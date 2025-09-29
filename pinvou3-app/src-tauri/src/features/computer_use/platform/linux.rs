@@ -2998,7 +2998,8 @@ mod x11_live_tests {
     /// Validate-then-consume, mirroring what the tool does around its
     /// target re-screen. Returns the approved element label on success.
     fn spend(shared: &ComputerUseShared, confirm_id: &str, summary: &str) -> Option<String> {
-        let label = shared.peek_confirmation(confirm_id, SESSION, summary, 0)?;
+        let (label, _element_binding) =
+            shared.peek_confirmation(confirm_id, SESSION, summary, 0)?;
         assert!(
             shared.consume_confirmation(confirm_id),
             "a peeked token must still be there to consume"
