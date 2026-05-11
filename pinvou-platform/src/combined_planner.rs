@@ -144,7 +144,18 @@ impl CombinedPlanner {
 - 最后一个 milestone 必须 mode=final_output
 - tools 必须从工具池中选；mode=final_output 时不能含 request_user_input
 - 如果用户首条消息已提供关键信息，对应的 collect 阶段可以省略
-- 只输出 JSON，不要任何其他文本"
+
+**严格的 mode → tools 对应（违反会被拒绝）**：
+- mode=collect          → tools **必须含** `request_user_input`
+- mode=produce_options  → tools **必须含** `request_user_input`（用于展示 2-3 选项给用户选）
+- mode=refine_selected_option → tools 可以为空，或含 file_read / web_search
+- mode=freeform         → tools 可以为空（纯产出），或含搜索/读文件类工具
+- mode=final_output     → tools 可含 file_write 等导出工具，**不能含** request_user_input
+
+口诀：要让用户做选择就用 collect 或 produce_options，并把 request_user_input 放进它的 tools 里。
+绝对不要在 produce_options 里写 `\"tools\": []` —— 这会让用户看到一堆文本问题而不是选择卡片。
+
+只输出 JSON，不要任何其他文本"
         )
     }
 
@@ -252,10 +263,15 @@ fn validate_dto(
         }
     }
 
-    // 7. tools 校验 —— 仅以 available_tools 为权威来源（来自实际 harness 注册的工具）。
-    // mode-tool 兼容性规则仍然检查（如 final_output 禁 request_user_input）。
+    // 7. tools 校验 —— 三层：
+    //   a) available_tools 是权威来源（每个 tool 必须在 harness 实际注册的池里）
+    //   b) ForbidTool：mode 禁用的工具不能出现
+    //   c) RequiresToolCall：mode 必需的工具必须出现（防 LLM 拆解时漏填导致下游退化文本）
     let mut milestones = Vec::with_capacity(dto.milestones.len());
     for m in dto.milestones {
+        let mode_contract = contract_for_mode(m.mode.clone());
+
+        // a + b：逐 tool 检查白名单与禁用
         for t in &m.tools {
             if !available_tools.iter().any(|x| x == t) {
                 bail!(
@@ -263,8 +279,6 @@ fn validate_dto(
                     t, available_tools
                 );
             }
-            // 用 mode 内置的 ForbidTool 校验工具兼容性
-            let mode_contract = contract_for_mode(m.mode.clone());
             for req in &mode_contract.output_requirements {
                 if let OutputRequirement::ForbidTool(forbidden) = req {
                     if forbidden == t {
@@ -276,6 +290,22 @@ fn validate_dto(
                 }
             }
         }
+
+        // c：检查必需工具都已声明。
+        // 这是关键的「自洽校验」：mode 的 RequiresToolCall 规则要求某工具，
+        // 那 milestone.tools 里必须有它。否则下游 filter_tools_for_contract
+        // 会过滤掉所有工具，LLM 看到空 tools 后退化文本路径。
+        for req in &mode_contract.output_requirements {
+            if let OutputRequirement::RequiresToolCall(required) = req {
+                if !m.tools.iter().any(|t| t == required) {
+                    bail!(
+                        "milestone '{}' (mode={:?}) 必须在 tools 中声明 `{}`（mode 的 RequiresToolCall 硬规则）",
+                        m.label, m.mode, required
+                    );
+                }
+            }
+        }
+
         milestones.push(PlannedMilestone {
             label: m.label,
             mode: m.mode,
@@ -480,6 +510,54 @@ mod tests {
         }"#;
         let err = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap_err();
         assert!(err.to_string().contains("rm_rf"));
+    }
+
+    #[test]
+    fn parse_rejects_produce_options_without_request_user_input_in_tools() {
+        // 关键 bug 修复测试：LLM 拆解时给 produce_options 写 tools=[]
+        // 应该被拒绝（mode 的 RequiresToolCall 要求）
+        let reg = registry_with_basic_agents();
+        let json = r#"{
+            "agent": "doc_generation",
+            "milestones": [
+                {"label": "选结构", "mode": "produce_options", "tools": []},
+                {"label": "定稿", "mode": "final_output", "tools": []}
+            ]
+        }"#;
+        let err = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("RequiresToolCall") || msg.contains("request_user_input"),
+            "expected RequiresToolCall error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_collect_without_request_user_input_in_tools() {
+        let reg = registry_with_basic_agents();
+        let json = r#"{
+            "agent": "doc_generation",
+            "milestones": [
+                {"label": "了解需求", "mode": "collect", "tools": []},
+                {"label": "定稿", "mode": "final_output", "tools": []}
+            ]
+        }"#;
+        let err = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap_err();
+        assert!(err.to_string().contains("request_user_input"));
+    }
+
+    #[test]
+    fn parse_accepts_produce_options_with_required_tool() {
+        let reg = registry_with_basic_agents();
+        let json = r#"{
+            "agent": "doc_generation",
+            "milestones": [
+                {"label": "选结构", "mode": "produce_options", "tools": ["request_user_input"]},
+                {"label": "定稿", "mode": "final_output", "tools": []}
+            ]
+        }"#;
+        let plan = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap();
+        assert_eq!(plan.milestones.len(), 2);
     }
 
     #[test]
