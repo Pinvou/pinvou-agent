@@ -187,6 +187,36 @@ fn sse_done_for_milestone(result: &MilestoneAdvanceResult) -> axum::response::ss
 
 type SseItem = Result<axum::response::sse::Event, Infallible>;
 
+/// auto-continue 场景下用的 user_message 占位符。
+///
+/// 为什么不能让 user_message 为空：本地 LLM（如 Qwen 系列）收到空 user 消息时
+/// 会直接输出 EOS，导致 stream `response_text len=0` + 不调任何工具，
+/// 阶段卡死。给一个明确的"系统过渡"消息让 LLM 知道按 system prompt 继续。
+const AUTO_CONTINUE_AFTER_CONTINUE: &str =
+    "（系统：用户已确认推进，请按当前阶段要求继续）";
+const AUTO_CONTINUE_AFTER_TOOL_RESULT: &str =
+    "（系统：用户已完成上一阶段选择，请按当前阶段要求继续）";
+
+/// 解析本轮发给 LLM 的 user_message。
+///
+/// 三种情况：
+/// 1. 用户输入了"继续"等触发推进的命令 → 用 AUTO_CONTINUE_AFTER_CONTINUE
+/// 2. 用户发了 tool_result（选择卡回传）且无文本消息 → 用 AUTO_CONTINUE_AFTER_TOOL_RESULT
+/// 3. 用户输入了普通文本 → 透传原始消息
+fn resolve_effective_message<'a>(
+    raw_message: &'a str,
+    continue_consumed: bool,
+    has_tool_result: bool,
+) -> &'a str {
+    if continue_consumed {
+        AUTO_CONTINUE_AFTER_CONTINUE
+    } else if has_tool_result && raw_message.is_empty() {
+        AUTO_CONTINUE_AFTER_TOOL_RESULT
+    } else {
+        raw_message
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum WebTurnAction {
     CallLlm,
@@ -393,11 +423,11 @@ async fn stream_chat(
             return Box::pin(stream::iter(events));
         }
     }
-    let effective_message = if continue_result.is_some() {
-        ""
-    } else {
-        req.message.as_str()
-    };
+    let effective_message = resolve_effective_message(
+        req.message.as_str(),
+        continue_result.is_some(),
+        req.tool_result.is_some(),
+    );
 
     // === 编排：检查活跃里程碑，构造限定范围 prompt ===
     let active_milestone = engine
@@ -871,6 +901,49 @@ mod tests {
     }
 
     // === slash 命令路径测试 ===
+
+    #[test]
+    // === resolve_effective_message 测试 ===
+
+    #[test]
+    fn effective_message_normal_text_passes_through() {
+        let out = resolve_effective_message("帮我写周报", false, false);
+        assert_eq!(out, "帮我写周报");
+    }
+
+    #[test]
+    fn effective_message_continue_uses_placeholder() {
+        // 用户输入"继续"，被 consume_continue_command 消费
+        // effective_message 应该是过渡占位符，不能为空（否则 LLM 输出 EOS）
+        let out = resolve_effective_message("继续", true, false);
+        assert_eq!(out, AUTO_CONTINUE_AFTER_CONTINUE);
+        assert!(!out.is_empty(), "auto-continue 不能给 LLM 空 user_message");
+    }
+
+    #[test]
+    fn effective_message_tool_result_uses_placeholder() {
+        // tool_result 路径：用户没发文本，只回了 choice_result
+        // 不能给 LLM 空 user_message
+        let out = resolve_effective_message("", false, true);
+        assert_eq!(out, AUTO_CONTINUE_AFTER_TOOL_RESULT);
+        assert!(!out.is_empty());
+    }
+
+    #[test]
+    fn effective_message_tool_result_with_text_passes_through() {
+        // 罕见：tool_result + 同时有文本消息（前端正常不会这样发）
+        // 透传文本（不该用占位符覆盖用户实际输入）
+        let out = resolve_effective_message("额外说明", false, true);
+        assert_eq!(out, "额外说明");
+    }
+
+    #[test]
+    fn effective_message_empty_no_special_returns_empty() {
+        // 没有 continue 也没有 tool_result，但消息为空
+        // 透传空字符串（这种情况上游应该拦掉，但函数本身保持简单）
+        let out = resolve_effective_message("", false, false);
+        assert_eq!(out, "");
+    }
 
     #[test]
     fn build_command_sse_emits_delta_then_done_with_command_field() {
