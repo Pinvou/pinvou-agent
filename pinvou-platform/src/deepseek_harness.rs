@@ -41,6 +41,26 @@ const TOOL_LOOP_MAX_ITERATIONS: usize = 12;
 const TOOL_ARGS_VISIBLE_MAX: usize = 200;
 const TOOL_RESULT_VISIBLE_MAX: usize = 1500;
 
+/// 「副作用」工具：执行就是目的，无需 LLM 基于结果继续生成。
+///
+/// 这类工具完成后 tool loop 直接终止，避免 LLM 再开一轮"基于结果复述"——
+/// 实测中 write_file 完成后 LLM 会把刚写入的 markdown 内容重新输出一遍，
+/// 而且会带 JSON 转义字符（\n 字面），导致前端格式乱（Problem 3）。
+///
+/// 与之相对，「信息」工具（web_search / read_file / list_dir / grep_files
+/// / fetch_url 等）需要 LLM 拿到结果后继续生成，不进此列表。
+const SIDE_EFFECT_TOOLS: &[&str] = &[
+    "write_file",
+    "edit_file",
+    "exec_shell",
+    "exec_interact",
+    "exec_shell_cancel",
+];
+
+fn is_side_effect_tool(name: &str) -> bool {
+    SIDE_EFFECT_TOOLS.contains(&name)
+}
+
 /// 把工具调用参数压缩成可视摘要（长 JSON 截断）
 fn render_args_compact(args: &serde_json::Value) -> String {
     let raw = serde_json::to_string(args).unwrap_or_else(|_| "{}".into());
@@ -431,10 +451,40 @@ impl<C: LlmClient + Clone + 'static> AgentHarness for DeepSeekHarness<C> {
                         },
                         Ok(DtStreamEvent::ContentBlockStop { index }) => {
                             if let Some((call_id, tool_name, buf)) = tool_buffers.remove(&index) {
-                                let args = if buf.is_empty() {
-                                    serde_json::Value::Null
+                                // Problem 2：LLM 偶发流式输出 ToolUse 但 input 字段为空
+                                // （input_json_delta 完全没发或全丢）。此时 buf 为空 / 不可解析。
+                                // 之前 fallback 到 Value::Null 后会让工具自报"missing required
+                                // field" 错误并 retry，但用户会先看到 "🔧 [write_file] null"
+                                // 这种无意义的中间状态。
+                                //
+                                // 改为：检测到 args 不合法时，不发 ToolCallStart 给上层，
+                                // 改成往 tool loop messages 注入一条 ToolUse + 错误 ToolResult，
+                                // 显式告诉 LLM "你的 input 是空的，请重试"。LLM 下一轮会重新调。
+                                let parsed = if buf.is_empty() {
+                                    None
                                 } else {
-                                    serde_json::from_str(&buf).unwrap_or(serde_json::Value::Null)
+                                    serde_json::from_str::<serde_json::Value>(&buf).ok()
+                                };
+                                let args = match parsed {
+                                    Some(v) if !matches!(v, serde_json::Value::Null) => v,
+                                    _ => {
+                                        // 不合法的 args：友好提示 + 自动重试，不污染前端选择卡 / 工具调用
+                                        if tool_name != "request_user_input" {
+                                            let banner = format!(
+                                                "\n\n⚠️ 模型对 `{tool_name}` 的调用参数为空（流式输出 bug），正在让模型重试……\n"
+                                            );
+                                            assistant_text.push_str(&banner);
+                                            yield Ok(StreamEvent::TextDelta { content: banner });
+                                        }
+                                        // 把这次"失败的调用"以错误 ToolResult 形式塞进 messages
+                                        // 让 LLM 下一轮能感知到失败并重新生成正确的 args
+                                        completed_calls.push((
+                                            call_id,
+                                            tool_name,
+                                            serde_json::Value::Null,
+                                        ));
+                                        continue;
+                                    }
                                 };
                                 // 把工具调用以文本形式 yield，方便 web 层把它纳入
                                 // engine.messages（用于跨轮历史），同时也让用户看到。
@@ -522,6 +572,21 @@ impl<C: LlmClient + Clone + 'static> AgentHarness for DeepSeekHarness<C> {
 
                 // 有透传工具（如 request_user_input）→ 上层处理，本流终止
                 if has_pass_through {
+                    yield Ok(StreamEvent::Done);
+                    return;
+                }
+
+                // 副作用工具（write_file / edit_file / exec_shell ...）**成功**完成后直接终止：
+                // 这类工具的产出就是目的本身，不需要 LLM 基于结果再开一轮复述。
+                // 之前实测：write_file 后 LLM 重新输出整篇 markdown（带 JSON 转义字符），
+                // 既慢又乱格式。详见 Problem 3 根因分析。
+                //
+                // 失败（content 以 "ERROR" 开头）的副作用调用不算成功——例如 Problem 2 的
+                // null args 场景，工具 spec 会返回错误。这时不能终止 loop，要让 LLM 重试。
+                let has_succeeded_side_effect = auto_executed.iter().any(|(_, tool_name, _, content)| {
+                    is_side_effect_tool(tool_name) && !content.starts_with("ERROR")
+                });
+                if has_succeeded_side_effect {
                     yield Ok(StreamEvent::Done);
                     return;
                 }
@@ -634,6 +699,24 @@ mod tests {
     use deepseek_tui::llm_client::LlmClient;
     use deepseek_tui::models::{MessageResponse, Usage};
     use futures_util::stream;
+
+    #[test]
+    fn side_effect_tools_include_write_and_shell() {
+        // Problem 3 修复依据：这些工具完成后 tool loop 必须终止。
+        assert!(is_side_effect_tool("write_file"));
+        assert!(is_side_effect_tool("edit_file"));
+        assert!(is_side_effect_tool("exec_shell"));
+    }
+
+    #[test]
+    fn side_effect_tools_exclude_info_tools() {
+        // 信息工具不算副作用：LLM 拿到结果后需要继续生成。
+        assert!(!is_side_effect_tool("web_search"));
+        assert!(!is_side_effect_tool("read_file"));
+        assert!(!is_side_effect_tool("list_dir"));
+        assert!(!is_side_effect_tool("grep_files"));
+        assert!(!is_side_effect_tool("request_user_input"));
+    }
 
     /// 测试用 LlmClient 实现 — 返回固定文本。
     /// MockLlmClient 被 `#[cfg(test)]` 门控在 deepseek-tui 内部，
