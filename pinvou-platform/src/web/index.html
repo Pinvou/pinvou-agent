@@ -215,20 +215,17 @@
   <nav class="sidebar-nav">
     <button class="active" data-view="chat"><span class="nav-icon">💬</span><span>聊天室</span></button>
     <div class="sidebar-section-label">应用</div>
-    <button data-app="数据分析"><span class="nav-icon">📊</span><span>数据分析</span></button>
-    <button data-app="文档生成"><span class="nav-icon">📝</span><span>文档生成</span></button>
-    <button data-app="计划敲定"><span class="nav-icon">🎯</span><span>计划敲定</span></button>
+    <button data-app="data_analysis"><span class="nav-icon">📊</span><span>数据分析</span></button>
+    <button data-app="doc_generation"><span class="nav-icon">📝</span><span>文档生成</span></button>
+    <button data-app="planning"><span class="nav-icon">🎯</span><span>计划制定</span></button>
+    <button data-app="qa"><span class="nav-icon">💬</span><span>简单问答</span></button>
+    <button data-app="generic"><span class="nav-icon">🔧</span><span>通用任务</span></button>
   </nav>
 </aside>
 
 <div class="main-area">
   <div class="topbar">
-    <select class="topbar-app-select" id="appSelect">
-      <option value="">— 选择应用 —</option>
-      <option value="数据分析">📊 数据分析</option>
-      <option value="文档生成">📝 文档生成</option>
-      <option value="计划敲定">🎯 计划敲定</option>
-    </select>
+    <span class="topbar-hint">直接输入需求，AI 自动选择 agent 并拆解任务</span>
     <span class="topbar-divider"></span>
     <span class="topbar-model-badge" id="modelBadge">deepseek-v3</span>
     <span class="topbar-status" id="statusDot" title="已连接"></span>
@@ -261,33 +258,31 @@
 marked.setOptions({ breaks: true, gfm: true });
 
 const state = {
-  currentApp: null, milestones: [], streaming: false, abortController: null, pendingChoice: null
+  milestones: [], streaming: false, abortController: null, pendingChoice: null
 };
 
-const appSelect = document.getElementById('appSelect');
 const chatMessages = document.getElementById('chatMessages');
 const chatInput = document.getElementById('chatInput');
 const sendBtn = document.getElementById('sendBtn');
 const stepList = document.getElementById('stepList');
 const statusDot = document.getElementById('statusDot');
 
-appSelect.addEventListener('change', async (e) => {
-  const appId = e.target.value;
-  if (!appId) { state.currentApp = null; state.milestones = []; chatInput.disabled = true; sendBtn.disabled = true; renderMilestones(); return; }
-  state.currentApp = appId;
-  state.milestones = []; chatInput.disabled = false; sendBtn.disabled = false;
-  renderMilestones();
-  addSystemMsg(`已进入「${appId}」模式`);
-  await fetchMilestones();
-});
+// 启动即可用：不需要选择 App
+chatInput.disabled = false;
+sendBtn.disabled = false;
+fetchMilestones();
 
+// 侧边栏快捷入口：把 agent id 作为 /use 命令直接发出去
 document.querySelectorAll('[data-app]').forEach(btn => {
-  btn.addEventListener('click', () => { appSelect.value = btn.dataset.app; appSelect.dispatchEvent(new Event('change')); });
+  btn.addEventListener('click', () => {
+    chatInput.value = `/use ${btn.dataset.app}`;
+    sendMessage();
+  });
 });
 
 async function sendMessage() {
   const text = chatInput.value.trim();
-  if (!text || state.streaming || !state.currentApp) return;
+  if (!text || state.streaming) return;
 
   chatInput.value = ''; chatInput.style.height = 'auto';
   chatInput.disabled = true; sendBtn.disabled = true; sendBtn.textContent = '…';
@@ -300,7 +295,7 @@ async function sendMessage() {
     const resp = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text, app_id: state.currentApp }),
+      body: JSON.stringify({ message: text }),
       signal: state.abortController.signal,
     });
     if (!resp.ok) { const err = await resp.json().catch(() => ({ error: resp.statusText })); throw new Error(err.error || `HTTP ${resp.status}`); }
@@ -317,7 +312,9 @@ async function sendMessage() {
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
         const data = line.slice(6);
-        try { const p = JSON.parse(data); if (p.error) throw new Error(p.error); if (p.done) continue;
+        try { const p = JSON.parse(data); if (p.error) throw new Error(p.error);
+          if (p.milestone) { fetchMilestones(); }
+          if (p.done) continue;
           if (p.choice_request) {
             streamDiv.classList.remove('streaming');
             streamDiv.querySelector('.msg-bubble').innerHTML = marked.parse(fullText);
@@ -383,7 +380,7 @@ async function fetchMilestones() {
 }
 
 function renderMilestones() {
-  if (state.milestones.length === 0) { stepList.innerHTML = '<div class="panel-empty">选择应用后显示步骤</div>'; return; }
+  if (state.milestones.length === 0) { stepList.innerHTML = '<div class="panel-empty">输入需求后将显示步骤</div>'; return; }
   stepList.innerHTML = state.milestones.map(m => `
     <div class="step ${m.status}">
       <div class="step-indicator">${m.status === 'done' ? '✓' : m.status === 'active' ? '●' : '○'}</div>
@@ -477,7 +474,6 @@ async function submitChoice(answers) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message: '',
-        app_id: state.currentApp,
         tool_result: { call_id: pc.callId, answers: answers },
       }),
       signal: state.abortController.signal,
@@ -496,7 +492,9 @@ async function submitChoice(answers) {
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
         const data = line.slice(6);
-        try { const p = JSON.parse(data); if (p.error) throw new Error(p.error); if (p.done) continue;
+        try { const p = JSON.parse(data); if (p.error) throw new Error(p.error);
+          if (p.milestone) { fetchMilestones(); }
+          if (p.done) continue;
           if (p.choice_request) {
             streamDiv.classList.remove('streaming');
             streamDiv.querySelector('.msg-bubble').innerHTML = marked.parse(fullText);
@@ -542,7 +540,6 @@ async function skipChoice() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message: '',
-        app_id: state.currentApp,
         tool_result: { call_id: callId, skip: true },
       }),
       signal: state.abortController.signal,
@@ -560,7 +557,9 @@ async function skipChoice() {
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
         const data = line.slice(6);
-        try { const p = JSON.parse(data); if (p.error) throw new Error(p.error); if (p.done) continue;
+        try { const p = JSON.parse(data); if (p.error) throw new Error(p.error);
+          if (p.milestone) { fetchMilestones(); }
+          if (p.done) continue;
           if (p.choice_request) {
             streamDiv.classList.remove('streaming');
             streamDiv.querySelector('.msg-bubble').innerHTML = marked.parse(fullText);
