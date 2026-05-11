@@ -7,6 +7,10 @@
 
 use crate::contract::{MilestoneContract, OutputRequirement};
 
+/// 选择卡 option.description 的全局最小字符数（Unicode 字符）。
+/// 低于这个数等于一句话注释，用户做选择没信心。
+pub const MIN_OPTION_DESCRIPTION_CHARS: usize = 30;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidationResult {
     pub ok: bool,
@@ -104,6 +108,29 @@ impl ContractValidator {
                         }
                     }
                     _ => {}
+                }
+            }
+
+            // 全局硬规则：每个 option.description 至少 30 字（按 Unicode 字符数）。
+            // 这是用户决策信心的底线 —— 一句话注释式 description 让用户不知道选什么。
+            // 不进 OutputRequirement（避免每个 mode 都重复声明），统一全局门槛。
+            if let Some(questions) = arguments.get("questions").and_then(|v| v.as_array()) {
+                for (qi, q) in questions.iter().enumerate() {
+                    let Some(options) = q.get("options").and_then(|v| v.as_array()) else {
+                        continue;
+                    };
+                    for (oi, opt) in options.iter().enumerate() {
+                        let desc = opt
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let chars = desc.chars().count();
+                        if chars < MIN_OPTION_DESCRIPTION_CHARS {
+                            result.push_issue(format!(
+                                "questions[{qi}].options[{oi}].description 过短 ({chars} 字)：选项描述必须 ≥ {MIN_OPTION_DESCRIPTION_CHARS} 字，说明这个选项与其他选项的关键差异和取舍"
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -214,6 +241,63 @@ mod tests {
             assert!(!result.ok);
             assert!(result.issues.iter().any(|i| i.contains("至少 2 个选项")));
         }
+    }
+
+    #[test]
+    fn short_option_description_is_rejected_to_protect_user_confidence() {
+        // description < MIN_OPTION_DESCRIPTION_CHARS（30 字） → 失败
+        let contract = contract_with(
+            MilestoneMode::ProduceOptions,
+            vec![OutputRequirement::MinOptions(2)],
+            vec!["request_user_input".into()],
+        );
+        let args = serde_json::json!({
+            "questions": [{
+                "header": "方案",
+                "id": "selected_option",
+                "question": "请选择方案",
+                "options": [
+                    {"label": "湖畔徒步", "description": "走湖边"},
+                    {"label": "骑行环线", "description": "骑行"}
+                ]
+            }]
+        });
+        let result = ContractValidator::validate_tool_call(&contract, "request_user_input", &args);
+        assert!(!result.ok);
+        assert!(
+            result.issues.iter().any(|i| i.contains("description 过短")),
+            "应该报 description 过短: {:?}",
+            result.issues
+        );
+    }
+
+    #[test]
+    fn rich_option_description_passes() {
+        // description ≥ 30 字 → 通过
+        let contract = contract_with(
+            MilestoneMode::ProduceOptions,
+            vec![OutputRequirement::MinOptions(2)],
+            vec!["request_user_input".into()],
+        );
+        let args = serde_json::json!({
+            "questions": [{
+                "header": "方案",
+                "id": "selected_option",
+                "question": "请选择方案",
+                "options": [
+                    {
+                        "label": "湖畔徒步",
+                        "description": "沿湖步道环湖一周约 5 公里，平坦易走，适合慢节奏拍照和家庭出行，时间约 2 小时。"
+                    },
+                    {
+                        "label": "骑行环线",
+                        "description": "骑行环湖加上山路 10 公里，难度中等，适合体力充沛的同行者，时间约 1.5 小时，需自带或租赁单车。"
+                    }
+                ]
+            }]
+        });
+        let result = ContractValidator::validate_tool_call(&contract, "request_user_input", &args);
+        assert!(result.ok, "应通过但有 issue: {:?}", result.issues);
     }
 
     #[test]

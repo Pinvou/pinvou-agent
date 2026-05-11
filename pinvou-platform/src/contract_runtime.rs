@@ -46,6 +46,7 @@ impl ContractRuntime {
                     "最多调用 request_user_input {} 次；收到选择后立即总结并完成阶段。",
                     contract.question_budget
                 ));
+                push_request_user_input_quality_rules(&mut requirements);
             }
             MilestoneMode::ProduceOptions => {
                 if question_budget_reached(milestone, state) {
@@ -57,6 +58,7 @@ impl ContractRuntime {
                     "可以调用 request_user_input 让用户选择一个方案，但选项数量必须是 2-3 个。"
                         .into(),
                 );
+                push_request_user_input_quality_rules(&mut requirements);
             }
             MilestoneMode::RefineSelectedOption => {
                 requirements.push(
@@ -93,6 +95,20 @@ impl ContractRuntime {
             system_requirements: requirements,
         }))
     }
+}
+
+/// 注入 request_user_input 的选项质量规则。
+/// 用在 Collect / ProduceOptions / (未来) Review 等所有发选择卡的 mode。
+fn push_request_user_input_quality_rules(requirements: &mut Vec<String>) {
+    requirements.push(
+        "硬规则：调用 request_user_input 时，每个 option.description 必须 ≥ 30 字，说明这个选项与其他选项的关键差异、适用场景、取舍——不能是「一句话注释」级别。".into(),
+    );
+    requirements.push(
+        "硬规则：description 字段支持 markdown，可以用粗体、列表、内联代码强调关键信息，让用户一眼看清差异。".into(),
+    );
+    requirements.push(
+        "建议：在多选项场景，挑一个最契合用户偏好的选项标 `recommended: true`，并在 description 里 1-2 句说明为什么推荐——可以显著提高用户决策信心。".into(),
+    );
 }
 
 fn push_stage_hint(requirements: &mut Vec<String>, milestone: &Milestone) {

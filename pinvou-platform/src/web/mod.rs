@@ -349,6 +349,41 @@ fn choice_request_allowed_after_validation(
     }
 }
 
+/// 选择卡上下文清洗：去掉 DeepSeek-TUI tool loop 注入的横幅，
+/// 只保留 LLM 自己的论证文字。
+///
+/// 横幅形态来自 `deepseek_harness.rs` 的 tool loop：
+/// - `\n\n⏳ 正在调用工具...\n`
+/// - `\n\n🔧 [<tool>] {args}\n`
+/// - `\n\n📄 结果:\n<json>`
+///
+/// 这些对前端选择卡是噪音；用户要看的是"为什么要做这个决策"，
+/// 不是 web_search 返回了哪些 JSON。
+fn strip_tool_banners(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_skip_block = false;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("⏳ 正在调用工具")
+            || trimmed.starts_with("🔧 [")
+            || trimmed.starts_with("📄 结果")
+        {
+            in_skip_block = true;
+            continue;
+        }
+        // 跳过 tool 结果块的后续行：JSON / 普通文本，直到遇到空行或下一段
+        if in_skip_block {
+            if trimmed.is_empty() {
+                in_skip_block = false;
+            }
+            continue;
+        }
+        out.push_str(line);
+    }
+    // 末尾如果只剩 tool 输出后的空白，trim 一下
+    out.trim().to_string()
+}
+
 fn validation_delta_from_issues(validation_issues: &[String]) -> Option<String> {
     if validation_issues.is_empty() {
         None
@@ -744,9 +779,25 @@ where
                                 yield Ok(sse_err(message));
                                 return;
                             }
-                            eprintln!("[web] Emitting choice_request event");
+                            // 把选项之前 LLM 流式输出的文字一并带给前端，
+                            // 让选择卡顶部能渲染「LLM 的判断依据」。
+                            // 没有这段上下文时，用户拿到的只是裸选项，决策信心差。
+                            let context = strip_tool_banners(&full_text);
+                            eprintln!(
+                                "[web] Emitting choice_request event (context_len={})",
+                                context.len()
+                            );
+                            let mut choice_payload = choice_data;
+                            if !context.trim().is_empty() {
+                                if let Some(obj) = choice_payload.as_object_mut() {
+                                    obj.insert(
+                                        "context".into(),
+                                        serde_json::Value::String(context),
+                                    );
+                                }
+                            }
                             let choice_event = axum::response::sse::Event::default().data(
-                                serde_json::json!({ "choice_request": choice_data }).to_string(),
+                                serde_json::json!({ "choice_request": choice_payload }).to_string(),
                             );
                             yield Ok(choice_event);
                             return;
@@ -873,8 +924,8 @@ mod tests {
                 "header": "目标",
                 "question": "请选择",
                 "options": [
-                    {"label": "A", "description": "a"},
-                    {"label": "B", "description": "b"}
+                    {"label": "A", "description": "选项 A 的详细说明，包含决策依据、关键差异和取舍点，供用户做对比时参考。"},
+                    {"label": "B", "description": "选项 B 的详细说明，与 A 在关键维度上的差异点、适用场景、限制条件，方便决策。"}
                 ]
             }]
         });
@@ -1003,8 +1054,8 @@ mod tests {
                 "header": "方案",
                 "question": "请选择",
                 "options": [
-                    {"label": "A", "description": "first"},
-                    {"label": "B", "description": "second"}
+                    {"label": "A", "description": "方案 A 的完整说明，含成本时间风险三个维度的分析与适用场景对比。"},
+                    {"label": "B", "description": "方案 B 的完整说明，与 A 在执行难度、回报、风险上的关键差异点。"}
                 ]
             }]
         });
@@ -1255,6 +1306,40 @@ mod tests {
     }
 
     // === 新加的 SSE 事件 helper 格式 ===
+
+    // === strip_tool_banners ===
+
+    #[test]
+    fn strip_tool_banners_keeps_llm_prose() {
+        let raw = "\
+基于搜索结果，我有 3 个方案推荐给你。每个方案的时间安排不同，请选择。
+
+\n\n⏳ 正在调用工具...
+🔧 [web_search] {\"query\":\"xxx\"}
+📄 结果:
+{\"results\":[...]}
+
+我的判断依据是用户偏好 + 天气情况。";
+        let cleaned = strip_tool_banners(raw);
+        assert!(cleaned.contains("基于搜索结果，我有 3 个方案推荐给你"));
+        assert!(cleaned.contains("我的判断依据"));
+        assert!(!cleaned.contains("正在调用工具"));
+        assert!(!cleaned.contains("[web_search]"));
+        assert!(!cleaned.contains("results"));
+    }
+
+    #[test]
+    fn strip_tool_banners_empty_when_only_banners() {
+        let raw = "\n\n⏳ 正在调用工具...\n🔧 [exec_shell] {}\n📄 结果:\nOK\n";
+        let cleaned = strip_tool_banners(raw);
+        assert!(cleaned.is_empty());
+    }
+
+    #[test]
+    fn strip_tool_banners_preserves_plain_text() {
+        let raw = "纯文本没有工具调用。";
+        assert_eq!(strip_tool_banners(raw), "纯文本没有工具调用。");
+    }
 
     #[test]
     fn sse_stage_advanced_emits_advance_signal() {
