@@ -1,11 +1,25 @@
 //! DeepSeekHarness — 实现 AgentHarness trait，对接本地和远程 LLM。
 //!
 //! 泛型参数 C: LlmClient 支持注入 DeepSeekClient（生产）、Ollama client、MockLlmClient（测试）。
+//!
+//! ## 工具执行循环（自动 tool loop）
+//!
+//! 通过 `with_tools()` 注入 `ToolRegistry` + `ToolContext` 后，harness 在 LLM
+//! 调用工具时会自动 dispatch：
+//! - 工具名在 `auto_tool_names` 集合中 → harness 调 `ToolSpec::execute()`，把结果
+//!   作为 `ToolResult` 写回对话历史，再次调 LLM，让它基于工具结果继续生成
+//! - 工具名不在集合中（如 `request_user_input`）→ 把 `ToolCallStart` 透传给
+//!   上层，由 web/TUI 处理用户交互
+//!
+//! 这避免 LLM 输出形如 `[web_search: ...]` 的伪工具调用：因为现在它真的会被执行。
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use async_stream::stream;
 use async_trait::async_trait;
 use futures_util::{Stream, StreamExt};
 
@@ -15,6 +29,90 @@ use deepseek_tui::models::{
     ContentBlock, ContentBlockStart, Delta, Message, MessageRequest, StreamEvent as DtStreamEvent,
     SystemPrompt, Tool,
 };
+use deepseek_tui::tools::registry::ToolRegistry;
+use deepseek_tui::tools::spec::ToolContext;
+
+const TOOL_LOOP_MAX_ITERATIONS: usize = 5;
+
+/// 旧行为：单次 LLM 调用 + 透传 tool calls，不自动执行工具。
+/// 当 harness 未注入 ToolRegistry 时使用，保留向后兼容。
+async fn chat_stream_passthrough<C: LlmClient>(
+    client: C,
+    msg_req: MessageRequest,
+) -> Result<Box<dyn Stream<Item = Result<StreamEvent>> + Send + Unpin>> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    let llm_stream: StreamEventBox = client.create_message_stream(msg_req).await?;
+    type ToolState = (String, String, String);
+    let idx_map: Arc<Mutex<HashMap<u32, ToolState>>> = Arc::new(Mutex::new(HashMap::new()));
+
+    let mapped = llm_stream.map(move |result| match result {
+        Ok(DtStreamEvent::ContentBlockStart {
+            index,
+            content_block,
+        }) => match content_block {
+            ContentBlockStart::ToolUse { id, name, .. } => {
+                if let Ok(mut map) = idx_map.lock() {
+                    map.insert(index, (id, name, String::new()));
+                }
+                Ok(StreamEvent::TextDelta {
+                    content: "\n\n⏳ 正在准备选项...\n".into(),
+                })
+            }
+            _ => Ok(StreamEvent::TextDelta {
+                content: String::new(),
+            }),
+        },
+        Ok(DtStreamEvent::ContentBlockDelta { index, delta }) => match delta {
+            Delta::TextDelta { text } => Ok(StreamEvent::TextDelta { content: text }),
+            Delta::InputJsonDelta { partial_json } => {
+                if let Ok(mut map) = idx_map.lock() {
+                    if let Some(entry) = map.get_mut(&index) {
+                        entry.2.push_str(&partial_json);
+                    }
+                }
+                Ok(StreamEvent::TextDelta {
+                    content: String::new(),
+                })
+            }
+            _ => Ok(StreamEvent::TextDelta {
+                content: String::new(),
+            }),
+        },
+        Ok(DtStreamEvent::ContentBlockStop { index }) => {
+            let removed = if let Ok(mut map) = idx_map.lock() {
+                map.remove(&index)
+            } else {
+                None
+            };
+            if let Some((call_id, tool_name, buf)) = removed {
+                let args: serde_json::Value = if buf.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::from_str(&buf).unwrap_or(serde_json::Value::Null)
+                };
+                return Ok(StreamEvent::ToolCallStart {
+                    call_id,
+                    tool_name,
+                    arguments: args,
+                });
+            }
+            Ok(StreamEvent::TextDelta {
+                content: String::new(),
+            })
+        }
+        Ok(DtStreamEvent::MessageStop) => Ok(StreamEvent::Done),
+        Err(e) => Ok(StreamEvent::Error {
+            message: e.to_string(),
+        }),
+        _ => Ok(StreamEvent::TextDelta {
+            content: String::new(),
+        }),
+    });
+
+    Ok(Box::new(mapped))
+}
 
 pub struct DeepSeekHarness<C: LlmClient> {
     client: C,
@@ -22,9 +120,15 @@ pub struct DeepSeekHarness<C: LlmClient> {
     models: Vec<ModelInfo>,
     workspace: PathBuf,
     checkpoint_dir: PathBuf,
+    /// DeepSeek-TUI 工具注册表。注入后，harness 在 chat_stream 中自动 dispatch。
+    tool_registry: Option<Arc<ToolRegistry>>,
+    /// 工具执行上下文（workspace、sandbox 等）。
+    tool_context: Option<ToolContext>,
+    /// 哪些工具走 harness 自动执行；不在此集合的工具透传给上层（如 request_user_input）。
+    auto_tool_names: HashSet<String>,
 }
 
-impl<C: LlmClient> DeepSeekHarness<C> {
+impl<C: LlmClient + Clone + 'static> DeepSeekHarness<C> {
     pub fn new(client: C, tools: Vec<ToolDef>, models: Vec<ModelInfo>, workspace: PathBuf) -> Self {
         let checkpoint_dir = workspace.join(".checkpoints");
         Self {
@@ -33,11 +137,44 @@ impl<C: LlmClient> DeepSeekHarness<C> {
             models,
             workspace,
             checkpoint_dir,
+            tool_registry: None,
+            tool_context: None,
+            auto_tool_names: HashSet::new(),
         }
     }
 
     pub fn with_checkpoint_dir(mut self, dir: PathBuf) -> Self {
         self.checkpoint_dir = dir;
+        self
+    }
+
+    /// 注入 DeepSeek-TUI 工具注册表 + 执行上下文。
+    ///
+    /// `auto_tool_names` 是 harness **自动执行** 的工具名集合：当 LLM 调用其中
+    /// 任一工具时，harness 会调 `ToolSpec::execute()`，把结果写回对话历史并
+    /// 自动触发下一轮 LLM 调用。
+    ///
+    /// 不在此集合的工具（典型如 `request_user_input`）—— harness 将 `ToolCallStart`
+    /// 透传给上层（web/TUI），由那里处理用户交互。
+    pub fn with_tools(
+        mut self,
+        registry: Arc<ToolRegistry>,
+        context: ToolContext,
+        auto_tool_names: HashSet<String>,
+    ) -> Self {
+        // tools 字段从 registry 派生，覆盖手工传入的列表
+        let api_tools = registry.to_api_tools();
+        self.tools = api_tools
+            .into_iter()
+            .map(|t| ToolDef {
+                name: t.name,
+                description: t.description,
+                parameters: t.input_schema,
+            })
+            .collect();
+        self.tool_registry = Some(registry);
+        self.tool_context = Some(context);
+        self.auto_tool_names = auto_tool_names;
         self
     }
 
@@ -137,7 +274,7 @@ impl<C: LlmClient> DeepSeekHarness<C> {
 }
 
 #[async_trait]
-impl<C: LlmClient> AgentHarness for DeepSeekHarness<C> {
+impl<C: LlmClient + Clone + 'static> AgentHarness for DeepSeekHarness<C> {
     /// 非流式 chat — 绕过 SSE 流式请求以兼容 Ark 等平台
     async fn chat(&self, req: ChatRequest) -> Result<String> {
         let msg_req = self.to_message_request(&req);
@@ -155,86 +292,189 @@ impl<C: LlmClient> AgentHarness for DeepSeekHarness<C> {
         &self,
         req: ChatRequest,
     ) -> Result<Box<dyn Stream<Item = Result<StreamEvent>> + Send + Unpin>> {
-        use std::collections::HashMap;
-        use std::sync::{Arc, Mutex};
+        let initial_msg_req = self.to_message_request(&req);
+        let client = self.client.clone();
+        let registry = self.tool_registry.clone();
+        let context = self.tool_context.clone();
+        let auto_names = self.auto_tool_names.clone();
 
-        let msg_req = self.to_message_request(&req);
-        let llm_stream: StreamEventBox = self.client.create_message_stream(msg_req).await?;
+        // 没有 registry → 走兼容路径（旧行为：单次 LLM 调用 + 透传 tool calls）
+        if registry.is_none() {
+            return chat_stream_passthrough(client, initial_msg_req).await;
+        }
 
-        // 流式 tool call: ToolUse 的 input 初始为空，参数通过 InputJsonDelta 增量传输
-        // index → (call_id, tool_name, accumulated_json_buffer)
-        type ToolState = (String, String, String);
-        let tool_state: Arc<Mutex<HashMap<u32, ToolState>>> = Arc::new(Mutex::new(HashMap::new()));
-        let idx_map = tool_state.clone();
+        let registry = registry.unwrap();
+        let context = context.expect("ToolContext required when registry is set");
 
-        let mapped = llm_stream.map(move |result| match result {
-            Ok(DtStreamEvent::ContentBlockStart {
-                index,
-                content_block,
-            }) => match content_block {
-                ContentBlockStart::ToolUse { id, name, .. } => {
-                    if let Ok(mut map) = idx_map.lock() {
-                        map.insert(index, (id, name, String::new()));
-                    }
-                    // 通知前端 tool call 正在生成，避免用户以为卡住
-                    Ok(StreamEvent::TextDelta {
-                        content: "\n\n⏳ 正在准备选项...\n".into(),
-                    })
+        // 有 registry → tool loop：自动 dispatch + 多轮 LLM
+        let s = stream! {
+            let mut msg_req = initial_msg_req;
+            let mut iteration: usize = 0;
+
+            'outer: loop {
+                iteration += 1;
+                if iteration > TOOL_LOOP_MAX_ITERATIONS {
+                    yield Ok(StreamEvent::Error {
+                        message: format!(
+                            "达到工具循环最大轮次 {TOOL_LOOP_MAX_ITERATIONS}，终止以避免死循环"
+                        ),
+                    });
+                    return;
                 }
-                _ => Ok(StreamEvent::TextDelta {
-                    content: String::new(),
-                }),
-            },
-            Ok(DtStreamEvent::ContentBlockDelta { index, delta }) => match delta {
-                Delta::TextDelta { text } => Ok(StreamEvent::TextDelta { content: text }),
-                Delta::InputJsonDelta { partial_json } => {
-                    if let Ok(mut map) = idx_map.lock() {
-                        if let Some(entry) = map.get_mut(&index) {
-                            entry.2.push_str(&partial_json);
+
+                let mut llm_stream: StreamEventBox =
+                    match client.create_message_stream(msg_req.clone()).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            yield Ok(StreamEvent::Error { message: e.to_string() });
+                            return;
                         }
-                    }
-                    Ok(StreamEvent::TextDelta {
-                        content: String::new(),
-                    })
-                }
-                _ => Ok(StreamEvent::TextDelta {
-                    content: String::new(),
-                }),
-            },
-            Ok(DtStreamEvent::ContentBlockStop { index }) => {
-                let removed = if let Ok(mut map) = idx_map.lock() {
-                    map.remove(&index)
-                } else {
-                    None
-                };
-                if let Some((call_id, tool_name, buf)) = removed {
-                    let args: serde_json::Value = if buf.is_empty() {
-                        serde_json::Value::Null
-                    } else {
-                        serde_json::from_str(&buf).unwrap_or(serde_json::Value::Null)
                     };
-                    let evt = StreamEvent::ToolCallStart {
-                        call_id,
-                        tool_name,
-                        arguments: args,
-                    };
-                    eprintln!("[harness] accumulated tool call: {evt:?}");
-                    return Ok(evt);
-                }
-                Ok(StreamEvent::TextDelta {
-                    content: String::new(),
-                })
-            }
-            Ok(DtStreamEvent::MessageStop) => Ok(StreamEvent::Done),
-            Err(e) => Ok(StreamEvent::Error {
-                message: e.to_string(),
-            }),
-            _ => Ok(StreamEvent::TextDelta {
-                content: String::new(),
-            }),
-        });
 
-        Ok(Box::new(mapped))
+                let mut assistant_text = String::new();
+                let mut tool_buffers: std::collections::HashMap<u32, (String, String, String)> =
+                    std::collections::HashMap::new();
+                let mut completed_calls: Vec<(String, String, serde_json::Value)> = Vec::new();
+
+                while let Some(result) = llm_stream.next().await {
+                    match result {
+                        Ok(DtStreamEvent::ContentBlockStart { index, content_block }) => {
+                            if let ContentBlockStart::ToolUse { id, name, .. } = content_block {
+                                tool_buffers.insert(index, (id, name, String::new()));
+                                yield Ok(StreamEvent::TextDelta {
+                                    content: "\n\n⏳ 正在调用工具...\n".into(),
+                                });
+                            }
+                        }
+                        Ok(DtStreamEvent::ContentBlockDelta { index, delta }) => match delta {
+                            Delta::TextDelta { text } => {
+                                assistant_text.push_str(&text);
+                                yield Ok(StreamEvent::TextDelta { content: text });
+                            }
+                            Delta::InputJsonDelta { partial_json } => {
+                                if let Some(entry) = tool_buffers.get_mut(&index) {
+                                    entry.2.push_str(&partial_json);
+                                }
+                            }
+                            _ => {}
+                        },
+                        Ok(DtStreamEvent::ContentBlockStop { index }) => {
+                            if let Some((call_id, tool_name, buf)) = tool_buffers.remove(&index) {
+                                let args = if buf.is_empty() {
+                                    serde_json::Value::Null
+                                } else {
+                                    serde_json::from_str(&buf).unwrap_or(serde_json::Value::Null)
+                                };
+                                yield Ok(StreamEvent::ToolCallStart {
+                                    call_id: call_id.clone(),
+                                    tool_name: tool_name.clone(),
+                                    arguments: args.clone(),
+                                });
+                                completed_calls.push((call_id, tool_name, args));
+                            }
+                        }
+                        Ok(DtStreamEvent::MessageStop) => break,
+                        Err(e) => {
+                            yield Ok(StreamEvent::Error { message: e.to_string() });
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+
+                // 没有工具调用 → 终止（LLM 已生成完整回答）
+                if completed_calls.is_empty() {
+                    yield Ok(StreamEvent::Done);
+                    return;
+                }
+
+                // 把工具调用分为：自动执行 / 透传给上层
+                let mut auto_executed: Vec<(String, String, serde_json::Value, String)> = Vec::new();
+                let mut has_pass_through = false;
+                for (call_id, tool_name, args) in &completed_calls {
+                    if auto_names.contains(tool_name) {
+                        if let Some(spec) = registry.get(tool_name) {
+                            match spec.execute(args.clone(), &context).await {
+                                Ok(result) => {
+                                    yield Ok(StreamEvent::ToolCallResult {
+                                        call_id: call_id.clone(),
+                                        output: result.content.clone(),
+                                    });
+                                    auto_executed.push((
+                                        call_id.clone(),
+                                        tool_name.clone(),
+                                        args.clone(),
+                                        result.content,
+                                    ));
+                                }
+                                Err(e) => {
+                                    let msg = format!("ERROR: {e}");
+                                    yield Ok(StreamEvent::ToolCallResult {
+                                        call_id: call_id.clone(),
+                                        output: msg.clone(),
+                                    });
+                                    auto_executed.push((
+                                        call_id.clone(),
+                                        tool_name.clone(),
+                                        args.clone(),
+                                        msg,
+                                    ));
+                                }
+                            }
+                        } else {
+                            has_pass_through = true;
+                        }
+                    } else {
+                        has_pass_through = true;
+                    }
+                }
+
+                // 有透传工具（如 request_user_input）→ 上层处理，本流终止
+                if has_pass_through {
+                    yield Ok(StreamEvent::Done);
+                    return;
+                }
+
+                // 全部 auto → 拼装 messages 进入下一轮
+                let mut assistant_blocks = Vec::new();
+                if !assistant_text.is_empty() {
+                    assistant_blocks.push(ContentBlock::Text {
+                        text: assistant_text,
+                        cache_control: None,
+                    });
+                }
+                for (id, name, args, _) in &auto_executed {
+                    assistant_blocks.push(ContentBlock::ToolUse {
+                        id: id.clone(),
+                        name: name.clone(),
+                        input: args.clone(),
+                        caller: None,
+                    });
+                }
+                msg_req.messages.push(Message {
+                    role: "assistant".to_string(),
+                    content: assistant_blocks,
+                });
+
+                let result_blocks: Vec<ContentBlock> = auto_executed
+                    .iter()
+                    .map(|(id, _, _, content)| ContentBlock::ToolResult {
+                        tool_use_id: id.clone(),
+                        content: content.clone(),
+                        is_error: None,
+                        content_blocks: None,
+                    })
+                    .collect();
+                msg_req.messages.push(Message {
+                    role: "user".to_string(),
+                    content: result_blocks,
+                });
+
+                continue 'outer;
+            }
+        };
+
+        Ok(Box::new(Box::pin(s)))
     }
 
     fn tools(&self) -> Vec<ToolDef> {
@@ -307,6 +547,7 @@ mod tests {
     /// 测试用 LlmClient 实现 — 返回固定文本。
     /// MockLlmClient 被 `#[cfg(test)]` 门控在 deepseek-tui 内部，
     /// 外部 crate 测试无法访问，因此这里提供最小实现。
+    #[derive(Clone)]
     struct TestLlmClient {
         canned_text: String,
     }

@@ -5,12 +5,20 @@
 //!   DEEPSEEK_BASE_URL  — API 端点（可选，默认 DeepSeek 官方）
 //!   DEEPSEEK_MODEL     — 模型名（可选，默认 deepseek-chat）
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
 use deepseek_tui::client::DeepSeekClient;
 use deepseek_tui::config::Config;
+use deepseek_tui::tools::fetch_url::FetchUrlTool;
+use deepseek_tui::tools::file::{ListDirTool, ReadFileTool};
+use deepseek_tui::tools::registry::{ToolRegistry, ToolRegistryBuilder};
+use deepseek_tui::tools::search::GrepFilesTool;
+use deepseek_tui::tools::spec::ToolContext;
+use deepseek_tui::tools::user_input::RequestUserInputTool;
+use deepseek_tui::tools::web_search::WebSearchTool;
 
 use crate::agent_registry::AgentRegistry;
 use crate::app::AppRegistry;
@@ -114,7 +122,11 @@ pub fn create_engine(registry: AppRegistry, workspace: PathBuf) -> Result<Pinvou
         capability: "large".into(),
     }];
 
-    let harness = DeepSeekHarness::new(client, tool_names, models, workspace.clone());
+    // 构造 DeepSeek-TUI 工具注册表（批量挂多个工具）
+    let (tool_registry, tool_context, auto_tool_names) = build_default_tool_registry(&workspace);
+
+    let harness = DeepSeekHarness::new(client, tool_names, models, workspace.clone())
+        .with_tools(tool_registry, tool_context, auto_tool_names);
 
     let mut engine = PlatformEngine::new(harness, registry, workspace.clone());
 
@@ -123,4 +135,40 @@ pub fn create_engine(registry: AppRegistry, workspace: PathBuf) -> Result<Pinvou
     engine.set_agent_registry(load_agents(&prompts_dir));
 
     Ok(engine)
+}
+
+/// 构造默认工具注册表 + 执行上下文。
+///
+/// 当前接入的工具：
+/// - **自动执行**：`web_search`、`fetch_url`、`read_file`、`list_dir`、`grep_files`
+///   harness 收到 LLM 调用时直接 `ToolSpec::execute()`，结果写回对话历史
+///   触发下一轮 LLM，让它基于真实工具结果继续生成。
+/// - **透传给上层**：`request_user_input`
+///   harness 不执行，原样发出 `ToolCallStart` 事件，由 web/TUI 处理用户交互。
+///
+/// 副作用工具（write_file, edit_file, shell, python_exec）暂未接入，
+/// 待 approval 流程稳定后再开。
+pub fn build_default_tool_registry(
+    workspace: &Path,
+) -> (Arc<ToolRegistry>, ToolContext, HashSet<String>) {
+    let context = ToolContext::new(workspace.to_path_buf());
+
+    let registry = ToolRegistryBuilder::new()
+        .with_tool(Arc::new(RequestUserInputTool))
+        .with_tool(Arc::new(WebSearchTool))
+        .with_tool(Arc::new(FetchUrlTool))
+        .with_tool(Arc::new(ReadFileTool))
+        .with_tool(Arc::new(ListDirTool))
+        .with_tool(Arc::new(GrepFilesTool))
+        .build(context.clone());
+
+    let mut auto = HashSet::new();
+    auto.insert("web_search".to_string());
+    auto.insert("fetch_url".to_string());
+    auto.insert("read_file".to_string());
+    auto.insert("list_dir".to_string());
+    auto.insert("grep_files".to_string());
+    // request_user_input 不在自动列表 → 透传给上层
+
+    (Arc::new(registry), context, auto)
 }
