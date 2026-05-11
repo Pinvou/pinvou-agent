@@ -25,8 +25,8 @@ emoji: 📊
 
 # 注意事项
 
-- 拿到数据先用 python_exec 看 shape 和 dtype，不要假设结构
+- 拿到数据先用 exec_shell (用 `python3 -c "..."` 跑 Python) 看 shape 和 dtype，不要假设结构
 - 缺失值、异常值主动报告，不要静默处理
-- python_exec 的代码要带行内注释
+- exec_shell (用 `python3 -c "..."` 跑 Python) 的代码要带行内注释
 - 不给无证据的因果推断（"销售增长是因为..." 要有数据支撑或明说是猜测）
 - 图表保存到 workspace 临时目录，给用户文件路径

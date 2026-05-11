@@ -12,13 +12,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use deepseek_tui::client::DeepSeekClient;
 use deepseek_tui::config::Config;
-use deepseek_tui::tools::fetch_url::FetchUrlTool;
-use deepseek_tui::tools::file::{ListDirTool, ReadFileTool};
 use deepseek_tui::tools::registry::{ToolRegistry, ToolRegistryBuilder};
-use deepseek_tui::tools::search::GrepFilesTool;
 use deepseek_tui::tools::spec::ToolContext;
-use deepseek_tui::tools::user_input::RequestUserInputTool;
-use deepseek_tui::tools::web_search::WebSearchTool;
 
 use crate::agent_registry::AgentRegistry;
 use crate::app::AppRegistry;
@@ -139,35 +134,63 @@ pub fn create_engine(registry: AppRegistry, workspace: PathBuf) -> Result<Pinvou
 
 /// 构造默认工具注册表 + 执行上下文。
 ///
-/// 当前接入的工具：
-/// - **自动执行**：`web_search`、`fetch_url`、`read_file`、`list_dir`、`grep_files`
-///   harness 收到 LLM 调用时直接 `ToolSpec::execute()`，结果写回对话历史
-///   触发下一轮 LLM，让它基于真实工具结果继续生成。
-/// - **透传给上层**：`request_user_input`
-///   harness 不执行，原样发出 `ToolCallStart` 事件，由 web/TUI 处理用户交互。
+/// 默认 YOLO 模式（`auto_approve=true`, `trust_mode=true`），不弹审批对话框。
+/// pinvou3 是本地单用户工具，workspace 是天然边界。如果未来需要更严的审批，
+/// 在这里切换 `with_auto_approve(...)` 的参数。
 ///
-/// 副作用工具（write_file, edit_file, shell, python_exec）暂未接入，
-/// 待 approval 流程稳定后再开。
+/// **自动执行**的工具（harness 直接 `ToolSpec::execute()`，结果写回对话历史 →
+/// 触发下一轮 LLM）：
+/// - 联网：`web_search` / `fetch_url`
+/// - 读：`read_file` / `list_dir` / `grep_files`
+/// - 写：`write_file` / `edit_file`（限 workspace 内）
+/// - 执行：`exec_shell` + 相关辅助
+///
+/// **透传给上层**（不在 auto_tool_names）：`request_user_input` —— harness 发出
+/// `ToolCallStart` 事件，由 web/TUI 渲染选择卡。
 pub fn build_default_tool_registry(
     workspace: &Path,
 ) -> (Arc<ToolRegistry>, ToolContext, HashSet<String>) {
-    let context = ToolContext::new(workspace.to_path_buf());
+    let workspace = workspace.to_path_buf();
+    let notes_path = workspace.join(".deepseek").join("notes.md");
+    let mcp_config_path = workspace.join(".deepseek").join("mcp.json");
+
+    // YOLO 上下文：trust_mode=true（允许跨 workspace 读，但写仍限于 workspace），
+    // auto_approve=true（不弹审批），让 LLM 调工具时直接跑。
+    let context = ToolContext::with_auto_approve(
+        workspace,
+        true, // trust_mode
+        notes_path,
+        mcp_config_path,
+        true, // auto_approve
+    );
 
     let registry = ToolRegistryBuilder::new()
-        .with_tool(Arc::new(RequestUserInputTool))
-        .with_tool(Arc::new(WebSearchTool))
-        .with_tool(Arc::new(FetchUrlTool))
-        .with_tool(Arc::new(ReadFileTool))
-        .with_tool(Arc::new(ListDirTool))
-        .with_tool(Arc::new(GrepFilesTool))
+        .with_user_input_tool()
+        .with_web_tools() // web_search / fetch_url / finance / web_run
+        .with_file_tools() // read_file / write_file / edit_file / list_dir
+        .with_search_tools() // grep_files / file_search
+        .with_shell_tools() // exec_shell + wait/interact/cancel
         .build(context.clone());
 
     let mut auto = HashSet::new();
+    // 联网
     auto.insert("web_search".to_string());
     auto.insert("fetch_url".to_string());
+    // 读
     auto.insert("read_file".to_string());
     auto.insert("list_dir".to_string());
     auto.insert("grep_files".to_string());
+    auto.insert("file_search".to_string());
+    // 写（workspace 内）
+    auto.insert("write_file".to_string());
+    auto.insert("edit_file".to_string());
+    // shell
+    auto.insert("exec_shell".to_string());
+    auto.insert("exec_shell_wait".to_string());
+    auto.insert("exec_shell_interact".to_string());
+    auto.insert("exec_shell_cancel".to_string());
+    auto.insert("exec_wait".to_string());
+    auto.insert("exec_interact".to_string());
     // request_user_input 不在自动列表 → 透传给上层
 
     (Arc::new(registry), context, auto)

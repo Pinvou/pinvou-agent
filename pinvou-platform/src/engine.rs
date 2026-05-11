@@ -913,7 +913,7 @@ pub mod mock {
 
         pub fn with_responses(responses: Vec<String>) -> Self {
             Self {
-                // 给测试用的工具池：覆盖所有 GLOBAL_TOOL_POOL 中的工具
+                // 给测试用的工具池：覆盖测试常用的工具名
                 tools: vec![
                     ToolDef {
                         name: "request_user_input".into(),
@@ -921,12 +921,12 @@ pub mod mock {
                         parameters: serde_json::json!({}),
                     },
                     ToolDef {
-                        name: "file_read".into(),
+                        name: "read_file".into(),
                         description: "read file".into(),
                         parameters: serde_json::json!({}),
                     },
                     ToolDef {
-                        name: "file_write".into(),
+                        name: "write_file".into(),
                         description: "write file".into(),
                         parameters: serde_json::json!({}),
                     },
@@ -936,8 +936,14 @@ pub mod mock {
                         parameters: serde_json::json!({}),
                     },
                     ToolDef {
-                        name: "python_exec".into(),
-                        description: "run python".into(),
+                        name: "exec_shell".into(),
+                        description: "run shell".into(),
+                        parameters: serde_json::json!({}),
+                    },
+                    // 保留 file_write 兼容旧测试中可能用到的名字
+                    ToolDef {
+                        name: "file_write".into(),
+                        description: "legacy".into(),
                         parameters: serde_json::json!({}),
                     },
                 ],

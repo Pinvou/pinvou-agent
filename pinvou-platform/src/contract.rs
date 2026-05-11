@@ -212,16 +212,26 @@ pub fn mode_tool_compatibility(mode: MilestoneMode, tool: &str) -> Option<String
     None
 }
 
-/// 全局工具池：所有可用工具的白名单。
+/// 全局工具池：所有可能用到的工具名（用作设计意图文档 / 拼写防呆参考）。
+///
+/// 运行时的权威工具列表来自 `AgentHarness::tools()`，由 `engine_factory` 注册
+/// （含 DeepSeek-TUI 真实可执行的工具，如 `web_search`、`exec_shell` 等）。
+/// `combined_planner` 不再用本常量做校验，而是接收 `available_tools: &[String]`
+/// 参数对照实际 harness 注册情况。
 pub const GLOBAL_TOOL_POOL: &[&str] = &[
     "request_user_input",
-    "file_read",
-    "file_write",
     "web_search",
-    "python_exec",
+    "fetch_url",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list_dir",
+    "grep_files",
+    "file_search",
+    "exec_shell",
 ];
 
-/// 工具是否在全局白名单内
+/// 工具是否在全局白名单内（用于拼写防呆，不是权威校验）。
 pub fn is_tool_in_global_pool(tool: &str) -> bool {
     GLOBAL_TOOL_POOL.contains(&tool)
 }
@@ -359,8 +369,8 @@ mod tests {
     #[test]
     fn global_tool_pool_contains_expected_tools() {
         assert!(is_tool_in_global_pool("request_user_input"));
-        assert!(is_tool_in_global_pool("file_write"));
-        assert!(is_tool_in_global_pool("python_exec"));
+        assert!(is_tool_in_global_pool("write_file"));
+        assert!(is_tool_in_global_pool("exec_shell"));
         assert!(!is_tool_in_global_pool("rm_rf"));
         assert!(!is_tool_in_global_pool(""));
     }

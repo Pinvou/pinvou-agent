@@ -33,6 +33,28 @@ use deepseek_tui::tools::registry::ToolRegistry;
 use deepseek_tui::tools::spec::ToolContext;
 
 const TOOL_LOOP_MAX_ITERATIONS: usize = 5;
+const TOOL_ARGS_VISIBLE_MAX: usize = 200;
+const TOOL_RESULT_VISIBLE_MAX: usize = 1500;
+
+/// 把工具调用参数压缩成可视摘要（长 JSON 截断）
+fn render_args_compact(args: &serde_json::Value) -> String {
+    let raw = serde_json::to_string(args).unwrap_or_else(|_| "{}".into());
+    truncate_chars(&raw, TOOL_ARGS_VISIBLE_MAX)
+}
+
+/// 把工具结果压缩成可视摘要（保留前 N 字符 + 省略号）
+fn render_result_compact(content: &str) -> String {
+    truncate_chars(content, TOOL_RESULT_VISIBLE_MAX)
+}
+
+fn truncate_chars(s: &str, limit: usize) -> String {
+    let total = s.chars().count();
+    if total <= limit {
+        return s.to_string();
+    }
+    let prefix: String = s.chars().take(limit).collect();
+    format!("{prefix}… (节选自 {total} 字符)")
+}
 
 /// 旧行为：单次 LLM 调用 + 透传 tool calls，不自动执行工具。
 /// 当 harness 未注入 ToolRegistry 时使用，保留向后兼容。
@@ -365,6 +387,16 @@ impl<C: LlmClient + Clone + 'static> AgentHarness for DeepSeekHarness<C> {
                                 } else {
                                     serde_json::from_str(&buf).unwrap_or(serde_json::Value::Null)
                                 };
+                                // 把工具调用以文本形式 yield，方便 web 层把它纳入
+                                // engine.messages（用于跨轮历史），同时也让用户看到。
+                                // request_user_input 不暴露（前端会有专用 choice card UI）
+                                if tool_name != "request_user_input" {
+                                    let args_short = render_args_compact(&args);
+                                    let banner =
+                                        format!("\n\n🔧 [{tool_name}] {args_short}\n");
+                                    assistant_text.push_str(&banner);
+                                    yield Ok(StreamEvent::TextDelta { content: banner });
+                                }
                                 yield Ok(StreamEvent::ToolCallStart {
                                     call_id: call_id.clone(),
                                     tool_name: tool_name.clone(),
@@ -396,6 +428,14 @@ impl<C: LlmClient + Clone + 'static> AgentHarness for DeepSeekHarness<C> {
                         if let Some(spec) = registry.get(tool_name) {
                             match spec.execute(args.clone(), &context).await {
                                 Ok(result) => {
+                                    // 把工具结果以摘要文本 yield 进 stream，
+                                    // 这样 web 层把它纳入 engine.messages，
+                                    // 跨轮对话时 LLM 仍能看到工具交互上下文。
+                                    let visible = render_result_compact(&result.content);
+                                    let banner = format!("\n📄 结果:\n{visible}\n\n");
+                                    yield Ok(StreamEvent::TextDelta {
+                                        content: banner,
+                                    });
                                     yield Ok(StreamEvent::ToolCallResult {
                                         call_id: call_id.clone(),
                                         output: result.content.clone(),
@@ -409,6 +449,8 @@ impl<C: LlmClient + Clone + 'static> AgentHarness for DeepSeekHarness<C> {
                                 }
                                 Err(e) => {
                                     let msg = format!("ERROR: {e}");
+                                    let banner = format!("\n⚠️ {msg}\n\n");
+                                    yield Ok(StreamEvent::TextDelta { content: banner });
                                     yield Ok(StreamEvent::ToolCallResult {
                                         call_id: call_id.clone(),
                                         output: msg.clone(),

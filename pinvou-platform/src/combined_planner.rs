@@ -36,7 +36,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 
 use crate::agent_registry::AgentRegistry;
-use crate::contract::{MilestoneMode, is_tool_in_global_pool, mode_tool_compatibility};
+use crate::contract::{MilestoneMode, mode_tool_compatibility};
 
 /// LLM 拆解的完整结果
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,13 +252,11 @@ fn validate_dto(
         }
     }
 
-    // 7. tools 校验
+    // 7. tools 校验 —— 仅以 available_tools 为权威来源（来自实际 harness 注册的工具）。
+    // mode-tool 兼容性规则仍然检查（如 final_output 禁 request_user_input）。
     let mut milestones = Vec::with_capacity(dto.milestones.len());
     for m in dto.milestones {
         for t in &m.tools {
-            if !is_tool_in_global_pool(t) {
-                bail!("tool '{}' not in global pool", t);
-            }
             if !available_tools.iter().any(|x| x == t) {
                 bail!(
                     "tool '{}' not available on current harness (advertised={:?})",
@@ -300,12 +298,14 @@ mod tests {
     use crate::agent_registry::AgentDefinition;
 
     fn test_tool_pool() -> Vec<String> {
+        // 与 GLOBAL_TOOL_POOL 对齐 + 保留 file_write 兼容旧测试用例
         vec![
             "request_user_input".into(),
-            "file_read".into(),
-            "file_write".into(),
+            "read_file".into(),
+            "write_file".into(),
             "web_search".into(),
-            "python_exec".into(),
+            "exec_shell".into(),
+            "file_write".into(),
         ]
     }
 
