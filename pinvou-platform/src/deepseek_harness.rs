@@ -32,7 +32,12 @@ use deepseek_tui::models::{
 use deepseek_tui::tools::registry::ToolRegistry;
 use deepseek_tui::tools::spec::ToolContext;
 
-const TOOL_LOOP_MAX_ITERATIONS: usize = 5;
+/// 工具自动循环的软上限。撞到上限**不会**直接报错杀流，而是触发 graceful
+/// degradation：通知 LLM 不再允许调用工具，让它基于已收集的信息直接给出最终
+/// 回复。换言之，这是一个"软兜底"——任何具体的 N 都可能被合法场景打满
+/// （比如 freeform research 多维度搜索），关键是撞了之后体验不崩，而不是
+/// 把 N 调得多大。详细见 §3.7。
+const TOOL_LOOP_MAX_ITERATIONS: usize = 12;
 const TOOL_ARGS_VISIBLE_MAX: usize = 200;
 const TOOL_RESULT_VISIBLE_MAX: usize = 1500;
 
@@ -336,11 +341,55 @@ impl<C: LlmClient + Clone + 'static> AgentHarness for DeepSeekHarness<C> {
             'outer: loop {
                 iteration += 1;
                 if iteration > TOOL_LOOP_MAX_ITERATIONS {
-                    yield Ok(StreamEvent::Error {
-                        message: format!(
-                            "达到工具循环最大轮次 {TOOL_LOOP_MAX_ITERATIONS}，终止以避免死循环"
-                        ),
+                    // === graceful degradation：上限不杀流 ===
+                    // 通知用户 + LLM：禁工具，基于已收集信息直接出最终回复。
+                    // 任何 N 都可能被合法场景打满，撞了之后体验必须不崩。
+                    let notice = format!(
+                        "\n\n（已达工具调用上限 {TOOL_LOOP_MAX_ITERATIONS} 轮，基于已收集信息总结输出，不再调用工具）\n\n"
+                    );
+                    yield Ok(StreamEvent::TextDelta {
+                        content: notice,
                     });
+
+                    // 禁工具 + 注入引导消息
+                    msg_req.tools = None;
+                    msg_req.tool_choice = None;
+                    msg_req.messages.push(Message {
+                        role: "user".to_string(),
+                        content: vec![ContentBlock::Text {
+                            text: format!(
+                                "工具调用已达上限（{TOOL_LOOP_MAX_ITERATIONS} 轮）。请基于以上所有工具结果和已收集的信息，直接给出最终回复。不要再尝试调用任何工具，也不要请求更多搜索/读取——把现有信息组织好就够了。"
+                            ),
+                            cache_control: None,
+                        }],
+                    });
+
+                    // 再做一次 LLM 调用，流式输出最终总结
+                    let mut final_stream: StreamEventBox =
+                        match client.create_message_stream(msg_req.clone()).await {
+                            Ok(s) => s,
+                            Err(e) => {
+                                yield Ok(StreamEvent::Error { message: e.to_string() });
+                                return;
+                            }
+                        };
+                    while let Some(result) = final_stream.next().await {
+                        match result {
+                            Ok(DtStreamEvent::ContentBlockDelta {
+                                delta: Delta::TextDelta { text },
+                                ..
+                            }) => {
+                                yield Ok(StreamEvent::TextDelta { content: text });
+                            }
+                            Ok(DtStreamEvent::MessageStop) => break,
+                            Err(e) => {
+                                yield Ok(StreamEvent::Error { message: e.to_string() });
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+                    yield Ok(StreamEvent::Done);
                     return;
                 }
 

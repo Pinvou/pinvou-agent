@@ -451,7 +451,7 @@ struct ContextEntry {
 chat_stream(req)
    │
    └─ async_stream::stream! {
-        loop (最多 5 轮)
+        loop (软上限 TOOL_LOOP_MAX_ITERATIONS = 12)
         │
         ├─ stream = client.create_message_stream(msg_req)
         │  累积: assistant_text + completed_calls
@@ -467,9 +467,22 @@ chat_stream(req)
         │  ├─ 有透传工具         → yield Done, return（上层处理交互）
         │  └─ 全部 auto         → loop（让 LLM 基于结果继续生成）
         │
-        └─ 超 5 轮              → yield Error
+        └─ 超 12 轮             → graceful degradation:
+                                  ① 通知用户「已达上限，基于已收集信息总结」
+                                  ② msg_req.tools = None（禁工具）
+                                  ③ 注入 user 消息「不要再调工具，直接总结」
+                                  ④ 再做一次 LLM 调用，流式输出
+                                  ⑤ yield Done
       }
 ```
+
+**关键设计原则**：上限是**软兜底**，不是 fatal。任何具体 N 值（5 / 12 / 50）都
+可能被合法场景打满（多维度 research、复杂 debug），关键不是「N 多大」，是
+「撞了之后体验不崩」。fail-stop 模式会让用户看到红字错误 + 已收集结果全废；
+graceful degradation 让 LLM 基于现有信息组织最终回复，保住已经付出的成本。
+
+更精细的失败模式控制（dedup 同工具同 args 重复调用、token budget、墙钟超时）
+属于 P2 范畴，本期不展开。
 
 **自动执行的工具**：web_search / fetch_url / read_file / write_file / edit_file /
 list_dir / grep_files / file_search / exec_shell + 变体
