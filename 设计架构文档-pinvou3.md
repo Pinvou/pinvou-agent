@@ -1,45 +1,30 @@
 # pinvou3 设计架构文档
 
-> 基于 DeepSeek-TUI 二次开发的本地 AI 平台 TUI。
-> 运行于 NVIDIA GB10，面向普通用户，覆盖日常文档、数据、计划、问答等场景。
->
-> 本文档是 pinvou3 的总纲领，所有实现决策以此为准。
+> 基于 DeepSeek-TUI 二次开发的本地 AI 平台。
+> 运行于 NVIDIA GB10，面向普通用户，覆盖文档生成、数据分析、计划制定、知识问答等场景。
 
 ---
 
 ## 一、背景与定位
 
-### 1.1 从 pinvou2 到 pinvou3
+### 1.1 设计目标
 
-| | pinvou2 | pinvou3 |
-|---|---|---|
-| **架构** | Python + Electron + Docker + vLLM + Claw-Code | Rust 单体 + Web UI（TUI 待重建） |
-| **运行时组件** | 6 层 | 1 层（单二进制） |
-| **分发** | .run + pip + npm + docker build | 单二进制，cargo build 即得 |
-| **隔离方式** | Docker 容器 | Skills / Sub-agent / MCP |
-| **任务入口** | 必经 Plan → Bridging → Execute 三段式 gate | **LLM 单次调用同时完成分类 + 拆解 + 工具选择**，简单问答不进框架 |
-| **任务拆解** | Claw LLM (Plan) + Bridging LLM (翻译 → cards) | LLM 自由产出 milestone 列表，mode 受枚举约束 |
-| **领域配置** | 固定 App 列表（写死） | `prompts/*.md` agent 注册表，加 agent = 加一个 markdown 文件 |
-| **颗粒度控制** | 超时 1200s × 3 → Refine → Claw 细分 | 阶段 Contract 控制工具 / 预算 / 输出形态 |
-| **中途纠错** | 仅 Plan 期审方案 | 显式命令（`/back`、`/redo`、`/replan`）+ 隐式信号检测 |
-| **目标用户** | 技术用户（编码代理） | 普通用户（通用 AI 平台） |
+- **通用 AI 平台**，不是编码工具。面向非专业用户。
+- **本地运行**（Qwen 7B-35B on GB10），单二进制分发。
+- **对话为主**，侧边栏为辅。
+- **零代码扩展**：加新 agent = 加一个 `prompts/<id>.md`。
 
-### 1.2 核心定位
+pinvou2 的教训：必经的 Plan → Bridging → Execute 三段式 gate + Docker 容器化太重，本地小模型管不住流程。pinvou3 用 **代码硬边界 + LLM 语义 + 用户纠错** 三方分工，每方只做自己擅长的。
 
-- **通用 AI 平台**（非纯编码工具），coding 占比小
-- 面向**非专业用户**：文档生成、数据分析、计划制定、知识问答
-- **对话为主**，侧边栏为可选步骤导航
-- **简单问答不走框架**，避免给"问个问题"加无谓仪式
-- **领域即 prompt**：新场景 = 在 `prompts/` 加一个 markdown 文件，零代码
-- **单二进制分发**，开箱即用
+### 1.2 关键约束
 
-### 1.3 关键约束
+本地小模型限制 → 设计原则：
 
-- **本地 LLM 质量有限**（Qwen 7B-35B on GB10）
-- 不能依赖 LLM 自主管理复杂流程
-- 不能依赖 LLM 在该停的时候自己停
-- **可校验的事（工具 / 预算 / 输出结构）由代码硬卡**
-- **需要语义判断的事（拆几步、每步叫什么、选什么 agent）由 LLM 决定，用户可纠错**
+- **不能依赖 LLM 在该停的时候自己停** → question_budget / advance_policy 硬卡
+- **不能依赖 LLM 自主管理复杂流程** → ContractRuntime 决定本轮动作
+- **能用代码校验的事不交给 LLM** → ContractValidator 拦截越界
+- **需要语义判断的事必须交给 LLM** → 拆解 / 产出 / 自然语言生成
+- **方向纠错必须由用户控制** → slash 命令（`/back` `/redo` `/replan` `/use`）
 
 ---
 
@@ -48,383 +33,353 @@
 ### 2.1 分层架构
 
 ```
-+----------------------------------------------------+
-|                  用户输入                            |
-+-------------------------+--------------------------+
-                          v
+┌────────────────────────────────────────────────────┐
+│                  用户输入                            │
+└─────────────────────┬──────────────────────────────┘
+                      ↓
               startswith("/")? ─yes→ RollbackManager
-                          │ no
-                          v
-+----------------------------------------------------+
-|   LLM 单次调用（分类 + 拆解 + 工具选择）              |
-|   输入: 用户消息 + AgentRegistry + mode 字典         |
-|   输出: { agent: "...", milestones: [...] }         |
-+--------+----------------+---------------+---------+
-         │                │                │
-   agent=qa         agent=其他       校验失败
-         v                v                v
-   流式回答          注入 prompt        回退默认
-   (无 milestone)    + Contract 编排    fallback
-         |                |
-         v                v
-      结束           +------------------+
-                     | ContractRuntime  |
-                     | + Validator      |
-                     | + StepBuilder    |
-                     | + ConversationSt |
-                     | + RollbackMgr    |
-                     +------------------+
-                              |
-                              | AgentHarness trait
-                              v
-                     +-------------------+
-                     | DeepSeek-TUI      |
-                     | (LLM 调用 / 工具 / |
-                     |  TUI 渲染)         |
-                     +-------------------+
+                      │ no
+                      ↓
+┌────────────────────────────────────────────────────┐
+│ LLM 单次调用（CombinedPlanner）                      │
+│ 输入: 用户消息 + AgentRegistry + Mode 枚举           │
+│ 输出: { agent: "...", milestones: [{label, mode,    │
+│        tools, prompt_hint}] }                       │
+└──────┬──────────────┬──────────────────┬───────────┘
+       │              │                  │
+   agent=qa      agent=其他          校验失败
+       ↓              ↓                  ↓
+   流式回答     注入三层 prompt        回退 generic
+   (无 milestone) Contract 编排        + 默认 milestones
+       │              │
+       ↓              ↓
+     结束       ┌────────────────┐
+                │ ContractRuntime │
+                │ + Validator     │
+                │ + StepBuilder   │
+                │ + ConversationSt │
+                │ + RollbackMgr   │
+                └────────┬────────┘
+                         │ AgentHarness trait
+                         ↓
+                ┌────────────────────┐
+                │ DeepSeekHarness    │
+                │ + 工具执行循环      │
+                └────────┬───────────┘
+                         │
+                         ↓
+                ┌────────────────────┐
+                │ DeepSeek-TUI       │
+                │ (LLM client +      │
+                │  ToolRegistry +    │
+                │  30+ ToolSpec 实现)│
+                └────────────────────┘
 ```
 
 ### 2.2 核心原则
 
-1. **扩展而非替换**：不修改原有 crate 逻辑。仅加 `mod platform;` 和 `[[bin]]`。
-2. **底层可替换**：`AgentHarness` trait 是边界。换 OpenCode 只需重新实现此 trait。
-3. **分类与拆解合并**：单次 LLM 调用同时输出 agent + milestones，避免多次往返。命令检测靠 `startswith("/")` 一行代码。
-4. **对话永远是主角**：工作流是侧边栏的可选建议，不是必经之路。
-5. **领域即 prompt**：新 agent = 一个 `prompts/<id>.md`。零代码。
-6. **可校验交给代码，语义交给 LLM，方向交给用户**：硬边界（工具 / 预算 / 结构）代码守，拆解 / 产出 LLM 做，纠错 / 回退用户控。
+1. **扩展不替换**：不改 DeepSeek-TUI 源码。
+2. **AgentHarness trait 是唯一边界**：换底层 LLM 引擎只重新实现 trait。
+3. **分类与拆解合并**：单次 LLM 调用同时出 agent + milestones。
+4. **领域即 prompt**：新 agent = 一个 markdown 文件。
+5. **三方分工**：代码硬卡、LLM 做语义、用户控方向。
 
 ---
 
-## 三、任务拆解与执行流程（核心编排）
+## 三、任务编排流程
 
-### 3.1 职责划分
-
-| | 代码 | LLM | 用户 |
-|---|---|---|---|
-| 命令检测 | `startswith("/")` 路由到 RollbackManager | - | 输入 `/back`、`/skip` 等 |
-| 任务分类 + 拆解 | 校验 agent ∈ 已知列表；milestone 数量 / mode / 工具合法 | 单次调用输出 `{agent, milestones[]}` | 不满意可 `/replan` |
-| Agent prompt 注入 | 读 `prompts/<agent>.md` 注入 system prompt | - | - |
-| 每步 Prompt 构造 | `StepBuilder` 按 contract 限定范围 | - | - |
-| 每步实际执行 | - | 拿到限定范围 Prompt 完成任务 | - |
-| 工具调用 | `ContractValidator` 按 allowed_tools 硬拦截 | 选择调用与否 | - |
-| 输出校验 | 结构性校验（选项数、工具调用、mode 形态） | - | - |
-| 推进 / 等待 | `ContractRuntime` 按 advance_policy 路由 | - | choice_request 时回应 |
-| 中途回退 | 命令 / 信号 → 状态机回退 | 可建议「是否回退」 | `/back`、`/redo`、`/replan` |
-
-### 3.2 整体流程
+### 3.1 整体流程
 
 ```
 用户输入
-    |
-    v
+   ↓
 startswith("/") ? ──yes──> RollbackManager → 状态机变化 → 结束
-    | no
-    v
-+-- LLM 单次调用：分类 + 拆解 ---------------------+
-|   输入: 用户消息 + AgentRegistry + mode 字典      |
-|   输出 JSON:                                     |
-|   {                                              |
-|     "agent": "<id>",                              |
-|     "milestones": [                               |
-|       { "label": "...", "mode": "...",            |
-|         "tools": [...], "prompt_hint": "..." }    |
-|     ]                                             |
-|   }                                              |
-+--------+----------------+------------------------+
-         |                |
-   agent=qa         agent=非 qa
-   milestones=[]    milestones=[2-8]
-         v                v
-+-- Q&A 路径 ------+ +-- 场景路径 -----------------+
-| 流式输出回答      | | 注入 prompts/<agent>.md      |
-| 不挂 milestone   | | 进入 ContractRuntime         |
-| 不挂 Contract    | | 按 milestone 逐步执行         |
-| 历史保留          | | (见 §3.5 - §3.8)            |
-+----+------------+ +-------+---------------------+
-     |                      |
-     v                      v
-   结束               最终 final_output → 结束
+   │ no
+   ↓
+┌─ Step 1: LLM 单次调用：分类 + 拆解 ──────────────┐
+│  输入: 用户消息 + agent 列表 + Mode 字典         │
+│  输出 JSON:                                     │
+│  {                                              │
+│    "agent": "<id>",                              │
+│    "milestones": [                               │
+│      { "label", "mode", "tools", "prompt_hint" } │
+│    ]                                             │
+│  }                                              │
+└─────────┬───────────────────────┬───────────────┘
+          │                       │
+      agent=qa                agent=非 qa
+          ↓                       ↓
+    Q&A 流式回答              进入 Contract 编排
+    (无 milestone)            
+          │                       ↓
+          │            ┌─ Step 2: 逐 milestone 执行 ─┐
+          │            │  本轮 directive 由 mode 决定: │
+          │            │  - CallLlm: 调 LLM           │
+          │            │  - AskUser: 发选择卡         │
+          │            │  - Blocked: 提问预算超       │
+          │            │                              │
+          │            │  StepBuilder 拼接三层 prompt │
+          │            │  → LLM stream                │
+          │            │                              │
+          │            │  Harness 自动执行循环:        │
+          │            │  - tool call → spec.execute()│
+          │            │  - 结果回 LLM 继续生成        │
+          │            │                              │
+          │            │  ContractValidator 硬边界:    │
+          │            │  - 工具白名单                 │
+          │            │  - 选项数 / 结构校验         │
+          │            │                              │
+          │            │  推进:                       │
+          │            │  - OnChoice: 收到选择即完成   │
+          │            │  - OnValidOutput: 校验通过即完成│
+          │            └──────────────────────────────┘
+          │                       │
+          ↓                       ↓
+        结束               final_output → 结束
 ```
 
-### 3.3 LLM 单次调用：分类 + 拆解
+### 3.2 分类与拆解：CombinedPlanner
 
-**核心原则：用一次 LLM 调用同时完成「选 agent」和「拆 milestone」。**
+**用一次 LLM 调用同时完成「选 agent」+「拆 milestone」+「为每 milestone 选工具」。** 唯一的代码规则是 `startswith("/")` 判断 slash 命令。
 
-不做单独的 Router 分类器，不维护关键词列表，不养第二个小模型。**唯一的代码规则是 `startswith("/")` 判断 slash 命令。**
-
-#### 拆解 Prompt（示意）
+#### Prompt 结构（示意）
 
 ```
 用户输入: "{user_message}"
 
 可用 agents:
-- qa: 简单问答、概念解释、翻译、闲聊。无需多步拆解
-- doc_generation: 根据用户素材生成结构化文档（周报、报告、邮件等）
-- data_analysis: 用 Python 处理表格数据，输出分析和图表
-- planning: 制定计划、时间表、行程
-- generic: 不属于上述但需要多步处理的任务
+- qa: 简单问答、概念解释、翻译。不需要多步
+- doc_generation: 文档生成（周报、邮件、报告）
+- data_analysis: 数据分析（Python + 图表）
+- planning: 计划制定（出行、项目、目标拆解）
+- generic: 兜底
 
-可用 mode（每个 milestone 必须选一个）:
+可用 mode（每个 milestone 选一个）:
 - collect: 收集用户决策性信息
 - produce_options: 给 2-3 个方案让用户选
 - refine_selected_option: 细化已选方案
 - freeform: 自由产出（写作 / 分析 / 计算）
-- final_output: 最终交付物（必须是最后一个 milestone）
+- final_output: 最终交付（必须是最后一个）
 
-可用工具池（每个 milestone 从中选 0-N 个）:
-- request_user_input: 让用户做选择题
-- file_read, file_write: 文件读写
-- python_exec: 执行 Python（沙箱内）
-- web_search: 联网搜索
+可用工具池: <由 harness.tools() 提供的实际工具名>
 
-请输出 JSON:
+输出 JSON:
 {
-  "agent": "<agent_id>",
+  "agent": "<id>",
   "milestones": [
-    {
-      "label": "...",
-      "mode": "...",
-      "tools": ["..."],
-      "prompt_hint": "..."
-    }
+    { "label", "mode", "tools", "prompt_hint" }
   ]
 }
 
 约束:
-- 如果 agent=qa，milestones 输出空数组
-- 否则 milestones 数量 2-8 个
-- 最后一个 milestone 必须 mode=final_output
+- agent=qa → milestones=[]
+- 否则 milestones 数量 2-8
+- 最后一个 mode 必须 final_output
 - tools 必须从工具池中选
-- mode 必须从枚举中选
 ```
 
-#### 三种典型输出
+#### 结构性校验（CombinedPlanner.parse_plan）
 
-**输出 1：简单问答**
-```json
-{
-  "agent": "qa",
-  "milestones": []
-}
-```
-→ 流式回答用户问题，不挂 milestone，不挂 Contract。后续追问保留对话历史。
+代码只校验结构，不校验内容合理性：
 
-**输出 2：场景任务**
-```json
-{
-  "agent": "doc_generation",
-  "milestones": [
-    {"label": "确认结构", "mode": "produce_options", "tools": ["request_user_input"], "prompt_hint": "..."},
-    {"label": "生成草稿", "mode": "freeform", "tools": [], "prompt_hint": "..."},
-    {"label": "定稿", "mode": "final_output", "tools": ["file_write"], "prompt_hint": "..."}
-  ]
-}
-```
-→ 注入 `prompts/doc_generation.md`，按 milestones 走 Contract 编排。
+- agent ∈ AgentRegistry 注册项
+- milestones 数量 2-8（qa 为 0）
+- 每个 mode 是合法枚举
+- 最后一个 mode = final_output
+- 每个 tool ∈ available_tools（来自 harness.tools()）
+- tools 满足 mode 兼容性（如 final_output 不能含 request_user_input）
 
-**输出 3：JSON 解析失败 / 校验失败**
-→ 回退到 `agent=generic` + 默认 fallback milestones（`collect → freeform → final_output` 三步）。
+校验失败 → 退到 `CombinedPlanner::fallback_plan()`（agent=generic + 三步默认）。
 
-#### 结构性校验
-
-代码不校验「内容是否合理」，只校验「结构是否合法」：
-
-- `agent` ∈ AgentRegistry 已注册的 id
-- 如果 `agent != "qa"`：
-  - `milestones.length` ∈ [2, 8]
-  - 每个 `mode` ∈ {collect, produce_options, refine_selected_option, freeform, final_output}
-  - 最后一个 `mode == final_output`
-  - 每个 `tools[i]` ∈ 全局工具池
-  - `tools` 满足 mode 限制（如 `final_output` 不能含 `request_user_input`）
-  - `label` 非空且不重复
-
-校验失败 → 回退到 `agent=generic` + fallback milestones。
-
-#### 流式分类优化（可选，P1）
-
-LLM 输出 JSON 时按字段顺序流式出。`agent` 字段一旦解析出，即可决定路径：
-
-- `agent == "qa"` → 立刻中止后续 JSON 输出，发起 Q&A 流式回答
-- `agent != "qa"` → 继续等 milestones 完整后进入编排
-
-P0 阶段不做此优化，接受 ~500ms 的"分类延迟"。
-
-### 3.4 Agent 注册表
-
-#### 文件结构
-
-每个 agent 是 `prompts/<id>.md`，含 YAML frontmatter + markdown 正文：
-
-```markdown
----
-id: doc_generation
-name: 文档生成
-description: 根据用户提供的素材生成结构化文档：周报、报告、邮件、纪要等。
-emoji: 📝
 ---
 
-# 角色
+### 3.3 三层分工：Mode / Agent / Milestone
 
-你是文档生成助手，擅长根据用户素材生成结构化、可读性高的中文文档。
+**核心原则：每层只管自己的事，互不污染。**
 
-# 适用场景
-...
-
-# 风格
-...
-
-# 注意事项
-...
+```
+┌──────────────────────────────────────────────────────┐
+│  Mode 层（结构标签，5 种枚举）                          │
+│                                                      │
+│  由 LLM 在拆解时选。代码根据 mode 推导:                  │
+│   • question_budget（提问预算）                       │
+│   • advance_policy（OnChoice / OnValidOutput）       │
+│   • output_requirements（结构约束）                   │
+│   • mode-tool 兼容性（如 final_output 禁 user_input） │
+│                                                      │
+│  注入 prompt 的措辞 仅含通用结构语:                     │
+│   "必须产出 2-3 个选项"                                │
+│   "本阶段最多提问 1 次"                                │
+│   "输出最终交付物，不再提问"                            │
+│                                                      │
+│  ✗ 不写场景词（"成本/时间/风险"、"markdown"）           │
+└──────────────────────────────────────────────────────┘
+                          ↑
+                          │ 协同
+                          ↓
+┌──────────────────────────────────────────────────────┐
+│  Agent 层（prompts/<id>.md 正文）                     │
+│                                                      │
+│  人写。提供领域风格 + 行业规范:                         │
+│   • planning: "做方案对比时必须含成本/时间/风险对比"     │
+│   • doc_generation: "选项关注结构、长度、读者"          │
+│   • data_analysis: "拿到数据先看 shape 和 dtype"       │
+│                                                      │
+│  通过 frontmatter description 让 CombinedPlanner    │
+│  知道何时选这个 agent；body 在执行阶段注入 prompt。     │
+└──────────────────────────────────────────────────────┘
+                          ↑
+                          │ 协同
+                          ↓
+┌──────────────────────────────────────────────────────┐
+│  Milestone 层（LLM 拆解时填，单次目标）                 │
+│                                                      │
+│  每个阶段的具体内容:                                    │
+│   • label: "选择出行方案"                            │
+│   • prompt_hint: "根据用户时长/兴趣给 2-3 个候选"      │
+│   • tools: ["request_user_input"]                   │
+│                                                      │
+│  这一层告诉 LLM "这一步具体要做的事"。                  │
+└──────────────────────────────────────────────────────┘
 ```
 
-#### 加载时机
+**为什么需要 Mode？** 直接让 LLM 输出 `question_budget: 1, advance_policy: "on_choice"` 这种底层枚举，本地小模型容易出错。Mode 是个**LLM 友好的分类标签**，代码反向推导出底层配置。LLM 只要会判断「这一步是收信息 / 出选项 / 自由产出 / 最终输出」就行。
 
-启动时扫描 `prompts/*.md`：
+**为什么 Mode 不带场景词？** 同一个 mode 用在不同场景：`produce_options` 用于 planning 时关注「成本对比」，用于 doc_generation 时关注「结构选择」。把场景词写进 mode 等于让 mode 替不相关场景做了决定。场景词的正确归属是 agent prompt。
 
-- 解析 frontmatter → 注册到 `AgentRegistry`
-- 正文内容缓存到内存，执行阶段注入 system prompt
-- frontmatter 的 `description` 字段拼接到 §3.3 的拆解 prompt 中给 LLM 看
+---
 
-#### 初始 agent 集合（P0）
+### 3.4 阶段契约：MilestoneContract
 
-| id | 一句话定位 |
-|---|---|
-| `qa` | 简单问答、翻译、概念解释、闲聊 |
-| `doc_generation` | 周报、报告、邮件、纪要 |
-| `data_analysis` | CSV / Excel 数据探索 + Python + 图表 |
-| `planning` | 计划、时间表、行程 |
-| `generic` | 兜底，多步但无明显领域归属 |
-
-#### 添加新 agent 的流程
-
-1. 在 `prompts/` 加 `<new_id>.md`
-2. frontmatter 写 `id` / `name` / `description` / `emoji`
-3. 正文 200-400 字（角色 / 场景 / 风格 / 注意事项）
-4. 重启服务（启动时重扫）
-
-不改代码，不改全局配置。
-
-#### 致谢
-
-agent 概念格式（frontmatter + markdown body）参考 [agency-agents-zh](https://github.com/jnMetaCode/agency-agents-zh)。pinvou3 重新撰写了适配本地小模型的精简版（200-400 字 / agent），未直接依赖该仓库。
-
-### 3.5 MilestoneContract
-
-LLM 拆解决定 milestone 的 `label`、`mode`、`tools`、`prompt_hint`、`required_context`、`produced_context`。**Mode 对应的结构性约束（`question_budget`、`advance_policy`、`output_requirements`）由代码内置，不可配置。**
+每个 milestone 在拆解后挂一个 contract：
 
 ```rust
 struct MilestoneContract {
-    label: String,
     mode: MilestoneMode,                            // LLM 选
-    tools: Vec<String>,                             // LLM 选，受全局池约束
+    tools: Vec<String>,                             // LLM 选（受 mode 兼容性约束）
     prompt_hint: Option<String>,                    // LLM 填
     required_context: Vec<String>,                  // LLM 填
     produced_context: Vec<String>,                  // LLM 填
-    // 以下由 mode 决定，代码内置:
+
+    // 以下由 mode 自动推导，LLM 不能改:
     question_budget: u8,
     advance_policy: AdvancePolicy,
     output_requirements: Vec<OutputRequirement>,
 }
 
 enum MilestoneMode {
-    Collect,                  // 收集信息
-    ProduceOptions,           // 产出 2-3 个方案让用户选
+    Collect,                  // 收信息（通常用 request_user_input）
+    ProduceOptions,           // 出 2-3 个方案让用户选
     RefineSelectedOption,     // 细化已选方案
-    Freeform,                 // 自由产出
-    FinalOutput,              // 最终输出（必须是最后一个）
+    Freeform,                 // 自由产出（写作 / 分析 / 计算）
+    FinalOutput,              // 最终交付（必须是最后一个）
 }
 
 enum AdvancePolicy {
-    OnChoice,        // 用户选择后完成
-    OnValidOutput,   // 输出通过校验后完成
-    ManualContinue,  // 显式继续
+    OnChoice,        // 用户选择即完成
+    OnValidOutput,   // 输出通过校验即完成
+    ManualContinue,  // 显式继续（保留扩展）
 }
 ```
 
 #### mode → 内置规则（代码硬编码）
 
-| mode | question_budget | advance_policy | output_requirements |
+| mode | question_budget | advance_policy | 主要 output_requirements |
 |---|---|---|---|
 | `collect` | 1 | `on_choice` | 无 |
-| `produce_options` | 1 | `on_choice` | `min_options=2`, `max_options=3` |
-| `refine_selected_option` | 0 | `on_valid_output` | `no_open_question` |
-| `freeform` | 1 | `on_valid_output` | `no_open_question` |
-| `final_output` | 0 | `on_valid_output` | `no_tool_call_except_export` |
+| `produce_options` | 1 | `on_choice` | min_options=2, max_options=3 |
+| `refine_selected_option` | 0 | `on_valid_output` | no_open_question |
+| `freeform` | 1 | `on_valid_output` | no_open_question |
+| `final_output` | 0 | `on_valid_output` | no_open_question |
 
-### 3.6 执行硬边界
+理由：这些是契约安全底线，开放配置等于让 LLM 给自己放权。
 
-**「调什么工具 / 问几次 / 输出什么形状」由代码硬卡，不靠 LLM 自觉。**
+---
 
-| 边界 | 实现 | 违反时 |
-|------|------|--------|
-| Agent 合法性 | `agent` ∈ 已注册 AgentRegistry | 回退 generic |
-| 工具池白名单 | `milestone.tools[i]` ∈ 全局工具池 | 拆解时拒绝该 milestone |
-| Mode-工具规则 | `final_output` 不能含 `request_user_input` 等 | 拆解时拒绝 |
-| 选项数量 | `request_user_input.questions[].options` 长度 | 不发 choice card |
-| 提问预算 | `state.question_count(ms_id) < budget` | 返回 blocked 文案 |
-| 输出结构 | mode 对应的结构校验（如 markdown table 必须有 `|---|`） | 不自动推进 |
-| Q&A 模式 | 不挂 Contract，但工具调用一律拒绝 | 直接拒绝 |
+### 3.5 硬边界 vs 软建议
 
-#### 全局工具池（P0）
+**这是契约系统能给本地小模型托底的关键。** 严格区分两类规则：
 
-| 工具 | 危险等级 | 说明 |
+#### 硬规则（违反会被代码拦截）
+
+| 规则 | 校验位置 | 违反后果 |
 |---|---|---|
-| `request_user_input` | 安全 | 让用户做选择题 |
-| `file_read` | 安全 | 读 workspace 内文件 |
-| `file_write` | 中 | 写 workspace 内文件（沙箱） |
-| `web_search` | 安全 | 联网搜索 |
-| `python_exec` | 中 | 沙箱内 Python 执行 |
+| 调用了 allowed_tools 外的工具 | ContractValidator.validate_tool_call | 拒绝执行，错误回到 LLM |
+| 工具与 mode 不兼容（如 final_output 调 request_user_input） | mode_tool_compatibility | 同上 |
+| request_user_input 选项数不符 min/max_options | ContractValidator | 不发选择卡 |
+| 提问次数超过 question_budget | ContractRuntime → Blocked | 返回提示文案，本轮不调 LLM |
+| 输出形态违反 output_requirements（如 must_contain_table） | ContractValidator.validate_response | 不自动推进 |
 
-#### 结构校验 vs 语义校验
+这些**在 prompt 中以「必须遵守」语气声明**，并且**代码真会拦截**。
 
-- **结构性校验**（代码做，P0）：调了不该调的工具、选项数量不对、markdown 表格缺 `|---|` 分隔
-- **语义性校验**（LLM judge 做，P1）：内容是否合理、文档是否完整、答案是否准确
+#### 软建议（违反不拦截，LLM 自觉）
 
-### 3.7 中途纠错与回退
+| 建议 | 来源 |
+|---|---|
+| "做方案对比时含成本/时间/风险" | agent prompt（planning） |
+| "选项之间差异要明显" | agent prompt 或 milestone prompt_hint |
+| "结论先行，再说算法" | agent prompt（data_analysis） |
+| 文风、措辞、领域偏好 | agent prompt |
 
-**单向流水线不符合真实对话。** 真实场景中用户可能：
+这些**在 prompt 中以「建议」语气声明**，违反不拦截。
 
-- 走到 Step 3 时说"等下，第 1 步的需求我说错了"
-- 拿到草稿后说"重写"
-- 看到拆解后说"第 2 步跳过"
-- 写到一半说"这个方向不对"
+#### 分节渲染
+
+`ContractPrompt` 应当**显式区分**两类：
+
+```rust
+struct ContractPrompt {
+    milestone_id: String,
+    user_message: String,
+    allowed_tools: Vec<String>,
+    hard_rules: Vec<String>,    // 违反会被代码拦截
+    soft_hints: Vec<String>,    // 仅建议
+}
+```
+
+StepBuilder 渲染时分两节：
+
+```
+## 阶段必须遵守（违反会被系统拦截）
+- 选项数量 2-3 个
+- 本阶段最多提问 1 次
+- 输出必须包含表格
+
+## 阶段建议
+- 选项之间差异要明显
+```
+
+LLM 看到「必须」与「建议」就知道哪些不能违反。
+
+---
+
+### 3.6 中途纠错与回退
 
 #### 显式回退命令
 
 | 命令 | 行为 |
 |------|------|
-| `/back` | 当前 milestone 标回 Active，清自身及之后的 context；前一个 Done 标回 Active |
-| `/skip` | 当前 milestone 标 Skipped，推进到下一个 |
-| `/redo` | 当前 milestone 重做（仅清自身 context，前面保留） |
+| `/back` | 当前 milestone 退回 Active，清自身及之后的 context；上一个 Done 回 Active |
+| `/skip` | 当前 milestone 标 Skipped，推进下一个 |
+| `/redo` | 当前 milestone 重做（清自身 context，前面保留） |
 | `/replan` | 整个对话重新拆解，已收集 context 注入新计划 |
-| `/use <agent_id>` | 显式切换 agent（如 `/use planning`） |
-
-#### 隐式回退检测
-
-LLM 检测到「重做 / 不对 / 换一种」类信号时，**不直接执行**，向用户显示选项卡片：
-
-```
-A) 重写当前步骤（保留前几步）
-B) 回到上一步，从那里改起
-C) 改整体计划，重新拆解
-D) 算了，继续当前
-```
+| `/use <agent_id>` | 切换 agent（仅 Q&A 或未拆解时合法） |
 
 #### 状态机扩展
 
 ```
 Pending --start--> Active --done--> Done
-                     |                |
-                     |                +--back--> Active
-                     |
+                     │                │
+                     │                +--back--> Active
+                     │
                      +--skip--> Skipped
-                     |
+                     │
                      +--redo--> Active  (清自身 context)
 ```
 
 #### Context 归属
 
-每条 context 必须挂在产生它的 milestone 上：
+每条 context 挂在产生它的 milestone：
 
 ```rust
 struct ContextEntry {
@@ -434,120 +389,90 @@ struct ContextEntry {
 }
 ```
 
-回退时按 `produced_by` 清理：
-
-- `/back`：清退回点之后（含当前）所有 milestone 产生的 context
-- `/redo`：仅清当前 milestone 的 context
-- `/replan`：保留全部 context，让新计划的 `required_context` 自行决定
-
-### 3.8 DeepSeekHarness 工具自动执行循环
-
-新设计的关键基础设施：`DeepSeekHarness::chat_stream` 在收到 `ToolRegistry`
-注入后会跑一个工具循环，让 LLM 的 tool call **真的被执行**而不是只是文本声明。
-
-```
-chat_stream(req)
-    │
-    ├─ msg_req = to_message_request(req)
-    │
-    └─ async_stream::stream! {
-         loop (最多 5 轮)
-         │
-         ├─ stream = client.create_message_stream(msg_req)
-         │  累积: assistant_text + completed_calls (ToolCallStart 透传)
-         │
-         ├─ 无 tool call          → yield Done, return
-         │
-         ├─ 有 tool call:
-         │  ├─ tool_name ∈ auto_tool_names ?
-         │  │   - 是：spec.execute(args, ctx) → yield ToolCallResult
-         │  │         追加到 msg_req: [assistant: ToolUse] + [user: ToolResult]
-         │  │   - 否：标 has_pass_through（如 request_user_input）
-         │  │
-         │  ├─ 有透传工具          → yield Done, return（上层处理用户交互）
-         │  └─ 全部 auto 执行完     → 继续 loop（让 LLM 基于工具结果生成）
-         │
-         └─ 超 5 轮               → yield Error
-       }
-```
-
-#### 工具分类
-
-- **自动执行**：harness 直接调 `ToolSpec::execute()`，结果写回对话历史触发下一轮 LLM。
-  当前包括 `web_search` / `fetch_url` / `read_file` / `write_file` / `edit_file` /
-  `list_dir` / `grep_files` / `file_search` / `exec_shell` + 变体
-- **透传给上层**：harness 只发 `ToolCallStart` 事件，由 web/TUI 处理用户交互。
-  当前唯一例子：`request_user_input`（前端渲染选择卡片）
-
-#### 工具交互文本化
-
-工具循环会在 `ToolCallStart` 前 yield 一段文本 delta：
-```
-🔧 [web_search] {"query":"广州黄埔区水生水库 开放时间"}
-```
-执行后 yield 结果摘要 delta（最多 1500 字符）：
-```
-📄 结果:
-- 水生水库位于广州黄埔区...
-```
-
-web 层捕获这些 delta 进 `engine.messages`，跨轮对话时 LLM 仍能看到工具交互
-上下文。结构化历史（直接重建 `ContentBlock::ToolUse`/`ToolResult`）作为后续优化。
-
-#### 关键约束
-
-- 工具循环只在注入 `ToolRegistry` 后启用（生产由 `engine_factory` 注入）
-- 未注入时走 passthrough 模式（旧的单次调用 + 透传 tool call）
-- `ToolRegistry` + `ToolContext` 来自 DeepSeek-TUI，通过 `with_tools()` 桥接
-
-### 3.9 交互模式：选择题优于问答题
-
-**核心原则：用户做决策，不做作文。**
-
-```
-反模式:
-  LLM: "请描述你的数据文件结构、想分析什么维度、关心什么指标？"
-  用户: 需要组织语言写一段话回答
-
-正确模式:
-  LLM 调用 request_user_input({
-    questions: [{
-      header: "分析维度",
-      question: "你想从哪个角度分析？",
-      options: [
-        {label: "销售趋势", description: "按时间展示销售额变化"},
-        {label: "地区对比", description: "不同地区的销售差异"},
-        {label: "都看看", description: "同时展示趋势和对比"}
-      ]
-    }]
-  })
-  用户: 按一个数字键
-```
-
-**实现机制：复用 DeepSeek-TUI 的 `request_user_input` 工具。**
-
-DeepSeek-TUI 已有完整实现：
-
-- Tool spec：1-3 题，每题 2-3 选项 + "Other" 自定义输入
-- TUI 模态框：数字键快速选择
-- Engine 集成：`await_user_input()` 挂起 agent loop
-
-Platform 层职责：
-
-1. LLM 拆解时把 `request_user_input` 选入 collect / produce_options 的 `tools`
-2. 在 contract prompt 中引导 LLM 用此工具而非开放题
-3. `ContractValidator` 校验选择题形状（2-3 选项）
-4. Web 在发送 choice card 前预留问题预算
+回退时按 `produced_by` 清理，避免污染前序步骤产出。
 
 ---
 
-## 四、Agent 系统（替代旧 App 系统）
+### 3.7 DeepSeekHarness 工具自动执行循环
+
+让 LLM 的 tool call **真的被执行**，而不只是文本声明：
+
+```
+chat_stream(req)
+   │
+   └─ async_stream::stream! {
+        loop (最多 5 轮)
+        │
+        ├─ stream = client.create_message_stream(msg_req)
+        │  累积: assistant_text + completed_calls
+        │
+        ├─ 无 tool call         → yield Done, return
+        │
+        ├─ 有 tool call:
+        │  ├─ name ∈ auto_tool_names ?
+        │  │   - 是：spec.execute(args, ctx) → yield ToolCallResult
+        │  │         追加 msg_req: assistant ToolUse + user ToolResult
+        │  │   - 否：标 has_pass_through（如 request_user_input）
+        │  │
+        │  ├─ 有透传工具         → yield Done, return（上层处理交互）
+        │  └─ 全部 auto         → loop（让 LLM 基于结果继续生成）
+        │
+        └─ 超 5 轮              → yield Error
+      }
+```
+
+**自动执行的工具**：web_search / fetch_url / read_file / write_file / edit_file /
+list_dir / grep_files / file_search / exec_shell + 变体
+
+**透传给上层的工具**：request_user_input（前端渲染选择卡）
+
+工具调用前后还 yield text delta（`🔧 [tool] args` / `📄 结果`），让 web 层
+能把工具交互写进 `engine.messages`，跨轮对话 LLM 看得到上下文。
+
+---
+
+### 3.8 选择题优于问答题
+
+**核心原则：让用户做决策，不做作文。**
+
+反模式：
+```
+LLM: "请描述你的数据结构、想分析什么维度、关心什么指标？"
+用户: （要打几段字）
+```
+
+正确模式：
+```
+LLM 调用 request_user_input({
+  questions: [{
+    header: "分析维度",
+    question: "你想从哪个角度分析？",
+    options: [
+      {label: "销售趋势", description: "按时间展示销售额变化"},
+      {label: "地区对比", description: "不同地区的销售差异"},
+      {label: "都看看", description: "同时展示趋势和对比"}
+    ]
+  }]
+})
+用户: 按一个数字键
+```
+
+实现：
+
+- 复用 DeepSeek-TUI `tools/user_input.rs` 的 `RequestUserInputTool`
+- ContractValidator 校验选项数量（2-3）
+- harness 把 ToolCallStart 透传给 web，前端渲染选择卡
+- 用户选完通过 `tool_result` 回到 stream
+
+---
+
+## 四、Agent 系统
 
 ### 4.1 文件布局
 
 ```
 pinvou3/
-├── prompts/                    ← Agent 注册表（核心）
+├── prompts/
 │   ├── qa.md
 │   ├── doc_generation.md
 │   ├── data_analysis.md
@@ -556,82 +481,83 @@ pinvou3/
 └── ...
 ```
 
-旧的 `apps/<App名>/app.toml` 目录结构在 P0 退役阶段移除。
+启动时扫描，frontmatter 解析为 `AgentDefinition`，body 缓存到内存。
 
 ### 4.2 Agent 文件格式
 
 ```markdown
 ---
-id: doc_generation
-name: 文档生成
-description: 根据用户提供的素材生成结构化文档：周报、报告、邮件、纪要等。
-emoji: 📝
+id: planning
+name: 计划制定
+description: 制定计划、时间表、行程。模糊目标拆成可执行步骤，识别约束与风险。
+emoji: 📅
 ---
 
 # 角色
-
-你是文档生成助手...（200-400 字）
+你是计划制定助手...
 
 # 适用场景
-- ...
+- 出行、活动安排
+- 项目里程碑规划
+...
 
-# 风格
-- ...
+# 风格（领域偏好）
+- 步骤具体到「谁在什么时间做什么」
+- 做方案对比时必须含成本/时间/风险对比表    ← 场景词写在这里
+- 风险章节是必须的，不是装饰
 
 # 注意事项
 - ...
 ```
 
-**Frontmatter 字段：**
-
 | 字段 | 必填 | 用途 |
 |---|---|---|
-| `id` | ✓ | 程序内唯一标识，必须匹配文件名（`<id>.md`） |
-| `name` | ✓ | 用户可见的显示名 |
-| `description` | ✓ | 一句话场景描述，给 LLM 看用于选 agent |
-| `emoji` | 可选 | UI 上的图标 |
+| `id` | ✓ | 程序内标识，必须匹配文件名 |
+| `name` | ✓ | UI 显示名 |
+| `description` | ✓ | 一句话场景描述，供 CombinedPlanner 选 agent |
+| `emoji` | 可选 | UI 图标 |
 
-**正文：** 200-400 字，分 4 块：角色 / 适用场景 / 风格 / 注意事项。
-正文在执行阶段作为 system prompt 中段注入。
+正文 200-400 字，含「角色 / 场景 / 风格 / 注意事项」四块。**所有领域风格、行业规范、场景词都在这一层写**。
 
-### 4.3 全局配置（代码硬编码）
+### 4.3 System Prompt 组装
 
-以下由代码内置，不开放配置：
-
-- **Mode → 规则映射**（见 §3.5）：question_budget、advance_policy、output_requirements
-- **全局工具池**（见 §3.6）：5 个内置工具及危险等级
-- **Mode-工具兼容规则**：如 `final_output` 禁用 `request_user_input`
-
-理由：这些是契约的安全底线，开放配置会让 LLM 有机会给自己放权。
-
-### 4.4 System Prompt 组装
-
-`StepBuilder::build_contract_prompt` 组装的完整 system prompt：
+执行某个 milestone 时拼接的完整 system prompt：
 
 ```
-┌─────────────────────────────────────────┐
-│ [agent prompt]    ← prompts/<id>.md      │
-│   "你是文档生成助手..."                     │
-├─────────────────────────────────────────┤
-│ [mode 阶段指令]    ← ContractRuntime 生成 │
-│   "当前契约要求：                            │
-│    - 必须先给出 2-3 个可选方案...           │
-│    - 最多调用 request_user_input 1 次"     │
-├─────────────────────────────────────────┤
-│ [已知 context]    ← ConversationState     │
-│   "已知信息：                               │
-│    - doc_type: 周报                        │
-│    - audience: 团队"                       │
-├─────────────────────────────────────────┤
-│ [工具限制 / 可用工具]                       │
-│   "可用工具：request_user_input"            │
-├─────────────────────────────────────────┤
-│ [用户消息]                                  │
-└─────────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│ ## Agent 角色与风格   ← prompts/<id>.md body      │
+│   "你是计划制定助手。做方案对比时必须含成本/时间/风险... " │
+├──────────────────────────────────────────────────┤
+│ ## 当前阶段           ← milestone.label/prompt_hint │
+│   标题: 选择出行方案                                │
+│   目标: 根据用户时长/兴趣给 2-3 候选                 │
+├──────────────────────────────────────────────────┤
+│ ## 阶段必须遵守       ← ContractRuntime.hard_rules │
+│   - 必须产出 2-3 个选项                              │
+│   - 本阶段最多提问 1 次                              │
+│   - 选项必须有 label + description                  │
+├──────────────────────────────────────────────────┤
+│ ## 阶段建议           ← ContractRuntime.soft_hints │
+│   - 选项之间差异要明显                              │
+├──────────────────────────────────────────────────┤
+│ ## 可用工具                                         │
+│   - request_user_input                              │
+├──────────────────────────────────────────────────┤
+│ ## 已知信息           ← ConversationState.context  │
+│   - 时长: 半天                                      │
+│   - 兴趣: 徒步休闲                                  │
+├──────────────────────────────────────────────────┤
+│ ## 用户消息                                          │
+└──────────────────────────────────────────────────┘
 ```
 
-Q&A 模式或无活跃 milestone 时跳过 ContractRuntime，直接走 `engine::build_request`：
-只注入 `agent_system_prompt`（来自 `prompts/<id>.md`）+ 用户消息 + 历史消息。
+**三层各自来源清晰**，互不污染：
+
+- Agent 层 ← 人写的 markdown
+- Milestone 层 ← LLM 拆解时填
+- Mode/Contract 层 ← 代码硬编码 + LLM 选的 mode
+
+Q&A 模式不挂 Contract，只注入 Agent body + 用户消息 + 历史。
 
 ---
 
@@ -641,220 +567,149 @@ Q&A 模式或无活跃 milestone 时跳过 ContractRuntime，直接走 `engine::
 
 ```rust
 struct ConversationState {
-    agent_id: Option<String>,                // None = Q&A 模式或未初始化
+    agent_id: Option<String>,                // None = 未初始化
     global_mode: GlobalMode,
     milestones: Vec<(Milestone, MilestoneStatus)>,
     context: HashMap<String, ContextEntry>,  // 含 produced_by
     turn_count: u32,
     plan_initialized: bool,
     question_counts: HashMap<MilestoneId, u8>,
-    history: Vec<StateTransition>,           // 用于回退追溯
+    history: Vec<StateTransition>,
 }
 ```
 
-### 5.2 里程碑状态
+### 5.2 状态机
 
 ```
+里程碑级:
 Pending --start--> Active --done--> Done --back--> Active
-                     |
+                     │
                      +--skip--> Skipped
-                     |
+                     │
                      +--redo--> Active
+
+全局级 (GlobalMode):
+QnAMode | PlanningMode | ExecutingMode | ReplanMode | DoneMode
 ```
 
-### 5.3 全局会话状态（GlobalMode）
+### 5.3 Web 主路径
 
-```
-QnAMode       Router 判定为 Q&A，没有 milestones
-PlanningMode  动态拆解中（极短，通常 <1s）
-ExecutingMode 按 milestone 推进
-ReplanMode    用户触发 /replan
-DoneMode      final_output 完成
-```
+`/api/chat/stream` 是唯一入口：
 
-### 5.4 Web 主路径
-
-`/api/chat/stream` 是唯一对话入口。前置 `startswith("/")` 决定后续路径：
-
-- **命令模式**：调用 RollbackManager 触发状态机变化
-- **首轮（非命令）**：发起 LLM 单次调用 → 分类 + 拆解 → 根据 agent 路由
-- **后续轮（QnA Mode）**：直接转发到 LLM 流，保留对话历史
-- **后续轮（Executing Mode）**：经过 ContractRuntime + ContractValidator
-
-旧的非流式 `/api/chat` 不注册，避免绕过 Router 和 Contract 系统。
+- **命令模式**（`startswith("/")`）→ RollbackManager
+- **首轮（非命令）** → CombinedPlanner → 根据 agent 路由
+- **后续轮 QnA Mode** → 直接转发 LLM 流（保留历史）
+- **后续轮 Executing Mode** → ContractRuntime + ContractValidator
 
 ---
 
-## 六、执行示例
+## 六、执行示例（完整场景）
 
-### 6.1 简单问答
-
-```
-用户: "K-means 是什么？"
-
-[startswith("/")? no]
-   ↓
-LLM 单次调用 →
-{"agent": "qa", "milestones": []}
-   ↓
-[agent=qa] 进入 Q&A 路径
-注入 prompts/qa.md 到 system prompt
-LLM 流式输出: "K-means 是一种无监督聚类算法..."
-   ↓
-完成（对话历史保留）
-
-后续:
-用户: "那 K-medoids 呢？"
-[已在 QnAMode] 跳过分类，直接流式回答
-注入 prompts/qa.md + 历史
-LLM: "K-medoids 跟 K-means 类似但..."
-```
-
-### 6.2 场景任务：写周报
+用户说「我周末要去广州黄埔区水生水库游玩，你来计划」：
 
 ```
-用户: "帮我写本周周报，团队 3 人，做了 A/B feature 和事故复盘"
+Round 1: LLM 单次调用（CombinedPlanner）
+  → {"agent": "planning", "milestones": [
+       {label: "确认偏好",  mode: collect,         tools: [request_user_input]},
+       {label: "搜索资源",  mode: freeform,        tools: [web_search]},
+       {label: "出方案",    mode: produce_options, tools: [request_user_input]},
+       {label: "细化方案",  mode: refine_selected_option, tools: []},
+       {label: "输出计划书", mode: final_output,   tools: [file_write]}
+     ]}
 
-[startswith("/")? no]
-   ↓
-LLM 单次调用 →
-{
-  "agent": "doc_generation",
-  "milestones": [
-    {"label": "确认结构偏好", "mode": "produce_options", "tools": ["request_user_input"]},
-    {"label": "生成草稿", "mode": "freeform", "tools": []},
-    {"label": "调整事故段落", "mode": "refine_selected_option", "tools": []},
-    {"label": "定稿", "mode": "final_output", "tools": ["file_write"]}
-  ]
-}
-   ↓
-[结构校验通过] 注入 prompts/doc_generation.md
-进入 Contract 编排，侧边栏渲染 4 个 milestone
+Round 2: "确认偏好" (collect)
+  注入 prompts/planning.md 的领域风格
+  LLM 调用 request_user_input：时长（半天/一天）、目的（徒步/亲水/家庭）...
+  用户选 → context: {duration: "半天", purpose: "徒步"}
+  milestone Done，auto-continue → 进入 ms_1
 
-Round 2: "确认结构偏好" (produce_options)
-  ContractRuntime: 允许 request_user_input
-  LLM 调用 request_user_input 给 3 个结构选项
-  Validator 检查选项数: 通过
-  用户选 → context.structure = "三段式" (produced_by="确认结构偏好")
-  milestone 标 Done
+Round 3: "搜索资源" (freeform)
+  harness 收到 web_search ToolCallStart
+  自动执行 → 拿到 DuckDuckGo 结果
+  结果回写 messages，LLM 基于搜索内容生成
+  Validator 检查输出结构：通过
+  ms_1 Done
 
-Round 3: "生成草稿" (freeform)
-  注入已选结构到 context
-  LLM 输出三段式草稿
-  Validator 检查 markdown 结构: 通过
+Round 4: "出方案" (produce_options)
+  LLM 调用 request_user_input 给 3 个方案（含成本/时间/风险对比表，← 来自 agent prompt）
+  用户选 A → context: {plan: "A"}
+  ms_2 Done
 
-Round 4: "调整事故段落" (refine_selected_option)
-  用户: "事故复盘那段太轻描淡写"
-  LLM 重写该段
+Round 5: "细化方案" (refine_selected_option)
+  LLM 输出 A 方案的详细执行
+  ms_3 Done
 
-Round 5: "定稿" (final_output)
-  Validator: allowed_tools 仅含 file_write
-  LLM 调用 file_write 保存最终 markdown
+Round 6: "输出计划书" (final_output)
+  harness 收到 file_write ToolCallStart
+  自动写入 workspace
   完成
 
-总计: 5 轮，~3 分钟
+总计: 6 轮，~3 分钟
 ```
 
-### 6.3 中途纠错
+中途纠错示例：
 
-```
-用户在 Round 4 拿到草稿后:
-"不行，整体方向不对，重新写"
-
-[LLM 检测到回退信号]
-LLM 显示选项卡片:
-  A) 重写当前步骤
-  B) 回到上一步改起
-  C) 改整体计划，重新拆解
-  D) 继续当前
-
-用户选 C → 触发 /replan
-  保留 context (素材已收集)
-  重新调用 LLM 单次调用 → 新 agent + milestones
-  生成新计划
-
-----
-
-用户在 Round 5 (定稿后):
-"/back"
-  最后一个 milestone Done → Active
-  produced_by="定稿" 的 context 清除
-  LLM 基于现状重新生成
-```
+- 用户在 Round 4 后输入 `/back` → ms_2 Done → Active，相关 context 清除
+- 用户在 Round 3 后输入 `/replan` → 清空 milestones，重新拆解（保留 collect 阶段的 context）
 
 ---
 
 ## 七、模块清单
 
-### 7.1 当前模块（全部已实现）
+### 7.1 当前实现
 
 | 模块 | 职责 |
 |------|------|
-| `platform/harness.rs` | `AgentHarness` trait —— 唯一接口边界 |
-| `platform/deepseek_harness.rs` | `DeepSeekHarness` —— trait 实现 + **工具自动执行循环** |
-| `platform/engine_factory.rs` | 工厂函数：创建 harness、注入 ToolRegistry + ToolContext |
-| `platform/agent_registry.rs` | 扫 `prompts/*.md` 解析 frontmatter，注册 agent |
-| `platform/combined_planner.rs` | 单次 LLM 调用：分类 + milestone 拆解 + 工具选择 |
-| `platform/rollback.rs` | slash 命令解析（`/back` `/skip` `/redo` `/replan` `/use`） + 状态机回退 |
-| `platform/contract.rs` | `MilestoneContract` + `MilestoneMode` + `contract_for_mode` + 工具池 |
-| `platform/contract_runtime.rs` | `ContractRuntime::next_directive` —— 按 mode 决定本轮动作 |
-| `platform/contract_validator.rs` | 工具调用 / 输出结构硬边界检查 |
-| `platform/workflow.rs` | `ConversationState` / `GlobalMode` / `Milestone` / context 归属 / rewind |
-| `platform/step_builder.rs` | `build_contract_prompt` 渲染 system prompt |
-| `platform/engine.rs` | `PlatformEngine::ensure_combined_plan` + `apply_choice_result` 等 |
-| `platform/router.rs` | 模型路由（small / medium / large） |
-| `pinvou-platform/src/web/mod.rs` | Axum SSE 主路径 `/api/chat/stream` |
-| `pinvou-platform/src/web/index.html` | 前端（去 app 选择器，处理 milestone_progress 事件） |
-| `prompts/{qa,doc_generation,data_analysis,planning,generic}.md` | 5 个初始 agent |
-| `tests/full_flow.rs` | 11 个端到端集成测试 |
+| `harness.rs` | `AgentHarness` trait（唯一接口边界） |
+| `deepseek_harness.rs` | trait 实现 + **工具自动执行循环** |
+| `engine_factory.rs` | 构造 harness、注入 ToolRegistry / ToolContext |
+| `agent_registry.rs` | 扫 `prompts/*.md` 解析 frontmatter |
+| `combined_planner.rs` | 单次调用：分类 + 拆解 + 工具选择 + 结构校验 |
+| `rollback.rs` | slash 命令解析 + 状态机回退 |
+| `contract.rs` | `MilestoneContract` + Mode 枚举 + Mode → 规则 |
+| `contract_runtime.rs` | 按 mode 决定本轮 directive，产出 hard_rules / soft_hints |
+| `contract_validator.rs` | 工具调用 / 输出结构硬边界检查 |
+| `workflow.rs` | ConversationState / GlobalMode / Milestone |
+| `step_builder.rs` | 拼三层 system prompt |
+| `engine.rs` | 编排主入口 |
+| `web/mod.rs` | Axum SSE 路径 |
+| `web/index.html` | 前端 |
+| `prompts/*.md` | 5 个初始 agent |
+| `tests/full_flow.rs` | 端到端集成测试 |
 
-### 7.2 DeepSeek-TUI 复用（不修改、只引用）
+### 7.2 DeepSeek-TUI 复用（不修改）
 
 | DeepSeek-TUI 提供 | pinvou 使用方式 |
 |---|---|
 | `client::DeepSeekClient` | `DeepSeekHarness` 内部封装 |
-| `tools::ToolRegistry` / `ToolSpec` | `engine_factory` 用 `ToolRegistryBuilder` 批量挂工具 |
+| `tools::ToolRegistry` / `ToolSpec` | `engine_factory` 用 `ToolRegistryBuilder` 挂工具 |
 | `tools::ToolContext` | `with_auto_approve` 构造，注入 harness |
-| `tools::web_search` / `fetch_url` / `file::*` / `search::*` / `shell::*` / `user_input` | 通过 ToolRegistry 调用，不重写 |
-| `models::ContentBlock` / `StreamEvent` 等 | 仅在 `deepseek_harness.rs` 桥接层用 |
+| 30+ ToolSpec 实现 | 通过 ToolRegistry 调用 |
+| `models::ContentBlock` / `StreamEvent` | 仅在 `deepseek_harness.rs` 桥接层用 |
 
-### 7.3 待新增（P1，按优先度）
-
-| 项 | 描述 |
-|---|---|
-| **真正的审批流** | 当前 YOLO 模式（auto_approve=true）；改为 `ApprovalRequirement::Required` 工具 → SSE 双向交互 |
-| **结构化历史** | 工具交互目前以 text 形式注入 `engine.messages`；改为 `HistoryMessage` 加 tool 字段，重建 `ContentBlock::ToolUse`/`ToolResult` |
-| **流式分类优化** | CombinedPlanner 流式 JSON 解析，`agent` 字段一出即路由（去掉 ~500ms 等待感） |
-| **真实 LLM 链路测试** | 当前集成测试用 MockHarness（绕过 DeepSeekHarness 工具循环）；补 LlmClient 级 mock 测 chat_stream 工具循环 |
-
-### 7.4 待新增（P2，远期）
+### 7.3 待新增（P1）
 
 | 项 | 描述 |
 |---|---|
-| `CheckpointStore` | 对话断点持久化 |
-| `SubAgentRouter` | 并行子任务分发 |
-| LLM-as-judge | 语义性输出校验替代结构性正则 |
-| 多层 agent 选择 | agent 数量 > 20 时先选部门再选 agent |
-| 隐式回退检测 | LLM 识别「重做/不对」信号 → 弹回退选项卡片 |
-| TUI 重建 | 基于新架构重写 ratatui 前端（旧 `tui/` 已删除） |
+| Hard/Soft 规则分离 | `ContractPrompt` 加 `hard_rules` + `soft_hints` 字段；StepBuilder 分节渲染；mode 指令剥离场景词 |
+| 真正的审批流 | 替代 YOLO 模式：`ApprovalRequirement::Required` 工具 → 前端审批 UI |
+| 结构化历史 | 工具交互改为 `ContentBlock::ToolUse/ToolResult` 注入 messages |
+| 流式分类优化 | CombinedPlanner 解 `agent` 字段一出即路由（去掉 500ms 等待） |
+| 真实 LlmClient 链路测试 | mock LlmClient 模拟 SSE 测 chat_stream 工具循环 |
 
-### 7.5 已删除的 legacy（历史记录）
+### 7.4 待新增（P2 / 远期）
 
-以下模块在 P1 清理中删除，新设计已完全替代：
-
-- `platform/app.rs`：`AppConfig` + `AppRegistry` → 被 `agent_registry` 替代
-- `platform/dynamic_planner.rs` → 被 `combined_planner` 替代
-- `platform/response_checker.rs`：`[OK]/[MORE]/[BLOCKED]` 信号路由 → 被 contract validator 替代
-- `platform/reviewer.rs`：LLM 拆解审阅 → 新设计结构性校验足够
-- `platform/tui/`：1400 行 ratatui 前端 → 不在新设计路径，P2 重建
-- `apps/*/app.toml`：3 个固定 App 配置 → 被 `prompts/*.md` 替代
-- `engine.rs` 中 `load_app` / `ensure_plan_initialized` / `decompose_and_execute` /
-  `step_execute` / `current_app` / `app_system_prompt`
-- `WebTurnAction::LegacyFallback` → 改为 `FreeFlow`（Q&A 模式或无 milestone 时直进 LLM 流）
+| 项 | 描述 |
+|---|---|
+| `CheckpointStore` | 断点持久化 |
+| LLM-as-judge | 替代结构性正则的语义校验 |
+| 多层 agent 选择 | agent > 20 时分部门选 |
+| 隐式回退检测 | LLM 检测「重做 / 不对」信号 |
+| TUI 重建 | 基于新架构重写 |
 
 ---
 
-## 八、AgentHarness 接口（底层替换边界）
+## 八、AgentHarness 接口
 
 ```rust
 #[async_trait]
@@ -875,32 +730,50 @@ pub trait AgentHarness: Send + Sync {
 
 ## 九、关键决策记录
 
-| # | 决策 | 原因 |
-|---|------|------|
-| 1 | **代码做路由器，LLM 做执行者，用户做决策者** | 代码不判断语义，LLM 不做流程控制 |
-| 2 | **砍掉 StepChecker 格式校验** | 步骤数不限死；改为结构性校验 |
-| 3 | **LLM Reviewer 语义审阅 → P1 退役** | 新版动态拆解结构性校验足够 |
-| 4 | **LLM 自评只是信号，推进必须通过 contract 验收** | 本地 LLM 不能自主管理流程 |
-| 5 | **按 contract 决定确认边界** | LLM 可能不准，需要决策时由 runtime 停住 |
-| 7 | **动态 milestone 列表自由，mode 仍是枚举** | 旧版「严格复用模板」让动态拆解变成翻译标题；mode 枚举保留契约挂载点 |
-| 8 | **无 Bridging 翻译步骤** | pinvou2 已验证多余 |
-| 9 | **越界和阻塞按状态机即时修正，不等超时** | 比 pinvou2 的 1200s 超时更快 |
-| 10 | **选择题优于问答题** | 用户做决策而非做作文 |
-| 11 | **优先复用 DeepSeek-TUI** | 工具 / TUI 组件 DeepSeek-TUI 已有 |
-| 12 | **分类与拆解合并为单次 LLM 调用** | 避免多次 LLM 往返；agent 字段一出即可路由 |
-| 13 | **命令路由只用 `startswith("/")` 一行代码** | 不养第二个小模型、不维护关键词列表 |
-| 14 | **状态机支持显式回退（/back, /redo, /replan, /use）** | 真实对话不是单向流水线 |
-| 15 | **Context 按 produced_by 归属** | 回退时精准清理，避免污染前序步骤 |
-| 16 | **OutputRequirement 改为结构性 + LLM judge** | 关键词校验脆弱；结构性正则可靠，语义判断交给 LLM judge |
-| 17 | **ResponseChecker / LLMReviewer / AppRegistry 标 legacy** | Contract 系统 + AgentRegistry 已替代其职责 |
-| 18 | **Mode → 规则映射代码硬编码** | 这些是契约安全底线，开放配置等于让 LLM 给自己放权 |
-| 19 | **Agent = 一个 markdown 文件** | 新场景零代码；frontmatter 参考 agency-agents-zh，正文为 pinvou3 适配本地小模型重写 |
-| 20 | **工具池全局共享，LLM 按 milestone 挑** | App 概念解耦；危险等级由代码控制 |
-| 21 | **DeepSeekHarness 内嵌工具自动执行循环** | pinvou 用 LlmClient 直连，不依赖 DeepSeek-TUI 完整 engine 的循环；用 async-stream 实现轻量 5 轮上限的内部循环 |
-| 22 | **YOLO 模式作为 MVP 默认** | 本地单用户 + workspace 边界够安全；真正的审批流（双向 SSE）放 P1 |
-| 23 | **前端不发 app_id**：用户直接输入需求，AI 自动选 agent | App 选择是无谓仪式；侧边栏快捷按钮发 `/use <id>` 显式切换 |
-| 24 | **工具交互以 text delta 注入 messages**（MVP） | 跨轮历史可见，足够本地小模型理解；结构化 ContentBlock 注入是 P1 |
-| 25 | **集成测试用 MockHarness 跳过 LlmClient** | 验证 PlatformEngine + Contract + Rollback 这一层；真实 LlmClient mock 测 chat_stream 工具循环放 P1 |
+按主题归类。
+
+### 9.1 关于流程控制权
+
+1. **代码做路由器、LLM 做执行者、用户做决策者** — 代码不判断语义，LLM 不做流程
+2. **LLM 自评（[OK]/[MORE]/[BLOCKED]）只是信号，推进必须过 contract 验收** — 小模型靠不住
+3. **越界即时拦截，不等超时** — 比 pinvou2 的 1200s 超时更快、更可恢复
+
+### 9.2 关于拆解与分类
+
+4. **分类与拆解合并为单次 LLM 调用** — 避免多次往返
+5. **命令路由只用 `startswith("/")`** — 不养第二个小模型
+6. **动态 milestone 列表自由，mode 仍是枚举** — mode 是 LLM 友好分类标签，让代码反向推导底层配置
+
+### 9.3 关于三层分工（核心）
+
+7. **Mode 只编码结构，场景词在 Agent prompt** — 同一 mode 用在不同场景，场景词侵入会污染
+8. **Agent = 一个 markdown 文件** — 零代码扩展；frontmatter + body 两段
+9. **Mode → 规则映射代码硬编码** — 这是安全底线，开放配置等于让 LLM 给自己放权
+10. **工具池全局共享，LLM 按 milestone 挑** — App 概念解耦；危险等级由代码控制
+
+### 9.4 关于硬边界与软建议
+
+11. **Prompt 显式分「必须遵守」和「建议」两节** — LLM 才能区分哪些违反会被拦截
+12. **OutputRequirement 用结构性正则**（如 markdown table 必须有 `|---|` 分隔行） — 不用关键词匹配（脆弱）；语义校验由 LLM judge 在 P1 加
+
+### 9.5 关于交互模式
+
+13. **选择题优于问答题** — 用户做决策不做作文
+14. **状态机支持显式回退（/back, /redo, /replan, /use）** — 真实对话不是单向
+15. **Context 按 produced_by 归属** — 回退时精准清理
+
+### 9.6 关于底层与复用
+
+16. **AgentHarness trait 是唯一接口边界** — 换底层只重新实现 trait
+17. **优先复用 DeepSeek-TUI，不修改源码** — 工具 / TUI 组件已有
+18. **DeepSeekHarness 内嵌工具自动执行循环** — pinvou 用 LlmClient 直连而非 DeepSeek-TUI 完整 engine
+19. **YOLO 模式作为 MVP 默认**（auto_approve=true）— 本地单用户 + workspace 边界够安全
+20. **工具交互以 text delta 注入 messages**（MVP） — 跨轮历史可见；结构化注入 P1
+
+### 9.7 关于前端
+
+21. **前端不发 app_id，用户直接输入需求** — App 选择是无谓仪式
+22. **slash 命令显式控制流程** — `/use` 切 agent / `/replan` 重拆 / `/back` 回退
 
 ---
 
