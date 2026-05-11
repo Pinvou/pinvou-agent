@@ -552,22 +552,23 @@ fn planned_to_milestone(idx: usize, pm: &PlannedMilestone) -> Milestone {
 
 // === Mock AgentHarness（用于测试和开发） ===
 
-#[cfg(test)]
+/// Mock 工具 —— 单元测试 + 集成测试共用。
+///
+/// 非 cfg(test) 门控，以便 `tests/` 下的集成测试访问。结构简单，
+/// 生产代码不会调用它（除非显式构造）。
 pub mod mock {
     use super::*;
     use async_trait::async_trait;
     use futures_util::stream;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// 简单的 Mock Engine，返回预设响应
+    /// 简单的 Mock harness，按预设序列返回响应。
     pub struct MockHarness {
         pub tools: Vec<ToolDef>,
         pub models: Vec<ModelInfo>,
         pub responses: Vec<String>,
         call_count: AtomicUsize,
     }
-
-    static REGISTRY_ROOT_SEQ: AtomicUsize = AtomicUsize::new(0);
 
     impl MockHarness {
         pub fn new() -> Self {
