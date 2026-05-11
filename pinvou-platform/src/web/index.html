@@ -297,6 +297,30 @@ const state = {
   milestones: [], streaming: false, abortController: null, pendingChoice: null
 };
 
+// 流式渲染节流器：每个流式消息一个 renderer，每帧最多 marked.parse 一次。
+// 修复 Problem 1：之前每个 SSE delta 都触发 marked.parse(fullText) +
+// innerHTML 替换 + scroll reflow，O(N²) 复杂度让前端跟不上 LLM 输出速度。
+function createStreamRenderer(streamDiv, getFullText) {
+  let pending = null;
+  const doRender = () => {
+    streamDiv.querySelector('.msg-bubble').innerHTML = marked.parse(getFullText());
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+    pending = null;
+  };
+  return {
+    schedule() {
+      // 已经排了一帧，丢弃本次（合并多个 delta 到下一帧）
+      if (pending != null) return;
+      pending = requestAnimationFrame(doRender);
+    },
+    flush() {
+      // 流结束 / choice 切换前立即同步渲染最新文本
+      if (pending != null) { cancelAnimationFrame(pending); pending = null; }
+      doRender();
+    },
+  };
+}
+
 const chatMessages = document.getElementById('chatMessages');
 const chatInput = document.getElementById('chatInput');
 const sendBtn = document.getElementById('sendBtn');
@@ -339,6 +363,7 @@ async function sendMessage() {
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '', fullText = '';
+    const renderer = createStreamRenderer(streamDiv, () => fullText);
 
     while (true) {
       const { done, value } = await reader.read();
@@ -353,14 +378,14 @@ async function sendMessage() {
           if (p.done) continue;
           if (p.choice_request) {
             streamDiv.classList.remove('streaming');
-            streamDiv.querySelector('.msg-bubble').innerHTML = marked.parse(fullText);
+            renderer.flush();
             showChoiceCard(p.choice_request);
-          } else if (p.delta) { fullText += p.delta; streamDiv.querySelector('.msg-bubble').innerHTML = marked.parse(fullText); chatMessages.scrollTop = chatMessages.scrollHeight; }
+          } else if (p.delta) { fullText += p.delta; renderer.schedule(); }
         } catch(e) { if (!e.message.includes('JSON')) throw e; }
       }
     }
     streamDiv.classList.remove('streaming');
-    streamDiv.querySelector('.msg-bubble').innerHTML = marked.parse(fullText);
+    renderer.flush();
   } catch (e) {
     streamDiv.classList.remove('streaming');
     if (e.name === 'AbortError') {
@@ -537,6 +562,7 @@ async function submitChoice(answers) {
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '', fullText = '';
+    const renderer = createStreamRenderer(streamDiv, () => fullText);
 
     while (true) {
       const { done, value } = await reader.read();
@@ -551,14 +577,14 @@ async function submitChoice(answers) {
           if (p.done) continue;
           if (p.choice_request) {
             streamDiv.classList.remove('streaming');
-            streamDiv.querySelector('.msg-bubble').innerHTML = marked.parse(fullText);
+            renderer.flush();
             showChoiceCard(p.choice_request);
-          } else if (p.delta) { fullText += p.delta; streamDiv.querySelector('.msg-bubble').innerHTML = marked.parse(fullText); chatMessages.scrollTop = chatMessages.scrollHeight; }
+          } else if (p.delta) { fullText += p.delta; renderer.schedule(); }
         } catch(e) { if (!e.message.includes('JSON')) throw e; }
       }
     }
     streamDiv.classList.remove('streaming');
-    streamDiv.querySelector('.msg-bubble').innerHTML = marked.parse(fullText);
+    renderer.flush();
   } catch (e) {
     streamDiv.classList.remove('streaming');
     if (e.name === 'AbortError') {
@@ -603,6 +629,7 @@ async function skipChoice() {
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '', fullText = '';
+    const renderer = createStreamRenderer(streamDiv, () => fullText);
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -616,14 +643,14 @@ async function skipChoice() {
           if (p.done) continue;
           if (p.choice_request) {
             streamDiv.classList.remove('streaming');
-            streamDiv.querySelector('.msg-bubble').innerHTML = marked.parse(fullText);
+            renderer.flush();
             showChoiceCard(p.choice_request);
-          } else if (p.delta) { fullText += p.delta; streamDiv.querySelector('.msg-bubble').innerHTML = marked.parse(fullText); chatMessages.scrollTop = chatMessages.scrollHeight; }
+          } else if (p.delta) { fullText += p.delta; renderer.schedule(); }
         } catch(e) { if (!e.message.includes('JSON')) throw e; }
       }
     }
     streamDiv.classList.remove('streaming');
-    streamDiv.querySelector('.msg-bubble').innerHTML = marked.parse(fullText);
+    renderer.flush();
   } catch (e) {
     streamDiv.classList.remove('streaming');
     if (e.name === 'AbortError') {
