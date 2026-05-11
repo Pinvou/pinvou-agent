@@ -22,7 +22,7 @@
 //! 只做结构性校验，不判断内容合理性：
 //! - `agent` ∈ AgentRegistry 注册项
 //! - 若非 qa：
-//!   - milestones 数量 ∈ [2, 8]
+//!   - milestones 数量 ∈ [2, 12]
 //!   - 每个 mode 是合法枚举
 //!   - 最后一个 mode == FinalOutput
 //!   - 每个 tool ∈ GLOBAL_TOOL_POOL
@@ -140,7 +140,7 @@ impl CombinedPlanner {
 
 约束:
 - 如果 agent=qa，milestones 必须为空数组 []
-- 否则 milestones 数量 2-8 个
+- 否则 milestones 数量 2-12 个
 - 最后一个 milestone 必须 mode=final_output
 - tools 必须从工具池中选；mode=final_output 时不能含 request_user_input
 - 如果用户首条消息已提供关键信息，对应的 collect 阶段可以省略
@@ -221,8 +221,8 @@ fn validate_dto(
     if dto.milestones.is_empty() {
         bail!("non-qa agent must have milestones, got 0");
     }
-    if dto.milestones.len() < 2 || dto.milestones.len() > 8 {
-        bail!("milestones count must be 2-8, got {}", dto.milestones.len());
+    if dto.milestones.len() < 2 || dto.milestones.len() > 12 {
+        bail!("milestones count must be 2-12, got {}", dto.milestones.len());
     }
 
     // 4. label 非空且不重复
@@ -434,7 +434,8 @@ mod tests {
     fn parse_rejects_too_many_milestones() {
         let _reg = registry_with_basic_agents();
         let mut milestones: Vec<String> = Vec::new();
-        for i in 0..8 {
+        // 12 freeform + 1 final = 13 总数，超过 12 上限
+        for i in 0..12 {
             milestones.push(format!(
                 r#"{{"label": "m{i}", "mode": "freeform", "tools": []}}"#
             ));
@@ -445,6 +446,26 @@ mod tests {
             milestones.join(",")
         );
         assert!(CombinedPlanner::parse_plan(&json, &registry_with_basic_agents(), &test_tool_pool()).is_err());
+    }
+
+    #[test]
+    fn parse_accepts_10_milestones() {
+        // 验证新上限：10 步（含 final_output）应该通过
+        let reg = registry_with_basic_agents();
+        let mut milestones: Vec<String> = Vec::new();
+        for i in 0..9 {
+            milestones.push(format!(
+                r#"{{"label": "m{i}", "mode": "freeform", "tools": []}}"#
+            ));
+        }
+        milestones.push(r#"{"label": "end", "mode": "final_output", "tools": []}"#.into());
+        let json = format!(
+            r#"{{"agent": "doc_generation", "milestones": [{}]}}"#,
+            milestones.join(",")
+        );
+        let plan = CombinedPlanner::parse_plan(&json, &reg, &test_tool_pool())
+            .expect("10 milestones should be within cap 12");
+        assert_eq!(plan.milestones.len(), 10);
     }
 
     #[test]
