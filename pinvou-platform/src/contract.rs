@@ -53,15 +53,24 @@ pub enum AdvancePolicy {
     ManualContinue,
 }
 
+/// 阶段输出约束 —— 由 Mode 自动挂载，违反时代码会拦截。
+///
+/// 注意：领域性的内容约束（"必须含成本/风险对比表"等）**不在这里**。
+/// 那些是 agent 软建议，写在 `prompts/<id>.md` 正文里。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutputRequirement {
+    /// `request_user_input` 的 questions[i].options 数量下限
     MinOptions(u8),
+    /// `request_user_input` 的 questions[i].options 数量上限
     MaxOptions(u8),
-    MustContainTable,
-    MustContainSchedule,
-    MustContainRiskSection,
+    /// 响应末尾不能是开放式问句（以 ? 或 ？ 结尾）
     NoOpenQuestion,
+    /// 本阶段完全禁止任何工具调用
     NoToolCall,
+    /// 本阶段必须调用指定工具（如 collect 必须调 request_user_input）
+    RequiresToolCall(String),
+    /// 本阶段禁止调用指定工具（如 final_output 禁 request_user_input）
+    ForbidTool(String),
 }
 
 impl Serialize for OutputRequirement {
@@ -78,11 +87,10 @@ impl OutputRequirement {
         match self {
             OutputRequirement::MinOptions(value) => format!("min_options:{value}"),
             OutputRequirement::MaxOptions(value) => format!("max_options:{value}"),
-            OutputRequirement::MustContainTable => "must_contain_table".to_string(),
-            OutputRequirement::MustContainSchedule => "must_contain_schedule".to_string(),
-            OutputRequirement::MustContainRiskSection => "must_contain_risk_section".to_string(),
             OutputRequirement::NoOpenQuestion => "no_open_question".to_string(),
             OutputRequirement::NoToolCall => "no_tool_call".to_string(),
+            OutputRequirement::RequiresToolCall(name) => format!("requires_tool_call:{name}"),
+            OutputRequirement::ForbidTool(name) => format!("forbid_tool:{name}"),
         }
     }
 }
@@ -144,31 +152,39 @@ fn default_advance_policy() -> AdvancePolicy {
     AdvancePolicy::ManualContinue
 }
 
-/// 根据 mode 返回内置默认 contract（新设计：mode → 规则映射在代码里硬编码）。
+/// 根据 mode 返回内置默认 contract（mode → 硬规则映射，写在代码里）。
 ///
-/// 注意：返回的 `allowed_tools` 留空。新设计中 `allowed_tools` 由 LLM 拆解时挑选，
-/// 但会被 mode 兼容性规则（`mode_tool_compatibility`）约束。
+/// 返回的 `allowed_tools` 留空：由 LLM 拆解时选具体工具，
+/// `output_requirements` 中的 `ForbidTool` 在校验阶段拦截违规。
 pub fn contract_for_mode(mode: MilestoneMode) -> MilestoneContract {
     match mode {
+        // 收信息：必须用 request_user_input 让用户做选择题；不能开放追问
         MilestoneMode::Collect => MilestoneContract {
             mode,
             question_budget: 1,
             allowed_tools: Vec::new(),
-            output_requirements: Vec::new(),
+            output_requirements: vec![
+                OutputRequirement::RequiresToolCall("request_user_input".to_string()),
+                OutputRequirement::NoOpenQuestion,
+            ],
             advance_policy: AdvancePolicy::OnChoice,
             ..MilestoneContract::default()
         },
+        // 出方案：必须用 request_user_input 给 2-3 个选项；不能开放追问
         MilestoneMode::ProduceOptions => MilestoneContract {
             mode,
             question_budget: 1,
             allowed_tools: Vec::new(),
             output_requirements: vec![
+                OutputRequirement::RequiresToolCall("request_user_input".to_string()),
                 OutputRequirement::MinOptions(2),
                 OutputRequirement::MaxOptions(3),
+                OutputRequirement::NoOpenQuestion,
             ],
             advance_policy: AdvancePolicy::OnChoice,
             ..MilestoneContract::default()
         },
+        // 细化已选方案：不能再问，基于现有上下文产出
         MilestoneMode::RefineSelectedOption => MilestoneContract {
             mode,
             question_budget: 0,
@@ -177,15 +193,8 @@ pub fn contract_for_mode(mode: MilestoneMode) -> MilestoneContract {
             advance_policy: AdvancePolicy::OnValidOutput,
             ..MilestoneContract::default()
         },
+        // 自由产出：纯产出阶段；要确认偏好就拆 collect
         MilestoneMode::Freeform => MilestoneContract {
-            mode,
-            question_budget: 1,
-            allowed_tools: Vec::new(),
-            output_requirements: vec![OutputRequirement::NoOpenQuestion],
-            advance_policy: AdvancePolicy::OnValidOutput,
-            ..MilestoneContract::default()
-        },
-        MilestoneMode::FinalOutput => MilestoneContract {
             mode,
             question_budget: 0,
             allowed_tools: Vec::new(),
@@ -193,23 +202,19 @@ pub fn contract_for_mode(mode: MilestoneMode) -> MilestoneContract {
             advance_policy: AdvancePolicy::OnValidOutput,
             ..MilestoneContract::default()
         },
+        // 最终输出：禁问用户、禁开放问题
+        MilestoneMode::FinalOutput => MilestoneContract {
+            mode,
+            question_budget: 0,
+            allowed_tools: Vec::new(),
+            output_requirements: vec![
+                OutputRequirement::ForbidTool("request_user_input".to_string()),
+                OutputRequirement::NoOpenQuestion,
+            ],
+            advance_policy: AdvancePolicy::OnValidOutput,
+            ..MilestoneContract::default()
+        },
     }
-}
-
-/// mode 与工具的硬兼容性检查。
-///
-/// 返回 None 表示兼容；Some(reason) 表示拒绝。
-///
-/// 规则：
-/// - `final_output` 禁止 `request_user_input`（最终输出阶段不能再问用户）
-/// - 其他 mode 当前无硬限制
-pub fn mode_tool_compatibility(mode: MilestoneMode, tool: &str) -> Option<String> {
-    if matches!(mode, MilestoneMode::FinalOutput) && tool == "request_user_input" {
-        return Some(format!(
-            "final_output 阶段禁止使用 {tool}（最终输出不能再向用户提问）"
-        ));
-    }
-    None
 }
 
 /// 全局工具池：所有可能用到的工具名（用作设计意图文档 / 拼写防呆参考）。
@@ -236,57 +241,8 @@ pub fn is_tool_in_global_pool(tool: &str) -> bool {
     GLOBAL_TOOL_POOL.contains(&tool)
 }
 
-pub fn default_contract_for_label(label: &str) -> MilestoneContract {
-    if label.contains("方案") || label.contains("对比") {
-        MilestoneContract {
-            mode: MilestoneMode::ProduceOptions,
-            question_budget: 1,
-            allowed_tools: vec!["request_user_input".to_string()],
-            output_requirements: vec![
-                OutputRequirement::MinOptions(2),
-                OutputRequirement::MaxOptions(3),
-                OutputRequirement::MustContainTable,
-                OutputRequirement::NoOpenQuestion,
-            ],
-            advance_policy: AdvancePolicy::OnChoice,
-            ..MilestoneContract::default()
-        }
-    } else if label.contains("细化") {
-        MilestoneContract {
-            mode: MilestoneMode::RefineSelectedOption,
-            question_budget: 0,
-            output_requirements: vec![
-                OutputRequirement::MustContainSchedule,
-                OutputRequirement::MustContainRiskSection,
-                OutputRequirement::NoOpenQuestion,
-            ],
-            advance_policy: AdvancePolicy::OnValidOutput,
-            ..MilestoneContract::default()
-        }
-    } else if label.contains("输出") || label.contains("定稿") {
-        MilestoneContract {
-            mode: MilestoneMode::FinalOutput,
-            question_budget: 0,
-            output_requirements: vec![OutputRequirement::NoToolCall],
-            advance_policy: AdvancePolicy::OnValidOutput,
-            ..MilestoneContract::default()
-        }
-    } else {
-        MilestoneContract {
-            mode: MilestoneMode::Collect,
-            question_budget: 1,
-            allowed_tools: vec!["request_user_input".to_string()],
-            advance_policy: AdvancePolicy::OnChoice,
-            ..MilestoneContract::default()
-        }
-    }
-}
-
 pub fn parse_output_requirement(raw: &str) -> Result<OutputRequirement, String> {
     match raw {
-        "must_contain_table" => Ok(OutputRequirement::MustContainTable),
-        "must_contain_schedule" => Ok(OutputRequirement::MustContainSchedule),
-        "must_contain_risk_section" => Ok(OutputRequirement::MustContainRiskSection),
         "no_open_question" => Ok(OutputRequirement::NoOpenQuestion),
         "no_tool_call" => Ok(OutputRequirement::NoToolCall),
         _ if raw.starts_with("min_options:") => {
@@ -295,6 +251,12 @@ pub fn parse_output_requirement(raw: &str) -> Result<OutputRequirement, String> 
         _ if raw.starts_with("max_options:") => {
             parse_u8_suffix(raw, "max_options:").map(OutputRequirement::MaxOptions)
         }
+        _ if raw.starts_with("requires_tool_call:") => Ok(OutputRequirement::RequiresToolCall(
+            raw.trim_start_matches("requires_tool_call:").to_string(),
+        )),
+        _ if raw.starts_with("forbid_tool:") => Ok(OutputRequirement::ForbidTool(
+            raw.trim_start_matches("forbid_tool:").to_string(),
+        )),
         _ => Err(format!("unknown output requirement: {raw}")),
     }
 }
@@ -324,46 +286,56 @@ mod tests {
     use super::*;
 
     #[test]
-    fn contract_for_mode_collect_has_question_budget_one_and_on_choice() {
+    fn contract_for_mode_collect_requires_user_input_and_no_open_question() {
         let c = contract_for_mode(MilestoneMode::Collect);
         assert_eq!(c.question_budget, 1);
         assert_eq!(c.advance_policy, AdvancePolicy::OnChoice);
-        assert!(c.output_requirements.is_empty());
+        assert!(c.output_requirements.contains(&OutputRequirement::RequiresToolCall(
+            "request_user_input".to_string()
+        )));
+        assert!(c.output_requirements.contains(&OutputRequirement::NoOpenQuestion));
     }
 
     #[test]
-    fn contract_for_mode_produce_options_requires_2_to_3_options() {
+    fn contract_for_mode_produce_options_full_constraints() {
         let c = contract_for_mode(MilestoneMode::ProduceOptions);
         assert!(c.output_requirements.contains(&OutputRequirement::MinOptions(2)));
         assert!(c.output_requirements.contains(&OutputRequirement::MaxOptions(3)));
+        assert!(c.output_requirements.contains(&OutputRequirement::RequiresToolCall(
+            "request_user_input".to_string()
+        )));
+        assert!(c.output_requirements.contains(&OutputRequirement::NoOpenQuestion));
         assert_eq!(c.advance_policy, AdvancePolicy::OnChoice);
     }
 
     #[test]
-    fn contract_for_mode_final_output_no_budget_no_open_question() {
+    fn contract_for_mode_final_output_forbids_user_input() {
         let c = contract_for_mode(MilestoneMode::FinalOutput);
         assert_eq!(c.question_budget, 0);
+        assert!(c.output_requirements.contains(&OutputRequirement::ForbidTool(
+            "request_user_input".to_string()
+        )));
         assert!(c.output_requirements.contains(&OutputRequirement::NoOpenQuestion));
         assert_eq!(c.advance_policy, AdvancePolicy::OnValidOutput);
     }
 
     #[test]
-    fn mode_tool_compatibility_blocks_request_input_in_final_output() {
-        let res = mode_tool_compatibility(MilestoneMode::FinalOutput, "request_user_input");
-        assert!(res.is_some());
-        assert!(res.unwrap().contains("final_output"));
+    fn contract_for_mode_freeform_no_question_budget() {
+        let c = contract_for_mode(MilestoneMode::Freeform);
+        assert_eq!(c.question_budget, 0, "freeform 是纯产出阶段，不允许提问");
+        assert_eq!(c.advance_policy, AdvancePolicy::OnValidOutput);
     }
 
     #[test]
-    fn mode_tool_compatibility_allows_request_input_in_collect() {
-        let res = mode_tool_compatibility(MilestoneMode::Collect, "request_user_input");
-        assert!(res.is_none());
-    }
-
-    #[test]
-    fn mode_tool_compatibility_allows_file_write_in_final_output() {
-        let res = mode_tool_compatibility(MilestoneMode::FinalOutput, "file_write");
-        assert!(res.is_none());
+    fn parse_output_requirement_handles_new_variants() {
+        assert_eq!(
+            parse_output_requirement("requires_tool_call:request_user_input").unwrap(),
+            OutputRequirement::RequiresToolCall("request_user_input".to_string())
+        );
+        assert_eq!(
+            parse_output_requirement("forbid_tool:exec_shell").unwrap(),
+            OutputRequirement::ForbidTool("exec_shell".to_string())
+        );
     }
 
     #[test]

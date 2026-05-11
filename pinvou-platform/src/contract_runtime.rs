@@ -105,17 +105,27 @@ fn push_output_requirements(
     requirements: &mut Vec<String>,
     output_requirements: &[OutputRequirement],
 ) {
-    if output_requirements.contains(&OutputRequirement::MustContainTable) {
-        requirements.push("输出必须包含表格。".into());
-    }
-    if output_requirements.contains(&OutputRequirement::MustContainSchedule) {
-        requirements.push("输出必须包含明确时间表。".into());
-    }
-    if output_requirements.contains(&OutputRequirement::MustContainRiskSection) {
-        requirements.push("输出必须包含风险或预案部分。".into());
-    }
-    if output_requirements.contains(&OutputRequirement::NoOpenQuestion) {
-        requirements.push("不要提出开放式问题继续收集需求。".into());
+    for req in output_requirements {
+        match req {
+            OutputRequirement::NoOpenQuestion => {
+                requirements.push("响应末尾不要以问号结尾（不要开放追问）。".into());
+            }
+            OutputRequirement::RequiresToolCall(name) => {
+                requirements.push(format!("本阶段必须调用 `{name}` 工具完成任务。"));
+            }
+            OutputRequirement::ForbidTool(name) => {
+                requirements.push(format!("本阶段禁止调用 `{name}` 工具。"));
+            }
+            OutputRequirement::MinOptions(n) => {
+                requirements.push(format!("选择题选项数量不少于 {n}。"));
+            }
+            OutputRequirement::MaxOptions(n) => {
+                requirements.push(format!("选择题选项数量不超过 {n}。"));
+            }
+            OutputRequirement::NoToolCall => {
+                requirements.push("本阶段禁止调用任何工具。".into());
+            }
+        }
     }
 }
 
@@ -249,10 +259,7 @@ mod tests {
         ms.prompt_hint = Some("根据用户需求进行深入分析，输出表格和文字解读".into());
         ms.contract.question_budget = 0;
         ms.contract.allowed_tools = vec!["python".into(), "shell".into()];
-        ms.contract.output_requirements = vec![
-            OutputRequirement::MustContainTable,
-            OutputRequirement::NoOpenQuestion,
-        ];
+        ms.contract.output_requirements = vec![OutputRequirement::NoOpenQuestion];
         let cs = ConversationState::new("数据分析".into(), vec![ms.clone()]);
 
         let directive = ContractRuntime::next_directive(&ms, &cs, "继续").unwrap();
@@ -262,7 +269,7 @@ mod tests {
         };
         let rendered_requirements = prompt.system_requirements.join("\n");
         assert!(rendered_requirements.contains("深入分析"));
-        assert!(rendered_requirements.contains("表格"));
+        assert!(rendered_requirements.contains("问号"));
         assert!(prompt.allowed_tools.contains(&"python".into()));
     }
 

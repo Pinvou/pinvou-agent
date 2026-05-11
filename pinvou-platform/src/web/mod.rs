@@ -491,6 +491,10 @@ async fn stream_chat(
     let state_clone = state.clone();
     let state_for_choice = state.clone();
     let milestone_for_check = active_milestone.clone();
+    // 工具调用累积：用于 validate_stage_completion 的 RequiresToolCall 校验
+    let invoked_tools: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let it_clone = invoked_tools.clone();
     // choice 状态：检测到 request_user_input 工具调用时设值
     let choice_state: std::sync::Arc<std::sync::Mutex<Option<serde_json::Value>>> =
         std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -503,6 +507,7 @@ async fn stream_chat(
         let state_clone = state_clone.clone();
         let state_for_choice = state_for_choice.clone();
         let milestone_for_check = milestone_for_check.clone();
+        let it_clone = it_clone.clone();
         let ch_clone = ch_clone.clone();
         let abort_for_stream = abort_for_stream.clone();
 
@@ -520,6 +525,12 @@ async fn stream_chat(
             }
             Ok(StreamEvent::ToolCallStart { call_id, tool_name, arguments }) => {
                 eprintln!("[web] ToolCallStart: {tool_name} call_id={call_id} args={arguments:?}");
+                // 记录本阶段调用过的工具，用于 validate_stage_completion 的 RequiresToolCall
+                if let Ok(mut it) = it_clone.lock() {
+                    if !it.iter().any(|t| t == &tool_name) {
+                        it.push(tool_name.clone());
+                    }
+                }
                 let decision = {
                     let engine = state_for_choice.engine.lock().await;
                     authorize_tool_call(
@@ -559,10 +570,16 @@ async fn stream_chat(
                     let text = ft.clone();
                     let choice = ch_clone.lock().unwrap().take();
 
-                    // 新设计：推进由 ContractValidator 单独裁决，ResponseChecker
-                    // 不再参与（已退役）。
+                    // 推进由 ContractValidator 单独裁决：
+                    // validate_stage_completion 同时校验响应文本（NoOpenQuestion）
+                    // 和阶段必调工具（RequiresToolCall）
+                    let invoked = it_clone.lock().map(|v| v.clone()).unwrap_or_default();
                     let (milestone_json, should_advance, validation_issues) = if let Some(ms) = &milestone_for_check {
-                        let contract_ok = ContractValidator::validate_response(&ms.contract, &text);
+                        let contract_ok = ContractValidator::validate_stage_completion(
+                            &ms.contract,
+                            &text,
+                            &invoked,
+                        );
                         let should_advance = contract_ok.ok
                             && matches!(
                                 ms.contract.advance_policy,
@@ -827,7 +844,7 @@ mod tests {
         let mut ms = milestone("options", MilestoneMode::ProduceOptions);
         ms.contract.output_requirements = vec![
             OutputRequirement::MinOptions(2),
-            OutputRequirement::MustContainTable,
+            OutputRequirement::NoOpenQuestion,
         ];
         let cs = ConversationState::new("app".into(), vec![ms.clone()]);
         let args = serde_json::json!({

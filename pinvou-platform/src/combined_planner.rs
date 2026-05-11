@@ -36,7 +36,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 
 use crate::agent_registry::AgentRegistry;
-use crate::contract::{MilestoneMode, mode_tool_compatibility};
+use crate::contract::{MilestoneMode, OutputRequirement, contract_for_mode};
 
 /// LLM 拆解的完整结果
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -263,8 +263,17 @@ fn validate_dto(
                     t, available_tools
                 );
             }
-            if let Some(reason) = mode_tool_compatibility(m.mode.clone(), t) {
-                bail!("tool incompat: {reason}");
+            // 用 mode 内置的 ForbidTool 校验工具兼容性
+            let mode_contract = contract_for_mode(m.mode.clone());
+            for req in &mode_contract.output_requirements {
+                if let OutputRequirement::ForbidTool(forbidden) = req {
+                    if forbidden == t {
+                        bail!(
+                            "tool '{}' forbidden in mode {:?}（contract::ForbidTool）",
+                            t, m.mode
+                        );
+                    }
+                }
             }
         }
         milestones.push(PlannedMilestone {
@@ -463,7 +472,12 @@ mod tests {
             ]
         }"#;
         let err = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap_err();
-        assert!(err.to_string().contains("final_output"));
+        // 错误信息含 ForbidTool 或 mode 名（错误措辞从 mode_tool_compatibility 改为 ForbidTool）
+        assert!(
+            err.to_string().to_lowercase().contains("forbidden")
+                || err.to_string().contains("FinalOutput"),
+            "expected forbidden tool error, got: {err}"
+        );
     }
 
     #[test]
