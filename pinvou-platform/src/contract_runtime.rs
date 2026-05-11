@@ -68,17 +68,39 @@ impl ContractRuntime {
                 push_output_requirements(&mut requirements, &contract.output_requirements);
             }
             MilestoneMode::FinalOutput => {
+                // 检测是否是 review 触发的微调（context 中带 review_feedback）。
+                // 微调时不要全文重写，prompt 强调"基于上一版只改 X"。
+                let review_feedback = state.context.get("review_feedback").cloned();
+                let is_revision = review_feedback.is_some();
+
                 if contract
                     .output_requirements
                     .contains(&OutputRequirement::NoToolCall)
                     || contract.allowed_tools.is_empty()
                 {
-                    requirements.push("输出最终 markdown 文档，不要再提问，不要调用工具。".into());
+                    if is_revision {
+                        requirements.push(format!(
+                            "这是基于用户反馈的**修订版**（反馈：「{}」）。直接输出修订后的最终 markdown 文档；不要从头重写所有内容，只在反馈涉及的部分做改动，其他内容原样保留。不要再提问，不要调用工具。",
+                            review_feedback.unwrap_or_default()
+                        ));
+                    } else {
+                        requirements.push(
+                            "输出最终 markdown 文档，不要再提问，不要调用工具。".into(),
+                        );
+                    }
                 } else {
-                    requirements.push(format!(
-                        "输出最终 markdown 文档，不要再提问；如需完成最终输出、导出或保存，只能调用契约允许的工具：{}。",
-                        contract.allowed_tools.join(", ")
-                    ));
+                    if is_revision {
+                        requirements.push(format!(
+                            "这是基于用户反馈的**修订版**（反馈：「{}」）。\n\n步骤：① 先以 markdown 形式流式输出修订后的完整文档（用户能实时看到产出）——只在反馈涉及的部分做改动，其他内容**原样保留**，不要从头重写。② 输出结束后调用 `{}` 工具把内容写入文件覆盖保存（path 与上一版相同）。不要在工具调用前后重复输出内容。",
+                            review_feedback.unwrap_or_default(),
+                            contract.allowed_tools.join(", ")
+                        ));
+                    } else {
+                        requirements.push(format!(
+                            "步骤：① 先以 markdown 形式流式输出最终文档（用户能实时看到产出，不要塞进工具参数）。② 输出结束后调用 `{}` 工具把同样的内容写入文件保存。不要在工具调用前后重复输出内容；不要再提问。",
+                            contract.allowed_tools.join(", ")
+                        ));
+                    }
                 }
             }
             MilestoneMode::Freeform => {
@@ -263,6 +285,55 @@ mod tests {
                 .system_requirements
                 .iter()
                 .any(|r| r.contains("不要调用工具"))
+        );
+    }
+
+    #[test]
+    fn final_output_with_review_feedback_injects_revision_prompt() {
+        let mut ms = milestone("output", MilestoneMode::FinalOutput);
+        ms.contract.allowed_tools = vec!["write_file".into()];
+        let mut cs = ConversationState::new("修订".into(), vec![ms.clone()]);
+        cs.set_context("review_feedback", "调整时间安排：把上午徒步改到下午");
+
+        let directive = ContractRuntime::next_directive(&ms, &cs, "继续").unwrap();
+        let TurnDirective::CallLlm(prompt) = directive else {
+            unreachable!()
+        };
+        let joined = prompt.system_requirements.join("\n");
+        assert!(
+            joined.contains("修订版"),
+            "review_feedback 应触发修订版 prompt: {joined}"
+        );
+        assert!(
+            joined.contains("调整时间安排"),
+            "应嵌入用户反馈原文: {joined}"
+        );
+        assert!(
+            joined.contains("原样保留") || joined.contains("不要从头重写"),
+            "应明确告知 LLM 增量改: {joined}"
+        );
+    }
+
+    #[test]
+    fn final_output_without_review_feedback_uses_initial_prompt() {
+        let mut ms = milestone("output", MilestoneMode::FinalOutput);
+        ms.contract.allowed_tools = vec!["write_file".into()];
+        let cs = ConversationState::new("初版".into(), vec![ms.clone()]);
+
+        let directive = ContractRuntime::next_directive(&ms, &cs, "继续").unwrap();
+        let TurnDirective::CallLlm(prompt) = directive else {
+            unreachable!()
+        };
+        let joined = prompt.system_requirements.join("\n");
+        // 初版不应该出现"修订版"字样
+        assert!(
+            !joined.contains("修订版"),
+            "无 review_feedback 时不应是修订 prompt: {joined}"
+        );
+        // 应包含"先流式输出"的步骤引导（Problem 3 修复一部分）
+        assert!(
+            joined.contains("先") && (joined.contains("流式") || joined.contains("markdown")),
+            "应有「先流式输出文档，最后调工具」的步骤引导: {joined}"
         );
     }
 
