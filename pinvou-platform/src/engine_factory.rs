@@ -122,13 +122,9 @@ pub fn create_engine(workspace: PathBuf) -> Result<PinvouEngine> {
     let harness = DeepSeekHarness::new(client, tool_names, models, workspace.clone())
         .with_tools(tool_registry, tool_context, auto_tool_names);
 
-    let mut engine = PlatformEngine::new(harness, workspace.clone());
-
-    // 注入 AgentRegistry（默认从 workspace/prompts 加载，main 可用 --prompts-dir 覆盖）
-    let prompts_dir = workspace.join("prompts");
-    engine.set_agent_registry(load_agents(&prompts_dir));
-
-    Ok(engine)
+    // 注意：AgentRegistry 由 main.rs 用 CLI 的 `--prompts-dir` 显式注入，
+    // create_engine 不再这里加载，避免重复读盘 + 重复日志。
+    Ok(PlatformEngine::new(harness, workspace.clone()))
 }
 
 /// 构造默认工具注册表 + 执行上下文。
