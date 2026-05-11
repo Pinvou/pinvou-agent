@@ -118,7 +118,8 @@ impl CombinedPlanner {
 - produce_options: 给 2-3 个方案让用户选
 - refine_selected_option: 细化已选方案
 - freeform: 自由产出（写作 / 分析 / 计算）
-- final_output: 最终交付物（必须是最后一个 milestone）
+- final_output: 最终交付物（必须出现，要么是最后一个，要么倒数第二个）
+- review: 产物审核，让用户决定满意/微调/重做（**可选**：建议在 final_output 之后加一个，适合 planning / doc_generation 类任务，让用户拿到产物后能微调）
 
 可用工具池（每个 milestone 从中选 0-N 个）:
 {tools_list}
@@ -141,7 +142,8 @@ impl CombinedPlanner {
 约束:
 - 如果 agent=qa，milestones 必须为空数组 []
 - 否则 milestones 数量 2-12 个
-- 最后一个 milestone 必须 mode=final_output
+- 必须有且仅有一个 mode=final_output
+- 最后一个 milestone 必须是 final_output 或 review；如果最后是 review，其前一个必须是 final_output
 - tools 必须从工具池中选；mode=final_output 时不能含 request_user_input
 - 如果用户首条消息已提供关键信息，对应的 collect 阶段可以省略
 
@@ -151,6 +153,7 @@ impl CombinedPlanner {
 - mode=refine_selected_option → tools 可以为空，或含 file_read / web_search
 - mode=freeform         → tools 可以为空（纯产出），或含搜索/读文件类工具
 - mode=final_output     → tools 可含 file_write 等导出工具，**不能含** request_user_input
+- mode=review           → tools **必须含** `request_user_input`（给用户做选择题：满意/微调/重做）
 
 口诀：要让用户做选择就用 collect 或 produce_options，并把 request_user_input 放进它的 tools 里。
 绝对不要在 produce_options 里写 `\"tools\": []` —— 这会让用户看到一堆文本问题而不是选择卡片。
@@ -247,19 +250,51 @@ fn validate_dto(
         }
     }
 
-    // 5. 最后一个必须是 final_output
-    let last_mode = &dto.milestones.last().unwrap().mode;
-    if !matches!(last_mode, MilestoneMode::FinalOutput) {
-        bail!("last milestone must be final_output, got {:?}", last_mode);
+    // 5. 最后一个必须是 final_output 或 review
+    let last_idx = dto.milestones.len() - 1;
+    let last_mode = &dto.milestones[last_idx].mode;
+    match last_mode {
+        MilestoneMode::FinalOutput => { /* ok */ }
+        MilestoneMode::Review => {
+            // review 作为最后一个时，其前一个必须是 final_output
+            if last_idx == 0 {
+                bail!("review milestone cannot be the only milestone");
+            }
+            let prev_mode = &dto.milestones[last_idx - 1].mode;
+            if !matches!(prev_mode, MilestoneMode::FinalOutput) {
+                bail!(
+                    "review milestone must follow final_output, found {:?} before review",
+                    prev_mode
+                );
+            }
+        }
+        other => bail!(
+            "last milestone must be final_output or review, got {:?}",
+            other
+        ),
     }
 
-    // 6. 中间不能有 final_output（仅末尾允许）
-    for m in &dto.milestones[..dto.milestones.len() - 1] {
-        if matches!(m.mode, MilestoneMode::FinalOutput) {
-            bail!(
-                "final_output may only appear as the last milestone, found '{}'",
-                m.label
-            );
+    // 6. 中间不能有 final_output / review（review 也只能作为最后一个）
+    for m in &dto.milestones[..last_idx] {
+        match m.mode {
+            MilestoneMode::FinalOutput => {
+                // 例外：如果最后一个是 review，倒数第二个 final_output 是合法的
+                let is_pre_review_final = matches!(last_mode, MilestoneMode::Review)
+                    && std::ptr::eq(m, &dto.milestones[last_idx - 1]);
+                if !is_pre_review_final {
+                    bail!(
+                        "final_output may only appear as the last milestone (or right before review), found '{}'",
+                        m.label
+                    );
+                }
+            }
+            MilestoneMode::Review => {
+                bail!(
+                    "review may only appear as the last milestone, found '{}'",
+                    m.label
+                );
+            }
+            _ => {}
         }
     }
 
@@ -433,6 +468,74 @@ mod tests {
         }"#;
         let err = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap_err();
         assert!(err.to_string().contains("final_output"));
+    }
+
+    #[test]
+    fn parse_accepts_review_as_last_after_final_output() {
+        let reg = registry_with_basic_agents();
+        let json = r#"{
+            "agent": "doc_generation",
+            "milestones": [
+                {"label": "选方案", "mode": "produce_options", "tools": ["request_user_input"]},
+                {"label": "定稿", "mode": "final_output", "tools": ["write_file"]},
+                {"label": "审核", "mode": "review", "tools": ["request_user_input"]}
+            ]
+        }"#;
+        let plan = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap();
+        assert_eq!(plan.milestones[2].mode, MilestoneMode::Review);
+    }
+
+    #[test]
+    fn parse_rejects_review_not_after_final_output() {
+        let reg = registry_with_basic_agents();
+        let json = r#"{
+            "agent": "doc_generation",
+            "milestones": [
+                {"label": "草稿", "mode": "freeform", "tools": []},
+                {"label": "审核", "mode": "review", "tools": ["request_user_input"]}
+            ]
+        }"#;
+        let err = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap_err();
+        assert!(
+            err.to_string().contains("review")
+                && err.to_string().contains("final_output"),
+            "应提示 review 必须跟在 final_output 后面: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_review_in_middle() {
+        let reg = registry_with_basic_agents();
+        let json = r#"{
+            "agent": "doc_generation",
+            "milestones": [
+                {"label": "审核1", "mode": "review", "tools": ["request_user_input"]},
+                {"label": "定稿", "mode": "final_output", "tools": []}
+            ]
+        }"#;
+        let err = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap_err();
+        assert!(
+            err.to_string().contains("review may only appear as the last"),
+            "review 在中间应拒绝: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_review_without_request_user_input() {
+        let reg = registry_with_basic_agents();
+        let json = r#"{
+            "agent": "doc_generation",
+            "milestones": [
+                {"label": "定稿", "mode": "final_output", "tools": ["write_file"]},
+                {"label": "审核", "mode": "review", "tools": []}
+            ]
+        }"#;
+        let err = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap_err();
+        assert!(
+            err.to_string().contains("request_user_input")
+                || err.to_string().contains("RequiresToolCall"),
+            "review 没声明 request_user_input 应拒绝: {err}"
+        );
     }
 
     #[test]

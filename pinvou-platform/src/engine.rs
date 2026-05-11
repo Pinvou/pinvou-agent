@@ -213,6 +213,15 @@ impl<H: AgentHarness> PlatformEngine<H> {
             .as_ref()
             .and_then(|cs| cs.active_milestone().cloned());
 
+        // Review 模式有三个状态机分支（满意/微调/重做），靠 label 前缀识别。
+        // 不是 Review milestone 时走原来的"mark_done + advance"路径。
+        let review_branch: Option<ReviewBranch> =
+            if !skip && is_review_milestone(active_before.as_ref()) {
+                Some(classify_review_branch(answers))
+            } else {
+                None
+            };
+
         let tool_msg = if skip {
             format!("[tool_result call_id={call_id}] 用户跳过了此选择器，继续推进。")
         } else {
@@ -245,8 +254,44 @@ impl<H: AgentHarness> PlatformEngine<H> {
                 }
             }
 
-            if let Some(ref active) = active_before {
-                cs.mark_done(&active.id);
+            // Review 分支处理：满意/重做 走默认 mark_done；微调走 rewind_to(final_output)
+            match review_branch {
+                Some(ReviewBranch::Tweak) => {
+                    if let Some(ref active) = active_before {
+                        let final_output_id = cs
+                            .milestones
+                            .iter()
+                            .find(|(m, _)| m.contract.mode == crate::contract::MilestoneMode::FinalOutput)
+                            .map(|(m, _)| m.id.clone());
+                        if let Some(final_id) = final_output_id {
+                            // rewind 会清受影响 milestone 的 context，所以反馈在 rewind 之后再 set
+                            let feedback_label = answers
+                                .first()
+                                .map(|a| a.label.clone())
+                                .unwrap_or_default();
+                            cs.rewind_to(&final_id);
+                            if !feedback_label.is_empty() {
+                                cs.set_context("review_feedback", feedback_label);
+                            }
+                        } else {
+                            // 异常：review 阶段但没找到 final_output，按默认 mark_done 兜底
+                            cs.mark_done(&active.id);
+                        }
+                    }
+                }
+                Some(ReviewBranch::Redo) => {
+                    // 重做：标 review 完成（已完成它的工作 — 收到了用户的"重做"决策）
+                    // 同时记录信号，让 web 层在 summary 提示用户走 /replan
+                    if let Some(ref active) = active_before {
+                        cs.set_context("review_outcome", "redo");
+                        cs.mark_done(&active.id);
+                    }
+                }
+                Some(ReviewBranch::Accept) | None => {
+                    if let Some(ref active) = active_before {
+                        cs.mark_done(&active.id);
+                    }
+                }
             }
         }
 
@@ -261,8 +306,21 @@ impl<H: AgentHarness> PlatformEngine<H> {
             }
         }
 
-        let summary =
-            choice_event_summary(skip, answers, active_before.as_ref(), active_after.as_ref());
+        let summary = match review_branch {
+            Some(ReviewBranch::Tweak) => format!(
+                "已记录你的微调意向：{}。系统将重新生成最终产物。",
+                answers
+                    .first()
+                    .map(|a| a.label.as_str())
+                    .unwrap_or("（未识别）")
+            ),
+            Some(ReviewBranch::Redo) => {
+                "已记录「重新规划」意向。请发送 `/replan` 重新拆解任务。".to_string()
+            }
+            Some(ReviewBranch::Accept) | None => {
+                choice_event_summary(skip, answers, active_before.as_ref(), active_after.as_ref())
+            }
+        };
 
         MilestoneAdvanceResult {
             completed_milestone_id: active_before.as_ref().map(|m| m.id.clone()),
@@ -501,6 +559,41 @@ impl<H: AgentHarness> PlatformEngine<H> {
 
 }
 
+/// Review milestone 选择题的三种语义分支。
+///
+/// 通过 LLM 输出的选项 label 前缀识别：
+/// - "满意" 开头  → Accept（接受产物，正常完成）
+/// - "重做" 开头  → Redo（用户想重新规划，走 /replan）
+/// - 其他       → Tweak（微调，回退到 final_output 重做）
+///
+/// 这个识别契约写在 contract_runtime 的 Review mode prompt 里强制 LLM 遵守。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReviewBranch {
+    Accept,
+    Redo,
+    Tweak,
+}
+
+fn is_review_milestone(active: Option<&Milestone>) -> bool {
+    active
+        .map(|m| m.contract.mode == crate::contract::MilestoneMode::Review)
+        .unwrap_or(false)
+}
+
+fn classify_review_branch(answers: &[UserChoiceAnswer]) -> ReviewBranch {
+    let label = answers
+        .first()
+        .map(|a| a.label.as_str().trim_start())
+        .unwrap_or("");
+    if label.starts_with("满意") {
+        ReviewBranch::Accept
+    } else if label.starts_with("重做") {
+        ReviewBranch::Redo
+    } else {
+        ReviewBranch::Tweak
+    }
+}
+
 fn is_continue_command(user_message: &str) -> bool {
     matches!(
         user_message.trim(),
@@ -733,6 +826,107 @@ pub mod mock {
         engine.set_agent_registry(agents_registry());
         engine.ensure_combined_plan("帮我写周报").await.unwrap();
         engine
+    }
+
+    /// 4 阶段场景：collect → freeform → final_output → review，并把前 3 阶段标 Done，
+    /// review 阶段 Active。用于测 Review 分支三种走向。
+    async fn engine_at_review_stage() -> PlatformEngine<MockHarness> {
+        let mock = MockHarness::with_responses(vec![
+            r#"{
+                "agent": "planning",
+                "milestones": [
+                    {"label": "收集偏好", "mode": "collect", "tools": ["request_user_input"]},
+                    {"label": "生成草稿", "mode": "freeform", "tools": []},
+                    {"label": "定稿", "mode": "final_output", "tools": ["write_file"]},
+                    {"label": "审核产物", "mode": "review", "tools": ["request_user_input"]}
+                ]
+            }"#
+            .into(),
+        ]);
+        let mut engine = PlatformEngine::new(mock, PathBuf::from("."));
+        engine.set_agent_registry(agents_registry());
+        engine.ensure_combined_plan("帮我做计划").await.unwrap();
+        let cs = engine.conv_state.as_mut().unwrap();
+        // 强制把前 3 阶段标 Done，让 review (ms_3) active
+        cs.mark_done("ms_0");
+        cs.mark_done("ms_1");
+        cs.mark_done("ms_2");
+        engine
+    }
+
+    #[tokio::test]
+    async fn review_accept_marks_done_and_ends_workflow() {
+        let mut engine = engine_at_review_stage().await;
+        let result = engine.apply_choice_result(
+            "review-1",
+            &[UserChoiceAnswer {
+                id: "review".into(),
+                label: "满意，按此输出".into(),
+                value: "满意，按此输出".into(),
+            }],
+            false,
+        );
+        assert_eq!(result.completed_milestone_id.as_deref(), Some("ms_3"));
+        assert_eq!(result.next_milestone_id, None, "Review 结束应该 AllDone");
+        let cs = engine.conv_state.as_ref().unwrap();
+        assert_eq!(cs.milestones[3].1, crate::workflow::MilestoneStatus::Done);
+    }
+
+    #[tokio::test]
+    async fn review_tweak_rewinds_to_final_output_and_records_feedback() {
+        let mut engine = engine_at_review_stage().await;
+        let result = engine.apply_choice_result(
+            "review-1",
+            &[UserChoiceAnswer {
+                id: "review".into(),
+                label: "调整时间安排：把上午徒步改到下午".into(),
+                value: "调整时间安排：把上午徒步改到下午".into(),
+            }],
+            false,
+        );
+        let cs = engine.conv_state.as_ref().unwrap();
+        // final_output (ms_2) 回到 Active；review (ms_3) 回到 Pending
+        assert_eq!(cs.milestones[2].1, crate::workflow::MilestoneStatus::Active);
+        assert_eq!(cs.milestones[3].1, crate::workflow::MilestoneStatus::Pending);
+        // 反馈作为 context 注入
+        assert_eq!(
+            cs.context.get("review_feedback").map(String::as_str),
+            Some("调整时间安排：把上午徒步改到下午"),
+            "用户的微调意向应作为反馈注入 context"
+        );
+        // active_after 是 final_output
+        assert_eq!(result.next_milestone_id.as_deref(), Some("ms_2"));
+        assert!(
+            result.summary.contains("微调") || result.summary.contains("重新生成"),
+            "summary 应提示微调走向: {}",
+            result.summary
+        );
+    }
+
+    #[tokio::test]
+    async fn review_redo_marks_done_and_hints_replan() {
+        let mut engine = engine_at_review_stage().await;
+        let result = engine.apply_choice_result(
+            "review-1",
+            &[UserChoiceAnswer {
+                id: "review".into(),
+                label: "重做，重新规划".into(),
+                value: "重做，重新规划".into(),
+            }],
+            false,
+        );
+        let cs = engine.conv_state.as_ref().unwrap();
+        assert_eq!(cs.milestones[3].1, crate::workflow::MilestoneStatus::Done);
+        assert_eq!(
+            cs.context.get("review_outcome").map(String::as_str),
+            Some("redo"),
+            "应该记录 redo 信号便于上层 UI 提示"
+        );
+        assert!(
+            result.summary.contains("/replan"),
+            "summary 应提示用户走 /replan: {}",
+            result.summary
+        );
     }
 
     #[tokio::test]

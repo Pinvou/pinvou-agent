@@ -322,7 +322,8 @@ enum MilestoneMode {
     ProduceOptions,           // 出 2-3 个方案让用户选
     RefineSelectedOption,     // 细化已选方案
     Freeform,                 // 自由产出（写作 / 分析 / 计算）
-    FinalOutput,              // 最终交付（必须是最后一个）
+    FinalOutput,              // 最终交付（要么是最后一个，要么 review 前一个）
+    Review,                   // 产物审核：让用户决定满意/微调/重做（可选，建议跟在 final_output 之后）
 }
 
 enum AdvancePolicy {
@@ -336,13 +337,19 @@ enum AdvancePolicy {
 
 | mode | question_budget | advance_policy | 主要 output_requirements |
 |---|---|---|---|
-| `collect` | 1 | `on_choice` | 无 |
-| `produce_options` | 1 | `on_choice` | min_options=2, max_options=3 |
+| `collect` | 1 | `on_choice` | requires_tool_call(request_user_input), no_open_question |
+| `produce_options` | 1 | `on_choice` | requires_tool_call(request_user_input), min_options=2, max_options=3, no_open_question |
 | `refine_selected_option` | 0 | `on_valid_output` | no_open_question |
 | `freeform` | 1 | `on_valid_output` | no_open_question |
-| `final_output` | 0 | `on_valid_output` | no_open_question |
+| `final_output` | 0 | `on_valid_output` | forbid_tool(request_user_input), no_open_question |
+| `review` | 1 | `on_choice` | requires_tool_call(request_user_input), min_options=2, max_options=4, no_open_question |
 
 理由：这些是契约安全底线，开放配置等于让 LLM 给自己放权。
+
+**Review 状态机分支（apply_choice_result 在 engine 层处理）**：
+- 选项 label 以「满意」开头 → mark_done(review) → 整体 AllDone
+- 选项 label 以「重做」开头 → mark_done(review) + 注入 `review_outcome=redo` context；summary 提示用户走 `/replan`
+- 其他选项（微调点）→ `rewind_to(final_output_id)` 让 final_output 重做；用户选的 label 作为 `review_feedback` context 注入；review 自身回到 Pending 等下一轮再问
 
 ---
 
@@ -736,7 +743,8 @@ Round 1: LLM 单次调用（CombinedPlanner）
        {label: "搜索资源",  mode: freeform,        tools: [web_search]},
        {label: "出方案",    mode: produce_options, tools: [request_user_input]},
        {label: "细化方案",  mode: refine_selected_option, tools: []},
-       {label: "输出计划书", mode: final_output,   tools: [file_write]}
+       {label: "输出计划书", mode: final_output,   tools: [file_write]},
+       {label: "审核产物",  mode: review,         tools: [request_user_input]}
      ]}
 
 Round 2: "确认偏好" (collect)
@@ -764,15 +772,30 @@ Round 5: "细化方案" (refine_selected_option)
 Round 6: "输出计划书" (final_output)
   harness 收到 file_write ToolCallStart
   自动写入 workspace
-  完成
+  自动推进到下一阶段（同 SSE 流内 backend looper 串接）
 
-总计: 6 轮，~3 分钟
+Round 7: "审核产物" (review)
+  LLM 基于产物预判用户可能想改什么，调 request_user_input：
+    选项 [
+      {label:"满意，按此输出", description:"...", recommended:true},
+      {label:"调整时间安排", description:"..."},
+      {label:"换成自驾路线", description:"..."},
+      {label:"重做，重新规划", description:"..."}
+    ]
+  分支：
+    用户选「满意...」→ mark_done(review) → AllDone
+    用户选「调整...」→ rewind_to(ms_4 final_output) + review_feedback=label
+                       → final_output 重做 → 再次到 review → 循环直到满意
+    用户选「重做...」→ mark_done(review) + 提示用户输 /replan
+
+总计: 7+ 轮，~3-5 分钟（用户接受产物前可多次微调）
 ```
 
 中途纠错示例：
 
 - 用户在 Round 4 后输入 `/back` → ms_2 Done → Active，相关 context 清除
 - 用户在 Round 3 后输入 `/replan` → 清空 milestones，重新拆解（保留 collect 阶段的 context）
+- 用户在 Round 7 选「调整时间安排」→ review 触发 final_output 重做，无需用户输 slash 命令
 
 ---
 

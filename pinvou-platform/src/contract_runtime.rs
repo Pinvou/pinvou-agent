@@ -86,6 +86,25 @@ impl ContractRuntime {
                 push_stage_hint(&mut requirements, milestone);
                 push_output_requirements(&mut requirements, &contract.output_requirements);
             }
+            MilestoneMode::Review => {
+                if question_budget_reached(milestone, state) {
+                    return Ok(TurnDirective::Blocked(question_budget_message(milestone)));
+                }
+                requirements.push(
+                    "这是产物审核阶段。基于上一阶段的最终产出，让用户决定是否接受或调整。".into(),
+                );
+                requirements.push(
+                    "硬规则：必须调用 request_user_input 给用户做选择题，选项 2-4 个。".into(),
+                );
+                requirements.push(
+                    "选项必须包含：① 一个「满意，结束」选项；② 1-2 个最可能的微调方向（预判用户可能想改什么，比如「调整时间安排」「换成自驾路线」「补充雨天预案」）；③ 一个「不满意，重新规划」选项。".into(),
+                );
+                requirements.push(
+                    "硬规则：标「满意」的选项 label 必须以「满意」开头（如「满意，结束」「满意，按此输出」）；标「重做」的选项 label 必须以「重做」开头（如「重做，重新规划」）。这是状态机识别的依据。".into(),
+                );
+                push_request_user_input_quality_rules(&mut requirements);
+                push_stage_hint(&mut requirements, milestone);
+            }
         }
 
         Ok(TurnDirective::CallLlm(ContractPrompt {

@@ -43,6 +43,12 @@ pub enum MilestoneMode {
     RefineSelectedOption,
     FinalOutput,
     Freeform,
+    /// 产物审核阶段。挂在 `FinalOutput` 之后，让用户决定是否微调或重做。
+    /// 选项形如 [满意结束 / 微调点A / 微调点B / 重新规划]，由 LLM 预判可能
+    /// 的修订点。`Review` milestone 的状态机分支由 `apply_choice_result`
+    /// 在 engine 层处理：满意 → 完成；微调 → 把 final_output 回退到 Active
+    /// 重做产物；重做 → 提示用户走 `/replan`。
+    Review,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,6 +220,21 @@ pub fn contract_for_mode(mode: MilestoneMode) -> MilestoneContract {
             advance_policy: AdvancePolicy::OnValidOutput,
             ..MilestoneContract::default()
         },
+        // 产物审核：必须用 request_user_input 给用户做选择题（满意/微调N/重做）
+        // 选项数 2-4：1 个"满意" + 1-2 个微调点 + 1 个"重做"
+        MilestoneMode::Review => MilestoneContract {
+            mode,
+            question_budget: 1,
+            allowed_tools: Vec::new(),
+            output_requirements: vec![
+                OutputRequirement::RequiresToolCall("request_user_input".to_string()),
+                OutputRequirement::MinOptions(2),
+                OutputRequirement::MaxOptions(4),
+                OutputRequirement::NoOpenQuestion,
+            ],
+            advance_policy: AdvancePolicy::OnChoice,
+            ..MilestoneContract::default()
+        },
     }
 }
 
@@ -324,6 +345,19 @@ mod tests {
         let c = contract_for_mode(MilestoneMode::Freeform);
         assert_eq!(c.question_budget, 0, "freeform 是纯产出阶段，不允许提问");
         assert_eq!(c.advance_policy, AdvancePolicy::OnValidOutput);
+    }
+
+    #[test]
+    fn contract_for_mode_review_uses_choice_card_with_2_to_4_options() {
+        let c = contract_for_mode(MilestoneMode::Review);
+        assert_eq!(c.question_budget, 1);
+        assert_eq!(c.advance_policy, AdvancePolicy::OnChoice);
+        assert!(c.output_requirements.contains(&OutputRequirement::RequiresToolCall(
+            "request_user_input".to_string()
+        )));
+        assert!(c.output_requirements.contains(&OutputRequirement::MinOptions(2)));
+        assert!(c.output_requirements.contains(&OutputRequirement::MaxOptions(4)));
+        assert!(c.output_requirements.contains(&OutputRequirement::NoOpenQuestion));
     }
 
     #[test]
