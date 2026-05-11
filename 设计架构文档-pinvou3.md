@@ -13,7 +13,7 @@
 
 | | pinvou2 | pinvou3 |
 |---|---|---|
-| **架构** | Python + Electron + Docker + vLLM + Claw-Code | Rust 单体 + ratatui TUI + Web |
+| **架构** | Python + Electron + Docker + vLLM + Claw-Code | Rust 单体 + Web UI（TUI 待重建） |
 | **运行时组件** | 6 层 | 1 层（单二进制） |
 | **分发** | .run + pip + npm + docker build | 单二进制，cargo build 即得 |
 | **隔离方式** | Docker 容器 | Skills / Sub-agent / MCP |
@@ -440,7 +440,67 @@ struct ContextEntry {
 - `/redo`：仅清当前 milestone 的 context
 - `/replan`：保留全部 context，让新计划的 `required_context` 自行决定
 
-### 3.8 交互模式：选择题优于问答题
+### 3.8 DeepSeekHarness 工具自动执行循环
+
+新设计的关键基础设施：`DeepSeekHarness::chat_stream` 在收到 `ToolRegistry`
+注入后会跑一个工具循环，让 LLM 的 tool call **真的被执行**而不是只是文本声明。
+
+```
+chat_stream(req)
+    │
+    ├─ msg_req = to_message_request(req)
+    │
+    └─ async_stream::stream! {
+         loop (最多 5 轮)
+         │
+         ├─ stream = client.create_message_stream(msg_req)
+         │  累积: assistant_text + completed_calls (ToolCallStart 透传)
+         │
+         ├─ 无 tool call          → yield Done, return
+         │
+         ├─ 有 tool call:
+         │  ├─ tool_name ∈ auto_tool_names ?
+         │  │   - 是：spec.execute(args, ctx) → yield ToolCallResult
+         │  │         追加到 msg_req: [assistant: ToolUse] + [user: ToolResult]
+         │  │   - 否：标 has_pass_through（如 request_user_input）
+         │  │
+         │  ├─ 有透传工具          → yield Done, return（上层处理用户交互）
+         │  └─ 全部 auto 执行完     → 继续 loop（让 LLM 基于工具结果生成）
+         │
+         └─ 超 5 轮               → yield Error
+       }
+```
+
+#### 工具分类
+
+- **自动执行**：harness 直接调 `ToolSpec::execute()`，结果写回对话历史触发下一轮 LLM。
+  当前包括 `web_search` / `fetch_url` / `read_file` / `write_file` / `edit_file` /
+  `list_dir` / `grep_files` / `file_search` / `exec_shell` + 变体
+- **透传给上层**：harness 只发 `ToolCallStart` 事件，由 web/TUI 处理用户交互。
+  当前唯一例子：`request_user_input`（前端渲染选择卡片）
+
+#### 工具交互文本化
+
+工具循环会在 `ToolCallStart` 前 yield 一段文本 delta：
+```
+🔧 [web_search] {"query":"广州黄埔区水生水库 开放时间"}
+```
+执行后 yield 结果摘要 delta（最多 1500 字符）：
+```
+📄 结果:
+- 水生水库位于广州黄埔区...
+```
+
+web 层捕获这些 delta 进 `engine.messages`，跨轮对话时 LLM 仍能看到工具交互
+上下文。结构化历史（直接重建 `ContentBlock::ToolUse`/`ToolResult`）作为后续优化。
+
+#### 关键约束
+
+- 工具循环只在注入 `ToolRegistry` 后启用（生产由 `engine_factory` 注入）
+- 未注入时走 passthrough 模式（旧的单次调用 + 透传 tool call）
+- `ToolRegistry` + `ToolContext` 来自 DeepSeek-TUI，通过 `with_tools()` 桥接
+
+### 3.9 交互模式：选择题优于问答题
 
 **核心原则：用户做决策，不做作文。**
 
@@ -546,28 +606,32 @@ emoji: 📝
 
 ### 4.4 System Prompt 组装
 
-执行某个 milestone 时，StepBuilder 组装的完整 system prompt：
+`StepBuilder::build_contract_prompt` 组装的完整 system prompt：
 
 ```
 ┌─────────────────────────────────────────┐
-│ [全局基础 prompt]                         │
-│   "你是 pinvou 助手，本地运行..."           │
-├─────────────────────────────────────────┤
-│ [agent prompt]    ← prompts/<id>.md     │
+│ [agent prompt]    ← prompts/<id>.md      │
 │   "你是文档生成助手..."                     │
 ├─────────────────────────────────────────┤
 │ [mode 阶段指令]    ← ContractRuntime 生成 │
-│   "当前阶段：生成草稿 (freeform)            │
-│    允许工具: [file_read]                   │
-│    输出要求: markdown                      │
-│    问题预算: 1"                            │
+│   "当前契约要求：                            │
+│    - 必须先给出 2-3 个可选方案...           │
+│    - 最多调用 request_user_input 1 次"     │
 ├─────────────────────────────────────────┤
-│ [已知 context]    ← ConversationState    │
-│   "用户已选结构：三段式..."                  │
+│ [已知 context]    ← ConversationState     │
+│   "已知信息：                               │
+│    - doc_type: 周报                        │
+│    - audience: 团队"                       │
 ├─────────────────────────────────────────┤
-│ [用户当轮消息]                              │
+│ [工具限制 / 可用工具]                       │
+│   "可用工具：request_user_input"            │
+├─────────────────────────────────────────┤
+│ [用户消息]                                  │
 └─────────────────────────────────────────┘
 ```
+
+Q&A 模式或无活跃 milestone 时跳过 ContractRuntime，直接走 `engine::build_request`：
+只注入 `agent_system_prompt`（来自 `prompts/<id>.md`）+ 用户消息 + 历史消息。
 
 ---
 
@@ -722,65 +786,71 @@ LLM 显示选项卡片:
 
 ## 七、模块清单
 
-### 7.1 当前已实现
-
-| 文件 | 职责 |
-|------|------|
-| `platform/harness.rs` | `AgentHarness` trait —— 底层可替换边界 |
-| `platform/app.rs` | `AppConfig` + `AppRegistry`（待退役，由 AgentRegistry 替代） |
-| `platform/workflow.rs` | `ConversationState` —— 对话状态机（待扩展回退） |
-| `platform/contract.rs` | `MilestoneContract` + mode 枚举 |
-| `platform/contract_runtime.rs` | `ContractRuntime` —— 按阶段契约决定本轮动作 |
-| `platform/contract_validator.rs` | `ContractValidator` —— 工具 / 输出硬边界检查 |
-| `platform/dynamic_planner.rs` | `DynamicPlanner` —— 首轮动态拆解（待重写为合并分类+拆解） |
-| `platform/step_builder.rs` | `StepBuilder` —— contract prompt 渲染 |
-| `platform/deepseek_harness.rs` | `DeepSeekHarness` —— 实现 `AgentHarness` |
-| `platform/router.rs` | `ModelRouter` —— 模型路由 + GB10 预置 |
-| `platform/engine.rs` | `PlatformEngine` —— 编排主入口 |
-| `pinvou-platform/src/web/mod.rs` | Web SSE 主路径 |
-| DeepSeek-TUI `tools/user_input.rs` | `request_user_input` tool spec（复用） |
-| DeepSeek-TUI `tui/user_input.rs` | 选择器模态框（复用） |
-
-### 7.2 待新增（P0）
+### 7.1 当前模块（全部已实现）
 
 | 模块 | 职责 |
 |------|------|
-| `AgentRegistry` | 扫描 `prompts/*.md`，解析 frontmatter，注册 agent |
-| `CombinedPlanner` | 替代 `DynamicPlanner`，一次 LLM 调用同时输出 agent + milestones |
-| `CommandRouter` | `startswith("/")` 路由到 RollbackManager（极简，~20 行） |
-| `RollbackManager` | 显式命令处理 + 状态机回退（`/back`、`/skip`、`/redo`、`/replan`、`/use`） |
-| `ContextEntry.produced_by` | context 归属追踪，支持精准清理 |
-| `GlobalMode` | 全局会话状态枚举（QnA / Planning / Executing / Replan / Done） |
-| `ContractValidator v2` | 结构性正则替换关键词校验；mode-工具兼容规则 |
-| Mode → 规则映射 | 代码内置（替代 app.toml 配置） |
+| `platform/harness.rs` | `AgentHarness` trait —— 唯一接口边界 |
+| `platform/deepseek_harness.rs` | `DeepSeekHarness` —— trait 实现 + **工具自动执行循环** |
+| `platform/engine_factory.rs` | 工厂函数：创建 harness、注入 ToolRegistry + ToolContext |
+| `platform/agent_registry.rs` | 扫 `prompts/*.md` 解析 frontmatter，注册 agent |
+| `platform/combined_planner.rs` | 单次 LLM 调用：分类 + milestone 拆解 + 工具选择 |
+| `platform/rollback.rs` | slash 命令解析（`/back` `/skip` `/redo` `/replan` `/use`） + 状态机回退 |
+| `platform/contract.rs` | `MilestoneContract` + `MilestoneMode` + `contract_for_mode` + 工具池 |
+| `platform/contract_runtime.rs` | `ContractRuntime::next_directive` —— 按 mode 决定本轮动作 |
+| `platform/contract_validator.rs` | 工具调用 / 输出结构硬边界检查 |
+| `platform/workflow.rs` | `ConversationState` / `GlobalMode` / `Milestone` / context 归属 / rewind |
+| `platform/step_builder.rs` | `build_contract_prompt` 渲染 system prompt |
+| `platform/engine.rs` | `PlatformEngine::ensure_combined_plan` + `apply_choice_result` 等 |
+| `platform/router.rs` | 模型路由（small / medium / large） |
+| `pinvou-platform/src/web/mod.rs` | Axum SSE 主路径 `/api/chat/stream` |
+| `pinvou-platform/src/web/index.html` | 前端（去 app 选择器，处理 milestone_progress 事件） |
+| `prompts/{qa,doc_generation,data_analysis,planning,generic}.md` | 5 个初始 agent |
+| `tests/full_flow.rs` | 11 个端到端集成测试 |
 
-### 7.3 待新增（P1）
+### 7.2 DeepSeek-TUI 复用（不修改、只引用）
 
-| 模块 | 职责 |
-|------|------|
-| `LLM-as-judge` | 语义性校验替代关键词启发式 |
+| DeepSeek-TUI 提供 | pinvou 使用方式 |
+|---|---|
+| `client::DeepSeekClient` | `DeepSeekHarness` 内部封装 |
+| `tools::ToolRegistry` / `ToolSpec` | `engine_factory` 用 `ToolRegistryBuilder` 批量挂工具 |
+| `tools::ToolContext` | `with_auto_approve` 构造，注入 harness |
+| `tools::web_search` / `fetch_url` / `file::*` / `search::*` / `shell::*` / `user_input` | 通过 ToolRegistry 调用，不重写 |
+| `models::ContentBlock` / `StreamEvent` 等 | 仅在 `deepseek_harness.rs` 桥接层用 |
+
+### 7.3 待新增（P1，按优先度）
+
+| 项 | 描述 |
+|---|---|
+| **真正的审批流** | 当前 YOLO 模式（auto_approve=true）；改为 `ApprovalRequirement::Required` 工具 → SSE 双向交互 |
+| **结构化历史** | 工具交互目前以 text 形式注入 `engine.messages`；改为 `HistoryMessage` 加 tool 字段，重建 `ContentBlock::ToolUse`/`ToolResult` |
+| **流式分类优化** | CombinedPlanner 流式 JSON 解析，`agent` 字段一出即路由（去掉 ~500ms 等待感） |
+| **真实 LLM 链路测试** | 当前集成测试用 MockHarness（绕过 DeepSeekHarness 工具循环）；补 LlmClient 级 mock 测 chat_stream 工具循环 |
+
+### 7.4 待新增（P2，远期）
+
+| 项 | 描述 |
+|---|---|
 | `CheckpointStore` | 对话断点持久化 |
-| 隐式回退信号检测 | "重做 / 不对 / 换一种" 等语义识别 |
-| 流式分类优化 | LLM 输出 JSON 时按 `agent` 字段流式路由 |
-
-### 7.4 待退役（legacy）
-
-| 模块 | 状态 |
-|------|------|
-| `platform/app.rs` (AppConfig / AppRegistry) | 由 AgentRegistry 替代，P0 退役 |
-| `apps/<App名>/app.toml` 目录 | 由 `prompts/<id>.md` 替代，P0 删除 |
-| `platform/response_checker.rs` | LLM 自评信号解析，Contract 系统已替代，P1 退役 |
-| `platform/reviewer.rs` | LLM 审阅拆解，新版动态拆解不需要语义审阅，P1 退役 |
-| `engine.decompose_and_execute` | 旧版拆解执行流程，Web 主路径不再调用，P1 删除 |
-| `WebTurnAction::LegacyFallback` | 动态计划失败已有 fallback 兜底，P1 删除 |
-| `DynamicPlanner` | 重写为 `CombinedPlanner`（合并分类+拆解） |
-
-### 7.5 待新增（P2）
-
-| 模块 | 职责 |
-|------|------|
 | `SubAgentRouter` | 并行子任务分发 |
-| 多层 agent 选择 | 当 agent 数量 >20 时，先选部门再选 agent |
+| LLM-as-judge | 语义性输出校验替代结构性正则 |
+| 多层 agent 选择 | agent 数量 > 20 时先选部门再选 agent |
+| 隐式回退检测 | LLM 识别「重做/不对」信号 → 弹回退选项卡片 |
+| TUI 重建 | 基于新架构重写 ratatui 前端（旧 `tui/` 已删除） |
+
+### 7.5 已删除的 legacy（历史记录）
+
+以下模块在 P1 清理中删除，新设计已完全替代：
+
+- `platform/app.rs`：`AppConfig` + `AppRegistry` → 被 `agent_registry` 替代
+- `platform/dynamic_planner.rs` → 被 `combined_planner` 替代
+- `platform/response_checker.rs`：`[OK]/[MORE]/[BLOCKED]` 信号路由 → 被 contract validator 替代
+- `platform/reviewer.rs`：LLM 拆解审阅 → 新设计结构性校验足够
+- `platform/tui/`：1400 行 ratatui 前端 → 不在新设计路径，P2 重建
+- `apps/*/app.toml`：3 个固定 App 配置 → 被 `prompts/*.md` 替代
+- `engine.rs` 中 `load_app` / `ensure_plan_initialized` / `decompose_and_execute` /
+  `step_execute` / `current_app` / `app_system_prompt`
+- `WebTurnAction::LegacyFallback` → 改为 `FreeFlow`（Q&A 模式或无 milestone 时直进 LLM 流）
 
 ---
 
@@ -826,6 +896,11 @@ pub trait AgentHarness: Send + Sync {
 | 18 | **Mode → 规则映射代码硬编码** | 这些是契约安全底线，开放配置等于让 LLM 给自己放权 |
 | 19 | **Agent = 一个 markdown 文件** | 新场景零代码；frontmatter 参考 agency-agents-zh，正文为 pinvou3 适配本地小模型重写 |
 | 20 | **工具池全局共享，LLM 按 milestone 挑** | App 概念解耦；危险等级由代码控制 |
+| 21 | **DeepSeekHarness 内嵌工具自动执行循环** | pinvou 用 LlmClient 直连，不依赖 DeepSeek-TUI 完整 engine 的循环；用 async-stream 实现轻量 5 轮上限的内部循环 |
+| 22 | **YOLO 模式作为 MVP 默认** | 本地单用户 + workspace 边界够安全；真正的审批流（双向 SSE）放 P1 |
+| 23 | **前端不发 app_id**：用户直接输入需求，AI 自动选 agent | App 选择是无谓仪式；侧边栏快捷按钮发 `/use <id>` 显式切换 |
+| 24 | **工具交互以 text delta 注入 messages**（MVP） | 跨轮历史可见，足够本地小模型理解；结构化 ContentBlock 注入是 P1 |
+| 25 | **集成测试用 MockHarness 跳过 LlmClient** | 验证 PlatformEngine + Contract + Rollback 这一层；真实 LlmClient mock 测 chat_stream 工具循环放 P1 |
 
 ---
 
