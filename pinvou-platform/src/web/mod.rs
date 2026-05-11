@@ -671,6 +671,24 @@ where
                 });
             }
 
+            // [INSTRUMENTATION] 打印实际发给 LLM 的 system_prompt 前 500 字 +
+            // context 全量，便于验证 review_feedback / 其他 context 是否真的注入
+            {
+                let sp = chat_req
+                    .platform_system_prompt
+                    .as_deref()
+                    .unwrap_or("");
+                let sp_preview: String = sp.chars().take(500).collect();
+                eprintln!(
+                    "[chat_req:trace] active_ms={:?} system_prompt_len={} user_message={:?}",
+                    active_milestone.as_ref().map(|m| (m.id.clone(), m.contract.mode.clone())),
+                    sp.chars().count(),
+                    chat_req.user_message,
+                );
+                eprintln!("[chat_req:trace] system_prompt_head: {sp_preview}");
+                eprintln!("[chat_req:trace] context: {:?}", chat_req.context);
+            }
+
             let mut event_stream = match AgentHarness::chat_stream(&engine.harness, chat_req).await
             {
                 Ok(s) => s,

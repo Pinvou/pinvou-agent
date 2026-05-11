@@ -357,6 +357,11 @@ impl<C: LlmClient + Clone + 'static> AgentHarness for DeepSeekHarness<C> {
         let s = stream! {
             let mut msg_req = initial_msg_req;
             let mut iteration: usize = 0;
+            // [INSTRUMENTATION] tool loop 起始时间，所有日志相对此打点
+            let t0 = std::time::Instant::now();
+            eprintln!("[harness:trace] tool loop start; messages={} tools={}",
+                msg_req.messages.len(),
+                msg_req.tools.as_ref().map(|t| t.len()).unwrap_or(0));
 
             'outer: loop {
                 iteration += 1;
@@ -413,6 +418,10 @@ impl<C: LlmClient + Clone + 'static> AgentHarness for DeepSeekHarness<C> {
                     return;
                 }
 
+                // [INSTRUMENTATION] LLM call 起始时间
+                let t_llm_call = std::time::Instant::now();
+                eprintln!("[harness:trace] +{}ms iter={} LLM call start",
+                    t0.elapsed().as_millis(), iteration);
                 let mut llm_stream: StreamEventBox =
                     match client.create_message_stream(msg_req.clone()).await {
                         Ok(s) => s,
@@ -426,6 +435,11 @@ impl<C: LlmClient + Clone + 'static> AgentHarness for DeepSeekHarness<C> {
                 let mut tool_buffers: std::collections::HashMap<u32, (String, String, String)> =
                     std::collections::HashMap::new();
                 let mut completed_calls: Vec<(String, String, serde_json::Value)> = Vec::new();
+                // [INSTRUMENTATION] 本轮 LLM 内的统计
+                let mut text_delta_count: usize = 0;
+                let mut text_delta_chars: usize = 0;
+                let mut last_yield_at = t_llm_call;
+                let mut max_inter_delta_ms: u128 = 0;
 
                 while let Some(result) = llm_stream.next().await {
                     match result {
@@ -439,6 +453,13 @@ impl<C: LlmClient + Clone + 'static> AgentHarness for DeepSeekHarness<C> {
                         }
                         Ok(DtStreamEvent::ContentBlockDelta { index, delta }) => match delta {
                             Delta::TextDelta { text } => {
+                                // [INSTRUMENTATION] 记录 inter-delta 间隔
+                                let now = std::time::Instant::now();
+                                let inter_ms = now.duration_since(last_yield_at).as_millis();
+                                if inter_ms > max_inter_delta_ms { max_inter_delta_ms = inter_ms; }
+                                last_yield_at = now;
+                                text_delta_count += 1;
+                                text_delta_chars += text.chars().count();
                                 assistant_text.push_str(&text);
                                 yield Ok(StreamEvent::TextDelta { content: text });
                             }
@@ -451,46 +472,25 @@ impl<C: LlmClient + Clone + 'static> AgentHarness for DeepSeekHarness<C> {
                         },
                         Ok(DtStreamEvent::ContentBlockStop { index }) => {
                             if let Some((call_id, tool_name, buf)) = tool_buffers.remove(&index) {
-                                // Problem 2：LLM 偶发流式输出 ToolUse 但 input 字段为空
-                                // （input_json_delta 完全没发或全丢）。此时 buf 为空 / 不可解析。
-                                // 之前 fallback 到 Value::Null 后会让工具自报"missing required
-                                // field" 错误并 retry，但用户会先看到 "🔧 [write_file] null"
-                                // 这种无意义的中间状态。
-                                //
-                                // 改为：检测到 args 不合法时，不发 ToolCallStart 给上层，
-                                // 改成往 tool loop messages 注入一条 ToolUse + 错误 ToolResult，
-                                // 显式告诉 LLM "你的 input 是空的，请重试"。LLM 下一轮会重新调。
-                                let parsed = if buf.is_empty() {
-                                    None
+                                let args = if buf.is_empty() {
+                                    serde_json::Value::Null
                                 } else {
-                                    serde_json::from_str::<serde_json::Value>(&buf).ok()
-                                };
-                                let args = match parsed {
-                                    Some(v) if !matches!(v, serde_json::Value::Null) => v,
-                                    _ => {
-                                        // 不合法的 args：友好提示 + 自动重试，不污染前端选择卡 / 工具调用
-                                        if tool_name != "request_user_input" {
-                                            let banner = format!(
-                                                "\n\n⚠️ 模型对 `{tool_name}` 的调用参数为空（流式输出 bug），正在让模型重试……\n"
-                                            );
-                                            assistant_text.push_str(&banner);
-                                            yield Ok(StreamEvent::TextDelta { content: banner });
-                                        }
-                                        // 把这次"失败的调用"以错误 ToolResult 形式塞进 messages
-                                        // 让 LLM 下一轮能感知到失败并重新生成正确的 args
-                                        completed_calls.push((
-                                            call_id,
-                                            tool_name,
-                                            serde_json::Value::Null,
-                                        ));
-                                        continue;
-                                    }
+                                    serde_json::from_str(&buf).unwrap_or(serde_json::Value::Null)
                                 };
                                 // 把工具调用以文本形式 yield，方便 web 层把它纳入
                                 // engine.messages（用于跨轮历史），同时也让用户看到。
                                 // request_user_input 不暴露（前端会有专用 choice card UI）
+                                //
+                                // 注意：即使 args=Null（LLM 偶发流式输出 bug）也仍然 yield
+                                // ToolCallStart。这样 request_user_input 走前端选择卡路径
+                                // 能正常触发；auto_execute 工具走 spec.execute(Null) 自报错
+                                // → 错误回流 messages 让 LLM 重试。banner 文案区分提示用户。
                                 if tool_name != "request_user_input" {
-                                    let args_short = render_args_compact(&args);
+                                    let args_short = if matches!(args, serde_json::Value::Null) {
+                                        "(参数缺失，模型流式输出 bug；下游会触发重试)".to_string()
+                                    } else {
+                                        render_args_compact(&args)
+                                    };
                                     let banner =
                                         format!("\n\n🔧 [{tool_name}] {args_short}\n");
                                     assistant_text.push_str(&banner);
@@ -513,8 +513,27 @@ impl<C: LlmClient + Clone + 'static> AgentHarness for DeepSeekHarness<C> {
                     }
                 }
 
+                // [INSTRUMENTATION] LLM call 结束统计：耗时 / 输出速率 / 间隔
+                let llm_elapsed_ms = t_llm_call.elapsed().as_millis();
+                let tokens_per_sec = if llm_elapsed_ms > 0 {
+                    (text_delta_chars as f64 * 1000.0 / llm_elapsed_ms as f64) as u64
+                } else { 0 };
+                eprintln!(
+                    "[harness:trace] +{}ms iter={} LLM call end; took={}ms delta_count={} delta_chars={} chars/s={} max_gap={}ms tool_calls={}",
+                    t0.elapsed().as_millis(),
+                    iteration,
+                    llm_elapsed_ms,
+                    text_delta_count,
+                    text_delta_chars,
+                    tokens_per_sec,
+                    max_inter_delta_ms,
+                    completed_calls.len(),
+                );
+
                 // 没有工具调用 → 终止（LLM 已生成完整回答）
                 if completed_calls.is_empty() {
+                    eprintln!("[harness:trace] +{}ms iter={} no tools → Done",
+                        t0.elapsed().as_millis(), iteration);
                     yield Ok(StreamEvent::Done);
                     return;
                 }
@@ -525,8 +544,27 @@ impl<C: LlmClient + Clone + 'static> AgentHarness for DeepSeekHarness<C> {
                 for (call_id, tool_name, args) in &completed_calls {
                     if auto_names.contains(tool_name) {
                         if let Some(spec) = registry.get(tool_name) {
-                            match spec.execute(args.clone(), &context).await {
+                            // [INSTRUMENTATION] tool execute 计时
+                            let t_tool = std::time::Instant::now();
+                            let tool_result = spec.execute(args.clone(), &context).await;
+                            let tool_ms = t_tool.elapsed().as_millis();
+                            match tool_result {
                                 Ok(result) => {
+                                    // [INSTRUMENTATION] result.content 预览
+                                    let head: String = result.content.chars().take(120).collect();
+                                    let tail: String = if result.content.chars().count() > 200 {
+                                        let total = result.content.chars().count();
+                                        result.content.chars().skip(total - 50).collect()
+                                    } else { String::new() };
+                                    eprintln!(
+                                        "[harness:trace] +{}ms tool {} OK in {}ms; result_len={} head={:?} tail={:?}",
+                                        t0.elapsed().as_millis(),
+                                        tool_name,
+                                        tool_ms,
+                                        result.content.chars().count(),
+                                        head,
+                                        tail,
+                                    );
                                     // 把工具结果以摘要文本 yield 进 stream，
                                     // 这样 web 层把它纳入 engine.messages，
                                     // 跨轮对话时 LLM 仍能看到工具交互上下文。
@@ -547,6 +585,13 @@ impl<C: LlmClient + Clone + 'static> AgentHarness for DeepSeekHarness<C> {
                                     ));
                                 }
                                 Err(e) => {
+                                    eprintln!(
+                                        "[harness:trace] +{}ms tool {} ERR in {}ms; err={:?}",
+                                        t0.elapsed().as_millis(),
+                                        tool_name,
+                                        tool_ms,
+                                        e.to_string(),
+                                    );
                                     let msg = format!("ERROR: {e}");
                                     let banner = format!("\n⚠️ {msg}\n\n");
                                     yield Ok(StreamEvent::TextDelta { content: banner });

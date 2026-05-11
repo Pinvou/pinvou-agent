@@ -302,13 +302,31 @@ const state = {
 // innerHTML 替换 + scroll reflow，O(N²) 复杂度让前端跟不上 LLM 输出速度。
 function createStreamRenderer(streamDiv, getFullText) {
   let pending = null;
+  // [INSTRUMENTATION] 计时器：记录第一次 schedule、渲染次数、累积 parse 耗时
+  let firstScheduleAt = null;
+  let scheduleCount = 0;
+  let renderCount = 0;
+  let totalParseMs = 0;
+  let totalChars = 0;
   const doRender = () => {
+    const t0 = performance.now();
     streamDiv.querySelector('.msg-bubble').innerHTML = marked.parse(getFullText());
     chatMessages.scrollTop = chatMessages.scrollHeight;
+    const parseMs = performance.now() - t0;
     pending = null;
+    renderCount++;
+    totalParseMs += parseMs;
+    totalChars = getFullText().length;
+    // 每 10 帧 + flush 时打印一条
+    if (renderCount % 10 === 0) {
+      console.log(`[render:trace] frame#${renderCount} schedules=${scheduleCount} text=${totalChars}c parse=${parseMs.toFixed(1)}ms`);
+    }
   };
   return {
     schedule() {
+      // [INSTRUMENTATION]
+      if (!firstScheduleAt) firstScheduleAt = performance.now();
+      scheduleCount++;
       // 已经排了一帧，丢弃本次（合并多个 delta 到下一帧）
       if (pending != null) return;
       pending = requestAnimationFrame(doRender);
@@ -317,6 +335,10 @@ function createStreamRenderer(streamDiv, getFullText) {
       // 流结束 / choice 切换前立即同步渲染最新文本
       if (pending != null) { cancelAnimationFrame(pending); pending = null; }
       doRender();
+      // [INSTRUMENTATION] 汇总
+      const totalMs = firstScheduleAt ? (performance.now() - firstScheduleAt) : 0;
+      const mergeRatio = scheduleCount > 0 ? (scheduleCount / renderCount).toFixed(1) : '0';
+      console.log(`[render:trace] FLUSH total_wall=${totalMs.toFixed(0)}ms schedules=${scheduleCount} renders=${renderCount} merge_ratio=${mergeRatio}x text=${totalChars}c total_parse=${totalParseMs.toFixed(1)}ms`);
     },
   };
 }

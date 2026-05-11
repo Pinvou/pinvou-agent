@@ -89,16 +89,17 @@ impl ContractRuntime {
                         );
                     }
                 } else {
+                    // 工具调用的 path 字段必填：实测中 LLM 偶发漏 `path`
+                    // 导致 write_file 失败 → 重试翻倍。强引导一个具体 path。
+                    let tools_list = contract.allowed_tools.join(", ");
                     if is_revision {
                         requirements.push(format!(
-                            "这是基于用户反馈的**修订版**（反馈：「{}」）。\n\n步骤：① 先以 markdown 形式流式输出修订后的完整文档（用户能实时看到产出）——只在反馈涉及的部分做改动，其他内容**原样保留**，不要从头重写。② 输出结束后调用 `{}` 工具把内容写入文件覆盖保存（path 与上一版相同）。不要在工具调用前后重复输出内容。",
-                            review_feedback.unwrap_or_default(),
-                            contract.allowed_tools.join(", ")
+                            "这是基于用户反馈的**修订版**（反馈：「{}」）。\n\n步骤：① 先以 markdown 形式流式输出修订后的完整文档（用户能实时看到产出）——只在反馈涉及的部分做改动，其他内容**原样保留**，不要从头重写。② 输出结束后调用 `{tools_list}` 工具把内容写入文件覆盖保存：**必须带 `path` 字段**（用与上一版相同的文件名，如 `plan.md`）和 `content` 字段。不要在工具调用前后重复输出内容。",
+                            review_feedback.unwrap_or_default()
                         ));
                     } else {
                         requirements.push(format!(
-                            "步骤：① 先以 markdown 形式流式输出最终文档（用户能实时看到产出，不要塞进工具参数）。② 输出结束后调用 `{}` 工具把同样的内容写入文件保存。不要在工具调用前后重复输出内容；不要再提问。",
-                            contract.allowed_tools.join(", ")
+                            "步骤：① 先以 markdown 形式流式输出最终文档（用户能实时看到产出，不要塞进工具参数）。② 输出结束后调用 `{tools_list}` 工具保存：**必须包含 `path` 字段**（推荐用任务主题命名，例如 `plan.md` / `report.md` / `output.md`）和 `content` 字段（完整 markdown 内容）。\n\n**反例**：`{{\"content\": \"...\"}}` ← 缺 path，会失败。\n**正例**：`{{\"path\": \"plan.md\", \"content\": \"# ...\"}}`。\n\n不要在工具调用前后重复输出内容；不要再提问。"
                         ));
                     }
                 }
