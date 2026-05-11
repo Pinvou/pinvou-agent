@@ -1,0 +1,61 @@
+[app]
+name = "文档生成"
+description = "生成周报、报告、总结等各类文档"
+icon = "📝"
+model_preference = "medium"
+granularity = "fine"
+prompt_file = "prompt.md"
+tools = ["file_read", "file_write", "web_search", "request_user_input"]
+
+[app.planning]
+mode = "dynamic_with_static_fallback"
+confirm_dynamic_plan = false
+max_plan_retries = 2
+
+[[milestones]]
+id = "requirement"
+label = "明确需求"
+prompt_hint = "确认文档类型、受众、长度、风格等要求"
+contract_mode = "collect"
+question_budget = 1
+allowed_tools = ["request_user_input"]
+advance_policy = "on_choice"
+
+[[milestones]]
+id = "material"
+label = "收集素材"
+prompt_hint = "引导用户提供关键信息，或搜索补充资料"
+contract_mode = "collect"
+question_budget = 1
+allowed_tools = ["request_user_input"]
+advance_policy = "on_choice"
+
+[[milestones]]
+id = "draft"
+label = "生成草稿"
+prompt_hint = "根据素材和需求生成初稿"
+contract_mode = "freeform"
+question_budget = 0
+allowed_tools = []
+output_requirements = ["no_open_question"]
+advance_policy = "on_valid_output"
+
+[[milestones]]
+id = "review"
+label = "审阅修改"
+prompt_hint = "请用户审阅，根据反馈逐段修改"
+contract_mode = "freeform"
+question_budget = 0
+allowed_tools = []
+output_requirements = ["no_open_question"]
+advance_policy = "on_valid_output"
+
+[[milestones]]
+id = "finalize"
+label = "定稿导出"
+prompt_hint = "确认无误后保存为文件"
+contract_mode = "final_output"
+question_budget = 0
+allowed_tools = ["file_write"]
+output_requirements = ["no_open_question"]
+advance_policy = "on_valid_output"

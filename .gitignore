@@ -1,0 +1,23 @@
+# Rust
+pinvou-platform/target/
+DeepSeek-TUI/target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+*.pem
+
+# Playwright
+.playwright-mcp/
+
+# DeepSeek-TUI is a separate repo
+DeepSeek-TUI/

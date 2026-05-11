@@ -1,0 +1,67 @@
+[app]
+name = "计划敲定"
+description = "辅助制定方案、对比选项、输出执行计划"
+icon = "🎯"
+model_preference = "large"
+granularity = "fine"
+prompt_file = "prompt.md"
+tools = ["web_search", "file_write", "shell", "request_user_input"]
+
+[app.planning]
+mode = "dynamic_with_static_fallback"
+confirm_dynamic_plan = false
+max_plan_retries = 2
+
+[[milestones]]
+id = "goal"
+label = "明确目标"
+prompt_hint = "确认目标、兴趣、时长、强度"
+contract_mode = "collect"
+question_budget = 1
+produced_context = ["goal", "interest", "duration", "intensity"]
+allowed_tools = ["request_user_input"]
+advance_policy = "on_choice"
+
+[[milestones]]
+id = "constraints"
+label = "梳理约束"
+prompt_hint = "确认预算、交通、人数、时间段"
+contract_mode = "collect"
+question_budget = 1
+required_context = ["goal", "duration"]
+produced_context = ["budget", "transport", "party_size", "time_window"]
+allowed_tools = ["request_user_input"]
+advance_policy = "on_choice"
+
+[[milestones]]
+id = "options"
+label = "方案对比"
+prompt_hint = "给出 2-3 个可选方案，列出成本、时间、风险、收益，并让用户选择一个"
+contract_mode = "produce_options"
+question_budget = 1
+required_context = ["goal", "duration", "budget", "transport"]
+produced_context = ["selected_option"]
+allowed_tools = ["request_user_input"]
+output_requirements = ["min_options:2", "max_options:3", "must_contain_table", "no_open_question"]
+advance_policy = "on_choice"
+
+[[milestones]]
+id = "detail"
+label = "细化方案"
+prompt_hint = "基于已选方案生成时间表、资源分配和风险预案"
+contract_mode = "refine_selected_option"
+question_budget = 0
+required_context = ["selected_option"]
+allowed_tools = []
+output_requirements = ["must_contain_schedule", "must_contain_risk_section", "no_open_question"]
+advance_policy = "on_valid_output"
+
+[[milestones]]
+id = "output"
+label = "输出计划书"
+prompt_hint = "输出最终 markdown 计划书"
+contract_mode = "final_output"
+question_budget = 0
+allowed_tools = []
+output_requirements = ["no_tool_call"]
+advance_policy = "on_valid_output"
