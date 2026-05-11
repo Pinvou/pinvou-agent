@@ -4,94 +4,135 @@
 
 ---
 
-## 一、当前状态
+## 一、当前状态（一句话）
 
-### 已完成的
-
-| 模块 | 说明 |
-|------|------|
-| AppConfig + AppRegistry | TOML 加载正常，含 granularity/confirm_at/ban_list 字段 |
-| ConversationState | 里程碑 Pending→Active→Done 生命周期正常 |
-| StepBuilder | 旧版 step prompt + contract prompt 渲染，含 request_user_input 引导 |
-| ResponseChecker | [OK]/[MORE]/[BLOCKED] 信号解析 + NextAction 路由 |
-| DeepSeekHarness | 非流式 chat() + SSE 流式 chat_stream() |
-| Web SSE 流式 | 逐 token 渲染 + Markdown + choice_request 检测 |
-| Web 侧边栏 | 里程碑渲染，从服务端 /api/milestones 加载（不再硬编码） |
-| Web Choice Card | 前端 choice card 组件 + `/api/chat/stream` tool_result 回传 |
-| Choice Result 状态事件 | tool_result 会写入 ConversationState.context，并完成当前里程碑 |
-| fine 模式继续语义 | choice 后“继续”用于启动下一阶段；阶段完成后的“继续”用于推进下一里程碑 |
-| 3 个 app.toml | 均含 planning 配置、milestone contracts、request_user_input 工具 + granularity 配置 |
-| granularity 控制 | fine/medium/coarse 三种自动推进策略已实现 |
-| engine.decompose_and_execute() | 拆解→审阅→转换 流程已实现，作为较早 helper 保留；Web 主路径不再依赖该方法 |
-| Milestone Contract Runtime | app.toml 提供阶段 contract，动态拆解只能特化模板标题/提示/context，运行时按 contract 决策 |
-| DynamicPlanner Web 接入 | Web 第一条用户消息优先生成动态计划，失败回退静态 contracts |
-| ContractValidator | 工具调用和输出按阶段契约做硬边界检查 |
-
-### 后续优化
-
-| 项 | 说明 |
-|----|------|
-| ban_list 迁移到 app.toml | AppConfig 已有 ban_list 字段，StepBuilder 会合并使用，但当前 TOML 中未配置自定义 ban 规则 |
-| 消息历史去重 | 已核实 — build_request/stream_chat 无 N+1 重复，previous_messages 与 user_message 正确分离 |
+新设计主路径接通：`prompts/*.md` 注册 agent → LLM 单次调用拆解 + 选工具 → harness 自动执行工具循环（web_search 等真能跑）→ Contract 校验硬边界 → slash 命令回退状态机。`cargo test --lib` = **173 passed**。
 
 ---
 
-## 二、本轮契约运行时改动清单
+## 二、已落地
 
-### 代码
-
-| 文件 | 改动 |
-|------|------|
-| `contract.rs` | 新增 `MilestoneContract`、planning 配置、阶段模式、推进策略和 output requirements |
-| `contract_runtime.rs` | 新增按 contract 输出 `TurnDirective` 的运行时；问题预算、阶段动作、最终输出工具边界都由契约决定 |
-| `contract_validator.rs` | 新增工具调用和阶段输出机械校验，拦截越界工具、无效选择题、开放问题等 |
-| `dynamic_planner.rs` | 新增首轮动态拆解解析与静态模板回退 |
-| `step_builder.rs` | 新增 contract prompt 渲染，保留旧 step prompt 兼容路径 |
-| `engine.rs` | 初始化动态/静态计划，生成下一轮 contract prompt，并在缺失状态时补建 `ConversationState` |
-| `web/mod.rs` | Web SSE 主路径接入 dynamic planner、contract runtime、contract validator；阻断非法工具调用和超预算问题 |
-| `apps/*/app.toml` (3) | 新增 planning 配置和里程碑 contracts，覆盖计划敲定、文档生成、数据分析 |
-
-### 文档
-
-| 文件 | 改动 |
-|------|------|
-| `设计架构文档-pinvou3.md` | 增补 Milestone Contract Runtime 说明，并把模块清单更新为当前事实 |
-| `process.md` | 更新当前状态、Web 主路径和契约运行时改动清单 |
+| 模块 | 行数 | 状态 |
+|---|---|---|
+| `agent_registry` | ~280 | ✅ |
+| `combined_planner`（单次调用分类 + 拆解） | ~400 | ✅ |
+| `rollback`（/back, /skip, /redo, /replan, /use） | ~270 | ✅ |
+| `contract` + `runtime` + `validator`（硬边界） | ~750 | ✅ |
+| `workflow`（GlobalMode, ContextEntry 归属, rewind） | ~480 | ✅ |
+| `engine.ensure_combined_plan` + `agent_system_prompt` | — | ✅ |
+| `web/mod.rs` 主路径（agent path + slash + auto-continue） | — | ✅ |
+| `DeepSeekHarness` 工具循环（async-stream） | — | ✅ |
+| 11 个工具接入（web_search/fetch_url/read_file/write_file/edit_file/list_dir/grep_files/file_search/exec_shell + 变体） | — | ✅ |
+| 工具交互文本化进 engine.messages（跨轮历史） | — | ✅ |
+| 5 个初始 agent（qa / doc_generation / data_analysis / planning / generic） | — | ✅ |
+| 设计文档全量重写 | — | ✅ |
 
 ---
 
-## 三、本轮设计评审收敛
+## 三、下一步 P1（按优先度排）
 
-### P0：主编排协议先收敛
+### 1. Legacy 清理（无功能影响，纯减债）
 
-`设计架构文档-pinvou3.md` 已把主编排从“自然语言步骤 + LLM 自评推进”收敛为 `MilestoneContract + ContractRuntime + ContractValidator`：
+- 删除 `apps/` 目录（旧 App 配置）
+- 删除 `pinvou-platform/src/app.rs`（AppConfig / AppRegistry）
+- 删除 `pinvou-platform/src/dynamic_planner.rs`
+- `engine.rs` 删除 `ensure_plan_initialized` / `decompose_and_execute` / `current_app` 字段
+- `engine_factory.rs` 不再创建 AppRegistry
+- `main.rs` 删除 `--apps-dir` 参数
 
-- `MilestoneContract` 当前字段为 `mode`、`question_budget`、`required_context`、`produced_context`、`allowed_tools`、`forbidden_tools`、`output_requirements`、`advance_policy`。
-- 静态 `app.toml` 是 contract 来源；动态拆解必须完整复用静态模板 id 和 mode，只能特化 `label`、`prompt_hint`、`required_context`、`produced_context`。
-- `ContractRuntime` 负责本轮动作和问题预算，`ContractValidator` 负责工具边界、选择题形状和输出形态。
-- Web 主路径只注册 `/api/chat/stream`；旧的非流式 `/api/chat` 不注册，避免绕过 runtime / validator。
+风险：低。新路径已不依赖。删完 cargo check 跑通即可。
 
-### P1：后续串行恢复能力
+### 2. 从 web 主路径移除 `ResponseChecker` / `LLMReviewer` 调用
 
-以下能力是后续增强，不属于本轮已落地范围：
+- `web/mod.rs:514` 还在 LLM 响应后跑 `ResponseChecker::check`
+- Contract Validator 已覆盖其推进逻辑；`[OK]/[MORE]/[BLOCKED]` 信号路由可退役
+- 移除后删除 `response_checker.rs` + `reviewer.rs`
 
-- 计划确认页允许用户编辑 contract，但只修改当前会话计划，不回写全局 app 配置。
-- 当前步骤遇到连续阻塞或用户反馈太粗时，只细分当前 contract，并经用户确认后 splice 回计划。
-- 跳过、回退、断连恢复都必须通过显式状态迁移和 checkpoint 记录。
-- checkpoint 至少保存 active contract、contract 状态、context、最近输入输出和工具结果摘要。
+风险：中。需要验证 ContractValidator 的 advance 判断完备（OnChoice/OnValidOutput/ManualContinue 三种 policy 都试过）。
 
-### P2：暂缓项
+### 3. Frontend 改造
 
-`SubAgentRouter` 暂不进入 P0/P1。串行 contract 编排稳定前，不做并行子任务分发。
+- HTML/JS 不再发 `app_id`（新路径已经忽略，但发了浪费且误导）
+- 处理 `sse_milestone_progress` 事件（不带 `done` 标志）：状态更新但保持 EventSource 连接，等下一段 LLM stream
+- 移除"等待用户输入'继续'"的 UI 提示
 
-进入 P2 的条件：
+风险：低。当前 frontend `if (p.done) continue;` 已经能跳过中间 done 事件，但 UI 文案需更新。
 
-- P0/P1 的状态机和 checkpoint 恢复路径稳定。
-- 单任务 contract 的工具边界、输出验收和阻塞恢复已经可预测。
-- UI 能清楚展示多个子任务的状态、错误和合并结果。
+### 4. 真实 LLM 集成测试
 
-P2 初步范围：
+- `tests/` 目录加端到端测试：
+  - MockLlmClient 按预设序列返回 JSON（模拟拆解结果）
+  - 走完整 `chat_stream` 路径，断言 SSE 事件序列
+  - 验证 tool loop 多轮调用 + 透传工具行为
+- 当前 173 个 unit test 都是模块级，缺整链路 mock 测试
 
-- 只允许拆分互不依赖的只读分析、资料整理、对比评审类任务。
-- 每个 sub-agent 必须拿到独立 `MilestoneContract`，不能共享可写文件范围。
-- 父编排只负责分发、等待、汇总和冲突处理，不把子 agent 的自评直接当作完成依据。
+风险：低。补丁式增加。
+
+### 5. 真正的审批流（替代 YOLO）
+
+当前 `ToolContext.auto_approve = true`，写盘 / shell 命令直接跑。MVP 可接受（本地单用户、workspace 边界），但用户哪天 LLM 跑飞了会想要审批。
+
+实现：
+- `ApprovalRequirement::Required` 工具调用 → harness 发 `ToolApprovalRequest` SSE 事件 → 前端弹审批 UI → 用户响应通过新 `tool_result` 回到 stream → harness 继续 / 取消
+- 需要 SSE 双向交互模式（类似现有 `request_user_input` 但更通用）
+
+风险：中。架构改动较大（harness 工具循环要支持挂起 + 恢复）。
+
+### 6. 结构化历史
+
+当前 tool 交互以文本形式（`🔧 [tool] args` / `📄 结果`）写进 `engine.messages`，跨轮 LLM 看的是 text。够用但不严谨。
+
+正解：
+- `HistoryMessage` 加 `tool_calls: Vec<ToolCallBlock>` + `tool_result_for: Option<String>` 字段
+- `deepseek_harness::to_message_request` 根据这些字段重建 `ContentBlock::ToolUse` / `ContentBlock::ToolResult`
+- Harness 工具循环结束时通过 `StreamEvent::HistorySnapshot { messages }` 把完整历史回给 web 层
+
+风险：中。HistoryMessage 跨模块边界。
+
+### 7. 流式分类优化
+
+CombinedPlanner 当前等完整 JSON（~500ms on Qwen 7B）才路由。优化：
+
+- 解析 JSON 时按字段顺序流式出
+- `agent` 字段一旦解析出（前 ~20-50ms）即可决定路径
+- `agent="qa"` 立刻中止后续 JSON，转去做真正的 QnA 流式回答
+
+风险：低-中。需要流式 JSON 解析。
+
+---
+
+## 四、P2（远期）
+
+| 项 | 描述 |
+|---|---|
+| `CheckpointStore` | 对话断点持久化，浏览器刷新后恢复 |
+| `SubAgentRouter` | 并行子任务分发 |
+| LLM-as-judge | 替代当前结构性正则的语义校验（生成文档是否合理等） |
+| 多层 agent 选择 | agent 数量 > 20 时，先选部门再选 agent |
+| 隐式回退检测 | LLM 检测「重做/不对」信号 → 弹回退选项卡片 |
+
+---
+
+## 五、已知不完整 / 取舍点
+
+- **YOLO 工具执行**：写盘/shell 不弹审批，靠 workspace 边界。见 P1.5。
+- **跨轮 tool 历史用 text 而非结构化**：见 P1.6。
+- **CombinedPlanner 第一次调用 500ms 延迟**：见 P1.7。
+- **`apps/` 目录还在**：legacy fallback 用，等清理后删除。见 P1.1。
+- **ResponseChecker 还在主路径**：双重判断推进，目前不冲突但冗余。见 P1.2。
+
+---
+
+## 六、检查点
+
+```
+cargo test --lib                            173 passed
+cargo build                                 clean (1 deprecation warning, 已 allow)
+cargo run --example agent_smoke             5 agents loaded
+```
+
+跑起来的命令：
+```bash
+DEEPSEEK_API_KEY=... cargo run --bin pinvou-platform
+# 访问 http://127.0.0.1:9876
+```
