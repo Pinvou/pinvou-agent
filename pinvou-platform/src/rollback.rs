@@ -167,7 +167,7 @@ fn execute_use(state: &mut ConversationState, target: &str) -> RollbackOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::Milestone;
+    use crate::workflow::Milestone;
 
     fn sample_milestones() -> Vec<Milestone> {
         vec![

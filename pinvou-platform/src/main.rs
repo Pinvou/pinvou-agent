@@ -1,15 +1,14 @@
 //! pinvou3 — 本地 AI 平台。
 //!
-//! 默认启动 Web UI，--tui 切回终端模式。
+//! 默认启动 Web UI；`--coding` 旁路进入 DeepSeek-TUI 编码模式。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use pinvou_platform::app::AppRegistry;
-use pinvou_platform::engine_factory::create_engine;
+use pinvou_platform::engine_factory::{create_engine, load_agents};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -18,19 +17,11 @@ use pinvou_platform::engine_factory::create_engine;
     about = "pinvou3 — 本地 AI 平台"
 )]
 struct Cli {
-    /// 应用配置目录（legacy，由 prompts_dir 替代中）
-    #[arg(long, default_value = "./apps")]
-    apps_dir: PathBuf,
-
-    /// Agent prompt 目录（新设计：每个 agent = 一个 markdown 文件）
+    /// Agent prompt 目录（每个 agent = 一个 markdown 文件）
     #[arg(long, default_value = "./prompts")]
     prompts_dir: PathBuf,
 
-    /// 使用 TUI 模式（默认 Web UI）
-    #[arg(long)]
-    tui: bool,
-
-    /// 以 coding 模式直接启动
+    /// 以 coding 模式直接启动（旁路 DeepSeek-TUI 编码界面）
     #[arg(long)]
     coding: bool,
 
@@ -47,32 +38,19 @@ async fn main() -> Result<()> {
         return launch_coding_mode();
     }
 
-    // 创建编排引擎
     let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let registry = AppRegistry::load(&cli.apps_dir).unwrap_or_default();
-    let mut engine = create_engine(registry, workspace)?;
+    let mut engine = create_engine(workspace)?;
 
-    // 覆盖默认的 prompts 路径（来自 CLI）
-    {
-        use pinvou_platform::engine_factory::load_agents;
-        let agents = load_agents(&cli.prompts_dir);
-        engine.set_agent_registry(agents);
-    }
+    let agents = load_agents(&cli.prompts_dir);
+    engine.set_agent_registry(agents);
 
-    if cli.tui {
-        pinvou_platform::tui::ui::run_platform_tui(cli.apps_dir, engine)?;
-    } else {
-        pinvou_platform::web::serve(engine, cli.port).await?;
-    }
-
+    pinvou_platform::web::serve(engine, cli.port).await?;
     Ok(())
 }
 
 fn launch_coding_mode() -> Result<()> {
     let own_exe = std::env::current_exe()?;
-    let own_dir = own_exe
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
+    let own_dir = own_exe.parent().unwrap_or_else(|| Path::new("."));
     let coding_bin = own_dir.join("deepseek-tui");
 
     if coding_bin.exists() {
@@ -95,7 +73,7 @@ fn launch_coding_mode() -> Result<()> {
     Ok(())
 }
 
-fn exec_binary(path: &std::path::Path) -> Result<()> {
+fn exec_binary(path: &Path) -> Result<()> {
     let mut child = Command::new(path)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())

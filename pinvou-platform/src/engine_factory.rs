@@ -16,7 +16,6 @@ use deepseek_tui::tools::registry::{ToolRegistry, ToolRegistryBuilder};
 use deepseek_tui::tools::spec::ToolContext;
 
 use crate::agent_registry::AgentRegistry;
-use crate::app::AppRegistry;
 use crate::deepseek_harness::DeepSeekHarness;
 use crate::engine::PlatformEngine;
 use crate::harness::{ModelInfo, ToolDef};
@@ -46,7 +45,7 @@ pub fn load_agents(prompts_dir: impl AsRef<Path>) -> Arc<AgentRegistry> {
 }
 
 /// 从环境变量创建引擎。
-pub fn create_engine(registry: AppRegistry, workspace: PathBuf) -> Result<PinvouEngine> {
+pub fn create_engine(workspace: PathBuf) -> Result<PinvouEngine> {
     let mut config = Config::default();
 
     // 从环境变量覆盖配置
@@ -123,9 +122,9 @@ pub fn create_engine(registry: AppRegistry, workspace: PathBuf) -> Result<Pinvou
     let harness = DeepSeekHarness::new(client, tool_names, models, workspace.clone())
         .with_tools(tool_registry, tool_context, auto_tool_names);
 
-    let mut engine = PlatformEngine::new(harness, registry, workspace.clone());
+    let mut engine = PlatformEngine::new(harness, workspace.clone());
 
-    // 注入 AgentRegistry（默认从 workspace/prompts 加载）
+    // 注入 AgentRegistry（默认从 workspace/prompts 加载，main 可用 --prompts-dir 覆盖）
     let prompts_dir = workspace.join("prompts");
     engine.set_agent_registry(load_agents(&prompts_dir));
 

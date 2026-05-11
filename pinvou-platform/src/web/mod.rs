@@ -28,9 +28,7 @@ use crate::contract_validator::ContractValidator;
 use crate::engine::{MilestoneAdvanceResult, UserChoiceAnswer};
 use crate::engine_factory::PinvouEngine;
 use crate::harness::{AgentHarness, StreamEvent, ToolDef};
-use crate::response_checker::ResponseChecker;
 use crate::rollback::{self, RollbackOutcome};
-use crate::step_builder::StepBuilder;
 
 // === App State ===
 
@@ -43,7 +41,10 @@ pub struct AppState {
 #[derive(Debug, Deserialize)]
 pub struct ChatRequest {
     pub message: String,
-    pub app_id: String,
+    /// 兼容字段：前端仍在发，但服务端不再使用（agent 由 CombinedPlanner 决定，
+    /// 或通过 `/use <agent_id>` slash 命令切换）。后续前端去除即可删除。
+    #[serde(default)]
+    pub app_id: Option<String>,
     #[serde(default)]
     pub tool_result: Option<ToolResultDto>,
 }
@@ -192,7 +193,8 @@ enum WebTurnAction {
     Blocked(String),
     AskUser(crate::contract_runtime::ChoiceRequest),
     CompleteStep(String),
-    LegacyFallback,
+    /// Q&A 模式或无活跃 milestone：跳过 contract，直接走 LLM 流
+    FreeFlow,
 }
 
 fn classify_turn_directive_for_web(directive: anyhow::Result<TurnDirective>) -> WebTurnAction {
@@ -201,7 +203,7 @@ fn classify_turn_directive_for_web(directive: anyhow::Result<TurnDirective>) -> 
         Ok(TurnDirective::Blocked(message)) => WebTurnAction::Blocked(message),
         Ok(TurnDirective::AskUser(choice)) => WebTurnAction::AskUser(choice),
         Ok(TurnDirective::CompleteStep(message)) => WebTurnAction::CompleteStep(message),
-        Err(_) => WebTurnAction::LegacyFallback,
+        Err(_) => WebTurnAction::FreeFlow,
     }
 }
 
@@ -214,7 +216,7 @@ enum FrontendToolDecision {
 fn filter_tools_for_contract(
     all_tools: Vec<ToolDef>,
     app_tool_names: &[String],
-    milestone: Option<&crate::app::Milestone>,
+    milestone: Option<&crate::workflow::Milestone>,
 ) -> Vec<ToolDef> {
     all_tools
         .into_iter()
@@ -241,7 +243,7 @@ fn filter_tools_for_contract(
 }
 
 fn authorize_tool_call(
-    milestone: Option<&crate::app::Milestone>,
+    milestone: Option<&crate::workflow::Milestone>,
     conv_state: Option<&crate::workflow::ConversationState>,
     tool_name: &str,
     arguments: &serde_json::Value,
@@ -276,7 +278,7 @@ fn authorize_tool_call(
 }
 
 fn reserve_request_user_input_budget(
-    milestone: Option<&crate::app::Milestone>,
+    milestone: Option<&crate::workflow::Milestone>,
     conv_state: Option<&mut crate::workflow::ConversationState>,
 ) -> FrontendToolDecision {
     if let (Some(ms), Some(cs)) = (milestone, conv_state) {
@@ -324,42 +326,19 @@ async fn stream_chat(
 ) -> Pin<Box<dyn Stream<Item = SseItem> + Send>> {
     let mut engine = state.engine.lock().await;
 
-    // 新设计：AgentRegistry 注入后走 CombinedPlanner 路径，忽略 req.app_id
-    let use_agent_path = engine.agents.is_some();
-
-    // 新路径的 auto-continue 累积器：choice_result 之后不再要求用户手动"继续"，
-    // 而是把"进入下一阶段"的事件作为 prefix 拼到 LLM 流之前。
+    // auto-continue 累积器：choice_result 之后不再要求用户手动"继续"，
+    // 把"进入下一阶段"的事件作为 prefix 拼到 LLM 流之前。
     let mut auto_continue_prefix: Vec<SseItem> = Vec::new();
 
-    // Legacy 路径：按 req.app_id 加载/切换 App
-    if !use_agent_path
-        && engine
-            .current_app
-            .as_ref()
-            .map(|a| a.id != req.app_id)
-            .unwrap_or(true)
-    {
-        if let Err(e) = engine.load_app(&req.app_id) {
-            let ev = sse_err(format!("加载应用失败: {e}"));
-            return Box::pin(stream::iter(vec![Ok(ev)]));
-        }
-    }
-
     // === Slash 命令分流（早退）===
-    // 在 ensure_plan_initialized 之前处理，避免空命令触发拆解
     if req.tool_result.is_none() && rollback::is_slash_command(&req.message) {
         let outcome = handle_slash_command(&mut engine, &req.message);
         return Box::pin(stream::iter(build_command_sse(outcome)));
     }
 
-    // Plan 初始化：根据路径选择拆解器
+    // Plan 初始化：CombinedPlanner（单次 LLM 调用同时拆解 + 选 agent）
     if req.tool_result.is_none() {
-        let init_result: Result<(), anyhow::Error> = if use_agent_path {
-            engine.ensure_combined_plan(&req.message).await.map(|_| ())
-        } else {
-            engine.ensure_plan_initialized(&req.message).await
-        };
-        if let Err(e) = init_result {
+        if let Err(e) = engine.ensure_combined_plan(&req.message).await {
             let ev = sse_err(format!("初始化计划失败: {e}"));
             return Box::pin(stream::iter(vec![Ok(ev)]));
         }
@@ -378,39 +357,14 @@ async fn stream_chat(
             .collect();
         let result = engine.apply_choice_result(&tr.call_id, &answers, tr.skip);
 
-        let legacy_fine = !use_agent_path
-            && engine
-                .current_app
-                .as_ref()
-                .and_then(|a| a.granularity.as_deref())
-                == Some("fine");
-
-        if legacy_fine {
-            // Legacy: 阶段间必须停住，等用户输入"继续"
-            if let Some(ref mut cs) = engine.conv_state {
-                cs.increment_turn();
-            }
-            engine.messages.push(crate::harness::HistoryMessage {
-                role: "assistant".into(),
-                content: result.summary.clone(),
-            });
-            let events = vec![
-                Ok(sse_delta(&result.summary)),
-                Ok(sse_done_for_milestone(&result)),
-            ];
-            return Box::pin(stream::iter(events));
-        }
-
-        if use_agent_path {
-            // 新设计：发个 milestone 状态更新（不带 done），然后继续往下跑 LLM
-            engine.messages.push(crate::harness::HistoryMessage {
-                role: "assistant".into(),
-                content: result.summary.clone(),
-            });
-            auto_continue_prefix.push(Ok(sse_delta(&result.summary)));
-            auto_continue_prefix.push(Ok(sse_milestone_progress(&result)));
-            // 不 return，继续走主流程（会用空 user_message 触发下一阶段的 LLM）
-        }
+        // 新设计：发个 milestone 状态更新（不带 done），然后继续往下跑 LLM
+        engine.messages.push(crate::harness::HistoryMessage {
+            role: "assistant".into(),
+            content: result.summary.clone(),
+        });
+        auto_continue_prefix.push(Ok(sse_delta(&result.summary)));
+        auto_continue_prefix.push(Ok(sse_milestone_progress(&result)));
+        // 不 return，继续走主流程（会用空 user_message 触发下一阶段的 LLM）
     }
 
     let continue_result = engine.consume_continue_command(&req.message);
@@ -446,21 +400,10 @@ async fn stream_chat(
     };
 
     // === 编排：检查活跃里程碑，构造限定范围 prompt ===
-    let app_config = engine.current_app.clone();
     let active_milestone = engine
         .conv_state
         .as_ref()
         .and_then(|cs| cs.active_milestone().cloned());
-    let context = engine
-        .conv_state
-        .as_ref()
-        .map(|cs| cs.context.clone())
-        .unwrap_or_default();
-    let app_tool_names: Vec<String> = engine
-        .current_app
-        .as_ref()
-        .map(|a| a.tools.clone())
-        .unwrap_or_default();
     let all_tools = AgentHarness::tools(&engine.harness);
     let in_qa_mode = engine
         .conv_state
@@ -471,7 +414,8 @@ async fn stream_chat(
         // Q&A 模式禁用所有工具
         vec![]
     } else {
-        filter_tools_for_contract(all_tools, &app_tool_names, active_milestone.as_ref())
+        // 不再使用 app 级工具白名单；harness 注册的全部工具走 milestone contract 过滤
+        filter_tools_for_contract(all_tools, &[], active_milestone.as_ref())
     };
 
     let turn_action = if let (Some(cs), Some(ms)) =
@@ -479,7 +423,8 @@ async fn stream_chat(
     {
         classify_turn_directive_for_web(ContractRuntime::next_directive(ms, cs, effective_message))
     } else {
-        WebTurnAction::LegacyFallback
+        // QnA 模式或未初始化：直接进 LLM 流（无 contract 约束）
+        WebTurnAction::FreeFlow
     };
 
     let chat_req = match turn_action {
@@ -517,23 +462,9 @@ async fn stream_chat(
                 req.platform_system_prompt = Some(step_prompt.system);
                 req
             }
-            Err(_) => {
-                let mut req = engine.build_request(effective_message, tools);
-                if let (Some(ms), Some(app)) = (&active_milestone, &app_config) {
-                    let sp = StepBuilder::build(ms, &context, effective_message, app);
-                    req.platform_system_prompt = Some(sp.system);
-                }
-                req
-            }
+            Err(_) => engine.build_request(effective_message, tools),
         },
-        WebTurnAction::LegacyFallback => {
-            let mut req = engine.build_request(effective_message, tools);
-            if let (Some(ms), Some(app)) = (&active_milestone, &app_config) {
-                let sp = StepBuilder::build(ms, &context, effective_message, app);
-                req.platform_system_prompt = Some(sp.system);
-            }
-            req
-        }
+        WebTurnAction::FreeFlow => engine.build_request(effective_message, tools),
     };
     if let Some(ref mut cs) = engine.conv_state {
         cs.increment_turn();
@@ -560,7 +491,6 @@ async fn stream_chat(
     let state_clone = state.clone();
     let state_for_choice = state.clone();
     let milestone_for_check = active_milestone.clone();
-    let app_for_check = app_config.clone();
     // choice 状态：检测到 request_user_input 工具调用时设值
     let choice_state: std::sync::Arc<std::sync::Mutex<Option<serde_json::Value>>> =
         std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -573,7 +503,6 @@ async fn stream_chat(
         let state_clone = state_clone.clone();
         let state_for_choice = state_for_choice.clone();
         let milestone_for_check = milestone_for_check.clone();
-        let app_for_check = app_for_check.clone();
         let ch_clone = ch_clone.clone();
         let abort_for_stream = abort_for_stream.clone();
 
@@ -630,36 +559,25 @@ async fn stream_chat(
                     let text = ft.clone();
                     let choice = ch_clone.lock().unwrap().take();
 
-                    let (milestone_json, should_advance, validation_issues) = if let (Some(ms), Some(app)) = (&milestone_for_check, &app_for_check) {
-                        let check = ResponseChecker::check(&text, ms, app);
+                    // 新设计：推进由 ContractValidator 单独裁决，ResponseChecker
+                    // 不再参与（已退役）。
+                    let (milestone_json, should_advance, validation_issues) = if let Some(ms) = &milestone_for_check {
                         let contract_ok = ContractValidator::validate_response(&ms.contract, &text);
-
-                        // granularity 控制自动推进（与 step_execute 一致）
-                        let is_advance = matches!(check.next_action, crate::response_checker::NextAction::Advance);
-                        let should_advance = contract_ok.ok && match app.granularity.as_deref() {
-                            Some("fine") => is_advance && check.signal.is_some(),
-                            Some("medium") => {
-                                !app.confirm_at.as_ref().map(|ids| ids.contains(&ms.id)).unwrap_or(false)
-                            }
-                            Some("coarse") => true,
-                            _ => is_advance,
-                        };
-
+                        let should_advance = contract_ok.ok
+                            && matches!(
+                                ms.contract.advance_policy,
+                                crate::contract::AdvancePolicy::OnValidOutput
+                            );
                         let validation_issues = if contract_ok.ok {
                             vec![]
                         } else {
                             contract_ok.issues.clone()
                         };
-                        let next_action = if contract_ok.ok {
-                            format!("{:?}", check.next_action)
-                        } else {
-                            "Continue".to_string()
-                        };
+                        let next_action = if should_advance { "Advance" } else { "Wait" };
                         (
                             Some(serde_json::json!({
                                 "milestone_id": ms.id,
                                 "next_action": next_action,
-                                "signal": check.signal.map(|s| format!("{:?}", s)),
                                 "validation_issues": validation_issues.clone(),
                             })),
                             should_advance,
@@ -748,7 +666,7 @@ async fn stream_chat(
 mod tests {
     use super::*;
 
-    use crate::app::Milestone;
+    use crate::workflow::Milestone;
     use crate::contract::{AdvancePolicy, MilestoneContract, MilestoneMode, OutputRequirement};
     use crate::contract_runtime::TurnDirective;
     use crate::workflow::ConversationState;
@@ -979,20 +897,6 @@ async fn handle_milestones(State(state): State<Arc<AppState>>) -> Json<serde_jso
                         crate::workflow::MilestoneStatus::Done => "done",
                         crate::workflow::MilestoneStatus::Skipped => "skipped",
                     },
-                    "hint": m.prompt_hint,
-                })
-            })
-            .collect()
-    } else if let Some(app) = engine.current_app.as_ref() {
-        // 尚未加载对话状态时，返回 app.toml 定义的里程碑作为默认值
-        app.milestones
-            .iter()
-            .enumerate()
-            .map(|(i, m)| {
-                serde_json::json!({
-                    "id": m.id,
-                    "label": m.label,
-                    "status": if i == 0 { "active" } else { "pending" },
                     "hint": m.prompt_hint,
                 })
             })

@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::app::Milestone;
+use crate::workflow::Milestone;
 use crate::contract::{MilestoneMode, OutputRequirement};
 use crate::workflow::ConversationState;
 
@@ -134,7 +134,7 @@ fn question_budget_message(milestone: &Milestone) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::Milestone;
+    use crate::workflow::Milestone;
     use crate::contract::{AdvancePolicy, MilestoneContract, MilestoneMode, OutputRequirement};
     use crate::workflow::ConversationState;
 

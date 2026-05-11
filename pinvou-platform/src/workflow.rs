@@ -7,7 +7,28 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use super::app::Milestone;
+use crate::contract::MilestoneContract;
+
+/// 里程碑 —— 一段任务编排单元。
+///
+/// 由 `CombinedPlanner` 拆解生成（每个 milestone 选一个 `MilestoneMode`），
+/// 也可能是 fallback 计划中的静态项。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Milestone {
+    /// 唯一标识（在一次会话内不重复）
+    pub id: String,
+    /// 用户可见的中文标签
+    pub label: String,
+    /// LLM 阶段提示（行为引导，由拆解器填）
+    #[serde(default)]
+    pub prompt_hint: Option<String>,
+    /// 可选 UI 图标
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// 阶段契约（由 mode → 内置规则 + 拆解器选的工具组合而成）
+    #[serde(default)]
+    pub contract: MilestoneContract,
+}
 
 /// 里程碑状态
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
