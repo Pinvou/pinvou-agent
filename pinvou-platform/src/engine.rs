@@ -123,6 +123,9 @@ impl<H: AgentHarness> PlatformEngine<H> {
             .collect();
 
         let prompt = CombinedPlanner::build_prompt(user_message, &agents, &available_tools);
+        eprintln!(
+            "[planner] user_message={user_message:?} available_tools={available_tools:?}"
+        );
         let raw = self
             .harness
             .chat(ChatRequest {
@@ -137,11 +140,28 @@ impl<H: AgentHarness> PlatformEngine<H> {
                 previous_messages: vec![],
             })
             .await?;
+        eprintln!("[planner] raw LLM 返回:\n{raw}");
 
-        let (plan, used_fallback) = match CombinedPlanner::parse_plan(&raw, &agents, &available_tools) {
-            Ok(p) => (p, false),
-            Err(_) => (CombinedPlanner::fallback_plan(), true),
-        };
+        let (plan, used_fallback) =
+            match CombinedPlanner::parse_plan(&raw, &agents, &available_tools) {
+                Ok(p) => (p, false),
+                Err(e) => {
+                    eprintln!("[planner] parse_plan 失败，使用 fallback。err={e}");
+                    (CombinedPlanner::fallback_plan(), true)
+                }
+            };
+        eprintln!(
+            "[planner] 解析结果: agent={} used_fallback={} milestones={}",
+            plan.agent_id,
+            used_fallback,
+            plan.milestones.len()
+        );
+        for (i, pm) in plan.milestones.iter().enumerate() {
+            eprintln!(
+                "[planner]   #{i} label={:?} mode={:?} tools={:?} hint={:?}",
+                pm.label, pm.mode, pm.tools, pm.prompt_hint
+            );
+        }
 
         if plan.is_qa() {
             let mut state = ConversationState::new_qa(&plan.agent_id);

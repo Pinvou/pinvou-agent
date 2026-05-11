@@ -223,7 +223,7 @@ startswith("/") ? ──yes──> RollbackManager → 状态机变化 → 结�
 
 约束:
 - agent=qa → milestones=[]
-- 否则 milestones 数量 2-8
+- 否则 milestones 数量 2-12（与 §1.4 对齐，覆盖多约束/多阶段任务）
 - 最后一个 mode 必须 final_output
 - tools 必须从工具池中选
 ```
@@ -233,7 +233,7 @@ startswith("/") ? ──yes──> RollbackManager → 状态机变化 → 结�
 代码只校验结构，不校验内容合理性：
 
 - agent ∈ AgentRegistry 注册项
-- milestones 数量 2-8（qa 为 0）
+- milestones 数量 2-12（qa 为 0）
 - 每个 mode 是合法枚举
 - 最后一个 mode = final_output
 - 每个 tool ∈ available_tools（来自 harness.tools()）
@@ -481,7 +481,66 @@ list_dir / grep_files / file_search / exec_shell + 变体
 
 ---
 
-### 3.8 选择题优于问答题
+### 3.8 Web 层 milestone 自动推进循环
+
+DeepSeek-TUI tool loop（§3.7）只解决「单次 LLM 调用内执行工具」。
+跨 milestone 推进需要再起一次 LLM 调用，**但用户体感上应该是连续的**。
+Web 层在 `build_milestone_loop_stream` 内做这层串接：**在同一个 SSE 流内**
+连续推进多个 `OnValidOutput` 阶段，只在遇到需要用户行为时断流。
+
+```
+build_milestone_loop_stream(engine_mutex, prep)
+   │
+   └─ async_stream! {
+        loop (最多 MAX_AUTO_MILESTONE_ADVANCES = 8 轮)
+        │
+        ├─ active = conv_state.active_milestone()
+        │
+        ├─ ContractRuntime.next_directive(active, cs, msg) → 分类:
+        │   ├─ Blocked/CompleteStep → yield delta+done, return
+        │   ├─ AskUser              → yield choice_request, return
+        │   └─ CallLlm/FreeFlow     → 构造 chat_req
+        │
+        ├─ stream = harness.chat_stream(chat_req)
+        │  累积: full_text + invoked_tools + choice_state
+        │
+        ├─ 遇 Done:
+        │   ├─ ContractValidator.validate_stage_completion(...)
+        │   ├─ 有 choice 卡 (OnChoice)   → yield choice_request, return
+        │   ├─ should_advance (OnValidOutput + 通过):
+        │   │   ├─ mark_done(active)
+        │   │   ├─ 有下一阶段 → yield stage_advanced, continue loop
+        │   │   └─ 全部完成   → yield all_milestones_complete, return
+        │   └─ !should_advance → yield stage_done_wait, return
+        │
+        └─ 超上限             → yield Error
+      }
+```
+
+**断流条件**（流结束 = 等用户下一步操作）：
+- `AskUser`：要发选择卡
+- `OnChoice` 阶段完成（含 choice card 已发）：等用户做选择
+- `OnValidOutput` 阶段校验失败：用户介入纠错
+- `Blocked` / `CompleteStep`：契约硬卡
+- 错误 / 推进次数超上限
+
+**SSE 事件类型**（前端契约）：
+
+| 事件 | 字段 | 含义 |
+|---|---|---|
+| `delta` | `delta: <text>` | LLM 文本输出 |
+| `milestone` (signal=`AutoAdvance`) | `next_action: Advance` | 阶段自动推进，**不**断流 |
+| `done` (signal=`AllDone`) | `next_action: Complete` | 所有 milestone 完成 |
+| `done` + milestone (`WaitForUser`) | OnChoice 完成或无 milestone | 等用户输入 |
+| `done` + milestone (`WaitValidation`) | `validation_issues: []` | 校验失败，等纠错 |
+| `choice_request` | call_id + questions | 渲染选择卡 |
+
+**与 §3.7 的关系**：§3.7 是 LLM 内部 tool loop（单次 chat_stream 内多轮 LLM↔工具）；
+§3.8 是 milestone 级 loop（同一个 SSE 响应内多次 chat_stream）。两层互不感知。
+
+---
+
+### 3.9 选择题优于问答题
 
 **核心原则：让用户做决策，不做作文。**
 
