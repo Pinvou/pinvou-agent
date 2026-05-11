@@ -25,7 +25,12 @@ fn main() {
     println!("\n--- planner agent list (rendered for LLM) ---");
     println!("{}", reg.render_for_planner());
 
-    println!("\n--- combined planner prompt sample ---");
-    let prompt = CombinedPlanner::build_prompt("帮我写本周周报", &reg);
+    println!("\n--- combined planner prompt sample (no tools available) ---");
+    let prompt = CombinedPlanner::build_prompt("帮我写本周周报", &reg, &[]);
+    println!("{}", prompt);
+
+    println!("\n--- combined planner prompt sample (request_user_input only) ---");
+    let tools = vec!["request_user_input".to_string()];
+    let prompt = CombinedPlanner::build_prompt("帮我写本周周报", &reg, &tools);
     println!("{}", prompt);
 }

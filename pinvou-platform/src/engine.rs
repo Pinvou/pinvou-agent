@@ -121,7 +121,16 @@ impl<H: AgentHarness> PlatformEngine<H> {
             return Ok(CombinedPlanOutcome::AlreadyPlanned);
         }
 
-        let prompt = CombinedPlanner::build_prompt(user_message, &agents);
+        // 关键：只把 harness 实际注册的工具名传给 planner，否则 LLM 会被诱导
+        // 调用伪工具（输出形如 [web_search: ...] 的纯文本）。
+        let available_tools: Vec<String> = self
+            .harness
+            .tools()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+
+        let prompt = CombinedPlanner::build_prompt(user_message, &agents, &available_tools);
         let raw = self
             .harness
             .chat(ChatRequest {
@@ -137,7 +146,7 @@ impl<H: AgentHarness> PlatformEngine<H> {
             })
             .await?;
 
-        let (plan, used_fallback) = match CombinedPlanner::parse_plan(&raw, &agents) {
+        let (plan, used_fallback) = match CombinedPlanner::parse_plan(&raw, &agents, &available_tools) {
             Ok(p) => (p, false),
             Err(_) => (CombinedPlanner::fallback_plan(), true),
         };
@@ -832,7 +841,8 @@ fn choice_event_summary(
     }
 
     if let Some(ms) = next {
-        lines.push(format!("输入“继续”进入「{}」。", ms.label));
+        // 不再要求用户手动输入"继续"——前端应自动让 LLM 进入下一阶段
+        lines.push(format!("→ 进入「{}」。", ms.label));
     } else {
         lines.push("所有步骤已完成。".to_string());
     }
@@ -903,7 +913,34 @@ pub mod mock {
 
         pub fn with_responses(responses: Vec<String>) -> Self {
             Self {
-                tools: vec![],
+                // 给测试用的工具池：覆盖所有 GLOBAL_TOOL_POOL 中的工具
+                tools: vec![
+                    ToolDef {
+                        name: "request_user_input".into(),
+                        description: "ask user".into(),
+                        parameters: serde_json::json!({}),
+                    },
+                    ToolDef {
+                        name: "file_read".into(),
+                        description: "read file".into(),
+                        parameters: serde_json::json!({}),
+                    },
+                    ToolDef {
+                        name: "file_write".into(),
+                        description: "write file".into(),
+                        parameters: serde_json::json!({}),
+                    },
+                    ToolDef {
+                        name: "web_search".into(),
+                        description: "search web".into(),
+                        parameters: serde_json::json!({}),
+                    },
+                    ToolDef {
+                        name: "python_exec".into(),
+                        description: "run python".into(),
+                        parameters: serde_json::json!({}),
+                    },
+                ],
                 models: vec![ModelInfo {
                     id: "mock-model".into(),
                     provider: "mock".into(),

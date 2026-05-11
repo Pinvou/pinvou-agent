@@ -36,9 +36,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 
 use crate::agent_registry::AgentRegistry;
-use crate::contract::{
-    GLOBAL_TOOL_POOL, MilestoneMode, is_tool_in_global_pool, mode_tool_compatibility,
-};
+use crate::contract::{MilestoneMode, is_tool_in_global_pool, mode_tool_compatibility};
 
 /// LLM 拆解的完整结果
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,14 +86,26 @@ struct PlannedMilestoneDto {
 pub struct CombinedPlanner;
 
 impl CombinedPlanner {
-    /// 构造发给 LLM 的拆解 prompt
-    pub fn build_prompt(user_message: &str, agents: &AgentRegistry) -> String {
+    /// 构造发给 LLM 的拆解 prompt。
+    ///
+    /// `available_tools` 必须是当前 harness **实际可执行**的工具列表，
+    /// 否则 LLM 会被诱导调用根本不存在的工具，输出形似 `[web_search: ...]`
+    /// 的纯文本伪工具调用。
+    pub fn build_prompt(
+        user_message: &str,
+        agents: &AgentRegistry,
+        available_tools: &[String],
+    ) -> String {
         let agent_list = agents.render_for_planner();
-        let tools_list = GLOBAL_TOOL_POOL
-            .iter()
-            .map(|t| format!("- {t}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let tools_list = if available_tools.is_empty() {
+            "- （当前无可用工具，所有阶段只能用文本输出）".to_string()
+        } else {
+            available_tools
+                .iter()
+                .map(|t| format!("- {t}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
 
         format!(
             "用户输入: \"{user_message}\"
@@ -138,11 +148,18 @@ impl CombinedPlanner {
         )
     }
 
-    /// 解析 LLM 输出并做结构性校验
-    pub fn parse_plan(text: &str, agents: &AgentRegistry) -> Result<CombinedPlan> {
+    /// 解析 LLM 输出并做结构性校验。
+    ///
+    /// `available_tools` 是当前 harness 实际可执行的工具集；LLM 选了池外的工具
+    /// （比如训练数据里见过但当前没注册的）会直接拒绝，避免下游伪工具调用。
+    pub fn parse_plan(
+        text: &str,
+        agents: &AgentRegistry,
+        available_tools: &[String],
+    ) -> Result<CombinedPlan> {
         let json = extract_json_object(text).context("response has no JSON object")?;
         let dto: PlanDto = serde_json::from_str(json).context("failed to parse plan JSON")?;
-        validate_dto(dto, agents)
+        validate_dto(dto, agents, available_tools)
     }
 
     /// 校验失败时使用的兜底计划
@@ -179,7 +196,11 @@ impl CombinedPlanner {
     }
 }
 
-fn validate_dto(dto: PlanDto, agents: &AgentRegistry) -> Result<CombinedPlan> {
+fn validate_dto(
+    dto: PlanDto,
+    agents: &AgentRegistry,
+    available_tools: &[String],
+) -> Result<CombinedPlan> {
     // 1. agent 必须已注册
     if !agents.contains(&dto.agent) {
         bail!("agent '{}' not in registry", dto.agent);
@@ -238,6 +259,12 @@ fn validate_dto(dto: PlanDto, agents: &AgentRegistry) -> Result<CombinedPlan> {
             if !is_tool_in_global_pool(t) {
                 bail!("tool '{}' not in global pool", t);
             }
+            if !available_tools.iter().any(|x| x == t) {
+                bail!(
+                    "tool '{}' not available on current harness (advertised={:?})",
+                    t, available_tools
+                );
+            }
             if let Some(reason) = mode_tool_compatibility(m.mode.clone(), t) {
                 bail!("tool incompat: {reason}");
             }
@@ -272,6 +299,16 @@ mod tests {
     use super::*;
     use crate::agent_registry::AgentDefinition;
 
+    fn test_tool_pool() -> Vec<String> {
+        vec![
+            "request_user_input".into(),
+            "file_read".into(),
+            "file_write".into(),
+            "web_search".into(),
+            "python_exec".into(),
+        ]
+    }
+
     fn registry_with_basic_agents() -> AgentRegistry {
         let mut reg = AgentRegistry::default();
         for (id, name) in [
@@ -295,7 +332,7 @@ mod tests {
     #[test]
     fn build_prompt_includes_agents_and_tools() {
         let reg = registry_with_basic_agents();
-        let prompt = CombinedPlanner::build_prompt("帮我写周报", &reg);
+        let prompt = CombinedPlanner::build_prompt("帮我写周报", &reg, &test_tool_pool());
         assert!(prompt.contains("帮我写周报"));
         assert!(prompt.contains("- qa:"));
         assert!(prompt.contains("- doc_generation:"));
@@ -308,7 +345,7 @@ mod tests {
     fn parse_qa_plan_with_empty_milestones() {
         let reg = registry_with_basic_agents();
         let json = r#"{"agent": "qa", "milestones": []}"#;
-        let plan = CombinedPlanner::parse_plan(json, &reg).unwrap();
+        let plan = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap();
         assert!(plan.is_qa());
         assert_eq!(plan.agent_id, "qa");
     }
@@ -317,14 +354,14 @@ mod tests {
     fn parse_qa_with_milestones_fails() {
         let reg = registry_with_basic_agents();
         let json = r#"{"agent": "qa", "milestones": [{"label": "x", "mode": "freeform"}]}"#;
-        assert!(CombinedPlanner::parse_plan(json, &reg).is_err());
+        assert!(CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).is_err());
     }
 
     #[test]
     fn parse_unknown_agent_fails() {
         let reg = registry_with_basic_agents();
         let json = r#"{"agent": "nonexistent", "milestones": []}"#;
-        assert!(CombinedPlanner::parse_plan(json, &reg).is_err());
+        assert!(CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).is_err());
     }
 
     #[test]
@@ -338,7 +375,7 @@ mod tests {
                 {"label": "定稿", "mode": "final_output", "tools": ["file_write"]}
             ]
         }"#;
-        let plan = CombinedPlanner::parse_plan(json, &reg).unwrap();
+        let plan = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap();
         assert_eq!(plan.agent_id, "doc_generation");
         assert_eq!(plan.milestones.len(), 3);
         assert_eq!(plan.milestones[0].mode, MilestoneMode::ProduceOptions);
@@ -355,7 +392,7 @@ mod tests {
                 {"label": "b", "mode": "freeform", "tools": []}
             ]
         }"#;
-        let err = CombinedPlanner::parse_plan(json, &reg).unwrap_err();
+        let err = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap_err();
         assert!(err.to_string().contains("final_output"));
     }
 
@@ -369,7 +406,7 @@ mod tests {
                 {"label": "b", "mode": "final_output", "tools": []}
             ]
         }"#;
-        assert!(CombinedPlanner::parse_plan(json, &reg).is_err());
+        assert!(CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).is_err());
     }
 
     #[test]
@@ -381,7 +418,7 @@ mod tests {
                 {"label": "a", "mode": "final_output", "tools": []}
             ]
         }"#;
-        assert!(CombinedPlanner::parse_plan(json, &reg).is_err());
+        assert!(CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).is_err());
     }
 
     #[test]
@@ -398,7 +435,7 @@ mod tests {
             r#"{{"agent": "doc_generation", "milestones": [{}]}}"#,
             milestones.join(",")
         );
-        assert!(CombinedPlanner::parse_plan(&json, &registry_with_basic_agents()).is_err());
+        assert!(CombinedPlanner::parse_plan(&json, &registry_with_basic_agents(), &test_tool_pool()).is_err());
     }
 
     #[test]
@@ -411,7 +448,7 @@ mod tests {
                 {"label": "b", "mode": "final_output", "tools": []}
             ]
         }"#;
-        let err = CombinedPlanner::parse_plan(json, &reg).unwrap_err();
+        let err = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap_err();
         assert!(err.to_string().contains("rm_rf"));
     }
 
@@ -425,7 +462,7 @@ mod tests {
                 {"label": "b", "mode": "final_output", "tools": ["request_user_input"]}
             ]
         }"#;
-        let err = CombinedPlanner::parse_plan(json, &reg).unwrap_err();
+        let err = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap_err();
         assert!(err.to_string().contains("final_output"));
     }
 
@@ -439,7 +476,7 @@ mod tests {
                 {"label": "X", "mode": "final_output", "tools": []}
             ]
         }"#;
-        let err = CombinedPlanner::parse_plan(json, &reg).unwrap_err();
+        let err = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap_err();
         assert!(err.to_string().contains("duplicate"));
     }
 
@@ -453,14 +490,14 @@ mod tests {
                 {"label": "end", "mode": "final_output", "tools": []}
             ]
         }"#;
-        assert!(CombinedPlanner::parse_plan(json, &reg).is_err());
+        assert!(CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).is_err());
     }
 
     #[test]
     fn parse_handles_json_with_surrounding_text() {
         let reg = registry_with_basic_agents();
         let text = "Here is the plan:\n{\"agent\": \"qa\", \"milestones\": []}\n\nDone.";
-        let plan = CombinedPlanner::parse_plan(text, &reg).unwrap();
+        let plan = CombinedPlanner::parse_plan(text, &reg, &test_tool_pool()).unwrap();
         assert!(plan.is_qa());
     }
 
@@ -483,6 +520,6 @@ mod tests {
                 "tools": m.tools,
             })).collect::<Vec<_>>()
         });
-        assert!(CombinedPlanner::parse_plan(&json.to_string(), &reg).is_ok());
+        assert!(CombinedPlanner::parse_plan(&json.to_string(), &reg, &test_tool_pool()).is_ok());
     }
 }

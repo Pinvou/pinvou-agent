@@ -154,6 +154,21 @@ fn build_command_sse(outcome: RollbackOutcome) -> Vec<SseItem> {
     vec![Ok(delta), Ok(done)]
 }
 
+/// 中间态：milestone 推进事件（**不含** `done` 标志），用于 auto-continue 场景。
+/// 前端收到此事件应保持监听，等待后续 LLM delta。
+fn sse_milestone_progress(result: &MilestoneAdvanceResult) -> axum::response::sse::Event {
+    axum::response::sse::Event::default().data(
+        serde_json::json!({
+            "milestone": {
+                "milestone_id": result.completed_milestone_id,
+                "next_milestone_id": result.next_milestone_id,
+                "signal": "ChoiceResult",
+            }
+        })
+        .to_string(),
+    )
+}
+
 fn sse_done_for_milestone(result: &MilestoneAdvanceResult) -> axum::response::sse::Event {
     axum::response::sse::Event::default().data(
         serde_json::json!({
@@ -312,6 +327,10 @@ async fn stream_chat(
     // 新设计：AgentRegistry 注入后走 CombinedPlanner 路径，忽略 req.app_id
     let use_agent_path = engine.agents.is_some();
 
+    // 新路径的 auto-continue 累积器：choice_result 之后不再要求用户手动"继续"，
+    // 而是把"进入下一阶段"的事件作为 prefix 拼到 LLM 流之前。
+    let mut auto_continue_prefix: Vec<SseItem> = Vec::new();
+
     // Legacy 路径：按 req.app_id 加载/切换 App
     if !use_agent_path
         && engine
@@ -359,16 +378,15 @@ async fn stream_chat(
             .collect();
         let result = engine.apply_choice_result(&tr.call_id, &answers, tr.skip);
 
-        // fine 模式：阶段间必须停住。choice_result 已经推进状态，这里不再调用 LLM，
-        // 避免同一阶段反复生成新的选择题。
-        // 新设计（use_agent_path）默认 fine。
-        let is_fine = use_agent_path
-            || engine
+        let legacy_fine = !use_agent_path
+            && engine
                 .current_app
                 .as_ref()
                 .and_then(|a| a.granularity.as_deref())
                 == Some("fine");
-        if is_fine {
+
+        if legacy_fine {
+            // Legacy: 阶段间必须停住，等用户输入"继续"
             if let Some(ref mut cs) = engine.conv_state {
                 cs.increment_turn();
             }
@@ -381,6 +399,17 @@ async fn stream_chat(
                 Ok(sse_done_for_milestone(&result)),
             ];
             return Box::pin(stream::iter(events));
+        }
+
+        if use_agent_path {
+            // 新设计：发个 milestone 状态更新（不带 done），然后继续往下跑 LLM
+            engine.messages.push(crate::harness::HistoryMessage {
+                role: "assistant".into(),
+                content: result.summary.clone(),
+            });
+            auto_continue_prefix.push(Ok(sse_delta(&result.summary)));
+            auto_continue_prefix.push(Ok(sse_milestone_progress(&result)));
+            // 不 return，继续走主流程（会用空 user_message 触发下一阶段的 LLM）
         }
     }
 
@@ -707,7 +736,12 @@ async fn stream_chat(
         }
     }).flat_map(stream::iter);
 
-    Box::pin(sse_stream)
+    if auto_continue_prefix.is_empty() {
+        Box::pin(sse_stream)
+    } else {
+        // Auto-continue：把 choice_result 的 ack + milestone 推进事件拼到 LLM 流之前
+        Box::pin(stream::iter(auto_continue_prefix).chain(sse_stream))
+    }
 }
 
 #[cfg(test)]
