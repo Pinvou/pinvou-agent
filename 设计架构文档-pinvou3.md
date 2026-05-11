@@ -812,7 +812,6 @@ pub trait AgentHarness: Send + Sync {
 | 3 | **LLM Reviewer 语义审阅 → P1 退役** | 新版动态拆解结构性校验足够 |
 | 4 | **LLM 自评只是信号，推进必须通过 contract 验收** | 本地 LLM 不能自主管理流程 |
 | 5 | **按 contract 决定确认边界** | LLM 可能不准，需要决策时由 runtime 停住 |
-| 6 | **扩展而非替换** | 不修改原有代码逻辑 |
 | 7 | **动态 milestone 列表自由，mode 仍是枚举** | 旧版「严格复用模板」让动态拆解变成翻译标题；mode 枚举保留契约挂载点 |
 | 8 | **无 Bridging 翻译步骤** | pinvou2 已验证多余 |
 | 9 | **越界和阻塞按状态机即时修正，不等超时** | 比 pinvou2 的 1200s 超时更快 |

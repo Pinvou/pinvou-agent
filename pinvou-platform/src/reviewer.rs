@@ -1,3 +1,9 @@
+//! **LEGACY**：LLM 自审拆解结果（语义检查）。
+//!
+//! 新设计的 `combined_planner` 只做结构性校验（mode 枚举、tool 池、数量），
+//! 不需要 LLM 二次审阅。本模块仅在 `engine::decompose_and_execute` 中使用，
+//! 而该方法已不在 web 主路径上。P1 删除。
+//!
 //! LLMReviewer — 调用 LLM 对拆解结果做语义审阅。
 //!
 //! JSON 解析失败 → 正则降级 → 再失败默认 ok=true 放行。

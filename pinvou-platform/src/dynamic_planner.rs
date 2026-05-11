@@ -1,3 +1,11 @@
+//! **LEGACY**：旧版动态拆解器，要求严格复用 app.toml 模板的 id 和 mode。
+//!
+//! 已被 [`crate::combined_planner::CombinedPlanner`] 替代。后者一次 LLM 调用
+//! 同时输出 agent + milestones，不受静态模板约束。
+//!
+//! 仍保留是因为 `engine::ensure_plan_initialized` 在 legacy 路径上仍使用它
+//! （当 AgentRegistry 未注入时）。P1 删除。
+
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -5,6 +13,7 @@ use std::collections::HashSet;
 use crate::app::{AppConfig, Milestone};
 use crate::contract::MilestoneMode;
 
+#[deprecated(note = "use CombinedPlanner instead; this is P1 legacy")]
 pub struct DynamicPlanner;
 
 #[derive(Debug, Deserialize)]
@@ -26,6 +35,7 @@ struct DynamicMilestoneDto {
     produced_context: Vec<String>,
 }
 
+#[allow(deprecated)]
 impl DynamicPlanner {
     pub fn build_prompt(user_message: &str, app: &AppConfig) -> String {
         let templates = app

@@ -309,12 +309,16 @@ async fn stream_chat(
 ) -> Pin<Box<dyn Stream<Item = SseItem> + Send>> {
     let mut engine = state.engine.lock().await;
 
-    // 加载/切换应用
-    if engine
-        .current_app
-        .as_ref()
-        .map(|a| a.id != req.app_id)
-        .unwrap_or(true)
+    // 新设计：AgentRegistry 注入后走 CombinedPlanner 路径，忽略 req.app_id
+    let use_agent_path = engine.agents.is_some();
+
+    // Legacy 路径：按 req.app_id 加载/切换 App
+    if !use_agent_path
+        && engine
+            .current_app
+            .as_ref()
+            .map(|a| a.id != req.app_id)
+            .unwrap_or(true)
     {
         if let Err(e) = engine.load_app(&req.app_id) {
             let ev = sse_err(format!("加载应用失败: {e}"));
@@ -329,8 +333,14 @@ async fn stream_chat(
         return Box::pin(stream::iter(build_command_sse(outcome)));
     }
 
+    // Plan 初始化：根据路径选择拆解器
     if req.tool_result.is_none() {
-        if let Err(e) = engine.ensure_plan_initialized(&req.message).await {
+        let init_result: Result<(), anyhow::Error> = if use_agent_path {
+            engine.ensure_combined_plan(&req.message).await.map(|_| ())
+        } else {
+            engine.ensure_plan_initialized(&req.message).await
+        };
+        if let Err(e) = init_result {
             let ev = sse_err(format!("初始化计划失败: {e}"));
             return Box::pin(stream::iter(vec![Ok(ev)]));
         }
@@ -351,12 +361,14 @@ async fn stream_chat(
 
         // fine 模式：阶段间必须停住。choice_result 已经推进状态，这里不再调用 LLM，
         // 避免同一阶段反复生成新的选择题。
-        if engine
-            .current_app
-            .as_ref()
-            .and_then(|a| a.granularity.as_deref())
-            == Some("fine")
-        {
+        // 新设计（use_agent_path）默认 fine。
+        let is_fine = use_agent_path
+            || engine
+                .current_app
+                .as_ref()
+                .and_then(|a| a.granularity.as_deref())
+                == Some("fine");
+        if is_fine {
             if let Some(ref mut cs) = engine.conv_state {
                 cs.increment_turn();
             }
@@ -421,7 +433,17 @@ async fn stream_chat(
         .map(|a| a.tools.clone())
         .unwrap_or_default();
     let all_tools = AgentHarness::tools(&engine.harness);
-    let tools = filter_tools_for_contract(all_tools, &app_tool_names, active_milestone.as_ref());
+    let in_qa_mode = engine
+        .conv_state
+        .as_ref()
+        .map(|cs| cs.global_mode == crate::workflow::GlobalMode::QnA)
+        .unwrap_or(false);
+    let tools = if in_qa_mode {
+        // Q&A 模式禁用所有工具
+        vec![]
+    } else {
+        filter_tools_for_contract(all_tools, &app_tool_names, active_milestone.as_ref())
+    };
 
     let turn_action = if let (Some(cs), Some(ms)) =
         (engine.conv_state.as_ref(), active_milestone.as_ref())

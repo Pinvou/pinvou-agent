@@ -1,3 +1,9 @@
+//! **LEGACY**：[OK] / [MORE] / [BLOCKED] 信号路由。
+//!
+//! 新设计用 `contract_runtime` + `contract_validator` 取代「LLM 自评推进」语义。
+//! 仍保留是因为 web 主路径在 LLM 响应后调用 ResponseChecker 做软推进判断；
+//! 待 ContractValidator 完全替代后删除（P1）。
+//!
 //! ResponseChecker — 信号解析 + 越界检测 + 路由决策。
 //!
 //! 纯函数模块，不做 LLM 调用，只做规则-based 文本解析与决策。

@@ -234,12 +234,7 @@ impl<H: AgentHarness> PlatformEngine<H> {
             .as_ref()
             .and_then(|cs| cs.active_milestone().cloned());
 
-        if self
-            .current_app
-            .as_ref()
-            .and_then(|a| a.granularity.as_deref())
-            == Some("fine")
-        {
+        if self.is_fine_granularity() {
             if let (Some(cs), Some(next)) = (&mut self.conv_state, &active_after) {
                 cs.set_context(AWAITING_START_MILESTONE_KEY, next.id.clone());
             }
@@ -258,6 +253,16 @@ impl<H: AgentHarness> PlatformEngine<H> {
     }
 
     /// 在 fine granularity 下，将“继续”消费成显式里程碑推进。
+    /// 是否为 fine 粒度（用户每步都需要显式"继续"）。
+    /// - Legacy 路径：`current_app.granularity == "fine"`
+    /// - 新设计路径：注入了 AgentRegistry 即视为 fine
+    pub fn is_fine_granularity(&self) -> bool {
+        match self.current_app.as_ref() {
+            Some(app) => app.granularity.as_deref() == Some("fine"),
+            None => self.agents.is_some(),
+        }
+    }
+
     pub fn consume_continue_command(
         &mut self,
         user_message: &str,
@@ -266,8 +271,17 @@ impl<H: AgentHarness> PlatformEngine<H> {
             return None;
         }
 
-        let app = self.current_app.as_ref()?;
-        if app.granularity.as_deref() != Some("fine") {
+        // Q&A 模式：不消费"继续"，让普通 chat 路径处理
+        if self
+            .conv_state
+            .as_ref()
+            .map(|cs| cs.global_mode == GlobalMode::QnA)
+            .unwrap_or(false)
+        {
+            return None;
+        }
+
+        if !self.is_fine_granularity() {
             return None;
         }
 
@@ -351,6 +365,9 @@ impl<H: AgentHarness> PlatformEngine<H> {
         Ok(())
     }
 
+    /// **LEGACY**：旧版动态拆解 + 静态 fallback。
+    /// 新代码用 [`Self::ensure_combined_plan`]。
+    #[allow(deprecated)]
     pub async fn ensure_plan_initialized(&mut self, user_message: &str) -> Result<()> {
         let Some(app) = self.current_app.clone() else {
             return Ok(());
@@ -447,16 +464,21 @@ impl<H: AgentHarness> PlatformEngine<H> {
             }
         }
 
+        // 优先用 agent_system_prompt（新设计），回退到 app_system_prompt（legacy）
+        let system_prompt = self
+            .agent_system_prompt()
+            .or_else(|| self.app_system_prompt());
+
         ChatRequest {
             user_message: user_message.to_string(),
-            platform_system_prompt: self.app_system_prompt(),
+            platform_system_prompt: system_prompt,
             context,
             tools,
             model: None,
-            session_id: self
-                .conv_state
-                .as_ref()
-                .map(|cs| format!("{}-{}", cs.app_id, cs.turn_count)),
+            session_id: self.conv_state.as_ref().map(|cs| {
+                let scope = cs.agent_id.as_deref().unwrap_or(cs.app_id.as_str());
+                format!("{}-{}", scope, cs.turn_count)
+            }),
             previous_messages: self.messages.clone(),
         }
     }
