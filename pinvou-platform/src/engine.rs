@@ -8,9 +8,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::app::{AppConfig, AppRegistry};
+use super::agent_registry::AgentRegistry;
+use super::app::{AppConfig, AppRegistry, Milestone};
+use super::combined_planner::{CombinedPlanner, PlannedMilestone};
+use super::contract::contract_for_mode;
 use super::harness::{AgentHarness, ChatRequest, Checkpoint, HistoryMessage, ModelInfo, ToolDef};
-use super::workflow::ConversationState;
+use super::workflow::{ConversationState, GlobalMode};
 use anyhow::Result;
 use regex::Regex;
 
@@ -22,11 +25,13 @@ const AWAITING_START_MILESTONE_KEY: &str = "_awaiting_start_milestone";
 pub struct PlatformEngine<H: AgentHarness> {
     /// 底层 agent harness
     pub harness: H,
-    /// 应用注册表
+    /// 应用注册表（legacy，由 AgentRegistry 替代中）
     pub registry: Arc<AppRegistry>,
+    /// Agent 注册表（新设计，从 prompts/*.md 加载）
+    pub agents: Option<Arc<AgentRegistry>>,
     /// 当前对话状态
     pub conv_state: Option<ConversationState>,
-    /// 当前应用配置
+    /// 当前应用配置（legacy）
     pub current_app: Option<AppConfig>,
     /// 工作目录
     pub workspace: PathBuf,
@@ -34,6 +39,21 @@ pub struct PlatformEngine<H: AgentHarness> {
     pub consecutive_out_of_scope: u32,
     /// 对话消息历史（对标 deepseek-tui Session.messages）
     pub messages: Vec<HistoryMessage>,
+}
+
+/// `ensure_combined_plan` 的执行结果
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CombinedPlanOutcome {
+    /// 已经初始化过，本次未触发拆解
+    AlreadyPlanned,
+    /// 落到 Q&A 路径，没有 milestone
+    QaMode { agent_id: String },
+    /// 落到场景路径，挂上了 milestones
+    ScenarioMode {
+        agent_id: String,
+        milestone_count: usize,
+        used_fallback: bool,
+    },
 }
 
 /// 用户在 choice card 中提交的一项选择。
@@ -59,12 +79,105 @@ impl<H: AgentHarness> PlatformEngine<H> {
         Self {
             harness,
             registry: Arc::new(registry),
+            agents: None,
             conv_state: None,
             current_app: None,
             workspace,
             consecutive_out_of_scope: 0,
             messages: Vec::new(),
         }
+    }
+
+    /// 注入 AgentRegistry（新设计入口）。
+    /// 在调用 `ensure_combined_plan` 前必须先调用此方法。
+    pub fn set_agent_registry(&mut self, agents: Arc<AgentRegistry>) {
+        self.agents = Some(agents);
+    }
+
+    /// 新设计：单次 LLM 调用完成「分类 + 拆解」，并初始化 ConversationState。
+    ///
+    /// 行为：
+    /// - 若 `conv_state.plan_initialized == true`：返回 `AlreadyPlanned`
+    /// - 否则调用 `harness.chat()` 拿到 JSON，用 `CombinedPlanner::parse_plan` 校验
+    /// - 校验失败 → 使用 `CombinedPlanner::fallback_plan()`
+    /// - 根据 `agent_id`：
+    ///   - `"qa"` → 创建 `ConversationState::new_qa()`
+    ///   - 其他 → 把 `PlannedMilestone` 转成 `Milestone`，创建 Executing 状态
+    pub async fn ensure_combined_plan(
+        &mut self,
+        user_message: &str,
+    ) -> Result<CombinedPlanOutcome> {
+        let agents = self
+            .agents
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("AgentRegistry 未注入，先调用 set_agent_registry"))?;
+
+        if self
+            .conv_state
+            .as_ref()
+            .map(|cs| cs.plan_initialized)
+            .unwrap_or(false)
+        {
+            return Ok(CombinedPlanOutcome::AlreadyPlanned);
+        }
+
+        let prompt = CombinedPlanner::build_prompt(user_message, &agents);
+        let raw = self
+            .harness
+            .chat(ChatRequest {
+                user_message: prompt,
+                platform_system_prompt: Some(
+                    "你是任务拆解器。严格只输出 JSON，不要任何其他文本。".into(),
+                ),
+                context: Default::default(),
+                tools: vec![],
+                model: None,
+                session_id: None,
+                previous_messages: vec![],
+            })
+            .await?;
+
+        let (plan, used_fallback) = match CombinedPlanner::parse_plan(&raw, &agents) {
+            Ok(p) => (p, false),
+            Err(_) => (CombinedPlanner::fallback_plan(), true),
+        };
+
+        if plan.is_qa() {
+            let mut state = ConversationState::new_qa(&plan.agent_id);
+            state.turn_count = 1;
+            let agent_id = plan.agent_id.clone();
+            self.conv_state = Some(state);
+            return Ok(CombinedPlanOutcome::QaMode { agent_id });
+        }
+
+        let milestones = plan
+            .milestones
+            .iter()
+            .enumerate()
+            .map(|(idx, pm)| planned_to_milestone(idx, pm))
+            .collect::<Vec<_>>();
+
+        let milestone_count = milestones.len();
+        let mut state = ConversationState::new(plan.agent_id.clone(), milestones);
+        state.set_agent(&plan.agent_id);
+        state.plan_initialized = true;
+        state.global_mode = GlobalMode::Executing;
+        let agent_id = plan.agent_id.clone();
+        self.conv_state = Some(state);
+
+        Ok(CombinedPlanOutcome::ScenarioMode {
+            agent_id,
+            milestone_count,
+            used_fallback,
+        })
+    }
+
+    /// 拿到当前 agent 的 system prompt 正文（替代 app_system_prompt）
+    pub fn agent_system_prompt(&self) -> Option<String> {
+        let cs = self.conv_state.as_ref()?;
+        let agent_id = cs.agent_id.as_deref()?;
+        let agents = self.agents.as_ref()?;
+        agents.get(agent_id).map(|a| a.body.clone())
     }
 
     /// 将 choice card 的结果作为平台事件消费，而不是只作为普通聊天文本。
@@ -705,6 +818,22 @@ fn choice_event_summary(
     lines.join("\n\n")
 }
 
+/// 把 `PlannedMilestone` 转换为 `Milestone`，挂上 mode 默认 contract + LLM 选的 tools。
+fn planned_to_milestone(idx: usize, pm: &PlannedMilestone) -> Milestone {
+    let mut contract = contract_for_mode(pm.mode.clone());
+    contract.allowed_tools = pm.tools.clone();
+    contract.required_context = pm.required_context.clone();
+    contract.produced_context = pm.produced_context.clone();
+    Milestone {
+        id: format!("ms_{idx}"),
+        label: pm.label.clone(),
+        prompt_hint: pm.prompt_hint.clone(),
+        icon: None,
+        contract,
+        ..Default::default()
+    }
+}
+
 /// 拆解结果
 #[derive(Debug, Clone)]
 pub struct DecomposeResult {
@@ -746,6 +875,19 @@ pub mod mock {
                     capability: "medium".into(),
                 }],
                 responses: vec!["Mock response".into()],
+                call_count: AtomicUsize::new(0),
+            }
+        }
+
+        pub fn with_responses(responses: Vec<String>) -> Self {
+            Self {
+                tools: vec![],
+                models: vec![ModelInfo {
+                    id: "mock-model".into(),
+                    provider: "mock".into(),
+                    capability: "medium".into(),
+                }],
+                responses,
                 call_count: AtomicUsize::new(0),
             }
         }
@@ -970,6 +1112,161 @@ pub mod mock {
 
         let prompt = engine.build_next_contract_prompt("继续").unwrap();
         assert!(prompt.system.contains("当前契约要求"));
+    }
+
+    // === ensure_combined_plan 测试 ===
+
+    fn agents_registry() -> Arc<AgentRegistry> {
+        use crate::agent_registry::AgentDefinition;
+        let mut reg = AgentRegistry::default();
+        for (id, body) in [
+            ("qa", "Q&A body"),
+            ("doc_generation", "Docs body"),
+            ("data_analysis", "Data body"),
+            ("planning", "Plans body"),
+            ("generic", "Generic body"),
+        ] {
+            reg.register(AgentDefinition {
+                id: id.into(),
+                name: id.into(),
+                description: format!("{id} agent"),
+                emoji: None,
+                body: body.into(),
+            });
+        }
+        Arc::new(reg)
+    }
+
+    #[tokio::test]
+    async fn ensure_combined_plan_qa_creates_qa_state() {
+        let mock = MockHarness::with_responses(vec![
+            r#"{"agent": "qa", "milestones": []}"#.into(),
+        ]);
+        let mut engine = PlatformEngine::new(mock, AppRegistry::default(), PathBuf::from("."));
+        engine.set_agent_registry(agents_registry());
+
+        let outcome = engine.ensure_combined_plan("K-means 是什么").await.unwrap();
+
+        match outcome {
+            CombinedPlanOutcome::QaMode { ref agent_id } => assert_eq!(agent_id, "qa"),
+            other => panic!("expected QaMode, got {:?}", other),
+        }
+
+        let cs = engine.conv_state.as_ref().unwrap();
+        assert_eq!(cs.global_mode, GlobalMode::QnA);
+        assert_eq!(cs.agent_id.as_deref(), Some("qa"));
+        assert!(cs.milestones.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ensure_combined_plan_scenario_attaches_milestones() {
+        let mock = MockHarness::with_responses(vec![
+            r#"{
+                "agent": "doc_generation",
+                "milestones": [
+                    {"label": "确认结构", "mode": "produce_options", "tools": ["request_user_input"]},
+                    {"label": "生成草稿", "mode": "freeform", "tools": []},
+                    {"label": "定稿", "mode": "final_output", "tools": ["file_write"]}
+                ]
+            }"#.into(),
+        ]);
+        let mut engine = PlatformEngine::new(mock, AppRegistry::default(), PathBuf::from("."));
+        engine.set_agent_registry(agents_registry());
+
+        let outcome = engine.ensure_combined_plan("帮我写周报").await.unwrap();
+
+        match outcome {
+            CombinedPlanOutcome::ScenarioMode {
+                ref agent_id,
+                milestone_count,
+                used_fallback,
+            } => {
+                assert_eq!(agent_id, "doc_generation");
+                assert_eq!(milestone_count, 3);
+                assert!(!used_fallback);
+            }
+            other => panic!("expected ScenarioMode, got {:?}", other),
+        }
+
+        let cs = engine.conv_state.as_ref().unwrap();
+        assert_eq!(cs.global_mode, GlobalMode::Executing);
+        assert_eq!(cs.agent_id.as_deref(), Some("doc_generation"));
+        assert_eq!(cs.milestones.len(), 3);
+
+        // 第一个 milestone 应该 Active
+        assert!(matches!(
+            cs.milestones[0].1,
+            crate::workflow::MilestoneStatus::Active
+        ));
+        // 第一个 milestone 的 allowed_tools 应该是 LLM 选的
+        assert_eq!(
+            cs.milestones[0].0.contract.allowed_tools,
+            vec!["request_user_input".to_string()]
+        );
+        // produce_options 的 question_budget 来自 mode 默认
+        assert_eq!(cs.milestones[0].0.contract.question_budget, 1);
+        // 最后一个 milestone 是 final_output
+        let last = &cs.milestones[2].0.contract;
+        assert!(matches!(
+            last.mode,
+            crate::contract::MilestoneMode::FinalOutput
+        ));
+    }
+
+    #[tokio::test]
+    async fn ensure_combined_plan_falls_back_on_invalid_json() {
+        let mock = MockHarness::with_responses(vec!["this is not json".into()]);
+        let mut engine = PlatformEngine::new(mock, AppRegistry::default(), PathBuf::from("."));
+        engine.set_agent_registry(agents_registry());
+
+        let outcome = engine.ensure_combined_plan("怎么办").await.unwrap();
+
+        match outcome {
+            CombinedPlanOutcome::ScenarioMode {
+                ref agent_id,
+                used_fallback,
+                ..
+            } => {
+                assert_eq!(agent_id, "generic");
+                assert!(used_fallback);
+            }
+            other => panic!("expected ScenarioMode w/ fallback, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn ensure_combined_plan_returns_already_planned_on_second_call() {
+        let mock = MockHarness::with_responses(vec![
+            r#"{"agent": "qa", "milestones": []}"#.into(),
+        ]);
+        let mut engine = PlatformEngine::new(mock, AppRegistry::default(), PathBuf::from("."));
+        engine.set_agent_registry(agents_registry());
+
+        let _ = engine.ensure_combined_plan("first").await.unwrap();
+        let second = engine.ensure_combined_plan("second").await.unwrap();
+        assert_eq!(second, CombinedPlanOutcome::AlreadyPlanned);
+    }
+
+    #[tokio::test]
+    async fn ensure_combined_plan_without_registry_errors() {
+        let mock = MockHarness::with_responses(vec![]);
+        let mut engine = PlatformEngine::new(mock, AppRegistry::default(), PathBuf::from("."));
+        // 没有调用 set_agent_registry
+        let err = engine.ensure_combined_plan("hi").await.unwrap_err();
+        assert!(err.to_string().contains("AgentRegistry"));
+    }
+
+    #[tokio::test]
+    async fn agent_system_prompt_returns_body_for_current_agent() {
+        let mock = MockHarness::with_responses(vec![
+            r#"{"agent": "qa", "milestones": []}"#.into(),
+        ]);
+        let mut engine = PlatformEngine::new(mock, AppRegistry::default(), PathBuf::from("."));
+        engine.set_agent_registry(agents_registry());
+
+        engine.ensure_combined_plan("hi").await.unwrap();
+        let body = engine.agent_system_prompt().unwrap();
+        assert_eq!(body, "Q&A body");
     }
 
     fn registry_with_plan_app(granularity: &str) -> AppRegistry {

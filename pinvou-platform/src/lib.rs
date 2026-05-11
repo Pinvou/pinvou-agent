@@ -7,7 +7,9 @@
 //! - ConversationState：对话状态机 + 里程碑跟踪
 //! - TUI：启动器 + 对话视图 + 侧边栏 + 输入框
 
+pub mod agent_registry;
 pub mod app;
+pub mod combined_planner;
 pub mod contract;
 pub mod contract_runtime;
 pub mod contract_validator;
@@ -18,6 +20,7 @@ pub mod engine_factory;
 pub mod harness;
 pub mod response_checker;
 pub mod reviewer;
+pub mod rollback;
 pub mod router;
 pub mod step_builder;
 pub mod tui;

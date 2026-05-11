@@ -144,6 +144,88 @@ fn default_advance_policy() -> AdvancePolicy {
     AdvancePolicy::ManualContinue
 }
 
+/// 根据 mode 返回内置默认 contract（新设计：mode → 规则映射在代码里硬编码）。
+///
+/// 注意：返回的 `allowed_tools` 留空。新设计中 `allowed_tools` 由 LLM 拆解时挑选，
+/// 但会被 mode 兼容性规则（`mode_tool_compatibility`）约束。
+pub fn contract_for_mode(mode: MilestoneMode) -> MilestoneContract {
+    match mode {
+        MilestoneMode::Collect => MilestoneContract {
+            mode,
+            question_budget: 1,
+            allowed_tools: Vec::new(),
+            output_requirements: Vec::new(),
+            advance_policy: AdvancePolicy::OnChoice,
+            ..MilestoneContract::default()
+        },
+        MilestoneMode::ProduceOptions => MilestoneContract {
+            mode,
+            question_budget: 1,
+            allowed_tools: Vec::new(),
+            output_requirements: vec![
+                OutputRequirement::MinOptions(2),
+                OutputRequirement::MaxOptions(3),
+            ],
+            advance_policy: AdvancePolicy::OnChoice,
+            ..MilestoneContract::default()
+        },
+        MilestoneMode::RefineSelectedOption => MilestoneContract {
+            mode,
+            question_budget: 0,
+            allowed_tools: Vec::new(),
+            output_requirements: vec![OutputRequirement::NoOpenQuestion],
+            advance_policy: AdvancePolicy::OnValidOutput,
+            ..MilestoneContract::default()
+        },
+        MilestoneMode::Freeform => MilestoneContract {
+            mode,
+            question_budget: 1,
+            allowed_tools: Vec::new(),
+            output_requirements: vec![OutputRequirement::NoOpenQuestion],
+            advance_policy: AdvancePolicy::OnValidOutput,
+            ..MilestoneContract::default()
+        },
+        MilestoneMode::FinalOutput => MilestoneContract {
+            mode,
+            question_budget: 0,
+            allowed_tools: Vec::new(),
+            output_requirements: vec![OutputRequirement::NoOpenQuestion],
+            advance_policy: AdvancePolicy::OnValidOutput,
+            ..MilestoneContract::default()
+        },
+    }
+}
+
+/// mode 与工具的硬兼容性检查。
+///
+/// 返回 None 表示兼容；Some(reason) 表示拒绝。
+///
+/// 规则：
+/// - `final_output` 禁止 `request_user_input`（最终输出阶段不能再问用户）
+/// - 其他 mode 当前无硬限制
+pub fn mode_tool_compatibility(mode: MilestoneMode, tool: &str) -> Option<String> {
+    if matches!(mode, MilestoneMode::FinalOutput) && tool == "request_user_input" {
+        return Some(format!(
+            "final_output 阶段禁止使用 {tool}（最终输出不能再向用户提问）"
+        ));
+    }
+    None
+}
+
+/// 全局工具池：所有可用工具的白名单。
+pub const GLOBAL_TOOL_POOL: &[&str] = &[
+    "request_user_input",
+    "file_read",
+    "file_write",
+    "web_search",
+    "python_exec",
+];
+
+/// 工具是否在全局白名单内
+pub fn is_tool_in_global_pool(tool: &str) -> bool {
+    GLOBAL_TOOL_POOL.contains(&tool)
+}
+
 pub fn default_contract_for_label(label: &str) -> MilestoneContract {
     if label.contains("方案") || label.contains("对比") {
         MilestoneContract {
@@ -225,4 +307,61 @@ where
         .iter()
         .map(|raw| parse_output_requirement(raw).map_err(serde::de::Error::custom))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn contract_for_mode_collect_has_question_budget_one_and_on_choice() {
+        let c = contract_for_mode(MilestoneMode::Collect);
+        assert_eq!(c.question_budget, 1);
+        assert_eq!(c.advance_policy, AdvancePolicy::OnChoice);
+        assert!(c.output_requirements.is_empty());
+    }
+
+    #[test]
+    fn contract_for_mode_produce_options_requires_2_to_3_options() {
+        let c = contract_for_mode(MilestoneMode::ProduceOptions);
+        assert!(c.output_requirements.contains(&OutputRequirement::MinOptions(2)));
+        assert!(c.output_requirements.contains(&OutputRequirement::MaxOptions(3)));
+        assert_eq!(c.advance_policy, AdvancePolicy::OnChoice);
+    }
+
+    #[test]
+    fn contract_for_mode_final_output_no_budget_no_open_question() {
+        let c = contract_for_mode(MilestoneMode::FinalOutput);
+        assert_eq!(c.question_budget, 0);
+        assert!(c.output_requirements.contains(&OutputRequirement::NoOpenQuestion));
+        assert_eq!(c.advance_policy, AdvancePolicy::OnValidOutput);
+    }
+
+    #[test]
+    fn mode_tool_compatibility_blocks_request_input_in_final_output() {
+        let res = mode_tool_compatibility(MilestoneMode::FinalOutput, "request_user_input");
+        assert!(res.is_some());
+        assert!(res.unwrap().contains("final_output"));
+    }
+
+    #[test]
+    fn mode_tool_compatibility_allows_request_input_in_collect() {
+        let res = mode_tool_compatibility(MilestoneMode::Collect, "request_user_input");
+        assert!(res.is_none());
+    }
+
+    #[test]
+    fn mode_tool_compatibility_allows_file_write_in_final_output() {
+        let res = mode_tool_compatibility(MilestoneMode::FinalOutput, "file_write");
+        assert!(res.is_none());
+    }
+
+    #[test]
+    fn global_tool_pool_contains_expected_tools() {
+        assert!(is_tool_in_global_pool("request_user_input"));
+        assert!(is_tool_in_global_pool("file_write"));
+        assert!(is_tool_in_global_pool("python_exec"));
+        assert!(!is_tool_in_global_pool("rm_rf"));
+        assert!(!is_tool_in_global_pool(""));
+    }
 }

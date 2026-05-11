@@ -509,8 +509,11 @@ advance_policy = "on_choice"
         };
         let state = ConversationState {
             app_id: "计划敲定".into(),
+            agent_id: None,
+            global_mode: Default::default(),
             milestones: vec![(milestone, MilestoneStatus::Active)],
             context: HashMap::new(),
+            context_attribution: HashMap::new(),
             plan_initialized: false,
             question_counts: HashMap::new(),
             turn_count: 0,

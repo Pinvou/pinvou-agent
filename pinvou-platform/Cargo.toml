@@ -29,3 +29,6 @@ tower-http = { version = "0.6", features = ["fs"] }
 
 # 底层 Agent — path 依赖
 deepseek-tui = { path = "../DeepSeek-TUI/crates/tui" }
+
+[dev-dependencies]
+tempfile = "3"

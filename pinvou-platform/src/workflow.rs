@@ -22,11 +22,40 @@ pub enum MilestoneStatus {
     Skipped,
 }
 
+/// 全局会话状态（取代旧的"必有 app"假设）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GlobalMode {
+    /// 简单问答：无 milestone，纯流式对话
+    QnA,
+    /// 动态拆解中（短暂）
+    Planning,
+    /// 按 milestone 推进
+    Executing,
+    /// 用户触发 /replan 重拆解中
+    Replan,
+    /// 全部完成
+    Done,
+}
+
+impl Default for GlobalMode {
+    fn default() -> Self {
+        // 旧 checkpoint 默认按 Executing 还原（保留行为）
+        GlobalMode::Executing
+    }
+}
+
 /// 对话状态 — 贯穿一次应用会话的核心状态
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationState {
     /// 当前加载的应用 ID
     pub app_id: String,
+    /// 当前选定的 agent ID（None 表示未初始化或 Q&A 模式）
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    /// 全局会话模式
+    #[serde(default)]
+    pub global_mode: GlobalMode,
     /// 各里程碑状态
     pub milestones: Vec<(Milestone, MilestoneStatus)>,
     /// 对话中累积的上下文（键值对）
@@ -36,6 +65,9 @@ pub struct ConversationState {
     /// - 文档生成: {"doc_type": "周报", "collected_info": "..."}
     /// - 计划敲定: {"options": "[A, B]", "constraints": "..."}
     pub context: HashMap<String, String>,
+    /// 每个 context key 由哪个 milestone 产出（用于精准回退清理）
+    #[serde(default)]
+    pub context_attribution: HashMap<String, String>,
     /// 是否已经初始化动态计划
     #[serde(default)]
     pub plan_initialized: bool,
@@ -66,13 +98,126 @@ impl ConversationState {
 
         Self {
             app_id,
+            agent_id: None,
+            global_mode: GlobalMode::Executing,
             milestones: milestone_states,
             context: HashMap::new(),
+            context_attribution: HashMap::new(),
             plan_initialized: false,
             question_counts: HashMap::new(),
             turn_count: 0,
             current_phase: None,
         }
+    }
+
+    /// 创建 Q&A 模式的会话（无 milestone）
+    pub fn new_qa(agent_id: impl Into<String>) -> Self {
+        Self {
+            app_id: String::new(),
+            agent_id: Some(agent_id.into()),
+            global_mode: GlobalMode::QnA,
+            milestones: Vec::new(),
+            context: HashMap::new(),
+            context_attribution: HashMap::new(),
+            plan_initialized: true,
+            question_counts: HashMap::new(),
+            turn_count: 0,
+            current_phase: None,
+        }
+    }
+
+    /// 设置 agent_id
+    pub fn set_agent(&mut self, agent_id: impl Into<String>) {
+        self.agent_id = Some(agent_id.into());
+    }
+
+    /// 设置 context 项并记录产出方
+    pub fn set_context_with_origin(
+        &mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+        produced_by: impl Into<String>,
+    ) {
+        let key = key.into();
+        self.context.insert(key.clone(), value.into());
+        self.context_attribution.insert(key, produced_by.into());
+    }
+
+    /// 清除归属于某个 milestone 的所有 context（用于 /redo）
+    pub fn clear_context_by_milestone(&mut self, milestone_id: &str) {
+        let to_remove: Vec<String> = self
+            .context_attribution
+            .iter()
+            .filter(|(_, owner)| owner.as_str() == milestone_id)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in to_remove {
+            self.context.remove(&k);
+            self.context_attribution.remove(&k);
+        }
+    }
+
+    /// 清除归属于一组 milestone 的所有 context（用于 /back）
+    pub fn clear_context_by_milestones(&mut self, milestone_ids: &[String]) {
+        let to_remove: Vec<String> = self
+            .context_attribution
+            .iter()
+            .filter(|(_, owner)| milestone_ids.iter().any(|id| id == owner.as_str()))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in to_remove {
+            self.context.remove(&k);
+            self.context_attribution.remove(&k);
+        }
+    }
+
+    /// 回退到指定 milestone：将它及之后的 Done 标回 Active/Pending，并清相应 context
+    ///
+    /// - 目标 milestone 标 Active
+    /// - 目标之后的 Done 标 Pending
+    /// - 当前 Active 标 Pending（如果不在目标之前）
+    pub fn rewind_to(&mut self, milestone_id: &str) -> bool {
+        let target_idx = self.milestones.iter().position(|(m, _)| m.id == milestone_id);
+        let Some(target_idx) = target_idx else {
+            return false;
+        };
+
+        let mut affected_ids: Vec<String> = Vec::new();
+        for (i, (m, status)) in self.milestones.iter_mut().enumerate() {
+            match i.cmp(&target_idx) {
+                std::cmp::Ordering::Less => { /* 保持原状 */ }
+                std::cmp::Ordering::Equal => {
+                    affected_ids.push(m.id.clone());
+                    *status = MilestoneStatus::Active;
+                }
+                std::cmp::Ordering::Greater => {
+                    affected_ids.push(m.id.clone());
+                    *status = MilestoneStatus::Pending;
+                }
+            }
+        }
+
+        // 清除受影响 milestone 的 context 和提问计数
+        self.clear_context_by_milestones(&affected_ids);
+        for id in &affected_ids {
+            self.question_counts.remove(id);
+        }
+        true
+    }
+
+    /// 跳过当前活跃 milestone（标 Skipped 并推进）
+    pub fn skip_active(&mut self) -> Option<String> {
+        let active_id = self.active_milestone().map(|m| m.id.clone())?;
+        self.skip(&active_id);
+        Some(active_id)
+    }
+
+    /// 当前活跃 milestone 重做：清自身 context，状态仍为 Active
+    pub fn redo_active(&mut self) -> Option<String> {
+        let active_id = self.active_milestone().map(|m| m.id.clone())?;
+        self.clear_context_by_milestone(&active_id);
+        self.question_counts.remove(&active_id);
+        Some(active_id)
     }
 
     /// 标记里程碑为完成，激活下一个
@@ -295,5 +440,97 @@ mod tests {
 
         assert!(!state.plan_initialized);
         assert!(state.question_counts.is_empty());
+        assert_eq!(state.agent_id, None);
+        assert!(state.context_attribution.is_empty());
+        assert_eq!(state.global_mode, GlobalMode::Executing); // 默认值
+    }
+
+    // === 新增：context attribution + rewind 测试 ===
+
+    #[test]
+    fn set_context_with_origin_records_attribution() {
+        let mut state = ConversationState::new("test".into(), sample_milestones());
+        state.set_context_with_origin("structure", "三段式", "a");
+        assert_eq!(state.context.get("structure").unwrap(), "三段式");
+        assert_eq!(state.context_attribution.get("structure").unwrap(), "a");
+    }
+
+    #[test]
+    fn clear_context_by_milestone_only_removes_owned_keys() {
+        let mut state = ConversationState::new("test".into(), sample_milestones());
+        state.set_context_with_origin("k1", "v1", "a");
+        state.set_context_with_origin("k2", "v2", "b");
+        state.set_context_with_origin("k3", "v3", "a");
+
+        state.clear_context_by_milestone("a");
+
+        assert!(!state.context.contains_key("k1"));
+        assert!(state.context.contains_key("k2"));
+        assert!(!state.context.contains_key("k3"));
+        assert!(!state.context_attribution.contains_key("k1"));
+        assert!(state.context_attribution.contains_key("k2"));
+    }
+
+    #[test]
+    fn rewind_to_restores_active_and_clears_later_context() {
+        let mut state = ConversationState::new("test".into(), sample_milestones());
+        // 走完 a 和 b
+        state.set_context_with_origin("ka", "va", "a");
+        state.mark_done("a");
+        state.set_context_with_origin("kb", "vb", "b");
+        state.mark_done("b");
+        // 此时 c 是 Active
+        assert_eq!(state.milestones[2].1, MilestoneStatus::Active);
+
+        // 回退到 a
+        assert!(state.rewind_to("a"));
+        assert_eq!(state.milestones[0].1, MilestoneStatus::Active);
+        assert_eq!(state.milestones[1].1, MilestoneStatus::Pending);
+        assert_eq!(state.milestones[2].1, MilestoneStatus::Pending);
+
+        // a 自身的 context 被清，因为它也是受影响的（Active）
+        // b 的 context 被清
+        assert!(!state.context.contains_key("ka"));
+        assert!(!state.context.contains_key("kb"));
+    }
+
+    #[test]
+    fn rewind_to_unknown_milestone_returns_false() {
+        let mut state = ConversationState::new("test".into(), sample_milestones());
+        assert!(!state.rewind_to("nonexistent"));
+    }
+
+    #[test]
+    fn skip_active_advances_to_next() {
+        let mut state = ConversationState::new("test".into(), sample_milestones());
+        let skipped = state.skip_active().unwrap();
+        assert_eq!(skipped, "a");
+        assert_eq!(state.milestones[0].1, MilestoneStatus::Skipped);
+        assert_eq!(state.milestones[1].1, MilestoneStatus::Active);
+    }
+
+    #[test]
+    fn redo_active_clears_own_context_but_keeps_prior() {
+        let mut state = ConversationState::new("test".into(), sample_milestones());
+        state.set_context_with_origin("ka", "va", "a");
+        state.mark_done("a"); // 现在 b 是 Active
+        state.set_context_with_origin("kb", "vb", "b");
+        state.increment_question_count("b");
+
+        let redone = state.redo_active().unwrap();
+        assert_eq!(redone, "b");
+        assert_eq!(state.milestones[1].1, MilestoneStatus::Active); // 仍是 Active
+        assert!(state.context.contains_key("ka")); // a 的不动
+        assert!(!state.context.contains_key("kb")); // b 的清
+        assert_eq!(state.question_count("b"), 0); // 计数清零
+    }
+
+    #[test]
+    fn qa_constructor_creates_state_with_no_milestones() {
+        let state = ConversationState::new_qa("qa");
+        assert_eq!(state.global_mode, GlobalMode::QnA);
+        assert_eq!(state.agent_id.as_deref(), Some("qa"));
+        assert!(state.milestones.is_empty());
+        assert!(state.plan_initialized);
     }
 }

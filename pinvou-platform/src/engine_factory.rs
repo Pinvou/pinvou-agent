@@ -5,18 +5,42 @@
 //!   DEEPSEEK_BASE_URL  — API 端点（可选，默认 DeepSeek 官方）
 //!   DEEPSEEK_MODEL     — 模型名（可选，默认 deepseek-chat）
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Result;
 use deepseek_tui::client::DeepSeekClient;
 use deepseek_tui::config::Config;
 
+use crate::agent_registry::AgentRegistry;
 use crate::app::AppRegistry;
 use crate::deepseek_harness::DeepSeekHarness;
 use crate::engine::PlatformEngine;
 use crate::harness::{ModelInfo, ToolDef};
 
 pub type PinvouEngine = PlatformEngine<DeepSeekHarness<DeepSeekClient>>;
+
+/// 加载 prompts/ 目录下的 agent。若目录不存在或为空，返回空 registry（不报错）。
+pub fn load_agents(prompts_dir: impl AsRef<Path>) -> Arc<AgentRegistry> {
+    let dir = prompts_dir.as_ref();
+    let reg = if dir.exists() {
+        match AgentRegistry::from_directory(dir) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!(
+                    "[pinvou3] 加载 prompts 目录失败 ({}): {e}",
+                    dir.display()
+                );
+                AgentRegistry::default()
+            }
+        }
+    } else {
+        eprintln!("[pinvou3] prompts/ 目录不存在: {}", dir.display());
+        AgentRegistry::default()
+    };
+    eprintln!("[pinvou3] 已加载 {} 个 agent", reg.len());
+    Arc::new(reg)
+}
 
 /// 从环境变量创建引擎。
 pub fn create_engine(registry: AppRegistry, workspace: PathBuf) -> Result<PinvouEngine> {
@@ -92,5 +116,11 @@ pub fn create_engine(registry: AppRegistry, workspace: PathBuf) -> Result<Pinvou
 
     let harness = DeepSeekHarness::new(client, tool_names, models, workspace.clone());
 
-    Ok(PlatformEngine::new(harness, registry, workspace))
+    let mut engine = PlatformEngine::new(harness, registry, workspace.clone());
+
+    // 注入 AgentRegistry（默认从 workspace/prompts 加载）
+    let prompts_dir = workspace.join("prompts");
+    engine.set_agent_registry(load_agents(&prompts_dir));
+
+    Ok(engine)
 }

@@ -29,6 +29,7 @@ use crate::engine::{MilestoneAdvanceResult, UserChoiceAnswer};
 use crate::engine_factory::PinvouEngine;
 use crate::harness::{AgentHarness, StreamEvent, ToolDef};
 use crate::response_checker::ResponseChecker;
+use crate::rollback::{self, RollbackOutcome};
 use crate::step_builder::StepBuilder;
 
 // === App State ===
@@ -90,6 +91,67 @@ fn sse_delta(text: &str) -> axum::response::sse::Event {
 
 fn sse_done() -> axum::response::sse::Event {
     axum::response::sse::Event::default().data(r#"{"done":true}"#)
+}
+
+/// 在 engine 上执行一条 slash 命令并记录历史。
+fn handle_slash_command(engine: &mut PinvouEngine, raw: &str) -> RollbackOutcome {
+    // 1. 解析
+    let Some(cmd) = rollback::parse_command(raw) else {
+        return RollbackOutcome {
+            message: format!("未知命令: {}", raw.trim()),
+            state_changed: false,
+            trigger_replan: false,
+            switch_agent: None,
+        };
+    };
+
+    // 2. 记录用户输入
+    engine.messages.push(crate::harness::HistoryMessage {
+        role: "user".into(),
+        content: raw.trim().to_string(),
+    });
+
+    // 3. 在 conv_state 上执行
+    let outcome = match engine.conv_state.as_mut() {
+        Some(cs) => rollback::execute(cmd, cs),
+        None => RollbackOutcome {
+            message: "尚无会话状态，无法执行命令".into(),
+            state_changed: false,
+            trigger_replan: false,
+            switch_agent: None,
+        },
+    };
+
+    // 4. 记录助手响应
+    engine.messages.push(crate::harness::HistoryMessage {
+        role: "assistant".into(),
+        content: outcome.message.clone(),
+    });
+
+    outcome
+}
+
+/// SSE 事件：slash 命令执行结果（不调 LLM）
+fn sse_command_result(outcome: &RollbackOutcome) -> axum::response::sse::Event {
+    axum::response::sse::Event::default().data(
+        serde_json::json!({
+            "done": true,
+            "command": {
+                "message": outcome.message,
+                "state_changed": outcome.state_changed,
+                "trigger_replan": outcome.trigger_replan,
+                "switch_agent": outcome.switch_agent,
+            }
+        })
+        .to_string(),
+    )
+}
+
+/// 构造 slash 命令的 SSE 响应（一个 delta + 一个 done）
+fn build_command_sse(outcome: RollbackOutcome) -> Vec<SseItem> {
+    let delta = sse_delta(&outcome.message);
+    let done = sse_command_result(&outcome);
+    vec![Ok(delta), Ok(done)]
 }
 
 fn sse_done_for_milestone(result: &MilestoneAdvanceResult) -> axum::response::sse::Event {
@@ -258,6 +320,13 @@ async fn stream_chat(
             let ev = sse_err(format!("加载应用失败: {e}"));
             return Box::pin(stream::iter(vec![Ok(ev)]));
         }
+    }
+
+    // === Slash 命令分流（早退）===
+    // 在 ensure_plan_initialized 之前处理，避免空命令触发拆解
+    if req.tool_result.is_none() && rollback::is_slash_command(&req.message) {
+        let outcome = handle_slash_command(&mut engine, &req.message);
+        return Box::pin(stream::iter(build_command_sse(outcome)));
     }
 
     if req.tool_result.is_none() {
@@ -808,6 +877,31 @@ mod tests {
         assert_eq!(decision, FrontendToolDecision::Accept);
         assert!(suppressed.is_none());
         assert_eq!(cs.question_count("options"), 0);
+    }
+
+    // === slash 命令路径测试 ===
+
+    #[test]
+    fn build_command_sse_emits_delta_then_done_with_command_field() {
+        let outcome = RollbackOutcome {
+            message: "已回退到 a".into(),
+            state_changed: true,
+            trigger_replan: false,
+            switch_agent: None,
+        };
+        let events = build_command_sse(outcome);
+        assert_eq!(events.len(), 2);
+        // 第一个应是 delta，第二个应是带 command 字段的 done
+        let second = events
+            .into_iter()
+            .nth(1)
+            .unwrap()
+            .map_err(|_: std::convert::Infallible| ())
+            .unwrap();
+        // SSE Event 字段是私有的，通过 Debug 输出验证（够用）
+        let dbg = format!("{:?}", second);
+        assert!(dbg.contains("command"));
+        assert!(dbg.contains("\\\"state_changed\\\":true") || dbg.contains("state_changed"));
     }
 }
 
