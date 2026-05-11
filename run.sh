@@ -6,4 +6,4 @@ export DEEPSEEK_BASE_URL="https://ark.cn-beijing.volces.com/api/coding/v3"
 export DEEPSEEK_MODEL="deepseek-v3-2-251201"
 
 cd "$(dirname "$0")"
-exec cargo run --manifest-path pinvou-platform/Cargo.toml -- --apps-dir apps/ "$@"
+exec cargo run --manifest-path pinvou-platform/Cargo.toml -- --prompts-dir prompts/ "$@"
