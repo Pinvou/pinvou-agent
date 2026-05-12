@@ -65,11 +65,17 @@ impl AppEngine {
     }
 
     /// 发用户消息给 Engine。Engine 内部自管 session 状态，所以多轮自然累积。
+    ///
+    /// 用 `AppMode::Yolo`（不是 Agent）：pinvou3 MVP 是 YOLO 行为（auto_approve=true，
+    /// trust_mode=true），且 DeepSeek-TUI 在 Yolo 模式下禁用 deferred tool loading
+    /// （tool_catalog.rs:32 `if mode == AppMode::Yolo { return false }`）。
+    /// Agent 模式 + Qwen3.6 会触发 write_file 等延迟工具的"加载后重试"流程，加上
+    /// 上游 schema validator 对字段顺序敏感，会导致 LLM 反复 retry 卡死。
     pub async fn send_user_message(&self, content: String) -> Result<()> {
         self.handle
             .send(Op::SendMessage {
                 content,
-                mode: AppMode::Agent,
+                mode: AppMode::Yolo,
                 model: self.model.clone(),
                 goal_objective: None,
                 reasoning_effort: Some("off".to_string()),
