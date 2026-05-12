@@ -4,23 +4,49 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>pinvou3 智能助手</title>
-  <link rel="stylesheet" href="./styles/base.css">
+
+  <!-- 本地化的 markdown 渲染 + 安全过滤（无 CDN 依赖） -->
+  <script src="./vendor/marked.min.js"></script>
+  <script src="./vendor/purify.min.js"></script>
+
+  <link href="./styles/chat.css" rel="stylesheet"/>
 </head>
 <body>
+
+  <!-- 顶栏 -->
   <header class="topbar">
-    <div class="brand">pinvou3</div>
-    <div id="status" class="status status-idle">就绪</div>
+    <div class="topbar-left">
+      <span class="brand">PINVOU3</span>
+      <span class="brand-sub">智能助手</span>
+    </div>
+    <div class="topbar-right">
+      <span id="status-dot" class="status-dot"></span>
+      <span id="status-text" class="status-text">READY</span>
+    </div>
   </header>
 
-  <main class="chat-area" id="chat-area"></main>
+  <!-- 消息流 -->
+  <main id="chat-area" class="chat-area chat-scroll">
+    <div class="msg-row msg-system">
+      <div class="bubble bubble-system">
+        <span class="bubble-system-prefix">PINVOU3 · READY</span><br/>
+        跟 Qwen3.6 说点什么。它能联网、读写文件、跑 shell。
+      </div>
+    </div>
+  </main>
 
+  <!-- 输入栏 -->
   <footer class="composer">
-    <textarea
-      id="input"
-      placeholder="跟 Qwen3.6 说点什么（Enter 发送，Shift+Enter 换行）"
-      rows="2"
-      autofocus></textarea>
-    <button id="send-btn" type="button">发送</button>
+    <div class="composer-inner">
+      <textarea
+        id="input"
+        rows="1"
+        placeholder="跟 Qwen3.6 说点什么（Enter 发送 · Shift+Enter 换行）"
+        autofocus></textarea>
+      <button id="send-btn" type="button" aria-label="发送">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+      </button>
+    </div>
   </footer>
 
   <script src="./main.js"></script>

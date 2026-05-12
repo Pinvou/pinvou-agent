@@ -10,5 +10,9 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0"
+  },
+  "dependencies": {
+    "dompurify": "^3.4.2",
+    "marked": "^13.0.3"
   }
 }
