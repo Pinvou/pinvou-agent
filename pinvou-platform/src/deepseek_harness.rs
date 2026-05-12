@@ -49,9 +49,12 @@ const TOOL_RESULT_VISIBLE_MAX: usize = 1500;
 ///
 /// 与之相对，「信息」工具（web_search / read_file / list_dir / grep_files
 /// / fetch_url 等）需要 LLM 拿到结果后继续生成，不进此列表。
+///
+/// `edit_file` 也**不在**此列表：PatchOutput 阶段 LLM 通常需要连续多次
+/// edit_file（一次只改一处，多处修订要多次调用），一次 edit 就断流会
+/// 截断微调流程。
 const SIDE_EFFECT_TOOLS: &[&str] = &[
     "write_file",
-    "edit_file",
     "exec_shell",
     "exec_interact",
     "exec_shell_cancel",
@@ -749,8 +752,17 @@ mod tests {
     fn side_effect_tools_include_write_and_shell() {
         // Problem 3 修复依据：这些工具完成后 tool loop 必须终止。
         assert!(is_side_effect_tool("write_file"));
-        assert!(is_side_effect_tool("edit_file"));
         assert!(is_side_effect_tool("exec_shell"));
+    }
+
+    #[test]
+    fn side_effect_tools_exclude_edit_file_for_patch_chains() {
+        // edit_file 移出 side_effect 是为了让 PatchOutput 能连续多次
+        // edit_file（一次改一处，多处修订要多次调用）不被中断。
+        assert!(
+            !is_side_effect_tool("edit_file"),
+            "edit_file 不应是 side_effect：patch 链需要连续多次 edit"
+        );
     }
 
     #[test]

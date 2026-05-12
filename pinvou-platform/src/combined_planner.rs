@@ -268,13 +268,19 @@ fn validate_dto(
                 );
             }
         }
+        MilestoneMode::PatchOutput => bail!(
+            "patch_output cannot appear in initial plan (it is dynamically inserted by review tweak)"
+        ),
         other => bail!(
             "last milestone must be final_output or review, got {:?}",
             other
         ),
     }
 
-    // 6. 中间不能有 final_output / review（review 也只能作为最后一个）
+    // 6. 中间不能有 final_output / review / patch_output
+    // - final_output 只能末尾或紧邻 review 之前
+    // - review 只能末尾
+    // - patch_output 完全不能在初始拆解中出现（只能由 review tweak 动态触发插入）
     for m in &dto.milestones[..last_idx] {
         match m.mode {
             MilestoneMode::FinalOutput => {
@@ -291,6 +297,12 @@ fn validate_dto(
             MilestoneMode::Review => {
                 bail!(
                     "review may only appear as the last milestone, found '{}'",
+                    m.label
+                );
+            }
+            MilestoneMode::PatchOutput => {
+                bail!(
+                    "patch_output cannot appear in initial plan (dynamically inserted by review tweak), found '{}'",
                     m.label
                 );
             }
@@ -518,6 +530,39 @@ mod tests {
             err.to_string().contains("review may only appear as the last"),
             "review 在中间应拒绝: {err}"
         );
+    }
+
+    #[test]
+    fn parse_rejects_patch_output_in_initial_plan() {
+        // patch_output 是 review tweak 动态插入的，不应在初始拆解里
+        let reg = registry_with_basic_agents();
+        let json = r#"{
+            "agent": "doc_generation",
+            "milestones": [
+                {"label": "草稿", "mode": "freeform", "tools": []},
+                {"label": "修订", "mode": "patch_output", "tools": ["edit_file"]},
+                {"label": "定稿", "mode": "final_output", "tools": ["write_file"]}
+            ]
+        }"#;
+        let err = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap_err();
+        assert!(
+            err.to_string().contains("patch_output"),
+            "应拒绝初始拆解里出现 patch_output: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_patch_output_as_last_milestone() {
+        let reg = registry_with_basic_agents();
+        let json = r#"{
+            "agent": "doc_generation",
+            "milestones": [
+                {"label": "定稿", "mode": "final_output", "tools": ["write_file"]},
+                {"label": "修订", "mode": "patch_output", "tools": ["edit_file"]}
+            ]
+        }"#;
+        let err = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap_err();
+        assert!(err.to_string().contains("patch_output"));
     }
 
     #[test]

@@ -254,28 +254,63 @@ impl<H: AgentHarness> PlatformEngine<H> {
                 }
             }
 
-            // Review 分支处理：满意/重做 走默认 mark_done；微调走 rewind_to(final_output)
+            // Review 分支处理：满意/重做 走默认 mark_done；微调走 PatchOutput 路径
             match review_branch {
                 Some(ReviewBranch::Tweak) => {
-                    if let Some(ref active) = active_before {
-                        let final_output_id = cs
-                            .milestones
-                            .iter()
-                            .find(|(m, _)| m.contract.mode == crate::contract::MilestoneMode::FinalOutput)
-                            .map(|(m, _)| m.id.clone());
-                        if let Some(final_id) = final_output_id {
-                            // rewind 会清受影响 milestone 的 context，所以反馈在 rewind 之后再 set
+                    if let Some(ref active_review) = active_before {
+                        // 检查 final_output 是否存在（决定是否能走 PatchOutput 路径）
+                        let has_final_output = cs.milestones.iter().any(|(m, _)| {
+                            m.contract.mode == crate::contract::MilestoneMode::FinalOutput
+                        });
+
+                        if has_final_output {
+                            // 动态构造 PatchOutput milestone：用 read_file + edit_file
+                            // 做精确局部修订，不重写整篇。
                             let feedback_label = answers
                                 .first()
                                 .map(|a| a.label.clone())
                                 .unwrap_or_default();
-                            cs.rewind_to(&final_id);
+                            // 计数已有 patch_*：允许多次微调，每次插入新 patch milestone
+                            let patch_seq = cs
+                                .milestones
+                                .iter()
+                                .filter(|(m, _)| m.id.starts_with("patch_"))
+                                .count();
+                            let patch_id = format!("patch_{}", patch_seq);
+
+                            let mut patch_contract = crate::contract::contract_for_mode(
+                                crate::contract::MilestoneMode::PatchOutput,
+                            );
+                            patch_contract.allowed_tools =
+                                vec!["read_file".into(), "edit_file".into()];
+
+                            let patch_label = if feedback_label.is_empty() {
+                                "局部修订产物".to_string()
+                            } else {
+                                format!("局部修订：{feedback_label}")
+                            };
+                            let patch_ms = Milestone {
+                                id: patch_id.clone(),
+                                label: patch_label,
+                                prompt_hint: Some(format!(
+                                    "基于用户反馈「{feedback_label}」做精确 patch；不要重写整篇。"
+                                )),
+                                icon: None,
+                                contract: patch_contract,
+                                ..Default::default()
+                            };
+
+                            // 反馈先注入 context（patch milestone 的 prompt 引用它）
                             if !feedback_label.is_empty() {
                                 cs.set_context("review_feedback", feedback_label);
                             }
+                            // 在 review milestone 之前插入 patch milestone
+                            // patch 成为 Active，review 改为 Pending（patch 完成后会回到 Active）
+                            cs.insert_milestone_before(&active_review.id, patch_ms);
                         } else {
-                            // 异常：review 阶段但没找到 final_output，按默认 mark_done 兜底
-                            cs.mark_done(&active.id);
+                            // 异常：review 阶段但没 final_output → 没有可 patch 的产物
+                            // 按默认 mark_done 兜底
+                            cs.mark_done(&active_review.id);
                         }
                     }
                 }
@@ -873,7 +908,7 @@ pub mod mock {
     }
 
     #[tokio::test]
-    async fn review_tweak_rewinds_to_final_output_and_records_feedback() {
+    async fn review_tweak_inserts_patch_milestone_before_review_and_records_feedback() {
         let mut engine = engine_at_review_stage().await;
         let result = engine.apply_choice_result(
             "review-1",
@@ -885,22 +920,73 @@ pub mod mock {
             false,
         );
         let cs = engine.conv_state.as_ref().unwrap();
-        // final_output (ms_2) 回到 Active；review (ms_3) 回到 Pending
-        assert_eq!(cs.milestones[2].1, crate::workflow::MilestoneStatus::Active);
-        assert_eq!(cs.milestones[3].1, crate::workflow::MilestoneStatus::Pending);
+        // 期望状态：[ms_0 Done, ms_1 Done, ms_2 Done, patch_0 Active, ms_3 Pending]
+        assert_eq!(cs.milestones.len(), 5, "应插入一个 patch milestone");
+        // final_output (ms_2) 仍为 Done（未动）
+        assert_eq!(cs.milestones[2].0.id, "ms_2");
+        assert_eq!(cs.milestones[2].1, crate::workflow::MilestoneStatus::Done);
+        // patch 插入到 review 之前，状态 Active
+        assert_eq!(cs.milestones[3].0.id, "patch_0");
+        assert_eq!(cs.milestones[3].1, crate::workflow::MilestoneStatus::Active);
+        // patch milestone 的 mode 是 PatchOutput
+        assert_eq!(
+            cs.milestones[3].0.contract.mode,
+            crate::contract::MilestoneMode::PatchOutput
+        );
+        // allowed_tools 含 read_file + edit_file
+        let tools = &cs.milestones[3].0.contract.allowed_tools;
+        assert!(tools.iter().any(|t| t == "read_file"));
+        assert!(tools.iter().any(|t| t == "edit_file"));
+        // review (ms_3) 改 Pending（等 patch 完成后再轮到）
+        assert_eq!(cs.milestones[4].0.id, "ms_3");
+        assert_eq!(cs.milestones[4].1, crate::workflow::MilestoneStatus::Pending);
         // 反馈作为 context 注入
         assert_eq!(
             cs.context.get("review_feedback").map(String::as_str),
             Some("调整时间安排：把上午徒步改到下午"),
-            "用户的微调意向应作为反馈注入 context"
         );
-        // active_after 是 final_output
-        assert_eq!(result.next_milestone_id.as_deref(), Some("ms_2"));
+        // active_after 应该是 patch_0
+        assert_eq!(result.next_milestone_id.as_deref(), Some("patch_0"));
         assert!(
-            result.summary.contains("微调") || result.summary.contains("重新生成"),
+            result.summary.contains("微调") || result.summary.contains("修改"),
             "summary 应提示微调走向: {}",
             result.summary
         );
+    }
+
+    #[tokio::test]
+    async fn review_tweak_twice_creates_two_patch_milestones() {
+        // 两次微调应该插入 patch_0 和 patch_1
+        let mut engine = engine_at_review_stage().await;
+        engine.apply_choice_result(
+            "rev-1",
+            &[UserChoiceAnswer {
+                id: "review".into(),
+                label: "改时间".into(),
+                value: "改时间".into(),
+            }],
+            false,
+        );
+        // 模拟 patch_0 完成 + review 再次 Active
+        engine.conv_state.as_mut().unwrap().mark_done("patch_0");
+        engine.apply_choice_result(
+            "rev-2",
+            &[UserChoiceAnswer {
+                id: "review".into(),
+                label: "改交通".into(),
+                value: "改交通".into(),
+            }],
+            false,
+        );
+        let cs = engine.conv_state.as_ref().unwrap();
+        // 应该有 patch_0 和 patch_1
+        let patches: Vec<&str> = cs
+            .milestones
+            .iter()
+            .filter(|(m, _)| m.id.starts_with("patch_"))
+            .map(|(m, _)| m.id.as_str())
+            .collect();
+        assert_eq!(patches, vec!["patch_0", "patch_1"]);
     }
 
     #[tokio::test]

@@ -109,6 +109,36 @@ impl ContractRuntime {
                 push_stage_hint(&mut requirements, milestone);
                 push_output_requirements(&mut requirements, &contract.output_requirements);
             }
+            MilestoneMode::PatchOutput => {
+                // 局部修订：从 context 拿用户反馈和上一版文件路径，引导 LLM 用
+                // read_file + edit_file 做精确 patch，不重写全文。
+                let feedback = state
+                    .context
+                    .get("review_feedback")
+                    .cloned()
+                    .unwrap_or_else(|| "（未提供具体反馈）".to_string());
+                let path = state
+                    .context
+                    .get("last_output_path")
+                    .cloned()
+                    .unwrap_or_else(|| "output.md".to_string());
+                requirements.push(
+                    "这是**局部修订**阶段（不是重新创作）。基于已有产物做精确改动。".into(),
+                );
+                requirements.push(format!(
+                    "用户反馈：「{feedback}」"
+                ));
+                requirements.push(format!(
+                    "目标文件路径：`{path}`"
+                ));
+                requirements.push(
+                    "步骤：① 先调 `read_file` 读取目标文件当前内容，确认要改的具体位置。② 用 `edit_file` 做精确替换：传 `path`、`old_string`（要被替换的原文，必须唯一可定位）、`new_string`（替换后的新内容）。一次 edit_file 只改一处；如有多处需要改可多次调用 edit_file。③ 完成后用一两句话简单说明改了哪些位置即可，**不要重新输出整篇文档**。"
+                        .into(),
+                );
+                requirements.push(
+                    "硬规则：禁止调用 `write_file`（那会全文覆盖，违反局部修订原则）。仅允许 `read_file` 和 `edit_file`。".into(),
+                );
+            }
             MilestoneMode::Review => {
                 if question_budget_reached(milestone, state) {
                     return Ok(TurnDirective::Blocked(question_budget_message(milestone)));
@@ -287,6 +317,44 @@ mod tests {
                 .iter()
                 .any(|r| r.contains("不要调用工具"))
         );
+    }
+
+    #[test]
+    fn patch_output_prompt_uses_feedback_and_path_and_forbids_write_file() {
+        let mut ms = milestone("patch", MilestoneMode::PatchOutput);
+        ms.contract.allowed_tools = vec!["read_file".into(), "edit_file".into()];
+        let mut cs = ConversationState::new("patch 场景".into(), vec![ms.clone()]);
+        cs.set_context("review_feedback", "把上午徒步改到下午");
+        cs.set_context("last_output_path", "plan.md");
+
+        let directive = ContractRuntime::next_directive(&ms, &cs, "继续").unwrap();
+        let TurnDirective::CallLlm(prompt) = directive else {
+            unreachable!()
+        };
+        let joined = prompt.system_requirements.join("\n");
+        assert!(joined.contains("局部修订"));
+        assert!(joined.contains("把上午徒步改到下午"), "应嵌入用户反馈");
+        assert!(joined.contains("plan.md"), "应嵌入文件路径");
+        assert!(joined.contains("read_file") && joined.contains("edit_file"));
+        assert!(
+            joined.contains("禁止调用 `write_file`"),
+            "硬规则：patch 阶段不能用 write_file"
+        );
+    }
+
+    #[test]
+    fn patch_output_falls_back_to_defaults_when_context_missing() {
+        // 上下文里没 last_output_path / review_feedback 时用兜底值，不应 panic
+        let mut ms = milestone("patch", MilestoneMode::PatchOutput);
+        ms.contract.allowed_tools = vec!["read_file".into(), "edit_file".into()];
+        let cs = ConversationState::new("无 context".into(), vec![ms.clone()]);
+        let directive = ContractRuntime::next_directive(&ms, &cs, "继续").unwrap();
+        let TurnDirective::CallLlm(prompt) = directive else {
+            unreachable!()
+        };
+        let joined = prompt.system_requirements.join("\n");
+        assert!(joined.contains("output.md"), "默认 path 兜底为 output.md");
+        assert!(joined.contains("（未提供具体反馈）"), "默认 feedback 兜底文案");
     }
 
     #[test]

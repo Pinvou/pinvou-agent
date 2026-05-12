@@ -739,6 +739,17 @@ where
                                     .unwrap_or(serde_json::Value::Null),
                             }));
                         }
+                        // 捕获 write_file / edit_file 的 path 字段到 context，
+                        // 让后续 PatchOutput 阶段 prompt 能引用 `last_output_path`。
+                        if tool_name == "write_file" || tool_name == "edit_file" {
+                            if let Some(path) =
+                                arguments.get("path").and_then(|v| v.as_str())
+                            {
+                                if let Some(ref mut cs) = engine.conv_state {
+                                    cs.set_context("last_output_path", path);
+                                }
+                            }
+                        }
                         yield Ok(sse_delta(""));
                     }
                     Ok(StreamEvent::Done) => {

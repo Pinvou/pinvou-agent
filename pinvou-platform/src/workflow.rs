@@ -241,6 +241,39 @@ impl ConversationState {
         Some(active_id)
     }
 
+    /// 在指定 milestone 之前插入新 milestone。
+    ///
+    /// 主要用于 Review tweak 路径：动态插入 `PatchOutput` milestone 让 LLM
+    /// 做精确局部修订，不重写整个 final_output。
+    ///
+    /// 行为：
+    /// - 新 milestone 状态设为 `Active`
+    /// - 目标 milestone（review）若是 `Active` 改 `Pending` —— patch 完成后会再次轮到它
+    /// - 其他 milestone 状态不变
+    ///
+    /// 返回 true = 找到目标并完成插入；false = target_id 不存在。
+    pub fn insert_milestone_before(&mut self, target_id: &str, new_ms: Milestone) -> bool {
+        let target_idx = self
+            .milestones
+            .iter()
+            .position(|(m, _)| m.id == target_id);
+        let Some(idx) = target_idx else {
+            return false;
+        };
+
+        // 目标若是 Active，改 Pending（patch 完成后会重新成为 Active）
+        if let Some((_, status)) = self.milestones.get_mut(idx) {
+            if matches!(status, MilestoneStatus::Active) {
+                *status = MilestoneStatus::Pending;
+            }
+        }
+
+        // 插入新 milestone，状态 Active
+        self.milestones
+            .insert(idx, (new_ms, MilestoneStatus::Active));
+        true
+    }
+
     /// 标记里程碑为完成，激活下一个
     pub fn mark_done(&mut self, milestone_id: &str) {
         self.update_milestone(milestone_id, MilestoneStatus::Done);
@@ -519,6 +552,65 @@ mod tests {
     fn rewind_to_unknown_milestone_returns_false() {
         let mut state = ConversationState::new("test".into(), sample_milestones());
         assert!(!state.rewind_to("nonexistent"));
+    }
+
+    fn make_milestone(id: &str, label: &str) -> Milestone {
+        Milestone {
+            id: id.into(),
+            label: label.into(),
+            prompt_hint: None,
+            icon: None,
+            contract: crate::contract::MilestoneContract::default(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn insert_before_active_pushes_active_to_pending_and_takes_active() {
+        // 场景：[a:Done, b:Active, c:Pending]，在 b 之前插入 patch
+        // 期望：[a:Done, patch:Active, b:Pending, c:Pending]
+        let mut state = ConversationState::new("test".into(), sample_milestones());
+        state.mark_done("a"); // 现在 b 是 Active
+        let patch = make_milestone("patch", "局部修订");
+        let ok = state.insert_milestone_before("b", patch);
+        assert!(ok);
+
+        // 注意 sample_milestones 顺序：a/b/c
+        assert_eq!(state.milestones[0].0.id, "a");
+        assert_eq!(state.milestones[0].1, MilestoneStatus::Done);
+        assert_eq!(state.milestones[1].0.id, "patch");
+        assert_eq!(state.milestones[1].1, MilestoneStatus::Active);
+        assert_eq!(state.milestones[2].0.id, "b");
+        assert_eq!(state.milestones[2].1, MilestoneStatus::Pending,
+            "b 原本是 Active，被 patch 顶到前面后应改 Pending");
+        assert_eq!(state.milestones[3].0.id, "c");
+    }
+
+    #[test]
+    fn insert_before_unknown_target_returns_false() {
+        let mut state = ConversationState::new("test".into(), sample_milestones());
+        let patch = make_milestone("patch", "");
+        assert!(!state.insert_milestone_before("nonexistent", patch));
+        assert_eq!(state.milestones.len(), 3, "失败时不修改列表");
+    }
+
+    #[test]
+    fn insert_before_pending_target_doesnt_change_target_status() {
+        // 目标若是 Pending，插入新 Active 后目标仍 Pending（不该被改）
+        let mut state = ConversationState::new("test".into(), sample_milestones());
+        // a 还是 Active，b 是 Pending
+        let patch = make_milestone("patch", "");
+        let ok = state.insert_milestone_before("b", patch);
+        assert!(ok);
+        // 现在有两个 Active（a 和 patch）—— 这是允许的，因为 active_milestone()
+        // 返回第一个 Active，patch 不在最前
+        // 实际场景中 review tweak 是在 review (Active) 之前插入，原 Active 会
+        // 转 Pending，所以本测试的"两 Active"是 corner case 不会发生。
+        assert_eq!(state.milestones[1].0.id, "patch");
+        assert_eq!(state.milestones[1].1, MilestoneStatus::Active);
+        assert_eq!(state.milestones[2].0.id, "b");
+        assert_eq!(state.milestones[2].1, MilestoneStatus::Pending,
+            "b 本来就是 Pending，插入操作不改它");
     }
 
     #[test]

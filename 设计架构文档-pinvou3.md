@@ -324,6 +324,7 @@ enum MilestoneMode {
     Freeform,                 // 自由产出（写作 / 分析 / 计算）
     FinalOutput,              // 最终交付（要么是最后一个，要么 review 前一个）
     Review,                   // 产物审核：让用户决定满意/微调/重做（可选，建议跟在 final_output 之后）
+    PatchOutput,              // 局部修订（read_file + edit_file 做精确 patch）；不在初始拆解出现，由 review tweak 动态插入
 }
 
 enum AdvancePolicy {
@@ -343,13 +344,30 @@ enum AdvancePolicy {
 | `freeform` | 1 | `on_valid_output` | no_open_question |
 | `final_output` | 0 | `on_valid_output` | forbid_tool(request_user_input), no_open_question |
 | `review` | 1 | `on_choice` | requires_tool_call(request_user_input), min_options=2, max_options=4, no_open_question |
+| `patch_output` | 0 | `on_valid_output` | no_open_question；`allowed_tools` 由 engine 动态填 `read_file` + `edit_file` |
 
 理由：这些是契约安全底线，开放配置等于让 LLM 给自己放权。
+
+**`PatchOutput` 的特殊性**：
+- **不出现在 CombinedPlanner 初始拆解**——`combined_planner.rs::validate_dto` 显式拒绝
+- 由 `apply_choice_result` 在 `Review` 阶段用户选「微调」时**动态构造并插入**到 review 之前
+- ID 规则 `patch_<n>`（按已有 patch 数递增），允许多次微调
+- allowed_tools 由 engine 填 `[read_file, edit_file]`；**禁止 write_file**（那会全文覆盖违反 patch 语义）
+- 完成后回到 review 等用户再次审核（review 自己处于 Pending 状态等 patch Done）
 
 **Review 状态机分支（apply_choice_result 在 engine 层处理）**：
 - 选项 label 以「满意」开头 → mark_done(review) → 整体 AllDone
 - 选项 label 以「重做」开头 → mark_done(review) + 注入 `review_outcome=redo` context；summary 提示用户走 `/replan`
-- 其他选项（微调点）→ `rewind_to(final_output_id)` 让 final_output 重做；用户选的 label 作为 `review_feedback` context 注入；review 自身回到 Pending 等下一轮再问
+- 其他选项（微调点）→ **不再 rewind 到 final_output**（会触发全文重写）。改为：
+  - 动态构造一个 `PatchOutput` milestone（id=`patch_<n>`，allowed_tools=`[read_file, edit_file]`）
+  - 用 `insert_milestone_before(review_id, patch_ms)` 插入到 review 之前
+  - patch 变 Active，review 改 Pending；用户选的 label 注入 `review_feedback` context
+  - LLM 进 patch 阶段：先 `read_file(last_output_path)`，再用 `edit_file` 做精确 old_string→new_string 替换；不重写整篇
+  - patch 完成 → review 再次 Active → 用户再次审核 → 可循环多次
+
+**Patch 路径需要的 context**：
+- `review_feedback`：用户选项 label，patch 阶段 prompt 引用作为修订指令
+- `last_output_path`：write_file / edit_file 调用时由 `web/mod.rs` 自动捕获 `args.path` 注入，patch 阶段引用以定位文件
 
 ---
 
@@ -784,18 +802,35 @@ Round 7: "审核产物" (review)
     ]
   分支：
     用户选「满意...」→ mark_done(review) → AllDone
-    用户选「调整...」→ rewind_to(ms_4 final_output) + review_feedback=label
-                       → final_output 重做 → 再次到 review → 循环直到满意
+    用户选「调整...」→ 动态插入 patch_output milestone，进 Round 8（不再 rewind 重写）
     用户选「重做...」→ mark_done(review) + 提示用户输 /replan
 
-总计: 7+ 轮，~3-5 分钟（用户接受产物前可多次微调）
+Round 8 (可选, review 微调时进入): "局部修订" (patch_output)
+  状态: 插入 patch_0 在 review 之前；patch_0 Active，review Pending
+  Context:
+    review_feedback = "调整时间安排"（用户选项 label）
+    last_output_path = "plan.md"（来自 Round 6 write_file 的 args.path）
+  LLM 流程:
+    1. read_file("plan.md") → 拿到当前完整内容
+    2. edit_file({path:"plan.md", old:"14:00 徒步", new:"15:00 徒步"}) → 改一处
+    3. (可选) 再 edit_file 改另一处
+    4. 文字简单说"已把上午徒步调整到下午"——不重输出整篇
+  完成 → mark_done(patch_0) → review 再次 Active → 进 Round 9
+
+Round 9: 再次 review
+  用户继续选「满意/再微调一次/重做」
+  再微调 → 插入 patch_1，循环 Round 8 / Round 9 直到满意
+
+总计: 7+ 轮（review 直接满意）；或 7+2N 轮（N 次微调）
+关键: 每次微调只走 patch_output（短 tool args + edit_file 精确替换），
+      不再触发 final_output 全文重写——速度从分钟级降到秒级
 ```
 
 中途纠错示例：
 
 - 用户在 Round 4 后输入 `/back` → ms_2 Done → Active，相关 context 清除
 - 用户在 Round 3 后输入 `/replan` → 清空 milestones，重新拆解（保留 collect 阶段的 context）
-- 用户在 Round 7 选「调整时间安排」→ review 触发 final_output 重做，无需用户输 slash 命令
+- 用户在 Round 7 选「调整时间安排」→ 动态插入 patch_output，LLM 走精确 patch 路径（≤10 秒），无需用户输 slash 命令
 
 ---
 

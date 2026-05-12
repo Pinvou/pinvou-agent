@@ -46,9 +46,19 @@ pub enum MilestoneMode {
     /// 产物审核阶段。挂在 `FinalOutput` 之后，让用户决定是否微调或重做。
     /// 选项形如 [满意结束 / 微调点A / 微调点B / 重新规划]，由 LLM 预判可能
     /// 的修订点。`Review` milestone 的状态机分支由 `apply_choice_result`
-    /// 在 engine 层处理：满意 → 完成；微调 → 把 final_output 回退到 Active
-    /// 重做产物；重做 → 提示用户走 `/replan`。
+    /// 在 engine 层处理：满意 → 完成；微调 → 动态插入 PatchOutput milestone；
+    /// 重做 → 提示用户走 `/replan`。
     Review,
+    /// 局部修订阶段。**不在初始拆解中出现**——由 `Review` 阶段用户选「微调」
+    /// 时由 engine 动态插入到 review 之前。
+    ///
+    /// 行为模式与 `FinalOutput` 截然不同：用 `read_file` 读取既有产物，
+    /// 然后用 `edit_file` 做精确的 old_string → new_string 替换。不重新
+    /// 生成整篇内容，tool args 短，速度快。完成后回到 `Review` 等用户再次审核。
+    ///
+    /// allowed_tools 由 engine 动态填 `read_file` + `edit_file`；
+    /// `last_output_path` context 来自之前 `FinalOutput` 阶段的 write_file。
+    PatchOutput,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,6 +230,16 @@ pub fn contract_for_mode(mode: MilestoneMode) -> MilestoneContract {
             advance_policy: AdvancePolicy::OnValidOutput,
             ..MilestoneContract::default()
         },
+        // 局部修订：用 read_file + edit_file 对既有产物做精确 patch，不重写全文
+        // allowed_tools 由 engine 在 review tweak 时动态填（read_file + edit_file）
+        MilestoneMode::PatchOutput => MilestoneContract {
+            mode,
+            question_budget: 0,
+            allowed_tools: Vec::new(),
+            output_requirements: vec![OutputRequirement::NoOpenQuestion],
+            advance_policy: AdvancePolicy::OnValidOutput,
+            ..MilestoneContract::default()
+        },
         // 产物审核：必须用 request_user_input 给用户做选择题（满意/微调N/重做）
         // 选项数 2-4：1 个"满意" + 1-2 个微调点 + 1 个"重做"
         MilestoneMode::Review => MilestoneContract {
@@ -345,6 +365,17 @@ mod tests {
         let c = contract_for_mode(MilestoneMode::Freeform);
         assert_eq!(c.question_budget, 0, "freeform 是纯产出阶段，不允许提问");
         assert_eq!(c.advance_policy, AdvancePolicy::OnValidOutput);
+    }
+
+    #[test]
+    fn contract_for_mode_patch_output_no_questions_and_valid_output_advance() {
+        let c = contract_for_mode(MilestoneMode::PatchOutput);
+        assert_eq!(c.question_budget, 0, "patch 阶段不再问用户");
+        assert_eq!(c.advance_policy, AdvancePolicy::OnValidOutput);
+        assert!(c.output_requirements.contains(&OutputRequirement::NoOpenQuestion));
+        // allowed_tools 留空：engine 在 review tweak 时动态填 read_file + edit_file
+        assert!(c.allowed_tools.is_empty(),
+            "PatchOutput 的工具由 engine 在 review tweak 时动态填，contract 不预填");
     }
 
     #[test]
