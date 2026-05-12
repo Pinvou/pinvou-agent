@@ -581,6 +581,9 @@ where
         let mut advances: usize = 0;
 
         'milestone_loop: loop {
+            // [INSTRUMENTATION] 本次 iteration 起点
+            let t_iter_start = std::time::Instant::now();
+
             // 取当前 active milestone
             let active_milestone = engine
                 .conv_state
@@ -680,7 +683,8 @@ where
                     .unwrap_or("");
                 let sp_preview: String = sp.chars().take(500).collect();
                 eprintln!(
-                    "[chat_req:trace] active_ms={:?} system_prompt_len={} user_message={:?}",
+                    "[chat_req:trace] +{}ms build_done; active_ms={:?} system_prompt_len={} user_message={:?}",
+                    t_iter_start.elapsed().as_millis(),
                     active_milestone.as_ref().map(|m| (m.id.clone(), m.contract.mode.clone())),
                     sp.chars().count(),
                     chat_req.user_message,
@@ -688,6 +692,13 @@ where
                 eprintln!("[chat_req:trace] system_prompt_head: {sp_preview}");
                 eprintln!("[chat_req:trace] context: {:?}", chat_req.context);
             }
+
+            // [INSTRUMENTATION] 调用 chat_stream 前
+            let t_before_chat = std::time::Instant::now();
+            eprintln!(
+                "[looper:trace] +{}ms calling chat_stream",
+                t_iter_start.elapsed().as_millis()
+            );
 
             let mut event_stream = match AgentHarness::chat_stream(&engine.harness, chat_req).await
             {

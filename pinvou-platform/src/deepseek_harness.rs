@@ -306,6 +306,13 @@ impl<C: LlmClient + Clone + 'static> DeepSeekHarness<C> {
             tool_choice
         );
 
+        // reasoning_effort 通过环境变量 DEEPSEEK_REASONING_EFFORT 控制。
+        // 本地 vLLM 跑 Qwen3 时通常需要 "off" 关闭 thinking 模式
+        // （否则模型先生成几十秒 reasoning 段，前端体感是"卡死"）。
+        let reasoning_effort = std::env::var("DEEPSEEK_REASONING_EFFORT")
+            .ok()
+            .filter(|s| !s.is_empty());
+
         MessageRequest {
             model,
             messages,
@@ -315,7 +322,7 @@ impl<C: LlmClient + Clone + 'static> DeepSeekHarness<C> {
             tool_choice,
             metadata: None,
             thinking: None,
-            reasoning_effort: None,
+            reasoning_effort,
             stream: None,
             temperature: None,
             top_p: None,
@@ -421,10 +428,11 @@ impl<C: LlmClient + Clone + 'static> AgentHarness for DeepSeekHarness<C> {
                     return;
                 }
 
-                // [INSTRUMENTATION] LLM call 起始时间
+                // [INSTRUMENTATION] LLM call 起始时间 + HTTP setup 分段计时
                 let t_llm_call = std::time::Instant::now();
-                eprintln!("[harness:trace] +{}ms iter={} LLM call start",
+                eprintln!("[harness:trace] +{}ms iter={} LLM call start (calling create_message_stream)",
                     t0.elapsed().as_millis(), iteration);
+                let t_http_start = std::time::Instant::now();
                 let mut llm_stream: StreamEventBox =
                     match client.create_message_stream(msg_req.clone()).await {
                         Ok(s) => s,
@@ -433,6 +441,9 @@ impl<C: LlmClient + Clone + 'static> AgentHarness for DeepSeekHarness<C> {
                             return;
                         }
                     };
+                let http_setup_ms = t_http_start.elapsed().as_millis();
+                eprintln!("[harness:trace] +{}ms iter={} HTTP stream established (setup={}ms)",
+                    t0.elapsed().as_millis(), iteration, http_setup_ms);
 
                 let mut assistant_text = String::new();
                 let mut tool_buffers: std::collections::HashMap<u32, (String, String, String)> =
@@ -442,9 +453,23 @@ impl<C: LlmClient + Clone + 'static> AgentHarness for DeepSeekHarness<C> {
                 let mut text_delta_count: usize = 0;
                 let mut text_delta_chars: usize = 0;
                 let mut last_yield_at = t_llm_call;
+                let mut first_event_at: Option<std::time::Instant> = None;
+                let mut first_text_delta_at: Option<std::time::Instant> = None;
                 let mut max_inter_delta_ms: u128 = 0;
 
                 while let Some(result) = llm_stream.next().await {
+                    // [INSTRUMENTATION] 第一个 stream event 到达
+                    if first_event_at.is_none() {
+                        let now = std::time::Instant::now();
+                        first_event_at = Some(now);
+                        eprintln!(
+                            "[harness:trace] +{}ms iter={} first stream event arrived (TTFE={}ms from call_start, {}ms from HTTP_ready)",
+                            t0.elapsed().as_millis(),
+                            iteration,
+                            now.duration_since(t_llm_call).as_millis(),
+                            now.duration_since(t_http_start).as_millis().saturating_sub(http_setup_ms),
+                        );
+                    }
                     match result {
                         Ok(DtStreamEvent::ContentBlockStart { index, content_block }) => {
                             if let ContentBlockStart::ToolUse { id, name, .. } = content_block {
@@ -458,6 +483,15 @@ impl<C: LlmClient + Clone + 'static> AgentHarness for DeepSeekHarness<C> {
                             Delta::TextDelta { text } => {
                                 // [INSTRUMENTATION] 记录 inter-delta 间隔
                                 let now = std::time::Instant::now();
+                                if first_text_delta_at.is_none() {
+                                    first_text_delta_at = Some(now);
+                                    eprintln!(
+                                        "[harness:trace] +{}ms iter={} first TextDelta arrived (TTFT={}ms from call_start)",
+                                        t0.elapsed().as_millis(),
+                                        iteration,
+                                        now.duration_since(t_llm_call).as_millis(),
+                                    );
+                                }
                                 let inter_ms = now.duration_since(last_yield_at).as_millis();
                                 if inter_ms > max_inter_delta_ms { max_inter_delta_ms = inter_ms; }
                                 last_yield_at = now;

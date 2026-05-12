@@ -52,8 +52,37 @@ pub fn create_engine(workspace: PathBuf) -> Result<PinvouEngine> {
     if let Ok(key) = std::env::var("DEEPSEEK_API_KEY") {
         config.api_key = Some(key);
     }
+    // DEEPSEEK_PROVIDER 必须在 BASE_URL / default_model 之前处理：
+    // deepseek-tui 的 apply_env_overrides 把 BASE_URL 写到不同字段（看
+    // api_provider() 的返回值），同时 default_model() 也按 provider 决定
+    // 是否 pass-through 自定义 model 字符串（如本地 vLLM 路径形式的
+    // model name）。Openai/Ollama 的 provider pass-through model 原样不改。
+    if let Ok(p) = std::env::var("DEEPSEEK_PROVIDER") {
+        config.provider = Some(p);
+    }
     if let Ok(url) = std::env::var("DEEPSEEK_BASE_URL") {
-        config.base_url = Some(url);
+        // deepseek-tui::config::Config::deepseek_base_url() 对不同 provider 读
+        // 不同字段：Deepseek/DeepseekCN/NvidiaNim 读顶层 `config.base_url`；
+        // 其他（Openai/Vllm/Sglang/Fireworks/Novita/Openrouter/Ollama）只读
+        // `providers.<x>.base_url`。所以 BASE_URL 必须按 provider 分流，否则
+        // 自定义 base_url 不会生效，请求会发到该 provider 的硬编码 default。
+        use deepseek_tui::config::{ApiProvider, ProvidersConfig};
+        let providers = config.providers.get_or_insert_with(ProvidersConfig::default);
+        match config.provider.as_deref().and_then(ApiProvider::parse).unwrap_or(ApiProvider::Deepseek) {
+            ApiProvider::Openai => providers.openai.base_url = Some(url),
+            ApiProvider::NvidiaNim => providers.nvidia_nim.base_url = Some(url.clone()),
+            ApiProvider::Openrouter => providers.openrouter.base_url = Some(url),
+            ApiProvider::Novita => providers.novita.base_url = Some(url),
+            ApiProvider::Fireworks => providers.fireworks.base_url = Some(url),
+            ApiProvider::Sglang => providers.sglang.base_url = Some(url),
+            ApiProvider::Vllm => providers.vllm.base_url = Some(url),
+            ApiProvider::Ollama => providers.ollama.base_url = Some(url),
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
+                config.base_url = Some(url);
+            }
+        }
+        // NvidiaNim 还有 back-compat sniff（看 base_url 是否含 nvidia 域名），
+        // 这种情况它会读顶层 base_url，所以两边都写一份保险。
     }
 
     let model_name = std::env::var("DEEPSEEK_MODEL")
