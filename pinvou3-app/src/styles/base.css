@@ -1,0 +1,157 @@
+/* pinvou3-app 极简骨架样式（Week 1）
+   设计语言占位 — Week 2 用 pinvou2 theme-liquid.css 替换 */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: #0c0e14;
+  color: #e2e2eb;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 20px;
+  background: #111319;
+  border-bottom: 1px solid #282a31;
+}
+
+.brand {
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 1px;
+  color: #ff6b35;
+}
+
+.status {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid;
+}
+.status-idle  { color: #59d5fb; border-color: rgba(89,213,251,0.3); }
+.status-busy  { color: #ffbf00; border-color: rgba(255,191,0,0.3); }
+.status-error { color: #ff4444; border-color: rgba(255,68,68,0.3); }
+
+.chat-area {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.msg {
+  display: flex;
+  max-width: 80%;
+}
+.msg-user { align-self: flex-end; }
+.msg-assistant, .msg-system { align-self: flex-start; }
+
+.bubble {
+  padding: 10px 14px;
+  border-radius: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg-user .bubble {
+  background: rgba(255,107,53,0.18);
+  border: 1px solid rgba(255,107,53,0.4);
+}
+.msg-assistant .bubble {
+  background: #1d1f26;
+  border: 1px solid #282a31;
+}
+.msg-system .bubble {
+  background: rgba(255,68,68,0.10);
+  border: 1px solid rgba(255,68,68,0.3);
+  font-size: 12px;
+  color: #ffbf00;
+}
+
+/* 工具调用卡片 */
+.tool-card {
+  align-self: flex-start;
+  max-width: 80%;
+  background: #191b22;
+  border: 1px solid #282a31;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-family: "JetBrains Mono", Consolas, monospace;
+}
+.tool-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.tool-name { font-weight: 700; color: #59d5fb; }
+.tool-state { margin-left: auto; opacity: 0.7; }
+.tool-running .tool-state { color: #ffbf00; }
+.tool-success .tool-state { color: #59fbb5; }
+.tool-error .tool-state { color: #ff4444; }
+.tool-args {
+  opacity: 0.55;
+  font-size: 11px;
+  word-break: break-all;
+}
+.tool-output {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #282a31;
+  white-space: pre-wrap;
+  opacity: 0.75;
+}
+
+.composer {
+  display: flex;
+  gap: 8px;
+  padding: 12px 20px;
+  background: #111319;
+  border-top: 1px solid #282a31;
+}
+
+#input {
+  flex: 1;
+  background: #0c0e14;
+  border: 1px solid #282a31;
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: #e2e2eb;
+  font-family: inherit;
+  font-size: 14px;
+  resize: none;
+  outline: none;
+}
+#input:focus { border-color: #ff6b35; }
+#input:disabled { opacity: 0.5; }
+
+#send-btn {
+  background: #ff6b35;
+  border: none;
+  color: white;
+  padding: 0 20px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  font-family: inherit;
+}
+#send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+#send-btn:hover:not(:disabled) { background: #ff7d4a; }
+
+/* 滚动条 */
+.chat-area::-webkit-scrollbar { width: 6px; }
+.chat-area::-webkit-scrollbar-track { background: transparent; }
+.chat-area::-webkit-scrollbar-thumb { background: #282a31; border-radius: 6px; }

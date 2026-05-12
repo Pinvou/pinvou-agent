@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>pinvou3 智能助手</title>
+  <link rel="stylesheet" href="./styles/base.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">pinvou3</div>
+    <div id="status" class="status status-idle">就绪</div>
+  </header>
+
+  <main class="chat-area" id="chat-area"></main>
+
+  <footer class="composer">
+    <textarea
+      id="input"
+      placeholder="跟 Qwen3.6 说点什么（Enter 发送，Shift+Enter 换行）"
+      rows="2"
+      autofocus></textarea>
+    <button id="send-btn" type="button">发送</button>
+  </footer>
+
+  <script src="./main.js"></script>
+</body>
+</html>

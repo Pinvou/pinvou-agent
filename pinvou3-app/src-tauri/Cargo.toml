@@ -1,0 +1,29 @@
+[package]
+name = "pinvou3-tauri"
+version = "0.1.0"
+description = "pinvou3 智能助手 Tauri 后端（包装 DeepSeek-TUI EngineHandle）"
+authors = ["pinvou"]
+license = ""
+edition = "2021"
+rust-version = "1.88"
+
+[lib]
+name = "pinvou3_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.1", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.11.1", features = [] }
+tauri-plugin-log = "2"
+
+# 异步 / 错误
+anyhow = "1.0"
+tokio = { version = "1.49", features = ["full"] }
+
+# 底层 Agent —— DeepSeek-TUI 提供 LLM 调用 + 工具循环 + 流式事件
+deepseek-tui = { path = "../../DeepSeek-TUI/crates/tui" }
