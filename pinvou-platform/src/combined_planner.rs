@@ -311,21 +311,47 @@ fn validate_dto(
     }
 
     // 7. tools 校验 —— 三层：
-    //   a) available_tools 是权威来源（每个 tool 必须在 harness 实际注册的池里）
+    //   a) available_tools 是权威来源 —— 但用「软容错」：
+    //      - 已知 alias 表（典型反序 typo 如 file_read↔read_file）→ 直接 normalize
+    //      - 编辑距离 ≤ 2 的 fuzzy match → 替换为最近的合法工具名
+    //      - 都没命中 → 静默移除（不整盘 fallback），eprintln warn
+    //      理由：LLM 偶发把 `read_file` 写成 `file_read` 会让整个 plan
+    //      退到 generic fallback，破坏 planning agent 的丰富拆解。容错让
+    //      95% typo case 仍能进入正确 agent；剩余 5% 该 milestone 工具被
+    //      移除，但仍有机会工作（freeform 退化文本输出；c 阶段的 RequiresToolCall
+    //      硬规则会进一步拦截 collect/produce_options 的空工具）。
     //   b) ForbidTool：mode 禁用的工具不能出现
     //   c) RequiresToolCall：mode 必需的工具必须出现（防 LLM 拆解时漏填导致下游退化文本）
     let mut milestones = Vec::with_capacity(dto.milestones.len());
     for m in dto.milestones {
         let mode_contract = contract_for_mode(m.mode.clone());
 
-        // a + b：逐 tool 检查白名单与禁用
+        // a: 容错 normalize —— 每个 tool 名先 alias 表 → fuzzy match → 否则移除
+        let mut normalized_tools: Vec<String> = Vec::with_capacity(m.tools.len());
         for t in &m.tools {
-            if !available_tools.iter().any(|x| x == t) {
-                bail!(
-                    "tool '{}' not available on current harness (advertised={:?})",
-                    t, available_tools
-                );
+            match normalize_tool_name(t, available_tools) {
+                Some(canonical) => {
+                    if canonical != *t {
+                        eprintln!(
+                            "[planner:tools] milestone '{}': normalized '{}' → '{}'",
+                            m.label, t, canonical
+                        );
+                    }
+                    if !normalized_tools.contains(&canonical) {
+                        normalized_tools.push(canonical);
+                    }
+                }
+                None => {
+                    eprintln!(
+                        "[planner:tools] milestone '{}': dropped unknown tool '{}' (advertised={:?})",
+                        m.label, t, available_tools
+                    );
+                }
             }
+        }
+
+        // b: ForbidTool 校验（仍然硬卡，mode 设计原则要求）
+        for t in &normalized_tools {
             for req in &mode_contract.output_requirements {
                 if let OutputRequirement::ForbidTool(forbidden) = req {
                     if forbidden == t {
@@ -344,7 +370,7 @@ fn validate_dto(
         // 会过滤掉所有工具，LLM 看到空 tools 后退化文本路径。
         for req in &mode_contract.output_requirements {
             if let OutputRequirement::RequiresToolCall(required) = req {
-                if !m.tools.iter().any(|t| t == required) {
+                if !normalized_tools.iter().any(|t| t == required) {
                     bail!(
                         "milestone '{}' (mode={:?}) 必须在 tools 中声明 `{}`（mode 的 RequiresToolCall 硬规则）",
                         m.label, m.mode, required
@@ -356,7 +382,7 @@ fn validate_dto(
         milestones.push(PlannedMilestone {
             label: m.label,
             mode: m.mode,
-            tools: m.tools,
+            tools: normalized_tools,
             prompt_hint: m.prompt_hint,
             required_context: m.required_context,
             produced_context: m.produced_context,
@@ -367,6 +393,89 @@ fn validate_dto(
         agent_id: dto.agent,
         milestones,
     })
+}
+
+/// 已知 alias 表：明显的反序 / 大小写 / 复数 typo 直接映射为合法工具名。
+/// 优先级高于 fuzzy match（这些是高频常见错误，直接走 O(1) 查表）。
+///
+/// 添加新 alias 时只看「LLM 真实输出过的错误形态 → 真实工具名」，
+/// 不要添加同义词（如 `bash` → `exec_shell`），那是语义判断，不在工具
+/// 名 typo 修复的范围。
+fn tool_name_alias(name: &str) -> Option<&'static str> {
+    match name {
+        "file_read" => Some("read_file"),
+        "file_write" => Some("write_file"),
+        "file_edit" => Some("edit_file"),
+        "file_search" => Some("file_search"),
+        "search_file" => Some("file_search"),
+        "search_files" => Some("file_search"),
+        "list_directory" => Some("list_dir"),
+        "search_web" => Some("web_search"),
+        "websearch" => Some("web_search"),
+        _ => None,
+    }
+}
+
+/// 把 LLM 输出的工具名 normalize 为合法工具名。
+///
+/// 策略：
+/// 1. 在 available_tools 里精确命中 → 直接返回
+/// 2. 在 alias 表里命中 → 返回 alias（但 alias 也得在 available_tools 才有效）
+/// 3. 跟 available_tools fuzzy match（Levenshtein 距离 ≤ 2 且必须 > 0）→ 返回最近的
+/// 4. 都不匹配 → 返回 None（调用方决定丢弃 / 报错）
+pub fn normalize_tool_name(name: &str, available_tools: &[String]) -> Option<String> {
+    // 1. 精确命中
+    if available_tools.iter().any(|t| t == name) {
+        return Some(name.to_string());
+    }
+
+    // 2. alias 表
+    if let Some(canonical) = tool_name_alias(name) {
+        if available_tools.iter().any(|t| t == canonical) {
+            return Some(canonical.to_string());
+        }
+    }
+
+    // 3. fuzzy match：选 Levenshtein 距离最小的，要求 ≤ 2
+    let mut best: Option<(&String, usize)> = None;
+    for candidate in available_tools {
+        let d = levenshtein(name, candidate);
+        if d == 0 {
+            continue; // 已经在 step 1 处理
+        }
+        if d <= 2 && best.map(|(_, bd)| d < bd).unwrap_or(true) {
+            best = Some((candidate, d));
+        }
+    }
+    best.map(|(s, _)| s.clone())
+}
+
+/// 简单 Levenshtein 编辑距离（DP, O(m*n)）。用于工具名 fuzzy match。
+/// 工具名都很短（< 30 字符），性能不是问题。
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let m = a.len();
+    let n = b.len();
+    if m == 0 {
+        return n;
+    }
+    if n == 0 {
+        return m;
+    }
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr: Vec<usize> = vec![0; n + 1];
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            curr[j] = (curr[j - 1] + 1)
+                .min(prev[j] + 1)
+                .min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
 }
 
 fn extract_json_object(text: &str) -> Option<&str> {
@@ -647,17 +756,135 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_tool_outside_global_pool() {
+    fn normalize_exact_match_returns_same_name() {
+        let pool: Vec<String> = vec!["read_file".into(), "write_file".into()];
+        assert_eq!(
+            normalize_tool_name("read_file", &pool),
+            Some("read_file".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_alias_table_takes_priority_over_fuzzy() {
+        let pool: Vec<String> = vec!["read_file".into(), "write_file".into()];
+        // file_read 在 alias 表里直接映射；也凑巧 fuzzy 到 read_file 距离 4
+        // 验证走的是 alias 路径
+        assert_eq!(
+            normalize_tool_name("file_read", &pool),
+            Some("read_file".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_fuzzy_matches_within_distance_2() {
+        let pool: Vec<String> = vec!["web_search".into(), "read_file".into()];
+        // 距离 = 1（中划线 vs 下划线）
+        assert_eq!(
+            normalize_tool_name("read-file", &pool),
+            Some("read_file".to_string())
+        );
+        // 距离 = 2（大小写无关，但这里只测距离）
+        assert_eq!(
+            normalize_tool_name("web_searc", &pool),  // 缺最后一个字符
+            Some("web_search".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_rejects_far_string() {
+        let pool: Vec<String> = vec!["read_file".into(), "web_search".into()];
+        assert_eq!(normalize_tool_name("totally_unrelated_thing", &pool), None);
+    }
+
+    #[test]
+    fn normalize_alias_only_works_if_canonical_in_pool() {
+        // alias 表说 file_read → read_file，但如果 read_file 不在 pool 里
+        // 则不能 normalize（避免引入不存在的工具）
+        let pool: Vec<String> = vec!["web_search".into()];
+        assert_eq!(normalize_tool_name("file_read", &pool), None);
+    }
+
+    #[test]
+    fn parse_silently_drops_unknown_tool_in_freeform_milestone() {
+        // 软容错：未知工具 + fuzzy 不命中 → 静默移除，不整盘 fallback
+        // （比之前的"任一未知工具就 fallback 到 generic"对 LLM typo 更友好）
         let reg = registry_with_basic_agents();
         let json = r#"{
             "agent": "doc_generation",
             "milestones": [
-                {"label": "a", "mode": "freeform", "tools": ["rm_rf"]},
+                {"label": "a", "mode": "freeform", "tools": ["rm_rf_imaginary_tool"]},
+                {"label": "b", "mode": "final_output", "tools": []}
+            ]
+        }"#;
+        let plan = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap();
+        // 未知工具被静默移除
+        assert!(plan.milestones[0].tools.is_empty(),
+            "未知工具 'rm_rf_imaginary_tool' 应被静默移除: {:?}",
+            plan.milestones[0].tools);
+    }
+
+    #[test]
+    fn parse_fuzzy_normalizes_typo_tool_name() {
+        // alias 表命中：LLM 写 file_read，应自动 normalize 为 read_file
+        let reg = registry_with_basic_agents();
+        let json = r#"{
+            "agent": "doc_generation",
+            "milestones": [
+                {"label": "a", "mode": "freeform", "tools": ["file_read"]},
+                {"label": "b", "mode": "final_output", "tools": []}
+            ]
+        }"#;
+        let plan = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap();
+        assert_eq!(plan.milestones[0].tools, vec!["read_file".to_string()],
+            "file_read 应被 alias 表 normalize 为 read_file");
+    }
+
+    #[test]
+    fn parse_fuzzy_matches_close_typo() {
+        // 编辑距离 ≤ 2 fuzzy match：write_files (含 s)、read-file (中划线) 等
+        let reg = registry_with_basic_agents();
+        let json = r#"{
+            "agent": "doc_generation",
+            "milestones": [
+                {"label": "a", "mode": "freeform", "tools": ["read-file"]},
+                {"label": "b", "mode": "final_output", "tools": []}
+            ]
+        }"#;
+        let plan = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap();
+        assert_eq!(plan.milestones[0].tools, vec!["read_file".to_string()],
+            "read-file 应 fuzzy match 到 read_file (距离=1)");
+    }
+
+    #[test]
+    fn parse_fuzzy_keeps_correct_required_tool_intact() {
+        // collect 必须含 request_user_input；如果 LLM 写对了，不应被错误改写
+        let reg = registry_with_basic_agents();
+        let json = r#"{
+            "agent": "doc_generation",
+            "milestones": [
+                {"label": "a", "mode": "collect", "tools": ["request_user_input"]},
+                {"label": "b", "mode": "final_output", "tools": []}
+            ]
+        }"#;
+        let plan = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap();
+        assert_eq!(plan.milestones[0].tools, vec!["request_user_input".to_string()]);
+    }
+
+    #[test]
+    fn parse_still_rejects_when_required_tool_missing_after_normalize() {
+        // collect 阶段写了未知工具但缺 request_user_input → normalize 后 tools 空
+        // → RequiresToolCall 硬规则触发，仍然 bail（不是软容错能解决的）
+        let reg = registry_with_basic_agents();
+        let json = r#"{
+            "agent": "doc_generation",
+            "milestones": [
+                {"label": "a", "mode": "collect", "tools": ["totally_unknown_xyz"]},
                 {"label": "b", "mode": "final_output", "tools": []}
             ]
         }"#;
         let err = CombinedPlanner::parse_plan(json, &reg, &test_tool_pool()).unwrap_err();
-        assert!(err.to_string().contains("rm_rf"));
+        assert!(err.to_string().contains("request_user_input"),
+            "RequiresToolCall 应在 normalize 后再次检查: {err}");
     }
 
     #[test]

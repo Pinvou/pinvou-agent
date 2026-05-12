@@ -312,6 +312,10 @@ impl<C: LlmClient + Clone + 'static> DeepSeekHarness<C> {
         let reasoning_effort = std::env::var("DEEPSEEK_REASONING_EFFORT")
             .ok()
             .filter(|s| !s.is_empty());
+        eprintln!(
+            "[harness:trace] to_message_request reasoning_effort={:?}",
+            reasoning_effort
+        );
 
         MessageRequest {
             model,
@@ -334,15 +338,25 @@ impl<C: LlmClient + Clone + 'static> DeepSeekHarness<C> {
 impl<C: LlmClient + Clone + 'static> AgentHarness for DeepSeekHarness<C> {
     /// 非流式 chat — 绕过 SSE 流式请求以兼容 Ark 等平台
     async fn chat(&self, req: ChatRequest) -> Result<String> {
+        // 走 stream 然后累积 —— 非流式请求 vLLM 要等整段生成完才返回 response
+        // headers，长输出（如 CombinedPlanner 拆出 5-6 个 milestone 的几 KB JSON）
+        // 会超 45 秒 open_timeout 报"did not receive response headers"。
+        // 流式模式 vLLM 首字节几乎 0ms 返回，永远不会超时；客户端拼出完整文本即可。
         let msg_req = self.to_message_request(&req);
-        let response = self.client.create_message(msg_req).await?;
-        // 提取第一个 text block 作为回复
-        for block in &response.content {
-            if let ContentBlock::Text { text, .. } = block {
-                return Ok(text.clone());
+        let mut stream: StreamEventBox = self.client.create_message_stream(msg_req).await?;
+        let mut text = String::new();
+        while let Some(event) = stream.next().await {
+            match event {
+                Ok(DtStreamEvent::ContentBlockDelta {
+                    delta: Delta::TextDelta { text: chunk },
+                    ..
+                }) => text.push_str(&chunk),
+                Ok(DtStreamEvent::MessageStop) => break,
+                Err(e) => return Err(anyhow::anyhow!(e.to_string())),
+                _ => {}
             }
         }
-        Ok(String::new())
+        Ok(text)
     }
 
     async fn chat_stream(
