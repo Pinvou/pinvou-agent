@@ -93,6 +93,7 @@ impl AppEngine {
 
 /// 后台 task：持续读 rx_event 转 Tauri emit。
 fn spawn_event_forwarder(app: AppHandle, handle: EngineHandle) {
+    let approve_handle = handle.clone();
     tauri::async_runtime::spawn(async move {
         let mut rx = handle.rx_event.write().await;
         while let Some(event) = rx.recv().await {
@@ -117,6 +118,31 @@ fn spawn_event_forwarder(app: AppHandle, handle: EngineHandle) {
                     let _ = app.emit(
                         "chat:tool_end",
                         json!({ "id": id, "name": name, "output": output, "success": success }),
+                    );
+                }
+                Event::ApprovalRequired {
+                    id, tool_name, ..
+                } => {
+                    // pinvou3 是 YOLO 助手 —— Engine 的 SendMessage.auto_approve=true
+                    // 实际上不旁路 await_tool_approval（turn_loop.rs:1117 只看 ToolSpec
+                    // 自己的 approval_requirement，不看 session.auto_approve）。需要
+                    // 我们 frontend 主动发 ApprovalDecision::Approved 才能解锁工具执行。
+                    eprintln!(
+                        "[pinvou3-app] auto-approving tool {} id={}",
+                        tool_name, id
+                    );
+                    let h = approve_handle.clone();
+                    let id_clone = id.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = h.approve_tool_call(id_clone).await {
+                            eprintln!("[pinvou3-app] approve_tool_call failed: {e:?}");
+                        }
+                    });
+                    // 同时通知前端"有工具开始"——engine 的 ToolCallStarted 会随后到，
+                    // 这条主要是用户感知（避免审批阶段静默）
+                    let _ = app.emit(
+                        "chat:tool_start",
+                        json!({ "id": id, "name": tool_name, "args": null }),
                     );
                 }
                 Event::TurnComplete { status, error, .. } => {

@@ -11,6 +11,10 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091
 source <(grep '^export' "$PROJECT_ROOT/run-deepseek-tui.sh")
 
+# SSE idle timeout 调短到 90 秒：默认 300s 太长，hang 的 turn 用户感知不到
+# 异常。90s 足够 vLLM 在 GB10 上 prefill 一次 100KB body 的 prompt。
+export DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS="${DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS:-90}"
+
 # ── 2. 输入法兼容（fcitx5 / ibus 在 Wayland 下跟 webkit 兼容差） ─
 # 强制 GTK 走 X11 (XWayland)，webkit 通过 XIM 协议跟 fcitx5 协作
 # 比 Wayland 文本输入协议稳定。
