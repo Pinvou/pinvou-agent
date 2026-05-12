@@ -18,9 +18,16 @@ use deepseek_tui::tools::spec::ToolContext;
 use crate::agent_registry::AgentRegistry;
 use crate::deepseek_harness::DeepSeekHarness;
 use crate::engine::PlatformEngine;
+use crate::engine_harness::{EngineHarness, Harness};
 use crate::harness::{ModelInfo, ToolDef};
 
-pub type PinvouEngine = PlatformEngine<DeepSeekHarness<DeepSeekClient>>;
+/// 切换两种底层 harness：
+/// - `Harness::Legacy` —— 历史路径，pinvou-platform 自写的 tool loop（deepseek_harness.rs）
+/// - `Harness::Engine` —— 新路径，包装 DeepSeek-TUI 的 EngineHandle（engine_harness.rs）
+///
+/// 默认走 Legacy，设 `PINVOU_USE_ENGINE_HARNESS=1` 切到 Engine。
+/// 验证稳定后 Phase 4 删除 Legacy 分支 + DeepSeekHarness 整个文件。
+pub type PinvouEngine = PlatformEngine<Harness>;
 
 /// 加载 prompts/ 目录下的 agent。若目录不存在或为空，返回空 registry（不报错）。
 pub fn load_agents(prompts_dir: impl AsRef<Path>) -> Arc<AgentRegistry> {
@@ -145,11 +152,31 @@ pub fn create_engine(workspace: PathBuf) -> Result<PinvouEngine> {
         capability: "large".into(),
     }];
 
-    // 构造 DeepSeek-TUI 工具注册表（批量挂多个工具）
-    let (tool_registry, tool_context, auto_tool_names) = build_default_tool_registry(&workspace);
+    // 选择 harness 路径
+    let use_engine = std::env::var("PINVOU_USE_ENGINE_HARNESS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
 
-    let harness = DeepSeekHarness::new(client, tool_names, models, workspace.clone())
-        .with_tools(tool_registry, tool_context, auto_tool_names);
+    let harness = if use_engine {
+        eprintln!("[pinvou3] Harness: EngineHarness (新路径，包装 DeepSeek-TUI EngineHandle)");
+        // EngineConfig 复用 deepseek-tui 默认值；workspace + model 显式覆盖
+        let engine_config = deepseek_tui::core::engine::EngineConfig {
+            model: models[0].id.clone(),
+            workspace: workspace.clone(),
+            allow_shell: false,
+            trust_mode: true, // workspace 内可读写
+            ..deepseek_tui::core::engine::EngineConfig::default()
+        };
+        Harness::Engine(EngineHarness::new(engine_config, &config, tool_names))
+    } else {
+        eprintln!("[pinvou3] Harness: DeepSeekHarness (Legacy，自写 tool loop)");
+        // 构造 DeepSeek-TUI 工具注册表（批量挂多个工具）
+        let (tool_registry, tool_context, auto_tool_names) =
+            build_default_tool_registry(&workspace);
+        let h = DeepSeekHarness::new(client, tool_names, models, workspace.clone())
+            .with_tools(tool_registry, tool_context, auto_tool_names);
+        Harness::Legacy(h)
+    };
 
     // 注意：AgentRegistry 由 main.rs 用 CLI 的 `--prompts-dir` 显式注入，
     // create_engine 不再这里加载，避免重复读盘 + 重复日志。

@@ -24,6 +24,7 @@ pub mod contract_validator;
 pub mod deepseek_harness;
 pub mod engine;
 pub mod engine_factory;
+pub mod engine_harness;
 pub mod harness;
 pub mod rollback;
 pub mod router;

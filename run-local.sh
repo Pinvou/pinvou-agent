@@ -20,6 +20,17 @@ export DEEPSEEK_REASONING_EFFORT=off
 # 测试机是内网 HTTP 推理服务，deepseek-tui 默认拒绝非 HTTPS URL。
 # 在受信内网用 HTTP 是合理的，显式 override 这个安全检查。
 export DEEPSEEK_ALLOW_INSECURE_HTTP=1
+# 强制 HTTP/1.1：reqwest 默认会试 HTTP/2 upgrade，但 vLLM 内网通过某些
+# 代理时 HTTP/2 ALPN 协商会卡死（SSE 不返回 response headers，45s 超时）。
+# HTTP/1.1 兼容性最广，SSE 也完全支持。
+export DEEPSEEK_FORCE_HTTP1=1
+# EngineHandle 重构暂时回退到 Legacy 路径（自写 tool loop），等架构梳理
+# 后再启动。详见 engine-refactor-status.md。
+# 想试 Engine 路径：取消下面这行注释。
+# export PINVOU_USE_ENGINE_HARNESS=1
+# vLLM max-model-len=65536，engine 默认 max_output_tokens=64000 会撞顶。
+# 切 Engine 路径时需要这个 env；Legacy 路径不依赖。
+export DEEPSEEK_MAX_OUTPUT_TOKENS=16384
 
 cd "$(dirname "$0")"
 exec cargo run --manifest-path pinvou-platform/Cargo.toml -- --prompts-dir prompts/ "$@"
