@@ -1,66 +1,38 @@
 # pinvou3 项目规则
 
-> 架构详情见 `设计架构文档-pinvou3.md`。当前进度与 P1 待办见 `process.md`。
-> 本文档只列做事规则，不重复架构说明。
+## 两个核心约束
 
----
+### 1. DeepSeek-TUI 是底座，不重复造轮子
 
-## 边界
+DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegistry / Commands 路由 / MCP client / Hooks / Cycle / Compaction。
 
-**pinvou-platform 是编排层，DeepSeek-TUI 是底层。** 唯一接口是 `pinvou-platform/src/harness.rs` 的 `AgentHarness` trait。
+**绝不在 pinvou3 重新实现这些**。扩展时按场景选：
 
-只有 `deepseek_harness.rs` 这个桥接模块可以 `use deepseek_tui::*`。其他 platform 模块走 trait + 自定义类型（`ChatRequest` / `StreamEvent` / `ToolDef`）。
-
----
-
-## 复用优先
-
-加任何能力前先看 DeepSeek-TUI 有没有：
-
-| 想加什么 | 先看 |
+| 想做的事 | 用哪个 |
 |---|---|
-| 工具实现（联网 / 文件 / shell 等） | `DeepSeek-TUI/crates/tui/src/tools/` |
-| LLM 客户端 | `crates/tui/src/client.rs` |
-| 流式事件 / 消息块 / Tool schema | `crates/tui/src/models.rs`、`tools/spec.rs` |
-| TUI 模态框（选择卡等） | `crates/tui/src/tui/` |
-| Sandbox / workspace 信任 | `crates/tui/src/sandbox.rs`、`workspace_trust.rs` |
+| 加领域 agent / 工具组合 | SKILL.md（复用 SkillRegistry） |
+| 加 `/xxx` 命令 | `~/.deepseek/commands/xxx.md` |
+| 接外部 API | 写独立 MCP server |
+| 改 LLM 行为引导 | `.deepseek/instructions.md` |
+| Tauri UI / Rust wrapper / Engine 配置 | pinvou3-app 内 Rust |
+| 修上游 bug | DeepSeek-TUI fork ≤50 行 + 立即 PR（参考 #1511） |
 
-只有 DeepSeek-TUI 没有的能力才在 platform 新增。
+### 2. 只用本地算力（GB10 + Qwen3.6-35B-A3B-FP8）
 
----
+- 设计以当前模型能力为基线，未来变强是 bonus
+- 内网受限：CDN 大概率不可达，所有前端资源必须 vendor 化 + 系统字体
+- 部署形态：Tauri 单机桌面，不做 Web 双轨
 
-## 修改 DeepSeek-TUI
+## 主体
 
-**非必要不动。** 真要改：
-- 先尝试在 platform 包装绕过
-- 改之前确认上游能接受（避免之后 rebase 痛苦）
-- 在 PR / 提交说明里写清动机
-- 不要把它的代码 fork 进 platform
+- `pinvou3-app/` — 🟢 Tauri 2.0 + EngineHandle wrapper（当前主线）
+- `pinvou-platform/` — ⚠️ 已冻结（旧编排层，等 pinvou3-app 稳定后删）
+- `DeepSeek-TUI/` — 库依赖，改动遵循约束 1
 
----
+启动：`./pinvou3-app/run-dev.sh`
 
-## 常见错误
+## 参考文档
 
-- ❌ 在拆解 prompt 里宣传 harness 未注册的工具 → LLM 输出 `[web_search: ...]` 这类伪文本
-- ❌ 绕过 `ContractValidator` 让 LLM 自评推进 → 本地 LLM 不会自觉停
-- ❌ 在 `ConversationState` 外维护对话状态 → 回退（`/back` / `/redo`）清不干净
-- ❌ 自己定义工具协议 → 用 DeepSeek-TUI 的 `ToolSpec` + `ToolRegistryBuilder`
-- ❌ 给 `AgentHarness` trait 加 DeepSeek-TUI 内部类型 → 破坏可替换性
-
----
-
-## 常见任务
-
-- **加 agent** = 写一个 `prompts/<id>.md`（含 frontmatter）。零代码，启动时自动扫描。
-- **加工具** = `engine_factory::build_default_tool_registry` 加一行 `.with_tool(Arc::new(SomeTool))` + 把工具名加进 `auto_tool_names`（若可自动执行）
-- **加 milestone mode** = 三处协同更新：`contract::contract_for_mode`（规则）+ `contract_runtime::next_directive`（路由）+ `combined_planner` 拆解 prompt（让 LLM 知道）
-
----
-
-## 验证
-
-```
-cargo test --manifest-path pinvou-platform/Cargo.toml --lib
-```
-
-改架构性的东西要同步更新 `设计架构文档-pinvou3.md`；完成 P1 项要更新 `process.md`。
+- `docs/DeepSeek-TUI-架构详解.md` — 底座详尽解析
+- `docs/验证报告-qwen3.6-deepseek-tui.md` — 阶段 A 实证报告
+- git log + commit message — 决策记录与已知坑修复
