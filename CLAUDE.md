@@ -23,9 +23,8 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 
 ## 主体
 
-- `pinvou3-app/` — 🟢 Tauri 2.0 + EngineHandle wrapper（当前主线）
-- `pinvou-platform/` — ⚠️ 已冻结（旧编排层，等 pinvou3-app 稳定后删）
-- `DeepSeek-TUI/` — 库依赖，改动遵循约束 1
+- `pinvou3-app/` — 🟢 Tauri 2.0 + EngineHandle wrapper（主线）
+- `DeepSeek-TUI/` — submodule（h3c-hexin/DeepSeek-TUI fork），改动遵循约束 1
 
 启动：`./pinvou3-app/run-dev.sh`
 
@@ -33,4 +32,5 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 
 - `docs/DeepSeek-TUI-架构详解.md` — 底座详尽解析
 - `docs/验证报告-qwen3.6-deepseek-tui.md` — 阶段 A 实证报告
+- `process.md` — 跨阶段待办 / 长期搁置项
 - git log + commit message — 决策记录与已知坑修复

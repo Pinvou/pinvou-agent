@@ -6,12 +6,27 @@
 set -euo pipefail
 
 # ── 1. 后端 env（vLLM + Qwen3.6） ───────────────────────────────
-# 复用项目根 run-deepseek-tui.sh 的 DEEPSEEK_* 配置
-PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# shellcheck disable=SC1091
-source <(grep '^export' "$PROJECT_ROOT/run-deepseek-tui.sh")
+# vLLM provider (OpenAI 兼容 /v1/chat/completions)
+export DEEPSEEK_PROVIDER=vllm
+export DEEPSEEK_API_KEY="local-no-auth"
+export DEEPSEEK_BASE_URL="http://10.214.74.113:8000/v1"
+export DEEPSEEK_MODEL="/model"
 
-# SSE idle timeout 调短到 90 秒：默认 300s 太长，hang 的 turn 用户感知不到
+# 关 Qwen3 thinking 模式 (reasoning_effort=off 触发
+# chat_template_kwargs.enable_thinking=false,避免 10+ 秒 reasoning 段卡死)
+export DEEPSEEK_REASONING_EFFORT=off
+
+# 内网 HTTP 推理服务,绕过 deepseek-tui 默认 HTTPS 强制
+export DEEPSEEK_ALLOW_INSECURE_HTTP=1
+
+# 内网代理 HTTP/2 ALPN 协商有时卡死,强制 HTTP/1.1
+export DEEPSEEK_FORCE_HTTP1=1
+
+# vLLM max-model-len=65536,engine 默认 max_output_tokens=64000 会撞顶,
+# 砍到 16k 让 input + output 总和不爆 (依赖 fork commit 490c3dde)
+export DEEPSEEK_MAX_OUTPUT_TOKENS=16384
+
+# SSE idle timeout 调短到 90 秒:默认 300s 太长,hang 的 turn 用户感知不到
 # 异常。90s 足够 vLLM 在 GB10 上 prefill 一次 100KB body 的 prompt。
 export DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS="${DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS:-90}"
 
