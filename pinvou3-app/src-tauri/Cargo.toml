@@ -27,3 +27,6 @@ tokio = { version = "1.49", features = ["full"] }
 
 # 底层 Agent —— DeepSeek-TUI 提供 LLM 调用 + 工具循环 + 流式事件
 deepseek-tui = { path = "../../DeepSeek-TUI/crates/tui" }
+
+# Monitor 用：vLLM HTTP probe（/v1/models + Prometheus /metrics）
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }

@@ -8,12 +8,17 @@
 //! Engine 事件（MessageDelta / ToolCallStarted / ToolCallComplete / TurnComplete）
 //! 由 `engine::spawn_event_forwarder` 转译成 Tauri 事件推到前端。
 
+mod bridge;
 mod commands;
 mod engine;
+mod monitor;
+
+use std::time::Duration;
 
 use tauri::Manager;
 
 use crate::engine::AppEngine;
+use crate::monitor::MonitorState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -41,9 +46,22 @@ pub fn run() {
                 }
             });
 
+            // Monitor 后台采样：5s 一次，缓存在 MonitorState 里
+            let monitor_state = MonitorState::new();
+            monitor::spawn_sampler(monitor_state.clone(), Duration::from_secs(5));
+            app.handle().manage(monitor_state);
+            eprintln!("[pinvou3-app] monitor sampler started (5s interval)");
+
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![commands::chat])
+        .invoke_handler(tauri::generate_handler![
+            commands::chat,
+            commands::get_settings,
+            commands::update_settings,
+            commands::clear_session,
+            commands::get_monitor_snapshot,
+            commands::get_backend_status,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

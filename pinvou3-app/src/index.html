@@ -3,52 +3,229 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>pinvou3 智能助手</title>
+  <title data-i18n="app.title">pinvou3 智能助手</title>
 
-  <!-- 本地化的 markdown 渲染 + 安全过滤（无 CDN 依赖） -->
   <script src="./vendor/marked.min.js"></script>
   <script src="./vendor/purify.min.js"></script>
 
   <link href="./styles/chat.css" rel="stylesheet"/>
 </head>
-<body>
+<body data-theme="genesis">
 
-  <!-- 顶栏 -->
-  <header class="topbar">
-    <div class="topbar-left">
-      <span class="brand">PINVOU3</span>
-      <span class="brand-sub">智能助手</span>
-    </div>
-    <div class="topbar-right">
-      <span id="status-dot" class="status-dot"></span>
-      <span id="status-text" class="status-text">READY</span>
-    </div>
-  </header>
+<div class="app-shell">
 
-  <!-- 消息流 -->
-  <main id="chat-area" class="chat-area chat-scroll">
-    <div class="msg-row msg-system">
-      <div class="bubble bubble-system">
-        <span class="bubble-system-prefix">PINVOU3 · READY</span><br/>
-        跟 Qwen3.6 说点什么。它能联网、读写文件、跑 shell。
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand">PINVOU3</div>
+      <div class="brand-sub" data-i18n="brand.sub">本地 · GB10</div>
+    </div>
+    <nav class="sidebar-nav">
+      <a class="nav-link active" data-view="chatroom" href="#">
+        <span class="nav-icon">💬</span>
+        <span class="nav-label" data-i18n="nav.chatroom">聊天室</span>
+      </a>
+      <a class="nav-link" data-view="workflow" href="#">
+        <span class="nav-icon">📋</span>
+        <span class="nav-label" data-i18n="nav.workflow">工作流</span>
+      </a>
+      <a class="nav-link" data-view="monitor" href="#">
+        <span class="nav-icon">📊</span>
+        <span class="nav-label" data-i18n="nav.monitor">监控</span>
+      </a>
+    </nav>
+    <div class="sidebar-foot">
+      <a class="nav-link" data-view="settings" href="#">
+        <span class="nav-icon">⚙️</span>
+        <span class="nav-label" data-i18n="nav.settings">设置</span>
+      </a>
+    </div>
+  </aside>
+
+  <main class="app-main">
+
+    <!-- ChatRoom -->
+    <section id="view-chatroom" class="view view-active">
+      <header class="view-header">
+        <div class="view-header-left">
+          <span class="view-title" data-i18n="view.chatroom.title">聊天室</span>
+          <span class="view-sub" data-i18n="view.chatroom.sub">跟 Qwen3.6 聊点什么</span>
+        </div>
+        <div class="view-header-right">
+          <span id="live-dot" class="live-dot" title="vLLM 状态"></span>
+          <span id="live-text" class="live-text" data-i18n="live.checking">检查中</span>
+          <button id="clear-btn" class="icon-btn" type="button" data-i18n="chat.clear">清除</button>
+        </div>
+      </header>
+
+      <div id="chat-area" class="chat-area chat-scroll">
+        <div class="msg-row msg-system">
+          <div class="bubble bubble-system">
+            <span class="bubble-system-prefix">PINVOU3 · READY</span><br/>
+            <span data-i18n="chat.welcome">跟 Qwen3.6 说点什么。它能联网、读写文件、跑 shell。</span>
+          </div>
+        </div>
       </div>
-    </div>
+
+      <footer class="composer">
+        <div class="composer-inner">
+          <textarea
+            id="input"
+            rows="1"
+            data-i18n-placeholder="chat.placeholder"
+            placeholder="跟 Qwen3.6 说点什么（Enter 发送 · Shift+Enter 换行）"
+            autofocus></textarea>
+          <button id="send-btn" type="button" aria-label="发送">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+          </button>
+        </div>
+      </footer>
+    </section>
+
+    <!-- WorkFlow -->
+    <section id="view-workflow" class="view">
+      <header class="view-header">
+        <div class="view-header-left">
+          <span class="view-title" data-i18n="view.workflow.title">工作流</span>
+          <span class="view-sub" data-i18n="view.workflow.sub">任务拆解 · 进度可视化</span>
+        </div>
+      </header>
+      <div class="view-empty">
+        <div class="view-empty-icon">📋</div>
+        <h2 data-i18n="workflow.empty.title">工作流功能开发中</h2>
+        <p data-i18n="workflow.empty.desc">未来在这里能看到 AI 把你的需求拆成步骤、并行/串行执行,每步状态实时跟踪。</p>
+        <p class="view-empty-hint" data-i18n="workflow.empty.hint">现在请在聊天室提需求。</p>
+      </div>
+    </section>
+
+    <!-- Monitor -->
+    <section id="view-monitor" class="view">
+      <header class="view-header">
+        <div class="view-header-left">
+          <span class="view-title" data-i18n="view.monitor.title">监控</span>
+          <span class="view-sub" data-i18n="view.monitor.sub">系统性能 · 5 秒刷新</span>
+        </div>
+        <div class="view-header-right">
+          <span id="monitor-live-dot" class="live-dot"></span>
+          <span id="monitor-updated" class="view-sub">—</span>
+          <button id="monitor-refresh-btn" class="icon-btn" type="button" data-i18n="monitor.refresh">刷新</button>
+        </div>
+      </header>
+      <div class="monitor-grid">
+        <div class="monitor-card" id="card-gpu">
+          <div class="monitor-card-head"><span class="card-label">GPU</span><span class="card-icon">🖥️</span></div>
+          <div class="card-title" id="gpu-name">—</div>
+          <div class="card-row">
+            <span class="card-row-label" data-i18n="monitor.vram">VRAM</span>
+            <div class="bar"><div class="bar-fill" id="gpu-vram-bar"></div></div>
+            <span class="card-row-val" id="gpu-vram-text">— / —</span>
+          </div>
+          <div class="card-row">
+            <span class="card-row-label" data-i18n="monitor.util">利用率</span>
+            <div class="bar"><div class="bar-fill" id="gpu-util-bar"></div></div>
+            <span class="card-row-val" id="gpu-util-text">—%</span>
+          </div>
+        </div>
+
+        <div class="monitor-card" id="card-ram">
+          <div class="monitor-card-head"><span class="card-label" data-i18n="monitor.memory">内存</span><span class="card-icon">🧠</span></div>
+          <div class="card-title" data-i18n="monitor.system_ram">系统内存</div>
+          <div class="card-row">
+            <span class="card-row-label" data-i18n="monitor.used">已用</span>
+            <div class="bar"><div class="bar-fill" id="ram-used-bar"></div></div>
+            <span class="card-row-val" id="ram-used-text">— / —</span>
+          </div>
+          <div class="card-row">
+            <span class="card-row-label" data-i18n="monitor.swap">Swap</span>
+            <div class="bar"><div class="bar-fill" id="swap-used-bar"></div></div>
+            <span class="card-row-val" id="swap-used-text">— / —</span>
+          </div>
+        </div>
+
+        <div class="monitor-card" id="card-vllm">
+          <div class="monitor-card-head"><span class="card-label">vLLM Engine</span><span class="card-icon">⚡</span></div>
+          <div class="card-title" id="vllm-model">—</div>
+          <div class="card-row">
+            <span class="card-row-label" data-i18n="monitor.status">状态</span>
+            <span class="card-badge" id="vllm-status">OFFLINE</span>
+          </div>
+          <div class="card-kv">
+            <div><span data-i18n="monitor.upstream">上游</span><span id="vllm-upstream">—</span></div>
+            <div><span>Max Len</span><span id="vllm-maxlen">—</span></div>
+            <div><span data-i18n="monitor.queue">运行 / 等待</span><span id="vllm-queue">— / —</span></div>
+            <div><span>KV Cache</span><span id="vllm-kv">—%</span></div>
+          </div>
+        </div>
+
+        <div class="monitor-card" id="card-app">
+          <div class="monitor-card-head"><span class="card-label" data-i18n="monitor.app">应用</span><span class="card-icon">📦</span></div>
+          <div class="card-title">pinvou3-app</div>
+          <div class="card-kv">
+            <div><span data-i18n="monitor.app_version">应用版本</span><span id="app-version">—</span></div>
+            <div><span>DeepSeek-TUI</span><span id="dt-version">—</span></div>
+            <div><span data-i18n="monitor.session">会话运行</span><span id="session-uptime">—</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Settings -->
+    <section id="view-settings" class="view">
+      <header class="view-header">
+        <div class="view-header-left">
+          <span class="view-title" data-i18n="view.settings.title">设置</span>
+          <span class="view-sub" data-i18n="view.settings.sub">外观与语言</span>
+        </div>
+      </header>
+      <div class="settings-container">
+
+        <section class="settings-section">
+          <h2 class="settings-section-title" data-i18n="settings.theme.title">界面风格</h2>
+          <div class="theme-grid" id="theme-options">
+            <div class="theme-card" data-theme="genesis">
+              <div class="theme-card-badge" data-i18n="theme.default_badge">默认</div>
+              <div class="theme-preview theme-preview-genesis"><span data-i18n="theme.genesis.short">创始之境</span></div>
+              <div class="theme-card-body">
+                <div class="theme-card-name" data-i18n="theme.genesis.name">创始之境 · Genesis</div>
+                <div class="theme-card-desc" data-i18n="theme.genesis.desc">暗色实验室美学,橙色 accent,Terminal 质感。</div>
+              </div>
+            </div>
+            <div class="theme-card" data-theme="liquid-light">
+              <div class="theme-preview theme-preview-liquid-light"><span data-i18n="theme.liquid_light.short">澄境</span></div>
+              <div class="theme-card-body">
+                <div class="theme-card-name" data-i18n="theme.liquid_light.name">澄境 · 浅色</div>
+                <div class="theme-card-desc" data-i18n="theme.liquid_light.desc">白底柔和阴影,适合明亮环境。</div>
+              </div>
+            </div>
+            <div class="theme-card" data-theme="liquid-dark">
+              <div class="theme-preview theme-preview-liquid-dark"><span data-i18n="theme.liquid_dark.short">澄境</span></div>
+              <div class="theme-card-body">
+                <div class="theme-card-name" data-i18n="theme.liquid_dark.name">澄境 · 深色</div>
+                <div class="theme-card-desc" data-i18n="theme.liquid_dark.desc">纯黑底蓝色点缀,低光环境护眼。</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <h2 class="settings-section-title" data-i18n="settings.language.title">界面语言</h2>
+          <p class="settings-subtitle" data-i18n="settings.language.subtitle">切换界面文案 · 同步通知 LLM 改用对应语言回复(重启 app 生效)</p>
+          <div class="seg-group" id="language-options">
+            <button class="seg-btn" data-lang="zh-Hans" type="button">中文</button>
+            <button class="seg-btn" data-lang="en" type="button">English</button>
+          </div>
+        </section>
+
+        <p class="settings-foot-note">
+          <span data-i18n="settings.foot_note_prefix">高级参数(max tokens / allow shell / 模型预设 等)需要手动修改</span>
+          <code>~/.pinvou3/settings.json</code>
+          <span data-i18n="settings.foot_note_suffix">的 advanced 字段,重启 app 生效。</span>
+        </p>
+      </div>
+    </section>
+
   </main>
+</div>
 
-  <!-- 输入栏 -->
-  <footer class="composer">
-    <div class="composer-inner">
-      <textarea
-        id="input"
-        rows="1"
-        placeholder="跟 Qwen3.6 说点什么（Enter 发送 · Shift+Enter 换行）"
-        autofocus></textarea>
-      <button id="send-btn" type="button" aria-label="发送">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
-      </button>
-    </div>
-  </footer>
-
-  <script src="./main.js"></script>
+<script src="./main.js"></script>
 </body>
 </html>
