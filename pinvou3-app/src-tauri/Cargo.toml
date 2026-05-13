@@ -37,3 +37,7 @@ parking_lot = "0.12"
 
 # 时间戳：SessionMetadata.updated_at 用 chrono::Utc::now()，对齐上游 schema
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+
+# File watcher：监听 ~/.pinvou3/sessions/*/workspace/ 新文件产出，
+# 自动入 session.artifacts (覆盖 write_file 之外的工具如 exec_shell pandoc 产出的 docx)
+notify = "6"

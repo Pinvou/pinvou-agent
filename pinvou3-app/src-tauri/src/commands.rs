@@ -270,6 +270,20 @@ pub async fn save_session_messages(
         .map_err(|e| format!("save_session_messages({id}): {e:?}"))
 }
 
+/// 落盘 session 的产物 paths 列表。前端跟踪 write_file 调用后调用,
+/// 跟 save_session_messages 一起落 (TurnComplete 时)。重启/切换 session 后,
+/// 从 SavedSession.artifacts 重建前端产物列表。
+#[tauri::command]
+pub async fn save_session_artifacts(
+    id: String,
+    paths: Vec<String>,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    store
+        .update_artifacts(&id, paths)
+        .map_err(|e| format!("save_session_artifacts({id}): {e:?}"))
+}
+
 // ===================== 阶段 C: 取消生成 + 编辑/重发 =====================
 
 /// 取消当前生成（生成中按⏹️停止按钮）。

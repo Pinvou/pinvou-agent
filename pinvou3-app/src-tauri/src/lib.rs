@@ -12,6 +12,7 @@ mod bridge;
 mod commands;
 mod engine;
 mod file_ingest;
+mod file_watcher;
 mod monitor;
 
 use std::time::Duration;
@@ -64,6 +65,12 @@ pub fn run() {
                 Err(e) => eprintln!("[pinvou3-app] session store boot failed: {e:?}"),
             }
 
+            // File watcher: 监听 ~/.pinvou3/sessions/ 树,新文件 emit artifact:disk
+            file_watcher::spawn(
+                app.handle().clone(),
+                bridge::paths::sessions_root(),
+            );
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -80,6 +87,7 @@ pub fn run() {
             commands::rename_session,
             commands::get_active_session,
             commands::save_session_messages,
+            commands::save_session_artifacts,
             commands::cancel_generation,
             commands::edit_last_turn,
             commands::read_artifact_text,

@@ -119,11 +119,12 @@ const I18N = {
     "chat.edit": "编辑",
     "chat.regenerate": "重发",
     "pane.artifacts": "产物",
-    "pane.browser": "浏览器",
     "pane.artifacts.empty": "本对话还没有产物",
     "pane.preview.empty": "选择一个产物预览",
     "pane.preview.open_external": "用系统应用打开",
     "pane.preview.unsupported": "这种文件类型只能用系统应用打开",
+    "modal.confirm": "确认",
+    "modal.cancel": "取消",
   },
   "en": {
     "app.title": "pinvou3 Assistant",
@@ -192,11 +193,12 @@ const I18N = {
     "chat.edit": "Edit",
     "chat.regenerate": "Regenerate",
     "pane.artifacts": "Artifacts",
-    "pane.browser": "Browser",
     "pane.artifacts.empty": "No artifacts in this conversation yet",
     "pane.preview.empty": "Select an artifact to preview",
     "pane.preview.open_external": "Open with system app",
     "pane.preview.unsupported": "This file type can only be opened with system app",
+    "modal.confirm": "OK",
+    "modal.cancel": "Cancel",
   },
 };
 
@@ -895,13 +897,10 @@ async function confirmAndDelete(meta) {
     appendSystemMessage("⚠️ 这是唯一的空对话,直接在这里输入即可");
     return;
   }
-  let ok = false;
-  const promptText = i18nText("history.confirm_delete") + "\n\n" + (meta.title || meta.id);
-  if (typeof dialogAsk === "function") {
-    ok = await dialogAsk(promptText, { title: i18nText("history.delete"), kind: "warning" });
-  } else {
-    ok = confirm(promptText);
-  }
+  const ok = await appConfirm(
+    i18nText("history.confirm_delete") + "\n\n" + (meta.title || meta.id),
+    { title: i18nText("history.delete"), kind: "warning" }
+  );
   if (!ok) return;
   try {
     await invoke("delete_session", { id: meta.id });
@@ -962,15 +961,10 @@ async function createNewSession() {
 async function switchToSession(id) {
   if (id === activeSessionId) return;
   if (busy) {
-    let ok = false;
-    if (typeof dialogAsk === "function") {
-      ok = await dialogAsk("当前对话还在响应,打断并切换?", {
-        title: "切换对话",
-        kind: "warning",
-      });
-    } else {
-      ok = confirm("当前对话还在响应,打断并切换?");
-    }
+    const ok = await appConfirm("当前对话还在响应,打断并切换?", {
+      title: "切换对话",
+      kind: "warning",
+    });
     if (!ok) return;
     try {
       const done = waitForChatDone();
@@ -990,8 +984,17 @@ async function switchToSession(id) {
     activeSessionId = saved.metadata.id;
     messages = Array.isArray(saved.messages) ? saved.messages : [];
     pendingAssistantText = "";
-    // 产物列表是前端跟踪的，切 session 时清空（不从 messages 重建——messages 不含 tool blocks）
-    artifacts = [];
+    // 从 SavedSession.artifacts 重建前端产物列表 (storage_path 是绝对路径)
+    const savedArtifacts = Array.isArray(saved.artifacts) ? saved.artifacts : [];
+    artifacts = savedArtifacts.map((a) => {
+      const path = a.storage_path || a.path || "";
+      return {
+        path,
+        basename: path.split(/[\\/]/).pop() || path,
+        created_at: Date.parse(a.created_at) || Date.now(),
+        updated_at: Date.parse(a.created_at) || Date.now(),
+      };
+    });
     activeArtifactPath = null;
     renderArtifactList();
     clearUnreadArtifacts();
@@ -1016,11 +1019,16 @@ async function refreshHistoryList() {
   renderHistoryList();
 }
 
-/** 把当前 messages 落盘到后端（每轮 TurnComplete 调用一次）。 */
+/** 把当前 messages + artifacts 落盘到后端（每轮 TurnComplete 调用一次）。 */
 async function persistMessages() {
   if (!activeSessionId) return;
   try {
     await invoke("save_session_messages", { id: activeSessionId, messages });
+    // artifacts 一起落盘,重启 / 切换 session 后能恢复
+    await invoke("save_session_artifacts", {
+      id: activeSessionId,
+      paths: artifacts.map((a) => a.path),
+    });
     // 标题在前端没有自动生成机制（plan 提到 LLM 总结 6 字内为阶段 D 工作），
     // 但首次发消息后用 user 消息前 20 字做 placeholder
     const meta = sessionsCache.find((m) => m.id === activeSessionId);
@@ -1048,9 +1056,6 @@ const rightPaneToggle = document.getElementById("right-pane-toggle");
 const rightPaneBadge = document.getElementById("right-pane-badge");
 const artifactListEl = document.getElementById("artifact-list");
 const artifactPreviewEl = document.getElementById("artifact-preview");
-const browserUrlEl = document.getElementById("browser-url");
-const browserGoBtn = document.getElementById("browser-go");
-const browserFrameEl = document.getElementById("browser-frame");
 let activeArtifactPath = null;
 let unreadArtifacts = 0;
 
@@ -1115,16 +1120,10 @@ tokenBarEl?.addEventListener("click", async () => {
     appendSystemMessage("ℹ️ 还没有可压缩的对话历史");
     return;
   }
-  // Tauri webview 的 window.confirm 是 no-op,改用 plugin-dialog 的原生 ask
-  let ok = false;
-  if (typeof dialogAsk === "function") {
-    ok = await dialogAsk(
-      "立即压缩当前对话上下文？\n\n早期消息会被摘要替换,无法恢复。",
-      { title: "压缩上下文", kind: "warning" }
-    );
-  } else {
-    ok = confirm("立即压缩当前对话上下文？");
-  }
+  const ok = await appConfirm(
+    "立即压缩当前对话上下文？\n\n早期消息会被摘要替换,无法恢复。",
+    { title: "压缩上下文", kind: "warning" }
+  );
   if (!ok) return;
   try {
     await invoke("compact_now");
@@ -1145,9 +1144,10 @@ function extractArtifactPath(args) {
   return obj.path || obj.file_path || obj.target || obj.filename || null;
 }
 
-/** 把一个产物路径加入 state.artifacts。重复 path 的覆盖（最近一次写为准）。 */
+/** 把一个产物路径加入 state.artifacts。重复 path 的覆盖（最近一次写为准）。
+ *  badge unread 只在 path 真新增时 bump,避免 file watcher 多次 Modify 事件
+ *  把计数刷到天上去。 */
 function trackArtifact(path) {
-  // 同路径已存在 → 更新顺序（移到最前），保留之前的 created_at
   const existing = artifacts.findIndex((a) => a.path === path);
   const basename = path.split(/[\\/]/).pop() || path;
   const entry = existing >= 0
@@ -1156,7 +1156,20 @@ function trackArtifact(path) {
   if (existing >= 0) artifacts.splice(existing, 1);
   artifacts.unshift(entry);
   renderArtifactList();
-  bumpUnreadArtifacts();
+  if (existing < 0) bumpUnreadArtifacts();
+}
+
+/** 从 artifacts 数组中移除一条 (file watcher Remove 事件触发)。 */
+function untrackArtifact(path) {
+  const idx = artifacts.findIndex((a) => a.path === path);
+  if (idx < 0) return;
+  artifacts.splice(idx, 1);
+  // 如果删的是当前正在预览的,清空预览区
+  if (activeArtifactPath === path) {
+    activeArtifactPath = null;
+    if (artifactPreviewEl) artifactPreviewEl.innerHTML = "";
+  }
+  renderArtifactList();
 }
 
 /** 渲染右栏产物列表。 */
@@ -1238,7 +1251,10 @@ async function previewArtifact(a) {
       const text = await invoke("read_artifact_text", { path: a.path });
       const iframe = document.createElement("iframe");
       iframe.sandbox = "allow-same-origin allow-scripts";
-      iframe.srcdoc = text;
+      // iframe 是独立 document,主文档的 contextmenu listener 管不到,
+      // 必须把禁右键脚本注入 srcdoc 顶部 (用户右键 reload 会刷掉所有前端状态)
+      const guard = `<script>document.addEventListener('contextmenu',function(e){e.preventDefault();})<\/script>`;
+      iframe.srcdoc = guard + text;
       iframe.style.height = "100%";
       artifactPreviewEl.innerHTML = "";
       artifactPreviewEl.appendChild(iframe);
@@ -1506,21 +1522,6 @@ input.addEventListener("paste", async (e) => {
   }
 })();
 
-// 浏览器 tab url submit
-browserGoBtn?.addEventListener("click", () => loadBrowserUrl());
-browserUrlEl?.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") {
-    e.preventDefault();
-    loadBrowserUrl();
-  }
-});
-function loadBrowserUrl() {
-  if (!browserUrlEl || !browserFrameEl) return;
-  let url = browserUrlEl.value.trim();
-  if (!url) return;
-  if (!/^https?:\/\//i.test(url)) url = "https://" + url;
-  browserFrameEl.src = url;
-}
 
 // ── Tauri 事件订阅 ────────────────────────────────────────────────
 listen("chat:delta", (e) => {
@@ -1557,6 +1558,20 @@ listen("chat:usage", (e) => {
     updateTokenBar(input);
   }
 });
+// File watcher 推送的产物事件：sessions/<id>/workspace/ 下任何新文件 / 修改
+// → 自动跟踪到 artifacts。覆盖 write_file 无法捕获的场景 (如 exec_shell pandoc 出 docx)。
+// 同一 file 短时间内可能多次 fire (Create + 多次 Modify),trackArtifact 已按 path 去重。
+listen("artifact:disk", (e) => {
+  const payload = e.payload || {};
+  if (payload.session_id !== activeSessionId) return; // 只跟当前 session
+  if (!payload.path) return;
+  if (payload.event === "removed") {
+    untrackArtifact(payload.path);
+  } else {
+    trackArtifact(payload.path);
+  }
+});
+
 listen("chat:compaction", (e) => {
   const phase = e.payload?.phase;
   const msg = e.payload?.message || "";
@@ -1681,6 +1696,56 @@ input.addEventListener("keydown", (e) => {
     send();
   }
 });
+
+// 禁掉 webview 默认右键菜单 (含「重新加载」)。
+// 用户右键以为是普通菜单，点了 reload 整个前端状态会丢，体验差。
+document.addEventListener("contextmenu", (e) => e.preventDefault());
+
+// ── 自定义 confirm modal (替代 GTK 原生 dialog.ask) ──────────────
+const modalOverlay = document.getElementById("modal-overlay");
+const modalTitleEl = document.getElementById("modal-title");
+const modalBodyEl = document.getElementById("modal-body");
+const modalConfirmBtn = document.getElementById("modal-btn-confirm");
+const modalCancelBtn = document.getElementById("modal-btn-cancel");
+
+/** 主题一致的 confirm 弹窗。
+ *  返回 Promise<boolean>：true=确认 / false=取消 / Esc 也是取消。
+ *  kind: "default" | "warning"  (warning 的确认按钮变红色) */
+function appConfirm(message, opts = {}) {
+  return new Promise((resolve) => {
+    if (!modalOverlay) {
+      // fallback：极端情况 modal DOM 不在
+      resolve(confirm(message));
+      return;
+    }
+    modalTitleEl.textContent = opts.title || i18nText("modal.confirm");
+    modalBodyEl.textContent = message;
+    modalConfirmBtn.textContent = opts.confirmText || i18nText("modal.confirm");
+    modalCancelBtn.textContent = opts.cancelText || i18nText("modal.cancel");
+    modalOverlay.dataset.kind = opts.kind || "default";
+    modalOverlay.dataset.open = "true";
+
+    function cleanup() {
+      modalOverlay.dataset.open = "false";
+      modalConfirmBtn.removeEventListener("click", onConfirm);
+      modalCancelBtn.removeEventListener("click", onCancel);
+      modalOverlay.removeEventListener("click", onBackdrop);
+      document.removeEventListener("keydown", onKey);
+    }
+    function onConfirm() { cleanup(); resolve(true); }
+    function onCancel() { cleanup(); resolve(false); }
+    function onBackdrop(e) { if (e.target === modalOverlay) onCancel(); }
+    function onKey(e) {
+      if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+      else if (e.key === "Enter") { e.preventDefault(); onConfirm(); }
+    }
+    modalConfirmBtn.addEventListener("click", onConfirm);
+    modalCancelBtn.addEventListener("click", onCancel);
+    modalOverlay.addEventListener("click", onBackdrop);
+    document.addEventListener("keydown", onKey);
+    setTimeout(() => modalConfirmBtn.focus(), 0);
+  });
+}
 
 // ── 初始化 ────────────────────────────────────────────────────────
 (async function init() {

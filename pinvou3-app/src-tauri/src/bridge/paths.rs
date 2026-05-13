@@ -79,6 +79,13 @@ pub fn session_artifacts_dir(session_id: &str) -> PathBuf {
     sessions_root().join(session_id).join("artifacts")
 }
 
+/// `~/.pinvou3/sessions/<session_id>/workspace/` —— 每个 session 独立的工作目录。
+/// engine workspace 跟随当前 active session 切换，避免多 session 共享文件冲突。
+/// 切换 session 时 bridge 调 `Op::SyncSession { workspace }` 重置。
+pub fn session_workspace_dir(session_id: &str) -> PathBuf {
+    sessions_root().join(session_id).join("workspace")
+}
+
 /// 阶段 C 没多 session 时的 fallback artifacts dir（session_id="default"）。
 /// Step 4 完成后这个会被切换 session 时动态计算的值替换。
 pub fn default_session_artifacts_dir() -> PathBuf {

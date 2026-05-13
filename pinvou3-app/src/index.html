@@ -107,9 +107,6 @@
             <button class="right-pane-tab active" data-pane-tab="artifacts" type="button">
               <span>📦</span> <span data-i18n="pane.artifacts">产物</span>
             </button>
-            <button class="right-pane-tab" data-pane-tab="browser" type="button">
-              <span>🌐</span> <span data-i18n="pane.browser">浏览器</span>
-            </button>
           </div>
           <div class="right-pane-content">
             <div class="pane-tab-panel pane-tab-active" data-pane-panel="artifacts">
@@ -117,13 +114,6 @@
                 <li class="artifact-empty" data-i18n="pane.artifacts.empty">本对话还没有产物</li>
               </ul>
               <div class="artifact-preview" id="artifact-preview"></div>
-            </div>
-            <div class="pane-tab-panel" data-pane-panel="browser">
-              <div class="browser-bar">
-                <input type="text" class="browser-url" id="browser-url" placeholder="https://..." />
-                <button class="browser-go" id="browser-go" type="button">→</button>
-              </div>
-              <iframe class="browser-frame" id="browser-frame" sandbox="allow-same-origin allow-scripts"></iframe>
             </div>
           </div>
         </aside>
@@ -273,6 +263,17 @@
     </section>
 
   </main>
+</div>
+
+<div class="modal-overlay" id="modal-overlay" data-open="false" data-kind="default">
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-title" id="modal-title"></div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-actions">
+      <button class="modal-btn modal-btn-cancel" id="modal-btn-cancel" type="button" data-i18n="modal.cancel">取消</button>
+      <button class="modal-btn modal-btn-confirm" id="modal-btn-confirm" type="button" data-i18n="modal.confirm">确认</button>
+    </div>
+  </div>
 </div>
 
 <script src="./main.js"></script>

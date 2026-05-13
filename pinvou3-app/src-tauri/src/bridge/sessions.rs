@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
+use deepseek_tui::artifacts::{ArtifactKind, ArtifactRecord};
 use deepseek_tui::models::Message;
 use deepseek_tui::session_manager::{
     create_saved_session_with_id_and_mode, SavedSession, SessionManager, SessionMetadata,
@@ -112,6 +113,37 @@ impl SessionStore {
         session.metadata.message_count = messages.len();
         session.metadata.updated_at = Utc::now();
         session.messages = messages;
+        self.save(&session)?;
+        Ok(())
+    }
+
+    /// 替换 session 的产物列表。前端跟踪 write_file 工具调用积累的 paths,
+    /// 每轮 TurnComplete 一起落盘。重启 / 切换 session 后能从 SavedSession.artifacts
+    /// 恢复列表(让用户感知产物跟 session 是一对一的)。
+    pub fn update_artifacts(&self, id: &str, paths: Vec<String>) -> Result<()> {
+        let mut session = self.load(id)?;
+        let session_id = session.metadata.id.clone();
+        let now = Utc::now();
+        session.artifacts = paths
+            .into_iter()
+            .enumerate()
+            .map(|(idx, p)| {
+                let path = PathBuf::from(&p);
+                let byte_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                ArtifactRecord {
+                    id: format!("p3art_{session_id}_{idx}"),
+                    kind: ArtifactKind::ToolOutput,
+                    session_id: session_id.clone(),
+                    tool_call_id: format!("p3_{idx}"),
+                    tool_name: "write_file".into(),
+                    created_at: now,
+                    byte_size,
+                    preview: String::new(),
+                    storage_path: path,
+                }
+            })
+            .collect();
+        session.metadata.updated_at = now;
         self.save(&session)?;
         Ok(())
     }

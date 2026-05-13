@@ -1041,31 +1041,36 @@ body[data-theme="liquid-light"] .settings-foot-note code {
    阶段 C: 左侧历史会话面板
    ========================================================= */
 
+/* 历史会话面板 —— 视觉上从「聊天室」nav 项缩进延伸，表达从属关系。
+   左侧加细色条作为「这是聊天室的子内容」视觉线索。 */
 .history-panel {
-  margin: 4px 0 12px;
-  padding-left: 8px;
+  margin: 2px 0 14px;
+  padding: 0 8px 0 28px;          /* 28px 缩进对齐 聊天室 icon+label 位置 */
+  border-left: 1px solid var(--surface-container-high);
+  margin-left: 24px;              /* 让 border-left 落在 聊天室 icon 中点下方 */
 }
 
 .history-new {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
-  padding: 8px 12px;
-  margin-bottom: 8px;
+  padding: 6px 8px;
+  margin-bottom: 4px;
   background: transparent;
-  border: 1px dashed var(--surface-container-high);
-  border-radius: 8px;
-  color: var(--on-surface-variant);
+  border: none;
+  border-radius: 6px;
+  color: var(--on-surface-muted);
   font: inherit;
-  font-size: 0.85em;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all 0.12s;
 }
 .history-new:hover {
-  border-style: solid;
-  border-color: var(--accent);
-  color: var(--accent);
+  background: rgba(255, 107, 53, 0.08);
+  color: var(--primary-container);
 }
 .history-new-icon {
   font-size: 1.1em;
@@ -1076,8 +1081,15 @@ body[data-theme="liquid-light"] .settings-foot-note code {
   list-style: none;
   margin: 0;
   padding: 0;
-  max-height: 50vh;
+  max-height: 45vh;
   overflow-y: auto;
+}
+/* 历史列表的滚动条做细 */
+.history-list::-webkit-scrollbar { width: 4px; }
+.history-list::-webkit-scrollbar-track { background: transparent; }
+.history-list::-webkit-scrollbar-thumb {
+  background: var(--surface-container-high);
+  border-radius: 2px;
 }
 
 .history-empty {
@@ -1092,20 +1104,33 @@ body[data-theme="liquid-light"] .settings-foot-note code {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 8px 6px 12px;
+  padding: 5px 8px 5px 10px;
   border-radius: 6px;
   cursor: pointer;
   color: var(--on-surface-variant);
-  font-size: 0.85em;
+  font-size: 12px;
+  line-height: 1.5;
   position: relative;
-  transition: background 0.12s;
+  transition: background 0.12s, color 0.12s;
 }
 .history-item:hover {
   background: rgba(255, 255, 255, 0.04);
+  color: var(--on-surface);
 }
 .history-item.active {
   background: rgba(255, 107, 53, 0.12);
   color: var(--on-surface);
+}
+/* active 项左侧加细色条强化「当前对话」感 */
+.history-item.active::before {
+  content: "";
+  position: absolute;
+  left: -28px;             /* 顶到 history-panel 的 border-left 上 */
+  top: 4px;
+  bottom: 4px;
+  width: 3px;
+  background: var(--primary-container);
+  border-radius: 0 2px 2px 0;
 }
 .history-item-title {
   flex: 1;
@@ -1148,20 +1173,26 @@ body[data-theme="liquid-light"] .settings-foot-note code {
 }
 
 /* Liquid-light 主题适配 */
+body[data-theme="liquid-light"] .history-panel {
+  border-left-color: rgba(0, 0, 0, 0.1);
+}
 body[data-theme="liquid-light"] .history-new {
-  border-color: rgba(0, 0, 0, 0.12);
-  color: rgba(0, 0, 0, 0.6);
+  color: rgba(0, 0, 0, 0.5);
 }
 body[data-theme="liquid-light"] .history-new:hover {
-  border-color: #007aff;
+  background: rgba(0, 122, 255, 0.08);
   color: #007aff;
 }
 body[data-theme="liquid-light"] .history-item:hover {
   background: rgba(0, 0, 0, 0.04);
+  color: #000;
 }
 body[data-theme="liquid-light"] .history-item.active {
   background: rgba(0, 122, 255, 0.1);
   color: #000;
+}
+body[data-theme="liquid-light"] .history-item.active::before {
+  background: #007aff;
 }
 body[data-theme="liquid-light"] .history-item-action:hover {
   color: #007aff;
@@ -1504,43 +1535,6 @@ body[data-theme="liquid-light"] .right-pane-close:hover {
   border: none;
 }
 
-/* 浏览器 tab */
-.browser-bar {
-  display: flex;
-  gap: 4px;
-  padding: 8px;
-  border-bottom: 1px solid var(--surface-container-high);
-}
-.browser-url {
-  flex: 1;
-  background: var(--surface-container-low);
-  border: 1px solid var(--surface-container-high);
-  border-radius: 6px;
-  color: var(--on-surface);
-  font: inherit;
-  font-size: 0.85em;
-  padding: 6px 10px;
-  outline: none;
-}
-.browser-url:focus {
-  border-color: var(--accent);
-}
-.browser-go {
-  background: var(--accent);
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  padding: 6px 12px;
-  cursor: pointer;
-  font: inherit;
-}
-.browser-frame {
-  flex: 1;
-  width: 100%;
-  border: none;
-  background: #fff;
-}
-
 /* Liquid-light 适配 */
 body[data-theme="liquid-light"] .right-pane {
   background: rgba(0, 0, 0, 0.02);
@@ -1563,16 +1557,6 @@ body[data-theme="liquid-light"] .artifact-item:hover {
 }
 body[data-theme="liquid-light"] .artifact-item.active {
   background: rgba(0, 122, 255, 0.1);
-}
-body[data-theme="liquid-light"] .browser-bar {
-  border-bottom-color: rgba(0, 0, 0, 0.08);
-}
-body[data-theme="liquid-light"] .browser-url {
-  background: #fff;
-  border-color: rgba(0, 0, 0, 0.12);
-}
-body[data-theme="liquid-light"] .browser-go {
-  background: #007aff;
 }
 
 /* =========================================================
@@ -1649,29 +1633,41 @@ body[data-theme="liquid-light"] .browser-go {
   color: var(--danger);
 }
 
-/* 📎 attach 按钮 —— 跟 send-btn 视觉对齐 */
+/* 📎 attach 按钮 —— 跟 send-btn 对称,absolute 浮在 textarea 左侧 */
 .attach-btn {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
   background: transparent;
-  border: 1px solid var(--surface-container-high);
-  color: var(--on-surface-variant);
-  border-radius: 10px;
-  width: 38px;
-  height: 38px;
-  font-size: 1.1em;
+  border: none;
+  color: var(--on-surface-muted);
+  border-radius: 8px;
+  width: 32px;
+  height: 32px;
+  font-size: 0.95em;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0;
-  transition: all 0.15s;
+  transition: color 0.15s, background 0.15s;
+  z-index: 2;
 }
 .attach-btn:hover {
-  border-color: var(--primary-container);
   color: var(--primary-container);
+  background: rgba(255, 107, 53, 0.08);
 }
 .attach-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+/* textarea 左侧留出 attach 按钮位置 (原 padding-left 16px → 48px) */
+.composer-inner textarea {
+  padding-left: 48px !important;
+}
+body[data-theme="liquid-light"] .attach-btn:hover {
+  color: #007aff;
+  background: rgba(0, 122, 255, 0.08);
 }
 
 /* 拖拽时高亮 composer */
@@ -1747,4 +1743,132 @@ body[data-theme="liquid-light"] .token-bar[data-level="yellow"] .token-bar-fill 
 }
 body[data-theme="liquid-light"] .token-bar[data-level="red"] .token-bar-fill {
   background: #ff3b30;
+}
+
+/* =========================================================
+   阶段 C: 自定义 modal (替换 GTK 原生 dialog)
+   ========================================================= */
+
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 1000;
+  align-items: center;
+  justify-content: center;
+  animation: modal-fade-in 0.15s ease;
+}
+.modal-overlay[data-open="true"] {
+  display: flex;
+}
+@keyframes modal-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.modal-box {
+  width: min(420px, 90vw);
+  background: var(--surface-container);
+  border: 1px solid var(--surface-container-high);
+  border-radius: 14px;
+  padding: 24px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  animation: modal-pop-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes modal-pop-in {
+  from { transform: scale(0.92); opacity: 0; }
+  to   { transform: scale(1);    opacity: 1; }
+}
+
+.modal-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--on-surface);
+  margin-bottom: 12px;
+  letter-spacing: 0.01em;
+}
+
+.modal-body {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--on-surface-variant);
+  margin-bottom: 22px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.modal-btn {
+  padding: 8px 18px;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.12s;
+  min-width: 76px;
+}
+.modal-btn-cancel {
+  background: transparent;
+  border: 1px solid var(--surface-container-high);
+  color: var(--on-surface-variant);
+}
+.modal-btn-cancel:hover {
+  border-color: var(--on-surface);
+  color: var(--on-surface);
+}
+.modal-btn-confirm {
+  background: var(--primary-container);
+  border: 1px solid var(--primary-container);
+  color: #fff;
+}
+.modal-btn-confirm:hover {
+  filter: brightness(1.1);
+  box-shadow: 0 0 12px rgba(255, 107, 53, 0.45);
+}
+/* warning kind: confirm 按钮变红 */
+.modal-overlay[data-kind="warning"] .modal-btn-confirm {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+.modal-overlay[data-kind="warning"] .modal-btn-confirm:hover {
+  box-shadow: 0 0 12px rgba(255, 68, 68, 0.45);
+}
+
+/* Liquid-light 主题适配 */
+body[data-theme="liquid-light"] .modal-overlay {
+  background: rgba(0, 0, 0, 0.4);
+}
+body[data-theme="liquid-light"] .modal-box {
+  background: #fff;
+  border-color: rgba(0, 0, 0, 0.08);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18);
+}
+body[data-theme="liquid-light"] .modal-title { color: #000; }
+body[data-theme="liquid-light"] .modal-body  { color: rgba(0, 0, 0, 0.65); }
+body[data-theme="liquid-light"] .modal-btn-cancel {
+  border-color: rgba(0, 0, 0, 0.15);
+  color: rgba(0, 0, 0, 0.65);
+}
+body[data-theme="liquid-light"] .modal-btn-cancel:hover {
+  border-color: #000;
+  color: #000;
+}
+body[data-theme="liquid-light"] .modal-btn-confirm {
+  background: #007aff;
+  border-color: #007aff;
+}
+body[data-theme="liquid-light"] .modal-overlay[data-kind="warning"] .modal-btn-confirm {
+  background: #ff3b30;
+  border-color: #ff3b30;
 }

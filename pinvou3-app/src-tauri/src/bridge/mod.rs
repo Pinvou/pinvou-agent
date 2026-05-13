@@ -26,7 +26,7 @@ use deepseek_tui::hooks::{Hook, HookEvent, HooksConfig};
 use deepseek_tui::tui::app::AppMode;
 use deepseek_tui::tui::approval::ApprovalMode;
 
-use self::bundle::Pinvou3Bundle;
+use self::bundle::{Pinvou3Bundle, INSTRUCTIONS_MD};
 use self::prefs::{ModelPreset, UserPrefs};
 
 /// Qwen3.6 在 vLLM 里是 passthrough 字符串（不走 alias）。
@@ -71,6 +71,35 @@ impl Pinvou3Bridge {
 
     pub fn locale_tag(&self) -> &'static str {
         self.prefs.language.locale_tag()
+    }
+
+    /// 用 INSTRUCTIONS_MD 模板，把 `{{PINVOU3_WORKSPACE}}` 替换成指定 session 的
+    /// 独立 workspace 目录。bridge 在切换 session 时调用,通过
+    /// `Op::SyncSession { system_prompt }` 让 engine 拿到 session 专属的产出引导。
+    pub fn build_session_system_prompt(&self, session_id: &str) -> String {
+        let ws = paths::session_workspace_dir(session_id);
+        // 同时确保目录存在,AI 写 write_file 时不会因为目录不存在而失败
+        let _ = std::fs::create_dir_all(&ws);
+        INSTRUCTIONS_MD.replace("{{PINVOU3_WORKSPACE}}", &ws.to_string_lossy())
+    }
+
+    /// 当前 active session 的 workspace 目录。
+    pub fn session_workspace(&self, session_id: &str) -> std::path::PathBuf {
+        paths::session_workspace_dir(session_id)
+    }
+
+    /// 切换 session 前调用：**重写 disk 上的 `bundle/instructions.md`** 为
+    /// session-specific workspace 路径。
+    ///
+    /// 为什么必须重写 disk:engine 的 `rehydrate_latest_canonical_state()` 会从
+    /// `EngineConfig.instructions` (disk 文件路径) 重读并覆盖 session.system_prompt,
+    /// 把我们通过 Op::SyncSession 传的 system_prompt 顶掉。要让 AI 看到 session-
+    /// specific PINVOU3_WORKSPACE 必须改 disk 内容本身。
+    ///
+    /// pinvou3 是单用户单进程,disk 文件 race 不是问题。
+    pub fn rewrite_instructions_for_session(&self, session_id: &str) -> std::io::Result<()> {
+        let rendered = self.build_session_system_prompt(session_id);
+        std::fs::write(&self.bundle.instructions_md, rendered)
     }
 
     pub fn model(&self) -> String {

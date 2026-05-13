@@ -18,7 +18,7 @@ use anyhow::Result;
 use deepseek_tui::core::engine::{spawn_engine, EngineHandle};
 use deepseek_tui::core::events::Event;
 use deepseek_tui::core::ops::Op;
-use deepseek_tui::models::Message;
+use deepseek_tui::models::{Message, SystemPrompt};
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
 
@@ -83,22 +83,34 @@ impl AppEngine {
         Ok(())
     }
 
-    /// 切换 engine 内部 session 状态：替换 messages + workspace + session_id。
-    /// 前端切换 session 时必须调用,否则 engine 会把新 session 的消息 append 到
-    /// 旧 session 的 messages 后面,造成上下文串台。
-    /// `messages` 为空 + `session_id` Some 时 engine 开新 session。
+    /// 切换 engine 内部 session 状态：替换 messages + 切到 session-specific
+    /// workspace + 重拼 system_prompt (把 PINVOU3_WORKSPACE 占位符换成
+    /// 该 session 的独立 workspace 目录)。
+    ///
+    /// 实施动机:
+    /// - 不切 engine.messages → 上下文跨 session 串台
+    /// - 不切 workspace → AI 默认产物目录全局共享,多 session 写同名文件冲突
+    /// - 不重拼 system_prompt → AI 看到的 PINVOU3_WORKSPACE 路径跟实际 workspace 不一致
     pub async fn sync_session(
         &self,
         session_id: String,
         messages: Vec<Message>,
     ) -> Result<()> {
+        let workspace = self.bridge.session_workspace(&session_id);
+        // 重写 disk 上的 instructions.md 为 session-specific 路径。
+        // engine 的 rehydrate 会从 disk 重读覆盖 session.system_prompt,
+        // 所以必须改 disk 才能让 AI 看到正确的 PINVOU3_WORKSPACE。
+        if let Err(e) = self.bridge.rewrite_instructions_for_session(&session_id) {
+            eprintln!("[sync_session] rewrite instructions failed: {e}");
+        }
+        let prompt_text = self.bridge.build_session_system_prompt(&session_id);
         self.handle
             .send(Op::SyncSession {
                 session_id: Some(session_id),
                 messages,
-                system_prompt: None, // 让 engine 用 EngineConfig.instructions 重建
+                system_prompt: Some(SystemPrompt::Text(prompt_text)),
                 model: self.bridge.model(),
-                workspace: self.bridge.workspace.clone(),
+                workspace,
             })
             .await?;
         Ok(())
