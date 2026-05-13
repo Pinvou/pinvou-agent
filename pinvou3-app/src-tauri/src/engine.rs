@@ -37,6 +37,21 @@ impl AppEngine {
         let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let (config, model) = build_dt_config_from_env();
 
+        // 自动定位项目根：cwd 通常是 pinvou3-app/src-tauri/（cargo run 时），
+        // 项目根的标志是同时含 CLAUDE.md + DeepSeek-TUI/。
+        let project_root = workspace.ancestors().find(|p| {
+            p.join("CLAUDE.md").is_file() && p.join("DeepSeek-TUI").is_dir()
+        });
+
+        // 加载项目级 instructions.md（如果存在）。
+        // 这是 CLAUDE.md 约束 1 "改 LLM 行为引导 → .deepseek/instructions.md" 的兑现：
+        // 不写 Rust 改 LLM prompt，靠这个 markdown 文件强化 Qwen3.6 的 agent 行为。
+        let instructions: Vec<PathBuf> = project_root
+            .map(|p| p.join(".deepseek").join("instructions.md"))
+            .filter(|p| p.is_file())
+            .map(|p| vec![p])
+            .unwrap_or_default();
+
         // 给 Engine 用的最小 EngineConfig：trust_mode=true 允许 workspace 内读写，
         // allow_shell=true 让 LLM 能跑 exec_shell（pinvou3 MVP YOLO 模式）。
         let engine_config = EngineConfig {
@@ -44,13 +59,23 @@ impl AppEngine {
             workspace: workspace.clone(),
             allow_shell: true,
             trust_mode: true,
+            instructions: instructions.clone(),
             ..EngineConfig::default()
         };
 
         eprintln!(
-            "[pinvou3-app] spawn_engine model={} workspace={}",
+            "[pinvou3-app] spawn_engine model={} workspace={} instructions={}",
             model,
-            workspace.display()
+            workspace.display(),
+            if instructions.is_empty() {
+                "none".to_string()
+            } else {
+                instructions
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            }
         );
         let handle = spawn_engine(engine_config, &config);
 

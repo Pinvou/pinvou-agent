@@ -1,6 +1,6 @@
 # pinvou3 项目规则
 
-## 两个核心约束
+## 核心约束
 
 ### 1. DeepSeek-TUI 是底座，不重复造轮子
 
@@ -20,8 +20,6 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 ### 2. 只用本地算力（GB10 + Qwen3.6-35B-A3B-FP8）
 
 - 设计以当前模型能力为基线，未来变强是 bonus
-- 内网受限：CDN 大概率不可达，所有前端资源必须 vendor 化 + 系统字体
-- 部署形态：Tauri 单机桌面，不做 Web 双轨
 
 ## 主体
 
