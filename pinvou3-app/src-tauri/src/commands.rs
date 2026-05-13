@@ -368,6 +368,10 @@ pub async fn artifact_info(path: String) -> Result<ArtifactInfo, String> {
         "html" | "htm" => "html",
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg" => "image",
         "pdf" => "pdf",
+        // 让前端能识别 office 格式 → 调 ingest_file 转 md 内嵌预览
+        "docx" | "pptx" | "odt" => "docx",
+        "xlsx" | "ods" => "xlsx",
+        "doc" | "ppt" | "xls" | "rtf" => "legacy_office",
         "txt" | "log" | "csv" | "json" | "yaml" | "yml" | "toml" | "xml"
         | "rs" | "py" | "js" | "ts" | "go" | "c" | "cpp" | "h" | "hpp" | "sh" => "text",
         _ => "binary",
