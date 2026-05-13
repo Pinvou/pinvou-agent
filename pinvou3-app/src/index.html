@@ -24,6 +24,15 @@
         <span class="nav-icon">💬</span>
         <span class="nav-label" data-i18n="nav.chatroom">聊天室</span>
       </a>
+      <div class="history-panel">
+        <button class="history-new" id="new-session-btn" type="button">
+          <span class="history-new-icon">+</span>
+          <span data-i18n="history.new">新对话</span>
+        </button>
+        <ul class="history-list" id="history-list">
+          <li class="history-empty" data-i18n="history.empty">暂无历史对话</li>
+        </ul>
+      </div>
       <a class="nav-link" data-view="workflow" href="#">
         <span class="nav-icon">📋</span>
         <span class="nav-label" data-i18n="nav.workflow">工作流</span>
@@ -45,6 +54,8 @@
 
     <!-- ChatRoom -->
     <section id="view-chatroom" class="view view-active">
+      <div class="chatroom-grid">
+        <div class="chatroom-main">
       <header class="view-header">
         <div class="view-header-left">
           <span class="view-title" data-i18n="view.chatroom.title">聊天室</span>
@@ -53,9 +64,14 @@
         <div class="view-header-right">
           <span id="live-dot" class="live-dot" title="vLLM 状态"></span>
           <span id="live-text" class="live-text" data-i18n="live.checking">检查中</span>
+          <button id="right-pane-toggle" class="icon-btn" type="button" title="产物面板">📦<span class="icon-btn-badge hidden" id="right-pane-badge">0</span></button>
           <button id="clear-btn" class="icon-btn" type="button" data-i18n="chat.clear">清除</button>
         </div>
       </header>
+
+      <div class="token-bar" id="token-bar" data-level="green" title="上下文使用率">
+        <div class="token-bar-fill" id="token-bar-fill"></div>
+      </div>
 
       <div id="chat-area" class="chat-area chat-scroll">
         <div class="msg-row msg-system">
@@ -67,7 +83,9 @@
       </div>
 
       <footer class="composer">
+        <div class="attachment-row" id="attachment-row"></div>
         <div class="composer-inner">
+          <button id="attach-btn" type="button" class="attach-btn" aria-label="附件" title="附件 (拖拽/点击/Ctrl+V)">📎</button>
           <textarea
             id="input"
             rows="1"
@@ -75,10 +93,41 @@
             placeholder="跟 Qwen3.6 说点什么（Enter 发送 · Shift+Enter 换行）"
             autofocus></textarea>
           <button id="send-btn" type="button" aria-label="发送">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+            <svg class="send-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+            <span class="stop-icon" aria-hidden="true">■</span>
           </button>
         </div>
       </footer>
+        </div><!-- /chatroom-main -->
+
+        <div class="right-pane-backdrop" id="right-pane-backdrop"></div>
+        <aside class="right-pane" id="right-pane" data-collapsed="auto">
+          <button class="right-pane-close" id="right-pane-close" type="button" aria-label="关闭">✕</button>
+          <div class="right-pane-tabs">
+            <button class="right-pane-tab active" data-pane-tab="artifacts" type="button">
+              <span>📦</span> <span data-i18n="pane.artifacts">产物</span>
+            </button>
+            <button class="right-pane-tab" data-pane-tab="browser" type="button">
+              <span>🌐</span> <span data-i18n="pane.browser">浏览器</span>
+            </button>
+          </div>
+          <div class="right-pane-content">
+            <div class="pane-tab-panel pane-tab-active" data-pane-panel="artifacts">
+              <ul class="artifact-list" id="artifact-list">
+                <li class="artifact-empty" data-i18n="pane.artifacts.empty">本对话还没有产物</li>
+              </ul>
+              <div class="artifact-preview" id="artifact-preview"></div>
+            </div>
+            <div class="pane-tab-panel" data-pane-panel="browser">
+              <div class="browser-bar">
+                <input type="text" class="browser-url" id="browser-url" placeholder="https://..." />
+                <button class="browser-go" id="browser-go" type="button">→</button>
+              </div>
+              <iframe class="browser-frame" id="browser-frame" sandbox="allow-same-origin allow-scripts"></iframe>
+            </div>
+          </div>
+        </aside>
+      </div><!-- /chatroom-grid -->
     </section>
 
     <!-- WorkFlow -->

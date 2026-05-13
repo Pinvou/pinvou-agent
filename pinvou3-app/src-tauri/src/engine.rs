@@ -17,6 +17,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use deepseek_tui::core::engine::{spawn_engine, EngineHandle};
 use deepseek_tui::core::events::Event;
+use deepseek_tui::core::ops::Op;
+use deepseek_tui::models::Message;
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
 
@@ -55,6 +57,50 @@ impl AppEngine {
     pub async fn send_user_message(&self, content: String) -> Result<()> {
         let op = self.bridge.build_send_message_op(content);
         self.handle.send(op).await?;
+        Ok(())
+    }
+
+    /// 取消当前正在生成的回复（点⏹️停止按钮）。
+    /// 同步触发 cancel_token，engine turn loop 会立即跳出并发 TurnComplete 事件。
+    pub fn cancel_current(&self) {
+        self.handle.cancel();
+    }
+
+    /// 编辑/重发最后一轮 user 消息（点 ✏️ 编辑或 🔄 重发按钮）。
+    /// 上游 [`Op::EditLastTurn`] 行为：砍掉 session 末尾最近的 user 消息及之后
+    /// 所有消息，然后用 `new_message` 当成新 user 消息重新发送。
+    pub async fn edit_last_turn(&self, new_message: String) -> Result<()> {
+        self.handle
+            .send(Op::EditLastTurn { new_message })
+            .await?;
+        Ok(())
+    }
+
+    /// 手动触发上下文压缩（用户点 token 进度条 → 立即压缩）。
+    /// 自动压缩由上游 CompactionConfig.enabled 控制（pinvou3 走默认 = on）。
+    pub async fn compact_now(&self) -> Result<()> {
+        self.handle.send(Op::CompactContext).await?;
+        Ok(())
+    }
+
+    /// 切换 engine 内部 session 状态：替换 messages + workspace + session_id。
+    /// 前端切换 session 时必须调用,否则 engine 会把新 session 的消息 append 到
+    /// 旧 session 的 messages 后面,造成上下文串台。
+    /// `messages` 为空 + `session_id` Some 时 engine 开新 session。
+    pub async fn sync_session(
+        &self,
+        session_id: String,
+        messages: Vec<Message>,
+    ) -> Result<()> {
+        self.handle
+            .send(Op::SyncSession {
+                session_id: Some(session_id),
+                messages,
+                system_prompt: None, // 让 engine 用 EngineConfig.instructions 重建
+                model: self.bridge.model(),
+                workspace: self.bridge.workspace.clone(),
+            })
+            .await?;
         Ok(())
     }
 }
@@ -119,16 +165,48 @@ fn spawn_event_forwarder(app: AppHandle, handle: EngineHandle) {
                             eprintln!("[pinvou3-app] approve_tool_call failed: {e:?}");
                         }
                     });
-                    // 通知前端有工具开始（避免审批阶段静默）
-                    let _ = app.emit(
-                        "chat:tool_start",
-                        json!({ "id": id, "name": tool_name, "args": null }),
-                    );
+                    // 不重复 emit chat:tool_start —— 上游 ToolCallStarted（带完整 input）
+                    // 已先于 ApprovalRequired fire，前端已收到正确的 args。
+                    // 之前在此 emit 会用 args=null 覆盖前端 toolMeta，导致产物路径丢失。
                 }
-                Event::TurnComplete { status, error, .. } => {
+                Event::TurnComplete { usage, status, error } => {
+                    // 单独发 usage 给前端 token 进度条
+                    let _ = app.emit(
+                        "chat:usage",
+                        json!({
+                            "input_tokens": usage.input_tokens,
+                            "output_tokens": usage.output_tokens,
+                        }),
+                    );
                     let _ = app.emit(
                         "chat:done",
                         json!({ "status": format!("{status:?}"), "error": error }),
+                    );
+                }
+                Event::CompactionStarted { message, auto, .. } => {
+                    let _ = app.emit(
+                        "chat:compaction",
+                        json!({ "phase": "start", "auto": auto, "message": message }),
+                    );
+                }
+                Event::CompactionCompleted {
+                    message, auto, messages_before, messages_after, ..
+                } => {
+                    let _ = app.emit(
+                        "chat:compaction",
+                        json!({
+                            "phase": "done",
+                            "auto": auto,
+                            "message": message,
+                            "messages_before": messages_before,
+                            "messages_after": messages_after,
+                        }),
+                    );
+                }
+                Event::CompactionFailed { message, auto, .. } => {
+                    let _ = app.emit(
+                        "chat:compaction",
+                        json!({ "phase": "fail", "auto": auto, "message": message }),
                     );
                 }
                 Event::Error { envelope, .. } => {

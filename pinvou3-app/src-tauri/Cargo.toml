@@ -20,6 +20,7 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.11.1", features = [] }
 tauri-plugin-log = "2"
+tauri-plugin-dialog = "2"
 
 # 异步 / 错误
 anyhow = "1.0"
@@ -30,3 +31,9 @@ deepseek-tui = { path = "../../DeepSeek-TUI/crates/tui" }
 
 # Monitor 用：vLLM HTTP probe（/v1/models + Prometheus /metrics）
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+# Session store 用：阻塞式 RwLock（sync 不需要 .await 拿读写锁）
+parking_lot = "0.12"
+
+# 时间戳：SessionMetadata.updated_at 用 chrono::Utc::now()，对齐上游 schema
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }

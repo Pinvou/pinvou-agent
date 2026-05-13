@@ -11,18 +11,21 @@
 mod bridge;
 mod commands;
 mod engine;
+mod file_ingest;
 mod monitor;
 
 use std::time::Duration;
 
 use tauri::Manager;
 
+use crate::bridge::sessions::SessionStore;
 use crate::engine::AppEngine;
 use crate::monitor::MonitorState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -52,6 +55,15 @@ pub fn run() {
             app.handle().manage(monitor_state);
             eprintln!("[pinvou3-app] monitor sampler started (5s interval)");
 
+            // 多对话历史 store：用 ~/.pinvou3/sessions/ 隔离 deepseek-tui 全局目录
+            match SessionStore::boot() {
+                Ok(store) => {
+                    app.handle().manage(store);
+                    eprintln!("[pinvou3-app] session store ready");
+                }
+                Err(e) => eprintln!("[pinvou3-app] session store boot failed: {e:?}"),
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -61,6 +73,22 @@ pub fn run() {
             commands::clear_session,
             commands::get_monitor_snapshot,
             commands::get_backend_status,
+            commands::list_sessions,
+            commands::create_session,
+            commands::load_session,
+            commands::delete_session,
+            commands::rename_session,
+            commands::get_active_session,
+            commands::save_session_messages,
+            commands::cancel_generation,
+            commands::edit_last_turn,
+            commands::read_artifact_text,
+            commands::artifact_info,
+            commands::open_in_system,
+            commands::ingest_file,
+            commands::detect_system_tools,
+            commands::save_paste_image,
+            commands::compact_now,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -579,6 +579,7 @@ body { flex-direction: row; }
 }
 
 .icon-btn {
+  position: relative;
   padding: 6px 12px;
   font-family: var(--font-mono);
   font-size: 10px;
@@ -594,6 +595,60 @@ body { flex-direction: row; }
 .icon-btn:hover {
   color: var(--on-surface);
   border-color: var(--primary-container);
+}
+/* 数字 badge —— 新产物未读提示，叠在 .icon-btn 右上角 */
+.icon-btn-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  background: var(--primary-container);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  /* 双重 ring：内层贴底色 mask，外层光晕 pulse */
+  box-shadow: 0 0 0 2px var(--bg), 0 0 8px rgba(255, 107, 53, 0.55);
+  animation: artifact-badge-pulse 1.8s ease-in-out infinite;
+  pointer-events: none;
+}
+.icon-btn-badge.hidden {
+  display: none;
+}
+@keyframes artifact-badge-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 2px var(--bg), 0 0 6px rgba(255, 107, 53, 0.4);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 2px var(--bg), 0 0 14px rgba(255, 107, 53, 0.75);
+    transform: scale(1.08);
+  }
+}
+/* Liquid 主题：badge 用蓝色 accent */
+body[data-theme="liquid-light"] .icon-btn-badge,
+body[data-theme="liquid-dark"] .icon-btn-badge {
+  background: #0a84ff;
+  box-shadow: 0 0 0 2px var(--bg), 0 0 6px rgba(10, 132, 255, 0.45);
+  animation: artifact-badge-pulse-blue 1.8s ease-in-out infinite;
+}
+@keyframes artifact-badge-pulse-blue {
+  0%, 100% {
+    box-shadow: 0 0 0 2px var(--bg), 0 0 6px rgba(10, 132, 255, 0.4);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 2px var(--bg), 0 0 14px rgba(10, 132, 255, 0.75);
+    transform: scale(1.08);
+  }
 }
 
 /* ─── ChatRoom 内部沿用既有 chat 样式 ──────────────────────── */
@@ -980,4 +1035,716 @@ body[data-theme="liquid-light"] .composer textarea:focus {
 }
 body[data-theme="liquid-light"] .settings-foot-note code {
   color: #007aff;
+}
+
+/* =========================================================
+   阶段 C: 左侧历史会话面板
+   ========================================================= */
+
+.history-panel {
+  margin: 4px 0 12px;
+  padding-left: 8px;
+}
+
+.history-new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  background: transparent;
+  border: 1px dashed var(--surface-container-high);
+  border-radius: 8px;
+  color: var(--on-surface-variant);
+  font: inherit;
+  font-size: 0.85em;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.history-new:hover {
+  border-style: solid;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.history-new-icon {
+  font-size: 1.1em;
+  line-height: 1;
+}
+
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.history-empty {
+  padding: 8px 12px;
+  color: var(--on-surface-variant);
+  opacity: 0.5;
+  font-size: 0.8em;
+  font-style: italic;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--on-surface-variant);
+  font-size: 0.85em;
+  position: relative;
+  transition: background 0.12s;
+}
+.history-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.history-item.active {
+  background: rgba(255, 107, 53, 0.12);
+  color: var(--on-surface);
+}
+.history-item-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.history-item-actions {
+  display: none;
+  gap: 4px;
+}
+.history-item:hover .history-item-actions,
+.history-item.active .history-item-actions {
+  display: flex;
+}
+.history-item-action {
+  background: transparent;
+  border: none;
+  color: var(--on-surface-variant);
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 0.9em;
+  opacity: 0.7;
+  transition: opacity 0.12s;
+}
+.history-item-action:hover {
+  opacity: 1;
+  color: var(--accent);
+}
+.history-item-rename-input {
+  flex: 1;
+  background: var(--surface-container-low);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--on-surface);
+  font: inherit;
+  font-size: 0.85em;
+  padding: 2px 6px;
+  outline: none;
+}
+
+/* Liquid-light 主题适配 */
+body[data-theme="liquid-light"] .history-new {
+  border-color: rgba(0, 0, 0, 0.12);
+  color: rgba(0, 0, 0, 0.6);
+}
+body[data-theme="liquid-light"] .history-new:hover {
+  border-color: #007aff;
+  color: #007aff;
+}
+body[data-theme="liquid-light"] .history-item:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+body[data-theme="liquid-light"] .history-item.active {
+  background: rgba(0, 122, 255, 0.1);
+  color: #000;
+}
+body[data-theme="liquid-light"] .history-item-action:hover {
+  color: #007aff;
+}
+
+/* =========================================================
+   阶段 C: 取消生成 / 编辑 / 重发
+   ========================================================= */
+
+/* busy 时发送按钮变红色 ■ stop —— 切 svg / span 显示
+   (用 ::before 在某些 button 实现下不可靠，改为切 DOM 子元素 display) */
+#send-btn .stop-icon {
+  display: none;
+  font-size: 1.05em;
+  line-height: 1;
+  color: #fff;
+}
+#send-btn.busy-stop {
+  background: #d93b3b !important;
+  border-color: #d93b3b !important;
+  color: #fff !important;
+}
+#send-btn.busy-stop .send-icon {
+  display: none;
+}
+#send-btn.busy-stop .stop-icon {
+  display: inline-block;
+}
+
+/* 消息上的 hover 操作按钮 */
+.msg-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.msg-wrap:hover .msg-actions {
+  opacity: 1;
+}
+.msg-actions-user {
+  align-self: flex-end;
+}
+.msg-actions-assistant {
+  align-self: flex-start;
+}
+.msg-action-btn {
+  background: transparent;
+  border: 1px solid var(--surface-container-high);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 0.85em;
+  color: var(--on-surface-variant);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.msg-action-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(255, 107, 53, 0.06);
+}
+
+/* Inline 编辑 user 消息的 textarea */
+.msg-edit-input {
+  width: 100%;
+  min-width: 280px;
+  background: var(--surface-container-low);
+  border: 2px solid var(--accent);
+  border-radius: 10px;
+  color: var(--on-surface);
+  font: inherit;
+  font-size: 0.95em;
+  line-height: 1.5;
+  padding: 10px 14px;
+  outline: none;
+  resize: vertical;
+}
+
+/* Liquid-light 主题适配 */
+body[data-theme="liquid-light"] .msg-action-btn {
+  border-color: rgba(0, 0, 0, 0.12);
+  color: rgba(0, 0, 0, 0.55);
+}
+body[data-theme="liquid-light"] .msg-action-btn:hover {
+  border-color: #007aff;
+  color: #007aff;
+  background: rgba(0, 122, 255, 0.06);
+}
+body[data-theme="liquid-light"] .msg-edit-input {
+  background: #fff;
+  border-color: #007aff;
+  color: #000;
+}
+
+/* =========================================================
+   阶段 C: 右栏产物面板（📦 产物 + 🌐 浏览器）
+   ========================================================= */
+
+/* ChatRoom view 内 grid 布局：左主区 + 右栏。
+   右栏在 1280px 以下默认折叠成 icon 条（40px），点 toggle 展开。 */
+.chatroom-grid {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+.chatroom-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+/* 小窗（≤ 1280px）：右栏不再占 grid 列，改为 overlay 浮层从右侧滑入。
+   - 默认折叠：transform:translateX(100%) 隐到屏外，chat-area 占满
+   - 头部 📦 toggle 点击后展开 + backdrop 显示
+   - 右栏自带 ✕ 关闭按钮，点 backdrop 也能关 */
+.right-pane-backdrop { display: none; }
+.right-pane-close { display: none; }
+
+@media (max-width: 1280px) {
+  .chatroom-grid {
+    grid-template-columns: 1fr;
+  }
+  .right-pane {
+    position: fixed;
+    top: 0;
+    right: 0;
+    height: 100vh;
+    width: min(360px, 90vw);
+    z-index: 80;
+    transform: translateX(100%);
+    transition: transform 0.22s ease;
+    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.45);
+    /* 强制不透明背景（防止透出 chat 内容看着乱） */
+    background: var(--surface) !important;
+  }
+  .right-pane[data-collapsed="false"] {
+    transform: translateX(0);
+  }
+  /* 浮层右上角 ✕ 关闭按钮 */
+  .right-pane-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 30px;
+    height: 30px;
+    z-index: 2;
+    background: transparent;
+    border: none;
+    border-radius: 50%;
+    color: var(--on-surface-variant);
+    font-size: 1.05em;
+    cursor: pointer;
+    transition: background 0.12s;
+  }
+  .right-pane-close:hover {
+    background: var(--surface-container-high);
+    color: var(--on-surface);
+  }
+  /* Backdrop 遮罩：点击关闭 + 视觉提示 */
+  .right-pane-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 70;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+  }
+  .right-pane-backdrop.active {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+body[data-theme="liquid-light"] .right-pane-close:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: #000;
+}
+
+/* 大窗（> 1280px）：grid 两栏。toggle 控制是否显示 */
+@media (min-width: 1281px) {
+  .chatroom-grid:has(.right-pane[data-collapsed="true"]) {
+    grid-template-columns: 1fr 0;
+  }
+  .right-pane[data-collapsed="true"] {
+    display: none;
+  }
+}
+
+.right-pane {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-container-low);
+  border-left: 1px solid var(--surface-container-high);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.right-pane-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--surface-container-high);
+  background: var(--surface-container);
+}
+.right-pane-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--on-surface-variant);
+  font: inherit;
+  font-size: 0.9em;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.right-pane-tab:hover {
+  color: var(--on-surface);
+}
+.right-pane-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  background: rgba(255, 107, 53, 0.06);
+}
+
+.right-pane-content {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.pane-tab-panel {
+  display: none;
+  flex: 1;
+  overflow: hidden;
+  flex-direction: column;
+}
+.pane-tab-panel.pane-tab-active {
+  display: flex;
+}
+
+/* 产物 tab */
+.artifact-list {
+  list-style: none;
+  margin: 0;
+  padding: 8px;
+  max-height: 50%;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--surface-container-high);
+}
+.artifact-empty {
+  padding: 16px 8px;
+  color: var(--on-surface-variant);
+  opacity: 0.5;
+  font-size: 0.85em;
+  font-style: italic;
+  text-align: center;
+}
+.artifact-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85em;
+  color: var(--on-surface);
+  transition: background 0.12s;
+}
+.artifact-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.artifact-item.active {
+  background: rgba(255, 107, 53, 0.12);
+}
+.artifact-icon {
+  font-size: 1.1em;
+  flex-shrink: 0;
+}
+.artifact-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.artifact-size {
+  font-size: 0.75em;
+  color: var(--on-surface-variant);
+  flex-shrink: 0;
+}
+.artifact-open-btn {
+  background: transparent;
+  border: none;
+  color: var(--on-surface-variant);
+  cursor: pointer;
+  padding: 2px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.artifact-item:hover .artifact-open-btn {
+  opacity: 1;
+}
+.artifact-open-btn:hover {
+  color: var(--accent);
+}
+
+.artifact-preview {
+  flex: 1;
+  overflow: auto;
+  padding: 12px;
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+.artifact-preview:empty::before {
+  content: "选择一个产物预览";
+  display: block;
+  padding: 40px 8px;
+  text-align: center;
+  color: var(--on-surface-variant);
+  opacity: 0.4;
+  font-style: italic;
+}
+.artifact-preview img {
+  max-width: 100%;
+  display: block;
+}
+.artifact-preview iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+/* 浏览器 tab */
+.browser-bar {
+  display: flex;
+  gap: 4px;
+  padding: 8px;
+  border-bottom: 1px solid var(--surface-container-high);
+}
+.browser-url {
+  flex: 1;
+  background: var(--surface-container-low);
+  border: 1px solid var(--surface-container-high);
+  border-radius: 6px;
+  color: var(--on-surface);
+  font: inherit;
+  font-size: 0.85em;
+  padding: 6px 10px;
+  outline: none;
+}
+.browser-url:focus {
+  border-color: var(--accent);
+}
+.browser-go {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font: inherit;
+}
+.browser-frame {
+  flex: 1;
+  width: 100%;
+  border: none;
+  background: #fff;
+}
+
+/* Liquid-light 适配 */
+body[data-theme="liquid-light"] .right-pane {
+  background: rgba(0, 0, 0, 0.02);
+  border-left-color: rgba(0, 0, 0, 0.08);
+}
+body[data-theme="liquid-light"] .right-pane-tabs {
+  background: rgba(0, 0, 0, 0.03);
+  border-bottom-color: rgba(0, 0, 0, 0.08);
+}
+body[data-theme="liquid-light"] .right-pane-tab.active {
+  color: #007aff;
+  border-bottom-color: #007aff;
+  background: rgba(0, 122, 255, 0.06);
+}
+body[data-theme="liquid-light"] .artifact-list {
+  border-bottom-color: rgba(0, 0, 0, 0.08);
+}
+body[data-theme="liquid-light"] .artifact-item:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+body[data-theme="liquid-light"] .artifact-item.active {
+  background: rgba(0, 122, 255, 0.1);
+}
+body[data-theme="liquid-light"] .browser-bar {
+  border-bottom-color: rgba(0, 0, 0, 0.08);
+}
+body[data-theme="liquid-light"] .browser-url {
+  background: #fff;
+  border-color: rgba(0, 0, 0, 0.12);
+}
+body[data-theme="liquid-light"] .browser-go {
+  background: #007aff;
+}
+
+/* =========================================================
+   阶段 C: 输入栏多文件上传 (chip + 拖拽 + 粘贴)
+   ========================================================= */
+
+.attachment-row {
+  display: none;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px 0;
+  max-width: 72rem;
+  width: 100%;
+  margin: 0 auto;
+}
+.attachment-row.has-items {
+  display: flex;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 4px 10px;
+  background: var(--surface-container);
+  border: 1px solid var(--surface-container-high);
+  border-radius: 14px;
+  font-size: 12px;
+  color: var(--on-surface);
+  max-width: 240px;
+  position: relative;
+}
+.attachment-chip.warn {
+  border-color: rgba(255, 191, 0, 0.5);
+}
+.attachment-chip.error {
+  border-color: rgba(255, 68, 68, 0.5);
+  background: rgba(255, 68, 68, 0.06);
+}
+.attachment-chip.parsing {
+  opacity: 0.7;
+  font-style: italic;
+}
+.chip-icon {
+  font-size: 0.95em;
+  line-height: 1;
+}
+.chip-warn {
+  color: var(--warning);
+  font-size: 0.95em;
+}
+.chip-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chip-meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--on-surface-muted);
+  flex-shrink: 0;
+}
+.chip-remove {
+  background: transparent;
+  border: none;
+  color: var(--on-surface-muted);
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 1em;
+  line-height: 1;
+}
+.chip-remove:hover {
+  color: var(--danger);
+}
+
+/* 📎 attach 按钮 —— 跟 send-btn 视觉对齐 */
+.attach-btn {
+  background: transparent;
+  border: 1px solid var(--surface-container-high);
+  color: var(--on-surface-variant);
+  border-radius: 10px;
+  width: 38px;
+  height: 38px;
+  font-size: 1.1em;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.15s;
+}
+.attach-btn:hover {
+  border-color: var(--primary-container);
+  color: var(--primary-container);
+}
+.attach-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 拖拽时高亮 composer */
+.composer.drag-over .composer-inner {
+  border: 2px dashed var(--primary-container);
+  background: rgba(255, 107, 53, 0.06);
+}
+
+/* Liquid-light 主题适配 */
+body[data-theme="liquid-light"] .attachment-chip {
+  background: rgba(0, 0, 0, 0.04);
+  border-color: rgba(0, 0, 0, 0.1);
+  color: #000;
+}
+body[data-theme="liquid-light"] .attach-btn {
+  border-color: rgba(0, 0, 0, 0.12);
+  color: rgba(0, 0, 0, 0.6);
+}
+body[data-theme="liquid-light"] .attach-btn:hover {
+  border-color: #007aff;
+  color: #007aff;
+}
+body[data-theme="liquid-light"] .composer.drag-over .composer-inner {
+  border-color: #007aff;
+  background: rgba(0, 122, 255, 0.06);
+}
+
+/* =========================================================
+   阶段 C: Token 进度条 (上下文使用率)
+   ========================================================= */
+
+.token-bar {
+  height: 3px;
+  background: var(--surface-container-high);
+  cursor: pointer;
+  flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
+  transition: height 0.15s;
+}
+.token-bar:hover {
+  height: 6px;
+}
+.token-bar-fill {
+  height: 100%;
+  width: 0%;
+  transition: width 0.4s ease, background 0.4s, box-shadow 0.4s;
+}
+.token-bar[data-level="green"] .token-bar-fill {
+  background: linear-gradient(90deg, var(--tertiary), var(--success));
+}
+.token-bar[data-level="yellow"] .token-bar-fill {
+  background: var(--warning);
+}
+.token-bar[data-level="red"] .token-bar-fill {
+  background: var(--danger);
+  box-shadow: 0 0 8px var(--danger);
+  animation: token-bar-pulse 1.6s ease-in-out infinite;
+}
+@keyframes token-bar-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+
+body[data-theme="liquid-light"] .token-bar {
+  background: rgba(0, 0, 0, 0.06);
+}
+body[data-theme="liquid-light"] .token-bar[data-level="green"] .token-bar-fill {
+  background: linear-gradient(90deg, #34c759, #007aff);
+}
+body[data-theme="liquid-light"] .token-bar[data-level="yellow"] .token-bar-fill {
+  background: #ff9500;
+}
+body[data-theme="liquid-light"] .token-bar[data-level="red"] .token-bar-fill {
+  background: #ff3b30;
 }

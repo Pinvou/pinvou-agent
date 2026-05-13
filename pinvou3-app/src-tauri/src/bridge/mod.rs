@@ -14,6 +14,7 @@
 pub mod bundle;
 pub mod paths;
 pub mod prefs;
+pub mod sessions;
 
 use std::path::PathBuf;
 
@@ -21,6 +22,7 @@ use anyhow::Result;
 use deepseek_tui::config::{Config as DtConfig, ProvidersConfig};
 use deepseek_tui::core::engine::EngineConfig;
 use deepseek_tui::core::ops::Op;
+use deepseek_tui::hooks::{Hook, HookEvent, HooksConfig};
 use deepseek_tui::tui::app::AppMode;
 use deepseek_tui::tui::approval::ApprovalMode;
 
@@ -42,6 +44,14 @@ pub struct Pinvou3Bridge {
 impl Pinvou3Bridge {
     /// 启动序列：确保 `~/.pinvou3/` 子目录存在 → 解包 bundle → 加载 prefs。
     /// 首次启动写一份默认 `settings.json` 让用户/开发者方便手改 advanced。
+    ///
+    /// **workspace 现为 `$HOME`**（阶段 C 调整）——让 AI 能用 read_file/glob
+    /// 找到用户在桌面/文档/下载里的真实文件。配套敏感目录禁令在
+    /// `bundle/instructions.md` 里引导，硬拦截后续走 deepseek-tui hook 注册。
+    ///
+    /// **$PINVOU3_SESSION_ARTIFACTS** 环境变量在这里 set：让 LLM 通过
+    /// `write_file` 写"产出"时落到 `~/.pinvou3/sessions/<id>/artifacts/`，
+    /// 不污染用户家目录。多 session 切换时调用方应重新 set。
     pub fn boot() -> Result<Self> {
         paths::ensure_dirs()?;
         let bundle = Pinvou3Bundle::paths();
@@ -50,10 +60,12 @@ impl Pinvou3Bridge {
         if !paths::settings_path().exists() {
             prefs.save().ok();
         }
+        let artifacts = paths::default_session_artifacts_dir();
+        std::env::set_var("PINVOU3_SESSION_ARTIFACTS", &artifacts);
         Ok(Self {
             prefs,
             bundle,
-            workspace: paths::workspace_dir(),
+            workspace: paths::user_home_dir(),
         })
     }
 
@@ -162,7 +174,12 @@ impl Pinvou3Bridge {
             strict_tool_mode: false,
             // 上游 default 透传
             features,
-            compaction,
+            // compaction model 默认 deepseek-v4-pro,本地 vLLM 没这个模型,
+            // 必须改成 pinvou3 当前用的 model,否则手动 /compact 报 404。
+            compaction: deepseek_tui::compaction::CompactionConfig {
+                model: self.model(),
+                ..compaction
+            },
             cycle,
             capacity,
             todos,
@@ -177,7 +194,8 @@ impl Pinvou3Bridge {
         }
     }
 
-    /// 构造 deepseek-tui 顶层 [`DtConfig`]：锁定本地 vLLM + Qwen3.6。
+    /// 构造 deepseek-tui 顶层 [`DtConfig`]：锁定本地 vLLM + Qwen3.6 +
+    /// 注入敏感目录拦截 hook。
     /// 环境变量优先（兼容 run-dev.sh 里既有的 `DEEPSEEK_*` 设置）。
     pub fn build_dt_config(&self) -> DtConfig {
         let mut cfg = DtConfig::default();
@@ -194,7 +212,30 @@ impl Pinvou3Bridge {
         cfg.default_text_model = Some(self.model());
         // Qwen3.6 thinking 必须关，否则 SSE idle timeout
         cfg.reasoning_effort = Some("off".to_string());
+        cfg.hooks = Some(self.build_hooks_config());
         cfg
+    }
+
+    /// 注入硬拦截 hook：ToolCallBefore 时 spawn 一个 shell 脚本检查 tool args
+    /// 是否触碰敏感目录（~/.ssh / ~/.gnupg / ~/.aws / 等），命中 exit 1
+    /// 让上游拒绝该 tool 调用。脚本本体在 bundle 中,首次启动解包到
+    /// `~/.pinvou3/bundle/deny_sensitive_paths.sh`。
+    fn build_hooks_config(&self) -> HooksConfig {
+        let script = self.bundle.deny_sensitive_sh.to_string_lossy().to_string();
+        HooksConfig {
+            enabled: true,
+            hooks: vec![Hook {
+                event: HookEvent::ToolCallBefore,
+                command: format!("bash {script}"),
+                condition: None,
+                timeout_secs: 5,
+                background: false,
+                continue_on_error: false,
+                name: Some("pinvou3-sensitive-firewall".into()),
+            }],
+            default_timeout_secs: Some(5),
+            working_dir: None,
+        }
     }
 
     /// 构造发给 engine 的 [`Op::SendMessage`]——pinvou3 永远走 Yolo + auto_approve。
@@ -288,5 +329,18 @@ mod tests {
         assert!(!cfg.mcp_config_path.starts_with(&ds));
         assert!(!cfg.notes_path.starts_with(&ds));
         assert!(!cfg.memory_path.starts_with(&ds));
+    }
+
+    /// 阶段 C：bridge.workspace 必须透传到 EngineConfig.workspace。
+    /// 不直接测 boot()——boot 会 mutate PINVOU3_HOME 跟其他测试 race。
+    /// 单独验证 paths::user_home_dir() 的逻辑见 paths.rs 测试。
+    #[test]
+    fn engine_config_workspace_follows_bridge_field() {
+        let mut bridge = fixture_bridge();
+        bridge.workspace = std::path::PathBuf::from("/tmp/pinvou3-ws-fixture");
+        assert_eq!(
+            bridge.build_engine_config().workspace,
+            std::path::PathBuf::from("/tmp/pinvou3-ws-fixture")
+        );
     }
 }
