@@ -1,0 +1,4 @@
+[submodule "DeepSeek-TUI"]
+	path = DeepSeek-TUI
+	url = https://github.com/h3c-hexin/DeepSeek-TUI.git
+	branch = pinvou3-patches

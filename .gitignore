@@ -1,6 +1,6 @@
-# Rust
-pinvou-platform/target/
+# Rust build artifacts
 DeepSeek-TUI/target/
+pinvou3-app/src-tauri/target/
 
 # IDE
 .idea/
@@ -18,6 +18,3 @@ Thumbs.db
 
 # Playwright
 .playwright-mcp/
-
-# DeepSeek-TUI is a separate repo
-DeepSeek-TUI/
