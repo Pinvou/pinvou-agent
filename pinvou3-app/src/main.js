@@ -1756,6 +1756,16 @@ function untrackArtifact(path) {
   renderArtifactList();
 }
 
+/** 外部打开产物: HTML 走 Tauri 新 webview 窗口 (绕 snap 浏览器对 ~/.xxx/ 的沙箱限制),
+ *  其他类型走 xdg-open 调系统应用。 */
+function openArtifactExternal(path) {
+  const ext = (path.split(".").pop() || "").toLowerCase();
+  const cmd = (ext === "html" || ext === "htm") ? "open_artifact_window" : "open_in_system";
+  return invoke(cmd, { path }).catch((err) => {
+    appendSystemMessage("⚠️ 打开失败: " + err);
+  });
+}
+
 /** 渲染右栏产物列表。 */
 function renderArtifactList() {
   if (!artifactListEl) return;
@@ -1793,9 +1803,7 @@ function renderArtifactList() {
     openBtn.textContent = "↗";
     openBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      invoke("open_in_system", { path: a.path }).catch((err) => {
-        appendSystemMessage("⚠️ 打开失败: " + err);
-      });
+      openArtifactExternal(a.path);
     });
 
     li.appendChild(iconEl);
@@ -1849,7 +1857,7 @@ async function previewArtifact(a) {
     // Tauri 默认 file:// 不可直接 img src，需要 convertFileSrc。简单走 system 应用
     artifactPreviewEl.innerHTML = `<div style="padding:8px"><p style="opacity:.7;font-size:.9em">图片预览暂不支持嵌入,</p><button class="artifact-open-btn" style="opacity:1;border:1px solid currentColor;padding:6px 12px">↗ ${escapeHtml(i18nText("pane.preview.open_external"))}</button></div>`;
     artifactPreviewEl.querySelector("button").addEventListener("click", () => {
-      invoke("open_in_system", { path: a.path });
+      openArtifactExternal(a.path);
     });
   } else if (info.kind === "text") {
     try {
@@ -1865,7 +1873,7 @@ async function previewArtifact(a) {
   } else {
     artifactPreviewEl.innerHTML = `<div style="padding:8px"><p style="opacity:.7">${escapeHtml(i18nText("pane.preview.unsupported"))}</p><button class="artifact-open-btn" style="opacity:1;border:1px solid currentColor;padding:6px 12px;margin-top:8px">↗ ${escapeHtml(i18nText("pane.preview.open_external"))}</button></div>`;
     artifactPreviewEl.querySelector("button").addEventListener("click", () => {
-      invoke("open_in_system", { path: a.path });
+      openArtifactExternal(a.path);
     });
   }
 }

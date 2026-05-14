@@ -409,6 +409,48 @@ pub async fn open_in_system(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 在 Tauri 新窗口里加载 HTML 产物。绕过 snap 浏览器对 `~/.xxx/` 隐藏目录的沙箱限制。
+/// 同一文件再次调用 → focus 已有窗口而非新建,防窗口爆炸。
+#[tauri::command]
+pub async fn open_artifact_window(
+    path: String,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder, Manager};
+
+    let p = validate_user_path(&path)?;
+    if !p.is_file() {
+        return Err(format!("not a file: {}", p.display()));
+    }
+    // 用文件 inode 做稳定 label,防同一文件多次打开建多窗口。Tauri label 只允许 a-zA-Z0-9-_。
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    p.to_string_lossy().hash(&mut hasher);
+    let label = format!("artifact-{:x}", hasher.finish());
+
+    if let Some(existing) = app.get_webview_window(&label) {
+        let _ = existing.set_focus();
+        return Ok(());
+    }
+
+    let url_str = format!("file://{}", p.display());
+    let url = url_str.parse().map_err(|e| format!("parse file url: {e}"))?;
+    let title = p
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("产物")
+        .to_string();
+
+    WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(url))
+        .title(title)
+        .inner_size(1024.0, 768.0)
+        .resizable(true)
+        .build()
+        .map_err(|e| format!("build artifact window: {e}"))?;
+    Ok(())
+}
+
 // ===================== 阶段 C: 输入文件上传 =====================
 
 /// 把一个用户上传的文件转成 markdown（或标记不支持），返回 IngestResult。

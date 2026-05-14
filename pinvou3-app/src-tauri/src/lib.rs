@@ -106,6 +106,7 @@ pub fn run() {
             commands::read_artifact_text,
             commands::artifact_info,
             commands::open_in_system,
+            commands::open_artifact_window,
             commands::ingest_file,
             commands::detect_system_tools,
             commands::save_paste_image,
