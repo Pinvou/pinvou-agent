@@ -40,8 +40,30 @@ let currentPrefs = null;
 // 每次 TurnComplete 调 save_session_messages 落盘。切换 session 时
 // load_session 拿回 messages 重渲染。
 let activeSessionId = null;
-let messages = [];          // 当前 session 的完整消息数组
-let pendingAssistantText = ""; // 累积中的 assistant 文本（TurnComplete 时入栈）
+let messages = [];          // 当前 session 的完整消息数组 (Anthropic Messages API schema:
+                            // role + content[ContentBlock]. ContentBlock: text/tool_use/tool_result/thinking)
+let pendingAssistantText = "";    // 当前 assistant message 内尚未 flush 的 text 段缓冲
+let pendingAssistantBlocks = [];  // 当前 assistant message 已 flush 的 content blocks (text + tool_use)
+
+// flush 当前 text 段为 text block, 加到 pendingAssistantBlocks. 遇 tool_use 或 turn 结束前调.
+function flushPendingTextBlock() {
+  if (pendingAssistantText) {
+    pendingAssistantBlocks.push({ type: "text", text: pendingAssistantText });
+    pendingAssistantText = "";
+  }
+}
+// 把当前 assistant message 整体 push 到 messages (tool_result 来时 + chat:done 时调).
+function flushAssistantMessageToHistory() {
+  flushPendingTextBlock();
+  if (pendingAssistantBlocks.length) {
+    messages.push({ role: "assistant", content: pendingAssistantBlocks });
+    pendingAssistantBlocks = [];
+  }
+}
+function resetPendingAssistant() {
+  pendingAssistantText = "";
+  pendingAssistantBlocks = [];
+}
 let sessionsCache = [];     // 左侧历史列表数据（list_sessions 结果）
 let artifacts = [];         // 当前 session 的产物列表（前端跟踪，重启 app 后丢）
 const toolMeta = new Map(); // tool_call_id → {name, args}，给 tool_end 拿原始 args 用
@@ -284,8 +306,10 @@ async function onPlanAccept(card) {
   const status = card.querySelector(".plan-card-status");
   status.hidden = false;
   status.textContent = "✅ 已批准";
-  // 在消息流追加 user 气泡让用户感知（不持久化到 messages.json，避免污染上下文）
+  // 追加 user 气泡 + 持久化到 messages: 作为 Plan→Executing 的 turn 边界标记,
+  // 历史还原时 plan_card 也据此渲染在正确位置.
   appendUserMessage("✅ 就这么干");
+  messages.push({ role: "user", content: [{ type: "text", text: "✅ 就这么干" }] });
   const planMd = card.dataset.planMarkdown || "";
   setBusy(true);
   try {
@@ -460,13 +484,9 @@ function renderUserInputCard(toolCallId, questions) {
       // 用户选择是一个分界点:关闭当前 assistant 气泡,把已累积 text 入栈 messages,
       // 下一段 LLM 输出会开新气泡(视觉上接在用户气泡之后,不会串到 request_user_input
       // 之前的旧气泡里)。
-      if (pendingAssistantText) {
-        messages.push({
-          role: "assistant",
-          content: [{ type: "text", text: pendingAssistantText }],
-        });
-        pendingAssistantText = "";
-      }
+      // chat:tool_end 会自动 flush + push user/tool_result message, 这里只关闭 bubble
+      // 让后续 LLM 输出开新气泡, 避免串到工具前的气泡里.
+      flushAssistantMessageToHistory();
       closeAssistantBubble();
       status.textContent = "✓ 已提交";
     } catch (e) {
@@ -483,10 +503,8 @@ function finalizeUserInputCard(toolCallId, success) {
   card.dataset.cardState = success ? "submitted" : "cancelled";
   card.querySelectorAll(".user-input-option").forEach((b) => (b.disabled = true));
   const status = card.querySelector(".user-input-status");
-  if (!success) {
-    status.hidden = false;
-    status.textContent = "✕ 已取消";
-  }
+  status.hidden = false;
+  status.textContent = success ? "✓ 已提交" : "✕ 已取消";
   userInputCards.delete(toolCallId);
 }
 
@@ -585,6 +603,7 @@ function renderPlanTextFallbackCard(text) {
     status.textContent = "✅ 采纳中...";
     if (!activeSessionId) { status.textContent = "⚠️ 无 active session"; return; }
     appendUserMessage("✅ 采纳此方案");
+    messages.push({ role: "user", content: [{ type: "text", text: "✅ 采纳此方案" }] });
     try {
       const state = await invoke("accept_plan", {
         sessionId: activeSessionId,
@@ -1229,7 +1248,7 @@ async function submitEditLastTurn(newText) {
   // 重渲染对话区（rerenderFromMessages 已经把新 user 渲染出来，不再重复 appendUserMessage）
   rerenderFromMessages();
   setBusy(true);
-  pendingAssistantText = "";
+  resetPendingAssistant();
   try {
     await invoke("edit_last_turn", { newMessage: newText });
   } catch (err) {
@@ -1388,8 +1407,10 @@ const newSessionBtn = document.getElementById("new-session-btn");
 function clearChatDOM() {
   chatArea.innerHTML = "";
   toolCards.clear();
+  toolMeta.clear();
+  userInputCards.clear();
   closeAssistantBubble();
-  pendingAssistantText = "";
+  resetPendingAssistant();
   const row = document.createElement("div");
   row.className = "msg-row msg-system";
   row.innerHTML = `<div class="bubble bubble-system"><span class="bubble-system-prefix">PINVOU3 · READY</span><br/>${escapeHtml(i18nText("chat.welcome"))}</div>`;
@@ -1399,27 +1420,150 @@ function clearChatDOM() {
 /** 用 state.messages 重渲染对话区（切换 session 时用）。 */
 function rerenderFromMessages() {
   clearChatDOM();
+  // turn 边界: 一个 turn 由 user.text message 开启, 累积该 turn 内的 plan/todos snapshot,
+  // 在下一个 user.text 出现前(或遍历结束)渲染 1 个 plan_card. 跟实时 chat:plan_ready
+  // 在 turn 末尾 emit 一次的行为对齐, 避免历史还原显示 N 个 plan_card.
+  let lastPlanSnap = null;
+  let lastTodosSnap = null;
+  let pendingPlanCard = false;
+  // 当前 turn 是否 Executing (accept_plan 触发的 turn): user.text 以"✅"开头视为 accept.
+  // Executing turn 末尾即使有 update_plan(标 completed) 也不渲染新 plan_card —— 跟实时一致.
+  let currentTurnIsExecuting = false;
+
+  function flushHistoricAssistantText(text) {
+    if (!text) return;
+    beginAssistantBubble();
+    currentAssistantRawText = text;
+    currentAssistantBubble.innerHTML = renderMarkdown(text);
+    closeAssistantBubble();
+  }
+  function flushPendingPlanCard() {
+    if (!currentTurnIsExecuting && pendingPlanCard && (lastPlanSnap || lastTodosSnap)) {
+      renderHistoricPlanCard(lastPlanSnap, lastTodosSnap);
+    }
+    pendingPlanCard = false;
+    lastPlanSnap = null;
+    lastTodosSnap = null;
+  }
+
   for (const m of messages) {
+    const blocks = Array.isArray(m.content) ? m.content : [];
     if (m.role === "user") {
-      const text = (m.content || [])
-        .filter((c) => c.type === "text")
-        .map((c) => c.text)
-        .join("");
-      if (text) appendUserMessage(text);
-    } else if (m.role === "assistant") {
-      const text = (m.content || [])
-        .filter((c) => c.type === "text")
-        .map((c) => c.text)
-        .join("");
-      if (text) {
-        beginAssistantBubble();
-        currentAssistantRawText = text;
-        currentAssistantBubble.innerHTML = renderMarkdown(text);
-        closeAssistantBubble();
+      const textParts = blocks.filter((c) => c.type === "text").map((c) => c.text);
+      if (textParts.length) {
+        flushPendingPlanCard();
+        const userText = textParts.join("");
+        appendUserMessage(userText);
+        currentTurnIsExecuting = userText.startsWith("✅");
+      }
+      // tool_result 段(同 turn 内): 不算边界, 更新对应历史 tool card 状态
+      for (const c of blocks) {
+        if (c.type !== "tool_result") continue;
+        applyHistoricToolResult(c.tool_use_id, c.content, c.is_error === true);
+      }
+      continue;
+    }
+    if (m.role !== "assistant") continue;
+    // assistant: 按 block 顺序遍历 text + tool_use
+    let textBuf = "";
+    for (const b of blocks) {
+      if (b.type === "text") {
+        textBuf += b.text;
+      } else if (b.type === "thinking") {
+        // 跳过
+      } else if (b.type === "tool_use") {
+        flushHistoricAssistantText(textBuf);
+        textBuf = "";
+        // 累积 plan snapshot 但不立即渲染卡片, 等 turn 结束
+        if (b.name === "update_plan") {
+          lastPlanSnap = b.input;
+          pendingPlanCard = true;
+        } else if (b.name === "checklist_write" || b.name === "todo_write") {
+          lastTodosSnap = b.input;
+          pendingPlanCard = true;
+        }
+        renderHistoricToolUse(b);
       }
     }
+    flushHistoricAssistantText(textBuf);
+  }
+  // 最后一个 turn 末尾(没有下一个 user.text 触发)
+  flushPendingPlanCard();
+  // 还在 pending 的历史 tool card → turn 被中断未拿到 tool_result, 标灰让用户看清.
+  for (const [id, meta] of Array.from(toolMeta.entries())) {
+    if (
+      meta.name === "request_user_input" ||
+      meta.name === "update_plan" ||
+      meta.name === "checklist_write" ||
+      meta.name === "todo_write"
+    ) {
+      toolMeta.delete(id);
+      continue;
+    }
+    appendToolCallEnd(id, "(无返回 · 可能被中断)", false);
+    toolMeta.delete(id);
   }
   scrollToBottom();
+}
+
+// 历史还原: tool_use → tool card(pending 态). update_plan/request_user_input 走专用 card.
+function renderHistoricToolUse(block) {
+  const { id, name, input } = block;
+  toolMeta.set(id, { name, args: input });
+  if (name === "request_user_input") {
+    const questions = (input || {}).questions || [];
+    if (questions.length) renderUserInputCard(id, questions);
+    return;
+  }
+  if (name === "update_plan" || name === "checklist_write" || name === "todo_write") {
+    // 不渲染通用 tool card, plan_card 已经接管. 但仍 toolMeta 占位让 tool_result 应用时不报警告.
+    return;
+  }
+  appendToolCallStart(id, name, input);
+}
+
+function applyHistoricToolResult(toolUseId, content, isError) {
+  const meta = toolMeta.get(toolUseId);
+  if (!meta) {
+    // 老 session 可能没匹配上 (tool_use 缺失), 静默忽略
+    return;
+  }
+  if (meta.name === "request_user_input") {
+    finalizeUserInputCard(toolUseId, !isError);
+    toolMeta.delete(toolUseId);
+    return;
+  }
+  if (meta.name === "update_plan" || meta.name === "checklist_write" || meta.name === "todo_write") {
+    // 已由 renderHistoricPlanCard 接管, 不需要 tool card 更新
+    toolMeta.delete(toolUseId);
+    return;
+  }
+  if (!isError && meta.name === "write_file") {
+    const path = extractArtifactPath(meta.args);
+    if (path) trackArtifact(path);
+  }
+  appendToolCallEnd(toolUseId, content, !isError);
+  toolMeta.delete(toolUseId);
+}
+
+// 历史 plan_card: 重用 renderPlanReadyCard 但立即 freeze, 标"历史方案".
+function renderHistoricPlanCard(planInput, todosInput) {
+  const snapshots = {};
+  if (planInput) {
+    snapshots.plan = {
+      explanation: planInput.explanation,
+      items: Array.isArray(planInput.items) ? planInput.items : [],
+    };
+  }
+  if (todosInput) {
+    const todos = todosInput.todos || todosInput.items || [];
+    snapshots.todos = { items: Array.isArray(todos) ? todos : [] };
+  }
+  if (!snapshots.plan && !snapshots.todos) return;
+  renderPlanReadyCard(snapshots);
+  const card = chatArea.querySelector('.msg-plan-card[data-card-state="active"]:last-of-type')
+    || chatArea.querySelector('.msg-plan-card[data-card-state="active"]');
+  if (card) setPlanCardFrozen(card, "📜 历史方案");
 }
 
 /** 渲染左侧历史列表（重读 sessionsCache 状态）。 */
@@ -1528,7 +1672,7 @@ async function confirmAndDelete(meta) {
       // 删的是当前 session：优先切到剩余最新一条；都没了再建空 session
       activeSessionId = null;
       messages = [];
-      pendingAssistantText = "";
+      resetPendingAssistant();
       if (sessionsCache.length > 0) {
         await switchToSession(sessionsCache[0].id);
       } else {
@@ -1558,7 +1702,7 @@ async function createNewSession() {
     const meta = await invoke("create_session");
     activeSessionId = meta.id;
     messages = [];
-    pendingAssistantText = "";
+    resetPendingAssistant();
     artifacts = [];
     activeArtifactPath = null;
     renderArtifactList();
@@ -1603,7 +1747,7 @@ async function switchToSession(id) {
     const saved = await invoke("load_session", { id });
     activeSessionId = saved.metadata.id;
     messages = Array.isArray(saved.messages) ? saved.messages : [];
-    pendingAssistantText = "";
+    resetPendingAssistant();
     // 从 SavedSession.artifacts 重建前端产物列表 (storage_path 是绝对路径)
     const savedArtifacts = Array.isArray(saved.artifacts) ? saved.artifacts : [];
     artifacts = savedArtifacts.map((a) => {
@@ -2502,24 +2646,35 @@ listen("chat:delta", (e) => {
 });
 listen("chat:tool_start", (e) => {
   const { id, name, args } = e.payload || {};
-  // 缓存原始 args 给 tool_end 用（提取产物路径）。
-  // 防御：上游可能为同一 id 多次 fire（如 ApprovalRequired），args 为 null 时不覆盖已存。
   if (!toolMeta.has(id) || args != null) {
     toolMeta.set(id, { name, args });
   }
-  // chip 切到 tool 阶段:重置计时 + 显示具体工具名
   if (name) switchThinkingToTool(name);
-  // request_user_input: 不渲染默认 tool card,等 chat:user_input_required event
-  // 单独渲染选择气泡。否则会在 chat 流里露出原始 questions JSON。
+  // 持久化: tool_use 是当前 assistant message 的一部分. 先 flush text 再 push tool_use.
+  flushPendingTextBlock();
+  pendingAssistantBlocks.push({
+    type: "tool_use",
+    id,
+    name,
+    input: args || {},
+  });
+  // request_user_input: 不渲染默认 tool card,等 chat:user_input_required event 单独渲染选择气泡.
   if (name === "request_user_input") return;
   appendToolCallStart(id, name, args);
 });
 listen("chat:tool_end", (e) => {
   const { id, output, success } = e.payload || {};
   const meta = toolMeta.get(id);
-  // chip 切回 thinking 阶段:重置计时 + 文案回到"思考中"
   switchThinkingToIdle();
-  // request_user_input 结束时关闭选择气泡 + 不调 appendToolCallEnd(没创建过 tool card)
+  // 持久化: tool_result 是新的 user message. 先 flush 当前 assistant message, 再 push user message.
+  // closeAssistantBubble 防止后续 text 串到工具前的 bubble 里.
+  const resultContent = typeof output === "string" ? output : JSON.stringify(output);
+  flushAssistantMessageToHistory();
+  closeAssistantBubble();
+  const trBlock = { type: "tool_result", tool_use_id: id, content: resultContent };
+  if (!success) trBlock.is_error = true;
+  messages.push({ role: "user", content: [trBlock] });
+  // request_user_input 结束: 关闭选择气泡, 不调 appendToolCallEnd.
   if (meta && meta.name === "request_user_input") {
     finalizeUserInputCard(id, success);
     toolMeta.delete(id);
@@ -2614,14 +2769,8 @@ listen("chat:done", async (e) => {
   const error = e.payload?.error;
   if (error) appendSystemMessage("⚠️ " + error);
 
-  // 把累积的 assistant 文本入栈到 messages（如果有内容）
-  if (pendingAssistantText) {
-    messages.push({
-      role: "assistant",
-      content: [{ type: "text", text: pendingAssistantText }],
-    });
-    pendingAssistantText = "";
-  }
+  // 把累积的 assistant message (text + 任何未配对的 tool_use) flush 到 messages.
+  flushAssistantMessageToHistory();
   closeAssistantBubble();
   setBusy(false);
 
