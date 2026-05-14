@@ -1295,10 +1295,17 @@ body[data-theme="liquid-light"] .msg-edit-input {
    右栏在 1280px 以下默认折叠成 icon 条（40px），点 toggle 展开。 */
 .chatroom-grid {
   display: grid;
-  grid-template-columns: 1fr 360px;
+  grid-template-columns: 1fr var(--right-pane-w, 360px);
   height: 100%;
   width: 100%;
   overflow: hidden;
+}
+body.is-resizing-right-pane {
+  cursor: ew-resize !important;
+  user-select: none;
+}
+body.is-resizing-right-pane iframe {
+  pointer-events: none;
 }
 .chatroom-main {
   display: flex;
@@ -1322,7 +1329,7 @@ body[data-theme="liquid-light"] .msg-edit-input {
     top: 0;
     right: 0;
     height: 100vh;
-    width: min(360px, 90vw);
+    width: min(var(--right-pane-w, 360px), 90vw);
     z-index: 80;
     transform: translateX(100%);
     transition: transform 0.22s ease;
@@ -1395,6 +1402,42 @@ body[data-theme="liquid-light"] .right-pane-close:hover {
   border-left: 1px solid var(--surface-container-high);
   min-width: 0;
   overflow: hidden;
+}
+/* 大窗下 resizer 用 absolute 定位需要 positioned ancestor。
+   小窗 overlay 模式自己是 position:fixed (1327 行) 已是 positioned, 不重复设置 */
+@media (min-width: 1281px) {
+  .right-pane {
+    position: relative;
+  }
+}
+
+/* 拖拽 handle: 贴在 .right-pane 左边缘的竖条。
+   命中区 10px(覆盖左边缘 ±5px), 默认不可见;
+   hover 显示中央 2px 的 accent 色窄条提示「这里能拖,双击重置」。 */
+.right-pane-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  width: 10px;
+  cursor: ew-resize;
+  z-index: 5;
+  background: transparent;
+  transition: background 0.12s;
+}
+.right-pane-resizer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 2px;
+  background: transparent;
+  transition: background 0.12s;
+}
+.right-pane-resizer:hover::before,
+body.is-resizing-right-pane .right-pane-resizer::before {
+  background: var(--accent);
 }
 
 .right-pane-tabs {

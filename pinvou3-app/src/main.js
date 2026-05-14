@@ -1920,6 +1920,64 @@ rightPaneToggle?.addEventListener("click", () => {
 rightPaneClose?.addEventListener("click", () => setRightPaneState("true"));
 rightPaneBackdrop?.addEventListener("click", () => setRightPaneState("true"));
 
+// ── 右栏宽度拖拽 (大窗下生效, 浮层模式禁用) ─────────────────────
+// 拖左边缘 → 改 --right-pane-w → 落 localStorage
+const RIGHT_PANE_W_KEY = "pinvou3.rightPaneWidth";
+const RIGHT_PANE_W_MIN = 240;
+const rightPaneResizer = document.getElementById("right-pane-resizer");
+
+function applyRightPaneWidth(px) {
+  // 大窗 60vw 上限留主对话区呼吸空间; 小窗 overlay 模式允许 90vw (CSS 那一侧再加一道 90vw 兜底)
+  const ratio = window.innerWidth > 1280 ? 0.6 : 0.9;
+  const maxW = Math.max(RIGHT_PANE_W_MIN, Math.floor(window.innerWidth * ratio));
+  const clamped = Math.min(maxW, Math.max(RIGHT_PANE_W_MIN, Math.round(px)));
+  document.documentElement.style.setProperty("--right-pane-w", `${clamped}px`);
+  return clamped;
+}
+
+// 启动时恢复
+try {
+  const saved = parseInt(localStorage.getItem(RIGHT_PANE_W_KEY) || "", 10);
+  if (Number.isFinite(saved)) applyRightPaneWidth(saved);
+} catch {}
+
+// 自模拟双击: 两次 mousedown 间隔 < 350ms 且都没拖动 → 重置默认。
+// 不用原生 dblclick: resizer 只有 6px 宽,双击微移到相邻元素时不在同一 target 不触发。
+let lastResizerMouseDownTs = 0;
+rightPaneResizer?.addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  const now = Date.now();
+  const isDoubleClick = now - lastResizerMouseDownTs < 350;
+  lastResizerMouseDownTs = now;
+  if (isDoubleClick) {
+    applyRightPaneWidth(360);
+    try { localStorage.removeItem(RIGHT_PANE_W_KEY); } catch {}
+    lastResizerMouseDownTs = 0; // 防三连击再次触发
+    return;
+  }
+  const startX = e.clientX;
+  const startW = rightPane.getBoundingClientRect().width;
+  let dragged = false;
+  document.body.classList.add("is-resizing-right-pane");
+  const onMove = (ev) => {
+    const dx = ev.clientX - startX;
+    if (Math.abs(dx) > 2) dragged = true;
+    applyRightPaneWidth(startW - dx);
+  };
+  const onUp = () => {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    document.body.classList.remove("is-resizing-right-pane");
+    // 没拖动时不写 localStorage(避免单击 = 落值 = 让宽度恢复成"刚才偶然的尺寸")
+    if (dragged) {
+      const cur = rightPane.getBoundingClientRect().width;
+      try { localStorage.setItem(RIGHT_PANE_W_KEY, String(Math.round(cur))); } catch {}
+    }
+  };
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+});
+
 // ── 阶段 C: 输入栏多文件上传 ──────────────────────────────────────
 
 const attachBtn = document.getElementById("attach-btn");
