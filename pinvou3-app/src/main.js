@@ -50,6 +50,585 @@ const toolMeta = new Map(); // tool_call_id → {name, args}，给 tool_end 拿�
 let pendingAttachments = []; // { id, result: IngestResult, status: "parsing"|"ready"|"error" }
 let attachSeq = 0;
 
+// 阶段 D: Plan / YOLO 双模式状态机
+// modeState = { mode: "yolo"|"plan", plan_phase: "none"|"planning"|"ready"|"executing" }
+// 后端 SessionStore 是 source of truth，前端切 session 时同步拉一遍。
+let modeState = { mode: "yolo", plan_phase: "none" };
+
+// ── Thinking 指示器:Braille 10 帧旋转 + 分阶段计时,统一到 chip 区 ──
+// thinkingPhase = "thinking"(LLM 思考/流式) | "tool"(工具调用中)
+// 每次 phase 切换重置计时器 → 用户看到"每个小阶段花了多少时间",
+// 避免单 turn 内累积超大数字(eg 180s)让用户判断不出卡在哪步。
+const BRAILLE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+let thinkingTicker = null;       // setInterval handle
+let thinkingFrameIdx = 0;
+let thinkingStartedAt = 0;       // 当前阶段起始时刻
+let thinkingFrame = BRAILLE_FRAMES[0];
+let thinkingElapsedSec = 0;
+let thinkingPhase = "thinking";  // "thinking" | "tool"
+let thinkingToolName = "";       // phase=tool 时的工具名
+
+function startThinking() {
+  if (thinkingTicker) return;
+  thinkingFrameIdx = 0;
+  thinkingPhase = "thinking";
+  thinkingToolName = "";
+  thinkingStartedAt = Date.now();
+  thinkingFrame = BRAILLE_FRAMES[0];
+  thinkingElapsedSec = 0;
+  if (typeof updateModeUI === "function") updateModeUI();
+  thinkingTicker = setInterval(() => {
+    thinkingFrameIdx = (thinkingFrameIdx + 1) % BRAILLE_FRAMES.length;
+    thinkingFrame = BRAILLE_FRAMES[thinkingFrameIdx];
+    thinkingElapsedSec = Math.floor((Date.now() - thinkingStartedAt) / 1000);
+    if (typeof updateModeUI === "function") updateModeUI();
+  }, 100);
+}
+
+function stopThinking() {
+  if (thinkingTicker) {
+    clearInterval(thinkingTicker);
+    thinkingTicker = null;
+  }
+  thinkingFrame = BRAILLE_FRAMES[0];
+  thinkingElapsedSec = 0;
+  thinkingPhase = "thinking";
+  thinkingToolName = "";
+  if (typeof updateModeUI === "function") updateModeUI();
+}
+
+/** 切到工具阶段:重置计时,文案变成"调用 xxx... Ns"。 */
+function switchThinkingToTool(toolName) {
+  if (!thinkingTicker) return; // 只在 busy 期间生效
+  thinkingPhase = "tool";
+  thinkingToolName = toolName || "";
+  thinkingStartedAt = Date.now();
+  thinkingElapsedSec = 0;
+  if (typeof updateModeUI === "function") updateModeUI();
+}
+
+/** 切回思考阶段:工具完成,重置计时,文案回到"思考中... Ns"。 */
+function switchThinkingToIdle() {
+  if (!thinkingTicker) return;
+  thinkingPhase = "thinking";
+  thinkingToolName = "";
+  thinkingStartedAt = Date.now();
+  thinkingElapsedSec = 0;
+  if (typeof updateModeUI === "function") updateModeUI();
+}
+
+/**
+ * 渲染 plan_card：消息流内嵌的方案卡片，**两层结构**：
+ *   - plan 层（来自 update_plan）：高层 strategy，含 explanation + phase 步骤
+ *   - todos 层（来自 checklist_write / todo_write）：每个 phase 下的细分待办
+ * 任一存在就渲染，两个都有就分两段。
+ *
+ * 状态机：active → approved（点 ✅）/ revising（点 ✏️）/ discarded（点 🚪）/ frozen（被新卡片覆盖）
+ *
+ * snapshots: { plan?: PlanSnap, todos?: TodosSnap }
+ *   PlanSnap  = { explanation?, items: [{ step, status }] }
+ *   TodosSnap = { items: [{ id, content, status }], completion_pct, in_progress_id }
+ */
+function renderPlanReadyCard(snapshots) {
+  freezeOldPlanCards();
+  const card = document.createElement("div");
+  card.className = "msg-row msg-plan-card";
+  card.dataset.cardState = "active";
+  const planMarkdown = composePlanMarkdown(snapshots);
+  card.dataset.planMarkdown = planMarkdown;
+  card.innerHTML = `
+    <div class="plan-card-box">
+      <div class="plan-card-header">✨ 方案准备好</div>
+      <div class="plan-card-body"></div>
+      <div class="plan-card-sep"></div>
+      <div class="plan-card-footer">
+        <div class="plan-card-prompt">下一步：</div>
+        <div class="plan-card-actions">
+          <button class="plan-card-btn plan-card-accept" type="button">✅ 就这么干</button>
+          <button class="plan-card-btn plan-card-revise" type="button">✏️ 改改</button>
+          <button class="plan-card-btn plan-card-discard" type="button">🚪 算了</button>
+        </div>
+        <div class="plan-card-status" hidden></div>
+      </div>
+    </div>
+  `;
+  const bodyEl = card.querySelector(".plan-card-body");
+  renderSnapshotsInto(bodyEl, snapshots);
+  card.querySelector(".plan-card-accept").addEventListener("click", () => onPlanAccept(card));
+  card.querySelector(".plan-card-revise").addEventListener("click", () => onPlanRevise(card));
+  card.querySelector(".plan-card-discard").addEventListener("click", () => onPlanDiscard(card));
+  chatArea.appendChild(card);
+  scrollToBottom();
+}
+
+/** 拼 accept 时发给后端的 plan markdown：含 plan + todos 全部内容,方便 AI 按方案执行。 */
+function composePlanMarkdown(snapshots) {
+  const lines = [];
+  const plan = snapshots && snapshots.plan;
+  const todos = snapshots && snapshots.todos;
+  if (plan && Array.isArray(plan.items)) {
+    if (plan.explanation) {
+      lines.push("**方案：**", plan.explanation, "");
+    }
+    lines.push("**步骤：**");
+    plan.items.forEach((item, i) => {
+      const sym = item.status === "completed" ? "●" : item.status === "in_progress" ? "◎" : "○";
+      lines.push(`${i + 1}. ${sym} ${item.step}`);
+    });
+    lines.push("");
+  }
+  if (todos && Array.isArray(todos.items)) {
+    lines.push("**细分待办：**");
+    todos.items.forEach((item, i) => {
+      const sym = item.status === "completed" ? "●" : item.status === "in_progress" ? "◎" : "○";
+      lines.push(`${i + 1}. ${sym} ${item.content}`);
+    });
+  }
+  return lines.length > 0 ? lines.join("\n") : "（plan 为空）";
+}
+
+/** 把 plan + todos 渲染到卡片 body。两层独立 section,标签清晰区分。 */
+function renderSnapshotsInto(el, snapshots) {
+  el.innerHTML = "";
+  const plan = snapshots && snapshots.plan;
+  const todos = snapshots && snapshots.todos;
+  if (!plan && !todos) {
+    el.textContent = "（plan 为空）";
+    return;
+  }
+  if (plan && Array.isArray(plan.items) && plan.items.length > 0) {
+    el.appendChild(renderLayerSection("📋 方案", plan.explanation, plan.items, "step"));
+  }
+  if (todos && Array.isArray(todos.items) && todos.items.length > 0) {
+    el.appendChild(renderLayerSection("✅ 细分待办", null, todos.items, "content"));
+  }
+}
+
+/** 渲染一层(plan 或 todos): 标签 + 可选 explanation + 步骤列表。
+ *  itemField: "step" (plan) or "content" (todos) —— 字段名归一化。 */
+function renderLayerSection(label, explanation, items, itemField) {
+  const wrap = document.createElement("section");
+  wrap.className = "plan-card-layer";
+  const head = document.createElement("div");
+  head.className = "plan-card-layer-head";
+  head.textContent = label;
+  wrap.appendChild(head);
+  if (explanation) {
+    const p = document.createElement("p");
+    p.className = "plan-card-explanation";
+    p.textContent = explanation;
+    wrap.appendChild(p);
+  }
+  const ol = document.createElement("ol");
+  ol.className = "plan-card-steps";
+  for (const item of items) {
+    const li = document.createElement("li");
+    li.dataset.status = item.status || "pending";
+    const sym = item.status === "completed" ? "●" : item.status === "in_progress" ? "◎" : "○";
+    li.innerHTML = `<span class="plan-step-sym">${sym}</span> <span class="plan-step-text"></span>`;
+    li.querySelector(".plan-step-text").textContent = item[itemField] || "";
+    ol.appendChild(li);
+  }
+  wrap.appendChild(ol);
+  return wrap;
+}
+
+/** 新 plan_card 出现前，把所有旧的 active 卡片冻结成 "📜 已过期"。 */
+function freezeOldPlanCards() {
+  chatArea.querySelectorAll('.msg-plan-card[data-card-state="active"]').forEach((old) => {
+    setPlanCardFrozen(old, "📜 已被新方案覆盖");
+  });
+}
+
+function setPlanCardFrozen(card, label) {
+  card.dataset.cardState = "frozen";
+  card.querySelectorAll(".plan-card-btn").forEach((b) => (b.disabled = true));
+  const status = card.querySelector(".plan-card-status");
+  status.hidden = false;
+  status.textContent = label;
+}
+
+async function onPlanAccept(card) {
+  if (card.dataset.cardState !== "active") return;
+  if (!activeSessionId) return;
+  card.dataset.cardState = "approved";
+  card.querySelectorAll(".plan-card-btn").forEach((b) => (b.disabled = true));
+  const status = card.querySelector(".plan-card-status");
+  status.hidden = false;
+  status.textContent = "✅ 已批准";
+  // 在消息流追加 user 气泡让用户感知（不持久化到 messages.json，避免污染上下文）
+  appendUserMessage("✅ 就这么干");
+  const planMd = card.dataset.planMarkdown || "";
+  setBusy(true);
+  try {
+    const state = await invoke("accept_plan", {
+      sessionId: activeSessionId,
+      planMarkdown: planMd,
+    });
+    modeState = { mode: state.mode, plan_phase: state.plan_phase };
+    updateModeUI();
+  } catch (e) {
+    appendSystemMessage("⚠️ accept_plan 失败: " + e);
+    setBusy(false);
+  }
+}
+
+async function onPlanRevise(card) {
+  if (card.dataset.cardState !== "active") return;
+  if (!activeSessionId) return;
+  setPlanCardFrozen(card, "✏️ 已请求修改 · 在下方告诉 AI 怎么改");
+  try {
+    const state = await invoke("revise_plan", { sessionId: activeSessionId });
+    modeState = { mode: state.mode, plan_phase: state.plan_phase };
+    updateModeUI();
+  } catch (e) {
+    appendSystemMessage("⚠️ revise_plan 失败: " + e);
+    return;
+  }
+  input.focus();
+  input.placeholder = "告诉 AI 你想怎么改方案…";
+  setTimeout(() => { input.placeholder = "跟 Qwen3.6 说点什么(Enter 发送 · Shift+Enter 换行)"; }, 8000);
+}
+
+async function onPlanDiscard(card) {
+  if (card.dataset.cardState !== "active") return;
+  if (!activeSessionId) return;
+  setPlanCardFrozen(card, "🚪 已退出 Plan");
+  try {
+    const state = await invoke("discard_plan", { sessionId: activeSessionId });
+    modeState = { mode: state.mode, plan_phase: state.plan_phase };
+    updateModeUI();
+  } catch (e) {
+    appendSystemMessage("⚠️ discard_plan 失败: " + e);
+  }
+}
+
+// ── request_user_input 选择气泡 ─────────────────────────────────────
+// 跟 plan_card 类似但更轻：1-3 个问题, 每题 2-3 个选项, 用户选完所有题
+// 后才 submit_user_input。期间 engine 在 await_user_input loop 等。
+
+const userInputCards = new Map(); // tool_call_id → { card, answers, questions }
+
+function renderUserInputCard(toolCallId, questions) {
+  if (!Array.isArray(questions) || questions.length === 0) return;
+  const card = document.createElement("div");
+  card.className = "msg-row msg-user-input";
+  card.dataset.toolCallId = toolCallId;
+  card.dataset.cardState = "active";
+  card.innerHTML = `
+    <div class="user-input-box">
+      <div class="user-input-header">🤔 AI 想问你几个问题</div>
+      <div class="user-input-body"></div>
+      <div class="user-input-status" hidden></div>
+    </div>
+  `;
+  const body = card.querySelector(".user-input-body");
+  const answers = new Array(questions.length).fill(null);
+  questions.forEach((q, qi) => {
+    const block = document.createElement("div");
+    block.className = "user-input-question";
+    const headEl = document.createElement("div");
+    headEl.className = "user-input-q-header";
+    headEl.textContent = q.header || `Q${qi + 1}`;
+    const qEl = document.createElement("div");
+    qEl.className = "user-input-q-text";
+    qEl.textContent = q.question || "";
+    const opts = document.createElement("div");
+    opts.className = "user-input-options";
+    (q.options || []).forEach((opt) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "user-input-option";
+      btn.dataset.qIndex = String(qi);
+      btn.innerHTML = `<span class="user-input-option-label"></span><span class="user-input-option-desc"></span>`;
+      btn.querySelector(".user-input-option-label").textContent = opt.label || "";
+      btn.querySelector(".user-input-option-desc").textContent = opt.description || "";
+      btn.addEventListener("click", () => {
+        // 同一题选过的取消高亮，本题所有按钮去 selected
+        opts.querySelectorAll(".user-input-option").forEach((b) => b.classList.remove("selected"));
+        // 收起任何已展开的 Other 输入区
+        opts.querySelectorAll(".user-input-other-box").forEach((box) => box.remove());
+        btn.classList.add("selected");
+        answers[qi] = {
+          id: q.id,
+          label: opt.label,
+          value: opt.label,
+        };
+        maybeSubmit();
+      });
+      opts.appendChild(btn);
+    });
+    // [💬 其他(自己写)] —— Claude Code 同款,所有 question 自动加,让用户自由输入。
+    // 点击 inline 展开 textarea + 提交按钮,不占消息流。
+    const otherBtn = document.createElement("button");
+    otherBtn.type = "button";
+    otherBtn.className = "user-input-option user-input-other";
+    otherBtn.dataset.qIndex = String(qi);
+    otherBtn.innerHTML = `<span class="user-input-option-label">💬 其他(自己写)</span><span class="user-input-option-desc">如果上面选项不合适,自己说一下</span>`;
+    otherBtn.addEventListener("click", () => {
+      // 已展开就关闭
+      const existing = opts.querySelector(".user-input-other-box");
+      if (existing) { existing.remove(); return; }
+      // 清掉之前的选项高亮 + 已答(用户在改主意)
+      opts.querySelectorAll(".user-input-option").forEach((b) => b.classList.remove("selected"));
+      answers[qi] = null;
+      // 创建 inline 输入区
+      const box = document.createElement("div");
+      box.className = "user-input-other-box";
+      box.innerHTML = `
+        <textarea class="user-input-other-textarea" rows="2" placeholder="写下你想说的..."></textarea>
+        <div class="user-input-other-actions">
+          <button class="user-input-other-cancel" type="button">取消</button>
+          <button class="user-input-other-submit" type="button">提交</button>
+        </div>
+      `;
+      const textarea = box.querySelector(".user-input-other-textarea");
+      box.querySelector(".user-input-other-cancel").addEventListener("click", () => box.remove());
+      box.querySelector(".user-input-other-submit").addEventListener("click", () => {
+        const val = textarea.value.trim();
+        if (!val) { textarea.focus(); return; }
+        otherBtn.classList.add("selected");
+        answers[qi] = { id: q.id, label: "其他", value: val };
+        box.remove();
+        maybeSubmit();
+      });
+      textarea.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          box.querySelector(".user-input-other-submit").click();
+        }
+      });
+      opts.appendChild(box);
+      setTimeout(() => textarea.focus(), 30);
+    });
+    opts.appendChild(otherBtn);
+    block.appendChild(headEl);
+    block.appendChild(qEl);
+    block.appendChild(opts);
+    body.appendChild(block);
+  });
+  chatArea.appendChild(card);
+  scrollToBottom();
+  userInputCards.set(toolCallId, { card, answers, questions });
+
+  async function maybeSubmit() {
+    // 所有题都选完 → submit
+    if (answers.some((a) => a == null)) return;
+    card.querySelectorAll(".user-input-option").forEach((b) => (b.disabled = true));
+    const status = card.querySelector(".user-input-status");
+    status.hidden = false;
+    status.textContent = "提交中…";
+    try {
+      await invoke("submit_user_input", { toolCallId, answers });
+      // 在用户气泡追加用户的选择(让对话流可读),不持久化到 messages.json
+      const summary = answers
+        .map((a, i) => `${questions[i].header}: ${a.label}`)
+        .join(" · ");
+      appendUserMessage("✓ " + summary);
+      // 用户选择是一个分界点:关闭当前 assistant 气泡,把已累积 text 入栈 messages,
+      // 下一段 LLM 输出会开新气泡(视觉上接在用户气泡之后,不会串到 request_user_input
+      // 之前的旧气泡里)。
+      if (pendingAssistantText) {
+        messages.push({
+          role: "assistant",
+          content: [{ type: "text", text: pendingAssistantText }],
+        });
+        pendingAssistantText = "";
+      }
+      closeAssistantBubble();
+      status.textContent = "✓ 已提交";
+    } catch (e) {
+      status.textContent = "⚠️ 提交失败: " + e;
+      card.querySelectorAll(".user-input-option").forEach((b) => (b.disabled = false));
+    }
+  }
+}
+
+function finalizeUserInputCard(toolCallId, success) {
+  const entry = userInputCards.get(toolCallId);
+  if (!entry) return;
+  const { card } = entry;
+  card.dataset.cardState = success ? "submitted" : "cancelled";
+  card.querySelectorAll(".user-input-option").forEach((b) => (b.disabled = true));
+  const status = card.querySelector(".user-input-status");
+  if (!success) {
+    status.hidden = false;
+    status.textContent = "✕ 已取消";
+  }
+  userInputCards.delete(toolCallId);
+}
+
+// ── Plan 模式死锁兜底卡片 ────────────────────────────────────────────
+// AI 在 Plan 模式调了不在工具集的工具(常见 write_file/edit_file/exec_shell)
+// 失败时弹这个卡片,给用户两条出路:让 AI 重出方案 / 跳过方案直接干。
+
+function showPlanStuckCard(toolName) {
+  // 同一 turn 内多次失败不重复插入,等用户处理完旧的
+  if (chatArea.querySelector('.msg-plan-stuck:not([data-resolved])')) return;
+  const card = document.createElement("div");
+  card.className = "msg-row msg-plan-stuck";
+  const safeName = toolName ? String(toolName) : "(unknown)";
+  card.innerHTML = `
+    <div class="plan-stuck-box">
+      <div class="plan-stuck-text">
+        ⚠️ AI 在 Plan 模式调用了 <code class="plan-stuck-tool"></code> 但被白名单挡掉。
+        Plan 模式只能讨论方案,不能动手。给你两个出路:
+      </div>
+      <div class="plan-stuck-actions">
+        <button class="plan-stuck-btn plan-stuck-replan" type="button">📋 让 AI 重出方案</button>
+        <button class="plan-stuck-btn plan-stuck-go" type="button">⚡ 直接动手(跳过方案)</button>
+      </div>
+      <div class="plan-stuck-status" hidden></div>
+    </div>
+  `;
+  card.querySelector(".plan-stuck-tool").textContent = safeName;
+  card.querySelector(".plan-stuck-replan").addEventListener("click", () => onPlanStuckReplan(card));
+  card.querySelector(".plan-stuck-go").addEventListener("click", () => onPlanStuckGo(card));
+  chatArea.appendChild(card);
+  scrollToBottom();
+}
+
+async function onPlanStuckReplan(card) {
+  if (card.dataset.resolved) return;
+  card.dataset.resolved = "true";
+  card.querySelectorAll(".plan-stuck-btn").forEach((b) => (b.disabled = true));
+  const status = card.querySelector(".plan-stuck-status");
+  status.hidden = false;
+  status.textContent = "📋 让 AI 重出方案…";
+  input.value = "请用 update_plan 工具输出完整方案,不要直接调写工具。";
+  await send();
+}
+
+async function onPlanStuckGo(card) {
+  if (card.dataset.resolved) return;
+  card.dataset.resolved = "true";
+  card.querySelectorAll(".plan-stuck-btn").forEach((b) => (b.disabled = true));
+  const status = card.querySelector(".plan-stuck-status");
+  status.hidden = false;
+  if (!activeSessionId) {
+    status.textContent = "⚠️ 没有 active session";
+    return;
+  }
+  try {
+    const state = await invoke("exit_plan_to_yolo", { sessionId: activeSessionId });
+    modeState = { mode: state.mode, plan_phase: state.plan_phase };
+    updateModeUI();
+    status.textContent = "⚡ 已切到 YOLO,接下来发消息 AI 就能动手";
+  } catch (e) {
+    status.textContent = "⚠️ 退出 Plan 失败: " + e;
+  }
+}
+
+// ── M3: Plan 文本兜底卡片(AI 没用 plan 工具但 text 写了方案) ───────
+function renderPlanTextFallbackCard(text) {
+  if (chatArea.querySelector('.msg-plan-fallback:not([data-resolved])')) return;
+  const card = document.createElement("div");
+  card.className = "msg-row msg-plan-fallback";
+  card.dataset.text = text;
+  card.innerHTML = `
+    <div class="plan-fallback-box">
+      <div class="plan-fallback-header">📝 AI 给了方案但没用 plan 工具</div>
+      <div class="plan-fallback-text">
+        AI 在文本里描述了方案,但没调 update_plan 工具,所以没出方案卡片。你想怎么处理?
+      </div>
+      <div class="plan-fallback-actions">
+        <button class="plan-fallback-btn plan-fallback-accept" type="button">✅ 直接采纳这段</button>
+        <button class="plan-fallback-btn plan-fallback-retry" type="button">📋 让 AI 用工具重出</button>
+        <button class="plan-fallback-btn plan-fallback-discard" type="button">🚪 算了</button>
+      </div>
+      <div class="plan-fallback-status" hidden></div>
+    </div>
+  `;
+  card.querySelector(".plan-fallback-accept").addEventListener("click", async () => {
+    if (card.dataset.resolved) return;
+    card.dataset.resolved = "true";
+    card.querySelectorAll(".plan-fallback-btn").forEach((b) => (b.disabled = true));
+    const status = card.querySelector(".plan-fallback-status");
+    status.hidden = false;
+    status.textContent = "✅ 采纳中...";
+    if (!activeSessionId) { status.textContent = "⚠️ 无 active session"; return; }
+    appendUserMessage("✅ 采纳此方案");
+    try {
+      const state = await invoke("accept_plan", {
+        sessionId: activeSessionId,
+        planMarkdown: card.dataset.text || "",
+      });
+      modeState = { mode: state.mode, plan_phase: state.plan_phase };
+      updateModeUI();
+      status.textContent = "✅ 已采纳,AI 开始执行";
+    } catch (err) {
+      status.textContent = "⚠️ accept_plan 失败: " + err;
+    }
+  });
+  card.querySelector(".plan-fallback-retry").addEventListener("click", async () => {
+    if (card.dataset.resolved) return;
+    card.dataset.resolved = "true";
+    card.querySelectorAll(".plan-fallback-btn").forEach((b) => (b.disabled = true));
+    const status = card.querySelector(".plan-fallback-status");
+    status.hidden = false;
+    status.textContent = "📋 让 AI 重出...";
+    input.value = "请用 update_plan 工具把上面的方案重新输出一遍,我才能在卡片上决策。";
+    await send();
+  });
+  card.querySelector(".plan-fallback-discard").addEventListener("click", async () => {
+    if (card.dataset.resolved) return;
+    card.dataset.resolved = "true";
+    card.querySelectorAll(".plan-fallback-btn").forEach((b) => (b.disabled = true));
+    const status = card.querySelector(".plan-fallback-status");
+    status.hidden = false;
+    if (!activeSessionId) { status.textContent = "🚪 已忽略"; return; }
+    try {
+      const state = await invoke("discard_plan", { sessionId: activeSessionId });
+      modeState = { mode: state.mode, plan_phase: state.plan_phase };
+      updateModeUI();
+      status.textContent = "🚪 已退出 Plan";
+    } catch (err) {
+      status.textContent = "⚠️ discard 失败: " + err;
+    }
+  });
+  chatArea.appendChild(card);
+  scrollToBottom();
+}
+
+// ── M2: Executing 自驱上限触达提示 ───────────────────────────────────
+function renderExecutionStuckCard(tries) {
+  if (chatArea.querySelector('.msg-execution-stuck:not([data-resolved])')) return;
+  const card = document.createElement("div");
+  card.className = "msg-row msg-execution-stuck";
+  card.innerHTML = `
+    <div class="plan-stuck-box">
+      <div class="plan-stuck-text">
+        🛑 AI 执行卡住了 (已自动尝试 ${tries} 次仍未真正产出文件)。你可以:
+      </div>
+      <div class="plan-stuck-actions">
+        <button class="plan-stuck-btn plan-stuck-replan" type="button">📋 让 AI 重出方案</button>
+        <button class="plan-stuck-btn plan-stuck-go" type="button">⚡ 我自己来</button>
+      </div>
+      <div class="plan-stuck-status" hidden></div>
+    </div>
+  `;
+  card.querySelector(".plan-stuck-replan").addEventListener("click", async () => {
+    if (card.dataset.resolved) return;
+    card.dataset.resolved = "true";
+    card.querySelectorAll(".plan-stuck-btn").forEach((b) => (b.disabled = true));
+    input.value = "你卡住了。请重新用 update_plan 工具列方案,我们再开始。";
+    await send();
+  });
+  card.querySelector(".plan-stuck-go").addEventListener("click", async () => {
+    if (card.dataset.resolved) return;
+    card.dataset.resolved = "true";
+    card.querySelectorAll(".plan-stuck-btn").forEach((b) => (b.disabled = true));
+    if (!activeSessionId) return;
+    try {
+      const state = await invoke("discard_plan", { sessionId: activeSessionId });
+      modeState = { mode: state.mode, plan_phase: state.plan_phase };
+      updateModeUI();
+    } catch (_) {}
+  });
+  chatArea.appendChild(card);
+  scrollToBottom();
+}
+
 // ── i18n 字典（极简版，DOM 扫描 data-i18n / data-i18n-placeholder） ──
 const I18N = {
   "zh-Hans": {
@@ -440,6 +1019,9 @@ function setBusy(b) {
   sendBtn.classList.toggle("busy-stop", b);
   sendBtn.title = b ? i18nText("chat.stop") : "";
   updateMessageActions();
+  // 同步 thinking 指示器:busy=true 启动 Braille 动画 + 计时
+  if (b) startThinking();
+  else stopThinking();
 }
 function appendUserMessage(text) {
   const row = document.createElement("div");
@@ -949,6 +1531,7 @@ async function createNewSession() {
     if (artifactPreviewEl) artifactPreviewEl.innerHTML = "";
     clearChatDOM();
     await refreshHistoryList();
+    await syncModeStateFromBackend();
   } catch (e) {
     appendSystemMessage("⚠️ 新建对话失败: " + e);
   }
@@ -1003,6 +1586,7 @@ async function switchToSession(id) {
     if (artifactPreviewEl) artifactPreviewEl.innerHTML = "";
     rerenderFromMessages();
     renderHistoryList();
+    await syncModeStateFromBackend();
   } catch (e) {
     appendSystemMessage("⚠️ 加载对话失败: " + e);
   }
@@ -1340,6 +1924,274 @@ rightPaneBackdrop?.addEventListener("click", () => setRightPaneState("true"));
 
 const attachBtn = document.getElementById("attach-btn");
 const attachmentRow = document.getElementById("attachment-row");
+
+// 阶段 D: Plan/YOLO 双模式 UI 引用
+const planBtn = document.getElementById("plan-btn");
+const composerEl = document.getElementById("composer");
+const modeChipRow = document.getElementById("mode-chip-row");
+const modeChipText = document.getElementById("mode-chip-text");
+const modeChipAction = document.getElementById("mode-chip-action");
+const modeChipJump = document.getElementById("mode-chip-jump");
+const modeChipProgress = document.getElementById("mode-chip-progress");
+const modeBadgeEl = document.getElementById("mode-badge");
+
+// 缓存最新的 plan/todos snapshot(由 chat:plan_snapshot event 更新)
+// chip 进度条渲染 + accept_plan 时拼 plan_markdown 用。
+// 各带 _ts(时间戳),pickProgressItems 选较新的渲染——避免 AI 在 Executing 调
+// update_plan 更新 plan 后,chip 仍显示 Planning 阶段的老 todos 数据。
+let latestPlanSnapshot = null;
+let latestPlanSnapshotTs = 0;
+let latestTodosSnapshot = null;
+let latestTodosSnapshotTs = 0;
+let planProgressExpanded = false;
+
+/**
+ * 根据 modeState 同步所有视觉锚点：
+ *   - composer[data-plan-phase]
+ *   - plan-btn[data-active / disabled]
+ *   - mode-badge[data-mode] + 文案
+ *   - mode-chip-row 显隐 + 文案 + ⚡ 退出按钮
+ */
+function updateModeUI() {
+  const { mode, plan_phase } = modeState;
+  composerEl.dataset.planPhase = plan_phase;
+  // plan-btn: yolo+none 可点；planning/ready disabled；executing 可点（二次确认）
+  planBtn.dataset.active = mode === "plan" ? "true" : "false";
+  planBtn.disabled = plan_phase === "planning" || plan_phase === "ready";
+  // mode badge——保持静态模式标签,不带动画(busy 反馈完全由 chip thinking 提供)
+  if (plan_phase === "executing") {
+    modeBadgeEl.dataset.mode = "executing";
+    modeBadgeEl.textContent = "🏃 执行中";
+  } else if (mode === "plan") {
+    modeBadgeEl.dataset.mode = "plan";
+    modeBadgeEl.textContent = "💡 PLAN";
+  } else {
+    modeBadgeEl.dataset.mode = "yolo";
+    modeBadgeEl.textContent = "⚡ YOLO";
+  }
+
+  // thinking 前缀:busy 时 "⠋ Ns · " 拼在文案最前,按 phase 切换文字。
+  // tool phase 时显示具体工具名;thinking phase 时默认"思考中"(下面 fallback chip 用)。
+  let thinkingPrefix = "";
+  if (busy) {
+    if (thinkingPhase === "tool" && thinkingToolName) {
+      thinkingPrefix = `${thinkingFrame} 调用 ${thinkingToolName}... ${thinkingElapsedSec}s · `;
+    } else {
+      thinkingPrefix = `${thinkingFrame} ${thinkingElapsedSec}s · `;
+    }
+  }
+
+  // chip 显示逻辑——统一状态条:模式标签 + thinking 反馈 + 操作按钮
+  modeChipJump.hidden = true;
+  modeChipProgress.hidden = true;  // V4 简化:chip 不再显示 plan 进度列表(冗余 + AI 行为不可靠)
+
+  if (plan_phase === "planning") {
+    modeChipRow.hidden = false;
+    modeChipText.textContent = `${thinkingPrefix}💡 Plan 模式 · 讨论中`;
+    modeChipAction.hidden = false;
+    modeChipAction.textContent = "⚡ 直接动手";
+    modeChipAction.dataset.kind = "exit_plan";
+  } else if (plan_phase === "ready") {
+    modeChipRow.hidden = false;
+    modeChipText.textContent = `${thinkingPrefix}✨ AI 给出方案 · 看下面卡片决策`;
+    modeChipAction.hidden = true;
+    modeChipJump.hidden = false;  // 卡片可能滚出视口,给跳转按钮
+  } else if (plan_phase === "executing") {
+    modeChipRow.hidden = false;
+    modeChipText.textContent = `${thinkingPrefix}🏃 执行中`;
+    modeChipAction.hidden = false;
+    modeChipAction.textContent = "⏹️ 中断";
+    modeChipAction.dataset.kind = "cancel_executing";
+  } else if (busy) {
+    // YOLO + 默认 + busy:chip 浮现仅承载 thinking 反馈(无按钮)
+    // 解决"用户感觉卡死"的核心场景。按 phase 选文案。
+    modeChipRow.hidden = false;
+    if (thinkingPhase === "tool" && thinkingToolName) {
+      modeChipText.textContent = `${thinkingFrame} 调用 ${thinkingToolName}... ${thinkingElapsedSec}s`;
+    } else {
+      modeChipText.textContent = `${thinkingFrame} 思考中... ${thinkingElapsedSec}s`;
+    }
+    modeChipAction.hidden = true;
+  } else {
+    // YOLO + 默认 + 闲置:chip 完全隐藏
+    modeChipRow.hidden = true;
+    modeChipAction.hidden = true;
+    delete modeChipAction.dataset.kind;
+  }
+}
+
+/** 选取进度展示用的 items:挑**最近更新**的那个 snapshot(plan vs todos)。
+ *  归一化成 {label, status} 让 renderChipProgress 不关心来源。
+ *  时间戳来自 chat:plan_snapshot event 到达时间,而非工具调用时间——足够准确。 */
+function pickProgressItems() {
+  const planValid = latestPlanSnapshot && Array.isArray(latestPlanSnapshot.items) && latestPlanSnapshot.items.length > 0;
+  const todosValid = latestTodosSnapshot && Array.isArray(latestTodosSnapshot.items) && latestTodosSnapshot.items.length > 0;
+  if (!planValid && !todosValid) return [];
+  // 都有效 → 选时间戳新的;只有一个有效 → 用它
+  const useTodos = todosValid && (!planValid || latestTodosSnapshotTs >= latestPlanSnapshotTs);
+  if (useTodos) {
+    return latestTodosSnapshot.items.map((i) => ({
+      label: i.content || "",
+      status: i.status || "pending",
+    }));
+  }
+  return latestPlanSnapshot.items.map((i) => ({
+    label: i.step || "",
+    status: i.status || "pending",
+  }));
+}
+
+/** 渲染 chip 进度列表。默认 5 行可见(completed 折叠到最近 1 + in_progress + pending 前 3),
+ *  超过弹 +n more 折叠按钮。expanded 状态显示全部。 */
+function renderChipProgress(items) {
+  if (items.length === 0) {
+    modeChipProgress.hidden = true;
+    return;
+  }
+  modeChipProgress.hidden = false;
+  modeChipProgress.classList.toggle("expanded", planProgressExpanded);
+  const display = planProgressExpanded ? items : compactItems(items);
+  const ol = document.createElement("ol");
+  for (const it of display) {
+    const li = document.createElement("li");
+    li.dataset.status = it.status;
+    const sym = it.status === "completed" ? "●" : it.status === "in_progress" ? "◎" : "○";
+    li.innerHTML = `<span class="mode-chip-progress-sym"></span><span class="mode-chip-progress-text"></span>`;
+    li.querySelector(".mode-chip-progress-sym").textContent = sym;
+    li.querySelector(".mode-chip-progress-text").textContent = it.label;
+    ol.appendChild(li);
+  }
+  modeChipProgress.innerHTML = "";
+  modeChipProgress.appendChild(ol);
+  // 折叠/展开按钮
+  if (!planProgressExpanded && items.length > display.length) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "mode-chip-progress-toggle";
+    btn.textContent = `+${items.length - display.length} 更多 ▾`;
+    btn.addEventListener("click", () => {
+      planProgressExpanded = true;
+      renderChipProgress(items);
+    });
+    modeChipProgress.appendChild(btn);
+  } else if (planProgressExpanded && items.length > 5) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "mode-chip-progress-toggle";
+    btn.textContent = "折叠 ▴";
+    btn.addEventListener("click", () => {
+      planProgressExpanded = false;
+      renderChipProgress(items);
+    });
+    modeChipProgress.appendChild(btn);
+  }
+}
+
+/** 紧凑模式:completed 已折叠到最近 1 个 + in_progress 全部 + pending 前 3 个。最多 5 行。 */
+function compactItems(items) {
+  if (items.length <= 5) return items;
+  const lastCompletedIdx = items.findLastIndex
+    ? items.findLastIndex((i) => i.status === "completed")
+    : (() => {
+        for (let i = items.length - 1; i >= 0; i--) {
+          if (items[i].status === "completed") return i;
+        }
+        return -1;
+      })();
+  const result = [];
+  if (lastCompletedIdx >= 0) result.push(items[lastCompletedIdx]);
+  const rest = items.filter(
+    (i, idx) => idx !== lastCompletedIdx && i.status !== "completed"
+  );
+  for (const it of rest) {
+    if (result.length >= 5) break;
+    result.push(it);
+  }
+  return result;
+}
+
+/** 切换/新建 session 后从后端拉最新 mode_state，UI 同步。 */
+async function syncModeStateFromBackend() {
+  // 切 session 必清 snapshot:plan/todos 是 per-session in-memory,前 session 数据不该跨界
+  latestPlanSnapshot = null;
+  latestTodosSnapshot = null;
+  planProgressExpanded = false;
+  if (!activeSessionId) {
+    modeState = { mode: "yolo", plan_phase: "none" };
+    updateModeUI();
+    return;
+  }
+  try {
+    const state = await invoke("get_mode_state", { sessionId: activeSessionId });
+    modeState = { mode: state.mode || "yolo", plan_phase: state.plan_phase || "none" };
+  } catch (e) {
+    console.warn("get_mode_state failed", e);
+    modeState = { mode: "yolo", plan_phase: "none" };
+  }
+  updateModeUI();
+}
+
+// plan-btn 点击：进入 Plan 模式 OR 执行中二次确认中断重开 Plan
+planBtn.addEventListener("click", async () => {
+  if (planBtn.disabled) return;
+  if (!activeSessionId) {
+    // 没 session 时先创建一个
+    await createNewSession();
+    if (!activeSessionId) return;
+  }
+  // 执行中 → 二次确认
+  if (modeState.plan_phase === "executing") {
+    const ok = await appConfirm("当前任务还在执行,中断并开启新的 Plan?", {
+      title: "中断当前",
+      kind: "warning",
+    });
+    if (!ok) return;
+    try { await invoke("cancel_generation"); } catch (_) {}
+  }
+  try {
+    const state = await invoke("set_plan_mode_next", { sessionId: activeSessionId });
+    modeState = { mode: state.mode, plan_phase: state.plan_phase };
+    updateModeUI();
+  } catch (e) {
+    appendSystemMessage("⚠️ 进入 Plan 模式失败: " + e);
+  }
+});
+
+// chip [📌 跳到卡片] 按钮:Ready 态卡片可能滚出视口,提供 scrollIntoView 路径
+modeChipJump.addEventListener("click", () => {
+  const activeCard = chatArea.querySelector('.msg-plan-card[data-card-state="active"]');
+  if (activeCard) {
+    activeCard.scrollIntoView({ behavior: "smooth", block: "center" });
+    activeCard.classList.add("plan-card-pulse");
+    setTimeout(() => activeCard.classList.remove("plan-card-pulse"), 1200);
+  }
+});
+
+// chip ⚡ 按钮：根据 dataset.kind 派发
+modeChipAction.addEventListener("click", async () => {
+  if (!activeSessionId) return;
+  const kind = modeChipAction.dataset.kind;
+  if (kind === "exit_plan") {
+    try {
+      const state = await invoke("exit_plan_to_yolo", { sessionId: activeSessionId });
+      modeState = { mode: state.mode, plan_phase: state.plan_phase };
+      updateModeUI();
+    } catch (e) {
+      appendSystemMessage("⚠️ 退出 Plan 失败: " + e);
+    }
+  } else if (kind === "cancel_executing") {
+    // 完整中断:取消当前 turn + 退出 Executing 态(切回 mode=Yolo + phase=None)
+    // 比单调 cancel_generation 更符合"中断"心智(用户期望整个任务退出)
+    try { await invoke("cancel_generation"); } catch (_) {}
+    try {
+      const state = await invoke("discard_plan", { sessionId: activeSessionId });
+      modeState = { mode: state.mode, plan_phase: state.plan_phase };
+      updateModeUI();
+    } catch (e) {
+      appendSystemMessage("⚠️ 中断后退出 Executing 失败: " + e);
+    }
+  }
+});
 const composer = document.querySelector(".composer");
 
 const KIND_ICONS = {
@@ -1536,20 +2388,54 @@ listen("chat:tool_start", (e) => {
   if (!toolMeta.has(id) || args != null) {
     toolMeta.set(id, { name, args });
   }
+  // chip 切到 tool 阶段:重置计时 + 显示具体工具名
+  if (name) switchThinkingToTool(name);
+  // request_user_input: 不渲染默认 tool card,等 chat:user_input_required event
+  // 单独渲染选择气泡。否则会在 chat 流里露出原始 questions JSON。
+  if (name === "request_user_input") return;
   appendToolCallStart(id, name, args);
 });
 listen("chat:tool_end", (e) => {
   const { id, output, success } = e.payload || {};
+  const meta = toolMeta.get(id);
+  // chip 切回 thinking 阶段:重置计时 + 文案回到"思考中"
+  switchThinkingToIdle();
+  // request_user_input 结束时关闭选择气泡 + 不调 appendToolCallEnd(没创建过 tool card)
+  if (meta && meta.name === "request_user_input") {
+    finalizeUserInputCard(id, success);
+    toolMeta.delete(id);
+    return;
+  }
   appendToolCallEnd(id, output, success);
   // write_file 成功 → 加入产物列表
   if (success) {
-    const meta = toolMeta.get(id);
     if (meta && meta.name === "write_file") {
       const path = extractArtifactPath(meta.args);
       if (path) trackArtifact(path);
     }
   }
+  // 兜底:Plan 模式下 AI 调了被白名单/sandbox 拦的工具 → 弹兜底卡片给两条出路。
+  // 底座两种拒绝错误文本都要覆盖:
+  //   - "not available in the current tool catalog"  通用 catalog 拒绝(write_file/edit_file)
+  //   - "unavailable in Plan mode"                    Plan 模式专属拒绝(exec_shell/code_execution)
+  if (
+    !success &&
+    modeState.mode === "plan" &&
+    typeof output === "string" &&
+    (output.includes("not available in the current tool catalog")
+      || output.includes("unavailable in Plan mode")
+      || output.includes("PermissionDenied"))
+  ) {
+    showPlanStuckCard(meta && meta.name);
+  }
   toolMeta.delete(id);
+});
+
+// 底座 emit Event::UserInputRequired → bridge 转发为 chat:user_input_required
+// payload: { id: tool_call_id, questions: [{header, id, question, options:[{label, description}]}] }
+listen("chat:user_input_required", (e) => {
+  const payload = e.payload || {};
+  renderUserInputCard(payload.id, payload.questions || []);
 });
 listen("chat:usage", (e) => {
   const input = Number(e.payload?.input_tokens || 0);
@@ -1620,6 +2506,12 @@ listen("chat:done", async (e) => {
   closeAssistantBubble();
   setBusy(false);
 
+  // 执行 plan 完成 → 回 yolo 默认态（plan_phase 从 executing → none）
+  if (modeState.plan_phase === "executing") {
+    modeState = { mode: "yolo", plan_phase: "none" };
+    updateModeUI();
+  }
+
   // 持久化整轮（含 user + assistant）到 disk
   await persistMessages();
 
@@ -1628,6 +2520,70 @@ listen("chat:done", async (e) => {
   pendingDoneResolvers = [];
   for (const r of resolvers) r();
 });
+
+// chat:plan_snapshot —— 每次 update_plan/checklist_write/todo_write 工具调用后触发,
+// 实时更新 chip 进度区。跟 plan_ready 解耦(后者控制 plan_card 弹出)。
+// 各 snapshot 带时间戳,pickProgressItems 选最新的渲染。
+listen("chat:plan_snapshot", (e) => {
+  const payload = e.payload || {};
+  if (payload.session_id && payload.session_id !== activeSessionId) return;
+  const now = Date.now();
+  if (payload.plan_snapshot) {
+    latestPlanSnapshot = payload.plan_snapshot;
+    latestPlanSnapshotTs = now;
+  }
+  if (payload.todos_snapshot) {
+    latestTodosSnapshot = payload.todos_snapshot;
+    latestTodosSnapshotTs = now;
+  }
+  updateModeUI();
+});
+
+// chat:plan_ready 后端 payload schema:
+//   { session_id, plan_snapshot?, todos_snapshot? }
+// plan_snapshot 来自 update_plan (strategy 层): { explanation, items:[{step,status}] }
+// todos_snapshot 来自 checklist_write/todo_write (leaf 层): { items:[{id,content,status}], completion_pct, in_progress_id }
+// 任一非空就渲染 plan_card；都有就两层渲染。
+listen("chat:plan_ready", (e) => {
+  const payload = e.payload || {};
+  if (payload.session_id && payload.session_id !== activeSessionId) return;
+  modeState.plan_phase = "ready";
+  updateModeUI();
+  renderPlanReadyCard({
+    plan: payload.plan_snapshot,
+    todos: payload.todos_snapshot,
+  });
+});
+
+// M3: Planning 态 + AI 没调 plan 工具 + assistant text > 300 字 → 后端 emit。
+// 前端拿最后一条 assistant text 做关键词命中检测,命中才弹文本兜底卡片。
+const PLAN_FALLBACK_KEYWORDS = ["方案", "步骤", "以下", "技术栈", "实现", "设计", "**"];
+listen("chat:plan_text_fallback", (e) => {
+  const payload = e.payload || {};
+  if (payload.session_id && payload.session_id !== activeSessionId) return;
+  let lastText = "";
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "assistant") {
+      const parts = messages[i].content || [];
+      for (const p of parts) {
+        if (p.type === "text" && p.text) lastText += p.text;
+      }
+      break;
+    }
+  }
+  if (!lastText) return;
+  const hit = PLAN_FALLBACK_KEYWORDS.some((kw) => lastText.includes(kw));
+  if (!hit) return;
+  renderPlanTextFallbackCard(lastText);
+});
+
+// M2: Executing 自驱 3 次后仍卡 → 弹卡顿提示
+listen("chat:execution_stuck", (e) => {
+  const payload = e.payload || {};
+  if (payload.session_id && payload.session_id !== activeSessionId) return;
+  renderExecutionStuckCard(payload.auto_continue_tried || 0);
+});
+
 
 // ── 发送 ───────────────────────────────────────────────────────────
 async function send() {
@@ -1646,6 +2602,20 @@ async function send() {
     if (!activeSessionId) {
       appendSystemMessage("⚠️ 创建对话失败，请重启 app");
       return;
+    }
+  }
+  // Plan Ready 态用户直接发消息 = 隐式"改改"：转回 Planning，
+  // 同时冻结当前 active 的 plan_card（避免遗留按钮可点）
+  if (modeState.plan_phase === "ready") {
+    chatArea.querySelectorAll('.msg-plan-card[data-card-state="active"]').forEach((c) => {
+      setPlanCardFrozen(c, "✏️ 已请求修改 · 在下方告诉 AI 怎么改");
+    });
+    try {
+      const state = await invoke("revise_plan", { sessionId: activeSessionId });
+      modeState = { mode: state.mode, plan_phase: state.plan_phase };
+      updateModeUI();
+    } catch (e) {
+      console.warn("auto revise_plan failed", e);
     }
   }
   input.value = "";

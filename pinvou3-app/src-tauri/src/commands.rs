@@ -14,9 +14,11 @@
 
 use deepseek_tui::models::Message;
 use deepseek_tui::session_manager::{SavedSession, SessionMetadata};
+use deepseek_tui::tools::user_input::{UserInputAnswer, UserInputResponse};
 use serde::Serialize;
 use tauri::State;
 
+use crate::bridge::mode_state::{PlanPhase, SerializableMode, SessionModeState};
 use crate::bridge::prefs::UserPrefs;
 use crate::bridge::sessions::SessionStore;
 use crate::engine::AppEngine;
@@ -40,15 +42,28 @@ pub async fn chat(
     message: String,
     attachments: Option<Vec<crate::file_ingest::IngestResult>>,
     engine: State<'_, AppEngine>,
+    store: State<'_, SessionStore>,
 ) -> Result<(), String> {
     let trimmed = message.trim();
     if trimmed.is_empty() && attachments.as_ref().map_or(true, |a| a.is_empty()) {
         return Err("empty message".to_string());
     }
     let full = build_message_with_attachments(message, attachments.unwrap_or_default());
+    // 取当前 active session 的 mode + phase;无 active session 时默认 Yolo+None(首条消息场景)
+    let (mode, phase) = store
+        .active_id()
+        .map(|id| {
+            let s = store.mode_state(&id);
+            (s.mode, s.plan_phase)
+        })
+        .unwrap_or((SerializableMode::Yolo, PlanPhase::None));
+    // M2: 用户主动消息重置 auto-continue 计数器(新任务从 0 开始算 max 3 次)
+    if let Some(id) = store.active_id() {
+        store.reset_auto_continue(&id);
+    }
     engine
         .inner()
-        .send_user_message(full)
+        .send_user_message(full, mode.to_app_mode(), phase)
         .await
         .map_err(|e| format!("send_user_message failed: {e:?}"))
 }
@@ -430,6 +445,123 @@ pub async fn compact_now(engine: State<'_, AppEngine>) -> Result<(), String> {
         .compact_now()
         .await
         .map_err(|e| format!("compact_now: {e:?}"))
+}
+
+// ===================== 阶段 D: Plan / YOLO 双模式 =====================
+
+/// 查询当前 session 的 mode 状态（前端启动 / 切换 session 时拉一次）。
+#[tauri::command]
+pub async fn get_mode_state(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<SessionModeState, String> {
+    Ok(store.mode_state(&session_id))
+}
+
+/// 用户点 💡 进入 Plan 流程：设 mode=Plan + phase=Planning。
+/// 下一条 chat 消息会带 mode=Plan 发送，底座自动切只读工具集 + ReadOnly sandbox。
+#[tauri::command]
+pub async fn set_plan_mode_next(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<SessionModeState, String> {
+    store.set_mode_state(&session_id, SerializableMode::Plan, PlanPhase::Planning);
+    Ok(store.mode_state(&session_id))
+}
+
+/// 用户点 [⚡ 直接动手]（Planning 态 chip 退出按钮）：跳过 plan 流程，凭对话历史自由干。
+/// mode 切回 Yolo + phase=None。对话历史天然保留，AI 在 YOLO 下能看到之前讨论的 context。
+#[tauri::command]
+pub async fn exit_plan_to_yolo(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<SessionModeState, String> {
+    store.set_mode_state(&session_id, SerializableMode::Yolo, PlanPhase::None);
+    Ok(store.mode_state(&session_id))
+}
+
+/// 用户点 plan_card [✅ 就这么干]：接受 plan，切 YOLO 执行。
+/// 流程：
+///   1. 设 mode=Yolo, phase=Executing
+///   2. 用 plan_markdown 作为指令前缀发一条 user message 触发执行
+/// 前端在调用前应在消息流追加 user 气泡显示「✅ 就这么干」让用户感知。
+#[tauri::command]
+pub async fn accept_plan(
+    session_id: String,
+    plan_markdown: String,
+    store: State<'_, SessionStore>,
+    engine: State<'_, AppEngine>,
+) -> Result<SessionModeState, String> {
+    store.set_mode_state(&session_id, SerializableMode::Yolo, PlanPhase::Executing);
+    // 简短指令——主约束由 M1 per-turn system-reminder 提供(bridge 按 phase=Executing 注入)。
+    let instruction = format!(
+        "用户已批准方案,立即开始执行。方案:\n\n{plan_markdown}"
+    );
+    engine
+        .inner()
+        .send_user_message(
+            instruction,
+            SerializableMode::Yolo.to_app_mode(),
+            PlanPhase::Executing,
+        )
+        .await
+        .map_err(|e| format!("accept_plan send_user_message: {e:?}"))?;
+    Ok(store.mode_state(&session_id))
+}
+
+/// 用户点 plan_card [✏️ 改改]：继续讨论修订 plan。
+/// 设 phase=Planning（mode 仍是 Plan）→ 用户下条消息走 Plan 模式发送，AI 修订。
+/// 前端在调用后应 focus composer + 显示 placeholder 引导。
+#[tauri::command]
+pub async fn revise_plan(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<SessionModeState, String> {
+    store.set_mode_state(&session_id, SerializableMode::Plan, PlanPhase::Planning);
+    Ok(store.mode_state(&session_id))
+}
+
+/// 用户点 plan_card [🚪 算了]：放弃整个任务，回 YOLO 默认态。
+/// 与 exit_plan_to_yolo 区别：⚡ 是「不要 plan 直接干」，🚪 是「这事不干了」。
+#[tauri::command]
+pub async fn discard_plan(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<SessionModeState, String> {
+    store.set_mode_state(&session_id, SerializableMode::Yolo, PlanPhase::None);
+    Ok(store.mode_state(&session_id))
+}
+
+// ===================== request_user_input 工具气泡 =====================
+
+/// 前端选择气泡点击后调用：把用户选择回传给 engine,解锁 await_user_input。
+/// answers 数组里每项 { id, label, value } 对应底座 `UserInputAnswer`。
+#[tauri::command]
+pub async fn submit_user_input(
+    tool_call_id: String,
+    answers: Vec<UserInputAnswer>,
+    engine: State<'_, AppEngine>,
+) -> Result<(), String> {
+    let response = UserInputResponse { answers };
+    engine
+        .inner()
+        .submit_user_input(tool_call_id, response)
+        .await
+        .map_err(|e| format!("submit_user_input: {e:?}"))
+}
+
+/// 前端 ✕ 按钮 / 切换 session 时调用：取消 request_user_input。
+/// engine 把工具结果置为 "User input cancelled" error,LLM 收到后会继续 turn。
+#[tauri::command]
+pub async fn cancel_user_input(
+    tool_call_id: String,
+    engine: State<'_, AppEngine>,
+) -> Result<(), String> {
+    engine
+        .inner()
+        .cancel_user_input(tool_call_id)
+        .await
+        .map_err(|e| format!("cancel_user_input: {e:?}"))
 }
 
 /// 路径校验：必须是绝对路径 + 落在用户家目录下 + 路径解析后无 `..` 逃逸。

@@ -12,6 +12,7 @@
 //! 转译。GUI 永远不直接操纵 EngineConfig；engine.rs 永远从这层取配置。
 
 pub mod bundle;
+pub mod mode_state;
 pub mod paths;
 pub mod prefs;
 pub mod sessions;
@@ -27,6 +28,7 @@ use deepseek_tui::tui::app::AppMode;
 use deepseek_tui::tui::approval::ApprovalMode;
 
 use self::bundle::{Pinvou3Bundle, INSTRUCTIONS_MD};
+use self::mode_state::PlanPhase;
 use self::prefs::{ModelPreset, UserPrefs};
 
 /// Qwen3.6 在 vLLM 里是 passthrough 字符串（不走 alias）。
@@ -267,25 +269,84 @@ impl Pinvou3Bridge {
         }
     }
 
-    /// 构造发给 engine 的 [`Op::SendMessage`]——pinvou3 永远走 Yolo + auto_approve。
+    /// 构造发给 engine 的 [`Op::SendMessage`]——按 `mode` 切换 trust/approval/sandbox。
+    ///
+    /// 决策来源：`docs/Plan-YOLO双模式-设计决策.md` 第 4.1 节复用底座 mode 字段。
+    ///
+    /// | mode | allow_shell | trust_mode | auto_approve | approval_mode | 实际效果 |
+    /// |------|-------------|------------|--------------|---------------|---------|
+    /// | Yolo | self.allow  | true       | true         | Auto          | 全自动 + 信任全家目录 |
+    /// | Plan | true        | false      | true         | Auto          | 只读工具集 + ReadOnly sandbox（底座 tool_setup.rs 按 mode 自动切换） |
+    ///
+    /// **M1 弱模型加固**: 在 user content 前 prepend `<system-reminder>` 段,
+    /// 内容按 `phase` 动态生成。Claude Code 同款机制对抗 long-context 遗忘 +
+    /// 强制特定状态行为。Qwen3.6 短期注意力强,放 message 顶端命中率高。
+    /// 见决策文档 V2 §13.1。
     ///
     /// 注：DeepSeek-TUI 当前的 `auto_approve` 字段不旁路 `await_tool_approval`
     /// （上游 bug），所以 event forwarder 仍要监听 ApprovalRequired 并主动
     /// 调 `approve_tool_call`。这条逻辑见 `engine.rs::spawn_event_forwarder`。
-    pub fn build_send_message_op(&self, content: String) -> Op {
+    pub fn build_send_message_op(&self, content: String, mode: AppMode, phase: PlanPhase) -> Op {
+        let (allow_shell, trust_mode) = match mode {
+            AppMode::Yolo => (self.allow_shell(), true),
+            // Plan: allow_shell=true 让 engine 正常路由 shell 工具，
+            // 底座 tool_setup.rs 会把 sandbox 切到 ReadOnly + 工具白名单切到只读集
+            AppMode::Plan => (true, false),
+            // Agent mode pinvou3 不暴露，但保留 default 处理避免 panic
+            AppMode::Agent => (self.allow_shell(), false),
+        };
+        let full_content = match reminder_for(mode, phase) {
+            Some(r) => format!("<system-reminder>\n{}\n</system-reminder>\n\n{}", r, content),
+            None => content,
+        };
         Op::SendMessage {
-            content,
-            mode: AppMode::Yolo,
+            content: full_content,
+            mode,
             model: self.model(),
             goal_objective: None,
             reasoning_effort: Some("off".to_string()),
             reasoning_effort_auto: false,
             auto_model: false,
-            allow_shell: self.allow_shell(),
-            trust_mode: true,
+            allow_shell,
+            trust_mode,
             auto_approve: true,
             approval_mode: ApprovalMode::Auto,
         }
+    }
+}
+
+/// M1: per-turn `<system-reminder>` 文案,按当前 mode+phase 选段。
+/// 决策文档 V2 §13.1。
+/// 命中率优先于优雅:每段都是命令式、短、列禁令清单(Qwen3.6 友好)。
+fn reminder_for(mode: AppMode, phase: PlanPhase) -> Option<&'static str> {
+    match (mode, phase) {
+        (AppMode::Plan, PlanPhase::Planning) => Some(
+            "你现在在 Plan 模式 + Planning 阶段。本 turn 你必须按这个顺序行动:\n\
+             1. 任务有歧义 → 调 `request_user_input` 工具问澄清(给 2-3 个选项让用户点选)。\
+             不要在 text 里列 A/B/C 选项。\n\
+             2. 方案清晰后 → 调 `update_plan` 工具输出方案(explanation 字段写关键决策,\
+             items 写 3-8 个执行步骤)。可选再调 `checklist_write` 拆细。\n\
+             3. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
+             方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。\n\
+             4. **禁止**调 `write_file` / `edit_file` / `exec_shell` / `code_execution`——\
+             它们在 Plan 模式不可用,调了一定失败。",
+        ),
+        (AppMode::Plan, PlanPhase::Ready) => Some(
+            "Plan 模式 + Ready 阶段。AI 之前的方案已经在 plan 卡片上等用户决策。\n\
+             如果用户发了新消息,说明用户在隐式修订——你必须调 `update_plan` 重出方案,\
+             不要只在 text 描述,不要假定用户已批准。",
+        ),
+        (AppMode::Yolo, PlanPhase::Executing) => Some(
+            "你现在在执行阶段(用户已批准方案)。本 turn 你必须:\n\
+             1. **第一动作**:用 `write_file` / `edit_file` / `exec_shell` 等工具\
+             **实际产出文件或代码**。\n\
+             2. **禁止**只调 `update_plan` 标记 in_progress 就结束 turn——\
+             那是假执行,用户什么文件都没拿到。\n\
+             3. 一个 turn 内**连续调多个工具**直到所有步骤完成,不要中途停下来等用户。\n\
+             4. 完成一步后调 `update_plan` 把对应步骤标 completed,继续下一步。\n\
+             5. **禁止**在 text 里贴完整代码代替 write_file——磁盘上不会有文件。",
+        ),
+        _ => None,
     }
 }
 

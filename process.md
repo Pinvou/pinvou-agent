@@ -21,9 +21,16 @@
 
 按推荐顺序：
 
+### A. Plan / YOLO 双模式（已拍板设计，待实施）
+- 完整决策文档：`docs/Plan-YOLO双模式-设计决策.md`
+- 复用底座 Plan mode + update_plan 工具 + Op::SendMessage{mode} 字段
+- pinvou3 增量：bridge 状态机 + [💡] 按钮 + 消息流内嵌 plan_card + chip [⚡ 直接动手]
+- 工作量 2.7 天，0 侵入 DeepSeek-TUI
+
 ### B. WorkFlow 视图（最重，差异化最强）
 - plan 里 Phase D 重头戏，用户明说「具体设计后续探讨」
 - 需先讨论交互模型：todo checklist / 可视化节点流 / 专家协作？
+- 跟 A 项 plan_card 可能融合
 - 探讨完再 2-3 天实现
 
 ### C. AI 行为加固

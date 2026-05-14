@@ -36,10 +36,32 @@ pub fn run() {
                 )?;
             }
 
+            // 多对话历史 store：用 ~/.pinvou3/sessions/ 隔离 deepseek-tui 全局目录。
+            // 必须先 boot 这个，engine forwarder 需要它跟踪 active session 的 mode_state
+            // 以便 TurnComplete 时判定是否 emit chat:plan_ready。
+            let session_store = match SessionStore::boot() {
+                Ok(store) => {
+                    eprintln!("[pinvou3-app] session store ready");
+                    Some(store)
+                }
+                Err(e) => {
+                    eprintln!("[pinvou3-app] session store boot failed: {e:?}");
+                    None
+                }
+            };
+            if let Some(store) = session_store.clone() {
+                app.handle().manage(store);
+            }
+
             // 异步 spawn engine：Tauri setup 是同步的，需要走 async_runtime
             let handle = app.handle().clone();
+            let store_for_engine = session_store.unwrap_or_else(|| {
+                // store boot 失败时退化用一份临时 store（让 engine 至少能起来）；
+                // 实际使用 session 相关命令会失败,但聊天能跑
+                SessionStore::boot().expect("session store boot fallback")
+            });
             tauri::async_runtime::block_on(async move {
-                match AppEngine::spawn(handle.clone()).await {
+                match AppEngine::spawn(handle.clone(), store_for_engine).await {
                     Ok(eng) => {
                         handle.manage(eng);
                         eprintln!("[pinvou3-app] engine ready");
@@ -55,15 +77,6 @@ pub fn run() {
             monitor::spawn_sampler(monitor_state.clone(), Duration::from_secs(5));
             app.handle().manage(monitor_state);
             eprintln!("[pinvou3-app] monitor sampler started (5s interval)");
-
-            // 多对话历史 store：用 ~/.pinvou3/sessions/ 隔离 deepseek-tui 全局目录
-            match SessionStore::boot() {
-                Ok(store) => {
-                    app.handle().manage(store);
-                    eprintln!("[pinvou3-app] session store ready");
-                }
-                Err(e) => eprintln!("[pinvou3-app] session store boot failed: {e:?}"),
-            }
 
             // File watcher: 监听 ~/.pinvou3/sessions/ 树,新文件 emit artifact:disk
             file_watcher::spawn(
@@ -97,6 +110,14 @@ pub fn run() {
             commands::detect_system_tools,
             commands::save_paste_image,
             commands::compact_now,
+            commands::get_mode_state,
+            commands::set_plan_mode_next,
+            commands::exit_plan_to_yolo,
+            commands::accept_plan,
+            commands::revise_plan,
+            commands::discard_plan,
+            commands::submit_user_input,
+            commands::cancel_user_input,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

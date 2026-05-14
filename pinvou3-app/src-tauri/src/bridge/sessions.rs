@@ -15,6 +15,7 @@
 //! **Arc + RwLock 包装**：所有字段都是 `Arc`，整个 `SessionStore` 可以
 //! 廉价 Clone 进 Tauri State + 多个 task 共享。
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -27,13 +28,24 @@ use deepseek_tui::session_manager::{
 };
 use parking_lot::RwLock;
 
+use super::mode_state::{PlanPhase, SerializableMode, SessionModeState};
 use super::paths;
 
-/// pinvou3 session 存储：包 SessionManager + active id 跟踪。
+/// pinvou3 session 存储：包 SessionManager + active id 跟踪 + per-session mode 状态。
+///
+/// mode 状态故意 in-memory only（不持久化到 SavedSession.json）：
+/// - mode/plan_phase 是运行时交互状态，重启 app 后默认回到 Yolo+None 合理
+/// - 持久化反而会让用户切了 session 后突然看到「这个 session 还停在 Plan 模式」困惑
+///
+/// `auto_continue_count`：M2 弱模型加固——Executing 态 LLM 调一次工具就停时,
+/// bridge 自动 send "继续"消息驱动 agent loop。每个用户主动消息重置为 0,
+/// 单次任务内 max 3 次连续 auto-continue 防失控。见决策文档 V2 §13.2。
 #[derive(Clone)]
 pub struct SessionStore {
     manager: Arc<SessionManager>,
     active: Arc<RwLock<Option<String>>>,
+    mode_states: Arc<RwLock<HashMap<String, SessionModeState>>>,
+    auto_continue_count: Arc<RwLock<HashMap<String, u8>>>,
 }
 
 impl SessionStore {
@@ -45,6 +57,8 @@ impl SessionStore {
         Ok(Self {
             manager: Arc::new(manager),
             active: Arc::new(RwLock::new(None)),
+            mode_states: Arc::new(RwLock::new(HashMap::new())),
+            auto_continue_count: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -82,6 +96,8 @@ impl SessionStore {
         if active.as_deref() == Some(id) {
             *active = None;
         }
+        drop(active);
+        self.mode_states.write().remove(id);
         Ok(())
     }
 
@@ -154,6 +170,78 @@ impl SessionStore {
 
     pub fn set_active(&self, id: Option<String>) {
         *self.active.write() = id;
+    }
+
+    // ===================== Mode 状态机 =====================
+
+    /// 取当前 session 的 mode 状态。未存在时返回 default（Yolo + None）。
+    pub fn mode_state(&self, id: &str) -> SessionModeState {
+        self.mode_states
+            .read()
+            .get(id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// 设置 mode（影响下一条消息发送时 `build_send_message_op` 取值）。
+    /// 同时调整 plan_phase 让状态保持一致：
+    /// - 切到 Plan 且当前 phase=None → phase=Planning
+    /// - 切到 Yolo → phase 不动（调用方决定 None/Executing）
+    pub fn set_mode(&self, id: &str, mode: SerializableMode) {
+        let mut m = self.mode_states.write();
+        let entry = m.entry(id.to_string()).or_default();
+        entry.mode = mode;
+        if mode == SerializableMode::Plan && entry.plan_phase == PlanPhase::None {
+            entry.plan_phase = PlanPhase::Planning;
+        }
+    }
+
+    /// 设置 plan_phase（细粒度状态转移：Planning↔Ready / Executing / None）。
+    pub fn set_plan_phase(&self, id: &str, phase: PlanPhase) {
+        let mut m = self.mode_states.write();
+        let entry = m.entry(id.to_string()).or_default();
+        entry.plan_phase = phase;
+    }
+
+    /// 一次性原子更新 mode + phase（用户 accept_plan / exit_plan_to_yolo 等场景）。
+    pub fn set_mode_state(&self, id: &str, mode: SerializableMode, phase: PlanPhase) {
+        let mut m = self.mode_states.write();
+        m.insert(
+            id.to_string(),
+            SessionModeState {
+                mode,
+                plan_phase: phase,
+            },
+        );
+    }
+
+    /// 重置到默认（Yolo + None）。delete_session 时调用。
+    pub fn reset_mode_state(&self, id: &str) {
+        self.mode_states.write().remove(id);
+    }
+
+    // ===================== M2: auto-continue counter =====================
+
+    /// 取当前 session 的 auto-continue 计数。
+    pub fn auto_continue_count(&self, id: &str) -> u8 {
+        self.auto_continue_count
+            .read()
+            .get(id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// +1 并返回新值。Executing 卡顿时 forwarder 调用。
+    pub fn bump_auto_continue(&self, id: &str) -> u8 {
+        let mut m = self.auto_continue_count.write();
+        let n = m.entry(id.to_string()).or_insert(0);
+        *n = n.saturating_add(1);
+        *n
+    }
+
+    /// 清零。用户主动发消息(commands::chat) 调用。
+    pub fn reset_auto_continue(&self, id: &str) {
+        self.auto_continue_count.write().remove(id);
     }
 }
 

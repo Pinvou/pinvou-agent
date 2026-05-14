@@ -1661,14 +1661,632 @@ body[data-theme="liquid-light"] .artifact-item.active {
   opacity: 0.4;
   cursor: not-allowed;
 }
-/* textarea 左侧留出 attach 按钮位置 (原 padding-left 16px → 48px) */
+/* textarea 左侧留出 attach + plan 按钮位置（attach 8px + plan 44px = 80px） */
 .composer-inner textarea {
-  padding-left: 48px !important;
+  padding-left: 84px !important;
 }
 body[data-theme="liquid-light"] .attach-btn:hover {
   color: #007aff;
   background: rgba(0, 122, 255, 0.08);
 }
+
+/* ─── 阶段 D: Plan / YOLO 双模式 ─────────────────────────── */
+
+/* [💡] 按钮——进入 Plan 模式的入口 */
+.plan-btn {
+  position: absolute;
+  left: 44px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  color: var(--on-surface-muted);
+  border-radius: 8px;
+  width: 32px;
+  height: 32px;
+  font-size: 0.95em;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s, transform 0.15s;
+  z-index: 2;
+}
+.plan-btn:hover {
+  color: var(--primary-container);
+  background: rgba(255, 107, 53, 0.08);
+}
+.plan-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+/* 已激活态——下一条消息会进 Plan */
+.plan-btn[data-active="true"] {
+  color: #4a90e2;
+  background: rgba(74, 144, 226, 0.15);
+  transform: translateY(-50%) scale(1.1);
+}
+body[data-theme="liquid-light"] .plan-btn:hover {
+  color: #4a90e2;
+  background: rgba(74, 144, 226, 0.08);
+}
+
+/* composer 边框颜色（plan_phase 驱动） */
+.composer[data-plan-phase="planning"] textarea,
+.composer[data-plan-phase="ready"] textarea {
+  border-color: rgba(74, 144, 226, 0.55);
+  box-shadow: 0 0 0 2px rgba(74, 144, 226, 0.12);
+}
+.composer[data-plan-phase="executing"] textarea {
+  border-color: rgba(34, 197, 94, 0.55);
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.12);
+}
+
+/* Plan chip 提示行（chip-row 在 composer 顶部，仅非 yolo-default 显示） */
+.mode-chip-row {
+  max-width: 72rem;
+  margin: 0 auto 8px;
+  padding: 6px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  border-radius: 10px;
+  background: rgba(74, 144, 226, 0.1);
+  color: #4a90e2;
+  border: 1px solid rgba(74, 144, 226, 0.25);
+}
+/* HTML hidden 属性默认 display:none,但被上面 .mode-chip-row display:flex 覆盖。
+   必须显式 [hidden] 才能真正隐藏。 */
+.mode-chip-row[hidden] { display: none; }
+.composer[data-plan-phase="executing"] .mode-chip-row {
+  background: rgba(34, 197, 94, 0.1);
+  color: #22c55e;
+  border-color: rgba(34, 197, 94, 0.25);
+}
+/* chip 顶部摘要行(横排): text + 可选 jump + action */
+.mode-chip-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mode-chip-text { flex: 1; }
+.mode-chip-action, .mode-chip-jump {
+  background: rgba(74, 144, 226, 0.2);
+  border: 1px solid rgba(74, 144, 226, 0.35);
+  color: inherit;
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.mode-chip-action:hover, .mode-chip-jump:hover {
+  background: rgba(74, 144, 226, 0.35);
+}
+.composer[data-plan-phase="executing"] .mode-chip-action {
+  background: rgba(34, 197, 94, 0.2);
+  border-color: rgba(34, 197, 94, 0.35);
+}
+.composer[data-plan-phase="executing"] .mode-chip-action:hover {
+  background: rgba(34, 197, 94, 0.35);
+}
+
+/* chip 内嵌进度列表 */
+.mode-chip-progress {
+  max-height: 9em;
+  overflow: hidden;
+  border-top: 1px dashed rgba(74, 144, 226, 0.2);
+  padding-top: 6px;
+  font-size: 12px;
+}
+.mode-chip-progress.expanded {
+  max-height: 24em;
+  overflow-y: auto;
+}
+.mode-chip-progress ol {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.mode-chip-progress li {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  color: var(--on-surface);
+  line-height: 1.4;
+}
+.mode-chip-progress li[data-status="completed"] {
+  color: var(--on-surface-muted);
+  text-decoration: line-through;
+}
+.mode-chip-progress li[data-status="in_progress"] {
+  color: #4a90e2;
+  font-weight: 600;
+}
+.composer[data-plan-phase="executing"] .mode-chip-progress li[data-status="in_progress"] {
+  color: #22c55e;
+}
+.mode-chip-progress-sym {
+  display: inline-block;
+  width: 1.1em;
+  text-align: center;
+  flex-shrink: 0;
+}
+.mode-chip-progress-toggle {
+  background: transparent;
+  border: none;
+  color: var(--on-surface-muted);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 4px;
+  margin-top: 3px;
+  text-align: left;
+}
+.mode-chip-progress-toggle:hover {
+  color: #4a90e2;
+}
+
+/* 顶部 mode badge（header right 永久显示当前 mode） */
+.mode-badge {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  letter-spacing: 0.04em;
+  user-select: none;
+}
+.mode-badge[data-mode="yolo"] {
+  background: rgba(255, 107, 53, 0.12);
+  color: var(--primary-container);
+  border-color: rgba(255, 107, 53, 0.3);
+}
+.mode-badge[data-mode="plan"] {
+  background: rgba(74, 144, 226, 0.12);
+  color: #4a90e2;
+  border-color: rgba(74, 144, 226, 0.3);
+}
+.mode-badge[data-mode="executing"] {
+  background: rgba(34, 197, 94, 0.12);
+  color: #22c55e;
+  border-color: rgba(34, 197, 94, 0.3);
+}
+
+/* ─── Plan Ready 卡片（消息流内嵌） ───────────────────── */
+.msg-plan-card {
+  display: flex;
+  justify-content: flex-start;
+  margin: 6px 0;
+}
+.plan-card-box {
+  max-width: 80%;
+  border: 1px solid rgba(74, 144, 226, 0.45);
+  background: rgba(74, 144, 226, 0.07);
+  border-radius: 14px;
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.plan-card-header {
+  font-weight: 600;
+  color: #4a90e2;
+  font-size: 14px;
+}
+.plan-card-explanation {
+  margin: 0;
+  font-size: 13px;
+  color: var(--on-surface);
+  line-height: 1.55;
+}
+.plan-card-layer + .plan-card-layer {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(74, 144, 226, 0.25);
+}
+.plan-card-layer-head {
+  font-size: 11px;
+  color: #4a90e2;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  text-transform: none;
+  margin-bottom: 6px;
+}
+.plan-card-steps {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.plan-card-steps li {
+  font-size: 13px;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  color: var(--on-surface);
+}
+.plan-card-steps li[data-status="completed"] {
+  color: var(--on-surface-muted);
+  text-decoration: line-through;
+}
+.plan-card-steps li[data-status="in_progress"] {
+  color: #4a90e2;
+  font-weight: 600;
+}
+.plan-step-sym {
+  display: inline-block;
+  width: 1.2em;
+  text-align: center;
+  color: #4a90e2;
+}
+.plan-card-sep {
+  border-top: 1px dashed rgba(74, 144, 226, 0.25);
+  margin: 4px 0 2px;
+}
+.plan-card-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.plan-card-prompt {
+  font-size: 12px;
+  color: var(--on-surface-muted);
+}
+.plan-card-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.plan-card-btn {
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.15s, transform 0.05s;
+}
+.plan-card-accept {
+  background: #4a90e2;
+  color: white;
+}
+.plan-card-accept:hover:not(:disabled) {
+  background: #3a7bc8;
+}
+.plan-card-revise {
+  background: rgba(74, 144, 226, 0.15);
+  color: #4a90e2;
+  border-color: rgba(74, 144, 226, 0.35);
+}
+.plan-card-revise:hover:not(:disabled) {
+  background: rgba(74, 144, 226, 0.25);
+}
+.plan-card-discard {
+  background: transparent;
+  color: var(--on-surface-muted);
+  border-color: var(--surface-container-high);
+}
+.plan-card-discard:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.04);
+}
+.plan-card-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.plan-card-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.plan-card-status {
+  font-size: 12px;
+  color: var(--on-surface-muted);
+  font-style: italic;
+}
+/* 冻结态：卡片整体淡化 */
+.msg-plan-card[data-card-state="frozen"] .plan-card-box,
+.msg-plan-card[data-card-state="approved"] .plan-card-box {
+  opacity: 0.7;
+  border-color: rgba(74, 144, 226, 0.25);
+  background: rgba(74, 144, 226, 0.04);
+}
+/* 跳转到卡片时的脉冲动画(chip [📌 跳到卡片] 点击后高亮卡片 1.2s) */
+@keyframes plan-card-pulse-anim {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(74, 144, 226, 0); }
+  50% { box-shadow: 0 0 0 6px rgba(74, 144, 226, 0.35); }
+}
+.msg-plan-card.plan-card-pulse .plan-card-box {
+  animation: plan-card-pulse-anim 0.6s ease-in-out 2;
+}
+
+/* ─── request_user_input 选择气泡 ──────────────────────── */
+.msg-user-input {
+  display: flex;
+  justify-content: flex-start;
+  margin: 6px 0;
+}
+.user-input-box {
+  max-width: 80%;
+  border: 1px solid rgba(168, 85, 247, 0.45);
+  background: rgba(168, 85, 247, 0.06);
+  border-radius: 14px;
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.user-input-header {
+  font-weight: 600;
+  color: #a855f7;
+  font-size: 14px;
+}
+.user-input-question + .user-input-question {
+  border-top: 1px dashed rgba(168, 85, 247, 0.2);
+  padding-top: 12px;
+}
+.user-input-q-header {
+  font-size: 11px;
+  color: #a855f7;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 3px;
+}
+.user-input-q-text {
+  font-size: 13px;
+  color: var(--on-surface);
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+.user-input-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.user-input-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  background: var(--surface-container-lowest);
+  border: 1px solid var(--surface-container-high);
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s, border-color 0.15s, transform 0.05s;
+  width: 100%;
+  color: var(--on-surface);
+}
+.user-input-option:hover:not(:disabled) {
+  background: rgba(168, 85, 247, 0.08);
+  border-color: rgba(168, 85, 247, 0.4);
+}
+.user-input-option.selected {
+  background: rgba(168, 85, 247, 0.15);
+  border-color: #a855f7;
+  color: #a855f7;
+}
+.user-input-option:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.user-input-option:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.user-input-option-label {
+  font-weight: 600;
+  font-size: 13px;
+}
+.user-input-option-desc {
+  font-size: 12px;
+  color: var(--on-surface-muted);
+}
+.user-input-option.selected .user-input-option-desc {
+  color: inherit;
+  opacity: 0.85;
+}
+.user-input-status {
+  font-size: 12px;
+  color: var(--on-surface-muted);
+  font-style: italic;
+}
+.msg-user-input[data-card-state="submitted"] .user-input-box,
+.msg-user-input[data-card-state="cancelled"] .user-input-box {
+  opacity: 0.75;
+  background: rgba(168, 85, 247, 0.03);
+  border-color: rgba(168, 85, 247, 0.2);
+}
+
+/* "其他(自己写)" 按钮跟普通选项稍区分(虚线边框) */
+.user-input-other {
+  border-style: dashed !important;
+  border-color: rgba(168, 85, 247, 0.4) !important;
+}
+.user-input-other-box {
+  margin-top: 8px;
+  padding: 10px;
+  background: rgba(168, 85, 247, 0.06);
+  border: 1px solid rgba(168, 85, 247, 0.3);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.user-input-other-textarea {
+  width: 100%;
+  background: var(--surface-container-lowest);
+  border: 1px solid rgba(168, 85, 247, 0.3);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--on-surface);
+  resize: vertical;
+  outline: none;
+  min-height: 50px;
+}
+.user-input-other-textarea:focus {
+  border-color: #a855f7;
+}
+.user-input-other-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.user-input-other-cancel, .user-input-other-submit {
+  padding: 5px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.user-input-other-cancel {
+  background: transparent;
+  color: var(--on-surface-muted);
+  border-color: var(--surface-container-high);
+}
+.user-input-other-cancel:hover { background: rgba(0, 0, 0, 0.04); }
+.user-input-other-submit {
+  background: #a855f7;
+  color: white;
+}
+.user-input-other-submit:hover { background: #9333ea; }
+
+/* ─── Plan 死锁兜底卡片(橙色警告系) ────────────────── */
+.msg-plan-stuck {
+  display: flex;
+  justify-content: flex-start;
+  margin: 6px 0;
+}
+.plan-stuck-box {
+  max-width: 80%;
+  border: 1px solid rgba(251, 146, 60, 0.55);
+  background: rgba(251, 146, 60, 0.08);
+  border-radius: 14px;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.plan-stuck-text {
+  font-size: 13px;
+  color: var(--on-surface);
+  line-height: 1.55;
+}
+.plan-stuck-tool {
+  background: rgba(251, 146, 60, 0.18);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: #fb923c;
+}
+.plan-stuck-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.plan-stuck-btn {
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.15s;
+}
+.plan-stuck-replan {
+  background: rgba(74, 144, 226, 0.15);
+  color: #4a90e2;
+  border-color: rgba(74, 144, 226, 0.35);
+}
+.plan-stuck-replan:hover:not(:disabled) {
+  background: rgba(74, 144, 226, 0.25);
+}
+.plan-stuck-go {
+  background: #fb923c;
+  color: white;
+}
+.plan-stuck-go:hover:not(:disabled) {
+  background: #ea7a1f;
+}
+.plan-stuck-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.plan-stuck-status {
+  font-size: 12px;
+  color: var(--on-surface-muted);
+  font-style: italic;
+}
+.msg-plan-stuck[data-resolved] .plan-stuck-box {
+  opacity: 0.75;
+}
+
+/* ─── M3 文本兜底卡片(蓝灰系) ───────────────────────── */
+.msg-plan-fallback {
+  display: flex;
+  justify-content: flex-start;
+  margin: 6px 0;
+}
+.plan-fallback-box {
+  max-width: 80%;
+  border: 1px solid rgba(100, 116, 139, 0.45);
+  background: rgba(100, 116, 139, 0.06);
+  border-radius: 14px;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.plan-fallback-header {
+  font-weight: 600;
+  color: #64748b;
+  font-size: 13px;
+}
+.plan-fallback-text {
+  font-size: 13px;
+  color: var(--on-surface);
+  line-height: 1.55;
+}
+.plan-fallback-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.plan-fallback-btn {
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.15s;
+}
+.plan-fallback-accept {
+  background: #4a90e2;
+  color: white;
+}
+.plan-fallback-accept:hover:not(:disabled) { background: #3a7bc8; }
+.plan-fallback-retry {
+  background: rgba(74, 144, 226, 0.15);
+  color: #4a90e2;
+  border-color: rgba(74, 144, 226, 0.35);
+}
+.plan-fallback-retry:hover:not(:disabled) { background: rgba(74, 144, 226, 0.25); }
+.plan-fallback-discard {
+  background: transparent;
+  color: var(--on-surface-muted);
+  border-color: var(--surface-container-high);
+}
+.plan-fallback-discard:hover:not(:disabled) { background: rgba(0,0,0,0.04); }
+.plan-fallback-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.plan-fallback-status {
+  font-size: 12px;
+  color: var(--on-surface-muted);
+  font-style: italic;
+}
+.msg-plan-fallback[data-resolved] .plan-fallback-box { opacity: 0.75; }
 
 /* 拖拽时高亮 composer */
 .composer.drag-over .composer-inner {
