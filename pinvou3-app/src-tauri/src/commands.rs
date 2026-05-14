@@ -551,17 +551,9 @@ pub async fn accept_plan(
     Ok(store.mode_state(&session_id))
 }
 
-/// 用户点 plan_card [✏️ 改改]：继续讨论修订 plan。
-/// 设 phase=Planning（mode 仍是 Plan）→ 用户下条消息走 Plan 模式发送，AI 修订。
-/// 前端在调用后应 focus composer + 显示 placeholder 引导。
-#[tauri::command]
-pub async fn revise_plan(
-    session_id: String,
-    store: State<'_, SessionStore>,
-) -> Result<SessionModeState, String> {
-    store.set_mode_state(&session_id, SerializableMode::Plan, PlanPhase::Planning);
-    Ok(store.mode_state(&session_id))
-}
+// 修法 D 删除了 revise_plan 命令.
+// 用户点 [✏️ 改改] 时前端走 DeepSeek-TUI 底座做法:不切 phase, 仅 input 预填"修订方案:"前缀.
+// phase 保持 Ready, 下一条 chat 触发的 Ready reminder 已包含"用户发新消息=隐式修订"语义.
 
 /// 用户点 plan_card [🚪 算了]：放弃整个任务，回 YOLO 默认态。
 /// 与 exit_plan_to_yolo 区别：⚡ 是「不要 plan 直接干」，🚪 是「这事不干了」。

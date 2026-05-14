@@ -55,18 +55,46 @@ let attachSeq = 0;
 // 后端 SessionStore 是 source of truth，前端切 session 时同步拉一遍。
 let modeState = { mode: "yolo", plan_phase: "none" };
 
-// ── Thinking 指示器:Braille 10 帧旋转 + 分阶段计时,统一到 chip 区 ──
-// thinkingPhase = "thinking"(LLM 思考/流式) | "tool"(工具调用中)
-// 每次 phase 切换重置计时器 → 用户看到"每个小阶段花了多少时间",
-// 避免单 turn 内累积超大数字(eg 180s)让用户判断不出卡在哪步。
+// ── Thinking 指示器:Braille 10 帧 + 分阶段计时,以"气泡"形式跟随消息流尾部 ──
+// (业界惯例: ChatGPT/Claude 都把 thinking 反馈放在最新消息下方, 不混进 mode 状态条)
+// phase = "thinking"(LLM 思考/流式) | "tool"(工具调用中, 文案变"调用 xxx... Ns")
+// 每次 phase 切换重置计时器 → 用户看到"每个小阶段花了多少时间".
 const BRAILLE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 let thinkingTicker = null;       // setInterval handle
 let thinkingFrameIdx = 0;
-let thinkingStartedAt = 0;       // 当前阶段起始时刻
+let thinkingStartedAt = 0;
 let thinkingFrame = BRAILLE_FRAMES[0];
 let thinkingElapsedSec = 0;
-let thinkingPhase = "thinking";  // "thinking" | "tool"
-let thinkingToolName = "";       // phase=tool 时的工具名
+let thinkingPhase = "thinking";
+let thinkingToolName = "";
+let thinkingBubbleEl = null;     // 单例气泡 DOM, 跟随 chatArea 尾部
+
+function renderThinkingBubble() {
+  if (!thinkingTicker) {
+    removeThinkingBubble();
+    return;
+  }
+  if (!thinkingBubbleEl) {
+    thinkingBubbleEl = document.createElement("div");
+    thinkingBubbleEl.className = "thinking-bubble";
+    chatArea.appendChild(thinkingBubbleEl);
+    scrollToBottom();
+  } else if (chatArea.lastElementChild !== thinkingBubbleEl) {
+    // 新消息/工具卡插入后, thinking 气泡不在末尾 → 重挪到末尾
+    chatArea.appendChild(thinkingBubbleEl);
+    scrollToBottom();
+  }
+  thinkingBubbleEl.textContent = thinkingPhase === "tool" && thinkingToolName
+    ? `${thinkingFrame} 调用 ${thinkingToolName}... ${thinkingElapsedSec}s`
+    : `${thinkingFrame} 思考中... ${thinkingElapsedSec}s`;
+}
+
+function removeThinkingBubble() {
+  if (thinkingBubbleEl) {
+    thinkingBubbleEl.remove();
+    thinkingBubbleEl = null;
+  }
+}
 
 function startThinking() {
   if (thinkingTicker) return;
@@ -76,12 +104,12 @@ function startThinking() {
   thinkingStartedAt = Date.now();
   thinkingFrame = BRAILLE_FRAMES[0];
   thinkingElapsedSec = 0;
-  if (typeof updateModeUI === "function") updateModeUI();
+  renderThinkingBubble();
   thinkingTicker = setInterval(() => {
     thinkingFrameIdx = (thinkingFrameIdx + 1) % BRAILLE_FRAMES.length;
     thinkingFrame = BRAILLE_FRAMES[thinkingFrameIdx];
     thinkingElapsedSec = Math.floor((Date.now() - thinkingStartedAt) / 1000);
-    if (typeof updateModeUI === "function") updateModeUI();
+    renderThinkingBubble();
   }, 100);
 }
 
@@ -94,17 +122,17 @@ function stopThinking() {
   thinkingElapsedSec = 0;
   thinkingPhase = "thinking";
   thinkingToolName = "";
-  if (typeof updateModeUI === "function") updateModeUI();
+  removeThinkingBubble();
 }
 
 /** 切到工具阶段:重置计时,文案变成"调用 xxx... Ns"。 */
 function switchThinkingToTool(toolName) {
-  if (!thinkingTicker) return; // 只在 busy 期间生效
+  if (!thinkingTicker) return;
   thinkingPhase = "tool";
   thinkingToolName = toolName || "";
   thinkingStartedAt = Date.now();
   thinkingElapsedSec = 0;
-  if (typeof updateModeUI === "function") updateModeUI();
+  renderThinkingBubble();
 }
 
 /** 切回思考阶段:工具完成,重置计时,文案回到"思考中... Ns"。 */
@@ -114,7 +142,7 @@ function switchThinkingToIdle() {
   thinkingToolName = "";
   thinkingStartedAt = Date.now();
   thinkingElapsedSec = 0;
-  if (typeof updateModeUI === "function") updateModeUI();
+  renderThinkingBubble();
 }
 
 /**
@@ -276,18 +304,13 @@ async function onPlanAccept(card) {
 async function onPlanRevise(card) {
   if (card.dataset.cardState !== "active") return;
   if (!activeSessionId) return;
-  setPlanCardFrozen(card, "✏️ 已请求修改 · 在下方告诉 AI 怎么改");
-  try {
-    const state = await invoke("revise_plan", { sessionId: activeSessionId });
-    modeState = { mode: state.mode, plan_phase: state.plan_phase };
-    updateModeUI();
-  } catch (e) {
-    appendSystemMessage("⚠️ revise_plan 失败: " + e);
-    return;
-  }
+  // 修法 D: 照搬 DeepSeek-TUI 底座做法 —— 不改 mode_state, 不 freeze 卡片(用户可反悔点 ✅),
+  // 只在输入框预填"修订方案:"前缀. AI 看到前缀 + 当前 phase=Ready 触发的 reminder
+  // "用户发新消息=隐式修订,必须重新调 update_plan",自然重出方案.
+  input.value = "修订方案:";
   input.focus();
-  input.placeholder = "告诉 AI 你想怎么改方案…";
-  setTimeout(() => { input.placeholder = "跟 Qwen3.6 说点什么(Enter 发送 · Shift+Enter 换行)"; }, 8000);
+  input.setSelectionRange(input.value.length, input.value.length);
+  input.placeholder = "继续写: 你想怎么改方案…";
 }
 
 async function onPlanDiscard(card) {
@@ -399,7 +422,12 @@ function renderUserInputCard(toolCallId, questions) {
         }
       });
       opts.appendChild(box);
-      setTimeout(() => textarea.focus(), 30);
+      // 卡片可能比视口高,box 展开在卡片底部容易滚出视口看不到。
+      // focus 不一定滚动,显式 scrollIntoView 保证用户看到 textarea。
+      setTimeout(() => {
+        textarea.focus();
+        box.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 30);
     });
     opts.appendChild(otherBtn);
     block.appendChild(headEl);
@@ -421,8 +449,12 @@ function renderUserInputCard(toolCallId, questions) {
     try {
       await invoke("submit_user_input", { toolCallId, answers });
       // 在用户气泡追加用户的选择(让对话流可读),不持久化到 messages.json
+      // "其他"选项 label="其他"+value=用户输入,要展示 value 才看得见实际内容
       const summary = answers
-        .map((a, i) => `${questions[i].header}: ${a.label}`)
+        .map((a, i) => {
+          const text = a.label === "其他" ? `(其他) ${a.value}` : a.label;
+          return `${questions[i].header}: ${text}`;
+        })
         .join(" · ");
       appendUserMessage("✓ " + summary);
       // 用户选择是一个分界点:关闭当前 assistant 气泡,把已累积 text 入栈 messages,
@@ -1999,7 +2031,6 @@ const modeChipText = document.getElementById("mode-chip-text");
 const modeChipAction = document.getElementById("mode-chip-action");
 const modeChipJump = document.getElementById("mode-chip-jump");
 const modeChipProgress = document.getElementById("mode-chip-progress");
-const modeBadgeEl = document.getElementById("mode-badge");
 
 // 缓存最新的 plan/todos snapshot(由 chat:plan_snapshot event 更新)
 // chip 进度条渲染 + accept_plan 时拼 plan_markdown 用。
@@ -2014,38 +2045,32 @@ let planProgressExpanded = false;
 /**
  * 根据 modeState 同步所有视觉锚点：
  *   - composer[data-plan-phase]
- *   - plan-btn[data-active / disabled]
- *   - mode-badge[data-mode] + 文案
+ *   - plan-btn[data-active / disabled / title]
  *   - mode-chip-row 显隐 + 文案 + ⚡ 退出按钮
  */
 function updateModeUI() {
   const { mode, plan_phase } = modeState;
   composerEl.dataset.planPhase = plan_phase;
-  // plan-btn: yolo+none 可点；planning/ready disabled；executing 可点（二次确认）
+  // plan-btn 三态:
+  //   YOLO/none → 可点(进入 Plan), hover "进入 Plan 模式"
+  //   Plan/planning → 可点(退出 Plan, 等价 chip 上的 ⚡ 直接动手), hover "退出 Plan 模式"
+  //   Plan/ready → disabled(等用户在 plan_card 上决策, 灯泡误触会丢失方案上下文)
+  //   YOLO/executing → 可点(二次确认中断 + 重开 Plan)
   planBtn.dataset.active = mode === "plan" ? "true" : "false";
-  planBtn.disabled = plan_phase === "planning" || plan_phase === "ready";
-  // mode badge——保持静态模式标签,不带动画(busy 反馈完全由 chip thinking 提供)
-  if (plan_phase === "executing") {
-    modeBadgeEl.dataset.mode = "executing";
-    modeBadgeEl.textContent = "🏃 执行中";
+  planBtn.disabled = plan_phase === "ready";
+  if (plan_phase === "ready") {
+    planBtn.title = "请先在卡片上决策方案";
   } else if (mode === "plan") {
-    modeBadgeEl.dataset.mode = "plan";
-    modeBadgeEl.textContent = "💡 PLAN";
+    planBtn.title = "退出 Plan 模式";
+  } else if (plan_phase === "executing") {
+    planBtn.title = "中断当前 · 重开 Plan";
   } else {
-    modeBadgeEl.dataset.mode = "yolo";
-    modeBadgeEl.textContent = "⚡ YOLO";
+    planBtn.title = "进入 Plan 模式";
   }
 
   // thinking 前缀:busy 时 "⠋ Ns · " 拼在文案最前,按 phase 切换文字。
   // tool phase 时显示具体工具名;thinking phase 时默认"思考中"(下面 fallback chip 用)。
-  let thinkingPrefix = "";
-  if (busy) {
-    if (thinkingPhase === "tool" && thinkingToolName) {
-      thinkingPrefix = `${thinkingFrame} 调用 ${thinkingToolName}... ${thinkingElapsedSec}s · `;
-    } else {
-      thinkingPrefix = `${thinkingFrame} ${thinkingElapsedSec}s · `;
-    }
-  }
+  // (thinking 反馈走独立气泡 renderThinkingBubble,不再拼到 chip 文案)
 
   // chip 显示逻辑——统一状态条:模式标签 + thinking 反馈 + 操作按钮
   modeChipJump.hidden = true;
@@ -2053,33 +2078,25 @@ function updateModeUI() {
 
   if (plan_phase === "planning") {
     modeChipRow.hidden = false;
-    modeChipText.textContent = `${thinkingPrefix}💡 Plan 模式 · 讨论中`;
+    // 首句价值描述: 让用户搞懂"为啥要 Plan + 何时该用",降低误触成本。
+    modeChipText.textContent = busy
+      ? `💡 Plan 模式 · 讨论中`
+      : `💡 Plan 模式：让 AI 先列方案再执行，复杂任务且 没想好时开启`;
     modeChipAction.hidden = false;
     modeChipAction.textContent = "⚡ 直接动手";
     modeChipAction.dataset.kind = "exit_plan";
   } else if (plan_phase === "ready") {
     modeChipRow.hidden = false;
-    modeChipText.textContent = `${thinkingPrefix}✨ AI 给出方案 · 看下面卡片决策`;
+    modeChipText.textContent = `✨ AI 给出方案 · 看下面卡片决策`;
     modeChipAction.hidden = true;
     modeChipJump.hidden = false;  // 卡片可能滚出视口,给跳转按钮
   } else if (plan_phase === "executing") {
     modeChipRow.hidden = false;
-    modeChipText.textContent = `${thinkingPrefix}🏃 执行中`;
-    modeChipAction.hidden = false;
-    modeChipAction.textContent = "⏹️ 中断";
-    modeChipAction.dataset.kind = "cancel_executing";
-  } else if (busy) {
-    // YOLO + 默认 + busy:chip 浮现仅承载 thinking 反馈(无按钮)
-    // 解决"用户感觉卡死"的核心场景。按 phase 选文案。
-    modeChipRow.hidden = false;
-    if (thinkingPhase === "tool" && thinkingToolName) {
-      modeChipText.textContent = `${thinkingFrame} 调用 ${thinkingToolName}... ${thinkingElapsedSec}s`;
-    } else {
-      modeChipText.textContent = `${thinkingFrame} 思考中... ${thinkingElapsedSec}s`;
-    }
+    modeChipText.textContent = `🏃 执行中`;
+    // 中断走输入框 ⏹️ (业界惯例), chip 仅作状态显示
     modeChipAction.hidden = true;
   } else {
-    // YOLO + 默认 + 闲置:chip 完全隐藏
+    // YOLO/none: chip 完全隐藏. busy 时 thinking 气泡(消息流尾部)承担反馈, 不借壳 chip.
     modeChipRow.hidden = true;
     modeChipAction.hidden = true;
     delete modeChipAction.dataset.kind;
@@ -2197,13 +2214,21 @@ async function syncModeStateFromBackend() {
   updateModeUI();
 }
 
-// plan-btn 点击：进入 Plan 模式 OR 执行中二次确认中断重开 Plan
+// plan-btn 点击 (toggle):
+//   YOLO/none → 进入 Plan
+//   Plan/planning → 退出 Plan (等价 chip 的 ⚡ 直接动手, 保留对话历史回 YOLO)
+//   YOLO/executing → 二次确认中断 + 重开 Plan
+//   Plan/ready → disabled (前置拦截)
 planBtn.addEventListener("click", async () => {
   if (planBtn.disabled) return;
   if (!activeSessionId) {
-    // 没 session 时先创建一个
     await createNewSession();
     if (!activeSessionId) return;
+  }
+  // Plan + planning 已激活 → toggle 退出 (busy 时由 exitPlanFlow 内部先 cancel_generation)
+  if (modeState.mode === "plan" && modeState.plan_phase === "planning") {
+    await exitPlanFlow();
+    return;
   }
   // 执行中 → 二次确认
   if (modeState.plan_phase === "executing") {
@@ -2212,7 +2237,7 @@ planBtn.addEventListener("click", async () => {
       kind: "warning",
     });
     if (!ok) return;
-    try { await invoke("cancel_generation"); } catch (_) {}
+    await cancelActiveTurn();
   }
   try {
     const state = await invoke("set_plan_mode_next", { sessionId: activeSessionId });
@@ -2233,29 +2258,52 @@ modeChipJump.addEventListener("click", () => {
   }
 });
 
-// chip ⚡ 按钮：根据 dataset.kind 派发
-modeChipAction.addEventListener("click", async () => {
-  if (!activeSessionId) return;
-  const kind = modeChipAction.dataset.kind;
-  if (kind === "exit_plan") {
-    try {
-      const state = await invoke("exit_plan_to_yolo", { sessionId: activeSessionId });
-      modeState = { mode: state.mode, plan_phase: state.plan_phase };
-      updateModeUI();
-    } catch (e) {
-      appendSystemMessage("⚠️ 退出 Plan 失败: " + e);
-    }
-  } else if (kind === "cancel_executing") {
-    // 完整中断:取消当前 turn + 退出 Executing 态(切回 mode=Yolo + phase=None)
-    // 比单调 cancel_generation 更符合"中断"心智(用户期望整个任务退出)
+// 统一中断 helper: 所有"中断/停止"路径必须先调它,确保 turn 真的能跳出。
+//   1. 取消所有 active request_user_input 卡片
+//      —— engine 在 await_user_input 的 oneshot 上阻塞时, cancel_generation 不一定唤醒它,
+//         前端必须主动 cancel_user_input 才能让 turn 跳出
+//   2. 取消整个 turn (cancel_generation)
+//   3. Executing 态时自动 discard_plan 同步前后端
+//      —— 业界惯例 ⏹️ 仅停生成,但 Executing 是 plan 接受后的"YOLO 干活态",
+//         用户停下后期望整个任务结束(否则后端 mode 错位到下一轮 chat)。
+// Planning 态保持 X1 不改 mode (用户停下后仍在 Plan 模式可继续讨论).
+async function cancelActiveTurn() {
+  for (const id of Array.from(userInputCards.keys())) {
+    try { await invoke("cancel_user_input", { toolCallId: id }); } catch (_) {}
+    finalizeUserInputCard(id, false);
+  }
+  if (busy) {
     try { await invoke("cancel_generation"); } catch (_) {}
+  }
+  if (modeState.plan_phase === "executing" && activeSessionId) {
     try {
       const state = await invoke("discard_plan", { sessionId: activeSessionId });
       modeState = { mode: state.mode, plan_phase: state.plan_phase };
       updateModeUI();
-    } catch (e) {
-      appendSystemMessage("⚠️ 中断后退出 Executing 失败: " + e);
-    }
+    } catch (_) {}
+  }
+}
+
+// 退出 Plan 公共流程: cancelActiveTurn 兜底, 再切 mode 回 Yolo/None.
+// chip [⚡ 直接动手] 和灯泡 toggle 共用。
+async function exitPlanFlow() {
+  if (!activeSessionId) return;
+  await cancelActiveTurn();
+  try {
+    const state = await invoke("exit_plan_to_yolo", { sessionId: activeSessionId });
+    modeState = { mode: state.mode, plan_phase: state.plan_phase };
+    updateModeUI();
+  } catch (e) {
+    appendSystemMessage("⚠️ 退出 Plan 失败: " + e);
+  }
+}
+
+// chip ⚡ 按钮：仅承载 "⚡ 直接动手" (Planning 态退出 Plan).
+// Executing 态的中断走输入框 ⏹️ (cancelActiveTurn 内置 executing→discard 同步).
+modeChipAction.addEventListener("click", async () => {
+  if (!activeSessionId) return;
+  if (modeChipAction.dataset.kind === "exit_plan") {
+    await exitPlanFlow();
   }
 });
 const composer = document.querySelector(".composer");
@@ -2572,10 +2620,14 @@ listen("chat:done", async (e) => {
   closeAssistantBubble();
   setBusy(false);
 
-  // 执行 plan 完成 → 回 yolo 默认态（plan_phase 从 executing → none）
+  // 执行 plan 完成 → 回 yolo 默认态(plan_phase 从 executing → none).
+  // 同步后端 store, 防止下条消息 chat 命令读到 phase=executing 错位.
   if (modeState.plan_phase === "executing") {
     modeState = { mode: "yolo", plan_phase: "none" };
     updateModeUI();
+    if (activeSessionId) {
+      try { await invoke("discard_plan", { sessionId: activeSessionId }); } catch (_) {}
+    }
   }
 
   // 持久化整轮（含 user + assistant）到 disk
@@ -2670,20 +2722,9 @@ async function send() {
       return;
     }
   }
-  // Plan Ready 态用户直接发消息 = 隐式"改改"：转回 Planning，
-  // 同时冻结当前 active 的 plan_card（避免遗留按钮可点）
-  if (modeState.plan_phase === "ready") {
-    chatArea.querySelectorAll('.msg-plan-card[data-card-state="active"]').forEach((c) => {
-      setPlanCardFrozen(c, "✏️ 已请求修改 · 在下方告诉 AI 怎么改");
-    });
-    try {
-      const state = await invoke("revise_plan", { sessionId: activeSessionId });
-      modeState = { mode: state.mode, plan_phase: state.plan_phase };
-      updateModeUI();
-    } catch (e) {
-      console.warn("auto revise_plan failed", e);
-    }
-  }
+  // 修法 D: Ready 态用户直接发消息 = 隐式修订. phase 保持 Ready,
+  // 由后端 Ready reminder ("用户发新消息=隐式修订,必须重出 update_plan") 引导 AI.
+  // 不 freeze 旧 plan_card —— 让用户保留撤回(回头点 ✅)的可能.
   input.value = "";
   autoResize();
   // 显示 + state.messages：把附件 chip 名字附在 user 消息末尾让用户看到
@@ -2714,12 +2755,10 @@ function autoResize() {
 }
 sendBtn.addEventListener("click", async () => {
   if (busy) {
-    // busy 模式下点击 = 停止生成
-    try {
-      await invoke("cancel_generation");
-    } catch (e) {
-      console.warn("cancel_generation failed", e);
-    }
+    // busy 时点击 ⏹️ = 通用"停止生成"(业界惯例: Cursor/Claude Code).
+    // 仅停 turn, 不改 mode_state —— 用户停下后仍在原 mode 可继续讨论.
+    // 想退 Plan 模式走 chip [⚡ 直接动手] 或灯泡 toggle.
+    await cancelActiveTurn();
   } else {
     await send();
   }

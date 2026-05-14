@@ -115,7 +115,6 @@ pub fn run() {
             commands::set_plan_mode_next,
             commands::exit_plan_to_yolo,
             commands::accept_plan,
-            commands::revise_plan,
             commands::discard_plan,
             commands::submit_user_input,
             commands::cancel_user_input,

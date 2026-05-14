@@ -346,10 +346,18 @@ fn spawn_event_forwarder(
                     if let Some(active_id) = store.active_id() {
                         let state = store.mode_state(&active_id);
 
-                        // ── plan_ready 触发(Plan+Planning + 调过 plan 类工具) ──
+                        // ── plan_ready 触发(Plan + 调过 plan 类工具) ──
+                        // 覆盖两个场景:
+                        //   1. Planning: 初次出方案 (phase: Planning → Ready)
+                        //   2. Ready (修订): 用户在 Ready 态发新消息让 AI 重出方案 (phase 保持 Ready,
+                        //      set_plan_phase(Ready) 幂等). 修法 D: revise 不切回 Planning,
+                        //      所以触发条件不能绑死 Planning,否则新卡片不弹.
                         if plan_used
                             && state.mode == SerializableMode::Plan
-                            && state.plan_phase == PlanPhase::Planning
+                            && matches!(
+                                state.plan_phase,
+                                PlanPhase::Planning | PlanPhase::Ready
+                            )
                         {
                             store.set_plan_phase(&active_id, PlanPhase::Ready);
                             let _ = app.emit(
