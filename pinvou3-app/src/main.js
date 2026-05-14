@@ -545,10 +545,15 @@ async function onPlanStuckGo(card) {
     const state = await invoke("exit_plan_to_yolo", { sessionId: activeSessionId });
     modeState = { mode: state.mode, plan_phase: state.plan_phase };
     updateModeUI();
-    status.textContent = "⚡ 已切到 YOLO,接下来发消息 AI 就能动手";
+    status.textContent = "⚡ 已切到 YOLO,自动接着干";
   } catch (e) {
     status.textContent = "⚠️ 退出 Plan 失败: " + e;
+    return;
   }
+  // 跟 onPlanStuckReplan 对称: 预填具体指令立即发送, 避免用户发"继续"模糊词
+  // 触发 Qwen3.6 把 history 残留的 system-reminder 文本回显的 LLM 偏差.
+  input.value = "按上面讨论的方案继续执行任务,直接写文件/跑命令,不要再讨论方案。";
+  await send();
 }
 
 // ── M3: Plan 文本兜底卡片(AI 没用 plan 工具但 text 写了方案) ───────
