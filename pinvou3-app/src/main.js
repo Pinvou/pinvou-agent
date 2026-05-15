@@ -1582,7 +1582,10 @@ function renderHistoryList() {
     const title = document.createElement("span");
     title.className = "history-item-title";
     title.textContent = meta.title || i18nText("history.untitled");
-    title.addEventListener("click", () => switchToSession(meta.id));
+    title.addEventListener("click", () => {
+      switchView("chatroom");
+      switchToSession(meta.id);
+    });
 
     const actions = document.createElement("span");
     actions.className = "history-item-actions";
@@ -1812,7 +1815,10 @@ async function persistMessages() {
   }
 }
 
-newSessionBtn?.addEventListener("click", () => createNewSession());
+newSessionBtn?.addEventListener("click", () => {
+  switchView("chatroom");
+  createNewSession();
+});
 
 // ── 阶段 C: 右栏产物面板 ──────────────────────────────────────────
 
@@ -1828,9 +1834,13 @@ let unreadArtifacts = 0;
 let maxModelLen = 32768;     // 兜底值，monitor 拉到真实 max_model_len 后覆盖
 let lastInputTokens = 0;     // 最近一轮 TurnComplete.usage.input_tokens
 
-/** 右栏是否「正在可见地展示产物」——展开 + 产物 tab 激活。 */
+/** 右栏是否「正在可见地展示产物」——展开 + 产物 tab 激活。
+ *  dataset.collapsed 默认 "auto": 大窗下 CSS 自动显示, 小窗下 overlay 隐藏.
+ *  之前只认 "false" 漏掉 "auto+大窗" 这个**默认显示**场景 → badge 永不清零. */
 function isArtifactsTabVisible() {
-  const expanded = rightPane?.dataset.collapsed === "false";
+  const collapsed = rightPane?.dataset.collapsed || "auto";
+  const expanded = collapsed === "false"
+    || (collapsed === "auto" && window.innerWidth > 1280);
   const activeTab = document.querySelector(".right-pane-tab.active")?.dataset.paneTab;
   return expanded && activeTab === "artifacts";
 }
@@ -1853,10 +1863,15 @@ function clearUnreadArtifacts() {
 }
 
 function bumpUnreadArtifacts() {
-  if (isArtifactsTabVisible()) return; // 正在看就不算未读
+  if (isArtifactsTabVisible()) { clearUnreadArtifacts(); return; } // 正在看 → 顺手清掉历史残留
   unreadArtifacts += 1;
   renderUnreadBadge();
 }
+
+// 窗口尺寸变化时(小窗→大窗) auto 状态自动展开右栏 → 清未读
+window.addEventListener("resize", () => {
+  if (isArtifactsTabVisible()) clearUnreadArtifacts();
+});
 
 // ── 阶段 C: token 进度条 ────────────────────────────────────────
 const tokenBarEl = document.getElementById("token-bar");
