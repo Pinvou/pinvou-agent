@@ -1444,7 +1444,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-protocol"
-version = "0.8.30"
+version = "0.8.37"
 dependencies = [
  "serde",
  "serde_json",
@@ -1452,7 +1452,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-secrets"
-version = "0.8.30"
+version = "0.8.37"
 dependencies = [
  "dirs",
  "keyring",
@@ -1464,7 +1464,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-tools"
-version = "0.8.30"
+version = "0.8.37"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1477,7 +1477,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-tui"
-version = "0.8.30"
+version = "0.8.37"
 dependencies = [
  "anyhow",
  "arboard",

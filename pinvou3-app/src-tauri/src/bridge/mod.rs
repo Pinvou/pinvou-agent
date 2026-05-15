@@ -169,6 +169,8 @@ impl Pinvou3Bridge {
             memory_path: _,
             locale_tag: _,
             strict_tool_mode: _,
+            translation_enabled: _,
+            vision_config: _,
             // —— 上游 default 透传（命名后放进新结构体）——
             features,
             compaction,
@@ -183,6 +185,9 @@ impl Pinvou3Bridge {
             subagent_model_overrides,
             goal_objective,
             workshop,
+            snapshots_max_workspace_bytes,
+            search_provider,
+            search_api_key,
         } = EngineConfig::default();
 
         EngineConfig {
@@ -203,6 +208,10 @@ impl Pinvou3Bridge {
             memory_path: paths::memory_path(),
             locale_tag: self.locale_tag().to_string(),
             strict_tool_mode: false,
+            // pinvou3 中文用户已经是中文语境，不走 /translate 路径
+            translation_enabled: false,
+            // Qwen3.6-35B-A3B-FP8 不是 vision 模型
+            vision_config: None,
             // 上游 default 透传
             features,
             // compaction model 默认 deepseek-v4-pro,本地 vLLM 没这个模型,
@@ -222,6 +231,9 @@ impl Pinvou3Bridge {
             subagent_model_overrides,
             goal_objective,
             workshop,
+            snapshots_max_workspace_bytes,
+            search_provider,
+            search_api_key,
         }
     }
 
@@ -311,6 +323,7 @@ impl Pinvou3Bridge {
             trust_mode,
             auto_approve: true,
             approval_mode: ApprovalMode::Auto,
+            translation_enabled: false,
         }
     }
 }
