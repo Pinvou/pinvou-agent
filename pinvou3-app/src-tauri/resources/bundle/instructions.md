@@ -81,7 +81,11 @@
   例:write_file 的 path 填 `{{PINVOU3_WORKSPACE}}/旅行计划.md`。
   **不要先用 exec_shell 探路径**,也不要传 `$HOME/...` 或 `~/...`(write_file 不展开 shell 变量)。
 - 用户明确说"在原位置改"才动用户原路径。
-- 不要写到项目源码目录(`pinvou3-app/` `DeepSeek-TUI/` 等)。
+
+**关于 workspace 的重要事实**:
+- `{{PINVOU3_WORKSPACE}}` 是**当前 session 独立的空目录**——每次新对话都是全新工作区。
+- 新项目直接在里面 `mkdir`/`write_file` 即可,**不需要 list_dir 上层**看"是否有现有项目"。
+- 跟用户讨论现有项目时,如果用户没指定路径,先调 `request_user_input` 问清楚再动手。
 
 ## 敏感目录禁令
 

@@ -409,6 +409,21 @@ pub async fn open_in_system(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 用文件管理器打开**所在目录**（不是文件本身）。xdg-open 一个目录路径
+/// → Ubuntu 走 Nautilus / Files；跨发行版（GNOME/KDE/XFCE）freedesktop 标准兼容。
+#[tauri::command]
+pub async fn open_containing_folder(path: String) -> Result<(), String> {
+    let p = validate_user_path(&path)?;
+    let dir = p
+        .parent()
+        .ok_or_else(|| format!("no parent dir for {}", p.display()))?;
+    std::process::Command::new("xdg-open")
+        .arg(dir)
+        .spawn()
+        .map_err(|e| format!("xdg-open({}) failed: {e}", dir.display()))?;
+    Ok(())
+}
+
 /// 在 Tauri 新窗口里加载 HTML 产物。绕过 snap 浏览器对 `~/.xxx/` 隐藏目录的沙箱限制。
 /// 同一文件再次调用 → focus 已有窗口而非新建,防窗口爆炸。
 #[tauri::command]
@@ -598,8 +613,12 @@ pub async fn cancel_user_input(
         .map_err(|e| format!("cancel_user_input: {e:?}"))
 }
 
-/// 路径校验：必须是绝对路径 + 落在用户家目录下 + 路径解析后无 `..` 逃逸。
-/// 防止前端拿伪造路径让后端读 /etc/shadow 或 ~/.ssh 之类。
+/// 路径校验：必须是绝对路径 + 路径解析后无 `..` 逃逸 + 不命中敏感清单。
+///
+/// pinvou3 是本地单用户工具，不像 web 服务有跨用户边界，所以不强制 $HOME
+/// 限制（允许 AI 在 /tmp / /opt / /mnt 等用户授权位置产出文件）。仅黑名单
+/// 拦截两类位置：(1) 用户凭据目录/文件，避免 AI 误把私钥/.env 内容读进
+/// LLM context 传给外部 vLLM；(2) 系统级敏感文件如 /etc/shadow。
 fn validate_user_path(raw: &str) -> Result<std::path::PathBuf, String> {
     use std::path::PathBuf;
     let p = PathBuf::from(raw);
@@ -607,21 +626,55 @@ fn validate_user_path(raw: &str) -> Result<std::path::PathBuf, String> {
         return Err(format!("path must be absolute: {raw}"));
     }
     let canon = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
-    let home = match std::env::var("HOME") {
-        Ok(h) => PathBuf::from(h),
-        Err(_) => return Err("HOME not set".into()),
-    };
-    if !canon.starts_with(&home) {
-        return Err(format!("path {} not under $HOME", canon.display()));
-    }
-    // 敏感子目录拦截（跟 instructions.md 的软引导一致）
-    for blocked in &[".ssh", ".gnupg", ".aws", ".docker", ".kube"] {
+    let canon_str = canon.to_string_lossy();
+
+    // 凭据/配置类组件名拦截（任意路径深度，命中目录名或文件名即拒绝）
+    const BLOCKED_COMPONENTS: &[&str] = &[
+        ".ssh",
+        ".gnupg",
+        ".aws",
+        ".docker",
+        ".kube",
+        ".password-store",
+        "id_rsa",
+        "id_ed25519",
+        "id_ecdsa",
+        "id_dsa",
+        "credentials.json",
+        ".env",
+    ];
+    for blocked in BLOCKED_COMPONENTS {
         if canon
             .components()
             .any(|c| c.as_os_str() == std::ffi::OsStr::new(blocked))
         {
-            return Err(format!("path {} crosses sensitive dir {}", canon.display(), blocked));
+            return Err(format!(
+                "path {} crosses sensitive component {}",
+                canon.display(),
+                blocked
+            ));
         }
     }
+
+    // 系统级敏感路径前缀拦截
+    const BLOCKED_PREFIXES: &[&str] = &[
+        "/etc/shadow",
+        "/etc/gshadow",
+        "/etc/sudoers",
+        "/etc/ssh/",
+        "/root/",
+        "/var/log/auth",
+        "/proc/",
+        "/sys/",
+    ];
+    for prefix in BLOCKED_PREFIXES {
+        if canon_str.starts_with(prefix) {
+            return Err(format!(
+                "path {} is in system-sensitive area",
+                canon.display()
+            ));
+        }
+    }
+
     Ok(canon)
 }

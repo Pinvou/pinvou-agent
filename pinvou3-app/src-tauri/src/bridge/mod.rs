@@ -302,8 +302,11 @@ impl Pinvou3Bridge {
         let (allow_shell, trust_mode) = match mode {
             AppMode::Yolo => (self.allow_shell(), true),
             // Plan: allow_shell=true 让 engine 正常路由 shell 工具，
-            // 底座 tool_setup.rs 会把 sandbox 切到 ReadOnly + 工具白名单切到只读集
-            AppMode::Plan => (true, false),
+            // 底座 tool_setup.rs 会把 sandbox 切到 ReadOnly + 工具白名单切到只读集。
+            // trust_mode=true 让 list_dir/read_file 等只读工具能跨 session workspace
+            // 边界（pinvou3 是本地单用户工具，无跨用户安全边界，写保护靠 ReadOnly
+            // sandbox + 只读工具集，不依赖 trust_mode）。
+            AppMode::Plan => (true, true),
             // Agent mode pinvou3 不暴露，但保留 default 处理避免 panic
             AppMode::Agent => (self.allow_shell(), false),
         };

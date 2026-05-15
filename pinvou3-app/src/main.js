@@ -1962,6 +1962,13 @@ function openArtifactExternal(path) {
   });
 }
 
+/** 用文件管理器打开产物**所在目录**（不是文件本身）。 */
+function openArtifactFolder(path) {
+  return invoke("open_containing_folder", { path }).catch((err) => {
+    appendSystemMessage("⚠️ 打开目录失败: " + err);
+  });
+}
+
 /** 渲染右栏产物列表。 */
 function renderArtifactList() {
   if (!artifactListEl) return;
@@ -1992,6 +1999,15 @@ function renderArtifactList() {
     nameEl.className = "artifact-name";
     nameEl.textContent = a.basename;
     nameEl.title = a.path;
+    const folderBtn = document.createElement("button");
+    folderBtn.className = "artifact-open-btn";
+    folderBtn.type = "button";
+    folderBtn.title = "打开所在目录";
+    folderBtn.textContent = "📂";
+    folderBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openArtifactFolder(a.path);
+    });
     const openBtn = document.createElement("button");
     openBtn.className = "artifact-open-btn";
     openBtn.type = "button";
@@ -2004,6 +2020,7 @@ function renderArtifactList() {
 
     li.appendChild(iconEl);
     li.appendChild(nameEl);
+    li.appendChild(folderBtn);
     li.appendChild(openBtn);
     li.addEventListener("click", () => previewArtifact(a));
     artifactListEl.appendChild(li);
