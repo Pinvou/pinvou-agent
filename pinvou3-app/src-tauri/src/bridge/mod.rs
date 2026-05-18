@@ -71,6 +71,17 @@ impl Pinvou3Bridge {
         })
     }
 
+    /// 测试入口(L1 harness 用):同 [`boot`] 但 workspace 用传入的 `ws`
+    /// (通常是 scenario 自己的 tempdir),而不是 `paths::user_home_dir()`。
+    /// 让 L1 真 vLLM dialog harness 能给每个 scenario 一个隔离的产出目录,
+    /// 避免污染用户 $HOME 也避免 scenario 之间互相干扰。
+    #[allow(dead_code)] // L1 runner 接入前临时 unused
+    pub fn boot_with_workspace(ws: PathBuf) -> Result<Self> {
+        let mut this = Self::boot()?;
+        this.workspace = ws;
+        Ok(this)
+    }
+
     pub fn locale_tag(&self) -> &'static str {
         self.prefs.language.locale_tag()
     }
@@ -242,14 +253,13 @@ impl Pinvou3Bridge {
     /// 环境变量优先（兼容 run-dev.sh 里既有的 `DEEPSEEK_*` 设置）。
     pub fn build_dt_config(&self) -> DtConfig {
         let mut cfg = DtConfig::default();
-        cfg.provider = Some(
-            std::env::var("DEEPSEEK_PROVIDER").unwrap_or_else(|_| "vllm".to_string()),
-        );
+        cfg.provider =
+            Some(std::env::var("DEEPSEEK_PROVIDER").unwrap_or_else(|_| "vllm".to_string()));
         cfg.api_key = Some(
             std::env::var("DEEPSEEK_API_KEY").unwrap_or_else(|_| LOCAL_VLLM_API_KEY.to_string()),
         );
-        let base_url = std::env::var("DEEPSEEK_BASE_URL")
-            .unwrap_or_else(|_| LOCAL_VLLM_BASE_URL.to_string());
+        let base_url =
+            std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| LOCAL_VLLM_BASE_URL.to_string());
         let providers = cfg.providers.get_or_insert_with(ProvidersConfig::default);
         providers.vllm.base_url = Some(base_url);
         cfg.default_text_model = Some(self.model());
@@ -311,7 +321,10 @@ impl Pinvou3Bridge {
             AppMode::Agent => (self.allow_shell(), false),
         };
         let full_content = match reminder_for(mode, phase) {
-            Some(r) => format!("<system-reminder>\n{}\n</system-reminder>\n\n{}", r, content),
+            Some(r) => format!(
+                "<system-reminder>\n{}\n</system-reminder>\n\n{}",
+                r, content
+            ),
             None => content,
         };
         Op::SendMessage {
@@ -387,7 +400,10 @@ mod tests {
             !cfg.strict_tool_mode,
             "strict_tool_mode 必须 false（Qwen3.6 用宽松模式）"
         );
-        assert!(!cfg.snapshots_enabled, "snapshots 不开（用户没 git workspace）");
+        assert!(
+            !cfg.snapshots_enabled,
+            "snapshots 不开（用户没 git workspace）"
+        );
         assert!(
             !cfg.project_context_pack_enabled,
             "project context pack 不开（非 dev 用户没 project）"
@@ -447,6 +463,79 @@ mod tests {
         assert_eq!(
             bridge.build_engine_config().workspace,
             std::path::PathBuf::from("/tmp/pinvou3-ws-fixture")
+        );
+    }
+
+    /// 把 build_send_message_op 返回的 Op 解构成 (allow_shell, trust_mode)，
+    /// 失败 panic（测试用 helper）。
+    fn extract_shell_trust(op: Op) -> (bool, bool) {
+        match op {
+            Op::SendMessage {
+                allow_shell,
+                trust_mode,
+                ..
+            } => (allow_shell, trust_mode),
+            other => panic!("expected SendMessage, got {other:?}"),
+        }
+    }
+
+    /// L2-5: Yolo 模式 → trust_mode=true（pinvou3 是本地单用户工具，
+    /// yolo 路径默认放开 trust 让产物落任意用户授权目录）。
+    #[test]
+    fn bridge_yolo_mode_trust_mode_true() {
+        std::env::remove_var("PINVOU3_ALLOW_SHELL");
+        let bridge = fixture_bridge();
+        let op = bridge.build_send_message_op("hi".into(), AppMode::Yolo, PlanPhase::None);
+        let (_allow_shell, trust_mode) = extract_shell_trust(op);
+        assert!(trust_mode, "Yolo 模式 trust_mode 必须 true");
+    }
+
+    /// L2-6: Plan 模式 → trust_mode=true（P1 修复回归，原本是 false 导致
+    /// list_dir 跨 session workspace 边界报 PathEscape）。
+    #[test]
+    fn bridge_plan_mode_trust_mode_true_after_p1() {
+        let bridge = fixture_bridge();
+        let op =
+            bridge.build_send_message_op("list dir".into(), AppMode::Plan, PlanPhase::Planning);
+        let (_allow_shell, trust_mode) = extract_shell_trust(op);
+        assert!(
+            trust_mode,
+            "Plan 模式 trust_mode 必须 true (P1 修复点，防 list_dir PathEscape 回归)"
+        );
+    }
+
+    /// L2-7: Plan 模式 → allow_shell=true（让底座 tool_setup.rs 正常路由
+    /// shell 工具到 ReadOnly sandbox + 只读工具白名单；allow_shell=false
+    /// 会直接屏蔽掉 shell 工具入口，Plan 阶段 AI 反而连只读 exec_shell ls
+    /// 都用不了）。
+    #[test]
+    fn bridge_plan_mode_allow_shell_true() {
+        std::env::remove_var("PINVOU3_ALLOW_SHELL");
+        let bridge = fixture_bridge();
+        let op = bridge.build_send_message_op("exec ls".into(), AppMode::Plan, PlanPhase::Planning);
+        let (allow_shell, _trust_mode) = extract_shell_trust(op);
+        assert!(
+            allow_shell,
+            "Plan 模式 allow_shell 必须 true (tool_setup.rs 依赖此字段路由工具集)"
+        );
+    }
+
+    /// L2-8: build_session_system_prompt 必须把 `{{PINVOU3_WORKSPACE}}` 占位符
+    /// 替换为 session-specific 路径，且替换后的 prompt 必须含 session_id 子串
+    /// （session_workspace_dir 路径形如 `<root>/<session_id>/workspace`）。
+    #[test]
+    fn instructions_md_session_workspace_subst() {
+        let bridge = fixture_bridge();
+        let session_id = "test-l2-session-9f8a-2c1b";
+        let prompt = bridge.build_session_system_prompt(session_id);
+        assert!(
+            !prompt.contains("{{PINVOU3_WORKSPACE}}"),
+            "占位符必须被替换,残留=死锁(AI 看不到真实路径)"
+        );
+        assert!(
+            prompt.contains(session_id),
+            "替换后 prompt 必须含 session_id 子串, prompt 前 200 字: {}",
+            &prompt.chars().take(200).collect::<String>()
         );
     }
 }

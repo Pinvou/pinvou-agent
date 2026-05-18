@@ -92,9 +92,7 @@ impl UserPrefs {
         let path = super::paths::settings_path();
         match std::fs::read_to_string(&path) {
             Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
-                eprintln!(
-                    "[pinvou3-app] settings.json parse failed ({e}), using defaults"
-                );
+                eprintln!("[pinvou3-app] settings.json parse failed ({e}), using defaults");
                 Self::default()
             }),
             Err(_) => Self::default(),

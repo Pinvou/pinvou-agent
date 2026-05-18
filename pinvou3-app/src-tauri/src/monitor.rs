@@ -34,7 +34,7 @@ pub struct GpuSnapshot {
 #[derive(Debug, Clone, Serialize)]
 pub struct RamSnapshot {
     pub total_kib: u64,
-    pub used_kib: u64,        // total - available
+    pub used_kib: u64, // total - available
     pub swap_total_kib: u64,
     pub swap_used_kib: u64,
 }
@@ -90,9 +90,7 @@ impl MonitorState {
     }
 
     pub fn session_uptime_secs(&self) -> u64 {
-        self.started_at
-            .map(|t| t.elapsed().as_secs())
-            .unwrap_or(0)
+        self.started_at.map(|t| t.elapsed().as_secs()).unwrap_or(0)
     }
 }
 
@@ -161,12 +159,7 @@ fn ram_snapshot() -> Option<RamSnapshot> {
     let mut swap_free = None;
     for line in text.lines() {
         let (key, val) = line.split_once(':')?;
-        let kib: u64 = val
-            .trim()
-            .trim_end_matches(" kB")
-            .parse()
-            .ok()
-            .unwrap_or(0);
+        let kib: u64 = val.trim().trim_end_matches(" kB").parse().ok().unwrap_or(0);
         match key {
             "MemTotal" => total = Some(kib),
             "MemAvailable" => available = Some(kib),
@@ -264,7 +257,10 @@ async fn vllm_snapshot(upstream: &str) -> Option<VllmSnapshot> {
 
 fn parse_models_response(v: serde_json::Value) -> Option<(Option<String>, Option<u32>)> {
     let first = v.get("data")?.as_array()?.first()?;
-    let id = first.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let id = first
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let max = first
         .get("max_model_len")
         .and_then(|v| v.as_u64())

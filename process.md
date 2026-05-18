@@ -88,3 +88,43 @@ GB10 同机起 Qwen-VL-Chat 7B / InternVL2-2B（vLLM 并存）→ bridge 自动 
 ## 基建待办（不阻塞功能）
 
 - **GB10 self-hosted GitHub Actions runner**：让 L1 真 vLLM 测试能进 CI nightly（详 `docs/自动化测试方案.md` §8）。优先级低，等团队≥2 人或发版频率上升再做
+
+---
+
+## L1 judge 离群点跟进 (auto-append by Claude)
+
+> 流程见 `docs/L1-judge-rubric.md` §3 Step 5。任一维度 ≤3 → append 至此。
+
+### 2026-05-18 · run 1779074272-r1 · plan_mode_list_dir · 简洁性 3/5
+- **问题**: final text 三句话 "先看看 /tmp 目录的情况" / "结果太多了(66KB被截断)" / "我先做个统计分析" 有跳跃感且语义打架——已 update_plan 还说"我先做个统计分析",给用户感觉方案还没出
+- **改进方向**: Plan/Planning 的 system-reminder 加一句 "已调 update_plan 就别再说'我先...'之类的过渡语,直接交付方案"
+- **状态**: 🔁 2026-05-18 又出现一次 (run 1779077762-r1) —— Plan 模式 text 悬空问题持续。**已尝试改 reminder 失败,见下方 lesson learned**
+
+### 2026-05-18 · run 1779077762-r1 · plan_mode_list_dir · 完整性 3/5
+- **问题**: final text 只一句 "输出被截断了，让我获取完整的目录列表信息。" 像是 turn 没结束就 turn_complete,用户得不到方案 summary,只能看 plan 卡片
+- **改进方向**: 同上 (Plan/Planning system-reminder 加 "调 update_plan 后 text 必须给方案 summary 不能悬空,不要说'让我...'之类下一步动作意图")
+- **状态**: 🆕 待处理 (跟简洁性同因,见 lesson learned)
+
+### 🧪 Lesson learned 2026-05-18: reminder 改 ≠ LLM 行为改
+
+尝试: commit `7b983b6` 给 Plan/Planning system-reminder 加第 5 条 "调完 update_plan 后必须给方案 summary,禁止过渡语"。
+
+单 scenario 验证 (run 1779078816):
+- 完整性 3→5 ✅ (有具体分类描述了)
+- 简洁性 3→3 持平 (LLM 仍写了 **5 次 "让我..."**,reminder 禁过渡语没起作用)
+- text 暴增 **23 → 556 字** (+24×) — reminder "必须给 summary" 反向起作用,LLM 多写了
+
+判断: 副作用 (output 膨胀 + system prompt 占位) 大于改进 (单样本完整性可能是 LLM 抽奖)。**回滚** (commit `ec2f788` revert)。
+
+学到的:
+- **prompt 工程层改 LLM 行为**通常需多 scenario 多次跑验证,单样本不可信
+- LLM "复述思考过程" (写 "让我...") 是 mode-independent 行为,单靠 reminder 改不动
+- 加 reminder 条款的 ROI 要看 (a) 群体改善是否 ≥ ±0.5 (b) 副作用 (token + system prompt 长度)
+- 未来类似离群点先**积累 3+ 次出现证据**再考虑改 reminder; 真要改要在 2+ scenario 上 A/B 对比验证
+
+剩 `plan_travel_web 工具使用 3/5` 待办仍是 🆕,优先级降低 (同样原因:单样本不一定可信)。
+
+### 2026-05-18 · run 1779077762-r1 · plan_travel_web · 工具使用 3/5
+- **问题**: prompt 明确要求"用 update_plan 给我一个 3 天行程方案",LLM 用 text 表格替代直接交付,没调 update_plan。web_search 4 次全失败 (Bing 0 结果 + 网络 err) 后也没换 fetch_url 等其他工具
+- **改进方向**: INSTRUCTIONS_MD 加引导 "prompt 明示要用某工具(如 update_plan),即便数据不足也要调,可以基于常识填内容"。web_search 失败后可尝试 fetch_url 直接拿某个景点 url 内容
+- **状态**: 🆕 待处理

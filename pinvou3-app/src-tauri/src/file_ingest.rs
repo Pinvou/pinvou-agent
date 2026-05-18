@@ -126,9 +126,9 @@ pub fn ingest(path: &Path) -> IngestResult {
 
 fn classify(ext: &str) -> &'static str {
     match ext {
-        "txt" | "md" | "markdown" | "json" | "csv" | "yaml" | "yml" | "toml" | "xml"
-        | "rs" | "py" | "js" | "ts" | "go" | "c" | "cpp" | "h" | "hpp" | "sh" | "log"
-        | "ini" | "conf" | "env" | "tsv" => "text",
+        "txt" | "md" | "markdown" | "json" | "csv" | "yaml" | "yml" | "toml" | "xml" | "rs"
+        | "py" | "js" | "ts" | "go" | "c" | "cpp" | "h" | "hpp" | "sh" | "log" | "ini" | "conf"
+        | "env" | "tsv" => "text",
         "pdf" => "pdf",
         "docx" | "pptx" | "odt" => "docx",
         "xlsx" | "ods" => "xlsx",
@@ -175,9 +175,7 @@ fn ingest_pdf(path: &Path, basename: String, path_str: String, byte_size: u64) -
             markdown: None,
             token_estimate: 0,
             byte_size,
-            warning: Some(
-                "PDF 解析需要 pdftotext，请运行: sudo apt install poppler-utils".into(),
-            ),
+            warning: Some("PDF 解析需要 pdftotext，请运行: sudo apt install poppler-utils".into()),
         };
     }
     // pdftotext -layout <path> -  → stdout
@@ -457,15 +455,18 @@ fn sanitize_filename(raw: &str) -> String {
     let cleaned: String = trimmed
         .chars()
         .map(|c| {
-            if c.is_control() || matches!(c, '/' | '\\' | ':' | '<' | '>' | '|' | '"' | '?' | '*')
-            {
+            if c.is_control() || matches!(c, '/' | '\\' | ':' | '<' | '>' | '|' | '"' | '?' | '*') {
                 '_'
             } else {
                 c
             }
         })
         .collect();
-    if cleaned.is_empty() { "file".into() } else { cleaned }
+    if cleaned.is_empty() {
+        "file".into()
+    } else {
+        cleaned
+    }
 }
 
 /// 校验路径：必须绝对 + 在 $HOME 下 + 不在敏感目录。
@@ -570,5 +571,27 @@ mod tests {
     #[test]
     fn validate_path_rejects_outside_home() {
         assert!(validate_path("/etc/passwd").is_err());
+    }
+
+    /// L2-9: .docx 扩展名必须 dispatch 到 ingest_pandoc 路径（kind="docx"），
+    /// 不能 fallthrough 到 binary_placeholder。pandoc 是否真装好不影响 dispatch
+    /// 决策（无 pandoc 时返回 warning，有则 markdown is_some）。这条防的是
+    /// classify→dispatch 链路在重构时被改坏，导致 docx 上传走 binary 死路。
+    #[test]
+    fn file_ingest_pandoc_detects_docx() {
+        let tmp = std::env::temp_dir().join("pinvou3-ingest-docx-test.docx");
+        std::fs::write(&tmp, b"PK\x03\x04 fake docx zip header").unwrap();
+        let r = ingest(&tmp);
+        std::fs::remove_file(&tmp).ok();
+        assert_eq!(
+            r.kind, "docx",
+            ".docx 必须 dispatch 到 docx 处理路径,got kind={}",
+            r.kind
+        );
+        // pandoc 装/没装两种情况都接受,但必须有明确产物或警告之一
+        assert!(
+            r.markdown.is_some() || r.warning.is_some(),
+            "docx 路径必须产 markdown 或 warning, got both None"
+        );
     }
 }

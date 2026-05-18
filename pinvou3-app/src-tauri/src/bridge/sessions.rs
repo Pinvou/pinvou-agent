@@ -176,11 +176,7 @@ impl SessionStore {
 
     /// 取当前 session 的 mode 状态。未存在时返回 default（Yolo + None）。
     pub fn mode_state(&self, id: &str) -> SessionModeState {
-        self.mode_states
-            .read()
-            .get(id)
-            .copied()
-            .unwrap_or_default()
+        self.mode_states.read().get(id).copied().unwrap_or_default()
     }
 
     /// 设置 mode（影响下一条消息发送时 `build_send_message_op` 取值）。
@@ -342,6 +338,8 @@ mod tests {
     #[test]
     fn generate_session_id_url_safe() {
         let id = generate_session_id();
-        assert!(id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        assert!(id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
     }
 }
