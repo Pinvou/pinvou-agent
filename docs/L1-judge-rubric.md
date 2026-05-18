@@ -1,6 +1,6 @@
 # L1 Judge Rubric — Claude 离线评 Qwen 答案质量
 
-> **当前版本: r1** (2026-05-18 起生效)。改版规则见 §6。
+> **当前版本: r2** (2026-05-18 起生效)。改版规则见 §6。
 >
 > 用法:L1 跑完 → 用户对话框跟 Claude 说 "评一下 `target/l1-runs/<ts>`" → Claude 按本文件 rubric 评分写报告 → `target/l1-judge/<ts>-report.md`。
 >
@@ -72,6 +72,36 @@ target/l1-judge/<ts>-report.md        ← Claude 评分后写这里
 | 1 | 完全错误的工具选择 / 应该调工具却纯文本回答 |
 | N/A | 任务本身不需要工具 (例如简单翻译/问答) |
 
+### 维度 5:任务拆分合理性 (Subagent Decomposition) — **r2 新增**
+
+> "调 subagent 时,任务边界划得清不清楚"
+
+仅当 scenario 涉及 subagent 工具 (`agent_spawn` / `agent_open` / `agent_eval` / `delegate_to_agent` 等) 时评分。否则 N/A。
+
+| 分 | 判别 |
+|---|---|
+| 5 | subagent 边界清晰互不重叠,每个 subagent 有独立可完成的具体任务,数量合理(任务规模决定) |
+| 4 | 边界基本清晰,有 1 个小重叠或多余 subagent |
+| 3 | 任务拆分有缺陷(N 个 subagent 做 1 件事 / 或 1 个 subagent 塞 N 件) |
+| 2 | 拆分明显错(瞎并发同样查询 / 或该拆没拆塞 1 个 subagent) |
+| 1 | 不该开 subagent 却开了 / 或边界完全乱套 |
+| N/A | scenario 不涉及 subagent 工具 |
+
+### 维度 6:结果综合能力 (Result Synthesis) — **r2 新增**
+
+> "拿到多个 subagent 返回后,主 agent 是否真的综合了 vs 简单 concatenate"
+
+仅当 scenario 涉及 subagent 且拿到了 ≥2 个 subagent 结果时评分。
+
+| 分 | 判别 |
+|---|---|
+| 5 | 主 agent 给出真正综合的结构(对比表/分类/推荐),不只是并列复述 |
+| 4 | 综合到位,但有 1 处简单复述或冗余 |
+| 3 | 部分综合(给了对比但没推荐 / 给了清单但没归类) |
+| 2 | 几乎是 concat(N 个 subagent 的输出依次贴出来) |
+| 1 | 完全没综合 / 或综合错误丢失关键信息 |
+| N/A | scenario 不涉及 subagent / subagent 只 1 个 / subagent 失败没拿到结果 |
+
 **N/A 处理**:平均分计算时跳过 N/A 项,只算实际有评分的维度数。
 
 ---
@@ -103,8 +133,9 @@ ls target/l1-runs/<ts>/
   - 一 turn 内连续多个相同工具→检查是否合理(`batch_create_7_files` 期望 7 次 write_file)
   - Plan 模式 → 不应调 write/edit/exec_shell(底座 sandbox 应该已拦,但 LLM 不该尝试)
   - "不要先 list_dir 探目录" → 不应调 list_dir
-  - **blocklist 工具出现 → 工具使用 ≤2 分** (`agent_*`/`rlm_*`/`task_*`/`pr_attempt_*`/`git_*`/`apply_patch`/`pandoc_convert`/`image_*`/`todo_*`/`automation_*`/`github_*` —— 完整清单见 `DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs`)
+  - **blocklist 工具出现** → 默认工具使用 ≤2 分 (`rlm_*`/`task_*`/`pr_attempt_*`/`git_*`/`apply_patch`/`pandoc_convert`/`image_*`/`todo_*`/`automation_*`/`github_*` —— 完整清单见 `DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs`)。**豁免**:scenario 用 `PINVOU3_BLOCKLIST_OVERRIDE` env 显式启用的工具不扣 (例如 `subagent_*` scenario 启用 `agent_spawn` 是合法的)
   - **过激探目录** → 工具使用 ≤3 分 (translate/简单 QA 等任务调 list_dir/read_file 探环境)
+- **任务拆分合理性 / 结果综合能力 (r2 维度 5/6)**:仅 subagent scenario 评。看 `agent_spawn` 的 prompt 字段、subagent 数量、`agent_result` 后主 agent 输出综合度
 
 **每个分附一句话理由**——理由必须具体引用 transcript 内容,不能空洞("还可以"不算理由)。
 
@@ -152,14 +183,14 @@ ls target/l1-runs/<ts>/
 
 ## 总览
 
-| scenario | 准确性 | 完整性 | 简洁性 | 工具 | 平均 |
-|---|---|---|---|---|---|
-| translate_no_tool | 5 | 4 | 4 | N/A | 4.33 |
-| batch_create_7_files | 5 | 5 | 4 | 5 | 4.75 |
-| plan_mode_list_dir | 4 | 4 | 3 | 4 | 3.75 |
-| save_to_tmp_no_validate_fail | 5 | 5 | 5 | 5 | 5.00 |
-| reasoning_off_speed | 4 | 4 | 5 | N/A | 4.33 |
-| **维度平均** | 4.6 | 4.4 | 4.2 | 4.67 | **4.43** |
+| scenario | 准确性 | 完整性 | 简洁性 | 工具 | 拆分 | 综合 | 平均 |
+|---|---|---|---|---|---|---|---|
+| translate_no_tool | 5 | 4 | 4 | N/A | N/A | N/A | 4.33 |
+| batch_create_7_files | 5 | 5 | 4 | 5 | N/A | N/A | 4.75 |
+| subagent_compare_3_libs | 5 | 5 | 4 | 4 | 5 | 4 | 4.50 |
+| **维度平均** | ... | ... | ... | ... | ... | ... | **N.NN** |
+
+(拆分=任务拆分合理性,综合=结果综合能力。两列只对 subagent scenario 评。)
 
 ## 逐 scenario 详评
 
@@ -230,6 +261,7 @@ ls target/l1-runs/<ts>/
 ### 版本历史
 
 - **r1** (2026-05-18): 初版,4 维 × 1-5 分,N/A 跳过。Step 3 增加 blocklist 工具/过激探目录扣分条款。
+- **r2** (2026-05-18): 加 2 维 (任务拆分合理性 / 结果综合能力),用于 subagent scenario。blocklist 扣分加 `PINVOU3_BLOCKLIST_OVERRIDE` env 豁免条款。
 
 ### 改版流程
 
