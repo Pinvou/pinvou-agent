@@ -358,7 +358,11 @@ fn reminder_for(mode: AppMode, phase: PlanPhase) -> Option<&'static str> {
              3. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
              方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。\n\
              4. **禁止**调 `write_file` / `edit_file` / `exec_shell` / `code_execution`——\
-             它们在 Plan 模式不可用,调了一定失败。",
+             它们在 Plan 模式不可用,调了一定失败。\n\
+             5. 调完 update_plan 后,text 必须用 1-2 句话给方案核心 summary(不超过 50 字),\
+             例如 \"已出 4 步方案,核心是先统计后清理。等你确认\"。**禁止**写\"我先...\" \
+             /\"让我...\"/\"接下来...\"等过渡语或未完成的下一步动作意图——卡片已交付,\
+             text 是给用户的最终交付总结,不是给自己的旁白。",
         ),
         (AppMode::Plan, PlanPhase::Ready) => Some(
             "Plan 模式 + Ready 阶段。AI 之前的方案已经在 plan 卡片上等用户决策。\n\
