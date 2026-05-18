@@ -1090,8 +1090,12 @@ function appendUserMessage(text) {
   const bubble = document.createElement("div");
   bubble.className = "bubble bubble-user";
   bubble.textContent = text;
+  const meta = document.createElement("div");
+  meta.className = "user-meta";
+  meta.textContent = new Date().toTimeString().slice(0, 5);
   wrap.appendChild(label);
   wrap.appendChild(bubble);
+  wrap.appendChild(meta);
   row.appendChild(wrap);
   chatArea.appendChild(row);
   scrollToBottom();
@@ -1114,7 +1118,8 @@ function beginAssistantBubble() {
   wrap.className = "msg-wrap msg-wrap-assistant";
   const label = document.createElement("div");
   label.className = "speaker-label speaker-assistant";
-  label.textContent = "Qwen3.6";
+  const time = new Date().toTimeString().slice(0, 5);
+  label.innerHTML = `<span class="label-name">QWEN3.6</span><span class="label-meta">· ${time}</span>`;
   const bubble = document.createElement("div");
   bubble.className = "bubble bubble-assistant rendered";
   wrap.appendChild(label);
@@ -1129,12 +1134,63 @@ function appendAssistantDelta(text) {
   if (!currentAssistantBubble) beginAssistantBubble();
   currentAssistantRawText += text;
   currentAssistantBubble.innerHTML = renderMarkdown(currentAssistantRawText);
+  // 流式期间末尾插入光标(每次重渲染都会被清掉,所以这里 append 回去)
+  const cursor = document.createElement("span");
+  cursor.className = "stream-cursor";
+  currentAssistantBubble.appendChild(cursor);
   scrollToBottom();
 }
 function closeAssistantBubble() {
+  if (currentAssistantBubble) {
+    const cursor = currentAssistantBubble.querySelector(".stream-cursor");
+    if (cursor) cursor.remove();
+    enhanceCodeBlocks(currentAssistantBubble);
+  }
   currentAssistantBubble = null;
   currentAssistantRawText = "";
   updateMessageActions();
+}
+
+/** 对 assistant bubble 内的 <pre><code> 包装一层 .code-block,加语言标签 + COPY 按钮。
+ *  幂等:已包装的 pre 跳过。 */
+function enhanceCodeBlocks(container) {
+  if (!container) return;
+  container.querySelectorAll("pre").forEach((pre) => {
+    if (pre.parentElement?.classList.contains("code-block")) return;
+    const code = pre.querySelector("code");
+    const cls = code?.className || "";
+    const m = cls.match(/language-(\S+)/);
+    const lang = m ? m[1].toUpperCase() : "";
+    const wrap = document.createElement("div");
+    wrap.className = "code-block";
+    const head = document.createElement("div");
+    head.className = "code-block-head";
+    const langEl = document.createElement("span");
+    langEl.className = "code-block-lang";
+    langEl.textContent = lang;
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "code-block-copy";
+    copyBtn.textContent = "⧉ COPY";
+    copyBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(code?.textContent || pre.textContent || "");
+        copyBtn.classList.add("copied");
+        copyBtn.textContent = "✓ COPIED";
+        setTimeout(() => {
+          copyBtn.classList.remove("copied");
+          copyBtn.textContent = "⧉ COPY";
+        }, 1400);
+      } catch (e) {
+        console.warn("clipboard write failed", e);
+      }
+    });
+    head.appendChild(langEl);
+    head.appendChild(copyBtn);
+    pre.parentNode.insertBefore(wrap, pre);
+    wrap.appendChild(head);
+    wrap.appendChild(pre);
+  });
 }
 
 // ── 阶段 C: 消息 hover 操作按钮（最后一条 user/assistant 才显示） ──

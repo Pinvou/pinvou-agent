@@ -2526,3 +2526,239 @@ body[data-theme="liquid-light"] .modal-overlay[data-kind="warning"] .modal-btn-c
   background: #ff3b30;
   border-color: #ff3b30;
 }
+
+/* =========================================================
+   v2 气泡改造:assistant 去装饰,user 紧凑,代码块/工具卡升级
+   ========================================================= */
+
+/* assistant 容器:去 bg/border/shadow,直接占阅读列 */
+.bubble-assistant {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  line-height: 1.75;
+}
+.msg-wrap-assistant {
+  max-width: min(72ch, 90%);
+}
+
+/* assistant label:一行带元信息(│ QWEN3.6 · 14:32),左侧用 border 做稳定竖条 */
+.speaker-label.speaker-assistant {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--tertiary);
+  opacity: 1;
+  margin-bottom: 6px;
+  padding: 1px 0 1px 8px;
+  border-left: 2px solid var(--primary-container);
+  line-height: 1.3;
+}
+.speaker-label.speaker-assistant .label-name {
+  color: var(--tertiary);
+}
+.speaker-label.speaker-assistant .label-meta {
+  color: var(--on-surface-muted);
+  font-weight: 400;
+  letter-spacing: 0.1em;
+  margin-left: 8px;
+}
+
+/* user 气泡:紧凑一点 */
+.bubble-user {
+  padding: 8px 14px;
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+.speaker-label.speaker-user {
+  display: none;  /* user 不需要 label,用 user-meta 时间戳替代 */
+}
+.user-meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--on-surface-muted);
+  text-transform: uppercase;
+  margin-top: 3px;
+  padding-right: 4px;
+}
+
+/* 流式光标:橙色块闪烁 */
+.stream-cursor {
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  background: var(--primary-container);
+  margin-left: 2px;
+  vertical-align: -2px;
+  animation: stream-blink 1.1s steps(2) infinite;
+}
+@keyframes stream-blink {
+  50% { opacity: 0; }
+}
+
+/* 代码块装饰:语言标签 + COPY 按钮(替换 .bubble.rendered pre 默认外观) */
+.code-block {
+  margin: 0.7em 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface-container-lowest);
+  border: 1px solid var(--surface-container-high);
+}
+.code-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 14px;
+  background: rgba(40, 42, 49, 0.45);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--on-surface-muted);
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--surface-container-high);
+}
+.code-block-lang {
+  color: var(--tertiary);
+  font-weight: 600;
+}
+.code-block-copy {
+  background: transparent;
+  border: none;
+  color: var(--on-surface-muted);
+  cursor: pointer;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all 0.12s;
+}
+.code-block-copy:hover {
+  color: var(--on-surface);
+  background: rgba(255, 255, 255, 0.05);
+}
+.code-block-copy.copied {
+  color: var(--success);
+}
+.code-block pre {
+  margin: 0;
+  padding: 12px 14px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  overflow-x: auto;
+  line-height: 1.6;
+}
+
+/* tool-card 收紧:贴文字流左缘 + 紧底色. 状态完全由右侧 badge(DONE/RUNNING/FAILED)表达,不在边框上额外加竖条 */
+.tool-card {
+  margin: 12px 0;
+  align-self: flex-start;
+  max-width: min(72ch, 90%);
+  padding: 8px 12px;
+  background: rgba(28, 31, 38, 0.5);
+  border: 1px solid var(--surface-container-high);
+}
+.tool-card.tool-running,
+.tool-card.tool-success,
+.tool-card.tool-error {
+  border-color: var(--surface-container-high);
+}
+.tool-card .tool-head {
+  margin-bottom: 6px;
+}
+.tool-card .tool-name {
+  font-weight: 700;
+  font-size: 12px;
+}
+.tool-card .tool-meta {
+  font-size: 10px;
+}
+.tool-card .tool-state {
+  font-size: 10px;
+  padding: 1px 8px;
+}
+.tool-card .tool-args,
+.tool-card .tool-output {
+  font-size: 10.5px;
+}
+
+/* msg-actions:inline mono 风,更克制 */
+.msg-actions {
+  margin-top: 8px;
+  opacity: 0.55;
+}
+.msg-wrap:hover .msg-actions {
+  opacity: 1;
+}
+.msg-action-btn {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  padding: 3px 9px;
+}
+
+/* === liquid-dark 主题适配 v2 === */
+body[data-theme="liquid-dark"] .speaker-label.speaker-assistant {
+  color: #64D2FF;
+  border-left-color: #0A84FF;
+}
+body[data-theme="liquid-dark"] .speaker-label.speaker-assistant .label-name {
+  color: #64D2FF;
+}
+body[data-theme="liquid-dark"] .stream-cursor {
+  background: #0A84FF;
+}
+body[data-theme="liquid-dark"] .code-block-head {
+  background: rgba(28, 28, 30, 0.6);
+}
+body[data-theme="liquid-dark"] .code-block-lang {
+  color: #64D2FF;
+}
+body[data-theme="liquid-dark"] .tool-card {
+  background: rgba(28, 28, 30, 0.6);
+}
+
+/* === liquid-light 主题适配 v2:chat-area 白色面板 + 字色调整 === */
+body[data-theme="liquid-light"] .chat-area {
+  background: #FFFFFF;
+  border-radius: 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 8px 32px rgba(0,0,0,0.05);
+  margin: 16px 32px;
+  max-width: calc(100% - 64px);
+  padding: 28px 36px;
+}
+body[data-theme="liquid-light"] .speaker-label.speaker-assistant {
+  color: #007AFF;
+  border-left-color: #007AFF;
+}
+body[data-theme="liquid-light"] .speaker-label.speaker-assistant .label-name {
+  color: #007AFF;
+}
+body[data-theme="liquid-light"] .stream-cursor {
+  background: #007AFF;
+}
+body[data-theme="liquid-light"] .code-block {
+  background: #f7f7fa;
+  border-color: rgba(0, 0, 0, 0.08);
+}
+body[data-theme="liquid-light"] .code-block-head {
+  background: rgba(0, 0, 0, 0.03);
+  border-bottom-color: rgba(0, 0, 0, 0.08);
+}
+body[data-theme="liquid-light"] .code-block-lang {
+  color: #007AFF;
+}
+body[data-theme="liquid-light"] .code-block pre {
+  color: #1d1d1f;
+}
+body[data-theme="liquid-light"] .tool-card {
+  background: rgba(0, 0, 0, 0.02);
+  border-color: rgba(0, 0, 0, 0.08);
+}
+body[data-theme="liquid-light"] .bubble.rendered strong {
+  color: #1d1d1f;
+}
