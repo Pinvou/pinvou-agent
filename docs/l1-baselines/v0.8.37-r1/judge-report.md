@@ -1,6 +1,6 @@
-# L1 Judge Report — `1779074272` (5 scenarios)
+# L1 Judge Report — `1779074272` (5 scenarios, rubric r1)
 
-> Judged by Claude. Rubric: `docs/L1-judge-rubric.md` v1.
+> Judged by Claude. Rubric: `docs/L1-judge-rubric.md` **r1**.
 > Source transcripts: `target/l1-runs/1779074272/`.
 > Model under test: Qwen3.6-35B-A3B-FP8 @ vLLM 10.214.74.113.
 
@@ -72,6 +72,12 @@
 - 下次跑前先 `cp -r target/l1-runs/1779074272/ target/l1-runs/baseline-v0.8.37/`,作为质量基线
 - 改 INSTRUCTIONS_MD / system-reminder / 模型版本时,跑 L1 → 拿新 ts 跟 baseline diff
 - ±0.5 分以内视为正常波动,±0.5 以上是 signal
+
+## process.md 待办建议 (闭环)
+
+任一维度 ≤3 的项已 append 到 `process.md` `## L1 judge 离群点跟进` 区:
+
+- `plan_mode_list_dir` 简洁性 3/5 → Plan/Planning system-reminder 加 "已调 update_plan 别再说'我先...'过渡语"
 
 ## 备注
 

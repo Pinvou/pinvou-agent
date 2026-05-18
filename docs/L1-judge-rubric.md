@@ -1,8 +1,10 @@
 # L1 Judge Rubric — Claude 离线评 Qwen 答案质量
 
+> **当前版本: r1** (2026-05-18 起生效)。改版规则见 §6。
+>
 > 用法:L1 跑完 → 用户对话框跟 Claude 说 "评一下 `target/l1-runs/<ts>`" → Claude 按本文件 rubric 评分写报告 → `target/l1-judge/<ts>-report.md`。
 >
-> **跟 L1 cargo test PASS/FAIL 完全解耦**。L1 是行为契约(工具/落盘/耗时),judge 是答案质量评估,两件事。
+> **跟 L1 cargo test PASS/FAIL 完全解耦**。L1 是行为契约(文件落盘/耗时上限,judge 看不见的硬指标),judge 是答案质量评估,两件事。
 >
 > Judge 是 Claude(本对话里的我),不是远程 Anthropic API,不是本地 Qwen 自评。**跨模型独立性是 judge 的存在价值**——Qwen 跑、Claude 评,比 Qwen 自评 Qwen 多一层防同向漂移。
 
@@ -101,18 +103,39 @@ ls target/l1-runs/<ts>/
   - 一 turn 内连续多个相同工具→检查是否合理(`batch_create_7_files` 期望 7 次 write_file)
   - Plan 模式 → 不应调 write/edit/exec_shell(底座 sandbox 应该已拦,但 LLM 不该尝试)
   - "不要先 list_dir 探目录" → 不应调 list_dir
+  - **blocklist 工具出现 → 工具使用 ≤2 分** (`agent_*`/`rlm_*`/`task_*`/`pr_attempt_*`/`git_*`/`apply_patch`/`pandoc_convert`/`image_*`/`todo_*`/`automation_*`/`github_*` —— 完整清单见 `DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs`)
+  - **过激探目录** → 工具使用 ≤3 分 (translate/简单 QA 等任务调 list_dir/read_file 探环境)
 
 **每个分附一句话理由**——理由必须具体引用 transcript 内容,不能空洞("还可以"不算理由)。
 
-### Step 4: 写报告到 `target/l1-judge/<ts>-report.md`
+### Step 4: 写报告到 `target/l1-judge/<ts>-r<N>-report.md`
 
-按下方模板。`mkdir -p target/l1-judge/` 若不存在。
+`<N>` 是当前 rubric 版本号(本文档顶部"当前版本"),比如 `1779074272-r1-report.md`。
+`mkdir -p target/l1-judge/` 若不存在。按 §4 模板。
 
-### Step 5: 给用户简短回报
+### Step 5: append 离群点到 `process.md` (闭环防丢失)
+
+任一 scenario 任一维度 ≤3 → 把改进建议 append 到 `process.md` 末尾的固定区:
+
+```markdown
+## L1 judge 离群点跟进 (auto-append by Claude)
+
+### <date> · run <ts>-r<N> · <scenario> · <维度> <分>/5
+- **问题**: <从 judge 详评里抽出来的具体描述>
+- **改进方向**: <你给的具体建议,例如改 reminder/instructions/prompt 哪段>
+- **状态**: 🆕 待处理
+```
+
+`<date>` 用今天日期(用户的 currentDate),`<ts>-r<N>` 跟 report 文件名一致。
+
+如果 `process.md` 末尾没有 `## L1 judge 离群点跟进` 这个 H2,先 append 一个。
+如果同一 scenario 同一维度的待办已存在(grep 同 scenario+维度),不重复 append,改更新状态行为 "🔁 又出现一次"。
+
+### Step 6: 给用户简短回报
 
 对话框里告诉用户:
 - 总平均分
-- 离群点(任一维度 ≤2 分,或全维度 ≥4.5 分)
+- 离群点条数 (写进 process.md 第 N 行)
 - 报告路径
 
 不要在对话框贴完整报告——报告在文件里,用户自己看。
@@ -122,9 +145,9 @@ ls target/l1-runs/<ts>/
 ## 4. 报告模板
 
 ````markdown
-# L1 Judge Report — `<ts>` (<scenario_count> scenarios)
+# L1 Judge Report — `<ts>` (<scenario_count> scenarios, rubric r<N>)
 
-> Judged by Claude (本对话). Rubric: `docs/L1-judge-rubric.md` v1.
+> Judged by Claude (本对话). Rubric: `docs/L1-judge-rubric.md` **r<N>**.
 > Source transcripts: `target/l1-runs/<ts>/`.
 
 ## 总览
@@ -175,11 +198,16 @@ ls target/l1-runs/<ts>/
 **重大变化** (任一维度 ±0.5+):
 - 无 / 或列出维度 + 可能原因
 
+## process.md 待办建议 (闭环)
+
+任一维度 ≤3 → 这里列出,**同时**已 append 到 `process.md` 末尾的 `## L1 judge 离群点跟进` 区:
+
+- `<scenario>` <维度> <分>/5 → 建议: <具体改进>
+
 ## 备注
 
 - Judge 自评的固有偏差: Claude 跟 Qwen 都是 LLM,虽跨模型但同类心智,某些"模型味"可能 Claude 看不出来
 - 这是 ad-hoc judge,不是 CI gate。要 release 前手动跑 + 看报告
-- Rubric 改了请 bump rubric 版本号
 ````
 
 ---
@@ -197,13 +225,40 @@ ls target/l1-runs/<ts>/
 
 ---
 
-## 6. Rubric 演进
+## 6. Rubric 演进 & 跨版本 diff 规则
 
-v1 (2026-05-18): 初版,4 维 × 1-5 分,N/A 跳过。
+### 版本历史
 
-后续可能新增:
-- "上下文连贯性"(multi-turn scenario 引入后)
+- **r1** (2026-05-18): 初版,4 维 × 1-5 分,N/A 跳过。Step 3 增加 blocklist 工具/过激探目录扣分条款。
+
+### 改版流程
+
+1. **改 rubric 内容**(新增维度/调整判别标准/扣分条款)→ 顶部 "当前版本" bump 到下一个 r
+2. **§6 版本历史**加一行说明改了什么
+3. **所有未来 baseline 文件夹命名**含新 rubric 版本: `docs/l1-baselines/v<app_ver>-r<N>/`
+4. **跨 rubric 版本 diff 拒绝**——4 分(r1)跟 4 分(r2)不是一个尺子。要 diff 必须先用同一 rubric 重评一边
+
+### 何时 bump 版本
+
+- 加新维度(从 4 维 → 5 维)
+- 改 1-5 分的判别标准(扣分门槛/示例变化)
+- 加新扣分条款(像 r1 的 blocklist 工具 ≤2 分)
+- **不需要 bump**:错别字、补充说明、报告模板调整
+
+### Baseline 命名约定
+
+```
+docs/l1-baselines/v<app_ver>-r<rubric_ver>/
+   ├── <scenario>.md × N
+   └── judge-report.md
+```
+
+例:`v0.8.37-r1/` 表示 pinvou3-app v0.8.37 + rubric r1 评分。
+
+升 rubric 时:旧 baseline 文件夹**不动**(它们是历史快照,用旧 rubric)。新跑用新 rubric,新 baseline 起新文件夹。需要时跑一次"用新 rubric 重评旧 transcript"产 `v0.8.37-r2/` 作为 rubric 迁移参照。
+
+### 后续可能加的维度 (留作 r2+ 候选)
+
+- "上下文连贯性"(multi-turn scenario 大量引入后)
 - "安全性"(模型有没有泄露敏感信息 / 越权操作)
 - "中文表达地道度"(zh-Hans 用户体验维度)
-
-每次改 rubric 都要 bump 版本号,旧报告标注用的版本以便 diff。

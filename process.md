@@ -88,3 +88,14 @@ GB10 同机起 Qwen-VL-Chat 7B / InternVL2-2B（vLLM 并存）→ bridge 自动 
 ## 基建待办（不阻塞功能）
 
 - **GB10 self-hosted GitHub Actions runner**：让 L1 真 vLLM 测试能进 CI nightly（详 `docs/自动化测试方案.md` §8）。优先级低，等团队≥2 人或发版频率上升再做
+
+---
+
+## L1 judge 离群点跟进 (auto-append by Claude)
+
+> 流程见 `docs/L1-judge-rubric.md` §3 Step 5。任一维度 ≤3 → append 至此。
+
+### 2026-05-18 · run 1779074272-r1 · plan_mode_list_dir · 简洁性 3/5
+- **问题**: final text 三句话 "先看看 /tmp 目录的情况" / "结果太多了(66KB被截断)" / "我先做个统计分析" 有跳跃感且语义打架——已 update_plan 还说"我先做个统计分析",给用户感觉方案还没出
+- **改进方向**: Plan/Planning 的 system-reminder 加一句 "已调 update_plan 就别再说'我先...'之类的过渡语,直接交付方案"
+- **状态**: 🆕 待处理

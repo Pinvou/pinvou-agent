@@ -7,16 +7,22 @@
 ```
 docs/l1-baselines/
 ├── README.md (本文件)
-└── <version>-<date>/                  ← 一次 baseline
+└── v<app_ver>-r<rubric_ver>/          ← 一次 baseline (双版本号)
     ├── <scenario>.md × N              ← harness 落的 transcript
     └── judge-report.md                ← Claude 按 rubric 评分报告
 ```
 
+**双版本号** (`v<app_ver>-r<rubric_ver>`) 的意义:
+- `v<app_ver>` 标的是被测系统 (pinvou3-app 版本 + Qwen 模型 + INSTRUCTIONS_MD)
+- `r<rubric_ver>` 标的是评分尺子 (`docs/L1-judge-rubric.md` 当前版本)
+- 跨 r 版本的分数**不可直接 diff** (4 分@r1 跟 4 分@r2 不是一个尺子,见 rubric §6)
+- rubric bump 后,旧 baseline 文件夹不动,新跑用新 rubric 起新文件夹
+
 ## 已有 baseline
 
-| 版本 | 日期 | scenario 数 | 总均分 | 说明 |
+| 文件夹 | 日期 | scenario 数 | 总均分 | 说明 |
 |---|---|---|---|---|
-| `v0.8.37` | 2026-05-18 | 5 | 4.75 | 首次 baseline,Qwen3.6 + L1.5 工具表 + INSTRUCTIONS_MD v0.8.37 |
+| `v0.8.37-r1` | 2026-05-18 | 5 | 4.75 | 首次 baseline,Qwen3.6 + L1.5 工具表 + INSTRUCTIONS_MD v0.8.37,rubric r1 |
 
 ## 怎么用
 
@@ -26,12 +32,12 @@ docs/l1-baselines/
 cargo test --test l1_dialog_harness -- --ignored --test-threads=1
 # 拿到新 ts (target/l1-runs/<ts>/)
 # 跟 Claude 说: "评一下 target/l1-runs/<ts>"
-# 拿到 judge report 后:
+# 拿到 judge report 后(report 文件名形如 <ts>-r<N>-report.md):
 ts=<ts>
-ver=<version-date>
+ver=v<app_ver>-r<rubric_ver>     # 例: v0.8.38-r1
 mkdir -p docs/l1-baselines/$ver
 cp pinvou3-app/src-tauri/target/l1-runs/$ts/*.md docs/l1-baselines/$ver/
-cp pinvou3-app/src-tauri/target/l1-judge/$ts-report.md docs/l1-baselines/$ver/judge-report.md
+cp pinvou3-app/src-tauri/target/l1-judge/$ts-r*-report.md docs/l1-baselines/$ver/judge-report.md
 # 更新本 README 表格
 git add docs/l1-baselines/$ver/ docs/l1-baselines/README.md
 git commit -m "锚 L1 baseline $ver"
