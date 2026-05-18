@@ -8,9 +8,11 @@
 //! Engine 事件（MessageDelta / ToolCallStarted / ToolCallComplete / TurnComplete）
 //! 由 `engine::spawn_event_forwarder` 转译成 Tauri 事件推到前端。
 
-mod bridge;
+// bridge + engine 公开给 tests/l1_dialog_harness.rs 用 (boot_with_workspace /
+// spawn_headless 是测试入口)。其余模块保持 private,仅 Tauri 内部使用。
+pub mod bridge;
 mod commands;
-mod engine;
+pub mod engine;
 mod file_ingest;
 mod file_watcher;
 mod monitor;
