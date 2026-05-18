@@ -180,4 +180,28 @@ GB10 同机起 Qwen-VL-Chat 7B / InternVL2-2B（vLLM 并存）→ bridge 自动 
 
 ### 2026-05-18 · run 1779095350-r2 · plan_travel_web · 工具 3/5
 - **问题**: 🔁 没调 update_plan (vllm2-r2-17scn 自动修了,这次又退回)
-- **状态**: 🔁 LLM 行为不稳累积证据,等更多样本
+- **状态**: ✅ run 1779102334 plan B 配置下自动修了 (工具 5/5,调对了 update_plan)。**LLM 行为对 vLLM 配置敏感**
+
+### 2026-05-18 · run 1779102334-r2 · plan B vLLM 配置最终诊断
+
+vLLM 参数:`max-num-batched-tokens 131072 (4×) + 保留 chunked-prefill + 256K context`。老 13 scenarios 平均 4.67→4.71 (5 个改善:multi_turn/plan_travel/chinese/tool_error/reasoning_off)。
+
+**subagent 大任务 timeout 真正根因终于定位**: 不是 vLLM 调度问题。**subagent 内部完整对话需要 5-10 分钟** (research_academic 504s 还在 running)。可能原因:
+1. Qwen3.6 subagent 默认 verbose (大量 reasoning token)
+2. subagent 内部多步推理 (调工具+思考 5+ 轮)
+3. subagent 内部工具失败重试 (Bing 不可用 → 反复尝试)
+
+**这跟模型能力 + Qwen 默认行为有关,不是 vLLM 配置能修。**
+
+### 2026-05-18 · run 1779102334-r2 · subagent 大任务可用性结论
+- **现状**: ≤1 subagent (single_simple 30s)、subagent_no_need (不开 subagent) 完美;subagent_one_fails (3 subagent 中 1 完成 2 超时,主 agent 用知识补)正常工作;**multi-subagent + 长 prompt + 需要长完成时间** = 不可用 (>10 分钟超 cargo timeout)
+- **改进方向 (后续)**:
+  1. 主 agent prompt 工程限制 subagent 步数 (`max_steps=5`)
+  2. 减 subagent reasoning verbosity (system prompt 加 "简洁,直接出结论")
+  3. 接受 multi-subagent 大任务在 pinvou3 当前场景下不可用,只支持 single subagent / single subagent fan-out 1-2 个
+- **状态**: ⚠️ 用户决定 — multi-subagent 是 power feature,需要 prompt 工程改造才能彻底可用
+
+### 2026-05-18 · run 1779102334-r2 · long_output_1500 · 工具 2/5 + 简洁性 2/5
+- **问题**: LLM 自己 detour 调 web_search 2 次 (prompt 没要求联网,Bing 全失败),且写了 12K 字超 prompt 1500 要求 8×。cargo test fail (206s > 180s)
+- **改进方向**: 单次 LLM 抽奖 — 单 sample 不可信。累积 3+ 次再考虑改 prompt
+- **状态**: 🆕 待处理 (低优先,LLM noise)
