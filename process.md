@@ -98,12 +98,12 @@ GB10 同机起 Qwen-VL-Chat 7B / InternVL2-2B（vLLM 并存）→ bridge 自动 
 ### 2026-05-18 · run 1779074272-r1 · plan_mode_list_dir · 简洁性 3/5
 - **问题**: final text 三句话 "先看看 /tmp 目录的情况" / "结果太多了(66KB被截断)" / "我先做个统计分析" 有跳跃感且语义打架——已 update_plan 还说"我先做个统计分析",给用户感觉方案还没出
 - **改进方向**: Plan/Planning 的 system-reminder 加一句 "已调 update_plan 就别再说'我先...'之类的过渡语,直接交付方案"
-- **状态**: 🧪 已尝试改造 reminder (commit `<commit-hash-pending>`,Planning §5 加禁过渡语条款),但 run 1779078816 LLM 仍写了 5 次 "让我..." —— 单靠 reminder 改不动 LLM "复述思考过程" 这类 mode-independent 行为,需 prompt 工程层或 fine-tune 跟进。**降级追踪**:等下次完整 baseline 跑看群体趋势。
+- **状态**: 🔁 2026-05-18 又出现一次 (run 1779077762-r1) —— Plan 模式 text 悬空问题持续
 
 ### 2026-05-18 · run 1779077762-r1 · plan_mode_list_dir · 完整性 3/5
 - **问题**: final text 只一句 "输出被截断了，让我获取完整的目录列表信息。" 像是 turn 没结束就 turn_complete,用户得不到方案 summary,只能看 plan 卡片
 - **改进方向**: 同上 (Plan/Planning system-reminder 加 "调 update_plan 后 text 必须给方案 summary 不能悬空,不要说'让我...'之类下一步动作意图")
-- **状态**: ✅ 2026-05-18 已改善 — reminder 改造后 run 1779078816 final text 给出具体分类描述(477 条目/pinvou3-l1- 前缀/系统目录),完整性从 3/5 升到 5/5 (单次样本,需完整 baseline 复核)
+- **状态**: 🆕 待处理
 
 ### 2026-05-18 · run 1779077762-r1 · plan_travel_web · 工具使用 3/5
 - **问题**: prompt 明确要求"用 update_plan 给我一个 3 天行程方案",LLM 用 text 表格替代直接交付,没调 update_plan。web_search 4 次全失败 (Bing 0 结果 + 网络 err) 后也没换 fetch_url 等其他工具
