@@ -17,7 +17,6 @@ mod file_ingest;
 mod file_watcher;
 mod monitor;
 
-use std::time::Duration;
 
 use tauri::Manager;
 
@@ -74,11 +73,10 @@ pub fn run() {
                 }
             });
 
-            // Monitor 后台采样：5s 一次，缓存在 MonitorState 里
+            // Monitor 按需采样：state 只持有 session_uptime，sample 由前端调
+            // get_monitor_snapshot 时触发（监控页面 1s interval，离开页面停）。
             let monitor_state = MonitorState::new();
-            monitor::spawn_sampler(monitor_state.clone(), Duration::from_secs(5));
             app.handle().manage(monitor_state);
-            eprintln!("[pinvou3-app] monitor sampler started (5s interval)");
 
             // File watcher: 监听 ~/.pinvou3/sessions/ 树,新文件 emit artifact:disk
             file_watcher::spawn(app.handle().clone(), bridge::paths::sessions_root());

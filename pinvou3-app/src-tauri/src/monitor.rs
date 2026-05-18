@@ -1,17 +1,16 @@
 //! GB10 设备 + vLLM 后端 + pinvou3-app 自身的健康/性能采样。
 //!
-//! 数据流：后台 task 每 5s 跑一次 `sample_all`（async），结果写入
-//! `Arc<RwLock<MonitorSnapshot>>` 缓存。Tauri command `get_monitor_snapshot()`
-//! 直接读缓存——避免每次前端 invoke 都跑 `nvidia-smi` 或 HTTP 请求。
+//! 数据流：**按需采样**——前端在监控页面 mount 时启 1s interval 调
+//! `get_monitor_snapshot`，离开页面就停。后端每次 command 直接跑一次
+//! `sample_all`。设计目的：用户不在监控页面时**完全不跑 nvidia-smi**。
+//! GPU util 峰值靠前端 5 个值滑窗 max（A+B）补足瞬时采样易错过推理峰的问题。
 //!
 //! 设计原则：**任何采样失败都 graceful degrade**——返回 None / OFFLINE，
 //! 而不是 panic 或让上层崩。pinvou3 用户可能没装 nvidia-smi，可能没启 vLLM。
 
-use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
-use tokio::sync::RwLock;
 
 /// 单次完整采样结果。所有字段 `Option`——采集失败就为 None。
 #[derive(Debug, Clone, Default, Serialize)]
@@ -29,6 +28,9 @@ pub struct GpuSnapshot {
     pub vram_used_mib: u64,
     pub vram_total_mib: u64,
     pub utilization_pct: u32,
+    /// GB10 等 unified-memory 设备 VRAM 字段是 [N/A]，UI 切到温度+功耗显示。
+    pub temperature_c: Option<u32>,
+    pub power_w: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -66,27 +68,17 @@ pub struct AppSnapshot {
     pub session_uptime_secs: u64,
 }
 
-/// 持有缓存的 Monitor 状态，可 clone（内部 Arc）。
+/// Monitor 状态——只持有 session 起始时间，sample 全部按需。
 #[derive(Debug, Clone, Default)]
 pub struct MonitorState {
-    inner: Arc<RwLock<MonitorSnapshot>>,
     started_at: Option<Instant>,
 }
 
 impl MonitorState {
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(RwLock::new(MonitorSnapshot::default())),
             started_at: Some(Instant::now()),
         }
-    }
-
-    pub async fn snapshot(&self) -> MonitorSnapshot {
-        self.inner.read().await.clone()
-    }
-
-    pub async fn replace(&self, snap: MonitorSnapshot) {
-        *self.inner.write().await = snap;
     }
 
     pub fn session_uptime_secs(&self) -> u64 {
@@ -94,20 +86,7 @@ impl MonitorState {
     }
 }
 
-/// 后台任务：每 `interval` 跑一次 `sample_all`，结果写入 state。
-/// 通常在 Tauri setup() 里 spawn 一次，进程整个生命周期都活着。
-pub fn spawn_sampler(state: MonitorState, interval: Duration) {
-    tauri::async_runtime::spawn(async move {
-        let upstream = vllm_base_url();
-        loop {
-            let snap = sample_all(&state, &upstream).await;
-            state.replace(snap).await;
-            tokio::time::sleep(interval).await;
-        }
-    });
-}
-
-async fn sample_all(state: &MonitorState, vllm_upstream: &str) -> MonitorSnapshot {
+pub async fn sample_all(state: &MonitorState, vllm_upstream: &str) -> MonitorSnapshot {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -129,7 +108,7 @@ async fn sample_all(state: &MonitorState, vllm_upstream: &str) -> MonitorSnapsho
 fn gpu_snapshot() -> Option<GpuSnapshot> {
     let out = std::process::Command::new("nvidia-smi")
         .args([
-            "--query-gpu=name,memory.used,memory.total,utilization.gpu",
+            "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw",
             "--format=csv,noheader,nounits",
         ])
         .output()
@@ -139,14 +118,19 @@ fn gpu_snapshot() -> Option<GpuSnapshot> {
     }
     let line = std::str::from_utf8(&out.stdout).ok()?.lines().next()?;
     let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
-    if parts.len() < 4 {
+    if parts.len() < 6 {
         return None;
     }
+    // unified-memory 设备（如 NVIDIA GB10）`nvidia-smi` 返 `[N/A]`，
+    // parse 失败时不要让整个 snapshot 丢失：单字段降级为 0/None。
+    // UI 层检测 vram_total_mib == 0 切到温度+功耗显示。
     Some(GpuSnapshot {
         name: parts[0].to_string(),
-        vram_used_mib: parts[1].parse().ok()?,
-        vram_total_mib: parts[2].parse().ok()?,
-        utilization_pct: parts[3].parse().ok()?,
+        vram_used_mib: parts[1].parse().unwrap_or(0),
+        vram_total_mib: parts[2].parse().unwrap_or(0),
+        utilization_pct: parts[3].parse().unwrap_or(0),
+        temperature_c: parts[4].parse().ok(),
+        power_w: parts[5].parse().ok(),
     })
 }
 
@@ -182,7 +166,7 @@ fn ram_snapshot() -> Option<RamSnapshot> {
 
 /// 健康探测 + Prometheus metrics 解析。
 /// `/v1/models` 返不到 200 → OFFLINE；返 200 但 metrics 拿不到 → READY 无指标。
-async fn vllm_snapshot(upstream: &str) -> Option<VllmSnapshot> {
+pub async fn vllm_snapshot(upstream: &str) -> Option<VllmSnapshot> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
@@ -305,7 +289,7 @@ fn strip_v1_suffix(url: &str) -> Option<String> {
     )
 }
 
-fn vllm_base_url() -> String {
+pub fn vllm_base_url() -> String {
     std::env::var("DEEPSEEK_BASE_URL")
         .unwrap_or_else(|_| "http://10.214.74.113:8000/v1".to_string())
 }

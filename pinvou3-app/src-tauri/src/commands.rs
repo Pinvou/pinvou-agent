@@ -157,12 +157,14 @@ pub async fn clear_session() -> Result<(), String> {
     Ok(())
 }
 
-/// Monitor 视图完整数据。前端每 5s 拉一次。
+/// Monitor 视图完整数据。**按需采样**——前端只在监控页面 mount 时启 1s
+/// interval 调本 command，每次都重新跑 sample_all。GPU util 瞬时易错过推理
+/// 峰，前端维护 5 个值滑窗 max 弥补。
 #[tauri::command]
 pub async fn get_monitor_snapshot(
     monitor: State<'_, MonitorState>,
 ) -> Result<MonitorSnapshot, String> {
-    Ok(monitor.snapshot().await)
+    Ok(crate::monitor::sample_all(&monitor, &crate::monitor::vllm_base_url()).await)
 }
 
 /// ChatRoom 顶部 live dot 简版指示：vLLM 是否在线。
@@ -173,15 +175,20 @@ pub struct BackendStatus {
 }
 
 #[tauri::command]
-pub async fn get_backend_status(monitor: State<'_, MonitorState>) -> Result<BackendStatus, String> {
-    let snap = monitor.snapshot().await;
+pub async fn get_backend_status(_monitor: State<'_, MonitorState>) -> Result<BackendStatus, String> {
+    // Lightweight: 只 probe vLLM,不跑 nvidia-smi / RAM 采样
+    let vllm = crate::monitor::vllm_snapshot(&crate::monitor::vllm_base_url()).await;
     let vllm_online = matches!(
-        snap.vllm.as_ref().map(|v| v.status),
+        vllm.as_ref().map(|v| v.status),
         Some(VllmStatus::Ready) | Some(VllmStatus::Busy)
     );
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
     Ok(BackendStatus {
         vllm_online,
-        last_check_ms: snap.generated_at_ms,
+        last_check_ms: now_ms,
     })
 }
 

@@ -22,6 +22,9 @@
   --warning:                   #ffbf00;
   --danger:                    #ff4444;
 
+  /* 三栏分隔软线：柔化 sidebar / view-header / right-pane 边框,弱化"切割感" */
+  --border-soft: rgba(255, 255, 255, 0.06);
+
   /* Bubble token（Genesis 默认；液态主题在文件末尾覆写） */
   --bubble-user-bg:     rgba(255, 107, 53, 0.18);
   --bubble-user-fg:     #ffe5d6;
@@ -132,9 +135,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  max-width: 72rem;
   width: 100%;
-  margin: 0 auto;
 }
 .chat-scroll::-webkit-scrollbar { width: 6px; }
 .chat-scroll::-webkit-scrollbar-track { background: transparent; }
@@ -392,8 +393,6 @@ body {
 }
 .composer-inner {
   position: relative;
-  max-width: 72rem;
-  margin: 0 auto;
 }
 .composer textarea {
   display: block; /* 防 inline baseline gap 让 .composer-inner 比 textarea 高 → absolute 按钮 top:50% 偏下 */
@@ -465,13 +464,44 @@ body { flex-direction: row; }
 
 /* ─── Sidebar ───────────────────────────────────────────────── */
 .sidebar {
-  width: 220px;
+  width: var(--sidebar-w, 220px);
   flex-shrink: 0;
-  background: var(--surface-container-lowest);
-  border-right: 1px solid var(--surface-container-high);
+  background: transparent;
+  border-right: 1px solid var(--border-soft);
   display: flex;
   flex-direction: column;
   padding: 28px 0 20px;
+  position: relative;
+}
+/* sidebar 右缘拖拽 handle:命中区 10px(±5px), hover 显中线 */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -5px;
+  width: 10px;
+  cursor: ew-resize;
+  z-index: 5;
+  background: transparent;
+  transition: background 0.12s;
+}
+.sidebar-resizer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 2px;
+  background: transparent;
+  transition: background 0.12s;
+}
+.sidebar-resizer:hover::before,
+body.is-resizing-sidebar .sidebar-resizer::before {
+  background: var(--primary-container);
+}
+body.is-resizing-sidebar {
+  cursor: ew-resize !important;
+  user-select: none;
 }
 .sidebar-brand {
   padding: 0 24px 28px;
@@ -498,7 +528,7 @@ body { flex-direction: row; }
   gap: 4px;
 }
 .sidebar-foot {
-  border-top: 1px solid var(--surface-container-high);
+  border-top: 1px solid var(--border-soft);
   padding-top: 16px;
 }
 .nav-link {
@@ -549,8 +579,8 @@ body { flex-direction: row; }
   align-items: center;
   justify-content: space-between;
   padding: 18px 32px;
-  border-bottom: 1px solid var(--surface-container-high);
-  background: var(--surface-container-low);
+  border-bottom: 1px solid var(--border-soft);
+  background: transparent;
   flex-shrink: 0;
 }
 /* ChatRoom 顶部 toolbar 内容跟 chat-area 中央 72rem 对齐 —— 大屏下避免
@@ -967,6 +997,7 @@ body[data-theme="liquid-dark"] .icon-btn-badge {
 
 /* ─── 主题色板覆写（液态主题，对齐 pinvou2/styles/theme-liquid.css）─── */
 body[data-theme="liquid-dark"] {
+  --border-soft: rgba(255, 255, 255, 0.08);
   --bg: #000000;
   --surface: #1C1C1E;
   --surface-container-lowest: #09090B;
@@ -994,6 +1025,7 @@ body[data-theme="liquid-dark"] {
   --bubble-system-prefix: #64D2FF;
 }
 body[data-theme="liquid-light"] {
+  --border-soft: rgba(0, 0, 0, 0.06);
   --bg: #F2F2F7;
   --surface: #FFFFFF;
   --surface-container-lowest: #FFFFFF;
@@ -1063,9 +1095,9 @@ body[data-theme="liquid-light"] .settings-foot-note code {
    左侧加细色条作为「这是聊天室的子内容」视觉线索。 */
 .history-panel {
   margin: 2px 0 14px;
-  padding: 0 8px 0 28px;          /* 28px 缩进对齐 聊天室 icon+label 位置 */
-  border-left: 1px solid var(--surface-container-high);
-  margin-left: 24px;              /* 让 border-left 落在 聊天室 icon 中点下方 */
+  padding: 0 8px 0 16px;          /* 收紧:从 28 改 16,会话项更贴左 */
+  border-left: 1px solid var(--border-soft);
+  margin-left: 12px;              /* 从 24 改 12,整体往左 24px */
 }
 
 .history-new {
@@ -1143,7 +1175,7 @@ body[data-theme="liquid-light"] .settings-foot-note code {
 .history-item.active::before {
   content: "";
   position: absolute;
-  left: -28px;             /* 顶到 history-panel 的 border-left 上 */
+  left: -16px;             /* 顶到 history-panel 的 border-left 上(padding-left 16px) */
   top: 4px;
   bottom: 4px;
   width: 3px;
@@ -1416,8 +1448,8 @@ body[data-theme="liquid-light"] .right-pane-close:hover {
 .right-pane {
   display: flex;
   flex-direction: column;
-  background: var(--surface-container-low);
-  border-left: 1px solid var(--surface-container-high);
+  background: transparent;
+  border-left: 1px solid var(--border-soft);
   min-width: 0;
   overflow: hidden;
 }
@@ -1596,11 +1628,7 @@ body.is-resizing-right-pane .right-pane-resizer::before {
   border: none;
 }
 
-/* Liquid-light 适配 */
-body[data-theme="liquid-light"] .right-pane {
-  background: rgba(0, 0, 0, 0.02);
-  border-left-color: rgba(0, 0, 0, 0.08);
-}
+/* Liquid-light 适配:right-pane 已统一为 transparent + --border-soft,此处不再单独 override 背景 */
 body[data-theme="liquid-light"] .right-pane-tabs {
   background: rgba(0, 0, 0, 0.03);
   border-bottom-color: rgba(0, 0, 0, 0.08);
@@ -1629,9 +1657,7 @@ body[data-theme="liquid-light"] .artifact-item.active {
   flex-wrap: wrap;
   gap: 6px;
   padding: 8px 12px 0;
-  max-width: 72rem;
   width: 100%;
-  margin: 0 auto;
 }
 .attachment-row.has-items {
   display: flex;
@@ -1785,8 +1811,7 @@ body[data-theme="liquid-light"] .plan-btn:hover {
 
 /* Plan chip 提示行（chip-row 在 composer 顶部，仅非 yolo-default 显示） */
 .mode-chip-row {
-  max-width: 72rem;
-  margin: 0 auto 8px;
+  margin: 0 0 8px;
   padding: 6px 12px;
   display: flex;
   flex-direction: column;
@@ -2722,14 +2747,24 @@ body[data-theme="liquid-dark"] .tool-card {
   background: rgba(28, 28, 30, 0.6);
 }
 
-/* === liquid-light 主题适配 v2:chat-area 白色面板 + 字色调整 === */
-body[data-theme="liquid-light"] .chat-area {
+/* === liquid-light 主题适配 v2:chat-area 不卡片化(跟 genesis 一致铺满父容器), 仅做字色 / 子元素颜色调整 === */
+/* tool-card 默认背景 rgba(28,31,38,0.5) 是给 dark 主题的,在 light 主题下半透明叠浅灰几乎隐形,override */
+body[data-theme="liquid-light"] .tool-card {
   background: #FFFFFF;
-  border-radius: 16px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 8px 32px rgba(0,0,0,0.05);
-  margin: 16px 32px;
-  max-width: calc(100% - 64px);
-  padding: 28px 36px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+/* tool-args/output 默认 color: #c0c0c8 是 dark 主题用的浅灰,light 底下不可读,强制深字 + 白色 fade 渐变 */
+body[data-theme="liquid-light"] .tool-args,
+body[data-theme="liquid-light"] .tool-output {
+  color: #1d1d1f;
+}
+body[data-theme="liquid-light"] .tool-args.collapsible:not(.expanded)::after,
+body[data-theme="liquid-light"] .tool-output.collapsible:not(.expanded)::after {
+  background: linear-gradient(transparent, rgba(255, 255, 255, 0.95));
+}
+body[data-theme="liquid-light"] .tool-output {
+  border-top-color: rgba(0, 0, 0, 0.06);
 }
 body[data-theme="liquid-light"] .speaker-label.speaker-assistant {
   color: #007AFF;
@@ -2755,10 +2790,7 @@ body[data-theme="liquid-light"] .code-block-lang {
 body[data-theme="liquid-light"] .code-block pre {
   color: #1d1d1f;
 }
-body[data-theme="liquid-light"] .tool-card {
-  background: rgba(0, 0, 0, 0.02);
-  border-color: rgba(0, 0, 0, 0.08);
-}
+/* 旧的 .tool-card light 主题 override 已被前面 (~2723) 的白底版本替代,删此处避免覆盖冲突 */
 body[data-theme="liquid-light"] .bubble.rendered strong {
   color: #1d1d1f;
 }

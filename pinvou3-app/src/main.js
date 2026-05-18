@@ -34,6 +34,9 @@ const toolCards = new Map();
 let busy = false;
 let currentView = "chatroom";
 let currentPrefs = null;
+let monitorIntervalId = null;
+let gpuUtilHistory = []; // 5 个最近 util 滑窗，render 取 max（A+B：1s 采样 + 5s 窗口峰值）
+const GPU_UTIL_WINDOW = 5;
 
 // 阶段 C: 多对话历史 —— 前端是 messages 的 source of truth。
 // state.messages 对齐 deepseek-tui Message schema (role + content[]).
@@ -690,11 +693,11 @@ const I18N = {
   "zh-Hans": {
     "app.title": "pinvou3 智能助手",
     "brand.sub": "本地 · GB10",
-    "nav.chatroom": "聊天室",
+    "nav.chatroom": "工作会话",
     "nav.workflow": "工作流",
     "nav.monitor": "监控",
     "nav.settings": "设置",
-    "view.chatroom.title": "聊天室",
+    "view.chatroom.title": "工作会话",
     "view.chatroom.sub": "跟 Qwen3.6 聊点什么",
     "view.workflow.title": "工作流",
     "view.workflow.sub": "任务拆解 · 进度可视化",
@@ -726,6 +729,7 @@ const I18N = {
     "monitor.session": "会话运行",
     "monitor.updated_prefix": "更新: ",
     "monitor.gpu_unavail": "GPU 信息不可用(无 nvidia-smi)",
+    "monitor.gpu_status": "状态",
     "settings.theme.title": "界面风格",
     "settings.language.title": "界面语言",
     "settings.language.subtitle": "切换界面文案 · 同步通知 LLM 改用对应语言回复(重启 app 生效)",
@@ -743,7 +747,7 @@ const I18N = {
     "theme.liquid_dark.desc": "纯黑底蓝色点缀,低光环境护眼。",
     "workflow.empty.title": "工作流功能开发中",
     "workflow.empty.desc": "未来在这里能看到 AI 把你的需求拆成步骤、并行/串行执行,每步状态实时跟踪。",
-    "workflow.empty.hint": "现在请在聊天室提需求。",
+    "workflow.empty.hint": "现在请在工作会话提需求。",
     "history.new": "新对话",
     "history.empty": "暂无历史对话",
     "history.rename": "重命名",
@@ -764,11 +768,11 @@ const I18N = {
   "en": {
     "app.title": "pinvou3 Assistant",
     "brand.sub": "Local · GB10",
-    "nav.chatroom": "ChatRoom",
+    "nav.chatroom": "Session",
     "nav.workflow": "WorkFlow",
     "nav.monitor": "Monitor",
     "nav.settings": "Settings",
-    "view.chatroom.title": "ChatRoom",
+    "view.chatroom.title": "Session",
     "view.chatroom.sub": "Talk to Qwen3.6",
     "view.workflow.title": "WorkFlow",
     "view.workflow.sub": "Task breakdown · progress",
@@ -800,6 +804,7 @@ const I18N = {
     "monitor.session": "Session uptime",
     "monitor.updated_prefix": "Updated: ",
     "monitor.gpu_unavail": "GPU info unavailable (no nvidia-smi)",
+    "monitor.gpu_status": "Status",
     "settings.theme.title": "Theme",
     "settings.language.title": "Language",
     "settings.language.subtitle": "Switch UI language · also tells the LLM to reply in that language (restart app to take effect)",
@@ -817,7 +822,7 @@ const I18N = {
     "theme.liquid_dark.desc": "Pure black with blue accents, easy on the eyes in low light.",
     "workflow.empty.title": "Workflow feature in development",
     "workflow.empty.desc": "Future: see AI break your request into steps, executed sequentially or in parallel, with real-time status.",
-    "workflow.empty.hint": "For now, ask in ChatRoom.",
+    "workflow.empty.hint": "For now, ask in Session.",
     "history.new": "New chat",
     "history.empty": "No history yet",
     "history.rename": "Rename",
@@ -873,6 +878,18 @@ function switchView(name) {
   document.querySelectorAll(".nav-link[data-view]").forEach((el) => {
     el.classList.toggle("active", el.dataset.view === name);
   });
+  // 监控按需采样：进入 monitor 启 1s interval，离开清掉
+  // 避免不在监控页时白跑 nvidia-smi / vLLM probe
+  if (name === "monitor") {
+    if (!monitorIntervalId) {
+      gpuUtilHistory = []; // 重置滑窗
+      pollMonitor();
+      monitorIntervalId = setInterval(pollMonitor, 1000);
+    }
+  } else if (monitorIntervalId) {
+    clearInterval(monitorIntervalId);
+    monitorIntervalId = null;
+  }
 }
 document.querySelectorAll(".nav-link[data-view]").forEach((el) => {
   el.addEventListener("click", (e) => {
@@ -965,14 +982,32 @@ function renderMonitor(snap) {
   // GPU
   if (snap.gpu) {
     document.getElementById("gpu-name").textContent = snap.gpu.name;
-    const vramPct = snap.gpu.vram_total_mib > 0
-      ? Math.round((snap.gpu.vram_used_mib / snap.gpu.vram_total_mib) * 100)
-      : 0;
-    document.getElementById("gpu-vram-bar").style.width = vramPct + "%";
-    document.getElementById("gpu-vram-text").textContent =
-      `${fmtMiB(snap.gpu.vram_used_mib)} / ${fmtMiB(snap.gpu.vram_total_mib)}`;
-    document.getElementById("gpu-util-bar").style.width = snap.gpu.utilization_pct + "%";
-    document.getElementById("gpu-util-text").textContent = snap.gpu.utilization_pct + "%";
+    const vramLabel = document.querySelector('[data-i18n="monitor.vram"]');
+    const vramBarWrap = document.getElementById("gpu-vram-bar").parentElement;
+    if (snap.gpu.vram_total_mib > 0) {
+      if (vramLabel) vramLabel.textContent = i18nText("monitor.vram");
+      if (vramBarWrap) vramBarWrap.style.display = "";
+      const vramPct = Math.round((snap.gpu.vram_used_mib / snap.gpu.vram_total_mib) * 100);
+      document.getElementById("gpu-vram-bar").style.width = vramPct + "%";
+      document.getElementById("gpu-vram-text").textContent =
+        `${fmtMiB(snap.gpu.vram_used_mib)} / ${fmtMiB(snap.gpu.vram_total_mib)}`;
+    } else {
+      // GB10 等 unified-memory 设备：nvidia-smi 不报独立 VRAM，
+      // 替换显示温度·功耗(更能反映 GPU 是否在工作)。无进度条(数据是绝对值不是占比)。
+      if (vramLabel) vramLabel.textContent = i18nText("monitor.gpu_status");
+      if (vramBarWrap) vramBarWrap.style.display = "none";
+      const temp = snap.gpu.temperature_c;
+      const power = snap.gpu.power_w;
+      const tempStr = temp != null ? `${temp}°C` : "—";
+      const powerStr = power != null ? `${power.toFixed(1)} W` : "—";
+      document.getElementById("gpu-vram-text").textContent = `${tempStr} · ${powerStr}`;
+    }
+    // GPU util 滑窗 max：单次采样易错过短推理峰（GB10 idle=0% / 推理=96% 持续几秒）
+    gpuUtilHistory.push(snap.gpu.utilization_pct);
+    if (gpuUtilHistory.length > GPU_UTIL_WINDOW) gpuUtilHistory.shift();
+    const utilMax = Math.max(0, ...gpuUtilHistory);
+    document.getElementById("gpu-util-bar").style.width = utilMax + "%";
+    document.getElementById("gpu-util-text").textContent = utilMax + "%";
     document.getElementById("card-gpu").classList.remove("card-unavail");
   } else {
     document.getElementById("gpu-name").textContent = i18nText("monitor.gpu_unavail");
@@ -2255,6 +2290,61 @@ rightPaneResizer?.addEventListener("mousedown", (e) => {
   document.addEventListener("mouseup", onUp);
 });
 
+// ── Sidebar 宽度拖拽 ──────────────────────────────────────────────
+// 拖右边缘 → 改 --sidebar-w → 落 localStorage。同一套模式 follow right-pane。
+const SIDEBAR_W_KEY = "pinvou3.sidebarWidth";
+const SIDEBAR_W_MIN = 160;
+const SIDEBAR_W_DEFAULT = 220;
+const sidebarEl = document.querySelector(".sidebar");
+const sidebarResizer = document.getElementById("sidebar-resizer");
+
+function applySidebarWidth(px) {
+  // 上限 40vw 留出对话区
+  const maxW = Math.max(SIDEBAR_W_MIN, Math.floor(window.innerWidth * 0.4));
+  const clamped = Math.min(maxW, Math.max(SIDEBAR_W_MIN, Math.round(px)));
+  document.documentElement.style.setProperty("--sidebar-w", `${clamped}px`);
+  return clamped;
+}
+
+try {
+  const saved = parseInt(localStorage.getItem(SIDEBAR_W_KEY) || "", 10);
+  if (Number.isFinite(saved)) applySidebarWidth(saved);
+} catch {}
+
+let lastSidebarMouseDownTs = 0;
+sidebarResizer?.addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  const now = Date.now();
+  const isDoubleClick = now - lastSidebarMouseDownTs < 350;
+  lastSidebarMouseDownTs = now;
+  if (isDoubleClick) {
+    applySidebarWidth(SIDEBAR_W_DEFAULT);
+    try { localStorage.removeItem(SIDEBAR_W_KEY); } catch {}
+    lastSidebarMouseDownTs = 0;
+    return;
+  }
+  const startX = e.clientX;
+  const startW = sidebarEl.getBoundingClientRect().width;
+  let dragged = false;
+  document.body.classList.add("is-resizing-sidebar");
+  const onMove = (ev) => {
+    const dx = ev.clientX - startX;
+    if (Math.abs(dx) > 2) dragged = true;
+    applySidebarWidth(startW + dx);
+  };
+  const onUp = () => {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    document.body.classList.remove("is-resizing-sidebar");
+    if (dragged) {
+      const cur = sidebarEl.getBoundingClientRect().width;
+      try { localStorage.setItem(SIDEBAR_W_KEY, String(Math.round(cur))); } catch {}
+    }
+  };
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+});
+
 // ── 阶段 C: 输入栏多文件上传 ──────────────────────────────────────
 
 const attachBtn = document.getElementById("attach-btn");
@@ -3078,9 +3168,8 @@ function appConfirm(message, opts = {}) {
     await createNewSession();
   }
 
-  // 启动两个定时拉取
-  pollMonitor();
+  // Backend live dot 仍周期拉（10s 一次，lightweight 只 probe vLLM）。
+  // Monitor 拉取改成按需：switchView('monitor') 时启 1s interval，离开清。
   pollBackendStatus();
-  setInterval(pollMonitor, 5000);
   setInterval(pollBackendStatus, 10000);
 })();
