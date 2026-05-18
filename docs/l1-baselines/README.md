@@ -12,10 +12,13 @@ docs/l1-baselines/
     └── judge-report.md                ← Claude 按 rubric 评分报告
 ```
 
-**双版本号** (`v<app_ver>-r<rubric_ver>`) 的意义:
-- `v<app_ver>` 标的是被测系统 (pinvou3-app 版本 + Qwen 模型 + INSTRUCTIONS_MD)
-- `r<rubric_ver>` 标的是评分尺子 (`docs/L1-judge-rubric.md` 当前版本)
+**命名维度** (`v<app_ver>[-<vllm_tag>]-r<rubric_ver>[-<suffix>]`) 的意义:
+- `v<app_ver>` 标 pinvou3-app 代码版本 + INSTRUCTIONS_MD
+- `<vllm_tag>` (可选) 标 vLLM 配置变更 (例 `vllm2` = 256K context + prefix-caching + chunked-prefill + max-num-seqs 8 优化)
+- `r<rubric_ver>` 标评分尺子 (`docs/L1-judge-rubric.md` 当前版本)
+- `<suffix>` 可加 scenario 集合大小 (例 `13scn` / `17scn`)
 - 跨 r 版本的分数**不可直接 diff** (4 分@r1 跟 4 分@r2 不是一个尺子,见 rubric §6)
+- 跨 vllm 配置的分数**可以 diff**但要意识到底座变了 (例 `r1-13scn` vs `vllm2-r2-17scn` 内 13 老 scenarios diff 有效)
 - rubric bump 后,旧 baseline 文件夹不动,新跑用新 rubric 起新文件夹
 
 ## 已有 baseline
@@ -24,6 +27,7 @@ docs/l1-baselines/
 |---|---|---|---|---|
 | `v0.8.37-r1` | 2026-05-18 | 5 | 4.75 | 首次 baseline (MVP scenario 集),Qwen3.6 + L1.5 工具表 + INSTRUCTIONS_MD v0.8.37,rubric r1 |
 | `v0.8.37-r1-13scn` | 2026-05-18 | 13 | 4.67 | 扩 scenario 集 (multi_turn/write_okr/data_csv/plan_travel/refusal/long_output/chinese/tool_err),同 app/rubric 版本。3 个 ≤3 离群点已 append 到 process.md |
+| `v0.8.37-vllm2-r2-17scn` | 2026-05-18 | 17 | 4.46 (老 13 子集 4.77 +0.10) | **vLLM 参数优化** (256K context + prefix-caching + chunked-prefill + max-num-seqs 8) + rubric r2 (加 2 维 subagent 评估) + 加 4 个 subagent scenarios。老 scenarios 整体 +0.10 (plan_travel_web 修复 + multi_turn 不再 overkill),但 subagent 链路 3/4 SSE 失败暴露 vLLM 调度问题 |
 
 **suffix 约定**: 文件夹后缀 `-<N>scn` 表示 scenario 集合大小,用于区分相同 app/rubric 版本下不同 scenario 集合的 baseline。覆盖更全的集合 (≥) 可作为后续 baseline 的 ground truth。
 

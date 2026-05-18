@@ -127,4 +127,26 @@ GB10 同机起 Qwen-VL-Chat 7B / InternVL2-2B（vLLM 并存）→ bridge 自动 
 ### 2026-05-18 · run 1779077762-r1 · plan_travel_web · 工具使用 3/5
 - **问题**: prompt 明确要求"用 update_plan 给我一个 3 天行程方案",LLM 用 text 表格替代直接交付,没调 update_plan。web_search 4 次全失败 (Bing 0 结果 + 网络 err) 后也没换 fetch_url 等其他工具
 - **改进方向**: INSTRUCTIONS_MD 加引导 "prompt 明示要用某工具(如 update_plan),即便数据不足也要调,可以基于常识填内容"。web_search 失败后可尝试 fetch_url 直接拿某个景点 url 内容
-- **状态**: 🆕 待处理
+- **状态**: ✅ vLLM 参数优化后自动修复 (run 1779089467-r2 同 prompt LLM 正确调了 update_plan,工具 5/5)。零代码改动免费红利
+
+### 2026-05-18 · run 1779089467-r2 · vLLM subagent SSE 调度问题 (🆕 紧急)
+- **问题**: 4 个 subagent scenarios 里 **3 个 subagent 全 SSE 失败** (compare/research/one_fails 共 11+ 个 agent_eval 大多失败或 timeout)。新 vLLM 配置 `max-num-seqs 8 + enable-chunked-prefill + max-num-batched-tokens 32768` 下,多 subagent 并发跑时 SSE 不稳。**跟模型能力无关,是底座调度问题**
+- **改进方向**:
+  1. 排查 vLLM 日志看 SSE 超时根因 (具体哪个 sequence / chunked-prefill 是否撞 batched-tokens 限制)
+  2. 尝试调参:`max-num-seqs 16` 或 `--disable-chunked-prefill` 看是否改善
+  3. 如果是 OpenAI streaming bug 类似上游问题,提 PR 给 vLLM
+- **状态**: 🆕 待处理 — **subagent 能力评估的真实瓶颈**
+
+### 2026-05-18 · run 1779089467-r2 · subagent_research_topic · 完整性 2/5 + 简洁性 2/5
+- **问题**: 主 agent fallback 决策慢 — subagent 失败后等了 **8 分钟** 才决定用自身知识降级,最终综述被 timeout 截断 (532s)
+- **改进方向**: 依赖 vLLM 调度问题先解决。如果 vLLM 修不了,prompt 工程引导"subagent failed/无进展 1 分钟立即 fallback"
+- **状态**: 🆕 待处理 (低优先,等 vLLM 修了再看是否还存在)
+
+### 2026-05-18 · run 1779089467-r2 · subagent_compare_3_libs · 综合 2/5 + 简洁性 2/5 + 完整性 2/5
+- **问题**: 660s timeout,subagent SSE 失败 → 重派 (name collision "already in use" 错误) → 主 agent 用 22 次 exec_shell + curl API 拿真数据 → 综合报告被截断
+- **改进方向**: 同上,依赖 vLLM 调度修
+- **状态**: 🆕 待处理 (低优先)
+
+### 2026-05-18 · run 1779089467-r2 · plan_mode_list_dir · 简洁性 3/5
+- **问题**: 🔁 **第 3 次出现** (run 1779074272-r1 / 1779077762-r1 / 1779089467-r2),Plan 模式 text 仍有"让我..."过渡语
+- **状态**: 🔁 持续追踪,不再尝试 prompt 工程改造 (lesson learned 已验证 reminder 改造 ROI 负)
