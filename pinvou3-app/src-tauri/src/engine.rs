@@ -142,6 +142,7 @@ impl AppEngine {
                 session_id: Some(session_id),
                 messages,
                 system_prompt: Some(SystemPrompt::Text(prompt_text)),
+                system_prompt_override: false,
                 model: self.bridge.model(),
                 workspace,
             })
