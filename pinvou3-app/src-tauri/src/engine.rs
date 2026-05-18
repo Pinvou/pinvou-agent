@@ -59,6 +59,21 @@ impl AppEngine {
         Ok(Self { handle, bridge })
     }
 
+    /// 测试入口(L1 harness 用):用预先 boot 好的 bridge spawn 一个 engine,
+    /// **不启 Tauri event forwarder** (不需要 AppHandle / SessionStore),
+    /// 调用方自己消费 `engine.handle.rx_event` 拿到 ToolCallStarted /
+    /// ToolCallComplete / TurnComplete 做断言。
+    ///
+    /// 不复用 [`spawn`] 是因为它强依赖 Tauri AppHandle (`spawn_event_forwarder`
+    /// 里 `app.emit(...)`),测试场景没有 webview/event 系统跑不起来。
+    #[allow(dead_code)] // L1 runner 接入前临时 unused
+    pub async fn spawn_headless(bridge: Pinvou3Bridge) -> Result<Self> {
+        let engine_config = bridge.build_engine_config();
+        let dt_config = bridge.build_dt_config();
+        let handle = spawn_engine(engine_config, &dt_config);
+        Ok(Self { handle, bridge })
+    }
+
     /// 发用户消息给 Engine。Engine 内部自管 session，多轮自然累积。
     ///
     /// `mode` + `phase` 由 commands::chat 从 SessionStore 取当前 session 的

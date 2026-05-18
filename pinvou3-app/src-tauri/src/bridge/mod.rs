@@ -71,6 +71,17 @@ impl Pinvou3Bridge {
         })
     }
 
+    /// 测试入口(L1 harness 用):同 [`boot`] 但 workspace 用传入的 `ws`
+    /// (通常是 scenario 自己的 tempdir),而不是 `paths::user_home_dir()`。
+    /// 让 L1 真 vLLM dialog harness 能给每个 scenario 一个隔离的产出目录,
+    /// 避免污染用户 $HOME 也避免 scenario 之间互相干扰。
+    #[allow(dead_code)] // L1 runner 接入前临时 unused
+    pub fn boot_with_workspace(ws: PathBuf) -> Result<Self> {
+        let mut this = Self::boot()?;
+        this.workspace = ws;
+        Ok(this)
+    }
+
     pub fn locale_tag(&self) -> &'static str {
         self.prefs.language.locale_tag()
     }
