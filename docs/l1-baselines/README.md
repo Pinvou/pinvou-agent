@@ -28,6 +28,7 @@ docs/l1-baselines/
 | `v0.8.37-r1` | 2026-05-18 | 5 | 4.75 | 首次 baseline (MVP scenario 集),Qwen3.6 + L1.5 工具表 + INSTRUCTIONS_MD v0.8.37,rubric r1 |
 | `v0.8.37-r1-13scn` | 2026-05-18 | 13 | 4.67 | 扩 scenario 集 (multi_turn/write_okr/data_csv/plan_travel/refusal/long_output/chinese/tool_err),同 app/rubric 版本。3 个 ≤3 离群点已 append 到 process.md |
 | `v0.8.37-vllm2-r2-17scn` | 2026-05-18 | 17 | 4.46 (老 13 子集 4.77 +0.10) | **vLLM 参数优化** (256K context + prefix-caching + chunked-prefill + max-num-seqs 8) + rubric r2 (加 2 维 subagent 评估) + 加 4 个 subagent scenarios。老 scenarios 整体 +0.10 (plan_travel_web 修复 + multi_turn 不再 overkill),但 subagent 链路 3/4 SSE 失败暴露 vLLM 调度问题 |
+| `v0.8.37-vllm2_clientfix-r2-18scn` | 2026-05-18 | 18 | 4.50 | **Fork patch 双修**: Bug #1 turn_loop role=user (避免 Qwen chat_template raise) + Bug #2 stream_open_timeout 180s。新加 `subagent_single_simple` 验证 1 个 subagent 完美 19s。**subagent 拆分 4.80 + 综合 5.00**,链路真正可用。但 ≥3 个 long-prompt subagent 仍受 vLLM 调度限制 (Bug #3 trade-off)。老 scenarios 有 LLM 抽奖 regression (multi_turn_t2 / plan_travel_web / chinese_idiomatic) |
 
 **suffix 约定**: 文件夹后缀 `-<N>scn` 表示 scenario 集合大小,用于区分相同 app/rubric 版本下不同 scenario 集合的 baseline。覆盖更全的集合 (≥) 可作为后续 baseline 的 ground truth。
 

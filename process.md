@@ -150,3 +150,34 @@ GB10 同机起 Qwen-VL-Chat 7B / InternVL2-2B（vLLM 并存）→ bridge 自动 
 ### 2026-05-18 · run 1779089467-r2 · plan_mode_list_dir · 简洁性 3/5
 - **问题**: 🔁 **第 3 次出现** (run 1779074272-r1 / 1779077762-r1 / 1779089467-r2),Plan 模式 text 仍有"让我..."过渡语
 - **状态**: 🔁 持续追踪,不再尝试 prompt 工程改造 (lesson learned 已验证 reminder 改造 ROI 负)
+
+### 2026-05-18 · run 1779095350-r2 · 三 bug 诊断完结 + subagent 链路恢复
+
+经 SSH vLLM logs + 代码定位 + 验证 3 个底座 bug,2 个修了 1 个是 vLLM 调度 trade-off:
+
+| Bug | 位置 | 状态 |
+|---|---|---|
+| **#1 role=system 触发 chat_template raise** | `DeepSeek-TUI/.../turn_loop.rs:1946` `subagent_completion_runtime_message` | ✅ fork commit `363dd35` (role system→user) |
+| **#2 stream_open_timeout 45s 太短** | `DeepSeek-TUI/.../client/chat.rs:26` default | ✅ harness `DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS=180` |
+| **#3 多 subagent + chunked-prefill 调度累积** | vLLM 配置 trade-off | ⚠️ ≥3 subagent + 长 prompt 在 max-num-seqs=8 下 >10 分钟。可调 `--disable-chunked-prefill` 或 `--max-num-seqs 16`,但是 latency vs throughput 拍板 |
+
+**修复效果** (run 1779095350-r2):
+- ✅ `subagent_single_simple` 新加 → 19s 完成 5.00 分
+- ✅ `subagent_one_fails` 4.50 → 5.00 (主 agent 真重派失败 subagent)
+- ⚠️ `subagent_compare_3_libs` / `subagent_research_topic` 仍 cargo timeout — Bug #3 限制
+- ⚠️ 老 scenarios 抽奖 regression (multi_turn_t2 / plan_travel_web / chinese_idiomatic 各掉一点) — LLM 输出本质不确定,单次跑不能下结论
+
+**上游 PR 候选**: Bug #1 + Bug #2 都是通用 fix (适用所有 Qwen3.6 严格 chat_template + 长 prompt + subagent 场景),值得提 Hmbown/DeepSeek-TUI PR。
+
+### 2026-05-18 · run 1779095350-r2 · subagent_compare_3_libs / subagent_research_topic · cargo timeout
+- **问题**: 3 个 long-prompt subagent 同时 prefill,主 agent 4-5 次 agent_eval (block, timeout_ms=60s) 都拿到 status=running。subagent 内部 prefill 排队,完成时间 >10 分钟超过 cargo test max_duration_s=600s
+- **改进方向**: vLLM 调参 `--disable-chunked-prefill` (牺牲 throughput) 或 `--max-num-seqs 16` (允许更多并发);或 prompt 工程让主 agent 用更短的 subagent prompt
+- **状态**: ⚠️ vLLM 调度限制 — 用户拍板调参 vs 接受 multi-subagent 大任务 partial
+
+### 2026-05-18 · run 1779095350-r2 · multi_turn_context_t2 · 简洁性 2/5 + 工具 3/5
+- **问题**: 用 exec_shell python3 算 2026-1990 overkill,且复述两遍"今天是你36岁生日"
+- **状态**: 🆕 待处理 (LLM 单次抽奖,3+ 次再考虑 prompt 工程)
+
+### 2026-05-18 · run 1779095350-r2 · plan_travel_web · 工具 3/5
+- **问题**: 🔁 没调 update_plan (vllm2-r2-17scn 自动修了,这次又退回)
+- **状态**: 🔁 LLM 行为不稳累积证据,等更多样本

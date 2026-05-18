@@ -449,6 +449,10 @@ fn ensure_runtime_env() {
     set_var_if_unset("DEEPSEEK_FORCE_HTTP1", "1");
     set_var_if_unset("DEEPSEEK_MAX_OUTPUT_TOKENS", "16384");
     set_var_if_unset("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "90");
+    // 2026-05-18: subagent 并发 + 256K context + chunked-prefill 配置下,
+    // vLLM first-token-latency 可能 >45s (default open_timeout)。调到 180s
+    // 容纳多 subagent prefill 排队。client/chat.rs:112 stream_open_timeout()
+    set_var_if_unset("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS", "180");
 }
 
 fn set_var_if_unset(k: &str, v: &str) {
@@ -962,6 +966,37 @@ impl Drop for SubagentEnv {
             }
         }
     }
+}
+
+/// C-0 subagent_single_simple (诊断): **1 个 subagent 做简单任务**,隔离"多 subagent 并发"
+/// 跟"subagent 链路本身" 两个变量。
+/// 如果这个 PASS 而 compare_3_libs FAIL → 并发问题 (max-num-seqs / chunked-prefill)
+/// 如果这个也 FAIL → subagent 层 bug 或 vLLM tool_call_parser 问题
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "L1 真 vLLM 端到端,默认不跑"]
+async fn subagent_single_simple() {
+    let scenario = "subagent_single_simple";
+    if !require_vllm(scenario).await {
+        return;
+    }
+    let _env_guard = SubagentEnv::enable();
+    let (engine, _ws) = spawn_for_scenario(scenario).await;
+
+    let mut expect = Expect::default();
+    expect.max_duration_s = 300.0;
+
+    run_turn(
+        &engine,
+        "用 1 个 subagent (delegate_to_agent) 帮我做一件简单事:\
+         写一段不超过 100 字的中文,解释什么是 Rust 的 ownership。\
+         主 agent 不要自己回答,把任务委托给 subagent,等结果后转述。",
+        AppMode::Yolo,
+        PlanPhase::None,
+        &expect,
+        scenario,
+        Duration::from_secs(330),
+    )
+    .await;
 }
 
 /// C-1 subagent_compare_3_libs (核心场景): context isolation + 任务并行拆分。
