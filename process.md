@@ -37,6 +37,17 @@
 - 跟现有 `plan_card` 可能融合
 - 设计落定再 2-3 天实现
 
+### A2. 自动化测试 L1+L2（紧迫性高）
+
+每次改 INSTRUCTIONS_MD / bridge / blocklist 都可能 regression，目前只能靠手测。
+方案已落档 `docs/自动化测试方案.md`（v2 修正版，按决策 Y/D）：
+
+- **L2 backend 纯函数测试** 9 个，1 天，每 PR `cargo test` 跑 CI block
+- **L1 plumbing 改造** 2 处 fork patch（`bridge::boot_with_workspace` + `AppEngine::spawn_headless`），半天
+- **L1 MVP** 真 vLLM 5 个 scenario + 健康探针 + DEFAULT_OUTPUT_NEVER，2.5-3 天
+- L1 完整 11 scenario 排 M2
+- L3 GUI / AI-as-judge 暂缓
+
 ### B. 附件预处理 pipeline
 
 bridge 拦截 docx/pdf/image 上传 → pandoc/tesseract 转 md → 嵌 user message。
@@ -71,3 +82,9 @@ GB10 同机起 Qwen-VL-Chat 7B / InternVL2-2B（vLLM 并存）→ bridge 自动 
 
 - **上游 P2/P3 PR**：`DEEPSEEK_MAX_OUTPUT_TOKENS` env override 和 lib `pub mod` 暴露——pinvou3 偏好不是生态价值，fork 自留更干净
 - **产物内嵌预览 docx/pdf/xlsx**：已尝试回退，`↗` 用系统应用打开体验已够
+
+---
+
+## 基建待办（不阻塞功能）
+
+- **GB10 self-hosted GitHub Actions runner**：让 L1 真 vLLM 测试能进 CI nightly（详 `docs/自动化测试方案.md` §8）。优先级低，等团队≥2 人或发版频率上升再做
