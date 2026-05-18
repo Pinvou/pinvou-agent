@@ -19,6 +19,7 @@
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use deepseek_tui::core::events::Event;
@@ -77,13 +78,14 @@ fn make_scenario_tempdir(scenario: &str) -> PathBuf {
 }
 
 /// 收集 scenario 一次 turn 完整事件流,直到 `Event::TurnComplete` 出现。
-/// 返回 (events, elapsed)。超过 `timeout` 返回当前已收集的事件 + 是否 timeout。
+/// 返回 (timeline=(t_sec, event)*, elapsed, timed_out)。
+/// t_sec 是相对 turn start 的秒数,judge transcript 渲染要用。
 async fn collect_turn_events(
     engine: &AppEngine,
     timeout: Duration,
-) -> (Vec<Event>, Duration, bool) {
+) -> (Vec<(f64, Event)>, Duration, bool) {
     let start = Instant::now();
-    let mut events = Vec::new();
+    let mut timeline = Vec::new();
     let mut rx = engine.handle.rx_event.write().await;
     let mut timed_out = false;
     let mut closed = false;
@@ -113,7 +115,7 @@ async fn collect_turn_events(
                     eprintln!("[harness +{t:.1}s] engine Error event: {:?}", event);
                 }
                 let is_done = matches!(event, Event::TurnComplete { .. } | Event::Error { .. });
-                events.push(event);
+                timeline.push((t, event));
                 if is_done {
                     break;
                 }
@@ -131,7 +133,7 @@ async fn collect_turn_events(
     if closed {
         eprintln!("[harness] rx_event channel closed (engine task exited?)");
     }
-    (events, start.elapsed(), timed_out)
+    (timeline, start.elapsed(), timed_out)
 }
 
 fn event_kind(e: &Event) -> &'static str {
@@ -178,10 +180,10 @@ struct TurnSummary {
     timed_out: bool,
 }
 
-fn summarize(events: &[Event], elapsed: Duration, timed_out: bool) -> TurnSummary {
+fn summarize(timeline: &[(f64, Event)], elapsed: Duration, timed_out: bool) -> TurnSummary {
     let mut full_text = String::new();
     let mut tool_call_counts: HashMap<String, usize> = HashMap::new();
-    for e in events {
+    for (_t, e) in timeline {
         match e {
             Event::MessageDelta { content, .. } => full_text.push_str(content),
             Event::ToolCallComplete { name, result, .. } => {
@@ -271,7 +273,7 @@ fn verify_expect(summary: &TurnSummary, expect: &Expect, scenario: &str) {
     }
 }
 
-/// 跑一轮对话 + 验证。出错 panic。
+/// 跑一轮对话 + 落 transcript + 验证。出错 panic (transcript 已先落档可复盘)。
 async fn run_turn(
     engine: &AppEngine,
     user: &str,
@@ -285,15 +287,185 @@ async fn run_turn(
         .send_user_message(user.to_string(), mode, phase)
         .await
         .expect("send_user_message");
-    let (events, elapsed, timed_out) = collect_turn_events(engine, turn_timeout).await;
-    let summary = summarize(&events, elapsed, timed_out);
+    let (timeline, elapsed, timed_out) = collect_turn_events(engine, turn_timeout).await;
+    let summary = summarize(&timeline, elapsed, timed_out);
     eprintln!(
         "[{scenario}] elapsed={:.1}s tools={:?} text_len={}",
         summary.elapsed.as_secs_f64(),
         summary.tool_call_counts,
         summary.full_text.chars().count(),
     );
+    // 先落 transcript 再 verify_expect:即便断言失败,judge 也能复盘
+    let path = record_transcript(scenario, user, mode, phase, &timeline, &summary);
+    eprintln!("[{scenario}] transcript → {}", path.display());
     verify_expect(&summary, expect, scenario);
+}
+
+/// 同一次 `cargo test` 跑下所有 scenario 共享一个 ts 子目录。
+static RUN_TS: OnceLock<String> = OnceLock::new();
+fn run_ts() -> &'static str {
+    RUN_TS.get_or_init(|| {
+        let s = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        format!("{s}")
+    })
+}
+
+fn transcript_dir() -> PathBuf {
+    let dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"))
+        .join("l1-runs")
+        .join(run_ts());
+    std::fs::create_dir_all(&dir).expect("create transcript dir");
+    dir
+}
+
+/// 把 scenario 一次 turn 的完整 transcript 落 markdown,供 judge (Claude) 离线评分。
+/// 路径:`<target>/l1-runs/<ts>/<scenario>.md`。
+/// 跟 cargo test PASS/FAIL 完全解耦——质量评估是另一回事。
+fn record_transcript(
+    scenario: &str,
+    user: &str,
+    mode: AppMode,
+    phase: PlanPhase,
+    timeline: &[(f64, Event)],
+    summary: &TurnSummary,
+) -> PathBuf {
+    let path = transcript_dir().join(format!("{scenario}.md"));
+    let mut md = String::new();
+    md.push_str(&format!("# L1 scenario: `{scenario}`\n\n"));
+    md.push_str("## meta\n\n");
+    md.push_str(&format!("- mode: `{mode:?}` / phase: `{phase:?}`\n"));
+    md.push_str(&format!(
+        "- elapsed: **{:.1}s**\n",
+        summary.elapsed.as_secs_f64()
+    ));
+    md.push_str(&format!("- timed_out: {}\n", summary.timed_out));
+    md.push_str(&format!(
+        "- tool_call_histogram: `{:?}`\n",
+        summary.tool_call_counts
+    ));
+    md.push_str(&format!(
+        "- text_chars: {}\n\n",
+        summary.full_text.chars().count()
+    ));
+
+    md.push_str("## user prompt\n\n```text\n");
+    md.push_str(user);
+    if !user.ends_with('\n') {
+        md.push('\n');
+    }
+    md.push_str("```\n\n");
+
+    md.push_str("## tool / event timeline\n\n");
+    let rendered = render_timeline(timeline);
+    if rendered.is_empty() {
+        md.push_str("_(no tool/event activity)_\n\n");
+    } else {
+        md.push_str(&rendered);
+        md.push('\n');
+    }
+
+    md.push_str("## assistant final text\n\n");
+    if summary.full_text.is_empty() {
+        md.push_str("_(empty)_\n");
+    } else {
+        md.push_str("```\n");
+        md.push_str(summary.full_text.trim_end());
+        md.push_str("\n```\n");
+    }
+
+    std::fs::write(&path, md).expect("write transcript md");
+    path
+}
+
+fn render_timeline(timeline: &[(f64, Event)]) -> String {
+    let mut s = String::new();
+    for (t, e) in timeline {
+        match e {
+            Event::ToolCallStarted { id, name, input } => {
+                let args = abbreviate(&format!("{input:?}"), 200);
+                s.push_str(&format!(
+                    "- `[+{t:.1}s]` **tool_start** `{name}` id=`{id}` args=`{args}`\n"
+                ));
+            }
+            Event::ToolCallComplete { id, name, result } => {
+                let (status, body) = match result {
+                    Ok(r) => ("ok", abbreviate(&r.content, 200)),
+                    Err(e) => ("err", abbreviate(&format!("{e:?}"), 200)),
+                };
+                s.push_str(&format!(
+                    "- `[+{t:.1}s]` **tool_end** `{name}` id=`{id}` → **{status}** `{body}`\n"
+                ));
+            }
+            Event::ApprovalRequired { id, tool_name, .. } => {
+                s.push_str(&format!(
+                    "- `[+{t:.1}s]` approval_required `{tool_name}` id=`{id}` (harness auto-approve)\n"
+                ));
+            }
+            Event::UserInputRequired { id, .. } => {
+                s.push_str(&format!(
+                    "- `[+{t:.1}s]` user_input_required id=`{id}` (headless harness 不处理)\n"
+                ));
+            }
+            Event::TurnComplete {
+                usage,
+                status,
+                error,
+            } => {
+                let extra = error
+                    .as_ref()
+                    .map(|e| format!(" error={e}"))
+                    .unwrap_or_default();
+                s.push_str(&format!(
+                    "- `[+{t:.1}s]` **turn_complete** status={status:?} usage=in:{}/out:{}{extra}\n",
+                    usage.input_tokens, usage.output_tokens
+                ));
+            }
+            Event::Error { envelope, .. } => {
+                s.push_str(&format!(
+                    "- `[+{t:.1}s]` **ERROR** {}: {}\n",
+                    envelope.code, envelope.message
+                ));
+            }
+            Event::CompactionStarted { message, auto, .. } => {
+                s.push_str(&format!(
+                    "- `[+{t:.1}s]` compaction start auto={auto} {message}\n"
+                ));
+            }
+            Event::CompactionCompleted {
+                messages_before,
+                messages_after,
+                ..
+            } => {
+                s.push_str(&format!(
+                    "- `[+{t:.1}s]` compaction done {messages_before:?}→{messages_after:?}\n"
+                ));
+            }
+            Event::CompactionFailed { message, .. } => {
+                s.push_str(&format!("- `[+{t:.1}s]` compaction failed: {message}\n"));
+            }
+            // MessageDelta / ThinkingDelta 不入 timeline (累积在 full_text)
+            _ => {}
+        }
+    }
+    s
+}
+
+fn abbreviate(s: &str, max: usize) -> String {
+    let total = s.chars().count();
+    if total <= max {
+        s.replace('`', "´").replace('\n', "⏎")
+    } else {
+        let head: String = s.chars().take(max).collect();
+        format!(
+            "{}…[{total} chars total]",
+            head.replace('`', "´").replace('\n', "⏎")
+        )
+    }
 }
 
 /// 启动 scenario engine:tempdir workspace + headless engine。
