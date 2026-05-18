@@ -17,7 +17,6 @@
 #![allow(dead_code)] // 框架辅助函数会在后续 scenario 里逐步消化
 
 use std::collections::HashMap;
-use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -27,19 +26,6 @@ use deepseek_tui::tui::app::AppMode;
 use pinvou3_lib::bridge::mode_state::PlanPhase;
 use pinvou3_lib::bridge::Pinvou3Bridge;
 use pinvou3_lib::engine::AppEngine;
-
-/// 每个 Expect 自动套这组拒绝词,防 LLM "我无法/抱歉" 这类伪绿场景被关键词
-/// 正向匹配蒙混过关。
-const DEFAULT_OUTPUT_NEVER: &[&str] = &[
-    "我无法",
-    "抱歉",
-    "I cannot",
-    "I'm sorry",
-    "我不会",
-    "无法获取",
-    "无法访问",
-    "Sorry, I",
-];
 
 const DEFAULT_VLLM_BASE_URL: &str = "http://10.214.74.113:8000/v1";
 
@@ -153,20 +139,22 @@ fn event_kind(e: &Event) -> &'static str {
     }
 }
 
-/// 单 scenario 期望项:工具计数 / 文件落地 / 输出关键词 / 时长上限。
+/// 单 scenario 期望项 —— **只保留 judge 看不见的硬指标**。
+///
+/// 砍掉的 (judge 更准): tool_use_counts / tools_never / output_contains_any /
+/// output_never_extra / DEFAULT_OUTPUT_NEVER。这些都让 Claude judge 读 transcript
+/// 评分时一起判,机器断言对 LLM 创新方式完成任务过于刚性(模型用 batched API
+/// 一次解决 7 件事会误 fail)。
+///
+/// 留下的两条都是 judge 摸不到的:
+/// - `files_exist`:judge 只看 transcript 看不见磁盘,工具 say success 但文件
+///   没真落盘只有 fs 验证抓得到
+/// - `max_duration_s`:judge 不擅长数字断言,thinking 没关导致 30s+ judge 不留意
 #[derive(Default)]
 struct Expect {
-    /// 工具名 → 允许的调用次数区间 (闭区间,inclusive)
-    tool_use_counts: HashMap<&'static str, RangeInclusive<usize>>,
-    /// 永不调用的工具
-    tools_never: Vec<&'static str>,
-    /// 必须落盘存在的路径
+    /// 必须落盘存在的路径 (judge 看不见磁盘)
     files_exist: Vec<PathBuf>,
-    /// 输出 (concat 全部 MessageDelta) 含任一关键词即 pass
-    output_contains_any: Vec<&'static str>,
-    /// 调用方追加的 NEVER 词;DEFAULT_OUTPUT_NEVER 已自动套上
-    output_never_extra: Vec<&'static str>,
-    /// turn 上限秒
+    /// turn 上限秒 (judge 不擅长数字断言)
     max_duration_s: f64,
 }
 
@@ -203,6 +191,8 @@ fn summarize(timeline: &[(f64, Event)], elapsed: Duration, timed_out: bool) -> T
 }
 
 /// 验证 Expect。失败 panic 让 #[test] fail。
+/// 行为质量类断言全部委托给 Claude judge 读 transcript 评分,这里只断 judge
+/// 摸不到的硬指标(磁盘 / 数字)。
 fn verify_expect(summary: &TurnSummary, expect: &Expect, scenario: &str) {
     assert!(
         !summary.timed_out,
@@ -210,59 +200,12 @@ fn verify_expect(summary: &TurnSummary, expect: &Expect, scenario: &str) {
         summary.elapsed
     );
 
-    // tool_use_counts
-    for (tool, range) in &expect.tool_use_counts {
-        let count = summary.tool_call_counts.get(*tool).copied().unwrap_or(0);
-        assert!(
-            range.contains(&count),
-            "[{scenario}] tool {tool} 调用次数 {count} 不在期望区间 {range:?}, \
-             histogram={:?}",
-            summary.tool_call_counts
-        );
-    }
-
-    // tools_never
-    for tool in &expect.tools_never {
-        let count = summary.tool_call_counts.get(*tool).copied().unwrap_or(0);
-        assert_eq!(
-            count, 0,
-            "[{scenario}] tool {tool} 不应被调用,实际 {count} 次, histogram={:?}",
-            summary.tool_call_counts
-        );
-    }
-
-    // files_exist
+    // files_exist - judge 看不见磁盘
     for p in &expect.files_exist {
         assert!(p.is_file(), "[{scenario}] 期望文件不存在: {}", p.display());
     }
 
-    // output_contains_any
-    if !expect.output_contains_any.is_empty() {
-        let hit = expect
-            .output_contains_any
-            .iter()
-            .any(|kw| summary.full_text.contains(kw));
-        assert!(
-            hit,
-            "[{scenario}] output 不含任何关键词 {:?}, output 前 200 字: {}",
-            expect.output_contains_any,
-            summary.full_text.chars().take(200).collect::<String>()
-        );
-    }
-
-    // 拒绝词兜底 (DEFAULT + extra)
-    for never in DEFAULT_OUTPUT_NEVER
-        .iter()
-        .chain(expect.output_never_extra.iter())
-    {
-        assert!(
-            !summary.full_text.contains(never),
-            "[{scenario}] output 含拒绝词 {never:?} (LLM 拒答?), output 前 200 字: {}",
-            summary.full_text.chars().take(200).collect::<String>()
-        );
-    }
-
-    // max_duration_s
+    // max_duration_s - judge 不擅长数字
     if expect.max_duration_s > 0.0 {
         let actual = summary.elapsed.as_secs_f64();
         assert!(
@@ -528,17 +471,8 @@ async fn translate_no_tool() {
     let (engine, _ws) = spawn_for_scenario(scenario).await;
 
     let mut expect = Expect::default();
-    expect.tools_never = vec![
-        "list_dir",
-        "read_file",
-        "write_file",
-        "exec_shell",
-        "web_search",
-        "code_execution",
-    ];
-    // 期望含 local 或 AI 这种翻译常见词 (Qwen3.6 翻译质量稳定)
-    expect.output_contains_any = vec!["local", "AI", "Local", "test"];
     expect.max_duration_s = 30.0;
+    // "AI 该不该调工具 / 拒答 / 翻译质量"全部交给 judge
 
     run_turn(
         &engine,
@@ -567,13 +501,11 @@ async fn batch_create_7_files() {
     let ws_str = ws.to_string_lossy().to_string();
 
     let mut expect = Expect::default();
-    // 7 次成功 write_file (允许 7..=10,LLM 可能多调一次列目录等)
-    expect.tool_use_counts.insert("write_file", 7..=10);
-    // 7 个文件都必须落盘
+    // 7 个文件都必须落盘 (judge 看不见磁盘——streaming batch bug 让 7→1 时
+    // judge 仍能读出"完成 7 个"的 transcript,只有 fs 验证抓得到真实差异)
     for i in 1..=7 {
         expect.files_exist.push(ws.join(format!("{i}.md")));
     }
-    // LLM 可能在最后说"完成"等,这里不强制关键词
     expect.max_duration_s = 180.0;
 
     let user = format!(
@@ -608,12 +540,8 @@ async fn plan_mode_list_dir() {
     let (engine, _ws) = spawn_for_scenario(scenario).await;
 
     let mut expect = Expect::default();
-    expect.tool_use_counts.insert("list_dir", 1..=10);
-    // Plan 模式禁写工具,sandbox + 工具集双重保险
-    expect.tools_never = vec!["write_file", "edit_file"];
-    // 关键:不能出现 PathEscape / permission denied 这类 trust_mode 拒绝词
-    expect.output_never_extra = vec!["PathEscape", "permission denied"];
     expect.max_duration_s = 180.0;
+    // "list_dir 调没调 / Plan 模式有没有偷调写工具 / 报没报 PathEscape"全交给 judge
 
     run_turn(
         &engine,
@@ -649,7 +577,6 @@ async fn save_to_tmp_no_validate_fail() {
     let _ = std::fs::remove_file(&target);
 
     let mut expect = Expect::default();
-    expect.tool_use_counts.insert("write_file", 1..=3);
     expect.files_exist = vec![target.clone()];
     expect.max_duration_s = 120.0;
 
@@ -687,15 +614,8 @@ async fn reasoning_off_speed() {
     let (engine, _ws) = spawn_for_scenario(scenario).await;
 
     let mut expect = Expect::default();
-    expect.tools_never = vec![
-        "list_dir",
-        "read_file",
-        "write_file",
-        "exec_shell",
-        "code_execution",
-        "web_search",
-    ];
     expect.max_duration_s = 15.0;
+    // "该不该调工具"交给 judge,本场景核心是数字:15s 上限抓 thinking 没关
 
     run_turn(
         &engine,
