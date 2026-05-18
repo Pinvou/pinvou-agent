@@ -440,7 +440,9 @@ fn ensure_runtime_env() {
     set_var_if_unset("DEEPSEEK_PROVIDER", "vllm");
     set_var_if_unset("DEEPSEEK_API_KEY", "local-no-auth");
     set_var_if_unset("DEEPSEEK_BASE_URL", DEFAULT_VLLM_BASE_URL);
-    set_var_if_unset("DEEPSEEK_MODEL", "/model");
+    // 2026-05-18: vLLM 上线后 served-model-name 改 qwen36_35b (旧为 /model)。
+    // export DEEPSEEK_MODEL=... 仍可覆盖,这里只改默认。
+    set_var_if_unset("DEEPSEEK_MODEL", "qwen36_35b");
     set_var_if_unset("DEEPSEEK_REASONING_EFFORT", "off");
     // 关键:vLLM 在 10.214.74.113 不是 loopback,底座默认拒绝非 loopback HTTP
     set_var_if_unset("DEEPSEEK_ALLOW_INSECURE_HTTP", "1");
