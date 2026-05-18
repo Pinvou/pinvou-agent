@@ -81,10 +81,7 @@ pub fn run() {
             eprintln!("[pinvou3-app] monitor sampler started (5s interval)");
 
             // File watcher: 监听 ~/.pinvou3/sessions/ 树,新文件 emit artifact:disk
-            file_watcher::spawn(
-                app.handle().clone(),
-                bridge::paths::sessions_root(),
-            );
+            file_watcher::spawn(app.handle().clone(), bridge::paths::sessions_root());
 
             Ok(())
         })
@@ -144,18 +141,18 @@ mod blocklist_contract {
         // 类别代表性工具必须在内（每个类别至少一个 sentinel，整类被漏砍
         // 立刻 fail）
         for sentinel in [
-            "task_create",        // durable task
-            "agent_open",         // subagent
-            "rlm_eval",           // RLM
-            "pr_attempt_record",  // PR 跟踪
-            "git_status",         // git 类
-            "apply_patch",        // patch/fim
-            "pandoc_convert",     // 附件预处理（移到 bridge）
-            "todo_write",         // legacy todo alias
-            "exec_shell_cancel",  // 异步 shell 变体
-            "automation_create",  // automation 持久化
+            "task_create",          // durable task
+            "agent_open",           // subagent
+            "rlm_eval",             // RLM
+            "pr_attempt_record",    // PR 跟踪
+            "git_status",           // git 类
+            "apply_patch",          // patch/fim
+            "pandoc_convert",       // 附件预处理（移到 bridge）
+            "todo_write",           // legacy todo alias
+            "exec_shell_cancel",    // 异步 shell 变体
+            "automation_create",    // automation 持久化
             "github_issue_context", // github 集成
-            "web.run",            // 旧 web_run
+            "web.run",              // 旧 web_run
         ] {
             assert!(
                 is_pinvou3_hidden(sentinel),

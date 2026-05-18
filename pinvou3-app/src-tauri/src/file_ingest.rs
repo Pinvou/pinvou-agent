@@ -126,9 +126,9 @@ pub fn ingest(path: &Path) -> IngestResult {
 
 fn classify(ext: &str) -> &'static str {
     match ext {
-        "txt" | "md" | "markdown" | "json" | "csv" | "yaml" | "yml" | "toml" | "xml"
-        | "rs" | "py" | "js" | "ts" | "go" | "c" | "cpp" | "h" | "hpp" | "sh" | "log"
-        | "ini" | "conf" | "env" | "tsv" => "text",
+        "txt" | "md" | "markdown" | "json" | "csv" | "yaml" | "yml" | "toml" | "xml" | "rs"
+        | "py" | "js" | "ts" | "go" | "c" | "cpp" | "h" | "hpp" | "sh" | "log" | "ini" | "conf"
+        | "env" | "tsv" => "text",
         "pdf" => "pdf",
         "docx" | "pptx" | "odt" => "docx",
         "xlsx" | "ods" => "xlsx",
@@ -175,9 +175,7 @@ fn ingest_pdf(path: &Path, basename: String, path_str: String, byte_size: u64) -
             markdown: None,
             token_estimate: 0,
             byte_size,
-            warning: Some(
-                "PDF 解析需要 pdftotext，请运行: sudo apt install poppler-utils".into(),
-            ),
+            warning: Some("PDF 解析需要 pdftotext，请运行: sudo apt install poppler-utils".into()),
         };
     }
     // pdftotext -layout <path> -  → stdout
@@ -457,15 +455,18 @@ fn sanitize_filename(raw: &str) -> String {
     let cleaned: String = trimmed
         .chars()
         .map(|c| {
-            if c.is_control() || matches!(c, '/' | '\\' | ':' | '<' | '>' | '|' | '"' | '?' | '*')
-            {
+            if c.is_control() || matches!(c, '/' | '\\' | ':' | '<' | '>' | '|' | '"' | '?' | '*') {
                 '_'
             } else {
                 c
             }
         })
         .collect();
-    if cleaned.is_empty() { "file".into() } else { cleaned }
+    if cleaned.is_empty() {
+        "file".into()
+    } else {
+        cleaned
+    }
 }
 
 /// 校验路径：必须绝对 + 在 $HOME 下 + 不在敏感目录。

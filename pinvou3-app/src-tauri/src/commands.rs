@@ -90,9 +90,7 @@ fn build_message_with_attachments(
     for a in &attachments {
         out.push_str(&format!(
             "### {} ({}, {} bytes",
-            a.basename,
-            a.kind,
-            a.byte_size
+            a.basename, a.kind, a.byte_size
         ));
         if a.token_estimate > 0 {
             out.push_str(&format!(", ~{} tokens", a.token_estimate));
@@ -109,7 +107,9 @@ fn build_message_with_attachments(
         } else if let Some(md) = &a.markdown {
             out.push_str("```\n");
             out.push_str(md);
-            if !md.ends_with('\n') { out.push('\n'); }
+            if !md.ends_with('\n') {
+                out.push('\n');
+            }
             out.push_str("```\n");
         } else if let Some(warning) = &a.warning {
             out.push_str(&format!("⚠️ {warning}\n"));
@@ -138,7 +138,9 @@ pub async fn get_settings() -> Result<UserPrefs, String> {
 /// Phase C 会做 in-place engine restart（处理 in-flight turn）。
 #[tauri::command]
 pub async fn update_settings(prefs: UserPrefs) -> Result<(), String> {
-    prefs.save().map_err(|e| format!("save settings failed: {e:?}"))
+    prefs
+        .save()
+        .map_err(|e| format!("save settings failed: {e:?}"))
 }
 
 /// 清当前会话历史。
@@ -171,9 +173,7 @@ pub struct BackendStatus {
 }
 
 #[tauri::command]
-pub async fn get_backend_status(
-    monitor: State<'_, MonitorState>,
-) -> Result<BackendStatus, String> {
+pub async fn get_backend_status(monitor: State<'_, MonitorState>) -> Result<BackendStatus, String> {
     let snap = monitor.snapshot().await;
     let vllm_online = matches!(
         snap.vllm.as_ref().map(|v| v.status),
@@ -190,9 +190,7 @@ pub async fn get_backend_status(
 /// 列出所有 session 元数据，按 updated_at 倒序。前端历史面板渲染用。
 /// 返回 SessionMetadata 数组（id/title/时间/token/model/workspace 等字段）。
 #[tauri::command]
-pub async fn list_sessions(
-    store: State<'_, SessionStore>,
-) -> Result<Vec<SessionMetadata>, String> {
+pub async fn list_sessions(store: State<'_, SessionStore>) -> Result<Vec<SessionMetadata>, String> {
     store.list().map_err(|e| format!("list_sessions: {e:?}"))
 }
 
@@ -243,10 +241,7 @@ pub async fn load_session(
 
 /// 删除 session（含 artifacts 目录）。
 #[tauri::command]
-pub async fn delete_session(
-    id: String,
-    store: State<'_, SessionStore>,
-) -> Result<(), String> {
+pub async fn delete_session(id: String, store: State<'_, SessionStore>) -> Result<(), String> {
     store
         .delete(&id)
         .map_err(|e| format!("delete_session({id}): {e:?}"))
@@ -266,9 +261,7 @@ pub async fn rename_session(
 
 /// 取当前 active session id（前端启动时高亮历史面板用）。
 #[tauri::command]
-pub async fn get_active_session(
-    store: State<'_, SessionStore>,
-) -> Result<Option<String>, String> {
+pub async fn get_active_session(store: State<'_, SessionStore>) -> Result<Option<String>, String> {
     Ok(store.active_id())
 }
 
@@ -346,8 +339,7 @@ pub struct ArtifactInfo {
 #[tauri::command]
 pub async fn read_artifact_text(path: String) -> Result<String, String> {
     let p = validate_user_path(&path)?;
-    std::fs::read_to_string(&p)
-        .map_err(|e| format!("read_artifact_text({}): {e}", p.display()))
+    std::fs::read_to_string(&p).map_err(|e| format!("read_artifact_text({}): {e}", p.display()))
 }
 
 /// 读 artifact 元数据：大小 / 类型 / 是否存在。
@@ -387,8 +379,8 @@ pub async fn artifact_info(path: String) -> Result<ArtifactInfo, String> {
         "docx" | "pptx" | "odt" => "docx",
         "xlsx" | "ods" => "xlsx",
         "doc" | "ppt" | "xls" | "rtf" => "legacy_office",
-        "txt" | "log" | "csv" | "json" | "yaml" | "yml" | "toml" | "xml"
-        | "rs" | "py" | "js" | "ts" | "go" | "c" | "cpp" | "h" | "hpp" | "sh" => "text",
+        "txt" | "log" | "csv" | "json" | "yaml" | "yml" | "toml" | "xml" | "rs" | "py" | "js"
+        | "ts" | "go" | "c" | "cpp" | "h" | "hpp" | "sh" => "text",
         _ => "binary",
     };
     Ok(ArtifactInfo {
@@ -427,11 +419,8 @@ pub async fn open_containing_folder(path: String) -> Result<(), String> {
 /// 在 Tauri 新窗口里加载 HTML 产物。绕过 snap 浏览器对 `~/.xxx/` 隐藏目录的沙箱限制。
 /// 同一文件再次调用 → focus 已有窗口而非新建,防窗口爆炸。
 #[tauri::command]
-pub async fn open_artifact_window(
-    path: String,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    use tauri::{WebviewUrl, WebviewWindowBuilder, Manager};
+pub async fn open_artifact_window(path: String, app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
     let p = validate_user_path(&path)?;
     if !p.is_file() {
@@ -450,7 +439,9 @@ pub async fn open_artifact_window(
     }
 
     let url_str = format!("file://{}", p.display());
-    let url = url_str.parse().map_err(|e| format!("parse file url: {e}"))?;
+    let url = url_str
+        .parse()
+        .map_err(|e| format!("parse file url: {e}"))?;
     let title = p
         .file_name()
         .and_then(|s| s.to_str())
@@ -551,9 +542,7 @@ pub async fn accept_plan(
 ) -> Result<SessionModeState, String> {
     store.set_mode_state(&session_id, SerializableMode::Yolo, PlanPhase::Executing);
     // 简短指令——主约束由 M1 per-turn system-reminder 提供(bridge 按 phase=Executing 注入)。
-    let instruction = format!(
-        "用户已批准方案,立即开始执行。方案:\n\n{plan_markdown}"
-    );
+    let instruction = format!("用户已批准方案,立即开始执行。方案:\n\n{plan_markdown}");
     engine
         .inner()
         .send_user_message(

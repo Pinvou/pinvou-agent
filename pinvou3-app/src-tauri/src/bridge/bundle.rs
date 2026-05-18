@@ -63,10 +63,8 @@ impl Pinvou3Bundle {
         std::fs::create_dir_all(&self.skills_dir)?;
         let workspace_abs = paths::workspace_dir();
         std::fs::create_dir_all(&workspace_abs)?;
-        let rendered = INSTRUCTIONS_MD.replace(
-            "{{PINVOU3_WORKSPACE}}",
-            &workspace_abs.to_string_lossy(),
-        );
+        let rendered =
+            INSTRUCTIONS_MD.replace("{{PINVOU3_WORKSPACE}}", &workspace_abs.to_string_lossy());
         std::fs::write(&self.instructions_md, rendered)?;
         if !self.mcp_json.exists() {
             std::fs::write(&self.mcp_json, DEFAULT_MCP_JSON)?;

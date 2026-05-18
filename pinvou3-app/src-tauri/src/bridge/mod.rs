@@ -253,14 +253,13 @@ impl Pinvou3Bridge {
     /// 环境变量优先（兼容 run-dev.sh 里既有的 `DEEPSEEK_*` 设置）。
     pub fn build_dt_config(&self) -> DtConfig {
         let mut cfg = DtConfig::default();
-        cfg.provider = Some(
-            std::env::var("DEEPSEEK_PROVIDER").unwrap_or_else(|_| "vllm".to_string()),
-        );
+        cfg.provider =
+            Some(std::env::var("DEEPSEEK_PROVIDER").unwrap_or_else(|_| "vllm".to_string()));
         cfg.api_key = Some(
             std::env::var("DEEPSEEK_API_KEY").unwrap_or_else(|_| LOCAL_VLLM_API_KEY.to_string()),
         );
-        let base_url = std::env::var("DEEPSEEK_BASE_URL")
-            .unwrap_or_else(|_| LOCAL_VLLM_BASE_URL.to_string());
+        let base_url =
+            std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| LOCAL_VLLM_BASE_URL.to_string());
         let providers = cfg.providers.get_or_insert_with(ProvidersConfig::default);
         providers.vllm.base_url = Some(base_url);
         cfg.default_text_model = Some(self.model());
@@ -322,7 +321,10 @@ impl Pinvou3Bridge {
             AppMode::Agent => (self.allow_shell(), false),
         };
         let full_content = match reminder_for(mode, phase) {
-            Some(r) => format!("<system-reminder>\n{}\n</system-reminder>\n\n{}", r, content),
+            Some(r) => format!(
+                "<system-reminder>\n{}\n</system-reminder>\n\n{}",
+                r, content
+            ),
             None => content,
         };
         Op::SendMessage {
@@ -398,7 +400,10 @@ mod tests {
             !cfg.strict_tool_mode,
             "strict_tool_mode 必须 false（Qwen3.6 用宽松模式）"
         );
-        assert!(!cfg.snapshots_enabled, "snapshots 不开（用户没 git workspace）");
+        assert!(
+            !cfg.snapshots_enabled,
+            "snapshots 不开（用户没 git workspace）"
+        );
         assert!(
             !cfg.project_context_pack_enabled,
             "project context pack 不开（非 dev 用户没 project）"

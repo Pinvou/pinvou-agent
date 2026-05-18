@@ -100,9 +100,7 @@ impl AppEngine {
     /// 上游 [`Op::EditLastTurn`] 行为：砍掉 session 末尾最近的 user 消息及之后
     /// 所有消息，然后用 `new_message` 当成新 user 消息重新发送。
     pub async fn edit_last_turn(&self, new_message: String) -> Result<()> {
-        self.handle
-            .send(Op::EditLastTurn { new_message })
-            .await?;
+        self.handle.send(Op::EditLastTurn { new_message }).await?;
         Ok(())
     }
 
@@ -121,7 +119,9 @@ impl AppEngine {
         tool_call_id: String,
         response: UserInputResponse,
     ) -> Result<()> {
-        self.handle.submit_user_input(tool_call_id, response).await?;
+        self.handle
+            .submit_user_input(tool_call_id, response)
+            .await?;
         Ok(())
     }
 
@@ -139,11 +139,7 @@ impl AppEngine {
     /// - 不切 engine.messages → 上下文跨 session 串台
     /// - 不切 workspace → AI 默认产物目录全局共享,多 session 写同名文件冲突
     /// - 不重拼 system_prompt → AI 看到的 PINVOU3_WORKSPACE 路径跟实际 workspace 不一致
-    pub async fn sync_session(
-        &self,
-        session_id: String,
-        messages: Vec<Message>,
-    ) -> Result<()> {
+    pub async fn sync_session(&self, session_id: String, messages: Vec<Message>) -> Result<()> {
         let workspace = self.bridge.session_workspace(&session_id);
         // 重写 disk 上的 instructions.md 为 session-specific 路径。
         // engine 的 rehydrate 会从 disk 重读覆盖 session.system_prompt,
@@ -239,7 +235,8 @@ fn spawn_event_forwarder(
     bridge: Pinvou3Bridge,
 ) {
     let approve_handle = handle.clone();
-    let plan_tracker: Arc<Mutex<TurnPlanTracker>> = Arc::new(Mutex::new(TurnPlanTracker::default()));
+    let plan_tracker: Arc<Mutex<TurnPlanTracker>> =
+        Arc::new(Mutex::new(TurnPlanTracker::default()));
     tauri::async_runtime::spawn(async move {
         let mut rx = handle.rx_event.write().await;
         while let Some(event) = rx.recv().await {
@@ -263,9 +260,10 @@ fn spawn_event_forwarder(
                         Err(e) => (format!("{e:?}"), false),
                     };
                     // Plan 类工具结果：标记 + 缓存 snapshot（两层）+ 实时 emit 给前端 chip 进度区
-                    if success && (name == "update_plan"
-                        || name == "checklist_write"
-                        || name == "todo_write")
+                    if success
+                        && (name == "update_plan"
+                            || name == "checklist_write"
+                            || name == "todo_write")
                     {
                         let mut tracker = plan_tracker.lock();
                         tracker.plan_tool_used = true;
@@ -300,10 +298,12 @@ fn spawn_event_forwarder(
                         );
                     }
                     // M2: 跟踪本 turn 是否调过会真正产出的工具
-                    if success && matches!(
-                        name.as_str(),
-                        "write_file" | "edit_file" | "exec_shell" | "code_execution"
-                    ) {
+                    if success
+                        && matches!(
+                            name.as_str(),
+                            "write_file" | "edit_file" | "exec_shell" | "code_execution"
+                        )
+                    {
                         plan_tracker.lock().write_tool_used = true;
                     }
                     let _ = app.emit(
@@ -325,10 +325,7 @@ fn spawn_event_forwarder(
                 }
                 Event::ApprovalRequired { id, tool_name, .. } => {
                     // pinvou3 yolo 助手：主动 approve（上游 bug 旁路，见上方注释）
-                    eprintln!(
-                        "[pinvou3-app] auto-approving tool {} id={}",
-                        tool_name, id
-                    );
+                    eprintln!("[pinvou3-app] auto-approving tool {} id={}", tool_name, id);
                     let h = approve_handle.clone();
                     let id_clone = id.clone();
                     tokio::spawn(async move {
@@ -340,7 +337,11 @@ fn spawn_event_forwarder(
                     // 已先于 ApprovalRequired fire，前端已收到正确的 args。
                     // 之前在此 emit 会用 args=null 覆盖前端 toolMeta，导致产物路径丢失。
                 }
-                Event::TurnComplete { usage, status, error } => {
+                Event::TurnComplete {
+                    usage,
+                    status,
+                    error,
+                } => {
                     // 单独发 usage 给前端 token 进度条
                     let _ = app.emit(
                         "chat:usage",
@@ -370,10 +371,7 @@ fn spawn_event_forwarder(
                         //      所以触发条件不能绑死 Planning,否则新卡片不弹.
                         if plan_used
                             && state.mode == SerializableMode::Plan
-                            && matches!(
-                                state.plan_phase,
-                                PlanPhase::Planning | PlanPhase::Ready
-                            )
+                            && matches!(state.plan_phase, PlanPhase::Planning | PlanPhase::Ready)
                         {
                             store.set_plan_phase(&active_id, PlanPhase::Ready);
                             let _ = app.emit(
@@ -458,7 +456,11 @@ fn spawn_event_forwarder(
                     );
                 }
                 Event::CompactionCompleted {
-                    message, auto, messages_before, messages_after, ..
+                    message,
+                    auto,
+                    messages_before,
+                    messages_after,
+                    ..
                 } => {
                     let _ = app.emit(
                         "chat:compaction",

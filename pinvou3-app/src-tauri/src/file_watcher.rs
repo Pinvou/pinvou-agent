@@ -47,10 +47,7 @@ pub fn spawn(app: AppHandle, sessions_root: PathBuf) {
             );
             return;
         }
-        eprintln!(
-            "[file_watcher] watching {}",
-            sessions_root.display()
-        );
+        eprintln!("[file_watcher] watching {}", sessions_root.display());
 
         for result in rx {
             match result {
@@ -83,10 +80,7 @@ fn handle_event(app: &AppHandle, ev: &Event, root: &Path) {
             continue;
         }
         // 跳过 LibreOffice/Word/编辑器临时文件 (.~lock / ~$ / .swp 等)
-        let basename = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
+        let basename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
         if should_skip(basename) {
             continue;
         }
@@ -108,12 +102,24 @@ fn handle_event(app: &AppHandle, ev: &Event, root: &Path) {
 /// 跳过隐藏 / 编辑器临时文件 —— LibreOffice `.~lock.xxx#` / MS Word `~$xxx`
 /// / vim `.xxx.swp` / 通用 `.` 开头的隐藏文件 / `.tmp` 后缀。
 fn should_skip(basename: &str) -> bool {
-    if basename.is_empty() { return true; }
-    if basename.starts_with('.') { return true; }    // .~lock / 任意 dot file
-    if basename.starts_with("~$") { return true; }   // MS Word 临时锁
-    if basename.ends_with('~') { return true; }      // emacs backup
-    if basename.ends_with(".swp") || basename.ends_with(".swo") { return true; }
-    if basename.ends_with(".tmp") || basename.ends_with(".bak") { return true; }
+    if basename.is_empty() {
+        return true;
+    }
+    if basename.starts_with('.') {
+        return true;
+    } // .~lock / 任意 dot file
+    if basename.starts_with("~$") {
+        return true;
+    } // MS Word 临时锁
+    if basename.ends_with('~') {
+        return true;
+    } // emacs backup
+    if basename.ends_with(".swp") || basename.ends_with(".swo") {
+        return true;
+    }
+    if basename.ends_with(".tmp") || basename.ends_with(".bak") {
+        return true;
+    }
     false
 }
 
@@ -154,13 +160,13 @@ mod tests {
 
     #[test]
     fn should_skip_temp_files() {
-        assert!(should_skip(".~lock.foo.docx#"));   // LibreOffice
-        assert!(should_skip("~$report.docx"));      // MS Word
-        assert!(should_skip(".hidden"));            // 通用 dot file
-        assert!(should_skip(".bashrc.swp"));        // vim swap
+        assert!(should_skip(".~lock.foo.docx#")); // LibreOffice
+        assert!(should_skip("~$report.docx")); // MS Word
+        assert!(should_skip(".hidden")); // 通用 dot file
+        assert!(should_skip(".bashrc.swp")); // vim swap
         assert!(should_skip("draft.tmp"));
         assert!(!should_skip("report.docx"));
-        assert!(!should_skip("人类文档.docx"));     // 正常中文文件名
+        assert!(!should_skip("人类文档.docx")); // 正常中文文件名
         assert!(!should_skip("plan.md"));
     }
 

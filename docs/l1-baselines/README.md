@@ -22,7 +22,10 @@ docs/l1-baselines/
 
 | 文件夹 | 日期 | scenario 数 | 总均分 | 说明 |
 |---|---|---|---|---|
-| `v0.8.37-r1` | 2026-05-18 | 5 | 4.75 | 首次 baseline,Qwen3.6 + L1.5 工具表 + INSTRUCTIONS_MD v0.8.37,rubric r1 |
+| `v0.8.37-r1` | 2026-05-18 | 5 | 4.75 | 首次 baseline (MVP scenario 集),Qwen3.6 + L1.5 工具表 + INSTRUCTIONS_MD v0.8.37,rubric r1 |
+| `v0.8.37-r1-13scn` | 2026-05-18 | 13 | 4.67 | 扩 scenario 集 (multi_turn/write_okr/data_csv/plan_travel/refusal/long_output/chinese/tool_err),同 app/rubric 版本。3 个 ≤3 离群点已 append 到 process.md |
+
+**suffix 约定**: 文件夹后缀 `-<N>scn` 表示 scenario 集合大小,用于区分相同 app/rubric 版本下不同 scenario 集合的 baseline。覆盖更全的集合 (≥) 可作为后续 baseline 的 ground truth。
 
 ## 怎么用
 
