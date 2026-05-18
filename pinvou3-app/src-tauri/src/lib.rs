@@ -123,3 +123,57 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+#[cfg(test)]
+mod blocklist_contract {
+    use deepseek_tui::tools::pinvou3_blocklist::{is_pinvou3_hidden, PINVOU3_HIDDEN_TOOLS};
+
+    /// L2-4: pinvou3 L1.5 blocklist 关键不变量——防止上游 rebase 或重构时
+    /// 误把整块隐藏清单删掉/改名，导致 LLM schema 重新膨胀。
+    #[test]
+    fn pinvou3_blocklist_hides_state_tools() {
+        // 数量下限——fork 维护时一旦掉到 60 以下就要 review 是否漏砍
+        assert!(
+            PINVOU3_HIDDEN_TOOLS.len() >= 60,
+            "blocklist 数量 {} < 60,可能整块被误删",
+            PINVOU3_HIDDEN_TOOLS.len()
+        );
+
+        // 类别代表性工具必须在内（每个类别至少一个 sentinel，整类被漏砍
+        // 立刻 fail）
+        for sentinel in [
+            "task_create",        // durable task
+            "agent_open",         // subagent
+            "rlm_eval",           // RLM
+            "pr_attempt_record",  // PR 跟踪
+            "git_status",         // git 类
+            "apply_patch",        // patch/fim
+            "pandoc_convert",     // 附件预处理（移到 bridge）
+            "todo_write",         // legacy todo alias
+            "exec_shell_cancel",  // 异步 shell 变体
+            "automation_create",  // automation 持久化
+            "github_issue_context", // github 集成
+            "web.run",            // 旧 web_run
+        ] {
+            assert!(
+                is_pinvou3_hidden(sentinel),
+                "类别代表工具 {sentinel} 应该被隐藏,但不在 blocklist"
+            );
+        }
+
+        // 核心工具必须可见（误把 read_file 砍了 = AI 啥都干不了）
+        for core in [
+            "read_file",
+            "write_file",
+            "edit_file",
+            "exec_shell",
+            "web_search",
+            "checklist_write",
+            "update_plan",
+            "list_dir",
+            "request_user_input",
+        ] {
+            assert!(!is_pinvou3_hidden(core), "核心工具 {core} 不应该被隐藏");
+        }
+    }
+}
