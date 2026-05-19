@@ -257,7 +257,24 @@ vLLM 参数:`max-num-batched-tokens 131072 (4×) + 保留 chunked-prefill + 256K
 #### 🟡 中等
 - **GUI subagent 卡片方案 B/C** (扩展版): 主 agent 串行视图 / subagent 内部 timeline。当前 A 已让用户能识别"嵌套 LLM 调用",B+C 是更好的体验
 - **Settings toggle 让用户在 GUI 启用 subagent**: 当前 blocklist 默认屏蔽,用户测试需 env override。加 `UserPrefs.advanced.enable_subagent` 让用户 GUI 勾选
-- **grep_files fork patch 何时 PR**: 等 PR #1790 反馈,如果上游接受看 reviewer 是否问其他工具,再 PR
+- **Fork → 上游 PR roadmap** (2026-05-19 整理): fork 现 12 commits ahead `upstream/main`,分类如下:
+
+  | 状态 | Commit | 内容 | 备注 |
+  |---|---|---|---|
+  | ✅ 已 PR | `d866274` | file_search spawn_blocking + 30s timeout (英文 clean 版) | **PR #1790** + Issue #1791,等反馈 |
+  | 🟢 强适合 PR | `363dd35` | subagent completion role=system→user (修 Qwen 严格 chat_template 400) | 通用 bug fix,纯净 7 行,**PR #1790 接受后立即提** |
+  | 🟢 强适合 PR | `9860ef1` | `DEFAULT_MAX_STEPS` 100→20 + `DEFAULT_SUBAGENT_ELAPSED_MAX` 300s | 对齐 CrewAI 行业共识;改默认值有争议,**先开 issue 讨论再 PR** |
+  | 🟡 待 PR | `aaa1920` | grep_files spawn_blocking + 30s timeout (中文版,需英文 clean) | 等 #1790 反馈;若 reviewer 问其他同步 tool 就合进或单独 PR |
+  | 🟡 弱适合 | `15244e6` | `GENERAL_AGENT_INTRO` 加 stop-on-failure 条款 | prompt 改动 PR 社区接受度低,ROI 低,**不主动 PR** |
+  | 🟡 弱适合 | `dd879db` | `#[cfg(test)] pub mod test_support` | 不常见模式,reviewer 可能质疑,**不主动 PR** |
+  | ❌ fork-only | `6ac5b97` `47e6abc` | lib export internal modules + RPIT trait | pinvou3-app Rust wrap 专用,**已决策不做**(process.md "偏好≠生态价值") |
+  | ❌ fork-only | `93e9474` | `DEEPSEEK_MAX_OUTPUT_TOKENS` env override | pinvou3 vLLM 撞顶专用,**已决策不做** |
+  | ❌ fork-only | `b9b40ce` `36526ce` `1ba8e41` | blocklist 52 工具 / tool_catalog 优先 / `PINVOU3_BLOCKLIST_OVERRIDE` env | pinvou3 业务定制,永远 fork-only |
+
+  **下次开工动作**:
+  1. 看 PR #1790 是否被合(`gh pr view 1790 --repo Hmbown/DeepSeek-TUI`)
+  2. 合了 → cherry-pick `363dd35` 到新 PR 分支,跑 fork `cargo test` 后提 PR
+  3. `9860ef1` 先开 issue 讨论默认值(20 还是 30/50),收 maintainer 意见再 PR
 
 #### 🟢 低优先
 - **Multi-subagent 大研究任务** (subagent_compare_3_libs / subagent_research_topic 仍 cargo timeout): 是 stress test 边界,生产场景用 single subagent 已够。若真要支持需要 prompt 工程减 verbosity + 用户接受 10+ 分钟等待
