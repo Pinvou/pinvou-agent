@@ -78,7 +78,7 @@ let attachSeq = 0;
 // 阶段 D: Plan / YOLO 双模式状态机
 // modeState = { mode, plan_phase, pinvou_review_enabled }
 // pinvou_review_enabled 与 Plan/YOLO 正交,开启后 plan 期 accept_plan 触发 EXIT GATE。
-// 设计:docs/Pinvou-嘴替设计.md §5。
+// 设计:docs/Pinvou-品悟设计.md §5。
 // 后端 SessionStore 是 source of truth，前端切 session 时同步拉一遍。
 let modeState = { mode: "yolo", plan_phase: "none", pinvou_review_enabled: false };
 
@@ -1163,7 +1163,7 @@ function escapeHtml(s) {
 
 // ════════════════════════════════════════════════════════════════════
 // Pinvou Review v2 — careful 卡片 + 品悟气泡 + 3 按钮 + Fallback
-// 设计:docs/Pinvou-嘴替设计.md §4-§6
+// 设计:docs/Pinvou-品悟设计.md §4-§6
 // ════════════════════════════════════════════════════════════════════
 
 /** Careful hook 拦截卡片(红色醒目)。chat:tool_end 时 metadata.safety_level=="dangerous" 触发。 */

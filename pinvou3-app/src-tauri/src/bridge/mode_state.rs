@@ -39,7 +39,7 @@ impl Default for PlanPhase {
 /// - YOLO + 关 = 现状行为
 ///
 /// careful hook 跨所有组合默认开启(由 DeepSeek-TUI shell.rs 强制 BLOCKED Dangerous 实现,
-/// 不依赖此开关)。设计依据:docs/Pinvou-嘴替设计.md §5。
+/// 不依赖此开关)。设计依据:docs/Pinvou-品悟设计.md §5。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionModeState {
     /// 当前激活 mode。`build_send_message_op` 用这个值。

@@ -614,7 +614,7 @@ pub async fn set_pinvou_review(
 /// 读 pinvou3 内置 skill 的 body(去掉 frontmatter)。
 /// 用途:前端 autoTriggerPinvouReview 把完整 SKILL.md 内容塞进 user message,
 /// 不依赖本地 Qwen3.6 主动 read_file —— 弱模型不会主动用 progressive disclosure。
-/// 设计依据:docs/Pinvou-嘴替设计.md §10.5 (即将补)
+/// 设计依据:docs/Pinvou-品悟设计.md §10.5 (即将补)
 #[tauri::command]
 pub async fn read_skill_body(name: String) -> Result<String, String> {
     use crate::bridge::paths;

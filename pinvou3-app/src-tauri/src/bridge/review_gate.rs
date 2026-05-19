@@ -5,7 +5,7 @@
 //! `## PINVOU REVIEW REPORT` 表格,且所有 CRITICAL finding 已 RESOLVED 或
 //! OVERRIDDEN_BY_USER。
 //!
-//! 设计依据:`docs/Pinvou-嘴替设计.md` §4.2,以及本仓库 commit `7b983b6`
+//! 设计依据:`docs/Pinvou-品悟设计.md` §4.2,以及本仓库 commit `7b983b6`
 //! 的回滚教训(Qwen3.6 + advisory reminder 引导单飞不可靠,必须 blocking gate)。
 //!
 //! Fallback 路径(前端):LLM 没按格式输出表格时,前端 main.js 的

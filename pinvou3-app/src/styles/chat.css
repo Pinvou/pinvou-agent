@@ -2796,7 +2796,7 @@ body[data-theme="liquid-light"] .bubble.rendered strong {
 }
 
 /* === Pinvou Review v2: careful 卡片 + 品悟气泡 + toggle === */
-/* 详细设计:docs/Pinvou-嘴替设计.md §4 § 5 §6 */
+/* 详细设计:docs/Pinvou-品悟设计.md §4 § 5 §6 */
 
 /* careful 拦截卡片(红色醒目) */
 .msg-careful-blocked {
