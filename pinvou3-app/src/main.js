@@ -1357,6 +1357,42 @@ async function autoTriggerPinvouReview(planCardEl, reason) {
   await send();
 }
 
+// 任务收口 final review:advisory 性质,无 GATE 无 3 按钮。
+let pendingFinalReview = false;
+
+async function autoTriggerPinvouFinal() {
+  pendingFinalReview = true;
+  appendSystemMessage("🟣 任务完成 —— 让 Pinvou 嘴替核验一下产出...");
+  try {
+    const skillBody = await invoke("read_skill_body", { name: "pinvou-review-final" });
+    input.value = `[嘴替自动触发 /pinvou-review-final,完整角色定义如下]\n\n${skillBody}`;
+  } catch (e) {
+    appendSystemMessage(`⚠️ 加载 pinvou-review-final skill 失败: ${e}`);
+    input.value = "/pinvou-review-final";  // fallback
+  }
+  await send();
+}
+
+/** 渲染 final review advisory 气泡(无 3 按钮,跟 plan review 区分)。 */
+function renderPinvouFinalCard(text) {
+  if (!text || !text.trim()) return;
+  const row = document.createElement("div");
+  row.className = "msg-row msg-pinvou";
+  const wrap = document.createElement("div");
+  wrap.className = "msg-wrap msg-wrap-pinvou";
+  const label = document.createElement("div");
+  label.className = "speaker-label speaker-pinvou";
+  label.textContent = "🟣 Pinvou · 嘴替(任务收口验收)";
+  const bubble = document.createElement("div");
+  bubble.className = "bubble bubble-pinvou";
+  bubble.textContent = text.trim();
+  wrap.appendChild(label);
+  wrap.appendChild(bubble);
+  row.appendChild(wrap);
+  chatArea.appendChild(row);
+  scrollToBottom();
+}
+
 /** 拼当前 assistant 完整 text(已 flush blocks + 未 flush pending)。chat:done 提取用。 */
 function collectLastAssistantText() {
   const parts = [];
@@ -3238,7 +3274,7 @@ listen("chat:done", async (e) => {
   const error = e.payload?.error;
   if (error) appendSystemMessage("⚠️ " + error);
 
-  // Pinvou Review v2: GATE 失败后的 review 跑完,渲染嘴替气泡(带 Fallback)
+  // Pinvou Review v2: GATE 失败后的 plan review 跑完,渲染嘴替气泡(带 Fallback)
   if (pendingPinvouReview) {
     const lastAssistant = collectLastAssistantText();
     const rendered = tryRenderPinvouReviewFromAssistant(lastAssistant, pendingPinvouReview);
@@ -3248,6 +3284,13 @@ listen("chat:done", async (e) => {
     pendingPinvouReview = null;
   }
 
+  // Pinvou Review v2 阶段 D: final review 跑完,渲染 advisory 气泡(无 3 按钮)
+  if (pendingFinalReview) {
+    const lastAssistant = collectLastAssistantText();
+    renderPinvouFinalCard(lastAssistant);
+    pendingFinalReview = false;
+  }
+
   // 把累积的 assistant message (text + 任何未配对的 tool_use) flush 到 messages.
   flushAssistantMessageToHistory();
   closeAssistantBubble();
@@ -3255,12 +3298,21 @@ listen("chat:done", async (e) => {
 
   // 执行 plan 完成 → 回 yolo 默认态(plan_phase 从 executing → none).
   // 同步后端 store, 防止下条消息 chat 命令读到 phase=executing 错位.
+  let wasExecutingTransition = false;
   if (modeState.plan_phase === "executing") {
-    modeState = { mode: "yolo", plan_phase: "none" };
+    wasExecutingTransition = true;
+    modeState = { mode: "yolo", plan_phase: "none", pinvou_review_enabled: modeState.pinvou_review_enabled };
     updateModeUI();
     if (activeSessionId) {
       try { await invoke("discard_plan", { sessionId: activeSessionId }); } catch (_) {}
     }
+  }
+
+  // Pinvou Review v2 阶段 D:任务收口 final review
+  // executing→none transition 是任务收口信号。pinvou_review_enabled 时自动 advisory review。
+  // pendingFinalReview 防止 final review 自己触发的 chat:done 又递归触发新一轮 final。
+  if (wasExecutingTransition && modeState.pinvou_review_enabled && !pendingFinalReview) {
+    await autoTriggerPinvouFinal();
   }
 
   // 持久化整轮（含 user + assistant）到 disk
