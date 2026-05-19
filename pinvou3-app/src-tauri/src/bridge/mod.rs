@@ -32,7 +32,8 @@ use self::mode_state::PlanPhase;
 use self::prefs::{ModelPreset, UserPrefs};
 
 /// Qwen3.6 在 vLLM 里是 passthrough 字符串（不走 alias）。
-const LOCAL_VLLM_MODEL: &str = "/model";
+// 2026-05-19: vLLM 重启后 served-model-name 改 qwen36_35b (旧 "/model" 已废)
+const LOCAL_VLLM_MODEL: &str = "qwen36_35b";
 const LOCAL_VLLM_BASE_URL: &str = "http://10.214.74.113:8000/v1";
 const LOCAL_VLLM_API_KEY: &str = "local-no-auth";
 
@@ -213,7 +214,12 @@ impl Pinvou3Bridge {
             instructions: self.instruction_paths(),
             project_context_pack_enabled: false,
             max_steps: self.prefs.advanced.max_steps.unwrap_or(100),
-            max_subagents: self.prefs.advanced.max_subagents.unwrap_or(4),
+            // 2026-05-19: 工程层硬锁 single subagent at a time。
+            // 多 subagent 并发在本地单 vLLM + 弱模型下不可控 (timeout 风险),
+            // 用户场景是 context isolation 而非 fan-out,单 subagent 足够。
+            // 第 2 个 agent_spawn 会被 SubAgentManager.max_agents 检查 reject,
+            // LLM 拿到 "Sub-agent limit reached" 自然 fallback,不死磕。
+            max_subagents: self.prefs.advanced.max_subagents.unwrap_or(1),
             snapshots_enabled: false,
             memory_enabled: false,
             memory_path: paths::memory_path(),
@@ -410,6 +416,12 @@ mod tests {
         );
         assert!(!cfg.memory_enabled, "memory feature 暂不开（Phase C）");
         assert_eq!(cfg.locale_tag, "zh-Hans", "默认中文 locale");
+        assert_eq!(
+            cfg.max_subagents, 1,
+            "max_subagents 必须 1：工程层锁定 single subagent at a time \
+             (multi-subagent 并发在本地单 vLLM + 弱模型下不可控)。\
+             改这个值要先评估 multi-subagent 测试场景"
+        );
     }
 
     /// 语言切换必须传到 engine.locale_tag。

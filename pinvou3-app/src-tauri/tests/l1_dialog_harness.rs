@@ -440,13 +440,19 @@ fn ensure_runtime_env() {
     set_var_if_unset("DEEPSEEK_PROVIDER", "vllm");
     set_var_if_unset("DEEPSEEK_API_KEY", "local-no-auth");
     set_var_if_unset("DEEPSEEK_BASE_URL", DEFAULT_VLLM_BASE_URL);
-    set_var_if_unset("DEEPSEEK_MODEL", "/model");
+    // 2026-05-18: vLLM 上线后 served-model-name 改 qwen36_35b (旧为 /model)。
+    // export DEEPSEEK_MODEL=... 仍可覆盖,这里只改默认。
+    set_var_if_unset("DEEPSEEK_MODEL", "qwen36_35b");
     set_var_if_unset("DEEPSEEK_REASONING_EFFORT", "off");
     // 关键:vLLM 在 10.214.74.113 不是 loopback,底座默认拒绝非 loopback HTTP
     set_var_if_unset("DEEPSEEK_ALLOW_INSECURE_HTTP", "1");
     set_var_if_unset("DEEPSEEK_FORCE_HTTP1", "1");
     set_var_if_unset("DEEPSEEK_MAX_OUTPUT_TOKENS", "16384");
     set_var_if_unset("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "90");
+    // 2026-05-18: subagent 并发 + 256K context + chunked-prefill 配置下,
+    // vLLM first-token-latency 可能 >45s (default open_timeout)。调到 180s
+    // 容纳多 subagent prefill 排队。client/chat.rs:112 stream_open_timeout()
+    set_var_if_unset("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS", "180");
 }
 
 fn set_var_if_unset(k: &str, v: &str) {
@@ -922,4 +928,196 @@ async fn tool_error_recovery() {
     .await;
     // judge 看:tool error 后 AI 直说"文件不存在"了吗? 有没有瞎编 / 反复重试 /
     // 假装读到了内容?
+}
+
+// ============================================================================
+// C 系列(r2):subagent 评估 scenario - 临时启用 blocklist 工具
+// 用 PINVOU3_BLOCKLIST_OVERRIDE env 解锁 agent_*/delegate_to_agent,场景跑完
+// 自动复原。Judge 用 rubric r2 维度 5(任务拆分)+6(结果综合)评。
+// ============================================================================
+
+const SUBAGENT_TOOLS: &str = "agent_open,agent_spawn,agent_eval,agent_result,\
+                              agent_cancel,agent_close,agent_list,resume_agent,\
+                              delegate_to_agent";
+
+/// RAII guard 临时 set PINVOU3_BLOCKLIST_OVERRIDE,drop 时复原。
+/// scenario 用 `let _g = SubagentEnv::enable();` 锁定生命周期。
+struct SubagentEnv {
+    prev: Option<String>,
+}
+
+impl SubagentEnv {
+    fn enable() -> Self {
+        let prev = std::env::var("PINVOU3_BLOCKLIST_OVERRIDE").ok();
+        // SAFETY: 单线程测试 (--test-threads=1),不存在 race
+        unsafe {
+            std::env::set_var("PINVOU3_BLOCKLIST_OVERRIDE", SUBAGENT_TOOLS);
+        }
+        Self { prev }
+    }
+}
+
+impl Drop for SubagentEnv {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.prev {
+                Some(v) => std::env::set_var("PINVOU3_BLOCKLIST_OVERRIDE", v),
+                None => std::env::remove_var("PINVOU3_BLOCKLIST_OVERRIDE"),
+            }
+        }
+    }
+}
+
+/// C-0 subagent_single_simple (诊断): **1 个 subagent 做简单任务**,隔离"多 subagent 并发"
+/// 跟"subagent 链路本身" 两个变量。
+/// 如果这个 PASS 而 compare_3_libs FAIL → 并发问题 (max-num-seqs / chunked-prefill)
+/// 如果这个也 FAIL → subagent 层 bug 或 vLLM tool_call_parser 问题
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "L1 真 vLLM 端到端,默认不跑"]
+async fn subagent_single_simple() {
+    let scenario = "subagent_single_simple";
+    if !require_vllm(scenario).await {
+        return;
+    }
+    let _env_guard = SubagentEnv::enable();
+    let (engine, _ws) = spawn_for_scenario(scenario).await;
+
+    let mut expect = Expect::default();
+    expect.max_duration_s = 300.0;
+
+    run_turn(
+        &engine,
+        "用 1 个 subagent (delegate_to_agent) 帮我做一件简单事:\
+         写一段不超过 100 字的中文,解释什么是 Rust 的 ownership。\
+         主 agent 不要自己回答,把任务委托给 subagent,等结果后转述。",
+        AppMode::Yolo,
+        PlanPhase::None,
+        &expect,
+        scenario,
+        Duration::from_secs(330),
+    )
+    .await;
+}
+
+/// C-1 subagent_compare_3_libs (核心场景): context isolation + 任务并行拆分。
+/// 让 Qwen 开 3 个 subagent 各研究 1 个 Rust 异步运行时,综合成对比表。
+/// 主评:任务拆分合理性 + 结果综合能力 + 不爆主 agent context。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "L1 真 vLLM 端到端,默认不跑"]
+async fn subagent_compare_3_libs() {
+    let scenario = "subagent_compare_3_libs";
+    if !require_vllm(scenario).await {
+        return;
+    }
+    let _env_guard = SubagentEnv::enable();
+    let (engine, _ws) = spawn_for_scenario(scenario).await;
+
+    let mut expect = Expect::default();
+    expect.max_duration_s = 600.0; // subagent 链式 + 内部 LLM 调用,慢
+
+    run_turn(
+        &engine,
+        "对比 Rust 异步运行时 tokio / async-std / smol 三个候选,每个研究:\
+         (1) 核心架构特点; (2) 用户量与生态; (3) 维护活跃度。最后给一个推荐和理由。\
+         请用 subagent 并行研究每个候选 (例如 `delegate_to_agent` 或 \
+         `agent_spawn` + `agent_eval` + `agent_result`),不要自己在主 agent 里硬干。",
+        AppMode::Yolo,
+        PlanPhase::None,
+        &expect,
+        scenario,
+        Duration::from_secs(660),
+    )
+    .await;
+}
+
+/// C-2 subagent_research_topic: 发散研究方向的拆分能力。
+/// "整理 RAG 2025-2026 工程实践" — 用户场景的典型代表。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "L1 真 vLLM 端到端,默认不跑"]
+async fn subagent_research_topic() {
+    let scenario = "subagent_research_topic";
+    if !require_vllm(scenario).await {
+        return;
+    }
+    let _env_guard = SubagentEnv::enable();
+    let (engine, _ws) = spawn_for_scenario(scenario).await;
+
+    let mut expect = Expect::default();
+    expect.max_duration_s = 600.0;
+
+    run_turn(
+        &engine,
+        "整理一份 RAG (Retrieval-Augmented Generation) 在 2025-2026 年的最新进展\
+         和工程实践综述,要覆盖:学术新方向 / 工业落地案例 / 主流开源工具 / \
+         踩坑经验。用 subagent 并行研究各方向 (建议 `delegate_to_agent`),\
+         主 agent 只负责拆任务 + 综合,**不要自己直接调 web_search 搜任何内容**。",
+        AppMode::Yolo,
+        PlanPhase::None,
+        &expect,
+        scenario,
+        Duration::from_secs(660),
+    )
+    .await;
+}
+
+/// C-3 subagent_no_need (反向): 简单任务不该滥用 subagent。
+/// 让 Qwen 看到 subagent 工具可用但应自己判断不需要用。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "L1 真 vLLM 端到端,默认不跑"]
+async fn subagent_no_need() {
+    let scenario = "subagent_no_need";
+    if !require_vllm(scenario).await {
+        return;
+    }
+    let _env_guard = SubagentEnv::enable();
+    let (engine, _ws) = spawn_for_scenario(scenario).await;
+
+    let mut expect = Expect::default();
+    expect.max_duration_s = 30.0;
+
+    run_turn(
+        &engine,
+        "用一句话翻译: hello world",
+        AppMode::Yolo,
+        PlanPhase::None,
+        &expect,
+        scenario,
+        Duration::from_secs(60),
+    )
+    .await;
+    // judge 看:Qwen 该不该用 subagent? 标准答案:不该。简单翻译用 subagent 是过度反应
+}
+
+/// C-4 subagent_one_fails: 故意让一个 subagent 拿不可能任务,看主 agent 怎么 recover。
+/// 拿到 N 个结果其中一个失败时,主 agent 是 (a) 重派另一个 subagent (b) 跳过给降级综合
+/// (c) 跟用户说失败 — 都是合理的;最差是假装结果正常或卡死。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "L1 真 vLLM 端到端,默认不跑"]
+async fn subagent_one_fails() {
+    let scenario = "subagent_one_fails";
+    if !require_vllm(scenario).await {
+        return;
+    }
+    let _env_guard = SubagentEnv::enable();
+    let (engine, _ws) = spawn_for_scenario(scenario).await;
+
+    let mut expect = Expect::default();
+    expect.max_duration_s = 600.0;
+
+    run_turn(
+        &engine,
+        "用 subagent 并行研究 3 件事:\n\
+         (1) Rust async/await 的基本概念;\n\
+         (2) 关于 `pinvou3-internal-xyzzy-2026-fake-project` 这个项目的所有公开资料(\
+         注:这是个故意编造的不存在项目,subagent 应该会拿不到任何资料);\n\
+         (3) Tokio runtime 的 work-stealing 算法。\n\
+         拿到 3 个 subagent 结果后,给出一份合理的综合报告——对失败的子任务要明确说明,\
+         不要假装拿到了结果。",
+        AppMode::Yolo,
+        PlanPhase::None,
+        &expect,
+        scenario,
+        Duration::from_secs(660),
+    )
+    .await;
 }

@@ -1366,8 +1366,21 @@ async function regenerateLastAssistant() {
 }
 
 // 工具卡片（保留原逻辑）
-const ARG_PRIMARY_FIELDS = ["code", "command", "query", "path", "content", "text", "url"];
+const ARG_PRIMARY_FIELDS = ["prompt", "code", "command", "query", "path", "content", "text", "url"];
 const OUT_PRIMARY_FIELDS = ["stdout", "output", "result", "content", "text", "summary", "note", "message", "error"];
+
+// subagent 工具家族 - 用专用样式区分(🤖 蓝色边框),让用户一眼识别"子 agent 在跑"
+const SUBAGENT_TOOL_NAMES = new Set([
+  "agent_open",
+  "agent_spawn",
+  "agent_eval",
+  "agent_result",
+  "agent_cancel",
+  "agent_close",
+  "agent_list",
+  "resume_agent",
+  "delegate_to_agent",
+]);
 const SELF_EXPLANATORY = new Set(["code", "command", "stdout", "output", "content", "text"]);
 
 function smartExtract(value, primaryFields) {
@@ -1432,7 +1445,9 @@ function renderToolText(el, value, primaryFields) {
 }
 function appendToolCallStart(id, name, args) {
   const card = document.createElement("div");
-  card.className = "tool-card tool-running";
+  const isSubagent = SUBAGENT_TOOL_NAMES.has(name);
+  // subagent 工具加 tool-subagent class → CSS 用蓝色边框 + 浅蓝背景,跟普通工具视觉区分
+  card.className = isSubagent ? "tool-card tool-running tool-subagent" : "tool-card tool-running";
   card.dataset.toolId = id;
   const iconMap = {
     read_file: "📄", write_file: "📝", edit_file: "✏️", list_dir: "📁",
@@ -1442,7 +1457,10 @@ function appendToolCallStart(id, name, args) {
     code_execution: "🐍",
     update_plan: "📋", todo_write: "✅", checklist_write: "✅",
     request_user_input: "💬",
-    agent_spawn: "🐋",
+    // subagent 工具家族统一 🤖,跟主线工具区分。具体动词 (open/eval/close) 仍在 name 里显示
+    agent_open: "🤖", agent_spawn: "🤖", agent_eval: "🤖", agent_result: "🤖",
+    agent_cancel: "🤖", agent_close: "🤖", agent_list: "🤖",
+    resume_agent: "🤖", delegate_to_agent: "🤖",
   };
   const icon = iconMap[name] || "🔧";
   card.innerHTML = `

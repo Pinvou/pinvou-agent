@@ -305,6 +305,18 @@ body {
 .tool-card.tool-success { border-color: rgba(89, 251, 181, 0.3); }
 .tool-card.tool-error   { border-color: rgba(255, 68, 68, 0.4); }
 
+/* subagent 工具家族:蓝色边框 + 浅蓝背景,左边加 4px 蓝色竖条提示"嵌套 LLM 调用"
+   覆盖 running/success/error 的边框色,但保留它们的 .tool-state 颜色提示 */
+.tool-card.tool-subagent {
+  background: rgba(45, 100, 180, 0.10);
+  border-color: rgba(120, 180, 255, 0.45);
+  border-left: 4px solid rgba(120, 180, 255, 0.85);
+  padding-left: 12px;
+}
+.tool-card.tool-subagent.tool-running { border-color: rgba(120, 180, 255, 0.45); border-left-color: rgba(255, 191, 0, 0.9); }
+.tool-card.tool-subagent.tool-error   { border-color: rgba(255, 68, 68, 0.55); }
+.tool-card.tool-subagent .tool-name   { color: rgba(120, 180, 255, 0.95); }
+
 .tool-head {
   display: flex;
   align-items: center;
