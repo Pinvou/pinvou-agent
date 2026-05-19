@@ -255,9 +255,10 @@ fn spawn_event_forwarder(
                     );
                 }
                 Event::ToolCallComplete { id, name, result } => {
-                    let (output, success) = match result {
-                        Ok(r) => (r.content, true),
-                        Err(e) => (format!("{e:?}"), false),
+                    // 携带 metadata 让前端识别 careful hook 拦截 (safety_level=="dangerous")
+                    let (output, success, metadata) = match result {
+                        Ok(r) => (r.content, true, r.metadata),
+                        Err(e) => (format!("{e:?}"), false, None),
                     };
                     // Plan 类工具结果：标记 + 缓存 snapshot（两层）+ 实时 emit 给前端 chip 进度区
                     if success
@@ -308,7 +309,13 @@ fn spawn_event_forwarder(
                     }
                     let _ = app.emit(
                         "chat:tool_end",
-                        json!({ "id": id, "name": name, "output": output, "success": success }),
+                        json!({
+                            "id": id,
+                            "name": name,
+                            "output": output,
+                            "success": success,
+                            "metadata": metadata,
+                        }),
                     );
                 }
                 Event::UserInputRequired { id, request } => {

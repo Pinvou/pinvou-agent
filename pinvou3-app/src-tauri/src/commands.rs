@@ -20,6 +20,7 @@ use tauri::State;
 
 use crate::bridge::mode_state::{PlanPhase, SerializableMode, SessionModeState};
 use crate::bridge::prefs::UserPrefs;
+use crate::bridge::review_gate::{check_exit_gate, GateError};
 use crate::bridge::sessions::SessionStore;
 use crate::engine::AppEngine;
 use crate::monitor::{MonitorSnapshot, MonitorState, VllmStatus};
@@ -526,19 +527,35 @@ pub async fn set_plan_mode_next(
 
 /// 用户点 [⚡ 直接动手]（Planning 态 chip 退出按钮）：跳过 plan 流程，凭对话历史自由干。
 /// mode 切回 Yolo + phase=None。对话历史天然保留，AI 在 YOLO 下能看到之前讨论的 context。
+///
+/// **Pinvou Review GATE**: `pinvou_review_enabled = true` 时,plan 期切 YOLO 也需要 Pinvou
+/// 看过 plan(防绕过)。前端可传入 plan_markdown=None 表示"我承认还没 plan,纯空手切 YOLO"
+/// (这种情况不触发 GATE)。
 #[tauri::command]
 pub async fn exit_plan_to_yolo(
     session_id: String,
+    plan_markdown: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<SessionModeState, String> {
+    let enabled = store.mode_state(&session_id).pinvou_review_enabled;
+    if enabled {
+        if let Some(md) = plan_markdown.as_deref() {
+            if !md.trim().is_empty() {
+                check_exit_gate(md).map_err(|e| serialize_gate_error(&e))?;
+            }
+        }
+    }
     store.set_mode_state(&session_id, SerializableMode::Yolo, PlanPhase::None);
     Ok(store.mode_state(&session_id))
 }
 
 /// 用户点 plan_card [✅ 就这么干]：接受 plan，切 YOLO 执行。
 /// 流程：
-///   1. 设 mode=Yolo, phase=Executing
-///   2. 用 plan_markdown 作为指令前缀发一条 user message 触发执行
+///   1. **Pinvou Review GATE** (仅 pinvou_review_enabled = true):校验 plan_markdown
+///      末尾的 ## PINVOU REVIEW REPORT 表格,CRITICAL 全部 RESOLVED/OVERRIDDEN_BY_USER。
+///      失败时返回结构化错误 JSON,前端据此自动追加 /pinvou-review-plan 或提示用户。
+///   2. 设 mode=Yolo, phase=Executing
+///   3. 用 plan_markdown 作为指令前缀发一条 user message 触发执行
 /// 前端在调用前应在消息流追加 user 气泡显示「✅ 就这么干」让用户感知。
 #[tauri::command]
 pub async fn accept_plan(
@@ -547,6 +564,10 @@ pub async fn accept_plan(
     store: State<'_, SessionStore>,
     engine: State<'_, AppEngine>,
 ) -> Result<SessionModeState, String> {
+    let enabled = store.mode_state(&session_id).pinvou_review_enabled;
+    if enabled {
+        check_exit_gate(&plan_markdown).map_err(|e| serialize_gate_error(&e))?;
+    }
     store.set_mode_state(&session_id, SerializableMode::Yolo, PlanPhase::Executing);
     // 简短指令——主约束由 M1 per-turn system-reminder 提供(bridge 按 phase=Executing 注入)。
     let instruction = format!("用户已批准方案,立即开始执行。方案:\n\n{plan_markdown}");
@@ -559,6 +580,34 @@ pub async fn accept_plan(
         )
         .await
         .map_err(|e| format!("accept_plan send_user_message: {e:?}"))?;
+    Ok(store.mode_state(&session_id))
+}
+
+/// 把 GateError 序列化成 JSON 字符串,前端 parseGateError() 解析 {gate_error, message, detail}。
+fn serialize_gate_error(err: &GateError) -> String {
+    let kind = match err {
+        GateError::MissingReviewReport => "missing_review_report",
+        GateError::MalformedReport { .. } => "malformed_report",
+        GateError::UnresolvedCritical { .. } => "unresolved_critical",
+    };
+    serde_json::to_string(&serde_json::json!({
+        "gate_error": kind,
+        "message": err.to_string(),
+        "detail": err,
+    }))
+    .unwrap_or_else(|_| err.to_string())
+}
+
+/// 用户切换嘴替 review 开关(UI 顶部 toggle)。
+/// 与 Plan/YOLO 切换正交:嘴替 toggle 不动 mode/phase,只控是否触发 EXIT GATE + 嘴替气泡。
+/// careful hook 不依赖此开关,跨所有模式默认开启(DeepSeek-TUI shell.rs 强制 BLOCKED Dangerous)。
+#[tauri::command]
+pub async fn set_pinvou_review(
+    session_id: String,
+    enabled: bool,
+    store: State<'_, SessionStore>,
+) -> Result<SessionModeState, String> {
+    store.set_pinvou_review(&session_id, enabled);
     Ok(store.mode_state(&session_id))
 }
 
