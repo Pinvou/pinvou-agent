@@ -68,6 +68,12 @@ impl Pinvou3Bundle {
         paths::ensure_dirs()?;
         let version_file = paths::bundle_version_file();
         let current = std::fs::read_to_string(&version_file).unwrap_or_default();
+
+        // Pinvou Review v2 skills 每次启动都重写(防御性):skill 是 immutable
+        // bundle 资源,无副作用;且 0.4 VERSION 写出但 skill 缺失的状态实测发生过,
+        // 不该让用户依赖 VERSION 对账 + 手动删 VERSION 才能修复。
+        self.write_pinvou_skills()?;
+
         if current.trim() == BUNDLE_VERSION {
             return Ok(());
         }
@@ -90,20 +96,27 @@ impl Pinvou3Bundle {
             perm.set_mode(0o755);
             std::fs::set_permissions(&self.deny_sensitive_sh, perm)?;
         }
-        // Pinvou Review v2 内置 skills:写到 <skills_dir>/<name>/SKILL.md
-        // DeepSeek-TUI SkillRegistry::discover 期待这个 subdir + SKILL.md 格式。
-        let plan_dir = self.skills_dir.join("pinvou-review-plan");
-        let final_dir = self.skills_dir.join("pinvou-review-final");
-        std::fs::create_dir_all(&plan_dir)?;
-        std::fs::create_dir_all(&final_dir)?;
-        std::fs::write(plan_dir.join("SKILL.md"), PINVOU_REVIEW_PLAN_SKILL_MD)?;
-        std::fs::write(final_dir.join("SKILL.md"), PINVOU_REVIEW_FINAL_SKILL_MD)?;
         std::fs::write(&version_file, BUNDLE_VERSION)?;
         eprintln!(
             "[pinvou3-app] bundle extracted to {} (version {})",
             self.root.display(),
             BUNDLE_VERSION
         );
+        Ok(())
+    }
+
+    /// Pinvou Review v2 内置 skills:写到 `<skills_dir>/<name>/SKILL.md`
+    /// DeepSeek-TUI SkillRegistry::discover 期待这个 subdir + SKILL.md 格式。
+    /// 每次启动都写一遍(被 ensure_extracted 在 VERSION check 前调用),防御
+    /// "VERSION 对得上但 skill 文件缺失" 的状态。
+    fn write_pinvou_skills(&self) -> std::io::Result<()> {
+        std::fs::create_dir_all(&self.skills_dir)?;
+        let plan_dir = self.skills_dir.join("pinvou-review-plan");
+        let final_dir = self.skills_dir.join("pinvou-review-final");
+        std::fs::create_dir_all(&plan_dir)?;
+        std::fs::create_dir_all(&final_dir)?;
+        std::fs::write(plan_dir.join("SKILL.md"), PINVOU_REVIEW_PLAN_SKILL_MD)?;
+        std::fs::write(final_dir.join("SKILL.md"), PINVOU_REVIEW_FINAL_SKILL_MD)?;
         Ok(())
     }
 }
