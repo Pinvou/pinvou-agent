@@ -76,9 +76,11 @@ let pendingAttachments = []; // { id, result: IngestResult, status: "parsing"|"r
 let attachSeq = 0;
 
 // 阶段 D: Plan / YOLO 双模式状态机
-// modeState = { mode: "yolo"|"plan", plan_phase: "none"|"planning"|"ready"|"executing" }
+// modeState = { mode, plan_phase, pinvou_review_enabled }
+// pinvou_review_enabled 与 Plan/YOLO 正交,开启后 plan 期 accept_plan 触发 EXIT GATE。
+// 设计:docs/Pinvou-品悟设计.md §5。
 // 后端 SessionStore 是 source of truth，前端切 session 时同步拉一遍。
-let modeState = { mode: "yolo", plan_phase: "none" };
+let modeState = { mode: "yolo", plan_phase: "none", pinvou_review_enabled: false };
 
 // ── Thinking 指示器:Braille 10 帧 + 分阶段计时,以"气泡"形式跟随消息流尾部 ──
 // (业界惯例: ChatGPT/Claude 都把 thinking 反馈放在最新消息下方, 不混进 mode 状态条)
@@ -309,8 +311,6 @@ async function onPlanAccept(card) {
   const status = card.querySelector(".plan-card-status");
   status.hidden = false;
   status.textContent = "✅ 已批准";
-  // 追加 user 气泡 + 持久化到 messages: 作为 Plan→Executing 的 turn 边界标记,
-  // 历史还原时 plan_card 也据此渲染在正确位置.
   appendUserMessage("✅ 就这么干");
   messages.push({ role: "user", content: [{ type: "text", text: "✅ 就这么干" }] });
   const planMd = card.dataset.planMarkdown || "";
@@ -320,9 +320,28 @@ async function onPlanAccept(card) {
       sessionId: activeSessionId,
       planMarkdown: planMd,
     });
-    modeState = { mode: state.mode, plan_phase: state.plan_phase };
+    modeState = {
+      mode: state.mode,
+      plan_phase: state.plan_phase,
+      pinvou_review_enabled: !!state.pinvou_review_enabled,
+    };
     updateModeUI();
   } catch (e) {
+    // Pinvou Review GATE 失败时,e 是 JSON 字符串 {gate_error, message, detail}
+    const gateInfo = parseGateError(e);
+    if (gateInfo) {
+      // 反 freeze:plan 还没真接受,允许用户后续重点
+      card.dataset.cardState = "active";
+      card.querySelectorAll(".plan-card-btn").forEach((b) => (b.disabled = false));
+      status.hidden = true;
+      setBusy(false);
+      if (gateInfo.gate_error === "missing_review_report") {
+        await autoTriggerPinvouReview(card, "品悟还没看过这个方案");
+        return;
+      }
+      appendSystemMessage(`⚠️ Pinvou EXIT GATE 阻塞: ${gateInfo.message}`);
+      return;
+    }
     appendSystemMessage("⚠️ accept_plan 失败: " + e);
     setBusy(false);
   }
@@ -1136,6 +1155,279 @@ function appendUserMessage(text) {
   scrollToBottom();
   updateMessageActions();
 }
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[c]);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Pinvou Review v2 — careful 卡片 + 品悟气泡 + 3 按钮 + Fallback
+// 设计:docs/Pinvou-品悟设计.md §4-§6
+// ════════════════════════════════════════════════════════════════════
+
+/** Careful hook 拦截卡片(红色醒目)。chat:tool_end 时 metadata.safety_level=="dangerous" 触发。 */
+function renderCarefulBlockedCard(args, metadata) {
+  const row = document.createElement("div");
+  row.className = "msg-row msg-careful-blocked";
+  const cmd = (args && (args.command || args.cmd)) || "(命令未知)";
+  const reasons = (metadata.reasons || []).map((r) => `<li>${escapeHtml(r)}</li>`).join("");
+  const suggestions = (metadata.suggestions || []).map((s) => `<li>${escapeHtml(s)}</li>`).join("");
+  row.innerHTML = `
+    <div class="careful-blocked-box">
+      <div class="careful-blocked-header">🛑 Careful Hook 拦截了一条破坏性命令</div>
+      <div class="careful-blocked-cmd"><code>${escapeHtml(cmd)}</code></div>
+      <div class="careful-blocked-section">
+        <div class="careful-blocked-label">为什么拦?</div>
+        <ul>${reasons || "<li>命中破坏性 pattern</li>"}</ul>
+      </div>
+      ${suggestions ? `
+      <div class="careful-blocked-section">
+        <div class="careful-blocked-label">建议</div>
+        <ul>${suggestions}</ul>
+      </div>` : ""}
+      <div class="careful-blocked-foot">
+        这个 hook 在所有模式默认开启,与 Plan/YOLO/品悟开关无关。
+        如果你确认要跑,自己在终端执行 —— LLM 不会被允许跑破坏性命令。
+      </div>
+    </div>
+  `;
+  chatArea.appendChild(row);
+  scrollToBottom();
+}
+
+// === Pinvou Review:GATE / 提取 / 渲染 / Fallback ===
+
+const PINVOU_REVIEW_RE = /## PINVOU REVIEW REPORT[\s\S]*$/m;
+
+function extractPinvouReviewReport(text) {
+  if (!text) return null;
+  const m = text.match(PINVOU_REVIEW_RE);
+  return m ? m[0].trim() : null;
+}
+
+function overrideAllCriticalInReport(report) {
+  return report.replace(
+    /^(\|[^|]*\|\s*CRITICAL\s*\|\s*)RAISED(\s*\|[^|]*\|)$/gim,
+    "$1OVERRIDDEN_BY_USER$2",
+  ).replace(
+    /^(\|[^|]*\|\s*CRITICAL\s*\|\s*OVERRIDDEN_BY_USER\s*\|\s*)[^|]*(\|)$/gim,
+    "$1用户拍板继续$2",
+  );
+}
+
+/** Fallback:LLM 没按格式输出表格时合成 OVERRIDDEN_BY_USER 占位表格。
+ *  设计依据:§10.1 v1 lessons learned + commit 7b983b6 教训。 */
+function synthesizeOverriddenReport(reasonHint) {
+  return `## PINVOU REVIEW REPORT
+
+| Finding | Severity | Status | User Decision |
+|---------|----------|--------|---------------|
+| ${reasonHint || "Pinvou 输出未按表格格式,用户已阅读并 override"} | CRITICAL | OVERRIDDEN_BY_USER | 用户拍板继续 |
+
+**VERDICT**: user override —— Pinvou 未按格式输出表格,用户已读完意见后强制放行`;
+}
+
+/** chat:done 后把 3 按钮附加到 Pinvou 气泡(气泡本身在 chat:delta 期间已经渲染成紫色)。
+ *  - rowEl: 渲染好的 Pinvou row(data-pinvou-persona="pinvou-plan")
+ *  - report: 提取到的 PINVOU REVIEW REPORT(null = LLM 没按格式输出,fallback 模式)
+ *  - planCardEl: 关联的 plan card,3 按钮回调需要它的 dataset.planMarkdown */
+function attachPinvouReviewActions(rowEl, report, planCardEl) {
+  if (!rowEl) return;
+  const wrap = rowEl.querySelector(".msg-wrap-pinvou");
+  if (!wrap) return;
+  // freeze 关联的 plan card(防止用户跳过 review 直接重点 ✅)
+  if (planCardEl) {
+    planCardEl.querySelectorAll(".plan-card-btn").forEach((b) => (b.disabled = true));
+    const cardStatus = planCardEl.querySelector(".plan-card-status");
+    if (cardStatus) {
+      cardStatus.hidden = false;
+      cardStatus.textContent = "⏸ 品悟已审,看下面按钮";
+    }
+  }
+  const actions = document.createElement("div");
+  actions.className = "pinvou-review-actions";
+  actions.innerHTML = `
+    <button class="pinvou-review-btn" data-action="accept" type="button">✅ 直接执行</button>
+    <button class="pinvou-review-btn" data-action="revise" type="button">↻ AI 改方案</button>
+    <button class="pinvou-review-btn" data-action="add" type="button">⊕ 我加一句</button>
+  `;
+  const status = document.createElement("div");
+  status.className = "pinvou-review-status";
+  status.hidden = true;
+  wrap.appendChild(actions);
+  wrap.appendChild(status);
+
+  // accept 时用的 report:有 report 走 overrideAllCritical;无 report (fallback) 合成 placeholder
+  const effectiveReport = report
+    ? overrideAllCriticalInReport(report)
+    : synthesizeOverriddenReport("Pinvou 用自然语言提了意见(见上方),用户阅读后决策");
+
+  actions.querySelector('[data-action="accept"]').addEventListener("click", async () => {
+    if (rowEl.dataset.resolved) return;
+    rowEl.dataset.resolved = "true";
+    actions.querySelectorAll("button").forEach((b) => (b.disabled = true));
+    status.hidden = false;
+    status.textContent = "👍 用户 override 所有 CRITICAL,继续执行...";
+    if (!planCardEl || !activeSessionId) return;
+    const planMd = planCardEl.dataset.planMarkdown || "";
+    const fullMd = `${planMd}\n\n${effectiveReport}`;
+    appendUserMessage("✅ 就这么干(品悟顾虑已 override)");
+    messages.push({ role: "user", content: [{ type: "text", text: "✅ 就这么干(品悟顾虑已 override)" }] });
+    setBusy(true);
+    try {
+      const state = await invoke("accept_plan", {
+        sessionId: activeSessionId,
+        planMarkdown: fullMd,
+      });
+      modeState = {
+        mode: state.mode,
+        plan_phase: state.plan_phase,
+        pinvou_review_enabled: !!state.pinvou_review_enabled,
+      };
+      updateModeUI();
+    } catch (e) {
+      appendSystemMessage("⚠️ accept_plan 仍失败: " + e);
+      setBusy(false);
+    }
+  });
+
+  actions.querySelector('[data-action="revise"]').addEventListener("click", () => {
+    if (rowEl.dataset.resolved) return;
+    rowEl.dataset.resolved = "true";
+    actions.querySelectorAll("button").forEach((b) => (b.disabled = true));
+    status.hidden = false;
+    status.textContent = "↻ 让 AI 改方案...";
+    input.value = "修订方案: 按 Pinvou 上面提的 CRITICAL,改一下方案。";
+    input.focus();
+  });
+
+  actions.querySelector('[data-action="add"]').addEventListener("click", () => {
+    if (rowEl.dataset.resolved) return;
+    rowEl.dataset.resolved = "true";
+    actions.querySelectorAll("button").forEach((b) => (b.disabled = true));
+    status.hidden = false;
+    status.textContent = "⊕ 把你的话补进 plan,一起改...";
+    input.value = "我也担心: ";
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  });
+}
+
+// 标记:GATE 失败后等待 LLM 跑 review,chat:done 时用这个找回 plan card 引用
+let pendingPinvouReview = null;
+
+/** 共用底层:用简短摘要在前端显示 user 气泡 + 发完整 prompt 给后端。
+ *  前端 messages 数组只存简短摘要(避免 SKILL.md 累积污染 history + 持久化)。
+ *  后端 engine session 看到完整 prompt(本地小模型必须 eager loading)。 */
+async function dispatchPinvouTrigger(persona, frontendSummary, fullPrompt) {
+  if (!activeSessionId || busy) return;
+  pendingAssistantPersona = persona; // 下一个 assistant 气泡用 Pinvou 样式
+  appendUserMessage(frontendSummary);
+  messages.push({
+    role: "user",
+    content: [{ type: "text", text: frontendSummary }],
+  });
+  setBusy(true);
+  try {
+    await invoke("chat", { message: fullPrompt, attachments: [] });
+  } catch (err) {
+    appendSystemMessage("⚠️ " + (err && err.toString ? err.toString() : err));
+    setBusy(false);
+  }
+}
+
+async function autoTriggerPinvouReview(planCardEl, reason) {
+  pendingPinvouReview = { planCardEl };
+  appendSystemMessage(`🟣 ${reason} —— 自动让品悟先看一眼...`);
+  // 不靠 LLM 主动 read_file 加载 skill(本地 Qwen3.6 不会 progressive disclosure):
+  // 直接从后端读 SKILL.md body 塞进 LLM context,user 气泡只显示简短摘要。
+  let fullPrompt = "/pinvou-review-plan";
+  try {
+    const skillBody = await invoke("read_skill_body", { name: "pinvou-review-plan" });
+    fullPrompt = `[品悟自动触发 /pinvou-review-plan,完整角色定义如下]\n\n${skillBody}`;
+  } catch (e) {
+    appendSystemMessage(`⚠️ 加载 pinvou-review-plan skill 失败: ${e}`);
+  }
+  await dispatchPinvouTrigger("pinvou-plan", "🟣 触发品悟审方案", fullPrompt);
+}
+
+// 任务收口 final review:advisory 性质,无 GATE 无 3 按钮。
+let pendingFinalReview = false;
+
+async function autoTriggerPinvouFinal() {
+  pendingFinalReview = true;
+  appendSystemMessage("🟣 任务完成 —— 让品悟核验一下产出...");
+  let fullPrompt = "/pinvou-review-final";
+  try {
+    const skillBody = await invoke("read_skill_body", { name: "pinvou-review-final" });
+    fullPrompt = `[品悟自动触发 /pinvou-review-final,完整角色定义如下]\n\n${skillBody}`;
+  } catch (e) {
+    appendSystemMessage(`⚠️ 加载 pinvou-review-final skill 失败: ${e}`);
+  }
+  await dispatchPinvouTrigger("pinvou-final", "🟣 触发品悟验收", fullPrompt);
+}
+
+/** 拼当前 assistant 完整 text(已 flush blocks + 未 flush pending)。chat:done 提取用。 */
+function collectLastAssistantText() {
+  const parts = [];
+  for (const b of pendingAssistantBlocks) {
+    if (b && b.type === "text" && typeof b.text === "string") {
+      parts.push(b.text);
+    }
+  }
+  if (pendingAssistantText) parts.push(pendingAssistantText);
+  return parts.join("\n");
+}
+
+/** 解析 accept_plan/exit_plan_to_yolo 失败时后端返回的 GATE 错误(JSON 字符串)。
+ *  非 JSON 返回 null(普通错误)。 */
+function parseGateError(err) {
+  const s = typeof err === "string" ? err : (err && err.toString ? err.toString() : "");
+  if (!s.includes("gate_error")) return null;
+  try { return JSON.parse(s); } catch { return null; }
+}
+
+// === Workflow toggle: 顶部品悟 review ON/OFF ===
+
+async function togglePinvouReview() {
+  if (!activeSessionId) return;
+  const newEnabled = !modeState.pinvou_review_enabled;
+  try {
+    const state = await invoke("set_pinvou_review", {
+      sessionId: activeSessionId,
+      enabled: newEnabled,
+    });
+    modeState = {
+      mode: state.mode,
+      plan_phase: state.plan_phase,
+      pinvou_review_enabled: !!state.pinvou_review_enabled,
+    };
+    updatePinvouReviewToggleUI();
+  } catch (e) {
+    appendSystemMessage("⚠️ set_pinvou_review 失败: " + e);
+  }
+}
+
+function updatePinvouReviewToggleUI() {
+  const btn = document.getElementById("pinvou-review-toggle");
+  if (!btn) return;
+  const enabled = !!modeState.pinvou_review_enabled;
+  btn.dataset.enabled = enabled ? "true" : "false";
+  btn.title = enabled
+    ? "品悟 review: 开 (关键阶段让品悟把关,优化输出质量)"
+    : "品悟 review: 关 (点击开启,关键阶段让品悟把关,优化输出质量)";
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  const btn = document.getElementById("pinvou-review-toggle");
+  if (btn) btn.addEventListener("click", togglePinvouReview);
+});
+
+// ════════════════════════════════════════════════════════════════════
+// Pinvou Review v2 模块结束
+// ════════════════════════════════════════════════════════════════════
+
 function appendSystemMessage(text) {
   const row = document.createElement("div");
   row.className = "msg-row msg-system";
@@ -1146,17 +1438,35 @@ function appendSystemMessage(text) {
   chatArea.appendChild(row);
   scrollToBottom();
 }
+// 一次性 flag:autoTriggerPinvouReview/Final 设置后,下一个 beginAssistantBubble
+// 把 LLM 输出气泡渲染成品悟样式(紫色 + label "🟣 品悟")。消费后清空。
+// 这样避免 v2 之前的"两次显示同一内容"bug(原 LLM 气泡 + 重新渲染品悟气泡)。
+let pendingAssistantPersona = null; // null | "pinvou-plan" | "pinvou-final"
+
 function beginAssistantBubble() {
   const row = document.createElement("div");
-  row.className = "msg-row msg-assistant";
   const wrap = document.createElement("div");
-  wrap.className = "msg-wrap msg-wrap-assistant";
   const label = document.createElement("div");
-  label.className = "speaker-label speaker-assistant";
-  const time = new Date().toTimeString().slice(0, 5);
-  label.innerHTML = `<span class="label-name">QWEN3.6</span><span class="label-meta">· ${time}</span>`;
   const bubble = document.createElement("div");
-  bubble.className = "bubble bubble-assistant rendered";
+
+  if (pendingAssistantPersona === "pinvou-plan" || pendingAssistantPersona === "pinvou-final") {
+    row.className = "msg-row msg-pinvou";
+    wrap.className = "msg-wrap msg-wrap-pinvou";
+    label.className = "speaker-label speaker-pinvou";
+    label.textContent = pendingAssistantPersona === "pinvou-plan"
+      ? "🟣 品悟"
+      : "🟣 品悟 · 任务验收";
+    bubble.className = "bubble bubble-pinvou rendered";
+    row.dataset.pinvouPersona = pendingAssistantPersona; // chat:done 据此附 3 按钮
+    pendingAssistantPersona = null; // 一次性消费
+  } else {
+    row.className = "msg-row msg-assistant";
+    wrap.className = "msg-wrap msg-wrap-assistant";
+    label.className = "speaker-label speaker-assistant";
+    const time = new Date().toTimeString().slice(0, 5);
+    label.innerHTML = `<span class="label-name">QWEN3.6</span><span class="label-meta">· ${time}</span>`;
+    bubble.className = "bubble bubble-assistant rendered";
+  }
   wrap.appendChild(label);
   wrap.appendChild(bubble);
   row.appendChild(wrap);
@@ -2545,18 +2855,24 @@ async function syncModeStateFromBackend() {
   latestTodosSnapshot = null;
   planProgressExpanded = false;
   if (!activeSessionId) {
-    modeState = { mode: "yolo", plan_phase: "none" };
+    modeState = { mode: "yolo", plan_phase: "none", pinvou_review_enabled: false };
     updateModeUI();
+    updatePinvouReviewToggleUI();
     return;
   }
   try {
     const state = await invoke("get_mode_state", { sessionId: activeSessionId });
-    modeState = { mode: state.mode || "yolo", plan_phase: state.plan_phase || "none" };
+    modeState = {
+      mode: state.mode || "yolo",
+      plan_phase: state.plan_phase || "none",
+      pinvou_review_enabled: !!state.pinvou_review_enabled,
+    };
   } catch (e) {
     console.warn("get_mode_state failed", e);
-    modeState = { mode: "yolo", plan_phase: "none" };
+    modeState = { mode: "yolo", plan_phase: "none", pinvou_review_enabled: false };
   }
   updateModeUI();
+  updatePinvouReviewToggleUI();
 }
 
 // plan-btn 点击 (toggle):
@@ -2859,7 +3175,7 @@ listen("chat:tool_start", (e) => {
   appendToolCallStart(id, name, args);
 });
 listen("chat:tool_end", (e) => {
-  const { id, output, success } = e.payload || {};
+  const { id, output, success, metadata } = e.payload || {};
   const meta = toolMeta.get(id);
   switchThinkingToIdle();
   // 持久化: tool_result 是新的 user message. 先 flush 当前 assistant message, 再 push user message.
@@ -2877,6 +3193,10 @@ listen("chat:tool_end", (e) => {
     return;
   }
   appendToolCallEnd(id, output, success);
+  // Careful hook: DeepSeek-TUI shell.rs 拦截 Dangerous → 渲染红色卡片
+  if (metadata && metadata.safety_level === "dangerous" && metadata.blocked) {
+    renderCarefulBlockedCard(meta && meta.args, metadata);
+  }
   // write_file 成功 → 加入产物列表
   if (success) {
     if (meta && meta.name === "write_file") {
@@ -2965,6 +3285,28 @@ listen("chat:done", async (e) => {
   const error = e.payload?.error;
   if (error) appendSystemMessage("⚠️ " + error);
 
+  // Pinvou Review v2 阶段 A:plan review 跑完,把 3 按钮附加到 Pinvou 气泡。
+  // 气泡本身已经在 chat:delta 期间渲染成紫色(beginAssistantBubble 看 pendingAssistantPersona)。
+  if (pendingPinvouReview) {
+    const lastAssistant = collectLastAssistantText();
+    const report = extractPinvouReviewReport(lastAssistant);
+    const pinvouRows = chatArea.querySelectorAll('.msg-row[data-pinvou-persona="pinvou-plan"]');
+    const lastPinvouRow = pinvouRows.length ? pinvouRows[pinvouRows.length - 1] : null;
+    if (lastPinvouRow) {
+      attachPinvouReviewActions(lastPinvouRow, report, pendingPinvouReview.planCardEl);
+    } else {
+      // 没找到气泡(LLM 没输出任何内容)→ fallback 提示
+      appendSystemMessage("⚠️ Pinvou 没回应,可能是模型卡住。手动点 ✅ 会再次触发 GATE。");
+    }
+    pendingPinvouReview = null;
+  }
+
+  // 阶段 D:final review 已经渲染成紫色 Pinvou 气泡(beginAssistantBubble 已处理),
+  // advisory 性质,不附加按钮,只清 flag。
+  if (pendingFinalReview) {
+    pendingFinalReview = false;
+  }
+
   // 把累积的 assistant message (text + 任何未配对的 tool_use) flush 到 messages.
   flushAssistantMessageToHistory();
   closeAssistantBubble();
@@ -2972,12 +3314,21 @@ listen("chat:done", async (e) => {
 
   // 执行 plan 完成 → 回 yolo 默认态(plan_phase 从 executing → none).
   // 同步后端 store, 防止下条消息 chat 命令读到 phase=executing 错位.
+  let wasExecutingTransition = false;
   if (modeState.plan_phase === "executing") {
-    modeState = { mode: "yolo", plan_phase: "none" };
+    wasExecutingTransition = true;
+    modeState = { mode: "yolo", plan_phase: "none", pinvou_review_enabled: modeState.pinvou_review_enabled };
     updateModeUI();
     if (activeSessionId) {
       try { await invoke("discard_plan", { sessionId: activeSessionId }); } catch (_) {}
     }
+  }
+
+  // Pinvou Review v2 阶段 D:任务收口 final review
+  // executing→none transition 是任务收口信号。pinvou_review_enabled 时自动 advisory review。
+  // pendingFinalReview 防止 final review 自己触发的 chat:done 又递归触发新一轮 final。
+  if (wasExecutingTransition && modeState.pinvou_review_enabled && !pendingFinalReview) {
+    await autoTriggerPinvouFinal();
   }
 
   // 持久化整轮（含 user + assistant）到 disk

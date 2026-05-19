@@ -200,15 +200,21 @@ impl SessionStore {
     }
 
     /// 一次性原子更新 mode + phase（用户 accept_plan / exit_plan_to_yolo 等场景）。
+    /// **保留现有 pinvou_review_enabled**(品悟开关与 mode/phase 正交)。
     pub fn set_mode_state(&self, id: &str, mode: SerializableMode, phase: PlanPhase) {
         let mut m = self.mode_states.write();
-        m.insert(
-            id.to_string(),
-            SessionModeState {
-                mode,
-                plan_phase: phase,
-            },
-        );
+        let entry = m.entry(id.to_string()).or_default();
+        entry.mode = mode;
+        entry.plan_phase = phase;
+        // pinvou_review_enabled 不动
+    }
+
+    /// 设置品悟 review 开关（用户在 UI 顶部 toggle 切换）。
+    /// 与 Plan/YOLO 切换正交：品悟 toggle 不动 mode/phase。
+    pub fn set_pinvou_review(&self, id: &str, enabled: bool) {
+        let mut m = self.mode_states.write();
+        let entry = m.entry(id.to_string()).or_default();
+        entry.pinvou_review_enabled = enabled;
     }
 
     /// 重置到默认（Yolo + None）。delete_session 时调用。
@@ -341,5 +347,42 @@ mod tests {
         assert!(id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+    }
+
+    #[test]
+    fn pinvou_review_defaults_off() {
+        let (store, _g) = isolated_store();
+        assert!(!store.mode_state("s1").pinvou_review_enabled);
+    }
+
+    #[test]
+    fn set_pinvou_review_persists() {
+        let (store, _g) = isolated_store();
+        store.set_pinvou_review("s1", true);
+        assert!(store.mode_state("s1").pinvou_review_enabled);
+        store.set_pinvou_review("s1", false);
+        assert!(!store.mode_state("s1").pinvou_review_enabled);
+    }
+
+    #[test]
+    fn set_mode_state_preserves_pinvou_review() {
+        // 关键不变量:plan→execute 流转(set_mode_state)不能覆盖品悟开关。
+        let (store, _g) = isolated_store();
+        store.set_pinvou_review("s1", true);
+        store.set_mode_state(
+            "s1",
+            super::super::mode_state::SerializableMode::Yolo,
+            super::super::mode_state::PlanPhase::Executing,
+        );
+        let state = store.mode_state("s1");
+        assert!(state.pinvou_review_enabled);
+        assert!(matches!(
+            state.mode,
+            super::super::mode_state::SerializableMode::Yolo
+        ));
+        assert!(matches!(
+            state.plan_phase,
+            super::super::mode_state::PlanPhase::Executing
+        ));
     }
 }

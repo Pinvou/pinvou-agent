@@ -114,6 +114,8 @@ pub fn run() {
             commands::exit_plan_to_yolo,
             commands::accept_plan,
             commands::discard_plan,
+            commands::set_pinvou_review,
+            commands::read_skill_body,
             commands::submit_user_input,
             commands::cancel_user_input,
         ])

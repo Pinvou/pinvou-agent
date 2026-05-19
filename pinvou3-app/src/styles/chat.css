@@ -2808,3 +2808,165 @@ body[data-theme="liquid-light"] .code-block pre {
 body[data-theme="liquid-light"] .bubble.rendered strong {
   color: #1d1d1f;
 }
+
+/* === Pinvou Review v2: careful 卡片 + 品悟气泡 + toggle === */
+/* 详细设计:docs/Pinvou-品悟设计.md §4 § 5 §6 */
+
+/* careful 拦截卡片(红色醒目) */
+.msg-careful-blocked {
+  justify-content: center;
+  margin: 12px 0;
+}
+.careful-blocked-box {
+  max-width: 680px;
+  background: rgba(255, 59, 48, 0.08);
+  border: 2px solid rgba(255, 59, 48, 0.5);
+  border-radius: 10px;
+  padding: 16px 20px;
+  color: var(--on-surface);
+  font-size: 14px;
+  line-height: 1.6;
+}
+.careful-blocked-header {
+  font-weight: 600;
+  font-size: 15px;
+  color: #ff3b30;
+  margin-bottom: 10px;
+}
+.careful-blocked-cmd {
+  background: rgba(0, 0, 0, 0.25);
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin: 8px 0 12px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.careful-blocked-cmd code {
+  background: none;
+  color: #ff6b6b;
+}
+.careful-blocked-section {
+  margin: 8px 0;
+}
+.careful-blocked-label {
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: var(--on-surface);
+}
+.careful-blocked-section ul {
+  margin: 0;
+  padding-left: 22px;
+}
+.careful-blocked-section li {
+  margin: 2px 0;
+}
+.careful-blocked-foot {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 59, 48, 0.2);
+  font-size: 12px;
+  color: var(--on-surface-muted);
+  font-style: italic;
+}
+body[data-theme="liquid-light"] .careful-blocked-cmd {
+  background: rgba(0, 0, 0, 0.06);
+}
+body[data-theme="liquid-light"] .careful-blocked-cmd code {
+  color: #c0392b;
+}
+
+/* Pinvou 品悟气泡 + 3 按钮 */
+.msg-pinvou {
+  justify-content: flex-start;
+}
+.msg-wrap-pinvou {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  max-width: 75%;
+}
+.speaker-pinvou {
+  font-size: 12px;
+  font-weight: 600;
+  color: #af52de;
+  margin-bottom: 4px;
+  padding-left: 4px;
+}
+.bubble-pinvou {
+  background: rgba(175, 82, 222, 0.08);
+  border: 1px solid rgba(175, 82, 222, 0.35);
+  border-radius: 12px;
+  padding: 12px 16px;
+  color: var(--on-surface);
+  font-size: 14px;
+  line-height: 1.6;
+}
+/* .rendered class 表示 markdown→HTML(表格/code block);
+ * 不带 .rendered 时保留 pre-wrap 给纯文本回退场景。 */
+.bubble-pinvou:not(.rendered) {
+  white-space: pre-wrap;
+}
+.pinvou-review-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.pinvou-review-btn {
+  background: rgba(175, 82, 222, 0.12);
+  border: 1px solid rgba(175, 82, 222, 0.45);
+  color: var(--on-surface);
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.15s;
+}
+.pinvou-review-btn:hover {
+  background: rgba(175, 82, 222, 0.22);
+}
+.pinvou-review-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.pinvou-review-btn[data-action="accept"] {
+  border-color: rgba(52, 199, 89, 0.45);
+}
+.pinvou-review-btn[data-action="accept"]:hover {
+  background: rgba(52, 199, 89, 0.18);
+}
+.pinvou-review-status {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--on-surface-muted);
+  font-style: italic;
+}
+body[data-theme="liquid-light"] .bubble-pinvou {
+  background: rgba(175, 82, 222, 0.06);
+  border-color: rgba(175, 82, 222, 0.3);
+}
+
+/* 顶部品悟 review toggle(与 Plan/YOLO 切换正交,不替代) */
+.pinvou-review-toggle {
+  background: transparent;
+  border: 1px solid var(--bubble-system-border);
+  color: var(--on-surface-muted);
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  margin-right: 4px;
+  transition: all 0.15s;
+}
+.pinvou-review-toggle:hover {
+  border-color: #af52de;
+  color: var(--on-surface);
+}
+.pinvou-review-toggle[data-enabled="true"] {
+  background: rgba(175, 82, 222, 0.15);
+  border-color: #af52de;
+  color: var(--on-surface);
+  font-weight: 500;
+}
