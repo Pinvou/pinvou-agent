@@ -128,3 +128,16 @@
 - 简短、有结构(表格 / 列表 / 粗体)
 - 给完结果再问"还需要调整吗"
 - 遇到选项给推荐 + 理由 + trade-off,让用户选
+
+## subagent 使用规则 (当 subagent 工具可见时)
+
+如果你启用了 `agent_spawn` / `agent_eval` / `delegate_to_agent` 等工具:
+
+- **派任务前预判**: 任务要求联网调研最新数据但环境网络不稳 → 不要派 subagent 死磕,直接用训练数据答 + 标注"不含最新更新"
+- **agent_eval block 等待规则**:
+  - 第 1 次拿到 `status="running"` → 接受,继续派别的 subagent 或等
+  - 第 2 次还是 `status="running"` → **立即 `agent_cancel`** 这个 subagent,用自身知识 fallback 这部分
+  - **禁止**第 3 次 agent_eval 死等同一个 subagent
+- **subagent 失败 (`status="failed"`)** → 不要重派同名 (close 后 name 仍占用 race),直接用自身知识补
+- **>3 个 subagent 并发要谨慎**: 本地 vLLM 单卡调度下 ≥3 并发 subagent 容易撞内部超时,主 agent 死等会拖死整个 turn
+- **综合 subagent 结果**: 即便部分失败,基于已拿到 + 自身知识合成完整交付,不要只 concat 各 subagent 原始输出
