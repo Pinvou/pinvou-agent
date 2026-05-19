@@ -8,8 +8,8 @@
 
 ## 当前状态
 
-- **main HEAD**: `d5fec83` (阶段 F merge + Fork PR roadmap)
-- **fork HEAD**: `aaa1920` (`pinvou3-patches` 分支, 12 commits ahead `upstream/main`)
+- **main HEAD**: `5f53848` (阶段 H — submodule bump + careful Dangerous BLOCK)
+- **fork HEAD**: `b2f6ef56` (`pinvou3-patches` 分支, 14 commits ahead `origin/main`)
 - **进行中**: 等 PR [#1790](https://github.com/Hmbown/DeepSeek-TUI/pull/1790) (file_search timeout) 上游反馈
 - **worktrees**: 无
 
@@ -17,27 +17,31 @@
 
 ## 已完成阶段
 
-### 阶段 F: subagent 完整支持 + L1 testing 系统成熟 (2026-05-18~19, main `5cf9afc`)
+> 决策细节走 git log,这里只留**定位 + 数据点 + 文档兜底**。
 
-从"subagent 不可用 + L1 测试缺位"到"single subagent context isolation 完全可用 + 5 个 baseline 演进追踪质量 + 上游 PR 提交"。1.5 天紧凑迭代。
+### 阶段 H — auto-compact 接通本地 256K vLLM (2026-05-19, `3325f9d` + `5f53848`)
 
-**主要产出**:
-- **测试系统**: L2 backend 9 个 + 49 tests total CI PR-gate; L1 真 vLLM dialog harness 18 scenarios (`tests/l1_dialog_harness.rs`); Judge rubric r2 (6 维 × 1-5 分 + N/A); 5 次 baseline 演进 (`v0.8.37-r1` 4.75 → `vllm3_final-r2-18scn` 4.66 最终)
-- **Fork patches 9 个**: 详见下方 Fork → 上游 PR roadmap
-- **pinvou3-app**: L1 plumbing (`boot_with_workspace` + `spawn_headless`); `max_subagents` default 4→1 工程层硬锁; INSTRUCTIONS_MD v4 (164→112 行 + §3 任务完成定义 + §6 subagent 框架); GUI subagent 卡片(方案 A 最小版 `tool-subagent` class); Model 同步 `qwen36_35b`
-- **上游贡献**: PR #1790 (file_search timeout) + Issue #1791 (ToolContext cancel_token 长期方案)
+底座为 V4 1M 设计,默认参数在 256K 窗口下 4 个子系统静默退化或反向触发,会话一路涨到 vLLM `max_model_len` 撞墙 400。一次性收口:**B1+B2 fork**(`_Nk` hint 全 vendor + `context_input_budget` 按窗口分级)+ **bridge** 关 cycle 子系统 + wire `DEEPSEEK_MAX_OUTPUT_TOKENS` + **careful hook** YOLO 下也 BLOCK Dangerous + 隐藏 token bar。回归测试锁默认模型窗口识别。详 `docs/auto-compact-256K-tuning.md`。
 
-详见 `docs/l1-baselines/v0.8.37-vllm3_final-r2-18scn/judge-report.md`。
+### 阶段 G — 品悟 v2 review 系统 (2026-05-19, `e6c5ea8` 一次性 merge 20 commits)
 
-### 阶段 E: 工具表精简 + GUI 体验优化 (main `e30b64c`, fork `8e9be9c7`)
+把 pinvou2 "常驻并发嘴替"压成"3 节点触发"——基于 pinvou2 实测(raise_concern 工具化率 25%)+ gstack production 验证 + 同步前台流约束。配套 rebrand "嘴替"→"品悟"(toggle 跟产品名同名)。
 
-- L1.5 工具表精简: LLM 可见 85→16+4, schema ~119KB→14KB, 翻译 19s→8s
-- OpenAI streaming batch tool_calls 修复 + 上游 PR [#1686](https://github.com/Hmbown/DeepSeek-TUI/pull/1686) (已合)
-- 路径校验放宽 (`commands.rs validate_user_path` A 方案,允许 /tmp 等)
-- Plan 模式 `trust_mode=true` (修 list_dir 跨 workspace PathEscape)
-- 产物 📂 打开所在目录按钮 + INSTRUCTIONS_MD workspace 引导
+| 节点 | 触发 | 严苛度 | 状态 |
+|---|---|---|---|
+| **A. Plan 出炉** | `ExitPlanMode` 前 | **L2 blocking** | ✅ `/pinvou-review-plan` |
+| **D. 任务收口** | TurnComplete | L1 advisory | ✅ `/pinvou-review-final` |
+| **E. Stuck 兜底** | auto-continue 3 次失败 | L1 advisory | ⏸️ v1.5 选做未做 |
 
-详见 `docs/工具表精简方案.md`。
+详 `docs/Pinvou-品悟设计.md`。
+
+### 阶段 F — subagent 完整支持 + L1 testing 系统成熟 (2026-05-18~19, `5cf9afc`)
+
+single subagent context isolation 完全可用 + 9 fork patches 落定。L2 backend 49 tests CI gate;L1 真 vLLM dialog harness 18 scenarios;Judge rubric r2(6 维 × 1-5 分);5 次 baseline 演进 4.75→4.66。`max_subagents` 4→1 工程硬锁;INSTRUCTIONS_MD v4(164→112 行)。上游 PR #1790 + Issue #1791 已提。详 `docs/l1-baselines/v0.8.37-vllm3_final-r2-18scn/judge-report.md`。
+
+### 阶段 E — 工具表精简 + GUI 体验优化 (`e30b64c` / fork `8e9be9c7`)
+
+LLM 可见工具 85→16+4,schema 119KB→14KB,翻译 19s→8s。OpenAI streaming batch tool_calls 修复 → 上游 PR [#1686](https://github.com/Hmbown/DeepSeek-TUI/pull/1686) 已合。Plan 模式 `trust_mode=true` + 路径校验放宽。详 `docs/工具表精简方案.md`。
 
 ---
 
@@ -78,16 +82,18 @@ bridge 已有 `ModelPreset` 占位,缺 GUI。支持远程 DeepSeek API / OpenRou
 
 ---
 
-## Fork → 上游 PR roadmap (2026-05-19 整理)
+## Fork → 上游 PR roadmap (2026-05-19 整理,阶段 G/H 后)
 
-Fork 现 12 commits ahead `upstream/main`:
+Fork 现 14 commits ahead `origin/main` (Hmbown upstream):
 
 | 状态 | Commit | 内容 | 备注 |
 |---|---|---|---|
 | ✅ 已 PR | `d866274` | file_search spawn_blocking + 30s timeout (英文 clean 版) | **PR #1790** + Issue #1791, 等反馈 |
 | 🟢 强适合 PR | `363dd35` | subagent completion role=system→user (修 Qwen 严格 chat_template 400) | 通用 bug fix, 纯净 7 行, **PR #1790 接受后立即提** |
 | 🟢 强适合 PR | `9860ef1` | `DEFAULT_MAX_STEPS` 100→20 + `DEFAULT_SUBAGENT_ELAPSED_MAX` 300s | 对齐 CrewAI 行业共识; 改默认值有争议, **先开 issue 讨论再 PR** |
+| 🟢 强适合 PR | `7e5288e3` | B1+B2: `_Nk` hint 提到所有 vendor 前 + `context_input_budget` 按窗口分级 reserved | **通用 bug,只影响 <500K 窗口模型**(V4 1M 路径不变,有测试锁定);自托管/小窗口社区现成受益方,**PR #1790 合后单独 PR** |
 | 🟡 待 PR | `aaa1920` | grep_files spawn_blocking + 30s timeout (中文,需英文 clean) | 等 #1790 反馈; 若 reviewer 问其他同步 tool 就合进或单独 PR |
+| 🟡 弱适合 | `b2f6ef56` | careful: shell Dangerous 命令在 YOLO 模式下也 BLOCKED | 强 pinvou3 业务语义(careful hook 是品悟 v2 配套),上游接受度低,**不主动 PR** |
 | 🟡 弱适合 | `15244e6` | `GENERAL_AGENT_INTRO` 加 stop-on-failure 条款 | prompt 改动 PR 社区接受度低, ROI 低, **不主动 PR** |
 | 🟡 弱适合 | `dd879db` | `#[cfg(test)] pub mod test_support` | 不常见模式, reviewer 可能质疑, **不主动 PR** |
 | ❌ fork-only | `6ac5b97` `47e6abc` | lib export internal modules + RPIT trait | pinvou3-app Rust wrap 专用 |
@@ -97,7 +103,8 @@ Fork 现 12 commits ahead `upstream/main`:
 **下次开工动作**:
 1. `gh pr view 1790 --repo Hmbown/DeepSeek-TUI` 查状态
 2. 合了 → cherry-pick `363dd35` 到新 PR 分支,跑 fork `cargo test` 后提 PR
-3. `9860ef1` 先开 issue 讨论默认值 (20 还是 30/50),收 maintainer 意见再 PR
+3. `7e5288e3` (B1+B2) 单独 PR,卖点"自托管/小窗口模型 auto compact 失效";改动局部、有现成测试,接受度比 `9860ef1` 高
+4. `9860ef1` 先开 issue 讨论默认值 (20 还是 30/50),收 maintainer 意见再 PR
 
 ---
 
