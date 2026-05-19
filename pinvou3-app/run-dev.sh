@@ -24,9 +24,13 @@ export DEEPSEEK_ALLOW_INSECURE_HTTP=1
 # 内网代理 HTTP/2 ALPN 协商有时卡死,强制 HTTP/1.1
 export DEEPSEEK_FORCE_HTTP1=1
 
-# vLLM max-model-len=65536,engine 默认 max_output_tokens=64000 会撞顶,
-# 砍到 16k 让 input + output 总和不爆 (依赖 fork commit 490c3dde)
-export DEEPSEEK_MAX_OUTPUT_TOKENS=16384
+# vLLM max-model-len=262144 (256K,2026-05 升级,旧值 65536 已过期),
+# engine 默认 max_output_tokens=64000 适配 DeepSeek 1M API,本地 Qwen 自托管按需调。
+# 16384 是 65K context 时代的安全边界,256K context 下严重保守(只用 6%)。
+# 65536 给单次输出 64K budget,本地 Qwen 一次写 600-1000 行 HTML/代码不撞顶;
+# 留 200K context 给 input + history + tool schema (30K) 仍宽松。
+# 实测来源:嘴替 v2 测试 tetris,16K 撞顶导致 write_file 输出空 content。
+export DEEPSEEK_MAX_OUTPUT_TOKENS=65536
 
 # SSE idle timeout:
 # 90s 原值只够 prefill 一次大 prompt,但 decode 长 HTML/代码块时 token 间静默可超 90s
