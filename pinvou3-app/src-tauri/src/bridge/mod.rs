@@ -32,7 +32,8 @@ use self::mode_state::PlanPhase;
 use self::prefs::{ModelPreset, UserPrefs};
 
 /// Qwen3.6 在 vLLM 里是 passthrough 字符串（不走 alias）。
-const LOCAL_VLLM_MODEL: &str = "/model";
+// 2026-05-19: vLLM 重启后 served-model-name 改 qwen36_35b (旧 "/model" 已废)
+const LOCAL_VLLM_MODEL: &str = "qwen36_35b";
 const LOCAL_VLLM_BASE_URL: &str = "http://10.214.74.113:8000/v1";
 const LOCAL_VLLM_API_KEY: &str = "local-no-auth";
 
