@@ -175,7 +175,44 @@ fn check_exit_plan_gate(plan_content: &str) -> Result<(), GateError> {
 - "测试可以更严"已经覆盖行为的
 - "Regex 不处理 X 边缘"实际输入不会出现 X 的
 
-## 5. UI 嘴替观感
+## 5. 作为独立开关,正交于 Plan/YOLO
+
+**嘴替 review 不是第三种工作流**,而是与 Plan/YOLO **正交的质量护栏开关**。Plan/YOLO 是执行风格(用户已有),嘴替是质量保险(新增),两者独立可组合。
+
+| 维度 | 选项 | 默认 | 关系 |
+|---|---|---|---|
+| **执行风格**(已有) | Plan / YOLO | YOLO | 用户原有切换不动 |
+| **嘴替 review**(新) | ON / OFF | OFF | 独立 toggle |
+| **careful hook**(新) | 始终 ON | 不可选 | 与上面两个无关 |
+
+**四种组合**:
+
+| 组合 | 行为 |
+|---|---|
+| Plan + 嘴替 OFF | 当前现状,plan card → accept/revise/discard |
+| **Plan + 嘴替 ON** | plan 出炉触发 EXIT GATE,任务收口触发 final review(v1.5) |
+| YOLO + 嘴替 OFF | 当前现状,AI 直接干 |
+| **YOLO + 嘴替 ON** | 任务收口触发 final review(YOLO 无 plan 期,EXIT GATE 不生效) |
+
+**配置形态**(per-session,存 SessionStore):
+
+```rust
+SessionModeState {
+    mode: SerializableMode,         // 用户原有 Plan/YOLO 切换
+    plan_phase: PlanPhase,
+    pinvou_review_enabled: bool,    // 新增:嘴替开关,默认 false
+}
+```
+
+**UI 入口**:pinvou3-app 顶部加一个独立 toggle 按钮 `🟣 嘴替`(默认灰色),点一下切换 ON/OFF(高亮紫色)。原有 Plan/YOLO 切换不动。
+
+**关键设计原则**:
+- **正交不替代**:用户原有的 Plan/YOLO 切换是执行风格,嘴替是质量护栏,任意组合
+- **careful hook 不可选**:破坏性命令防护是基础安全,不让用户关
+- **嘴替默认关**:保持现状行为,用户主动开启
+- **per-session 配置**:不同 session 可以有不同的嘴替开关状态
+
+## 6. UI 嘴替观感
 
 底层串行 review，UI 渲染成"三个角色对话"错觉：
 
@@ -199,7 +236,7 @@ fn check_exit_plan_gate(plan_content: &str) -> Result<(), GateError> {
 - Pinvou 不能每个 turn 都跳出来，只在 A/D/E 节点
 - Pinvou 必须看完整 plan / 完整 trace 才发言（256K context 让这变得可能）
 
-## 6. 与 pinvou2 的关系
+## 7. 与 pinvou2 的关系
 
 **意图层面：高度一致** ✅
 - 嘴替代客户发声、关键节点质疑、防 LLM 自欺——核心理念全保留
@@ -227,7 +264,7 @@ fn check_exit_plan_gate(plan_content: &str) -> Result<(), GateError> {
 - 结构化 EXIT GATE（pinvou2 raise_concern 失败的对症药）
 - careful hook（pinvou2 没有，靠 sandbox 兜底）
 
-## 7. v1 落地清单
+## 8. v1 落地清单
 
 **v1 必做**（按工作量 + 独立性排序，建议开工顺序）：
 
@@ -249,7 +286,7 @@ fn check_exit_plan_gate(plan_content: &str) -> Result<(), GateError> {
 - ❌ heartbeat 容器（pinvou3 无场景）
 - ❌ pinvou2 旧"卡片派发"机制（pinvou3 同步流不需要）
 
-## 8. 风险与待验证项
+## 9. 风险与待验证项
 
 ### 8.1 Outside Voice 独立性打折
 本地 Qwen 单模型，subagent fallback = 同模型 fresh context，找漏洞重叠度可能高。v1 接受这个折扣（A+C 方案），后续可考虑：
@@ -275,7 +312,38 @@ Pinvou 端：subagent fresh context + 完整 plan + execute trace，单次 prefi
 - Pinvou skill prompt 中"禁止 X"条款必须配 **代码级强制**（EXIT GATE 检查表格），不靠 LLM 自觉
 - 不要重蹈 7b983b6 覆辙
 
-## 9. 决策来源索引
+## 10. v1 实施 lessons learned
+
+### 10.1 Qwen3.6 不可靠按格式输出 → 必须前端 Fallback
+
+**实测**(v1 worktree 启动后第一次测试):Pinvou skill 跑了,内容质量不错(找了风险点 + 给了 ✅/⚠️ 标记),但**没用 `## PINVOU REVIEW REPORT` 表格**,而是用项目符号列表 + "技术选型/工作量评估/结论"小标题段。
+
+结果:EXIT GATE 检测不到表格 → 死循环(点 ✅ → GATE 拒绝 → 自动跑 review → 仍非表格 → 再拒绝)。
+
+**修复**(两层):
+
+1. **Skill prompt 加强**:`.deepseek/commands/pinvou-review-plan.md` 顶部加 🚨 输出格式硬约束,明令禁止 ✅/⚠️ 列表 + "工作量评估"小标题,加 3 个完整 few-shot(其中一个就是俄罗斯方块场景)
+
+2. **前端 Fallback 兜底**(`main.js synthesizeOverriddenReport()`):
+   - LLM 输出有内容但**无表格** → **仍渲染**嘴替气泡(气泡显示 LLM 原话) + 合成 OVERRIDDEN_BY_USER 占位表格
+   - 用户点 [✅ 直接执行] → 用合成表格拼 plan_markdown → GATE 二次校验过 → 进 execute
+
+这印证了本仓库 commit `7b983b6` 的回滚教训("Qwen3.6 + advisory reminder 引导不可靠"):**必须 bridge blocking + UI 兜底**,不能纯靠 prompt 引导。
+
+### 10.2 worktree 必须立刻 commit
+
+v1 worktree 创建后**从未 commit**,工作期间一直裸跑写代码。worktree 被物理删除时分支头还停在 base commit,**所有工作 git 无从感知**,reflog/fsck 都救不回。
+
+**v2 教训**:
+- Worktree 名字带 `-DO-NOT-DELETE` 后缀,降低被误以为临时工作区的概率
+- 创建后第一件事就 commit baseline(即使内容只有几行)
+- 每个 Stage 完成立刻 commit,不积压
+
+### 10.3 工作流不要 3 选 1,要正交开关
+
+v1 第一版把 Pinvou Review 设计成"工作流的一种"(Plan / YOLO / Pinvou Review 三选一切换器),被用户指出错——嘴替本质是**质量护栏**,应该跟 Plan/YOLO **正交**而非替代。v2 改成独立 toggle(`pinvou_review_enabled: bool`),允许任意组合(YOLO + 嘴替开等)。
+
+## 11. 决策来源索引
 
 | 决策 | 关键证据 |
 |---|---|
