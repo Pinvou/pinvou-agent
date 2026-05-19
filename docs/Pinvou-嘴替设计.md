@@ -1,0 +1,287 @@
+# Pinvou 嘴替设计
+
+> 状态：v1 设计稿，2026-05-18 与用户讨论敲定
+> 背景：基于 pinvou2 实证教训 + gstack production 设计 + 本地 Qwen3.6 + DeepSeek-TUI 同步前台流的约束
+
+## 1. 一句话总结
+
+**Pinvou 是 Boss 的嘴替，只在 3 个 LLM-review 节点出场（plan 入门 / stuck 兜底 / 任务收口），危险命令完全交给 hook 处理，其他阶段完全沉默。**
+
+形态从 pinvou2 的"常驻并发"压缩到"3 节点触发"。这不是缩水，是基于 pinvou2 自己的演进方向 + 实证教训做出的有意取舍。
+
+## 2. 核心决策
+
+| 决策 | 理由 |
+|---|---|
+| ❌ **不做常驻并发嘴替** | pinvou2 raise_concern 工具化率仅 25%（实战退化）；CrewAI hierarchical 同形态在 4 万 star 框架里也实战崩坏 |
+| ❌ **不做 heartbeat 容器** | pinvou3 是 DeepSeek-TUI 同步前台流，没有"无人值守容器执行器"场景（已查证：`crates/tui/src/core/engine/turn_loop.rs` LLM 一个 turn 调一次工具就停） |
+| ❌ **不做用户主动 @pinvou 召唤** | pinvou2 嘴替 100% 被动（`actors/pinvou/CLAUDE.md:38-46` 硬铁律），保持"嘴替不抢戏"的灵魂 |
+| ✅ **做流水线 review** | gstack production 验证有效（Garry Tan 日常用） |
+| ✅ **做结构化 EXIT GATE** | 抄 gstack `## GSTACK REVIEW REPORT` 防 self-deception；pinvou2 raise_concern 死掉 + 本仓库 commit `7b983b6` 回滚教训均指向"advisory 引导对 Qwen3.6 不可靠，必须 blocking" |
+| ✅ **做 careful hook**（嘴替之外） | gstack `careful` 模式：硬编码 pattern + Pre-tool 拦截，零 LLM 开销，比 LLM review 更可靠 |
+
+## 3. 三个出场节点
+
+```
+[Daily 闲聊]                  ✗ 沉默
+   ↓
+[Plan Mode → ExitPlanMode]    ★ 阶段 A：/pinvou-review-plan（必做，blocking）
+   ↓
+[Execute / Tool Call]         ✗ Pinvou 不参与
+   ↓ 危险命令              → careful hook 自动拦截（非 LLM）
+   ↓
+[execution_stuck 卡片]        ☆ 阶段 E：嘴替接管（v1.5 选做，advisory）
+   ↓
+[任务完成]                    ★ 阶段 D：/pinvou-review-final（必做，advisory）
+```
+
+| 节点 | 触发 | 严苛度 | 落地 |
+|---|---|---|---|
+| **A. Plan 出炉** | `ExitPlanMode` 前自动 | **L2 blocking**（GATE 不通过不放行） | skill + bridge gate |
+| **E. Stuck 兜底** | `auto-continue` 3 次失败弹卡片 | L1 advisory | 扩展现有 stuck-card UI |
+| **D. 任务收口** | TurnComplete + 无下一步 / 用户标记 | L1 advisory（纯总结，无按钮） | skill |
+
+3 个节点对应 Boss 替不在场客户问的 3 个问题：
+- A：「这方向真对吗？」
+- E：「卡了，要换条路吗？」
+- D：「真做完了吗？」
+
+## 4. 关键机制
+
+### 4.1 careful hook（pinvou3 现状缺失，需新增）
+
+**问题**：pinvou3-app 在 YOLO 模式下自动 approve 所有 `ApprovalRequirement::Required`（commit `618521d`），等于把 DeepSeek-TUI 的 approval 框架废了。无破坏性 pattern 检测。
+
+**方案**：扩展 `ApprovalRequirement` 加新等级 `RequiredDangerous`：
+
+```rust
+// DeepSeek-TUI/crates/tui/src/tools/shell.rs
+fn approval_requirement(&self, args: &ShellArgs) -> ApprovalRequirement {
+    if DANGEROUS_PATTERNS.iter().any(|p| p.matches(&args.command)) {
+        return ApprovalRequirement::RequiredDangerous;
+    }
+    // 现有逻辑
+}
+
+// pinvou3-app/src-tauri/src/engine.rs（改 auto-approve）
+if event.requirement == RequiredDangerous {
+    show_dangerous_warning_dialog(event);  // 不 auto-approve
+} else if yolo_mode {
+    handle.approve_tool_call(id);
+}
+```
+
+**Pattern 列表（参考 gstack `careful/SKILL.md`）**：
+
+| 拦截 | 放行 |
+|---|---|
+| `rm -rf /xxx`, `rm -rf ~/xxx` | `rm -rf node_modules`, `.next/`, `dist/`, `__pycache__`, `.cache`, `build/`, `coverage/` |
+| `DROP TABLE`, `DROP DATABASE`, `TRUNCATE` | — |
+| `git push --force`, `git push -f` | — |
+| `git reset --hard`, `git checkout .` | — |
+| `kubectl delete`, `docker system prune` | — |
+
+**工作量**：~150 行 Rust，遵循 fork ≤50 行 PR 原则（pattern 检测器单独成模块，主框架几乎不动）。
+
+**为什么不用 LLM review B 节点**：硬编码 pattern 零 token、零延迟、不会被 prompt 工程绕过、命中即拦无退化路径。这事就该交给确定性规则。
+
+### 4.2 PINVOU REVIEW REPORT 表格 + EXIT GATE（pinvou3 现状缺失，需新增）
+
+**问题**：DeepSeek-TUI `ExitPlanMode` 直接 `app.set_mode(AppMode::Agent)`，零检查（`crates/tui/src/tui/ui.rs`）。pinvou3-app 用 per-turn `<system-reminder>` 引导 LLM 行为，但 commit `7b983b6` 已经证明 advisory 引导对 Qwen3.6 不可靠（"禁过渡语反向膨胀 23→556 字"，已回滚）。
+
+**方案**：bridge 层拦截 ExitPlanMode 事件，强制检查 plan 文件末尾结构化表格。
+
+**表格格式**：
+
+```markdown
+## PINVOU REVIEW REPORT
+
+| Finding | Severity | Status | User Decision |
+|---------|----------|--------|---------------|
+| 用户没说性能预算，方案隐含 200ms 假设 | CRITICAL | RAISED | 待用户拍 |
+| Step 3 路径会覆盖现有 config | CRITICAL | RESOLVED | Claw 已加 backup |
+| 测试覆盖率没在方案里 | INFORMATIONAL | OVERRIDDEN_BY_USER | 用户判定可接受 |
+
+**VERDICT**: 0 critical 待拍板 — 可 ExitPlanMode
+```
+
+**EXIT GATE 逻辑**：
+
+```rust
+fn check_exit_plan_gate(plan_content: &str) -> Result<(), GateError> {
+    if !plan_content.ends_with_section("## PINVOU REVIEW REPORT") {
+        return Err(GateError::MissingReviewReport);
+    }
+    if !has_findings_table(plan_content) {
+        return Err(GateError::MalformedReport);
+    }
+    if has_unresolved_critical(plan_content) {
+        return Err(GateError::UnresolvedCritical);
+    }
+    Ok(())
+}
+```
+
+**强制要求**：
+- 表格必须是 plan 文件最后一个 `## ` heading（防 LLM "我审过了，写在文件中间也算"）
+- 至少 1 行 finding（即使是 "无明显风险" 也必须显式写出 CLEAR）
+- CRITICAL 必须 RESOLVED 或 OVERRIDDEN_BY_USER 才能放行
+
+**工作量**：~80 行 Rust + 1 个 `~/.deepseek/commands/pinvou-review.md` skill。
+
+**关键警示**：**不能仅靠 prompt 引导让 Pinvou 写表格**——`7b983b6` 已经证明 Qwen3.6 不吃这套。必须 bridge 层 blocking + skill prompt 双保险，bridge 检测到无表格就自动追加一次 `/pinvou-review-plan`，逼它生成。
+
+### 4.3 Outside Voice（subagent + 差异化 persona）
+
+**gstack 原版**：用 `codex exec` 调另一个 AI 系统（GPT），Codex 不可用时 fallback `Task` 工具派 subagent（fresh context = genuine independence）。两个不同模型互相印证。
+
+**pinvou3 处境**：本地只有 Qwen3.6，没有"第二个不同模型"。subagent fallback = 同模型 fresh prompt 再跑一遍，独立性打折（漏洞重叠度可能 70%+）。
+
+**v1 方案**：A + C 组合
+- **A. subagent fresh context**：用 DeepSeek-TUI 的 Task/Agent 工具派出独立 LLM session
+- **C. 差异化 persona prompt**：主审 Claw 用工程师视角，subagent 用"Boss 嘴替"视角（不同语气、不同关注点、不同 Suppressions 列表）
+
+承认这是"半外"而非"真外"。如果未来 pinvou3 引入云 API（Claude/GPT）兜底，可升级到 D 方案（云 outside voice），效果最佳但有成本。
+
+### 4.4 Pinvou Review Skill prompt 骨架
+
+**风格**：customer 主 + attacker 副混合（避开 advisor 退化成客气话）
+
+```
+你是 Pinvou，Boss 的嘴替。Boss 不在场，你替他看 Claw 的方案。
+
+你的发言要做两件事：
+1) 第一视角：用 Boss 的语气问"如果是我会问..."（customer mindset）
+2) 强制找硬伤：必须输出 ≥1 个具体担忧/风险/漏洞（attacker mindset）
+
+禁止：
+- 范围外建议（"顺便加个 X 吧"）——这是 Claw 的事，不是 Boss 的关心点
+- 技术细节挑剔（"这个函数名不规范"）——Boss 不在乎
+- 客气话开场（"整体看起来不错，但..."）——Boss 没空寒暄
+- 自然语言提担忧而不写表格——必须输出 ## PINVOU REVIEW REPORT 表格
+
+输出格式（追加到 plan 文件末尾）：
+## PINVOU REVIEW REPORT
+| Finding | Severity | Status | User Decision |
+|---------|----------|--------|---------------|
+| <Boss 视角的核心担忧> | CRITICAL/INFORMATIONAL/CLEAR | RAISED | 待用户拍 |
+
+**VERDICT**: <一句话总结>
+```
+
+**Suppressions 列表**（抄 gstack `review/checklist.md:170-180`，避免噪音）：
+- "X 跟 Y 冗余"但实际增可读性的
+- "加注释解释这个阈值"——阈值会变，注释会烂
+- "测试可以更严"已经覆盖行为的
+- "Regex 不处理 X 边缘"实际输入不会出现 X 的
+
+## 5. UI 嘴替观感
+
+底层串行 review，UI 渲染成"三个角色对话"错觉：
+
+```
+[Claw 气泡] 方案 A...
+       ↓ (后台跑 /pinvou-review-plan，500ms-2s)
+[Pinvou 气泡，带打字光标动画]
+       "Boss 视角看：我担心 3 件事..."
+       1) ... 2) ... 3) ...
+[底部 3 按钮]
+   [✓ 直接执行]  [↻ 让 Claw 修]  [⊕ 我自己加一句]
+```
+
+**3 按钮设计**：
+- **直接执行**：用户判定 Pinvou 多虑了，一键 override 所有 CRITICAL（标 OVERRIDDEN_BY_USER）→ EXIT GATE 放行
+- **让 Claw 修**：把 review 表格作为 user message 注入 Claw session，Claw 修方案 → 再触发 Pinvou re-review 循环
+- **我自己加一句**：用户补充意见进 plan 文件，再触发 Claw 修方案
+
+**关键产品取舍**：
+- Pinvou 的发言必须是 review skill 的真实产出，不能为对话感凭空发言
+- Pinvou 不能每个 turn 都跳出来，只在 A/D/E 节点
+- Pinvou 必须看完整 plan / 完整 trace 才发言（256K context 让这变得可能）
+
+## 6. 与 pinvou2 的关系
+
+**意图层面：高度一致** ✅
+- 嘴替代客户发声、关键节点质疑、防 LLM 自欺——核心理念全保留
+- 100% 被动出场（无用户召唤入口）——保留 pinvou2 嘴替灵魂
+
+**形态层面：与 pinvou2 最新演进方向趋同**（不是和旧设计对齐）
+
+| 维度 | pinvou2 旧（已废弃） | pinvou2 新（已演进） | pinvou3 v1 |
+|---|---|---|---|
+| Pinvou 角色 | 派单 + 审阅 + 体检（混乱） | **仅末端验收** | **仅 plan + final + stuck** |
+| 任务派发 | Python workflow_engine + 容器 | Claw 自主 + Agent 工具派 subagent | 不需要（同步流，无多卡片场景） |
+| 嘴替交互 | 自动在线 + 被动响应 + 100% 无召唤 | 同上 | 节点触发 + UI 气泡（观感等效） |
+
+**与 pinvou2 不同的部分（有意取舍）**：
+
+| 差异 | 取舍理由 |
+|---|---|
+| pinvou3 plan 期不"持续盯"中间 turn | pinvou2 raise_concern 工具化率 25%，证明常驻并不真发挥作用；EXIT GATE blocking 更可靠 |
+| pinvou3 execute 期不参与 | pinvou3 同步前台流，没有 executor 多步场景 |
+| pinvou3 多 careful hook 层 | YOLO auto-approve 把 approval 废了，需要硬编码 pattern 补位 |
+| pinvou3 多 EXIT GATE blocking | pinvou2 advisory raise_concern 实战死了，本仓库 `7b983b6` 同样回滚过引导式方案 |
+
+**新增 pinvou2 没有的部分**：
+- Outside Voice subagent（gstack 模式，pinvou2 无此设计）
+- 结构化 EXIT GATE（pinvou2 raise_concern 失败的对症药）
+- careful hook（pinvou2 没有，靠 sandbox 兜底）
+
+## 7. v1 落地清单
+
+**v1 必做**（按工作量 + 独立性排序，建议开工顺序）：
+
+| # | 任务 | 工作量 | 文件位置 | 依赖 |
+|---|---|---|---|---|
+| 1 | `careful` hook（扩展 ApprovalRequirement + RequiredDangerous） | ~150 行 Rust | `DeepSeek-TUI/crates/tui/src/tools/{shell,git}.rs` + `pinvou3-app/src-tauri/src/engine.rs` | 无 |
+| 2 | `/pinvou-review-plan` skill | 1 个 markdown | `~/.deepseek/commands/pinvou-review-plan.md` | 无 |
+| 3 | EXIT GATE blocking | ~80 行 Rust | pinvou3-app bridge 层 | #2 |
+| 4 | `/pinvou-review-final` skill | 1 个 markdown | `~/.deepseek/commands/pinvou-review-final.md` | 无 |
+| 5 | UI 嘴替气泡 + 3 按钮 | Tauri 前端 | pinvou3-app frontend | #2, #3 |
+
+**v1.5 选做**：
+- Stuck-card 嘴替接管（扩展现有 `chat:execution_stuck` 卡片）
+
+**确认砍掉**：
+- ❌ 用户 `@pinvou` 主动召唤（保持 pinvou2 100% 被动灵魂）
+- ❌ 每 turn review（噪音过大）
+- ❌ B 节点 LLM review（careful hook 替代）
+- ❌ heartbeat 容器（pinvou3 无场景）
+- ❌ pinvou2 旧"卡片派发"机制（pinvou3 同步流不需要）
+
+## 8. 风险与待验证项
+
+### 8.1 Outside Voice 独立性打折
+本地 Qwen 单模型，subagent fallback = 同模型 fresh context，找漏洞重叠度可能高。v1 接受这个折扣（A+C 方案），后续可考虑：
+- 装第二个本地小模型（Phi-4 / Llama-3.3 8B）专做 critic
+- 接云 API 关键节点兜底（成本可控的话）
+
+### 8.2 EXIT GATE blocking 的回退机制
+如果 Pinvou review 失败（subagent 报错、LLM 超时），EXIT GATE 不能死锁——需要降级路径：
+- 重试 1 次 → 仍失败 → 弹"Pinvou 不可用，强制继续？"用户拍板
+- 不要让基础设施故障变成产品阻塞
+
+### 8.3 Suppressions 列表的维护
+gstack `review/checklist.md:170-180` 列表是英文 + 通用 web 开发场景。pinvou3 场景不同（本地 Tauri / Rust + 中文用户），需要：
+- v1 先抄 gstack 列表作为种子
+- 实际运行中观察哪些 finding 经常被用户 [直接执行]，进 suppressions
+
+### 8.4 256K context 的实际利用
+Claw 端：tool schema 已占 30K，留给 history ~200K+（充裕）
+Pinvou 端：subagent fresh context + 完整 plan + execute trace，单次 prefill 可能 50K+，**单次响应延迟 5-10s**（可接受，因为非热路径）
+
+### 8.5 弱模型加固教训的对照
+本仓库 commit `7b983b6` 试过用 reminder 强制 LLM 行为（禁过渡语）→ Qwen3.6 反向膨胀，已回滚。v1 设计直接对症：
+- Pinvou skill prompt 中"禁止 X"条款必须配 **代码级强制**（EXIT GATE 检查表格），不靠 LLM 自觉
+- 不要重蹈 7b983b6 覆辙
+
+## 9. 决策来源索引
+
+| 决策 | 关键证据 |
+|---|---|
+| 不做并发嘴替 | pinvou2 `docs/gemma4-tool-calling-audit.md`（raise_concern 25%）+ Towards Data Science "Why CrewAI's Manager-Worker Architecture Fails" |
+| 做 EXIT GATE blocking | gstack `plan-ceo-review/SKILL.md:2200-2223`（self-deception 防护）+ 本仓库 commit `7b983b6` 回滚 |
+| careful 用 hook 不用 LLM | gstack `careful/SKILL.md`（63 行硬编码 pattern）|
+| Outside Voice subagent | gstack `plan-ceo-review/SKILL.md:1607-1750`（codex exec + Claude subagent fallback）|
+| Pinvou 100% 被动 | pinvou2 `actors/pinvou/CLAUDE.md:38-46`（硬铁律）+ pinvou2 `host/chatroom.py:264-291`（并发响应非主动） |
+| Pinvou 角色降级（只在末端） | pinvou2 `docs/task-mode-subagent-architecture.md:46-72`（新架构演进） |

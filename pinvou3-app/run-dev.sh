@@ -10,7 +10,9 @@ set -euo pipefail
 export DEEPSEEK_PROVIDER=vllm
 export DEEPSEEK_API_KEY="local-no-auth"
 export DEEPSEEK_BASE_URL="http://10.214.74.113:8000/v1"
-export DEEPSEEK_MODEL="/model"
+# 2026-05-18 起 vLLM served-model-name 从 /model 改成 qwen36_35b
+# (跟 main 上 commit ad95782 model 同步保持一致)
+export DEEPSEEK_MODEL="qwen36_35b"
 
 # 关 Qwen3 thinking 模式 (reasoning_effort=off 触发
 # chat_template_kwargs.enable_thinking=false,避免 10+ 秒 reasoning 段卡死)
