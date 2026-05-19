@@ -2888,6 +2888,10 @@ body[data-theme="liquid-light"] .careful-blocked-cmd code {
   color: var(--on-surface);
   font-size: 14px;
   line-height: 1.6;
+}
+/* .rendered class 表示 markdown→HTML(表格/code block);
+ * 不带 .rendered 时保留 pre-wrap 给纯文本回退场景。 */
+.bubble-pinvou:not(.rendered) {
   white-space: pre-wrap;
 }
 .pinvou-review-actions {

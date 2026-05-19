@@ -1228,29 +1228,23 @@ function synthesizeOverriddenReport(reasonHint) {
 **VERDICT**: user override —— Pinvou 未按格式输出表格,用户已读完意见后强制放行`;
 }
 
-/** 渲染 Pinvou 嘴替气泡 + 3 按钮。
- *  - report: 用于 accept 时拼回 plan_markdown 的结构化 report
- *  - planCardEl: 关联的 plan card,3 按钮回调需要它的 dataset.planMarkdown
- *  - displayText: 可选,气泡显示的内容(默认 report)。Fallback 模式传 LLM 完整原话 */
-function renderPinvouReviewCard(report, planCardEl, displayText) {
+/** chat:done 后把 3 按钮附加到 Pinvou 气泡(气泡本身在 chat:delta 期间已经渲染成紫色)。
+ *  - rowEl: 渲染好的 Pinvou row(data-pinvou-persona="pinvou-plan")
+ *  - report: 提取到的 PINVOU REVIEW REPORT(null = LLM 没按格式输出,fallback 模式)
+ *  - planCardEl: 关联的 plan card,3 按钮回调需要它的 dataset.planMarkdown */
+function attachPinvouReviewActions(rowEl, report, planCardEl) {
+  if (!rowEl) return;
+  const wrap = rowEl.querySelector(".msg-wrap-pinvou");
+  if (!wrap) return;
+  // freeze 关联的 plan card(防止用户跳过 review 直接重点 ✅)
   if (planCardEl) {
     planCardEl.querySelectorAll(".plan-card-btn").forEach((b) => (b.disabled = true));
     const cardStatus = planCardEl.querySelector(".plan-card-status");
     if (cardStatus) {
       cardStatus.hidden = false;
-      cardStatus.textContent = "⏸ 嘴替正在审,看下面卡片";
+      cardStatus.textContent = "⏸ 嘴替已审,看下面按钮";
     }
   }
-  const row = document.createElement("div");
-  row.className = "msg-row msg-pinvou";
-  const wrap = document.createElement("div");
-  wrap.className = "msg-wrap msg-wrap-pinvou";
-  const label = document.createElement("div");
-  label.className = "speaker-label speaker-pinvou";
-  label.textContent = "🟣 Pinvou · 嘴替";
-  const bubble = document.createElement("div");
-  bubble.className = "bubble bubble-pinvou";
-  bubble.textContent = displayText || report;
   const actions = document.createElement("div");
   actions.className = "pinvou-review-actions";
   actions.innerHTML = `
@@ -1261,24 +1255,23 @@ function renderPinvouReviewCard(report, planCardEl, displayText) {
   const status = document.createElement("div");
   status.className = "pinvou-review-status";
   status.hidden = true;
-  wrap.appendChild(label);
-  wrap.appendChild(bubble);
   wrap.appendChild(actions);
   wrap.appendChild(status);
-  row.appendChild(wrap);
-  chatArea.appendChild(row);
-  scrollToBottom();
+
+  // accept 时用的 report:有 report 走 overrideAllCritical;无 report (fallback) 合成 placeholder
+  const effectiveReport = report
+    ? overrideAllCriticalInReport(report)
+    : synthesizeOverriddenReport("Pinvou 用自然语言提了意见(见上方),用户阅读后决策");
 
   actions.querySelector('[data-action="accept"]').addEventListener("click", async () => {
-    if (row.dataset.resolved) return;
-    row.dataset.resolved = "true";
+    if (rowEl.dataset.resolved) return;
+    rowEl.dataset.resolved = "true";
     actions.querySelectorAll("button").forEach((b) => (b.disabled = true));
     status.hidden = false;
     status.textContent = "👍 用户 override 所有 CRITICAL,继续执行...";
     if (!planCardEl || !activeSessionId) return;
     const planMd = planCardEl.dataset.planMarkdown || "";
-    const overriddenReport = overrideAllCriticalInReport(report);
-    const fullMd = `${planMd}\n\n${overriddenReport}`;
+    const fullMd = `${planMd}\n\n${effectiveReport}`;
     appendUserMessage("✅ 就这么干(Pinvou 顾虑已 override)");
     messages.push({ role: "user", content: [{ type: "text", text: "✅ 就这么干(Pinvou 顾虑已 override)" }] });
     setBusy(true);
@@ -1300,8 +1293,8 @@ function renderPinvouReviewCard(report, planCardEl, displayText) {
   });
 
   actions.querySelector('[data-action="revise"]').addEventListener("click", () => {
-    if (row.dataset.resolved) return;
-    row.dataset.resolved = "true";
+    if (rowEl.dataset.resolved) return;
+    rowEl.dataset.resolved = "true";
     actions.querySelectorAll("button").forEach((b) => (b.disabled = true));
     status.hidden = false;
     status.textContent = "↻ 让 AI 改方案...";
@@ -1310,8 +1303,8 @@ function renderPinvouReviewCard(report, planCardEl, displayText) {
   });
 
   actions.querySelector('[data-action="add"]').addEventListener("click", () => {
-    if (row.dataset.resolved) return;
-    row.dataset.resolved = "true";
+    if (rowEl.dataset.resolved) return;
+    rowEl.dataset.resolved = "true";
     actions.querySelectorAll("button").forEach((b) => (b.disabled = true));
     status.hidden = false;
     status.textContent = "⊕ 把你的话补进 plan,一起改...";
@@ -1321,40 +1314,42 @@ function renderPinvouReviewCard(report, planCardEl, displayText) {
   });
 }
 
-/** 在 chat:done 时尝试从 assistant 输出渲染 Pinvou 嘴替气泡。
- *  容错模式:LLM 没按格式输出表格时,合成 OVERRIDDEN_BY_USER 占位表格,气泡显示 LLM 原话。
- *  这样用户能读懂 Pinvou 实际说什么,点 [✅ 直接执行] 仍能凿穿 GATE。
- *  设计依据:§10.1 Qwen3.6 不可靠按格式输出 → 必须 Fallback */
-function tryRenderPinvouReviewFromAssistant(assistantText, triggerCtx) {
-  if (!assistantText || !assistantText.trim()) return false;
-  const planCardEl = triggerCtx && triggerCtx.planCardEl;
-  const report = extractPinvouReviewReport(assistantText);
-  if (report) {
-    renderPinvouReviewCard(report, planCardEl);
-    return true;
-  }
-  // Fallback
-  const synthesized = synthesizeOverriddenReport("Pinvou 用自然语言提了意见(见上方),用户阅读后决策");
-  renderPinvouReviewCard(synthesized, planCardEl, assistantText.trim());
-  return true;
-}
-
 // 标记:GATE 失败后等待 LLM 跑 review,chat:done 时用这个找回 plan card 引用
 let pendingPinvouReview = null;
+
+/** 共用底层:用简短摘要在前端显示 user 气泡 + 发完整 prompt 给后端。
+ *  前端 messages 数组只存简短摘要(避免 SKILL.md 累积污染 history + 持久化)。
+ *  后端 engine session 看到完整 prompt(本地小模型必须 eager loading)。 */
+async function dispatchPinvouTrigger(persona, frontendSummary, fullPrompt) {
+  if (!activeSessionId || busy) return;
+  pendingAssistantPersona = persona; // 下一个 assistant 气泡用 Pinvou 样式
+  appendUserMessage(frontendSummary);
+  messages.push({
+    role: "user",
+    content: [{ type: "text", text: frontendSummary }],
+  });
+  setBusy(true);
+  try {
+    await invoke("chat", { message: fullPrompt, attachments: [] });
+  } catch (err) {
+    appendSystemMessage("⚠️ " + (err && err.toString ? err.toString() : err));
+    setBusy(false);
+  }
+}
 
 async function autoTriggerPinvouReview(planCardEl, reason) {
   pendingPinvouReview = { planCardEl };
   appendSystemMessage(`🟣 ${reason} —— 自动让 Pinvou 嘴替先看一眼...`);
   // 不靠 LLM 主动 read_file 加载 skill(本地 Qwen3.6 不会 progressive disclosure):
-  // 直接从后端读 SKILL.md body 塞进 user message,LLM 必读完整 prompt。
+  // 直接从后端读 SKILL.md body 塞进 LLM context,user 气泡只显示简短摘要。
+  let fullPrompt = "/pinvou-review-plan";
   try {
     const skillBody = await invoke("read_skill_body", { name: "pinvou-review-plan" });
-    input.value = `[嘴替自动触发 /pinvou-review-plan,完整角色定义如下]\n\n${skillBody}`;
+    fullPrompt = `[嘴替自动触发 /pinvou-review-plan,完整角色定义如下]\n\n${skillBody}`;
   } catch (e) {
     appendSystemMessage(`⚠️ 加载 pinvou-review-plan skill 失败: ${e}`);
-    input.value = "/pinvou-review-plan";  // fallback
   }
-  await send();
+  await dispatchPinvouTrigger("pinvou-plan", "🟣 触发 Pinvou plan review", fullPrompt);
 }
 
 // 任务收口 final review:advisory 性质,无 GATE 无 3 按钮。
@@ -1363,34 +1358,14 @@ let pendingFinalReview = false;
 async function autoTriggerPinvouFinal() {
   pendingFinalReview = true;
   appendSystemMessage("🟣 任务完成 —— 让 Pinvou 嘴替核验一下产出...");
+  let fullPrompt = "/pinvou-review-final";
   try {
     const skillBody = await invoke("read_skill_body", { name: "pinvou-review-final" });
-    input.value = `[嘴替自动触发 /pinvou-review-final,完整角色定义如下]\n\n${skillBody}`;
+    fullPrompt = `[嘴替自动触发 /pinvou-review-final,完整角色定义如下]\n\n${skillBody}`;
   } catch (e) {
     appendSystemMessage(`⚠️ 加载 pinvou-review-final skill 失败: ${e}`);
-    input.value = "/pinvou-review-final";  // fallback
   }
-  await send();
-}
-
-/** 渲染 final review advisory 气泡(无 3 按钮,跟 plan review 区分)。 */
-function renderPinvouFinalCard(text) {
-  if (!text || !text.trim()) return;
-  const row = document.createElement("div");
-  row.className = "msg-row msg-pinvou";
-  const wrap = document.createElement("div");
-  wrap.className = "msg-wrap msg-wrap-pinvou";
-  const label = document.createElement("div");
-  label.className = "speaker-label speaker-pinvou";
-  label.textContent = "🟣 Pinvou · 嘴替(任务收口验收)";
-  const bubble = document.createElement("div");
-  bubble.className = "bubble bubble-pinvou";
-  bubble.textContent = text.trim();
-  wrap.appendChild(label);
-  wrap.appendChild(bubble);
-  row.appendChild(wrap);
-  chatArea.appendChild(row);
-  scrollToBottom();
+  await dispatchPinvouTrigger("pinvou-final", "🟣 触发 Pinvou final 验收", fullPrompt);
 }
 
 /** 拼当前 assistant 完整 text(已 flush blocks + 未 flush pending)。chat:done 提取用。 */
@@ -1463,17 +1438,35 @@ function appendSystemMessage(text) {
   chatArea.appendChild(row);
   scrollToBottom();
 }
+// 一次性 flag:autoTriggerPinvouReview/Final 设置后,下一个 beginAssistantBubble
+// 把 LLM 输出气泡渲染成 Pinvou 嘴替样式(紫色 + label "PINVOU · 嘴替")。消费后清空。
+// 这样避免 v2 之前的"两次显示同一内容"bug(原 LLM 气泡 + 重新渲染嘴替气泡)。
+let pendingAssistantPersona = null; // null | "pinvou-plan" | "pinvou-final"
+
 function beginAssistantBubble() {
   const row = document.createElement("div");
-  row.className = "msg-row msg-assistant";
   const wrap = document.createElement("div");
-  wrap.className = "msg-wrap msg-wrap-assistant";
   const label = document.createElement("div");
-  label.className = "speaker-label speaker-assistant";
-  const time = new Date().toTimeString().slice(0, 5);
-  label.innerHTML = `<span class="label-name">QWEN3.6</span><span class="label-meta">· ${time}</span>`;
   const bubble = document.createElement("div");
-  bubble.className = "bubble bubble-assistant rendered";
+
+  if (pendingAssistantPersona === "pinvou-plan" || pendingAssistantPersona === "pinvou-final") {
+    row.className = "msg-row msg-pinvou";
+    wrap.className = "msg-wrap msg-wrap-pinvou";
+    label.className = "speaker-label speaker-pinvou";
+    label.textContent = pendingAssistantPersona === "pinvou-plan"
+      ? "🟣 PINVOU · 嘴替"
+      : "🟣 PINVOU · 嘴替(任务收口验收)";
+    bubble.className = "bubble bubble-pinvou rendered";
+    row.dataset.pinvouPersona = pendingAssistantPersona; // chat:done 据此附 3 按钮
+    pendingAssistantPersona = null; // 一次性消费
+  } else {
+    row.className = "msg-row msg-assistant";
+    wrap.className = "msg-wrap msg-wrap-assistant";
+    label.className = "speaker-label speaker-assistant";
+    const time = new Date().toTimeString().slice(0, 5);
+    label.innerHTML = `<span class="label-name">QWEN3.6</span><span class="label-meta">· ${time}</span>`;
+    bubble.className = "bubble bubble-assistant rendered";
+  }
   wrap.appendChild(label);
   wrap.appendChild(bubble);
   row.appendChild(wrap);
@@ -3274,20 +3267,25 @@ listen("chat:done", async (e) => {
   const error = e.payload?.error;
   if (error) appendSystemMessage("⚠️ " + error);
 
-  // Pinvou Review v2: GATE 失败后的 plan review 跑完,渲染嘴替气泡(带 Fallback)
+  // Pinvou Review v2 阶段 A:plan review 跑完,把 3 按钮附加到 Pinvou 气泡。
+  // 气泡本身已经在 chat:delta 期间渲染成紫色(beginAssistantBubble 看 pendingAssistantPersona)。
   if (pendingPinvouReview) {
     const lastAssistant = collectLastAssistantText();
-    const rendered = tryRenderPinvouReviewFromAssistant(lastAssistant, pendingPinvouReview);
-    if (!rendered) {
+    const report = extractPinvouReviewReport(lastAssistant);
+    const pinvouRows = chatArea.querySelectorAll('.msg-row[data-pinvou-persona="pinvou-plan"]');
+    const lastPinvouRow = pinvouRows.length ? pinvouRows[pinvouRows.length - 1] : null;
+    if (lastPinvouRow) {
+      attachPinvouReviewActions(lastPinvouRow, report, pendingPinvouReview.planCardEl);
+    } else {
+      // 没找到气泡(LLM 没输出任何内容)→ fallback 提示
       appendSystemMessage("⚠️ Pinvou 没回应,可能是模型卡住。手动点 ✅ 会再次触发 GATE。");
     }
     pendingPinvouReview = null;
   }
 
-  // Pinvou Review v2 阶段 D: final review 跑完,渲染 advisory 气泡(无 3 按钮)
+  // 阶段 D:final review 已经渲染成紫色 Pinvou 气泡(beginAssistantBubble 已处理),
+  // advisory 性质,不附加按钮,只清 flag。
   if (pendingFinalReview) {
-    const lastAssistant = collectLastAssistantText();
-    renderPinvouFinalCard(lastAssistant);
     pendingFinalReview = false;
   }
 
