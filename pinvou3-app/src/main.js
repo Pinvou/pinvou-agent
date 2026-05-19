@@ -76,9 +76,11 @@ let pendingAttachments = []; // { id, result: IngestResult, status: "parsing"|"r
 let attachSeq = 0;
 
 // 阶段 D: Plan / YOLO 双模式状态机
-// modeState = { mode: "yolo"|"plan", plan_phase: "none"|"planning"|"ready"|"executing" }
+// modeState = { mode, plan_phase, pinvou_review_enabled }
+// pinvou_review_enabled 与 Plan/YOLO 正交,开启后 plan 期 accept_plan 触发 EXIT GATE。
+// 设计:docs/Pinvou-嘴替设计.md §5。
 // 后端 SessionStore 是 source of truth，前端切 session 时同步拉一遍。
-let modeState = { mode: "yolo", plan_phase: "none" };
+let modeState = { mode: "yolo", plan_phase: "none", pinvou_review_enabled: false };
 
 // ── Thinking 指示器:Braille 10 帧 + 分阶段计时,以"气泡"形式跟随消息流尾部 ──
 // (业界惯例: ChatGPT/Claude 都把 thinking 反馈放在最新消息下方, 不混进 mode 状态条)
@@ -309,8 +311,6 @@ async function onPlanAccept(card) {
   const status = card.querySelector(".plan-card-status");
   status.hidden = false;
   status.textContent = "✅ 已批准";
-  // 追加 user 气泡 + 持久化到 messages: 作为 Plan→Executing 的 turn 边界标记,
-  // 历史还原时 plan_card 也据此渲染在正确位置.
   appendUserMessage("✅ 就这么干");
   messages.push({ role: "user", content: [{ type: "text", text: "✅ 就这么干" }] });
   const planMd = card.dataset.planMarkdown || "";
@@ -320,9 +320,28 @@ async function onPlanAccept(card) {
       sessionId: activeSessionId,
       planMarkdown: planMd,
     });
-    modeState = { mode: state.mode, plan_phase: state.plan_phase };
+    modeState = {
+      mode: state.mode,
+      plan_phase: state.plan_phase,
+      pinvou_review_enabled: !!state.pinvou_review_enabled,
+    };
     updateModeUI();
   } catch (e) {
+    // Pinvou Review GATE 失败时,e 是 JSON 字符串 {gate_error, message, detail}
+    const gateInfo = parseGateError(e);
+    if (gateInfo) {
+      // 反 freeze:plan 还没真接受,允许用户后续重点
+      card.dataset.cardState = "active";
+      card.querySelectorAll(".plan-card-btn").forEach((b) => (b.disabled = false));
+      status.hidden = true;
+      setBusy(false);
+      if (gateInfo.gate_error === "missing_review_report") {
+        await autoTriggerPinvouReview(card, "嘴替还没看过这个方案");
+        return;
+      }
+      appendSystemMessage(`⚠️ Pinvou EXIT GATE 阻塞: ${gateInfo.message}`);
+      return;
+    }
     appendSystemMessage("⚠️ accept_plan 失败: " + e);
     setBusy(false);
   }
@@ -1136,6 +1155,260 @@ function appendUserMessage(text) {
   scrollToBottom();
   updateMessageActions();
 }
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[c]);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Pinvou Review v2 — careful 卡片 + 嘴替气泡 + 3 按钮 + Fallback
+// 设计:docs/Pinvou-嘴替设计.md §4-§6
+// ════════════════════════════════════════════════════════════════════
+
+/** Careful hook 拦截卡片(红色醒目)。chat:tool_end 时 metadata.safety_level=="dangerous" 触发。 */
+function renderCarefulBlockedCard(args, metadata) {
+  const row = document.createElement("div");
+  row.className = "msg-row msg-careful-blocked";
+  const cmd = (args && (args.command || args.cmd)) || "(命令未知)";
+  const reasons = (metadata.reasons || []).map((r) => `<li>${escapeHtml(r)}</li>`).join("");
+  const suggestions = (metadata.suggestions || []).map((s) => `<li>${escapeHtml(s)}</li>`).join("");
+  row.innerHTML = `
+    <div class="careful-blocked-box">
+      <div class="careful-blocked-header">🛑 Careful Hook 拦截了一条破坏性命令</div>
+      <div class="careful-blocked-cmd"><code>${escapeHtml(cmd)}</code></div>
+      <div class="careful-blocked-section">
+        <div class="careful-blocked-label">为什么拦?</div>
+        <ul>${reasons || "<li>命中破坏性 pattern</li>"}</ul>
+      </div>
+      ${suggestions ? `
+      <div class="careful-blocked-section">
+        <div class="careful-blocked-label">建议</div>
+        <ul>${suggestions}</ul>
+      </div>` : ""}
+      <div class="careful-blocked-foot">
+        这个 hook 在所有模式默认开启,与 Plan/YOLO/嘴替开关无关。
+        如果你确认要跑,自己在终端执行 —— LLM 不会被允许跑破坏性命令。
+      </div>
+    </div>
+  `;
+  chatArea.appendChild(row);
+  scrollToBottom();
+}
+
+// === Pinvou Review:GATE / 提取 / 渲染 / Fallback ===
+
+const PINVOU_REVIEW_RE = /## PINVOU REVIEW REPORT[\s\S]*$/m;
+
+function extractPinvouReviewReport(text) {
+  if (!text) return null;
+  const m = text.match(PINVOU_REVIEW_RE);
+  return m ? m[0].trim() : null;
+}
+
+function overrideAllCriticalInReport(report) {
+  return report.replace(
+    /^(\|[^|]*\|\s*CRITICAL\s*\|\s*)RAISED(\s*\|[^|]*\|)$/gim,
+    "$1OVERRIDDEN_BY_USER$2",
+  ).replace(
+    /^(\|[^|]*\|\s*CRITICAL\s*\|\s*OVERRIDDEN_BY_USER\s*\|\s*)[^|]*(\|)$/gim,
+    "$1用户拍板继续$2",
+  );
+}
+
+/** Fallback:LLM 没按格式输出表格时合成 OVERRIDDEN_BY_USER 占位表格。
+ *  设计依据:§10.1 v1 lessons learned + commit 7b983b6 教训。 */
+function synthesizeOverriddenReport(reasonHint) {
+  return `## PINVOU REVIEW REPORT
+
+| Finding | Severity | Status | User Decision |
+|---------|----------|--------|---------------|
+| ${reasonHint || "Pinvou 输出未按表格格式,用户已阅读并 override"} | CRITICAL | OVERRIDDEN_BY_USER | 用户拍板继续 |
+
+**VERDICT**: user override —— Pinvou 未按格式输出表格,用户已读完意见后强制放行`;
+}
+
+/** 渲染 Pinvou 嘴替气泡 + 3 按钮。
+ *  - report: 用于 accept 时拼回 plan_markdown 的结构化 report
+ *  - planCardEl: 关联的 plan card,3 按钮回调需要它的 dataset.planMarkdown
+ *  - displayText: 可选,气泡显示的内容(默认 report)。Fallback 模式传 LLM 完整原话 */
+function renderPinvouReviewCard(report, planCardEl, displayText) {
+  if (planCardEl) {
+    planCardEl.querySelectorAll(".plan-card-btn").forEach((b) => (b.disabled = true));
+    const cardStatus = planCardEl.querySelector(".plan-card-status");
+    if (cardStatus) {
+      cardStatus.hidden = false;
+      cardStatus.textContent = "⏸ 嘴替正在审,看下面卡片";
+    }
+  }
+  const row = document.createElement("div");
+  row.className = "msg-row msg-pinvou";
+  const wrap = document.createElement("div");
+  wrap.className = "msg-wrap msg-wrap-pinvou";
+  const label = document.createElement("div");
+  label.className = "speaker-label speaker-pinvou";
+  label.textContent = "🟣 Pinvou · 嘴替";
+  const bubble = document.createElement("div");
+  bubble.className = "bubble bubble-pinvou";
+  bubble.textContent = displayText || report;
+  const actions = document.createElement("div");
+  actions.className = "pinvou-review-actions";
+  actions.innerHTML = `
+    <button class="pinvou-review-btn" data-action="accept" type="button">✅ 直接执行</button>
+    <button class="pinvou-review-btn" data-action="revise" type="button">↻ 让 Claw 修</button>
+    <button class="pinvou-review-btn" data-action="add" type="button">⊕ 我加一句</button>
+  `;
+  const status = document.createElement("div");
+  status.className = "pinvou-review-status";
+  status.hidden = true;
+  wrap.appendChild(label);
+  wrap.appendChild(bubble);
+  wrap.appendChild(actions);
+  wrap.appendChild(status);
+  row.appendChild(wrap);
+  chatArea.appendChild(row);
+  scrollToBottom();
+
+  actions.querySelector('[data-action="accept"]').addEventListener("click", async () => {
+    if (row.dataset.resolved) return;
+    row.dataset.resolved = "true";
+    actions.querySelectorAll("button").forEach((b) => (b.disabled = true));
+    status.hidden = false;
+    status.textContent = "👍 用户 override 所有 CRITICAL,继续执行...";
+    if (!planCardEl || !activeSessionId) return;
+    const planMd = planCardEl.dataset.planMarkdown || "";
+    const overriddenReport = overrideAllCriticalInReport(report);
+    const fullMd = `${planMd}\n\n${overriddenReport}`;
+    appendUserMessage("✅ 就这么干(Pinvou 顾虑已 override)");
+    messages.push({ role: "user", content: [{ type: "text", text: "✅ 就这么干(Pinvou 顾虑已 override)" }] });
+    setBusy(true);
+    try {
+      const state = await invoke("accept_plan", {
+        sessionId: activeSessionId,
+        planMarkdown: fullMd,
+      });
+      modeState = {
+        mode: state.mode,
+        plan_phase: state.plan_phase,
+        pinvou_review_enabled: !!state.pinvou_review_enabled,
+      };
+      updateModeUI();
+    } catch (e) {
+      appendSystemMessage("⚠️ accept_plan 仍失败: " + e);
+      setBusy(false);
+    }
+  });
+
+  actions.querySelector('[data-action="revise"]').addEventListener("click", () => {
+    if (row.dataset.resolved) return;
+    row.dataset.resolved = "true";
+    actions.querySelectorAll("button").forEach((b) => (b.disabled = true));
+    status.hidden = false;
+    status.textContent = "↻ 让 Claw 修方案...";
+    input.value = "修订方案: 按 Pinvou 上面提的 CRITICAL,改一下方案。";
+    input.focus();
+  });
+
+  actions.querySelector('[data-action="add"]').addEventListener("click", () => {
+    if (row.dataset.resolved) return;
+    row.dataset.resolved = "true";
+    actions.querySelectorAll("button").forEach((b) => (b.disabled = true));
+    status.hidden = false;
+    status.textContent = "⊕ 把你的话补进 plan,让 Claw 一起改...";
+    input.value = "我也担心: ";
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  });
+}
+
+/** 在 chat:done 时尝试从 assistant 输出渲染 Pinvou 嘴替气泡。
+ *  容错模式:LLM 没按格式输出表格时,合成 OVERRIDDEN_BY_USER 占位表格,气泡显示 LLM 原话。
+ *  这样用户能读懂 Pinvou 实际说什么,点 [✅ 直接执行] 仍能凿穿 GATE。
+ *  设计依据:§10.1 Qwen3.6 不可靠按格式输出 → 必须 Fallback */
+function tryRenderPinvouReviewFromAssistant(assistantText, triggerCtx) {
+  if (!assistantText || !assistantText.trim()) return false;
+  const planCardEl = triggerCtx && triggerCtx.planCardEl;
+  const report = extractPinvouReviewReport(assistantText);
+  if (report) {
+    renderPinvouReviewCard(report, planCardEl);
+    return true;
+  }
+  // Fallback
+  const synthesized = synthesizeOverriddenReport("Pinvou 用自然语言提了意见(见上方),用户阅读后决策");
+  renderPinvouReviewCard(synthesized, planCardEl, assistantText.trim());
+  return true;
+}
+
+// 标记:GATE 失败后等待 LLM 跑 review,chat:done 时用这个找回 plan card 引用
+let pendingPinvouReview = null;
+
+async function autoTriggerPinvouReview(planCardEl, reason) {
+  pendingPinvouReview = { planCardEl };
+  appendSystemMessage(`🟣 ${reason} —— 自动让 Pinvou 嘴替先看一眼...`);
+  input.value = "/pinvou-review-plan";
+  await send();
+}
+
+/** 拼当前 assistant 完整 text(已 flush blocks + 未 flush pending)。chat:done 提取用。 */
+function collectLastAssistantText() {
+  const parts = [];
+  for (const b of pendingAssistantBlocks) {
+    if (b && b.type === "text" && typeof b.text === "string") {
+      parts.push(b.text);
+    }
+  }
+  if (pendingAssistantText) parts.push(pendingAssistantText);
+  return parts.join("\n");
+}
+
+/** 解析 accept_plan/exit_plan_to_yolo 失败时后端返回的 GATE 错误(JSON 字符串)。
+ *  非 JSON 返回 null(普通错误)。 */
+function parseGateError(err) {
+  const s = typeof err === "string" ? err : (err && err.toString ? err.toString() : "");
+  if (!s.includes("gate_error")) return null;
+  try { return JSON.parse(s); } catch { return null; }
+}
+
+// === Workflow toggle: 顶部嘴替 review ON/OFF ===
+
+async function togglePinvouReview() {
+  if (!activeSessionId) return;
+  const newEnabled = !modeState.pinvou_review_enabled;
+  try {
+    const state = await invoke("set_pinvou_review", {
+      sessionId: activeSessionId,
+      enabled: newEnabled,
+    });
+    modeState = {
+      mode: state.mode,
+      plan_phase: state.plan_phase,
+      pinvou_review_enabled: !!state.pinvou_review_enabled,
+    };
+    updatePinvouReviewToggleUI();
+  } catch (e) {
+    appendSystemMessage("⚠️ set_pinvou_review 失败: " + e);
+  }
+}
+
+function updatePinvouReviewToggleUI() {
+  const btn = document.getElementById("pinvou-review-toggle");
+  if (!btn) return;
+  const enabled = !!modeState.pinvou_review_enabled;
+  btn.dataset.enabled = enabled ? "true" : "false";
+  btn.title = enabled
+    ? "嘴替 review: 开 (Plan 出炉时让 Pinvou 先审 + EXIT GATE)"
+    : "嘴替 review: 关 (点击开启)";
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  const btn = document.getElementById("pinvou-review-toggle");
+  if (btn) btn.addEventListener("click", togglePinvouReview);
+});
+
+// ════════════════════════════════════════════════════════════════════
+// Pinvou Review v2 模块结束
+// ════════════════════════════════════════════════════════════════════
+
 function appendSystemMessage(text) {
   const row = document.createElement("div");
   row.className = "msg-row msg-system";
@@ -2527,18 +2800,24 @@ async function syncModeStateFromBackend() {
   latestTodosSnapshot = null;
   planProgressExpanded = false;
   if (!activeSessionId) {
-    modeState = { mode: "yolo", plan_phase: "none" };
+    modeState = { mode: "yolo", plan_phase: "none", pinvou_review_enabled: false };
     updateModeUI();
+    updatePinvouReviewToggleUI();
     return;
   }
   try {
     const state = await invoke("get_mode_state", { sessionId: activeSessionId });
-    modeState = { mode: state.mode || "yolo", plan_phase: state.plan_phase || "none" };
+    modeState = {
+      mode: state.mode || "yolo",
+      plan_phase: state.plan_phase || "none",
+      pinvou_review_enabled: !!state.pinvou_review_enabled,
+    };
   } catch (e) {
     console.warn("get_mode_state failed", e);
-    modeState = { mode: "yolo", plan_phase: "none" };
+    modeState = { mode: "yolo", plan_phase: "none", pinvou_review_enabled: false };
   }
   updateModeUI();
+  updatePinvouReviewToggleUI();
 }
 
 // plan-btn 点击 (toggle):
@@ -2841,7 +3120,7 @@ listen("chat:tool_start", (e) => {
   appendToolCallStart(id, name, args);
 });
 listen("chat:tool_end", (e) => {
-  const { id, output, success } = e.payload || {};
+  const { id, output, success, metadata } = e.payload || {};
   const meta = toolMeta.get(id);
   switchThinkingToIdle();
   // 持久化: tool_result 是新的 user message. 先 flush 当前 assistant message, 再 push user message.
@@ -2859,6 +3138,10 @@ listen("chat:tool_end", (e) => {
     return;
   }
   appendToolCallEnd(id, output, success);
+  // Careful hook: DeepSeek-TUI shell.rs 拦截 Dangerous → 渲染红色卡片
+  if (metadata && metadata.safety_level === "dangerous" && metadata.blocked) {
+    renderCarefulBlockedCard(meta && meta.args, metadata);
+  }
   // write_file 成功 → 加入产物列表
   if (success) {
     if (meta && meta.name === "write_file") {
@@ -2946,6 +3229,16 @@ function waitForChatDone() {
 listen("chat:done", async (e) => {
   const error = e.payload?.error;
   if (error) appendSystemMessage("⚠️ " + error);
+
+  // Pinvou Review v2: GATE 失败后的 review 跑完,渲染嘴替气泡(带 Fallback)
+  if (pendingPinvouReview) {
+    const lastAssistant = collectLastAssistantText();
+    const rendered = tryRenderPinvouReviewFromAssistant(lastAssistant, pendingPinvouReview);
+    if (!rendered) {
+      appendSystemMessage("⚠️ Pinvou 没回应,可能是模型卡住。手动点 ✅ 会再次触发 GATE。");
+    }
+    pendingPinvouReview = null;
+  }
 
   // 把累积的 assistant message (text + 任何未配对的 tool_use) flush 到 messages.
   flushAssistantMessageToHistory();
