@@ -2390,7 +2390,9 @@ body[data-theme="liquid-light"] .composer.drag-over .composer-inner {
    阶段 C: Token 进度条 (上下文使用率)
    ========================================================= */
 
+/* token-bar 容器已在 index.html 标 hidden;CSS 双保险防止以后误改 HTML 露出来 */
 .token-bar {
+  display: none;
   height: 3px;
   background: var(--surface-container-high);
   cursor: pointer;

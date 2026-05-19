@@ -70,7 +70,10 @@
         </div>
       </header>
 
-      <div class="token-bar" id="token-bar" data-level="green" title="上下文使用率">
+      <!-- token-bar 隐藏:auto compact 已交给底座管 (2026-05-19), 用户无需可见上下文压力指示。
+           保留 DOM 节点 (hidden) 让 main.js 1986-1987 的 getElementById 不报 null;
+           CSS .token-bar { display:none } 也是同一目的 -->
+      <div class="token-bar" id="token-bar" data-level="green" title="上下文使用率" hidden>
         <div class="token-bar-fill" id="token-bar-fill"></div>
       </div>
 

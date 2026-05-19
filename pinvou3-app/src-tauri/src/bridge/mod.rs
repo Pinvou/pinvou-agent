@@ -32,8 +32,18 @@ use self::mode_state::PlanPhase;
 use self::prefs::{ModelPreset, UserPrefs};
 
 /// Qwen3.6 在 vLLM 里是 passthrough 字符串（不走 alias）。
-// 2026-05-19: vLLM 重启后 served-model-name 改 qwen36_35b (旧 "/model" 已废)
-const LOCAL_VLLM_MODEL: &str = "qwen36_35b";
+///
+/// 后缀 `_256k` 由 fork B1 (`context_window_for_model` 的 `_Nk` hint) 识别,
+/// 让底座为本地 Qwen 派生 256K 窗口 → context_input_budget / capacity ratio /
+/// compaction 派生路径全部能算对。若改名为无后缀,底座立刻退化到 `None`,
+/// preflight + emergency recovery 默认不生效 (codex adversarial-review 抓到的
+/// 高优 finding)。回归测试 `bridge::tests::default_model_window_recognized`
+/// 锁住这个不变量。
+///
+/// ⚠️ ops 同步要求:vLLM 启动也要带
+/// `--served-model-name qwen36_35b_256k`,否则 OpenAI-compat API 报
+/// `model_not_found`。
+const LOCAL_VLLM_MODEL: &str = "qwen36_35b_256k";
 const LOCAL_VLLM_BASE_URL: &str = "http://10.214.74.113:8000/v1";
 const LOCAL_VLLM_API_KEY: &str = "local-no-auth";
 
@@ -65,11 +75,33 @@ impl Pinvou3Bridge {
         }
         let artifacts = paths::default_session_artifacts_dir();
         std::env::set_var("PINVOU3_SESSION_ARTIFACTS", &artifacts);
-        Ok(Self {
+        let this = Self {
             prefs,
             bundle,
             workspace: paths::user_home_dir(),
-        })
+        };
+        this.wire_max_output_tokens_env();
+        Ok(this)
+    }
+
+    /// 把 `self.max_output_tokens()` 写到底座读取的 `DEEPSEEK_MAX_OUTPUT_TOKENS`
+    /// env (核心:底座 `effective_max_output_tokens()` 只读这个 env)。
+    ///
+    /// 生产 Tauri 启动不走 run-dev.sh (clean env), 没这一步:
+    ///   effective_max_output_tokens("qwen36_35b_256k") → min(256K/2, 64K) = 64K
+    ///   context_input_budget = 256K - 64K - 1K = 191K (而非文档承诺的 ~239K)
+    ///
+    /// 已有 env 时不覆盖 (允许 run-dev.sh / L1 harness / 用户 override)。
+    ///
+    /// 单独抽 helper 让测试可以不走 boot() (避免 ensure_dirs / extract_bundle
+    /// 写盘到真实 ~/.pinvou3 + 不需要拿 PINVOU3_HOME ENV_LOCK)。
+    pub fn wire_max_output_tokens_env(&self) {
+        if std::env::var_os("DEEPSEEK_MAX_OUTPUT_TOKENS").is_none() {
+            std::env::set_var(
+                "DEEPSEEK_MAX_OUTPUT_TOKENS",
+                self.max_output_tokens().to_string(),
+            );
+        }
     }
 
     /// 测试入口(L1 harness 用):同 [`boot`] 但 workspace 用传入的 `ws`
@@ -233,11 +265,38 @@ impl Pinvou3Bridge {
             features,
             // compaction model 默认 deepseek-v4-pro,本地 vLLM 没这个模型,
             // 必须改成 pinvou3 当前用的 model,否则手动 /compact 报 404。
+            //
+            // 本地 Qwen3.6 vLLM 跑 256K (max_model_len=262144)。
+            // turn_loop:90 的 preflight should_compact 直接吃这两个参数:
+            //  - token_threshold = 200K (256K × ~78%):should_compact 真正放行 LLM 摘要的线
+            //  - auto_floor_tokens = 60K:should_compact 的"低于则拒绝"下限,**不是** prune
+            //    启动线 (codex round 3/4 抓出:prune_tool_results 是 compact_messages_safe
+            //    内部第一步,必须 should_compact 先放行,即 ≥200K 才跑)。60K 留着仅作为
+            //    极短会话防误触发的下限保护
+            // ⚠️ 上游默认 token_threshold=800K,对 256K 窗口永远撞不到,**必须显式 set**
             compaction: deepseek_tui::compaction::CompactionConfig {
                 model: self.model(),
+                token_threshold: 200_000,
+                auto_floor_tokens: 60_000,
                 ..compaction
             },
-            cycle,
+            // 关 cycle 子系统 (2026-05-19 codex adversarial-review round 3 发现):
+            // cycle_manager:184 算 trigger_floor 时 saturating_sub
+            // reserved_response_headroom_tokens(263168) 与 256K window,
+            // 对小窗口模型 floor 永远变 0, threshold.min(0)=0 → 每轮触发
+            // briefing + 归档 + 重置 messages。
+            // pinvou3 用 compaction 路径管 context, 不需要 cycle 重复管理。
+            cycle: deepseek_tui::cycle_manager::CycleConfig {
+                enabled: false,
+                ..cycle
+            },
+            // capacity controller 保持上游 default = off (2026-05-19 codex
+            // adversarial-review round 2 发现:其 low_risk_max / medium_risk_max
+            // 是 p_fail 风险阈值而非 context_used_ratio,context 权重只占 15%。
+            // 复杂工具轮在 context 远低于 200K 时就可能触发 VerifyAndReplan /
+            // VerifyWithToolReplay 改写会话。
+            // auto compact 直接用上游 turn_loop:90 的 should_compact preflight,
+            // 语义干净:按 token_threshold/auto_floor 决定是否走 LLM 摘要。
             capacity,
             todos,
             plan_state,
@@ -395,6 +454,64 @@ mod tests {
             bundle: Pinvou3Bundle::paths(),
             workspace: std::env::temp_dir(),
         }
+    }
+
+    /// 默认模型名必须能被底座 `context_window_for_model` 识别出窗口,
+    /// 否则 `context_input_budget` 静默返回 `None`,preflight + emergency
+    /// recovery 全静默禁用 (codex adversarial-review 2026-05-19 抓到的
+    /// 高优 finding)。后缀 `_256k` 由 fork B1 `_Nk` hint 解析。
+    #[test]
+    fn default_model_window_recognized_by_engine() {
+        let bridge = fixture_bridge();
+        let model = bridge.model();
+        let window = deepseek_tui::models::context_window_for_model(&model);
+        assert!(
+            window.is_some(),
+            "底座 context_window_for_model 必须识别默认模型名 (得到 None 意味着 \
+             LOCAL_VLLM_MODEL 后缀漏了 _Nk 标记,B2 preflight 静默禁用)。\
+             当前 model = {model:?}"
+        );
+        // 256K = 256_000 (hint 用 ×1000;实际 vLLM 262144 差 6K 在 2% 噪声内)
+        assert_eq!(
+            window,
+            Some(256_000),
+            "默认模型应派生 256K 窗口,得到 {window:?}"
+        );
+    }
+
+    /// `wire_max_output_tokens_env` 必须把 self.max_output_tokens() 设给底座
+    /// env (codex round 4 抓出:生产 Tauri clean env 启动时,
+    /// effective_max_output_tokens() 走 fallback = min(256K/2, 64K) = 64K,
+    /// B2 算 context_input_budget 变成 191K 而非文档承诺的 ~239K)。
+    ///
+    /// 走 fixture_bridge() + helper (而非 boot()),避免:
+    ///   - 写真实 ~/.pinvou3 (codex round 5 finding)
+    ///   - 跟 PINVOU3_HOME ENV_LOCK 持有者冲突
+    ///
+    /// 两个语义合并一个测试避免并发 race (Rust env process-global,
+    /// 后续多测试可以拿 DEEPSEEK_MAX_OUTPUT_TOKENS 专属锁,但目前只此一处)。
+    #[test]
+    fn wire_max_output_tokens_env_sets_default_then_respects_existing() {
+        // clean env 路径:helper 应 set 默认 16384
+        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
+        std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
+        fixture_bridge().wire_max_output_tokens_env();
+        assert_eq!(
+            std::env::var("DEEPSEEK_MAX_OUTPUT_TOKENS").as_deref(),
+            Ok("16384"),
+            "wire helper 必须 set DEEPSEEK_MAX_OUTPUT_TOKENS=16384, 让底座 \
+             effective_max_output_tokens 走显式 cap 而非 fallback 64K"
+        );
+
+        // 已有 env 不覆盖路径:helper 是 no-op
+        std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "32768");
+        fixture_bridge().wire_max_output_tokens_env();
+        assert_eq!(
+            std::env::var("DEEPSEEK_MAX_OUTPUT_TOKENS").as_deref(),
+            Ok("32768"),
+            "已有 env 必须保留,不能被 helper 覆盖 (允许 run-dev.sh / L1 / 用户 override)"
+        );
+        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
     }
 
     /// 安全敏感字段必须固定——这些值改了会让 pinvou3 出现奇怪行为或越权。
