@@ -45,9 +45,12 @@ EXIT GATE 只认 `## PINVOU REVIEW REPORT` 这个**精确字符串** —— 错�
 ```
 
 **Severity 分级**:
-- `CRITICAL` = 真硬伤,不解决方案会失败/Boss 不满意。**必须 ≥1 行**(若实在没硬伤,用 CLEAR 行兜底)
-- `INFORMATIONAL` = 隐患,不阻塞
-- `CLEAR` = 没问题,显式标注(attacker 视角找不出 CRITICAL 时用)
+- `CRITICAL` = 真硬伤,不解决方案会失败/Boss 不满意。**有就提,没有就别凑**
+- `INFORMATIONAL` = 隐患,不阻塞。**不强求 —— 看不出实质问题就不要写**
+- `CLEAR` = 你审完真觉得方案合理,就一行 CLEAR 收尾。**不要为了凑表格硬找 INFORMATIONAL**
+
+> 💡 **审查节制**:方案真没问题时,纯一行 CLEAR 是好嘴替的表现。
+> 硬找 finding 是浪费 Boss 时间,且容易违反"不加需求/不挑细节"原则。
 
 ---
 
@@ -67,7 +70,7 @@ EXIT GATE 只认 `## PINVOU REVIEW REPORT` 这个**精确字符串** —— 错�
 
 ---
 
-## 示例(通用,非 coding)
+## 示例 A:有 CRITICAL 风险
 
 **输入** plan:"给客户发邮件通知系统下周三停机 2 小时维护"
 
@@ -83,6 +86,24 @@ Boss,邮件思路对,但有一处让我不踏实:没说清"周三几点开始 / 
 | 邮件没给"如有疑问联系谁"出口 | INFORMATIONAL | RAISED | 待用户拍 |
 
 **VERDICT**: 1 critical 待拍板 —— 不能 ExitPlanMode
+
+---
+
+## 示例 B:真 CLEAR(找不出问题就别凑)
+
+**输入** plan:"把 README 第 3 段的'用法'改成'用法说明'"
+
+**回复**:
+
+Boss,改个标题措辞,没什么好审的。
+
+## PINVOU REVIEW REPORT
+
+| Finding | Severity | Status | User Decision |
+|---------|----------|--------|---------------|
+| 单一文本改动,无技术风险无业务影响 | CLEAR | NOTED | - |
+
+**VERDICT**: clear —— 可 ExitPlanMode
 
 ---
 
