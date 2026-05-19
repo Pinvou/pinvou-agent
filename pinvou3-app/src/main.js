@@ -1321,19 +1321,81 @@ function renderPinvouReviewCard(report, planCardEl, displayText) {
   });
 }
 
+/** 检测 review report 里有没有未决的 CRITICAL finding。
+ *  匹配表格行:| ... | CRITICAL | RAISED | ... | (status 不是 RESOLVED/OVERRIDDEN_BY_USER)。 */
+function reviewHasUnresolvedCritical(report) {
+  if (!report) return false;
+  const lines = report.split("\n").filter((l) => l.trim().startsWith("|"));
+  for (const line of lines) {
+    const cells = line.split("|").map((c) => c.trim());
+    // 找 severity 是 CRITICAL,且 status 不是 RESOLVED/OVERRIDDEN_BY_USER 的行
+    const hasCritical = cells.some((c) => c.toUpperCase() === "CRITICAL");
+    if (!hasCritical) continue;
+    const resolved = cells.some((c) => {
+      const u = c.toUpperCase();
+      return u === "RESOLVED" || u === "OVERRIDDEN_BY_USER";
+    });
+    if (!resolved) return true;
+  }
+  return false;
+}
+
+/** Pinvou clear(无未决 CRITICAL)时自动放行:拼 report 进 plan_markdown,直接调 accept_plan。
+ *  不需要用户再点按钮 —— Pinvou 都说没问题了,GATE 也不会拦。
+ *  仍渲染 advisory 气泡让用户看到 Pinvou 说过什么(INFORMATIONAL / CLEAR)。 */
+async function autoAcceptAfterClearReview(planCardEl, report, displayText) {
+  if (!planCardEl || !activeSessionId) return;
+  // advisory 气泡:用 final card 样式(无 3 按钮)
+  renderPinvouFinalCard(displayText || report);
+  appendSystemMessage("👍 Pinvou clear(无 critical),自动放行进 execute...");
+  const planMd = planCardEl.dataset.planMarkdown || "";
+  const fullMd = `${planMd}\n\n${report}`;
+  // freeze plan card
+  planCardEl.dataset.cardState = "approved";
+  planCardEl.querySelectorAll(".plan-card-btn").forEach((b) => (b.disabled = true));
+  const status = planCardEl.querySelector(".plan-card-status");
+  if (status) { status.hidden = false; status.textContent = "✅ Pinvou clear,自动放行"; }
+  appendUserMessage("✅ 就这么干(Pinvou clear,自动放行)");
+  messages.push({ role: "user", content: [{ type: "text", text: "✅ 就这么干(Pinvou clear,自动放行)" }] });
+  setBusy(true);
+  try {
+    const state = await invoke("accept_plan", {
+      sessionId: activeSessionId,
+      planMarkdown: fullMd,
+    });
+    modeState = {
+      mode: state.mode,
+      plan_phase: state.plan_phase,
+      pinvou_review_enabled: !!state.pinvou_review_enabled,
+    };
+    updateModeUI();
+  } catch (e) {
+    appendSystemMessage("⚠️ 自动 accept_plan 失败: " + e);
+    setBusy(false);
+  }
+}
+
 /** 在 chat:done 时尝试从 assistant 输出渲染 Pinvou 嘴替气泡。
- *  容错模式:LLM 没按格式输出表格时,合成 OVERRIDDEN_BY_USER 占位表格,气泡显示 LLM 原话。
- *  这样用户能读懂 Pinvou 实际说什么,点 [✅ 直接执行] 仍能凿穿 GATE。
+ *  收敛规则:
+ *  - 有未决 CRITICAL → 渲染嘴替气泡 + 3 按钮等用户决策
+ *  - 无 CRITICAL(全 INFORMATIONAL/CLEAR) → 自动放行 + advisory 气泡(无按钮)
+ *  - LLM 没按格式输出 → Fallback 渲染 3 按钮气泡
  *  设计依据:§10.1 Qwen3.6 不可靠按格式输出 → 必须 Fallback */
 function tryRenderPinvouReviewFromAssistant(assistantText, triggerCtx) {
   if (!assistantText || !assistantText.trim()) return false;
   const planCardEl = triggerCtx && triggerCtx.planCardEl;
   const report = extractPinvouReviewReport(assistantText);
   if (report) {
-    renderPinvouReviewCard(report, planCardEl);
+    if (reviewHasUnresolvedCritical(report)) {
+      // 有 critical:等用户决策
+      renderPinvouReviewCard(report, planCardEl);
+    } else {
+      // clear:自动放行
+      autoAcceptAfterClearReview(planCardEl, report);
+    }
     return true;
   }
-  // Fallback
+  // Fallback:格式错乱,保守等用户决策(不自动放行,因为不确定是否真 clear)
   const synthesized = synthesizeOverriddenReport("Pinvou 用自然语言提了意见(见上方),用户阅读后决策");
   renderPinvouReviewCard(synthesized, planCardEl, assistantText.trim());
   return true;
