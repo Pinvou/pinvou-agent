@@ -127,7 +127,7 @@ fn check_exit_plan_gate(plan_content: &str) -> Result<(), GateError> {
 - 至少 1 行 finding（即使是 "无明显风险" 也必须显式写出 CLEAR）
 - CRITICAL 必须 RESOLVED 或 OVERRIDDEN_BY_USER 才能放行
 
-**工作量**：~80 行 Rust + 1 个 `~/.deepseek/commands/pinvou-review.md` skill。
+**工作量**：~80 行 Rust + 1 个 `pinvou3-app/src-tauri/resources/bundle/skills/pinvou-review-plan/SKILL.md`(随 app 编译内嵌,启动时解包到 `~/.pinvou3/bundle/skills/`) skill。
 
 **关键警示**：**不能仅靠 prompt 引导让 Pinvou 写表格**——`7b983b6` 已经证明 Qwen3.6 不吃这套。必须 bridge 层 blocking + skill prompt 双保险，bridge 检测到无表格就自动追加一次 `/pinvou-review-plan`，逼它生成。
 
@@ -272,9 +272,9 @@ SessionModeState {
 | # | 任务 | 工作量 | 文件位置 | 依赖 |
 |---|---|---|---|---|
 | 1 | `careful` hook（扩展 ApprovalRequirement + RequiredDangerous） | ~150 行 Rust | `DeepSeek-TUI/crates/tui/src/tools/{shell,git}.rs` + `pinvou3-app/src-tauri/src/engine.rs` | 无 |
-| 2 | `/pinvou-review-plan` skill | 1 个 markdown | `~/.deepseek/commands/pinvou-review-plan.md` | 无 |
+| 2 | `/pinvou-review-plan` skill | 1 个 markdown | `pinvou3-app/.../bundle/skills/pinvou-review-plan/SKILL.md` | 无 |
 | 3 | EXIT GATE blocking | ~80 行 Rust | pinvou3-app bridge 层 | #2 |
-| 4 | `/pinvou-review-final` skill | 1 个 markdown | `~/.deepseek/commands/pinvou-review-final.md` | 无 |
+| 4 | `/pinvou-review-final` skill | 1 个 markdown | `pinvou3-app/.../bundle/skills/pinvou-review-final/SKILL.md` | 无 |
 | 5 | UI 嘴替气泡 + 3 按钮 | Tauri 前端 | pinvou3-app frontend | #2, #3 |
 
 **v1.5 选做**：
@@ -323,7 +323,7 @@ Pinvou 端：subagent fresh context + 完整 plan + execute trace，单次 prefi
 
 **修复**(两层):
 
-1. **Skill prompt 加强**:`.deepseek/commands/pinvou-review-plan.md` 顶部加 🚨 输出格式硬约束,明令禁止 ✅/⚠️ 列表 + "工作量评估"小标题,加 3 个完整 few-shot(其中一个就是俄罗斯方块场景)
+1. **Skill prompt 加强**:`pinvou-review-plan` skill 顶部加 🚨 输出格式硬约束,明令禁止 ✅/⚠️ 列表 + "工作量评估"小标题,加 3 个完整 few-shot(其中一个就是俄罗斯方块场景)
 
 2. **前端 Fallback 兜底**(`main.js synthesizeOverriddenReport()`):
    - LLM 输出有内容但**无表格** → **仍渲染**嘴替气泡(气泡显示 LLM 原话) + 合成 OVERRIDDEN_BY_USER 占位表格
@@ -355,7 +355,7 @@ v1 第一版把 Pinvou Review 设计成"工作流的一种"(Plan / YOLO / Pinvou
 
 **修复**(已落地):
 
-1. `.deepseek/commands/pinvou-review-plan.md` 加 **Engineer mindset 必查清单**:
+1. `pinvou-review-plan` skill 加 **Engineer mindset 必查清单**:
    - 单次 write_file content > 600 行 → RAISE CRITICAL,建议拆分
    - plan > 8 步 → RAISE INFORMATIONAL
    - 一次性生成大 JSON/SQL/CSV → 同上

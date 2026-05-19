@@ -11,7 +11,9 @@ use super::paths;
 /// Bundle 版本号：手动 base + 自动 instructions.md 内容 hash（build.rs 注入）。
 /// 改 INSTRUCTIONS_MD 时不需要 bump base —— hash 自动变，ensure_extracted 自动覆写。
 /// 改其他 bundle 资源（mcp.json 默认 / skills 模板等）才需要手动 bump base。
-pub const BUNDLE_VERSION: &str = concat!("0.3-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+///
+/// 0.4: 加 Pinvou Review 内置 skills(pinvou-review-plan / pinvou-review-final)
+pub const BUNDLE_VERSION: &str = concat!("0.4-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions.md（Qwen3.6 适配 prompt），编译时内嵌。
 pub const INSTRUCTIONS_MD: &str = include_str!("../../resources/bundle/instructions.md");
@@ -23,6 +25,16 @@ pub const DEFAULT_MCP_JSON: &str = "{\n  \"servers\": {}\n}\n";
 /// 时阻止 LLM 触碰 ~/.ssh/ ~/.gnupg/ 等。
 pub const DENY_SENSITIVE_PATHS_SH: &str =
     include_str!("../../resources/bundle/deny_sensitive_paths.sh");
+
+/// Pinvou Review v2 内置 skill:plan 审查(GATE 配套)。
+/// 编译时内嵌,启动时 ensure_extracted 写到 ~/.pinvou3/bundle/skills/。
+/// DeepSeek-TUI SkillRegistry 期待 <skills_dir>/<skill-name>/SKILL.md 格式。
+pub const PINVOU_REVIEW_PLAN_SKILL_MD: &str =
+    include_str!("../../resources/bundle/skills/pinvou-review-plan/SKILL.md");
+
+/// Pinvou Review v2 内置 skill:任务收口物理校验(advisory)。
+pub const PINVOU_REVIEW_FINAL_SKILL_MD: &str =
+    include_str!("../../resources/bundle/skills/pinvou-review-final/SKILL.md");
 
 #[derive(Debug, Clone)]
 pub struct Pinvou3Bundle {
@@ -78,6 +90,14 @@ impl Pinvou3Bundle {
             perm.set_mode(0o755);
             std::fs::set_permissions(&self.deny_sensitive_sh, perm)?;
         }
+        // Pinvou Review v2 内置 skills:写到 <skills_dir>/<name>/SKILL.md
+        // DeepSeek-TUI SkillRegistry::discover 期待这个 subdir + SKILL.md 格式。
+        let plan_dir = self.skills_dir.join("pinvou-review-plan");
+        let final_dir = self.skills_dir.join("pinvou-review-final");
+        std::fs::create_dir_all(&plan_dir)?;
+        std::fs::create_dir_all(&final_dir)?;
+        std::fs::write(plan_dir.join("SKILL.md"), PINVOU_REVIEW_PLAN_SKILL_MD)?;
+        std::fs::write(final_dir.join("SKILL.md"), PINVOU_REVIEW_FINAL_SKILL_MD)?;
         std::fs::write(&version_file, BUNDLE_VERSION)?;
         eprintln!(
             "[pinvou3-app] bundle extracted to {} (version {})",
