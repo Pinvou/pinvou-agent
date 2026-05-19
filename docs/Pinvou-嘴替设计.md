@@ -343,6 +343,27 @@ v1 worktree 创建后**从未 commit**,工作期间一直裸跑写代码。workt
 
 v1 第一版把 Pinvou Review 设计成"工作流的一种"(Plan / YOLO / Pinvou Review 三选一切换器),被用户指出错——嘴替本质是**质量护栏**,应该跟 Plan/YOLO **正交**而非替代。v2 改成独立 toggle(`pinvou_review_enabled: bool`),允许任意组合(YOLO + 嘴替开等)。
 
+### 10.4 嘴替的副作用:加重实施层负担 → 撞本地模型 output budget
+
+**实测**(v2 跑通 tetris 端到端):
+
+- 嘴替关:plan = 7 步基础版,AI 一次 write_file 600 行 HTML 跑通
+- 嘴替开:Pinvou 给方案加了 Wall Kick + Ghost piece + 等级 + 暂停 +硬下落 → plan 升 9 步详细版 → AI 试图把所有功能塞进一次 write_file → **content 撞 16K output budget 顶 → 输出空 content → 被 DeepSeek-TUI 去重 guard BLOCK**
+
+**根因**:Pinvou 之前的 mindset 只有 customer + attacker,**没有 engineer**(实施可行性视角)。Boss 不会自己写 600 行 HTML,所以 customer mindset 看不到"本地模型一次输出能不能写完"这种约束;attacker mindset 也只挑设计漏洞,不看实施层。
+
+**修复**(已落地):
+
+1. `.deepseek/commands/pinvou-review-plan.md` 加 **Engineer mindset 必查清单**:
+   - 单次 write_file content > 600 行 → RAISE CRITICAL,建议拆分
+   - plan > 8 步 → RAISE INFORMATIONAL
+   - 一次性生成大 JSON/SQL/CSV → 同上
+   - **禁止"加需求"**:Pinvou 是审,不是设计师,不应该让方案变大
+2. Suppressions 加一条:"任何把方案做大的建议"
+3. 角色规则改成 **Customer + Attacker + Engineer 三视角混合**(原 customer + attacker 二视角)
+
+**Lessons learned 升级**:嘴替不是"越多建议越好",反而要**克制**——好的嘴替应该是"找硬伤 + 实施可行性 check",不是"代用户加需求"。
+
 ## 11. 决策来源索引
 
 | 决策 | 关键证据 |
