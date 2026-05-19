@@ -204,4 +204,96 @@ vLLM 参数:`max-num-batched-tokens 131072 (4×) + 保留 chunked-prefill + 256K
 ### 2026-05-18 · run 1779102334-r2 · long_output_1500 · 工具 2/5 + 简洁性 2/5
 - **问题**: LLM 自己 detour 调 web_search 2 次 (prompt 没要求联网,Bing 全失败),且写了 12K 字超 prompt 1500 要求 8×。cargo test fail (206s > 180s)
 - **改进方向**: 单次 LLM 抽奖 — 单 sample 不可信。累积 3+ 次再考虑改 prompt
-- **状态**: 🆕 待处理 (低优先,LLM noise)
+- **状态**: ✅ run 1779159923-r2 (INSTRUCTIONS_MD v4 §3 任务完成定义起效) 修了,122s + 6.7K 字 PASS
+
+---
+
+## 阶段 F:subagent 完整支持 + L1 testing 系统成熟 (worktree-tests-l1-l2 合入 main `<待 merge>`)
+
+工期:2026-05-18 至 2026-05-19 (1.5 天紧凑迭代)。从"subagent 不可用 + L1 测试缺位"到"single subagent context isolation 完全可用 + 5 个 baseline 演进追踪质量 + 上游 PR 提交"。
+
+### 已完成清单
+
+#### 测试系统 (L1+L2+Judge)
+
+- **L2 backend 纯函数测试 9 个** + 49 tests total 进 CI PR-gate
+- **L1 真 vLLM dialog harness** 18 scenarios (`tests/l1_dialog_harness.rs`),含基础 / 工具链 / Plan / 多 turn / 边界 / subagent 6 类
+- **Judge rubric r2** (`docs/L1-judge-rubric.md`),6 维 × 1-5 分,加 N/A 跳过
+- **Baseline 5 次演进归档** (`docs/l1-baselines/`):
+  - `v0.8.37-r1` (4.75) → `v0.8.37-r1-13scn` (4.67) → `v0.8.37-vllm2-r2-17scn` (4.46) → `v0.8.37-vllm2_clientfix-r2-18scn` (4.50) → `v0.8.37-vllm3_planB-r2-18scn` (4.59) → **`v0.8.37-vllm3_final-r2-18scn` (4.66,最终)**
+- **离群点闭环**:任一维度 ≤3 → auto-append `process.md` `## L1 judge 离群点跟进` 区
+
+#### Fork patches (DeepSeek-TUI submodule, `pinvou3-patches` branch)
+
+| Commit | 内容 | 状态 |
+|---|---|---|
+| `1ba8e41` | `PINVOU3_BLOCKLIST_OVERRIDE` env override + 补 `agent_spawn` 进 blocklist | ✅ fork-only |
+| `363dd35` | subagent completion role=user (避免 Qwen chat_template raise 400) | ✅ fork-only, 上游 PR 候选 |
+| `15244e6` | `GENERAL_AGENT_INTRO` 加 stop-on-failure 条款 | ✅ fork-only |
+| `9860ef1` | C+C+: `DEFAULT_MAX_STEPS` 100→20 + `DEFAULT_SUBAGENT_ELAPSED_MAX` 300s | ✅ fork-only, CrewAI 风格 |
+| `079a3bb` | file_search spawn_blocking + 30s timeout (中文版) | ✅ fork-only |
+| `aaa1920` | grep_files 同上 (中文版) | ✅ fork-only |
+| `d866274` | **file_search 英文 clean 版 (PR #1790 → Hmbown/DeepSeek-TUI)** | 🚀 上游 PR 中 |
+
+#### pinvou3-app 端
+
+- **L1 plumbing**: `Pinvou3Bridge::boot_with_workspace` + `AppEngine::spawn_headless`
+- **L1 harness env**: `ensure_runtime_env` 设全 9 个 `DEEPSEEK_*` 变量,含 `STREAM_OPEN_TIMEOUT_SECS=180`
+- **工程层硬锁**: `max_subagents` default 4→1,L2 test 锁住防 regression
+- **INSTRUCTIONS_MD v4 整理**:164→112 行,加 §3 任务完成定义 + §6 subagent 框架 (context isolation 优先,何时该用/不该用/失败 fallback/结果综合)
+- **GUI subagent 卡片** (方案 A 最小版):`tool-subagent` class + 🤖 emoji + 蓝边 + 左侧 4px 竖条
+- **Model 同步**:`run-dev.sh` + bridge `LOCAL_VLLM_MODEL` + harness `DEEPSEEK_MODEL` 都改 `qwen36_35b`
+
+#### 上游贡献
+
+- **PR #1790** (Hmbown/DeepSeek-TUI): `fix(file_search): wrap walker in spawn_blocking + 30s timeout`
+- **Issue #1791** 长期方案讨论:`ToolContext` 加 `cancel_token` 字段,让同步 tool 能 cancel mid-iteration
+
+### 代办项 (按优先级)
+
+#### 🔴 紧急 (影响生产可用度)
+- 无
+
+#### 🟡 中等
+- **GUI subagent 卡片方案 B/C** (扩展版): 主 agent 串行视图 / subagent 内部 timeline。当前 A 已让用户能识别"嵌套 LLM 调用",B+C 是更好的体验
+- **Settings toggle 让用户在 GUI 启用 subagent**: 当前 blocklist 默认屏蔽,用户测试需 env override。加 `UserPrefs.advanced.enable_subagent` 让用户 GUI 勾选
+- **grep_files fork patch 何时 PR**: 等 PR #1790 反馈,如果上游接受看 reviewer 是否问其他工具,再 PR
+
+#### 🟢 低优先
+- **Multi-subagent 大研究任务** (subagent_compare_3_libs / subagent_research_topic 仍 cargo timeout): 是 stress test 边界,生产场景用 single subagent 已够。若真要支持需要 prompt 工程减 verbosity + 用户接受 10+ 分钟等待
+- **真 sanity 跨 session 重评**: 当前 sanity 是同 session retake,真要看 Claude judge 一致性需开新 session 重评
+- **GB10 self-hosted runner**: L1 nightly 进 CI,等团队 ≥2 人或发版频率上升
+
+#### ⏸️ 已决策不做
+- **多 vLLM 实例给 subagent**: 不解决根本问题 (subagent 慢主因是模型行为,非 vLLM 限制),且破坏 pinvou3 single-vLLM 简洁架构
+- **`prompt 工程让 LLM 不死磕`**: lesson learned 已验证 reminder 改 ≠ LLM 行为改,ROI 边际递减
+- **L3 GUI Playwright**: UI 改动少 ROI 低
+- **Scenario 提取 toml**: 18 个手维护够,等 ≥30 个再考虑
+
+### 已知问题 / 边界
+
+#### subagent 边界
+- **single subagent 完全可用** (context isolation use case,验证 19s/75s 完成 5.00 分)
+- **2-3 subagent 串行可用** (one_fails 377s PASS 4.83 分,主 agent 用 checklist_write 拆步)
+- **multi-subagent 并发**: 工程层 `max_subagents=1` 硬锁,LLM 第 2 个 spawn 拿 "Sub-agent limit reached" 自然 fallback
+- **3+ long-prompt subagent + 需联网**: 当前 setup 不可用 (compare/research scenarios 5-10 分钟超 cargo cap)
+
+#### LLM 行为不稳 (vLLM 抽奖)
+- `chinese_idiomatic` 偶发 detour 写文件 (3/5 次出现) — 无法消除 LLM 单次随机
+- `long_output_1500` 偶发 detour 调 web_search — 同上
+- 这些都是单 sample 信号,跨 baseline 均值看是 noise
+
+#### 工具同步阻塞
+- `file_search` / `grep_files` 在大目录 (workspace=$HOME) 同步 walker 跑数分钟阻塞 turn loop 响应 cancel — 已修 (fork patch + 上游 PR)
+- `list_dir` 单层 read_dir 通常 OK 但极端目录边缘 case 可能
+
+#### Judge 自身局限
+- Claude 跟 Qwen 都是 LLM,虽跨模型但同类心智,某些"模型味"Claude 看不出来
+- 单 session retake 是"演习"不是真 sanity (需新 session 重评)
+- ±0.2 是 noise,±0.5 才算 signal
+
+### 相关文档
+- `docs/自动化测试方案.md` — 测试系统现状描述
+- `docs/L1-judge-rubric.md` — Judge 评分 rubric (r2)
+- `docs/l1-baselines/README.md` — Baseline 命名约定 + 已有 baseline 表
+- `docs/l1-baselines/v0.8.37-vllm3_final-r2-18scn/judge-report.md` — 最终评分报告
