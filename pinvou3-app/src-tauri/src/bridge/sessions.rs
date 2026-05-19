@@ -200,7 +200,7 @@ impl SessionStore {
     }
 
     /// 一次性原子更新 mode + phase（用户 accept_plan / exit_plan_to_yolo 等场景）。
-    /// **保留现有 pinvou_review_enabled**(嘴替开关与 mode/phase 正交)。
+    /// **保留现有 pinvou_review_enabled**(品悟开关与 mode/phase 正交)。
     pub fn set_mode_state(&self, id: &str, mode: SerializableMode, phase: PlanPhase) {
         let mut m = self.mode_states.write();
         let entry = m.entry(id.to_string()).or_default();
@@ -209,8 +209,8 @@ impl SessionStore {
         // pinvou_review_enabled 不动
     }
 
-    /// 设置嘴替 review 开关（用户在 UI 顶部 toggle 切换）。
-    /// 与 Plan/YOLO 切换正交：嘴替 toggle 不动 mode/phase。
+    /// 设置品悟 review 开关（用户在 UI 顶部 toggle 切换）。
+    /// 与 Plan/YOLO 切换正交：品悟 toggle 不动 mode/phase。
     pub fn set_pinvou_review(&self, id: &str, enabled: bool) {
         let mut m = self.mode_states.write();
         let entry = m.entry(id.to_string()).or_default();
@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn set_mode_state_preserves_pinvou_review() {
-        // 关键不变量:plan→execute 流转(set_mode_state)不能覆盖嘴替开关。
+        // 关键不变量:plan→execute 流转(set_mode_state)不能覆盖品悟开关。
         let (store, _g) = isolated_store();
         store.set_pinvou_review("s1", true);
         store.set_mode_state(

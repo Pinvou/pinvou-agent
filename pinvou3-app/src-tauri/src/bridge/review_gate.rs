@@ -1,6 +1,6 @@
 //! Pinvou Review EXIT GATE。
 //!
-//! 用户开启嘴替 review (`pinvou_review_enabled = true`) 后,accept_plan /
+//! 用户开启品悟 review (`pinvou_review_enabled = true`) 后,accept_plan /
 //! exit_plan_to_yolo 前必须通过此 GATE:plan_markdown 末尾必须含结构化的
 //! `## PINVOU REVIEW REPORT` 表格,且所有 CRITICAL finding 已 RESOLVED 或
 //! OVERRIDDEN_BY_USER。

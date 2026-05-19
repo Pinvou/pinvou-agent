@@ -336,7 +336,7 @@ async function onPlanAccept(card) {
       status.hidden = true;
       setBusy(false);
       if (gateInfo.gate_error === "missing_review_report") {
-        await autoTriggerPinvouReview(card, "嘴替还没看过这个方案");
+        await autoTriggerPinvouReview(card, "品悟还没看过这个方案");
         return;
       }
       appendSystemMessage(`⚠️ Pinvou EXIT GATE 阻塞: ${gateInfo.message}`);
@@ -1162,7 +1162,7 @@ function escapeHtml(s) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// Pinvou Review v2 — careful 卡片 + 嘴替气泡 + 3 按钮 + Fallback
+// Pinvou Review v2 — careful 卡片 + 品悟气泡 + 3 按钮 + Fallback
 // 设计:docs/Pinvou-嘴替设计.md §4-§6
 // ════════════════════════════════════════════════════════════════════
 
@@ -1187,7 +1187,7 @@ function renderCarefulBlockedCard(args, metadata) {
         <ul>${suggestions}</ul>
       </div>` : ""}
       <div class="careful-blocked-foot">
-        这个 hook 在所有模式默认开启,与 Plan/YOLO/嘴替开关无关。
+        这个 hook 在所有模式默认开启,与 Plan/YOLO/品悟开关无关。
         如果你确认要跑,自己在终端执行 —— LLM 不会被允许跑破坏性命令。
       </div>
     </div>
@@ -1242,7 +1242,7 @@ function attachPinvouReviewActions(rowEl, report, planCardEl) {
     const cardStatus = planCardEl.querySelector(".plan-card-status");
     if (cardStatus) {
       cardStatus.hidden = false;
-      cardStatus.textContent = "⏸ 嘴替已审,看下面按钮";
+      cardStatus.textContent = "⏸ 品悟已审,看下面按钮";
     }
   }
   const actions = document.createElement("div");
@@ -1272,8 +1272,8 @@ function attachPinvouReviewActions(rowEl, report, planCardEl) {
     if (!planCardEl || !activeSessionId) return;
     const planMd = planCardEl.dataset.planMarkdown || "";
     const fullMd = `${planMd}\n\n${effectiveReport}`;
-    appendUserMessage("✅ 就这么干(Pinvou 顾虑已 override)");
-    messages.push({ role: "user", content: [{ type: "text", text: "✅ 就这么干(Pinvou 顾虑已 override)" }] });
+    appendUserMessage("✅ 就这么干(品悟顾虑已 override)");
+    messages.push({ role: "user", content: [{ type: "text", text: "✅ 就这么干(品悟顾虑已 override)" }] });
     setBusy(true);
     try {
       const state = await invoke("accept_plan", {
@@ -1339,17 +1339,17 @@ async function dispatchPinvouTrigger(persona, frontendSummary, fullPrompt) {
 
 async function autoTriggerPinvouReview(planCardEl, reason) {
   pendingPinvouReview = { planCardEl };
-  appendSystemMessage(`🟣 ${reason} —— 自动让 Pinvou 嘴替先看一眼...`);
+  appendSystemMessage(`🟣 ${reason} —— 自动让品悟先看一眼...`);
   // 不靠 LLM 主动 read_file 加载 skill(本地 Qwen3.6 不会 progressive disclosure):
   // 直接从后端读 SKILL.md body 塞进 LLM context,user 气泡只显示简短摘要。
   let fullPrompt = "/pinvou-review-plan";
   try {
     const skillBody = await invoke("read_skill_body", { name: "pinvou-review-plan" });
-    fullPrompt = `[嘴替自动触发 /pinvou-review-plan,完整角色定义如下]\n\n${skillBody}`;
+    fullPrompt = `[品悟自动触发 /pinvou-review-plan,完整角色定义如下]\n\n${skillBody}`;
   } catch (e) {
     appendSystemMessage(`⚠️ 加载 pinvou-review-plan skill 失败: ${e}`);
   }
-  await dispatchPinvouTrigger("pinvou-plan", "🟣 触发 Pinvou plan review", fullPrompt);
+  await dispatchPinvouTrigger("pinvou-plan", "🟣 触发品悟审方案", fullPrompt);
 }
 
 // 任务收口 final review:advisory 性质,无 GATE 无 3 按钮。
@@ -1357,15 +1357,15 @@ let pendingFinalReview = false;
 
 async function autoTriggerPinvouFinal() {
   pendingFinalReview = true;
-  appendSystemMessage("🟣 任务完成 —— 让 Pinvou 嘴替核验一下产出...");
+  appendSystemMessage("🟣 任务完成 —— 让品悟核验一下产出...");
   let fullPrompt = "/pinvou-review-final";
   try {
     const skillBody = await invoke("read_skill_body", { name: "pinvou-review-final" });
-    fullPrompt = `[嘴替自动触发 /pinvou-review-final,完整角色定义如下]\n\n${skillBody}`;
+    fullPrompt = `[品悟自动触发 /pinvou-review-final,完整角色定义如下]\n\n${skillBody}`;
   } catch (e) {
     appendSystemMessage(`⚠️ 加载 pinvou-review-final skill 失败: ${e}`);
   }
-  await dispatchPinvouTrigger("pinvou-final", "🟣 触发 Pinvou final 验收", fullPrompt);
+  await dispatchPinvouTrigger("pinvou-final", "🟣 触发品悟验收", fullPrompt);
 }
 
 /** 拼当前 assistant 完整 text(已 flush blocks + 未 flush pending)。chat:done 提取用。 */
@@ -1388,7 +1388,7 @@ function parseGateError(err) {
   try { return JSON.parse(s); } catch { return null; }
 }
 
-// === Workflow toggle: 顶部嘴替 review ON/OFF ===
+// === Workflow toggle: 顶部品悟 review ON/OFF ===
 
 async function togglePinvouReview() {
   if (!activeSessionId) return;
@@ -1415,8 +1415,8 @@ function updatePinvouReviewToggleUI() {
   const enabled = !!modeState.pinvou_review_enabled;
   btn.dataset.enabled = enabled ? "true" : "false";
   btn.title = enabled
-    ? "嘴替 review: 开 (Plan 出炉时让 Pinvou 先审 + EXIT GATE)"
-    : "嘴替 review: 关 (点击开启)";
+    ? "品悟 review: 开 (关键阶段让品悟把关,优化输出质量)"
+    : "品悟 review: 关 (点击开启,关键阶段让品悟把关,优化输出质量)";
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -1439,8 +1439,8 @@ function appendSystemMessage(text) {
   scrollToBottom();
 }
 // 一次性 flag:autoTriggerPinvouReview/Final 设置后,下一个 beginAssistantBubble
-// 把 LLM 输出气泡渲染成 Pinvou 嘴替样式(紫色 + label "PINVOU · 嘴替")。消费后清空。
-// 这样避免 v2 之前的"两次显示同一内容"bug(原 LLM 气泡 + 重新渲染嘴替气泡)。
+// 把 LLM 输出气泡渲染成品悟样式(紫色 + label "🟣 品悟")。消费后清空。
+// 这样避免 v2 之前的"两次显示同一内容"bug(原 LLM 气泡 + 重新渲染品悟气泡)。
 let pendingAssistantPersona = null; // null | "pinvou-plan" | "pinvou-final"
 
 function beginAssistantBubble() {
@@ -1454,8 +1454,8 @@ function beginAssistantBubble() {
     wrap.className = "msg-wrap msg-wrap-pinvou";
     label.className = "speaker-label speaker-pinvou";
     label.textContent = pendingAssistantPersona === "pinvou-plan"
-      ? "🟣 PINVOU · 嘴替"
-      : "🟣 PINVOU · 嘴替(任务收口验收)";
+      ? "🟣 品悟"
+      : "🟣 品悟 · 任务验收";
     bubble.className = "bubble bubble-pinvou rendered";
     row.dataset.pinvouPersona = pendingAssistantPersona; // chat:done 据此附 3 按钮
     pendingAssistantPersona = null; // 一次性消费

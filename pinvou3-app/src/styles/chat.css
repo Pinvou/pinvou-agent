@@ -2795,7 +2795,7 @@ body[data-theme="liquid-light"] .bubble.rendered strong {
   color: #1d1d1f;
 }
 
-/* === Pinvou Review v2: careful 卡片 + 嘴替气泡 + toggle === */
+/* === Pinvou Review v2: careful 卡片 + 品悟气泡 + toggle === */
 /* 详细设计:docs/Pinvou-嘴替设计.md §4 § 5 §6 */
 
 /* careful 拦截卡片(红色醒目) */
@@ -2863,7 +2863,7 @@ body[data-theme="liquid-light"] .careful-blocked-cmd code {
   color: #c0392b;
 }
 
-/* Pinvou 嘴替气泡 + 3 按钮 */
+/* Pinvou 品悟气泡 + 3 按钮 */
 .msg-pinvou {
   justify-content: flex-start;
 }
@@ -2934,7 +2934,7 @@ body[data-theme="liquid-light"] .bubble-pinvou {
   border-color: rgba(175, 82, 222, 0.3);
 }
 
-/* 顶部嘴替 review toggle(与 Plan/YOLO 切换正交,不替代) */
+/* 顶部品悟 review toggle(与 Plan/YOLO 切换正交,不替代) */
 .pinvou-review-toggle {
   background: transparent;
   border: 1px solid var(--bubble-system-border);

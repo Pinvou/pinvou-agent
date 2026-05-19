@@ -598,8 +598,8 @@ fn serialize_gate_error(err: &GateError) -> String {
     .unwrap_or_else(|_| err.to_string())
 }
 
-/// 用户切换嘴替 review 开关(UI 顶部 toggle)。
-/// 与 Plan/YOLO 切换正交:嘴替 toggle 不动 mode/phase,只控是否触发 EXIT GATE + 嘴替气泡。
+/// 用户切换品悟 review 开关(UI 顶部 toggle)。
+/// 与 Plan/YOLO 切换正交:品悟 toggle 不动 mode/phase,只控是否触发 EXIT GATE + 品悟气泡。
 /// careful hook 不依赖此开关,跨所有模式默认开启(DeepSeek-TUI shell.rs 强制 BLOCKED Dangerous)。
 #[tauri::command]
 pub async fn set_pinvou_review(

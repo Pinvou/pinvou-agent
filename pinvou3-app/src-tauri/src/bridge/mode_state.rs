@@ -32,7 +32,7 @@ impl Default for PlanPhase {
 /// 单 session 的 mode 状态。前端通过 `get_mode_state` 拉取，
 /// `set_plan_mode_next` / `accept_plan` 等命令修改。
 ///
-/// **嘴替 review 是与 Plan/YOLO 正交的独立开关**(`pinvou_review_enabled`):
+/// **品悟 review 是与 Plan/YOLO 正交的独立开关**(`pinvou_review_enabled`):
 /// - Plan + 开 = plan 出炉 EXIT GATE + 任务收口 final review
 /// - Plan + 关 = 现状行为
 /// - YOLO + 开 = 只触发 final review(YOLO 无 plan 期)
@@ -45,7 +45,7 @@ pub struct SessionModeState {
     /// 当前激活 mode。`build_send_message_op` 用这个值。
     pub mode: SerializableMode,
     pub plan_phase: PlanPhase,
-    /// 嘴替 review 质量护栏开关。默认 false(保持现状)。
+    /// 品悟 review 质量护栏开关。默认 false(保持现状)。
     /// 开启后 accept_plan / exit_plan_to_yolo 触发 EXIT GATE。
     #[serde(default)]
     pub pinvou_review_enabled: bool,
