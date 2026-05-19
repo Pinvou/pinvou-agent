@@ -611,6 +611,35 @@ pub async fn set_pinvou_review(
     Ok(store.mode_state(&session_id))
 }
 
+/// 读 pinvou3 内置 skill 的 body(去掉 frontmatter)。
+/// 用途:前端 autoTriggerPinvouReview 把完整 SKILL.md 内容塞进 user message,
+/// 不依赖本地 Qwen3.6 主动 read_file —— 弱模型不会主动用 progressive disclosure。
+/// 设计依据:docs/Pinvou-嘴替设计.md §10.5 (即将补)
+#[tauri::command]
+pub async fn read_skill_body(name: String) -> Result<String, String> {
+    use crate::bridge::paths;
+    let safe_name: String = name.chars().filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_').collect();
+    if safe_name != name || safe_name.is_empty() {
+        return Err(format!("invalid skill name: {name}"));
+    }
+    let path = paths::bundle_skills_dir().join(&safe_name).join("SKILL.md");
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("read SKILL.md ({}): {e}", path.display()))?;
+    // 剥 frontmatter ---\n...\n---\n
+    let body = if let Some(rest) = content.strip_prefix("---\n") {
+        if let Some(end) = rest.find("\n---\n") {
+            rest[end + 5..].trim_start().to_string()
+        } else if let Some(end) = rest.find("\n---") {
+            rest[end + 4..].trim_start().to_string()
+        } else {
+            content
+        }
+    } else {
+        content
+    };
+    Ok(body)
+}
+
 // 修法 D 删除了 revise_plan 命令.
 // 用户点 [✏️ 改改] 时前端走 DeepSeek-TUI 底座做法:不切 phase, 仅 input 预填"修订方案:"前缀.
 // phase 保持 Ready, 下一条 chat 触发的 Ready reminder 已包含"用户发新消息=隐式修订"语义.

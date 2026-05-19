@@ -1345,7 +1345,15 @@ let pendingPinvouReview = null;
 async function autoTriggerPinvouReview(planCardEl, reason) {
   pendingPinvouReview = { planCardEl };
   appendSystemMessage(`🟣 ${reason} —— 自动让 Pinvou 嘴替先看一眼...`);
-  input.value = "/pinvou-review-plan";
+  // 不靠 LLM 主动 read_file 加载 skill(本地 Qwen3.6 不会 progressive disclosure):
+  // 直接从后端读 SKILL.md body 塞进 user message,LLM 必读完整 prompt。
+  try {
+    const skillBody = await invoke("read_skill_body", { name: "pinvou-review-plan" });
+    input.value = `[嘴替自动触发 /pinvou-review-plan,完整角色定义如下]\n\n${skillBody}`;
+  } catch (e) {
+    appendSystemMessage(`⚠️ 加载 pinvou-review-plan skill 失败: ${e}`);
+    input.value = "/pinvou-review-plan";  // fallback
+  }
   await send();
 }
 
