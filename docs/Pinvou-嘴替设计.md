@@ -99,7 +99,7 @@ if event.requirement == RequiredDangerous {
 | Finding | Severity | Status | User Decision |
 |---------|----------|--------|---------------|
 | 用户没说性能预算，方案隐含 200ms 假设 | CRITICAL | RAISED | 待用户拍 |
-| Step 3 路径会覆盖现有 config | CRITICAL | RESOLVED | Claw 已加 backup |
+| Step 3 路径会覆盖现有 config | CRITICAL | RESOLVED | 已采纳并修订 |
 | 测试覆盖率没在方案里 | INFORMATIONAL | OVERRIDDEN_BY_USER | 用户判定可接受 |
 
 **VERDICT**: 0 critical 待拍板 — 可 ExitPlanMode
@@ -139,7 +139,7 @@ fn check_exit_plan_gate(plan_content: &str) -> Result<(), GateError> {
 
 **v1 方案**：A + C 组合
 - **A. subagent fresh context**：用 DeepSeek-TUI 的 Task/Agent 工具派出独立 LLM session
-- **C. 差异化 persona prompt**：主审 Claw 用工程师视角，subagent 用"Boss 嘴替"视角（不同语气、不同关注点、不同 Suppressions 列表）
+- **C. 差异化 persona prompt**：主 LLM 用工程师视角，subagent 用"Boss 嘴替"视角（不同语气、不同关注点、不同 Suppressions 列表）
 
 承认这是"半外"而非"真外"。如果未来 pinvou3 引入云 API（Claude/GPT）兜底，可升级到 D 方案（云 outside voice），效果最佳但有成本。
 
@@ -148,14 +148,15 @@ fn check_exit_plan_gate(plan_content: &str) -> Result<(), GateError> {
 **风格**：customer 主 + attacker 副混合（避开 advisor 退化成客气话）
 
 ```
-你是 Pinvou，Boss 的嘴替。Boss 不在场，你替他看 Claw 的方案。
+你是 Pinvou，Boss 的嘴替。Boss 不在场，你替他审眼前这个方案。
+(pinvou3 单 LLM 架构,被审的方案就是你前面 turn 自己产出的;换 persona 重新审,不假装是别人写的)
 
 你的发言要做两件事：
 1) 第一视角：用 Boss 的语气问"如果是我会问..."（customer mindset）
 2) 强制找硬伤：必须输出 ≥1 个具体担忧/风险/漏洞（attacker mindset）
 
 禁止：
-- 范围外建议（"顺便加个 X 吧"）——这是 Claw 的事，不是 Boss 的关心点
+- 范围外建议（"顺便加个 X 吧"）——不是 Boss 的关心点
 - 技术细节挑剔（"这个函数名不规范"）——Boss 不在乎
 - 客气话开场（"整体看起来不错，但..."）——Boss 没空寒暄
 - 自然语言提担忧而不写表格——必须输出 ## PINVOU REVIEW REPORT 表格
@@ -217,19 +218,19 @@ SessionModeState {
 底层串行 review，UI 渲染成"三个角色对话"错觉：
 
 ```
-[Claw 气泡] 方案 A...
+[AI 气泡] 方案 A...    (实际渲染时是模型名,如 "QWEN3.6")
        ↓ (后台跑 /pinvou-review-plan，500ms-2s)
 [Pinvou 气泡，带打字光标动画]
        "Boss 视角看：我担心 3 件事..."
        1) ... 2) ... 3) ...
 [底部 3 按钮]
-   [✓ 直接执行]  [↻ 让 Claw 修]  [⊕ 我自己加一句]
+   [✓ 直接执行]  [↻ AI 改方案]  [⊕ 我自己加一句]
 ```
 
 **3 按钮设计**：
 - **直接执行**：用户判定 Pinvou 多虑了，一键 override 所有 CRITICAL（标 OVERRIDDEN_BY_USER）→ EXIT GATE 放行
-- **让 Claw 修**：把 review 表格作为 user message 注入 Claw session，Claw 修方案 → 再触发 Pinvou re-review 循环
-- **我自己加一句**：用户补充意见进 plan 文件，再触发 Claw 修方案
+- **AI 改方案**：把 review 表格作为 user message 注入对话，让 AI 修方案 → 再触发 Pinvou re-review 循环
+- **我自己加一句**：用户补充意见进 plan 文件，再触发 AI 修方案
 
 **关键产品取舍**：
 - Pinvou 的发言必须是 review skill 的真实产出，不能为对话感凭空发言
@@ -304,7 +305,7 @@ gstack `review/checklist.md:170-180` 列表是英文 + 通用 web 开发场景�
 - 实际运行中观察哪些 finding 经常被用户 [直接执行]，进 suppressions
 
 ### 8.4 256K context 的实际利用
-Claw 端：tool schema 已占 30K，留给 history ~200K+（充裕）
+主 LLM 端：tool schema 已占 30K，留给 history ~200K+（充裕）
 Pinvou 端：subagent fresh context + 完整 plan + execute trace，单次 prefill 可能 50K+，**单次响应延迟 5-10s**（可接受，因为非热路径）
 
 ### 8.5 弱模型加固教训的对照

@@ -1255,7 +1255,7 @@ function renderPinvouReviewCard(report, planCardEl, displayText) {
   actions.className = "pinvou-review-actions";
   actions.innerHTML = `
     <button class="pinvou-review-btn" data-action="accept" type="button">✅ 直接执行</button>
-    <button class="pinvou-review-btn" data-action="revise" type="button">↻ 让 Claw 修</button>
+    <button class="pinvou-review-btn" data-action="revise" type="button">↻ AI 改方案</button>
     <button class="pinvou-review-btn" data-action="add" type="button">⊕ 我加一句</button>
   `;
   const status = document.createElement("div");
@@ -1304,7 +1304,7 @@ function renderPinvouReviewCard(report, planCardEl, displayText) {
     row.dataset.resolved = "true";
     actions.querySelectorAll("button").forEach((b) => (b.disabled = true));
     status.hidden = false;
-    status.textContent = "↻ 让 Claw 修方案...";
+    status.textContent = "↻ 让 AI 改方案...";
     input.value = "修订方案: 按 Pinvou 上面提的 CRITICAL,改一下方案。";
     input.focus();
   });
@@ -1314,7 +1314,7 @@ function renderPinvouReviewCard(report, planCardEl, displayText) {
     row.dataset.resolved = "true";
     actions.querySelectorAll("button").forEach((b) => (b.disabled = true));
     status.hidden = false;
-    status.textContent = "⊕ 把你的话补进 plan,让 Claw 一起改...";
+    status.textContent = "⊕ 把你的话补进 plan,一起改...";
     input.value = "我也担心: ";
     input.focus();
     input.setSelectionRange(input.value.length, input.value.length);
