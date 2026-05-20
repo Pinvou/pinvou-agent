@@ -303,7 +303,7 @@ fn strip_v1_suffix(url: &str) -> Option<String> {
 
 pub fn vllm_base_url() -> String {
     std::env::var("DEEPSEEK_BASE_URL")
-        .unwrap_or_else(|_| "http://10.214.74.113:8000/v1".to_string())
+        .unwrap_or_else(|_| "http://127.0.0.1:8000/v1".to_string())
 }
 
 #[cfg(test)]
