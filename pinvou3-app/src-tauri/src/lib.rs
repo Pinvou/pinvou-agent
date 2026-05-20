@@ -24,8 +24,36 @@ use crate::bridge::sessions::SessionStore;
 use crate::engine::AppEngine;
 use crate::monitor::MonitorState;
 
+/// 为 release 安装包（.deb 双击启动场景）注入 run-dev.sh 里集中处理的运行时 env。
+/// dev 启动走 run-dev.sh 已经 export 过的不会被覆盖（var_os().is_none() 守门）。
+fn ensure_release_env() {
+    use std::env;
+    const DEFAULTS: &[(&str, &str)] = &[
+        // —— vLLM 后端：BASE_URL/MODEL/API_KEY 已在 bridge/mod.rs 有默认常量，
+        // 这里只补 run-dev.sh 额外注入但 Rust 没默认的 ——
+        ("DEEPSEEK_PROVIDER", "vllm"),
+        ("DEEPSEEK_REASONING_EFFORT", "off"),
+        ("DEEPSEEK_ALLOW_INSECURE_HTTP", "1"),
+        ("DEEPSEEK_FORCE_HTTP1", "1"),
+        ("DEEPSEEK_MAX_OUTPUT_TOKENS", "16384"),
+        ("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "240"),
+        // —— webkit2gtk / fcitx 兼容（Wayland 下 IM 协议挂、合成模式异常）——
+        ("GDK_BACKEND", "x11"),
+        ("WEBKIT_DISABLE_COMPOSITING_MODE", "1"),
+        ("GTK_IM_MODULE", "fcitx"),
+        ("QT_IM_MODULE", "fcitx"),
+        ("XMODIFIERS", "@im=fcitx"),
+    ];
+    for (k, v) in DEFAULTS {
+        if env::var_os(k).is_none() {
+            env::set_var(k, v);
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    ensure_release_env();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
