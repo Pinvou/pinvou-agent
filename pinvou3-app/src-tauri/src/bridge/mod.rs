@@ -45,7 +45,10 @@ use self::prefs::{ModelPreset, UserPrefs};
 /// `--served-model-name qwen36_35b_256k`,否则 OpenAI-compat API 报
 /// `model_not_found`。
 const LOCAL_VLLM_MODEL: &str = "qwen36_35b_256k";
-const LOCAL_VLLM_BASE_URL: &str = "http://10.214.74.113:8000/v1";
+// 127.0.0.1 让 .deb 装到任何机器都默认连本机 vLLM(全量包 install.sh
+// 起 systemd 容器 --network host 绑 0.0.0.0:8000);本机 dev 走 run-dev.sh
+// export DEEPSEEK_BASE_URL=http://10.214.74.113:8000/v1 覆盖,连开发机 GB10。
+const LOCAL_VLLM_BASE_URL: &str = "http://127.0.0.1:8000/v1";
 const LOCAL_VLLM_API_KEY: &str = "local-no-auth";
 
 #[derive(Debug, Clone)]
