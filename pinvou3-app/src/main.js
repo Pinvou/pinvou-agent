@@ -1969,9 +1969,12 @@ function applyHistoricToolResult(toolUseId, content, isError) {
 function renderHistoricPlanCard(planInput, todosInput) {
   const snapshots = {};
   if (planInput) {
+    // update_plan tool input 字段叫 "plan"(见 DeepSeek-TUI plan.rs schema),
+    // 但实时 chat:plan_ready 的 PlanSnapshot 字段叫 "items". 两种 shape 都兼容.
+    const planItems = planInput.plan || planInput.items || [];
     snapshots.plan = {
       explanation: planInput.explanation,
-      items: Array.isArray(planInput.items) ? planInput.items : [],
+      items: Array.isArray(planItems) ? planItems : [],
     };
   }
   if (todosInput) {
