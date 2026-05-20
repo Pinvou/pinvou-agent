@@ -89,4 +89,4 @@ cd pinvou3
 
 `run-dev.sh` 集中处理 vLLM 端点 / 模型名（`qwen36_35b_256k`，后缀 `_256k` 触发底座 256K 窗口派生）/ 关闭 thinking 模式 / 允许内网 HTTP / 强制 HTTP/1.1。
 
-前置：本地 vLLM 已用 `--served-model-name qwen36_35b_256k --max-model-len 262144` 起好，默认端点 `http://10.214.74.113:8000/v1`，改在 `run-dev.sh` 里。
+前置：本地 vLLM 已用 `--served-model-name qwen36_35b_256k --max-model-len 262144` 起好。Rust 默认端点 `http://127.0.0.1:8000/v1`（release `.deb` 装到任何机器都连本机 vLLM）；本机 dev 走 `run-dev.sh` 里 `export DEEPSEEK_BASE_URL=http://10.214.74.113:8000/v1` 覆盖回开发机 GB10。
