@@ -130,7 +130,12 @@ impl Pinvou3Bridge {
         let ws = paths::session_workspace_dir(session_id);
         // 同时确保目录存在,AI 写 write_file 时不会因为目录不存在而失败
         let _ = std::fs::create_dir_all(&ws);
-        INSTRUCTIONS_MD.replace("{{PINVOU3_WORKSPACE}}", &ws.to_string_lossy())
+        INSTRUCTIONS_MD
+            .replace("{{PINVOU3_WORKSPACE}}", &ws.to_string_lossy())
+            .replace(
+                "{{PINVOU3_SUDO_INSTRUCTION}}",
+                crate::super_permission::instruction_block(),
+            )
     }
 
     /// 当前 active session 的 workspace 目录。

@@ -67,6 +67,9 @@
                   title="品悟 review: 关 (点击开启,关键阶段让品悟把关,优化输出质量)">
             🟣 品悟
           </button>
+          <span id="super-perm-badge" class="super-perm-badge hidden"
+                title="超级权限已开启,pinvou3 可装软件 / 改系统(去设置关闭)"
+                data-i18n="settings.super_perm.badge">⚠️ 超级权限</span>
           <span id="live-dot" class="live-dot" title="vLLM 状态"></span>
           <span id="live-text" class="live-text" data-i18n="live.checking">检查中</span>
           <button id="right-pane-toggle" class="icon-btn" type="button" title="产物面板">📦<span class="icon-btn-badge hidden" id="right-pane-badge">0</span></button>
@@ -269,6 +272,18 @@
           <div class="seg-group" id="language-options">
             <button class="seg-btn" data-lang="zh-Hans" type="button">中文</button>
             <button class="seg-btn" data-lang="en" type="button">English</button>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <h2 class="settings-section-title" data-i18n="settings.super_perm.title">系统权限</h2>
+          <p class="settings-subtitle" data-i18n="settings.super_perm.subtitle">允许 pinvou3 装软件 / 配环境 / 改系统服务等需要管理员权限的操作。首次开启会弹一次系统密码框,之后免密。</p>
+          <div class="super-perm-row">
+            <button id="super-perm-toggle" class="super-perm-toggle" type="button" data-enabled="false">
+              <span class="super-perm-toggle-track"><span class="super-perm-toggle-thumb"></span></span>
+              <span id="super-perm-toggle-label" class="super-perm-toggle-label" data-i18n="settings.super_perm.off">超级权限 · 关</span>
+            </button>
+            <span class="super-perm-hint" data-i18n="settings.super_perm.hint">开启后破坏性命令(rm -rf / 等)依然硬拦,无须担心彻底失控</span>
           </div>
         </section>
 

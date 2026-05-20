@@ -2972,3 +2972,71 @@ body[data-theme="liquid-light"] .bubble-pinvou {
   color: var(--on-surface);
   font-weight: 500;
 }
+
+/* 超级权限：顶部 red badge(仅 sudoers 已写时显示) */
+.super-perm-badge {
+  background: rgba(255, 59, 48, 0.15);
+  border: 1px solid rgba(255, 59, 48, 0.6);
+  color: #ff8a80;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  margin-right: 4px;
+  user-select: none;
+}
+.super-perm-badge.hidden { display: none; }
+
+/* 设置面板：超级权限开关行 */
+.super-perm-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+.super-perm-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  background: transparent;
+  border: 1px solid var(--bubble-system-border);
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--on-surface);
+  transition: all 0.15s;
+}
+.super-perm-toggle:hover { border-color: #ff3b30; }
+.super-perm-toggle-track {
+  position: relative;
+  width: 34px;
+  height: 18px;
+  border-radius: 9px;
+  background: rgba(127, 127, 127, 0.35);
+  transition: background 0.15s;
+}
+.super-perm-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s;
+}
+.super-perm-toggle[data-enabled="true"] .super-perm-toggle-track {
+  background: #ff3b30;
+}
+.super-perm-toggle[data-enabled="true"] .super-perm-toggle-thumb {
+  transform: translateX(16px);
+}
+.super-perm-toggle[data-busy="true"] {
+  opacity: 0.55;
+  cursor: progress;
+}
+.super-perm-hint {
+  font-size: 11px;
+  color: var(--on-surface-muted);
+}

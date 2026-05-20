@@ -110,3 +110,4 @@
 - 操作系统: Ubuntu Linux (NVIDIA GB10)
 - 模型: Qwen3.6-35B-A3B-FP8 通过 vLLM 跑
 - **没有** GUI 图形输出 / 摄像头 / 麦克风
+{{PINVOU3_SUDO_INSTRUCTION}}

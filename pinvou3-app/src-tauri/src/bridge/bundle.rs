@@ -81,8 +81,15 @@ impl Pinvou3Bundle {
         std::fs::create_dir_all(&self.skills_dir)?;
         let workspace_abs = paths::workspace_dir();
         std::fs::create_dir_all(&workspace_abs)?;
-        let rendered =
-            INSTRUCTIONS_MD.replace("{{PINVOU3_WORKSPACE}}", &workspace_abs.to_string_lossy());
+        // 首次解包按当前 sudoers 状态填 PINVOU3_SUDO_INSTRUCTION,避免占位符原文
+        // 漏到 LLM 看到的 system prompt(engine boot 时是从 disk 读的)。
+        // 用户切换开关时 set_super_permission 会 sync_session 重写。
+        let rendered = INSTRUCTIONS_MD
+            .replace("{{PINVOU3_WORKSPACE}}", &workspace_abs.to_string_lossy())
+            .replace(
+                "{{PINVOU3_SUDO_INSTRUCTION}}",
+                crate::super_permission::instruction_block(),
+            );
         std::fs::write(&self.instructions_md, rendered)?;
         if !self.mcp_json.exists() {
             std::fs::write(&self.mcp_json, DEFAULT_MCP_JSON)?;

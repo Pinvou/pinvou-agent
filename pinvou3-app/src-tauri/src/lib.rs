@@ -16,6 +16,7 @@ pub mod engine;
 mod file_ingest;
 mod file_watcher;
 mod monitor;
+pub mod super_permission;
 
 
 use tauri::Manager;
@@ -146,6 +147,8 @@ pub fn run() {
             commands::read_skill_body,
             commands::submit_user_input,
             commands::cancel_user_input,
+            commands::get_super_permission_status,
+            commands::set_super_permission,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

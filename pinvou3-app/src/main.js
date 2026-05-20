@@ -752,6 +752,12 @@ const I18N = {
     "settings.theme.title": "界面风格",
     "settings.language.title": "界面语言",
     "settings.language.subtitle": "切换界面文案 · 同步通知 LLM 改用对应语言回复(重启 app 生效)",
+    "settings.super_perm.title": "系统权限",
+    "settings.super_perm.subtitle": "允许 pinvou3 装软件 / 配环境 / 改系统服务等需要管理员权限的操作。首次开启会弹一次系统密码框,之后免密。",
+    "settings.super_perm.hint": "开启后破坏性命令(rm -rf / 等)依然硬拦,无须担心彻底失控",
+    "settings.super_perm.on": "超级权限 · 开",
+    "settings.super_perm.off": "超级权限 · 关",
+    "settings.super_perm.badge": "⚠️ 超级权限",
     "settings.foot_note_prefix": "高级参数(max tokens / allow shell / 模型预设 等)需要手动修改",
     "settings.foot_note_suffix": "的 advanced 字段,重启 app 生效。",
     "theme.default_badge": "默认",
@@ -827,6 +833,12 @@ const I18N = {
     "settings.theme.title": "Theme",
     "settings.language.title": "Language",
     "settings.language.subtitle": "Switch UI language · also tells the LLM to reply in that language (restart app to take effect)",
+    "settings.super_perm.title": "System privileges",
+    "settings.super_perm.subtitle": "Let pinvou3 install software, configure the environment, and modify system services. First time you turn it on a system password dialog appears; after that, no prompts.",
+    "settings.super_perm.hint": "Destructive commands (rm -rf /, etc.) are still hard-blocked — you won't lose control entirely.",
+    "settings.super_perm.on": "Super privileges · ON",
+    "settings.super_perm.off": "Super privileges · OFF",
+    "settings.super_perm.badge": "⚠️ Super privileges",
     "settings.foot_note_prefix": "Advanced parameters (max tokens / allow shell / model preset etc.) require manually editing",
     "settings.foot_note_suffix": "and restarting the app.",
     "theme.default_badge": "Default",
@@ -1427,6 +1439,66 @@ document.addEventListener("DOMContentLoaded", () => {
 // ════════════════════════════════════════════════════════════════════
 // Pinvou Review v2 模块结束
 // ════════════════════════════════════════════════════════════════════
+
+// === 超级权限开关 ===
+// 源真相 = `/etc/sudoers.d/pinvou3` 是否存在(后端 super_permission::is_enabled)。
+// 不在 settings.json 冗余存。toggle 直接调 set_super_permission,后端走 pkexec。
+let superPermEnabled = false;
+
+async function refreshSuperPermStatus() {
+  try {
+    superPermEnabled = !!(await invoke("get_super_permission_status"));
+  } catch (e) {
+    console.warn("get_super_permission_status failed", e);
+    superPermEnabled = false;
+  }
+  updateSuperPermUI();
+}
+
+function updateSuperPermUI() {
+  const toggle = document.getElementById("super-perm-toggle");
+  const label = document.getElementById("super-perm-toggle-label");
+  const badge = document.getElementById("super-perm-badge");
+  if (toggle) toggle.dataset.enabled = superPermEnabled ? "true" : "false";
+  if (label) {
+    label.dataset.i18n = superPermEnabled ? "settings.super_perm.on" : "settings.super_perm.off";
+    const lang = (currentPrefs && currentPrefs.language) || "zh-Hans";
+    const dict = I18N[lang] || I18N["zh-Hans"];
+    const v = dict[label.dataset.i18n];
+    if (v != null) label.textContent = v;
+  }
+  if (badge) badge.classList.toggle("hidden", !superPermEnabled);
+}
+
+async function toggleSuperPerm() {
+  const toggle = document.getElementById("super-perm-toggle");
+  if (toggle?.dataset.busy === "true") return;
+  if (toggle) toggle.dataset.busy = "true";
+  const target = !superPermEnabled;
+  try {
+    superPermEnabled = !!(await invoke("set_super_permission", { enabled: target }));
+    appendSystemMessage(
+      superPermEnabled
+        ? "⚠️ 超级权限已开启 —— pinvou3 现在可装软件 / 改系统服务。去设置可关闭。"
+        : "超级权限已关闭。"
+    );
+  } catch (e) {
+    appendSystemMessage("⚠️ " + (e && e.toString ? e.toString() : e));
+    // 失败/取消时按真实状态回退 UI
+    try {
+      superPermEnabled = !!(await invoke("get_super_permission_status"));
+    } catch {}
+  } finally {
+    if (toggle) toggle.dataset.busy = "false";
+    updateSuperPermUI();
+  }
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  const btn = document.getElementById("super-perm-toggle");
+  if (btn) btn.addEventListener("click", toggleSuperPerm);
+  refreshSuperPermStatus();
+});
 
 function appendSystemMessage(text) {
   const row = document.createElement("div");

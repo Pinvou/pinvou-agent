@@ -611,6 +611,42 @@ pub async fn set_pinvou_review(
     Ok(store.mode_state(&session_id))
 }
 
+/// 超级权限开关：当前用户能否跑 sudo 免密。
+/// 源真相 = `/etc/sudoers.d/pinvou3` 是否存在；前端启动时调一次同步 UI 状态。
+#[tauri::command]
+pub async fn get_super_permission_status() -> Result<bool, String> {
+    Ok(crate::super_permission::is_enabled())
+}
+
+/// 切换超级权限。开启时 pkexec 弹系统密码框写 sudoers，关闭时 pkexec 删文件。
+/// 切换后同步当前 session 让新 system prompt 立即生效（注入/抹掉 sudo 引导段）。
+/// 返回真实生效状态（pkexec 失败/取消时不会变）。
+#[tauri::command]
+pub async fn set_super_permission(
+    enabled: bool,
+    store: State<'_, SessionStore>,
+    engine: State<'_, AppEngine>,
+) -> Result<bool, String> {
+    if enabled {
+        crate::super_permission::enable()?;
+    } else {
+        crate::super_permission::disable()?;
+    }
+    if let Some(active_id) = store.active_id() {
+        if let Ok(session) = store.load(&active_id) {
+            // sync_session 失败不阻塞：sudoers 已写好，LLM 下次新 session 也会看到新 prompt
+            if let Err(e) = engine
+                .inner()
+                .sync_session(active_id, session.messages.clone())
+                .await
+            {
+                eprintln!("[set_super_permission] sync_session failed: {e:?}");
+            }
+        }
+    }
+    Ok(crate::super_permission::is_enabled())
+}
+
 /// 读 pinvou3 内置 skill 的 body(去掉 frontmatter)。
 /// 用途:前端 autoTriggerPinvouReview 把完整 SKILL.md 内容塞进 user message,
 /// 不依赖本地 Qwen3.6 主动 read_file —— 弱模型不会主动用 progressive disclosure。
