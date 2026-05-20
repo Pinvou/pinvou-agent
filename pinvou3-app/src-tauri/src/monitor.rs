@@ -50,7 +50,10 @@ pub struct VllmSnapshot {
     pub max_model_len: Option<u32>,
     pub num_requests_running: Option<f64>,
     pub num_requests_waiting: Option<f64>,
-    pub kv_cache_usage_pct: Option<f64>,
+    /// 历史累计 prefix cache 命中率: hits_total / queries_total × 100。
+    /// 反映"重复 prompt prefix 复用 KV 比例",直接关联首字延迟。
+    /// 瞬时 kv_cache_usage_perc 单用户场景一直是 0-2%,意义不大,已替换。
+    pub prefix_cache_hit_pct: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -191,7 +194,7 @@ pub async fn vllm_snapshot(upstream: &str) -> Option<VllmSnapshot> {
                 max_model_len: None,
                 num_requests_running: None,
                 num_requests_waiting: None,
-                kv_cache_usage_pct: None,
+                prefix_cache_hit_pct: None,
             });
         }
     };
@@ -218,9 +221,18 @@ pub async fn vllm_snapshot(upstream: &str) -> Option<VllmSnapshot> {
     let waiting = metrics_text
         .as_deref()
         .and_then(|t| parse_prom_metric(t, "vllm:num_requests_waiting"));
-    let kv = metrics_text
-        .as_deref()
-        .and_then(|t| parse_prom_metric(t, "vllm:kv_cache_usage_perc"));
+    // 历史累计 prefix cache 命中率: hits/queries × 100。两个都是 vLLM Prometheus
+    // counter (单调递增,vLLM 进程生命周期内累积)。queries=0 时返回 None 显示 "—"
+    // 而非 NaN。
+    let prefix_hit_pct = metrics_text.as_deref().and_then(|t| {
+        let hits = parse_prom_metric(t, "vllm:prefix_cache_hits_total")?;
+        let queries = parse_prom_metric(t, "vllm:prefix_cache_queries_total")?;
+        if queries > 0.0 {
+            Some(hits / queries * 100.0)
+        } else {
+            None
+        }
+    });
 
     let status = match (running, waiting) {
         (Some(r), _) if r > 0.0 => VllmStatus::Busy,
@@ -235,7 +247,7 @@ pub async fn vllm_snapshot(upstream: &str) -> Option<VllmSnapshot> {
         max_model_len,
         num_requests_running: running,
         num_requests_waiting: waiting,
-        kv_cache_usage_pct: kv.map(|v| v * 100.0),
+        prefix_cache_hit_pct: prefix_hit_pct,
     })
 }
 

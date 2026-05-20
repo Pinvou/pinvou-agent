@@ -1066,7 +1066,7 @@ function renderMonitor(snap) {
     document.getElementById("vllm-queue").textContent =
       `${v.num_requests_running ?? "—"} / ${v.num_requests_waiting ?? "—"}`;
     document.getElementById("vllm-kv").textContent =
-      v.kv_cache_usage_pct != null ? v.kv_cache_usage_pct.toFixed(1) + "%" : "—";
+      v.prefix_cache_hit_pct != null ? v.prefix_cache_hit_pct.toFixed(1) + "%" : "—";
     monitorLiveDot.className = "live-dot " + (v.status === "offline" ? "offline" : "online");
   } else {
     document.getElementById("vllm-status").textContent = "—";
