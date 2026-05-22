@@ -429,7 +429,8 @@ fn reminder_for(mode: AppMode, phase: PlanPhase) -> Option<&'static str> {
              不要在 text 里列 A/B/C 选项。\n\
              2. 方案清晰后 → 调 `update_plan` 工具输出方案(explanation 字段写关键决策,\
              items 写 3-8 个执行步骤)。如果产物预计超过 300 行或 20KB(如 HTML deck / 完整网页 / 长报告),\
-             plan 必须拆成:先写骨架 → 分块 append_file 填内容 → read_file/命令验证;禁止写成\"一次编写完整文件\"。\
+             plan 必须拆成:先写**小骨架**(≤ 200 行,只含外壳 + 占位标记,不 inline CSS/JS/实际内容)\
+             → 分块 `append_file` 填内容 → `read_file`/命令验证;禁止写成\"一次编写完整文件\"。\
              可选再调 `checklist_write` 拆细。\n\
              3. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
              方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。\n\
@@ -448,7 +449,8 @@ fn reminder_for(mode: AppMode, phase: PlanPhase) -> Option<&'static str> {
              2. **禁止**只调 `update_plan` 标记 in_progress 就结束 turn——\
              那是假执行,用户什么文件都没拿到。\n\
              3. 预计超过 300 行或 20KB 的产物,**禁止**一次 `write_file` 写完整文件;\
-             先 `write_file` 写小骨架/占位,再用多个 `append_file` 或小范围 `edit_file` 分块填充(每块约 3-5 页/200 行以内)。\n\
+             先 `write_file` 写**小骨架**(≤ 200 行,只含外壳 + 占位标记,不 inline CSS/JS/实际内容),\
+             再用多个 `append_file` 或小范围 `edit_file` 分块填充(每块约 3-5 页 / 200 行以内)。\n\
              4. 一个 turn 内**连续调多个工具**直到所有步骤完成,不要中途停下来等用户。\n\
              5. 完成一步后调 `update_plan` 把对应步骤标 completed,继续下一步。\n\
              6. **禁止**在 text 里贴完整代码代替 write_file/append_file——磁盘上不会有文件。",
@@ -460,7 +462,8 @@ fn reminder_for(mode: AppMode, phase: PlanPhase) -> Option<&'static str> {
         (AppMode::Yolo, PlanPhase::None) => Some(
             "你在 Yolo 模式,直接调工具产出。产物预计超过 300 行或 20KB\
              (HTML deck / 完整网页 / 长报告)时,**禁止**一次 `write_file` 写完整文件;\
-             必须先 `write_file` 写骨架,再多次 `append_file` 分块追加,中间用 `read_file` 验证。\
+             必须先 `write_file` 写**小骨架**(≤ 200 行,只含外壳 + 占位标记,不 inline CSS/JS/实际内容),\
+             再多次 `append_file` 分块追加,中间用 `read_file` 验证。\
              **禁止**在 text 里贴完整代码代替工具调用——磁盘上不会有文件。",
         ),
         _ => None,
