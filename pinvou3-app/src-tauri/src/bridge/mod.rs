@@ -453,6 +453,16 @@ fn reminder_for(mode: AppMode, phase: PlanPhase) -> Option<&'static str> {
              5. 完成一步后调 `update_plan` 把对应步骤标 completed,继续下一步。\n\
              6. **禁止**在 text 里贴完整代码代替 write_file/append_file——磁盘上不会有文件。",
         ),
+        // 纯 Yolo 路径(用户没进 Plan 模式直接发 task,plan_phase 一直 None):
+        // 此前命中 `_ => None` 没注入"大产物拆"规则, 实测 h3c-ppt P7 阶段
+        // LLM 决定"create as single mega HTML"撞 SSE timeout。跟 Plan/Executing
+        // 同风格:命令式 + 短 + 一句话讲清规则,不暴露底座细节。
+        (AppMode::Yolo, PlanPhase::None) => Some(
+            "你在 Yolo 模式,直接调工具产出。产物预计超过 300 行或 20KB\
+             (HTML deck / 完整网页 / 长报告)时,**禁止**一次 `write_file` 写完整文件;\
+             必须先 `write_file` 写骨架,再多次 `append_file` 分块追加,中间用 `read_file` 验证。\
+             **禁止**在 text 里贴完整代码代替工具调用——磁盘上不会有文件。",
+        ),
         _ => None,
     }
 }
