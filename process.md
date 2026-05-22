@@ -2,22 +2,40 @@
 
 跨阶段待办、决策、follow-up 集中地。决策细节走 git commit + `docs/`,这里只放**需要单独排期**的事。
 
-最后更新: 2026-05-19
+最后更新: 2026-05-22
 
 ---
 
 ## 当前状态
 
-- **main HEAD**: `5f53848` (阶段 H — submodule bump + careful Dangerous BLOCK)
-- **fork HEAD**: `b2f6ef56` (`pinvou3-patches` 分支, 14 commits ahead `origin/main`)
-- **进行中**: 等 PR [#1790](https://github.com/Hmbown/DeepSeek-TUI/pull/1790) (file_search timeout) 上游反馈
-- **worktrees**: 无
+- **main HEAD**: `133ee3f` (阶段 I — workflow MVP1+MVP2 + 工具调用启发式 phase 推断, see git log)
+- **fork HEAD**: `0526dc5` (`pinvou3-patches` 分支, +1 commit append_file 工具 + write_file diff 截断, on top of 357a2ace)
+- **进行中**: worktree `workflow-discussion` 上 (`c54b149` / `863e3e7`) 含 P7 治本的 reminder 关键补丁, 待 cherry-pick 回 main
+- **worktrees**: `workflow-discussion` (P7 reminder 补丁 + workflow MVP1 平行方案)
 
 ---
 
 ## 已完成阶段
 
 > 决策细节走 git log,这里只留**定位 + 数据点 + 文档兜底**。
+
+### 阶段 I — 工作流 phase 可视化 MVP1 + P7 大文件 SSE timeout 治本 (2026-05-22)
+
+**MVP1 phase 可视化** (`54825bd` / `133ee3f` main 主分支 + `efa7811` worktree 平行方案): SKILL.md `phases:` 字段解析 + `<phase id="../>` marker + `Event::PhaseChanged` + workflow 视图 chip 横排。主分支版 chips 在 workflow 视图内 + MVP3a 工具调用启发式 phase 推断;worktree 平行版 chips 在 chatroom 顶部 + 显式启用 + USER_NUDGE 兜底。两套并存暂未合并,看 h3c-ppt 实战哪个更顺。
+
+**P7 大文件 SSE timeout 治本** (`095fda2` + worktree `c54b149` / `863e3e7`): 实测 h3c-ppt P7 阶段 LLM 生成 12K+ tokens HTML decode 10 分钟撞 240s SSE timeout + JSON 字段顺序乱(content 在 path 前)→ missing_field 'path' → loop_guard 3 次锁死。完整三连失败链路一次性治本:
+
+| 层 | 修法 | 提供者 |
+|---|---|---|
+| 工具能力 | `append_file` 新工具 (创建/追加,返摘要不返 full diff) + `write_file` >32KB 跳过 inline diff 改返摘要 | submodule `0526dc5` |
+| `(Plan, Planning)` reminder | "产物 >300 行 plan 必须拆: 先写小骨架(≤200 行, 不 inline CSS/JS) → 分块 append_file → read_file 验证" | main `133ee3f` 后 + worktree 骨架约束 `863e3e7` |
+| `(Yolo, Executing)` reminder | 执行阶段 6 条规则含同样约束 | 同上 |
+| `(Yolo, None)` reminder | 纯 Yolo 路径(不进 Plan 模式)同步覆盖,关键漏洞 | worktree `c54b149` |
+| Pinvou GATE 硬阈值 | 单次 write_file >300 行/20KB → CRITICAL; 20+页 HTML PPT 无分块 → CRITICAL | main `133ee3f` 后 |
+| max_output_tokens | 16384 → 65536 配合 append_file 提供 budget | main `133ee3f` 后 |
+| instructions.md §7 | 大产物先 write_file 骨架, 再 append_file 分块追加 (1 行兜底) | 同上 |
+
+15 页 PPT 实测端到端跑通: write_file 5304 bytes 骨架 + 多次 append_file 累积 14KB+,无任何 SSE timeout / missing_field / loop_guard block。详 git log。
 
 ### 阶段 H — auto-compact 接通本地 256K vLLM (2026-05-19, `3325f9d` + `5f53848`)
 
@@ -164,6 +182,23 @@ Fork 现 14 commits ahead `origin/main` (Hmbown upstream):
 - LLM 复述思考过程 (写"让我...") 是 mode-independent 行为, reminder 改不动
 - 加 reminder 条款 ROI 要看 (a) 群体改善 ≥ ±0.5 (b) 副作用 (token + system prompt 长度)
 - 类似离群点先积累 3+ 次出现证据再考虑改 reminder; 真要改要在 2+ scenario A/B 对比验证
+
+### 🧪 Lesson learned 2026-05-22: prompt 工程对 Qwen3.6 不是 ROI 一刀切, 看规则形态
+
+跟 05-18 lesson 配对修正: 之前判断"prompt ROI 低"过粗。h3c-ppt P7 卡死治本实战发现, **同样是 reminder 改 LLM 行为, 量化具体规则 ROI 高, 抽象意图 ROI 低**:
+
+| reminder 形态 | 实测结果 | 例 |
+|---|---|---|
+| 抽象意图("写大文件必须拆") | LLM 自由解释边界, 不听 | d58b57e instructions.md 18 行引导 + h3c-ppt SKILL.md "拆 slides" 全失败, 仍写 mega.html |
+| 量化具体规则("骨架 ≤ 200 行, 不 inline CSS/JS, append_file 每块 ≤ 200 行") | LLM 严格遵循 | `863e3e7` 加骨架约束后实测 5304 bytes 骨架 + append_file × N 跑通 15 页 PPT |
+
+**学到的**:
+- LLM 需要的不是"抽象意图", 是"能精确执行的边界"; "≤ 200 行" 比 "必须拆" 强 10×
+- Qwen3.6 弱模型对量化规则的执行力 ≈ 强模型对抽象意图的执行力, 工程投入要换形态不是放弃
+- reminder 路径需要全覆盖, 一个 case 漏注入(如 `(Yolo, None)` `c54b149` 之前没 reminder)就是 LLM 自由发挥的入口
+- 工具能力 + reminder 协同设计: append_file 不存在时 reminder"必须拆"是空话; 工具 + 规则一起出, LLM 才能落地
+
+**配对结论**: 05-18 lesson 没错(单 scenario 验证不可信 + 复述本性改不动), 但**不要因此放弃整个 prompt 工程路径**。改 LLM 行为前先问: 我的规则是"抽象意图"还是"量化具体边界"? 形态对了 ROI 完全不同。
 
 ---
 
