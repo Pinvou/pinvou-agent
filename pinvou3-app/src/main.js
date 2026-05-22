@@ -921,6 +921,11 @@ function switchView(name) {
     clearInterval(monitorIntervalId);
     monitorIntervalId = null;
   }
+  // 工作流视图打开时拉 skill 列表渲染卡片。每次切回都重拉,跟"扫描"按钮一致,
+  // 因为用户可能在外面装了新 skill / 改了 SKILL.md frontmatter。
+  if (name === "workflow") {
+    renderWorkflowView();
+  }
 }
 document.querySelectorAll(".nav-link[data-view]").forEach((el) => {
   el.addEventListener("click", (e) => {
@@ -3597,6 +3602,284 @@ function appConfirm(message, opts = {}) {
     setTimeout(() => modalConfirmBtn.focus(), 0);
   });
 }
+
+// ── 工作流 Phase 可视化 MVP1 ────────────────────────────────────────
+//
+// 数据流:
+//   工作流视图 → list_skills_v2() → 渲染卡片
+//   点"启用"  → set_active_skill(name) → 切回 chatroom + 渲染 chips
+//   LLM 输出 `<phase id="..."/>` → 底座 engine emit Event::PhaseChanged
+//                                → Tauri event chat:phase_changed
+//                                → setCurrentPhase(pN, "llm")
+//   用户点 chip → setCurrentPhase(pN, "user") + 发 [USER_NUDGE] 伪消息引导 LLM
+//
+// 复用底座:
+//   - SkillRegistry::discover + phases / DemoInfo 解析
+//   - System prompt 自动注入 phased skill 强约束 prompt + skill 列表
+//   - turn_loop 自动从回复抽 marker emit PhaseChanged (前端不需要正则解析文本)
+//   - strip_phase_marker_delta 已经把 marker 从 chat:delta 内容剥掉,聊天区无污染
+
+const workflowState = {
+  activeSkillName: null,
+  phases: [],
+  currentPhaseId: null,
+  reachedPhaseIds: new Set(),
+};
+
+async function renderWorkflowView() {
+  const grid = document.getElementById("workflow-skills-grid");
+  grid.innerHTML = `<div class="workflow-skills-loading">加载 skill 列表 …</div>`;
+  let skills = [];
+  try {
+    skills = await invoke("list_skills_v2");
+  } catch (e) {
+    grid.innerHTML = `<div class="workflow-skills-error">加载失败: ${escapeHtml(String(e))}</div>`;
+    return;
+  }
+  if (!skills.length) {
+    grid.innerHTML = `<div class="workflow-skills-empty">
+      没找到任何 skill。把 SKILL.md 放到 <code>~/.deepseek/skills/&lt;name&gt;/</code> 后回来扫描。
+    </div>`;
+    return;
+  }
+  grid.innerHTML = skills.map(skillCardHtml).join("");
+  // 卡片按钮事件委托
+  grid.querySelectorAll("[data-act]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      const act = btn.dataset.act;
+      const name = btn.dataset.skill;
+      if (!name) return;
+      if (act === "enable") activateSkill(name);
+      else if (act === "demo") openDemoModal(name);
+    });
+  });
+}
+
+function skillCardHtml(s) {
+  const isActive = workflowState.activeSkillName === s.name;
+  const phasesCount = s.phases?.length || 0;
+  const phasesHint = phasesCount > 0
+    ? `<div class="card-phases">${phasesCount} 个 phase · ${s.phases.slice(0, 8).map(p => escapeHtml(p.id) + (p.loop ? "↻" : "")).join(" → ")}${phasesCount > 8 ? " → …" : ""}</div>`
+    : `<div class="card-phases card-phases-none">普通 skill (未声明 phases)</div>`;
+  const demoBtn = (s.demo?.has_file || s.demo?.has_preview)
+    ? `<button class="card-btn card-btn-demo" data-act="demo" data-skill="${escapeHtml(s.name)}">看 demo</button>`
+    : "";
+  const enableBtn = phasesCount > 0
+    ? (isActive
+        ? `<button class="card-btn card-btn-active" disabled>✓ 已启用</button>`
+        : `<button class="card-btn card-btn-enable" data-act="enable" data-skill="${escapeHtml(s.name)}">启用</button>`)
+    : `<button class="card-btn" disabled title="无 phases 定义,MVP1 仅展示">仅查看</button>`;
+  const durationHint = s.demo?.duration
+    ? `<div class="card-duration">⏱ ${escapeHtml(s.demo.duration)}</div>`
+    : "";
+  const sourceLabel = { bundle: "内置", deepseek: "~/.deepseek", user: "~/.pinvou3/user" }[s.source] || s.source;
+  return `<div class="workflow-skill-card${isActive ? ' workflow-skill-card-active' : ''}">
+    <header class="card-head">
+      <h3 class="card-name">${escapeHtml(s.name)}</h3>
+      <span class="card-source" title="${escapeHtml(sourceLabel)}">${escapeHtml(s.source)}</span>
+    </header>
+    <p class="card-desc">${escapeHtml((s.description || "").slice(0, 220))}${(s.description || "").length > 220 ? "…" : ""}</p>
+    ${phasesHint}
+    ${durationHint}
+    <footer class="card-actions">${enableBtn}${demoBtn}</footer>
+  </div>`;
+}
+
+async function activateSkill(name) {
+  let state;
+  try {
+    state = await invoke("set_active_skill", { name });
+  } catch (e) {
+    appendSystemMessage(`⚠️ 启用 skill ${name} 失败: ${e}`);
+    return;
+  }
+  if (!state) {
+    deactivateSkill(false);
+    return;
+  }
+  workflowState.activeSkillName = state.name;
+  workflowState.phases = state.phases || [];
+  workflowState.currentPhaseId = state.current_phase_id || (state.phases?.[0]?.id ?? null);
+  workflowState.reachedPhaseIds = new Set(
+    workflowState.currentPhaseId ? [workflowState.currentPhaseId] : []
+  );
+  renderChipsStrip();
+  switchView("chatroom");
+  // 让 input 框预填一句引导,降低用户操作门槛
+  if (input && !input.value) {
+    input.value = `我要用 ${state.name} 完成: `;
+    input.focus();
+    if (typeof input.setSelectionRange === "function") {
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  }
+}
+
+async function deactivateSkill(callBackend = true) {
+  if (callBackend) {
+    try {
+      await invoke("set_active_skill", { name: null });
+    } catch (e) {
+      console.warn("set_active_skill(null) failed", e);
+    }
+  }
+  workflowState.activeSkillName = null;
+  workflowState.phases = [];
+  workflowState.currentPhaseId = null;
+  workflowState.reachedPhaseIds.clear();
+  renderChipsStrip();
+}
+
+function renderChipsStrip() {
+  const wrap = document.getElementById("workflow-chips");
+  if (!wrap) return;
+  if (!workflowState.activeSkillName || !workflowState.phases.length) {
+    wrap.hidden = true;
+    return;
+  }
+  wrap.hidden = false;
+  const nameEl = document.getElementById("chip-skill-name");
+  if (nameEl) nameEl.textContent = workflowState.activeSkillName;
+  const track = document.getElementById("workflow-chips-track");
+  if (!track) return;
+  // 用真实 button 而非纯 div,方便点击 + 键盘 focus
+  const parts = [];
+  workflowState.phases.forEach((p, idx) => {
+    if (idx > 0) parts.push(`<span class="chip-sep">›</span>`);
+    const reached = workflowState.reachedPhaseIds.has(p.id);
+    const current = p.id === workflowState.currentPhaseId;
+    const cls = [
+      "phase-chip",
+      current ? "phase-chip-current" : "",
+      reached && !current ? "phase-chip-done" : "",
+      !reached ? "phase-chip-pending" : "",
+      p.loop ? "phase-chip-loop" : "",
+    ].filter(Boolean).join(" ");
+    parts.push(
+      `<button type="button" class="${cls}" data-phase="${escapeHtml(p.id)}" title="${escapeHtml(p.title)}${p.loop ? ' (含 loop)' : ''}">
+         <span class="chip-id">${escapeHtml(p.id)}</span>
+         <span class="chip-title">${escapeHtml(p.title)}</span>${p.loop ? "<span class='chip-loop'>↻</span>" : ""}
+       </button>`
+    );
+  });
+  track.innerHTML = parts.join("");
+}
+
+function setCurrentPhase(phaseId, source) {
+  if (!phaseId) return;
+  if (!workflowState.phases.some((p) => p.id.toLowerCase() === phaseId.toLowerCase())) {
+    console.warn("setCurrentPhase: unknown phase id", phaseId);
+    return;
+  }
+  // 统一小写匹配,但 chip 渲染保留原始大小写
+  const normalized = workflowState.phases.find((p) => p.id.toLowerCase() === phaseId.toLowerCase()).id;
+  workflowState.reachedPhaseIds.add(normalized);
+  workflowState.currentPhaseId = normalized;
+  renderChipsStrip();
+  if (source === "user") {
+    const ph = workflowState.phases.find((p) => p.id === normalized);
+    sendSystemNudge(
+      `用户在 chips 条上手动切换到 phase \`${normalized}\`: ${ph.title}。请按该 phase 的职责继续 — 下一条回复仍要以 \`<phase id="${normalized}"/>\` marker 单独一行开头。`
+    );
+  }
+}
+
+function sendSystemNudge(text) {
+  // 走现有 chat command,在 message 前缀 [USER_NUDGE] 标识。前端 appendUserMessage
+  // 可以根据这个前缀做样式区分 (MVP1 不强制做)。底座 LLM 看见后会按 nudge 调整行为。
+  invoke("chat", { message: `[USER_NUDGE]\n${text}`, attachments: [] }).catch((e) => {
+    console.warn("sendSystemNudge chat failed", e);
+  });
+}
+
+async function openDemoModal(name) {
+  const modal = document.getElementById("workflow-demo-modal");
+  const titleEl = document.getElementById("demo-modal-title");
+  const bodyEl = document.getElementById("demo-modal-body");
+  const footerEl = document.getElementById("demo-modal-footer");
+  if (!modal || !bodyEl) return;
+  titleEl.textContent = `${name} · demo 预览`;
+  bodyEl.innerHTML = `<div class="demo-modal-loading">加载 demo …</div>`;
+  footerEl.innerHTML = "";
+  modal.hidden = false;
+  let payload;
+  try {
+    payload = await invoke("read_skill_demo", { name });
+  } catch (e) {
+    bodyEl.innerHTML = `<div class="demo-modal-error">读取失败: ${escapeHtml(String(e))}</div>`;
+    return;
+  }
+  const kind = payload.file_kind;
+  const path = payload.file_path;
+  if (kind === "none" || !path) {
+    bodyEl.innerHTML = `<div class="demo-modal-empty">该 skill 未声明 demo 文件。</div>`;
+  } else if (kind === "html") {
+    const src = window.__TAURI__.core.convertFileSrc(path);
+    bodyEl.innerHTML = `<iframe class="demo-modal-iframe" src="${src}" sandbox="allow-same-origin allow-scripts"></iframe>`;
+  } else if (kind === "image") {
+    const src = window.__TAURI__.core.convertFileSrc(path);
+    bodyEl.innerHTML = `<img class="demo-modal-img" src="${src}" alt="${escapeHtml(name)} demo"/>`;
+  } else if (kind === "text") {
+    const content = payload.content || "";
+    bodyEl.innerHTML = `<pre class="demo-modal-text">${escapeHtml(content)}</pre>`;
+  } else {
+    bodyEl.innerHTML = `<div class="demo-modal-unknown">未识别的文件类型,用系统应用打开:</div>`;
+    footerEl.innerHTML = `<button class="btn" id="demo-modal-open-system">用系统应用打开</button>`;
+    document.getElementById("demo-modal-open-system").addEventListener("click", () => {
+      invoke("open_in_system", { path }).catch((e) => console.warn(e));
+    });
+  }
+  // 元数据放 footer 提示
+  if (payload.description || payload.duration) {
+    const meta = [];
+    if (payload.description) meta.push(`📝 ${escapeHtml(payload.description)}`);
+    if (payload.duration) meta.push(`⏱ ${escapeHtml(payload.duration)}`);
+    footerEl.insertAdjacentHTML("afterbegin", `<div class="demo-modal-meta">${meta.join(" · ")}</div>`);
+  }
+}
+
+// 事件绑定
+listen("chat:phase_changed", (e) => {
+  const phaseId = e.payload?.phase_id;
+  if (!phaseId) return;
+  if (!workflowState.activeSkillName) return;
+  setCurrentPhase(phaseId, "llm");
+});
+
+// chips 区点击委托 (chip 跳 phase + 退出按钮)
+document.addEventListener("click", (e) => {
+  // 退出按钮 — 委托到 document 是因为 chips 区初始 hidden,
+  // 直接 getElementById + addEventListener 在 init 时也安全,
+  // 但走委托风格统一更好。
+  if (e.target.closest("#chip-skill-exit")) {
+    e.preventDefault();
+    deactivateSkill();
+    return;
+  }
+  const chip = e.target.closest(".phase-chip");
+  if (chip && chip.dataset.phase) {
+    e.preventDefault();
+    setCurrentPhase(chip.dataset.phase, "user");
+  }
+});
+
+// demo 模态关闭 (点 ✕ / 点背景)
+document.addEventListener("click", (e) => {
+  if (e.target.closest("#demo-modal-close")) {
+    document.getElementById("workflow-demo-modal").hidden = true;
+  } else if (e.target.id === "workflow-demo-modal") {
+    e.target.hidden = true;
+  }
+});
+
+// 工作流视图"扫描"按钮 (重渲染)
+document.addEventListener("click", (e) => {
+  if (e.target.closest("#workflow-refresh-btn")) {
+    e.preventDefault();
+    renderWorkflowView();
+  }
+});
 
 // ── 初始化 ────────────────────────────────────────────────────────
 (async function init() {

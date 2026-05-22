@@ -84,6 +84,19 @@
         <div class="token-bar-fill" id="token-bar-fill"></div>
       </div>
 
+      <!-- 工作流 Phase 可视化 MVP1: chatroom 顶部 phase chips 条。
+           workflowState.activeSkillName 非空且 phases 非空时显示。
+           chip 状态由 Tauri 事件 chat:phase_changed 驱动 (底座 engine 从 LLM 回复抽
+           `<phase id="..."/>` marker 自动 emit)。用户点 chip 强制跳 = 发 [USER_NUDGE] 伪消息。 -->
+      <div class="workflow-chips" id="workflow-chips" hidden>
+        <div class="workflow-chips-skill">
+          <span class="chip-skill-badge">🧭</span>
+          <span class="chip-skill-name" id="chip-skill-name"></span>
+          <button class="chip-skill-exit icon-btn" id="chip-skill-exit" type="button" title="退出 skill">✕</button>
+        </div>
+        <div class="workflow-chips-track" id="workflow-chips-track"></div>
+      </div>
+
       <div id="chat-area" class="chat-area chat-scroll">
         <div class="msg-row msg-system">
           <div class="bubble bubble-system">
@@ -141,19 +154,33 @@
       </div><!-- /chatroom-grid -->
     </section>
 
-    <!-- WorkFlow -->
+    <!-- WorkFlow: skill 库 / 选择器 (MVP1)。
+         有 phases 的 skill 显示「启用」按钮 → 设到 ActiveSkillStore + 切回 chatroom + 渲染 chips。
+         有 demo_file 的 skill 显示「看 demo」按钮 → 弹模态 (iframe/img/pre)。
+         状态机/数据流见 docs/WorkFlow-Phase-可视化-MVP1.md 和 plans/workflow-phase-elegant-zephyr.md。 -->
     <section id="view-workflow" class="view">
       <header class="view-header">
         <div class="view-header-left">
           <span class="view-title" data-i18n="view.workflow.title">工作流</span>
-          <span class="view-sub" data-i18n="view.workflow.sub">任务拆解 · 进度可视化</span>
+          <span class="view-sub" data-i18n="view.workflow.sub">选 skill 启用 phase pipeline 跟踪</span>
+        </div>
+        <div class="view-header-right">
+          <button id="workflow-refresh-btn" class="icon-btn" type="button" title="重扫 skill 目录">🔄 扫描</button>
         </div>
       </header>
-      <div class="view-empty">
-        <div class="view-empty-icon">📋</div>
-        <h2 data-i18n="workflow.empty.title">工作流功能开发中</h2>
-        <p data-i18n="workflow.empty.desc">未来在这里能看到 AI 把你的需求拆成步骤、并行/串行执行,每步状态实时跟踪。</p>
-        <p class="view-empty-hint" data-i18n="workflow.empty.hint">现在请在工作会话提需求。</p>
+      <div class="workflow-skills-grid" id="workflow-skills-grid">
+        <div class="workflow-skills-loading" data-i18n="workflow.loading">加载 skill 列表 …</div>
+      </div>
+      <!-- demo 模态 (hidden 时不占空间) -->
+      <div class="workflow-demo-modal" id="workflow-demo-modal" hidden>
+        <div class="workflow-demo-modal-inner">
+          <header class="workflow-demo-modal-header">
+            <span id="demo-modal-title"></span>
+            <button id="demo-modal-close" class="icon-btn" type="button">✕</button>
+          </header>
+          <div class="workflow-demo-modal-body" id="demo-modal-body"></div>
+          <footer class="workflow-demo-modal-footer" id="demo-modal-footer"></footer>
+        </div>
       </div>
     </section>
 

@@ -44,12 +44,19 @@ pub async fn chat(
     attachments: Option<Vec<crate::file_ingest::IngestResult>>,
     engine: State<'_, AppEngine>,
     store: State<'_, SessionStore>,
+    active_skill: State<'_, crate::active_skill::ActiveSkillStore>,
 ) -> Result<(), String> {
     let trimmed = message.trim();
     if trimmed.is_empty() && attachments.as_ref().map_or(true, |a| a.is_empty()) {
         return Err("empty message".to_string());
     }
-    let full = build_message_with_attachments(message, attachments.unwrap_or_default());
+    let mut full = build_message_with_attachments(message, attachments.unwrap_or_default());
+    // 工作流 Phase 可视化 MVP1: 用户刚启用 skill 后第一条消息 prepend skill body
+    // + phase 追踪规则文案。take_pending_instruction 是一次性消费,后续 turn
+    // 靠 LLM session 上下文保持记忆。
+    if let Some(injected) = active_skill.take_pending_instruction() {
+        full = format!("{injected}\n\n---\n\n{full}");
+    }
     // 取当前 active session 的 mode + phase;无 active session 时默认 Yolo+None(首条消息场景)
     let (mode, phase) = store
         .active_id()
@@ -787,6 +794,238 @@ fn validate_user_path(raw: &str) -> Result<std::path::PathBuf, String> {
     }
 
     Ok(canon)
+}
+
+// ===================== 工作流 Phase 可视化 MVP1 =====================
+// list_skills_v2 / read_skill_demo / set_active_skill 三件套支撑「工作流」
+// 视图重定义为 skill 库 + 选择器。设计与边界见
+// `/home/hexin/.claude/plans/workflow-phase-elegant-zephyr.md`。
+
+/// 工作流视图卡片渲染需要的 skill 摘要 — 跟 DeepSeek-TUI runtime_api 的
+/// `SkillEntry` 不同,这里额外把 phases / demo 元数据序列化给前端 (底座
+/// 没把这俩字段暴露到 REST,所以 pinvou3-app 自己读 SkillRegistry 拼)。
+#[derive(Debug, Serialize)]
+pub struct SkillSummary {
+    pub name: String,
+    pub description: String,
+    /// "bundle" / "deepseek" / "user" — 决定卡片角标。
+    pub source: &'static str,
+    pub phases: Vec<deepseek_tui::skills::PhaseDef>,
+    pub demo: DemoSummary,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DemoSummary {
+    pub has_file: bool,
+    pub has_preview: bool,
+    pub description: Option<String>,
+    pub duration: Option<String>,
+}
+
+impl From<&deepseek_tui::skills::DemoInfo> for DemoSummary {
+    fn from(d: &deepseek_tui::skills::DemoInfo) -> Self {
+        Self {
+            has_file: d.file.is_some(),
+            has_preview: d.preview.is_some(),
+            description: d.description.clone(),
+            duration: d.duration_estimate.clone(),
+        }
+    }
+}
+
+/// 列出 pinvou3-app 能发现的所有 skill (bundle / `~/.deepseek/skills/` /
+/// `~/.pinvou3/user/skills/`),按 name 合并去重,user > deepseek > bundle。
+#[tauri::command]
+pub async fn list_skills_v2() -> Result<Vec<SkillSummary>, String> {
+    use crate::bridge::paths;
+    use deepseek_tui::skills::SkillRegistry;
+    use std::collections::BTreeMap;
+
+    // (优先级, source) — 数字越大越优先,后插入覆盖前面同名 skill
+    let dirs: &[(i32, &'static str, std::path::PathBuf)] = &[
+        (0, "bundle", paths::bundle_skills_dir()),
+        (1, "deepseek", paths::deepseek_skills_dir()),
+        (2, "user", paths::user_skills_dir()),
+    ];
+
+    // name -> (priority, source, Skill)
+    let mut merged: BTreeMap<String, (i32, &'static str, deepseek_tui::skills::Skill)> =
+        BTreeMap::new();
+    for (prio, src, dir) in dirs {
+        if !dir.exists() {
+            continue;
+        }
+        let registry = SkillRegistry::discover(dir);
+        for skill in registry.list() {
+            let entry = merged.entry(skill.name.clone());
+            match entry {
+                std::collections::btree_map::Entry::Vacant(v) => {
+                    v.insert((*prio, *src, skill.clone()));
+                }
+                std::collections::btree_map::Entry::Occupied(mut o) => {
+                    if *prio >= o.get().0 {
+                        o.insert((*prio, *src, skill.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut out: Vec<SkillSummary> = merged
+        .into_iter()
+        .map(|(_, (_, source, s))| SkillSummary {
+            name: s.name,
+            description: s.description,
+            source,
+            phases: s.phases,
+            demo: (&s.demo).into(),
+        })
+        .collect();
+    // 有 phases 的排前面
+    out.sort_by(|a, b| b.phases.len().cmp(&a.phases.len()).then(a.name.cmp(&b.name)));
+    Ok(out)
+}
+
+/// 读取一个 skill 的 demo 文件元数据 + 内容(text 类型直接附 content,
+/// html/image 走 file_path + Tauri `convertFileSrc` 由前端 iframe/img 渲染)。
+#[derive(Debug, Serialize)]
+pub struct SkillDemoPayload {
+    pub file_path: Option<String>,
+    pub file_kind: &'static str, // "html" | "image" | "text" | "unknown" | "none"
+    /// text 类型时附内容 (限 1MB);否则 None。
+    pub content: Option<String>,
+    pub preview_path: Option<String>,
+    pub description: Option<String>,
+    pub duration: Option<String>,
+}
+
+#[tauri::command]
+pub async fn read_skill_demo(name: String) -> Result<SkillDemoPayload, String> {
+    use crate::bridge::paths;
+    use deepseek_tui::skills::SkillRegistry;
+
+    let dirs = [
+        paths::user_skills_dir(),
+        paths::deepseek_skills_dir(),
+        paths::bundle_skills_dir(),
+    ];
+    let mut found: Option<deepseek_tui::skills::Skill> = None;
+    for dir in &dirs {
+        if !dir.exists() {
+            continue;
+        }
+        let registry = SkillRegistry::discover(dir);
+        if let Some(s) = registry.get(&name) {
+            found = Some(s.clone());
+            break;
+        }
+    }
+    let skill = found.ok_or_else(|| format!("skill not found: {name}"))?;
+
+    let file_path = skill.demo.file.clone();
+    let preview_path = skill.demo.preview.as_ref().map(|p| p.to_string_lossy().to_string());
+
+    let (file_kind, content) = match file_path.as_ref() {
+        None => ("none", None),
+        Some(p) => {
+            let ext = p
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .unwrap_or_default();
+            match ext.as_str() {
+                "html" | "htm" => ("html", None),
+                "png" | "jpg" | "jpeg" | "webp" | "svg" | "gif" => ("image", None),
+                "md" | "txt" | "json" => {
+                    let raw = std::fs::read(p)
+                        .map_err(|e| format!("read demo {}: {e}", p.display()))?;
+                    if raw.len() > 1024 * 1024 {
+                        ("text", Some("[demo 超过 1MB,已截断 — 用系统应用打开看完整]".to_string()))
+                    } else {
+                        let s = String::from_utf8_lossy(&raw).to_string();
+                        ("text", Some(s))
+                    }
+                }
+                _ => ("unknown", None),
+            }
+        }
+    };
+
+    Ok(SkillDemoPayload {
+        file_path: file_path.map(|p| p.to_string_lossy().to_string()),
+        file_kind,
+        content,
+        preview_path,
+        description: skill.demo.description.clone(),
+        duration: skill.demo.duration_estimate.clone(),
+    })
+}
+
+/// 启用 / 取消激活一个 skill,响应里返 phases 列表给前端初始化 chips。
+#[derive(Debug, Serialize)]
+pub struct ActiveSkillState {
+    pub name: String,
+    pub phases: Vec<deepseek_tui::skills::PhaseDef>,
+    pub current_phase_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn set_active_skill(
+    name: Option<String>,
+    active: State<'_, crate::active_skill::ActiveSkillStore>,
+) -> Result<Option<ActiveSkillState>, String> {
+    use crate::active_skill::ActiveSkill;
+    use crate::bridge::paths;
+    use deepseek_tui::skills::SkillRegistry;
+
+    let Some(name) = name else {
+        active.clear();
+        return Ok(None);
+    };
+
+    // 找到 skill (user > deepseek > bundle)
+    let dirs = [
+        paths::user_skills_dir(),
+        paths::deepseek_skills_dir(),
+        paths::bundle_skills_dir(),
+    ];
+    let mut found: Option<deepseek_tui::skills::Skill> = None;
+    for dir in &dirs {
+        if !dir.exists() {
+            continue;
+        }
+        let registry = SkillRegistry::discover(dir);
+        if let Some(s) = registry.get(&name) {
+            found = Some(s.clone());
+            break;
+        }
+    }
+    let skill = found.ok_or_else(|| format!("skill not found: {name}"))?;
+
+    // 单行 nudge:让 LLM 知道用户已在 UI 启用某个 skill。底座 system prompt 已经
+    // 全自动注入了 skill 列表 + phased skill 强约束 prompt(crates/tui/src/skills/
+    // mod.rs:676 起 + Engine 会自动从回复抽 `<phase id="..."/>` emit Event::
+    // PhaseChanged),所以这里只发一条触发提示,不重复 dump skill body / phase 规则。
+    let injected = format!(
+        "[pinvou3-app] 用户在「工作流」视图启用了 skill: `{name}`。\
+         请按该 skill 的 phases 流程响应 — engine 会自动从你回复里抽 \
+         `<phase id=\"...\"/>` marker 驱动 UI 上方的 phase chip 条,\
+         **每条回复必须以该 marker 单独一行开头**(详见 system prompt 里 \
+         「Phase tracking — MANDATORY for phased skills」段)。",
+        name = skill.name,
+    );
+
+    let first_phase = skill.phases.first().map(|p| p.id.clone());
+    active.set(ActiveSkill {
+        name: skill.name.clone(),
+        injected_instruction: injected,
+        already_sent: false,
+    });
+    Ok(Some(ActiveSkillState {
+        name: skill.name,
+        phases: skill.phases,
+        current_phase_id: first_phase,
+    }))
 }
 
 #[cfg(test)]

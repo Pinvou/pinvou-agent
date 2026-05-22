@@ -53,6 +53,14 @@ pub fn user_skills_dir() -> PathBuf {
     user_root().join("skills")
 }
 
+/// `~/.deepseek/skills/` — DeepSeek-TUI 标准用户 skills 目录,h3c-ppt /
+/// skill-creator 这种由 `/skill install` 装的 skill 都在这里。跟
+/// [`user_skills_dir`](pinvou3 私有 `~/.pinvou3/user/skills/`) 平行,工作流
+/// 视图 list_skills_v2 把两个目录合并去重展示 (user 覆盖 deepseek 覆盖 bundle)。
+pub fn deepseek_skills_dir() -> PathBuf {
+    user_home_dir().join(".deepseek").join("skills")
+}
+
 /// 兼容字段：阶段 B 旧 sandbox workspace（已不作为 engine workspace 使用，
 /// 但保留作为 "AI 私人沙盒" 兜底——某些场景如 monitor 测试还在用）。
 pub fn workspace_dir() -> PathBuf {

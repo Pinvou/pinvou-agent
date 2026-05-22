@@ -3040,3 +3040,312 @@ body[data-theme="liquid-light"] .bubble-pinvou {
   font-size: 11px;
   color: var(--on-surface-muted);
 }
+
+/* ─── 工作流 Phase 可视化 MVP1 ───────────────────────────────── */
+/* chatroom 顶部 chip 条 */
+.workflow-chips {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px 8px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--surface-container-lowest);
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: thin;
+}
+.workflow-chips-skill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--primary);
+  background: rgba(255, 107, 53, 0.10);
+  border: 1px solid rgba(255, 107, 53, 0.30);
+  padding: 3px 8px;
+  border-radius: 14px;
+  flex-shrink: 0;
+}
+.chip-skill-badge { font-size: 13px; }
+.chip-skill-name { color: var(--on-surface); }
+.chip-skill-exit {
+  margin-left: 4px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--on-surface-muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.chip-skill-exit:hover { color: var(--danger); }
+.workflow-chips-track {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: nowrap;
+}
+.phase-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 9px;
+  border-radius: 11px;
+  border: 1px solid var(--surface-container-high);
+  background: var(--surface-container);
+  color: var(--on-surface);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.phase-chip:hover {
+  border-color: var(--primary);
+}
+.phase-chip .chip-id {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 10px;
+  color: var(--on-surface-muted);
+}
+.phase-chip-current {
+  background: var(--primary-container);
+  border-color: var(--primary-container);
+  color: #fff;
+  box-shadow: 0 0 12px rgba(255, 107, 53, 0.45);
+}
+.phase-chip-current .chip-id { color: rgba(255, 255, 255, 0.85); }
+.phase-chip-current::before {
+  content: "▶ ";
+  font-size: 9px;
+}
+.phase-chip-done {
+  background: rgba(89, 251, 181, 0.10);
+  border-color: rgba(89, 251, 181, 0.30);
+  color: var(--success);
+}
+.phase-chip-done .chip-id { color: rgba(89, 251, 181, 0.75); }
+.phase-chip-done::before {
+  content: "✓ ";
+  font-size: 10px;
+}
+.phase-chip-pending {
+  opacity: 0.55;
+}
+.phase-chip-loop .chip-loop {
+  font-size: 10px;
+  color: var(--tertiary);
+}
+.chip-sep {
+  color: var(--on-surface-muted);
+  font-size: 10px;
+  margin: 0 2px;
+}
+
+/* 工作流视图 (skill 库) */
+#view-workflow .workflow-skills-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+  padding: 20px;
+  overflow-y: auto;
+}
+.workflow-skills-loading,
+.workflow-skills-empty,
+.workflow-skills-error {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--on-surface-muted);
+}
+.workflow-skills-error { color: var(--danger); }
+.workflow-skills-empty code {
+  background: var(--surface-container);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+}
+.workflow-skill-card {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-container-low);
+  border: 1px solid var(--surface-container-high);
+  border-radius: 10px;
+  padding: 14px 16px;
+  transition: border-color 0.15s, transform 0.15s;
+}
+.workflow-skill-card:hover {
+  border-color: var(--primary);
+  transform: translateY(-1px);
+}
+.workflow-skill-card-active {
+  border-color: var(--primary-container);
+  box-shadow: 0 0 0 1px var(--primary-container);
+}
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.card-name {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--on-surface);
+}
+.card-source {
+  font-size: 10px;
+  color: var(--on-surface-muted);
+  background: var(--surface-container-high);
+  padding: 1px 6px;
+  border-radius: 4px;
+  text-transform: lowercase;
+  flex-shrink: 0;
+}
+.card-desc {
+  font-size: 12px;
+  color: var(--on-surface-muted);
+  line-height: 1.45;
+  margin: 0 0 10px;
+  flex: 1;
+  max-height: 5.4em;
+  overflow: hidden;
+}
+.card-phases {
+  font-size: 11px;
+  color: var(--tertiary);
+  font-family: ui-monospace, monospace;
+  margin-bottom: 6px;
+  word-break: break-all;
+}
+.card-phases-none {
+  color: var(--on-surface-muted);
+  font-style: italic;
+  font-family: inherit;
+}
+.card-duration {
+  font-size: 11px;
+  color: var(--warning);
+  margin-bottom: 10px;
+}
+.card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+}
+.card-btn {
+  font-size: 12px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--surface-container-high);
+  background: var(--surface-container);
+  color: var(--on-surface);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.card-btn:hover:not(:disabled) {
+  background: var(--surface-container-high);
+}
+.card-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.card-btn-enable {
+  background: var(--primary-container);
+  border-color: var(--primary-container);
+  color: #fff;
+}
+.card-btn-enable:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.card-btn-active {
+  background: rgba(89, 251, 181, 0.15);
+  border-color: rgba(89, 251, 181, 0.40);
+  color: var(--success);
+}
+
+/* demo 模态 */
+.workflow-demo-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 100;
+}
+.workflow-demo-modal[hidden] { display: none; }
+.workflow-demo-modal-inner {
+  width: min(92vw, 1100px);
+  height: min(86vh, 800px);
+  background: var(--surface);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 12px 64px rgba(0, 0, 0, 0.6);
+}
+.workflow-demo-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--surface-container-high);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--on-surface);
+}
+.workflow-demo-modal-body {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+}
+.demo-modal-iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+.demo-modal-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: var(--surface-container-lowest);
+}
+.demo-modal-text {
+  width: 100%;
+  margin: 0;
+  padding: 14px 18px;
+  overflow: auto;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  color: var(--on-surface);
+  background: var(--surface-container-lowest);
+}
+.demo-modal-loading,
+.demo-modal-error,
+.demo-modal-empty,
+.demo-modal-unknown {
+  width: 100%;
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--on-surface-muted);
+}
+.demo-modal-error { color: var(--danger); }
+.workflow-demo-modal-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--surface-container-high);
+  font-size: 11px;
+  color: var(--on-surface-muted);
+  min-height: 18px;
+}
+.demo-modal-meta { flex: 1; }
