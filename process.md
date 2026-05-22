@@ -67,6 +67,25 @@ LLM 可见工具 85→16+4,schema 119KB→14KB,翻译 19s→8s。OpenAI streamin
 
 ### 🟡 中等
 
+#### 0. P7 大文件 Phase 1 完整版兜底 (tail event 触发后做)
+
+阶段 I 已落地 5 层 prompt + append_file + write_file description 阈值, h3c-ppt 15 页 PPT
+实测跑通 (单 sample)。Phase 1 完整版**没做**: write_file.content 32KB maxLength 拒绝
++ actionable recovery 指引 + loop_guard 计数绕过 (~80 行 submodule fork)。
+
+**触发条件**:
+- 出现 ≥ 2 个不同场景 tail event (LLM 在 h3c-ppt 之外的大文件场景撞 SSE timeout)
+- 或要发布 production 需要 defense in depth
+- 或 fork 上游 PR 有价值 (强模型不需要,大概率 fork-only)
+
+**预案设计**:
+- 拒绝路径: `WriteFileTool::execute()` 加 size check → `ToolError::execution_failed(actionable_recovery_msg)` 含具体拆分 pattern
+- loop_guard 绕过: 拒绝消息明确"换 tool 不要 retry" + 工具结果带 `dont_count_for_loop_guard` 标记或 record_attempt 跳过 schema-failed
+- 同时考虑 sticky tool_choice=named (write_file maxLength 拒绝后下个 turn 强制 named append_file)
+- 完整版预计 ~80 行 submodule fork + 测试
+
+不立即做的理由: 当前实测够用 + 复杂度增加 + 单 sample 不代表分布,YAGNI 优先。
+
 #### A. WorkFlow 视图编排 (差异化最强)
 - 用户明说"准备做编排,要细聊"
 - 交互模型待讨论: todo checklist / 可视化节点流 / 专家协作
