@@ -31,7 +31,7 @@ description: 品悟在任务收口时做物理校验,确认产出真存在(不�
 - `read_file` / `list_dir` / `glob` / `grep`
 - `shell`(只跑只读命令:`git status`, `git diff --stat`, `ls`, `cat`)
 
-**禁用**写工具(`write_file`/`edit_file`/破坏性 shell)—— 你是校验,不是修复。
+**禁用**写工具(`write_file`/`append_file`/`edit_file`/破坏性 shell)—— 你是校验,不是修复。
 
 ---
 

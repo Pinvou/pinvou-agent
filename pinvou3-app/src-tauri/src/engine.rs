@@ -191,8 +191,8 @@ struct TurnPlanTracker {
     /// `{ items: [{id, content, status}], completion_pct, in_progress_id }`
     /// 上游 `TodoWriteTool::execute` 返回 "Todo list updated (...)\n<json>"。
     last_todos_snapshot: Option<serde_json::Value>,
-    /// 本 turn 是否调过任何会真正改变世界的工具(write_file / edit_file /
-    /// exec_shell / code_execution)。M2 自驱判据:Executing 态 turn end +
+    /// 本 turn 是否调过任何会真正改变世界的工具(write_file / append_file /
+    /// edit_file / exec_shell / code_execution)。M2 自驱判据:Executing 态 turn end +
     /// write_tool_used==false → 是"假执行",触发 auto-continue。
     write_tool_used: bool,
     /// 本 turn assistant text 累积字符数。M3 判据:Planning 态 + 没调 plan 工具 +
@@ -302,7 +302,11 @@ fn spawn_event_forwarder(
                     if success
                         && matches!(
                             name.as_str(),
-                            "write_file" | "edit_file" | "exec_shell" | "code_execution"
+                            "write_file"
+                                | "append_file"
+                                | "edit_file"
+                                | "exec_shell"
+                                | "code_execution"
                         )
                     {
                         plan_tracker.lock().write_tool_used = true;
@@ -427,7 +431,7 @@ fn spawn_event_forwarder(
                                 let handle_clone = approve_handle.clone();
                                 tauri::async_runtime::spawn(async move {
                                     let op = bridge_clone.build_send_message_op(
-                                        "继续执行下一步,记得用 write_file/edit_file/exec_shell \
+                                        "继续执行下一步,记得用 write_file/append_file/edit_file/exec_shell \
                                          实际产出文件,不要只调 update_plan 标记进度。"
                                             .to_string(),
                                         deepseek_tui::tui::app::AppMode::Yolo,

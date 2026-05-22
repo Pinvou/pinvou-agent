@@ -70,7 +70,7 @@ pub trait ToolSpec: Send + Sync {
 
 | Builder 方法 | 添加的工具 |
 |---|---|
-| `with_file_tools` | read_file, write_file, edit_file, list_dir |
+| `with_file_tools` | read_file, write_file, append_file, edit_file, list_dir |
 | `with_read_only_file_tools` | read_file, list_dir |
 | `with_search_tools` | grep_files, file_search |
 | `with_web_tools` | web_search, fetch_url, web_run |
@@ -203,6 +203,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 |---|---|---|
 | read_file | with_file_tools | 读文件（支持 chunked / 内嵌 PDF 抽取） |
 | write_file | with_file_tools | 写文件（创建或覆盖） |
+| append_file | with_file_tools | 追加写文件（适合大产物分块生成） |
 | edit_file | with_file_tools | 字符串级 patch 编辑 |
 | list_dir | with_file_tools | 列目录 |
 | apply_patch | with_patch_tools | 类 git diff 风格的多文件 patch |
@@ -312,7 +313,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 `build_turn_tool_registry_builder` Yolo 路径展开后大约 **45 个工具**：
 
 ```
-read_file write_file edit_file list_dir
+read_file write_file append_file edit_file list_dir
 grep_files file_search
 exec_shell exec_shell_cancel note
 web_search fetch_url web_run
@@ -333,7 +334,7 @@ agent_open agent_eval agent_result agent_cancel agent_close agent_list
 resume_agent delegate_to_agent
 ```
 
-INSTRUCTIONS_MD 只显式提及 7 个核心（read_file / write_file / edit_file / exec_shell / grep_files / file_search / web_search + code_execution 别名）。剩余 ~38 个工具靠模型自行从 schema 探索。
+INSTRUCTIONS_MD 只显式提及核心工具（read_file / write_file / append_file / edit_file / exec_shell / grep_files / file_search / web_search + code_execution 别名）。剩余工具靠模型自行从 schema 探索。
 
 Plan 模式约 **15 个工具**：file 只读、search、git（含 history）、diagnostics、skill、validation、handle、task 只读、todo、plan、review、user_input、parallel、recall_archive。
 

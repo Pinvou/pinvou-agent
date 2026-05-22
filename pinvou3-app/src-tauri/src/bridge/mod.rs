@@ -91,9 +91,9 @@ impl Pinvou3Bridge {
     /// 把 `self.max_output_tokens()` 写到底座读取的 `DEEPSEEK_MAX_OUTPUT_TOKENS`
     /// env (核心:底座 `effective_max_output_tokens()` 只读这个 env)。
     ///
-    /// 生产 Tauri 启动不走 run-dev.sh (clean env), 没这一步:
-    ///   effective_max_output_tokens("qwen36_35b_256k") → min(256K/2, 64K) = 64K
-    ///   context_input_budget = 256K - 64K - 1K = 191K (而非文档承诺的 ~239K)
+    /// 生产 Tauri 启动不走 run-dev.sh (clean env), 没这一步会让底座回到
+    /// 模型表启发式。这里显式写入 pinvou3 的本地 vLLM 输出预算,确保 dev /
+    /// release / headless harness 行为一致。
     ///
     /// 已有 env 时不覆盖 (允许 run-dev.sh / L1 harness / 用户 override)。
     ///
@@ -173,14 +173,14 @@ impl Pinvou3Bridge {
         self.prefs.advanced.allow_shell.unwrap_or(true)
     }
 
-    /// env > prefs.advanced > 16384。
+    /// env > prefs.advanced > 65536。
     pub fn max_output_tokens(&self) -> u32 {
         if let Ok(v) = std::env::var("PINVOU3_MAX_OUTPUT_TOKENS") {
             if let Ok(n) = v.parse() {
                 return n;
             }
         }
-        self.prefs.advanced.max_output_tokens.unwrap_or(16384)
+        self.prefs.advanced.max_output_tokens.unwrap_or(65_536)
     }
 
     /// system prompt 注入路径数组：bundle 必有，user 可选。
@@ -428,10 +428,12 @@ fn reminder_for(mode: AppMode, phase: PlanPhase) -> Option<&'static str> {
              1. 任务有歧义 → 调 `request_user_input` 工具问澄清(给 2-3 个选项让用户点选)。\
              不要在 text 里列 A/B/C 选项。\n\
              2. 方案清晰后 → 调 `update_plan` 工具输出方案(explanation 字段写关键决策,\
-             items 写 3-8 个执行步骤)。可选再调 `checklist_write` 拆细。\n\
+             items 写 3-8 个执行步骤)。如果产物预计超过 300 行或 20KB(如 HTML deck / 完整网页 / 长报告),\
+             plan 必须拆成:先写骨架 → 分块 append_file 填内容 → read_file/命令验证;禁止写成\"一次编写完整文件\"。\
+             可选再调 `checklist_write` 拆细。\n\
              3. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
              方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。\n\
-             4. **禁止**调 `write_file` / `edit_file` / `exec_shell` / `code_execution`——\
+             4. **禁止**调 `write_file` / `append_file` / `edit_file` / `exec_shell` / `code_execution`——\
              它们在 Plan 模式不可用,调了一定失败。",
         ),
         (AppMode::Plan, PlanPhase::Ready) => Some(
@@ -441,13 +443,15 @@ fn reminder_for(mode: AppMode, phase: PlanPhase) -> Option<&'static str> {
         ),
         (AppMode::Yolo, PlanPhase::Executing) => Some(
             "你现在在执行阶段(用户已批准方案)。本 turn 你必须:\n\
-             1. **第一动作**:用 `write_file` / `edit_file` / `exec_shell` 等工具\
+             1. **第一动作**:用 `write_file` / `append_file` / `edit_file` / `exec_shell` 等工具\
              **实际产出文件或代码**。\n\
              2. **禁止**只调 `update_plan` 标记 in_progress 就结束 turn——\
              那是假执行,用户什么文件都没拿到。\n\
-             3. 一个 turn 内**连续调多个工具**直到所有步骤完成,不要中途停下来等用户。\n\
-             4. 完成一步后调 `update_plan` 把对应步骤标 completed,继续下一步。\n\
-             5. **禁止**在 text 里贴完整代码代替 write_file——磁盘上不会有文件。",
+             3. 预计超过 300 行或 20KB 的产物,**禁止**一次 `write_file` 写完整文件;\
+             先 `write_file` 写小骨架/占位,再用多个 `append_file` 或小范围 `edit_file` 分块填充(每块约 3-5 页/200 行以内)。\n\
+             4. 一个 turn 内**连续调多个工具**直到所有步骤完成,不要中途停下来等用户。\n\
+             5. 完成一步后调 `update_plan` 把对应步骤标 completed,继续下一步。\n\
+             6. **禁止**在 text 里贴完整代码代替 write_file/append_file——磁盘上不会有文件。",
         ),
         _ => None,
     }
@@ -489,9 +493,7 @@ mod tests {
     }
 
     /// `wire_max_output_tokens_env` 必须把 self.max_output_tokens() 设给底座
-    /// env (codex round 4 抓出:生产 Tauri clean env 启动时,
-    /// effective_max_output_tokens() 走 fallback = min(256K/2, 64K) = 64K,
-    /// B2 算 context_input_budget 变成 191K 而非文档承诺的 ~239K)。
+    /// env,让 dev / release / headless harness 对同一个本地 vLLM cap 达成一致。
     ///
     /// 走 fixture_bridge() + helper (而非 boot()),避免:
     ///   - 写真实 ~/.pinvou3 (codex round 5 finding)
@@ -501,15 +503,15 @@ mod tests {
     /// 后续多测试可以拿 DEEPSEEK_MAX_OUTPUT_TOKENS 专属锁,但目前只此一处)。
     #[test]
     fn wire_max_output_tokens_env_sets_default_then_respects_existing() {
-        // clean env 路径:helper 应 set 默认 16384
+        // clean env 路径:helper 应 set 默认 65536
         std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
         std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
         fixture_bridge().wire_max_output_tokens_env();
         assert_eq!(
             std::env::var("DEEPSEEK_MAX_OUTPUT_TOKENS").as_deref(),
-            Ok("16384"),
-            "wire helper 必须 set DEEPSEEK_MAX_OUTPUT_TOKENS=16384, 让底座 \
-             effective_max_output_tokens 走显式 cap 而非 fallback 64K"
+            Ok("65536"),
+            "wire helper 必须 set DEEPSEEK_MAX_OUTPUT_TOKENS=65536, 让底座 \
+             effective_max_output_tokens 走 pinvou3 显式 cap"
         );
 
         // 已有 env 不覆盖路径:helper 是 no-op

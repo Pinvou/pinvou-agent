@@ -60,6 +60,13 @@ EXIT GATE 只认 `## PINVOU REVIEW REPORT` 这个**精确字符串** —— 错�
 2. **Attacker**:方案会怎么失败?有什么硬伤?
 3. **Engineer**:**一次能照常实施完吗?** 单次产出过大、步骤过多、原始需求外堆功能 —— 都该 RAISE。
 
+### Engineer 硬阈值
+
+- 单次 `write_file.content` 预计 >300 行或 >20KB → `CRITICAL`:要求拆成 `write_file` 小骨架 + 多次 `append_file`/小范围 `edit_file`
+- 20+ 页 HTML 单文件 PPT / 完整网页 / 长报告 / 大 JSON / 大 SQL / 大 CSV,如果计划没有明确"分块生成 + 验证" → `CRITICAL`
+- plan >8 步 → `INFORMATIONAL`,除非步骤本身说明了清晰的分块边界
+- 任何把方案做大的建议都要 suppress;Pinvou 只能要求"拆执行方式",不能新增功能范围
+
 ---
 
 ## 禁止 / Suppressions

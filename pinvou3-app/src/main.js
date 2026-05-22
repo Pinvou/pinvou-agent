@@ -531,7 +531,7 @@ function finalizeUserInputCard(toolCallId, success) {
 }
 
 // ── Plan 模式死锁兜底卡片 ────────────────────────────────────────────
-// AI 在 Plan 模式调了不在工具集的工具(常见 write_file/edit_file/exec_shell)
+// AI 在 Plan 模式调了不在工具集的工具(常见 write_file/append_file/edit_file/exec_shell)
 // 失败时弹这个卡片,给用户两条出路:让 AI 重出方案 / 跳过方案直接干。
 
 function showPlanStuckCard(toolName) {
@@ -1837,7 +1837,7 @@ function appendToolCallStart(id, name, args) {
   card.className = isSubagent ? "tool-card tool-running tool-subagent" : "tool-card tool-running";
   card.dataset.toolId = id;
   const iconMap = {
-    read_file: "📄", write_file: "📝", edit_file: "✏️", list_dir: "📁",
+    read_file: "📄", write_file: "📝", append_file: "📝", edit_file: "✏️", list_dir: "📁",
     file_search: "🔎", grep_files: "🔎",
     web_search: "🌐", fetch_url: "🌐", web_run: "🌐",
     exec_shell: "💻", exec_shell_wait: "💻", exec_shell_interact: "💻",
@@ -2034,7 +2034,7 @@ function applyHistoricToolResult(toolUseId, content, isError) {
     toolMeta.delete(toolUseId);
     return;
   }
-  if (!isError && meta.name === "write_file") {
+  if (!isError && (meta.name === "write_file" || meta.name === "append_file")) {
     const path = extractArtifactPath(meta.args);
     if (path) trackArtifact(path);
   }
@@ -2411,7 +2411,7 @@ tokenBarEl?.addEventListener("click", async () => {
   }
 });
 
-/** 从 write_file 的 args 中提取目标 path。
+/** 从 write_file / append_file 的 args 中提取目标 path。
  *  args 形态可能是 JSON 字符串或 object，且字段名可能是 path/file_path 等。 */
 function extractArtifactPath(args) {
   if (args == null) return null;
@@ -3277,9 +3277,9 @@ listen("chat:tool_end", (e) => {
   if (metadata && metadata.safety_level === "dangerous" && metadata.blocked) {
     renderCarefulBlockedCard(meta && meta.args, metadata);
   }
-  // write_file 成功 → 加入产物列表
+  // write_file / append_file 成功 → 加入产物列表
   if (success) {
-    if (meta && meta.name === "write_file") {
+    if (meta && (meta.name === "write_file" || meta.name === "append_file")) {
       const path = extractArtifactPath(meta.args);
       if (path) trackArtifact(path);
     }

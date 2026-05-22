@@ -93,7 +93,7 @@ fn build_message_with_attachments(
     out.push_str(
         "---\n用户附上了以下文件。**文件完整内容已嵌入下方代码块,可直接使用,\
          不需要再调 read_file / file_search 重新读取。** 如需保存修改版本,用 \
-         write_file 写到 PINVOU3_WORKSPACE 下。\n\n",
+         write_file 写到 PINVOU3_WORKSPACE 下;大产物用 append_file 分块追加。\n\n",
     );
     for a in &attachments {
         out.push_str(&format!(
@@ -293,7 +293,7 @@ pub async fn save_session_messages(
         .map_err(|e| format!("save_session_messages({id}): {e:?}"))
 }
 
-/// 落盘 session 的产物 paths 列表。前端跟踪 write_file 调用后调用,
+/// 落盘 session 的产物 paths 列表。前端跟踪 write_file / append_file 调用后调用,
 /// 跟 save_session_messages 一起落 (TurnComplete 时)。重启/切换 session 后,
 /// 从 SavedSession.artifacts 重建前端产物列表。
 #[tauri::command]

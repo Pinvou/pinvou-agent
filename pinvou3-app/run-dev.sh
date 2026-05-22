@@ -26,10 +26,9 @@ export DEEPSEEK_ALLOW_INSECURE_HTTP=1
 # 内网代理 HTTP/2 ALPN 协商有时卡死,强制 HTTP/1.1
 export DEEPSEEK_FORCE_HTTP1=1
 
-# vLLM max-model-len=262144 (256K)。engine 默认 max_output_tokens=64000,
-# 本地小模型 thinking 没 V4 那么大,砍到 16k 让 input + output 总和留出 ~239K
-# 给上下文 (依赖 fork commit 490c3dde + B2 让 context_input_budget 用这个值算预算)
-export DEEPSEEK_MAX_OUTPUT_TOKENS=16384
+# vLLM max-model-len=262144 (256K)。给单次大产物输出 64K budget;
+# 再配合 append_file / 分块执行,避免 HTML deck 等大文件撞 16K 顶。
+export DEEPSEEK_MAX_OUTPUT_TOKENS="${DEEPSEEK_MAX_OUTPUT_TOKENS:-65536}"
 
 # SSE idle timeout:
 # 90s 原值只够 prefill 一次大 prompt,但 decode 长 HTML/代码块时 token 间静默可超 90s
