@@ -1,4 +1,6 @@
-# WorkFlow Phase 可视化 · 设计
+# WorkFlow Phase 可视化 · 设计（愿景 / 用户旅程）
+
+> 已落地的实现架构（per-session 绑定、命令、数据流）见 [`WorkFlow-Phase-可视化-实现设计.md`](./WorkFlow-Phase-可视化-实现设计.md)。
 
 ## 一句话
 
