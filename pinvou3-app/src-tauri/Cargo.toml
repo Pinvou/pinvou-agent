@@ -26,8 +26,11 @@ tauri-plugin-dialog = "2"
 anyhow = "1.0"
 tokio = { version = "1.49", features = ["full"] }
 
-# 底层 Agent —— DeepSeek-TUI 提供 LLM 调用 + 工具循环 + 流式事件
-deepseek-tui = { path = "../../DeepSeek-TUI/crates/tui" }
+# 底层 Agent —— DeepSeek-TUI 提供 LLM 调用 + 工具循环 + 流式事件。
+# 上游 v0.8.45 起 rebrand：库 crate 改名 codewhale-tui。用 Cargo 的 `package`
+# 重命名保留本地别名 deepseek-tui，全部 `use deepseek_tui::*` 无需改动
+# （上游自己也保留 deepseek-tui bin shim 做 back-compat，做法一致）。
+deepseek-tui = { path = "../../DeepSeek-TUI/crates/tui", package = "codewhale-tui" }
 
 # Monitor 用：vLLM HTTP probe（/v1/models + Prometheus /metrics）
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }

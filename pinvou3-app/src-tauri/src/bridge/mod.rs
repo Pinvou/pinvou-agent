@@ -241,6 +241,7 @@ impl Pinvou3Bridge {
             snapshots_max_workspace_bytes,
             search_provider,
             search_api_key,
+            subagent_api_timeout,
         } = EngineConfig::default();
 
         EngineConfig {
@@ -319,6 +320,7 @@ impl Pinvou3Bridge {
             snapshots_max_workspace_bytes,
             search_provider,
             search_api_key,
+            subagent_api_timeout,
         }
     }
 

@@ -1031,6 +1031,114 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e9b18233253483ce2f65329a24072ec414db782531bdbb7d0bbc4bd2ce6b7e21"
 
 [[package]]
+name = "codewhale-config"
+version = "0.8.44"
+dependencies = [
+ "anyhow",
+ "codewhale-secrets",
+ "dirs",
+ "serde",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+]
+
+[[package]]
+name = "codewhale-protocol"
+version = "0.8.44"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "codewhale-secrets"
+version = "0.8.44"
+dependencies = [
+ "dirs",
+ "keyring",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "codewhale-tools"
+version = "0.8.44"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "codewhale-protocol",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "codewhale-tui"
+version = "0.8.44"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "async-stream",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "clap_complete",
+ "codewhale-config",
+ "codewhale-secrets",
+ "codewhale-tools",
+ "colored",
+ "crossterm 0.28.1",
+ "dirs",
+ "dotenvy",
+ "fd-lock",
+ "flate2",
+ "futures-util",
+ "ignore",
+ "image",
+ "libc",
+ "multimap",
+ "objc2",
+ "objc2-foundation",
+ "pdf-extract",
+ "portable-pty",
+ "ratatui",
+ "regex",
+ "reqwest 0.13.3",
+ "rustyline 15.0.0",
+ "schemars 1.2.1",
+ "schemaui",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "shellexpand",
+ "shlex",
+ "similar",
+ "starlark",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tiny_http",
+ "tokio",
+ "tokio-util",
+ "toml 0.9.12+spec-1.1.0",
+ "tower-http",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "unicode-segmentation",
+ "unicode-width 0.2.2",
+ "uuid",
+ "wait-timeout",
+ "windows 0.60.0",
+ "zeroize",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1440,99 +1548,6 @@ dependencies = [
  "schemafy",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "deepseek-protocol"
-version = "0.8.39"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "deepseek-secrets"
-version = "0.8.39"
-dependencies = [
- "dirs",
- "keyring",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "deepseek-tools"
-version = "0.8.39"
-dependencies = [
- "anyhow",
- "async-trait",
- "deepseek-protocol",
- "serde",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "deepseek-tui"
-version = "0.8.39"
-dependencies = [
- "anyhow",
- "arboard",
- "async-stream",
- "async-trait",
- "axum",
- "base64 0.22.1",
- "chrono",
- "clap",
- "clap_complete",
- "colored",
- "crossterm 0.28.1",
- "deepseek-secrets",
- "deepseek-tools",
- "dirs",
- "dotenvy",
- "fd-lock",
- "flate2",
- "futures-util",
- "ignore",
- "image",
- "libc",
- "multimap",
- "pdf-extract",
- "portable-pty",
- "ratatui",
- "regex",
- "reqwest 0.13.3",
- "rustyline 15.0.0",
- "schemars 1.2.1",
- "schemaui",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "shellexpand",
- "shlex",
- "similar",
- "starlark",
- "tar",
- "tempfile",
- "thiserror 2.0.18",
- "tiny_http",
- "tokio",
- "tokio-util",
- "toml 0.9.12+spec-1.1.0",
- "tower-http",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "unicode-segmentation",
- "unicode-width 0.2.2",
- "uuid",
- "wait-timeout",
- "windows 0.60.0",
- "zeroize",
 ]
 
 [[package]]
@@ -4634,7 +4649,7 @@ version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
- "deepseek-tui",
+ "codewhale-tui",
  "log",
  "notify",
  "parking_lot",
