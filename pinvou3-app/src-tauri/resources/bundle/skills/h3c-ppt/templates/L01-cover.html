@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>L01 · 封面 Cover · 母板</title>
+  <link rel="stylesheet" href="../assets/base.css" />
+  <style>
+    /* L01 Cover · 用 .slide.cover 触发 H3C 总部大楼背景 */
+    .cover-stage {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 0 96px 0 720px;  /* 左侧留给 H3C 大楼背景 */
+      gap: 48px;
+    }
+    .cover-eyebrow {
+      font-size: var(--fs-h2);
+      letter-spacing: 0.18em;
+      color: var(--gold);
+      font-weight: 600;
+    }
+    .cover-main {
+      font-size: var(--fs-cover);
+      line-height: 1.05;
+      font-weight: var(--fw-bold);
+      color: var(--t-1);
+      letter-spacing: -0.02em;
+    }
+    .cover-main .em {
+      background: linear-gradient(180deg, var(--gold-bright) 0%, var(--gold) 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      color: var(--gold);
+    }
+    .cover-rule {
+      width: 240px;
+      height: 2px;
+      background: linear-gradient(90deg, var(--gx-red), var(--gold), transparent);
+    }
+    .cover-sub {
+      font-size: var(--fs-h2);
+      font-weight: var(--fw-light);
+      color: var(--t-2);
+      letter-spacing: 0.02em;
+      line-height: 1.4;
+    }
+    .cover-meta {
+      position: absolute;
+      bottom: 96px;
+      left: 720px;
+      right: 96px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      font-size: var(--fs-note);
+      color: var(--t-3);
+      letter-spacing: 0.12em;
+    }
+    .cover-meta .right {
+      font-family: "Inter", sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <!-- 用 class="slide cover" 启用 H3C 总部大楼封面背景 -->
+  <div class="slide cover">
+
+    <div class="cover-stage">
+      <!-- 眉头(英文章节锚 / 项目分类) -->
+      <div class="cover-eyebrow">PROJECT · 2026</div>
+
+      <!-- 主标题(可选 .em 套色) -->
+      <h1 class="cover-main">
+        项目<span class="em">主题</span>
+        <br/>一句话定调
+      </h1>
+
+      <!-- 装饰金线 -->
+      <div class="cover-rule"></div>
+
+      <!-- 副标 -->
+      <p class="cover-sub">
+        副标题 · 受众一眼能看懂这是给谁的<br/>
+        日期 · 版本 · 准备人
+      </p>
+    </div>
+
+    <!-- 底部 meta -->
+    <div class="cover-meta">
+      <span class="left">出品方 · 致 客户名称</span>
+      <span class="right">V1.0 · 2026-01-01</span>
+    </div>
+  </div>
+</body>
+</html>
