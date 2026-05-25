@@ -275,8 +275,9 @@
             </div>
 
             {/* Navigation / Recents */}
-            <div className={`flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-2 mt-4 ${isSidebarOpen ? 'px-3' : 'px-2 items-center'}`}>
+            <div className={`flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-1 mt-3 ${isSidebarOpen ? 'px-3' : 'px-2 items-center'}`}>
 
+              {/* 四个导航项等距同级 */}
               <NavItem
                 icon={<Edit2 size={18} />} label={t.newChat}
                 theme={activeTheme}
@@ -290,36 +291,33 @@
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => setCurrentView('search')}
               />
-
-              <div className={`mt-2 mb-2 flex flex-col gap-2 ${!isSidebarOpen ? 'w-full items-center' : ''}`}>
-                <NavItem
-                  icon={<BarChart2 size={18} />} label={t.monitor}
-                  active={currentView === 'monitor'}
-                  theme={activeTheme}
-                  isSidebarOpen={isSidebarOpen}
-                  onClick={() => setCurrentView('monitor')}
-                />
-                <NavItem
-                  icon={<ClipboardList size={18} />} label={t.workflow}
-                  active={currentView === 'workflow'}
-                  theme={activeTheme}
-                  isSidebarOpen={isSidebarOpen}
-                  onClick={() => setCurrentView('workflow')}
-                />
-              </div>
+              <NavItem
+                icon={<BarChart2 size={18} />} label={t.monitor}
+                active={currentView === 'monitor'}
+                theme={activeTheme}
+                isSidebarOpen={isSidebarOpen}
+                onClick={() => setCurrentView('monitor')}
+              />
+              <NavItem
+                icon={<ClipboardList size={18} />} label={t.workflow}
+                active={currentView === 'workflow'}
+                theme={activeTheme}
+                isSidebarOpen={isSidebarOpen}
+                onClick={() => setCurrentView('workflow')}
+              />
 
               {isSidebarOpen && (
                 <>
-                  <div className="text-[13px] font-medium px-4 py-2 mt-2 mb-1 whitespace-nowrap" style={{ color: activeTheme === 'dark' ? '#C4C7C5' : '#444746' }}>
+                  <div className="text-[13px] font-medium px-4 py-2 mt-3 mb-1 whitespace-nowrap" style={{ color: activeTheme === 'dark' ? '#C4C7C5' : '#444746' }}>
                     {t.recent}
                   </div>
 
-                  <div className="space-y-[2px]">
+                  <div className="space-y-px">
                     {chatHistory.map((chat) => (
                       <div
                         key={chat.id}
                         onClick={() => handleSwitchSession(chat.id)}
-                        className={`group flex items-center justify-between px-4 py-2.5 rounded-full cursor-pointer text-[14px] transition-all
+                        className={`group flex items-center justify-between px-4 py-1.5 rounded-full cursor-pointer text-[14px] transition-all
                           ${(activeChat === chat.id && currentView === 'chat')
                             ? (activeTheme === 'dark' ? 'bg-[#333537] text-white' : 'bg-[#E1E5EA] text-[#1F1F1F]')
                             : (activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#282A2C]' : 'text-[#444746] hover:bg-[#E1E5EA]')
