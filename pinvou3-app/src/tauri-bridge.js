@@ -134,6 +134,9 @@
       console.warn("list_sessions failed", e);
       state.sessions = [];
     }
+    try {
+      state.workflow.bindings = await invoke("list_session_skill_bindings");
+    } catch (e) { /* 无绑定 */ }
     notify();
   }
 
@@ -145,6 +148,7 @@
       state.activeSessionId = meta.id;
       state.messages = [];
       state.chatItems = [];
+      state.artifacts = [];
       resetPendingAssistant();
       await refreshHistoryList();
       await syncModeState();
@@ -172,6 +176,10 @@
       state.messages = Array.isArray(saved.messages) ? saved.messages : [];
       resetPendingAssistant();
       state.chatItems = [];
+      state.artifacts = Array.isArray(saved.artifacts) ? saved.artifacts.map(function (a) {
+        var p = typeof a === "string" ? a : (a.storage_path || a.path || "");
+        return { path: p, basename: basename(p) };
+      }) : [];
       rerenderFromMessages();
       await syncModeState();
       await syncSessionSkill();
@@ -393,6 +401,8 @@
     if (!state.activeSessionId) return;
     try {
       await invoke("save_session_messages", { id: state.activeSessionId, messages: state.messages });
+      // artifacts 一起落盘，重启/切换 session 后能恢复
+      try { await invoke("save_session_artifacts", { id: state.activeSessionId, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch (_) {}
       // Auto-title
       var meta = state.sessions.find(function (s) { return s.id === state.activeSessionId; });
       if (meta && (meta.title === "新对话" || meta.title === "New chat")) {
@@ -921,6 +931,12 @@
   function readArtifactText(path) { return invoke("read_artifact_text", { path: path }); }
   function openContainingFolder(path) { return invoke("open_containing_folder", { path: path }).catch(function (e) { addSystemItem("⚠️ 打开目录失败: " + e); }); }
   function openInSystem(path) { return invoke("open_in_system", { path: path }).catch(function (e) { addSystemItem("⚠️ 打开失败: " + e); }); }
+  // 外部打开产物：HTML 走 Tauri 独立窗口（绕沙箱），其他走系统应用
+  function openArtifactExternal(path) {
+    var ext = (String(path).split(".").pop() || "").toLowerCase();
+    var cmd = (ext === "html" || ext === "htm") ? "open_artifact_window" : "open_in_system";
+    return invoke(cmd, { path: path }).catch(function (e) { addSystemItem("⚠️ 打开失败: " + e); });
+  }
 
   // ── 附件 ────────────────────────────────────────────────────────
   async function addAttachmentByPath(path) {
@@ -944,6 +960,16 @@
     notify();
   }
   function clearAttachments() { state.attachments = []; }
+  // 打开系统文件选择器并摄入为附件
+  async function pickAndAttach() {
+    if (!dialogOpen) { addSystemItem("⚠️ 文件选择不可用"); return; }
+    try {
+      var selected = await dialogOpen({ multiple: true });
+      if (!selected) return;
+      var paths = Array.isArray(selected) ? selected : [selected];
+      for (var i = 0; i < paths.length; i++) { await addAttachmentByPath(paths[i]); }
+    } catch (e) { addSystemItem("⚠️ 选择文件失败: " + e); }
+  }
 
   // ── 品悟审批（基础封装；GATE 编排在 React 卡片层）────────────────
   function readSkillBody(name) { return invoke("read_skill_body", { name: name }); }
@@ -1094,11 +1120,13 @@
     readArtifactText: readArtifactText,
     openContainingFolder: openContainingFolder,
     openInSystem: openInSystem,
+    openArtifactExternal: openArtifactExternal,
     // 附件
     addAttachmentByPath: addAttachmentByPath,
     addPasteImage: addPasteImage,
     removeAttachment: removeAttachment,
     clearAttachments: clearAttachments,
+    pickAndAttach: pickAndAttach,
     // 品悟审批
     readSkillBody: readSkillBody,
     setPinvouReview: setPinvouReview,

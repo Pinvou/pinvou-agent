@@ -610,10 +610,13 @@
     const ChatView = ({ theme, t, bs }) => {
       const isDark = theme === 'dark';
       const [inputText, setInputText] = useState('');
+      const [artifactsOpen, setArtifactsOpen] = useState(false);
       const chatEndRef = useRef(null);
       const chatItems = bs ? bs.chatItems : [];
       const busy = bs ? bs.busy : false;
       const hasMessages = chatItems.length > 0;
+      const attachments = (bs && bs.attachments) || [];
+      const artifactCount = (bs && bs.artifacts) ? bs.artifacts.length : 0;
 
       // Auto-scroll on new messages
       useEffect(() => {
@@ -623,7 +626,9 @@
       }, [chatItems.length, chatItems[chatItems.length - 1]?.html]);
 
       function handleSend() {
-        if (!inputText.trim() || busy) return;
+        if (busy) return;
+        const hasReady = attachments.some(a => a.status === 'ready');
+        if (!inputText.trim() && !hasReady) return;
         if (bridge.available) bridge.sendMessage(inputText.trim());
         setInputText('');
       }
@@ -639,13 +644,36 @@
         if (bridge.available) bridge.cancelGeneration();
       }
 
+      function handlePaste(e) {
+        const items = (e.clipboardData && e.clipboardData.items) || [];
+        for (const it of items) {
+          if (it.type && it.type.indexOf('image/') === 0) {
+            const file = it.getAsFile();
+            if (!file) continue;
+            e.preventDefault();
+            const reader = new FileReader();
+            reader.onload = () => {
+              const bytes = Array.from(new Uint8Array(reader.result));
+              const ext = (file.type.split('/')[1] || 'png');
+              if (bridge.available) bridge.addPasteImage(`paste-${Date.now()}.${ext}`, bytes);
+            };
+            reader.readAsArrayBuffer(file);
+          }
+        }
+      }
+
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
+          {artifactsOpen && <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} />}
 
           {/* Top Header */}
-          <div className="absolute top-0 left-0 right-0 p-4 flex justify-end z-20 pointer-events-none">
-            <button className={`pointer-events-auto px-4 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm'}`}>
+          <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-20 pointer-events-none">
+            <ModeHeader bs={bs} theme={theme} />
+            <button
+              onClick={() => setArtifactsOpen(true)}
+              className={`pointer-events-auto px-4 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm'}`}>
               <Package size={16} /> {t.artifacts}
+              {artifactCount > 0 && <span className={`text-[11px] px-1.5 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>{artifactCount}</span>}
             </button>
           </div>
 
@@ -664,7 +692,7 @@
             {hasMessages && (
               <div className="max-w-[800px] w-full mx-auto space-y-4">
                 {chatItems.map((item) => (
-                  <ChatBubble key={item.id} item={item} theme={theme} />
+                  <ChatBubble key={item.id} item={item} theme={theme} onPrefill={(txt) => setInputText(txt)} />
                 ))}
                 <div ref={chatEndRef} />
               </div>
@@ -674,10 +702,26 @@
 
           {/* Floating Input Area */}
           <div className="absolute bottom-8 left-1/2 -translate-x-1/2 w-full max-w-[800px] px-4 z-20">
+            {/* 附件 chips */}
+            {attachments.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-2 px-2">
+                {attachments.map((a) => (
+                  <div key={a.id} className={`flex items-center gap-1.5 pl-3 pr-1.5 py-1 rounded-full text-[12px] ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F] shadow-sm'}`}>
+                    <span>📎</span>
+                    <span className="max-w-[160px] truncate">{a.basename}</span>
+                    <span className={a.status === 'error' ? 'text-[#F28B82]' : a.status === 'parsing' ? 'opacity-60' : 'text-[#93D5A6]'}>
+                      {a.status === 'parsing' ? '解析中…' : a.status === 'error' ? '失败' : '✓'}
+                    </span>
+                    <button onClick={() => bridge.removeAttachment(a.id)} className={`w-5 h-5 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#F0F4F9]'}`}>×</button>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className={`flex items-center gap-3 p-2 rounded-full shadow-lg ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
 
-              <button className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>
-                <Plus size={24} />
+              <button onClick={() => bridge.available && bridge.pickAndAttach()} title="添加附件"
+                className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>
+                <Paperclip size={20} />
               </button>
 
               <input
@@ -686,6 +730,7 @@
                 value={inputText}
                 onChange={e => setInputText(e.target.value)}
                 onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
                 className={`flex-1 bg-transparent border-none outline-none text-[16px] py-3 ${isDark ? 'placeholder:text-[#C4C7C5]' : 'placeholder:text-gray-400'}`}
               />
 
@@ -701,12 +746,14 @@
                   onClick={handleSend}
                   className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}
                 >
-                  <Mic size={20} />
+                  {(inputText.trim() || attachments.some(a => a.status === 'ready')) ? <Send size={18} /> : <Mic size={20} />}
                 </button>
               )}
             </div>
-            <div className="text-center mt-3">
+            <div className="flex items-center justify-center gap-3 mt-3">
                <p className={`text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{t.disclaimer}</p>
+               <button onClick={() => bridge.available && bridge.compactNow()} title="手动压缩上下文"
+                 className={`text-[12px] flex items-center gap-1 ${isDark ? 'text-[#8E8E8E] hover:text-[#C4C7C5]' : 'text-[#757575] hover:text-[#444746]'}`}>🗜 压缩</button>
             </div>
           </div>
 
@@ -717,8 +764,14 @@
     // ==========================================
     // Chat Bubble (message rendering)
     // ==========================================
-    const ChatBubble = ({ item, theme }) => {
+    const ChatBubble = ({ item, theme, onPrefill }) => {
       const isDark = theme === 'dark';
+
+      if (item.type === 'plan_card') return <PlanCard item={item} theme={theme} onPrefill={onPrefill} />;
+      if (item.type === 'plan_stuck' || item.type === 'execution_stuck') return <PlanStuckCard item={item} theme={theme} />;
+      if (item.type === 'plan_text_fallback') return <PlanFallbackCard item={item} theme={theme} />;
+      if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} theme={theme} />;
+      if (item.type === 'user_input') return <UserInputCard item={item} theme={theme} />;
 
       if (item.type === 'user') {
         return (
@@ -814,6 +867,344 @@
               )}
             </div>
           )}
+        </div>
+      );
+    };
+
+    // ==========================================
+    // Plan / 待办 步骤渲染
+    // ==========================================
+    const STEP_SYM = { completed: '●', in_progress: '◎', pending: '○' };
+    const PlanLayer = ({ label, explanation, items, field, isDark }) => {
+      if (!items || items.length === 0) return null;
+      return (
+        <section className="mb-2">
+          <div className={`text-[12px] font-semibold mb-1 ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{label}</div>
+          {explanation && <p className={`text-[13px] mb-1.5 leading-relaxed ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{explanation}</p>}
+          <ol className="space-y-1">
+            {items.map((it, i) => (
+              <li key={i} className={`text-[13px] flex gap-2 leading-relaxed ${it.status === 'completed' ? 'opacity-60' : ''} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
+                <span className={it.status === 'in_progress' ? (isDark ? 'text-[#FDD663]' : 'text-[#E37400]') : ''}>{STEP_SYM[it.status] || '○'}</span>
+                <span>{it[field] || ''}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      );
+    };
+
+    const cardBoxCls = (isDark, accent) =>
+      `rounded-[16px] border p-4 my-1 ${isDark ? 'bg-[#1E1F20] border-white/10' : 'bg-[#F0F4F9] border-black/5'} ${accent || ''}`;
+    const cardBtnCls = (isDark, variant) => {
+      const base = 'px-3 py-1.5 rounded-full text-[13px] font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
+      if (variant === 'primary') return `${base} ${isDark ? 'bg-[#A8C7FA] text-[#062E6F] hover:bg-[#C2DBFF]' : 'bg-[#0B57D0] text-white hover:bg-[#0A4BB8]'}`;
+      return `${base} ${isDark ? 'bg-[#333537] text-[#E3E3E3] hover:bg-[#444746]' : 'bg-white text-[#1F1F1F] hover:bg-[#E1E5EA] border border-black/10'}`;
+    };
+
+    // ==========================================
+    // PlanCard — ✨ 方案准备好
+    // ==========================================
+    const PlanCard = ({ item, theme, onPrefill }) => {
+      const isDark = theme === 'dark';
+      const active = item.cardState === 'active' && !item.resolved;
+      return (
+        <div className={cardBoxCls(isDark, isDark ? 'border-[#A8C7FA]/30' : 'border-[#0B57D0]/20')}>
+          <div className={`text-[14px] font-semibold mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>✨ 方案准备好</div>
+          {(!item.plan && !item.todos)
+            ? <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>（plan 为空）</div>
+            : <>
+                <PlanLayer label="📋 方案" explanation={item.plan && item.plan.explanation} items={item.plan && item.plan.items} field="step" isDark={isDark} />
+                <PlanLayer label="✅ 细分待办" items={item.todos && item.todos.items} field="content" isDark={isDark} />
+              </>}
+          <div className={`h-px my-3 ${isDark ? 'bg-white/10' : 'bg-black/10'}`}></div>
+          {active ? (
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className={`text-[13px] mr-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>下一步：</span>
+              <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.acceptPlan(item.id, item.planMarkdown)}>✅ 就这么干</button>
+              <button className={cardBtnCls(isDark)} onClick={() => onPrefill && onPrefill('修订方案:')}>✏️ 改改</button>
+              <button className={cardBtnCls(isDark)} onClick={() => bridge.discardPlan(item.id)}>🚪 算了</button>
+            </div>
+          ) : (
+            <div className={`text-[13px] font-medium ${isDark ? 'text-[#93D5A6]' : 'text-[#137333]'}`}>{item.statusLabel}</div>
+          )}
+        </div>
+      );
+    };
+
+    // ==========================================
+    // PlanStuckCard — Plan 死锁 / 执行卡住 兜底
+    // ==========================================
+    const PlanStuckCard = ({ item, theme }) => {
+      const isDark = theme === 'dark';
+      const isExec = item.type === 'execution_stuck';
+      const done = item.resolved;
+      return (
+        <div className={cardBoxCls(isDark, isDark ? 'border-[#FDD663]/30' : 'border-[#E37400]/20')}>
+          <div className={`text-[13px] leading-relaxed mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
+            {isExec
+              ? <>🛑 AI 执行卡住了 (已自动尝试 {item.tries} 次仍未真正产出文件)。你可以:</>
+              : <>⚠️ AI 在 Plan 模式调用了 <code className="px-1 rounded bg-black/20">{item.toolName || '(unknown)'}</code> 但被白名单挡掉。Plan 模式只能讨论方案,不能动手。给你两个出路:</>}
+          </div>
+          {done ? (
+            <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{item.statusLabel || '已处理'}</div>
+          ) : (
+            <div className="flex items-center gap-2 flex-wrap">
+              <button className={cardBtnCls(isDark)} onClick={() => isExec ? bridge.executionStuckReplan(item.id) : bridge.planStuckReplan(item.id)}>📋 让 AI 重出方案</button>
+              <button className={cardBtnCls(isDark, 'primary')} onClick={() => isExec ? bridge.discardPlan(item.id) : bridge.planStuckGo(item.id)}>⚡ {isExec ? '我自己来' : '直接动手(跳过方案)'}</button>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    // ==========================================
+    // PlanFallbackCard — AI 给了方案但没用 plan 工具
+    // ==========================================
+    const PlanFallbackCard = ({ item, theme }) => {
+      const isDark = theme === 'dark';
+      const done = item.resolved;
+      return (
+        <div className={cardBoxCls(isDark, isDark ? 'border-[#FDD663]/30' : 'border-[#E37400]/20')}>
+          <div className={`text-[14px] font-semibold mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>📝 AI 给了方案但没用 plan 工具</div>
+          <div className={`text-[13px] leading-relaxed mb-3 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>AI 在文本里描述了方案,但没调 update_plan 工具,所以没出方案卡片。你想怎么处理?</div>
+          {done ? (
+            <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{item.statusLabel || '已处理'}</div>
+          ) : (
+            <div className="flex items-center gap-2 flex-wrap">
+              <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.planFallbackAccept(item.id, item.text)}>✅ 直接采纳这段</button>
+              <button className={cardBtnCls(isDark)} onClick={() => bridge.planFallbackRetry(item.id)}>📋 让 AI 用工具重出</button>
+              <button className={cardBtnCls(isDark)} onClick={() => bridge.discardPlan(item.id)}>🚪 算了</button>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    // ==========================================
+    // CarefulBlockedCard — 🛑 破坏性命令拦截
+    // ==========================================
+    const CarefulBlockedCard = ({ item, theme }) => {
+      const isDark = theme === 'dark';
+      const md = item.metadata || {};
+      const cmd = (item.args && (item.args.command || item.args.cmd)) || '(命令未知)';
+      const reasons = (md.reasons && md.reasons.length) ? md.reasons : ['命中破坏性 pattern'];
+      const suggestions = md.suggestions || [];
+      return (
+        <div className={cardBoxCls(isDark, isDark ? 'border-[#F28B82]/40' : 'border-[#C5221F]/30')}>
+          <div className={`text-[14px] font-semibold mb-2 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>🛑 Careful Hook 拦截了一条破坏性命令</div>
+          <pre className={`text-[12px] font-mono rounded-lg p-2 mb-2 overflow-x-auto ${isDark ? 'bg-[#131314] text-[#F28B82]' : 'bg-white text-[#C5221F]'}`}>{cmd}</pre>
+          <div className="mb-2">
+            <div className={`text-[12px] font-medium mb-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>为什么拦?</div>
+            <ul className={`list-disc pl-5 text-[13px] space-y-0.5 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{reasons.map((r, i) => <li key={i}>{r}</li>)}</ul>
+          </div>
+          {suggestions.length > 0 && (
+            <div className="mb-2">
+              <div className={`text-[12px] font-medium mb-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>建议</div>
+              <ul className={`list-disc pl-5 text-[13px] space-y-0.5 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{suggestions.map((s, i) => <li key={i}>{s}</li>)}</ul>
+            </div>
+          )}
+          <div className={`text-[12px] leading-relaxed ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>这个 hook 在所有模式默认开启,与 Plan/YOLO/品悟开关无关。如果你确认要跑,自己在终端执行 —— LLM 不会被允许跑破坏性命令。</div>
+        </div>
+      );
+    };
+
+    // ==========================================
+    // UserInputCard — 🤔 AI 想问你几个问题
+    // ==========================================
+    const UserInputCard = ({ item, theme }) => {
+      const isDark = theme === 'dark';
+      const questions = item.questions || [];
+      const [answers, setAnswers] = useState(() => questions.map(() => null));
+      const [otherOpen, setOtherOpen] = useState(() => questions.map(() => false));
+      const [otherText, setOtherText] = useState(() => questions.map(() => ''));
+      const locked = item.resolved || item.submitting;
+
+      function pick(qi, opt) {
+        if (locked) return;
+        const next = answers.slice();
+        next[qi] = { id: questions[qi].id, label: opt.label, value: opt.label };
+        const oo = otherOpen.slice(); oo[qi] = false; setOtherOpen(oo);
+        commit(next);
+      }
+      function toggleOther(qi) {
+        if (locked) return;
+        const oo = otherOpen.slice(); oo[qi] = !oo[qi]; setOtherOpen(oo);
+        if (oo[qi]) { const next = answers.slice(); next[qi] = null; setAnswers(next); }
+      }
+      function submitOther(qi) {
+        const val = (otherText[qi] || '').trim();
+        if (!val) return;
+        const next = answers.slice();
+        next[qi] = { id: questions[qi].id, label: '其他', value: val };
+        const oo = otherOpen.slice(); oo[qi] = false; setOtherOpen(oo);
+        commit(next);
+      }
+      function commit(next) {
+        setAnswers(next);
+        if (next.every(a => a != null)) {
+          bridge.submitUserInput(item.id, item.toolCallId, next, questions);
+        }
+      }
+
+      const statusText = item.cardState === 'submitted' ? '✓ 已提交'
+        : item.cardState === 'cancelled' ? '✕ 已取消'
+        : item.submitting ? '提交中…' : item.error ? ('⚠️ 提交失败: ' + item.error) : '';
+
+      return (
+        <div className={cardBoxCls(isDark, isDark ? 'border-[#A8C7FA]/30' : 'border-[#0B57D0]/20')}>
+          <div className={`text-[14px] font-semibold mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>🤔 AI 想问你几个问题</div>
+          <div className="space-y-4">
+            {questions.map((q, qi) => (
+              <div key={qi}>
+                <div className={`text-[12px] font-semibold ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{q.header || ('Q' + (qi + 1))}</div>
+                <div className={`text-[13px] mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{q.question || ''}</div>
+                <div className="flex flex-col gap-1.5">
+                  {(q.options || []).map((opt, oi) => {
+                    const sel = answers[qi] && answers[qi].label === opt.label && answers[qi].value === opt.label;
+                    return (
+                      <button key={oi} disabled={locked}
+                        onClick={() => pick(qi, opt)}
+                        className={`text-left px-3 py-2 rounded-[12px] border transition-colors disabled:cursor-not-allowed
+                          ${sel ? (isDark ? 'border-[#A8C7FA] bg-[#A8C7FA]/10' : 'border-[#0B57D0] bg-[#0B57D0]/5')
+                                : (isDark ? 'border-white/10 hover:bg-[#282A2C]' : 'border-black/10 hover:bg-[#E8EDF2]')}`}>
+                        <div className={`text-[13px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{opt.label}</div>
+                        {opt.description && <div className={`text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{opt.description}</div>}
+                      </button>
+                    );
+                  })}
+                  <button disabled={locked} onClick={() => toggleOther(qi)}
+                    className={`text-left px-3 py-2 rounded-[12px] border transition-colors disabled:cursor-not-allowed
+                      ${answers[qi] && answers[qi].label === '其他' ? (isDark ? 'border-[#A8C7FA] bg-[#A8C7FA]/10' : 'border-[#0B57D0] bg-[#0B57D0]/5')
+                        : (isDark ? 'border-white/10 hover:bg-[#282A2C]' : 'border-black/10 hover:bg-[#E8EDF2]')}`}>
+                    <div className={`text-[13px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>💬 其他(自己写)</div>
+                    <div className={`text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>如果上面选项不合适,自己说一下</div>
+                  </button>
+                  {otherOpen[qi] && (
+                    <div className="mt-1">
+                      <textarea rows="2" value={otherText[qi]}
+                        onChange={e => { const ot = otherText.slice(); ot[qi] = e.target.value; setOtherText(ot); }}
+                        onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submitOther(qi); } }}
+                        placeholder="写下你想说的..."
+                        className={`w-full rounded-[10px] p-2 text-[13px] outline-none border ${isDark ? 'bg-[#131314] border-white/10 text-[#E3E3E3]' : 'bg-white border-black/10 text-[#1F1F1F]'}`} />
+                      <div className="flex gap-2 mt-1 justify-end">
+                        <button className={cardBtnCls(isDark)} onClick={() => toggleOther(qi)}>取消</button>
+                        <button className={cardBtnCls(isDark, 'primary')} onClick={() => submitOther(qi)}>提交</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+          {statusText && <div className={`mt-3 text-[13px] ${item.error ? (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]') : (isDark ? 'text-[#93D5A6]' : 'text-[#137333]')}`}>{statusText}</div>}
+        </div>
+      );
+    };
+
+    // ==========================================
+    // ModeHeader — Plan/YOLO 模式指示 + 灯泡切换
+    // ==========================================
+    const PHASE_LABEL = { planning: '讨论方案', ready: '方案就绪', executing: '执行中' };
+    const ModeHeader = ({ bs, theme }) => {
+      const isDark = theme === 'dark';
+      const ms = (bs && bs.modeState) || { mode: 'yolo', plan_phase: 'none' };
+      const isPlan = ms.mode === 'plan';
+      const phaseLabel = PHASE_LABEL[ms.plan_phase] || '';
+      return (
+        <button
+          onClick={() => bridge.available && bridge.setPlanModeNext()}
+          title="切换 Plan / YOLO 模式"
+          className={`pointer-events-auto px-3 py-2 rounded-full text-[13px] font-medium flex items-center gap-2 transition-colors
+            ${isPlan
+              ? (isDark ? 'bg-[#0B57D0]/30 text-[#A8C7FA]' : 'bg-[#0B57D0]/10 text-[#0B57D0]')
+              : (isDark ? 'bg-[#1E1F20] text-[#C4C7C5] hover:bg-[#333537]' : 'bg-white text-[#444746] hover:bg-[#F0F4F9] shadow-sm')}`}
+        >
+          <Zap size={15} /> {isPlan ? ('Plan' + (phaseLabel ? ' · ' + phaseLabel : '')) : 'YOLO'}
+        </button>
+      );
+    };
+
+    // ==========================================
+    // ArtifactsPanel — 产物面板（右侧抽屉 + 预览）
+    // ==========================================
+    const ARTIFACT_ICONS = {
+      md: '📄', markdown: '📄', html: '🌐', htm: '🌐',
+      png: '🖼️', jpg: '🖼️', jpeg: '🖼️', gif: '🖼️', webp: '🖼️', svg: '🖼️',
+      pdf: '📕', csv: '📊', xlsx: '📊', json: '🔢', yaml: '🔢', yml: '🔢', txt: '📝',
+    };
+    const artifactIcon = (name) => ARTIFACT_ICONS[(name.split('.').pop() || '').toLowerCase()] || '📎';
+
+    const ArtifactsPanel = ({ bs, theme, t, onClose }) => {
+      const isDark = theme === 'dark';
+      const artifacts = (bs && bs.artifacts) || [];
+      const [sel, setSel] = useState(null);
+      const [pv, setPv] = useState({ loading: false });
+
+      async function preview(a) {
+        setSel(a.path);
+        setPv({ loading: true });
+        try {
+          const info = await bridge.artifactInfo(a.path);
+          if (!info || !info.exists) { setPv({ loading: false, missing: true }); return; }
+          if (info.kind === 'md' || info.kind === 'html' || info.kind === 'text') {
+            const text = await bridge.readArtifactText(a.path);
+            setPv({ loading: false, kind: info.kind, text });
+          } else {
+            setPv({ loading: false, kind: info.kind || 'other' });
+          }
+        } catch (e) { setPv({ loading: false, error: String(e) }); }
+      }
+
+      return (
+        <div className="absolute inset-0 z-30 flex justify-end pointer-events-auto">
+          <div className="absolute inset-0 bg-black/40" onClick={onClose}></div>
+          <div className={`relative w-[680px] max-w-[88vw] h-full flex flex-col shadow-2xl ${isDark ? 'bg-[#1E1F20]' : 'bg-white'} animate-in slide-in-from-right duration-200`}>
+            <div className={`flex items-center justify-between px-4 py-3 border-b ${isDark ? 'border-white/10' : 'border-black/10'}`}>
+              <span className={`text-[15px] font-medium flex items-center gap-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}><Package size={16} /> {t.artifacts}</span>
+              <button onClick={onClose} className={`w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537] text-[#C4C7C5]' : 'hover:bg-[#F0F4F9] text-[#444746]'}`}><XCircle size={18} /></button>
+            </div>
+            <div className="flex-1 flex min-h-0">
+              {/* list */}
+              <div className={`w-[240px] shrink-0 overflow-y-auto custom-scrollbar border-r ${isDark ? 'border-white/10' : 'border-black/10'}`}>
+                {artifacts.length === 0 ? (
+                  <div className={`p-4 text-[13px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>暂无产物</div>
+                ) : artifacts.map((a) => (
+                  <div key={a.path} onClick={() => preview(a)}
+                    className={`group flex items-center gap-2 px-3 py-2.5 cursor-pointer text-[13px]
+                      ${sel === a.path ? (isDark ? 'bg-[#333537]' : 'bg-[#E8EDF2]') : (isDark ? 'hover:bg-[#282A2C]' : 'hover:bg-[#F0F4F9]')}`}>
+                    <span>{artifactIcon(a.basename)}</span>
+                    <span className={`flex-1 truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`} title={a.path}>{a.basename}</span>
+                    <button title="打开所在目录" onClick={(e) => { e.stopPropagation(); bridge.openContainingFolder(a.path); }} className="opacity-0 group-hover:opacity-100 text-[13px]">📂</button>
+                    <button title="外部打开" onClick={(e) => { e.stopPropagation(); bridge.openArtifactExternal(a.path); }} className="opacity-0 group-hover:opacity-100 text-[13px]">↗</button>
+                  </div>
+                ))}
+              </div>
+              {/* preview */}
+              <div className="flex-1 overflow-y-auto custom-scrollbar p-4 min-w-0">
+                {!sel ? (
+                  <div className={`text-[13px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>选择左侧产物预览</div>
+                ) : pv.loading ? (
+                  <div className={`text-[13px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>加载中...</div>
+                ) : pv.missing ? (
+                  <div className={`text-[13px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>文件不存在或已被删除</div>
+                ) : pv.error ? (
+                  <div className={`text-[13px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>读取失败: {pv.error}</div>
+                ) : pv.kind === 'md' ? (
+                  <div className={`msg-md text-[14px] leading-relaxed ${isDark ? 'dark-code text-[#E3E3E3]' : 'light-code text-[#1F1F1F]'}`} dangerouslySetInnerHTML={{ __html: bridge.renderMarkdown(pv.text || '') }} />
+                ) : pv.kind === 'html' ? (
+                  <iframe sandbox="allow-same-origin allow-scripts" className="w-full h-full min-h-[480px] rounded-lg bg-white"
+                    srcDoc={"<script>document.addEventListener('contextmenu',function(e){e.preventDefault();})<\/script>" + (pv.text || '')} />
+                ) : pv.kind === 'text' ? (
+                  <pre className={`text-[12px] whitespace-pre-wrap break-words font-mono ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{pv.text}</pre>
+                ) : (
+                  <div>
+                    <p className={`text-[13px] mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{pv.kind === 'image' ? '图片预览暂不支持嵌入' : '此类型暂不支持预览'}</p>
+                    <button onClick={() => bridge.openArtifactExternal(sel)} className={cardBtnCls(isDark, 'primary')}>↗ 外部打开</button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       );
     };
