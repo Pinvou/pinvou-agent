@@ -10,12 +10,14 @@
     "withGlobalTauri": true,
     "windows": [
       {
+        "label": "main",
         "title": "pinvou3 智能助手",
         "width": 1100,
         "height": 760,
         "resizable": true,
         "fullscreen": false,
-        "maximized": true
+        "maximized": true,
+        "decorations": false
       }
     ],
     "security": {
