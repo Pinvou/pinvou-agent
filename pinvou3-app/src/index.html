@@ -662,7 +662,7 @@
       const isDark = theme === 'dark';
       const [inputText, setInputText] = useState('');
       const [artifactsOpen, setArtifactsOpen] = useState(false);
-      const chatEndRef = useRef(null);
+      const scrollRef = useRef(null);
       const chatItems = bs ? bs.chatItems : [];
       const busy = bs ? bs.busy : false;
       const hasMessages = chatItems.length > 0;
@@ -676,11 +676,10 @@
         if (prefill) { setInputText(prefill); if (onPrefillConsumed) onPrefillConsumed(); }
       }, [prefill]);
 
-      // Auto-scroll on new messages
+      // Auto-scroll：直接滚内部容器到底（绝不动外层窗口，避免内容被顶到看不见/拉不动）
       useEffect(() => {
-        if (chatEndRef.current) {
-          chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
-        }
+        const el = scrollRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
       }, [chatItems.length, chatItems[chatItems.length - 1]?.html]);
 
       function handleSend() {
@@ -739,7 +738,7 @@
           </div>
 
           {/* Main Chat Area */}
-          <div className={`flex-1 min-h-0 overflow-y-auto px-4 md:px-20 lg:px-40 pt-20 pb-40 custom-scrollbar flex flex-col ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
+          <div ref={scrollRef} className={`flex-1 min-h-0 overflow-y-auto px-4 md:px-20 lg:px-40 pt-20 pb-40 custom-scrollbar flex flex-col ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
 
             <div className="sticky top-0 z-10 max-w-[800px] w-full mx-auto"><PhaseChips bs={bs} theme={theme} /></div>
 
@@ -757,7 +756,6 @@
                 {chatItems.map((item) => (
                   <ChatBubble key={item.id} item={item} theme={theme} onPrefill={(txt) => setInputText(txt)} editable={!busy && item.id === lastUserId} />
                 ))}
-                <div ref={chatEndRef} />
               </div>
             )}
 
