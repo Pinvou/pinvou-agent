@@ -504,10 +504,22 @@ fn spawn_event_forwarder(
                     );
                 }
                 Event::Error { envelope, .. } => {
-                    let _ = app.emit(
-                        "chat:done",
-                        json!({ "status": "error", "error": envelope.message }),
-                    );
+                    // 可恢复错误(如 SSE idle timeout、瞬态工具失败)turn 不会结束——
+                    // 引擎会 retry / 继续跑后续步骤。绝不能发 chat:done,否则前端
+                    // setBusy(false) 把"思考中"指示器掐掉,而引擎还在干活,看着像卡死
+                    // (且会误触发 flush/closeBubble/plan_phase 收尾)。只飘个 advisory。
+                    // 仅 recoverable==false(致命)才是真结束 → chat:done。
+                    if envelope.recoverable {
+                        let _ = app.emit(
+                            "chat:transient_error",
+                            json!({ "error": envelope.message }),
+                        );
+                    } else {
+                        let _ = app.emit(
+                            "chat:done",
+                            json!({ "status": "error", "error": envelope.message }),
+                        );
+                    }
                 }
                 _ => {}
             }

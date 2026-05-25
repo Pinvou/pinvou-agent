@@ -99,7 +99,7 @@ let thinkingPhase = "thinking";
 let thinkingToolName = "";
 let thinkingBubbleEl = null;     // 单例气泡 DOM, 跟随 chatArea 尾部
 
-// 状态文案(bubble + banner 共用)。计时拉长时升级措辞:本地模型生成长内容时
+// thinking 气泡的状态文案。计时拉长时升级措辞:本地模型生成长内容时
 // 后端会长时间静默(无 SSE chunk),纯"思考中... 230s"读起来像卡死。随时长加一句
 // "本地模型生成中"让用户知道仍在运行,不是干等。spinner 始终在动是另一层活信号。
 function busyStatusText() {
@@ -118,7 +118,6 @@ function busyStatusText() {
 function renderThinkingBubble() {
   if (!thinkingTicker) {
     removeThinkingBubble();
-    renderBusyIndicator();
     return;
   }
   if (!thinkingBubbleEl) {
@@ -132,23 +131,6 @@ function renderThinkingBubble() {
     scrollToBottom();
   }
   thinkingBubbleEl.textContent = `${thinkingFrame} ${busyStatusText()}`;
-  renderBusyIndicator();
-}
-
-// composer 上方的持续可见状态条 — 跟 thinking-bubble 同源,但脱离消息流。
-// 用户滚到上面看历史时,thinking-bubble 在视野外,这条仍贴在输入框上方可见。
-function renderBusyIndicator() {
-  const banner = document.getElementById("busy-indicator");
-  if (!banner) return;
-  if (!thinkingTicker) {
-    banner.hidden = true;
-    return;
-  }
-  banner.hidden = false;
-  const spinnerEl = document.getElementById("busy-spinner");
-  const textEl = document.getElementById("busy-text");
-  if (spinnerEl) spinnerEl.textContent = thinkingFrame;
-  if (textEl) textEl.textContent = busyStatusText();
 }
 
 function removeThinkingBubble() {
@@ -156,9 +138,6 @@ function removeThinkingBubble() {
     thinkingBubbleEl.remove();
     thinkingBubbleEl = null;
   }
-  // 状态条也一起关
-  const banner = document.getElementById("busy-indicator");
-  if (banner) banner.hidden = true;
 }
 
 function startThinking() {
@@ -3404,6 +3383,12 @@ listen("chat:usage", (e) => {
     lastInputTokens = input;
     updateTokenBar(input);
   }
+});
+// 可恢复的瞬态错误(SSE idle timeout / 瞬态工具失败)。turn 没结束,引擎会 retry/继续,
+// 所以**绝不 setBusy(false)** —— 思考指示器照常转。只飘个 ⚠️ 提示让用户知道刚抖了一下。
+listen("chat:transient_error", (e) => {
+  const error = e.payload?.error;
+  if (error) appendSystemMessage("⚠️ " + error);
 });
 // File watcher 推送的产物事件：sessions/<id>/workspace/ 下任何新文件 / 修改
 // → 自动跟踪到 artifacts。覆盖 write_file 无法捕获的场景 (如 exec_shell pandoc 出 docx)。

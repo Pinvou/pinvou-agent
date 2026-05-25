@@ -395,32 +395,6 @@ body {
 .tool-toggle:hover { text-decoration: underline; }
 
 /* ─── 输入栏 ───────────────────────────────────────────── */
-/* busy-indicator: composer 上方持续可见的"AI 在干活"状态条。
-   跟 chat-area 末尾的 thinking-bubble 同步内容,但脱离消息流,
-   滚动浏览历史时仍贴在输入栏上方可见,避免用户误以为 LLM 卡死。 */
-.busy-indicator {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 32px;
-  font-size: 12px;
-  font-family: var(--font-mono, monospace);
-  font-style: italic;
-  color: var(--on-surface-muted);
-  background: var(--surface-container-lowest);
-  border-top: 1px solid var(--surface-container-high);
-  letter-spacing: 0.03em;
-  user-select: none;
-  flex-shrink: 0;
-}
-.busy-indicator[hidden] { display: none; }
-.busy-spinner {
-  display: inline-block;
-  font-style: normal;
-  color: var(--accent);
-  min-width: 1em;
-}
-
 .composer {
   padding: 16px 32px;
   background: var(--surface-container-low);
