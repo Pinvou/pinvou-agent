@@ -2,22 +2,37 @@
 
 跨阶段待办、决策、follow-up 集中地。决策细节走 git commit + `docs/`,这里只放**需要单独排期**的事。
 
-最后更新: 2026-05-22
+最后更新: 2026-05-25
 
 ---
 
 ## 当前状态
 
-- **main HEAD**: `133ee3f` (阶段 I — workflow MVP1+MVP2 + 工具调用启发式 phase 推断, see git log)
-- **fork HEAD**: `0526dc5` (`pinvou3-patches` 分支, +1 commit append_file 工具 + write_file diff 截断, on top of 357a2ace)
-- **进行中**: worktree `workflow-discussion` 上 (`c54b149` / `863e3e7`) 含 P7 治本的 reminder 关键补丁, 待 cherry-pick 回 main
-- **worktrees**: `workflow-discussion` (P7 reminder 补丁 + workflow MVP1 平行方案)
+- **main HEAD**: `e729d06` (阶段 J — 已 push origin `Pinvou/pinvou3` + backup `h3c-hexin/pinvou3`)
+- **fork HEAD**: `2564193c` (`pinvou3-patches`,已同步上游 **v0.8.45 + rebrand CodeWhale**,已 push `h3c-hexin/DeepSeek-TUI`)
+- **进行中**: 无重大未并项;阶段 J 全部并入 main 并推送
+- **worktrees**: `workflow-discussion` (本会话工作,已并入 main)、`workflow-desing-01`、`pinvou-review-v2-DO-NOT-DELETE`
 
 ---
 
 ## 已完成阶段
 
 > 决策细节走 git log,这里只留**定位 + 数据点 + 文档兜底**。
+
+### 阶段 J — 大文件 SSE timeout Phase 1 + 上游 v0.8.45 同步/rebrand + 思考指示器修复 (2026-05-25)
+
+本会话四块,全部并入 main `e729d06` + 推 origin/backup:
+
+1. **P7 大文件 SSE timeout Phase 1 完整版**(fork `ade944d`,代办 #0 治本): 
+   - `write_file`/`append_file` 加 **64KB 单次 content 硬上限**(超限返 `InvalidInput` + 引导骨架+分块)。阈值 64KB 而非 32KB 是为不撞上游 `WRITE_FILE_INLINE_DIFF_LIMIT_BYTES`(32KB diff-omit 仍合法)。
+   - **截断感知错误**(`truncated_args_hint`): write/append 因流截断缺 required 字段时,错误改成"参数被截断、content 太大、先骨架后 append ≤16KB 分块",替代干巴巴 missing_field,掐断 loop_guard 原样重试内耗。
+   - SSE idle timeout 错误带 `bytes_received`/在途 tool_use buffer 诊断,区分 prefill 静默 vs 参数中途断。**实测根因**: 大 tool-arg 生成静默 > 240s → 流被切 → arg_repair 修出缺字段调用。
+
+2. **上游 v0.8.45 同步**(fork `2564193c` merge): 上游 148 commit + rebrand(crate `deepseek-tui`→`codewhale-tui`,仓库 `Hmbown/CodeWhale`)。6 冲突解净(file_search/grep 取上游已 harvest 版,append_file/phase-marker/subagent-cap/预算全保)。pinvou3-app rebrand 适配仅 2 处: Cargo.toml `package="codewhale-tui"` 重命名保留 `deepseek_tui::` 别名 + bridge 透传新增 `EngineConfig.subagent_api_timeout`。
+
+3. **思考指示器修复**(main `e729d06`): ① 去掉冗余 busy-indicator banner(和消息流气泡重复);② **根因修复**: bridge 之前无条件 `Event::Error`→`chat:done`,而 SSE idle timeout 是 `recoverable=true` 中途错误(turn 不结束),却被当结束 → 前端 `setBusy(false)` 把"思考中"掐掉、引擎还在跑却显示空白。现按 `recoverable` 分流: 瞬态→`chat:transient_error`(只飘 ⚠️ 不动 busy),仅致命→`chat:done`。
+
+4. **上游 PR**: #2057(subagent role)、#2060(self-hosted 窗口 compaction 预算)已提,待审。CLAUDE.md 加"fork 改动按通用/专用决定是否提 PR"规则。
 
 ### 阶段 I — 工作流 phase 可视化 MVP1 + P7 大文件 SSE timeout 治本 (2026-05-22)
 
@@ -67,24 +82,13 @@ LLM 可见工具 85→16+4,schema 119KB→14KB,翻译 19s→8s。OpenAI streamin
 
 ### 🟡 中等
 
-#### 0. P7 大文件 Phase 1 完整版兜底 (tail event 触发后做)
+#### 0. ✅ P7 大文件 Phase 1 — 已落地 (阶段 J `ade944d`, 2026-05-25)
 
-阶段 I 已落地 5 层 prompt + append_file + write_file description 阈值, h3c-ppt 15 页 PPT
-实测跑通 (单 sample)。Phase 1 完整版**没做**: write_file.content 32KB maxLength 拒绝
-+ actionable recovery 指引 + loop_guard 计数绕过 (~80 行 submodule fork)。
-
-**触发条件**:
-- 出现 ≥ 2 个不同场景 tail event (LLM 在 h3c-ppt 之外的大文件场景撞 SSE timeout)
-- 或要发布 production 需要 defense in depth
-- 或 fork 上游 PR 有价值 (强模型不需要,大概率 fork-only)
-
-**预案设计**:
-- 拒绝路径: `WriteFileTool::execute()` 加 size check → `ToolError::execution_failed(actionable_recovery_msg)` 含具体拆分 pattern
-- loop_guard 绕过: 拒绝消息明确"换 tool 不要 retry" + 工具结果带 `dont_count_for_loop_guard` 标记或 record_attempt 跳过 schema-failed
-- 同时考虑 sticky tool_choice=named (write_file maxLength 拒绝后下个 turn 强制 named append_file)
-- 完整版预计 ~80 行 submodule fork + 测试
-
-不立即做的理由: 当前实测够用 + 复杂度增加 + 单 sample 不代表分布,YAGNI 优先。
+预案里的"硬上限拒绝 + actionable recovery"已做:
+- ✅ `write_file`/`append_file` content **64KB 硬上限**(非 32KB,避开上游 32KB diff-omit 合法区) → 超限返 `InvalidInput` + 骨架/分块引导。
+- ✅ actionable recovery: `truncated_args_hint` —— 流截断缺字段时回"参数被截断请分块",而非干巴巴 missing_field,引导模型换 tool 不原样重试(缓解 loop_guard 锁死)。
+- ✅ 诊断日志: SSE idle timeout 带 bytes/buffer,**实测确认根因** = 大 tool-arg 生成静默 > 240s 被切。
+- ⚠️ **未做**(暂不需要): `dont_count_for_loop_guard` 标记 / sticky `tool_choice=named` 强制下轮 append_file。当前 hint 已能引导模型自纠,实测够用,YAGNI。
 
 #### A. WorkFlow 视图编排 (差异化最强)
 - 用户明说"准备做编排,要细聊"
@@ -119,29 +123,26 @@ bridge 已有 `ModelPreset` 占位,缺 GUI。支持远程 DeepSeek API / OpenRou
 
 ---
 
-## Fork → 上游 PR roadmap (2026-05-19 整理,阶段 G/H 后)
+## Fork → 上游 PR roadmap (2026-05-25 更新, 阶段 J 后)
 
-Fork 现 14 commits ahead `origin/main` (Hmbown upstream):
+上游已 rebrand: **`Hmbown/CodeWhale`**(原 DeepSeek-TUI),crate `codewhale-tui`,当前 v0.8.45。fork 已同步。
+CLAUDE.md 规则: 通用优化/bug → PR;pinvou3 专用 → 留 fork。
 
 | 状态 | Commit | 内容 | 备注 |
 |---|---|---|---|
-| ✅ 已 PR | `d866274` | file_search spawn_blocking + 30s timeout (英文 clean 版) | **PR #1790** + Issue #1791, 等反馈 |
-| 🟢 强适合 PR | `363dd35` | subagent completion role=system→user (修 Qwen 严格 chat_template 400) | 通用 bug fix, 纯净 7 行, **PR #1790 接受后立即提** |
-| 🟢 强适合 PR | `9860ef1` | `DEFAULT_MAX_STEPS` 100→20 + `DEFAULT_SUBAGENT_ELAPSED_MAX` 300s | 对齐 CrewAI 行业共识; 改默认值有争议, **先开 issue 讨论再 PR** |
-| 🟢 强适合 PR | `7e5288e3` | B1+B2: `_Nk` hint 提到所有 vendor 前 + `context_input_budget` 按窗口分级 reserved | **通用 bug,只影响 <500K 窗口模型**(V4 1M 路径不变,有测试锁定);自托管/小窗口社区现成受益方,**PR #1790 合后单独 PR** |
-| 🟡 待 PR | `aaa1920` | grep_files spawn_blocking + 30s timeout (中文,需英文 clean) | 等 #1790 反馈; 若 reviewer 问其他同步 tool 就合进或单独 PR |
-| 🟡 弱适合 | `b2f6ef56` | careful: shell Dangerous 命令在 YOLO 模式下也 BLOCKED | 强 pinvou3 业务语义(careful hook 是品悟 v2 配套),上游接受度低,**不主动 PR** |
-| 🟡 弱适合 | `15244e6` | `GENERAL_AGENT_INTRO` 加 stop-on-failure 条款 | prompt 改动 PR 社区接受度低, ROI 低, **不主动 PR** |
-| 🟡 弱适合 | `dd879db` | `#[cfg(test)] pub mod test_support` | 不常见模式, reviewer 可能质疑, **不主动 PR** |
-| ❌ fork-only | `6ac5b97` `47e6abc` | lib export internal modules + RPIT trait | pinvou3-app Rust wrap 专用 |
-| ❌ fork-only | `93e9474` | `DEEPSEEK_MAX_OUTPUT_TOKENS` env override | pinvou3 vLLM 撞顶专用 |
-| ❌ fork-only | `b9b40ce` `36526ce` `1ba8e41` | blocklist 52 工具 / tool_catalog 优先 / `PINVOU3_BLOCKLIST_OVERRIDE` env | pinvou3 业务定制 |
+| 🔵 **待审** | `363dd35` | subagent role system→user (Qwen chat_template 400) | **PR #2057 OPEN** (2026-05-25 提, 重做净版 + 测试) |
+| 🔵 **待审** | `7e5288e` | sub-500K 窗口 compaction 预算 (`_Nk` vendor-agnostic + 分级 reserved) | **PR #2060 OPEN** (2026-05-25 提) |
+| ✅ 已合/harvest | `d866274`/`aaa1920` | file_search/grep timeout | **#1790 CLOSED**(上游 #2035 harvest 了);grep 同理无需再提。分支已删 |
+| ✅ 已合 | — | OpenAI streaming batch tool_calls | **#1686 MERGED** 进上游。分支已删 |
+| 🟡 待沟通 | `93e9474` | `DEEPSEEK_MAX_OUTPUT_TOKENS` env override | **重新评估: 可 PR**(上游仍用 `DEEPSEEK_` 前缀)。但上游已有 `config.max_output` 字段而 `effective_max_output_tokens` 没读它 → **先开 issue 问 env vs 接 config**, 再实现 |
+| 🟡 待沟通 | `b2f6ef56`/`a25352a` | careful YOLO BLOCK / 多行命令逐行分析 | 碰 **execpolicy/sandbox 信任边界**(CONTRIBUTING 要求预沟通);a25352a 是"放松"安全面更需先开 issue。**不盲提** |
+| 🟡 弱适合 | `9860ef1` `15244e6` `dd879db` | MAX_STEPS 默认 / stop-on-failure prompt / test_support | 改默认值/prompt/不常见模式,ROI 低或需先 issue,**暂不主动** |
+| ❌ fork-only | `6ac5b97` `47e6abc` / `b9b40ce` `36526ce` `1ba8e41` / `ade944d` 64KB 上限 | lib export / blocklist / 64KB 硬上限(opinionated) | pinvou3 专用或 opinionated,留 fork(64KB 那条若要 PR 需拆且阈值可配置) |
 
 **下次开工动作**:
-1. `gh pr view 1790 --repo Hmbown/DeepSeek-TUI` 查状态
-2. 合了 → cherry-pick `363dd35` 到新 PR 分支,跑 fork `cargo test` 后提 PR
-3. `7e5288e3` (B1+B2) 单独 PR,卖点"自托管/小窗口模型 auto compact 失效";改动局部、有现成测试,接受度比 `9860ef1` 高
-4. `9860ef1` 先开 issue 讨论默认值 (20 还是 30/50),收 maintainer 意见再 PR
+1. `gh pr view 2057 2060 --repo Hmbown/CodeWhale` 看反应(merge / harvest / 意见)
+2. 看维护者节奏后再推 `93e9474`(先开 issue 问 env vs config max_output)
+3. `a25352a` 若想推, 先开 issue 描述"多行命令一刀切 Dangerous 误伤", 拿 sign-off 再提
 
 ---
 
