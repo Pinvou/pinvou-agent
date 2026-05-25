@@ -721,7 +721,7 @@
       }
 
       return (
-        <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
+        <div className="flex-1 flex flex-col w-full h-full min-h-0 relative z-10 animate-in fade-in duration-300">
           {artifactsOpen && <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} />}
 
           {/* Top Header (浮动) */}
@@ -739,7 +739,7 @@
           </div>
 
           {/* Main Chat Area */}
-          <div className={`flex-1 overflow-y-auto px-4 md:px-20 lg:px-40 pt-20 pb-40 custom-scrollbar flex flex-col ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
+          <div className={`flex-1 min-h-0 overflow-y-auto px-4 md:px-20 lg:px-40 pt-20 pb-40 custom-scrollbar flex flex-col ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
 
             <div className="sticky top-0 z-10 max-w-[800px] w-full mx-auto"><PhaseChips bs={bs} theme={theme} /></div>
 
