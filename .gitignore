@@ -18,3 +18,7 @@ Thumbs.db
 
 # Playwright
 .playwright-mcp/
+
+# Local tool state
+.claude/
+.superpowers/
