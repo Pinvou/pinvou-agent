@@ -335,6 +335,45 @@
     return lines.length > 0 ? lines.join("\n") : "（plan 为空）";
   }
 
+  // ── 品悟审批辅助 ─────────────────────────────────────────────────
+  var PINVOU_REVIEW_RE = /## PINVOU REVIEW REPORT[\s\S]*$/m;
+  function extractPinvouReport(text) {
+    if (!text) return null;
+    var m = text.match(PINVOU_REVIEW_RE);
+    return m ? m[0].trim() : null;
+  }
+  function overrideAllCriticalInReport(report) {
+    return report.replace(
+      /^(\|[^|]*\|\s*CRITICAL\s*\|\s*)RAISED(\s*\|[^|]*\|)$/gim, "$1OVERRIDDEN_BY_USER$2"
+    ).replace(
+      /^(\|[^|]*\|\s*CRITICAL\s*\|\s*OVERRIDDEN_BY_USER\s*\|\s*)[^|]*(\|)$/gim, "$1用户拍板继续$2"
+    );
+  }
+  function synthesizeOverriddenReport(hint) {
+    return "## PINVOU REVIEW REPORT\n\n| Finding | Severity | Status | User Decision |\n|---------|----------|--------|---------------|\n| " +
+      (hint || "Pinvou 输出未按表格格式,用户已阅读并 override") + " | CRITICAL | OVERRIDDEN_BY_USER | 用户拍板继续 |\n\n**VERDICT**: user override —— Pinvou 未按格式输出表格,用户已读完意见后强制放行";
+  }
+  function parseGateError(err) {
+    var s = typeof err === "string" ? err : (err && err.toString ? err.toString() : "");
+    if (s.indexOf("gate_error") < 0) return null;
+    try { return JSON.parse(s); } catch (e) { return null; }
+  }
+  function lastAssistantText() {
+    for (var i = state.messages.length - 1; i >= 0; i--) {
+      if (state.messages[i].role === "assistant") {
+        var parts = state.messages[i].content || [];
+        var buf = "";
+        for (var k = 0; k < parts.length; k++) { if (parts[k].type === "text" && parts[k].text) buf += parts[k].text; }
+        return buf;
+      }
+    }
+    return "";
+  }
+  // 品悟触发态（内部）
+  var pendingAssistantPersona = null;   // null | "pinvou-plan" | "pinvou-final"
+  var pendingPinvouReview = null;       // { planMarkdown }
+  var pendingFinalReview = false;
+
   // ── Send message ─────────────────────────────────────────────────
   async function sendMessage(text) {
     text = (text || "").trim();
@@ -438,6 +477,7 @@
         html: renderMarkdown(currentStreamText),
         time: timeStr(),
         streaming: true,
+        persona: pendingAssistantPersona,
       });
     }
     notify();
@@ -536,13 +576,30 @@
     state.busy = false;
     currentStreamText = "";
     currentStreamId = 0;
+    pendingAssistantPersona = null;
+
+    // 品悟审方案完成 → 在紫色品悟气泡后附 3 按钮卡(accept override / revise / add)
+    if (pendingPinvouReview) {
+      var report = extractPinvouReport(lastAssistantText());
+      addChatItem({ type: "pinvou_actions", planMarkdown: pendingPinvouReview.planMarkdown, report: report, resolved: false, statusLabel: "", time: timeStr() });
+      pendingPinvouReview = null;
+    }
+    // final review 是 advisory，跑完只清 flag，不附按钮
+    if (pendingFinalReview) { pendingFinalReview = false; }
 
     // 执行 plan 完成 → 回 yolo 默认态(plan_phase 从 executing → none)，同步后端 store
+    var wasExecuting = false;
     if (state.modeState.plan_phase === "executing") {
+      wasExecuting = true;
       state.modeState = { mode: "yolo", plan_phase: "none", pinvou_review_enabled: state.modeState.pinvou_review_enabled };
       if (state.activeSessionId) {
         try { await invoke("discard_plan", { sessionId: state.activeSessionId }); } catch (_) {}
       }
+    }
+
+    // 任务收口：开了品悟审批则自动 advisory final review（pendingFinalReview 防递归）
+    if (wasExecuting && state.modeState.pinvou_review_enabled && !pendingFinalReview) {
+      await autoTriggerPinvouFinal();
     }
 
     await persistMessages();
@@ -822,6 +879,7 @@
     addChatItem({ type: "user", text: text, time: timeStr() });
     if (persist) state.messages.push({ role: "user", content: [{ type: "text", text: text }] });
   }
+  function markResolved(id, statusLabel) { patchItemById(id, { resolved: true, statusLabel: statusLabel || "" }); notify(); }
   function applyModeFromState(st) {
     state.modeState = {
       mode: st.mode || "yolo",
@@ -840,9 +898,16 @@
       var st = await invoke("accept_plan", { sessionId: state.activeSessionId, planMarkdown: planMarkdown || "" });
       applyModeFromState(st);
     } catch (e) {
+      // Pinvou EXIT GATE：accept 前必须先有 review report
+      var gate = parseGateError(e);
       if (itemId) patchItemById(itemId, { cardState: "active", statusLabel: "", resolved: false });
       state.busy = false;
-      addSystemItem("⚠️ accept_plan 失败: " + e);
+      if (gate && gate.gate_error === "missing_review_report") {
+        notify();
+        await autoTriggerPinvouReview(planMarkdown || "");
+        return;
+      }
+      addSystemItem(gate ? ("⚠️ Pinvou EXIT GATE 阻塞: " + (gate.message || "")) : ("⚠️ accept_plan 失败: " + e));
     }
     notify();
   }
@@ -1006,6 +1071,51 @@
     } catch (e) { addSystemItem("⚠️ 设置品悟审批失败: " + e); }
     notify();
   }
+  function togglePinvouReview() { return setPinvouReview(!state.modeState.pinvou_review_enabled); }
+
+  // 共用底层：前端 user 气泡只显示简短摘要，完整 prompt 发给后端（本地小模型 eager loading）
+  async function dispatchPinvouTrigger(persona, summary, fullPrompt) {
+    if (!state.activeSessionId || state.busy) return;
+    pendingAssistantPersona = persona;
+    pushUserEcho(summary, true);
+    state.busy = true;
+    currentStreamText = "";
+    currentStreamId = ++itemIdSeq;
+    state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true, persona: persona });
+    notify();
+    try { await invoke("chat", { message: fullPrompt, attachments: [] }); }
+    catch (e) { addSystemItem("⚠️ " + e); state.busy = false; notify(); }
+  }
+  async function autoTriggerPinvouReview(planMarkdown) {
+    pendingPinvouReview = { planMarkdown: planMarkdown };
+    addSystemItem("🟣 品悟还没看过这个方案 —— 自动让品悟先看一眼...");
+    var fullPrompt = "/pinvou-review-plan";
+    try { var body = await invoke("read_skill_body", { name: "pinvou-review-plan" }); fullPrompt = "[品悟自动触发 /pinvou-review-plan,完整角色定义如下]\n\n" + body; }
+    catch (e) { addSystemItem("⚠️ 加载 pinvou-review-plan skill 失败: " + e); }
+    await dispatchPinvouTrigger("pinvou-plan", "🟣 触发品悟审方案", fullPrompt);
+  }
+  async function autoTriggerPinvouFinal() {
+    pendingFinalReview = true;
+    addSystemItem("🟣 任务完成 —— 让品悟核验一下产出...");
+    var fullPrompt = "/pinvou-review-final";
+    try { var body = await invoke("read_skill_body", { name: "pinvou-review-final" }); fullPrompt = "[品悟自动触发 /pinvou-review-final,完整角色定义如下]\n\n" + body; }
+    catch (e) { addSystemItem("⚠️ 加载 pinvou-review-final skill 失败: " + e); }
+    await dispatchPinvouTrigger("pinvou-final", "🟣 触发品悟验收", fullPrompt);
+  }
+  // 品悟 3 按钮之「✅ 直接执行」：override 所有 CRITICAL 后 accept_plan
+  async function pinvouAcceptOverride(itemId, planMarkdown, report) {
+    patchItemById(itemId, { resolved: true, statusLabel: "👍 用户 override 所有 CRITICAL,继续执行..." });
+    if (!state.activeSessionId) { notify(); return; }
+    var eff = report ? overrideAllCriticalInReport(report) : synthesizeOverriddenReport("Pinvou 用自然语言提了意见(见上方),用户阅读后决策");
+    var fullMd = (planMarkdown || "") + "\n\n" + eff;
+    pushUserEcho("✅ 就这么干(品悟顾虑已 override)", true);
+    state.busy = true; notify();
+    try {
+      var st = await invoke("accept_plan", { sessionId: state.activeSessionId, planMarkdown: fullMd });
+      applyModeFromState(st);
+    } catch (e) { addSystemItem("⚠️ accept_plan 仍失败: " + e); state.busy = false; }
+    notify();
+  }
 
   // ── 工作流 ───────────────────────────────────────────────────────
   function setCurrentPhase(phaseId, source) {
@@ -1154,6 +1264,9 @@
     // 品悟审批
     readSkillBody: readSkillBody,
     setPinvouReview: setPinvouReview,
+    togglePinvouReview: togglePinvouReview,
+    pinvouAcceptOverride: pinvouAcceptOverride,
+    markResolved: markResolved,
     // 工作流
     loadSkills: loadSkills,
     activateSkill: activateSkill,

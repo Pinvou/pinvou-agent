@@ -686,7 +686,10 @@
 
           {/* Top Header */}
           <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-20 pointer-events-none">
-            <ModeHeader bs={bs} theme={theme} />
+            <div className="flex items-center gap-2">
+              <ModeHeader bs={bs} theme={theme} />
+              <PinvouToggle bs={bs} theme={theme} />
+            </div>
             <button
               onClick={() => setArtifactsOpen(true)}
               className={`pointer-events-auto px-4 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm'}`}>
@@ -823,9 +826,23 @@
       if (item.type === 'plan_text_fallback') return <PlanFallbackCard item={item} theme={theme} />;
       if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} theme={theme} />;
       if (item.type === 'user_input') return <UserInputCard item={item} theme={theme} />;
+      if (item.type === 'pinvou_actions') return <PinvouActionsCard item={item} theme={theme} onPrefill={onPrefill} />;
       if (item.type === 'user') return <UserBubble item={item} theme={theme} editable={editable} />;
 
       if (item.type === 'assistant') {
+        const persona = item.persona;
+        const isPinvou = persona === 'pinvou-plan' || persona === 'pinvou-final';
+        if (isPinvou) {
+          return (
+            <div className="flex justify-start">
+              <div className={`max-w-[95%] w-full rounded-[16px] border p-3 ${isDark ? 'bg-[#7C3AED]/10 border-[#D0BCFF]/30' : 'bg-[#7C3AED]/5 border-[#7C3AED]/20'} ${isDark ? 'dark-code' : 'light-code'}`}>
+                <div className={`text-[12px] font-semibold mb-1.5 ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>🟣 品悟{persona === 'pinvou-final' ? '（验收）' : '（审方案）'}</div>
+                <div className={`msg-md text-[15px] leading-relaxed ${item.streaming ? 'streaming-cursor' : ''} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}
+                  dangerouslySetInnerHTML={{ __html: item.html || '' }} />
+              </div>
+            </div>
+          );
+        }
         return (
           <div className="flex justify-start">
             <div className={`max-w-[95%] ${isDark ? 'dark-code' : 'light-code'}`}>
@@ -1163,6 +1180,41 @@
         >
           <Zap size={15} /> {isPlan ? ('Plan' + (phaseLabel ? ' · ' + phaseLabel : '')) : 'YOLO'}
         </button>
+      );
+    };
+
+    // 品悟审批 toggle（与 Plan/YOLO 正交）
+    const PinvouToggle = ({ bs, theme }) => {
+      const isDark = theme === 'dark';
+      const on = !!(bs && bs.modeState && bs.modeState.pinvou_review_enabled);
+      return (
+        <button onClick={() => bridge.available && bridge.togglePinvouReview()}
+          title={on ? '品悟 review: 开（关键阶段让品悟把关）' : '品悟 review: 关（点击开启）'}
+          className={`pointer-events-auto px-3 py-2 rounded-full text-[13px] font-medium flex items-center gap-1.5 transition-colors
+            ${on ? (isDark ? 'bg-[#7C3AED]/40 text-[#D0BCFF]' : 'bg-[#7C3AED]/10 text-[#7C3AED]')
+                 : (isDark ? 'bg-[#1E1F20] text-[#8E8E8E] hover:bg-[#333537]' : 'bg-white text-[#9AA0A6] hover:bg-[#F0F4F9] shadow-sm')}`}>
+          🟣 品悟{on ? ' 开' : ''}
+        </button>
+      );
+    };
+
+    // 品悟审完后的 3 按钮卡
+    const PinvouActionsCard = ({ item, theme, onPrefill }) => {
+      const isDark = theme === 'dark';
+      const done = item.resolved;
+      return (
+        <div className={cardBoxCls(isDark, isDark ? 'border-[#D0BCFF]/40' : 'border-[#7C3AED]/30')}>
+          <div className={`text-[13px] font-medium mb-3 ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>🟣 品悟审完了 —— 你的决定：</div>
+          {done ? (
+            <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{item.statusLabel || '已处理'}</div>
+          ) : (
+            <div className="flex items-center gap-2 flex-wrap">
+              <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.pinvouAcceptOverride(item.id, item.planMarkdown, item.report)}>✅ 直接执行</button>
+              <button className={cardBtnCls(isDark)} onClick={() => { onPrefill && onPrefill('修订方案: 按 Pinvou 上面提的 CRITICAL,改一下方案。'); bridge.markResolved(item.id, '↻ 让 AI 改方案...'); }}>↻ AI 改方案</button>
+              <button className={cardBtnCls(isDark)} onClick={() => { onPrefill && onPrefill('我也担心: '); bridge.markResolved(item.id, '⊕ 把你的话补进 plan...'); }}>⊕ 我加一句</button>
+            </div>
+          )}
+        </div>
       );
     };
 
