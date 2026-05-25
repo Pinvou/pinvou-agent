@@ -222,6 +222,31 @@ CLAUDE.md 规则: 通用优化/bug → PR;pinvou3 专用 → 留 fork。
 
 ---
 
+## 阶段 K(react-ui-migration 分支): 同事新版 React UI 合并 + 全能力移植
+
+**背景**: UI 同事基于旧版 9006490 重写了一套 **纯 React UI**(JSX-in-Babel 内联 index.html + Tailwind CDN
++ tauri-bridge.js pub/sub), 但比当时 main 的 vanilla `main.js`(4053 行)落后一个版本且砍掉了大量能力。
+需求: 用同事的 React 框架替换 vanilla 前端, 跑在 main 现有后端上, 并把 main 全部能力移植过来 + 补 workflow。
+
+**做法**(worktree `react-ui-migration`, 基于 main f43a279):
+- 底座: 落地同事 React index.html + tauri-bridge.js(CRLF→LF), 删 vanilla main.js/chat.css(死代码)
+- 设计原则: **bridge 做唯一状态源, React 纯渲染**; 各种卡片(plan/用户交互/careful/品悟)作为
+  特殊类型 chatItem 按序插入聊天流; 持久 mode/workflow 状态放 state 顶层
+- bridge 从 ~16 命令扩到 main 前端全部 37 命令 + 14 事件
+- 移植: Plan/YOLO 双模式 · 用户交互卡 · careful 拦截 · 产物面板(md/html iframe/text 预览) ·
+  附件/粘贴图 · 编辑上一轮 · 手动压缩 · 品悟审批 v2(GATE→紫气泡→3按钮 override) · **workflow 视图**
+  (skill 卡片网格 + phase chip pipeline 三态 + chip 只读预览 + demo modal + session 绑定标签)
+- 校验: 无法跑 GUI, 用 `@babel/standalone` 离线编译校验 JSX(每步) + `node --check` bridge
+
+**已知待办**(留给后续):
+- ⚠️ **CDN 依赖**: 新 index.html 从 unpkg/cdn 加载 React/Tailwind/Babel, 离线/内网跑不起来 —
+  GB10 本地产品上线前需 vendor 化(下载到 vendor/ 本地引用)
+- i18n: 新 UI 沿用同事的极简 dict(chrome 中英双语), 移植的卡片用中文领域术语(品悟/方案/工作流)未做
+  英文版 — 与同事 ToolCard 等硬编码中文一致, 产品中文优先, 视需要再补
+- 主题/语言: 启动未从 saved settings 同步 activeTheme/language(同事原代码遗留, 非本次回归)
+
+---
+
 ## 相关文档
 
 - `docs/L1-judge-rubric.md` — Judge 评分 rubric (r2)
