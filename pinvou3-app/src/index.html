@@ -628,6 +628,8 @@
       const hasMessages = chatItems.length > 0;
       const attachments = (bs && bs.attachments) || [];
       const artifactCount = (bs && bs.artifacts) ? bs.artifacts.length : 0;
+      let lastUserId = null;
+      for (let i = chatItems.length - 1; i >= 0; i--) { if (chatItems[i].type === 'user') { lastUserId = chatItems[i].id; break; } }
 
       // 工作流启用时预填输入框
       useEffect(() => {
@@ -710,7 +712,7 @@
             {hasMessages && (
               <div className="max-w-[800px] w-full mx-auto space-y-4">
                 {chatItems.map((item) => (
-                  <ChatBubble key={item.id} item={item} theme={theme} onPrefill={(txt) => setInputText(txt)} />
+                  <ChatBubble key={item.id} item={item} theme={theme} onPrefill={(txt) => setInputText(txt)} editable={!busy && item.id === lastUserId} />
                 ))}
                 <div ref={chatEndRef} />
               </div>
@@ -782,7 +784,38 @@
     // ==========================================
     // Chat Bubble (message rendering)
     // ==========================================
-    const ChatBubble = ({ item, theme, onPrefill }) => {
+    const UserBubble = ({ item, theme, editable }) => {
+      const isDark = theme === 'dark';
+      const [editing, setEditing] = useState(false);
+      const [val, setVal] = useState(item.text);
+      function commit() { const tx = val.trim(); setEditing(false); if (tx && bridge.available) bridge.editLastTurn(tx); }
+      if (editing) {
+        return (
+          <div className="flex justify-end">
+            <div className="max-w-[85%] w-full">
+              <textarea autoFocus value={val} onChange={e => setVal(e.target.value)}
+                rows={Math.min(6, Math.max(1, val.split('\n').length))}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit(); } else if (e.key === 'Escape') { setEditing(false); setVal(item.text); } }}
+                className={`w-full rounded-[16px] px-4 py-2 text-[15px] outline-none ${isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]'}`} />
+              <div className="flex gap-2 justify-end mt-1">
+                <button className={cardBtnCls(isDark)} onClick={() => { setEditing(false); setVal(item.text); }}>取消</button>
+                <button className={cardBtnCls(isDark, 'primary')} onClick={commit}>重新发送</button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+      return (
+        <div className="flex justify-end group">
+          <div className="flex items-center gap-2 max-w-[85%]">
+            {editable && <button title="编辑并重发" onClick={() => { setVal(item.text); setEditing(true); }} className={`opacity-0 group-hover:opacity-100 text-[13px] shrink-0 ${isDark ? 'text-[#8E8E8E] hover:text-[#C4C7C5]' : 'text-[#9AA0A6] hover:text-[#444746]'}`}>✏️</button>}
+            <div className={`px-5 py-3 rounded-[20px] text-[15px] leading-relaxed whitespace-pre-wrap ${isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]'}`}>{item.text}</div>
+          </div>
+        </div>
+      );
+    };
+
+    const ChatBubble = ({ item, theme, onPrefill, editable }) => {
       const isDark = theme === 'dark';
 
       if (item.type === 'plan_card') return <PlanCard item={item} theme={theme} onPrefill={onPrefill} />;
@@ -790,16 +823,7 @@
       if (item.type === 'plan_text_fallback') return <PlanFallbackCard item={item} theme={theme} />;
       if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} theme={theme} />;
       if (item.type === 'user_input') return <UserInputCard item={item} theme={theme} />;
-
-      if (item.type === 'user') {
-        return (
-          <div className="flex justify-end">
-            <div className={`max-w-[85%] px-5 py-3 rounded-[20px] text-[15px] leading-relaxed ${isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]'}`}>
-              {item.text}
-            </div>
-          </div>
-        );
-      }
+      if (item.type === 'user') return <UserBubble item={item} theme={theme} editable={editable} />;
 
       if (item.type === 'assistant') {
         return (

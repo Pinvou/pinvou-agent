@@ -920,7 +920,31 @@
 
   // ── 编辑上一轮 / 手动压缩 ─────────────────────────────────────────
   async function editLastTurn(newText) {
-    try { await invoke("edit_last_turn", { newMessage: newText }); } catch (e) { addSystemItem("⚠️ 编辑失败: " + e); }
+    if (state.busy || !state.activeSessionId) return;
+    newText = (newText || "").trim();
+    if (!newText) return;
+    // 删除末尾最近的 user 及之后所有，push 新 user，重渲染
+    var cut = -1;
+    for (var i = state.messages.length - 1; i >= 0; i--) {
+      if (state.messages[i].role === "user") { cut = i; break; }
+    }
+    if (cut >= 0) state.messages.splice(cut);
+    state.messages.push({ role: "user", content: [{ type: "text", text: newText }] });
+    resetPendingAssistant();
+    state.chatItems = [];
+    rerenderFromMessages();
+    state.busy = true;
+    currentStreamText = "";
+    currentStreamId = ++itemIdSeq;
+    state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
+    notify();
+    try {
+      await invoke("edit_last_turn", { newMessage: newText });
+    } catch (e) {
+      addSystemItem("⚠️ " + e);
+      state.busy = false;
+      notify();
+    }
   }
   async function compactNow() {
     try { await invoke("compact_now"); } catch (e) { addSystemItem("⚠️ 压缩失败: " + e); }
