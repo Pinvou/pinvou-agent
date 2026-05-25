@@ -3,340 +3,896 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title data-i18n="app.title">pinvou3 智能助手</title>
+  <title>pinvou3 智能助手</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Markdown rendering -->
+  <script src="vendor/marked.min.js"></script>
+  <script src="vendor/purify.min.js"></script>
+  <style>
+    .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+    .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+    .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.3); border-radius: 10px; }
+    .custom-scrollbar:hover::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.5); }
+    .hide-scrollbar::-webkit-scrollbar { display: none; }
+    .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 
-  <script src="./vendor/marked.min.js"></script>
-  <script src="./vendor/purify.min.js"></script>
+    /* Chat message styles */
+    .msg-md h1,.msg-md h2,.msg-md h3,.msg-md h4 { font-weight:600; margin:0.6em 0 0.3em; }
+    .msg-md h1 { font-size:1.4em; } .msg-md h2 { font-size:1.2em; } .msg-md h3 { font-size:1.05em; }
+    .msg-md p { margin:0.4em 0; line-height:1.7; }
+    .msg-md ul,.msg-md ol { padding-left:1.5em; margin:0.4em 0; }
+    .msg-md li { margin:0.2em 0; line-height:1.6; }
+    .msg-md code { font-family:"JetBrains Mono","SF Mono",Consolas,monospace; font-size:0.88em; padding:0.15em 0.4em; border-radius:6px; }
+    .msg-md pre { margin:0.6em 0; padding:1em; border-radius:12px; overflow-x:auto; font-size:0.88em; line-height:1.5; }
+    .msg-md pre code { padding:0; background:none; }
+    .msg-md blockquote { border-left:3px solid rgba(128,128,128,0.4); padding-left:1em; margin:0.5em 0; opacity:0.85; }
+    .msg-md a { text-decoration:underline; }
+    .msg-md table { border-collapse:collapse; margin:0.5em 0; font-size:0.92em; }
+    .msg-md th,.msg-md td { border:1px solid rgba(128,128,128,0.3); padding:0.4em 0.8em; }
 
-  <link href="./styles/chat.css" rel="stylesheet"/>
+    /* Dark theme code blocks */
+    .dark-code .msg-md code { background:rgba(255,255,255,0.08); color:#E3E3E3; }
+    .dark-code .msg-md pre { background:rgba(0,0,0,0.3); color:#E3E3E3; }
+    /* Light theme code blocks */
+    .light-code .msg-md code { background:rgba(0,0,0,0.06); color:#1F1F1F; }
+    .light-code .msg-md pre { background:rgba(0,0,0,0.04); color:#1F1F1F; }
+
+    /* Tool card styles */
+    .tool-card-output { max-height:200px; overflow-y:auto; font-size:12px; line-height:1.5; white-space:pre-wrap; word-break:break-all; }
+
+    /* Streaming cursor */
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+    .streaming-cursor::after { content:"▊"; animation:blink 1s step-end infinite; margin-left:2px; }
+
+    /* Thinking animation */
+    @keyframes spin-braille { 0%{content:"⠋"} 10%{content:"⠙"} 20%{content:"⠹"} 30%{content:"⠸"} 40%{content:"⠼"} 50%{content:"⠴"} 60%{content:"⠦"} 70%{content:"⠧"} 80%{content:"⠇"} 90%{content:"⠏"} }
+  </style>
 </head>
-<body data-theme="genesis">
+<body class="m-0 p-0">
+  <div id="root"></div>
 
-<div class="app-shell">
+  <!-- TauriBridge must load before React -->
+  <script src="tauri-bridge.js"></script>
 
-  <aside class="sidebar">
-    <div class="sidebar-resizer" id="sidebar-resizer" title="拖拽调整侧栏宽度 · 双击重置"></div>
-    <div class="sidebar-brand">
-      <div class="brand">PINVOU3</div>
-      <div class="brand-sub" data-i18n="brand.sub">本地 · GB10</div>
-    </div>
-    <nav class="sidebar-nav">
-      <a class="nav-link active" data-view="chatroom" href="#">
-        <span class="nav-icon">💬</span>
-        <span class="nav-label" data-i18n="nav.chatroom">工作会话</span>
-      </a>
-      <div class="history-panel">
-        <button class="history-new" id="new-session-btn" type="button">
-          <span class="history-new-icon">+</span>
-          <span data-i18n="history.new">新对话</span>
-        </button>
-        <ul class="history-list" id="history-list">
-          <li class="history-empty" data-i18n="history.empty">暂无历史对话</li>
-        </ul>
-      </div>
-      <a class="nav-link" data-view="workflow" href="#">
-        <span class="nav-icon">📋</span>
-        <span class="nav-label" data-i18n="nav.workflow">工作流</span>
-      </a>
-      <a class="nav-link" data-view="monitor" href="#">
-        <span class="nav-icon">📊</span>
-        <span class="nav-label" data-i18n="nav.monitor">监控</span>
-      </a>
-    </nav>
-    <div class="sidebar-foot">
-      <a class="nav-link" data-view="settings" href="#">
-        <span class="nav-icon">⚙️</span>
-        <span class="nav-label" data-i18n="nav.settings">设置</span>
-      </a>
-    </div>
-  </aside>
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
 
-  <main class="app-main">
+    /* ==========================================
+       Lucide icon replacements (inline SVG)
+       ========================================== */
+    const I = ({size=24,className='',children}) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+        stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+        className={className}>{children}</svg>
+    );
+    const Plus = (p) => <I {...p}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></I>;
+    const Edit2 = (p) => <I {...p}><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></I>;
+    const Trash2 = (p) => <I {...p}><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></I>;
+    const ClipboardList = (p) => <I {...p}><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/></I>;
+    const BarChart2 = (p) => <I {...p}><line x1="18" x2="18" y1="20" y2="10"/><line x1="12" x2="12" y1="20" y2="4"/><line x1="6" x2="6" y1="20" y2="14"/></I>;
+    const Settings = (p) => <I {...p}><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></I>;
+    const Monitor = (p) => <I {...p}><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></I>;
+    const Brain = (p) => <I {...p}><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/></I>;
+    const Zap = (p) => <I {...p}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></I>;
+    const Package = (p) => <I {...p}><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></I>;
+    const RefreshCw = (p) => <I {...p}><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></I>;
+    const Search = (p) => <I {...p}><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></I>;
+    const Paperclip = (p) => <I {...p}><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></I>;
+    const Mic = (p) => <I {...p}><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></I>;
+    const Send = (p) => <I {...p}><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></I>;
+    const Terminal = (p) => <I {...p}><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></I>;
+    const ChevronDown = (p) => <I {...p}><path d="m6 9 6 6 6-6"/></I>;
+    const ChevronRight = (p) => <I {...p}><path d="m9 18 6-6-6-6"/></I>;
+    const Copy = (p) => <I {...p}><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></I>;
+    const CheckCircle2 = (p) => <I {...p}><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></I>;
+    const Menu = (p) => <I {...p}><line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/></I>;
+    const Sparkles = (p) => <I {...p}><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/><path d="M5 3v4"/><path d="M19 17v4"/><path d="M3 5h4"/><path d="M17 19h4"/></I>;
+    const StopCircle = (p) => <I {...p}><circle cx="12" cy="12" r="10"/><rect width="6" height="6" x="9" y="9"/></I>;
+    const XCircle = (p) => <I {...p}><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></I>;
+    const Wrench = (p) => <I {...p}><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76Z"/></I>;
+    const User = (p) => <I {...p}><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></I>;
 
-    <!-- ChatRoom -->
-    <section id="view-chatroom" class="view view-active">
-      <div class="chatroom-grid">
-        <div class="chatroom-main">
-      <header class="view-header">
-        <div class="view-header-left">
-          <span class="view-title" data-i18n="view.chatroom.title">工作会话</span>
-          <span class="view-sub" data-i18n="view.chatroom.sub">跟 Qwen3.6 聊点什么</span>
-        </div>
-        <div class="view-header-right">
-          <button id="pinvou-review-toggle" class="pinvou-review-toggle" type="button" data-enabled="false"
-                  title="品悟 review: 关 (点击开启,关键阶段让品悟把关,优化输出质量)">
-            🟣 品悟
-          </button>
-          <span id="super-perm-badge" class="super-perm-badge hidden"
-                title="超级权限已开启,pinvou3 可装软件 / 改系统(去设置关闭)"
-                data-i18n="settings.super_perm.badge">⚠️ 超级权限</span>
-          <span id="live-dot" class="live-dot" title="vLLM 状态"></span>
-          <span id="live-text" class="live-text" data-i18n="live.checking">检查中</span>
-          <button id="right-pane-toggle" class="icon-btn" type="button" title="产物面板">📦<span class="icon-btn-badge hidden" id="right-pane-badge">0</span></button>
-          <button id="clear-btn" class="icon-btn" type="button" data-i18n="chat.clear">清除</button>
-        </div>
-      </header>
+    /* ==========================================
+       i18n dictionary — 1:1 from 前端.html
+       ========================================== */
 
-      <!-- token-bar 隐藏:auto compact 已交给底座管 (2026-05-19), 用户无需可见上下文压力指示。
-           保留 DOM 节点 (hidden) 让 main.js 1986-1987 的 getElementById 不报 null;
-           CSS .token-bar { display:none } 也是同一目的 -->
-      <div class="token-bar" id="token-bar" data-level="green" title="上下文使用率" hidden>
-        <div class="token-bar-fill" id="token-bar-fill"></div>
-      </div>
+    const dict = {
+      zh: {
+        newChat: '新对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', recent: '近期', settings: '设置', localEnv: '本地环境',
+        sysStatus: '系统状态', sysDesc: '实时性能与资源指标', gpu: '图形处理器 (GPU)', gpuUnavail: '状态不可用', noSmi: '未检测到 nvidia-smi',
+        vram: '显存占用', core: '计算核心', ram: '系统内存 (RAM)', used: '已用', physical: '物理内存', total: '总计', swap: '交换空间',
+        vllm: 'VLLM 推理引擎', ctx: '上下文长度', queue: '队列情况', kv: 'KV 命中率', app: '应用服务', appRunning: '核心守护进程运行中',
+        curVer: '当前版本', uiVer: 'UI 版本', uptime: '运行时长',
+        appearance: '外观与语言', lang: '界面语言', langDesc: '切换应用的显示语言', theme: '主题模式', themeDesc: '选择适合你的色彩风格',
+        light: '浅色', dark: '深色', sysPerm: '系统权限', sudo: '高级执行权限 (Sudo)', sudoDesc: '允许助手执行环境配置等高级指令。',
+        chatGreeting: '你好，今天想聊点什么？', artifacts: '产物与代码', placeholder: '询问 PINVOU 或输入指令', disclaimer: 'PINVOU 可能会生成不准确的信息，请仔细核实。',
+        searchPlaceholder: 'Search chats'
+      },
+      en: {
+        newChat: 'New chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', recent: 'Recent', settings: 'Settings', localEnv: 'Local Env',
+        sysStatus: 'System Status', sysDesc: 'Real-time performance metrics', gpu: 'GPU', gpuUnavail: 'Unavailable', noSmi: 'nvidia-smi not found',
+        vram: 'VRAM Usage', core: 'Core Usage', ram: 'System RAM', used: 'Used', physical: 'Physical RAM', total: 'Total', swap: 'Swap Space',
+        vllm: 'VLLM Engine', ctx: 'Context Length', queue: 'Queue (Run/Wait)', kv: 'KV Hit Rate', app: 'App Service', appRunning: 'Core daemon running',
+        curVer: 'App Version', uiVer: 'UI Version', uptime: 'Uptime',
+        appearance: 'Appearance & Language', lang: 'Language', langDesc: 'Switch application display language', theme: 'Theme', themeDesc: 'Choose your color style',
+        light: 'Light', dark: 'Dark', sysPerm: 'System Permissions', sudo: 'Sudo Access', sudoDesc: 'Allow assistant to run high-privilege commands.',
+        chatGreeting: "Hi, what's good?", artifacts: 'Artifacts', placeholder: 'Ask PINVOU or enter a command', disclaimer: 'PINVOU may display inaccurate info, so double-check.',
+        searchPlaceholder: 'Search chats'
+      }
+    };
 
-      <!-- 工作流 Phase 可视化 MVP1: chatroom 顶部 phase chips 条。
-           workflowState.activeSkillName 非空且 phases 非空时显示。
-           chip 状态由 Tauri 事件 chat:phase_changed 驱动 (底座 engine 从 LLM 回复抽
-           `<phase id="..."/>` marker 自动 emit)。用户点 chip 强制跳 = 发 [USER_NUDGE] 伪消息。 -->
-      <div class="workflow-chips" id="workflow-chips" hidden>
-        <div class="workflow-chips-skill">
-          <span class="chip-skill-badge">🧭</span>
-          <span class="chip-skill-name" id="chip-skill-name"></span>
-          <button class="chip-skill-exit icon-btn" id="chip-skill-exit" type="button" title="退出 skill">✕</button>
-        </div>
-        <div class="workflow-chips-track" id="workflow-chips-track"></div>
-      </div>
+    /* ==========================================
+       TauriBridge hook
+       ========================================== */
+    const bridge = window.TauriBridge || { available: false };
 
-      <div id="chat-area" class="chat-area chat-scroll">
-        <div class="msg-row msg-system">
-          <div class="bubble bubble-system">
-            <span class="bubble-system-prefix">PINVOU3 · READY</span><br/>
-            <span data-i18n="chat.welcome">跟 Qwen3.6 说点什么。它能联网、读写文件、跑 shell。</span>
+    function useBridge() {
+      const [bs, setBs] = useState(() => bridge.available ? bridge.getState() : null);
+      useEffect(() => {
+        if (!bridge.available) return;
+        return bridge.subscribe(setBs);
+      }, []);
+      return bs;
+    }
+
+    /* ==========================================
+       App — 1:1 matching 前端.html structure
+       ========================================== */
+    const App = () => {
+      const bs = useBridge();
+      const [activeChat, setActiveChat] = useState(null);
+      const [currentView, setCurrentView] = useState('chat');
+      const [activeTheme, setActiveTheme] = useState('dark');
+      const [language, setLanguage] = useState('zh');
+      const [superPerm, setSuperPerm] = useState(false);
+      const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+      const t = dict[language];
+
+      // Sync from bridge state
+      useEffect(() => {
+        if (!bs) return;
+        if (bs.activeSessionId && bs.activeSessionId !== activeChat) {
+          setActiveChat(bs.activeSessionId);
+          if (currentView !== 'monitor' && currentView !== 'settings' && currentView !== 'search') {
+            setCurrentView('chat');
+          }
+        }
+        if (bs.superPermEnabled !== superPerm) setSuperPerm(bs.superPermEnabled);
+      }, [bs]);
+
+      // Build chat history from sessions
+      const chatHistory = bs && bs.sessions ? bs.sessions.map(s => ({
+        id: s.id,
+        title: s.title || '新对话',
+        date: formatSessionDate(s.updated_at || s.created_at),
+      })) : [];
+
+      function handleNewChat() {
+        if (bridge.available) bridge.createNewSession();
+        setCurrentView('chat');
+      }
+
+      function handleSwitchSession(id) {
+        if (bridge.available) bridge.switchToSession(id);
+        setActiveChat(id);
+        setCurrentView('chat');
+      }
+
+      function handleDeleteSession(id) {
+        if (bridge.available) bridge.deleteSession(id);
+      }
+
+      function handleToggleSuperPerm() {
+        if (bridge.available) bridge.toggleSuperPerm();
+        else setSuperPerm(!superPerm);
+      }
+
+      function handleSetTheme(th) {
+        setActiveTheme(th);
+        if (bridge.available) {
+          bridge.saveSettings({ theme: th === 'dark' ? 'genesis' : 'light', language: language === 'zh' ? 'zh-Hans' : 'en' });
+        }
+      }
+
+      function handleSetLanguage(lang) {
+        setLanguage(lang);
+        if (bridge.available) {
+          bridge.saveSettings({ theme: activeTheme === 'dark' ? 'genesis' : 'light', language: lang === 'zh' ? 'zh-Hans' : 'en' });
+        }
+      }
+
+      return (
+        <div className={`flex h-screen font-sans overflow-hidden antialiased transition-colors duration-300 ${activeTheme === 'dark' ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
+
+          {/* ================= Sidebar (Gemini Style) ================= */}
+          <div className={`${isSidebarOpen ? 'w-[280px] bg-[#1E1F20]' : 'w-[68px] bg-[#131314]'} shrink-0 flex flex-col z-40 transition-all duration-300 ${activeTheme === 'light' ? 'bg-[#F0F4F9]' : ''}`}>
+
+            {/* Header / Logo */}
+            <div className={`px-4 py-4 flex items-center ${isSidebarOpen ? 'gap-3' : 'justify-center'} overflow-hidden`}>
+              <button
+                onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+                title={isSidebarOpen ? "收起侧边栏" : "展开侧边栏"}
+                className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]'}`}
+              >
+                <Menu size={20} className={activeTheme === 'dark' ? 'text-[#E3E3E3]' : 'text-[#444746]'} />
+              </button>
+              <span className={`text-[18px] font-medium tracking-wide flex items-center gap-2 whitespace-nowrap transition-opacity duration-200 ${isSidebarOpen ? 'opacity-100' : 'opacity-0 w-0'}`}>
+                <Sparkles size={20} className={activeTheme === 'dark' ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'} />
+                PINVOU
+              </span>
+            </div>
+
+            {/* Navigation / Recents */}
+            <div className={`flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-1 mt-2 ${isSidebarOpen ? 'px-3' : 'px-2 items-center'}`}>
+
+              <NavItem
+                icon={<Edit2 size={18} />} label={t.newChat}
+                theme={activeTheme}
+                isSidebarOpen={isSidebarOpen}
+                onClick={handleNewChat}
+              />
+              <NavItem
+                icon={<Search size={18} />} label={t.searchChats}
+                active={currentView === 'search'}
+                theme={activeTheme}
+                isSidebarOpen={isSidebarOpen}
+                onClick={() => setCurrentView('search')}
+              />
+
+              <div className={`mb-2 flex flex-col gap-1 ${!isSidebarOpen ? 'w-full items-center' : ''}`}>
+                <NavItem
+                  icon={<BarChart2 size={18} />} label={t.monitor}
+                  active={currentView === 'monitor'}
+                  theme={activeTheme}
+                  isSidebarOpen={isSidebarOpen}
+                  onClick={() => setCurrentView('monitor')}
+                />
+                <NavItem
+                  icon={<ClipboardList size={18} />} label={t.workflow}
+                  active={currentView === 'workflow'}
+                  theme={activeTheme}
+                  isSidebarOpen={isSidebarOpen}
+                  onClick={() => setCurrentView('workflow')}
+                />
+              </div>
+
+              {isSidebarOpen && (
+                <>
+                  <div className="text-[13px] font-medium px-4 py-2 mt-2 mb-1 whitespace-nowrap" style={{ color: activeTheme === 'dark' ? '#C4C7C5' : '#444746' }}>
+                    {t.recent}
+                  </div>
+
+                  <div className="space-y-[2px]">
+                    {chatHistory.map((chat) => (
+                      <div
+                        key={chat.id}
+                        onClick={() => handleSwitchSession(chat.id)}
+                        className={`group flex items-center justify-between px-4 py-2.5 rounded-full cursor-pointer text-[14px] transition-all
+                          ${(activeChat === chat.id && currentView === 'chat')
+                            ? (activeTheme === 'dark' ? 'bg-[#333537] text-white' : 'bg-[#E1E5EA] text-[#1F1F1F]')
+                            : (activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#282A2C]' : 'text-[#444746] hover:bg-[#E1E5EA]')
+                          }`}
+                      >
+                        <span className="truncate pr-4 leading-relaxed whitespace-nowrap">{chat.title}</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Footer Profile */}
+            <div className={`p-3 flex ${isSidebarOpen ? 'flex-row items-center justify-between' : 'flex-col items-center gap-3 pb-6'}`}>
+              {!isSidebarOpen && (
+                <button
+                  onClick={() => setCurrentView('settings')}
+                  title={t.settings}
+                  className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
+                >
+                  <Settings size={18} />
+                </button>
+              )}
+              <div className={`flex items-center ${isSidebarOpen ? 'px-2 gap-3' : 'justify-center'}`}>
+                <div title={t.localEnv} className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-[12px] font-bold ${activeTheme === 'dark' ? 'bg-[#9580FF] text-white' : 'bg-[#7C3AED] text-white'}`}>
+                  GB
+                </div>
+                {isSidebarOpen && (
+                  <div className="flex flex-col whitespace-nowrap overflow-hidden">
+                    <span className="text-[14px] font-medium leading-none mb-1">{t.localEnv}</span>
+                    <span className={`text-[12px] ${activeTheme === 'dark' ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>GB10 Node</span>
+                  </div>
+                )}
+              </div>
+              {isSidebarOpen && (
+                <button
+                  onClick={() => setCurrentView('settings')}
+                  title={t.settings}
+                  className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
+                >
+                  <Settings size={18} />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* ================= Main Content ================= */}
+          <div className="flex-1 flex flex-col relative min-w-0 overflow-hidden">
+
+            {/* Gemini Style Background Glow */}
+            {currentView === 'chat' && (
+              activeTheme === 'light' ? (
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[1200px] h-[800px] bg-[radial-gradient(ellipse_at_center,_rgba(232,240,254,0.8)_0%,_transparent_60%)] pointer-events-none z-0"></div>
+              ) : (
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[40%] w-[1400px] h-[900px] bg-[radial-gradient(ellipse_at_center,_rgba(168,199,250,0.25)_0%,_transparent_60%)] pointer-events-none z-0"></div>
+              )
+            )}
+
+            {currentView === 'monitor' && <MonitorView theme={activeTheme} t={t} bs={bs} />}
+            {currentView === 'settings' && (
+              <SettingsView
+                activeTheme={activeTheme} setActiveTheme={handleSetTheme}
+                language={language} setLanguage={handleSetLanguage}
+                superPerm={superPerm} setSuperPerm={handleToggleSuperPerm}
+                t={t}
+              />
+            )}
+            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} />}
+            {currentView === 'search' && <SearchView theme={activeTheme} history={chatHistory} t={t} onSelect={handleSwitchSession} />}
+
           </div>
         </div>
-      </div>
+      );
+    };
 
-      <footer class="composer" id="composer" data-plan-phase="none">
-        <div class="mode-chip-row" id="mode-chip-row" hidden>
-          <div class="mode-chip-summary">
-            <span class="mode-chip-text" id="mode-chip-text"></span>
-            <button class="mode-chip-jump" id="mode-chip-jump" type="button" hidden>📌 跳到卡片</button>
-            <button class="mode-chip-action" id="mode-chip-action" type="button" hidden></button>
+    /* ==========================================
+       Helpers
+       ========================================== */
+    function formatSessionDate(ts) {
+      if (!ts) return '';
+      const d = new Date(typeof ts === 'number' ? ts : ts);
+      const now = new Date();
+      const diff = now - d;
+      if (diff < 86400000 && d.getDate() === now.getDate()) return 'Today';
+      if (diff < 172800000) return 'Yesterday';
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+
+    // ==========================================
+    // Search View (Gemini Style)
+    // ==========================================
+    const SearchView = ({ theme, history, t, onSelect }) => {
+      const isDark = theme === 'dark';
+      const [query, setQuery] = useState('');
+      const filtered = query
+        ? history.filter(h => h.title.toLowerCase().includes(query.toLowerCase()))
+        : history;
+
+      return (
+        <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
+          <div className="flex-1 overflow-y-auto custom-scrollbar px-6 pt-16 pb-20">
+            <div className="max-w-[768px] mx-auto flex flex-col">
+
+              {/* Centered Search Bar */}
+              <div className={`flex items-center gap-3 px-6 py-4 rounded-full mb-10 transition-colors ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`}>
+                <Search size={22} className={isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'} />
+                <input
+                  type="text"
+                  placeholder={t.searchPlaceholder}
+                  value={query}
+                  onChange={e => setQuery(e.target.value)}
+                  className={`flex-1 bg-transparent border-none outline-none text-[16px] placeholder:text-[16px] ${isDark ? 'placeholder:text-[#C4C7C5]' : 'placeholder:text-[#444746]'}`}
+                />
+              </div>
+
+              {/* List Section */}
+              <div className={`text-[14px] font-medium mb-3 px-4 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
+                {t.recent}
+              </div>
+
+              <div className="flex flex-col">
+                {filtered.map(chat => (
+                  <div
+                    key={chat.id}
+                    onClick={() => onSelect && onSelect(chat.id)}
+                    className={`flex justify-between items-center px-4 py-[14px] cursor-pointer rounded-[16px] transition-colors ${isDark ? 'hover:bg-[#1E1F20]' : 'hover:bg-[#F0F4F9]'}`}
+                  >
+                    <span className={`text-[15px] truncate pr-4 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
+                      {chat.title}
+                    </span>
+                    <span className={`text-[13px] shrink-0 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
+                      {chat.date}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+            </div>
           </div>
-          <div class="mode-chip-progress" id="mode-chip-progress" hidden></div>
         </div>
-        <div class="attachment-row" id="attachment-row"></div>
-        <div class="composer-inner">
-          <button id="attach-btn" type="button" class="attach-btn" aria-label="附件" title="附件 (拖拽/点击/Ctrl+V)">📎</button>
-          <button id="plan-btn" type="button" class="plan-btn" aria-label="Plan 模式切换">💡</button>
-          <textarea
-            id="input"
-            rows="1"
-            data-i18n-placeholder="chat.placeholder"
-            placeholder="跟 Qwen3.6 说点什么（Enter 发送 · Shift+Enter 换行）"
-            autofocus></textarea>
-          <button id="send-btn" type="button" aria-label="发送">
-            <svg class="send-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
-            <span class="stop-icon" aria-hidden="true">■</span>
-          </button>
-        </div>
-      </footer>
-        </div><!-- /chatroom-main -->
+      );
+    };
 
-        <div class="right-pane-backdrop" id="right-pane-backdrop"></div>
-        <aside class="right-pane" id="right-pane" data-collapsed="auto">
-          <div class="right-pane-resizer" id="right-pane-resizer" title="拖拽调整宽度"></div>
-          <button class="right-pane-close" id="right-pane-close" type="button" aria-label="关闭">✕</button>
-          <div class="right-pane-tabs">
-            <button class="right-pane-tab active" data-pane-tab="artifacts" type="button">
-              <span>📦</span> <span data-i18n="pane.artifacts">产物</span>
+
+    // ==========================================
+    // Monitor View (Material 3 Style)
+    // ==========================================
+    const MonitorView = ({ theme, t, bs }) => {
+      const isDark = theme === 'dark';
+      const fmt = bs && bs.monitor && bs.monitor._fmt;
+
+      // Start/stop polling when view mounts/unmounts
+      useEffect(() => {
+        if (bridge.available) bridge.startMonitorPolling();
+        return () => { if (bridge.available) bridge.stopMonitorPolling(); };
+      }, []);
+
+      const updatedAt = fmt ? fmt.updatedAt : '—';
+      const gpuName = fmt ? fmt.gpuName : t.gpuUnavail;
+      const gpuHasVram = fmt ? fmt.gpuHasVram : false;
+      const gpuVram = fmt ? fmt.gpuVram : '—';
+      const gpuVramPct = fmt ? fmt.gpuVramPct : 0;
+      const gpuUtil = fmt ? fmt.gpuUtil : '—';
+      const gpuUtilPct = fmt ? fmt.gpuUtilPct : 0;
+      const ramUsedGiB = fmt ? fmt.ramUsedGiB : '—';
+      const ramPct = fmt ? fmt.ramPct : 0;
+      const ramTotal = fmt ? fmt.ramTotal : '—';
+      const swapPct = fmt ? fmt.swapPct : 0;
+      const swapTotal = fmt ? fmt.swapTotal : '—';
+      const vllmModel = fmt ? fmt.vllmModel : '—';
+      const vllmStatus = fmt ? fmt.vllmStatus : 'OFFLINE';
+      const vllmOnline = fmt ? fmt.vllmOnline : false;
+      const vllmUpstream = fmt ? fmt.vllmUpstream : '—';
+      const vllmMaxLen = fmt ? fmt.vllmMaxLen : '—';
+      const vllmQueue = fmt ? fmt.vllmQueue : '— / —';
+      const vllmKv = fmt ? fmt.vllmKv : '—';
+      const appVersion = fmt ? fmt.appVersion : '—';
+      const dtVersion = fmt ? fmt.dtVersion : '—';
+      const uptime = fmt ? fmt.uptime : '—';
+
+      return (
+        <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
+
+          <div className="px-16 pt-12 pb-6 flex items-end justify-between">
+            <div>
+              <h1 className="text-[32px] font-normal tracking-tight mb-2">{t.sysStatus}</h1>
+              <p className={`text-[15px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.sysDesc}</p>
+            </div>
+            <div className={`flex items-center gap-3 px-5 py-2.5 rounded-full ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
+              <div className={`w-2 h-2 rounded-full ${vllmOnline ? 'bg-[#188038] animate-pulse' : 'bg-[#EA4335]'}`}></div>
+              <span className={`text-[13px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{updatedAt}</span>
+              <div className="w-[1px] h-4 bg-gray-400/30 mx-2"></div>
+              <button
+                onClick={() => { if (bridge.available) bridge.startMonitorPolling(); }}
+                className={`hover:rotate-180 transition-transform duration-500 ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}
+              >
+                <RefreshCw size={16} />
+              </button>
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-16 py-8 custom-scrollbar">
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 max-w-[1200px]">
+
+              <WidgetCard title={t.gpu} theme={theme}>
+                <div className="mb-10">
+                  <h3 className="text-[28px] font-medium">{gpuHasVram ? gpuName : t.gpuUnavail}</h3>
+                  <p className={`text-[14px] mt-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{gpuHasVram ? '' : t.noSmi}</p>
+                </div>
+                <div className="space-y-6 mt-auto">
+                  <ProgressBar label={t.vram} value={gpuHasVram ? gpuVram : '—'} percentage={gpuVramPct} theme={theme} />
+                  <ProgressBar label={t.core} value={gpuHasVram ? gpuUtil : '—'} percentage={gpuUtilPct} theme={theme} />
+                </div>
+              </WidgetCard>
+
+              <WidgetCard title={t.ram} theme={theme}>
+                 <div className="mb-10 flex items-baseline gap-2">
+                  <h3 className="text-[48px] font-normal leading-none tracking-tight">{ramUsedGiB}</h3>
+                  <span className={`text-[16px] font-medium ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>GB {t.used}</span>
+                </div>
+                <div className="space-y-6 mt-auto">
+                  <ProgressBar label={t.physical} value={ramPct + '%'} subValue={ramTotal + ' ' + t.total} percentage={ramPct} theme={theme} color="#0B57D0" />
+                  <ProgressBar label={t.swap} value={swapPct + '%'} subValue={swapTotal} percentage={swapPct} theme={theme} color="#188038" />
+                </div>
+              </WidgetCard>
+
+              <WidgetCard title={t.vllm} theme={theme}>
+                 <div className="flex items-start justify-between mb-8">
+                  <div>
+                    <h3 className="text-[22px] font-medium mb-1">{vllmModel}</h3>
+                    <p className={`text-[13px] font-mono ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{vllmUpstream}</p>
+                  </div>
+                  <div className={`px-3 py-1 rounded-full flex items-center gap-2 ${vllmOnline ? (isDark ? 'bg-[#0F5223] text-[#93D5A6]' : 'bg-[#E6F4EA] text-[#137333]') : (isDark ? 'bg-[#5C2020] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]')}`}>
+                    <CheckCircle2 size={12} />
+                    <span className="text-[11px] font-bold tracking-wider">{vllmStatus}</span>
+                  </div>
+                </div>
+                <div className={`rounded-[16px] p-2 mt-auto ${isDark ? 'bg-[#131314]' : 'bg-[#F8F9FA]'}`}>
+                  <ListRow label={t.ctx} value={String(vllmMaxLen)} theme={theme} />
+                  <ListRow label={t.queue} value={vllmQueue} theme={theme} />
+                  <ListRow label={t.kv} value={vllmKv} border={false} theme={theme} />
+                </div>
+              </WidgetCard>
+
+              <WidgetCard title={t.app} theme={theme}>
+                <div className="mb-8">
+                  <h3 className="text-[22px] font-medium mb-1">pinvou3-app</h3>
+                  <p className={`text-[14px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.appRunning}</p>
+                </div>
+                <div className={`rounded-[16px] p-2 mt-auto ${isDark ? 'bg-[#131314]' : 'bg-[#F8F9FA]'}`}>
+                  <ListRow label={t.curVer} value={appVersion} theme={theme} />
+                  <ListRow label={t.uiVer} value={dtVersion} theme={theme} />
+                  <ListRow label={t.uptime} value={uptime} border={false} theme={theme} />
+                </div>
+              </WidgetCard>
+
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // ==========================================
+    // Settings View (Material 3 Style)
+    // ==========================================
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, t }) => {
+      const isDark = activeTheme === 'dark';
+      return (
+        <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
+
+          <div className="px-16 pt-12 pb-6">
+            <h1 className="text-[32px] font-normal tracking-tight mb-2">{t.settings}</h1>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-16 pt-4 pb-20 custom-scrollbar">
+            <div className="max-w-[800px] space-y-8">
+
+              <div className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
+                <h2 className="text-[18px] font-medium mb-6">{t.appearance}</h2>
+
+                <div className="space-y-8">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-[16px] block mb-1">{t.lang}</span>
+                      <span className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.langDesc}</span>
+                    </div>
+                    <div className={`p-1 rounded-full flex ${isDark ? 'bg-[#131314]' : 'bg-[#E1E5EA]'}`}>
+                      <button onClick={() => setLanguage('zh')} className={`px-6 py-2 rounded-full text-[14px] font-medium transition-colors ${language === 'zh' ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-white text-[#0B57D0] shadow-sm') : ''}`}>中文</button>
+                      <button onClick={() => setLanguage('en')} className={`px-6 py-2 rounded-full text-[14px] font-medium transition-colors ${language === 'en' ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-white text-[#0B57D0] shadow-sm') : ''}`}>English</button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-[16px] block mb-1">{t.theme}</span>
+                      <span className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.themeDesc}</span>
+                    </div>
+                    <div className={`p-1 rounded-full flex ${isDark ? 'bg-[#131314]' : 'bg-[#E1E5EA]'}`}>
+                      <button onClick={() => setActiveTheme('light')} className={`px-6 py-2 rounded-full text-[14px] font-medium transition-colors ${activeTheme === 'light' ? 'bg-white text-[#0B57D0] shadow-sm' : ''}`}>{t.light}</button>
+                      <button onClick={() => setActiveTheme('dark')} className={`px-6 py-2 rounded-full text-[14px] font-medium transition-colors ${activeTheme === 'dark' ? 'bg-[#A8C7FA] text-[#041E49]' : ''}`}>{t.dark}</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
+                <h2 className="text-[18px] font-medium mb-6">{t.sysPerm}</h2>
+
+                <div className="flex items-center justify-between">
+                  <div className="pr-8">
+                    <span className="text-[16px] block mb-1">{t.sudo}</span>
+                    <span className={`text-[14px] leading-relaxed block ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
+                      {t.sudoDesc}
+                    </span>
+                  </div>
+
+                  <button
+                    onClick={setSuperPerm}
+                    className={`w-[52px] h-[32px] rounded-full p-[2px] transition-colors duration-300 relative ${superPerm ? (isDark ? 'bg-[#A8C7FA]' : 'bg-[#0B57D0]') : (isDark ? 'bg-[#444746]' : 'bg-[#747775]')}`}
+                  >
+                    <div className={`w-[28px] h-[28px] rounded-full shadow-sm transform transition-transform duration-300 ${isDark ? 'bg-[#041E49]' : 'bg-white'} ${superPerm ? 'translate-x-[20px]' : 'translate-x-0'}`} />
+                  </button>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // ==========================================
+    // Chat View (Gemini Centered Style + Messages)
+    // ==========================================
+    const ChatView = ({ theme, t, bs }) => {
+      const isDark = theme === 'dark';
+      const [inputText, setInputText] = useState('');
+      const chatEndRef = useRef(null);
+      const chatItems = bs ? bs.chatItems : [];
+      const busy = bs ? bs.busy : false;
+      const hasMessages = chatItems.length > 0;
+
+      // Auto-scroll on new messages
+      useEffect(() => {
+        if (chatEndRef.current) {
+          chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+        }
+      }, [chatItems.length, chatItems[chatItems.length - 1]?.html]);
+
+      function handleSend() {
+        if (!inputText.trim() || busy) return;
+        if (bridge.available) bridge.sendMessage(inputText.trim());
+        setInputText('');
+      }
+
+      function handleKeyDown(e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          handleSend();
+        }
+      }
+
+      function handleCancel() {
+        if (bridge.available) bridge.cancelGeneration();
+      }
+
+      return (
+        <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
+
+          {/* Top Header */}
+          <div className="absolute top-0 left-0 right-0 p-4 flex justify-end z-20 pointer-events-none">
+            <button className={`pointer-events-auto px-4 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm'}`}>
+              <Package size={16} /> {t.artifacts}
             </button>
           </div>
-          <div class="right-pane-content">
-            <div class="pane-tab-panel pane-tab-active" data-pane-panel="artifacts">
-              <ul class="artifact-list" id="artifact-list">
-                <li class="artifact-empty" data-i18n="pane.artifacts.empty">本对话还没有产物</li>
-              </ul>
-              <div class="artifact-preview" id="artifact-preview"></div>
-            </div>
-          </div>
-        </aside>
-      </div><!-- /chatroom-grid -->
-    </section>
 
-    <!-- WorkFlow: skill 库 / 选择器。
-         有 phases 的 skill 显示「启用」按钮 → start_skill_session 新建一个绑定该 skill
-         的 session,自动切到 chatroom + 渲染 chips。可多次启用,各次独立 session。
-         有 demo_file 的 skill 显示「看 demo」按钮 → 弹模态 (iframe/img/pre)。
-         状态机/数据流见 docs/WorkFlow-Phase-可视化-MVP1.md 和 plans/workflow-phase-elegant-zephyr.md。 -->
-    <section id="view-workflow" class="view">
-      <header class="view-header">
-        <div class="view-header-left">
-          <span class="view-title" data-i18n="view.workflow.title">工作流</span>
-          <span class="view-sub" data-i18n="view.workflow.sub">选 skill 启用 phase pipeline 跟踪</span>
-        </div>
-        <div class="view-header-right">
-          <button id="workflow-refresh-btn" class="icon-btn" type="button" title="重扫 skill 目录">🔄 扫描</button>
-        </div>
-      </header>
-      <div class="workflow-skills-grid" id="workflow-skills-grid">
-        <div class="workflow-skills-loading" data-i18n="workflow.loading">加载 skill 列表 …</div>
-      </div>
-      <!-- demo 模态 (hidden 时不占空间) -->
-      <div class="workflow-demo-modal" id="workflow-demo-modal" hidden>
-        <div class="workflow-demo-modal-inner">
-          <header class="workflow-demo-modal-header">
-            <span id="demo-modal-title"></span>
-            <button id="demo-modal-close" class="icon-btn" type="button">✕</button>
-          </header>
-          <div class="workflow-demo-modal-body" id="demo-modal-body"></div>
-          <footer class="workflow-demo-modal-footer" id="demo-modal-footer"></footer>
-        </div>
-      </div>
-    </section>
+          {/* Main Chat Area */}
+          <div className={`flex-1 overflow-y-auto px-4 md:px-20 lg:px-40 pt-20 pb-40 custom-scrollbar flex flex-col ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
 
-    <!-- Monitor -->
-    <section id="view-monitor" class="view">
-      <header class="view-header">
-        <div class="view-header-left">
-          <span class="view-title" data-i18n="view.monitor.title">监控</span>
-          <span class="view-sub" data-i18n="view.monitor.sub">系统性能 · 5 秒刷新</span>
-        </div>
-        <div class="view-header-right">
-          <span id="monitor-live-dot" class="live-dot"></span>
-          <span id="monitor-updated" class="view-sub">—</span>
-          <button id="monitor-refresh-btn" class="icon-btn" type="button" data-i18n="monitor.refresh">刷新</button>
-        </div>
-      </header>
-      <div class="monitor-grid">
-        <div class="monitor-card" id="card-gpu">
-          <div class="monitor-card-head"><span class="card-label">GPU</span><span class="card-icon">🖥️</span></div>
-          <div class="card-title" id="gpu-name">—</div>
-          <div class="card-row">
-            <span class="card-row-label" data-i18n="monitor.vram">VRAM</span>
-            <div class="bar"><div class="bar-fill" id="gpu-vram-bar"></div></div>
-            <span class="card-row-val" id="gpu-vram-text">— / —</span>
-          </div>
-          <div class="card-row">
-            <span class="card-row-label" data-i18n="monitor.util">利用率</span>
-            <div class="bar"><div class="bar-fill" id="gpu-util-bar"></div></div>
-            <span class="card-row-val" id="gpu-util-text">—%</span>
-          </div>
-        </div>
-
-        <div class="monitor-card" id="card-ram">
-          <div class="monitor-card-head"><span class="card-label" data-i18n="monitor.memory">内存</span><span class="card-icon">🧠</span></div>
-          <div class="card-title" data-i18n="monitor.system_ram">系统内存</div>
-          <div class="card-row">
-            <span class="card-row-label" data-i18n="monitor.used">已用</span>
-            <div class="bar"><div class="bar-fill" id="ram-used-bar"></div></div>
-            <span class="card-row-val" id="ram-used-text">— / —</span>
-          </div>
-          <div class="card-row">
-            <span class="card-row-label" data-i18n="monitor.swap">Swap</span>
-            <div class="bar"><div class="bar-fill" id="swap-used-bar"></div></div>
-            <span class="card-row-val" id="swap-used-text">— / —</span>
-          </div>
-        </div>
-
-        <div class="monitor-card" id="card-vllm">
-          <div class="monitor-card-head"><span class="card-label">vLLM Engine</span><span class="card-icon">⚡</span></div>
-          <div class="card-title" id="vllm-model">—</div>
-          <div class="card-row">
-            <span class="card-row-label" data-i18n="monitor.status">状态</span>
-            <span class="card-badge" id="vllm-status">OFFLINE</span>
-          </div>
-          <div class="card-kv">
-            <div><span data-i18n="monitor.upstream">上游</span><span id="vllm-upstream">—</span></div>
-            <div><span>Max Len</span><span id="vllm-maxlen">—</span></div>
-            <div><span data-i18n="monitor.queue">运行 / 等待</span><span id="vllm-queue">— / —</span></div>
-            <div><span title="历史累计 prefix cache 命中率(hits/queries),反映重复 prompt prefix KV 复用,直接关联首字延迟">KV Cache</span><span id="vllm-kv">—%</span></div>
-          </div>
-        </div>
-
-        <div class="monitor-card" id="card-app">
-          <div class="monitor-card-head"><span class="card-label" data-i18n="monitor.app">应用</span><span class="card-icon">📦</span></div>
-          <div class="card-title">pinvou3-app</div>
-          <div class="card-kv">
-            <div><span data-i18n="monitor.app_version">应用版本</span><span id="app-version">—</span></div>
-            <div><span>DeepSeek-TUI</span><span id="dt-version">—</span></div>
-            <div><span data-i18n="monitor.session">会话运行</span><span id="session-uptime">—</span></div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Settings -->
-    <section id="view-settings" class="view">
-      <header class="view-header">
-        <div class="view-header-left">
-          <span class="view-title" data-i18n="view.settings.title">设置</span>
-          <span class="view-sub" data-i18n="view.settings.sub">外观与语言</span>
-        </div>
-      </header>
-      <div class="settings-container">
-
-        <section class="settings-section">
-          <h2 class="settings-section-title" data-i18n="settings.theme.title">界面风格</h2>
-          <div class="theme-grid" id="theme-options">
-            <div class="theme-card" data-theme="genesis">
-              <div class="theme-card-badge" data-i18n="theme.default_badge">默认</div>
-              <div class="theme-preview theme-preview-genesis"><span data-i18n="theme.genesis.short">创始之境</span></div>
-              <div class="theme-card-body">
-                <div class="theme-card-name" data-i18n="theme.genesis.name">创始之境 · Genesis</div>
-                <div class="theme-card-desc" data-i18n="theme.genesis.desc">暗色实验室美学,橙色 accent,Terminal 质感。</div>
+            {!hasMessages && (
+              /* Gemini Style Centered Empty State */
+              <div className="text-center mb-12 animate-in slide-in-from-bottom-4 duration-500">
+                <h1 className={`text-[44px] font-normal mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
+                  {t.chatGreeting}
+                </h1>
               </div>
-            </div>
-            <div class="theme-card" data-theme="liquid-light">
-              <div class="theme-preview theme-preview-liquid-light"><span data-i18n="theme.liquid_light.short">澄境</span></div>
-              <div class="theme-card-body">
-                <div class="theme-card-name" data-i18n="theme.liquid_light.name">澄境 · 浅色</div>
-                <div class="theme-card-desc" data-i18n="theme.liquid_light.desc">白底柔和阴影,适合明亮环境。</div>
+            )}
+
+            {hasMessages && (
+              <div className="max-w-[800px] w-full mx-auto space-y-4">
+                {chatItems.map((item) => (
+                  <ChatBubble key={item.id} item={item} theme={theme} />
+                ))}
+                <div ref={chatEndRef} />
               </div>
+            )}
+
+          </div>
+
+          {/* Floating Input Area */}
+          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 w-full max-w-[800px] px-4 z-20">
+            <div className={`flex items-center gap-3 p-2 rounded-full shadow-lg ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
+
+              <button className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>
+                <Plus size={24} />
+              </button>
+
+              <input
+                type="text"
+                placeholder={t.placeholder}
+                value={inputText}
+                onChange={e => setInputText(e.target.value)}
+                onKeyDown={handleKeyDown}
+                className={`flex-1 bg-transparent border-none outline-none text-[16px] py-3 ${isDark ? 'placeholder:text-[#C4C7C5]' : 'placeholder:text-gray-400'}`}
+              />
+
+              {busy ? (
+                <button
+                  onClick={handleCancel}
+                  className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#F28B82] hover:bg-[#333537]' : 'text-[#C5221F] hover:bg-[#F0F4F9]'}`}
+                >
+                  <StopCircle size={20} />
+                </button>
+              ) : (
+                <button
+                  onClick={handleSend}
+                  className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}
+                >
+                  <Mic size={20} />
+                </button>
+              )}
             </div>
-            <div class="theme-card" data-theme="liquid-dark">
-              <div class="theme-preview theme-preview-liquid-dark"><span data-i18n="theme.liquid_dark.short">澄境</span></div>
-              <div class="theme-card-body">
-                <div class="theme-card-name" data-i18n="theme.liquid_dark.name">澄境 · 深色</div>
-                <div class="theme-card-desc" data-i18n="theme.liquid_dark.desc">纯黑底蓝色点缀,低光环境护眼。</div>
-              </div>
+            <div className="text-center mt-3">
+               <p className={`text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{t.disclaimer}</p>
             </div>
           </div>
-        </section>
 
-        <section class="settings-section">
-          <h2 class="settings-section-title" data-i18n="settings.language.title">界面语言</h2>
-          <p class="settings-subtitle" data-i18n="settings.language.subtitle">切换界面文案 · 同步通知 LLM 改用对应语言回复(重启 app 生效)</p>
-          <div class="seg-group" id="language-options">
-            <button class="seg-btn" data-lang="zh-Hans" type="button">中文</button>
-            <button class="seg-btn" data-lang="en" type="button">English</button>
+        </div>
+      );
+    };
+
+    // ==========================================
+    // Chat Bubble (message rendering)
+    // ==========================================
+    const ChatBubble = ({ item, theme }) => {
+      const isDark = theme === 'dark';
+
+      if (item.type === 'user') {
+        return (
+          <div className="flex justify-end">
+            <div className={`max-w-[85%] px-5 py-3 rounded-[20px] text-[15px] leading-relaxed ${isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]'}`}>
+              {item.text}
+            </div>
           </div>
-        </section>
+        );
+      }
 
-        <section class="settings-section">
-          <h2 class="settings-section-title" data-i18n="settings.super_perm.title">系统权限</h2>
-          <p class="settings-subtitle" data-i18n="settings.super_perm.subtitle">允许 pinvou3 装软件 / 配环境 / 改系统服务等需要管理员权限的操作。首次开启会弹一次系统密码框,之后免密。</p>
-          <div class="super-perm-row">
-            <button id="super-perm-toggle" class="super-perm-toggle" type="button" data-enabled="false">
-              <span class="super-perm-toggle-track"><span class="super-perm-toggle-thumb"></span></span>
-              <span id="super-perm-toggle-label" class="super-perm-toggle-label" data-i18n="settings.super_perm.off">超级权限 · 关</span>
-            </button>
-            <span class="super-perm-hint" data-i18n="settings.super_perm.hint">开启后破坏性命令(rm -rf / 等)依然硬拦,无须担心彻底失控</span>
+      if (item.type === 'assistant') {
+        return (
+          <div className="flex justify-start">
+            <div className={`max-w-[95%] ${isDark ? 'dark-code' : 'light-code'}`}>
+              <div
+                className={`msg-md text-[15px] leading-relaxed ${item.streaming ? 'streaming-cursor' : ''} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}
+                dangerouslySetInnerHTML={{ __html: item.html || '' }}
+              />
+              {item.time && !item.streaming && (
+                <div className={`text-[11px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{item.time}</div>
+              )}
+            </div>
           </div>
-        </section>
+        );
+      }
 
-        <p class="settings-foot-note">
-          <span data-i18n="settings.foot_note_prefix">高级参数(max tokens / allow shell / 模型预设 等)需要手动修改</span>
-          <code>~/.pinvou3/settings.json</code>
-          <span data-i18n="settings.foot_note_suffix">的 advanced 字段,重启 app 生效。</span>
-        </p>
-      </div>
-    </section>
+      if (item.type === 'tool') {
+        return <ToolCard item={item} theme={theme} />;
+      }
 
-  </main>
-</div>
+      if (item.type === 'system') {
+        return (
+          <div className="flex justify-center">
+            <div className={`text-[13px] px-4 py-1.5 rounded-full ${isDark ? 'bg-[#1E1F20] text-[#8E8E8E]' : 'bg-[#F0F4F9] text-[#757575]'}`}>
+              {item.text}
+            </div>
+          </div>
+        );
+      }
 
-<div class="modal-overlay" id="modal-overlay" data-open="false" data-kind="default">
-  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-    <div class="modal-title" id="modal-title"></div>
-    <div class="modal-body" id="modal-body"></div>
-    <div class="modal-actions">
-      <button class="modal-btn modal-btn-cancel" id="modal-btn-cancel" type="button" data-i18n="modal.cancel">取消</button>
-      <button class="modal-btn modal-btn-confirm" id="modal-btn-confirm" type="button" data-i18n="modal.confirm">确认</button>
-    </div>
-  </div>
-</div>
+      return null;
+    };
 
-<script src="./main.js"></script>
+    // ==========================================
+    // Tool Card
+    // ==========================================
+    const ToolCard = ({ item, theme }) => {
+      const isDark = theme === 'dark';
+      const [expanded, setExpanded] = useState(false);
+      const isRunning = item.state === 'running';
+      const isDone = item.state === 'done';
+      const isFailed = item.state === 'failed';
+
+      const statusColor = isRunning
+        ? (isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]')
+        : isDone
+          ? (isDark ? 'text-[#93D5A6]' : 'text-[#137333]')
+          : (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]');
+
+      const statusText = isRunning ? '运行中...' : isDone ? '完成' : '失败';
+
+      return (
+        <div className={`rounded-[16px] overflow-hidden border ${isDark ? 'bg-[#1E1F20] border-white/5' : 'bg-[#F0F4F9] border-black/5'}`}>
+          <div
+            className={`flex items-center gap-3 px-4 py-3 cursor-pointer ${isDark ? 'hover:bg-[#282A2C]' : 'hover:bg-[#E8EDF2]'}`}
+            onClick={() => setExpanded(!expanded)}
+          >
+            <Wrench size={14} className={statusColor} />
+            <span className={`text-[13px] font-medium flex-1 truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
+              {item.name}
+            </span>
+            <span className={`text-[12px] ${statusColor}`}>{statusText}</span>
+            <ChevronDown size={14} className={`transition-transform ${expanded ? 'rotate-180' : ''} ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`} />
+          </div>
+          {expanded && (
+            <div className={`px-4 pb-3 border-t ${isDark ? 'border-white/5' : 'border-black/5'}`}>
+              {item.args && (
+                <div className="mt-2">
+                  <div className={`text-[11px] font-medium mb-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>输入</div>
+                  <pre className={`tool-card-output custom-scrollbar rounded-lg p-2 ${isDark ? 'bg-[#131314] text-[#C4C7C5]' : 'bg-white text-[#444746]'}`}>
+                    {typeof item.args === 'string' ? item.args : JSON.stringify(item.args, null, 2)}
+                  </pre>
+                </div>
+              )}
+              {item.output != null && (
+                <div className="mt-2">
+                  <div className={`text-[11px] font-medium mb-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>输出</div>
+                  <pre className={`tool-card-output custom-scrollbar rounded-lg p-2 ${isDark ? 'bg-[#131314] text-[#C4C7C5]' : 'bg-white text-[#444746]'}`}>
+                    {typeof item.output === 'string' ? item.output : JSON.stringify(item.output, null, 2)}
+                  </pre>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    // ==========================================
+    // Shared Components
+    // ==========================================
+
+    const NavItem = ({ icon, label, active, theme, isSidebarOpen = true, onClick }) => {
+      const isDark = theme === 'dark';
+      return (
+        <div
+          onClick={onClick}
+          title={!isSidebarOpen ? label : ""}
+          className={`flex items-center cursor-pointer text-[14px] font-medium transition-colors overflow-hidden
+          ${isSidebarOpen ? 'px-4 py-2.5 rounded-full w-full' : 'w-10 h-10 justify-center rounded-full mx-auto shrink-0'}
+          ${active
+            ? (isDark ? 'bg-[#333537] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#041E49]')
+            : (isDark ? 'text-[#E3E3E3] hover:bg-[#282A2C]' : 'text-[#1F1F1F] hover:bg-[#E1E5EA]')}`}
+        >
+          <div className={`${isSidebarOpen ? 'mr-4' : ''} shrink-0 ${active ? (isDark ? 'text-[#E3E3E3]' : 'text-[#0B57D0]') : ''}`}>
+            {icon}
+          </div>
+          {isSidebarOpen && <span className="whitespace-nowrap">{label}</span>}
+        </div>
+      );
+    };
+
+    const WidgetCard = ({ title, children, theme }) => {
+      const isDark = theme === 'dark';
+      return (
+        <div className={`rounded-[24px] p-8 flex flex-col transition-shadow hover:shadow-md ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
+          <div className={`text-[14px] font-medium tracking-wide mb-6 ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>
+            {title}
+          </div>
+          <div className="flex-1 flex flex-col">
+            {children}
+          </div>
+        </div>
+      );
+    };
+
+    const ProgressBar = ({ label, value, subValue, percentage, theme, color = "#0B57D0" }) => {
+      const isDark = theme === 'dark';
+      return (
+        <div>
+          <div className="flex justify-between items-end mb-2">
+            <span className={`text-[14px] ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{label}</span>
+            <div className="text-right">
+              <span className={`text-[16px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{value}</span>
+              {subValue && <span className={`text-[13px] ml-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{subValue}</span>}
+            </div>
+          </div>
+          <div className={`h-2 w-full rounded-full overflow-hidden ${isDark ? 'bg-[#333537]' : 'bg-[#E1E5EA]'}`}>
+            <div
+              className="h-full rounded-full transition-all duration-1000 ease-out"
+              style={{ width: `${percentage > 0 ? percentage : 100}%`, backgroundColor: percentage > 0 ? color : (isDark ? '#444746' : '#C4C7C5') }}
+            ></div>
+          </div>
+        </div>
+      );
+    };
+
+    const ListRow = ({ label, value, border = true, theme }) => {
+      const isDark = theme === 'dark';
+      return (
+        <div className="flex justify-between items-center px-4 py-3 relative">
+          <span className={`text-[14px] ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{label}</span>
+          <span className={`text-[14px] font-mono ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{value}</span>
+          {border && <div className={`absolute bottom-0 right-4 left-4 h-[1px] ${isDark ? 'bg-white/5' : 'bg-black/5'}`}></div>}
+        </div>
+      );
+    };
+
+    // ==========================================
+    // Render
+    // ==========================================
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
 </body>
 </html>
