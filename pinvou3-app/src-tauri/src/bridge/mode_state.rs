@@ -8,6 +8,24 @@
 use deepseek_tui::tui::app::AppMode;
 use serde::{Deserialize, Serialize};
 
+/// Per-session 绑定的 skill。在 session 上点工作流卡片"启用"时,
+/// `commands::start_skill_session` 先 create_new() 再把这个结构挂到 session
+/// 的 mode_state 上,后续这个 session 内的 chat 自动 prepend 一次性 instruction。
+///
+/// 设计:in-memory only(不持久化到 SavedSession.json) — skill 绑定是运行时
+/// 状态,重启 app 后 session 仍可继续对话但 chips 不再驱动是合理的(用户可以
+/// 重新点卡片新建另一个绑定 session)。PhaseDef 上游只 derive Serialize,
+/// 所以这里也只单向序列化给前端,不走 deserialize 路径。
+#[derive(Debug, Clone, Serialize)]
+pub struct ActiveSkillBinding {
+    pub name: String,
+    /// skill.body + phase 追踪规则文案,首条消息 prepend 后置空。
+    #[serde(skip)]
+    pub pending_instruction: Option<String>,
+    /// 前端渲染 chips 用的 phases 列表(JSON 透传)。
+    pub phases: Vec<deepseek_tui::skills::PhaseDef>,
+}
+
 /// Plan 流程的子阶段。`mode = Plan` 时 phase 在 Planning/Ready 间流转；
 /// 用户 accept plan 后 `mode = Yolo, phase = Executing`；执行完毕 `phase = None`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,7 +58,14 @@ impl Default for PlanPhase {
 ///
 /// careful hook 跨所有组合默认开启(由 DeepSeek-TUI shell.rs 强制 BLOCKED Dangerous 实现,
 /// 不依赖此开关)。设计依据:docs/Pinvou-品悟设计.md §5。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// **active_skill** 是工作流 phase 可视化 MVP1 加的 per-session 绑定字段:
+/// 用户在工作流页点"启用" → start_skill_session 命令 create_new + 写这里 →
+/// 切到该 session 时 chips strip 自动显示绑定 skill 的 phases。
+///
+/// 上游 PhaseDef 只 derive Serialize,所以这里也只单向序列化给前端;
+/// SessionModeState 不需要从前端 deserialize 回来(它通过 set_*_state 命令逐字段写)。
+#[derive(Debug, Clone, Serialize)]
 pub struct SessionModeState {
     /// 当前激活 mode。`build_send_message_op` 用这个值。
     pub mode: SerializableMode,
@@ -49,6 +74,9 @@ pub struct SessionModeState {
     /// 开启后 accept_plan / exit_plan_to_yolo 触发 EXIT GATE。
     #[serde(default)]
     pub pinvou_review_enabled: bool,
+    /// 该 session 绑定的工作流 skill。`None` = 普通对话。
+    #[serde(default)]
+    pub active_skill: Option<ActiveSkillBinding>,
 }
 
 impl Default for SessionModeState {
@@ -57,6 +85,7 @@ impl Default for SessionModeState {
             mode: SerializableMode::Yolo,
             plan_phase: PlanPhase::None,
             pinvou_review_enabled: false,
+            active_skill: None,
         }
     }
 }
@@ -108,6 +137,7 @@ mod tests {
             mode: SerializableMode::Plan,
             plan_phase: PlanPhase::Planning,
             pinvou_review_enabled: false,
+            active_skill: None,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"mode\":\"plan\""));

@@ -106,6 +106,13 @@
         </div>
       </div>
 
+      <!-- busy-indicator: composer 上方持续可见的"思考中/调用工具中"状态条。
+           跟 chatArea 末尾的 thinking-bubble 同步刷新,但脱离消息流 sticky 在
+           输入框上方 — 用户滚到上面看历史时仍能看到 LLM 还在干活,不会误以为卡死。 -->
+      <div class="busy-indicator" id="busy-indicator" hidden>
+        <span class="busy-spinner" id="busy-spinner">⠋</span>
+        <span class="busy-text" id="busy-text">思考中... 0s</span>
+      </div>
       <footer class="composer" id="composer" data-plan-phase="none">
         <div class="mode-chip-row" id="mode-chip-row" hidden>
           <div class="mode-chip-summary">
@@ -154,8 +161,9 @@
       </div><!-- /chatroom-grid -->
     </section>
 
-    <!-- WorkFlow: skill 库 / 选择器 (MVP1)。
-         有 phases 的 skill 显示「启用」按钮 → 设到 ActiveSkillStore + 切回 chatroom + 渲染 chips。
+    <!-- WorkFlow: skill 库 / 选择器。
+         有 phases 的 skill 显示「启用」按钮 → start_skill_session 新建一个绑定该 skill
+         的 session,自动切到 chatroom + 渲染 chips。可多次启用,各次独立 session。
          有 demo_file 的 skill 显示「看 demo」按钮 → 弹模态 (iframe/img/pre)。
          状态机/数据流见 docs/WorkFlow-Phase-可视化-MVP1.md 和 plans/workflow-phase-elegant-zephyr.md。 -->
     <section id="view-workflow" class="view">

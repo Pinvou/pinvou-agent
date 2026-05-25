@@ -11,7 +11,6 @@
 // bridge + engine 公开给 tests/l1_dialog_harness.rs 用 (boot_with_workspace /
 // spawn_headless 是测试入口)。其余模块保持 private,仅 Tauri 内部使用。
 pub mod bridge;
-mod active_skill;
 mod commands;
 pub mod engine;
 mod file_ingest;
@@ -108,9 +107,9 @@ pub fn run() {
             let monitor_state = MonitorState::new();
             app.handle().manage(monitor_state);
 
-            // 工作流 Phase 可视化 MVP1: ActiveSkillStore 全局单例 — 用户启用 skill
-            // 后,下次 send_user_message 把 skill body + phase 规则 prepend 一次。
-            app.handle().manage(active_skill::ActiveSkillStore::default());
+            // 工作流 Phase 可视化:skill 绑定挂在 SessionStore.mode_state 上,
+            // per-session 隔离(start_skill_session 命令负责新建 session + bind)。
+            // 不再需要全局 ActiveSkillStore。
 
             // File watcher: 监听 ~/.pinvou3/sessions/ 树,新文件 emit artifact:disk
             file_watcher::spawn(app.handle().clone(), bridge::paths::sessions_root());
@@ -152,7 +151,10 @@ pub fn run() {
             commands::read_skill_body,
             commands::list_skills_v2,
             commands::read_skill_demo,
-            commands::set_active_skill,
+            commands::start_skill_session,
+            commands::unbind_session_skill,
+            commands::get_session_active_skill,
+            commands::list_session_skill_bindings,
             commands::submit_user_input,
             commands::cancel_user_input,
             commands::get_super_permission_status,

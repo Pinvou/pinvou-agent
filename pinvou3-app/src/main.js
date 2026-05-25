@@ -68,6 +68,9 @@ function resetPendingAssistant() {
   pendingAssistantBlocks = [];
 }
 let sessionsCache = [];     // 左侧历史列表数据（list_sessions 结果）
+// session_id → 绑定的 skill 名,渲染历史列表时叠在卡片上。
+// 后端 in-memory only(跟 mode_state 一样不持久化),刷新列表时一起拉。
+let sessionSkillBindings = {};
 let artifacts = [];         // 当前 session 的产物列表（前端跟踪，重启 app 后丢）
 const toolMeta = new Map(); // tool_call_id → {name, args}，给 tool_end 拿原始 args 用
 
@@ -96,9 +99,26 @@ let thinkingPhase = "thinking";
 let thinkingToolName = "";
 let thinkingBubbleEl = null;     // 单例气泡 DOM, 跟随 chatArea 尾部
 
+// 状态文案(bubble + banner 共用)。计时拉长时升级措辞:本地模型生成长内容时
+// 后端会长时间静默(无 SSE chunk),纯"思考中... 230s"读起来像卡死。随时长加一句
+// "本地模型生成中"让用户知道仍在运行,不是干等。spinner 始终在动是另一层活信号。
+function busyStatusText() {
+  if (thinkingPhase === "tool" && thinkingToolName) {
+    return `调用 ${thinkingToolName}... ${thinkingElapsedSec}s`;
+  }
+  let suffix = "";
+  if (thinkingElapsedSec >= 120) {
+    suffix = " · 本地模型在生成长内容,请耐心等";
+  } else if (thinkingElapsedSec >= 30) {
+    suffix = " · 本地模型生成中";
+  }
+  return `思考中... ${thinkingElapsedSec}s${suffix}`;
+}
+
 function renderThinkingBubble() {
   if (!thinkingTicker) {
     removeThinkingBubble();
+    renderBusyIndicator();
     return;
   }
   if (!thinkingBubbleEl) {
@@ -111,9 +131,24 @@ function renderThinkingBubble() {
     chatArea.appendChild(thinkingBubbleEl);
     scrollToBottom();
   }
-  thinkingBubbleEl.textContent = thinkingPhase === "tool" && thinkingToolName
-    ? `${thinkingFrame} 调用 ${thinkingToolName}... ${thinkingElapsedSec}s`
-    : `${thinkingFrame} 思考中... ${thinkingElapsedSec}s`;
+  thinkingBubbleEl.textContent = `${thinkingFrame} ${busyStatusText()}`;
+  renderBusyIndicator();
+}
+
+// composer 上方的持续可见状态条 — 跟 thinking-bubble 同源,但脱离消息流。
+// 用户滚到上面看历史时,thinking-bubble 在视野外,这条仍贴在输入框上方可见。
+function renderBusyIndicator() {
+  const banner = document.getElementById("busy-indicator");
+  if (!banner) return;
+  if (!thinkingTicker) {
+    banner.hidden = true;
+    return;
+  }
+  banner.hidden = false;
+  const spinnerEl = document.getElementById("busy-spinner");
+  const textEl = document.getElementById("busy-text");
+  if (spinnerEl) spinnerEl.textContent = thinkingFrame;
+  if (textEl) textEl.textContent = busyStatusText();
 }
 
 function removeThinkingBubble() {
@@ -121,6 +156,9 @@ function removeThinkingBubble() {
     thinkingBubbleEl.remove();
     thinkingBubbleEl = null;
   }
+  // 状态条也一起关
+  const banner = document.getElementById("busy-indicator");
+  if (banner) banner.hidden = true;
 }
 
 function startThinking() {
@@ -2086,6 +2124,16 @@ function renderHistoryList() {
       switchToSession(meta.id);
     });
 
+    // 该 session 绑定了工作流 skill 时显示一个小标签(纯展示,点击仍切到 session)
+    const boundSkillName = sessionSkillBindings[meta.id];
+    let skillBadge = null;
+    if (boundSkillName) {
+      skillBadge = document.createElement("span");
+      skillBadge.className = "history-item-skill";
+      skillBadge.title = `工作流: ${boundSkillName}`;
+      skillBadge.textContent = `🧭 ${boundSkillName}`;
+    }
+
     const actions = document.createElement("span");
     actions.className = "history-item-actions";
     const renameBtn = document.createElement("button");
@@ -2108,6 +2156,7 @@ function renderHistoryList() {
     actions.appendChild(deleteBtn);
 
     li.appendChild(title);
+    if (skillBadge) li.appendChild(skillBadge);
     li.appendChild(actions);
     historyListEl.appendChild(li);
   }
@@ -2215,6 +2264,7 @@ async function createNewSession() {
     clearChatDOM();
     await refreshHistoryList();
     await syncModeStateFromBackend();
+    await syncSkillBindingFromBackend();
   } catch (e) {
     appendSystemMessage("⚠️ 新建对话失败: " + e);
   }
@@ -2270,18 +2320,25 @@ async function switchToSession(id) {
     rerenderFromMessages();
     renderHistoryList();
     await syncModeStateFromBackend();
+    await syncSkillBindingFromBackend();
   } catch (e) {
     appendSystemMessage("⚠️ 加载对话失败: " + e);
   }
 }
 
-/** 拉一次列表 + 重渲染。 */
+/** 拉一次列表 + 重渲染。同时拉一遍 session→skill 绑定 map,渲染时叠 skill 标签。 */
 async function refreshHistoryList() {
   try {
     sessionsCache = await invoke("list_sessions");
   } catch (e) {
     console.warn("list_sessions failed", e);
     sessionsCache = [];
+  }
+  try {
+    sessionSkillBindings = await invoke("list_session_skill_bindings");
+  } catch (e) {
+    console.warn("list_session_skill_bindings failed", e);
+    sessionSkillBindings = {};
   }
   renderHistoryList();
 }
@@ -2926,6 +2983,40 @@ function compactItems(items) {
     result.push(it);
   }
   return result;
+}
+
+/** 切换/新建 session 后从后端拉该 session 的 skill 绑定信息,同步 chips strip。
+ *  skill 绑定是 per-session 的:有绑定就显示 chips,没绑定 hidden。 */
+async function syncSkillBindingFromBackend() {
+  if (!activeSessionId) {
+    workflowState.activeSkillName = null;
+    workflowState.phases = [];
+    workflowState.currentPhaseId = null;
+    workflowState.reachedPhaseIds.clear();
+    renderChipsStrip();
+    return;
+  }
+  let state = null;
+  try {
+    state = await invoke("get_session_active_skill", { sessionId: activeSessionId });
+  } catch (e) {
+    console.warn("get_session_active_skill failed", e);
+  }
+  if (state) {
+    workflowState.activeSkillName = state.name;
+    workflowState.phases = state.phases || [];
+    workflowState.currentPhaseId =
+      state.current_phase_id || (state.phases?.[0]?.id ?? null);
+    workflowState.reachedPhaseIds = new Set(
+      workflowState.currentPhaseId ? [workflowState.currentPhaseId] : []
+    );
+  } else {
+    workflowState.activeSkillName = null;
+    workflowState.phases = [];
+    workflowState.currentPhaseId = null;
+    workflowState.reachedPhaseIds.clear();
+  }
+  renderChipsStrip();
 }
 
 /** 切换/新建 session 后从后端拉最新 mode_state，UI 同步。 */
@@ -3603,15 +3694,20 @@ function appConfirm(message, opts = {}) {
   });
 }
 
-// ── 工作流 Phase 可视化 MVP1 ────────────────────────────────────────
+// ── 工作流 Phase 可视化(per-session 绑定) ────────────────────────
 //
 // 数据流:
-//   工作流视图 → list_skills_v2() → 渲染卡片
-//   点"启用"  → set_active_skill(name) → 切回 chatroom + 渲染 chips
+//   工作流视图 → list_skills_v2() → 渲染卡片(每张卡片是一个"启动入口")
+//   点"启用"  → start_skill_session(name) → 后端 create_new + bind_skill,
+//             返回新 session + skill 信息 → 前端切到这个 session + 渲染 chips
+//             (每次点都新建独立 session,可以多次启动,skill 仅对该 session 生效)
+//   切 session → get_session_active_skill(sid) → 同步 chips strip 显隐
+//             (绑定的 session 出 chips,普通 session chips 隐藏)
 //   LLM 输出 `<phase id="..."/>` → 底座 engine emit Event::PhaseChanged
 //                                → Tauri event chat:phase_changed
 //                                → setCurrentPhase(pN, "llm")
 //   用户点 chip → setCurrentPhase(pN, "user") + 发 [USER_NUDGE] 伪消息引导 LLM
+//   用户点 ✕    → unbind_session_skill(sid) → 解绑 chips 隐藏,session 仍可用
 //
 // 复用底座:
 //   - SkillRegistry::discover + phases / DemoInfo 解析
@@ -3657,7 +3753,8 @@ async function renderWorkflowView() {
 }
 
 function skillCardHtml(s) {
-  const isActive = workflowState.activeSkillName === s.name;
+  // 卡片本身是"启动入口",不持久化 active 状态 — 每次点"启用"都新建一个
+  // 绑定该 skill 的 session(可以多次启动,各自独立 chips)。
   const phasesCount = s.phases?.length || 0;
   const phasesHint = phasesCount > 0
     ? `<div class="card-phases">${phasesCount} 个 phase · ${s.phases.slice(0, 8).map(p => escapeHtml(p.id) + (p.loop ? "↻" : "")).join(" → ")}${phasesCount > 8 ? " → …" : ""}</div>`
@@ -3666,18 +3763,15 @@ function skillCardHtml(s) {
     ? `<button class="card-btn card-btn-demo" data-act="demo" data-skill="${escapeHtml(s.name)}">看 demo</button>`
     : "";
   const enableBtn = phasesCount > 0
-    ? (isActive
-        ? `<button class="card-btn card-btn-active" disabled>✓ 已启用</button>`
-        : `<button class="card-btn card-btn-enable" data-act="enable" data-skill="${escapeHtml(s.name)}">启用</button>`)
+    ? `<button class="card-btn card-btn-enable" data-act="enable" data-skill="${escapeHtml(s.name)}" title="新建一个会话使用此工作流">启用</button>`
     : `<button class="card-btn" disabled title="无 phases 定义,MVP1 仅展示">仅查看</button>`;
   const durationHint = s.demo?.duration
     ? `<div class="card-duration">⏱ ${escapeHtml(s.demo.duration)}</div>`
     : "";
-  const sourceLabel = { bundle: "内置", deepseek: "~/.deepseek", user: "~/.pinvou3/user" }[s.source] || s.source;
-  return `<div class="workflow-skill-card${isActive ? ' workflow-skill-card-active' : ''}">
+  return `<div class="workflow-skill-card">
     <header class="card-head">
       <h3 class="card-name">${escapeHtml(s.name)}</h3>
-      <span class="card-source" title="${escapeHtml(sourceLabel)}">${escapeHtml(s.source)}</span>
+      <span class="card-source" title="内置">${escapeHtml(s.source)}</span>
     </header>
     <p class="card-desc">${escapeHtml((s.description || "").slice(0, 220))}${(s.description || "").length > 220 ? "…" : ""}</p>
     ${phasesHint}
@@ -3687,28 +3781,46 @@ function skillCardHtml(s) {
 }
 
 async function activateSkill(name) {
-  let state;
+  // 启用 = 新建一个绑定该 skill 的 session(每次点都建新的,不复用)。
+  // 后端 start_skill_session 内部 create_new + set_active + bind_skill + sync_session,
+  // 前端拿到返回的 session 元数据,正常走 switchToSession 流程把 messages / chips
+  // 全部同步起来。
+  let result;
   try {
-    state = await invoke("set_active_skill", { name });
+    result = await invoke("start_skill_session", { name });
   } catch (e) {
     appendSystemMessage(`⚠️ 启用 skill ${name} 失败: ${e}`);
     return;
   }
-  if (!state) {
-    deactivateSkill(false);
-    return;
-  }
-  workflowState.activeSkillName = state.name;
-  workflowState.phases = state.phases || [];
-  workflowState.currentPhaseId = state.current_phase_id || (state.phases?.[0]?.id ?? null);
+  await refreshHistoryList();          // 让左侧历史列表包含这个新 session
+  // 直接同步 activeSessionId(switchToSession 会比较 id 相等而 early-return,
+  // 这里 start_skill_session 已经把 engine 切到新 session 并清了 messages)
+  activeSessionId = result.session.id;
+  messages = [];
+  resetPendingAssistant();
+  artifacts = [];
+  activeArtifactPath = null;
+  renderArtifactList();
+  clearUnreadArtifacts();
+  lastInputTokens = 0;
+  updateTokenBar(0);
+  if (artifactPreviewEl) artifactPreviewEl.innerHTML = "";
+  clearChatDOM();
+  // workflow chips:用 start_skill_session 返回里的 skill 信息直接渲染,
+  // 不再多调一次 get_session_active_skill。
+  workflowState.activeSkillName = result.skill.name;
+  workflowState.phases = result.skill.phases || [];
+  workflowState.currentPhaseId =
+    result.skill.current_phase_id || (result.skill.phases?.[0]?.id ?? null);
   workflowState.reachedPhaseIds = new Set(
     workflowState.currentPhaseId ? [workflowState.currentPhaseId] : []
   );
   renderChipsStrip();
+  renderHistoryList();
+  await syncModeStateFromBackend();
   switchView("chatroom");
-  // 让 input 框预填一句引导,降低用户操作门槛
   if (input && !input.value) {
-    input.value = `我要用 ${state.name} 完成: `;
+    input.value = `我要用 ${result.skill.name} 完成: `;
     input.focus();
     if (typeof input.setSelectionRange === "function") {
       input.setSelectionRange(input.value.length, input.value.length);
@@ -3717,11 +3829,15 @@ async function activateSkill(name) {
 }
 
 async function deactivateSkill(callBackend = true) {
-  if (callBackend) {
+  // 解除当前 active session 的 skill 绑定。不删 session,仅清绑定 → chips 隐藏,
+  // session 继续作为普通对话存在(后续可以正常聊天/删除)。
+  if (callBackend && activeSessionId) {
     try {
-      await invoke("set_active_skill", { name: null });
+      await invoke("unbind_session_skill", { sessionId: activeSessionId });
+      delete sessionSkillBindings[activeSessionId];
+      renderHistoryList();
     } catch (e) {
-      console.warn("set_active_skill(null) failed", e);
+      console.warn("unbind_session_skill failed", e);
     }
   }
   workflowState.activeSkillName = null;

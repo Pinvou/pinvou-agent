@@ -44,18 +44,40 @@ pub async fn chat(
     attachments: Option<Vec<crate::file_ingest::IngestResult>>,
     engine: State<'_, AppEngine>,
     store: State<'_, SessionStore>,
-    active_skill: State<'_, crate::active_skill::ActiveSkillStore>,
 ) -> Result<(), String> {
     let trimmed = message.trim();
     if trimmed.is_empty() && attachments.as_ref().map_or(true, |a| a.is_empty()) {
         return Err("empty message".to_string());
     }
     let mut full = build_message_with_attachments(message, attachments.unwrap_or_default());
-    // 工作流 Phase 可视化 MVP1: 用户刚启用 skill 后第一条消息 prepend skill body
-    // + phase 追踪规则文案。take_pending_instruction 是一次性消费,后续 turn
-    // 靠 LLM session 上下文保持记忆。
-    if let Some(injected) = active_skill.take_pending_instruction() {
-        full = format!("{injected}\n\n---\n\n{full}");
+    // 工作流 Phase 可视化:用户在工作流页"启用"卡片 = start_skill_session
+    // 新建一个绑定了 skill 的 session。该 session 第一条 chat 消息时,
+    // 把 skill body + phase 规则 prepend 一次,后续 turn 靠 LLM session 上下文保持。
+    //
+    // 另外 — 实测 Qwen3.6 在长上下文里对 system prompt 顶端的 phase marker
+    // MANDATORY 段遵循率衰减(h3c-ppt 跑到 p5+ 后频繁不出 `<phase id=".."/>`
+    // marker),每个 user turn 都重申一遍约束,把信号搬到距 LLM 最近的位置。
+    if let Some(sid) = store.active_id() {
+        if let Some(injected) = store.take_pending_skill_instruction(&sid) {
+            full = format!("{injected}\n\n---\n\n{full}");
+        }
+        if let Some(skill) = store.active_skill(&sid) {
+            let reminder = format!(
+                "<system-reminder>\n\
+                 工作流 `{name}` 提醒:你的下一条回复**必须**以 `<phase id=\"...\"/>` \
+                 单独一行开头(literal XML 标签,不是 markdown 加粗,不是自然语言)。\n\
+                 - 自然语言里写 \"进入 P5\" / \"现在做 HTML 实现\" **不算** marker,\
+                 必须输出字面 `<phase id=\"p5\"/>` 然后空行然后正文。\n\
+                 - 跳过 phase 也要显式输出对应 marker(从 p3 直接做 p5 → 输出 \
+                 `<phase id=\"p5\"/>`,别不出标)。\n\
+                 - 留在同一 phase 多个 turn 也要每次都输出该 phase 的 marker,\
+                 不要因为\"没换 phase\"省略。\n\
+                 pinvou3 UI chips 条靠这个 marker 推进度,漏标 = 用户看不到进展。\n\
+                 </system-reminder>",
+                name = skill.name,
+            );
+            full = format!("{reminder}\n\n{full}");
+        }
     }
     // 取当前 active session 的 mode + phase;无 active session 时默认 Yolo+None(首条消息场景)
     let (mode, phase) = store
@@ -797,9 +819,17 @@ fn validate_user_path(raw: &str) -> Result<std::path::PathBuf, String> {
 }
 
 // ===================== 工作流 Phase 可视化 MVP1 =====================
-// list_skills_v2 / read_skill_demo / set_active_skill 三件套支撑「工作流」
-// 视图重定义为 skill 库 + 选择器。设计与边界见
+// list_skills_v2 / read_skill_demo / start_skill_session / unbind_session_skill
+// 四件套支撑「工作流」视图 + skill per-session 绑定。设计与边界见
 // `/home/hexin/.claude/plans/workflow-phase-elegant-zephyr.md`。
+
+/// 工作流卡片不显示的 skill 名单。这些是 pinvou3 自带的基础能力组件
+/// (review 流程内部用),不应作为用户主动启用的工作流入口。
+///
+/// 后续真正物理隔离会把这俩从 `bundle/skills/` 移到独立目录 +
+/// DeepSeek-TUI fork patch 让 EngineConfig 支持多 skills_dir。当前
+/// 用 skiplist 软隔离,工作量小,效果一致。
+const WORKFLOW_HIDDEN_SKILLS: &[&str] = &["pinvou-review-plan", "pinvou-review-final"];
 
 /// 工作流视图卡片渲染需要的 skill 摘要 — 跟 DeepSeek-TUI runtime_api 的
 /// `SkillEntry` 不同,这里额外把 phases / demo 元数据序列化给前端 (底座
@@ -808,7 +838,8 @@ fn validate_user_path(raw: &str) -> Result<std::path::PathBuf, String> {
 pub struct SkillSummary {
     pub name: String,
     pub description: String,
-    /// "bundle" / "deepseek" / "user" — 决定卡片角标。
+    /// 永远是 "bundle"(只扫 bundle/skills 单源)— 字段保留是为了前端
+    /// 卡片角标 / 跟未来多源场景兼容。
     pub source: &'static str,
     pub phases: Vec<deepseek_tui::skills::PhaseDef>,
     pub demo: DemoSummary,
@@ -833,51 +864,28 @@ impl From<&deepseek_tui::skills::DemoInfo> for DemoSummary {
     }
 }
 
-/// 列出 pinvou3-app 能发现的所有 skill (bundle / `~/.deepseek/skills/` /
-/// `~/.pinvou3/user/skills/`),按 name 合并去重,user > deepseek > bundle。
+/// 列出 `~/.pinvou3/bundle/skills/` 下的所有用户业务 skill。
+/// pinvou-review-* 这种系统基础能力通过 `WORKFLOW_HIDDEN_SKILLS` 过滤掉
+/// (它们不应出现在工作流卡片入口里)。
 #[tauri::command]
 pub async fn list_skills_v2() -> Result<Vec<SkillSummary>, String> {
     use crate::bridge::paths;
     use deepseek_tui::skills::SkillRegistry;
-    use std::collections::BTreeMap;
 
-    // (优先级, source) — 数字越大越优先,后插入覆盖前面同名 skill
-    let dirs: &[(i32, &'static str, std::path::PathBuf)] = &[
-        (0, "bundle", paths::bundle_skills_dir()),
-        (1, "deepseek", paths::deepseek_skills_dir()),
-        (2, "user", paths::user_skills_dir()),
-    ];
-
-    // name -> (priority, source, Skill)
-    let mut merged: BTreeMap<String, (i32, &'static str, deepseek_tui::skills::Skill)> =
-        BTreeMap::new();
-    for (prio, src, dir) in dirs {
-        if !dir.exists() {
-            continue;
-        }
-        let registry = SkillRegistry::discover(dir);
-        for skill in registry.list() {
-            let entry = merged.entry(skill.name.clone());
-            match entry {
-                std::collections::btree_map::Entry::Vacant(v) => {
-                    v.insert((*prio, *src, skill.clone()));
-                }
-                std::collections::btree_map::Entry::Occupied(mut o) => {
-                    if *prio >= o.get().0 {
-                        o.insert((*prio, *src, skill.clone()));
-                    }
-                }
-            }
-        }
+    let dir = paths::bundle_skills_dir();
+    if !dir.exists() {
+        return Ok(Vec::new());
     }
-
-    let mut out: Vec<SkillSummary> = merged
-        .into_iter()
-        .map(|(_, (_, source, s))| SkillSummary {
-            name: s.name,
-            description: s.description,
-            source,
-            phases: s.phases,
+    let registry = SkillRegistry::discover(&dir);
+    let mut out: Vec<SkillSummary> = registry
+        .list()
+        .iter()
+        .filter(|s| !WORKFLOW_HIDDEN_SKILLS.contains(&s.name.as_str()))
+        .map(|s| SkillSummary {
+            name: s.name.clone(),
+            description: s.description.clone(),
+            source: "bundle",
+            phases: s.phases.clone(),
             demo: (&s.demo).into(),
         })
         .collect();
@@ -904,23 +912,19 @@ pub async fn read_skill_demo(name: String) -> Result<SkillDemoPayload, String> {
     use crate::bridge::paths;
     use deepseek_tui::skills::SkillRegistry;
 
-    let dirs = [
-        paths::user_skills_dir(),
-        paths::deepseek_skills_dir(),
-        paths::bundle_skills_dir(),
-    ];
-    let mut found: Option<deepseek_tui::skills::Skill> = None;
-    for dir in &dirs {
-        if !dir.exists() {
-            continue;
-        }
-        let registry = SkillRegistry::discover(dir);
-        if let Some(s) = registry.get(&name) {
-            found = Some(s.clone());
-            break;
-        }
+    if WORKFLOW_HIDDEN_SKILLS.contains(&name.as_str()) {
+        return Err(format!("skill {name} 是系统基础能力,无 demo 入口"));
     }
-    let skill = found.ok_or_else(|| format!("skill not found: {name}"))?;
+
+    let dir = paths::bundle_skills_dir();
+    if !dir.exists() {
+        return Err(format!("skills dir not found: {}", dir.display()));
+    }
+    let registry = SkillRegistry::discover(&dir);
+    let skill = registry
+        .get(&name)
+        .ok_or_else(|| format!("skill not found: {name}"))?
+        .clone();
 
     let file_path = skill.demo.file.clone();
     let preview_path = skill.demo.preview.as_ref().map(|p| p.to_string_lossy().to_string());
@@ -961,7 +965,15 @@ pub async fn read_skill_demo(name: String) -> Result<SkillDemoPayload, String> {
     })
 }
 
-/// 启用 / 取消激活一个 skill,响应里返 phases 列表给前端初始化 chips。
+/// 工作流卡片"启用"后返回的载荷:新建的 session 元数据 + 该 session 绑定的
+/// skill 信息(phases 给前端初始化 chips strip)。
+#[derive(Debug, Serialize)]
+pub struct StartSkillSessionResult {
+    pub session: SessionMetadata,
+    pub skill: ActiveSkillState,
+}
+
+/// chips strip 初始化用的 skill 视图字段。
 #[derive(Debug, Serialize)]
 pub struct ActiveSkillState {
     pub name: String,
@@ -969,43 +981,56 @@ pub struct ActiveSkillState {
     pub current_phase_id: Option<String>,
 }
 
+/// 用户在「工作流」视图点 skill 卡片「启用」 → 新建一个 session 并把该 skill
+/// 绑定到这个 session。每次点都新建独立 session,skill 仅对该 session 生效
+/// (不再有全局 active_skill 单例)。
 #[tauri::command]
-pub async fn set_active_skill(
-    name: Option<String>,
-    active: State<'_, crate::active_skill::ActiveSkillStore>,
-) -> Result<Option<ActiveSkillState>, String> {
-    use crate::active_skill::ActiveSkill;
+pub async fn start_skill_session(
+    name: String,
+    store: State<'_, SessionStore>,
+    engine: State<'_, AppEngine>,
+) -> Result<StartSkillSessionResult, String> {
+    use crate::bridge::mode_state::ActiveSkillBinding;
     use crate::bridge::paths;
     use deepseek_tui::skills::SkillRegistry;
 
-    let Some(name) = name else {
-        active.clear();
-        return Ok(None);
-    };
-
-    // 找到 skill (user > deepseek > bundle)
-    let dirs = [
-        paths::user_skills_dir(),
-        paths::deepseek_skills_dir(),
-        paths::bundle_skills_dir(),
-    ];
-    let mut found: Option<deepseek_tui::skills::Skill> = None;
-    for dir in &dirs {
-        if !dir.exists() {
-            continue;
-        }
-        let registry = SkillRegistry::discover(dir);
-        if let Some(s) = registry.get(&name) {
-            found = Some(s.clone());
-            break;
-        }
+    if WORKFLOW_HIDDEN_SKILLS.contains(&name.as_str()) {
+        return Err(format!(
+            "{name} 是系统基础能力,不能直接启用为工作流"
+        ));
     }
-    let skill = found.ok_or_else(|| format!("skill not found: {name}"))?;
 
-    // 单行 nudge:让 LLM 知道用户已在 UI 启用某个 skill。底座 system prompt 已经
-    // 全自动注入了 skill 列表 + phased skill 强约束 prompt(crates/tui/src/skills/
-    // mod.rs:676 起 + Engine 会自动从回复抽 `<phase id="..."/>` emit Event::
-    // PhaseChanged),所以这里只发一条触发提示,不重复 dump skill body / phase 规则。
+    // 1) 只在 bundle/skills 里找 — 跟 list_skills_v2 source of truth 保持一致
+    let dir = paths::bundle_skills_dir();
+    if !dir.exists() {
+        return Err(format!("skills dir not found: {}", dir.display()));
+    }
+    let registry = SkillRegistry::discover(&dir);
+    let skill = registry
+        .get(&name)
+        .ok_or_else(|| format!("skill not found: {name}"))?
+        .clone();
+
+    // 2) 新建 session(沿用 create_session 的 model + workspace 取值)
+    let model = engine.inner().bridge.model();
+    let workspace = engine.inner().bridge.workspace.clone();
+    let session = store
+        .create_new(model, workspace)
+        .map_err(|e| format!("create_session: {e:?}"))?;
+    let sid = session.metadata.id.clone();
+    store.set_active(Some(sid.clone()));
+
+    // 3) 让 engine 切到这个空 session,否则下一条 chat 会续在旧 session 上下文后
+    engine
+        .inner()
+        .sync_session(sid.clone(), Vec::new())
+        .await
+        .map_err(|e| format!("sync engine session: {e:?}"))?;
+
+    // 4) 绑定 skill。pending_instruction 是单行 nudge — 底座 system prompt
+    //    已经自动注入了 skill 列表 + phase 强约束(crates/tui/src/skills/mod.rs)
+    //    + 自动从回复抽 `<phase id="..."/>` emit Event::PhaseChanged,所以这里
+    //    只发一条触发提示,不重复 dump skill body / phase 规则。
     let injected = format!(
         "[pinvou3-app] 用户在「工作流」视图启用了 skill: `{name}`。\
          请按该 skill 的 phases 流程响应 — engine 会自动从你回复里抽 \
@@ -1016,16 +1041,69 @@ pub async fn set_active_skill(
     );
 
     let first_phase = skill.phases.first().map(|p| p.id.clone());
-    active.set(ActiveSkill {
-        name: skill.name.clone(),
-        injected_instruction: injected,
-        already_sent: false,
-    });
-    Ok(Some(ActiveSkillState {
-        name: skill.name,
-        phases: skill.phases,
-        current_phase_id: first_phase,
+    let phases = skill.phases.clone();
+    store.bind_skill(
+        &sid,
+        ActiveSkillBinding {
+            name: skill.name.clone(),
+            pending_instruction: Some(injected),
+            phases: phases.clone(),
+        },
+    );
+
+    Ok(StartSkillSessionResult {
+        session: session.metadata,
+        skill: ActiveSkillState {
+            name: skill.name,
+            phases,
+            current_phase_id: first_phase,
+        },
+    })
+}
+
+/// 解除指定 session 的 skill 绑定(用户点 chips 区 ✕)。
+/// 不删 session,只清绑定 — chips strip 隐藏,普通对话照常继续。
+#[tauri::command]
+pub async fn unbind_session_skill(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    store.unbind_skill(&session_id);
+    Ok(())
+}
+
+/// 拉取指定 session 当前绑定的 skill 信息(给前端切 session 后渲染 chips)。
+/// 没绑定返回 None。
+#[tauri::command]
+pub async fn get_session_active_skill(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<Option<ActiveSkillState>, String> {
+    Ok(store.active_skill(&session_id).map(|b| {
+        let first = b.phases.first().map(|p| p.id.clone());
+        ActiveSkillState {
+            name: b.name,
+            phases: b.phases,
+            current_phase_id: first,
+        }
     }))
+}
+
+/// 拉取所有 session 当前绑定的 skill 名(给 session 列表卡片显示标签用)。
+/// 返回 `{ session_id: skill_name }` 映射;没绑定的 session 不在 map 里。
+/// in-memory only — app 重启后 binding 全部丢失(跟 mode_state 一致设计)。
+#[tauri::command]
+pub async fn list_session_skill_bindings(
+    store: State<'_, SessionStore>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let metas = store.list().map_err(|e| format!("list_sessions: {e:?}"))?;
+    let mut out = std::collections::HashMap::new();
+    for m in metas {
+        if let Some(b) = store.active_skill(&m.id) {
+            out.insert(m.id, b.name);
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

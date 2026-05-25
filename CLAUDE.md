@@ -15,7 +15,9 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 | 接外部 API | 写独立 MCP server |
 | 改 LLM 行为引导 | `.deepseek/instructions.md` |
 | Tauri UI / Rust wrapper / Engine 配置 | pinvou3-app 内 Rust |
-| 修上游 bug | DeepSeek-TUI fork ≤50 行 + 立即 PR（参考 #1511） |
+| 修上游 bug | DeepSeek-TUI fork ≤50 行 + 视情况 PR（见下） |
+
+> **fork 改动是否要 PR**：不是所有 fork 改动都提 PR。**通用优化 / 通用 bug 修复**（任何用上游的人都受益）才建议提上游 PR（参考 #1511）；**pinvou3 专用**的改动（只为本项目场景、依赖 pinvou3 约定/配置）留在 fork 内，不提 PR。
 
 ### 2. 只用本地算力（GB10 + Qwen3.6-35B-A3B-FP8）
 

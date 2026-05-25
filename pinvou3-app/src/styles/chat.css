@@ -395,6 +395,32 @@ body {
 .tool-toggle:hover { text-decoration: underline; }
 
 /* ─── 输入栏 ───────────────────────────────────────────── */
+/* busy-indicator: composer 上方持续可见的"AI 在干活"状态条。
+   跟 chat-area 末尾的 thinking-bubble 同步内容,但脱离消息流,
+   滚动浏览历史时仍贴在输入栏上方可见,避免用户误以为 LLM 卡死。 */
+.busy-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 32px;
+  font-size: 12px;
+  font-family: var(--font-mono, monospace);
+  font-style: italic;
+  color: var(--on-surface-muted);
+  background: var(--surface-container-lowest);
+  border-top: 1px solid var(--surface-container-high);
+  letter-spacing: 0.03em;
+  user-select: none;
+  flex-shrink: 0;
+}
+.busy-indicator[hidden] { display: none; }
+.busy-spinner {
+  display: inline-block;
+  font-style: normal;
+  color: var(--accent);
+  min-width: 1em;
+}
+
 .composer {
   padding: 16px 32px;
   background: var(--surface-container-low);
@@ -1201,6 +1227,24 @@ body[data-theme="liquid-light"] .settings-foot-note code {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 绑定了工作流 skill 的 session 在右侧显示一个小标签 */
+.history-item-skill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  margin-right: 4px;
+  border-radius: 8px;
+  background: rgba(255, 107, 53, 0.16);
+  color: var(--accent);
+  font-size: 0.72em;
+  white-space: nowrap;
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.history-item.active .history-item-skill {
+  background: rgba(255, 107, 53, 0.32);
 }
 .history-item-actions {
   display: none;
@@ -3054,6 +3098,9 @@ body[data-theme="liquid-light"] .bubble-pinvou {
   white-space: nowrap;
   scrollbar-width: thin;
 }
+/* CSS display:flex 会覆盖 HTML `hidden` 属性的默认 `display:none`,
+   切到无 skill 绑定的 session 后 chips 条仍可见 — 显式兜底。 */
+.workflow-chips[hidden] { display: none; }
 .workflow-chips-skill {
   display: inline-flex;
   align-items: center;
