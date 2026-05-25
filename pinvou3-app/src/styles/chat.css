@@ -3166,6 +3166,63 @@ body[data-theme="liquid-light"] .bubble-pinvou {
   margin: 0 2px;
 }
 
+/* chip 只读预览 popover —— 点 chip 弹出,不改进度 */
+.phase-chip-previewing {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+.phase-preview-popover {
+  position: fixed;
+  z-index: 50;
+  min-width: 170px;
+  max-width: 260px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface-container-high);
+  border: 1px solid var(--border-soft);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.38);
+  font-size: 12px;
+  color: var(--on-surface);
+  animation: phase-preview-in 0.12s ease-out;
+}
+@keyframes phase-preview-in {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.phase-preview-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.phase-preview-id {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 10px;
+  color: var(--on-surface-muted);
+}
+.phase-preview-title { font-weight: 600; }
+.phase-preview-meta {
+  color: var(--on-surface-muted);
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+.phase-preview-status {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+.phase-preview-status-current { color: #fff; background: var(--primary-container); }
+.phase-preview-status-done { color: var(--success); background: rgba(89, 251, 181, 0.12); }
+.phase-preview-status-pending { color: var(--on-surface-muted); background: var(--surface-container); }
+.phase-preview-note {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--on-surface-muted);
+  opacity: 0.8;
+}
+
 /* 工作流视图 (skill 库) */
 #view-workflow .workflow-skills-grid {
   display: grid;

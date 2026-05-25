@@ -3690,8 +3690,12 @@ function appConfirm(message, opts = {}) {
 //             (绑定的 session 出 chips,普通 session chips 隐藏)
 //   LLM 输出 `<phase id="..."/>` → 底座 engine emit Event::PhaseChanged
 //                                → Tauri event chat:phase_changed
-//                                → setCurrentPhase(pN, "llm")
-//   用户点 chip → setCurrentPhase(pN, "user") + 发 [USER_NUDGE] 伪消息引导 LLM
+//                                → setCurrentPhase(pN, "llm") — 唯一改进度的来源
+//   用户点 chip → showPhasePreview() 只读状态 popover(不改进度、不发 nudge)
+//                历史教训:旧实现点 chip 会本地拖动 currentPhaseId 并发 [USER_NUDGE],
+//                但 nudge 在模型 streaming 时被忙态拒收 + .catch 静默吞掉(44 个
+//                session 零落库),结果 chip 被拖到哪个 phase 与模型实际进度脱节。
+//                改为纯只读预览,进度只由 LLM marker 驱动。
 //   用户点 ✕    → unbind_session_skill(sid) → 解绑 chips 隐藏,session 仍可用
 //
 // 复用底座:
@@ -3833,6 +3837,7 @@ async function deactivateSkill(callBackend = true) {
 }
 
 function renderChipsStrip() {
+  closePhasePreview(); // 重渲染会替换 chip 元素,先关掉挂在 body 上的预览避免悬空
   const wrap = document.getElementById("workflow-chips");
   if (!wrap) return;
   if (!workflowState.activeSkillName || !workflowState.phases.length) {
@@ -3878,20 +3883,56 @@ function setCurrentPhase(phaseId, source) {
   workflowState.reachedPhaseIds.add(normalized);
   workflowState.currentPhaseId = normalized;
   renderChipsStrip();
-  if (source === "user") {
-    const ph = workflowState.phases.find((p) => p.id === normalized);
-    sendSystemNudge(
-      `用户在 chips 条上手动切换到 phase \`${normalized}\`: ${ph.title}。请按该 phase 的职责继续 — 下一条回复仍要以 \`<phase id="${normalized}"/>\` marker 单独一行开头。`
-    );
-  }
 }
 
-function sendSystemNudge(text) {
-  // 走现有 chat command,在 message 前缀 [USER_NUDGE] 标识。前端 appendUserMessage
-  // 可以根据这个前缀做样式区分 (MVP1 不强制做)。底座 LLM 看见后会按 nudge 调整行为。
-  invoke("chat", { message: `[USER_NUDGE]\n${text}`, attachments: [] }).catch((e) => {
-    console.warn("sendSystemNudge chat failed", e);
-  });
+// chip 点击 = 只读状态预览。弹一个轻量 popover 展示该 phase 的位置/loop/到达状态,
+// 不改 currentPhaseId、不发 nudge、不碰后端 —— 进度只由 LLM marker 驱动。
+let phasePreviewEl = null;
+function closePhasePreview() {
+  if (phasePreviewEl) {
+    phasePreviewEl.remove();
+    phasePreviewEl = null;
+  }
+  document
+    .querySelectorAll(".phase-chip-previewing")
+    .forEach((c) => c.classList.remove("phase-chip-previewing"));
+}
+function showPhasePreview(chip) {
+  const phaseId = chip.dataset.phase;
+  const idx = workflowState.phases.findIndex((p) => p.id === phaseId);
+  if (idx < 0) return;
+  // 再点同一个 chip = 关闭(toggle)
+  const sameOpen = phasePreviewEl && phasePreviewEl.dataset.phase === phaseId;
+  closePhasePreview();
+  if (sameOpen) return;
+  const p = workflowState.phases[idx];
+  const total = workflowState.phases.length;
+  const current = p.id === workflowState.currentPhaseId;
+  const reached = workflowState.reachedPhaseIds.has(p.id);
+  const status = current ? "当前阶段" : reached ? "已到达" : "未到达";
+  const statusCls = current ? "current" : reached ? "done" : "pending";
+  chip.classList.add("phase-chip-previewing");
+  const pop = document.createElement("div");
+  pop.className = "phase-preview-popover";
+  pop.dataset.phase = phaseId;
+  pop.innerHTML = `
+    <div class="phase-preview-head">
+      <span class="phase-preview-id">${escapeHtml(p.id)}</span>
+      <span class="phase-preview-title">${escapeHtml(p.title)}</span>
+    </div>
+    <div class="phase-preview-meta">第 ${idx + 1} 步 / 共 ${total} 步${p.loop ? " · ↻ 含内部循环" : ""}</div>
+    <div class="phase-preview-status phase-preview-status-${statusCls}">${status}</div>
+    <div class="phase-preview-note">只读预览,不影响实际进度</div>`;
+  document.body.appendChild(pop);
+  phasePreviewEl = pop;
+  // 定位:chip 下方左对齐,右溢出则贴右边
+  const r = chip.getBoundingClientRect();
+  pop.style.top = `${r.bottom + 6}px`;
+  let left = r.left;
+  if (left + pop.offsetWidth > window.innerWidth - 8) {
+    left = window.innerWidth - pop.offsetWidth - 8;
+  }
+  pop.style.left = `${Math.max(8, left)}px`;
 }
 
 async function openDemoModal(name) {
@@ -3955,14 +3996,23 @@ document.addEventListener("click", (e) => {
   // 但走委托风格统一更好。
   if (e.target.closest("#chip-skill-exit")) {
     e.preventDefault();
+    closePhasePreview();
     deactivateSkill();
     return;
   }
   const chip = e.target.closest(".phase-chip");
   if (chip && chip.dataset.phase) {
     e.preventDefault();
-    setCurrentPhase(chip.dataset.phase, "user");
+    showPhasePreview(chip); // 只读预览,不改进度、不发 nudge
+    return;
   }
+  // 点 chip 和 popover 之外 → 关掉预览
+  if (!e.target.closest(".phase-preview-popover")) {
+    closePhasePreview();
+  }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closePhasePreview();
 });
 
 // demo 模态关闭 (点 ✕ / 点背景)
