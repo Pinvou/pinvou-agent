@@ -9,7 +9,7 @@
 ## 当前状态
 
 - **main HEAD**: `e729d06` (阶段 J — 已 push origin `Pinvou/pinvou3` + backup `h3c-hexin/pinvou3`)
-- **fork HEAD**: `2564193c` (`pinvou3-patches`,已同步上游 **v0.8.45 + rebrand CodeWhale**,已 push `h3c-hexin/DeepSeek-TUI`)
+- **fork HEAD**: `63e17d77` (`pinvou3-patches`,已同步上游 **v0.8.45 + rebrand CodeWhale**,已 push `h3c-hexin/DeepSeek-TUI`)。另有分支 `fix/grep-files-timeout`(`f2153f10`)= **PR #2146**,从 `upstream/main` 拉,不并入 patches
 - **进行中**: 无重大未并项;阶段 J 全部并入 main 并推送
 - **worktrees**: `workflow-discussion` (本会话工作,已并入 main)、`workflow-desing-01`、`pinvou-review-v2-DO-NOT-DELETE`
 
@@ -123,26 +123,30 @@ bridge 已有 `ModelPreset` 占位,缺 GUI。支持远程 DeepSeek API / OpenRou
 
 ---
 
-## Fork → 上游 PR roadmap (2026-05-25 更新, 阶段 J 后)
+## Fork → 上游 PR roadmap (2026-05-26 更新, grep #2146 + max_output #2147 提交后)
 
 上游已 rebrand: **`Hmbown/CodeWhale`**(原 DeepSeek-TUI),crate `codewhale-tui`,当前 v0.8.45。fork 已同步。
 CLAUDE.md 规则: 通用优化/bug → PR;pinvou3 专用 → 留 fork。
 
 | 状态 | Commit | 内容 | 备注 |
 |---|---|---|---|
-| 🔵 **待审** | `363dd35` | subagent role system→user (Qwen chat_template 400) | **PR #2057 OPEN** (2026-05-25 提, 重做净版 + 测试) |
-| 🔵 **待审** | `7e5288e` | sub-500K 窗口 compaction 预算 (`_Nk` vendor-agnostic + 分级 reserved) | **PR #2060 OPEN** (2026-05-25 提) |
-| ✅ 已合/harvest | `d866274`/`aaa1920` | file_search/grep timeout | **#1790 CLOSED**(上游 #2035 harvest 了);grep 同理无需再提。分支已删 |
+| ✅ 已合 | `363dd35` | subagent role system→user (Qwen chat_template 400) | **PR #2057 MERGED** (2026-05-25) |
+| ✅ 已合 | `7e5288e` | sub-500K 窗口 compaction 预算 (`_Nk` vendor-agnostic + 分级 reserved) | **PR #2060 MERGED** (2026-05-25) |
+| ✅ 已收敛 | `079a3bb` | file_search timeout + spawn_blocking | 上游 **#2035 harvest 等价实现**(连 `FILE_SEARCH_TIMEOUT` 同名)。**#1790/#2044 CLOSED**;HEAD 与上游 `file_search.rs` **逐字节一致, 零漂移, 无可 drop**(合并时自动收敛) |
+| 🔵 **待审** | `aaa1920` | grep_files timeout + spawn_blocking | ⚠️ **v0.8.45 合并时被上游 harvest 版覆盖丢失**(上游 grep 只剩 per-file cancel-check, 无 spawn_blocking/硬超时, 大目录仍独占 runtime 线程)。2026-05-26 从 `upstream/main` 拉净分支重做(`run_blocking_grep` 对称 file_search) → **PR #2146 OPEN**(一致性论点)。**未回 fork** |
 | ✅ 已合 | — | OpenAI streaming batch tool_calls | **#1686 MERGED** 进上游。分支已删 |
-| 🟡 待沟通 | `93e9474` | `DEEPSEEK_MAX_OUTPUT_TOKENS` env override | **重新评估: 可 PR**(上游仍用 `DEEPSEEK_` 前缀)。但上游已有 `config.max_output` 字段而 `effective_max_output_tokens` 没读它 → **先开 issue 问 env vs 接 config**, 再实现 |
+| 🔵 **待审** | `93e9474` | `DEEPSEEK_MAX_OUTPUT_TOKENS` env override (tight-context providers) | **PR #2147 OPEN** (2026-05-26 提) |
 | 🟡 待沟通 | `b2f6ef56`/`a25352a` | careful YOLO BLOCK / 多行命令逐行分析 | 碰 **execpolicy/sandbox 信任边界**(CONTRIBUTING 要求预沟通);a25352a 是"放松"安全面更需先开 issue。**不盲提** |
 | 🟡 弱适合 | `9860ef1` `15244e6` `dd879db` | MAX_STEPS 默认 / stop-on-failure prompt / test_support | 改默认值/prompt/不常见模式,ROI 低或需先 issue,**暂不主动** |
 | ❌ fork-only | `6ac5b97` `47e6abc` / `b9b40ce` `36526ce` `1ba8e41` / `ade944d` 64KB 上限 | lib export / blocklist / 64KB 硬上限(opinionated) | pinvou3 专用或 opinionated,留 fork(64KB 那条若要 PR 需拆且阈值可配置) |
 
+**已合**: #2057 #2060 (2026-05-25)、#1686 #1511。
+
 **下次开工动作**:
-1. `gh pr view 2057 2060 --repo Hmbown/CodeWhale` 看反应(merge / harvest / 意见)
-2. 看维护者节奏后再推 `93e9474`(先开 issue 问 env vs config max_output)
-3. `a25352a` 若想推, 先开 issue 描述"多行命令一刀切 Dangerous 误伤", 拿 sign-off 再提
+1. `gh pr view 2146 2147 --repo Hmbown/CodeWhale` 看反应(merge / harvest / 意见)
+2. #2146(grep timeout) 若被 harvest/merge → grep 零漂移白拿;若被拒 → 真实痛点($HOME 卡死)上游已用 per-file cancel-check 覆盖, 零损失, 不回 fork
+3. #2147(max_output_tokens env) 待审; 若维护者倾向接 `config.max_output` 而非 env, 按反馈改
+4. `a25352a` 若想推, 先开 issue 描述"多行命令一刀切 Dangerous 误伤", 拿 sign-off 再提
 
 ---
 
@@ -160,7 +164,8 @@ CLAUDE.md 规则: 通用优化/bug → PR;pinvou3 专用 → 留 fork。
 - 跨 baseline 均值看是 noise, 单 sample 信号不下结论
 
 ### 工具同步阻塞
-- ✅ `file_search` / `grep_files` 已修 (fork patch + 上游 PR)
+- ✅ `file_search` 已修且**上游已收敛**(#2035, fork 零漂移)
+- 🔵 `grep_files` fork patch 已在 v0.8.45 合并时丢失;上游现有 per-file cancel-check(大目录场景 OK), spawn_blocking+硬超时走 **PR #2146**(待审, 未回 fork)
 - ⚠️ `list_dir` 单层 read_dir 通常 OK 但极端目录边缘 case 可能
 
 ### Judge 自身局限
