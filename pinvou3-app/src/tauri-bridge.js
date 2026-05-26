@@ -52,6 +52,8 @@
     attachments: [],
     // token 预算（input_tokens / maxModelLen）
     tokens: { input: 0, max: 32768 },
+    // 思考指示器：active 时 React 渲染计时气泡（Braille + 思考中/调用工具 + 秒数）
+    thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
     // 工作流状态
     workflow: {
       skills: [],
@@ -404,6 +406,7 @@
 
     // Start streaming
     state.busy = true;
+    startThinking();
     currentStreamText = "";
     currentStreamId = ++itemIdSeq;
     state.chatItems.push({
@@ -486,6 +489,7 @@
   listen("chat:tool_start", function (e) {
     var p = e.payload || {};
     toolMeta[p.id] = { name: p.name, args: p.args };
+    thinkingTool(p.name);
     flushPendingTextBlock();
     pendingAssistantBlocks.push({ type: "tool_use", id: p.id, name: p.name, input: p.args || {} });
 
@@ -511,6 +515,7 @@
   listen("chat:tool_end", function (e) {
     var p = e.payload || {};
     var meta = toolMeta[p.id];
+    thinkingIdle();
     var resultContent = typeof p.output === "string" ? p.output : JSON.stringify(p.output);
     flushAssistantMessageToHistory();
     var trBlock = { type: "tool_result", tool_use_id: p.id, content: resultContent };
@@ -574,6 +579,7 @@
     });
 
     state.busy = false;
+    stopThinking();
     currentStreamText = "";
     currentStreamId = 0;
     pendingAssistantPersona = null;
@@ -880,6 +886,12 @@
     if (persist) state.messages.push({ role: "user", content: [{ type: "text", text: text }] });
   }
   function markResolved(id, statusLabel) { patchItemById(id, { resolved: true, statusLabel: statusLabel || "" }); notify(); }
+
+  // ── 思考指示器状态（每次阶段切换重置计时）──────────────────────
+  function startThinking() { state.thinking = { active: true, phase: "thinking", toolName: "", startedAt: Date.now() }; }
+  function thinkingTool(name) { state.thinking = { active: true, phase: "tool", toolName: name || "", startedAt: Date.now() }; }
+  function thinkingIdle() { state.thinking = { active: true, phase: "thinking", toolName: "", startedAt: Date.now() }; }
+  function stopThinking() { state.thinking = { active: false, phase: "thinking", toolName: "", startedAt: 0 }; }
   function applyModeFromState(st) {
     state.modeState = {
       mode: st.mode || "yolo",
@@ -893,7 +905,7 @@
     if (!state.activeSessionId) return;
     if (itemId) patchItemById(itemId, { cardState: "approved", statusLabel: "✅ 已批准", resolved: true });
     pushUserEcho(echo || "✅ 就这么干", true);
-    state.busy = true; notify();
+    state.busy = true; startThinking(); notify();
     try {
       var st = await invoke("accept_plan", { sessionId: state.activeSessionId, planMarkdown: planMarkdown || "" });
       applyModeFromState(st);
@@ -999,6 +1011,7 @@
     state.chatItems = [];
     rerenderFromMessages();
     state.busy = true;
+    startThinking();
     currentStreamText = "";
     currentStreamId = ++itemIdSeq;
     state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
@@ -1079,6 +1092,7 @@
     pendingAssistantPersona = persona;
     pushUserEcho(summary, true);
     state.busy = true;
+    startThinking();
     currentStreamText = "";
     currentStreamId = ++itemIdSeq;
     state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true, persona: persona });
@@ -1109,7 +1123,7 @@
     var eff = report ? overrideAllCriticalInReport(report) : synthesizeOverriddenReport("Pinvou 用自然语言提了意见(见上方),用户阅读后决策");
     var fullMd = (planMarkdown || "") + "\n\n" + eff;
     pushUserEcho("✅ 就这么干(品悟顾虑已 override)", true);
-    state.busy = true; notify();
+    state.busy = true; startThinking(); notify();
     try {
       var st = await invoke("accept_plan", { sessionId: state.activeSessionId, planMarkdown: fullMd });
       applyModeFromState(st);
