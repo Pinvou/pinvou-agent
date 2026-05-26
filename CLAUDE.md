@@ -18,6 +18,7 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 | 修上游 bug | DeepSeek-TUI fork ≤50 行 + 视情况 PR（见下） |
 
 > **fork 改动是否要 PR**：不是所有 fork 改动都提 PR。**通用优化 / 通用 bug 修复**（任何用上游的人都受益）才建议提上游 PR（参考 #1511）；**pinvou3 专用**的改动（只为本项目场景、依赖 pinvou3 约定/配置）留在 fork 内，不提 PR。
+> **底座上游PR规范**：https://github.com/Hmbown/CodeWhale/blob/main/CONTRIBUTING.md
 
 ### 2. 只用本地算力（GB10 + Qwen3.6-35B-A3B-FP8）
 
@@ -32,7 +33,6 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 
 ## 参考文档
 
-- `docs/DeepSeek-TUI-架构详解.md` — 底座详尽解析
 - `docs/验证报告-qwen3.6-deepseek-tui.md` — 阶段 A 实证报告
 - `process.md` — 跨阶段待办 / 长期搁置项
 - git log + commit message — 决策记录与已知坑修复
