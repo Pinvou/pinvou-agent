@@ -26,7 +26,7 @@
 
 **⚠️ 本次 merge 暴露的 fork 维护点**:
 - 文件路径变更:上游把 write/append/edit 合进 **`tools/file.rs`**(原 `write_file.rs`/`append_file.rs` 不再独立)。
-- `tool_catalog.rs`:上游重构为 `always_load` + `DEFAULT_ACTIVE_NATIVE_TOOLS`。pinvou3 blocklist 已从 `should_default_defer_tool` **移到 `apply_native_tool_deferral` 叠加层**(保上游单测纯净)。
+- `tool_catalog.rs`:上游把工具 deferral 从 pinvou3 的 **blocklist 模型**(显示全部、隐藏黑名单)改成 **allowlist**(`DEFAULT_ACTIVE_NATIVE_TOOLS` 白名单、其余 defer)。philosophy 相反 → 静默踩坑:`request_user_input`/`append_file` 不在上游白名单被 defer,**GUI 里 request_user_input 不出气泡**。修复:新增 `pinvou3_should_defer_native_tool`(Yolo 只 defer 黑名单、其余全显示;非 Yolo 才叠加上游 allowlist),`should_default_defer_tool` 保持上游纯逻辑。回归测试 `pinvou3_yolo_offers_nonblocklisted_tools_outside_upstream_default` 锁死,防下次 sync 再踩。
 - `lib.rs`:上游新模块需手动加 `pub mod`(本次补了 `tool_output_receipts`)。这是 fork lib-export patch 的固定维护成本。
 - bridge:上游 `EngineConfig` 新增 `show_thinking`/`goal_state`/`tools_always_load`/`prefer_bwrap`,已透传 default。
 - ⚠️ 上游 **#2132 默认搜索后端 Bing→DuckDuckGo**;pinvou3 bing decode 修复仍在(Bing 仍是可选后端),PR #2245 紧迫性下降但仍有效。
