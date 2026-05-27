@@ -36,7 +36,19 @@
     ],
     "linux": {
       "deb": {
-        "preRemoveScript": "scripts/prerm.sh"
+        "preRemoveScript": "scripts/prerm.sh",
+        "depends": [
+          "poppler-utils",
+          "tesseract-ocr",
+          "tesseract-ocr-chi-sim",
+          "pandoc",
+          "p7zip-full",
+          "python3"
+        ],
+        "recommends": [
+          "libreoffice",
+          "libemail-outlook-message-perl"
+        ]
       }
     }
   }

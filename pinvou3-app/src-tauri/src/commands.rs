@@ -130,10 +130,26 @@ fn build_message_with_attachments(
         // 同时避免 AI 凭想象编造 workspace/<timestamp>-... 这种伪路径
         out.push_str(&format!("原始路径: `{}`\n", a.path));
         if a.kind == "image" {
-            out.push_str(
-                "⚠️ 当前模型 Qwen3.6 没有视觉能力,只知道用户附了这张图,**无法**分析像素内容。\
-                请明确告诉用户你看不到,不要臆测图里的东西。\n",
-            );
+            if let Some(md) = &a.markdown {
+                // OCR 抠出了文字：给出文字，但说清这是 OCR 不是视觉理解。
+                out.push_str(
+                    "ℹ️ 以下是图片经 OCR 提取的**文字**(非视觉理解,版式/图形/颜色已丢失,\
+                    可能有识别误差)。如用户问图里画了什么、配色、布局等视觉内容,\
+                    请说明你只能读到文字、看不到画面,不要臆测:\n",
+                );
+                out.push_str("```\n");
+                out.push_str(md);
+                if !md.ends_with('\n') {
+                    out.push('\n');
+                }
+                out.push_str("```\n");
+            } else {
+                // 没 OCR 文字(纯图/缺 tesseract/识别为空)：照旧提示无视觉。
+                out.push_str(
+                    "⚠️ 当前模型 Qwen3.6 没有视觉能力,只知道用户附了这张图,**无法**分析像素内容。\
+                    请明确告诉用户你看不到,不要臆测图里的东西。\n",
+                );
+            }
         } else if let Some(md) = &a.markdown {
             out.push_str("```\n");
             out.push_str(md);

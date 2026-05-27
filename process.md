@@ -333,6 +333,29 @@ CLAUDE.md 规则: 通用优化/bug → PR;pinvou3 专用 → 留 fork。
 
 ---
 
+## 阶段 L(issue-1-attachment-pipeline 分支): 主对话附件识别补全(响应 Pinvou/pinvou3#1)
+
+**背景**: file_ingest 已有附件 UI + 通路, 但解析有缺口/bug。综合评估底座(image_ocr/pandoc_convert)
+vs pinvou3 自调, 结论: pdftotext(`-layout`)/pandoc pinvou3 不比底座差, 不动; 真缺口是 OCR + 几个
+被错误派给 pandoc 而坏掉的格式。
+
+**已落地**:
+- 图片 OCR(tesseract, `chi_sim+eng` 探测降级 eng) + 扫描件 PDF 兜底(pdftotext 空→pdftoppm→OCR, 30 页封顶)
+- 修 pandoc 吃不下的格式: pptx/ppt→PDF→pdftotext, xlsx/ods/xls→LibreOffice CSV(原来全派给 pandoc 是坏的)
+- WPS 三件套 .wps/.et/.dps 按用途归入对应 LibreOffice 路径
+- 压缩包 zip/rar/7z: 7z 解压前炸弹预检(条目数+解压后总大小) + 递归复用主 ingest + 防套娃
+- 邮件 .eml(python email 标准库) / .msg(msgconvert→eml→同脚本)
+- 依赖分发: `tauri.conf.json` deb depends/recommends 声明, `apt install .deb` 自动拉齐(不做运行时懒装)
+- 验证: 8 常规单测 + 4 个 `#[ignore]` 端到端实测(中文 OCR/office/archive/eml)全过
+
+**搁置项**:
+- ⏸ **音视频转录**: whisper 后端未部署(本机 x86 无, GB10 远程); 且同步 ingest 跑 whisper 阻塞数分钟
+  不合适。待 GB10 部署 whisper.cpp/faster-whisper 后作独立能力(sidecar/服务), 现仅 `media_placeholder` 降级。
+- ⏸ **图片 VLM caption**: 本地 Qwen3.6 无视觉, 阻塞; 现图片靠 OCR 抠文字 + `model_no_vision` 提示。
+  等接入 vision 模型再补「看图说话」。
+
+---
+
 ## 相关文档
 
 - `docs/L1-judge-rubric.md` — Judge 评分 rubric (r2)
