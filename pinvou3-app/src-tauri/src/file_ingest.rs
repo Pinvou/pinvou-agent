@@ -367,7 +367,10 @@ fn libreoffice_convert_text(
     let tmpdir = std::env::temp_dir().join(format!("pinvou3-libreoffice-{ts}"));
     std::fs::create_dir_all(&tmpdir).map_err(|e| format!("创建临时目录失败: {e}"))?;
 
+    // 独立 UserInstallation profile：LibreOffice 同一 profile 不能并发(会 lock)，
+    // 用户一次拖多个 office 文件时前端会并发 ingest_file，必须各用各的 profile。
     let out = Command::new("soffice")
+        .arg(format!("-env:UserInstallation=file://{}/profile", tmpdir.display()))
         .arg("--headless")
         .arg("--convert-to")
         .arg(convert_to)
@@ -384,6 +387,8 @@ fn libreoffice_convert_text(
                 .unwrap_or("converted");
             let out_path = tmpdir.join(format!("{stem}.{out_ext}"));
             std::fs::read_to_string(&out_path)
+                // soffice 的 txt/csv 导出会带 UTF-8 BOM，去掉以免污染正文开头。
+                .map(|s| s.trim_start_matches('\u{feff}').to_string())
                 .map_err(|e| format!("LibreOffice 转换后读取失败: {e}"))
         }
         Ok(o) => Err(format!(
@@ -537,6 +542,7 @@ fn libreoffice_presentation_text(path: &Path) -> Result<String, String> {
     std::fs::create_dir_all(&tmpdir).map_err(|e| format!("创建临时目录失败: {e}"))?;
 
     let convert = Command::new("soffice")
+        .arg(format!("-env:UserInstallation=file://{}/profile", tmpdir.display()))
         .arg("--headless")
         .arg("--convert-to")
         .arg("pdf")
@@ -1427,5 +1433,61 @@ mod tests {
         assert!(md.contains("Project Update"), "应含主题: {md}");
         assert!(md.contains("邮件正文"), "应含正文中文: {md}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 全类型端到端：遍历 /tmp/e2e_files 下预先造好的各类样本文件，逐个 ingest，
+    /// 打印 [文件/kind/markdown/tokens/预览] 汇总表，并断言「预期可解析」的类型都
+    /// 真的产出了 markdown。依赖全套外部工具 + 样本目录，故 `#[ignore]`。
+    #[test]
+    #[ignore = "全类型 e2e: 需 /tmp/e2e_files 与全套外部工具"]
+    fn e2e_all_supported_types() {
+        let dir = std::path::Path::new("/tmp/e2e_files");
+        if !dir.exists() {
+            eprintln!("跳过: 无 /tmp/e2e_files");
+            return;
+        }
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.is_file())
+            .collect();
+        entries.sort();
+
+        // 预期能解析出正文的扩展（其余 mp3/bin 预期只给 warning）。
+        let expect_md = [
+            "txt", "md", "csv", "json", "docx", "odt", "rtf", "doc", "pptx", "ppt", "xlsx",
+            "ods", "xls", "png", "pdf", "zip", "7z", "eml",
+        ];
+
+        println!(
+            "\n{:<14} {:<12} {:<5} {:>6}  {}",
+            "文件", "kind", "md", "tokens", "warning / 内容预览"
+        );
+        println!("{}", "-".repeat(100));
+        let mut failures = Vec::new();
+        for p in &entries {
+            let r = ingest(p);
+            let ext = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            let md_flag = if r.markdown.is_some() { "有" } else { "—" };
+            let preview = match (&r.markdown, &r.warning) {
+                (Some(m), _) => m.chars().take(70).collect::<String>().replace('\n', " ⏎ "),
+                (None, Some(w)) => format!("⚠️ {w}"),
+                _ => String::new(),
+            };
+            println!(
+                "{:<14} {:<12} {:<5} {:>6}  {}",
+                name, r.kind, md_flag, r.token_estimate, preview
+            );
+            if expect_md.contains(&ext.as_str()) && r.markdown.is_none() {
+                failures.push(format!("{name} ({ext}) 预期产 markdown 但为空: {:?}", r.warning));
+            }
+        }
+        println!("{}", "-".repeat(100));
+        assert!(failures.is_empty(), "以下类型解析失败:\n{}", failures.join("\n"));
     }
 }

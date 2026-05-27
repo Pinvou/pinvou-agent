@@ -1159,4 +1159,59 @@ mod tests {
         assert!(result.is_err(), "/etc/shadow 必须拒绝, got {result:?}");
         assert!(result.unwrap_err().contains("system-sensitive"));
     }
+
+    /// 端到端（除 GUI）：图片 → file_ingest OCR → build_message_with_attachments
+    /// 拼成发给 LLM 的最终 prompt。验证 OCR 文字真的进了 prompt 且带「非视觉理解」
+    /// 标注。把 prompt 写到 /tmp 供外部脚本发真实 vLLM 验证模型能否读懂。
+    /// 依赖 tesseract + /tmp/ocr_test_cn.png，故 `#[ignore]`。
+    #[test]
+    #[ignore = "端到端: 需 tesseract + /tmp/ocr_test_cn.png"]
+    fn e2e_image_ocr_into_prompt() {
+        let img = std::path::Path::new("/tmp/ocr_test_cn.png");
+        if !img.exists() {
+            eprintln!("跳过: 无 /tmp/ocr_test_cn.png");
+            return;
+        }
+        let r = crate::file_ingest::ingest(img);
+        let prompt = build_message_with_attachments(
+            "这张图里的项目编号是多少？只回答编号。".to_string(),
+            vec![r],
+        );
+        std::fs::write("/tmp/e2e_prompt.txt", &prompt).expect("写 prompt");
+        println!("===PROMPT===\n{prompt}\n===END===");
+        assert!(prompt.contains("OCR"), "prompt 应标注 OCR 来源");
+        assert!(
+            prompt.contains("2026-PV-001"),
+            "OCR 抠出的项目编号必须进 prompt"
+        );
+    }
+
+    /// 为多种附件类型生成「问题 + 附件内容」的最终 prompt，写到 /tmp 供外部脚本
+    /// 发真实 vLLM 验证模型能否据附件作答。依赖 /tmp/e2e_files，故 `#[ignore]`。
+    #[test]
+    #[ignore = "生成多类型 prompt 供 vLLM 验证"]
+    fn e2e_build_llm_cases() {
+        let dir = std::path::Path::new("/tmp/e2e_files");
+        if !dir.exists() {
+            eprintln!("跳过: 无 /tmp/e2e_files");
+            return;
+        }
+        let cases = [
+            ("sample.png", "这张图里的项目编号是多少？只回答编号。", "/tmp/llm_png.txt"),
+            ("scan.pdf", "这份文件的文号是多少？只回答文号。", "/tmp/llm_scan.txt"),
+            ("sample.xlsx", "表格里李四的金额是多少？只回答数字。", "/tmp/llm_xlsx.txt"),
+            ("sample.pptx", "演示文稿第一章讲什么？提到的编号是？", "/tmp/llm_pptx.txt"),
+            ("mail.eml", "这封邮件的主题是什么？正文里的编号是多少？", "/tmp/llm_eml.txt"),
+            ("bundle.zip", "这个压缩包里图片上的项目编号是多少？", "/tmp/llm_zip.txt"),
+        ];
+        for (f, q, out) in cases {
+            let p = dir.join(f);
+            if !p.exists() {
+                continue;
+            }
+            let r = crate::file_ingest::ingest(&p);
+            let prompt = build_message_with_attachments(q.to_string(), vec![r]);
+            std::fs::write(out, prompt).expect("写 prompt");
+        }
+    }
 }
