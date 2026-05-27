@@ -30,7 +30,12 @@ use crate::bridge::mode_state::{PlanPhase, SerializableMode};
 use crate::bridge::sessions::SessionStore;
 use crate::bridge::Pinvou3Bridge;
 
-/// Tauri State 持有。前端通过 `invoke('chat', ...)` 间接调到这里。
+/// 单个 session 的 engine wrapper(handle + 该 session 绑定的 bridge)。
+///
+/// 多引擎并发模型下,[`EnginePool`](crate::engine_pool::EnginePool) 为每个 session
+/// 持有一个 `AppEngine`(经 [`spawn_for_session`](Self::spawn_for_session) 创建);
+/// L1 headless harness 经 [`spawn_headless`](Self::spawn_headless) 单独用一个。
+/// Clone 廉价(EngineHandle 内部 Arc)。
 #[derive(Clone)]
 pub struct AppEngine {
     pub handle: EngineHandle,
@@ -38,25 +43,45 @@ pub struct AppEngine {
 }
 
 impl AppEngine {
-    /// 启动序列：boot bridge → build configs → spawn engine → 启 event forwarder。
-    /// 必须在 Tauri `setup()` 的异步上下文里调。
-    pub async fn spawn(app: AppHandle, store: SessionStore) -> Result<Self> {
-        let bridge = Pinvou3Bridge::boot()?;
-        let engine_config = bridge.build_engine_config();
+    /// 为指定 session spawn 一个**独立** engine:绑定该 session 专属的 workspace +
+    /// instructions(spawn 时由 [`build_engine_config_for_session`] 固化进 config,
+    /// 不再靠 `Op::SyncSession` 动态切),并启一个带 `session_id` 的 event forwarder。
+    /// 返回 `(engine, forwarder_handle)`,[`EnginePool`] 回收 session 时 abort forwarder。
+    ///
+    /// 调用方(EnginePool)负责复用同一份已 boot 的 `bridge`,避免每个 session 重 boot
+    /// (boot 会写盘 / 设 env)。
+    ///
+    /// [`build_engine_config_for_session`]: crate::bridge::Pinvou3Bridge::build_engine_config_for_session
+    /// [`EnginePool`]: crate::engine_pool::EnginePool
+    pub async fn spawn_for_session(
+        app: AppHandle,
+        store: SessionStore,
+        bridge: Pinvou3Bridge,
+        session_id: &str,
+    ) -> Result<(Self, tauri::async_runtime::JoinHandle<()>)> {
+        // 写 session 专属 instructions(engine rehydrate 从 disk 读这个文件)。
+        bridge.write_session_instructions(session_id)?;
+        let engine_config = bridge.build_engine_config_for_session(session_id);
         let dt_config = bridge.build_dt_config();
 
         eprintln!(
-            "[pinvou3-app] spawn_engine model={} workspace={} skills_dir={} instructions={}",
+            "[pinvou3-app] spawn_engine session={} model={} workspace={} instructions={}",
+            session_id,
             engine_config.model,
             engine_config.workspace.display(),
-            engine_config.skills_dir.display(),
             format_instructions(&engine_config.instructions),
         );
 
         let handle = spawn_engine(engine_config, &dt_config);
-        spawn_event_forwarder(app, handle.clone(), store, bridge.clone());
+        let forwarder = spawn_event_forwarder(
+            app,
+            handle.clone(),
+            store,
+            bridge.clone(),
+            session_id.to_string(),
+        );
 
-        Ok(Self { handle, bridge })
+        Ok((Self { handle, bridge }, forwarder))
     }
 
     /// 测试入口(L1 harness 用):用预先 boot 好的 bridge spawn 一个 engine,
@@ -141,11 +166,12 @@ impl AppEngine {
     /// - 不重拼 system_prompt → AI 看到的 PINVOU3_WORKSPACE 路径跟实际 workspace 不一致
     pub async fn sync_session(&self, session_id: String, messages: Vec<Message>) -> Result<()> {
         let workspace = self.bridge.session_workspace(&session_id);
-        // 重写 disk 上的 instructions.md 为 session-specific 路径。
-        // engine 的 rehydrate 会从 disk 重读覆盖 session.system_prompt,
-        // 所以必须改 disk 才能让 AI 看到正确的 PINVOU3_WORKSPACE。
-        if let Err(e) = self.bridge.rewrite_instructions_for_session(&session_id) {
-            eprintln!("[sync_session] rewrite instructions failed: {e}");
+        // 重写 **session 专属** instructions 文件为 session-specific 路径。
+        // engine 的 rehydrate 会从 disk 重读覆盖 session.system_prompt,所以必须改
+        // disk 才能让 AI 看到正确的 PINVOU3_WORKSPACE。多引擎并发下每个 session 写
+        // 自己的文件,不再共享全局 bundle/instructions.md(否则互相覆写串台)。
+        if let Err(e) = self.bridge.write_session_instructions(&session_id) {
+            eprintln!("[sync_session] write session instructions failed: {e}");
         }
         let prompt_text = self.bridge.build_session_system_prompt(&session_id);
         self.handle
@@ -228,12 +254,20 @@ fn plan_has_pending(snapshot: &serde_json::Value) -> bool {
 /// Plan ready 触发：监听 `update_plan` 工具结果 + TurnComplete，
 /// 若 active session mode=Plan + 本 turn 调过 update_plan + plan 非空 →
 /// 设 phase=Ready + emit `chat:plan_ready` 含 plan snapshot。
+///
+/// **多引擎并发**:每个 session 一个独立 engine + 一个独立 forwarder,所以这里捕获
+/// 的 `session_id` 唯一标识本 forwarder 服务的 session。**所有 emit 的 payload 都带
+/// `session_id`**,前端按它把事件分流到对应 session 的缓冲;TurnComplete 里的 mode
+/// 判据(plan_ready / M2 / M3)也全部基于本 `session_id`,不再读全局 `store.active_id()`
+/// (并发下 active 会变,读全局会把判据算到错误 session 上)。返回 forwarder 的
+/// `JoinHandle`,EnginePool 回收 session 时 `abort()` 它。
 fn spawn_event_forwarder(
     app: AppHandle,
     handle: EngineHandle,
     store: SessionStore,
     bridge: Pinvou3Bridge,
-) {
+    session_id: String,
+) -> tauri::async_runtime::JoinHandle<()> {
     let approve_handle = handle.clone();
     let plan_tracker: Arc<Mutex<TurnPlanTracker>> =
         Arc::new(Mutex::new(TurnPlanTracker::default()));
@@ -243,7 +277,10 @@ fn spawn_event_forwarder(
             match event {
                 Event::MessageDelta { content, .. } => {
                     plan_tracker.lock().assistant_text_len += content.chars().count();
-                    let _ = app.emit("chat:delta", json!({ "text": content }));
+                    let _ = app.emit(
+                        "chat:delta",
+                        json!({ "session_id": session_id, "text": content }),
+                    );
                 }
                 Event::ThinkingDelta { .. } => {
                     // Qwen3 已用 reasoning_effort=off 关 thinking，丢这段
@@ -251,7 +288,7 @@ fn spawn_event_forwarder(
                 Event::ToolCallStarted { id, name, input } => {
                     let _ = app.emit(
                         "chat:tool_start",
-                        json!({ "id": id, "name": name, "args": input }),
+                        json!({ "session_id": session_id, "id": id, "name": name, "args": input }),
                     );
                 }
                 Event::ToolCallComplete { id, name, result } => {
@@ -287,12 +324,11 @@ fn spawn_event_forwarder(
                         } else {
                             (None, tracker.last_todos_snapshot.clone())
                         };
-                        let active_id_for_emit = store.active_id();
                         drop(tracker);
                         let _ = app.emit(
                             "chat:plan_snapshot",
                             json!({
-                                "session_id": active_id_for_emit,
+                                "session_id": session_id,
                                 "plan_snapshot": plan_emit,
                                 "todos_snapshot": todos_emit,
                             }),
@@ -314,6 +350,7 @@ fn spawn_event_forwarder(
                     let _ = app.emit(
                         "chat:tool_end",
                         json!({
+                            "session_id": session_id,
                             "id": id,
                             "name": name,
                             "output": output,
@@ -331,6 +368,7 @@ fn spawn_event_forwarder(
                     let _ = app.emit(
                         "chat:phase_changed",
                         json!({
+                            "session_id": session_id,
                             "phase_id": phase_id,
                         }),
                     );
@@ -342,6 +380,7 @@ fn spawn_event_forwarder(
                     let _ = app.emit(
                         "chat:user_input_required",
                         json!({
+                            "session_id": session_id,
                             "id": id,
                             "questions": request.questions,
                         }),
@@ -370,6 +409,7 @@ fn spawn_event_forwarder(
                     let _ = app.emit(
                         "chat:usage",
                         json!({
+                            "session_id": session_id,
                             "input_tokens": usage.input_tokens,
                             "output_tokens": usage.output_tokens,
                         }),
@@ -384,7 +424,9 @@ fn spawn_event_forwarder(
                     *tracker = TurnPlanTracker::default();
                     drop(tracker);
 
-                    if let Some(active_id) = store.active_id() {
+                    {
+                        // 多引擎:mode 判据基于本 forwarder 的 session_id,不读全局 active。
+                        let active_id = session_id.clone();
                         let state = store.mode_state(&active_id);
 
                         // ── plan_ready 触发(Plan + 调过 plan 类工具) ──
@@ -470,13 +512,13 @@ fn spawn_event_forwarder(
                     }
                     let _ = app.emit(
                         "chat:done",
-                        json!({ "status": format!("{status:?}"), "error": error }),
+                        json!({ "session_id": session_id, "status": format!("{status:?}"), "error": error }),
                     );
                 }
                 Event::CompactionStarted { message, auto, .. } => {
                     let _ = app.emit(
                         "chat:compaction",
-                        json!({ "phase": "start", "auto": auto, "message": message }),
+                        json!({ "session_id": session_id, "phase": "start", "auto": auto, "message": message }),
                     );
                 }
                 Event::CompactionCompleted {
@@ -489,6 +531,7 @@ fn spawn_event_forwarder(
                     let _ = app.emit(
                         "chat:compaction",
                         json!({
+                            "session_id": session_id,
                             "phase": "done",
                             "auto": auto,
                             "message": message,
@@ -500,7 +543,7 @@ fn spawn_event_forwarder(
                 Event::CompactionFailed { message, auto, .. } => {
                     let _ = app.emit(
                         "chat:compaction",
-                        json!({ "phase": "fail", "auto": auto, "message": message }),
+                        json!({ "session_id": session_id, "phase": "fail", "auto": auto, "message": message }),
                     );
                 }
                 Event::Error { envelope, .. } => {
@@ -512,20 +555,22 @@ fn spawn_event_forwarder(
                     if envelope.recoverable {
                         let _ = app.emit(
                             "chat:transient_error",
-                            json!({ "error": envelope.message }),
+                            json!({ "session_id": session_id, "error": envelope.message }),
                         );
                     } else {
                         let _ = app.emit(
                             "chat:done",
-                            json!({ "status": "error", "error": envelope.message }),
+                            json!({ "session_id": session_id, "status": "error", "error": envelope.message }),
                         );
                     }
                 }
                 _ => {}
             }
         }
-        eprintln!("[pinvou3-app] event forwarder stopped (engine shut down?)");
-    });
+        eprintln!(
+            "[pinvou3-app] event forwarder stopped for session {session_id} (engine shut down?)"
+        );
+    })
 }
 
 /// 让 main.rs 编译时知道这个模块（供 docs/CI 用）。

@@ -152,9 +152,42 @@ impl Pinvou3Bridge {
     /// specific PINVOU3_WORKSPACE 必须改 disk 内容本身。
     ///
     /// pinvou3 是单用户单进程,disk 文件 race 不是问题。
+    ///
+    /// ⚠️ **已废弃(多引擎并发)**:写全局共享的 `bundle/instructions.md`,多个 engine
+    /// 同时 rehydrate 会读到对方刚写的内容 → system_prompt 串台。EnginePool 路径改用
+    /// [`write_session_instructions`] 写 session 专属文件。保留仅为兼容旧单引擎路径。
+    #[deprecated(note = "多引擎并发改用 write_session_instructions(session 专属文件)")]
+    #[allow(deprecated)]
     pub fn rewrite_instructions_for_session(&self, session_id: &str) -> std::io::Result<()> {
         let rendered = self.build_session_system_prompt(session_id);
         std::fs::write(&self.bundle.instructions_md, rendered)
+    }
+
+    /// 把 [`build_session_system_prompt`] 渲染结果写到 **session 专属** instructions
+    /// 文件(`~/.pinvou3/sessions/<id>/instructions.md`)。每个 engine 的
+    /// `EngineConfig.instructions` 指向各自这个文件,engine rehydrate 从 disk 重读时
+    /// 互不干扰 —— 多引擎并发的核心隔离。spawn engine 前必须先调一次。
+    ///
+    /// [`build_session_system_prompt`]: Self::build_session_system_prompt
+    pub fn write_session_instructions(&self, session_id: &str) -> std::io::Result<()> {
+        let rendered = self.build_session_system_prompt(session_id);
+        let path = paths::session_instructions_path(session_id);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, rendered)
+    }
+
+    /// session 专属的 system-prompt 注入路径数组:先 session 专属 instructions
+    /// (已渲染,含本 session workspace),再 user 自定义 instructions(可选)。
+    /// **不含**全局 `bundle/instructions.md`(避免多引擎并发共享写冲突)。
+    pub fn session_instruction_paths(&self, session_id: &str) -> Vec<PathBuf> {
+        let mut out = vec![paths::session_instructions_path(session_id)];
+        let user = paths::user_instructions();
+        if user.is_file() {
+            out.push(user);
+        }
+        out
     }
 
     pub fn model(&self) -> String {
@@ -356,6 +389,24 @@ impl Pinvou3Bridge {
             tools_always_load,
             prefer_bwrap,
         }
+    }
+
+    /// 构造 **session 专属** [`EngineConfig`]:在 [`build_engine_config`] 基础上把
+    /// `workspace` 换成该 session 的独立工作目录、`instructions` 换成该 session 的
+    /// 专属 instructions 文件。EnginePool 给每个 session spawn engine 时用这个,
+    /// 让 engine 从 spawn 起就绑定自己的 workspace + prompt,不再依赖 `Op::SyncSession`
+    /// 动态切换、也不碰全局 `bundle/instructions.md`。
+    ///
+    /// 调用方必须先 [`write_session_instructions`] 把渲染好的 prompt 写到 disk,
+    /// 否则 engine rehydrate 读到空/旧文件。
+    ///
+    /// [`build_engine_config`]: Self::build_engine_config
+    /// [`write_session_instructions`]: Self::write_session_instructions
+    pub fn build_engine_config_for_session(&self, session_id: &str) -> EngineConfig {
+        let mut cfg = self.build_engine_config();
+        cfg.workspace = self.session_workspace(session_id);
+        cfg.instructions = self.session_instruction_paths(session_id);
+        cfg
     }
 
     /// 构造 deepseek-tui 顶层 [`DtConfig`]：锁定本地 vLLM + Qwen3.6 +
@@ -755,6 +806,42 @@ mod tests {
             prompt.contains(session_id),
             "替换后 prompt 必须含 session_id 子串, prompt 前 200 字: {}",
             &prompt.chars().take(200).collect::<String>()
+        );
+    }
+
+    /// 多引擎并发隔离基石:两个不同 session 的 EngineConfig 必须 workspace +
+    /// instructions 路径都互不相同,且各自落在自己 session 目录下。否则两个 engine
+    /// 会写同一份产物 / 读同一份 instructions → system_prompt 串台。
+    #[test]
+    fn engine_config_for_session_paths_are_isolated() {
+        let bridge = fixture_bridge();
+        let (a, b) = ("sess-aaaa-1111", "sess-bbbb-2222");
+        let cfg_a = bridge.build_engine_config_for_session(a);
+        let cfg_b = bridge.build_engine_config_for_session(b);
+
+        assert_ne!(
+            cfg_a.workspace, cfg_b.workspace,
+            "两 session 的 workspace 必须不同(否则产物冲突)"
+        );
+        assert!(cfg_a.workspace.to_string_lossy().contains(a));
+        assert!(cfg_b.workspace.to_string_lossy().contains(b));
+
+        // instructions 第一项是 session 专属文件,必须含各自 session_id 且不同。
+        let instr_a = &cfg_a.instructions[0];
+        let instr_b = &cfg_b.instructions[0];
+        assert_ne!(
+            instr_a, instr_b,
+            "两 session 的 instructions 文件必须不同(否则 rehydrate 串台)"
+        );
+        assert!(instr_a.to_string_lossy().contains(a));
+        assert!(instr_b.to_string_lossy().contains(b));
+        // 绝不能引用全局共享的 bundle/instructions.md。
+        assert!(
+            !cfg_a
+                .instructions
+                .iter()
+                .any(|p| p == &bridge.bundle.instructions_md),
+            "session 专属 config 不得引用全局 bundle/instructions.md(并发写冲突源)"
         );
     }
 }
