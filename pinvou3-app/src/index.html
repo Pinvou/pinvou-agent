@@ -896,6 +896,19 @@
       );
     };
 
+    // 品悟报告里的 CRITICAL/RAISED 等是 GATE/override 协议字段（前端正则放行 + 后端 GATE 依赖），
+    // 不能改 skill 输出；只在显示层把它们翻译成人话，协议链路全程保持英文。
+    const prettyPinvouReport = (html) => (html || '')
+      .replace(/>Finding</g, '>问题<')
+      .replace(/>Severity</g, '>程度<')
+      .replace(/>Status</g, '>状态<')
+      .replace(/>User Decision</g, '>你的决定<')
+      .replace(/CRITICAL/g, '需要改')
+      .replace(/INFORMATIONAL/g, '可改可不改')
+      .replace(/OVERRIDDEN_BY_USER/g, '已同意继续')
+      .replace(/RAISED/g, '待定')
+      .replace(/\bcritical\b/gi, '需改项');
+
     const ChatBubble = ({ item, theme, onPrefill, editable }) => {
       const isDark = theme === 'dark';
 
@@ -922,7 +935,7 @@
               <div className={`max-w-[95%] w-full rounded-[16px] border p-3 ${isDark ? 'bg-[#7C3AED]/10 border-[#D0BCFF]/30' : 'bg-[#7C3AED]/5 border-[#7C3AED]/20'} ${isDark ? 'dark-code' : 'light-code'}`}>
                 <div className={`text-[12px] font-semibold mb-1.5 ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>🟣 品悟{persona === 'pinvou-final' ? '（验收）' : '（审方案）'}</div>
                 <div className={`msg-md text-[15px] leading-relaxed ${item.streaming ? 'streaming-cursor' : ''} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}
-                  dangerouslySetInnerHTML={{ __html: item.html || '' }} />
+                  dangerouslySetInnerHTML={{ __html: prettyPinvouReport(html) }} />
               </div>
             </div>
           );
@@ -1528,7 +1541,7 @@
           ) : (
             <div className="flex items-center gap-2 flex-wrap">
               <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.pinvouAcceptOverride(item.id, item.planMarkdown, item.report)}>✅ 直接执行</button>
-              <button className={cardBtnCls(isDark)} onClick={() => { onPrefill && onPrefill('修订方案: 按 Pinvou 上面提的 CRITICAL,改一下方案。'); bridge.markResolved(item.id, '↻ 让 AI 改方案...'); }}>↻ AI 改方案</button>
+              <button className={cardBtnCls(isDark)} onClick={() => { onPrefill && onPrefill('修订方案: 按 Pinvou 上面提的关键问题改一下方案。'); bridge.markResolved(item.id, '↻ 让 AI 改方案...'); }}>↻ AI 改方案</button>
               <button className={cardBtnCls(isDark)} onClick={() => { onPrefill && onPrefill('我也担心: '); bridge.markResolved(item.id, '⊕ 把你的话补进 plan...'); }}>⊕ 我加一句</button>
             </div>
           )}

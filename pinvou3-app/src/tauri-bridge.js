@@ -1208,11 +1208,11 @@
   }
   // 品悟 3 按钮之「✅ 直接执行」：override 所有 CRITICAL 后 accept_plan
   async function pinvouAcceptOverride(itemId, planMarkdown, report) {
-    patchItemById(itemId, { resolved: true, statusLabel: "👍 用户 override 所有 CRITICAL,继续执行..." });
+    patchItemById(itemId, { resolved: true, statusLabel: "👍 已确认 Pinvou 的顾虑,继续执行..." });
     if (!state.activeSessionId) { notify(); return; }
     var eff = report ? overrideAllCriticalInReport(report) : synthesizeOverriddenReport("Pinvou 用自然语言提了意见(见上方),用户阅读后决策");
     var fullMd = (planMarkdown || "") + "\n\n" + eff;
-    pushUserEcho("✅ 就这么干(品悟顾虑已 override)", true);
+    pushUserEcho("✅ 就这么干(已确认 Pinvou 的顾虑)", true);
     state.busy = true; startThinking(); notify();
     try {
       var st = await invoke("accept_plan", { sessionId: state.activeSessionId, planMarkdown: fullMd });
