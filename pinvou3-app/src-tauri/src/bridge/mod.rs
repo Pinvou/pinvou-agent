@@ -609,6 +609,28 @@ mod tests {
         );
     }
 
+    /// [pinvou3-fork-guard #18] network_policy 必须 Some 且**只信 fake-ip 占位段**。
+    /// 产品跑在用户 clash/TUN fake-ip 环境,域名全解析到 198.18/15,需放行;
+    /// 但绝不能信任真实私网(早期 `proxy=["*"]` 会放行任意域名 → 内网 SSRF)。
+    /// 上游改 EngineConfig 字段后 bridge 若静默传 None,fake-ip 下联网全废 /
+    /// 或信任过宽。
+    #[test]
+    fn forkguard_network_policy_trusts_fakeip_range_only() {
+        let cfg = fixture_bridge().build_engine_config();
+        let decider = cfg
+            .network_policy
+            .as_ref()
+            .expect("network_policy 必须 Some(配置 fake-ip 信任段)");
+        assert!(
+            decider.is_trusted_fakeip_addr(&"198.18.0.1".parse().unwrap()),
+            "fake-ip 占位段(198.18/15)必须被信任,否则 TUN 下联网工具被自家 SSRF 防护误杀"
+        );
+        assert!(
+            !decider.is_trusted_fakeip_addr(&"192.168.0.1".parse().unwrap()),
+            "真实私网不得被信任(SSRF 边界)"
+        );
+    }
+
     /// 语言切换必须传到 engine.locale_tag。
     #[test]
     fn locale_tag_follows_language_pref() {

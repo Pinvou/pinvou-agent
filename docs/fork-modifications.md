@@ -158,17 +158,35 @@
 
 ## 快速核对表 (上游 sync 后使用)
 
+**一条命令自动校验**(替代旧的手工 grep):
+
 ```bash
-# 检查这些文件是否有 merge conflict 或 revert
-grep -n "pinvou3-fork\|DEFAULT_MAX_STEPS\|DEFAULT_SUBAGENT_ELAPSED_MAX\|truncated_args_hint\|subagent_api_timeout\|is_trusted_fakeip_addr\|tool_agent_route" \
-  DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs \
-  DeepSeek-TUI/crates/tui/src/tools/web_search.rs \
-  DeepSeek-TUI/crates/tui/src/tools/fetch_url.rs \
-  DeepSeek-TUI/crates/tui/src/network_policy.rs \
-  DeepSeek-TUI/crates/tui/src/client/chat.rs \
-  pinvou3-app/src-tauri/src/bridge/mod.rs \
-  pinvou3-app/src-tauri/src/bridge/prefs.rs
+./scripts/fork-guard.sh          # 全量:指纹层 + 编译跑 fork 回归测试
+./scripts/fork-guard.sh --fast   # 仅指纹层,秒级,不编译(merge 后第一道快筛)
 ```
+
+两层防护:
+- **指纹层** — grep 每个 fork 标记是否还在,抓「merge 静默丢整段 patch」(对应旧手工 grep,升级为带退出码 + 逐项 ✓/✗)。
+- **行为层** — `cargo test` 跑精选 fork 回归测试,抓「值/逻辑被改回上游」(指纹 grep 抓不住,例:`tool_agent_route` 被改回硬编码 `deepseek-v4-flash` 时旧测试因 stub model 巧合而假阳性 → 新增 `forkguard_..._inherits_parent_model` 用区别 model 名真守住)。
+
+> L1 vLLM dialog harness 慢且需后端,**不在** fork-guard 内,按需单独跑。
+
+**fork 回归测试清单**(脚本里 `forkguard_` 前缀 + 显式列名;新增 patch 时同步加测试 + 指纹 + 本文档):
+
+| patch | 测试 | crate |
+|---|---|---|
+| #1/#2 步数/墙钟上限 | `forkguard_subagent_step_and_elapsed_caps_match_local_budget` | codewhale-tui |
+| #4 resolve_agent_ref 截断 | `resolve_agent_ref_tolerates_truncated_agent_prefix` | codewhale-tui |
+| #7 tool_agent_route 继承父 model | `forkguard_tool_agent_route_inherits_parent_model_not_hardcoded_flash` | codewhale-tui |
+| #10 bing 实体解码 | `bing_ckurl_with_html_entities_decodes_real_url` | codewhale-tui |
+| #13 fetch_url fake-ip 放行 | `forkguard_validate_dns_resolved_ip_allows_fakeip_blocks_real_private` | codewhale-tui |
+| #14 64KB 上限 | `test_write_file_rejects_oversized_content` / `..._append_..._` | codewhale-tui |
+| #15 truncated_args_hint | `truncated_args_hint_fires...` / `..._skips_other_tools...` | codewhale-tui |
+| #18a fake-ip CIDR | `trusted_fakeip_cidr_allows_placeholder_but_not_real_private` | codewhale-tui |
+| tool_catalog blocklist | `pinvou3_yolo_offers_nonblocklisted_tools_outside_upstream_default` | codewhale-tui |
+| #18b bridge fake-ip 信任段 | `forkguard_network_policy_trusts_fakeip_range_only` | pinvou3-tauri |
+| #16/锁定字段 | `engine_config_locks_critical_fields`(含 max_subagents=1 / timeout=300) | pinvou3-tauri |
+| #23/#24 窗口识别 | `default_model_window_recognized_by_engine` | pinvou3-tauri |
 
 ---
 
