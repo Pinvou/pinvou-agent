@@ -1,0 +1,151 @@
+# DeepSeek-TUI Fork 修改清单
+
+> 本文件集中记录 pinvou3 对 `DeepSeek-TUI` 底座的所有 fork 修改。
+> 
+> 目的:
+> 1.  upstream PR 时快速定位改动点
+> 2.  团队交接 / 新人 onboarding
+> 3.  上游 sync 后检查 merge 是否静默丢失
+>
+> 格式: `[优先级]` 文件路径 + 行号范围 + 修改摘要 + 理由 + 是否适合提上游 PR。
+
+---
+
+## 目录
+
+- [Subagent 模块](#subagent-模块)
+- [联网工具链](#联网工具链)
+- [文件工具](#文件工具)
+- [Bridge / 配置](#bridge--配置)
+- [SSE / 流处理](#sse--流处理)
+- [上下文管理](#上下文管理)
+- [其他 GUI 适配](#其他-gui-适配)
+
+---
+
+## Subagent 模块
+
+### `crates/tui/src/tools/subagent/mod.rs`
+
+| # | 行号 | 修改 | 理由 | 上游 PR? |
+|---|---|---|---|---|
+| 1 | ~67 | `DEFAULT_MAX_STEPS` 100→**20** | 防弱模型死磕 17min;single-task 够用 | ⚠️ 环境相关 |
+| 2 | ~70 | `DEFAULT_SUBAGENT_ELAPSED_MAX` 硬上限 **300s** | 防 subagent 内部死磕反复重试 | ⚠️ 环境相关 |
+| 3 | ~5028 | `GENERAL_AGENT_INTRO` 增加 **stop-on-failure** + **bounded effort** | 弱模型反复重试同一失败工具,浪费步数 | ✅ 通用,可提 |
+| 4 | ~1419 | `resolve_agent_ref()` 截断容错: LLM 截断 `"agent_"` 前缀时自动补回 | Qwen3.6 偶发截断 agent_id;单 subagent 也必需 | ✅ 通用,已验证 |
+| 7 | ~4505 | `tool_agent_route()` 继承父 session `runtime.model.clone()` | 原硬编码 `"deepseek-v4-flash"` 本地 vLLM 无此模型→404;单 subagent 必需 | ✅ 通用 bugfix |
+
+> ⚠️ **2026-05-27 弃用**(原 #5/#6 + max_steps→12 + elapsed→600 + harness 1260):多 subagent 并行 fan-out 废弃后,为 fan-out 调的 budget prompt(`build_assignment_prompt` step budget、`agent_open` "Keep it SIMPLE"、`GENERAL_AGENT_INTRO` 8-call 硬预算)全部回退 committed——它们会掐死单 subagent 长任务。根因/详情见 `process.md` Lesson learned 2026-05-27。
+
+### `pinvou3-app/src-tauri/tests/l1_dialog_harness.rs`
+
+| # | 修改 | 理由 | 上游 PR? |
+|---|---|---|---|
+| 8 | `spawn_for_scenario` 跟随 bridge 默认 `max_subagents` | 避免测试与生产行为不一致 | ✅ 测试修复 |
+
+---
+
+## 联网工具链
+
+### `crates/tui/src/tools/web_search.rs` (底座内部)
+
+| # | 修改 | 理由 | 上游 PR? |
+|---|---|---|---|
+| 10 | `normalize_bing_url` 先 `decode_html_entities` 再提取 `u=` 参数 | bing /ck/a 重定向 href 用 `&amp;` 实体编码,直接 regex 取 `u=` 为空→默认后端恒返 0 | ✅ **已提 #2245 OPEN** |
+
+> ⚠️ **2026-05-27 弃用**(原 #11/#12 网络重试 retry + timeout 15s→30s):env-specific 且两次 L1 重跑未被触发,回退 committed。
+
+### `crates/tui/src/tools/fetch_url.rs` (底座内部)
+
+| # | 修改 | 理由 | 上游 PR? |
+|---|---|---|---|
+| 13 | `validate_dns_resolved_ip` 放行落在 **fake-ip CIDR** 内的解析 IP(`is_trusted_fakeip_addr`) | clash/TUN fake-ip 下域名全解析到 198.18.x 占位段被 SSRF 误杀。**按 IP 段信任**(替代早期 `proxy=["*"]`,后者会放行任意域名→内网 SSRF);真实私网/loopback/元数据仍拦 | 🔵 可提(碰 SSRF 信任边界,需先开 issue) |
+
+---
+
+## 文件工具
+
+### `crates/tui/src/tools/write_file.rs` / `append_file.rs` (底座内部)
+
+| # | 修改 | 理由 | 上游 PR? |
+|---|---|---|---|
+| 14 | content **64KB 硬上限**(超限返 `InvalidInput` + 引导骨架+分块) | 大产物生成静默 >240s → SSE timeout → 流截断 | ✅ 通用保护 |
+| 15 | `truncated_args_hint`: 流截断缺字段时回"参数被截断请分块" | 替代干巴巴 missing_field,掐断 loop_guard 原样重试 | ✅ 通用体验改善 |
+
+---
+
+## Bridge / 配置
+
+### `pinvou3-app/src-tauri/src/bridge/mod.rs`
+
+| # | 修改 | 理由 | 上游 PR? |
+|---|---|---|---|
+| 16 | `subagent_api_timeout` 120s→**300s** | 本地 vLLM 慢推理,复杂 prompt 生成常 >120s;单 subagent 必需 | ⚠️ 环境相关 |
+| 17 | `max_subagents` 默认 **1**(= 上游默认) | 2026-05-27 定论:多/并行 fan-out 弱模型不可用(编排认知,非工具/后端),只留单+串行。曾试 4 已回退 | ✅ 与上游一致 |
+| 18 | `network_policy` 从 `None` 改 `Some(decider)`:`default=Allow` + **`with_trusted_fakeip_cidrs(["198.18.0.0/15"])`** | 按 IP 段信任 fake-ip 占位段(配合 #13);替代早期 `proxy=["*"]`(SSRF) | 🔵 配 #13 |
+
+> 配套:`crates/tui/src/network_policy.rs` 新增 `with_trusted_fakeip_cidrs` / `is_trusted_fakeip_addr` + IPv4 CIDR helper(无新依赖)。
+
+### `pinvou3-app/src-tauri/src/bridge/prefs.rs`
+
+| # | 修改 | 理由 | 上游 PR? |
+|---|---|---|---|
+| 19 | `AdvancedPrefs` 增加 `max_subagents: Option<usize>` + `max_steps: Option<u32>` | 让用户可调,当前 GUI 未暴露 | ✅ 通用功能 |
+
+---
+
+## SSE / 流处理
+
+### `crates/tui/src/client/chat.rs` (底座内部)
+
+| # | 修改 | 理由 | 上游 PR? |
+|---|---|---|---|
+| 20 | SSE idle timeout 错误带 `bytes_received`/在途 tool_use buffer 诊断 | 区分 prefill 静默 vs 参数中途断 | ✅ 通用诊断增强 |
+| 21 | `stream_open_timeout` 45s→**180s** | 本地 vLLM 首 token 慢 | ⚠️ 环境相关 |
+
+### `pinvou3-app/src-tauri/src/bridge/mod.rs` (bridge 层)
+
+| # | 修改 | 理由 | 上游 PR? |
+|---|---|---|---|
+| 22 | 思考指示器修复: `Event::Error` 按 `recoverable` 分流 | 瞬态错误(SSE idle timeout)被当 turn 结束 → 前端 busy=false 但引擎仍跑 | ✅ 通用 bugfix |
+
+---
+
+## 上下文管理
+
+### `crates/tui/src/agent/session.rs` / `context.rs` (底座内部)
+
+| # | 修改 | 理由 | 上游 PR? |
+|---|---|---|---|
+| 23 | `context_input_budget` 按窗口分级(256K 下不等于 1M 默认值) | 256K 窗口下底座 4 个子系统静默退化,会话涨到 max_model_len 撞墙 | ⚠️ 模型相关 |
+| 24 | `_Nk` hint 全 vendor(不仅 DeepSeek) | 本地 vLLM 也需 compact 预算 hint | ✅ 通用功能 |
+
+---
+
+## 其他 GUI 适配
+
+### `pinvou3-app/src-tauri/Cargo.toml`
+
+| # | 修改 | 理由 | 上游 PR? |
+|---|---|---|---|
+| 25 | `package="codewhale-tui"` 重命名保留 `deepseek_tui::` 别名 | 上游 rebrand 后 crate 名变了,pinvou3 代码大量用旧名 | ✅ 兼容层 |
+
+---
+
+## 快速核对表 (上游 sync 后使用)
+
+```bash
+# 检查这些文件是否有 merge conflict 或 revert
+grep -n "pinvou3-fork\|DEFAULT_MAX_STEPS\|DEFAULT_SUBAGENT_ELAPSED_MAX\|truncated_args_hint\|subagent_api_timeout\|is_trusted_fakeip_addr\|tool_agent_route" \
+  DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs \
+  DeepSeek-TUI/crates/tui/src/tools/web_search.rs \
+  DeepSeek-TUI/crates/tui/src/tools/fetch_url.rs \
+  DeepSeek-TUI/crates/tui/src/network_policy.rs \
+  DeepSeek-TUI/crates/tui/src/client/chat.rs \
+  pinvou3-app/src-tauri/src/bridge/mod.rs \
+  pinvou3-app/src-tauri/src/bridge/prefs.rs
+```
+
+---
+
+最后更新: 2026-05-27

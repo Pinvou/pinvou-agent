@@ -22,3 +22,6 @@ Thumbs.db
 # Local tool state
 .claude/
 .superpowers/
+
+# 临时 PR worktree(submodule 的 git worktree,勿提交)
+/DeepSeek-TUI-*-env/
