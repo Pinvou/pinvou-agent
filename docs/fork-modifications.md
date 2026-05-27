@@ -11,6 +11,30 @@
 
 ---
 
+## 🔄 v0.8.47 同步后整理 (2026-05-27, merge `44844fa6`)
+
+上游 `origin/main` 同步 123 commit (v0.8.45→v0.8.47)。逐 patch 验证存活,结论:
+
+**✅ 上游已 harvest(fork 版消失=零漂移,下列条目作废,无需再维护)**:
+- **subagent role system→user** (原 PR #2057) — 上游已合并,`turn_loop.rs` 用上游注释,代码一致。
+- **`context_input_budget` 按窗口分级** (阶段 H B2) — 上游采纳。
+- **`_Nk` hint 全 vendor** (阶段 H B1) — 上游采纳并 rename `deepseek_context_window_hint`→`explicit_context_window_hint`。
+- **`DEEPSEEK_MAX_OUTPUT_TOKENS` env override** — 上游已具备。
+- (早先) `file_search`/`grep_files` timeout、OpenAI streaming batch tool_calls — 历史已收敛。
+
+**✅ fork-distinct patch 全部验证存活**(merge 未静默丢失):subagent(MAX_STEPS=20 / ELAPSED=300 / resolve_agent_ref / tool_agent_route / stop-on-failure)、web_search bing decode、fetch_url+network_policy fake-ip IP 段信任、file.rs 64KB+append_file+truncated_args_hint、chat.rs SSE 诊断、bridge 全部。
+
+**⚠️ 本次 merge 暴露的 fork 维护点**:
+- 文件路径变更:上游把 write/append/edit 合进 **`tools/file.rs`**(原 `write_file.rs`/`append_file.rs` 不再独立)。
+- `tool_catalog.rs`:上游重构为 `always_load` + `DEFAULT_ACTIVE_NATIVE_TOOLS`。pinvou3 blocklist 已从 `should_default_defer_tool` **移到 `apply_native_tool_deferral` 叠加层**(保上游单测纯净)。
+- `lib.rs`:上游新模块需手动加 `pub mod`(本次补了 `tool_output_receipts`)。这是 fork lib-export patch 的固定维护成本。
+- bridge:上游 `EngineConfig` 新增 `show_thinking`/`goal_state`/`tools_always_load`/`prefer_bwrap`,已透传 default。
+- ⚠️ 上游 **#2132 默认搜索后端 Bing→DuckDuckGo**;pinvou3 bing decode 修复仍在(Bing 仍是可选后端),PR #2245 紧迫性下降但仍有效。
+
+**注**:1 个测试 `system_prompt_skips_locale_preamble_for_english` 在本机失败 = 全局中文 skills(lark-*/h3c-ppt)注入 prompt 触发,**环境噪音非代码问题**,CI 干净环境通过。
+
+---
+
 ## 目录
 
 - [Subagent 模块](#subagent-模块)
@@ -65,7 +89,7 @@
 
 ## 文件工具
 
-### `crates/tui/src/tools/write_file.rs` / `append_file.rs` (底座内部)
+### `crates/tui/src/tools/file.rs` (底座内部;v0.8.47 起 write/append/edit 合并于此)
 
 | # | 修改 | 理由 | 上游 PR? |
 |---|---|---|---|

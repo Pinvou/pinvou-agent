@@ -242,6 +242,11 @@ impl Pinvou3Bridge {
             snapshots_max_workspace_bytes,
             search_provider,
             search_api_key,
+            // —— v0.8.47 上游新增字段,透传 default ——
+            show_thinking,
+            goal_state,
+            tools_always_load,
+            prefer_bwrap,
         } = EngineConfig::default();
 
         EngineConfig {
@@ -345,6 +350,11 @@ impl Pinvou3Bridge {
             snapshots_max_workspace_bytes,
             search_provider,
             search_api_key,
+            // v0.8.47 上游新增,透传 default
+            show_thinking,
+            goal_state,
+            tools_always_load,
+            prefer_bwrap,
         }
     }
 
@@ -440,6 +450,8 @@ impl Pinvou3Bridge {
             auto_approve: true,
             approval_mode: ApprovalMode::Auto,
             translation_enabled: false,
+            // v0.8.47 上游新增;pinvou3 reasoning_effort=off 故无实际影响,取默认。
+            show_thinking: true,
         }
     }
 }
