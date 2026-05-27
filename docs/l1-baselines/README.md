@@ -34,6 +34,12 @@ docs/l1-baselines/
 
 **suffix 约定**: 文件夹后缀 `-<N>scn` 表示 scenario 集合大小,用于区分相同 app/rubric 版本下不同 scenario 集合的 baseline。覆盖更全的集合 (≥) 可作为后续 baseline 的 ground truth。
 
+## 专项重评估 (非常规 baseline,无总均分)
+
+| 文件夹 | 日期 | 说明 |
+|---|---|---|
+| `v0.8.45-subagent-reeval-2026-05-26` | 2026-05-26 | **多 subagent 后端重评估 + 设计决策** (`max_subagents=4` 跑 C-0~C-4)。后端并发瓶颈已消除(N=4 first-token <1s)。底座修复后 C-1 3/3 完成、C-2 2/4 完成，但管理开销极大(eval×12+重试)。**关键决策**: 弱模型(Qwen3.6)下多 subagent 并行研究模式 ROI 为负，废弃。保留单 subagent，复杂研究改为主 agent 直接工具调用或串行单任务子 agent。详见 `report.md` §7 |
+
 ## 怎么用
 
 ### 1. 锚一份新 baseline
