@@ -222,19 +222,71 @@
     }
   }
 
+  // 实时态有专属气泡的工具（方案卡），重建时要还原成原卡而非普通工具卡。
+  var PLAN_TOOLS = ["update_plan", "checklist_write", "todo_write"];
+  // 品悟触发 echo（dispatchPinvouTrigger persist 进 messages）是重建品悟紫色气泡的锚点：
+  // 紧跟其后的 assistant 消息即对应 persona 的品悟回复。
+  var PINVOU_TRIGGER_PERSONA = { "🟣 触发品悟审方案": "pinvou-plan", "🟣 触发品悟验收": "pinvou-final" };
+
+  // tool_result.content 可能是 string 或 Anthropic content blocks 数组，归一成纯文本。
+  function toolResultText(content) {
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) {
+      return content.map(function (b) { return b && typeof b.text === "string" ? b.text : ""; }).join("");
+    }
+    return "";
+  }
+
+  // plan 类工具结果格式："...updated:\n{json}"——切第一个换行后 parse（与 engine.rs 一致）。
+  function parsePlanSnapshot(content) {
+    var txt = toolResultText(content);
+    var i = txt.indexOf("\n");
+    if (i < 0) return null;
+    try { return JSON.parse(txt.slice(i + 1)); } catch (_) { return null; }
+  }
+
+  // request_user_input 结果是纯 JSON {answers:[{id,label,value}]}（turn_loop.rs ToolResult::json）。
+  // 按 question.id 匹配，还原成 UserInputCard 的 answers 数组（顺序对齐 questions）。
+  function parseUserAnswers(content, questions) {
+    var ans;
+    try { ans = JSON.parse(toolResultText(content)).answers; } catch (_) { return null; }
+    if (!Array.isArray(ans)) return null;
+    var byId = {};
+    ans.forEach(function (a) { if (a && a.id != null) byId[a.id] = a; });
+    return questions.map(function (q) {
+      var a = byId[q.id];
+      return a ? { id: q.id, label: a.label, value: a.value } : null;
+    });
+  }
+
   // ── Rerender from messages (session restore) ─────────────────────
   function rerenderFromMessages() {
     state.chatItems = [];
     itemIdSeq = 0;
+    var pendingPersona = null; // 品悟触发 echo 命中后，标记下一条 assistant 为品悟回复
+    // 预扫 tool_result：tool_use 在 assistant 消息、result 在后续 user 消息，需提前建映射
+    // 才能在还原选择卡/方案卡时拿到结果（选项/快照）。
+    var resultById = {};
+    for (var ri = 0; ri < state.messages.length; ri++) {
+      var rc = state.messages[ri].content;
+      if (!Array.isArray(rc)) continue;
+      for (var rj = 0; rj < rc.length; rj++) {
+        if (rc[rj].type === "tool_result") {
+          resultById[rc[rj].tool_use_id] = { content: rc[rj].content, is_error: !!rc[rj].is_error };
+        }
+      }
+    }
     for (var mi = 0; mi < state.messages.length; mi++) {
       var m = state.messages[mi];
       var blocks = Array.isArray(m.content) ? m.content : [];
       if (m.role === "user") {
         var textParts = blocks.filter(function (c) { return c.type === "text"; }).map(function (c) { return c.text; });
+        var utext = textParts.join("");
         if (textParts.length) {
-          addChatItem({ type: "user", text: textParts.join(""), time: "" });
+          addChatItem({ type: "user", text: utext, time: "" });
         }
-        // tool_result
+        if (PINVOU_TRIGGER_PERSONA[utext]) pendingPersona = PINVOU_TRIGGER_PERSONA[utext];
+        // tool_result（只回填普通工具卡；选择卡/方案卡的结果已在 tool_use 处还原）
         for (var ci = 0; ci < blocks.length; ci++) {
           var c = blocks[ci];
           if (c.type !== "tool_result") continue;
@@ -246,22 +298,60 @@
         continue;
       }
       if (m.role !== "assistant") continue;
+      var msgPersona = pendingPersona; // 本条若是品悟回复，气泡带 persona 还原紫色样式
+      pendingPersona = null;
       var textBuf = "";
+      var planSnap = null, todosSnap = null, sawPlanTool = false;
       for (var bi = 0; bi < blocks.length; bi++) {
         var b = blocks[bi];
         if (b.type === "text") {
           textBuf += b.text;
         } else if (b.type === "tool_use") {
           if (textBuf) {
-            addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
+            addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false, persona: msgPersona });
             textBuf = "";
           }
           toolMeta[b.id] = { name: b.name, args: b.input };
+          // request_user_input → 还原只读选择卡（问题来自 input，选项高亮来自 result）
+          if (b.name === "request_user_input") {
+            var qs = (b.input && b.input.questions) || [];
+            if (Array.isArray(qs) && qs.length) {
+              var res = resultById[b.id];
+              addChatItem({
+                type: "user_input", toolCallId: b.id, questions: qs,
+                resolved: true, cardState: (res && res.is_error) ? "cancelled" : "submitted",
+                restoredAnswers: res ? parseUserAnswers(res.content, qs) : null, time: "",
+              });
+            }
+            continue;
+          }
+          // update_plan / checklist_write / todo_write → 收集快照，本条消息末尾还原方案卡
+          if (PLAN_TOOLS.indexOf(b.name) >= 0) {
+            var snap = parsePlanSnapshot(resultById[b.id] && resultById[b.id].content);
+            if (snap) {
+              if (b.name === "update_plan") planSnap = snap; else todosSnap = snap;
+            }
+            sawPlanTool = true;
+            continue;
+          }
           addChatItem({ type: "tool", toolId: b.id, name: b.name, args: b.input, output: null, success: null, state: "pending" });
         }
       }
       if (textBuf) {
-        addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
+        addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false, persona: msgPersona });
+      }
+      // 本条 assistant 消息用过 plan 工具 → 还原一张只读历史方案卡
+      if (sawPlanTool && (planSnap || todosSnap)) {
+        var snaps = { plan: planSnap, todos: todosSnap };
+        addChatItem({
+          type: "plan_card", plan: planSnap, todos: todosSnap,
+          planMarkdown: composePlanMarkdown(snaps),
+          cardState: "frozen", resolved: true, statusLabel: "📜 历史方案", time: "",
+        });
+      }
+      // 品悟审方案回复后 → 还原只读操作卡（决策痕迹由后续 user echo 体现，按钮不可再点）
+      if (msgPersona === "pinvou-plan") {
+        addChatItem({ type: "pinvou_actions", resolved: true, statusLabel: "📜 已审阅", planMarkdown: null, report: null, time: "" });
       }
     }
   }
