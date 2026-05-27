@@ -94,6 +94,17 @@ pub fn session_workspace_dir(session_id: &str) -> PathBuf {
     sessions_root().join(session_id).join("workspace")
 }
 
+/// `~/.pinvou3/sessions/<session_id>/instructions.md` —— 每个 session 独立的
+/// system-prompt 文件(已渲染,`{{PINVOU3_WORKSPACE}}` 占位符替换成本 session
+/// 的 workspace)。
+///
+/// 多引擎并发模型的核心隔离点:每个 engine 的 `EngineConfig.instructions` 指向
+/// 各自 session 的这个文件,engine rehydrate 从 disk 重读时不再串台到全局共享的
+/// `bundle/instructions.md`(后者在并发下会被多个 engine 互相覆写)。
+pub fn session_instructions_path(session_id: &str) -> PathBuf {
+    sessions_root().join(session_id).join("instructions.md")
+}
+
 /// 阶段 C 没多 session 时的 fallback artifacts dir（session_id="default"）。
 /// Step 4 完成后这个会被切换 session 时动态计算的值替换。
 pub fn default_session_artifacts_dir() -> PathBuf {

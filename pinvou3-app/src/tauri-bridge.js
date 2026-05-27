@@ -48,6 +48,10 @@
     planSnapshot: { plan: null, todos: null },
     // 当前 session 产物列表 [{ path, basename }]
     artifacts: [],
+    // 多 session 并发:每个 session 是否正在生成 { session_id: bool }，会话列表显示「工作中」转圈
+    sessionBusy: {},
+    // 排队式输入:当前 session 生成中时积压的待发消息 [{ id, text, displayText, attachments }]
+    queued: [],
     // 输入框待发附件 [{ id, basename, status:'parsing'|'ready'|'error', result, error }]
     attachments: [],
     // token 预算（input_tokens / maxModelLen）
@@ -81,9 +85,122 @@
   // Plan 文本兜底卡片命中关键词（与 main.js 对齐）
   var PLAN_FALLBACK_KEYWORDS = ["方案", "步骤", "以下", "技术栈", "实现", "设计", "**"];
 
+  // ── Per-session 工作集缓冲（多 session 并发）────────────────────
+  // active session 的工作集 = state.* + 上面那批模块级 stream 变量(保持原逻辑零改动)。
+  // 后台 session 的工作集存在 sessionStates[id];后台事件进来时临时把工作集切到对应
+  // buffer 跑同步逻辑再切回(saveWorkingSetTo/loadWorkingSetFrom),期间 suppressNotify
+  // 避免把后台渲染成 active。异步收尾(落盘/品悟)按显式 session_id 路由,不依赖工作集。
+  var sessionStates = {};
+  var suppressNotify = false;
+  function freshBuffer() {
+    return {
+      messages: [], chatItems: [], artifacts: [], busy: false, queued: [],
+      planSnapshot: { plan: null, todos: null },
+      modeState: { mode: "yolo", plan_phase: "none", pinvou_review_enabled: false },
+      thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
+      tokens: { input: 0, max: maxModelLen },
+      stream: {
+        currentStreamText: "", currentStreamId: 0, pendingAssistantText: "",
+        pendingAssistantBlocks: [], itemIdSeq: 0, toolMeta: {},
+        pendingAssistantPersona: null, pendingPinvouReview: null, pendingFinalReview: false,
+      },
+    };
+  }
+  function getBuffer(id) {
+    if (!id) return null;
+    if (!sessionStates[id]) sessionStates[id] = freshBuffer();
+    return sessionStates[id];
+  }
+  function saveWorkingSetTo(buf) {
+    if (!buf) return;
+    buf.messages = state.messages; buf.chatItems = state.chatItems; buf.artifacts = state.artifacts;
+    buf.busy = state.busy; buf.planSnapshot = state.planSnapshot; buf.modeState = state.modeState;
+    buf.thinking = state.thinking; buf.tokens = state.tokens; buf.queued = state.queued;
+    buf.stream = {
+      currentStreamText: currentStreamText, currentStreamId: currentStreamId,
+      pendingAssistantText: pendingAssistantText, pendingAssistantBlocks: pendingAssistantBlocks,
+      itemIdSeq: itemIdSeq, toolMeta: toolMeta,
+      pendingAssistantPersona: pendingAssistantPersona, pendingPinvouReview: pendingPinvouReview,
+      pendingFinalReview: pendingFinalReview,
+    };
+  }
+  function loadWorkingSetFrom(buf) {
+    if (!buf) return;
+    state.messages = buf.messages; state.chatItems = buf.chatItems; state.artifacts = buf.artifacts;
+    state.busy = buf.busy; state.planSnapshot = buf.planSnapshot; state.modeState = buf.modeState;
+    state.thinking = buf.thinking; state.tokens = buf.tokens; state.queued = buf.queued || [];
+    var s = buf.stream || {};
+    currentStreamText = s.currentStreamText || ""; currentStreamId = s.currentStreamId || 0;
+    pendingAssistantText = s.pendingAssistantText || ""; pendingAssistantBlocks = s.pendingAssistantBlocks || [];
+    itemIdSeq = s.itemIdSeq || 0; toolMeta = s.toolMeta || {};
+    pendingAssistantPersona = s.pendingAssistantPersona || null;
+    pendingPinvouReview = s.pendingPinvouReview || null;
+    pendingFinalReview = s.pendingFinalReview || false;
+  }
+  // 把 active 工作集存好后切到 id 的 buffer(opts.fresh=新建空 buffer)。
+  function switchActiveTo(id, opts) {
+    if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
+    state.activeSessionId = id;
+    var buf = sessionStates[id];
+    if (!buf || (opts && opts.fresh)) buf = sessionStates[id] = freshBuffer();
+    loadWorkingSetFrom(buf);
+  }
+  // 在指定 session 的工作集上跑一段【同步】逻辑。sid 是 active → 直接跑(零行为变化);
+  // 否则临时切到该 buffer 跑完再切回(期间不 notify)。
+  function runSyncOnSession(sid, fn) {
+    if (!sid || sid === state.activeSessionId) { fn(); return; }
+    var bg = sessionStates[sid]; if (!bg) return;
+    var realId = state.activeSessionId;
+    saveWorkingSetTo(getBuffer(realId));
+    loadWorkingSetFrom(bg);
+    state.activeSessionId = sid;
+    var prev = suppressNotify; suppressNotify = true;
+    try { fn(); }
+    finally {
+      suppressNotify = prev;
+      saveWorkingSetTo(bg);
+      state.activeSessionId = realId;
+      loadWorkingSetFrom(getBuffer(realId));
+    }
+  }
+  // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
+  function onSessionEvent(e, fn) {
+    var sid = (e && e.payload && e.payload.session_id) || state.activeSessionId;
+    if (sid && sid !== state.activeSessionId && !sessionStates[sid]) sessionStates[sid] = freshBuffer();
+    var isBg = sid && sid !== state.activeSessionId;
+    runSyncOnSession(sid, fn);
+    if (isBg) notify();
+  }
+  // 落盘指定 session 的 messages + artifacts(active 用工作集,后台用其 buffer)。
+  async function persistMessagesFor(sid) {
+    if (!sid) return;
+    var buf = sid === state.activeSessionId ? null : sessionStates[sid];
+    var msgs = buf ? buf.messages : state.messages;
+    var arts = buf ? buf.artifacts : state.artifacts;
+    try {
+      await invoke("save_session_messages", { id: sid, messages: msgs });
+      try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch (_) {}
+      var meta = state.sessions.find(function (s) { return s.id === sid; });
+      if (meta && (meta.title === "新对话" || meta.title === "New chat")) {
+        var firstUser = msgs.find(function (m) { return m.role === "user"; });
+        var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
+        if (text && text.text) {
+          var newTitle = text.text.slice(0, 20);
+          await invoke("rename_session", { id: sid, title: newTitle });
+          meta.title = newTitle;
+        }
+      }
+    } catch (e) { console.warn("persist failed", e); }
+  }
+
   // ── Pub/Sub ──────────────────────────────────────────────────────
   var subscribers = [];
   function notify() {
+    if (suppressNotify) return;
+    // 会话列表「工作中」指示:active 取活动工作集 state.busy,其余取各自 buffer.busy
+    state.sessionBusy = {};
+    for (var id in sessionStates) state.sessionBusy[id] = !!sessionStates[id].busy;
+    if (state.activeSessionId) state.sessionBusy[state.activeSessionId] = !!state.busy;
     var snapshot = JSON.parse(JSON.stringify(state));
     for (var i = 0; i < subscribers.length; i++) subscribers[i](snapshot);
   }
@@ -144,14 +261,11 @@
 
   async function createNewSession() {
     if (state.activeSessionId && state.messages.length === 0) return;
-    if (state.busy) { addSystemItem("⚠️ 正在响应中，请等完成后再新建"); return; }
+    // 多 session 并发:不再因「正在响应中」拦截新建。旧 session 转入后台,在自己的
+    // engine 上继续跑(其工作集已存进 sessionStates),新 session 用全新工作集。
     try {
       var meta = await invoke("create_session");
-      state.activeSessionId = meta.id;
-      state.messages = [];
-      state.chatItems = [];
-      state.artifacts = [];
-      resetPendingAssistant();
+      switchActiveTo(meta.id, { fresh: true });
       await refreshHistoryList();
       await syncModeState();
       await syncSessionSkill();
@@ -163,18 +277,22 @@
 
   async function switchToSession(id) {
     if (id === state.activeSessionId) return;
-    if (state.busy) {
-      try {
-        await invoke("cancel_generation");
-        await new Promise(function (r) { setTimeout(r, 500); });
-      } catch (e) {
-        addSystemItem("⚠️ 切换失败: " + e);
-        return;
-      }
+    // 多 session 并发:切换【不再 cancel】旧 session —— 它在自己的 engine 上继续跑,
+    // 工作集存进 sessionStates 后台累积。切回来能看到完整(含切走期间产生的)内容。
+    // 已有 buffer(切过/在跑)→ 直接换工作集;没有 → load_session 建 buffer + 重渲染。
+    if (sessionStates[id]) {
+      switchActiveTo(id, null);
+      await syncModeState();
+      await syncSessionSkill();
+      notify();
+      reconcileArtifacts(id); // 对账磁盘产物(fire-and-forget)
+      return;
     }
     try {
+      if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
       var saved = await invoke("load_session", { id: id });
       state.activeSessionId = saved.metadata.id;
+      loadWorkingSetFrom(sessionStates[id] = freshBuffer());
       state.messages = Array.isArray(saved.messages) ? saved.messages : [];
       resetPendingAssistant();
       state.chatItems = [];
@@ -186,6 +304,7 @@
       await syncModeState();
       await syncSessionSkill();
       notify();
+      reconcileArtifacts(id); // 对账磁盘产物(修重启/跟踪遗漏导致的面板缺文件)
     } catch (e) {
       addSystemItem("⚠️ 加载对话失败: " + e);
     }
@@ -194,6 +313,7 @@
   async function deleteSession(id) {
     try {
       await invoke("delete_session", { id: id });
+      delete sessionStates[id]; // 丢掉该 session 的工作集缓冲(后端已 evict 其 engine)
       state.sessions = state.sessions.filter(function (s) { return s.id !== id; });
       if (state.activeSessionId === id) {
         state.activeSessionId = null;
@@ -399,6 +519,23 @@
     state.artifacts = state.artifacts.filter(function (a) { return a.path !== path; });
     if (state.artifacts.length !== before) notify();
   }
+  // 切换 session 时对账:扫 workspace 磁盘,把实际存在、但跟踪列表里没有的文件补进来。
+  // 修「文件已生成在盘上、却因 app 中途重启/跟踪遗漏而不在产物面板」(以磁盘为准)。
+  async function reconcileArtifacts(sid) {
+    if (!sid) return;
+    try {
+      var files = await invoke("list_workspace_files", { sessionId: sid });
+      if (sid !== state.activeSessionId) return; // 已切走,放弃(避免写错 session)
+      var have = {};
+      state.artifacts.forEach(function (a) { have[a.path] = true; });
+      var added = false;
+      files.forEach(function (p) { if (!have[p]) { state.artifacts.push({ path: p, basename: basename(p) }); added = true; } });
+      if (added) {
+        notify();
+        try { await invoke("save_session_artifacts", { id: sid, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch (_) {}
+      }
+    } catch (e) { /* workspace 不存在(新 session)等,忽略 */ }
+  }
   // write_file / append_file 的 args 里提取产物路径
   function extractArtifactPath(args) {
     if (!args) return null;
@@ -467,11 +604,53 @@
   var pendingFinalReview = false;
 
   // ── Send message ─────────────────────────────────────────────────
+  // 指定 session 是否正在生成(active 看工作集 busy,后台看其 buffer)。
+  function isBusyFor(sid) {
+    return sid === state.activeSessionId ? state.busy : !!(sessionStates[sid] && sessionStates[sid].busy);
+  }
+  // 真正发送:在 sid 的工作集上加 user 气泡 + 流式占位 + busy,然后 invoke chat。
+  // active/后台通用(后台走 runSyncOnSession 临时切工作集)。
+  function doSendFor(sid, text, displayText, attachmentsPayload) {
+    runSyncOnSession(sid, function () {
+      addChatItem({ type: "user", text: displayText, time: timeStr() });
+      state.messages.push({ role: "user", content: [{ type: "text", text: displayText }] });
+      state.busy = true;
+      startThinking();
+      currentStreamText = "";
+      currentStreamId = ++itemIdSeq;
+      state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
+    });
+    notify();
+    return invoke("chat", { message: text, attachments: attachmentsPayload, sessionId: sid })
+      .catch(function (err) {
+        runSyncOnSession(sid, function () {
+          addSystemItem("⚠️ " + (err && err.toString ? err.toString() : err));
+          state.busy = false;
+          state.chatItems = state.chatItems.filter(function (item) { return item.id !== currentStreamId || item.html; });
+        });
+        notify();
+      });
+  }
+  // 本轮跑完(或被停止)后,若该 session 不忙且有排队消息 → 把【整个队列】合并成一条
+  // 一次性发出(Claude 式:排队的全部一起扔进下一轮,而不是一条条串行)。
+  function flushQueued(sid) {
+    if (isBusyFor(sid)) return;            // doFinal 等又起了新 turn → 留给那轮的 done 再 flush
+    var q = sid === state.activeSessionId ? state.queued : (sessionStates[sid] && sessionStates[sid].queued);
+    if (!q || q.length === 0) return;
+    var items = q.splice(0, q.length);     // 排空队列
+    // 发给模型用 \n\n 分隔(让它清楚是几条独立消息);气泡显示用单换行 \n(紧凑,不空行)
+    var text = items.map(function (i) { return i.text; }).filter(Boolean).join("\n\n");
+    var displayText = items.map(function (i) { return i.displayText; }).filter(Boolean).join("\n");
+    var attachments = [];
+    items.forEach(function (i) { if (i.attachments && i.attachments.length) attachments = attachments.concat(i.attachments); });
+    notify();
+    doSendFor(sid, text, displayText, attachments);
+  }
+
   async function sendMessage(text) {
     text = (text || "").trim();
     var readyAttachments = state.attachments.filter(function (a) { return a.status === "ready" && a.result; });
     if (!text && readyAttachments.length === 0) return;
-    if (state.busy) return;
     // 还有解析中的附件 → 等
     if (state.attachments.some(function (a) { return a.status === "parsing"; })) {
       addSystemItem("⚠️ 附件还在解析,请稍后再发");
@@ -490,39 +669,26 @@
     var attachmentsPayload = readyAttachments.map(function (a) { return a.result; });
     clearAttachments();
 
-    // Add user message
-    addChatItem({ type: "user", text: displayText, time: timeStr() });
-    state.messages.push({ role: "user", content: [{ type: "text", text: displayText }] });
-
-    // Start streaming
-    state.busy = true;
-    startThinking();
-    currentStreamText = "";
-    currentStreamId = ++itemIdSeq;
-    state.chatItems.push({
-      id: currentStreamId,
-      type: "assistant",
-      html: "",
-      time: timeStr(),
-      streaming: true,
-    });
-    notify();
-
-    try {
-      await invoke("chat", { message: text, attachments: attachmentsPayload });
-    } catch (err) {
-      addSystemItem("⚠️ " + (err && err.toString ? err.toString() : err));
-      state.busy = false;
-      // Remove empty streaming bubble
-      state.chatItems = state.chatItems.filter(function (item) { return item.id !== currentStreamId || item.html; });
+    // 排队式:当前 session 正在生成 → 这句进队列(不打断当前轮),本轮 chat:done 后自动发。
+    // 输入框上方显示待发 chip(可✕撤销)。停止按钮仍只硬打断当前轮。
+    if (state.busy) {
+      state.queued.push({ id: ++itemIdSeq, text: text, displayText: displayText, attachments: attachmentsPayload });
       notify();
+      return;
     }
+
+    await doSendFor(state.activeSessionId, text, displayText, attachmentsPayload);
+  }
+  // 撤销一条待发消息(点 chip 的 ✕)。
+  function removeQueued(id) {
+    state.queued = state.queued.filter(function (q) { return q.id !== id; });
+    notify();
   }
 
   async function cancelGeneration() {
     if (!state.busy) return;
     try {
-      await invoke("cancel_generation");
+      await invoke("cancel_generation", { sessionId: state.activeSessionId });
     } catch (e) {
       console.warn("cancel failed", e);
     }
@@ -552,7 +718,11 @@
   }
 
   // ── Event listeners ──────────────────────────────────────────────
-  listen("chat:delta", function (e) {
+  // 所有 chat:* 事件都带 session_id(后端 spawn_event_forwarder 打的 tag)。
+  // onSessionEvent 按 session_id 把同步逻辑路由到对应 session 的工作集:active 直接跑,
+  // 后台临时切工作集跑完再切回。下面每个监听器的 body 与旧单 session 版逐字一致,
+  // 只是包了一层路由,所以 active session 行为零变化。
+  listen("chat:delta", function (e) { onSessionEvent(e, function () {
     var text = e.payload && e.payload.text || "";
     pendingAssistantText += text;
     currentStreamText += text;
@@ -574,9 +744,9 @@
       });
     }
     notify();
-  });
+  }); });
 
-  listen("chat:tool_start", function (e) {
+  listen("chat:tool_start", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
     toolMeta[p.id] = { name: p.name, args: p.args };
     thinkingTool(p.name);
@@ -600,9 +770,9 @@
       output: null, success: null, state: "running",
     });
     notify();
-  });
+  }); });
 
-  listen("chat:tool_end", function (e) {
+  listen("chat:tool_end", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
     var meta = toolMeta[p.id];
     thinkingIdle();
@@ -652,77 +822,79 @@
     currentStreamText = "";
     currentStreamId = 0;
     notify();
-  });
+  }); });
 
-  listen("chat:done", async function (e) {
-    var error = e.payload && e.payload.error;
-    if (error) addSystemItem("⚠️ " + error);
-
-    flushAssistantMessageToHistory();
-
-    // Finalize streaming bubble
-    var streamItem = state.chatItems.find(function (it) { return it.id === currentStreamId; });
-    if (streamItem) streamItem.streaming = false;
-    // Remove empty assistant bubbles
-    state.chatItems = state.chatItems.filter(function (it) {
-      return !(it.type === "assistant" && !it.html);
-    });
-
-    state.busy = false;
-    stopThinking();
-    currentStreamText = "";
-    currentStreamId = 0;
-    pendingAssistantPersona = null;
-
-    // 品悟审方案完成 → 在紫色品悟气泡后附 3 按钮卡(accept override / revise / add)
-    if (pendingPinvouReview) {
-      var report = extractPinvouReport(lastAssistantText());
-      addChatItem({ type: "pinvou_actions", planMarkdown: pendingPinvouReview.planMarkdown, report: report, resolved: false, statusLabel: "", time: timeStr() });
-      pendingPinvouReview = null;
-    }
-    // final review 是 advisory，跑完只清 flag，不附按钮
-    if (pendingFinalReview) { pendingFinalReview = false; }
-
-    // 执行 plan 完成 → 回 yolo 默认态(plan_phase 从 executing → none)，同步后端 store
-    var wasExecuting = false;
-    if (state.modeState.plan_phase === "executing") {
-      wasExecuting = true;
-      state.modeState = { mode: "yolo", plan_phase: "none", pinvou_review_enabled: state.modeState.pinvou_review_enabled };
-      if (state.activeSessionId) {
-        try { await invoke("discard_plan", { sessionId: state.activeSessionId }); } catch (_) {}
+  // chat:done 特殊:同步收尾(flush/busy=false/品悟卡/mode 复位)走 runSyncOnSession
+  // 路由到对应 session;异步收尾(discard_plan/品悟终审/落盘/刷新列表)按显式 sid 路由,
+  // 不依赖工作集 —— 这样后台 session 跑完也能正确落盘 + 触发终审。
+  listen("chat:done", function (e) {
+    var sid = (e.payload && e.payload.session_id) || state.activeSessionId;
+    var flags = { wasExecuting: false, doFinal: false };
+    runSyncOnSession(sid, function () {
+      var error = e.payload && e.payload.error;
+      if (error) addSystemItem("⚠️ " + error);
+      flushAssistantMessageToHistory();
+      // Finalize streaming bubble
+      var streamItem = state.chatItems.find(function (it) { return it.id === currentStreamId; });
+      if (streamItem) streamItem.streaming = false;
+      // Remove empty assistant bubbles
+      state.chatItems = state.chatItems.filter(function (it) {
+        return !(it.type === "assistant" && !it.html);
+      });
+      state.busy = false;
+      stopThinking();
+      currentStreamText = "";
+      currentStreamId = 0;
+      pendingAssistantPersona = null;
+      // 品悟审方案完成 → 在紫色品悟气泡后附 3 按钮卡
+      if (pendingPinvouReview) {
+        var report = extractPinvouReport(lastAssistantText());
+        addChatItem({ type: "pinvou_actions", planMarkdown: pendingPinvouReview.planMarkdown, report: report, resolved: false, statusLabel: "", time: timeStr() });
+        pendingPinvouReview = null;
       }
-    }
-
-    // 任务收口：开了品悟审批则自动 advisory final review（pendingFinalReview 防递归）
-    if (wasExecuting && state.modeState.pinvou_review_enabled && !pendingFinalReview) {
-      await autoTriggerPinvouFinal();
-    }
-
-    await persistMessages();
-    await refreshHistoryList();
+      // final review 是 advisory，跑完只清 flag，不附按钮
+      if (pendingFinalReview) { pendingFinalReview = false; }
+      // 执行 plan 完成 → 回 yolo 默认态(plan_phase 从 executing → none)
+      if (state.modeState.plan_phase === "executing") {
+        flags.wasExecuting = true;
+        state.modeState = { mode: "yolo", plan_phase: "none", pinvou_review_enabled: state.modeState.pinvou_review_enabled };
+      }
+      // 任务收口:开了品悟审批 → 自动 advisory final review(防递归靠 wasExecuting:终审 turn 不在 executing 态)
+      flags.doFinal = flags.wasExecuting && state.modeState.pinvou_review_enabled;
+    });
     notify();
+    // 异步收尾(按 sid 路由,active/后台通用)
+    (async function () {
+      if (flags.wasExecuting) { try { await invoke("discard_plan", { sessionId: sid }); } catch (_) {} }
+      if (flags.doFinal) { await autoTriggerPinvouFinalFor(sid); }
+      await persistMessagesFor(sid);
+      await refreshHistoryList();
+      notify();
+      // 排队式:本轮跑完,若该 session 不忙(没被 doFinal 又起新 turn)且有待发消息 → 自动发下一条
+      flushQueued(sid);
+    })();
   });
 
-  listen("chat:usage", function (e) {
+  listen("chat:usage", function (e) { onSessionEvent(e, function () {
     var input = Number(e.payload && e.payload.input_tokens || 0);
     if (input > 0) {
       state.tokens = { input: input, max: maxModelLen };
       notify();
     }
-  });
+  }); });
 
-  listen("chat:compaction", function (e) {
+  listen("chat:compaction", function (e) { onSessionEvent(e, function () {
     var phase = e.payload && e.payload.phase;
     var msg = e.payload && e.payload.message || "";
     var auto = e.payload && e.payload.auto ? "（自动）" : "";
     if (phase === "start") addSystemItem("⏳ 正在压缩上下文" + auto + " " + msg);
     else if (phase === "done") addSystemItem("✓ 上下文压缩完成" + auto + " " + msg);
     else if (phase === "fail") addSystemItem("⚠️ 压缩失败" + auto + ": " + msg);
-  });
+  }); });
 
   // ── request_user_input：渲染选择卡片（不进 messages.json）─────────
   // payload: { id: tool_call_id, questions: [{header, id, question, options:[{label, description}]}] }
-  listen("chat:user_input_required", function (e) {
+  listen("chat:user_input_required", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
     var questions = p.questions || [];
     if (!Array.isArray(questions) || questions.length === 0) return;
@@ -731,37 +903,37 @@
       resolved: false, cardState: "active", time: timeStr(),
     });
     notify();
-  });
+  }); });
 
   // 可恢复的瞬态错误（SSE idle timeout / 瞬态工具失败）：turn 没结束，引擎会 retry，
   // 绝不 setBusy(false)，只飘一条 ⚠️ 提示。
-  listen("chat:transient_error", function (e) {
+  listen("chat:transient_error", function (e) { onSessionEvent(e, function () {
     var error = e.payload && e.payload.error;
     if (error) addSystemItem("⚠️ " + error);
-  });
+  }); });
 
-  // File watcher 推送的产物事件：当前 session workspace 下新文件/修改/删除
+  // File watcher 推送的产物事件：session workspace 下新文件/修改/删除。
+  // 路由到对应 session 的产物列表(后台 session 的产物也跟踪)。
   listen("artifact:disk", function (e) {
     var p = e.payload || {};
-    if (p.session_id !== state.activeSessionId) return;
     if (!p.path) return;
-    if (p.event === "removed") untrackArtifact(p.path);
-    else trackArtifact(p.path);
+    onSessionEvent(e, function () {
+      if (p.event === "removed") untrackArtifact(p.path);
+      else trackArtifact(p.path);
+    });
   });
 
   // chat:plan_snapshot —— update_plan/checklist_write 后实时更新进度，与 plan_ready 解耦
-  listen("chat:plan_snapshot", function (e) {
+  listen("chat:plan_snapshot", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
-    if (p.session_id && p.session_id !== state.activeSessionId) return;
     if (p.plan_snapshot) state.planSnapshot.plan = p.plan_snapshot;
     if (p.todos_snapshot) state.planSnapshot.todos = p.todos_snapshot;
     notify();
-  });
+  }); });
 
   // chat:plan_ready —— 任一层快照非空就渲染方案卡（plan_phase → ready）
-  listen("chat:plan_ready", function (e) {
+  listen("chat:plan_ready", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
-    if (p.session_id && p.session_id !== state.activeSessionId) return;
     state.modeState.plan_phase = "ready";
     // 新方案出现 → 旧的 active 方案卡冻结
     state.chatItems.forEach(function (it) {
@@ -775,12 +947,10 @@
       planMarkdown: composePlanMarkdown(snaps), cardState: "active", statusLabel: "", time: timeStr(),
     });
     notify();
-  });
+  }); });
 
   // chat:plan_text_fallback —— Planning 态 AI 没调 plan 工具但 text 写了方案
-  listen("chat:plan_text_fallback", function (e) {
-    var p = e.payload || {};
-    if (p.session_id && p.session_id !== state.activeSessionId) return;
+  listen("chat:plan_text_fallback", function (e) { onSessionEvent(e, function () {
     var lastText = "";
     for (var i = state.messages.length - 1; i >= 0; i--) {
       if (state.messages[i].role === "assistant") {
@@ -795,19 +965,21 @@
     if (hasUnresolvedItem("plan_text_fallback")) return;
     addChatItem({ type: "plan_text_fallback", text: lastText, resolved: false, time: timeStr() });
     notify();
-  });
+  }); });
 
   // chat:execution_stuck —— Executing 自驱 N 次后仍卡
-  listen("chat:execution_stuck", function (e) {
+  listen("chat:execution_stuck", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
-    if (p.session_id && p.session_id !== state.activeSessionId) return;
     if (hasUnresolvedItem("execution_stuck")) return;
     addChatItem({ type: "execution_stuck", tries: p.auto_continue_tried || 0, resolved: false, time: timeStr() });
     notify();
-  });
+  }); });
 
-  // chat:phase_changed —— 底座从 LLM 回复抽 <phase id="..."/> marker 触发
+  // chat:phase_changed —— 底座从 LLM 回复抽 <phase id="..."/> marker 触发。
+  // workflow phase chips 是全局(跟 active skill 走),后台 session 的 phase 变更不动 active chips。
   listen("chat:phase_changed", function (e) {
+    var sid = e.payload && e.payload.session_id;
+    if (sid && sid !== state.activeSessionId) return;
     var phaseId = e.payload && (e.payload.phase_id || e.payload.phaseId);
     setCurrentPhase(phaseId, "llm");
   });
@@ -1066,7 +1238,7 @@
   async function submitUserInput(itemId, toolCallId, answers, questions) {
     patchItemById(itemId, { submitting: true }); notify();
     try {
-      await invoke("submit_user_input", { toolCallId: toolCallId, answers: answers });
+      await invoke("submit_user_input", { toolCallId: toolCallId, answers: answers, sessionId: state.activeSessionId });
       var summary = answers.map(function (a, i) {
         var text = a.label === "其他" ? "(其他) " + a.value : a.label;
         return (questions[i].header || ("Q" + (i + 1))) + ": " + text;
@@ -1080,7 +1252,7 @@
     notify();
   }
   async function cancelUserInput(itemId, toolCallId) {
-    try { await invoke("cancel_user_input", { toolCallId: toolCallId }); } catch (_) {}
+    try { await invoke("cancel_user_input", { toolCallId: toolCallId, sessionId: state.activeSessionId }); } catch (_) {}
     patchItemById(itemId, { resolved: true, cardState: "cancelled" });
     notify();
   }
@@ -1107,7 +1279,7 @@
     state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
     notify();
     try {
-      await invoke("edit_last_turn", { newMessage: newText });
+      await invoke("edit_last_turn", { newMessage: newText, sessionId: state.activeSessionId });
     } catch (e) {
       addSystemItem("⚠️ " + e);
       state.busy = false;
@@ -1115,7 +1287,7 @@
     }
   }
   async function compactNow() {
-    try { await invoke("compact_now"); } catch (e) { addSystemItem("⚠️ 压缩失败: " + e); }
+    try { await invoke("compact_now", { sessionId: state.activeSessionId }); } catch (e) { addSystemItem("⚠️ 压缩失败: " + e); }
   }
 
   // ── 产物面板 ─────────────────────────────────────────────────────
@@ -1176,19 +1348,29 @@
   }
   function togglePinvouReview() { return setPinvouReview(!state.modeState.pinvou_review_enabled); }
 
-  // 共用底层：前端 user 气泡只显示简短摘要，完整 prompt 发给后端（本地小模型 eager loading）
-  async function dispatchPinvouTrigger(persona, summary, fullPrompt) {
-    if (!state.activeSessionId || state.busy) return;
-    pendingAssistantPersona = persona;
-    pushUserEcho(summary, true);
-    state.busy = true;
-    startThinking();
-    currentStreamText = "";
-    currentStreamId = ++itemIdSeq;
-    state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true, persona: persona });
+  // 共用底层：前端 user 气泡只显示简短摘要，完整 prompt 发给后端（本地小模型 eager loading）。
+  // *For(sid) 变体支持后台 session(chat:done 触发的自动终审):同步设置发送态走
+  // runSyncOnSession 路由到对应 session,invoke chat 带显式 session_id。
+  function dispatchPinvouTriggerFor(sid, persona, summary, fullPrompt) {
+    if (!sid) return Promise.resolve();
+    var canSend = true;
+    runSyncOnSession(sid, function () {
+      if (state.busy) { canSend = false; return; }
+      pendingAssistantPersona = persona;
+      pushUserEcho(summary, true);
+      state.busy = true;
+      startThinking();
+      currentStreamText = "";
+      currentStreamId = ++itemIdSeq;
+      state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true, persona: persona });
+    });
+    if (!canSend) return Promise.resolve();
     notify();
-    try { await invoke("chat", { message: fullPrompt, attachments: [] }); }
-    catch (e) { addSystemItem("⚠️ " + e); state.busy = false; notify(); }
+    return invoke("chat", { message: fullPrompt, attachments: [], sessionId: sid })
+      .catch(function (e) { runSyncOnSession(sid, function () { addSystemItem("⚠️ " + e); state.busy = false; }); notify(); });
+  }
+  function dispatchPinvouTrigger(persona, summary, fullPrompt) {
+    return dispatchPinvouTriggerFor(state.activeSessionId, persona, summary, fullPrompt);
   }
   async function autoTriggerPinvouReview(planMarkdown) {
     pendingPinvouReview = { planMarkdown: planMarkdown };
@@ -1198,13 +1380,17 @@
     catch (e) { addSystemItem("⚠️ 加载 pinvou-review-plan skill 失败: " + e); }
     await dispatchPinvouTrigger("pinvou-plan", "🟣 触发品悟审方案", fullPrompt);
   }
-  async function autoTriggerPinvouFinal() {
-    pendingFinalReview = true;
-    addSystemItem("🟣 任务完成 —— 让品悟核验一下产出...");
+  async function autoTriggerPinvouFinalFor(sid) {
+    if (!sid) return;
+    runSyncOnSession(sid, function () { pendingFinalReview = true; addSystemItem("🟣 任务完成 —— 让品悟核验一下产出..."); });
+    notify();
     var fullPrompt = "/pinvou-review-final";
     try { var body = await invoke("read_skill_body", { name: "pinvou-review-final" }); fullPrompt = "[品悟自动触发 /pinvou-review-final,完整角色定义如下]\n\n" + body; }
-    catch (e) { addSystemItem("⚠️ 加载 pinvou-review-final skill 失败: " + e); }
-    await dispatchPinvouTrigger("pinvou-final", "🟣 触发品悟验收", fullPrompt);
+    catch (e) { runSyncOnSession(sid, function () { addSystemItem("⚠️ 加载 pinvou-review-final skill 失败: " + e); }); }
+    await dispatchPinvouTriggerFor(sid, "pinvou-final", "🟣 触发品悟验收", fullPrompt);
+  }
+  async function autoTriggerPinvouFinal() {
+    await autoTriggerPinvouFinalFor(state.activeSessionId);
   }
   // 品悟 3 按钮之「✅ 直接执行」：override 所有 CRITICAL 后 accept_plan
   async function pinvouAcceptOverride(itemId, planMarkdown, report) {
@@ -1327,6 +1513,7 @@
     getState: function () { return JSON.parse(JSON.stringify(state)); },
     init: init,
     sendMessage: sendMessage,
+    removeQueued: removeQueued,
     cancelGeneration: cancelGeneration,
     createNewSession: createNewSession,
     switchToSession: switchToSession,

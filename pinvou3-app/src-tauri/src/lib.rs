@@ -13,6 +13,7 @@
 pub mod bridge;
 mod commands;
 pub mod engine;
+pub mod engine_pool;
 mod file_ingest;
 mod file_watcher;
 mod monitor;
@@ -22,7 +23,7 @@ pub mod super_permission;
 use tauri::Manager;
 
 use crate::bridge::sessions::SessionStore;
-use crate::engine::AppEngine;
+use crate::engine_pool::EnginePool;
 use crate::monitor::MonitorState;
 
 /// 为 release 安装包（.deb 双击启动场景）注入 run-dev.sh 里集中处理的运行时 env。
@@ -83,24 +84,23 @@ pub fn run() {
                 app.handle().manage(store);
             }
 
-            // 异步 spawn engine：Tauri setup 是同步的，需要走 async_runtime
+            // 多 session 并发:存 EnginePool(lazy spawn,首条消息才为该 session 起 engine)。
+            // boot bridge 在 pool::new 里做一次(写盘 / 设 env 只能一次)。
             let handle = app.handle().clone();
             let store_for_engine = session_store.unwrap_or_else(|| {
                 // store boot 失败时退化用一份临时 store（让 engine 至少能起来）；
                 // 实际使用 session 相关命令会失败,但聊天能跑
                 SessionStore::boot().expect("session store boot fallback")
             });
-            tauri::async_runtime::block_on(async move {
-                match AppEngine::spawn(handle.clone(), store_for_engine).await {
-                    Ok(eng) => {
-                        handle.manage(eng);
-                        eprintln!("[pinvou3-app] engine ready");
-                    }
-                    Err(e) => {
-                        eprintln!("[pinvou3-app] failed to spawn engine: {e:?}");
-                    }
+            match EnginePool::new(handle.clone(), store_for_engine) {
+                Ok(pool) => {
+                    handle.manage(pool);
+                    eprintln!("[pinvou3-app] engine pool ready (lazy spawn per session)");
                 }
-            });
+                Err(e) => {
+                    eprintln!("[pinvou3-app] failed to init engine pool: {e:?}");
+                }
+            }
 
             // Monitor 按需采样：state 只持有 session_uptime，sample 由前端调
             // get_monitor_snapshot 时触发（监控页面 1s interval，离开页面停）。
@@ -131,6 +131,7 @@ pub fn run() {
             commands::get_active_session,
             commands::save_session_messages,
             commands::save_session_artifacts,
+            commands::list_workspace_files,
             commands::cancel_generation,
             commands::edit_last_turn,
             commands::read_artifact_text,

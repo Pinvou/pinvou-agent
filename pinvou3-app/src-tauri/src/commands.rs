@@ -22,7 +22,7 @@ use crate::bridge::mode_state::{PlanPhase, SerializableMode, SessionModeState};
 use crate::bridge::prefs::UserPrefs;
 use crate::bridge::review_gate::{check_exit_gate, GateError};
 use crate::bridge::sessions::SessionStore;
-use crate::engine::AppEngine;
+use crate::engine_pool::EnginePool;
 use crate::monitor::{MonitorSnapshot, MonitorState, VllmStatus};
 
 /// 接收用户消息并转发给 Engine。
@@ -42,13 +42,19 @@ use crate::monitor::{MonitorSnapshot, MonitorState, VllmStatus};
 pub async fn chat(
     message: String,
     attachments: Option<Vec<crate::file_ingest::IngestResult>>,
-    engine: State<'_, AppEngine>,
+    session_id: Option<String>,
+    pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
     let trimmed = message.trim();
     if trimmed.is_empty() && attachments.as_ref().map_or(true, |a| a.is_empty()) {
         return Err("empty message".to_string());
     }
+    // 多 session 并发:消息显式路由到指定 session(前端传 session_id);兼容旧前端时
+    // 回退到全局 active_id。每条消息按各自 session 取 mode/phase/skill,送到对应 engine。
+    let sid = session_id
+        .or_else(|| store.active_id())
+        .ok_or_else(|| "no active session".to_string())?;
     let mut full = build_message_with_attachments(message, attachments.unwrap_or_default());
     // 工作流 Phase 可视化:用户在工作流页"启用"卡片 = start_skill_session
     // 新建一个绑定了 skill 的 session。该 session 第一条 chat 消息时,
@@ -57,43 +63,32 @@ pub async fn chat(
     // 另外 — 实测 Qwen3.6 在长上下文里对 system prompt 顶端的 phase marker
     // MANDATORY 段遵循率衰减(h3c-ppt 跑到 p5+ 后频繁不出 `<phase id=".."/>`
     // marker),每个 user turn 都重申一遍约束,把信号搬到距 LLM 最近的位置。
-    if let Some(sid) = store.active_id() {
-        if let Some(injected) = store.take_pending_skill_instruction(&sid) {
-            full = format!("{injected}\n\n---\n\n{full}");
-        }
-        if let Some(skill) = store.active_skill(&sid) {
-            let reminder = format!(
-                "<system-reminder>\n\
-                 工作流 `{name}` 提醒:你的下一条回复**必须**以 `<phase id=\"...\"/>` \
-                 单独一行开头(literal XML 标签,不是 markdown 加粗,不是自然语言)。\n\
-                 - 自然语言里写 \"进入 P5\" / \"现在做 HTML 实现\" **不算** marker,\
-                 必须输出字面 `<phase id=\"p5\"/>` 然后空行然后正文。\n\
-                 - 跳过 phase 也要显式输出对应 marker(从 p3 直接做 p5 → 输出 \
-                 `<phase id=\"p5\"/>`,别不出标)。\n\
-                 - 留在同一 phase 多个 turn 也要每次都输出该 phase 的 marker,\
-                 不要因为\"没换 phase\"省略。\n\
-                 pinvou3 UI chips 条靠这个 marker 推进度,漏标 = 用户看不到进展。\n\
-                 </system-reminder>",
-                name = skill.name,
-            );
-            full = format!("{reminder}\n\n{full}");
-        }
+    if let Some(injected) = store.take_pending_skill_instruction(&sid) {
+        full = format!("{injected}\n\n---\n\n{full}");
     }
-    // 取当前 active session 的 mode + phase;无 active session 时默认 Yolo+None(首条消息场景)
-    let (mode, phase) = store
-        .active_id()
-        .map(|id| {
-            let s = store.mode_state(&id);
-            (s.mode, s.plan_phase)
-        })
-        .unwrap_or((SerializableMode::Yolo, PlanPhase::None));
+    if let Some(skill) = store.active_skill(&sid) {
+        let reminder = format!(
+            "<system-reminder>\n\
+             工作流 `{name}` 提醒:你的下一条回复**必须**以 `<phase id=\"...\"/>` \
+             单独一行开头(literal XML 标签,不是 markdown 加粗,不是自然语言)。\n\
+             - 自然语言里写 \"进入 P5\" / \"现在做 HTML 实现\" **不算** marker,\
+             必须输出字面 `<phase id=\"p5\"/>` 然后空行然后正文。\n\
+             - 跳过 phase 也要显式输出对应 marker(从 p3 直接做 p5 → 输出 \
+             `<phase id=\"p5\"/>`,别不出标)。\n\
+             - 留在同一 phase 多个 turn 也要每次都输出该 phase 的 marker,\
+             不要因为\"没换 phase\"省略。\n\
+             pinvou3 UI chips 条靠这个 marker 推进度,漏标 = 用户看不到进展。\n\
+             </system-reminder>",
+            name = skill.name,
+        );
+        full = format!("{reminder}\n\n{full}");
+    }
+    // 取该 session 的 mode + phase。
+    let s = store.mode_state(&sid);
+    let (mode, phase) = (s.mode, s.plan_phase);
     // M2: 用户主动消息重置 auto-continue 计数器(新任务从 0 开始算 max 3 次)
-    if let Some(id) = store.active_id() {
-        store.reset_auto_continue(&id);
-    }
-    engine
-        .inner()
-        .send_user_message(full, mode.to_app_mode(), phase)
+    store.reset_auto_continue(&sid);
+    pool.send_user_message(&sid, full, mode.to_app_mode(), phase)
         .await
         .map_err(|e| format!("send_user_message failed: {e:?}"))
 }
@@ -252,20 +247,16 @@ pub async fn list_sessions(store: State<'_, SessionStore>) -> Result<Vec<Session
 #[tauri::command]
 pub async fn create_session(
     store: State<'_, SessionStore>,
-    engine: State<'_, AppEngine>,
+    pool: State<'_, EnginePool>,
 ) -> Result<SessionMetadata, String> {
-    let model = engine.inner().bridge.model();
-    let workspace = engine.inner().bridge.workspace.clone();
+    let model = pool.bridge.model();
+    let workspace = pool.bridge.workspace.clone();
     let session = store
         .create_new(model, workspace)
         .map_err(|e| format!("create_session: {e:?}"))?;
     store.set_active(Some(session.metadata.id.clone()));
-    // 清空 engine 内部 session，否则新对话会接在旧上下文后面
-    engine
-        .inner()
-        .sync_session(session.metadata.id.clone(), Vec::new())
-        .await
-        .map_err(|e| format!("sync engine session: {e:?}"))?;
+    // 多 session 并发:不预热 engine(lazy)。新建的空 session 没有历史,首条 chat
+    // 时 EnginePool.get_or_spawn 会为它 spawn 一个带专属 workspace 的 engine。
     Ok(session.metadata)
 }
 
@@ -275,26 +266,27 @@ pub async fn create_session(
 pub async fn load_session(
     id: String,
     store: State<'_, SessionStore>,
-    engine: State<'_, AppEngine>,
 ) -> Result<SavedSession, String> {
     let session = store
         .load(&id)
         .map_err(|e| format!("load_session({id}): {e:?}"))?;
     store.set_active(Some(id.clone()));
-    // 把 engine 的内部 session 状态替换成这个 session 的 messages，
-    // 否则 engine 仍持有旧 session 的 messages,下次发消息会续在旧上下文后,
-    // 造成 session 间「串台」(bug fix 2026-05-13)
-    engine
-        .inner()
-        .sync_session(id, session.messages.clone())
-        .await
-        .map_err(|e| format!("sync engine session: {e:?}"))?;
+    // 多 session 并发:切换不再 SyncSession 替换全局引擎(那是旧单引擎模型)。该 session
+    // 有自己独立的 engine(已起则持有自己的上下文、还在跑就继续跑;未起则下次 chat 时
+    // lazy spawn 并注水这里返回的 messages)。本命令只切 active 指针 + 返回 messages 给前端渲染。
     Ok(session)
 }
 
 /// 删除 session（含 artifacts 目录）。
 #[tauri::command]
-pub async fn delete_session(id: String, store: State<'_, SessionStore>) -> Result<(), String> {
+pub async fn delete_session(
+    id: String,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+) -> Result<(), String> {
+    // 先回收该 session 的 engine(cancel 在跑的 turn + shutdown + abort forwarder),
+    // 再删盘上数据,避免僵尸 engine 继续往已删 session 写产物。
+    pool.evict(&id).await;
     store
         .delete(&id)
         .map_err(|e| format!("delete_session({id}): {e:?}"))
@@ -345,14 +337,53 @@ pub async fn save_session_artifacts(
         .map_err(|e| format!("save_session_artifacts({id}): {e:?}"))
 }
 
+/// 扫描 session workspace 目录,返回实际存在的产物文件绝对路径(过滤隐藏/临时文件)。
+/// 前端切换 session 时用它对账 —— 让产物面板以**磁盘真相**为准,不受跟踪遗漏 /
+/// app 中途重启(内存跟踪丢失)影响。过滤规则与 file_watcher::should_skip 对齐。
+#[tauri::command]
+pub async fn list_workspace_files(session_id: String) -> Result<Vec<String>, String> {
+    let dir = crate::bridge::paths::session_workspace_dir(&session_id);
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if name.is_empty()
+                || name.starts_with('.')
+                || name.starts_with("~$")
+                || name.ends_with('~')
+                || name.ends_with(".swp")
+                || name.ends_with(".swo")
+                || name.ends_with(".tmp")
+                || name.ends_with(".bak")
+            {
+                continue;
+            }
+            out.push(path.to_string_lossy().to_string());
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
 // ===================== 阶段 C: 取消生成 + 编辑/重发 =====================
 
 /// 取消当前生成（生成中按⏹️停止按钮）。
 /// engine 立即 cancel_token.cancel()，turn loop 跳出后会发 TurnComplete 事件，
 /// 前端通过 chat:done 解锁 busy 状态。
 #[tauri::command]
-pub async fn cancel_generation(engine: State<'_, AppEngine>) -> Result<(), String> {
-    engine.inner().cancel_current();
+pub async fn cancel_generation(
+    session_id: Option<String>,
+    pool: State<'_, EnginePool>,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    // 多 session:取消指定 session(前端传 session_id);兼容旧前端回退 active。
+    if let Some(sid) = session_id.or_else(|| store.active_id()) {
+        pool.cancel(&sid).await;
+    }
     Ok(())
 }
 
@@ -362,14 +393,17 @@ pub async fn cancel_generation(engine: State<'_, AppEngine>) -> Result<(), Strin
 #[tauri::command]
 pub async fn edit_last_turn(
     new_message: String,
-    engine: State<'_, AppEngine>,
+    session_id: Option<String>,
+    pool: State<'_, EnginePool>,
+    store: State<'_, SessionStore>,
 ) -> Result<(), String> {
     if new_message.trim().is_empty() {
         return Err("empty new_message".into());
     }
-    engine
-        .inner()
-        .edit_last_turn(new_message)
+    let sid = session_id
+        .or_else(|| store.active_id())
+        .ok_or_else(|| "no active session".to_string())?;
+    pool.edit_last_turn(&sid, new_message)
         .await
         .map_err(|e| format!("edit_last_turn: {e:?}"))
 }
@@ -540,10 +574,15 @@ pub async fn save_paste_image(filename: String, bytes: Vec<u8>) -> Result<String
 /// 触发后 engine 会发 CompactionStarted / Completed / Failed 事件，
 /// 通过 chat:compaction 系列 event 通知前端。
 #[tauri::command]
-pub async fn compact_now(engine: State<'_, AppEngine>) -> Result<(), String> {
-    engine
-        .inner()
-        .compact_now()
+pub async fn compact_now(
+    session_id: Option<String>,
+    pool: State<'_, EnginePool>,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    let sid = session_id
+        .or_else(|| store.active_id())
+        .ok_or_else(|| "no active session".to_string())?;
+    pool.compact_now(&sid)
         .await
         .map_err(|e| format!("compact_now: {e:?}"))
 }
@@ -607,7 +646,7 @@ pub async fn accept_plan(
     session_id: String,
     plan_markdown: String,
     store: State<'_, SessionStore>,
-    engine: State<'_, AppEngine>,
+    pool: State<'_, EnginePool>,
 ) -> Result<SessionModeState, String> {
     let enabled = store.mode_state(&session_id).pinvou_review_enabled;
     if enabled {
@@ -616,15 +655,14 @@ pub async fn accept_plan(
     store.set_mode_state(&session_id, SerializableMode::Yolo, PlanPhase::Executing);
     // 简短指令——主约束由 M1 per-turn system-reminder 提供(bridge 按 phase=Executing 注入)。
     let instruction = format!("用户已批准方案,立即开始执行。方案:\n\n{plan_markdown}");
-    engine
-        .inner()
-        .send_user_message(
-            instruction,
-            SerializableMode::Yolo.to_app_mode(),
-            PlanPhase::Executing,
-        )
-        .await
-        .map_err(|e| format!("accept_plan send_user_message: {e:?}"))?;
+    pool.send_user_message(
+        &session_id,
+        instruction,
+        SerializableMode::Yolo.to_app_mode(),
+        PlanPhase::Executing,
+    )
+    .await
+    .map_err(|e| format!("accept_plan send_user_message: {e:?}"))?;
     Ok(store.mode_state(&session_id))
 }
 
@@ -669,26 +707,17 @@ pub async fn get_super_permission_status() -> Result<bool, String> {
 #[tauri::command]
 pub async fn set_super_permission(
     enabled: bool,
-    store: State<'_, SessionStore>,
-    engine: State<'_, AppEngine>,
+    pool: State<'_, EnginePool>,
 ) -> Result<bool, String> {
     if enabled {
         crate::super_permission::enable()?;
     } else {
         crate::super_permission::disable()?;
     }
-    if let Some(active_id) = store.active_id() {
-        if let Ok(session) = store.load(&active_id) {
-            // sync_session 失败不阻塞：sudoers 已写好，LLM 下次新 session 也会看到新 prompt
-            if let Err(e) = engine
-                .inner()
-                .sync_session(active_id, session.messages.clone())
-                .await
-            {
-                eprintln!("[set_super_permission] sync_session failed: {e:?}");
-            }
-        }
-    }
+    // 多 session 并发:重写所有已起 engine 的 session 专属 instructions(含新 sudo 引导块),
+    // engine 下个 turn rehydrate 时从 disk 重读 → 「下次 turn 生效」。低频操作,不为即时
+    // 生效去 SyncSession 打断在跑的 turn。未起的 session 首次 spawn 时自然带上新引导。
+    pool.refresh_all_instructions().await;
     Ok(crate::super_permission::is_enabled())
 }
 
@@ -744,12 +773,15 @@ pub async fn discard_plan(
 pub async fn submit_user_input(
     tool_call_id: String,
     answers: Vec<UserInputAnswer>,
-    engine: State<'_, AppEngine>,
+    session_id: Option<String>,
+    pool: State<'_, EnginePool>,
+    store: State<'_, SessionStore>,
 ) -> Result<(), String> {
+    let sid = session_id
+        .or_else(|| store.active_id())
+        .ok_or_else(|| "no active session".to_string())?;
     let response = UserInputResponse { answers };
-    engine
-        .inner()
-        .submit_user_input(tool_call_id, response)
+    pool.submit_user_input(&sid, tool_call_id, response)
         .await
         .map_err(|e| format!("submit_user_input: {e:?}"))
 }
@@ -759,11 +791,14 @@ pub async fn submit_user_input(
 #[tauri::command]
 pub async fn cancel_user_input(
     tool_call_id: String,
-    engine: State<'_, AppEngine>,
+    session_id: Option<String>,
+    pool: State<'_, EnginePool>,
+    store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    engine
-        .inner()
-        .cancel_user_input(tool_call_id)
+    let sid = session_id
+        .or_else(|| store.active_id())
+        .ok_or_else(|| "no active session".to_string())?;
+    pool.cancel_user_input(&sid, tool_call_id)
         .await
         .map_err(|e| format!("cancel_user_input: {e:?}"))
 }
@@ -1004,7 +1039,7 @@ pub struct ActiveSkillState {
 pub async fn start_skill_session(
     name: String,
     store: State<'_, SessionStore>,
-    engine: State<'_, AppEngine>,
+    pool: State<'_, EnginePool>,
 ) -> Result<StartSkillSessionResult, String> {
     use crate::bridge::mode_state::ActiveSkillBinding;
     use crate::bridge::paths;
@@ -1028,20 +1063,16 @@ pub async fn start_skill_session(
         .clone();
 
     // 2) 新建 session(沿用 create_session 的 model + workspace 取值)
-    let model = engine.inner().bridge.model();
-    let workspace = engine.inner().bridge.workspace.clone();
+    let model = pool.bridge.model();
+    let workspace = pool.bridge.workspace.clone();
     let session = store
         .create_new(model, workspace)
         .map_err(|e| format!("create_session: {e:?}"))?;
     let sid = session.metadata.id.clone();
     store.set_active(Some(sid.clone()));
 
-    // 3) 让 engine 切到这个空 session,否则下一条 chat 会续在旧 session 上下文后
-    engine
-        .inner()
-        .sync_session(sid.clone(), Vec::new())
-        .await
-        .map_err(|e| format!("sync engine session: {e:?}"))?;
+    // 3) 多 session 并发:不预热 engine(lazy)。首条 chat 时 EnginePool 为这个空 session
+    //    spawn 专属 engine,空历史无需 SyncSession。
 
     // 4) 绑定 skill。pending_instruction 是单行 nudge — 底座 system prompt
     //    已经自动注入了 skill 列表 + phase 强约束(crates/tui/src/skills/mod.rs)
