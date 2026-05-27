@@ -10,7 +10,7 @@
 
 - **main HEAD**: `e491451` (阶段 K React UI 迁移(另一会话/机器推的)+ 本次 fetch_url fake-ip 按 IP 段信任/subagent 单路径必要修复 — 已 push origin `Pinvou/pinvou3` + backup `h3c-hexin/pinvou3`,三方对齐)
 - **fork HEAD**: `aab9cab8` (`pinvou3-patches`,v0.8.45 + 本次 3 commit: web_search bing decode / fetch_url fake-ip IP段信任 / tool_agent model+resolve_agent_ref — 已 push `h3c-hexin/DeepSeek-TUI`)。上游 PR 分支(从 `upstream/main` 拉,不并入 patches): `fix/bing-ckurl-html-entity-decode`=**#2245 OPEN**、`fix/grep-files-timeout`=#2146、`fix/max-output-tokens-env`=#2147
-- **进行中**: 无重大未并项;main 已并入阶段 K + 本次修复并三方推送。注:Pinvou/pinvou3 有 PR-only 分支保护,owner(本人)直推 bypass
+- **进行中**: 阶段 L 主对话附件识别补全(响应 #1)完成,合并入 main 待推。注:Pinvou/pinvou3 有 PR-only 分支保护,owner(本人)直推 bypass
 - **多 subagent**: 并行 fan-out 已废弃(根因主 agent 编排认知,详 lesson learned 2026-05-27),只留单+串行;subagent 行为调优归 owner
 - **worktrees**: `workflow-discussion` (本会话工作,已并入 main)、`workflow-desing-01`、`pinvou-review-v2-DO-NOT-DELETE`
 
@@ -107,22 +107,11 @@ LLM 可见工具 85→16+4,schema 119KB→14KB,翻译 19s→8s。OpenAI streamin
 
 ### 🟡 中等
 
-#### 0. ✅ P7 大文件 Phase 1 — 已落地 (阶段 J `ade944d`, 2026-05-25)
-
-预案里的"硬上限拒绝 + actionable recovery"已做:
-- ✅ `write_file`/`append_file` content **64KB 硬上限**(非 32KB,避开上游 32KB diff-omit 合法区) → 超限返 `InvalidInput` + 骨架/分块引导。
-- ✅ actionable recovery: `truncated_args_hint` —— 流截断缺字段时回"参数被截断请分块",而非干巴巴 missing_field,引导模型换 tool 不原样重试(缓解 loop_guard 锁死)。
-- ✅ 诊断日志: SSE idle timeout 带 bytes/buffer,**实测确认根因** = 大 tool-arg 生成静默 > 240s 被切。
-- ⚠️ **未做**(暂不需要): `dont_count_for_loop_guard` 标记 / sticky `tool_choice=named` 强制下轮 append_file。当前 hint 已能引导模型自纠,实测够用,YAGNI。
-
 #### A. WorkFlow 视图编排 (差异化最强)
 - 用户明说"准备做编排,要细聊"
 - 交互模型待讨论: todo checklist / 可视化节点流 / 专家协作
 - 跟现有 `plan_card` 可能融合
 - 设计落定再 2-3 天实现
-
-#### B. 附件预处理 pipeline
-bridge 拦截 docx/pdf/image 上传 → pandoc/tesseract 转 md → 嵌 user message。省 5-10k token/turn + UX 直拿数据 + AI 无需 `pandoc_convert/image_ocr` 工具决策。1-2 天,详 `docs/工具表精简方案.md` §6.1。
 
 #### D. 模型预设切换 GUI
 bridge 已有 `ModelPreset` 占位,缺 GUI。支持远程 DeepSeek API / OpenRouter。
@@ -207,25 +196,7 @@ CLAUDE.md 规则: 通用优化/bug → PR;pinvou3 专用 → 留 fork。
 
 ### 🆕 / 🔁 待处理
 
-### 2026-05-26 · run 1779779654-r2 · subagent_research_topic · 准确性 1/5
-- **问题**: final text 只有执行状态说明,没有给出 RAG 2025-2026 综述正文。
-- **改进方向**: subagent 全失败时应更早降级,至少在 1-2 个失败后先产出基于现有知识的结构化综述。
-- **状态**: 🆕 待处理
-
-### 2026-05-26 · run 1779779654-r2 · subagent_research_topic · 完整性 1/5
-- **问题**: prompt 要求覆盖学术新方向、工业落地、开源工具、踩坑经验四类,final text 未覆盖任何一类。
-- **改进方向**: 降级输出也必须保留四个必答栏目,不能只输出执行状态。
-- **状态**: 🆕 待处理
-
-### 2026-05-26 · run 1779779654-r2 · subagent_research_topic · 简洁性 2/5
-- **问题**: 输出主要是“还在跑/让我再等/失败后换思路”的过程复述,没有转化为结果。
-- **改进方向**: transcript 内可保留过程,final answer 应只给结论、降级说明和下一步,避免“让我...”流水账。
-- **状态**: 🆕 待处理
-
-### 2026-05-26 · run 1779779654-r2 · subagent_research_topic · 工具使用 2/5
-- **问题**: 用 `exec_shell sleep` 轮询 4 次,重复 `agent_eval`,且在 prompt 明确禁止主 agent 直接 `web_search` 后仍直接调用 5 次。
-- **改进方向**: 禁止用 `exec_shell sleep` 轮询 subagent;优先 `agent_eval block=true` 或有界短轮询,并遵守 scenario 约束。
-- **状态**: 🆕 待处理
+_暂无。(原 subagent_research_topic 4 项离群点随并行 fan-out 废弃(lesson learned 2026-05-27)一并关闭，不再单独跟进。)_
 
 ### ✅ 已结案 (简表)
 
@@ -305,6 +276,27 @@ CLAUDE.md 规则: 通用优化/bug → PR;pinvou3 专用 → 留 fork。
 - **3 个单 subagent 必需**: `tool_agent` model 路由(本地没 `deepseek-v4-flash` 否则 404)、bridge `subagent_api_timeout=300`(本地慢推理 120s 误杀单步)、`resolve_agent_ref` 截断前缀容错
 - **已弃**: `fetch_url` 30s+retry(env-specific 且未验证)、所有 fan-out 调参(`max_steps=12`/`elapsed=600`/budget prompt)
 - ⚠️ **给 owner 的提醒**: 单 subagent 长任务被 `max_steps`+`elapsed` 双重掐(本地 40-70s/步下 elapsed 600s 仅 ~10 步,光抬 max_steps 无效需同抬 elapsed)。已弃回 committed,owner 调优时重新放宽。
+
+---
+
+## 阶段 L — 主对话附件识别补全 (2026-05-27, 响应 Pinvou/pinvou3#1)
+
+**背景**: file_ingest 已有附件 UI + 通路, 但解析有缺口/bug。综合评估底座(image_ocr/
+pandoc_convert) vs pinvou3 自调: pdftotext(`-layout`)/pandoc 不比底座差, 不动; 真缺口是
+OCR + 一批被错派给 pandoc(只吃 docx/odt)而坏掉的格式。
+
+**已落地**:
+- 图片 OCR(tesseract `chi_sim+eng` 探测降级 eng) + 扫描件 PDF 兜底(pdftotext 空→pdftoppm→OCR, 30 页封顶)
+- 修 pandoc 吃不下的格式: pptx/ppt→PDF→pdftotext、xlsx/ods/xls→LibreOffice CSV(原全派 pandoc 是坏的)
+- WPS .wps/.et/.dps 按用途归入对应 LibreOffice 路径; 压缩包 zip/rar/7z(7z 解压前炸弹预检 + 递归复用主 ingest + 防套娃);
+  邮件 .eml(python email 标准库)/.msg(msgconvert→eml); 音视频降级标"未处理"
+- 健壮性: 多附件并发时 soffice 各用独立 UserInstallation profile(避免同 profile lock); 清 soffice txt/csv 输出 UTF-8 BOM
+- 依赖分发: `tauri.conf.json` deb depends/recommends 声明, `apt install .deb` 自动拉齐(不做运行时懒装)
+- 验证: 8 常规单测 + 全类型 e2e(21 样本逐个 ingest) + 真实 Qwen3.6 6 类语义验证(图片/扫描件/表格/演示/邮件/压缩包均据附件正确作答) + GUI 用户冒烟通过
+
+**搁置项**(并入「已决策不做 / 视觉模型」一处管理):
+- ⏸ 音视频转录: whisper 未部署 GB10, 且同步 ingest 跑转录阻塞数分钟; 现仅 `media_placeholder` 降级。待 GB10 部署后作独立能力(sidecar/服务)。
+- ⏸ 图片 VLM caption: 本地 Qwen3.6 无视觉, 现靠 OCR 抠文字 + `model_no_vision` 提示; 等接入 vision 模型再补。
 
 ---
 
