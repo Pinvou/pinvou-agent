@@ -8,9 +8,10 @@
 
 ## 当前状态
 
-- **main HEAD**: `d99af05` (阶段 J + J-后续 — 已 push origin `Pinvou/pinvou3` + backup `h3c-hexin/pinvou3`)
-- **fork HEAD**: `63e17d77` (`pinvou3-patches`,已同步上游 **v0.8.45 + rebrand CodeWhale**,已 push `h3c-hexin/DeepSeek-TUI`)。另有分支 `fix/grep-files-timeout`(`f2153f10`)= **PR #2146**,从 `upstream/main` 拉,不并入 patches
-- **进行中**: 无重大未并项;阶段 J 全部并入 main 并推送
+- **main HEAD**: `e491451` (阶段 K React UI 迁移(另一会话/机器推的)+ 本次 fetch_url fake-ip 按 IP 段信任/subagent 单路径必要修复 — 已 push origin `Pinvou/pinvou3` + backup `h3c-hexin/pinvou3`,三方对齐)
+- **fork HEAD**: `aab9cab8` (`pinvou3-patches`,v0.8.45 + 本次 3 commit: web_search bing decode / fetch_url fake-ip IP段信任 / tool_agent model+resolve_agent_ref — 已 push `h3c-hexin/DeepSeek-TUI`)。上游 PR 分支(从 `upstream/main` 拉,不并入 patches): `fix/bing-ckurl-html-entity-decode`=**#2245 OPEN**、`fix/grep-files-timeout`=#2146、`fix/max-output-tokens-env`=#2147
+- **进行中**: 无重大未并项;main 已并入阶段 K + 本次修复并三方推送。注:Pinvou/pinvou3 有 PR-only 分支保护,owner(本人)直推 bypass
+- **多 subagent**: 并行 fan-out 已废弃(根因主 agent 编排认知,详 lesson learned 2026-05-27),只留单+串行;subagent 行为调优归 owner
 - **worktrees**: `workflow-discussion` (本会话工作,已并入 main)、`workflow-desing-01`、`pinvou-review-v2-DO-NOT-DELETE`
 
 ---
