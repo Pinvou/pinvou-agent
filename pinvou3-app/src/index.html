@@ -671,6 +671,7 @@
       const busy = bs ? bs.busy : false;
       const hasMessages = chatItems.length > 0;
       const attachments = (bs && bs.attachments) || [];
+      const queued = (bs && bs.queued) || []; // 排队待发消息（当前 session 生成中时积压）
       const artifactCount = (bs && bs.artifacts) ? bs.artifacts.length : 0;
       const hasSkill = !!(bs && bs.workflow && bs.workflow.activeSkillName);
       let lastUserId = null;
@@ -688,7 +689,7 @@
       }, [chatItems.length, chatItems[chatItems.length - 1]?.html]);
 
       function handleSend() {
-        if (busy) return;
+        // 不再因 busy 拦截:bridge.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
         const hasReady = attachments.some(a => a.status === 'ready');
         if (!inputText.trim() && !hasReady) return;
         if (bridge.available) bridge.sendMessage(inputText.trim());
@@ -774,6 +775,18 @@
 
           {/* Floating Input Area */}
           <div className="absolute bottom-8 left-1/2 -translate-x-1/2 w-full max-w-[800px] px-4 z-20">
+            {/* 排队待发消息 chips（生成中继续输入会积压到这里，本轮跑完自动发） */}
+            {queued.length > 0 && (
+              <div className="flex flex-col gap-1 mb-2 px-2">
+                {queued.map((q) => (
+                  <div key={q.id} className={`flex items-center gap-1.5 pl-3 pr-1.5 py-1 rounded-full text-[12px] self-start max-w-full ${isDark ? 'bg-[#2A2B2D] text-[#C4C7C5]' : 'bg-[#EAEDF1] text-[#444746]'}`}>
+                    <span className="opacity-60">排队中</span>
+                    <span className="max-w-[480px] truncate">{q.displayText}</span>
+                    <button onClick={() => bridge.removeQueued(q.id)} title="撤销" className={`w-5 h-5 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#F0F4F9]'}`}>×</button>
+                  </div>
+                ))}
+              </div>
+            )}
             {/* 附件 chips */}
             {attachments.length > 0 && (
               <div className="flex flex-wrap gap-2 mb-2 px-2">

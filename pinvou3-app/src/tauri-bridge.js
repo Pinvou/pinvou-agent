@@ -50,6 +50,8 @@
     artifacts: [],
     // 多 session 并发:每个 session 是否正在生成 { session_id: bool }，会话列表显示「工作中」转圈
     sessionBusy: {},
+    // 排队式输入:当前 session 生成中时积压的待发消息 [{ id, text, displayText, attachments }]
+    queued: [],
     // 输入框待发附件 [{ id, basename, status:'parsing'|'ready'|'error', result, error }]
     attachments: [],
     // token 预算（input_tokens / maxModelLen）
@@ -92,7 +94,7 @@
   var suppressNotify = false;
   function freshBuffer() {
     return {
-      messages: [], chatItems: [], artifacts: [], busy: false,
+      messages: [], chatItems: [], artifacts: [], busy: false, queued: [],
       planSnapshot: { plan: null, todos: null },
       modeState: { mode: "yolo", plan_phase: "none", pinvou_review_enabled: false },
       thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
@@ -113,7 +115,7 @@
     if (!buf) return;
     buf.messages = state.messages; buf.chatItems = state.chatItems; buf.artifacts = state.artifacts;
     buf.busy = state.busy; buf.planSnapshot = state.planSnapshot; buf.modeState = state.modeState;
-    buf.thinking = state.thinking; buf.tokens = state.tokens;
+    buf.thinking = state.thinking; buf.tokens = state.tokens; buf.queued = state.queued;
     buf.stream = {
       currentStreamText: currentStreamText, currentStreamId: currentStreamId,
       pendingAssistantText: pendingAssistantText, pendingAssistantBlocks: pendingAssistantBlocks,
@@ -126,7 +128,7 @@
     if (!buf) return;
     state.messages = buf.messages; state.chatItems = buf.chatItems; state.artifacts = buf.artifacts;
     state.busy = buf.busy; state.planSnapshot = buf.planSnapshot; state.modeState = buf.modeState;
-    state.thinking = buf.thinking; state.tokens = buf.tokens;
+    state.thinking = buf.thinking; state.tokens = buf.tokens; state.queued = buf.queued || [];
     var s = buf.stream || {};
     currentStreamText = s.currentStreamText || ""; currentStreamId = s.currentStreamId || 0;
     pendingAssistantText = s.pendingAssistantText || ""; pendingAssistantBlocks = s.pendingAssistantBlocks || [];
@@ -602,11 +604,53 @@
   var pendingFinalReview = false;
 
   // ── Send message ─────────────────────────────────────────────────
+  // 指定 session 是否正在生成(active 看工作集 busy,后台看其 buffer)。
+  function isBusyFor(sid) {
+    return sid === state.activeSessionId ? state.busy : !!(sessionStates[sid] && sessionStates[sid].busy);
+  }
+  // 真正发送:在 sid 的工作集上加 user 气泡 + 流式占位 + busy,然后 invoke chat。
+  // active/后台通用(后台走 runSyncOnSession 临时切工作集)。
+  function doSendFor(sid, text, displayText, attachmentsPayload) {
+    runSyncOnSession(sid, function () {
+      addChatItem({ type: "user", text: displayText, time: timeStr() });
+      state.messages.push({ role: "user", content: [{ type: "text", text: displayText }] });
+      state.busy = true;
+      startThinking();
+      currentStreamText = "";
+      currentStreamId = ++itemIdSeq;
+      state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
+    });
+    notify();
+    return invoke("chat", { message: text, attachments: attachmentsPayload, sessionId: sid })
+      .catch(function (err) {
+        runSyncOnSession(sid, function () {
+          addSystemItem("⚠️ " + (err && err.toString ? err.toString() : err));
+          state.busy = false;
+          state.chatItems = state.chatItems.filter(function (item) { return item.id !== currentStreamId || item.html; });
+        });
+        notify();
+      });
+  }
+  // 本轮跑完(或被停止)后,若该 session 不忙且有排队消息 → 把【整个队列】合并成一条
+  // 一次性发出(Claude 式:排队的全部一起扔进下一轮,而不是一条条串行)。
+  function flushQueued(sid) {
+    if (isBusyFor(sid)) return;            // doFinal 等又起了新 turn → 留给那轮的 done 再 flush
+    var q = sid === state.activeSessionId ? state.queued : (sessionStates[sid] && sessionStates[sid].queued);
+    if (!q || q.length === 0) return;
+    var items = q.splice(0, q.length);     // 排空队列
+    // 发给模型用 \n\n 分隔(让它清楚是几条独立消息);气泡显示用单换行 \n(紧凑,不空行)
+    var text = items.map(function (i) { return i.text; }).filter(Boolean).join("\n\n");
+    var displayText = items.map(function (i) { return i.displayText; }).filter(Boolean).join("\n");
+    var attachments = [];
+    items.forEach(function (i) { if (i.attachments && i.attachments.length) attachments = attachments.concat(i.attachments); });
+    notify();
+    doSendFor(sid, text, displayText, attachments);
+  }
+
   async function sendMessage(text) {
     text = (text || "").trim();
     var readyAttachments = state.attachments.filter(function (a) { return a.status === "ready" && a.result; });
     if (!text && readyAttachments.length === 0) return;
-    if (state.busy) return;
     // 还有解析中的附件 → 等
     if (state.attachments.some(function (a) { return a.status === "parsing"; })) {
       addSystemItem("⚠️ 附件还在解析,请稍后再发");
@@ -625,34 +669,20 @@
     var attachmentsPayload = readyAttachments.map(function (a) { return a.result; });
     clearAttachments();
 
-    // Add user message
-    addChatItem({ type: "user", text: displayText, time: timeStr() });
-    state.messages.push({ role: "user", content: [{ type: "text", text: displayText }] });
-
-    // Start streaming
-    state.busy = true;
-    startThinking();
-    currentStreamText = "";
-    currentStreamId = ++itemIdSeq;
-    state.chatItems.push({
-      id: currentStreamId,
-      type: "assistant",
-      html: "",
-      time: timeStr(),
-      streaming: true,
-    });
-    notify();
-
-    var sendSid = state.activeSessionId;
-    try {
-      await invoke("chat", { message: text, attachments: attachmentsPayload, sessionId: sendSid });
-    } catch (err) {
-      addSystemItem("⚠️ " + (err && err.toString ? err.toString() : err));
-      state.busy = false;
-      // Remove empty streaming bubble
-      state.chatItems = state.chatItems.filter(function (item) { return item.id !== currentStreamId || item.html; });
+    // 排队式:当前 session 正在生成 → 这句进队列(不打断当前轮),本轮 chat:done 后自动发。
+    // 输入框上方显示待发 chip(可✕撤销)。停止按钮仍只硬打断当前轮。
+    if (state.busy) {
+      state.queued.push({ id: ++itemIdSeq, text: text, displayText: displayText, attachments: attachmentsPayload });
       notify();
+      return;
     }
+
+    await doSendFor(state.activeSessionId, text, displayText, attachmentsPayload);
+  }
+  // 撤销一条待发消息(点 chip 的 ✕)。
+  function removeQueued(id) {
+    state.queued = state.queued.filter(function (q) { return q.id !== id; });
+    notify();
   }
 
   async function cancelGeneration() {
@@ -840,6 +870,8 @@
       await persistMessagesFor(sid);
       await refreshHistoryList();
       notify();
+      // 排队式:本轮跑完,若该 session 不忙(没被 doFinal 又起新 turn)且有待发消息 → 自动发下一条
+      flushQueued(sid);
     })();
   });
 
@@ -1481,6 +1513,7 @@
     getState: function () { return JSON.parse(JSON.stringify(state)); },
     init: init,
     sendMessage: sendMessage,
+    removeQueued: removeQueued,
     cancelGeneration: cancelGeneration,
     createNewSession: createNewSession,
     switchToSession: switchToSession,
