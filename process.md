@@ -2,13 +2,13 @@
 
 跨阶段待办、决策、follow-up 集中地。决策细节走 git commit + `docs/`,这里只放**需要单独排期**的事。
 
-最后更新: 2026-05-25
+最后更新: 2026-05-27
 
 ---
 
 ## 当前状态
 
-- **main HEAD**: `e729d06` (阶段 J — 已 push origin `Pinvou/pinvou3` + backup `h3c-hexin/pinvou3`)
+- **main HEAD**: `d99af05` (阶段 J + J-后续 — 已 push origin `Pinvou/pinvou3` + backup `h3c-hexin/pinvou3`)
 - **fork HEAD**: `63e17d77` (`pinvou3-patches`,已同步上游 **v0.8.45 + rebrand CodeWhale**,已 push `h3c-hexin/DeepSeek-TUI`)。另有分支 `fix/grep-files-timeout`(`f2153f10`)= **PR #2146**,从 `upstream/main` 拉,不并入 patches
 - **进行中**: 无重大未并项;阶段 J 全部并入 main 并推送
 - **worktrees**: `workflow-discussion` (本会话工作,已并入 main)、`workflow-desing-01`、`pinvou-review-v2-DO-NOT-DELETE`
@@ -32,7 +32,31 @@
 
 3. **思考指示器修复**(main `e729d06`): ① 去掉冗余 busy-indicator banner(和消息流气泡重复);② **根因修复**: bridge 之前无条件 `Event::Error`→`chat:done`,而 SSE idle timeout 是 `recoverable=true` 中途错误(turn 不结束),却被当结束 → 前端 `setBusy(false)` 把"思考中"掐掉、引擎还在跑却显示空白。现按 `recoverable` 分流: 瞬态→`chat:transient_error`(只飘 ⚠️ 不动 busy),仅致命→`chat:done`。
 
-4. **上游 PR**: #2057(subagent role)、#2060(self-hosted 窗口 compaction 预算)已提,待审。CLAUDE.md 加"fork 改动按通用/专用决定是否提 PR"规则。
+4. **上游 PR**: #2057(subagent role)、#2060(self-hosted 窗口 compaction 预算)已合;#2146(grep timeout)、#2147(web_search retry)待审。CLAUDE.md 加"fork 改动按通用/专用决定是否提 PR"规则。
+
+### 阶段 J-后续 — 子agent 底座修复系列 (2026-05-26)
+
+`v0.8.45-subagent-reeval` 报告发现后端并发 OK、但子agent 仍大面积超时失败。当日密集底座修复 11 项 + prompt 工程 3 项,全部落 `pinvou3-patches` + main:
+
+**超时/默认值调参**:
+- `subagent_api_timeout` 120s→300s、`DEFAULT_SUBAGENT_ELAPSED_MAX` 300s→600s、harness heavy-scenario timeout 660s→1260s
+- `DEFAULT_MAX_STEPS` 20→12 (20 步在 600s 内跑不完,12 步强制收敛)
+- ⚠️ `max_subagents`: 当时把 app 默认从 1 改到 4。**2026-05-27 验证结论建议回退到 1**(多/并行 fan-out 不可用,见下方 lesson learned)。⚠️ subagent 行为调优由 subagent owner 负责,此处仅记录验证侧建议,不擅自改 subagent 代码
+
+**联网工具链补强**(⚠️ 当日快照,2026-05-27 已部分推翻——见下方 lesson learned + subagent 边界的最新口径):
+- `web_search` Bing parser: `normalize_bing_url` 先 `decode_html_entities`,修复 bing 恒返回 0(**保留,已提 PR #2245**)
+- `fetch_url` fake-ip 信任: ~~`proxy=["*"]`~~ **已废弃改成按 IP 段信任**(`with_trusted_fakeip_cidrs`),`proxy=["*"]` 会放行任意域名→内网 SSRF
+- ~~网络重试 retry + timeout 15s→30s~~ **已弃**(env-specific 且未验证)
+
+**子agent 交互修复**:
+- `tool_agent` model 路由: 硬编码 `"deepseek-v4-flash"` → 继承父 session `runtime.model.clone()`,避免子agent 走远程 API
+- `resolve_agent_ref` 截断容错: LLM 截断 `"agent_"` 前缀时自动补回,修复 `agent_eval` 连续 "not found"
+- harness `max_subagents` 硬编码去除: `spawn_for_scenario` 不再覆写 bridge 默认值
+
+**任务范围膨胀修复 (Scope Bloat)**:
+- 根因: 主agent 生成过于详细的 prompt("搜 A/B/C/D 然后分析写报告"),子agent 淹没系统 prompt 的步数约束,进入 8-15 步搜索循环撞 cap
+- 底座修复三处: ① `agent_open` schema description 引导主agent 给简单任务; ② `build_assignment_prompt` 强制注入 `**step budget: 12 max**` + 半程提醒; ③ `DEFAULT_MAX_STEPS` 20→12 硬性上限
+- 预期: 失败模式从"超时白跑"转为"提前返半成品",主agent 负责综合
 
 ### 阶段 I — 工作流 phase 可视化 MVP1 + P7 大文件 SSE timeout 治本 (2026-05-22)
 
@@ -107,7 +131,7 @@ bridge 已有 `ModelPreset` 占位,缺 GUI。支持远程 DeepSeek API / OpenRou
 - **Settings toggle 启用 subagent**: 当前 blocklist 默认屏蔽,用户测试需 env override。加 `UserPrefs.advanced.enable_subagent` GUI 勾选
 
 ### 🟢 低优先
-- **Multi-subagent 大研究任务** (subagent_compare_3_libs / research_topic 仍 cargo timeout): stress test 边界,生产场景用 single subagent 已够。若真要支持需要 prompt 工程减 verbosity + 用户接受 10+ 分钟等待
+- **Multi-subagent 大研究任务**: 2026-05-27 验证结论——并行 fan-out 不可用,真根因是主 agent 编排/结果提取认知失败(非工具/后端,见 lesson learned 2026-05-27)。建议替代:主 agent 直接 curl/web_search 或串行单任务 subagent。**最终 subagent 策略由 owner 决策**
 - **真 sanity 跨 session 重评**: 当前 sanity 是同 session retake,真要看 Claude judge 一致性需开新 session 重评
 - **GB10 self-hosted GitHub Actions runner**: L1 nightly 进 CI,等团队 ≥2 人或发版频率上升 (详 `docs/自动化测试方案.md` §8)
 
@@ -155,8 +179,9 @@ CLAUDE.md 规则: 通用优化/bug → PR;pinvou3 专用 → 留 fork。
 ### subagent 边界
 - ✅ **single subagent 完全可用** (context isolation use case, 验证 19s/75s 完成 5.00 分)
 - ✅ **2-3 subagent 串行可用** (one_fails 377s PASS 4.83 分, 主 agent 用 checklist_write 拆步)
-- 🔒 **multi-subagent 并发**: 工程层 `max_subagents=1` 硬锁, LLM 第 2 个 spawn 拿 "Sub-agent limit reached" 自然 fallback
-- ⚠️ **3+ long-prompt subagent + 需联网**: 当前 setup 不可用 (compare/research scenarios 5-10 分钟超 cargo cap)
+- 🔓 **后端并发本身不是瓶颈 (2026-05-26)**: 探针 N=4 first-token <1s,`agent_open×3/×4` 全成功并行,当年"多序列卡 SSE"不复现 (planB 4× batched-tokens 之功)。
+- ✅ **环境工具两个真 bug 已修 (工作区未提交)**: ① `fetch_url` fake-ip 误杀 → **按 IP 段信任 fake-ip 占位段**(`network_policy is_trusted_fakeip_addr` + bridge `with_trusted_fakeip_cidrs(["198.18.0.0/15"])`;早期 `proxy=["*"]` 会放行任意域名→内网,已废弃改 IP 段,真实私网/元数据仍拦);② `web_search` bing 恒返回 0(`normalize_bing_url` 先 `decode_html_entities`,**已提 PR #2245**)。**注:2026-05-27 重测证明这俩跟多 agent 研究失败无关**——见下方 lesson learned。
+- ❌ **多 subagent 并行研究 fan-out 不可用 (2026-05-27 验证)**: 真根因不是工具/后端,是主 agent **编排认知 + 结果提取协议**——看不懂 completed 子 agent 结果在 eval 返回里 → 反复重 spawn 撞超时。建议 app `max_subagents` 回退 1 物理堵死 fan-out(**待 subagent owner 决策**)。详见 lesson learned 2026-05-27。
 
 ### LLM 行为不稳 (vLLM 抽奖)
 - `chinese_idiomatic` 偶发 detour 写文件 (3/5 次出现)
@@ -181,7 +206,25 @@ CLAUDE.md 规则: 通用优化/bug → PR;pinvou3 专用 → 留 fork。
 
 ### 🆕 / 🔁 待处理
 
-暂无。新离群点出现时按 `docs/L1-judge-rubric.md` §3 Step 5 流程 append。
+### 2026-05-26 · run 1779779654-r2 · subagent_research_topic · 准确性 1/5
+- **问题**: final text 只有执行状态说明,没有给出 RAG 2025-2026 综述正文。
+- **改进方向**: subagent 全失败时应更早降级,至少在 1-2 个失败后先产出基于现有知识的结构化综述。
+- **状态**: 🆕 待处理
+
+### 2026-05-26 · run 1779779654-r2 · subagent_research_topic · 完整性 1/5
+- **问题**: prompt 要求覆盖学术新方向、工业落地、开源工具、踩坑经验四类,final text 未覆盖任何一类。
+- **改进方向**: 降级输出也必须保留四个必答栏目,不能只输出执行状态。
+- **状态**: 🆕 待处理
+
+### 2026-05-26 · run 1779779654-r2 · subagent_research_topic · 简洁性 2/5
+- **问题**: 输出主要是“还在跑/让我再等/失败后换思路”的过程复述,没有转化为结果。
+- **改进方向**: transcript 内可保留过程,final answer 应只给结论、降级说明和下一步,避免“让我...”流水账。
+- **状态**: 🆕 待处理
+
+### 2026-05-26 · run 1779779654-r2 · subagent_research_topic · 工具使用 2/5
+- **问题**: 用 `exec_shell sleep` 轮询 4 次,重复 `agent_eval`,且在 prompt 明确禁止主 agent 直接 `web_search` 后仍直接调用 5 次。
+- **改进方向**: 禁止用 `exec_shell sleep` 轮询 subagent;优先 `agent_eval block=true` 或有界短轮询,并遵守 scenario 约束。
+- **状态**: 🆕 待处理
 
 ### ✅ 已结案 (简表)
 
@@ -224,6 +267,43 @@ CLAUDE.md 规则: 通用优化/bug → PR;pinvou3 专用 → 留 fork。
 - 工具能力 + reminder 协同设计: append_file 不存在时 reminder"必须拆"是空话; 工具 + 规则一起出, LLM 才能落地
 
 **配对结论**: 05-18 lesson 没错(单 scenario 验证不可信 + 复述本性改不动), 但**不要因此放弃整个 prompt 工程路径**。改 LLM 行为前先问: 我的规则是"抽象意图"还是"量化具体边界"? 形态对了 ROI 完全不同。
+
+### 🧪 Lesson learned 2026-05-26: 弱模型下多 subagent 并行不是好设计
+
+本轮测试(`run 1779799386`) 完整验证了多 subagent 并行在 Qwen3.6-35B-A3B-FP8 @ 本地 vLLM 上的表现:
+
+| 模式 | 场景 | 耗时 | 管理开销 | 结果 |
+|------|------|------|---------|------|
+| 单 subagent | `single_simple` | **23.7s** | open×1, eval×1 | ✅ 完美 |
+| 多 subagent 并行 | `compare_3_libs` | **785.9s** | open×4, eval×12, 重试×1 | ⚠️ 能成但极重 |
+| 多 subagent 并行 | `research_topic` | **933.2s** | open×5, eval×9, 失败×2, 遗忘×1 | ❌ fallback |
+| 多 subagent 并行 | `one_fails` | **293.9s** | open×3, eval×6 | ⚠️ 1个超时 |
+
+**核心判断**: 多 subagent 并行的收益("分工+并发提速")被管理成本完全吞掉:
+1. **主 agent 分活质量差**: Qwen3.6 拆分任务能力有限,`research_topic` 把15+工具塞给1个子 agent → 12步不够 → failed
+2. **调度开销巨大**: 每步40-70s,`compare_3_libs` 轮询12次 eval 消耗大量时间
+3. **注意力分散**: 处理失败重试时遗忘其他子 agent(`research_pitfalls` 从未被检查)
+4. **失败处理复杂**: 子 agent failed 后主 agent 需决策重试/降级/fallback,代码路径爆炸
+5. **并行不省钱**: 3-4个并发但总时间仍785-933s,因为主 agent 要等最慢的那个
+
+**设计决策**:
+- ✅ **保留**: 单 subagent 场景(context isolation、简单委托)——`single_simple` 23.7s 证明干净可用
+- ❌ **废弃**: "主 agent 分活 + 多 subagent 并行研究"模式——弱模型下 ROI 为负
+- 🔵 **替代**: 复杂研究类任务改为"主 agent 直接工具调用"或"串行单任务子 agent"(1个子 agent 做1件事,串行派发)
+
+**`compare_3_libs` 虽成功但不应视为模式可行**: 3/3 完成是靠12次 eval + 1次重试 + 785s 堆出来的,管理复杂度远超收益。若主 agent 自己做(web_search×3 + fetch_url×3 + 综合),预计 200-400s 且更可控。
+
+### 🧪 Lesson learned 2026-05-27: 并行 fan-out 真根因是「编排认知」,非工具/后端
+
+环境工具修好后重跑:`compare_3_libs` 427s PASS、`research_topic` 1260s FAILED——**两场景全程 0 次 web_search/fetch_url**,证明 05-26「环境工具坏」归因错了。真根因 = 主 agent **编排认知 + 结果提取协议**:看不懂 completed 子 agent 结果就在 eval 返回里 → 反复重 spawn(research 开了 9 个)永不收敛撞超时。工具修不好它。
+
+**结论**: 并行 fan-out 在本地弱模型不可用,只留单 subagent(context isolation)+ 串行单任务。**subagent 行为调优交 owner**;本轮验证侧只保留必要改动,其余 fan-out 调参(`max_steps=12`/`elapsed=600`/budget prompt)全部弃回 committed。
+
+**保留的改动(已落工作区,待提交)**:
+- **通用 bug / 环境**(与 agent 数无关): ① `web_search` bing decode(已提 **PR #2245**); ② **fetch_url fake-ip SSRF-safe 重设计**——按 **IP 段**信任 fake-ip 占位段(`network_policy` 加 `with_trusted_fakeip_cidrs`/`is_trusted_fakeip_addr` + `fetch_url validate_dns_resolved_ip` + bridge `with_trusted_fakeip_cidrs(["198.18.0.0/15"])`),只放行 198.18.x 占位、真实私网/元数据仍拦。**早期 `proxy=["*"]` + `*` 通配已废弃**(会放行任意域名→内网,SSRF)。
+- **3 个单 subagent 必需**: `tool_agent` model 路由(本地没 `deepseek-v4-flash` 否则 404)、bridge `subagent_api_timeout=300`(本地慢推理 120s 误杀单步)、`resolve_agent_ref` 截断前缀容错
+- **已弃**: `fetch_url` 30s+retry(env-specific 且未验证)、所有 fan-out 调参(`max_steps=12`/`elapsed=600`/budget prompt)
+- ⚠️ **给 owner 的提醒**: 单 subagent 长任务被 `max_steps`+`elapsed` 双重掐(本地 40-70s/步下 elapsed 600s 仅 ~10 步,光抬 max_steps 无效需同抬 elapsed)。已弃回 committed,owner 调优时重新放宽。
 
 ---
 

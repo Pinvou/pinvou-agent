@@ -224,6 +224,7 @@ impl Pinvou3Bridge {
             strict_tool_mode: _,
             translation_enabled: _,
             vision_config: _,
+            subagent_api_timeout: _, // pinvou3 自定义 (见下),本地慢推理 120s 不够
             // —— 上游 default 透传（命名后放进新结构体）——
             features,
             compaction,
@@ -232,7 +233,7 @@ impl Pinvou3Bridge {
             todos,
             plan_state,
             max_spawn_depth,
-            network_policy,
+            network_policy: _, // pinvou3 显式构造 (见下),不透传 default(None)
             lsp_config,
             runtime_services,
             subagent_model_overrides,
@@ -241,7 +242,6 @@ impl Pinvou3Bridge {
             snapshots_max_workspace_bytes,
             search_provider,
             search_api_key,
-            subagent_api_timeout,
         } = EngineConfig::default();
 
         EngineConfig {
@@ -271,6 +271,10 @@ impl Pinvou3Bridge {
             translation_enabled: false,
             // Qwen3.6-35B-A3B-FP8 不是 vision 模型
             vision_config: None,
+            // [pinvou3-fork] 上游默认 120s 是为 DeepSeek 云端 API 设计。
+            // 本地 Qwen3.6 vLLM 慢推理下单 step 30-90s 很常见,120s 频繁误杀子 agent。
+            // 300s 与 elapsed cap 对齐,给复杂研究类任务留出完整单步窗口。
+            subagent_api_timeout: std::time::Duration::from_secs(300),
             // 上游 default 透传
             features,
             // compaction model 默认 deepseek-v4-pro,本地 vLLM 没这个模型,
@@ -311,7 +315,28 @@ impl Pinvou3Bridge {
             todos,
             plan_state,
             max_spawn_depth,
-            network_policy,
+            // pinvou3 产品要跑在用户自带的 clash/透明代理 fake-ip(TUN) 环境:所有
+            // 域名 DNS 解析到 fake-ip 占位段(clash 默认 198.18.0.0/15,IETF benchmark
+            // 保留段、无真实服务),底座 fetch_url 自解析后被 SSRF 防护当 restricted 误杀。
+            // 修法:按 **IP 段**信任 fake-ip 占位段(`with_trusted_fakeip_cidrs`),而非
+            // 按 host 信任(早期 `proxy=["*"]` 会让任意域名解析到真实私网/元数据也放行 →
+            // SSRF)。改成 IP 段后:198.18.x 占位放行;`*.lan→192.168.x`、`→169.254.169.254`
+            // (云元数据)、IP 字面量仍被 is_restricted_ip 拦。default=Allow 仅指不按 host
+            // 弹窗确认(本地可信助手),与 SSRF 兜底正交。
+            // 自定义 fake-ip-range 的用户暂未暴露配置(默认段覆盖绝大多数;真有人撞再加)。
+            network_policy: Some(
+                deepseek_tui::network_policy::NetworkPolicyDecider::new(
+                    deepseek_tui::network_policy::NetworkPolicy {
+                        default: deepseek_tui::network_policy::DecisionToml::Allow,
+                        allow: Vec::new(),
+                        deny: Vec::new(),
+                        proxy: Vec::new(),
+                        audit: false,
+                    },
+                    None,
+                )
+                .with_trusted_fakeip_cidrs(&["198.18.0.0/15"]),
+            ),
             lsp_config,
             runtime_services,
             subagent_model_overrides,
@@ -320,7 +345,6 @@ impl Pinvou3Bridge {
             snapshots_max_workspace_bytes,
             search_provider,
             search_api_key,
-            subagent_api_timeout,
         }
     }
 
@@ -564,6 +588,12 @@ mod tests {
             "max_subagents 必须 1：工程层锁定 single subagent at a time \
              (multi-subagent 并发在本地单 vLLM + 弱模型下不可控)。\
              改这个值要先评估 multi-subagent 测试场景"
+        );
+        assert_eq!(
+            cfg.subagent_api_timeout.as_secs(), 300,
+            "subagent_api_timeout 必须 300s。上游默认 120s 是为 DeepSeek 云端 API 设计, \
+             本地 Qwen3.6 vLLM 慢推理下单 step 30-90s 很常见,120s 频繁误杀子 agent。 \
+             300s 与 elapsed cap 对齐,给复杂研究类任务留出完整单步窗口。"
         );
     }
 
