@@ -131,6 +131,7 @@ pub fn run() {
             commands::get_active_session,
             commands::save_session_messages,
             commands::save_session_artifacts,
+            commands::list_workspace_files,
             commands::cancel_generation,
             commands::edit_last_turn,
             commands::read_artifact_text,

@@ -283,6 +283,7 @@
       await syncModeState();
       await syncSessionSkill();
       notify();
+      reconcileArtifacts(id); // 对账磁盘产物(fire-and-forget)
       return;
     }
     try {
@@ -301,6 +302,7 @@
       await syncModeState();
       await syncSessionSkill();
       notify();
+      reconcileArtifacts(id); // 对账磁盘产物(修重启/跟踪遗漏导致的面板缺文件)
     } catch (e) {
       addSystemItem("⚠️ 加载对话失败: " + e);
     }
@@ -514,6 +516,23 @@
     var before = state.artifacts.length;
     state.artifacts = state.artifacts.filter(function (a) { return a.path !== path; });
     if (state.artifacts.length !== before) notify();
+  }
+  // 切换 session 时对账:扫 workspace 磁盘,把实际存在、但跟踪列表里没有的文件补进来。
+  // 修「文件已生成在盘上、却因 app 中途重启/跟踪遗漏而不在产物面板」(以磁盘为准)。
+  async function reconcileArtifacts(sid) {
+    if (!sid) return;
+    try {
+      var files = await invoke("list_workspace_files", { sessionId: sid });
+      if (sid !== state.activeSessionId) return; // 已切走,放弃(避免写错 session)
+      var have = {};
+      state.artifacts.forEach(function (a) { have[a.path] = true; });
+      var added = false;
+      files.forEach(function (p) { if (!have[p]) { state.artifacts.push({ path: p, basename: basename(p) }); added = true; } });
+      if (added) {
+        notify();
+        try { await invoke("save_session_artifacts", { id: sid, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch (_) {}
+      }
+    } catch (e) { /* workspace 不存在(新 session)等,忽略 */ }
   }
   // write_file / append_file 的 args 里提取产物路径
   function extractArtifactPath(args) {

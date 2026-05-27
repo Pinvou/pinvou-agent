@@ -321,6 +321,38 @@ pub async fn save_session_artifacts(
         .map_err(|e| format!("save_session_artifacts({id}): {e:?}"))
 }
 
+/// 扫描 session workspace 目录,返回实际存在的产物文件绝对路径(过滤隐藏/临时文件)。
+/// 前端切换 session 时用它对账 —— 让产物面板以**磁盘真相**为准,不受跟踪遗漏 /
+/// app 中途重启(内存跟踪丢失)影响。过滤规则与 file_watcher::should_skip 对齐。
+#[tauri::command]
+pub async fn list_workspace_files(session_id: String) -> Result<Vec<String>, String> {
+    let dir = crate::bridge::paths::session_workspace_dir(&session_id);
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if name.is_empty()
+                || name.starts_with('.')
+                || name.starts_with("~$")
+                || name.ends_with('~')
+                || name.ends_with(".swp")
+                || name.ends_with(".swo")
+                || name.ends_with(".tmp")
+                || name.ends_with(".bak")
+            {
+                continue;
+            }
+            out.push(path.to_string_lossy().to_string());
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
 // ===================== 阶段 C: 取消生成 + 编辑/重发 =====================
 
 /// 取消当前生成（生成中按⏹️停止按钮）。
