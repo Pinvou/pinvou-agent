@@ -3,9 +3,8 @@
 //!
 //! 不 spawn engine(避免连 vLLM/起 turn loop),只复刻 prompt 拼装环节:
 //!   1. bridge.boot()                                  -> ensure_dirs + load prefs
-//!   2. bridge.write_session_instructions(sid)         -> 写 sessions/<sid>/instructions.md
-//!   3. bridge.build_engine_config_for_session(sid)    -> EngineConfig (instructions/workspace/...)
-//!   4. prompts::system_prompt_for_mode_with_context_skills_session_and_approval(...)
+//!   2. bridge.build_engine_config_for_session(sid)    -> EngineConfig(含 inline instructions)
+//!   3. prompts::system_prompt_for_mode_with_context_skills_session_and_approval(...)
 //!
 //! 跑法:
 //!   cargo run --bin dump_system_prompt \
@@ -27,7 +26,6 @@ fn main() -> Result<()> {
     let sid = "__dump_system_prompt__";
 
     let bridge = Pinvou3Bridge::boot()?;
-    bridge.write_session_instructions(sid)?;
     let cfg = bridge.build_engine_config_for_session(sid);
 
     // 复刻 Engine::new (core/engine.rs:454-475) 的入参装配

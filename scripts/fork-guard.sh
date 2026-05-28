@@ -56,6 +56,9 @@ fingerprints=(
   "    |phase tracking 反指引(不要声明不适用)|DeepSeek-TUI/crates/tui/src/skills/mod.rs|Don't announce that a phased skill is"
   "    |PROJECT_CONTEXT_FILES 砍到 1 条     |DeepSeek-TUI/crates/tui/src/project_context.rs|PROJECT_CONTEXT_FILES: &[&str] = &[\".pinvou3/workspace_context.md\"]"
   "    |GLOBAL_PATHS 砍空                   |DeepSeek-TUI/crates/tui/src/project_context.rs|const GLOBAL_PATHS: &[&[&str]] = &[]"
+  "    |C 方案 InstructionSource enum       |DeepSeek-TUI/crates/tui/src/prompts.rs|pub enum InstructionSource {"
+  "    |C 方案 EngineConfig.instructions    |DeepSeek-TUI/crates/tui/src/core/engine.rs|pub instructions: Vec<crate::prompts::InstructionSource>"
+  "    |C 方案 pinvou3 注入 Inline          |pinvou3-app/src-tauri/src/bridge/mod.rs|fn session_instructions(&self, session_id: &str) -> Vec<InstructionSource>"
 )
 for fp in "${fingerprints[@]}"; do
   IFS='|' read -r id desc file pat <<<"$fp"

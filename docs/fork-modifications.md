@@ -235,6 +235,23 @@
 | 上游 PR | ⚠️ #40(移位)通用价值适合 PR;#39(删字段)pinvou3 专用 |
 | 测试 | `render_environment_block_lists_supplied_locale_and_workspace`(改造为反向断言确认 lang/codewhale_version 不存在) |
 
+### 组 7 — InstructionSource enum (C 方案 P-no-disk) ⚠️
+
+> 配套去 codewhale 品牌后的最后一步:消除 `~/.pinvou3/sessions/<sid>/instructions.md`
+> disk 文件。pinvou3 instructions 之前必须先渲染写盘再传 `Vec<PathBuf>` 给底座 —— disk
+> 是底座 `EngineConfig.instructions: Vec<PathBuf>` API 设计假设的副作用。改成 enum
+> 后 pinvou3 用 `Inline` 直接传内存字符串,底座 `render_instructions_block` 区分两种
+> variant(File 走 disk 兼容上游,Inline 走内存)。
+
+| 项 | 内容 |
+|---|---|
+| 文件 | `prompts.rs` (enum 定义 + render 改造) + `core/engine.rs` (EngineConfig 字段) + 7 处 CLI/TUI/runtime call sites (`.into()` 升级) |
+| 改动 | (a) `prompts.rs` 新增 `pub enum InstructionSource { File(PathBuf), Inline { name, content } }` + `From<PathBuf>` impl<br>(b) `EngineConfig.instructions: Vec<PathBuf>` → `Vec<InstructionSource>`<br>(c) `render_instructions_block` 区分两 variant: File `std::fs::read_to_string`, Inline 直接用 content,共享 truncate/skip-empty 逻辑<br>(d) 上游 CLI/TUI/runtime 路径 7 处 call sites 加 `.into_iter().map(Into::into).collect()` 升级 |
+| 配套 pinvou3 | `bridge::session_instructions(sid)` 返回 `Vec<Inline>`(rendered INSTRUCTIONS_MD with placeholder substituted);`bridge::instructions()`(legacy headless 路径)同样改 Inline;**删** `write_session_instructions` / `session_instruction_paths`;**删** engine.rs spawn_for_session 里的写盘调用;sync_session 改 `system_prompt: None`(让底座从 EngineConfig.instructions 自动重拼,不再被 rehydrate disk 覆盖);boot 时一次性清 `~/.pinvou3/sessions/*/instructions.md` legacy 残留 |
+| 收益 | (1) disk 上不再有 `<sid>/instructions.md` 用户能看到 / 修改无效的文件;(2) multi-engine 并发不再依赖 per-session disk file 避免 rehydrate race,内存对象天然隔离;(3) sudo permission 改动后用户重启会话生效(原 disk 热刷路径走掉,接受) |
+| 上游 PR | ✅ 通用 API 改进(任何 embedder 想注入运行时计算的 instructions 都受益,不只 pinvou3) |
+| 测试 | 底座 5 个 `render_instructions_block_*` 测试改用 `.into()` 走 File variant;新加 `forkguard_render_instructions_block_handles_inline_source`(覆盖 Inline empty / oversize / mixed File+Inline 顺序);pinvou3 `engine_config_for_session_paths_are_isolated` 改成断言 Inline name + content 含 session_id;`workspace_orientation_guidance_present` 因 Tier 5 精简 fail 用 `#[ignore]` 标记 |
+
 ### 组 6 — Skills 扫描路径精简 ❌ (原 #41)
 
 | 项 | 内容 |

@@ -25,6 +25,7 @@ use deepseek_tui::config::{Config as DtConfig, ProvidersConfig};
 use deepseek_tui::core::engine::EngineConfig;
 use deepseek_tui::core::ops::Op;
 use deepseek_tui::hooks::{Hook, HookEvent, HooksConfig};
+use deepseek_tui::prompts::InstructionSource;
 use deepseek_tui::tui::app::AppMode;
 use deepseek_tui::tui::approval::ApprovalMode;
 
@@ -119,7 +120,32 @@ impl Pinvou3Bridge {
         if let Err(e) = this.write_pinvou3_workspace_context_if_needed() {
             eprintln!("[pinvou3-app] write pinvou3 workspace context failed: {e}");
         }
+        // C 方案(P-no-disk): 清理 legacy `~/.pinvou3/sessions/<sid>/instructions.md`
+        // 残留。新版 pinvou3 用 `InstructionSource::Inline` 注入,这些文件不再被读;
+        // 留着只是用户 $HOME 里看着像配置文件实际作废。清掉减少混淆。
+        this.cleanup_legacy_session_instructions();
         Ok(this)
+    }
+
+    /// 扫 `~/.pinvou3/sessions/*/instructions.md` 全删 — C 方案后这些文件没用。
+    /// 不动 sessions 目录里其它文件(messages 历史/artifacts/workspace 等仍要保留)。
+    fn cleanup_legacy_session_instructions(&self) {
+        let Ok(entries) = std::fs::read_dir(paths::sessions_root()) else {
+            return;
+        };
+        let mut removed = 0usize;
+        for entry in entries.flatten() {
+            let path = entry.path().join("instructions.md");
+            if path.is_file() && std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+        if removed > 0 {
+            eprintln!(
+                "[pinvou3-app] cleaned up {removed} legacy session instructions.md files \
+                 (C-fork P-no-disk: instructions now Inline in memory)"
+            );
+        }
     }
 
     /// pinvou3 精简版 `project_context`,挡住底座 `auto_generate_context` 对 $HOME 的
@@ -165,8 +191,7 @@ impl Pinvou3Bridge {
     }
 
     /// 用 INSTRUCTIONS_MD 模板，把 `{{PINVOU3_WORKSPACE}}` 替换成指定 session 的
-    /// 独立 workspace 目录。bridge 在切换 session 时调用,通过
-    /// `Op::SyncSession { system_prompt }` 让 engine 拿到 session 专属的产出引导。
+    /// 独立 workspace 目录,返回渲染后的字符串(供 [`session_instructions`] 用)。
     pub fn build_session_system_prompt(&self, session_id: &str) -> String {
         let ws = paths::session_workspace_dir(session_id);
         // 同时确保目录存在,AI 写 write_file 时不会因为目录不存在而失败
@@ -184,49 +209,26 @@ impl Pinvou3Bridge {
         paths::session_workspace_dir(session_id)
     }
 
-    /// 切换 session 前调用：**重写 disk 上的 `bundle/instructions.md`** 为
-    /// session-specific workspace 路径。
+    /// session 专属 `EngineConfig.instructions` 注入:
+    ///   1. pinvou3 自家 INSTRUCTIONS_MD 渲染版(走 `InstructionSource::Inline`,
+    ///      不写 disk — 见 C 方案 P-no-disk 决策);
+    ///   2. 用户自定义 `~/.codewhale/instructions.md`(可选,仍走 `File`)。
     ///
-    /// 为什么必须重写 disk:engine 的 `rehydrate_latest_canonical_state()` 会从
-    /// `EngineConfig.instructions` (disk 文件路径) 重读并覆盖 session.system_prompt,
-    /// 把我们通过 Op::SyncSession 传的 system_prompt 顶掉。要让 AI 看到 session-
-    /// specific PINVOU3_WORKSPACE 必须改 disk 内容本身。
-    ///
-    /// pinvou3 是单用户单进程,disk 文件 race 不是问题。
-    ///
-    /// ⚠️ **已废弃(多引擎并发)**:写全局共享的 `bundle/instructions.md`,多个 engine
-    /// 同时 rehydrate 会读到对方刚写的内容 → system_prompt 串台。EnginePool 路径改用
-    /// [`write_session_instructions`] 写 session 专属文件。保留仅为兼容旧单引擎路径。
-    #[deprecated(note = "多引擎并发改用 write_session_instructions(session 专属文件)")]
-    #[allow(deprecated)]
-    pub fn rewrite_instructions_for_session(&self, session_id: &str) -> std::io::Result<()> {
+    /// 之前版本写 `~/.pinvou3/sessions/<sid>/instructions.md` disk 文件然后传
+    /// `Vec<PathBuf>` 给底座 — 改用 `InstructionSource::Inline` 后:
+    ///  • disk 上没了多余的 instructions.md 给用户造成混淆
+    ///  • 多引擎并发不再依赖 per-session 文件避免 race(内存对象天然隔离)
+    ///  • rehydrate 不再从 disk 重读,内容跟 EngineConfig 一起在内存里活
+    pub fn session_instructions(&self, session_id: &str) -> Vec<InstructionSource> {
+        let mut out: Vec<InstructionSource> = Vec::new();
         let rendered = self.build_session_system_prompt(session_id);
-        std::fs::write(&self.bundle.instructions_md, rendered)
-    }
-
-    /// 把 [`build_session_system_prompt`] 渲染结果写到 **session 专属** instructions
-    /// 文件(`~/.pinvou3/sessions/<id>/instructions.md`)。每个 engine 的
-    /// `EngineConfig.instructions` 指向各自这个文件,engine rehydrate 从 disk 重读时
-    /// 互不干扰 —— 多引擎并发的核心隔离。spawn engine 前必须先调一次。
-    ///
-    /// [`build_session_system_prompt`]: Self::build_session_system_prompt
-    pub fn write_session_instructions(&self, session_id: &str) -> std::io::Result<()> {
-        let rendered = self.build_session_system_prompt(session_id);
-        let path = paths::session_instructions_path(session_id);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, rendered)
-    }
-
-    /// session 专属的 system-prompt 注入路径数组:先 session 专属 instructions
-    /// (已渲染,含本 session workspace),再 user 自定义 instructions(可选)。
-    /// **不含**全局 `bundle/instructions.md`(避免多引擎并发共享写冲突)。
-    pub fn session_instruction_paths(&self, session_id: &str) -> Vec<PathBuf> {
-        let mut out = vec![paths::session_instructions_path(session_id)];
+        out.push(InstructionSource::Inline {
+            name: format!("pinvou3:sessions/{session_id}/instructions"),
+            content: rendered,
+        });
         let user = paths::user_instructions();
         if user.is_file() {
-            out.push(user);
+            out.push(InstructionSource::File(user));
         }
         out
     }
@@ -257,16 +259,17 @@ impl Pinvou3Bridge {
         self.prefs.advanced.max_output_tokens.unwrap_or(65_536)
     }
 
-    /// system prompt 注入路径数组：bundle 必有，user 可选。
-    /// 顺序：先 bundle，再 user（user 在后，覆盖效应由上游 prompt 拼接决定）。
-    pub fn instruction_paths(&self) -> Vec<PathBuf> {
-        let mut out = Vec::new();
-        if self.bundle.instructions_md.is_file() {
-            out.push(self.bundle.instructions_md.clone());
-        }
+    /// legacy 单引擎路径(headless harness 用):走 INSTRUCTIONS_MD inline + 用户自定义。
+    /// 跟 [`session_instructions`] 区别仅在不带 session_id —— 直接用 INSTRUCTIONS_MD 原文
+    /// (不替换 `{{PINVOU3_WORKSPACE}}`)。
+    pub fn instructions(&self) -> Vec<InstructionSource> {
+        let mut out: Vec<InstructionSource> = vec![InstructionSource::Inline {
+            name: "pinvou3:bundle/instructions".to_string(),
+            content: INSTRUCTIONS_MD.to_string(),
+        }];
         let user = paths::user_instructions();
         if user.is_file() {
-            out.push(user);
+            out.push(InstructionSource::File(user));
         }
         out
     }
@@ -332,7 +335,7 @@ impl Pinvou3Bridge {
             notes_path: paths::notes_path(),
             mcp_config_path: paths::mcp_config_path(),
             skills_dir: self.bundle.skills_dir.clone(),
-            instructions: self.instruction_paths(),
+            instructions: self.instructions(),
             project_context_pack_enabled: false,
             max_steps: self.prefs.advanced.max_steps.unwrap_or(100),
             // 2026-05-19: 工程层硬锁 single subagent at a time。
@@ -451,19 +454,15 @@ impl Pinvou3Bridge {
 
     /// 构造 **session 专属** [`EngineConfig`]:在 [`build_engine_config`] 基础上把
     /// `workspace` 换成该 session 的独立工作目录、`instructions` 换成该 session 的
-    /// 专属 instructions 文件。EnginePool 给每个 session spawn engine 时用这个,
-    /// 让 engine 从 spawn 起就绑定自己的 workspace + prompt,不再依赖 `Op::SyncSession`
-    /// 动态切换、也不碰全局 `bundle/instructions.md`。
-    ///
-    /// 调用方必须先 [`write_session_instructions`] 把渲染好的 prompt 写到 disk,
-    /// 否则 engine rehydrate 读到空/旧文件。
+    /// inline 渲染版(`InstructionSource::Inline`,不走 disk)。EnginePool 给每个
+    /// session spawn engine 时用这个,让 engine 从 spawn 起就绑定自己的 workspace +
+    /// prompt,内存隔离不依赖 disk。
     ///
     /// [`build_engine_config`]: Self::build_engine_config
-    /// [`write_session_instructions`]: Self::write_session_instructions
     pub fn build_engine_config_for_session(&self, session_id: &str) -> EngineConfig {
         let mut cfg = self.build_engine_config();
         cfg.workspace = self.session_workspace(session_id);
-        cfg.instructions = self.session_instruction_paths(session_id);
+        cfg.instructions = self.session_instructions(session_id);
         cfg
     }
 
@@ -949,9 +948,9 @@ mod tests {
         }
     }
 
-    /// 多引擎并发隔离基石:两个不同 session 的 EngineConfig 必须 workspace +
-    /// instructions 路径都互不相同,且各自落在自己 session 目录下。否则两个 engine
-    /// 会写同一份产物 / 读同一份 instructions → system_prompt 串台。
+    /// 多引擎并发隔离基石(C 方案 P-no-disk 版): 两个不同 session 的 EngineConfig
+    /// 必须 workspace 不同 + instructions 内容含各自 session_id(走 `InstructionSource::
+    /// Inline`,内存对象天然隔离,不再依赖 disk 文件)。
     #[test]
     fn engine_config_for_session_paths_are_isolated() {
         let bridge = fixture_bridge();
@@ -966,23 +965,27 @@ mod tests {
         assert!(cfg_a.workspace.to_string_lossy().contains(a));
         assert!(cfg_b.workspace.to_string_lossy().contains(b));
 
-        // instructions 第一项是 session 专属文件,必须含各自 session_id 且不同。
-        let instr_a = &cfg_a.instructions[0];
-        let instr_b = &cfg_b.instructions[0];
-        assert_ne!(
-            instr_a, instr_b,
-            "两 session 的 instructions 文件必须不同(否则 rehydrate 串台)"
-        );
-        assert!(instr_a.to_string_lossy().contains(a));
-        assert!(instr_b.to_string_lossy().contains(b));
-        // 绝不能引用全局共享的 bundle/instructions.md。
+        // instructions 第一项是 session 专属 Inline source,name 含各自 session_id。
+        let extract = |s: &InstructionSource| -> (String, String) {
+            match s {
+                InstructionSource::Inline { name, content } => (name.clone(), content.clone()),
+                InstructionSource::File(p) => (p.display().to_string(), String::new()),
+            }
+        };
+        let (name_a, content_a) = extract(&cfg_a.instructions[0]);
+        let (name_b, content_b) = extract(&cfg_b.instructions[0]);
         assert!(
-            !cfg_a
-                .instructions
-                .iter()
-                .any(|p| p == &bridge.bundle.instructions_md),
-            "session 专属 config 不得引用全局 bundle/instructions.md(并发写冲突源)"
+            matches!(cfg_a.instructions[0], InstructionSource::Inline { .. }),
+            "session instructions 第一项必须是 Inline(C 方案 P-no-disk)"
         );
+        assert_ne!(name_a, name_b, "两 session 的 inline name 必须不同");
+        assert!(name_a.contains(a) && name_b.contains(b));
+        // 渲染后的内容含各自 session-specific workspace 路径(占位符替换生效)。
+        assert!(
+            content_a.contains(a),
+            "session A 的 inline content 必须含 session_id"
+        );
+        assert!(content_b.contains(b));
     }
 
     /// P0-2 fork-guard: pinvou3 boot 时必须给 `workspace=$HOME` 写一份

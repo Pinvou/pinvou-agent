@@ -59,8 +59,9 @@ impl AppEngine {
         bridge: Pinvou3Bridge,
         session_id: &str,
     ) -> Result<(Self, tauri::async_runtime::JoinHandle<()>)> {
-        // 写 session 专属 instructions(engine rehydrate 从 disk 读这个文件)。
-        bridge.write_session_instructions(session_id)?;
+        // C 方案(P-no-disk): EngineConfig.instructions 现在走
+        // `InstructionSource::Inline`,内容直接在内存里 — 不再写 disk 文件,
+        // 多 engine 并发也不再依赖 per-session 文件避免 race。
         let engine_config = bridge.build_engine_config_for_session(session_id);
         let dt_config = bridge.build_dt_config();
 
@@ -157,28 +158,19 @@ impl AppEngine {
     }
 
     /// 切换 engine 内部 session 状态：替换 messages + 切到 session-specific
-    /// workspace + 重拼 system_prompt (把 PINVOU3_WORKSPACE 占位符换成
-    /// 该 session 的独立 workspace 目录)。
+    /// workspace。
     ///
-    /// 实施动机:
-    /// - 不切 engine.messages → 上下文跨 session 串台
-    /// - 不切 workspace → AI 默认产物目录全局共享,多 session 写同名文件冲突
-    /// - 不重拼 system_prompt → AI 看到的 PINVOU3_WORKSPACE 路径跟实际 workspace 不一致
+    /// C 方案(P-no-disk): 不再传 `system_prompt` — `EngineConfig.instructions`
+    /// 是内存 inline,底座 refresh_system_prompt 自动从中重拼 + 完整替换
+    /// `{{PINVOU3_WORKSPACE}}` 占位符。原先 sync 时重写 disk + 传 SystemPrompt::Text
+    /// 都是 disk-API-限制的副作用,现在彻底走掉。
     pub async fn sync_session(&self, session_id: String, messages: Vec<Message>) -> Result<()> {
         let workspace = self.bridge.session_workspace(&session_id);
-        // 重写 **session 专属** instructions 文件为 session-specific 路径。
-        // engine 的 rehydrate 会从 disk 重读覆盖 session.system_prompt,所以必须改
-        // disk 才能让 AI 看到正确的 PINVOU3_WORKSPACE。多引擎并发下每个 session 写
-        // 自己的文件,不再共享全局 bundle/instructions.md(否则互相覆写串台)。
-        if let Err(e) = self.bridge.write_session_instructions(&session_id) {
-            eprintln!("[sync_session] write session instructions failed: {e}");
-        }
-        let prompt_text = self.bridge.build_session_system_prompt(&session_id);
         self.handle
             .send(Op::SyncSession {
                 session_id: Some(session_id),
                 messages,
-                system_prompt: Some(SystemPrompt::Text(prompt_text)),
+                system_prompt: None,
                 system_prompt_override: false,
                 model: self.bridge.model(),
                 workspace,
@@ -188,13 +180,17 @@ impl AppEngine {
     }
 }
 
-fn format_instructions(paths: &[PathBuf]) -> String {
-    if paths.is_empty() {
+fn format_instructions(sources: &[deepseek_tui::prompts::InstructionSource]) -> String {
+    use deepseek_tui::prompts::InstructionSource;
+    if sources.is_empty() {
         "none".to_string()
     } else {
-        paths
+        sources
             .iter()
-            .map(|p| p.display().to_string())
+            .map(|s| match s {
+                InstructionSource::File(p) => p.display().to_string(),
+                InstructionSource::Inline { name, .. } => format!("inline:{name}"),
+            })
             .collect::<Vec<_>>()
             .join(",")
     }
