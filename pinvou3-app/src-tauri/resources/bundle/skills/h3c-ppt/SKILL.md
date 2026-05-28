@@ -50,7 +50,7 @@ Six milestones. Each: do this → produce this → stop. Don't pull in Full-lane
 
 **p7 · HTML implementation — chunked, multi-file. (This is exactly where a past run stalled.)**
 - Same layout as the Full lane: `HTML_Deck/index.html` (host shell + `SLIDES = [...]` order array) and `HTML_Deck/slides/NN_name.html` — **one file per slide.** (Use `HTML_Deck/` so the p10/p12 scripts and the skill's auto-trigger find your slides.)
-- **Never write the whole deck — or multiple slides — in a single `write_file`.** Per slide: `write_file` a small skeleton (≤ 8KB: structure + placeholder text, link `../assets/base.css`, no giant inline CSS/JS), then `append_file` the body in ≤ 16KB chunks.
+- **Never write the whole deck — or multiple slides — in a single `write_file`.** One slide is one small file. Use `append_file` only for tail-appending content in final file order; if you create placeholders inside an existing slide file, replace them with `edit_file` / `apply_patch`.
 - Why: a huge `content` arg out-runs the SSE idle timeout on local inference, the stream is cut mid-arguments, and the call comes back truncated ("missing required field 'content'"). One small file per slide avoids it entirely. A past pinvou3 run dumped the whole deck into one root `.html` and stalled twice — don't repeat it.
 - Reuse the `L01`-`L05` templates per page type.
 
@@ -193,7 +193,7 @@ Build the actual slides:
 
 Conventions that have proven robust:
 
-- **One page = one small file. Never write multiple slides (or the whole deck) in a single `write_file` call** — a large `content` arg out-runs the SSE idle timeout on local inference and the call gets truncated ("missing required field 'content'"). Per page: `write_file` a ≤ 8KB skeleton, then `append_file` the body in ≤ 16KB chunks.
+- **One page = one small file. Never write multiple slides (or the whole deck) in a single `write_file` call** — a large `content` arg out-runs the SSE idle timeout on local inference and the call gets truncated ("missing required field 'content'"). Use `append_file` only for tail-appending content in final file order; use `edit_file` / `apply_patch` for placeholders or middle-of-file edits.
 - Each page is self-contained (links to `../assets/base.css` only) — easier to debug and easier to inline for build
 - Use master / scene page pairs for story-driven pages (master = takeaway + data, scene = in-situ photo)
 - Page chapter labels (`CH.NN`) on scene pages must match their master — phase 10 audit will catch drift
@@ -390,6 +390,6 @@ This skill is the playbook layer; those skills are the tool layer.
 If you only remember four things:
 
 1. **Pick the lane first.** Light (`p0→p4→p6→p7→p10→p12`) for internal/quick/≤30-page decks — the pinvou3 default; Full (all 16) only for external large productions. Don't run the heavy lane on a small internal deck.
-2. **In p7, one page = one small file; chunk with append_file.** Dumping the whole deck into one `write_file` stalls the stream and truncates the call. This burned a past run.
+2. **In p7, one page = one small file.** Dumping the whole deck into one `write_file` stalls the stream; `append_file` is tail-append only, so use `edit_file` / `apply_patch` for placeholders.
 3. **(Full lane) Phase 2 research is non-negotiable.** A deck without case citations dies in customer review.
 4. **(Full lane) Loop D / 8.5 are multi-round by design** — ship when the decision-maker says "OK," not when "perfect."
