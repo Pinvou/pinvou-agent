@@ -248,7 +248,7 @@
       const chatHistory = bs && bs.sessions ? bs.sessions.map(s => ({
         id: s.id,
         title: s.title || '新对话',
-        date: formatSessionDate(s.updated_at || s.created_at),
+        date: formatSessionDate(s.updated_at || s.created_at, language),
         skill: skillBindings[s.id] || null,
         working: !!sessionBusy[s.id], // 多 session 并发:该 session 是否正在后台生成
       })) : [];
@@ -351,7 +351,7 @@
             </div>
 
             {/* Navigation / Recents */}
-            <div className={`flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-2 mt-3 ${isSidebarOpen ? 'px-3' : 'px-2 items-center'}`}>
+            <div className={`flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-3 mt-3 ${isSidebarOpen ? 'px-3' : 'px-2 items-center'}`}>
 
               {/* 四个导航项等距同级 */}
               <NavItem
@@ -384,7 +384,12 @@
 
               {isSidebarOpen && (
                 <>
-                  <div className="text-[13px] font-medium px-4 py-2 mt-3 mb-1 whitespace-nowrap" style={{ color: activeTheme === 'dark' ? '#C4C7C5' : '#444746' }}>
+                  {/* nav / list 分割:hairline + section header,让上下两块视觉脱开 */}
+                  <div className={`mt-4 mx-3 h-px ${activeTheme === 'dark' ? 'bg-white/10' : 'bg-black/10'}`}></div>
+                  <div
+                    className="text-[11px] font-medium px-4 pt-3 pb-1 whitespace-nowrap"
+                    style={{ color: activeTheme === 'dark' ? '#80868B' : '#5F6368', letterSpacing: '0.06em' }}
+                  >
                     {t.recent}
                   </div>
 
@@ -475,14 +480,18 @@
     /* ==========================================
        Helpers
        ========================================== */
-    function formatSessionDate(ts) {
+    function formatSessionDate(ts, language) {
       if (!ts) return '';
       const d = new Date(typeof ts === 'number' ? ts : ts);
       const now = new Date();
       const diff = now - d;
-      if (diff < 86400000 && d.getDate() === now.getDate()) return 'Today';
-      if (diff < 172800000) return 'Yesterday';
-      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const zh = language === 'zh';
+      if (diff < 86400000 && d.getDate() === now.getDate()) return zh ? '今天' : 'Today';
+      if (diff < 172800000) return zh ? '昨天' : 'Yesterday';
+      // 7 天内显示「X 天前」/「X days ago」,更早显示日期
+      const days = Math.floor(diff / 86400000);
+      if (days < 7) return zh ? `${days} 天前` : `${days}d ago`;
+      return d.toLocaleDateString(zh ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric' });
     }
 
     // ==========================================
@@ -2001,13 +2010,13 @@
         <div
           onClick={onClick}
           title={!isSidebarOpen ? label : ""}
-          className={`flex items-center cursor-pointer text-[14px] font-medium transition-colors overflow-hidden
-          ${isSidebarOpen ? 'px-4 py-2.5 rounded-full w-full' : 'w-10 h-10 justify-center rounded-full mx-auto shrink-0'}
+          className={`flex items-center cursor-pointer text-[15px] font-medium transition-colors overflow-hidden
+          ${isSidebarOpen ? 'px-4 py-3 rounded-full w-full' : 'w-10 h-10 justify-center rounded-full mx-auto shrink-0'}
           ${active
-            ? (isDark ? 'bg-[#333537] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#041E49]')
+            ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-[#D3E3FD] text-[#041E49]')
             : (isDark ? 'text-[#E3E3E3] hover:bg-[#282A2C]' : 'text-[#1F1F1F] hover:bg-[#E1E5EA]')}`}
         >
-          <div className={`${isSidebarOpen ? 'mr-4' : ''} shrink-0 ${active ? (isDark ? 'text-[#E3E3E3]' : 'text-[#0B57D0]') : ''}`}>
+          <div className={`${isSidebarOpen ? 'mr-4' : ''} shrink-0 ${active ? (isDark ? 'text-[#041E49]' : 'text-[#0B57D0]') : ''}`}>
             {icon}
           </div>
           {isSidebarOpen && <span className="whitespace-nowrap">{label}</span>}
@@ -2036,9 +2045,9 @@
       }
       return (
         <div onClick={() => onSelect(chat.id)}
-          className={`group flex items-center px-4 py-1.5 rounded-full cursor-pointer text-[14px] transition-all
+          className={`group flex items-center px-4 py-1.5 rounded-full cursor-pointer text-[13px] transition-all
             ${active ? (isDark ? 'bg-[#333537] text-white' : 'bg-[#E1E5EA] text-[#1F1F1F]')
-                     : (isDark ? 'text-[#E3E3E3] hover:bg-[#282A2C]' : 'text-[#444746] hover:bg-[#E1E5EA]')}`}>
+                     : (isDark ? 'text-[#BDC1C6] hover:bg-[#282A2C] hover:text-[#E3E3E3]' : 'text-[#5F6368] hover:bg-[#E1E5EA] hover:text-[#1F1F1F]')}`}>
           <span className="truncate pr-2 leading-relaxed whitespace-nowrap flex-1">{chat.title}</span>
           {chat.working && <span className="shrink-0 mr-1 inline-block w-2 h-2 rounded-full bg-current opacity-70 animate-pulse" title="正在生成中"></span>}
           {chat.skill && <span className="text-[11px] shrink-0 opacity-70 mr-1" title={chat.skill}>🧭</span>}
@@ -2051,12 +2060,20 @@
                 className={`w-6 h-6 rounded-full flex items-center justify-center text-[12px] ${isDark ? 'hover:bg-[#444746]' : 'hover:bg-[#D3D7DB]'}`}>✗</button>
             </div>
           ) : (
-            <div className="hidden group-hover:flex items-center gap-0.5 shrink-0">
-              <button title="重命名" onClick={(e) => { e.stopPropagation(); setVal(chat.title); setEditing(true); }}
-                className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${isDark ? 'hover:bg-[#444746]' : 'hover:bg-[#D3D7DB]'}`}>✏️</button>
-              <button title="删除" onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
-                className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${isDark ? 'hover:bg-[#5c2b29]' : 'hover:bg-[#FAD2CF]'}`}>🗑</button>
-            </div>
+            <>
+              {/* 默认: 显示日期(辨识每条会话什么时候发生);hover/active 时换成编辑/删除按钮 */}
+              {chat.date && (
+                <span className={`text-[11px] shrink-0 opacity-60 whitespace-nowrap group-hover:hidden ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
+                  {chat.date}
+                </span>
+              )}
+              <div className="hidden group-hover:flex items-center gap-0.5 shrink-0">
+                <button title="重命名" onClick={(e) => { e.stopPropagation(); setVal(chat.title); setEditing(true); }}
+                  className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${isDark ? 'hover:bg-[#444746]' : 'hover:bg-[#D3D7DB]'}`}>✏️</button>
+                <button title="删除" onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
+                  className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${isDark ? 'hover:bg-[#5c2b29]' : 'hover:bg-[#FAD2CF]'}`}>🗑</button>
+              </div>
+            </>
           )}
         </div>
       );
