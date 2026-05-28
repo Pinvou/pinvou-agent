@@ -27,11 +27,31 @@ description: 品悟在任务收口时做物理校验,确认产出真存在(不�
 
 ## 可用工具
 
-只允许只读:
-- `read_file` / `list_dir` / `glob` / `grep`
-- `shell`(只跑只读命令:`git status`, `git diff --stat`, `ls`, `cat`)
+本轮强制锁在 Plan mode,**没有 shell**(`exec_shell` 不在白名单,调了必败)。只读工具:
+- `list_dir` —— 看文件存不存在 + 大小
+- `glob` —— 模式批量找文件(`**/*.html`)
+- `grep` —— 关键字定位(找标题/关键 section/函数名)
+- `read_file path start_line=N max_lines=M` —— 支持区间读(默认 200 行/~16KB 自动 truncate)
 
-**禁用**写工具(`write_file`/`append_file`/`edit_file`/破坏性 shell)—— 你是校验,不是修复。
+**禁用**(根本调不到,别试):
+- 写工具 `write_file` / `append_file` / `edit_file` —— 你是校验,不是修复
+- 任何 shell / 命令 `exec_shell` / `git status` / `wc` / `ls` / `cat`
+
+---
+
+## 验收顺序:cheap → expensive,不要默认 read_file 整文件
+
+**大文件(HTML PPT / 长报告 / 大 JSON)read_file 整读没意义** —— 你要的是"产物在不在 + 关键结构对不对",不是把全文塞进 context。按下面顺序走:
+
+1. **存在性 + 体量** —— `list_dir workspace/` 看文件在不在、size 是否合理(几 KB 还是几百 KB)。`glob` 批量找。
+2. **关键标记 grep** —— 用 `grep` 找产物该有的关键字(plan 里说要做 Wall Kick → `grep "wall.*kick\|WallKick"`;15 页 PPT → `grep "<section\|<slide"` 数 section 个数;给客户邮件 → `grep "停机时段\|联系"`)。**这一步就能定 80% 的 silent skip。**
+3. **骨架抽样 read_file** —— 只在 grep 结果不够定论时,`read_file path start_line=1 max_lines=30`(开头骨架) + `start_line=<near_end> max_lines=20`(结尾闭合)。够看就停。
+4. **小文件直接全读** —— 文件 ≤ 200 行(read_file 默认窗口能装下),才考虑无 range 全读。
+
+**反模式**(不要这么做):
+- ❌ 不看 `list_dir`,直接 `read_file` 拉一个 30KB 的 HTML —— 浪费 context 还可能 truncate
+- ❌ `read_file` 一次一次拉相邻区间凑全文 —— 用 `grep` 定位关键行,而不是滑动窗口扫
+- ❌ 想"精确行数"凑数字 —— 验收不要求精确,`list_dir` 看 size 估个量级("约 600 行 / ~20KB")就够
 
 ---
 

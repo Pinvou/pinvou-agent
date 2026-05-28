@@ -19,9 +19,26 @@
   const dialogOpen = TAURI.dialog?.open;
 
   // ── Markdown rendering (vendor scripts loaded in index.html) ─────
+  // 抹平裸 <script>/<style>/<iframe> 等危险标签:它们一旦被 marked 透传成真 HTML,
+  // 浏览器按 HTML 解析时 script 元素会"吞掉"后续兄弟节点直到 </script>(或文档末尾),
+  // 然后 DOMPurify 把整段 script 连同被卷进去的内容一起剥掉。后果:Pinvou 表格里 LLM
+  // 写"在同一个 <script> 标签内……| CRITICAL | RAISED |"会让 CRITICAL/RAISED 那几格空掉。
+  //
+  // 关键:在 marked.parse 【之后】做替换,而不是之前。原因:marked 给代码块/inline code 的
+  // 输出本身就已经把 < 转义成 &lt;(不会有真 <script>),只有用户在正文里裸写 HTML 时才会
+  // 透传出 <script>。post-process 只命中后者,不会双重转义代码块里的 `<script>` 字面量。
+  var DANGEROUS_TAGS_RE = /<(\/?(?:script|style|iframe|object|embed|link|meta)\b[^>]*)>/gi;
+  function neutralizeRawDangerousTags(html) {
+    return html.replace(DANGEROUS_TAGS_RE, function (_, inner) { return "&lt;" + inner + "&gt;"; });
+  }
   function renderMarkdown(text) {
     if (!window.marked || !window.DOMPurify) return escapeHtml(text);
-    return DOMPurify.sanitize(marked.parse(text || ""));
+    var html = neutralizeRawDangerousTags(marked.parse(text || ""));
+    return DOMPurify.sanitize(html, {
+      // 兜底:即使 neutralize 有漏网(罕见 HTML 注释/CDATA 等),DOMPurify 仍剥掉这些
+      FORBID_TAGS: ["style", "iframe", "object", "embed", "link", "meta"],
+      FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus", "onblur"],
+    });
   }
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, function (c) {
@@ -1162,6 +1179,47 @@
   }
   function markResolved(id, statusLabel) { patchItemById(id, { resolved: true, statusLabel: statusLabel || "" }); notify(); }
 
+  // ── Per-session UI 路由 ─────────────────────────────────────────
+  // 品悟链路有多个 await 边界,用户可能中途切 session。所有 UI 写入(chatItem 增改、
+  // pending* 标记、modeState 同步)必须落在【触发 session】的 buffer 上,不能跟着
+  // state.activeSessionId 漂走。一律 wrap 进 runSyncOnSession 是因为:sid === active
+  // 时它是 no-op 直通,sid !== active 时它 swap-load-fn-save 回 sid 的 buffer。
+  function runOnSession(sid, fn) { runSyncOnSession(sid || state.activeSessionId, fn); }
+  function addSystemItemFor(sid, text) { runOnSession(sid, function () { addSystemItem(text); }); }
+  function patchItemByIdFor(sid, id, patch) { runOnSession(sid, function () { patchItemById(id, patch); }); }
+  function modeStateFor(sid) {
+    if (!sid || sid === state.activeSessionId) return state.modeState;
+    var buf = sessionStates[sid];
+    return buf ? buf.modeState : state.modeState;
+  }
+  // unresolved_critical / accept_plan 二次失败时,把品悟决策入口重新摆到用户面前。
+  // 优先复活最近的 pinvou_actions 卡(让 override/revise/加一句 按钮重新可点);没卡就
+  // 新插一张 —— 避免用户落在「一行红字 + 没按钮」的死胡同。
+  function surfacePinvouActionsCardFor(sid, planMarkdown, report, hint) {
+    runOnSession(sid, function () {
+      var revived = false;
+      for (var i = state.chatItems.length - 1; i >= 0; i--) {
+        if (state.chatItems[i].type === "pinvou_actions") {
+          Object.assign(state.chatItems[i], {
+            resolved: false, statusLabel: "",
+            planMarkdown: planMarkdown,
+            report: report || state.chatItems[i].report,
+          });
+          revived = true;
+          break;
+        }
+      }
+      if (!revived) {
+        addChatItem({
+          type: "pinvou_actions",
+          planMarkdown: planMarkdown, report: report,
+          resolved: false, statusLabel: "", time: timeStr(),
+        });
+      }
+      if (hint) addSystemItem(hint);
+    });
+  }
+
   // ── 思考指示器状态（每次阶段切换重置计时）──────────────────────
   function startThinking() { state.thinking = { active: true, phase: "thinking", toolName: "", startedAt: Date.now() }; }
   function thinkingTool(name) { state.thinking = { active: true, phase: "tool", toolName: name || "", startedAt: Date.now() }; }
@@ -1174,10 +1232,10 @@
       pinvou_review_enabled: st.pinvou_review_enabled != null ? !!st.pinvou_review_enabled : state.modeState.pinvou_review_enabled,
     };
   }
-  async function preflightPinvouGate(planMarkdown) {
-    if (!state.activeSessionId || !state.modeState.pinvou_review_enabled) return null;
+  async function preflightPinvouGate(sid, planMarkdown) {
+    if (!sid || !modeStateFor(sid).pinvou_review_enabled) return null;
     try {
-      await invoke("check_pinvou_exit_gate", { sessionId: state.activeSessionId, planMarkdown: planMarkdown || "" });
+      await invoke("check_pinvou_exit_gate", { sessionId: sid, planMarkdown: planMarkdown || "" });
       return null;
     } catch (e) {
       return parseGateError(e) || { gate_error: "unknown", message: String(e) };
@@ -1185,37 +1243,56 @@
   }
 
   // ── Plan/YOLO 命令 ───────────────────────────────────────────────
+  // sid 在 entry 捕获一次,thread through 所有 await —— 防用户切 session 后,
+  // 后续 UI 写入/IPC 把卡片塞到错误的 session。
   async function acceptPlan(itemId, planMarkdown, echo) {
-    if (!state.activeSessionId) return;
-    var gate = await preflightPinvouGate(planMarkdown || "");
+    var sid = state.activeSessionId;
+    if (!sid) return;
+    var gate = await preflightPinvouGate(sid, planMarkdown || "");
     if (gate) {
-      if (itemId) patchItemById(itemId, { cardState: "active", statusLabel: "", resolved: false });
+      if (itemId) patchItemByIdFor(sid, itemId, { cardState: "active", statusLabel: "", resolved: false });
       if (gate.gate_error === "missing_review_report" || gate.gate_error === "malformed_report") {
         notify();
-        await autoTriggerPinvouReview(planMarkdown || "");
+        await autoTriggerPinvouReview(sid, planMarkdown || "");
         return;
       }
-      addSystemItem("⚠️ 品悟放行检查阻塞: " + (gate.message || ""));
+      if (gate.gate_error === "unresolved_critical") {
+        // planMarkdown 已带旧 report 但 CRITICAL 还在 RAISED —— 复活品悟决策卡,
+        // 让用户走 override / revise / 加一句出口,而不是落在系统提示死胡同。
+        var n = (gate.detail && gate.detail.unresolved_count) || "?";
+        surfacePinvouActionsCardFor(sid, planMarkdown || "", null,
+          "⚠️ 品悟还有 " + n + " 个 CRITICAL 没拍板 —— 已重新打开决策卡");
+        notify();
+        return;
+      }
+      addSystemItemFor(sid, "⚠️ 品悟放行检查阻塞: " + (gate.message || ""));
       notify();
       return;
     }
-    if (itemId) patchItemById(itemId, { cardState: "approved", statusLabel: "✅ 已批准", resolved: true });
-    pushUserEcho(echo || "✅ 就这么干", true);
-    state.busy = true; startThinking(); notify();
+    if (itemId) patchItemByIdFor(sid, itemId, { cardState: "approved", statusLabel: "✅ 已批准", resolved: true });
+    runOnSession(sid, function () { pushUserEcho(echo || "✅ 就这么干", true); state.busy = true; startThinking(); });
+    notify();
     try {
-      var st = await invoke("accept_plan", { sessionId: state.activeSessionId, planMarkdown: planMarkdown || "" });
-      applyModeFromState(st);
+      var st = await invoke("accept_plan", { sessionId: sid, planMarkdown: planMarkdown || "" });
+      runOnSession(sid, function () { applyModeFromState(st); });
     } catch (e) {
       // Pinvou EXIT GATE：accept 前必须先有 review report
-      var gate = parseGateError(e);
-      if (itemId) patchItemById(itemId, { cardState: "active", statusLabel: "", resolved: false });
-      state.busy = false;
-      if (gate && gate.gate_error === "missing_review_report") {
+      var gate2 = parseGateError(e);
+      if (itemId) patchItemByIdFor(sid, itemId, { cardState: "active", statusLabel: "", resolved: false });
+      runOnSession(sid, function () { state.busy = false; });
+      if (gate2 && gate2.gate_error === "missing_review_report") {
         notify();
-        await autoTriggerPinvouReview(planMarkdown || "");
+        await autoTriggerPinvouReview(sid, planMarkdown || "");
         return;
       }
-      addSystemItem(gate ? ("⚠️ Pinvou EXIT GATE 阻塞: " + (gate.message || "")) : ("⚠️ accept_plan 失败: " + e));
+      if (gate2 && gate2.gate_error === "unresolved_critical") {
+        var n2 = (gate2.detail && gate2.detail.unresolved_count) || "?";
+        surfacePinvouActionsCardFor(sid, planMarkdown || "", null,
+          "⚠️ Pinvou EXIT GATE: 还有 " + n2 + " 个 CRITICAL 待拍板 —— 已重新打开决策卡");
+        notify();
+        return;
+      }
+      addSystemItemFor(sid, gate2 ? ("⚠️ Pinvou EXIT GATE 阻塞: " + (gate2.message || "")) : ("⚠️ accept_plan 失败: " + e));
     }
     notify();
   }
@@ -1406,13 +1483,16 @@
   function dispatchPinvouTrigger(persona, summary, fullPrompt) {
     return dispatchPinvouTriggerFor(state.activeSessionId, persona, summary, fullPrompt);
   }
-  async function autoTriggerPinvouReview(planMarkdown) {
-    pendingPinvouReview = { planMarkdown: planMarkdown };
-    addSystemItem("🟣 品悟还没看过这个方案 —— 自动让品悟先看一眼...");
+  async function autoTriggerPinvouReview(sid, planMarkdown) {
+    if (!sid) return;
+    runOnSession(sid, function () {
+      pendingPinvouReview = { planMarkdown: planMarkdown };
+      addSystemItem("🟣 品悟还没看过这个方案 —— 自动让品悟先看一眼...");
+    });
     var fullPrompt = "/pinvou-review-plan";
     try { var body = await invoke("read_skill_body", { name: "pinvou-review-plan" }); fullPrompt = buildPinvouPlanPrompt(body, planMarkdown); }
-    catch (e) { addSystemItem("⚠️ 加载 pinvou-review-plan skill 失败: " + e); }
-    await dispatchPinvouTrigger("pinvou-plan", "🟣 触发品悟审方案", fullPrompt);
+    catch (e) { addSystemItemFor(sid, "⚠️ 加载 pinvou-review-plan skill 失败: " + e); }
+    await dispatchPinvouTriggerFor(sid, "pinvou-plan", "🟣 触发品悟审方案", fullPrompt);
   }
   async function autoTriggerPinvouFinalFor(sid) {
     if (!sid) return;
@@ -1433,54 +1513,71 @@
   }
   // 品悟 3 按钮之「✅ 确认继续执行」：override 所有 CRITICAL 后 accept_plan
   async function pinvouAcceptOverride(itemId, planMarkdown, report) {
-    patchItemById(itemId, { resolved: true, statusLabel: "👍 已确认品悟的顾虑,继续执行..." });
-    if (!state.activeSessionId) { notify(); return; }
+    var sid = state.activeSessionId;
+    patchItemByIdFor(sid, itemId, { resolved: true, statusLabel: "👍 已确认品悟的顾虑,继续执行..." });
+    if (!sid) { notify(); return; }
     var eff = report ? overrideAllCriticalInReport(report) : synthesizeOverriddenReport("Pinvou 用自然语言提了意见(见上方),用户阅读后决策");
     var fullMd = (planMarkdown || "") + "\n\n" + eff;
-    var gate = await preflightPinvouGate(fullMd);
-    if (gate && report && gate.gate_error === "malformed_report") {
-      eff = synthesizeOverriddenReport("Pinvou 表格格式不合规(见上方原文),用户阅读后决策");
+    var gate = await preflightPinvouGate(sid, fullMd);
+    // malformed_report / unresolved_critical 都说明 override regex 没拿下整张表
+    // (字段拼写偏、列序换、行数对不齐)。用户已经按下"确认继续",synthesize 一张全新的
+    // OVERRIDDEN_BY_USER 单行表二次冲门 —— 把第一次的形式失败治住。
+    if (gate && report && (gate.gate_error === "malformed_report" || gate.gate_error === "unresolved_critical")) {
+      eff = synthesizeOverriddenReport("Pinvou 报告无法自动 override(格式异常 / 部分行未对齐),用户阅读后强制放行");
       fullMd = (planMarkdown || "") + "\n\n" + eff;
-      gate = await preflightPinvouGate(fullMd);
+      gate = await preflightPinvouGate(sid, fullMd);
     }
     if (gate) {
-      patchItemById(itemId, { resolved: false, statusLabel: "" });
-      addSystemItem("⚠️ 品悟放行检查仍阻塞: " + (gate.message || ""));
+      surfacePinvouActionsCardFor(sid, planMarkdown || "", report,
+        "⚠️ 品悟放行检查仍阻塞: " + (gate.message || "") + " —— 已重新打开决策卡");
       notify();
       return;
     }
-    pushUserEcho("✅ 就这么干(已确认品悟的顾虑)", true);
-    state.busy = true; startThinking(); notify();
+    runOnSession(sid, function () { pushUserEcho("✅ 就这么干(已确认品悟的顾虑)", true); state.busy = true; startThinking(); });
+    notify();
     try {
-      var st = await invoke("accept_plan", { sessionId: state.activeSessionId, planMarkdown: fullMd });
-      applyModeFromState(st);
-    } catch (e) { addSystemItem("⚠️ accept_plan 仍失败: " + e); state.busy = false; }
+      var st = await invoke("accept_plan", { sessionId: sid, planMarkdown: fullMd });
+      runOnSession(sid, function () { applyModeFromState(st); });
+    } catch (e) {
+      addSystemItemFor(sid, "⚠️ accept_plan 仍失败: " + e);
+      runOnSession(sid, function () { state.busy = false; });
+    }
     notify();
   }
 
-  // 品悟 3 按钮之「↻ AI 改方案」：用户已经表达修订意图,直接发起 Plan 修订。
-  // 这里不是执行方案:要求模型只调用 update_plan 重出方案卡,仍等用户下一次拍板。
-  async function pinvouRevisePlan(itemId, planMarkdown, report) {
-    patchItemById(itemId, { resolved: true, statusLabel: "↻ 正在让 AI 修订方案..." });
-    if (!state.activeSessionId) { notify(); return; }
-    var displayText = "↻ 按品悟意见改方案";
+  // 品悟 3 按钮之「↻ AI 改方案」/「⊕ 我加一句」共用:user 已表达修订意图。
+  // userComment 非空 = 「⊕ 我加一句」路径,把用户那句话也喂进修订指令(不是落进普通 chat)。
+  // 仍要求模型只调用 update_plan 重出方案卡,等用户下一次拍板,不直接执行。
+  async function pinvouRevisePlan(itemId, planMarkdown, report, userComment) {
+    var sid = state.activeSessionId;
+    var hasComment = !!(userComment && userComment.trim());
+    patchItemByIdFor(sid, itemId, {
+      resolved: true,
+      statusLabel: hasComment ? "⊕ 已带上你的意见,正在让 AI 修订..." : "↻ 正在让 AI 修订方案...",
+    });
+    if (!sid) { notify(); return; }
+    var displayText = hasComment ? ("⊕ 我也担心: " + userComment.trim()) : "↻ 按品悟意见改方案";
     var instruction =
       "根据品悟意见修订当前方案。只更新方案,不要执行文件写入或命令。\n" +
       "你必须调用 update_plan 输出新版方案卡,然后停下来等用户拍板。\n\n" +
       "当前方案:\n" + (planMarkdown || "（plan 为空）") + "\n\n" +
-      "品悟意见:\n" + (report || "见上方品悟审查意见");
+      "品悟意见:\n" + (report || "见上方品悟审查意见") +
+      (hasComment ? ("\n\n用户补充意见(必须在新方案里回应):\n" + userComment.trim()) : "");
     try {
-      var st = await invoke("set_plan_mode_next", { sessionId: state.activeSessionId });
-      applyModeFromState(st);
-      if (state.busy) {
-        state.queued.push({ id: ++itemIdSeq, text: instruction, displayText: displayText, attachments: [] });
+      var st = await invoke("set_plan_mode_next", { sessionId: sid });
+      runOnSession(sid, function () { applyModeFromState(st); });
+      // 排队判定按 sid 自己的 busy(不是 active 的),避免「触发 session 后台还在跑」时
+      // 误把 instruction 当成立即可发。
+      var sidBusy = sid === state.activeSessionId ? state.busy : !!(sessionStates[sid] && sessionStates[sid].busy);
+      if (sidBusy) {
+        runOnSession(sid, function () { state.queued.push({ id: ++itemIdSeq, text: instruction, displayText: displayText, attachments: [] }); });
         notify();
         return;
       }
-      await doSendFor(state.activeSessionId, instruction, displayText, []);
+      await doSendFor(sid, instruction, displayText, []);
     } catch (e) {
-      patchItemById(itemId, { resolved: false, statusLabel: "" });
-      addSystemItem("⚠️ 触发方案修订失败: " + e);
+      patchItemByIdFor(sid, itemId, { resolved: false, statusLabel: "" });
+      addSystemItemFor(sid, "⚠️ 触发方案修订失败: " + e);
       notify();
     }
   }

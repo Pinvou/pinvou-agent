@@ -36,6 +36,7 @@
 - **WorkFlow 视图编排**(差异化最强,用户明确要做):交互模型待讨论(todo checklist / 节点流 / 专家协作),可能与 `plan_card` 融合
 - **模型预设切换 GUI**:bridge 已有 `ModelPreset` 占位,缺 GUI(远程 DeepSeek API / OpenRouter)
 - **GUI subagent 体验**:卡片方案 B/C(串行视图 / 内部 timeline)+ Settings toggle 启用 subagent(当前需 env override)
+- **品悟 outside voice 兑现 §4.3**(2026-05-28 调研后转 follow-up):`pinvou_review_chat` 当前在主 session 跑,主 history/用户偏好全在场,独立性≈0;clean 解法是借多 session engine 池跑 transient `pinvou-review-<uuid>` session,把 chat:done 路由回父 session UI、跑完销毁(预估 2-3h,涉及事件路由 + session lifecycle + UI 锚定三处)。`Op::SyncSession`/`Op::SpawnSubAgent` 都不接,前者面 resume/load 不抗 in-flight、后者 fire-and-forget mailbox 模式
 
 **🟢 低优先**
 - GB10 self-hosted GitHub Actions runner 跑 L1 nightly(等团队 ≥2 人或发版加快)
