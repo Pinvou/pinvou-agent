@@ -19,9 +19,26 @@
   const dialogOpen = TAURI.dialog?.open;
 
   // ── Markdown rendering (vendor scripts loaded in index.html) ─────
+  // 抹平裸 <script>/<style>/<iframe> 等危险标签:它们一旦被 marked 透传成真 HTML,
+  // 浏览器按 HTML 解析时 script 元素会"吞掉"后续兄弟节点直到 </script>(或文档末尾),
+  // 然后 DOMPurify 把整段 script 连同被卷进去的内容一起剥掉。后果:Pinvou 表格里 LLM
+  // 写"在同一个 <script> 标签内……| CRITICAL | RAISED |"会让 CRITICAL/RAISED 那几格空掉。
+  //
+  // 关键:在 marked.parse 【之后】做替换,而不是之前。原因:marked 给代码块/inline code 的
+  // 输出本身就已经把 < 转义成 &lt;(不会有真 <script>),只有用户在正文里裸写 HTML 时才会
+  // 透传出 <script>。post-process 只命中后者,不会双重转义代码块里的 `<script>` 字面量。
+  var DANGEROUS_TAGS_RE = /<(\/?(?:script|style|iframe|object|embed|link|meta)\b[^>]*)>/gi;
+  function neutralizeRawDangerousTags(html) {
+    return html.replace(DANGEROUS_TAGS_RE, function (_, inner) { return "&lt;" + inner + "&gt;"; });
+  }
   function renderMarkdown(text) {
     if (!window.marked || !window.DOMPurify) return escapeHtml(text);
-    return DOMPurify.sanitize(marked.parse(text || ""));
+    var html = neutralizeRawDangerousTags(marked.parse(text || ""));
+    return DOMPurify.sanitize(html, {
+      // 兜底:即使 neutralize 有漏网(罕见 HTML 注释/CDATA 等),DOMPurify 仍剥掉这些
+      FORBID_TAGS: ["style", "iframe", "object", "embed", "link", "meta"],
+      FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus", "onblur"],
+    });
   }
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, function (c) {
