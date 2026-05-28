@@ -37,7 +37,6 @@
 - **GUI subagent 体验**:卡片方案 B/C(串行视图 / 内部 timeline)+ Settings toggle 启用 subagent(当前需 env override)
 
 **🟢 低优先**
-- 真 sanity 跨 session 重评(当前 sanity 是同 session retake)
 - GB10 self-hosted GitHub Actions runner 跑 L1 nightly(等团队 ≥2 人或发版加快)
 
 **⏸️ 已决策不做**
@@ -63,7 +62,7 @@
 - **subagent**:单(context isolation)+ 2-3 串行可用;后端并发非瓶颈(N=4 探针 first-token <1s);并行 fan-out 不可用(见决策)
 - **LLM 行为不稳**(vLLM 抽奖):偶发 detour 写文件/调 web_search,单 sample 不下结论
 - **grep_files**:fork patch 在 v0.8.45 合并时被上游 harvest 版覆盖丢失;上游 per-file cancel-check 大目录够用,spawn_blocking+硬超时走 PR #2146(详 `docs/fork-modifications.md`)
-- **Judge 局限**:Claude/Qwen 同为 LLM 有共同盲区,单 session retake 非真 sanity
+- **Judge 局限**:跨 session 盲评已做(2026-05-28,19/20 点 0 漂移,稳定;唯一 ±1 落在 plan_mode 简洁性 3-vs-4 模糊带,详 `docs/l1-baselines/v0.8.37-r1/judge-sanity-retake-newsession.md`);残留盲区是 Claude/Qwen 同为 LLM 的同向偏,需换模型家族评才查得出
 - **L1 离群点**:暂无待处理(历史离群点已结案或随 fan-out 废弃关闭);跟进流程见 `docs/L1-judge-rubric.md` §3
 
 ---
