@@ -1122,3 +1122,70 @@ async fn subagent_one_fails() {
     )
     .await;
 }
+
+/// 视觉端到端:把带随机码的测试图拷进引擎 workspace 的 `attachments/`(复刻
+/// commands.rs 的暂存位置)→ 引导语让 LLM 调 `image_analyze` 读图 → 断言模型
+/// **真调了** image_analyze 且最终答案**命中**图中随机码 KX7-93。
+///
+/// 这是视觉接入(2026-05-28 路线 1)的真端到端验证,跑通整条链路:
+/// vision_config 接线(bridge)+ blocklist 放行 image_analyze + 工具执行 +
+/// workspace 相对路径解析 + 模型据工具返回作答。两条硬断言 judge 摸不到,
+/// 故不委托 judge:工具直方图含 image_analyze + 答案含随机码。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "L1 真 vLLM 端到端,默认不跑"]
+async fn image_vision_analyze() {
+    let scenario = "image_vision_analyze";
+    if !require_vllm(scenario).await {
+        return;
+    }
+    let (engine, ws) = spawn_for_scenario(scenario).await;
+
+    // 把测试图拷进引擎 workspace 的 attachments/(= image_analyze 相对路径根)。
+    let att = ws.join("attachments");
+    std::fs::create_dir_all(&att).expect("mk attachments");
+    std::fs::write(
+        att.join("shot.png"),
+        include_bytes!("fixtures/vision_kx7-93.png"),
+    )
+    .expect("write fixture png");
+
+    // 复刻 commands.rs 的引导语:图在 workspace 相对路径,要看内容就调 image_analyze。
+    let user = "用户附了一张图片,已存到 workspace 的 `attachments/shot.png`。\
+        要查看图片内容请调用 image_analyze(image_path=\"attachments/shot.png\", \
+        prompt=\"读出图中的文字和形状\")。问题:这张图里的编号(字母数字串)是多少?只回答那个编号。";
+
+    let mut expect = Expect::default();
+    expect.max_duration_s = 120.0; // image_analyze 含 thinking 单次 ~17s,主 loop 多轮留足
+
+    engine
+        .send_user_message(user.to_string(), AppMode::Yolo, PlanPhase::None)
+        .await
+        .expect("send_user_message");
+    let (timeline, elapsed, timed_out) =
+        collect_turn_events(&engine, Duration::from_secs(140)).await;
+    let summary = summarize(&timeline, elapsed, timed_out);
+    eprintln!(
+        "[{scenario}] elapsed={:.1}s tools={:?} text_len={}",
+        summary.elapsed.as_secs_f64(),
+        summary.tool_call_counts,
+        summary.full_text.chars().count(),
+    );
+    let path =
+        record_transcript(scenario, user, AppMode::Yolo, PlanPhase::None, &timeline, &summary);
+    eprintln!("[{scenario}] transcript → {}", path.display());
+
+    verify_expect(&summary, &expect, scenario);
+    // 视觉硬契约(judge 摸不到):模型真调了 image_analyze。
+    assert!(
+        summary.tool_call_counts.contains_key("image_analyze"),
+        "[{scenario}] 模型必须调用 image_analyze 读图,实际工具={:?}",
+        summary.tool_call_counts
+    );
+    // 答案必须命中图中随机码——证明视觉真读到了像素内容,不是臆测。
+    let text_up = summary.full_text.to_uppercase();
+    assert!(
+        text_up.contains("KX7"),
+        "[{scenario}] 最终答案必须命中图中随机码 KX7-93,实际文本={:?}",
+        summary.full_text
+    );
+}

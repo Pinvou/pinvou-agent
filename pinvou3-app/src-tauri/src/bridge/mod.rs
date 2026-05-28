@@ -307,14 +307,31 @@ impl Pinvou3Bridge {
             strict_tool_mode: false,
             // pinvou3 中文用户已经是中文语境，不走 /translate 路径
             translation_enabled: false,
-            // Qwen3.6-35B-A3B-FP8 不是 vision 模型
-            vision_config: None,
+            // Qwen3.6 实测支持视觉(2026-05-28 base64 image_url 识图通过),
+            // image_analyze 工具复用同一 vllm 端点/模型/key,无需独立 vision 服务。
+            vision_config: Some(deepseek_tui::config::VisionModelConfig {
+                model: self.model(),
+                api_key: Some(
+                    std::env::var("DEEPSEEK_API_KEY")
+                        .unwrap_or_else(|_| LOCAL_VLLM_API_KEY.to_string()),
+                ),
+                base_url: Some(
+                    std::env::var("DEEPSEEK_BASE_URL")
+                        .unwrap_or_else(|_| LOCAL_VLLM_BASE_URL.to_string()),
+                ),
+            }),
             // [pinvou3-fork] 上游默认 120s 是为 DeepSeek 云端 API 设计。
             // 本地 Qwen3.6 vLLM 慢推理下单 step 30-90s 很常见,120s 频繁误杀子 agent。
             // 300s 与 elapsed cap 对齐,给复杂研究类任务留出完整单步窗口。
             subagent_api_timeout: std::time::Duration::from_secs(300),
-            // 上游 default 透传
-            features,
+            // 开启 VisionModel feature(默认 Experimental 关):配合上面的
+            // vision_config,tool_setup.rs 才会注册 image_analyze 工具给 LLM。
+            // 两道门缺一不可——只配 vision_config 不开 feature,工具不会注册。
+            features: {
+                let mut f = features;
+                f.enable(deepseek_tui::features::Feature::VisionModel);
+                f
+            },
             // compaction model 默认 deepseek-v4-pro,本地 vLLM 没这个模型,
             // 必须改成 pinvou3 当前用的 model,否则手动 /compact 报 404。
             //

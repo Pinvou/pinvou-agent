@@ -40,7 +40,7 @@
 - GB10 self-hosted GitHub Actions runner 跑 L1 nightly(等团队 ≥2 人或发版加快)
 
 **⏸️ 已决策不做**
-- 视觉模型补足(Qwen-VL 等)、图片 VLM caption、音视频转录 — 均等 GB10/vision 接入再作独立能力,现降级处理
+- 音视频转录 — 等 GB10/相应模型接入再作独立能力,现降级处理(视觉已完成,见关键决策)
 - 多 vLLM 实例给 subagent — 不解决根本(慢主因是模型行为),破坏 single-vLLM 简洁
 - 多 subagent 大研究 fan-out — 弱模型不可用(见决策)
 - prompt 工程消解死磕 / reminder-vs-XML / L3 Playwright / scenario 提 toml / 产物内嵌预览 — ROI 低或已回退
@@ -54,6 +54,7 @@
 - **LLM 复述本性改不动**:写「让我…」是 mode-independent,reminder 强改反而 token 暴增;±0.5 才算 signal,±0.2 是 noise
 - **上游 PR 取舍**:通用 bug/优化 → 提 PR,pinvou3 专用/opinionated → 留 fork;活动状态归 `docs/fork-modifications.md`
 - **soffice 并发**:多附件 ingest 各用独立 UserInstallation profile,避免同 profile lock
+- **视觉接入走工具式复用**(2026-05-28):Qwen3.6 实测有视觉(base64 image_url 识图通过,推翻"不是 vision 模型"旧判断);复用底座已有 `image_analyze` 工具(零底座功能改动),pinvou3 四处接线——(1)开启 `Feature::VisionModel` feature(默认 Experimental 关)+(2)`vision_config` 指向同一 vllm 端点,**两道门缺一不可**(tool_setup.rs:99 同时 require feature+config 才注册 image_analyze)+(3)blocklist 放出 image_analyze +(4)附件图拷进 session workspace `attachments/` 引导 LLM 调用;真 e2e 验证(`l1_dialog_harness::image_vision_analyze`,13s 一击命中 KX7-93)——组件测试全过但漏了 feature 门,只有 e2e 抓到。**路线 1 软肋(GUI 手测暴露)**:图不在主上下文,模型有时跳过 image_analyze**凭空幻觉**(同一张证件照,不调工具时编成"Qwen 文档页",调了才得真相);修法是引导 prompt 翻转框架——不说"你有视觉能力"(诱导直接描述),改硬约束"调用前你对图一无所知,绝不能描述/猜测",并点名"这是什么/帅吗"等问法(`commands.rs`)。治标不治本(概率性),仍偶发就该上路线 2 根治。原生多模态(ContentBlock::Image,~100 行 fork)留作后续升级
 
 ---
 

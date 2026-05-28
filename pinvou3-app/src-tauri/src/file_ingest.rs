@@ -585,58 +585,20 @@ fn libreoffice_presentation_text(path: &Path) -> Result<String, String> {
     result
 }
 
-/// 图片：跑 tesseract OCR 把文字抠出来。注意这是**文字识别**不是视觉理解
-/// （版式 / 图形 / 颜色全丢），所以 markdown 有值时 commands.rs 仍要标注「非
-/// 视觉理解」。缺 tesseract / 图里没文字 → markdown=None，退回 `model_no_vision`
-/// 让上层照旧提示「模型看不到图」。
-fn ingest_image(path: &Path, basename: String, path_str: String, byte_size: u64) -> IngestResult {
-    let tools = system_tools();
-    if !tools.tesseract {
-        return IngestResult {
-            kind: "image".into(),
-            basename,
-            path: path_str,
-            markdown: None,
-            token_estimate: 0,
-            byte_size,
-            // 仍标 model_no_vision（上层提示无视觉），附带装 OCR 的指引。
-            warning: Some(
-                "model_no_vision；如需识别图中文字请装 OCR: sudo apt install tesseract-ocr tesseract-ocr-chi-sim".into(),
-            ),
-        };
-    }
-    match ocr_image(path) {
-        Ok(text) if !text.trim().is_empty() => {
-            let tokens = estimate_tokens(&text);
-            IngestResult {
-                kind: "image".into(),
-                basename,
-                path: path_str,
-                markdown: Some(text),
-                token_estimate: tokens,
-                byte_size,
-                warning: None,
-            }
-        }
-        // OCR 跑通但没识别到文字（纯图 / 照片）→ 退回无视觉提示。
-        Ok(_) => IngestResult {
-            kind: "image".into(),
-            basename,
-            path: path_str,
-            markdown: None,
-            token_estimate: 0,
-            byte_size,
-            warning: Some("model_no_vision".into()),
-        },
-        Err(e) => IngestResult {
-            kind: "image".into(),
-            basename,
-            path: path_str,
-            markdown: None,
-            token_estimate: 0,
-            byte_size,
-            warning: Some(format!("model_no_vision；图片 OCR 失败: {e}")),
-        },
+/// 图片：Qwen3.6 有视觉能力(2026-05-28 实证),不再跑 OCR 降级。这里只登记元
+/// 数据,真正"看图"由 LLM 在对话里调 `image_analyze` 完成——commands.rs 发消息时
+/// 会把图拷进 session workspace 的 `attachments/` 并给出相对路径引导。
+/// markdown 留空(不预解析像素),token_estimate=0(视觉 token 量取决于分辨率,
+/// 不在此处解码估算,UI 计数会略低,属已知局限)。
+fn ingest_image(_path: &Path, basename: String, path_str: String, byte_size: u64) -> IngestResult {
+    IngestResult {
+        kind: "image".into(),
+        basename,
+        path: path_str,
+        markdown: None,
+        token_estimate: 0,
+        byte_size,
+        warning: None,
     }
 }
 
@@ -1264,19 +1226,19 @@ mod tests {
     }
 
     #[test]
-    fn ingest_image_falls_back_to_no_vision_without_text() {
-        // 伪装的 png（实为文本字节）：无论本机装没装 tesseract，都 OCR 不出
-        // 文字 —— 必须退回无视觉提示（markdown None + warning 以 model_no_vision
-        // 开头），不能把识别失败当成功，也不能 panic。
+    fn ingest_image_registers_metadata_no_ocr() {
+        // 视觉接入后(2026-05-28):图片不再走 OCR 降级,只登记元数据
+        // (kind=image, markdown=None, 无 model_no_vision 警告)。真正读图由 LLM
+        // 在对话里调 image_analyze 完成(commands.rs 把图拷进 workspace)。
         let tmp = std::env::temp_dir().join("pinvou3-ingest-image-test.png");
         std::fs::write(&tmp, b"fake png bytes").unwrap();
         let r = ingest(&tmp);
         std::fs::remove_file(&tmp).ok();
         assert_eq!(r.kind, "image");
-        assert!(r.markdown.is_none(), "无文字图片 markdown 必须 None");
+        assert!(r.markdown.is_none(), "图片不预解析 markdown");
         assert!(
-            r.warning.as_deref().unwrap_or("").starts_with("model_no_vision"),
-            "无文字图片必须退回 model_no_vision，got warning={:?}",
+            r.warning.is_none(),
+            "视觉可用,不应再有 model_no_vision 警告,got warning={:?}",
             r.warning
         );
     }
