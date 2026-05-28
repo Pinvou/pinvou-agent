@@ -10,7 +10,6 @@
 
 - **main**: `e6f246c` — 阶段 L 附件管线已并入;推 `Pinvou/pinvou3`(owner 直推 bypass PR 保护)+ backup `h3c-hexin/pinvou3`
 - **fork**: `bf048a7c` (`pinvou3-patches`, v0.8.47) — 上游 PR 活动状态见 `docs/fork-modifications.md`,本文件不维护
-- **worktrees**: `issue-1-attachment-pipeline`(本会话)、`workflow-desing-01`
 - **subagent**: 只用单 + 串行,并行 fan-out 已废弃(见决策);行为调优归 owner
 
 ---
