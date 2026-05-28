@@ -1560,21 +1560,47 @@
     };
 
     // 品悟审完后的 3 按钮卡
-    const PinvouActionsCard = ({ item, theme, onPrefill }) => {
+    // ⊕ 我加一句:展开行内 textarea,用户写完点「📋 发送 修订」走 pinvouRevisePlan(带 userComment)
+    // —— 用户的意见真正进 AI 修订指令,而不是落进普通 chat 链路。
+    const PinvouActionsCard = ({ item, theme }) => {
       const isDark = theme === 'dark';
       const done = item.resolved;
+      const [commenting, setCommenting] = useState(false);
+      const [comment, setComment] = useState('');
+      const canSend = comment.trim().length > 0;
+      if (done) {
+        return (
+          <div className={cardBoxCls(isDark, isDark ? 'border-[#D0BCFF]/40' : 'border-[#7C3AED]/30')}>
+            <div className={`text-[13px] font-medium mb-3 ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>🟣 品悟审完了 —— 你的决定：</div>
+            <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{item.statusLabel || '已处理'}</div>
+          </div>
+        );
+      }
+      if (commenting) {
+        return (
+          <div className={cardBoxCls(isDark, isDark ? 'border-[#D0BCFF]/40' : 'border-[#7C3AED]/30')}>
+            <div className={`text-[13px] font-medium mb-2 ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>⊕ 加一句意见 → 让 AI 按品悟+你的意见改方案：</div>
+            <textarea
+              value={comment} onChange={(e) => setComment(e.target.value)}
+              placeholder="我也担心..." rows={3} autoFocus
+              className={`w-full px-3 py-2 rounded-lg text-[13px] outline-none resize-y mb-2 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] border border-white/10' : 'bg-white text-[#1F1F1F] border border-black/10'}`}
+            />
+            <div className="flex items-center gap-2 flex-wrap">
+              <button disabled={!canSend} onClick={() => bridge.pinvouRevisePlan(item.id, item.planMarkdown, item.report, comment.trim())}
+                className={`${cardBtnCls(isDark, 'primary')} ${canSend ? '' : 'opacity-50 cursor-not-allowed'}`}>📋 发送 修订</button>
+              <button onClick={() => { setCommenting(false); setComment(''); }} className={cardBtnCls(isDark)}>取消</button>
+            </div>
+          </div>
+        );
+      }
       return (
         <div className={cardBoxCls(isDark, isDark ? 'border-[#D0BCFF]/40' : 'border-[#7C3AED]/30')}>
           <div className={`text-[13px] font-medium mb-3 ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>🟣 品悟审完了 —— 你的决定：</div>
-          {done ? (
-            <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{item.statusLabel || '已处理'}</div>
-          ) : (
-            <div className="flex items-center gap-2 flex-wrap">
-              <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.pinvouAcceptOverride(item.id, item.planMarkdown, item.report)}>✅ 确认继续执行</button>
-              <button className={cardBtnCls(isDark)} onClick={() => bridge.pinvouRevisePlan(item.id, item.planMarkdown, item.report)}>↻ 让 AI 改方案</button>
-              <button className={cardBtnCls(isDark)} onClick={() => { onPrefill && onPrefill('我也担心: '); bridge.markResolved(item.id, '⊕ 把你的话补进 plan...'); }}>⊕ 我加一句</button>
-            </div>
-          )}
+          <div className="flex items-center gap-2 flex-wrap">
+            <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.pinvouAcceptOverride(item.id, item.planMarkdown, item.report)}>✅ 确认继续执行</button>
+            <button className={cardBtnCls(isDark)} onClick={() => bridge.pinvouRevisePlan(item.id, item.planMarkdown, item.report)}>↻ 让 AI 改方案</button>
+            <button className={cardBtnCls(isDark)} onClick={() => setCommenting(true)}>⊕ 我加一句</button>
+          </div>
         </div>
       );
     };
