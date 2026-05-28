@@ -107,6 +107,7 @@
 | 16 | `subagent_api_timeout` 120s→**300s** | 本地 vLLM 慢推理,复杂 prompt 生成常 >120s;单 subagent 必需 | ⚠️ 环境相关 |
 | 17 | `max_subagents` 默认 **1**(= 上游默认) | 2026-05-27 定论:多/并行 fan-out 弱模型不可用(编排认知,非工具/后端),只留单+串行。曾试 4 已回退 | ✅ 与上游一致 |
 | 18 | `network_policy` 从 `None` 改 `Some(decider)`:`default=Allow` + **`with_trusted_fakeip_cidrs(["198.18.0.0/15"])`** | 按 IP 段信任 fake-ip 占位段(配合 #13);替代早期 `proxy=["*"]`(SSRF) | 🔵 配 #13 |
+| 27 | `boot()` 末新增 `write_pinvou3_workspace_context_if_needed()`,往 `~/.codewhale/instructions.md` 写 12 行 pinvou3 精简版(覆盖底座 auto-gen / 不动用户自定义) | P0-2: `workspace=$HOME` + 底座 `auto_generate_context` 会自动 dump 500 行 $HOME 目录树到 prompt(暴露 `~/.ssh/id_ed25519` 等敏感路径名,与 instructions §8 禁令直接冲突;1145→662 行 -30%) | ❌ pinvou3 专用(workspace=$HOME 是 pinvou3 GUI 假设,上游典型场景 workspace 是 git repo,不会触发) |
 
 > 配套:`crates/tui/src/network_policy.rs` 新增 `with_trusted_fakeip_cidrs` / `is_trusted_fakeip_addr` + IPv4 CIDR helper(无新依赖)。
 
@@ -143,6 +144,106 @@
 |---|---|---|---|
 | 23 | `context_input_budget` 按窗口分级(256K 下不等于 1M 默认值) | 256K 窗口下底座 4 个子系统静默退化,会话涨到 max_model_len 撞墙 | ⚠️ 模型相关 |
 | 24 | `_Nk` hint 全 vendor(不仅 DeepSeek) | 本地 vLLM 也需 compact 预算 hint | ✅ 通用功能 |
+
+---
+
+## Prompt 拼装 / Skills 注入
+
+> 背景: 来自系统 prompt 质量评估(`docs/system-prompt-架构.md`),把 1144 行 prompt 压到 571 行(-50%)。原则:**只改事实层**(model/render target/工具列表/sub-agent cap/品牌字样/扫描路径),**不动哲学层**(Constitution 7 articles / Statutes / Personality / Hierarchy)。终态 dump:`/tmp/pinvou3_system_prompt_v10.txt`。
+>
+> 14 个 patch (#25-#41) 按 6 个逻辑单元归组。原 # 编号保留(便于上游 sync 时 cherry-pick),代码 / 测试 / fork-guard 指纹照旧。
+
+### 组 1 — Skills 注入 union 入口 ✅ (原 #25 + #26)
+
+| 项 | 内容 |
+|---|---|
+| 文件 | `crates/tui/src/skills/mod.rs` + `crates/tui/src/prompts.rs:757-769` |
+| 改动 | `skills/mod.rs` 新增 pub `render_available_skills_context_for_workspace_and_dir(workspace, skills_dir)`;`prompts.rs` skills_block 拼装由 `for_workspace(...).or_else(skills_dir...)` 改成 union(`for_workspace_and_dir`) |
+| 理由 | 上游 `or_else` fallback 永不触发——workspace=$HOME 时 `discover_in_workspace` 总返回 Some(home-rooted skills),pinvou3 注入的 `EngineConfig.skills_dir` 形同虚设,bundle 内 `pinvou-review-plan`/`pinvou-review-final` AI 全程看不见 |
+| 上游 PR | ✅ 通用 bugfix(任何用 `skills_dir` 的 embedder 同样受影响) |
+| 测试 | `forkguard_skills_dir_unions_with_home_rooted_workspace_skills` |
+
+### 组 2 — Tier 5 覆盖 EngineConfig.instructions ✅ (原 #28)
+
+| 项 | 内容 |
+|---|---|
+| 文件 | `crates/tui/src/prompts/base.md:55` (Article VII Tier 5) |
+| 改动 | 加 "any file configured via `EngineConfig.instructions`" 显式条款 + 声明 EngineConfig.instructions imperatives 属 Local Law(非 Tier 7 Memory) |
+| 理由 | pinvou3 instructions 路径 `~/.pinvou3/sessions/*/instructions.md` 不在原始 4-file 名单(AGENTS.md / CLAUDE.md / .codewhale/instructions.md / .deepseek/instructions.md),内容又是祈使句,会被底座 Article VII 默认贬到 Tier 7 Memory(用户一句话可 override) |
+| 上游 PR | ✅ 通用 API 缺口(任何用 EngineConfig.instructions 的 embedder 都受益) |
+| 测试 | `forkguard_local_law_tier_covers_engine_config_instructions` |
+
+### 组 3 — BASE_PROMPT 事实层剪裁 ❌ (原 #29 + #30 + #31 + #32 + #33 + #34 + #35)
+
+| 项 | 内容 |
+|---|---|
+| 文件 | `prompts/base.md` 多段 + `prompts.rs:773-789` inline + `prompts/modes/agent.md` |
+| 删除 | `## RLM — How to Use It` 段 (20 行) + Tool Selection Guide `### rlm_open / rlm_eval` 段 + `## Your V4 Characteristics` 段 (12 行) + `## Toolbox (fast reference)` 段 (16 行,列 30+ 上游工具) + Context Management 里 "DeepSeek V4 thinking tokens" 句 |
+| 改写 | `## Sub-Agent Strategy` (删 "$0.14/M / cap 10 / hard ceiling 20" → "concurrent cap is embedder-configured");`## Output Formatting` 反转 ("terminal-only" → "Match the embedder's render target");`## Composition Pattern` 抽象 (硬编码 `checklist_write` / `update_plan` → "use whichever planning tool the runtime exposes");`## Context Management` + `agent.md` 删 `/compact` slash command / `cache hit %` 角标 / sidebar 等 terminal UI 引用;`### agent_open / agent_eval / agent_close / tool_agent` 改成通用 `### Sub-agent tools (if exposed)` (删 `fork_context` / `Fin fast lane` / `Flash V4` 等 DeepSeek-specific 引导) |
+| 理由 | BASE_PROMPT 是给 codewhale-tui 终端 + DeepSeek V4 + 30+ 工具齐全场景写的;pinvou3 = Qwen3.6 + Tauri GUI + ~10 工具,三维度全错位。AI 看到引导会试调不可用工具失败 |
+| 上游 PR | ❌ pinvou3 专用(其他用底座的人可能用 RLM / V4 / 完整 toolbox) |
+| 测试改造 | 上游 4 个回归测试因这些删/改必然 fail(断言 RLM/agent_eval/fork_context/Brother Whale 关键字存在),反向重写为 forkguard:<br>• `forkguard_tool_selection_guide_is_embedder_aware`<br>• `forkguard_rlm_section_removed_by_pinvou3`<br>• `forkguard_pinvou3_omitted_upstream_specific_tool_names_from_base_prompt`<br>• `forkguard_no_deepseek_specific_fork_context_prose_in_base_prompt` |
+
+### 组 4 — P-brand cleanup: 品牌字样 + 路径列表清理 ❌ (原 #36 + #37 + #38 + 2026-05-28 扩展)
+
+> 这一组覆盖所有 "去 codewhale 品牌" 改动:文本字串替换 + 路径清单砍 + Tier 5 段精简 + 配套 pinvou3 bridge 路径迁移。最终 prompt 里 `codewhale` 只剩 3 处 `<codewhale:subagent.done>` 协议 sentinel(hook 契约不可改)。
+
+#### 4a — 文本字串替换 (原 #36 + #37 + #38)
+
+| 项 | 内容 |
+|---|---|
+| 文件 | `prompts/base.md` + `prompts.rs::LOCALE_PREAMBLE_ZH_HANS` + `prompts.rs::AUTHORITY_RECAP` |
+| 改动 | (a) Constitution 标题 `CODEWHALE` → `PINVOU3` + 删 `### Preamble` 整段(5 行 Brother Whale 品牌诗),改成一句 `You are {model_id}, running inside pinvou3. Honor the user's trust through truth, clarity, and working code.`<br>(b) `LOCALE_PREAMBLE_ZH_HANS` "你正在 codewhale 中运行" → "你正在 pinvou3 中运行"<br>(c) `AUTHORITY_RECAP` "Constitution of CodeWhale" → "Constitution of pinvou3" |
+| 理由 | pinvou3 是独立产品;模型自我认知应标识 pinvou3 运行环境而非底座品牌 |
+| 测试 | `forkguard_constitutional_preamble_uses_pinvou3_branding` |
+
+#### 4b — Tier 5 段精简 (2026-05-28)
+
+| 项 | 内容 |
+|---|---|
+| 文件 | `prompts/base.md:55` (Article VII Tier 5) |
+| 改动 | 删裸暴露的品牌路径名 `AGENTS.md, CLAUDE.md`, `.codewhale/instructions.md`, `.deepseek/instructions.md`,改成 "files configured via `EngineConfig.instructions` plus any workspace-rooted instructions file the runtime discovers"。语义保留(EngineConfig.instructions 仍升 Tier 5 Local Law),只删品牌列举 |
+| 理由 | pinvou3 用户不该在 prompt 里看到其他 AI 工具品牌路径 |
+| 测试 | `forkguard_local_law_tier_covers_engine_config_instructions`(扩展为同时断言品牌路径不裸列) |
+
+#### 4c — PROJECT_CONTEXT_FILES + GLOBAL_PATHS 砍到 1 (2026-05-28)
+
+| 项 | 内容 |
+|---|---|
+| 文件 | `project_context.rs` (`PROJECT_CONTEXT_FILES` + `GLOBAL_PATHS` + `auto_generate_context`) |
+| 改动 | (a) `PROJECT_CONTEXT_FILES` 6 路径(`WHALE.md`/`AGENTS.md`/`.claude/instructions.md`/`CLAUDE.md`/`.codewhale/instructions.md`/`.deepseek/instructions.md`)→ 只剩 `.pinvou3/workspace_context.md`<br>(b) `GLOBAL_PATHS` 4 路径(`~/.codewhale/AGENTS.md` 等)→ 空数组,`load_global_agents_context` early return None<br>(c) `auto_generate_context` 配套对齐:检查目标 + 写盘路径都改 `.pinvou3/workspace_context.md` |
+| 理由 | pinvou3 不识别其他 AI 工具的全局/workspace 配置(`~/CLAUDE.md`/`~/AGENTS.md` 等);只用 pinvou3 自家路径 |
+| 上游 PR | ❌ pinvou3 专用 |
+| 测试 | 底座原 11 个相关 test 用 `#[ignore = "pinvou3 fork (P-brand cleanup): ..."]` 标记保留(便于上游 sync cherry-pick) |
+
+#### 4d — pinvou3 bridge 路径迁移 + legacy 清理 (2026-05-28)
+
+| 项 | 内容 |
+|---|---|
+| 文件 | `pinvou3-app/src-tauri/src/bridge/mod.rs::write_pinvou3_workspace_context_at` (扩展原 #27) |
+| 改动 | (a) 写盘路径从 `~/.codewhale/instructions.md` → `~/.pinvou3/workspace_context.md`(配套 4c PROJECT_CONTEXT_FILES 唯一一条路径)<br>(b) 同时清理 legacy `~/.codewhale/instructions.md` + `~/.deepseek/instructions.md`(仅清 auto-gen 残留 / pinvou3 早期写的版本,用户自定义保留) |
+| 理由 | 配套 4c;同时清干净用户 $HOME 上的早期路径残留 |
+| 测试 | `forkguard_writes_pinvou3_workspace_context_to_codewhale_instructions`(扩展为 4 case:含 legacy 清理验证) |
+
+### 组 5 — Environment block 精简 + 移到 volatile 区 ⚠️ (原 #39 + #40)
+
+| 项 | 内容 |
+|---|---|
+| 文件 | `prompts.rs::render_environment_block` + 渲染位置(原 #2.25 → #6,紧邻 instructions block) |
+| 改动 | (a) 删 `- lang:` 字段(跟 locale_preamble/closer/pinvou3 §1 三处冗余)<br>(b) 删 `- codewhale_version:` 字段(显示 codewhale-tui crate 版本而非 pinvou3-app 版本,误导)<br>(c) 渲染位置从 volatile boundary **上方**移到**下方** |
+| 理由 | 上游注释假设"workspace fixed for the run"对 codewhale-tui 终端成立、对 pinvou3 多 session 不成立(pwd 含 session_id 跨 session 漂移)。移到 volatile 区让静态 prefix 跨 session byte-stable,prefix cache 命中率提升 |
+| 上游 PR | ⚠️ #40(移位)通用价值适合 PR;#39(删字段)pinvou3 专用 |
+| 测试 | `render_environment_block_lists_supplied_locale_and_workspace`(改造为反向断言确认 lang/codewhale_version 不存在) |
+
+### 组 6 — Skills 扫描路径精简 ❌ (原 #41)
+
+| 项 | 内容 |
+|---|---|
+| 文件 | `skills/mod.rs::skills_directories_with_home` |
+| 改动 | 砍 10 条路径(6 个 workspace `<ws>/.agents/skills` / `skills` / `.opencode/skills` / `.claude/skills` / `.cursor/skills` / `.codewhale/skills` + 3 个 home `~/.claude/skills` / `~/.codewhale/skills` / `~/.deepseek/skills` + 1 个 fallback `/tmp/codewhale/skills`),只保留 `~/.agents/skills`。pinvou3 自带 skill 通过 `EngineConfig.skills_dir` 走组 1 的 union 入口注入 |
+| 理由 | pinvou3 GUI 单 embedder 场景:workspace=$HOME → 10 条 home/workspace 路径全重叠;`.opencode`/`.cursor`/`.claude`/`.codewhale`/`.deepseek` 等多工具约定对 pinvou3 无意义 |
+| 上游 PR | ❌ pinvou3 专用决策 |
+| 测试 | `forkguard_skills_dir_unions_with_home_rooted_workspace_skills`(同时验证 `.deepseek/skills` 等不进);底座 7 个原版路径测试用 `#[ignore = "pinvou3 fork patch #41: ..."]` 标记保留,便于上游 sync 时对照恢复 |
 
 ---
 
@@ -187,6 +288,15 @@
 | #18b bridge fake-ip 信任段 | `forkguard_network_policy_trusts_fakeip_range_only` | pinvou3-tauri |
 | #16/锁定字段 | `engine_config_locks_critical_fields`(含 max_subagents=1 / timeout=300) | pinvou3-tauri |
 | #23/#24 窗口识别 | `default_model_window_recognized_by_engine` | pinvou3-tauri |
+| #25/#26 skills_dir union 不被短路 | `forkguard_skills_dir_unions_with_home_rooted_workspace_skills` | codewhale-tui |
+| #27 workspace=$HOME 不被 500 行 dump | `forkguard_writes_pinvou3_workspace_context_to_codewhale_instructions` | pinvou3-tauri |
+| #28 Tier 5 cover EngineConfig.instructions | `forkguard_local_law_tier_covers_engine_config_instructions` | codewhale-tui |
+| #29 RLM 段被删 | `forkguard_rlm_section_removed_by_pinvou3` | codewhale-tui |
+| #31 Toolbox / agent_eval 字串被清 | `forkguard_pinvou3_omitted_upstream_specific_tool_names_from_base_prompt` | codewhale-tui |
+| #31 fork_context: true / DeepSeek prefix-cache 被清 | `forkguard_no_deepseek_specific_fork_context_prose_in_base_prompt` | codewhale-tui |
+| #31 Tool Selection Guide 改 embedder-aware | `forkguard_tool_selection_guide_is_embedder_aware` | codewhale-tui |
+| #36 Constitution 改 PINVOU3 + 删 Brother Whale | `forkguard_constitutional_preamble_uses_pinvou3_branding` | codewhale-tui |
+| #39 environment 删 lang / codewhale_version | `render_environment_block_lists_supplied_locale_and_workspace`(反向断言) | codewhale-tui |
 
 ---
 
