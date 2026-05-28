@@ -114,7 +114,7 @@
         light: '浅色', dark: '深色',
         searchBackend: 'web_search 源', searchBackendDesc: 'LLM 调用 web_search 工具时使用的源',
         searchKey: 'API Key',
-        searchKeyHintBing: 'Bing 不需要 API key',
+        searchKeyHintBing: 'Bing 不需要 API key，但中文搜索结果不理想',
         searchKeyHintMetaso: '留空使用社区共享 key（~100 次/天，多用户竞争）',
         searchKeyHintBocha: '必填，否则搜索会直接报错',
         searchKeyPlaceholder: '粘贴 API key',
@@ -136,7 +136,7 @@
         light: 'Light', dark: 'Dark',
         searchBackend: 'web_search source', searchBackendDesc: 'Source used by the LLM when invoking the web_search tool',
         searchKey: 'API Key',
-        searchKeyHintBing: 'Bing requires no API key',
+        searchKeyHintBing: 'Bing needs no API key, but Chinese search results are poor',
         searchKeyHintMetaso: 'Leave empty for community shared key (~100/day, multi-user)',
         searchKeyHintBocha: 'Required, search will fail without it',
         searchKeyPlaceholder: 'Paste API key',
@@ -722,26 +722,27 @@
                     </div>
                   </div>
 
-                  <div>
-                    <span className="text-[16px] block mb-2">{t.searchKey}</span>
-                    <input
-                      type="password"
-                      value={searchApiKey}
-                      onChange={e => setSearchApiKey(e.target.value)}
-                      disabled={searchProvider === 'bing'}
-                      placeholder={t.searchKeyPlaceholder}
-                      className={`w-full px-4 py-2 rounded-lg text-[14px] outline-none transition-colors ${
-                        isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746] focus:border-[#A8C7FA]'
-                               : 'bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0]'
-                      } ${searchProvider === 'bing' ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    />
-                    <span className={`text-[12px] mt-2 block ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
-                      {searchProvider === 'bing' ? t.searchKeyHintBing
-                        : searchProvider === 'metaso' ? t.searchKeyHintMetaso
-                        : t.searchKeyHintBocha}
+                  {searchProvider === 'bing' ? (
+                    <span className={`text-[13px] block ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
+                      {t.searchKeyHintBing}
                     </span>
+                  ) : (
+                    <div>
+                      <span className="text-[16px] block mb-2">{t.searchKey}</span>
+                      <input
+                        type="password"
+                        value={searchApiKey}
+                        onChange={e => setSearchApiKey(e.target.value)}
+                        placeholder={t.searchKeyPlaceholder}
+                        className={`w-full px-4 py-2 rounded-lg text-[14px] outline-none transition-colors ${
+                          isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746] focus:border-[#A8C7FA]'
+                                 : 'bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0]'
+                        }`}
+                      />
+                      <span className={`text-[12px] mt-2 block ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
+                        {searchProvider === 'metaso' ? t.searchKeyHintMetaso : t.searchKeyHintBocha}
+                      </span>
 
-                    {(searchProvider === 'metaso' || searchProvider === 'bocha') && (
                       <div className={`mt-3 px-3 py-2 rounded-lg flex items-center justify-between gap-3 ${isDark ? 'bg-[#131314]' : 'bg-white'}`}>
                         <span className={`text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
                           {searchProvider === 'metaso' ? t.searchGetKeyMetasoSteps : t.searchGetKeyBochaSteps}
@@ -759,12 +760,12 @@
                           }`}
                         >{t.searchGetKey} ↗</button>
                       </div>
-                    )}
+                    </div>
+                  )}
 
-                    <span className={`text-[12px] mt-2 block italic ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
-                      {t.searchRestartHint}
-                    </span>
-                  </div>
+                  <span className={`text-[12px] mt-2 block italic ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
+                    {t.searchRestartHint}
+                  </span>
                 </div>
               </div>
 
