@@ -184,7 +184,10 @@ fn classify(ext: &str) -> &'static str {
         "pptx" | "ppt" | "odp" | "dps" => "presentation",
         // 表格：pandoc 不支持 xlsx/ods → LibreOffice csv（含 WPS 表格 .et）
         "xlsx" | "ods" | "xls" | "et" => "spreadsheet",
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg" | "tiff" | "tif" => "image",
+        // 仅底座 image_analyze 支持的位图格式走视觉(vision/tools.rs detect_mime_type)。
+        // svg(矢量)/tiff 不在支持列表 —— 不归 image,落到 binary 兜底给"不支持"提示,
+        // 避免被当图暂存后 image_analyze 报 "Unsupported image format"。
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => "image",
         // 压缩包：解压后递归识别（7z 统一处理 zip/rar/7z）
         "zip" | "rar" | "7z" => "archive",
         // 邮件：eml 走 python email 标准库；msg 先 msgconvert 转 eml
@@ -1055,7 +1058,7 @@ fn media_placeholder(basename: String, path_str: String, byte_size: u64) -> Inge
         token_estimate: 0,
         byte_size,
         warning: Some(
-            "检测到音视频文件，当前未启用本地语音转录（需部署 whisper 后端）。\
+            "检测到音视频文件，当前暂不支持本地语音转录。\
              可改为提供文字稿，或口述其中要点。"
                 .into(),
         ),
@@ -1251,6 +1254,19 @@ mod tests {
     #[test]
     fn validate_path_rejects_outside_home() {
         assert!(validate_path("/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn classify_routes_image_formats_by_vision_support() {
+        // 视觉(image_analyze)支持的位图走 image。
+        for e in ["png", "jpg", "jpeg", "gif", "webp", "bmp"] {
+            assert_eq!(classify(e), "image", "{e} 应走 image");
+        }
+        // svg(矢量)/tiff 不被视觉工具支持 → 落 binary 兜底,不当图,
+        // 否则会被暂存后 image_analyze 报 Unsupported image format。
+        for e in ["svg", "tiff", "tif"] {
+            assert_eq!(classify(e), "binary", "{e} 不应走 image,应落 binary 兜底");
+        }
     }
 
     /// 端到端 OCR 实测：依赖本机装了 tesseract + chi_sim，且 /tmp 下有用

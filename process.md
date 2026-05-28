@@ -38,9 +38,9 @@
 
 **🟢 低优先**
 - GB10 self-hosted GitHub Actions runner 跑 L1 nightly(等团队 ≥2 人或发版加快)
+- **音视频音轨转录**(issue #1 最后缺口,2026-05-28 定方案暂缓做)。范围:只做音轨转录(音频+视频抽音轨共用),**不做画面理解**(无本地视频模型、抽帧送 image_analyze 成本高、PPT 场景画面价值低)。方案已定:ffmpeg(deb depends,本地已装)抽 16k 单声道音轨 → whisper.cpp `whisper-cli`(~1MB 二进制 vendor 进 app 资源)+ ggml-**small** 模型(466MB,**首次拖音视频自动下载**到 `~/.pinvou3/whisper/`,**不进 deb**)→ `-l zh` 转录 → 替换 `file_ingest.rs` 的 `media_placeholder`,失败优雅降级回占位。本地 CPU 跑(16 核无 GPU,不碰 GB10/不抢 vLLM)。待决:whisper-cli 二进制是否本地编译后 vendor(需先装 cmake);转录慢(数分钟)的进度 UX(v1 用现有 parsing spinner,进度条 v1.1)
 
 **⏸️ 已决策不做**
-- 音视频转录 — 等 GB10/相应模型接入再作独立能力,现降级处理(视觉已完成,见关键决策)
 - 多 vLLM 实例给 subagent — 不解决根本(慢主因是模型行为),破坏 single-vLLM 简洁
 - 多 subagent 大研究 fan-out — 弱模型不可用(见决策)
 - prompt 工程消解死磕 / reminder-vs-XML / L3 Playwright / scenario 提 toml / 产物内嵌预览 — ROI 低或已回退
