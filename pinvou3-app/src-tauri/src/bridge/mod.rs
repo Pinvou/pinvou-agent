@@ -45,31 +45,6 @@ use self::prefs::{ModelPreset, UserPrefs};
 /// ⚠️ ops 同步要求:vLLM 启动也要带
 /// `--served-model-name qwen36_35b_256k`,否则 OpenAI-compat API 报
 /// `model_not_found`。
-/// 占据底座 `PROJECT_CONTEXT_FILES` 唯一一条路径的精简内容,挡掉
-/// `auto_generate_context($HOME)` 产生的 500 行树状 dump。
-///
-/// 写到 `~/.pinvou3/workspace_context.md`(P-brand cleanup 后路径,配套底座 fork
-/// patch 砍掉 PROJECT_CONTEXT_FILES 6 条品牌路径只留这一条)。设计要点:
-/// - **不**自称 "Project Structure" — 避免 auto-gen 检测把它当 pinvou3 自己写的可覆盖文件
-/// - 引导模型把"产出根目录"从 $HOME 转向 session 的真实 workspace(具体路径在 6a 层
-///   `<instructions source=".../sessions/<sid>/...">` 段内)
-/// - 重申敏感目录禁令的位置,不在这里重复展开(避免双源真相)
-const PINVOU3_WORKSPACE_CONTEXT_MD: &str = "\
-# pinvou3 workspace context
-
-工作目录是 pinvou3 用户的家目录 (`$HOME`)。**这不是一个项目**——pinvou3 是本地 AI 助手 GUI,$HOME 不需要按 git repo 的方式建立项目认知。
-
-## 产出根目录
-真正的产出目录由 session 决定,具体路径见下文 `<instructions>` 段(每个 session 一份独立 workspace,新会话 = 全新空目录)。**不要**把产物写到 `$HOME` 顶层或 `~/Documents` 等用户私有目录,除非用户明确要求。
-
-## 用户文件位置
-常见: `~/Documents/` `~/Desktop/` `~/Downloads/` `~/桌面/` `~/下载/` `~/文档/`(中/英文桌面环境两种命名都可能)。用 `glob` / `file_search` 找,**不要硬猜路径**。
-
-## 禁止行为
-- **不要** `list_dir ~/` 或 `find ~/ ...` 探整个家目录——噪音大且对当前任务无意义
-- 敏感目录禁读/禁写见 `<instructions>` 段 §8(`~/.ssh/`、`~/.gnupg/`、`~/.aws/`、`credentials*`、`.env` 等)。本文件**不**列敏感路径名,避免与 §8 形成双源真相
-";
-
 const LOCAL_VLLM_MODEL: &str = "qwen36_35b_256k";
 // 127.0.0.1 让 .deb 装到任何机器都默认连本机 vLLM(全量包 install.sh
 // 起 systemd 容器 --network host 绑 0.0.0.0:8000);本机 dev 走 run-dev.sh
@@ -111,48 +86,59 @@ impl Pinvou3Bridge {
             workspace: paths::user_home_dir(),
         };
         this.wire_max_output_tokens_env();
-        // P0-2 + P-brand cleanup: 让 workspace=$HOME 不被底座
-        // `load_project_context_with_parents` 当成项目自动 walk 出 500 行 $HOME
-        // 目录树注入 prompt(含 .ssh/id_ed25519 等敏感路径名)。pinvou3 抢在底座
-        // auto_generate 之前往 `~/.pinvou3/workspace_context.md` 写一份精简版
-        // (配套底座 fork patch 把 PROJECT_CONTEXT_FILES 砍到只剩这一条 pinvou3
-        // 自家路径)。同时清理早期 `~/.codewhale/instructions.md` 残留。
-        if let Err(e) = this.write_pinvou3_workspace_context_if_needed() {
-            eprintln!("[pinvou3-app] write pinvou3 workspace context failed: {e}");
-        }
-        // C 方案(P-no-disk): 清理 legacy `~/.pinvou3/sessions/<sid>/instructions.md`
-        // 残留。新版 pinvou3 用 `InstructionSource::Inline` 注入,这些文件不再被读;
-        // 留着只是用户 $HOME 里看着像配置文件实际作废。清掉减少混淆。
-        this.cleanup_legacy_session_instructions();
+        // C 方案(P-no-disk)最终版: 清理所有 pinvou3 历史 disk 残留:
+        //   • `~/.pinvou3/sessions/<sid>/instructions.md`(per-session inline 前路径)
+        //   • `~/.pinvou3/workspace_context.md`(workspace context 已合并进 INSTRUCTIONS_MD §0)
+        //   • `~/.codewhale/instructions.md` / `~/.deepseek/instructions.md`(早期 P-brand 路径)
+        // 不再生成任何 pinvou3-managed disk 文件 — 所有 prompt 内容走 Inline。
+        this.cleanup_legacy_pinvou3_disk_files();
         Ok(this)
     }
 
-    /// 扫 `~/.pinvou3/sessions/*/instructions.md` 全删 — C 方案后这些文件没用。
-    /// 不动 sessions 目录里其它文件(messages 历史/artifacts/workspace 等仍要保留)。
-    fn cleanup_legacy_session_instructions(&self) {
-        let Ok(entries) = std::fs::read_dir(paths::sessions_root()) else {
-            return;
-        };
+    /// 清扫所有早期版本 pinvou3 写过的 prompt-related disk 文件。C-fork P-no-disk
+    /// 最终态 disk 完全干净,所有 prompt 内容走 `InstructionSource::Inline` 内存注入。
+    ///
+    /// 清单(只清 pinvou3-managed / auto-gen 内容,用户自定义文件保留):
+    ///   • `~/.pinvou3/sessions/<sid>/instructions.md` — per-session inline 前路径(全清)
+    ///   • `~/.pinvou3/workspace_context.md` — workspace context 合并进 INSTRUCTIONS_MD §0 前路径
+    ///   • `~/.codewhale/instructions.md` + `~/.deepseek/instructions.md` — 早期 P-brand 路径
+    fn cleanup_legacy_pinvou3_disk_files(&self) {
         let mut removed = 0usize;
-        for entry in entries.flatten() {
-            let path = entry.path().join("instructions.md");
-            if path.is_file() && std::fs::remove_file(&path).is_ok() {
-                removed += 1;
+
+        // (1) sessions/*/instructions.md — 无条件清(per-session pinvou3 自家产物,不会用户编辑)
+        if let Ok(entries) = std::fs::read_dir(paths::sessions_root()) {
+            for entry in entries.flatten() {
+                let path = entry.path().join("instructions.md");
+                if path.is_file() && std::fs::remove_file(&path).is_ok() {
+                    removed += 1;
+                }
             }
         }
+
+        // (2)(3)(4) 单文件 — 只清 pinvou3-managed / auto-gen 标识的,用户自定义保留
+        for legacy in [
+            self.workspace.join(".pinvou3").join("workspace_context.md"),
+            self.workspace.join(".codewhale").join("instructions.md"),
+            self.workspace.join(".deepseek").join("instructions.md"),
+        ] {
+            if let Ok(existing) = std::fs::read_to_string(&legacy) {
+                let head: String = existing.chars().take(200).collect();
+                let is_auto_gen = head.contains("Project Structure (Auto-generated)");
+                let is_pinvou3_managed = head.contains("pinvou3 workspace context");
+                if (is_auto_gen || is_pinvou3_managed)
+                    && std::fs::remove_file(&legacy).is_ok()
+                {
+                    removed += 1;
+                }
+            }
+        }
+
         if removed > 0 {
             eprintln!(
-                "[pinvou3-app] cleaned up {removed} legacy session instructions.md files \
-                 (C-fork P-no-disk: instructions now Inline in memory)"
+                "[pinvou3-app] cleaned up {removed} legacy disk file(s) \
+                 (C-fork P-no-disk: prompt content now Inline in memory)"
             );
         }
-    }
-
-    /// pinvou3 精简版 `project_context`,挡住底座 `auto_generate_context` 对 $HOME 的
-    /// 500 行树状 dump。**只**写 `~/.codewhale/instructions.md`(底座 PROJECT_CONTEXT_FILES
-    /// 顺序 `.codewhale > .deepseek`,前者存在则后者不再读)。
-    fn write_pinvou3_workspace_context_if_needed(&self) -> std::io::Result<()> {
-        write_pinvou3_workspace_context_at(&self.workspace)
     }
 
     /// 把 `self.max_output_tokens()` 写到底座读取的 `DEEPSEEK_MAX_OUTPUT_TOKENS`
@@ -564,55 +550,6 @@ impl Pinvou3Bridge {
     }
 }
 
-/// 落地 P0-2: 在 `workspace/.pinvou3/workspace_context.md` 写 pinvou3 精简版,
-/// 挡住底座 `auto_generate_context` 对 $HOME 的 500 行 dump。抽成 module-level
-/// free fn 是为了测试能传 fake home 跑(避免动用户真实 `~/.pinvou3`)。
-///
-/// 路径迁移历史: 早期用 `.codewhale/instructions.md`(底座命名约定),后随
-/// P-brand cleanup 改到 `.pinvou3/workspace_context.md` —— 配套底座 fork patch
-/// 把 PROJECT_CONTEXT_FILES 砍到只剩这一条 pinvou3 自家路径,prompt 里不再
-/// 暴露 codewhale 品牌路径名。同时清理 legacy `.codewhale/instructions.md` 和
-/// `.deepseek/instructions.md`(底座 auto-gen 内容才清,用户自定义保留)。
-///
-/// 写入条件(保守):
-/// 1. 不存在 → 写
-/// 2. 存在且前 200 字节含底座 auto-gen marker `Project Structure (Auto-generated)`
-///    → 覆盖(底座 auto-gen 文件用户不会真改)
-/// 3. 否则保留(用户已定制 / 别的工具写的)
-fn write_pinvou3_workspace_context_at(workspace: &std::path::Path) -> std::io::Result<()> {
-    let target = workspace.join(".pinvou3").join("workspace_context.md");
-    let should_write = match std::fs::read_to_string(&target) {
-        Err(_) => true,
-        Ok(existing) => {
-            let head: String = existing.chars().take(200).collect();
-            head.contains("Project Structure (Auto-generated)")
-        }
-    };
-    if should_write {
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&target, PINVOU3_WORKSPACE_CONTEXT_MD)?;
-    }
-
-    // 清理早期版本残留 / 底座 auto-gen 残留(仅自动生成的版本,用户改过的保留)。
-    for legacy in [
-        workspace.join(".codewhale").join("instructions.md"),
-        workspace.join(".deepseek").join("instructions.md"),
-    ] {
-        if let Ok(existing) = std::fs::read_to_string(&legacy) {
-            let head: String = existing.chars().take(200).collect();
-            let is_auto_gen = head.contains("Project Structure (Auto-generated)");
-            let is_old_pinvou3 = head.contains("pinvou3 workspace context");
-            if is_auto_gen || is_old_pinvou3 {
-                let _ = std::fs::remove_file(&legacy);
-            }
-        }
-    }
-
-    Ok(())
-}
-
 /// M1: per-turn `<system-reminder>` 文案,按当前 mode+phase 选段。
 /// 决策文档 V2 §13.1。
 /// 命中率优先于优雅:每段都是命令式、短、列禁令清单(Qwen3.6 友好)。
@@ -988,122 +925,4 @@ mod tests {
         assert!(content_b.contains(b));
     }
 
-    /// P0-2 fork-guard: pinvou3 boot 时必须给 `workspace=$HOME` 写一份
-    /// 精简 `.codewhale/instructions.md`,挡住底座 `auto_generate_context`
-    /// 在 $HOME 上生成 500 行树状 dump(暴露 ~/.ssh/id_ed25519 等敏感路径名)。
-    ///
-    /// 覆盖三个 case: (1) 不存在 → 写;(2) 存在但是底座 auto-gen → 覆盖;
-    /// (3) 存在且用户自定义 → 保留不动。
-    /// P0-2 + P-brand fork-guard: pinvou3 boot 时必须给 `workspace=$HOME` 写一份
-    /// 精简 `.pinvou3/workspace_context.md`(P-brand cleanup 后路径,原 `.codewhale/
-    /// instructions.md` 已迁移),挡住底座 `auto_generate_context` 在 $HOME 上生成
-    /// 500 行树状 dump(暴露 ~/.ssh/id_ed25519 等敏感路径名)。
-    ///
-    /// 覆盖 4 个 case: (1) 不存在 → 写;(2) 存在但是底座 auto-gen → 覆盖;
-    /// (3) 存在且用户自定义 → 保留不动;(4) 清理 legacy `.codewhale/instructions.md`
-    /// auto-gen 残留(用户自定义版本保留)。
-    #[test]
-    fn forkguard_writes_pinvou3_workspace_context_to_codewhale_instructions() {
-        // 用 PID + nanos 造唯一临时目录,免引 tempfile 依赖。
-        fn unique_tempdir(tag: &str) -> std::path::PathBuf {
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let pid = std::process::id();
-            let dir = std::env::temp_dir().join(format!(
-                "pinvou3-forkguard-p0_2-{tag}-{pid}-{nanos}"
-            ));
-            std::fs::create_dir_all(&dir).unwrap();
-            dir
-        }
-
-        // case 1: 不存在 → 写
-        let tmp = unique_tempdir("case1");
-        super::write_pinvou3_workspace_context_at(&tmp).unwrap();
-        let target = tmp.join(".pinvou3/workspace_context.md");
-        assert!(target.exists(), "case 1: 文件不存在时必须写");
-        let content = std::fs::read_to_string(&target).unwrap();
-        assert!(
-            content.contains("pinvou3 workspace context"),
-            "case 1: 写的内容必须是 pinvou3 精简版"
-        );
-        assert!(
-            !content.contains("Project Structure (Auto-generated)"),
-            "case 1: 不能写底座 auto-gen 标识(否则下次启动认成可覆盖)"
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
-
-        // case 2: 存在 + 底座 auto-gen marker → 覆盖
-        let tmp = unique_tempdir("case2");
-        let target = tmp.join(".pinvou3/workspace_context.md");
-        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-        std::fs::write(
-            &target,
-            "# Project Structure (Auto-generated)\n\n> Old 500-line tree dump...\n",
-        )
-        .unwrap();
-        super::write_pinvou3_workspace_context_at(&tmp).unwrap();
-        let content = std::fs::read_to_string(&target).unwrap();
-        assert!(
-            content.contains("pinvou3 workspace context"),
-            "case 2: 底座 auto-gen 版本必须被 pinvou3 精简版覆盖"
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
-
-        // case 3: 存在 + 用户自定义内容 → 不动
-        let tmp = unique_tempdir("case3");
-        let target = tmp.join(".pinvou3/workspace_context.md");
-        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-        let user_custom = "# 我自己写的项目规则\n\n绝对不要碰 src/legacy/\n";
-        std::fs::write(&target, user_custom).unwrap();
-        super::write_pinvou3_workspace_context_at(&tmp).unwrap();
-        let content = std::fs::read_to_string(&target).unwrap();
-        assert_eq!(
-            content, user_custom,
-            "case 3: 用户自定义内容必须保留,不能被 pinvou3 覆盖"
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
-
-        // case 4: legacy `.codewhale/instructions.md` (auto-gen 或早期 pinvou3 自己写的)
-        // 必须被清理;但用户自定义 `.codewhale/instructions.md` 保留。
-        let tmp = unique_tempdir("case4");
-        let legacy_codewhale = tmp.join(".codewhale/instructions.md");
-        std::fs::create_dir_all(legacy_codewhale.parent().unwrap()).unwrap();
-        // (4a) auto-gen 残留 → 删
-        std::fs::write(
-            &legacy_codewhale,
-            "# Project Structure (Auto-generated)\n\n> Old dump...\n",
-        )
-        .unwrap();
-        super::write_pinvou3_workspace_context_at(&tmp).unwrap();
-        assert!(
-            !legacy_codewhale.exists(),
-            "case 4a: legacy 底座 auto-gen `.codewhale/instructions.md` 必须被清理"
-        );
-        // (4b) pinvou3 早期写的版本 → 删
-        std::fs::write(
-            &legacy_codewhale,
-            "# pinvou3 workspace context\n\n旧版 pinvou3 写在 .codewhale 路径\n",
-        )
-        .unwrap();
-        super::write_pinvou3_workspace_context_at(&tmp).unwrap();
-        assert!(
-            !legacy_codewhale.exists(),
-            "case 4b: 早期 pinvou3 自己写到 `.codewhale/instructions.md` 的版本必须被清理"
-        );
-        // (4c) 用户自定义 `.codewhale/instructions.md` → 留(不动用户私有)
-        std::fs::write(
-            &legacy_codewhale,
-            "# 我手动写在 .codewhale 的内容\n\n保留不动\n",
-        )
-        .unwrap();
-        super::write_pinvou3_workspace_context_at(&tmp).unwrap();
-        assert!(
-            legacy_codewhale.exists(),
-            "case 4c: 用户自定义 `.codewhale/instructions.md` 必须保留(不能删用户私有)"
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
 }

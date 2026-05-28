@@ -54,7 +54,7 @@ fingerprints=(
   "#41 |skill 路径只剩 ~/.agents/skills    |DeepSeek-TUI/crates/tui/src/skills/mod.rs|patch #41): 砍掉底座的 10 路径扫描清单"
   "    |phase tracking 弱化(dormant)       |DeepSeek-TUI/crates/tui/src/skills/mod.rs|This section is dormant by default"
   "    |phase tracking 反指引(不要声明不适用)|DeepSeek-TUI/crates/tui/src/skills/mod.rs|Don't announce that a phased skill is"
-  "    |PROJECT_CONTEXT_FILES 砍到 1 条     |DeepSeek-TUI/crates/tui/src/project_context.rs|PROJECT_CONTEXT_FILES: &[&str] = &[\".pinvou3/workspace_context.md\"]"
+  "    |PROJECT_CONTEXT_FILES 砍空(C 终态)  |DeepSeek-TUI/crates/tui/src/project_context.rs|PROJECT_CONTEXT_FILES: &[&str] = &[]"
   "    |GLOBAL_PATHS 砍空                   |DeepSeek-TUI/crates/tui/src/project_context.rs|const GLOBAL_PATHS: &[&[&str]] = &[]"
   "    |C 方案 InstructionSource enum       |DeepSeek-TUI/crates/tui/src/prompts.rs|pub enum InstructionSource {"
   "    |C 方案 EngineConfig.instructions    |DeepSeek-TUI/crates/tui/src/core/engine.rs|pub instructions: Vec<crate::prompts::InstructionSource>"
