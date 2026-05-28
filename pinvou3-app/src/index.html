@@ -914,15 +914,30 @@
     // 品悟报告里的 CRITICAL/RAISED 等是 GATE/override 协议字段（前端正则放行 + 后端 GATE 依赖），
     // 不能改 skill 输出；只在显示层把它们翻译成人话，协议链路全程保持英文。
     const prettyPinvouReport = (html) => (html || '')
+      .replace(/PINVOU REVIEW REPORT/g, '品悟审核报告')
+      .replace(/PINVOU FINAL REPORT/g, '品悟验收报告')
+      .replace(/\bBoss\b/g, '老板')
+      .replace(/\bPinvou\b/g, '品悟')
       .replace(/>Finding</g, '>问题<')
-      .replace(/>Severity</g, '>程度<')
-      .replace(/>Status</g, '>状态<')
+      .replace(/>Severity</g, '>重要性<')
+      .replace(/>Status</g, '>处理状态<')
       .replace(/>User Decision</g, '>你的决定<')
-      .replace(/CRITICAL/g, '需要改')
-      .replace(/INFORMATIONAL/g, '可改可不改')
-      .replace(/OVERRIDDEN_BY_USER/g, '已同意继续')
-      .replace(/RAISED/g, '待定')
-      .replace(/\bcritical\b/gi, '需改项');
+      .replace(/\bCRITICAL\b/g, '必须处理')
+      .replace(/\bINFORMATIONAL\b/g, '可选建议')
+      .replace(/\bCLEAR\b/g, '无硬伤')
+      .replace(/\bDONE\b/g, '已完成')
+      .replace(/\bPARTIAL\b/g, '部分完成')
+      .replace(/\bMISSING\b/g, '未完成')
+      .replace(/\bOVERRIDDEN_BY_USER\b/g, '用户确认继续')
+      .replace(/\bRESOLVED\b/g, '已修复')
+      .replace(/\bRAISED\b/g, '待处理')
+      .replace(/\bNOTED\b/g, '已记录')
+      .replace(/<strong>VERDICT<\/strong>:\s*/gi, '<strong>结论</strong>：')
+      .replace(/\bVERDICT\b/g, '结论')
+      .replace(/\bExitPlanMode\b/g, '继续执行')
+      .replace(/\buser override\b/gi, '用户确认继续')
+      .replace(/\bclear\b/gi, '可以继续')
+      .replace(/\bcritical\b/gi, '必须处理');
 
     const ChatBubble = ({ item, theme, onPrefill, editable }) => {
       const isDark = theme === 'dark';
@@ -1535,7 +1550,7 @@
       const on = !!(bs && bs.modeState && bs.modeState.pinvou_review_enabled);
       return (
         <button onClick={() => bridge.available && bridge.togglePinvouReview()}
-          title={on ? '品悟 review: 开（关键阶段让品悟把关）' : '品悟 review: 关（点击开启）'}
+          title={on ? '品悟审核: 开（关键阶段让品悟把关）' : '品悟审核: 关（点击开启）'}
           className={`pointer-events-auto px-3 py-2 rounded-full text-[13px] font-medium flex items-center gap-1.5 transition-colors
             ${on ? (isDark ? 'bg-[#7C3AED]/40 text-[#D0BCFF]' : 'bg-[#7C3AED]/10 text-[#7C3AED]')
                  : (isDark ? 'bg-[#1E1F20] text-[#8E8E8E] hover:bg-[#333537]' : 'bg-white text-[#9AA0A6] hover:bg-[#F0F4F9] shadow-sm')}`}>
@@ -1555,8 +1570,8 @@
             <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{item.statusLabel || '已处理'}</div>
           ) : (
             <div className="flex items-center gap-2 flex-wrap">
-              <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.pinvouAcceptOverride(item.id, item.planMarkdown, item.report)}>✅ 直接执行</button>
-              <button className={cardBtnCls(isDark)} onClick={() => { onPrefill && onPrefill('修订方案: 按 Pinvou 上面提的关键问题改一下方案。'); bridge.markResolved(item.id, '↻ 让 AI 改方案...'); }}>↻ AI 改方案</button>
+              <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.pinvouAcceptOverride(item.id, item.planMarkdown, item.report)}>✅ 确认继续执行</button>
+              <button className={cardBtnCls(isDark)} onClick={() => bridge.pinvouRevisePlan(item.id, item.planMarkdown, item.report)}>↻ 让 AI 改方案</button>
               <button className={cardBtnCls(isDark)} onClick={() => { onPrefill && onPrefill('我也担心: '); bridge.markResolved(item.id, '⊕ 把你的话补进 plan...'); }}>⊕ 我加一句</button>
             </div>
           )}

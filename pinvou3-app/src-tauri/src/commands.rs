@@ -697,6 +697,23 @@ pub async fn accept_plan(
     Ok(store.mode_state(&session_id))
 }
 
+/// Pinvou Gate 预检。
+///
+/// 前端在把「用户已批准」echo 写进 messages 之前先调用本命令。这样当 Gate 失败并触发
+/// `/pinvou-review-plan` 时,reviewer 不会在同一上下文里先看到一条误导性的
+/// "用户已经批准"。
+#[tauri::command]
+pub async fn check_pinvou_exit_gate(
+    session_id: String,
+    plan_markdown: String,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    if store.mode_state(&session_id).pinvou_review_enabled {
+        check_exit_gate(&plan_markdown).map_err(|e| serialize_gate_error(&e))?;
+    }
+    Ok(())
+}
+
 /// 把 GateError 序列化成 JSON 字符串,前端 parseGateError() 解析 {gate_error, message, detail}。
 fn serialize_gate_error(err: &GateError) -> String {
     let kind = match err {
@@ -710,6 +727,31 @@ fn serialize_gate_error(err: &GateError) -> String {
         "detail": err,
     }))
     .unwrap_or_else(|_| err.to_string())
+}
+
+/// Pinvou 专用 review turn。
+///
+/// 与普通 `chat` 的区别:
+/// - 不按当前 session mode 发,固定走 `AppMode::Plan` 的只读工具面;
+/// - 不重置 auto-continue 计数,因为这不是用户主动开启的新任务;
+/// - 不修改 mode_state,避免 review turn 把 Plan/Executing 状态机带偏。
+#[tauri::command]
+pub async fn pinvou_review_chat(
+    session_id: String,
+    message: String,
+    pool: State<'_, EnginePool>,
+) -> Result<(), String> {
+    if message.trim().is_empty() {
+        return Err("empty review message".into());
+    }
+    pool.send_user_message(
+        &session_id,
+        message,
+        SerializableMode::Plan.to_app_mode(),
+        PlanPhase::None,
+    )
+    .await
+    .map_err(|e| format!("pinvou_review_chat send_user_message: {e:?}"))
 }
 
 /// 用户切换品悟 review 开关(UI 顶部 toggle)。

@@ -47,18 +47,17 @@ impl std::error::Error for GateError {}
 /// 检查 plan_markdown 是否通过 GATE。
 /// `Ok(())` = 放行,`Err(...)` = 阻塞,前端据 GateError 类型决定下一步。
 pub fn check_exit_gate(plan_markdown: &str) -> Result<(), GateError> {
-    let last_section = extract_last_section(plan_markdown)
-        .ok_or(GateError::MissingReviewReport)?;
+    let last_section = extract_last_section(plan_markdown).ok_or(GateError::MissingReviewReport)?;
 
-    if !last_section.heading.eq_ignore_ascii_case("PINVOU REVIEW REPORT") {
+    if !last_section
+        .heading
+        .eq_ignore_ascii_case("PINVOU REVIEW REPORT")
+    {
         return Err(GateError::MissingReviewReport);
     }
 
-    let findings = parse_findings_table(&last_section.body).map_err(|hint| {
-        GateError::MalformedReport {
-            hint: hint.to_string(),
-        }
-    })?;
+    let findings = parse_findings_table(&last_section.body)
+        .map_err(|hint| GateError::MalformedReport { hint })?;
 
     if findings.is_empty() {
         return Err(GateError::MalformedReport {
@@ -68,11 +67,8 @@ pub fn check_exit_gate(plan_markdown: &str) -> Result<(), GateError> {
 
     let unresolved_count = findings
         .iter()
-        .filter(|f| f.severity.eq_ignore_ascii_case("CRITICAL"))
-        .filter(|f| {
-            let s = f.status.to_uppercase();
-            s != "RESOLVED" && s != "OVERRIDDEN_BY_USER"
-        })
+        .filter(|f| f.severity == Severity::Critical)
+        .filter(|f| f.status != Status::Resolved && f.status != Status::OverriddenByUser)
         .count();
 
     if unresolved_count > 0 {
@@ -116,55 +112,96 @@ fn extract_last_section(md: &str) -> Option<Section<'_>> {
     Some(Section { heading, body })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Severity {
+    Critical,
+    Informational,
+    Clear,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Status {
+    Raised,
+    Resolved,
+    OverriddenByUser,
+    Noted,
+}
+
 #[derive(Debug, Clone)]
 struct Finding {
-    severity: String,
-    status: String,
+    severity: Severity,
+    status: Status,
 }
 
 /// 解析 markdown 表格,提取 Severity 和 Status 两列。
 /// 期望表头:`| Finding | Severity | Status | User Decision |`
-fn parse_findings_table(body: &str) -> Result<Vec<Finding>, &'static str> {
+fn parse_findings_table(body: &str) -> Result<Vec<Finding>, String> {
     let mut lines = body.lines().filter(|l| l.trim_start().starts_with('|'));
-    let header = lines.next().ok_or("找不到表格头")?;
-    let sep = lines.next().ok_or("找不到表格分隔行(|---|)")?;
+    let header = lines.next().ok_or_else(|| "找不到表格头".to_string())?;
+    let sep = lines
+        .next()
+        .ok_or_else(|| "找不到表格分隔行(|---|)".to_string())?;
     if !sep.contains("---") {
-        return Err("第二行不是分隔行(应该是 |---|---|...|)");
+        return Err("第二行不是分隔行(应该是 |---|---|...|)".into());
     }
 
     let header_cells: Vec<String> = split_md_row(header);
     let severity_idx = header_cells
         .iter()
         .position(|c| c.eq_ignore_ascii_case("Severity"))
-        .ok_or("表头缺 Severity 列")?;
+        .ok_or_else(|| "表头缺 Severity 列".to_string())?;
     let status_idx = header_cells
         .iter()
         .position(|c| c.eq_ignore_ascii_case("Status"))
-        .ok_or("表头缺 Status 列")?;
+        .ok_or_else(|| "表头缺 Status 列".to_string())?;
 
     let mut findings = Vec::new();
-    for line in lines {
+    for (row_idx, line) in lines.enumerate() {
         let cells = split_md_row(line);
         if cells.len() <= severity_idx.max(status_idx) {
             continue;
         }
-        let severity = cells[severity_idx].clone();
-        let status = cells[status_idx].clone();
-        if severity.is_empty() && status.is_empty() {
+        let severity_raw = cells[severity_idx].trim();
+        let status_raw = cells[status_idx].trim();
+        if severity_raw.is_empty() && status_raw.is_empty() {
             continue;
         }
+        let severity = parse_severity(severity_raw)
+            .map_err(|e| format!("第 {} 行 Severity 不合法: {e}", row_idx + 1))?;
+        let status = parse_status(status_raw)
+            .map_err(|e| format!("第 {} 行 Status 不合法: {e}", row_idx + 1))?;
         findings.push(Finding { severity, status });
     }
     Ok(findings)
 }
 
+fn parse_severity(raw: &str) -> Result<Severity, String> {
+    match raw.trim().to_ascii_uppercase().as_str() {
+        "CRITICAL" => Ok(Severity::Critical),
+        "INFORMATIONAL" => Ok(Severity::Informational),
+        "CLEAR" => Ok(Severity::Clear),
+        other => Err(format!(
+            "未知 severity `{other}`; 只允许 CRITICAL / INFORMATIONAL / CLEAR"
+        )),
+    }
+}
+
+fn parse_status(raw: &str) -> Result<Status, String> {
+    match raw.trim().to_ascii_uppercase().as_str() {
+        "RAISED" => Ok(Status::Raised),
+        "RESOLVED" => Ok(Status::Resolved),
+        "OVERRIDDEN_BY_USER" => Ok(Status::OverriddenByUser),
+        "NOTED" => Ok(Status::Noted),
+        other => Err(format!(
+            "未知 status `{other}`; 只允许 RAISED / RESOLVED / OVERRIDDEN_BY_USER / NOTED"
+        )),
+    }
+}
+
 fn split_md_row(line: &str) -> Vec<String> {
     let trimmed = line.trim();
     let stripped = trimmed.trim_start_matches('|').trim_end_matches('|');
-    stripped
-        .split('|')
-        .map(|c| c.trim().to_string())
-        .collect()
+    stripped.split('|').map(|c| c.trim().to_string()).collect()
 }
 
 #[cfg(test)]
@@ -275,5 +312,41 @@ Some content here.
 **VERDICT**: clear
 "#;
         assert!(check_exit_gate(plan).is_ok());
+    }
+
+    #[test]
+    fn reject_unknown_severity_instead_of_silently_passing() {
+        let plan = r#"# Plan
+
+## PINVOU REVIEW REPORT
+
+| Finding | Severity | Status | User Decision |
+|---------|----------|--------|---------------|
+| 模型把协议字段翻译了 | 需要改 | RAISED | 待用户拍 |
+
+**VERDICT**: bad enum
+"#;
+        assert!(matches!(
+            check_exit_gate(plan),
+            Err(GateError::MalformedReport { .. })
+        ));
+    }
+
+    #[test]
+    fn reject_unknown_status_instead_of_silently_passing() {
+        let plan = r#"# Plan
+
+## PINVOU REVIEW REPORT
+
+| Finding | Severity | Status | User Decision |
+|---------|----------|--------|---------------|
+| 状态拼错不能放行 | CRITICAL | DONE | 待用户拍 |
+
+**VERDICT**: bad enum
+"#;
+        assert!(matches!(
+            check_exit_gate(plan),
+            Err(GateError::MalformedReport { .. })
+        ));
     }
 }

@@ -200,6 +200,32 @@ mod tests {
         cleanup(&tmp);
     }
 
+    #[test]
+    fn bundled_prompt_contracts_explain_append_file_tail_only() {
+        assert!(
+            INSTRUCTIONS_MD.contains("append_file` 只能追加到文件尾"),
+            "全局 instructions 必须说明 append_file 是尾追加"
+        );
+        assert!(
+            PINVOU_REVIEW_PLAN_SKILL_MD.contains("append_file` 只能追加到文件尾"),
+            "Pinvou review 必须把 append_file 当中间插入/占位替换判为硬伤"
+        );
+
+        let h3c = H3C_PPT_SKILL_DIR
+            .get_file("SKILL.md")
+            .expect("h3c-ppt SKILL.md bundled")
+            .contents_utf8()
+            .expect("h3c-ppt SKILL.md utf8");
+        assert!(
+            h3c.contains("tail-appending content in final file order"),
+            "h3c-ppt 必须说明 append_file 只适合最终顺序尾追加"
+        );
+        assert!(
+            h3c.contains("edit_file` / `apply_patch"),
+            "h3c-ppt 必须说明占位符/中间编辑走 edit_file 或 apply_patch"
+        );
+    }
+
     fn tempdir() -> String {
         let id = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

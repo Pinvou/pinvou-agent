@@ -21,6 +21,9 @@ description: 品悟对当前 plan 进行 review,代 Boss 视角找硬伤,产出�
 2. **`## PINVOU REVIEW REPORT` 表格 + 一行 VERDICT**
 
 EXIT GATE 只认 `## PINVOU REVIEW REPORT` 这个**精确字符串** —— 错一个字就阻塞。
+表格里的协议字段只能写英文枚举,不能翻译、不能自造:
+- Severity 只能是 `CRITICAL` / `INFORMATIONAL` / `CLEAR`
+- Status 只能是 `RAISED` / `RESOLVED` / `OVERRIDDEN_BY_USER` / `NOTED`
 
 **禁用**:
 - 用项目符号列表(✅/⚠️)代替表格
@@ -62,7 +65,8 @@ EXIT GATE 只认 `## PINVOU REVIEW REPORT` 这个**精确字符串** —— 错�
 
 ### Engineer 硬阈值
 
-- 单次 `write_file.content` 预计 >300 行或 >20KB → `CRITICAL`:要求拆成 `write_file` 小骨架 + 多次 `append_file`/小范围 `edit_file`
+- 单次 `write_file.content` 预计 >300 行或 >20KB → `CRITICAL`:要求分块写入并验证
+- 方案把 `append_file` 当作"插入到文件中间"或"替换占位符"使用 → `CRITICAL`;`append_file` 只能追加到文件尾,中间填充应使用 `edit_file` / `apply_patch`
 - 20+ 页 HTML 单文件 PPT / 完整网页 / 长报告 / 大 JSON / 大 SQL / 大 CSV,如果计划没有明确"分块生成 + 验证" → `CRITICAL`
 - plan >8 步 → `INFORMATIONAL`,除非步骤本身说明了清晰的分块边界
 - 任何把方案做大的建议都要 suppress;Pinvou 只能要求"拆执行方式",不能新增功能范围

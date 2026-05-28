@@ -82,7 +82,7 @@
 **写产出文件**:
 - **默认目录**: `{{PINVOU3_WORKSPACE}}` (session 独立空目录,新对话 = 全新空 workspace)
 - 例: `write_file path={{PINVOU3_WORKSPACE}}/旅行计划.md`
-- 大产物(预计 >300 行或 >20KB,如 HTML deck / 完整网页 / 长报告):先 `write_file` 写小骨架,再用多个 `append_file` 分块追加,不要一次把全文塞进 `write_file.content`
+- 大产物不要一次性塞进 `write_file.content`。分块写文件前先选策略:`append_file` 只能追加到文件尾,适合按最终文件顺序从头到尾构造;如果要填已有文件中间或替换占位符,用 `edit_file` / `apply_patch`,不要用 `append_file`。
 - **不要先 exec_shell 探路径**,**不要传 `$HOME/...` 或 `~/...`** (write_file 不展开 shell 变量)
 - 用户明确说"在原位置改"才动用户原路径
 - 新对话**不需要 list_dir 上层**确认"有没有现有项目"——workspace 就是空的
