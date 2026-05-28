@@ -96,7 +96,10 @@ bold "── 第 2 层:fork 回归测试 (pinvou3-tauri / bridge) ──"
 ( cd "$APP" && cargo test -p pinvou3-tauri --lib -- \
     forkguard_ \
     engine_config_locks_critical_fields \
-    default_model_window_recognized_by_engine ) || fail=1
+    default_model_window_recognized_by_engine \
+    search_prefs_default_is_bing_no_key \
+    search_prefs_roundtrip_with_metaso_key \
+    search_prefs_partial_json_fills_defaults ) || fail=1
 
 echo
 if [[ $fail -eq 0 ]]; then

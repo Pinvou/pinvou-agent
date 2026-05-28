@@ -303,8 +303,8 @@ impl Pinvou3Bridge {
             goal_objective,
             workshop,
             snapshots_max_workspace_bytes,
-            search_provider,
-            search_api_key,
+            search_provider: _, // pinvou3 显式构造 (见下),由 prefs.search 翻译
+            search_api_key: _,
             // —— v0.8.47 上游新增字段,透传 default ——
             show_thinking,
             goal_state,
@@ -428,8 +428,16 @@ impl Pinvou3Bridge {
             goal_objective,
             workshop,
             snapshots_max_workspace_bytes,
-            search_provider,
-            search_api_key,
+            // pinvou3 search 后端: prefs 翻译。
+            // Bing 是默认 (fork patch #42 在底座 SearchProvider::default());Metaso/Bocha
+            // 是 GUI 切换项。底座 web_search 对 Metaso 留空 key 用内置共享 key
+            // (~100 次/天),对 Bocha 留空 key 直接报 ToolError "requires API key"。
+            search_provider: match self.prefs.search.provider {
+                prefs::SearchProvider::Bing => deepseek_tui::config::SearchProvider::Bing,
+                prefs::SearchProvider::Metaso => deepseek_tui::config::SearchProvider::Metaso,
+                prefs::SearchProvider::Bocha => deepseek_tui::config::SearchProvider::Bocha,
+            },
+            search_api_key: self.prefs.search.api_key.clone(),
             // v0.8.47 上游新增,透传 default
             show_thinking,
             goal_state,
@@ -701,6 +709,40 @@ mod tests {
              本地 Qwen3.6 vLLM 慢推理下单 step 30-90s 很常见,120s 频繁误杀子 agent。 \
              300s 与 elapsed cap 对齐,给复杂研究类任务留出完整单步窗口。"
         );
+    }
+
+    /// EngineConfig.search_provider 必须由 prefs.search 翻译,不能透传上游 default。
+    /// 默认 prefs 是 Bing(国情:DDG 被 GFW + 代理 datacenter IP 反爬,基本不可用)。
+    /// 切到 Metaso/Bocha 时 prefs.search.api_key 必须透传到 EngineConfig.search_api_key
+    /// (Bocha 必填,Metaso 留空可走底座内置共享 key)。
+    /// 下次 sync 若 destructure 块把 search_provider/search_api_key 改回透传 default,
+    /// 本测试立刻报错。
+    #[test]
+    fn forkguard_search_provider_translates_from_prefs() {
+        // 默认 prefs → Bing
+        let cfg = fixture_bridge().build_engine_config();
+        assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Bing);
+        assert!(cfg.search_api_key.is_none());
+
+        // 切 Metaso + 自定义 key
+        let mut bridge = fixture_bridge();
+        bridge.prefs.search = prefs::SearchPrefs {
+            provider: prefs::SearchProvider::Metaso,
+            api_key: Some("mk-user-key".to_string()),
+        };
+        let cfg = bridge.build_engine_config();
+        assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Metaso);
+        assert_eq!(cfg.search_api_key.as_deref(), Some("mk-user-key"));
+
+        // 切 Bocha + 留空 key (UX 上前端应阻止,但 bridge 层透传 None)
+        let mut bridge = fixture_bridge();
+        bridge.prefs.search = prefs::SearchPrefs {
+            provider: prefs::SearchProvider::Bocha,
+            api_key: None,
+        };
+        let cfg = bridge.build_engine_config();
+        assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Bocha);
+        assert!(cfg.search_api_key.is_none());
     }
 
     /// [pinvou3-fork-guard #18] network_policy 必须 Some 且**只信 fake-ip 占位段**。

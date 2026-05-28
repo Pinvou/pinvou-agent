@@ -508,6 +508,25 @@ pub async fn artifact_info(path: String) -> Result<ArtifactInfo, String> {
     })
 }
 
+/// 用系统默认浏览器打开**允许列表**里的 https URL。
+/// 用于 Settings 面板的"获取 API key"链接(Metaso/Bocha 注册页)。
+/// 白名单写死,前端没法用这个 command 打开任意 URL。
+#[tauri::command]
+pub async fn open_external_url(url: String) -> Result<(), String> {
+    const ALLOWED_PREFIXES: &[&str] = &[
+        "https://metaso.cn/",
+        "https://open.bochaai.com/",
+    ];
+    if !ALLOWED_PREFIXES.iter().any(|p| url.starts_with(p)) {
+        return Err(format!("URL not in allowlist: {url}"));
+    }
+    std::process::Command::new("xdg-open")
+        .arg(&url)
+        .spawn()
+        .map_err(|e| format!("xdg-open({url}) failed: {e}"))?;
+    Ok(())
+}
+
 /// 用系统默认应用打开文件（xdg-open / 文件管理器）。
 #[tauri::command]
 pub async fn open_in_system(path: String) -> Result<(), String> {
@@ -1229,6 +1248,31 @@ pub async fn list_session_skill_bindings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `open_external_url` 必须只放 metaso.cn / open.bochaai.com,任何其他 host /
+    /// 任何其他 scheme(http、file、javascript)都立即 reject——这是前端 webview
+    /// 万一被 XSS 的最后一道防线,不许扩大白名单不加测试。
+    #[tokio::test]
+    async fn open_external_url_rejects_off_allowlist_targets() {
+        let rejected = [
+            "http://metaso.cn/",              // 非 https
+            "https://evil.example.com/",      // host 不在白名单
+            "https://metaso.cn.evil.com/",    // 子域钓鱼
+            "javascript:alert(1)",            // js scheme
+            "file:///etc/passwd",             // file scheme
+            "https://google.com/",            // 任何第三方域
+            "",                               // 空串
+            "metaso.cn/",                     // 缺 scheme
+        ];
+        for url in rejected {
+            let err = open_external_url(url.to_string()).await.err();
+            assert!(err.is_some(), "must reject URL: {url:?}");
+            assert!(
+                err.as_deref().unwrap().contains("allowlist"),
+                "reject reason should name allowlist for {url:?}, got {err:?}"
+            );
+        }
+    }
 
     /// L2-1: A 方案放宽 — /tmp 下任意文件可校验通过（不强 $HOME 限制）。
     #[test]

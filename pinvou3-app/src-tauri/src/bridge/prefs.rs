@@ -64,6 +64,34 @@ impl Default for ModelPreset {
     }
 }
 
+/// Search 后端选择。
+/// - `Bing`(默认): HTML scrape,无需 key,但对中文长复合查询相关性差。
+///   DDG 在 GFW + 代理 datacenter IP 段下基本恒返 anomaly-modal,
+///   所以底座 fork patch #42 已把默认翻成 Bing,这里前端默认对齐。
+/// - `Metaso` / `Bocha`: 国内 AI 搜索 API,中文场景相关性远好于 Bing scrape。
+///   Metaso 留空 key 走底座内置共享 key(~100 次/天);Bocha 必须填 key。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchProvider {
+    Bing,
+    Metaso,
+    Bocha,
+}
+impl Default for SearchProvider {
+    fn default() -> Self {
+        SearchProvider::Bing
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SearchPrefs {
+    pub provider: SearchProvider,
+    /// 当 `provider = Metaso` 时:None 走底座内置共享 key。
+    /// 当 `provider = Bocha` 时:None 会让 web_search 直接报错(Bocha 必填)。
+    pub api_key: Option<String>,
+}
+
 /// 开发者后门字段。GUI 永远不暴露这些，靠手改 settings.json 或 env 调。
 /// `None` 走 bridge 里的默认值；env 优先级高于 settings.json。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -83,6 +111,7 @@ pub struct UserPrefs {
     pub theme: Theme,
     pub color_scheme: ColorScheme,
     pub language: Language,
+    pub search: SearchPrefs,
     pub advanced: AdvancedPrefs,
 }
 
@@ -119,6 +148,7 @@ mod tests {
             theme: Theme::LiquidDark,
             color_scheme: ColorScheme::Dark,
             language: Language::En,
+            search: SearchPrefs::default(),
             advanced: AdvancedPrefs {
                 allow_shell: Some(false),
                 max_output_tokens: Some(8192),
@@ -158,5 +188,36 @@ mod tests {
     fn locale_tag_helper() {
         assert_eq!(Language::ZhHans.locale_tag(), "zh-Hans");
         assert_eq!(Language::En.locale_tag(), "en");
+    }
+
+    #[test]
+    fn search_prefs_default_is_bing_no_key() {
+        let p = SearchPrefs::default();
+        assert_eq!(p.provider, SearchProvider::Bing);
+        assert!(p.api_key.is_none());
+    }
+
+    #[test]
+    fn search_prefs_roundtrip_with_metaso_key() {
+        let prefs = UserPrefs {
+            search: SearchPrefs {
+                provider: SearchProvider::Metaso,
+                api_key: Some("mk-user-own-key".to_string()),
+            },
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&prefs).unwrap();
+        let parsed: UserPrefs = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.search.provider, SearchProvider::Metaso);
+        assert_eq!(parsed.search.api_key.as_deref(), Some("mk-user-own-key"));
+    }
+
+    #[test]
+    fn search_prefs_partial_json_fills_defaults() {
+        // 老的 settings.json 没 search 字段 → 默认 Bing/None,不破坏向前兼容。
+        let json = r#"{"theme":"genesis","language":"zh-Hans"}"#;
+        let prefs: UserPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.search.provider, SearchProvider::Bing);
+        assert!(prefs.search.api_key.is_none());
     }
 }

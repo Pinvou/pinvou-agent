@@ -1406,6 +1406,8 @@
   function readArtifactText(path) { return invoke("read_artifact_text", { path: path }); }
   function openContainingFolder(path) { return invoke("open_containing_folder", { path: path }).catch(function (e) { addSystemItem("⚠️ 打开目录失败: " + e); }); }
   function openInSystem(path) { return invoke("open_in_system", { path: path }).catch(function (e) { addSystemItem("⚠️ 打开失败: " + e); }); }
+  // 仅放白名单 URL (metaso.cn / open.bochaai.com),后端 open_external_url 强制校验。
+  function openExternalUrl(url) { return invoke("open_external_url", { url: url }).catch(function (e) { addSystemItem("⚠️ 打开链接失败: " + e); }); }
   // 外部打开产物：HTML 走 Tauri 独立窗口（绕沙箱），其他走系统应用
   function openArtifactExternal(path) {
     var ext = (String(path).split(".").pop() || "").toLowerCase();
@@ -1721,6 +1723,7 @@
     openContainingFolder: openContainingFolder,
     openInSystem: openInSystem,
     openArtifactExternal: openArtifactExternal,
+    openExternalUrl: openExternalUrl,
     // 附件
     addAttachmentByPath: addAttachmentByPath,
     addPasteImage: addPasteImage,

@@ -111,7 +111,18 @@
         vllm: 'VLLM 推理引擎', ctx: '上下文长度', queue: '队列情况', kv: 'KV 命中率', app: '应用服务', appRunning: '核心守护进程运行中',
         curVer: '当前版本', uiVer: 'UI 版本', uptime: '运行时长',
         appearance: '外观与语言', lang: '界面语言', langDesc: '切换应用的显示语言', theme: '主题模式', themeDesc: '选择适合你的色彩风格',
-        light: '浅色', dark: '深色', sysPerm: '系统权限', sudo: '高级执行权限 (Sudo)', sudoDesc: '允许助手执行环境配置等高级指令。',
+        light: '浅色', dark: '深色',
+        searchBackend: 'web_search 源', searchBackendDesc: 'LLM 调用 web_search 工具时使用的源',
+        searchKey: 'API Key',
+        searchKeyHintBing: 'Bing 不需要 API key',
+        searchKeyHintMetaso: '留空使用社区共享 key（~100 次/天，多用户竞争）',
+        searchKeyHintBocha: '必填，否则搜索会直接报错',
+        searchKeyPlaceholder: '粘贴 API key',
+        searchRestartHint: 'web_search 源切换需重启应用生效',
+        searchGetKey: '获取你自己的 key',
+        searchGetKeyMetasoSteps: '免费 · 微信/手机扫码 1 分钟注册 · 个人独立配额',
+        searchGetKeyBochaSteps: '免费 · 注册后在控制台领 sk- 开头的 key',
+        sysPerm: '系统权限', sudo: '高级执行权限 (Sudo)', sudoDesc: '允许助手执行环境配置等高级指令。',
         chatGreeting: '你好，今天想聊点什么？', artifacts: '产物与代码', placeholder: '询问 PINVOU 或输入指令', disclaimer: 'PINVOU 可能会生成不准确的信息，请仔细核实。',
         searchPlaceholder: 'Search chats'
       },
@@ -122,7 +133,18 @@
         vllm: 'VLLM Engine', ctx: 'Context Length', queue: 'Queue (Run/Wait)', kv: 'KV Hit Rate', app: 'App Service', appRunning: 'Core daemon running',
         curVer: 'App Version', uiVer: 'UI Version', uptime: 'Uptime',
         appearance: 'Appearance & Language', lang: 'Language', langDesc: 'Switch application display language', theme: 'Theme', themeDesc: 'Choose your color style',
-        light: 'Light', dark: 'Dark', sysPerm: 'System Permissions', sudo: 'Sudo Access', sudoDesc: 'Allow assistant to run high-privilege commands.',
+        light: 'Light', dark: 'Dark',
+        searchBackend: 'web_search source', searchBackendDesc: 'Source used by the LLM when invoking the web_search tool',
+        searchKey: 'API Key',
+        searchKeyHintBing: 'Bing requires no API key',
+        searchKeyHintMetaso: 'Leave empty for community shared key (~100/day, multi-user)',
+        searchKeyHintBocha: 'Required, search will fail without it',
+        searchKeyPlaceholder: 'Paste API key',
+        searchRestartHint: 'web_search source change requires app restart',
+        searchGetKey: 'Get your own key',
+        searchGetKeyMetasoSteps: 'Free · 1-min QR-code sign-up (WeChat/phone) · Personal quota',
+        searchGetKeyBochaSteps: 'Free · Get sk- prefixed key from console after sign-up',
+        sysPerm: 'System Permissions', sudo: 'Sudo Access', sudoDesc: 'Allow assistant to run high-privilege commands.',
         chatGreeting: "Hi, what's good?", artifacts: 'Artifacts', placeholder: 'Ask PINVOU or enter a command', disclaimer: 'PINVOU may display inaccurate info, so double-check.',
         searchPlaceholder: 'Search chats'
       }
@@ -186,6 +208,10 @@
       const [activeTheme, setActiveTheme] = useState('dark');
       const [language, setLanguage] = useState('zh');
       const [superPerm, setSuperPerm] = useState(false);
+      // search 后端配置:provider 默认 bing(对齐 bridge prefs::SearchProvider::default());
+      // bs.settings 加载后 useEffect 同步进来。
+      const [searchProvider, setSearchProvider] = useState('bing');
+      const [searchApiKey, setSearchApiKey] = useState('');
       const [isSidebarOpen, setIsSidebarOpen] = useState(false);
       const [chatPrefill, setChatPrefill] = useState('');
 
@@ -207,6 +233,13 @@
           }
         }
         if (bs.superPermEnabled !== superPerm) setSuperPerm(bs.superPermEnabled);
+        // 从 bs.settings 同步 search 配置。bs.settings 是后端 UserPrefs JSON。
+        if (bs.settings && bs.settings.search) {
+          const sp = bs.settings.search.provider || 'bing';
+          if (sp !== searchProvider) setSearchProvider(sp);
+          const k = bs.settings.search.api_key || '';
+          if (k !== searchApiKey) setSearchApiKey(k);
+        }
       }, [bs]);
 
       // Build chat history from sessions
@@ -244,17 +277,51 @@
         else setSuperPerm(!superPerm);
       }
 
+      // 构造完整 UserPrefs 对象写盘。spread bs.settings 保留 search/advanced 等
+      // 其他字段——之前漏 spread 会让后端 serde default 把它们重置(bug fix)。
+      function buildFullSettings(overrides) {
+        const base = (bs && bs.settings) ? bs.settings : {};
+        return {
+          ...base,
+          theme: activeTheme === 'dark' ? 'genesis' : 'light',
+          language: language === 'zh' ? 'zh-Hans' : 'en',
+          search: {
+            provider: searchProvider,
+            api_key: searchApiKey ? searchApiKey : null,
+          },
+          ...overrides,
+        };
+      }
+
       function handleSetTheme(th) {
         setActiveTheme(th);
         if (bridge.available) {
-          bridge.saveSettings({ theme: th === 'dark' ? 'genesis' : 'light', language: language === 'zh' ? 'zh-Hans' : 'en' });
+          bridge.saveSettings(buildFullSettings({ theme: th === 'dark' ? 'genesis' : 'light' }));
+        }
+      }
+
+      function handleSetSearchProvider(p) {
+        setSearchProvider(p);
+        if (bridge.available) {
+          bridge.saveSettings(buildFullSettings({
+            search: { provider: p, api_key: searchApiKey ? searchApiKey : null },
+          }));
+        }
+      }
+
+      function handleSetSearchApiKey(k) {
+        setSearchApiKey(k);
+        if (bridge.available) {
+          bridge.saveSettings(buildFullSettings({
+            search: { provider: searchProvider, api_key: k ? k : null },
+          }));
         }
       }
 
       function handleSetLanguage(lang) {
         setLanguage(lang);
         if (bridge.available) {
-          bridge.saveSettings({ theme: activeTheme === 'dark' ? 'genesis' : 'light', language: lang === 'zh' ? 'zh-Hans' : 'en' });
+          bridge.saveSettings(buildFullSettings({ language: lang === 'zh' ? 'zh-Hans' : 'en' }));
         }
       }
 
@@ -390,6 +457,8 @@
                 activeTheme={activeTheme} setActiveTheme={handleSetTheme}
                 language={language} setLanguage={handleSetLanguage}
                 superPerm={superPerm} setSuperPerm={handleToggleSuperPerm}
+                searchProvider={searchProvider} setSearchProvider={handleSetSearchProvider}
+                searchApiKey={searchApiKey} setSearchApiKey={handleSetSearchApiKey}
                 t={t}
               />
             )}
@@ -593,7 +662,7 @@
     // ==========================================
     // Settings View (Material 3 Style)
     // ==========================================
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, t }) => {
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, t }) => {
       const isDark = activeTheme === 'dark';
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
@@ -629,6 +698,72 @@
                       <button onClick={() => setActiveTheme('light')} className={`px-6 py-2 rounded-full text-[14px] font-medium transition-colors ${activeTheme === 'light' ? 'bg-white text-[#0B57D0] shadow-sm' : ''}`}>{t.light}</button>
                       <button onClick={() => setActiveTheme('dark')} className={`px-6 py-2 rounded-full text-[14px] font-medium transition-colors ${activeTheme === 'dark' ? 'bg-[#A8C7FA] text-[#041E49]' : ''}`}>{t.dark}</button>
                     </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
+                <h2 className="text-[18px] font-medium mb-6">{t.searchBackend}</h2>
+
+                <div className="space-y-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-[16px] block mb-1">{t.searchBackend}</span>
+                      <span className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.searchBackendDesc}</span>
+                    </div>
+                    <div className={`p-1 rounded-full flex ${isDark ? 'bg-[#131314]' : 'bg-[#E1E5EA]'}`}>
+                      {['bing', 'metaso', 'bocha'].map(p => (
+                        <button
+                          key={p}
+                          onClick={() => setSearchProvider(p)}
+                          className={`px-5 py-2 rounded-full text-[14px] font-medium transition-colors capitalize ${searchProvider === p ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-white text-[#0B57D0] shadow-sm') : ''}`}
+                        >{p}</button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <span className="text-[16px] block mb-2">{t.searchKey}</span>
+                    <input
+                      type="password"
+                      value={searchApiKey}
+                      onChange={e => setSearchApiKey(e.target.value)}
+                      disabled={searchProvider === 'bing'}
+                      placeholder={t.searchKeyPlaceholder}
+                      className={`w-full px-4 py-2 rounded-lg text-[14px] outline-none transition-colors ${
+                        isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746] focus:border-[#A8C7FA]'
+                               : 'bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0]'
+                      } ${searchProvider === 'bing' ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    />
+                    <span className={`text-[12px] mt-2 block ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
+                      {searchProvider === 'bing' ? t.searchKeyHintBing
+                        : searchProvider === 'metaso' ? t.searchKeyHintMetaso
+                        : t.searchKeyHintBocha}
+                    </span>
+
+                    {(searchProvider === 'metaso' || searchProvider === 'bocha') && (
+                      <div className={`mt-3 px-3 py-2 rounded-lg flex items-center justify-between gap-3 ${isDark ? 'bg-[#131314]' : 'bg-white'}`}>
+                        <span className={`text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
+                          {searchProvider === 'metaso' ? t.searchGetKeyMetasoSteps : t.searchGetKeyBochaSteps}
+                        </span>
+                        <button
+                          onClick={() => {
+                            const url = searchProvider === 'metaso'
+                              ? 'https://metaso.cn/search-api/api-keys'
+                              : 'https://open.bochaai.com/';
+                            if (bridge.available) bridge.openExternalUrl(url);
+                          }}
+                          className={`text-[12px] font-medium px-3 py-1 rounded-full whitespace-nowrap transition-colors ${
+                            isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]'
+                                   : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'
+                          }`}
+                        >{t.searchGetKey} ↗</button>
+                      </div>
+                    )}
+
+                    <span className={`text-[12px] mt-2 block italic ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
+                      {t.searchRestartHint}
+                    </span>
                   </div>
                 </div>
               </div>

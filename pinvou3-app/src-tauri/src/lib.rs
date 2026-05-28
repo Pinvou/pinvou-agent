@@ -139,6 +139,7 @@ pub fn run() {
             commands::open_in_system,
             commands::open_containing_folder,
             commands::open_artifact_window,
+            commands::open_external_url,
             commands::ingest_file,
             commands::detect_system_tools,
             commands::save_paste_image,
