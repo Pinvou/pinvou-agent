@@ -75,7 +75,7 @@
 
 | # | 修改 | 理由 | 上游 PR? |
 |---|---|---|---|
-| 10 | `normalize_bing_url` 先 `decode_html_entities` 再提取 `u=` 参数 | bing /ck/a 重定向 href 用 `&amp;` 实体编码,直接 regex 取 `u=` 为空→默认后端恒返 0 | ✅ **已提 #2245 OPEN** |
+| 10 | `normalize_bing_url` 先 `decode_html_entities` 再提取 `u=` 参数 | bing /ck/a 重定向 href 用 `&amp;` 实体编码,直接 regex 取 `u=` 为空→默认后端恒返 0 | ✅ **#2245 已 APPROVE+CI 全绿,待 owner merge**(05-28) |
 
 > ⚠️ **2026-05-27 弃用**(原 #11/#12 网络重试 retry + timeout 15s→30s):env-specific 且两次 L1 重跑未被触发,回退 committed。
 

@@ -9,7 +9,7 @@
 ## 当前状态
 
 - **main HEAD**: `e491451` (阶段 K React UI 迁移(另一会话/机器推的)+ 本次 fetch_url fake-ip 按 IP 段信任/subagent 单路径必要修复 — 已 push origin `Pinvou/pinvou3` + backup `h3c-hexin/pinvou3`,三方对齐)
-- **fork HEAD**: `aab9cab8` (`pinvou3-patches`,v0.8.45 + 本次 3 commit: web_search bing decode / fetch_url fake-ip IP段信任 / tool_agent model+resolve_agent_ref — 已 push `h3c-hexin/DeepSeek-TUI`)。上游 PR 分支(从 `upstream/main` 拉,不并入 patches): `fix/bing-ckurl-html-entity-decode`=**#2245 OPEN**、`fix/grep-files-timeout`=#2146、`fix/max-output-tokens-env`=#2147
+- **fork HEAD**: `aab9cab8` (`pinvou3-patches`,v0.8.45 + 本次 3 commit: web_search bing decode / fetch_url fake-ip IP段信任 / tool_agent model+resolve_agent_ref — 已 push `h3c-hexin/DeepSeek-TUI`)。上游 PR 状态(开/合/审)统一见 `docs/fork-modifications.md`,本文件不再维护活动状态
 - **进行中**: 阶段 L 主对话附件识别补全(响应 #1)完成,合并入 main 待推。注:Pinvou/pinvou3 有 PR-only 分支保护,owner(本人)直推 bypass
 - **多 subagent**: 并行 fan-out 已废弃(根因主 agent 编排认知,详 lesson learned 2026-05-27),只留单+串行;subagent 行为调优归 owner
 - **worktrees**: `workflow-discussion` (本会话工作,已并入 main)、`workflow-desing-01`、`pinvou-review-v2-DO-NOT-DELETE`
