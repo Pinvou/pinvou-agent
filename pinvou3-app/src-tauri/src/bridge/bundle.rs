@@ -263,6 +263,71 @@ mod tests {
         );
     }
 
+    /// 阶段2 forkguard:base.md override 内容正确。submodule base.md 已回退上游
+    /// 原文,pinvou3 的 Constitution/工具纪律/精简只在这份 bundle 里 —— 这些断言
+    /// 从 submodule 删掉的 forkguard 迁来,守住"内容没被误删/被上游内容污染"。
+    #[test]
+    fn forkguard_base_override_has_pinvou3_content() {
+        for anchor in [
+            "CONSTITUTION OF PINVOU3",
+            "running inside pinvou3",
+            "Match the embedder's render target",
+            "concurrent cap is embedder-configured",
+            "files configured via `EngineConfig.instructions`",
+        ] {
+            assert!(
+                BASE_PROMPT_MD.contains(anchor),
+                "base.md override 缺 pinvou3 锚点 {anchor:?}"
+            );
+        }
+        for dropped in [
+            "Brother Whale",
+            "RLM — How to Use It",
+            "CONSTITUTION OF CODEWHALE",
+            "## Toolbox (fast reference",
+            "DeepSeek prefix-cache reuse",
+            "fork_context: true",
+        ] {
+            assert!(
+                !BASE_PROMPT_MD.contains(dropped),
+                "base.md override 不应含上游内容 {dropped:?}"
+            );
+        }
+        // {model_id} 占位符必须保留,底座 apply_model_template 会替换它。
+        assert!(
+            BASE_PROMPT_MD.contains("{model_id}"),
+            "base.md override 丢了 {{model_id}} 占位符"
+        );
+    }
+
+    /// 阶段2 forkguard:locale/authority override 品牌词正确(pinvou3 非 codewhale)。
+    #[test]
+    fn forkguard_locale_authority_override_branding() {
+        assert!(LOCALE_PREAMBLE_ZH_HANS.contains("你正在 pinvou3 中运行"));
+        assert!(!LOCALE_PREAMBLE_ZH_HANS.contains("你正在 codewhale 中运行"));
+        assert!(AUTHORITY_RECAP.contains("The Constitution of pinvou3 (Articles I-VII)"));
+        assert!(!AUTHORITY_RECAP.contains("The Constitution of CodeWhale"));
+    }
+
+    /// 阶段2 forkguard(端到端):install_prompt_overrides 真把 pinvou3 内容注入
+    /// 底座 compose。证明 hook + 内容 + 注入三者接通 —— 若底座 sync 把 override
+    /// hook 冲掉,这个测试会失败(compose 退回上游 base)。
+    #[test]
+    fn forkguard_install_overrides_makes_compose_emit_pinvou3() {
+        use deepseek_tui::prompts::{self, Personality};
+        use deepseek_tui::tui::app::AppMode;
+        install_prompt_overrides();
+        let prompt = prompts::compose_prompt(AppMode::Agent, Personality::Calm);
+        assert!(
+            prompt.contains("CONSTITUTION OF PINVOU3"),
+            "override 未生效:compose 缺 pinvou3 Constitution(hook 可能被 sync 冲掉)"
+        );
+        assert!(
+            !prompt.contains("Brother Whale"),
+            "override 未生效:compose 仍含上游 Brother Whale"
+        );
+    }
+
     fn tempdir() -> String {
         let id = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
