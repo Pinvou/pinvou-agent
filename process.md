@@ -58,6 +58,7 @@
 - **上游 PR 取舍**:通用 bug/优化 → 提 PR,pinvou3 专用/opinionated → 留 fork;活动状态归 `docs/fork-modifications.md`
 - **soffice 并发**:多附件 ingest 各用独立 UserInstallation profile,避免同 profile lock
 - **视觉接入走工具式复用**(2026-05-28):Qwen3.6 实测有视觉(base64 image_url 识图通过,推翻"不是 vision 模型"旧判断);复用底座已有 `image_analyze` 工具(零底座功能改动),pinvou3 四处接线——(1)开启 `Feature::VisionModel` feature(默认 Experimental 关)+(2)`vision_config` 指向同一 vllm 端点,**两道门缺一不可**(tool_setup.rs:99 同时 require feature+config 才注册 image_analyze)+(3)blocklist 放出 image_analyze +(4)附件图拷进 session workspace `attachments/` 引导 LLM 调用;真 e2e 验证(`l1_dialog_harness::image_vision_analyze`,13s 一击命中 KX7-93)——组件测试全过但漏了 feature 门,只有 e2e 抓到。**路线 1 软肋(GUI 手测暴露)**:图不在主上下文,模型有时跳过 image_analyze**凭空幻觉**(同一张证件照,不调工具时编成"Qwen 文档页",调了才得真相);修法是引导 prompt 翻转框架——不说"你有视觉能力"(诱导直接描述),改硬约束"调用前你对图一无所知,绝不能描述/猜测",并点名"这是什么/帅吗"等问法(`commands.rs`)。治标不治本(概率性),仍偶发就该上路线 2 根治。原生多模态(ContentBlock::Image,~100 行 fork)留作后续升级
+- **prompt 文案走 override 不改 submodule**(2026-05-29):「能应用层解决就不碰 fork」;base/locale/authority 加底座 `OnceLock` override hook(向后兼容,未 set=上游原值),pinvou3 内容迁 `pinvou3-app/.../bundle/base.md`+`bridge/bundle.rs`,`boot()` 注入;submodule base.md 字节回退上游(0 diff),这部分 prompt fork drift 归零;hook 通用可提上游 PR(merge 后连 hook drift 也归零)。工具引导三处自洽(instructions §1 ↔ base.md ↔ §4),清掉 apply_patch/task_shell_start 等隐藏/不存在工具
 
 ---
 
