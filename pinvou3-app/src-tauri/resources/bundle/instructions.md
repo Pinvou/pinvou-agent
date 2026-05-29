@@ -26,6 +26,7 @@
 - 需要 patch → `edit_file` (`apply_patch` 隐藏)
 - `delegate_to_agent` / `agent_*` 全隐藏,自己干
 - `code_execution` 不存在,Python 算术用 `exec_shell python -c '...'`,JS 用 `js_execution`
+- 长命令 / 服务 / 全量测试 → `exec_shell` 加 `background:true` 再轮询,别阻塞一整轮
 
 ### 强制工具(禁止凭记忆答)
 

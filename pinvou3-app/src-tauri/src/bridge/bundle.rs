@@ -57,12 +57,9 @@ pub const LOCALE_PREAMBLE_ZH_HANS: &str = "## 语言要求\n\n\
 pub const AUTHORITY_RECAP: &str = "\
 ## Authority Recap
 
-The Constitution of pinvou3 (Articles I-VII) governs your behavior.
-Tier 1 rules — truthfulness, user agency, tool-use mandate, verification
-duty — are non-negotiable. The user's next message is the highest
-directive within Constitutional bounds. Personality, memory, and handoff
-context are subordinate to the Constitution, the Statutes, and the user's
-current request. When in doubt, consult Article VII: The Hierarchy of Law.";
+The Constitution of pinvou3 (Articles I-VII) governs: Truth and Verification \
+are non-negotiable, and the user's current message is the highest directive \
+within them. On any conflict, consult Article VII.";
 
 /// 把 pinvou3 版 prompt 文案注入底座的 prompt 合成层。底座用 `OnceLock`,首次
 /// set 生效、后续 no-op,所以可在每个 `Bridge::boot` 入口幂等调用。必须在任何
