@@ -9,6 +9,8 @@
 >
 > 格式: `[优先级]` 文件路径 + 行号范围 + 修改摘要 + 理由 + 是否适合提上游 PR。
 
+> **2026-05-29 阶段2 prompt override 重构**:原 #28/#32/#33/#36/#37/#38(改 base.md / prompts.rs 品牌 + 事实层)已从"直接改 submodule"迁到 **override hook** —— submodule `base.md` 回退上游原文(0 diff),pinvou3 prompt 内容移到 `pinvou3-app/src-tauri/resources/bundle/base.md` + `bridge/bundle.rs` 常量,启动经底座 `set_*_override` 注入(新 patch #42)。详见 `docs/base-prompt-override-阶段2.md`。submodule 这部分 prompt fork drift = 0;下方组 3/组 4 描述的"改 base.md"已不在 submodule,仅内容落点变了。
+
 ---
 
 ## 🔄 v0.8.47 同步后整理 (2026-05-27, merge `44844fa6`)
@@ -173,7 +175,7 @@
 | 上游 PR | ✅ 通用 API 缺口(任何用 EngineConfig.instructions 的 embedder 都受益) |
 | 测试 | `forkguard_local_law_tier_covers_engine_config_instructions` |
 
-### 组 3 — BASE_PROMPT 事实层剪裁 ❌ (原 #29 + #30 + #31 + #32 + #33 + #34 + #35)
+### 组 3 — BASE_PROMPT 事实层剪裁 ❌ (原 #29-#35) — **阶段2 起内容在 pinvou3-app/resources/bundle/base.md,submodule base.md 已回退上游**
 
 | 项 | 内容 |
 |---|---|
@@ -188,11 +190,11 @@
 
 > 这一组覆盖所有 "去 codewhale 品牌" 改动:文本字串替换 + 路径清单砍 + Tier 5 段精简 + 配套 pinvou3 bridge 路径迁移。最终 prompt 里 `codewhale` 只剩 3 处 `<codewhale:subagent.done>` 协议 sentinel(hook 契约不可改)。
 
-#### 4a — 文本字串替换 (原 #36 + #37 + #38)
+#### 4a — 文本字串替换 (原 #36 + #37 + #38) — **阶段2 起经 override 注入,内容在 pinvou3-app**
 
 | 项 | 内容 |
 |---|---|
-| 文件 | `prompts/base.md` + `prompts.rs::LOCALE_PREAMBLE_ZH_HANS` + `prompts.rs::AUTHORITY_RECAP` |
+| 文件 | **(阶段2)** `pinvou3-app/.../bundle/base.md` + `bridge/bundle.rs::{LOCALE_PREAMBLE_ZH_HANS,AUTHORITY_RECAP}`;submodule 三处常量已回退 codewhale,经 `set_*_override` 注入 |
 | 改动 | (a) Constitution 标题 `CODEWHALE` → `PINVOU3` + 删 `### Preamble` 整段(5 行 Brother Whale 品牌诗),改成一句 `You are {model_id}, running inside pinvou3. Honor the user's trust through truth, clarity, and working code.`<br>(b) `LOCALE_PREAMBLE_ZH_HANS` "你正在 codewhale 中运行" → "你正在 pinvou3 中运行"<br>(c) `AUTHORITY_RECAP` "Constitution of CodeWhale" → "Constitution of pinvou3" |
 | 理由 | pinvou3 是独立产品;模型自我认知应标识 pinvou3 运行环境而非底座品牌 |
 | 测试 | `forkguard_constitutional_preamble_uses_pinvou3_branding` |
@@ -307,14 +309,14 @@
 | #23/#24 窗口识别 | `default_model_window_recognized_by_engine` | pinvou3-tauri |
 | #25/#26 skills_dir union 不被短路 | `forkguard_skills_dir_unions_with_home_rooted_workspace_skills` | codewhale-tui |
 | #27 workspace=$HOME 不被 500 行 dump | `forkguard_writes_pinvou3_workspace_context_to_codewhale_instructions` | pinvou3-tauri |
-| #28 Tier 5 cover EngineConfig.instructions | `forkguard_local_law_tier_covers_engine_config_instructions` | codewhale-tui |
-| #29 RLM 段被删 | `forkguard_rlm_section_removed_by_pinvou3` | codewhale-tui |
-| #31 Toolbox / agent_eval 字串被清 | `forkguard_pinvou3_omitted_upstream_specific_tool_names_from_base_prompt` | codewhale-tui |
-| #31 fork_context: true / DeepSeek prefix-cache 被清 | `forkguard_no_deepseek_specific_fork_context_prose_in_base_prompt` | codewhale-tui |
-| #31 Tool Selection Guide 改 embedder-aware | `forkguard_tool_selection_guide_is_embedder_aware` | codewhale-tui |
-| #36 Constitution 改 PINVOU3 + 删 Brother Whale | `forkguard_constitutional_preamble_uses_pinvou3_branding` | codewhale-tui |
+| #42 base override hook 存活(submodule) | 指纹 grep `set_base_prompt_override`(无专属测试,hook 失效则下方 app 端到端测试 fail) | codewhale-tui |
+| #28/#29/#31/#36 内容(阶段2 迁 app) | `forkguard_base_override_has_pinvou3_content`(锚点+删项) | pinvou3-tauri |
+| #37/#38 locale/authority 品牌(阶段2 迁 app) | `forkguard_locale_authority_override_branding` | pinvou3-tauri |
+| 阶段2 override 端到端生效 | `forkguard_install_overrides_makes_compose_emit_pinvou3` | pinvou3-tauri |
 | #39 environment 删 lang / codewhale_version | `render_environment_block_lists_supplied_locale_and_workspace`(反向断言) | codewhale-tui |
+
+> 注:原 #29/#31/#36 的 6 个 submodule 内容 forkguard 测试在阶段2 已删除(base.md 回退上游,内容移 app),职责由上面 3 个 pinvou3-tauri 测试承接。
 
 ---
 
-最后更新: 2026-05-27
+最后更新: 2026-05-29(阶段2 prompt override 重构)
