@@ -22,16 +22,30 @@ pub fn is_enabled() -> bool {
     Path::new(SUDOERS_PATH).exists()
 }
 
-/// 注入 system prompt 的引导段。
+/// 静态 system prompt 的 §7 占位段。**不含开关状态**。
 ///
-/// **开启**：告诉 LLM 可以直接 sudo（避免反复跟用户确认权限）。
-/// **关闭**：显式负面引导，告诉 LLM sudo 会卡 120s 超时，不要盲试 ——
-/// 否则 LLM 按训练数据默认就用 `sudo apt remove` 卡死,白白等超时(实测 case)。
+/// 状态是动态的:静态 prompt 在 engine spawn 时只渲染一次,之后切开关无法热刷
+/// (`refresh_all_instructions` 是 no-op —— 见 `engine_pool.rs`)。把状态写进
+/// 静态段会导致"UI 显示已开启,但会话 prompt 还停在关闭态"的 desync(实测 case)。
+/// 真正的开/关指令由 [`turn_reminder`] 每 turn 注入(`build_send_message_op`),
+/// 始终实时。这里只留一句指引,把状态判断交给 per-turn reminder。
 pub fn instruction_block() -> &'static str {
+    "\n## 7. 超级权限(sudo)\n\n当前是否开启、以及对应该怎么做,见每轮对话顶部的 `<system-reminder>`(实时,以那里为准)。"
+}
+
+/// 每 turn 注入 `<system-reminder>` 的超级权限状态指令。
+///
+/// `is_enabled()` 每次实时读 `/etc/sudoers.d/pinvou3`,所以用户切换开关后**下一
+/// turn 即生效**,不需要重启会话或 GUI —— 这是绕开 `refresh_all_instructions`
+/// no-op 的关键(静态 prompt 刷不动,就每 turn 重新注入)。
+///
+/// **开启**:直接 sudo 一步到位,别先试裸命令(否则模型对 `/etc` 写只会裸 touch 然后放弃)。
+/// **关闭**:禁 sudo(会被 deny hook 拦或卡超时),引导用户开开关。
+pub fn turn_reminder() -> &'static str {
     if is_enabled() {
-        "\n## 7. 超级权限已开启\n\n用户已授权 sudo 免密。装包/配环境/改系统服务时直接用 sudo（如 `sudo apt install`、`sudo systemctl enable`），不要让用户去手动输密码。**仍不要碰** §5 禁令的敏感目录。"
+        "超级权限【已开启】(sudo 免密)。需要 root 时**直接用 sudo 一步到位,绝不先试不带 sudo 的命令再回头补**:写系统路径用 `sudo touch`/`sudo tee`/`sudo mkdir -p`/`sudo rm`,装包/服务用 `sudo apt install`/`sudo systemctl`。仍不要碰密钥/凭证(`~/.ssh`、含 `credentials`/`id_rsa`/`token` 的路径、`/etc/shadow`、`/etc/sudoers`),开 root 也禁。"
     } else {
-        "\n## 7. 超级权限当前关闭\n\n**禁止用 sudo**（会卡 120s 等密码后超时被杀,白白浪费一轮)。需要 root 操作(apt install/remove、systemctl、改 /etc 等)时:\n1. 优先尝试免 root 替代(`pip install --user`、`~/.local/bin` 等)\n2. 真需要 root → 告诉用户「请去【设置 → 系统权限】打开开关后重试」,或把命令贴出来让用户自己跑\n3. 不要盲试 `sudo xxx` 或 `echo '' | sudo -S xxx` —— 两种都会超时"
+        "超级权限【已关闭】。**禁止用 sudo**(会被系统拦截或卡到超时,白费一轮,别试 `sudo xxx` 也别试 `echo '' | sudo -S xxx`)。需要 root(写 `/etc`、`apt`、`systemctl` 等)时:告诉用户去【设置 → 系统权限】打开开关后重试,或把命令贴给用户自己跑;优先找免 root 替代(`--user`、`~/.local`)。"
     }
 }
 

@@ -74,4 +74,18 @@ if [[ "$TOOL" == "exec_shell"* || "$TOOL" == "code_execution" ]]; then
     done
 fi
 
+# 4) 超级权限关闭态拦 sudo：sudo 无免密会阻塞读密码，直到 exec_shell 超时（最长
+#    10 分钟）才被 SIGKILL，体感卡死。源真相 = /etc/sudoers.d/pinvou3 是否存在
+#    （超级权限开关用 pkexec 写/删它）。关闭态命中 sudo → 即时拒绝，让 AI 引导
+#    用户去开开关，而不是卡到超时。开启态（NOPASSWD）放行，sudo 不会阻塞。
+#    用词边界匹配 sudo 命令 token，避免误伤 "pseudo" 等含子串的词。
+if [[ "$TOOL" == "exec_shell"* ]]; then
+    if [[ "$ARGS" =~ (^|[^[:alnum:]_])sudo([^[:alnum:]_]|$) ]]; then
+        if [[ ! -e /etc/sudoers.d/pinvou3 ]]; then
+            echo "pinvou3-deny: 超级权限未开启，sudo 会阻塞到超时（不是真在执行）。已拦截。请去【设置 → 系统权限】打开开关后重试，或把命令贴出来自己跑。" >&2
+            exit 1
+        fi
+    fi
+fi
+
 exit 0
