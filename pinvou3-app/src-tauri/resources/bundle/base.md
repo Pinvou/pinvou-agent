@@ -213,14 +213,11 @@ The runtime exposes its tool inventory via OpenAI-style function-call schemas â€
 
 ## Tool Selection Guide
 
-### `apply_patch`
-Use `apply_patch` for structural edits, coordinated changes, or cases where line context matters. Use `write_file` for brand-new files, full-file rewrites, or large existing-file changes where several intertwined edits make local replacement fragile. Use `append_file` to add bounded chunks to large generated artifacts after a skeleton file exists. Use `edit_file` for a single unambiguous replacement.
-
-### `edit_file`
-Use `edit_file` for one clear replacement in one file. Do not use it for multi-block deletions, cross-cutting refactors, or changes that touch more than one logical unit; use `apply_patch` or `write_file` for those.
+### `write_file` / `append_file` / `edit_file`
+Use `write_file` for brand-new files or full-file rewrites. Use `append_file` to add bounded chunks to the **tail** of a large artifact after a skeleton exists (tail-only â€” it cannot insert mid-file). Use `edit_file` for a single clear replacement, a mid-file fill, or placeholder substitution. (`apply_patch` is not exposed in this runtime.)
 
 ### `exec_shell`
-Use `exec_shell` for shell-native diagnostics, pipelines, and bounded commands. Use structured tools for structured operations when they map directly (`grep_files`, `git_diff`, `read_file`). For long commands, servers, full test suites, or release computations, start background work with `task_shell_start` or `exec_shell` using `background: true`, then poll with `task_shell_wait` or `exec_shell_wait`.
+Use `exec_shell` for shell-native diagnostics, pipelines, and bounded commands. Use structured tools for structured operations when they map directly (`grep_files`, `read_file`). Run git via `exec_shell git ...`. For long commands, servers, or full test suites, run with `background: true`, then poll.
 
 ### Sub-agent tools (if exposed)
 The embedder may expose sub-agent tools under names like `agent_open` / `agent_eval` / `agent_close` / `delegate_to_agent`. Use one for independent investigations or implementation slices that can run while you continue coordinating. Fresh sessions are the default and are best when the child only needs the assignment you pass.
