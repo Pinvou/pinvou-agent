@@ -5,6 +5,32 @@
 > 方案="务实大头"：只迁 `base.md` + `LOCALE_PREAMBLE_ZH_HANS` + `AUTHORITY_RECAP` 三处；
 > mode/approval/compact 小文案留 fork（边际收益低于改造成本）。
 
+## 执行进度 — 阶段2 已完成（2026-05-29）
+
+全部落地并验证通过：
+
+**submodule（commit `af64e9f7`，在阶段1 `5f847284` 之上）**
+- `base.md` 回退上游原文（`git diff 54151a4b` = 0，字节一致）
+- `prompts.rs` 品牌词回退 codewhale（locale / authority / doc 注释 3 处）
+- 删除 6 个内容 forkguard 测试（职责移到 pinvou3-app），authority 测试断言回退 CodeWhale
+- 全量测试 **3349 passed / 0 failed**；hook（3 个 `set_*_override`）完好
+
+**pinvou3-app（working tree，待父仓 commit）**
+- `resources/bundle/base.md` = pinvou3 版 base.md（249 行）
+- `bridge/bundle.rs` 3 常量（`BASE_PROMPT_MD` + `LOCALE_PREAMBLE_ZH_HANS` + `AUTHORITY_RECAP`）+ `install_prompt_overrides()` + 3 个新 forkguard 测试（内容锚点 + override 端到端生效）
+- `bridge/mod.rs` `boot()` 调 `install_prompt_overrides()`（早于 ensure_dirs；dump_system_prompt bin 同经此 boot）
+- forkguard 测试 **4 passed / 0 failed**
+
+**fork-guard.sh + 文档**
+- 7 个品牌/内容指纹 retarget 到 pinvou3-app 文件 + 新增 #42 hook 存活指纹；`--fast` 指纹层全过
+- `fork-modifications.md` prompts 段更新为 override 架构
+
+**端到端**：`dump_system_prompt` = 38746B，pinvou3 内容全在（CONSTITUTION OF PINVOU3 / running inside pinvou3 / 你正在 pinvou3 / authority pinvou3），上游内容全无（Brother Whale / RLM / CODEWHALE = 0）。与阶段1 渲染字节一致 → 行为零回退。
+
+> 下方为阶段2 原始规格（执行前所写），保留作设计记录。
+
+---
+
 ## 阶段 1 已完成（commit `5f847284`，submodule pinvou3-patches 分支）
 
 `crates/tui/src/prompts.rs` 加了 3 个 `OnceLock` override + setter + `effective_*()` getter，

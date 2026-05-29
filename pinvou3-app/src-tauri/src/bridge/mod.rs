@@ -71,6 +71,11 @@ impl Pinvou3Bridge {
     /// `write_file` 写"产出"时落到 `~/.pinvou3/sessions/<id>/artifacts/`，
     /// 不污染用户家目录。多 session 切换时调用方应重新 set。
     pub fn boot() -> Result<Self> {
+        // ⓪ 注入 pinvou3 版 prompt 文案到底座 prompt 合成层(base/locale/authority)。
+        // 幂等(底座 OnceLock 首次生效),必须早于任何 engine spawn。编译期内嵌常量,
+        // 不依赖 bundle 解包。dump_system_prompt bin 也经此 boot,故 dump 同样生效。
+        // 见 docs/base-prompt-override-阶段2.md。
+        bundle::install_prompt_overrides();
         paths::ensure_dirs()?;
         let bundle = Pinvou3Bundle::paths();
         bundle.ensure_extracted()?;
