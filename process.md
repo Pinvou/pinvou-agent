@@ -2,14 +2,14 @@
 
 跨阶段定位 + 关键决策 + 待排期事项。**细节走 git log + `docs/`,这里每条尽量一句话。**
 
-最后更新: 2026-05-28
+最后更新: 2026-05-29
 
 ---
 
 ## 当前状态
 
 - **main**: `5935da7` — 阶段 M 视觉接入已并入;推 `Pinvou/pinvou3`(owner 直推 bypass PR 保护)+ backup `h3c-hexin/pinvou3`
-- **fork**: `032973b5` (`pinvou3-patches`, v0.8.47) — 上游 PR 活动状态见 `docs/fork-modifications.md`,本文件不维护
+- **fork**: `af64e9f7` (`pinvou3-patches`, v0.8.47) — prompt 文案已迁 override(base.md 回退上游 0 diff);全量 drift ~2200 行逼近 1500 软上限,详见 `docs/fork-modifications.md`
 - **subagent**: 只用单 + 串行,并行 fan-out 已废弃(见决策);行为调优归 owner
 
 ---
@@ -27,6 +27,7 @@
 | **K** React UI 迁移 | 同事纯 React UI 替换 vanilla(bridge 唯一状态源/React 纯渲染),37 命令 + 14 事件全移植 + workflow 视图 | git log |
 | **L** 附件识别补全(#1) | file_ingest 补 OCR + 修错派 pandoc 的格式(office/archive/eml) + deb 依赖声明;8 单测 + e2e + Qwen3.6 语义验证全过 | git log |
 | **M** 视觉接入 | Qwen3.6 实测多模态(推翻旧判断);复用底座 image_analyze + 两道门接线(VisionModel feature + vision_config)+ 附件暂存引导;真 e2e 抓出 feature 门 + GUI 手测暴露幻觉→硬约束 prompt 修;svg/tiff 落 binary 兜底 | 关键决策 §视觉 |
+| **N** prompt 底座 fork→override | instructions v15 对齐实际工具(删 4 幻觉工具);base/locale/authority 加 OnceLock override hook,内容迁 pinvou3-app(`bundle/base.md`+`bridge/bundle.rs`),submodule base.md 回退上游 0 diff;工具引导三处自洽;fork-guard 指纹 retarget+#42 | `docs/base-prompt-override-阶段2.md` |
 
 ---
 
