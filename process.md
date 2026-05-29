@@ -8,7 +8,7 @@
 
 ## 当前状态
 
-- **main**: prompt 减肥 A 类(base.md 散文压缩 20.3K→11.1K,渲染总 prompt 38.4K→29.1K,-24%);前置阶段 N override 迁移已并入;推 `Pinvou/pinvou3`(owner 直推 bypass PR 保护)+ backup `h3c-hexin/pinvou3`
+- **main**: prompt 减肥 A 类 + 一期消重(base.md 20.3K→4.4K,渲染总 prompt 38.4K→**22.3K**,-42%);前置阶段 N override 迁移已并入;推 `Pinvou/pinvou3`(owner 直推 bypass PR 保护)+ backup `h3c-hexin/pinvou3`
 - **fork**: `af64e9f7` (`pinvou3-patches`, v0.8.47) — prompt 文案已迁 override(base.md 回退上游 0 diff);全量 drift ~2200 行逼近 1500 软上限,详见 `docs/fork-modifications.md`
 - **subagent**: 只用单 + 串行,并行 fan-out 已废弃(见决策);行为调优归 owner
 
@@ -34,7 +34,7 @@
 ## 待办
 
 **🟡 中等**
-- **prompt 减肥 C 类**(A 类 base.md 已做,渲染 38.4K→29.1K):剩余大头在 submodule 无 override——Personality(calm.md ~1.3K)/ Compaction 模板(compact.md ~3K)/ Mode·Approval(~3.2K)。要减得「加 override hook(同阶段 N,通用可提 PR,不增 fork drift)」或「改 fork」。建议优先 Compaction+Personality 加 hook 后压缩;instructions.md(5K,app 层)亦可二次精简。memory `prompt-slimming-task` 有地形+forkguard 红线
+- **prompt 减肥 二期(C 类)**(A 类 + 一期消重已做,渲染 38.4K→22.3K):剩余大头在 submodule 无 override——Personality(calm.md ~1.4K)/ Mode·Approval×3(~3.2K)/ Context+prompt-cache(~1.5K,prompts.rs 硬编码)/ Compaction 模板(compact.md ~1.8K)/ 语言再次提醒(LOCALE_CLOSER,prompts.rs:455,带测试)。要减得「加 override hook(同阶段 N,通用可提 PR,不增 fork drift)」或「改 fork」。三期(架构):Skills 长描述+phase 协议按需注入(-2.4K)/ compaction 动态生成。memory `prompt-slimming-task` 有地形+forkguard 红线;codex+我双评见会话
 - **WorkFlow 视图编排**(差异化最强,用户明确要做):交互模型待讨论(todo checklist / 节点流 / 专家协作),可能与 `plan_card` 融合
 - **模型预设切换 GUI**:bridge 已有 `ModelPreset` 占位,缺 GUI(远程 DeepSeek API / OpenRouter)
 - **GUI subagent 体验**:卡片方案 B/C(串行视图 / 内部 timeline)+ Settings toggle 启用 subagent(当前需 env override)
