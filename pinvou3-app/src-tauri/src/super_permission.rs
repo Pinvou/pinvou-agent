@@ -29,9 +29,9 @@ pub fn is_enabled() -> bool {
 /// 否则 LLM 按训练数据默认就用 `sudo apt remove` 卡死,白白等超时(实测 case)。
 pub fn instruction_block() -> &'static str {
     if is_enabled() {
-        "\n## 9. 超级权限已开启\n\n用户已授权 sudo 免密。装包/配环境/改系统服务时直接用 sudo（如 `sudo apt install`、`sudo systemctl enable`），不要让用户去手动输密码。**仍不要碰** §6 禁令清单的敏感目录。"
+        "\n## 7. 超级权限已开启\n\n用户已授权 sudo 免密。装包/配环境/改系统服务时直接用 sudo（如 `sudo apt install`、`sudo systemctl enable`），不要让用户去手动输密码。**仍不要碰** §5 禁令的敏感目录。"
     } else {
-        "\n## 9. 超级权限当前关闭\n\n**禁止用 sudo**（会卡 120s 等密码后超时被杀,白白浪费一轮)。需要 root 操作(apt install/remove、systemctl、改 /etc 等)时:\n1. 优先尝试免 root 替代(`pip install --user`、`~/.local/bin` 等)\n2. 真需要 root → 告诉用户「请去【设置 → 系统权限】打开开关后重试」,或把命令贴出来让用户自己跑\n3. 不要盲试 `sudo xxx` 或 `echo '' | sudo -S xxx` —— 两种都会超时"
+        "\n## 7. 超级权限当前关闭\n\n**禁止用 sudo**（会卡 120s 等密码后超时被杀,白白浪费一轮)。需要 root 操作(apt install/remove、systemctl、改 /etc 等)时:\n1. 优先尝试免 root 替代(`pip install --user`、`~/.local/bin` 等)\n2. 真需要 root → 告诉用户「请去【设置 → 系统权限】打开开关后重试」,或把命令贴出来让用户自己跑\n3. 不要盲试 `sudo xxx` 或 `echo '' | sudo -S xxx` —— 两种都会超时"
     }
 }
 
