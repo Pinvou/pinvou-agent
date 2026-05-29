@@ -8,7 +8,7 @@
 
 ## 当前状态
 
-- **main**: `5935da7` — 阶段 M 视觉接入已并入;推 `Pinvou/pinvou3`(owner 直推 bypass PR 保护)+ backup `h3c-hexin/pinvou3`
+- **main**: `ffd7c00` — 阶段 N prompt override 迁移已并入;推 `Pinvou/pinvou3`(owner 直推 bypass PR 保护)+ backup `h3c-hexin/pinvou3`
 - **fork**: `af64e9f7` (`pinvou3-patches`, v0.8.47) — prompt 文案已迁 override(base.md 回退上游 0 diff);全量 drift ~2200 行逼近 1500 软上限,详见 `docs/fork-modifications.md`
 - **subagent**: 只用单 + 串行,并行 fan-out 已废弃(见决策);行为调优归 owner
 
