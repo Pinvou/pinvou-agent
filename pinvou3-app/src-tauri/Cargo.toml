@@ -47,8 +47,3 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 # File watcher：监听 ~/.pinvou3/sessions/*/workspace/ 新文件产出，
 # 自动入 session.artifacts (覆盖 write_file 之外的工具如 exec_shell pandoc 产出的 docx)
 notify = "6"
-
-# Bundle 内嵌：把 resources/bundle/skills/ 下的多文件 skill（h3c-ppt 含脚本 +
-# 二进制图片/母板共 24 文件）整目录编译进 app，启动时解包到 ~/.pinvou3/bundle/skills/。
-# include_str! 只能逐个文本文件，撑不住二进制 + 24 文件，故用 include_dir 整目录内嵌。
-include_dir = "0.7"

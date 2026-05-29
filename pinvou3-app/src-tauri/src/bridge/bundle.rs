@@ -13,7 +13,8 @@ use super::paths;
 /// 改其他 bundle 资源（mcp.json 默认 / skills 模板等）才需要手动 bump base。
 ///
 /// 0.4: 加 Pinvou Review 内置 skills(pinvou-review-plan / pinvou-review-final)
-pub const BUNDLE_VERSION: &str = concat!("0.4-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.5: 下线 h3c-ppt workflow skill(workflow 功能转"开发中"),phase 协议随之停渲
+pub const BUNDLE_VERSION: &str = concat!("0.5-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions.md（Qwen3.6 适配 prompt），编译时内嵌。
 pub const INSTRUCTIONS_MD: &str = include_str!("../../resources/bundle/instructions.md");
@@ -69,12 +70,6 @@ pub fn install_prompt_overrides() {
     deepseek_tui::prompts::set_locale_preamble_zh_hans_override(LOCALE_PREAMBLE_ZH_HANS.to_string());
     deepseek_tui::prompts::set_authority_recap_override(AUTHORITY_RECAP.to_string());
 }
-
-/// h3c-ppt 工作流 skill —— 多文件(SKILL.md + scripts/ + templates/ 含二进制图片 +
-/// reference/ + demo/),整目录编译期内嵌,启动时递归解包到 ~/.pinvou3/bundle/skills/h3c-ppt/。
-/// 这样仓库 `resources/bundle/skills/h3c-ppt/` 成为唯一源,改 skill 只改仓库源即可。
-static H3C_PPT_SKILL_DIR: include_dir::Dir<'_> =
-    include_dir::include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/skills/h3c-ppt");
 
 #[derive(Debug, Clone)]
 pub struct Pinvou3Bundle {
@@ -164,28 +159,11 @@ impl Pinvou3Bundle {
         std::fs::create_dir_all(&final_dir)?;
         std::fs::write(plan_dir.join("SKILL.md"), PINVOU_REVIEW_PLAN_SKILL_MD)?;
         std::fs::write(final_dir.join("SKILL.md"), PINVOU_REVIEW_FINAL_SKILL_MD)?;
-        // h3c-ppt:整目录解包(同 pinvou 的 immutable bundle 策略,每次启动重写)。
-        let h3c_dir = self.skills_dir.join("h3c-ppt");
-        extract_embedded_dir(&H3C_PPT_SKILL_DIR, &h3c_dir)?;
+        // h3c-ppt workflow skill 已下线(workflow 功能转"开发中"):清理既有装机的残留
+        // 目录,否则 SkillRegistry 仍会从 disk 发现它、重新触发 phase 协议 prompt。
+        let _ = std::fs::remove_dir_all(self.skills_dir.join("h3c-ppt"));
         Ok(())
     }
-}
-
-/// 把 [`include_dir::Dir`] 递归写到 `base` 下。每个文件的 `path()` 是相对内嵌根
-/// 的路径(如 `scripts/audit.py`),join 到 `base` 即目标位置;二进制(图片)走
-/// `contents()` 字节写出。
-fn extract_embedded_dir(dir: &include_dir::Dir<'_>, base: &std::path::Path) -> std::io::Result<()> {
-    for file in dir.files() {
-        let dest = base.join(file.path());
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(dest, file.contents())?;
-    }
-    for sub in dir.dirs() {
-        extract_embedded_dir(sub, base)?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -208,16 +186,15 @@ mod tests {
         assert!(bundle.instructions_md.is_file());
         assert!(bundle.mcp_json.is_file());
         assert!(paths::bundle_version_file().is_file());
-        // h3c-ppt 多文件 skill 整目录解包:SKILL.md + 子目录里的脚本/二进制都要落地。
-        let h3c = bundle.skills_dir.join("h3c-ppt");
-        assert!(h3c.join("SKILL.md").is_file(), "h3c-ppt SKILL.md 应被解包");
+        // pinvou-review 内置 skills 应被写出。
         assert!(
-            h3c.join("scripts/rebuild_mega.sh").is_file(),
-            "子目录脚本应被递归解包"
+            bundle.skills_dir.join("pinvou-review-plan/SKILL.md").is_file(),
+            "pinvou-review-plan SKILL.md 应被写出"
         );
+        // h3c-ppt workflow skill 已下线:不应再被写出。
         assert!(
-            h3c.join("templates/h3c-brand/h3c-logo-white.png").is_file(),
-            "二进制图片资产应被递归解包"
+            !bundle.skills_dir.join("h3c-ppt").exists(),
+            "h3c-ppt 已下线,不应再解包"
         );
         let v = std::fs::read_to_string(paths::bundle_version_file()).unwrap();
         assert_eq!(v.trim(), BUNDLE_VERSION);
@@ -243,20 +220,6 @@ mod tests {
         assert!(
             PINVOU_REVIEW_PLAN_SKILL_MD.contains("append_file` 只能追加到文件尾"),
             "Pinvou review 必须把 append_file 当中间插入/占位替换判为硬伤"
-        );
-
-        let h3c = H3C_PPT_SKILL_DIR
-            .get_file("SKILL.md")
-            .expect("h3c-ppt SKILL.md bundled")
-            .contents_utf8()
-            .expect("h3c-ppt SKILL.md utf8");
-        assert!(
-            h3c.contains("tail-appending content in final file order"),
-            "h3c-ppt 必须说明 append_file 只适合最终顺序尾追加"
-        );
-        assert!(
-            h3c.contains("edit_file` / `apply_patch"),
-            "h3c-ppt 必须说明占位符/中间编辑走 edit_file 或 apply_patch"
         );
     }
 
