@@ -37,40 +37,6 @@ pub const PINVOU_REVIEW_PLAN_SKILL_MD: &str =
 pub const PINVOU_REVIEW_FINAL_SKILL_MD: &str =
     include_str!("../../resources/bundle/skills/pinvou-review-final/SKILL.md");
 
-/// pinvou3 版 base prompt（Constitution / 工具纪律 / embedder-aware / 删 RLM·Toolbox·V4），
-/// 编译期内嵌。通过底座 `prompts::set_base_prompt_override` 注入，替换底座的
-/// 上游 `BASE_PROMPT`。这样 pinvou3 的 prompt 定制活在 app,DeepSeek-TUI submodule
-/// 的 base.md 回退上游原文(fork drift 归零)。见 docs/base-prompt-override-阶段2.md。
-pub const BASE_PROMPT_MD: &str = include_str!("../../resources/bundle/base.md");
-
-/// pinvou3 版简体中文 locale 前导段（替换底座 `LOCALE_PREAMBLE_ZH_HANS`，仅品牌词
-/// pinvou3 与上游 codewhale 不同）。底座原文用 `\` 行续拼接,本常量按其最终字节复刻。
-pub const LOCALE_PREAMBLE_ZH_HANS: &str = "## 语言要求\n\n\
-你正在 pinvou3 中运行。无论任务上下文（代码、错误日志、文件名）\
-是英文，无论系统提示的其余部分是英文，你都必须用简体中文进行 \
-`reasoning_content`（内部思考）和最终回复。代码、文件路径、工具名称\
-（例如 `read_file`、`exec_shell`）、环境变量、命令行参数和 URL \
-保持原样 —— 只有自然语言散文要切换到简体中文。\n\n\
-如果用户在会话中切换到另一种语言，从下一轮开始跟随切换。\
-如果用户明确要求（例如 \"think in English\"），则覆盖此规则。";
-
-/// pinvou3 版 Authority Recap（替换底座 `AUTHORITY_RECAP`，仅品牌词不同）。
-pub const AUTHORITY_RECAP: &str = "\
-## Authority Recap
-
-The Constitution of pinvou3 (Articles I-VII) governs: Truth and Verification \
-are non-negotiable, and the user's current message is the highest directive \
-within them. On any conflict, consult Article VII.";
-
-/// 把 pinvou3 版 prompt 文案注入底座的 prompt 合成层。底座用 `OnceLock`,首次
-/// set 生效、后续 no-op,所以可在每个 `Bridge::boot` 入口幂等调用。必须在任何
-/// engine spawn 前调用(boot 早于 EnginePool::new 的 engine 装配)。
-pub fn install_prompt_overrides() {
-    deepseek_tui::prompts::set_base_prompt_override(BASE_PROMPT_MD.to_string());
-    deepseek_tui::prompts::set_locale_preamble_zh_hans_override(LOCALE_PREAMBLE_ZH_HANS.to_string());
-    deepseek_tui::prompts::set_authority_recap_override(AUTHORITY_RECAP.to_string());
-}
-
 #[derive(Debug, Clone)]
 pub struct Pinvou3Bundle {
     pub root: PathBuf,
@@ -223,70 +189,7 @@ mod tests {
         );
     }
 
-    /// 阶段2 forkguard:base.md override 内容正确。submodule base.md 已回退上游
-    /// 原文,pinvou3 的 Constitution/工具纪律/精简只在这份 bundle 里 —— 这些断言
-    /// 从 submodule 删掉的 forkguard 迁来,守住"内容没被误删/被上游内容污染"。
-    #[test]
-    fn forkguard_base_override_has_pinvou3_content() {
-        for anchor in [
-            "CONSTITUTION OF PINVOU3",
-            "running inside pinvou3",
-            "Match the embedder's render target",
-            "concurrent cap is embedder-configured",
-            "files configured via `EngineConfig.instructions`",
-        ] {
-            assert!(
-                BASE_PROMPT_MD.contains(anchor),
-                "base.md override 缺 pinvou3 锚点 {anchor:?}"
-            );
-        }
-        for dropped in [
-            "Brother Whale",
-            "RLM — How to Use It",
-            "CONSTITUTION OF CODEWHALE",
-            "## Toolbox (fast reference",
-            "DeepSeek prefix-cache reuse",
-            "fork_context: true",
-        ] {
-            assert!(
-                !BASE_PROMPT_MD.contains(dropped),
-                "base.md override 不应含上游内容 {dropped:?}"
-            );
-        }
-        // {model_id} 占位符必须保留,底座 apply_model_template 会替换它。
-        assert!(
-            BASE_PROMPT_MD.contains("{model_id}"),
-            "base.md override 丢了 {{model_id}} 占位符"
-        );
-    }
 
-    /// 阶段2 forkguard:locale/authority override 品牌词正确(pinvou3 非 codewhale)。
-    #[test]
-    fn forkguard_locale_authority_override_branding() {
-        assert!(LOCALE_PREAMBLE_ZH_HANS.contains("你正在 pinvou3 中运行"));
-        assert!(!LOCALE_PREAMBLE_ZH_HANS.contains("你正在 codewhale 中运行"));
-        assert!(AUTHORITY_RECAP.contains("The Constitution of pinvou3 (Articles I-VII)"));
-        assert!(!AUTHORITY_RECAP.contains("The Constitution of CodeWhale"));
-    }
-
-    /// 阶段2 forkguard(端到端):install_prompt_overrides 真把 pinvou3 内容注入
-    /// 底座 compose。证明 hook + 内容 + 注入三者接通 —— 若底座 sync 把 override
-    /// hook 冲掉,这个测试会失败(compose 退回上游 base)。
-    #[test]
-    fn forkguard_install_overrides_makes_compose_emit_pinvou3() {
-        use deepseek_tui::prompts::{self, Personality};
-        use deepseek_tui::tui::app::AppMode;
-        install_prompt_overrides();
-        let prompt = prompts::compose_prompt(AppMode::Agent, Personality::Calm);
-        assert!(
-            prompt.contains("CONSTITUTION OF PINVOU3"),
-            "override 未生效:compose 缺 pinvou3 Constitution(hook 可能被 sync 冲掉)"
-        );
-        assert!(
-            !prompt.contains("Brother Whale"),
-            "override 未生效:compose 仍含上游 Brother Whale"
-        );
-    }
 
     fn tempdir() -> String {
         let id = std::time::SystemTime::now()

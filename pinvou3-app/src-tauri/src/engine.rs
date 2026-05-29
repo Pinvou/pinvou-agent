@@ -12,14 +12,13 @@
 //! 这一层只做 "boot engine + 转发事件"。Engine 自管 session 状态，多轮对话
 //! 在同一个 EngineHandle 内自然累积。
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
 use deepseek_tui::core::engine::{spawn_engine, EngineHandle};
 use deepseek_tui::core::events::Event;
 use deepseek_tui::core::ops::Op;
-use deepseek_tui::models::{Message, SystemPrompt};
+use deepseek_tui::models::Message;
 use deepseek_tui::tools::user_input::UserInputResponse;
 use deepseek_tui::tui::app::AppMode;
 use parking_lot::Mutex;
