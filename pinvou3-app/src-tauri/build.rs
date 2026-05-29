@@ -1,11 +1,20 @@
 fn main() {
-    // 算 instructions.md 的内容 hash，注入到 BUNDLE_INSTRUCTIONS_HASH 环境变量
+    // 算 bundle 资源的内容 hash，注入到 BUNDLE_INSTRUCTIONS_HASH 环境变量
     // 让 bundle.rs::BUNDLE_VERSION 自动包含 hash —— 文件变化时 cargo build 重跑
-    // build.rs，hash 跟着变，ensure_extracted 自动覆写 disk 的 instructions.md。
-    println!("cargo:rerun-if-changed=resources/bundle/instructions.md");
-    let content = std::fs::read("resources/bundle/instructions.md")
-        .expect("bundle/instructions.md must exist");
-    let hash = fnv1a_64(&content);
+    // build.rs，hash 跟着变，ensure_extracted 自动覆写 disk 的 bundle 文件。
+    //
+    // 纳入哈希的资源（任一变化都要触发老安装重新解包）：
+    //   - instructions.md：system prompt 模板
+    //   - deny_sensitive_paths.sh：敏感目录/命令硬拦截 hook（只改它也要落盘）
+    let mut hashed = Vec::new();
+    for f in [
+        "resources/bundle/instructions.md",
+        "resources/bundle/deny_sensitive_paths.sh",
+    ] {
+        println!("cargo:rerun-if-changed={f}");
+        hashed.extend(std::fs::read(f).unwrap_or_else(|_| panic!("{f} must exist")));
+    }
+    let hash = fnv1a_64(&hashed);
     println!("cargo:rustc-env=BUNDLE_INSTRUCTIONS_HASH={hash:016x}");
 
     tauri_build::build();

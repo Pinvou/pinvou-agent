@@ -184,19 +184,19 @@ impl EnginePool {
         Ok(())
     }
 
-    /// super permission 改动后,通知用户重启会话生效。
+    /// super permission 改动后调用。**无需热刷静态 prompt**——sudo 的开/关状态
+    /// 已改由 `build_send_message_op` 每 turn 注入 `<system-reminder>`
+    /// (见 `super_permission::turn_reminder`),`is_enabled()` 每次实时读 disk,
+    /// 所以切开关下一 turn 自动生效。静态 prompt 里只剩一句中性指引(指向
+    /// per-turn reminder),过不过时都不影响行为。
     ///
-    /// C 方案(P-no-disk) 之前:写 disk 让 engine rehydrate 重读。现在
-    /// `EngineConfig.instructions` 是内存 inline,已 spawn engine 持有 spawn 时
-    /// 渲染的版本,sudo 改动不能即时进 prompt(底座 Op::SyncSession 不带
-    /// instructions 字段,没法热刷)。新建 session 或重启 GUI 让新值生效。
-    /// GUI 层在 super permission toggle UI 上给 user 提示即可。
+    /// 本函数保留为 no-op:调用点(set_super_permission)语义上"通知一下",
+    /// 但实际生效靠 per-turn 注入,不依赖这里。
     pub async fn refresh_all_instructions(&self) {
-        // no-op: 见上面注释。保留函数 shell 便于未来底座加 Op::RefreshInstructions 后重新接入。
         let live_count = self.entries.lock().await.len();
         eprintln!(
-            "[engine_pool] sudo permission changed; {live_count} live session(s) keep old prompt \
-             until next restart (no-op in C-fork P-no-disk model)"
+            "[engine_pool] sudo permission changed; {live_count} live session(s) — \
+             new state takes effect next turn via per-turn system-reminder"
         );
     }
 }

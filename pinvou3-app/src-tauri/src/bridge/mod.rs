@@ -537,13 +537,18 @@ impl Pinvou3Bridge {
             // Agent mode pinvou3 不暴露，但保留 default 处理避免 panic
             AppMode::Agent => (self.allow_shell(), false),
         };
-        let full_content = match reminder_for(mode, phase) {
-            Some(r) => format!(
-                "<system-reminder>\n{}\n</system-reminder>\n\n{}",
-                r, content
-            ),
-            None => content,
+        // 超级权限状态每 turn 实时注入(is_enabled() 每次读 disk),绕开
+        // refresh_all_instructions no-op 导致的"切开关不生效"——静态 prompt
+        // spawn 时渲染一次就过时,这里每 turn 重出。始终注入(连 mode/phase
+        // reminder 为 None 的纯 Yolo 态也带上)。
+        let sudo = crate::super_permission::turn_reminder();
+        let reminder_body = match reminder_for(mode, phase) {
+            Some(r) => format!("{r}\n\n{sudo}"),
+            None => sudo.to_string(),
         };
+        let full_content = format!(
+            "<system-reminder>\n{reminder_body}\n</system-reminder>\n\n{content}"
+        );
         Op::SendMessage {
             content: full_content,
             mode,
@@ -648,6 +653,29 @@ mod tests {
             Some(256_000),
             "默认模型应派生 256K 窗口,得到 {window:?}"
         );
+    }
+
+    /// 超级权限状态必须每 turn 注入 system-reminder——哪怕 mode/phase reminder
+    /// 为 None 的纯 Yolo 态也要带上,否则切开关对当前会话不生效(refresh no-op)。
+    /// 锁住:任意 mode/phase 下 op content 都含 `<system-reminder>` + 超级权限字样。
+    #[test]
+    fn build_send_message_op_always_injects_super_permission_reminder() {
+        let bridge = fixture_bridge();
+        for (mode, phase) in [
+            (AppMode::Yolo, PlanPhase::None),
+            (AppMode::Yolo, PlanPhase::Executing),
+            (AppMode::Plan, PlanPhase::Planning),
+        ] {
+            let op = bridge.build_send_message_op("用户消息".to_string(), mode, phase);
+            let content = match op {
+                Op::SendMessage { content, .. } => content,
+                other => panic!("期望 SendMessage,得到 {other:?}"),
+            };
+            assert!(
+                content.contains("<system-reminder>") && content.contains("超级权限"),
+                "mode={mode:?} phase={phase:?} 的 op 必须每 turn 注入超级权限状态,得到:\n{content}"
+            );
+        }
     }
 
     /// `wire_max_output_tokens_env` 必须把 self.max_output_tokens() 设给底座
