@@ -25,6 +25,7 @@ use deepseek_tui::config::{Config as DtConfig, ProvidersConfig};
 use deepseek_tui::core::engine::EngineConfig;
 use deepseek_tui::core::ops::Op;
 use deepseek_tui::hooks::{Hook, HookEvent, HooksConfig};
+use deepseek_tui::prompts::InstructionSource;
 use deepseek_tui::tui::app::AppMode;
 use deepseek_tui::tui::approval::ApprovalMode;
 
@@ -70,6 +71,11 @@ impl Pinvou3Bridge {
     /// `write_file` 写"产出"时落到 `~/.pinvou3/sessions/<id>/artifacts/`，
     /// 不污染用户家目录。多 session 切换时调用方应重新 set。
     pub fn boot() -> Result<Self> {
+        // ⓪ 注入 pinvou3 版 prompt 文案到底座 prompt 合成层(base/locale/authority)。
+        // 幂等(底座 OnceLock 首次生效),必须早于任何 engine spawn。编译期内嵌常量,
+        // 不依赖 bundle 解包。dump_system_prompt bin 也经此 boot,故 dump 同样生效。
+        // 见 docs/base-prompt-override-阶段2.md。
+        bundle::install_prompt_overrides();
         paths::ensure_dirs()?;
         let bundle = Pinvou3Bundle::paths();
         bundle.ensure_extracted()?;
@@ -85,7 +91,59 @@ impl Pinvou3Bridge {
             workspace: paths::user_home_dir(),
         };
         this.wire_max_output_tokens_env();
+        // C 方案(P-no-disk)最终版: 清理所有 pinvou3 历史 disk 残留:
+        //   • `~/.pinvou3/sessions/<sid>/instructions.md`(per-session inline 前路径)
+        //   • `~/.pinvou3/workspace_context.md`(workspace context 已合并进 INSTRUCTIONS_MD §0)
+        //   • `~/.codewhale/instructions.md` / `~/.deepseek/instructions.md`(早期 P-brand 路径)
+        // 不再生成任何 pinvou3-managed disk 文件 — 所有 prompt 内容走 Inline。
+        this.cleanup_legacy_pinvou3_disk_files();
         Ok(this)
+    }
+
+    /// 清扫所有早期版本 pinvou3 写过的 prompt-related disk 文件。C-fork P-no-disk
+    /// 最终态 disk 完全干净,所有 prompt 内容走 `InstructionSource::Inline` 内存注入。
+    ///
+    /// 清单(只清 pinvou3-managed / auto-gen 内容,用户自定义文件保留):
+    ///   • `~/.pinvou3/sessions/<sid>/instructions.md` — per-session inline 前路径(全清)
+    ///   • `~/.pinvou3/workspace_context.md` — workspace context 合并进 INSTRUCTIONS_MD §0 前路径
+    ///   • `~/.codewhale/instructions.md` + `~/.deepseek/instructions.md` — 早期 P-brand 路径
+    fn cleanup_legacy_pinvou3_disk_files(&self) {
+        let mut removed = 0usize;
+
+        // (1) sessions/*/instructions.md — 无条件清(per-session pinvou3 自家产物,不会用户编辑)
+        if let Ok(entries) = std::fs::read_dir(paths::sessions_root()) {
+            for entry in entries.flatten() {
+                let path = entry.path().join("instructions.md");
+                if path.is_file() && std::fs::remove_file(&path).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+
+        // (2)(3)(4) 单文件 — 只清 pinvou3-managed / auto-gen 标识的,用户自定义保留
+        for legacy in [
+            self.workspace.join(".pinvou3").join("workspace_context.md"),
+            self.workspace.join(".codewhale").join("instructions.md"),
+            self.workspace.join(".deepseek").join("instructions.md"),
+        ] {
+            if let Ok(existing) = std::fs::read_to_string(&legacy) {
+                let head: String = existing.chars().take(200).collect();
+                let is_auto_gen = head.contains("Project Structure (Auto-generated)");
+                let is_pinvou3_managed = head.contains("pinvou3 workspace context");
+                if (is_auto_gen || is_pinvou3_managed)
+                    && std::fs::remove_file(&legacy).is_ok()
+                {
+                    removed += 1;
+                }
+            }
+        }
+
+        if removed > 0 {
+            eprintln!(
+                "[pinvou3-app] cleaned up {removed} legacy disk file(s) \
+                 (C-fork P-no-disk: prompt content now Inline in memory)"
+            );
+        }
     }
 
     /// 把 `self.max_output_tokens()` 写到底座读取的 `DEEPSEEK_MAX_OUTPUT_TOKENS`
@@ -124,8 +182,7 @@ impl Pinvou3Bridge {
     }
 
     /// 用 INSTRUCTIONS_MD 模板，把 `{{PINVOU3_WORKSPACE}}` 替换成指定 session 的
-    /// 独立 workspace 目录。bridge 在切换 session 时调用,通过
-    /// `Op::SyncSession { system_prompt }` 让 engine 拿到 session 专属的产出引导。
+    /// 独立 workspace 目录,返回渲染后的字符串(供 [`session_instructions`] 用)。
     pub fn build_session_system_prompt(&self, session_id: &str) -> String {
         let ws = paths::session_workspace_dir(session_id);
         // 同时确保目录存在,AI 写 write_file 时不会因为目录不存在而失败
@@ -143,49 +200,26 @@ impl Pinvou3Bridge {
         paths::session_workspace_dir(session_id)
     }
 
-    /// 切换 session 前调用：**重写 disk 上的 `bundle/instructions.md`** 为
-    /// session-specific workspace 路径。
+    /// session 专属 `EngineConfig.instructions` 注入:
+    ///   1. pinvou3 自家 INSTRUCTIONS_MD 渲染版(走 `InstructionSource::Inline`,
+    ///      不写 disk — 见 C 方案 P-no-disk 决策);
+    ///   2. 用户自定义 `~/.codewhale/instructions.md`(可选,仍走 `File`)。
     ///
-    /// 为什么必须重写 disk:engine 的 `rehydrate_latest_canonical_state()` 会从
-    /// `EngineConfig.instructions` (disk 文件路径) 重读并覆盖 session.system_prompt,
-    /// 把我们通过 Op::SyncSession 传的 system_prompt 顶掉。要让 AI 看到 session-
-    /// specific PINVOU3_WORKSPACE 必须改 disk 内容本身。
-    ///
-    /// pinvou3 是单用户单进程,disk 文件 race 不是问题。
-    ///
-    /// ⚠️ **已废弃(多引擎并发)**:写全局共享的 `bundle/instructions.md`,多个 engine
-    /// 同时 rehydrate 会读到对方刚写的内容 → system_prompt 串台。EnginePool 路径改用
-    /// [`write_session_instructions`] 写 session 专属文件。保留仅为兼容旧单引擎路径。
-    #[deprecated(note = "多引擎并发改用 write_session_instructions(session 专属文件)")]
-    #[allow(deprecated)]
-    pub fn rewrite_instructions_for_session(&self, session_id: &str) -> std::io::Result<()> {
+    /// 之前版本写 `~/.pinvou3/sessions/<sid>/instructions.md` disk 文件然后传
+    /// `Vec<PathBuf>` 给底座 — 改用 `InstructionSource::Inline` 后:
+    ///  • disk 上没了多余的 instructions.md 给用户造成混淆
+    ///  • 多引擎并发不再依赖 per-session 文件避免 race(内存对象天然隔离)
+    ///  • rehydrate 不再从 disk 重读,内容跟 EngineConfig 一起在内存里活
+    pub fn session_instructions(&self, session_id: &str) -> Vec<InstructionSource> {
+        let mut out: Vec<InstructionSource> = Vec::new();
         let rendered = self.build_session_system_prompt(session_id);
-        std::fs::write(&self.bundle.instructions_md, rendered)
-    }
-
-    /// 把 [`build_session_system_prompt`] 渲染结果写到 **session 专属** instructions
-    /// 文件(`~/.pinvou3/sessions/<id>/instructions.md`)。每个 engine 的
-    /// `EngineConfig.instructions` 指向各自这个文件,engine rehydrate 从 disk 重读时
-    /// 互不干扰 —— 多引擎并发的核心隔离。spawn engine 前必须先调一次。
-    ///
-    /// [`build_session_system_prompt`]: Self::build_session_system_prompt
-    pub fn write_session_instructions(&self, session_id: &str) -> std::io::Result<()> {
-        let rendered = self.build_session_system_prompt(session_id);
-        let path = paths::session_instructions_path(session_id);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, rendered)
-    }
-
-    /// session 专属的 system-prompt 注入路径数组:先 session 专属 instructions
-    /// (已渲染,含本 session workspace),再 user 自定义 instructions(可选)。
-    /// **不含**全局 `bundle/instructions.md`(避免多引擎并发共享写冲突)。
-    pub fn session_instruction_paths(&self, session_id: &str) -> Vec<PathBuf> {
-        let mut out = vec![paths::session_instructions_path(session_id)];
+        out.push(InstructionSource::Inline {
+            name: format!("pinvou3:sessions/{session_id}/instructions"),
+            content: rendered,
+        });
         let user = paths::user_instructions();
         if user.is_file() {
-            out.push(user);
+            out.push(InstructionSource::File(user));
         }
         out
     }
@@ -216,16 +250,17 @@ impl Pinvou3Bridge {
         self.prefs.advanced.max_output_tokens.unwrap_or(65_536)
     }
 
-    /// system prompt 注入路径数组：bundle 必有，user 可选。
-    /// 顺序：先 bundle，再 user（user 在后，覆盖效应由上游 prompt 拼接决定）。
-    pub fn instruction_paths(&self) -> Vec<PathBuf> {
-        let mut out = Vec::new();
-        if self.bundle.instructions_md.is_file() {
-            out.push(self.bundle.instructions_md.clone());
-        }
+    /// legacy 单引擎路径(headless harness 用):走 INSTRUCTIONS_MD inline + 用户自定义。
+    /// 跟 [`session_instructions`] 区别仅在不带 session_id —— 直接用 INSTRUCTIONS_MD 原文
+    /// (不替换 `{{PINVOU3_WORKSPACE}}`)。
+    pub fn instructions(&self) -> Vec<InstructionSource> {
+        let mut out: Vec<InstructionSource> = vec![InstructionSource::Inline {
+            name: "pinvou3:bundle/instructions".to_string(),
+            content: INSTRUCTIONS_MD.to_string(),
+        }];
         let user = paths::user_instructions();
         if user.is_file() {
-            out.push(user);
+            out.push(InstructionSource::File(user));
         }
         out
     }
@@ -273,8 +308,8 @@ impl Pinvou3Bridge {
             goal_objective,
             workshop,
             snapshots_max_workspace_bytes,
-            search_provider,
-            search_api_key,
+            search_provider: _, // pinvou3 显式构造 (见下),由 prefs.search 翻译
+            search_api_key: _,
             // —— v0.8.47 上游新增字段,透传 default ——
             show_thinking,
             goal_state,
@@ -291,7 +326,7 @@ impl Pinvou3Bridge {
             notes_path: paths::notes_path(),
             mcp_config_path: paths::mcp_config_path(),
             skills_dir: self.bundle.skills_dir.clone(),
-            instructions: self.instruction_paths(),
+            instructions: self.instructions(),
             project_context_pack_enabled: false,
             max_steps: self.prefs.advanced.max_steps.unwrap_or(100),
             // 2026-05-19: 工程层硬锁 single subagent at a time。
@@ -307,14 +342,31 @@ impl Pinvou3Bridge {
             strict_tool_mode: false,
             // pinvou3 中文用户已经是中文语境，不走 /translate 路径
             translation_enabled: false,
-            // Qwen3.6-35B-A3B-FP8 不是 vision 模型
-            vision_config: None,
+            // Qwen3.6 实测支持视觉(2026-05-28 base64 image_url 识图通过),
+            // image_analyze 工具复用同一 vllm 端点/模型/key,无需独立 vision 服务。
+            vision_config: Some(deepseek_tui::config::VisionModelConfig {
+                model: self.model(),
+                api_key: Some(
+                    std::env::var("DEEPSEEK_API_KEY")
+                        .unwrap_or_else(|_| LOCAL_VLLM_API_KEY.to_string()),
+                ),
+                base_url: Some(
+                    std::env::var("DEEPSEEK_BASE_URL")
+                        .unwrap_or_else(|_| LOCAL_VLLM_BASE_URL.to_string()),
+                ),
+            }),
             // [pinvou3-fork] 上游默认 120s 是为 DeepSeek 云端 API 设计。
             // 本地 Qwen3.6 vLLM 慢推理下单 step 30-90s 很常见,120s 频繁误杀子 agent。
             // 300s 与 elapsed cap 对齐,给复杂研究类任务留出完整单步窗口。
             subagent_api_timeout: std::time::Duration::from_secs(300),
-            // 上游 default 透传
-            features,
+            // 开启 VisionModel feature(默认 Experimental 关):配合上面的
+            // vision_config,tool_setup.rs 才会注册 image_analyze 工具给 LLM。
+            // 两道门缺一不可——只配 vision_config 不开 feature,工具不会注册。
+            features: {
+                let mut f = features;
+                f.enable(deepseek_tui::features::Feature::VisionModel);
+                f
+            },
             // compaction model 默认 deepseek-v4-pro,本地 vLLM 没这个模型,
             // 必须改成 pinvou3 当前用的 model,否则手动 /compact 报 404。
             //
@@ -381,8 +433,16 @@ impl Pinvou3Bridge {
             goal_objective,
             workshop,
             snapshots_max_workspace_bytes,
-            search_provider,
-            search_api_key,
+            // pinvou3 search 后端: prefs 翻译。
+            // Bing 是默认 (fork patch #42 在底座 SearchProvider::default());Metaso/Bocha
+            // 是 GUI 切换项。底座 web_search 对 Metaso 留空 key 用内置共享 key
+            // (~100 次/天),对 Bocha 留空 key 直接报 ToolError "requires API key"。
+            search_provider: match self.prefs.search.provider {
+                prefs::SearchProvider::Bing => deepseek_tui::config::SearchProvider::Bing,
+                prefs::SearchProvider::Metaso => deepseek_tui::config::SearchProvider::Metaso,
+                prefs::SearchProvider::Bocha => deepseek_tui::config::SearchProvider::Bocha,
+            },
+            search_api_key: self.prefs.search.api_key.clone(),
             // v0.8.47 上游新增,透传 default
             show_thinking,
             goal_state,
@@ -393,19 +453,15 @@ impl Pinvou3Bridge {
 
     /// 构造 **session 专属** [`EngineConfig`]:在 [`build_engine_config`] 基础上把
     /// `workspace` 换成该 session 的独立工作目录、`instructions` 换成该 session 的
-    /// 专属 instructions 文件。EnginePool 给每个 session spawn engine 时用这个,
-    /// 让 engine 从 spawn 起就绑定自己的 workspace + prompt,不再依赖 `Op::SyncSession`
-    /// 动态切换、也不碰全局 `bundle/instructions.md`。
-    ///
-    /// 调用方必须先 [`write_session_instructions`] 把渲染好的 prompt 写到 disk,
-    /// 否则 engine rehydrate 读到空/旧文件。
+    /// inline 渲染版(`InstructionSource::Inline`,不走 disk)。EnginePool 给每个
+    /// session spawn engine 时用这个,让 engine 从 spawn 起就绑定自己的 workspace +
+    /// prompt,内存隔离不依赖 disk。
     ///
     /// [`build_engine_config`]: Self::build_engine_config
-    /// [`write_session_instructions`]: Self::write_session_instructions
     pub fn build_engine_config_for_session(&self, session_id: &str) -> EngineConfig {
         let mut cfg = self.build_engine_config();
         cfg.workspace = self.session_workspace(session_id);
-        cfg.instructions = self.session_instruction_paths(session_id);
+        cfg.instructions = self.session_instructions(session_id);
         cfg
     }
 
@@ -518,12 +574,12 @@ fn reminder_for(mode: AppMode, phase: PlanPhase) -> Option<&'static str> {
              不要在 text 里列 A/B/C 选项。\n\
              2. 方案清晰后 → 调 `update_plan` 工具输出方案(explanation 字段写关键决策,\
              items 写 3-8 个执行步骤)。如果产物预计超过 300 行或 20KB(如 HTML deck / 完整网页 / 长报告),\
-             plan 必须拆成:先写**小骨架**(≤ 200 行,只含外壳 + 占位标记,不 inline CSS/JS/实际内容)\
-             → 分块 `append_file` 填内容 → `read_file`/命令验证;禁止写成\"一次编写完整文件\"。\
+             plan 必须说明分块写法:`append_file` 只能追加到文件尾;要填已有文件中间或替换占位符,\
+             用 `edit_file`,不要用 `append_file`。\
              可选再调 `checklist_write` 拆细。\n\
              3. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
              方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。\n\
-             4. **禁止**调 `write_file` / `append_file` / `edit_file` / `exec_shell` / `code_execution`——\
+             4. **禁止**调 `write_file` / `append_file` / `edit_file` / `exec_shell` / `js_execution`——\
              它们在 Plan 模式不可用,调了一定失败。",
         ),
         (AppMode::Plan, PlanPhase::Ready) => Some(
@@ -538,8 +594,8 @@ fn reminder_for(mode: AppMode, phase: PlanPhase) -> Option<&'static str> {
              2. **禁止**只调 `update_plan` 标记 in_progress 就结束 turn——\
              那是假执行,用户什么文件都没拿到。\n\
              3. 预计超过 300 行或 20KB 的产物,**禁止**一次 `write_file` 写完整文件;\
-             先 `write_file` 写**小骨架**(≤ 200 行,只含外壳 + 占位标记,不 inline CSS/JS/实际内容),\
-             再用多个 `append_file` 或小范围 `edit_file` 分块填充(每块约 3-5 页 / 200 行以内)。\n\
+             分块前先选策略:`append_file` 只能追加到文件尾;要填已有文件中间或替换占位符,\
+             用 `edit_file`,不要用 `append_file`。\n\
              4. 一个 turn 内**连续调多个工具**直到所有步骤完成,不要中途停下来等用户。\n\
              5. 完成一步后调 `update_plan` 把对应步骤标 completed,继续下一步。\n\
              6. **禁止**在 text 里贴完整代码代替 write_file/append_file——磁盘上不会有文件。",
@@ -551,8 +607,8 @@ fn reminder_for(mode: AppMode, phase: PlanPhase) -> Option<&'static str> {
         (AppMode::Yolo, PlanPhase::None) => Some(
             "你在 Yolo 模式,直接调工具产出。产物预计超过 300 行或 20KB\
              (HTML deck / 完整网页 / 长报告)时,**禁止**一次 `write_file` 写完整文件;\
-             必须先 `write_file` 写**小骨架**(≤ 200 行,只含外壳 + 占位标记,不 inline CSS/JS/实际内容),\
-             再多次 `append_file` 分块追加,中间用 `read_file` 验证。\
+             分块前先选策略:`append_file` 只能追加到文件尾;要填已有文件中间或替换占位符,\
+             用 `edit_file`,不要用 `append_file`;完成后读回关键片段验证。\
              **禁止**在 text 里贴完整代码代替工具调用——磁盘上不会有文件。",
         ),
         _ => None,
@@ -658,6 +714,40 @@ mod tests {
              本地 Qwen3.6 vLLM 慢推理下单 step 30-90s 很常见,120s 频繁误杀子 agent。 \
              300s 与 elapsed cap 对齐,给复杂研究类任务留出完整单步窗口。"
         );
+    }
+
+    /// EngineConfig.search_provider 必须由 prefs.search 翻译,不能透传上游 default。
+    /// 默认 prefs 是 Bing(国情:DDG 被 GFW + 代理 datacenter IP 反爬,基本不可用)。
+    /// 切到 Metaso/Bocha 时 prefs.search.api_key 必须透传到 EngineConfig.search_api_key
+    /// (Bocha 必填,Metaso 留空可走底座内置共享 key)。
+    /// 下次 sync 若 destructure 块把 search_provider/search_api_key 改回透传 default,
+    /// 本测试立刻报错。
+    #[test]
+    fn forkguard_search_provider_translates_from_prefs() {
+        // 默认 prefs → Bing
+        let cfg = fixture_bridge().build_engine_config();
+        assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Bing);
+        assert!(cfg.search_api_key.is_none());
+
+        // 切 Metaso + 自定义 key
+        let mut bridge = fixture_bridge();
+        bridge.prefs.search = prefs::SearchPrefs {
+            provider: prefs::SearchProvider::Metaso,
+            api_key: Some("mk-user-key".to_string()),
+        };
+        let cfg = bridge.build_engine_config();
+        assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Metaso);
+        assert_eq!(cfg.search_api_key.as_deref(), Some("mk-user-key"));
+
+        // 切 Bocha + 留空 key (UX 上前端应阻止,但 bridge 层透传 None)
+        let mut bridge = fixture_bridge();
+        bridge.prefs.search = prefs::SearchPrefs {
+            provider: prefs::SearchProvider::Bocha,
+            api_key: None,
+        };
+        let cfg = bridge.build_engine_config();
+        assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Bocha);
+        assert!(cfg.search_api_key.is_none());
     }
 
     /// [pinvou3-fork-guard #18] network_policy 必须 Some 且**只信 fake-ip 占位段**。
@@ -809,9 +899,43 @@ mod tests {
         );
     }
 
-    /// 多引擎并发隔离基石:两个不同 session 的 EngineConfig 必须 workspace +
-    /// instructions 路径都互不相同,且各自落在自己 session 目录下。否则两个 engine
-    /// 会写同一份产物 / 读同一份 instructions → system_prompt 串台。
+    #[test]
+    fn instructions_md_explains_append_file_tail_only() {
+        let bridge = fixture_bridge();
+        let prompt = bridge.build_session_system_prompt("append-contract-session");
+        assert!(
+            prompt.contains("append_file` 只能追加到文件尾"),
+            "全局 instructions 必须说明 append_file 是尾追加,不能当中间插入"
+        );
+        assert!(
+            prompt.contains("用 `edit_file`,不要用 `append_file`")
+                || prompt.contains("要替换中间用 `edit_file`"),
+            "全局 instructions 必须说明中间填充/占位替换应走 edit_file(apply_patch 已隐藏)"
+        );
+    }
+
+    #[test]
+    fn large_artifact_reminders_explain_append_file_tail_only() {
+        for (mode, phase) in [
+            (AppMode::Plan, PlanPhase::Planning),
+            (AppMode::Yolo, PlanPhase::Executing),
+            (AppMode::Yolo, PlanPhase::None),
+        ] {
+            let reminder = reminder_for(mode, phase).expect("large artifact reminder exists");
+            assert!(
+                reminder.contains("append_file` 只能追加到文件尾"),
+                "reminder 必须锁住 append_file 尾追加语义: mode={mode:?} phase={phase:?}"
+            );
+            assert!(
+                reminder.contains("用 `edit_file`,不要用 `append_file`"),
+                "reminder 必须给中间填充/占位替换的正确工具(edit_file,apply_patch 已隐藏): mode={mode:?} phase={phase:?}"
+            );
+        }
+    }
+
+    /// 多引擎并发隔离基石(C 方案 P-no-disk 版): 两个不同 session 的 EngineConfig
+    /// 必须 workspace 不同 + instructions 内容含各自 session_id(走 `InstructionSource::
+    /// Inline`,内存对象天然隔离,不再依赖 disk 文件)。
     #[test]
     fn engine_config_for_session_paths_are_isolated() {
         let bridge = fixture_bridge();
@@ -826,22 +950,27 @@ mod tests {
         assert!(cfg_a.workspace.to_string_lossy().contains(a));
         assert!(cfg_b.workspace.to_string_lossy().contains(b));
 
-        // instructions 第一项是 session 专属文件,必须含各自 session_id 且不同。
-        let instr_a = &cfg_a.instructions[0];
-        let instr_b = &cfg_b.instructions[0];
-        assert_ne!(
-            instr_a, instr_b,
-            "两 session 的 instructions 文件必须不同(否则 rehydrate 串台)"
-        );
-        assert!(instr_a.to_string_lossy().contains(a));
-        assert!(instr_b.to_string_lossy().contains(b));
-        // 绝不能引用全局共享的 bundle/instructions.md。
+        // instructions 第一项是 session 专属 Inline source,name 含各自 session_id。
+        let extract = |s: &InstructionSource| -> (String, String) {
+            match s {
+                InstructionSource::Inline { name, content } => (name.clone(), content.clone()),
+                InstructionSource::File(p) => (p.display().to_string(), String::new()),
+            }
+        };
+        let (name_a, content_a) = extract(&cfg_a.instructions[0]);
+        let (name_b, content_b) = extract(&cfg_b.instructions[0]);
         assert!(
-            !cfg_a
-                .instructions
-                .iter()
-                .any(|p| p == &bridge.bundle.instructions_md),
-            "session 专属 config 不得引用全局 bundle/instructions.md(并发写冲突源)"
+            matches!(cfg_a.instructions[0], InstructionSource::Inline { .. }),
+            "session instructions 第一项必须是 Inline(C 方案 P-no-disk)"
         );
+        assert_ne!(name_a, name_b, "两 session 的 inline name 必须不同");
+        assert!(name_a.contains(a) && name_b.contains(b));
+        // 渲染后的内容含各自 session-specific workspace 路径(占位符替换生效)。
+        assert!(
+            content_a.contains(a),
+            "session A 的 inline content 必须含 session_id"
+        );
+        assert!(content_b.contains(b));
     }
+
 }

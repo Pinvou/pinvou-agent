@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>pinvou3 智能助手</title>
+  <title>PINVOU 智能助手</title>
   <!-- 本地 vendor（离线/内网可用，不依赖 CDN）。见 vendor/README.md -->
   <script src="vendor/tailwind.js"></script>
   <script src="vendor/react.development.js"></script>
@@ -111,7 +111,18 @@
         vllm: 'VLLM 推理引擎', ctx: '上下文长度', queue: '队列情况', kv: 'KV 命中率', app: '应用服务', appRunning: '核心守护进程运行中',
         curVer: '当前版本', uiVer: 'UI 版本', uptime: '运行时长',
         appearance: '外观与语言', lang: '界面语言', langDesc: '切换应用的显示语言', theme: '主题模式', themeDesc: '选择适合你的色彩风格',
-        light: '浅色', dark: '深色', sysPerm: '系统权限', sudo: '高级执行权限 (Sudo)', sudoDesc: '允许助手执行环境配置等高级指令。',
+        light: '浅色', dark: '深色',
+        searchBackend: 'web_search 源', searchBackendDesc: 'LLM 调用 web_search 工具时使用的源',
+        searchKey: 'API Key',
+        searchKeyHintBing: 'Bing 不需要 API key，但中文搜索结果不理想',
+        searchKeyHintMetaso: '留空使用社区共享 key（~100 次/天，多用户竞争）',
+        searchKeyHintBocha: '必填，否则搜索会直接报错',
+        searchKeyPlaceholder: '粘贴 API key',
+        searchRestartHint: 'web_search 源切换需重启应用生效',
+        searchGetKey: '获取你自己的 key',
+        searchGetKeyMetasoSteps: '免费 · 微信/手机扫码 1 分钟注册 · 个人独立配额',
+        searchGetKeyBochaSteps: '免费 · 注册后在控制台领 sk- 开头的 key',
+        sysPerm: '系统权限', sudo: '高级执行权限 (Sudo)', sudoDesc: '允许助手执行环境配置等高级指令。',
         chatGreeting: '你好，今天想聊点什么？', artifacts: '产物与代码', placeholder: '询问 PINVOU 或输入指令', disclaimer: 'PINVOU 可能会生成不准确的信息，请仔细核实。',
         searchPlaceholder: 'Search chats'
       },
@@ -122,7 +133,18 @@
         vllm: 'VLLM Engine', ctx: 'Context Length', queue: 'Queue (Run/Wait)', kv: 'KV Hit Rate', app: 'App Service', appRunning: 'Core daemon running',
         curVer: 'App Version', uiVer: 'UI Version', uptime: 'Uptime',
         appearance: 'Appearance & Language', lang: 'Language', langDesc: 'Switch application display language', theme: 'Theme', themeDesc: 'Choose your color style',
-        light: 'Light', dark: 'Dark', sysPerm: 'System Permissions', sudo: 'Sudo Access', sudoDesc: 'Allow assistant to run high-privilege commands.',
+        light: 'Light', dark: 'Dark',
+        searchBackend: 'web_search source', searchBackendDesc: 'Source used by the LLM when invoking the web_search tool',
+        searchKey: 'API Key',
+        searchKeyHintBing: 'Bing needs no API key, but Chinese search results are poor',
+        searchKeyHintMetaso: 'Leave empty for community shared key (~100/day, multi-user)',
+        searchKeyHintBocha: 'Required, search will fail without it',
+        searchKeyPlaceholder: 'Paste API key',
+        searchRestartHint: 'web_search source change requires app restart',
+        searchGetKey: 'Get your own key',
+        searchGetKeyMetasoSteps: 'Free · 1-min QR-code sign-up (WeChat/phone) · Personal quota',
+        searchGetKeyBochaSteps: 'Free · Get sk- prefixed key from console after sign-up',
+        sysPerm: 'System Permissions', sudo: 'Sudo Access', sudoDesc: 'Allow assistant to run high-privilege commands.',
         chatGreeting: "Hi, what's good?", artifacts: 'Artifacts', placeholder: 'Ask PINVOU or enter a command', disclaimer: 'PINVOU may display inaccurate info, so double-check.',
         searchPlaceholder: 'Search chats'
       }
@@ -155,8 +177,8 @@
         <div data-tauri-drag-region
           className={`h-9 shrink-0 flex items-center justify-between select-none ${isDark ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`}>
           <div data-tauri-drag-region className="flex items-center gap-2 px-3 text-[13px] font-medium pointer-events-none">
-            <Sparkles size={14} className={isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'} />
-            pinvou3 智能助手
+            <Sparkles size={15} className={isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'} />
+            PINVOU 智能助手
           </div>
           <div className="flex items-center h-full">
             <button onClick={() => appWindow && appWindow.minimize()} title="最小化"
@@ -186,6 +208,10 @@
       const [activeTheme, setActiveTheme] = useState('dark');
       const [language, setLanguage] = useState('zh');
       const [superPerm, setSuperPerm] = useState(false);
+      // search 后端配置:provider 默认 bing(对齐 bridge prefs::SearchProvider::default());
+      // bs.settings 加载后 useEffect 同步进来。
+      const [searchProvider, setSearchProvider] = useState('bing');
+      const [searchApiKey, setSearchApiKey] = useState('');
       const [isSidebarOpen, setIsSidebarOpen] = useState(false);
       const [chatPrefill, setChatPrefill] = useState('');
 
@@ -207,6 +233,13 @@
           }
         }
         if (bs.superPermEnabled !== superPerm) setSuperPerm(bs.superPermEnabled);
+        // 从 bs.settings 同步 search 配置。bs.settings 是后端 UserPrefs JSON。
+        if (bs.settings && bs.settings.search) {
+          const sp = bs.settings.search.provider || 'bing';
+          if (sp !== searchProvider) setSearchProvider(sp);
+          const k = bs.settings.search.api_key || '';
+          if (k !== searchApiKey) setSearchApiKey(k);
+        }
       }, [bs]);
 
       // Build chat history from sessions
@@ -215,7 +248,7 @@
       const chatHistory = bs && bs.sessions ? bs.sessions.map(s => ({
         id: s.id,
         title: s.title || '新对话',
-        date: formatSessionDate(s.updated_at || s.created_at),
+        date: formatSessionDate(s.updated_at || s.created_at, language),
         skill: skillBindings[s.id] || null,
         working: !!sessionBusy[s.id], // 多 session 并发:该 session 是否正在后台生成
       })) : [];
@@ -244,17 +277,51 @@
         else setSuperPerm(!superPerm);
       }
 
+      // 构造完整 UserPrefs 对象写盘。spread bs.settings 保留 search/advanced 等
+      // 其他字段——之前漏 spread 会让后端 serde default 把它们重置(bug fix)。
+      function buildFullSettings(overrides) {
+        const base = (bs && bs.settings) ? bs.settings : {};
+        return {
+          ...base,
+          theme: activeTheme === 'dark' ? 'genesis' : 'light',
+          language: language === 'zh' ? 'zh-Hans' : 'en',
+          search: {
+            provider: searchProvider,
+            api_key: searchApiKey ? searchApiKey : null,
+          },
+          ...overrides,
+        };
+      }
+
       function handleSetTheme(th) {
         setActiveTheme(th);
         if (bridge.available) {
-          bridge.saveSettings({ theme: th === 'dark' ? 'genesis' : 'light', language: language === 'zh' ? 'zh-Hans' : 'en' });
+          bridge.saveSettings(buildFullSettings({ theme: th === 'dark' ? 'genesis' : 'light' }));
+        }
+      }
+
+      function handleSetSearchProvider(p) {
+        setSearchProvider(p);
+        if (bridge.available) {
+          bridge.saveSettings(buildFullSettings({
+            search: { provider: p, api_key: searchApiKey ? searchApiKey : null },
+          }));
+        }
+      }
+
+      function handleSetSearchApiKey(k) {
+        setSearchApiKey(k);
+        if (bridge.available) {
+          bridge.saveSettings(buildFullSettings({
+            search: { provider: searchProvider, api_key: k ? k : null },
+          }));
         }
       }
 
       function handleSetLanguage(lang) {
         setLanguage(lang);
         if (bridge.available) {
-          bridge.saveSettings({ theme: activeTheme === 'dark' ? 'genesis' : 'light', language: lang === 'zh' ? 'zh-Hans' : 'en' });
+          bridge.saveSettings(buildFullSettings({ language: lang === 'zh' ? 'zh-Hans' : 'en' }));
         }
       }
 
@@ -283,10 +350,8 @@
               </span>
             </div>
 
-            {/* Navigation / Recents */}
-            <div className={`flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-2 mt-3 ${isSidebarOpen ? 'px-3' : 'px-2 items-center'}`}>
-
-              {/* 四个导航项等距同级 */}
+            {/* Navigation — shrink-0 固定不滚动,list 再多也不挤压 nav */}
+            <div className={`shrink-0 flex flex-col gap-1 mt-3 ${isSidebarOpen ? 'px-3' : 'px-2 items-center'}`}>
               <NavItem
                 icon={<Edit2 size={18} />} label={t.newChat}
                 theme={activeTheme}
@@ -314,32 +379,38 @@
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => setCurrentView('workflow')}
               />
-
-              {isSidebarOpen && (
-                <>
-                  <div className="text-[13px] font-medium px-4 py-2 mt-3 mb-1 whitespace-nowrap" style={{ color: activeTheme === 'dark' ? '#C4C7C5' : '#444746' }}>
-                    {t.recent}
-                  </div>
-
-                  <div className="space-y-px">
-                    {chatHistory.map((chat) => (
-                      <RecentItem
-                        key={chat.id}
-                        chat={chat}
-                        theme={activeTheme}
-                        active={activeChat === chat.id && currentView === 'chat'}
-                        onSelect={handleSwitchSession}
-                        onRename={handleRenameSession}
-                        onDelete={handleDeleteSession}
-                      />
-                    ))}
-                  </div>
-                </>
-              )}
             </div>
 
+            {/* Recents — 独立 flex-1 + overflow-y-auto,只在展开态显示。
+                min-h-0 关键:flex 子项默认 min-height: auto 会阻止 overflow,
+                显式压成 0 才允许内容溢出触发滚动条。
+                nav / list 分隔:不用 hairline,「近期」label 上 padding 自然撑开。 */}
+            {isSidebarOpen && (
+              <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-3 flex flex-col">
+                <div
+                  className="text-[11px] font-medium px-4 pt-6 pb-1 whitespace-nowrap shrink-0"
+                  style={{ color: activeTheme === 'dark' ? '#80868B' : '#5F6368', letterSpacing: '0.06em' }}
+                >
+                  {t.recent}
+                </div>
+                <div className="space-y-px">
+                  {chatHistory.map((chat) => (
+                    <RecentItem
+                      key={chat.id}
+                      chat={chat}
+                      theme={activeTheme}
+                      active={activeChat === chat.id && currentView === 'chat'}
+                      onSelect={handleSwitchSession}
+                      onRename={handleRenameSession}
+                      onDelete={handleDeleteSession}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Footer Profile */}
-            <div className={`p-3 flex ${isSidebarOpen ? 'flex-row items-center justify-between' : 'flex-col items-center gap-3 pb-6'}`}>
+            <div className={`p-3 mt-auto flex ${isSidebarOpen ? 'flex-row items-center justify-between' : 'flex-col items-center gap-3 pb-6'}`}>
               {!isSidebarOpen && (
                 <button
                   onClick={() => setCurrentView('settings')}
@@ -390,10 +461,12 @@
                 activeTheme={activeTheme} setActiveTheme={handleSetTheme}
                 language={language} setLanguage={handleSetLanguage}
                 superPerm={superPerm} setSuperPerm={handleToggleSuperPerm}
+                searchProvider={searchProvider} setSearchProvider={handleSetSearchProvider}
+                searchApiKey={searchApiKey} setSearchApiKey={handleSetSearchApiKey}
                 t={t}
               />
             )}
-            {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} onActivate={handleActivateSkill} />}
+            {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} />}
             {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} />}
             {currentView === 'search' && <SearchView theme={activeTheme} history={chatHistory} t={t} onSelect={handleSwitchSession} />}
 
@@ -406,14 +479,18 @@
     /* ==========================================
        Helpers
        ========================================== */
-    function formatSessionDate(ts) {
+    function formatSessionDate(ts, language) {
       if (!ts) return '';
       const d = new Date(typeof ts === 'number' ? ts : ts);
       const now = new Date();
       const diff = now - d;
-      if (diff < 86400000 && d.getDate() === now.getDate()) return 'Today';
-      if (diff < 172800000) return 'Yesterday';
-      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const zh = language === 'zh';
+      if (diff < 86400000 && d.getDate() === now.getDate()) return zh ? '今天' : 'Today';
+      if (diff < 172800000) return zh ? '昨天' : 'Yesterday';
+      // 7 天内显示「X 天前」/「X days ago」,更早显示日期
+      const days = Math.floor(diff / 86400000);
+      if (days < 7) return zh ? `${days} 天前` : `${days}d ago`;
+      return d.toLocaleDateString(zh ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric' });
     }
 
     // ==========================================
@@ -593,7 +670,7 @@
     // ==========================================
     // Settings View (Material 3 Style)
     // ==========================================
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, t }) => {
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, t }) => {
       const isDark = activeTheme === 'dark';
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
@@ -630,6 +707,73 @@
                       <button onClick={() => setActiveTheme('dark')} className={`px-6 py-2 rounded-full text-[14px] font-medium transition-colors ${activeTheme === 'dark' ? 'bg-[#A8C7FA] text-[#041E49]' : ''}`}>{t.dark}</button>
                     </div>
                   </div>
+                </div>
+              </div>
+
+              <div className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
+                <h2 className="text-[18px] font-medium mb-6">{t.searchBackend}</h2>
+
+                <div className="space-y-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-[16px] block mb-1">{t.searchBackend}</span>
+                      <span className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.searchBackendDesc}</span>
+                    </div>
+                    <div className={`p-1 rounded-full flex ${isDark ? 'bg-[#131314]' : 'bg-[#E1E5EA]'}`}>
+                      {['bing', 'metaso', 'bocha'].map(p => (
+                        <button
+                          key={p}
+                          onClick={() => setSearchProvider(p)}
+                          className={`px-5 py-2 rounded-full text-[14px] font-medium transition-colors capitalize ${searchProvider === p ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-white text-[#0B57D0] shadow-sm') : ''}`}
+                        >{p}</button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {searchProvider === 'bing' ? (
+                    <span className={`text-[13px] block ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
+                      {t.searchKeyHintBing}
+                    </span>
+                  ) : (
+                    <div>
+                      <span className="text-[16px] block mb-2">{t.searchKey}</span>
+                      <input
+                        type="password"
+                        value={searchApiKey}
+                        onChange={e => setSearchApiKey(e.target.value)}
+                        placeholder={t.searchKeyPlaceholder}
+                        className={`w-full px-4 py-2 rounded-lg text-[14px] outline-none transition-colors ${
+                          isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746] focus:border-[#A8C7FA]'
+                                 : 'bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0]'
+                        }`}
+                      />
+                      <span className={`text-[12px] mt-2 block ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
+                        {searchProvider === 'metaso' ? t.searchKeyHintMetaso : t.searchKeyHintBocha}
+                      </span>
+
+                      <div className={`mt-3 px-3 py-2 rounded-lg flex items-center justify-between gap-3 ${isDark ? 'bg-[#131314]' : 'bg-white'}`}>
+                        <span className={`text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
+                          {searchProvider === 'metaso' ? t.searchGetKeyMetasoSteps : t.searchGetKeyBochaSteps}
+                        </span>
+                        <button
+                          onClick={() => {
+                            const url = searchProvider === 'metaso'
+                              ? 'https://metaso.cn/search-api/api-keys'
+                              : 'https://open.bochaai.com/';
+                            if (bridge.available) bridge.openExternalUrl(url);
+                          }}
+                          className={`text-[12px] font-medium px-3 py-1 rounded-full whitespace-nowrap transition-colors ${
+                            isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]'
+                                   : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'
+                          }`}
+                        >{t.searchGetKey} ↗</button>
+                      </div>
+                    </div>
+                  )}
+
+                  <span className={`text-[12px] mt-2 block italic ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
+                    {t.searchRestartHint}
+                  </span>
                 </div>
               </div>
 
@@ -914,15 +1058,30 @@
     // 品悟报告里的 CRITICAL/RAISED 等是 GATE/override 协议字段（前端正则放行 + 后端 GATE 依赖），
     // 不能改 skill 输出；只在显示层把它们翻译成人话，协议链路全程保持英文。
     const prettyPinvouReport = (html) => (html || '')
+      .replace(/PINVOU REVIEW REPORT/g, '品悟审核报告')
+      .replace(/PINVOU FINAL REPORT/g, '品悟验收报告')
+      .replace(/\bBoss\b/g, '老板')
+      .replace(/\bPinvou\b/g, '品悟')
       .replace(/>Finding</g, '>问题<')
-      .replace(/>Severity</g, '>程度<')
-      .replace(/>Status</g, '>状态<')
+      .replace(/>Severity</g, '>重要性<')
+      .replace(/>Status</g, '>处理状态<')
       .replace(/>User Decision</g, '>你的决定<')
-      .replace(/CRITICAL/g, '需要改')
-      .replace(/INFORMATIONAL/g, '可改可不改')
-      .replace(/OVERRIDDEN_BY_USER/g, '已同意继续')
-      .replace(/RAISED/g, '待定')
-      .replace(/\bcritical\b/gi, '需改项');
+      .replace(/\bCRITICAL\b/g, '必须处理')
+      .replace(/\bINFORMATIONAL\b/g, '可选建议')
+      .replace(/\bCLEAR\b/g, '无硬伤')
+      .replace(/\bDONE\b/g, '已完成')
+      .replace(/\bPARTIAL\b/g, '部分完成')
+      .replace(/\bMISSING\b/g, '未完成')
+      .replace(/\bOVERRIDDEN_BY_USER\b/g, '用户确认继续')
+      .replace(/\bRESOLVED\b/g, '已修复')
+      .replace(/\bRAISED\b/g, '待处理')
+      .replace(/\bNOTED\b/g, '已记录')
+      .replace(/<strong>VERDICT<\/strong>:\s*/gi, '<strong>结论</strong>：')
+      .replace(/\bVERDICT\b/g, '结论')
+      .replace(/\bExitPlanMode\b/g, '继续执行')
+      .replace(/\buser override\b/gi, '用户确认继续')
+      .replace(/\bclear\b/gi, '可以继续')
+      .replace(/\bcritical\b/gi, '必须处理');
 
     const ChatBubble = ({ item, theme, onPrefill, editable }) => {
       const isDark = theme === 'dark';
@@ -1535,7 +1694,7 @@
       const on = !!(bs && bs.modeState && bs.modeState.pinvou_review_enabled);
       return (
         <button onClick={() => bridge.available && bridge.togglePinvouReview()}
-          title={on ? '品悟 review: 开（关键阶段让品悟把关）' : '品悟 review: 关（点击开启）'}
+          title={on ? '品悟审核: 开（关键阶段让品悟把关）' : '品悟审核: 关（点击开启）'}
           className={`pointer-events-auto px-3 py-2 rounded-full text-[13px] font-medium flex items-center gap-1.5 transition-colors
             ${on ? (isDark ? 'bg-[#7C3AED]/40 text-[#D0BCFF]' : 'bg-[#7C3AED]/10 text-[#7C3AED]')
                  : (isDark ? 'bg-[#1E1F20] text-[#8E8E8E] hover:bg-[#333537]' : 'bg-white text-[#9AA0A6] hover:bg-[#F0F4F9] shadow-sm')}`}>
@@ -1545,21 +1704,47 @@
     };
 
     // 品悟审完后的 3 按钮卡
-    const PinvouActionsCard = ({ item, theme, onPrefill }) => {
+    // ⊕ 我加一句:展开行内 textarea,用户写完点「📋 发送 修订」走 pinvouRevisePlan(带 userComment)
+    // —— 用户的意见真正进 AI 修订指令,而不是落进普通 chat 链路。
+    const PinvouActionsCard = ({ item, theme }) => {
       const isDark = theme === 'dark';
       const done = item.resolved;
+      const [commenting, setCommenting] = useState(false);
+      const [comment, setComment] = useState('');
+      const canSend = comment.trim().length > 0;
+      if (done) {
+        return (
+          <div className={cardBoxCls(isDark, isDark ? 'border-[#D0BCFF]/40' : 'border-[#7C3AED]/30')}>
+            <div className={`text-[13px] font-medium mb-3 ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>🟣 品悟审完了 —— 你的决定：</div>
+            <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{item.statusLabel || '已处理'}</div>
+          </div>
+        );
+      }
+      if (commenting) {
+        return (
+          <div className={cardBoxCls(isDark, isDark ? 'border-[#D0BCFF]/40' : 'border-[#7C3AED]/30')}>
+            <div className={`text-[13px] font-medium mb-2 ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>⊕ 加一句意见 → 让 AI 按品悟+你的意见改方案：</div>
+            <textarea
+              value={comment} onChange={(e) => setComment(e.target.value)}
+              placeholder="我也担心..." rows={3} autoFocus
+              className={`w-full px-3 py-2 rounded-lg text-[13px] outline-none resize-y mb-2 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] border border-white/10' : 'bg-white text-[#1F1F1F] border border-black/10'}`}
+            />
+            <div className="flex items-center gap-2 flex-wrap">
+              <button disabled={!canSend} onClick={() => bridge.pinvouRevisePlan(item.id, item.planMarkdown, item.report, comment.trim())}
+                className={`${cardBtnCls(isDark, 'primary')} ${canSend ? '' : 'opacity-50 cursor-not-allowed'}`}>📋 发送 修订</button>
+              <button onClick={() => { setCommenting(false); setComment(''); }} className={cardBtnCls(isDark)}>取消</button>
+            </div>
+          </div>
+        );
+      }
       return (
         <div className={cardBoxCls(isDark, isDark ? 'border-[#D0BCFF]/40' : 'border-[#7C3AED]/30')}>
           <div className={`text-[13px] font-medium mb-3 ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>🟣 品悟审完了 —— 你的决定：</div>
-          {done ? (
-            <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{item.statusLabel || '已处理'}</div>
-          ) : (
-            <div className="flex items-center gap-2 flex-wrap">
-              <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.pinvouAcceptOverride(item.id, item.planMarkdown, item.report)}>✅ 直接执行</button>
-              <button className={cardBtnCls(isDark)} onClick={() => { onPrefill && onPrefill('修订方案: 按 Pinvou 上面提的关键问题改一下方案。'); bridge.markResolved(item.id, '↻ 让 AI 改方案...'); }}>↻ AI 改方案</button>
-              <button className={cardBtnCls(isDark)} onClick={() => { onPrefill && onPrefill('我也担心: '); bridge.markResolved(item.id, '⊕ 把你的话补进 plan...'); }}>⊕ 我加一句</button>
-            </div>
-          )}
+          <div className="flex items-center gap-2 flex-wrap">
+            <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.pinvouAcceptOverride(item.id, item.planMarkdown, item.report)}>✅ 确认继续执行</button>
+            <button className={cardBtnCls(isDark)} onClick={() => bridge.pinvouRevisePlan(item.id, item.planMarkdown, item.report)}>↻ 让 AI 改方案</button>
+            <button className={cardBtnCls(isDark)} onClick={() => setCommenting(true)}>⊕ 我加一句</button>
+          </div>
         </div>
       );
     };
@@ -1777,39 +1962,22 @@
       );
     };
 
-    const WorkflowView = ({ bs, theme, t, onActivate }) => {
+    const WorkflowView = ({ theme, t }) => {
       const isDark = theme === 'dark';
-      const wf = (bs && bs.workflow) || {};
-      useEffect(() => { if (bridge.available) bridge.loadSkills(); }, []);
-      const skills = wf.skills || [];
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden animate-in fade-in duration-300">
-          <div className="flex items-center justify-between px-6 md:px-10 pt-8 pb-4">
-            <div>
-              <h1 className={`text-[28px] font-normal ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.workflow}</h1>
-              <p className={`text-[13px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>任务拆解 · 进度可视化</p>
+          <div className="px-6 md:px-10 pt-8 pb-4">
+            <h1 className={`text-[28px] font-normal ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.workflow}</h1>
+          </div>
+          <div className="flex-1 flex flex-col items-center justify-center px-6 text-center gap-3">
+            <div className={`w-16 h-16 rounded-full flex items-center justify-center ${isDark ? 'bg-[#282A2C] text-[#8E8E8E]' : 'bg-[#F0F4F9] text-[#757575]'}`}>
+              <ClipboardList size={28} />
             </div>
-            <button onClick={() => bridge.loadSkills()} title="重新扫描 skill"
-              className={`w-10 h-10 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>
-              <RefreshCw size={18} />
-            </button>
+            <div className={`text-[16px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>开发中</div>
+            <div className={`text-[13px] max-w-[360px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>
+              工作流编排功能正在重新设计，敬请期待。
+            </div>
           </div>
-          <div className="flex-1 overflow-y-auto custom-scrollbar px-6 md:px-10 pb-10">
-            {wf.loadState === 'loading' ? (
-              <div className={`text-[13px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>加载 skill 列表 …</div>
-            ) : wf.loadState === 'error' ? (
-              <div className={`text-[13px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>加载失败，点右上角重试</div>
-            ) : skills.length === 0 ? (
-              <div className={`text-[13px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>未发现 skill</div>
-            ) : (
-              <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
-                {skills.map((s) => (
-                  <SkillCard key={s.name} s={s} theme={theme} active={wf.activeSkillName === s.name} onActivate={onActivate} />
-                ))}
-              </div>
-            )}
-          </div>
-          <DemoModal demo={wf.demo} theme={theme} onClose={() => bridge.closeDemo()} />
         </div>
       );
     };
@@ -1824,13 +1992,13 @@
         <div
           onClick={onClick}
           title={!isSidebarOpen ? label : ""}
-          className={`flex items-center cursor-pointer text-[14px] font-medium transition-colors overflow-hidden
-          ${isSidebarOpen ? 'px-4 py-2.5 rounded-full w-full' : 'w-10 h-10 justify-center rounded-full mx-auto shrink-0'}
+          className={`flex items-center cursor-pointer text-[15px] font-medium transition-colors overflow-hidden
+          ${isSidebarOpen ? 'px-4 py-3 rounded-full w-full' : 'w-10 h-10 justify-center rounded-full mx-auto shrink-0'}
           ${active
-            ? (isDark ? 'bg-[#333537] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#041E49]')
+            ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-[#D3E3FD] text-[#041E49]')
             : (isDark ? 'text-[#E3E3E3] hover:bg-[#282A2C]' : 'text-[#1F1F1F] hover:bg-[#E1E5EA]')}`}
         >
-          <div className={`${isSidebarOpen ? 'mr-4' : ''} shrink-0 ${active ? (isDark ? 'text-[#E3E3E3]' : 'text-[#0B57D0]') : ''}`}>
+          <div className={`${isSidebarOpen ? 'mr-4' : ''} shrink-0 ${active ? (isDark ? 'text-[#041E49]' : 'text-[#0B57D0]') : ''}`}>
             {icon}
           </div>
           {isSidebarOpen && <span className="whitespace-nowrap">{label}</span>}
@@ -1859,9 +2027,9 @@
       }
       return (
         <div onClick={() => onSelect(chat.id)}
-          className={`group flex items-center px-4 py-1.5 rounded-full cursor-pointer text-[14px] transition-all
+          className={`group flex items-center px-4 py-1.5 rounded-full cursor-pointer text-[13px] transition-all
             ${active ? (isDark ? 'bg-[#333537] text-white' : 'bg-[#E1E5EA] text-[#1F1F1F]')
-                     : (isDark ? 'text-[#E3E3E3] hover:bg-[#282A2C]' : 'text-[#444746] hover:bg-[#E1E5EA]')}`}>
+                     : (isDark ? 'text-[#BDC1C6] hover:bg-[#282A2C] hover:text-[#E3E3E3]' : 'text-[#5F6368] hover:bg-[#E1E5EA] hover:text-[#1F1F1F]')}`}>
           <span className="truncate pr-2 leading-relaxed whitespace-nowrap flex-1">{chat.title}</span>
           {chat.working && <span className="shrink-0 mr-1 inline-block w-2 h-2 rounded-full bg-current opacity-70 animate-pulse" title="正在生成中"></span>}
           {chat.skill && <span className="text-[11px] shrink-0 opacity-70 mr-1" title={chat.skill}>🧭</span>}
@@ -1874,12 +2042,20 @@
                 className={`w-6 h-6 rounded-full flex items-center justify-center text-[12px] ${isDark ? 'hover:bg-[#444746]' : 'hover:bg-[#D3D7DB]'}`}>✗</button>
             </div>
           ) : (
-            <div className="hidden group-hover:flex items-center gap-0.5 shrink-0">
-              <button title="重命名" onClick={(e) => { e.stopPropagation(); setVal(chat.title); setEditing(true); }}
-                className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${isDark ? 'hover:bg-[#444746]' : 'hover:bg-[#D3D7DB]'}`}>✏️</button>
-              <button title="删除" onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
-                className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${isDark ? 'hover:bg-[#5c2b29]' : 'hover:bg-[#FAD2CF]'}`}>🗑</button>
-            </div>
+            <>
+              {/* 默认: 显示日期(辨识每条会话什么时候发生);hover/active 时换成编辑/删除按钮 */}
+              {chat.date && (
+                <span className={`text-[11px] shrink-0 opacity-60 whitespace-nowrap group-hover:hidden ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
+                  {chat.date}
+                </span>
+              )}
+              <div className="hidden group-hover:flex items-center gap-0.5 shrink-0">
+                <button title="重命名" onClick={(e) => { e.stopPropagation(); setVal(chat.title); setEditing(true); }}
+                  className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${isDark ? 'hover:bg-[#444746]' : 'hover:bg-[#D3D7DB]'}`}>✏️</button>
+                <button title="删除" onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
+                  className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${isDark ? 'hover:bg-[#5c2b29]' : 'hover:bg-[#FAD2CF]'}`}>🗑</button>
+              </div>
+            </>
           )}
         </div>
       );

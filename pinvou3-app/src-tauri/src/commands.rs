@@ -55,7 +55,11 @@ pub async fn chat(
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
-    let mut full = build_message_with_attachments(message, attachments.unwrap_or_default());
+    let mut full = build_message_with_attachments(
+        message,
+        attachments.unwrap_or_default(),
+        &crate::bridge::paths::session_workspace_dir(&sid),
+    );
     // 工作流 Phase 可视化:用户在工作流页"启用"卡片 = start_skill_session
     // 新建一个绑定了 skill 的 session。该 session 第一条 chat 消息时,
     // 把 skill body + phase 规则 prepend 一次,后续 turn 靠 LLM session 上下文保持。
@@ -93,11 +97,33 @@ pub async fn chat(
         .map_err(|e| format!("send_user_message failed: {e:?}"))
 }
 
+/// 把图片附件拷进 session workspace 的 `attachments/` 子目录,返回供 `image_analyze`
+/// 使用的 **workspace 相对路径**(image_analyze 只接受不逃逸 workspace 的相对路径)。
+/// 失败返回 None,上层降级为提示无法读图。
+fn stage_image_in_workspace(src: &str, basename: &str, workspace: &std::path::Path) -> Option<String> {
+    let dir = workspace.join("attachments");
+    std::fs::create_dir_all(&dir).ok()?;
+    // 防重名:已存在则 name-1.ext / name-2.ext 递增。
+    let (stem, ext) = match basename.rsplit_once('.') {
+        Some((s, e)) => (s.to_string(), format!(".{e}")),
+        None => (basename.to_string(), String::new()),
+    };
+    let mut candidate = basename.to_string();
+    let mut n = 1;
+    while dir.join(&candidate).exists() {
+        candidate = format!("{stem}-{n}{ext}");
+        n += 1;
+    }
+    std::fs::copy(src, dir.join(&candidate)).ok()?;
+    Some(format!("attachments/{candidate}"))
+}
+
 /// 拼接 user 文本 + 附件 markdown。
-/// 图片走 model_no_vision 警告块，让 LLM 明确知道「有图但看不到内容」。
+/// 图片拷进 workspace 后引导 LLM 调 image_analyze 读图(Qwen3.6 有视觉能力)。
 fn build_message_with_attachments(
     text: String,
     attachments: Vec<crate::file_ingest::IngestResult>,
+    workspace: &std::path::Path,
 ) -> String {
     if attachments.is_empty() {
         return text;
@@ -125,25 +151,30 @@ fn build_message_with_attachments(
         // 同时避免 AI 凭想象编造 workspace/<timestamp>-... 这种伪路径
         out.push_str(&format!("原始路径: `{}`\n", a.path));
         if a.kind == "image" {
-            if let Some(md) = &a.markdown {
-                // OCR 抠出了文字：给出文字，但说清这是 OCR 不是视觉理解。
-                out.push_str(
-                    "ℹ️ 以下是图片经 OCR 提取的**文字**(非视觉理解,版式/图形/颜色已丢失,\
-                    可能有识别误差)。如用户问图里画了什么、配色、布局等视觉内容,\
-                    请说明你只能读到文字、看不到画面,不要臆测:\n",
-                );
-                out.push_str("```\n");
-                out.push_str(md);
-                if !md.ends_with('\n') {
-                    out.push('\n');
+            // 把图拷进 workspace,硬约束引导 LLM 调 image_analyze 读图。
+            // 关键:不能说"你有视觉能力"——那会让模型以为可直接描述而凭空幻觉
+            // (实测同一张图,不调工具时编造内容,调工具才得真相)。改成"你现在
+            // 一无所知,调用前绝不描述",把模糊建议变成具体硬规则(Qwen3.6 对具体
+            // 硬规则遵循好、对抽象意图无效)。
+            match stage_image_in_workspace(&a.path, &a.basename, workspace) {
+                Some(rel) => {
+                    out.push_str(&format!(
+                        "🖼 用户附了一张图片,存在 workspace 的 `{rel}`。\n\
+                        ⚠️ 你现在**看不到这张图的任何内容**,对图里有什么**一无所知**。\
+                        在调用 image_analyze 工具并拿到返回结果之前,你**绝对不能**描述、\
+                        猜测或编造图里有什么——包括「这是什么」「帅吗」「什么颜色」「是不是某某文档」\
+                        这类**任何**关于图的问题。凭空作答=幻觉,是严重错误。\n\
+                        要回答**任何**跟这张图有关的问题,**必须先**调用:\n\
+                        `image_analyze(image_path=\"{rel}\", prompt=\"<按用户问题要看的,如:描述这张图/读出文字/这是什么>\")`\n\
+                        拿到工具返回的描述后,再据此如实回答用户。\n",
+                    ));
                 }
-                out.push_str("```\n");
-            } else {
-                // 没 OCR 文字(纯图/缺 tesseract/识别为空)：照旧提示无视觉。
-                out.push_str(
-                    "⚠️ 当前模型 Qwen3.6 没有视觉能力,只知道用户附了这张图,**无法**分析像素内容。\
-                    请明确告诉用户你看不到,不要臆测图里的东西。\n",
-                );
+                None => {
+                    out.push_str(
+                        "⚠️ 这张图片暂存到 workspace 失败,无法用 image_analyze 读取。\
+                        请告知用户图片无法处理,不要臆测图里的内容。\n",
+                    );
+                }
             }
         } else if let Some(md) = &a.markdown {
             out.push_str("```\n");
@@ -477,6 +508,25 @@ pub async fn artifact_info(path: String) -> Result<ArtifactInfo, String> {
     })
 }
 
+/// 用系统默认浏览器打开**允许列表**里的 https URL。
+/// 用于 Settings 面板的"获取 API key"链接(Metaso/Bocha 注册页)。
+/// 白名单写死,前端没法用这个 command 打开任意 URL。
+#[tauri::command]
+pub async fn open_external_url(url: String) -> Result<(), String> {
+    const ALLOWED_PREFIXES: &[&str] = &[
+        "https://metaso.cn/",
+        "https://open.bochaai.com/",
+    ];
+    if !ALLOWED_PREFIXES.iter().any(|p| url.starts_with(p)) {
+        return Err(format!("URL not in allowlist: {url}"));
+    }
+    std::process::Command::new("xdg-open")
+        .arg(&url)
+        .spawn()
+        .map_err(|e| format!("xdg-open({url}) failed: {e}"))?;
+    Ok(())
+}
+
 /// 用系统默认应用打开文件（xdg-open / 文件管理器）。
 #[tauri::command]
 pub async fn open_in_system(path: String) -> Result<(), String> {
@@ -666,6 +716,23 @@ pub async fn accept_plan(
     Ok(store.mode_state(&session_id))
 }
 
+/// Pinvou Gate 预检。
+///
+/// 前端在把「用户已批准」echo 写进 messages 之前先调用本命令。这样当 Gate 失败并触发
+/// `/pinvou-review-plan` 时,reviewer 不会在同一上下文里先看到一条误导性的
+/// "用户已经批准"。
+#[tauri::command]
+pub async fn check_pinvou_exit_gate(
+    session_id: String,
+    plan_markdown: String,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    if store.mode_state(&session_id).pinvou_review_enabled {
+        check_exit_gate(&plan_markdown).map_err(|e| serialize_gate_error(&e))?;
+    }
+    Ok(())
+}
+
 /// 把 GateError 序列化成 JSON 字符串,前端 parseGateError() 解析 {gate_error, message, detail}。
 fn serialize_gate_error(err: &GateError) -> String {
     let kind = match err {
@@ -679,6 +746,31 @@ fn serialize_gate_error(err: &GateError) -> String {
         "detail": err,
     }))
     .unwrap_or_else(|_| err.to_string())
+}
+
+/// Pinvou 专用 review turn。
+///
+/// 与普通 `chat` 的区别:
+/// - 不按当前 session mode 发,固定走 `AppMode::Plan` 的只读工具面;
+/// - 不重置 auto-continue 计数,因为这不是用户主动开启的新任务;
+/// - 不修改 mode_state,避免 review turn 把 Plan/Executing 状态机带偏。
+#[tauri::command]
+pub async fn pinvou_review_chat(
+    session_id: String,
+    message: String,
+    pool: State<'_, EnginePool>,
+) -> Result<(), String> {
+    if message.trim().is_empty() {
+        return Err("empty review message".into());
+    }
+    pool.send_user_message(
+        &session_id,
+        message,
+        SerializableMode::Plan.to_app_mode(),
+        PlanPhase::None,
+    )
+    .await
+    .map_err(|e| format!("pinvou_review_chat send_user_message: {e:?}"))
 }
 
 /// 用户切换品悟 review 开关(UI 顶部 toggle)。
@@ -1157,6 +1249,31 @@ pub async fn list_session_skill_bindings(
 mod tests {
     use super::*;
 
+    /// `open_external_url` 必须只放 metaso.cn / open.bochaai.com,任何其他 host /
+    /// 任何其他 scheme(http、file、javascript)都立即 reject——这是前端 webview
+    /// 万一被 XSS 的最后一道防线,不许扩大白名单不加测试。
+    #[tokio::test]
+    async fn open_external_url_rejects_off_allowlist_targets() {
+        let rejected = [
+            "http://metaso.cn/",              // 非 https
+            "https://evil.example.com/",      // host 不在白名单
+            "https://metaso.cn.evil.com/",    // 子域钓鱼
+            "javascript:alert(1)",            // js scheme
+            "file:///etc/passwd",             // file scheme
+            "https://google.com/",            // 任何第三方域
+            "",                               // 空串
+            "metaso.cn/",                     // 缺 scheme
+        ];
+        for url in rejected {
+            let err = open_external_url(url.to_string()).await.err();
+            assert!(err.is_some(), "must reject URL: {url:?}");
+            assert!(
+                err.as_deref().unwrap().contains("allowlist"),
+                "reject reason should name allowlist for {url:?}, got {err:?}"
+            );
+        }
+    }
+
     /// L2-1: A 方案放宽 — /tmp 下任意文件可校验通过（不强 $HOME 限制）。
     #[test]
     fn validate_user_path_allows_tmp() {
@@ -1191,30 +1308,38 @@ mod tests {
         assert!(result.unwrap_err().contains("system-sensitive"));
     }
 
-    /// 端到端（除 GUI）：图片 → file_ingest OCR → build_message_with_attachments
-    /// 拼成发给 LLM 的最终 prompt。验证 OCR 文字真的进了 prompt 且带「非视觉理解」
-    /// 标注。把 prompt 写到 /tmp 供外部脚本发真实 vLLM 验证模型能否读懂。
-    /// 依赖 tesseract + /tmp/ocr_test_cn.png，故 `#[ignore]`。
+    /// 图片附件 → build_message_with_attachments 的视觉通路:验证图被拷进 workspace
+    /// 的 attachments/ 且 prompt 引导 LLM 调 image_analyze(不再走 OCR)。
+    /// 用临时 png + 临时 workspace,不依赖外部文件,正常跑(非 ignore)。
     #[test]
-    #[ignore = "端到端: 需 tesseract + /tmp/ocr_test_cn.png"]
-    fn e2e_image_ocr_into_prompt() {
-        let img = std::path::Path::new("/tmp/ocr_test_cn.png");
-        if !img.exists() {
-            eprintln!("跳过: 无 /tmp/ocr_test_cn.png");
-            return;
-        }
-        let r = crate::file_ingest::ingest(img);
+    fn image_attachment_stages_and_guides_image_analyze() {
+        let tmp = std::env::temp_dir().join(format!("pinvou3-vis-test-{}", std::process::id()));
+        let ws = tmp.join("workspace");
+        std::fs::create_dir_all(&ws).expect("建 workspace");
+        let src = tmp.join("shot.png");
+        std::fs::write(&src, b"\x89PNG\r\n\x1a\nfake-bytes").expect("写假 png");
+
+        let r = crate::file_ingest::ingest(&src);
+        assert_eq!(r.kind, "image", "应识别为 image");
+        assert!(r.markdown.is_none(), "图片不再预解析出 markdown(OCR 已移除)");
+
         let prompt = build_message_with_attachments(
-            "这张图里的项目编号是多少？只回答编号。".to_string(),
+            "这张图里画了什么？".to_string(),
             vec![r],
+            &ws,
         );
-        std::fs::write("/tmp/e2e_prompt.txt", &prompt).expect("写 prompt");
-        println!("===PROMPT===\n{prompt}\n===END===");
-        assert!(prompt.contains("OCR"), "prompt 应标注 OCR 来源");
+        assert!(prompt.contains("image_analyze"), "prompt 应引导调 image_analyze");
         assert!(
-            prompt.contains("2026-PV-001"),
-            "OCR 抠出的项目编号必须进 prompt"
+            prompt.contains("attachments/shot.png"),
+            "prompt 应给出 workspace 相对路径"
         );
+        assert!(
+            ws.join("attachments/shot.png").exists(),
+            "图片应被拷进 workspace 的 attachments/"
+        );
+        assert!(!prompt.contains("没有视觉能力"), "不应再出现无视觉提示");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// 为多种附件类型生成「问题 + 附件内容」的最终 prompt，写到 /tmp 供外部脚本
@@ -1241,7 +1366,9 @@ mod tests {
                 continue;
             }
             let r = crate::file_ingest::ingest(&p);
-            let prompt = build_message_with_attachments(q.to_string(), vec![r]);
+            let ws = std::env::temp_dir().join("pinvou3-e2e-ws");
+            let _ = std::fs::create_dir_all(&ws);
+            let prompt = build_message_with_attachments(q.to_string(), vec![r], &ws);
             std::fs::write(out, prompt).expect("写 prompt");
         }
     }

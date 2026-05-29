@@ -95,12 +95,11 @@ pub fn session_workspace_dir(session_id: &str) -> PathBuf {
 }
 
 /// `~/.pinvou3/sessions/<session_id>/instructions.md` —— 每个 session 独立的
-/// system-prompt 文件(已渲染,`{{PINVOU3_WORKSPACE}}` 占位符替换成本 session
-/// 的 workspace)。
+/// Legacy `~/.pinvou3/sessions/<sid>/instructions.md` 路径。
 ///
-/// 多引擎并发模型的核心隔离点:每个 engine 的 `EngineConfig.instructions` 指向
-/// 各自 session 的这个文件,engine rehydrate 从 disk 重读时不再串台到全局共享的
-/// `bundle/instructions.md`(后者在并发下会被多个 engine 互相覆写)。
+/// C 方案(P-no-disk)前用作 per-session prompt 文件,EngineConfig.instructions
+/// 指向它。改成 `InstructionSource::Inline` 后这个 disk 文件**不再被生产代码读**,
+/// 仅用于 boot 时 legacy 清理(早期 pinvou3 版本写下的残留)。新版 pinvou3 不再写。
 pub fn session_instructions_path(session_id: &str) -> PathBuf {
     sessions_root().join(session_id).join("instructions.md")
 }

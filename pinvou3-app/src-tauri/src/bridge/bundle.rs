@@ -13,7 +13,8 @@ use super::paths;
 /// 改其他 bundle 资源（mcp.json 默认 / skills 模板等）才需要手动 bump base。
 ///
 /// 0.4: 加 Pinvou Review 内置 skills(pinvou-review-plan / pinvou-review-final)
-pub const BUNDLE_VERSION: &str = concat!("0.4-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.5: 下线 h3c-ppt workflow skill(workflow 功能转"开发中"),phase 协议随之停渲
+pub const BUNDLE_VERSION: &str = concat!("0.5-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions.md（Qwen3.6 适配 prompt），编译时内嵌。
 pub const INSTRUCTIONS_MD: &str = include_str!("../../resources/bundle/instructions.md");
@@ -36,11 +37,39 @@ pub const PINVOU_REVIEW_PLAN_SKILL_MD: &str =
 pub const PINVOU_REVIEW_FINAL_SKILL_MD: &str =
     include_str!("../../resources/bundle/skills/pinvou-review-final/SKILL.md");
 
-/// h3c-ppt 工作流 skill —— 多文件(SKILL.md + scripts/ + templates/ 含二进制图片 +
-/// reference/ + demo/),整目录编译期内嵌,启动时递归解包到 ~/.pinvou3/bundle/skills/h3c-ppt/。
-/// 这样仓库 `resources/bundle/skills/h3c-ppt/` 成为唯一源,改 skill 只改仓库源即可。
-static H3C_PPT_SKILL_DIR: include_dir::Dir<'_> =
-    include_dir::include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/skills/h3c-ppt");
+/// pinvou3 版 base prompt（Constitution / 工具纪律 / embedder-aware / 删 RLM·Toolbox·V4），
+/// 编译期内嵌。通过底座 `prompts::set_base_prompt_override` 注入，替换底座的
+/// 上游 `BASE_PROMPT`。这样 pinvou3 的 prompt 定制活在 app,DeepSeek-TUI submodule
+/// 的 base.md 回退上游原文(fork drift 归零)。见 docs/base-prompt-override-阶段2.md。
+pub const BASE_PROMPT_MD: &str = include_str!("../../resources/bundle/base.md");
+
+/// pinvou3 版简体中文 locale 前导段（替换底座 `LOCALE_PREAMBLE_ZH_HANS`，仅品牌词
+/// pinvou3 与上游 codewhale 不同）。底座原文用 `\` 行续拼接,本常量按其最终字节复刻。
+pub const LOCALE_PREAMBLE_ZH_HANS: &str = "## 语言要求\n\n\
+你正在 pinvou3 中运行。无论任务上下文（代码、错误日志、文件名）\
+是英文，无论系统提示的其余部分是英文，你都必须用简体中文进行 \
+`reasoning_content`（内部思考）和最终回复。代码、文件路径、工具名称\
+（例如 `read_file`、`exec_shell`）、环境变量、命令行参数和 URL \
+保持原样 —— 只有自然语言散文要切换到简体中文。\n\n\
+如果用户在会话中切换到另一种语言，从下一轮开始跟随切换。\
+如果用户明确要求（例如 \"think in English\"），则覆盖此规则。";
+
+/// pinvou3 版 Authority Recap（替换底座 `AUTHORITY_RECAP`，仅品牌词不同）。
+pub const AUTHORITY_RECAP: &str = "\
+## Authority Recap
+
+The Constitution of pinvou3 (Articles I-VII) governs: Truth and Verification \
+are non-negotiable, and the user's current message is the highest directive \
+within them. On any conflict, consult Article VII.";
+
+/// 把 pinvou3 版 prompt 文案注入底座的 prompt 合成层。底座用 `OnceLock`,首次
+/// set 生效、后续 no-op,所以可在每个 `Bridge::boot` 入口幂等调用。必须在任何
+/// engine spawn 前调用(boot 早于 EnginePool::new 的 engine 装配)。
+pub fn install_prompt_overrides() {
+    deepseek_tui::prompts::set_base_prompt_override(BASE_PROMPT_MD.to_string());
+    deepseek_tui::prompts::set_locale_preamble_zh_hans_override(LOCALE_PREAMBLE_ZH_HANS.to_string());
+    deepseek_tui::prompts::set_authority_recap_override(AUTHORITY_RECAP.to_string());
+}
 
 #[derive(Debug, Clone)]
 pub struct Pinvou3Bundle {
@@ -130,28 +159,11 @@ impl Pinvou3Bundle {
         std::fs::create_dir_all(&final_dir)?;
         std::fs::write(plan_dir.join("SKILL.md"), PINVOU_REVIEW_PLAN_SKILL_MD)?;
         std::fs::write(final_dir.join("SKILL.md"), PINVOU_REVIEW_FINAL_SKILL_MD)?;
-        // h3c-ppt:整目录解包(同 pinvou 的 immutable bundle 策略,每次启动重写)。
-        let h3c_dir = self.skills_dir.join("h3c-ppt");
-        extract_embedded_dir(&H3C_PPT_SKILL_DIR, &h3c_dir)?;
+        // h3c-ppt workflow skill 已下线(workflow 功能转"开发中"):清理既有装机的残留
+        // 目录,否则 SkillRegistry 仍会从 disk 发现它、重新触发 phase 协议 prompt。
+        let _ = std::fs::remove_dir_all(self.skills_dir.join("h3c-ppt"));
         Ok(())
     }
-}
-
-/// 把 [`include_dir::Dir`] 递归写到 `base` 下。每个文件的 `path()` 是相对内嵌根
-/// 的路径(如 `scripts/audit.py`),join 到 `base` 即目标位置;二进制(图片)走
-/// `contents()` 字节写出。
-fn extract_embedded_dir(dir: &include_dir::Dir<'_>, base: &std::path::Path) -> std::io::Result<()> {
-    for file in dir.files() {
-        let dest = base.join(file.path());
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(dest, file.contents())?;
-    }
-    for sub in dir.dirs() {
-        extract_embedded_dir(sub, base)?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -174,16 +186,15 @@ mod tests {
         assert!(bundle.instructions_md.is_file());
         assert!(bundle.mcp_json.is_file());
         assert!(paths::bundle_version_file().is_file());
-        // h3c-ppt 多文件 skill 整目录解包:SKILL.md + 子目录里的脚本/二进制都要落地。
-        let h3c = bundle.skills_dir.join("h3c-ppt");
-        assert!(h3c.join("SKILL.md").is_file(), "h3c-ppt SKILL.md 应被解包");
+        // pinvou-review 内置 skills 应被写出。
         assert!(
-            h3c.join("scripts/rebuild_mega.sh").is_file(),
-            "子目录脚本应被递归解包"
+            bundle.skills_dir.join("pinvou-review-plan/SKILL.md").is_file(),
+            "pinvou-review-plan SKILL.md 应被写出"
         );
+        // h3c-ppt workflow skill 已下线:不应再被写出。
         assert!(
-            h3c.join("templates/h3c-brand/h3c-logo-white.png").is_file(),
-            "二进制图片资产应被递归解包"
+            !bundle.skills_dir.join("h3c-ppt").exists(),
+            "h3c-ppt 已下线,不应再解包"
         );
         let v = std::fs::read_to_string(paths::bundle_version_file()).unwrap();
         assert_eq!(v.trim(), BUNDLE_VERSION);
@@ -198,6 +209,83 @@ mod tests {
         );
 
         cleanup(&tmp);
+    }
+
+    #[test]
+    fn bundled_prompt_contracts_explain_append_file_tail_only() {
+        assert!(
+            INSTRUCTIONS_MD.contains("append_file` 只能追加到文件尾"),
+            "全局 instructions 必须说明 append_file 是尾追加"
+        );
+        assert!(
+            PINVOU_REVIEW_PLAN_SKILL_MD.contains("append_file` 只能追加到文件尾"),
+            "Pinvou review 必须把 append_file 当中间插入/占位替换判为硬伤"
+        );
+    }
+
+    /// 阶段2 forkguard:base.md override 内容正确。submodule base.md 已回退上游
+    /// 原文,pinvou3 的 Constitution/工具纪律/精简只在这份 bundle 里 —— 这些断言
+    /// 从 submodule 删掉的 forkguard 迁来,守住"内容没被误删/被上游内容污染"。
+    #[test]
+    fn forkguard_base_override_has_pinvou3_content() {
+        for anchor in [
+            "CONSTITUTION OF PINVOU3",
+            "running inside pinvou3",
+            "Match the embedder's render target",
+            "concurrent cap is embedder-configured",
+            "files configured via `EngineConfig.instructions`",
+        ] {
+            assert!(
+                BASE_PROMPT_MD.contains(anchor),
+                "base.md override 缺 pinvou3 锚点 {anchor:?}"
+            );
+        }
+        for dropped in [
+            "Brother Whale",
+            "RLM — How to Use It",
+            "CONSTITUTION OF CODEWHALE",
+            "## Toolbox (fast reference",
+            "DeepSeek prefix-cache reuse",
+            "fork_context: true",
+        ] {
+            assert!(
+                !BASE_PROMPT_MD.contains(dropped),
+                "base.md override 不应含上游内容 {dropped:?}"
+            );
+        }
+        // {model_id} 占位符必须保留,底座 apply_model_template 会替换它。
+        assert!(
+            BASE_PROMPT_MD.contains("{model_id}"),
+            "base.md override 丢了 {{model_id}} 占位符"
+        );
+    }
+
+    /// 阶段2 forkguard:locale/authority override 品牌词正确(pinvou3 非 codewhale)。
+    #[test]
+    fn forkguard_locale_authority_override_branding() {
+        assert!(LOCALE_PREAMBLE_ZH_HANS.contains("你正在 pinvou3 中运行"));
+        assert!(!LOCALE_PREAMBLE_ZH_HANS.contains("你正在 codewhale 中运行"));
+        assert!(AUTHORITY_RECAP.contains("The Constitution of pinvou3 (Articles I-VII)"));
+        assert!(!AUTHORITY_RECAP.contains("The Constitution of CodeWhale"));
+    }
+
+    /// 阶段2 forkguard(端到端):install_prompt_overrides 真把 pinvou3 内容注入
+    /// 底座 compose。证明 hook + 内容 + 注入三者接通 —— 若底座 sync 把 override
+    /// hook 冲掉,这个测试会失败(compose 退回上游 base)。
+    #[test]
+    fn forkguard_install_overrides_makes_compose_emit_pinvou3() {
+        use deepseek_tui::prompts::{self, Personality};
+        use deepseek_tui::tui::app::AppMode;
+        install_prompt_overrides();
+        let prompt = prompts::compose_prompt(AppMode::Agent, Personality::Calm);
+        assert!(
+            prompt.contains("CONSTITUTION OF PINVOU3"),
+            "override 未生效:compose 缺 pinvou3 Constitution(hook 可能被 sync 冲掉)"
+        );
+        assert!(
+            !prompt.contains("Brother Whale"),
+            "override 未生效:compose 仍含上游 Brother Whale"
+        );
     }
 
     fn tempdir() -> String {

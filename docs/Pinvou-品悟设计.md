@@ -222,19 +222,20 @@ SessionModeState {
 [AI 气泡] 方案 A...    (实际渲染时是模型名,如 "QWEN3.6")
        ↓ (后台跑 /pinvou-review-plan，500ms-2s)
 [Pinvou 气泡，带打字光标动画]
-       "Boss 视角看：我担心 3 件事..."
+       "老板视角看：我担心 3 件事..."
        1) ... 2) ... 3) ...
 [底部 3 按钮]
-   [✓ 直接执行]  [↻ AI 改方案]  [⊕ 我自己加一句]
+   [✓ 确认继续执行]  [↻ 让 AI 改方案]  [⊕ 我自己加一句]
 ```
 
 **3 按钮设计**：
-- **直接执行**：用户判定 Pinvou 多虑了，一键 override 所有 CRITICAL（标 OVERRIDDEN_BY_USER）→ EXIT GATE 放行
-- **AI 改方案**：把 review 表格作为 user message 注入对话，让 AI 修方案 → 再触发 Pinvou re-review 循环
+- **确认继续执行**：用户判定品悟多虑了，一键 override 所有 CRITICAL（标 OVERRIDDEN_BY_USER）→ EXIT GATE 放行
+- **让 AI 改方案**：按钮直接触发一次 Plan 修订请求，前端只显示简短用户气泡；真实指令要求模型只调用 `update_plan` 生成新版方案卡，停下来等用户再次拍板，不直接执行文件写入或命令
 - **我自己加一句**：用户补充意见进 plan 文件，再触发 AI 修方案
 
 **关键产品取舍**：
 - Pinvou 的发言必须是 review skill 的真实产出，不能为对话感凭空发言
+- Pinvou 协议字段保持英文，UI 显示层翻译成中文；不要把显示文案反写回 GATE 协议
 - Pinvou 不能每个 turn 都跳出来，只在 A/D/E 节点
 - Pinvou 必须看完整 plan / 完整 trace 才发言（256K context 让这变得可能）
 
@@ -337,7 +338,7 @@ Pinvou 端：subagent fresh context + 完整 plan + execute trace，单次 prefi
 
 2. **前端 Fallback 兜底**(`main.js synthesizeOverriddenReport()`):
    - LLM 输出有内容但**无表格** → **仍渲染**品悟气泡(气泡显示 LLM 原话) + 合成 OVERRIDDEN_BY_USER 占位表格
-   - 用户点 [✅ 直接执行] → 用合成表格拼 plan_markdown → GATE 二次校验过 → 进 execute
+   - 用户点 [✅ 确认继续执行] → 用合成表格拼 plan_markdown → GATE 二次校验过 → 进 execute
 
 这印证了本仓库 commit `7b983b6` 的回滚教训("Qwen3.6 + advisory reminder 引导不可靠"):**必须 bridge blocking + UI 兜底**,不能纯靠 prompt 引导。
 
@@ -412,6 +413,22 @@ v2 实测 Pinvou 在方案合理时硬凑 finding（俄罗斯方块场景凑了"
 修法：删硬凑要求，改成"看不出问题就一行 CLEAR 收尾，不强求"。加 example B（改 README 标题）demo 纯 CLEAR 长什么样。
 
 **经验**：好的审查者会说"今天没什么好审的"，硬凑反而违反审查者本职。
+
+### 10.10 v2.1 Gate / 只读验收硬化
+
+实现 review 后再做了一轮代码审查，发现问题不在"品悟会不会说话"，而在状态机边界：
+
+1. 旧前端在 `acceptPlan()` 里先把"✅ 就这么干"写进 messages，再调用后端 `accept_plan`。如果 Gate 失败并触发品悟审方案，reviewer 会在同一上下文先看到"用户已批准"，这是错误信号。
+2. 旧 `/pinvou-review-plan` 只靠历史上下文找 plan，没有把当前 plan markdown 显式塞进 review prompt。切换 persona 不是独立 reviewer，必须把被审对象钉死。
+3. 旧 `/pinvou-review-final` 虽然 prompt 写"只读"，但实际仍按当前会话 mode 发送；执行态结束后通常回 YOLO，final reviewer 理论上还能写文件/跑命令。
+4. 旧 Gate 只识别 `Severity == CRITICAL`，模型把字段翻译成中文或拼成别的词时可能被当成非 critical 放行。
+
+修法（v2.1）：
+
+- 前端新增 Gate 预检：先调后端 `check_pinvou_exit_gate`，通过后才写"已批准" echo；失败则触发品悟或提示用户处理。
+- `autoTriggerPinvouReview` 把完整 `planMarkdown` 放进 prompt 的 `<plan_markdown>` 块，要求只审这份 plan，不把触发语/按钮文案当决策。
+- 新增 `pinvou_review_chat` 后端命令，Pinvou plan/final review 固定用 `AppMode::Plan + PlanPhase::None` 发送，走底座只读工具面，不改 session mode_state。
+- `review_gate.rs` 对 Severity / Status 做严格枚举：`CRITICAL / INFORMATIONAL / CLEAR` 与 `RAISED / RESOLVED / OVERRIDDEN_BY_USER / NOTED`，未知值直接 Malformed。
 
 ## 11. 决策来源索引
 

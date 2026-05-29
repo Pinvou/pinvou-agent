@@ -41,6 +41,25 @@ fingerprints=(
   "    |tool_catalog blocklist 模型     |DeepSeek-TUI/crates/tui/src/core/engine/tool_catalog.rs|pinvou3_should_defer_native_tool"
   "#18b|bridge 透传 fake-ip 信任段      |pinvou3-app/src-tauri/src/bridge/mod.rs|with_trusted_fakeip_cidrs"
   "#16 |bridge subagent_api_timeout 300 |pinvou3-app/src-tauri/src/bridge/mod.rs|from_secs(300)"
+  "#25 |skills union pub API            |DeepSeek-TUI/crates/tui/src/skills/mod.rs|pub fn render_available_skills_context_for_workspace_and_dir"
+  "#26 |prompts skills_block union 调用 |DeepSeek-TUI/crates/tui/src/prompts.rs|render_available_skills_context_for_workspace_and_dir(workspace, dir)"
+  "#42 |base override hook 存活(submodule) |DeepSeek-TUI/crates/tui/src/prompts.rs|pub fn set_base_prompt_override"
+  "#28 |Tier 5 cover EngineConfig.instructions |pinvou3-app/src-tauri/resources/bundle/base.md|files configured via \`EngineConfig.instructions\`"
+  "#33 |Output Formatting 改 embedder-aware|pinvou3-app/src-tauri/resources/bundle/base.md|Match the embedder's render target"
+  "#32 |Sub-Agent Strategy embedder-aware  |pinvou3-app/src-tauri/resources/bundle/base.md|concurrent cap is embedder-configured"
+  "#36 |Constitution 改 PINVOU3 brand      |pinvou3-app/src-tauri/resources/bundle/base.md|CONSTITUTION OF PINVOU3"
+  "#36 |Brother Whale preamble 已删         |pinvou3-app/src-tauri/resources/bundle/base.md|running inside pinvou3"
+  "#37 |LOCALE_PREAMBLE_ZH_HANS pinvou3 brand|pinvou3-app/src-tauri/src/bridge/bundle.rs|你正在 pinvou3 中运行"
+  "#38 |AUTHORITY_RECAP pinvou3 brand       |pinvou3-app/src-tauri/src/bridge/bundle.rs|Constitution of pinvou3 (Articles I-VII)"
+  "#40 |environment block 移到 volatile 下  |DeepSeek-TUI/crates/tui/src/prompts.rs|6 (was 2.25). Environment block"
+  "#41 |skill 路径只剩 ~/.agents/skills    |DeepSeek-TUI/crates/tui/src/skills/mod.rs|patch #41): 砍掉底座的 10 路径扫描清单"
+  "    |phase tracking 弱化(dormant)       |DeepSeek-TUI/crates/tui/src/skills/mod.rs|This section is dormant by default"
+  "    |phase tracking 反指引(不要声明不适用)|DeepSeek-TUI/crates/tui/src/skills/mod.rs|Don't announce that a phased skill is"
+  "    |PROJECT_CONTEXT_FILES 砍空(C 终态)  |DeepSeek-TUI/crates/tui/src/project_context.rs|PROJECT_CONTEXT_FILES: &[&str] = &[]"
+  "    |GLOBAL_PATHS 砍空                   |DeepSeek-TUI/crates/tui/src/project_context.rs|const GLOBAL_PATHS: &[&[&str]] = &[]"
+  "    |C 方案 InstructionSource enum       |DeepSeek-TUI/crates/tui/src/prompts.rs|pub enum InstructionSource {"
+  "    |C 方案 EngineConfig.instructions    |DeepSeek-TUI/crates/tui/src/core/engine.rs|pub instructions: Vec<crate::prompts::InstructionSource>"
+  "    |C 方案 pinvou3 注入 Inline          |pinvou3-app/src-tauri/src/bridge/mod.rs|fn session_instructions(&self, session_id: &str) -> Vec<InstructionSource>"
 )
 for fp in "${fingerprints[@]}"; do
   IFS='|' read -r id desc file pat <<<"$fp"
@@ -78,7 +97,10 @@ bold "── 第 2 层:fork 回归测试 (pinvou3-tauri / bridge) ──"
 ( cd "$APP" && cargo test -p pinvou3-tauri --lib -- \
     forkguard_ \
     engine_config_locks_critical_fields \
-    default_model_window_recognized_by_engine ) || fail=1
+    default_model_window_recognized_by_engine \
+    search_prefs_default_is_bing_no_key \
+    search_prefs_roundtrip_with_metaso_key \
+    search_prefs_partial_json_fills_defaults ) || fail=1
 
 echo
 if [[ $fail -eq 0 ]]; then

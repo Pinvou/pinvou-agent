@@ -184,15 +184,19 @@ impl EnginePool {
         Ok(())
     }
 
-    /// super permission 改动后:把所有**已起** engine 的 session 专属 instructions
-    /// 文件重写一遍(含新的 sudo 引导块)。engine rehydrate 在下个 turn 从 disk 重读,
-    /// 故是「下次 turn 生效」语义(低频操作,不值得为即时生效发 SyncSession 打断在跑的 turn)。
+    /// super permission 改动后,通知用户重启会话生效。
+    ///
+    /// C 方案(P-no-disk) 之前:写 disk 让 engine rehydrate 重读。现在
+    /// `EngineConfig.instructions` 是内存 inline,已 spawn engine 持有 spawn 时
+    /// 渲染的版本,sudo 改动不能即时进 prompt(底座 Op::SyncSession 不带
+    /// instructions 字段,没法热刷)。新建 session 或重启 GUI 让新值生效。
+    /// GUI 层在 super permission toggle UI 上给 user 提示即可。
     pub async fn refresh_all_instructions(&self) {
-        let ids: Vec<String> = self.entries.lock().await.keys().cloned().collect();
-        for id in ids {
-            if let Err(e) = self.bridge.write_session_instructions(&id) {
-                eprintln!("[engine_pool] refresh instructions for {id} failed: {e:?}");
-            }
-        }
+        // no-op: 见上面注释。保留函数 shell 便于未来底座加 Op::RefreshInstructions 后重新接入。
+        let live_count = self.entries.lock().await.len();
+        eprintln!(
+            "[engine_pool] sudo permission changed; {live_count} live session(s) keep old prompt \
+             until next restart (no-op in C-fork P-no-disk model)"
+        );
     }
 }
