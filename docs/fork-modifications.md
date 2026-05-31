@@ -10,6 +10,10 @@
 > 格式: `[优先级]` 文件路径 + 行号范围 + 修改摘要 + 理由 + 是否适合提上游 PR。
 
 > **2026-05-29 阶段2 prompt override 重构**:原 #28/#32/#33/#36/#37/#38(改 base.md / prompts.rs 品牌 + 事实层)已从"直接改 submodule"迁到 **override hook** —— submodule `base.md` 回退上游原文(0 diff),pinvou3 prompt 内容移到 `pinvou3-app/src-tauri/resources/bundle/base.md` + `bridge/bundle.rs` 常量,启动经底座 `set_*_override` 注入(新 patch #42)。详见 `docs/base-prompt-override-阶段2.md`。submodule 这部分 prompt fork drift = 0;下方组 3/组 4 描述的"改 base.md"已不在 submodule,仅内容落点变了。
+>
+> **2026-05-29 上游 PR 一批 → 05-31 大批合入**:override hook 机制(#42 配套)抽通用版提 **#2356**;另把 doc #3(subagent stop-on-failure)提 **#2354**、doc #13(fetch_url fake-ip 信任)提 **#2355**。三者均从 `upstream/main` 切净分支、零 pinvou3 字样泄漏。**05-31 owner 大批 merge**:#2354/#2355 连同早前 OPEN 的 #2245/#2311/#2313/#2314 全部合入,**OPEN 仅剩 #2356**。已合入的 fork patch 下次 sync 会被上游 harvest(漂移归零),按文件级 diff 确认。**PR 全量实时状态见 `docs/fork-policy.md §8`(单一真相源,本文件不再重复维护 PR 号)**。
+>
+> ⚠️ **下次 sync 待办**:`tools/search.rs`(file_search)的 spawn_blocking + 30s timeout fork patch 已被上游 **#2035**(merge `d22da53e`)用自家实现覆盖,fork 版与上游重叠 —— sync 时**撤回 fork 版留上游版**(配套 PR #2044/#1790 已 CLOSED)。
 
 ---
 
@@ -57,7 +61,7 @@
 |---|---|---|---|---|
 | 1 | ~67 | `DEFAULT_MAX_STEPS` 100→**20** | 防弱模型死磕 17min;single-task 够用 | ⚠️ 环境相关 |
 | 2 | ~70 | `DEFAULT_SUBAGENT_ELAPSED_MAX` 硬上限 **300s** | 防 subagent 内部死磕反复重试 | ⚠️ 环境相关 |
-| 3 | ~5028 | `GENERAL_AGENT_INTRO` 增加 **stop-on-failure** + **bounded effort** | 弱模型反复重试同一失败工具,浪费步数 | ✅ 通用,可提 |
+| 3 | ~5028 | `GENERAL_AGENT_INTRO` 增加 **stop-on-failure** + **bounded effort** | 弱模型反复重试同一失败工具,浪费步数 | ✅ **#2354 已 MERGED**(05-31,下次 sync 归零) |
 | 4 | ~1419 | `resolve_agent_ref()` 截断容错: LLM 截断 `"agent_"` 前缀时自动补回 | Qwen3.6 偶发截断 agent_id;单 subagent 也必需 | ✅ 通用,已验证 |
 | 7 | ~4505 | `tool_agent_route()` 继承父 session `runtime.model.clone()` | 原硬编码 `"deepseek-v4-flash"` 本地 vLLM 无此模型→404;单 subagent 必需 | ✅ 通用 bugfix |
 
@@ -85,7 +89,7 @@
 
 | # | 修改 | 理由 | 上游 PR? |
 |---|---|---|---|
-| 13 | `validate_dns_resolved_ip` 放行落在 **fake-ip CIDR** 内的解析 IP(`is_trusted_fakeip_addr`) | clash/TUN fake-ip 下域名全解析到 198.18.x 占位段被 SSRF 误杀。**按 IP 段信任**(替代早期 `proxy=["*"]`,后者会放行任意域名→内网 SSRF);真实私网/loopback/元数据仍拦 | 🔵 可提(碰 SSRF 信任边界,需先开 issue) |
+| 13 | `validate_dns_resolved_ip` 放行落在 **fake-ip CIDR** 内的解析 IP(`is_trusted_fakeip_addr`) | clash/TUN fake-ip 下域名全解析到 198.18.x 占位段被 SSRF 误杀。**按 IP 段信任**(替代早期 `proxy=["*"]`,后者会放行任意域名→内网 SSRF);真实私网/loopback/元数据仍拦 | ✅ **#2355 已 MERGED**(05-31;PR 版做成 opt-in 可配置 CIDR,默认空=无行为变化,下次 sync 归零) |
 
 ---
 
@@ -319,4 +323,4 @@
 
 ---
 
-最后更新: 2026-05-29(阶段2 prompt override 重构)
+最后更新: 2026-05-31(上游大批合入 #2245/#2311/#2313/#2314/#2354/#2355,OPEN 仅剩 #2356;PR 状态见 fork-policy.md §8)
