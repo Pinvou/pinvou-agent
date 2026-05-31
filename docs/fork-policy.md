@@ -162,18 +162,44 @@ diff /tmp/pre-sync-prompt.txt /tmp/post-sync-prompt.txt
 
 参考：https://github.com/Hmbown/CodeWhale/blob/main/CONTRIBUTING.md（如有）
 
-## 8. 当前已识别的"建议上游 PR"清单
+## 8. 上游 PR 状态（实时，2026-05-31 核对）
 
-待提交（按接受概率排）：
+> 全部 PR 提到 `Hmbown/CodeWhale`，head 走 `h3c-hexin/DeepSeek-TUI` 跨 fork。状态用 `gh pr list --repo Hmbown/CodeWhale --author h3c-hexin --state all` 核。
+>
+> **2026-05-31 大批合入**：owner 一次性 merge 了 #2245/#2311/#2313/#2314/#2354/#2355。**OPEN 仅剩 #2356**。这批合入的 fork patch 下次 sync 会被上游 harvest，届时按文件级 diff 确认 fork 版消失（漂移归零）。
 
-| # | 内容 | 当前所在 commit | PR Title |
-|---|---|---|---|
-| 1 | `InstructionSource` enum (File/Inline) | `9af2ee97` | `feat(prompts): support inline string sources in EngineConfig.instructions` |
-| 2 | skills_dir union bug fix | `7514ec8e` 部分 | `fix(skills): union EngineConfig.skills_dir into discovery instead of dead fallback` |
-| 3 | Tier 5 cover EngineConfig.instructions | `7514ec8e` 部分 | `docs(constitution): Tier 5 covers EngineConfig.instructions paths` |
-| 4 | Environment block 移到 volatile 区 | `7514ec8e` 部分 | `perf(prompts): move environment block below volatile boundary for per-session workspaces` |
+**✅ 已 MERGED（下次 sync 随上游归零，别重复提）**
 
-如果 4 个全部 accept，fork drift 从 ~990 → ~845 行。
+| PR | 内容 | merge |
+|---|---|---|
+| #1511 | exec reasoning_effort | 05-12 |
+| #1686 | OpenAI streaming batch tool_calls 累积 | 05-15 |
+| #2057 | subagent completion role system→user | 05-25 |
+| #2060 | 256K 自托管窗口 auto-compact 生效 | 05-25 |
+| #2146 | grep_files spawn_blocking + 30s timeout | 05-26 |
+| #2147 | max_output_tokens env override | 05-26 |
+| #2245 | web_search bing /ck/a HTML 实体解码 | 05-31 |
+| #2311 | InstructionSource enum (File/Inline) | 05-31 |
+| #2313 | Tier 5 覆盖 EngineConfig.instructions | 05-31 |
+| #2314 | environment block 移 volatile 区 | 05-31 |
+| **#2354** | subagent stop-on-failure + bounded-effort（doc #3） | 05-31 |
+| **#2355** | fetch_url 可配置信任 fake-ip 段防 SSRF（doc #13） | 05-31 |
+
+**🟡 OPEN（等上游 review/merge）**
+
+| PR | 内容 |
+|---|---|
+| **#2356** | prompt override OnceLock hook（base/locale/authority，2026-05-29 提，#42 配套） |
+
+**❌ CLOSED（不再跟进）**
+
+| PR | 内容 | 处置 |
+|---|---|---|
+| #2312 | skills_dir union | 自己关的（diff 泄漏 pinvou3 字样）；功能仍是 pinvou3 必需活 patch，留 fork |
+| #2044 / #1790 | file_search cancel/timeout | 功能已被上游 **#2035**(merge `d22da53e`) 用自家实现覆盖；fork 侧 file_search timeout patch 与上游重叠，**下次 sync 撤回留上游版** |
+| #1480 | vLLM chat_template_kwargs | 留 fork |
+
+> **提 PR 防泄漏铁律**（#2312 教训）：从 `upstream/main` 切干净分支，cherry-pick 后必跑 `git diff upstream/main <br> | grep -i 'pinvou\|qwen\|vllm\|gb10\|brother whale'` 自查；cherry-pick 常把源 commit 里的中文/品牌注释带进来，逐行剔除。
 
 ## 9. 相关文档
 
