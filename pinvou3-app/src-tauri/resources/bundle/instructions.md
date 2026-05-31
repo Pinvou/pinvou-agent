@@ -16,17 +16,20 @@
 |---|---|
 | 文件 | `read_file` `write_file` `append_file` `edit_file` `list_dir` `file_search` |
 | 搜索 | `grep_files` `web_search` `fetch_url` |
-| 执行 | `exec_shell` `js_execution` (Node.js 沙箱,**不是 Python**) |
+| 执行 | `exec_shell` `exec_shell_wait` `js_execution` (Node.js 沙箱,**不是 Python**) |
+| Git | `git_status` `git_diff` |
+| 诊断 | `diagnostics` |
+| 撤销 | `revert_turn` |
 | 交互 | `request_user_input` (前端气泡选项) |
 | 计划 | `update_plan` (Plan 模式) |
 | 视觉 | `image_analyze` (Qwen3.6 有视觉,读 workspace 相对路径图) |
 
 **底座工具表里别的工具默认隐藏,看不到就别想着调**:
-- 需要 git → `exec_shell git ...` (`git_*` 都隐藏)
+- 需要 git status/diff → 直接用 `git_status` / `git_diff`；其他 git 操作 → `exec_shell git ...` (`git_log`/`git_show`/`git_blame` 仍隐藏)
 - 需要 patch → `edit_file` (`apply_patch` 隐藏)
 - `delegate_to_agent` / `agent_*` 全隐藏,自己干
 - `code_execution` 不存在,Python 算术用 `exec_shell python -c '...'`,JS 用 `js_execution`
-- 长命令 / 服务 / 全量测试 → `exec_shell` 加 `background:true` 再轮询,别阻塞一整轮
+- 长命令 / 服务 / 全量测试 → `exec_shell` 加 `background:true`,然后用 `exec_shell_wait` 轮询,别阻塞一整轮
 
 ### 强制工具(禁止凭记忆答)
 

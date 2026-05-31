@@ -107,7 +107,8 @@
       zh: {
         newChat: '新对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', recent: '近期', settings: '设置', localEnv: '本地环境',
         sysStatus: '系统状态', sysDesc: '实时性能与资源指标', gpu: '图形处理器 (GPU)', gpuUnavail: '状态不可用', noSmi: '未检测到 nvidia-smi',
-        vram: '显存占用', core: '计算核心', ram: '系统内存 (RAM)', used: '已用', physical: '物理内存', total: '总计', swap: '交换空间',
+        vram: '显存占用', core: '计算核心', temp: '温度', power: '功耗', unifiedMem: '统一内存架构',
+        ram: '系统内存 (RAM)', used: '已用', physical: '物理内存', total: '总计', swap: '交换空间',
         vllm: 'VLLM 推理引擎', ctx: '上下文长度', queue: '队列情况', kv: 'KV 命中率', app: '应用服务', appRunning: '核心守护进程运行中',
         curVer: '当前版本', uiVer: 'UI 版本', uptime: '运行时长',
         appearance: '外观与语言', lang: '界面语言', langDesc: '切换应用的显示语言', theme: '主题模式', themeDesc: '选择适合你的色彩风格',
@@ -129,7 +130,8 @@
       en: {
         newChat: 'New chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', recent: 'Recent', settings: 'Settings', localEnv: 'Local Env',
         sysStatus: 'System Status', sysDesc: 'Real-time performance metrics', gpu: 'GPU', gpuUnavail: 'Unavailable', noSmi: 'nvidia-smi not found',
-        vram: 'VRAM Usage', core: 'Core Usage', ram: 'System RAM', used: 'Used', physical: 'Physical RAM', total: 'Total', swap: 'Swap Space',
+        vram: 'VRAM Usage', core: 'Core Usage', temp: 'Temp', power: 'Power', unifiedMem: 'Unified Memory',
+        ram: 'System RAM', used: 'Used', physical: 'Physical RAM', total: 'Total', swap: 'Swap Space',
         vllm: 'VLLM Engine', ctx: 'Context Length', queue: 'Queue (Run/Wait)', kv: 'KV Hit Rate', app: 'App Service', appRunning: 'Core daemon running',
         curVer: 'App Version', uiVer: 'UI Version', uptime: 'Uptime',
         appearance: 'Appearance & Language', lang: 'Language', langDesc: 'Switch application display language', theme: 'Theme', themeDesc: 'Choose your color style',
@@ -564,11 +566,14 @@
 
       const updatedAt = fmt ? fmt.updatedAt : '—';
       const gpuName = fmt ? fmt.gpuName : t.gpuUnavail;
+      const gpuAvailable = fmt ? fmt.gpuAvailable : false;
       const gpuHasVram = fmt ? fmt.gpuHasVram : false;
       const gpuVram = fmt ? fmt.gpuVram : '—';
       const gpuVramPct = fmt ? fmt.gpuVramPct : 0;
       const gpuUtil = fmt ? fmt.gpuUtil : '—';
       const gpuUtilPct = fmt ? fmt.gpuUtilPct : 0;
+      const gpuTemp = fmt ? fmt.gpuTemp : null;
+      const gpuPower = fmt ? fmt.gpuPower : null;
       const ramUsedGiB = fmt ? fmt.ramUsedGiB : '—';
       const ramPct = fmt ? fmt.ramPct : 0;
       const ramTotal = fmt ? fmt.ramTotal : '—';
@@ -611,12 +616,26 @@
 
               <WidgetCard title={t.gpu} theme={theme}>
                 <div className="mb-10">
-                  <h3 className="text-[28px] font-medium">{gpuHasVram ? gpuName : t.gpuUnavail}</h3>
-                  <p className={`text-[14px] mt-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{gpuHasVram ? '' : t.noSmi}</p>
+                  <h3 className="text-[28px] font-medium">{gpuAvailable ? gpuName : t.gpuUnavail}</h3>
+                  <p className={`text-[14px] mt-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{gpuAvailable ? (gpuHasVram ? '' : t.unifiedMem) : t.noSmi}</p>
                 </div>
                 <div className="space-y-6 mt-auto">
-                  <ProgressBar label={t.vram} value={gpuHasVram ? gpuVram : '—'} percentage={gpuVramPct} theme={theme} />
-                  <ProgressBar label={t.core} value={gpuHasVram ? gpuUtil : '—'} percentage={gpuUtilPct} theme={theme} />
+                  {gpuHasVram ? (
+                    <ProgressBar label={t.vram} value={gpuVram} percentage={gpuVramPct} theme={theme} />
+                  ) : gpuAvailable ? (
+                    <div className={`flex justify-between items-center py-2.5 px-3 rounded-[16px] ${isDark ? 'bg-[#131314]' : 'bg-[#F8F9FA]'}`}>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.temp}</span>
+                        <span className={`text-[13px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{gpuTemp || '—'}</span>
+                      </div>
+                      <div className="w-px h-4 bg-gray-400/30"></div>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.power}</span>
+                        <span className={`text-[13px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{gpuPower || '—'}</span>
+                      </div>
+                    </div>
+                  ) : null}
+                  <ProgressBar label={t.core} value={gpuAvailable ? gpuUtil : '—'} percentage={gpuAvailable ? gpuUtilPct : 0} theme={theme} />
                 </div>
               </WidgetCard>
 

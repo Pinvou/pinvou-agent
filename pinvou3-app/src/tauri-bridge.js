@@ -1053,6 +1053,7 @@
         gpuUtilPct: snap.gpu ? snap.gpu._utilMax : 0,
         gpuTemp: snap.gpu && snap.gpu.temperature_c != null ? snap.gpu.temperature_c + "°C" : null,
         gpuPower: snap.gpu && snap.gpu.power_w != null ? snap.gpu.power_w.toFixed(1) + " W" : null,
+        gpuAvailable: !!snap.gpu,
         gpuHasVram: !!(snap.gpu && snap.gpu.vram_total_mib > 0),
         ramUsed: snap.ram ? fmtKiB(snap.ram.used_kib) : "—",
         ramTotal: snap.ram ? fmtKiB(snap.ram.total_kib) : "—",

@@ -190,7 +190,8 @@ mod blocklist_contract {
             "agent_open",           // subagent
             "rlm_eval",             // RLM
             "pr_attempt_record",    // PR 跟踪
-            "git_status",           // git 类
+            "create_goal",          // goal 状态管理
+            "git_log",              // git 类
             "apply_patch",          // patch/fim
             "pandoc_convert",       // 附件预处理（移到 bridge）
             "todo_write",           // legacy todo alias
@@ -217,6 +218,11 @@ mod blocklist_contract {
             "update_plan",
             "list_dir",
             "request_user_input",
+            "exec_shell_wait",
+            "git_status",
+            "git_diff",
+            "diagnostics",
+            "revert_turn",
         ] {
             assert!(!is_pinvou3_hidden(core), "核心工具 {core} 不应该被隐藏");
         }
