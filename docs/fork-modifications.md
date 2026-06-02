@@ -35,6 +35,25 @@
 
 **✅ fork-distinct patch 全部验证存活**:fork-guard 全过(指纹层 0 缺失 + codewhale-tui 12 测试 + pinvou3-tauri 7 测试)。子 agent 预警的语义风险点(tool_catalog blocklist / skills_dir union / file.rs 64KB / tool_agent_route)均由对应 forkguard_ 测试守住通过。
 
+### fork commit 死/活快照(截至 v0.8.49,共 35 个非 merge commit)
+
+> 快照随每次 sync 变动。"死"= 功能已被上游 harvest,merge 取上游版,commit 留历史但净 drift=0,**无需再守护**;"活"= 仍 fork-distinct。**净 drift +1796/40 文件,全在"活"集。**
+
+**💀 已 harvest(死,11 个)** —— 下次评估可从守护清单移除:
+`93e94741` MAX_OUTPUT_TOKENS env · `9af2ee97` InstructionSource enum · `5f847284` override hook(上游自带并扩展)· `9ef4a1d6` fetch_url fake-ip · `8d6d461d` bing decode · `15244e66` stop-on-failure · `363dd35a` role system→user · `7e5288e3` 256K auto-compact · `aaa19202` grep_files timeout · `079a3bb6` file_search timeout · `7514ec8e` brand 回退(已被 af64e9f7 回退)
+
+**🟢 仍活(22 个)** —— 6 大主题,这才是真维护负担:
+1. **工具表 blocklist**:`b9b40ce7`/`36526ce1`/`1ba8e418`/`44372248`/`032973b5`/`b776189e`/`d264542b`(pinvou3_blocklist.rs + tool_catalog defer)
+2. **phase/demo workflow**:`f5c20678`/`357a2ace`/`2267f53c`(skills phases+demo + turn_loop strip_marker + events)
+3. **subagent 本地约束**:`aab9cab8` + MAX_STEPS=20/ELAPSED=300(继承父 model / resolve_agent_ref 截断)
+4. **careful 安全 hook**:`a25352a1`(多行逐行)/`b2f6ef56`(YOLO 全拦)
+5. **file 大产物**:`0526dc57`(append_file)/`ebe58b8d`/`ade944db`(64KB+遥测)/`63e17d77`(truncated_args_hint)
+6. **library 暴露 + project_context**:`6ac5b976`/`47e6abcd`/`dd879db8`(lib pub mod)/`9ae23c70`(PATHS 砍空)
+
+**🟗 半死半活(2 个)**:
+- `af64e9f7`:override 注入逻辑死(上游自带 hook),但 base.txt 的 append_file 列表项 + modes/compact 等 prompt md 精简编辑仍活。
+- `bf048a7c`:守的 fetch_url fake-ip 已 harvest,但 forkguard 测试本体还在 —— **下次可删 `forkguard_validate_dns_resolved_ip_allows_fakeip` 测试**(特性已上游化)。
+
 ---
 
 ## 🔄 v0.8.47 同步后整理 (2026-05-27, merge `44844fa6`)
