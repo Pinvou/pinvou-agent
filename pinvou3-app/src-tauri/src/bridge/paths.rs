@@ -39,6 +39,14 @@ pub fn bundle_skills_dir() -> PathBuf {
 pub fn bundle_mcp_json() -> PathBuf {
     bundle_root().join("mcp.json")
 }
+/// `~/.pinvou3/bundle/mcp-servers/` —— pinvou3 内置 MCP server 脚本目录。
+pub fn bundle_mcp_servers_dir() -> PathBuf {
+    bundle_root().join("mcp-servers")
+}
+/// present_artifact MCP server 脚本绝对路径(mcp.json 的 args 指向它)。
+pub fn bundle_present_artifact_server() -> PathBuf {
+    bundle_mcp_servers_dir().join("present_artifact_server.py")
+}
 pub fn bundle_version_file() -> PathBuf {
     bundle_root().join("VERSION")
 }

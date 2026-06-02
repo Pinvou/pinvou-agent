@@ -1105,6 +1105,7 @@
     const ChatBubble = ({ item, theme, onPrefill, editable }) => {
       const isDark = theme === 'dark';
 
+      if (item.type === 'artifact_card') return <ArtifactCard item={item} theme={theme} />;
       if (item.type === 'plan_card') return <PlanCard item={item} theme={theme} onPrefill={onPrefill} />;
       if (item.type === 'plan_stuck' || item.type === 'execution_stuck') return <PlanStuckCard item={item} theme={theme} />;
       if (item.type === 'plan_text_fallback') return <PlanFallbackCard item={item} theme={theme} />;
@@ -1163,6 +1164,47 @@
       }
 
       return null;
+    };
+
+    // ==========================================
+    // Artifact Card — present_artifact 成品卡（点击打开预览）
+    // ==========================================
+    const _ARTIFACT_ICON = { html: '🌐', markdown: '📄', image: '🖼️', other: '📎' };
+    const _artifactKind = (p) => {
+      const ext = (String(p || '').split('.').pop() || '').toLowerCase();
+      if (ext === 'html' || ext === 'htm') return 'html';
+      if (ext === 'md' || ext === 'markdown') return 'markdown';
+      if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].indexOf(ext) >= 0) return 'image';
+      return 'other';
+    };
+    const ArtifactCard = ({ item, theme }) => {
+      const isDark = theme === 'dark';
+      const path = item.path || '';
+      const kind = _artifactKind(path);
+      const icon = _ARTIFACT_ICON[kind] || '📎';
+      const basename = (String(path).split('/').pop()) || '';
+      const open = () => { if (bridge.available && path) bridge.openArtifactExternal(path); };
+      return (
+        <div className="flex justify-start">
+          <div onClick={open}
+            className={`max-w-[95%] w-full rounded-[16px] border p-3 cursor-pointer transition-all ${isDark ? 'bg-[#7C3AED]/10 border-[#D0BCFF]/30 hover:border-[#D0BCFF]/60' : 'bg-[#7C3AED]/5 border-[#7C3AED]/20 hover:border-[#7C3AED]/50'}`}>
+            <div className="flex items-start gap-3">
+              <div className="text-[26px] leading-none flex-shrink-0">{icon}</div>
+              <div className="flex-1 min-w-0">
+                <div className={`text-[11px] font-mono uppercase tracking-wider mb-0.5 ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>成品 · {kind}</div>
+                <div className={`text-[15px] font-semibold truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{item.title || '成品'}</div>
+                {item.description && (
+                  <div className={`text-[13px] mt-0.5 line-clamp-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{item.description}</div>
+                )}
+                <div className={`flex items-center justify-between mt-2 pt-2 border-t ${isDark ? 'border-[#D0BCFF]/15' : 'border-[#7C3AED]/15'}`}>
+                  <span className={`text-[11px] font-mono truncate ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`} title={basename}>{basename}</span>
+                  <span className={`text-[12px] flex-shrink-0 ml-2 ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>点击打开 →</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
     };
 
     // ==========================================

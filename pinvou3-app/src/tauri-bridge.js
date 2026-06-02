@@ -462,6 +462,21 @@
             }
             continue;
           }
+          // present_artifact → 还原成品卡(切会话不丢)。仅当工具成功时还原:
+          // 失败的调用回退成普通工具卡(下方 default addChatItem)。
+          if (isPresentArtifactTool(b.name)) {
+            var pares = resultById[b.id];
+            if (!(pares && pares.is_error)) {
+              addChatItem({
+                type: "artifact_card",
+                path: (b.input && b.input.path) || "",
+                title: (b.input && b.input.title) || "",
+                description: (b.input && b.input.description) || "",
+                time: "",
+              });
+              continue;
+            }
+          }
           // update_plan / checklist_write / todo_write → 收集快照，本条消息末尾还原方案卡
           if (PLAN_TOOLS.indexOf(b.name) >= 0) {
             var snap = parsePlanSnapshot(resultById[b.id] && resultById[b.id].content);
@@ -472,6 +487,22 @@
             continue;
           }
           addChatItem({ type: "tool", toolId: b.id, name: b.name, args: b.input, output: null, success: null, state: "pending" });
+          // 还原"自动续卡":write_file/append_file 改的文件之前 present 过 → 续一张
+          // 成品卡(与实时 tool_end 的自动续逻辑对齐,切会话不丢)。present 的卡按
+          // 顺序在前(必须先 present 才进集合),此处 findPresentedArtifact 能命中。
+          if ((b.name === "write_file" || b.name === "append_file")) {
+            var wres = resultById[b.id];
+            if (!(wres && wres.is_error)) {
+              var wap = extractArtifactPath(b.input);
+              var wprev = wap ? findPresentedArtifact(wap) : null;
+              if (wprev) {
+                addChatItem({
+                  type: "artifact_card", path: wprev.path, title: wprev.title,
+                  description: wprev.description, time: "",
+                });
+              }
+            }
+          }
         }
       }
       if (textBuf) {
@@ -535,6 +566,20 @@
     var before = state.artifacts.length;
     state.artifacts = state.artifacts.filter(function (a) { return a.path !== path; });
     if (state.artifacts.length !== before) notify();
+  }
+  // 自动续卡支撑:这个文件之前是否被 present_artifact 展示过(同 basename)。
+  // 已 present 过 = 用户已确认是成品,后续 write_file/append_file 修改它就自动
+  // 再弹一张成品卡 —— 不靠 agent 第二次主动调(Qwen3.6 迭代后常漏)。信息直接
+  // 从 chatItems 里的成品卡推导,无需单独 per-session map(chatItems 已按 session
+  // 隔离 + rerender 重建)。返回最近一张同名成品卡(取 title/description 复用)。
+  function findPresentedArtifact(path) {
+    var bn = basename(path);
+    if (!bn) return null;
+    for (var i = state.chatItems.length - 1; i >= 0; i--) {
+      var it = state.chatItems[i];
+      if (it.type === "artifact_card" && basename(it.path) === bn) return it;
+    }
+    return null;
   }
   // 切换 session 时对账:扫 workspace 磁盘,把实际存在、但跟踪列表里没有的文件补进来。
   // 修「文件已生成在盘上、却因 app 中途重启/跟踪遗漏而不在产物面板」(以磁盘为准)。
@@ -776,6 +821,13 @@
     notify();
   }); });
 
+  // present_artifact MCP 工具名匹配:兼容底座 MCP adapter 可能加的 server 前缀
+  // (实测透传名若带前缀仍命中)。命中则渲染成品卡而非灰色工具卡。
+  function isPresentArtifactTool(name) {
+    return name === "present_artifact" ||
+      (typeof name === "string" && name.endsWith("present_artifact"));
+  }
+
   listen("chat:tool_start", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
     toolMeta[p.id] = { name: p.name, args: p.args };
@@ -793,6 +845,9 @@
 
     // request_user_input：不渲染默认工具卡，等 chat:user_input_required 单独渲染选择卡片
     if (p.name === "request_user_input") { notify(); return; }
+
+    // present_artifact：不渲染灰色工具卡，等 tool_end 成功时渲染成品卡
+    if (isPresentArtifactTool(p.name)) { notify(); return; }
 
     // Add tool card
     addChatItem({
@@ -824,6 +879,34 @@
       return;
     }
 
+    // present_artifact 结束：成功 → 弹成品卡(点击打开);失败 → 落普通工具卡显错误,
+    // 让 AI 从 tool_result 看到错误自行重试。成品卡是真工具调用,tool_use 已进
+    // messages(tool_start line 784),rerenderFromMessages 按 name 还原,切会话不丢。
+    if (meta && isPresentArtifactTool(meta.name)) {
+      if (p.success) {
+        addChatItem({
+          type: "artifact_card",
+          path: (meta.args && meta.args.path) || "",
+          title: (meta.args && meta.args.title) || "",
+          description: (meta.args && meta.args.description) || "",
+          time: timeStr(),
+        });
+        delete toolMeta[p.id];
+        currentStreamText = ""; currentStreamId = 0;
+        notify();
+        return;
+      }
+      // 失败:补一张工具卡承载错误输出(tool_start 时跳过了灰卡)
+      addChatItem({
+        type: "tool", toolId: p.id, name: meta.name, args: meta.args,
+        output: p.output, success: false, state: "done",
+      });
+      delete toolMeta[p.id];
+      currentStreamText = ""; currentStreamId = 0;
+      notify();
+      return;
+    }
+
     updateToolItem(p.id, p.output, p.success);
 
     // Careful hook：DeepSeek-TUI shell.rs 拦截 Dangerous → 红色拦截卡
@@ -835,7 +918,18 @@
     // write_file / append_file 成功 → 加入产物列表
     if (p.success && meta && (meta.name === "write_file" || meta.name === "append_file")) {
       var ap = extractArtifactPath(meta.args);
-      if (ap) trackArtifact(ap);
+      if (ap) {
+        trackArtifact(ap);
+        // 自动续卡:之前 present 过的成品被改了 → 再弹一张新成品卡(每次新卡,对齐
+        // pinvou2),复用首次的 title/description(也复用首次可打开的 path)。
+        var prevCard = findPresentedArtifact(ap);
+        if (prevCard) {
+          addChatItem({
+            type: "artifact_card", path: prevCard.path, title: prevCard.title,
+            description: prevCard.description, time: timeStr(),
+          });
+        }
+      }
     }
 
     // 兜底：Plan 模式下 AI 调了被白名单/sandbox 拦的工具 → 弹兜底卡，给两条出路

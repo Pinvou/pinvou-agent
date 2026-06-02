@@ -14,7 +14,8 @@ use super::paths;
 ///
 /// 0.4: 加 Pinvou Review 内置 skills(pinvou-review-plan / pinvou-review-final)
 /// 0.5: 下线 h3c-ppt workflow skill(workflow 功能转"开发中"),phase 协议随之停渲
-pub const BUNDLE_VERSION: &str = concat!("0.5-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.6: 加 present_artifact 内置 MCP server(成品卡):mcp.json 注册 + server 脚本解包
+pub const BUNDLE_VERSION: &str = concat!("0.6-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions.md（Qwen3.6 适配 prompt），编译时内嵌。
 pub const INSTRUCTIONS_MD: &str = include_str!("../../resources/bundle/instructions.md");
@@ -58,8 +59,19 @@ pub fn install_prompt_overrides() {
     let _ = deepseek_tui::prompts::set_authority_recap_override(AUTHORITY_RECAP.to_string());
 }
 
-/// 内置 MCP 默认配置——暂时空。`McpPool::from_config_path` 接受 `{"servers":{}}`。
-pub const DEFAULT_MCP_JSON: &str = "{\n  \"servers\": {}\n}\n";
+/// 内置 MCP 默认配置:注册 present_artifact server(成品卡)。`{{PINVOU3_PRESENT_SERVER}}`
+/// 占位符在 `ensure_extracted` 写出时被替换成解包后的 server 脚本绝对路径(常量无法
+/// 编译期拿到 `~/.pinvou3/bundle/` 运行时路径,同 INSTRUCTIONS_MD 的 `{{PINVOU3_WORKSPACE}}`)。
+/// server key `pinvou` + tool `present_artifact` → 底座透传给前端的工具名是
+/// `mcp_pinvou_present_artifact`(底座 `mcp.rs:all_tools` 格式 `mcp_{server}_{tool}`)。
+/// instructions.md 的引导名与前端匹配都按这个全名;前端 `isPresentArtifactTool`
+/// 用 `endsWith("present_artifact")` 命中,改 server 名也不破。
+pub const DEFAULT_MCP_JSON: &str = "{\n  \"servers\": {\n    \"pinvou\": {\n      \"command\": \"python3\",\n      \"args\": [\"{{PINVOU3_PRESENT_SERVER}}\"]\n    }\n  }\n}\n";
+
+/// present_artifact MCP server 脚本(零依赖 python stdio),编译期内嵌,解包到
+/// `~/.pinvou3/bundle/mcp-servers/`。底座按 mcp.json 用 `python3 <path>` 拉起它。
+pub const PRESENT_ARTIFACT_SERVER_PY: &str =
+    include_str!("../../resources/bundle/mcp-servers/present_artifact_server.py");
 
 /// 内嵌的敏感目录拦截 shell 脚本——配合 bridge 注入的 hook 在 ToolCallBefore
 /// 时阻止 LLM 触碰 ~/.ssh/ ~/.gnupg/ 等。
@@ -113,6 +125,9 @@ impl Pinvou3Bundle {
         // bundle 资源,无副作用;且 0.4 VERSION 写出但 skill 缺失的状态实测发生过,
         // 不该让用户依赖 VERSION 对账 + 手动删 VERSION 才能修复。
         self.write_pinvou_skills()?;
+        // MCP server 脚本同 skills:immutable bundle 资源,每次启动防御性重写
+        // (防 "VERSION 对得上但脚本缺失"),无副作用。mcp.json 本身走下面 VERSION-gated。
+        self.write_mcp_servers()?;
 
         if current.trim() == BUNDLE_VERSION {
             return Ok(());
@@ -131,9 +146,14 @@ impl Pinvou3Bundle {
                 crate::super_permission::instruction_block(),
             );
         std::fs::write(&self.instructions_md, rendered)?;
-        if !self.mcp_json.exists() {
-            std::fs::write(&self.mcp_json, DEFAULT_MCP_JSON)?;
-        }
+        // mcp.json 是 bundle 托管资源(非 user/),升级覆写:把 present server 占位符
+        // 替换成解包后的绝对路径。v1 用户自定义 MCP server 的 user/ 合并留后续。
+        let present_server = paths::bundle_present_artifact_server();
+        std::fs::write(
+            &self.mcp_json,
+            DEFAULT_MCP_JSON
+                .replace("{{PINVOU3_PRESENT_SERVER}}", &present_server.to_string_lossy()),
+        )?;
         // 敏感目录拦截脚本：写入 + 加可执行位
         std::fs::write(&self.deny_sensitive_sh, DENY_SENSITIVE_PATHS_SH)?;
         #[cfg(unix)]
@@ -169,6 +189,24 @@ impl Pinvou3Bundle {
         let _ = std::fs::remove_dir_all(self.skills_dir.join("h3c-ppt"));
         Ok(())
     }
+
+    /// 写出内置 MCP server 脚本到 `~/.pinvou3/bundle/mcp-servers/` + 加可执行位。
+    /// 每次启动防御性重写(immutable bundle 资源,无副作用)。底座按 mcp.json
+    /// 用 `python3 <path>` 拉起,不依赖可执行位,但 chmod +x 无害。
+    fn write_mcp_servers(&self) -> std::io::Result<()> {
+        let dir = paths::bundle_mcp_servers_dir();
+        std::fs::create_dir_all(&dir)?;
+        let server = paths::bundle_present_artifact_server();
+        std::fs::write(&server, PRESENT_ARTIFACT_SERVER_PY)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perm = std::fs::metadata(&server)?.permissions();
+            perm.set_mode(0o755);
+            std::fs::set_permissions(&server, perm)?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -191,6 +229,20 @@ mod tests {
         assert!(bundle.instructions_md.is_file());
         assert!(bundle.mcp_json.is_file());
         assert!(paths::bundle_version_file().is_file());
+        // present_artifact MCP server 应解包,mcp.json 注册且占位符替换成绝对路径
+        assert!(
+            paths::bundle_present_artifact_server().is_file(),
+            "present_artifact server 脚本应被解包"
+        );
+        let mcp = std::fs::read_to_string(&bundle.mcp_json).unwrap();
+        assert!(
+            mcp.contains("present_artifact_server.py"),
+            "mcp.json 应注册 present server 的绝对路径"
+        );
+        assert!(
+            !mcp.contains("{{PINVOU3_PRESENT_SERVER}}"),
+            "mcp.json 的 server 路径占位符应被替换"
+        );
         // pinvou-review 内置 skills 应被写出。
         assert!(
             bundle.skills_dir.join("pinvou-review-plan/SKILL.md").is_file(),

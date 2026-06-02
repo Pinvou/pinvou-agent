@@ -21,6 +21,7 @@
 | 诊断 | `diagnostics` |
 | 撤销 | `revert_turn` |
 | 交互 | `request_user_input` (前端气泡选项) |
+| 展示 | `mcp_pinvou_present_artifact` (产出成品后弹可点击成品卡给客户,见 §4) |
 | 计划 | `update_plan` (Plan 模式) |
 | 视觉 | `image_analyze` (Qwen3.6 有视觉,读 workspace 相对路径图) |
 
@@ -73,6 +74,7 @@
 - `append_file` 只能追加到文件尾,要替换中间用 `edit_file`
 - 用户明确说"在原位置改"才动用户原路径
 - 新对话不要 `list_dir` 上层确认 — workspace 就是空的
+- **产出给客户看的成品后调 `mcp_pinvou_present_artifact`**: html / markdown / 图片等单文件作品写完,立刻调它(传绝对 `path` + 一眼看懂的中文 `title`),聊天区弹成品卡客户点一下就能打开。**迭代/修复后重写了成品,也再调一次**让客户看到更新版。写中间文件 / 配置 / 脚本 / 内部处理**不要**调。
 
 ## 5. 禁令
 
