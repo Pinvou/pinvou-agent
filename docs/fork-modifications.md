@@ -17,6 +17,26 @@
 
 ---
 
+## 🔄 v0.8.49 同步后整理 (2026-06-02, merge `31adba22`,submodule HEAD `2267f53c`)
+
+上游 v0.8.47→v0.8.49 同步 **367 commit**。冲突 6 文件 16 标记,无困难冲突。drift 从 v0.8.47 基线 +2127 降到 **+1796 / 40 文件**(6 个 PR 被 harvest)。
+
+**✅ 上游已 harvest(fork 版作废,merge 时取上游侧)**:
+- 我们提的 6 个 PR 全部合入 v0.8.49:#2245 bing decode、#2311 InstructionSource、#2313 Tier5、#2314 environment-volatile、#2354 subagent stop-on-failure、#2355 fetch_url fake-ip。
+- **prompt override hook**:上游自己实现并扩展(我们 PR #2356,上游扩成 10 个 `set_*_override`,签名变 `Result<(), String>`)。fork submodule 侧取上游版,**app 层 install_prompt_overrides 适配新签名**(`let _ =` 忽略幂等重复 set 的 Err)。
+- #40 environment block 移 volatile:上游 harvest,fork-guard 指纹撤除。
+
+**⚠️ 本次 merge 暴露/踩的坑**:
+- **`--theirs` 误覆盖**:解 subagent/mod.rs 单点冲突时对整文件取了上游版,冲掉 4 个不在冲突区的 fork-distinct patch(#1 MAX_STEPS=20 / #2 ELAPSED=300 / #4 resolve_agent_ref 截断 / #7 tool_agent_route 继承父 model)。靠 fork-guard 指纹层抓出,逐个重施。**教训:整文件 `--theirs` 危险,fork-distinct 文件必须逐 hunk 解。**
+- **lib.rs export 维护成本**:上游新增 7 模块需手动补 `pub mod`(purge/slop_ledger/workspace_discovery/shell_dispatcher/prompt_zones/session_failure_classifier + 其一);`acp_server` 依赖 bin 专属 `resolve_cli_auto_route` 不能进 lib。
+- **EngineConfig/Op 新字段**:v0.8.49 加 `allowed_tools`/`tools`(EngineConfig)、`allowed_tools`(Op::SendMessage)、`tool_catalog`/`base_url`(Event::TurnComplete)。bridge 透传 default,engine.rs 事件解构用 `..` 忽略。
+- **Skill{phases,demo} 撞车**:v0.8.49 在 runtime_api.rs 测试新增 Skill{} 构造,缺 fork 的 phase/demo 字段 → lib test 编译失败,补默认值。
+- **app override 曾被发版误删**:`e702a02`(同事发版)为过 build 删了整套 app override,本次 sync 一并恢复。详见父仓 commit `7c813b8`。
+
+**✅ fork-distinct patch 全部验证存活**:fork-guard 全过(指纹层 0 缺失 + codewhale-tui 12 测试 + pinvou3-tauri 7 测试)。子 agent 预警的语义风险点(tool_catalog blocklist / skills_dir union / file.rs 64KB / tool_agent_route)均由对应 forkguard_ 测试守住通过。
+
+---
+
 ## 🔄 v0.8.47 同步后整理 (2026-05-27, merge `44844fa6`)
 
 上游 `origin/main` 同步 123 commit (v0.8.45→v0.8.47)。逐 patch 验证存活,结论:
@@ -323,4 +343,4 @@
 
 ---
 
-最后更新: 2026-05-31(上游大批合入 #2245/#2311/#2313/#2314/#2354/#2355,OPEN 仅剩 #2356;PR 状态见 fork-policy.md §8)
+最后更新: 2026-06-02(v0.8.49 sync 完成,merge `31adba22`;6 PR 全 harvest + override hook 上游自带;详见顶部 v0.8.49 章节)

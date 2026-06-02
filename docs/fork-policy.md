@@ -7,7 +7,7 @@
 ## 0. 现状
 
 - DeepSeek-TUI 是 `h3c-hexin/DeepSeek-TUI` fork（submodule，`pinvou3-patches` 分支）
-- 当前 fork drift 约 **~990 行**（v0.8.46 基线，2026-05-28 起步状态）
+- 当前 fork drift 约 **+1796 / -322 行,40 文件**（v0.8.49 基线,2026-06-02 sync 后;含 prompt override 已移 app 层不计入此数）。上一基线 v0.8.47 时为 +2127,因 6 个 PR 被上游 harvest 而下降
 - 已超出原 CLAUDE.md "≤50 行" 约定 — **本文件正式修订该约束**
 - 接受"重 fork"路线，靠工程化（指纹 + 测试 + 文档）控制维护成本
 
@@ -187,9 +187,9 @@ diff /tmp/pre-sync-prompt.txt /tmp/post-sync-prompt.txt
 
 **🟡 OPEN（等上游 review/merge）**
 
-| PR | 内容 |
-|---|---|
-| **#2356** | prompt override OnceLock hook（base/locale/authority，2026-05-29 提，#42 配套） |
+- (无)
+
+> **#2356** prompt override OnceLock hook:v0.8.49 上游**已自行实现并扩展**(10 个 `set_*_override`,签名 `Result<(), String>`)。我们 PR 本身或被采纳或被独立实现,无论哪种 fork 侧已取上游版,app 层 install_prompt_overrides 适配新签名。可关闭跟进。
 
 **❌ CLOSED（不再跟进）**
 
