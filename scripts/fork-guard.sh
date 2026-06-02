@@ -51,7 +51,8 @@ fingerprints=(
   "#36 |Brother Whale preamble 已删         |pinvou3-app/src-tauri/resources/bundle/base.md|running inside pinvou3"
   "#37 |LOCALE_PREAMBLE_ZH_HANS pinvou3 brand|pinvou3-app/src-tauri/src/bridge/bundle.rs|你正在 pinvou3 中运行"
   "#38 |AUTHORITY_RECAP pinvou3 brand       |pinvou3-app/src-tauri/src/bridge/bundle.rs|Constitution of pinvou3 (Articles I-VII)"
-  "#40 |environment block 移到 volatile 下  |DeepSeek-TUI/crates/tui/src/prompts.rs|6 (was 2.25). Environment block"
+  # #40 environment block 移 volatile 下:v0.8.49 已被上游 harvest(PR #2314 合入),
+  # 不再是 fork-distinct patch,指纹撤除(功能由上游自身保证)。
   "#41 |skill 路径只剩 ~/.agents/skills    |DeepSeek-TUI/crates/tui/src/skills/mod.rs|patch #41): 砍掉底座的 10 路径扫描清单"
   "    |phase tracking 弱化(dormant)       |DeepSeek-TUI/crates/tui/src/skills/mod.rs|This section is dormant by default"
   "    |phase tracking 反指引(不要声明不适用)|DeepSeek-TUI/crates/tui/src/skills/mod.rs|Don't announce that a phased skill is"

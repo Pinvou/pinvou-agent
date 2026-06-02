@@ -19,6 +19,45 @@ pub const BUNDLE_VERSION: &str = concat!("0.5-", env!("BUNDLE_INSTRUCTIONS_HASH"
 /// pinvou3 内置的 instructions.md（Qwen3.6 适配 prompt），编译时内嵌。
 pub const INSTRUCTIONS_MD: &str = include_str!("../../resources/bundle/instructions.md");
 
+/// pinvou3 版 base prompt（Constitution / 工具纪律 / embedder-aware / 删 RLM·Toolbox·V4），
+/// 编译期内嵌。通过底座 `prompts::set_base_prompt_override` 注入，替换底座的上游
+/// `BASE_PROMPT`。这样 pinvou3 的 prompt 定制活在 app,DeepSeek-TUI submodule 的
+/// base.md 回退上游原文(fork drift 归零)。见 docs/base-prompt-override-阶段2.md。
+pub const BASE_PROMPT_MD: &str = include_str!("../../resources/bundle/base.md");
+
+/// pinvou3 版简体中文 locale 前导段（替换底座 `LOCALE_PREAMBLE_ZH_HANS`，仅品牌词
+/// pinvou3 与上游 codewhale 不同）。
+pub const LOCALE_PREAMBLE_ZH_HANS: &str = "## 语言要求\n\n\
+你正在 pinvou3 中运行。无论任务上下文（代码、错误日志、文件名）\
+是英文，无论系统提示的其余部分是英文，你都必须用简体中文进行 \
+`reasoning_content`（内部思考）和最终回复。代码、文件路径、工具名称\
+（例如 `read_file`、`exec_shell`）、环境变量、命令行参数和 URL \
+保持原样 —— 只有自然语言散文要切换到简体中文。\n\n\
+如果用户在会话中切换到另一种语言，从下一轮开始跟随切换。\
+如果用户明确要求（例如 \"think in English\"），则覆盖此规则。";
+
+/// pinvou3 版 Authority Recap（替换底座 `AUTHORITY_RECAP`，仅品牌词不同）。
+pub const AUTHORITY_RECAP: &str = "\
+## Authority Recap
+
+The Constitution of pinvou3 (Articles I-VII) governs your behavior.
+Tier 1 rules — truthfulness, user agency, tool-use mandate, verification
+duty — are non-negotiable. The user's next message is the highest
+directive within Constitutional bounds. Personality, memory, and handoff
+context are subordinate to the Constitution, the Statutes, and the user's
+current request. When in doubt, consult Article VII: The Hierarchy of Law.";
+
+/// 把 pinvou3 版 prompt 文案注入底座的 prompt 合成层。底座用 `OnceLock`,首次
+/// set 生效、后续返回 Err(rejected) —— 幂等,可在每个 `Bridge::boot` 入口重复调用
+/// (忽略后续 Err)。必须在任何 engine spawn 前调用(boot 早于 EnginePool 装配)。
+/// 上游 v0.8.49 起 `set_*_override` 返回 `Result<(), String>`(首次 Ok,重复 Err)。
+pub fn install_prompt_overrides() {
+    let _ = deepseek_tui::prompts::set_base_prompt_override(BASE_PROMPT_MD.to_string());
+    let _ =
+        deepseek_tui::prompts::set_locale_preamble_zh_hans_override(LOCALE_PREAMBLE_ZH_HANS.to_string());
+    let _ = deepseek_tui::prompts::set_authority_recap_override(AUTHORITY_RECAP.to_string());
+}
+
 /// 内置 MCP 默认配置——暂时空。`McpPool::from_config_path` 接受 `{"servers":{}}`。
 pub const DEFAULT_MCP_JSON: &str = "{\n  \"servers\": {}\n}\n";
 

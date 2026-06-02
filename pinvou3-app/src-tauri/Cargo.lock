@@ -1032,7 +1032,7 @@ checksum = "e9b18233253483ce2f65329a24072ec414db782531bdbb7d0bbc4bd2ce6b7e21"
 
 [[package]]
 name = "codewhale-config"
-version = "0.8.46"
+version = "0.8.49"
 dependencies = [
  "anyhow",
  "codewhale-secrets",
@@ -1045,15 +1045,26 @@ dependencies = [
 
 [[package]]
 name = "codewhale-protocol"
-version = "0.8.46"
+version = "0.8.49"
 dependencies = [
  "serde",
  "serde_json",
 ]
 
 [[package]]
+name = "codewhale-release"
+version = "0.8.49"
+dependencies = [
+ "anyhow",
+ "reqwest 0.13.3",
+ "semver",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "codewhale-secrets"
-version = "0.8.46"
+version = "0.8.49"
 dependencies = [
  "dirs",
  "keyring",
@@ -1065,20 +1076,21 @@ dependencies = [
 
 [[package]]
 name = "codewhale-tools"
-version = "0.8.46"
+version = "0.8.49"
 dependencies = [
  "anyhow",
  "async-trait",
  "codewhale-protocol",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
  "uuid",
 ]
 
 [[package]]
 name = "codewhale-tui"
-version = "0.8.46"
+version = "0.8.49"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1090,6 +1102,8 @@ dependencies = [
  "clap",
  "clap_complete",
  "codewhale-config",
+ "codewhale-protocol",
+ "codewhale-release",
  "codewhale-secrets",
  "codewhale-tools",
  "colored",
@@ -1107,6 +1121,7 @@ dependencies = [
  "objc2-foundation",
  "pdf-extract",
  "portable-pty",
+ "qrcode",
  "ratatui",
  "regex",
  "reqwest 0.13.3",
@@ -4871,6 +4886,12 @@ name = "pxfm"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e0c5ccf5294c6ccd63a74f1565028353830a9c2f5eb0c682c355c471726a6e3f"
+
+[[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
 
 [[package]]
 name = "quick-error"

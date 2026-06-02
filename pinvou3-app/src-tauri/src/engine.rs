@@ -399,6 +399,8 @@ fn spawn_event_forwarder(
                     usage,
                     status,
                     error,
+                    // v0.8.49 上游新增 tool_catalog / base_url(调试/审计用),pinvou3 不消费
+                    ..
                 } => {
                     // 单独发 usage 给前端 token 进度条
                     let _ = app.emit(
