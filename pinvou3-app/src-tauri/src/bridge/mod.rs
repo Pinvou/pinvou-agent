@@ -224,11 +224,93 @@ impl Pinvou3Bridge {
         out
     }
 
-    pub fn model(&self) -> String {
+    /// 当前 active provider 标识（传给底座 `DtConfig.provider`）。
+    pub fn provider(&self) -> String {
+        if let Ok(v) = std::env::var("DEEPSEEK_PROVIDER") {
+            return v;
+        }
         match self.prefs.advanced.model_preset.unwrap_or_default() {
-            ModelPreset::LocalVllm => {
-                std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| LOCAL_VLLM_MODEL.into())
-            }
+            ModelPreset::LocalVllm => "vllm".to_string(),
+            ModelPreset::Deepseek => "deepseek".to_string(),
+            ModelPreset::Kimi => "moonshot".to_string(),
+            ModelPreset::OpenaiCompatible
+            | ModelPreset::Qwen
+            | ModelPreset::Doubao
+            | ModelPreset::Minimax
+            | ModelPreset::Glm
+            | ModelPreset::Mimo => "openai".to_string(),
+        }
+    }
+
+    /// 当前 active 模型名（传给底座 `DtConfig.default_text_model` / `EngineConfig.model`）。
+    /// 环境变量 > settings.custom_model_name > 厂商默认值。
+    pub fn model(&self) -> String {
+        if let Ok(v) = std::env::var("DEEPSEEK_MODEL") {
+            return v;
+        }
+        self.prefs
+            .advanced
+            .custom_model_name
+            .clone()
+            .unwrap_or_else(|| self.default_model_for_preset())
+    }
+
+    /// 各厂商默认模型名。
+    fn default_model_for_preset(&self) -> String {
+        match self.prefs.advanced.model_preset.unwrap_or_default() {
+            ModelPreset::LocalVllm => LOCAL_VLLM_MODEL.into(),
+            ModelPreset::Deepseek => "deepseek-v4-pro".to_string(),
+            ModelPreset::Kimi => "kimi-k2.6".to_string(),
+            ModelPreset::OpenaiCompatible => "gpt-4o".to_string(),
+            ModelPreset::Qwen => "qwen-max".to_string(),
+            ModelPreset::Doubao => "doubao-pro-256k".to_string(),
+            ModelPreset::Minimax => "abab6.5s-chat".to_string(),
+            ModelPreset::Glm => "glm-4-plus".to_string(),
+            ModelPreset::Mimo => "mimo-v2-flash".to_string(),
+        }
+    }
+
+    /// 当前 active base_url（传给底座 `DtConfig.providers.*.base_url`）。
+    /// 环境变量 > settings.custom_base_url > 厂商默认值。
+    pub fn base_url(&self) -> String {
+        if let Ok(v) = std::env::var("DEEPSEEK_BASE_URL") {
+            return v;
+        }
+        self.prefs
+            .advanced
+            .custom_base_url
+            .clone()
+            .unwrap_or_else(|| self.default_base_url_for_preset())
+    }
+
+    /// 各厂商默认 API base URL。
+    fn default_base_url_for_preset(&self) -> String {
+        match self.prefs.advanced.model_preset.unwrap_or_default() {
+            ModelPreset::LocalVllm => LOCAL_VLLM_BASE_URL.into(),
+            ModelPreset::Deepseek => "https://api.deepseek.com/beta".to_string(),
+            ModelPreset::Kimi => "https://api.moonshot.cn/v1".to_string(),
+            ModelPreset::OpenaiCompatible => "https://api.openai.com/v1".to_string(),
+            ModelPreset::Qwen => "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
+            ModelPreset::Doubao => "https://ark.cn-beijing.volces.com/api/v3".to_string(),
+            ModelPreset::Minimax => "https://api.minimax.chat/v1".to_string(),
+            ModelPreset::Glm => "https://open.bigmodel.cn/api/paas/v4".to_string(),
+            ModelPreset::Mimo => "https://api.xiaomimimo.com/v1".to_string(),
+        }
+    }
+
+    /// 当前 active api_key（传给底座 `DtConfig.api_key`）。
+    pub fn api_key(&self) -> String {
+        if let Ok(v) = std::env::var("DEEPSEEK_API_KEY") {
+            return v;
+        }
+        match self.prefs.advanced.model_preset.unwrap_or_default() {
+            ModelPreset::LocalVllm => LOCAL_VLLM_API_KEY.into(),
+            _ => self
+                .prefs
+                .advanced
+                .custom_api_key
+                .clone()
+                .unwrap_or_default(),
         }
     }
 
@@ -345,18 +427,12 @@ impl Pinvou3Bridge {
             strict_tool_mode: false,
             // pinvou3 中文用户已经是中文语境，不走 /translate 路径
             translation_enabled: false,
-            // Qwen3.6 实测支持视觉(2026-05-28 base64 image_url 识图通过),
-            // image_analyze 工具复用同一 vllm 端点/模型/key,无需独立 vision 服务。
+            // 视觉配置跟随主模型端点：本地 vLLM 复用同一端点；
+            // 第三方 provider 也复用（若不支持 vision，底座会优雅失败）。
             vision_config: Some(deepseek_tui::config::VisionModelConfig {
                 model: self.model(),
-                api_key: Some(
-                    std::env::var("DEEPSEEK_API_KEY")
-                        .unwrap_or_else(|_| LOCAL_VLLM_API_KEY.to_string()),
-                ),
-                base_url: Some(
-                    std::env::var("DEEPSEEK_BASE_URL")
-                        .unwrap_or_else(|_| LOCAL_VLLM_BASE_URL.to_string()),
-                ),
+                api_key: Some(self.api_key()),
+                base_url: Some(self.base_url()),
             }),
             // [pinvou3-fork] 上游默认 120s 是为 DeepSeek 云端 API 设计。
             // 本地 Qwen3.6 vLLM 慢推理下单 step 30-90s 很常见,120s 频繁误杀子 agent。
@@ -471,23 +547,47 @@ impl Pinvou3Bridge {
         cfg
     }
 
-    /// 构造 deepseek-tui 顶层 [`DtConfig`]：锁定本地 vLLM + Qwen3.6 +
-    /// 注入敏感目录拦截 hook。
+    /// 构造 deepseek-tui 顶层 [`DtConfig`]：按 `ModelPreset` 动态路由 provider /
+    /// model / base_url / api_key，注入敏感目录拦截 hook。
     /// 环境变量优先（兼容 run-dev.sh 里既有的 `DEEPSEEK_*` 设置）。
     pub fn build_dt_config(&self) -> DtConfig {
         let mut cfg = DtConfig::default();
-        cfg.provider =
-            Some(std::env::var("DEEPSEEK_PROVIDER").unwrap_or_else(|_| "vllm".to_string()));
-        cfg.api_key = Some(
-            std::env::var("DEEPSEEK_API_KEY").unwrap_or_else(|_| LOCAL_VLLM_API_KEY.to_string()),
-        );
-        let base_url =
-            std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| LOCAL_VLLM_BASE_URL.to_string());
+        let provider = self.provider();
+        cfg.provider = Some(provider.clone());
+        let api_key = self.api_key();
+        cfg.api_key = Some(api_key.clone());
+        let base_url = self.base_url();
         let providers = cfg.providers.get_or_insert_with(ProvidersConfig::default);
-        providers.vllm.base_url = Some(base_url);
+        // 按 provider 写对应 provider 配置的 base_url + api_key
+        match provider.as_str() {
+            "vllm" => {
+                providers.vllm.base_url = Some(base_url);
+                providers.vllm.api_key = Some(api_key);
+            }
+            "openai" => {
+                providers.openai.base_url = Some(base_url);
+                providers.openai.api_key = Some(api_key);
+            }
+            "deepseek" => {
+                providers.deepseek.base_url = Some(base_url);
+                providers.deepseek.api_key = Some(api_key);
+            }
+            "moonshot" => {
+                providers.moonshot.base_url = Some(base_url);
+                providers.moonshot.api_key = Some(api_key);
+            }
+            _ => {
+                providers.vllm.base_url = Some(base_url);
+                providers.vllm.api_key = Some(api_key);
+            }
+        }
         cfg.default_text_model = Some(self.model());
-        // Qwen3.6 thinking 必须关，否则 SSE idle timeout
-        cfg.reasoning_effort = Some("off".to_string());
+        // 本地 vLLM (Qwen3.6) thinking 必须关，否则 SSE idle timeout；
+        // 云端 provider 保留底座默认（用户可在 settings.toml 中覆盖）。
+        let preset = self.prefs.advanced.model_preset.unwrap_or_default();
+        if matches!(preset, ModelPreset::LocalVllm) {
+            cfg.reasoning_effort = Some("off".to_string());
+        }
         cfg.hooks = Some(self.build_hooks_config());
         cfg
     }
@@ -560,7 +660,16 @@ impl Pinvou3Bridge {
             mode,
             model: self.model(),
             goal_objective: None,
-            reasoning_effort: Some("off".to_string()),
+            // 本地 vLLM (Qwen3.6) thinking 必须关，否则 SSE idle timeout；
+            // 云端 provider 保留底座默认（传 None 让底座自行决定）。
+            reasoning_effort: {
+                let preset = self.prefs.advanced.model_preset.unwrap_or_default();
+                if matches!(preset, ModelPreset::LocalVllm) {
+                    Some("off".to_string())
+                } else {
+                    None
+                }
+            },
             reasoning_effort_auto: false,
             auto_model: false,
             allow_shell,
@@ -1007,6 +1116,88 @@ mod tests {
             "session A 的 inline content 必须含 session_id"
         );
         assert!(content_b.contains(b));
+    }
+
+    /// OpenaiCompatible preset 必须让用户提供的模型名生效，而不是回退到默认。
+    #[test]
+    fn openai_compatible_uses_user_provided_name() {
+        let mut bridge = fixture_bridge();
+        bridge.prefs.advanced.model_preset = Some(ModelPreset::OpenaiCompatible);
+        bridge.prefs.advanced.custom_model_name = Some("my-custom-model".to_string());
+        assert_eq!(bridge.model(), "my-custom-model");
+        assert_eq!(bridge.provider(), "openai");
+    }
+
+    /// OpenaiCompatible preset 必须透传任意模型名（如 gpt-4o）。
+    #[test]
+    fn openai_compatible_passthrough_model_name() {
+        let mut bridge = fixture_bridge();
+        bridge.prefs.advanced.model_preset = Some(ModelPreset::OpenaiCompatible);
+        bridge.prefs.advanced.custom_model_name = Some("gpt-4o".to_string());
+        bridge.prefs.advanced.custom_base_url = Some("https://api.openai.com/v1".to_string());
+        bridge.prefs.advanced.custom_api_key = Some("sk-xxx".to_string());
+        assert_eq!(bridge.model(), "gpt-4o");
+        assert_eq!(bridge.provider(), "openai");
+        assert_eq!(bridge.base_url(), "https://api.openai.com/v1");
+        assert_eq!(bridge.api_key(), "sk-xxx");
+    }
+
+    /// env 优先级始终高于 settings.json（兼容 run-dev.sh / harness）。
+    #[test]
+    fn env_always_overrides_settings() {
+        let mut bridge = fixture_bridge();
+        bridge.prefs.advanced.model_preset = Some(ModelPreset::OpenaiCompatible);
+        bridge.prefs.advanced.custom_model_name = Some("gpt-4o".to_string());
+        std::env::set_var("DEEPSEEK_MODEL", "env-model");
+        std::env::set_var("DEEPSEEK_PROVIDER", "env-provider");
+        std::env::set_var("DEEPSEEK_BASE_URL", "http://env:8000/v1");
+        std::env::set_var("DEEPSEEK_API_KEY", "env-key");
+        assert_eq!(bridge.model(), "env-model");
+        assert_eq!(bridge.provider(), "env-provider");
+        assert_eq!(bridge.base_url(), "http://env:8000/v1");
+        assert_eq!(bridge.api_key(), "env-key");
+        std::env::remove_var("DEEPSEEK_MODEL");
+        std::env::remove_var("DEEPSEEK_PROVIDER");
+        std::env::remove_var("DEEPSEEK_BASE_URL");
+        std::env::remove_var("DEEPSEEK_API_KEY");
+    }
+
+    /// DtConfig 在 OpenaiCompatible 模式下不应强制 reasoning_effort=off。
+    #[test]
+    fn remote_provider_keeps_default_reasoning_effort() {
+        let mut bridge = fixture_bridge();
+        bridge.prefs.advanced.model_preset = Some(ModelPreset::OpenaiCompatible);
+        bridge.prefs.advanced.custom_model_name = Some("gpt-4o".to_string());
+        let cfg = bridge.build_dt_config();
+        assert_eq!(cfg.reasoning_effort, None);
+    }
+
+    /// Deepseek preset 应返回正确的默认 URL 和模型。
+    #[test]
+    fn deepseek_preset_defaults() {
+        let mut bridge = fixture_bridge();
+        bridge.prefs.advanced.model_preset = Some(ModelPreset::Deepseek);
+        assert_eq!(bridge.provider(), "deepseek");
+        assert_eq!(bridge.model(), "deepseek-v4-pro");
+        assert_eq!(bridge.base_url(), "https://api.deepseek.com/beta");
+    }
+
+    /// Qwen preset 应返回正确的默认 URL 和模型。
+    #[test]
+    fn qwen_preset_defaults() {
+        let mut bridge = fixture_bridge();
+        bridge.prefs.advanced.model_preset = Some(ModelPreset::Qwen);
+        assert_eq!(bridge.provider(), "openai");
+        assert_eq!(bridge.model(), "qwen-max");
+        assert_eq!(bridge.base_url(), "https://dashscope.aliyuncs.com/compatible-mode/v1");
+    }
+
+    /// DtConfig 在 LocalVllm 模式下必须保持 reasoning_effort=off（防 SSE timeout）。
+    #[test]
+    fn local_vllm_forces_reasoning_effort_off() {
+        let bridge = fixture_bridge();
+        let cfg = bridge.build_dt_config();
+        assert_eq!(cfg.reasoning_effort.as_deref(), Some("off"));
     }
 
 }

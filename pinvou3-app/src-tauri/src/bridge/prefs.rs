@@ -56,7 +56,24 @@ impl Language {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelPreset {
+    /// 默认本地 vLLM：qwen36_35b_256k @ 127.0.0.1:8000/v1
     LocalVllm,
+    /// DeepSeek 官方 API
+    Deepseek,
+    /// Kimi (Moonshot)
+    Kimi,
+    /// OpenAI 兼容 API（OpenAI 官方 / 自托管 / 代理 / 其他 OpenAI 兼容厂商）
+    OpenaiCompatible,
+    /// 通义千问 (Qwen)
+    Qwen,
+    /// 豆包 (火山方舟)
+    Doubao,
+    /// MiniMax
+    Minimax,
+    /// 智谱 GLM
+    Glm,
+    /// 小米 MiMo
+    Mimo,
 }
 impl Default for ModelPreset {
     fn default() -> Self {
@@ -102,6 +119,12 @@ pub struct AdvancedPrefs {
     pub max_output_tokens: Option<u32>,
     pub max_subagents: Option<usize>,
     pub max_steps: Option<u32>,
+    /// 自定义模型 ID（CustomLocal / Remote* 生效）
+    pub custom_model_name: Option<String>,
+    /// 自定义 API base URL（CustomLocal / Remote* 生效）
+    pub custom_base_url: Option<String>,
+    /// 自定义 API key（CustomLocal / Remote* 生效）
+    pub custom_api_key: Option<String>,
 }
 
 /// 用户偏好。`settings.json` 顶层结构。

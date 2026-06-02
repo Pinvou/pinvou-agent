@@ -215,6 +215,16 @@ pub async fn update_settings(prefs: UserPrefs) -> Result<(), String> {
         .map_err(|e| format!("save settings failed: {e:?}"))
 }
 
+/// 保存设置后立即重启应用（模型/后端切换后需要重启才能生效）。
+#[tauri::command]
+pub async fn save_settings_and_restart(prefs: UserPrefs, app: tauri::AppHandle) -> Result<(), String> {
+    prefs
+        .save()
+        .map_err(|e| format!("save settings failed: {e:?}"))?;
+    eprintln!("[pinvou3-app] settings saved, restarting app...");
+    app.restart();
+}
+
 /// 清当前会话历史。
 ///
 /// **当前 MVP 限制**：仅返回 Ok 让前端清显示；后端 EngineHandle 仍持

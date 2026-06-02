@@ -1224,6 +1224,14 @@
     }
     notify();
   }
+  async function saveSettingsAndRestart(prefs) {
+    state.settings = prefs;
+    try {
+      await invoke("save_settings_and_restart", { prefs: prefs });
+    } catch (e) {
+      console.warn("save settings and restart failed", e);
+    }
+  }
 
   // ── Super permission ─────────────────────────────────────────────
   async function refreshSuperPerm() {
@@ -1794,6 +1802,7 @@
     startMonitorPolling: startMonitorPolling,
     stopMonitorPolling: stopMonitorPolling,
     saveSettings: saveSettings,
+    saveSettingsAndRestart: saveSettingsAndRestart,
     toggleSuperPerm: toggleSuperPerm,
     renderMarkdown: renderMarkdown,
     // Plan/YOLO
