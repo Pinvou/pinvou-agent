@@ -120,6 +120,7 @@ pub fn run() {
             commands::chat,
             commands::get_settings,
             commands::update_settings,
+            commands::save_settings_and_restart,
             commands::clear_session,
             commands::get_monitor_snapshot,
             commands::get_backend_status,

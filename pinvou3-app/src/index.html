@@ -123,6 +123,23 @@
         searchGetKey: '获取你自己的 key',
         searchGetKeyMetasoSteps: '免费 · 微信/手机扫码 1 分钟注册 · 个人独立配额',
         searchGetKeyBochaSteps: '免费 · 注册后在控制台领 sk- 开头的 key',
+        modelBackend: '模型与后端',
+        modelBackendDesc: '选择本地 vLLM 或第三方 API 作为推理后端',
+        modelPreset: '模型来源',
+        modelPresetLocalVllm: '本地 vLLM（默认）',
+        modelPresetDeepseek: 'DeepSeek',
+        modelPresetKimi: 'Kimi',
+        modelPresetOpenaiCompatible: 'OpenAI 兼容',
+        modelPresetQwen: '通义千问',
+        modelPresetDoubao: '豆包',
+        modelPresetMinimax: 'MiniMax',
+        modelPresetGlm: '智谱 GLM',
+        modelPresetMimo: '小米 MiMo',
+        customModelName: '模型名称',
+        customBaseUrl: 'API 地址',
+        customApiKey: 'API Key',
+        confirmAndRestart: '确认并重启应用',
+        modelRestartHint: '修改后点击「确认并重启应用」生效',
         sysPerm: '系统权限', sudo: '高级执行权限 (Sudo)', sudoDesc: '允许助手执行环境配置等高级指令。',
         chatGreeting: '你好，今天想聊点什么？', artifacts: '产物与代码', placeholder: '询问 PINVOU 或输入指令', disclaimer: 'PINVOU 可能会生成不准确的信息，请仔细核实。',
         searchPlaceholder: 'Search chats'
@@ -146,6 +163,23 @@
         searchGetKey: 'Get your own key',
         searchGetKeyMetasoSteps: 'Free · 1-min QR-code sign-up (WeChat/phone) · Personal quota',
         searchGetKeyBochaSteps: 'Free · Get sk- prefixed key from console after sign-up',
+        modelBackend: 'Model & Backend',
+        modelBackendDesc: 'Choose local vLLM or a third-party API for inference',
+        modelPreset: 'Model Source',
+        modelPresetLocalVllm: 'Local vLLM (default)',
+        modelPresetDeepseek: 'DeepSeek',
+        modelPresetKimi: 'Kimi',
+        modelPresetOpenaiCompatible: 'OpenAI Compatible',
+        modelPresetQwen: 'Tongyi Qianwen',
+        modelPresetDoubao: 'Doubao',
+        modelPresetMinimax: 'MiniMax',
+        modelPresetGlm: 'Zhipu GLM',
+        modelPresetMimo: 'Xiaomi MiMo',
+        customModelName: 'Model Name',
+        customBaseUrl: 'API Base URL',
+        customApiKey: 'API Key',
+        confirmAndRestart: 'Confirm & Restart App',
+        modelRestartHint: 'Click "Confirm & Restart App" to apply changes',
         sysPerm: 'System Permissions', sudo: 'Sudo Access', sudoDesc: 'Allow assistant to run high-privilege commands.',
         chatGreeting: "Hi, what's good?", artifacts: 'Artifacts', placeholder: 'Ask PINVOU or enter a command', disclaimer: 'PINVOU may display inaccurate info, so double-check.',
         searchPlaceholder: 'Search chats'
@@ -214,6 +248,12 @@
       // bs.settings 加载后 useEffect 同步进来。
       const [searchProvider, setSearchProvider] = useState('bing');
       const [searchApiKey, setSearchApiKey] = useState('');
+      // 模型配置（动态适配）——草稿模式，确认后才保存
+      const [modelPreset, setModelPreset] = useState('local_vllm');
+      const [customModelName, setCustomModelName] = useState('');
+      const [customBaseUrl, setCustomBaseUrl] = useState('');
+      const [customApiKey, setCustomApiKey] = useState('');
+      const modelConfigInitRef = useRef(false);
       const [isSidebarOpen, setIsSidebarOpen] = useState(false);
       const [chatPrefill, setChatPrefill] = useState('');
 
@@ -241,6 +281,16 @@
           if (sp !== searchProvider) setSearchProvider(sp);
           const k = bs.settings.search.api_key || '';
           if (k !== searchApiKey) setSearchApiKey(k);
+        }
+        // 模型配置：只在第一次从 bs.settings 加载初始值，后续走草稿模式（确认后才保存），
+        // 避免 useEffect 把未保存的本地修改覆盖回 disk 旧值。
+        if (!modelConfigInitRef.current && bs.settings && bs.settings.advanced) {
+          const adv = bs.settings.advanced;
+          setModelPreset(adv.model_preset || 'local_vllm');
+          setCustomModelName(adv.custom_model_name || '');
+          setCustomBaseUrl(adv.custom_base_url || '');
+          setCustomApiKey(adv.custom_api_key || '');
+          modelConfigInitRef.current = true;
         }
       }, [bs]);
 
@@ -291,6 +341,10 @@
             provider: searchProvider,
             api_key: searchApiKey ? searchApiKey : null,
           },
+          advanced: {
+            ...buildAdvancedOverrides({}),
+            ...(overrides && overrides.advanced ? overrides.advanced : {}),
+          },
           ...overrides,
         };
       }
@@ -324,6 +378,58 @@
         setLanguage(lang);
         if (bridge.available) {
           bridge.saveSettings(buildFullSettings({ language: lang === 'zh' ? 'zh-Hans' : 'en' }));
+        }
+      }
+
+      function buildAdvancedOverrides(overrides) {
+        return {
+          model_preset: overrides.model_preset !== undefined ? overrides.model_preset : modelPreset,
+          custom_model_name: overrides.custom_model_name !== undefined ? (overrides.custom_model_name || null) : (customModelName || null),
+          custom_base_url: overrides.custom_base_url !== undefined ? (overrides.custom_base_url || null) : (customBaseUrl || null),
+          custom_api_key: overrides.custom_api_key !== undefined ? (overrides.custom_api_key || null) : (customApiKey || null),
+        };
+      }
+
+      // 各厂商默认配置（前端自动填充用，与 bridge/mod.rs 对齐）
+      const PRESET_DEFAULTS = {
+        local_vllm:  { baseUrl: 'http://127.0.0.1:8000/v1',                model: 'qwen36_35b_256k' },
+        deepseek:    { baseUrl: 'https://api.deepseek.com/beta',           model: 'deepseek-v4-pro' },
+        kimi:        { baseUrl: 'https://api.moonshot.cn/v1',              model: 'kimi-k2.6' },
+        openai_compatible: { baseUrl: 'https://api.openai.com/v1',        model: 'gpt-4o' },
+        qwen:        { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-max' },
+        doubao:      { baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-pro-256k' },
+        minimax:     { baseUrl: 'https://api.minimax.chat/v1',            model: 'abab6.5s-chat' },
+        glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-4-plus' },
+        mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2-flash' },
+      };
+
+      // 模型配置改为草稿模式：只更新 state，点击确认后统一保存并重启
+      function handleChangeModelPreset(p) {
+        const defs = PRESET_DEFAULTS[p] || PRESET_DEFAULTS.local_vllm;
+        setModelPreset(p);
+        setCustomBaseUrl(defs.baseUrl);
+        setCustomModelName(defs.model);
+        setCustomApiKey(''); // 切换 provider 清空 api_key，避免跨厂商 key 混用
+      }
+      function handleSetCustomModelName(v) {
+        setCustomModelName(v);
+      }
+      function handleSetCustomBaseUrl(v) {
+        setCustomBaseUrl(v);
+      }
+      function handleSetCustomApiKey(v) {
+        setCustomApiKey(v);
+      }
+      function handleConfirmModelConfig() {
+        if (bridge.available) {
+          bridge.saveSettingsAndRestart(buildFullSettings({
+            advanced: {
+              model_preset: modelPreset,
+              custom_model_name: customModelName || null,
+              custom_base_url: customBaseUrl || null,
+              custom_api_key: customApiKey || null,
+            },
+          }));
         }
       }
 
@@ -465,6 +571,11 @@
                 superPerm={superPerm} setSuperPerm={handleToggleSuperPerm}
                 searchProvider={searchProvider} setSearchProvider={handleSetSearchProvider}
                 searchApiKey={searchApiKey} setSearchApiKey={handleSetSearchApiKey}
+                modelPreset={modelPreset} onChangeModelPreset={handleChangeModelPreset}
+                customModelName={customModelName} setCustomModelName={handleSetCustomModelName}
+                customBaseUrl={customBaseUrl} setCustomBaseUrl={handleSetCustomBaseUrl}
+                customApiKey={customApiKey} setCustomApiKey={handleSetCustomApiKey}
+                onConfirmModelConfig={handleConfirmModelConfig}
                 t={t}
               />
             )}
@@ -689,8 +800,19 @@
     // ==========================================
     // Settings View (Material 3 Style)
     // ==========================================
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, t }) => {
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, modelPreset, onChangeModelPreset, customModelName, setCustomModelName, customBaseUrl, setCustomBaseUrl, customApiKey, setCustomApiKey, onConfirmModelConfig, t }) => {
       const isDark = activeTheme === 'dark';
+      const presetOptions = [
+        { key: 'local_vllm',  label: t.modelPresetLocalVllm },
+        { key: 'deepseek',    label: t.modelPresetDeepseek },
+        { key: 'kimi',        label: t.modelPresetKimi },
+        { key: 'openai_compatible', label: t.modelPresetOpenaiCompatible },
+        { key: 'qwen',        label: t.modelPresetQwen },
+        { key: 'doubao',      label: t.modelPresetDoubao },
+        { key: 'minimax',     label: t.modelPresetMinimax },
+        { key: 'glm',         label: t.modelPresetGlm },
+        { key: 'mimo',        label: t.modelPresetMimo },
+      ];
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
 
@@ -700,6 +822,92 @@
 
           <div className="flex-1 overflow-y-auto px-16 pt-4 pb-20 custom-scrollbar">
             <div className="max-w-[800px] space-y-8">
+
+              <div className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
+                <h2 className="text-[18px] font-medium mb-6">{t.modelBackend}</h2>
+
+                <div className="space-y-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-[16px] block mb-1">{t.modelPreset}</span>
+                      <span className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.modelBackendDesc}</span>
+                    </div>
+                    <div className="relative">
+                      <select
+                        value={modelPreset}
+                        onChange={e => onChangeModelPreset(e.target.value)}
+                        className={`appearance-none px-4 py-2 pr-10 rounded-lg text-[14px] font-medium outline-none transition-colors cursor-pointer ${
+                          isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746] focus:border-[#A8C7FA]'
+                                 : 'bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0]'
+                        }`}
+                      >
+                        {presetOptions.map(opt => (
+                          <option key={opt.key} value={opt.key}>{opt.label}</option>
+                        ))}
+                      </select>
+                      <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
+                        <ChevronDown size={16} className={isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'} />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div>
+                      <span className="text-[16px] block mb-2">{t.customModelName}</span>
+                      <input
+                        type="text"
+                        value={customModelName}
+                        onChange={e => setCustomModelName(e.target.value)}
+                        placeholder={modelPreset === 'local_vllm' ? 'qwen36_35b_256k' : '如: gpt-4o / deepseek-v4-pro'}
+                        className={`w-full px-4 py-2 rounded-lg text-[14px] outline-none transition-colors ${
+                          isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746] focus:border-[#A8C7FA]'
+                                 : 'bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0]'
+                        }`}
+                      />
+                    </div>
+                    <div>
+                      <span className="text-[16px] block mb-2">{t.customBaseUrl}</span>
+                      <input
+                        type="text"
+                        value={customBaseUrl}
+                        onChange={e => setCustomBaseUrl(e.target.value)}
+                        placeholder={modelPreset === 'local_vllm' ? 'http://127.0.0.1:8000/v1' : '如: https://api.openai.com/v1'}
+                        className={`w-full px-4 py-2 rounded-lg text-[14px] outline-none transition-colors ${
+                          isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746] focus:border-[#A8C7FA]'
+                                 : 'bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0]'
+                        }`}
+                      />
+                    </div>
+                    <div>
+                      <span className="text-[16px] block mb-2">{t.customApiKey}</span>
+                      <input
+                        type="password"
+                        value={customApiKey}
+                        onChange={e => setCustomApiKey(e.target.value)}
+                        placeholder={modelPreset === 'local_vllm' ? 'local-no-auth' : 'sk-...'}
+                        className={`w-full px-4 py-2 rounded-lg text-[14px] outline-none transition-colors ${
+                          isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746] focus:border-[#A8C7FA]'
+                                 : 'bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0]'
+                        }`}
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={onConfirmModelConfig}
+                    className={`w-full py-3 rounded-xl text-[15px] font-medium transition-colors ${
+                      isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]'
+                             : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'
+                    }`}
+                  >
+                    {t.confirmAndRestart}
+                  </button>
+
+                  <span className={`text-[12px] block italic ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
+                    {t.modelRestartHint}
+                  </span>
+                </div>
+              </div>
 
               <div className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
                 <h2 className="text-[18px] font-medium mb-6">{t.appearance}</h2>

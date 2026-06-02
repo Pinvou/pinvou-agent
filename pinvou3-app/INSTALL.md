@@ -36,7 +36,8 @@ vllm serve /opt/models/qwen3.6-35b-a3b-fp8 \
 ```
 
 关键约束：
-- `--served-model-name` **必须** 设为 `qwen36_35b_256k`（或至少包含 `_256k`），否则底座无法识别长上下文能力。
+- `--served-model-name` **推荐** 设为 `qwen36_35b_256k`（或至少包含 `_256k`），底座据此派生 256K 上下文窗口与 compaction 阈值。
+- 若使用其他模型名（如 `Qwen2.5-72B-Instruct`），底座也能识别 Qwen 系列并派生 128K 窗口；如仍想获得 256K 阈值，请在模型名中附加 `_256k` 后缀。
 - 若 vLLM 绑在其他端口（如 `8080`），见下节「自定义后端地址」。
 
 ---
@@ -56,9 +57,9 @@ pinvou3
 
 ---
 
-## 4. 自定义后端地址（可选）
+## 4. 自定义后端地址与模型（可选）
 
-若 vLLM 不在本机或绑在其他端口，启动前设置环境变量：
+### 方式 A：环境变量（临时 / 开发调试）
 
 ```bash
 export DEEPSEEK_BASE_URL="http://192.168.1.100:8000/v1"
@@ -66,6 +67,32 @@ export DEEPSEEK_API_KEY="local-no-auth"   # 无鉴权时保持此值
 export DEEPSEEK_MODEL="qwen36_35b_256k"
 pinvou3
 ```
+
+环境变量优先级最高，适合 run-dev.sh 或临时切换。
+
+### 方式 B：`~/.pinvou3/settings.json`（持久化）
+
+手改 `~/.pinvou3/settings.json` 的 `advanced` 字段：
+
+```json
+{
+  "advanced": {
+    "model_preset": "custom_local",
+    "custom_model_name": "my-local-qwen",
+    "custom_base_url": "http://192.168.1.100:8000/v1",
+    "custom_api_key": "local-no-auth"
+  }
+}
+```
+
+支持的 `model_preset`：
+- `local_vllm` — 默认本地 qwen36_35b_256k（无需改配置）
+- `custom_local` — 自定义本地 vLLM 模型名/地址
+- `remote_openai` — OpenAI 官方 / 兼容 API（如 GPT-4o、自托管 proxy）
+- `remote_deepseek` — DeepSeek 官方 API
+- `remote_moonshot` — Moonshot / Kimi
+
+`custom_model_name`、`custom_base_url`、`custom_api_key` 在 `custom_local` 和全部 `remote_*` 模式下生效。
 
 也可写入 `~/.bashrc` 或创建启动脚本持久化。
 
