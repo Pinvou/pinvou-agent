@@ -50,6 +50,38 @@
 
     /* Thinking animation */
     @keyframes spin-braille { 0%{content:"⠋"} 10%{content:"⠙"} 20%{content:"⠹"} 30%{content:"⠸"} 40%{content:"⠼"} 50%{content:"⠴"} 60%{content:"⠦"} 70%{content:"⠧"} 80%{content:"⠇"} 90%{content:"⠏"} }
+
+    /* ===== 卡片池: tilt / spotlight / borderglow / 挂件 ===== */
+    .ap-card { transform-style: preserve-3d; transition: transform .18s cubic-bezier(.2,.8,.2,1), box-shadow .25s, border-color .25s; will-change: transform; position: relative; }
+    /* 鼠标跟随高光(--mx/--my 由 JS 注入) */
+    .ap-card::before {
+      content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none; opacity:0;
+      transition:opacity .25s; z-index:1;
+      background: radial-gradient(380px circle at var(--mx,50%) var(--my,50%), rgba(255,255,255,.10), transparent 42%);
+    }
+    .ap-card:hover::before { opacity:1; }
+    .ap-card > * { position:relative; z-index:2; }
+    /* A 档金色 spotlight 额外柔光 */
+    .ap-card.tier-A:hover { box-shadow: 0 0 0 1px rgba(255,191,0,.35), 0 14px 40px -12px rgba(255,191,0,.30); }
+    /* 已加持: 金色流转边框 */
+    @keyframes ap-borderglow { 0%{box-shadow:0 0 0 1px rgba(255,170,0,.9),0 0 18px -2px rgba(255,170,0,.55)} 50%{box-shadow:0 0 0 1px rgba(255,210,80,1),0 0 26px 0 rgba(255,190,40,.75)} 100%{box-shadow:0 0 0 1px rgba(255,170,0,.9),0 0 18px -2px rgba(255,170,0,.55)} }
+    .ap-card.equipped { border-color: rgba(255,180,30,.95) !important; animation: ap-borderglow 2.4s ease-in-out infinite; }
+    /* 挂件(lanyard) 入场 + 悬挂摆动 */
+    @keyframes lanyard-drop { 0%{ transform: translateY(-120%) rotate(-3deg); opacity:0 } 60%{ transform: translateY(6%) rotate(1.5deg) } 100%{ transform: translateY(0) rotate(0); opacity:1 } }
+    @keyframes lanyard-sway { 0%,100%{ transform: rotate(-1.3deg) } 50%{ transform: rotate(1.3deg) } }
+    .lanyard-wrap { animation: lanyard-drop .55s cubic-bezier(.2,.9,.3,1.2) both; transform-origin: top center; }
+    .lanyard-card { animation: lanyard-sway 4.5s ease-in-out infinite; transform-origin: top center; }
+    /* 详情 modal 里的完整人设正文(markdown) prose 排版 */
+    .persona-body h1, .persona-body h2, .persona-body h3 { font-weight:600; margin:.9em 0 .35em; line-height:1.3; }
+    .persona-body h1 { font-size:1.15em; } .persona-body h2 { font-size:1.06em; } .persona-body h3 { font-size:1em; }
+    .persona-body p { margin:.45em 0; }
+    .persona-body ul, .persona-body ol { margin:.4em 0; padding-left:1.4em; }
+    .persona-body li { margin:.18em 0; }
+    .persona-body code { font-size:.88em; padding:.08em .35em; border-radius:4px; background:rgba(128,128,128,.18); }
+    .persona-body pre { padding:.7em; border-radius:8px; background:rgba(128,128,128,.14); overflow-x:auto; margin:.5em 0; }
+    .persona-body pre code { background:none; padding:0; }
+    .persona-body strong { font-weight:600; }
+    .persona-body hr { border:none; border-top:1px solid rgba(128,128,128,.25); margin:.8em 0; }
   </style>
 </head>
 <body class="m-0 p-0">
@@ -98,6 +130,8 @@
     const XCircle = (p) => <I {...p}><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></I>;
     const Wrench = (p) => <I {...p}><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76Z"/></I>;
     const User = (p) => <I {...p}><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></I>;
+    const Layers = (p) => <I {...p}><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 12.5-9.17 4.17a2 2 0 0 1-1.66 0L2 12.5"/><path d="m22 17.5-9.17 4.17a2 2 0 0 1-1.66 0L2 17.5"/></I>;
+    const X = (p) => <I {...p}><path d="M18 6 6 18"/><path d="m6 6 12 12"/></I>;
 
     /* ==========================================
        i18n dictionary — 1:1 from 前端.html
@@ -105,7 +139,7 @@
 
     const dict = {
       zh: {
-        newChat: '新对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', recent: '近期', settings: '设置', localEnv: '本地环境',
+        newChat: '新对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', cardPool: '卡牌池', recent: '近期', settings: '设置', localEnv: '本地环境',
         sysStatus: '系统状态', sysDesc: '实时性能与资源指标', gpu: '图形处理器 (GPU)', gpuUnavail: '状态不可用', noSmi: '未检测到 nvidia-smi',
         vram: '显存占用', core: '计算核心', temp: '温度', power: '功耗', unifiedMem: '统一内存架构',
         ram: '系统内存 (RAM)', used: '已用', physical: '物理内存', total: '总计', swap: '交换空间',
@@ -145,7 +179,7 @@
         searchPlaceholder: 'Search chats'
       },
       en: {
-        newChat: 'New chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', recent: 'Recent', settings: 'Settings', localEnv: 'Local Env',
+        newChat: 'New chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', cardPool: 'Card Deck', recent: 'Recent', settings: 'Settings', localEnv: 'Local Env',
         sysStatus: 'System Status', sysDesc: 'Real-time performance metrics', gpu: 'GPU', gpuUnavail: 'Unavailable', noSmi: 'nvidia-smi not found',
         vram: 'VRAM Usage', core: 'Core Usage', temp: 'Temp', power: 'Power', unifiedMem: 'Unified Memory',
         ram: 'System RAM', used: 'Used', physical: 'Physical RAM', total: 'Total', swap: 'Swap Space',
@@ -256,6 +290,7 @@
       const modelConfigInitRef = useRef(false);
       const [isSidebarOpen, setIsSidebarOpen] = useState(false);
       const [chatPrefill, setChatPrefill] = useState('');
+      const [personaEditor, setPersonaEditor] = useState(null); // 聊天里"存入卡牌池"草稿 → App 级编辑器
 
       const t = dict[language];
 
@@ -487,6 +522,13 @@
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => setCurrentView('workflow')}
               />
+              <NavItem
+                icon={<Layers size={18} />} label={t.cardPool}
+                active={currentView === 'cardpool'}
+                theme={activeTheme}
+                isSidebarOpen={isSidebarOpen}
+                onClick={() => setCurrentView('cardpool')}
+              />
             </div>
 
             {/* Recents — 独立 flex-1 + overflow-y-auto,只在展开态显示。
@@ -508,6 +550,7 @@
                       chat={chat}
                       theme={activeTheme}
                       active={activeChat === chat.id && currentView === 'chat'}
+                      personaTarget={activeChat === chat.id && currentView === 'cardpool'}
                       onSelect={handleSwitchSession}
                       onRename={handleRenameSession}
                       onDelete={handleDeleteSession}
@@ -580,8 +623,22 @@
               />
             )}
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} />}
-            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} />}
+            {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} />}
+            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} />}
+            {currentView === 'chat' && bs && bs.activeSessionId && (
+              <Lanyard persona={bs.activePersona || null} isDark={activeTheme === 'dark'}
+                onRemove={() => bridge.available && bridge.unequipPersona()}
+                onOpenPicker={() => setCurrentView('cardpool')} />
+            )}
             {currentView === 'search' && <SearchView theme={activeTheme} history={chatHistory} t={t} onSelect={handleSwitchSession} />}
+
+            {/* App 级自创卡编辑器: 聊天里「存入卡牌池」草稿走这条 */}
+            {personaEditor && (
+              <PersonaEditorModal initial={personaEditor.initial} isDark={activeTheme === 'dark'}
+                onClose={() => setPersonaEditor(null)}
+                onSaved={() => setPersonaEditor(null)}
+                onDeleted={() => setPersonaEditor(null)} />
+            )}
 
           </div>
           </div>
@@ -1033,7 +1090,7 @@
     // ==========================================
     // Chat View (Gemini Centered Style + Messages)
     // ==========================================
-    const ChatView = ({ theme, t, bs, prefill, onPrefillConsumed }) => {
+    const ChatView = ({ theme, t, bs, prefill, onPrefillConsumed, onOpenEditor }) => {
       const isDark = theme === 'dark';
       const [inputText, setInputText] = useState('');
       const [artifactsOpen, setArtifactsOpen] = useState(false);
@@ -1136,7 +1193,7 @@
             {hasMessages && (
               <div className="max-w-[800px] w-full mx-auto space-y-4">
                 {chatItems.map((item) => (
-                  <ChatBubble key={item.id} item={item} theme={theme} onPrefill={(txt) => setInputText(txt)} editable={!busy && item.id === lastUserId} />
+                  <ChatBubble key={item.id} item={item} theme={theme} onPrefill={(txt) => setInputText(txt)} editable={!busy && item.id === lastUserId} onOpenEditor={onOpenEditor} />
                 ))}
                 {busy && <ThinkingBubble thinking={bs && bs.thinking} theme={theme} />}
               </div>
@@ -1310,7 +1367,22 @@
       .replace(/\bclear\b/gi, '可以继续')
       .replace(/\bcritical\b/gi, '必须处理');
 
-    const ChatBubble = ({ item, theme, onPrefill, editable }) => {
+    // ③ 卡牌制造专家: 从助手消息渲染后的 html 里抠出 ```persona-card 草稿块 → 解析成卡。
+    function htmlUnescape(s) {
+      return String(s).replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&amp;/g,'&');
+    }
+    function extractPersonaDraft(html) {
+      if (!html || html.indexOf('persona-card') < 0) return null;
+      var m = html.match(/<code[^>]*class="[^"]*language-persona-card[^"]*"[^>]*>([\s\S]*?)<\/code>/);
+      if (!m) return null;
+      try {
+        var d = JSON.parse(htmlUnescape(m[1]));
+        if (!d || !d.name || !d.body) return null;
+        return { name: d.name, dept: d.dept || 'specialized', emoji: d.emoji || '🃏', color: d.color || '', description: d.description || '', body: d.body };
+      } catch (e) { return null; }
+    }
+
+    const ChatBubble = ({ item, theme, onPrefill, editable, onOpenEditor }) => {
       const isDark = theme === 'dark';
 
       if (item.type === 'artifact_card') return <ArtifactCard item={item} theme={theme} />;
@@ -1349,6 +1421,20 @@
                 className={`msg-md text-[15px] leading-relaxed ${item.streaming ? 'streaming-cursor' : ''} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}
                 dangerouslySetInnerHTML={{ __html: item.html || '' }}
               />
+              {!item.streaming && (() => {
+                const draft = extractPersonaDraft(item.html);
+                if (!draft) return null;
+                return (
+                  <div className="mt-2 rounded-xl border p-3 flex items-center gap-3 max-w-[440px]" style={{ background: isDark?'rgba(124,58,237,.10)':'rgba(124,58,237,.06)', borderColor:'rgba(149,128,255,.45)' }}>
+                    <div className="w-9 h-9 rounded-lg flex items-center justify-center text-[18px] shrink-0" style={{ background:'rgba(149,128,255,.2)' }}>{draft.emoji}</div>
+                    <div className="min-w-0 flex-1">
+                      <div className={`text-[13px] font-semibold ${isDark?'text-[#E3E3E3]':'text-[#1F1F1F]'}`}>🃏 卡牌草稿: {draft.name}</div>
+                      <div className="text-[11px] truncate" style={{ color: isDark?'#9aa0a6':'#5f6368' }}>{draft.description || (DEPT_LABELS[draft.dept]||draft.dept)}</div>
+                    </div>
+                    <button onClick={()=> onOpenEditor && onOpenEditor(draft)} className="shrink-0 px-3 py-1.5 rounded-lg text-[12px] font-semibold text-white" style={{ background:'#7C3AED' }}>存入卡牌池</button>
+                  </div>
+                );
+              })()}
               {item.time && !item.streaming && (
                 <div className={`text-[11px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{item.time}</div>
               )}
@@ -1361,6 +1447,29 @@
         return <ToolCard item={item} theme={theme} />;
       }
 
+      if (item.type === 'persona_equip') {
+        const c = item.card || {};
+        const tc = (typeof deptColor !== 'undefined' ? deptColor(c.dept) : '#ffae1e');
+        const deptLabel = (typeof DEPT_LABELS !== 'undefined' && DEPT_LABELS[c.dept]) || c.dept;
+        return (
+          <div className="flex flex-col gap-1">
+            <div className="text-[12px] font-semibold" style={{ color: isDark ? '#9aa0a6' : '#5f6368' }}>系统</div>
+            <div className="rounded-xl border p-4 max-w-[640px]" style={{ background: isDark ? 'rgba(255,180,30,.06)' : 'rgba(255,180,30,.08)', borderColor: 'rgba(255,180,30,.35)' }}>
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-lg flex items-center justify-center text-[18px] shrink-0" style={{ background: tc + '22' }}>{c.emoji}</div>
+                <div className={`text-[14px] font-semibold ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>Boss 为你带上专家卡牌加持: {c.name}</div>
+              </div>
+              <div className="text-[12.5px] mt-2 space-y-0.5" style={{ color: isDark ? '#C4C7C5' : '#3c4043' }}>
+                <div>部门: <span style={{ color: tc, fontWeight: 700 }}>{deptLabel}</span></div>
+                <div>简介: {c.description}</div>
+              </div>
+              <div className="text-[11.5px] mt-2" style={{ color: isDark ? '#80868b' : '#757575' }}>
+                完整能力档案已注入,AI 将以该专家的方法论承接后续任务。
+              </div>
+            </div>
+          </div>
+        );
+      }
       if (item.type === 'system') {
         return (
           <div className="flex justify-center">
@@ -2252,6 +2361,410 @@
     };
 
     // ==========================================
+    // 卡片池 (Persona / AgentPool)
+    // ==========================================
+    // Side B: agency-agents-zh 按"部门"组织(无档位/评分), 派生稳定的部门配色。
+    const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', finance:'金融', 'game-development':'游戏', hr:'人力', legal:'法务', marketing:'营销', 'paid-media':'投放', product:'产品', 'project-management':'项管', sales:'销售', 'spatial-computing':'空间计算', specialized:'专项', 'supply-chain':'供应链', support:'客服', testing:'测试', tool:'工具' };
+    const DEPT_ORDER = ['engineering','marketing','specialized','design','product','finance','sales','testing','project-management','paid-media','support','academic','game-development','spatial-computing','supply-chain','hr','legal','tool'];
+    const DEPT_COLOR = { academic:'#8B5CF6', design:'#EC4899', engineering:'#06B6D4', finance:'#10B981', 'game-development':'#F59E0B', hr:'#F472B6', legal:'#6B7280', marketing:'#F97316', 'paid-media':'#EF4444', product:'#7C3AED', 'project-management':'#3B82F6', sales:'#14B8A6', 'spatial-computing':'#6366F1', specialized:'#64748B', 'supply-chain':'#84CC16', support:'#22D3EE', testing:'#A855F7', tool:'#7C3AED' };
+    // 可在编辑器下拉选的部门(排除 tool —— 那是内置工具卡专用)
+    const DEPT_OPTIONS = DEPT_ORDER.filter(function(d){ return d !== 'tool'; });
+    const deptColor = (d) => DEPT_COLOR[d] || '#9aa0a6';
+    const CLAMP3 = { display:'-webkit-box', WebkitLineClamp:3, WebkitBoxOrient:'vertical', overflow:'hidden' };
+    const CLAMP2 = { display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical', overflow:'hidden' };
+
+    // 聊天室左上角的专家面具挂件(工牌)。常驻:有对话就挂。
+    //   未加持 → 占位卡"＋ 加持专家", 整卡点击打开专家池(入口)。
+    //   已加持 → 显专家, 点卡片主体=换专家, 点 ✕=摘下。
+    const Lanyard = ({ persona, isDark, onRemove, onOpenPicker }) => {
+      // 未加持: 占位入口
+      if (!persona) {
+        return (
+          <div className="absolute top-0 left-6 z-[15]" style={{ width:148 }}>
+            <div className="lanyard-wrap flex flex-col items-center">
+              <div style={{ width:2, height:60, background: isDark?'linear-gradient(#4a4d50,#303234)':'linear-gradient(#cfd2d6,#aeb2b6)' }}></div>
+              <div className="w-2.5 h-2.5 rounded-full -mt-1 mb-1.5" style={{ background: isDark?'#15171a':'#e8eaed', border:'2px solid '+(isDark?'#3c4043':'#bdc1c6') }}></div>
+              <div onClick={onOpenPicker} title="加持一张卡牌"
+                className="lanyard-card rounded-xl px-3 py-3.5 border border-dashed w-[140px] flex flex-col items-center gap-1 cursor-pointer transition-colors hover:border-solid"
+                style={{ background: isDark?'rgba(40,42,44,.5)':'rgba(255,255,255,.6)', borderColor: isDark?'#4a4d50':'#c4c7c5' }}>
+                <div className="w-8 h-8 rounded-lg flex items-center justify-center text-[18px] leading-none" style={{ background: isDark?'rgba(124,58,237,.16)':'rgba(124,58,237,.10)', color:'#9580FF' }}>＋</div>
+                <div className="text-[11.5px] font-medium" style={{ color: isDark?'#9aa0a6':'#5f6368' }}>加持卡牌</div>
+                <div className="text-[8.5px] font-mono tracking-[0.18em]" style={{ color: isDark?'#5f6368':'#9aa0a6' }}>AI PERSONA</div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+      // 已加持
+      const tc = deptColor(persona.dept);
+      return (
+        <div className="absolute top-0 left-6 z-[15]" style={{ width:148 }}>
+          <div className="lanyard-wrap flex flex-col items-center">
+            {/* 挂绳 + 扣环(留出长度让卡片落到浮动 Artifacts 按钮下方) */}
+            <div style={{ width:2, height:60, background:'linear-gradient(#ff5a3c,#b3361f)' }}></div>
+            <div className="w-2.5 h-2.5 rounded-full -mt-1 mb-1.5" style={{ background: isDark?'#15171a':'#e8eaed', border:'2px solid '+(isDark?'#3c4043':'#bdc1c6') }}></div>
+            <div onClick={onOpenPicker} title="点击换专家"
+              className="lanyard-card relative rounded-xl p-3 border w-[140px] cursor-pointer"
+              style={{ background: isDark?'#1e2022':'#fff', borderColor:'rgba(255,180,30,.85)', boxShadow:'0 10px 30px -8px rgba(0,0,0,.5), 0 0 14px -3px rgba(255,180,30,.5)' }}>
+              <button onClick={(e)=>{ e.stopPropagation(); onRemove(); }} title="摘下面具" className="absolute -top-2 -right-2 w-5 h-5 rounded-full flex items-center justify-center text-[11px] leading-none"
+                style={{ background: isDark?'#2c2e30':'#eef0f3', color: isDark?'#9aa0a6':'#5f6368', border:'1px solid '+(isDark?'#3c4043':'#dadce0') }}>✕</button>
+              <div className="flex items-center gap-2">
+                <div className="w-9 h-9 rounded-lg flex items-center justify-center text-[18px] shrink-0" style={{ background: tc+'22' }}>{persona.emoji}</div>
+                <div className="min-w-0">
+                  <div className={`text-[12px] font-semibold leading-tight ${isDark?'text-[#E3E3E3]':'text-[#1F1F1F]'}`} style={CLAMP2}>{persona.name}</div>
+                  <span className="text-[10px] font-mono font-bold" style={{ color:tc }}>{DEPT_LABELS[persona.dept]||persona.dept}</span>
+                </div>
+              </div>
+              <p className="text-[10px] leading-snug mt-1.5" style={{ ...CLAMP2, color: isDark?'#80868b':'#5f6368' }}>{persona.description}</p>
+              <div className="text-[8.5px] font-mono tracking-[0.18em] text-center mt-2 pt-1.5 border-t" style={{ color:'#ffae1e', borderColor: isDark?'rgba(255,255,255,.06)':'rgba(0,0,0,.06)' }}>AI PERSONA</div>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // 双击卡片打开的详情 modal —— FLIP 转场 + 拉取并展示完整人设正文(body)。
+    const PersonaDetailModal = ({ card, originRect, equipped, onClose, onEquip, isDark }) => {
+      const panelRef = useRef(null);
+      const [body, setBody] = useState(null); // null=loading
+      useEffect(() => {
+        const panel = panelRef.current;
+        if (panel && originRect) {
+          const last = panel.getBoundingClientRect();
+          const dx = originRect.left - last.left, dy = originRect.top - last.top;
+          const sx = Math.max(0.05, originRect.width / last.width), sy = Math.max(0.05, originRect.height / last.height);
+          panel.style.transformOrigin = 'top left';
+          panel.style.transform = `translate(${dx}px,${dy}px) scale(${sx},${sy})`;
+          panel.style.opacity = '0.5';
+          panel.getBoundingClientRect();
+          panel.style.transition = 'transform .34s cubic-bezier(.2,.85,.25,1), opacity .34s';
+          panel.style.transform = 'none';
+          panel.style.opacity = '1';
+        }
+        if (bridge.available && bridge.readPersonaBody) {
+          bridge.readPersonaBody(card.id).then(b=>setBody(b||'')).catch(()=>setBody('（正文加载失败）'));
+        } else { setBody(''); }
+      }, []);
+      const tc = deptColor(card.dept);
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6" style={{ background:'rgba(0,0,0,.55)' }} onClick={onClose}>
+          <div ref={panelRef} onClick={(e)=>e.stopPropagation()}
+            className="w-full max-w-[620px] max-h-[84vh] flex flex-col rounded-2xl border"
+            style={{ background: isDark?'#1e2022':'#ffffff', borderColor: isDark?'rgba(255,255,255,.10)':'rgba(0,0,0,.08)', boxShadow:'0 24px 80px -20px rgba(0,0,0,.6)' }}>
+            <div className="flex items-start gap-4 p-6 pb-3 shrink-0">
+              <div className="w-16 h-16 rounded-xl flex items-center justify-center text-[34px] shrink-0" style={{ background: tc+'22' }}>{card.emoji}</div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <h2 className={`text-[20px] font-semibold ${isDark?'text-[#E3E3E3]':'text-[#1F1F1F]'}`}>{card.name}</h2>
+                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded" style={{ background: tc+'22', color: tc }}>{DEPT_LABELS[card.dept]||card.dept}</span>
+                </div>
+                <div className="text-[12.5px] mt-1" style={{ color: isDark?'#C4C7C5':'#3c4043' }}>{card.description}</div>
+              </div>
+              <button onClick={onClose} className={`shrink-0 p-1 rounded-md ${isDark?'text-[#9aa0a6] hover:bg-[#2c2e30]':'text-[#5f6368] hover:bg-[#eef0f3]'}`}><X size={18}/></button>
+            </div>
+            {/* 完整人设正文 */}
+            <div className="flex-1 overflow-y-auto custom-scrollbar px-6 py-3 min-h-0 border-t" style={{ borderColor: isDark?'rgba(255,255,255,.06)':'rgba(0,0,0,.06)' }}>
+              <div className="text-[11px] font-semibold mb-2 font-mono tracking-wide" style={{ color: isDark?'#80868b':'#9aa0a6' }}>完整人设 (加持时一次性注入)</div>
+              {body===null
+                ? <div className="text-[13px] py-6 text-center" style={{ color: isDark?'#80868b':'#757575' }}>加载人设正文…</div>
+                : <div className={`persona-body text-[13px] leading-relaxed ${isDark?'text-[#C4C7C5]':'text-[#3c4043]'}`} dangerouslySetInnerHTML={{ __html: bridge.renderMarkdown ? bridge.renderMarkdown(body) : body }} />}
+            </div>
+            <div className="p-5 pt-3 shrink-0 border-t" style={{ borderColor: isDark?'rgba(255,255,255,.06)':'rgba(0,0,0,.06)' }}>
+              <button onClick={()=>onEquip(card)}
+                className="w-full py-2.5 rounded-xl text-[14px] font-semibold transition-colors"
+                style={ equipped ? { background:'rgba(255,180,30,.18)', color:'#ffae1e' } : { background:'#7C3AED', color:'#fff' } }>
+                {equipped ? '🎴 已加持 · 点击摘下' : '加持给 AI'}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // 自创卡编辑器:新建 / 编辑 / ③ 草稿预填都复用它。initial.source==='user' 且有 id → 编辑(update),否则新建(create)。
+    const PersonaEditorModal = ({ initial, onClose, onSaved, onDeleted, isDark }) => {
+      const init = initial || {};
+      const isEdit = !!(init.id && init.source === 'user');
+      const [confirmDel, setConfirmDel] = useState(false);
+      const [name, setName] = useState(init.name || '');
+      const [dept, setDept] = useState(init.dept && init.dept !== 'tool' ? init.dept : 'specialized');
+      const [emoji, setEmoji] = useState(init.emoji || '🃏');
+      const [description, setDescription] = useState(init.description || '');
+      const [body, setBody] = useState(init.body || '');
+      const [saving, setSaving] = useState(false);
+      const [err, setErr] = useState('');
+      // 编辑已有卡时, summary 不含 body, 拉一次完整正文
+      useEffect(() => {
+        if (isEdit && !init.body && bridge.available && bridge.readPersonaBody) {
+          bridge.readPersonaBody(init.id).then(function (b) { setBody(b || ''); }).catch(function () {});
+        }
+      }, []);
+      const tc = deptColor(dept);
+      const inputCls = "w-full px-3 py-2 rounded-lg text-[13px] outline-none border";
+      const inputStyle = { background: isDark ? '#131314' : '#fff', color: isDark ? '#E3E3E3' : '#1F1F1F', borderColor: isDark ? '#3c4043' : '#dadce0' };
+      async function save() {
+        if (!name.trim()) { setErr('请填写卡牌名称'); return; }
+        if (!body.trim()) { setErr('请填写人设正文'); return; }
+        setSaving(true); setErr('');
+        var input = { name: name.trim(), dept: dept, emoji: emoji || '🃏', color: init.color || deptColor(dept), description: description.trim(), body: body };
+        try {
+          var sum = isEdit ? await bridge.updatePersona(init.id, input) : await bridge.createPersona(input);
+          if (onSaved) onSaved(sum);
+          onClose();
+        } catch (e) { setErr('保存失败: ' + e); setSaving(false); }
+      }
+      return (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-6" style={{ background:'rgba(0,0,0,.55)' }} onClick={onClose}>
+          <div onClick={(e)=>e.stopPropagation()} className="w-full max-w-[640px] max-h-[88vh] flex flex-col rounded-2xl border"
+            style={{ background: isDark?'#1e2022':'#fff', borderColor: isDark?'rgba(255,255,255,.10)':'rgba(0,0,0,.08)', boxShadow:'0 24px 80px -20px rgba(0,0,0,.6)' }}>
+            <div className="flex items-center justify-between px-6 pt-5 pb-3 shrink-0">
+              <h2 className={`text-[18px] font-semibold ${isDark?'text-[#E3E3E3]':'text-[#1F1F1F]'}`}>{isEdit ? '编辑卡牌' : '新建卡牌'} <span className="text-[12px] font-normal" style={{color:'#9580FF'}}>🃏 自制</span></h2>
+              <button onClick={onClose} className={`p-1 rounded-md ${isDark?'text-[#9aa0a6] hover:bg-[#2c2e30]':'text-[#5f6368] hover:bg-[#eef0f3]'}`}><X size={18}/></button>
+            </div>
+            <div className="flex-1 overflow-y-auto custom-scrollbar px-6 py-2 min-h-0 space-y-3">
+              <div className="flex gap-3">
+                <div className="w-16 shrink-0">
+                  <label className="text-[11px] font-medium block mb-1" style={{color: isDark?'#9aa0a6':'#5f6368'}}>emoji</label>
+                  <input value={emoji} onChange={e=>setEmoji(e.target.value)} maxLength={4} className={inputCls + " text-center text-[20px]"} style={inputStyle} />
+                </div>
+                <div className="flex-1">
+                  <label className="text-[11px] font-medium block mb-1" style={{color: isDark?'#9aa0a6':'#5f6368'}}>名称 *</label>
+                  <input value={name} onChange={e=>setName(e.target.value)} placeholder="如:抖音短视频脚本专家" className={inputCls} style={inputStyle} />
+                </div>
+                <div className="w-28 shrink-0">
+                  <label className="text-[11px] font-medium block mb-1" style={{color: isDark?'#9aa0a6':'#5f6368'}}>部门</label>
+                  <select value={dept} onChange={e=>setDept(e.target.value)} className={inputCls} style={inputStyle}>
+                    {DEPT_OPTIONS.map(function(d){ return <option key={d} value={d}>{DEPT_LABELS[d]||d}</option>; })}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="text-[11px] font-medium block mb-1" style={{color: isDark?'#9aa0a6':'#5f6368'}}>一句话简介</label>
+                <input value={description} onChange={e=>setDescription(e.target.value)} placeholder="15 字内,卡片上显示" className={inputCls} style={inputStyle} />
+              </div>
+              <div>
+                <label className="text-[11px] font-medium block mb-1" style={{color: isDark?'#9aa0a6':'#5f6368'}}>人设正文 * <span style={{color: isDark?'#5f6368':'#9aa0a6'}}>(加持时注入给 AI 的完整能力档案:职责/工作流/规则/交付物)</span></label>
+                <textarea value={body} onChange={e=>setBody(e.target.value)} rows={12}
+                  placeholder={"# 角色名\n\n你是一位...\n\n## 核心职责\n- ...\n\n## 工作流程\n1. ...\n\n## 关键规则\n- ..."}
+                  className={inputCls + " resize-y font-mono leading-relaxed"} style={{...inputStyle, minHeight:220}} />
+              </div>
+              {err ? <div className="text-[12px] text-[#F28B82]">{err}</div> : null}
+            </div>
+            <div className="flex items-center justify-between gap-2 px-6 py-4 shrink-0 border-t" style={{borderColor: isDark?'rgba(255,255,255,.06)':'rgba(0,0,0,.06)'}}>
+              <div>
+                {isEdit ? (
+                  confirmDel
+                    ? <span className="flex items-center gap-2 text-[12.5px]"><span className="text-[#F28B82]">确定删除?</span>
+                        <button onClick={()=>{ bridge.deletePersona(init.id).then(()=>{ if(onDeleted) onDeleted(init); onClose(); }); }} className="px-2 py-1 rounded-md text-[12px] text-[#F28B82] border border-[#F28B82]/50">删除</button>
+                        <button onClick={()=>setConfirmDel(false)} className="px-2 py-1 rounded-md text-[12px]" style={{color: isDark?'#9aa0a6':'#5f6368'}}>取消</button>
+                      </span>
+                    : <button onClick={()=>setConfirmDel(true)} className="px-3 py-2 rounded-lg text-[12.5px] text-[#F28B82]">删除此卡</button>
+                ) : null}
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={onClose} className="px-4 py-2 rounded-lg text-[13px] border" style={{color: isDark?'#C4C7C5':'#3c4043', borderColor: isDark?'#3c4043':'#dadce0'}}>取消</button>
+                <button onClick={save} disabled={saving} className="px-5 py-2 rounded-lg text-[13px] font-semibold text-white" style={{background: saving ? '#9aa0a6' : '#7C3AED'}}>{saving ? '保存中…' : (isEdit ? '保存修改' : '创建卡牌')}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const CardPoolView = ({ theme, t, bs, onEquipped }) => {
+      const isDark = theme === 'dark';
+      const pool = (bs && bs.personaPool) || { loadState: 'idle' };
+      // 201 张卡走模块级缓存(不进 notify 快照),loadState 变化驱动重渲染。
+      const list = (bridge.available && bridge.getPersonas) ? bridge.getPersonas() : [];
+      const active = (bs && bs.activePersona) || null;
+      // 加持目标 = 当前对话(equipPersona 注入到 state.activeSessionId)。让用户始终知道注入到哪。
+      const target = (bs && bs.sessions && bs.activeSessionId) ? bs.sessions.find(s => s.id === bs.activeSessionId) : null;
+      const targetTitle = target ? (target.title || '新对话') : null;
+      const [selDept, setSelDept] = useState([]);
+      const [query, setQuery] = useState('');
+      const [visible, setVisible] = useState(60);
+      const [detail, setDetail] = useState(null);
+      const [toast, setToast] = useState(null);
+      const [editor, setEditor] = useState(null); // null | { initial }
+      const [myOnly, setMyOnly] = useState(false); // 「我的卡牌」facet
+
+      useEffect(() => { if (bridge.available) bridge.loadPersonas(); }, []);
+      useEffect(() => { setVisible(60); }, [query, selDept, myOnly]);
+      useEffect(() => { if (!toast) return; const id = setTimeout(() => setToast(null), 2400); return () => clearTimeout(id); }, [toast]);
+
+      const counts = {}; list.forEach(c => { counts[c.dept] = (counts[c.dept]||0)+1; });
+      const userCount = list.filter(c => c.source === 'user').length;
+      const q = query.trim().toLowerCase();
+      const filtered = list.filter(c => {
+        if (myOnly && c.source !== 'user') return false;
+        if (selDept.length && selDept.indexOf(c.dept) < 0) return false;
+        if (q) {
+          const hay = (c.name+' '+c.description+' '+c.dept+' '+(DEPT_LABELS[c.dept]||'')).toLowerCase();
+          if (hay.indexOf(q) < 0) return false;
+        }
+        return true;
+      });
+      const shown = filtered.slice(0, visible);
+
+      function toggle(arr, setArr, v) { setArr(arr.indexOf(v)>=0 ? arr.filter(x=>x!==v) : arr.concat([v])); }
+      function resetFacets() { setSelDept([]); setQuery(''); setMyOnly(false); }
+      function editCard(card, e){ if(e) e.stopPropagation(); setEditor({ initial: card }); }
+      function onMove(e){ const el=e.currentTarget; const r=el.getBoundingClientRect(); const px=(e.clientX-r.left)/r.width, py=(e.clientY-r.top)/r.height;
+        el.style.transform=`perspective(900px) rotateX(${(0.5-py)*9}deg) rotateY(${(px-0.5)*11}deg) translateY(-3px)`;
+        el.style.setProperty('--mx',(px*100)+'%'); el.style.setProperty('--my',(py*100)+'%'); }
+      function onLeave(e){ e.currentTarget.style.transform=''; }
+      function equip(card, e){ if(e) e.stopPropagation();
+        if (active && active.id===card.id) { bridge.unequipPersona(); setToast('已摘下: ' + card.name); }
+        else { Promise.resolve(bridge.equipPersona(card.id)).then(s => { if (s) setToast('已加持给「' + (targetTitle || '当前对话') + '」: ' + s.name); }); } }
+      function openDetail(card, e){ const r=e.currentTarget.getBoundingClientRect();
+        setDetail({ card, rect:{ left:r.left, top:r.top, width:r.width, height:r.height } }); }
+
+      return (
+        <div className="flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden animate-in fade-in duration-300">
+          {/* Header */}
+          <div className="px-6 md:px-8 pt-6 pb-3 flex items-end justify-between gap-4 shrink-0">
+            <div className="min-w-0">
+              <h1 className={`text-[24px] font-normal tracking-wide ${isDark?'text-[#E3E3E3]':'text-[#1F1F1F]'}`}>
+                <span style={{ color:'#7C3AED', fontWeight:600 }}>卡牌池</span> <span style={{ color: isDark?'#80868b':'#9aa0a6' }}>/ 专家能力卡组</span>
+              </h1>
+              <div className="text-[12px] mt-1" style={{ color: isDark?'#80868b':'#757575' }}>为 AI 加持一张专家卡牌 —— 将该领域专家的方法论、工作流与交付规范注入当前对话,使其以专家级标准承接后续任务。</div>
+              {/* 加持目标: 醒目横幅, 让用户一眼看清注入到哪个对话 */}
+              <div className="mt-2.5 inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[12.5px]"
+                style={ targetTitle
+                  ? { background: isDark?'rgba(124,58,237,.20)':'rgba(124,58,237,.10)', borderColor: isDark?'rgba(149,128,255,.6)':'rgba(124,58,237,.42)' }
+                  : { background: isDark?'rgba(242,139,130,.16)':'rgba(242,139,130,.10)', borderColor:'rgba(242,139,130,.55)' } }>
+                <span className="font-semibold whitespace-nowrap" style={{ color: targetTitle ? '#9580FF' : '#F28B82' }}>🎯 加持目标</span>
+                {targetTitle
+                  ? <>
+                      <span className="font-semibold truncate max-w-[240px]" style={{ color: isDark?'#E3E3E3':'#1F1F1F' }} title={targetTitle}>「{targetTitle}」</span>
+                      {active
+                        ? <span className="whitespace-nowrap" style={{ color: isDark?'#9aa0a6':'#757575' }}>· 已加持 <span style={{ color:'#ffae1e', fontWeight:600 }}>{active.name}</span></span>
+                        : <span className="whitespace-nowrap" style={{ color: isDark?'#80868b':'#9aa0a6' }}>· 未加持</span>}
+                    </>
+                  : <span className="font-medium whitespace-nowrap" style={{ color:'#F28B82' }}>无当前对话，请先新建 / 打开一个</span>}
+              </div>
+            </div>
+            <div className="flex items-center gap-3 shrink-0">
+              <span className="text-[12px] font-mono" style={{ color: isDark?'#80868b':'#757575' }}>{filtered.length} / {list.length}</span>
+              <button onClick={()=>setEditor({ initial: null })} className="px-3 py-1.5 rounded-lg text-[12.5px] font-medium text-white flex items-center gap-1.5" style={{ background:'#7C3AED' }} title="手动新建一张自制卡牌">
+                <Plus size={15}/> 新建卡牌
+              </button>
+            </div>
+          </div>
+
+          {pool.loadState==='loading' ? (
+            <div className="flex-1 flex items-center justify-center text-[13px]" style={{ color: isDark?'#80868b':'#757575' }}>正在加载卡牌池…</div>
+          ) : pool.loadState==='error' ? (
+            <div className="flex-1 flex items-center justify-center text-[13px] text-[#F28B82]">卡牌池加载失败</div>
+          ) : (
+          <div className="flex-1 flex min-h-0">
+            {/* Facet 侧栏: 部门 */}
+            <aside className="w-[200px] shrink-0 overflow-y-auto custom-scrollbar px-5 py-2 hidden md:block">
+              {/* 我的卡牌 facet */}
+              <div onClick={()=>setMyOnly(!myOnly)} className="flex items-center justify-between cursor-pointer text-[12.5px] py-1.5 px-2 mb-3 rounded-lg border transition-colors"
+                style={ myOnly ? { background:'rgba(124,58,237,.16)', borderColor:'rgba(149,128,255,.55)', color:'#9580FF' } : { background:'transparent', borderColor: isDark?'#3c4043':'#dadce0', color: isDark?'#C4C7C5':'#3c4043' }}>
+                <span className="flex items-center gap-1.5 font-medium">🃏 我的卡牌</span>
+                <span className="font-mono text-[11px]" style={{ color: myOnly?'#9580FF':(isDark?'#5f6368':'#9aa0a6') }}>{userCount}</span>
+              </div>
+              <div className="text-[12px] font-semibold mb-2" style={{ color: isDark?'#9aa0a6':'#5f6368' }}>部门</div>
+              <div className="space-y-1 mb-5">
+                {DEPT_ORDER.filter(k=>counts[k]).map(k=>{
+                  const on = selDept.indexOf(k)>=0; const tc=deptColor(k);
+                  return (
+                    <div key={k} onClick={()=>toggle(selDept,setSelDept,k)} className="flex items-center justify-between cursor-pointer text-[12.5px] py-0.5 group">
+                      <span className="flex items-center gap-2">
+                        <span className="w-3.5 h-3.5 rounded-sm border flex items-center justify-center" style={{ borderColor: on?tc:(isDark?'#5f6368':'#bdc1c6'), background: on?tc:'transparent' }}>{on?<span className="text-white text-[9px] leading-none">✓</span>:null}</span>
+                        <span style={{ color: isDark?'#C4C7C5':'#3c4043' }}>{DEPT_LABELS[k]||k}</span>
+                      </span>
+                      <span className="font-mono text-[11px]" style={{ color: isDark?'#5f6368':'#9aa0a6' }}>{counts[k]}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <button onClick={resetFacets} className="w-full py-2 rounded-lg text-[12.5px] border transition-colors" style={{ color: isDark?'#C4C7C5':'#3c4043', borderColor: isDark?'#3c4043':'#dadce0' }}>重置筛选</button>
+            </aside>
+
+            {/* 卡片网格 */}
+            <div className="flex-1 min-w-0 flex flex-col">
+              <div className="flex-1 overflow-y-auto custom-scrollbar px-5 pb-4">
+                {shown.length===0 ? (
+                  <div className="h-full flex items-center justify-center text-[13px]" style={{ color: isDark?'#80868b':'#757575' }}>没有匹配的专家，试试放宽筛选</div>
+                ) : (
+                  <div className="grid gap-3" style={{ gridTemplateColumns:'repeat(auto-fill, minmax(248px, 1fr))' }}>
+                    {shown.map(c=>{ const eq = active && active.id===c.id; const tc=deptColor(c.dept); const isUser = c.source==='user';
+                      return (
+                        <div key={c.id}
+                          className={`ap-card ${eq?'equipped':''} rounded-xl p-3.5 flex flex-col gap-2 cursor-pointer border`}
+                          style={{ borderColor: isDark?'rgba(255,255,255,.08)':'rgba(0,0,0,.08)', background: isDark?'rgba(40,42,44,.55)':'rgba(255,255,255,.72)' }}
+                          onMouseMove={onMove} onMouseLeave={onLeave} onDoubleClick={(e)=>openDetail(c,e)}>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div className="w-10 h-10 rounded-lg flex items-center justify-center text-[20px] shrink-0" style={{ background: tc+'22' }}>{c.emoji}</div>
+                              <div className={`font-semibold text-[14.5px] truncate ${isDark?'text-[#E3E3E3]':'text-[#1F1F1F]'}`}>{c.name}</div>
+                            </div>
+                            {eq
+                              ? <span className="shrink-0 text-[10.5px] font-semibold px-2 py-0.5 rounded-md whitespace-nowrap" style={{ background:'#ffae1e', color:'#3a2500' }}>🎴 已加持</span>
+                              : isUser
+                                ? <span className="shrink-0 text-[10.5px] font-semibold px-1.5 py-0.5 rounded whitespace-nowrap" style={{ background:'rgba(149,128,255,.18)', color:'#9580FF' }}>🃏 自制</span>
+                                : <span className="shrink-0 text-[10.5px] font-semibold px-1.5 py-0.5 rounded whitespace-nowrap" style={{ background: tc+'22', color: tc }}>{DEPT_LABELS[c.dept]||c.dept}</span>}
+                          </div>
+                          <p className="text-[11.5px] leading-snug flex-1" style={{ ...CLAMP3, color: isDark?'#9aa0a6':'#5f6368' }} title={c.description}>{c.description||'(无简介)'}</p>
+                          <div className="flex items-center justify-between text-[10.5px] font-mono gap-2">
+                            <span className="truncate" style={{ color: isDark?'#80868b':'#9aa0a6' }}>{isUser ? <button onClick={(e)=>editCard(c,e)} className="hover:underline" style={{color: isDark?'#80868b':'#9aa0a6'}}>✎ 编辑</button> : (DEPT_LABELS[c.dept]||c.dept)}</span>
+                            <button onClick={(e)=>equip(c,e)} className="shrink-0 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors"
+                              style={ eq ? { background:'rgba(255,180,30,.16)', color:'#ffae1e' } : { background: isDark?'rgba(124,58,237,.18)':'rgba(124,58,237,.10)', color:'#9580FF' } }>
+                              {eq ? '取消' : '加持给 AI'}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {filtered.length > visible ? (
+                  <div className="flex justify-center mt-4">
+                    <button onClick={()=>setVisible(visible+60)} className="px-4 py-2 rounded-lg text-[12.5px] border transition-colors" style={{ color: isDark?'#C4C7C5':'#3c4043', borderColor: isDark?'#3c4043':'#dadce0' }}>显示更多 ({filtered.length - visible})</button>
+                  </div>
+                ) : null}
+              </div>
+
+              {/* 搜索框 (前端关键词过滤) */}
+              <div className="shrink-0 px-5 py-3 border-t flex items-center gap-3" style={{ borderColor: isDark?'rgba(255,255,255,.06)':'rgba(0,0,0,.06)' }}>
+                <Search size={16} className={isDark?'text-[#80868b]':'text-[#9aa0a6]'} />
+                <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="搜专家:名称 / 描述 / 部门 (如 前端 / 增长 / 测试)"
+                  className="flex-1 bg-transparent outline-none text-[13px]" style={{ color: isDark?'#E3E3E3':'#1F1F1F' }} />
+                {query ? <button onClick={()=>setQuery('')} className={isDark?'text-[#80868b] hover:text-[#E3E3E3]':'text-[#9aa0a6] hover:text-[#1F1F1F]'}><X size={14}/></button> : null}
+              </div>
+            </div>
+          </div>
+          )}
+
+          {detail ? (
+            <PersonaDetailModal card={detail.card} originRect={detail.rect} equipped={active && active.id===detail.card.id}
+              isDark={isDark} onClose={()=>setDetail(null)}
+              onEquip={(card)=>{ equip(card); }} />
+          ) : null}
+
+          {/* 自创卡编辑器(新建/编辑) */}
+          {editor ? (
+            <PersonaEditorModal initial={editor.initial} isDark={isDark}
+              onClose={()=>setEditor(null)}
+              onSaved={(sum)=>setToast((editor.initial && editor.initial.id ? '已保存: ' : '已创建: ') + sum.name)}
+              onDeleted={(card)=>setToast('已删除: ' + card.name)} />
+          ) : null}
+
+          {/* 加持反馈 toast */}
+          {toast ? (
+            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-40 px-4 py-2.5 rounded-xl text-[13px] font-medium animate-in fade-in slide-in-from-bottom-2 duration-200"
+              style={{ background: isDark?'#2c2e30':'#1F1F1F', color:'#fff', boxShadow:'0 10px 30px -8px rgba(0,0,0,.5)' }}>
+              🎴 {toast}
+            </div>
+          ) : null}
+        </div>
+      );
+    };
+
+    // ==========================================
     // Shared Components
     // ==========================================
 
@@ -2276,7 +2789,7 @@
     };
 
     // 近期会话项：支持重命名(内联编辑) + 删除(内联二次确认)
-    const RecentItem = ({ chat, active, theme, onSelect, onRename, onDelete }) => {
+    const RecentItem = ({ chat, active, personaTarget, theme, onSelect, onRename, onDelete }) => {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
@@ -2296,9 +2809,13 @@
       }
       return (
         <div onClick={() => onSelect(chat.id)}
+          title={personaTarget ? '加持目标 · 在卡牌池选的专家会注入到这个对话' : undefined}
+          style={ personaTarget ? { background: isDark?'rgba(124,58,237,.22)':'rgba(124,58,237,.12)', boxShadow:'inset 0 0 0 1px '+(isDark?'rgba(149,128,255,.6)':'rgba(124,58,237,.42)'), color: isDark?'#fff':'#1F1F1F' } : undefined }
           className={`group flex items-center px-4 py-1.5 rounded-full cursor-pointer text-[13px] transition-all
-            ${active ? (isDark ? 'bg-[#333537] text-white' : 'bg-[#E1E5EA] text-[#1F1F1F]')
+            ${personaTarget ? ''
+              : active ? (isDark ? 'bg-[#333537] text-white' : 'bg-[#E1E5EA] text-[#1F1F1F]')
                      : (isDark ? 'text-[#BDC1C6] hover:bg-[#282A2C] hover:text-[#E3E3E3]' : 'text-[#5F6368] hover:bg-[#E1E5EA] hover:text-[#1F1F1F]')}`}>
+          {personaTarget && <span className="shrink-0 mr-1.5 text-[12px]" title="加持目标">🎴</span>}
           <span className="truncate pr-2 leading-relaxed whitespace-nowrap flex-1">{chat.title}</span>
           {chat.working && <span className="shrink-0 mr-1 inline-block w-2 h-2 rounded-full bg-current opacity-70 animate-pulse" title="正在生成中"></span>}
           {chat.skill && <span className="text-[11px] shrink-0 opacity-70 mr-1" title={chat.skill}>🧭</span>}

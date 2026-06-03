@@ -55,6 +55,9 @@
     activeSessionId: null,
     messages: [],      // Anthropic Messages schema
     chatItems: [],     // display items for React
+    // 卡牌加持/卸下事件时间线(sidecar, 不进 messages/LLM)。每项 {kind,pos,...}。
+    // pos = 事件发生时的 messages 数, rerender 时按 pos 插回原位, 让重载历史不割裂。
+    personaEvents: [],
     busy: false,
     monitor: null,
     backendOnline: null, // null=checking, true, false
@@ -86,7 +89,15 @@
       bindings: {},      // session_id → skill_name
       demo: null,        // { open, name, loading, kind, content, error, description, duration }
     },
+    // 卡片池: 专家面具。activePersona = 当前 session 加持的专家卡(完整对象)或 null,
+    // 驱动聊天室右上角挂件。
+    activePersona: null,
+    // personaPool 只放轻量元信息(loadState),1078 张卡放模块级 personaPoolCache,
+    // 不进 notify() 的 JSON 深拷贝(否则每个流式 token 都克隆 ~950KB,卡顿)。
+    personaPool: { loadState: "idle" }, // idle | loading | ready | error
   };
+  // 卡片池 1078 张卡的前端缓存。只读,通过 getPersonas() 取引用,不走 notify 快照。
+  var personaPoolCache = [];
 
   // internal streaming state
   var currentStreamText = "";
@@ -111,11 +122,13 @@
   var suppressNotify = false;
   function freshBuffer() {
     return {
-      messages: [], chatItems: [], artifacts: [], busy: false, queued: [],
+      messages: [], chatItems: [], personaEvents: [], artifacts: [], busy: false, queued: [],
       planSnapshot: { plan: null, todos: null },
       modeState: { mode: "yolo", plan_phase: "none", pinvou_review_enabled: false },
       thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
       tokens: { input: 0, max: maxModelLen },
+      activePersona: null, // 卡片池: 该 session 加持的专家面具(挂件用)
+
       stream: {
         currentStreamText: "", currentStreamId: 0, pendingAssistantText: "",
         pendingAssistantBlocks: [], itemIdSeq: 0, toolMeta: {},
@@ -131,8 +144,10 @@
   function saveWorkingSetTo(buf) {
     if (!buf) return;
     buf.messages = state.messages; buf.chatItems = state.chatItems; buf.artifacts = state.artifacts;
+    buf.personaEvents = state.personaEvents;
     buf.busy = state.busy; buf.planSnapshot = state.planSnapshot; buf.modeState = state.modeState;
     buf.thinking = state.thinking; buf.tokens = state.tokens; buf.queued = state.queued;
+    buf.activePersona = state.activePersona;
     buf.stream = {
       currentStreamText: currentStreamText, currentStreamId: currentStreamId,
       pendingAssistantText: pendingAssistantText, pendingAssistantBlocks: pendingAssistantBlocks,
@@ -144,8 +159,10 @@
   function loadWorkingSetFrom(buf) {
     if (!buf) return;
     state.messages = buf.messages; state.chatItems = buf.chatItems; state.artifacts = buf.artifacts;
+    state.personaEvents = buf.personaEvents || [];
     state.busy = buf.busy; state.planSnapshot = buf.planSnapshot; state.modeState = buf.modeState;
     state.thinking = buf.thinking; state.tokens = buf.tokens; state.queued = buf.queued || [];
+    state.activePersona = buf.activePersona || null;
     var s = buf.stream || {};
     currentStreamText = s.currentStreamText || ""; currentStreamId = s.currentStreamId || 0;
     pendingAssistantText = s.pendingAssistantText || ""; pendingAssistantBlocks = s.pendingAssistantBlocks || [];
@@ -286,6 +303,7 @@
       await refreshHistoryList();
       await syncModeState();
       await syncSessionSkill();
+      await syncActivePersona();
       notify();
     } catch (e) {
       addSystemItem("⚠️ 新建对话失败: " + e);
@@ -301,6 +319,7 @@
       switchActiveTo(id, null);
       await syncModeState();
       await syncSessionSkill();
+      await syncActivePersona();
       notify();
       reconcileArtifacts(id); // 对账磁盘产物(fire-and-forget)
       return;
@@ -311,6 +330,7 @@
       state.activeSessionId = saved.metadata.id;
       loadWorkingSetFrom(sessionStates[id] = freshBuffer());
       state.messages = Array.isArray(saved.messages) ? saved.messages : [];
+      try { state.personaEvents = await invoke("get_session_persona_events", { sessionId: id }) || []; } catch (e) { state.personaEvents = []; }
       resetPendingAssistant();
       state.chatItems = [];
       state.artifacts = Array.isArray(saved.artifacts) ? saved.artifacts.map(function (a) {
@@ -320,6 +340,7 @@
       rerenderFromMessages();
       await syncModeState();
       await syncSessionSkill();
+      await syncActivePersona();
       notify();
       reconcileArtifacts(id); // 对账磁盘产物(修重启/跟踪遗漏导致的面板缺文件)
     } catch (e) {
@@ -400,6 +421,16 @@
   function rerenderFromMessages() {
     state.chatItems = [];
     itemIdSeq = 0;
+    // 卡牌事件按 pos 插回原位(pos=事件发生时的 messages 数)。让重载历史不割裂。
+    var pe = Array.isArray(state.personaEvents) ? state.personaEvents : [];
+    function emitPersonaAt(atOrAfter, isTail) {
+      for (var k = 0; k < pe.length; k++) {
+        var ev = pe[k];
+        if (isTail ? (ev.pos < atOrAfter) : (ev.pos !== atOrAfter)) continue;
+        if (ev.kind === "equip" && ev.card) addChatItem({ type: "persona_equip", card: ev.card, time: "" });
+        else if (ev.kind === "unequip") addChatItem({ type: "system", text: "🎴 已卸下专家卡牌: " + (ev.name || ""), time: "" });
+      }
+    }
     var pendingPersona = null; // 品悟触发 echo 命中后，标记下一条 assistant 为品悟回复
     // 预扫 tool_result：tool_use 在 assistant 消息、result 在后续 user 消息，需提前建映射
     // 才能在还原选择卡/方案卡时拿到结果（选项/快照）。
@@ -414,6 +445,7 @@
       }
     }
     for (var mi = 0; mi < state.messages.length; mi++) {
+      emitPersonaAt(mi, false); // 该消息之前发生的卡牌事件先插
       var m = state.messages[mi];
       var blocks = Array.isArray(m.content) ? m.content : [];
       if (m.role === "user") {
@@ -522,6 +554,7 @@
         addChatItem({ type: "pinvou_actions", resolved: true, statusLabel: "📜 已审阅", planMarkdown: null, report: null, time: "" });
       }
     }
+    emitPersonaAt(state.messages.length, true); // 最后一条消息之后发生的卡牌事件(末尾加持/卸下)
   }
 
   function updateToolItem(toolId, output, success) {
@@ -1771,6 +1804,88 @@
     } catch (e) { /* 旧 session 无绑定，忽略 */ }
   }
 
+  // ── 卡片池: 专家面具加持 ─────────────────────────────────────────
+  // 懒加载全部专家卡(1078 张),前端缓存供 facet/搜索。只拉一次。
+  async function loadPersonas() {
+    if (state.personaPool.loadState === "ready" || state.personaPool.loadState === "loading") return;
+    await refreshPersonas();
+  }
+  // 强制重拉卡牌列表(自创卡增删改后调,让池子立即反映)。
+  async function refreshPersonas() {
+    state.personaPool.loadState = "loading"; notify();
+    try {
+      personaPoolCache = await invoke("list_personas");
+      state.personaPool.loadState = "ready";
+    } catch (e) {
+      personaPoolCache = []; state.personaPool.loadState = "error";
+      console.warn("list_personas failed", e);
+    }
+    notify();
+  }
+  // ── 用户自创卡 CRUD(写盘后刷新缓存) ──
+  async function createPersona(input) {
+    var sum = await invoke("create_persona", { input: input });
+    await refreshPersonas();
+    return sum;
+  }
+  async function updatePersona(personaId, input) {
+    var sum = await invoke("update_persona", { personaId: personaId, input: input });
+    await refreshPersonas();
+    // 若改的正是当前 session 加持的卡, 同步挂件显示
+    if (state.activePersona && state.activePersona.id === personaId) { state.activePersona = sum; notify(); }
+    return sum;
+  }
+  async function deletePersona(personaId) {
+    await invoke("delete_persona", { personaId: personaId });
+    await refreshPersonas();
+  }
+  // 给当前 session 加持一张专家面具。后端存 persona_id + 每 turn 注入人设;
+  // 前端记 activePersona(挂件) + 发一条系统消息播报。
+  // 取专家显示名(兼容 Side A 的 cn_name / Side B 的 name)。
+  function personaName(p) { return (p && (p.name || p.cn_name)) || ""; }
+  // 记一条卡牌事件到时间线 sidecar(pos=当前 messages 数),并落盘。重载历史时按 pos 插回。
+  function recordPersonaEvent(ev) {
+    if (!state.activeSessionId) return;
+    ev.pos = state.messages.length;
+    state.personaEvents.push(ev);
+    var sid = state.activeSessionId;
+    var snapshot = JSON.parse(JSON.stringify(state.personaEvents));
+    invoke("save_session_persona_events", { sessionId: sid, events: snapshot }).catch(function () {});
+  }
+  async function equipPersona(personaId) {
+    if (!state.activeSessionId) { addSystemItem("⚠️ 请先打开或新建一个对话再加持专家"); return; }
+    var prev = state.activePersona; // 换卡前的旧专家(同 session 切换时先播报卸下)
+    try {
+      var card = await invoke("equip_persona", { sessionId: state.activeSessionId, personaId: personaId });
+      // 同 session 换了一张不同的卡 → 先弹一条"已卸下旧专家",再弹新加持。
+      if (prev && prev.id !== card.id) {
+        addChatItem({ type: "system", text: "🎴 已卸下专家卡牌: " + personaName(prev), time: timeStr() });
+        recordPersonaEvent({ kind: "unequip", name: personaName(prev) });
+      }
+      state.activePersona = card;
+      addChatItem({ type: "persona_equip", card: card, time: timeStr() });
+      recordPersonaEvent({ kind: "equip", card: card });
+      notify();
+      return card;
+    } catch (e) { addSystemItem("⚠️ 加持失败: " + e); return null; }
+  }
+  // 摘下当前 session 的专家面具。
+  async function unequipPersona() {
+    if (!state.activeSessionId) return;
+    var prev = state.activePersona;
+    try { await invoke("unequip_persona", { sessionId: state.activeSessionId }); } catch (e) { /* 忽略,前端照样摘 */ }
+    state.activePersona = null;
+    if (prev) { addChatItem({ type: "system", text: "🎴 已卸下专家卡牌: " + personaName(prev), time: timeStr() }); recordPersonaEvent({ kind: "unequip", name: personaName(prev) }); }
+    notify();
+  }
+  // 切换/重载 session 后,从后端拉该 session 的加持状态还原挂件(backend 是真相)。
+  async function syncActivePersona() {
+    if (!state.activeSessionId) { state.activePersona = null; return; }
+    try {
+      state.activePersona = await invoke("get_active_persona", { sessionId: state.activeSessionId }) || null;
+    } catch (e) { /* 旧 session 无加持,忽略 */ }
+  }
+
   // ── Init ─────────────────────────────────────────────────────────
   async function init() {
     await loadSettings();
@@ -1848,6 +1963,16 @@
     openDemo: openDemo,
     closeDemo: closeDemo,
     setCurrentPhase: setCurrentPhase,
+    // 卡片池: 专家面具
+    loadPersonas: loadPersonas,
+    getPersonas: function () { return personaPoolCache; }, // 返回引用(只读),不进 notify 快照
+    readPersonaBody: function (id) { return invoke("read_persona_body", { personaId: id }); }, // Side B: 详情拉完整正文
+    equipPersona: equipPersona,
+    unequipPersona: unequipPersona,
+    // 用户自创卡
+    createPersona: createPersona,
+    updatePersona: updatePersona,
+    deletePersona: deletePersona,
   };
 
   // Auto-init after DOM ready

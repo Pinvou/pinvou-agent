@@ -60,6 +60,11 @@ pub fn user_instructions() -> PathBuf {
 pub fn user_skills_dir() -> PathBuf {
     user_root().join("skills")
 }
+/// `~/.pinvou3/user/personas/` —— 用户自创专家卡牌（卡牌池）。每张卡一个
+/// `<id>.json`（PersonaCard 序列化）。跟 bundle 内嵌的内置卡分离，**永不被覆写**。
+pub fn user_personas_dir() -> PathBuf {
+    user_root().join("personas")
+}
 
 /// `~/.deepseek/skills/` — DeepSeek-TUI 标准用户 skills 目录,h3c-ppt /
 /// skill-creator 这种由 `/skill install` 装的 skill 都在这里。跟
@@ -112,6 +117,14 @@ pub fn session_instructions_path(session_id: &str) -> PathBuf {
     sessions_root().join(session_id).join("instructions.md")
 }
 
+/// `~/.pinvou3/sessions/<session_id>/persona_events.json` —— 该 session 的卡牌
+/// 加持/卸下事件时间线(sidecar)。**刻意独立于 messages**:messages 在 engine
+/// 冷启动时会被 sync_session 注水回 LLM,而卡牌事件是纯前端展示,绝不能进 LLM 上下文。
+/// 前端按 `pos`(事件发生时的 messages 数)在 rerenderFromMessages 里插回原位。
+pub fn session_persona_events(session_id: &str) -> PathBuf {
+    sessions_root().join(session_id).join("persona_events.json")
+}
+
 /// 阶段 C 没多 session 时的 fallback artifacts dir（session_id="default"）。
 /// Step 4 完成后这个会被切换 session 时动态计算的值替换。
 pub fn default_session_artifacts_dir() -> PathBuf {
@@ -122,6 +135,7 @@ pub fn default_session_artifacts_dir() -> PathBuf {
 pub fn ensure_dirs() -> std::io::Result<()> {
     std::fs::create_dir_all(bundle_skills_dir())?;
     std::fs::create_dir_all(user_skills_dir())?;
+    std::fs::create_dir_all(user_personas_dir())?;
     std::fs::create_dir_all(workspace_dir())?;
     std::fs::create_dir_all(default_session_artifacts_dir())?;
     Ok(())

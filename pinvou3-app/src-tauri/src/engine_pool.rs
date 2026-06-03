@@ -134,9 +134,17 @@ impl EnginePool {
         mode: AppMode,
         phase: PlanPhase,
     ) -> Result<()> {
+        // Side B 卡片池: 该 session 加持了专家面具时,每 turn 注入轻锚点(短)维持身份。
+        // 完整 body 已在加持首条消息一次性注入(commands::chat take_pending_persona_body)。
+        // 在 pool 层解析,所有上层调用(chat / accept_plan / pinvou_review_chat)自动带上锚点。
+        let persona_reminder = self
+            .store
+            .active_persona_id(session_id)
+            .and_then(|pid| crate::personas::get(&pid))
+            .map(|c| crate::personas::equip_anchor(&c));
         self.get_or_spawn(session_id)
             .await?
-            .send_user_message(content, mode, phase)
+            .send_user_message(content, mode, phase, persona_reminder)
             .await
     }
 

@@ -17,6 +17,7 @@ pub mod engine_pool;
 mod file_ingest;
 mod file_watcher;
 mod monitor;
+pub mod personas;
 pub mod super_permission;
 
 
@@ -164,6 +165,16 @@ pub fn run() {
             commands::cancel_user_input,
             commands::get_super_permission_status,
             commands::set_super_permission,
+            commands::list_personas,
+            commands::read_persona_body,
+            commands::equip_persona,
+            commands::unequip_persona,
+            commands::get_active_persona,
+            commands::create_persona,
+            commands::update_persona,
+            commands::delete_persona,
+            commands::save_session_persona_events,
+            commands::get_session_persona_events,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

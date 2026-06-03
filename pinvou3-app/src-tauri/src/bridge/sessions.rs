@@ -256,6 +256,35 @@ impl SessionStore {
         }
     }
 
+    // ===================== 卡片池: 专家面具加持 =====================
+
+    /// 给指定 session 加持/摘下专家面具。`Some(id)` 加持,`None` 摘下。
+    /// 仅存 persona id;每 turn `EnginePool::send_user_message` 解析成 reminder 注入。
+    pub fn set_active_persona(&self, id: &str, persona_id: Option<String>) {
+        let mut m = self.mode_states.write();
+        let entry = m.entry(id.to_string()).or_default();
+        entry.active_persona = persona_id;
+    }
+
+    /// 取该 session 当前加持的专家面具 id(给挂件渲染 + per-turn 注入用)。
+    pub fn active_persona_id(&self, id: &str) -> Option<String> {
+        self.mode_states.read().get(id)?.active_persona.clone()
+    }
+
+    /// Side B: 给 session 挂上一次性注入的完整人设 body(加持时调)。
+    pub fn set_pending_persona_body(&self, id: &str, body: Option<String>) {
+        let mut m = self.mode_states.write();
+        let entry = m.entry(id.to_string()).or_default();
+        entry.pending_persona_body = body;
+    }
+
+    /// Side B: 一次性消费 session 的待注入人设 body。chat 在发消息前调,
+    /// prepend 到 message content 后置空,后续 turn 靠 equip_anchor 维持。
+    pub fn take_pending_persona_body(&self, id: &str) -> Option<String> {
+        let mut m = self.mode_states.write();
+        m.get_mut(id)?.pending_persona_body.take()
+    }
+
     // ===================== M2: auto-continue counter =====================
 
     /// 取当前 session 的 auto-continue 计数。

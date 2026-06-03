@@ -647,7 +647,13 @@ impl Pinvou3Bridge {
     /// 注：DeepSeek-TUI 当前的 `auto_approve` 字段不旁路 `await_tool_approval`
     /// （上游 bug），所以 event forwarder 仍要监听 ApprovalRequired 并主动
     /// 调 `approve_tool_call`。这条逻辑见 `engine.rs::spawn_event_forwarder`。
-    pub fn build_send_message_op(&self, content: String, mode: AppMode, phase: PlanPhase) -> Op {
+    pub fn build_send_message_op(
+        &self,
+        content: String,
+        mode: AppMode,
+        phase: PlanPhase,
+        persona_reminder: Option<String>,
+    ) -> Op {
         let (allow_shell, trust_mode) = match mode {
             AppMode::Yolo => (self.allow_shell(), true),
             // Plan: allow_shell=true 让 engine 正常路由 shell 工具，
@@ -664,10 +670,14 @@ impl Pinvou3Bridge {
         // spawn 时渲染一次就过时,这里每 turn 重出。始终注入(连 mode/phase
         // reminder 为 None 的纯 Yolo 态也带上)。
         let sudo = crate::super_permission::turn_reminder();
-        let reminder_body = match reminder_for(mode, phase) {
+        let mut reminder_body = match reminder_for(mode, phase) {
             Some(r) => format!("{r}\n\n{sudo}"),
             None => sudo.to_string(),
         };
+        // 卡片池: 该 session 加持了专家面具时,每 turn 注入 persona 人设(粘性身份)。
+        if let Some(persona) = persona_reminder {
+            reminder_body = format!("{reminder_body}\n\n{persona}");
+        }
         let full_content = format!(
             "<system-reminder>\n{reminder_body}\n</system-reminder>\n\n{content}"
         );
@@ -799,7 +809,7 @@ mod tests {
             (AppMode::Yolo, PlanPhase::Executing),
             (AppMode::Plan, PlanPhase::Planning),
         ] {
-            let op = bridge.build_send_message_op("用户消息".to_string(), mode, phase);
+            let op = bridge.build_send_message_op("用户消息".to_string(), mode, phase, None);
             let content = match op {
                 Op::SendMessage { content, .. } => content,
                 other => panic!("期望 SendMessage,得到 {other:?}"),
@@ -808,6 +818,34 @@ mod tests {
                 content.contains("<system-reminder>") && content.contains("超级权限"),
                 "mode={mode:?} phase={phase:?} 的 op 必须每 turn 注入超级权限状态,得到:\n{content}"
             );
+        }
+    }
+
+    /// 卡片池: 该 session 加持了专家面具时,persona reminder 必须进 per-turn
+    /// `<system-reminder>`(粘性身份的核心机制)。None 时不注入(不破坏纯对话)。
+    #[test]
+    fn build_send_message_op_injects_persona_reminder_when_present() {
+        let bridge = fixture_bridge();
+        let persona = "你现在戴着【数据库架构师】专家面具。".to_string();
+        let op = bridge.build_send_message_op(
+            "用户消息".to_string(),
+            AppMode::Yolo,
+            PlanPhase::None,
+            Some(persona.clone()),
+        );
+        let content = match op {
+            Op::SendMessage { content, .. } => content,
+            other => panic!("期望 SendMessage,得到 {other:?}"),
+        };
+        assert!(
+            content.contains("<system-reminder>") && content.contains(&persona),
+            "加持后 op 必须在 system-reminder 内注入 persona 人设,得到:\n{content}"
+        );
+        // None 时不应出现该文案
+        let op_none =
+            bridge.build_send_message_op("hi".to_string(), AppMode::Yolo, PlanPhase::None, None);
+        if let Op::SendMessage { content, .. } = op_none {
+            assert!(!content.contains("数据库架构师"), "未加持不应注入 persona");
         }
     }
 
@@ -1043,7 +1081,7 @@ mod tests {
     fn bridge_yolo_mode_trust_mode_true() {
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         let bridge = fixture_bridge();
-        let op = bridge.build_send_message_op("hi".into(), AppMode::Yolo, PlanPhase::None);
+        let op = bridge.build_send_message_op("hi".into(), AppMode::Yolo, PlanPhase::None, None);
         let (_allow_shell, trust_mode) = extract_shell_trust(op);
         assert!(trust_mode, "Yolo 模式 trust_mode 必须 true");
     }
@@ -1054,7 +1092,7 @@ mod tests {
     fn bridge_plan_mode_trust_mode_true_after_p1() {
         let bridge = fixture_bridge();
         let op =
-            bridge.build_send_message_op("list dir".into(), AppMode::Plan, PlanPhase::Planning);
+            bridge.build_send_message_op("list dir".into(), AppMode::Plan, PlanPhase::Planning, None);
         let (_allow_shell, trust_mode) = extract_shell_trust(op);
         assert!(
             trust_mode,
@@ -1070,7 +1108,7 @@ mod tests {
     fn bridge_plan_mode_allow_shell_true() {
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         let bridge = fixture_bridge();
-        let op = bridge.build_send_message_op("exec ls".into(), AppMode::Plan, PlanPhase::Planning);
+        let op = bridge.build_send_message_op("exec ls".into(), AppMode::Plan, PlanPhase::Planning, None);
         let (allow_shell, _trust_mode) = extract_shell_trust(op);
         assert!(
             allow_shell,

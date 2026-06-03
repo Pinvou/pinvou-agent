@@ -70,6 +70,11 @@ pub async fn chat(
     if let Some(injected) = store.take_pending_skill_instruction(&sid) {
         full = format!("{injected}\n\n---\n\n{full}");
     }
+    // Side B 卡片池: 加持后首条消息一次性 prepend 完整人设 body(agency-agents-zh)。
+    // 之后每 turn 只靠 equip_anchor 轻锚点维持身份(EnginePool 注入),不再重灌 body。
+    if let Some(body) = store.take_pending_persona_body(&sid) {
+        full = format!("{body}\n\n---\n\n{full}");
+    }
     if let Some(skill) = store.active_skill(&sid) {
         let reminder = format!(
             "<system-reminder>\n\
@@ -656,6 +661,143 @@ pub async fn get_mode_state(
     store: State<'_, SessionStore>,
 ) -> Result<SessionModeState, String> {
     Ok(store.mode_state(&session_id))
+}
+
+// ===================== 卡片池: 专家面具 =====================
+
+/// 列出全部专家卡的**摘要**（不含 body，~200 卡）。前端进卡片池拉一次缓存。
+/// Side B: body 太大（~6K 字/张），不随 list 下发，加持/详情时按需取。
+#[tauri::command]
+pub async fn list_personas() -> Result<Vec<crate::personas::PersonaSummary>, String> {
+    Ok(crate::personas::all_summaries())
+}
+
+/// 读单个专家的完整人设正文（详情 modal 预览用）。
+#[tauri::command]
+pub async fn read_persona_body(persona_id: String) -> Result<String, String> {
+    crate::personas::get(&persona_id)
+        .map(|c| c.body.clone())
+        .ok_or_else(|| format!("未知专家面具: {persona_id}"))
+}
+
+/// 给当前 session 加持一张专家面具（点卡片"加持给 AI"）。
+/// Side B: 存 persona_id + 把完整 body 挂为 pending（下一条 chat 一次性 prepend）；
+/// 之后每 turn 只注入轻锚点。返回摘要供前端渲染挂件 + 系统消息。
+#[tauri::command]
+pub async fn equip_persona(
+    session_id: String,
+    persona_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<crate::personas::PersonaSummary, String> {
+    let card = crate::personas::get(&persona_id)
+        .ok_or_else(|| format!("未知专家面具: {persona_id}"))?;
+    let summary = card.summary();
+    store.set_pending_persona_body(&session_id, Some(crate::personas::equip_body_injection(&card)));
+    store.set_active_persona(&session_id, Some(persona_id));
+    Ok(summary)
+}
+
+// ── 用户自创卡 CRUD ────────────────────────────────────────────────
+
+/// 前端建/改卡传入的字段(不含 id/source —— create 由后端生成 id;update 用 persona_id)。
+#[derive(Debug, serde::Deserialize)]
+pub struct PersonaInput {
+    pub name: String,
+    pub dept: String,
+    #[serde(default)]
+    pub emoji: String,
+    #[serde(default)]
+    pub color: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub body: String,
+}
+
+impl PersonaInput {
+    fn into_card(self, id: String) -> crate::personas::PersonaCard {
+        crate::personas::PersonaCard {
+            id,
+            dept: self.dept,
+            name: self.name,
+            description: self.description,
+            emoji: if self.emoji.is_empty() { "🃏".into() } else { self.emoji },
+            color: if self.color.is_empty() { "#7C3AED".into() } else { self.color },
+            body: self.body,
+            source: "user".into(),
+        }
+    }
+}
+
+/// 新建自制卡 → 写 `~/.pinvou3/user/personas/<id>.json`,返回摘要(含生成的 id)。
+#[tauri::command]
+pub async fn create_persona(
+    input: PersonaInput,
+) -> Result<crate::personas::PersonaSummary, String> {
+    crate::personas::create_user_persona(input.into_card(String::new()))
+}
+
+/// 编辑自制卡(persona_id 必须是 user- 前缀)。
+#[tauri::command]
+pub async fn update_persona(
+    persona_id: String,
+    input: PersonaInput,
+) -> Result<crate::personas::PersonaSummary, String> {
+    crate::personas::update_user_persona(input.into_card(persona_id))
+}
+
+/// 删除自制卡。
+#[tauri::command]
+pub async fn delete_persona(persona_id: String) -> Result<(), String> {
+    crate::personas::delete_user_persona(&persona_id)
+}
+
+/// 保存某 session 的卡牌加持/卸下事件时间线(sidecar,不进 messages)。
+/// events 是前端定义的 opaque JSON 数组,后端只透明落盘。
+#[tauri::command]
+pub async fn save_session_persona_events(
+    session_id: String,
+    events: serde_json::Value,
+) -> Result<(), String> {
+    let path = crate::bridge::paths::session_persona_events(&session_id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("建 session 目录失败: {e}"))?;
+    }
+    let json = serde_json::to_string(&events).map_err(|e| format!("序列化失败: {e}"))?;
+    std::fs::write(&path, json).map_err(|e| format!("写卡牌事件失败: {e}"))
+}
+
+/// 读某 session 的卡牌事件时间线(无则返回空数组)。
+#[tauri::command]
+pub async fn get_session_persona_events(session_id: String) -> Result<serde_json::Value, String> {
+    let path = crate::bridge::paths::session_persona_events(&session_id);
+    match std::fs::read_to_string(&path) {
+        Ok(txt) => Ok(serde_json::from_str(&txt).unwrap_or_else(|_| serde_json::json!([]))),
+        Err(_) => Ok(serde_json::json!([])),
+    }
+}
+
+/// 摘下当前 session 的专家面具（点挂件取消 / 卡片"已加持"再点）。
+#[tauri::command]
+pub async fn unequip_persona(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    store.set_active_persona(&session_id, None);
+    store.set_pending_persona_body(&session_id, None);
+    Ok(())
+}
+
+/// 查当前 session 加持的专家面具摘要（前端启动 / 切 session 时拉，用于还原挂件）。
+/// 无加持返回 None。
+#[tauri::command]
+pub async fn get_active_persona(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<Option<crate::personas::PersonaSummary>, String> {
+    Ok(store
+        .active_persona_id(&session_id)
+        .and_then(|pid| crate::personas::get(&pid).map(|c| c.summary())))
 }
 
 /// 用户点 💡 进入 Plan 流程：设 mode=Plan + phase=Planning。
