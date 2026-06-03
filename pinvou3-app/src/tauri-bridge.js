@@ -1896,6 +1896,7 @@
       await createNewSession();
     }
     await refreshSuperPerm();
+    loadPersonas(); // 预载卡池(让聊天里草稿"已存入"判定能查到同名自制卡), fire-and-forget
     pollBackendStatus();
     setInterval(pollBackendStatus, 10000);
     notify();

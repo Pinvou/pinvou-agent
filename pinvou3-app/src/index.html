@@ -1375,23 +1375,33 @@
       if (!d || typeof d !== 'object' || !d.name || !d.body) return null;
       return { name: d.name, dept: d.dept || 'specialized', emoji: d.emoji || '🃏', color: d.color || '', description: d.description || '', body: d.body };
     }
-    // 扫所有 code 块,任何能解析成「含 name+body 的 JSON」的就当卡牌草稿。
+    // 扫所有 ```代码块,任何能解析成「含 name+body 的 JSON」的就当卡牌草稿。
     // 不强求 ```persona-card 标签 —— 小模型常打 ```json 或不打标签,放宽识别更鲁棒。
     // 形状校验(name+body)避免把别的 JSON 误判成草稿。明确 persona-card 标签的优先。
-    function extractPersonaDraft(html) {
-      if (!html || html.indexOf('{') < 0) return null;
-      var re = /<code([^>]*)>([\s\S]*?)<\/code>/g, m, fallback = null;
+    // 返回 { draft, html }:html 是把那段原始 JSON 块抹掉后的版本(用户只看友好草稿卡,不看机器载荷)。
+    function parsePersonaDraft(html) {
+      if (!html || html.indexOf('{') < 0) return { draft: null, html: html };
+      var re = /<pre[^>]*>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g, m, chosen = null, chosenDraft = null;
       while ((m = re.exec(html))) {
         var raw = htmlUnescape(m[2]).trim();
         if (raw.charAt(0) !== '{') continue;
         try {
           var draft = asDraft(JSON.parse(raw));
           if (!draft) continue;
-          if (/persona-card/.test(m[1])) return draft; // 明确标签优先返回
-          if (!fallback) fallback = draft;
+          if (/persona-card/.test(m[1])) { chosen = m[0]; chosenDraft = draft; break; } // 明确标签优先
+          if (!chosenDraft) { chosen = m[0]; chosenDraft = draft; }
         } catch (e) { /* 非 JSON 块,跳过 */ }
       }
-      return fallback;
+      if (!chosenDraft) return { draft: null, html: html };
+      return { draft: chosenDraft, html: html.replace(chosen, '') };
+    }
+    // 流式中: JSON 还没闭合无法解析,把正在生成的卡牌代码块折叠成占位,避免原始 JSON 一直刷屏。
+    function hideStreamingDraft(html) {
+      if (!html) return html;
+      var m = /<pre[^>]*>\s*<code[^>]*persona-card[\s\S]*$/i.exec(html); // persona-card 标签块(到末尾)
+      if (!m) m = /<pre[^>]*>\s*<code[^>]*>\s*\{[\s\S]*?(?:name|&quot;name)[\s\S]*$/i.exec(html); // 兜底: 以 { 开头且含 name 的块
+      if (!m) return html;
+      return html.slice(0, m.index) + '<div style="margin-top:.5em;opacity:.7;font-size:13px">🃏 正在设计卡牌…</div>';
     }
 
     const ChatBubble = ({ item, theme, onPrefill, editable, onOpenEditor }) => {
@@ -1426,27 +1436,29 @@
             </div>
           );
         }
+        const pd = item.streaming ? { draft: null, html: hideStreamingDraft(html) } : parsePersonaDraft(html);
+        // 草稿是否已存入(按名字在已加载的卡池里找同名自制卡 → 派生"已存入",免单独持久化)
+        const draftSaved = pd.draft && bridge.available && bridge.getPersonas
+          && bridge.getPersonas().some(function(c){ return c && c.source === 'user' && c.name === pd.draft.name; });
         return (
           <div className="flex justify-start">
             <div className={`max-w-[95%] ${isDark ? 'dark-code' : 'light-code'}`}>
               <div
                 className={`msg-md text-[15px] leading-relaxed ${item.streaming ? 'streaming-cursor' : ''} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}
-                dangerouslySetInnerHTML={{ __html: item.html || '' }}
+                dangerouslySetInnerHTML={{ __html: pd.html || '' }}
               />
-              {!item.streaming && (() => {
-                const draft = extractPersonaDraft(item.html);
-                if (!draft) return null;
-                return (
-                  <div className="mt-2 rounded-xl border p-3 flex items-center gap-3 max-w-[440px]" style={{ background: isDark?'rgba(124,58,237,.10)':'rgba(124,58,237,.06)', borderColor:'rgba(149,128,255,.45)' }}>
-                    <div className="w-9 h-9 rounded-lg flex items-center justify-center text-[18px] shrink-0" style={{ background:'rgba(149,128,255,.2)' }}>{draft.emoji}</div>
-                    <div className="min-w-0 flex-1">
-                      <div className={`text-[13px] font-semibold ${isDark?'text-[#E3E3E3]':'text-[#1F1F1F]'}`}>🃏 卡牌草稿: {draft.name}</div>
-                      <div className="text-[11px] truncate" style={{ color: isDark?'#9aa0a6':'#5f6368' }}>{draft.description || (DEPT_LABELS[draft.dept]||draft.dept)}</div>
-                    </div>
-                    <button onClick={()=> onOpenEditor && onOpenEditor(draft)} className="shrink-0 px-3 py-1.5 rounded-lg text-[12px] font-semibold text-white" style={{ background:'#7C3AED' }}>存入卡牌池</button>
+              {pd.draft ? (
+                <div className="mt-2 rounded-xl border p-3 flex items-center gap-3 max-w-[460px]" style={{ background: isDark?'rgba(124,58,237,.10)':'rgba(124,58,237,.06)', borderColor:'rgba(149,128,255,.45)' }}>
+                  <div className="w-9 h-9 rounded-lg flex items-center justify-center text-[18px] shrink-0" style={{ background:'rgba(149,128,255,.2)' }}>{pd.draft.emoji}</div>
+                  <div className="min-w-0 flex-1">
+                    <div className={`text-[13px] font-semibold ${isDark?'text-[#E3E3E3]':'text-[#1F1F1F]'}`}>🃏 卡牌草稿: {pd.draft.name}</div>
+                    <div className="text-[11px] truncate" style={{ color: isDark?'#9aa0a6':'#5f6368' }}>{pd.draft.description || (DEPT_LABELS[pd.draft.dept]||pd.draft.dept)}</div>
                   </div>
-                );
-              })()}
+                  {draftSaved
+                    ? <span className="shrink-0 px-3 py-1.5 rounded-lg text-[12px] font-semibold" style={{ background:'rgba(52,168,83,.16)', color:'#34A853' }} title="已有同名自制卡">✅ 已存入</span>
+                    : <button onClick={()=> onOpenEditor && onOpenEditor(pd.draft)} className="shrink-0 px-3 py-1.5 rounded-lg text-[12px] font-semibold text-white" style={{ background:'#7C3AED' }} title="查看完整内容并存入卡牌池">查看 / 存入</button>}
+                </div>
+              ) : null}
               {item.time && !item.streaming && (
                 <div className={`text-[11px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{item.time}</div>
               )}
@@ -2599,6 +2611,7 @@
       const [toast, setToast] = useState(null);
       const [editor, setEditor] = useState(null); // null | { initial }
       const [myOnly, setMyOnly] = useState(false); // 「我的卡牌」facet
+      const [confirmDelId, setConfirmDelId] = useState(null); // 卡上删除二次确认
 
       useEffect(() => { if (bridge.available) bridge.loadPersonas(); }, []);
       useEffect(() => { setVisible(60); }, [query, selDept, myOnly]);
@@ -2621,6 +2634,8 @@
       function toggle(arr, setArr, v) { setArr(arr.indexOf(v)>=0 ? arr.filter(x=>x!==v) : arr.concat([v])); }
       function resetFacets() { setSelDept([]); setQuery(''); setMyOnly(false); }
       function editCard(card, e){ if(e) e.stopPropagation(); setEditor({ initial: card }); }
+      function doDelete(card, e){ if(e) e.stopPropagation(); setConfirmDelId(null);
+        Promise.resolve(bridge.deletePersona(card.id)).then(function(){ setToast('已删除: '+card.name); }).catch(function(){ setToast('删除失败'); }); }
       function onMove(e){ const el=e.currentTarget; const r=el.getBoundingClientRect(); const px=(e.clientX-r.left)/r.width, py=(e.clientY-r.top)/r.height;
         el.style.transform=`perspective(900px) rotateX(${(0.5-py)*9}deg) rotateY(${(px-0.5)*11}deg) translateY(-3px)`;
         el.style.setProperty('--mx',(px*100)+'%'); el.style.setProperty('--my',(py*100)+'%'); }
@@ -2722,7 +2737,19 @@
                           </div>
                           <p className="text-[11.5px] leading-snug flex-1" style={{ ...CLAMP3, color: isDark?'#9aa0a6':'#5f6368' }} title={c.description}>{c.description||'(无简介)'}</p>
                           <div className="flex items-center justify-between text-[10.5px] font-mono gap-2">
-                            <span className="truncate" style={{ color: isDark?'#80868b':'#9aa0a6' }}>{isUser ? <button onClick={(e)=>editCard(c,e)} className="hover:underline" style={{color: isDark?'#80868b':'#9aa0a6'}}>✎ 编辑</button> : (DEPT_LABELS[c.dept]||c.dept)}</span>
+                            <span className="truncate flex items-center gap-2" style={{ color: isDark?'#80868b':'#9aa0a6' }}>
+                              {!isUser ? (DEPT_LABELS[c.dept]||c.dept)
+                                : confirmDelId === c.id
+                                  ? <span className="flex items-center gap-1.5" onClick={(e)=>e.stopPropagation()}>
+                                      <span style={{color:'#F28B82'}}>删?</span>
+                                      <button onClick={(e)=>doDelete(c,e)} style={{color:'#F28B82'}}>✓</button>
+                                      <button onClick={(e)=>{e.stopPropagation();setConfirmDelId(null);}} style={{color:isDark?'#9aa0a6':'#5f6368'}}>✗</button>
+                                    </span>
+                                  : <>
+                                      <button onClick={(e)=>editCard(c,e)} className="hover:underline">✎ 编辑</button>
+                                      <button onClick={(e)=>{e.stopPropagation();setConfirmDelId(c.id);}} className="hover:underline" title="删除这张自制卡">🗑</button>
+                                    </>}
+                            </span>
                             <button onClick={(e)=>equip(c,e)} className="shrink-0 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors"
                               style={ eq ? { background:'rgba(255,180,30,.16)', color:'#ffae1e' } : { background: isDark?'rgba(124,58,237,.18)':'rgba(124,58,237,.10)', color:'#9580FF' } }>
                               {eq ? '取消' : '加持给 AI'}
