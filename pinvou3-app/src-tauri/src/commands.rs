@@ -692,9 +692,64 @@ pub async fn equip_persona(
     let card = crate::personas::get(&persona_id)
         .ok_or_else(|| format!("未知专家面具: {persona_id}"))?;
     let summary = card.summary();
-    store.set_pending_persona_body(&session_id, Some(crate::personas::equip_body_injection(card)));
+    store.set_pending_persona_body(&session_id, Some(crate::personas::equip_body_injection(&card)));
     store.set_active_persona(&session_id, Some(persona_id));
     Ok(summary)
+}
+
+// ── 用户自创卡 CRUD ────────────────────────────────────────────────
+
+/// 前端建/改卡传入的字段(不含 id/source —— create 由后端生成 id;update 用 persona_id)。
+#[derive(Debug, serde::Deserialize)]
+pub struct PersonaInput {
+    pub name: String,
+    pub dept: String,
+    #[serde(default)]
+    pub emoji: String,
+    #[serde(default)]
+    pub color: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub body: String,
+}
+
+impl PersonaInput {
+    fn into_card(self, id: String) -> crate::personas::PersonaCard {
+        crate::personas::PersonaCard {
+            id,
+            dept: self.dept,
+            name: self.name,
+            description: self.description,
+            emoji: if self.emoji.is_empty() { "🃏".into() } else { self.emoji },
+            color: if self.color.is_empty() { "#7C3AED".into() } else { self.color },
+            body: self.body,
+            source: "user".into(),
+        }
+    }
+}
+
+/// 新建自制卡 → 写 `~/.pinvou3/user/personas/<id>.json`,返回摘要(含生成的 id)。
+#[tauri::command]
+pub async fn create_persona(
+    input: PersonaInput,
+) -> Result<crate::personas::PersonaSummary, String> {
+    crate::personas::create_user_persona(input.into_card(String::new()))
+}
+
+/// 编辑自制卡(persona_id 必须是 user- 前缀)。
+#[tauri::command]
+pub async fn update_persona(
+    persona_id: String,
+    input: PersonaInput,
+) -> Result<crate::personas::PersonaSummary, String> {
+    crate::personas::update_user_persona(input.into_card(persona_id))
+}
+
+/// 删除自制卡。
+#[tauri::command]
+pub async fn delete_persona(persona_id: String) -> Result<(), String> {
+    crate::personas::delete_user_persona(&persona_id)
 }
 
 /// 摘下当前 session 的专家面具（点挂件取消 / 卡片"已加持"再点）。

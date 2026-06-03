@@ -1790,6 +1790,10 @@
   // 懒加载全部专家卡(1078 张),前端缓存供 facet/搜索。只拉一次。
   async function loadPersonas() {
     if (state.personaPool.loadState === "ready" || state.personaPool.loadState === "loading") return;
+    await refreshPersonas();
+  }
+  // 强制重拉卡牌列表(自创卡增删改后调,让池子立即反映)。
+  async function refreshPersonas() {
     state.personaPool.loadState = "loading"; notify();
     try {
       personaPoolCache = await invoke("list_personas");
@@ -1799,6 +1803,23 @@
       console.warn("list_personas failed", e);
     }
     notify();
+  }
+  // ── 用户自创卡 CRUD(写盘后刷新缓存) ──
+  async function createPersona(input) {
+    var sum = await invoke("create_persona", { input: input });
+    await refreshPersonas();
+    return sum;
+  }
+  async function updatePersona(personaId, input) {
+    var sum = await invoke("update_persona", { personaId: personaId, input: input });
+    await refreshPersonas();
+    // 若改的正是当前 session 加持的卡, 同步挂件显示
+    if (state.activePersona && state.activePersona.id === personaId) { state.activePersona = sum; notify(); }
+    return sum;
+  }
+  async function deletePersona(personaId) {
+    await invoke("delete_persona", { personaId: personaId });
+    await refreshPersonas();
   }
   // 给当前 session 加持一张专家面具。后端存 persona_id + 每 turn 注入人设;
   // 前端记 activePersona(挂件) + 发一条系统消息播报。
@@ -1919,6 +1940,10 @@
     readPersonaBody: function (id) { return invoke("read_persona_body", { personaId: id }); }, // Side B: 详情拉完整正文
     equipPersona: equipPersona,
     unequipPersona: unequipPersona,
+    // 用户自创卡
+    createPersona: createPersona,
+    updatePersona: updatePersona,
+    deletePersona: deletePersona,
   };
 
   // Auto-init after DOM ready

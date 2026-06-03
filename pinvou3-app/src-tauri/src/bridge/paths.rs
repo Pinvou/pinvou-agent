@@ -60,6 +60,11 @@ pub fn user_instructions() -> PathBuf {
 pub fn user_skills_dir() -> PathBuf {
     user_root().join("skills")
 }
+/// `~/.pinvou3/user/personas/` —— 用户自创专家卡牌（卡牌池）。每张卡一个
+/// `<id>.json`（PersonaCard 序列化）。跟 bundle 内嵌的内置卡分离，**永不被覆写**。
+pub fn user_personas_dir() -> PathBuf {
+    user_root().join("personas")
+}
 
 /// `~/.deepseek/skills/` — DeepSeek-TUI 标准用户 skills 目录,h3c-ppt /
 /// skill-creator 这种由 `/skill install` 装的 skill 都在这里。跟
@@ -122,6 +127,7 @@ pub fn default_session_artifacts_dir() -> PathBuf {
 pub fn ensure_dirs() -> std::io::Result<()> {
     std::fs::create_dir_all(bundle_skills_dir())?;
     std::fs::create_dir_all(user_skills_dir())?;
+    std::fs::create_dir_all(user_personas_dir())?;
     std::fs::create_dir_all(workspace_dir())?;
     std::fs::create_dir_all(default_session_artifacts_dir())?;
     Ok(())

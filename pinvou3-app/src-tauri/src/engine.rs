@@ -476,7 +476,7 @@ fn spawn_event_forwarder(
                                 let persona_reminder = store
                                     .active_persona_id(&active_id)
                                     .and_then(|pid| crate::personas::get(&pid))
-                                    .map(crate::personas::equip_anchor);
+                                    .map(|c| crate::personas::equip_anchor(&c));
                                 tauri::async_runtime::spawn(async move {
                                     let op = bridge_clone.build_send_message_op(
                                         "继续执行下一步,记得用 write_file/append_file/edit_file/exec_shell \

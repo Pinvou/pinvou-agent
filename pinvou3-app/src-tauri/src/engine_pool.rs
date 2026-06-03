@@ -141,7 +141,7 @@ impl EnginePool {
             .store
             .active_persona_id(session_id)
             .and_then(|pid| crate::personas::get(&pid))
-            .map(crate::personas::equip_anchor);
+            .map(|c| crate::personas::equip_anchor(&c));
         self.get_or_spawn(session_id)
             .await?
             .send_user_message(content, mode, phase, persona_reminder)
