@@ -134,9 +134,16 @@ impl EnginePool {
         mode: AppMode,
         phase: PlanPhase,
     ) -> Result<()> {
+        // 卡片池: 该 session 加持了专家面具时,解析成 per-turn reminder 一起注入。
+        // 在 pool 层解析,所有上层调用(chat / accept_plan / pinvou_review_chat)自动带上 persona。
+        let persona_reminder = self
+            .store
+            .active_persona_id(session_id)
+            .and_then(|pid| crate::personas::get(&pid))
+            .map(crate::personas::equip_reminder);
         self.get_or_spawn(session_id)
             .await?
-            .send_user_message(content, mode, phase)
+            .send_user_message(content, mode, phase, persona_reminder)
             .await
     }
 

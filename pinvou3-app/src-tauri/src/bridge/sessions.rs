@@ -256,6 +256,21 @@ impl SessionStore {
         }
     }
 
+    // ===================== 卡片池: 专家面具加持 =====================
+
+    /// 给指定 session 加持/摘下专家面具。`Some(id)` 加持,`None` 摘下。
+    /// 仅存 persona id;每 turn `EnginePool::send_user_message` 解析成 reminder 注入。
+    pub fn set_active_persona(&self, id: &str, persona_id: Option<String>) {
+        let mut m = self.mode_states.write();
+        let entry = m.entry(id.to_string()).or_default();
+        entry.active_persona = persona_id;
+    }
+
+    /// 取该 session 当前加持的专家面具 id(给挂件渲染 + per-turn 注入用)。
+    pub fn active_persona_id(&self, id: &str) -> Option<String> {
+        self.mode_states.read().get(id)?.active_persona.clone()
+    }
+
     // ===================== M2: auto-continue counter =====================
 
     /// 取当前 session 的 auto-continue 计数。

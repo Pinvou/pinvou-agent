@@ -86,7 +86,15 @@
       bindings: {},      // session_id → skill_name
       demo: null,        // { open, name, loading, kind, content, error, description, duration }
     },
+    // 卡片池: 专家面具。activePersona = 当前 session 加持的专家卡(完整对象)或 null,
+    // 驱动聊天室右上角挂件。
+    activePersona: null,
+    // personaPool 只放轻量元信息(loadState),1078 张卡放模块级 personaPoolCache,
+    // 不进 notify() 的 JSON 深拷贝(否则每个流式 token 都克隆 ~950KB,卡顿)。
+    personaPool: { loadState: "idle" }, // idle | loading | ready | error
   };
+  // 卡片池 1078 张卡的前端缓存。只读,通过 getPersonas() 取引用,不走 notify 快照。
+  var personaPoolCache = [];
 
   // internal streaming state
   var currentStreamText = "";
@@ -116,6 +124,8 @@
       modeState: { mode: "yolo", plan_phase: "none", pinvou_review_enabled: false },
       thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
       tokens: { input: 0, max: maxModelLen },
+      activePersona: null, // 卡片池: 该 session 加持的专家面具(挂件用)
+
       stream: {
         currentStreamText: "", currentStreamId: 0, pendingAssistantText: "",
         pendingAssistantBlocks: [], itemIdSeq: 0, toolMeta: {},
@@ -133,6 +143,7 @@
     buf.messages = state.messages; buf.chatItems = state.chatItems; buf.artifacts = state.artifacts;
     buf.busy = state.busy; buf.planSnapshot = state.planSnapshot; buf.modeState = state.modeState;
     buf.thinking = state.thinking; buf.tokens = state.tokens; buf.queued = state.queued;
+    buf.activePersona = state.activePersona;
     buf.stream = {
       currentStreamText: currentStreamText, currentStreamId: currentStreamId,
       pendingAssistantText: pendingAssistantText, pendingAssistantBlocks: pendingAssistantBlocks,
@@ -146,6 +157,7 @@
     state.messages = buf.messages; state.chatItems = buf.chatItems; state.artifacts = buf.artifacts;
     state.busy = buf.busy; state.planSnapshot = buf.planSnapshot; state.modeState = buf.modeState;
     state.thinking = buf.thinking; state.tokens = buf.tokens; state.queued = buf.queued || [];
+    state.activePersona = buf.activePersona || null;
     var s = buf.stream || {};
     currentStreamText = s.currentStreamText || ""; currentStreamId = s.currentStreamId || 0;
     pendingAssistantText = s.pendingAssistantText || ""; pendingAssistantBlocks = s.pendingAssistantBlocks || [];
@@ -286,6 +298,7 @@
       await refreshHistoryList();
       await syncModeState();
       await syncSessionSkill();
+      await syncActivePersona();
       notify();
     } catch (e) {
       addSystemItem("⚠️ 新建对话失败: " + e);
@@ -301,6 +314,7 @@
       switchActiveTo(id, null);
       await syncModeState();
       await syncSessionSkill();
+      await syncActivePersona();
       notify();
       reconcileArtifacts(id); // 对账磁盘产物(fire-and-forget)
       return;
@@ -320,6 +334,7 @@
       rerenderFromMessages();
       await syncModeState();
       await syncSessionSkill();
+      await syncActivePersona();
       notify();
       reconcileArtifacts(id); // 对账磁盘产物(修重启/跟踪遗漏导致的面板缺文件)
     } catch (e) {
@@ -1771,6 +1786,49 @@
     } catch (e) { /* 旧 session 无绑定，忽略 */ }
   }
 
+  // ── 卡片池: 专家面具加持 ─────────────────────────────────────────
+  // 懒加载全部专家卡(1078 张),前端缓存供 facet/搜索。只拉一次。
+  async function loadPersonas() {
+    if (state.personaPool.loadState === "ready" || state.personaPool.loadState === "loading") return;
+    state.personaPool.loadState = "loading"; notify();
+    try {
+      personaPoolCache = await invoke("list_personas");
+      state.personaPool.loadState = "ready";
+    } catch (e) {
+      personaPoolCache = []; state.personaPool.loadState = "error";
+      console.warn("list_personas failed", e);
+    }
+    notify();
+  }
+  // 给当前 session 加持一张专家面具。后端存 persona_id + 每 turn 注入人设;
+  // 前端记 activePersona(挂件) + 发一条系统消息播报。
+  async function equipPersona(personaId) {
+    if (!state.activeSessionId) { addSystemItem("⚠️ 请先打开或新建一个对话再加持专家"); return; }
+    try {
+      var card = await invoke("equip_persona", { sessionId: state.activeSessionId, personaId: personaId });
+      state.activePersona = card;
+      addChatItem({ type: "persona_equip", card: card, time: timeStr() });
+      notify();
+      return card;
+    } catch (e) { addSystemItem("⚠️ 加持失败: " + e); return null; }
+  }
+  // 摘下当前 session 的专家面具。
+  async function unequipPersona() {
+    if (!state.activeSessionId) return;
+    var prev = state.activePersona;
+    try { await invoke("unequip_persona", { sessionId: state.activeSessionId }); } catch (e) { /* 忽略,前端照样摘 */ }
+    state.activePersona = null;
+    if (prev) addChatItem({ type: "system", text: "🎴 已摘下专家面具: " + prev.cn_name, time: timeStr() });
+    notify();
+  }
+  // 切换/重载 session 后,从后端拉该 session 的加持状态还原挂件(backend 是真相)。
+  async function syncActivePersona() {
+    if (!state.activeSessionId) { state.activePersona = null; return; }
+    try {
+      state.activePersona = await invoke("get_active_persona", { sessionId: state.activeSessionId }) || null;
+    } catch (e) { /* 旧 session 无加持,忽略 */ }
+  }
+
   // ── Init ─────────────────────────────────────────────────────────
   async function init() {
     await loadSettings();
@@ -1848,6 +1906,11 @@
     openDemo: openDemo,
     closeDemo: closeDemo,
     setCurrentPhase: setCurrentPhase,
+    // 卡片池: 专家面具
+    loadPersonas: loadPersonas,
+    getPersonas: function () { return personaPoolCache; }, // 返回引用(只读),不进 notify 快照
+    equipPersona: equipPersona,
+    unequipPersona: unequipPersona,
   };
 
   // Auto-init after DOM ready

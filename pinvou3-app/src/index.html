@@ -50,6 +50,27 @@
 
     /* Thinking animation */
     @keyframes spin-braille { 0%{content:"⠋"} 10%{content:"⠙"} 20%{content:"⠹"} 30%{content:"⠸"} 40%{content:"⠼"} 50%{content:"⠴"} 60%{content:"⠦"} 70%{content:"⠧"} 80%{content:"⠇"} 90%{content:"⠏"} }
+
+    /* ===== 卡片池: tilt / spotlight / borderglow / 挂件 ===== */
+    .ap-card { transform-style: preserve-3d; transition: transform .18s cubic-bezier(.2,.8,.2,1), box-shadow .25s, border-color .25s; will-change: transform; position: relative; }
+    /* 鼠标跟随高光(--mx/--my 由 JS 注入) */
+    .ap-card::before {
+      content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none; opacity:0;
+      transition:opacity .25s; z-index:1;
+      background: radial-gradient(380px circle at var(--mx,50%) var(--my,50%), rgba(255,255,255,.10), transparent 42%);
+    }
+    .ap-card:hover::before { opacity:1; }
+    .ap-card > * { position:relative; z-index:2; }
+    /* A 档金色 spotlight 额外柔光 */
+    .ap-card.tier-A:hover { box-shadow: 0 0 0 1px rgba(255,191,0,.35), 0 14px 40px -12px rgba(255,191,0,.30); }
+    /* 已加持: 金色流转边框 */
+    @keyframes ap-borderglow { 0%{box-shadow:0 0 0 1px rgba(255,170,0,.9),0 0 18px -2px rgba(255,170,0,.55)} 50%{box-shadow:0 0 0 1px rgba(255,210,80,1),0 0 26px 0 rgba(255,190,40,.75)} 100%{box-shadow:0 0 0 1px rgba(255,170,0,.9),0 0 18px -2px rgba(255,170,0,.55)} }
+    .ap-card.equipped { border-color: rgba(255,180,30,.95) !important; animation: ap-borderglow 2.4s ease-in-out infinite; }
+    /* 挂件(lanyard) 入场 + 悬挂摆动 */
+    @keyframes lanyard-drop { 0%{ transform: translateY(-120%) rotate(-3deg); opacity:0 } 60%{ transform: translateY(6%) rotate(1.5deg) } 100%{ transform: translateY(0) rotate(0); opacity:1 } }
+    @keyframes lanyard-sway { 0%,100%{ transform: rotate(-1.3deg) } 50%{ transform: rotate(1.3deg) } }
+    .lanyard-wrap { animation: lanyard-drop .55s cubic-bezier(.2,.9,.3,1.2) both; transform-origin: top center; }
+    .lanyard-card { animation: lanyard-sway 4.5s ease-in-out infinite; transform-origin: top center; }
   </style>
 </head>
 <body class="m-0 p-0">
@@ -98,6 +119,8 @@
     const XCircle = (p) => <I {...p}><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></I>;
     const Wrench = (p) => <I {...p}><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76Z"/></I>;
     const User = (p) => <I {...p}><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></I>;
+    const Layers = (p) => <I {...p}><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 12.5-9.17 4.17a2 2 0 0 1-1.66 0L2 12.5"/><path d="m22 17.5-9.17 4.17a2 2 0 0 1-1.66 0L2 17.5"/></I>;
+    const X = (p) => <I {...p}><path d="M18 6 6 18"/><path d="m6 6 12 12"/></I>;
 
     /* ==========================================
        i18n dictionary — 1:1 from 前端.html
@@ -105,7 +128,7 @@
 
     const dict = {
       zh: {
-        newChat: '新对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', recent: '近期', settings: '设置', localEnv: '本地环境',
+        newChat: '新对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', cardPool: '卡片池', recent: '近期', settings: '设置', localEnv: '本地环境',
         sysStatus: '系统状态', sysDesc: '实时性能与资源指标', gpu: '图形处理器 (GPU)', gpuUnavail: '状态不可用', noSmi: '未检测到 nvidia-smi',
         vram: '显存占用', core: '计算核心', temp: '温度', power: '功耗', unifiedMem: '统一内存架构',
         ram: '系统内存 (RAM)', used: '已用', physical: '物理内存', total: '总计', swap: '交换空间',
@@ -145,7 +168,7 @@
         searchPlaceholder: 'Search chats'
       },
       en: {
-        newChat: 'New chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', recent: 'Recent', settings: 'Settings', localEnv: 'Local Env',
+        newChat: 'New chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', cardPool: 'Card Pool', recent: 'Recent', settings: 'Settings', localEnv: 'Local Env',
         sysStatus: 'System Status', sysDesc: 'Real-time performance metrics', gpu: 'GPU', gpuUnavail: 'Unavailable', noSmi: 'nvidia-smi not found',
         vram: 'VRAM Usage', core: 'Core Usage', temp: 'Temp', power: 'Power', unifiedMem: 'Unified Memory',
         ram: 'System RAM', used: 'Used', physical: 'Physical RAM', total: 'Total', swap: 'Swap Space',
@@ -487,6 +510,13 @@
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => setCurrentView('workflow')}
               />
+              <NavItem
+                icon={<Layers size={18} />} label={t.cardPool}
+                active={currentView === 'cardpool'}
+                theme={activeTheme}
+                isSidebarOpen={isSidebarOpen}
+                onClick={() => setCurrentView('cardpool')}
+              />
             </div>
 
             {/* Recents — 独立 flex-1 + overflow-y-auto,只在展开态显示。
@@ -580,7 +610,11 @@
               />
             )}
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} />}
+            {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} />}
             {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} />}
+            {currentView === 'chat' && bs && bs.activePersona && (
+              <Lanyard persona={bs.activePersona} isDark={activeTheme === 'dark'} onRemove={() => bridge.available && bridge.unequipPersona()} />
+            )}
             {currentView === 'search' && <SearchView theme={activeTheme} history={chatHistory} t={t} onSelect={handleSwitchSession} />}
 
           </div>
@@ -1361,6 +1395,28 @@
         return <ToolCard item={item} theme={theme} />;
       }
 
+      if (item.type === 'persona_equip') {
+        const c = item.card || {};
+        const tc = (typeof TIER_COLOR !== 'undefined' && TIER_COLOR[c.tier]) || '#ffae1e';
+        return (
+          <div className="flex flex-col gap-1">
+            <div className="text-[12px] font-semibold" style={{ color: isDark ? '#9aa0a6' : '#5f6368' }}>系统</div>
+            <div className="rounded-xl border p-4 max-w-[640px]" style={{ background: isDark ? 'rgba(255,180,30,.06)' : 'rgba(255,180,30,.08)', borderColor: 'rgba(255,180,30,.35)' }}>
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-lg flex items-center justify-center text-[18px] shrink-0" style={{ background: (c.color || '#ffae1e') + '22' }}>{c.emoji}</div>
+                <div className={`text-[14px] font-semibold ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>📛 Boss 为你带上专家卡牌加持: {c.cn_name}</div>
+              </div>
+              <div className="text-[12.5px] mt-2 space-y-0.5 font-mono" style={{ color: isDark ? '#C4C7C5' : '#3c4043' }}>
+                <div>领域: {(typeof L1_LABELS !== 'undefined' && L1_LABELS[c.l1]) || c.l1} / {c.l2} · 档位: <span style={{ color: tc, fontWeight: 700 }}>{c.tier}</span> · 评分: {Math.round(c.final_score || 0)}</div>
+                <div className="font-sans">技能简介: {c.short_desc}</div>
+              </div>
+              <div className="text-[11.5px] mt-2" style={{ color: isDark ? '#80868b' : '#757575' }}>
+                (agent_id: {c.id};Claw 将以此专家视角回应,遇到相关任务可调用其专长。)
+              </div>
+            </div>
+          </div>
+        );
+      }
       if (item.type === 'system') {
         return (
           <div className="flex justify-center">
@@ -2247,6 +2303,249 @@
               工作流编排功能正在重新设计，敬请期待。
             </div>
           </div>
+        </div>
+      );
+    };
+
+    // ==========================================
+    // 卡片池 (Persona / AgentPool)
+    // ==========================================
+    const L1_LABELS = { engineering:'工程', business:'商业', design:'设计', marketing:'市场', quality:'质量', product:'产品', 'ai-data':'AI·数据', games:'游戏' };
+    const L1_ORDER = ['engineering','business','design','marketing','quality','product','ai-data','games'];
+    const TIER_COLOR = { A:'#ffbf00', B:'#59fbb5', C:'#9aa0a6' };
+    const CLAMP3 = { display:'-webkit-box', WebkitLineClamp:3, WebkitBoxOrient:'vertical', overflow:'hidden' };
+    const CLAMP2 = { display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical', overflow:'hidden' };
+
+    // 聊天室右上角的专家面具挂件(工牌)。active persona 时悬挂,点 ✕ 摘下。
+    const Lanyard = ({ persona, isDark, onRemove }) => {
+      const tc = TIER_COLOR[persona.tier] || '#9aa0a6';
+      return (
+        <div className="absolute top-0 left-6 z-[15]" style={{ width:148 }}>
+          <div className="lanyard-wrap flex flex-col items-center">
+            {/* 挂绳 + 扣环(留出长度让卡片落到浮动 Artifacts 按钮下方) */}
+            <div style={{ width:2, height:60, background:'linear-gradient(#ff5a3c,#b3361f)' }}></div>
+            <div className="w-2.5 h-2.5 rounded-full -mt-1 mb-1.5" style={{ background: isDark?'#15171a':'#e8eaed', border:'2px solid '+(isDark?'#3c4043':'#bdc1c6') }}></div>
+            <div className="lanyard-card relative rounded-xl p-3 border w-[140px]"
+              style={{ background: isDark?'#1e2022':'#fff', borderColor:'rgba(255,180,30,.85)', boxShadow:'0 10px 30px -8px rgba(0,0,0,.5), 0 0 14px -3px rgba(255,180,30,.5)' }}>
+              <button onClick={onRemove} title="摘下面具" className="absolute -top-2 -right-2 w-5 h-5 rounded-full flex items-center justify-center text-[11px] leading-none"
+                style={{ background: isDark?'#2c2e30':'#eef0f3', color: isDark?'#9aa0a6':'#5f6368', border:'1px solid '+(isDark?'#3c4043':'#dadce0') }}>✕</button>
+              <div className="flex items-center gap-2">
+                <div className="w-9 h-9 rounded-lg flex items-center justify-center text-[18px] shrink-0" style={{ background: persona.color+'22' }}>{persona.emoji}</div>
+                <div className="min-w-0">
+                  <div className={`text-[12px] font-semibold leading-tight ${isDark?'text-[#E3E3E3]':'text-[#1F1F1F]'}`} style={CLAMP2}>{persona.cn_name}</div>
+                  <span className="text-[10px] font-mono font-bold" style={{ color:tc }}>{persona.tier} {Math.round(persona.final_score)}</span>
+                </div>
+              </div>
+              <p className="text-[10px] leading-snug mt-1.5" style={{ ...CLAMP2, color: isDark?'#80868b':'#5f6368' }}>{persona.short_desc}</p>
+              <div className="text-[8.5px] font-mono tracking-[0.18em] text-center mt-2 pt-1.5 border-t" style={{ color:'#ffae1e', borderColor: isDark?'rgba(255,255,255,.06)':'rgba(0,0,0,.06)' }}>CLAW PERSONA</div>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // 双击卡片打开的详情 modal —— 从卡片位置 FLIP 转场到居中面板。
+    const PersonaDetailModal = ({ card, originRect, equipped, onClose, onEquip, isDark }) => {
+      const panelRef = useRef(null);
+      useEffect(() => {
+        const panel = panelRef.current;
+        if (!panel || !originRect) return;
+        const last = panel.getBoundingClientRect();
+        const dx = originRect.left - last.left, dy = originRect.top - last.top;
+        const sx = Math.max(0.05, originRect.width / last.width), sy = Math.max(0.05, originRect.height / last.height);
+        panel.style.transformOrigin = 'top left';
+        panel.style.transform = `translate(${dx}px,${dy}px) scale(${sx},${sy})`;
+        panel.style.opacity = '0.5';
+        panel.getBoundingClientRect(); // 强制 reflow 锁住初始态
+        panel.style.transition = 'transform .34s cubic-bezier(.2,.85,.25,1), opacity .34s';
+        panel.style.transform = 'none';
+        panel.style.opacity = '1';
+      }, []);
+      const tc = TIER_COLOR[card.tier] || '#9aa0a6';
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6" style={{ background:'rgba(0,0,0,.55)' }} onClick={onClose}>
+          <div ref={panelRef} onClick={(e)=>e.stopPropagation()}
+            className="w-full max-w-[560px] max-h-[82vh] overflow-y-auto custom-scrollbar rounded-2xl p-6 border"
+            style={{ background: isDark?'#1e2022':'#ffffff', borderColor: isDark?'rgba(255,255,255,.10)':'rgba(0,0,0,.08)', boxShadow:'0 24px 80px -20px rgba(0,0,0,.6)' }}>
+            <div className="flex items-start gap-4">
+              <div className="w-16 h-16 rounded-xl flex items-center justify-center text-[34px] shrink-0" style={{ background: card.color+'22' }}>{card.emoji}</div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <h2 className={`text-[20px] font-semibold ${isDark?'text-[#E3E3E3]':'text-[#1F1F1F]'}`}>{card.cn_name}</h2>
+                  <span className="text-[11px] font-mono font-bold px-1.5 py-0.5 rounded" style={{ background: tc+'26', color: tc }}>{card.tier} {Math.round(card.final_score)}</span>
+                </div>
+                <div className="text-[12px] font-mono mt-0.5" style={{ color: isDark?'#80868b':'#757575' }}>{card.name} · {L1_LABELS[card.l1]||card.l1} / {card.l2}</div>
+              </div>
+              <button onClick={onClose} className={`shrink-0 p-1 rounded-md ${isDark?'text-[#9aa0a6] hover:bg-[#2c2e30]':'text-[#5f6368] hover:bg-[#eef0f3]'}`}><X size={18}/></button>
+            </div>
+            {card.vibe ? <p className="text-[13px] italic mt-4" style={{ color: isDark?'#A8C7FA':'#0B57D0' }}>“{card.vibe}”</p> : null}
+            <p className="text-[13.5px] leading-relaxed mt-3" style={{ color: isDark?'#C4C7C5':'#3c4043' }}>{card.description || card.short_desc}</p>
+            {card.strengths && card.strengths.length ? (
+              <div className="mt-4">
+                <div className="text-[12px] font-semibold mb-1.5" style={{ color: isDark?'#9aa0a6':'#5f6368' }}>核心专长</div>
+                <ul className="space-y-1">{card.strengths.map((s,i)=>(<li key={i} className="text-[13px] flex gap-2" style={{ color: isDark?'#C4C7C5':'#3c4043' }}><span style={{color:tc}}>▸</span>{s}</li>))}</ul>
+              </div>
+            ) : null}
+            {card.unique_selling_point ? (
+              <div className="mt-4 rounded-lg p-3 text-[12.5px]" style={{ background: isDark?'rgba(168,199,250,.08)':'rgba(11,87,208,.06)', color: isDark?'#C4C7C5':'#3c4043' }}>💡 {card.unique_selling_point}</div>
+            ) : null}
+            <button onClick={()=>onEquip(card)}
+              className="w-full mt-5 py-2.5 rounded-xl text-[14px] font-semibold transition-colors"
+              style={ equipped ? { background:'rgba(255,180,30,.18)', color:'#ffae1e' } : { background:'#7C3AED', color:'#fff' } }>
+              {equipped ? '🎴 已加持 · 点击摘下' : '加持 Claw'}
+            </button>
+          </div>
+        </div>
+      );
+    };
+
+    const CardPoolView = ({ theme, t, bs, onEquipped }) => {
+      const isDark = theme === 'dark';
+      const pool = (bs && bs.personaPool) || { loadState: 'idle' };
+      // 1078 张卡走模块级缓存(不进 notify 快照),loadState 变化驱动重渲染。
+      const list = (bridge.available && bridge.getPersonas) ? bridge.getPersonas() : [];
+      const active = (bs && bs.activePersona) || null;
+      const [selL1, setSelL1] = useState([]);
+      const [selTier, setSelTier] = useState([]);
+      const [minScore, setMinScore] = useState(0);
+      const [query, setQuery] = useState('');
+      const [visible, setVisible] = useState(60);
+      const [detail, setDetail] = useState(null);
+
+      useEffect(() => { if (bridge.available) bridge.loadPersonas(); }, []);
+      useEffect(() => { setVisible(60); }, [query, selL1, selTier, minScore]);
+
+      const counts = {}; list.forEach(c => { counts[c.l1] = (counts[c.l1]||0)+1; });
+      const q = query.trim().toLowerCase();
+      const filtered = list.filter(c => {
+        if (selL1.length && selL1.indexOf(c.l1) < 0) return false;
+        if (selTier.length && selTier.indexOf(c.tier) < 0) return false;
+        if ((c.final_score||0) < minScore) return false;
+        if (q) {
+          const hay = (c.cn_name+' '+c.name+' '+c.short_desc+' '+c.l1+' '+c.l2+' '+((c.tags||[]).join(' '))).toLowerCase();
+          if (hay.indexOf(q) < 0) return false;
+        }
+        return true;
+      });
+      const shown = filtered.slice(0, visible);
+
+      function toggle(arr, setArr, v) { setArr(arr.indexOf(v)>=0 ? arr.filter(x=>x!==v) : arr.concat([v])); }
+      function resetFacets() { setSelL1([]); setSelTier([]); setMinScore(0); setQuery(''); }
+      function onMove(e){ const el=e.currentTarget; const r=el.getBoundingClientRect(); const px=(e.clientX-r.left)/r.width, py=(e.clientY-r.top)/r.height;
+        el.style.transform=`perspective(900px) rotateX(${(0.5-py)*9}deg) rotateY(${(px-0.5)*11}deg) translateY(-3px)`;
+        el.style.setProperty('--mx',(px*100)+'%'); el.style.setProperty('--my',(py*100)+'%'); }
+      function onLeave(e){ e.currentTarget.style.transform=''; }
+      function equip(card, e){ if(e) e.stopPropagation();
+        if (active && active.id===card.id) bridge.unequipPersona();
+        else { bridge.equipPersona(card.id); if (onEquipped) {/* 停留在池内显示已加持, 不强制跳转 */} } }
+      function openDetail(card, e){ const r=e.currentTarget.getBoundingClientRect();
+        setDetail({ card, rect:{ left:r.left, top:r.top, width:r.width, height:r.height } }); }
+
+      return (
+        <div className="flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden animate-in fade-in duration-300">
+          {/* Header */}
+          <div className="px-6 md:px-8 pt-6 pb-3 flex items-end justify-between gap-4 shrink-0">
+            <div>
+              <h1 className={`text-[24px] font-normal tracking-wide ${isDark?'text-[#E3E3E3]':'text-[#1F1F1F]'}`}>
+                <span style={{ color:'#7C3AED', fontWeight:600 }}>卡片池</span> <span style={{ color: isDark?'#80868b':'#9aa0a6' }}>/ 专家中队甄选</span>
+              </h1>
+              <div className="text-[12px] mt-1" style={{ color: isDark?'#80868b':'#757575' }}>选一张专家面具加持给 Claw —— 它会以这位专家的视角回应你</div>
+            </div>
+            <div className="text-[12px] font-mono shrink-0" style={{ color: isDark?'#80868b':'#757575' }}>{filtered.length} / {list.length}</div>
+          </div>
+
+          {pool.loadState==='loading' ? (
+            <div className="flex-1 flex items-center justify-center text-[13px]" style={{ color: isDark?'#80868b':'#757575' }}>正在加载专家池…</div>
+          ) : pool.loadState==='error' ? (
+            <div className="flex-1 flex items-center justify-center text-[13px] text-[#F28B82]">专家池加载失败</div>
+          ) : (
+          <div className="flex-1 flex min-h-0">
+            {/* Facet 侧栏 */}
+            <aside className="w-[200px] shrink-0 overflow-y-auto custom-scrollbar px-5 py-2 hidden md:block">
+              <div className="text-[12px] font-semibold mb-2" style={{ color: isDark?'#9aa0a6':'#5f6368' }}>领域 L1</div>
+              <div className="space-y-1 mb-5">
+                {L1_ORDER.filter(k=>counts[k]).map(k=>{
+                  const on = selL1.indexOf(k)>=0;
+                  return (
+                    <div key={k} onClick={()=>toggle(selL1,setSelL1,k)} className="flex items-center justify-between cursor-pointer text-[12.5px] py-0.5 group">
+                      <span className="flex items-center gap-2">
+                        <span className="w-3.5 h-3.5 rounded-sm border flex items-center justify-center" style={{ borderColor: on?'#7C3AED':(isDark?'#5f6368':'#bdc1c6'), background: on?'#7C3AED':'transparent' }}>{on?<span className="text-white text-[9px] leading-none">✓</span>:null}</span>
+                        <span style={{ color: isDark?'#C4C7C5':'#3c4043' }}>{L1_LABELS[k]}</span>
+                      </span>
+                      <span className="font-mono text-[11px]" style={{ color: isDark?'#5f6368':'#9aa0a6' }}>{counts[k]}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="text-[12px] font-semibold mb-2" style={{ color: isDark?'#9aa0a6':'#5f6368' }}>档位</div>
+              <div className="flex gap-2 mb-5">
+                {['A','B','C'].map(tr=>{ const on=selTier.indexOf(tr)>=0; const tc=TIER_COLOR[tr];
+                  return <button key={tr} onClick={()=>toggle(selTier,setSelTier,tr)} className="w-9 h-8 rounded-md text-[13px] font-mono font-bold border transition-colors" style={ on?{ background:tc+'26', color:tc, borderColor:tc }:{ background:'transparent', color:isDark?'#80868b':'#9aa0a6', borderColor:isDark?'#3c4043':'#dadce0' }}>{tr}</button>;
+                })}
+              </div>
+              <div className="text-[12px] font-semibold mb-2" style={{ color: isDark?'#9aa0a6':'#5f6368' }}>最低评分 <span className="font-mono" style={{color:'#7C3AED'}}>{minScore}</span></div>
+              <input type="range" min="0" max="80" value={minScore} onChange={e=>setMinScore(+e.target.value)} className="w-full mb-5" style={{ accentColor:'#7C3AED' }} />
+              <button onClick={resetFacets} className="w-full py-2 rounded-lg text-[12.5px] border transition-colors" style={{ color: isDark?'#C4C7C5':'#3c4043', borderColor: isDark?'#3c4043':'#dadce0' }}>重置筛选</button>
+            </aside>
+
+            {/* 卡片网格 */}
+            <div className="flex-1 min-w-0 flex flex-col">
+              <div className="flex-1 overflow-y-auto custom-scrollbar px-5 pb-4">
+                {shown.length===0 ? (
+                  <div className="h-full flex items-center justify-center text-[13px]" style={{ color: isDark?'#80868b':'#757575' }}>没有匹配的专家，试试放宽筛选</div>
+                ) : (
+                  <div className="grid gap-3" style={{ gridTemplateColumns:'repeat(auto-fill, minmax(248px, 1fr))' }}>
+                    {shown.map(c=>{ const eq = active && active.id===c.id; const tc=TIER_COLOR[c.tier]||'#9aa0a6';
+                      return (
+                        <div key={c.id}
+                          className={`ap-card tier-${c.tier} ${eq?'equipped':''} rounded-xl p-3.5 flex flex-col gap-2 cursor-pointer border`}
+                          style={{ borderColor: isDark?'rgba(255,255,255,.08)':'rgba(0,0,0,.08)', background: isDark?'rgba(40,42,44,.55)':'rgba(255,255,255,.72)' }}
+                          onMouseMove={onMove} onMouseLeave={onLeave} onDoubleClick={(e)=>openDetail(c,e)}>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div className="w-10 h-10 rounded-lg flex items-center justify-center text-[20px] shrink-0" style={{ background: c.color+'22' }}>{c.emoji}</div>
+                              <div className={`font-semibold text-[14.5px] truncate ${isDark?'text-[#E3E3E3]':'text-[#1F1F1F]'}`}>{c.cn_name}</div>
+                            </div>
+                            {eq
+                              ? <span className="shrink-0 text-[10.5px] font-semibold px-2 py-0.5 rounded-md whitespace-nowrap" style={{ background:'#ffae1e', color:'#3a2500' }}>🎴 已加持</span>
+                              : <span className="shrink-0 text-[10.5px] font-mono font-bold px-1.5 py-0.5 rounded" style={{ background: tc+'22', color: tc }}>{c.tier} {Math.round(c.final_score)}</span>}
+                          </div>
+                          <p className="text-[11.5px] leading-snug flex-1" style={{ ...CLAMP3, color: isDark?'#9aa0a6':'#5f6368' }} title={c.short_desc}>{c.short_desc||'(无简介)'}</p>
+                          <div className="flex items-center justify-between text-[10.5px] font-mono gap-2">
+                            <span className="truncate" style={{ color: isDark?'#80868b':'#80868b' }}>{L1_LABELS[c.l1]||c.l1} / {c.l2}</span>
+                            <button onClick={(e)=>equip(c,e)} className="shrink-0 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors"
+                              style={ eq ? { background:'rgba(255,180,30,.16)', color:'#ffae1e' } : { background: isDark?'rgba(124,58,237,.18)':'rgba(124,58,237,.10)', color:'#9580FF' } }>
+                              {eq ? '取消' : '加持 Claw'}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {filtered.length > visible ? (
+                  <div className="flex justify-center mt-4">
+                    <button onClick={()=>setVisible(visible+60)} className="px-4 py-2 rounded-lg text-[12.5px] border transition-colors" style={{ color: isDark?'#C4C7C5':'#3c4043', borderColor: isDark?'#3c4043':'#dadce0' }}>显示更多 ({filtered.length - visible})</button>
+                  </div>
+                ) : null}
+              </div>
+
+              {/* 搜索框 (前端关键词过滤) */}
+              <div className="shrink-0 px-5 py-3 border-t flex items-center gap-3" style={{ borderColor: isDark?'rgba(255,255,255,.06)':'rgba(0,0,0,.06)' }}>
+                <Search size={16} className={isDark?'text-[#80868b]':'text-[#9aa0a6]'} />
+                <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="搜专家:名称 / 简介 / 领域 / 标签 (如 React / 数据库 / 弹幕)"
+                  className="flex-1 bg-transparent outline-none text-[13px]" style={{ color: isDark?'#E3E3E3':'#1F1F1F' }} />
+                {query ? <button onClick={()=>setQuery('')} className={isDark?'text-[#80868b] hover:text-[#E3E3E3]':'text-[#9aa0a6] hover:text-[#1F1F1F]'}><X size={14}/></button> : null}
+              </div>
+            </div>
+          </div>
+          )}
+
+          {detail ? (
+            <PersonaDetailModal card={detail.card} originRect={detail.rect} equipped={active && active.id===detail.card.id}
+              isDark={isDark} onClose={()=>setDetail(null)}
+              onEquip={(card)=>{ equip(card); }} />
+          ) : null}
         </div>
       );
     };

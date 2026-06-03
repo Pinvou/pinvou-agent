@@ -109,8 +109,11 @@ impl AppEngine {
         content: String,
         mode: AppMode,
         phase: PlanPhase,
+        persona_reminder: Option<String>,
     ) -> Result<()> {
-        let op = self.bridge.build_send_message_op(content, mode, phase);
+        let op = self
+            .bridge
+            .build_send_message_op(content, mode, phase, persona_reminder);
         self.handle.send(op).await?;
         Ok(())
     }
@@ -468,6 +471,12 @@ fn spawn_event_forwarder(
                                 );
                                 let bridge_clone = bridge.clone();
                                 let handle_clone = approve_handle.clone();
+                                // 卡片池: auto-continue 这一轮也带上该 session 当前加持的专家面具,
+                                // 否则系统自动追问会丢掉 persona 视角。
+                                let persona_reminder = store
+                                    .active_persona_id(&active_id)
+                                    .and_then(|pid| crate::personas::get(&pid))
+                                    .map(crate::personas::equip_reminder);
                                 tauri::async_runtime::spawn(async move {
                                     let op = bridge_clone.build_send_message_op(
                                         "继续执行下一步,记得用 write_file/append_file/edit_file/exec_shell \
@@ -475,6 +484,7 @@ fn spawn_event_forwarder(
                                             .to_string(),
                                         deepseek_tui::tui::app::AppMode::Yolo,
                                         PlanPhase::Executing,
+                                        persona_reminder,
                                     );
                                     if let Err(e) = handle_clone.send(op).await {
                                         eprintln!("[M2 auto-continue] send failed: {e:?}");

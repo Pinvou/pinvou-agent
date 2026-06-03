@@ -77,6 +77,11 @@ pub struct SessionModeState {
     /// 该 session 绑定的工作流 skill。`None` = 普通对话。
     #[serde(default)]
     pub active_skill: Option<ActiveSkillBinding>,
+    /// 该 session 当前加持的专家面具 id（卡片池选中的 persona）。`None` = 未加持。
+    /// 仅存 id，完整卡片由 `personas::get(id)` 解析；前端挂件按 id 在已拉取的池里查显示字段。
+    /// 同 active_skill：in-memory only，重启 app 后丢失（可重新点卡加持）。
+    #[serde(default)]
+    pub active_persona: Option<String>,
 }
 
 impl Default for SessionModeState {
@@ -86,6 +91,7 @@ impl Default for SessionModeState {
             plan_phase: PlanPhase::None,
             pinvou_review_enabled: false,
             active_skill: None,
+            active_persona: None,
         }
     }
 }
@@ -138,6 +144,7 @@ mod tests {
             plan_phase: PlanPhase::Planning,
             pinvou_review_enabled: false,
             active_skill: None,
+            active_persona: None,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"mode\":\"plan\""));
