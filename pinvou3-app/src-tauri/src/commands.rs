@@ -752,6 +752,31 @@ pub async fn delete_persona(persona_id: String) -> Result<(), String> {
     crate::personas::delete_user_persona(&persona_id)
 }
 
+/// 保存某 session 的卡牌加持/卸下事件时间线(sidecar,不进 messages)。
+/// events 是前端定义的 opaque JSON 数组,后端只透明落盘。
+#[tauri::command]
+pub async fn save_session_persona_events(
+    session_id: String,
+    events: serde_json::Value,
+) -> Result<(), String> {
+    let path = crate::bridge::paths::session_persona_events(&session_id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("建 session 目录失败: {e}"))?;
+    }
+    let json = serde_json::to_string(&events).map_err(|e| format!("序列化失败: {e}"))?;
+    std::fs::write(&path, json).map_err(|e| format!("写卡牌事件失败: {e}"))
+}
+
+/// 读某 session 的卡牌事件时间线(无则返回空数组)。
+#[tauri::command]
+pub async fn get_session_persona_events(session_id: String) -> Result<serde_json::Value, String> {
+    let path = crate::bridge::paths::session_persona_events(&session_id);
+    match std::fs::read_to_string(&path) {
+        Ok(txt) => Ok(serde_json::from_str(&txt).unwrap_or_else(|_| serde_json::json!([]))),
+        Err(_) => Ok(serde_json::json!([])),
+    }
+}
+
 /// 摘下当前 session 的专家面具（点挂件取消 / 卡片"已加持"再点）。
 #[tauri::command]
 pub async fn unequip_persona(

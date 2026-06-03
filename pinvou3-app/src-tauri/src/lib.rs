@@ -173,6 +173,8 @@ pub fn run() {
             commands::create_persona,
             commands::update_persona,
             commands::delete_persona,
+            commands::save_session_persona_events,
+            commands::get_session_persona_events,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

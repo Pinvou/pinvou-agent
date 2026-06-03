@@ -117,6 +117,14 @@ pub fn session_instructions_path(session_id: &str) -> PathBuf {
     sessions_root().join(session_id).join("instructions.md")
 }
 
+/// `~/.pinvou3/sessions/<session_id>/persona_events.json` —— 该 session 的卡牌
+/// 加持/卸下事件时间线(sidecar)。**刻意独立于 messages**:messages 在 engine
+/// 冷启动时会被 sync_session 注水回 LLM,而卡牌事件是纯前端展示,绝不能进 LLM 上下文。
+/// 前端按 `pos`(事件发生时的 messages 数)在 rerenderFromMessages 里插回原位。
+pub fn session_persona_events(session_id: &str) -> PathBuf {
+    sessions_root().join(session_id).join("persona_events.json")
+}
+
 /// 阶段 C 没多 session 时的 fallback artifacts dir（session_id="default"）。
 /// Step 4 完成后这个会被切换 session 时动态计算的值替换。
 pub fn default_session_artifacts_dir() -> PathBuf {
