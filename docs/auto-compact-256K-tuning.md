@@ -130,6 +130,22 @@ vLLM 启动加 `--served-model-name qwen36_35b_256k`。OpenAI-compat API 协议�
 > 改 output 预留(影响 budget)或 token_threshold 导致倒置都会被它挡下。
 > output=24K 的依据见上文「修复②」(系统 prompt 强制 ≤16KB 分块写,单次回复 ≈ 3-5K tokens)。
 
+## 大工具输出的上下文 bound（A1 调研结论:不需额外配置，2026-06-03）
+
+担心"单个大工具输出(几十 K 的 grep/read)一步污染上下文、跳过 nice 压缩直奔 emergency"。调研结论:**底座已防住,无需配 large_output_router / workshop**。
+
+**底座每-工具-结果截断(始终生效):** `turn_loop.rs:1970` 对**每个**工具结果调 `compact_tool_result_for_context`,产出的压缩版(`output_for_context`)才进 `session.messages` 喂模型(`turn_loop.rs:2004`);全文只给前端显示(`tool_call.set_result`)。
+- 档位由窗口决定(`context.rs:262`):`window ≥ 500K` 用大限(180K 字符),否则小限。**pinvou3 256K < 500K → 硬压到 `TOOL_RESULT_CONTEXT_HARD_LIMIT_CHARS = 12,000` 字符/结果**(head/tail snippet + 元数据摘要)。
+- 即单次工具输出进上下文 ≤ **~3-4K tokens**,**跳不过 nice(~195K)→ emergency(230,400)的 ~35K 缺口**。
+
+**`large_output_router`(#548 / workshop)是冗余且不完整,不要开:**
+- synthesis 子 agent **没实现**:`registry.rs:158` 注释 "produce a structured header + truncated preview **without a live API call**";合成 prompt builder 是 `#[allow(dead_code)] // 未来 Flash 合成用`。所谓"配 synthesis 模型"无对象可配。
+- 它实际只做"截断到 **1,200 字符** + 存 workshop 变量 `last_tool_result`",比底座的 12K head/tail snippet **更激进、丢更多上下文**。`EngineConfig.workshop` 默认 `None`,保持关闭即可。
+
+**残留极端情况:** 一个 turn 里十几个大工具**并行**调用,collective 仍可能凑够 ~35K 跳过 nice —— 此时 emergency 接住(走强制路径,不崩),概率极低,不值得为它加冗余 workshop。
+
+> 结论:tool-output 这条线**保持现状**(靠底座 12K/结果截断 + truncate.rs spill + `retrieve_tool_result` 按需取回)。task A1 据此关闭。
+
 ## fork PR roadmap
 
 B1 + B2 都是上游友好的改动，可独立 PR：
