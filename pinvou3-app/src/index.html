@@ -1371,15 +1371,27 @@
     function htmlUnescape(s) {
       return String(s).replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&amp;/g,'&');
     }
+    function asDraft(d) {
+      if (!d || typeof d !== 'object' || !d.name || !d.body) return null;
+      return { name: d.name, dept: d.dept || 'specialized', emoji: d.emoji || '🃏', color: d.color || '', description: d.description || '', body: d.body };
+    }
+    // 扫所有 code 块,任何能解析成「含 name+body 的 JSON」的就当卡牌草稿。
+    // 不强求 ```persona-card 标签 —— 小模型常打 ```json 或不打标签,放宽识别更鲁棒。
+    // 形状校验(name+body)避免把别的 JSON 误判成草稿。明确 persona-card 标签的优先。
     function extractPersonaDraft(html) {
-      if (!html || html.indexOf('persona-card') < 0) return null;
-      var m = html.match(/<code[^>]*class="[^"]*language-persona-card[^"]*"[^>]*>([\s\S]*?)<\/code>/);
-      if (!m) return null;
-      try {
-        var d = JSON.parse(htmlUnescape(m[1]));
-        if (!d || !d.name || !d.body) return null;
-        return { name: d.name, dept: d.dept || 'specialized', emoji: d.emoji || '🃏', color: d.color || '', description: d.description || '', body: d.body };
-      } catch (e) { return null; }
+      if (!html || html.indexOf('{') < 0) return null;
+      var re = /<code([^>]*)>([\s\S]*?)<\/code>/g, m, fallback = null;
+      while ((m = re.exec(html))) {
+        var raw = htmlUnescape(m[2]).trim();
+        if (raw.charAt(0) !== '{') continue;
+        try {
+          var draft = asDraft(JSON.parse(raw));
+          if (!draft) continue;
+          if (/persona-card/.test(m[1])) return draft; // 明确标签优先返回
+          if (!fallback) fallback = draft;
+        } catch (e) { /* 非 JSON 块,跳过 */ }
+      }
+      return fallback;
     }
 
     const ChatBubble = ({ item, theme, onPrefill, editable, onOpenEditor }) => {
