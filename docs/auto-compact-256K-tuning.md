@@ -12,7 +12,54 @@
 
 会话只会一路涨到 vLLM `max_model_len` 撞墙报 400。
 
+## 当前实测阈值与修正（2026-06-03 核对）
+
+> 本节是对照**当前代码**(submodule HEAD = `9c8e4826`,晚于本文初版 `7e5288e3`)逐行核对后的更新。下方「全套修复」「Codex review 历程」是设计/推导记录,保留不动;**实际生效以本节为准**。
+
+### 修正历程（2026-06 核对 → 重调）
+
+初版文档(2026-05-19)假设 `DEEPSEEK_MAX_OUTPUT_TOKENS=16384`、emergency budget ~239K、`token_threshold=200K`。核对当前代码发现 output 已漂到 65,536 → budget 落到 **189,440**,而 200K > 189,440 → **触发顺序倒置 bug**(见下)。本轮做了两件事:① 修倒置;② 重估 output 预留 64K→24K。
+
+**关键 bug:两条触发顺序倒置 → nice 路径死掉**
+
+turn_loop 一个 turn 内:先判 `should_compact`(:116),后判 emergency(:201),但度量/阈值不同:
+- **should_compact**(nice LLM 摘要):可摘要**子集** > `token_threshold − pinned` ⟹ **总量 > ~token_threshold + 近4条**。
+- **emergency**(强制 `recover_context_overflow`):**全量** input > `context_input_budget`。
+
+只要 `token_threshold ≥ context_input_budget`,emergency(全量度量 ≥ 子集)就必然先越线 → should_compact 永远轮不到 → 每个长会话都走 emergency 强制路径("Emergency context compaction",重试 2 次救不回硬报 `context_overflow`)。
+
+**修复①:`token_threshold` 200K → 190K**;锚定不变式 `token_threshold + 20K margin ≤ context_input_budget`,由回归测试 `compaction_threshold_stays_below_emergency_budget`(按 `max_output_tokens()` 动态算 budget)锁住。
+
+**修复②:`max_output_tokens` 默认 64K → 24K**(`bridge::max_output_tokens()` + `lib.rs` DEFAULTS + run-dev + L1 harness 一致)。
+- 依据:系统 prompt(`bundle/instructions.md` §4)**强制大产物分块写**——write_file skeleton ≤8KB → append_file chunks **≤16KB/次**;Pinvou 审查 skill 把单写 >20KB 判 `CRITICAL`。thinking 关 → 单次回复 ≈ ≤16KB chunk ≈ **3-5K tokens**。
+- 故 64K 是 ~4x 设计上限的过度预留。24K 覆盖 ≤16KB 设计 + 弱模型偶尔超写到 ~24KB 的 margin,同时把**输入预算 189K(74%)→ 230,400(90%)**,自动压缩更晚触发、保留更多历史。
+
+### 完整阈值表（当前生效，output=24K）
+
+| 阈值/常量 | 值 | 作用 | 层级 |
+|---|---|---|---|
+| auto_floor_tokens | 60,000 | should_compact 下限,低于不压缩 | ① 下限 |
+| **token_threshold** | **190,000 (~74%)** | should_compact 放行 LLM 摘要主线 | ② nice 主路径,总量 ~195K 触发 |
+| context_input_budget | **230,400 (90%)** | emergency 强制压缩硬天花板 = 256K−24,576−1,024 | ③ 安全网 |
+| emergency 时 token_threshold / auto_floor | min(190K, budget−1) / **0** | 强制压缩(绕地板) | ③ |
+| **effective_max_output** | **24,576 (24K)** | 单次回复输出上限(env `DEEPSEEK_MAX_OUTPUT_TOKENS`)+ 预留输出 | — |
+| CONTEXT_HEADROOM | 1,024 | 余量 | — |
+| MAX_CONTEXT_RECOVERY_ATTEMPTS | 2 | emergency 救不回才报 overflow | ③ |
+| KEEP_RECENT / MIN_SUMMARIZE | 4 / 6 | 保留近 N 条 / 最少摘要条数 | — |
+| capacity controller | enabled=false | 主动风险护栏,故意关 | — |
+| cycle 子系统 | enabled=false | checkpoint-restart,故意关(saturating_sub bug) | — |
+| 上游默认 token_threshold / floor | 800K / 500K | 被 bridge 覆写,256K 上永远撞不到 | — |
+
+稳态(总量 token,从小到大):`60K 下限 < ~195K should_compact(nice) < 230,400 emergency(网) < 256K 墙`。
+
+> 单次回复 ≈ ≤16KB chunk ≈ 3-5K tokens ≪ 24K 输出预留,设计上不会截断;弱模型若无视分块规则一次写 >24KB 才会在 24K 处截断,Pinvou 审查在 plan 期已拦(yolo/execute 不过 Pinvou,靠这 margin 兜)。
+
 ## 全套修复
+
+> ⚠️ **本节数值为初版(2026-05-19)记录,部分已被上文「当前实测阈值与修正」覆盖**:
+> `token_threshold` 200K→**190K**、`DEEPSEEK_MAX_OUTPUT_TOKENS` 16384→**24576(24K)**、
+> emergency budget→**230,400**、commit 7e5288e3→当前 HEAD `9c8e4826`。
+> 下文保留作**设计/推导过程记录**,实际生效以上文表格为准。
 
 bridge 2 处 + fork 2 处 + 前端 1 处 + L1 harness + 回归测试：
 
@@ -54,30 +101,34 @@ bridge 2 处 + fork 2 处 + 前端 1 处 + L1 harness + 回归测试：
 
 vLLM 启动加 `--served-model-name qwen36_35b_256k`。OpenAI-compat API 协议要求 `model` 字段匹配 served name，不改的话启动后立刻报 `model_not_found`（显式失败，不会再有静默退化）。
 
-## 触发线全景（最终版）
+## 触发线全景（2026-06-03 最终值，output=24K）
 
 ```
-0K ──────────────────── 200K ───────── ~239K ──── 256K
-                       │                │          │
-                       │                │          └─ vLLM max_model_len 硬墙
-                       │                └─ B2 preflight emergency 兜底
-                       │                   (recover_context_overflow,
-                       │                    估算 > 239K 强制 compact)
-                       └─ turn_loop:90 preflight should_compact
-                          触发 compact_messages_safe (内部先 prune_tool_result
-                          再决定 LLM 摘要)。auto_floor=60K 只是允许触发的下限
+0K ─────── 60K ──────────────── ~195K ───── 230,400 ──── 256K
+            │                     │            │           │
+            │                     │            │           └─ vLLM max_model_len 硬墙
+            │                     │            └─ emergency 兜底
+            │                     │               (recover_context_overflow,全量 input
+            │                     │                > context_input_budget=230,400 强制 compact)
+            │                     └─ turn_loop preflight should_compact (nice 主路径)
+            │                        触发 compact_messages_safe (内部先 prune_tool_result
+            │                        再决定 LLM 摘要)。总量 ~195K 触发
+            └─ auto_floor=60K:低于此不压缩(护极短会话 / prefix cache)
 ```
 
-稳态：
+稳态（按总量 token）：
 
-- **0–200K**：完全不动（auto_floor 是下限，60K 那条线在当前实现下不做任何事）
-- **≥200K**：turn_loop:90 调 `compact_messages_safe`
-  - 内部先 `prune_tool_results`（机械去重旧工具结果），如果剪完已经回到 200K 以下直接返回，**省一次 LLM**
+- **0–60K**：完全不动（auto_floor 下限,护 prefix cache）
+- **~195K**：`should_compact` 放行 → `compact_messages_safe`(nice 主路径)
+  - 内部先 `prune_tool_results`（机械去重旧工具结果），剪完回到阈值下就直接返回，**省一次 LLM**
   - 否则做 LLM 摘要：末尾 4 条 + 工作集相关 pin 保留 + 旧消息总结成 system block
-- **≥239K**：B2 preflight emergency 兜底（最多重试 2 次）
-- **≥256K**：vLLM 硬拒（理论上 emergency 已救回）
+- **230,400**：emergency 兜底（绕 floor 强制压缩，最多重试 2 次，救不回报 `context_overflow`）
+- **256K**：vLLM 硬拒（理论上 emergency 已救回）
 
-> 如果将来发现 200K 才 LLM 太贵，可以做 fork B5：加独立 preflight prune-only 分支让 60K 起就剪老的重复工具结果，不进 LLM。当前实现没有这条路径。
+> 关键不变式:`token_threshold(190K) + 20K margin ≤ context_input_budget(230,400)`,由回归测试
+> `compaction_threshold_stays_below_emergency_budget` 按 `max_output_tokens()` 动态算 budget 锁住——
+> 改 output 预留(影响 budget)或 token_threshold 导致倒置都会被它挡下。
+> output=24K 的依据见上文「修复②」(系统 prompt 强制 ≤16KB 分块写,单次回复 ≈ 3-5K tokens)。
 
 ## fork PR roadmap
 

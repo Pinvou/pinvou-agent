@@ -37,7 +37,7 @@ fn ensure_release_env() {
         ("DEEPSEEK_REASONING_EFFORT", "off"),
         ("DEEPSEEK_ALLOW_INSECURE_HTTP", "1"),
         ("DEEPSEEK_FORCE_HTTP1", "1"),
-        ("DEEPSEEK_MAX_OUTPUT_TOKENS", "65536"),
+        ("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576"),
         ("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "240"),
         // —— webkit2gtk / fcitx 兼容（Wayland 下 IM 协议挂、合成模式异常）——
         ("GDK_BACKEND", "x11"),

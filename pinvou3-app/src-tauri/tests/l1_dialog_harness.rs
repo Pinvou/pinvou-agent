@@ -448,7 +448,7 @@ fn ensure_runtime_env() {
     // 关键:vLLM 在 10.214.74.113 不是 loopback,底座默认拒绝非 loopback HTTP
     set_var_if_unset("DEEPSEEK_ALLOW_INSECURE_HTTP", "1");
     set_var_if_unset("DEEPSEEK_FORCE_HTTP1", "1");
-    set_var_if_unset("DEEPSEEK_MAX_OUTPUT_TOKENS", "65536");
+    set_var_if_unset("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576");
     set_var_if_unset("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "90");
     // 2026-05-18: subagent 并发 + 256K context + chunked-prefill 配置下,
     // vLLM first-token-latency 可能 >45s (default open_timeout)。调到 180s

@@ -322,14 +322,19 @@ impl Pinvou3Bridge {
         self.prefs.advanced.allow_shell.unwrap_or(true)
     }
 
-    /// env > prefs.advanced > 65536。
+    /// env > prefs.advanced > 24576 (24K)。
+    /// 24K 而非 64K:系统 prompt 强制"大产物分块写"(write_file skeleton ≤8KB →
+    /// append_file chunks ≤16KB/次,见 bundle/instructions.md §4 + Pinvou 审查 >20KB
+    /// 单写判 CRITICAL),且 thinking 关 → 单次回复 ≈ ≤16KB chunk ≈ 3-5K tokens。
+    /// 24K 覆盖该上限 + 弱模型偶尔超写到 ~24KB 的 margin;同时把输入预算从 189K(74%)
+    /// 抬到 230K(90%),让自动压缩更晚触发。64K 是 ~4x 设计上限的过度预留。
     pub fn max_output_tokens(&self) -> u32 {
         if let Ok(v) = std::env::var("PINVOU3_MAX_OUTPUT_TOKENS") {
             if let Ok(n) = v.parse() {
                 return n;
             }
         }
-        self.prefs.advanced.max_output_tokens.unwrap_or(65_536)
+        self.prefs.advanced.max_output_tokens.unwrap_or(24_576)
     }
 
     /// legacy 单引擎路径(headless harness 用):走 INSTRUCTIONS_MD inline + 用户自定义。
@@ -450,16 +455,27 @@ impl Pinvou3Bridge {
             // 必须改成 pinvou3 当前用的 model,否则手动 /compact 报 404。
             //
             // 本地 Qwen3.6 vLLM 跑 256K (max_model_len=262144)。
-            // turn_loop:90 的 preflight should_compact 直接吃这两个参数:
-            //  - token_threshold = 200K (256K × ~78%):should_compact 真正放行 LLM 摘要的线
-            //  - auto_floor_tokens = 60K:should_compact 的"低于则拒绝"下限,**不是** prune
-            //    启动线 (codex round 3/4 抓出:prune_tool_results 是 compact_messages_safe
-            //    内部第一步,必须 should_compact 先放行,即 ≥200K 才跑)。60K 留着仅作为
-            //    极短会话防误触发的下限保护
-            // ⚠️ 上游默认 token_threshold=800K,对 256K 窗口永远撞不到,**必须显式 set**
+            // 两条压缩触发(turn_loop 内顺序:先 should_compact:116,后 emergency:201):
+            //  - should_compact(nice LLM 摘要):可摘要子集 > token_threshold − pinned,
+            //    等价于 总量 > ~token_threshold + 近4条。
+            //  - emergency(强制,recover_context_overflow):全量 input > context_input_budget
+            //    = 窗口 − effective_max_output(24,576) − headroom(1,024) = 230,400 (256K 上)。
+            //
+            // ⚠️ 关键:emergency 的 230,400 是**派生硬天花板**(留满 24K 输出的输入上限,
+            //    随 max_output_tokens 改而变)。token_threshold 必须**显著低于**它,否则
+            //    should_compact 永远轮不到——emergency 先越线,nice 路径死掉,每个长会话
+            //    都走"Emergency"强制路径(重试 2 次救不回就硬报 context_overflow)。
+            //    2026-05 旧值 200K > 当时 budget 189,440 正是这个倒置 bug
+            //    (详见 docs/auto-compact-256K-tuning.md「当前实测阈值」)。
+            //  - token_threshold = 190K (256K × ~74%):should_compact 在总量 ~195K 触发,
+            //    稳在 230,400 安全网之下 ~35K,nice=主路径 / emergency=真·安全网。
+            //    回归测试 compaction_threshold_stays_below_emergency_budget 按 max_output
+            //    动态算 budget 锁住这个不变式,改 output 预留会自动跟着校验。
+            //  - auto_floor_tokens = 60K:should_compact 的"低于则拒绝"下限,极短会话防误触发。
+            // 上游默认 token_threshold=800K / floor=500K,对 256K 窗口永远撞不到,**必须显式 set**。
             compaction: deepseek_tui::compaction::CompactionConfig {
                 model: self.model(),
-                token_threshold: 200_000,
+                token_threshold: 190_000,
                 auto_floor_tokens: 60_000,
                 ..compaction
             },
@@ -806,15 +822,15 @@ mod tests {
     /// 后续多测试可以拿 DEEPSEEK_MAX_OUTPUT_TOKENS 专属锁,但目前只此一处)。
     #[test]
     fn wire_max_output_tokens_env_sets_default_then_respects_existing() {
-        // clean env 路径:helper 应 set 默认 65536
+        // clean env 路径:helper 应 set 默认 24576
         std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
         std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
         fixture_bridge().wire_max_output_tokens_env();
         assert_eq!(
             std::env::var("DEEPSEEK_MAX_OUTPUT_TOKENS").as_deref(),
-            Ok("65536"),
-            "wire helper 必须 set DEEPSEEK_MAX_OUTPUT_TOKENS=65536, 让底座 \
-             effective_max_output_tokens 走 pinvou3 显式 cap"
+            Ok("24576"),
+            "wire helper 必须 set DEEPSEEK_MAX_OUTPUT_TOKENS=24576, 让底座 \
+             effective_max_output_tokens 走 pinvou3 显式 cap (24K,见 max_output_tokens 注释)"
         );
 
         // 已有 env 不覆盖路径:helper 是 no-op
@@ -858,6 +874,43 @@ mod tests {
             "subagent_api_timeout 必须 300s。上游默认 120s 是为 DeepSeek 云端 API 设计, \
              本地 Qwen3.6 vLLM 慢推理下单 step 30-90s 很常见,120s 频繁误杀子 agent。 \
              300s 与 elapsed cap 对齐,给复杂研究类任务留出完整单步窗口。"
+        );
+    }
+
+    /// 不变式:should_compact 的 `token_threshold` 必须**显著低于** emergency 的
+    /// `context_input_budget`,否则 emergency 先越线、nice LLM 摘要路径永远轮不到
+    /// ——2026-06 抓到的倒置 bug(旧值 200K > budget 189,440,每个长会话都走
+    /// "Emergency" 强制路径 + 2 次救不回硬报 context_overflow)。
+    /// 锁住「nice 主路径 / emergency 真·安全网」的层级,谁动 token_threshold 或
+    /// max_output_tokens 导致倒置都会被这条测试挡下。详见 docs/auto-compact-256K-tuning.md。
+    #[test]
+    fn compaction_threshold_stays_below_emergency_budget() {
+        let bridge = fixture_bridge();
+        let model = bridge.model();
+        let window = deepseek_tui::models::context_window_for_model(&model)
+            .expect("默认模型必须有已知窗口(否则 budget 静默 None)") as usize;
+        // 复刻底座 context_input_budget(engine/context.rs):
+        //   window<500K 时 = window − effective_max_output − headroom。
+        //   effective_max_output 即 wire 给 DEEPSEEK_MAX_OUTPUT_TOKENS 的 max_output_tokens()。
+        let effective_output = bridge.max_output_tokens() as usize;
+        const HEADROOM: usize = 1_024; // 底座 CONTEXT_HEADROOM_TOKENS(context.rs 私有常量)
+        let emergency_budget = window - effective_output - HEADROOM;
+
+        let cfg = bridge.build_engine_config();
+        let threshold = cfg.compaction.token_threshold;
+        let floor = cfg.compaction.auto_floor_tokens;
+
+        // ≥20K margin:should_compact 用「可摘要子集」度量、emergency 用「全量 input
+        // (含 system+tools)」度量,要留够余量保证 nice 在 emergency 之前清晰触发。
+        const MARGIN: usize = 20_000;
+        assert!(
+            threshold + MARGIN <= emergency_budget,
+            "token_threshold({threshold}) 必须 ≤ emergency_budget({emergency_budget}) − {MARGIN}(margin);\
+             否则 emergency 抢先、nice 路径死掉(倒置 bug)。window={window} effective_output={effective_output}"
+        );
+        assert!(
+            floor < threshold,
+            "auto_floor_tokens({floor}) 必须低于 token_threshold({threshold}),否则下限反客为主"
         );
     }
 

@@ -32,7 +32,7 @@ export DEEPSEEK_FORCE_HTTP1=1
 
 # vLLM max-model-len=262144 (256K)。给单次大产物输出 64K budget;
 # 再配合 append_file / 分块执行,避免 HTML deck 等大文件撞 16K 顶。
-export DEEPSEEK_MAX_OUTPUT_TOKENS="${DEEPSEEK_MAX_OUTPUT_TOKENS:-65536}"
+export DEEPSEEK_MAX_OUTPUT_TOKENS="${DEEPSEEK_MAX_OUTPUT_TOKENS:-24576}"
 
 # SSE idle timeout:
 # 90s 原值只够 prefill 一次大 prompt,但 decode 长 HTML/代码块时 token 间静默可超 90s
