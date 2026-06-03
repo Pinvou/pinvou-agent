@@ -82,6 +82,11 @@ pub struct SessionModeState {
     /// 同 active_skill：in-memory only，重启 app 后丢失（可重新点卡加持）。
     #[serde(default)]
     pub active_persona: Option<String>,
+    /// Side B: 加持后**一次性**注入的完整人设正文（agency-agents-zh body）。
+    /// 加持时写入，该 session 下一条 chat 消费后置空（仿 active_skill.pending_instruction）。
+    /// 之后每 turn 只靠 `equip_anchor` 轻锚点维持身份，不再重灌 body。
+    #[serde(skip)]
+    pub pending_persona_body: Option<String>,
 }
 
 impl Default for SessionModeState {
@@ -92,6 +97,7 @@ impl Default for SessionModeState {
             pinvou_review_enabled: false,
             active_skill: None,
             active_persona: None,
+            pending_persona_body: None,
         }
     }
 }
@@ -145,6 +151,7 @@ mod tests {
             pinvou_review_enabled: false,
             active_skill: None,
             active_persona: None,
+            pending_persona_body: None,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"mode\":\"plan\""));

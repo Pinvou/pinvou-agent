@@ -70,6 +70,11 @@ pub async fn chat(
     if let Some(injected) = store.take_pending_skill_instruction(&sid) {
         full = format!("{injected}\n\n---\n\n{full}");
     }
+    // Side B 卡片池: 加持后首条消息一次性 prepend 完整人设 body(agency-agents-zh)。
+    // 之后每 turn 只靠 equip_anchor 轻锚点维持身份(EnginePool 注入),不再重灌 body。
+    if let Some(body) = store.take_pending_persona_body(&sid) {
+        full = format!("{body}\n\n---\n\n{full}");
+    }
     if let Some(skill) = store.active_skill(&sid) {
         let reminder = format!(
             "<system-reminder>\n\
@@ -660,27 +665,36 @@ pub async fn get_mode_state(
 
 // ===================== 卡片池: 专家面具 =====================
 
-/// 列出全部专家卡（前端进卡片池时拉一次，之后前端缓存 + 内存 facet/搜索）。
-/// 1078 张 ~950KB，只读静态数据。
+/// 列出全部专家卡的**摘要**（不含 body，~200 卡）。前端进卡片池拉一次缓存。
+/// Side B: body 太大（~6K 字/张），不随 list 下发，加持/详情时按需取。
 #[tauri::command]
-pub async fn list_personas() -> Result<Vec<crate::personas::PersonaCard>, String> {
-    Ok(crate::personas::all().to_vec())
+pub async fn list_personas() -> Result<Vec<crate::personas::PersonaSummary>, String> {
+    Ok(crate::personas::all_summaries())
 }
 
-/// 给当前 session 加持一张专家面具（点卡片"加持 Claw"）。
-/// 存 persona_id 到 session mode_state；返回完整卡片供前端渲染挂件 + 系统消息。
-/// 后续该 session 每 turn 由 EnginePool 解析成 reminder 注入（粘性身份）。
+/// 读单个专家的完整人设正文（详情 modal 预览用）。
+#[tauri::command]
+pub async fn read_persona_body(persona_id: String) -> Result<String, String> {
+    crate::personas::get(&persona_id)
+        .map(|c| c.body.clone())
+        .ok_or_else(|| format!("未知专家面具: {persona_id}"))
+}
+
+/// 给当前 session 加持一张专家面具（点卡片"加持给 AI"）。
+/// Side B: 存 persona_id + 把完整 body 挂为 pending（下一条 chat 一次性 prepend）；
+/// 之后每 turn 只注入轻锚点。返回摘要供前端渲染挂件 + 系统消息。
 #[tauri::command]
 pub async fn equip_persona(
     session_id: String,
     persona_id: String,
     store: State<'_, SessionStore>,
-) -> Result<crate::personas::PersonaCard, String> {
+) -> Result<crate::personas::PersonaSummary, String> {
     let card = crate::personas::get(&persona_id)
-        .ok_or_else(|| format!("未知专家面具: {persona_id}"))?
-        .clone();
+        .ok_or_else(|| format!("未知专家面具: {persona_id}"))?;
+    let summary = card.summary();
+    store.set_pending_persona_body(&session_id, Some(crate::personas::equip_body_injection(card)));
     store.set_active_persona(&session_id, Some(persona_id));
-    Ok(card)
+    Ok(summary)
 }
 
 /// 摘下当前 session 的专家面具（点挂件取消 / 卡片"已加持"再点）。
@@ -690,19 +704,20 @@ pub async fn unequip_persona(
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
     store.set_active_persona(&session_id, None);
+    store.set_pending_persona_body(&session_id, None);
     Ok(())
 }
 
-/// 查当前 session 加持的专家面具（前端启动 / 切 session 时拉，用于还原挂件）。
+/// 查当前 session 加持的专家面具摘要（前端启动 / 切 session 时拉，用于还原挂件）。
 /// 无加持返回 None。
 #[tauri::command]
 pub async fn get_active_persona(
     session_id: String,
     store: State<'_, SessionStore>,
-) -> Result<Option<crate::personas::PersonaCard>, String> {
+) -> Result<Option<crate::personas::PersonaSummary>, String> {
     Ok(store
         .active_persona_id(&session_id)
-        .and_then(|pid| crate::personas::get(&pid).cloned()))
+        .and_then(|pid| crate::personas::get(&pid).map(|c| c.summary())))
 }
 
 /// 用户点 💡 进入 Plan 流程：设 mode=Plan + phase=Planning。

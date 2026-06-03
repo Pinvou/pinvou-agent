@@ -1,50 +1,59 @@
-//! 专家面具池（卡片池）：移植自 pinvou2 的 AgentPool（agent-market）。
+//! 专家面具池（卡片池）—— **Side B: agency-agents-zh 全正文版**。
 //!
-//! 设计要点：
-//! - **只读静态数据**：1078 张专家卡是 immutable 资源，编译期 `include_str!` 内嵌，
-//!   首次访问时一次性解析进 `OnceLock`，不落盘、不解包到 `~/.pinvou3/`。
-//! - **加持 = persona（WHO），非 skill（HOW）**：选中一张卡 → per-session 存 persona_id →
-//!   `build_send_message_op` 每 turn 把 [`equip_reminder`] 注入 `<system-reminder>`，
-//!   让主 agent 以这位专家的视角持续回应，直到用户摘下面具。
-//!   这是粘性身份，故走 per-turn 注入（同 super_permission），不走 skill 的一次性 prepend。
-//! - **数据瘦身**：pinvou2 原始 agent-market.v0.3.json 2.5MB（含 embeddings 引用、
-//!   dim_scores 等），这里只保留前端卡片 + 详情 + 加持 reminder 需要的字段（~950KB）。
+//! 与 Side A(pinvou2 agent-market 1078 元数据卡)的本质区别:
+//! - 数据源 = jnMetaCode/agency-agents-zh(MIT, 201 个 agent),每个带 ~6K 字**完整人设正文**
+//!   (职责/工作流/规则/交付物/沟通风格),不是摘要。
+//! - **加持机制改造**:正文太长不能每 turn 灌。改成「加持时一次性注入完整 body
+//!   (仿 skill 的 pending_instruction,首条消息 prepend) + 每 turn 只注入一句轻锚点」。
+//!   见 [`equip_body_injection`](one-time) 与 [`equip_anchor`](per-turn)。
+//! - 没有 tier/score/strengths 等结构化元数据(agency-agents-zh 不提供),facet 改部门过滤。
+//!
+//! License: agency-agents.json 数据 MIT(Michael Sitarzewski 原版 + jnMetaCode 中文化),
+//! 见 resources/bundle/personas/AGENCY-AGENTS-LICENSE。
 
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
-/// 编译期内嵌的专家卡数据（瘦身版）。源自 pinvou2 exec/executors/data/agent-market.v0.3.json。
-const PERSONAS_JSON: &str = include_str!("../resources/bundle/personas/personas.v0.3.json");
+/// 编译期内嵌的 agency-agents-zh 数据(含完整 body)。
+const PERSONAS_JSON: &str = include_str!("../resources/bundle/personas/agency-agents.json");
 
-/// 单张专家卡。字段对齐前端卡片网格 / facet 过滤 / 详情 modal / 加持 reminder 所需。
-/// 所有 string 字段在生成瘦身 json 时已把 null 归一成 ""，故可用裸 String + serde(default)。
+/// 单张专家卡(全正文版)。`body` 是完整人设 markdown(加持时注入)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersonaCard {
     pub id: String,
+    /// 部门(academic/design/engineering/.../testing),前端 facet 按这个分组。
+    pub dept: String,
     pub name: String,
-    pub cn_name: String,
+    pub description: String,
     pub emoji: String,
     pub color: String,
+    /// 完整人设正文(markdown)。list 时不下发给前端(太大),加持/详情时按需取。
     #[serde(default)]
-    pub vibe: String,
-    pub short_desc: String,
-    #[serde(default)]
+    pub body: String,
+}
+
+/// 不含 body 的轻量摘要,给前端卡片网格用(list_personas 返回它,避免 1.2MB body 全量下发)。
+#[derive(Debug, Clone, Serialize)]
+pub struct PersonaSummary {
+    pub id: String,
+    pub dept: String,
+    pub name: String,
     pub description: String,
-    /// 一级领域 code（engineering/business/design/marketing/quality/product/ai-data/games）。
-    pub l1: String,
-    #[serde(default)]
-    pub l2: String,
-    #[serde(default)]
-    pub l3: String,
-    /// 档位 A/B/C。
-    pub tier: String,
-    pub final_score: f64,
-    #[serde(default)]
-    pub strengths: Vec<String>,
-    #[serde(default)]
-    pub unique_selling_point: String,
-    #[serde(default)]
-    pub tags: Vec<String>,
+    pub emoji: String,
+    pub color: String,
+}
+
+impl PersonaCard {
+    pub fn summary(&self) -> PersonaSummary {
+        PersonaSummary {
+            id: self.id.clone(),
+            dept: self.dept.clone(),
+            name: self.name.clone(),
+            description: self.description.clone(),
+            emoji: self.emoji.clone(),
+            color: self.color.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -54,7 +63,7 @@ struct PersonaPoolFile {
 
 static POOL: OnceLock<Vec<PersonaCard>> = OnceLock::new();
 
-/// 全部专家卡（首次调用时解析内嵌 json，之后零成本）。
+/// 全部专家卡(首次调用解析内嵌 json，之后零成本)。
 pub fn all() -> &'static [PersonaCard] {
     POOL.get_or_init(|| {
         serde_json::from_str::<PersonaPoolFile>(PERSONAS_JSON)
@@ -66,50 +75,40 @@ pub fn all() -> &'static [PersonaCard] {
     })
 }
 
-/// 按 id 查一张卡。
+/// 全部卡的轻量摘要(list_personas 用)。
+pub fn all_summaries() -> Vec<PersonaSummary> {
+    all().iter().map(|c| c.summary()).collect()
+}
+
+/// 按 id 查一张卡(含 body)。
 pub fn get(id: &str) -> Option<&'static PersonaCard> {
     all().iter().find(|c| c.id == id)
 }
 
-/// 一级领域 code → 中文标签。用于加持 reminder（避免把英文 slug `product/...`
-/// 写进 prompt 让小模型误当成文件路径——实测 Qwen3.6 会去 read_file 找它）。
-fn l1_label(code: &str) -> &str {
-    match code {
-        "engineering" => "工程",
-        "business" => "商业",
-        "design" => "设计",
-        "marketing" => "市场",
-        "quality" => "质量",
-        "product" => "产品",
-        "ai-data" => "AI·数据",
-        "games" => "游戏",
-        _ => "通用",
-    }
+/// **一次性**注入的完整人设(加持后首条消息 prepend 一次,仿 skill pending_instruction)。
+/// 把 agency-agents-zh 的完整 body 框起来,明确这是固定身份。
+pub fn equip_body_injection(card: &PersonaCard) -> String {
+    format!(
+        "【你被加持了一张专家面具:{name}】\n\
+         从这一刻起,你严格扮演下面这位专家——这是你的固定身份与行为准则,一直有效直到用户摘下面具:\n\n\
+         ====== 专家人设开始 ======\n\
+         {body}\n\
+         ====== 专家人设结束 ======\n\n\
+         以上是你的身份。回应 Boss 时始终基于这位专家的视角、方法论与沟通风格。\
+         注意:人设正文里若出现示例代码、模板、路径,那是给你参考的范式,不是要你去读取的真实文件。",
+        name = card.name,
+        body = card.body,
+    )
 }
 
-/// 每 turn 注入 `<system-reminder>` 的专家面具人设文案。
-///
-/// 命中率优先于优雅（Qwen3.6 友好）：命令式、短、点明身份 + 视角 + 持续性。
-/// 由 [`crate::bridge::Pinvou3Bridge::build_send_message_op`] 拼进 reminder_body。
-///
-/// **不写 l1/l2 英文 slug**：`product/product-strategy` 这种带斜杠的 slug 会被
-/// 小模型当成工作区文件路径去 read_file（实测 bug）。改用中文领域标签、无斜杠。
-pub fn equip_reminder(card: &PersonaCard) -> String {
-    let mut s = format!(
-        "你现在戴着【{cn}】专家面具——一位{domain}领域的 {tier} 档专家(评分 {score:.0})。\
-         {desc}。\n\
-         本 turn 起,以这位专家的视角、专业判断与语气回应 Boss——遇到相关任务发挥其专长。\
-         这是持续身份,会一直挂着直到用户摘下面具,不要因为话题转移就丢掉这个视角。",
-        cn = card.cn_name,
-        domain = l1_label(&card.l1),
-        tier = card.tier,
-        score = card.final_score,
-        desc = card.short_desc,
-    );
-    if !card.strengths.is_empty() {
-        s.push_str(&format!("\n专长:{}。", card.strengths.join("、")));
-    }
-    s
+/// **每 turn**注入的轻锚点(短,放 `<system-reminder>`,防小模型长对话脱戏)。
+/// 完整人设已在加持首条消息一次性给过,这里只重申身份,不重复 body。
+pub fn equip_anchor(card: &PersonaCard) -> String {
+    format!(
+        "你仍戴着【{name}】专家面具——保持这位专家的身份、专业判断与沟通风格,\
+         不要因话题转移而脱离角色。完整人设你已在加持时收到,按那个角色行事。",
+        name = card.name,
+    )
 }
 
 #[cfg(test)]
@@ -119,55 +118,41 @@ mod tests {
     #[test]
     fn pool_parses_and_is_nonempty() {
         let cards = all();
-        assert!(cards.len() > 1000, "应解析出 1000+ 张专家卡, 实际 {}", cards.len());
+        assert!(cards.len() > 150, "应解析出 150+ 张 agency 专家卡, 实际 {}", cards.len());
     }
 
     #[test]
-    fn every_card_has_core_fields() {
+    fn every_card_has_core_fields_and_body() {
         for c in all() {
             assert!(!c.id.is_empty());
-            assert!(!c.cn_name.is_empty());
-            assert!(!c.tier.is_empty());
-            assert!(!c.l1.is_empty());
+            assert!(!c.name.is_empty());
+            assert!(!c.dept.is_empty());
+            assert!(!c.body.is_empty(), "agency 卡必须有完整 body, 卡={}", c.id);
         }
     }
 
     #[test]
-    fn get_by_id_roundtrips() {
-        let first = &all()[0];
-        let found = get(&first.id).expect("应能按 id 查到");
-        assert_eq!(found.id, first.id);
+    fn summary_drops_body() {
+        let s = serde_json::to_string(&all()[0].summary()).unwrap();
+        assert!(!s.contains("\"body\""), "summary 不应含 body 字段");
     }
 
     #[test]
-    fn equip_reminder_mentions_identity_and_persistence() {
+    fn body_injection_contains_full_body_and_framing() {
         let card = &all()[0];
-        let r = equip_reminder(card);
-        assert!(r.contains(&card.cn_name), "reminder 必须点名专家");
-        assert!(r.contains("摘下面具"), "reminder 必须说明这是持续身份");
+        let inj = equip_body_injection(card);
+        assert!(inj.contains(&card.name), "注入必须点名专家");
+        assert!(inj.contains(&card.body), "一次性注入必须含完整 body");
+        assert!(inj.contains("摘下面具"), "必须说明这是持续身份");
     }
 
-    /// 回归: reminder 绝不能含 `l1/l2` 英文 slug(带斜杠)——会被小模型当成
-    /// 工作区文件路径去 read_file(实测 product/product-strategy bug)。
     #[test]
-    fn equip_reminder_has_no_pathlike_slug() {
-        for c in all() {
-            let r = equip_reminder(c);
-            if !c.l2.is_empty() {
-                let slug = format!("{}/{}", c.l1, c.l2);
-                assert!(
-                    !r.contains(&slug),
-                    "reminder 不能含路径状 slug {slug:?}(会被误当文件路径), 卡={}",
-                    c.id
-                );
-            }
-            // l1 英文 code 也不应裸出现(用中文领域标签替代)
-            assert!(
-                !r.contains(&format!("{}/", c.l1)),
-                "reminder 不应含 `{}/` 形式的 slug, 卡={}",
-                c.l1,
-                c.id
-            );
-        }
+    fn anchor_is_short_and_no_body() {
+        let card = &all()[0];
+        let a = equip_anchor(card);
+        assert!(a.contains(&card.name), "锚点必须点名");
+        assert!(!a.contains(&card.body), "per-turn 锚点不能重复 body");
+        let chars = a.chars().count();
+        assert!(chars < 120, "锚点应短(<120 字), 实际 {chars} 字");
     }
 }

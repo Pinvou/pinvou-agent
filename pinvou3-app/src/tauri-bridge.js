@@ -1802,10 +1802,17 @@
   }
   // 给当前 session 加持一张专家面具。后端存 persona_id + 每 turn 注入人设;
   // 前端记 activePersona(挂件) + 发一条系统消息播报。
+  // 取专家显示名(兼容 Side A 的 cn_name / Side B 的 name)。
+  function personaName(p) { return (p && (p.name || p.cn_name)) || ""; }
   async function equipPersona(personaId) {
     if (!state.activeSessionId) { addSystemItem("⚠️ 请先打开或新建一个对话再加持专家"); return; }
+    var prev = state.activePersona; // 换卡前的旧专家(同 session 切换时先播报卸下)
     try {
       var card = await invoke("equip_persona", { sessionId: state.activeSessionId, personaId: personaId });
+      // 同 session 换了一张不同的卡 → 先弹一条"已摘下旧专家",再弹新加持。
+      if (prev && prev.id !== card.id) {
+        addChatItem({ type: "system", text: "🎴 已卸下专家卡牌: " + personaName(prev), time: timeStr() });
+      }
       state.activePersona = card;
       addChatItem({ type: "persona_equip", card: card, time: timeStr() });
       notify();
@@ -1818,7 +1825,7 @@
     var prev = state.activePersona;
     try { await invoke("unequip_persona", { sessionId: state.activeSessionId }); } catch (e) { /* 忽略,前端照样摘 */ }
     state.activePersona = null;
-    if (prev) addChatItem({ type: "system", text: "🎴 已摘下专家面具: " + prev.cn_name, time: timeStr() });
+    if (prev) addChatItem({ type: "system", text: "🎴 已卸下专家卡牌: " + personaName(prev), time: timeStr() });
     notify();
   }
   // 切换/重载 session 后,从后端拉该 session 的加持状态还原挂件(backend 是真相)。
@@ -1909,6 +1916,7 @@
     // 卡片池: 专家面具
     loadPersonas: loadPersonas,
     getPersonas: function () { return personaPoolCache; }, // 返回引用(只读),不进 notify 快照
+    readPersonaBody: function (id) { return invoke("read_persona_body", { personaId: id }); }, // Side B: 详情拉完整正文
     equipPersona: equipPersona,
     unequipPersona: unequipPersona,
   };

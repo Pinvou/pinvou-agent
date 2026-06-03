@@ -271,6 +271,20 @@ impl SessionStore {
         self.mode_states.read().get(id)?.active_persona.clone()
     }
 
+    /// Side B: 给 session 挂上一次性注入的完整人设 body(加持时调)。
+    pub fn set_pending_persona_body(&self, id: &str, body: Option<String>) {
+        let mut m = self.mode_states.write();
+        let entry = m.entry(id.to_string()).or_default();
+        entry.pending_persona_body = body;
+    }
+
+    /// Side B: 一次性消费 session 的待注入人设 body。chat 在发消息前调,
+    /// prepend 到 message content 后置空,后续 turn 靠 equip_anchor 维持。
+    pub fn take_pending_persona_body(&self, id: &str) -> Option<String> {
+        let mut m = self.mode_states.write();
+        m.get_mut(id)?.pending_persona_body.take()
+    }
+
     // ===================== M2: auto-continue counter =====================
 
     /// 取当前 session 的 auto-continue 计数。

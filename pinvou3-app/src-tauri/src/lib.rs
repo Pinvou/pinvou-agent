@@ -166,6 +166,7 @@ pub fn run() {
             commands::get_super_permission_status,
             commands::set_super_permission,
             commands::list_personas,
+            commands::read_persona_body,
             commands::equip_persona,
             commands::unequip_persona,
             commands::get_active_persona,
