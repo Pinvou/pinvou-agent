@@ -2,7 +2,7 @@
 
 跨阶段定位 + 关键决策 + 待排期事项。**细节走 git log + `docs/`,这里每条尽量一句话。**
 
-最后更新: 2026-05-29
+最后更新: 2026-06-03
 
 ---
 
@@ -22,7 +22,7 @@
 | **E** 工具表精简 | LLM 可见工具 85→16+4、schema 119KB→14KB、翻译 19s→8s;OpenAI batch tool_calls 修复进上游 #1686 | `docs/工具表精简方案.md` |
 | **F** subagent + L1 测试 | 单 subagent context isolation 可用;L2 49 测试 CI gate + L1 vLLM 18 场景 harness + Judge rubric r2 | judge-report |
 | **G** 品悟 v2 review | 常驻嘴替压成 3 节点触发:Plan 出炉(L2 blocking)/ 任务收口(L1 advisory)/ stuck 兜底(未做) | `docs/Pinvou-品悟设计.md` |
-| **H** auto-compact 256K | 底座 V4 1M 默认参数在 256K 窗口退化,一次性收口(hint vendor + budget 分级 + 关 cycle + careful BLOCK) | `docs/auto-compact-256K-tuning.md` |
+| **H** auto-compact 256K | 底座 V4 1M 默认参数在 256K 退化一次性收口(hint vendor + budget 分级 + 关 cycle);**2026-06 核对修两处**:nice/emergency 触发倒置(`token_threshold` 200K>budget→nice 永不触发)+ output 预留 64K 过度 → **190K / 24K**(输入预算 74%→90%)+ 回归测试锁不变式 | `docs/auto-compact-256K-tuning.md` |
 | **I** workflow phase 可视化 + 大文件 SSE 治本 | SKILL `phases:` → chip 可视化(两套并存待选);append_file + 骨架量化约束跑通 15 页 PPT | git log |
 | **J** SSE Phase1 + v0.8.45 同步 | write/append 64KB 硬上限 + 截断感知错误;rebrand `codewhale-tui`;bridge 按 recoverable 分流瞬态错误 | git log |
 | **K** React UI 迁移 | 同事纯 React UI 替换 vanilla(bridge 唯一状态源/React 纯渲染),37 命令 + 14 事件全移植 + workflow 视图 | git log |
@@ -36,7 +36,7 @@
 
 **🟡 中等**
 - **prompt 减肥 二期(C 类)**(A 类 + 一期消重 + workflow 下线已做,渲染 38.4K→20.1K):剩余大头在 submodule 无 override——Personality(calm.md ~1.4K)/ Mode·Approval×3(~3.2K)/ Context+prompt-cache(~1.5K,prompts.rs 硬编码)/ Compaction 模板(compact.md ~1.8K)/ 语言再次提醒(LOCALE_CLOSER,prompts.rs:455,带测试)。要减得「加 override hook(同阶段 N,通用可提 PR,不增 fork drift)」或「改 fork」。三期(架构):Skills 长描述+phase 协议按需注入(-2.4K)/ compaction 动态生成。memory `prompt-slimming-task` 有地形+forkguard 红线;codex+我双评见会话
-- **WorkFlow 视图编排**(差异化最强,用户明确要做):交互模型待讨论(todo checklist / 节点流 / 专家协作),可能与 `plan_card` 融合
+- **WorkFlow 视图编排**(差异化最强,用户明确要做):交互模型待讨论(todo checklist / 节点流 / 专家协作),可能与 `plan_card` 融合。**2026-06 卡牌池调研**:pinvou3 已有 skill 池骨架(`list_skills_v2`+`SkillCard`+`start_skill_session`,前端「工作流编排开发中」占位);**卡=skill 不是 agent**(底座只有「主 agent + 内置 subagent 角色枚举 + skill」,无「具名 agent」层——role library `~/.deepseek/roles/` 上游规划未建,`role` 参数只拼一行文本);pinvou2 卡牌 v2 实为「Claw 自由派 subagent + AgentWatcher 看 manifest 反向构造卡」(旧 DAG 引擎 workflow_engine 已废),pinvou3 subagent 工具全 blocklist 故此路走不通;候选 skill 源 `agency-agents-zh`(215 中文角色/MIT/SKILL.md `name+description+emoji+color` 兼容)但是**人格卡**(非过程型 skill)需策展+瘦身;P0=skill 池加搜索/分类/富元数据(emoji/color frontmatter,SkillSummary 扩字段)
 - **模型预设切换 GUI**:bridge 已有 `ModelPreset` 占位,缺 GUI(远程 DeepSeek API / OpenRouter)
 - **GUI subagent 体验**:卡片方案 B/C(串行视图 / 内部 timeline)+ Settings toggle 启用 subagent(当前需 env override)
 - **品悟 outside voice 兑现 §4.3**(2026-05-28 调研后转 follow-up):`pinvou_review_chat` 当前在主 session 跑,主 history/用户偏好全在场,独立性≈0;clean 解法是借多 session engine 池跑 transient `pinvou-review-<uuid>` session,把 chat:done 路由回父 session UI、跑完销毁(预估 2-3h,涉及事件路由 + session lifecycle + UI 锚定三处)。`Op::SyncSession`/`Op::SpawnSubAgent` 都不接,前者面 resume/load 不抗 in-flight、后者 fire-and-forget mailbox 模式
@@ -61,6 +61,8 @@
 - **soffice 并发**:多附件 ingest 各用独立 UserInstallation profile,避免同 profile lock
 - **视觉接入走工具式复用**(2026-05-28):Qwen3.6 实测有视觉(base64 image_url 识图通过,推翻"不是 vision 模型"旧判断);复用底座已有 `image_analyze` 工具(零底座功能改动),pinvou3 四处接线——(1)开启 `Feature::VisionModel` feature(默认 Experimental 关)+(2)`vision_config` 指向同一 vllm 端点,**两道门缺一不可**(tool_setup.rs:99 同时 require feature+config 才注册 image_analyze)+(3)blocklist 放出 image_analyze +(4)附件图拷进 session workspace `attachments/` 引导 LLM 调用;真 e2e 验证(`l1_dialog_harness::image_vision_analyze`,13s 一击命中 KX7-93)——组件测试全过但漏了 feature 门,只有 e2e 抓到。**路线 1 软肋(GUI 手测暴露)**:图不在主上下文,模型有时跳过 image_analyze**凭空幻觉**(同一张证件照,不调工具时编成"Qwen 文档页",调了才得真相);修法是引导 prompt 翻转框架——不说"你有视觉能力"(诱导直接描述),改硬约束"调用前你对图一无所知,绝不能描述/猜测",并点名"这是什么/帅吗"等问法(`commands.rs`)。治标不治本(概率性),仍偶发就该上路线 2 根治。原生多模态(ContentBlock::Image,~100 行 fork)留作后续升级
 - **prompt 文案走 override 不改 submodule**(2026-05-29):「能应用层解决就不碰 fork」;base/locale/authority 加底座 `OnceLock` override hook(向后兼容,未 set=上游原值),pinvou3 内容迁 `pinvou3-app/.../bundle/base.md`+`bridge/bundle.rs`,`boot()` 注入;submodule base.md 字节回退上游(0 diff),这部分 prompt fork drift 归零;hook 通用可提上游 PR(merge 后连 hook drift 也归零)。工具引导三处自洽(instructions §1 ↔ base.md ↔ §4),清掉 apply_patch/task_shell_start 等隐藏/不存在工具
+- **256K 自动压缩真正生效的是 emergency 容量护栏,不是 should_compact**(2026-06-03):底座静态 `token_threshold=800K`/`floor=500K` 在 256K 窗口永远撞不到;真正护住的是 `context_input_budget`(窗口派生:`window−output−1024`,绕 floor 强制压缩,fork commit `9c8e4826` 修了 sub-500K 下溢);**nice/emergency 倒置 bug**:`token_threshold` 必须低于 budget 否则 emergency 先越线、nice 永不触发(旧 200K>189,440)→ 修 190K;output 预留按系统 prompt 强制的「≤16KB 分块写」(单次回复 3-5K tokens)从 64K 重估 24K,输入预算 74%→90%;不变式 `token_threshold+20K margin ≤ budget` 由回归测试 `compaction_threshold_stays_below_emergency_budget` 动态锁(改 output/threshold 倒置即报)。全在 `bridge/mod.rs`,零 submodule
+- **大工具输出无需额外治理**(2026-06-03,task A1 关):底座 `compact_tool_result_for_context` 对**每个**工具结果硬压到 12K 字符(256K<500K 走小限档,`turn_loop:1970→2004`),单次输出进上下文 ≤3-4K tokens,跳不过压缩缺口,全文只给前端显示;`large_output_router`(#548 workshop)的 synthesis 子 agent 是 **dead code**(`registry.rs:158` 无 LLM 合成、只截断到 1200 字符+存变量),冗余且更激进,保持 `workshop=None` 关闭
 
 ---
 
