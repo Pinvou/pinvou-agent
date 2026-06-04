@@ -2621,7 +2621,7 @@
               <h1 className={`text-[24px] font-normal tracking-wide ${isDark?'text-[#E3E3E3]':'text-[#1F1F1F]'}`}>
                 <span style={{ color:'#7C3AED', fontWeight:600 }}>卡牌池</span> <span style={{ color: isDark?'#80868b':'#9aa0a6' }}>/ 专家能力卡组</span>
               </h1>
-              <div className="text-[12px] mt-1" style={{ color: isDark?'#80868b':'#757575' }}>为 AI 加持一张专家卡牌 —— 将该领域专家的方法论、工作流与交付规范注入当前对话,使其以专家级标准承接后续任务。</div>
+              <div className="text-[12px] mt-1 truncate" style={{ color: isDark?'#80868b':'#757575' }} title="加持一张专家卡牌,将该领域的方法论、工作流与交付规范注入当前对话,使 AI 以专家级标准承接后续任务。">加持专家卡牌,让 AI 以该领域专家的标准承接当前对话。</div>
               {/* 加持目标: 醒目横幅, 让用户一眼看清注入到哪个对话 */}
               <div className="mt-2.5 inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[12.5px]"
                 style={ targetTitle
@@ -2680,11 +2680,18 @@
 
             {/* 卡片网格 */}
             <div className="flex-1 min-w-0 flex flex-col">
-              <div className="flex-1 overflow-y-auto custom-scrollbar px-5 pb-4">
+              {/* 搜索框 (前端关键词过滤) —— 置顶,符合"找搜索往上看"的直觉 */}
+              <div className="shrink-0 px-5 py-3 border-b flex items-center gap-3" style={{ borderColor: isDark?'rgba(255,255,255,.06)':'rgba(0,0,0,.06)' }}>
+                <Search size={16} className={isDark?'text-[#80868b]':'text-[#9aa0a6]'} />
+                <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="搜专家:名称 / 描述 / 部门 (如 前端 / 增长 / 测试)"
+                  className="flex-1 bg-transparent outline-none text-[13px]" style={{ color: isDark?'#E3E3E3':'#1F1F1F' }} />
+                {query ? <button onClick={()=>setQuery('')} className={isDark?'text-[#80868b] hover:text-[#E3E3E3]':'text-[#9aa0a6] hover:text-[#1F1F1F]'}><X size={14}/></button> : null}
+              </div>
+              <div className="flex-1 overflow-y-auto custom-scrollbar px-5 pt-4 pb-4">
                 {shown.length===0 ? (
                   <div className="h-full flex items-center justify-center text-[13px]" style={{ color: isDark?'#80868b':'#757575' }}>没有匹配的专家，试试放宽筛选</div>
                 ) : (
-                  <div className="grid gap-3" style={{ gridTemplateColumns:'repeat(auto-fill, minmax(248px, 1fr))' }}>
+                  <div className="grid gap-4" style={{ gridTemplateColumns:'repeat(auto-fill, minmax(256px, 1fr))' }}>
                     {shown.map(c=>{ const eq = active && active.id===c.id; const tc=deptColor(c.dept); const isUser = c.source==='user';
                       return (
                         <div key={c.id}
@@ -2693,7 +2700,7 @@
                           onMouseMove={onMove} onMouseLeave={onLeave} onDoubleClick={(e)=>openDetail(c,e)}>
                           <div className="flex items-start justify-between gap-2">
                             <div className="flex items-center gap-2.5 min-w-0">
-                              <div className="w-10 h-10 rounded-lg flex items-center justify-center text-[20px] shrink-0" style={{ background: tc+'22' }}>{c.emoji}</div>
+                              <div className="w-10 h-10 rounded-lg flex items-center justify-center text-[20px] shrink-0" style={{ background: tc+'2e' }}>{c.emoji}</div>
                               <div className={`font-semibold text-[14.5px] truncate ${isDark?'text-[#E3E3E3]':'text-[#1F1F1F]'}`}>{c.name}</div>
                             </div>
                             {eq
@@ -2705,7 +2712,7 @@
                           <p className="text-[11.5px] leading-snug flex-1" style={{ ...CLAMP3, color: isDark?'#9aa0a6':'#5f6368' }} title={c.description}>{c.description||'(无简介)'}</p>
                           <div className="flex items-center justify-between text-[10.5px] font-mono gap-2">
                             <span className="truncate flex items-center gap-2" style={{ color: isDark?'#80868b':'#9aa0a6' }}>
-                              {!isUser ? (DEPT_LABELS[c.dept]||c.dept)
+                              {!isUser ? null
                                 : confirmDelId === c.id
                                   ? <span className="flex items-center gap-1.5" onClick={(e)=>e.stopPropagation()}>
                                       <span style={{color:'#F28B82'}}>删?</span>
@@ -2732,14 +2739,6 @@
                     <button onClick={()=>setVisible(visible+60)} className="px-4 py-2 rounded-lg text-[12.5px] border transition-colors" style={{ color: isDark?'#C4C7C5':'#3c4043', borderColor: isDark?'#3c4043':'#dadce0' }}>显示更多 ({filtered.length - visible})</button>
                   </div>
                 ) : null}
-              </div>
-
-              {/* 搜索框 (前端关键词过滤) */}
-              <div className="shrink-0 px-5 py-3 border-t flex items-center gap-3" style={{ borderColor: isDark?'rgba(255,255,255,.06)':'rgba(0,0,0,.06)' }}>
-                <Search size={16} className={isDark?'text-[#80868b]':'text-[#9aa0a6]'} />
-                <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="搜专家:名称 / 描述 / 部门 (如 前端 / 增长 / 测试)"
-                  className="flex-1 bg-transparent outline-none text-[13px]" style={{ color: isDark?'#E3E3E3':'#1F1F1F' }} />
-                {query ? <button onClick={()=>setQuery('')} className={isDark?'text-[#80868b] hover:text-[#E3E3E3]':'text-[#9aa0a6] hover:text-[#1F1F1F]'}><X size={14}/></button> : null}
               </div>
             </div>
           </div>
