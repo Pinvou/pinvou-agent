@@ -175,6 +175,12 @@
         confirmAndRestart: '确认并重启应用',
         modelRestartHint: '修改后点击「确认并重启应用」生效',
         sysPerm: '系统权限', sudo: '高级执行权限 (Sudo)', sudoDesc: '允许助手执行环境配置等高级指令。',
+        versionUpdate: '版本与更新',
+        checkUpdate: '检查更新', checking: '检查中…', upToDate: '已是最新版本',
+        newVersionFound: '发现新版本', updateNotes: '更新说明',
+        downloadInstall: '下载并安装', downloading: '下载中…', installing: '安装中…',
+        updateComplete: '升级完成，重启后生效', restartNow: '立即重启',
+        updateCheckFailed: '检查失败',
         chatGreeting: '你好，今天想聊点什么？', artifacts: '产物与代码', placeholder: '询问 PINVOU 或输入指令', disclaimer: 'PINVOU 可能会生成不准确的信息，请仔细核实。',
         searchPlaceholder: 'Search chats'
       },
@@ -215,6 +221,12 @@
         confirmAndRestart: 'Confirm & Restart App',
         modelRestartHint: 'Click "Confirm & Restart App" to apply changes',
         sysPerm: 'System Permissions', sudo: 'Sudo Access', sudoDesc: 'Allow assistant to run high-privilege commands.',
+        versionUpdate: 'Version & Update',
+        checkUpdate: 'Check for Updates', checking: 'Checking…', upToDate: 'Up to date',
+        newVersionFound: 'New version available', updateNotes: 'Release Notes',
+        downloadInstall: 'Download & Install', downloading: 'Downloading…', installing: 'Installing…',
+        updateComplete: 'Update complete, restart to apply', restartNow: 'Restart Now',
+        updateCheckFailed: 'Check failed',
         chatGreeting: "Hi, what's good?", artifacts: 'Artifacts', placeholder: 'Ask PINVOU or enter a command', disclaimer: 'PINVOU may display inaccurate info, so double-check.',
         searchPlaceholder: 'Search chats'
       }
@@ -293,6 +305,8 @@
       const [personaEditor, setPersonaEditor] = useState(null); // 聊天里"存入卡牌池"草稿 → App 级编辑器
 
       const t = dict[language];
+      // 有可用新版 → 侧边栏设置图标亮红点（不弹窗不打断）
+      const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
 
       function handleActivateSkill(name) {
         setChatPrefill('我要用 ' + name + ' 完成: ');
@@ -558,9 +572,10 @@
                 <button
                   onClick={() => setCurrentView('settings')}
                   title={t.settings}
-                  className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
+                  className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
                 >
                   <Settings size={18} />
+                  {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
                 </button>
               )}
               <div className={`flex items-center ${isSidebarOpen ? 'px-2 gap-3' : 'justify-center'}`}>
@@ -578,9 +593,10 @@
                 <button
                   onClick={() => setCurrentView('settings')}
                   title={t.settings}
-                  className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
+                  className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
                 >
                   <Settings size={18} />
+                  {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
                 </button>
               )}
             </div>
@@ -611,6 +627,7 @@
                 customBaseUrl={customBaseUrl} setCustomBaseUrl={handleSetCustomBaseUrl}
                 customApiKey={customApiKey} setCustomApiKey={handleSetCustomApiKey}
                 onConfirmModelConfig={handleConfirmModelConfig}
+                bs={bs}
                 t={t}
               />
             )}
@@ -848,7 +865,7 @@
     // ==========================================
     // Settings View (Material 3 Style)
     // ==========================================
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, modelPreset, onChangeModelPreset, customModelName, setCustomModelName, customBaseUrl, setCustomBaseUrl, customApiKey, setCustomApiKey, onConfirmModelConfig, t }) => {
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, modelPreset, onChangeModelPreset, customModelName, setCustomModelName, customBaseUrl, setCustomBaseUrl, customApiKey, setCustomApiKey, onConfirmModelConfig, bs, t }) => {
       const isDark = activeTheme === 'dark';
       const presetOptions = [
         { key: 'local_vllm',  label: t.modelPresetLocalVllm },
@@ -1070,6 +1087,92 @@
                     <div className={`w-[28px] h-[28px] rounded-full shadow-sm transform transition-transform duration-300 ${isDark ? 'bg-[#041E49]' : 'bg-white'} ${superPerm ? 'translate-x-[20px]' : 'translate-x-0'}`} />
                   </button>
                 </div>
+              </div>
+
+              {/* 版本与更新: 链路 检查 → 下载(进度) → pkexec 安装 → 重启 */}
+              <div className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
+                <h2 className="text-[18px] font-medium mb-6">{t.versionUpdate}</h2>
+
+                {(() => {
+                  const upd = bs && bs.updateInfo;
+                  const checking = !!(bs && bs.updateChecking);
+                  const downloading = !!(bs && bs.updateDownloading);
+                  const ready = !!(bs && bs.updateReady);
+                  const progress = (bs && bs.updateProgress) || 0;
+                  const subText = isDark ? 'text-[#C4C7C5]' : 'text-[#444746]';
+                  return (
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <div className="pr-8">
+                          <span className="text-[16px] block mb-1">
+                            {t.curVer}: v{(upd && upd.current_version) || '—'}
+                          </span>
+                          <span className={`text-[14px] leading-relaxed block ${subText}`}>
+                            {checking ? t.checking
+                              : (bs && bs.updateCheckError === 'latest') ? t.upToDate
+                              : (bs && bs.updateCheckError) ? (t.updateCheckFailed + ': ' + bs.updateCheckError)
+                              : (upd && upd.available) ? (t.newVersionFound + ': v' + upd.latest_version)
+                              : ''}
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => bridge.available && !checking && bridge.checkForUpdate()}
+                          disabled={checking}
+                          className={`text-[12px] font-medium px-4 py-2 rounded-full whitespace-nowrap transition-colors ${
+                            isDark ? 'bg-[#333537] text-[#E3E3E3] hover:bg-[#444746]'
+                                   : 'bg-[#E1E5EA] text-[#1F1F1F] hover:bg-[#D3D9E0]'
+                          } ${checking ? 'opacity-50' : ''}`}
+                        >{t.checkUpdate}</button>
+                      </div>
+
+                      {upd && upd.available && (
+                        <div className={`mt-5 pt-5 border-t ${isDark ? 'border-[#333537]' : 'border-[#DDE3EA]'}`}>
+                          {upd.notes && (
+                            <div className="mb-4">
+                              <span className={`text-[12px] block mb-1 ${subText}`}>{t.updateNotes}</span>
+                              <span className="text-[14px] leading-relaxed whitespace-pre-wrap block">{upd.notes}</span>
+                            </div>
+                          )}
+
+                          {ready ? (
+                            <div className="flex items-center justify-between">
+                              <span className="text-[14px]">✅ {t.updateComplete}</span>
+                              <button
+                                onClick={() => bridge.available && bridge.restartApp()}
+                                className={`text-[12px] font-medium px-4 py-2 rounded-full whitespace-nowrap transition-colors ${
+                                  isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]'
+                                         : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'
+                                }`}
+                              >{t.restartNow}</button>
+                            </div>
+                          ) : downloading ? (
+                            <div>
+                              <div className="flex items-center justify-between mb-2">
+                                <span className={`text-[12px] ${subText}`}>{progress >= 100 ? t.installing : t.downloading}</span>
+                                <span className={`text-[12px] ${subText}`}>{progress}%</span>
+                              </div>
+                              <div className={`h-[6px] rounded-full overflow-hidden ${isDark ? 'bg-[#333537]' : 'bg-[#DDE3EA]'}`}>
+                                <div className="h-full rounded-full transition-all duration-200" style={{ width: progress + '%', backgroundColor: '#0B57D0' }} />
+                              </div>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => bridge.available && bridge.downloadAndInstallUpdate()}
+                              className={`text-[12px] font-medium px-4 py-2 rounded-full whitespace-nowrap transition-colors ${
+                                isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]'
+                                       : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'
+                              }`}
+                            >{t.downloadInstall} (v{upd.latest_version})</button>
+                          )}
+
+                          {bs && bs.updateError && (
+                            <span className="text-[13px] mt-3 block text-[#EA4335]">⚠️ {bs.updateError}</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
             </div>

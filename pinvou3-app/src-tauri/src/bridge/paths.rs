@@ -94,6 +94,12 @@ pub fn sessions_root() -> PathBuf {
     pinvou3_home().join("sessions")
 }
 
+/// `~/.pinvou3/updates/` —— 应用内升级下载的 deb 暂存目录。
+/// 不用 /tmp：tmpfs 受内存限制 + 重启清空（下载完提示重启后文件就没了）。
+pub fn updates_dir() -> PathBuf {
+    pinvou3_home().join("updates")
+}
+
 /// `~/.pinvou3/sessions/<session_id>/artifacts/` —— AI 默认产物落地目录。
 /// `$PINVOU3_SESSION_ARTIFACTS` 环境变量注入这个值给 engine + LLM。
 pub fn session_artifacts_dir(session_id: &str) -> PathBuf {

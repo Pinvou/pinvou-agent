@@ -19,6 +19,7 @@ mod file_watcher;
 mod monitor;
 pub mod personas;
 pub mod super_permission;
+mod updater;
 
 
 use tauri::Manager;
@@ -169,6 +170,10 @@ pub fn run() {
             commands::delete_persona,
             commands::save_session_persona_events,
             commands::get_session_persona_events,
+            updater::check_for_update,
+            updater::download_update,
+            updater::install_update,
+            updater::restart_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

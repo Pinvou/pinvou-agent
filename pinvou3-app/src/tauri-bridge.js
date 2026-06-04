@@ -84,6 +84,14 @@
     // personaPool 只放轻量元信息(loadState),1078 张卡放模块级 personaPoolCache,
     // 不进 notify() 的 JSON 深拷贝(否则每个流式 token 都克隆 ~950KB,卡顿)。
     personaPool: { loadState: "idle" }, // idle | loading | ready | error
+    // 应用内升级: updateInfo = check_for_update 返回值(available=true 才有意义)
+    updateInfo: null,
+    updateChecking: false,
+    updateCheckError: null,   // 手动检查的错误/「已是最新」提示文案
+    updateDownloading: false,
+    updateProgress: 0,        // 0-100
+    updateReady: false,       // 安装完成,等用户点重启
+    updateError: null,        // 下载/安装阶段错误(sha256/apt stderr 透传)
   };
   // 卡片池 1078 张卡的前端缓存。只读,通过 getPersonas() 取引用,不走 notify 快照。
   var personaPoolCache = [];
@@ -1796,6 +1804,52 @@
     } catch (e) { /* 旧 session 无加持,忽略 */ }
   }
 
+  // ── 应用内升级 ───────────────────────────────────────────────────
+  // 链路: check_for_update(对比服务器 latest.json) → download_update(流式下载+sha256,
+  // 进度走 update:progress 事件) → install_update(pkexec apt) → restart_app。
+  listen("update:progress", function (e) {
+    var p = e.payload || {};
+    state.updateProgress = p.total ? Math.round((p.downloaded / p.total) * 100) : 0;
+    notify();
+  });
+  // 启动静默检查: 失败全吞(网络差/更新源挂了不打扰用户)。结果不管新旧都存——
+  // available 驱动红点,current_version 给设置页显示当前版本用。
+  async function checkForUpdateSilently() {
+    try {
+      var info = await invoke("check_for_update");
+      if (info) { state.updateInfo = info; notify(); }
+    } catch (e) { /* 静默 */ }
+  }
+  // 设置页手动检查: 错误和「已是最新」都要反馈。
+  async function checkForUpdate() {
+    state.updateChecking = true; state.updateCheckError = null; notify();
+    try {
+      var info = await invoke("check_for_update");
+      state.updateInfo = info;
+      if (!info.available) state.updateCheckError = "latest"; // 前端按 i18n 显示「已是最新」
+    } catch (e) {
+      state.updateCheckError = String(e);
+    }
+    state.updateChecking = false; notify();
+  }
+  // 下载+安装一条龙: 下载完 pkexec 弹系统密码框,装完置 updateReady 等用户点重启。
+  async function downloadAndInstallUpdate() {
+    if (!state.updateInfo || !state.updateInfo.available || state.updateDownloading) return;
+    state.updateDownloading = true; state.updateProgress = 0; state.updateError = null; notify();
+    try {
+      var debPath = await invoke("download_update", { info: state.updateInfo });
+      state.updateProgress = 100; notify();
+      await invoke("install_update", { debPath: debPath });
+      state.updateReady = true;
+    } catch (e) {
+      state.updateError = String(e);
+    }
+    state.updateDownloading = false; notify();
+  }
+  function restartApp() {
+    invoke("restart_app").catch(function () { /* restart 成功不会返回 */ });
+  }
+
   // ── Init ─────────────────────────────────────────────────────────
   async function init() {
     await loadSettings();
@@ -1809,6 +1863,7 @@
     loadPersonas(); // 预载卡池(让聊天里草稿"已存入"判定能查到同名自制卡), fire-and-forget
     pollBackendStatus();
     setInterval(pollBackendStatus, 10000);
+    checkForUpdateSilently(); // fire-and-forget,不阻塞启动
     notify();
   }
 
@@ -1877,6 +1932,10 @@
     createPersona: createPersona,
     updatePersona: updatePersona,
     deletePersona: deletePersona,
+    // 应用内升级
+    checkForUpdate: checkForUpdate,
+    downloadAndInstallUpdate: downloadAndInstallUpdate,
+    restartApp: restartApp,
   };
 
   // Auto-init after DOM ready
