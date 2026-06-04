@@ -61,8 +61,6 @@
 
 > 触发：上游 DeepSeek-TUI 有新版本要 pull 进来
 > 估时：30-60 分钟（取决于 conflict 数量）
->
-> 💡 **团队成员同步别人已合好的改动**(非自己做 upstream sync):用 Claude Code 项目命令 **`/sync-fork`**(`.claude/commands/sync-fork.md`)—— 自动把 submodule 同步到父仓钉的 commit + 追踪分支、处理脏树/孤儿分支、重编 + 跑 fork-guard。脏工作树/分歧会先停下问。
 
 ### 4.1 sync 前
 
