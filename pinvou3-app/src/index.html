@@ -540,12 +540,13 @@
             {/* Recents — 独立 flex-1 + overflow-y-auto,只在展开态显示。
                 min-h-0 关键:flex 子项默认 min-height: auto 会阻止 overflow,
                 显式压成 0 才允许内容溢出触发滚动条。
-                nav / list 分隔:不用 hairline,「近期」label 上 padding 自然撑开。 */}
+                nav / list 分隔:「近期」label sticky top-0 + 实色背景,滚动时常驻顶端
+                遮住下滑的列表项,避免首项与上方 nav 贴死("重合")。 */}
             {isSidebarOpen && (
               <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-3 flex flex-col">
                 <div
-                  className="text-[11px] font-medium px-4 pt-6 pb-1 whitespace-nowrap shrink-0"
-                  style={{ color: activeTheme === 'dark' ? '#80868B' : '#5F6368', letterSpacing: '0.06em' }}
+                  className="text-[11px] font-medium px-4 pt-6 pb-2 whitespace-nowrap shrink-0 sticky top-0 z-10"
+                  style={{ color: activeTheme === 'dark' ? '#80868B' : '#5F6368', letterSpacing: '0.06em', background: activeTheme === 'dark' ? '#1E1F20' : '#F0F4F9' }}
                 >
                   {t.recent}
                 </div>
