@@ -6,8 +6,8 @@
 
 ## 0. 现状
 
-- DeepSeek-TUI 是 `h3c-hexin/DeepSeek-TUI` fork（submodule，`pinvou3-patches` 分支）
-- 当前 fork drift 约 **+1243 / -315 行,34 文件**（**clean re-fork 后,2026-06-04;新分支 `pinvou3-clean` ← v0.8.53,6 主题 commit**;含 prompt override 已移 app 层不计入此数）。clean re-fork 砍掉 subagent 全套(不可达)/ phase-demo workflow / qwen-128K 死码 / fetch_url 残留测试 + 撤除已 harvest 指纹,drift 从 +1844 降到 +1243。详见 `docs/fork-modifications.md` 顶部「Clean re-fork」章节
+- DeepSeek-TUI 是 `h3c-hexin/DeepSeek-TUI` fork（submodule，**`pinvou3-clean` 分支**,`.gitmodules` 追踪;旧 `pinvou3-patches` 留 fork 上当备份)
+- 当前 fork drift 约 **+1258 / -315 行,34 文件**（**clean re-fork 后,2026-06-04;`pinvou3-clean` ← v0.8.53,6 主题 commit**;含 prompt override 已移 app 层不计入此数)。clean re-fork 砍掉 subagent 全套(不可达)/ phase-demo workflow(跨仓)/ qwen-128K 死码 / fetch_url 残留测试 + 撤除已 harvest 指纹,drift 从 +1844 降到 +1258。**fork 结构 = 6 主题 commit,详见 `docs/fork-modifications.md` §1**
 - 已超出原 CLAUDE.md "≤50 行" 约定 — **本文件正式修订该约束**
 - 接受"重 fork"路线，靠工程化（指纹 + 测试 + 文档）控制维护成本
 
@@ -46,16 +46,16 @@
 
 | # | 必做项 | 工具 |
 |---|---|---|
-| 1 | `docs/fork-modifications.md` 加 entry（# 编号 + 文件:行 + 改动 + 理由 + 上游 PR 可行性） | 手动 |
+| 1 | `docs/fork-modifications.md` §1 对应主题 commit 小节补 entry（文件 + 改动 + 理由 + 上游 PR 可行性） | 手动 |
 | 2 | `scripts/fork-guard.sh` 加指纹（grep 固定字串抓静默丢失） | 手动 |
 | 3 | 写 `forkguard_*` 测试（断言 fork 后行为，反向防回归） | `cargo test forkguard_` |
-| 4 | 上游原回归测试因这次 fork 必然 fail → 加 `#[ignore = "pinvou3 fork patch #X: ..."]` | 手动 |
+| 4 | 上游原回归测试因这次 fork 必然 fail → 加 `#[ignore = "pinvou3 fork(<主题>): ..."]` | 手动 |
 | 5 | 跑 `bash scripts/fork-guard.sh --fast` 确认全过 | 脚本 |
 
 ### 测试命名规范
 
 - 新加防回归测试 → `forkguard_<assertion>`（前缀让 fork-guard.sh 自动 cargo test）
-- 上游原测试因 fork 失效 → `#[ignore = "pinvou3 fork patch #X: <一句解释>"]`
+- 上游原测试因 fork 失效 → `#[ignore = "pinvou3 fork(<主题/原因>): <一句解释>"]`
 
 ## 4. 上游 sync 流程
 
@@ -80,20 +80,24 @@ bash scripts/fork-guard.sh
 
 ```bash
 cd DeepSeek-TUI
-git fetch upstream
-git checkout pinvou3-patches
-git merge upstream/main  # 或 git rebase,看团队习惯
+# remote: origin = Hmbown(上游),fork = h3c-hexin(我们)
+git fetch origin --tags
+git checkout pinvou3-clean
+# ⚠️ release 是独立 tag(v0.8.5x),不在 origin/main 上(main 常停在上个版本+CI),
+#    要对 release tag 合,别合 origin/main
+git merge v0.8.XX
 ```
 
 **Conflict 处理优先级**：
 
-1. **核心文件 5 个**（必须最先 review）：
-   - `crates/tui/src/prompts/base.md`
-   - `crates/tui/src/prompts.rs`
-   - `crates/tui/src/project_context.rs`
-   - `crates/tui/src/skills/mod.rs`
-   - `crates/tui/src/core/engine.rs`
-2. 其它 fork 触及文件按 `docs/fork-modifications.md` 列表逐个对
+1. **核心 fork 文件**（必须最先 review,对应 fork-modifications §1 的 6 commit）：
+   - `crates/tui/src/project_context.rs`（C5:砍空 + constitution 短路）
+   - `crates/tui/src/skills/mod.rs` + `prompts.rs`（C5:skills union / 路径砍 / embedder-agnostic）
+   - `crates/tui/src/tools/pinvou3_blocklist.rs` + `core/engine/tool_catalog.rs`（C2:工具门控)
+   - `crates/tui/src/tools/file.rs` + `core/engine/{dispatch,turn_loop}.rs`（C3:append_file/大产物)
+   - `crates/tui/src/command_safety.rs` + `tools/shell.rs`（C4:careful)
+   - `crates/tui/src/lib.rs`（C1:上游加/删模块要手动同步 `pub mod`)
+2. 其它 fork 触及文件按 `docs/fork-modifications.md` §1 逐个对
 3. Conflict 时**保留 pinvou3 行为**（fork-modifications.md 记的就是不要回退的内容）
 4. 上游新加内容 review：是否对 pinvou3 有用？无用就丢、有用就保留
 
@@ -123,14 +127,13 @@ diff /tmp/pre-sync-prompt.txt /tmp/post-sync-prompt.txt
 ### 4.4 收尾
 
 ```bash
-# 1. 更新 fork-modifications.md 顶部"v0.8.X 同步后整理"章节
-#    - 列出本次 sync 上游变化对 pinvou3 的影响
-#    - 标注哪些 fork patch 被上游 harvest（可作废）
-#    - 标注新增的暴露点
+# 1. fork-modifications.md §4「Sync 历史」加一条本次 sync 章节
+#    - 上游变化对 pinvou3 的影响 / 被 harvest 可作废的 patch / 新暴露点
+#    若有 patch 被 harvest:撤 fork-guard 指纹 + 更新 §1 commit 描述
 
 # 2. 更新本文件 §0 "当前 fork drift" 行数
 
-# 3. 提交 submodule commit + 主 repo submodule ref update
+# 3. submodule 提交在 pinvou3-clean 分支 + push fork + 主 repo 更新 submodule ref
 ```
 
 ## 5. 撤回评估时机
@@ -144,11 +147,12 @@ diff /tmp/pre-sync-prompt.txt /tmp/post-sync-prompt.txt
 | 任一 `forkguard_*` 测试 fail 但原因不明 | 看 fork-modifications.md 对应 entry,确认改动是否还必要 |
 | 上游加新 API 跟 pinvou3 fork 重叠 | 撤回 pinvou3 私有版本,改用上游 API |
 
-## 6. fork patch 编号规则
+## 6. fork patch 组织规则（clean re-fork 后）
 
-- **全局递增**：`#1, #2, ..., #41` 用 fork-modifications.md 内顺序
-- **新加 patch**：取 fork-modifications.md 当前最大编号 +1
-- **删除 patch**：编号**不复用**，在 fork-modifications.md 标 "❌ 已删除（上游 harvest）"
+- 不再用旧的 `#1..#42` 全局编号(clean re-fork 已废弃)。fork 按 **6 个主题 commit**(C1-C6)组织,见 `docs/fork-modifications.md` §1。
+- **新加 patch**:归入对应主题 commit 的范畴(工具/prompt/safety/lib/…),在 fork-modifications §1 对应小节补文件 + 改动 + 上游 PR 可行性 + 测试。
+- **删/harvest patch**:从 fork-guard 指纹撤除,在 §2「移除清单」记一条 + §1 对应小节更新。
+- drift 涨太多或主题混杂时,可再做一次 clean re-fork(从最新 release 重建主题 commit)—— 本次(2026-06-04)即范例。
 
 ## 7. 上游 PR 提交流程
 
@@ -162,11 +166,17 @@ diff /tmp/pre-sync-prompt.txt /tmp/post-sync-prompt.txt
 
 参考：https://github.com/Hmbown/CodeWhale/blob/main/CONTRIBUTING.md（如有）
 
-## 8. 上游 PR 状态（实时，2026-05-31 核对）
+## 8. 上游 PR 状态（2026-06-04 clean re-fork 后核对）
 
 > 全部 PR 提到 `Hmbown/CodeWhale`，head 走 `h3c-hexin/DeepSeek-TUI` 跨 fork。状态用 `gh pr list --repo Hmbown/CodeWhale --author h3c-hexin --state all` 核。
 >
-> **2026-05-31 大批合入**：owner 一次性 merge 了 #2245/#2311/#2313/#2314/#2354/#2355。**OPEN 仅剩 #2356**。这批合入的 fork patch 下次 sync 会被上游 harvest，届时按文件级 diff 确认 fork 版消失（漂移归零）。
+> **下方 MERGED 的 PR 已在 v0.8.53 + clean re-fork 全部确认 harvest 归零**(fork 侧取上游版,对应指纹已从 fork-guard 撤除)。
+
+**🟠 待提(clean re-fork 派生)**
+
+| PR | 内容 | 来源 |
+|---|---|---|
+| (待提) | `tool_agent_route` 硬编码 `deepseek-v4-flash` → 继承父 session model(任何非 DeepSeek 后端都会 404) | clean re-fork 丢 subagent fork patch 时识别为通用 bug;从 v0.8.53 切净分支 cherry-pick |
 
 **✅ 已 MERGED（下次 sync 随上游归零，别重复提）**
 
@@ -203,7 +213,7 @@ diff /tmp/pre-sync-prompt.txt /tmp/post-sync-prompt.txt
 
 ## 9. 相关文档
 
-- `docs/fork-modifications.md` — 所有 fork patch 列表（按逻辑组分类）
+- `docs/fork-modifications.md` — fork patch 清单（§1 = 6 主题 commit 结构 / §2 移除清单 / §3 fork-guard / §4 sync 历史）
 - `docs/system-prompt-架构.md` — system prompt 全链路梳理
 - `scripts/fork-guard.sh` — 指纹 + 回归测试守卫
 - `pinvou3-app/src-tauri/src/bin/dump_system_prompt.rs` — prompt dump 工具（debug 必备）
