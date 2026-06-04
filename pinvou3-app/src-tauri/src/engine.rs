@@ -357,20 +357,6 @@ fn spawn_event_forwarder(
                         }),
                     );
                 }
-                Event::PhaseChanged { phase_id } => {
-                    // 工作流 Phase 可视化 MVP1: 底座从 LLM 回复里抽
-                    // `<phase id="..."/>` marker 自动 emit 这个事件。前端
-                    // workflowState 监听 chat:phase_changed 切 chip 状态,无需自己
-                    // 正则解析 chat:delta 流。marker 本身已被 strip_phase_marker_delta
-                    // 从 MessageDelta 内容剥掉,聊天区不会有 DOM 污染。
-                    let _ = app.emit(
-                        "chat:phase_changed",
-                        json!({
-                            "session_id": session_id,
-                            "phase_id": phase_id,
-                        }),
-                    );
-                }
                 Event::UserInputRequired { id, request } => {
                     // 底座 emit 这个事件后会 block 在 await_user_input，等 submit_user_input
                     // 或 cancel_user_input。前端渲染选择气泡 → 用户点选 →

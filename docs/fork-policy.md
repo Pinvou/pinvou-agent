@@ -7,7 +7,7 @@
 ## 0. 现状
 
 - DeepSeek-TUI 是 `h3c-hexin/DeepSeek-TUI` fork（submodule，`pinvou3-patches` 分支）
-- 当前 fork drift 约 **+1844 / -333 行,41 文件**（**v0.8.53 基线,2026-06-04 sync 后**;含 prompt override 已移 app 层不计入此数）。v0.8.51 时 +1811,本次 +33 来自 constitution.json loader 短路新 patch。v0.8.49 时 +1796/40 文件。上一基线 v0.8.47 时为 +2127
+- 当前 fork drift 约 **+1243 / -315 行,34 文件**（**clean re-fork 后,2026-06-04;新分支 `pinvou3-clean` ← v0.8.53,6 主题 commit**;含 prompt override 已移 app 层不计入此数）。clean re-fork 砍掉 subagent 全套(不可达)/ phase-demo workflow / qwen-128K 死码 / fetch_url 残留测试 + 撤除已 harvest 指纹,drift 从 +1844 降到 +1243。详见 `docs/fork-modifications.md` 顶部「Clean re-fork」章节
 - 已超出原 CLAUDE.md "≤50 行" 约定 — **本文件正式修订该约束**
 - 接受"重 fork"路线，靠工程化（指纹 + 测试 + 文档）控制维护成本
 

@@ -28,7 +28,7 @@ use deepseek_tui::session_manager::{
 };
 use parking_lot::RwLock;
 
-use super::mode_state::{ActiveSkillBinding, PlanPhase, SerializableMode, SessionModeState};
+use super::mode_state::{PlanPhase, SerializableMode, SessionModeState};
 use super::paths;
 
 /// pinvou3 session 存储：包 SessionManager + active id 跟踪 + per-session mode 状态。
@@ -220,40 +220,6 @@ impl SessionStore {
     /// 重置到默认（Yolo + None）。delete_session 时调用。
     pub fn reset_mode_state(&self, id: &str) {
         self.mode_states.write().remove(id);
-    }
-
-    // ===================== 工作流 skill 绑定 (per-session) =====================
-
-    /// 把一个 skill 绑定到指定 session。`start_skill_session` 在 create_new
-    /// 之后立刻调,挂 pending_instruction 让该 session 第一条 chat 自动 prepend。
-    pub fn bind_skill(&self, id: &str, binding: ActiveSkillBinding) {
-        let mut m = self.mode_states.write();
-        let entry = m.entry(id.to_string()).or_default();
-        entry.active_skill = Some(binding);
-    }
-
-    /// 取该 session 当前绑定的 skill 信息(给前端渲染 chips strip)。
-    /// 注意:返回的 binding 里 pending_instruction 是 None(serde skip + 一次性消费)。
-    pub fn active_skill(&self, id: &str) -> Option<ActiveSkillBinding> {
-        self.mode_states.read().get(id)?.active_skill.clone()
-    }
-
-    /// 一次性消费 session 绑定 skill 的 pending instruction。
-    /// commands::chat 在发用户消息前调,prepend 到 message content 后置空,
-    /// 后续 turn 不再重复(LLM 已经看到过,靠 session 上下文保持)。
-    pub fn take_pending_skill_instruction(&self, id: &str) -> Option<String> {
-        let mut m = self.mode_states.write();
-        let entry = m.get_mut(id)?;
-        let skill = entry.active_skill.as_mut()?;
-        skill.pending_instruction.take()
-    }
-
-    /// 解除 session 的 skill 绑定(用户点 chips 区 ✕ 时调用)。
-    /// 不删 session 本身,只清掉绑定 — chips strip 在前端会因此隐藏。
-    pub fn unbind_skill(&self, id: &str) {
-        if let Some(entry) = self.mode_states.write().get_mut(id) {
-            entry.active_skill = None;
-        }
     }
 
     // ===================== 卡片池: 专家面具加持 =====================
@@ -450,77 +416,8 @@ mod tests {
     }
 
     #[test]
-    fn bind_skill_then_take_consumes_once_and_returns_binding() {
-        let (store, _g) = isolated_store();
-        store.bind_skill(
-            "s1",
-            ActiveSkillBinding {
-                name: "h3c-ppt".into(),
-                pending_instruction: Some("PREPEND".into()),
-                phases: vec![],
-            },
-        );
-        let b = store.active_skill("s1").expect("bound");
-        assert_eq!(b.name, "h3c-ppt");
-        // pending_instruction 被 #[serde(skip)] 标记,active_skill 路径走的是
-        // .clone() 不影响 pending_instruction(它仍存在原 entry 上),take 走另一路径
-        assert_eq!(
-            store.take_pending_skill_instruction("s1").as_deref(),
-            Some("PREPEND")
-        );
-        assert!(store.take_pending_skill_instruction("s1").is_none());
-        // 取走 instruction 后 active_skill 仍能返回 binding(name+phases),
-        // 仅 pending_instruction 槽位被消费 — 关键:phases 不丢
-        let b2 = store.active_skill("s1").expect("still bound");
-        assert_eq!(b2.name, "h3c-ppt");
-    }
-
-    #[test]
-    fn unbind_skill_clears_binding() {
-        let (store, _g) = isolated_store();
-        store.bind_skill(
-            "s1",
-            ActiveSkillBinding {
-                name: "h3c-ppt".into(),
-                pending_instruction: None,
-                phases: vec![],
-            },
-        );
-        assert!(store.active_skill("s1").is_some());
-        store.unbind_skill("s1");
-        assert!(store.active_skill("s1").is_none());
-    }
-
-    #[test]
-    fn bind_skill_preserves_mode_and_phase() {
-        // 绑定/解绑 skill 不能动 mode / plan_phase / pinvou_review_enabled。
-        let (store, _g) = isolated_store();
-        store.set_pinvou_review("s1", true);
-        store.set_mode_state(
-            "s1",
-            super::super::mode_state::SerializableMode::Plan,
-            super::super::mode_state::PlanPhase::Planning,
-        );
-        store.bind_skill(
-            "s1",
-            ActiveSkillBinding {
-                name: "h3c-ppt".into(),
-                pending_instruction: None,
-                phases: vec![],
-            },
-        );
-        let state = store.mode_state("s1");
-        assert!(state.pinvou_review_enabled);
-        assert!(matches!(
-            state.mode,
-            super::super::mode_state::SerializableMode::Plan
-        ));
-        store.unbind_skill("s1");
-        let state2 = store.mode_state("s1");
-        assert!(state2.pinvou_review_enabled);
-        assert!(matches!(
-            state2.mode,
-            super::super::mode_state::SerializableMode::Plan
-        ));
+    fn bind_skill_preserves_mode_and_phase_placeholder() {
+        // (工作流 skill 绑定已移除;mode/plan_phase/pinvou_review 正交性由
+        //  下方 mode-state 相关测试覆盖。)
     }
 }

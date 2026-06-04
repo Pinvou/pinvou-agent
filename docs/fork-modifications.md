@@ -17,6 +17,32 @@
 
 ---
 
+## 🧹 Clean re-fork (2026-06-04, 新分支 `pinvou3-clean` ← v0.8.53)
+
+把积累的 36 个交错 fork 提交 + 160 commit 乱历史,**从 v0.8.53 干净起点重建为 6 个主题 commit**,只留仍 fork-distinct 的 patch。drift **+1844→+1243 / 34 文件**(submodule)。
+
+**新历史(6 主题 commit)**:
+1. `feat(lib)` lib facade(暴露内部模块供 app as-library)
+2. `feat(tools)` pinvou3 blocklist 工具门控
+3. `feat(tools)` append_file + 大产物保护(64KB 上限 / truncated_args_hint / SSE idle 遥测)
+4. `feat(safety)` careful hook(多行逐行 + YOLO 也拦 Dangerous)
+5. `feat(prompt)` GUI prompt/context/skills(project_context 砍空 + constitution 短路 + skills union/路径砍 + prompts embedder-agnostic)
+6. `chore` 零碎适配(llm_client/lsp/hooks/gitignore)
+
+**丢弃的 patch**:
+- **subagent 本地约束全套**(MAX_STEPS/ELAPSED/resolve_agent_ref/Implementer-append_file)—— 实证 `agent_*`/`delegate` 全在 blocklist,**subagent 路径生产不可达**,等重做 subagent 再说。`tool_agent_route` 硬编码 deepseek-v4-flash 改为**提上游 PR**(通用 bug)。
+- **phase/demo workflow 全删(跨仓)**—— submodule(PhaseDef/DemoInfo/strip_marker/PhaseChanged)+ app 后端(commands 四件套/ActiveSkillBinding/engine handler)+ app 前端(WorkflowView/PhaseChips/state.workflow/监听)。**专家卡牌(persona)+ plan_phase 独立,未碰**。workflow 后面重做。
+- **qwen-128K**(models.rs 死码,真实模型 `qwen36_35b_256k` 走上游 hint 返 256K)。
+- **fetch_url 残留测试**(33 行,测的全是已上游化 API)。
+
+**已 harvest 指纹撤除**(v0.8.53 上游自带,非 fork-distinct):bing decode / network_policy fake-ip API / InstructionSource enum / base override hook / EngineConfig.instructions / 256K auto-compact / MAX_OUTPUT env。fork-guard 指纹从 ~32 → **22**(只剩真 fork patch)。
+
+**验证**:fork-guard 全过(22 指纹 + codewhale-tui 6 + pinvou3-tauri 7 测试);底座 lib **3850 pass**;app 后端 lib **98 pass**;system prompt 与 re-fork 前逐字节一致。⚠️ app 前端(index.html)是 JS 未跑,需 run-dev 冒烟确认 UI。
+
+**待办**:① `pinvou3-clean` 切为主分支 + push fork + 更新父仓 submodule 指针;② `pinvou3-clean-wip` 快照分支可删;③ `tool_agent_route` deepseek-v4-flash PR。
+
+---
+
 ## 🔄 v0.8.53 同步后整理 (2026-06-04, submodule merge v0.8.53 → pinvou3-patches)
 
 上游 v0.8.51→**v0.8.53** 同步 **40 commit**(14 fix / 9 feat / 6 docs)。**仅 1 个真实冲突**(`project_context.rs`,其余 14 个重叠文件如 engine.rs/turn_loop.rs/subagent 全自动合)。drift +1811→**+1844 / 41 文件**。0.8.53 是当前 Latest release(0.8.52 仅 tag 未 release,跳过直接对 53)。

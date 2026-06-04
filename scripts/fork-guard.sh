@@ -28,23 +28,27 @@ fail=0
 # ---------- 第 1 层:指纹(代码是否还在) ----------
 bold "── 第 1 层:fork patch 指纹校验 ──"
 # 格式: "编号|说明|文件(相对 REPO)|grep -F 固定串"
+# 2026-06-04 clean re-fork(pinvou3-clean ← v0.8.53):已删 subagent 全套 / phase-demo /
+# qwen-128K / fetch_url 残留测试;已 harvest 的(bing decode / network_policy fake-ip /
+# InstructionSource / override hook / EngineConfig.instructions / 256K compact)指纹一并撤除
+# —— 它们已是上游自带,不再是 fork-distinct patch。下面只保留仍 fork-distinct 的 patch。
 fingerprints=(
-  "#1  |subagent 步数上限 20            |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|DEFAULT_MAX_STEPS: u32 = 20"
-  "#2  |subagent 墙钟上限 300s          |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|DEFAULT_SUBAGENT_ELAPSED_MAX: Duration = Duration::from_secs(300)"
-  "#4  |resolve_agent_ref 截断容错      |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|LLM 可能截断"
-  "#7  |tool_agent_route 继承父 model   |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|上游硬编码 deepseek-v4-flash"
-  "組5  |Implementer allowed_tools 含 append_file |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|[pinvou3-fork 組5] append_file 是 pinvou3 一等写工具"
-  "#10 |web_search bing 实体解码        |DeepSeek-TUI/crates/tui/src/tools/web_search.rs|decode_html_entities"
-  "#13 |fetch_url fake-ip 放行          |DeepSeek-TUI/crates/tui/src/tools/fetch_url.rs|is_trusted_fakeip_addr"
-  "#18a|network_policy fake-ip CIDR     |DeepSeek-TUI/crates/tui/src/network_policy.rs|with_trusted_fakeip_cidrs"
+  # —— submodule fork patch ——
   "#14 |file.rs 64KB content 上限       |DeepSeek-TUI/crates/tui/src/tools/file.rs|WRITE_FILE_MAX_CONTENT_BYTES"
-  "#15 |truncated_args_hint 截断提示    |DeepSeek-TUI/crates/tui/src/core/engine/turn_loop.rs|truncated_args_hint"
+  "#15 |truncated_args_hint 截断提示    |DeepSeek-TUI/crates/tui/src/core/engine/dispatch.rs|truncated_args_hint"
   "    |tool_catalog blocklist 模型     |DeepSeek-TUI/crates/tui/src/core/engine/tool_catalog.rs|pinvou3_should_defer_native_tool"
-  "#18b|bridge 透传 fake-ip 信任段      |pinvou3-app/src-tauri/src/bridge/mod.rs|with_trusted_fakeip_cidrs"
-  "#16 |bridge subagent_api_timeout 300 |pinvou3-app/src-tauri/src/bridge/mod.rs|from_secs(300)"
+  "    |pinvou3_blocklist 工具表        |DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs|fn is_pinvou3_hidden"
+  "    |careful 多行逐行(SafetyLevel Ord)|DeepSeek-TUI/crates/tui/src/command_safety.rs|多行命令不再一刀切 Dangerous"
+  "    |careful shell YOLO 也 BLOCK     |DeepSeek-TUI/crates/tui/src/tools/shell.rs|Dangerous commands are BLOCKED in ALL modes"
   "#25 |skills union pub API            |DeepSeek-TUI/crates/tui/src/skills/mod.rs|pub fn render_available_skills_context_for_workspace_and_dir"
   "#26 |prompts skills_block union 调用 |DeepSeek-TUI/crates/tui/src/prompts.rs|render_available_skills_context_for_workspace_and_dir(workspace, dir)"
-  "#42 |base override hook 存活(submodule) |DeepSeek-TUI/crates/tui/src/prompts.rs|pub fn set_base_prompt_override"
+  "#41 |skill 路径只剩 ~/.agents/skills    |DeepSeek-TUI/crates/tui/src/skills/mod.rs|patch #41): 砍掉底座的 10 路径扫描清单"
+  "    |PROJECT_CONTEXT_FILES 砍空(C 终态)  |DeepSeek-TUI/crates/tui/src/project_context.rs|PROJECT_CONTEXT_FILES: &[&str] = &[]"
+  "    |GLOBAL_PATHS 砍空                   |DeepSeek-TUI/crates/tui/src/project_context.rs|const GLOBAL_PATHS: &[&[&str]] = &[]"
+  "53  |constitution.json loader 短路       |DeepSeek-TUI/crates/tui/src/project_context.rs|v0.8.53 上游引入 \`.codewhale/constitution.json\`"
+  # —— app 层 fork(pinvou3-app)——
+  "#18b|bridge 透传 fake-ip 信任段      |pinvou3-app/src-tauri/src/bridge/mod.rs|with_trusted_fakeip_cidrs"
+  "#16 |bridge subagent_api_timeout 300 |pinvou3-app/src-tauri/src/bridge/mod.rs|from_secs(300)"
   "#28 |Tier 5 cover EngineConfig.instructions |pinvou3-app/src-tauri/resources/bundle/base.md|files configured via \`EngineConfig.instructions\`"
   "#33 |Output Formatting 改 embedder-aware|pinvou3-app/src-tauri/resources/bundle/base.md|Match the embedder's render target"
   "#32 |Sub-Agent Strategy embedder-aware  |pinvou3-app/src-tauri/resources/bundle/base.md|concurrent cap is embedder-configured"
@@ -52,16 +56,6 @@ fingerprints=(
   "#36 |Brother Whale preamble 已删         |pinvou3-app/src-tauri/resources/bundle/base.md|running inside pinvou3"
   "#37 |LOCALE_PREAMBLE_ZH_HANS pinvou3 brand|pinvou3-app/src-tauri/src/bridge/bundle.rs|你正在 pinvou3 中运行"
   "#38 |AUTHORITY_RECAP pinvou3 brand       |pinvou3-app/src-tauri/src/bridge/bundle.rs|Constitution of pinvou3 (Articles I-VII)"
-  # #40 environment block 移 volatile 下:v0.8.49 已被上游 harvest(PR #2314 合入),
-  # 不再是 fork-distinct patch,指纹撤除(功能由上游自身保证)。
-  "#41 |skill 路径只剩 ~/.agents/skills    |DeepSeek-TUI/crates/tui/src/skills/mod.rs|patch #41): 砍掉底座的 10 路径扫描清单"
-  "    |phase tracking 弱化(dormant)       |DeepSeek-TUI/crates/tui/src/skills/mod.rs|This section is dormant by default"
-  "    |phase tracking 反指引(不要声明不适用)|DeepSeek-TUI/crates/tui/src/skills/mod.rs|Don't announce that a phased skill is"
-  "    |PROJECT_CONTEXT_FILES 砍空(C 终态)  |DeepSeek-TUI/crates/tui/src/project_context.rs|PROJECT_CONTEXT_FILES: &[&str] = &[]"
-  "    |GLOBAL_PATHS 砍空                   |DeepSeek-TUI/crates/tui/src/project_context.rs|const GLOBAL_PATHS: &[&[&str]] = &[]"
-  "53  |constitution.json loader 短路       |DeepSeek-TUI/crates/tui/src/project_context.rs|v0.8.53 上游引入 \`.codewhale/constitution.json\`"
-  "    |C 方案 InstructionSource enum       |DeepSeek-TUI/crates/tui/src/prompts.rs|pub enum InstructionSource {"
-  "    |C 方案 EngineConfig.instructions    |DeepSeek-TUI/crates/tui/src/core/engine.rs|pub instructions: Vec<crate::prompts::InstructionSource>"
   "    |C 方案 pinvou3 注入 Inline          |pinvou3-app/src-tauri/src/bridge/mod.rs|fn session_instructions(&self, session_id: &str) -> Vec<InstructionSource>"
 )
 for fp in "${fingerprints[@]}"; do
@@ -86,10 +80,7 @@ bold "── 第 2 层:fork 回归测试 (codewhale-tui) ──"
 # libtest 多 filter = OR。forkguard_ 前缀网住所有新增守卫;其余按名列出。
 ( cd "$TUI" && cargo test -p codewhale-tui --lib -- \
     forkguard_ \
-    resolve_agent_ref_tolerates_truncated_agent_prefix \
     pinvou3_yolo_offers_nonblocklisted_tools_outside_upstream_default \
-    bing_ckurl_with_html_entities_decodes_real_url \
-    trusted_fakeip_cidr_allows_placeholder_but_not_real_private \
     truncated_args_hint_fires_for_file_write_missing_field \
     truncated_args_hint_skips_other_tools_and_other_errors \
     test_write_file_rejects_oversized_content \

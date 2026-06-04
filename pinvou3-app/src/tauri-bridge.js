@@ -78,17 +78,6 @@
     tokens: { input: 0, max: 32768 },
     // 思考指示器：active 时 React 渲染计时气泡（Braille + 思考中/调用工具 + 秒数）
     thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
-    // 工作流状态
-    workflow: {
-      skills: [],
-      loadState: "idle", // idle | loading | ready | error
-      activeSkillName: null,
-      phases: [],
-      currentPhaseId: null,
-      reachedPhaseIds: [],
-      bindings: {},      // session_id → skill_name
-      demo: null,        // { open, name, loading, kind, content, error, description, duration }
-    },
     // 卡片池: 专家面具。activePersona = 当前 session 加持的专家卡(完整对象)或 null,
     // 驱动聊天室右上角挂件。
     activePersona: null,
@@ -287,9 +276,6 @@
       console.warn("list_sessions failed", e);
       state.sessions = [];
     }
-    try {
-      state.workflow.bindings = await invoke("list_session_skill_bindings");
-    } catch (e) { /* 无绑定 */ }
     notify();
   }
 
@@ -302,7 +288,6 @@
       switchActiveTo(meta.id, { fresh: true });
       await refreshHistoryList();
       await syncModeState();
-      await syncSessionSkill();
       await syncActivePersona();
       notify();
     } catch (e) {
@@ -318,7 +303,6 @@
     if (sessionStates[id]) {
       switchActiveTo(id, null);
       await syncModeState();
-      await syncSessionSkill();
       await syncActivePersona();
       notify();
       reconcileArtifacts(id); // 对账磁盘产物(fire-and-forget)
@@ -339,7 +323,6 @@
       }) : [];
       rerenderFromMessages();
       await syncModeState();
-      await syncSessionSkill();
       await syncActivePersona();
       notify();
       reconcileArtifacts(id); // 对账磁盘产物(修重启/跟踪遗漏导致的面板缺文件)
@@ -1152,15 +1135,6 @@
     notify();
   }); });
 
-  // chat:phase_changed —— 底座从 LLM 回复抽 <phase id="..."/> marker 触发。
-  // workflow phase chips 是全局(跟 active skill 走),后台 session 的 phase 变更不动 active chips。
-  listen("chat:phase_changed", function (e) {
-    var sid = e.payload && e.payload.session_id;
-    if (sid && sid !== state.activeSessionId) return;
-    var phaseId = e.payload && (e.payload.phase_id || e.payload.phaseId);
-    setCurrentPhase(phaseId, "llm");
-  });
-
   // ── Monitor ──────────────────────────────────────────────────────
   function fmtMiB(mib) {
     if (mib == null) return "—";
@@ -1740,90 +1714,6 @@
     }
   }
 
-  // ── 工作流 ───────────────────────────────────────────────────────
-  function setCurrentPhase(phaseId, source) {
-    if (!phaseId) return;
-    var wf = state.workflow;
-    // 大小写归一匹配 phases
-    var match = wf.phases.find(function (p) { return String(p.id).toLowerCase() === String(phaseId).toLowerCase(); });
-    var canonical = match ? match.id : phaseId;
-    wf.currentPhaseId = canonical;
-    if (wf.reachedPhaseIds.indexOf(canonical) < 0) wf.reachedPhaseIds.push(canonical);
-    notify();
-  }
-  async function loadSkills() {
-    state.workflow.loadState = "loading"; notify();
-    try {
-      state.workflow.skills = await invoke("list_skills_v2");
-      state.workflow.loadState = "ready";
-    } catch (e) { state.workflow.skills = []; state.workflow.loadState = "error"; }
-    notify();
-  }
-  async function activateSkill(name) {
-    try {
-      var res = await invoke("start_skill_session", { name: name });
-      var skill = res.skill || {};
-      var meta = res.session || res.metadata || {};
-      state.activeSessionId = meta.id || state.activeSessionId;
-      state.messages = []; state.chatItems = []; resetPendingAssistant();
-      state.workflow.activeSkillName = skill.name || name;
-      state.workflow.phases = skill.phases || [];
-      state.workflow.currentPhaseId = skill.current_phase_id || (skill.phases && skill.phases[0] && skill.phases[0].id) || null;
-      state.workflow.reachedPhaseIds = state.workflow.currentPhaseId ? [state.workflow.currentPhaseId] : [];
-      if (meta.id) state.workflow.bindings[meta.id] = skill.name || name;
-      await refreshHistoryList();
-      await syncModeState();
-      notify();
-      return res;
-    } catch (e) { addSystemItem("⚠️ 启用工作流失败: " + e); notify(); return null; }
-  }
-  async function deactivateSkill() {
-    if (state.activeSessionId) {
-      try { await invoke("unbind_session_skill", { sessionId: state.activeSessionId }); } catch (_) {}
-      delete state.workflow.bindings[state.activeSessionId];
-    }
-    state.workflow.activeSkillName = null;
-    state.workflow.phases = [];
-    state.workflow.currentPhaseId = null;
-    state.workflow.reachedPhaseIds = [];
-    notify();
-  }
-  async function openDemo(name) {
-    state.workflow.demo = { open: true, name: name, loading: true, kind: null, content: null, error: null, description: null, duration: null };
-    notify();
-    try {
-      var d = await invoke("read_skill_demo", { name: name });
-      state.workflow.demo = {
-        open: true, name: name, loading: false,
-        kind: d.file_kind, path: d.file_path, content: d.content,
-        error: null, description: d.description, duration: d.duration,
-      };
-    } catch (e) {
-      state.workflow.demo = { open: true, name: name, loading: false, kind: null, content: null, error: String(e) };
-    }
-    notify();
-  }
-  function closeDemo() { state.workflow.demo = null; notify(); }
-  // 切换 session 后同步该 session 的 skill 绑定到 workflow 高亮
-  async function syncSessionSkill() {
-    if (!state.activeSessionId) return;
-    try {
-      var info = await invoke("get_session_active_skill", { sessionId: state.activeSessionId });
-      if (info && info.name) {
-        state.workflow.activeSkillName = info.name;
-        state.workflow.phases = info.phases || [];
-        state.workflow.currentPhaseId = info.current_phase_id || null;
-        state.workflow.reachedPhaseIds = info.current_phase_id ? [info.current_phase_id] : [];
-        state.workflow.bindings[state.activeSessionId] = info.name;
-      } else {
-        state.workflow.activeSkillName = null;
-        state.workflow.phases = [];
-        state.workflow.currentPhaseId = null;
-        state.workflow.reachedPhaseIds = [];
-      }
-    } catch (e) { /* 旧 session 无绑定，忽略 */ }
-  }
-
   // ── 卡片池: 专家面具加持 ─────────────────────────────────────────
   // 懒加载全部专家卡(1078 张),前端缓存供 facet/搜索。只拉一次。
   async function loadPersonas() {
@@ -1977,13 +1867,6 @@
     pinvouAcceptOverride: pinvouAcceptOverride,
     pinvouRevisePlan: pinvouRevisePlan,
     markResolved: markResolved,
-    // 工作流
-    loadSkills: loadSkills,
-    activateSkill: activateSkill,
-    deactivateSkill: deactivateSkill,
-    openDemo: openDemo,
-    closeDemo: closeDemo,
-    setCurrentPhase: setCurrentPhase,
     // 卡片池: 专家面具
     loadPersonas: loadPersonas,
     getPersonas: function () { return personaPoolCache; }, // 返回引用(只读),不进 notify 快照

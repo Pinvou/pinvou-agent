@@ -295,7 +295,6 @@
       const t = dict[language];
 
       function handleActivateSkill(name) {
-        if (bridge.available) bridge.activateSkill(name);
         setChatPrefill('我要用 ' + name + ' 完成: ');
         setCurrentView('chat');
       }
@@ -516,13 +515,6 @@
                 onClick={() => setCurrentView('monitor')}
               />
               <NavItem
-                icon={<ClipboardList size={18} />} label={t.workflow}
-                active={currentView === 'workflow'}
-                theme={activeTheme}
-                isSidebarOpen={isSidebarOpen}
-                onClick={() => setCurrentView('workflow')}
-              />
-              <NavItem
                 icon={<Layers size={18} />} label={t.cardPool}
                 active={currentView === 'cardpool'}
                 theme={activeTheme}
@@ -622,7 +614,6 @@
                 t={t}
               />
             )}
-            {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} />}
             {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} />}
             {currentView === 'chat' && bs && bs.activeSessionId && (
@@ -1173,12 +1164,6 @@
             </button>
           </div>
 
-          {/* 工作流 phase pipeline —— 固定在顶部(清浮动顶栏)，绑定 skill 才显示 */}
-          {hasSkill && (
-            <div className="shrink-0 pt-16 px-4 md:px-20 lg:px-40">
-              <div className="max-w-[800px] w-full mx-auto"><PhaseChips bs={bs} theme={theme} /></div>
-            </div>
-          )}
 
           {/* Main Chat Area */}
           <div ref={scrollRef} className={`flex-1 min-h-0 overflow-y-auto px-4 md:px-20 lg:px-40 pb-40 custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
@@ -2256,154 +2241,6 @@
                   </div>
                 )}
               </div>
-            </div>
-          </div>
-        </div>
-      );
-    };
-
-    // ==========================================
-    // 工作流：PhaseChips / WorkflowView / SkillCard / DemoModal
-    // ==========================================
-    const convertFileSrc = (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.convertFileSrc)
-      ? window.__TAURI__.core.convertFileSrc
-      : ((p) => p);
-
-    // 聊天室顶部 phase pipeline（仅当前 session 绑定了 skill 时显示）
-    const PhaseChips = ({ bs, theme }) => {
-      const isDark = theme === 'dark';
-      const wf = (bs && bs.workflow) || {};
-      if (!wf.activeSkillName || !wf.phases || !wf.phases.length) return null;
-      const reached = new Set(wf.reachedPhaseIds || []);
-      const total = wf.phases.length;
-      const curIdx = wf.phases.findIndex(p => p.id === wf.currentPhaseId);
-      const cur = curIdx >= 0 ? wf.phases[curIdx] : null;
-      return (
-        <div className={`rounded-xl px-3 py-2 ${isDark ? 'bg-[#1E1F20]/90' : 'bg-[#F0F4F9]'}`}>
-          {/* 头部：skill 名 + 当前阶段标题 */}
-          <div className="flex items-center gap-2 mb-2 flex-wrap">
-            <span className={`flex items-center gap-1 text-[12px] font-medium px-2 py-0.5 rounded-full ${isDark ? 'bg-[#0B57D0]/30 text-[#A8C7FA]' : 'bg-[#0B57D0]/10 text-[#0B57D0]'}`}>
-              🧭 {wf.activeSkillName}
-              <button title="退出工作流" onClick={() => bridge.deactivateSkill()} className="ml-1 hover:text-[#F28B82]">✕</button>
-            </span>
-            {cur && (
-              <span className={`text-[12px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
-                当前 {curIdx + 1}/{total}：<span className="font-medium">{cur.title}</span>{cur.loop ? ' ↻' : ''}
-              </span>
-            )}
-          </div>
-          {/* 单行横向滚动：每个 phase 显示 编号 + 标题 */}
-          <div className="flex items-center gap-1 overflow-x-auto custom-scrollbar pb-1">
-            {wf.phases.map((p, i) => {
-              const isCur = p.id === wf.currentPhaseId;
-              const done = reached.has(p.id) && !isCur;
-              const cls = isCur
-                ? (isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white')
-                : done
-                  ? (isDark ? 'bg-[#1E3A2A] text-[#93D5A6]' : 'bg-[#E6F4EA] text-[#137333]')
-                  : (isDark ? 'bg-[#282A2C] text-[#9AA0A6]' : 'bg-white text-[#5F6368]');
-              return (
-                <div key={p.id} className="flex items-center shrink-0">
-                  {i > 0 && <span className={`mx-0.5 ${isDark ? 'text-[#5F6368]' : 'text-[#BDC1C6]'}`}>›</span>}
-                  <div title={p.id + ' · ' + p.title} className={`flex items-center gap-1 px-2 py-1 rounded-full ${cls}`}>
-                    {isCur ? <span className="text-[10px]">▶</span> : done ? <span className="text-[10px]">✓</span> : null}
-                    <span className="font-mono text-[10px] opacity-70">{p.id}</span>
-                    <span className="text-[12px] whitespace-nowrap">{p.title}{p.loop ? ' ↻' : ''}</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      );
-    };
-
-    const SkillCard = ({ s, theme, active, onActivate }) => {
-      const isDark = theme === 'dark';
-      const phasesCount = (s.phases && s.phases.length) || 0;
-      const hasDemo = s.demo && (s.demo.has_file || s.demo.has_preview);
-      return (
-        <div className={`flex flex-col rounded-[16px] border p-4 ${isDark ? 'bg-[#1E1F20] border-white/10 hover:border-white/20' : 'bg-white border-black/10 hover:shadow-md'} transition-all`}>
-          <div className="flex items-start justify-between gap-2 mb-1">
-            <h3 className={`text-[14px] font-semibold ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{s.name}</h3>
-            <span className={`text-[11px] px-1.5 py-0.5 rounded shrink-0 ${isDark ? 'bg-[#333537] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]'}`}>{s.source}</span>
-          </div>
-          <p className={`text-[12px] leading-relaxed mb-2 line-clamp-3 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{(s.description || '').slice(0, 220)}</p>
-          {phasesCount > 0 ? (
-            <div className={`text-[12px] font-mono mb-2 ${isDark ? 'text-[#8E8E8E]' : 'text-[#5F6368]'}`}>
-              {phasesCount} 个 phase · {s.phases.slice(0, 8).map(p => p.id + (p.loop ? '↻' : '')).join(' → ')}{phasesCount > 8 ? ' → …' : ''}
-            </div>
-          ) : (
-            <div className={`text-[12px] mb-2 ${isDark ? 'text-[#5F6368]' : 'text-[#9AA0A6]'}`}>普通 skill (未声明 phases)</div>
-          )}
-          {s.demo && s.demo.duration && <div className={`text-[12px] mb-2 ${isDark ? 'text-[#8E8E8E]' : 'text-[#5F6368]'}`}>⏱ {s.demo.duration}</div>}
-          <div className="flex items-center gap-2 mt-auto pt-2">
-            {phasesCount > 0 ? (
-              <button onClick={() => onActivate(s.name)} className={cardBtnCls(isDark, 'primary')}>{active ? '✓ 使用中' : '启用'}</button>
-            ) : (
-              <button disabled className={cardBtnCls(isDark)}>仅查看</button>
-            )}
-            {hasDemo && <button onClick={() => bridge.openDemo(s.name)} className={cardBtnCls(isDark)}>看 demo</button>}
-          </div>
-        </div>
-      );
-    };
-
-    const DemoModal = ({ demo, theme, onClose }) => {
-      const isDark = theme === 'dark';
-      if (!demo || !demo.open) return null;
-      return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-6" >
-          <div className="absolute inset-0 bg-black/60" onClick={onClose}></div>
-          <div className={`relative w-[1100px] max-w-[92vw] max-h-[82vh] flex flex-col rounded-[16px] overflow-hidden shadow-2xl ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
-            <div className={`flex items-center justify-between px-4 py-3 border-b ${isDark ? 'border-white/10' : 'border-black/10'}`}>
-              <span className={`text-[14px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{demo.name} · demo 预览</span>
-              <button onClick={onClose} className={`w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537] text-[#C4C7C5]' : 'hover:bg-[#F0F4F9] text-[#444746]'}`}><XCircle size={18} /></button>
-            </div>
-            <div className="flex-1 overflow-auto min-h-[300px] flex flex-col">
-              {demo.loading ? (
-                <div className={`m-auto text-[13px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>加载 demo …</div>
-              ) : demo.error ? (
-                <div className={`m-auto text-[13px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>读取失败: {demo.error}</div>
-              ) : (demo.kind === 'none' || !demo.path) && demo.kind !== 'text' ? (
-                <div className={`m-auto text-[13px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>该 skill 未声明 demo 文件。</div>
-              ) : demo.kind === 'html' ? (
-                <iframe className="w-full flex-1 min-h-[480px] border-0 bg-white" src={convertFileSrc(demo.path)} sandbox="allow-same-origin allow-scripts" />
-              ) : demo.kind === 'image' ? (
-                <img className="max-w-full max-h-[72vh] object-contain m-auto" src={convertFileSrc(demo.path)} alt={demo.name + ' demo'} />
-              ) : demo.kind === 'text' ? (
-                <pre className={`p-4 text-[12px] whitespace-pre-wrap break-words font-mono ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{demo.content || ''}</pre>
-              ) : (
-                <div className="m-auto text-center">
-                  <p className={`text-[13px] mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>未识别的文件类型</p>
-                  <button onClick={() => bridge.openInSystem(demo.path)} className={cardBtnCls(isDark, 'primary')}>用系统应用打开</button>
-                </div>
-              )}
-            </div>
-            {(demo.description || demo.duration) && (
-              <div className={`px-4 py-2 border-t text-[12px] ${isDark ? 'border-white/10 text-[#C4C7C5]' : 'border-black/10 text-[#444746]'}`}>
-                {demo.description ? '📝 ' + demo.description : ''}{demo.description && demo.duration ? ' · ' : ''}{demo.duration ? '⏱ ' + demo.duration : ''}
-              </div>
-            )}
-          </div>
-        </div>
-      );
-    };
-
-    const WorkflowView = ({ theme, t }) => {
-      const isDark = theme === 'dark';
-      return (
-        <div className="flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden animate-in fade-in duration-300">
-          <div className="px-6 md:px-10 pt-8 pb-4">
-            <h1 className={`text-[28px] font-normal ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.workflow}</h1>
-          </div>
-          <div className="flex-1 flex flex-col items-center justify-center px-6 text-center gap-3">
-            <div className={`w-16 h-16 rounded-full flex items-center justify-center ${isDark ? 'bg-[#282A2C] text-[#8E8E8E]' : 'bg-[#F0F4F9] text-[#757575]'}`}>
-              <ClipboardList size={28} />
-            </div>
-            <div className={`text-[16px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>开发中</div>
-            <div className={`text-[13px] max-w-[360px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>
-              工作流编排功能正在重新设计，敬请期待。
             </div>
           </div>
         </div>
