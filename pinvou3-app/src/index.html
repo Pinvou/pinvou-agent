@@ -1160,8 +1160,10 @@
           {/* Top Header (浮动) */}
           <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-20 pointer-events-none">
             <div className="flex items-center gap-2">
-              <ModeHeader bs={bs} theme={theme} />
-              <PinvouToggle bs={bs} theme={theme} />
+              {/* [plan/yolo 收敛] Plan 模式入口 + 品悟开关已下线：全局 Yolo 单模式。
+                  ModeHeader / PinvouToggle 组件及 bridge 逻辑均保留，取消注释即恢复，待重评是否彻底移除。 */}
+              {/* <ModeHeader bs={bs} theme={theme} /> */}
+              {/* <PinvouToggle bs={bs} theme={theme} /> */}
             </div>
             <button
               onClick={() => setArtifactsOpen(true)}
@@ -1937,29 +1939,53 @@
     };
 
     // ==========================================
-    // CarefulBlockedCard — 🛑 破坏性命令拦截
+    // CarefulBlockedCard — 🛑 危险操作被拦（人话化：底座英文技术原因→中文人话，技术详情折叠）
     // ==========================================
+    const REASON_MAP = [
+      [/root filesystem|delete all root|delete root/i, '想删除系统根目录——会毁掉整个系统'],
+      [/home director/i, '想删掉你的主目录——个人文件几乎都在里面，删了找不回'],
+      [/recursiv|rm\s+-rf/i, '会递归删掉整个文件夹，连里面的东西一起没，找不回'],
+      [/forced? deletion|\bforce\b/i, '强制删除，不进回收站，找不回'],
+      [/fork bomb/i, '会瞬间耗尽系统资源，导致死机'],
+      [/overwrite|\bof=|\bdd\b/i, '会直接覆写磁盘数据'],
+      [/format|mkfs/i, '会格式化磁盘，数据全没'],
+    ];
+    const humanizeReason = (en) => {
+      const s = String(en);
+      for (let i = 0; i < REASON_MAP.length; i++) if (REASON_MAP[i][0].test(s)) return REASON_MAP[i][1];
+      return '这条命令可能破坏你的文件或系统';
+    };
     const CarefulBlockedCard = ({ item, theme }) => {
       const isDark = theme === 'dark';
+      const [showTech, setShowTech] = useState(false);
       const md = item.metadata || {};
       const cmd = (item.args && (item.args.command || item.args.cmd)) || '(命令未知)';
-      const reasons = (md.reasons && md.reasons.length) ? md.reasons : ['命中破坏性 pattern'];
-      const suggestions = md.suggestions || [];
+      const rawReasons = (md.reasons && md.reasons.length) ? md.reasons : [];
+      const rawSuggestions = md.suggestions || [];
+      const humanReasons = [...new Set(rawReasons.map(humanizeReason))];
+      if (humanReasons.length === 0) humanReasons.push('这条命令可能破坏你的文件或系统');
+      const hasTech = rawReasons.length > 0 || rawSuggestions.length > 0;
       return (
         <div className={cardBoxCls(isDark, isDark ? 'border-[#F28B82]/40' : 'border-[#C5221F]/30')}>
-          <div className={`text-[14px] font-semibold mb-2 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>🛑 Careful Hook 拦截了一条破坏性命令</div>
+          <div className={`text-[14px] font-semibold mb-2 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>🛑 拦下了一条危险操作</div>
+          <div className={`text-[12px] mb-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>AI 想执行：</div>
           <pre className={`text-[12px] font-mono rounded-lg p-2 mb-2 overflow-x-auto ${isDark ? 'bg-[#131314] text-[#F28B82]' : 'bg-white text-[#C5221F]'}`}>{cmd}</pre>
           <div className="mb-2">
-            <div className={`text-[12px] font-medium mb-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>为什么拦?</div>
-            <ul className={`list-disc pl-5 text-[13px] space-y-0.5 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{reasons.map((r, i) => <li key={i}>{r}</li>)}</ul>
+            <div className={`text-[12px] font-medium mb-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>为什么拦它</div>
+            <ul className={`list-disc pl-5 text-[13px] space-y-0.5 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{humanReasons.map((r, i) => <li key={i}>{r}</li>)}</ul>
           </div>
-          {suggestions.length > 0 && (
-            <div className="mb-2">
-              <div className={`text-[12px] font-medium mb-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>建议</div>
-              <ul className={`list-disc pl-5 text-[13px] space-y-0.5 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{suggestions.map((s, i) => <li key={i}>{s}</li>)}</ul>
+          <div className={`text-[12px] leading-relaxed mb-1.5 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>这是系统自带的安全保护，一直开着。AI 不会被允许做这种危险事；要真是你想要的，得你自己手动来。</div>
+          {hasTech && (
+            <div>
+              <button onClick={() => setShowTech(!showTech)} className={`text-[11px] ${isDark ? 'text-[#8AB4F8]' : 'text-[#0B57D0]'}`}>{showTech ? '收起技术详情' : '技术详情'}</button>
+              {showTech && (
+                <div className={`mt-1 text-[11px] font-mono space-y-0.5 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>
+                  {rawReasons.map((r, i) => <div key={'r' + i}>· {r}</div>)}
+                  {rawSuggestions.map((s, i) => <div key={'s' + i}>→ {s}</div>)}
+                </div>
+              )}
             </div>
           )}
-          <div className={`text-[12px] leading-relaxed ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>这个 hook 在所有模式默认开启,与 Plan/YOLO/品悟开关无关。如果你确认要跑,自己在终端执行 —— LLM 不会被允许跑破坏性命令。</div>
         </div>
       );
     };

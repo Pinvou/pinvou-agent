@@ -39,6 +39,7 @@
 - **WorkFlow 视图编排**（差异化最强，用户要做）：卡=skill 非 agent，pinvou3 已有 skill 池骨架（`list_skills_v2`+`SkillCard`+`start_skill_session`），P0 加搜索/分类/富元数据；候选源 `agency-agents-zh`（215 中文角色/MIT，人格卡需策展瘦身）
 - **GUI subagent 体验**：串行视图 / 内部 timeline 卡片 + Settings toggle 启用（当前需 env override）
 - **品悟 outside voice §4.3**：当前在主 session 跑独立性≈0，clean 解法借多 session engine 池跑 transient `pinvou-review-<uuid>` session（~2-3h，事件路由 + lifecycle + UI 锚定）
+- **plan/yolo 收敛 + 品悟 review 重评（进行中）**：方案收敛为 Yolo-only。前端已隐藏 Plan 模式切换入口(`ModeHeader`) + 品悟开关(`PinvouToggle`)（index.html:1106 JSX 注释，组件/bridge/底座逻辑全保留，取消注释即恢复）。待重评：①品悟「Plan blocking」节点失去载体 → 重定位/下线，连带「收口 advisory / stuck」三节点整体必要性；②plan 相关 command（set_plan_mode_next/accept_plan/exit_plan_to_yolo）是否彻底移除。否决(2026-06-03)：人话翻译层 timeline ⚠️ 黄色警示——实现(destructiveHint 模板 + ToolCard 一行提示)后用户判定不需要(光警示不能撤=干着急 + 视觉噪音)，已全部回滚，index.html 回到改前。结论：Yolo 下破坏性操作不额外标注，真危险仍由底座 Careful Hook 红卡拦截。红卡本身已人话化(2026-06-03)：底座吐的英文技术原因(如 "Attempts to recursively delete home directory")→中文映射表 + 去术语标题/说明 + 技术详情折叠(CarefulBlockedCard)。已搁置：revert 一等交互（前端 UI + 对话同步，没想好）。不可逆操作保持现状不审批（窄白名单不做）
 
 **🟢 低优先**
 - GB10 self-hosted runner 跑 L1 nightly（等团队 ≥2 人或发版加快）
@@ -62,6 +63,7 @@
 - **prompt 文案走 override 不改 submodule**（2026-05-29）：base/locale/authority 加 OnceLock hook、内容迁 pinvou3-app，submodule 0 diff，hook 可提上游 PR
 - **256K 真触发是 emergency 容量护栏**（2026-06-03）：静态 800K/500K 撞不到，靠 `context_input_budget`（窗口派生、绕 floor）；token_threshold 必须低于 budget 否则倒置 → 改 190K；output 按「≤16KB 分块写」重估 24K；不变式由回归测试锁
 - **大工具输出无需治理**（2026-06-03，A1 关）：底座 `compact_tool_result_for_context` 每结果硬压 12K 字符（256K 走小限档）；`large_output_router` synthesis 是 dead code，保持 `workshop=None`
+- **提问引导补丁不做**（2026-06-03）：隐藏 plan 后担心「提问引导真空」,A/B 验证(真实 base+instructions+reminder+request_user_input schema、不传 temperature 匹配 turn_loop None、每格 10 共 80 样本)证明现状 §2.4 已够——text列选项率 A=0/40,加「禁止在 text 列选项」禁令无益反升 B=4/40 且调工具率 62%→62% 零变化(疑弱模型反向暗示);早期 probe 的 20% 系 temp0.7+小样本噪声。教训:reminder/prompt 改动必须大样本+忠实参数 A/B,否则被抽奖噪声误导
 
 ---
 

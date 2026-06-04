@@ -417,6 +417,19 @@
     });
   }
 
+  // careful hook 拦截结果(shell.rs BLOCKED 固定格式)→ 反解出 careful_blocked 卡所需 metadata。
+  // metadata 不进持久化 messages,session 重载只能从 tool_result 文本识别,否则 🛑 红卡重启即丢。
+  function parseCarefulBlocked(text) {
+    if (typeof text !== "string" || text.indexOf("BLOCKED: This command was blocked for safety reasons") !== 0) return null;
+    var rm = text.match(/Reasons: ([^\n]*)/);
+    var sm = text.match(/Suggestions: ([^\n]*)/);
+    return {
+      safety_level: "dangerous", blocked: true,
+      reasons: rm && rm[1] ? rm[1].split("; ") : [],
+      suggestions: sm && sm[1] ? sm[1].split("; ") : [],
+    };
+  }
+
   // ── Rerender from messages (session restore) ─────────────────────
   function rerenderFromMessages() {
     state.chatItems = [];
@@ -461,7 +474,14 @@
           if (c.type !== "tool_result") continue;
           var tm = toolMeta[c.tool_use_id];
           if (tm) {
-            updateToolItem(c.tool_use_id, c.content, !c.is_error);
+            // careful hook 拦截 → 还原 🛑 红卡(实时由 tool_end metadata 插,重载从文本反解)
+            var blockedMd = parseCarefulBlocked(toolResultText(c.content));
+            if (blockedMd) {
+              updateToolItem(c.tool_use_id, c.content, false); // 被拦=失败态,与实时一致
+              addChatItem({ type: "careful_blocked", args: tm.args, metadata: blockedMd, time: "" });
+            } else {
+              updateToolItem(c.tool_use_id, c.content, !c.is_error);
+            }
           }
         }
         continue;
