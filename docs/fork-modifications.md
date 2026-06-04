@@ -47,7 +47,7 @@
 | 改动 | `append_file` 工具(**上游完全没有**)+ content **64KB 硬上限** + `truncated_args_hint`(流截断缺字段→引导分块)+ SSE idle-timeout 遥测 + undo 快照纳入 append_file |
 | 理由 | 本地慢 vLLM 大产物(PPT/长文档)>240s idle timeout 流截断;`write_file` 写 skeleton(≤8KB)→ `append_file` 追加 chunk(≤16KB)工作流 |
 | 测试 | `truncated_args_hint_fires/skips_*`、`test_{write,append}_file_rejects_oversized_content` |
-| 上游 PR | 🔵 64KB/truncated_args_hint 通用保护可提;append_file 工具 pinvou3 专用 |
+| 上游 PR | ❌ **评估后不提**:64KB cap / truncated_args_hint 与 pinvou3 专属 `append_file` 深度耦合(cap 同管 append_file、hint 引导 "build up with append_file");上游无 append_file,去耦后引导无落点。留 fork |
 
 ### C4 `feat(safety)` careful 安全 hook
 | | |
@@ -64,7 +64,7 @@
 | skills | 扫描路径只留 `~/.agents/skills`(原 10 路径,#41);union 接线 `render_available_skills_context_for_workspace_and_dir`(上游 `or_else` 短路 bug 致 workspace=$HOME 时 bundle skills 不可见) |
 | prompts/*.md | embedder-agnostic 措辞(去 `/compact`/`Ctrl+L`/`checklist_write` 硬编码,改 "whichever planning tool the runtime exposes");`compact.md` 加 "这是模板非真 handoff"(防 Qwen3.6 误读空模板) |
 | 测试 | `forkguard_skills_dir_unions_with_home_rooted_workspace_skills`、project_context 多路径测试 `#[ignore]` |
-| 上游 PR | skills union 接线 🔵 通用 bug 可提;其余 ❌ pinvou3 场景专用 |
+| 上游 PR | skills union 接线 → **已提 [PR #2737](https://github.com/Hmbown/CodeWhale/pull/2737)**;其余 ❌ pinvou3 场景专用 |
 
 ### C6 `chore` 零碎 fork 适配
 | | |
@@ -88,7 +88,7 @@
 
 | patch | 原因 |
 |---|---|
-| subagent 本地约束全套(MAX_STEPS=20 / ELAPSED=300 / resolve_agent_ref / tool_agent_route / Implementer-append_file) | `agent_*`/`delegate` 全在 blocklist,**subagent 路径生产不可达**;重做 subagent 时再恢复。`tool_agent_route` 硬编码 `deepseek-v4-flash` → **提上游 PR**(通用 bug) |
+| subagent 本地约束全套(MAX_STEPS=20 / ELAPSED=300 / resolve_agent_ref / tool_agent_route / Implementer-append_file) | `agent_*`/`delegate` 全在 blocklist,**subagent 路径生产不可达**;重做 subagent 时再恢复。`tool_agent_route` 硬编码 `deepseek-v4-flash` → **已提 [PR #2736](https://github.com/Hmbown/CodeWhale/pull/2736)**(继承父 model,通用 bug) |
 | phase/demo workflow(跨仓全删) | submodule(PhaseDef/DemoInfo/strip_marker/PhaseChanged)+ app 后端(commands 四件套/ActiveSkillBinding/engine handler)+ app 前端(WorkflowView/PhaseChips/state.workflow/监听)。workflow 后续重做。**专家卡牌(persona)/plan_phase/auto-compact 独立,未碰** |
 | qwen-128K(models.rs) | 死码:真实模型 `qwen36_35b_256k` 走上游 `_Nk` hint 解析返 256K;通用 `qwen→128K` 永不触发且语义错 |
 | fetch_url 残留测试(33 行) | 测的全是已上游化 API(fake-ip CIDR),上游已有等价测试 |

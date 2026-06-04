@@ -172,11 +172,16 @@ diff /tmp/pre-sync-prompt.txt /tmp/post-sync-prompt.txt
 >
 > **下方 MERGED 的 PR 已在 v0.8.53 + clean re-fork 全部确认 harvest 归零**(fork 侧取上游版,对应指纹已从 fork-guard 撤除)。
 
-**🟠 待提(clean re-fork 派生)**
+**🟡 OPEN(2026-06-04 提,clean re-fork 派生,等上游 review)**
 
-| PR | 内容 | 来源 |
+| PR | 内容 | head 分支 |
 |---|---|---|
-| (待提) | `tool_agent_route` 硬编码 `deepseek-v4-flash` → 继承父 session model(任何非 DeepSeek 后端都会 404) | clean re-fork 丢 subagent fork patch 时识别为通用 bug;从 v0.8.53 切净分支 cherry-pick |
+| [#2736](https://github.com/Hmbown/CodeWhale/pull/2736) | `tool_agent_route` 硬编码 `deepseek-v4-flash` → 继承父 session model(非 DeepSeek 后端 404) | `fix/tool-agent-inherit-parent-model` |
+| [#2737](https://github.com/Hmbown/CodeWhale/pull/2737) | skills `skills_dir` 被 workspace skills 用 `or_else` 遮蔽 → 改 union | `fix/skills-dir-union-not-shadowed` |
+
+> 均从 `origin/main`(=v0.8.53)切净分支,leak-check(grep pinvou/qwen/vllm/中文)零泄漏,英文 commit/PR body。Accept 后下次 sync 随上游 harvest。
+>
+> **C3(64KB cap / truncated_args_hint)评估后不提**:与 pinvou3 专属的 `append_file` 工具深度耦合(cap 同时管 append_file、hint 文案引导 "build up with append_file"、`APPEND_FILE_MAX_CONTENT_BYTES`);上游无 append_file,去耦后引导无落点("多次 write_file" 会覆盖)。留 fork。
 
 **✅ 已 MERGED（下次 sync 随上游归零，别重复提）**
 
