@@ -40,6 +40,9 @@ fn main() -> Result<()> {
         translation_enabled: cfg.translation_enabled,
         model_id: &cfg.model,
         show_thinking: cfg.show_thinking,
+        // v0.8.53 上游新增:gate shell 工具是否进 prompt(prompts.rs:798)。复刻
+        // 生产 Engine::new 取 cfg.allow_shell,保持 dump 与真实 prompt 一致。
+        allow_shell: cfg.allow_shell,
     };
 
     // session.approval_mode 默认 = Suggest (跟 default_approval_mode_for_mode(Agent) 一致)

@@ -383,7 +383,6 @@ impl Pinvou3Bridge {
             // —— 上游 default 透传（命名后放进新结构体）——
             features,
             compaction,
-            cycle,
             capacity,
             todos,
             plan_state,
@@ -405,6 +404,13 @@ impl Pinvou3Bridge {
             // —— v0.8.49 上游新增字段,透传 default ——
             allowed_tools,
             tools,
+            // —— v0.8.51 上游新增字段,透传 default(speech 输出目录 / hook executor)——
+            speech_output_dir,
+            hook_executor,
+            // —— v0.8.53 上游新增字段,透传 default(subagent 心跳超时;配 subagent
+            //    lifecycle hooks feat)。⚠️ 本地慢 vLLM 下或需像 subagent_api_timeout
+            //    一样调大,先透传 default,验证后再评估。——
+            subagent_heartbeat_timeout,
         } = EngineConfig::default();
 
         EngineConfig {
@@ -471,24 +477,18 @@ impl Pinvou3Bridge {
             //    稳在 230,400 安全网之下 ~35K,nice=主路径 / emergency=真·安全网。
             //    回归测试 compaction_threshold_stays_below_emergency_budget 按 max_output
             //    动态算 budget 锁住这个不变式,改 output 预留会自动跟着校验。
-            //  - auto_floor_tokens = 60K:should_compact 的"低于则拒绝"下限,极短会话防误触发。
-            // 上游默认 token_threshold=800K / floor=500K,对 256K 窗口永远撞不到,**必须显式 set**。
+            // 上游默认 token_threshold=800K,对 256K 窗口永远撞不到,**必须显式 set**。
+            // ⚠️ v0.8.51 上游移除了 CompactionConfig.auto_floor_tokens 字段(floor 概念
+            //    随 cycle removal 一并去掉),原 60K 下限设置失效,删除。
             compaction: deepseek_tui::compaction::CompactionConfig {
                 model: self.model(),
                 token_threshold: 190_000,
-                auto_floor_tokens: 60_000,
                 ..compaction
             },
-            // 关 cycle 子系统 (2026-05-19 codex adversarial-review round 3 发现):
-            // cycle_manager:184 算 trigger_floor 时 saturating_sub
-            // reserved_response_headroom_tokens(263168) 与 256K window,
-            // 对小窗口模型 floor 永远变 0, threshold.min(0)=0 → 每轮触发
-            // briefing + 归档 + 重置 messages。
-            // pinvou3 用 compaction 路径管 context, 不需要 cycle 重复管理。
-            cycle: deepseek_tui::cycle_manager::CycleConfig {
-                enabled: false,
-                ..cycle
-            },
+            // ⚠️ v0.8.51 上游整体移除 cycle 子系统(release "cycle removal"):
+            //    EngineConfig.cycle 字段不复存在。原 pinvou3 在小窗口下显式关闭 cycle
+            //    (防 trigger_floor saturating_sub 归零导致每轮误触发 briefing)的逻辑
+            //    随之失效——目标已由上游删除子系统达成,直接删去。
             // capacity controller 保持上游 default = off (2026-05-19 codex
             // adversarial-review round 2 发现:其 low_risk_max / medium_risk_max
             // 是 p_fail 风险阈值而非 context_used_ratio,context 权重只占 15%。
@@ -546,6 +546,11 @@ impl Pinvou3Bridge {
             // v0.8.49 上游新增,透传 default
             allowed_tools,
             tools,
+            // v0.8.51 上游新增,透传 default
+            speech_output_dir,
+            hook_executor,
+            // v0.8.53 上游新增,透传 default
+            subagent_heartbeat_timeout,
         }
     }
 
@@ -707,6 +712,8 @@ impl Pinvou3Bridge {
             show_thinking: true,
             // v0.8.49 上游新增;None = 不限制本次消息可用工具,沿用 engine 全量工具表。
             allowed_tools: None,
+            // v0.8.51 上游新增;None = 不挂 per-message hook executor,沿用 engine 级默认。
+            hook_executor: None,
         }
     }
 }
@@ -936,7 +943,8 @@ mod tests {
 
         let cfg = bridge.build_engine_config();
         let threshold = cfg.compaction.token_threshold;
-        let floor = cfg.compaction.auto_floor_tokens;
+        // v0.8.51 上游移除 auto_floor_tokens 字段(floor 概念随 cycle removal 去掉),
+        // 原 floor < threshold 不变式已无对应字段,删除该断言。
 
         // ≥20K margin:should_compact 用「可摘要子集」度量、emergency 用「全量 input
         // (含 system+tools)」度量,要留够余量保证 nice 在 emergency 之前清晰触发。
@@ -945,10 +953,6 @@ mod tests {
             threshold + MARGIN <= emergency_budget,
             "token_threshold({threshold}) 必须 ≤ emergency_budget({emergency_budget}) − {MARGIN}(margin);\
              否则 emergency 抢先、nice 路径死掉(倒置 bug)。window={window} effective_output={effective_output}"
-        );
-        assert!(
-            floor < threshold,
-            "auto_floor_tokens({floor}) 必须低于 token_threshold({threshold}),否则下限反客为主"
         );
     }
 

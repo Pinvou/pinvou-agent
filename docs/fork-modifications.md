@@ -17,6 +17,53 @@
 
 ---
 
+## 🔄 v0.8.53 同步后整理 (2026-06-04, submodule merge v0.8.53 → pinvou3-patches)
+
+上游 v0.8.51→**v0.8.53** 同步 **40 commit**(14 fix / 9 feat / 6 docs)。**仅 1 个真实冲突**(`project_context.rs`,其余 14 个重叠文件如 engine.rs/turn_loop.rs/subagent 全自动合)。drift +1811→**+1844 / 41 文件**。0.8.53 是当前 Latest release(0.8.52 仅 tag 未 release,跳过直接对 53)。
+
+**✅ 唯一冲突 `project_context.rs`(4 块)解法 —— 撞上组4-4c**:
+上游 v0.8.53 引入整套 **`.codewhale/constitution.json` 仓库 authority 层 + WHALE.md 弃用**(新增 9 个常量 + `load_repo_constitution_block` 加载函数 + 6 个测试),与我们组4-4c(`PROJECT_CONTEXT_FILES`/`GLOBAL_PATHS` 砍空、不读其他 AI 工具配置)正面冲突。
+- 块1/2(doc+常量)— **保我们空数组**;上游新 constitution 常量**保留**(标 `#[allow(dead_code)]`)让自动合进来的函数体编译通过。
+- 块3(`load_global_agents_context`)— **保 HEAD** early-return(GLOBAL_PATHS 空)。
+- 块4(测试)— 上游 2 个新全局多路径测试 + 原 1 个**全标 `#[ignore]`**(扫描路径砍空后不可达)。
+- **🆕 新 fork patch:`load_repo_constitution_block` 短路 early-return**。该函数读 `<workspace>/.codewhale/constitution.json`,pinvou3 workspace=$HOME 场景会读 `~/.codewhale/constitution.json` —— **与 §5 禁令(~/.codewhale 禁读)直接冲突**,且 pinvou3 走 inline 注入不依赖 disk 项目配置。短路返回 `(None, [])`,保留函数体防回退。配套 fork-guard 指纹(锚点「v0.8.53 上游引入 `.codewhale/constitution.json`」)+ 上游 4 个 constitution/WHALE 测试标 `#[ignore]`。
+
+**⚠️ 本次踩的坑**:
+- **`EngineConfig` 新字段 `subagent_heartbeat_timeout: Duration`**(配 subagent lifecycle hooks feat):bridge 解构/init 透传 default。✅ **已评估安全,不需 override**:默认 `DEFAULT_SUBAGENT_HEARTBEAT_TIMEOUT_SECS=300`,**正好 = 我们 `subagent_api_timeout` override 值**;且配置层 `subagent_heartbeat_timeout_defaults_clamps_and_respects_api_timeout` 测试证实心跳被 clamp 到 ≥ api_timeout;进度在步骤边界/工具完成上报会重置心跳(`record_agent_progress`→`touch`),单步 LLM 调用受 api_timeout=300 封顶。唯一边缘风险:子 agent 内跑 >5min 的工具(全量 build)期间无进度上报会被掐,但 pinvou3 单子 agent + 长命令走 background,属边缘。
+- **`PromptSessionContext` 新字段 `allow_shell: bool`**(v0.8.53,gate shell 工具是否进 prompt):`bin/dump_system_prompt.rs` 构造缺它 → **编译失败**。⚠️ **fork-guard 盲区**:dump bin 不在 fork-guard 的 lib-test 构建里,只有真跑 dump 才暴露。已补 `allow_shell: cfg.allow_shell`(复刻生产)。**sync 后除 fork-guard 还要跑一次 `dump_system_prompt` 确认 prompt 工具链没断。**
+- **✅ prompt 零漂移**:v0.8.53 虽改 prompts.rs/engine,dump 出的 pinvou3 system prompt 与 v0.8.51 **逐字节一致(324 行/21122 字节)**。
+- **flaky 测试**:`mcp::tests::legacy_sse_closed_stream_reconnects_and_retries_tool_call` 全量并行跑偶发 FAILED,单独跑 ok —— 时序/资源争用环境噪音,非 fork/merge 问题(同 v0.8.47 记的 locale 测试性质)。
+
+**🧪 本次 feat 三处单测验证(无 vLLM 端到端,跑单元层)**:subagent lifecycle hooks(5)+ hooks 模块含 careful hook fork(41)+ subagent 模块全量含所有 subagent fork patch(122)+ models 模块含上游模型族分类与 qwen-128K patch 共存(12)+ mode-change runtime message(3)+ bridge 窗口识别(1)—— **全过**。端到端冒烟(子 agent 行为/GUI)仍需起 app + vLLM(L1 harness)。
+
+**✅ 验证**:fork-guard 全过(30 指纹含新增 constitution 短路 + 12 + 7 测试);底座全量 lib **3862 pass / 0 fail / 35 ignored**(31→35,+4 constitution/WHALE)。
+
+**🔭 与本次 feat 相关、需冒烟关注**:subagent lifecycle hooks(hooks.rs + hook_executor)、classify model families(models.rs ↔ qwen-128K patch)、mode-change runtime message(engine.rs)。
+
+---
+
+## 🔄 v0.8.51 同步后整理 (2026-06-03, submodule merge v0.8.51 → pinvou3-patches)
+
+上游 v0.8.49→**v0.8.51** 同步 **118 commit**(61 fix 主导 / 13 feat / 14 test / 14 docs)。⚠️ 注意 0.8.50/51 是**独立 release tag,不在 origin/main 上**(main 仍停 v0.8.49+CI),merge 直接对 `v0.8.51` tag。**仅 4 个内容冲突**(其余大改文件如 engine.rs +455 / shell.rs +206 / turn_loop.rs +209 / subagent +97 / llm_client +271 全靠 3-way 自动合)。drift +1796→**+1811 / 41 文件**(基本持平)。
+
+**✅ 4 个冲突解法**:
+- `prompts.rs` + `prompts/modes/agent.md`(Context Management)— **取 HEAD**:上游重新写回 `/compact`/`Ctrl+L`/auto_compact 终端细节,与组3 embedder-agnostic 主旨冲突,保我们的通用措辞。
+- `tools/registry.rs`(import)— **两行都留**:HEAD `use pinvou3_blocklist`(组1)与上游新 `use schema_canonicalize`(byte-level schema 规范化 feature)互不排斥,缺一编译失败。
+- `tui/widgets/tool_card.rs`(tool_family map)— **合并双方**:保 fork 的 `append_file`→Patch,纳入上游新增 `exec_shell_cancel`/`task_shell_start`/`task_shell_wait`→Run。
+
+**⚠️ 本次暴露/踩的坑**:
+- **上游 cycle removal**(release 主题之一):`cycle_manager` 模块 + `EngineConfig.cycle` 字段整体删除。① submodule `lib.rs` 残留孤儿 `pub mod cycle_manager;`(lib.rs 是 fork 文件、上游只有 main.rs,3-way 没自动删)→ 编译失败,**删行**。② bridge `EngineConfig { cycle: CycleConfig{enabled:false,..} }` 显式关 cycle 的逻辑失效 → **删除**(原目标"关 cycle 防小窗口误触发"已由上游删子系统达成,自然作废)。
+- **`CompactionConfig.auto_floor_tokens` 删除**(floor 概念随 cycle removal 一并去掉,新结构仅 `enabled/token_threshold/model/cache_summary`):bridge init 的 `auto_floor_tokens: 60_000` + 回归测试 `floor < threshold` 断言**双删**;`token_threshold: 190_000`(256K×74%)patch 仍活。
+- **`EngineConfig` 新字段 `speech_output_dir`/`hook_executor`** + **`Op::SendMessage` 新字段 `hook_executor`**:bridge 解构/init/SendMessage 三处透传 default(None)。这是固定的「上游新字段维护成本」。
+- **🩹 append_file 静默丢失找回(组5)**:merge 取上游 `SubAgentType::Implementer.allowed_tools()` 丢了 fork 的 `append_file` 条目,但 fork 加的测试断言 `test_implementer_allowed_tools_include_writes` 存活把它抓出。**已恢复 append_file 进 Implementer 列表 + 加 fork-guard 指纹(锚点「[pinvou3-fork 組5] append_file」)**。⚠️ **盲区教训**:该测试非 `forkguard_` 前缀 → fork-guard 不跑它,只有跑底座**全量 lib 测试**才暴露;实际 v0.8.49 起 allowed_tools 就已无 append_file(此前未跑全量未察觉)。**sync 后必跑 `cargo test -p codewhale-tui --lib` 全量,别只信 fork-guard。**
+- **新上游模块**:`tools/{schema_canonicalize,speech,verifier}.rs` 已在 `tools/mod.rs` 声明(自动合 OK);`acp_server` + 9 个 `*_tests` 模块是 bin-only(main.rs 专属),lib.rs 正确不列。
+
+**✅ 验证**:fork-guard 全过(29 指纹含新增 append_file + codewhale-tui 12 + pinvou3-tauri 7 测试);底座全量 lib **3799 pass / 0 fail / 29 ignored**。
+
+**🗑️ 本次自然作废的 fork patch**(上游 harvest / 删子系统):cycle 关闭逻辑、auto_floor_tokens 下限 —— 两者对应的上游字段/子系统已被删,fork 代码同步删除,drift 不增。
+
+---
+
 ## 🔄 v0.8.49 同步后整理 (2026-06-02, merge `31adba22`,submodule HEAD `2267f53c`)
 
 上游 v0.8.47→v0.8.49 同步 **367 commit**。冲突 6 文件 16 标记,无困难冲突。drift 从 v0.8.47 基线 +2127 降到 **+1796 / 40 文件**(6 个 PR 被 harvest)。
@@ -362,4 +409,4 @@
 
 ---
 
-最后更新: 2026-06-02(v0.8.49 sync 完成,merge `31adba22`;6 PR 全 harvest + override hook 上游自带;详见顶部 v0.8.49 章节)
+最后更新: 2026-06-04(v0.8.53 sync 完成;1 冲突 project_context.rs(组4 撞 constitution.json layer)+ load_repo_constitution_block 短路 + subagent_heartbeat_timeout 新字段;详见顶部 v0.8.53 章节。v0.8.51 章节见其下)
