@@ -22,7 +22,7 @@
 | 撤销 | `revert_turn` |
 | 交互 | `request_user_input` (前端气泡选项) |
 | 展示 | `mcp_pinvou_present_artifact` (产出成品后弹可点击成品卡给客户,见 §4) |
-| 计划 | `update_plan` (Plan 模式) |
+| 计划 | `update_plan` (出方案卡等用户拍板) `checklist_write` (执行清单,列完即做) |
 | 视觉 | `image_analyze` (Qwen3.6 有视觉,读 workspace 相对路径图) |
 
 **底座工具表里别的工具默认隐藏,看不到就别想着调**:
@@ -52,6 +52,7 @@
 2. **多工具并行**: 读多文件 / 多搜索不同关键词 → 同 response 一起发起
 3. **缺信息立即补**: 没读的文件 / 没确认的值 → 同 response 调工具,不要硬编
 4. **歧义才问**: 明显默认 → 直接做;真歧义 → `request_user_input` 给 2-3 选项
+5. **长任务先列清单**: ≥5 步的任务先用 `checklist_write` 列步骤再动手,完成逐项勾掉——列完清单**同 turn 立刻开始执行**,清单不是产出
 
 ## 3. 任务完成定义
 

@@ -28,27 +28,96 @@ pub const INSTRUCTIONS_MD: &str = include_str!("../../resources/bundle/instructi
 /// base.md 回退上游原文(fork drift 归零)。见 docs/base-prompt-override-阶段2.md。
 pub const BASE_PROMPT_MD: &str = include_str!("../../resources/bundle/base.md");
 
-/// pinvou3 版简体中文 locale 前导段（替换底座 `LOCALE_PREAMBLE_ZH_HANS`，仅品牌词
-/// pinvou3 与上游 codewhale 不同）。
+/// pinvou3 版简体中文 locale 前导段（替换底座 `LOCALE_PREAMBLE_ZH_HANS`）。
+/// 瘦身依据:底座原文的动机是防 thinking 漂英文(上游 #1118)——pinvou3 生产
+/// `reasoning_effort=off` 无 thinking,该 failure mode 不存在;回复语言已由
+/// base.md §Language("match the latest user message")管,这里只补
+/// "判断不了时的默认语言"。closer 同理。
 pub const LOCALE_PREAMBLE_ZH_HANS: &str = "## 语言要求\n\n\
-你正在 pinvou3 中运行。无论任务上下文（代码、错误日志、文件名）\
-是英文，无论系统提示的其余部分是英文，你都必须用简体中文进行 \
-`reasoning_content`（内部思考）和最终回复。代码、文件路径、工具名称\
-（例如 `read_file`、`exec_shell`）、环境变量、命令行参数和 URL \
-保持原样 —— 只有自然语言散文要切换到简体中文。\n\n\
-如果用户在会话中切换到另一种语言，从下一轮开始跟随切换。\
-如果用户明确要求（例如 \"think in English\"），则覆盖此规则。";
+pinvou3 界面语言为简体中文。跟随用户消息的语言回复;无法判断时用简体中文。\
+代码、路径、工具名、URL 保持原样。";
 
-/// pinvou3 版 Authority Recap（替换底座 `AUTHORITY_RECAP`，仅品牌词不同）。
+/// pinvou3 版简体中文 locale 收尾段（替换底座 `LOCALE_CLOSER_ZH_HANS` ~660B）。
+pub const LOCALE_CLOSER_ZH_HANS: &str = "## 语言再提醒\n\n\
+跟随用户最新消息的语言回复;无法判断时用简体中文。";
+
+/// pinvou3 版日语 locale 前导段（替换底座 `LOCALE_PREAMBLE_JA` ~800B,瘦身
+/// 依据同 `LOCALE_PREAMBLE_ZH_HANS`）。
+pub const LOCALE_PREAMBLE_JA: &str = "## 言語要件\n\n\
+pinvou3 の UI 言語は日本語です。ユーザーのメッセージの言語に従って\
+返信し、判断できない場合は日本語を使用してください。コード、パス、\
+ツール名、URL は元のまま。";
+
+/// pinvou3 版日语 locale 收尾段（替换底座 `LOCALE_CLOSER_JA` ~660B）。
+pub const LOCALE_CLOSER_JA: &str = "## 言語再確認\n\n\
+ユーザーの最新メッセージの言語に従って返信してください。\
+判断できない場合は日本語。";
+
+/// pinvou3 版静态层 mode 块——Yolo（生产主路径,approval=Auto）。瘦身依据:
+/// 行为引导大头已由 `bridge::reminder_for` 每 turn `<system-reminder>` 注入,
+/// 静态块只立常驻事实;底座 YOLO_MODE/AUTO_APPROVAL/Session Longevity/
+/// Efficient Approvals 的逐条教学全不保留。
+pub const MODE_EXECUTE_MD: &str = "\
+## Mode: Execute
+
+Tools run without per-call approval — the user has already authorized
+execution. Produce files and run commands now; never end the turn with
+a promise of future action. Then verify and report. Follow each
+message's `<system-reminder>` phase rules.";
+
+/// pinvou3 版静态层 mode 块——Plan（底座强制 approval=Never + ReadOnly sandbox）。
+/// 注意:前端 Plan 入口已下线([plan/yolo 收敛],index.html),生产全 Yolo 单模式
+/// 到不了这里——防御性保留,底座 AppMode::Plan 通路仍在,恢复入口即生效。
+pub const MODE_PLAN_MD: &str = "\
+## Mode: Plan
+
+Read-only: discovery tools work; file writes and shell mutations are
+blocked by the runtime. Your deliverable is a plan via `update_plan` —
+clarify real ambiguity with `request_user_input` first. Follow each
+message's `<system-reminder>` phase rules.";
+
+/// Agent+非Auto 兜底（pinvou3 不暴露 Agent mode,防御性保留）。
+pub const MODE_AGENT_GATED_MD: &str = "\
+## Mode: Agent
+
+Autonomous task execution. Reads run silently; writes, patches, and
+shell execution request user approval first — batch independent writes
+into one approval, not a series of surprise prompts.";
+
+/// pinvou3 版静态层 composer：接管底座全部编译期静态文案
+/// (taxonomy/base/personality/mode/approval/ContextMgmt/compact 模板)。
+/// 从此底座升级新增的静态块只进 default 合成,不漏进 pinvou3 prompt。
+/// 干掉:Personality(语气并入 base.md §Voice)、prompt-cache 教学、
+/// Session Longevity、Efficient Approvals、Core Tool Taxonomy(instructions
+/// 工具表已覆盖)、Compaction Relay 模板(实证死重:256K 自动压缩走
+/// `canonical_prompt()` 代码拼装、手动压缩走 `create_summary()` 独立 LLM
+/// 调用,二者均不按模板;`.codewhale/handoff.md` 在 pinvou3 无写入通路,
+/// `load_handoff_block` 永远 None——模板既无生产者也无消费者)。
+pub fn compose_static_layers(ctx: &deepseek_tui::prompts::StaticPromptCtx<'_>) -> String {
+    use deepseek_tui::tui::app::AppMode;
+    use deepseek_tui::tui::approval::ApprovalMode;
+
+    let base = BASE_PROMPT_MD.trim().replace("{model_id}", ctx.model_id);
+    let mode_block = match ctx.mode {
+        AppMode::Plan => MODE_PLAN_MD,
+        AppMode::Yolo => MODE_EXECUTE_MD,
+        // pinvou3 生产链路不发 Agent;万一出现按 approval 兜底
+        AppMode::Agent => match ctx.approval_mode {
+            ApprovalMode::Auto => MODE_EXECUTE_MD,
+            ApprovalMode::Suggest | ApprovalMode::Never => MODE_AGENT_GATED_MD,
+        },
+    };
+    format!("{base}\n\n{mode_block}")
+}
+
+/// pinvou3 版 Authority Recap（替换底座 `AUTHORITY_RECAP`,瘦身版——recency 位置
+/// 只复述三条真干活的裁决,不再复述已删的九层 tier 体系）。
 pub const AUTHORITY_RECAP: &str = "\
-## Authority Recap
+## Final Reminder
 
-The Constitution of pinvou3 (Articles I-VII) governs your behavior.
-Tier 1 rules — truthfulness, user agency, tool-use mandate, verification
-duty — are non-negotiable. The user's next message is the highest
-directive within Constitutional bounds. Personality, memory, and handoff
-context are subordinate to the Constitution, the Statutes, and the user's
-current request. When in doubt, consult Article VII: The Hierarchy of Law.";
+Core duties first; the user's current message outranks everything else;
+the `<instructions>` block is project law. Live tool output beats memory.
+Never fabricate, never claim unverified success.";
 
 /// 把 pinvou3 版 prompt 文案注入底座的 prompt 合成层。底座用 `OnceLock`,首次
 /// set 生效、后续返回 Err(rejected) —— 幂等,可在每个 `Bridge::boot` 入口重复调用
@@ -58,7 +127,18 @@ pub fn install_prompt_overrides() {
     let _ = deepseek_tui::prompts::set_base_prompt_override(BASE_PROMPT_MD.to_string());
     let _ =
         deepseek_tui::prompts::set_locale_preamble_zh_hans_override(LOCALE_PREAMBLE_ZH_HANS.to_string());
+    let _ =
+        deepseek_tui::prompts::set_locale_closer_zh_hans_override(LOCALE_CLOSER_ZH_HANS.to_string());
+    let _ = deepseek_tui::prompts::set_locale_preamble_ja_override(LOCALE_PREAMBLE_JA.to_string());
+    let _ = deepseek_tui::prompts::set_locale_closer_ja_override(LOCALE_CLOSER_JA.to_string());
     let _ = deepseek_tui::prompts::set_authority_recap_override(AUTHORITY_RECAP.to_string());
+    // 静态层全量接管(fork patch: set_static_prompt_composer_override)。
+    // 设置后底座的 Personality/Mode/Approval/ContextMgmt/COMPACT_TEMPLATE/
+    // taxonomy 常量全部不进 prompt,由 compose_static_layers 输出替代;
+    // base override 仍保留——composer 的 ctx.default_layers 引用它。
+    let _ = deepseek_tui::prompts::set_static_prompt_composer_override(Box::new(
+        |ctx| compose_static_layers(ctx),
+    ));
 }
 
 /// 内置 MCP 默认配置:注册 present_artifact server(成品卡)。`{{PINVOU3_PRESENT_SERVER}}`
@@ -256,6 +336,96 @@ mod tests {
             INSTRUCTIONS_MD.contains("append_file` 只能追加到文件尾"),
             "全局 instructions 必须说明 append_file 是尾追加"
         );
+    }
+
+    /// forkguard(composer): 静态层 composer 接管后,底座的 Personality/
+    /// Session Longevity/Efficient Approvals/taxonomy 不得再进 prompt,
+    /// pinvou3 自有的 mode 块 + 瘦身 compact 模板必须在。上游 sync 后此测试
+    /// 失败 = set_static_prompt_composer_override fork patch 被合丢。
+    #[test]
+    fn forkguard_static_composer_takes_over_static_layers() {
+        use deepseek_tui::models::SystemPrompt;
+        use deepseek_tui::tui::app::AppMode;
+
+        install_prompt_overrides(); // OnceLock 幂等,谁先调都一样
+
+        let SystemPrompt::Text(yolo) =
+            deepseek_tui::prompts::system_prompt_for_mode(AppMode::Yolo)
+        else {
+            panic!("unexpected SystemPrompt variant")
+        };
+        // 干掉的底座块(第二轮瘦身追加: Compaction 模板/Sub-agents/Thinking
+        // budget 实证死重,Tier 体系压成三行裁决)
+        for gone in [
+            "Personality: Calm",
+            "## Session Longevity",
+            "## Efficient Approvals",
+            "## Core Tool Taxonomy",
+            "Compaction Relay Template",
+            "Sub-agents",
+            "Thinking budget",
+            "Tier ", // 九层已删,不许残留悬空 tier 引用
+        ] {
+            assert!(!yolo.contains(gone), "底座静态块应被 composer 干掉: {gone}");
+        }
+        // 吸收/保留的 pinvou3 块
+        for kept in [
+            "CONSTITUTION OF PINVOU3",
+            "### When directives conflict",
+            "## Mode: Execute",
+            "### Voice",
+        ] {
+            assert!(yolo.contains(kept), "pinvou3 静态块缺失: {kept}");
+        }
+
+        let SystemPrompt::Text(plan) =
+            deepseek_tui::prompts::system_prompt_for_mode(AppMode::Plan)
+        else {
+            panic!("unexpected SystemPrompt variant")
+        };
+        assert!(plan.contains("## Mode: Plan"));
+        assert!(!plan.contains("## Mode: Execute"));
+    }
+
+    /// forkguard(composer): 完整合成路径上,底座在 compose 之外追加的
+    /// Context Management(含 prompt-cache 教学)与 COMPACT_TEMPLATE 也要被
+    /// composer 抑制(prompts.rs 的 static_prompt_composer().is_none() gate)。
+    #[test]
+    fn forkguard_static_composer_suppresses_context_mgmt_appends() {
+        use deepseek_tui::models::SystemPrompt;
+        use deepseek_tui::tui::app::AppMode;
+
+        install_prompt_overrides();
+
+        let tmp = tempdir();
+        std::fs::create_dir_all(&tmp).unwrap();
+        let SystemPrompt::Text(text) =
+            deepseek_tui::prompts::system_prompt_for_mode_with_context_and_skills(
+                AppMode::Yolo,
+                std::path::Path::new(&tmp),
+                None,
+                None,
+                None,
+                None,
+            )
+        else {
+            panic!("unexpected SystemPrompt variant")
+        };
+        assert!(
+            !text.contains("## Context Management"),
+            "Context Management 应被 composer 抑制"
+        );
+        assert!(
+            !text.contains("Prompt-cache awareness"),
+            "prompt-cache 教学应被 composer 抑制"
+        );
+        // Compaction 模板全删(第二轮瘦身):真实压缩走 canonical_prompt/
+        // create_summary,模板无生产者无消费者。底座原版也不许回流。
+        assert!(
+            !text.contains("Compaction Relay"),
+            "Compaction 模板不应出现(pinvou3 已删,底座版也不许回流)"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
 
