@@ -147,13 +147,13 @@
         curVer: '当前版本', uiVer: 'UI 版本', uptime: '运行时长',
         appearance: '外观与语言', lang: '界面语言', langDesc: '切换应用的显示语言', theme: '主题模式', themeDesc: '选择适合你的色彩风格',
         light: '浅色', dark: '深色',
-        searchBackend: 'web_search 源', searchBackendDesc: 'LLM 调用 web_search 工具时使用的源',
+        searchBackend: '联网搜索', searchSource: '搜索源', searchBackendDesc: 'LLM 调用 web_search 工具时使用的源',
         searchKey: 'API Key',
         searchKeyHintBing: 'Bing 不需要 API key，但中文搜索结果不理想',
         searchKeyHintMetaso: '留空使用社区共享 key（~100 次/天，多用户竞争）',
         searchKeyHintBocha: '必填，否则搜索会直接报错',
         searchKeyPlaceholder: '粘贴 API key',
-        searchRestartHint: 'web_search 源切换需重启应用生效',
+        searchRestartHint: '搜索源已切换，重启后生效',
         searchGetKey: '获取你自己的 key',
         searchGetKeyMetasoSteps: '免费 · 微信/手机扫码 1 分钟注册 · 个人独立配额',
         searchGetKeyBochaSteps: '免费 · 注册后在控制台领 sk- 开头的 key',
@@ -172,9 +172,9 @@
         customModelName: '模型名称',
         customBaseUrl: 'API 地址',
         customApiKey: 'API Key',
-        confirmAndRestart: '确认并重启应用',
-        modelRestartHint: '修改后点击「确认并重启应用」生效',
-        sysPerm: '系统权限', sudo: '高级执行权限 (Sudo)', sudoDesc: '允许助手执行环境配置等高级指令。',
+        confirmAndRestart: '保存并重启',
+        modelDirtyHint: '配置已修改，保存后应用将重启',
+        sysPerm: '系统权限', sudo: '高级执行权限 (Sudo)', sudoDesc: '允许助手执行环境配置等高级指令',
         versionUpdate: '版本与更新',
         checkUpdate: '检查更新', checking: '检查中…', upToDate: '已是最新版本',
         newVersionFound: '发现新版本', updateNotes: '更新说明',
@@ -193,13 +193,13 @@
         curVer: 'App Version', uiVer: 'UI Version', uptime: 'Uptime',
         appearance: 'Appearance & Language', lang: 'Language', langDesc: 'Switch application display language', theme: 'Theme', themeDesc: 'Choose your color style',
         light: 'Light', dark: 'Dark',
-        searchBackend: 'web_search source', searchBackendDesc: 'Source used by the LLM when invoking the web_search tool',
+        searchBackend: 'Web Search', searchSource: 'Search Source', searchBackendDesc: 'Source used by the LLM when invoking the web_search tool',
         searchKey: 'API Key',
         searchKeyHintBing: 'Bing needs no API key, but Chinese search results are poor',
         searchKeyHintMetaso: 'Leave empty for community shared key (~100/day, multi-user)',
         searchKeyHintBocha: 'Required, search will fail without it',
         searchKeyPlaceholder: 'Paste API key',
-        searchRestartHint: 'web_search source change requires app restart',
+        searchRestartHint: 'Search source changed — restart to apply',
         searchGetKey: 'Get your own key',
         searchGetKeyMetasoSteps: 'Free · 1-min QR-code sign-up (WeChat/phone) · Personal quota',
         searchGetKeyBochaSteps: 'Free · Get sk- prefixed key from console after sign-up',
@@ -218,9 +218,9 @@
         customModelName: 'Model Name',
         customBaseUrl: 'API Base URL',
         customApiKey: 'API Key',
-        confirmAndRestart: 'Confirm & Restart App',
-        modelRestartHint: 'Click "Confirm & Restart App" to apply changes',
-        sysPerm: 'System Permissions', sudo: 'Sudo Access', sudoDesc: 'Allow assistant to run high-privilege commands.',
+        confirmAndRestart: 'Save & Restart',
+        modelDirtyHint: 'Configuration changed — saving will restart the app',
+        sysPerm: 'System Permissions', sudo: 'Sudo Access', sudoDesc: 'Allow assistant to run high-privilege commands',
         versionUpdate: 'Version & Update',
         checkUpdate: 'Check for Updates', checking: 'Checking…', upToDate: 'Up to date',
         newVersionFound: 'New version available', updateNotes: 'Release Notes',
@@ -300,6 +300,23 @@
       const [customBaseUrl, setCustomBaseUrl] = useState('');
       const [customApiKey, setCustomApiKey] = useState('');
       const modelConfigInitRef = useRef(false);
+      // dirty 基线:已保存的模型配置(默认值填充后) / 启动时的搜索源。
+      // 草稿偏离基线才显示「保存并重启」/「立即重启」操作条。
+      const savedModelConfigRef = useRef(null);
+      const bootSearchProviderRef = useRef(null);
+
+      // 各厂商默认配置（前端自动填充用，与 bridge/mod.rs 对齐）
+      const PRESET_DEFAULTS = {
+        local_vllm:  { baseUrl: 'http://127.0.0.1:8000/v1',                model: 'qwen36_35b_256k' },
+        deepseek:    { baseUrl: 'https://api.deepseek.com/beta',           model: 'deepseek-v4-pro' },
+        kimi:        { baseUrl: 'https://api.moonshot.cn/v1',              model: 'kimi-k2.6' },
+        openai_compatible: { baseUrl: 'https://api.openai.com/v1',        model: 'gpt-4o' },
+        qwen:        { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-max' },
+        doubao:      { baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-pro-256k' },
+        minimax:     { baseUrl: 'https://api.minimax.chat/v1',            model: 'abab6.5s-chat' },
+        glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-4-plus' },
+        mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2-flash' },
+      };
       const [isSidebarOpen, setIsSidebarOpen] = useState(false);
       const [chatPrefill, setChatPrefill] = useState('');
       const [personaEditor, setPersonaEditor] = useState(null); // 聊天里"存入卡牌池"草稿 → App 级编辑器
@@ -326,21 +343,45 @@
         // 从 bs.settings 同步 search 配置。bs.settings 是后端 UserPrefs JSON。
         if (bs.settings && bs.settings.search) {
           const sp = bs.settings.search.provider || 'bing';
+          if (bootSearchProviderRef.current === null) bootSearchProviderRef.current = sp;
           if (sp !== searchProvider) setSearchProvider(sp);
           const k = bs.settings.search.api_key || '';
           if (k !== searchApiKey) setSearchApiKey(k);
         }
         // 模型配置：只在第一次从 bs.settings 加载初始值，后续走草稿模式（确认后才保存），
         // 避免 useEffect 把未保存的本地修改覆盖回 disk 旧值。
-        if (!modelConfigInitRef.current && bs.settings && bs.settings.advanced) {
-          const adv = bs.settings.advanced;
-          setModelPreset(adv.model_preset || 'local_vllm');
-          setCustomModelName(adv.custom_model_name || '');
-          setCustomBaseUrl(adv.custom_base_url || '');
-          setCustomApiKey(adv.custom_api_key || '');
+        // custom_* 为 null 时用 PRESET_DEFAULTS 填成真实值——输入框显示当前生效配置，
+        // 而不是灰色 placeholder 冒充。
+        if (!modelConfigInitRef.current && bs.settings) {
+          const adv = bs.settings.advanced || {};
+          const preset = adv.model_preset || 'local_vllm';
+          const defs = PRESET_DEFAULTS[preset] || PRESET_DEFAULTS.local_vllm;
+          const saved = {
+            preset,
+            name: adv.custom_model_name || defs.model,
+            baseUrl: adv.custom_base_url || defs.baseUrl,
+            apiKey: adv.custom_api_key || '',
+          };
+          setModelPreset(saved.preset);
+          setCustomModelName(saved.name);
+          setCustomBaseUrl(saved.baseUrl);
+          setCustomApiKey(saved.apiKey);
+          savedModelConfigRef.current = saved;
           modelConfigInitRef.current = true;
         }
       }, [bs]);
+
+      // 草稿 vs 已保存基线 → 模型卡是否显示「保存并重启」操作条
+      const savedModel = savedModelConfigRef.current;
+      const modelConfigDirty = !!savedModel && (
+        modelPreset !== savedModel.preset ||
+        customModelName !== savedModel.name ||
+        customBaseUrl !== savedModel.baseUrl ||
+        customApiKey !== savedModel.apiKey
+      );
+      // 搜索源改动立即落盘但需重启进程才生效 → 偏离启动值就显示「立即重启」操作条
+      const searchNeedsRestart = bootSearchProviderRef.current !== null
+        && searchProvider !== bootSearchProviderRef.current;
 
       // Build chat history from sessions
       const skillBindings = (bs && bs.workflow && bs.workflow.bindings) || {};
@@ -438,21 +479,17 @@
         };
       }
 
-      // 各厂商默认配置（前端自动填充用，与 bridge/mod.rs 对齐）
-      const PRESET_DEFAULTS = {
-        local_vllm:  { baseUrl: 'http://127.0.0.1:8000/v1',                model: 'qwen36_35b_256k' },
-        deepseek:    { baseUrl: 'https://api.deepseek.com/beta',           model: 'deepseek-v4-pro' },
-        kimi:        { baseUrl: 'https://api.moonshot.cn/v1',              model: 'kimi-k2.6' },
-        openai_compatible: { baseUrl: 'https://api.openai.com/v1',        model: 'gpt-4o' },
-        qwen:        { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-max' },
-        doubao:      { baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-pro-256k' },
-        minimax:     { baseUrl: 'https://api.minimax.chat/v1',            model: 'abab6.5s-chat' },
-        glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-4-plus' },
-        mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2-flash' },
-      };
-
       // 模型配置改为草稿模式：只更新 state，点击确认后统一保存并重启
       function handleChangeModelPreset(p) {
+        const saved = savedModelConfigRef.current;
+        if (saved && p === saved.preset) {
+          // 切回已保存的来源 → 还原已保存值（而非厂商默认），dirty 自然归零
+          setModelPreset(saved.preset);
+          setCustomModelName(saved.name);
+          setCustomBaseUrl(saved.baseUrl);
+          setCustomApiKey(saved.apiKey);
+          return;
+        }
         const defs = PRESET_DEFAULTS[p] || PRESET_DEFAULTS.local_vllm;
         setModelPreset(p);
         setCustomBaseUrl(defs.baseUrl);
@@ -628,6 +665,9 @@
                 customBaseUrl={customBaseUrl} setCustomBaseUrl={handleSetCustomBaseUrl}
                 customApiKey={customApiKey} setCustomApiKey={handleSetCustomApiKey}
                 onConfirmModelConfig={handleConfirmModelConfig}
+                modelConfigDirty={modelConfigDirty}
+                searchNeedsRestart={searchNeedsRestart}
+                onRestartApp={() => bridge.available && bridge.restartApp()}
                 bs={bs}
                 t={t}
               />
@@ -866,7 +906,66 @@
     // ==========================================
     // Settings View (Material 3 Style)
     // ==========================================
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, modelPreset, onChangeModelPreset, customModelName, setCustomModelName, customBaseUrl, setCustomBaseUrl, customApiKey, setCustomApiKey, onConfirmModelConfig, bs, t }) => {
+    // 统一排版原语：卡片 / 行(label 左 + 控件右) / 纵向输入字段 / 分段选择 / 改动操作条
+    const SCard = ({ isDark, title, children }) => (
+      <section className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
+        <h2 className="text-[18px] font-medium mb-6">{title}</h2>
+        {children}
+      </section>
+    );
+
+    const SRow = ({ isDark, label, desc, children }) => (
+      <div className="flex items-center justify-between gap-8">
+        <div className="min-w-0">
+          <span className="text-[16px] block mb-1">{label}</span>
+          {desc && <span className={`text-[13px] block ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{desc}</span>}
+        </div>
+        <div className="shrink-0">{children}</div>
+      </div>
+    );
+
+    const SField = ({ isDark, label, ...inputProps }) => (
+      <div>
+        <span className={`text-[14px] block mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{label}</span>
+        <input
+          {...inputProps}
+          className={`w-full px-4 py-2 rounded-lg text-[14px] outline-none transition-colors ${
+            isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746] focus:border-[#A8C7FA]'
+                   : 'bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0]'
+          }`}
+        />
+      </div>
+    );
+
+    const SSegmented = ({ isDark, options, value, onChange }) => (
+      <div className={`p-1 rounded-full flex ${isDark ? 'bg-[#131314]' : 'bg-[#E1E5EA]'}`}>
+        {options.map(o => (
+          <button
+            key={o.key}
+            onClick={() => onChange(o.key)}
+            className={`px-5 py-2 rounded-full text-[14px] font-medium transition-colors ${
+              value === o.key ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-white text-[#0B57D0] shadow-sm') : ''
+            }`}
+          >{o.label}</button>
+        ))}
+      </div>
+    );
+
+    // 「需重启」统一表达：改动后才出现，一句说明 + 一个动作，替代常驻大按钮和斜体小字
+    const SActionBar = ({ isDark, message, actionLabel, onAction }) => (
+      <div className={`flex items-center justify-between gap-4 px-4 py-3 rounded-xl ${isDark ? 'bg-[#131314]' : 'bg-white'}`}>
+        <span className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{message}</span>
+        <button
+          onClick={onAction}
+          className={`text-[13px] font-medium px-4 py-2 rounded-full whitespace-nowrap transition-colors ${
+            isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]'
+                   : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'
+          }`}
+        >{actionLabel}</button>
+      </div>
+    );
+
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, modelPreset, onChangeModelPreset, customModelName, setCustomModelName, customBaseUrl, setCustomBaseUrl, customApiKey, setCustomApiKey, onConfirmModelConfig, modelConfigDirty, searchNeedsRestart, onRestartApp, bs, t }) => {
       const isDark = activeTheme === 'dark';
       const presetOptions = [
         { key: 'local_vllm',  label: t.modelPresetLocalVllm },
@@ -882,22 +981,15 @@
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
 
-          <div className="px-16 pt-12 pb-6">
-            <h1 className="text-[32px] font-normal tracking-tight mb-2">{t.settings}</h1>
-          </div>
+          {/* 标题随内容一起滚动：固定标题 + 硬裁切的滚动边界在视觉上打架 */}
+          <div className="flex-1 overflow-y-auto px-16 pb-20 custom-scrollbar">
+            <div className="max-w-[800px]">
+              <h1 className="text-[32px] font-normal tracking-tight pt-12 pb-8">{t.settings}</h1>
+              <div className="space-y-8">
 
-          <div className="flex-1 overflow-y-auto px-16 pt-4 pb-20 custom-scrollbar">
-            <div className="max-w-[800px] space-y-8">
-
-              <div className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
-                <h2 className="text-[18px] font-medium mb-6">{t.modelBackend}</h2>
-
+              <SCard isDark={isDark} title={t.modelBackend}>
                 <div className="space-y-6">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <span className="text-[16px] block mb-1">{t.modelPreset}</span>
-                      <span className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.modelBackendDesc}</span>
-                    </div>
+                  <SRow isDark={isDark} label={t.modelPreset} desc={t.modelBackendDesc}>
                     <div className="relative">
                       <select
                         value={modelPreset}
@@ -915,113 +1007,32 @@
                         <ChevronDown size={16} className={isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'} />
                       </div>
                     </div>
-                  </div>
+                  </SRow>
 
+                  {/* 输入框直接显示当前生效值（App 初始化时已用 PRESET_DEFAULTS 填充），不靠 placeholder 冒充 */}
                   <div className="space-y-4">
-                    <div>
-                      <span className="text-[16px] block mb-2">{t.customModelName}</span>
-                      <input
-                        type="text"
-                        value={customModelName}
-                        onChange={e => setCustomModelName(e.target.value)}
-                        placeholder={modelPreset === 'local_vllm' ? 'qwen36_35b_256k' : '如: gpt-4o / deepseek-v4-pro'}
-                        className={`w-full px-4 py-2 rounded-lg text-[14px] outline-none transition-colors ${
-                          isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746] focus:border-[#A8C7FA]'
-                                 : 'bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0]'
-                        }`}
-                      />
-                    </div>
-                    <div>
-                      <span className="text-[16px] block mb-2">{t.customBaseUrl}</span>
-                      <input
-                        type="text"
-                        value={customBaseUrl}
-                        onChange={e => setCustomBaseUrl(e.target.value)}
-                        placeholder={modelPreset === 'local_vllm' ? 'http://127.0.0.1:8000/v1' : '如: https://api.openai.com/v1'}
-                        className={`w-full px-4 py-2 rounded-lg text-[14px] outline-none transition-colors ${
-                          isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746] focus:border-[#A8C7FA]'
-                                 : 'bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0]'
-                        }`}
-                      />
-                    </div>
-                    <div>
-                      <span className="text-[16px] block mb-2">{t.customApiKey}</span>
-                      <input
-                        type="password"
-                        value={customApiKey}
-                        onChange={e => setCustomApiKey(e.target.value)}
-                        placeholder={modelPreset === 'local_vllm' ? 'local-no-auth' : 'sk-...'}
-                        className={`w-full px-4 py-2 rounded-lg text-[14px] outline-none transition-colors ${
-                          isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746] focus:border-[#A8C7FA]'
-                                 : 'bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0]'
-                        }`}
-                      />
-                    </div>
+                    <SField isDark={isDark} label={t.customModelName} type="text"
+                      value={customModelName} onChange={e => setCustomModelName(e.target.value)} />
+                    <SField isDark={isDark} label={t.customBaseUrl} type="text"
+                      value={customBaseUrl} onChange={e => setCustomBaseUrl(e.target.value)} />
+                    <SField isDark={isDark} label={t.customApiKey} type="password"
+                      value={customApiKey} onChange={e => setCustomApiKey(e.target.value)}
+                      placeholder={modelPreset === 'local_vllm' ? 'local-no-auth' : 'sk-...'} />
                   </div>
 
-                  <button
-                    onClick={onConfirmModelConfig}
-                    className={`w-full py-3 rounded-xl text-[15px] font-medium transition-colors ${
-                      isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]'
-                             : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'
-                    }`}
-                  >
-                    {t.confirmAndRestart}
-                  </button>
-
-                  <span className={`text-[12px] block italic ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
-                    {t.modelRestartHint}
-                  </span>
+                  {modelConfigDirty && (
+                    <SActionBar isDark={isDark} message={t.modelDirtyHint}
+                      actionLabel={t.confirmAndRestart} onAction={onConfirmModelConfig} />
+                  )}
                 </div>
-              </div>
+              </SCard>
 
-              <div className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
-                <h2 className="text-[18px] font-medium mb-6">{t.appearance}</h2>
-
-                <div className="space-y-8">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <span className="text-[16px] block mb-1">{t.lang}</span>
-                      <span className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.langDesc}</span>
-                    </div>
-                    <div className={`p-1 rounded-full flex ${isDark ? 'bg-[#131314]' : 'bg-[#E1E5EA]'}`}>
-                      <button onClick={() => setLanguage('zh')} className={`px-6 py-2 rounded-full text-[14px] font-medium transition-colors ${language === 'zh' ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-white text-[#0B57D0] shadow-sm') : ''}`}>中文</button>
-                      <button onClick={() => setLanguage('en')} className={`px-6 py-2 rounded-full text-[14px] font-medium transition-colors ${language === 'en' ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-white text-[#0B57D0] shadow-sm') : ''}`}>English</button>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <span className="text-[16px] block mb-1">{t.theme}</span>
-                      <span className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.themeDesc}</span>
-                    </div>
-                    <div className={`p-1 rounded-full flex ${isDark ? 'bg-[#131314]' : 'bg-[#E1E5EA]'}`}>
-                      <button onClick={() => setActiveTheme('light')} className={`px-6 py-2 rounded-full text-[14px] font-medium transition-colors ${activeTheme === 'light' ? 'bg-white text-[#0B57D0] shadow-sm' : ''}`}>{t.light}</button>
-                      <button onClick={() => setActiveTheme('dark')} className={`px-6 py-2 rounded-full text-[14px] font-medium transition-colors ${activeTheme === 'dark' ? 'bg-[#A8C7FA] text-[#041E49]' : ''}`}>{t.dark}</button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
-                <h2 className="text-[18px] font-medium mb-6">{t.searchBackend}</h2>
-
+              <SCard isDark={isDark} title={t.searchBackend}>
                 <div className="space-y-6">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <span className="text-[16px] block mb-1">{t.searchBackend}</span>
-                      <span className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.searchBackendDesc}</span>
-                    </div>
-                    <div className={`p-1 rounded-full flex ${isDark ? 'bg-[#131314]' : 'bg-[#E1E5EA]'}`}>
-                      {['bing', 'metaso', 'bocha'].map(p => (
-                        <button
-                          key={p}
-                          onClick={() => setSearchProvider(p)}
-                          className={`px-5 py-2 rounded-full text-[14px] font-medium transition-colors capitalize ${searchProvider === p ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-white text-[#0B57D0] shadow-sm') : ''}`}
-                        >{p}</button>
-                      ))}
-                    </div>
-                  </div>
+                  <SRow isDark={isDark} label={t.searchSource} desc={t.searchBackendDesc}>
+                    <SSegmented isDark={isDark} value={searchProvider} onChange={setSearchProvider}
+                      options={[{ key: 'bing', label: 'Bing' }, { key: 'metaso', label: 'Metaso' }, { key: 'bocha', label: 'Bocha' }]} />
+                  </SRow>
 
                   {searchProvider === 'bing' ? (
                     <span className={`text-[13px] block ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
@@ -1029,17 +1040,9 @@
                     </span>
                   ) : (
                     <div>
-                      <span className="text-[16px] block mb-2">{t.searchKey}</span>
-                      <input
-                        type="password"
-                        value={searchApiKey}
-                        onChange={e => setSearchApiKey(e.target.value)}
-                        placeholder={t.searchKeyPlaceholder}
-                        className={`w-full px-4 py-2 rounded-lg text-[14px] outline-none transition-colors ${
-                          isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746] focus:border-[#A8C7FA]'
-                                 : 'bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0]'
-                        }`}
-                      />
+                      <SField isDark={isDark} label={t.searchKey} type="password"
+                        value={searchApiKey} onChange={e => setSearchApiKey(e.target.value)}
+                        placeholder={t.searchKeyPlaceholder} />
                       <span className={`text-[12px] mt-2 block ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
                         {searchProvider === 'metaso' ? t.searchKeyHintMetaso : t.searchKeyHintBocha}
                       </span>
@@ -1064,36 +1067,40 @@
                     </div>
                   )}
 
-                  <span className={`text-[12px] mt-2 block italic ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
-                    {t.searchRestartHint}
-                  </span>
+                  {searchNeedsRestart && (
+                    <SActionBar isDark={isDark} message={t.searchRestartHint}
+                      actionLabel={t.restartNow} onAction={onRestartApp} />
+                  )}
                 </div>
-              </div>
+              </SCard>
 
-              <div className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
-                <h2 className="text-[18px] font-medium mb-6">{t.sysPerm}</h2>
-
-                <div className="flex items-center justify-between">
-                  <div className="pr-8">
-                    <span className="text-[16px] block mb-1">{t.sudo}</span>
-                    <span className={`text-[14px] leading-relaxed block ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
-                      {t.sudoDesc}
-                    </span>
-                  </div>
-
+              <SCard isDark={isDark} title={t.sysPerm}>
+                <SRow isDark={isDark} label={t.sudo} desc={t.sudoDesc}>
                   <button
                     onClick={setSuperPerm}
                     className={`w-[52px] h-[32px] rounded-full p-[2px] transition-colors duration-300 relative ${superPerm ? (isDark ? 'bg-[#A8C7FA]' : 'bg-[#0B57D0]') : (isDark ? 'bg-[#444746]' : 'bg-[#747775]')}`}
                   >
-                    <div className={`w-[28px] h-[28px] rounded-full shadow-sm transform transition-transform duration-300 ${isDark ? 'bg-[#041E49]' : 'bg-white'} ${superPerm ? 'translate-x-[20px]' : 'translate-x-0'}`} />
+                    {/* off 态 thumb 暗色下用浅灰——原深蓝在深灰轨道上几乎不可见 */}
+                    <div className={`w-[28px] h-[28px] rounded-full shadow-sm transform transition-transform duration-300 ${superPerm ? (isDark ? 'bg-[#041E49]' : 'bg-white') : (isDark ? 'bg-[#C4C7C5]' : 'bg-white')} ${superPerm ? 'translate-x-[20px]' : 'translate-x-0'}`} />
                   </button>
+                </SRow>
+              </SCard>
+
+              <SCard isDark={isDark} title={t.appearance}>
+                <div className="space-y-8">
+                  <SRow isDark={isDark} label={t.lang} desc={t.langDesc}>
+                    <SSegmented isDark={isDark} value={language} onChange={setLanguage}
+                      options={[{ key: 'zh', label: '中文' }, { key: 'en', label: 'English' }]} />
+                  </SRow>
+                  <SRow isDark={isDark} label={t.theme} desc={t.themeDesc}>
+                    <SSegmented isDark={isDark} value={activeTheme} onChange={setActiveTheme}
+                      options={[{ key: 'light', label: t.light }, { key: 'dark', label: t.dark }]} />
+                  </SRow>
                 </div>
-              </div>
+              </SCard>
 
               {/* 版本与更新: 链路 检查 → 下载(进度) → pkexec 安装 → 重启 */}
-              <div className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
-                <h2 className="text-[18px] font-medium mb-6">{t.versionUpdate}</h2>
-
+              <SCard isDark={isDark} title={t.versionUpdate}>
                 {(() => {
                   const upd = bs && bs.updateInfo;
                   const checking = !!(bs && bs.updateChecking);
@@ -1106,7 +1113,7 @@
                       <div className="flex items-center justify-between">
                         <div className="pr-8">
                           <span className="text-[16px] block mb-1">
-                            {t.curVer}: v{(upd && upd.current_version) || '—'}
+                            {t.curVer} v{(upd && upd.current_version) || '—'}
                           </span>
                           <span className={`text-[14px] leading-relaxed block ${subText}`}>
                             {checking ? t.checking
@@ -1174,8 +1181,9 @@
                     </div>
                   );
                 })()}
-              </div>
+              </SCard>
 
+              </div>
             </div>
           </div>
         </div>
