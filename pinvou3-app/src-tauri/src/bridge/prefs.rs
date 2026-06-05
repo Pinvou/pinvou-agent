@@ -90,14 +90,15 @@ impl Default for ModelPreset {
 /// - `Bing`(默认): HTML scrape,无需 key,但对中文长复合查询相关性差。
 ///   DDG 在 GFW + 代理 datacenter IP 段下基本恒返 anomaly-modal,
 ///   所以底座 fork patch #42 已把默认翻成 Bing,这里前端默认对齐。
-/// - `Metaso` / `Bocha`: 国内 AI 搜索 API,中文场景相关性远好于 Bing scrape。
-///   Metaso 留空 key 走底座内置共享 key(~100 次/天);Bocha 必须填 key。
+/// - `Metaso` / `Bocha` / `Baidu`: 国内 AI 搜索 API,中文场景相关性远好于 Bing scrape。
+///   Metaso 留空 key 走底座内置共享 key(~100 次/天);Bocha/Baidu 必须填 key。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchProvider {
     Bing,
     Metaso,
     Bocha,
+    Baidu,
 }
 impl Default for SearchProvider {
     fn default() -> Self {
@@ -110,7 +111,7 @@ impl Default for SearchProvider {
 pub struct SearchPrefs {
     pub provider: SearchProvider,
     /// 当 `provider = Metaso` 时:None 走底座内置共享 key。
-    /// 当 `provider = Bocha` 时:None 会让 web_search 直接报错(Bocha 必填)。
+    /// 当 `provider = Bocha`/`Baidu` 时:None 会让 web_search 直接报错(必填)。
     pub api_key: Option<String>,
 }
 

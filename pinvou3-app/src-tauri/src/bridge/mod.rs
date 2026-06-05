@@ -528,13 +528,14 @@ impl Pinvou3Bridge {
             workshop,
             snapshots_max_workspace_bytes,
             // pinvou3 search 后端: prefs 翻译。
-            // Bing 是默认 (fork patch #42 在底座 SearchProvider::default());Metaso/Bocha
+            // Bing 是默认 (fork patch #42 在底座 SearchProvider::default());Metaso/Bocha/Baidu
             // 是 GUI 切换项。底座 web_search 对 Metaso 留空 key 用内置共享 key
-            // (~100 次/天),对 Bocha 留空 key 直接报 ToolError "requires API key"。
+            // (~100 次/天),对 Bocha/Baidu 留空 key 直接报 ToolError "requires API key"。
             search_provider: match self.prefs.search.provider {
                 prefs::SearchProvider::Bing => deepseek_tui::config::SearchProvider::Bing,
                 prefs::SearchProvider::Metaso => deepseek_tui::config::SearchProvider::Metaso,
                 prefs::SearchProvider::Bocha => deepseek_tui::config::SearchProvider::Bocha,
+                prefs::SearchProvider::Baidu => deepseek_tui::config::SearchProvider::Baidu,
             },
             search_api_key: self.prefs.search.api_key.clone(),
             // v0.8.47 上游新增,透传 default
@@ -987,6 +988,16 @@ mod tests {
         let cfg = bridge.build_engine_config();
         assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Bocha);
         assert!(cfg.search_api_key.is_none());
+
+        // 切 Baidu + key (千帆 AI Search,key 必填)
+        let mut bridge = fixture_bridge();
+        bridge.prefs.search = prefs::SearchPrefs {
+            provider: prefs::SearchProvider::Baidu,
+            api_key: Some("bce-v3-user-key".to_string()),
+        };
+        let cfg = bridge.build_engine_config();
+        assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Baidu);
+        assert_eq!(cfg.search_api_key.as_deref(), Some("bce-v3-user-key"));
     }
 
     /// [pinvou3-fork-guard #18] network_policy 必须 Some 且**只信 fake-ip 占位段**。
