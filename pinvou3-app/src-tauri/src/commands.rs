@@ -95,9 +95,104 @@ fn stage_image_in_workspace(src: &str, basename: &str, workspace: &std::path::Pa
     Some(format!("attachments/{candidate}"))
 }
 
+/// 附件内联预算(token 估算)。单文件超过 INLINE_MAX、或多附件累计超过 TOTAL_BUDGET
+/// 的部分,不再全量嵌入 prompt——256K 窗口一条消息就能撑爆(实测 5000 行 xlsx 转
+/// CSV ≈ 237K tokens,直接顶穿 vLLM 262144 上限),且即使不炸窗口,小模型在超长
+/// 内联里的注意力质量也差。超限附件改注入「落盘路径 + 预览」,引导模型按需
+/// read_file 分页 / exec_shell 聚合(底座 read_file 原生支持 start_line/max_lines)。
+const ATTACH_INLINE_MAX_TOKENS: u32 = 8_000;
+const ATTACH_TOTAL_BUDGET_TOKENS: u32 = 16_000;
+/// 路径模式的开头预览:行数与字符双上限,先到为准。
+const ATTACH_PREVIEW_LINES: usize = 20;
+const ATTACH_PREVIEW_MAX_CHARS: usize = 1_500;
+
+/// 把超限附件的转换产物写进 workspace 的 `attachments/`(防重名递增),返回
+/// workspace 相对路径。text 类附件不走这里——原文件本身就是 read_file 可读的。
+fn stage_text_in_workspace(
+    content: &str,
+    basename: &str,
+    ext: &str,
+    workspace: &std::path::Path,
+) -> Option<String> {
+    let dir = workspace.join("attachments");
+    std::fs::create_dir_all(&dir).ok()?;
+    let stem = basename.rsplit_once('.').map_or(basename, |(s, _)| s);
+    let mut candidate = format!("{stem}.{ext}");
+    let mut n = 1;
+    while dir.join(&candidate).exists() {
+        candidate = format!("{stem}-{n}.{ext}");
+        n += 1;
+    }
+    std::fs::write(dir.join(&candidate), content).ok()?;
+    Some(format!("attachments/{candidate}"))
+}
+
+/// 转换产物落盘时的扩展名:表格是 CSV(awk/python 可直接吃),pandoc 产物是
+/// markdown,其余(pdftotext/LibreOffice txt/邮件)是纯文本。
+fn converted_ext(kind: &str) -> &'static str {
+    match kind {
+        "xlsx" | "ods" | "xls" | "et" => "csv",
+        "docx" | "odt" | "archive" => "md",
+        _ => "txt",
+    }
+}
+
+/// 取 markdown 开头若干行做预览,返回 (预览, 总行数)。
+fn attachment_preview(md: &str) -> (String, usize) {
+    let total_lines = md.lines().count();
+    let mut preview = String::new();
+    for (i, line) in md.lines().enumerate() {
+        if i >= ATTACH_PREVIEW_LINES
+            || preview.chars().count() + line.chars().count() > ATTACH_PREVIEW_MAX_CHARS
+        {
+            break;
+        }
+        preview.push_str(line);
+        preview.push('\n');
+    }
+    (preview, total_lines)
+}
+
+/// 超限附件的注入段:落盘(text 类直接用原始路径)+ 预览 + 工具引导。
+/// 显式声明「只看到预览」——否则小模型会拿前 20 行当全量数据静默作答。
+fn push_large_attachment_section(
+    out: &mut String,
+    a: &crate::file_ingest::IngestResult,
+    md: &str,
+    workspace: &std::path::Path,
+) {
+    let read_path = if a.kind == "text" {
+        a.path.clone()
+    } else {
+        match stage_text_in_workspace(md, &a.basename, converted_ext(&a.kind), workspace) {
+            Some(rel) => rel,
+            None => {
+                out.push_str(
+                    "⚠️ 此文件过大无法内嵌,且转换产物落盘失败。请告知用户该附件无法处理,\
+                     不要臆测其内容。\n",
+                );
+                return;
+            }
+        }
+    };
+    let (preview, total_lines) = attachment_preview(md);
+    out.push_str(&format!(
+        "⚠️ 此文件约 ~{} tokens,过大,完整内容**没有**嵌入本消息。你只看到下面的开头预览,\
+         **绝不能**只凭预览回答涉及全文/全表的问题。\n\
+         完整内容已是纯文本,共 {} 行,路径: `{}`\n\
+         预览(仅开头几行):\n```\n{}```\n\
+         需要完整内容时:\n\
+         - 统计/筛选/聚合(尤其表格数据):优先用 exec_shell 写 awk 或 python 一次算出结果,不要逐页通读\n\
+         - 通读/定位:用 read_file 分页(start_line/max_lines;返回 truncated=\"true\" 时按 next_start_line 续读)\n",
+        a.token_estimate, total_lines, read_path, preview
+    ));
+}
+
 /// 拼接 user 文本 + 附件 markdown。
-/// 图片拷进 workspace 后引导 LLM 调 image_analyze 读图(Qwen3.6 有视觉能力)。
-fn build_message_with_attachments(
+/// 图片拷进 workspace 后引导 LLM 调 image_analyze 读图(Qwen3.6 有视觉能力);
+/// 文本类附件按 token 预算分流:小→全量内联,大→落盘+路径+预览(见常量注释)。
+/// pub 仅为 L1 dialog harness 复用(lib.rs re-export),不是对外 API。
+pub fn build_message_with_attachments(
     text: String,
     attachments: Vec<crate::file_ingest::IngestResult>,
     workspace: &std::path::Path,
@@ -110,11 +205,8 @@ fn build_message_with_attachments(
         out.push_str(&text);
         out.push_str("\n\n");
     }
-    out.push_str(
-        "---\n用户附上了以下文件。**文件完整内容已嵌入下方代码块,可直接使用,\
-         不需要再调 read_file / file_search 重新读取。** 如需保存修改版本,用 \
-         write_file 写到 PINVOU3_WORKSPACE 下;大产物用 append_file 分块追加。\n\n",
-    );
+    out.push_str("---\n用户附上了以下文件:\n\n");
+    let mut inline_spent: u32 = 0;
     for a in &attachments {
         out.push_str(&format!(
             "### {} ({}, {} bytes",
@@ -154,12 +246,24 @@ fn build_message_with_attachments(
                 }
             }
         } else if let Some(md) = &a.markdown {
-            out.push_str("```\n");
-            out.push_str(md);
-            if !md.ends_with('\n') {
-                out.push('\n');
+            let fits = a.token_estimate <= ATTACH_INLINE_MAX_TOKENS
+                && inline_spent.saturating_add(a.token_estimate) <= ATTACH_TOTAL_BUDGET_TOKENS;
+            if fits {
+                inline_spent = inline_spent.saturating_add(a.token_estimate);
+                out.push_str(
+                    "**以下代码块是文件完整内容,可直接使用,不需要再调 read_file / \
+                     file_search 重新读取。**如需保存修改版本,用 write_file 写到 \
+                     PINVOU3_WORKSPACE 下;大产物用 append_file 分块追加。\n",
+                );
+                out.push_str("```\n");
+                out.push_str(md);
+                if !md.ends_with('\n') {
+                    out.push('\n');
+                }
+                out.push_str("```\n");
+            } else {
+                push_large_attachment_section(&mut out, a, md, workspace);
             }
-            out.push_str("```\n");
         } else if let Some(warning) = &a.warning {
             out.push_str(&format!("⚠️ {warning}\n"));
         }
@@ -1064,6 +1168,95 @@ mod tests {
         assert!(!prompt.contains("没有视觉能力"), "不应再出现无视觉提示");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 造一个指定 kind / token 估算的 IngestResult,markdown 是 `rows` 行可定位文本。
+    fn mk_attachment(kind: &str, basename: &str, rows: usize, tokens: u32) -> crate::file_ingest::IngestResult {
+        let md: String = (1..=rows).map(|i| format!("row-{i},value-{i}\n")).collect();
+        crate::file_ingest::IngestResult {
+            kind: kind.into(),
+            basename: basename.into(),
+            path: format!("/tmp/fake/{basename}"),
+            markdown: Some(md),
+            token_estimate: tokens,
+            byte_size: 1,
+            warning: None,
+        }
+    }
+
+    fn mk_test_ws(tag: &str) -> std::path::PathBuf {
+        let ws = std::env::temp_dir().join(format!("pinvou3-attach-test-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&ws);
+        std::fs::create_dir_all(&ws).expect("建 workspace");
+        ws
+    }
+
+    /// 小附件维持全量内联:内容在代码块里,且明确告知无需 read_file。
+    #[test]
+    fn small_attachment_stays_inline() {
+        let ws = mk_test_ws("inline");
+        let prompt = build_message_with_attachments(
+            "看下这个".into(),
+            vec![mk_attachment("xlsx", "small.xlsx", 10, 100)],
+            &ws,
+        );
+        assert!(prompt.contains("row-10,value-10"), "小附件应全量内联");
+        assert!(prompt.contains("不需要再调 read_file"), "内联段应声明无需 read_file");
+        assert!(!ws.join("attachments").exists(), "小附件不应落盘");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// 大表格 → 落盘 CSV + 预览 + 工具引导,完整内容不进 prompt。
+    #[test]
+    fn large_spreadsheet_goes_path_mode() {
+        let ws = mk_test_ws("xlsx");
+        let a = mk_attachment("xlsx", "data.xlsx", 5000, 100_000);
+        let full_md = a.markdown.clone().unwrap();
+        let prompt = build_message_with_attachments("分析一下".into(), vec![a], &ws);
+
+        assert!(!prompt.contains("row-5000,value-5000"), "完整内容不应进 prompt");
+        assert!(prompt.contains("row-1,value-1"), "应有开头预览");
+        assert!(prompt.contains("attachments/data.csv"), "应给出落盘 CSV 相对路径");
+        assert!(prompt.contains("read_file") && prompt.contains("exec_shell"), "应引导工具消化");
+        assert!(prompt.contains("没有**嵌入"), "应声明未嵌入完整内容");
+        let staged = std::fs::read_to_string(ws.join("attachments/data.csv")).expect("CSV 应落盘");
+        assert_eq!(staged, full_md, "落盘内容应与转换产物一致");
+        // 体量验证:prompt 远小于全量(预览+引导 vs 5000 行)
+        assert!(prompt.len() < full_md.len() / 10, "prompt 应远小于全量内容");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// 大纯文本(txt/csv 原文件):直接引用原始路径,不落盘副本。
+    #[test]
+    fn large_text_uses_original_path() {
+        let ws = mk_test_ws("text");
+        let a = mk_attachment("text", "big.log", 9000, 50_000);
+        let prompt = build_message_with_attachments("查错误".into(), vec![a], &ws);
+
+        assert!(prompt.contains("/tmp/fake/big.log"), "应引用原始路径");
+        assert!(!ws.join("attachments").exists(), "text 类不应落盘副本");
+        assert!(!prompt.contains("row-9000,value-9000"), "完整内容不应进 prompt");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// 多附件累计超预算:单个都不超 INLINE_MAX,但第三个把累计顶过 TOTAL_BUDGET → 转路径模式。
+    #[test]
+    fn cumulative_budget_overflows_to_path_mode() {
+        let ws = mk_test_ws("budget");
+        let prompt = build_message_with_attachments(
+            "汇总".into(),
+            vec![
+                mk_attachment("docx", "a.docx", 50, 7_000),
+                mk_attachment("docx", "b.docx", 60, 7_000),
+                mk_attachment("docx", "c.docx", 70, 7_000),
+            ],
+            &ws,
+        );
+        assert!(prompt.contains("row-50,value-50"), "a 应内联");
+        assert!(prompt.contains("row-60,value-60"), "b 应内联(累计 14K ≤ 16K)");
+        assert!(!prompt.contains("row-70,value-70"), "c 应转路径模式(累计 21K > 16K)");
+        assert!(ws.join("attachments/c.md").exists(), "c 的产物应落盘为 md");
+        let _ = std::fs::remove_dir_all(&ws);
     }
 
     /// 为多种附件类型生成「问题 + 附件内容」的最终 prompt，写到 /tmp 供外部脚本

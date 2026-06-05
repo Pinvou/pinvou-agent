@@ -12,9 +12,12 @@
 // spawn_headless 是测试入口)。其余模块保持 private,仅 Tauri 内部使用。
 pub mod bridge;
 mod commands;
+// L1 harness 的附件 e2e 要走「真实 ingest → 注入分流 → 真 vLLM」全链路:
+// 暴露注入收口函数 + file_ingest。
+pub use commands::build_message_with_attachments;
 pub mod engine;
 pub mod engine_pool;
-mod file_ingest;
+pub mod file_ingest;
 mod file_watcher;
 mod monitor;
 pub mod personas;

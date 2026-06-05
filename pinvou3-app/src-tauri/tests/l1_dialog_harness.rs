@@ -370,6 +370,7 @@ fn render_timeline(timeline: &[(f64, Event)]) -> String {
                 usage,
                 status,
                 error,
+                ..
             } => {
                 let extra = error
                     .as_ref()
@@ -1186,6 +1187,93 @@ async fn image_vision_analyze() {
     assert!(
         text_up.contains("KX7"),
         "[{scenario}] 最终答案必须命中图中随机码 KX7-93,实际文本={:?}",
+        summary.full_text
+    );
+}
+
+/// 附件分流 e2e:真实 ~5000 行 xlsx(转换产物 ~237K tokens,曾一条消息顶穿 vLLM
+/// 262144 上限)走「ingest → build_message_with_attachments 分流 → 真 vLLM」全链路。
+/// 验证:(1) prompt 只剩预览级体量;(2) CSV 落盘 workspace;(3) 模型按引导用
+/// exec_shell/read_file 消化全量数据后答出仅预览答不出的事实(总行数/最高频品牌)。
+/// 依赖本机测试文件,不在 → skip。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "L1 真 vLLM 端到端,默认不跑"]
+async fn large_xlsx_attachment_path_mode() {
+    let scenario = "large_xlsx_attachment_path_mode";
+    if !require_vllm(scenario).await {
+        return;
+    }
+    let src = PathBuf::from("/home/hexin/下载/2025年SSD存储数据.xlsx");
+    if !src.is_file() {
+        eprintln!("SKIP {scenario}: 测试文件不存在 {}", src.display());
+        return;
+    }
+    let (engine, ws) = spawn_for_scenario(scenario).await;
+
+    // 真实 ingest → 注入分流。该表转换产物必须远超内联预算,否则测不到路径模式。
+    let r = pinvou3_lib::file_ingest::ingest(&src);
+    assert!(
+        r.token_estimate > 100_000,
+        "[{scenario}] 转换产物应远超内联预算, got ~{} tokens",
+        r.token_estimate
+    );
+    let user = pinvou3_lib::build_message_with_attachments(
+        "这张表一共有多少条数据记录(不含表头)?BRAND 列哪个品牌出现次数最多?".into(),
+        vec![r],
+        &ws,
+    );
+    // 硬契约 1:分流后 prompt 只剩预览级体量(回归=又把全量塞回 prompt)。
+    let approx_tokens = user.chars().count() as f64 / 1.6;
+    assert!(
+        approx_tokens < 4_000.0,
+        "[{scenario}] 分流后 prompt 应为预览级, got ~{approx_tokens:.0} tokens"
+    );
+    // 硬契约 2:转换产物落盘 workspace,模型才有的读。
+    let csv = ws.join("attachments/2025年SSD存储数据.csv");
+    assert!(csv.is_file(), "[{scenario}] CSV 应落盘 {}", csv.display());
+
+    let mut expect = Expect::default();
+    expect.max_duration_s = 240.0;
+
+    engine
+        .send_user_message(user.clone(), AppMode::Yolo, PlanPhase::None, None)
+        .await
+        .expect("send_user_message");
+    let (timeline, elapsed, timed_out) =
+        collect_turn_events(&engine, Duration::from_secs(280)).await;
+    let summary = summarize(&timeline, elapsed, timed_out);
+    eprintln!(
+        "[{scenario}] elapsed={:.1}s tools={:?} text_len={}",
+        summary.elapsed.as_secs_f64(),
+        summary.tool_call_counts,
+        summary.full_text.chars().count(),
+    );
+    let path =
+        record_transcript(scenario, &user, AppMode::Yolo, PlanPhase::None, &timeline, &summary);
+    eprintln!("[{scenario}] transcript → {}", path.display());
+
+    verify_expect(&summary, &expect, scenario);
+    // 硬契约 3:模型真用工具消化了数据,不是拿 20 行预览臆测全表。
+    let used_tool = ["exec_shell", "exec_shell_wait", "read_file"]
+        .iter()
+        .any(|t| summary.tool_call_counts.contains_key(*t));
+    assert!(
+        used_tool,
+        "[{scenario}] 模型必须用 exec_shell/read_file 消化数据,实际工具={:?}",
+        summary.tool_call_counts
+    );
+    // 硬契约 4:答案命中全量数据才有的事实。真值:4970 条数据(csv.reader 逻辑行);
+    // 品牌最高频 WD(908 次,断崖领先第二名 Kingston 597)。行数按统计口径放宽到
+    // 497x(物理行 vs 逻辑行 vs 是否含落盘文件头部注释行会差 1-3)。
+    let text_up = summary.full_text.to_uppercase();
+    assert!(
+        text_up.contains("497"),
+        "[{scenario}] 答案应命中总行数 ~4970,实际文本={:?}",
+        summary.full_text
+    );
+    assert!(
+        text_up.contains("WD"),
+        "[{scenario}] 答案应命中最高频品牌 WD,实际文本={:?}",
         summary.full_text
     );
 }
