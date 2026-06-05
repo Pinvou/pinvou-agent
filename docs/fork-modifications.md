@@ -12,7 +12,7 @@
 ## 0. 当前状态速览
 
 - submodule 分支 **`pinvou3-clean`**(`.gitmodules` 追踪此分支;旧 `pinvou3-patches` 留 fork 上当备份)
-- fork drift **+1258 / -315 行,34 文件**(submodule;app 层 prompt 内容走 override 注入,不计入此数)
+- fork drift **+1398 / -301 行,29 文件**(submodule;app 层 prompt 内容走 override 注入,不计入此数。2026-06-05:+158 C7 composer hook,-35 回退 C5 prompts/*.md 文案 patch——被 composer 淘汰)
 - LLM 实际暴露 native 工具 **23 个**(= 全量注册 − blocklist;`mcp_pinvou_present_artifact` / `js_execution` 等走 MCP 另接)
 - fork-guard:**22 指纹 + 回归测试**;底座 lib **3850 pass** / app 后端 lib **98 pass** / system prompt 与上游 sync 前逐字节一致
 
@@ -59,10 +59,10 @@
 ### C5 `feat(prompt)` GUI prompt / context / skills
 | | |
 |---|---|
-| 文件 | `project_context.rs`、`skills/mod.rs`、`prompts.rs`、`prompts/{modes/agent.md, compact.md, approvals/suggest.md, subagent_output_format.md, base.txt}`、`commands/skills.rs` |
+| 文件 | `project_context.rs`、`skills/mod.rs`、`prompts.rs`、`commands/skills.rs` |
 | project_context | `PROJECT_CONTEXT_FILES`/`GLOBAL_PATHS` 砍空(workspace=$HOME GUI 助手,不读其他 AI 工具配置,context 走 inline 注入);`load_repo_constitution_block` 短路(v0.8.53 上游 `.codewhale/constitution.json` authority 层,与 §5 禁读 `~/.codewhale` 冲突) |
 | skills | 扫描路径只留 `~/.agents/skills`(原 10 路径,#41);union 接线 `render_available_skills_context_for_workspace_and_dir`(上游 `or_else` 短路 bug 致 workspace=$HOME 时 bundle skills 不可见) |
-| prompts/*.md | embedder-agnostic 措辞(去 `/compact`/`Ctrl+L`/`checklist_write` 硬编码,改 "whichever planning tool the runtime exposes");`compact.md` 加 "这是模板非真 handoff"(防 Qwen3.6 误读空模板) |
+| ~~prompts/*.md~~ | **2026-06-05 回退上游原文**(modes/agent.md / approvals/suggest.md / compact.md / subagent_output_format.md / base.txt,~35 行):embedder-agnostic 措辞路线被 C7 composer 淘汰——composer 设置后这些常量只进 `ctx.default_layers`(pinvou3 不读),进不了 prompt;base.txt 经查是零 include 孤儿文件;subagent_output_format.md 消费路径被 blocklist 封死。回退后 submodule 内 prompt 文案 drift = 0 |
 | 测试 | `forkguard_skills_dir_unions_with_home_rooted_workspace_skills`、project_context 多路径测试 `#[ignore]` |
 | 上游 PR | skills union 接线 → **已提 [PR #2737](https://github.com/Hmbown/CodeWhale/pull/2737)**;其余 ❌ pinvou3 场景专用 |
 
@@ -72,11 +72,31 @@
 | 文件 | `llm_client/mod.rs`、`core/engine/lsp_hooks.rs`、`lsp/mod.rs`、`hooks.rs`、`core/turn.rs`、`tui/app.rs`、`.gitignore` |
 | 改动 | 编译 / 接线层零碎适配(各 1-5 行) |
 
+### C7 `feat(prompt)` static composer hook(密封静态层,#42)
+| | |
+|---|---|
+| 文件 | `prompts.rs`(+158/-3) |
+| 改动 | `set_static_prompt_composer_override(Box<dyn Fn(&StaticPromptCtx)->String>)`:embedder 一个 hook 全量接管编译期静态文案(taxonomy/base/personality/mode/approval/ContextMgmt/COMPACT_TEMPLATE)。`StaticPromptCtx` `#[non_exhaustive]`(mode/approval_mode/model_id/allow_shell/default_layers);未设 hook 输出字节级不变;设了则 ContextMgmt + COMPACT_TEMPLATE 的后置 append 也被 gate 掉 |
+| 理由 | 逐块 `set_*_override` 防不住"上游新增块漏进 embedder prompt";composer 把静态层密封——上游升级新增的 doctrine 只进 default 合成。pinvou3 借此两轮瘦身 system prompt **20.2K→9.9K**(细节见 app 层小节) |
+| 测试 | `forkguard_static_prompt_composer_replaces_default_layers` / `forkguard_static_prompt_composer_unset_keeps_default_layers_byte_identical`(submodule,注入式不碰全局)+ app 端 `forkguard_static_composer_*` 两个端到端 |
+| 上游 PR | ✅ 应提:通用 embedder 诉求,与已上游化的 `set_*_override` 同族(待提) |
+
+#### app 层 composer 文案取舍记录(2026-06-05,两轮)
+
+第一轮(机制+初删,20.2K→13.6K):干掉 Personality(语气并入 base.md §Voice)/Session Longevity(推 sub-agents,与 blocklist 矛盾)/Efficient Approvals + Approval Policy(生产全 Yolo-Auto 单模式——Plan 前端入口已下线,Suggest 文案无落点)/prompt-cache 教学/taxonomy(instructions 工具表覆盖)。
+
+第二轮(逐块反事实审计,13.6K→9.9K),全部代码级证据:
+- **Compaction Relay 模板全删**:256K 自动压缩走 `canonical_prompt()`(capacity_flow.rs)纯代码拼装;手动压缩走 `create_summary()`(compaction.rs)独立 LLM 调用自带指令;`.codewhale/handoff.md` 在 pinvou3 无写入通路(`load_handoff_block` 永远 None)。模板无生产者无消费者
+- **Article VII 九层→三行裁决**:Tier 7 Memory(`memory_enabled:false`)/Tier 8 Personality(已被 composer 删)/Tier 9 handoff(不存在)三层引用幽灵实体;Statute vs Regulation 区分无行为差异;200+ 词嵌套长句与 Qwen3.6 实测有效文风(短/命令式)相反。保留的三条:Core duties→用户当前消息→instructions 项目法;工具输出 beats 记忆
+- **Thinking budget 删**(生产 `reasoning_effort=off` 无 thinking)、**Sub-agents 删**(工具不可见)、**Evidence 块并句**(与 instructions 重复,`ref_id` 一句并进 Verification)、**Output Formatting 压一句**(永远 rich GUI)、**语言 bookend 短版**(zh/ja preamble+closer 各压到 1-2 句:无 thinking 则"防 thinking 漂移"动机不存在,回复语言归 §Language,bookend 只管默认语言)、**Authority Recap→Final Reminder 短版**(去 tier 复述)
+
+第三轮(base↔instructions 去重去冲突,→~8.9K):操作性原则归 instructions.md 单一来源,base.md 只留红线+裁决+语气。消灭三处真冲突:① "never end a turn with a promise"与出方案流程天然矛盾→挪进 MODE_EXECUTE_MD(执行态专属);② "写后必读回"与 §3"80 分及时交付"/大产物分块张力→统一为"最相关检查(读回关键段/跑测试)或明说没验";③ Language 句"for both thinking and..."幽灵引用删除。去重:Action duty/歧义句/Plans & parallelism 段/"tool_calls 并行"句(此前 base×2+instructions×1 共三遍)全删;instructions §2 补第 5 条"长任务先列 `checklist_write` 清单,列完即做"、§1 计划行补 `checklist_write`(可见但此前没列=工具表不完备)。
+
 ### app 层 fork(不在 submodule —— 通过 override hook / bridge 注入)
 
 > 这些是 pinvou3-app 内的改动,不计入 submodule drift,但同属 fork 工程,fork-guard 也守。
 
-- **prompt 内容**:`pinvou3-app/src-tauri/resources/bundle/base.md` + `bridge/bundle.rs`(Constitution `PINVOU3` 品牌 / `LOCALE_PREAMBLE` / `AUTHORITY_RECAP`),经上游 `set_*_override` hook 注入(hook 本身已上游化)。submodule 内 prompt 文案 drift = 0。
+- **prompt 内容**:`pinvou3-app/src-tauri/resources/bundle/base.md` + `bridge/bundle.rs`(Constitution + 三行裁决 / Mode 块 / `LOCALE_PREAMBLE/CLOSER` zh+ja 短版 / `AUTHORITY_RECAP`→Final Reminder),经 `set_*_override` hook + `set_static_prompt_composer_override`(C7,fork-distinct)注入。submodule 内 prompt 文案 drift = 0;取舍记录见 C7 小节。
 - **bridge config**(`bridge/mod.rs`):`subagent_api_timeout=300`、`max_subagents=1`、`network_policy` fake-ip CIDR 信任(`with_trusted_fakeip_cidrs(["198.18.0.0/15"])`)、`compaction.token_threshold=190_000`(256K×74%,见 `docs/auto-compact-256K-tuning.md`)、`InstructionSource::Inline` 注入(instructions 不落 disk)。
 - **dump 工具**:`bin/dump_system_prompt.rs`(随上游 `PromptSessionContext` 字段变化维护)。
 
@@ -106,9 +126,10 @@
 
 两层:**指纹层** grep 每个 fork 标记是否还在(抓「merge 静默丢整段 patch」);**行为层** `cargo test` 跑回归测试(抓「值/逻辑被改回上游」)。
 
-**22 指纹**(`fingerprints=` 数组):
-- submodule(12):file.rs 64KB · truncated_args_hint(dispatch) · tool_catalog blocklist · pinvou3_blocklist · careful 多行逐行 · careful shell YOLO-block · skills union(#25)· prompts skills union(#26)· skills 路径#41 · PROJECT_CONTEXT 砍空 · GLOBAL_PATHS 砍空 · constitution.json 短路
-- app(10):bridge fake-ip(#18b)· bridge timeout(#16)· Tier5(#28)· Output Formatting(#33)· Sub-Agent Strategy(#32)· Constitution PINVOU3(#36)· Brother Whale 删(#36)· LOCALE(#37)· AUTHORITY(#38)· Inline 注入
+**25 指纹**(`fingerprints=` 数组):
+- submodule(14):file.rs 64KB · truncated_args_hint(dispatch) · tool_catalog blocklist · pinvou3_blocklist · careful 多行逐行 · careful shell YOLO-block · skills union(#25)· prompts skills union(#26)· skills 路径#41 · PROJECT_CONTEXT 砍空 · GLOBAL_PATHS 砍空 · constitution.json 短路 · static composer hook(#42)· ContextMgmt/COMPACT composer gate(#42)
+- app(11):bridge fake-ip(#18b)· bridge timeout(#16)· Constitution PINVOU3(#36)· Brother Whale 删(#36)· 冲突裁决三行(#43)· LOCALE zh 短版(#37)· AUTHORITY Final Reminder(#38)· Inline 注入 · composer 安装(#42)· compose_static_layers(#42)· LOCALE ja 短版(#42)
+- 2026-06-05 撤除:#28 Tier5 cover / #32 Sub-Agent Strategy / #33 Output Formatting——第二轮 prompt 瘦身删了对应段落;base.md 是 app 资产无 merge 威胁,这三条历史使命结束
 
 **回归测试**:
 | crate | 测试 |

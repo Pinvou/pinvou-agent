@@ -45,16 +45,23 @@ fn main() -> Result<()> {
         allow_shell: cfg.allow_shell,
     };
 
-    // session.approval_mode 默认 = Suggest (跟 default_approval_mode_for_mode(Agent) 一致)
+    // 生产链路 build_send_message_op 只发 Yolo(Auto) / Plan(底座强制 Never),
+    // 不发 Agent+Suggest —— dump 默认按 Yolo 复刻真实 turn。`dump_system_prompt plan`
+    // 切 Plan 组合。
+    let (mode, approval) = match std::env::args().nth(1).as_deref() {
+        Some("plan") => (AppMode::Plan, ApprovalMode::Never),
+        Some("agent") => (AppMode::Agent, ApprovalMode::Suggest),
+        _ => (AppMode::Yolo, ApprovalMode::Auto),
+    };
     let prompt =
         prompts::system_prompt_for_mode_with_context_skills_session_and_approval(
-            AppMode::Agent,
+            mode,
             &cfg.workspace,
             None,
             Some(&cfg.skills_dir),
             Some(&cfg.instructions),
             session_ctx,
-            ApprovalMode::Suggest,
+            approval,
         );
 
     match prompt {
@@ -66,8 +73,8 @@ fn main() -> Result<()> {
             eprintln!("instructions = {:?}", cfg.instructions);
             eprintln!("locale_tag   = {}", cfg.locale_tag);
             eprintln!("model_id     = {}", cfg.model);
-            eprintln!("approval     = Suggest (Agent 默认)");
-            eprintln!("mode         = Agent");
+            eprintln!("approval     = {approval:?}");
+            eprintln!("mode         = {mode:?}");
             eprintln!("show_thinking= {}", cfg.show_thinking);
             eprintln!("byte_len     = {}", text.len());
             eprintln!("line_count   = {}", text.lines().count());
