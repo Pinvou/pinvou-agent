@@ -79,7 +79,7 @@
 | 改动 | `set_static_prompt_composer_override(Box<dyn Fn(&StaticPromptCtx)->String>)`:embedder 一个 hook 全量接管编译期静态文案(taxonomy/base/personality/mode/approval/ContextMgmt/COMPACT_TEMPLATE)。`StaticPromptCtx` `#[non_exhaustive]`(mode/approval_mode/model_id/allow_shell/default_layers);未设 hook 输出字节级不变;设了则 ContextMgmt + COMPACT_TEMPLATE 的后置 append 也被 gate 掉 |
 | 理由 | 逐块 `set_*_override` 防不住"上游新增块漏进 embedder prompt";composer 把静态层密封——上游升级新增的 doctrine 只进 default 合成。pinvou3 借此两轮瘦身 system prompt **20.2K→9.9K**(细节见 app 层小节) |
 | 测试 | `forkguard_static_prompt_composer_replaces_default_layers` / `forkguard_static_prompt_composer_unset_keeps_default_layers_byte_identical`(submodule,注入式不碰全局)+ app 端 `forkguard_static_composer_*` 两个端到端 |
-| 上游 PR | ✅ 应提:通用 embedder 诉求,与已上游化的 `set_*_override` 同族(待提) |
+| 上游 PR | ✅ **已提 [PR #2786](https://github.com/Hmbown/CodeWhale/pull/2786)**(2026-06-05,英文化+去 forkguard 前缀,基于上游 main 干净 cherry-pick,workspace 4609 测试全过) |
 
 #### app 层 composer 文案取舍记录(2026-06-05,两轮)
 
