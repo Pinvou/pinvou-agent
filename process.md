@@ -21,7 +21,7 @@
 |---|---|---|
 | **E** 工具表精简 | LLM 可见工具 85→16+4、schema 119KB→14KB；batch tool_calls 修复进上游 #1686 | `docs/工具表精简方案.md` |
 | **F** subagent + L1 测试 | 单 subagent context isolation 可用；L2 49 测试 gate + L1 18 场景 harness + Judge rubric | judge-report |
-| **G** 品悟 v2 review | 常驻嘴替压成 3 节点：Plan blocking / 收口 advisory / stuck 兜底（未做） | `docs/Pinvou-品悟设计.md` |
+| **G** 品悟 v2 review | 常驻嘴替压成 3 节点：Plan blocking / 收口 advisory / stuck 兜底（未做）。**设计已推翻，2026-06-05 实现自源码移除**，新方案另行设计 | `docs/archived/Pinvou-品悟设计.md` |
 | **H** auto-compact 256K | 底座 V4 1M 默认参数在 256K 退化收口；2026-06 修 nice/emergency 倒置 + output 64K→24K（输入预算 74%→90%） | `docs/auto-compact-256K-tuning.md` |
 | **I** phase 可视化 + 大文件 SSE | SKILL `phases:`→chip 可视化；append_file + 骨架量化约束跑通 15 页 PPT | git log |
 | **J** SSE Phase1 + v0.8.45 同步 | write/append 64KB 硬上限 + 截断感知错误；rebrand `codewhale-tui` | git log |
@@ -38,8 +38,8 @@
 - **prompt 减肥二期（C 类）**：剩余大头在 submodule 无 override（Personality / Mode·Approval×3 / Compaction 模板 等 ~8K），要加 override hook 或改 fork；memory `prompt-slimming-task` 有地形 + 红线
 - **WorkFlow 视图编排**（差异化最强，用户要做）：卡=skill 非 agent，pinvou3 已有 skill 池骨架（`list_skills_v2`+`SkillCard`+`start_skill_session`），P0 加搜索/分类/富元数据；候选源 `agency-agents-zh`（215 中文角色/MIT，人格卡需策展瘦身）
 - **GUI subagent 体验**：串行视图 / 内部 timeline 卡片 + Settings toggle 启用（当前需 env override）
-- **品悟 outside voice §4.3**：当前在主 session 跑独立性≈0，clean 解法借多 session engine 池跑 transient `pinvou-review-<uuid>` session（~2-3h，事件路由 + lifecycle + UI 锚定）
-- **plan/yolo 收敛 + 品悟 review 重评（进行中）**：方案收敛为 Yolo-only。前端已隐藏 Plan 模式切换入口(`ModeHeader`) + 品悟开关(`PinvouToggle`)（index.html:1106 JSX 注释，组件/bridge/底座逻辑全保留，取消注释即恢复）。待重评：①品悟「Plan blocking」节点失去载体 → 重定位/下线，连带「收口 advisory / stuck」三节点整体必要性；②plan 相关 command（set_plan_mode_next/accept_plan/exit_plan_to_yolo）是否彻底移除。否决(2026-06-03)：人话翻译层 timeline ⚠️ 黄色警示——实现(destructiveHint 模板 + ToolCard 一行提示)后用户判定不需要(光警示不能撤=干着急 + 视觉噪音)，已全部回滚，index.html 回到改前。结论：Yolo 下破坏性操作不额外标注，真危险仍由底座 Careful Hook 红卡拦截。红卡本身已人话化(2026-06-03)：底座吐的英文技术原因(如 "Attempts to recursively delete home directory")→中文映射表 + 去术语标题/说明 + 技术详情折叠(CarefulBlockedCard)。已搁置：revert 一等交互（前端 UI + 对话同步，没想好）。不可逆操作保持现状不审批（窄白名单不做）
+- **品悟新方案**：v2 嘴替 review（EXIT GATE + 3 节点 + PinvouToggle/PinvouActionsCard/紫色气泡）已于 2026-06-05 自源码整体移除（review_gate.rs / 4 个 command / 2 个内置 skill / 前端全链路，bundle 0.7 清理装机残留）。原「outside voice §4.3 独立性」待办随 v2 一并撤销。v3 三人协同原型留在 worktree `pinvou3-v3-DO-NOT-DELETE`（分支 `feat/pingwu-v3-prototype`，未合入）。新方案另行设计
+- **plan/yolo 收敛（进行中）**：方案收敛为 Yolo-only。前端已隐藏 Plan 模式切换入口(`ModeHeader`)（JSX 注释，组件/bridge/底座逻辑保留，取消注释即恢复）。待重评：plan 相关 command（set_plan_mode_next/accept_plan/exit_plan_to_yolo）是否彻底移除。否决(2026-06-03)：人话翻译层 timeline ⚠️ 黄色警示——实现(destructiveHint 模板 + ToolCard 一行提示)后用户判定不需要(光警示不能撤=干着急 + 视觉噪音)，已全部回滚，index.html 回到改前。结论：Yolo 下破坏性操作不额外标注，真危险仍由底座 Careful Hook 红卡拦截。红卡本身已人话化(2026-06-03)：底座吐的英文技术原因(如 "Attempts to recursively delete home directory")→中文映射表 + 去术语标题/说明 + 技术详情折叠(CarefulBlockedCard)。已搁置：revert 一等交互（前端 UI + 对话同步，没想好）。不可逆操作保持现状不审批（窄白名单不做）
 
 **🟢 低优先**
 - GB10 self-hosted runner 跑 L1 nightly（等团队 ≥2 人或发版加快）
@@ -82,7 +82,7 @@
 - `docs/fork-modifications.md` — fork 修改清单 + 上游 PR 状态（单一真相源）
 - `docs/工具表精简方案.md` — 工具精简 + 附件 pipeline + 视觉模型
 - `docs/auto-compact-256K-tuning.md` — 256K 窗口调优 + 大工具输出 bound
-- `docs/Pinvou-品悟设计.md` — 品悟 review 系统
+- `docs/archived/Pinvou-品悟设计.md` — 品悟 v2 review 系统（已推翻，实现已移除）
 - `docs/L1-judge-rubric.md` / `docs/l1-baselines/` — Judge rubric + baseline
 - `docs/自动化测试方案.md` — 测试系统现状
 - `docs/DeepSeek-TUI-架构详解.md` — 底座解析

@@ -26,22 +26,14 @@ Plan 模式下 AI 不直接动手，先 `update_plan` 出方案 → 前端弹"�
 
 切换由顶部 💡 按钮，状态机贯穿前后端（`mode_state.rs`）。YOLO 模式下还有 careful hook 红卡片 BLOCK Dangerous 工具。
 
-### 品悟 review（方案质量把关）
+### 品悟（重做中）
 
-差异化最强的一块。把"常驻并发嘴替"压成 3 节点触发：
-
-| 节点 | 触发 | 严苛度 |
-|---|---|---|
-| Plan 出炉 | `accept_plan` 前 | **L2 blocking** GATE |
-| 任务收口 | `TurnComplete` | L1 advisory |
-| Stuck 兜底 | auto-continue 3 次失败 | L1 advisory（v1.5 选做） |
-
-L2 GATE 失败弹"品悟顾虑"气泡，三按钮：直接执行 / AI 改方案 / 我加一句。顶部"品悟"toggle 一键开关。设计依据见 `docs/Pinvou-品悟设计.md`。
+v2 嘴替 review（EXIT GATE + 3 节点触发）设计已推翻，实现自源码移除（2026-06-05），留档 `docs/archived/Pinvou-品悟设计.md`。新方案另行设计。
 
 ### 多对话 + 产物持久化
 
 - 左侧栏多对话历史，inline 重命名、删除、切换
-- 切换时整段 messages 重渲染（含 plan_card / 工具卡片 / Pinvou review 还原）
+- 切换时整段 messages 重渲染（含 plan_card / 工具卡片还原）
 - 右栏"产物面板"自动跟踪 AI 写过的文件，列表 + 预览（文本/图片/PDF）+ 系统应用打开 + 文件夹定位
 - 全部落盘 `~/.pinvou3/sessions/<id>.json`，每轮 `TurnComplete` 自动持久化
 

@@ -270,10 +270,6 @@
         uiqTitle: '🤔 AI 想问你几个问题',
         uiOtherTitle: '💬 其他(自己写)', uiOtherDesc: '如果上面选项不合适,自己说一下', uiOtherPh: '写下你想说的...', uiSubmit: '提交',
         uiSubmitted: '✓ 已提交', uiCancelled: '✕ 已取消', uiSubmitting: '提交中…', uiSubmitFailed: e => `⚠️ 提交失败: ${e}`,
-        pvPlanTag: '品悟（审方案）', pvFinalTag: '品悟（验收）',
-        pvDecide: '🟣 品悟审完了 —— 你的决定：',
-        pvAddComment: '⊕ 加一句意见 → 让 AI 按品悟+你的意见改方案：', pvCommentPh: '我也担心...',
-        pvSendRevise: '📋 发送 修订', pvAccept: '✅ 确认继续执行', pvRevise: '↻ 让 AI 改方案', pvAddOne: '⊕ 我加一句',
         apEmpty: '暂无产物', apOpenDir: '打开所在目录', apOpenExt: '外部打开', apSelect: '选择左侧产物预览',
         apLoading: '加载中...', apMissing: '文件不存在或已被删除', apReadFail: e => `读取失败: ${e}`,
         apNoImg: '图片预览暂不支持嵌入', apNoPreview: '此类型暂不支持预览', apOpenExtBtn: '↗ 外部打开',
@@ -409,10 +405,6 @@
         uiqTitle: '🤔 The AI has a few questions for you',
         uiOtherTitle: '💬 Other (write your own)', uiOtherDesc: 'If none of the options fit, say it in your own words', uiOtherPh: 'Type what you want to say...', uiSubmit: 'Submit',
         uiSubmitted: '✓ Submitted', uiCancelled: '✕ Cancelled', uiSubmitting: 'Submitting…', uiSubmitFailed: e => `⚠️ Submit failed: ${e}`,
-        pvPlanTag: 'Pinvou (plan review)', pvFinalTag: 'Pinvou (final review)',
-        pvDecide: '🟣 Pinvou has reviewed — your call:',
-        pvAddComment: "⊕ Add a note → the AI revises the plan with Pinvou's findings plus your note:", pvCommentPh: "I'm also worried about...",
-        pvSendRevise: '📋 Send for revision', pvAccept: '✅ Continue anyway', pvRevise: '↻ Ask AI to revise', pvAddOne: '⊕ Add my note',
         apEmpty: 'No artifacts yet', apOpenDir: 'Open containing folder', apOpenExt: 'Open externally', apSelect: 'Select an artifact to preview',
         apLoading: 'Loading...', apMissing: 'File missing or deleted', apReadFail: e => `Read failed: ${e}`,
         apNoImg: 'Inline image preview not supported yet', apNoPreview: 'Preview not supported for this type', apOpenExtBtn: '↗ Open externally',
@@ -548,10 +540,6 @@
         uiqTitle: '🤔 AI からいくつか質問があります',
         uiOtherTitle: '💬 その他（自由記述）', uiOtherDesc: '上の選択肢が合わなければ、自分の言葉でどうぞ', uiOtherPh: '伝えたいことを書いてください...', uiSubmit: '送信',
         uiSubmitted: '✓ 送信済み', uiCancelled: '✕ キャンセル済み', uiSubmitting: '送信中…', uiSubmitFailed: e => `⚠️ 送信に失敗: ${e}`,
-        pvPlanTag: '品悟（プランレビュー）', pvFinalTag: '品悟（検収）',
-        pvDecide: '🟣 品悟のレビューが完了 —— あなたの判断：',
-        pvAddComment: '⊕ ひとこと追加 → 品悟の指摘＋あなたの意見でプランを修正させる：', pvCommentPh: '私も気になるのは...',
-        pvSendRevise: '📋 修正を依頼', pvAccept: '✅ このまま続行', pvRevise: '↻ AI に修正させる', pvAddOne: '⊕ ひとこと添える',
         apEmpty: '成果物はまだありません', apOpenDir: 'フォルダを開く', apOpenExt: '外部で開く', apSelect: '左の成果物を選んでプレビュー',
         apLoading: '読み込み中...', apMissing: 'ファイルが存在しないか削除されています', apReadFail: e => `読み込みに失敗: ${e}`,
         apNoImg: '画像の埋め込みプレビューは未対応', apNoPreview: 'このタイプはプレビュー未対応', apOpenExtBtn: '↗ 外部で開く',
@@ -1612,10 +1600,10 @@
           {/* Top Header (浮动) */}
           <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-20 pointer-events-none">
             <div className="flex items-center gap-2">
-              {/* [plan/yolo 收敛] Plan 模式入口 + 品悟开关已下线：全局 Yolo 单模式。
-                  ModeHeader / PinvouToggle 组件及 bridge 逻辑均保留，取消注释即恢复，待重评是否彻底移除。 */}
+              {/* [plan/yolo 收敛] Plan 模式入口已下线：全局 Yolo 单模式。
+                  ModeHeader 组件及 bridge 逻辑保留，取消注释即恢复，待重评是否彻底移除。
+                  (品悟开关已彻底移除——v2 评审方案被推翻,等新方案。) */}
               {/* <ModeHeader bs={bs} theme={theme} /> */}
-              {/* <PinvouToggle bs={bs} theme={theme} /> */}
             </div>
             <button
               onClick={() => setArtifactsOpen(true)}
@@ -1787,39 +1775,6 @@
       );
     };
 
-    // 品悟报告里的 CRITICAL/RAISED 等是 GATE/override 协议字段（前端正则放行 + 后端 GATE 依赖），
-    // 不能改 skill 输出；只在显示层按 UI 语言翻成人话，协议链路全程保持英文。
-    // en 没有规则表 → 原样显示（报告本身就是英文标记）。
-    const PINVOU_PRETTY = {
-      zh: [
-        [/PINVOU REVIEW REPORT/g, '品悟审核报告'], [/PINVOU FINAL REPORT/g, '品悟验收报告'],
-        [/\bBoss\b/g, '老板'], [/\bPinvou\b/g, '品悟'],
-        [/>Finding</g, '>问题<'], [/>Severity</g, '>重要性<'], [/>Status</g, '>处理状态<'], [/>User Decision</g, '>你的决定<'],
-        [/\bCRITICAL\b/g, '必须处理'], [/\bINFORMATIONAL\b/g, '可选建议'], [/\bCLEAR\b/g, '无硬伤'],
-        [/\bDONE\b/g, '已完成'], [/\bPARTIAL\b/g, '部分完成'], [/\bMISSING\b/g, '未完成'],
-        [/\bOVERRIDDEN_BY_USER\b/g, '用户确认继续'], [/\bRESOLVED\b/g, '已修复'], [/\bRAISED\b/g, '待处理'], [/\bNOTED\b/g, '已记录'],
-        [/<strong>VERDICT<\/strong>:\s*/gi, '<strong>结论</strong>：'], [/\bVERDICT\b/g, '结论'],
-        [/\bExitPlanMode\b/g, '继续执行'], [/\buser override\b/gi, '用户确认继续'],
-        [/\bclear\b/gi, '可以继续'], [/\bcritical\b/gi, '必须处理'],
-      ],
-      ja: [
-        [/PINVOU REVIEW REPORT/g, '品悟レビュー報告'], [/PINVOU FINAL REPORT/g, '品悟検収報告'],
-        [/\bBoss\b/g, 'ボス'], [/\bPinvou\b/g, '品悟'],
-        [/>Finding</g, '>指摘<'], [/>Severity</g, '>重要度<'], [/>Status</g, '>状態<'], [/>User Decision</g, '>あなたの判断<'],
-        [/\bCRITICAL\b/g, '要対応'], [/\bINFORMATIONAL\b/g, '参考'], [/\bCLEAR\b/g, '問題なし'],
-        [/\bDONE\b/g, '完了'], [/\bPARTIAL\b/g, '一部完了'], [/\bMISSING\b/g, '未完了'],
-        [/\bOVERRIDDEN_BY_USER\b/g, 'ユーザー判断で続行'], [/\bRESOLVED\b/g, '修正済み'], [/\bRAISED\b/g, '未処理'], [/\bNOTED\b/g, '記録済み'],
-        [/<strong>VERDICT<\/strong>:\s*/gi, '<strong>結論</strong>：'], [/\bVERDICT\b/g, '結論'],
-        [/\bExitPlanMode\b/g, '実行を続行'], [/\buser override\b/gi, 'ユーザー判断で続行'],
-        [/\bclear\b/gi, '続行可'], [/\bcritical\b/gi, '要対応'],
-      ],
-    };
-    const prettyPinvouReport = (html, lang) => {
-      const rules = PINVOU_PRETTY[lang || 'zh'];
-      if (!rules) return html || '';
-      return rules.reduce((h, [re, rep]) => h.replace(re, rep), html || '');
-    };
-
     // ③ 卡牌制造专家: 从助手消息渲染后的 html 里抠出 ```persona-card 草稿块 → 解析成卡。
     function htmlUnescape(s) {
       return String(s).replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&amp;/g,'&');
@@ -1866,29 +1821,11 @@
       if (item.type === 'plan_text_fallback') return <PlanFallbackCard item={item} theme={theme} t={t} />;
       if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} theme={theme} t={t} />;
       if (item.type === 'user_input') return <UserInputCard item={item} theme={theme} t={t} />;
-      if (item.type === 'pinvou_actions') return <PinvouActionsCard item={item} theme={theme} t={t} onPrefill={onPrefill} />;
       if (item.type === 'user') return <UserBubble item={item} theme={theme} editable={editable} t={t} />;
 
       if (item.type === 'assistant') {
         if (item.streaming && !item.html) return null; // 空流式气泡交给 ThinkingBubble 表示
-        // persona 兜底：品悟报告（FINAL/REVIEW）即使没带 persona（自发输出/重载/persona 丢失）
-        // 也按内容标记识别，统一渲染成紫色品悟气泡
         const html = item.html || '';
-        const persona = item.persona
-          || (html.indexOf('PINVOU FINAL REPORT') >= 0 ? 'pinvou-final'
-            : html.indexOf('PINVOU REVIEW REPORT') >= 0 ? 'pinvou-plan' : null);
-        const isPinvou = persona === 'pinvou-plan' || persona === 'pinvou-final';
-        if (isPinvou) {
-          return (
-            <div className="flex justify-start">
-              <div className={`max-w-[95%] w-full rounded-[16px] border p-3 ${isDark ? 'bg-[#7C3AED]/10 border-[#D0BCFF]/30' : 'bg-[#7C3AED]/5 border-[#7C3AED]/20'} ${isDark ? 'dark-code' : 'light-code'}`}>
-                <div className={`text-[12px] font-semibold mb-1.5 ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>🟣 {persona === 'pinvou-final' ? t.pvFinalTag : t.pvPlanTag}</div>
-                <div className={`msg-md text-[15px] leading-relaxed ${item.streaming ? 'streaming-cursor' : ''} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}
-                  dangerouslySetInnerHTML={{ __html: prettyPinvouReport(html, t && t.langTag) }} />
-              </div>
-            </div>
-          );
-        }
         const pd = item.streaming ? { draft: null, html: hideStreamingDraft(html, t && t.cpDesigning) } : parsePersonaDraft(html);
         // 草稿是否已存入(按名字在已加载的卡池里找同名自制卡 → 派生"已存入",免单独持久化)
         const draftSaved = pd.draft && bridge.available && bridge.getPersonas
@@ -2566,67 +2503,6 @@
         >
           <Zap size={15} /> {isPlan ? ('Plan' + (phaseLabel ? ' · ' + phaseLabel : '')) : 'YOLO'}
         </button>
-      );
-    };
-
-    // 品悟审批 toggle（与 Plan/YOLO 正交）
-    const PinvouToggle = ({ bs, theme }) => {
-      const isDark = theme === 'dark';
-      const on = !!(bs && bs.modeState && bs.modeState.pinvou_review_enabled);
-      return (
-        <button onClick={() => bridge.available && bridge.togglePinvouReview()}
-          title={on ? '品悟审核: 开（关键阶段让品悟把关）' : '品悟审核: 关（点击开启）'}
-          className={`pointer-events-auto px-3 py-2 rounded-full text-[13px] font-medium flex items-center gap-1.5 transition-colors
-            ${on ? (isDark ? 'bg-[#7C3AED]/40 text-[#D0BCFF]' : 'bg-[#7C3AED]/10 text-[#7C3AED]')
-                 : (isDark ? 'bg-[#1E1F20] text-[#8E8E8E] hover:bg-[#333537]' : 'bg-white text-[#9AA0A6] hover:bg-[#F0F4F9] shadow-sm')}`}>
-          🟣 品悟{on ? ' 开' : ''}
-        </button>
-      );
-    };
-
-    // 品悟审完后的 3 按钮卡
-    // ⊕ 我加一句:展开行内 textarea,用户写完点「📋 发送 修订」走 pinvouRevisePlan(带 userComment)
-    // —— 用户的意见真正进 AI 修订指令,而不是落进普通 chat 链路。
-    const PinvouActionsCard = ({ item, theme, t }) => {
-      const isDark = theme === 'dark';
-      const done = item.resolved;
-      const [commenting, setCommenting] = useState(false);
-      const [comment, setComment] = useState('');
-      const canSend = comment.trim().length > 0;
-      if (done) {
-        return (
-          <div className={cardBoxCls(isDark, isDark ? 'border-[#D0BCFF]/40' : 'border-[#7C3AED]/30')}>
-            <div className={`text-[13px] font-medium mb-3 ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>{t.pvDecide}</div>
-            <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{item.statusLabel || t.handled}</div>
-          </div>
-        );
-      }
-      if (commenting) {
-        return (
-          <div className={cardBoxCls(isDark, isDark ? 'border-[#D0BCFF]/40' : 'border-[#7C3AED]/30')}>
-            <div className={`text-[13px] font-medium mb-2 ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>{t.pvAddComment}</div>
-            <textarea
-              value={comment} onChange={(e) => setComment(e.target.value)}
-              placeholder={t.pvCommentPh} rows={3} autoFocus
-              className={`w-full px-3 py-2 rounded-lg text-[13px] outline-none resize-y mb-2 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] border border-white/10' : 'bg-white text-[#1F1F1F] border border-black/10'}`}
-            />
-            <div className="flex items-center gap-2 flex-wrap">
-              <button disabled={!canSend} onClick={() => bridge.pinvouRevisePlan(item.id, item.planMarkdown, item.report, comment.trim())}
-                className={`${cardBtnCls(isDark, 'primary')} ${canSend ? '' : 'opacity-50 cursor-not-allowed'}`}>{t.pvSendRevise}</button>
-              <button onClick={() => { setCommenting(false); setComment(''); }} className={cardBtnCls(isDark)}>{t.cpCancel}</button>
-            </div>
-          </div>
-        );
-      }
-      return (
-        <div className={cardBoxCls(isDark, isDark ? 'border-[#D0BCFF]/40' : 'border-[#7C3AED]/30')}>
-          <div className={`text-[13px] font-medium mb-3 ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>{t.pvDecide}</div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.pinvouAcceptOverride(item.id, item.planMarkdown, item.report)}>{t.pvAccept}</button>
-            <button className={cardBtnCls(isDark)} onClick={() => bridge.pinvouRevisePlan(item.id, item.planMarkdown, item.report)}>{t.pvRevise}</button>
-            <button className={cardBtnCls(isDark)} onClick={() => setCommenting(true)}>{t.pvAddOne}</button>
-          </div>
-        </div>
       );
     };
 

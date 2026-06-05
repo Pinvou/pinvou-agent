@@ -15,7 +15,6 @@ pub mod bundle;
 pub mod mode_state;
 pub mod paths;
 pub mod prefs;
-pub mod review_gate;
 pub mod sessions;
 
 use std::path::PathBuf;

@@ -21,8 +21,8 @@
   // ── Markdown rendering (vendor scripts loaded in index.html) ─────
   // 抹平裸 <script>/<style>/<iframe> 等危险标签:它们一旦被 marked 透传成真 HTML,
   // 浏览器按 HTML 解析时 script 元素会"吞掉"后续兄弟节点直到 </script>(或文档末尾),
-  // 然后 DOMPurify 把整段 script 连同被卷进去的内容一起剥掉。后果:Pinvou 表格里 LLM
-  // 写"在同一个 <script> 标签内……| CRITICAL | RAISED |"会让 CRITICAL/RAISED 那几格空掉。
+  // 然后 DOMPurify 把整段 script 连同被卷进去的内容一起剥掉。后果:LLM 正文里裸写
+  // "在同一个 <script> 标签内……"会把后续表格/文字整段吞掉(历史上品悟报告表格踩过)。
   //
   // 关键:在 marked.parse 【之后】做替换,而不是之前。原因:marked 给代码块/inline code 的
   // 输出本身就已经把 < 转义成 &lt;(不会有真 <script>),只有用户在正文里裸写 HTML 时才会
@@ -63,7 +63,7 @@
     backendOnline: null, // null=checking, true, false
     settings: null,
     superPermEnabled: false,
-    modeState: { mode: "yolo", plan_phase: "none", pinvou_review_enabled: false },
+    modeState: { mode: "yolo", plan_phase: "none" },
     // 最新 plan/todos 快照（用于 mode header 进度 chip，与 plan_ready 卡解耦）
     planSnapshot: { plan: null, todos: null },
     // 当前 session 产物列表 [{ path, basename }]
@@ -112,90 +112,54 @@
 
   // ── bridge 层 UI 文案（系统消息/状态标签）──────────────────────
   // bridge 在事件回调里生成文案,拿不到 React 的 t;按 state.settings.language 取词,中文兜底。
-  // 注意:发给 LLM 的指令、品悟触发语("🟣 触发品悟审方案"等协议串)不在此表,保持中文。
+  // 注意:发给 LLM 的指令不在此表,保持中文。
   var BT_TABLE = {
     en: {
       newChatFailed: "⚠️ Failed to create chat: ", loadChatFailed: "⚠️ Failed to load chat: ", deleteFailed: "⚠️ Delete failed: ",
       personaUnequipped: "🎴 Expert card removed: ",
-      planHistorical: "📜 Past plan", pinvouReviewed: "📜 Reviewed", planSuperseded: "📜 Superseded by a newer plan",
+      planHistorical: "📜 Past plan", planSuperseded: "📜 Superseded by a newer plan",
       attachStillParsing: "⚠️ Attachment still parsing, try again shortly",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactAuto: " (auto)",
       gpuUnavailable: "GPU info unavailable",
       superOn: "⚠️ Super permission enabled", superOff: "Super permission disabled",
-      pinvouCriticalsRemain: function (n) { return "⚠️ Pinvou still has " + n + " CRITICAL item(s) undecided — decision card reopened"; },
-      pinvouGateBlocked: "⚠️ Pinvou gate blocked: ", gateStillBlockedTail: " — decision card reopened",
-      approved: "✅ Approved", echoGo: "✅ Do it", echoGoConfirmed: "✅ Do it (Pinvou's concerns acknowledged)",
-      exitGateBlocked: "⚠️ Pinvou EXIT GATE blocked: ", acceptPlanFailed: "⚠️ accept_plan failed: ", acceptStillFailed: "⚠️ accept_plan still failing: ",
-      pinvouExitGate: function (n) { return "⚠️ Pinvou EXIT GATE: " + n + " CRITICAL item(s) still undecided — decision card reopened"; },
+      approved: "✅ Approved", echoGo: "✅ Do it",
+      acceptPlanFailed: "⚠️ accept_plan failed: ",
       exitedPlan: "🚪 Exited Plan", discardPlanFailed: "⚠️ discard_plan failed: ", exitPlanFailed: "⚠️ Failed to exit Plan: ", switchModeFailed: "⚠️ Failed to switch mode: ",
       replanRequested: "📋 Asking the AI to re-plan…", adoptingPlan: "✅ Adopting...", adoptEcho: "✅ Adopt this plan",
       openFailed: "⚠️ Open failed: ", pasteImageFailed: "⚠️ Paste image failed: ",
       filePickUnavailable: "⚠️ File picker unavailable", filePickFailed: "⚠️ File selection failed: ",
-      setPinvouFailed: "⚠️ Failed to set Pinvou review: ",
-      pinvouAutoPlan: "🟣 Pinvou hasn't reviewed this plan — asking Pinvou to take a look first...",
-      pinvouAutoFinal: "🟣 Task finished — asking Pinvou to verify the output...",
-      skillLoadFailed: "⚠️ Failed to load skill: ",
-      overrideConfirmed: "👍 Pinvou's concerns acknowledged, continuing...",
-      gateStillBlocked: "⚠️ Pinvou gate still blocked: ",
-      revisingWithComment: "⊕ Your note included — asking the AI to revise...", revising: "↻ Asking the AI to revise the plan...",
-      echoWorry: "⊕ I'm also worried: ", echoReviseByPinvou: "↻ Revise per Pinvou's findings",
-      reviseTriggerFailed: "⚠️ Failed to trigger plan revision: ",
       equipNoSession: "⚠️ Open or create a chat before equipping an expert", equipFailed: "⚠️ Equip failed: ",
     },
     ja: {
       newChatFailed: "⚠️ 新規チャットの作成に失敗: ", loadChatFailed: "⚠️ チャットの読み込みに失敗: ", deleteFailed: "⚠️ 削除に失敗: ",
       personaUnequipped: "🎴 エキスパートカードを外しました: ",
-      planHistorical: "📜 過去のプラン", pinvouReviewed: "📜 レビュー済み", planSuperseded: "📜 新しいプランで上書きされました",
+      planHistorical: "📜 過去のプラン", planSuperseded: "📜 新しいプランで上書きされました",
       attachStillParsing: "⚠️ 添付ファイルを解析中です。少し待ってから送信してください",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactAuto: "（自動）",
       gpuUnavailable: "GPU 情報を取得できません",
       superOn: "⚠️ スーパー権限が有効になりました", superOff: "スーパー権限が無効になりました",
-      pinvouCriticalsRemain: function (n) { return "⚠️ 品悟の CRITICAL が " + n + " 件未決のままです —— 決定カードを再表示しました"; },
-      pinvouGateBlocked: "⚠️ 品悟ゲートがブロック: ", gateStillBlockedTail: " —— 決定カードを再表示しました",
-      approved: "✅ 承認済み", echoGo: "✅ これでいく", echoGoConfirmed: "✅ これでいく（品悟の指摘を確認済み）",
-      exitGateBlocked: "⚠️ 品悟 EXIT GATE がブロック: ", acceptPlanFailed: "⚠️ accept_plan に失敗: ", acceptStillFailed: "⚠️ accept_plan が引き続き失敗: ",
-      pinvouExitGate: function (n) { return "⚠️ 品悟 EXIT GATE: CRITICAL が " + n + " 件未決 —— 決定カードを再表示しました"; },
+      approved: "✅ 承認済み", echoGo: "✅ これでいく",
+      acceptPlanFailed: "⚠️ accept_plan に失敗: ",
       exitedPlan: "🚪 Plan を終了", discardPlanFailed: "⚠️ discard_plan に失敗: ", exitPlanFailed: "⚠️ Plan の終了に失敗: ", switchModeFailed: "⚠️ モード切替に失敗: ",
       replanRequested: "📋 AI にプランを出し直させています…", adoptingPlan: "✅ 採用中...", adoptEcho: "✅ このプランを採用",
       openFailed: "⚠️ 開けませんでした: ", pasteImageFailed: "⚠️ 画像の貼り付けに失敗: ",
       filePickUnavailable: "⚠️ ファイル選択を利用できません", filePickFailed: "⚠️ ファイル選択に失敗: ",
-      setPinvouFailed: "⚠️ 品悟レビュー設定に失敗: ",
-      pinvouAutoPlan: "🟣 品悟がまだこのプランを見ていません —— 先に品悟にレビューさせます...",
-      pinvouAutoFinal: "🟣 タスク完了 —— 品悟に成果物を検証させます...",
-      skillLoadFailed: "⚠️ skill の読み込みに失敗: ",
-      overrideConfirmed: "👍 品悟の指摘を確認し、続行します...",
-      gateStillBlocked: "⚠️ 品悟ゲートが引き続きブロック: ",
-      revisingWithComment: "⊕ あなたの意見を添えて AI に修正させています...", revising: "↻ AI にプランを修正させています...",
-      echoWorry: "⊕ 私も気になる: ", echoReviseByPinvou: "↻ 品悟の指摘どおり修正",
-      reviseTriggerFailed: "⚠️ プラン修正の起動に失敗: ",
       equipNoSession: "⚠️ エキスパートを装備する前にチャットを開くか新規作成してください", equipFailed: "⚠️ 装備に失敗: ",
     },
     zh: {
       newChatFailed: "⚠️ 新建对话失败: ", loadChatFailed: "⚠️ 加载对话失败: ", deleteFailed: "⚠️ 删除失败: ",
       personaUnequipped: "🎴 已卸下专家卡牌: ",
-      planHistorical: "📜 历史方案", pinvouReviewed: "📜 已审阅", planSuperseded: "📜 已被新方案覆盖",
+      planHistorical: "📜 历史方案", planSuperseded: "📜 已被新方案覆盖",
       attachStillParsing: "⚠️ 附件还在解析,请稍后再发",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactAuto: "（自动）",
       gpuUnavailable: "GPU 信息不可用",
       superOn: "⚠️ 超级权限已开启", superOff: "超级权限已关闭",
-      pinvouCriticalsRemain: function (n) { return "⚠️ 品悟还有 " + n + " 个 CRITICAL 没拍板 —— 已重新打开决策卡"; },
-      pinvouGateBlocked: "⚠️ 品悟放行检查阻塞: ", gateStillBlockedTail: " —— 已重新打开决策卡",
-      approved: "✅ 已批准", echoGo: "✅ 就这么干", echoGoConfirmed: "✅ 就这么干(已确认品悟的顾虑)",
-      exitGateBlocked: "⚠️ Pinvou EXIT GATE 阻塞: ", acceptPlanFailed: "⚠️ accept_plan 失败: ", acceptStillFailed: "⚠️ accept_plan 仍失败: ",
-      pinvouExitGate: function (n) { return "⚠️ Pinvou EXIT GATE: 还有 " + n + " 个 CRITICAL 待拍板 —— 已重新打开决策卡"; },
+      approved: "✅ 已批准", echoGo: "✅ 就这么干",
+      acceptPlanFailed: "⚠️ accept_plan 失败: ",
       exitedPlan: "🚪 已退出 Plan", discardPlanFailed: "⚠️ discard_plan 失败: ", exitPlanFailed: "⚠️ 退出 Plan 失败: ", switchModeFailed: "⚠️ 切换模式失败: ",
       replanRequested: "📋 让 AI 重出方案…", adoptingPlan: "✅ 采纳中...", adoptEcho: "✅ 采纳此方案",
       openFailed: "⚠️ 打开失败: ", pasteImageFailed: "⚠️ 粘贴图片失败: ",
       filePickUnavailable: "⚠️ 文件选择不可用", filePickFailed: "⚠️ 选择文件失败: ",
-      setPinvouFailed: "⚠️ 设置品悟审批失败: ",
-      pinvouAutoPlan: "🟣 品悟还没看过这个方案 —— 自动让品悟先看一眼...",
-      pinvouAutoFinal: "🟣 任务完成 —— 让品悟核验一下产出...",
-      skillLoadFailed: "⚠️ 加载 skill 失败: ",
-      overrideConfirmed: "👍 已确认品悟的顾虑,继续执行...",
-      gateStillBlocked: "⚠️ 品悟放行检查仍阻塞: ",
-      revisingWithComment: "⊕ 已带上你的意见,正在让 AI 修订...", revising: "↻ 正在让 AI 修订方案...",
-      echoWorry: "⊕ 我也担心: ", echoReviseByPinvou: "↻ 按品悟意见改方案",
-      reviseTriggerFailed: "⚠️ 触发方案修订失败: ",
       equipNoSession: "⚠️ 请先打开或新建一个对话再加持专家", equipFailed: "⚠️ 加持失败: ",
     },
   };
@@ -209,14 +173,14 @@
   // active session 的工作集 = state.* + 上面那批模块级 stream 变量(保持原逻辑零改动)。
   // 后台 session 的工作集存在 sessionStates[id];后台事件进来时临时把工作集切到对应
   // buffer 跑同步逻辑再切回(saveWorkingSetTo/loadWorkingSetFrom),期间 suppressNotify
-  // 避免把后台渲染成 active。异步收尾(落盘/品悟)按显式 session_id 路由,不依赖工作集。
+  // 避免把后台渲染成 active。异步收尾(落盘)按显式 session_id 路由,不依赖工作集。
   var sessionStates = {};
   var suppressNotify = false;
   function freshBuffer() {
     return {
       messages: [], chatItems: [], personaEvents: [], artifacts: [], busy: false, queued: [],
       planSnapshot: { plan: null, todos: null },
-      modeState: { mode: "yolo", plan_phase: "none", pinvou_review_enabled: false },
+      modeState: { mode: "yolo", plan_phase: "none" },
       thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
       tokens: { input: 0, max: maxModelLen },
       activePersona: null, // 卡片池: 该 session 加持的专家面具(挂件用)
@@ -224,7 +188,6 @@
       stream: {
         currentStreamText: "", currentStreamId: 0, pendingAssistantText: "",
         pendingAssistantBlocks: [], itemIdSeq: 0, toolMeta: {},
-        pendingAssistantPersona: null, pendingPinvouReview: null, pendingFinalReview: false,
       },
     };
   }
@@ -244,8 +207,6 @@
       currentStreamText: currentStreamText, currentStreamId: currentStreamId,
       pendingAssistantText: pendingAssistantText, pendingAssistantBlocks: pendingAssistantBlocks,
       itemIdSeq: itemIdSeq, toolMeta: toolMeta,
-      pendingAssistantPersona: pendingAssistantPersona, pendingPinvouReview: pendingPinvouReview,
-      pendingFinalReview: pendingFinalReview,
     };
   }
   function loadWorkingSetFrom(buf) {
@@ -259,9 +220,6 @@
     currentStreamText = s.currentStreamText || ""; currentStreamId = s.currentStreamId || 0;
     pendingAssistantText = s.pendingAssistantText || ""; pendingAssistantBlocks = s.pendingAssistantBlocks || [];
     itemIdSeq = s.itemIdSeq || 0; toolMeta = s.toolMeta || {};
-    pendingAssistantPersona = s.pendingAssistantPersona || null;
-    pendingPinvouReview = s.pendingPinvouReview || null;
-    pendingFinalReview = s.pendingFinalReview || false;
   }
   // 把 active 工作集存好后切到 id 的 buffer(opts.fresh=新建空 buffer)。
   function switchActiveTo(id, opts) {
@@ -468,9 +426,6 @@
 
   // 实时态有专属气泡的工具（方案卡），重建时要还原成原卡而非普通工具卡。
   var PLAN_TOOLS = ["update_plan", "checklist_write", "todo_write"];
-  // 品悟触发 echo（dispatchPinvouTrigger persist 进 messages）是重建品悟紫色气泡的锚点：
-  // 紧跟其后的 assistant 消息即对应 persona 的品悟回复。
-  var PINVOU_TRIGGER_PERSONA = { "🟣 触发品悟审方案": "pinvou-plan", "🟣 触发品悟验收": "pinvou-final" };
 
   // tool_result.content 可能是 string 或 Anthropic content blocks 数组，归一成纯文本。
   function toolResultText(content) {
@@ -530,7 +485,6 @@
         else if (ev.kind === "unequip") addChatItem({ type: "system", text: bt("personaUnequipped") + (ev.name || ""), time: "" });
       }
     }
-    var pendingPersona = null; // 品悟触发 echo 命中后，标记下一条 assistant 为品悟回复
     // 预扫 tool_result：tool_use 在 assistant 消息、result 在后续 user 消息，需提前建映射
     // 才能在还原选择卡/方案卡时拿到结果（选项/快照）。
     var resultById = {};
@@ -553,7 +507,6 @@
         if (textParts.length) {
           addChatItem({ type: "user", text: utext, time: "" });
         }
-        if (PINVOU_TRIGGER_PERSONA[utext]) pendingPersona = PINVOU_TRIGGER_PERSONA[utext];
         // tool_result（只回填普通工具卡；选择卡/方案卡的结果已在 tool_use 处还原）
         for (var ci = 0; ci < blocks.length; ci++) {
           var c = blocks[ci];
@@ -573,8 +526,6 @@
         continue;
       }
       if (m.role !== "assistant") continue;
-      var msgPersona = pendingPersona; // 本条若是品悟回复，气泡带 persona 还原紫色样式
-      pendingPersona = null;
       var textBuf = "";
       var planSnap = null, todosSnap = null, sawPlanTool = false;
       for (var bi = 0; bi < blocks.length; bi++) {
@@ -583,7 +534,7 @@
           textBuf += b.text;
         } else if (b.type === "tool_use") {
           if (textBuf) {
-            addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false, persona: msgPersona });
+            addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
             textBuf = "";
           }
           toolMeta[b.id] = { name: b.name, args: b.input };
@@ -644,7 +595,7 @@
         }
       }
       if (textBuf) {
-        addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false, persona: msgPersona });
+        addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
       }
       // 本条 assistant 消息用过 plan 工具 → 还原一张只读历史方案卡
       if (sawPlanTool && (planSnap || todosSnap)) {
@@ -654,10 +605,6 @@
           planMarkdown: composePlanMarkdown(snaps),
           cardState: "frozen", resolved: true, statusLabel: bt("planHistorical"), time: "",
         });
-      }
-      // 品悟审方案回复后 → 还原只读操作卡（决策痕迹由后续 user echo 体现，按钮不可再点）
-      if (msgPersona === "pinvou-plan") {
-        addChatItem({ type: "pinvou_actions", resolved: true, statusLabel: bt("pinvouReviewed"), planMarkdown: null, report: null, time: "" });
       }
     }
     emitPersonaAt(state.messages.length, true); // 最后一条消息之后发生的卡牌事件(末尾加持/卸下)
@@ -764,58 +711,6 @@
     }
     return lines.length > 0 ? lines.join("\n") : "（plan 为空）";
   }
-
-  // ── 品悟审批辅助 ─────────────────────────────────────────────────
-  var PINVOU_REVIEW_RE = /## PINVOU REVIEW REPORT[\s\S]*$/m;
-  function extractPinvouReport(text) {
-    if (!text) return null;
-    var m = text.match(PINVOU_REVIEW_RE);
-    return m ? m[0].trim() : null;
-  }
-  function overrideAllCriticalInReport(report) {
-    return report.replace(
-      /^(\|[^|]*\|\s*CRITICAL\s*\|\s*)RAISED(\s*\|[^|]*\|)$/gim, "$1OVERRIDDEN_BY_USER$2"
-    ).replace(
-      /^(\|[^|]*\|\s*CRITICAL\s*\|\s*OVERRIDDEN_BY_USER\s*\|\s*)[^|]*(\|)$/gim, "$1用户拍板继续$2"
-    );
-  }
-  function synthesizeOverriddenReport(hint) {
-    return "## PINVOU REVIEW REPORT\n\n| Finding | Severity | Status | User Decision |\n|---------|----------|--------|---------------|\n| " +
-      (hint || "Pinvou 输出未按表格格式,用户已阅读并 override") + " | CRITICAL | OVERRIDDEN_BY_USER | 用户拍板继续 |\n\n**VERDICT**: user override —— Pinvou 未按格式输出表格,用户已读完意见后强制放行";
-  }
-  function buildPinvouPlanPrompt(body, planMarkdown) {
-    return "[品悟自动触发 /pinvou-review-plan,完整角色定义如下]\n\n" + body +
-      "\n\n---\n\n你现在只审下面这份 plan。不要把触发语或历史里的按钮文案当成用户批准;只有后续明确的用户决策才算批准。\n\n<plan_markdown>\n" +
-      (planMarkdown || "（plan 为空）") +
-      "\n</plan_markdown>\n\n按上面的 /pinvou-review-plan 格式输出。";
-  }
-  function buildPinvouFinalPrompt(body, artifacts) {
-    var artifactLines = (artifacts || []).map(function (a) { return "- " + (a.path || a.basename || "unknown"); }).join("\n");
-    return "[品悟自动触发 /pinvou-review-final,完整角色定义如下]\n\n" + body +
-      "\n\n---\n\n这次是任务收口验收。你通过只读工具核验真实产物,不要修改文件、不要继续执行任务。\n\n当前前端跟踪到的产物:\n" +
-      (artifactLines || "（无前端跟踪产物;请用只读工具按上下文核验）") +
-      "\n\n按上面的 /pinvou-review-final 格式输出。";
-  }
-  function parseGateError(err) {
-    var s = typeof err === "string" ? err : (err && err.toString ? err.toString() : "");
-    if (s.indexOf("gate_error") < 0) return null;
-    try { return JSON.parse(s); } catch (e) { return null; }
-  }
-  function lastAssistantText() {
-    for (var i = state.messages.length - 1; i >= 0; i--) {
-      if (state.messages[i].role === "assistant") {
-        var parts = state.messages[i].content || [];
-        var buf = "";
-        for (var k = 0; k < parts.length; k++) { if (parts[k].type === "text" && parts[k].text) buf += parts[k].text; }
-        return buf;
-      }
-    }
-    return "";
-  }
-  // 品悟触发态（内部）
-  var pendingAssistantPersona = null;   // null | "pinvou-plan" | "pinvou-final"
-  var pendingPinvouReview = null;       // { planMarkdown }
-  var pendingFinalReview = false;
 
   // ── Send message ─────────────────────────────────────────────────
   // 指定 session 是否正在生成(active 看工作集 busy,后台看其 buffer)。
@@ -954,7 +849,6 @@
         html: renderMarkdown(currentStreamText),
         time: timeStr(),
         streaming: true,
-        persona: pendingAssistantPersona,
       });
     }
     notify();
@@ -1087,12 +981,12 @@
     notify();
   }); });
 
-  // chat:done 特殊:同步收尾(flush/busy=false/品悟卡/mode 复位)走 runSyncOnSession
-  // 路由到对应 session;异步收尾(discard_plan/品悟终审/落盘/刷新列表)按显式 sid 路由,
-  // 不依赖工作集 —— 这样后台 session 跑完也能正确落盘 + 触发终审。
+  // chat:done 特殊:同步收尾(flush/busy=false/mode 复位)走 runSyncOnSession
+  // 路由到对应 session;异步收尾(discard_plan/落盘/刷新列表)按显式 sid 路由,
+  // 不依赖工作集 —— 这样后台 session 跑完也能正确落盘。
   listen("chat:done", function (e) {
     var sid = (e.payload && e.payload.session_id) || state.activeSessionId;
-    var flags = { wasExecuting: false, doFinal: false };
+    var flags = { wasExecuting: false };
     runSyncOnSession(sid, function () {
       var error = e.payload && e.payload.error;
       if (error) addSystemItem("⚠️ " + error);
@@ -1108,32 +1002,20 @@
       stopThinking();
       currentStreamText = "";
       currentStreamId = 0;
-      pendingAssistantPersona = null;
-      // 品悟审方案完成 → 在紫色品悟气泡后附 3 按钮卡
-      if (pendingPinvouReview) {
-        var report = extractPinvouReport(lastAssistantText());
-        addChatItem({ type: "pinvou_actions", planMarkdown: pendingPinvouReview.planMarkdown, report: report, resolved: false, statusLabel: "", time: timeStr() });
-        pendingPinvouReview = null;
-      }
-      // final review 是 advisory，跑完只清 flag，不附按钮
-      if (pendingFinalReview) { pendingFinalReview = false; }
       // 执行 plan 完成 → 回 yolo 默认态(plan_phase 从 executing → none)
       if (state.modeState.plan_phase === "executing") {
         flags.wasExecuting = true;
-        state.modeState = { mode: "yolo", plan_phase: "none", pinvou_review_enabled: state.modeState.pinvou_review_enabled };
+        state.modeState = { mode: "yolo", plan_phase: "none" };
       }
-      // 任务收口:开了品悟审批 → 自动 advisory final review(防递归靠 wasExecuting:终审 turn 不在 executing 态)
-      flags.doFinal = flags.wasExecuting && state.modeState.pinvou_review_enabled;
     });
     notify();
     // 异步收尾(按 sid 路由,active/后台通用)
     (async function () {
       if (flags.wasExecuting) { try { await invoke("discard_plan", { sessionId: sid }); } catch (_) {} }
-      if (flags.doFinal) { await autoTriggerPinvouFinalFor(sid); }
       await persistMessagesFor(sid);
       await refreshHistoryList();
       notify();
-      // 排队式:本轮跑完,若该 session 不忙(没被 doFinal 又起新 turn)且有待发消息 → 自动发下一条
+      // 排队式:本轮跑完,若该 session 不忙且有待发消息 → 自动发下一条
       flushQueued(sid);
     })();
   });
@@ -1389,14 +1271,14 @@
   // ── Mode state ───────────────────────────────────────────────────
   async function syncModeState() {
     if (!state.activeSessionId) {
-      state.modeState = { mode: "yolo", plan_phase: "none", pinvou_review_enabled: false };
+      state.modeState = { mode: "yolo", plan_phase: "none" };
       return;
     }
     try {
       var ms = await invoke("get_mode_state", { sessionId: state.activeSessionId });
-      state.modeState = { mode: ms.mode || "yolo", plan_phase: ms.plan_phase || "none", pinvou_review_enabled: !!ms.pinvou_review_enabled };
+      state.modeState = { mode: ms.mode || "yolo", plan_phase: ms.plan_phase || "none" };
     } catch (e) {
-      state.modeState = { mode: "yolo", plan_phase: "none", pinvou_review_enabled: false };
+      state.modeState = { mode: "yolo", plan_phase: "none" };
     }
   }
 
@@ -1413,46 +1295,13 @@
   function markResolved(id, statusLabel) { patchItemById(id, { resolved: true, statusLabel: statusLabel || "" }); notify(); }
 
   // ── Per-session UI 路由 ─────────────────────────────────────────
-  // 品悟链路有多个 await 边界,用户可能中途切 session。所有 UI 写入(chatItem 增改、
+  // 卡片动作链路有多个 await 边界,用户可能中途切 session。所有 UI 写入(chatItem 增改、
   // pending* 标记、modeState 同步)必须落在【触发 session】的 buffer 上,不能跟着
   // state.activeSessionId 漂走。一律 wrap 进 runSyncOnSession 是因为:sid === active
   // 时它是 no-op 直通,sid !== active 时它 swap-load-fn-save 回 sid 的 buffer。
   function runOnSession(sid, fn) { runSyncOnSession(sid || state.activeSessionId, fn); }
   function addSystemItemFor(sid, text) { runOnSession(sid, function () { addSystemItem(text); }); }
   function patchItemByIdFor(sid, id, patch) { runOnSession(sid, function () { patchItemById(id, patch); }); }
-  function modeStateFor(sid) {
-    if (!sid || sid === state.activeSessionId) return state.modeState;
-    var buf = sessionStates[sid];
-    return buf ? buf.modeState : state.modeState;
-  }
-  // unresolved_critical / accept_plan 二次失败时,把品悟决策入口重新摆到用户面前。
-  // 优先复活最近的 pinvou_actions 卡(让 override/revise/加一句 按钮重新可点);没卡就
-  // 新插一张 —— 避免用户落在「一行红字 + 没按钮」的死胡同。
-  function surfacePinvouActionsCardFor(sid, planMarkdown, report, hint) {
-    runOnSession(sid, function () {
-      var revived = false;
-      for (var i = state.chatItems.length - 1; i >= 0; i--) {
-        if (state.chatItems[i].type === "pinvou_actions") {
-          Object.assign(state.chatItems[i], {
-            resolved: false, statusLabel: "",
-            planMarkdown: planMarkdown,
-            report: report || state.chatItems[i].report,
-          });
-          revived = true;
-          break;
-        }
-      }
-      if (!revived) {
-        addChatItem({
-          type: "pinvou_actions",
-          planMarkdown: planMarkdown, report: report,
-          resolved: false, statusLabel: "", time: timeStr(),
-        });
-      }
-      if (hint) addSystemItem(hint);
-    });
-  }
-
   // ── 思考指示器状态（每次阶段切换重置计时）──────────────────────
   function startThinking() { state.thinking = { active: true, phase: "thinking", toolName: "", startedAt: Date.now() }; }
   function thinkingTool(name) { state.thinking = { active: true, phase: "tool", toolName: name || "", startedAt: Date.now() }; }
@@ -1462,17 +1311,7 @@
     state.modeState = {
       mode: st.mode || "yolo",
       plan_phase: st.plan_phase || "none",
-      pinvou_review_enabled: st.pinvou_review_enabled != null ? !!st.pinvou_review_enabled : state.modeState.pinvou_review_enabled,
     };
-  }
-  async function preflightPinvouGate(sid, planMarkdown) {
-    if (!sid || !modeStateFor(sid).pinvou_review_enabled) return null;
-    try {
-      await invoke("check_pinvou_exit_gate", { sessionId: sid, planMarkdown: planMarkdown || "" });
-      return null;
-    } catch (e) {
-      return parseGateError(e) || { gate_error: "unknown", message: String(e) };
-    }
   }
 
   // ── Plan/YOLO 命令 ───────────────────────────────────────────────
@@ -1481,27 +1320,6 @@
   async function acceptPlan(itemId, planMarkdown, echo) {
     var sid = state.activeSessionId;
     if (!sid) return;
-    var gate = await preflightPinvouGate(sid, planMarkdown || "");
-    if (gate) {
-      if (itemId) patchItemByIdFor(sid, itemId, { cardState: "active", statusLabel: "", resolved: false });
-      if (gate.gate_error === "missing_review_report" || gate.gate_error === "malformed_report") {
-        notify();
-        await autoTriggerPinvouReview(sid, planMarkdown || "");
-        return;
-      }
-      if (gate.gate_error === "unresolved_critical") {
-        // planMarkdown 已带旧 report 但 CRITICAL 还在 RAISED —— 复活品悟决策卡,
-        // 让用户走 override / revise / 加一句出口,而不是落在系统提示死胡同。
-        var n = (gate.detail && gate.detail.unresolved_count) || "?";
-        surfacePinvouActionsCardFor(sid, planMarkdown || "", null,
-          bt("pinvouCriticalsRemain")(n));
-        notify();
-        return;
-      }
-      addSystemItemFor(sid, bt("pinvouGateBlocked") + (gate.message || ""));
-      notify();
-      return;
-    }
     if (itemId) patchItemByIdFor(sid, itemId, { cardState: "approved", statusLabel: bt("approved"), resolved: true });
     runOnSession(sid, function () { pushUserEcho(echo || bt("echoGo"), true); state.busy = true; startThinking(); });
     notify();
@@ -1509,23 +1327,9 @@
       var st = await invoke("accept_plan", { sessionId: sid, planMarkdown: planMarkdown || "" });
       runOnSession(sid, function () { applyModeFromState(st); });
     } catch (e) {
-      // Pinvou EXIT GATE：accept 前必须先有 review report
-      var gate2 = parseGateError(e);
       if (itemId) patchItemByIdFor(sid, itemId, { cardState: "active", statusLabel: "", resolved: false });
       runOnSession(sid, function () { state.busy = false; });
-      if (gate2 && gate2.gate_error === "missing_review_report") {
-        notify();
-        await autoTriggerPinvouReview(sid, planMarkdown || "");
-        return;
-      }
-      if (gate2 && gate2.gate_error === "unresolved_critical") {
-        var n2 = (gate2.detail && gate2.detail.unresolved_count) || "?";
-        surfacePinvouActionsCardFor(sid, planMarkdown || "", null,
-          bt("pinvouExitGate")(n2));
-        notify();
-        return;
-      }
-      addSystemItemFor(sid, gate2 ? (bt("exitGateBlocked") + (gate2.message || "")) : (bt("acceptPlanFailed") + e));
+      addSystemItemFor(sid, bt("acceptPlanFailed") + e);
     }
     notify();
   }
@@ -1681,141 +1485,6 @@
     } catch (e) { addSystemItem(bt("filePickFailed") + e); }
   }
 
-  // ── 品悟审批（基础封装；GATE 编排在 React 卡片层）────────────────
-  function readSkillBody(name) { return invoke("read_skill_body", { name: name }); }
-  async function setPinvouReview(enabled) {
-    if (!state.activeSessionId) return;
-    try {
-      var st = await invoke("set_pinvou_review", { sessionId: state.activeSessionId, enabled: !!enabled });
-      if (st && st.mode) applyModeFromState(st);
-      else state.modeState.pinvou_review_enabled = !!enabled;
-    } catch (e) { addSystemItem(bt("setPinvouFailed") + e); }
-    notify();
-  }
-  function togglePinvouReview() { return setPinvouReview(!state.modeState.pinvou_review_enabled); }
-
-  // 共用底层：前端 user 气泡只显示简短摘要，完整 prompt 发给后端（本地小模型 eager loading）。
-  // *For(sid) 变体支持后台 session(chat:done 触发的自动终审):同步设置发送态走
-  // runSyncOnSession 路由到对应 session,invoke chat 带显式 session_id。
-  function dispatchPinvouTriggerFor(sid, persona, summary, fullPrompt) {
-    if (!sid) return Promise.resolve();
-    var canSend = true;
-    runSyncOnSession(sid, function () {
-      if (state.busy) { canSend = false; return; }
-      pendingAssistantPersona = persona;
-      pushUserEcho(summary, true);
-      state.busy = true;
-      startThinking();
-      currentStreamText = "";
-      currentStreamId = ++itemIdSeq;
-      state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true, persona: persona });
-    });
-    if (!canSend) return Promise.resolve();
-    notify();
-    return invoke("pinvou_review_chat", { message: fullPrompt, sessionId: sid })
-      .catch(function (e) { runSyncOnSession(sid, function () { addSystemItem("⚠️ " + e); state.busy = false; }); notify(); });
-  }
-  function dispatchPinvouTrigger(persona, summary, fullPrompt) {
-    return dispatchPinvouTriggerFor(state.activeSessionId, persona, summary, fullPrompt);
-  }
-  async function autoTriggerPinvouReview(sid, planMarkdown) {
-    if (!sid) return;
-    runOnSession(sid, function () {
-      pendingPinvouReview = { planMarkdown: planMarkdown };
-      addSystemItem(bt("pinvouAutoPlan"));
-    });
-    var fullPrompt = "/pinvou-review-plan";
-    try { var body = await invoke("read_skill_body", { name: "pinvou-review-plan" }); fullPrompt = buildPinvouPlanPrompt(body, planMarkdown); }
-    catch (e) { addSystemItemFor(sid, bt("skillLoadFailed") + "pinvou-review-plan: " + e); }
-    await dispatchPinvouTriggerFor(sid, "pinvou-plan", "🟣 触发品悟审方案", fullPrompt);
-  }
-  async function autoTriggerPinvouFinalFor(sid) {
-    if (!sid) return;
-    var artifacts = [];
-    runSyncOnSession(sid, function () {
-      pendingFinalReview = true;
-      artifacts = (state.artifacts || []).slice();
-      addSystemItem(bt("pinvouAutoFinal"));
-    });
-    notify();
-    var fullPrompt = "/pinvou-review-final";
-    try { var body = await invoke("read_skill_body", { name: "pinvou-review-final" }); fullPrompt = buildPinvouFinalPrompt(body, artifacts); }
-    catch (e) { runSyncOnSession(sid, function () { addSystemItem(bt("skillLoadFailed") + "pinvou-review-final: " + e); }); }
-    await dispatchPinvouTriggerFor(sid, "pinvou-final", "🟣 触发品悟验收", fullPrompt);
-  }
-  async function autoTriggerPinvouFinal() {
-    await autoTriggerPinvouFinalFor(state.activeSessionId);
-  }
-  // 品悟 3 按钮之「✅ 确认继续执行」：override 所有 CRITICAL 后 accept_plan
-  async function pinvouAcceptOverride(itemId, planMarkdown, report) {
-    var sid = state.activeSessionId;
-    patchItemByIdFor(sid, itemId, { resolved: true, statusLabel: bt("overrideConfirmed") });
-    if (!sid) { notify(); return; }
-    var eff = report ? overrideAllCriticalInReport(report) : synthesizeOverriddenReport("Pinvou 用自然语言提了意见(见上方),用户阅读后决策");
-    var fullMd = (planMarkdown || "") + "\n\n" + eff;
-    var gate = await preflightPinvouGate(sid, fullMd);
-    // malformed_report / unresolved_critical 都说明 override regex 没拿下整张表
-    // (字段拼写偏、列序换、行数对不齐)。用户已经按下"确认继续",synthesize 一张全新的
-    // OVERRIDDEN_BY_USER 单行表二次冲门 —— 把第一次的形式失败治住。
-    if (gate && report && (gate.gate_error === "malformed_report" || gate.gate_error === "unresolved_critical")) {
-      eff = synthesizeOverriddenReport("Pinvou 报告无法自动 override(格式异常 / 部分行未对齐),用户阅读后强制放行");
-      fullMd = (planMarkdown || "") + "\n\n" + eff;
-      gate = await preflightPinvouGate(sid, fullMd);
-    }
-    if (gate) {
-      surfacePinvouActionsCardFor(sid, planMarkdown || "", report,
-        bt("gateStillBlocked") + (gate.message || "") + bt("gateStillBlockedTail"));
-      notify();
-      return;
-    }
-    runOnSession(sid, function () { pushUserEcho(bt("echoGoConfirmed"), true); state.busy = true; startThinking(); });
-    notify();
-    try {
-      var st = await invoke("accept_plan", { sessionId: sid, planMarkdown: fullMd });
-      runOnSession(sid, function () { applyModeFromState(st); });
-    } catch (e) {
-      addSystemItemFor(sid, bt("acceptStillFailed") + e);
-      runOnSession(sid, function () { state.busy = false; });
-    }
-    notify();
-  }
-
-  // 品悟 3 按钮之「↻ AI 改方案」/「⊕ 我加一句」共用:user 已表达修订意图。
-  // userComment 非空 = 「⊕ 我加一句」路径,把用户那句话也喂进修订指令(不是落进普通 chat)。
-  // 仍要求模型只调用 update_plan 重出方案卡,等用户下一次拍板,不直接执行。
-  async function pinvouRevisePlan(itemId, planMarkdown, report, userComment) {
-    var sid = state.activeSessionId;
-    var hasComment = !!(userComment && userComment.trim());
-    patchItemByIdFor(sid, itemId, {
-      resolved: true,
-      statusLabel: hasComment ? bt("revisingWithComment") : bt("revising"),
-    });
-    if (!sid) { notify(); return; }
-    var displayText = hasComment ? (bt("echoWorry") + userComment.trim()) : bt("echoReviseByPinvou");
-    var instruction =
-      "根据品悟意见修订当前方案。只更新方案,不要执行文件写入或命令。\n" +
-      "你必须调用 update_plan 输出新版方案卡,然后停下来等用户拍板。\n\n" +
-      "当前方案:\n" + (planMarkdown || "（plan 为空）") + "\n\n" +
-      "品悟意见:\n" + (report || "见上方品悟审查意见") +
-      (hasComment ? ("\n\n用户补充意见(必须在新方案里回应):\n" + userComment.trim()) : "");
-    try {
-      var st = await invoke("set_plan_mode_next", { sessionId: sid });
-      runOnSession(sid, function () { applyModeFromState(st); });
-      // 排队判定按 sid 自己的 busy(不是 active 的),避免「触发 session 后台还在跑」时
-      // 误把 instruction 当成立即可发。
-      var sidBusy = sid === state.activeSessionId ? state.busy : !!(sessionStates[sid] && sessionStates[sid].busy);
-      if (sidBusy) {
-        runOnSession(sid, function () { state.queued.push({ id: ++itemIdSeq, text: instruction, displayText: displayText, attachments: [] }); });
-        notify();
-        return;
-      }
-      await doSendFor(sid, instruction, displayText, []);
-    } catch (e) {
-      patchItemByIdFor(sid, itemId, { resolved: false, statusLabel: "" });
-      addSystemItemFor(sid, bt("reviseTriggerFailed") + e);
-      notify();
-    }
-  }
 
   // ── 卡片池: 专家面具加持 ─────────────────────────────────────────
   // 懒加载全部专家卡(1078 张),前端缓存供 facet/搜索。只拉一次。
@@ -2018,12 +1687,6 @@
     removeAttachment: removeAttachment,
     clearAttachments: clearAttachments,
     pickAndAttach: pickAndAttach,
-    // 品悟审批
-    readSkillBody: readSkillBody,
-    setPinvouReview: setPinvouReview,
-    togglePinvouReview: togglePinvouReview,
-    pinvouAcceptOverride: pinvouAcceptOverride,
-    pinvouRevisePlan: pinvouRevisePlan,
     markResolved: markResolved,
     // 卡片池: 专家面具
     loadPersonas: loadPersonas,

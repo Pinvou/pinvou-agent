@@ -20,7 +20,6 @@ use tauri::State;
 
 use crate::bridge::mode_state::{PlanPhase, SerializableMode, SessionModeState};
 use crate::bridge::prefs::UserPrefs;
-use crate::bridge::review_gate::{check_exit_gate, GateError};
 use crate::bridge::sessions::SessionStore;
 use crate::engine_pool::EnginePool;
 use crate::monitor::{MonitorSnapshot, MonitorState, VllmStatus};
@@ -786,35 +785,19 @@ pub async fn set_plan_mode_next(
 
 /// 用户点 [⚡ 直接动手]（Planning 态 chip 退出按钮）：跳过 plan 流程，凭对话历史自由干。
 /// mode 切回 Yolo + phase=None。对话历史天然保留，AI 在 YOLO 下能看到之前讨论的 context。
-///
-/// **Pinvou Review GATE**: `pinvou_review_enabled = true` 时,plan 期切 YOLO 也需要 Pinvou
-/// 看过 plan(防绕过)。前端可传入 plan_markdown=None 表示"我承认还没 plan,纯空手切 YOLO"
-/// (这种情况不触发 GATE)。
 #[tauri::command]
 pub async fn exit_plan_to_yolo(
     session_id: String,
-    plan_markdown: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<SessionModeState, String> {
-    let enabled = store.mode_state(&session_id).pinvou_review_enabled;
-    if enabled {
-        if let Some(md) = plan_markdown.as_deref() {
-            if !md.trim().is_empty() {
-                check_exit_gate(md).map_err(|e| serialize_gate_error(&e))?;
-            }
-        }
-    }
     store.set_mode_state(&session_id, SerializableMode::Yolo, PlanPhase::None);
     Ok(store.mode_state(&session_id))
 }
 
 /// 用户点 plan_card [✅ 就这么干]：接受 plan，切 YOLO 执行。
 /// 流程：
-///   1. **Pinvou Review GATE** (仅 pinvou_review_enabled = true):校验 plan_markdown
-///      末尾的 ## PINVOU REVIEW REPORT 表格,CRITICAL 全部 RESOLVED/OVERRIDDEN_BY_USER。
-///      失败时返回结构化错误 JSON,前端据此自动追加 /pinvou-review-plan 或提示用户。
-///   2. 设 mode=Yolo, phase=Executing
-///   3. 用 plan_markdown 作为指令前缀发一条 user message 触发执行
+///   1. 设 mode=Yolo, phase=Executing
+///   2. 用 plan_markdown 作为指令前缀发一条 user message 触发执行
 /// 前端在调用前应在消息流追加 user 气泡显示「✅ 就这么干」让用户感知。
 #[tauri::command]
 pub async fn accept_plan(
@@ -823,10 +806,6 @@ pub async fn accept_plan(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<SessionModeState, String> {
-    let enabled = store.mode_state(&session_id).pinvou_review_enabled;
-    if enabled {
-        check_exit_gate(&plan_markdown).map_err(|e| serialize_gate_error(&e))?;
-    }
     store.set_mode_state(&session_id, SerializableMode::Yolo, PlanPhase::Executing);
     // 简短指令——主约束由 M1 per-turn system-reminder 提供(bridge 按 phase=Executing 注入)。
     let instruction = format!("用户已批准方案,立即开始执行。方案:\n\n{plan_markdown}");
@@ -838,76 +817,6 @@ pub async fn accept_plan(
     )
     .await
     .map_err(|e| format!("accept_plan send_user_message: {e:?}"))?;
-    Ok(store.mode_state(&session_id))
-}
-
-/// Pinvou Gate 预检。
-///
-/// 前端在把「用户已批准」echo 写进 messages 之前先调用本命令。这样当 Gate 失败并触发
-/// `/pinvou-review-plan` 时,reviewer 不会在同一上下文里先看到一条误导性的
-/// "用户已经批准"。
-#[tauri::command]
-pub async fn check_pinvou_exit_gate(
-    session_id: String,
-    plan_markdown: String,
-    store: State<'_, SessionStore>,
-) -> Result<(), String> {
-    if store.mode_state(&session_id).pinvou_review_enabled {
-        check_exit_gate(&plan_markdown).map_err(|e| serialize_gate_error(&e))?;
-    }
-    Ok(())
-}
-
-/// 把 GateError 序列化成 JSON 字符串,前端 parseGateError() 解析 {gate_error, message, detail}。
-fn serialize_gate_error(err: &GateError) -> String {
-    let kind = match err {
-        GateError::MissingReviewReport => "missing_review_report",
-        GateError::MalformedReport { .. } => "malformed_report",
-        GateError::UnresolvedCritical { .. } => "unresolved_critical",
-    };
-    serde_json::to_string(&serde_json::json!({
-        "gate_error": kind,
-        "message": err.to_string(),
-        "detail": err,
-    }))
-    .unwrap_or_else(|_| err.to_string())
-}
-
-/// Pinvou 专用 review turn。
-///
-/// 与普通 `chat` 的区别:
-/// - 不按当前 session mode 发,固定走 `AppMode::Plan` 的只读工具面;
-/// - 不重置 auto-continue 计数,因为这不是用户主动开启的新任务;
-/// - 不修改 mode_state,避免 review turn 把 Plan/Executing 状态机带偏。
-#[tauri::command]
-pub async fn pinvou_review_chat(
-    session_id: String,
-    message: String,
-    pool: State<'_, EnginePool>,
-) -> Result<(), String> {
-    if message.trim().is_empty() {
-        return Err("empty review message".into());
-    }
-    pool.send_user_message(
-        &session_id,
-        message,
-        SerializableMode::Plan.to_app_mode(),
-        PlanPhase::None,
-    )
-    .await
-    .map_err(|e| format!("pinvou_review_chat send_user_message: {e:?}"))
-}
-
-/// 用户切换品悟 review 开关(UI 顶部 toggle)。
-/// 与 Plan/YOLO 切换正交:品悟 toggle 不动 mode/phase,只控是否触发 EXIT GATE + 品悟气泡。
-/// careful hook 不依赖此开关,跨所有模式默认开启(DeepSeek-TUI shell.rs 强制 BLOCKED Dangerous)。
-#[tauri::command]
-pub async fn set_pinvou_review(
-    session_id: String,
-    enabled: bool,
-    store: State<'_, SessionStore>,
-) -> Result<SessionModeState, String> {
-    store.set_pinvou_review(&session_id, enabled);
     Ok(store.mode_state(&session_id))
 }
 
@@ -936,35 +845,6 @@ pub async fn set_super_permission(
     // 生效去 SyncSession 打断在跑的 turn。未起的 session 首次 spawn 时自然带上新引导。
     pool.refresh_all_instructions().await;
     Ok(crate::super_permission::is_enabled())
-}
-
-/// 读 pinvou3 内置 skill 的 body(去掉 frontmatter)。
-/// 用途:前端 autoTriggerPinvouReview 把完整 SKILL.md 内容塞进 user message,
-/// 不依赖本地 Qwen3.6 主动 read_file —— 弱模型不会主动用 progressive disclosure。
-/// 设计依据:docs/Pinvou-品悟设计.md §10.5 (即将补)
-#[tauri::command]
-pub async fn read_skill_body(name: String) -> Result<String, String> {
-    use crate::bridge::paths;
-    let safe_name: String = name.chars().filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_').collect();
-    if safe_name != name || safe_name.is_empty() {
-        return Err(format!("invalid skill name: {name}"));
-    }
-    let path = paths::bundle_skills_dir().join(&safe_name).join("SKILL.md");
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("read SKILL.md ({}): {e}", path.display()))?;
-    // 剥 frontmatter ---\n...\n---\n
-    let body = if let Some(rest) = content.strip_prefix("---\n") {
-        if let Some(end) = rest.find("\n---\n") {
-            rest[end + 5..].trim_start().to_string()
-        } else if let Some(end) = rest.find("\n---") {
-            rest[end + 4..].trim_start().to_string()
-        } else {
-            content
-        }
-    } else {
-        content
-    };
-    Ok(body)
 }
 
 // 修法 D 删除了 revise_plan 命令.

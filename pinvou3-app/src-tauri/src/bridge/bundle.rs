@@ -15,7 +15,9 @@ use super::paths;
 /// 0.4: 加 Pinvou Review 内置 skills(pinvou-review-plan / pinvou-review-final)
 /// 0.5: 下线 h3c-ppt workflow skill(workflow 功能转"开发中"),phase 协议随之停渲
 /// 0.6: 加 present_artifact 内置 MCP server(成品卡):mcp.json 注册 + server 脚本解包
-pub const BUNDLE_VERSION: &str = concat!("0.6-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.7: 下线 Pinvou Review v2(EXIT GATE 评审被推翻,等新方案):两个 review skill
+///      不再解包,既有装机的残留目录启动时清理
+pub const BUNDLE_VERSION: &str = concat!("0.7-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions.md（Qwen3.6 适配 prompt），编译时内嵌。
 pub const INSTRUCTIONS_MD: &str = include_str!("../../resources/bundle/instructions.md");
@@ -78,16 +80,6 @@ pub const PRESENT_ARTIFACT_SERVER_PY: &str =
 pub const DENY_SENSITIVE_PATHS_SH: &str =
     include_str!("../../resources/bundle/deny_sensitive_paths.sh");
 
-/// Pinvou Review v2 内置 skill:plan 审查(GATE 配套)。
-/// 编译时内嵌,启动时 ensure_extracted 写到 ~/.pinvou3/bundle/skills/。
-/// DeepSeek-TUI SkillRegistry 期待 <skills_dir>/<skill-name>/SKILL.md 格式。
-pub const PINVOU_REVIEW_PLAN_SKILL_MD: &str =
-    include_str!("../../resources/bundle/skills/pinvou-review-plan/SKILL.md");
-
-/// Pinvou Review v2 内置 skill:任务收口物理校验(advisory)。
-pub const PINVOU_REVIEW_FINAL_SKILL_MD: &str =
-    include_str!("../../resources/bundle/skills/pinvou-review-final/SKILL.md");
-
 #[derive(Debug, Clone)]
 pub struct Pinvou3Bundle {
     pub root: PathBuf,
@@ -121,10 +113,9 @@ impl Pinvou3Bundle {
         let version_file = paths::bundle_version_file();
         let current = std::fs::read_to_string(&version_file).unwrap_or_default();
 
-        // Pinvou Review v2 skills 每次启动都重写(防御性):skill 是 immutable
-        // bundle 资源,无副作用;且 0.4 VERSION 写出但 skill 缺失的状态实测发生过,
-        // 不该让用户依赖 VERSION 对账 + 手动删 VERSION 才能修复。
-        self.write_pinvou_skills()?;
+        // 已下线 skills 每次启动都清理(防御性):既有装机的残留目录若不清,
+        // SkillRegistry 仍会从 disk 发现它们、重新触发对应协议 prompt。
+        self.cleanup_retired_skills()?;
         // MCP server 脚本同 skills:immutable bundle 资源,每次启动防御性重写
         // (防 "VERSION 对得上但脚本缺失"),无副作用。mcp.json 本身走下面 VERSION-gated。
         self.write_mcp_servers()?;
@@ -172,21 +163,15 @@ impl Pinvou3Bundle {
         Ok(())
     }
 
-    /// Pinvou Review v2 内置 skills:写到 `<skills_dir>/<name>/SKILL.md`
-    /// DeepSeek-TUI SkillRegistry::discover 期待这个 subdir + SKILL.md 格式。
-    /// 每次启动都写一遍(被 ensure_extracted 在 VERSION check 前调用),防御
-    /// "VERSION 对得上但 skill 文件缺失" 的状态。
-    fn write_pinvou_skills(&self) -> std::io::Result<()> {
+    /// 清理已下线内置 skills 的残留目录(被 ensure_extracted 在 VERSION check 前
+    /// 调用,每次启动都跑):
+    /// - h3c-ppt:0.5 下线(workflow 功能转"开发中")
+    /// - pinvou-review-plan / pinvou-review-final:0.7 下线(EXIT GATE 评审被推翻)
+    fn cleanup_retired_skills(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.skills_dir)?;
-        let plan_dir = self.skills_dir.join("pinvou-review-plan");
-        let final_dir = self.skills_dir.join("pinvou-review-final");
-        std::fs::create_dir_all(&plan_dir)?;
-        std::fs::create_dir_all(&final_dir)?;
-        std::fs::write(plan_dir.join("SKILL.md"), PINVOU_REVIEW_PLAN_SKILL_MD)?;
-        std::fs::write(final_dir.join("SKILL.md"), PINVOU_REVIEW_FINAL_SKILL_MD)?;
-        // h3c-ppt workflow skill 已下线(workflow 功能转"开发中"):清理既有装机的残留
-        // 目录,否则 SkillRegistry 仍会从 disk 发现它、重新触发 phase 协议 prompt。
-        let _ = std::fs::remove_dir_all(self.skills_dir.join("h3c-ppt"));
+        for retired in ["h3c-ppt", "pinvou-review-plan", "pinvou-review-final"] {
+            let _ = std::fs::remove_dir_all(self.skills_dir.join(retired));
+        }
         Ok(())
     }
 
@@ -243,16 +228,13 @@ mod tests {
             !mcp.contains("{{PINVOU3_PRESENT_SERVER}}"),
             "mcp.json 的 server 路径占位符应被替换"
         );
-        // pinvou-review 内置 skills 应被写出。
-        assert!(
-            bundle.skills_dir.join("pinvou-review-plan/SKILL.md").is_file(),
-            "pinvou-review-plan SKILL.md 应被写出"
-        );
-        // h3c-ppt workflow skill 已下线:不应再被写出。
-        assert!(
-            !bundle.skills_dir.join("h3c-ppt").exists(),
-            "h3c-ppt 已下线,不应再解包"
-        );
+        // 已下线 skills(h3c-ppt / pinvou-review-*)不应再被写出。
+        for retired in ["h3c-ppt", "pinvou-review-plan", "pinvou-review-final"] {
+            assert!(
+                !bundle.skills_dir.join(retired).exists(),
+                "{retired} 已下线,不应再解包"
+            );
+        }
         let v = std::fs::read_to_string(paths::bundle_version_file()).unwrap();
         assert_eq!(v.trim(), BUNDLE_VERSION);
 
@@ -273,10 +255,6 @@ mod tests {
         assert!(
             INSTRUCTIONS_MD.contains("append_file` 只能追加到文件尾"),
             "全局 instructions 必须说明 append_file 是尾追加"
-        );
-        assert!(
-            PINVOU_REVIEW_PLAN_SKILL_MD.contains("append_file` 只能追加到文件尾"),
-            "Pinvou review 必须把 append_file 当中间插入/占位替换判为硬伤"
         );
     }
 
