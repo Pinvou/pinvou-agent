@@ -110,6 +110,101 @@
   // Plan 文本兜底卡片命中关键词（与 main.js 对齐）
   var PLAN_FALLBACK_KEYWORDS = ["方案", "步骤", "以下", "技术栈", "实现", "设计", "**"];
 
+  // ── bridge 层 UI 文案（系统消息/状态标签）──────────────────────
+  // bridge 在事件回调里生成文案,拿不到 React 的 t;按 state.settings.language 取词,中文兜底。
+  // 注意:发给 LLM 的指令、品悟触发语("🟣 触发品悟审方案"等协议串)不在此表,保持中文。
+  var BT_TABLE = {
+    en: {
+      newChatFailed: "⚠️ Failed to create chat: ", loadChatFailed: "⚠️ Failed to load chat: ", deleteFailed: "⚠️ Delete failed: ",
+      personaUnequipped: "🎴 Expert card removed: ",
+      planHistorical: "📜 Past plan", pinvouReviewed: "📜 Reviewed", planSuperseded: "📜 Superseded by a newer plan",
+      attachStillParsing: "⚠️ Attachment still parsing, try again shortly",
+      compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactAuto: " (auto)",
+      gpuUnavailable: "GPU info unavailable",
+      superOn: "⚠️ Super permission enabled", superOff: "Super permission disabled",
+      pinvouCriticalsRemain: function (n) { return "⚠️ Pinvou still has " + n + " CRITICAL item(s) undecided — decision card reopened"; },
+      pinvouGateBlocked: "⚠️ Pinvou gate blocked: ", gateStillBlockedTail: " — decision card reopened",
+      approved: "✅ Approved", echoGo: "✅ Do it", echoGoConfirmed: "✅ Do it (Pinvou's concerns acknowledged)",
+      exitGateBlocked: "⚠️ Pinvou EXIT GATE blocked: ", acceptPlanFailed: "⚠️ accept_plan failed: ", acceptStillFailed: "⚠️ accept_plan still failing: ",
+      pinvouExitGate: function (n) { return "⚠️ Pinvou EXIT GATE: " + n + " CRITICAL item(s) still undecided — decision card reopened"; },
+      exitedPlan: "🚪 Exited Plan", discardPlanFailed: "⚠️ discard_plan failed: ", exitPlanFailed: "⚠️ Failed to exit Plan: ", switchModeFailed: "⚠️ Failed to switch mode: ",
+      replanRequested: "📋 Asking the AI to re-plan…", adoptingPlan: "✅ Adopting...", adoptEcho: "✅ Adopt this plan",
+      openFailed: "⚠️ Open failed: ", pasteImageFailed: "⚠️ Paste image failed: ",
+      filePickUnavailable: "⚠️ File picker unavailable", filePickFailed: "⚠️ File selection failed: ",
+      setPinvouFailed: "⚠️ Failed to set Pinvou review: ",
+      pinvouAutoPlan: "🟣 Pinvou hasn't reviewed this plan — asking Pinvou to take a look first...",
+      pinvouAutoFinal: "🟣 Task finished — asking Pinvou to verify the output...",
+      skillLoadFailed: "⚠️ Failed to load skill: ",
+      overrideConfirmed: "👍 Pinvou's concerns acknowledged, continuing...",
+      gateStillBlocked: "⚠️ Pinvou gate still blocked: ",
+      revisingWithComment: "⊕ Your note included — asking the AI to revise...", revising: "↻ Asking the AI to revise the plan...",
+      echoWorry: "⊕ I'm also worried: ", echoReviseByPinvou: "↻ Revise per Pinvou's findings",
+      reviseTriggerFailed: "⚠️ Failed to trigger plan revision: ",
+      equipNoSession: "⚠️ Open or create a chat before equipping an expert", equipFailed: "⚠️ Equip failed: ",
+    },
+    ja: {
+      newChatFailed: "⚠️ 新規チャットの作成に失敗: ", loadChatFailed: "⚠️ チャットの読み込みに失敗: ", deleteFailed: "⚠️ 削除に失敗: ",
+      personaUnequipped: "🎴 エキスパートカードを外しました: ",
+      planHistorical: "📜 過去のプラン", pinvouReviewed: "📜 レビュー済み", planSuperseded: "📜 新しいプランで上書きされました",
+      attachStillParsing: "⚠️ 添付ファイルを解析中です。少し待ってから送信してください",
+      compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactAuto: "（自動）",
+      gpuUnavailable: "GPU 情報を取得できません",
+      superOn: "⚠️ スーパー権限が有効になりました", superOff: "スーパー権限が無効になりました",
+      pinvouCriticalsRemain: function (n) { return "⚠️ 品悟の CRITICAL が " + n + " 件未決のままです —— 決定カードを再表示しました"; },
+      pinvouGateBlocked: "⚠️ 品悟ゲートがブロック: ", gateStillBlockedTail: " —— 決定カードを再表示しました",
+      approved: "✅ 承認済み", echoGo: "✅ これでいく", echoGoConfirmed: "✅ これでいく（品悟の指摘を確認済み）",
+      exitGateBlocked: "⚠️ 品悟 EXIT GATE がブロック: ", acceptPlanFailed: "⚠️ accept_plan に失敗: ", acceptStillFailed: "⚠️ accept_plan が引き続き失敗: ",
+      pinvouExitGate: function (n) { return "⚠️ 品悟 EXIT GATE: CRITICAL が " + n + " 件未決 —— 決定カードを再表示しました"; },
+      exitedPlan: "🚪 Plan を終了", discardPlanFailed: "⚠️ discard_plan に失敗: ", exitPlanFailed: "⚠️ Plan の終了に失敗: ", switchModeFailed: "⚠️ モード切替に失敗: ",
+      replanRequested: "📋 AI にプランを出し直させています…", adoptingPlan: "✅ 採用中...", adoptEcho: "✅ このプランを採用",
+      openFailed: "⚠️ 開けませんでした: ", pasteImageFailed: "⚠️ 画像の貼り付けに失敗: ",
+      filePickUnavailable: "⚠️ ファイル選択を利用できません", filePickFailed: "⚠️ ファイル選択に失敗: ",
+      setPinvouFailed: "⚠️ 品悟レビュー設定に失敗: ",
+      pinvouAutoPlan: "🟣 品悟がまだこのプランを見ていません —— 先に品悟にレビューさせます...",
+      pinvouAutoFinal: "🟣 タスク完了 —— 品悟に成果物を検証させます...",
+      skillLoadFailed: "⚠️ skill の読み込みに失敗: ",
+      overrideConfirmed: "👍 品悟の指摘を確認し、続行します...",
+      gateStillBlocked: "⚠️ 品悟ゲートが引き続きブロック: ",
+      revisingWithComment: "⊕ あなたの意見を添えて AI に修正させています...", revising: "↻ AI にプランを修正させています...",
+      echoWorry: "⊕ 私も気になる: ", echoReviseByPinvou: "↻ 品悟の指摘どおり修正",
+      reviseTriggerFailed: "⚠️ プラン修正の起動に失敗: ",
+      equipNoSession: "⚠️ エキスパートを装備する前にチャットを開くか新規作成してください", equipFailed: "⚠️ 装備に失敗: ",
+    },
+    zh: {
+      newChatFailed: "⚠️ 新建对话失败: ", loadChatFailed: "⚠️ 加载对话失败: ", deleteFailed: "⚠️ 删除失败: ",
+      personaUnequipped: "🎴 已卸下专家卡牌: ",
+      planHistorical: "📜 历史方案", pinvouReviewed: "📜 已审阅", planSuperseded: "📜 已被新方案覆盖",
+      attachStillParsing: "⚠️ 附件还在解析,请稍后再发",
+      compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactAuto: "（自动）",
+      gpuUnavailable: "GPU 信息不可用",
+      superOn: "⚠️ 超级权限已开启", superOff: "超级权限已关闭",
+      pinvouCriticalsRemain: function (n) { return "⚠️ 品悟还有 " + n + " 个 CRITICAL 没拍板 —— 已重新打开决策卡"; },
+      pinvouGateBlocked: "⚠️ 品悟放行检查阻塞: ", gateStillBlockedTail: " —— 已重新打开决策卡",
+      approved: "✅ 已批准", echoGo: "✅ 就这么干", echoGoConfirmed: "✅ 就这么干(已确认品悟的顾虑)",
+      exitGateBlocked: "⚠️ Pinvou EXIT GATE 阻塞: ", acceptPlanFailed: "⚠️ accept_plan 失败: ", acceptStillFailed: "⚠️ accept_plan 仍失败: ",
+      pinvouExitGate: function (n) { return "⚠️ Pinvou EXIT GATE: 还有 " + n + " 个 CRITICAL 待拍板 —— 已重新打开决策卡"; },
+      exitedPlan: "🚪 已退出 Plan", discardPlanFailed: "⚠️ discard_plan 失败: ", exitPlanFailed: "⚠️ 退出 Plan 失败: ", switchModeFailed: "⚠️ 切换模式失败: ",
+      replanRequested: "📋 让 AI 重出方案…", adoptingPlan: "✅ 采纳中...", adoptEcho: "✅ 采纳此方案",
+      openFailed: "⚠️ 打开失败: ", pasteImageFailed: "⚠️ 粘贴图片失败: ",
+      filePickUnavailable: "⚠️ 文件选择不可用", filePickFailed: "⚠️ 选择文件失败: ",
+      setPinvouFailed: "⚠️ 设置品悟审批失败: ",
+      pinvouAutoPlan: "🟣 品悟还没看过这个方案 —— 自动让品悟先看一眼...",
+      pinvouAutoFinal: "🟣 任务完成 —— 让品悟核验一下产出...",
+      skillLoadFailed: "⚠️ 加载 skill 失败: ",
+      overrideConfirmed: "👍 已确认品悟的顾虑,继续执行...",
+      gateStillBlocked: "⚠️ 品悟放行检查仍阻塞: ",
+      revisingWithComment: "⊕ 已带上你的意见,正在让 AI 修订...", revising: "↻ 正在让 AI 修订方案...",
+      echoWorry: "⊕ 我也担心: ", echoReviseByPinvou: "↻ 按品悟意见改方案",
+      reviseTriggerFailed: "⚠️ 触发方案修订失败: ",
+      equipNoSession: "⚠️ 请先打开或新建一个对话再加持专家", equipFailed: "⚠️ 加持失败: ",
+    },
+  };
+  function bt(key) {
+    var lang = state.settings && state.settings.language;
+    var m = lang === "en" ? BT_TABLE.en : lang === "ja" ? BT_TABLE.ja : BT_TABLE.zh;
+    return m[key] !== undefined ? m[key] : BT_TABLE.zh[key];
+  }
+
   // ── Per-session 工作集缓冲（多 session 并发）────────────────────
   // active session 的工作集 = state.* + 上面那批模块级 stream 变量(保持原逻辑零改动)。
   // 后台 session 的工作集存在 sessionStates[id];后台事件进来时临时把工作集切到对应
@@ -299,7 +394,7 @@
       await syncActivePersona();
       notify();
     } catch (e) {
-      addSystemItem("⚠️ 新建对话失败: " + e);
+      addSystemItem(bt("newChatFailed") + e);
     }
   }
 
@@ -335,7 +430,7 @@
       notify();
       reconcileArtifacts(id); // 对账磁盘产物(修重启/跟踪遗漏导致的面板缺文件)
     } catch (e) {
-      addSystemItem("⚠️ 加载对话失败: " + e);
+      addSystemItem(bt("loadChatFailed") + e);
     }
   }
 
@@ -356,7 +451,7 @@
       }
       notify();
     } catch (e) {
-      addSystemItem("⚠️ 删除失败: " + e);
+      addSystemItem(bt("deleteFailed") + e);
     }
   }
 
@@ -432,7 +527,7 @@
         var ev = pe[k];
         if (isTail ? (ev.pos < atOrAfter) : (ev.pos !== atOrAfter)) continue;
         if (ev.kind === "equip" && ev.card) addChatItem({ type: "persona_equip", card: ev.card, time: "" });
-        else if (ev.kind === "unequip") addChatItem({ type: "system", text: "🎴 已卸下专家卡牌: " + (ev.name || ""), time: "" });
+        else if (ev.kind === "unequip") addChatItem({ type: "system", text: bt("personaUnequipped") + (ev.name || ""), time: "" });
       }
     }
     var pendingPersona = null; // 品悟触发 echo 命中后，标记下一条 assistant 为品悟回复
@@ -557,12 +652,12 @@
         addChatItem({
           type: "plan_card", plan: planSnap, todos: todosSnap,
           planMarkdown: composePlanMarkdown(snaps),
-          cardState: "frozen", resolved: true, statusLabel: "📜 历史方案", time: "",
+          cardState: "frozen", resolved: true, statusLabel: bt("planHistorical"), time: "",
         });
       }
       // 品悟审方案回复后 → 还原只读操作卡（决策痕迹由后续 user echo 体现，按钮不可再点）
       if (msgPersona === "pinvou-plan") {
-        addChatItem({ type: "pinvou_actions", resolved: true, statusLabel: "📜 已审阅", planMarkdown: null, report: null, time: "" });
+        addChatItem({ type: "pinvou_actions", resolved: true, statusLabel: bt("pinvouReviewed"), planMarkdown: null, report: null, time: "" });
       }
     }
     emitPersonaAt(state.messages.length, true); // 最后一条消息之后发生的卡牌事件(末尾加持/卸下)
@@ -772,7 +867,7 @@
     if (!text && readyAttachments.length === 0) return;
     // 还有解析中的附件 → 等
     if (state.attachments.some(function (a) { return a.status === "parsing"; })) {
-      addSystemItem("⚠️ 附件还在解析,请稍后再发");
+      addSystemItem(bt("attachStillParsing"));
       return;
     }
 
@@ -1054,10 +1149,10 @@
   listen("chat:compaction", function (e) { onSessionEvent(e, function () {
     var phase = e.payload && e.payload.phase;
     var msg = e.payload && e.payload.message || "";
-    var auto = e.payload && e.payload.auto ? "（自动）" : "";
-    if (phase === "start") addSystemItem("⏳ 正在压缩上下文" + auto + " " + msg);
-    else if (phase === "done") addSystemItem("✓ 上下文压缩完成" + auto + " " + msg);
-    else if (phase === "fail") addSystemItem("⚠️ 压缩失败" + auto + ": " + msg);
+    var auto = e.payload && e.payload.auto ? bt("compactAuto") : "";
+    if (phase === "start") addSystemItem(bt("compactStart") + auto + " " + msg);
+    else if (phase === "done") addSystemItem(bt("compactDone") + auto + " " + msg);
+    else if (phase === "fail") addSystemItem(bt("compactFail") + auto + ": " + msg);
   }); });
 
   // ── request_user_input：渲染选择卡片（不进 messages.json）─────────
@@ -1106,7 +1201,7 @@
     // 新方案出现 → 旧的 active 方案卡冻结
     state.chatItems.forEach(function (it) {
       if (it.type === "plan_card" && it.cardState === "active") {
-        it.cardState = "frozen"; it.statusLabel = "📜 已被新方案覆盖";
+        it.cardState = "frozen"; it.statusLabel = bt("planSuperseded");
       }
     });
     var snaps = { plan: p.plan_snapshot || null, todos: p.todos_snapshot || null };
@@ -1173,7 +1268,7 @@
       }
       // Format values for display
       snap._fmt = {
-        gpuName: snap.gpu ? snap.gpu.name : "GPU 信息不可用",
+        gpuName: snap.gpu ? snap.gpu.name : bt("gpuUnavailable"),
         gpuVram: snap.gpu && snap.gpu.vram_total_mib > 0
           ? fmtMiB(snap.gpu.vram_used_mib) + " / " + fmtMiB(snap.gpu.vram_total_mib) : "—",
         gpuVramPct: snap.gpu && snap.gpu.vram_total_mib > 0
@@ -1282,8 +1377,8 @@
     try {
       state.superPermEnabled = !!(await invoke("set_super_permission", { enabled: target }));
       addSystemItem(state.superPermEnabled
-        ? "⚠️ 超级权限已开启"
-        : "超级权限已关闭");
+        ? bt("superOn")
+        : bt("superOff"));
     } catch (e) {
       addSystemItem("⚠️ " + e);
       try { state.superPermEnabled = !!(await invoke("get_super_permission_status")); } catch (e2) {}
@@ -1399,16 +1494,16 @@
         // 让用户走 override / revise / 加一句出口,而不是落在系统提示死胡同。
         var n = (gate.detail && gate.detail.unresolved_count) || "?";
         surfacePinvouActionsCardFor(sid, planMarkdown || "", null,
-          "⚠️ 品悟还有 " + n + " 个 CRITICAL 没拍板 —— 已重新打开决策卡");
+          bt("pinvouCriticalsRemain")(n));
         notify();
         return;
       }
-      addSystemItemFor(sid, "⚠️ 品悟放行检查阻塞: " + (gate.message || ""));
+      addSystemItemFor(sid, bt("pinvouGateBlocked") + (gate.message || ""));
       notify();
       return;
     }
-    if (itemId) patchItemByIdFor(sid, itemId, { cardState: "approved", statusLabel: "✅ 已批准", resolved: true });
-    runOnSession(sid, function () { pushUserEcho(echo || "✅ 就这么干", true); state.busy = true; startThinking(); });
+    if (itemId) patchItemByIdFor(sid, itemId, { cardState: "approved", statusLabel: bt("approved"), resolved: true });
+    runOnSession(sid, function () { pushUserEcho(echo || bt("echoGo"), true); state.busy = true; startThinking(); });
     notify();
     try {
       var st = await invoke("accept_plan", { sessionId: sid, planMarkdown: planMarkdown || "" });
@@ -1426,21 +1521,21 @@
       if (gate2 && gate2.gate_error === "unresolved_critical") {
         var n2 = (gate2.detail && gate2.detail.unresolved_count) || "?";
         surfacePinvouActionsCardFor(sid, planMarkdown || "", null,
-          "⚠️ Pinvou EXIT GATE: 还有 " + n2 + " 个 CRITICAL 待拍板 —— 已重新打开决策卡");
+          bt("pinvouExitGate")(n2));
         notify();
         return;
       }
-      addSystemItemFor(sid, gate2 ? ("⚠️ Pinvou EXIT GATE 阻塞: " + (gate2.message || "")) : ("⚠️ accept_plan 失败: " + e));
+      addSystemItemFor(sid, gate2 ? (bt("exitGateBlocked") + (gate2.message || "")) : (bt("acceptPlanFailed") + e));
     }
     notify();
   }
   async function discardPlan(itemId) {
-    if (itemId) patchItemById(itemId, { cardState: "frozen", statusLabel: "🚪 已退出 Plan", resolved: true });
+    if (itemId) patchItemById(itemId, { cardState: "frozen", statusLabel: bt("exitedPlan"), resolved: true });
     if (!state.activeSessionId) { notify(); return; }
     try {
       var st = await invoke("discard_plan", { sessionId: state.activeSessionId });
       applyModeFromState(st);
-    } catch (e) { addSystemItem("⚠️ discard_plan 失败: " + e); }
+    } catch (e) { addSystemItem(bt("discardPlanFailed") + e); }
     notify();
   }
   async function exitPlanToYolo() {
@@ -1448,7 +1543,7 @@
     try {
       var st = await invoke("exit_plan_to_yolo", { sessionId: state.activeSessionId });
       applyModeFromState(st);
-    } catch (e) { addSystemItem("⚠️ 退出 Plan 失败: " + e); }
+    } catch (e) { addSystemItem(bt("exitPlanFailed") + e); }
     notify();
   }
   // 灯泡 toggle：plan ↔ yolo
@@ -1457,12 +1552,12 @@
     try {
       var st = await invoke("set_plan_mode_next", { sessionId: state.activeSessionId });
       applyModeFromState(st);
-    } catch (e) { addSystemItem("⚠️ 切换模式失败: " + e); }
+    } catch (e) { addSystemItem(bt("switchModeFailed") + e); }
     notify();
   }
   // plan-stuck / fallback / execution-stuck 卡片动作
   async function planStuckReplan(itemId) {
-    patchItemById(itemId, { resolved: true, statusLabel: "📋 让 AI 重出方案…" }); notify();
+    patchItemById(itemId, { resolved: true, statusLabel: bt("replanRequested") }); notify();
     await sendMessage("请用 update_plan 工具输出完整方案,不要直接调写工具。");
   }
   async function planStuckGo(itemId) {
@@ -1471,8 +1566,8 @@
     await sendMessage("按上面讨论的方案继续执行任务,直接写文件/跑命令,不要再讨论方案。");
   }
   async function planFallbackAccept(itemId, text) {
-    patchItemById(itemId, { resolved: true, statusLabel: "✅ 采纳中..." }); notify();
-    await acceptPlan(null, text || "", "✅ 采纳此方案");
+    patchItemById(itemId, { resolved: true, statusLabel: bt("adoptingPlan") }); notify();
+    await acceptPlan(null, text || "", bt("adoptEcho"));
   }
   async function planFallbackRetry(itemId) {
     patchItemById(itemId, { resolved: true }); notify();
@@ -1536,21 +1631,21 @@
     }
   }
   async function compactNow() {
-    try { await invoke("compact_now", { sessionId: state.activeSessionId }); } catch (e) { addSystemItem("⚠️ 压缩失败: " + e); }
+    try { await invoke("compact_now", { sessionId: state.activeSessionId }); } catch (e) { addSystemItem(bt("compactFail") + ": " + e); }
   }
 
   // ── 产物面板 ─────────────────────────────────────────────────────
   function artifactInfo(path) { return invoke("artifact_info", { path: path }); }
   function readArtifactText(path) { return invoke("read_artifact_text", { path: path }); }
-  function openContainingFolder(path) { return invoke("open_containing_folder", { path: path }).catch(function (e) { addSystemItem("⚠️ 打开目录失败: " + e); }); }
-  function openInSystem(path) { return invoke("open_in_system", { path: path }).catch(function (e) { addSystemItem("⚠️ 打开失败: " + e); }); }
+  function openContainingFolder(path) { return invoke("open_containing_folder", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
+  function openInSystem(path) { return invoke("open_in_system", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   // 仅放白名单 URL (metaso.cn / open.bochaai.com),后端 open_external_url 强制校验。
-  function openExternalUrl(url) { return invoke("open_external_url", { url: url }).catch(function (e) { addSystemItem("⚠️ 打开链接失败: " + e); }); }
+  function openExternalUrl(url) { return invoke("open_external_url", { url: url }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   // 外部打开产物：HTML 走 Tauri 独立窗口（绕沙箱），其他走系统应用
   function openArtifactExternal(path) {
     var ext = (String(path).split(".").pop() || "").toLowerCase();
     var cmd = (ext === "html" || ext === "htm") ? "open_artifact_window" : "open_in_system";
-    return invoke(cmd, { path: path }).catch(function (e) { addSystemItem("⚠️ 打开失败: " + e); });
+    return invoke(cmd, { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
   }
 
   // ── 附件 ────────────────────────────────────────────────────────
@@ -1568,7 +1663,7 @@
     try {
       var path = await invoke("save_paste_image", { filename: filename, bytes: bytes });
       await addAttachmentByPath(path);
-    } catch (e) { addSystemItem("⚠️ 粘贴图片失败: " + e); }
+    } catch (e) { addSystemItem(bt("pasteImageFailed") + e); }
   }
   function removeAttachment(id) {
     state.attachments = state.attachments.filter(function (a) { return a.id !== id; });
@@ -1577,13 +1672,13 @@
   function clearAttachments() { state.attachments = []; }
   // 打开系统文件选择器并摄入为附件
   async function pickAndAttach() {
-    if (!dialogOpen) { addSystemItem("⚠️ 文件选择不可用"); return; }
+    if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return; }
     try {
       var selected = await dialogOpen({ multiple: true });
       if (!selected) return;
       var paths = Array.isArray(selected) ? selected : [selected];
       for (var i = 0; i < paths.length; i++) { await addAttachmentByPath(paths[i]); }
-    } catch (e) { addSystemItem("⚠️ 选择文件失败: " + e); }
+    } catch (e) { addSystemItem(bt("filePickFailed") + e); }
   }
 
   // ── 品悟审批（基础封装；GATE 编排在 React 卡片层）────────────────
@@ -1594,7 +1689,7 @@
       var st = await invoke("set_pinvou_review", { sessionId: state.activeSessionId, enabled: !!enabled });
       if (st && st.mode) applyModeFromState(st);
       else state.modeState.pinvou_review_enabled = !!enabled;
-    } catch (e) { addSystemItem("⚠️ 设置品悟审批失败: " + e); }
+    } catch (e) { addSystemItem(bt("setPinvouFailed") + e); }
     notify();
   }
   function togglePinvouReview() { return setPinvouReview(!state.modeState.pinvou_review_enabled); }
@@ -1627,11 +1722,11 @@
     if (!sid) return;
     runOnSession(sid, function () {
       pendingPinvouReview = { planMarkdown: planMarkdown };
-      addSystemItem("🟣 品悟还没看过这个方案 —— 自动让品悟先看一眼...");
+      addSystemItem(bt("pinvouAutoPlan"));
     });
     var fullPrompt = "/pinvou-review-plan";
     try { var body = await invoke("read_skill_body", { name: "pinvou-review-plan" }); fullPrompt = buildPinvouPlanPrompt(body, planMarkdown); }
-    catch (e) { addSystemItemFor(sid, "⚠️ 加载 pinvou-review-plan skill 失败: " + e); }
+    catch (e) { addSystemItemFor(sid, bt("skillLoadFailed") + "pinvou-review-plan: " + e); }
     await dispatchPinvouTriggerFor(sid, "pinvou-plan", "🟣 触发品悟审方案", fullPrompt);
   }
   async function autoTriggerPinvouFinalFor(sid) {
@@ -1640,12 +1735,12 @@
     runSyncOnSession(sid, function () {
       pendingFinalReview = true;
       artifacts = (state.artifacts || []).slice();
-      addSystemItem("🟣 任务完成 —— 让品悟核验一下产出...");
+      addSystemItem(bt("pinvouAutoFinal"));
     });
     notify();
     var fullPrompt = "/pinvou-review-final";
     try { var body = await invoke("read_skill_body", { name: "pinvou-review-final" }); fullPrompt = buildPinvouFinalPrompt(body, artifacts); }
-    catch (e) { runSyncOnSession(sid, function () { addSystemItem("⚠️ 加载 pinvou-review-final skill 失败: " + e); }); }
+    catch (e) { runSyncOnSession(sid, function () { addSystemItem(bt("skillLoadFailed") + "pinvou-review-final: " + e); }); }
     await dispatchPinvouTriggerFor(sid, "pinvou-final", "🟣 触发品悟验收", fullPrompt);
   }
   async function autoTriggerPinvouFinal() {
@@ -1654,7 +1749,7 @@
   // 品悟 3 按钮之「✅ 确认继续执行」：override 所有 CRITICAL 后 accept_plan
   async function pinvouAcceptOverride(itemId, planMarkdown, report) {
     var sid = state.activeSessionId;
-    patchItemByIdFor(sid, itemId, { resolved: true, statusLabel: "👍 已确认品悟的顾虑,继续执行..." });
+    patchItemByIdFor(sid, itemId, { resolved: true, statusLabel: bt("overrideConfirmed") });
     if (!sid) { notify(); return; }
     var eff = report ? overrideAllCriticalInReport(report) : synthesizeOverriddenReport("Pinvou 用自然语言提了意见(见上方),用户阅读后决策");
     var fullMd = (planMarkdown || "") + "\n\n" + eff;
@@ -1669,17 +1764,17 @@
     }
     if (gate) {
       surfacePinvouActionsCardFor(sid, planMarkdown || "", report,
-        "⚠️ 品悟放行检查仍阻塞: " + (gate.message || "") + " —— 已重新打开决策卡");
+        bt("gateStillBlocked") + (gate.message || "") + bt("gateStillBlockedTail"));
       notify();
       return;
     }
-    runOnSession(sid, function () { pushUserEcho("✅ 就这么干(已确认品悟的顾虑)", true); state.busy = true; startThinking(); });
+    runOnSession(sid, function () { pushUserEcho(bt("echoGoConfirmed"), true); state.busy = true; startThinking(); });
     notify();
     try {
       var st = await invoke("accept_plan", { sessionId: sid, planMarkdown: fullMd });
       runOnSession(sid, function () { applyModeFromState(st); });
     } catch (e) {
-      addSystemItemFor(sid, "⚠️ accept_plan 仍失败: " + e);
+      addSystemItemFor(sid, bt("acceptStillFailed") + e);
       runOnSession(sid, function () { state.busy = false; });
     }
     notify();
@@ -1693,10 +1788,10 @@
     var hasComment = !!(userComment && userComment.trim());
     patchItemByIdFor(sid, itemId, {
       resolved: true,
-      statusLabel: hasComment ? "⊕ 已带上你的意见,正在让 AI 修订..." : "↻ 正在让 AI 修订方案...",
+      statusLabel: hasComment ? bt("revisingWithComment") : bt("revising"),
     });
     if (!sid) { notify(); return; }
-    var displayText = hasComment ? ("⊕ 我也担心: " + userComment.trim()) : "↻ 按品悟意见改方案";
+    var displayText = hasComment ? (bt("echoWorry") + userComment.trim()) : bt("echoReviseByPinvou");
     var instruction =
       "根据品悟意见修订当前方案。只更新方案,不要执行文件写入或命令。\n" +
       "你必须调用 update_plan 输出新版方案卡,然后停下来等用户拍板。\n\n" +
@@ -1717,7 +1812,7 @@
       await doSendFor(sid, instruction, displayText, []);
     } catch (e) {
       patchItemByIdFor(sid, itemId, { resolved: false, statusLabel: "" });
-      addSystemItemFor(sid, "⚠️ 触发方案修订失败: " + e);
+      addSystemItemFor(sid, bt("reviseTriggerFailed") + e);
       notify();
     }
   }
@@ -1760,7 +1855,15 @@
   // 给当前 session 加持一张专家面具。后端存 persona_id + 每 turn 注入人设;
   // 前端记 activePersona(挂件) + 发一条系统消息播报。
   // 取专家显示名(兼容 Side A 的 cn_name / Side B 的 name)。
-  function personaName(p) { return (p && (p.name || p.cn_name)) || ""; }
+  function personaName(p) {
+    if (!p) return "";
+    // 内置卡名按 UI 语言显示(personas-i18n.js overlay),中文兜底;自制卡不翻
+    var lang = state.settings && state.settings.language;
+    var L = lang === "en" ? "en" : lang === "ja" ? "ja" : null;
+    var tr = L && p.source !== "user" && window.PERSONA_I18N && window.PERSONA_I18N[p.id] && window.PERSONA_I18N[p.id][L];
+    if (tr && tr.name) return tr.name;
+    return (p.name || p.cn_name) || "";
+  }
   // 记一条卡牌事件到时间线 sidecar(pos=当前 messages 数),并落盘。重载历史时按 pos 插回。
   function recordPersonaEvent(ev) {
     if (!state.activeSessionId) return;
@@ -1771,13 +1874,13 @@
     invoke("save_session_persona_events", { sessionId: sid, events: snapshot }).catch(function () {});
   }
   async function equipPersona(personaId) {
-    if (!state.activeSessionId) { addSystemItem("⚠️ 请先打开或新建一个对话再加持专家"); return; }
+    if (!state.activeSessionId) { addSystemItem(bt("equipNoSession")); return; }
     var prev = state.activePersona; // 换卡前的旧专家(同 session 切换时先播报卸下)
     try {
       var card = await invoke("equip_persona", { sessionId: state.activeSessionId, personaId: personaId });
       // 同 session 换了一张不同的卡 → 先弹一条"已卸下旧专家",再弹新加持。
       if (prev && prev.id !== card.id) {
-        addChatItem({ type: "system", text: "🎴 已卸下专家卡牌: " + personaName(prev), time: timeStr() });
+        addChatItem({ type: "system", text: bt("personaUnequipped") + personaName(prev), time: timeStr() });
         recordPersonaEvent({ kind: "unequip", name: personaName(prev) });
       }
       state.activePersona = card;
@@ -1785,7 +1888,7 @@
       recordPersonaEvent({ kind: "equip", card: card });
       notify();
       return card;
-    } catch (e) { addSystemItem("⚠️ 加持失败: " + e); return null; }
+    } catch (e) { addSystemItem(bt("equipFailed") + e); return null; }
   }
   // 摘下当前 session 的专家面具。
   async function unequipPersona() {
@@ -1793,7 +1896,7 @@
     var prev = state.activePersona;
     try { await invoke("unequip_persona", { sessionId: state.activeSessionId }); } catch (e) { /* 忽略,前端照样摘 */ }
     state.activePersona = null;
-    if (prev) { addChatItem({ type: "system", text: "🎴 已卸下专家卡牌: " + personaName(prev), time: timeStr() }); recordPersonaEvent({ kind: "unequip", name: personaName(prev) }); }
+    if (prev) { addChatItem({ type: "system", text: bt("personaUnequipped") + personaName(prev), time: timeStr() }); recordPersonaEvent({ kind: "unequip", name: personaName(prev) }); }
     notify();
   }
   // 切换/重载 session 后,从后端拉该 session 的加持状态还原挂件(backend 是真相)。

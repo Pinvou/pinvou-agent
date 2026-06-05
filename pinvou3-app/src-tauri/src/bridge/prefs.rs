@@ -38,6 +38,10 @@ pub enum Language {
     ZhHans,
     #[serde(rename = "en")]
     En,
+    /// 日语。底座 prompts.rs 的 translation_target_language_for_tag 已认识 "ja"，
+    /// LLM 回复语言链路零改动。
+    #[serde(rename = "ja")]
+    Ja,
 }
 impl Default for Language {
     fn default() -> Self {
@@ -49,6 +53,7 @@ impl Language {
         match self {
             Language::ZhHans => "zh-Hans",
             Language::En => "en",
+            Language::Ja => "ja",
         }
     }
 }
@@ -205,12 +210,21 @@ mod tests {
             r#""zh-Hans""#
         );
         assert_eq!(serde_json::to_string(&Language::En).unwrap(), r#""en""#);
+        assert_eq!(serde_json::to_string(&Language::Ja).unwrap(), r#""ja""#);
     }
 
     #[test]
     fn locale_tag_helper() {
         assert_eq!(Language::ZhHans.locale_tag(), "zh-Hans");
         assert_eq!(Language::En.locale_tag(), "en");
+        assert_eq!(Language::Ja.locale_tag(), "ja");
+    }
+
+    #[test]
+    fn language_ja_roundtrip() {
+        let json = r#"{"theme":"genesis","language":"ja"}"#;
+        let prefs: UserPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.language, Language::Ja);
     }
 
     #[test]
