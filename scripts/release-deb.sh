@@ -34,7 +34,8 @@ echo "=== 发布 pinvou3 v$VERSION ==="
 # ── 2. 构建 deb（前端纯静态无构建步骤,tauri build 直接打包）──────
 (cd "$APP_DIR" && npx tauri build)
 
-DEB="$APP_DIR/src-tauri/target/release/bundle/deb/pinvou3_${VERSION}_amd64.deb"
+ARCH=$(dpkg --print-architecture 2>/dev/null || echo "amd64")
+DEB="$APP_DIR/src-tauri/target/release/bundle/deb/pinvou3_${VERSION}_${ARCH}.deb"
 if [ ! -f "$DEB" ]; then
   echo "deb 产物不存在: $DEB" >&2
   exit 1
@@ -47,7 +48,7 @@ PUB_DATE=$(date -u +%FT%TZ)
 TMP_JSON=$(mktemp)
 jq -n \
   --arg version "$VERSION" --arg notes "$NOTES" --arg pub_date "$PUB_DATE" \
-  --arg url "$BASE_URL/pinvou3_${VERSION}_amd64.deb" --arg sha256 "$SHA256" \
+  --arg url "$BASE_URL/pinvou3_${VERSION}_${ARCH}.deb" --arg sha256 "$SHA256" \
   --argjson size "$SIZE" \
   '{version: $version, notes: $notes, pub_date: $pub_date, url: $url, sha256: $sha256, size: $size}' \
   > "$TMP_JSON"
