@@ -592,8 +592,14 @@ pub async fn artifact_info(path: String) -> Result<ArtifactInfo, String> {
         "docx" | "pptx" | "odt" => "docx",
         "xlsx" | "ods" => "xlsx",
         "doc" | "ppt" | "xls" | "rtf" => "legacy_office",
-        "txt" | "log" | "csv" | "json" | "yaml" | "yml" | "toml" | "xml" | "rs" | "py" | "js"
-        | "ts" | "go" | "c" | "cpp" | "h" | "hpp" | "sh" => "text",
+        "txt" | "log" | "csv" | "json" | "yaml" | "yml" | "toml" | "xml"
+        | "rs" | "py" | "js" | "ts" | "go" | "c" | "cpp" | "h" | "hpp" | "sh"
+        | "bash" | "zsh" | "fish" | "bat" | "cmd" | "ps1"
+        | "pl" | "pm" | "lua" | "swift" | "kt" | "kts" | "scala" | "groovy" | "dart"
+        | "r" | "m" | "jl" | "erl" | "hrl"
+        | "css" | "scss" | "sass" | "less" | "vue" | "svelte" | "mdx"
+        | "sql" | "ini" | "conf" | "cfg" | "env" | "properties" | "reg"
+        | "diff" | "patch" | "lock" | "proto" | "graphql" | "gql" | "prisma" => "text",
         _ => "binary",
     };
     let modified = meta
