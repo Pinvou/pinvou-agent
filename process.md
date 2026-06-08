@@ -2,7 +2,7 @@
 
 跨阶段定位 + 关键决策 + 待排期事项。**每条一句话,细节走 git log + `docs/`。**
 
-最后更新: 2026-06-03
+最后更新: 2026-06-08
 
 ---
 
@@ -36,6 +36,7 @@
 
 **🟡 中等**
 - **prompt 减肥二期（C 类）**：剩余大头在 submodule 无 override（Personality / Mode·Approval×3 / Compaction 模板 等 ~8K），要加 override hook 或改 fork；memory `prompt-slimming-task` 有地形 + 红线
+- **vLLM context 显式生效**：设置页已先做本机 vLLM 检测按钮（只回填 base_url/model,不影响 Engine budget）；待加 `advanced.custom_context_window_tokens` 或同等 override，让 `/v1/models.max_model_len` 可显式驱动 `context_window_for_model` / `context_input_budget`，并把 compact `token_threshold` 从固定 190K 改为按有效窗口动态计算（保留 nice < emergency ≥20K margin）
 - **WorkFlow 视图编排**（差异化最强，用户要做）：卡=skill 非 agent，pinvou3 已有 skill 池骨架（`list_skills_v2`+`SkillCard`+`start_skill_session`），P0 加搜索/分类/富元数据；候选源 `agency-agents-zh`（215 中文角色/MIT，人格卡需策展瘦身）
 - **GUI subagent 体验**：串行视图 / 内部 timeline 卡片 + Settings toggle 启用（当前需 env override）
 - **品悟新方案**：v2 嘴替 review（EXIT GATE + 3 节点 + PinvouToggle/PinvouActionsCard/紫色气泡）已于 2026-06-05 自源码整体移除（review_gate.rs / 4 个 command / 2 个内置 skill / 前端全链路，bundle 0.7 清理装机残留）。原「outside voice §4.3 独立性」待办随 v2 一并撤销。v3 三人协同原型留在 worktree `pinvou3-v3-DO-NOT-DELETE`（分支 `feat/pingwu-v3-prototype`，未合入）。新方案另行设计

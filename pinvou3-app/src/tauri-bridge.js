@@ -1244,6 +1244,9 @@
       console.warn("save settings and restart failed", e);
     }
   }
+  async function discoverLocalVllm(request) {
+    return await invoke("discover_local_vllm", { request: request || null });
+  }
 
   // ── Super permission ─────────────────────────────────────────────
   async function refreshSuperPerm() {
@@ -1657,6 +1660,7 @@
     stopMonitorPolling: stopMonitorPolling,
     saveSettings: saveSettings,
     saveSettingsAndRestart: saveSettingsAndRestart,
+    discoverLocalVllm: discoverLocalVllm,
     toggleSuperPerm: toggleSuperPerm,
     renderMarkdown: renderMarkdown,
     // Plan/YOLO

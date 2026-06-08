@@ -180,6 +180,18 @@
         customModelName: '模型名称',
         customBaseUrl: 'API 地址',
         customApiKey: 'API Key',
+        detectLocalVllm: '检测本机 vLLM',
+        detectingLocalVllm: '检测中…',
+        useVllmConfig: '使用此配置',
+        vllmDetectFound: n => `检测到 ${n} 个可用实例`,
+        vllmDetectNone: '未检测到可用的本机 vLLM',
+        vllmDetectError: e => `检测失败: ${e}`,
+        vllmDetectOffline: '离线',
+        vllmDetectReady: '可用',
+        vllmDetectBusy: '忙碌',
+        vllmDetectedModel: '模型',
+        vllmDetectedContext: '上下文',
+        vllmDetectHint: '仅检测 127.0.0.1 / localhost 的 8000-8002 端口；使用后仍需保存并重启。',
         confirmAndRestart: '保存并重启',
         modelDirtyHint: '配置已修改，保存后应用将重启',
         sysPerm: '系统权限', sudo: '高级执行权限 (Sudo)', sudoDesc: '允许助手执行环境配置等高级指令',
@@ -321,6 +333,18 @@
         customModelName: 'Model Name',
         customBaseUrl: 'API Base URL',
         customApiKey: 'API Key',
+        detectLocalVllm: 'Detect local vLLM',
+        detectingLocalVllm: 'Detecting…',
+        useVllmConfig: 'Use config',
+        vllmDetectFound: n => `${n} available instance${n === 1 ? '' : 's'} found`,
+        vllmDetectNone: 'No local vLLM instance found',
+        vllmDetectError: e => `Detection failed: ${e}`,
+        vllmDetectOffline: 'Offline',
+        vllmDetectReady: 'Ready',
+        vllmDetectBusy: 'Busy',
+        vllmDetectedModel: 'Model',
+        vllmDetectedContext: 'Context',
+        vllmDetectHint: 'Checks only 127.0.0.1 / localhost ports 8000-8002. Save and restart to apply.',
         confirmAndRestart: 'Save & Restart',
         modelDirtyHint: 'Configuration changed — saving will restart the app',
         sysPerm: 'System Permissions', sudo: 'Sudo Access', sudoDesc: 'Allow assistant to run high-privilege commands',
@@ -462,6 +486,18 @@
         customModelName: 'モデル名',
         customBaseUrl: 'API ベース URL',
         customApiKey: 'API Key',
+        detectLocalVllm: 'ローカル vLLM を検出',
+        detectingLocalVllm: '検出中…',
+        useVllmConfig: 'この設定を使用',
+        vllmDetectFound: n => `${n} 個の利用可能なインスタンスを検出`,
+        vllmDetectNone: '利用可能なローカル vLLM は見つかりません',
+        vllmDetectError: e => `検出に失敗: ${e}`,
+        vllmDetectOffline: 'オフライン',
+        vllmDetectReady: '利用可',
+        vllmDetectBusy: 'ビジー',
+        vllmDetectedModel: 'モデル',
+        vllmDetectedContext: 'コンテキスト',
+        vllmDetectHint: '127.0.0.1 / localhost の 8000-8002 ポートのみ検出します。反映には保存して再起動してください。',
         confirmAndRestart: '保存して再起動',
         modelDirtyHint: '設定が変更されました。保存するとアプリが再起動します',
         sysPerm: 'システム権限', sudo: '高度な実行権限 (Sudo)', sudoDesc: 'アシスタントによる環境設定などの高度なコマンド実行を許可',
@@ -1018,6 +1054,7 @@
                 customModelName={customModelName} setCustomModelName={handleSetCustomModelName}
                 customBaseUrl={customBaseUrl} setCustomBaseUrl={handleSetCustomBaseUrl}
                 customApiKey={customApiKey} setCustomApiKey={handleSetCustomApiKey}
+                savedModel={savedModel}
                 onConfirmModelConfig={handleConfirmModelConfig}
                 modelConfigDirty={modelConfigDirty}
                 searchNeedsRestart={searchNeedsRestart}
@@ -1323,8 +1360,10 @@
       </div>
     );
 
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, modelPreset, onChangeModelPreset, customModelName, setCustomModelName, customBaseUrl, setCustomBaseUrl, customApiKey, setCustomApiKey, onConfirmModelConfig, modelConfigDirty, searchNeedsRestart, onRestartApp, bs, t }) => {
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, modelPreset, onChangeModelPreset, customModelName, setCustomModelName, customBaseUrl, setCustomBaseUrl, customApiKey, setCustomApiKey, savedModel, onConfirmModelConfig, modelConfigDirty, searchNeedsRestart, onRestartApp, bs, t }) => {
       const isDark = activeTheme === 'dark';
+      const [vllmDiscovery, setVllmDiscovery] = useState(null);
+      const [vllmDiscovering, setVllmDiscovering] = useState(false);
       const presetOptions = [
         { key: 'local_vllm',  label: t.modelPresetLocalVllm },
         { key: 'deepseek',    label: t.modelPresetDeepseek },
@@ -1336,6 +1375,34 @@
         { key: 'glm',         label: t.modelPresetGlm },
         { key: 'mimo',        label: t.modelPresetMimo },
       ];
+      const vllmOnlineCandidates = vllmDiscovery && vllmDiscovery.candidates
+        ? vllmDiscovery.candidates.filter(c => c.status !== 'offline')
+        : [];
+      async function handleDetectLocalVllm() {
+        if (!bridge.available || vllmDiscovering) return;
+        setVllmDiscovering(true);
+        setVllmDiscovery(null);
+        try {
+          const result = await bridge.discoverLocalVllm({
+            currentBaseUrl: customBaseUrl,
+            savedBaseUrl: savedModel && savedModel.baseUrl,
+          });
+          setVllmDiscovery({ candidates: (result && result.candidates) || [] });
+        } catch (e) {
+          setVllmDiscovery({ error: String(e) });
+        } finally {
+          setVllmDiscovering(false);
+        }
+      }
+      function handleUseVllmCandidate(candidate) {
+        if (!candidate) return;
+        if (candidate.base_url) setCustomBaseUrl(candidate.base_url);
+        if (candidate.model) setCustomModelName(candidate.model);
+        setCustomApiKey('');
+      }
+      function vllmStatusLabel(status) {
+        return status === 'busy' ? t.vllmDetectBusy : status === 'ready' ? t.vllmDetectReady : t.vllmDetectOffline;
+      }
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
 
@@ -1373,10 +1440,60 @@
                       value={customModelName} onChange={e => setCustomModelName(e.target.value)} />
                     <SField isDark={isDark} label={t.customBaseUrl} type="text"
                       value={customBaseUrl} onChange={e => setCustomBaseUrl(e.target.value)} />
-                    <SField isDark={isDark} label={t.customApiKey} type="password"
-                      value={customApiKey} onChange={e => setCustomApiKey(e.target.value)}
-                      placeholder={modelPreset === 'local_vllm' ? 'local-no-auth' : 'sk-...'} />
-                  </div>
+	                    <SField isDark={isDark} label={t.customApiKey} type="password"
+	                      value={customApiKey} onChange={e => setCustomApiKey(e.target.value)}
+	                      placeholder={modelPreset === 'local_vllm' ? 'local-no-auth' : 'sk-...'} />
+	                    {modelPreset === 'local_vllm' && (
+	                      <div className={`rounded-xl border p-3 space-y-3 ${isDark ? 'border-[#333537] bg-[#131314]' : 'border-[#E0E3E7] bg-white'}`}>
+	                        <div className="flex items-center justify-between gap-3">
+	                          <span className={`text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{t.vllmDetectHint}</span>
+	                          <button
+	                            onClick={handleDetectLocalVllm}
+	                            disabled={vllmDiscovering || !bridge.available}
+	                            className={`shrink-0 text-[13px] font-medium px-4 py-2 rounded-full transition-colors disabled:opacity-60 ${
+	                              isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#333537]'
+	                                     : 'bg-[#F0F4F9] text-[#1F1F1F] hover:bg-[#E8EAED]'
+	                            }`}
+	                          >{vllmDiscovering ? t.detectingLocalVllm : t.detectLocalVllm}</button>
+	                        </div>
+	                        {vllmDiscovery && vllmDiscovery.error && (
+	                          <div className={`text-[12px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>
+	                            {t.vllmDetectError(vllmDiscovery.error)}
+	                          </div>
+	                        )}
+	                        {vllmDiscovery && !vllmDiscovery.error && (
+	                          <div className="space-y-2">
+	                            <div className={`text-[12px] ${vllmOnlineCandidates.length ? (isDark ? 'text-[#93D5A6]' : 'text-[#137333]') : (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]')}`}>
+	                              {vllmOnlineCandidates.length ? t.vllmDetectFound(vllmOnlineCandidates.length) : t.vllmDetectNone}
+	                            </div>
+	                            {vllmOnlineCandidates.map(candidate => {
+	                              return (
+	                                <div key={candidate.base_url} className={`flex items-center justify-between gap-3 rounded-lg px-3 py-2 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F8FAFD]'}`}>
+	                                  <div className="min-w-0">
+	                                    <div className="flex items-center gap-2">
+	                                      <span className="w-2 h-2 rounded-full bg-[#34A853]"></span>
+	                                      <span className={`text-[13px] font-medium truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{candidate.base_url}</span>
+	                                      <span className={`text-[11px] uppercase ${isDark ? 'text-[#93D5A6]' : 'text-[#137333]'}`}>{vllmStatusLabel(candidate.status)}</span>
+	                                    </div>
+	                                    <div className={`mt-1 text-[12px] truncate ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
+	                                      {t.vllmDetectedModel}: {candidate.model || '—'} · {t.vllmDetectedContext}: {candidate.max_model_len || '—'}
+	                                    </div>
+	                                  </div>
+	                                  <button
+	                                    onClick={() => handleUseVllmCandidate(candidate)}
+	                                    className={`shrink-0 text-[12px] font-medium px-3 py-1.5 rounded-full transition-colors ${
+	                                      isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]'
+	                                             : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'
+	                                    }`}
+	                                  >{t.useVllmConfig}</button>
+	                                </div>
+	                              );
+	                            })}
+	                          </div>
+	                        )}
+	                      </div>
+	                    )}
+	                  </div>
 
                   {modelConfigDirty && (
                     <SActionBar isDark={isDark} message={t.modelDirtyHint}

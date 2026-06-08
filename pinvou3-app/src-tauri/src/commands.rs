@@ -7,6 +7,7 @@
 //! - `clear_session()`       — 清前端显示（MVP）；后端 session 重启 app 才真清
 //! - `get_monitor_snapshot()`— Monitor 视图完整数据
 //! - `get_backend_status()`  — ChatRoom 顶部 live dot 用，简版健康指示
+//! - `discover_local_vllm()` — 设置页手动探测本机 vLLM 候选端点
 //!
 //! 阶段 C 新增（多对话历史）：
 //! - `list_sessions()` / `create_session()` / `load_session(id)`
@@ -15,7 +16,7 @@
 use deepseek_tui::models::Message;
 use deepseek_tui::session_manager::{SavedSession, SessionMetadata};
 use deepseek_tui::tools::user_input::{UserInputAnswer, UserInputResponse};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::bridge::mode_state::{PlanPhase, SerializableMode, SessionModeState};
@@ -328,6 +329,84 @@ pub async fn get_monitor_snapshot(
     monitor: State<'_, MonitorState>,
 ) -> Result<MonitorSnapshot, String> {
     Ok(crate::monitor::sample_all(&monitor, &crate::monitor::vllm_base_url()).await)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoverLocalVllmRequest {
+    pub current_base_url: Option<String>,
+    pub saved_base_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LocalVllmCandidate {
+    pub base_url: String,
+    pub status: VllmStatus,
+    pub model: Option<String>,
+    pub max_model_len: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LocalVllmDiscovery {
+    pub candidates: Vec<LocalVllmCandidate>,
+}
+
+/// 手动探测本机 vLLM。只探小白名单候选地址；不做端口扫描,不探局域网。
+#[tauri::command]
+pub async fn discover_local_vllm(
+    request: Option<DiscoverLocalVllmRequest>,
+) -> Result<LocalVllmDiscovery, String> {
+    let mut urls = Vec::new();
+    if let Some(req) = request {
+        push_local_vllm_candidate(&mut urls, req.current_base_url.as_deref());
+        push_local_vllm_candidate(&mut urls, req.saved_base_url.as_deref());
+    }
+    for port in [8000u16, 8001, 8002] {
+        push_local_vllm_candidate(&mut urls, Some(&format!("http://127.0.0.1:{port}/v1")));
+    }
+
+    let mut candidates = Vec::new();
+    for base_url in urls {
+        if let Some(snapshot) = crate::monitor::vllm_snapshot(&base_url).await {
+            candidates.push(LocalVllmCandidate {
+                base_url: snapshot.upstream,
+                status: snapshot.status,
+                model: snapshot.model,
+                max_model_len: snapshot.max_model_len,
+            });
+        }
+    }
+    Ok(LocalVllmDiscovery { candidates })
+}
+
+fn push_local_vllm_candidate(out: &mut Vec<String>, raw: Option<&str>) {
+    let Some(raw) = raw else {
+        return;
+    };
+    let Some(url) = normalize_local_vllm_base_url(raw) else {
+        return;
+    };
+    if !out.iter().any(|existing| existing == &url) {
+        out.push(url);
+    }
+}
+
+fn normalize_local_vllm_base_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    let rest = trimmed.strip_prefix("http://")?;
+    let host_port = rest.split('/').next()?;
+    let (host, port) = host_port.rsplit_once(':')?;
+    if !matches!(host, "127.0.0.1" | "localhost" | "[::1]") {
+        return None;
+    }
+    let port: u16 = port.parse().ok()?;
+    if !matches!(port, 8000 | 8001 | 8002) {
+        return None;
+    }
+    Some(format!("http://{host}:{port}/v1"))
 }
 
 /// ChatRoom 顶部 live dot 简版指示：vLLM 是否在线。

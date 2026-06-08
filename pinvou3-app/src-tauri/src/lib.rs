@@ -129,6 +129,7 @@ pub fn run() {
             commands::clear_session,
             commands::get_monitor_snapshot,
             commands::get_backend_status,
+            commands::discover_local_vllm,
             commands::list_sessions,
             commands::create_session,
             commands::load_session,
