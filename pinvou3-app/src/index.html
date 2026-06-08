@@ -1192,6 +1192,8 @@
       const swapPct = fmt ? fmt.swapPct : 0;
       const swapTotal = fmt ? fmt.swapTotal : '—';
       const vllmModel = fmt ? fmt.vllmModel : '—';
+      const vllmConfiguredModel = fmt ? fmt.vllmConfiguredModel : null;
+      const vllmModelMismatch = fmt ? fmt.vllmModelMismatch : false;
       const vllmStatus = fmt ? fmt.vllmStatus : 'OFFLINE';
       const vllmOnline = fmt ? fmt.vllmOnline : false;
       const vllmUpstream = fmt ? fmt.vllmUpstream : '—';
@@ -1264,8 +1266,13 @@
 
               <WidgetCard title={t.vllm} theme={theme}>
                  <div className="flex items-start justify-between mb-8">
-                  <div>
+                  <div className="min-w-0">
                     <h3 className="text-[22px] font-medium mb-1">{vllmModel}</h3>
+                    {vllmModelMismatch && vllmConfiguredModel && (
+                      <p className={`text-[12px] truncate ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>
+                        配置: {vllmConfiguredModel}
+                      </p>
+                    )}
                     <p className={`text-[13px] font-mono ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{vllmUpstream}</p>
                   </div>
                   <div className={`px-3 py-1 rounded-full flex items-center gap-2 ${vllmOnline ? (isDark ? 'bg-[#0F5223] text-[#93D5A6]' : 'bg-[#E6F4EA] text-[#137333]') : (isDark ? 'bg-[#5C2020] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]')}`}>

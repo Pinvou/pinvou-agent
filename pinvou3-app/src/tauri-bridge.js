@@ -1169,6 +1169,9 @@
         swapTotal: snap.ram ? fmtKiB(snap.ram.swap_total_kib) : "—",
         swapPct: snap.ram && snap.ram.swap_total_kib > 0 ? Math.round(snap.ram.swap_used_kib / snap.ram.swap_total_kib * 100) : 0,
         vllmModel: snap.vllm ? (snap.vllm.model || "—") : "—",
+        vllmConfiguredModel: snap.vllm ? (snap.vllm.configured_model || null) : null,
+        vllmModelMismatch: snap.vllm && snap.vllm.configured_model && snap.vllm.model
+          ? snap.vllm.configured_model !== snap.vllm.model : false,
         vllmStatus: snap.vllm ? snap.vllm.status.toUpperCase() : "OFFLINE",
         vllmOnline: snap.vllm ? snap.vllm.status !== "offline" : false,
         vllmUpstream: snap.vllm ? (snap.vllm.upstream || "—") : "—",

@@ -328,7 +328,13 @@ pub async fn clear_session() -> Result<(), String> {
 pub async fn get_monitor_snapshot(
     monitor: State<'_, MonitorState>,
 ) -> Result<MonitorSnapshot, String> {
-    Ok(crate::monitor::sample_all(&monitor, &crate::monitor::vllm_base_url()).await)
+    let snapshot = crate::monitor::sample_all(
+        &monitor,
+        &crate::monitor::vllm_base_url(),
+        crate::monitor::vllm_configured_model(),
+    )
+    .await;
+    Ok(snapshot)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -367,7 +373,7 @@ pub async fn discover_local_vllm(
 
     let mut candidates = Vec::new();
     for base_url in urls {
-        if let Some(snapshot) = crate::monitor::vllm_snapshot(&base_url).await {
+        if let Some(snapshot) = crate::monitor::vllm_snapshot(&base_url, None).await {
             candidates.push(LocalVllmCandidate {
                 base_url: snapshot.upstream,
                 status: snapshot.status,
@@ -419,7 +425,11 @@ pub struct BackendStatus {
 #[tauri::command]
 pub async fn get_backend_status(_monitor: State<'_, MonitorState>) -> Result<BackendStatus, String> {
     // Lightweight: 只 probe vLLM,不跑 nvidia-smi / RAM 采样
-    let vllm = crate::monitor::vllm_snapshot(&crate::monitor::vllm_base_url()).await;
+    let vllm = crate::monitor::vllm_snapshot(
+        &crate::monitor::vllm_base_url(),
+        crate::monitor::vllm_configured_model(),
+    )
+    .await;
     let vllm_online = matches!(
         vllm.as_ref().map(|v| v.status),
         Some(VllmStatus::Ready) | Some(VllmStatus::Busy)

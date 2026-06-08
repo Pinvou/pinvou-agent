@@ -45,7 +45,10 @@ pub struct RamSnapshot {
 #[derive(Debug, Clone, Serialize)]
 pub struct VllmSnapshot {
     pub status: VllmStatus,
+    /// vLLM `/v1/models` 返回的真实模型名。
     pub model: Option<String>,
+    /// 用户 settings 中配置的模型名（与 `model` 可能不同）。
+    pub configured_model: Option<String>,
     pub upstream: String,
     pub max_model_len: Option<u32>,
     pub num_requests_running: Option<f64>,
@@ -89,7 +92,7 @@ impl MonitorState {
     }
 }
 
-pub async fn sample_all(state: &MonitorState, vllm_upstream: &str) -> MonitorSnapshot {
+pub async fn sample_all(state: &MonitorState, vllm_upstream: &str, configured_model: Option<String>) -> MonitorSnapshot {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -98,7 +101,7 @@ pub async fn sample_all(state: &MonitorState, vllm_upstream: &str) -> MonitorSna
         generated_at_ms: now_ms,
         gpu: gpu_snapshot(),
         ram: ram_snapshot(),
-        vllm: vllm_snapshot(vllm_upstream).await,
+        vllm: vllm_snapshot(vllm_upstream, configured_model).await,
         app: AppSnapshot {
             pinvou3_version: env!("CARGO_PKG_VERSION"),
             deepseek_tui_version: env!("CARGO_PKG_VERSION"), // TODO: 从 deepseek-tui crate 取
@@ -184,7 +187,7 @@ fn ram_snapshot() -> Option<RamSnapshot> {
 
 /// 健康探测 + Prometheus metrics 解析。
 /// `/v1/models` 返不到 200 → OFFLINE；返 200 但 metrics 拿不到 → READY 无指标。
-pub async fn vllm_snapshot(upstream: &str) -> Option<VllmSnapshot> {
+pub async fn vllm_snapshot(upstream: &str, configured_model: Option<String>) -> Option<VllmSnapshot> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
@@ -205,6 +208,7 @@ pub async fn vllm_snapshot(upstream: &str) -> Option<VllmSnapshot> {
             return Some(VllmSnapshot {
                 status: VllmStatus::Offline,
                 model: None,
+                configured_model,
                 upstream: upstream.to_string(),
                 max_model_len: None,
                 num_requests_running: None,
@@ -258,6 +262,7 @@ pub async fn vllm_snapshot(upstream: &str) -> Option<VllmSnapshot> {
     Some(VllmSnapshot {
         status,
         model: model_id,
+        configured_model,
         upstream: upstream.to_string(),
         max_model_len,
         num_requests_running: running,
@@ -316,9 +321,28 @@ fn strip_v1_suffix(url: &str) -> Option<String> {
     )
 }
 
+/// 当前 monitor/探测应使用的 vLLM base_url。
+/// 优先级：环境变量 `DEEPSEEK_BASE_URL` > settings.json `custom_base_url` > 默认值。
+/// 与 Engine 使用的逻辑保持一致（见 `bridge::Pinvou3Bridge::base_url`）。
 pub fn vllm_base_url() -> String {
-    std::env::var("DEEPSEEK_BASE_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:8000/v1".to_string())
+    if let Ok(v) = std::env::var("DEEPSEEK_BASE_URL") {
+        return v;
+    }
+    let prefs = crate::bridge::prefs::UserPrefs::load();
+    prefs
+        .advanced
+        .custom_base_url
+        .unwrap_or_else(|| "http://127.0.0.1:8000/v1".to_string())
+}
+
+/// 用户配置的模型名（用于 monitor 显示"配置目标"）。
+/// 优先级：环境变量 `DEEPSEEK_MODEL` > settings.json `custom_model_name` > None。
+pub fn vllm_configured_model() -> Option<String> {
+    if let Ok(v) = std::env::var("DEEPSEEK_MODEL") {
+        return Some(v);
+    }
+    let prefs = crate::bridge::prefs::UserPrefs::load();
+    prefs.advanced.custom_model_name
 }
 
 #[cfg(test)]
