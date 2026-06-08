@@ -541,6 +541,8 @@ pub struct ArtifactInfo {
     pub kind: String,
     /// 文件存在标记（前端跟踪的路径可能被外部删了）
     pub exists: bool,
+    /// 最后修改时间（epoch 秒）。取不到给 0。前端列表「最后修改」/ 详情「修改时间」用。
+    pub modified: i64,
 }
 
 /// 读 artifact 文件的纯文本（md/json/txt 等）。文件不存在或不是文本 → 报错。
@@ -561,6 +563,7 @@ pub async fn artifact_info(path: String) -> Result<ArtifactInfo, String> {
                 size: 0,
                 kind: "denied".into(),
                 exists: false,
+                modified: 0,
             })
         }
     };
@@ -571,6 +574,7 @@ pub async fn artifact_info(path: String) -> Result<ArtifactInfo, String> {
                 size: 0,
                 kind: "missing".into(),
                 exists: false,
+                modified: 0,
             })
         }
     };
@@ -592,11 +596,131 @@ pub async fn artifact_info(path: String) -> Result<ArtifactInfo, String> {
         | "ts" | "go" | "c" | "cpp" | "h" | "hpp" | "sh" => "text",
         _ => "binary",
     };
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
     Ok(ArtifactInfo {
         size: meta.len(),
         kind: kind.into(),
         exists: true,
+        modified,
     })
+}
+
+/// PDF 预览逐页转图的页数上限：太多页 data URI 会撑爆前端内存。
+const VISUAL_PDF_MAX_PAGES: u32 = 30;
+
+/// 产物可视化预览结果。前端按 `mode` 渲染。
+#[derive(Debug, Clone, Serialize)]
+pub struct VisualResult {
+    /// "html"(iframe srcDoc 渲染) | "images"(逐张图) | "unsupported"(走统一兜底卡)
+    pub mode: String,
+    /// mode=html：图片已内联的自包含 HTML
+    pub html: Option<String>,
+    /// mode=images：图片 data URI 列表（pdf 多页 / 单图）
+    pub images: Vec<String>,
+    /// 缺工具 / 转换失败 / 截断 的人话提示
+    pub warning: Option<String>,
+}
+
+impl VisualResult {
+    fn unsupported(warning: Option<String>) -> Self {
+        VisualResult { mode: "unsupported".into(), html: None, images: vec![], warning }
+    }
+}
+
+/// 可视化预览结果缓存（按 路径|mtime 键）。soffice/pdftoppm 一次 1-3s，缓存后二次秒开。
+fn visual_cache() -> &'static parking_lot::Mutex<std::collections::HashMap<String, VisualResult>> {
+    static CACHE: std::sync::OnceLock<
+        parking_lot::Mutex<std::collections::HashMap<String, VisualResult>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 把 office/pdf/图片产物转成可视化预览：office→自包含 HTML，pdf→逐页 PNG，图片→data URI。
+/// 结果按 路径+mtime 缓存。md/html/text 不走这里（前端直接读文本渲染）。
+/// 转换慢且阻塞 → 丢到 `spawn_blocking`，不堵 tokio reactor。
+#[tauri::command]
+pub async fn render_artifact_visual(path: String) -> Result<VisualResult, String> {
+    let p = validate_user_path(&path)?;
+    if !p.is_file() {
+        return Err(format!("not a file: {}", p.display()));
+    }
+    let mtime = std::fs::metadata(&p)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let cache_key = format!("{}|{}", p.display(), mtime);
+    if let Some(hit) = visual_cache().lock().get(&cache_key).cloned() {
+        return Ok(hit);
+    }
+
+    let ext = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    let p2 = p.clone();
+    let result = tokio::task::spawn_blocking(move || -> VisualResult {
+        use crate::file_ingest as fi;
+        match ext.as_str() {
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg" => {
+                match fi::image_file_to_data_uri(&p2) {
+                    Ok(uri) => VisualResult {
+                        mode: "images".into(),
+                        html: None,
+                        images: vec![uri],
+                        warning: None,
+                    },
+                    Err(e) => VisualResult::unsupported(Some(e)),
+                }
+            }
+            // PDF / 演示稿 → 逐页 PNG。演示稿先转 PDF 再逐页(每页=一张幻灯片)。
+            "pdf" | "pptx" | "ppt" | "odp" => {
+                let conv = if ext == "pdf" {
+                    fi::pdf_to_png_data_uris(&p2, VISUAL_PDF_MAX_PAGES)
+                } else {
+                    fi::office_to_png_data_uris(&p2, VISUAL_PDF_MAX_PAGES)
+                };
+                match conv {
+                    Ok((imgs, truncated)) => VisualResult {
+                        mode: "images".into(),
+                        html: None,
+                        images: imgs,
+                        warning: truncated
+                            .then(|| format!("页数较多，仅渲染前 {VISUAL_PDF_MAX_PAGES} 页")),
+                    },
+                    Err(e) => VisualResult::unsupported(Some(e)),
+                }
+            }
+            // 文字文档 / 电子表格 → 自包含 HTML(版式 + 内联图片)。
+            "docx" | "odt" | "rtf" | "doc" | "xlsx" | "ods" | "xls" => {
+                match fi::libreoffice_to_inline_html(&p2) {
+                    Ok(html) => VisualResult {
+                        mode: "html".into(),
+                        html: Some(html),
+                        images: vec![],
+                        warning: None,
+                    },
+                    Err(e) => VisualResult::unsupported(Some(e)),
+                }
+            }
+            _ => VisualResult::unsupported(None),
+        }
+    })
+    .await
+    .map_err(|e| format!("render_artifact_visual join: {e}"))?;
+
+    // unsupported 不缓存：可能是工具暂缺，装上后下次重试。
+    if result.mode != "unsupported" {
+        visual_cache().lock().insert(cache_key, result.clone());
+    }
+    Ok(result)
 }
 
 /// 用系统默认浏览器打开**允许列表**里的 https URL。

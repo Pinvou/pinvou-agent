@@ -1441,6 +1441,7 @@
   // ── 产物面板 ─────────────────────────────────────────────────────
   function artifactInfo(path) { return invoke("artifact_info", { path: path }); }
   function readArtifactText(path) { return invoke("read_artifact_text", { path: path }); }
+  function renderArtifactVisual(path) { return invoke("render_artifact_visual", { path: path }); }
   function openContainingFolder(path) { return invoke("open_containing_folder", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   function openInSystem(path) { return invoke("open_in_system", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   // 仅放白名单 URL (metaso.cn / open.bochaai.com),后端 open_external_url 强制校验。
@@ -1677,6 +1678,7 @@
     // 产物
     artifactInfo: artifactInfo,
     readArtifactText: readArtifactText,
+    renderArtifactVisual: renderArtifactVisual,
     openContainingFolder: openContainingFolder,
     openInSystem: openInSystem,
     openArtifactExternal: openArtifactExternal,

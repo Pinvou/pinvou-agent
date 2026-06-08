@@ -142,6 +142,7 @@ pub fn run() {
             commands::edit_last_turn,
             commands::read_artifact_text,
             commands::artifact_info,
+            commands::render_artifact_visual,
             commands::open_in_system,
             commands::open_containing_folder,
             commands::open_artifact_window,
