@@ -161,7 +161,7 @@
         searchKeyHintBocha: '必填，否则搜索会直接报错',
         searchKeyHintBaidu: '必填（百度智能云千帆 API Key），否则搜索会直接报错',
         searchKeyPlaceholder: '粘贴 API key',
-        searchRestartHint: '搜索源已切换，重启后生效',
+        searchRestartHint: '配置已修改，保存后应用将重启',
         searchGetKey: '获取你自己的 key',
         searchGetKeyMetasoSteps: '免费 · 微信/手机扫码 1 分钟注册 · 个人独立配额',
         searchGetKeyBochaSteps: '免费 · 注册后在控制台领 sk- 开头的 key',
@@ -315,7 +315,7 @@
         searchKeyHintBocha: 'Required, search will fail without it',
         searchKeyHintBaidu: 'Required (Baidu Qianfan API Key), search will fail without it',
         searchKeyPlaceholder: 'Paste API key',
-        searchRestartHint: 'Search source changed — restart to apply',
+        searchRestartHint: 'Configuration changed — saving will restart the app',
         searchGetKey: 'Get your own key',
         searchGetKeyMetasoSteps: 'Free · 1-min QR-code sign-up (WeChat/phone) · Personal quota',
         searchGetKeyBochaSteps: 'Free · Get sk- prefixed key from console after sign-up',
@@ -469,7 +469,7 @@
         searchKeyHintBocha: '必須です。未設定の場合、検索はエラーになります',
         searchKeyHintBaidu: '必須（百度 Qianfan API Key）。未設定の場合、検索はエラーになります',
         searchKeyPlaceholder: 'API key を貼り付け',
-        searchRestartHint: '検索ソースが変更されました。再起動後に有効になります',
+        searchRestartHint: '設定が変更されました。保存後にアプリを再起動します',
         searchGetKey: '自分の key を取得',
         searchGetKeyMetasoSteps: '無料 · WeChat/携帯で 1 分登録 · 個人専用クォータ',
         searchGetKeyBochaSteps: '無料 · 登録後コンソールで sk- で始まる key を取得',
@@ -683,11 +683,12 @@
       const [customBaseUrl, setCustomBaseUrl] = useState('');
       const [customApiKey, setCustomApiKey] = useState('');
       const modelConfigInitRef = useRef(false);
+      const searchConfigInitRef = useRef(false);
       const uiPrefsInitRef = useRef(false);
-      // dirty 基线:已保存的模型配置(默认值填充后) / 启动时的搜索源。
-      // 草稿偏离基线才显示「保存并重启」/「立即重启」操作条。
+      // dirty 基线:已保存的模型配置(默认值填充后) / 已保存的搜索源配置。
+      // 草稿偏离基线才显示「保存并重启」操作条。
       const savedModelConfigRef = useRef(null);
-      const bootSearchProviderRef = useRef(null);
+      const savedSearchConfigRef = useRef(null);
 
       // 各厂商默认配置（前端自动填充用，与 bridge/mod.rs 对齐）
       const PRESET_DEFAULTS = {
@@ -732,13 +733,17 @@
           if (th !== activeTheme) setActiveTheme(th);
           uiPrefsInitRef.current = true;
         }
-        // 从 bs.settings 同步 search 配置。bs.settings 是后端 UserPrefs JSON。
-        if (bs.settings && bs.settings.search) {
-          const sp = bs.settings.search.provider || 'bing';
-          if (bootSearchProviderRef.current === null) bootSearchProviderRef.current = sp;
-          if (sp !== searchProvider) setSearchProvider(sp);
-          const k = bs.settings.search.api_key || '';
-          if (k !== searchApiKey) setSearchApiKey(k);
+        // 搜索配置：只在第一次从后端加载初始值，后续走草稿模式（确认后才保存并重启）。
+        if (!searchConfigInitRef.current && bs.settings) {
+          const search = bs.settings.search || {};
+          const saved = {
+            provider: search.provider || 'bing',
+            apiKey: search.api_key || '',
+          };
+          setSearchProvider(saved.provider);
+          setSearchApiKey(saved.apiKey);
+          savedSearchConfigRef.current = saved;
+          searchConfigInitRef.current = true;
         }
         // 模型配置：只在第一次从后端加载初始值，后续走草稿模式（确认后才保存），
         // 避免 useEffect 把未保存的本地修改覆盖回 disk 旧值。
@@ -772,9 +777,16 @@
         customBaseUrl !== savedModel.baseUrl ||
         customApiKey !== savedModel.apiKey
       );
-      // 搜索源改动立即落盘但需重启进程才生效 → 偏离启动值就显示「立即重启」操作条
-      const searchNeedsRestart = bootSearchProviderRef.current !== null
-        && searchProvider !== bootSearchProviderRef.current;
+      function normalizedSearchApiKeyValue(value) {
+        const trimmed = (value || '').trim();
+        return trimmed ? trimmed : null;
+      }
+      // 搜索配置也影响 EngineConfig,需保存后重启进程才生效。
+      const savedSearch = savedSearchConfigRef.current;
+      const searchNeedsRestart = !!savedSearch && (
+        searchProvider !== savedSearch.provider ||
+        normalizedSearchApiKeyValue(searchApiKey) !== normalizedSearchApiKeyValue(savedSearch.apiKey)
+      );
 
       // Build chat history from sessions
       const skillBindings = (bs && bs.workflow && bs.workflow.bindings) || {};
@@ -822,7 +834,7 @@
           language: LANG_TO_TAG[language] || 'zh-Hans',
           search: {
             provider: searchProvider,
-            api_key: searchApiKey ? searchApiKey : null,
+            api_key: normalizedSearchApiKeyValue(searchApiKey),
           },
           advanced: {
             ...buildAdvancedOverrides({}),
@@ -841,18 +853,16 @@
 
       function handleSetSearchProvider(p) {
         setSearchProvider(p);
-        if (bridge.available) {
-          bridge.saveSettings(buildFullSettings({
-            search: { provider: p, api_key: searchApiKey ? searchApiKey : null },
-          }));
-        }
       }
 
       function handleSetSearchApiKey(k) {
         setSearchApiKey(k);
+      }
+
+      function handleConfirmSearchConfig() {
         if (bridge.available) {
-          bridge.saveSettings(buildFullSettings({
-            search: { provider: searchProvider, api_key: k ? k : null },
+          bridge.saveSettingsAndRestart(buildFullSettings({
+            search: { provider: searchProvider, api_key: normalizedSearchApiKeyValue(searchApiKey) },
           }));
         }
       }
@@ -1061,9 +1071,9 @@
                 customApiKey={customApiKey} setCustomApiKey={handleSetCustomApiKey}
                 savedModel={savedModel}
                 onConfirmModelConfig={handleConfirmModelConfig}
+                onConfirmSearchConfig={handleConfirmSearchConfig}
                 modelConfigDirty={modelConfigDirty}
                 searchNeedsRestart={searchNeedsRestart}
-                onRestartApp={() => bridge.available && bridge.restartApp()}
                 bs={bs}
                 t={t}
               />
@@ -1378,7 +1388,7 @@
       </div>
     );
 
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, modelPreset, onChangeModelPreset, customModelName, setCustomModelName, customBaseUrl, setCustomBaseUrl, customApiKey, setCustomApiKey, savedModel, onConfirmModelConfig, modelConfigDirty, searchNeedsRestart, onRestartApp, bs, t }) => {
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, modelPreset, onChangeModelPreset, customModelName, setCustomModelName, customBaseUrl, setCustomBaseUrl, customApiKey, setCustomApiKey, savedModel, onConfirmModelConfig, onConfirmSearchConfig, modelConfigDirty, searchNeedsRestart, bs, t }) => {
       const isDark = activeTheme === 'dark';
       const [vllmDiscovery, setVllmDiscovery] = useState(null);
       const [vllmDiscovering, setVllmDiscovering] = useState(false);
@@ -1567,7 +1577,7 @@
 
                   {searchNeedsRestart && (
                     <SActionBar isDark={isDark} message={t.searchRestartHint}
-                      actionLabel={t.restartNow} onAction={onRestartApp} />
+                      actionLabel={t.confirmAndRestart} onAction={onConfirmSearchConfig} />
                   )}
                 </div>
               </SCard>

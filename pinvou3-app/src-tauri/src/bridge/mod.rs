@@ -581,7 +581,7 @@ impl Pinvou3Bridge {
                 prefs::SearchProvider::Bocha => deepseek_tui::config::SearchProvider::Bocha,
                 prefs::SearchProvider::Baidu => deepseek_tui::config::SearchProvider::Baidu,
             },
-            search_api_key: self.prefs.search.api_key.clone(),
+            search_api_key: self.prefs.search.normalized_api_key(),
             // v0.8.47 上游新增,透传 default
             show_thinking,
             goal_state,
@@ -1048,6 +1048,18 @@ mod tests {
         assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Metaso);
         assert_eq!(cfg.search_api_key.as_deref(), Some("mk-user-key"));
 
+        // 切 Metaso + 空白 key: bridge 层必须归一化成 None,让底座回退内置共享 key。
+        // 若透传 Some(""),旧底座会收到 Metaso HTTP 200 + errCode=2005,
+        // 并可能误显示成 No results found。
+        let mut bridge = fixture_bridge();
+        bridge.prefs.search = prefs::SearchPrefs {
+            provider: prefs::SearchProvider::Metaso,
+            api_key: Some("   ".to_string()),
+        };
+        let cfg = bridge.build_engine_config();
+        assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Metaso);
+        assert!(cfg.search_api_key.is_none());
+
         // 切 Bocha + 留空 key (UX 上前端应阻止,但 bridge 层透传 None)
         let mut bridge = fixture_bridge();
         bridge.prefs.search = prefs::SearchPrefs {
@@ -1067,6 +1079,16 @@ mod tests {
         let cfg = bridge.build_engine_config();
         assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Baidu);
         assert_eq!(cfg.search_api_key.as_deref(), Some("bce-v3-user-key"));
+
+        // 切 Baidu + 空白 key 同样归一化为 None,由底座报明确缺 key 错误。
+        let mut bridge = fixture_bridge();
+        bridge.prefs.search = prefs::SearchPrefs {
+            provider: prefs::SearchProvider::Baidu,
+            api_key: Some("\n\t ".to_string()),
+        };
+        let cfg = bridge.build_engine_config();
+        assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Baidu);
+        assert!(cfg.search_api_key.is_none());
     }
 
     /// [pinvou3-fork-guard #18] network_policy 必须 Some 且**只信 fake-ip 占位段**。

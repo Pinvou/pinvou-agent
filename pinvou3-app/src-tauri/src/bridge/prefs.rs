@@ -115,6 +115,24 @@ pub struct SearchPrefs {
     pub api_key: Option<String>,
 }
 
+impl SearchPrefs {
+    /// 传给底座前归一化 key。
+    ///
+    /// 空字符串如果透传成 `Some("")`,部分搜索 API 会返回 HTTP 200 + 业务错误体,
+    /// 底座旧版本可能误解析成 `No results found`。这里统一把空白 key 当未配置。
+    pub fn normalized_api_key(&self) -> Option<String> {
+        self.api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .map(ToString::to_string)
+    }
+
+    pub fn normalize(&mut self) {
+        self.api_key = self.normalized_api_key();
+    }
+}
+
 /// 开发者后门字段。GUI 永远不暴露这些，靠手改 settings.json 或 env 调。
 /// `None` 走 bridge 里的默认值；env 优先级高于 settings.json。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -162,7 +180,9 @@ impl UserPrefs {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let s = serde_json::to_string_pretty(self).expect("UserPrefs serialize");
+        let mut normalized = self.clone();
+        normalized.search.normalize();
+        let s = serde_json::to_string_pretty(&normalized).expect("UserPrefs serialize");
         std::fs::write(path, s)
     }
 }
@@ -248,6 +268,54 @@ mod tests {
         let parsed: UserPrefs = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.search.provider, SearchProvider::Metaso);
         assert_eq!(parsed.search.api_key.as_deref(), Some("mk-user-own-key"));
+    }
+
+    #[test]
+    fn search_prefs_normalized_api_key_treats_blank_as_none() {
+        for raw in [None, Some("".to_string()), Some("   \n\t ".to_string())] {
+            let prefs = SearchPrefs {
+                provider: SearchProvider::Metaso,
+                api_key: raw,
+            };
+            assert!(prefs.normalized_api_key().is_none());
+        }
+
+        let prefs = SearchPrefs {
+            provider: SearchProvider::Metaso,
+            api_key: Some("  mk-user-key  ".to_string()),
+        };
+        assert_eq!(prefs.normalized_api_key().as_deref(), Some("mk-user-key"));
+    }
+
+    #[test]
+    fn prefs_save_normalizes_blank_search_api_key_on_disk() {
+        let old_home = std::env::var_os("PINVOU3_HOME");
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-prefs-save-normalize-{}",
+            std::process::id()
+        ));
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let prefs = UserPrefs {
+            search: SearchPrefs {
+                provider: SearchProvider::Metaso,
+                api_key: Some(" \n\t ".to_string()),
+            },
+            ..Default::default()
+        };
+        prefs.save().expect("prefs should save");
+
+        let saved = std::fs::read_to_string(super::super::paths::settings_path())
+            .expect("settings should exist");
+        let parsed: UserPrefs = serde_json::from_str(&saved).expect("settings should parse");
+        assert_eq!(parsed.search.provider, SearchProvider::Metaso);
+        assert!(parsed.search.api_key.is_none());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        match old_home {
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
     }
 
     #[test]
