@@ -7,8 +7,8 @@ set -euo pipefail
 
 # ── 1. 后端 env（vLLM + Qwen3.6） ───────────────────────────────
 # vLLM provider (OpenAI 兼容 /v1/chat/completions)
-export DEEPSEEK_PROVIDER=vllm
-export DEEPSEEK_API_KEY="local-no-auth"
+#export DEEPSEEK_PROVIDER=vllm
+#export DEEPSEEK_API_KEY="local-no-auth"
 #export DEEPSEEK_BASE_URL="http://10.214.74.113:8000/v1"
 # 2026-05-19: vLLM served-model-name 改 qwen36_35b_256k。
 # 后缀 _256k 让 fork B1 在底座 context_window_for_model 中派生 256K 窗口;

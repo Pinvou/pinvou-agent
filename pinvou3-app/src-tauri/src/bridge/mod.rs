@@ -286,7 +286,7 @@ impl Pinvou3Bridge {
     fn default_base_url_for_preset(&self) -> String {
         match self.prefs.advanced.model_preset.unwrap_or_default() {
             ModelPreset::LocalVllm => LOCAL_VLLM_BASE_URL.into(),
-            ModelPreset::Deepseek => "https://api.deepseek.com/beta".to_string(),
+            ModelPreset::Deepseek => "https://api.deepseek.com".to_string(),
             ModelPreset::Kimi => "https://api.moonshot.cn/v1".to_string(),
             ModelPreset::OpenaiCompatible => "https://api.openai.com/v1".to_string(),
             ModelPreset::Qwen => "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
