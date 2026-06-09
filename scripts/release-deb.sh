@@ -59,6 +59,7 @@ cat "$TMP_JSON"
 # 顺序关键:清单最后传,避免清单已指向新版而 deb 还没传完,客户端 404。
 rsync -avz --progress "$DEB" "$SERVER:$REMOTE_DIR/"
 rsync -avz "$TMP_JSON" "$SERVER:$REMOTE_DIR/latest.json"
+ssh "$SERVER" "chmod 644 $REMOTE_DIR/latest.json"
 rm -f "$TMP_JSON"
 
 echo "=== 发布完成 ==="
