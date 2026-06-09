@@ -194,8 +194,6 @@
         vllmDetectedModel: '模型',
         vllmDetectedContext: '上下文',
         vllmDetectHint: '仅检测 127.0.0.1 / localhost 的 8000-8002 端口；使用后仍需保存并重启。',
-        envOverrideTitle: '环境变量覆盖',
-        envOverrideDesc: fields => `当前以下字段由环境变量控制（${fields}），修改设置后需重启或移除环境变量才能生效。`,
         confirmAndRestart: '保存并重启',
         modelDirtyHint: '配置已修改，保存后应用将重启',
         sysPerm: '系统权限', sudo: '高级执行权限 (Sudo)', sudoDesc: '允许助手执行环境配置等高级指令',
@@ -350,8 +348,6 @@
         vllmDetectedModel: 'Model',
         vllmDetectedContext: 'Context',
         vllmDetectHint: 'Checks only 127.0.0.1 / localhost ports 8000-8002. Save and restart to apply.',
-        envOverrideTitle: 'Environment variable override',
-        envOverrideDesc: fields => `The following fields are currently controlled by environment variables (${fields}). Remove the env vars or restart to apply settings changes.`,
         confirmAndRestart: 'Save & Restart',
         modelDirtyHint: 'Configuration changed — saving will restart the app',
         sysPerm: 'System Permissions', sudo: 'Sudo Access', sudoDesc: 'Allow assistant to run high-privilege commands',
@@ -506,8 +502,6 @@
         vllmDetectedModel: 'モデル',
         vllmDetectedContext: 'コンテキスト',
         vllmDetectHint: '127.0.0.1 / localhost の 8000-8002 ポートのみ検出します。反映には保存して再起動してください。',
-        envOverrideTitle: '環境変数による上書き',
-        envOverrideDesc: fields => `現在、以下のフィールドは環境変数（${fields}）によって制御されています。設定を反映するには環境変数を削除するか、アプリを再起動してください。`,
         confirmAndRestart: '保存して再起動',
         modelDirtyHint: '設定が変更されました。保存するとアプリが再起動します',
         sysPerm: 'システム権限', sudo: '高度な実行権限 (Sudo)', sudoDesc: 'アシスタントによる環境設定などの高度なコマンド実行を許可',
@@ -698,7 +692,7 @@
       // 各厂商默认配置（前端自动填充用，与 bridge/mod.rs 对齐）
       const PRESET_DEFAULTS = {
         local_vllm:  { baseUrl: 'http://127.0.0.1:8000/v1',                model: 'qwen36_35b_256k' },
-        deepseek:    { baseUrl: 'https://api.deepseek.com/beta',           model: 'deepseek-v4-pro' },
+        deepseek:    { baseUrl: 'https://api.deepseek.com',                model: 'deepseek-v4-pro' },
         kimi:        { baseUrl: 'https://api.moonshot.cn/v1',              model: 'kimi-k2.6' },
         openai_compatible: { baseUrl: 'https://api.openai.com/v1',        model: 'gpt-4o' },
         qwen:        { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-max' },
@@ -746,19 +740,20 @@
           const k = bs.settings.search.api_key || '';
           if (k !== searchApiKey) setSearchApiKey(k);
         }
-        // 模型配置：只在第一次从 bs.settings 加载初始值，后续走草稿模式（确认后才保存），
+        // 模型配置：只在第一次从后端加载初始值，后续走草稿模式（确认后才保存），
         // 避免 useEffect 把未保存的本地修改覆盖回 disk 旧值。
         // custom_* 为 null 时用 PRESET_DEFAULTS 填成真实值——输入框显示当前生效配置，
         // 而不是灰色 placeholder 冒充。
         if (!modelConfigInitRef.current && bs.settings) {
           const adv = bs.settings.advanced || {};
-          const preset = adv.model_preset || 'local_vllm';
+          const effective = bs.effectiveModelConfig || {};
+          const preset = effective.preset || adv.model_preset || 'local_vllm';
           const defs = PRESET_DEFAULTS[preset] || PRESET_DEFAULTS.local_vllm;
           const saved = {
             preset,
-            name: adv.custom_model_name || defs.model,
-            baseUrl: adv.custom_base_url || defs.baseUrl,
-            apiKey: adv.custom_api_key || '',
+            name: effective.model || adv.custom_model_name || defs.model,
+            baseUrl: effective.base_url || adv.custom_base_url || defs.baseUrl,
+            apiKey: effective.api_key || adv.custom_api_key || '',
           };
           setModelPreset(saved.preset);
           setCustomModelName(saved.name);
@@ -1440,14 +1435,6 @@
 
               <SCard isDark={isDark} title={t.modelBackend}>
                 <div className="space-y-6">
-                  {bs && bs.effectiveModelConfig && bs.effectiveModelConfig.env_overrides && bs.effectiveModelConfig.env_overrides.length > 0 && (
-                    <div className={`rounded-lg px-4 py-3 text-[13px] ${isDark ? 'bg-[#5C2020] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]'}`}>
-                      <div className="font-medium mb-1">{t.envOverrideTitle}</div>
-                      <div className={`text-[12px] ${isDark ? 'text-[#F28B82]/80' : 'text-[#C5221F]/80'}`}>
-                        {t.envOverrideDesc(bs.effectiveModelConfig.env_overrides.join(', '))}
-                      </div>
-                    </div>
-                  )}
                   <SRow isDark={isDark} label={t.modelPreset} desc={t.modelBackendDesc}>
                     <div className="relative">
                       <select

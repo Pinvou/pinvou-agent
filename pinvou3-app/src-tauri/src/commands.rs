@@ -20,9 +20,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::bridge::mode_state::{PlanPhase, SerializableMode, SessionModeState};
-use crate::bridge::prefs::UserPrefs;
+use crate::bridge::prefs::{ModelPreset, UserPrefs};
 use crate::bridge::sessions::SessionStore;
-use crate::engine::AppEngine;
 use crate::engine_pool::EnginePool;
 use crate::monitor::{MonitorSnapshot, MonitorState, VllmStatus};
 
@@ -299,9 +298,9 @@ pub struct EffectiveModelConfig {
 
 #[tauri::command]
 pub async fn get_effective_model_config(
-    engine: State<'_, AppEngine>,
+    pool: State<'_, EnginePool>,
 ) -> Result<EffectiveModelConfig, String> {
-    let bridge = &engine.bridge;
+    let bridge = &pool.bridge;
     let mut env_overrides = Vec::new();
     if std::env::var("DEEPSEEK_MODEL").is_ok() {
         env_overrides.push("model".to_string());
@@ -312,16 +311,22 @@ pub async fn get_effective_model_config(
     if std::env::var("DEEPSEEK_API_KEY").is_ok() {
         env_overrides.push("api_key".to_string());
     }
-    if std::env::var("DEEPSEEK_PROVIDER").is_ok() {
+    if std::env::var("DEEPSEEK_PROVIDER").is_ok_and(|provider| provider == bridge.provider()) {
         env_overrides.push("provider".to_string());
     }
+    let preset = match bridge.prefs.advanced.model_preset.unwrap_or_default() {
+        ModelPreset::LocalVllm => "local_vllm",
+        ModelPreset::Deepseek => "deepseek",
+        ModelPreset::Kimi => "kimi",
+        ModelPreset::OpenaiCompatible => "openai_compatible",
+        ModelPreset::Qwen => "qwen",
+        ModelPreset::Doubao => "doubao",
+        ModelPreset::Minimax => "minimax",
+        ModelPreset::Glm => "glm",
+        ModelPreset::Mimo => "mimo",
+    };
     Ok(EffectiveModelConfig {
-        preset: bridge
-            .prefs
-            .advanced
-            .model_preset
-            .map(|p| format!("{p:?}"))
-            .unwrap_or_else(|| "local_vllm".to_string()),
+        preset: preset.to_string(),
         model: bridge.model(),
         base_url: bridge.base_url(),
         api_key: bridge.api_key(),

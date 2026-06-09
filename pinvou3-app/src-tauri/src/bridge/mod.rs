@@ -20,7 +20,9 @@ pub mod sessions;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use deepseek_tui::config::{Config as DtConfig, ProvidersConfig};
+use deepseek_tui::config::{
+    wire_model_for_provider, ApiProvider, Config as DtConfig, ProvidersConfig,
+};
 use deepseek_tui::core::engine::EngineConfig;
 use deepseek_tui::core::ops::Op;
 use deepseek_tui::hooks::{Hook, HookEvent, HooksConfig};
@@ -50,6 +52,28 @@ const LOCAL_VLLM_MODEL: &str = "qwen36_35b_256k";
 // export DEEPSEEK_BASE_URL=http://10.214.74.113:8000/v1 覆盖,连开发机 GB10。
 const LOCAL_VLLM_BASE_URL: &str = "http://127.0.0.1:8000/v1";
 const LOCAL_VLLM_API_KEY: &str = "local-no-auth";
+
+fn is_official_deepseek_base_url(base_url: &str) -> bool {
+    let normalized = base_url
+        .trim()
+        .trim_end_matches('/')
+        .trim_end_matches("/beta")
+        .trim_end_matches("/v1")
+        .to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "https://api.deepseek.com" | "https://api.deepseeki.com"
+    )
+}
+
+fn official_deepseek_model_name(model: &str) -> String {
+    let model = wire_model_for_provider(ApiProvider::Deepseek, model);
+    match model.to_ascii_lowercase().as_str() {
+        "deepseek-v4-pro" => "deepseek-v4-pro".to_string(),
+        "deepseek-v4-flash" => "deepseek-v4-flash".to_string(),
+        _ => model,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Pinvou3Bridge {
@@ -225,6 +249,9 @@ impl Pinvou3Bridge {
 
     /// 当前 active provider 标识（传给底座 `DtConfig.provider`）。
     pub fn provider(&self) -> String {
+        if is_official_deepseek_base_url(&self.base_url()) {
+            return "deepseek".to_string();
+        }
         if let Ok(v) = std::env::var("DEEPSEEK_PROVIDER") {
             return v;
         }
@@ -244,14 +271,23 @@ impl Pinvou3Bridge {
     /// 当前 active 模型名（传给底座 `DtConfig.default_text_model` / `EngineConfig.model`）。
     /// 环境变量 > settings.custom_model_name > 厂商默认值。
     pub fn model(&self) -> String {
+        let is_official_deepseek = is_official_deepseek_base_url(&self.base_url());
         if let Ok(v) = std::env::var("DEEPSEEK_MODEL") {
+            if is_official_deepseek {
+                return official_deepseek_model_name(&v);
+            }
             return v;
         }
-        self.prefs
-            .advanced
-            .custom_model_name
-            .clone()
-            .unwrap_or_else(|| self.default_model_for_preset())
+        if let Some(model) = self.prefs.advanced.custom_model_name.clone() {
+            if is_official_deepseek {
+                return official_deepseek_model_name(&model);
+            }
+            return model;
+        }
+        if is_official_deepseek {
+            return "deepseek-v4-pro".to_string();
+        }
+        self.default_model_for_preset()
     }
 
     /// 各厂商默认模型名。
@@ -301,6 +337,14 @@ impl Pinvou3Bridge {
     pub fn api_key(&self) -> String {
         if let Ok(v) = std::env::var("DEEPSEEK_API_KEY") {
             return v;
+        }
+        if is_official_deepseek_base_url(&self.base_url()) {
+            return self
+                .prefs
+                .advanced
+                .custom_api_key
+                .clone()
+                .unwrap_or_default();
         }
         match self.prefs.advanced.model_preset.unwrap_or_default() {
             ModelPreset::LocalVllm => LOCAL_VLLM_API_KEY.into(),
@@ -605,8 +649,7 @@ impl Pinvou3Bridge {
         cfg.default_text_model = Some(self.model());
         // 本地 vLLM (Qwen3.6) thinking 必须关，否则 SSE idle timeout；
         // 云端 provider 保留底座默认（用户可在 settings.toml 中覆盖）。
-        let preset = self.prefs.advanced.model_preset.unwrap_or_default();
-        if matches!(preset, ModelPreset::LocalVllm) {
+        if self.provider() == "vllm" {
             cfg.reasoning_effort = Some("off".to_string());
         }
         cfg.hooks = Some(self.build_hooks_config());
@@ -694,8 +737,7 @@ impl Pinvou3Bridge {
             // 本地 vLLM (Qwen3.6) thinking 必须关，否则 SSE idle timeout；
             // 云端 provider 保留底座默认（传 None 让底座自行决定）。
             reasoning_effort: {
-                let preset = self.prefs.advanced.model_preset.unwrap_or_default();
-                if matches!(preset, ModelPreset::LocalVllm) {
+                if self.provider() == "vllm" {
                     Some("off".to_string())
                 } else {
                     None
@@ -773,6 +815,33 @@ fn reminder_for(mode: AppMode, phase: PlanPhase) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct EnvGuard {
+        vars: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn new(vars: &[&'static str]) -> Self {
+            Self {
+                vars: vars
+                    .iter()
+                    .map(|&name| (name, std::env::var(name).ok()))
+                    .collect(),
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (name, value) in &self.vars {
+                if let Some(value) = value {
+                    std::env::set_var(name, value);
+                } else {
+                    std::env::remove_var(name);
+                }
+            }
+        }
+    }
 
     fn fixture_bridge() -> Pinvou3Bridge {
         Pinvou3Bridge {
@@ -1250,6 +1319,12 @@ mod tests {
     /// env 优先级始终高于 settings.json（兼容 run-dev.sh / harness）。
     #[test]
     fn env_always_overrides_settings() {
+        let _env = EnvGuard::new(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
         let mut bridge = fixture_bridge();
         bridge.prefs.advanced.model_preset = Some(ModelPreset::OpenaiCompatible);
         bridge.prefs.advanced.custom_model_name = Some("gpt-4o".to_string());
@@ -1261,10 +1336,6 @@ mod tests {
         assert_eq!(bridge.provider(), "env-provider");
         assert_eq!(bridge.base_url(), "http://env:8000/v1");
         assert_eq!(bridge.api_key(), "env-key");
-        std::env::remove_var("DEEPSEEK_MODEL");
-        std::env::remove_var("DEEPSEEK_PROVIDER");
-        std::env::remove_var("DEEPSEEK_BASE_URL");
-        std::env::remove_var("DEEPSEEK_API_KEY");
     }
 
     /// DtConfig 在 OpenaiCompatible 模式下不应强制 reasoning_effort=off。
@@ -1284,7 +1355,60 @@ mod tests {
         bridge.prefs.advanced.model_preset = Some(ModelPreset::Deepseek);
         assert_eq!(bridge.provider(), "deepseek");
         assert_eq!(bridge.model(), "deepseek-v4-pro");
-        assert_eq!(bridge.base_url(), "https://api.deepseek.com/beta");
+        assert_eq!(bridge.base_url(), "https://api.deepseek.com");
+    }
+
+    /// 官方 DeepSeek API 只能接收裸模型名。若用户手动把 API 地址改成
+    /// api.deepseek.com,bridge 必须把 provider 纠正为 deepseek,避免底座按 vLLM /
+    /// sglang 形状把 deepseek-v4-flash 改写成 deepseek-ai/DeepSeek-V4-Flash。
+    #[test]
+    fn official_deepseek_base_url_forces_deepseek_provider() {
+        let mut bridge = fixture_bridge();
+        bridge.prefs.advanced.model_preset = Some(ModelPreset::LocalVllm);
+        bridge.prefs.advanced.custom_base_url = Some("https://api.deepseek.com/".to_string());
+        bridge.prefs.advanced.custom_model_name = Some("DeepSeek-V4-Flash".to_string());
+        bridge.prefs.advanced.custom_api_key = Some("sk-test".to_string());
+
+        assert_eq!(bridge.provider(), "deepseek");
+        assert_eq!(bridge.api_key(), "sk-test");
+        let cfg = bridge.build_dt_config();
+        assert_eq!(cfg.api_provider(), deepseek_tui::config::ApiProvider::Deepseek);
+        assert_eq!(cfg.deepseek_base_url(), "https://api.deepseek.com");
+        assert_eq!(cfg.default_model(), "deepseek-v4-flash");
+        assert_eq!(cfg.reasoning_effort, None);
+        assert_eq!(
+            deepseek_tui::config::wire_model_for_provider(cfg.api_provider(), &bridge.model()),
+            "deepseek-v4-flash"
+        );
+    }
+
+    /// 即便环境变量残留 vLLM provider / provider-prefixed 模型,只要有效
+    /// base_url 是官方 DeepSeek,bridge 就必须发官方 API 接受的 provider+模型名。
+    #[test]
+    fn official_deepseek_base_url_canonicalizes_env_mismatch() {
+        let _env = EnvGuard::new(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        bridge.prefs.advanced.model_preset = Some(ModelPreset::LocalVllm);
+        bridge.prefs.advanced.custom_api_key = Some("sk-test".to_string());
+        std::env::set_var("DEEPSEEK_PROVIDER", "vllm");
+        std::env::set_var("DEEPSEEK_BASE_URL", "https://api.deepseek.com/");
+        std::env::set_var("DEEPSEEK_MODEL", "deepseek-ai/DeepSeek-V4-Pro");
+
+        assert_eq!(bridge.provider(), "deepseek");
+        assert_eq!(bridge.model(), "deepseek-v4-pro");
+        let cfg = bridge.build_dt_config();
+        assert_eq!(cfg.api_provider(), deepseek_tui::config::ApiProvider::Deepseek);
+        assert_eq!(cfg.default_model(), "deepseek-v4-pro");
+        assert_eq!(cfg.reasoning_effort, None);
+        assert_eq!(
+            deepseek_tui::config::wire_model_for_provider(cfg.api_provider(), &bridge.model()),
+            "deepseek-v4-pro"
+        );
     }
 
     /// Qwen preset 应返回正确的默认 URL 和模型。
