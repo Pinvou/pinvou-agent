@@ -65,6 +65,8 @@ pub enum VllmStatus {
     Offline,
     Ready,
     Busy,
+    /// 配置的模型名与 vLLM 实际返回的模型名不一致。vLLM 服务在线但聊天会报 model_not_found。
+    Mismatch,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -253,11 +255,20 @@ pub async fn vllm_snapshot(upstream: &str, configured_model: Option<String>) -> 
         }
     });
 
-    let status = match (running, waiting) {
+    let mut status = match (running, waiting) {
         (Some(r), _) if r > 0.0 => VllmStatus::Busy,
         (_, Some(w)) if w > 0.0 => VllmStatus::Busy,
         _ => VllmStatus::Ready,
     };
+    // 如果用户配置了模型名，但和 vLLM 实际返回的不一致，降级为 Mismatch。
+    // 这样监控台不会显示绿色 READY，聊天 live dot 也会变红。
+    if let Some(ref cfg) = configured_model {
+        if let Some(ref actual) = model_id {
+            if cfg.trim() != actual.trim() {
+                status = VllmStatus::Mismatch;
+            }
+        }
+    }
 
     Some(VllmSnapshot {
         status,

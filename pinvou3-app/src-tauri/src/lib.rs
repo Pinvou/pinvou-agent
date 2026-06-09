@@ -124,6 +124,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::chat,
             commands::get_settings,
+            commands::get_effective_model_config,
             commands::update_settings,
             commands::save_settings_and_restart,
             commands::clear_session,

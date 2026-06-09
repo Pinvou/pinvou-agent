@@ -1173,7 +1173,7 @@
         vllmModelMismatch: snap.vllm && snap.vllm.configured_model && snap.vllm.model
           ? snap.vllm.configured_model !== snap.vllm.model : false,
         vllmStatus: snap.vllm ? snap.vllm.status.toUpperCase() : "OFFLINE",
-        vllmOnline: snap.vllm ? snap.vllm.status !== "offline" : false,
+        vllmOnline: snap.vllm ? (snap.vllm.status !== "offline" && snap.vllm.status !== "mismatch") : false,
         vllmUpstream: snap.vllm ? (snap.vllm.upstream || "—") : "—",
         vllmMaxLen: snap.vllm ? (snap.vllm.max_model_len || "—") : "—",
         vllmQueue: snap.vllm
@@ -1230,6 +1230,14 @@
     }
     notify();
   }
+  async function loadEffectiveModelConfig() {
+    try {
+      state.effectiveModelConfig = await invoke("get_effective_model_config");
+    } catch (e) {
+      state.effectiveModelConfig = null;
+    }
+    notify();
+  }
   async function saveSettings(prefs) {
     state.settings = prefs;
     try {
@@ -1249,6 +1257,9 @@
   }
   async function discoverLocalVllm(request) {
     return await invoke("discover_local_vllm", { request: request || null });
+  }
+  async function getEffectiveModelConfig() {
+    return await invoke("get_effective_model_config");
   }
 
   // ── Super permission ─────────────────────────────────────────────
@@ -1632,6 +1643,7 @@
   // ── Init ─────────────────────────────────────────────────────────
   async function init() {
     await loadSettings();
+    await loadEffectiveModelConfig();
     await refreshHistoryList();
     if (state.sessions.length > 0) {
       await switchToSession(state.sessions[0].id);
@@ -1664,6 +1676,7 @@
     saveSettings: saveSettings,
     saveSettingsAndRestart: saveSettingsAndRestart,
     discoverLocalVllm: discoverLocalVllm,
+    getEffectiveModelConfig: getEffectiveModelConfig,
     toggleSuperPerm: toggleSuperPerm,
     renderMarkdown: renderMarkdown,
     // Plan/YOLO

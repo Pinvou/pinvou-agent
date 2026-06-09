@@ -22,6 +22,7 @@ use tauri::State;
 use crate::bridge::mode_state::{PlanPhase, SerializableMode, SessionModeState};
 use crate::bridge::prefs::UserPrefs;
 use crate::bridge::sessions::SessionStore;
+use crate::engine::AppEngine;
 use crate::engine_pool::EnginePool;
 use crate::monitor::{MonitorSnapshot, MonitorState, VllmStatus};
 
@@ -280,6 +281,53 @@ pub fn build_message_with_attachments(
 #[tauri::command]
 pub async fn get_settings() -> Result<UserPrefs, String> {
     Ok(UserPrefs::load())
+}
+
+/// 实际生效的模型配置（环境变量可能覆盖 settings.json）。
+/// 前端设置页初始化时优先用这个，避免"改了 settings 但实际不生效"的困惑。
+#[derive(Debug, Clone, Serialize)]
+pub struct EffectiveModelConfig {
+    pub preset: String,
+    pub model: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub provider: String,
+    /// 被环境变量覆盖的字段名列表（如 `["model", "base_url"]`）。
+    /// 空列表表示全部走 settings.json，用户修改会生效。
+    pub env_overrides: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn get_effective_model_config(
+    engine: State<'_, AppEngine>,
+) -> Result<EffectiveModelConfig, String> {
+    let bridge = &engine.bridge;
+    let mut env_overrides = Vec::new();
+    if std::env::var("DEEPSEEK_MODEL").is_ok() {
+        env_overrides.push("model".to_string());
+    }
+    if std::env::var("DEEPSEEK_BASE_URL").is_ok() {
+        env_overrides.push("base_url".to_string());
+    }
+    if std::env::var("DEEPSEEK_API_KEY").is_ok() {
+        env_overrides.push("api_key".to_string());
+    }
+    if std::env::var("DEEPSEEK_PROVIDER").is_ok() {
+        env_overrides.push("provider".to_string());
+    }
+    Ok(EffectiveModelConfig {
+        preset: bridge
+            .prefs
+            .advanced
+            .model_preset
+            .map(|p| format!("{p:?}"))
+            .unwrap_or_else(|| "local_vllm".to_string()),
+        model: bridge.model(),
+        base_url: bridge.base_url(),
+        api_key: bridge.api_key(),
+        provider: bridge.provider(),
+        env_overrides,
+    })
 }
 
 /// 持久化 UserPrefs 到 `~/.pinvou3/settings.json`。

@@ -9,7 +9,7 @@ set -euo pipefail
 # vLLM provider (OpenAI 兼容 /v1/chat/completions)
 export DEEPSEEK_PROVIDER=vllm
 export DEEPSEEK_API_KEY="local-no-auth"
-export DEEPSEEK_BASE_URL="http://10.214.74.113:8000/v1"
+#export DEEPSEEK_BASE_URL="http://10.214.74.113:8000/v1"
 # 2026-05-19: vLLM served-model-name 改 qwen36_35b_256k。
 # 后缀 _256k 让 fork B1 在底座 context_window_for_model 中派生 256K 窗口;
 # 无后缀的 Qwen 模型也会被底座识别为 128K (models.rs qwen 通用识别)。
@@ -18,7 +18,7 @@ export DEEPSEEK_BASE_URL="http://10.214.74.113:8000/v1"
 # 动态适配: 用户可通过 ~/.pinvou3/settings.json 的 advanced.model_preset /
 # custom_model_name / custom_base_url / custom_api_key 切换模型与后端。
 # env 此处始终优先于 settings.json, 确保 run-dev.sh / harness 行为稳定。
-export DEEPSEEK_MODEL="qwen36_35b_256k"
+#export DEEPSEEK_MODEL="qwen36_35b_256k"
 
 # 关 Qwen3 thinking 模式 (reasoning_effort=off 触发
 # chat_template_kwargs.enable_thinking=false,避免 10+ 秒 reasoning 段卡死)
