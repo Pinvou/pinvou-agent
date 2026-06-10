@@ -719,9 +719,12 @@
       // Sync from bridge state
       useEffect(() => {
         if (!bs) return;
-        if (bs.activeSessionId && bs.activeSessionId !== activeChat) {
+        // activeChat 始终跟随 bridge(含 null:草稿态清掉近期列表高亮)。仅在物化成
+        // 真实 session(非 null)时才强制切回 chat 视图——草稿态/删会话不该把用户从
+        // monitor/settings 拽走。
+        if (bs.activeSessionId !== activeChat) {
           setActiveChat(bs.activeSessionId);
-          if (currentView !== 'monitor' && currentView !== 'settings' && currentView !== 'search') {
+          if (bs.activeSessionId && currentView !== 'monitor' && currentView !== 'settings' && currentView !== 'search') {
             setCurrentView('chat');
           }
         }
@@ -1091,8 +1094,10 @@
             )}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} />}
             {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} />}
-            {currentView === 'chat' && bs && bs.activeSessionId && (
-              <Lanyard persona={bs.activePersona || null} isDark={activeTheme === 'dark'} t={t}
+            {/* 草稿态(无 session)也渲染挂件,但强制空态——让欢迎页保留「＋加持卡牌」入口。
+                点它跳卡牌池,选卡时 equipPersona 会先物化 session(lazy session)。 */}
+            {currentView === 'chat' && bs && (
+              <Lanyard persona={bs.activeSessionId ? (bs.activePersona || null) : null} isDark={activeTheme === 'dark'} t={t}
                 onRemove={() => bridge.available && bridge.unequipPersona()}
                 onOpenPicker={() => setCurrentView('cardpool')} />
             )}

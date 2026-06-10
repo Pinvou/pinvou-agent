@@ -176,6 +176,10 @@
   // 避免把后台渲染成 active。异步收尾(落盘)按显式 session_id 路由,不依赖工作集。
   var sessionStates = {};
   var suppressNotify = false;
+  // sessionId → true:标题当前是「卡牌占位名」(加卡时自动取的),可被首条用户消息覆盖。
+  // 卡牌名只在「加了卡但还没开口」时当临时标题;一旦开始对话,对话内容更能区分同卡会话。
+  // 内存态(不持久化):重启后丢标记仅影响「加卡→重启→才发首条消息」这一冷门路径。
+  var personaPlaceholderTitles = {};
   function freshBuffer() {
     return {
       messages: [], chatItems: [], personaEvents: [], artifacts: [], busy: false, queued: [],
@@ -265,13 +269,14 @@
       await invoke("save_session_messages", { id: sid, messages: msgs });
       try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch (_) {}
       var meta = state.sessions.find(function (s) { return s.id === sid; });
-      if (meta && (meta.title === "新对话" || meta.title === "New chat")) {
+      if (meta && (meta.title === "新对话" || meta.title === "New chat" || personaPlaceholderTitles[sid])) {
         var firstUser = msgs.find(function (m) { return m.role === "user"; });
         var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
         if (text && text.text) {
           var newTitle = text.text.slice(0, 20);
           await invoke("rename_session", { id: sid, title: newTitle });
           meta.title = newTitle;
+          delete personaPlaceholderTitles[sid]; // 已被对话内容命名,卸下占位标记
         }
       }
     } catch (e) { console.warn("persist failed", e); }
@@ -340,16 +345,24 @@
     notify();
   }
 
-  async function createNewSession() {
-    if (state.activeSessionId && state.messages.length === 0) return;
-    // 复用已有空会话(title 仍是默认值 ⇔ 没发过用户消息,auto-title 机制保证),
-    // 否则「新建→切走→再新建」会让空「新对话」在列表里无限堆积。
-    var empty = state.sessions.find(function (s) {
-      return (s.title === "新对话" || s.title === "New chat") && s.id !== state.activeSessionId;
-    });
-    if (empty) { await switchToSession(empty.id); return; }
-    // 多 session 并发:不再因「正在响应中」拦截新建。旧 session 转入后台,在自己的
-    // engine 上继续跑(其工作集已存进 sessionStates),新 session 用全新工作集。
+  // 进入草稿态:不创建 session,只清空工作集 + activeSessionId=null,落在「你好」欢迎页。
+  // session 在首次有实质内容(发消息 / 加卡牌,见 ensureSession)时才物化——这样会话列表里
+  // 永远不会堆积没用过的空「新对话」(ChatGPT/Claude 式 lazy session)。
+  function enterDraft() {
+    if (!state.activeSessionId && state.messages.length === 0) { notify(); return; } // 已在草稿态
+    if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
+    state.activeSessionId = null;
+    loadWorkingSetFrom(freshBuffer());
+    notify();
+  }
+  // 公开「新建对话」入口(侧边栏按钮)= 进草稿态。名字保留以兼容前端调用。
+  async function createNewSession() { enterDraft(); }
+
+  // 草稿态首次有实质内容时真正向后端创建 session 并切为 active;已有 active 直接返回。
+  // 返回新 session id,创建失败返回 null。调用方:sendMessage(首条消息) / equipPersona(加卡)。
+  async function ensureSession() {
+    if (state.activeSessionId) return state.activeSessionId;
+    // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
     try {
       var meta = await invoke("create_session");
       switchActiveTo(meta.id, { fresh: true });
@@ -357,8 +370,10 @@
       await syncModeState();
       await syncActivePersona();
       notify();
+      return state.activeSessionId;
     } catch (e) {
       addSystemItem(bt("newChatFailed") + e);
+      return null;
     }
   }
 
@@ -404,14 +419,10 @@
       delete sessionStates[id]; // 丢掉该 session 的工作集缓冲(后端已 evict 其 engine)
       state.sessions = state.sessions.filter(function (s) { return s.id !== id; });
       if (state.activeSessionId === id) {
+        // 删当前会话 → 落空白草稿页(不自动切上一条/不建空 session)。被删 session 的 buffer
+        // 上面已 delete,这里不 saveWorkingSetTo(否则 getBuffer 会把它复活),直接清空工作集。
         state.activeSessionId = null;
-        state.messages = [];
-        state.chatItems = [];
-        if (state.sessions.length > 0) {
-          await switchToSession(state.sessions[0].id);
-        } else {
-          await createNewSession();
-        }
+        loadWorkingSetFrom(freshBuffer());
       }
       notify();
     } catch (e) {
@@ -424,6 +435,7 @@
       await invoke("rename_session", { id: id, title: title });
       var s = state.sessions.find(function (s) { return s.id === id; });
       if (s) s.title = title;
+      delete personaPlaceholderTitles[id]; // 用户主动命名后不再算卡牌占位,不被对话覆盖
       notify();
     } catch (e) {
       console.warn("rename failed", e);
@@ -773,7 +785,7 @@
     }
 
     if (!state.activeSessionId) {
-      await createNewSession();
+      await ensureSession(); // 草稿态首条消息 → 物化 session(命名靠下方 persistSession auto-title)
       if (!state.activeSessionId) return;
     }
 
@@ -818,13 +830,14 @@
       try { await invoke("save_session_artifacts", { id: state.activeSessionId, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch (_) {}
       // Auto-title
       var meta = state.sessions.find(function (s) { return s.id === state.activeSessionId; });
-      if (meta && (meta.title === "新对话" || meta.title === "New chat")) {
+      if (meta && (meta.title === "新对话" || meta.title === "New chat" || personaPlaceholderTitles[state.activeSessionId])) {
         var firstUser = state.messages.find(function (m) { return m.role === "user"; });
         var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
         if (text && text.text) {
           var newTitle = text.text.slice(0, 20);
           await invoke("rename_session", { id: state.activeSessionId, title: newTitle });
           meta.title = newTitle;
+          delete personaPlaceholderTitles[state.activeSessionId]; // 已被对话内容命名,卸下占位标记
         }
       }
     } catch (e) {
@@ -1567,10 +1580,27 @@
     invoke("save_session_persona_events", { sessionId: sid, events: snapshot }).catch(function () {});
   }
   async function equipPersona(personaId) {
-    if (!state.activeSessionId) { addSystemItem(bt("equipNoSession")); return; }
+    if (!state.activeSessionId) {
+      await ensureSession(); // 草稿态加卡 → 先物化 session(lazy session)
+      if (!state.activeSessionId) return; // 物化失败,放弃
+    }
     var prev = state.activePersona; // 换卡前的旧专家(同 session 切换时先播报卸下)
     try {
       var card = await invoke("equip_persona", { sessionId: state.activeSessionId, personaId: personaId });
+      // 标题仍是默认值「新对话」→ 用卡牌名命名(无论草稿态物化还是遗留空会话;
+      // 用户已主动改名 / 已被首条消息命名的会话不动)。决策:卡牌优先于首条消息。
+      var sid = state.activeSessionId;
+      var m = state.sessions.find(function (s) { return s.id === sid; });
+      // 标题还是默认值 / 仍是卡牌占位(换卡场景)→ 用(新)卡牌名命名,并标记为占位。
+      // 占位名会被首条用户消息覆盖(见 persistMessages*),让同卡会话靠对话内容区分。
+      if (m && (m.title === "新对话" || m.title === "New chat" || personaPlaceholderTitles[sid])) {
+        var newTitle = personaName(card);
+        if (newTitle) {
+          try { await invoke("rename_session", { id: sid, title: newTitle }); } catch (_) {}
+          m.title = newTitle;
+          personaPlaceholderTitles[sid] = true;
+        }
+      }
       // 同 session 换了一张不同的卡 → 先弹一条"已卸下旧专家",再弹新加持。
       if (prev && prev.id !== card.id) {
         addChatItem({ type: "system", text: bt("personaUnequipped") + personaName(prev), time: timeStr() });
@@ -1651,11 +1681,7 @@
     await loadSettings();
     await loadEffectiveModelConfig();
     await refreshHistoryList();
-    if (state.sessions.length > 0) {
-      await switchToSession(state.sessions[0].id);
-    } else {
-      await createNewSession();
-    }
+    enterDraft(); // 启动落空白草稿页(lazy session:不自动选/建会话)
     await refreshSuperPerm();
     loadPersonas(); // 预载卡池(让聊天里草稿"已存入"判定能查到同名自制卡), fire-and-forget
     pollBackendStatus();
