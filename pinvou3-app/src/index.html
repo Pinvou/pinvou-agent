@@ -134,6 +134,7 @@
     const Wrench = (p) => <I {...p}><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76Z"/></I>;
     const User = (p) => <I {...p}><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></I>;
     const Layers = (p) => <I {...p}><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 12.5-9.17 4.17a2 2 0 0 1-1.66 0L2 12.5"/><path d="m22 17.5-9.17 4.17a2 2 0 0 1-1.66 0L2 17.5"/></I>;
+    const MessageSquare = (p) => <I {...p}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></I>;
     const X = (p) => <I {...p}><path d="M18 6 6 18"/><path d="m6 6 12 12"/></I>;
     const ArrowLeft = (p) => <I {...p}><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></I>;
     const FolderOpen = (p) => <I {...p}><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></I>;
@@ -146,7 +147,7 @@
     const dict = {
       zh: {
         langTag: 'zh',
-        newChat: '新对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', cardPool: '卡牌池', recent: '近期', settings: '设置', localEnv: '本地环境',
+        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', cardPool: '卡牌池', recent: '近期', settings: '设置', localEnv: '本地环境',
         sysStatus: '系统状态', sysDesc: '实时性能与资源指标', gpu: '图形处理器 (GPU)', gpuUnavail: '状态不可用', noSmi: '未检测到 nvidia-smi',
         vram: '显存占用', core: '计算核心', temp: '温度', power: '功耗', unifiedMem: '统一内存架构',
         ram: '系统内存 (RAM)', used: '已用', physical: '物理内存', total: '总计', swap: '交换空间',
@@ -300,7 +301,7 @@
       },
       en: {
         langTag: 'en',
-        newChat: 'New chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', cardPool: 'Card Deck', recent: 'Recent', settings: 'Settings', localEnv: 'Local Env',
+        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', cardPool: 'Card Deck', recent: 'Recent', settings: 'Settings', localEnv: 'Local Env',
         sysStatus: 'System Status', sysDesc: 'Real-time performance metrics', gpu: 'GPU', gpuUnavail: 'Unavailable', noSmi: 'nvidia-smi not found',
         vram: 'VRAM Usage', core: 'Core Usage', temp: 'Temp', power: 'Power', unifiedMem: 'Unified Memory',
         ram: 'System RAM', used: 'Used', physical: 'Physical RAM', total: 'Total', swap: 'Swap Space',
@@ -454,7 +455,7 @@
       },
       ja: {
         langTag: 'ja',
-        newChat: '新しいチャット', searchChats: 'チャットを検索', monitor: 'システムモニター', workflow: 'ワークフロー', cardPool: 'カードプール', recent: '最近', settings: '設定', localEnv: 'ローカル環境',
+        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', monitor: 'システムモニター', workflow: 'ワークフロー', cardPool: 'カードプール', recent: '最近', settings: '設定', localEnv: 'ローカル環境',
         sysStatus: 'システム状態', sysDesc: 'リアルタイムの性能・リソース指標', gpu: 'GPU', gpuUnavail: '状態を取得できません', noSmi: 'nvidia-smi が見つかりません',
         vram: 'VRAM 使用量', core: 'コア使用率', temp: '温度', power: '消費電力', unifiedMem: 'ユニファイドメモリ',
         ram: 'システムメモリ (RAM)', used: '使用中', physical: '物理メモリ', total: '合計', swap: 'スワップ領域',
@@ -976,6 +977,16 @@
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => setCurrentView('cardpool')}
               />
+              {/* 收起态专属:展开态近期列表的高亮项就是回会话入口,不重复渲染 */}
+              {!isSidebarOpen && (
+                <NavItem
+                  icon={<MessageSquare size={18} />} label={t.currentChat}
+                  active={currentView === 'chat'}
+                  theme={activeTheme}
+                  isSidebarOpen={isSidebarOpen}
+                  onClick={() => setCurrentView('chat')}
+                />
+              )}
             </div>
 
             {/* Recents — 独立 flex-1 + overflow-y-auto,只在展开态显示。
@@ -1110,11 +1121,12 @@
       const now = new Date();
       const diff = now - d;
       const L = {
-        zh: { today: '今天', yesterday: '昨天', daysAgo: n => `${n} 天前`, locale: 'zh-CN' },
-        ja: { today: '今日', yesterday: '昨日', daysAgo: n => `${n} 日前`, locale: 'ja-JP' },
-        en: { today: 'Today', yesterday: 'Yesterday', daysAgo: n => `${n}d ago`, locale: 'en-US' },
-      }[language] || { today: 'Today', yesterday: 'Yesterday', daysAgo: n => `${n}d ago`, locale: 'en-US' };
-      if (diff < 86400000 && d.getDate() === now.getDate()) return L.today;
+        zh: { yesterday: '昨天', daysAgo: n => `${n} 天前`, locale: 'zh-CN' },
+        ja: { yesterday: '昨日', daysAgo: n => `${n} 日前`, locale: 'ja-JP' },
+        en: { yesterday: 'Yesterday', daysAgo: n => `${n}d ago`, locale: 'en-US' },
+      }[language] || { yesterday: 'Yesterday', daysAgo: n => `${n}d ago`, locale: 'en-US' };
+      // 今天的会话显示具体时间——同日多条全写「今天」毫无区分度
+      if (diff < 86400000 && d.getDate() === now.getDate()) return d.toLocaleTimeString(L.locale, { hour: '2-digit', minute: '2-digit', hour12: false });
       if (diff < 172800000) return L.yesterday;
       // 7 天内显示「X 天前」/「X days ago」,更早显示日期
       const days = Math.floor(diff / 86400000);

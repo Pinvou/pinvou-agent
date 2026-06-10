@@ -342,6 +342,12 @@
 
   async function createNewSession() {
     if (state.activeSessionId && state.messages.length === 0) return;
+    // 复用已有空会话(title 仍是默认值 ⇔ 没发过用户消息,auto-title 机制保证),
+    // 否则「新建→切走→再新建」会让空「新对话」在列表里无限堆积。
+    var empty = state.sessions.find(function (s) {
+      return (s.title === "新对话" || s.title === "New chat") && s.id !== state.activeSessionId;
+    });
+    if (empty) { await switchToSession(empty.id); return; }
     // 多 session 并发:不再因「正在响应中」拦截新建。旧 session 转入后台,在自己的
     // engine 上继续跑(其工作集已存进 sessionStates),新 session 用全新工作集。
     try {
