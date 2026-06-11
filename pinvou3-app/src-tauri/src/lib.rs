@@ -48,6 +48,11 @@ fn ensure_release_env() {
         ("DEEPSEEK_FORCE_HTTP1", "1"),
         ("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576"),
         ("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "240"),
+        // SSE 首响应头超时(open timeout):底座只认 env,默认 45s 是为云端调的。
+        // 本地 GB10 大上下文 SubAgent 请求首 token TTFT 偶发 >45s → 误杀子 agent
+        // (真机实锤:三省六部 libu~1 首发死于 45s,重派才过)。280s 与
+        // ~/.deepseek config 的 subagent api_timeout=300 对齐(步级超时须更大)。
+        ("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS", "280"),
         // —— webkit2gtk / fcitx 兼容（Wayland 下 IM 协议挂、合成模式异常）——
         ("GDK_BACKEND", "x11"),
         ("WEBKIT_DISABLE_COMPOSITING_MODE", "1"),
