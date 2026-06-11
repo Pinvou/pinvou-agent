@@ -1903,6 +1903,21 @@
           </div>
         );
       }
+      if (item.pinvouTransfer) {
+        const isWu = item.pinvouTransfer === '悟';
+        const tint = isWu ? (isDark ? '#8AB4F8' : '#1967D2') : (isDark ? '#D0BCFF' : '#7C3AED');
+        const tintBg = isWu ? (isDark ? 'bg-[#1A73E8]/10' : 'bg-[#1A73E8]/[0.06]') : (isDark ? 'bg-[#D0BCFF]/10' : 'bg-[#7C3AED]/[0.07]');
+        return (
+          <div className="flex justify-end">
+            <div className="max-w-[85%]">
+              <div className="flex items-center justify-end gap-1 mb-1 text-[11px] font-medium" style={{ color: tint }}>
+                <span>{isWu ? '💡' : '🔍'}</span><span>{'Pinvou · ' + item.pinvouTransfer + ' · 转交修订'}</span>
+              </div>
+              <div className={`px-5 py-3 rounded-[20px] rounded-tr-md text-[15px] leading-relaxed whitespace-pre-wrap border-l-[3px] ${tintBg} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`} style={{ borderLeftColor: tint }}>{item.text}</div>
+            </div>
+          </div>
+        );
+      }
       return (
         <div className="flex justify-end group">
           <div className="flex items-center gap-2 max-w-[85%]">
@@ -1992,7 +2007,6 @@
       if (item.type === 'plan_text_fallback') return <PlanFallbackCard item={item} theme={theme} t={t} />;
       if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} theme={theme} t={t} />;
       if (item.type === 'user_input') return <UserInputCard item={item} theme={theme} t={t} />;
-      if (item.type === 'pinvou_review') return <PinvouSummonCard item={item} theme={theme} />;
       if (item.type === 'user') return <UserBubble item={item} theme={theme} editable={editable} t={t} />;
 
       if (item.type === 'assistant') {
@@ -2439,7 +2453,7 @@
     //   issue.needs_verify(外部事实,AI 无知识)→ 让 AI 核实 / 我确认没问题;
     //   issue 其他(产物缺陷,AI 改得动)→ 让 AI 改 / 接受现状(high 默认勾)。
     // 「交给 AI 处理」按各条动作组装定向指令走 B1。单独子组件:useState 放这避 hooks 错位。
-    const PinvouRows = ({ review, theme, reviewPos }) => {
+    const PinvouRows = ({ review, theme }) => {
       const isDark = theme === 'dark';
       const body = isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]';
       const muted = isDark ? 'text-[#C4C7C5]' : 'text-[#5f6368]';
@@ -2484,8 +2498,8 @@
         : (isDark ? 'border-white/15 text-[#9AA0A6] hover:bg-white/5' : 'border-black/15 text-[#757575] hover:bg-black/5')}`;
       const onResolve = () => {
         if (!bridge.available) return;
-        // review 是 notify 深拷贝,写它的 resolution 落不到原 state;改为把裁决按下标 + reviewPos
-        // 传给 bridge,由 bridge 在原 state.pinvouReviews 上写,再落盘(根治 resolution 不持久化)。
+        // 弹窗里 review 是 notify 深拷贝,写它的 resolution 落不到原 state;把裁决按下标传给 bridge,
+        // 由 bridge 在 state.pinvouModal.review(原 state)上写、再落盘(根治 resolution 不持久化)。
         const resolutions = {
           recs: (review.recommendations || []).map((_, i) => res['r' + i] || 'pending'),
           issues: (review.issues || []).map((_, i) => res['i' + i] || 'pending'),
@@ -2500,7 +2514,7 @@
           else if (a === 'ask') actions.push({ t: 'ask', topic: it.raw.topic || it.head });
           else if (a === 'fill') actions.push({ t: 'fill', dimension: it.raw.dimension || '', suggestion: it.raw.suggestion || '' });
         });
-        bridge.resolvePinvouReview(reviewPos, resolutions, actions);
+        bridge.resolvePinvouReview(resolutions, actions);
       };
       return (
         <div>
@@ -2536,7 +2550,7 @@
                 交给 AI 处理（{activeCount} 条）
               </button>
             )}
-            <button onClick={() => bridge.available && bridge.dismissPinvouReview(reviewPos)} title="这次不处理,整张卡跳过"
+            <button onClick={() => bridge.available && bridge.dismissPinvouReview()} title="这次不处理,整张卡跳过"
               className={`px-3 py-1.5 rounded-full text-[12.5px] transition-colors ${isDark ? 'text-[#9AA0A6] hover:bg-white/5' : 'text-[#5f6368] hover:bg-black/5'}`}>
               跳过
             </button>
@@ -2548,7 +2562,7 @@
     // 场景 A(request_user_input 决策推荐):纯展示推荐+风险,**无勾选/无按勾选修订**。
     // 因为没有"产物"要让 AI 改,Boss 看完推荐去上面的 request_user_input 选项卡点选;
     // 且此时 turn 正阻塞等 Boss 答,绝不能 sendMessage(会冲突丢选项卡)。
-    const PinvouAdvise = ({ review, theme, reviewPos }) => {
+    const PinvouAdvise = ({ review, theme }) => {
       const isDark = theme === 'dark';
       const purple = isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]';
       const muted = isDark ? 'text-[#C4C7C5]' : 'text-[#5f6368]';
@@ -2586,7 +2600,7 @@
           )}
           <div className="flex items-center justify-between gap-2 mt-2.5">
             <span className={`text-[12px] ${muted}`}>👆 看完推荐去上面选项卡点选——只给建议，你来定。</span>
-            <button onClick={() => bridge.available && bridge.dismissPinvouReview(reviewPos)} title="这次不处理,整张卡跳过"
+            <button onClick={() => bridge.available && bridge.dismissPinvouReview()} title="这次不处理,整张卡跳过"
               className={`shrink-0 px-2.5 py-1 rounded-full text-[12px] ${isDark ? 'text-[#9AA0A6] hover:bg-white/5' : 'text-[#5f6368] hover:bg-black/5'}`}>跳过</button>
           </div>
         </div>
@@ -2642,8 +2656,8 @@
             </div>
           )}
           {hasRows && (item.advise
-            ? <PinvouAdvise review={r} theme={theme} reviewPos={item.reviewPos} />
-            : <PinvouRows review={r} theme={theme} reviewPos={item.reviewPos} />)}
+            ? <PinvouAdvise review={r} theme={theme} />
+            : <PinvouRows review={r} theme={theme} />)}
         </div>
       );
     };
@@ -3568,6 +3582,15 @@
               onClose={()=>setEditor(null)}
               onSaved={(sum)=>setToast((editor.initial && editor.initial.id ? t.cpToastSaved : t.cpToastCreated)(sum.name))}
               onDeleted={(card)=>setToast(t.cpToastDeleted(card.name))} />
+          ) : null}
+
+          {/* Pinvou 检阅弹窗(品/悟) —— 不进对话流;点背景或卡内「跳过」关闭 */}
+          {bs && bs.pinvouModal ? (
+            <div className="fixed inset-0 z-[55] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }} onClick={() => bridge.dismissPinvouReview()}>
+              <div className="w-full max-w-[560px] max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+                <PinvouSummonCard item={bs.pinvouModal} theme={isDark ? 'dark' : 'light'} />
+              </div>
+            </div>
           ) : null}
 
           {/* 加持反馈 toast */}

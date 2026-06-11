@@ -60,6 +60,8 @@
     personaEvents: [],
     // Pinvou 召唤检阅时间线(sidecar, 同 personaEvents, 不进 messages/LLM)。每项 {pos, review}。
     pinvouReviews: [],
+    // Pinvou 检阅结果弹窗(不进对话流);null=关闭。一次只一个,裁决/跳过直接操作它的 review、不靠 pos。
+    pinvouModal: null,
     // 本 turn 被 write/append/edit 改过的产物 path(去重)。chat:done 时给每个补一张成品卡
     // (present 过的复用 title/desc;没 present 的兜底首卡),turn 内改几次都只一张。
     turnDirtyArtifacts: [],
@@ -222,6 +224,7 @@
     state.messages = buf.messages; state.chatItems = buf.chatItems; state.artifacts = buf.artifacts;
     state.personaEvents = buf.personaEvents || [];
     state.pinvouReviews = buf.pinvouReviews || [];
+    state.pinvouModal = null; // 切 session 关掉检阅弹窗
     state.turnDirtyArtifacts = []; // turn 临时态,切 session 清空,别串到新 session
     state.turnPresentedArtifacts = [];
     state.busy = buf.busy; state.planSnapshot = buf.planSnapshot; state.modeState = buf.modeState;
@@ -497,15 +500,6 @@
         else if (ev.kind === "unequip") addChatItem({ type: "system", text: bt("personaUnequipped") + (ev.name || ""), time: "" });
       }
     }
-    // B2: 按 pos 把 Pinvou 审查卡插回原位(同 emitPersonaAt 范式,不进 messages/LLM)
-    var pr = Array.isArray(state.pinvouReviews) ? state.pinvouReviews : [];
-    function emitPinvouAt(atOrAfter, isTail) {
-      for (var k = 0; k < pr.length; k++) {
-        var x = pr[k];
-        if (isTail ? (x.pos < atOrAfter) : (x.pos !== atOrAfter)) continue;
-        addChatItem({ type: "pinvou_review", review: x.review, advise: x.advise, reviewPos: x.pos, time: "" });
-      }
-    }
     // 预扫 tool_result：tool_use 在 assistant 消息、result 在后续 user 消息，需提前建映射
     // 才能在还原选择卡/方案卡时拿到结果（选项/快照）。
     var resultById = {};
@@ -538,14 +532,17 @@
     }
     for (var mi = 0; mi < state.messages.length; mi++) {
       emitPersonaAt(mi, false); // 该消息之前发生的卡牌事件先插
-      emitPinvouAt(mi, false);  // 同 pos 的 Pinvou 审查卡
       var m = state.messages[mi];
       var blocks = Array.isArray(m.content) ? m.content : [];
       if (m.role === "user") {
         var textParts = blocks.filter(function (c) { return c.type === "text"; }).map(function (c) { return c.text; });
         var utext = textParts.join("");
         if (textParts.length) {
-          addChatItem({ type: "user", text: utext, time: "" });
+          // pinvouTransfer 是展示层标记、不在 messages → rerender 从转交固定措辞还原品/悟样式
+          var uitem2 = { type: "user", text: utext, time: "" };
+          if (utext.indexOf("以下维度产物还缺") >= 0) uitem2.pinvouTransfer = "悟";
+          else if (utext.indexOf("请按下面的检阅意见") >= 0 || utext.indexOf("以下事项我已拍板") >= 0 || utext.indexOf("request_user_input 正式问我") >= 0) uitem2.pinvouTransfer = "品";
+          addChatItem(uitem2);
         }
         // tool_result（只回填普通工具卡；选择卡/方案卡的结果已在 tool_use 处还原）
         for (var ci = 0; ci < blocks.length; ci++) {
@@ -652,7 +649,6 @@
       }
     }
     emitPersonaAt(state.messages.length, true); // 最后一条消息之后发生的卡牌事件(末尾加持/卸下)
-    emitPinvouAt(state.messages.length, true);  // 末尾的 Pinvou 审查卡
   }
 
   function updateToolItem(toolId, output, success) {
@@ -764,9 +760,11 @@
   }
   // 真正发送:在 sid 的工作集上加 user 气泡 + 流式占位 + busy,然后 invoke chat。
   // active/后台通用(后台走 runSyncOnSession 临时切工作集)。
-  function doSendFor(sid, text, displayText, attachmentsPayload) {
+  function doSendFor(sid, text, displayText, attachmentsPayload, meta) {
     runSyncOnSession(sid, function () {
-      addChatItem({ type: "user", text: displayText, time: timeStr() });
+      var uitem = { type: "user", text: displayText, time: timeStr() };
+      if (meta && meta.pinvouTransfer) uitem.pinvouTransfer = meta.pinvouTransfer; // 仅展示层,不进 messages/LLM
+      addChatItem(uitem);
       state.messages.push({ role: "user", content: [{ type: "text", text: displayText }] });
       state.busy = true;
       startThinking();
@@ -797,11 +795,12 @@
     var displayText = items.map(function (i) { return i.displayText; }).filter(Boolean).join("\n");
     var attachments = [];
     items.forEach(function (i) { if (i.attachments && i.attachments.length) attachments = attachments.concat(i.attachments); });
+    var meta = items.length === 1 ? items[0].meta : null; // 单条(如转交)保留 meta;合并多条不标
     notify();
-    doSendFor(sid, text, displayText, attachments);
+    doSendFor(sid, text, displayText, attachments, meta);
   }
 
-  async function sendMessage(text) {
+  async function sendMessage(text, meta) {
     text = (text || "").trim();
     var readyAttachments = state.attachments.filter(function (a) { return a.status === "ready" && a.result; });
     if (!text && readyAttachments.length === 0) return;
@@ -826,12 +825,12 @@
     // 排队式:当前 session 正在生成 → 这句进队列(不打断当前轮),本轮 chat:done 后自动发。
     // 输入框上方显示待发 chip(可✕撤销)。停止按钮仍只硬打断当前轮。
     if (state.busy) {
-      state.queued.push({ id: ++itemIdSeq, text: text, displayText: displayText, attachments: attachmentsPayload });
+      state.queued.push({ id: ++itemIdSeq, text: text, displayText: displayText, attachments: attachmentsPayload, meta: meta || null });
       notify();
       return;
     }
 
-    await doSendFor(state.activeSessionId, text, displayText, attachmentsPayload);
+    await doSendFor(state.activeSessionId, text, displayText, attachmentsPayload, meta);
   }
   // 撤销一条待发消息(点 chip 的 ✕)。
   function removeQueued(id) {
@@ -846,19 +845,17 @@
     if (!state.activeSessionId) { addSystemItem("先开始一个对话,再召唤 Pinvou 检阅。"); return; }
     if (state.pinvouSummoning) return;
     state.pinvouSummoning = true;
-    var card = { type: "pinvou_review", loading: true, advise: !!ask, coverage: mode === "coverage", time: timeStr() };
-    addChatItem(card); // addChatItem 赋 card.id;card 是引用,下面直接改它
+    // 检阅结果弹 modal(不进对话流):一次只一个,裁决/跳过直接操作 state.pinvouModal.review、
+    // 不靠 pos 定位(根治连续召唤 pos 重复串卡)。
+    state.pinvouModal = { loading: true, advise: !!ask, coverage: mode === "coverage" };
     notify();
     try {
-      // focus=产出物 path(场景B); ask=request_user_input 问题(场景A,turn 中途不靠 messages);
-      // mode="coverage"=通盘体检(查产物全不全)。
+      // focus=产出物 path(场景B); ask=request_user_input 问题(场景A); mode="coverage"=通盘体检。
       var review = await invoke("summon_pinvou", { sessionId: state.activeSessionId, focus: focus || null, ask: ask || null, mode: mode || null });
-      card.loading = false;
-      card.review = review;
-      card.reviewPos = recordPinvouReview(review, !!ask); // B2: 进 sidecar;reviewPos 供裁决定位原 state
+      recordPinvouReview(review, !!ask); // 存 sidecar(供核账读上轮账目);modal.review 同引用,裁决写它=写 sidecar
+      if (state.pinvouModal) { state.pinvouModal.loading = false; state.pinvouModal.review = review; }
     } catch (e) {
-      card.loading = false;
-      card.error = String(e && e.message ? e.message : e);
+      if (state.pinvouModal) { state.pinvouModal.loading = false; state.pinvouModal.error = String(e && e.message ? e.message : e); }
     } finally {
       state.pinvouSummoning = false;
       notify();
@@ -884,21 +881,19 @@
 
   // §2 按勾选裁决:resolution 已由前端写回 review 对象(引用→sidecar),这里持久化 +
   // 把勾「让AI改」的条目走 B1 发定向修订指令(只改对应段落、禁全文重写)。Boss 驾驶,非自动。
-  async function resolvePinvouReview(pos, resolutions, actions) {
-    // React 拿到的 state 是 notify() 的深拷贝,组件里写 review.resolution 落不到原 state。
-    // 这里按 pos 定位原 state.pinvouReviews 的 entry,在原对象上按下标写 resolution,再落盘。
-    if (resolutions && typeof pos === "number") {
-      var entry = null;
-      for (var i = state.pinvouReviews.length - 1; i >= 0; i--) {
-        if (state.pinvouReviews[i].pos === pos) { entry = state.pinvouReviews[i]; break; }
-      }
-      if (entry && entry.review) {
-        (entry.review.recommendations || []).forEach(function (r, k) { if (resolutions.recs && resolutions.recs[k]) r.resolution = resolutions.recs[k]; });
-        (entry.review.issues || []).forEach(function (x, k) { if (resolutions.issues && resolutions.issues[k]) x.resolution = resolutions.issues[k]; });
-        (entry.review.coverage || []).forEach(function (g, k) { if (resolutions.coverage && resolutions.coverage[k]) g.resolution = resolutions.coverage[k]; });
-      }
+  async function resolvePinvouReview(resolutions, actions) {
+    // 弹窗只一个 review(state.pinvouModal.review),直接在它上面写 resolution——不靠 pos 定位
+    // (根治连续召唤 pos 重复串卡)。它和 sidecar entry.review 同引用,写它=写 sidecar。
+    var isWu = !!(state.pinvouModal && state.pinvouModal.coverage); // 关窗前取,供转交标品/悟
+    var review = state.pinvouModal && state.pinvouModal.review;
+    if (review && resolutions) {
+      (review.recommendations || []).forEach(function (r, k) { if (resolutions.recs && resolutions.recs[k]) r.resolution = resolutions.recs[k]; });
+      (review.issues || []).forEach(function (x, k) { if (resolutions.issues && resolutions.issues[k]) x.resolution = resolutions.issues[k]; });
+      (review.coverage || []).forEach(function (g, k) { if (resolutions.coverage && resolutions.coverage[k]) g.resolution = resolutions.coverage[k]; });
     }
-    await persistPinvouReviews(); // 落盘(原 state 已写 resolution),配合后端 preserve_resolutions 防覆盖
+    await persistPinvouReviews(); // 落盘,配合后端 preserve_resolutions 防覆盖
+    state.pinvouModal = null; // 裁决完关窗
+    notify();
     if (!actions || !actions.length) return;
     // 按动作类型分组,组装一条 Boss 消息发给主 AI(Boss 驾驶,非自动回传):
     //   fix/verify=产物缺陷定向修订(verify 先核实);adopt=Boss 已定的决策;ask=让 AI 正式问。
@@ -926,16 +921,12 @@
       parts.push("以下维度产物还缺，请补充进去（保留其余内容、只增不改）：");
       fill.forEach(function (a) { parts.push("- " + a.dimension + (a.suggestion ? "：" + a.suggestion : "")); });
     }
-    if (parts.length) sendMessage(parts.join("\n"));
+    if (parts.length) sendMessage(parts.join("\n"), { pinvouTransfer: isWu ? "悟" : "品" });
   }
 
-  // 整卡跳过:Boss 看了不处理这次检阅,按 pos 在原 state 标 dismissed(持久化),卡片收起暗淡。
-  async function dismissPinvouReview(pos) {
-    if (typeof pos !== "number") return;
-    for (var i = state.pinvouReviews.length - 1; i >= 0; i--) {
-      if (state.pinvouReviews[i].pos === pos) { state.pinvouReviews[i].review.dismissed = true; break; }
-    }
-    await persistPinvouReviews();
+  // 整卡跳过:Boss 看了不处理这次检阅 → 直接关窗(sidecar entry 留着、无 resolution,无害)。
+  function dismissPinvouReview() {
+    state.pinvouModal = null;
     notify();
   }
   // 把当前 session 的审查时间线(含勾选写回的 resolution)重新落盘。返回 promise 供 await。
