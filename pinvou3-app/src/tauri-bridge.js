@@ -1215,6 +1215,12 @@
     if (p.workflow_id) run.workflowId = p.workflow_id;
     if (p.ui) run.ui = p.ui;
     var roles = p.roles || {};
+    // [B2 修] full_state 是权威全量快照:快照里没有的角色条目要删——尚书省派单后
+    // 静态六部被差事节点取代,留着陈旧条目会让泳道误判"六部在场"而不插差事批次泳道
+    // (实测:六部卡全员显示"等待尚书省交付",而差事其实已经在跑)。
+    Object.keys(state.workflow.run.agents).forEach(function (rid) {
+      if (!(rid in roles)) delete state.workflow.run.agents[rid];
+    });
     Object.keys(roles).forEach(function (rid) {
       var r = roles[rid] || {};
       applyAgentPatch(rid, {
