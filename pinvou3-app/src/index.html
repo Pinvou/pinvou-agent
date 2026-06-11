@@ -1095,6 +1095,15 @@
                 onDeleted={() => setPersonaEditor(null)} />
             )}
 
+            {/* Pinvou 检阅弹窗(品/悟) —— 全局,任何视图都能弹;点背景或卡内「跳过」关闭 */}
+            {bs && bs.pinvouModal && (
+              <div className="fixed inset-0 z-[55] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }} onClick={() => bridge.dismissPinvouReview()}>
+                <div className="w-full max-w-[560px] max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+                  <PinvouSummonCard item={bs.pinvouModal} theme={activeTheme} />
+                </div>
+              </div>
+            )}
+
           </div>
           </div>
         </div>
@@ -3582,15 +3591,6 @@
               onClose={()=>setEditor(null)}
               onSaved={(sum)=>setToast((editor.initial && editor.initial.id ? t.cpToastSaved : t.cpToastCreated)(sum.name))}
               onDeleted={(card)=>setToast(t.cpToastDeleted(card.name))} />
-          ) : null}
-
-          {/* Pinvou 检阅弹窗(品/悟) —— 不进对话流;点背景或卡内「跳过」关闭 */}
-          {bs && bs.pinvouModal ? (
-            <div className="fixed inset-0 z-[55] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }} onClick={() => bridge.dismissPinvouReview()}>
-              <div className="w-full max-w-[560px] max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-                <PinvouSummonCard item={bs.pinvouModal} theme={isDark ? 'dark' : 'light'} />
-              </div>
-            </div>
           ) : null}
 
           {/* 加持反馈 toast */}
