@@ -1992,6 +1992,7 @@
       if (item.type === 'plan_text_fallback') return <PlanFallbackCard item={item} theme={theme} t={t} />;
       if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} theme={theme} t={t} />;
       if (item.type === 'user_input') return <UserInputCard item={item} theme={theme} t={t} />;
+      if (item.type === 'pinvou_review') return <PinvouSummonCard item={item} theme={theme} />;
       if (item.type === 'user') return <UserBubble item={item} theme={theme} editable={editable} t={t} />;
 
       if (item.type === 'assistant') {
@@ -2101,7 +2102,13 @@
                 )}
                 <div className={`flex items-center justify-between mt-2 pt-2 border-t ${isDark ? 'border-[#D0BCFF]/15' : 'border-[#7C3AED]/15'}`}>
                   <span className={`text-[11px] font-mono truncate ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`} title={basename}>{basename}</span>
-                  <span className={`text-[12px] flex-shrink-0 ml-2 ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>{t.clickToOpen}</span>
+                  <div className="flex items-center gap-2.5 flex-shrink-0 ml-2">
+                    <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.summonPinvou(path); }} title="让 Pinvou 检阅这个产出物"
+                      className={`flex items-center gap-1 text-[12px] ${isDark ? 'text-[#D0BCFF] hover:text-[#E9DDFF]' : 'text-[#7C3AED] hover:text-[#6D28D9]'}`}>
+                      <Sparkles size={13} /> 检阅
+                    </button>
+                    <span className={`text-[12px] ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>{t.clickToOpen}</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -2420,6 +2427,110 @@
     };
 
     // ==========================================
+    // PinvouSummonCard — 🧭 召唤式检阅（Boss 主动呼叫 Pinvou）
+    // 自报家门人格(单主+alternates,§3.3) + trace + issues(severity 分色)。
+    // ==========================================
+    // 逐条裁决行(§2):每条 issue/rec 二选一(让AI改/接受现状),high 默认勾,「按勾选修订」走 B1。
+    // 单独子组件——useState 放这里,确保 loading→loaded 时首次 mount 才初始化(否则 hooks 错位)。
+    const PinvouRows = ({ review, theme }) => {
+      const isDark = theme === 'dark';
+      const body = isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]';
+      const muted = isDark ? 'text-[#C4C7C5]' : 'text-[#5f6368]';
+      const sevDot = (s) => s === 'high' ? '#EA4335' : s === 'medium' ? '#E37400' : '#9AA0A6';
+      const rows = [
+        ...(review.recommendations || []).map((x, i) => ({ k: 'r' + i, raw: x, sev: 'rec', head: (x.topic ? x.topic + '：' : '') + '建议 ' + x.pick, sub: x.why })),
+        ...(review.issues || []).map((x, i) => ({ k: 'i' + i, raw: x, sev: x.severity, head: x.text, sub: x.suggestion, nv: x.kind === 'needs_verify' })),
+      ];
+      const [res, setRes] = useState(() => {
+        const m = {};
+        rows.forEach(it => { m[it.k] = it.raw.resolution || (it.sev === 'high' ? 'modify' : null); });
+        return m;
+      });
+      const setOne = (k, v) => setRes(p => ({ ...p, [k]: p[k] === v ? null : v }));
+      const modifyCount = rows.filter(it => res[it.k] === 'modify').length;
+      const chip = (on, kind) => `text-[11.5px] px-2 py-0.5 rounded-full border transition-colors ${on
+        ? (kind === 'modify' ? (isDark ? 'bg-[#D0BCFF] text-[#381E72] border-transparent' : 'bg-[#7C3AED] text-white border-transparent')
+                             : (isDark ? 'bg-white/15 text-[#E3E3E3] border-transparent' : 'bg-black/10 text-[#1F1F1F] border-transparent'))
+        : (isDark ? 'border-white/15 text-[#9AA0A6] hover:bg-white/5' : 'border-black/15 text-[#757575] hover:bg-black/5')}`;
+      const onResolve = () => {
+        if (!bridge.available) return;
+        rows.forEach(it => { it.raw.resolution = res[it.k] || 'pending'; }); // 写回 review 对象(引用→sidecar)
+        const modifyList = rows.filter(it => res[it.k] === 'modify').map(it => it.head + (it.sub ? '（' + it.sub + '）' : ''));
+        bridge.resolvePinvouReview(review, modifyList);
+      };
+      return (
+        <div>
+          <div className="space-y-2">
+            {rows.map(it => {
+              const decided = res[it.k];
+              return (
+                <div key={it.k} className={`rounded-lg px-2.5 py-2 transition-opacity ${decided === 'accept' ? 'opacity-45' : ''} ${isDark ? 'bg-white/[0.04]' : 'bg-black/[0.03]'}`}>
+                  <div className="flex gap-2">
+                    <span className="mt-[6px] w-[7px] h-[7px] rounded-full shrink-0" style={{ background: it.sev === 'rec' ? '#7C3AED' : sevDot(it.sev) }} />
+                    <div className="flex-1 min-w-0">
+                      <div className={`text-[13px] leading-relaxed ${body}`}>
+                        {it.nv && <span className={`text-[10.5px] mr-1 px-1 py-px rounded ${isDark ? 'bg-[#FDD663]/20 text-[#FDD663]' : 'bg-[#FEF7E0] text-[#B06000]'}`}>需核实</span>}
+                        {it.head}
+                      </div>
+                      {it.sub && <div className={`text-[12px] mt-0.5 ${muted}`}>{it.sub}</div>}
+                      <div className="flex gap-1.5 mt-1.5">
+                        <button onClick={() => setOne(it.k, 'modify')} className={chip(decided === 'modify', 'modify')}>让 AI 改</button>
+                        <button onClick={() => setOne(it.k, 'accept')} className={chip(decided === 'accept', 'accept')}>接受现状</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {modifyCount > 0 && (
+            <button onClick={onResolve}
+              className={`mt-3 px-3 py-1.5 rounded-full text-[12.5px] font-medium transition-colors ${isDark ? 'bg-[#D0BCFF] text-[#381E72] hover:bg-[#E9DDFF]' : 'bg-[#7C3AED] text-white hover:bg-[#6D28D9]'}`}>
+              按勾选修订（{modifyCount} 条）
+            </button>
+          )}
+        </div>
+      );
+    };
+
+    const PinvouSummonCard = ({ item, theme }) => {
+      const isDark = theme === 'dark';
+      const accent = isDark ? 'border-[#D0BCFF]/30' : 'border-[#7C3AED]/25';
+      const purple = isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]';
+      const muted = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
+      const body = isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]';
+      if (item.loading) return (
+        <div className={cardBoxCls(isDark, accent)}>
+          <div className={`flex items-center gap-2 text-[12px] font-semibold ${purple}`}><span>🧭</span><span>Pinvou 检阅</span></div>
+          <div className={`text-[13px] mt-2 ${muted}`}>正在检阅前面的工作…</div>
+        </div>
+      );
+      if (item.error) return (
+        <div className={cardBoxCls(isDark, accent)}>
+          <div className={`flex items-center gap-2 text-[12px] font-semibold ${purple}`}><span>🧭</span><span>Pinvou 检阅</span></div>
+          <div className={`text-[13px] mt-2 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>检阅失败：{item.error}</div>
+        </div>
+      );
+      const r = item.review || {};
+      const personas = r.personas || [];
+      const primary = personas.find(p => p && p.primary) || personas[0] || {};
+      const alts = r.alternates || [];
+      const hasRows = (r.recommendations || []).length > 0 || (r.issues || []).length > 0;
+      return (
+        <div className={cardBoxCls(isDark, accent)}>
+          <div className="flex items-center flex-wrap gap-x-2 gap-y-1 mb-2">
+            <span className="text-[15px]">🧭</span>
+            <span className={`text-[13px] font-semibold ${purple}`}>{(primary.label || 'Pinvou') + ' 视角'}</span>
+            {alts.length > 0 && <span className={`text-[12px] ${muted}`}>· 也涉及 {alts.join(' / ')}</span>}
+            {r.verdict === 'pass' && <span className={`text-[11px] font-semibold px-1.5 py-0.5 rounded ${isDark ? 'bg-[#37BE5F]/20 text-[#81C995]' : 'bg-[#E6F4EA] text-[#137333]'}`}>✓ 通过，可交付</span>}
+          </div>
+          {r.trace && <div className={`text-[13.5px] leading-relaxed mb-2.5 ${body}`}>{r.trace}</div>}
+          {hasRows && <PinvouRows review={r} theme={theme} />}
+        </div>
+      );
+    };
+
+    // ==========================================
     // PlanCard — ✨ 方案准备好
     // ==========================================
     const PlanCard = ({ item, theme, t, onPrefill }) => {
@@ -2594,7 +2705,13 @@
 
       return (
         <div className={cardBoxCls(isDark, isDark ? 'border-[#A8C7FA]/30' : 'border-[#0B57D0]/20')}>
-          <div className={`text-[14px] font-semibold mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.uiqTitle}</div>
+          <div className="flex items-center justify-between mb-3">
+            <div className={`text-[14px] font-semibold ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.uiqTitle}</div>
+            {!locked && <button onClick={() => bridge.available && bridge.summonPinvou(null, (questions || []).map(q => (q.header ? q.header + '：' : '') + (q.question || '') + '（选项：' + (q.options || []).map(o => o.label).join(' / ') + '）').join('\n'))} title="让 Pinvou 给个决策推荐"
+              className={`flex items-center gap-1 text-[12px] shrink-0 ml-2 ${isDark ? 'text-[#D0BCFF] hover:text-[#E9DDFF]' : 'text-[#7C3AED] hover:text-[#6D28D9]'}`}>
+              <Sparkles size={13} /> 问 Pinvou
+            </button>}
+          </div>
           <div className="space-y-4">
             {questions.map((q, qi) => (
               <div key={qi}>

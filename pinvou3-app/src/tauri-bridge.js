@@ -58,6 +58,8 @@
     // 卡牌加持/卸下事件时间线(sidecar, 不进 messages/LLM)。每项 {kind,pos,...}。
     // pos = 事件发生时的 messages 数, rerender 时按 pos 插回原位, 让重载历史不割裂。
     personaEvents: [],
+    // Pinvou 召唤检阅时间线(sidecar, 同 personaEvents, 不进 messages/LLM)。每项 {pos, review}。
+    pinvouReviews: [],
     busy: false,
     monitor: null,
     backendOnline: null, // null=checking, true, false
@@ -178,7 +180,7 @@
   var suppressNotify = false;
   function freshBuffer() {
     return {
-      messages: [], chatItems: [], personaEvents: [], artifacts: [], busy: false, queued: [],
+      messages: [], chatItems: [], personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
       planSnapshot: { plan: null, todos: null },
       modeState: { mode: "yolo", plan_phase: "none" },
       thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
@@ -200,6 +202,7 @@
     if (!buf) return;
     buf.messages = state.messages; buf.chatItems = state.chatItems; buf.artifacts = state.artifacts;
     buf.personaEvents = state.personaEvents;
+    buf.pinvouReviews = state.pinvouReviews;
     buf.busy = state.busy; buf.planSnapshot = state.planSnapshot; buf.modeState = state.modeState;
     buf.thinking = state.thinking; buf.tokens = state.tokens; buf.queued = state.queued;
     buf.activePersona = state.activePersona;
@@ -213,6 +216,7 @@
     if (!buf) return;
     state.messages = buf.messages; state.chatItems = buf.chatItems; state.artifacts = buf.artifacts;
     state.personaEvents = buf.personaEvents || [];
+    state.pinvouReviews = buf.pinvouReviews || [];
     state.busy = buf.busy; state.planSnapshot = buf.planSnapshot; state.modeState = buf.modeState;
     state.thinking = buf.thinking; state.tokens = buf.tokens; state.queued = buf.queued || [];
     state.activePersona = buf.activePersona || null;
@@ -376,6 +380,7 @@
       loadWorkingSetFrom(sessionStates[id] = freshBuffer());
       state.messages = Array.isArray(saved.messages) ? saved.messages : [];
       try { state.personaEvents = await invoke("get_session_persona_events", { sessionId: id }) || []; } catch (e) { state.personaEvents = []; }
+      try { state.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: id }) || []; } catch (e) { state.pinvouReviews = []; }
       resetPendingAssistant();
       state.chatItems = [];
       state.artifacts = Array.isArray(saved.artifacts) ? saved.artifacts.map(function (a) {
@@ -485,6 +490,15 @@
         else if (ev.kind === "unequip") addChatItem({ type: "system", text: bt("personaUnequipped") + (ev.name || ""), time: "" });
       }
     }
+    // B2: 按 pos 把 Pinvou 审查卡插回原位(同 emitPersonaAt 范式,不进 messages/LLM)
+    var pr = Array.isArray(state.pinvouReviews) ? state.pinvouReviews : [];
+    function emitPinvouAt(atOrAfter, isTail) {
+      for (var k = 0; k < pr.length; k++) {
+        var x = pr[k];
+        if (isTail ? (x.pos < atOrAfter) : (x.pos !== atOrAfter)) continue;
+        addChatItem({ type: "pinvou_review", review: x.review, time: "" });
+      }
+    }
     // 预扫 tool_result：tool_use 在 assistant 消息、result 在后续 user 消息，需提前建映射
     // 才能在还原选择卡/方案卡时拿到结果（选项/快照）。
     var resultById = {};
@@ -499,6 +513,7 @@
     }
     for (var mi = 0; mi < state.messages.length; mi++) {
       emitPersonaAt(mi, false); // 该消息之前发生的卡牌事件先插
+      emitPinvouAt(mi, false);  // 同 pos 的 Pinvou 审查卡
       var m = state.messages[mi];
       var blocks = Array.isArray(m.content) ? m.content : [];
       if (m.role === "user") {
@@ -608,6 +623,7 @@
       }
     }
     emitPersonaAt(state.messages.length, true); // 最后一条消息之后发生的卡牌事件(末尾加持/卸下)
+    emitPinvouAt(state.messages.length, true);  // 末尾的 Pinvou 审查卡
   }
 
   function updateToolItem(toolId, output, success) {
@@ -792,6 +808,59 @@
   function removeQueued(id) {
     state.queued = state.queued.filter(function (q) { return q.id !== id; });
     notify();
+  }
+
+  // ── Pinvou v4 召唤式检阅:Boss 主动呼叫,审当前 session 前面的工作 ──
+  // 设计 docs/品悟v4-常驻检阅助手设计.md。纯召唤、不替 Boss 决策。
+  // 审查卡进 chatItems(当前会话可见);跨会话持久化(进 messages/独立存储)是 §6 后续增强。
+  async function summonPinvou(focus, ask) {
+    if (!state.activeSessionId) { addSystemItem("先开始一个对话,再召唤 Pinvou 检阅。"); return; }
+    if (state.pinvouSummoning) return;
+    state.pinvouSummoning = true;
+    var card = { type: "pinvou_review", loading: true, time: timeStr() };
+    addChatItem(card); // addChatItem 赋 card.id;card 是引用,下面直接改它
+    notify();
+    try {
+      // focus = 产出物 path(场景 B); ask = request_user_input 问题文本(场景 A——turn 中途
+      // messages 多半没落盘,问题自带上下文,不靠 messages)。
+      var review = await invoke("summon_pinvou", { sessionId: state.activeSessionId, focus: focus || null, ask: ask || null });
+      card.loading = false;
+      card.review = review;
+      recordPinvouReview(review); // B2: 进 sidecar 时间线,切会话不丢
+    } catch (e) {
+      card.loading = false;
+      card.error = String(e && e.message ? e.message : e);
+    } finally {
+      state.pinvouSummoning = false;
+      notify();
+    }
+  }
+
+  // B2: 审查卡进 sidecar 时间线(pos=当前 messages 数),落盘。同 recordPersonaEvent
+  // 范式,**不进 messages/LLM**;rerenderFromMessages 按 pos 插回,切会话/重载不丢。
+  function recordPinvouReview(review) {
+    if (!state.activeSessionId || !review) return;
+    state.pinvouReviews.push({ pos: state.messages.length, review: review });
+    var sid = state.activeSessionId;
+    var snapshot = JSON.parse(JSON.stringify(state.pinvouReviews));
+    invoke("save_session_pinvou_reviews", { sessionId: sid, reviews: snapshot }).catch(function () {});
+  }
+
+  // §2 按勾选裁决:resolution 已由前端写回 review 对象(引用→sidecar),这里持久化 +
+  // 把勾「让AI改」的条目走 B1 发定向修订指令(只改对应段落、禁全文重写)。Boss 驾驶,非自动。
+  function resolvePinvouReview(review, modifyList) {
+    persistPinvouReviews();
+    if (modifyList && modifyList.length) {
+      var lines = ["请按下面勾选的检阅意见，**只定向修改对应段落，不要全文重写**："];
+      modifyList.forEach(function (x) { lines.push("- " + x); });
+      sendMessage(lines.join("\n"));
+    }
+  }
+  // 把当前 session 的审查时间线(含勾选写回的 resolution)重新落盘。
+  function persistPinvouReviews() {
+    if (!state.activeSessionId) return;
+    var snapshot = JSON.parse(JSON.stringify(state.pinvouReviews));
+    invoke("save_session_pinvou_reviews", { sessionId: state.activeSessionId, reviews: snapshot }).catch(function () {});
   }
 
   async function cancelGeneration() {
@@ -1692,6 +1761,8 @@
     // 用户交互
     submitUserInput: submitUserInput,
     cancelUserInput: cancelUserInput,
+    summonPinvou: summonPinvou,
+    resolvePinvouReview: resolvePinvouReview,
     // 编辑/压缩
     editLastTurn: editLastTurn,
     compactNow: compactNow,
