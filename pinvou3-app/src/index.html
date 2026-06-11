@@ -2128,13 +2128,13 @@
                   <div className="flex items-center gap-2.5 flex-shrink-0 ml-2">
                     <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.summonPinvou(path); }} title="品 · 查错：揪出产物的风险、遗漏、与你需求的偏差，逐条让 AI 改或你拍板接受"
                       className={`flex items-center gap-1 text-[12px] ${isDark ? 'text-[#D0BCFF] hover:text-[#E9DDFF]' : 'text-[#7C3AED] hover:text-[#6D28D9]'}`}>
-                      <span className="text-[11px]">📋</span> 品
+                      「<span className="text-[11px]">📋</span> 品」
                     </button>
                     <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.inspectPinvou(path); }} title="悟 · 发散：以领域专家视角给出产物还能补的维度和新思路，挑中的一键加进去"
                       className={`flex items-center gap-1 text-[12px] ${isDark ? 'text-[#8AB4F8] hover:text-[#AECBFA]' : 'text-[#1967D2] hover:text-[#1A73E8]'}`}>
-                      <span className="text-[11px]">✨</span> 悟
+                      「<span className="text-[11px]">✨</span> 悟」
                     </button>
-                    <span className={`text-[12px] ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>{t.clickToOpen}</span>
+                    <span className={`text-[12px] ml-2 pl-2 border-l ${isDark ? 'text-[#D0BCFF] border-[#D0BCFF]/20' : 'text-[#7C3AED] border-[#7C3AED]/20'}`}>{t.clickToOpen}</span>
                   </div>
                 </div>
               </div>
