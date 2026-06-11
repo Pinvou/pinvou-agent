@@ -930,7 +930,7 @@
     var fill = actions.filter(function (a) { return a.t === "fill"; });
     if (fill.length) {
       if (parts.length) parts.push("");
-      parts.push("以下维度产物还缺，请补充进去（保留其余内容、只增不改）：");
+      parts.push("以下维度产物还缺，请补充进去（保留其余内容、只增不改）；**凡涉及外部事实(班次/票价/预约/营业时间/证件政策)的，先用 web_search 或 fetch_url 查证再写、标注依据，别凭记忆编**：");
       fill.forEach(function (a) { parts.push("- " + a.dimension + (a.suggestion ? "：" + a.suggestion : "")); });
     }
     if (parts.length) sendMessage(parts.join("\n"), { pinvouTransfer: isWu ? "悟" : "品" });
