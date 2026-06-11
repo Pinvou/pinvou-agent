@@ -228,7 +228,7 @@ pub async fn summon(
     // 有该产物的上轮记录 → 核账模式（即使账目全已结，也核账输出 pass，而非重新自由批评）。
     let prior = artifact_path
         .as_deref()
-        .and_then(|p| read_prior_ledger(session_id, p));
+        .and_then(|p| read_prior_ledger(session_id, p, messages.len() as u64));
     let (prompt, context) = match &prior {
         Some(ledger) => (
             RECONCILE_PROMPT,
@@ -316,23 +316,57 @@ fn is_ledger_closed(resolution: Option<&str>) -> bool {
 
 /// 读 sidecar(`pinvou_reviews.json`)里针对同一产出物的最近一轮账目(issues)。有则进
 /// 核账模式（§3，激活原未做项「连续召唤接续」）。sidecar 由前端 recordPinvouReview 落盘，后端只读。
-fn read_prior_ledger(session_id: &str, artifact_path: &str) -> Option<Vec<PinvouIssue>> {
+fn read_prior_ledger(
+    session_id: &str,
+    artifact_path: &str,
+    current_pos: u64,
+) -> Option<Vec<PinvouIssue>> {
     let path = crate::bridge::paths::session_pinvou_reviews(session_id);
     let txt = std::fs::read_to_string(path).ok()?;
     let arr: Vec<Value> = serde_json::from_str(&txt).ok()?;
-    ledger_from_entries(&arr, artifact_path)
+    ledger_from_entries(&arr, artifact_path, current_pos)
 }
 
 /// 从 sidecar entries 选【首轮立账】的账目(抽出便于单测)。读首个该产物、issues 非空的 entry,
 /// 不是最近一轮——否则 pass 轮 issues 空,下次核账读到空账目就退化成自由批评、重新挑错,导致
 /// pass↔continue 震荡(实测连点品三态循环)。固定读首轮那批,核账每次都核同一批+当前产物→收敛。
-fn ledger_from_entries(arr: &[Value], artifact_path: &str) -> Option<Vec<PinvouIssue>> {
-    // 固定读【首轮立账】(首个该产物、issues 非空的 entry),不读最近一轮。两个原因:
-    // ① pass 轮 issues 空,读它=空账目→核账退化成自由批评→pass↔continue 震荡(实测三态循环);
-    // ② "pass 后改读首轮 PROMPT 重审"也证伪(sim 实测):核账宽松判 pass、PROMPT 严格判有问题,
-    //    标准不一→pass↔立账 横跳。所以认死首轮那批账,核账每次核同一批+当前产物→稳定收敛 pass。
-    //    代价:首轮没立的账(含 AI 改得不够好的)核账不补——这是立账核账的设计,完整性交给【悟】镜头。
-    arr.iter().find_map(|entry| {
+fn ledger_from_entries(
+    arr: &[Value],
+    artifact_path: &str,
+    current_pos: u64,
+) -> Option<Vec<PinvouIssue>> {
+    // 最近一轮【品】entry(rev=从后往前第一个;有 verdict 或 issues 非空)。**跳过【悟】的 coverage
+    // entry**(issues 空+无 verdict)——否则悟 record 的 entry 会当 latest、让 current_pos 守门失效
+    // (悟非 pass→永远不触发重新立账,品又读不到 pass 后的增量)。
+    let latest = arr.iter().rev().find(|e| {
+        let r = match e.get("review") {
+            Some(r) => r,
+            None => return false,
+        };
+        if r.get("artifact_path").and_then(Value::as_str) != Some(artifact_path) {
+            return false;
+        }
+        r.get("verdict").and_then(Value::as_str).is_some()
+            || r.get("issues")
+                .and_then(Value::as_array)
+                .map_or(false, |a| !a.is_empty())
+    })?;
+    let latest_pos = latest.get("pos").and_then(Value::as_u64).unwrap_or(0);
+    let passed = latest
+        .get("review")
+        .and_then(|r| r.get("verdict"))
+        .and_then(Value::as_str)
+        == Some("pass");
+    // 最近一轮 pass(结案) + 之后产物又被改过(当前 messages 比审查那时长,说明悟/AI 动过产物)
+    // → None,品【重新立账】审 AI 这次的增量修改(补的内容可能有错)。连点品(产物没变,
+    // current_pos==latest_pos)→ 不重新立账,走下面核【最近一轮立账】→稳定 pass、不震荡。
+    // 这样既能审增量(产物真变了就重审),又不会因连点品在 pass↔挑错 间横跳(关键=current_pos 守门)。
+    if passed && current_pos > latest_pos {
+        return None;
+    }
+    // 读【最近一轮立账】(最近 issues 非空 entry)的账目——支持多轮立账(首轮品 + 悟后重新立账各立一批)。
+    // pass 轮 issues 空会被跳过;accept/confirmed 已结的过滤(§3,is_ledger_closed)。
+    arr.iter().rev().find_map(|entry| {
         let rv = entry.get("review")?;
         if rv.get("artifact_path").and_then(Value::as_str)? != artifact_path {
             return None;
@@ -605,30 +639,67 @@ mod tests {
         assert!(!is_ledger_closed(None));
     }
 
-    /// 核账固定读【首轮立账】不读最近一轮——pass 轮空账目会让核账退化成自由批评、连点品震荡。
+    /// 连点品(产物没变,current_pos==最近 pass 的 pos)→ 核最近立账、稳定 pass,不重新立账=不震荡。
     #[test]
-    fn ledger_reads_first_round_not_latest() {
+    fn ledger_repeat_pin_stable_no_relist() {
         let arr = vec![
-            serde_json::json!({"review":{"artifact_path":"/p.md","issues":[
+            serde_json::json!({"pos":10,"review":{"artifact_path":"/p.md","issues":[
                 {"text":"交通错","severity":"high","kind":"quality","resolution":"modify"}
             ]}}),
-            // 后续核账 pass(issues 空)——绝不能因它"最近"就读它(读了=空账目=自由批评=震荡)
-            serde_json::json!({"review":{"artifact_path":"/p.md","verdict":"pass","issues":[]}}),
+            serde_json::json!({"pos":12,"review":{"artifact_path":"/p.md","verdict":"pass","issues":[]}}),
         ];
-        let kept = ledger_from_entries(&arr, "/p.md").expect("应读到首轮那批账");
-        assert_eq!(kept.len(), 1, "读首轮,不是最近的空 pass");
+        let kept = ledger_from_entries(&arr, "/p.md", 12).expect("连点品核最近立账");
+        assert_eq!(kept.len(), 1, "连点品不重新立账,核最近立账");
         assert_eq!(kept[0].text, "交通错");
     }
 
-    /// 首轮账目全被标 accept/confirmed → kept 空(都已结,核账不再核)。
+    /// 最近一轮 pass 之后产物又被改(current_pos > 那轮 pos,说明悟/AI 动过)→ None,品重新立账审增量。
     #[test]
-    fn ledger_filters_closed_resolutions() {
-        let arr = vec![serde_json::json!({"review":{"artifact_path":"/p.md","issues":[
-            {"text":"a","severity":"high","kind":"quality","resolution":"accept"},
-            {"text":"b","severity":"medium","kind":"needs_verify","resolution":"confirmed"}
-        ]}})];
-        let kept = ledger_from_entries(&arr, "/p.md").expect("首轮 entry 存在");
-        assert!(kept.is_empty(), "accept/confirmed 都已结");
+    fn ledger_relist_after_pass_when_product_changed() {
+        let arr = vec![
+            serde_json::json!({"pos":10,"review":{"artifact_path":"/p.md","issues":[
+                {"text":"交通错","severity":"high","kind":"quality","resolution":"modify"}
+            ]}}),
+            serde_json::json!({"pos":12,"review":{"artifact_path":"/p.md","verdict":"pass","issues":[]}}),
+        ];
+        assert!(ledger_from_entries(&arr, "/p.md", 20).is_none(), "产物改过→重新立账审增量");
+    }
+
+    /// 多轮立账:读【最近一轮立账】(悟后重新立的签证账),不是首轮(交通)。
+    #[test]
+    fn ledger_reads_latest_round_not_first() {
+        let arr = vec![
+            serde_json::json!({"pos":10,"review":{"artifact_path":"/p.md","issues":[
+                {"text":"交通错","severity":"high","kind":"quality","resolution":"modify"}
+            ]}}),
+            serde_json::json!({"pos":12,"review":{"artifact_path":"/p.md","verdict":"pass","issues":[]}}),
+            serde_json::json!({"pos":20,"review":{"artifact_path":"/p.md","issues":[
+                {"text":"签证错","severity":"high","kind":"quality","resolution":"modify"}
+            ]}}),
+        ];
+        let kept = ledger_from_entries(&arr, "/p.md", 20).expect("读最近立账");
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].text, "签证错", "读最近立账(签证),不是首轮(交通)");
+    }
+
+    /// 悟 record 的 coverage entry(issues 空+无 verdict)绝不能当 latest 让守门失效:pass→悟→AI改,
+    /// 品仍应重新立账审增量(latest 跳过悟、认最近的品 pass)。
+    #[test]
+    fn ledger_skips_coverage_entry_for_relist() {
+        let arr = vec![
+            serde_json::json!({"pos":10,"review":{"artifact_path":"/p.md","issues":[
+                {"text":"交通错","severity":"high","kind":"quality","resolution":"modify"}
+            ]}}),
+            serde_json::json!({"pos":12,"review":{"artifact_path":"/p.md","verdict":"pass","issues":[]}}),
+            // 悟:coverage 非空、issues 空、无 verdict(pos 同 pass,悟召唤不发消息)
+            serde_json::json!({"pos":12,"review":{"artifact_path":"/p.md","issues":[],"coverage":[
+                {"dimension":"签证","severity":"high"}
+            ]}}),
+        ];
+        assert!(
+            ledger_from_entries(&arr, "/p.md", 20).is_none(),
+            "悟 entry 被跳过,pass 后改产物→重新立账审增量"
+        );
     }
 
     /// 覆盖镜头:framework + coverage 必须从 ModelReview 透传进 PinvouReview,不被 guard 丢。

@@ -42,27 +42,32 @@ def call(prompt, ctx):
     return json.loads(txt)
 
 
-def pick_ledger(entries):
-    """Python 复刻 Rust ledger_from_entries:固定读【首轮立账】(首个该产物、issues 非空的 entry)。"""
-    for e in entries:  # 首个,不 reversed
+def pick_ledger(entries, current_pos):
+    """Python 复刻 Rust ledger_from_entries:最近 pass+产物改过(current_pos>那轮 pos)→None 重新立账;
+    否则读最近一轮立账。连点品(current_pos==pass 的 pos,产物没变)→核最近立账、稳定。"""
+    latest = next((e for e in reversed(entries) if e["review"].get("artifact_path") == PATH), None)
+    if latest is None:
+        return None
+    if latest["review"].get("verdict") == "pass" and current_pos > latest.get("pos", 0):
+        return None  # 产物改过 → 重新立账审增量
+    for e in reversed(entries):  # 读最近一轮立账(最近 issues 非空)
         r = e["review"]
-        if r.get("artifact_path") != PATH:
-            continue
-        if not r.get("issues"):  # issues 空(如 pass 轮)→跳过,继续找首轮
+        if r.get("artifact_path") != PATH or not r.get("issues"):
             continue
         return [i for i in r["issues"] if i.get("resolution") not in ("accept", "confirmed")]
     return None
 
 
-# 初始:首轮立账已存在(假设 AI 已按它改好产物——product 是改后的最终态)
-entries = [{"review": first_round}]
+# 初始:首轮立账(pos=15);AI 已按它改好产物(product=改后态)。连点品时 messages 数固定=POS。
+POS = 31
+entries = [{"pos": 15, "review": first_round}]
 need = "【Boss 需求】带 2 大 1 小去欧洲玩 9 天亲子游,舒适型预算。"
 
 print(f"首轮账目({len(first_round.get('issues',[]))}笔):", [i["text"][:18] for i in first_round.get("issues", [])])
-print("\n连续点品 6 轮(产物全程不变),看 verdict 是否稳定:\n")
+print("\n连续点品 6 轮(产物全程不变,current_pos 固定),看 verdict 是否稳定:\n")
 seq = []
 for rnd in range(6):
-    ledger = pick_ledger(entries)
+    ledger = pick_ledger(entries, POS)
     if ledger is None:
         mode, prompt = "首轮重审", PROMPT
         ctx = f"{need}\n\n【AI 应对】(产物)\n{product}"
@@ -79,7 +84,7 @@ for rnd in range(6):
     issues = rv.get("issues", [])
     seq.append(verdict if verdict else f"立账{len(issues)}笔")
     print(f"  品{rnd+1} [{mode}] → verdict={verdict} issues={len(issues)}  {[i.get('text','')[:18] for i in issues[:3]]}")
-    entries.append({"review": {"artifact_path": PATH, "verdict": verdict, "issues": issues}})
+    entries.append({"pos": POS, "review": {"artifact_path": PATH, "verdict": verdict, "issues": issues}})
 
 print(f"\nverdict 序列: {seq}")
 tail = seq[2:] if len(seq) >= 3 else seq
