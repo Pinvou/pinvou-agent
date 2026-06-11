@@ -40,14 +40,14 @@ fn main() -> Result<()> {
         translation_enabled: cfg.translation_enabled,
         model_id: &cfg.model,
         show_thinking: cfg.show_thinking,
-        // v0.8.53 上游新增:gate shell 工具是否进 prompt(prompts.rs:798)。复刻
-        // 生产 Engine::new 取 cfg.allow_shell,保持 dump 与真实 prompt 一致。
-        allow_shell: cfg.allow_shell,
+        // v0.8.57:上游把 allow_shell 从 PromptSessionContext 移除(#2949,decouple
+        // 静态前缀,allow_shell 改走 per-turn <runtime_prompt> tag),dump 同步去掉。
     };
 
-    // 生产链路 build_send_message_op 只发 Yolo(Auto) / Plan(底座强制 Never),
-    // 不发 Agent+Suggest —— dump 默认按 Yolo 复刻真实 turn。`dump_system_prompt plan`
-    // 切 Plan 组合。
+    // v0.8.57:上游把 system prompt 改成 **mode-independent**(mode/approval 移出静态前缀,
+    // 函数签名去掉这两个参数)。pinvou3 的 composer 在 apply_static_prompt_composer 里以
+    // 常量 Yolo/Auto 构造宽 ctx → dump 出来的就是生产 Yolo(Execute) 静态 prompt,与 `plan`/
+    // `agent` 参数无关(仅用于下方 meta 展示)。
     let (mode, approval) = match std::env::args().nth(1).as_deref() {
         Some("plan") => (AppMode::Plan, ApprovalMode::Never),
         Some("agent") => (AppMode::Agent, ApprovalMode::Suggest),
@@ -55,13 +55,11 @@ fn main() -> Result<()> {
     };
     let prompt =
         prompts::system_prompt_for_mode_with_context_skills_session_and_approval(
-            mode,
             &cfg.workspace,
             None,
             Some(&cfg.skills_dir),
             Some(&cfg.instructions),
             session_ctx,
-            approval,
         );
 
     match prompt {

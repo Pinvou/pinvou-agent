@@ -345,17 +345,28 @@ mod tests {
     #[test]
     fn forkguard_static_composer_takes_over_static_layers() {
         use deepseek_tui::models::SystemPrompt;
-        use deepseek_tui::tui::app::AppMode;
 
         install_prompt_overrides(); // OnceLock 幂等,谁先调都一样
 
+        // v0.8.57:上游删了 `system_prompt_for_mode(AppMode)`(prompt 改 mode-independent)。
+        // 改用 mode-independent 入口;pinvou3 composer 以常量 Yolo 构造 ctx → 静态层 = base.md
+        // + MODE_EXECUTE_MD(生产单 Yolo-Auto)。原 Plan-mode 断言移除——static prompt 不再分模式
+        // (Plan 前端入口已下线;若恢复,mode 走 per-turn <runtime_prompt> tag,非静态前缀)。
+        let tmp = tempdir();
+        std::fs::create_dir_all(&tmp).unwrap();
         let SystemPrompt::Text(yolo) =
-            deepseek_tui::prompts::system_prompt_for_mode(AppMode::Yolo)
+            deepseek_tui::prompts::system_prompt_for_mode_with_context_and_skills(
+                std::path::Path::new(&tmp),
+                None,
+                None,
+                None,
+                None,
+            )
         else {
             panic!("unexpected SystemPrompt variant")
         };
-        // 干掉的底座块(第二轮瘦身追加: Compaction 模板/Sub-agents/Thinking
-        // budget 实证死重,Tier 体系压成三行裁决)
+        // 干掉的底座块(composer 密封 + gate:Compaction 模板/Sub-agents/Thinking budget/
+        // Tier 体系/全模式 Runtime Policy Reference 实证死重)
         for gone in [
             "Personality: Calm",
             "## Session Longevity",
@@ -365,6 +376,7 @@ mod tests {
             "Sub-agents",
             "Thinking budget",
             "Tier ", // 九层已删,不许残留悬空 tier 引用
+            "## Runtime Policy Reference", // v0.8.57 上游新增全模式块,composer gate 抑制
         ] {
             assert!(!yolo.contains(gone), "底座静态块应被 composer 干掉: {gone}");
         }
@@ -377,14 +389,6 @@ mod tests {
         ] {
             assert!(yolo.contains(kept), "pinvou3 静态块缺失: {kept}");
         }
-
-        let SystemPrompt::Text(plan) =
-            deepseek_tui::prompts::system_prompt_for_mode(AppMode::Plan)
-        else {
-            panic!("unexpected SystemPrompt variant")
-        };
-        assert!(plan.contains("## Mode: Plan"));
-        assert!(!plan.contains("## Mode: Execute"));
     }
 
     /// forkguard(composer): 完整合成路径上,底座在 compose 之外追加的
@@ -393,15 +397,14 @@ mod tests {
     #[test]
     fn forkguard_static_composer_suppresses_context_mgmt_appends() {
         use deepseek_tui::models::SystemPrompt;
-        use deepseek_tui::tui::app::AppMode;
 
         install_prompt_overrides();
 
         let tmp = tempdir();
         std::fs::create_dir_all(&tmp).unwrap();
+        // v0.8.57:上游把 system prompt 改 mode-independent,该函数签名去掉首个 AppMode 参数。
         let SystemPrompt::Text(text) =
             deepseek_tui::prompts::system_prompt_for_mode_with_context_and_skills(
-                AppMode::Yolo,
                 std::path::Path::new(&tmp),
                 None,
                 None,
@@ -416,6 +419,10 @@ mod tests {
             "Context Management 应被 composer 抑制"
         );
         assert!(
+            !text.contains("## Runtime Policy Reference"),
+            "Runtime Policy Reference 应被 composer gate 抑制(v0.8.57 新增全模式块)"
+        );
+        assert!(
             !text.contains("Prompt-cache awareness"),
             "prompt-cache 教学应被 composer 抑制"
         );
@@ -426,6 +433,21 @@ mod tests {
             "Compaction 模板不应出现(pinvou3 已删,底座版也不许回流)"
         );
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// forkguard(composer): per-turn `<runtime_prompt>` tag 也受 composer gate
+    /// (v0.8.57 上游新增,turn_loop 每请求注入 transient user 消息)。pinvou3 单
+    /// Yolo-Auto 下 tag 恒定零信息,且其解释文档(Runtime Policy Reference)已被
+    /// composer 抑制——无解释 internal tag 会诱发模型复述。本测试断言 composer
+    /// 安装后 `static_prompt_composer_installed()` 为真(turn_loop gate 的读数);
+    /// gate 行本身由 fork-guard 指纹守。
+    #[test]
+    fn forkguard_static_composer_gates_runtime_prompt_tag() {
+        install_prompt_overrides();
+        assert!(
+            deepseek_tui::prompts::static_prompt_composer_installed(),
+            "composer 安装后 installed() 应为 true → turn_loop 不再注入 <runtime_prompt> tag"
+        );
     }
 
 

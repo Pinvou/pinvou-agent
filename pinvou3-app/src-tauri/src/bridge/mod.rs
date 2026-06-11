@@ -454,6 +454,12 @@ impl Pinvou3Bridge {
             //    lifecycle hooks feat)。⚠️ 本地慢 vLLM 下或需像 subagent_api_timeout
             //    一样调大,先透传 default,验证后再评估。——
             subagent_heartbeat_timeout,
+            // —— v0.8.54-57 上游新增字段,透传 default ——
+            //   search_base_url: 自定义搜索后端 base URL(pinvou3 用内置 provider → None)。
+            //   stream_chunk_timeout: 单 chunk SSE 超时。⚠️ 本地慢 vLLM 下或需像
+            //   subagent_api_timeout 一样调大(配 C3 SSE idle-timeout 遥测),先透传 default 验证。
+            search_base_url,
+            stream_chunk_timeout,
         } = EngineConfig::default();
 
         EngineConfig {
@@ -595,6 +601,9 @@ impl Pinvou3Bridge {
             hook_executor,
             // v0.8.53 上游新增,透传 default
             subagent_heartbeat_timeout,
+            // v0.8.54-57 上游新增,透传 default(search_base_url=None / stream_chunk_timeout)
+            search_base_url,
+            stream_chunk_timeout,
         }
     }
 

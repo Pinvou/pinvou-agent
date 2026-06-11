@@ -17,7 +17,7 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 | Tauri UI / Rust wrapper / Engine 配置 | pinvou3-app 内 Rust |
 | 修上游 bug | DeepSeek-TUI fork(详见 `docs/fork-policy.md`,软上限 1500 行) + 视情况 PR |
 
-> **fork 维护策略**：见 [`docs/fork-policy.md`](docs/fork-policy.md) —— 新增 patch 决策树、配套清单（指纹/测试/登记）、上游 sync 流程、撤回评估时机。当前 fork drift 已 ~990 行（2026-05-28 起），原"≤50 行"约束已修订为软上限 1500 行 + 工程化守护（fork-guard.sh + forkguard_ 测试）。
+> **fork 维护**：策略/sync 流程/PR 状态见 [`docs/fork-policy.md`](docs/fork-policy.md)；fork 现状清单(C1–C7)+ sync 后验证 checklist 见 [`docs/fork-modifications.md`](docs/fork-modifications.md)。**基线/drift 以 fork-policy §0 为单一真相源**(软上限 1500 行,原"≤50 行"已修订)；守护手段 = fork-guard.sh 指纹 + forkguard_ 测试 + dump_system_prompt 前后 diff。
 > **fork 改动是否要 PR**：通用优化 / bug 修复才提；pinvou3 专用留 fork。详见 `docs/fork-policy.md` §2 决策树。
 > **底座上游PR规范**：https://github.com/Hmbown/CodeWhale/blob/main/CONTRIBUTING.md
 
