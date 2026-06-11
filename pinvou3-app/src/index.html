@@ -2430,43 +2430,68 @@
     // PinvouSummonCard — 🧭 召唤式检阅（Boss 主动呼叫 Pinvou）
     // 自报家门人格(单主+alternates,§3.3) + trace + issues(severity 分色)。
     // ==========================================
-    // 逐条裁决行(§2):每条 issue/rec 二选一(让AI改/接受现状),high 默认勾,「按勾选修订」走 B1。
-    // 单独子组件——useState 放这里,确保 loading→loaded 时首次 mount 才初始化(否则 hooks 错位)。
+    // 逐条裁决行(§2 + kind 分流):每条按本质给对应动作,不再一刀切判断题——
+    //   recommendation(决策点/缺信息,Boss 才能定)→ 采纳建议 / 让 AI 问我;
+    //   issue.needs_verify(外部事实,AI 无知识)→ 让 AI 核实 / 我确认没问题;
+    //   issue 其他(产物缺陷,AI 改得动)→ 让 AI 改 / 接受现状(high 默认勾)。
+    // 「交给 AI 处理」按各条动作组装定向指令走 B1。单独子组件:useState 放这避 hooks 错位。
     const PinvouRows = ({ review, theme }) => {
       const isDark = theme === 'dark';
       const body = isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]';
       const muted = isDark ? 'text-[#C4C7C5]' : 'text-[#5f6368]';
       const sevDot = (s) => s === 'high' ? '#EA4335' : s === 'medium' ? '#E37400' : '#9AA0A6';
       const rows = [
-        ...(review.recommendations || []).map((x, i) => ({ k: 'r' + i, raw: x, sev: 'rec', head: (x.topic ? x.topic + '：' : '') + '建议 ' + x.pick, sub: x.why })),
-        ...(review.issues || []).map((x, i) => ({ k: 'i' + i, raw: x, sev: x.severity, head: x.text, sub: x.suggestion, nv: x.kind === 'needs_verify' })),
+        ...(review.recommendations || []).map((x, i) => ({
+          k: 'r' + i, raw: x, kind: 'rec', dot: '#7C3AED',
+          head: (x.topic ? x.topic + '：' : '') + '建议 ' + x.pick, sub: x.why,
+        })),
+        ...(review.issues || []).map((x, i) => ({
+          k: 'i' + i, raw: x, kind: x.kind === 'needs_verify' ? 'verify' : 'fix',
+          dot: sevDot(x.severity), sev: x.severity, nv: x.kind === 'needs_verify',
+          head: x.text, sub: x.suggestion,
+        })),
       ];
+      // 每类二选一 [值,文案]:第一个=「要 AI 做」(紫色高亮),第二个=Boss 自己消化(灰)。
+      const ACT = {
+        rec: [['adopt', '采纳建议'], ['ask', '让 AI 问我']],
+        verify: [['verify', '让 AI 核实'], ['confirmed', '我确认没问题']],
+        fix: [['modify', '让 AI 改'], ['accept', '接受现状']],
+      };
+      const ACTIVE = { adopt: 1, ask: 1, verify: 1, modify: 1 }; // 需转交给 AI 的动作
       const [res, setRes] = useState(() => {
         const m = {};
-        rows.forEach(it => { m[it.k] = it.raw.resolution || (it.sev === 'high' ? 'modify' : null); });
+        rows.forEach(it => { m[it.k] = it.raw.resolution || (it.kind === 'fix' && it.sev === 'high' ? 'modify' : null); });
         return m;
       });
       const setOne = (k, v) => setRes(p => ({ ...p, [k]: p[k] === v ? null : v }));
-      const modifyCount = rows.filter(it => res[it.k] === 'modify').length;
-      const chip = (on, kind) => `text-[11.5px] px-2 py-0.5 rounded-full border transition-colors ${on
-        ? (kind === 'modify' ? (isDark ? 'bg-[#D0BCFF] text-[#381E72] border-transparent' : 'bg-[#7C3AED] text-white border-transparent')
-                             : (isDark ? 'bg-white/15 text-[#E3E3E3] border-transparent' : 'bg-black/10 text-[#1F1F1F] border-transparent'))
+      const activeCount = rows.filter(it => ACTIVE[res[it.k]]).length;
+      const chip = (on, active) => `text-[11.5px] px-2 py-0.5 rounded-full border transition-colors ${on
+        ? (active ? (isDark ? 'bg-[#D0BCFF] text-[#381E72] border-transparent' : 'bg-[#7C3AED] text-white border-transparent')
+                  : (isDark ? 'bg-white/15 text-[#E3E3E3] border-transparent' : 'bg-black/10 text-[#1F1F1F] border-transparent'))
         : (isDark ? 'border-white/15 text-[#9AA0A6] hover:bg-white/5' : 'border-black/15 text-[#757575] hover:bg-black/5')}`;
       const onResolve = () => {
         if (!bridge.available) return;
-        rows.forEach(it => { it.raw.resolution = res[it.k] || 'pending'; }); // 写回 review 对象(引用→sidecar)
-        const modifyList = rows.filter(it => res[it.k] === 'modify').map(it => it.head + (it.sub ? '（' + it.sub + '）' : ''));
-        bridge.resolvePinvouReview(review, modifyList);
+        rows.forEach(it => { it.raw.resolution = res[it.k] || 'pending'; }); // 写回裁决(引用→sidecar)
+        const actions = [];
+        rows.forEach(it => {
+          const a = res[it.k];
+          if (a === 'modify') actions.push({ t: 'fix', text: it.head + (it.sub ? '（' + it.sub + '）' : '') });
+          else if (a === 'verify') actions.push({ t: 'verify', text: it.head + (it.sub ? '（' + it.sub + '）' : '') });
+          else if (a === 'adopt') actions.push({ t: 'adopt', topic: it.raw.topic || '', pick: it.raw.pick || '' });
+          else if (a === 'ask') actions.push({ t: 'ask', topic: it.raw.topic || it.head });
+        });
+        bridge.resolvePinvouReview(review, actions);
       };
       return (
         <div>
           <div className="space-y-2">
             {rows.map(it => {
               const decided = res[it.k];
+              const passive = decided === 'accept' || decided === 'confirmed';
               return (
-                <div key={it.k} className={`rounded-lg px-2.5 py-2 transition-opacity ${decided === 'accept' ? 'opacity-45' : ''} ${isDark ? 'bg-white/[0.04]' : 'bg-black/[0.03]'}`}>
+                <div key={it.k} className={`rounded-lg px-2.5 py-2 transition-opacity ${passive ? 'opacity-45' : ''} ${isDark ? 'bg-white/[0.04]' : 'bg-black/[0.03]'}`}>
                   <div className="flex gap-2">
-                    <span className="mt-[6px] w-[7px] h-[7px] rounded-full shrink-0" style={{ background: it.sev === 'rec' ? '#7C3AED' : sevDot(it.sev) }} />
+                    <span className="mt-[6px] w-[7px] h-[7px] rounded-full shrink-0" style={{ background: it.dot }} />
                     <div className="flex-1 min-w-0">
                       <div className={`text-[13px] leading-relaxed ${body}`}>
                         {it.nv && <span className={`text-[10.5px] mr-1 px-1 py-px rounded ${isDark ? 'bg-[#FDD663]/20 text-[#FDD663]' : 'bg-[#FEF7E0] text-[#B06000]'}`}>需核实</span>}
@@ -2474,8 +2499,9 @@
                       </div>
                       {it.sub && <div className={`text-[12px] mt-0.5 ${muted}`}>{it.sub}</div>}
                       <div className="flex gap-1.5 mt-1.5">
-                        <button onClick={() => setOne(it.k, 'modify')} className={chip(decided === 'modify', 'modify')}>让 AI 改</button>
-                        <button onClick={() => setOne(it.k, 'accept')} className={chip(decided === 'accept', 'accept')}>接受现状</button>
+                        {ACT[it.kind].map(([v, label]) => (
+                          <button key={v} onClick={() => setOne(it.k, v)} className={chip(decided === v, !!ACTIVE[v])}>{label}</button>
+                        ))}
                       </div>
                     </div>
                   </div>
@@ -2483,10 +2509,10 @@
               );
             })}
           </div>
-          {modifyCount > 0 && (
+          {activeCount > 0 && (
             <button onClick={onResolve}
               className={`mt-3 px-3 py-1.5 rounded-full text-[12.5px] font-medium transition-colors ${isDark ? 'bg-[#D0BCFF] text-[#381E72] hover:bg-[#E9DDFF]' : 'bg-[#7C3AED] text-white hover:bg-[#6D28D9]'}`}>
-              按勾选修订（{modifyCount} 条）
+              交给 AI 处理（{activeCount} 条）
             </button>
           )}
         </div>

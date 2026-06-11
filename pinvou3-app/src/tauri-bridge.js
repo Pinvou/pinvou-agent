@@ -867,19 +867,36 @@
 
   // §2 按勾选裁决:resolution 已由前端写回 review 对象(引用→sidecar),这里持久化 +
   // 把勾「让AI改」的条目走 B1 发定向修订指令(只改对应段落、禁全文重写)。Boss 驾驶,非自动。
-  function resolvePinvouReview(review, modifyList) {
-    persistPinvouReviews();
-    if (modifyList && modifyList.length) {
-      var lines = ["请按下面勾选的检阅意见，**只定向修改对应段落，不要全文重写**："];
-      modifyList.forEach(function (x) { lines.push("- " + x); });
-      sendMessage(lines.join("\n"));
+  async function resolvePinvouReview(review, actions) {
+    await persistPinvouReviews(); // 先确保裁决落盘再转交,配合后端 preserve_resolutions 防覆盖
+    if (!actions || !actions.length) return;
+    // 按动作类型分组,组装一条 Boss 消息发给主 AI(Boss 驾驶,非自动回传):
+    //   fix/verify=产物缺陷定向修订(verify 先核实);adopt=Boss 已定的决策;ask=让 AI 正式问。
+    var fix = actions.filter(function (a) { return a.t === "fix" || a.t === "verify"; });
+    var adopt = actions.filter(function (a) { return a.t === "adopt"; });
+    var ask = actions.filter(function (a) { return a.t === "ask"; });
+    var parts = [];
+    if (fix.length) {
+      parts.push("请按下面的检阅意见，**只定向修改对应段落，不要全文重写**：");
+      fix.forEach(function (a) { parts.push("- " + (a.t === "verify" ? "【先核实再改】" : "") + a.text); });
     }
+    if (adopt.length) {
+      if (parts.length) parts.push("");
+      parts.push("以下事项我已拍板，按此更新产物：");
+      adopt.forEach(function (a) { parts.push("- " + (a.topic ? a.topic + "：" : "") + a.pick); });
+    }
+    if (ask.length) {
+      if (parts.length) parts.push("");
+      parts.push("以下待定项请用 request_user_input 正式问我，别自己猜：");
+      ask.forEach(function (a) { parts.push("- " + a.topic); });
+    }
+    if (parts.length) sendMessage(parts.join("\n"));
   }
-  // 把当前 session 的审查时间线(含勾选写回的 resolution)重新落盘。
+  // 把当前 session 的审查时间线(含勾选写回的 resolution)重新落盘。返回 promise 供 await。
   function persistPinvouReviews() {
-    if (!state.activeSessionId) return;
+    if (!state.activeSessionId) return Promise.resolve();
     var snapshot = JSON.parse(JSON.stringify(state.pinvouReviews));
-    invoke("save_session_pinvou_reviews", { sessionId: state.activeSessionId, reviews: snapshot }).catch(function () {});
+    return invoke("save_session_pinvou_reviews", { sessionId: state.activeSessionId, reviews: snapshot }).catch(function () {});
   }
 
   async function cancelGeneration() {
