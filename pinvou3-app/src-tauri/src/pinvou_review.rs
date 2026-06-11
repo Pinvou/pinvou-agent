@@ -249,6 +249,13 @@ fn latest_artifact_file(messages: &[Message], workspace: &Path) -> Option<(Strin
     Some((path, bounded))
 }
 
+/// 账目是否已被 Boss 结清、核账不再核（§3）：accept=缺陷接受现状、confirmed=需核实但 Boss
+/// 已确认没问题。其余(modify/verify/adopt/ask/pending)都保留进核账。kind 分流后新增的 confirmed
+/// 也得跳过，否则 Boss 已确认的账会被重核→震荡（pkx4clhny5jd0 实测暴露）。
+fn is_ledger_closed(resolution: Option<&str>) -> bool {
+    matches!(resolution, Some("accept") | Some("confirmed"))
+}
+
 /// 读 sidecar(`pinvou_reviews.json`)里针对同一产出物的最近一轮账目(issues)。有则进
 /// 核账模式（§3，激活原未做项「连续召唤接续」）。sidecar 由前端 recordPinvouReview 落盘，后端只读。
 fn read_prior_ledger(session_id: &str, artifact_path: &str) -> Option<Vec<PinvouIssue>> {
@@ -260,12 +267,13 @@ fn read_prior_ledger(session_id: &str, artifact_path: &str) -> Option<Vec<Pinvou
         if rv.get("artifact_path").and_then(Value::as_str)? != artifact_path {
             return None;
         }
-        // 「接受现状」(resolution=accept)的账目已结，核账不再核（§3）；其余反序列化为账目。
+        // 已结的账核账不再核（§3）：accept=缺陷接受现状、confirmed=需核实但 Boss 已确认没问题。
+        // 这两个都是 Boss 主动说"这条不用再管"；其余(modify/verify/adopt/ask/pending)保留核。
         let kept = rv
             .get("issues")?
             .as_array()?
             .iter()
-            .filter(|i| i.get("resolution").and_then(Value::as_str) != Some("accept"))
+            .filter(|i| !is_ledger_closed(i.get("resolution").and_then(Value::as_str)))
             .filter_map(|i| serde_json::from_value::<PinvouIssue>(i.clone()).ok())
             .collect::<Vec<_>>();
         Some(kept)
@@ -511,6 +519,18 @@ fn apply_guard(raw: ModelReview) -> PinvouReview {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 核账跳过哪些动作的契约：只有 accept(接受现状)/confirmed(需核实已确认)算已结，其余
+    /// 都保留核。漏掉 confirmed 会让 Boss 已确认的账被重核→震荡(pkx4clhny5jd0 实测暴露)。
+    #[test]
+    fn ledger_closed_only_for_accept_and_confirmed() {
+        assert!(is_ledger_closed(Some("accept")));
+        assert!(is_ledger_closed(Some("confirmed")));
+        for open in ["modify", "verify", "adopt", "ask", "pending"] {
+            assert!(!is_ledger_closed(Some(open)), "{open} 不该算已结");
+        }
+        assert!(!is_ledger_closed(None));
+    }
 
     fn user_text(t: &str) -> Message {
         Message {
