@@ -320,9 +320,20 @@ fn read_prior_ledger(session_id: &str, artifact_path: &str) -> Option<Vec<Pinvou
     let path = crate::bridge::paths::session_pinvou_reviews(session_id);
     let txt = std::fs::read_to_string(path).ok()?;
     let arr: Vec<Value> = serde_json::from_str(&txt).ok()?;
-    arr.iter().rev().find_map(|entry| {
+    ledger_from_entries(&arr, artifact_path)
+}
+
+/// 从 sidecar entries 选【首轮立账】的账目(抽出便于单测)。读首个该产物、issues 非空的 entry,
+/// 不是最近一轮——否则 pass 轮 issues 空,下次核账读到空账目就退化成自由批评、重新挑错,导致
+/// pass↔continue 震荡(实测连点品三态循环)。固定读首轮那批,核账每次都核同一批+当前产物→收敛。
+fn ledger_from_entries(arr: &[Value], artifact_path: &str) -> Option<Vec<PinvouIssue>> {
+    arr.iter().find_map(|entry| {
         let rv = entry.get("review")?;
         if rv.get("artifact_path").and_then(Value::as_str)? != artifact_path {
+            return None;
+        }
+        // 跳过首轮自身没立账(issues 空)的情况——那说明首轮就通过,没有账目可核,让它走自由模式。
+        if rv.get("issues").and_then(Value::as_array).map_or(true, |a| a.is_empty()) {
             return None;
         }
         // 已结的账核账不再核（§3）：accept=缺陷接受现状、confirmed=需核实但 Boss 已确认没问题。
@@ -590,6 +601,32 @@ mod tests {
             assert!(!is_ledger_closed(Some(open)), "{open} 不该算已结");
         }
         assert!(!is_ledger_closed(None));
+    }
+
+    /// 核账必须读【首轮立账】不读最近一轮——否则 pass 轮空账目让核账退化成自由批评、连点品震荡。
+    #[test]
+    fn ledger_reads_first_round_not_latest_pass() {
+        let arr = vec![
+            serde_json::json!({"review":{"artifact_path":"/p.md","issues":[
+                {"text":"交通错","severity":"high","kind":"quality","resolution":"modify"}
+            ]}}),
+            // 后续核账 pass(issues 空)——绝不能因它"最近"就读它(读了=空账目=自由批评)
+            serde_json::json!({"review":{"artifact_path":"/p.md","verdict":"pass","issues":[]}}),
+        ];
+        let kept = ledger_from_entries(&arr, "/p.md").expect("应读到首轮账目");
+        assert_eq!(kept.len(), 1, "读首轮那批,不是最近的空 pass");
+        assert_eq!(kept[0].text, "交通错");
+    }
+
+    /// 首轮全被标 accept/confirmed → kept 空(都已结)。
+    #[test]
+    fn ledger_filters_closed_resolutions() {
+        let arr = vec![serde_json::json!({"review":{"artifact_path":"/p.md","issues":[
+            {"text":"a","severity":"high","kind":"quality","resolution":"accept"},
+            {"text":"b","severity":"medium","kind":"needs_verify","resolution":"confirmed"}
+        ]}})];
+        let kept = ledger_from_entries(&arr, "/p.md").expect("entry 存在");
+        assert!(kept.is_empty(), "accept/confirmed 都已结,核账不再核");
     }
 
     /// 覆盖镜头:framework + coverage 必须从 ModelReview 透传进 PinvouReview,不被 guard 丢。
