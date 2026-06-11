@@ -62,6 +62,29 @@ const RECONCILE_PROMPT: &str = r#"你是 Pinvou，Boss 身边的独立检阅顾�
 5. **终态**：所有账目都闭合（issues 为空）→ verdict="pass"。**pass 时 trace 必须逐条点名每笔账目的核对结论**（如"①交通：已改为巴黎直飞苏黎世✓ ②日期：已锁定5月中下旬✓ ③签证：已补主停留国原则✓"），让 Boss 看到你逐条对过产物、不是空泛放行；还有没闭合的 → verdict="continue"。
 输出只能是 JSON：{"verdict":"pass|continue","trace":"pass 时逐条交代各账目核对结论，continue 时一句话","issues":[{"severity":"low|medium|high","kind":"...","text":"...","suggestion":"..."}],"risk":"low|medium|high"}"#;
 
+/// 覆盖镜头 prompt（§coverage，多场景 sim 4abe9ae 背书）：不挑错，查"全不全"。领域无关——
+/// 让模型自判专家身份临场列该类产物的完整性维度框架，再标缺/薄弱维度。收敛靠框架有限。
+const COVERAGE_PROMPT: &str = r#"你是 Pinvou，Boss 身边的独立检阅顾问。这次专做【覆盖度检查】——不挑已有内容的对错，只看产物"全不全"。
+
+给你 Boss 的需求 + 主 AI 的产物。两步走：
+1. 以你**自判的领域专家身份**，先想清楚：**这一类产物**要算完整、合格、能交付，行业惯例本该覆盖哪些维度？列出这个领域的完整性维度框架（贴合行业惯例，别硬套别的领域）。
+2. 对照产物，逐个维度看覆盖度。只把**薄弱/缺失**的维度列进 coverage，说明缺什么、建议补什么；已经齐的不用列。
+
+硬规则：
+- 维度框架必须贴合这类产物自己的行业惯例。
+- 核心维度（该有必须有的）缺失 → severity="high"；加分维度（锦上添花）缺失 → severity="low"。
+- 克制：最多列 5–7 个最重要的缺口，按 severity 排序。
+- 只指"缺哪些维度"，不挑"已写内容对不对"（那是 issues 镜头的事）。
+- 外部事实（如某地必备某证件）拿不准就在 suggestion 里写"需核实"，别硬断言。
+
+输出只能是 JSON，不要解释：
+{
+  "personas": [{"id":"领域英文短id","label":"领域顾问中文名","primary":true}],
+  "trace": "给 Boss 的一句话总结（像微信，说整体覆盖如何、缺哪几块）",
+  "framework": ["这类产物完整该覆盖的维度，逐个列"],
+  "coverage": [{"dimension":"维度名","coverage":"weak|missing","severity":"high|medium|low","text":"缺/薄弱在哪","suggestion":"建议补什么"}]
+}"#;
+
 /// 本地审查实测 5–19s，旧版 5s 必挂；放宽到 30s（设计 §9）。
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -108,6 +131,22 @@ pub struct PinvouRecommendation {
     pub why: String,
 }
 
+/// 覆盖镜头(coverage)的缺口：dimension=缺的维度，coverage=weak|missing，
+/// severity=high(核心维度缺=不完整)/low(加分维度)。和 issues(挑错)是两套镜头。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PinvouGap {
+    #[serde(default)]
+    pub dimension: String,
+    #[serde(default)]
+    pub coverage: String,
+    #[serde(default)]
+    pub severity: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub suggestion: String,
+}
+
 /// guard 后返回给前端的审查结果（§7 协议）。
 #[derive(Debug, Clone, Serialize)]
 pub struct PinvouReview {
@@ -116,6 +155,12 @@ pub struct PinvouReview {
     pub trace: String,
     pub recommendations: Vec<PinvouRecommendation>,
     pub issues: Vec<PinvouIssue>,
+    /// 覆盖镜头:这类产物的完整性维度框架(供展示)。空=没做覆盖体检。
+    #[serde(default)]
+    pub framework: Vec<String>,
+    /// 覆盖镜头:产物缺/薄弱的维度。
+    #[serde(default)]
+    pub coverage: Vec<PinvouGap>,
     pub risk: Option<String>,
     pub confidence: Option<f64>,
     /// 核账模式终态：pass=通过可交付 / continue=还有未结账目（首轮模式为 None）。
@@ -137,6 +182,10 @@ struct ModelReview {
     recommendations: Vec<PinvouRecommendation>,
     #[serde(default)]
     issues: Vec<PinvouIssue>,
+    #[serde(default)]
+    framework: Vec<String>,
+    #[serde(default)]
+    coverage: Vec<PinvouGap>,
     risk: Option<String>,
     confidence: Option<f64>,
     verdict: Option<String>,
@@ -150,6 +199,7 @@ pub async fn summon(
     session_id: &str,
     focus: Option<&str>,
     ask: Option<&str>,
+    mode: Option<&str>,
 ) -> Result<PinvouReview> {
     // 场景 A（§1）：对 request_user_input 问题给决策推荐。这是 turn 中途，主 AI 刚问的
     // 问题还在 pending、messages 前后端都没落盘（实测 pos=0 空召唤），所以问题内容由前端
@@ -166,6 +216,14 @@ pub async fn summon(
     }
     // focus = 就近图标锚定的产出物 path（召唤自带作用域，§1）；否则取最后修改的产出物。
     let artifact_path = focus.map(str::to_string).or_else(|| last_artifact_path(messages));
+    // 覆盖体检模式(§coverage,独立入口):查产物"全不全"。复用 build_context(全喂需求+产物文件)，
+    // COVERAGE_PROMPT 让模型临场列完整性框架+缺口。不走核账——体检是 Boss 主动的一次性深度动作。
+    if mode == Some("coverage") {
+        let raw = model_review(bridge, COVERAGE_PROMPT, &build_context(messages, workspace)).await?;
+        let mut review = apply_guard(raw);
+        review.artifact_path = artifact_path;
+        return Ok(review);
+    }
     // 核账模式：该产出物之前召唤过(sidecar 有账目) → 注入上轮账目，只核账、禁新增、可终态。
     // 有该产物的上轮记录 → 核账模式（即使账目全已结，也核账输出 pass，而非重新自由批评）。
     let prior = artifact_path
@@ -508,6 +566,8 @@ fn apply_guard(raw: ModelReview) -> PinvouReview {
         trace,
         recommendations: raw.recommendations,
         issues,
+        framework: raw.framework,
+        coverage: raw.coverage,
         risk: raw.risk,
         confidence: raw.confidence,
         verdict: raw.verdict,
@@ -530,6 +590,23 @@ mod tests {
             assert!(!is_ledger_closed(Some(open)), "{open} 不该算已结");
         }
         assert!(!is_ledger_closed(None));
+    }
+
+    /// 覆盖镜头:framework + coverage 必须从 ModelReview 透传进 PinvouReview,不被 guard 丢。
+    #[test]
+    fn guard_preserves_framework_and_coverage() {
+        let raw = ModelReview {
+            framework: vec!["签证".into(), "保险".into()],
+            coverage: vec![PinvouGap {
+                dimension: "签证".into(), coverage: "missing".into(),
+                severity: "high".into(), text: "缺".into(), suggestion: "补".into(),
+            }],
+            ..Default::default()
+        };
+        let review = apply_guard(raw);
+        assert_eq!(review.framework, vec!["签证", "保险"]);
+        assert_eq!(review.coverage.len(), 1);
+        assert_eq!(review.coverage[0].dimension, "签证");
     }
 
     fn user_text(t: &str) -> Message {
@@ -680,6 +757,8 @@ mod tests {
             risk: Some("high".into()),
             confidence: Some(0.8),
             verdict: None,
+            framework: vec![],
+            coverage: vec![],
         };
         let r = apply_guard(raw);
         assert_eq!(r.issues[0].persona, "travel", "未知 persona 归到 primary");

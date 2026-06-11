@@ -2103,9 +2103,13 @@
                 <div className={`flex items-center justify-between mt-2 pt-2 border-t ${isDark ? 'border-[#D0BCFF]/15' : 'border-[#7C3AED]/15'}`}>
                   <span className={`text-[11px] font-mono truncate ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`} title={basename}>{basename}</span>
                   <div className="flex items-center gap-2.5 flex-shrink-0 ml-2">
-                    <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.summonPinvou(path); }} title="让 Pinvou 检阅这个产出物"
+                    <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.summonPinvou(path); }} title="让 Pinvou 检阅这个产出物(挑错/给推荐)"
                       className={`flex items-center gap-1 text-[12px] ${isDark ? 'text-[#D0BCFF] hover:text-[#E9DDFF]' : 'text-[#7C3AED] hover:text-[#6D28D9]'}`}>
                       <Sparkles size={13} /> 检阅
+                    </button>
+                    <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.inspectPinvou(path); }} title="通盘体检:看覆盖面全不全、缺哪些维度"
+                      className={`flex items-center gap-1 text-[12px] ${isDark ? 'text-[#8AB4F8] hover:text-[#AECBFA]' : 'text-[#1967D2] hover:text-[#1A73E8]'}`}>
+                      <span className="text-[11px]">📋</span> 体检
                     </button>
                     <span className={`text-[12px] ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>{t.clickToOpen}</span>
                   </div>
@@ -2450,17 +2454,26 @@
           dot: sevDot(x.severity), sev: x.severity, nv: x.kind === 'needs_verify',
           head: x.text, sub: x.suggestion,
         })),
+        ...(review.coverage || []).map((x, i) => ({
+          k: 'c' + i, raw: x, kind: 'gap', dot: x.severity === 'high' ? '#1A73E8' : '#669DF6',
+          sev: x.severity, head: x.dimension + (x.text ? '：' + x.text : ''), sub: x.suggestion,
+        })),
       ];
-      // 每类二选一 [值,文案]:第一个=「要 AI 做」(紫色高亮),第二个=Boss 自己消化(灰)。
+      // 每类二选一 [值,文案]:第一个=「要 AI 做」(高亮),第二个=Boss 自己消化(灰)。
       const ACT = {
         rec: [['adopt', '采纳建议'], ['ask', '让 AI 问我']],
         verify: [['verify', '让 AI 核实'], ['confirmed', '我确认没问题']],
         fix: [['modify', '让 AI 改'], ['accept', '接受现状']],
+        gap: [['fill', '补上'], ['skip', '暂不补']],
       };
-      const ACTIVE = { adopt: 1, ask: 1, verify: 1, modify: 1 }; // 需转交给 AI 的动作
+      const ACTIVE = { adopt: 1, ask: 1, verify: 1, modify: 1, fill: 1 }; // 需转交给 AI 的动作
       const [res, setRes] = useState(() => {
         const m = {};
-        rows.forEach(it => { m[it.k] = it.raw.resolution || (it.kind === 'fix' && it.sev === 'high' ? 'modify' : null); });
+        rows.forEach(it => {
+          let def = null;
+          if (it.sev === 'high') def = it.kind === 'fix' ? 'modify' : it.kind === 'gap' ? 'fill' : null;
+          m[it.k] = it.raw.resolution || def;
+        });
         return m;
       });
       const setOne = (k, v) => setRes(p => ({ ...p, [k]: p[k] === v ? null : v }));
@@ -2476,6 +2489,7 @@
         const resolutions = {
           recs: (review.recommendations || []).map((_, i) => res['r' + i] || 'pending'),
           issues: (review.issues || []).map((_, i) => res['i' + i] || 'pending'),
+          coverage: (review.coverage || []).map((_, i) => res['c' + i] || 'pending'),
         };
         const actions = [];
         rows.forEach(it => {
@@ -2484,6 +2498,7 @@
           else if (a === 'verify') actions.push({ t: 'verify', text: it.head + (it.sub ? '（' + it.sub + '）' : '') });
           else if (a === 'adopt') actions.push({ t: 'adopt', topic: it.raw.topic || '', pick: it.raw.pick || '' });
           else if (a === 'ask') actions.push({ t: 'ask', topic: it.raw.topic || it.head });
+          else if (a === 'fill') actions.push({ t: 'fill', dimension: it.raw.dimension || '', suggestion: it.raw.suggestion || '' });
         });
         bridge.resolvePinvouReview(reviewPos, resolutions, actions);
       };
@@ -2492,7 +2507,7 @@
           <div className="space-y-2">
             {rows.map(it => {
               const decided = res[it.k];
-              const passive = decided === 'accept' || decided === 'confirmed';
+              const passive = decided === 'accept' || decided === 'confirmed' || decided === 'skip';
               return (
                 <div key={it.k} className={`rounded-lg px-2.5 py-2 transition-opacity ${passive ? 'opacity-45' : ''} ${isDark ? 'bg-white/[0.04]' : 'bg-black/[0.03]'}`}>
                   <div className="flex gap-2">
@@ -2576,8 +2591,8 @@
       const body = isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]';
       if (item.loading) return (
         <div className={cardBoxCls(isDark, accent)}>
-          <div className={`flex items-center gap-2 text-[12px] font-semibold ${purple}`}><span>🧭</span><span>Pinvou 检阅</span></div>
-          <div className={`text-[13px] mt-2 ${muted}`}>正在检阅前面的工作…</div>
+          <div className={`flex items-center gap-2 text-[12px] font-semibold ${purple}`}><span>🧭</span><span>{item.coverage ? 'Pinvou 通盘体检' : 'Pinvou 检阅'}</span></div>
+          <div className={`text-[13px] mt-2 ${muted}`}>{item.coverage ? '正在比对完整性维度…' : '正在检阅前面的工作…'}</div>
         </div>
       );
       if (item.error) return (
@@ -2590,7 +2605,7 @@
       const personas = r.personas || [];
       const primary = personas.find(p => p && p.primary) || personas[0] || {};
       const alts = r.alternates || [];
-      const hasRows = (r.recommendations || []).length > 0 || (r.issues || []).length > 0;
+      const hasRows = (r.recommendations || []).length > 0 || (r.issues || []).length > 0 || (r.coverage || []).length > 0;
       return (
         <div className={cardBoxCls(isDark, accent)}>
           <div className="flex items-center flex-wrap gap-x-2 gap-y-1 mb-2">
@@ -2600,6 +2615,11 @@
             {r.verdict === 'pass' && <span className={`text-[11px] font-semibold px-1.5 py-0.5 rounded ${isDark ? 'bg-[#37BE5F]/20 text-[#81C995]' : 'bg-[#E6F4EA] text-[#137333]'}`}>✓ 通过，可交付</span>}
           </div>
           {r.trace && <div className={`text-[13.5px] leading-relaxed mb-2.5 ${body}`}>{r.trace}</div>}
+          {(r.framework || []).length > 0 && (
+            <div className={`text-[11.5px] mb-2 px-2 py-1.5 rounded-lg leading-relaxed ${isDark ? 'bg-[#1A73E8]/10 text-[#8AB4F8]' : 'bg-[#1A73E8]/5 text-[#1967D2]'}`}>
+              <span className="opacity-70">完整性框架·{(r.framework || []).length}维：</span>{(r.framework || []).join(' · ')}
+            </div>
+          )}
           {hasRows && (item.advise
             ? <PinvouAdvise review={r} theme={theme} />
             : <PinvouRows review={r} theme={theme} reviewPos={item.reviewPos} />)}

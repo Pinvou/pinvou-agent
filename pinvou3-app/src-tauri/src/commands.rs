@@ -1372,6 +1372,7 @@ pub async fn summon_pinvou(
     session_id: Option<String>,
     focus: Option<String>,
     ask: Option<String>,
+    mode: Option<String>,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<crate::pinvou_review::PinvouReview, String> {
@@ -1389,6 +1390,7 @@ pub async fn summon_pinvou(
         &sid,
         focus.as_deref(),
         ask.as_deref(),
+        mode.as_deref(),
     )
     .await
     .map_err(|e| format!("summon_pinvou: {e:?}"))

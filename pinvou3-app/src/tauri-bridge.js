@@ -842,17 +842,17 @@
   // ── Pinvou v4 召唤式检阅:Boss 主动呼叫,审当前 session 前面的工作 ──
   // 设计 docs/品悟v4-常驻检阅助手设计.md。纯召唤、不替 Boss 决策。
   // 审查卡进 chatItems(当前会话可见);跨会话持久化(进 messages/独立存储)是 §6 后续增强。
-  async function summonPinvou(focus, ask) {
+  async function summonPinvou(focus, ask, mode) {
     if (!state.activeSessionId) { addSystemItem("先开始一个对话,再召唤 Pinvou 检阅。"); return; }
     if (state.pinvouSummoning) return;
     state.pinvouSummoning = true;
-    var card = { type: "pinvou_review", loading: true, advise: !!ask, time: timeStr() };
+    var card = { type: "pinvou_review", loading: true, advise: !!ask, coverage: mode === "coverage", time: timeStr() };
     addChatItem(card); // addChatItem 赋 card.id;card 是引用,下面直接改它
     notify();
     try {
-      // focus = 产出物 path(场景 B); ask = request_user_input 问题文本(场景 A——turn 中途
-      // messages 多半没落盘,问题自带上下文,不靠 messages)。
-      var review = await invoke("summon_pinvou", { sessionId: state.activeSessionId, focus: focus || null, ask: ask || null });
+      // focus=产出物 path(场景B); ask=request_user_input 问题(场景A,turn 中途不靠 messages);
+      // mode="coverage"=通盘体检(查产物全不全)。
+      var review = await invoke("summon_pinvou", { sessionId: state.activeSessionId, focus: focus || null, ask: ask || null, mode: mode || null });
       card.loading = false;
       card.review = review;
       card.reviewPos = recordPinvouReview(review, !!ask); // B2: 进 sidecar;reviewPos 供裁决定位原 state
@@ -863,6 +863,11 @@
       state.pinvouSummoning = false;
       notify();
     }
+  }
+
+  // 通盘体检(覆盖镜头):查产物"全不全"=缺哪些完整性维度。独立入口,走 mode=coverage。
+  function inspectPinvou(focus) {
+    return summonPinvou(focus, null, "coverage");
   }
 
   // B2: 审查卡进 sidecar 时间线(pos=当前 messages 数),落盘。同 recordPersonaEvent
@@ -890,6 +895,7 @@
       if (entry && entry.review) {
         (entry.review.recommendations || []).forEach(function (r, k) { if (resolutions.recs && resolutions.recs[k]) r.resolution = resolutions.recs[k]; });
         (entry.review.issues || []).forEach(function (x, k) { if (resolutions.issues && resolutions.issues[k]) x.resolution = resolutions.issues[k]; });
+        (entry.review.coverage || []).forEach(function (g, k) { if (resolutions.coverage && resolutions.coverage[k]) g.resolution = resolutions.coverage[k]; });
       }
     }
     await persistPinvouReviews(); // 落盘(原 state 已写 resolution),配合后端 preserve_resolutions 防覆盖
@@ -913,6 +919,12 @@
       if (parts.length) parts.push("");
       parts.push("以下待定项请用 request_user_input 正式问我，别自己猜：");
       ask.forEach(function (a) { parts.push("- " + a.topic); });
+    }
+    var fill = actions.filter(function (a) { return a.t === "fill"; });
+    if (fill.length) {
+      if (parts.length) parts.push("");
+      parts.push("以下维度产物还缺，请补充进去（保留其余内容、只增不改）：");
+      fill.forEach(function (a) { parts.push("- " + a.dimension + (a.suggestion ? "：" + a.suggestion : "")); });
     }
     if (parts.length) sendMessage(parts.join("\n"));
   }
@@ -1834,6 +1846,7 @@
     submitUserInput: submitUserInput,
     cancelUserInput: cancelUserInput,
     summonPinvou: summonPinvou,
+    inspectPinvou: inspectPinvou,
     resolvePinvouReview: resolvePinvouReview,
     // 编辑/压缩
     editLastTurn: editLastTurn,
