@@ -49,14 +49,22 @@ fn fnv1a64(s: &str) -> u64 {
     h
 }
 
+/// 项目目录名前缀:历史目录是 `ppt-`,2026-06-11 起新建为 `wf-`
+/// (旧前缀会顺着"项目目录: …"提示词污染规划,见 harness::init_project)。两种都认。
+fn strip_project_prefix(dir_name: &str) -> Option<&str> {
+    dir_name
+        .strip_prefix("ppt-")
+        .or_else(|| dir_name.strip_prefix("wf-"))
+}
+
 /// `ppt-20260601-120000-solution_deck` → `wf-20260601-1200-<4hex>`。
-/// `ppt-` 后解析不出合法时间戳 → None（调用方警告跳过）。
+/// 前缀后解析不出合法时间戳 → None（调用方警告跳过）。
 ///
 /// salt：撞名去重用。不同 session 下同名目录推出同 run_id，第二个项目对
 /// `"<dirname>#<salt>"` 重新散列（salt 从 2 起）；salt<=1 用原目录名——
 /// 与历史推导完全兼容，同目录续跑永远推出同 id（幂等前提）。
 fn derive_run_id_salted(dir_name: &str, salt: usize) -> Option<String> {
-    let rest = dir_name.strip_prefix("ppt-")?;
+    let rest = strip_project_prefix(dir_name)?;
     let date = rest.get(0..8)?;
     let time6 = rest.get(9..15)?;
     if !date.bytes().all(|b| b.is_ascii_digit())
@@ -80,9 +88,9 @@ fn derive_run_id(dir_name: &str) -> Option<String> {
     derive_run_id_salted(dir_name, 1)
 }
 
-/// 目录名尾段取 scenario：`ppt-<8位日期>-<6位时间>-<scenario>`。
+/// 目录名尾段取 scenario：`<前缀><8位日期>-<6位时间>-<scenario>`。
 fn scenario_from_dir_name(dir_name: &str) -> Option<String> {
-    let rest = dir_name.strip_prefix("ppt-")?;
+    let rest = strip_project_prefix(dir_name)?;
     let tail = rest.get(16..)?; // 8 日期 + '-' + 6 时间 + '-'
     if rest.as_bytes().get(15) != Some(&b'-') || tail.is_empty() {
         return None;
@@ -201,7 +209,7 @@ fn scan_and_migrate_projects() -> Result<usize, String> {
             let name = proj.file_name();
             let Some(name) = name.to_str() else { continue };
             if !p.is_dir()
-                || !name.starts_with("ppt-")
+                || strip_project_prefix(name).is_none()
                 || !p.join("_state").join("workflow_progress.json").is_file()
             {
                 continue;
@@ -581,6 +589,22 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].run_id, run_id);
         std::env::remove_var("PINVOU3_HOME");
+    }
+
+    // 新旧两种目录前缀(ppt-/wf-)都能解析;非法前缀拒绝。
+    #[test]
+    fn accepts_both_project_dir_prefixes() {
+        assert!(derive_run_id("ppt-20260611-135848-sansheng_liubu").is_some());
+        assert!(derive_run_id("wf-20260611-135848-sansheng_liubu").is_some());
+        assert!(derive_run_id("foo-20260611-135848-sansheng_liubu").is_none());
+        assert_eq!(
+            scenario_from_dir_name("wf-20260611-135848-sansheng_liubu").as_deref(),
+            Some("sansheng_liubu")
+        );
+        assert_eq!(
+            scenario_from_dir_name("ppt-20260611-135848-sansheng_liubu").as_deref(),
+            Some("sansheng_liubu")
+        );
     }
 
     // 缺口1b：不同 session 下同名 ppt-* 目录推出同 run_id（撞名）。

@@ -502,9 +502,9 @@ pub fn find_project_dir(workspace: &Path) -> Option<PathBuf> {
     best.map(|(_, p)| p)
 }
 
-/// 初始化一个新的 PPT 工作流项目目录。
+/// 初始化一个新的工作流项目目录。
 ///
-/// 在 `workspace` 下创建 `ppt-<ts>-<scenario>/`，写入：
+/// 在 `workspace` 下创建 `wf-<ts>-<scenario>/`，写入：
 /// - `_state/workflow_progress.json`（scenario + 创建时间，roles 由 scheduler.py 首次 --next 时 populate）
 /// - `_state/brief.json`（scenario + 合并 brief_init 字段）
 /// - 目录骨架 `_research/` `_audit/` `HTML_Deck/` `配套材料/`
@@ -530,9 +530,11 @@ pub fn init_project(
     }
 
     let ts = Utc::now().format("%Y%m%d-%H%M%S").to_string();
-    // 目录前缀仍是 ppt-(历史兼容:workflow_migrate/find_project_dir 都按它找;
-    // run 实体化 P0 Task6 接线时统一换成中性前缀)
-    let project = workspace.join(format!("ppt-{ts}-{scenario}"));
+    // 中性前缀 wf-。项目路径会进每个角色提示词("项目目录: …"),旧前缀 ppt-
+    // 实测污染规划:中书省看见目录名就把交付形态脑补成 PPT。旧目录不重命名:
+    // find_project_dir 按 _state/workflow_progress.json 找(与前缀无关),
+    // workflow_migrate 两种前缀都认。
+    let project = workspace.join(format!("wf-{ts}-{scenario}"));
 
     for sub in ["_state", "_research", "_audit", "配套材料"] {
         std::fs::create_dir_all(project.join(sub))
