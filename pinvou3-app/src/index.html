@@ -2435,7 +2435,7 @@
     //   issue.needs_verify(外部事实,AI 无知识)→ 让 AI 核实 / 我确认没问题;
     //   issue 其他(产物缺陷,AI 改得动)→ 让 AI 改 / 接受现状(high 默认勾)。
     // 「交给 AI 处理」按各条动作组装定向指令走 B1。单独子组件:useState 放这避 hooks 错位。
-    const PinvouRows = ({ review, theme }) => {
+    const PinvouRows = ({ review, theme, reviewPos }) => {
       const isDark = theme === 'dark';
       const body = isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]';
       const muted = isDark ? 'text-[#C4C7C5]' : 'text-[#5f6368]';
@@ -2471,7 +2471,12 @@
         : (isDark ? 'border-white/15 text-[#9AA0A6] hover:bg-white/5' : 'border-black/15 text-[#757575] hover:bg-black/5')}`;
       const onResolve = () => {
         if (!bridge.available) return;
-        rows.forEach(it => { it.raw.resolution = res[it.k] || 'pending'; }); // 写回裁决(引用→sidecar)
+        // review 是 notify 深拷贝,写它的 resolution 落不到原 state;改为把裁决按下标 + reviewPos
+        // 传给 bridge,由 bridge 在原 state.pinvouReviews 上写,再落盘(根治 resolution 不持久化)。
+        const resolutions = {
+          recs: (review.recommendations || []).map((_, i) => res['r' + i] || 'pending'),
+          issues: (review.issues || []).map((_, i) => res['i' + i] || 'pending'),
+        };
         const actions = [];
         rows.forEach(it => {
           const a = res[it.k];
@@ -2480,7 +2485,7 @@
           else if (a === 'adopt') actions.push({ t: 'adopt', topic: it.raw.topic || '', pick: it.raw.pick || '' });
           else if (a === 'ask') actions.push({ t: 'ask', topic: it.raw.topic || it.head });
         });
-        bridge.resolvePinvouReview(review, actions);
+        bridge.resolvePinvouReview(reviewPos, resolutions, actions);
       };
       return (
         <div>
@@ -2597,7 +2602,7 @@
           {r.trace && <div className={`text-[13.5px] leading-relaxed mb-2.5 ${body}`}>{r.trace}</div>}
           {hasRows && (item.advise
             ? <PinvouAdvise review={r} theme={theme} />
-            : <PinvouRows review={r} theme={theme} />)}
+            : <PinvouRows review={r} theme={theme} reviewPos={item.reviewPos} />)}
         </div>
       );
     };

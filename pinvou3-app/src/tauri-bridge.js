@@ -500,7 +500,7 @@
       for (var k = 0; k < pr.length; k++) {
         var x = pr[k];
         if (isTail ? (x.pos < atOrAfter) : (x.pos !== atOrAfter)) continue;
-        addChatItem({ type: "pinvou_review", review: x.review, advise: x.advise, time: "" });
+        addChatItem({ type: "pinvou_review", review: x.review, advise: x.advise, reviewPos: x.pos, time: "" });
       }
     }
     // 预扫 tool_result：tool_use 在 assistant 消息、result 在后续 user 消息，需提前建映射
@@ -845,7 +845,7 @@
       var review = await invoke("summon_pinvou", { sessionId: state.activeSessionId, focus: focus || null, ask: ask || null });
       card.loading = false;
       card.review = review;
-      recordPinvouReview(review, !!ask); // B2: 进 sidecar;advise=场景A(决策推荐,纯展示)
+      card.reviewPos = recordPinvouReview(review, !!ask); // B2: 进 sidecar;reviewPos 供裁决定位原 state
     } catch (e) {
       card.loading = false;
       card.error = String(e && e.message ? e.message : e);
@@ -858,17 +858,31 @@
   // B2: 审查卡进 sidecar 时间线(pos=当前 messages 数),落盘。同 recordPersonaEvent
   // 范式,**不进 messages/LLM**;rerenderFromMessages 按 pos 插回,切会话/重载不丢。
   function recordPinvouReview(review, advise) {
-    if (!state.activeSessionId || !review) return;
-    state.pinvouReviews.push({ pos: state.messages.length, review: review, advise: !!advise });
+    if (!state.activeSessionId || !review) return null;
+    var pos = state.messages.length;
+    state.pinvouReviews.push({ pos: pos, review: review, advise: !!advise });
     var sid = state.activeSessionId;
     var snapshot = JSON.parse(JSON.stringify(state.pinvouReviews));
     invoke("save_session_pinvou_reviews", { sessionId: sid, reviews: snapshot }).catch(function () {});
+    return pos; // 供卡片记 reviewPos,裁决时按 pos 定位原 state 写 resolution
   }
 
   // §2 按勾选裁决:resolution 已由前端写回 review 对象(引用→sidecar),这里持久化 +
   // 把勾「让AI改」的条目走 B1 发定向修订指令(只改对应段落、禁全文重写)。Boss 驾驶,非自动。
-  async function resolvePinvouReview(review, actions) {
-    await persistPinvouReviews(); // 先确保裁决落盘再转交,配合后端 preserve_resolutions 防覆盖
+  async function resolvePinvouReview(pos, resolutions, actions) {
+    // React 拿到的 state 是 notify() 的深拷贝,组件里写 review.resolution 落不到原 state。
+    // 这里按 pos 定位原 state.pinvouReviews 的 entry,在原对象上按下标写 resolution,再落盘。
+    if (resolutions && typeof pos === "number") {
+      var entry = null;
+      for (var i = state.pinvouReviews.length - 1; i >= 0; i--) {
+        if (state.pinvouReviews[i].pos === pos) { entry = state.pinvouReviews[i]; break; }
+      }
+      if (entry && entry.review) {
+        (entry.review.recommendations || []).forEach(function (r, k) { if (resolutions.recs && resolutions.recs[k]) r.resolution = resolutions.recs[k]; });
+        (entry.review.issues || []).forEach(function (x, k) { if (resolutions.issues && resolutions.issues[k]) x.resolution = resolutions.issues[k]; });
+      }
+    }
+    await persistPinvouReviews(); // 落盘(原 state 已写 resolution),配合后端 preserve_resolutions 防覆盖
     if (!actions || !actions.length) return;
     // 按动作类型分组,组装一条 Boss 消息发给主 AI(Boss 驾驶,非自动回传):
     //   fix/verify=产物缺陷定向修订(verify 先核实);adopt=Boss 已定的决策;ask=让 AI 正式问。
