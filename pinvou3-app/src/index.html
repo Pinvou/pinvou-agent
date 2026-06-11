@@ -2103,13 +2103,13 @@
                 <div className={`flex items-center justify-between mt-2 pt-2 border-t ${isDark ? 'border-[#D0BCFF]/15' : 'border-[#7C3AED]/15'}`}>
                   <span className={`text-[11px] font-mono truncate ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`} title={basename}>{basename}</span>
                   <div className="flex items-center gap-2.5 flex-shrink-0 ml-2">
-                    <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.summonPinvou(path); }} title="让 Pinvou 检阅这个产出物(挑错/给推荐)"
+                    <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.summonPinvou(path); }} title="品 · 查错：揪出产物的风险、遗漏、与你需求的偏差，逐条让 AI 改或你拍板接受"
                       className={`flex items-center gap-1 text-[12px] ${isDark ? 'text-[#D0BCFF] hover:text-[#E9DDFF]' : 'text-[#7C3AED] hover:text-[#6D28D9]'}`}>
-                      <Sparkles size={13} /> 检阅
+                      <span className="text-[11px]">🔍</span> 品
                     </button>
-                    <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.inspectPinvou(path); }} title="通盘体检:看覆盖面全不全、缺哪些维度"
+                    <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.inspectPinvou(path); }} title="悟 · 发散：以领域专家视角给出产物还能补的维度和新思路，挑中的一键加进去"
                       className={`flex items-center gap-1 text-[12px] ${isDark ? 'text-[#8AB4F8] hover:text-[#AECBFA]' : 'text-[#1967D2] hover:text-[#1A73E8]'}`}>
-                      <span className="text-[11px]">📋</span> 体检
+                      <span className="text-[11px]">💡</span> 悟
                     </button>
                     <span className={`text-[12px] ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>{t.clickToOpen}</span>
                   </div>
@@ -2529,12 +2529,18 @@
               );
             })}
           </div>
-          {activeCount > 0 && (
-            <button onClick={onResolve}
-              className={`mt-3 px-3 py-1.5 rounded-full text-[12.5px] font-medium transition-colors ${isDark ? 'bg-[#D0BCFF] text-[#381E72] hover:bg-[#E9DDFF]' : 'bg-[#7C3AED] text-white hover:bg-[#6D28D9]'}`}>
-              交给 AI 处理（{activeCount} 条）
+          <div className="flex items-center gap-2 mt-3">
+            {activeCount > 0 && (
+              <button onClick={onResolve}
+                className={`px-3 py-1.5 rounded-full text-[12.5px] font-medium transition-colors ${isDark ? 'bg-[#D0BCFF] text-[#381E72] hover:bg-[#E9DDFF]' : 'bg-[#7C3AED] text-white hover:bg-[#6D28D9]'}`}>
+                交给 AI 处理（{activeCount} 条）
+              </button>
+            )}
+            <button onClick={() => bridge.available && bridge.dismissPinvouReview(reviewPos)} title="这次不处理,整张卡跳过"
+              className={`px-3 py-1.5 rounded-full text-[12.5px] transition-colors ${isDark ? 'text-[#9AA0A6] hover:bg-white/5' : 'text-[#5f6368] hover:bg-black/5'}`}>
+              跳过
             </button>
-          )}
+          </div>
         </div>
       );
     };
@@ -2542,7 +2548,7 @@
     // 场景 A(request_user_input 决策推荐):纯展示推荐+风险,**无勾选/无按勾选修订**。
     // 因为没有"产物"要让 AI 改,Boss 看完推荐去上面的 request_user_input 选项卡点选;
     // 且此时 turn 正阻塞等 Boss 答,绝不能 sendMessage(会冲突丢选项卡)。
-    const PinvouAdvise = ({ review, theme }) => {
+    const PinvouAdvise = ({ review, theme, reviewPos }) => {
       const isDark = theme === 'dark';
       const purple = isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]';
       const muted = isDark ? 'text-[#C4C7C5]' : 'text-[#5f6368]';
@@ -2578,30 +2584,45 @@
               ))}
             </div>
           )}
-          <div className={`text-[12px] mt-2.5 ${muted}`}>👆 看完推荐，在上面的选项卡上点选——品悟只给建议，最终你来点。</div>
+          <div className="flex items-center justify-between gap-2 mt-2.5">
+            <span className={`text-[12px] ${muted}`}>👆 看完推荐去上面选项卡点选——只给建议，你来定。</span>
+            <button onClick={() => bridge.available && bridge.dismissPinvouReview(reviewPos)} title="这次不处理,整张卡跳过"
+              className={`shrink-0 px-2.5 py-1 rounded-full text-[12px] ${isDark ? 'text-[#9AA0A6] hover:bg-white/5' : 'text-[#5f6368] hover:bg-black/5'}`}>跳过</button>
+          </div>
         </div>
       );
     };
 
     const PinvouSummonCard = ({ item, theme }) => {
       const isDark = theme === 'dark';
-      const accent = isDark ? 'border-[#D0BCFF]/30' : 'border-[#7C3AED]/25';
-      const purple = isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]';
+      // 品(查错)=紫;悟(发散,coverage)=蓝。场景A(决策推荐,advise)归参谋(紫)。
+      const isWu = !!item.coverage;
+      const icon = isWu ? '💡' : (item.advise ? '🧭' : '🔍');
+      const tag = isWu ? ' · 悟' : (item.advise ? ' 视角' : ' · 品');
+      const accent = isWu ? (isDark ? 'border-[#8AB4F8]/30' : 'border-[#1A73E8]/25')
+                          : (isDark ? 'border-[#D0BCFF]/30' : 'border-[#7C3AED]/25');
+      const tint = isWu ? (isDark ? 'text-[#8AB4F8]' : 'text-[#1967D2]')
+                        : (isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]');
       const muted = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
       const body = isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]';
       if (item.loading) return (
         <div className={cardBoxCls(isDark, accent)}>
-          <div className={`flex items-center gap-2 text-[12px] font-semibold ${purple}`}><span>🧭</span><span>{item.coverage ? 'Pinvou 通盘体检' : 'Pinvou 检阅'}</span></div>
-          <div className={`text-[13px] mt-2 ${muted}`}>{item.coverage ? '正在比对完整性维度…' : '正在检阅前面的工作…'}</div>
+          <div className={`flex items-center gap-2 text-[12px] font-semibold ${tint}`}><span>{icon}</span><span>{isWu ? 'Pinvou 悟·发散补全' : 'Pinvou 品·查错检阅'}</span></div>
+          <div className={`text-[13px] mt-2 ${muted}`}>{isWu ? '正在比对完整性维度、发散补点…' : '正在检阅前面的工作…'}</div>
         </div>
       );
       if (item.error) return (
         <div className={cardBoxCls(isDark, accent)}>
-          <div className={`flex items-center gap-2 text-[12px] font-semibold ${purple}`}><span>🧭</span><span>Pinvou 检阅</span></div>
-          <div className={`text-[13px] mt-2 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>检阅失败：{item.error}</div>
+          <div className={`flex items-center gap-2 text-[12px] font-semibold ${tint}`}><span>{icon}</span><span>Pinvou {isWu ? '悟' : '品'}</span></div>
+          <div className={`text-[13px] mt-2 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>失败：{item.error}</div>
         </div>
       );
       const r = item.review || {};
+      if (r.dismissed) return (
+        <div className={cardBoxCls(isDark, accent) + ' opacity-50'}>
+          <div className={`flex items-center gap-2 text-[12px] ${muted}`}><span>{icon}</span><span>Pinvou{tag} · 已跳过</span></div>
+        </div>
+      );
       const personas = r.personas || [];
       const primary = personas.find(p => p && p.primary) || personas[0] || {};
       const alts = r.alternates || [];
@@ -2609,8 +2630,8 @@
       return (
         <div className={cardBoxCls(isDark, accent)}>
           <div className="flex items-center flex-wrap gap-x-2 gap-y-1 mb-2">
-            <span className="text-[15px]">🧭</span>
-            <span className={`text-[13px] font-semibold ${purple}`}>{(primary.label || 'Pinvou') + ' 视角'}</span>
+            <span className="text-[15px]">{icon}</span>
+            <span className={`text-[13px] font-semibold ${tint}`}>{(primary.label || 'Pinvou') + tag}</span>
             {alts.length > 0 && <span className={`text-[12px] ${muted}`}>· 也涉及 {alts.join(' / ')}</span>}
             {r.verdict === 'pass' && <span className={`text-[11px] font-semibold px-1.5 py-0.5 rounded ${isDark ? 'bg-[#37BE5F]/20 text-[#81C995]' : 'bg-[#E6F4EA] text-[#137333]'}`}>✓ 通过，可交付</span>}
           </div>
@@ -2621,7 +2642,7 @@
             </div>
           )}
           {hasRows && (item.advise
-            ? <PinvouAdvise review={r} theme={theme} />
+            ? <PinvouAdvise review={r} theme={theme} reviewPos={item.reviewPos} />
             : <PinvouRows review={r} theme={theme} reviewPos={item.reviewPos} />)}
         </div>
       );

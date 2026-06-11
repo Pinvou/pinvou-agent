@@ -928,6 +928,16 @@
     }
     if (parts.length) sendMessage(parts.join("\n"));
   }
+
+  // 整卡跳过:Boss 看了不处理这次检阅,按 pos 在原 state 标 dismissed(持久化),卡片收起暗淡。
+  async function dismissPinvouReview(pos) {
+    if (typeof pos !== "number") return;
+    for (var i = state.pinvouReviews.length - 1; i >= 0; i--) {
+      if (state.pinvouReviews[i].pos === pos) { state.pinvouReviews[i].review.dismissed = true; break; }
+    }
+    await persistPinvouReviews();
+    notify();
+  }
   // 把当前 session 的审查时间线(含勾选写回的 resolution)重新落盘。返回 promise 供 await。
   function persistPinvouReviews() {
     if (!state.activeSessionId) return Promise.resolve();
@@ -1848,6 +1858,7 @@
     summonPinvou: summonPinvou,
     inspectPinvou: inspectPinvou,
     resolvePinvouReview: resolvePinvouReview,
+    dismissPinvouReview: dismissPinvouReview,
     // 编辑/压缩
     editLastTurn: editLastTurn,
     compactNow: compactNow,
