@@ -92,6 +92,9 @@ impl Default for ModelPreset {
 ///   所以底座 fork patch #42 已把默认翻成 Bing,这里前端默认对齐。
 /// - `Metaso` / `Bocha` / `Baidu`: 国内 AI 搜索 API,中文场景相关性远好于 Bing scrape。
 ///   Metaso 留空 key 走底座内置共享 key(~100 次/天);Bocha/Baidu 必须填 key。
+/// - `Tavily`: 海外 agent 搜索 API(<https://app.tavily.com/> 拿 `tvly-` key,API 实际打
+///   `api.tavily.com`)。结果是干净抽取的 content 而非 HTML scrape,质量好;但要稳定外网 +
+///   自带额度,key 必填(留空底座直接报 "requires API key")。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchProvider {
@@ -99,6 +102,7 @@ pub enum SearchProvider {
     Metaso,
     Bocha,
     Baidu,
+    Tavily,
 }
 impl Default for SearchProvider {
     fn default() -> Self {

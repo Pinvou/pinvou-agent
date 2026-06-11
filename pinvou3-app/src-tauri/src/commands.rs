@@ -880,6 +880,7 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
         "https://metaso.cn/",
         "https://open.bochaai.com/",
         "https://console.bce.baidu.com/",
+        "https://app.tavily.com/",
     ];
     if !ALLOWED_PREFIXES.iter().any(|p| url.starts_with(p)) {
         return Err(format!("URL not in allowlist: {url}"));
@@ -1347,9 +1348,9 @@ fn validate_user_path(raw: &str) -> Result<std::path::PathBuf, String> {
 mod tests {
     use super::*;
 
-    /// `open_external_url` 必须只放 metaso.cn / open.bochaai.com / console.bce.baidu.com,
-    /// 任何其他 host / 任何其他 scheme(http、file、javascript)都立即 reject——这是前端
-    /// webview 万一被 XSS 的最后一道防线,不许扩大白名单不加测试。
+    /// `open_external_url` 必须只放 metaso.cn / open.bochaai.com / console.bce.baidu.com /
+    /// app.tavily.com,任何其他 host / 任何其他 scheme(http、file、javascript)都立即
+    /// reject——这是前端 webview 万一被 XSS 的最后一道防线,不许扩大白名单不加测试。
     #[tokio::test]
     async fn open_external_url_rejects_off_allowlist_targets() {
         let rejected = [
@@ -1357,6 +1358,7 @@ mod tests {
             "https://evil.example.com/",      // host 不在白名单
             "https://metaso.cn.evil.com/",    // 子域钓鱼
             "https://console.bce.baidu.com.evil.com/", // 百度子域钓鱼
+            "https://app.tavily.com.evil.com/", // tavily 子域钓鱼
             "https://bce.baidu.com/",         // 非 console 子域,不放行
             "javascript:alert(1)",            // js scheme
             "file:///etc/passwd",             // file scheme

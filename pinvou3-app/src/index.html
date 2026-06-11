@@ -161,12 +161,14 @@
         searchKeyHintMetaso: '留空使用社区共享 key（~100 次/天，多用户竞争）',
         searchKeyHintBocha: '必填，否则搜索会直接报错',
         searchKeyHintBaidu: '必填（百度智能云千帆 API Key），否则搜索会直接报错',
+        searchKeyHintTavily: '必填（tvly- 开头），海外服务，需稳定外网',
         searchKeyPlaceholder: '粘贴 API key',
         searchRestartHint: '配置已修改，保存后应用将重启',
         searchGetKey: '获取你自己的 key',
         searchGetKeyMetasoSteps: '免费 · 微信/手机扫码 1 分钟注册 · 个人独立配额',
         searchGetKeyBochaSteps: '免费 · 注册后在控制台领 sk- 开头的 key',
         searchGetKeyBaiduSteps: '千帆控制台创建 API Key · AI 搜索按量计费，有免费额度',
+        searchGetKeyTavilySteps: '海外 · 注册领 tvly- 开头的 key · 每月有免费额度，需外网访问',
         modelBackend: '模型与后端',
         modelBackendDesc: '选择本地 vLLM 或第三方 API 作为推理后端',
         modelPreset: '模型来源',
@@ -315,12 +317,14 @@
         searchKeyHintMetaso: 'Leave empty for community shared key (~100/day, multi-user)',
         searchKeyHintBocha: 'Required, search will fail without it',
         searchKeyHintBaidu: 'Required (Baidu Qianfan API Key), search will fail without it',
+        searchKeyHintTavily: 'Required (tvly- prefix), overseas service, needs stable external network',
         searchKeyPlaceholder: 'Paste API key',
         searchRestartHint: 'Configuration changed — saving will restart the app',
         searchGetKey: 'Get your own key',
         searchGetKeyMetasoSteps: 'Free · 1-min QR-code sign-up (WeChat/phone) · Personal quota',
         searchGetKeyBochaSteps: 'Free · Get sk- prefixed key from console after sign-up',
         searchGetKeyBaiduSteps: 'Create API Key in Qianfan console · Pay-as-you-go with free tier',
+        searchGetKeyTavilySteps: 'Overseas · Get tvly- key after sign-up · Free monthly tier, needs external network',
         modelBackend: 'Model & Backend',
         modelBackendDesc: 'Choose local vLLM or a third-party API for inference',
         modelPreset: 'Model Source',
@@ -469,12 +473,14 @@
         searchKeyHintMetaso: '空欄の場合はコミュニティ共有 key を使用（約 100 回/日、複数ユーザーで共有）',
         searchKeyHintBocha: '必須です。未設定の場合、検索はエラーになります',
         searchKeyHintBaidu: '必須（百度 Qianfan API Key）。未設定の場合、検索はエラーになります',
+        searchKeyHintTavily: '必須（tvly- で始まる）。海外サービスのため安定した外部ネットワークが必要',
         searchKeyPlaceholder: 'API key を貼り付け',
         searchRestartHint: '設定が変更されました。保存後にアプリを再起動します',
         searchGetKey: '自分の key を取得',
         searchGetKeyMetasoSteps: '無料 · WeChat/携帯で 1 分登録 · 個人専用クォータ',
         searchGetKeyBochaSteps: '無料 · 登録後コンソールで sk- で始まる key を取得',
         searchGetKeyBaiduSteps: 'Qianfan コンソールで API Key を作成 · 従量課金、無料枠あり',
+        searchGetKeyTavilySteps: '海外 · 登録後 tvly- key を取得 · 毎月無料枠あり、外部ネットワークが必要',
         modelBackend: 'モデルとバックエンド',
         modelBackendDesc: 'ローカル vLLM またはサードパーティ API を推論バックエンドとして選択',
         modelPreset: 'モデルソース',
@@ -1554,7 +1560,7 @@
                 <div className="space-y-6">
                   <SRow isDark={isDark} label={t.searchSource} desc={t.searchBackendDesc}>
                     <SSegmented isDark={isDark} value={searchProvider} onChange={setSearchProvider}
-                      options={[{ key: 'bing', label: 'Bing' }, { key: 'metaso', label: 'Metaso' }, { key: 'bocha', label: 'Bocha' }, { key: 'baidu', label: 'Baidu' }]} />
+                      options={[{ key: 'bing', label: 'Bing' }, { key: 'metaso', label: 'Metaso' }, { key: 'bocha', label: 'Bocha' }, { key: 'baidu', label: 'Baidu' }, { key: 'tavily', label: 'Tavily' }]} />
                   </SRow>
 
                   {searchProvider === 'bing' ? (
@@ -1567,12 +1573,12 @@
                         value={searchApiKey} onChange={e => setSearchApiKey(e.target.value)}
                         placeholder={t.searchKeyPlaceholder} />
                       <span className={`text-[12px] mt-2 block ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
-                        {searchProvider === 'metaso' ? t.searchKeyHintMetaso : searchProvider === 'baidu' ? t.searchKeyHintBaidu : t.searchKeyHintBocha}
+                        {searchProvider === 'metaso' ? t.searchKeyHintMetaso : searchProvider === 'baidu' ? t.searchKeyHintBaidu : searchProvider === 'tavily' ? t.searchKeyHintTavily : t.searchKeyHintBocha}
                       </span>
 
                       <div className={`mt-3 px-3 py-2 rounded-lg flex items-center justify-between gap-3 ${isDark ? 'bg-[#131314]' : 'bg-white'}`}>
                         <span className={`text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
-                          {searchProvider === 'metaso' ? t.searchGetKeyMetasoSteps : searchProvider === 'baidu' ? t.searchGetKeyBaiduSteps : t.searchGetKeyBochaSteps}
+                          {searchProvider === 'metaso' ? t.searchGetKeyMetasoSteps : searchProvider === 'baidu' ? t.searchGetKeyBaiduSteps : searchProvider === 'tavily' ? t.searchGetKeyTavilySteps : t.searchGetKeyBochaSteps}
                         </span>
                         <button
                           onClick={() => {
@@ -1580,6 +1586,8 @@
                               ? 'https://metaso.cn/search-api/api-keys'
                               : searchProvider === 'baidu'
                               ? 'https://console.bce.baidu.com/iam/#/iam/apikey/list'
+                              : searchProvider === 'tavily'
+                              ? 'https://app.tavily.com/'
                               : 'https://open.bochaai.com/';
                             if (bridge.available) bridge.openExternalUrl(url);
                           }}

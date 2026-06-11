@@ -586,6 +586,7 @@ impl Pinvou3Bridge {
                 prefs::SearchProvider::Metaso => deepseek_tui::config::SearchProvider::Metaso,
                 prefs::SearchProvider::Bocha => deepseek_tui::config::SearchProvider::Bocha,
                 prefs::SearchProvider::Baidu => deepseek_tui::config::SearchProvider::Baidu,
+                prefs::SearchProvider::Tavily => deepseek_tui::config::SearchProvider::Tavily,
             },
             search_api_key: self.prefs.search.normalized_api_key(),
             // v0.8.47 上游新增,透传 default
@@ -1098,6 +1099,16 @@ mod tests {
         let cfg = bridge.build_engine_config();
         assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Baidu);
         assert!(cfg.search_api_key.is_none());
+
+        // 切 Tavily + key (海外 agent 搜索 API,tvly- key 必填)
+        let mut bridge = fixture_bridge();
+        bridge.prefs.search = prefs::SearchPrefs {
+            provider: prefs::SearchProvider::Tavily,
+            api_key: Some("tvly-user-key".to_string()),
+        };
+        let cfg = bridge.build_engine_config();
+        assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Tavily);
+        assert_eq!(cfg.search_api_key.as_deref(), Some("tvly-user-key"));
     }
 
     /// [pinvou3-fork-guard #18] network_policy 必须 Some 且**只信 fake-ip 占位段**。
