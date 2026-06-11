@@ -198,22 +198,8 @@ pub async fn summon(
     workspace: &Path,
     session_id: &str,
     focus: Option<&str>,
-    ask: Option<&str>,
     mode: Option<&str>,
 ) -> Result<PinvouReview> {
-    // 场景 A（§1）：对 request_user_input 问题给决策推荐。这是 turn 中途，主 AI 刚问的
-    // 问题还在 pending、messages 前后端都没落盘（实测 pos=0 空召唤），所以问题内容由前端
-    // 直接传入、不依赖 messages。
-    if let Some(question) = ask {
-        let mut ctx = format!(
-            "【主 AI 正在问 Boss 的问题】\n{question}\n\n请站在 Boss 一侧，针对这个问题给决策推荐（recommendations），帮 Boss 拿主意。涉及外部事实（班次/价格/政策）标「需核实」。"
-        );
-        if !messages.is_empty() {
-            ctx.push_str(&format!("\n\n【对话背景】\n{}", build_context(messages, workspace)));
-        }
-        let raw = model_review(bridge, PROMPT, &ctx).await?;
-        return Ok(apply_guard(raw));
-    }
     // focus = 就近图标锚定的产出物 path（召唤自带作用域，§1）；否则取最后修改的产出物。
     let artifact_path = focus.map(str::to_string).or_else(|| last_artifact_path(messages));
     // 覆盖体检模式(§coverage,独立入口):查产物"全不全"。复用 build_context(全喂需求+产物文件)，

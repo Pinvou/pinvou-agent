@@ -845,20 +845,20 @@
   // ── Pinvou v4 召唤式检阅:Boss 主动呼叫,审当前 session 前面的工作 ──
   // 设计 docs/品悟v4-常驻检阅助手设计.md。纯召唤、不替 Boss 决策。
   // 审查卡进 chatItems(当前会话可见);跨会话持久化(进 messages/独立存储)是 §6 后续增强。
-  async function summonPinvou(focus, ask, mode) {
+  async function summonPinvou(focus, mode) {
     if (!state.activeSessionId) { addSystemItem("先开始一个对话,再召唤 Pinvou 检阅。"); return; }
     if (state.pinvouSummoning) return;
     state.pinvouSummoning = true;
     var sid = state.activeSessionId; // 召唤发起时的 session;await 返回后校验,防跨 session 串(召唤慢+切走)
     // 检阅结果弹 modal(不进对话流):一次只一个,裁决/跳过直接操作 state.pinvouModal.review、
     // 不靠 pos 定位(根治连续召唤 pos 重复串卡)。
-    state.pinvouModal = { loading: true, advise: !!ask, coverage: mode === "coverage" };
+    state.pinvouModal = { loading: true, coverage: mode === "coverage" };
     notify();
     try {
-      // focus=产出物 path(场景B); ask=request_user_input 问题(场景A); mode="coverage"=通盘体检。
-      var review = await invoke("summon_pinvou", { sessionId: sid, focus: focus || null, ask: ask || null, mode: mode || null });
+      // focus=产出物 path(品=审产物); mode="coverage"=悟(通盘体检)。
+      var review = await invoke("summon_pinvou", { sessionId: sid, focus: focus || null, mode: mode || null });
       if (state.activeSessionId !== sid) return; // 召唤期间切了 session → 丢弃,绝不 record/写进别的 session
-      recordPinvouReview(review, !!ask); // 存 sidecar(供核账读上轮账目);modal.review 同引用,裁决写它=写 sidecar
+      recordPinvouReview(review); // 存 sidecar(供核账读上轮账目);modal.review 同引用,裁决写它=写 sidecar
       if (state.pinvouModal) { state.pinvouModal.loading = false; state.pinvouModal.review = review; }
     } catch (e) {
       if (state.activeSessionId === sid && state.pinvouModal) { state.pinvouModal.loading = false; state.pinvouModal.error = String(e && e.message ? e.message : e); }
@@ -870,15 +870,15 @@
 
   // 通盘体检(覆盖镜头):查产物"全不全"=缺哪些完整性维度。独立入口,走 mode=coverage。
   function inspectPinvou(focus) {
-    return summonPinvou(focus, null, "coverage");
+    return summonPinvou(focus, "coverage");
   }
 
   // B2: 审查卡进 sidecar 时间线(pos=当前 messages 数),落盘。同 recordPersonaEvent
   // 范式,**不进 messages/LLM**;rerenderFromMessages 按 pos 插回,切会话/重载不丢。
-  function recordPinvouReview(review, advise) {
+  function recordPinvouReview(review) {
     if (!state.activeSessionId || !review) return null;
     var pos = state.messages.length;
-    state.pinvouReviews.push({ pos: pos, review: review, advise: !!advise });
+    state.pinvouReviews.push({ pos: pos, review: review });
     var sid = state.activeSessionId;
     var snapshot = JSON.parse(JSON.stringify(state.pinvouReviews));
     invoke("save_session_pinvou_reviews", { sessionId: sid, reviews: snapshot }).catch(function () {});

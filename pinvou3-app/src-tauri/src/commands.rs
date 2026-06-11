@@ -1371,7 +1371,6 @@ pub async fn cancel_user_input(
 pub async fn summon_pinvou(
     session_id: Option<String>,
     focus: Option<String>,
-    ask: Option<String>,
     mode: Option<String>,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
@@ -1389,7 +1388,6 @@ pub async fn summon_pinvou(
         &workspace,
         &sid,
         focus.as_deref(),
-        ask.as_deref(),
         mode.as_deref(),
     )
     .await

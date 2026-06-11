@@ -1808,9 +1808,13 @@
 
             {hasMessages && (
               <div className="max-w-[800px] w-full mx-auto space-y-4">
-                {chatItems.map((item) => (
-                  <ChatBubble key={item.id} item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} editable={!busy && item.id === lastUserId} onOpenEditor={onOpenEditor} />
-                ))}
+                {(() => {
+                  let lastArtId = null; // 只最新成品卡有品悟入口:历史卡召唤会审到最新文件、造成误导
+                  for (let ci = chatItems.length - 1; ci >= 0; ci--) { if (chatItems[ci].type === 'artifact_card') { lastArtId = chatItems[ci].id; break; } }
+                  return chatItems.map((item) => (
+                    <ChatBubble key={item.id} item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} editable={!busy && item.id === lastUserId} onOpenEditor={onOpenEditor} isLatestArtifact={item.id === lastArtId} />
+                  ));
+                })()}
                 {busy && <ThinkingBubble thinking={bs && bs.thinking} theme={theme} t={t} />}
               </div>
             )}
@@ -2007,10 +2011,10 @@
       return html.slice(0, m.index) + '<div style="margin-top:.5em;opacity:.7;font-size:13px">' + (label || '🃏 正在设计卡牌…') + '</div>';
     }
 
-    const ChatBubble = ({ item, theme, onPrefill, editable, onOpenEditor, t }) => {
+    const ChatBubble = ({ item, theme, onPrefill, editable, onOpenEditor, t, isLatestArtifact }) => {
       const isDark = theme === 'dark';
 
-      if (item.type === 'artifact_card') return <ArtifactCard item={item} theme={theme} t={t} />;
+      if (item.type === 'artifact_card') return <ArtifactCard item={item} theme={theme} t={t} isLatest={isLatestArtifact} />;
       if (item.type === 'plan_card') return <PlanCard item={item} theme={theme} t={t} onPrefill={onPrefill} />;
       if (item.type === 'plan_stuck' || item.type === 'execution_stuck') return <PlanStuckCard item={item} theme={theme} t={t} />;
       if (item.type === 'plan_text_fallback') return <PlanFallbackCard item={item} theme={theme} t={t} />;
@@ -2104,7 +2108,7 @@
       if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].indexOf(ext) >= 0) return 'image';
       return 'other';
     };
-    const ArtifactCard = ({ item, theme, t }) => {
+    const ArtifactCard = ({ item, theme, t, isLatest }) => {
       const isDark = theme === 'dark';
       const path = item.path || '';
       const kind = _artifactKind(path);
@@ -2126,14 +2130,14 @@
                 <div className={`flex items-center justify-between mt-2 pt-2 border-t ${isDark ? 'border-[#D0BCFF]/15' : 'border-[#7C3AED]/15'}`}>
                   <span className={`text-[11px] font-mono truncate ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`} title={basename}>{basename}</span>
                   <div className="flex items-center gap-2.5 flex-shrink-0 ml-2">
-                    <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.summonPinvou(path); }} title="品 · 查错：揪出产物的风险、遗漏、与你需求的偏差，逐条让 AI 改或你拍板接受"
+                    {isLatest && <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.summonPinvou(path); }} title="品 · 查错：揪出产物的风险、遗漏、与你需求的偏差，逐条让 AI 改或你拍板接受"
                       className={`flex items-center gap-1 text-[12px] ${isDark ? 'text-[#D0BCFF] hover:text-[#E9DDFF]' : 'text-[#7C3AED] hover:text-[#6D28D9]'}`}>
                       「<span className="text-[11px]">📋</span> 品」
-                    </button>
-                    <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.inspectPinvou(path); }} title="悟 · 发散：以领域专家视角给出产物还能补的维度和新思路，挑中的一键加进去"
+                    </button>}
+                    {isLatest && <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.inspectPinvou(path); }} title="悟 · 发散：以领域专家视角给出产物还能补的维度和新思路，挑中的一键加进去"
                       className={`flex items-center gap-1 text-[12px] ${isDark ? 'text-[#8AB4F8] hover:text-[#AECBFA]' : 'text-[#1967D2] hover:text-[#1A73E8]'}`}>
                       「<span className="text-[11px]">✨</span> 悟」
-                    </button>
+                    </button>}
                     <span className={`text-[12px] ml-2 pl-2 border-l ${isDark ? 'text-[#D0BCFF] border-[#D0BCFF]/20' : 'text-[#7C3AED] border-[#7C3AED]/20'}`}>{t.clickToOpen}</span>
                   </div>
                 </div>
@@ -2568,60 +2572,12 @@
       );
     };
 
-    // 场景 A(request_user_input 决策推荐):纯展示推荐+风险,**无勾选/无按勾选修订**。
-    // 因为没有"产物"要让 AI 改,Boss 看完推荐去上面的 request_user_input 选项卡点选;
-    // 且此时 turn 正阻塞等 Boss 答,绝不能 sendMessage(会冲突丢选项卡)。
-    const PinvouAdvise = ({ review, theme }) => {
-      const isDark = theme === 'dark';
-      const purple = isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]';
-      const muted = isDark ? 'text-[#C4C7C5]' : 'text-[#5f6368]';
-      const body = isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]';
-      const recs = review.recommendations || [];
-      const issues = review.issues || [];
-      const sevDot = (s) => s === 'high' ? '#EA4335' : s === 'medium' ? '#E37400' : '#9AA0A6';
-      return (
-        <div>
-          {recs.length > 0 && (
-            <div className="space-y-1.5">
-              {recs.map((rec, i) => (
-                <div key={i} className={`rounded-lg px-2.5 py-2 ${isDark ? 'bg-[#D0BCFF]/10' : 'bg-[#7C3AED]/5'}`}>
-                  <div className="flex items-baseline flex-wrap gap-x-1.5">
-                    {rec.topic && <span className={`text-[11px] ${muted}`}>{rec.topic}</span>}
-                    <span className={`text-[13px] font-semibold ${purple}`}>建议：{rec.pick}</span>
-                  </div>
-                  {rec.why && <div className={`text-[12px] mt-0.5 leading-relaxed ${muted}`}>{rec.why}</div>}
-                </div>
-              ))}
-            </div>
-          )}
-          {issues.length > 0 && (
-            <div className="space-y-2 mt-2">
-              {issues.map((iss, i) => (
-                <div key={i} className="flex gap-2">
-                  <span className="mt-[6px] w-[7px] h-[7px] rounded-full shrink-0" style={{ background: sevDot(iss.severity) }} />
-                  <div>
-                    <div className={`text-[13px] leading-relaxed ${body}`}>{iss.text}</div>
-                    {iss.suggestion && <div className={`text-[12px] mt-0.5 ${muted}`}>{iss.suggestion}</div>}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-          <div className="flex items-center justify-between gap-2 mt-2.5">
-            <span className={`text-[12px] ${muted}`}>👆 看完推荐去上面选项卡点选——只给建议，你来定。</span>
-            <button onClick={() => bridge.available && bridge.dismissPinvouReview()} title="这次不处理,整张卡跳过"
-              className={`shrink-0 px-2.5 py-1 rounded-full text-[12px] ${isDark ? 'text-[#9AA0A6] hover:bg-white/5' : 'text-[#5f6368] hover:bg-black/5'}`}>跳过</button>
-          </div>
-        </div>
-      );
-    };
-
     const PinvouSummonCard = ({ item, theme }) => {
       const isDark = theme === 'dark';
-      // 品(查错)=紫;悟(发散,coverage)=蓝。场景A(决策推荐,advise)归参谋(紫)。
+      // 品(查错)=紫;悟(发散,coverage)=蓝。
       const isWu = !!item.coverage;
-      const icon = isWu ? '✨' : (item.advise ? '🧭' : '📋');
-      const role = isWu ? '悟' : (item.advise ? '参谋' : '品');
+      const icon = isWu ? '✨' : '📋';
+      const role = isWu ? '悟' : '品';
       const accent = isWu ? (isDark ? 'border-[#8AB4F8]/30' : 'border-[#1A73E8]/25')
                           : (isDark ? 'border-[#D0BCFF]/30' : 'border-[#7C3AED]/25');
       const tint = isWu ? (isDark ? 'text-[#8AB4F8]' : 'text-[#1967D2]')
@@ -2664,9 +2620,7 @@
               <span className="opacity-70">完整性框架·{(r.framework || []).length}维：</span>{(r.framework || []).join(' · ')}
             </div>
           )}
-          {hasRows && (item.advise
-            ? <PinvouAdvise review={r} theme={theme} />
-            : <PinvouRows review={r} theme={theme} />)}
+          {hasRows && <PinvouRows review={r} theme={theme} />}
         </div>
       );
     };
@@ -2848,10 +2802,6 @@
         <div className={cardBoxCls(isDark, isDark ? 'border-[#A8C7FA]/30' : 'border-[#0B57D0]/20')}>
           <div className="flex items-center justify-between mb-3">
             <div className={`text-[14px] font-semibold ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.uiqTitle}</div>
-            {!locked && <button onClick={() => bridge.available && bridge.summonPinvou(null, (questions || []).map(q => (q.header ? q.header + '：' : '') + (q.question || '') + '（选项：' + (q.options || []).map(o => o.label).join(' / ') + '）').join('\n'))} title="让 Pinvou 给个决策推荐"
-              className={`flex items-center gap-1 text-[12px] shrink-0 ml-2 ${isDark ? 'text-[#D0BCFF] hover:text-[#E9DDFF]' : 'text-[#7C3AED] hover:text-[#6D28D9]'}`}>
-              <Sparkles size={13} /> 问 Pinvou
-            </button>}
           </div>
           <div className="space-y-4">
             {questions.map((q, qi) => (
