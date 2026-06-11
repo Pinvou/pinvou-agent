@@ -1129,6 +1129,64 @@ pub async fn get_session_persona_events(session_id: String) -> Result<serde_json
 /// Pinvou 召唤检阅时间线（opaque JSON，后端透明落盘，同 persona_events 范式）。
 /// 前端每次召唤后存，load_session 时读回，rerender 按 pos 插回审查卡——独立于
 /// messages，绝不进 LLM 上下文（设计 §6 / `docs/品悟v4-常驻检阅助手设计.md`）。
+/// 落盘前保留盘上已有的 resolution：防止后续全量 save（典型=核账 record 用不含 resolution
+/// 的快照）冲掉 Boss 已做的逐条裁决。按数组下标对齐——pinvouReviews 是 append-only、每条
+/// review 内容不可变，下标稳定可靠。new 自带 resolution 就用 new（允许 Boss 改裁决）；new
+/// 缺失才继承 old。根治「resolution 写进 sidecar 后被无 resolution 的全量 save 覆盖」的实测 bug。
+fn preserve_resolutions(path: &std::path::Path, new: serde_json::Value) -> serde_json::Value {
+    let old: serde_json::Value = match std::fs::read_to_string(path) {
+        Ok(txt) => match serde_json::from_str(&txt) {
+            Ok(v) => v,
+            Err(_) => return new,
+        },
+        Err(_) => return new,
+    };
+    merge_resolutions(old, new)
+}
+
+/// 纯合并逻辑（抽出便于单测）：new 缺 resolution 的条目继承 old 同下标的。
+fn merge_resolutions(old: serde_json::Value, mut new: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    let old_arr = match old.as_array() {
+        Some(a) => a,
+        None => return new,
+    };
+    let new_arr = match new.as_array_mut() {
+        Some(a) => a,
+        None => return new,
+    };
+    for (i, entry) in new_arr.iter_mut().enumerate() {
+        let old_entry = match old_arr.get(i) {
+            Some(e) => e,
+            None => continue,
+        };
+        for field in ["issues", "recommendations"] {
+            let ptr = format!("/review/{field}");
+            let old_items = match old_entry.pointer(&ptr).and_then(Value::as_array) {
+                Some(a) => a,
+                None => continue,
+            };
+            let new_items = match entry.pointer_mut(&ptr).and_then(Value::as_array_mut) {
+                Some(a) => a,
+                None => continue,
+            };
+            for (j, ni) in new_items.iter_mut().enumerate() {
+                if ni.get("resolution").map_or(false, |v| !v.is_null()) {
+                    continue; // new 已带裁决，尊重 new（含 Boss 改裁决/取消）
+                }
+                if let Some(old_res) = old_items.get(j).and_then(|x| x.get("resolution")) {
+                    if !old_res.is_null() {
+                        if let Some(obj) = ni.as_object_mut() {
+                            obj.insert("resolution".to_string(), old_res.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    new
+}
+
 #[tauri::command]
 pub async fn save_session_pinvou_reviews(
     session_id: String,
@@ -1138,7 +1196,8 @@ pub async fn save_session_pinvou_reviews(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("建 session 目录失败: {e}"))?;
     }
-    let json = serde_json::to_string(&reviews).map_err(|e| format!("序列化失败: {e}"))?;
+    let merged = preserve_resolutions(&path, reviews);
+    let json = serde_json::to_string(&merged).map_err(|e| format!("序列化失败: {e}"))?;
     std::fs::write(&path, json).map_err(|e| format!("写 Pinvou 审查失败: {e}"))
 }
 
@@ -1404,6 +1463,40 @@ fn validate_user_path(raw: &str) -> Result<std::path::PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// merge_resolutions 锁住实测 bug:勾选写进 sidecar 的 resolution 不能被后续不含
+    /// resolution 的全量 save(典型=核账 record 的原始快照)覆盖,否则核账无法跳过「接受现状」。
+    #[test]
+    fn merge_preserves_old_resolution_when_new_missing() {
+        let old = serde_json::json!([
+            {"pos":10,"review":{"issues":[{"text":"a","resolution":"modify"},{"text":"b","resolution":"accept"}],"recommendations":[]}}
+        ]);
+        // 核账 record 的 new:同一条 review 的 issues 不带 resolution(原始快照态)+ 追加 pos=44
+        let new = serde_json::json!([
+            {"pos":10,"review":{"issues":[{"text":"a"},{"text":"b"}],"recommendations":[]}},
+            {"pos":44,"review":{"issues":[],"recommendations":[]}}
+        ]);
+        let merged = merge_resolutions(old, new);
+        assert_eq!(merged[0]["review"]["issues"][0]["resolution"], "modify");
+        assert_eq!(merged[0]["review"]["issues"][1]["resolution"], "accept");
+    }
+
+    #[test]
+    fn merge_respects_new_resolution_for_changed_verdict() {
+        // Boss 改裁决:new 自带新值,不被 old 覆盖
+        let old = serde_json::json!([{"pos":10,"review":{"issues":[{"text":"a","resolution":"modify"}],"recommendations":[]}}]);
+        let new = serde_json::json!([{"pos":10,"review":{"issues":[{"text":"a","resolution":"accept"}],"recommendations":[]}}]);
+        let merged = merge_resolutions(old, new);
+        assert_eq!(merged[0]["review"]["issues"][0]["resolution"], "accept");
+    }
+
+    #[test]
+    fn merge_covers_recommendations_field() {
+        let old = serde_json::json!([{"pos":1,"review":{"issues":[],"recommendations":[{"topic":"t","resolution":"modify"}]}}]);
+        let new = serde_json::json!([{"pos":1,"review":{"issues":[],"recommendations":[{"topic":"t"}]}}]);
+        let merged = merge_resolutions(old, new);
+        assert_eq!(merged[0]["review"]["recommendations"][0]["resolution"], "modify");
+    }
 
     /// `open_external_url` 必须只放 metaso.cn / open.bochaai.com / console.bce.baidu.com,
     /// 任何其他 host / 任何其他 scheme(http、file、javascript)都立即 reject——这是前端
