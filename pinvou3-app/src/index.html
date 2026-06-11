@@ -2493,6 +2493,50 @@
       );
     };
 
+    // 场景 A(request_user_input 决策推荐):纯展示推荐+风险,**无勾选/无按勾选修订**。
+    // 因为没有"产物"要让 AI 改,Boss 看完推荐去上面的 request_user_input 选项卡点选;
+    // 且此时 turn 正阻塞等 Boss 答,绝不能 sendMessage(会冲突丢选项卡)。
+    const PinvouAdvise = ({ review, theme }) => {
+      const isDark = theme === 'dark';
+      const purple = isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]';
+      const muted = isDark ? 'text-[#C4C7C5]' : 'text-[#5f6368]';
+      const body = isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]';
+      const recs = review.recommendations || [];
+      const issues = review.issues || [];
+      const sevDot = (s) => s === 'high' ? '#EA4335' : s === 'medium' ? '#E37400' : '#9AA0A6';
+      return (
+        <div>
+          {recs.length > 0 && (
+            <div className="space-y-1.5">
+              {recs.map((rec, i) => (
+                <div key={i} className={`rounded-lg px-2.5 py-2 ${isDark ? 'bg-[#D0BCFF]/10' : 'bg-[#7C3AED]/5'}`}>
+                  <div className="flex items-baseline flex-wrap gap-x-1.5">
+                    {rec.topic && <span className={`text-[11px] ${muted}`}>{rec.topic}</span>}
+                    <span className={`text-[13px] font-semibold ${purple}`}>建议：{rec.pick}</span>
+                  </div>
+                  {rec.why && <div className={`text-[12px] mt-0.5 leading-relaxed ${muted}`}>{rec.why}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+          {issues.length > 0 && (
+            <div className="space-y-2 mt-2">
+              {issues.map((iss, i) => (
+                <div key={i} className="flex gap-2">
+                  <span className="mt-[6px] w-[7px] h-[7px] rounded-full shrink-0" style={{ background: sevDot(iss.severity) }} />
+                  <div>
+                    <div className={`text-[13px] leading-relaxed ${body}`}>{iss.text}</div>
+                    {iss.suggestion && <div className={`text-[12px] mt-0.5 ${muted}`}>{iss.suggestion}</div>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className={`text-[12px] mt-2.5 ${muted}`}>👆 看完推荐，在上面的选项卡上点选——品悟只给建议，最终你来点。</div>
+        </div>
+      );
+    };
+
     const PinvouSummonCard = ({ item, theme }) => {
       const isDark = theme === 'dark';
       const accent = isDark ? 'border-[#D0BCFF]/30' : 'border-[#7C3AED]/25';
@@ -2525,7 +2569,9 @@
             {r.verdict === 'pass' && <span className={`text-[11px] font-semibold px-1.5 py-0.5 rounded ${isDark ? 'bg-[#37BE5F]/20 text-[#81C995]' : 'bg-[#E6F4EA] text-[#137333]'}`}>✓ 通过，可交付</span>}
           </div>
           {r.trace && <div className={`text-[13.5px] leading-relaxed mb-2.5 ${body}`}>{r.trace}</div>}
-          {hasRows && <PinvouRows review={r} theme={theme} />}
+          {hasRows && (item.advise
+            ? <PinvouAdvise review={r} theme={theme} />
+            : <PinvouRows review={r} theme={theme} />)}
         </div>
       );
     };

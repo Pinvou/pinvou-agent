@@ -500,7 +500,7 @@
       for (var k = 0; k < pr.length; k++) {
         var x = pr[k];
         if (isTail ? (x.pos < atOrAfter) : (x.pos !== atOrAfter)) continue;
-        addChatItem({ type: "pinvou_review", review: x.review, time: "" });
+        addChatItem({ type: "pinvou_review", review: x.review, advise: x.advise, time: "" });
       }
     }
     // 预扫 tool_result：tool_use 在 assistant 消息、result 在后续 user 消息，需提前建映射
@@ -836,7 +836,7 @@
     if (!state.activeSessionId) { addSystemItem("先开始一个对话,再召唤 Pinvou 检阅。"); return; }
     if (state.pinvouSummoning) return;
     state.pinvouSummoning = true;
-    var card = { type: "pinvou_review", loading: true, time: timeStr() };
+    var card = { type: "pinvou_review", loading: true, advise: !!ask, time: timeStr() };
     addChatItem(card); // addChatItem 赋 card.id;card 是引用,下面直接改它
     notify();
     try {
@@ -845,7 +845,7 @@
       var review = await invoke("summon_pinvou", { sessionId: state.activeSessionId, focus: focus || null, ask: ask || null });
       card.loading = false;
       card.review = review;
-      recordPinvouReview(review); // B2: 进 sidecar 时间线,切会话不丢
+      recordPinvouReview(review, !!ask); // B2: 进 sidecar;advise=场景A(决策推荐,纯展示)
     } catch (e) {
       card.loading = false;
       card.error = String(e && e.message ? e.message : e);
@@ -857,9 +857,9 @@
 
   // B2: 审查卡进 sidecar 时间线(pos=当前 messages 数),落盘。同 recordPersonaEvent
   // 范式,**不进 messages/LLM**;rerenderFromMessages 按 pos 插回,切会话/重载不丢。
-  function recordPinvouReview(review) {
+  function recordPinvouReview(review, advise) {
     if (!state.activeSessionId || !review) return;
-    state.pinvouReviews.push({ pos: state.messages.length, review: review });
+    state.pinvouReviews.push({ pos: state.messages.length, review: review, advise: !!advise });
     var sid = state.activeSessionId;
     var snapshot = JSON.parse(JSON.stringify(state.pinvouReviews));
     invoke("save_session_pinvou_reviews", { sessionId: sid, reviews: snapshot }).catch(function () {});
