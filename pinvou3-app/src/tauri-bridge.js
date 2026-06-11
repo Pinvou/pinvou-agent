@@ -60,6 +60,9 @@
     personaEvents: [],
     // Pinvou 召唤检阅时间线(sidecar, 同 personaEvents, 不进 messages/LLM)。每项 {pos, review}。
     pinvouReviews: [],
+    // 本 turn 被 write/append/edit 改过、且之前 present 过的产物 path(去重)。chat:done 时
+    // 给每个补一张"已更新"成品卡(带召唤图标),turn 内改几次都只一张。
+    turnDirtyArtifacts: [],
     busy: false,
     monitor: null,
     backendOnline: null, // null=checking, true, false
@@ -217,6 +220,7 @@
     state.messages = buf.messages; state.chatItems = buf.chatItems; state.artifacts = buf.artifacts;
     state.personaEvents = buf.personaEvents || [];
     state.pinvouReviews = buf.pinvouReviews || [];
+    state.turnDirtyArtifacts = []; // turn 临时态,切 session 清空,别串到新 session
     state.busy = buf.busy; state.planSnapshot = buf.planSnapshot; state.modeState = buf.modeState;
     state.thinking = buf.thinking; state.tokens = buf.tokens; state.queued = buf.queued || [];
     state.activePersona = buf.activePersona || null;
@@ -511,6 +515,20 @@
         }
       }
     }
+    // 预扫:每个产物最后一次被 write/append/edit 改的 tool_use id → rerender 只在最后一次
+    // 续一张成品卡(与实时 chat:done 的一张对齐,不刷一堆)。
+    var lastDirtyArtifactId = {};
+    for (var di = 0; di < state.messages.length; di++) {
+      var dc = state.messages[di].content;
+      if (!Array.isArray(dc)) continue;
+      for (var dj = 0; dj < dc.length; dj++) {
+        var db = dc[dj];
+        if (db.type === "tool_use" && (db.name === "write_file" || db.name === "append_file" || db.name === "edit_file")) {
+          var dap = extractArtifactPath(db.input);
+          if (dap) lastDirtyArtifactId[dap] = db.id;
+        }
+      }
+    }
     for (var mi = 0; mi < state.messages.length; mi++) {
       emitPersonaAt(mi, false); // 该消息之前发生的卡牌事件先插
       emitPinvouAt(mi, false);  // 同 pos 的 Pinvou 审查卡
@@ -594,11 +612,12 @@
           // 还原"自动续卡":write_file/append_file 改的文件之前 present 过 → 续一张
           // 成品卡(与实时 tool_end 的自动续逻辑对齐,切会话不丢)。present 的卡按
           // 顺序在前(必须先 present 才进集合),此处 findPresentedArtifact 能命中。
-          if ((b.name === "write_file" || b.name === "append_file")) {
+          if (b.name === "write_file" || b.name === "append_file" || b.name === "edit_file") {
             var wres = resultById[b.id];
-            if (!(wres && wres.is_error)) {
-              var wap = extractArtifactPath(b.input);
-              var wprev = wap ? findPresentedArtifact(wap) : null;
+            var wap = extractArtifactPath(b.input);
+            // 去重:同产物只在最后一次修改处续一张(与实时对齐),且需之前 present 过。
+            if (!(wres && wres.is_error) && wap && lastDirtyArtifactId[wap] === b.id) {
+              var wprev = findPresentedArtifact(wap);
               if (wprev) {
                 addChatItem({
                   type: "artifact_card", path: wprev.path, title: wprev.title,
@@ -1017,19 +1036,16 @@
       addChatItem({ type: "careful_blocked", args: meta && meta.args, metadata: md, time: timeStr() });
     }
 
-    // write_file / append_file 成功 → 加入产物列表
-    if (p.success && meta && (meta.name === "write_file" || meta.name === "append_file")) {
+    // write_file/append_file/edit_file 改了产物 → 记账,turn 结束(chat:done)统一补成品卡。
+    // 改成记账+去重:AI 一个 turn 会 edit_file 改很多次,实时续会刷出一堆卡;且 edit_file
+    // 之前不触发续卡 → 改完没新卡片 → 没法对改后产物再召唤 pinvou(核账闭环断裂)。
+    if (p.success && meta && (meta.name === "write_file" || meta.name === "append_file" || meta.name === "edit_file")) {
       var ap = extractArtifactPath(meta.args);
       if (ap) {
-        trackArtifact(ap);
-        // 自动续卡:之前 present 过的成品被改了 → 再弹一张新成品卡(每次新卡,对齐
-        // pinvou2),复用首次的 title/description(也复用首次可打开的 path)。
-        var prevCard = findPresentedArtifact(ap);
-        if (prevCard) {
-          addChatItem({
-            type: "artifact_card", path: prevCard.path, title: prevCard.title,
-            description: prevCard.description, time: timeStr(),
-          });
+        if (meta.name !== "edit_file") trackArtifact(ap); // edit_file 只改已有,不新建产物
+        // 之前 present 过(已是成品)才记账续卡;新写未 present 的等 present_artifact 出卡。
+        if (findPresentedArtifact(ap) && state.turnDirtyArtifacts.indexOf(ap) < 0) {
+          state.turnDirtyArtifacts.push(ap);
         }
       }
     }
@@ -1060,6 +1076,13 @@
       var error = e.payload && e.payload.error;
       if (error) addSystemItem("⚠️ " + error);
       flushAssistantMessageToHistory();
+      // 本 turn 改过的已 present 产物 → 末尾补一张"已更新"成品卡(带召唤图标),让 Boss 就近
+      // 对改后的产物再召唤 pinvou(核账)。edit_file 改多次也只补一张。
+      (state.turnDirtyArtifacts || []).forEach(function (ap) {
+        var prev = findPresentedArtifact(ap);
+        if (prev) addChatItem({ type: "artifact_card", path: prev.path, title: prev.title, description: prev.description, time: timeStr() });
+      });
+      state.turnDirtyArtifacts = [];
       // Finalize streaming bubble
       var streamItem = state.chatItems.find(function (it) { return it.id === currentStreamId; });
       if (streamItem) streamItem.streaming = false;
