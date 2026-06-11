@@ -18,6 +18,7 @@ pub mod prefs;
 pub mod sessions;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 use deepseek_tui::config::{
@@ -48,8 +49,8 @@ use self::prefs::{ModelPreset, UserPrefs};
 /// `model_not_found`。
 const LOCAL_VLLM_MODEL: &str = "qwen36_35b_256k";
 // 127.0.0.1 让 .deb 装到任何机器都默认连本机 vLLM(全量包 install.sh
-// 起 systemd 容器 --network host 绑 0.0.0.0:8000);本机 dev 走 run-dev.sh
-// export DEEPSEEK_BASE_URL=http://10.214.74.113:8000/v1 覆盖,连开发机 GB10。
+// 起 systemd 容器 --network host 绑 0.0.0.0:8000);vLLM 与应用同机,
+// 用 loopback 免疫 DHCP 换 IP,别再写具体内网 IP。
 const LOCAL_VLLM_BASE_URL: &str = "http://127.0.0.1:8000/v1";
 const LOCAL_VLLM_API_KEY: &str = "local-no-auth";
 
@@ -432,7 +433,7 @@ impl Pinvou3Bridge {
             max_spawn_depth,
             network_policy: _, // pinvou3 显式构造 (见下),不透传 default(None)
             lsp_config,
-            runtime_services,
+            mut runtime_services,
             subagent_model_overrides,
             goal_objective,
             workshop,
@@ -444,6 +445,9 @@ impl Pinvou3Bridge {
             goal_state,
             tools_always_load,
             prefer_bwrap,
+            // pinvou3-fork 自定义:工作流监工白名单。普通 session = None(不限);
+            // workflow session 由 spawn_for_session 按 active_skill 覆盖。
+            tool_whitelist: _,
             // —— v0.8.49 上游新增字段,透传 default ——
             allowed_tools,
             tools,
@@ -474,12 +478,12 @@ impl Pinvou3Bridge {
             instructions: self.instructions(),
             project_context_pack_enabled: false,
             max_steps: self.prefs.advanced.max_steps.unwrap_or(100),
-            // 2026-05-19: 工程层硬锁 single subagent at a time。
-            // 多 subagent 并发在本地单 vLLM + 弱模型下不可控 (timeout 风险),
-            // 用户场景是 context isolation 而非 fan-out,单 subagent 足够。
-            // 第 2 个 agent_spawn 会被 SubAgentManager.max_agents 检查 reject,
-            // LLM 拿到 "Sub-agent limit reached" 自然 fallback,不死磕。
-            max_subagents: self.prefs.advanced.max_subagents.unwrap_or(1),
+            // 2026-05-27: 默认 10 (原 1 → 10),为 PPT 工作流 fan-out 场景预留。
+            // 原始锁定 2026-05-19 是避免 multi-subagent 并发在弱模型 + 单 vLLM 下 timeout。
+            // 实测 single subagent + 串行 2-3 subagent 都可用,fan-out 4+ 仍有 timeout 风险,
+            // 但走 SubAgentManager.max_agents fallback 不 hard crash。
+            // 出问题再回退,不预先限制。
+            max_subagents: self.prefs.advanced.max_subagents.unwrap_or(10),
             snapshots_enabled: false,
             memory_enabled: false,
             memory_path: paths::memory_path(),
@@ -594,6 +598,9 @@ impl Pinvou3Bridge {
             goal_state,
             tools_always_load,
             prefer_bwrap,
+            // 普通 session 不限工具;workflow session 的监工白名单由
+            // spawn_for_session 按 active_skill 覆盖(见 supervisor_tool_whitelist)。
+            tool_whitelist: None,
             // v0.8.49 上游新增,透传 default
             allowed_tools,
             tools,
@@ -619,6 +626,27 @@ impl Pinvou3Bridge {
         let mut cfg = self.build_engine_config();
         cfg.workspace = self.session_workspace(session_id);
         cfg.instructions = self.session_instructions(session_id);
+        cfg
+    }
+
+    /// 构造 **workflow run 专属** [`EngineConfig`]（P0 spec §5-C4）：
+    /// workspace = run 的 project 目录本身；tool_whitelist 直给监工白名单
+    /// （不再依赖 active_skill 判断后由 spawn_for_session 覆盖）；instructions
+    /// 极简占位——宿主主 loop 永远沉默，真 prompt 全在 roles/*.md 随
+    /// SpawnSubAgent 注入，绝不挂聊天助手人格（防"提示词广告全套工具"类坑）。
+    ///
+    /// [`build_engine_config`]: Self::build_engine_config
+    #[allow(dead_code)] // P0 Task5 接线后删
+    pub fn build_engine_config_for_workflow(&self, run_id: &str) -> EngineConfig {
+        let mut cfg = self.build_engine_config();
+        cfg.workspace = paths::workflow_project_dir(run_id);
+        cfg.instructions = vec![InstructionSource::Inline {
+            name: format!("pinvou3:workflows/{run_id}/instructions"),
+            content: "你是工作流的沉默宿主引擎。所有工作通过 SubAgent 派发执行;\
+                      你自身不响应自由对话。"
+                .to_string(),
+        }];
+        cfg.tool_whitelist = Some(Self::supervisor_tool_whitelist());
         cfg
     }
 
@@ -662,8 +690,24 @@ impl Pinvou3Bridge {
         if self.provider() == "vllm" {
             cfg.reasoning_effort = Some("off".to_string());
         }
-        cfg.hooks = Some(self.build_hooks_config());
         cfg
+    }
+
+    /// [pinvou3-fork] 工作流监工(品悟)的硬工具白名单 = 只读 + 评审。
+    ///
+    /// 信任根原则⑥:品悟在工作流里只做三件事 ① chat 报进展(纯文本,无需工具)
+    /// ② Loop 调它交代任务(Step B/E,纯文本) ③ Gate L2 评审交付物(读文件 / 看渲染图)。
+    /// 因此结构性砍掉 `write_file/edit_file/append_file/exec_shell/load_skill/agent_*`
+    /// 等一切写入·调度·spawn 类工具,使品悟**物理上无法**自演整个流程(假 dispatch 根因)。
+    /// 由 [`spawn_for_session`] 在 workflow session(active_skill 非空)装配 EngineConfig
+    /// 时施加;`tool_catalog::apply_tool_whitelist` 在每 turn 硬过滤 catalog。
+    ///
+    /// [`spawn_for_session`]: crate::engine::AppEngine::spawn_for_session
+    pub fn supervisor_tool_whitelist() -> std::collections::HashSet<String> {
+        ["read_file", "image_analyze", "update_plan"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     }
 
     /// 注入硬拦截 hook：ToolCallBefore 时 spawn 一个 shell 脚本检查 tool args
@@ -988,10 +1032,9 @@ mod tests {
         assert!(!cfg.memory_enabled, "memory feature 暂不开（Phase C）");
         assert_eq!(cfg.locale_tag, "zh-Hans", "默认中文 locale");
         assert_eq!(
-            cfg.max_subagents, 1,
-            "max_subagents 必须 1：工程层锁定 single subagent at a time \
-             (multi-subagent 并发在本地单 vLLM + 弱模型下不可控)。\
-             改这个值要先评估 multi-subagent 测试场景"
+            cfg.max_subagents, 10,
+            "max_subagents 默认 10：2026-05-27 从 1 解锁，为 PPT 工作流 fan-out 预留。\
+             真并发 4+ 在弱模型下仍有 timeout 风险，走 SubAgentManager fallback 不 hard crash"
         );
         assert_eq!(
             cfg.subagent_api_timeout.as_secs(), 300,
@@ -1332,6 +1375,58 @@ mod tests {
             "session A 的 inline content 必须含 session_id"
         );
         assert!(content_b.contains(b));
+    }
+
+    /// P0 run 实体化（spec §5-C4）：workflow run 的 EngineConfig 必须
+    ///   1. workspace = `~/.pinvou3/workflows/<run_id>/project`（run 的 project 目录本身）
+    ///   2. tool_whitelist 直给监工白名单（不再依赖 active_skill 后置覆盖）
+    ///   3. instructions = 极简 Inline 沉默宿主占位——绝不挂聊天助手人格
+    ///      （真 prompt 全在 roles/*.md 随 SpawnSubAgent 注入）。
+    /// 只断言路径后缀(ends_with)不断言绝对前缀,免拿 PINVOU3_HOME ENV_LOCK。
+    #[test]
+    fn workflow_engine_config_binds_run_project_and_whitelist() {
+        let bridge = fixture_bridge();
+        let cfg = bridge.build_engine_config_for_workflow("wf-20260610-0000-abcd");
+
+        assert!(
+            cfg.workspace
+                .ends_with("workflows/wf-20260610-0000-abcd/project"),
+            "workspace 必须是 run 的 project 目录本身, got: {}",
+            cfg.workspace.display()
+        );
+        assert_eq!(
+            cfg.tool_whitelist,
+            Some(Pinvou3Bridge::supervisor_tool_whitelist()),
+            "工作流 config 必须直给监工白名单,不靠 spawn 后按 active_skill 覆盖"
+        );
+
+        // instructions: 唯一一条 Inline 沉默宿主占位,非聊天助手人格
+        assert_eq!(
+            cfg.instructions.len(),
+            1,
+            "工作流宿主 instructions 必须只有一条极简占位(不挂用户自定义/聊天 prompt)"
+        );
+        match &cfg.instructions[0] {
+            InstructionSource::Inline { name, content } => {
+                assert!(
+                    name.contains("wf-20260610-0000-abcd"),
+                    "inline name 须含 run_id 便于排查, got: {name}"
+                );
+                assert!(
+                    content.contains("沉默宿主"),
+                    "instructions 必须声明沉默宿主语义, got: {content}"
+                );
+                assert!(
+                    content.contains("SubAgent"),
+                    "instructions 必须声明工作经 SubAgent 派发, got: {content}"
+                );
+                assert!(
+                    !content.contains("品悟") && !content.contains("助手") && !content.contains("{{PINVOU3_WORKSPACE}}"),
+                    "绝不挂聊天助手人格/模板残留(防'提示词广告全套工具'坑), got: {content}"
+                );
+            }
+            other => panic!("工作流 instructions 必须是 Inline 变体, got: {other:?}"),
+        }
     }
 
     /// OpenaiCompatible preset 必须让用户提供的模型名生效，而不是回退到默认。

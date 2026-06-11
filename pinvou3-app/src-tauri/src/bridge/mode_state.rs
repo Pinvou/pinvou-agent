@@ -8,6 +8,29 @@
 use deepseek_tui::tui::app::AppMode;
 use serde::{Deserialize, Serialize};
 
+/// Per-session 绑定的 skill。在 session 上点工作流卡片"启用"时,
+/// `commands::start_skill_session` 先查找已有绑定同名 skill 的 session，
+/// 找到则切回去（恢复工作流），找不到才 create_new()。
+///
+/// 持久化：`SessionStore::save_skill_bindings()` 把所有绑定写到
+/// `~/.pinvou3/sessions/_skill_bindings.json`，启动时 `load_skill_bindings()` 恢复。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveSkillBinding {
+    pub name: String,
+    #[serde(skip)]
+    pub pending_instruction: Option<String>,
+    /// 前端渲染 chips 用的 phases 列表(JSON 透传)。
+    #[serde(default)]
+    /// (底座 v0.8.57 删除 PhaseDef;字段保留作前端/持久化兼容,恒为空)
+    pub phases: Vec<serde_json::Value>,
+    /// 该 session 绑定的工作流项目目录（所有工作流 session 都填充）。
+    /// 当前是 `{workspace}/ppt-<ts>-<scenario>/`(历史前缀)，含 `_state/workflow_progress.json`。
+    /// 持久化在 `_skill_bindings.json` 里跟随 binding 一起恢复，重启 app 后 harness
+    /// 能继续找到对应项目。
+    #[serde(default)]
+    pub project_dir: Option<String>,
+}
+
 /// Plan 流程的子阶段。`mode = Plan` 时 phase 在 Planning/Ready 间流转；
 /// 用户 accept plan 后 `mode = Yolo, phase = Executing`；执行完毕 `phase = None`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,25 +55,39 @@ impl Default for PlanPhase {
 /// 单 session 的 mode 状态。前端通过 `get_mode_state` 拉取，
 /// `set_plan_mode_next` / `accept_plan` 等命令修改。
 ///
-/// careful hook 跨所有 mode 组合默认开启(由 DeepSeek-TUI shell.rs 强制
-/// BLOCKED Dangerous 实现)。
+/// **品悟 review 是与 Plan/YOLO 正交的独立开关**(`pinvou_review_enabled`):
+/// - Plan + 开 = plan 出炉 EXIT GATE + 任务收口 final review
+/// - Plan + 关 = 现状行为
+/// - YOLO + 开 = 只触发 final review(YOLO 无 plan 期)
+/// - YOLO + 关 = 现状行为
 ///
-/// 不需要从前端 deserialize 回来(它通过 set_*_state 命令逐字段写)。
+/// careful hook 跨所有组合默认开启(由 DeepSeek-TUI shell.rs 强制 BLOCKED Dangerous 实现,
+/// 不依赖此开关)。设计依据:docs/Pinvou-品悟设计.md §5。
+///
+/// **active_skill** 是工作流 phase 可视化 MVP1 加的 per-session 绑定字段:
+/// 用户在工作流页点"启用" → start_skill_session 命令 create_new + 写这里 →
+/// 切到该 session 时 chips strip 自动显示绑定 skill 的 phases。
+///
+/// 上游 PhaseDef 只 derive Serialize,所以这里也只单向序列化给前端;
+/// SessionModeState 不需要从前端 deserialize 回来(它通过 set_*_state 命令逐字段写)。
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionModeState {
+    /// Side B 卡片池:当前加持的专家卡 id(远端 persona 体系)。
+    #[serde(default)]
+    pub active_persona: Option<String>,
+    /// Side B:待一次性注入的人设 body。
+    #[serde(default, skip)]
+    pub pending_persona_body: Option<String>,
     /// 当前激活 mode。`build_send_message_op` 用这个值。
     pub mode: SerializableMode,
     pub plan_phase: PlanPhase,
-    /// 该 session 当前加持的专家面具 id（卡片池选中的 persona）。`None` = 未加持。
-    /// 仅存 id，完整卡片由 `personas::get(id)` 解析；前端挂件按 id 在已拉取的池里查显示字段。
-    /// 同 active_skill：in-memory only，重启 app 后丢失（可重新点卡加持）。
+    /// 品悟 review 质量护栏开关。默认 false(保持现状)。
+    /// 开启后 accept_plan / exit_plan_to_yolo 触发 EXIT GATE。
     #[serde(default)]
-    pub active_persona: Option<String>,
-    /// Side B: 加持后**一次性**注入的完整人设正文（agency-agents-zh body）。
-    /// 加持时写入，该 session 下一条 chat 消费后置空（仿 active_skill.pending_instruction）。
-    /// 之后每 turn 只靠 `equip_anchor` 轻锚点维持身份，不再重灌 body。
-    #[serde(skip)]
-    pub pending_persona_body: Option<String>,
+    pub pinvou_review_enabled: bool,
+    /// 该 session 绑定的工作流 skill。`None` = 普通对话。
+    #[serde(default)]
+    pub active_skill: Option<ActiveSkillBinding>,
 }
 
 impl Default for SessionModeState {
@@ -58,6 +95,8 @@ impl Default for SessionModeState {
         Self {
             mode: SerializableMode::Yolo,
             plan_phase: PlanPhase::None,
+            pinvou_review_enabled: false,
+            active_skill: None,
             active_persona: None,
             pending_persona_body: None,
         }
@@ -110,11 +149,19 @@ mod tests {
         let s = SessionModeState {
             mode: SerializableMode::Plan,
             plan_phase: PlanPhase::Planning,
+            pinvou_review_enabled: false,
+            active_skill: None,
             active_persona: None,
             pending_persona_body: None,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"mode\":\"plan\""));
         assert!(json.contains("\"plan_phase\":\"planning\""));
+    }
+
+    #[test]
+    fn pinvou_review_default_off() {
+        let s = SessionModeState::default();
+        assert!(!s.pinvou_review_enabled);
     }
 }

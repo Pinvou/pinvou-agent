@@ -58,11 +58,12 @@ impl AppEngine {
         bridge: Pinvou3Bridge,
         session_id: &str,
     ) -> Result<(Self, tauri::async_runtime::JoinHandle<()>)> {
-        // C 方案(P-no-disk): EngineConfig.instructions 现在走
-        // `InstructionSource::Inline`,内容直接在内存里 — 不再写 disk 文件,
-        // 多 engine 并发也不再依赖 per-session 文件避免 race。
-        let engine_config = bridge.build_engine_config_for_session(session_id);
-        let dt_config = bridge.build_dt_config();
+        // C 方案(P-no-disk): instructions 走 Inline,不再写 disk(远端);
+        // [pinvou3-fork] workflow session(绑 active_skill)→ 品悟监工硬白名单(本地保留)。
+        let mut engine_config = bridge.build_engine_config_for_session(session_id);
+        if store.active_skill(session_id).is_some() {
+            engine_config.tool_whitelist = Some(Pinvou3Bridge::supervisor_tool_whitelist());
+        }        let dt_config = bridge.build_dt_config();
 
         eprintln!(
             "[pinvou3-app] spawn_engine session={} model={} workspace={} instructions={}",
@@ -224,6 +225,24 @@ struct TurnPlanTracker {
     assistant_text_len: usize,
 }
 
+/// [edict-obs] per-role token 账本：role_id → (input 累计, output 累计, 调用次数)。
+/// 每收到一条 MailboxMessage::TokenUsage 调 add，返回该 role 最新累计快照。
+#[derive(Default)]
+struct TokenLedger {
+    by_role: std::collections::HashMap<String, (u64, u64, u32)>,
+}
+
+impl TokenLedger {
+    /// 累加一次调用，返回 (input_total, output_total, calls)。
+    fn add(&mut self, role: &str, input: u64, output: u64) -> (u64, u64, u32) {
+        let e = self.by_role.entry(role.to_string()).or_insert((0, 0, 0));
+        e.0 += input;
+        e.1 += output;
+        e.2 += 1;
+        *e
+    }
+}
+
 /// 判断 plan_snapshot 是否还有"未完成"的步骤(status != "completed")。
 /// snapshot 结构:{ explanation, items: [{step, status}] }。
 fn plan_has_pending(snapshot: &serde_json::Value) -> bool {
@@ -239,6 +258,158 @@ fn plan_has_pending(snapshot: &serde_json::Value) -> bool {
             })
         })
         .unwrap_or(false)
+}
+
+/// [per_page] 把某 fan-out 节点的逐页状态(queued/running/done/retrying)推给前端，
+/// 让工作流界面把该节点展开成 N 个 SubAgent chip 实时显示并发。
+pub(crate) fn emit_fanout(app: &AppHandle, session_id: &str, base_role: &str) {
+    let pages = crate::harness::fanout_snapshot(session_id, base_role);
+    let _ = app.emit(
+        "workflow:fanout",
+        json!({
+            "session_id": session_id,
+            "base_role": base_role,
+            "pages": pages,
+        }),
+    );
+}
+
+/// [pinvou3-fork] 执行一个 [`HarnessAction`](crate::harness::HarnessAction)：emit
+/// 前端事件，派发真 SubAgent（SpawnAgent → `Op::SpawnSubAgent`）
+/// 或等待/收尾（WaitForHuman/AllDone/Blocked）。由 `TurnComplete`（首轮 step_fresh）
+/// 和 `AgentComplete`（SubAgent 完成后推进）两条路径共用。返回 `true` = harness
+/// 推进了（调用方据此 emit `workflow:full_state` 快照）。
+pub(crate) async fn apply_harness_action(
+    action: crate::harness::HarnessAction,
+    app: &AppHandle,
+    bridge: &Pinvou3Bridge,
+    handle: &EngineHandle,
+    active_id: &str,
+) -> bool {
+    use crate::harness::HarnessAction as HA;
+    let ws = bridge.session_workspace(active_id);
+    match action {
+        HA::SpawnAgent {
+            role_id,
+            role_name,
+            prompt,
+            allowed_tools,
+            max_steps,
+            output_schema,
+            expects_file_output,
+        } => {
+            eprintln!(
+                "[harness] Step C spawn → {role_name} ({role_id}) tools={allowed_tools:?} max_steps={max_steps:?} structured={}",
+                output_schema.is_some()
+            );
+            crate::audit::append(&ws, "dispatch", &role_id, json!({ "role_name": &role_name }));
+            let _ = app.emit(
+                "workflow:agent_state_changed",
+                json!({
+                    "session_id": active_id, "role_id": role_id,
+                    "role_name": role_name, "status": "running",
+                }),
+            );
+            let op = Op::SpawnSubAgent {
+                prompt,
+                role_id,
+                allowed_tools,
+                max_steps,
+                output_schema,
+                expects_file_output,
+            };
+            if let Err(e) = handle.send(op).await {
+                eprintln!("[harness] spawn subagent failed: {e:?}");
+            }
+            true
+        }
+        // [per_page] 纵向 fan-out：有界并发派发。底座在 running>=max 时硬拒绝(不排队)，
+        // 故 Router 运行时自己排队：先派 K 个(per_page_concurrency)，其余留全局队列，由
+        // AgentComplete 每页完成补派一个 → 在飞稳定=K。join 计数在 State(record_page_done)；
+        // N 实例全到时 AgentComplete handler 对【单一逻辑节点】base_role 验收一次。
+        HA::SpawnAgentBatch { base_role, role_name, tasks } => {
+            let total = tasks.len();
+            let k = crate::harness::per_page_concurrency();
+            eprintln!("[harness] Step C fan-out → {role_name} ({base_role}) {total} 页, 在飞并发={k}, 其余排队");
+            crate::audit::append(&ws, "dispatch_batch", &base_role, json!({ "role_name": &role_name, "pages": total, "concurrency": k }));
+            let _ = app.emit(
+                "workflow:agent_state_changed",
+                json!({
+                    "session_id": active_id, "role_id": &base_role,
+                    "role_name": role_name, "status": "running",
+                }),
+            );
+            let first = crate::harness::batch_seed_and_take(active_id, &base_role, tasks, k);
+            for t in first {
+                let op = Op::SpawnSubAgent {
+                    prompt: t.prompt,
+                    role_id: t.agent_role, // "slide_writer#p01" → 回到 AgentComplete.role
+                    allowed_tools: t.allowed_tools,
+                    max_steps: t.max_steps,
+                    output_schema: t.output_schema,
+                    expects_file_output: t.expects_file_output,
+                };
+                if let Err(e) = handle.send(op).await {
+                    eprintln!("[harness] fan-out spawn failed: {e:?}");
+                }
+            }
+            emit_fanout(app, active_id, &base_role); // 初始 fan-out 状态 → 前端
+            true
+        }
+        HA::WaitForHuman {
+            role_id,
+            role_name,
+            description,
+        } => {
+            eprintln!("[harness] waiting for human → {role_name} ({role_id})");
+            crate::audit::append(&ws, "human_gate", &role_id, json!({ "role_name": &role_name, "description": crate::audit::clip(&description) }));
+            let _ = app.emit(
+                "workflow:gate_approval",
+                json!({
+                    "session_id": active_id, "role_id": role_id,
+                    "role_name": role_name, "gate_description": description,
+                }),
+            );
+            true
+        }
+        HA::AllDone => {
+            eprintln!("[harness] workflow complete");
+            // [edict-obs] 定位最终成品(deck 播放器入口),带进完成事件让前端弹"成品卡"。
+            // 找不到(非 deck 类工作流/产物缺失)→ artifact=null,前端只标完成不弹卡。
+            let artifact: Option<String> = crate::harness::read_full_agent_state(&ws)
+                .and_then(|st| {
+                    st.get("project_dir")
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                })
+                .map(|p| std::path::Path::new(&p).join("HTML_Deck").join("index.html"))
+                .filter(|p| p.exists())
+                .map(|p| p.display().to_string());
+            crate::audit::append(&ws, "complete", "", json!({ "artifact": artifact }));
+            let _ = app.emit(
+                "workflow:complete",
+                json!({ "session_id": active_id, "artifact": artifact }),
+            );
+            true
+        }
+        HA::Blocked { message } => {
+            eprintln!("[harness] blocked: {message}");
+            crate::audit::append(&ws, "blocked", "", json!({ "message": crate::audit::clip(&message) }));
+            let warmup_report = serde_json::from_str::<serde_json::Value>(&message).ok();
+            let _ = app.emit(
+                "workflow:blocked",
+                json!({
+                    "session_id": active_id, "message": message, "warmup_report": warmup_report,
+                }),
+            );
+            true
+        }
+        HA::Error(e) => {
+            eprintln!("[harness] error: {e}");
+            false
+        }
+        HA::NotApplicable => false,
+    }
 }
 
 /// 后台 task：持续读 rx_event 转 Tauri emit。
@@ -270,6 +441,18 @@ fn spawn_event_forwarder(
     let plan_tracker: Arc<Mutex<TurnPlanTracker>> =
         Arc::new(Mutex::new(TurnPlanTracker::default()));
     tauri::async_runtime::spawn(async move {
+        // [B2] 完成账本:agent_id -> 决策 role。dedup——同一 agent_id 重复
+        // AgentComplete 时跳过推进(防双推进)。角色重派(gate 失败/回滚)得新
+        // agent_id,不会被误跳。
+        let mut seen_completions: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        // [edict-obs] agent_id→role_id 关联(由 fork 的 AgentSpawned 第二发喂,
+        // 见下方 AgentSpawned 臂注释)+ per-role token 账本。
+        // 有意不清理:存活期=本 session forwarder,单 run 最多几十条目(含 fan-out 重试),
+        // 跟 seen_completions 同模式 —— 别加"AgentComplete 时清理",会破坏 dedup 语义。
+        let mut agent_roles: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let mut token_ledger = TokenLedger::default();
         let mut rx = handle.rx_event.write().await;
         while let Some(event) = rx.recv().await {
             match event {
@@ -384,6 +567,275 @@ fn spawn_event_forwarder(
                     // 已先于 ApprovalRequired fire，前端已收到正确的 args。
                     // 之前在此 emit 会用 args=null 覆盖前端 toolMeta，导致产物路径丢失。
                 }
+                // [edict-obs] 同一 agent_id 会收到两发 AgentSpawned:第一发来自
+                // subagent manager 内部(prompt=任务文本,subagent/mod.rs:1518),
+                // 第二发来自 fork 的 Op::SpawnSubAgent 成功臂(prompt=role_id)。
+                // FIFO 保证第二发后到 → HashMap::insert last-write-wins,最终值
+                // 必为 role_id。这是有意设计,别"去重优化"。
+                Event::AgentSpawned { id, prompt } => {
+                    agent_roles.insert(id, prompt);
+                }
+                // [edict-obs] SubAgent 每步进展(底座自动发,不靠 prompt 纪律)→ 前端看板。
+                Event::AgentProgress { id, status } => {
+                    // 早期事件可能赶在第二发 AgentSpawned(role_id)之前到 —— 兜底用
+                    // agent_id 而不是空串,跟 TokenUsage 臂的 fallback 语义一致。
+                    let role = agent_roles.get(&id).cloned().unwrap_or_else(|| id.clone());
+                    let _ = app.emit(
+                        "workflow:agent_progress",
+                        json!({
+                            "session_id": session_id,
+                            "agent_id": id,
+                            "role_id": role,
+                            "status": status,
+                        }),
+                    );
+                }
+                // [edict-obs] mailbox 信封:工具调用→progress;TokenUsage→账本+审计;
+                // Completed/Failed→审计。审计写盘是同步 IO,但单行 append 微秒级,
+                // 不值得为它 spawn_blocking(forwarder 本身不在 LLM 关键路径上)。
+                Event::SubAgentMailbox { message, .. } => {
+                    use deepseek_tui::tools::subagent::MailboxMessage as MM;
+                    let ws = bridge.session_workspace(&session_id);
+                    match message {
+                        MM::TokenUsage { agent_id, model, usage } => {
+                            let role = agent_roles
+                                .get(&agent_id)
+                                .cloned()
+                                .unwrap_or_else(|| agent_id.clone());
+                            let (input_total, output_total, calls) = token_ledger.add(
+                                &role,
+                                usage.input_tokens as u64,
+                                usage.output_tokens as u64,
+                            );
+                            let _ = app.emit(
+                                "workflow:token_usage",
+                                json!({
+                                    "session_id": session_id,
+                                    "role_id": role,
+                                    "agent_id": agent_id,
+                                    "model": model,
+                                    "input_tokens_total": input_total,
+                                    "output_tokens_total": output_total,
+                                    "calls": calls,
+                                }),
+                            );
+                            crate::audit::append(&ws, "token", &role, json!({
+                                "agent_id": agent_id,
+                                "input": usage.input_tokens,
+                                "output": usage.output_tokens,
+                            }));
+                        }
+                        MM::ToolCallStarted { agent_id, tool_name, step } => {
+                            // 兜底语义跟 AgentProgress 臂一致(agent_id 而非空串)
+                            let role = agent_roles
+                                .get(&agent_id)
+                                .cloned()
+                                .unwrap_or_else(|| agent_id.clone());
+                            let _ = app.emit(
+                                "workflow:agent_progress",
+                                json!({
+                                    "session_id": session_id,
+                                    "agent_id": agent_id,
+                                    "role_id": role,
+                                    "status": format!("🔧 {tool_name} (step {step})"),
+                                }),
+                            );
+                        }
+                        MM::Completed { agent_id, summary } => {
+                            let role = agent_roles.get(&agent_id).cloned().unwrap_or_default();
+                            crate::audit::append(&ws, "agent_done", &role, json!({
+                                "agent_id": agent_id,
+                                "summary": crate::audit::clip(&summary),
+                            }));
+                        }
+                        MM::Failed { agent_id, error } => {
+                            let role = agent_roles.get(&agent_id).cloned().unwrap_or_default();
+                            crate::audit::append(&ws, "agent_failed", &role, json!({
+                                "agent_id": agent_id,
+                                "error": crate::audit::clip(&error),
+                            }));
+                        }
+                        _ => {}
+                    }
+                }
+                // [pinvou3-fork] 真 SubAgent(Step C)完成 → Step D Gate。executing 期间
+                // 主 session 不发 TurnComplete(它空闲,subagent 在 subagent_manager 跑),
+                // 所以单角色周期的"完成"信号在这里、不在 TurnComplete。
+                Event::AgentComplete { id, result, role: envelope_role, failed } => {
+                    eprintln!(
+                        "[harness] subagent {id} complete ({} chars summary, failed={failed})",
+                        result.len()
+                    );
+                    let _ = app.emit(
+                        "workflow:agent_complete",
+                        json!({ "session_id": session_id, "agent_id": id }),
+                    );
+                    let state = store.mode_state(&session_id);
+                    if state.active_skill.is_some() {
+                        // [C2] 完成→节点关联完全用信封 role（SDAN Result.from）。
+                        // harness_phase 已删,无 phase 兜底——正常 workflow subagent
+                        // 派发必带 role(SubAgentAssignment.role)。
+                        let decision_role: Option<String> = envelope_role.clone();
+                        if decision_role.is_none() {
+                            eprintln!("[harness] ⚠️AgentComplete 无 role(非 workflow subagent?) id={id},不推进");
+                        }
+                        // dedup:同一 agent_id 重复完成 → 跳过,防双推进。
+                        // 角色重派(gate 失败/回滚)会得新 agent_id,不会被误跳。
+                        let is_dup = seen_completions
+                            .insert(id.clone(), decision_role.clone().unwrap_or_default())
+                            .is_some();
+                        if is_dup {
+                            eprintln!("[harness] 重复 AgentComplete id={id},跳过");
+                        } else if let Some(role) = decision_role {
+                            // [per_page] role 形如 "slide_writer#p01" = fan-out 成员：
+                            // 记一页 join 计数，未齐则等其余页（不推进）；齐了才对【单一
+                            // 逻辑节点】base_role 验收一次。普通角色 base = role 本身。
+                            let base_for_step: Option<String> =
+                                if let Some((base, page_str)) = role.split_once('#') {
+                                    let page: u32 =
+                                        page_str.trim_start_matches('p').parse().unwrap_or(0);
+                                    let ws = bridge.session_workspace(&session_id);
+                                    // [per_page] 先校验该页【真写成】：SSE 超时/放弃的 agent 也
+                                    // emit AgentComplete，但只留空壳骨架。空壳不计 done，自动重派
+                                    // 该页(带上限)，挡住空壳混入 batch → 避免 gate pagenum_mismatch
+                                    // 误判回滚的死循环。
+                                    let outs = crate::harness::batch_outputs_for(&session_id, base, page);
+                                    let real =
+                                        crate::harness::page_output_is_real(&ws, base, page, &outs);
+                                    let mut count_done = real;
+                                    if real {
+                                        eprintln!("[harness] per_page {role} 真写成 ✓");
+                                        crate::harness::fanout_mark(&session_id, base, page, "done");
+                                    } else {
+                                        let n = crate::harness::page_retry_inc(&session_id, base, page);
+                                        let maxr = crate::harness::max_page_retry();
+                                        if n <= maxr {
+                                            // 空壳 → 重派该页(占用刚释放的在飞名额，不补排队页)。
+                                            let ws_r = ws.clone();
+                                            let base_r = base.to_string();
+                                            let respawn = tokio::task::spawn_blocking(move || {
+                                                crate::harness::respawn_page(&ws_r, &base_r, page)
+                                            })
+                                            .await
+                                            .unwrap_or(None);
+                                            if let Some(t) = respawn {
+                                                let rr = t.agent_role.clone();
+                                                let op = Op::SpawnSubAgent {
+                                                    prompt: t.prompt,
+                                                    role_id: t.agent_role,
+                                                    allowed_tools: t.allowed_tools,
+                                                    max_steps: t.max_steps,
+                                                    output_schema: t.output_schema,
+                                                    expects_file_output: t.expects_file_output,
+                                                };
+                                                if let Err(e) = approve_handle.send(op).await {
+                                                    eprintln!("[harness] per_page {role} 空壳→重派 {rr} 失败: {e:?}");
+                                                } else {
+                                                    eprintln!("[harness] per_page {role} 空壳→重派(第{n}/{maxr}次) {rr}");
+                                                    crate::harness::fanout_mark(&session_id, base, page, "retrying");
+                                                }
+                                            } else {
+                                                eprintln!("[harness] per_page {role} 空壳但 respawn 取不到任务 → 兜底计 done");
+                                                count_done = true;
+                                                crate::harness::fanout_mark(&session_id, base, page, "done");
+                                            }
+                                        } else {
+                                            eprintln!("[harness] per_page {role} 空壳且重试耗尽({maxr}) → 兜底计 done(留给 gate/人工)");
+                                            count_done = true;
+                                            crate::harness::fanout_mark(&session_id, base, page, "done");
+                                        }
+                                    }
+                                    // 每页完成/重试后把最新 fan-out 状态推给前端工作流界面。
+                                    emit_fanout(&app, &session_id, base);
+                                    if count_done {
+                                        let ws_d = ws.clone();
+                                        let base_d = base.to_string();
+                                        let complete = tokio::task::spawn_blocking(move || {
+                                            crate::harness::record_page_done(&ws_d, &base_d, page)
+                                        })
+                                        .await
+                                        .unwrap_or(true);
+                                        eprintln!(
+                                            "[harness] per_page {role} done; batch_complete={complete}"
+                                        );
+                                        if complete {
+                                            crate::harness::batch_clear(&session_id, base);
+                                            Some(base.to_string())
+                                        } else {
+                                            // 未齐 → 补派下一排队页，维持在飞并发=K；不推进。
+                                            if let Some(t) =
+                                                crate::harness::batch_pop_next(&session_id, base)
+                                            {
+                                                let next_role = t.agent_role.clone();
+                                                let op = Op::SpawnSubAgent {
+                                                    prompt: t.prompt,
+                                                    role_id: t.agent_role,
+                                                    allowed_tools: t.allowed_tools,
+                                                    max_steps: t.max_steps,
+                                                    output_schema: t.output_schema,
+                                                    expects_file_output: t.expects_file_output,
+                                                };
+                                                if let Err(e) = approve_handle.send(op).await {
+                                                    eprintln!("[harness] per_page 补派 {next_role} 失败: {e:?}");
+                                                } else {
+                                                    eprintln!("[harness] per_page 补派下一页 {next_role}");
+                                                }
+                                            }
+                                            None
+                                        }
+                                    } else {
+                                        // 重派路径：等该页重试结果，不推进、不补排队页。
+                                        None
+                                    }
+                                } else {
+                                    Some(role.clone())
+                                };
+
+                            if let Some(base_role) = base_for_step {
+                                let ws = bridge.session_workspace(&session_id);
+                                // [2026-06-06] SubAgent 执行失败(failed=true,单角色)绝不走 gate：
+                                // gate 只验产物存在+非空，会拿【上一轮陈旧产物】把失败洗成 PASS
+                                // (实锤:web_search 不可用→PM 0步即死→旧 brief 过关)。改走
+                                // agent_failed:--fail 计次→重派带失败原因，耗尽→Blocked。
+                                // per_page 成员(role 带 #)不走这里:空壳检测已按页处理。
+                                let failed_single = failed && !role.contains('#');
+                                let err_text = result.clone();
+                                let action = tokio::task::spawn_blocking(move || {
+                                    if failed_single {
+                                        crate::harness::agent_failed(&ws, &base_role, &err_text)
+                                    } else {
+                                        crate::harness::step_after_role(&ws, &base_role)
+                                    }
+                                })
+                                .await
+                                .unwrap_or_else(|_| {
+                                    crate::harness::HarnessAction::Error("spawn_blocking panicked".into())
+                                });
+                                let handled = apply_harness_action(
+                                    action,
+                                    &app,
+                                    &bridge,
+                                    &approve_handle,
+                                    &session_id,
+                                )
+                                .await;
+                                if handled {
+                                    let ws = bridge.session_workspace(&session_id);
+                                    let app_clone = app.clone();
+                                    let sid_clone = session_id.clone();
+                                    tokio::task::spawn_blocking(move || {
+                                        if let Some(mut st) = crate::harness::read_full_agent_state(&ws) {
+                                            if let Some(obj) = st.as_object_mut() {
+                                                obj.insert("session_id".into(), json!(sid_clone));
+                                            }
+                                            let _ = app_clone.emit("workflow:full_state", st);
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
                 Event::TurnComplete {
                     usage,
                     status,
@@ -400,15 +852,20 @@ fn spawn_event_forwarder(
                             "output_tokens": usage.output_tokens,
                         }),
                     );
-                    // turn end:取出 tracker 快照,然后重置(下个 turn 重新累积)
-                    let mut tracker = plan_tracker.lock();
-                    let plan_used = tracker.plan_tool_used;
-                    let write_used = tracker.write_tool_used;
-                    let text_len = tracker.assistant_text_len;
-                    let plan_snapshot = tracker.last_plan_snapshot.take();
-                    let todos_snapshot = tracker.last_todos_snapshot.take();
-                    *tracker = TurnPlanTracker::default();
-                    drop(tracker);
+                    // turn end:取出 tracker 快照,然后重置(下个 turn 重新累积)。
+                    // 用独立 block 把 parking_lot guard 的生命周期限死在这里:下方
+                    // H1 harness 段有 .await(spawn_blocking),guard 是 !Send,若跨
+                    // await 会让整个 forwarder future 变 !Send(tauri::spawn 要求 Send)。
+                    let (plan_used, write_used, text_len, plan_snapshot, todos_snapshot) = {
+                        let mut tracker = plan_tracker.lock();
+                        let plan_used = tracker.plan_tool_used;
+                        let write_used = tracker.write_tool_used;
+                        let text_len = tracker.assistant_text_len;
+                        let plan_snapshot = tracker.last_plan_snapshot.take();
+                        let todos_snapshot = tracker.last_todos_snapshot.take();
+                        *tracker = TurnPlanTracker::default();
+                        (plan_used, write_used, text_len, plan_snapshot, todos_snapshot)
+                    };
 
                     {
                         // 多引擎:mode 判据基于本 forwarder 的 session_id,不读全局 active。
@@ -436,7 +893,47 @@ fn spawn_event_forwarder(
                             );
                         }
 
-                        // ── M2: Executing 自驱(turn 内只标 in_progress 没真产出) ──
+                        // ── H1: Harness Loop (skill session 图执行器) ──
+                        // 本 session 绑定了 skill 且项目目录有 workflow_progress.json →
+                        // harness 图执行器驱动下一步。workspace 用**本 session 的**目录
+                        // (多 session 并发:每个工作流的项目落在各自 session workspace)。
+                        let harness_workspace = bridge.session_workspace(&session_id);
+                        let harness_handled = if state.active_skill.is_some() {
+                            // [C2] harness_phase 已删。工作流由 kick(命令)+ AgentComplete
+                            // 驱动;主 session 在工作流期间空闲,此处 TurnComplete 一般不参与
+                            // 推进。仍兜底走 step_fresh:由 scheduler 据 State 决策——有角色在
+                            // 跑则返回 role_running→NotApplicable(防重复派发),否则派下一个。
+                            let ws = harness_workspace.clone();
+                            let action = tokio::task::spawn_blocking(move || {
+                                crate::harness::step_fresh(&ws)
+                            })
+                            .await
+                            .unwrap_or(crate::harness::HarnessAction::Error(
+                                "spawn_blocking panicked".into(),
+                            ));
+
+                            apply_harness_action(action, &app, &bridge, &approve_handle, &active_id)
+                                .await
+                        } else {
+                            false
+                        };
+
+                        // ── H1b: harness 推进了 → 推送全量 agent 状态快照给前端 ──
+                        if harness_handled {
+                            let ws = harness_workspace.clone();
+                            let app_clone = app.clone();
+                            let sid_clone = active_id.clone();
+                            tokio::task::spawn_blocking(move || {
+                                if let Some(mut state) = crate::harness::read_full_agent_state(&ws) {
+                                    if let Some(obj) = state.as_object_mut() {
+                                        obj.insert("session_id".into(), json!(sid_clone));
+                                    }
+                                    let _ = app_clone.emit("workflow:full_state", state);
+                                }
+                            });
+                        }
+
+                        // ── M2: Executing 自驱(仅在 harness 不适用时) ──
                         // 条件:mode=Yolo + phase=Executing + 本 turn 没调 write 类工具 +
                         // plan 仍有未完成步骤 + auto_continue 未到上限。
                         // 满足 → 自动 send "继续" 用户消息(注:不重置 turn,作为新 user message)
@@ -444,13 +941,16 @@ fn spawn_event_forwarder(
                             .as_ref()
                             .map(plan_has_pending)
                             .unwrap_or(false);
-                        if state.mode == SerializableMode::Yolo
+                        if !harness_handled
+                            && state.mode == SerializableMode::Yolo
                             && state.plan_phase == PlanPhase::Executing
                             && !write_used
                             && plan_pending
                         {
                             let n = store.bump_auto_continue(&active_id);
-                            if n <= 3 {
+                            // skill session 角色多、产出大,放宽自驱上限到 8(普通对话仍 3)
+                            let cap = if state.active_skill.is_some() { 8 } else { 3 };
+                            if n <= cap {
                                 eprintln!(
                                     "[pinvou3-app] M2 auto-continue #{} (Executing 假执行)",
                                     n
@@ -555,6 +1055,20 @@ fn spawn_event_forwarder(
                             "chat:done",
                             json!({ "session_id": session_id, "status": "error", "error": envelope.message }),
                         );
+                        // [C2] harness_phase 已删。工作流绑定(active_skill)的 session 遇
+                        // 致命错误(SubAgent 派发失败 / 内部 fatal)→ 可能收不到 AgentComplete
+                        // = 死锁。兜底:emit blocked 通知前端,让用户看到中断可重开(宁可多
+                        // 通知一次,不可无声卡死等永不到来的事件)。
+                        let was_active = store.mode_state(&session_id).active_skill.is_some();
+                        if was_active {
+                            let _ = app.emit(
+                                "workflow:blocked",
+                                json!({
+                                    "session_id": session_id,
+                                    "message": "工作流执行中断（致命错误，可能是 SubAgent 派发失败或内部错误），请检查后重新开始。",
+                                }),
+                            );
+                        }
                     }
                 }
                 _ => {}
@@ -569,4 +1083,18 @@ fn spawn_event_forwarder(
 /// 让 main.rs 编译时知道这个模块（供 docs/CI 用）。
 pub fn _force_link() -> Arc<()> {
     Arc::new(())
+}
+
+#[cfg(test)]
+mod token_ledger_tests {
+    use super::TokenLedger;
+
+    #[test]
+    fn accumulates_per_role() {
+        let mut l = TokenLedger::default();
+        assert_eq!(l.add("pm", 100, 20), (100, 20, 1));
+        assert_eq!(l.add("pm", 50, 10), (150, 30, 2));
+        assert_eq!(l.add("writer", 7, 3), (7, 3, 1));
+        assert_eq!(l.add("pm", 0, 0), (150, 30, 3));
+    }
 }
