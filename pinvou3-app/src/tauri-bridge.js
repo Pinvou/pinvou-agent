@@ -516,6 +516,7 @@
     // 续一张成品卡(与实时 chat:done 的一张对齐,不刷一堆)。
     var lastDirtyArtifactId = {};
     var writtenArtifacts = {}; // write/append 写过的 path=产物;没 present 时兜底补首卡
+    var presentedArtifacts = {}; // 整篇 present_artifact 过的 path → 别再兜底补首卡(present 会出卡,否则重复)
     for (var di = 0; di < state.messages.length; di++) {
       var dc = state.messages[di].content;
       if (!Array.isArray(dc)) continue;
@@ -527,6 +528,9 @@
             lastDirtyArtifactId[dap] = db.id;
             if (db.name !== "edit_file") writtenArtifacts[dap] = true;
           }
+        } else if (db.type === "tool_use" && isPresentArtifactTool(db.name)) {
+          var pap = extractArtifactPath(db.input);
+          if (pap) presentedArtifacts[pap] = true;
         }
       }
     }
@@ -627,7 +631,7 @@
                   type: "artifact_card", path: wprev.path, title: wprev.title,
                   description: wprev.description, time: "",
                 });
-              } else if (writtenArtifacts[wap]) {
+              } else if (writtenArtifacts[wap] && !presentedArtifacts[wap]) {
                 // AI 写了产物但全程没 present_artifact → 兜底补首卡(与实时 chat:done 对齐)
                 addChatItem({ type: "artifact_card", path: wap, title: basename(wap), description: "", time: "" });
               }

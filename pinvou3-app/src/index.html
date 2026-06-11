@@ -1920,7 +1920,7 @@
           <div className="flex justify-end">
             <div className="max-w-[85%]">
               <div className="flex items-center justify-end gap-1 mb-1 text-[11px] font-medium" style={{ color: tint }}>
-                <span>{isWu ? '💡' : '🔍'}</span><span>{'Pinvou · ' + item.pinvouTransfer + ' · 转交修订'}</span>
+                <span>{isWu ? '✨' : '📋'}</span><span>{'Pinvou · ' + item.pinvouTransfer + ' · 转交修订'}</span>
               </div>
               <div className={`px-5 py-3 rounded-[20px] rounded-tr-md text-[15px] leading-relaxed whitespace-pre-wrap border-l-[3px] ${tintBg} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`} style={{ borderLeftColor: tint }}>{item.text}</div>
             </div>
@@ -2128,11 +2128,11 @@
                   <div className="flex items-center gap-2.5 flex-shrink-0 ml-2">
                     <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.summonPinvou(path); }} title="品 · 查错：揪出产物的风险、遗漏、与你需求的偏差，逐条让 AI 改或你拍板接受"
                       className={`flex items-center gap-1 text-[12px] ${isDark ? 'text-[#D0BCFF] hover:text-[#E9DDFF]' : 'text-[#7C3AED] hover:text-[#6D28D9]'}`}>
-                      <span className="text-[11px]">🔍</span> 品
+                      <span className="text-[11px]">📋</span> 品
                     </button>
                     <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.inspectPinvou(path); }} title="悟 · 发散：以领域专家视角给出产物还能补的维度和新思路，挑中的一键加进去"
                       className={`flex items-center gap-1 text-[12px] ${isDark ? 'text-[#8AB4F8] hover:text-[#AECBFA]' : 'text-[#1967D2] hover:text-[#1A73E8]'}`}>
-                      <span className="text-[11px]">💡</span> 悟
+                      <span className="text-[11px]">✨</span> 悟
                     </button>
                     <span className={`text-[12px] ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>{t.clickToOpen}</span>
                   </div>
@@ -2620,7 +2620,7 @@
       const isDark = theme === 'dark';
       // 品(查错)=紫;悟(发散,coverage)=蓝。场景A(决策推荐,advise)归参谋(紫)。
       const isWu = !!item.coverage;
-      const icon = isWu ? '💡' : (item.advise ? '🧭' : '🔍');
+      const icon = isWu ? '✨' : (item.advise ? '🧭' : '📋');
       const role = isWu ? '悟' : (item.advise ? '参谋' : '品');
       const accent = isWu ? (isDark ? 'border-[#8AB4F8]/30' : 'border-[#1A73E8]/25')
                           : (isDark ? 'border-[#D0BCFF]/30' : 'border-[#7C3AED]/25');
