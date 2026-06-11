@@ -903,13 +903,19 @@
     if (!actions || !actions.length) return;
     // 按动作类型分组,组装一条 Boss 消息发给主 AI(Boss 驾驶,非自动回传):
     //   fix/verify=产物缺陷定向修订(verify 先核实);adopt=Boss 已定的决策;ask=让 AI 正式问。
-    var fix = actions.filter(function (a) { return a.t === "fix" || a.t === "verify"; });
+    var fix = actions.filter(function (a) { return a.t === "fix"; });
+    var verify = actions.filter(function (a) { return a.t === "verify"; });
     var adopt = actions.filter(function (a) { return a.t === "adopt"; });
     var ask = actions.filter(function (a) { return a.t === "ask"; });
     var parts = [];
     if (fix.length) {
       parts.push("请按下面的检阅意见，**只定向修改对应段落，不要全文重写**：");
-      fix.forEach(function (a) { parts.push("- " + (a.t === "verify" ? "【先核实再改】" : "") + a.text); });
+      fix.forEach(function (a) { parts.push("- " + a.text); });
+    }
+    if (verify.length) {
+      if (parts.length) parts.push("");
+      parts.push("以下涉及外部事实(班次/票价/预约/营业时间/签证政策)，**必须先用 web_search 或 fetch_url 联网查证、确认后再改，并在改动处标注依据来源；严禁凭记忆或想当然直接改**：");
+      verify.forEach(function (a) { parts.push("- " + a.text); });
     }
     if (adopt.length) {
       if (parts.length) parts.push("");
