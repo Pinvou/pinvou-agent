@@ -1126,6 +1126,32 @@ pub async fn get_session_persona_events(session_id: String) -> Result<serde_json
     }
 }
 
+/// Pinvou 召唤检阅时间线（opaque JSON，后端透明落盘，同 persona_events 范式）。
+/// 前端每次召唤后存，load_session 时读回，rerender 按 pos 插回审查卡——独立于
+/// messages，绝不进 LLM 上下文（设计 §6 / `docs/品悟v4-常驻检阅助手设计.md`）。
+#[tauri::command]
+pub async fn save_session_pinvou_reviews(
+    session_id: String,
+    reviews: serde_json::Value,
+) -> Result<(), String> {
+    let path = crate::bridge::paths::session_pinvou_reviews(&session_id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("建 session 目录失败: {e}"))?;
+    }
+    let json = serde_json::to_string(&reviews).map_err(|e| format!("序列化失败: {e}"))?;
+    std::fs::write(&path, json).map_err(|e| format!("写 Pinvou 审查失败: {e}"))
+}
+
+/// 读某 session 的 Pinvou 审查时间线（无则返回空数组）。
+#[tauri::command]
+pub async fn get_session_pinvou_reviews(session_id: String) -> Result<serde_json::Value, String> {
+    let path = crate::bridge::paths::session_pinvou_reviews(&session_id);
+    match std::fs::read_to_string(&path) {
+        Ok(txt) => Ok(serde_json::from_str(&txt).unwrap_or_else(|_| serde_json::json!([]))),
+        Err(_) => Ok(serde_json::json!([])),
+    }
+}
+
 /// 摘下当前 session 的专家面具（点挂件取消 / 卡片"已加持"再点）。
 #[tauri::command]
 pub async fn unequip_persona(
@@ -1275,6 +1301,38 @@ pub async fn cancel_user_input(
     pool.cancel_user_input(&sid, tool_call_id)
         .await
         .map_err(|e| format!("cancel_user_input: {e:?}"))
+}
+
+// ===================== Pinvou v4 召唤式检阅 =====================
+
+/// Boss 主动召唤 Pinvou 检阅当前 session 的工作（设计 `docs/品悟v4-常驻检阅助手设计.md`）。
+/// 取该 session 全部 messages → 投影/全喂 → 单次独立 LLM 审查 → 返回 personas/issues。
+/// 纯召唤、不替 Boss 决策；自动触发已彻底移除。
+#[tauri::command]
+pub async fn summon_pinvou(
+    session_id: Option<String>,
+    focus: Option<String>,
+    ask: Option<String>,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+) -> Result<crate::pinvou_review::PinvouReview, String> {
+    let sid = session_id
+        .or_else(|| store.active_id())
+        .ok_or_else(|| "no active session".to_string())?;
+    let session = store
+        .load(&sid)
+        .map_err(|e| format!("summon_pinvou load({sid}): {e:?}"))?;
+    let workspace = pool.bridge.session_workspace(&sid);
+    crate::pinvou_review::summon(
+        &pool.bridge,
+        &session.messages,
+        &workspace,
+        &sid,
+        focus.as_deref(),
+        ask.as_deref(),
+    )
+    .await
+    .map_err(|e| format!("summon_pinvou: {e:?}"))
 }
 
 /// 路径校验：必须是绝对路径 + 路径解析后无 `..` 逃逸 + 不命中敏感清单。
