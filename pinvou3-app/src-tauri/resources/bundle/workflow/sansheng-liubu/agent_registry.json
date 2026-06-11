@@ -353,7 +353,9 @@
         "edit_file",
         "list_dir",
         "grep_files",
-        "web_search"
+        "web_search",
+        "exec_shell",
+        "exec_shell_wait"
       ],
       "max_steps": 30,
       "timeout_secs": 900,
@@ -370,7 +372,9 @@
         "write_file",
         "edit_file",
         "list_dir",
-        "grep_files"
+        "grep_files",
+        "exec_shell",
+        "exec_shell_wait"
       ],
       "max_steps": 30,
       "timeout_secs": 900,

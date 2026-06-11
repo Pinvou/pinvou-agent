@@ -78,6 +78,49 @@ def check_file_exists(path: Path, min_bytes: int = 10) -> list[dict]:
 
 # ── finding 工厂 ──
 
+_ARTIFACT_HEADING = re.compile(r"^#{2,4}\s*工件清单")
+
+
+def check_artifact_manifest(project: Path, md_path: Path) -> list[dict]:
+    """核验交付报告「工件清单」段自声明的附属工件(如 .pptx/.xlsx/图片)。
+
+    约定:报告若含「## 工件清单」标题段,段内每个列表项声明一个工件,
+    路径写在反引号里(没有反引号则取列表项首个空白分隔 token)。
+    声明了但文件缺失 / 为空 → CRITICAL——堵"报告说生成了但文件不存在"
+    的静默假成功。报告没有该段 → 不检查(纯文档差事无工件是常态)。
+    """
+    findings: list[dict] = []
+    try:
+        lines = md_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return findings
+    in_section = False
+    for line in lines:
+        if _ARTIFACT_HEADING.match(line):
+            in_section = True
+            continue
+        if in_section and line.lstrip().startswith("#"):
+            break
+        if not in_section:
+            continue
+        s = line.strip()
+        if not s.startswith(("-", "*")):
+            continue
+        item = s.lstrip("-* ").strip()
+        m = re.search(r"`([^`]+)`", item)
+        rel = m.group(1) if m else (item.split()[0] if item else "")
+        if not rel:
+            continue
+        p = (project / rel).resolve()
+        if not str(p).startswith(str(project) + os.sep):
+            findings.append(critical(f"工件路径越界: {rel}"))
+        elif not p.exists():
+            findings.append(critical(f"工件清单声明的文件不存在: {rel}"))
+        elif p.stat().st_size == 0:
+            findings.append(critical(f"工件清单声明的文件为空: {rel}"))
+    return findings
+
+
 def critical(msg: str, fix: str = "") -> dict:
     return {"severity": "CRITICAL", "message": msg, "fix_hint": fix, "rollback_scope": "local"}
 
@@ -216,8 +259,13 @@ def validate_shangshu(project: Path) -> list[dict]:
 
 
 def _validate_bu(project: Path, bu: str) -> list[dict]:
-    """六部统一校验：deliverables/<bu>.md 存在+非空（有差事=产出；无差事=一行声明）。"""
-    return check_file_exists(project / "deliverables" / f"{bu}.md", min_bytes=10)
+    """六部统一校验：deliverables/<bu>.md 存在+非空（有差事=产出；无差事=一行声明），
+    报告若声明「工件清单」则逐项物理核验。"""
+    md = project / "deliverables" / f"{bu}.md"
+    findings = check_file_exists(md, min_bytes=10)
+    if not findings:
+        findings = check_artifact_manifest(project, md)
+    return findings
 
 
 @role_validator("hubu")
@@ -269,6 +317,9 @@ def validate(project_dir: str, role_id: str) -> dict:
             return {"role_id": role_id, "verdict": "FAIL", "findings": [critical(f"文件不存在: {rel}")]}
         if out.stat().st_size == 0:
             return {"role_id": role_id, "verdict": "FAIL", "findings": [critical(f"文件为空: {rel}")]}
+        artifact_findings = check_artifact_manifest(project, out)
+        if artifact_findings:
+            return {"role_id": role_id, "verdict": "FAIL", "findings": artifact_findings}
         return {"role_id": role_id, "verdict": "PASS", "findings": []}
     validator = ROLE_VALIDATORS.get(role_id)
     if not validator:
