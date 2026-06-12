@@ -58,6 +58,15 @@
     // 卡牌加持/卸下事件时间线(sidecar, 不进 messages/LLM)。每项 {kind,pos,...}。
     // pos = 事件发生时的 messages 数, rerender 时按 pos 插回原位, 让重载历史不割裂。
     personaEvents: [],
+    // Pinvou 召唤检阅时间线(sidecar, 同 personaEvents, 不进 messages/LLM)。每项 {pos, review}。
+    pinvouReviews: [],
+    // Pinvou 检阅结果弹窗(不进对话流);null=关闭。一次只一个,裁决/跳过直接操作它的 review、不靠 pos。
+    pinvouModal: null,
+    // 本 turn 被 write/append/edit 改过的产物 path(去重)。chat:done 时给每个补一张成品卡
+    // (present 过的复用 title/desc;没 present 的兜底首卡),turn 内改几次都只一张。
+    turnDirtyArtifacts: [],
+    // 本 turn 已 present_artifact 出过成品卡的产物 path —— chat:done 兜底补卡时跳过,不重复。
+    turnPresentedArtifacts: [],
     busy: false,
     monitor: null,
     backendOnline: null, // null=checking, true, false
@@ -125,6 +134,10 @@
   var pendingAssistantBlocks = [];
   var itemIdSeq = 0;
   var toolMeta = {};       // id → { name, args }
+  // 上下文行口径保护：TurnComplete 的 usage.input_tokens 是本轮所有请求的累加
+  // （计费口径）。只有单请求的"干净轮"该值才等于当前上下文占用；本轮一旦出现
+  // 工具调用/重试/压缩（= 多请求），就跳过这次 tokens 更新，保留上一个准确值。
+  var turnUsageDirty = {};  // session_id → bool
   var monitorIntervalId = null;
   var gpuUtilHistory = [];
   var maxModelLen = 32768;
@@ -204,7 +217,7 @@
   var personaPlaceholderTitles = {};
   function freshBuffer() {
     return {
-      messages: [], chatItems: [], personaEvents: [], artifacts: [], busy: false, queued: [],
+      messages: [], chatItems: [], personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
       planSnapshot: { plan: null, todos: null },
       modeState: { mode: "yolo", plan_phase: "none" },
       thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
@@ -226,6 +239,7 @@
     if (!buf) return;
     buf.messages = state.messages; buf.chatItems = state.chatItems; buf.artifacts = state.artifacts;
     buf.personaEvents = state.personaEvents;
+    buf.pinvouReviews = state.pinvouReviews;
     buf.busy = state.busy; buf.planSnapshot = state.planSnapshot; buf.modeState = state.modeState;
     buf.thinking = state.thinking; buf.tokens = state.tokens; buf.queued = state.queued;
     buf.activePersona = state.activePersona;
@@ -239,6 +253,10 @@
     if (!buf) return;
     state.messages = buf.messages; state.chatItems = buf.chatItems; state.artifacts = buf.artifacts;
     state.personaEvents = buf.personaEvents || [];
+    state.pinvouReviews = buf.pinvouReviews || [];
+    state.pinvouModal = null; // 切 session 关掉检阅弹窗
+    state.turnDirtyArtifacts = []; // turn 临时态,切 session 清空,别串到新 session
+    state.turnPresentedArtifacts = [];
     state.busy = buf.busy; state.planSnapshot = buf.planSnapshot; state.modeState = buf.modeState;
     state.thinking = buf.thinking; state.tokens = buf.tokens; state.queued = buf.queued || [];
     state.activePersona = buf.activePersona || null;
@@ -419,6 +437,7 @@
       loadWorkingSetFrom(sessionStates[id] = freshBuffer());
       state.messages = Array.isArray(saved.messages) ? saved.messages : [];
       try { state.personaEvents = await invoke("get_session_persona_events", { sessionId: id }) || []; } catch (e) { state.personaEvents = []; }
+      try { state.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: id }) || []; } catch (e) { state.pinvouReviews = []; }
       resetPendingAssistant();
       state.chatItems = [];
       state.artifacts = Array.isArray(saved.artifacts) ? saved.artifacts.map(function (a) {
@@ -439,6 +458,7 @@
     try {
       await invoke("delete_session", { id: id });
       delete sessionStates[id]; // 丢掉该 session 的工作集缓冲(后端已 evict 其 engine)
+      delete turnUsageDirty[id];
       state.sessions = state.sessions.filter(function (s) { return s.id !== id; });
       if (state.activeSessionId === id) {
         // 删当前会话 → 落空白草稿页(不自动切上一条/不建空 session)。被删 session 的 buffer
@@ -537,6 +557,28 @@
         }
       }
     }
+    // 预扫:每个产物最后一次被 write/append/edit 改的 tool_use id → rerender 只在最后一次
+    // 续一张成品卡(与实时 chat:done 的一张对齐,不刷一堆)。
+    var lastDirtyArtifactId = {};
+    var writtenArtifacts = {}; // write/append 写过的 path=产物;没 present 时兜底补首卡
+    var presentedArtifacts = {}; // 整篇 present_artifact 过的 path → 别再兜底补首卡(present 会出卡,否则重复)
+    for (var di = 0; di < state.messages.length; di++) {
+      var dc = state.messages[di].content;
+      if (!Array.isArray(dc)) continue;
+      for (var dj = 0; dj < dc.length; dj++) {
+        var db = dc[dj];
+        if (db.type === "tool_use" && (db.name === "write_file" || db.name === "append_file" || db.name === "edit_file")) {
+          var dap = extractArtifactPath(db.input);
+          if (dap) {
+            lastDirtyArtifactId[dap] = db.id;
+            if (db.name !== "edit_file") writtenArtifacts[dap] = true;
+          }
+        } else if (db.type === "tool_use" && isPresentArtifactTool(db.name)) {
+          var pap = extractArtifactPath(db.input);
+          if (pap) presentedArtifacts[pap] = true;
+        }
+      }
+    }
     for (var mi = 0; mi < state.messages.length; mi++) {
       emitPersonaAt(mi, false); // 该消息之前发生的卡牌事件先插
       var m = state.messages[mi];
@@ -545,7 +587,11 @@
         var textParts = blocks.filter(function (c) { return c.type === "text"; }).map(function (c) { return c.text; });
         var utext = textParts.join("");
         if (textParts.length) {
-          addChatItem({ type: "user", text: utext, time: "" });
+          // pinvouTransfer 是展示层标记、不在 messages → rerender 从转交固定措辞还原品/悟样式
+          var uitem2 = { type: "user", text: utext, time: "" };
+          if (utext.indexOf("以下维度产物还缺") >= 0) uitem2.pinvouTransfer = "悟";
+          else if (utext.indexOf("请按下面的检阅意见") >= 0 || utext.indexOf("以下事项我已拍板") >= 0 || utext.indexOf("request_user_input 正式问我") >= 0) uitem2.pinvouTransfer = "品";
+          addChatItem(uitem2);
         }
         // tool_result（只回填普通工具卡；选择卡/方案卡的结果已在 tool_use 处还原）
         for (var ci = 0; ci < blocks.length; ci++) {
@@ -619,16 +665,20 @@
           // 还原"自动续卡":write_file/append_file 改的文件之前 present 过 → 续一张
           // 成品卡(与实时 tool_end 的自动续逻辑对齐,切会话不丢)。present 的卡按
           // 顺序在前(必须先 present 才进集合),此处 findPresentedArtifact 能命中。
-          if ((b.name === "write_file" || b.name === "append_file")) {
+          if (b.name === "write_file" || b.name === "append_file" || b.name === "edit_file") {
             var wres = resultById[b.id];
-            if (!(wres && wres.is_error)) {
-              var wap = extractArtifactPath(b.input);
-              var wprev = wap ? findPresentedArtifact(wap) : null;
+            var wap = extractArtifactPath(b.input);
+            // 去重:同产物只在最后一次修改处补一张卡(与实时对齐)。
+            if (!(wres && wres.is_error) && wap && lastDirtyArtifactId[wap] === b.id) {
+              var wprev = findPresentedArtifact(wap);
               if (wprev) {
                 addChatItem({
                   type: "artifact_card", path: wprev.path, title: wprev.title,
                   description: wprev.description, time: "",
                 });
+              } else if (writtenArtifacts[wap] && !presentedArtifacts[wap]) {
+                // AI 写了产物但全程没 present_artifact → 兜底补首卡(与实时 chat:done 对齐)
+                addChatItem({ type: "artifact_card", path: wap, title: basename(wap), description: "", time: "" });
               }
             }
           }
@@ -759,9 +809,12 @@
   }
   // 真正发送:在 sid 的工作集上加 user 气泡 + 流式占位 + busy,然后 invoke chat。
   // active/后台通用(后台走 runSyncOnSession 临时切工作集)。
-  function doSendFor(sid, text, displayText, attachmentsPayload) {
+  function doSendFor(sid, text, displayText, attachmentsPayload, meta) {
+    turnUsageDirty[sid] = false; // 新一轮开始，重置口径保护
     runSyncOnSession(sid, function () {
-      addChatItem({ type: "user", text: displayText, time: timeStr() });
+      var uitem = { type: "user", text: displayText, time: timeStr() };
+      if (meta && meta.pinvouTransfer) uitem.pinvouTransfer = meta.pinvouTransfer; // 仅展示层,不进 messages/LLM
+      addChatItem(uitem);
       state.messages.push({ role: "user", content: [{ type: "text", text: displayText }] });
       state.busy = true;
       startThinking();
@@ -792,11 +845,12 @@
     var displayText = items.map(function (i) { return i.displayText; }).filter(Boolean).join("\n");
     var attachments = [];
     items.forEach(function (i) { if (i.attachments && i.attachments.length) attachments = attachments.concat(i.attachments); });
+    var meta = items.length === 1 ? items[0].meta : null; // 单条(如转交)保留 meta;合并多条不标
     notify();
-    doSendFor(sid, text, displayText, attachments);
+    doSendFor(sid, text, displayText, attachments, meta);
   }
 
-  async function sendMessage(text) {
+  async function sendMessage(text, meta) {
     text = (text || "").trim();
     var readyAttachments = state.attachments.filter(function (a) { return a.status === "ready" && a.result; });
     if (!text && readyAttachments.length === 0) return;
@@ -821,17 +875,124 @@
     // 排队式:当前 session 正在生成 → 这句进队列(不打断当前轮),本轮 chat:done 后自动发。
     // 输入框上方显示待发 chip(可✕撤销)。停止按钮仍只硬打断当前轮。
     if (state.busy) {
-      state.queued.push({ id: ++itemIdSeq, text: text, displayText: displayText, attachments: attachmentsPayload });
+      state.queued.push({ id: ++itemIdSeq, text: text, displayText: displayText, attachments: attachmentsPayload, meta: meta || null });
       notify();
       return;
     }
 
-    await doSendFor(state.activeSessionId, text, displayText, attachmentsPayload);
+    await doSendFor(state.activeSessionId, text, displayText, attachmentsPayload, meta);
   }
   // 撤销一条待发消息(点 chip 的 ✕)。
   function removeQueued(id) {
     state.queued = state.queued.filter(function (q) { return q.id !== id; });
     notify();
+  }
+
+  // ── Pinvou v4 召唤式检阅:Boss 主动呼叫,审当前 session 前面的工作 ──
+  // 设计 docs/品悟v4-常驻检阅助手设计.md。纯召唤、不替 Boss 决策。
+  // 审查卡进 chatItems(当前会话可见);跨会话持久化(进 messages/独立存储)是 §6 后续增强。
+  async function summonPinvou(focus, mode) {
+    if (!state.activeSessionId) { addSystemItem("先开始一个对话,再召唤 Pinvou 检阅。"); return; }
+    if (state.pinvouSummoning) return;
+    state.pinvouSummoning = true;
+    var sid = state.activeSessionId; // 召唤发起时的 session;await 返回后校验,防跨 session 串(召唤慢+切走)
+    // 检阅结果弹 modal(不进对话流):一次只一个,裁决/跳过直接操作 state.pinvouModal.review、
+    // 不靠 pos 定位(根治连续召唤 pos 重复串卡)。
+    state.pinvouModal = { loading: true, coverage: mode === "coverage" };
+    notify();
+    try {
+      // focus=产出物 path(品=审产物); mode="coverage"=悟(通盘体检)。
+      var review = await invoke("summon_pinvou", { sessionId: sid, focus: focus || null, mode: mode || null });
+      if (state.activeSessionId !== sid) return; // 召唤期间切了 session → 丢弃,绝不 record/写进别的 session
+      recordPinvouReview(review); // 存 sidecar(供核账读上轮账目);modal.review 同引用,裁决写它=写 sidecar
+      if (state.pinvouModal) { state.pinvouModal.loading = false; state.pinvouModal.review = review; }
+    } catch (e) {
+      if (state.activeSessionId === sid && state.pinvouModal) { state.pinvouModal.loading = false; state.pinvouModal.error = String(e && e.message ? e.message : e); }
+    } finally {
+      state.pinvouSummoning = false;
+      notify();
+    }
+  }
+
+  // 通盘体检(覆盖镜头):查产物"全不全"=缺哪些完整性维度。独立入口,走 mode=coverage。
+  function inspectPinvou(focus) {
+    return summonPinvou(focus, "coverage");
+  }
+
+  // B2: 审查卡进 sidecar 时间线(pos=当前 messages 数),落盘。同 recordPersonaEvent
+  // 范式,**不进 messages/LLM**;rerenderFromMessages 按 pos 插回,切会话/重载不丢。
+  function recordPinvouReview(review) {
+    if (!state.activeSessionId || !review) return null;
+    var pos = state.messages.length;
+    state.pinvouReviews.push({ pos: pos, review: review });
+    var sid = state.activeSessionId;
+    var snapshot = JSON.parse(JSON.stringify(state.pinvouReviews));
+    invoke("save_session_pinvou_reviews", { sessionId: sid, reviews: snapshot }).catch(function () {});
+    return pos; // 供卡片记 reviewPos,裁决时按 pos 定位原 state 写 resolution
+  }
+
+  // §2 按勾选裁决:resolution 已由前端写回 review 对象(引用→sidecar),这里持久化 +
+  // 把勾「让AI改」的条目走 B1 发定向修订指令(只改对应段落、禁全文重写)。Boss 驾驶,非自动。
+  async function resolvePinvouReview(resolutions, actions) {
+    // 弹窗只一个 review(state.pinvouModal.review),直接在它上面写 resolution——不靠 pos 定位
+    // (根治连续召唤 pos 重复串卡)。它和 sidecar entry.review 同引用,写它=写 sidecar。
+    var isWu = !!(state.pinvouModal && state.pinvouModal.coverage); // 关窗前取,供转交标品/悟
+    var review = state.pinvouModal && state.pinvouModal.review;
+    if (review && resolutions) {
+      (review.recommendations || []).forEach(function (r, k) { if (resolutions.recs && resolutions.recs[k]) r.resolution = resolutions.recs[k]; });
+      (review.issues || []).forEach(function (x, k) { if (resolutions.issues && resolutions.issues[k]) x.resolution = resolutions.issues[k]; });
+      (review.coverage || []).forEach(function (g, k) { if (resolutions.coverage && resolutions.coverage[k]) g.resolution = resolutions.coverage[k]; });
+    }
+    await persistPinvouReviews(); // 落盘,配合后端 preserve_resolutions 防覆盖
+    state.pinvouModal = null; // 裁决完关窗
+    notify();
+    if (!actions || !actions.length) return;
+    // 按动作类型分组,组装一条 Boss 消息发给主 AI(Boss 驾驶,非自动回传):
+    //   fix/verify=产物缺陷定向修订(verify 先核实);adopt=Boss 已定的决策;ask=让 AI 正式问。
+    var fix = actions.filter(function (a) { return a.t === "fix"; });
+    var verify = actions.filter(function (a) { return a.t === "verify"; });
+    var adopt = actions.filter(function (a) { return a.t === "adopt"; });
+    var ask = actions.filter(function (a) { return a.t === "ask"; });
+    var parts = [];
+    if (fix.length) {
+      parts.push("请按下面的检阅意见，**只定向修改对应段落，不要全文重写**：");
+      fix.forEach(function (a) { parts.push("- " + a.text); });
+    }
+    if (verify.length) {
+      if (parts.length) parts.push("");
+      parts.push("以下几条涉及外部事实，**先查证再改、标明依据，别凭记忆直接改**：");
+      verify.forEach(function (a) { parts.push("- " + a.text); });
+    }
+    if (adopt.length) {
+      if (parts.length) parts.push("");
+      parts.push("以下事项我已拍板，按此更新产物：");
+      adopt.forEach(function (a) { parts.push("- " + (a.topic ? a.topic + "：" : "") + a.pick); });
+    }
+    if (ask.length) {
+      if (parts.length) parts.push("");
+      parts.push("以下待定项请用 request_user_input 正式问我，别自己猜：");
+      ask.forEach(function (a) { parts.push("- " + a.topic); });
+    }
+    var fill = actions.filter(function (a) { return a.t === "fill"; });
+    if (fill.length) {
+      if (parts.length) parts.push("");
+      parts.push("以下维度产物还缺，请补充进去（保留其余、只增不改）：");
+      fill.forEach(function (a) { parts.push("- " + a.dimension + (a.suggestion ? "：" + a.suggestion : "")); });
+      parts.push("（涉及外部事实的，先查证再写、标依据，别凭记忆编。）");
+    }
+    if (parts.length) sendMessage(parts.join("\n"), { pinvouTransfer: isWu ? "悟" : "品" });
+  }
+
+  // 整卡跳过:Boss 看了不处理这次检阅 → 直接关窗(sidecar entry 留着、无 resolution,无害)。
+  function dismissPinvouReview() {
+    state.pinvouModal = null;
+    notify();
+  }
+  // 把当前 session 的审查时间线(含勾选写回的 resolution)重新落盘。返回 promise 供 await。
+  function persistPinvouReviews() {
+    if (!state.activeSessionId) return Promise.resolve();
+    var snapshot = JSON.parse(JSON.stringify(state.pinvouReviews));
+    return invoke("save_session_pinvou_reviews", { sessionId: state.activeSessionId, reviews: snapshot }).catch(function () {});
   }
 
   async function cancelGeneration() {
@@ -904,6 +1065,7 @@
 
   listen("chat:tool_start", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
+    if (p.session_id) turnUsageDirty[p.session_id] = true; // 多请求轮，usage 累加值不可当占用
     toolMeta[p.id] = { name: p.name, args: p.args };
     thinkingTool(p.name);
     flushPendingTextBlock();
@@ -958,13 +1120,15 @@
     // messages(tool_start line 784),rerenderFromMessages 按 name 还原,切会话不丢。
     if (meta && isPresentArtifactTool(meta.name)) {
       if (p.success) {
+        var presentedPath = (meta.args && meta.args.path) || "";
         addChatItem({
           type: "artifact_card",
-          path: (meta.args && meta.args.path) || "",
+          path: presentedPath,
           title: (meta.args && meta.args.title) || "",
           description: (meta.args && meta.args.description) || "",
           time: timeStr(),
         });
+        if (presentedPath) state.turnPresentedArtifacts.push(presentedPath); // 本 turn 已出成品卡,chat:done 不再兜底补
         delete toolMeta[p.id];
         currentStreamText = ""; currentStreamId = 0;
         notify();
@@ -989,19 +1153,18 @@
       addChatItem({ type: "careful_blocked", args: meta && meta.args, metadata: md, time: timeStr() });
     }
 
-    // write_file / append_file 成功 → 加入产物列表
-    if (p.success && meta && (meta.name === "write_file" || meta.name === "append_file")) {
+    // write_file/append_file/edit_file 改了产物 → 记账,turn 结束(chat:done)统一补成品卡。
+    // 改成记账+去重:AI 一个 turn 会 edit_file 改很多次,实时续会刷出一堆卡;且 edit_file
+    // 之前不触发续卡 → 改完没新卡片 → 没法对改后产物再召唤 pinvou(核账闭环断裂)。
+    if (p.success && meta && (meta.name === "write_file" || meta.name === "append_file" || meta.name === "edit_file")) {
       var ap = extractArtifactPath(meta.args);
       if (ap) {
-        trackArtifact(ap);
-        // 自动续卡:之前 present 过的成品被改了 → 再弹一张新成品卡(每次新卡,对齐
-        // pinvou2),复用首次的 title/description(也复用首次可打开的 path)。
-        var prevCard = findPresentedArtifact(ap);
-        if (prevCard) {
-          addChatItem({
-            type: "artifact_card", path: prevCard.path, title: prevCard.title,
-            description: prevCard.description, time: timeStr(),
-          });
+        if (meta.name !== "edit_file") trackArtifact(ap); // edit_file 只改已有,不新建产物
+        // 产物(present 过的成品 或 write/append 写进产物列表的)被写/改 → turn 结束补卡。
+        // 不再要求 present 过:AI 经常写完产物忘了 present_artifact → 没成品卡 = 没召唤入口。
+        var isArtifact = !!findPresentedArtifact(ap) || state.artifacts.some(function (a) { return a.path === ap; });
+        if (isArtifact && state.turnDirtyArtifacts.indexOf(ap) < 0) {
+          state.turnDirtyArtifacts.push(ap);
         }
       }
     }
@@ -1032,6 +1195,17 @@
       var error = e.payload && e.payload.error;
       if (error) addSystemItem("⚠️ " + error);
       flushAssistantMessageToHistory();
+      // 本 turn 写/改过的产物 → 末尾补一张成品卡(带召唤图标),让 Boss 就近召唤 pinvou。
+      // present 过的复用其 title/desc;AI 没 present 的兜底用文件名补首卡(否则没召唤入口=这次的 bug)。
+      // 本 turn 刚 present_artifact 出过卡的跳过,不重复。edit/append 改多次也只补一张。
+      (state.turnDirtyArtifacts || []).forEach(function (ap) {
+        if ((state.turnPresentedArtifacts || []).indexOf(ap) >= 0) return;
+        var prev = findPresentedArtifact(ap);
+        if (prev) addChatItem({ type: "artifact_card", path: prev.path, title: prev.title, description: prev.description, time: timeStr() });
+        else addChatItem({ type: "artifact_card", path: ap, title: basename(ap), description: "", time: timeStr() });
+      });
+      state.turnDirtyArtifacts = [];
+      state.turnPresentedArtifacts = [];
       // Finalize streaming bubble
       var streamItem = state.chatItems.find(function (it) { return it.id === currentStreamId; });
       if (streamItem) streamItem.streaming = false;
@@ -1062,6 +1236,8 @@
   });
 
   listen("chat:usage", function (e) { onSessionEvent(e, function () {
+    var sid = e.payload && e.payload.session_id;
+    if (sid && turnUsageDirty[sid]) return; // 本轮多请求，累加值≠占用，保留上个准确值
     var input = Number(e.payload && e.payload.input_tokens || 0);
     if (input > 0) {
       state.tokens = { input: input, max: maxModelLen };
@@ -1070,6 +1246,7 @@
   }); });
 
   listen("chat:compaction", function (e) { onSessionEvent(e, function () {
+    if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 压缩轮 usage 含摘要请求
     var phase = e.payload && e.payload.phase;
     var msg = e.payload && e.payload.message || "";
     var auto = e.payload && e.payload.auto ? bt("compactAuto") : "";
@@ -1077,12 +1254,6 @@
     else if (phase === "done") addSystemItem(bt("compactDone") + auto + " " + msg);
     else if (phase === "fail") addSystemItem(bt("compactFail") + auto + ": " + msg);
   }); });
-
-  // render_surface:把图纸事件转成 window 事件,SurfaceOverlay 接。
-  listen("chat:surface_render", function (e) {
-    var p = e.payload || {};
-    window.dispatchEvent(new CustomEvent("pinvou:surface", { detail: { surfaceId: p.surface_id, spec: p.spec } }));
-  });
 
   // ── request_user_input：渲染选择卡片（不进 messages.json）─────────
   // payload: { id: tool_call_id, questions: [{header, id, question, options:[{label, description}]}] }
@@ -1100,6 +1271,7 @@
   // 可恢复的瞬态错误（SSE idle timeout / 瞬态工具失败）：turn 没结束，引擎会 retry，
   // 绝不 setBusy(false)，只飘一条 ⚠️ 提示。
   listen("chat:transient_error", function (e) { onSessionEvent(e, function () {
+    if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 重试轮 usage 含重发请求
     var error = e.payload && e.payload.error;
     if (error) addSystemItem("⚠️ " + error);
   }); });
@@ -1388,6 +1560,12 @@
     if (m > 0) return m + "m " + (secs % 60) + "s";
     return secs + "s";
   }
+  function fmtTok(n) {
+    if (n == null) return "—";
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
+    return String(Math.round(n));
+  }
 
   async function pollMonitor() {
     try {
@@ -1431,6 +1609,12 @@
             (snap.vllm.num_requests_waiting != null ? snap.vllm.num_requests_waiting : "—") : "— / —",
         vllmKv: snap.vllm && snap.vllm.prefix_cache_hit_pct != null
           ? snap.vllm.prefix_cache_hit_pct.toFixed(1) + "%" : "—",
+        vllmTtft: snap.vllm && snap.vllm.ttft_count > 0
+          ? (snap.vllm.ttft_sum_s / snap.vllm.ttft_count).toFixed(2) + " s" : "—",
+        vllmTps: snap.vllm && snap.vllm.tpot_sum_s > 0
+          ? (snap.vllm.tpot_count / snap.vllm.tpot_sum_s).toFixed(1) + " tok/s" : "—",
+        vllmTokTotal: snap.vllm && snap.vllm.generation_tokens_total != null
+          ? fmtTok(snap.vllm.generation_tokens_total) + " / " + fmtTok(snap.vllm.prompt_tokens_total) : "—",
         appVersion: snap.app ? snap.app.pinvou3_version : "—",
         dtVersion: snap.app ? snap.app.deepseek_tui_version : "—",
         uptime: snap.app ? fmtDuration(snap.app.session_uptime_secs) : "—",
@@ -1465,6 +1649,11 @@
     try {
       var s = await invoke("get_backend_status");
       state.backendOnline = !!s.vllm_online;
+      // 修 token 分母时机 bug：不再依赖用户打开监控页才拿到真实 max_model_len
+      if (s.max_model_len) {
+        maxModelLen = s.max_model_len;
+        state.tokens.max = maxModelLen;
+      }
     } catch (e) {
       state.backendOnline = false;
     }
@@ -1693,6 +1882,7 @@
     currentStreamId = ++itemIdSeq;
     state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
     notify();
+    turnUsageDirty[state.activeSessionId] = false; // 编辑重跑=新一轮，同 doSendFor 重置口径保护
     try {
       await invoke("edit_last_turn", { newMessage: newText, sessionId: state.activeSessionId });
     } catch (e) {
@@ -2107,9 +2297,10 @@
     // 用户交互
     submitUserInput: submitUserInput,
     cancelUserInput: cancelUserInput,
-    // render_surface 回传
-    submitSurface: function (surfaceId, state) { return invoke("submit_surface", { surfaceId: surfaceId, state: state }); },
-    cancelSurface: function (surfaceId) { return invoke("cancel_surface", { surfaceId: surfaceId }); },
+    summonPinvou: summonPinvou,
+    inspectPinvou: inspectPinvou,
+    resolvePinvouReview: resolvePinvouReview,
+    dismissPinvouReview: dismissPinvouReview,
     // 编辑/压缩
     editLastTurn: editLastTurn,
     compactNow: compactNow,

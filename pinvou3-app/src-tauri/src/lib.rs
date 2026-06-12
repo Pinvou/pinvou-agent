@@ -23,6 +23,7 @@ mod file_watcher;
 mod harness;
 mod monitor;
 pub mod personas;
+mod pinvou_review;
 pub mod super_permission;
 mod updater;
 mod workflow_migrate;
@@ -201,6 +202,9 @@ pub fn run() {
             commands::add_run_materials,
             commands::cancel_user_input,
             commands::restart_engine,
+            commands::summon_pinvou,
+            commands::save_session_pinvou_reviews,
+            commands::get_session_pinvou_reviews,
             commands::get_super_permission_status,
             commands::set_super_permission,
             commands::list_personas,

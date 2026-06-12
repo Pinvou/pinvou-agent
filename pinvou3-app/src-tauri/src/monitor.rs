@@ -57,6 +57,17 @@ pub struct VllmSnapshot {
     /// 反映"重复 prompt prefix 复用 KV 比例",直接关联首字延迟。
     /// 瞬时 kv_cache_usage_perc 单用户场景一直是 0-2%,意义不大,已替换。
     pub prefix_cache_hit_pct: Option<f64>,
+    /// TTFT 直方图累计值（vllm:time_to_first_token_seconds_sum/_count）。
+    /// 累积平均 = sum/count。counter 跟随 vLLM 进程生命周期，
+    /// 换模型 = 重启进程 = 自动归零，因此天然按模型分段。
+    pub ttft_sum_s: Option<f64>,
+    pub ttft_count: Option<f64>,
+    /// TPOT 直方图累计值。⚠️ 真实指标名带 request_ 前缀
+    /// （vllm:request_time_per_output_token_seconds_*），2026-06-10 实测锁名。
+    pub tpot_sum_s: Option<f64>,
+    pub tpot_count: Option<f64>,
+    pub generation_tokens_total: Option<f64>,
+    pub prompt_tokens_total: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -216,6 +227,12 @@ pub async fn vllm_snapshot(upstream: &str, configured_model: Option<String>) -> 
                 num_requests_running: None,
                 num_requests_waiting: None,
                 prefix_cache_hit_pct: None,
+                ttft_sum_s: None,
+                ttft_count: None,
+                tpot_sum_s: None,
+                tpot_count: None,
+                generation_tokens_total: None,
+                prompt_tokens_total: None,
             });
         }
     };
@@ -255,6 +272,11 @@ pub async fn vllm_snapshot(upstream: &str, configured_model: Option<String>) -> 
         }
     });
 
+    let perf = metrics_text
+        .as_deref()
+        .map(parse_perf_metrics)
+        .unwrap_or_default();
+
     let mut status = match (running, waiting) {
         (Some(r), _) if r > 0.0 => VllmStatus::Busy,
         (_, Some(w)) if w > 0.0 => VllmStatus::Busy,
@@ -279,6 +301,12 @@ pub async fn vllm_snapshot(upstream: &str, configured_model: Option<String>) -> 
         num_requests_running: running,
         num_requests_waiting: waiting,
         prefix_cache_hit_pct: prefix_hit_pct,
+        ttft_sum_s: perf.ttft_sum_s,
+        ttft_count: perf.ttft_count,
+        tpot_sum_s: perf.tpot_sum_s,
+        tpot_count: perf.tpot_count,
+        generation_tokens_total: perf.generation_tokens_total,
+        prompt_tokens_total: perf.prompt_tokens_total,
     })
 }
 
@@ -293,6 +321,28 @@ fn parse_models_response(v: serde_json::Value) -> Option<(Option<String>, Option
         .and_then(|v| v.as_u64())
         .map(|n| n as u32);
     Some((id, max))
+}
+
+/// 推理性能相关的 6 个累计指标，统一解析、统一缺省 None。
+#[derive(Debug, Default)]
+struct PerfMetrics {
+    ttft_sum_s: Option<f64>,
+    ttft_count: Option<f64>,
+    tpot_sum_s: Option<f64>,
+    tpot_count: Option<f64>,
+    generation_tokens_total: Option<f64>,
+    prompt_tokens_total: Option<f64>,
+}
+
+fn parse_perf_metrics(text: &str) -> PerfMetrics {
+    PerfMetrics {
+        ttft_sum_s: parse_prom_metric(text, "vllm:time_to_first_token_seconds_sum"),
+        ttft_count: parse_prom_metric(text, "vllm:time_to_first_token_seconds_count"),
+        tpot_sum_s: parse_prom_metric(text, "vllm:request_time_per_output_token_seconds_sum"),
+        tpot_count: parse_prom_metric(text, "vllm:request_time_per_output_token_seconds_count"),
+        generation_tokens_total: parse_prom_metric(text, "vllm:generation_tokens_total"),
+        prompt_tokens_total: parse_prom_metric(text, "vllm:prompt_tokens_total"),
+    }
 }
 
 /// 从 Prometheus 文本里抽某个指标的第一个数值，例如：
@@ -417,5 +467,44 @@ mod tests {
         let (id, max) = parse_models_response(json).unwrap();
         assert_eq!(id.as_deref(), Some("/model"));
         assert_eq!(max, Some(65536));
+    }
+
+    /// 2026-06-10 本机 vLLM nightly(NVFP4) /metrics 实抓片段。
+    /// 注意 TPOT 直方图真实名带 request_ 前缀。
+    const REAL_METRICS_FIXTURE: &str = "\
+# HELP vllm:prompt_tokens_total Number of prefill tokens processed.\n\
+# TYPE vllm:prompt_tokens_total counter\n\
+vllm:prompt_tokens_total{engine=\"0\",model_name=\"qwen36_35b_256k\"} 4.1367205e+07\n\
+# HELP vllm:generation_tokens_total Number of generation tokens processed.\n\
+# TYPE vllm:generation_tokens_total counter\n\
+vllm:generation_tokens_total{engine=\"0\",model_name=\"qwen36_35b_256k\"} 295648.0\n\
+vllm:time_to_first_token_seconds_bucket{engine=\"0\",le=\"0.001\",model_name=\"qwen36_35b_256k\"} 0.0\n\
+vllm:time_to_first_token_seconds_created{engine=\"0\",model_name=\"qwen36_35b_256k\"} 1.7654321e+09\n\
+vllm:time_to_first_token_seconds_count{engine=\"0\",model_name=\"qwen36_35b_256k\"} 498.0\n\
+vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"} 1049.8486831188202\n\
+vllm:request_time_per_output_token_seconds_count{engine=\"0\",model_name=\"qwen36_35b_256k\"} 495.0\n\
+vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"} 6.363213540238716\n";
+
+    #[test]
+    fn perf_metrics_parse_from_real_fixture() {
+        let m = parse_perf_metrics(REAL_METRICS_FIXTURE);
+        assert_eq!(m.ttft_sum_s, Some(1049.8486831188202));
+        assert_eq!(m.ttft_count, Some(498.0));
+        assert_eq!(m.tpot_sum_s, Some(6.363213540238716));
+        assert_eq!(m.tpot_count, Some(495.0));
+        assert_eq!(m.generation_tokens_total, Some(295648.0));
+        // 科学计数法 counter 也要能解析
+        assert_eq!(m.prompt_tokens_total, Some(4.1367205e+07));
+    }
+
+    #[test]
+    fn perf_metrics_all_none_when_metrics_absent() {
+        let m = parse_perf_metrics("some_other_metric 1.0\n");
+        assert!(m.ttft_sum_s.is_none());
+        assert!(m.ttft_count.is_none());
+        assert!(m.tpot_sum_s.is_none());
+        assert!(m.tpot_count.is_none());
+        assert!(m.generation_tokens_total.is_none());
+        assert!(m.prompt_tokens_total.is_none());
     }
 }

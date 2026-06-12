@@ -525,6 +525,9 @@ fn normalize_local_vllm_base_url(raw: &str) -> Option<String> {
 pub struct BackendStatus {
     pub vllm_online: bool,
     pub last_check_ms: u64,
+    /// vLLM 真实上下文窗口（前端 token 进度数据的分母）。
+    /// 随 live-dot 轮询下发，监控页未打开时也能保持准确。
+    pub max_model_len: Option<u32>,
 }
 
 #[tauri::command]
@@ -539,6 +542,7 @@ pub async fn get_backend_status(_monitor: State<'_, MonitorState>) -> Result<Bac
         vllm.as_ref().map(|v| v.status),
         Some(VllmStatus::Ready) | Some(VllmStatus::Busy)
     );
+    let max_model_len = vllm.as_ref().and_then(|v| v.max_model_len);
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -546,6 +550,7 @@ pub async fn get_backend_status(_monitor: State<'_, MonitorState>) -> Result<Bac
     Ok(BackendStatus {
         vllm_online,
         last_check_ms: now_ms,
+        max_model_len,
     })
 }
 
@@ -1220,6 +1225,91 @@ pub async fn get_session_persona_events(session_id: String) -> Result<serde_json
     }
 }
 
+/// Pinvou 召唤检阅时间线（opaque JSON，后端透明落盘，同 persona_events 范式）。
+/// 前端每次召唤后存，load_session 时读回，rerender 按 pos 插回审查卡——独立于
+/// messages，绝不进 LLM 上下文（设计 §6 / `docs/品悟v4-常驻检阅助手设计.md`）。
+/// 落盘前保留盘上已有的 resolution：防止后续全量 save（典型=核账 record 用不含 resolution
+/// 的快照）冲掉 Boss 已做的逐条裁决。按数组下标对齐——pinvouReviews 是 append-only、每条
+/// review 内容不可变，下标稳定可靠。new 自带 resolution 就用 new（允许 Boss 改裁决）；new
+/// 缺失才继承 old。根治「resolution 写进 sidecar 后被无 resolution 的全量 save 覆盖」的实测 bug。
+fn preserve_resolutions(path: &std::path::Path, new: serde_json::Value) -> serde_json::Value {
+    let old: serde_json::Value = match std::fs::read_to_string(path) {
+        Ok(txt) => match serde_json::from_str(&txt) {
+            Ok(v) => v,
+            Err(_) => return new,
+        },
+        Err(_) => return new,
+    };
+    merge_resolutions(old, new)
+}
+
+/// 纯合并逻辑（抽出便于单测）：new 缺 resolution 的条目继承 old 同下标的。
+fn merge_resolutions(old: serde_json::Value, mut new: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    let old_arr = match old.as_array() {
+        Some(a) => a,
+        None => return new,
+    };
+    let new_arr = match new.as_array_mut() {
+        Some(a) => a,
+        None => return new,
+    };
+    for (i, entry) in new_arr.iter_mut().enumerate() {
+        let old_entry = match old_arr.get(i) {
+            Some(e) => e,
+            None => continue,
+        };
+        for field in ["issues", "recommendations"] {
+            let ptr = format!("/review/{field}");
+            let old_items = match old_entry.pointer(&ptr).and_then(Value::as_array) {
+                Some(a) => a,
+                None => continue,
+            };
+            let new_items = match entry.pointer_mut(&ptr).and_then(Value::as_array_mut) {
+                Some(a) => a,
+                None => continue,
+            };
+            for (j, ni) in new_items.iter_mut().enumerate() {
+                if ni.get("resolution").map_or(false, |v| !v.is_null()) {
+                    continue; // new 已带裁决，尊重 new（含 Boss 改裁决/取消）
+                }
+                if let Some(old_res) = old_items.get(j).and_then(|x| x.get("resolution")) {
+                    if !old_res.is_null() {
+                        if let Some(obj) = ni.as_object_mut() {
+                            obj.insert("resolution".to_string(), old_res.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    new
+}
+
+#[tauri::command]
+pub async fn save_session_pinvou_reviews(
+    session_id: String,
+    reviews: serde_json::Value,
+) -> Result<(), String> {
+    let path = crate::bridge::paths::session_pinvou_reviews(&session_id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("建 session 目录失败: {e}"))?;
+    }
+    let merged = preserve_resolutions(&path, reviews);
+    let json = serde_json::to_string(&merged).map_err(|e| format!("序列化失败: {e}"))?;
+    std::fs::write(&path, json).map_err(|e| format!("写 Pinvou 审查失败: {e}"))
+}
+
+/// 读某 session 的 Pinvou 审查时间线（无则返回空数组）。
+#[tauri::command]
+pub async fn get_session_pinvou_reviews(session_id: String) -> Result<serde_json::Value, String> {
+    let path = crate::bridge::paths::session_pinvou_reviews(&session_id);
+    match std::fs::read_to_string(&path) {
+        Ok(txt) => Ok(serde_json::from_str(&txt).unwrap_or_else(|_| serde_json::json!([]))),
+        Err(_) => Ok(serde_json::json!([])),
+    }
+}
+
 /// 摘下当前 session 的专家面具（点挂件取消 / 卡片"已加持"再点）。
 #[tauri::command]
 pub async fn unequip_persona(
@@ -1464,6 +1554,38 @@ pub async fn restart_engine(
         pool.evict(&sid).await;
     }
     Ok(())
+}
+
+// ===================== Pinvou v4 召唤式检阅 =====================
+
+/// Boss 主动召唤 Pinvou 检阅当前 session 的工作（设计 `docs/品悟v4-常驻检阅助手设计.md`）。
+/// 取该 session 全部 messages → 投影/全喂 → 单次独立 LLM 审查 → 返回 personas/issues。
+/// 纯召唤、不替 Boss 决策；自动触发已彻底移除。
+#[tauri::command]
+pub async fn summon_pinvou(
+    session_id: Option<String>,
+    focus: Option<String>,
+    mode: Option<String>,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+) -> Result<crate::pinvou_review::PinvouReview, String> {
+    let sid = session_id
+        .or_else(|| store.active_id())
+        .ok_or_else(|| "no active session".to_string())?;
+    let session = store
+        .load(&sid)
+        .map_err(|e| format!("summon_pinvou load({sid}): {e:?}"))?;
+    let workspace = pool.bridge.session_workspace(&sid);
+    crate::pinvou_review::summon(
+        &pool.bridge,
+        &session.messages,
+        &workspace,
+        &sid,
+        focus.as_deref(),
+        mode.as_deref(),
+    )
+    .await
+    .map_err(|e| format!("summon_pinvou: {e:?}"))
 }
 
 /// 路径校验：必须是绝对路径 + 路径解析后无 `..` 逃逸 + 不命中敏感清单。
@@ -2757,6 +2879,40 @@ pub async fn list_session_skill_bindings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// merge_resolutions 锁住实测 bug:勾选写进 sidecar 的 resolution 不能被后续不含
+    /// resolution 的全量 save(典型=核账 record 的原始快照)覆盖,否则核账无法跳过「接受现状」。
+    #[test]
+    fn merge_preserves_old_resolution_when_new_missing() {
+        let old = serde_json::json!([
+            {"pos":10,"review":{"issues":[{"text":"a","resolution":"modify"},{"text":"b","resolution":"accept"}],"recommendations":[]}}
+        ]);
+        // 核账 record 的 new:同一条 review 的 issues 不带 resolution(原始快照态)+ 追加 pos=44
+        let new = serde_json::json!([
+            {"pos":10,"review":{"issues":[{"text":"a"},{"text":"b"}],"recommendations":[]}},
+            {"pos":44,"review":{"issues":[],"recommendations":[]}}
+        ]);
+        let merged = merge_resolutions(old, new);
+        assert_eq!(merged[0]["review"]["issues"][0]["resolution"], "modify");
+        assert_eq!(merged[0]["review"]["issues"][1]["resolution"], "accept");
+    }
+
+    #[test]
+    fn merge_respects_new_resolution_for_changed_verdict() {
+        // Boss 改裁决:new 自带新值,不被 old 覆盖
+        let old = serde_json::json!([{"pos":10,"review":{"issues":[{"text":"a","resolution":"modify"}],"recommendations":[]}}]);
+        let new = serde_json::json!([{"pos":10,"review":{"issues":[{"text":"a","resolution":"accept"}],"recommendations":[]}}]);
+        let merged = merge_resolutions(old, new);
+        assert_eq!(merged[0]["review"]["issues"][0]["resolution"], "accept");
+    }
+
+    #[test]
+    fn merge_covers_recommendations_field() {
+        let old = serde_json::json!([{"pos":1,"review":{"issues":[],"recommendations":[{"topic":"t","resolution":"modify"}]}}]);
+        let new = serde_json::json!([{"pos":1,"review":{"issues":[],"recommendations":[{"topic":"t"}]}}]);
+        let merged = merge_resolutions(old, new);
+        assert_eq!(merged[0]["review"]["recommendations"][0]["resolution"], "modify");
+    }
 
     /// `open_external_url` 必须只放 metaso.cn / open.bochaai.com / console.bce.baidu.com /
     /// app.tavily.com,任何其他 host / 任何其他 scheme(http、file、javascript)都立即
