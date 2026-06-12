@@ -163,10 +163,8 @@ pub async fn install_update(deb_path: String) -> Result<(), String> {
     let canon = validate_deb_path(Path::new(&deb_path))?;
     // DEBIAN_FRONTEND 防 dpkg conffile 冲突卡交互；--reinstall 容错同版本重装。
     // 路径已白名单校验（~/.pinvou3/updates/ 下 .deb 且无引号），注入面可控。
-    // 先尝试修复可能已存在的依赖破损（常见于从 v0.3.3 等旧版本升级的系统），
-    // 然后再安装新版 deb。pkexec 单次授权执行两条命令，避免弹两次密码框。
     let script = format!(
-        "DEBIAN_FRONTEND=noninteractive apt-get --fix-broken install -y && \\n         DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall '{}'",
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall '{}'",
         canon.display()
     );
     // pkexec 等用户输密码可能很久，放 blocking 线程别占 async runtime
