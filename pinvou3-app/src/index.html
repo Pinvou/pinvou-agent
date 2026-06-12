@@ -206,7 +206,7 @@
         downloadInstall: '下载并安装', downloading: '下载中…', installing: '安装中…',
         updateComplete: '升级完成，重启后生效', restartNow: '立即重启',
         updateCheckFailed: '检查失败',
-        chatGreeting: '你好，今天想聊点什么？', artifacts: '产物与代码', placeholder: '询问 PINVOU 或输入指令', disclaimer: 'PINVOU 可能会生成不准确的信息，请仔细核实。',
+        chatGreeting: '你好，今天想聊点什么？', artifacts: '产物与代码', placeholder: '询问 PINVOU 或输入指令', disclaimer: 'PINVOU 可能会生成不准确的信息，请仔细核实。', ctxUsage: '上下文',
         searchPlaceholder: 'Search chats',
         // —— 卡牌池(cp*)。注:卡牌内容(名称/简介/正文)是数据,不在 UI 词典内 ——
         cpSubtitle: '专家能力卡组',
@@ -362,7 +362,7 @@
         downloadInstall: 'Download & Install', downloading: 'Downloading…', installing: 'Installing…',
         updateComplete: 'Update complete, restart to apply', restartNow: 'Restart Now',
         updateCheckFailed: 'Check failed',
-        chatGreeting: "Hi, what's good?", artifacts: 'Artifacts', placeholder: 'Ask PINVOU or enter a command', disclaimer: 'PINVOU may display inaccurate info, so double-check.',
+        chatGreeting: "Hi, what's good?", artifacts: 'Artifacts', placeholder: 'Ask PINVOU or enter a command', disclaimer: 'PINVOU may display inaccurate info, so double-check.', ctxUsage: 'Context',
         searchPlaceholder: 'Search chats',
         // —— Card Pool (cp*) ——
         cpSubtitle: 'Expert Capability Deck',
@@ -518,7 +518,7 @@
         downloadInstall: 'ダウンロードしてインストール', downloading: 'ダウンロード中…', installing: 'インストール中…',
         updateComplete: '更新が完了しました。再起動後に有効になります', restartNow: '今すぐ再起動',
         updateCheckFailed: '確認に失敗しました',
-        chatGreeting: 'こんにちは、今日は何をしましょうか？', artifacts: '成果物とコード', placeholder: 'PINVOU に質問またはコマンドを入力', disclaimer: 'PINVOU は不正確な情報を生成する可能性があります。必ずご確認ください。',
+        chatGreeting: 'こんにちは、今日は何をしましょうか？', artifacts: '成果物とコード', placeholder: 'PINVOU に質問またはコマンドを入力', disclaimer: 'PINVOU は不正確な情報を生成する可能性があります。必ずご確認ください。', ctxUsage: 'コンテキスト',
         searchPlaceholder: 'チャットを検索',
         // —— カードプール (cp*) ——
         cpSubtitle: 'エキスパートデッキ',
@@ -1751,6 +1751,9 @@
       const hasMessages = chatItems.length > 0;
       const attachments = (bs && bs.attachments) || [];
       const queued = (bs && bs.queued) || []; // 排队待发消息（当前 session 生成中时积压）
+      const ctxTokens = (bs && bs.tokens) || null; // {input, max}，chat:usage 每轮更新
+      const ctxPct = ctxTokens && ctxTokens.max > 0 ? ctxTokens.input / ctxTokens.max : 0;
+      const fmtCtxTok = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
       const artifactCount = (bs && bs.artifacts) ? bs.artifacts.length : 0;
       const hasSkill = !!(bs && bs.workflow && bs.workflow.activeSkillName);
       let lastUserId = null;
@@ -1914,6 +1917,14 @@
                 </button>
               )}
             </div>
+            {ctxTokens && ctxTokens.input > 0 && (
+              <div className={`mt-1.5 px-5 text-[11px] font-mono ${
+                ctxPct >= 0.9 ? (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]')
+                : ctxPct >= 0.75 ? (isDark ? 'text-[#F9AB00]' : 'text-[#B06000]')
+                : (isDark ? 'text-[#5F6368]' : 'text-[#9AA0A6]')}`}>
+                {t.ctxUsage} {fmtCtxTok(ctxTokens.input)} / {fmtCtxTok(ctxTokens.max)} · {Math.round(ctxPct * 100)}%
+              </div>
+            )}
             <div className="flex items-center justify-center mt-3">
                <p className={`text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{t.disclaimer}</p>
             </div>

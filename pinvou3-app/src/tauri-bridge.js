@@ -112,6 +112,10 @@
   var pendingAssistantBlocks = [];
   var itemIdSeq = 0;
   var toolMeta = {};       // id → { name, args }
+  // 上下文行口径保护：TurnComplete 的 usage.input_tokens 是本轮所有请求的累加
+  // （计费口径）。只有单请求的"干净轮"该值才等于当前上下文占用；本轮一旦出现
+  // 工具调用/重试/压缩（= 多请求），就跳过这次 tokens 更新，保留上一个准确值。
+  var turnUsageDirty = {};  // session_id → bool
   var monitorIntervalId = null;
   var gpuUtilHistory = [];
   var maxModelLen = 32768;
@@ -432,6 +436,7 @@
     try {
       await invoke("delete_session", { id: id });
       delete sessionStates[id]; // 丢掉该 session 的工作集缓冲(后端已 evict 其 engine)
+      delete turnUsageDirty[id];
       state.sessions = state.sessions.filter(function (s) { return s.id !== id; });
       if (state.activeSessionId === id) {
         // 删当前会话 → 落空白草稿页(不自动切上一条/不建空 session)。被删 session 的 buffer
@@ -783,6 +788,7 @@
   // 真正发送:在 sid 的工作集上加 user 气泡 + 流式占位 + busy,然后 invoke chat。
   // active/后台通用(后台走 runSyncOnSession 临时切工作集)。
   function doSendFor(sid, text, displayText, attachmentsPayload, meta) {
+    turnUsageDirty[sid] = false; // 新一轮开始，重置口径保护
     runSyncOnSession(sid, function () {
       var uitem = { type: "user", text: displayText, time: timeStr() };
       if (meta && meta.pinvouTransfer) uitem.pinvouTransfer = meta.pinvouTransfer; // 仅展示层,不进 messages/LLM
@@ -1037,6 +1043,7 @@
 
   listen("chat:tool_start", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
+    if (p.session_id) turnUsageDirty[p.session_id] = true; // 多请求轮，usage 累加值不可当占用
     toolMeta[p.id] = { name: p.name, args: p.args };
     thinkingTool(p.name);
     flushPendingTextBlock();
@@ -1207,6 +1214,8 @@
   });
 
   listen("chat:usage", function (e) { onSessionEvent(e, function () {
+    var sid = e.payload && e.payload.session_id;
+    if (sid && turnUsageDirty[sid]) return; // 本轮多请求，累加值≠占用，保留上个准确值
     var input = Number(e.payload && e.payload.input_tokens || 0);
     if (input > 0) {
       state.tokens = { input: input, max: maxModelLen };
@@ -1215,6 +1224,7 @@
   }); });
 
   listen("chat:compaction", function (e) { onSessionEvent(e, function () {
+    if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 压缩轮 usage 含摘要请求
     var phase = e.payload && e.payload.phase;
     var msg = e.payload && e.payload.message || "";
     var auto = e.payload && e.payload.auto ? bt("compactAuto") : "";
@@ -1239,6 +1249,7 @@
   // 可恢复的瞬态错误（SSE idle timeout / 瞬态工具失败）：turn 没结束，引擎会 retry，
   // 绝不 setBusy(false)，只飘一条 ⚠️ 提示。
   listen("chat:transient_error", function (e) { onSessionEvent(e, function () {
+    if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 重试轮 usage 含重发请求
     var error = e.payload && e.payload.error;
     if (error) addSystemItem("⚠️ " + error);
   }); });
@@ -1413,6 +1424,11 @@
     try {
       var s = await invoke("get_backend_status");
       state.backendOnline = !!s.vllm_online;
+      // 修 token 分母时机 bug：不再依赖用户打开监控页才拿到真实 max_model_len
+      if (s.max_model_len) {
+        maxModelLen = s.max_model_len;
+        state.tokens.max = maxModelLen;
+      }
     } catch (e) {
       state.backendOnline = false;
     }
@@ -1641,6 +1657,7 @@
     currentStreamId = ++itemIdSeq;
     state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
     notify();
+    turnUsageDirty[state.activeSessionId] = false; // 编辑重跑=新一轮，同 doSendFor 重置口径保护
     try {
       await invoke("edit_last_turn", { newMessage: newText, sessionId: state.activeSessionId });
     } catch (e) {
