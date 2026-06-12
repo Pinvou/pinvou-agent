@@ -914,7 +914,7 @@
     }
     if (verify.length) {
       if (parts.length) parts.push("");
-      parts.push("以下涉及外部事实(班次/票价/预约/营业时间/签证政策)，**必须先用 web_search 或 fetch_url 联网查证、确认后再改，并在改动处标注依据来源；严禁凭记忆或想当然直接改**：");
+      parts.push("以下几条涉及外部事实，**先查证再改、标明依据，别凭记忆直接改**：");
       verify.forEach(function (a) { parts.push("- " + a.text); });
     }
     if (adopt.length) {
@@ -930,8 +930,9 @@
     var fill = actions.filter(function (a) { return a.t === "fill"; });
     if (fill.length) {
       if (parts.length) parts.push("");
-      parts.push("以下维度产物还缺，请补充进去（保留其余内容、只增不改）；**凡涉及外部事实(班次/票价/预约/营业时间/证件政策)的，先用 web_search 或 fetch_url 查证再写、标注依据，别凭记忆编**：");
+      parts.push("以下维度产物还缺，请补充进去（保留其余、只增不改）：");
       fill.forEach(function (a) { parts.push("- " + a.dimension + (a.suggestion ? "：" + a.suggestion : "")); });
+      parts.push("（涉及外部事实的，先查证再写、标依据，别凭记忆编。）");
     }
     if (parts.length) sendMessage(parts.join("\n"), { pinvouTransfer: isWu ? "悟" : "品" });
   }
