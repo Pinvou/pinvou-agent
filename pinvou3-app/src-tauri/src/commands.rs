@@ -764,16 +764,65 @@ pub(crate) fn read_artifact_text_impl(path: &str) -> Result<String, String> {
     std::fs::read_to_string(&p).map_err(|e| format!("read_artifact_text({}): {e}", p.display()))
 }
 
-/// 奏折「御赐宝箱」:列出 run 的成品文档(项目 deliverables/ 下的文件,
-/// 含工部产的二进制成品如 .pptx)。二进制成品排前(对客户那才是"宝"),md 报告在后。
+/// 题目转安全文件名:去掉路径分隔/非法字符,截长,空了给兜底。
+fn sanitize_title_filename(title: &str, fallback: &str) -> String {
+    let cleaned: String = title
+        .chars()
+        .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r' | '\0'))
+        .collect::<String>()
+        .trim()
+        .chars()
+        .take(48)
+        .collect();
+    if cleaned.is_empty() {
+        fallback.to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// 奏折「御赐宝箱」:客户视角的成品分两层。
+/// - products(装箱的"真成品"):① 最终报告 final_report.md → 物化成
+///   **以题目命名**的副本(题目取太子立项 `_state/zhiyi.json` 的 title;幂等,
+///   内容变了重写)② deliverables/ 下非 .md 的二进制成品(.pptx 等,
+///   即工部「工件清单」硬闸核验过的那类)。
+/// - papers(过程文书,折叠展示):deliverables/ 下六部的 md 交付报告——
+///   衙门工作底稿,不是赐给客户的宝贝,但审计要找得到。
 #[tauri::command]
-pub async fn list_deliverables(project_dir: String) -> Result<Vec<serde_json::Value>, String> {
+pub async fn list_deliverables(project_dir: String) -> Result<serde_json::Value, String> {
     let p = validate_user_path(&project_dir)?;
-    let dir = p.join("deliverables");
-    let mut out: Vec<(bool, String, serde_json::Value)> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for e in entries.flatten() {
-            let path = e.path();
+    let mut products: Vec<serde_json::Value> = Vec::new();
+    let mut papers: Vec<serde_json::Value> = Vec::new();
+
+    // ① 最终报告 → 题目命名的成品副本(放项目根,不混进 deliverables/ 的扫描语义)
+    let report = p.join("final_report.md");
+    if report.is_file() {
+        let title = std::fs::read_to_string(p.join("_state").join("zhiyi.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.get("title").and_then(|t| t.as_str()).map(str::to_string));
+        let fname = format!(
+            "{}.md",
+            sanitize_title_filename(title.as_deref().unwrap_or(""), "最终报告")
+        );
+        let dst = p.join(&fname);
+        let src_bytes = std::fs::read(&report).unwrap_or_default();
+        let stale = std::fs::read(&dst).map(|b| b != src_bytes).unwrap_or(true);
+        if stale {
+            let _ = std::fs::write(&dst, &src_bytes);
+        }
+        products.push(serde_json::json!({
+            "name": fname,
+            "path": dst.to_string_lossy(),
+            "size": src_bytes.len(),
+        }));
+    }
+
+    // ② deliverables/:非 md → 成品;md → 过程文书
+    if let Ok(entries) = std::fs::read_dir(p.join("deliverables")) {
+        let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+        entries.sort();
+        for path in entries {
             if !path.is_file() {
                 continue;
             }
@@ -786,20 +835,19 @@ pub async fn list_deliverables(project_dir: String) -> Result<Vec<serde_json::Va
                 continue;
             }
             let size = path.metadata().map(|m| m.len()).unwrap_or(0);
-            let is_md = name.to_lowercase().ends_with(".md");
-            out.push((
-                is_md,
-                name.clone(),
-                serde_json::json!({
-                    "name": name,
-                    "path": path.to_string_lossy(),
-                    "size": size,
-                }),
-            ));
+            let item = serde_json::json!({
+                "name": name,
+                "path": path.to_string_lossy(),
+                "size": size,
+            });
+            if name.to_lowercase().ends_with(".md") {
+                papers.push(item);
+            } else {
+                products.push(item);
+            }
         }
     }
-    out.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
-    Ok(out.into_iter().map(|(_, _, v)| v).collect())
+    Ok(serde_json::json!({ "products": products, "papers": papers }))
 }
 
 /// 读 artifact 元数据：大小 / 类型 / 是否存在。

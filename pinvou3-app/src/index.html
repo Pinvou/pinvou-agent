@@ -4197,14 +4197,18 @@
     const ImperialMemorialModal = ({ projectDir, theme, onClose }) => {
       const [st, setSt] = useState({ loading: true, text: '', error: null });
       const [closing, setClosing] = useState(false);
-      // 御赐宝箱:run 的成品文档(deliverables/),点开箱盖掀开、成品弹出,点件即开
-      const [deliv, setDeliv] = useState([]);
+      // 御赐宝箱:两层——products=真成品(题目命名的最终报告+二进制成品),装箱;
+      // papers=六部过程文书,折叠降级展示(审计找得到,客户视角不被淹)。
+      const [deliv, setDeliv] = useState({ products: [], papers: [] });
       const [chestOpen, setChestOpen] = useState(false);
+      const [papersOpen, setPapersOpen] = useState(false);
       useEffect(() => {
         let alive = true;
         const dir = (projectDir || '').replace(/\/$/, '');
         if (dir && bridge.listDeliverables) {
-          bridge.listDeliverables(dir).then((fs) => { if (alive) setDeliv(fs || []); });
+          bridge.listDeliverables(dir).then((r) => {
+            if (alive) setDeliv({ products: (r && r.products) || [], papers: (r && r.papers) || [] });
+          });
         }
         return () => { alive = false; };
       }, [projectDir]);
@@ -4256,12 +4260,12 @@
                   : st.text ? <div className="msg-md light-code text-[14px] leading-[1.9]" style={{ color: '#3a2a18' }} dangerouslySetInnerHTML={{ __html: bridge.renderMarkdown(st.text) }} />
                   : <div style={{ color: '#7a5a2a' }} className="text-[13px] text-center py-10">尚无回奏内容</div>}
               </div>
-              {deliv.length > 0 && (
+              {deliv.products.length > 0 && (
                 <div className="shrink-0 px-8 pt-2 pb-1 text-center" style={{ borderTop: '1px dashed #c9a96a' }}>
-                  <div className="text-[11px] mb-1" style={{ color: '#7a5a2a', letterSpacing: '3px' }}>御 赐 宝 箱 · {deliv.length} 件成品</div>
+                  <div className="text-[11px] mb-1" style={{ color: '#7a5a2a', letterSpacing: '3px' }}>御 赐 宝 箱 · {deliv.products.length === 1 ? '成品一件' : `${deliv.products.length} 件成品`}</div>
                   {chestOpen && (
                     <div className="flex flex-wrap justify-center gap-2 mb-2">
-                      {deliv.map((f, i) => {
+                      {deliv.products.map((f, i) => {
                         const ext = (String(f.name).split('.').pop() || '').toLowerCase();
                         const chip = (ext === 'pptx' || ext === 'ppt') ? 'PPT' : ext === 'xlsx' ? '表' : ext === 'pdf' ? 'PDF'
                           : (ext === 'html' || ext === 'htm') ? '网页' : (ext === 'png' || ext === 'jpg' || ext === 'jpeg') ? '图' : '文';
@@ -4301,6 +4305,25 @@
                     </div>
                     <div className="text-[10px]" style={{ position: 'absolute', left: 0, right: 0, bottom: 0, color: '#7a5a2a' }}>{chestOpen ? '▲ 收箱' : '▼ 开箱取货'}</div>
                   </button>
+                  {deliv.papers.length > 0 && (
+                    <div className="mt-1">
+                      <button onClick={() => setPapersOpen((o) => !o)} className="text-[11px]"
+                        style={{ background: 'none', border: 'none', color: '#9a7b45', cursor: 'pointer', textDecoration: 'underline dotted' }}>
+                        {papersOpen ? '▾' : '▸'} 另有六部过程文书 {deliv.papers.length} 件
+                      </button>
+                      {papersOpen && (
+                        <div className="flex flex-wrap justify-center gap-1.5 mt-1 mb-1">
+                          {deliv.papers.map((f) => (
+                            <button key={f.path} onClick={() => bridge.openArtifactExternal(f.path)} title={'打开 ' + f.name}
+                              className="px-2 py-0.5 rounded text-[11px]"
+                              style={{ background: 'transparent', border: '1px solid #d9c89a', color: '#7a5a2a', cursor: 'pointer' }}>
+                              {f.name}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
               <div className="shrink-0 text-center py-3" style={{ borderTop: '1px solid #c9a96a' }}>
