@@ -87,6 +87,28 @@
     tokens: { input: 0, max: 32768 },
     // 思考指示器：active 时 React 渲染计时气泡（Braille + 思考中/调用工具 + 秒数）
     thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
+    // 工作流状态
+    workflow: {
+      skills: [],
+      loadState: "idle", // idle | loading | ready | error
+      activeSkillName: null,
+      phases: [],
+      currentPhaseId: null,
+      reachedPhaseIds: [],
+      bindings: {},      // session_id → skill_name
+      demo: null,        // { open, name, loading, kind, content, error, description, duration }
+      // 卡片流工作流运行态（无聊天，事件驱动看板）。详见 09-ui-plane 决策。
+      run: {
+        active: false,       // 是否有进行中的工作流
+        sessionId: null,
+        projectDir: null,
+        scenario: null,
+        status: "idle",      // idle | running | complete | blocked
+        agents: {},          // role_id → { id, name, status, last_gate_verdict, outputs_present, last_run_ts, depends_on }
+        cards: [],           // 底部交互卡片队列 [{ cardId, kind:'user_input'|'gate'|'system', resolved, ... }]
+        selectedRole: null,  // 右抽屉选中的角色
+      },
+    },
     // 卡片池: 专家面具。activePersona = 当前 session 加持的专家卡(完整对象)或 null,
     // 驱动聊天室右上角挂件。
     activePersona: null,
@@ -1317,6 +1339,209 @@
     notify();
   }); });
 
+  // chat:phase_changed —— 底座从 LLM 回复抽 <phase id="..."/> marker 触发。
+  // workflow phase chips 是全局(跟 active skill 走),后台 session 的 phase 变更不动 active chips。
+  listen("chat:phase_changed", function (e) {
+    var sid = e.payload && e.payload.session_id;
+    if (sid && sid !== state.activeSessionId) return;
+    var phaseId = e.payload && (e.payload.phase_id || e.payload.phaseId);
+    setCurrentPhase(phaseId, "llm");
+  });
+
+  // workflow:project_started —— start_workflow 后端建项目+绑定 session 后 emit。
+  // 必须真正 switchToSession 切过去（load 新 session 的空 messages + sync engine +
+  // syncSessionSkill），否则只设 activeSessionId 会让旧对话的 messages 残留在屏上，
+  // 顶部又叠加 PhaseChips，看起来像"旧对话被 append 了项目名"（Phase A 关键 bug）。
+  // refreshHistoryList 先跑让新 session 进 sidebar 列表 + 刷 bindings(🧭)。
+  // switchToSession 内部已调 syncSessionSkill，切完 App useEffect 自动 setCurrentView('chat')。
+  // [卡片流] start_workflow 后端建项目+绑定 session 后 emit。
+  // 新设计：**不再 switchToSession 跳聊天页** —— 用户停在工作流看板，
+  // 工作流 session 作为后台 session 跑，看板靠下面的 workflow:* 事件按 session_id 驱动。
+  listen("workflow:project_started", async function (e) {
+    var p = e.payload || {};
+    state.workflow.run = {
+      active: true, sessionId: p.session_id || null, projectDir: p.project_dir || null,
+      scenario: p.scenario || null, status: "running", agents: {}, cards: [], selectedRole: null,
+    };
+    await refreshHistoryList();
+    notify();
+  });
+
+  // ── 卡片流工作流：运行态 helper ──────────────────────────────────
+  // 事件只认本次 run 的 session（payload 无 session_id 时放行，兼容）。
+  function isRunSession(p) {
+    var s = state.workflow.run.sessionId;
+    return !p || !p.session_id || !s || p.session_id === s;
+  }
+  function applyAgentPatch(roleId, patch) {
+    if (!roleId) return;
+    var agents = state.workflow.run.agents;
+    agents[roleId] = Object.assign(agents[roleId] || { id: roleId }, patch);
+  }
+  function mergeFullState(p) {
+    var run = state.workflow.run;
+    if (p.project_dir) run.projectDir = p.project_dir;
+    if (p.scenario) run.scenario = p.scenario;
+    // [工作流分离] 后端按 scenario 解析出 workflow_id + workflow.json 的 ui 块,
+    // 前端泳道/表单/标题/奏折全按 run.ui 渲染(不再硬编码各工作流)。
+    if (p.workflow_id) run.workflowId = p.workflow_id;
+    if (p.ui) run.ui = p.ui;
+    var roles = p.roles || {};
+    // [B2 修] full_state 是权威全量快照:快照里没有的角色条目要删——尚书省派单后
+    // 静态六部被差事节点取代,留着陈旧条目会让泳道误判"六部在场"而不插差事批次泳道
+    // (实测:六部卡全员显示"等待尚书省交付",而差事其实已经在跑)。
+    Object.keys(state.workflow.run.agents).forEach(function (rid) {
+      if (!(rid in roles)) delete state.workflow.run.agents[rid];
+    });
+    Object.keys(roles).forEach(function (rid) {
+      var r = roles[rid] || {};
+      applyAgentPatch(rid, {
+        id: rid, name: r.name || rid, status: r.status || "pending",
+        last_gate_verdict: r.last_gate_verdict || null,
+        outputs_present: r.outputs_present || 0,
+        last_run_ts: r.last_run_ts || null,
+        depends_on: r.depends_on || [],
+        wave: r.wave, bu: r.bu,   // [B2 E1] 差事分层 + 取头像/配色
+      });
+    });
+    if (p.all_completed) run.status = "complete";
+  }
+  // [2026-06-06] 快照恢复：把前端 run 态挂回一个已存在的工作流 run（app 重启/切会话后）。
+  // 拉后端快照(get_workflow_state) → 点亮 run 态(复刻 project_started 结构) → mergeFullState
+  // 填角色 → 看板和「🔄 重跑」按钮全部恢复。非工作流会话(无 roles)返回 false、无副作用。
+  async function attachRun(sessionId, staleRunning) {
+    try {
+      var snap = await invoke("get_workflow_state", { sessionId: sessionId });
+      if (!snap || !snap.roles || Object.keys(snap.roles).length === 0) return false;
+      state.workflow.run = {
+        active: true, sessionId: sessionId, projectDir: snap.project_dir || null,
+        scenario: snap.scenario || null, status: snap.all_completed ? "complete" : "running",
+        agents: {}, cards: [], selectedRole: null,
+      };
+      mergeFullState(snap);
+      // [恢复] app 重启后,盘上记 running/reviewing 的角色其 SubAgent 已随重启死亡 →
+      // 标记 stale(需要重跑),卡片才显示「🔄 重跑」按钮;否则卡在"在工作"无出口。
+      // staleRunning 只在启动恢复(resumeWorkflowOnBoot)传 true;app 内切活跃 run 不传。
+      if (staleRunning) {
+        var ag = state.workflow.run.agents;
+        Object.keys(ag).forEach(function (rid) {
+          var s = ag[rid] && ag[rid].status;
+          if (s === "running" || s === "reviewing" || s === "briefing") ag[rid].status = "stale";
+        });
+      }
+      notify();
+      return true;
+    } catch (e) { console.warn("attachRun failed", e); return false; }
+  }
+  // app 启动后自动恢复最近一个进行中的工作流 run（后端扫 binding 找）。
+  async function resumeWorkflowOnBoot() {
+    try {
+      var r = await invoke("find_resumable_run");
+      if (r && r.session_id) {
+        await switchToSession(r.session_id);
+        await attachRun(r.session_id, true); // 启动恢复:僵死 running → stale,露出重跑按钮
+      }
+    } catch (e) { console.warn("resumeWorkflowOnBoot failed", e); }
+  }
+  function pushRunCard(card) { card.cardId = ++itemIdSeq; state.workflow.run.cards.push(card); }
+  function resolveRunCard(cardId, cardState) {
+    state.workflow.run.cards.forEach(function (c) { if (c.cardId === cardId) { c.resolved = true; c.cardState = cardState; } });
+    notify();
+  }
+  // 按角色 resolve 所有未处理的 gate 卡(去重 + 兜底:即便 cardId 对不上也清干净)。
+  function resolveRunCardsForRole(roleId, cardState) {
+    if (!roleId) return;
+    state.workflow.run.cards.forEach(function (c) {
+      if (c.kind === "gate" && c.roleId === roleId && !c.resolved) { c.resolved = true; c.cardState = cardState; }
+    });
+  }
+  // 批准/打回后拉一次后端真实状态,把看板角色态(gate_waiting→completed/running)刷正确。
+  async function refreshRunState() {
+    try {
+      var sid = state.workflow.run.sessionId; if (!sid) return;
+      var snap = await invoke("get_workflow_state", { sessionId: sid });
+      if (snap && snap.roles) mergeFullState(snap);
+    } catch (e) { console.warn("refreshRunState failed", e); }
+  }
+
+  // ── 卡片流工作流：事件监听 ───────────────────────────────────────
+  listen("workflow:full_state", function (e) {
+    var p = e.payload || {}; if (!isRunSession(p)) return;
+    mergeFullState(p); notify();
+  });
+  listen("workflow:agent_state_changed", function (e) {
+    var p = e.payload || {}; if (!isRunSession(p)) return;
+    applyAgentPatch(p.role_id, { name: p.role_name || p.role_id, status: p.status || "running" });
+    notify();
+  });
+  // [per_page] fan-out 逐页状态 → 工作流界面把该节点展开成 N 个 SubAgent chip。
+  // payload: { base_role, pages:[{page,status}] }，status ∈ queued|running|done|retrying。
+  listen("workflow:fanout", function (e) {
+    var p = e.payload || {}; if (!isRunSession(p)) return;
+    if (!state.workflow.run.fanout) state.workflow.run.fanout = {};
+    var pages = p.pages || [];
+    state.workflow.run.fanout[p.base_role] = { total: pages.length, pages: pages };
+    notify();
+  });
+  listen("workflow:complete", function (e) {
+    var p = e.payload || {}; if (!isRunSession(p)) return;
+    state.workflow.run.status = "complete";
+    // [edict-obs] 后端带回成品路径 → 弹成品卡(一键打开 deck)
+    if (p.artifact) {
+      pushRunCard({ kind: "artifact", path: p.artifact, text: "🎉 工作流完成，成品已生成", resolved: false });
+    }
+    notify();
+  });
+  listen("workflow:blocked", function (e) {
+    var p = e.payload || {}; if (!isRunSession(p)) return;
+    state.workflow.run.status = "blocked";
+    // 后端 emit 的是 message(+warmup_report)，不是 reason/waiting_roles。
+    pushRunCard({ kind: "system", text: "⚙️ 工作流卡住：" + (p.message || p.reason || "未知原因"), resolved: false });
+    notify();
+  });
+  listen("workflow:gate_approval", function (e) {
+    var p = e.payload || {}; if (!isRunSession(p)) return;
+    var findings = p.findings || (p.gate_description ? [p.gate_description] : []);
+    // 去重:同一角色已有未处理的 gate 卡 → 只更新 findings,不叠新卡(huizou 反复过闸会重复 emit)。
+    var dup = (state.workflow.run.cards || []).find(function (c) { return c.kind === "gate" && c.roleId === p.role_id && !c.resolved; });
+    if (dup) { dup.findings = findings; notify(); return; }
+    // 后端 emit 的是 gate_description(单串)，不是 findings —— 兜底收进 findings。
+    pushRunCard({ kind: "gate", roleId: p.role_id, roleName: p.role_name || p.role_id, findings: findings, resolved: false });
+    notify();
+  });
+  // [edict-obs] SubAgent 实时进展(底座每步/每个工具调用自动发)。
+  listen("workflow:agent_progress", function (e) {
+    var p = e.payload || {}; if (!isRunSession(p)) return;
+    if (!state.workflow.run.progress) state.workflow.run.progress = {};
+    var key = p.role_id || p.agent_id;
+    if (!key) return;
+    // per_page 成员 "<role>#p01" 归并到基础节点显示
+    var base = key.indexOf("#") > -1 ? key.split("#")[0] : key;
+    state.workflow.run.progress[base] = p.status || "";
+    notify();
+  });
+  // [edict-obs] per-role token 账本快照(每次 LLM 调用后推一次累计值)。
+  listen("workflow:token_usage", function (e) {
+    var p = e.payload || {}; if (!isRunSession(p)) return;
+    if (!state.workflow.run.tokens) state.workflow.run.tokens = {};
+    var key = p.role_id || p.agent_id;
+    if (!key) return;
+    var base = key.indexOf("#") > -1 ? key.split("#")[0] : key;
+    state.workflow.run.tokens[base] = {
+      input: p.input_tokens_total || 0, output: p.output_tokens_total || 0, calls: p.calls || 0,
+    };
+    notify();
+  });
+  // request_user_input：本次 run 的 session 弹问答卡到看板底部交互区
+  // （与上面 chat:user_input_required 的 chat 渲染并存，互不影响——工作流页看 run.cards）。
+  listen("chat:user_input_required", function (e) {
+    var p = e.payload || {};
+    if (!state.workflow.run.sessionId || p.session_id !== state.workflow.run.sessionId) return;
+    var qs = p.questions || []; if (!Array.isArray(qs) || !qs.length) return;
+    pushRunCard({ kind: "user_input", toolCallId: p.id, questions: qs, resolved: false });
+    notify();
+  });
+
   // ── Monitor ──────────────────────────────────────────────────────
   function fmtMiB(mib) {
     if (mib == null) return "—";
@@ -1673,6 +1898,7 @@
   // ── 产物面板 ─────────────────────────────────────────────────────
   function artifactInfo(path) { return invoke("artifact_info", { path: path }); }
   function readArtifactText(path) { return invoke("read_artifact_text", { path: path }); }
+  function readArtifactImageB64(path) { return invoke("read_artifact_image_b64", { path: path }); }
   function renderArtifactVisual(path) { return invoke("render_artifact_visual", { path: path }); }
   function openContainingFolder(path) { return invoke("open_containing_folder", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   function openInSystem(path) { return invoke("open_in_system", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
@@ -1872,6 +2098,156 @@
     invoke("restart_app").catch(function () { /* restart 成功不会返回 */ });
   }
 
+  // ── skill 工作流：动作（invoke 包装）[2026-06-06 恢复] ────────────
+  // 合并 973a6f0 把这 6 个函数定义弄丢了(导出/UI调用/后端命令都在,独缺定义)→
+  // 导出对象构建撞 ReferenceError(loadSkills undefined)→ window.TauriBridge 整个没装上。
+  // 从 943af78 原样恢复。
+  function setCurrentPhase(phaseId, source) {
+    if (!phaseId) return;
+    var wf = state.workflow;
+    // 大小写归一匹配 phases
+    var match = wf.phases.find(function (p) { return String(p.id).toLowerCase() === String(phaseId).toLowerCase(); });
+    var canonical = match ? match.id : phaseId;
+    wf.currentPhaseId = canonical;
+    if (wf.reachedPhaseIds.indexOf(canonical) < 0) wf.reachedPhaseIds.push(canonical);
+    notify();
+  }
+  async function loadSkills() {
+    state.workflow.loadState = "loading"; notify();
+    try {
+      state.workflow.skills = await invoke("list_skills_v2");
+      state.workflow.loadState = "ready";
+    } catch (e) { state.workflow.skills = []; state.workflow.loadState = "error"; }
+    notify();
+  }
+  async function activateSkill(name) {
+    try {
+      var res = await invoke("start_skill_session", { name: name });
+      var skill = res.skill || {};
+      var meta = res.session || res.metadata || {};
+      state.activeSessionId = meta.id || state.activeSessionId;
+      state.messages = []; state.chatItems = []; resetPendingAssistant();
+      state.workflow.activeSkillName = skill.name || name;
+      state.workflow.phases = skill.phases || [];
+      state.workflow.currentPhaseId = skill.current_phase_id || (skill.phases && skill.phases[0] && skill.phases[0].id) || null;
+      state.workflow.reachedPhaseIds = state.workflow.currentPhaseId ? [state.workflow.currentPhaseId] : [];
+      if (meta.id) state.workflow.bindings[meta.id] = skill.name || name;
+      await refreshHistoryList();
+      await syncModeState();
+      notify();
+      return res;
+    } catch (e) { addSystemItem("⚠️ 启用工作流失败: " + e); notify(); return null; }
+  }
+  async function deactivateSkill() {
+    if (state.activeSessionId) {
+      try { await invoke("unbind_session_skill", { sessionId: state.activeSessionId }); } catch (_) {}
+      delete state.workflow.bindings[state.activeSessionId];
+    }
+    state.workflow.activeSkillName = null;
+    state.workflow.phases = [];
+    state.workflow.currentPhaseId = null;
+    state.workflow.reachedPhaseIds = [];
+    notify();
+  }
+  async function openDemo(name) {
+    state.workflow.demo = { open: true, name: name, loading: true, kind: null, content: null, error: null, description: null, duration: null };
+    notify();
+    try {
+      var d = await invoke("read_skill_demo", { name: name });
+      state.workflow.demo = {
+        open: true, name: name, loading: false,
+        kind: d.file_kind, path: d.file_path, content: d.content,
+        error: null, description: d.description, duration: d.duration,
+      };
+    } catch (e) {
+      state.workflow.demo = { open: true, name: name, loading: false, kind: null, content: null, error: String(e) };
+    }
+    notify();
+  }
+  function closeDemo() { state.workflow.demo = null; notify(); }
+
+  // ── 卡片流工作流：动作（invoke 包装）────────────────────────────
+  // 新建任务：建项目（project_started 事件设 run 态）→ kick 派发首个 agent（无聊天）。
+  async function startWorkflowTask(scenario, brief) {
+    try {
+      var res = await invoke("start_workflow", { scenario: scenario, briefInit: brief || null });
+      try { await invoke("kick_workflow", { sessionId: res.session_id }); }
+      catch (e) { addSystemItem("⚠️ kick_workflow 失败: " + e); }
+      return res;
+    } catch (e) { addSystemItem("⚠️ 启动工作流失败: " + e); return null; }
+  }
+  // 模板页数据源:已发现且 enabled 的工作流(含 ui 块)。失败回空数组(模板页显示空态)。
+  async function listWorkflows() {
+    try { return (await invoke("list_workflows")) || []; }
+    catch (e) { console.warn("list_workflows failed", e); return []; }
+  }
+  function selectWorkflowRole(roleId) { state.workflow.run.selectedRole = roleId; notify(); }
+  function closeWorkflowDrawer() { state.workflow.run.selectedRole = null; notify(); }
+  function resetWorkflowRun() {
+    state.workflow.run = { active: false, sessionId: null, projectDir: null, scenario: null, status: "idle", agents: {}, cards: [], selectedRole: null };
+    notify();
+  }
+  // 抽屉数据：按 role 拉产出 / gate / 日志（projectDir 来自 run）。
+  function getRolePrompt(roleId, projectDir) { return invoke("get_role_prompt", { roleId: roleId, projectDir: projectDir || null }); }
+  function getRoleOutputs(roleId) { return invoke("get_role_outputs", { roleId: roleId, projectDir: state.workflow.run.projectDir }); }
+  function getGateReport(roleId) { return invoke("get_gate_report", { roleId: roleId, projectDir: state.workflow.run.projectDir }); }
+  function getRoleLogs(roleId, tail) { return invoke("get_role_logs", { roleId: roleId, projectDir: state.workflow.run.projectDir, tail: tail || 50 }); }
+  // 交互卡动作
+  async function submitWorkflowUserInput(cardId, toolCallId, answers) {
+    try { await invoke("submit_user_input", { toolCallId: toolCallId, answers: answers, sessionId: state.workflow.run.sessionId }); resolveRunCard(cardId, "submitted"); }
+    catch (e) { addSystemItem("⚠️ 提交失败: " + e); }
+  }
+  // [2026-06-06] 素材上传：复用系统文件选择器(dialogOpen) → 拷进当前 run 的 配套材料/。
+  // 返回落盘文件名数组(含同名去重);失败 throw 给调用方(卡片上报错)。
+  async function pickAndAddMaterials() {
+    if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return []; }
+    var selected = await dialogOpen({ multiple: true });
+    if (!selected) return [];
+    var paths = Array.isArray(selected) ? selected : [selected];
+    var added = await invoke("add_run_materials", { sessionId: state.workflow.run.sessionId, paths: paths });
+    addSystemItem("✅ 已添加 " + added.length + " 个素材到配套材料：" + added.join("、"));
+    return added;
+  }
+  // [新建任务模态] 只弹系统选择器拿路径,不拷贝(run 还没建)。返回路径数组。
+  async function pickFiles() {
+    if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return []; }
+    var selected = await dialogOpen({ multiple: true });
+    if (!selected) return [];
+    return Array.isArray(selected) ? selected : [selected];
+  }
+  // [新建任务模态] start_workflow 建好 run 后,把已选路径拷进该 session 的配套材料/。
+  async function addMaterialsToSession(sessionId, paths) {
+    if (!paths || !paths.length) return [];
+    return invoke("add_run_materials", { sessionId: sessionId, paths: paths });
+  }
+  // cardId 可为 null:看板 agent 卡上的"确认通过"只有 roleId(刷新后内存 gate 卡已清空)。
+  // 批准只需 roleId + sessionId,绝不依赖前端那张内存卡是否存在(那正是"按钮点了没反应"的 bug)。
+  async function approveWorkflowGate(cardId, roleId) {
+    try {
+      await invoke("approve_workflow_gate", { roleId: roleId, sessionId: state.workflow.run.sessionId });
+      if (cardId) resolveRunCard(cardId, "approved");
+      resolveRunCardsForRole(roleId, "approved");
+      await refreshRunState();   // 刷新真实状态:huizou gate_waiting→completed,看板按钮随之消失
+      notify();
+    } catch (e) { addSystemItem("⚠️ 通过失败: " + e); }
+  }
+  async function rejectWorkflowGate(cardId, roleId, reason) {
+    try {
+      await invoke("reject_workflow_gate", { roleId: roleId, reason: reason || "用户打回，请改进后重试", sessionId: state.workflow.run.sessionId });
+      if (cardId) resolveRunCard(cardId, "rejected");
+      resolveRunCardsForRole(roleId, "rejected");
+      await refreshRunState();
+      notify();
+    } catch (e) { addSystemItem("⚠️ 打回失败: " + e); }
+  }
+  // 从失败节点续跑:重置该角色为 pending(清重试)后重新调度,上游已完成节点不重跑。
+  async function retryWorkflowRole(roleId) {
+    try {
+      const r = await invoke("retry_workflow_role", { roleId: roleId, sessionId: state.workflow.run.sessionId });
+      addSystemItem("🔄 重跑 " + roleId + ": " + r);
+    } catch (e) { addSystemItem("⚠️ 重跑失败: " + e); }
+  }
+
   // ── Init ─────────────────────────────────────────────────────────
   async function init() {
     await loadSettings();
@@ -1883,6 +2259,7 @@
     pollBackendStatus();
     setInterval(pollBackendStatus, 10000);
     checkForUpdateSilently(); // fire-and-forget,不阻塞启动
+    await resumeWorkflowOnBoot(); // [2026-06-06] 有进行中的工作流 run 就自动挂回看板
     notify();
   }
 
@@ -1930,6 +2307,7 @@
     // 产物
     artifactInfo: artifactInfo,
     readArtifactText: readArtifactText,
+    readArtifactImageB64: readArtifactImageB64,
     renderArtifactVisual: renderArtifactVisual,
     openContainingFolder: openContainingFolder,
     openInSystem: openInSystem,
@@ -1942,6 +2320,32 @@
     clearAttachments: clearAttachments,
     pickAndAttach: pickAndAttach,
     markResolved: markResolved,
+    // 工作流
+    loadSkills: loadSkills,
+    activateSkill: activateSkill,
+    deactivateSkill: deactivateSkill,
+    openDemo: openDemo,
+    closeDemo: closeDemo,
+    setCurrentPhase: setCurrentPhase,
+    // 卡片流工作流
+    startWorkflowTask: startWorkflowTask,
+    listWorkflows: listWorkflows,
+    resetWorkflowRun: resetWorkflowRun,
+    selectWorkflowRole: selectWorkflowRole,
+    closeWorkflowDrawer: closeWorkflowDrawer,
+    getRolePrompt: getRolePrompt,
+    getRoleOutputs: getRoleOutputs,
+    getGateReport: getGateReport,
+    getRoleLogs: getRoleLogs,
+    submitWorkflowUserInput: submitWorkflowUserInput,
+    pickAndAddMaterials: pickAndAddMaterials,
+    pickFiles: pickFiles,
+    addMaterialsToSession: addMaterialsToSession,
+    attachRun: attachRun,
+    resumeWorkflowOnBoot: resumeWorkflowOnBoot,
+    approveWorkflowGate: approveWorkflowGate,
+    rejectWorkflowGate: rejectWorkflowGate,
+    retryWorkflowRole: retryWorkflowRole,
     // 卡片池: 专家面具
     loadPersonas: loadPersonas,
     getPersonas: function () { return personaPoolCache; }, // 返回引用(只读),不进 notify 快照

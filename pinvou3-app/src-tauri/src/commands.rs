@@ -17,7 +17,7 @@ use deepseek_tui::models::Message;
 use deepseek_tui::session_manager::{SavedSession, SessionMetadata};
 use deepseek_tui::tools::user_input::{UserInputAnswer, UserInputResponse};
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::bridge::mode_state::{PlanPhase, SerializableMode, SessionModeState};
 use crate::bridge::prefs::{ModelPreset, UserPrefs};
@@ -60,6 +60,58 @@ pub async fn chat(
         attachments.unwrap_or_default(),
         &crate::bridge::paths::session_workspace_dir(&sid),
     );
+    // 工作流 Phase 可视化:用户在工作流页"启用"卡片 = start_skill_session
+    // 新建一个绑定了 skill 的 session。该 session 第一条 chat 消息时,
+    // 把 skill body + phase 规则 prepend 一次,后续 turn 靠 LLM session 上下文保持。
+    //
+    // 另外 — 实测 Qwen3.6 在长上下文里对 system prompt 顶端的 phase marker
+    // MANDATORY 段遵循率衰减(h3c-ppt 跑到 p5+ 后频繁不出 `<phase id=".."/>`
+    // marker),每个 user turn 都重申一遍约束,把信号搬到距 LLM 最近的位置。
+    if let Some(injected) = store.take_pending_skill_instruction(&sid) {
+        full = format!("{injected}\n\n---\n\n{full}");
+    }
+    if let Some(skill) = store.active_skill(&sid) {
+        if crate::workflow_registry::is_workflow_id(&skill.name) {
+            // [pinvou3-fork] 真 dispatch 架构:绑定名命中 WorkflowRegistry = workflow
+            // session(不是挂载式 skill;对所有工作流通用——h3c-ppt/sansheng-liubu/…)。
+            // 品悟在 workflow session 里是**监工**,不自演角色、不走 phase marker 流程
+            // (phase 机制已废弃,进度靠 workflow:agent_state_changed 事件驱动卡片)。
+            // 每个 user turn 重申监工身份,压过 instructions.md 的通用助手引导
+            // (后者教用 write_file/exec_shell,但监工工具白名单根本没给 → 否则品悟会
+            // 像 e2e 实测那样瞎读一堆不存在的文件去"推进")。见 feedback_skill_vs_workflow。
+            let reminder = "<system-reminder>\n\
+                你在一个工作流项目里,身份是**监工(品悟)**,不是执行者。\n\
+                - 真正的角色工作由 Harness 自动派发的\
+                独立 SubAgent 完成,你看不到、也不干预它们的执行过程。\n\
+                - 你的职责只有三件:① 跟用户报告工作流进展 ② Harness 调你时交代任务或评审\
+                交付物 ③ 回答用户关于本项目的问题。\n\
+                - 你**没有** write_file / edit_file / append_file / exec_shell 等执行类工具,\
+                也**不要**尝试自己写文件、跑命令、或读一堆文件去\"推进\"——那是 SubAgent 的活,\
+                你做不了也不该做。\n\
+                - 用户问进展时,用 read_file 看项目 `_state/` 下已有的交付物和 \
+                `_state/workflow_progress.json` 如实回答;不清楚就说不清楚,**不要瞎猜文件名乱读**。\n\
+                </system-reminder>";
+            full = format!("{reminder}\n\n{full}");
+        } else {
+            // 其他普通挂载式 skill(review 等)保留 phase marker 机制,供前端 chips 进度。
+            let reminder = format!(
+                "<system-reminder>\n\
+                 工作流 `{name}` 提醒:你的下一条回复**必须**以 `<phase id=\"...\"/>` \
+                 单独一行开头(literal XML 标签,不是 markdown 加粗,不是自然语言)。\n\
+                 - 自然语言里写 \"进入 P5\" / \"现在做 HTML 实现\" **不算** marker,\
+                 必须输出字面 `<phase id=\"p5\"/>` 然后空行然后正文。\n\
+                 - 跳过 phase 也要显式输出对应 marker(从 p3 直接做 p5 → 输出 \
+                 `<phase id=\"p5\"/>`,别不出标)。\n\
+                 - 留在同一 phase 多个 turn 也要每次都输出该 phase 的 marker,\
+                 不要因为\"没换 phase\"省略。\n\
+                 pinvou3 UI chips 条靠这个 marker 推进度,漏标 = 用户看不到进展。\n\
+                 </system-reminder>",
+                name = skill.name,
+            );
+            full = format!("{reminder}\n\n{full}");
+        }
+    }
+
     // Side B 卡片池: 加持后首条消息一次性 prepend 完整人设 body(agency-agents-zh)。
     // 之后每 turn 只靠 equip_anchor 轻锚点维持身份(EnginePool 注入),不再重灌 body。
     if let Some(body) = store.take_pending_persona_body(&sid) {
@@ -506,9 +558,17 @@ pub async fn get_backend_status(_monitor: State<'_, MonitorState>) -> Result<Bac
 
 /// 列出所有 session 元数据，按 updated_at 倒序。前端历史面板渲染用。
 /// 返回 SessionMetadata 数组（id/title/时间/token/model/workspace 等字段）。
+/// [2026-06-04 白浪:chat 与工作流彻底分开] 过滤工作流宿主 session(绑定带 project_dir
+/// 即是,bindings 开机回灌持久化)——它们仅作 SubAgent 运行时,不进 chat 侧栏。
 #[tauri::command]
 pub async fn list_sessions(store: State<'_, SessionStore>) -> Result<Vec<SessionMetadata>, String> {
-    store.list().map_err(|e| format!("list_sessions: {e:?}"))
+    let mut metas = store.list().map_err(|e| format!("list_sessions: {e:?}"))?;
+    metas.retain(|m| {
+        store
+            .active_skill(&m.id)
+            .map_or(true, |b| b.project_dir.is_none())
+    });
+    Ok(metas)
 }
 
 /// 新建空 session 并设为 active。返回创建的 SessionMetadata。
@@ -681,7 +741,7 @@ pub async fn edit_last_turn(
 
 /// 产物文件元数据。前端右栏 list 用。
 #[derive(Debug, Clone, Serialize)]
-pub struct ArtifactInfo {
+pub(crate) struct ArtifactInfo {
     /// 文件大小（字节）
     pub size: u64,
     /// 文件 mime-ish 分类：md / html / image / pdf / text / binary
@@ -696,14 +756,47 @@ pub struct ArtifactInfo {
 /// 路径必须在用户家目录下（防 ../../../etc/passwd 之类逃逸）。
 #[tauri::command]
 pub async fn read_artifact_text(path: String) -> Result<String, String> {
-    let p = validate_user_path(&path)?;
+    read_artifact_text_impl(&path)
+}
+
+pub(crate) fn read_artifact_text_impl(path: &str) -> Result<String, String> {
+    let p = validate_user_path(path)?;
     std::fs::read_to_string(&p).map_err(|e| format!("read_artifact_text({}): {e}", p.display()))
 }
 
 /// 读 artifact 元数据：大小 / 类型 / 是否存在。
 #[tauri::command]
 pub async fn artifact_info(path: String) -> Result<ArtifactInfo, String> {
-    let p = match validate_user_path(&path) {
+    artifact_info_impl(&path)
+}
+
+/// [2026-06-07] 读图片 → base64 data url,给 FilePreviewModal 内联预览 png/jpg
+/// (csp=null 不拦 data:,比 asset 协议 scope 省事)。validate_user_path 防穿越。
+#[tauri::command]
+pub async fn read_artifact_image_b64(path: String) -> Result<String, String> {
+    let p = validate_user_path(&path).map_err(|_| "路径不允许".to_string())?;
+    if !p.is_file() {
+        return Err(format!("图片不存在: {path}"));
+    }
+    let bytes = std::fs::read(&p).map_err(|e| format!("读取失败: {e}"))?;
+    if bytes.len() > 25_000_000 {
+        return Err("图片过大(>25MB),请用外部打开".into());
+    }
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("png").to_ascii_lowercase();
+    let mime = match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        _ => "image/png",
+    };
+    let b64 = crate::file_ingest::base64_encode(&bytes);
+    Ok(format!("data:{mime};base64,{b64}"))
+}
+
+pub(crate) fn artifact_info_impl(path: &str) -> Result<ArtifactInfo, String> {
+    let p = match validate_user_path(path) {
         Ok(p) => p,
         Err(_) => {
             return Ok(ArtifactInfo {
@@ -1315,6 +1408,41 @@ pub async fn set_super_permission(
     Ok(crate::super_permission::is_enabled())
 }
 
+/// 读 pinvou3 内置 skill 的 body(去掉 frontmatter)。
+/// 用途:前端 autoTriggerPinvouReview 把完整 SKILL.md 内容塞进 user message,
+/// 不依赖本地 Qwen3.6 主动 read_file —— 弱模型不会主动用 progressive disclosure。
+/// 设计依据:docs/Pinvou-品悟设计.md §10.5 (即将补)
+#[tauri::command]
+pub async fn read_skill_body(name: String) -> Result<String, String> {
+    use crate::bridge::paths;
+    let safe_name: String = name.chars().filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_').collect();
+    if safe_name != name || safe_name.is_empty() {
+        return Err(format!("invalid skill name: {name}"));
+    }
+    // h3c-ppt 在 workflow/,review 等 skill 在 skills/;先查 workflow 再 fallback skills。
+    let wf_path = paths::bundle_workflow_dir().join(&safe_name).join("SKILL.md");
+    let path = if wf_path.is_file() {
+        wf_path
+    } else {
+        paths::bundle_skills_dir().join(&safe_name).join("SKILL.md")
+    };
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("read SKILL.md ({}): {e}", path.display()))?;
+    // 剥 frontmatter ---\n...\n---\n
+    let body = if let Some(rest) = content.strip_prefix("---\n") {
+        if let Some(end) = rest.find("\n---\n") {
+            rest[end + 5..].trim_start().to_string()
+        } else if let Some(end) = rest.find("\n---") {
+            rest[end + 4..].trim_start().to_string()
+        } else {
+            content
+        }
+    } else {
+        content
+    };
+    Ok(body)
+}
+
 // 修法 D 删除了 revise_plan 命令.
 // 用户点 [✏️ 改改] 时前端走 DeepSeek-TUI 底座做法:不切 phase, 仅 input 预填"修订方案:"前缀.
 // phase 保持 Ready, 下一条 chat 触发的 Ready reminder 已包含"用户发新消息=隐式修订"语义.
@@ -1351,6 +1479,49 @@ pub async fn submit_user_input(
         .map_err(|e| format!("submit_user_input: {e:?}"))
 }
 
+/// [2026-06-06] 工作流素材上传：把用户选的文件拷进当前 run 的 配套材料/ 目录。
+/// 前端素材收集卡片「📎 上传素材」按钮 → dialogOpen 选文件 → 调此命令落盘。
+/// materials_auditor 重扫 配套材料/ 即可识别。返回实际落盘的文件名（含同名去重后的名）。
+#[tauri::command]
+pub async fn add_run_materials(
+    session_id: Option<String>,
+    paths: Vec<String>,
+    pool: State<'_, EnginePool>,
+    store: State<'_, SessionStore>,
+) -> Result<Vec<String>, String> {
+    let sid = session_id
+        .or_else(|| store.active_id())
+        .ok_or_else(|| "no active session".to_string())?;
+    let workspace = pool.bridge.session_workspace(&sid);
+    let project = crate::harness::find_project_dir(&workspace)
+        .ok_or_else(|| "当前 session 无工作流项目".to_string())?;
+    let dst_dir = project.join("配套材料");
+    std::fs::create_dir_all(&dst_dir).map_err(|e| format!("建配套材料目录失败: {e}"))?;
+    let mut added = Vec::new();
+    for p in &paths {
+        let src = std::path::Path::new(p);
+        let base = src
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| format!("非法路径: {p}"))?;
+        // 同名去重（参照 attach_file 的命名逻辑）
+        let (stem, ext) = match base.rsplit_once('.') {
+            Some((s, e)) => (s.to_string(), format!(".{e}")),
+            None => (base.to_string(), String::new()),
+        };
+        let mut candidate = base.to_string();
+        let mut n = 1;
+        while dst_dir.join(&candidate).exists() {
+            candidate = format!("{stem}-{n}{ext}");
+            n += 1;
+        }
+        std::fs::copy(src, dst_dir.join(&candidate))
+            .map_err(|e| format!("拷贝 {base} 失败: {e}"))?;
+        added.push(candidate);
+    }
+    Ok(added)
+}
+
 /// 前端 ✕ 按钮 / 切换 session 时调用：取消 request_user_input。
 /// engine 把工具结果置为 "User input cancelled" error,LLM 收到后会继续 turn。
 #[tauri::command]
@@ -1366,6 +1537,23 @@ pub async fn cancel_user_input(
     pool.cancel_user_input(&sid, tool_call_id)
         .await
         .map_err(|e| format!("cancel_user_input: {e:?}"))
+}
+
+// (render_surface 回流 / cloud_keys 云模型配置是独立 feature,不在本 PR——
+//  本 PR 只含工作流基座 + 三省六部)
+
+#[tauri::command]
+pub async fn restart_engine(
+    pool: State<'_, EnginePool>,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    // 多 session 并发:重启 = evict 当前 active session 的 engine(取消在跑 turn +
+    // Shutdown + abort forwarder),下次 chat 时 EnginePool 重新 spawn 干净的并从磁盘
+    // rehydrate 历史。也是 engine-busy 卡死时的恢复路径。
+    if let Some(sid) = store.active_id() {
+        pool.evict(&sid).await;
+    }
+    Ok(())
 }
 
 // ===================== Pinvou v4 召唤式检阅 =====================
@@ -1406,7 +1594,7 @@ pub async fn summon_pinvou(
 /// 限制（允许 AI 在 /tmp / /opt / /mnt 等用户授权位置产出文件）。仅黑名单
 /// 拦截两类位置：(1) 用户凭据目录/文件，避免 AI 误把私钥/.env 内容读进
 /// LLM context 传给外部 vLLM；(2) 系统级敏感文件如 /etc/shadow。
-fn validate_user_path(raw: &str) -> Result<std::path::PathBuf, String> {
+pub(crate) fn validate_user_path(raw: &str) -> Result<std::path::PathBuf, String> {
     use std::path::PathBuf;
     let p = PathBuf::from(raw);
     if !p.is_absolute() {
@@ -1465,6 +1653,1228 @@ fn validate_user_path(raw: &str) -> Result<std::path::PathBuf, String> {
 
     Ok(canon)
 }
+
+// ===================== 工作流 Phase 可视化 MVP1 =====================
+// list_skills_v2 / read_skill_demo / start_skill_session / unbind_session_skill
+// 四件套支撑「工作流」视图 + skill per-session 绑定。设计与边界见
+// `/home/hexin/.claude/plans/workflow-phase-elegant-zephyr.md`。
+
+/// 工作流卡片不显示的 skill 名单。这些是 pinvou3 自带的基础能力组件
+/// (review 流程内部用),不应作为用户主动启用的工作流入口。
+///
+/// 后续真正物理隔离会把这俩从 `bundle/skills/` 移到独立目录 +
+/// DeepSeek-TUI fork patch 让 EngineConfig 支持多 skills_dir。当前
+/// 用 skiplist 软隔离,工作量小,效果一致。
+const WORKFLOW_HIDDEN_SKILLS: &[&str] = &["pinvou-review-plan", "pinvou-review-final"];
+
+/// 工作流视图卡片渲染需要的 skill 摘要 — 跟 DeepSeek-TUI runtime_api 的
+/// `SkillEntry` 不同,这里额外把 phases / demo 元数据序列化给前端 (底座
+/// 没把这俩字段暴露到 REST,所以 pinvou3-app 自己读 SkillRegistry 拼)。
+#[derive(Debug, Serialize)]
+pub struct SkillSummary {
+    pub name: String,
+    pub description: String,
+    /// 永远是 "bundle"(只扫 bundle/skills 单源)— 字段保留是为了前端
+    /// 卡片角标 / 跟未来多源场景兼容。
+    pub source: &'static str,
+    /// (底座 v0.8.57 删除 phases/demo 元数据;字段保留作前端兼容,恒为空/默认)
+    pub phases: Vec<serde_json::Value>,
+    pub demo: DemoSummary,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct DemoSummary {
+    pub has_file: bool,
+    pub has_preview: bool,
+    pub description: Option<String>,
+    pub duration: Option<String>,
+}
+
+/// 列出 `~/.pinvou3/bundle/skills/` 下的所有用户业务 skill。
+/// pinvou-review-* 这种系统基础能力通过 `WORKFLOW_HIDDEN_SKILLS` 过滤掉
+/// (它们不应出现在工作流卡片入口里)。
+#[tauri::command]
+pub async fn list_skills_v2() -> Result<Vec<SkillSummary>, String> {
+    use crate::bridge::paths;
+    use deepseek_tui::skills::SkillRegistry;
+
+    let dir = paths::bundle_workflow_dir();
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let registry = SkillRegistry::discover(&dir);
+    let mut out: Vec<SkillSummary> = registry
+        .list()
+        .iter()
+        .filter(|s| !WORKFLOW_HIDDEN_SKILLS.contains(&s.name.as_str()))
+        .map(|s| SkillSummary {
+            name: s.name.clone(),
+            description: s.description.clone(),
+            source: "bundle",
+            phases: Vec::new(),
+            demo: DemoSummary::default(),
+        })
+        .collect();
+    // 有 phases 的排前面
+    out.sort_by(|a, b| b.phases.len().cmp(&a.phases.len()).then(a.name.cmp(&b.name)));
+    Ok(out)
+}
+
+/// 读取一个 skill 的 demo 文件元数据 + 内容(text 类型直接附 content,
+/// html/image 走 file_path + Tauri `convertFileSrc` 由前端 iframe/img 渲染)。
+#[derive(Debug, Serialize)]
+pub struct SkillDemoPayload {
+    pub file_path: Option<String>,
+    pub file_kind: &'static str, // "html" | "image" | "text" | "unknown" | "none"
+    /// text 类型时附内容 (限 1MB);否则 None。
+    pub content: Option<String>,
+    pub preview_path: Option<String>,
+    pub description: Option<String>,
+    pub duration: Option<String>,
+}
+
+#[tauri::command]
+pub async fn read_skill_demo(name: String) -> Result<SkillDemoPayload, String> {
+    // 底座 v0.8.57 删除 SKILL.md 的 demo 元数据;命令保留(前端按 file_kind="none" 渲染空态)。
+    let _ = name;
+    Ok(SkillDemoPayload {
+        file_path: None,
+        file_kind: "none",
+        content: None,
+        preview_path: None,
+        description: None,
+        duration: None,
+    })
+}
+
+/// 工作流卡片"启用"后返回的载荷:新建的 session 元数据 + 该 session 绑定的
+/// skill 信息(phases 给前端初始化 chips strip)。
+#[derive(Debug, Serialize)]
+pub struct StartSkillSessionResult {
+    pub session: SessionMetadata,
+    pub skill: ActiveSkillState,
+}
+
+/// chips strip 初始化用的 skill 视图字段。
+#[derive(Debug, Serialize)]
+pub struct ActiveSkillState {
+    pub name: String,
+    /// (底座 v0.8.57 删除 PhaseDef;恒为空,chips 不再渲染)
+    pub phases: Vec<serde_json::Value>,
+    pub current_phase_id: Option<String>,
+}
+
+/// 用户在「工作流」视图点 skill 卡片「启用」 → 新建一个 session 并把该 skill
+/// 绑定到这个 session。每次点都新建独立 session,skill 仅对该 session 生效
+/// (不再有全局 active_skill 单例)。
+#[tauri::command]
+pub async fn start_skill_session(
+    name: String,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+) -> Result<StartSkillSessionResult, String> {
+    use crate::bridge::mode_state::ActiveSkillBinding;
+    use crate::bridge::paths;
+    use deepseek_tui::skills::SkillRegistry;
+
+    if WORKFLOW_HIDDEN_SKILLS.contains(&name.as_str()) {
+        return Err(format!(
+            "{name} 是系统基础能力,不能直接启用为工作流"
+        ));
+    }
+
+    // 1) 只在 bundle/skills 里找 — 跟 list_skills_v2 source of truth 保持一致
+    let dir = paths::bundle_workflow_dir();
+    if !dir.exists() {
+        return Err(format!("skills dir not found: {}", dir.display()));
+    }
+    let registry = SkillRegistry::discover(&dir);
+    let skill = registry
+        .get(&name)
+        .ok_or_else(|| format!("skill not found: {name}"))?
+        .clone();
+
+    // 2) 查找已有绑定该 skill 的 session——恢复工作流而非新建
+    let existing_sid = store.find_session_with_skill(&name);
+    // (底座 v0.8.57 删除 Skill.phases;chips 机制随之退役,恒为空)
+    let first_phase: Option<String> = None;
+    let phases: Vec<serde_json::Value> = Vec::new();
+
+    if let Some(sid) = existing_sid {
+        // 恢复：切到已有 session，重新加载对话历史。
+        // 多 session 并发:不显式 sync engine,EnginePool 下次 chat 时
+        // get_or_spawn 为该 session rehydrate 专属 engine。
+        store.set_active(Some(sid.clone()));
+        let session_data = store.load(&sid)
+            .map_err(|e| format!("load existing session: {e:?}"))?;
+
+        return Ok(StartSkillSessionResult {
+            session: session_data.metadata,
+            skill: ActiveSkillState {
+                name: skill.name,
+                phases,
+                current_phase_id: first_phase,
+            },
+        });
+    }
+
+    // 3) 没有已有 session → 新建(沿用 create_session 的 model + workspace 取值)
+    let model = pool.bridge.model();
+    let workspace = pool.bridge.workspace.clone();
+    let session = store
+        .create_new(model, workspace)
+        .map_err(|e| format!("create_session: {e:?}"))?;
+    let sid = session.metadata.id.clone();
+    store.set_active(Some(sid.clone()));
+
+    // 多 session 并发:不预热 engine(lazy)。首条 chat 时 EnginePool 为这个空 session
+    //    spawn 专属 engine,空历史无需 SyncSession。
+
+    let injected = format!(
+        "[pinvou3-app] 用户在「工作流」视图启用了 skill: `{name}`。\
+         请按该 skill 的 phases 流程响应 — engine 会自动从你回复里抽 \
+         `<phase id=\"...\"/>` marker 驱动 UI 上方的 phase chip 条,\
+         **每条回复必须以该 marker 单独一行开头**(详见 system prompt 里 \
+         「Phase tracking — MANDATORY for phased skills」段)。",
+        name = skill.name,
+    );
+
+    store.bind_skill(
+        &sid,
+        ActiveSkillBinding {
+            name: skill.name.clone(),
+            pending_instruction: Some(injected),
+            phases: phases.clone(),
+            project_dir: None,
+        },
+    );
+    store.save_skill_bindings();
+
+    Ok(StartSkillSessionResult {
+        session: session.metadata,
+        skill: ActiveSkillState {
+            name: skill.name,
+            phases,
+            current_phase_id: first_phase,
+        },
+    })
+}
+
+/// `start_workflow` 启动一个新的工作流项目(所属工作流按 scenario 经 WorkflowRegistry 解析)。
+///
+/// 流程：
+/// 1. 调 `harness::init_project(workspace, scenario, brief_init)` 在 workspace 下建
+///    `ppt-<ts>-<scenario>/` 项目目录 + `_state/workflow_progress.json` + `_state/brief.json`
+/// 2. 如未传 `session_id` → 新建一个 chat session；否则用现有 session 绑定到该项目
+/// 3. 加载 `h3c-ppt` skill 拿 phases，把 session 绑定到该 skill + project_dir
+/// 4. 持久化 binding 到 `_skill_bindings.json`（重启后能恢复）
+/// 5. emit `workflow:project_started` + `workflow:full_state` 通知前端刷新
+///
+/// 注意：本命令**不主动 send_user_message** —— 前端负责切到 chat 标签页并把
+/// `brief_init.user_request_raw` 预填到 input 框，等用户主动发送触发首个 turn。
+/// 首个 turn 完成后 engine.rs H1 段会自然调 `harness::step_fresh` 启动需求分析师。
+#[derive(Debug, Serialize)]
+pub struct StartWorkflowResult {
+    pub session_id: String,
+    pub project_dir: String,
+}
+
+#[tauri::command]
+pub async fn start_workflow(
+    scenario: String,
+    brief_init: Option<serde_json::Value>,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+    app: AppHandle,
+) -> Result<StartWorkflowResult, String> {
+    use crate::bridge::mode_state::ActiveSkillBinding;
+
+    // 0. 按 scenario 解析所属工作流(WorkflowRegistry 扫 bundle/workflow/*/workflow.json)。
+    //    enabled=false 只挡新建,历史项目不受影响(resolver 侧不过滤)。
+    let wf = crate::workflow_registry::by_scenario(&scenario)
+        .ok_or_else(|| format!("scenario `{scenario}` 没有对应的工作流(bundle/workflow/*/workflow.json)"))?;
+    if !wf.enabled {
+        return Err(format!("工作流 `{}` 已禁用(workflow.json enabled=false)", wf.id));
+    }
+
+    let brief = brief_init.unwrap_or_else(|| serde_json::json!({}));
+    // 在 brief 被 move 进 spawn_blocking 前提取 session title 素材（owned String）。
+    // 标题前缀 = workflow.json 的 name(多 scenario 工作流再拼 scenario id 区分)。
+    let req_summary: String = brief
+        .get("user_request_raw")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .chars()
+        .take(16)
+        .collect();
+    let mut title_prefix = wf.name.clone().unwrap_or_else(|| wf.id.clone());
+    if wf.scenarios.len() > 1 {
+        title_prefix = format!("{title_prefix} · {scenario}");
+    }
+    let session_title = if req_summary.trim().is_empty() {
+        title_prefix.clone()
+    } else {
+        format!("{title_prefix} · {}", req_summary.trim())
+    };
+
+    // 1. 决定宿主 session(每个工作流任务 = 一个隐藏宿主 session,仅作 SubAgent 运行时,
+    //    见 SDAN 09 落地细则)。多 session 并发:不显式 sync engine,EnginePool 派发时
+    //    get_or_spawn 为该 session 注水。
+    //    ⚠️ 不 set_active [2026-06-04 白浪:chat 与工作流彻底分开]:工作流启动绝不抢
+    //    用户当前 chat 会话;宿主 session 也不进侧栏(list_sessions 过滤)。
+    let sid = if let Some(sid) = session_id {
+        sid
+    } else {
+        let model = pool.bridge.model();
+        let session = store
+            .create_new(model, pool.bridge.workspace.clone())
+            .map_err(|e| format!("create_session: {e:?}"))?;
+        let sid = session.metadata.id.clone();
+        // 人话 title，工作流页/调试时一眼看出是哪个 PPT 项目
+        store.set_title(&sid, session_title.clone()).ok();
+        sid
+    };
+
+    // 2. 在**该 session 的 workspace**下初始化项目目录。harness forwarder 也按
+    //    bridge.session_workspace(session_id) 找项目,两处路径必须一致,否则推进找不到项目。
+    let workspace = pool.bridge.session_workspace(&sid);
+    let project_dir = tokio::task::spawn_blocking({
+        let workspace = workspace.clone();
+        let scenario = scenario.clone();
+        move || crate::harness::init_project(&workspace, &scenario, &brief)
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking init_project: {e}"))?
+    .map_err(|e| format!("init_project: {e}"))?;
+    let project_dir_str = project_dir.to_string_lossy().to_string();
+
+    // 3.(已并入步骤 0)wf 由 WorkflowRegistry 按 scenario 解析,不再依赖 SkillRegistry
+    //    /SKILL.md——工作流身份由 workflow.json 承载。
+
+    // 4. 把 workflow 项目绑到 session(project_dir 给 harness 找项目 + session 列表标签)。
+    //    ⚠️ 不塞 pending_instruction:那条"请按 skill 流程响应"会让品悟在
+    //    首条消息时 load_skill 把手册拉进 context 自驱跑流程,绕过 harness(信任根:
+    //    workflow 由 harness 按 workflow_progress.json 驱动,品悟绝不 load_skill 自驱)。
+    //    启动入口是「让我们开始吧」→ kick_workflow → step_fresh 直接派发 Agent1,
+    //    不经品悟自由 turn。
+    //    ⚠️ 不塞 phases [2026-06-04 白浪:chat 与工作流不混淆]:此前把 SKILL.md(旧 16
+    //    阶段手册化石)的 phases 塞进绑定 → chat 顶部 PhaseChips 渲染一条永不推进的
+    //    节点列表(workflow 没人发 phase marker)。工作流进度只在 WorkflowView 看板看。
+    store.bind_skill(
+        &sid,
+        ActiveSkillBinding {
+            name: wf.id.clone(),
+            pending_instruction: None,
+            phases: Vec::new(),
+            project_dir: Some(project_dir_str.clone()),
+        },
+    );
+    store.save_skill_bindings();
+
+    // 5. emit 事件让前端刷新（异步即可，失败忽略）
+    let _ = app.emit(
+        "workflow:project_started",
+        serde_json::json!({
+            "session_id": sid.clone(),
+            "project_dir": project_dir_str.clone(),
+            "scenario": scenario.clone(),
+        }),
+    );
+    // 推一次全量状态（scheduler --status 输出）让 workflow 页立刻刷新
+    {
+        let ws = workspace.clone();
+        let app_clone = app.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Some(state) = crate::harness::read_full_agent_state(&ws) {
+                let _ = app_clone.emit("workflow:full_state", state);
+            }
+        });
+    }
+
+    Ok(StartWorkflowResult {
+        session_id: sid,
+        project_dir: project_dir_str,
+    })
+}
+
+/// 「让我们开始吧」按钮调用：主动 kick harness `step_fresh` dispatch 第一个 agent
+/// (需求分析师)，emit running + 派发真 SubAgent。点开始直接进调度;之后每个
+/// agent 完成由 AgentComplete → step_after_role 链式推进(auto gate 自动过 /
+/// human gate 等用户)。
+#[tauri::command]
+pub async fn kick_workflow(
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+    app: AppHandle,
+) -> Result<String, String> {
+
+    // 取本次工作流对应的 session(前端显式传;回退 active)。每个工作流 = 一个 session,
+    // 绝不能匹配错——harness_phase / 项目目录全都按这个 sid 走。
+    let sid = session_id
+        .or_else(|| store.active_id())
+        .ok_or_else(|| "no active session".to_string())?;
+    let ws = pool.bridge.session_workspace(&sid);
+    let action = tokio::task::spawn_blocking(move || crate::harness::step_fresh(&ws))
+        .await
+        .map_err(|e| format!("spawn_blocking step_fresh: {e}"))?;
+
+    match action {
+        // [拆对话线 C] step_fresh 直接返回 SpawnAgent，Harness 直派真 SubAgent，
+        // executing 态，主 session 空闲（无品悟交代/自演）。
+        crate::harness::HarnessAction::SpawnAgent {
+            role_id,
+            role_name,
+            prompt,
+            allowed_tools,
+            max_steps,
+            output_schema,
+            expects_file_output,
+        } => {
+            let engine = pool
+                .get_or_spawn(&sid)
+                .await
+                .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
+            let _ = app.emit(
+                "workflow:agent_state_changed",
+                serde_json::json!({
+                    "session_id": sid.clone(),
+                    "role_id": role_id.clone(),
+                    "role_name": role_name.clone(),
+                    "status": "running",
+                }),
+            );
+            let op = deepseek_tui::core::ops::Op::SpawnSubAgent {
+                prompt,
+                role_id,
+                allowed_tools,
+                max_steps,
+                output_schema,
+                expects_file_output,
+            };
+            engine
+                .handle
+                .send(op)
+                .await
+                .map_err(|e| format!("spawn subagent: {e:?}"))?;
+            Ok(format!("spawning {role_name}"))
+        }
+        // [per_page] 纵向 fan-out：并发派 N 个 per-page SubAgent。
+        crate::harness::HarnessAction::SpawnAgentBatch { base_role, role_name, tasks } => {
+            let engine = pool
+                .get_or_spawn(&sid)
+                .await
+                .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
+            let _ = app.emit(
+                "workflow:agent_state_changed",
+                serde_json::json!({
+                    "session_id": sid.clone(), "role_id": base_role.clone(),
+                    "role_name": role_name.clone(), "status": "running",
+                }),
+            );
+            let n = tasks.len();
+            let k = crate::harness::per_page_concurrency();
+            let first = crate::harness::batch_seed_and_take(&sid, &base_role, tasks, k);
+            for t in first {
+                let op = deepseek_tui::core::ops::Op::SpawnSubAgent {
+                    prompt: t.prompt,
+                    role_id: t.agent_role,
+                    allowed_tools: t.allowed_tools,
+                    max_steps: t.max_steps,
+                    output_schema: t.output_schema,
+                    expects_file_output: t.expects_file_output,
+                };
+                engine.handle.send(op).await.map_err(|e| format!("fan-out spawn: {e:?}"))?;
+            }
+            crate::engine::emit_fanout(&app, &sid, &base_role); // 初始 fan-out 状态 → 前端
+            Ok(format!("spawning {role_name} ({n} pages, 在飞={k})"))
+        }
+        crate::harness::HarnessAction::Blocked { message } => {
+            Err(format!("workflow blocked: {message}"))
+        }
+        _ => Ok("no dispatch (already running or not applicable)".to_string()),
+    }
+}
+
+/// 从失败节点续跑:重置 `role_id` 为 pending(清重试),然后重新调度。
+/// 复用 harness::retry_role(reset + step_fresh) + kick 的 action→Op 派发逻辑。
+/// 用户在失败节点卡片点"🔄 重跑"→走这里→该角色重新 spawn(用最新提示词),
+/// 上游已 completed 节点不重跑(State 里仍 completed)。
+#[tauri::command]
+pub async fn retry_workflow_role(
+    role_id: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+    app: AppHandle,
+) -> Result<String, String> {
+
+    let sid = session_id
+        .or_else(|| store.active_id())
+        .ok_or_else(|| "no active session".to_string())?;
+    let ws = pool.bridge.session_workspace(&sid);
+    let rid = role_id.clone();
+    let action = tokio::task::spawn_blocking(move || crate::harness::retry_role(&ws, &rid))
+        .await
+        .map_err(|e| format!("spawn_blocking retry_role: {e}"))?;
+
+    match action {
+        crate::harness::HarnessAction::SpawnAgent {
+            role_id,
+            role_name,
+            prompt,
+            allowed_tools,
+            max_steps,
+            output_schema,
+            expects_file_output,
+        } => {
+            let engine = pool
+                .get_or_spawn(&sid)
+                .await
+                .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
+            let _ = app.emit(
+                "workflow:agent_state_changed",
+                serde_json::json!({
+                    "session_id": sid.clone(),
+                    "role_id": role_id.clone(),
+                    "role_name": role_name.clone(),
+                    "status": "running",
+                }),
+            );
+            let op = deepseek_tui::core::ops::Op::SpawnSubAgent {
+                prompt,
+                role_id,
+                allowed_tools,
+                max_steps,
+                output_schema,
+                expects_file_output,
+            };
+            engine
+                .handle
+                .send(op)
+                .await
+                .map_err(|e| format!("spawn subagent: {e:?}"))?;
+            Ok(format!("retry → spawning {role_name}"))
+        }
+        // [per_page] retry 重派整批（fan-out）。
+        crate::harness::HarnessAction::SpawnAgentBatch { base_role, role_name, tasks } => {
+            let engine = pool
+                .get_or_spawn(&sid)
+                .await
+                .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
+            let _ = app.emit(
+                "workflow:agent_state_changed",
+                serde_json::json!({
+                    "session_id": sid.clone(), "role_id": base_role.clone(),
+                    "role_name": role_name.clone(), "status": "running",
+                }),
+            );
+            let n = tasks.len();
+            let k = crate::harness::per_page_concurrency();
+            let first = crate::harness::batch_seed_and_take(&sid, &base_role, tasks, k);
+            for t in first {
+                let op = deepseek_tui::core::ops::Op::SpawnSubAgent {
+                    prompt: t.prompt,
+                    role_id: t.agent_role,
+                    allowed_tools: t.allowed_tools,
+                    max_steps: t.max_steps,
+                    output_schema: t.output_schema,
+                    expects_file_output: t.expects_file_output,
+                };
+                engine.handle.send(op).await.map_err(|e| format!("fan-out spawn: {e:?}"))?;
+            }
+            crate::engine::emit_fanout(&app, &sid, &base_role); // 初始 fan-out 状态 → 前端
+            Ok(format!("retry → spawning {role_name} ({n} pages, 在飞={k})"))
+        }
+        crate::harness::HarnessAction::Blocked { message } => {
+            Err(format!("retry blocked: {message}"))
+        }
+        crate::harness::HarnessAction::Error(e) => Err(format!("retry error: {e}")),
+        _ => Ok("retry: no dispatch (check role state)".to_string()),
+    }
+}
+
+/// 取一个角色的 system prompt（`roles/<role_id>.md`）+ registry meta（tools/model/max_steps 等）。
+/// 详情 Drawer 的 "Role Prompt" Tab 用。
+#[derive(Debug, Serialize)]
+pub struct RolePromptPayload {
+    pub role_id: String,
+    pub prompt_md: String,
+    pub registry_meta: serde_json::Value,
+}
+
+/// [B2] 差事节点 id（`<bu>~<seq>`）拆出所属部 + 序号;非差事节点返回 (role_id, None)。
+/// 分隔符 `~` 与 dispatch_graph.py / harness.rs::bu_of 一致(不用 `#`，避开 per_page 页实例)。
+fn split_task_node(role_id: &str) -> (&str, Option<&str>) {
+    match role_id.split_once('~') {
+        Some((bu, seq)) => (bu, Some(seq)),
+        None => (role_id, None),
+    }
+}
+
+#[tauri::command]
+pub async fn get_role_prompt(
+    role_id: String,
+    project_dir: Option<String>,
+) -> Result<RolePromptPayload, String> {
+    // 按项目 scenario 解析所属工作流;没传 project_dir 时按角色反查(角色跨工作流不重叠)
+    let workflow = project_dir
+        .as_deref()
+        .map(|p| crate::harness::workflow_of_project(std::path::Path::new(p)))
+        .unwrap_or_else(|| crate::harness::workflow_of_role(&role_id));
+    let skills_dir = crate::harness::workflow_root_for(&workflow);
+    let registry_path = skills_dir.join("agent_registry.json");
+    let registry: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&registry_path)
+            .map_err(|e| format!("read agent_registry.json: {e}"))?,
+    )
+    .map_err(|e| format!("parse agent_registry.json: {e}"))?;
+
+    // [B2] 差事节点(libu~1)按所属部(libu)查 registry 能力/prompt;非差事原样。
+    let (bu, seq) = split_task_node(&role_id);
+    let mut role_meta = registry
+        .get("agents")
+        .and_then(|a| a.get(bu))
+        .cloned()
+        .ok_or_else(|| format!("role {bu} not found in agent_registry.json"))?;
+
+    let prompt_file = role_meta
+        .get("prompt_file")
+        .and_then(|p| p.as_str())
+        .ok_or_else(|| format!("prompt_file missing for {bu}"))?;
+    let prompt_path = skills_dir.join(prompt_file);
+    let mut prompt_md = std::fs::read_to_string(&prompt_path)
+        .map_err(|e| format!("read prompt_file {}: {e}", prompt_path.display()))?;
+
+    // [B2] 差事节点增强:读 dynamic_routes.json 把"这次的差事"内容带进卡片——
+    // 否则 libu~1/libu~2 显示同一份静态 playbook,操作员分不清哪张卡干什么。
+    if seq.is_some() {
+        if let Some(pd) = project_dir.as_deref() {
+            let dr_path = std::path::PathBuf::from(pd)
+                .join("_state")
+                .join("dynamic_routes.json");
+            if let Ok(txt) = std::fs::read_to_string(&dr_path) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+                    if let Some(node) = v.get("task_nodes").and_then(|t| t.get(&role_id)) {
+                        let g = |k: &str| node.get(k).and_then(|x| x.as_str()).unwrap_or("");
+                        let (title, task, reqs, out_file) =
+                            (g("title"), g("task"), g("requirements"), g("output_file"));
+                        let wave = node.get("wave").and_then(|x| x.as_u64());
+                        // registry_meta: 改名「部·差事标题」+ 产物指向差事专属文件
+                        if let Some(obj) = role_meta.as_object_mut() {
+                            let bu_name = obj
+                                .get("name")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or(bu)
+                                .to_string();
+                            if !title.is_empty() {
+                                obj.insert(
+                                    "name".into(),
+                                    serde_json::Value::String(format!("{bu_name}·{title}")),
+                                );
+                            }
+                            if !out_file.is_empty() {
+                                obj.insert("outputs".into(), serde_json::json!([out_file]));
+                            }
+                            if let Some(w) = wave {
+                                obj.insert("wave".into(), serde_json::json!(w));
+                            }
+                        }
+                        // prompt 顶部注入这次差事(以此为准),与 scheduler.build_full_prompt 同款标题
+                        let mut head = String::from("## 📋 你这次的差事（以此为准）\n\n");
+                        if let Some(w) = wave {
+                            head.push_str(&format!("> 第 {w} 批 · {bu}\n\n"));
+                        }
+                        if !title.is_empty() {
+                            head.push_str(&format!("**{title}**\n\n"));
+                        }
+                        head.push_str(task);
+                        head.push('\n');
+                        if !reqs.is_empty() {
+                            head.push_str(&format!("\n**具体要求**：{reqs}\n"));
+                        }
+                        head.push_str("\n---\n\n");
+                        prompt_md = format!("{head}{prompt_md}");
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(RolePromptPayload {
+        role_id,
+        prompt_md,
+        registry_meta: role_meta,
+    })
+}
+
+/// 取一个角色在指定 project_dir 下实际产出的文件（按 agent_registry.outputs glob）。
+/// 详情 Drawer 的 "产出文件" Tab 用。
+#[derive(Debug, Serialize)]
+pub struct OutputFile {
+    pub path: String,
+    pub size: u64,
+    pub mtime_ms: u64,
+    /// 前 4000 字节文本预览（二进制返回 "[binary {size} bytes]"）
+    pub preview: String,
+}
+
+#[tauri::command]
+pub async fn get_role_outputs(
+    role_id: String,
+    project_dir: String,
+) -> Result<Vec<OutputFile>, String> {
+    let workflow = crate::harness::workflow_of_project(std::path::Path::new(&project_dir));
+    let skills_dir = crate::harness::workflow_root_for(&workflow);
+    let registry: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(skills_dir.join("agent_registry.json"))
+            .map_err(|e| format!("read registry: {e}"))?,
+    )
+    .map_err(|e| format!("parse registry: {e}"))?;
+    // [B2] 差事节点(libu~1)产物固定 deliverables/<bu>_<seq>.md(与 dispatch_graph 编译一致);
+    // 非差事节点照旧用所属部的 registry outputs glob。
+    let (bu, seq) = split_task_node(&role_id);
+    let outputs: Vec<serde_json::Value> = if let Some(seq) = seq {
+        vec![serde_json::Value::String(format!("deliverables/{bu}_{seq}.md"))]
+    } else {
+        registry
+            .get("agents")
+            .and_then(|a| a.get(bu))
+            .and_then(|r| r.get("outputs"))
+            .and_then(|o| o.as_array())
+            .cloned()
+            .unwrap_or_default()
+    };
+    let project = std::path::PathBuf::from(&project_dir);
+    if !project.exists() {
+        return Err(format!("project_dir not found: {project_dir}"));
+    }
+    let mut files: Vec<OutputFile> = Vec::new();
+    for pat in outputs {
+        let Some(pat) = pat.as_str() else { continue };
+        let abs_pattern = project.join(pat);
+        // 简易 glob：含 `*` 时 enumerate 父目录扩展名匹配；否则直接 stat
+        if abs_pattern.to_string_lossy().contains('*') {
+            let parent = match abs_pattern.parent() {
+                Some(p) => p.to_path_buf(),
+                None => continue,
+            };
+            let file_name_pat = abs_pattern
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if !parent.exists() {
+                continue;
+            }
+            let entries = match std::fs::read_dir(&parent) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if !p.is_file() {
+                    continue;
+                }
+                let name = p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                if !simple_glob_match(&file_name_pat, &name) {
+                    continue;
+                }
+                if let Some(of) = stat_output(&p) {
+                    files.push(of);
+                }
+            }
+        } else if abs_pattern.exists() && abs_pattern.is_file() {
+            if let Some(of) = stat_output(&abs_pattern) {
+                files.push(of);
+            }
+        }
+    }
+    Ok(files)
+}
+
+fn simple_glob_match(pattern: &str, name: &str) -> bool {
+    // 仅支持单个 `*` 通配符（典型用例：*.md / *.html）。够当前 outputs 字段用。
+    if let Some(idx) = pattern.find('*') {
+        let prefix = &pattern[..idx];
+        let suffix = &pattern[idx + 1..];
+        name.starts_with(prefix) && name.ends_with(suffix) && name.len() >= prefix.len() + suffix.len()
+    } else {
+        pattern == name
+    }
+}
+
+fn stat_output(path: &std::path::Path) -> Option<OutputFile> {
+    let meta = std::fs::metadata(path).ok()?;
+    let size = meta.len();
+    let mtime_ms = meta
+        .modified()
+        .ok()
+        .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let preview = if size > 0 {
+        let mut buf = vec![0u8; size.min(4000) as usize];
+        if let Ok(mut f) = std::fs::File::open(path) {
+            use std::io::Read;
+            let _ = f.read_exact(&mut buf);
+        }
+        match std::str::from_utf8(&buf) {
+            Ok(s) => s.to_string(),
+            Err(_) => format!("[binary {size} bytes]"),
+        }
+    } else {
+        String::new()
+    };
+    Some(OutputFile {
+        path: path.to_string_lossy().to_string(),
+        size,
+        mtime_ms,
+        preview,
+    })
+}
+
+/// 取一个角色的执行日志尾部 N 条（从 `_state/workflow_flow.log` 按 role_id 过滤）。
+/// 详情 Drawer 的 "执行日志" Tab 用。
+#[tauri::command]
+pub async fn get_role_logs(
+    role_id: String,
+    project_dir: String,
+    tail: Option<usize>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let log_path = std::path::PathBuf::from(&project_dir)
+        .join("_state")
+        .join("workflow_flow.log");
+    if !log_path.exists() {
+        return Ok(Vec::new());
+    }
+    let content =
+        std::fs::read_to_string(&log_path).map_err(|e| format!("read log: {e}"))?;
+    let limit = tail.unwrap_or(200);
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(rec) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        // role_id 过滤；缺字段或匹配则收下
+        let matches = rec
+            .get("role_id")
+            .and_then(|v| v.as_str())
+            .map(|r| r == role_id)
+            .unwrap_or(true); // 没有 role_id 字段的全局事件保留
+        if matches {
+            out.push(rec);
+        }
+    }
+    let start = out.len().saturating_sub(limit);
+    Ok(out[start..].to_vec())
+}
+
+/// 取一个角色最近一份 gate 报告（来自 `_state/gate_reports/<role>_<ts>.json`）。
+/// 详情 Drawer 的 "Gate Report" Tab 用。
+#[tauri::command]
+pub async fn get_gate_report(
+    role_id: String,
+    project_dir: String,
+) -> Result<Option<serde_json::Value>, String> {
+    let dir = std::path::PathBuf::from(&project_dir)
+        .join("_state")
+        .join("gate_reports");
+    if !dir.exists() {
+        return Ok(None);
+    }
+    let prefix = format!("{role_id}_");
+    let mut latest: Option<(u64, std::path::PathBuf)> = None;
+    for entry in std::fs::read_dir(&dir).map_err(|e| format!("read gate_reports: {e}"))? {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let p = entry.path();
+        let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.starts_with(&prefix) || !name.ends_with(".json") {
+            continue;
+        }
+        let mtime_ms = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        match &latest {
+            Some((m, _)) if *m >= mtime_ms => {}
+            _ => latest = Some((mtime_ms, p)),
+        }
+    }
+    let Some((_, path)) = latest else {
+        return Ok(None);
+    };
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| format!("read gate report {}: {e}", path.display()))?;
+    let mut v: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("parse gate report: {e}"))?;
+    // 附 _report_path 给前端调试
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert(
+            "_report_path".into(),
+            serde_json::Value::String(path.to_string_lossy().to_string()),
+        );
+    }
+    Ok(Some(v))
+}
+
+/// 保存项目级配置到 `_state/brief.json`（merge patch，不污染 agent_registry.json ground truth）。
+#[tauri::command]
+pub async fn save_project_config(
+    project_dir: String,
+    brief_patch: serde_json::Value,
+) -> Result<(), String> {
+    let brief_path = std::path::PathBuf::from(&project_dir)
+        .join("_state")
+        .join("brief.json");
+    let mut brief = if brief_path.exists() {
+        serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(&brief_path).map_err(|e| format!("read brief: {e}"))?,
+        )
+        .map_err(|e| format!("parse brief: {e}"))?
+    } else {
+        serde_json::json!({})
+    };
+    if let (Some(obj), Some(patch_obj)) = (brief.as_object_mut(), brief_patch.as_object()) {
+        for (k, v) in patch_obj {
+            obj.insert(k.clone(), v.clone());
+        }
+    } else {
+        return Err("brief.json or patch must be JSON object".to_string());
+    }
+    std::fs::write(
+        &brief_path,
+        serde_json::to_string_pretty(&brief).map_err(|e| format!("serialize: {e}"))?,
+    )
+    .map_err(|e| format!("write brief: {e}"))?;
+    Ok(())
+}
+
+/// 保存 per-project agent 级配置覆盖到 `_state/agent_overrides.json`（merge）。
+/// scheduler.py 在 load_role_prompt / build_full_prompt 旁加 apply_overrides() 读这里。
+#[tauri::command]
+pub async fn save_agent_overrides(
+    project_dir: String,
+    role_id: String,
+    patch: serde_json::Value,
+) -> Result<(), String> {
+    let path = std::path::PathBuf::from(&project_dir)
+        .join("_state")
+        .join("agent_overrides.json");
+    let mut all = if path.exists() {
+        serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(&path).map_err(|e| format!("read: {e}"))?,
+        )
+        .unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    let obj = all
+        .as_object_mut()
+        .ok_or_else(|| "agent_overrides.json must be JSON object".to_string())?;
+    let role_entry = obj
+        .entry(role_id.clone())
+        .or_insert(serde_json::json!({}));
+    if let (Some(role_obj), Some(patch_obj)) = (role_entry.as_object_mut(), patch.as_object()) {
+        for (k, v) in patch_obj {
+            role_obj.insert(k.clone(), v.clone());
+        }
+    } else if patch.is_object() {
+        *role_entry = patch.clone();
+    }
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&all).map_err(|e| format!("serialize: {e}"))?,
+    )
+    .map_err(|e| format!("write: {e}"))?;
+    Ok(())
+}
+
+/// 取消正在执行的某个角色：scheduler --fail role --reason cancel。
+/// [C2] harness_phase 已删,无需再清；调度状态由 State(workflow_progress.json)持有。
+#[tauri::command]
+pub async fn cancel_workflow_role(
+    role_id: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+) -> Result<serde_json::Value, String> {
+    let sid = session_id
+        .or_else(|| store.active_id())
+        .ok_or_else(|| "no active session".to_string())?;
+    let workspace = pool.bridge.session_workspace(&sid);
+    let rid = role_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        // 找到 project_dir
+        let project = match crate::harness::find_project_dir(&workspace) {
+            Some(p) => p,
+            None => return Err("no project found".to_string()),
+        };
+        // 读 scenario
+        let scenario_content = std::fs::read_to_string(
+            project.join("_state").join("workflow_progress.json"),
+        )
+        .unwrap_or_default();
+        let scenario = serde_json::from_str::<serde_json::Value>(&scenario_content)
+            .ok()
+            .and_then(|v| v.get("scenario").and_then(|s| s.as_str()).map(String::from))
+            .unwrap_or_else(|| "solution_deck".to_string());
+        // 走 scheduler 通用入口（用 std::process::Command 直接调）
+        let scheduler =
+            crate::harness::scheduler_path_for(&crate::harness::workflow_name_for_scenario(&scenario));
+        let output = std::process::Command::new("python3")
+            .args([
+                scheduler.to_string_lossy().as_ref(),
+                project.to_string_lossy().as_ref(),
+                "--scenario",
+                &scenario,
+                "--fail",
+                &rid,
+                "--reason",
+                "user_cancelled",
+            ])
+            .output()
+            .map_err(|e| format!("scheduler --fail: {e}"))?;
+        Ok(serde_json::json!({
+            "ok": output.status.success(),
+            "stdout": String::from_utf8_lossy(&output.stdout).to_string(),
+            "stderr": String::from_utf8_lossy(&output.stderr).to_string(),
+        }))
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {e}"))?;
+    result
+}
+
+/// 用户审批通过 workflow gate → 标记角色完成 → 继续推进 harness loop。
+/// 前端在审批卡片上点"确认"时调用。
+#[tauri::command]
+pub async fn approve_workflow_gate(
+    role_id: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    let sid = session_id
+        .or_else(|| store.active_id())
+        .ok_or_else(|| "no active session".to_string())?;
+    let workspace = pool.bridge.session_workspace(&sid);
+    let engine = pool
+        .get_or_spawn(&sid)
+        .await
+        .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
+    let rid = role_id.clone();
+    let action = tokio::task::spawn_blocking(move || {
+        crate::harness::approve_gate(&workspace, &rid)
+    }).await.map_err(|e| format!("spawn_blocking: {e}"))?;
+    // approve 后 step_fresh 推进到下一角色：SpawnAgent（直派）/ AllDone / WaitForHuman。
+    // 用 apply_harness_action 统一处理（set phase / emit / 派发），其值化结果回前端。
+    let next_label = match &action {
+        crate::harness::HarnessAction::SpawnAgent { .. } => "dispatch",
+        crate::harness::HarnessAction::AllDone => "all_done",
+        crate::harness::HarnessAction::WaitForHuman { .. } => "waiting",
+        crate::harness::HarnessAction::Blocked { .. } => "blocked",
+        _ => "noop",
+    };
+    let handled = crate::engine::apply_harness_action(
+        action,
+        &app,
+        &engine.bridge,
+        &engine.handle,
+        &sid,
+    )
+    .await;
+    Ok(serde_json::json!({"ok": handled, "next": next_label}))
+}
+
+/// 用户审批拒绝 workflow gate → 让角色重做。
+#[tauri::command]
+pub async fn reject_workflow_gate(
+    role_id: String,
+    reason: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    let sid = session_id
+        .or_else(|| store.active_id())
+        .ok_or_else(|| "no active session".to_string())?;
+    let workspace = pool.bridge.session_workspace(&sid);
+    let engine = pool
+        .get_or_spawn(&sid)
+        .await
+        .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
+    let rid = role_id.clone();
+    let r = reason.clone();
+    let action = tokio::task::spawn_blocking(move || {
+        crate::harness::reject_gate(&workspace, &rid, &r)
+    }).await.map_err(|e| format!("spawn_blocking: {e}"))?;
+    // reject 后 reject_gate 返回 SpawnAgent（重新派发同角色 SubAgent，附拒绝原因）。
+    let next_label = match &action {
+        crate::harness::HarnessAction::SpawnAgent { .. } => "redo",
+        crate::harness::HarnessAction::Blocked { .. } => "blocked",
+        _ => "noop",
+    };
+    let handled = crate::engine::apply_harness_action(
+        action,
+        &app,
+        &engine.bridge,
+        &engine.handle,
+        &sid,
+    )
+    .await;
+    Ok(serde_json::json!({"ok": handled, "next": next_label}))
+}
+
+/// 解除指定 session 的 skill 绑定(用户点 chips 区 ✕)。
+/// 不删 session,只清绑定 — chips strip 隐藏,普通对话照常继续。
+/// 前端拉取工作流全量 agent 状态（初始化 + 切到工作流页时用）。
+#[tauri::command]
+pub async fn get_workflow_state(
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+) -> Result<serde_json::Value, String> {
+    let sid = session_id
+        .or_else(|| store.active_id())
+        .ok_or_else(|| "no active session".to_string())?;
+    let workspace = pool.bridge.session_workspace(&sid);
+    tokio::task::spawn_blocking(move || {
+        crate::harness::read_full_agent_state(&workspace)
+            .unwrap_or(serde_json::json!(null))
+    }).await.map_err(|e| format!("spawn_blocking: {e}"))
+}
+
+/// [2026-06-06] 找最近一个「进行中」的工作流 run，供 app 启动后前端自动恢复看板。
+/// 扫所有 session 的 skill binding：有 project_dir（=工作流会话）且 workflow_progress.json
+/// 里存在未完成角色的，按 progress 文件 mtime 取最近一个。
+/// 返回 {session_id, project_dir, scenario}，无则返回 null。
+#[tauri::command]
+pub async fn find_resumable_run(store: State<'_, SessionStore>) -> Result<serde_json::Value, String> {
+    let metas = store.list().map_err(|e| format!("list: {e:?}"))?;
+    let mut best: Option<(std::time::SystemTime, String, String, String)> = None;
+    for m in metas {
+        let Some(binding) = store.active_skill(&m.id) else { continue };
+        let Some(pd) = binding.project_dir else { continue };
+        let progress = std::path::Path::new(&pd).join("_state").join("workflow_progress.json");
+        let Ok(content) = std::fs::read_to_string(&progress) else { continue };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else { continue };
+        // 未全完成 = roles 非空且存在 status != completed 的角色
+        let unfinished = v.get("roles").and_then(|r| r.as_object()).is_some_and(|rs| {
+            !rs.is_empty()
+                && rs
+                    .values()
+                    .any(|r| r.get("status").and_then(|s| s.as_str()) != Some("completed"))
+        });
+        if !unfinished {
+            continue;
+        }
+        let Some(scenario) = v
+            .get("scenario")
+            .and_then(|s| s.as_str())
+            .map(String::from)
+        else {
+            continue;
+        };
+        // scenario 已没有对应工作流(如已下线存档的 h3c-ppt 项目)→ 跳过。
+        // 否则老 PPT 半途 run(永远不会完成)mtime 最新时,每次开机都恢复进僵尸会话。
+        if crate::workflow_registry::by_scenario(&scenario).is_none() {
+            continue;
+        }
+        let mtime = std::fs::metadata(&progress)
+            .and_then(|md| md.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        if best.as_ref().map_or(true, |(bt, _, _, _)| mtime > *bt) {
+            best = Some((mtime, m.id.clone(), pd.clone(), scenario));
+        }
+    }
+    Ok(match best {
+        Some((_, sid, pd, scenario)) => serde_json::json!({
+            "session_id": sid, "project_dir": pd, "scenario": scenario
+        }),
+        None => serde_json::Value::Null,
+    })
+}
+
+/// 列出已发现且 enabled 的工作流(含 ui 块),给前端模板页/新建表单数据驱动渲染。
+/// 加第 N 个工作流 = 丢一份 workflow.json + bundle 嵌入表加一行,前端零改动。
+#[tauri::command]
+pub async fn list_workflows() -> Result<Vec<serde_json::Value>, String> {
+    Ok(crate::workflow_registry::discover()
+        .into_iter()
+        .filter(|w| w.enabled)
+        .map(|w| {
+            serde_json::json!({
+                "id": w.id,
+                "name": w.name,
+                "scenarios": w.scenarios,
+                "ui": w.ui,
+            })
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn unbind_session_skill(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    store.unbind_skill(&session_id);
+    Ok(())
+}
+
+/// 拉取指定 session 当前绑定的 skill 信息(给前端切 session 后渲染 chips)。
+/// 没绑定返回 None。
+#[tauri::command]
+pub async fn get_session_active_skill(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<Option<ActiveSkillState>, String> {
+    Ok(store.active_skill(&session_id).map(|b| {
+        // [2026-06-04 白浪:chat 与工作流不混淆] workflow 绑定(带 project_dir)不回传
+        // phases——兜住磁盘上历史持久化的旧绑定(带 SKILL.md 化石 phases),否则旧工作流
+        // session 切回来 chat 顶部仍渲染节点条。skill 会话(无 project_dir)不受影响。
+        let phases = if b.project_dir.is_some() { Vec::new() } else { b.phases };
+        let first: Option<String> = None;
+        let _ = &phases;
+        ActiveSkillState {
+            name: b.name,
+            phases,
+            current_phase_id: first,
+        }
+    }))
+}
+
+/// 拉取所有 session 当前绑定的 skill 名(给 session 列表卡片显示标签用)。
+/// 返回 `{ session_id: skill_name }` 映射;没绑定的 session 不在 map 里。
+/// in-memory only — app 重启后 binding 全部丢失(跟 mode_state 一致设计)。
+#[tauri::command]
+pub async fn list_session_skill_bindings(
+    store: State<'_, SessionStore>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let metas = store.list().map_err(|e| format!("list_sessions: {e:?}"))?;
+    let mut out = std::collections::HashMap::new();
+    for m in metas {
+        if let Some(b) = store.active_skill(&m.id) {
+            out.insert(m.id, b.name);
+        }
+    }
+    Ok(out)
+}
+
 
 #[cfg(test)]
 mod tests {

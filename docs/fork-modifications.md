@@ -183,3 +183,17 @@
 ---
 
 最后更新:2026-06-11(v0.8.57 sync;基线 v0.8.53→v0.8.57,正文校准 drift/指纹/工具数,旧 sync 历史压成教训速查)
+
+## 工作流底座层(feat/sansheng-workflow PR 随附,submodule 分支 pinvou3-workflow-v0857)
+
+随三省六部工作流引入的底座 fork 层,从 pinvou3-clean 旧线移植到 v0.8.57:
+
+| 项 | 内容 |
+|---|---|
+| Op::SpawnSubAgent 扩展 | +role_id/allowed_tools/max_steps/output_schema/expects_file_output 五字段;engine 按角色白名单+步数派 Custom SubAgent;空白名单 fail-fast |
+| StructuredOutput | submit_output 工具+schema 校验+x-output-file 落盘;stop 拦截催交(MAX_STRUCTURED_OUTPUT_RETRIES);耗尽置 failed |
+| request_user_input 路由 | SubAgent 可弹 GUI 卡片阻塞等答案(user_input_tx),不吃 TOOL_TIMEOUT |
+| AgentComplete 信封 | +role(SDAN Result.from)+failed(宿主走失败路径,不再被陈旧产物洗成 PASS) |
+| mailbox + AgentSpawned | Op 路径 SubAgent 挂 Mailbox(TokenUsage 等信封直达宿主)+二发 AgentSpawned 关联 agent_id→role_id(edict-obs) |
+| 贪心解码 | SubAgent 每步 temperature=0(根治 NVFP4 下工具调用 XML 被采歪→空转) |
+| C8/C9 | SubAgent surface 注册 web/custom 工具;read_pdf catch_unwind+中文字符边界防 panic |

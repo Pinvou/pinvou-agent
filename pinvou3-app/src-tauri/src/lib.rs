@@ -10,6 +10,7 @@
 
 // bridge + engine 公开给 tests/l1_dialog_harness.rs 用 (boot_with_workspace /
 // spawn_headless 是测试入口)。其余模块保持 private,仅 Tauri 内部使用。
+mod audit;
 pub mod bridge;
 mod commands;
 // L1 harness 的附件 e2e 要走「真实 ingest → 注入分流 → 真 vLLM」全链路:
@@ -19,11 +20,15 @@ pub mod engine;
 pub mod engine_pool;
 pub mod file_ingest;
 mod file_watcher;
+mod harness;
 mod monitor;
 pub mod personas;
 mod pinvou_review;
 pub mod super_permission;
 mod updater;
+mod workflow_migrate;
+pub mod workflow_registry;
+mod workflow_runs;
 
 use tauri::Manager;
 
@@ -44,6 +49,11 @@ fn ensure_release_env() {
         ("DEEPSEEK_FORCE_HTTP1", "1"),
         ("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576"),
         ("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "240"),
+        // SSE 首响应头超时(open timeout):底座只认 env,默认 45s 是为云端调的。
+        // 本地 GB10 大上下文 SubAgent 请求首 token TTFT 偶发 >45s → 误杀子 agent
+        // (真机实锤:三省六部 libu~1 首发死于 45s,重派才过)。280s 与
+        // ~/.deepseek config 的 subagent api_timeout=300 对齐(步级超时须更大)。
+        ("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS", "280"),
         // —— webkit2gtk / fcitx 兼容（Wayland 下 IM 协议挂、合成模式异常）——
         ("GDK_BACKEND", "x11"),
         ("WEBKIT_DISABLE_COMPOSITING_MODE", "1"),
@@ -72,11 +82,19 @@ pub fn run() {
                 )?;
             }
 
+            // run 实体化一次性迁移：必须在 SessionStore boot **之前**跑
+            // （迁移会动 _skill_bindings.json 和 sessions/ 目录，boot 之后再动
+            // 会跟内存态打架）。失败只警告不 panic——app 仍可用，下次 boot 续跑。
+            if let Err(e) = crate::workflow_migrate::migrate_if_needed() {
+                eprintln!("[pinvou3-app] workflow migrate failed (will retry next boot): {e}");
+            }
+
             // 多对话历史 store：用 ~/.pinvou3/sessions/ 隔离 deepseek-tui 全局目录。
             // 必须先 boot 这个，engine forwarder 需要它跟踪 active session 的 mode_state
             // 以便 TurnComplete 时判定是否 emit chat:plan_ready。
             let session_store = match SessionStore::boot() {
                 Ok(store) => {
+                    store.load_skill_bindings();
                     eprintln!("[pinvou3-app] session store ready");
                     Some(store)
                 }
@@ -88,7 +106,6 @@ pub fn run() {
             if let Some(store) = session_store.clone() {
                 app.handle().manage(store);
             }
-
             // 多 session 并发:存 EnginePool(lazy spawn,首条消息才为该 session 起 engine)。
             // boot bridge 在 pool::new 里做一次(写盘 / 设 env 只能一次)。
             let handle = app.handle().clone();
@@ -97,7 +114,7 @@ pub fn run() {
                 // 实际使用 session 相关命令会失败,但聊天能跑
                 SessionStore::boot().expect("session store boot fallback")
             });
-            match EnginePool::new(handle.clone(), store_for_engine) {
+            match EnginePool::new(handle.clone(), store_for_engine.clone()) {
                 Ok(pool) => {
                     handle.manage(pool);
                     eprintln!("[pinvou3-app] engine pool ready (lazy spawn per session)");
@@ -145,6 +162,7 @@ pub fn run() {
             commands::read_artifact_text,
             commands::artifact_info,
             commands::render_artifact_visual,
+            commands::read_artifact_image_b64,
             commands::open_in_system,
             commands::open_containing_folder,
             commands::open_artifact_window,
@@ -158,8 +176,32 @@ pub fn run() {
             commands::exit_plan_to_yolo,
             commands::accept_plan,
             commands::discard_plan,
+            commands::read_skill_body,
+            commands::list_skills_v2,
+            commands::read_skill_demo,
+            commands::start_skill_session,
+            commands::unbind_session_skill,
+            commands::list_workflows,
+            commands::start_workflow,
+            commands::kick_workflow,
+            commands::retry_workflow_role,
+            commands::get_role_prompt,
+            commands::get_role_outputs,
+            commands::get_role_logs,
+            commands::get_gate_report,
+            commands::save_project_config,
+            commands::save_agent_overrides,
+            commands::cancel_workflow_role,
+            commands::approve_workflow_gate,
+            commands::reject_workflow_gate,
+            commands::get_workflow_state,
+            commands::find_resumable_run,
+            commands::get_session_active_skill,
+            commands::list_session_skill_bindings,
             commands::submit_user_input,
+            commands::add_run_materials,
             commands::cancel_user_input,
+            commands::restart_engine,
             commands::summon_pinvou,
             commands::save_session_pinvou_reviews,
             commands::get_session_pinvou_reviews,

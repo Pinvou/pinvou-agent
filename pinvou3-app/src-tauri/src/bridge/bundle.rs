@@ -17,7 +17,16 @@ use super::paths;
 /// 0.6: 加 present_artifact 内置 MCP server(成品卡):mcp.json 注册 + server 脚本解包
 /// 0.7: 下线 Pinvou Review v2(EXIT GATE 评审被推翻,等新方案):两个 review skill
 ///      不再解包,既有装机的残留目录启动时清理
-pub const BUNDLE_VERSION: &str = concat!("0.7-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.6: workflow 嵌入目录内容 hash 折进 version(build.rs BUNDLE_WORKFLOW_HASH)
+/// 0.8: (render-surface skill 属独立 feature,未随本分支引入)
+/// 0.9: 加 sansheng-liubu workflow 嵌入目录 hash(build.rs BUNDLE_WORKFLOW_HASH_SANSHENG)
+/// 1.0: h3c-ppt workflow 下线存档(WorkSpace/_archive/),版本只折 sansheng hash
+pub const BUNDLE_VERSION: &str = concat!(
+    "1.0-",
+    env!("BUNDLE_INSTRUCTIONS_HASH"),
+    "-",
+    env!("BUNDLE_WORKFLOW_HASH_SANSHENG")
+);
 
 /// pinvou3 内置的 instructions.md（Qwen3.6 适配 prompt），编译时内嵌。
 pub const INSTRUCTIONS_MD: &str = include_str!("../../resources/bundle/instructions.md");
@@ -125,10 +134,12 @@ Never fabricate, never claim unverified success.";
 /// 上游 v0.8.49 起 `set_*_override` 返回 `Result<(), String>`(首次 Ok,重复 Err)。
 pub fn install_prompt_overrides() {
     let _ = deepseek_tui::prompts::set_base_prompt_override(BASE_PROMPT_MD.to_string());
-    let _ =
-        deepseek_tui::prompts::set_locale_preamble_zh_hans_override(LOCALE_PREAMBLE_ZH_HANS.to_string());
-    let _ =
-        deepseek_tui::prompts::set_locale_closer_zh_hans_override(LOCALE_CLOSER_ZH_HANS.to_string());
+    let _ = deepseek_tui::prompts::set_locale_preamble_zh_hans_override(
+        LOCALE_PREAMBLE_ZH_HANS.to_string(),
+    );
+    let _ = deepseek_tui::prompts::set_locale_closer_zh_hans_override(
+        LOCALE_CLOSER_ZH_HANS.to_string(),
+    );
     let _ = deepseek_tui::prompts::set_locale_preamble_ja_override(LOCALE_PREAMBLE_JA.to_string());
     let _ = deepseek_tui::prompts::set_locale_closer_ja_override(LOCALE_CLOSER_JA.to_string());
     let _ = deepseek_tui::prompts::set_authority_recap_override(AUTHORITY_RECAP.to_string());
@@ -136,9 +147,9 @@ pub fn install_prompt_overrides() {
     // 设置后底座的 Personality/Mode/Approval/ContextMgmt/COMPACT_TEMPLATE/
     // taxonomy 常量全部不进 prompt,由 compose_static_layers 输出替代;
     // base override 仍保留——composer 的 ctx.default_layers 引用它。
-    let _ = deepseek_tui::prompts::set_static_prompt_composer_override(Box::new(
-        |ctx| compose_static_layers(ctx),
-    ));
+    let _ = deepseek_tui::prompts::set_static_prompt_composer_override(Box::new(|ctx| {
+        compose_static_layers(ctx)
+    }));
 }
 
 /// 内置 MCP 默认配置:注册 present_artifact server(成品卡)。`{{PINVOU3_PRESENT_SERVER}}`
@@ -160,11 +171,20 @@ pub const PRESENT_ARTIFACT_SERVER_PY: &str =
 pub const DENY_SENSITIVE_PATHS_SH: &str =
     include_str!("../../resources/bundle/deny_sensitive_paths.sh");
 
+/// 三省六部工作流定义 —— 不是 skill(LLM 不挂载),是 workflow:
+/// 整目录编译期内嵌,启动时递归解包到 ~/.pinvou3/bundle/workflow/sansheng-liubu/。
+/// 仓库 `resources/bundle/workflow/sansheng-liubu/` 为唯一源。
+static SANSHENG_LIUBU_WORKFLOW_DIR: include_dir::Dir<'_> =
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/workflow/sansheng-liubu");
+
+// (本分支不带 bundle skills——render-surface 等属独立 feature,未随工作流 PR 引入)
+
 #[derive(Debug, Clone)]
 pub struct Pinvou3Bundle {
     pub root: PathBuf,
     pub instructions_md: PathBuf,
     pub skills_dir: PathBuf,
+    pub workflow_dir: PathBuf,
     pub user_skills_dir: PathBuf,
     pub mcp_json: PathBuf,
     pub deny_sensitive_sh: PathBuf,
@@ -176,6 +196,7 @@ impl Pinvou3Bundle {
             root: paths::bundle_root(),
             instructions_md: paths::bundle_instructions(),
             skills_dir: paths::bundle_skills_dir(),
+            workflow_dir: paths::bundle_workflow_dir(),
             user_skills_dir: paths::user_skills_dir(),
             mcp_json: paths::bundle_mcp_json(),
             deny_sensitive_sh: paths::bundle_root().join("deny_sensitive_paths.sh"),
@@ -196,6 +217,12 @@ impl Pinvou3Bundle {
         // 已下线 skills 每次启动都清理(防御性):既有装机的残留目录若不清,
         // SkillRegistry 仍会从 disk 发现它们、重新触发对应协议 prompt。
         self.cleanup_retired_skills()?;
+        // 已下线 workflow 同档防御性清理(h3c-ppt 2026-06-11 下线存档):残留目录会被
+        // WorkflowRegistry 重新"发现"(模板卡复活),且 VERSION 相同时不走下面的解包路径,
+        // 故必须在 VERSION 门外每启动跑。
+        for retired in ["h3c-ppt"] {
+            let _ = std::fs::remove_dir_all(paths::bundle_workflow_dir().join(retired));
+        }
         // MCP server 脚本同 skills:immutable bundle 资源,每次启动防御性重写
         // (防 "VERSION 对得上但脚本缺失"),无副作用。mcp.json 本身走下面 VERSION-gated。
         self.write_mcp_servers()?;
@@ -222,8 +249,10 @@ impl Pinvou3Bundle {
         let present_server = paths::bundle_present_artifact_server();
         std::fs::write(
             &self.mcp_json,
-            DEFAULT_MCP_JSON
-                .replace("{{PINVOU3_PRESENT_SERVER}}", &present_server.to_string_lossy()),
+            DEFAULT_MCP_JSON.replace(
+                "{{PINVOU3_PRESENT_SERVER}}",
+                &present_server.to_string_lossy(),
+            ),
         )?;
         // 敏感目录拦截脚本：写入 + 加可执行位
         std::fs::write(&self.deny_sensitive_sh, DENY_SENSITIVE_PATHS_SH)?;
@@ -234,6 +263,23 @@ impl Pinvou3Bundle {
             perm.set_mode(0o755);
             std::fs::set_permissions(&self.deny_sensitive_sh, perm)?;
         }
+        // workflow:整目录解包到 workflow/(不是 skills/,LLM 不挂载),
+        // harness 从这里读 registry/roles/scripts。VERSION 变化时整体重写;
+        // 已下线 workflow 的清理在上方 VERSION 门外每启动跑。
+        std::fs::create_dir_all(&self.workflow_dir)?;
+        const WORKFLOWS: &[(&str, &include_dir::Dir)] = &[
+            // h3c-ppt 已下线存档(2026-06-11,存档见 WorkSpace/_archive/),恢复=加回一行
+            ("sansheng-liubu", &SANSHENG_LIUBU_WORKFLOW_DIR),
+        ];
+        for (name, dir) in WORKFLOWS {
+            // 先清后写:extract 只覆写不删除,嵌入侧删掉的文件(如剪枝掉的 roles/*.md)
+            // 会在解包目录残留。bundle 是 app 自有 immutable 资产,运行时状态都在
+            // 项目目录,整删安全。
+            let dest = self.workflow_dir.join(name);
+            let _ = std::fs::remove_dir_all(&dest);
+            extract_embedded_dir(dir, &dest)?;
+        }
+        std::fs::create_dir_all(&self.skills_dir)?;
         std::fs::write(&version_file, BUNDLE_VERSION)?;
         eprintln!(
             "[pinvou3-app] bundle extracted to {} (version {})",
@@ -274,6 +320,20 @@ impl Pinvou3Bundle {
     }
 }
 
+fn extract_embedded_dir(dir: &include_dir::Dir<'_>, base: &std::path::Path) -> std::io::Result<()> {
+    for file in dir.files() {
+        let dest = base.join(file.path());
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(dest, file.contents())?;
+    }
+    for sub in dir.dirs() {
+        extract_embedded_dir(sub, base)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,6 +354,16 @@ mod tests {
         assert!(bundle.instructions_md.is_file());
         assert!(bundle.mcp_json.is_file());
         assert!(paths::bundle_version_file().is_file());
+        // workflow 整目录解包(h3c-ppt 已下线存档,不应再被写出)
+        assert!(
+            !bundle.workflow_dir.join("h3c-ppt").exists(),
+            "h3c-ppt workflow 已下线,不应再解包"
+        );
+        let sansheng = bundle.workflow_dir.join("sansheng-liubu");
+        assert!(
+            sansheng.join("workflow.json").is_file(),
+            "sansheng-liubu workflow.json 应被解包"
+        );
         // present_artifact MCP server 应解包,mcp.json 注册且占位符替换成绝对路径
         assert!(
             paths::bundle_present_artifact_server().is_file(),

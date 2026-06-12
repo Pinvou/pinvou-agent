@@ -28,7 +28,7 @@ use deepseek_tui::session_manager::{
 };
 use parking_lot::RwLock;
 
-use super::mode_state::{PlanPhase, SerializableMode, SessionModeState};
+use super::mode_state::{ActiveSkillBinding, PlanPhase, SerializableMode, SessionModeState};
 use super::paths;
 
 /// pinvou3 session 存储：包 SessionManager + active id 跟踪 + per-session mode 状态。
@@ -200,11 +200,21 @@ impl SessionStore {
     }
 
     /// 一次性原子更新 mode + phase（用户 accept_plan / exit_plan_to_yolo 等场景）。
+    /// **保留现有 pinvou_review_enabled**(品悟开关与 mode/phase 正交)。
     pub fn set_mode_state(&self, id: &str, mode: SerializableMode, phase: PlanPhase) {
         let mut m = self.mode_states.write();
         let entry = m.entry(id.to_string()).or_default();
         entry.mode = mode;
         entry.plan_phase = phase;
+        // pinvou_review_enabled 不动
+    }
+
+    /// 设置品悟 review 开关（用户在 UI 顶部 toggle 切换）。
+    /// 与 Plan/YOLO 切换正交：品悟 toggle 不动 mode/phase。
+    pub fn set_pinvou_review(&self, id: &str, enabled: bool) {
+        let mut m = self.mode_states.write();
+        let entry = m.entry(id.to_string()).or_default();
+        entry.pinvou_review_enabled = enabled;
     }
 
     /// 重置到默认（Yolo + None）。delete_session 时调用。
@@ -212,33 +222,104 @@ impl SessionStore {
         self.mode_states.write().remove(id);
     }
 
-    // ===================== 卡片池: 专家面具加持 =====================
+    // ===================== 工作流 skill 绑定 (per-session) =====================
 
-    /// 给指定 session 加持/摘下专家面具。`Some(id)` 加持,`None` 摘下。
-    /// 仅存 persona id;每 turn `EnginePool::send_user_message` 解析成 reminder 注入。
-    pub fn set_active_persona(&self, id: &str, persona_id: Option<String>) {
+    /// 把一个 skill 绑定到指定 session。`start_skill_session` 在 create_new
+    /// 之后立刻调,挂 pending_instruction 让该 session 第一条 chat 自动 prepend。
+    pub fn bind_skill(&self, id: &str, binding: ActiveSkillBinding) {
         let mut m = self.mode_states.write();
         let entry = m.entry(id.to_string()).or_default();
-        entry.active_persona = persona_id;
+        entry.active_skill = Some(binding);
     }
 
-    /// 取该 session 当前加持的专家面具 id(给挂件渲染 + per-turn 注入用)。
+    /// 取该 session 当前绑定的 skill 信息(给前端渲染 chips strip)。
+    /// 注意:返回的 binding 里 pending_instruction 是 None(serde skip + 一次性消费)。
+    pub fn active_skill(&self, id: &str) -> Option<ActiveSkillBinding> {
+        self.mode_states.read().get(id)?.active_skill.clone()
+    }
+
+    /// 一次性消费 session 绑定 skill 的 pending instruction。
+    /// commands::chat 在发用户消息前调,prepend 到 message content 后置空,
+    /// 后续 turn 不再重复(LLM 已经看到过,靠 session 上下文保持)。
+    pub fn take_pending_skill_instruction(&self, id: &str) -> Option<String> {
+        let mut m = self.mode_states.write();
+        let entry = m.get_mut(id)?;
+        let skill = entry.active_skill.as_mut()?;
+        skill.pending_instruction.take()
+    }
+
+    /// 解除 session 的 skill 绑定(用户点 chips 区 ✕ 时调用)。
+    /// 不删 session 本身,只清掉绑定 — chips strip 在前端会因此隐藏。
+    // ── Side B 卡片池(persona,远端体系) ──
+    pub fn set_active_persona(&self, id: &str, persona_id: Option<String>) {
+        self.mode_states.write().entry(id.to_string()).or_default().active_persona = persona_id;
+    }
     pub fn active_persona_id(&self, id: &str) -> Option<String> {
         self.mode_states.read().get(id)?.active_persona.clone()
     }
-
-    /// Side B: 给 session 挂上一次性注入的完整人设 body(加持时调)。
     pub fn set_pending_persona_body(&self, id: &str, body: Option<String>) {
-        let mut m = self.mode_states.write();
-        let entry = m.entry(id.to_string()).or_default();
-        entry.pending_persona_body = body;
+        self.mode_states.write().entry(id.to_string()).or_default().pending_persona_body = body;
+    }
+    pub fn take_pending_persona_body(&self, id: &str) -> Option<String> {
+        self.mode_states.write().get_mut(id)?.pending_persona_body.take()
     }
 
-    /// Side B: 一次性消费 session 的待注入人设 body。chat 在发消息前调,
-    /// prepend 到 message content 后置空,后续 turn 靠 equip_anchor 维持。
-    pub fn take_pending_persona_body(&self, id: &str) -> Option<String> {
+    pub fn unbind_skill(&self, id: &str) {
+        if let Some(entry) = self.mode_states.write().get_mut(id) {
+            entry.active_skill = None;
+        }
+        self.save_skill_bindings();
+    }
+
+    /// 查找已有绑定指定 skill 的 session ID（用于恢复工作流）。
+    pub fn find_session_with_skill(&self, skill_name: &str) -> Option<String> {
+        self.mode_states.read()
+            .iter()
+            .find(|(_, state)| {
+                state.active_skill.as_ref().map(|s| s.name.as_str()) == Some(skill_name)
+            })
+            .map(|(id, _)| id.clone())
+    }
+
+    /// 持久化所有 skill binding 到磁盘。
+    pub fn save_skill_bindings(&self) {
+        let bindings_file = super::paths::sessions_root().join("_skill_bindings.json");
+        let m = self.mode_states.read();
+        let bindings: std::collections::HashMap<String, &super::mode_state::ActiveSkillBinding> = m.iter()
+            .filter_map(|(id, state)| {
+                state.active_skill.as_ref().map(|s| (id.clone(), s))
+            })
+            .collect();
+        if bindings.is_empty() {
+            let _ = std::fs::remove_file(&bindings_file);
+            return;
+        }
+        if let Ok(json) = serde_json::to_string_pretty(&bindings) {
+            let _ = std::fs::write(bindings_file, json);
+        }
+    }
+
+    /// 从磁盘恢复 skill bindings（启动时调用）。
+    pub fn load_skill_bindings(&self) {
+        let bindings_file = super::paths::sessions_root().join("_skill_bindings.json");
+        if !bindings_file.exists() { return; }
+        let content = match std::fs::read_to_string(&bindings_file) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let bindings: std::collections::HashMap<String, super::mode_state::ActiveSkillBinding> =
+            match serde_json::from_str(&content) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("[sessions] load_skill_bindings failed: {e}");
+                    return;
+                }
+            };
         let mut m = self.mode_states.write();
-        m.get_mut(id)?.pending_persona_body.take()
+        for (id, binding) in bindings {
+            let entry = m.entry(id).or_default();
+            entry.active_skill = Some(binding);
+        }
     }
 
     // ===================== M2: auto-continue counter =====================
@@ -369,14 +450,32 @@ mod tests {
     }
 
     #[test]
-    fn set_mode_state_updates_mode_and_phase() {
+    fn pinvou_review_defaults_off() {
         let (store, _g) = isolated_store();
+        assert!(!store.mode_state("s1").pinvou_review_enabled);
+    }
+
+    #[test]
+    fn set_pinvou_review_persists() {
+        let (store, _g) = isolated_store();
+        store.set_pinvou_review("s1", true);
+        assert!(store.mode_state("s1").pinvou_review_enabled);
+        store.set_pinvou_review("s1", false);
+        assert!(!store.mode_state("s1").pinvou_review_enabled);
+    }
+
+    #[test]
+    fn set_mode_state_preserves_pinvou_review() {
+        // 关键不变量:plan→execute 流转(set_mode_state)不能覆盖品悟开关。
+        let (store, _g) = isolated_store();
+        store.set_pinvou_review("s1", true);
         store.set_mode_state(
             "s1",
             super::super::mode_state::SerializableMode::Yolo,
             super::super::mode_state::PlanPhase::Executing,
         );
         let state = store.mode_state("s1");
+        assert!(state.pinvou_review_enabled);
         assert!(matches!(
             state.mode,
             super::super::mode_state::SerializableMode::Yolo
@@ -388,7 +487,80 @@ mod tests {
     }
 
     #[test]
-    fn bind_skill_preserves_mode_and_phase_placeholder() {
-        // (工作流 skill 绑定已移除;mode/plan_phase 行为由上方 mode-state 测试覆盖。)
+    fn bind_skill_then_take_consumes_once_and_returns_binding() {
+        let (store, _g) = isolated_store();
+        store.bind_skill(
+            "s1",
+            ActiveSkillBinding {
+                name: "h3c-ppt".into(),
+                pending_instruction: Some("PREPEND".into()),
+                phases: vec![],
+                project_dir: None,
+            },
+        );
+        let b = store.active_skill("s1").expect("bound");
+        assert_eq!(b.name, "h3c-ppt");
+        // pending_instruction 被 #[serde(skip)] 标记,active_skill 路径走的是
+        // .clone() 不影响 pending_instruction(它仍存在原 entry 上),take 走另一路径
+        assert_eq!(
+            store.take_pending_skill_instruction("s1").as_deref(),
+            Some("PREPEND")
+        );
+        assert!(store.take_pending_skill_instruction("s1").is_none());
+        // 取走 instruction 后 active_skill 仍能返回 binding(name+phases),
+        // 仅 pending_instruction 槽位被消费 — 关键:phases 不丢
+        let b2 = store.active_skill("s1").expect("still bound");
+        assert_eq!(b2.name, "h3c-ppt");
+    }
+
+    #[test]
+    fn unbind_skill_clears_binding() {
+        let (store, _g) = isolated_store();
+        store.bind_skill(
+            "s1",
+            ActiveSkillBinding {
+                name: "h3c-ppt".into(),
+                pending_instruction: None,
+                phases: vec![],
+                project_dir: None,
+            },
+        );
+        assert!(store.active_skill("s1").is_some());
+        store.unbind_skill("s1");
+        assert!(store.active_skill("s1").is_none());
+    }
+
+    #[test]
+    fn bind_skill_preserves_mode_and_phase() {
+        // 绑定/解绑 skill 不能动 mode / plan_phase / pinvou_review_enabled。
+        let (store, _g) = isolated_store();
+        store.set_pinvou_review("s1", true);
+        store.set_mode_state(
+            "s1",
+            super::super::mode_state::SerializableMode::Plan,
+            super::super::mode_state::PlanPhase::Planning,
+        );
+        store.bind_skill(
+            "s1",
+            ActiveSkillBinding {
+                name: "h3c-ppt".into(),
+                pending_instruction: None,
+                phases: vec![],
+                project_dir: None,
+            },
+        );
+        let state = store.mode_state("s1");
+        assert!(state.pinvou_review_enabled);
+        assert!(matches!(
+            state.mode,
+            super::super::mode_state::SerializableMode::Plan
+        ));
+        store.unbind_skill("s1");
+        let state2 = store.mode_state("s1");
+        assert!(state2.pinvou_review_enabled);
+        assert!(matches!(
+            state2.mode,
+            super::super::mode_state::SerializableMode::Plan
+        ));
     }
 }

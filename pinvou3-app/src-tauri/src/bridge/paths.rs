@@ -36,6 +36,11 @@ pub fn bundle_instructions() -> PathBuf {
 pub fn bundle_skills_dir() -> PathBuf {
     bundle_root().join("skills")
 }
+/// 工作流(Harness Loop)定义目录,跟 `skills/` 并列。
+/// skill = LLM 挂载的标准附件(pinvou-review-*);workflow = harness 读、LLM 不挂载(h3c-ppt)。
+pub fn bundle_workflow_dir() -> PathBuf {
+    bundle_root().join("workflow")
+}
 pub fn bundle_mcp_json() -> PathBuf {
     bundle_root().join("mcp.json")
 }
@@ -92,6 +97,26 @@ pub fn mcp_config_path() -> PathBuf {
 /// `~/.pinvou3/sessions/` —— 所有对话历史落盘的根目录。
 pub fn sessions_root() -> PathBuf {
     pinvou3_home().join("sessions")
+}
+
+/// `~/.pinvou3/workflows/` —— 工作流 run 第一公民的根目录（独立于 sessions/）。
+pub fn workflows_root() -> PathBuf {
+    pinvou3_home().join("workflows")
+}
+
+/// `~/.pinvou3/workflows/<run_id>/` —— 单个 run 的家（run.json + project/）。
+pub fn workflow_run_dir(run_id: &str) -> PathBuf {
+    workflows_root().join(run_id)
+}
+
+/// `~/.pinvou3/workflows/<run_id>/project/` —— 项目目录 = 该 run 的 engine workspace 本身。
+pub fn workflow_project_dir(run_id: &str) -> PathBuf {
+    workflow_run_dir(run_id).join("project")
+}
+
+/// `~/.pinvou3/workflows/index.json` —— 台账。纯缓存可丢弃，决策读取须与 _state 互证。
+pub fn workflows_index_path() -> PathBuf {
+    workflows_root().join("index.json")
 }
 
 /// `~/.pinvou3/updates/` —— 应用内升级下载的 deb 暂存目录。
@@ -188,6 +213,34 @@ pub(crate) mod tests {
             assert_eq!(user_home_dir(), PathBuf::from(h));
         }
         // 没设 HOME 时 fallback /tmp（不强测，避免 race）
+    }
+
+    /// workflow run 目录族必须落在 ~/.pinvou3/workflows/ 下（独立于 sessions/）。
+    #[test]
+    fn workflow_paths_layout() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-wf-paths-test");
+        assert_eq!(
+            workflows_root(),
+            PathBuf::from("/tmp/pinvou3-wf-paths-test/workflows")
+        );
+        assert_eq!(
+            workflow_run_dir("wf-20260610-1432-a3f9"),
+            PathBuf::from("/tmp/pinvou3-wf-paths-test/workflows/wf-20260610-1432-a3f9")
+        );
+        assert_eq!(
+            workflow_project_dir("wf-20260610-1432-a3f9"),
+            PathBuf::from("/tmp/pinvou3-wf-paths-test/workflows/wf-20260610-1432-a3f9/project")
+        );
+        assert_eq!(
+            workflows_index_path(),
+            PathBuf::from("/tmp/pinvou3-wf-paths-test/workflows/index.json")
+        );
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
     }
 
     /// session artifacts 路径必须落在 ~/.pinvou3/sessions/<id>/artifacts/ 下。

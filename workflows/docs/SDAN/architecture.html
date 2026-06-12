@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>SDAN 架构图（真相源） · Software Defined Agent Network</title>
+<style>
+  body{margin:0;background:#070d24;color:#e6edff;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1300px;margin:0 auto;padding:24px 16px 48px}
+  h1{font-size:23px;font-weight:700;margin:0 0 4px;color:#7dd3fc}
+  h1 span{color:#e6edff;font-weight:500;font-size:15px}
+  .sub{font-size:13px;color:#94a3b8;margin:0 0 6px;line-height:1.6}
+  .tag{font-size:11.5px;color:#f3d3a0;margin:0 0 10px}
+  svg{width:100%;height:auto;display:block}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12.5px;color:#cbd5e1;margin:12px 0 0}
+  .legend i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:middle}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>SDAN 架构图 <span>· Software Defined Agent Network（软件定义 Agent 网络）· 真相源</span></h1>
+  <p class="sub">Router = 固定产品（无状态转发引擎）：加载·解析·执行路由表 + 严格按 SDAN 协议处理报文。判断·资源·记忆三模块旁挂分离。</p>
+  <p class="tag">最新设计（三模块分离版）· 取代旧的 router-dag「五道闸」图</p>
+
+<svg viewBox="0 0 1280 910" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="ab" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#5fa8e8"/></marker>
+    <marker id="ao" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#e0a85a"/></marker>
+    <marker id="agn" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#34d399"/></marker>
+    <marker id="acy" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#22d3ee"/></marker>
+    <marker id="apu" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#a78bfa"/></marker>
+  </defs>
+
+  <!-- ===== 北向 Pinvou3 ===== -->
+  <rect x="1015" y="14" width="245" height="54" rx="9" fill="#4a3512" stroke="#e0a85a" stroke-width="1.5"/>
+  <text x="1137" y="37" text-anchor="middle" font-size="13" fill="#f3d3a0" font-weight="600">Pinvou3 · 生成/改路由表</text>
+  <text x="1137" y="56" text-anchor="middle" font-size="10.5" fill="#d8b888">北向：软件定义 → 换 workflow 只换表</text>
+  <path d="M1015,46 L660,46 L660,102" stroke="#e0a85a" stroke-width="1.8" fill="none" marker-end="url(#ao)" stroke-dasharray="5 4"/>
+
+  <!-- ===== 中央 Router（固定产品，无状态） ===== -->
+  <rect x="378" y="104" width="476" height="286" rx="12" fill="#0d1f47" stroke="#38bdf8" stroke-width="2.4"/>
+  <text x="616" y="128" text-anchor="middle" font-size="15.5" fill="#bfe0ff" font-weight="700">Router · 固定产品 / 模块（无状态）</text>
+  <text x="492" y="150" text-anchor="middle" font-size="11.5" fill="#9fb3d9">① 加载·解析·执行路由表</text>
+  <text x="744" y="150" text-anchor="middle" font-size="11.5" fill="#9fb3d9">② 严格按 SDAN 协议处理报文</text>
+  <text x="408" y="116" font-size="10" fill="#e0a85a">↘ 加载路由表</text>
+
+  <!-- 处理循环 内框 -->
+  <rect x="398" y="166" width="436" height="146" rx="8" fill="#13314e" stroke="#38bdf8" stroke-width="1.2"/>
+  <text x="414" y="187" font-size="12" fill="#7dd3fc" font-weight="600">处理循环（每来一个 Result 报文）：</text>
+  <text x="414" y="210" font-size="11" fill="#cfe2ff">查表 → 调裁决 → 定下一跳 → adapter 打包 → 封 Task 发出</text>
+  <text x="414" y="236" font-size="10.5" fill="#94a3b8">下一跳去向（只由 hard verdict 定）：</text>
+  <text x="498" y="236" font-size="10.5" fill="#34d399">放行→下游</text>
+  <text x="582" y="236" font-size="10.5" fill="#e0a85a">打回→自己</text>
+  <text x="666" y="236" font-size="10.5" fill="#ef6b6b">structural→回滚 cascade</text>
+  <text x="414" y="258" font-size="10.5" fill="#94a3b8">耗尽→blocked 系统卡片</text>
+  <line x1="398" y1="276" x2="834" y2="276" stroke="#2a3a5a" stroke-width="1"/>
+  <text x="616" y="296" text-anchor="middle" font-size="11" fill="#7aa8d8">无状态 · 不存数据 · 不碰内容 · 不内置逻辑</text>
+
+  <text x="616" y="332" text-anchor="middle" font-size="10.5" fill="#5b6b8a">↓ 只看信封头转发，不拆信纸 ↓</text>
+  <text x="616" y="356" text-anchor="middle" font-size="10.5" fill="#5b6b8a">三模块都在 Router 外面，它只读写/调用、不拥有</text>
+  <text x="616" y="378" text-anchor="middle" font-size="10.5" fill="#5b6b8a">换业务＝换路由表，Router 不变</text>
+
+  <!-- ===== ⚖️ 裁决模块（左，旁挂） ===== -->
+  <rect x="26" y="118" width="220" height="258" rx="11" fill="#102a4a" stroke="#5fa8e8" stroke-width="1.8"/>
+  <text x="136" y="142" text-anchor="middle" font-size="13.5" fill="#bfe0ff" font-weight="700">⚖️ 裁决模块（旁挂）</text>
+  <rect x="42" y="156" width="188" height="100" rx="7" fill="#163b5c" stroke="#38bdf8" stroke-width="1.1"/>
+  <text x="136" y="176" text-anchor="middle" font-size="12" fill="#cfe2ff" font-weight="600">硬裁决 · 代码（先跑）</text>
+  <text x="136" y="196" text-anchor="middle" font-size="10.5" fill="#9fb3d9">validate_deliverable</text>
+  <text x="136" y="213" text-anchor="middle" font-size="10.5" fill="#9fb3d9">validate_density / gate_runner</text>
+  <text x="136" y="230" text-anchor="middle" font-size="10.5" fill="#9fb3d9">VLM 评分</text>
+  <text x="136" y="248" text-anchor="middle" font-size="10" fill="#7aa8d8">确定性优先</text>
+  <rect x="42" y="266" width="188" height="96" rx="7" fill="#3a2b5c" stroke="#a78bfa" stroke-width="1.1"/>
+  <text x="136" y="286" text-anchor="middle" font-size="12" fill="#ddd0ff" font-weight="600">软裁决 · LLM（无人格/无状态）</text>
+  <text x="136" y="306" text-anchor="middle" font-size="10.5" fill="#b9aede">硬闸过了才补看内容</text>
+  <text x="136" y="324" text-anchor="middle" font-size="10.5" fill="#b9aede">只产"建议卡片"</text>
+  <text x="136" y="344" text-anchor="middle" font-size="10.5" fill="#b9aede">不阻断 · 不定路由</text>
+
+  <!-- Router ↔ 裁决 双箭头 -->
+  <path d="M246,210 L378,210" stroke="#5fa8e8" stroke-width="1.8" fill="none" marker-end="url(#ab)"/>
+  <path d="M378,240 L246,240" stroke="#5fa8e8" stroke-width="1.8" fill="none" marker-end="url(#ab)"/>
+  <text x="290" y="203" font-size="10" fill="#7aa8d8">调</text>
+  <text x="290" y="258" font-size="10" fill="#7aa8d8">verdict→信封头</text>
+
+  <!-- ===== soft 建议卡片 → 用户 → hook 回裁决（白浪 2026-05-29：用户决策经裁决器回流，不直连 Router；推迟） ===== -->
+  <rect x="30" y="400" width="216" height="66" rx="9" fill="#2a1f47" stroke="#a78bfa" stroke-width="1.4" stroke-dasharray="5 4"/>
+  <text x="138" y="420" text-anchor="middle" font-size="11.5" fill="#ddd0ff" font-weight="600">🃏 soft 建议卡片 → 用户</text>
+  <text x="138" y="438" text-anchor="middle" font-size="9.3" fill="#b9aede">用户"通过/打回" → hook 回裁决器</text>
+  <text x="138" y="455" text-anchor="middle" font-size="9" fill="#8f7fd0">标 source=user · 存 State · 【推迟】</text>
+  <!-- soft → 建议卡片（出，实线） -->
+  <path d="M138,376 L138,400" stroke="#a78bfa" stroke-width="1.6" fill="none" marker-end="url(#apu)"/>
+  <text x="86" y="392" font-size="8.8" fill="#b9aede">只出建议</text>
+  <!-- 建议卡片 → 回裁决器（hook，虚线，不连 Router） -->
+  <path d="M206,400 L206,377" stroke="#a78bfa" stroke-width="1.4" fill="none" marker-end="url(#apu)" stroke-dasharray="4 3"/>
+  <text x="212" y="393" font-size="8.5" fill="#8f7fd0">hook·推迟</text>
+
+  <!-- ===== 🧠 记忆模块 State（右上） ===== -->
+  <rect x="992" y="110" width="262" height="128" rx="11" fill="#3a2c12" stroke="#e0a85a" stroke-width="1.8"/>
+  <text x="1123" y="134" text-anchor="middle" font-size="13.5" fill="#f3d3a0" font-weight="700">🧠 记忆模块 · State</text>
+  <text x="1123" y="156" text-anchor="middle" font-size="10.5" fill="#e8c89a">谁 done · join 等齐 · retry 计数</text>
+  <text x="1123" y="174" text-anchor="middle" font-size="10.5" fill="#e8c89a">回滚游标 · scenario</text>
+  <text x="1123" y="198" text-anchor="middle" font-size="10.5" fill="#d8b888">控制流进度（轻、要可靠）</text>
+  <text x="1123" y="220" text-anchor="middle" font-size="10.5" fill="#34d399">持久化 → Router 崩了重启不丢</text>
+
+  <!-- Router ↔ 记忆 双箭头 -->
+  <path d="M854,160 L992,160" stroke="#e0a85a" stroke-width="1.8" fill="none" marker-end="url(#ao)"/>
+  <path d="M992,188 L854,188" stroke="#e0a85a" stroke-width="1.8" fill="none" marker-end="url(#ao)"/>
+  <text x="888" y="153" font-size="10" fill="#e0a85a">读/写进度</text>
+
+  <!-- ===== 📦 资源模块 Blackboard（右下） ===== -->
+  <rect x="992" y="252" width="262" height="128" rx="11" fill="#0e3326" stroke="#34d399" stroke-width="1.8"/>
+  <text x="1123" y="276" text-anchor="middle" font-size="13.5" fill="#a7f3d0" font-weight="700">📦 资源模块 · Blackboard</text>
+  <text x="1123" y="298" text-anchor="middle" font-size="10.5" fill="#8fe6bf">各 agent 产出账本</text>
+  <text x="1123" y="316" text-anchor="middle" font-size="10.5" fill="#8fe6bf">大文件留盘，只存元数据/引用</text>
+  <text x="1123" y="338" text-anchor="middle" font-size="10.5" fill="#8fe6bf">adapter 从这取数据打包</text>
+  <text x="1123" y="360" text-anchor="middle" font-size="10" fill="#6fcfa0">（信纸内容，Router 不解析）</text>
+
+  <!-- Router ↔ 资源 双箭头 -->
+  <path d="M854,300 L992,300" stroke="#34d399" stroke-width="1.8" fill="none" marker-end="url(#agn)"/>
+  <path d="M992,328 L854,328" stroke="#34d399" stroke-width="1.8" fill="none" marker-end="url(#agn)"/>
+  <text x="884" y="293" font-size="10" fill="#34d399">登记/取</text>
+
+  <!-- ===== 接口协议层 ===== -->
+  <text x="616" y="432" text-anchor="middle" font-size="12.5" fill="#7dd3fc" font-weight="600">接口协议 · 信封头标准 + 信纸不透明（Router 只看头、不拆信纸；逻辑要翻译就调旁挂 adapter）</text>
+
+  <path d="M470,446 L470,520" stroke="#22d3ee" stroke-width="2.4" fill="none" marker-end="url(#acy)"/>
+  <rect x="296" y="450" width="252" height="48" rx="7" fill="#0c3a44" stroke="#22d3ee" stroke-width="1.3"/>
+  <text x="422" y="469" text-anchor="middle" font-size="12" fill="#a5f3fc" font-weight="600">Task 信封 ↓ 下发</text>
+  <text x="422" y="485" text-anchor="middle" font-size="9.5" fill="#7fd9e6">头：to·reason·constraints｜信纸：inputs(已打包)</text>
+
+  <path d="M770,520 L770,446" stroke="#34d399" stroke-width="2.4" fill="none" marker-end="url(#agn)"/>
+  <rect x="700" y="450" width="252" height="48" rx="7" fill="#13402e" stroke="#34d399" stroke-width="1.3"/>
+  <text x="826" y="469" text-anchor="middle" font-size="12" fill="#a7f3d0" font-weight="600">Result 信封 ↑ 上交</text>
+  <text x="826" y="485" text-anchor="middle" font-size="9.5" fill="#86e0b8">头：status·verdict·violation_type｜信纸：produces</text>
+
+  <!-- ===== 数据平面 ===== -->
+  <rect x="110" y="528" width="1060" height="256" rx="12" fill="#0a1838" stroke="#5fa8e8" stroke-width="2"/>
+  <text x="640" y="552" text-anchor="middle" font-size="15" fill="#bfe0ff" font-weight="700">数据平面 · SubAgent（傻腿，只收发信封、不知道全局）</text>
+
+  <g>
+    <!-- row1 -->
+    <rect x="132" y="568" width="186" height="64" rx="8" fill="#16335c" stroke="#5fa8e8" stroke-width="1.1"/>
+    <text x="225" y="595" text-anchor="middle" font-size="12.5" fill="#cfe2ff" font-weight="600">需求分析</text>
+    <text x="225" y="614" text-anchor="middle" font-size="9" fill="#8aa5cf">requirements_analyst</text>
+    <rect x="334" y="568" width="186" height="64" rx="8" fill="#16335c" stroke="#5fa8e8" stroke-width="1.1"/>
+    <text x="427" y="591" text-anchor="middle" font-size="12.5" fill="#cfe2ff" font-weight="600">素材审计</text>
+    <text x="427" y="608" text-anchor="middle" font-size="9" fill="#8aa5cf">materials_auditor</text>
+    <text x="427" y="624" text-anchor="middle" font-size="9" fill="#e0a85a">WARN·不卡</text>
+    <rect x="536" y="568" width="186" height="64" rx="8" fill="#16335c" stroke="#5fa8e8" stroke-width="1.1"/>
+    <text x="629" y="595" text-anchor="middle" font-size="12.5" fill="#cfe2ff" font-weight="600">调研</text>
+    <text x="629" y="614" text-anchor="middle" font-size="9" fill="#8aa5cf">researcher</text>
+    <rect x="738" y="568" width="186" height="64" rx="8" fill="#16335c" stroke="#5fa8e8" stroke-width="1.1"/>
+    <text x="831" y="595" text-anchor="middle" font-size="12.5" fill="#cfe2ff" font-weight="600">产品分析</text>
+    <text x="831" y="614" text-anchor="middle" font-size="9" fill="#8aa5cf">product_manager</text>
+    <rect x="940" y="568" width="186" height="64" rx="8" fill="#16335c" stroke="#5fa8e8" stroke-width="1.1"/>
+    <text x="1033" y="595" text-anchor="middle" font-size="12.5" fill="#cfe2ff" font-weight="600">方案架构</text>
+    <text x="1033" y="614" text-anchor="middle" font-size="9" fill="#8aa5cf">solution_architect</text>
+    <!-- row2 -->
+    <rect x="132" y="646" width="186" height="64" rx="8" fill="#16335c" stroke="#5fa8e8" stroke-width="1.1"/>
+    <text x="225" y="673" text-anchor="middle" font-size="12.5" fill="#cfe2ff" font-weight="600">内容策划</text>
+    <text x="225" y="692" text-anchor="middle" font-size="9" fill="#8aa5cf">content_planner</text>
+    <rect x="334" y="646" width="186" height="64" rx="8" fill="#16335c" stroke="#5fa8e8" stroke-width="1.1"/>
+    <text x="427" y="673" text-anchor="middle" font-size="12.5" fill="#cfe2ff" font-weight="600">视觉设计</text>
+    <text x="427" y="692" text-anchor="middle" font-size="9" fill="#8aa5cf">designer</text>
+    <rect x="536" y="646" width="186" height="64" rx="8" fill="#16335c" stroke="#5fa8e8" stroke-width="1.1"/>
+    <text x="629" y="673" text-anchor="middle" font-size="12.5" fill="#cfe2ff" font-weight="600">页面撰写</text>
+    <text x="629" y="692" text-anchor="middle" font-size="9" fill="#8aa5cf">slide_writer</text>
+    <rect x="738" y="646" width="186" height="64" rx="8" fill="#16335c" stroke="#5fa8e8" stroke-width="1.1"/>
+    <text x="831" y="669" text-anchor="middle" font-size="12.5" fill="#cfe2ff" font-weight="600">配图</text>
+    <text x="831" y="686" text-anchor="middle" font-size="9" fill="#8aa5cf">illustrator</text>
+    <text x="831" y="701" text-anchor="middle" font-size="9" fill="#e0a85a">VLM × 4 轮</text>
+    <rect x="940" y="646" width="186" height="64" rx="8" fill="#16335c" stroke="#5fa8e8" stroke-width="1.1"/>
+    <text x="1033" y="669" text-anchor="middle" font-size="12.5" fill="#cfe2ff" font-weight="600">质检</text>
+    <text x="1033" y="686" text-anchor="middle" font-size="9" fill="#8aa5cf">qa_inspector</text>
+    <text x="1033" y="701" text-anchor="middle" font-size="9" fill="#ef6b6b">⟲ 回滚发起点</text>
+  </g>
+
+  <text x="640" y="744" text-anchor="middle" font-size="10.5" fill="#6b7a99">工具/max_steps 来自 agent_registry.json（唯一真像）· 拓扑·回滚·场景来自路由表</text>
+  <text x="640" y="772" text-anchor="middle" font-size="11.5" fill="#7dd3fc">引擎不变 · 路由表是数据 ——— “软件定义” 的落点</text>
+</svg>
+
+  <div class="legend">
+    <span><i style="background:#38bdf8"></i>Router（固定产品·无状态）</span>
+    <span><i style="background:#5fa8e8"></i>⚖️ 裁决（旁挂）</span>
+    <span><i style="background:#e0a85a"></i>🧠 记忆 State</span>
+    <span><i style="background:#34d399"></i>📦 资源 Blackboard</span>
+    <span><i style="background:#22d3ee"></i>Task 下发</span>
+    <span><i style="background:#a78bfa"></i>soft 建议卡片 · 用户决策回路（推迟）</span>
+  </div>
+</div>
+</body>
+</html>

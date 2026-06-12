@@ -1,0 +1,306 @@
+{
+  "schema_version": 1,
+  "_about": "单一路由器（SDN 大脑）消费的全局调度真相源。路由器引擎=不变的一份代码；本表=数据，换 workflow 只换表。设计见 docs/SDAN/06-route-table.md。能力字段（tools/outputs/output_schema/max_steps/prompt_file/reads_static/name/gate）引用 agent_registry.json（唯一能力真像，不重复定义）；拓扑/裁决/回滚/场景（edges/joins/adapters/nodes.hard·soft/rollback_rules/scenarios）由本表自持。workflow.json 已退役删除。",
+  "_interface_contract": {
+    "_note": "agent↔router 只通过两种信封通信，定义见 router-design.draft.md §3",
+    "task_envelope": [
+      "task_id",
+      "to",
+      "attempt",
+      "reason(dispatch|local_retry|rollback|rejected)",
+      "inputs(已按 to.accepts 打包)",
+      "feedback",
+      "constraints(←registry)",
+      "allowed_tools(←registry)"
+    ],
+    "result_envelope": [
+      "task_id",
+      "from",
+      "status(completed|failed|need_input)",
+      "outputs",
+      "produces(←output_schema + signals)",
+      "self_report",
+      "need_input"
+    ]
+  },
+  "nodes": {
+    "taizi": {
+      "accepts": {
+        "user_request": "皇上原始旨意（首节点，来自 _state/brief.json.user_request_raw）"
+      },
+      "produces": "registry.output_schema（title/objective/constraints/original_request）→ _state/zhiyi.json",
+      "hard": {
+        "checks": [
+          "validate_deliverable(zhiyi.json 存在+必填字段)"
+        ],
+        "warn_only": false
+      },
+      "soft": null,
+      "max_retries": 2
+    },
+    "zhongshu": {
+      "accepts": {
+        "zhiyi": "←taizi.produces（旨意书）",
+        "shenyi_feedback": "封驳重做时读 _state/shenyi.json 逐条回应 issues"
+      },
+      "produces": "registry.output_schema（objective/steps[]/risks/expected_outputs）→ plan.json",
+      "hard": {
+        "checks": [
+          "validate_deliverable(plan.json 存在+必填字段)"
+        ],
+        "warn_only": false
+      },
+      "soft": null,
+      "max_retries": 2,
+      "_note": "fengbo 回滚的【落点】：门下省封驳 → 回滚到此重新起草（≤2 次，第 3 轮门下强制准奏）"
+    },
+    "menxia": {
+      "accepts": {
+        "plan": "←zhongshu.produces（执行方案）",
+        "zhiyi": "←taizi.produces（核对完整性）"
+      },
+      "produces": "registry.output_schema（verdict/dimensions/issues/forced）→ _state/shenyi.json",
+      "hard": {
+        "checks": [
+          "validate_deliverable(shenyi.json 存在+必填字段; verdict=封驳 且回滚计数<2 → structural finding(fengbo); 计数≥2 → 强制准奏放行)"
+        ],
+        "warn_only": false
+      },
+      "soft": null,
+      "max_retries": 2,
+      "_note": "★ fengbo structural 回滚发起点：验封驳→emit violation_type=fengbo 回滚 zhongshu；rollback_counts['zhongshu:fengbo']≥2 时 PASS 放行=第 3 轮强制准奏（prompt 层+校验层双保险）"
+    },
+    "shangshu": {
+      "accepts": {
+        "plan": "←zhongshu.produces（准奏方案）",
+        "shenyi": "←menxia.produces（审议书，forced 时吸收 issues 建议）"
+      },
+      "produces": "registry.output_schema（assignments[]/skip_bus[]）→ dispatch.json",
+      "hard": {
+        "checks": [
+          "validate_deliverable(dispatch.json 存在+必填字段)"
+        ],
+        "warn_only": false
+      },
+      "soft": null,
+      "max_retries": 2
+    },
+    "hubu": {
+      "accepts": {
+        "dispatch": "←shangshu.produces（找 bu==hubu 的任务令；无差事写一行声明）"
+      },
+      "produces": "deliverables/hubu.md（数据/统计/财算产出 或 无差事声明）",
+      "hard": {
+        "checks": [
+          "validate_deliverable(deliverables/hubu.md 存在+非空)"
+        ],
+        "warn_only": false
+      },
+      "soft": null,
+      "max_retries": 2
+    },
+    "libu": {
+      "accepts": {
+        "dispatch": "←shangshu.produces（找 bu==libu 的任务令；无差事写一行声明）"
+      },
+      "produces": "deliverables/libu.md（文书/文案产出 或 无差事声明）",
+      "hard": {
+        "checks": [
+          "validate_deliverable(deliverables/libu.md 存在+非空)"
+        ],
+        "warn_only": false
+      },
+      "soft": null,
+      "max_retries": 2
+    },
+    "bingbu": {
+      "accepts": {
+        "dispatch": "←shangshu.produces（找 bu==bingbu 的任务令；无差事写一行声明）"
+      },
+      "produces": "deliverables/bingbu.md（攻坚调研/情报产出 或 无差事声明）",
+      "hard": {
+        "checks": [
+          "validate_deliverable(deliverables/bingbu.md 存在+非空)"
+        ],
+        "warn_only": false
+      },
+      "soft": null,
+      "max_retries": 2
+    },
+    "xingbu": {
+      "accepts": {
+        "dispatch": "←shangshu.produces（找 bu==xingbu 的任务令；无差事写一行声明）"
+      },
+      "produces": "deliverables/xingbu.md（质检/合规产出 或 无差事声明）",
+      "hard": {
+        "checks": [
+          "validate_deliverable(deliverables/xingbu.md 存在+非空)"
+        ],
+        "warn_only": false
+      },
+      "soft": null,
+      "max_retries": 2
+    },
+    "gongbu": {
+      "accepts": {
+        "dispatch": "←shangshu.produces（找 bu==gongbu 的任务令；无差事写一行声明）"
+      },
+      "produces": "deliverables/gongbu.md（工程营造产出 或 无差事声明）",
+      "hard": {
+        "checks": [
+          "validate_deliverable(deliverables/gongbu.md 存在+非空)"
+        ],
+        "warn_only": false
+      },
+      "soft": null,
+      "max_retries": 2
+    },
+    "libu_renshi": {
+      "accepts": {
+        "dispatch": "←shangshu.produces（找 bu==libu_renshi 的任务令；无差事写一行声明）"
+      },
+      "produces": "deliverables/libu_renshi.md（人事组织产出 或 无差事声明）",
+      "hard": {
+        "checks": [
+          "validate_deliverable(deliverables/libu_renshi.md 存在+非空)"
+        ],
+        "warn_only": false
+      },
+      "soft": null,
+      "max_retries": 2
+    },
+    "huizou": {
+      "accepts": {
+        "deliverables": "←六部 deliverables/*.md（join 等齐）",
+        "zhiyi_plan_shenyi_dispatch": "←taizi/zhongshu/menxia/shangshu 全链路文书（对账呈报）"
+      },
+      "produces": "final_report.md（给皇上的结案呈报）",
+      "hard": {
+        "checks": [
+          "validate_deliverable(final_report.md 存在+≥5行)"
+        ],
+        "warn_only": false
+      },
+      "soft": null,
+      "max_retries": 2,
+      "_join": [
+        "hubu",
+        "libu",
+        "bingbu",
+        "xingbu",
+        "gongbu",
+        "libu_renshi"
+      ],
+      "_note": "gate=human（registry）：全流程唯一人工关卡，皇上终审"
+    }
+  },
+  "edges": [
+    {
+      "from": "taizi",
+      "to": "zhongshu"
+    },
+    {
+      "from": "zhongshu",
+      "to": "menxia"
+    },
+    {
+      "from": "menxia",
+      "to": "shangshu"
+    },
+    {
+      "from": "shangshu",
+      "to": "hubu"
+    },
+    {
+      "from": "shangshu",
+      "to": "libu"
+    },
+    {
+      "from": "shangshu",
+      "to": "bingbu"
+    },
+    {
+      "from": "shangshu",
+      "to": "xingbu"
+    },
+    {
+      "from": "shangshu",
+      "to": "gongbu"
+    },
+    {
+      "from": "shangshu",
+      "to": "libu_renshi"
+    },
+    {
+      "from": "hubu",
+      "to": "huizou"
+    },
+    {
+      "from": "libu",
+      "to": "huizou"
+    },
+    {
+      "from": "bingbu",
+      "to": "huizou"
+    },
+    {
+      "from": "xingbu",
+      "to": "huizou"
+    },
+    {
+      "from": "gongbu",
+      "to": "huizou"
+    },
+    {
+      "from": "libu_renshi",
+      "to": "huizou"
+    }
+  ],
+  "adapters": {
+    "_note": "每条边把 from.produces 翻译成 to.accepts。声明式映射为主，少数小函数。"
+  },
+  "joins": {
+    "huizou": [
+      "hubu",
+      "libu",
+      "bingbu",
+      "xingbu",
+      "gongbu",
+      "libu_renshi"
+    ]
+  },
+  "rollback_rules": {
+    "_about": "只声明 rollback_to + max_rollback；cascade 由 Router 按 DAG edges 自动算传递闭包（不再手写——旧手写 cascade 漏 illustrator，是 bug 源，已删）",
+    "_max_rollback_semantics": "Router 维护 per-(rollback_to, violation_type) 回滚计数；同一回滚超 max_rollback 仍 FAIL → 不再回滚，转 blocked + 系统消息（对称 local retry 的 max_retries→blocked）。计数【整轮累计、成功恢复也不重置】——即 max_rollback=2 意为整轮最多 2 次该回滚，防止「偶尔走运」的振荡器永不终止（反 livelock）",
+    "rollback_dispatch": {
+      "_desc": "qa_inspector hard FAIL 时，Router 按 violation_type 选规则",
+      "fengbo": {
+        "rollback_to": "zhongshu",
+        "max_rollback": 2,
+        "_trigger": "menxia 验证器：shenyi.json verdict=封驳 且 rollback_counts['zhongshu:fengbo']<2",
+        "_desc": "门下省封驳 → 回滚中书省重新起草（edict 三省制：最多封驳 2 次，第 3 轮强制准奏）"
+      }
+    }
+  },
+  "scenarios": {
+    "sansheng_liubu": {
+      "roles": [
+        "taizi",
+        "zhongshu",
+        "menxia",
+        "shangshu",
+        "hubu",
+        "libu",
+        "bingbu",
+        "xingbu",
+        "gongbu",
+        "libu_renshi",
+        "huizou"
+      ],
+      "dependency_overrides": {},
+      "_meta": {
+        "description": "三省六部帮你办 — 通用任务,edict 官制移植,门下省封驳≤2轮后强制准奏,回奏处人工终审"
+      }
+    }
+  }
+}
