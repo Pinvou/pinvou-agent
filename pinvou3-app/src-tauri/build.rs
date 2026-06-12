@@ -101,6 +101,9 @@ fn sync_workflow_bundle() {
     // 2. 引擎脚本 → bundle/scripts/（排 test_*，与 scheduler.py 同根路径假设对齐）
     let scripts_dst = dst.join("scripts");
     let _ = std::fs::create_dir_all(&scripts_dst);
+    // watch 目录本身：往 _engine/scripts 新增一个 .py，文件级 rerun-if-changed 看不到
+    // （那条路径之前不存在），但目录 mtime 会变 → 触发 build.rs 重跑、新脚本进 bundle。
+    println!("cargo:rerun-if-changed={}", engine_src.display());
     if let Ok(rd) = std::fs::read_dir(engine_src) {
         for e in rd.flatten() {
             let p = e.path();
@@ -118,8 +121,14 @@ fn sync_workflow_bundle() {
     }
 }
 
-/// 递归同步 src → dst（仅内容，排除 VCS/缓存/env）。不删 dst 多余文件（与原 rsync 一致）。
+/// 递归同步 src → dst（仅内容，排除 VCS/缓存/env）。
+/// 删除不传播：从 src 删的文件留在 dst 快照里继续被嵌入（与原 rsync 无 --delete 一致）。
+/// 这里不能加 prune——dst 还含另一步从 _engine 灌的 scripts/（src 里没有），prune 会误删它；
+/// 单文件下线靠手工清 bundle。整目录下线见 build.rs 顶部 retired-workflow 注释。
 fn sync_tree(src: &Path, dst: &Path) {
+    // watch 目录本身：往 src 新增文件（如新角色 .md），文件级 rerun-if-changed 看不到那条
+    // 尚不存在的路径，但目录 mtime 变 → 触发 build.rs 重跑、新文件进 bundle。递归覆盖每层子目录。
+    println!("cargo:rerun-if-changed={}", src.display());
     let Ok(rd) = std::fs::read_dir(src) else {
         return;
     };
