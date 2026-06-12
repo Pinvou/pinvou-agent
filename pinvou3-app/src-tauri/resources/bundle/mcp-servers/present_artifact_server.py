@@ -11,9 +11,15 @@ transport:每条消息一行 JSON + '\\n',read_line 读)。protocolVersion 2024-
 展示所需的全部信息(title / path / description)都在工具入参里,前端从 tool_use
 的 args 直接渲染。相对路径相对本进程 cwd 解析 —— 引导 agent 传绝对路径更稳。
 """
+import io
 import json
 import sys
 import os
+
+# Windows 默认 stdout/stdin 编码为 GBK，MCP 协议要求 UTF-8
+if sys.platform == "win32":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8")
 
 PROTOCOL_VERSION = "2024-11-05"
 
