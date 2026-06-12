@@ -1,6 +1,6 @@
 [package]
 name = "pinvou3-tauri"
-version = "0.4.2"
+version = "0.4.1"
 description = "pinvou3 智能助手 Tauri 后端（包装 DeepSeek-TUI EngineHandle）"
 authors = ["pinvou"]
 license = ""
