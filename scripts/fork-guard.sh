@@ -53,6 +53,18 @@ fingerprints=(
   "#42 |ContextMgmt/COMPACT 受 composer gate|DeepSeek-TUI/crates/tui/src/prompts.rs|static_prompt_composer().is_none()"
   "#42 |Runtime Policy Ref 受 composer gate |DeepSeek-TUI/crates/tui/src/prompts.rs|Policy Reference(agent/plan/yolo"
   "#42 |runtime_prompt tag 受 composer gate |DeepSeek-TUI/crates/tui/src/core/engine/turn_loop.rs|static_prompt_composer_installed()"
+  # —— 工作流 fork 基座层(三省六部;feat/sansheng-workflow 随附,2026-06-12 补)——
+  # 行为层已有 engine_config_locks_critical_fields(W10 reasoning_effort);其余 W* 暂只 L1。
+  "W1  |SpawnSubAgent 扩展字段          |DeepSeek-TUI/crates/tui/src/core/ops.rs|expects_file_output: bool"
+  "W2  |StructuredOutput 催交重试上限   |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|const MAX_STRUCTURED_OUTPUT_RETRIES: u32 = 3;"
+  "W3  |submit_output 合成工具名        |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|const SUBMIT_OUTPUT_TOOL: &str = \"submit_output\";"
+  "W4  |request_user_input 路由通道     |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|pub user_input_tx: Option<broadcast::Sender<UserInputDecision>>"
+  "W5  |AgentComplete failed 信封       |DeepSeek-TUI/crates/tui/src/core/events.rs|[pinvou3-fork] True when sub-agent execution ended via error rather"
+  "W6  |SubAgent Mailbox 信封           |DeepSeek-TUI/crates/tui/src/tools/subagent/mailbox.rs|pub struct MailboxEnvelope {"
+  "W7  |SubAgent 贪心解码 temp=0        |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|const SUBAGENT_TEMPERATURE: f32 = 0.0;"
+  "W8  |SubAgent web/custom 工具面      |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|with_full_agent_surface("
+  "W9  |read_pdf catch_unwind 防 panic  |DeepSeek-TUI/crates/tui/src/tools/file.rs|[pinvou3-fork] catch_unwind prevents pdf-extract font/CMap panics"
+  "W10 |reasoning_effort 会话初始注入   |DeepSeek-TUI/crates/tui/src/core/engine.rs|session.reasoning_effort = config.reasoning_effort"
   # —— app 层 fork(pinvou3-app)——
   "#18b|bridge 透传 fake-ip 信任段      |pinvou3-app/src-tauri/src/bridge/mod.rs|with_trusted_fakeip_cidrs"
   "#16 |bridge subagent_api_timeout 300 |pinvou3-app/src-tauri/src/bridge/mod.rs|from_secs(300)"
