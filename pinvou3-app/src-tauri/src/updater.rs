@@ -161,14 +161,33 @@ pub async fn download_update(info: UpdateInfo, app: AppHandle) -> Result<String,
 #[tauri::command]
 pub async fn install_update(deb_path: String) -> Result<(), String> {
     let canon = validate_deb_path(Path::new(&deb_path))?;
+    // 日志放在用户目录，root 可写、用户可读，便于失败后把完整 apt 输出带回。
+    let log = paths::updates_dir().join("install.log");
+    let _ = std::fs::create_dir_all(&paths::updates_dir());
+    let _ = std::fs::write(&log, b"");
+    let log_display = log.display();
+
     // DEBIAN_FRONTEND 防 dpkg conffile 冲突卡交互；--reinstall 容错同版本重装。
     // 路径已白名单校验（~/.pinvou3/updates/ 下 .deb 且无引号），注入面可控。
-    // 先尝试修复可能已存在的依赖破损（常见于从 v0.3.3 等旧版本升级的系统），
-    // 然后再安装新版 deb。pkexec 单次授权执行两条命令，避免弹两次密码框。
+    // 策略：先直接安装；若因依赖破损失败（exit 100），自动 apt-get install -f 修复后重试。
     let script = format!(
-        "DEBIAN_FRONTEND=noninteractive apt-get --fix-broken install -y && \\n         DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall '{}'",
-        canon.display()
+        "exec >'{log}' 2>&1\n\
+        set -x\n\
+        export DEBIAN_FRONTEND=noninteractive\n\
+        echo '=== 1/3 apt install attempt ==='\n\
+        if apt-get install -y --reinstall '{}'; then\n\
+            echo '=== install succeeded ==='\n\
+            exit 0\n\
+        fi\n\
+        echo '=== 2/3 apt fix-broken attempt ==='\n\
+        apt-get install -f -y\n\
+        echo '=== 3/3 apt install retry ==='\n\
+        apt-get install -y --reinstall '{}'\n",
+        canon.display(),
+        canon.display(),
+        log = log_display
     );
+
     // pkexec 等用户输密码可能很久，放 blocking 线程别占 async runtime
     let output = tokio::task::spawn_blocking(move || {
         Command::new("pkexec").args(["sh", "-c", &script]).output()
@@ -185,11 +204,15 @@ pub async fn install_update(deb_path: String) -> Result<(), String> {
         126 => "用户取消授权".to_string(),
         127 => "未授权或 pkexec 不可用".to_string(),
         _ => {
-            // 透传 apt stderr 末尾几行：lock 占用 / 磁盘不足 / 依赖缺失等真实原因
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let tail: Vec<&str> = stderr.lines().rev().take(4).collect();
+            // 把完整 apt 日志读出来，方便定位具体缺哪个包
+            let log_text = std::fs::read_to_string(&log).unwrap_or_default();
+            let tail: Vec<&str> = log_text.lines().rev().take(40).collect();
             let tail: Vec<&str> = tail.into_iter().rev().collect();
-            format!("安装失败 (exit {code}): {}", tail.join(" / "))
+            format!(
+                "安装失败 (exit {code}); 日志: {}\n--- apt 输出 ---\n{}",
+                log_display,
+                tail.join("\n")
+            )
         }
     })
 }
