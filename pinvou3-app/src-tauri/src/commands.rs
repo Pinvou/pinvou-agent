@@ -815,6 +815,72 @@ fn parse_product_manifest(report_text: &str) -> Vec<String> {
     out
 }
 
+/// 旧奏折(无成品清单段)的成品推断:语义归因,三路信号给六部计分。
+/// ① 本部章节(### 标题点名 <bu>_N.md)含成品描述词(整合/最终/成品/完整/汇总);
+/// ② **被质检对象**——质检章节(标题含审核/校验/验收)里「对〈X部〉…的」的 X
+///   (质检节内的成品词描述被审对象,绝不归审核者——天真就近归因实测翻车);
+/// ③ 对账表「交付」达成行点名的部。
+/// 返回 (bu_id, 得分);得分 <8(单一信号)不可信,调用方回退。
+fn infer_product_bu(report: &str) -> Option<(String, i32)> {
+    const BU: &[(&str, &str)] = &[
+        ("兵部", "bingbu"), ("户部", "hubu"), ("礼部", "libu"),
+        ("刑部", "xingbu"), ("工部", "gongbu"), ("吏部", "libu_renshi"),
+    ];
+    const QA_WORDS: &[&str] = &["审核", "校验", "验收", "质检"];
+    const PRODUCT_WORDS: &[(&str, i32)] = &[("整合", 3), ("最终", 3), ("成品", 4), ("完整", 2), ("汇总", 2)];
+    let mut scores: std::collections::HashMap<&str, i32> = Default::default();
+    // 按 markdown 标题分节
+    let mut sections: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for line in report.lines() {
+        if line.starts_with("##") && !cur.is_empty() {
+            sections.push(std::mem::take(&mut cur));
+        }
+        cur.push_str(line);
+        cur.push('\n');
+    }
+    sections.push(cur);
+    for sec in &sections {
+        let head = sec.lines().next().unwrap_or("");
+        if QA_WORDS.iter().any(|w| head.contains(w)) {
+            // 质检节:只认「对〈X部〉」归因(中文部名或拼音 id 都认)
+            for (cn, en) in BU {
+                if sec.contains(&format!("对{cn}")) || sec.contains(&format!("对{en}")) {
+                    *scores.entry(en).or_default() += 5;
+                }
+            }
+            continue;
+        }
+        // 标题点名 <bu>_<数字>(后随数字才算,防 libu_ 误吃 libu_renshi_1.md)
+        let names_bu = |head: &str, en: &str| {
+            let pat = format!("{en}_");
+            head.match_indices(&pat).any(|(i, _)| {
+                head[i + pat.len()..]
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_digit())
+            })
+        };
+        if let Some((_, en)) = BU.iter().rev().find(|(_, en)| names_bu(head, en)) {
+            let pts: i32 = PRODUCT_WORDS.iter().filter(|(k, _)| sec.contains(k)).map(|(_, w)| w).sum();
+            *scores.entry(en).or_default() += pts;
+        }
+    }
+    for line in report.lines() {
+        if line.contains("交付") && (line.contains('✅') || line.contains("达成")) {
+            for (cn, en) in BU {
+                if line.contains(cn) {
+                    *scores.entry(en).or_default() += 3;
+                }
+            }
+        }
+    }
+    scores
+        .into_iter()
+        .max_by_key(|(_, s)| *s)
+        .map(|(b, s)| (b.to_string(), s))
+}
+
 /// 奏折「成品箱」:**宝箱内容 = 奏折申报的成品**(白浪定的原则,后端不猜)。
 /// - products:回奏官在 final_report.md「## 成品清单」段申报的文件(硬闸已核验
 ///   存在)。衙门式文件名(如 libu_1.md)物化成**以题目命名**的副本给客户——
@@ -877,21 +943,59 @@ pub async fn list_deliverables(project_dir: String) -> Result<serde_json::Value,
             product_canon.push(canon);
         }
     }
-    if products.is_empty() {
-        // 回退路线(旧 run / 奏折没写成品清单):题目命名的 final_report 副本
-        if !report_text.is_empty() {
+    if products.is_empty() && !report_text.is_empty() {
+        // 回退1(旧奏折没写成品清单):语义推断成品归属部——得分≥8(多路信号
+        // 汇聚)才可信;取该部序号最大的 deliverable(整合终稿通常是末批)。
+        let inferred = infer_product_bu(&report_text)
+            .filter(|(_, score)| *score >= 8)
+            .and_then(|(bu, _)| {
+                let mut best: Option<(u32, std::path::PathBuf)> = None;
+                if let Ok(entries) = std::fs::read_dir(p.join("deliverables")) {
+                    for e in entries.flatten() {
+                        let path = e.path();
+                        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                        if let Some(seq) = name
+                            .strip_prefix(&format!("{bu}_"))
+                            .and_then(|r| r.strip_suffix(".md"))
+                            .and_then(|n| n.parse::<u32>().ok())
+                        {
+                            if best.as_ref().map_or(true, |(s, _)| seq > *s) {
+                                best = Some((seq, path));
+                            }
+                        }
+                    }
+                }
+                best.map(|(_, path)| path)
+            });
+        if let Some(src) = inferred {
+            let bytes = std::fs::read(&src).unwrap_or_default();
             let fname = format!("{title_base}.md");
             let dst = p.join(&fname);
-            let stale = std::fs::read(&dst)
-                .map(|b| b != report_text.as_bytes())
-                .unwrap_or(true);
+            let stale = std::fs::read(&dst).map(|b| b != bytes).unwrap_or(true);
             if stale {
-                let _ = std::fs::write(&dst, report_text.as_bytes());
+                let _ = std::fs::write(&dst, &bytes);
             }
             products.push(serde_json::json!({
-                "name": fname, "path": dst.to_string_lossy(), "size": report_text.len(),
+                "name": fname, "path": dst.to_string_lossy(), "size": bytes.len(),
             }));
+            if let Ok(canon) = std::fs::canonicalize(&src) {
+                product_canon.push(canon);
+            }
         }
+    }
+    if products.is_empty() && !report_text.is_empty() {
+        // 回退2(推断也不可信):题目命名的 final_report 副本,不至于空箱
+        let fname = format!("{title_base}.md");
+        let dst = p.join(&fname);
+        let stale = std::fs::read(&dst)
+            .map(|b| b != report_text.as_bytes())
+            .unwrap_or(true);
+        if stale {
+            let _ = std::fs::write(&dst, report_text.as_bytes());
+        }
+        products.push(serde_json::json!({
+            "name": fname, "path": dst.to_string_lossy(), "size": report_text.len(),
+        }));
     }
 
     // deliverables/:非 md 且未申报 → 也算成品(工件清单核验过的二进制);
@@ -3106,6 +3210,32 @@ mod tests {
                 "reject reason should name allowlist for {url:?}, got {err:?}"
             );
         }
+    }
+
+    /// 成品归属推断:成品词出现在质检节时必须归被审对象,不归审核者
+    /// (天真就近归因实测把成品判给 xingbu——刑部节里"对礼部整合的最终报告
+    /// 进行审核"的关键词全在审核者章节内)。
+    #[test]
+    fn infer_product_bu_attributes_to_audited_not_auditor() {
+        let report = "\
+## 各部成果\n\n\
+### 4. 礼部（libu_1.md）—— 报告撰写与方案整合\n\n\
+核心产出：将各部数据整合为完整的研究报告\n\n\
+### 5. 刑部（xingbu_1.md）—— 方案质量审核验收\n\n\
+核心产出：对礼部整合的最终报告进行全面质量审核\n\n\
+## 结果对账\n\n\
+| 具体方案交付 | ✅ 达成 | 礼部报告提供三套完整方案 |\n";
+        let (bu, score) = infer_product_bu(report).expect("应有推断结果");
+        assert_eq!(bu, "libu", "成品应归被审的礼部,不归审核者刑部");
+        assert!(score >= 8, "多路信号应汇聚到可信阈值,实得 {score}");
+    }
+
+    /// libu_ 前缀不得误吃 libu_renshi_N.md(后随数字才算点名)。
+    #[test]
+    fn infer_product_bu_no_prefix_confusion() {
+        let report = "### 吏部（libu_renshi_1.md）—— 流程规范\n\n整合完整的最终成品汇总\n";
+        let (bu, _) = infer_product_bu(report).expect("应有推断结果");
+        assert_eq!(bu, "libu_renshi");
     }
 
     /// L2-1: A 方案放宽 — /tmp 下任意文件可校验通过（不强 $HOME 限制）。
