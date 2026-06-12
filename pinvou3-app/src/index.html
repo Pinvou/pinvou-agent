@@ -69,6 +69,15 @@
     /* 挂件(lanyard) 入场 + 悬挂摆动 */
     @keyframes lanyard-drop { 0%{ transform: translateY(-120%) rotate(-3deg); opacity:0 } 60%{ transform: translateY(6%) rotate(1.5deg) } 100%{ transform: translateY(0) rotate(0); opacity:1 } }
     @keyframes lanyard-sway { 0%,100%{ transform: rotate(-1.3deg) } 50%{ transform: rotate(1.3deg) } }
+    /* 🏛️ 奏折卷轴:纸面从中线向上下展开(clip-path),两根轴杆从中间滚向边缘;收卷反向 */
+    @keyframes memorial-fade { from { opacity: 0 } to { opacity: 1 } }
+    @keyframes memorial-paper-open { from { clip-path: inset(50% 0 50% 0) } to { clip-path: inset(0 0 0 0) } }
+    @keyframes memorial-paper-close { from { clip-path: inset(0 0 0 0) } to { clip-path: inset(50% 0 50% 0) } }
+    @keyframes memorial-roller-top-open { from { top: calc(50% - 9px) } to { top: -9px } }
+    @keyframes memorial-roller-top-close { from { top: -9px } to { top: calc(50% - 9px) } }
+    @keyframes memorial-roller-bottom-open { from { bottom: calc(50% - 9px) } to { bottom: -9px } }
+    @keyframes memorial-roller-bottom-close { from { bottom: -9px } to { bottom: calc(50% - 9px) } }
+    @keyframes memorial-stamp { from { opacity: 0; transform: rotate(-14deg) scale(1.8) } 70% { opacity: .9; transform: rotate(-14deg) scale(.94) } to { opacity: .82; transform: rotate(-14deg) scale(1) } }
     .lanyard-wrap { animation: lanyard-drop .55s cubic-bezier(.2,.9,.3,1.2) both; transform-origin: top center; }
     .lanyard-card { animation: lanyard-sway 4.5s ease-in-out infinite; transform-origin: top center; }
     /* 详情 modal 里的完整人设正文(markdown) prose 排版 */
@@ -3942,6 +3951,15 @@
     // 🏛️ 最终奏折：三省六部办差完毕、太子准奏后展开的结案呈报(回奏 final_report.md)。代入感拉满。
     const ImperialMemorialModal = ({ projectDir, theme, onClose }) => {
       const [st, setSt] = useState({ loading: true, text: '', error: null });
+      const [closing, setClosing] = useState(false);
+      const closingRef = useRef(false);
+      // 收卷:先放反向卷轴动画,卷合后再真正卸载
+      const requestClose = () => {
+        if (closingRef.current) return;
+        closingRef.current = true;
+        setClosing(true);
+        setTimeout(onClose, 580);
+      };
       useEffect(() => {
         let alive = true;
         (async () => {
@@ -3953,29 +3971,41 @@
         })();
         return () => { alive = false; };
       }, [projectDir]);
-      const roller = (top) => ({ background: top ? 'linear-gradient(180deg,#6b4a23,#4a3217)' : 'linear-gradient(180deg,#4a3217,#6b4a23)', height: '16px', boxShadow: 'inset 0 0 6px rgba(0,0,0,.4)' });
+      const ease = closing ? '.55s cubic-bezier(.5,0,.75,.4) both' : '.65s cubic-bezier(.22,.8,.3,1) both';
+      // 两根轴杆:横向渐变带深色轴头,比纸面宽出一截,从中线滚向上下边缘
+      const roller = (top) => ({
+        position: 'absolute', left: '-14px', right: '-14px', height: '18px', borderRadius: '9px', zIndex: 2,
+        background: 'linear-gradient(90deg,#2e1f0e 0%,#6b4a23 6%,#4a3217 50%,#6b4a23 94%,#2e1f0e 100%)',
+        boxShadow: '0 2px 8px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,235,190,.25)',
+        animation: `memorial-roller-${top ? 'top' : 'bottom'}-${closing ? 'close' : 'open'} ${ease}`,
+      });
       return (
         <div className="fixed inset-0 z-[70] flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/70" onClick={onClose}></div>
-          <div className="relative w-[640px] max-w-[94vw] max-h-[88vh] flex flex-col rounded-[8px] overflow-hidden animate-in fade-in zoom-in duration-300"
-            style={{ background: 'linear-gradient(180deg,#f7eed8 0%,#f0e1bf 100%)', color: '#3a2a18', border: '1px solid #b8893f', boxShadow: '0 24px 70px rgba(0,0,0,.55)' }}>
+          <div className="absolute inset-0 bg-black/70" onClick={requestClose}
+            style={{ animation: 'memorial-fade .35s ease both', opacity: closing ? 0 : undefined, transition: 'opacity .5s ease' }}></div>
+          <div className="relative w-[640px] max-w-[94vw] max-h-[88vh] flex">
+            <div className="relative flex-1 min-w-0 min-h-0 flex flex-col rounded-[8px] overflow-hidden"
+              style={{ background: 'linear-gradient(180deg,#f7eed8 0%,#f0e1bf 100%)', color: '#3a2a18', border: '1px solid #b8893f', boxShadow: '0 24px 70px rgba(0,0,0,.55)',
+                animation: `memorial-paper-${closing ? 'close' : 'open'} ${ease}` }}>
+              <div className="relative px-8 pt-6 pb-3 text-center shrink-0">
+                <div style={{ color: '#8a1c1c', letterSpacing: '8px' }} className="text-[22px] font-semibold">奏　折</div>
+                <div style={{ color: '#7a5a2a' }} className="text-[12px] mt-1">三省六部办差完毕 · 回奏呈报</div>
+                <div style={{ position: 'absolute', top: '12px', right: '22px', color: '#b21e1e', border: '3px double #b21e1e', borderRadius: '6px', padding: '5px 9px', fontWeight: 700, fontSize: '19px', letterSpacing: '3px', fontFamily: 'serif',
+                  animation: closing ? 'none' : 'memorial-stamp .5s cubic-bezier(.3,1.4,.5,1) .55s both', transform: 'rotate(-14deg)', opacity: .82 }}>准奏</div>
+              </div>
+              <div style={{ borderTop: '1px solid #c9a96a' }}></div>
+              <div className="flex-1 overflow-y-auto custom-scrollbar px-8 py-5 min-w-0">
+                {st.loading ? <div style={{ color: '#7a5a2a' }} className="text-[13px] text-center py-10">展卷中…</div>
+                  : st.error ? <div className="text-[13px] text-center py-10" style={{ color: '#8a1c1c' }}>奏折读取失败：{st.error}</div>
+                  : st.text ? <div className="msg-md light-code text-[14px] leading-[1.9]" style={{ color: '#3a2a18' }} dangerouslySetInnerHTML={{ __html: bridge.renderMarkdown(st.text) }} />
+                  : <div style={{ color: '#7a5a2a' }} className="text-[13px] text-center py-10">尚无回奏内容</div>}
+              </div>
+              <div className="shrink-0 text-center py-3" style={{ borderTop: '1px solid #c9a96a' }}>
+                <div className="text-[15px]" style={{ color: '#8a1c1c', letterSpacing: '6px' }}>钦　此</div>
+                <button onClick={requestClose} className="mt-2 px-5 py-1.5 rounded-full text-[13px]" style={{ background: '#8a1c1c', color: '#f7eed6' }}>朕已阅 · 收卷</button>
+              </div>
+            </div>
             <div style={roller(true)}></div>
-            <div className="relative px-8 pt-6 pb-3 text-center shrink-0">
-              <div style={{ color: '#8a1c1c', letterSpacing: '8px' }} className="text-[22px] font-semibold">奏　折</div>
-              <div style={{ color: '#7a5a2a' }} className="text-[12px] mt-1">三省六部办差完毕 · 回奏呈报</div>
-              <div style={{ position: 'absolute', top: '12px', right: '22px', transform: 'rotate(-14deg)', color: '#b21e1e', border: '3px double #b21e1e', borderRadius: '6px', padding: '5px 9px', fontWeight: 700, fontSize: '19px', opacity: .82, letterSpacing: '3px', fontFamily: 'serif' }}>准奏</div>
-            </div>
-            <div style={{ borderTop: '1px solid #c9a96a' }}></div>
-            <div className="flex-1 overflow-y-auto custom-scrollbar px-8 py-5 min-w-0">
-              {st.loading ? <div style={{ color: '#7a5a2a' }} className="text-[13px] text-center py-10">展卷中…</div>
-                : st.error ? <div className="text-[13px] text-center py-10" style={{ color: '#8a1c1c' }}>奏折读取失败：{st.error}</div>
-                : st.text ? <div className="msg-md light-code text-[14px] leading-[1.9]" style={{ color: '#3a2a18' }} dangerouslySetInnerHTML={{ __html: bridge.renderMarkdown(st.text) }} />
-                : <div style={{ color: '#7a5a2a' }} className="text-[13px] text-center py-10">尚无回奏内容</div>}
-            </div>
-            <div className="shrink-0 text-center py-3" style={{ borderTop: '1px solid #c9a96a' }}>
-              <div className="text-[15px]" style={{ color: '#8a1c1c', letterSpacing: '6px' }}>钦　此</div>
-              <button onClick={onClose} className="mt-2 px-5 py-1.5 rounded-full text-[13px]" style={{ background: '#8a1c1c', color: '#f7eed6' }}>朕已阅 · 收卷</button>
-            </div>
             <div style={roller(false)}></div>
           </div>
         </div>
