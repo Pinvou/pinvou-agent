@@ -881,6 +881,17 @@ fn infer_product_bu(report: &str) -> Option<(String, i32)> {
         .map(|(b, s)| (b.to_string(), s))
 }
 
+/// md 首个一级/二级标题做客户可读的展示标题(客户看不懂 libu_1.md 这种衙门名)。
+fn md_display_title(bytes: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(&bytes[..bytes.len().min(8192)]);
+    text.lines().find_map(|l| {
+        let t = l.trim_start();
+        t.strip_prefix("## ")
+            .or_else(|| t.strip_prefix("# "))
+            .map(|h| h.trim().chars().take(60).collect::<String>())
+    })
+}
+
 /// 奏折「成品箱」:**宝箱内容 = 奏折申报的成品**(白浪定的原则,后端不猜)。
 /// - products:回奏官在 final_report.md「## 成品清单」段申报的文件(硬闸已核验
 ///   存在)。衙门式文件名(如 libu_1.md)物化成**以题目命名**的副本给客户——
@@ -932,12 +943,15 @@ pub async fn list_deliverables(project_dir: String) -> Result<serde_json::Value,
                 if stale {
                     let _ = std::fs::write(&dst, &bytes);
                 }
+                let title = md_display_title(&bytes)
+                    .unwrap_or_else(|| fname.trim_end_matches(".md").to_string());
                 products.push(serde_json::json!({
-                    "name": fname, "path": dst.to_string_lossy(), "size": bytes.len(),
+                    "name": fname, "title": title, "path": dst.to_string_lossy(), "size": bytes.len(),
                 }));
             } else {
+                let stem = orig_name.rsplit_once('.').map(|(a, _)| a).unwrap_or(&orig_name);
                 products.push(serde_json::json!({
-                    "name": orig_name, "path": canon.to_string_lossy(), "size": bytes.len(),
+                    "name": orig_name, "title": stem, "path": canon.to_string_lossy(), "size": bytes.len(),
                 }));
             }
             product_canon.push(canon);
@@ -975,8 +989,10 @@ pub async fn list_deliverables(project_dir: String) -> Result<serde_json::Value,
             if stale {
                 let _ = std::fs::write(&dst, &bytes);
             }
+            let title = md_display_title(&bytes)
+                .unwrap_or_else(|| fname.trim_end_matches(".md").to_string());
             products.push(serde_json::json!({
-                "name": fname, "path": dst.to_string_lossy(), "size": bytes.len(),
+                "name": fname, "title": title, "path": dst.to_string_lossy(), "size": bytes.len(),
             }));
             if let Ok(canon) = std::fs::canonicalize(&src) {
                 product_canon.push(canon);
@@ -994,7 +1010,7 @@ pub async fn list_deliverables(project_dir: String) -> Result<serde_json::Value,
             let _ = std::fs::write(&dst, report_text.as_bytes());
         }
         products.push(serde_json::json!({
-            "name": fname, "path": dst.to_string_lossy(), "size": report_text.len(),
+            "name": fname, "title": title_base.clone(), "path": dst.to_string_lossy(), "size": report_text.len(),
         }));
     }
 
@@ -1021,10 +1037,19 @@ pub async fn list_deliverables(project_dir: String) -> Result<serde_json::Value,
                 continue; // 已申报装箱,不重复列
             }
             let size = path.metadata().map(|m| m.len()).unwrap_or(0);
-            let item = serde_json::json!({
-                "name": name, "path": path.to_string_lossy(), "size": size,
+            let is_md = name.to_lowercase().ends_with(".md");
+            let title = if is_md {
+                std::fs::read(&path).ok().and_then(|b| md_display_title(&b))
+            } else {
+                None
+            }
+            .unwrap_or_else(|| {
+                name.rsplit_once('.').map(|(a, _)| a).unwrap_or(&name).to_string()
             });
-            if name.to_lowercase().ends_with(".md") {
+            let item = serde_json::json!({
+                "name": name, "title": title, "path": path.to_string_lossy(), "size": size,
+            });
+            if is_md {
                 papers.push(item);
             } else {
                 products.push(item);

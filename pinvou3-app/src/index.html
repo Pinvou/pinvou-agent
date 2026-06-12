@@ -4202,7 +4202,6 @@
       // papers=六部过程文书,折叠降级展示(审计找得到,客户视角不被淹)。
       const [deliv, setDeliv] = useState({ products: [], papers: [] });
       const [chestOpen, setChestOpen] = useState(false);
-      const [papersOpen, setPapersOpen] = useState(false);
       useEffect(() => {
         let alive = true;
         const dir = (projectDir || '').replace(/\/$/, '');
@@ -4264,21 +4263,34 @@
               {deliv.products.length > 0 && (
                 <div className="shrink-0 px-8 pt-2 pb-1 text-center" style={{ borderTop: '1px dashed #c9a96a' }}>
                   {chestOpen && (
-                    <div className="flex flex-wrap justify-center gap-2 mb-2">
-                      {deliv.products.map((f, i) => {
+                    <div className="flex flex-wrap justify-center gap-3 mb-2">
+                      {deliv.products.concat(deliv.papers).map((f, i) => {
+                        const isProduct = i < deliv.products.length;
                         const ext = (String(f.name).split('.').pop() || '').toLowerCase();
-                        const chip = (ext === 'pptx' || ext === 'ppt') ? 'PPT' : ext === 'xlsx' ? '表' : ext === 'pdf' ? 'PDF'
-                          : (ext === 'html' || ext === 'htm') ? '网页' : (ext === 'png' || ext === 'jpg' || ext === 'jpeg') ? '图' : '文';
+                        const chip = (ext === 'pptx' || ext === 'ppt') ? 'PPT' : ext === 'xlsx' ? '表格' : ext === 'pdf' ? 'PDF'
+                          : (ext === 'html' || ext === 'htm') ? '网页' : (ext === 'png' || ext === 'jpg' || ext === 'jpeg') ? '图' : '文书';
                         const sz = f.size > 1048576 ? (f.size / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(f.size / 1024)) + ' KB';
                         return (
-                          <button key={f.path} onClick={() => bridge.openArtifactExternal(f.path)} title={'打开 ' + f.name}
-                            className="flex items-center gap-2 px-3 py-1.5 rounded-[6px] text-[12px]"
-                            style={{ background: '#fdf6e3', border: '1px solid #c9a96a', color: '#3a2a18', cursor: 'pointer',
-                              boxShadow: '0 2px 6px rgba(58,42,24,.18)',
+                          <button key={f.path} onClick={() => bridge.openArtifactExternal(f.path)} title={'打开:' + (f.title || f.name)}
+                            style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer',
                               animation: `chest-item-pop .45s cubic-bezier(.3,1.4,.5,1) ${i * 0.09}s both` }}>
-                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold" style={{ background: '#8a1c1c', color: '#f7eed6' }}>{chip}</span>
-                            <span style={{ maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
-                            <span className="text-[10px]" style={{ color: '#7a5a2a' }}>{sz}</span>
+                            {/* 展开的小卷轴(斜 45° 视角):两端轴杆 + 中间纸面写标题 */}
+                            <div style={{ transform: 'perspective(520px) rotateY(-14deg) rotateX(7deg)', transformStyle: 'preserve-3d' }}>
+                              <div className="relative flex items-stretch" style={{ width: '168px', height: '92px', filter: 'drop-shadow(3px 5px 6px rgba(58,42,24,.35))' }}>
+                                <div style={{ width: '10px', margin: '-5px 0', borderRadius: '5px', background: 'linear-gradient(90deg,#2e1f0e,#6b4a23 55%,#3a2812)' }}></div>
+                                <div className="flex-1 flex flex-col items-center justify-center px-2" style={{
+                                  background: 'linear-gradient(90deg,#e8d9b4 0%,#f7eed8 12%,#f7eed8 88%,#e8d9b4 100%)',
+                                  borderTop: '1px solid #c9a96a', borderBottom: '1px solid #c9a96a', position: 'relative' }}>
+                                  {isProduct && <div style={{ position: 'absolute', top: '3px', right: '4px', color: '#b21e1e', border: '1.5px solid #b21e1e',
+                                    borderRadius: '3px', padding: '0 3px', fontSize: '9px', fontFamily: 'serif', opacity: .85, transform: 'rotate(-8deg)' }}>成品</div>}
+                                  <div className="text-[12px] leading-[1.5] font-medium" style={{ color: '#3a2a18',
+                                    display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                                    maxHeight: '54px', wordBreak: 'break-all' }}>{f.title || f.name}</div>
+                                  <div className="text-[10px] mt-1" style={{ color: '#9a7b45' }}>{chip} · {sz}</div>
+                                </div>
+                                <div style={{ width: '10px', margin: '-5px 0', borderRadius: '5px', background: 'linear-gradient(90deg,#3a2812,#6b4a23 45%,#2e1f0e)' }}></div>
+                              </div>
+                            </div>
                           </button>
                         );
                       })}
@@ -4295,28 +4307,9 @@
                         boxShadow: '0 4px 12px rgba(58,42,24,.3)',
                         animation: chestOpen ? 'chest-open-bounce .5s cubic-bezier(.34,1.45,.6,1) both' : 'none' }} />
                     <div className="text-[10px] mt-0.5" style={{ color: '#7a5a2a' }}>
-                      {chestOpen ? '▲ 收箱' : `▼ 点击开箱 · 成品 ${deliv.products.length} 件`}
+                      {chestOpen ? '▲ 收箱' : `▼ 点击开箱 · 文书 ${deliv.products.length + deliv.papers.length} 件`}
                     </div>
                   </button>
-                  {deliv.papers.length > 0 && (
-                    <div className="mt-1">
-                      <button onClick={() => setPapersOpen((o) => !o)} className="text-[11px]"
-                        style={{ background: 'none', border: 'none', color: '#9a7b45', cursor: 'pointer', textDecoration: 'underline dotted' }}>
-                        {papersOpen ? '▾' : '▸'} 另有六部过程文书 {deliv.papers.length} 件
-                      </button>
-                      {papersOpen && (
-                        <div className="flex flex-wrap justify-center gap-1.5 mt-1 mb-1">
-                          {deliv.papers.map((f) => (
-                            <button key={f.path} onClick={() => bridge.openArtifactExternal(f.path)} title={'打开 ' + f.name}
-                              className="px-2 py-0.5 rounded text-[11px]"
-                              style={{ background: 'transparent', border: '1px solid #d9c89a', color: '#7a5a2a', cursor: 'pointer' }}>
-                              {f.name}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
                 </div>
               )}
               <div className="shrink-0 text-center py-3" style={{ borderTop: '1px solid #c9a96a' }}>
