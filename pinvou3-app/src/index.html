@@ -1926,7 +1926,7 @@
               <div className="flex items-center justify-end gap-1 mb-1 text-[11px] font-medium" style={{ color: tint }}>
                 <span>{isWu ? '✨' : '📋'}</span><span>{'Pinvou · ' + item.pinvouTransfer + ' · 转交修订'}</span>
               </div>
-              <div className={`px-5 py-3 rounded-[20px] rounded-tr-md text-[15px] leading-relaxed whitespace-pre-wrap border-l-[3px] ${tintBg} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`} style={{ borderLeftColor: tint }}>{item.text}</div>
+              <div className={`px-5 py-3 rounded-[20px] text-[15px] leading-relaxed whitespace-pre-wrap ${tintBg} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{item.text}</div>
             </div>
           </div>
         );
@@ -2572,6 +2572,28 @@
       );
     };
 
+    // 检阅 loading:本地模型 5-30s,给 spinner+计时+安抚文字,别让 Boss 干等焦虑(以为卡死)。
+    const PinvouLoading = ({ isWu, icon, tint, accent, muted, isDark }) => {
+      const [frame, setFrame] = useState(0);
+      const [secs, setSecs] = useState(0);
+      useEffect(() => {
+        const a = setInterval(() => setFrame(f => (f + 1) % BRAILLE.length), 90);
+        const b = setInterval(() => setSecs(s => s + 1), 1000);
+        return () => { clearInterval(a); clearInterval(b); };
+      }, []);
+      return (
+        <div className={cardBoxCls(isDark, accent)}>
+          <div className={`flex items-center gap-2 text-[12px] font-semibold ${tint}`}><span>{icon}</span><span>{isWu ? 'Pinvou 悟·发散补全' : 'Pinvou 品·查错检阅'}</span></div>
+          <div className={`flex items-center gap-2 text-[13px] mt-2 ${muted}`}>
+            <span className={`${tint} font-mono`}>{BRAILLE[frame]}</span>
+            <span>{isWu ? '正在比对完整性维度、发散补点' : '正在逐条核对、揪问题'}</span>
+            {secs > 0 && <span className="opacity-50 tabular-nums">{secs}s</span>}
+          </div>
+          <div className={`text-[12px] mt-1.5 ${muted}`} style={{ opacity: 0.7 }}>本地模型推理中，通常 5–30 秒，稍候～</div>
+        </div>
+      );
+    };
+
     const PinvouSummonCard = ({ item, theme }) => {
       const isDark = theme === 'dark';
       // 品(查错)=紫;悟(发散,coverage)=蓝。
@@ -2584,12 +2606,7 @@
                         : (isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]');
       const muted = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
       const body = isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]';
-      if (item.loading) return (
-        <div className={cardBoxCls(isDark, accent)}>
-          <div className={`flex items-center gap-2 text-[12px] font-semibold ${tint}`}><span>{icon}</span><span>{isWu ? 'Pinvou 悟·发散补全' : 'Pinvou 品·查错检阅'}</span></div>
-          <div className={`text-[13px] mt-2 ${muted}`}>{isWu ? '正在比对完整性维度、发散补点…' : '正在检阅前面的工作…'}</div>
-        </div>
-      );
+      if (item.loading) return <PinvouLoading isWu={isWu} icon={icon} tint={tint} accent={accent} muted={muted} isDark={isDark} />;
       if (item.error) return (
         <div className={cardBoxCls(isDark, accent)}>
           <div className={`flex items-center gap-2 text-[12px] font-semibold ${tint}`}><span>{icon}</span><span>Pinvou {isWu ? '悟' : '品'}</span></div>
