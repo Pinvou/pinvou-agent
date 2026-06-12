@@ -1324,6 +1324,12 @@
     if (m > 0) return m + "m " + (secs % 60) + "s";
     return secs + "s";
   }
+  function fmtTok(n) {
+    if (n == null) return "—";
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
+    return String(Math.round(n));
+  }
 
   async function pollMonitor() {
     try {
@@ -1367,6 +1373,12 @@
             (snap.vllm.num_requests_waiting != null ? snap.vllm.num_requests_waiting : "—") : "— / —",
         vllmKv: snap.vllm && snap.vllm.prefix_cache_hit_pct != null
           ? snap.vllm.prefix_cache_hit_pct.toFixed(1) + "%" : "—",
+        vllmTtft: snap.vllm && snap.vllm.ttft_count > 0
+          ? (snap.vllm.ttft_sum_s / snap.vllm.ttft_count).toFixed(2) + " s" : "—",
+        vllmTps: snap.vllm && snap.vllm.tpot_sum_s > 0
+          ? (snap.vllm.tpot_count / snap.vllm.tpot_sum_s).toFixed(1) + " tok/s" : "—",
+        vllmTokTotal: snap.vllm && snap.vllm.generation_tokens_total != null
+          ? fmtTok(snap.vllm.generation_tokens_total) + " / " + fmtTok(snap.vllm.prompt_tokens_total) : "—",
         appVersion: snap.app ? snap.app.pinvou3_version : "—",
         dtVersion: snap.app ? snap.app.deepseek_tui_version : "—",
         uptime: snap.app ? fmtDuration(snap.app.session_uptime_secs) : "—",
