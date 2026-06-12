@@ -131,6 +131,14 @@ pub fn session_persona_events(session_id: &str) -> PathBuf {
     sessions_root().join(session_id).join("persona_events.json")
 }
 
+/// `~/.pinvou3/sessions/<session_id>/pinvou_reviews.json` —— 该 session 的 Pinvou
+/// 召唤检阅时间线（每条 {pos, review}）。同 persona_events 一样**刻意独立于 messages**:
+/// 审查卡是纯前端展示、绝不能进 LLM 上下文（那会污染主 AI），前端按 `pos` 在
+/// rerenderFromMessages 里插回。Boss 要主 AI 看审阅,走「转交」按钮发成 Boss 消息。
+pub fn session_pinvou_reviews(session_id: &str) -> PathBuf {
+    sessions_root().join(session_id).join("pinvou_reviews.json")
+}
+
 /// 阶段 C 没多 session 时的 fallback artifacts dir（session_id="default"）。
 /// Step 4 完成后这个会被切换 session 时动态计算的值替换。
 pub fn default_session_artifacts_dir() -> PathBuf {

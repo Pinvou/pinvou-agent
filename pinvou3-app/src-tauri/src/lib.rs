@@ -21,9 +21,9 @@ pub mod file_ingest;
 mod file_watcher;
 mod monitor;
 pub mod personas;
+mod pinvou_review;
 pub mod super_permission;
 mod updater;
-
 
 use tauri::Manager;
 
@@ -160,6 +160,9 @@ pub fn run() {
             commands::discard_plan,
             commands::submit_user_input,
             commands::cancel_user_input,
+            commands::summon_pinvou,
+            commands::save_session_pinvou_reviews,
+            commands::get_session_pinvou_reviews,
             commands::get_super_permission_status,
             commands::set_super_permission,
             commands::list_personas,

@@ -1,6 +1,10 @@
 # Rust build artifacts
 DeepSeek-TUI/target/
 pinvou3-app/src-tauri/target/
+/target/
+
+# Python (sim 脚本缓存)
+__pycache__/
 
 # IDE
 .idea/
