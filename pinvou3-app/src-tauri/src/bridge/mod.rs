@@ -12,6 +12,7 @@
 //! 转译。GUI 永远不直接操纵 EngineConfig；engine.rs 永远从这层取配置。
 
 pub mod bundle;
+pub mod marketplace;
 pub mod mode_state;
 pub mod paths;
 pub mod prefs;

@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 # Windows 默认 stdout/stdin 编码为 GBK，MCP 协议要求 UTF-8
@@ -93,7 +94,7 @@ def _query_mode(days):
 
 
 def _http_get(url, params):
-    query = urllib.request.urlencode(params)
+    query = urllib.parse.urlencode(params)
     full_url = f"{url}?{query}"
     req = urllib.request.Request(full_url)
     with urllib.request.urlopen(req, timeout=10) as resp:

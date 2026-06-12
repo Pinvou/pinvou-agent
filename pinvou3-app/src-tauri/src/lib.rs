@@ -221,6 +221,9 @@ pub fn run() {
             updater::download_update,
             updater::install_update,
             updater::restart_app,
+            commands::list_marketplace_tools,
+            commands::install_marketplace_tool,
+            commands::uninstall_marketplace_tool,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

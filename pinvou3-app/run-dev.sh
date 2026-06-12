@@ -11,16 +11,20 @@ SANSHENG_WORKFLOW_SRC="../workflows/sansheng-liubu"
 SANSHENG_ENGINE_SCRIPTS_SRC="../workflows/_engine/scripts"
 SANSHENG_BUNDLE_WF_DST="src-tauri/resources/bundle/workflow/sansheng-liubu"
 if [[ -d "$SANSHENG_WORKFLOW_SRC" && -d "$SANSHENG_BUNDLE_WF_DST" ]]; then
-    echo "[run-dev] 同步 workflows/sansheng-liubu/ → bundle 快照"
-    rsync -rc \
-        --exclude='.git/' --exclude='.gitignore' \
-        --exclude='*.env' --exclude='__pycache__/' \
-        "$SANSHENG_WORKFLOW_SRC/" "$SANSHENG_BUNDLE_WF_DST/"
-    mkdir -p "$SANSHENG_BUNDLE_WF_DST/scripts"
-    # 引擎拷贝排除 test_*.py:测试不进发布包(include_dir 会原样嵌进二进制)
-    for f in "$SANSHENG_ENGINE_SCRIPTS_SRC"/*.py; do
-        case "$(basename "$f")" in test_*) ;; *) cp "$f" "$SANSHENG_BUNDLE_WF_DST/scripts/";; esac
-    done
+    if command -v rsync &>/dev/null; then
+        echo "[run-dev] 同步 workflows/sansheng-liubu/ → bundle 快照"
+        rsync -rc \
+            --exclude='.git/' --exclude='.gitignore' \
+            --exclude='*.env' --exclude='__pycache__/' \
+            "$SANSHENG_WORKFLOW_SRC/" "$SANSHENG_BUNDLE_WF_DST/"
+        mkdir -p "$SANSHENG_BUNDLE_WF_DST/scripts"
+        # 引擎拷贝排除 test_*.py:测试不进发布包(include_dir 会原样嵌进二进制)
+        for f in "$SANSHENG_ENGINE_SCRIPTS_SRC"/*.py; do
+            case "$(basename "$f")" in test_*) ;; *) cp "$f" "$SANSHENG_BUNDLE_WF_DST/scripts/";; esac
+        done
+    else
+        echo "[run-dev] rsync not found, skipping workflow sync (Windows)"
+    fi
 fi
 
 # ── 工作流预检开关 ───────────────────────────────────────────────

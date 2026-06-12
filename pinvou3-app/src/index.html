@@ -29,6 +29,7 @@
     .msg-md li { margin:0.2em 0; line-height:1.6; }
     .msg-md code { font-family:"JetBrains Mono","SF Mono",Consolas,monospace; font-size:0.88em; padding:0.15em 0.4em; border-radius:6px; }
     .msg-md pre { margin:0.6em 0; padding:1em; border-radius:12px; overflow-x:auto; font-size:0.88em; line-height:1.5; }
+    .artifact-preview .msg-md pre { white-space:pre-wrap; word-break:break-word; overflow-x:hidden; }
     .msg-md pre code { padding:0; background:none; }
     .msg-md blockquote { border-left:3px solid rgba(128,128,128,0.4); padding-left:1em; margin:0.5em 0; opacity:0.85; }
     .msg-md a { text-decoration:underline; }
@@ -120,12 +121,15 @@
     const Navigation = (p) => <I {...p}><polygon points="3 11 22 2 13 21 11 13 3 11"/></I>;
     const Layout = (p) => <I {...p}><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><line x1="3" x2="21" y1="9" y2="9"/><line x1="9" x2="9" y1="21" y2="9"/></I>;
     const Code = (p) => <I {...p}><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></I>;
+    const Building2 = (p) => <I {...p}><path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/><path d="M10 6h4"/><path d="M10 10h4"/><path d="M10 14h4"/><path d="M10 18h4"/></I>;
     const Cpu = (p) => <I {...p}><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></I>;
     const Server = (p) => <I {...p}><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></I>;
     const Globe = (p) => <I {...p}><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></I>;
     const ChevronLeft = (p) => <I {...p}><path d="m15 18-6-6 6-6"/></I>;
     const XIcon = (p) => <I {...p}><path d="M18 6 6 18"/><path d="m6 6 12 12"/></I>;
     const CloudSun = (p) => <I {...p}><path d="M12 2v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="M20 12h2"/><path d="m19.07 4.93-1.41 1.41"/><path d="M15.947 12.65a4 4 0 0 0-5.925-4.128"/><path d="M13 22H7a5 5 0 1 1 4.9-6H13a3 3 0 0 1 0 6Z"/></I>;
+    const FolderOpen = (p) => <I {...p}><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></I>;
+    const ExternalLink = (p) => <I {...p}><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></I>;
 
     /* ==========================================
        i18n dictionary — 1:1 from 前端.html
@@ -858,6 +862,7 @@
       { id: 10, backendId: null, title: '钉钉开放 API', subtitle: '企业级智能移动办公底座', category: 'comm', type: 'REST API', version: 'v3.1.2', latency: '<80ms', desc: '提供钉钉全产品能力的接口映射。包含 AI 表格、考勤打卡、群聊机器人对话流及通讯录同步管控。', icon: Navigation, color: 'bg-gradient-to-b from-blue-400 to-indigo-500', installed: false, authRequired: true },
       { id: 11, backendId: null, title: 'TAPD 敏捷研发', subtitle: '缺陷与迭代的自动化追踪', category: 'dev', type: 'Action Skill', version: 'v2.8.0', latency: '<60ms', desc: '研发管理核心工具。允许 AI 查询项目迭代进度、自动拆分需求条目、更新缺陷状态，实现从需求到发布的研发全生命周期数字化。', icon: Layout, color: 'bg-gradient-to-b from-violet-500 to-fuchsia-600', installed: false, authRequired: true },
       { id: 12, backendId: null, title: 'CNB 云原生管线', subtitle: '代码仓库与 CI/CD 调度', category: 'dev', type: 'MCP Server', version: 'v1.0.0', latency: '<40ms', desc: '将云原生开发能力赋予大模型。支持通过自然语言进行代码仓库检索、提交 Issue、审查 PR、触发并监控流水线部署等极客操作。', icon: Code, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: true },
+      { id: 13, backendId: 'qcc', title: '企查查', subtitle: '企业工商、风控、知产、经营数据查询', category: 'finance', type: 'MCP Server', version: 'v1.0.0', latency: '<500ms', desc: '接入企查查智能体数据平台，提供182个企业数据查询工具，覆盖工商登记、股东结构、风险预警、知识产权、招投标等六大模块。', icon: Building2, color: 'bg-gradient-to-br from-blue-600 to-cyan-500', installed: false, authRequired: false, welcomeQueries: ['查一下华为的工商信息', '腾讯有哪些风险预警', '比亚迪的专利有多少', '阿里巴巴的招投标记录'] },
     ];
 
     // ==========================================
@@ -2124,13 +2129,15 @@
                       ${sel === a.path ? (isDark ? 'bg-[#333537]' : 'bg-[#E8EDF2]') : (isDark ? 'hover:bg-[#282A2C]' : 'hover:bg-[#F0F4F9]')}`}>
                     <span>{artifactIcon(a.basename)}</span>
                     <span className={`flex-1 truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`} title={a.path}>{a.basename}</span>
-                    <button title="打开所在目录" onClick={(e) => { e.stopPropagation(); bridge.openContainingFolder(a.path); }} className="opacity-0 group-hover:opacity-100 text-[13px]">📂</button>
-                    <button title="外部打开" onClick={(e) => { e.stopPropagation(); bridge.openArtifactExternal(a.path); }} className="opacity-0 group-hover:opacity-100 text-[13px]">↗</button>
+                    <button title="打开所在目录" onClick={(e) => { e.stopPropagation(); bridge.openContainingFolder(a.path); }}
+                      className={`opacity-0 group-hover:opacity-100 w-6 h-6 rounded flex items-center justify-center transition-colors ${isDark ? 'text-[#9AA0A6] hover:bg-[#444746] hover:text-[#E3E3E3]' : 'text-[#5F6368] hover:bg-[#D3D7DB] hover:text-[#1F1F1F]'}`}><FolderOpen size={14} /></button>
+                    <button title="外部打开" onClick={(e) => { e.stopPropagation(); bridge.openArtifactExternal(a.path); }}
+                      className={`opacity-0 group-hover:opacity-100 w-6 h-6 rounded flex items-center justify-center transition-colors ${isDark ? 'text-[#9AA0A6] hover:bg-[#444746] hover:text-[#E3E3E3]' : 'text-[#5F6368] hover:bg-[#D3D7DB] hover:text-[#1F1F1F]'}`}><ExternalLink size={14} /></button>
                   </div>
                 ))}
               </div>
               {/* preview */}
-              <div className="flex-1 overflow-y-auto custom-scrollbar p-4 min-w-0">
+              <div className="artifact-preview flex-1 overflow-y-auto custom-scrollbar p-4 min-w-0">
                 {!sel ? (
                   <div className={`text-[13px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>选择左侧产物预览</div>
                 ) : pv.loading ? (
@@ -2149,7 +2156,7 @@
                 ) : (
                   <div>
                     <p className={`text-[13px] mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{pv.kind === 'image' ? '图片预览暂不支持嵌入' : '此类型暂不支持预览'}</p>
-                    <button onClick={() => bridge.openArtifactExternal(sel)} className={cardBtnCls(isDark, 'primary')}>↗ 外部打开</button>
+                    <button onClick={() => bridge.openArtifactExternal(sel)} className={cardBtnCls(isDark, 'primary')}><ExternalLink size={14} className="inline -mt-0.5 mr-1" />外部打开</button>
                   </div>
                 )}
               </div>
@@ -2290,8 +2297,18 @@
     const WorkflowView = ({ bs, theme, t, onActivate }) => {
       const isDark = theme === 'dark';
       const wf = (bs && bs.workflow) || {};
-      useEffect(() => { if (bridge.available) bridge.loadSkills(); }, []);
+      const [workflows, setWorkflows] = useState([]);
+      const [wfLoading, setWfLoading] = useState(true);
+      const loadAll = async () => {
+        setWfLoading(true);
+        bridge.loadSkills();
+        try { setWorkflows(await bridge.listWorkflows()); } catch(e) { setWorkflows([]); }
+        setWfLoading(false);
+      };
+      useEffect(() => { if (bridge.available) loadAll(); }, []);
       const skills = wf.skills || [];
+      const hasContent = skills.length > 0 || workflows.length > 0;
+      const isLoading = wf.loadState === 'loading' || wfLoading;
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden animate-in fade-in duration-300">
           <div className="flex items-center justify-between px-6 md:px-10 pt-8 pb-4">
@@ -2299,20 +2316,42 @@
               <h1 className={`text-[28px] font-normal ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.workflow}</h1>
               <p className={`text-[13px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>任务拆解 · 进度可视化</p>
             </div>
-            <button onClick={() => bridge.loadSkills()} title="重新扫描 skill"
+            <button onClick={() => loadAll()} title="重新扫描"
               className={`w-10 h-10 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>
               <RefreshCw size={18} />
             </button>
           </div>
           <div className="flex-1 overflow-y-auto custom-scrollbar px-6 md:px-10 pb-10">
-            {wf.loadState === 'loading' ? (
-              <div className={`text-[13px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>加载 skill 列表 …</div>
+            {isLoading ? (
+              <div className={`text-[13px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>加载中 …</div>
             ) : wf.loadState === 'error' ? (
               <div className={`text-[13px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>加载失败，点右上角重试</div>
-            ) : skills.length === 0 ? (
-              <div className={`text-[13px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>未发现 skill</div>
+            ) : !hasContent ? (
+              <div className={`text-[13px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>未发现工作流</div>
             ) : (
               <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
+                {workflows.map((w) => {
+                  const tpl = (w.ui && w.ui.template) || {};
+                  const agentCount = (w.ui && w.ui.agentDefs) ? w.ui.agentDefs.length : 0;
+                  return (
+                    <div key={w.id} className={`rounded-2xl p-5 flex flex-col gap-2 border cursor-pointer transition-all hover:shadow-lg ${isDark ? 'bg-[#1E1F20] border-white/10 hover:border-white/20' : 'bg-white border-black/5 hover:border-black/10'}`}
+                      onClick={() => bridge.startWorkflowTask(w.scenarios && w.scenarios[0], '')}>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[16px] font-medium">{tpl.title || w.name || w.id}</span>
+                        {(tpl.badge || agentCount > 0) && <span className={`text-[11px] px-2 py-0.5 rounded-full ${isDark ? 'bg-white/10 text-[#C4C7C5]' : 'bg-black/5 text-[#5F6368]'}`}>{tpl.badge || (agentCount + ' agent')}</span>}
+                      </div>
+                      <p className={`text-[12px] leading-relaxed line-clamp-3 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{tpl.desc || ''}</p>
+                      {w.ui && w.ui.lanes && (
+                        <div className={`flex items-center gap-1 text-[11px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#9AA0A6]'}`}>
+                          {w.ui.lanes.map((l, i) => (<span key={i}>{i > 0 ? ' → ' : ''}{l.title}</span>))}
+                        </div>
+                      )}
+                      <div className="mt-auto pt-2">
+                        <button className={cardBtnCls(isDark, 'primary')}>新建任务</button>
+                      </div>
+                    </div>
+                  );
+                })}
                 {skills.map((s) => (
                   <SkillCard key={s.name} s={s} theme={theme} active={wf.activeSkillName === s.name} onActivate={onActivate} />
                 ))}
@@ -2337,10 +2376,12 @@
     ];
 
     const tsFeaturedCollections = [
+      { id: 'f6', label: '即装即用', title: '实时天气随口问', subtitle: '接入高德天气 API，自然语言查全国城市实时天气与多日预报，零配置一键安装。', bg: 'bg-gradient-to-br from-sky-500 via-blue-500 to-indigo-600', featuredToolId: 1 },
+      { id: 'f4', label: '数据引擎', title: '打造智能投研助理', subtitle: '集成同花顺问财 12 项金融工具，利用大模型快速输出深度个股诊断报告。', bg: 'bg-gradient-to-br from-red-600 via-rose-700 to-orange-600', featuredToolId: 2 },
+      { id: 'f7', label: '企业数据', title: '一键查透企业全貌', subtitle: '接入企查查 182 个工具，工商/风控/知产/经营数据信手拈来，免配置即装即用。', bg: 'bg-gradient-to-br from-blue-700 via-cyan-600 to-teal-500', featuredToolId: 13 },
       { id: 'f1', label: '场景套件', title: '构建 AI 研发中枢', subtitle: '串联 TAPD 与 CNB，让 AI 帮你审查 PR、追踪缺陷并自动部署流水线。', bg: 'bg-gradient-to-br from-indigo-800 via-violet-700 to-fuchsia-600', featuredToolId: 12 },
       { id: 'f2', label: '核心 MCP', title: '激活企业沉淀知识', subtitle: '挂载 ima 知识库底层能力，解锁毫秒级的海量文档精准召回与分析。', bg: 'bg-gradient-to-br from-blue-700 via-indigo-600 to-cyan-600', featuredToolId: 4 },
       { id: 'f3', label: '效率编排', title: '跨平台消息中转', subtitle: '无缝打通企微、飞书与钉钉，实现重要告警与工作流消息的自动化流转。', bg: 'bg-gradient-to-br from-emerald-600 via-teal-700 to-cyan-800', featuredToolId: 9 },
-      { id: 'f4', label: '数据引擎', title: '打造智能投研助理', subtitle: '集成同花顺问财 12 项金融工具，利用大模型快速输出深度个股诊断报告。', bg: 'bg-gradient-to-br from-red-600 via-rose-700 to-orange-600', featuredToolId: 2 },
       { id: 'f5', label: '通信治理', title: '下一代智能云会议', subtitle: '调用腾讯会议高级能力，实现自动发起、录制总结与待办任务自动分配。', bg: 'bg-gradient-to-br from-sky-600 via-blue-600 to-indigo-700', featuredToolId: 7 },
     ];
 
@@ -2365,7 +2406,7 @@
         return (
           <button
             onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, true); }}
-            className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/50`}
+            className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-slate-100 dark:bg-[#2C2C2E] border border-slate-200 dark:border-slate-700 text-[#FF3B30] dark:text-[#FF453A] hover:bg-slate-200 dark:hover:bg-[#3A3A3C]`}
           >
             卸载
           </button>
@@ -2431,7 +2472,7 @@
                     知道了
                   </button>
                 </div>
-                {!alert.isError && (
+                {!alert.isError && alert.isInstall && (
                   <div className={`border-t ${isDark ? 'border-white/10' : 'border-slate-200'}`}>
                     <button
                       onClick={onNewChat}
@@ -2548,6 +2589,12 @@
                               tool.desc.toLowerCase().includes(searchQuery.toLowerCase());
         const matchesCategory = activeCategory === 'all' || tool.category === activeCategory;
         return matchesSearch && matchesCategory;
+      }).sort((a, b) => {
+        if (a.backendId && !b.backendId) return -1;
+        if (!a.backendId && b.backendId) return 1;
+        if (a.installed && !b.installed) return -1;
+        if (!a.installed && b.installed) return 1;
+        return 0;
       });
 
       // 从后端加载已安装状态
@@ -2784,7 +2831,7 @@
                   </div>
 
                   {filteredTools.length > 0 ? (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-10 gap-y-2">
+                    <div className="grid gap-x-10 gap-y-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
                       {filteredTools.map((tool) => (
                         <div
                           key={tool.id}
@@ -2963,9 +3010,9 @@
               )}
               <div className="hidden group-hover:flex items-center gap-0.5 shrink-0">
                 <button title="重命名" onClick={(e) => { e.stopPropagation(); setVal(chat.title); setEditing(true); }}
-                  className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${isDark ? 'hover:bg-[#444746]' : 'hover:bg-[#D3D7DB]'}`}>✏️</button>
+                  className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#9AA0A6] hover:bg-[#444746] hover:text-[#E3E3E3]' : 'text-[#5F6368] hover:bg-[#D3D7DB] hover:text-[#1F1F1F]'}`}><Edit2 size={13} /></button>
                 <button title="删除" onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
-                  className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${isDark ? 'hover:bg-[#5c2b29]' : 'hover:bg-[#FAD2CF]'}`}>🗑</button>
+                  className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#9AA0A6] hover:bg-[#5c2b29] hover:text-[#F28B82]' : 'text-[#5F6368] hover:bg-[#FAD2CF] hover:text-[#C5221F]'}`}><Trash2 size={13} /></button>
               </div>
             </>
           )}

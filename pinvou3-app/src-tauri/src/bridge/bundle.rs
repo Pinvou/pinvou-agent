@@ -6,7 +6,13 @@
 
 use std::path::PathBuf;
 
+use include_dir::{include_dir, Dir};
+
 use super::paths;
+
+/// 三省六部工作流：编译期内嵌整个目录树（roles/*.md + scripts/*.py + json）。
+static SANSHENG_LIUBU_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/workflow/sansheng-liubu");
 
 /// Bundle 版本号：手动 base + 自动 instructions.md 内容 hash（build.rs 注入）。
 /// 改 INSTRUCTIONS_MD 时不需要 bump base —— hash 自动变，ensure_extracted 自动覆写。
@@ -17,7 +23,13 @@ use super::paths;
 /// 0.6: 加 present_artifact 内置 MCP server(成品卡):mcp.json 注册 + server 脚本解包
 /// 0.7: 下线 Pinvou Review v2(EXIT GATE 评审被推翻,等新方案):两个 review skill
 ///      不再解包,既有装机的残留目录启动时清理
-pub const BUNDLE_VERSION: &str = concat!("0.7-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.8: 上线三省六部卡片流工作流(sansheng-liubu):include_dir 内嵌 + 启动解包
+pub const BUNDLE_VERSION: &str = concat!(
+    "0.8-",
+    env!("BUNDLE_INSTRUCTIONS_HASH"),
+    "-",
+    env!("BUNDLE_WORKFLOW_HASH_SANSHENG"),
+);
 
 /// pinvou3 内置的 instructions.md（Qwen3.6 适配 prompt），编译时内嵌。
 pub const INSTRUCTIONS_MD: &str = include_str!("../../resources/bundle/instructions.md");
@@ -164,6 +176,8 @@ const IWENCAI_SERVER_PY: &str =
     include_str!("../../../resources/mcp-servers/iwencai/server.py");
 const IWENCAI_MANIFEST_JSON: &str =
     include_str!("../../../resources/mcp-servers/iwencai/manifest.json");
+const QCC_MANIFEST_JSON: &str =
+    include_str!("../../../resources/mcp-servers/qcc/manifest.json");
 
 /// 内嵌的敏感目录拦截 shell 脚本——配合 bridge 注入的 hook 在 ToolCallBefore
 /// 时阻止 LLM 触碰 ~/.ssh/ ~/.gnupg/ 等。
@@ -206,8 +220,10 @@ impl Pinvou3Bundle {
         // 已下线 skills 每次启动都清理(防御性):既有装机的残留目录若不清,
         // SkillRegistry 仍会从 disk 发现它们、重新触发对应协议 prompt。
         self.cleanup_retired_skills()?;
-        // MCP server 脚本同 skills:immutable bundle 资源,每次启动防御性重写
-        // (防 "VERSION 对得上但脚本缺失"),无副作用。
+        // 工作流目录同 skills:immutable bundle 资源,每次启动防御性重写
+        // (防 "VERSION 对得上但目录缺失"),无副作用。
+        self.write_workflows()?;
+        // MCP server 脚本同理。
         self.write_mcp_servers()?;
         // mcp.json merge:每次启动 upsert 内置 pinvou server,保留 marketplace 条目。
         // 不受 VERSION gate 限制——marketplace 安装可能在任何时候发生。
@@ -256,6 +272,34 @@ impl Pinvou3Bundle {
         std::fs::create_dir_all(&self.skills_dir)?;
         for retired in ["h3c-ppt", "pinvou-review-plan", "pinvou-review-final"] {
             let _ = std::fs::remove_dir_all(self.skills_dir.join(retired));
+        }
+        Ok(())
+    }
+
+    /// 解包内嵌的工作流目录到 `~/.pinvou3/bundle/workflow/`。
+    /// 每次启动防御性重写（immutable bundle 资源）。
+    fn write_workflows(&self) -> std::io::Result<()> {
+        let workflow_root = paths::bundle_workflow_dir();
+        // sansheng-liubu
+        let dest = workflow_root.join("sansheng-liubu");
+        Self::extract_dir(&SANSHENG_LIUBU_DIR, &dest)?;
+        Ok(())
+    }
+
+    /// 递归解包 `include_dir::Dir` 到磁盘目标路径。
+    /// `root` 是磁盘目标根(对应 include_dir 的顶层),`dir` 可以是任意层级子目录。
+    /// `Dir::files()` 返回的 `path()` 是相对于 **include_dir 根** 的完整路径
+    /// (如 "roles/taizi.md"),所以一律用 `root.join(file.path())` 定位。
+    fn extract_dir(dir: &Dir<'_>, root: &std::path::Path) -> std::io::Result<()> {
+        for file in dir.files() {
+            let path = root.join(file.path());
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&path, file.contents())?;
+        }
+        for sub in dir.dirs() {
+            Self::extract_dir(sub, root)?;
         }
         Ok(())
     }
@@ -317,6 +361,10 @@ impl Pinvou3Bundle {
         std::fs::create_dir_all(&iwencai_dir)?;
         std::fs::write(iwencai_dir.join("server.py"), IWENCAI_SERVER_PY)?;
         std::fs::write(iwencai_dir.join("manifest.json"), IWENCAI_MANIFEST_JSON)?;
+        // 工具市场：企查查（远程 MCP，只有 manifest.json，无 server.py）
+        let qcc_dir = dir.join("qcc");
+        std::fs::create_dir_all(&qcc_dir)?;
+        std::fs::write(qcc_dir.join("manifest.json"), QCC_MANIFEST_JSON)?;
         Ok(())
     }
 }
@@ -362,6 +410,20 @@ mod tests {
                 "{retired} 已下线,不应再解包"
             );
         }
+        // 三省六部工作流应解包到 bundle/workflow/sansheng-liubu/
+        let wf_dir = paths::bundle_workflow_dir().join("sansheng-liubu");
+        assert!(
+            wf_dir.join("workflow.json").is_file(),
+            "sansheng-liubu/workflow.json 应被解包"
+        );
+        assert!(
+            wf_dir.join("roles").join("taizi.md").is_file(),
+            "sansheng-liubu/roles/taizi.md 应被解包"
+        );
+        assert!(
+            wf_dir.join("scripts").join("scheduler.py").is_file(),
+            "sansheng-liubu/scripts/scheduler.py 应被解包"
+        );
         let v = std::fs::read_to_string(paths::bundle_version_file()).unwrap();
         assert_eq!(v.trim(), BUNDLE_VERSION);
 

@@ -35,6 +35,14 @@ pub struct ToolManifest {
     pub tool_table_entries: Vec<String>,
     #[serde(default)]
     pub pip_dependencies: Vec<String>,
+    #[serde(default)]
+    pub servers: Vec<RemoteServer>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteServer {
+    pub name: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -254,45 +262,82 @@ impl MarketplaceManager {
             .and_then(|s| s.as_object_mut())
             .ok_or("mcp.json 格式错误")?;
 
-        // 构造 server.py 的绝对路径
-        let server_dir = self.servers_dir.join(&manifest.id);
-        let args: Vec<String> = manifest
-            .args
-            .iter()
-            .map(|a| {
-                if a == "server.py" || a.ends_with("/server.py") {
-                    server_dir.join("server.py").to_string_lossy().to_string()
-                } else {
-                    a.clone()
-                }
-            })
-            .collect();
+        if !manifest.servers.is_empty() {
+            // ── 远程工具：遍历 manifest.servers[]，写 url/headers ──
+            for server in &manifest.servers {
+                let mut headers = serde_json::Map::new();
 
-        // 合并 manifest.env + user_config 中 target="env" 的字段
-        let mut env = manifest.env.clone();
-        for field in &manifest.config_fields {
-            if field.target == "env" {
-                if let Some(val) = user_config.get(&field.key) {
-                    env.insert(field.key.clone(), val.clone());
+                // 1. config_fields 中 target="bearer" 的字段（用户填入）
+                for field in &manifest.config_fields {
+                    if field.target == "bearer" {
+                        if let Some(val) = user_config.get(&field.key) {
+                            headers.insert(
+                                "Authorization".to_string(),
+                                serde_json::Value::String(format!("Bearer {}", val)),
+                            );
+                        }
+                    }
+                }
+
+                // 2. manifest.env 中以 _API_KEY 结尾的字段（内置 Key 阶段）
+                if headers.is_empty() {
+                    for (k, v) in &manifest.env {
+                        if k.ends_with("_API_KEY") && !v.is_empty() {
+                            headers.insert(
+                                "Authorization".to_string(),
+                                serde_json::Value::String(format!("Bearer {}", v)),
+                            );
+                            break;
+                        }
+                    }
+                }
+
+                let mut entry = serde_json::json!({ "url": server.url });
+                if !headers.is_empty() {
+                    entry["headers"] = serde_json::Value::Object(headers);
+                }
+                servers.insert(server.name.clone(), entry);
+            }
+        } else {
+            // ── 本地工具：command/args/env ──
+            let server_dir = self.servers_dir.join(&manifest.id);
+            let args: Vec<String> = manifest
+                .args
+                .iter()
+                .map(|a| {
+                    if a == "server.py" || a.ends_with("/server.py") {
+                        server_dir.join("server.py").to_string_lossy().to_string()
+                    } else {
+                        a.clone()
+                    }
+                })
+                .collect();
+
+            let mut env = manifest.env.clone();
+            for field in &manifest.config_fields {
+                if field.target == "env" {
+                    if let Some(val) = user_config.get(&field.key) {
+                        env.insert(field.key.clone(), val.clone());
+                    }
                 }
             }
-        }
 
-        let python_cmd = if cfg!(target_os = "windows") { "python" } else { "python3" };
-        let command = if manifest.command == "python" || manifest.command == "python3" {
-            python_cmd.to_string()
-        } else {
-            manifest.command.clone()
-        };
-        let mut entry = serde_json::json!({
-            "command": command,
-            "args": args,
-        });
-        if !env.is_empty() {
-            entry["env"] = serde_json::to_value(&env).unwrap_or_default();
-        }
+            let python_cmd = if cfg!(target_os = "windows") { "python" } else { "python3" };
+            let command = if manifest.command == "python" || manifest.command == "python3" {
+                python_cmd.to_string()
+            } else {
+                manifest.command.clone()
+            };
+            let mut entry = serde_json::json!({
+                "command": command,
+                "args": args,
+            });
+            if !env.is_empty() {
+                entry["env"] = serde_json::to_value(&env).unwrap_or_default();
+            }
 
-        servers.insert(manifest.id.clone(), entry);
+            servers.insert(manifest.id.clone(), entry);
+        }
 
         let json = serde_json::to_string_pretty(&mcp).map_err(|e| e.to_string())?;
         std::fs::write(&mcp_path, json).map_err(|e| format!("写入 mcp.json: {e}"))
@@ -309,7 +354,18 @@ impl MarketplaceManager {
             serde_json::from_str(&content).unwrap_or_else(|_| default_mcp_json());
 
         if let Some(servers) = mcp.get_mut("servers").and_then(|s| s.as_object_mut()) {
-            servers.remove(tool_id);
+            // 先尝试加载 manifest 看是否有 servers 字段（远程工具有多条目）
+            if let Some(manifest) = self.load_manifest(tool_id) {
+                if !manifest.servers.is_empty() {
+                    for server in &manifest.servers {
+                        servers.remove(&server.name);
+                    }
+                } else {
+                    servers.remove(tool_id);
+                }
+            } else {
+                servers.remove(tool_id);
+            }
         }
 
         let json = serde_json::to_string_pretty(&mcp).map_err(|e| e.to_string())?;

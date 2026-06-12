@@ -630,7 +630,7 @@ fn materialize_dispatch_graph(project: &Path) -> Result<(), String> {
         project.to_string_lossy().to_string(),
     ];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    run_cmd("python3", &arg_refs, scripts_dir).map(|_| ())
+    run_cmd(python_cmd(), &arg_refs, scripts_dir).map(|_| ())
 }
 
 /// 解析角色 gate 类型。真相源 = agent_registry.json 的 gate 字段(auto / human)。
@@ -663,8 +663,9 @@ fn log_flow(project: &Path, event: &str, extra: &[(&str, &str)]) {
         scripts = script.parent().unwrap().display(),
     );
 
-    let mut child = match Command::new("python3")
+    let mut child = match Command::new(python_cmd())
         .args(["-c", &py_code])
+        .env("PYTHONIOENCODING", "utf-8")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -679,6 +680,11 @@ fn log_flow(project: &Path, event: &str, extra: &[(&str, &str)]) {
 }
 
 // ── Subprocess ──
+
+/// Windows 上 `python3` 命令不存在(exit 9009)，统一用 `python`。
+fn python_cmd() -> &'static str {
+    if cfg!(target_os = "windows") { "python" } else { "python3" }
+}
 
 // [2026-06-04] 30→120s:gate_runner --layer 1 对 23 页 deck 实测 31.8s,30s 差 2 秒
 // 被杀 → designer 后推进链静默断头(MegaBook run 实锤)。对齐 audit_format 工具的
@@ -695,6 +701,7 @@ fn run_cmd_with_timeout(program: &str, args: &[&str], cwd: &Path, timeout_secs: 
         .args(args)
         .current_dir(cwd)
         .env("PYTHONPATH", cwd)
+        .env("PYTHONIOENCODING", "utf-8") // Windows stdout 默认 GBK，中文 print 会 UnicodeEncodeError
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -761,7 +768,7 @@ fn run_scheduler(project: &Path, args: &[&str]) -> Result<String, String> {
     let mut full_args = vec![script.to_string_lossy().to_string(), project.to_string_lossy().to_string()];
     full_args.extend(args.iter().map(|s| s.to_string()));
     let arg_refs: Vec<&str> = full_args.iter().map(|s| s.as_str()).collect();
-    run_cmd("python3", &arg_refs, scripts_dir)
+    run_cmd(python_cmd(), &arg_refs, scripts_dir)
 }
 
 fn run_warmup(project: &Path) -> Result<serde_json::Value, String> {
@@ -775,7 +782,7 @@ fn run_warmup(project: &Path) -> Result<serde_json::Value, String> {
         project.to_string_lossy().to_string(),
     ];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    match run_cmd_with_timeout("python3", &arg_refs, scripts_dir, WARMUP_TIMEOUT_SECS) {
+    match run_cmd_with_timeout(python_cmd(), &arg_refs, scripts_dir, WARMUP_TIMEOUT_SECS) {
         Ok(stdout) => match serde_json::from_str(&stdout) {
             Ok(v) => Ok(v),
             Err(_) => read_warmup_report(project),
@@ -831,7 +838,7 @@ fn run_gate_runner(project: &Path) -> Result<GateResult, String> {
         "--layer".to_string(), "1".to_string(),
     ];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let out = run_cmd("python3", &arg_refs, scripts_dir)?;
+    let out = run_cmd(python_cmd(), &arg_refs, scripts_dir)?;
     serde_json::from_str(&out).map_err(|e| format!("parse gate_runner: {e}"))
 }
 
@@ -847,7 +854,7 @@ fn run_deliverable_check(project: &Path, role_id: &str) -> Result<GateResult, St
         role_id.to_string(),
     ];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let out = run_cmd("python3", &arg_refs, scripts_dir)?;
+    let out = run_cmd(python_cmd(), &arg_refs, scripts_dir)?;
     let v: serde_json::Value = serde_json::from_str(&out)
         .map_err(|e| format!("parse deliverable check: {e}"))?;
 
