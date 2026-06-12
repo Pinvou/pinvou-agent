@@ -1,6 +1,12 @@
 use std::path::{Path, PathBuf};
 
 fn main() {
+    // 开发源 workflows/ → resources/bundle/(include_dir! 嵌入源)同步。放 build.rs 而非
+    // run-dev.sh:任何 cargo build/打包都同步,改完直接 build 也不漂移(run-dev.sh 只覆盖
+    // dev 启动)。引擎脚本(_engine/scripts 排 test_*)拷进每个 workflow 的 scripts/,对齐
+    // scheduler.py 的 WORKFLOW_ROOT=parent.parent 路径假设。内容比较,源未变不写盘。
+    sync_workflow_bundle();
+
     // 算 bundle 资源的内容 hash，注入到 BUNDLE_INSTRUCTIONS_HASH 环境变量
     // 让 bundle.rs::BUNDLE_VERSION 自动包含 hash —— 文件变化时 cargo build 重跑
     // build.rs，hash 跟着变，ensure_extracted 自动覆写 disk 的 bundle 文件。
@@ -78,4 +84,80 @@ fn fnv1a_step(mut hash: u64, bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
+}
+
+/// 开发源 → bundle 嵌入快照同步（替代 run-dev.sh 的 rsync 段）。
+/// build.rs 的 cwd = crate 根（src-tauri/），故开发源在 ../../workflows/。
+/// 发布树/沙箱里没有开发源时整体跳过——bundle 已是 commit 的快照。
+fn sync_workflow_bundle() {
+    let data_src = Path::new("../../workflows/sansheng-liubu");
+    let engine_src = Path::new("../../workflows/_engine/scripts");
+    let dst = Path::new("resources/bundle/workflow/sansheng-liubu");
+    if !data_src.is_dir() || !dst.is_dir() {
+        return;
+    }
+    // 1. 数据（roles/registry/route_table/workflow.json）→ bundle 根
+    sync_tree(data_src, dst);
+    // 2. 引擎脚本 → bundle/scripts/（排 test_*，与 scheduler.py 同根路径假设对齐）
+    let scripts_dst = dst.join("scripts");
+    let _ = std::fs::create_dir_all(&scripts_dst);
+    if let Ok(rd) = std::fs::read_dir(engine_src) {
+        for e in rd.flatten() {
+            let p = e.path();
+            let name = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            if !name.ends_with(".py") || name.starts_with("test_") {
+                continue;
+            }
+            println!("cargo:rerun-if-changed={}", p.display());
+            copy_if_changed(&p, &scripts_dst.join(&name));
+        }
+    }
+}
+
+/// 递归同步 src → dst（仅内容，排除 VCS/缓存/env）。不删 dst 多余文件（与原 rsync 一致）。
+fn sync_tree(src: &Path, dst: &Path) {
+    let Ok(rd) = std::fs::read_dir(src) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let sp = e.path();
+        let name = sp
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        if name == ".git"
+            || name == ".gitignore"
+            || name == "__pycache__"
+            || name.ends_with(".env")
+            || name.ends_with(".pyc")
+        {
+            continue;
+        }
+        let dp = dst.join(&name);
+        if sp.is_dir() {
+            let _ = std::fs::create_dir_all(&dp);
+            sync_tree(&sp, &dp);
+        } else {
+            println!("cargo:rerun-if-changed={}", sp.display());
+            copy_if_changed(&sp, &dp);
+        }
+    }
+}
+
+/// 内容比较拷贝：相同则不写——避免无谓 git dirty / mtime 抖动 / bundle 重解包。
+fn copy_if_changed(src: &Path, dst: &Path) {
+    let Ok(new_bytes) = std::fs::read(src) else {
+        return;
+    };
+    if let Ok(old_bytes) = std::fs::read(dst) {
+        if old_bytes == new_bytes {
+            return;
+        }
+    }
+    let _ = std::fs::write(dst, new_bytes);
 }
