@@ -4759,6 +4759,22 @@
       const [exited, setExited] = useState(false);
       // 准奏后展开的最终奏折弹窗(ui.hasMemorial 的工作流·终审角色)
       const [memorialOpen, setMemorialOpen] = useState(false);
+      // 奏折触发=状态驱动:回奏角色「未完成→完成」的瞬间自动展卷——与从哪个按钮
+      // 准奏无关(底部 gate 卡的「✓ 通过」直连 approveWorkflowGate,点击路径接不到
+      // approveRole,6/12 实测漏弹)。初值即已完成(刷新/重启进入已结束的 run)不自动
+      // 弹,靠头部「📜 奏折」常驻入口手动看。
+      const memorialUi = (run.ui && run.ui.hasMemorial && run.ui)
+        || (runWorkflow && runWorkflow.ui && runWorkflow.ui.hasMemorial && runWorkflow.ui) || null;
+      const memorialRoleId = memorialUi ? (memorialUi.memorialRole || 'huizou') : null;
+      const memorialStatus = memorialRoleId
+        ? (((run.agents || {})[memorialRoleId] || {}).status || null) : null;
+      const memorialDone = memorialStatus === 'completed' || memorialStatus === 'complete';
+      const prevMemorialDone = useRef(memorialDone);
+      useEffect(() => {
+        const was = prevMemorialDone.current;
+        prevMemorialDone.current = memorialDone;
+        if (memorialRoleId && memorialDone && !was) setMemorialOpen(true);
+      }, [memorialDone, memorialRoleId]);
       const inBoard = (run.active || opened) && !exited;
       const containerCls = "flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden animate-in fade-in duration-300";
 
@@ -4817,9 +4833,8 @@
       const approveRole = (rid) => {
         const c = (run.cards || []).find((c) => c.kind === 'gate' && c.roleId === rid && !c.resolved);
         const p = bridge.approveWorkflowGate(c ? c.cardId : null, rid);
-        // 三省六部的回奏(终审)准奏 → 展开最终奏折,代入感拉满
-        const memorialRole = (run.ui && run.ui.hasMemorial && (run.ui.memorialRole || 'huizou')) || null;
-        if (memorialRole && (rid === memorialRole || String(rid).indexOf(memorialRole) === 0)) {
+        // 三省六部的回奏(终审)准奏 → 立刻展卷(快路径;状态驱动的 effect 是兜底)
+        if (memorialRoleId && (rid === memorialRoleId || String(rid).indexOf(memorialRoleId) === 0)) {
           Promise.resolve(p).then(() => setMemorialOpen(true));
         }
       };
@@ -4836,6 +4851,10 @@
               <p className={`text-[13px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{statusText} · 卡片流</p>
             </div>
             <div className="flex items-center gap-2">
+              {/* 回奏已完成的 run 常驻奏折入口(自动弹窗只在完成瞬间触发一次,事后/刷新后从这里看) */}
+              {memorialRoleId && memorialDone && (
+                <button onClick={() => setMemorialOpen(true)} className={cardBtnCls(isDark)}>📜 奏折</button>
+              )}
               <button onClick={() => { setOpened(false); setExited(true); }} className={cardBtnCls(isDark)}>← 模板页</button>
               {/* 看板内新建 = 跟当前看板同工作流(开机自动恢复直接进看板时没经过模板卡,
                   必须在这里按 run 反查工作流对象,否则表单回落错) */}
