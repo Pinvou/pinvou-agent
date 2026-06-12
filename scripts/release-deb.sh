@@ -41,6 +41,19 @@ if [ ! -f "$DEB" ]; then
   exit 1
 fi
 
+# ── 2b. 修正 Tauri 在 Ubuntu 24.04+ 上自动检测的旧 GTK 包名 ────────
+# Tauri bundler 仍按 ldd 输出写 libgtk-3-0，但 noble 已改名为 libgtk-3-0t64。
+# 用 OR 依赖兼容旧版系统 (jammy) 与新版系统 (noble)。
+TMP_DPKG_DIR=$(mktemp -d)
+trap 'rm -rf "$TMP_DPKG_DIR"' EXIT
+if dpkg-deb -R "$DEB" "$TMP_DPKG_DIR" 2>/dev/null; then
+  if grep -qE '^Depends:.*\blibgtk-3-0\b' "$TMP_DPKG_DIR/DEBIAN/control" && \
+     ! grep -q 'libgtk-3-0t64' "$TMP_DPKG_DIR/DEBIAN/control"; then
+    sed -i 's/\blibgtk-3-0\b/libgtk-3-0 | libgtk-3-0t64/g' "$TMP_DPKG_DIR/DEBIAN/control"
+    dpkg-deb -b "$TMP_DPKG_DIR" "$DEB"
+  fi
+fi
+
 # ── 3. 生成 latest.json ───────────────────────────────────────────
 SHA256=$(sha256sum "$DEB" | awk '{print $1}')
 SIZE=$(stat -c%s "$DEB")
