@@ -78,6 +78,9 @@
     @keyframes memorial-roller-bottom-open { from { bottom: calc(50% - 9px) } to { bottom: -9px } }
     @keyframes memorial-roller-bottom-close { from { bottom: -9px } to { bottom: calc(50% - 9px) } }
     @keyframes memorial-stamp { from { opacity: 0; transform: rotate(-14deg) scale(1.8) } 70% { opacity: .9; transform: rotate(-14deg) scale(.94) } to { opacity: .82; transform: rotate(-14deg) scale(1) } }
+    /* 御赐宝箱:开箱金光迸出 + 成品文档逐件弹出 */
+    @keyframes chest-glow { from { opacity: 0; transform: translateX(-50%) scale(.4) } to { opacity: 1; transform: translateX(-50%) scale(1) } }
+    @keyframes chest-item-pop { from { opacity: 0; transform: translateY(16px) scale(.85) } to { opacity: 1; transform: none } }
     .lanyard-wrap { animation: lanyard-drop .55s cubic-bezier(.2,.9,.3,1.2) both; transform-origin: top center; }
     .lanyard-card { animation: lanyard-sway 4.5s ease-in-out infinite; transform-origin: top center; }
     /* 详情 modal 里的完整人设正文(markdown) prose 排版 */
@@ -4194,6 +4197,17 @@
     const ImperialMemorialModal = ({ projectDir, theme, onClose }) => {
       const [st, setSt] = useState({ loading: true, text: '', error: null });
       const [closing, setClosing] = useState(false);
+      // 御赐宝箱:run 的成品文档(deliverables/),点开箱盖掀开、成品弹出,点件即开
+      const [deliv, setDeliv] = useState([]);
+      const [chestOpen, setChestOpen] = useState(false);
+      useEffect(() => {
+        let alive = true;
+        const dir = (projectDir || '').replace(/\/$/, '');
+        if (dir && bridge.listDeliverables) {
+          bridge.listDeliverables(dir).then((fs) => { if (alive) setDeliv(fs || []); });
+        }
+        return () => { alive = false; };
+      }, [projectDir]);
       const closingRef = useRef(false);
       // 收卷:先放反向卷轴动画,卷合后再真正卸载
       const requestClose = () => {
@@ -4242,6 +4256,53 @@
                   : st.text ? <div className="msg-md light-code text-[14px] leading-[1.9]" style={{ color: '#3a2a18' }} dangerouslySetInnerHTML={{ __html: bridge.renderMarkdown(st.text) }} />
                   : <div style={{ color: '#7a5a2a' }} className="text-[13px] text-center py-10">尚无回奏内容</div>}
               </div>
+              {deliv.length > 0 && (
+                <div className="shrink-0 px-8 pt-2 pb-1 text-center" style={{ borderTop: '1px dashed #c9a96a' }}>
+                  <div className="text-[11px] mb-1" style={{ color: '#7a5a2a', letterSpacing: '3px' }}>御 赐 宝 箱 · {deliv.length} 件成品</div>
+                  {chestOpen && (
+                    <div className="flex flex-wrap justify-center gap-2 mb-2">
+                      {deliv.map((f, i) => {
+                        const ext = (String(f.name).split('.').pop() || '').toLowerCase();
+                        const chip = (ext === 'pptx' || ext === 'ppt') ? 'PPT' : ext === 'xlsx' ? '表' : ext === 'pdf' ? 'PDF'
+                          : (ext === 'html' || ext === 'htm') ? '网页' : (ext === 'png' || ext === 'jpg' || ext === 'jpeg') ? '图' : '文';
+                        const sz = f.size > 1048576 ? (f.size / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(f.size / 1024)) + ' KB';
+                        return (
+                          <button key={f.path} onClick={() => bridge.openArtifactExternal(f.path)} title={'打开 ' + f.name}
+                            className="flex items-center gap-2 px-3 py-1.5 rounded-[6px] text-[12px]"
+                            style={{ background: '#fdf6e3', border: '1px solid #c9a96a', color: '#3a2a18', cursor: 'pointer',
+                              boxShadow: '0 2px 6px rgba(58,42,24,.18)',
+                              animation: `chest-item-pop .45s cubic-bezier(.3,1.4,.5,1) ${i * 0.09}s both` }}>
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold" style={{ background: '#8a1c1c', color: '#f7eed6' }}>{chip}</span>
+                            <span style={{ maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
+                            <span className="text-[10px]" style={{ color: '#7a5a2a' }}>{sz}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {/* 红漆描金中式宝箱(纯 CSS):点击箱盖向后掀开,金光迸出 */}
+                  <button onClick={() => setChestOpen((o) => !o)} title={chestOpen ? '合上宝箱' : '打开宝箱'}
+                    className="relative inline-block" style={{ width: '92px', height: '70px', background: 'none', border: 'none', cursor: 'pointer', perspective: '300px' }}>
+                    {chestOpen && <div style={{ position: 'absolute', left: '50%', top: '6px', width: '130px', height: '56px',
+                      background: 'radial-gradient(ellipse at 50% 100%, rgba(255,200,60,.65) 0%, rgba(255,200,60,0) 70%)',
+                      animation: 'chest-glow .5s ease both', pointerEvents: 'none' }}></div>}
+                    <div style={{ position: 'absolute', left: '4px', right: '4px', top: '14px', height: '22px',
+                      borderRadius: '10px 10px 2px 2px', background: 'linear-gradient(180deg,#a83232,#7c1b1b)',
+                      border: '1.5px solid #d9a441', borderBottom: '2px solid #b8893f',
+                      transformOrigin: '50% 100%', transform: chestOpen ? 'rotateX(112deg)' : 'none',
+                      transition: 'transform .55s cubic-bezier(.34,1.45,.6,1)', zIndex: 2 }}></div>
+                    <div style={{ position: 'absolute', left: '4px', right: '4px', top: '34px', height: '26px',
+                      borderRadius: '2px 2px 7px 7px', background: 'linear-gradient(180deg,#8a1c1c,#5e1010)',
+                      border: '1.5px solid #d9a441', zIndex: 1 }}>
+                      <div style={{ position: 'absolute', left: '15px', top: 0, bottom: 0, width: '5px', background: 'linear-gradient(180deg,#e7b956,#b8893f)' }}></div>
+                      <div style={{ position: 'absolute', right: '15px', top: 0, bottom: 0, width: '5px', background: 'linear-gradient(180deg,#e7b956,#b8893f)' }}></div>
+                      <div style={{ position: 'absolute', left: '50%', top: '-7px', width: '16px', height: '16px', transform: 'translateX(-50%)',
+                        borderRadius: '50%', background: 'radial-gradient(circle at 35% 30%,#f4d27a,#b8893f)', border: '1px solid #8a6a2f', zIndex: 3 }}></div>
+                    </div>
+                    <div className="text-[10px]" style={{ position: 'absolute', left: 0, right: 0, bottom: 0, color: '#7a5a2a' }}>{chestOpen ? '▲ 收箱' : '▼ 开箱取货'}</div>
+                  </button>
+                </div>
+              )}
               <div className="shrink-0 text-center py-3" style={{ borderTop: '1px solid #c9a96a' }}>
                 <div className="text-[15px]" style={{ color: '#8a1c1c', letterSpacing: '6px' }}>钦　此</div>
                 <button onClick={requestClose} className="mt-2 px-5 py-1.5 rounded-full text-[13px]" style={{ background: '#8a1c1c', color: '#f7eed6' }}>朕已阅 · 收卷</button>

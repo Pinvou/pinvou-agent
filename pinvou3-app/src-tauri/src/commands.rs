@@ -764,6 +764,44 @@ pub(crate) fn read_artifact_text_impl(path: &str) -> Result<String, String> {
     std::fs::read_to_string(&p).map_err(|e| format!("read_artifact_text({}): {e}", p.display()))
 }
 
+/// 奏折「御赐宝箱」:列出 run 的成品文档(项目 deliverables/ 下的文件,
+/// 含工部产的二进制成品如 .pptx)。二进制成品排前(对客户那才是"宝"),md 报告在后。
+#[tauri::command]
+pub async fn list_deliverables(project_dir: String) -> Result<Vec<serde_json::Value>, String> {
+    let p = validate_user_path(&project_dir)?;
+    let dir = p.join("deliverables");
+    let mut out: Vec<(bool, String, serde_json::Value)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let path = e.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            if name.is_empty() || name.starts_with('.') || name.ends_with(".tmp") || name.ends_with('~') {
+                continue;
+            }
+            let size = path.metadata().map(|m| m.len()).unwrap_or(0);
+            let is_md = name.to_lowercase().ends_with(".md");
+            out.push((
+                is_md,
+                name.clone(),
+                serde_json::json!({
+                    "name": name,
+                    "path": path.to_string_lossy(),
+                    "size": size,
+                }),
+            ));
+        }
+    }
+    out.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+    Ok(out.into_iter().map(|(_, _, v)| v).collect())
+}
+
 /// 读 artifact 元数据：大小 / 类型 / 是否存在。
 #[tauri::command]
 pub async fn artifact_info(path: String) -> Result<ArtifactInfo, String> {
