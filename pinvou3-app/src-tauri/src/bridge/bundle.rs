@@ -278,10 +278,11 @@ impl Pinvou3Bundle {
                 .insert("servers".into(), serde_json::json!({}));
         }
         let servers = mcp["servers"].as_object_mut().unwrap();
+        let python_cmd = if cfg!(target_os = "windows") { "python" } else { "python3" };
         servers.insert(
             "pinvou".to_string(),
             serde_json::json!({
-                "command": "python",
+                "command": python_cmd,
                 "args": [present_server.to_string_lossy()]
             }),
         );

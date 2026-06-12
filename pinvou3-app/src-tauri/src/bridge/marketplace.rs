@@ -151,11 +151,6 @@ impl MarketplaceManager {
             .load_manifest(tool_id)
             .ok_or_else(|| format!("工具 '{tool_id}' 不存在"))?;
 
-        // 安装 Python 依赖
-        if !manifest.pip_dependencies.is_empty() {
-            self.install_pip_deps(&manifest.pip_dependencies)?;
-        }
-
         // 更新 installed.json
         let mut installed = self.installed_ids();
         if !installed.contains(&tool_id.to_string()) {
@@ -227,24 +222,6 @@ impl MarketplaceManager {
 
     // --- internal ---
 
-    fn install_pip_deps(&self, deps: &[String]) -> Result<(), String> {
-        let args: Vec<&str> = std::iter::once("install")
-            .chain(deps.iter().map(|s| s.as_str()))
-            .collect();
-        eprintln!("[marketplace] pip install {}", deps.join(" "));
-        let output = std::process::Command::new("pip")
-            .args(&args)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .map_err(|e| format!("pip 执行失败（请确认已安装 Python）: {e}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("pip install 失败: {stderr}"));
-        }
-        Ok(())
-    }
-
     fn load_manifest(&self, tool_id: &str) -> Option<ToolManifest> {
         let path = self.servers_dir.join(tool_id).join("manifest.json");
         let content = std::fs::read_to_string(&path).ok()?;
@@ -301,8 +278,14 @@ impl MarketplaceManager {
             }
         }
 
+        let python_cmd = if cfg!(target_os = "windows") { "python" } else { "python3" };
+        let command = if manifest.command == "python" || manifest.command == "python3" {
+            python_cmd.to_string()
+        } else {
+            manifest.command.clone()
+        };
         let mut entry = serde_json::json!({
-            "command": manifest.command,
+            "command": command,
             "args": args,
         });
         if !env.is_empty() {
