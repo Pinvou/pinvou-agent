@@ -399,7 +399,12 @@ async fn model_review(bridge: &Pinvou3Bridge, prompt: &str, user_content: &str) 
         "temperature": 0,
         "max_tokens": 1600,
         "stream": false,
-        "chat_template_kwargs": { "enable_thinking": false }
+        "chat_template_kwargs": { "enable_thinking": false },
+        // 根治偶发非法 JSON(qwen36 长输出漏逗号/字符串内未转义引号,实测 line N col M 解析炸):
+        // vLLM guided decoding token 级保证输出合法 JSON 语法,不靠事后 find('{')..rfind('}') 补救。
+        // 后端实测 json_object/guided_json/json_schema 四种约束均支持,取最通用的 json_object;
+        // 三个 prompt 均含「输出只能是 JSON」字样,满足 json mode 前置要求。
+        "response_format": { "type": "json_object" }
     });
     let resp = client
         .post(url)
