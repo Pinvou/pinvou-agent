@@ -81,6 +81,7 @@
     /* 御赐宝箱:开箱金光迸出 + 成品文档逐件弹出 */
     @keyframes chest-glow { from { opacity: 0; transform: translateX(-50%) scale(.4) } to { opacity: 1; transform: translateX(-50%) scale(1) } }
     @keyframes chest-item-pop { from { opacity: 0; transform: translateY(16px) scale(.85) } to { opacity: 1; transform: none } }
+    @keyframes chest-open-bounce { 0% { transform: scale(1) } 35% { transform: scale(1.07) rotate(-1.5deg) } 70% { transform: scale(.98) rotate(1deg) } 100% { transform: scale(1.03) } }
     .lanyard-wrap { animation: lanyard-drop .55s cubic-bezier(.2,.9,.3,1.2) both; transform-origin: top center; }
     .lanyard-card { animation: lanyard-sway 4.5s ease-in-out infinite; transform-origin: top center; }
     /* 详情 modal 里的完整人设正文(markdown) prose 排版 */
@@ -4262,7 +4263,6 @@
               </div>
               {deliv.products.length > 0 && (
                 <div className="shrink-0 px-8 pt-2 pb-1 text-center" style={{ borderTop: '1px dashed #c9a96a' }}>
-                  <div className="text-[11px] mb-1" style={{ color: '#7a5a2a', letterSpacing: '3px' }}>御 赐 宝 箱 · {deliv.products.length === 1 ? '成品一件' : `${deliv.products.length} 件成品`}</div>
                   {chestOpen && (
                     <div className="flex flex-wrap justify-center gap-2 mb-2">
                       {deliv.products.map((f, i) => {
@@ -4284,26 +4284,19 @@
                       })}
                     </div>
                   )}
-                  {/* 红漆描金中式宝箱(纯 CSS):点击箱盖向后掀开,金光迸出 */}
-                  <button onClick={() => setChestOpen((o) => !o)} title={chestOpen ? '合上宝箱' : '打开宝箱'}
-                    className="relative inline-block" style={{ width: '92px', height: '70px', background: 'none', border: 'none', cursor: 'pointer', perspective: '300px' }}>
-                    {chestOpen && <div style={{ position: 'absolute', left: '50%', top: '6px', width: '130px', height: '56px',
-                      background: 'radial-gradient(ellipse at 50% 100%, rgba(255,200,60,.65) 0%, rgba(255,200,60,0) 70%)',
-                      animation: 'chest-glow .5s ease both', pointerEvents: 'none' }}></div>}
-                    <div style={{ position: 'absolute', left: '4px', right: '4px', top: '14px', height: '22px',
-                      borderRadius: '10px 10px 2px 2px', background: 'linear-gradient(180deg,#a83232,#7c1b1b)',
-                      border: '1.5px solid #d9a441', borderBottom: '2px solid #b8893f',
-                      transformOrigin: '50% 100%', transform: chestOpen ? 'rotateX(112deg)' : 'none',
-                      transition: 'transform .55s cubic-bezier(.34,1.45,.6,1)', zIndex: 2 }}></div>
-                    <div style={{ position: 'absolute', left: '4px', right: '4px', top: '34px', height: '26px',
-                      borderRadius: '2px 2px 7px 7px', background: 'linear-gradient(180deg,#8a1c1c,#5e1010)',
-                      border: '1.5px solid #d9a441', zIndex: 1 }}>
-                      <div style={{ position: 'absolute', left: '15px', top: 0, bottom: 0, width: '5px', background: 'linear-gradient(180deg,#e7b956,#b8893f)' }}></div>
-                      <div style={{ position: 'absolute', right: '15px', top: 0, bottom: 0, width: '5px', background: 'linear-gradient(180deg,#e7b956,#b8893f)' }}></div>
-                      <div style={{ position: 'absolute', left: '50%', top: '-7px', width: '16px', height: '16px', transform: 'translateX(-50%)',
-                        borderRadius: '50%', background: 'radial-gradient(circle at 35% 30%,#f4d27a,#b8893f)', border: '1px solid #8a6a2f', zIndex: 3 }}></div>
+                  {/* 宝箱(白浪选的钥匙孔款):点击开箱,金光迸出、成品弹出 */}
+                  <button onClick={() => setChestOpen((o) => !o)} title={chestOpen ? '收箱' : '点击开箱'}
+                    className="relative inline-block" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                    {chestOpen && <div style={{ position: 'absolute', left: '50%', top: '-14px', width: '170px', height: '64px',
+                      background: 'radial-gradient(ellipse at 50% 100%, rgba(255,200,60,.7) 0%, rgba(255,200,60,0) 70%)',
+                      animation: 'chest-glow .5s ease both', pointerEvents: 'none', zIndex: 0 }}></div>}
+                    <img src="avatars/chengpin_chest.png" alt="成品箱"
+                      style={{ width: '118px', display: 'block', borderRadius: '8px', position: 'relative', zIndex: 1,
+                        boxShadow: '0 4px 12px rgba(58,42,24,.3)',
+                        animation: chestOpen ? 'chest-open-bounce .5s cubic-bezier(.34,1.45,.6,1) both' : 'none' }} />
+                    <div className="text-[10px] mt-0.5" style={{ color: '#7a5a2a' }}>
+                      {chestOpen ? '▲ 收箱' : `▼ 点击开箱 · 成品 ${deliv.products.length} 件`}
                     </div>
-                    <div className="text-[10px]" style={{ position: 'absolute', left: 0, right: 0, bottom: 0, color: '#7a5a2a' }}>{chestOpen ? '▲ 收箱' : '▼ 开箱取货'}</div>
                   </button>
                   {deliv.papers.length > 0 && (
                     <div className="mt-1">
