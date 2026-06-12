@@ -691,10 +691,17 @@ fn run_cmd(program: &str, args: &[&str], cwd: &Path) -> Result<String, String> {
 }
 
 fn run_cmd_with_timeout(program: &str, args: &[&str], cwd: &Path, timeout_secs: u64) -> Result<String, String> {
+    // [pinvou3] warmup/scheduler 子进程需要 app 实际用的 vLLM endpoint。app 可能只配
+    // settings.json(custom_base_url)而不设 DEEPSEEK_BASE_URL 环境变量,那样 warmup 的
+    // endpoint 预检会误判 blocked → 工作流启动卡死。统一注入解析后的 base_url
+    // (env 优先,回退 settings.json),子进程不必关心配置来源。
+    let base_url = std::env::var("DEEPSEEK_BASE_URL")
+        .unwrap_or_else(|_| crate::monitor::vllm_base_url());
     let mut child = Command::new(program)
         .args(args)
         .current_dir(cwd)
         .env("PYTHONPATH", cwd)
+        .env("DEEPSEEK_BASE_URL", base_url)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()

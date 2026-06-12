@@ -71,6 +71,7 @@
 ## 已知问题 / 边界（一句话）
 
 - **subagent**：单 + 2-3 串行可用，后端并发非瓶颈（N=4 探针 first-token <1s），并行 fan-out 不可用
+- **工作流 subagent max_steps 无界**（2026-06-12，#5 合入时记）：底座 manager `max_steps` 恒 `u32::MAX`，per-role registry max_steps（agent_registry.json，ops.rs 设计意图）未接通——Op 处理器丢弃该字段。当前收敛靠 submit_output fail-closed + 逐级升温（底座 d01debcf）双保障已够；接通 per-role 上限作第三层防御待办，勿仓促改全局 `DEFAULT_MAX_STEPS` 误杀长任务（工部产 pptx 多步）
 - **LLM 行为不稳**（vLLM 抽奖）：偶发 detour 写文件 / 调 web_search，单 sample 不下结论
 - **grep_files**：fork patch 在 v0.8.45 被上游 harvest 版覆盖丢失，上游版大目录够用，硬超时走 PR #2146
 - **Judge 局限**：跨 session 盲评稳定（19/20 零漂移）；盲区是 Claude/Qwen 同向偏，需换模型家族评才查得出
