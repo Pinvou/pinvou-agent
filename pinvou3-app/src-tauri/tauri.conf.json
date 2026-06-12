@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "pinvou3",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "identifier": "com.pinvou.pinvou3",
   "build": {
     "frontendDist": "../src"
@@ -39,15 +39,14 @@
     "linux": {
       "deb": {
         "preRemoveScript": "scripts/prerm.sh",
-        "depends": [
+        "depends": [],
+        "recommends": [
           "poppler-utils",
           "tesseract-ocr",
           "tesseract-ocr-chi-sim",
           "pandoc",
           "p7zip-full",
-          "python3"
-        ],
-        "recommends": [
+          "python3",
           "libreoffice",
           "libemail-outlook-message-perl"
         ]
