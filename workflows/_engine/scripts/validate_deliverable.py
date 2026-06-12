@@ -78,7 +78,7 @@ def check_file_exists(path: Path, min_bytes: int = 10) -> list[dict]:
 
 # ── finding 工厂 ──
 
-_ARTIFACT_HEADING = re.compile(r"^#{2,4}\s*工件清单")
+_ARTIFACT_HEADING = re.compile(r"^#{2,4}\s*(工件清单|成品清单)")
 
 
 def check_artifact_manifest(project: Path, md_path: Path) -> list[dict]:
@@ -300,7 +300,13 @@ def validate_libu_renshi(project: Path) -> list[dict]:
 
 @role_validator("huizou")
 def validate_huizou(project: Path) -> list[dict]:
-    return check_md_file(project / "final_report.md", min_lines=5)
+    """结案呈报存在+非空;「成品清单」段(角色卡要求必有)逐项物理核验——
+    奏折宝箱按此清单装箱,申报了不存在的成品过不了闸。"""
+    md = project / "final_report.md"
+    findings = check_md_file(md, min_lines=5)
+    if not any(f["severity"] == "CRITICAL" for f in findings):
+        findings.extend(check_artifact_manifest(project, md))
+    return findings
 
 
 # ── 主入口 ──

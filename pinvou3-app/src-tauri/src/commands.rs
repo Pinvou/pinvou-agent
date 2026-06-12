@@ -781,48 +781,126 @@ fn sanitize_title_filename(title: &str, fallback: &str) -> String {
     }
 }
 
-/// 奏折「御赐宝箱」:客户视角的成品分两层。
-/// - products(装箱的"真成品"):① 最终报告 final_report.md → 物化成
-///   **以题目命名**的副本(题目取太子立项 `_state/zhiyi.json` 的 title;幂等,
-///   内容变了重写)② deliverables/ 下非 .md 的二进制成品(.pptx 等,
-///   即工部「工件清单」硬闸核验过的那类)。
-/// - papers(过程文书,折叠展示):deliverables/ 下六部的 md 交付报告——
-///   衙门工作底稿,不是赐给客户的宝贝,但审计要找得到。
+/// 从结案呈报解析「成品清单/工件清单」段申报的成品相对路径。
+/// 与引擎 validate_deliverable.check_artifact_manifest 同一约定:
+/// 标题段内的列表项,路径写在反引号里(无反引号则取首个空白分隔 token),
+/// 到下一个标题为止。
+fn parse_product_manifest(report_text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_section = false;
+    for line in report_text.lines() {
+        let t = line.trim_start();
+        if t.starts_with('#') {
+            let h = t.trim_start_matches('#').trim();
+            in_section = h.starts_with("成品清单") || h.starts_with("工件清单");
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        let s = line.trim();
+        if !(s.starts_with('-') || s.starts_with('*')) {
+            continue;
+        }
+        let item = s.trim_start_matches(['-', '*', ' ']).trim();
+        let rel = if let Some(a) = item.find('`') {
+            item[a + 1..].split('`').next().unwrap_or("")
+        } else {
+            item.split_whitespace().next().unwrap_or("")
+        };
+        if !rel.is_empty() {
+            out.push(rel.to_string());
+        }
+    }
+    out
+}
+
+/// 奏折「成品箱」:**宝箱内容 = 奏折申报的成品**(白浪定的原则,后端不猜)。
+/// - products:回奏官在 final_report.md「## 成品清单」段申报的文件(硬闸已核验
+///   存在)。衙门式文件名(如 libu_1.md)物化成**以题目命名**的副本给客户——
+///   题目取太子立项 zhiyi.json 的 title;非 md 成品(.pptx 等,名字本来就达意)
+///   原样装箱。旧 run 没有成品清单段 → 回退:题目命名的 final_report 副本 +
+///   deliverables/ 非 md 二进制成品。
+/// - papers:deliverables/ 下未被申报为成品的 md = 六部过程文书,折叠降级。
 #[tauri::command]
 pub async fn list_deliverables(project_dir: String) -> Result<serde_json::Value, String> {
     let p = validate_user_path(&project_dir)?;
-    let mut products: Vec<serde_json::Value> = Vec::new();
-    let mut papers: Vec<serde_json::Value> = Vec::new();
+    let canon_root = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
+    let title = std::fs::read_to_string(p.join("_state").join("zhiyi.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("title").and_then(|t| t.as_str()).map(str::to_string));
+    let title_base = sanitize_title_filename(title.as_deref().unwrap_or(""), "最终成品");
 
-    // ① 最终报告 → 题目命名的成品副本(放项目根,不混进 deliverables/ 的扫描语义)
-    let report = p.join("final_report.md");
-    if report.is_file() {
-        let title = std::fs::read_to_string(p.join("_state").join("zhiyi.json"))
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| v.get("title").and_then(|t| t.as_str()).map(str::to_string));
-        let fname = format!(
-            "{}.md",
-            sanitize_title_filename(title.as_deref().unwrap_or(""), "最终报告")
-        );
-        let dst = p.join(&fname);
-        let src_bytes = std::fs::read(&report).unwrap_or_default();
-        let stale = std::fs::read(&dst).map(|b| b != src_bytes).unwrap_or(true);
-        if stale {
-            let _ = std::fs::write(&dst, &src_bytes);
+    let report_text = std::fs::read_to_string(p.join("final_report.md")).unwrap_or_default();
+    let declared = parse_product_manifest(&report_text);
+
+    let mut products: Vec<serde_json::Value> = Vec::new();
+    let mut product_canon: Vec<std::path::PathBuf> = Vec::new();
+
+    if !declared.is_empty() {
+        // 奏折申报路线:逐件解析,衙门式 md 文件名 → 题目命名副本
+        let mut md_idx = 0usize;
+        for rel in &declared {
+            let cand = p.join(rel);
+            let Ok(canon) = std::fs::canonicalize(&cand) else { continue };
+            if !canon.starts_with(&canon_root) || !canon.is_file() {
+                continue;
+            }
+            let orig_name = canon
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            let is_md = orig_name.to_lowercase().ends_with(".md");
+            let bytes = std::fs::read(&canon).unwrap_or_default();
+            if is_md {
+                md_idx += 1;
+                let fname = if md_idx == 1 {
+                    format!("{title_base}.md")
+                } else {
+                    format!("{title_base}·{md_idx}.md")
+                };
+                let dst = p.join(&fname);
+                let stale = std::fs::read(&dst).map(|b| b != bytes).unwrap_or(true);
+                if stale {
+                    let _ = std::fs::write(&dst, &bytes);
+                }
+                products.push(serde_json::json!({
+                    "name": fname, "path": dst.to_string_lossy(), "size": bytes.len(),
+                }));
+            } else {
+                products.push(serde_json::json!({
+                    "name": orig_name, "path": canon.to_string_lossy(), "size": bytes.len(),
+                }));
+            }
+            product_canon.push(canon);
         }
-        products.push(serde_json::json!({
-            "name": fname,
-            "path": dst.to_string_lossy(),
-            "size": src_bytes.len(),
-        }));
+    }
+    if products.is_empty() {
+        // 回退路线(旧 run / 奏折没写成品清单):题目命名的 final_report 副本
+        if !report_text.is_empty() {
+            let fname = format!("{title_base}.md");
+            let dst = p.join(&fname);
+            let stale = std::fs::read(&dst)
+                .map(|b| b != report_text.as_bytes())
+                .unwrap_or(true);
+            if stale {
+                let _ = std::fs::write(&dst, report_text.as_bytes());
+            }
+            products.push(serde_json::json!({
+                "name": fname, "path": dst.to_string_lossy(), "size": report_text.len(),
+            }));
+        }
     }
 
-    // ② deliverables/:非 md → 成品;md → 过程文书
+    // deliverables/:非 md 且未申报 → 也算成品(工件清单核验过的二进制);
+    // md 且未申报 → 过程文书
+    let mut papers: Vec<serde_json::Value> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(p.join("deliverables")) {
-        let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
-        entries.sort();
-        for path in entries {
+        let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+        paths.sort();
+        for path in paths {
             if !path.is_file() {
                 continue;
             }
@@ -834,11 +912,13 @@ pub async fn list_deliverables(project_dir: String) -> Result<serde_json::Value,
             if name.is_empty() || name.starts_with('.') || name.ends_with(".tmp") || name.ends_with('~') {
                 continue;
             }
+            let canon = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            if product_canon.contains(&canon) {
+                continue; // 已申报装箱,不重复列
+            }
             let size = path.metadata().map(|m| m.len()).unwrap_or(0);
             let item = serde_json::json!({
-                "name": name,
-                "path": path.to_string_lossy(),
-                "size": size,
+                "name": name, "path": path.to_string_lossy(), "size": size,
             });
             if name.to_lowercase().ends_with(".md") {
                 papers.push(item);
