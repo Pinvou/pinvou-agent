@@ -6,10 +6,10 @@
 
 ## 0. 现状
 
-- DeepSeek-TUI 是 `h3c-hexin/DeepSeek-TUI` fork(submodule,**`pinvou3-clean` 分支** ← upstream **v0.8.60**(merge `fa412ca1`);`.gitmodules` 追踪;旧 `pinvou3-patches` 留 fork 当备份)
+- DeepSeek-TUI 是 `h3c-hexin/DeepSeek-TUI` fork(submodule,**`pinvou3-clean` 分支** ← upstream **v0.8.60**;HEAD `1161bc78` = v0.8.60 + 8 主题 commit(2026-06-15 第 2 次 clean re-fork);`.gitmodules` 追踪;备份 `backup/pre-reclean-v0.8.60`)
 - fork drift **+2335 / −360 行,43 文件**(vs v0.8.60;主体是工作流层 W1–W12,**已超 1500 软上限**——撤回评估见 fork-modifications §4;app 层 prompt override 不计入)
-- fork 结构 = **C1–C7 逻辑主题**,详见 `docs/fork-modifications.md` §1
-- 路线:接受"重 fork",靠工程化(指纹 + 测试 + dump diff + 文档)控制维护成本。原 CLAUDE.md "≤50 行" 约定本文件已正式修订为下方软上限
+- fork 结构 = **C1–C7 + W 逻辑主题**(W = 三省六部工作流层),详见 `docs/fork-modifications.md` §1
+- 路线:接受"重 fork",靠工程化(指纹 + 测试 + dump diff + 文档)控制维护成本。当前 drift 2335 已超软上限,2026-06-15 评估=主体必需、保留(见 fork-modifications §4)
 
 ## 1. 总则
 
@@ -48,7 +48,7 @@
 
 **测试命名**:新加防回归 → `forkguard_<assertion>`(前缀让 fork-guard 自动 cargo test);上游原测试失效 → `#[ignore = "pinvou3 fork(<主题/原因>): <一句解释>"]`。
 
-## 4. 上游 sync 流程(估时 30–60 min)
+## 4. 上游 sync 流程(小 sync 30–60 min;大版本如 v0.8.57/v0.8.60 约半天)
 
 ### 4.1 sync 前
 ```bash
@@ -62,9 +62,10 @@ bash scripts/fork-guard.sh --fast                                # 起点指纹 
 ### 4.2 sync 过程
 ```bash
 cd DeepSeek-TUI
-git fetch origin --tags        # origin=Hmbown(上游),fork=h3c-hexin(我们)
+git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/Hmbown/CodeWhale.git
+git fetch upstream --tags      # upstream=Hmbown/CodeWhale(上游);origin=h3c-hexin(我们的 fork)
 git checkout pinvou3-clean
-git merge vX.Y.Z               # ⚠️ 合 release tag,不合 origin/main(main 常停在上版本+CI)
+git merge vX.Y.Z               # ⚠️ 合 release tag,不合 main(main 常停在上版本+CI)
 ```
 **冲突处理优先级**(最先 review 这些核心 fork 文件,对应 fork-modifications §1):
 
@@ -76,8 +77,9 @@ git merge vX.Y.Z               # ⚠️ 合 release tag,不合 origin/main(main 
 | `skills/mod.rs` | C5 | #41 路径收窄(union 接线已 harvest,只守收窄) |
 | `tools/pinvou3_blocklist.rs` + `tool_catalog.rs` | C2 | 工具门控 mode-aware;上游改 defer 签名要跟 |
 | `tools/file.rs` + `dispatch.rs` | C3 | append_file / 64KB / truncated_args_hint |
-| `tools/shell.rs` | C4 | C4-b YOLO 拦 Dangerous(C4-a 已撤) |
-| `lib.rs` | C1 | **上游加/删模块必手动同步 `pub mod`** |
+| `tools/shell.rs` + `command_safety.rs` | C4 | YOLO 也拦 Dangerous(rm -rf / ~,fork bomb;C4-a 已撤) |
+| `tools/subagent/mod.rs` 等 | W | 三省六部工作流层(SpawnSubAgent 五字段/结构化产出/max_steps);上游大改 subagent 时 union 不冲掉 W |
+| `lib.rs` | C1 | **上游加/删模块必手动同步 `pub mod`**(删模块→删孤儿 `pub mod`) |
 
 原则:**冲突时保留 pinvou3 行为**(fork-modifications 记的就是不要回退的内容);上游新内容评估对 pinvou3 是否有用,无用就丢。
 
@@ -97,6 +99,10 @@ diff /tmp/pre-sync-prompt.txt /tmp/post-sync-prompt.txt
 grep -rn "messages.push\|runtime_prompt" DeepSeek-TUI/crates/tui/src/core/engine/turn_loop.rs DeepSeek-TUI/crates/tui/src/core/engine.rs
 # 6. 工具集合盘点(blocklist 模型下上游新工具默认可见)
 #    对比两版 ToolSpec::name() 字面量集合,确认无新工具漏入需补黑名单
+#    更要查上游有没有新增能激活 deferred 工具的机制(tool_search/ensure_advanced_tooling 类)
+# 7. hook 决策协议(v0.8.60 Hooks v2 教训):上游可能改 hook 退出码/JSON 契约
+#    读 fold_tool_call_before_results 确认 deny 脚本(deny_sensitive_paths.sh)退出码契约
+#    (v0.8.60 把 hard-deny 从「非零」改成只认 exit_code==2,旧 exit 1 静默失效)
 ```
 **期望 diff**:pinvou3 私有改动**字节稳定**(变了=冲突处理出错);上游新静态段落要评估是否对 pinvou3 有意义、是否该 gate。
 
@@ -116,10 +122,10 @@ grep -rn "messages.push\|runtime_prompt" DeepSeek-TUI/crates/tui/src/core/engine
 
 ## 6. fork patch 组织规则
 
-- fork 按 **C1–C7 逻辑主题**组织(不再用旧 `#1..#42` 全局编号),见 fork-modifications §1。
-- **新加 patch**:归入对应主题(工具/prompt/safety/lib/…),按 §3 配套。
+- fork 按 **C1–C7 + W 逻辑主题**组织(不再用旧 `#1..#42` 全局编号),见 fork-modifications §1。
+- **新加 patch**:归入对应主题(工具/prompt/safety/lib/workflow/…),按 §3 配套。
 - **删/harvest patch**:撤 fork-guard 指纹 + 在 fork-modifications §2 记一条 + §1 对应小节更新。
-- drift 涨太多或主题混杂时,可再做 **clean re-fork**(从最新 release 重建主题 commit)—— 2026-06-04 即范例。
+- 历史乱或主题混杂时,做 **clean re-fork**(`git reset --soft <release>` 保树 → 按 file→theme 重组线性主题 commit,验字节等价)—— 2026-06-04 / 06-15 两次范例,详见 fork-modifications §4。
 
 ## 7. 上游 PR 提交流程
 
@@ -130,9 +136,9 @@ grep -rn "messages.push\|runtime_prompt" DeepSeek-TUI/crates/tui/src/core/engine
 
 > ⚠️ **PR 被 CLOSED ≠ 功能没进上游**:上游常**独立重实现**(v0.8.49 override hook #2356、v0.8.57 composer #2786 / skills union #2737 均如此)。sync 时按文件级 diff 逐字段比对,别假设。
 
-## 8. 上游 PR 状态(2026-06-11 v0.8.57 sync 核对)
+## 8. 上游 PR 状态(2026-06-15 v0.8.60 sync 核对)
 
-> `gh pr list --repo Hmbown/CodeWhale --author h3c-hexin --state all` 核。head 走 `h3c-hexin/DeepSeek-TUI` 跨 fork。
+> `gh pr list --repo Hmbown/CodeWhale --author h3c-hexin --state all` 核。head 走 `h3c-hexin/DeepSeek-TUI` 跨 fork。v0.8.60 sync 无新提 PR。
 
 **🟡 OPEN**:(无)
 
