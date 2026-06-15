@@ -182,7 +182,7 @@
 
 ---
 
-最后更新:2026-06-11(v0.8.57 sync;基线 v0.8.53→v0.8.57,正文校准 drift/指纹/工具数,旧 sync 历史压成教训速查)
+最后更新:2026-06-12(feat/sansheng-workflow PR:工作流层补 submit_output 即收工 + registry max_steps per-spawn 两修,W11/W12 指纹随附;clean 焊 1ad4f27d)
 
 ## 工作流底座层(feat/sansheng-workflow PR 随附,submodule 分支 pinvou3-workflow-v0857)
 
@@ -198,4 +198,6 @@
 | 贪心解码 | SubAgent 每步 temperature=0(根治 NVFP4 下工具调用 XML 被采歪→空转) |
 | C8/C9 | SubAgent surface 注册 web/custom 工具;read_pdf catch_unwind+中文字符边界防 panic |
 | reasoning_effort | `EngineConfig.reasoning_effort`(`[pinvou3-fork]`,Default=None);session 建时初始化,不依赖首条 SendMessage;`"off"` 由 app bridge 按 `provider==vllm` 注入(DeepSeek-TUI #3 并入 pinvou3-clean) |
-| fork-guard L1 | **W1–W10 指纹已补**(2026-06-12):ops/events/engine/file.rs + subagent/{mod,mailbox}.rs;此前整层无 L1 指纹,sync 静默丢只能靠编译/L2 抓。行为层仅 W10 reasoning_effort 有 `engine_config_locks_critical_fields`;其余 W* 暂只 L1,后续可按需补 forkguard_ 测试 |
+| submit_output 即收工 | `run_subagent` 结构化产出落盘成功(`output_schema.is_some() && output_submitted.is_some()`)即 break;否则 temp=0 模型确定性重复提交永动(menxia 实测第 1 步即成功却跑 173 步直到步数上限)。`final_result` 已在成功臂置好 |
+| registry max_steps 生效 | `SubAgentSpawnOptions.max_steps: Option<u32>` per-spawn 覆盖(`options.max_steps.unwrap_or(self.max_steps)`);此前 `Op::SpawnSubAgent` 派发臂 `max_steps: _` 静默丢弃 → 角色全回落 manager 默认 200,registry 的 15/20/30 失效。`AgentSpawnTool` 传 `None` 保旧行为。**填掉 process.md 的 max_steps 无界 backlog** |
+| fork-guard L1 | **W1–W12 指纹已补**(W1–W10 2026-06-12;**W11/W12 submit 收工/max_steps per-spawn 随 feat/sansheng-workflow PR 补**):ops/events/engine/file.rs + subagent/{mod,mailbox}.rs;此前整层无 L1 指纹,sync 静默丢只能靠编译/L2 抓。行为层仅 W10 reasoning_effort 有 `engine_config_locks_critical_fields`;其余 W* 暂只 L1,后续可按需补 forkguard_ 测试 |
