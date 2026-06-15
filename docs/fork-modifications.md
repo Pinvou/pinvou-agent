@@ -95,8 +95,8 @@
 - 上游 PR:❌ pinvou3 专用(可复用上游 WhaleFlow 基础 crate,暂未迁)
 
 ### app 层 fork(不在 submodule —— override hook / bridge 注入,fork-guard 也守)
-- **prompt 内容**:`resources/bundle/base.md` + `bridge/bundle.rs`(Constitution + 三行裁决 / Mode 块 / `LOCALE_PREAMBLE/CLOSER` zh+ja / `AUTHORITY_RECAP`),经 `set_*_override` + `set_static_prompt_composer_override` 注入。**submodule 内 prompt 文案 drift=0**
-- **bridge config**(`bridge/mod.rs`):`subagent_api_timeout=300`、`max_subagents=10`、`network_policy` fake-ip CIDR(`198.18.0.0/15`)、`compaction.token_threshold=190_000`(256K×74%)、`InstructionSource::Inline`。v0.8.58-60 新字段(verbosity/interactive_launch_limit/goal_*/disallowed_tools)全透传 default
+- **prompt 内容(单一来源,main #14 重构 2026-06-15)**:`resources/bundle/instructions.md` 是**唯一 pinvou3 prompt 来源**——宪法/裁决/`AUTHORITY_RECAP` 全折叠进 §底线 + 动态注入 `{{PINVOU3_MODEL}}`/`{{PINVOU3_DATE}}`(治"编时间");`bridge/bundle.rs` 只剩 Mode 块 + `LOCALE_PREAMBLE/CLOSER` zh+ja 短版(`AUTHORITY_RECAP=""`、base.md 留空 stub、`compose_static_layers` 丢 base 只剩 Mode,**Plan 模式仍按 mode 切**)。经 `set_*_override` + `set_static_prompt_composer_override` 注入。**submodule 内 prompt 文案 drift=0**。依据=ablation 实测(user memory `prompt-ablation-methodology`):base.md 对 Qwen3.6 可测价值仅 Voice;整 prompt 22590→16612B,剩余大头=Skills~52%(`~/.agents/skills` 全局 lark 技能,待重设计)
+- **bridge config**(`bridge/mod.rs`):`subagent_api_timeout=300`、`max_subagents`(prefs 默认)、`network_policy` fake-ip CIDR(`198.18.0.0/15`)、`compaction.token_threshold=190_000`(256K×74%)、`InstructionSource::Inline`。v0.8.58-60 新字段(verbosity/interactive_launch_limit/goal_*/disallowed_tools)全透传 default
 - **敏感目录 deny hook**:`resources/bundle/deny_sensitive_paths.sh`——ToolCallBefore 拦敏感路径 + 关闭态 sudo。**hard-deny 必须 `exit 2`**(v0.8.60 Hooks v2 `fold_tool_call_before_results` 只认 exit_code==2,旧 exit 1 被当 passthrough)
 - **dump 工具**:`bin/dump_system_prompt.rs`(随 `PromptSessionContext` 字段 / prompt 函数签名维护)
 

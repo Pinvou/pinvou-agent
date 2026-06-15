@@ -72,12 +72,14 @@ fingerprints=(
   # —— app 层 fork(pinvou3-app)——
   "#18b|bridge 透传 fake-ip 信任段      |pinvou3-app/src-tauri/src/bridge/mod.rs|with_trusted_fakeip_cidrs"
   "#16 |bridge subagent_api_timeout 300 |pinvou3-app/src-tauri/src/bridge/mod.rs|from_secs(300)"
-  "#36 |Constitution 改 PINVOU3 brand      |pinvou3-app/src-tauri/resources/bundle/base.md|CONSTITUTION OF PINVOU3"
-  "#36 |Brother Whale preamble 已删         |pinvou3-app/src-tauri/resources/bundle/base.md|running inside pinvou3"
+  # main #14 prompt 单一来源重构:宪法/裁决/Authority 从 base.md 折叠进 instructions.md,
+  # compose 丢弃 base(静态层只剩 Mode)→ 原 base.md 的 3 个指纹失效,改指向新落点。
+  "#36 |宪法核心折叠进 instructions(单一来源)|pinvou3-app/src-tauri/resources/bundle/instructions.md|权威顺序"
+  "#43 |compose 丢弃 base,静态层只剩 Mode   |pinvou3-app/src-tauri/src/bridge/bundle.rs|静态层只剩 Mode"
   "    |敏感目录 deny hook hard-deny exit 2 |pinvou3-app/src-tauri/resources/bundle/deny_sensitive_paths.sh|hard-deny 必须 **exit 2**"
-  "#43 |冲突裁决三行(九层 tier 体系已删)    |pinvou3-app/src-tauri/resources/bundle/base.md|### When directives conflict"
   "#37 |LOCALE_PREAMBLE_ZH_HANS 短版        |pinvou3-app/src-tauri/src/bridge/bundle.rs|pinvou3 界面语言为简体中文"
-  "#38 |AUTHORITY_RECAP 短版(Final Reminder)|pinvou3-app/src-tauri/src/bridge/bundle.rs|## Final Reminder"
+  "#38 |AUTHORITY_RECAP 清空(已折叠 instr)  |pinvou3-app/src-tauri/src/bridge/bundle.rs|Authority Recap（Final Reminder）清空"
+  "#45 |instructions 动态注入 model 名      |pinvou3-app/src-tauri/src/bridge/mod.rs|{{PINVOU3_MODEL}}"
   "    |C 方案 pinvou3 注入 Inline          |pinvou3-app/src-tauri/src/bridge/mod.rs|fn session_instructions(&self, session_id: &str) -> Vec<InstructionSource>"
   "#42 |app 装静态层 composer               |pinvou3-app/src-tauri/src/bridge/bundle.rs|set_static_prompt_composer_override"
   "#42 |pinvou3 Mode/compact 静态层文案     |pinvou3-app/src-tauri/src/bridge/bundle.rs|pub fn compose_static_layers"

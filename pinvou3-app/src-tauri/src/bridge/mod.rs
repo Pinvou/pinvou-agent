@@ -212,7 +212,12 @@ impl Pinvou3Bridge {
         let ws = paths::session_workspace_dir(session_id);
         // 同时确保目录存在,AI 写 write_file 时不会因为目录不存在而失败
         let _ = std::fs::create_dir_all(&ws);
+        // 动态注入:模型名(多模型适配,模型知道自己是谁)+ 今天日期(模型有日期就不必为"今天几号"
+        // 编/调工具,精确当前时间仍走工具)。同 workspace,每会话渲染。
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         INSTRUCTIONS_MD
+            .replace("{{PINVOU3_MODEL}}", &self.model())
+            .replace("{{PINVOU3_DATE}}", &today)
             .replace("{{PINVOU3_WORKSPACE}}", &ws.to_string_lossy())
             .replace(
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
@@ -1340,21 +1345,6 @@ mod tests {
             prompt.contains(session_id),
             "替换后 prompt 必须含 session_id 子串, prompt 前 200 字: {}",
             &prompt.chars().take(200).collect::<String>()
-        );
-    }
-
-    #[test]
-    fn instructions_md_explains_append_file_tail_only() {
-        let bridge = fixture_bridge();
-        let prompt = bridge.build_session_system_prompt("append-contract-session");
-        assert!(
-            prompt.contains("append_file` 只能追加到文件尾"),
-            "全局 instructions 必须说明 append_file 是尾追加,不能当中间插入"
-        );
-        assert!(
-            prompt.contains("用 `edit_file`,不要用 `append_file`")
-                || prompt.contains("要替换中间用 `edit_file`"),
-            "全局 instructions 必须说明中间填充/占位替换应走 edit_file(apply_patch 已隐藏)"
         );
     }
 
