@@ -6,6 +6,8 @@
   <title>PINVOU 智能助手</title>
   <!-- 本地 vendor（离线/内网可用，不依赖 CDN）。见 vendor/README.md -->
   <script src="vendor/tailwind.js"></script>
+  <!-- 工具商店/卡片用 Tailwind dark: 变体(class 策略);app 主题切换时由 App 在 <html> 挂 .dark -->
+  <script>tailwind.config = { darkMode: 'class' };</script>
   <script src="vendor/react.development.js"></script>
   <script src="vendor/react-dom.development.js"></script>
   <script src="vendor/babel.min.js"></script>
@@ -736,6 +738,8 @@
       const [activeChat, setActiveChat] = useState(null);
       const [currentView, setCurrentView] = useState('chat');
       const [activeTheme, setActiveTheme] = useState('dark');
+      // 工具商店/卡片用 Tailwind dark: 变体(darkMode:'class'),全局挂 <html>.dark 让其随 app 主题切换
+      useEffect(() => { document.documentElement.classList.toggle('dark', activeTheme === 'dark'); }, [activeTheme]);
       const [language, setLanguage] = useState('zh');
       const [superPerm, setSuperPerm] = useState(false);
       // search 后端配置:provider 默认 bing(对齐 bridge prefs::SearchProvider::default());
