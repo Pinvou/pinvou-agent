@@ -991,7 +991,11 @@
 
   // 整卡跳过:Boss 看了不处理这次检阅 → 直接关窗(sidecar entry 留着、无 resolution,无害)。
   function dismissPinvouReview() {
+    // 关窗即解召唤守卫:否则若在 await 期间被关(切 session 等路径),会留下"窗没了但
+    // pinvouSummoning 仍 held"的死区——重复点品/悟在守卫处(summonPinvou 开头)被吞,要等
+    // 整个直连 vLLM 调用(≤30s)返回才解锁。in-flight 结果靠 summonPinvou 内 `if (state.pinvouModal)` 守卫自然丢弃。
     state.pinvouModal = null;
+    state.pinvouSummoning = false;
     notify();
   }
   // 把当前 session 的审查时间线(含勾选写回的 resolution)重新落盘。返回 promise 供 await。

@@ -1197,7 +1197,11 @@
 
             {/* Pinvou 检阅弹窗(品/悟) —— 全局,任何视图都能弹;点背景或卡内「跳过」关闭 */}
             {bs && bs.pinvouModal && (
-              <div className="fixed inset-0 z-[55] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }} onClick={() => bridge.dismissPinvouReview()}>
+              <div className="fixed inset-0 z-[55] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }}
+                   onClick={() => { if (!bs.pinvouModal.loading) bridge.dismissPinvouReview(); }}>
+                {/* loading 期间禁止背景点击关窗:那张 loading 卡小且居中,点背景极易误关 spinner,
+                    而召唤(直连 vLLM,5-30s)仍在后台跑、守卫仍 held → 表现为"闪一下就没反应、要等一会才能再点"。
+                    锁住后 spinner+计时全程可见,出结果/错误后才可点背景关。 */}
                 <div className="w-full max-w-[560px] max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
                   <PinvouSummonCard item={bs.pinvouModal} theme={activeTheme} />
                 </div>
