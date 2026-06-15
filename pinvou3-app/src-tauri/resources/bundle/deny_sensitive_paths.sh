@@ -2,7 +2,12 @@
 # pinvou3 敏感目录硬拦截 hook
 #
 # DeepSeek-TUI 在 ToolCallBefore 事件 spawn 这个脚本，通过环境变量传入工具
-# 调用参数。命中敏感关键词 → exit 1 → 上游拒绝该 tool 调用。
+# 调用参数。命中敏感关键词 → exit 2 → 上游拒绝该 tool 调用。
+#
+# ⚠️ 退出码契约（v0.8.60 Hooks v2，#3026/#3049）：hard-deny 必须 **exit 2**
+#    （turn_loop.rs fold_tool_call_before_results 只认 exit_code==2 或 stdout
+#    JSON {"decision":"deny"}）。旧底座任意非零即拒，本脚本曾用 exit 1；v0.8.60
+#    起 exit 1 被当作 passthrough(ALLOW)，敏感目录硬墙会静默失效——务必保持 exit 2。
 #
 # 软引导（bundle/instructions.md）已经在 system prompt 里告诉 AI 不要碰这些
 # 目录，但 prompt 不是 100% 可靠（Qwen3.6 偶尔会忽略）。这里是兜底硬墙。
@@ -30,7 +35,7 @@ SENSITIVE_DIRS=(
 for pat in "${SENSITIVE_DIRS[@]}"; do
     if [[ "$ARGS" == *"$pat"* ]]; then
         echo "pinvou3-deny: tool '$TOOL' attempted to touch sensitive directory ($pat) — blocked" >&2
-        exit 1
+        exit 2
     fi
 done
 
@@ -52,7 +57,7 @@ SENSITIVE_NAMES=(
 for kw in "${SENSITIVE_NAMES[@]}"; do
     if [[ "$ARGS" == *"$kw"* ]]; then
         echo "pinvou3-deny: tool '$TOOL' attempted to touch sensitive file ($kw) — blocked" >&2
-        exit 1
+        exit 2
     fi
 done
 
@@ -69,7 +74,7 @@ if [[ "$TOOL" == "exec_shell"* || "$TOOL" == "code_execution" ]]; then
     for dc in "${DANGEROUS_CMDS[@]}"; do
         if [[ "$ARGS" == *"$dc"* ]]; then
             echo "pinvou3-deny: '$TOOL' contains dangerous command pattern ($dc) — blocked" >&2
-            exit 1
+            exit 2
         fi
     done
 fi
@@ -83,7 +88,7 @@ if [[ "$TOOL" == "exec_shell"* ]]; then
     if [[ "$ARGS" =~ (^|[^[:alnum:]_])sudo([^[:alnum:]_]|$) ]]; then
         if [[ ! -e /etc/sudoers.d/pinvou3 ]]; then
             echo "pinvou3-deny: 超级权限未开启，sudo 会阻塞到超时（不是真在执行）。已拦截。请去【设置 → 系统权限】打开开关后重试，或把命令贴出来自己跑。" >&2
-            exit 1
+            exit 2
         fi
     fi
 fi

@@ -4,19 +4,19 @@
 > 用途:① sync 后查 patch 存活 ② 团队交接 / onboarding ③ 上游 PR 定位改动点。
 > 配套:`scripts/fork-guard.sh`(指纹 + 回归测试守卫)、`docs/fork-policy.md`(维护策略 + sync 流程 + 上游 PR 状态)。
 >
-> **当前基线**:submodule 分支 `pinvou3-clean` ← upstream **v0.8.57**(2026-06-11 sync,详见 §4)。
+> **当前基线**:submodule 分支 `pinvou3-clean` ← upstream **v0.8.60**(2026-06-15 sync,详见 §4;commit `fa412ca1`)。
 
 ---
 
-## 0. 当前状态速览(2026-06-11)
+## 0. 当前状态速览(2026-06-15)
 
 | 项 | 值 |
 |---|---|
-| submodule 分支 | **`pinvou3-clean`**(`.gitmodules` 追踪;旧 `pinvou3-patches` 留 fork 当备份) |
-| fork drift | **+1364 / −307 行,30 文件**(`git -C DeepSeek-TUI diff v0.8.57..HEAD --stat`;app 层 prompt 走 override 注入,不计入此数) |
-| LLM 暴露 native 工具 | **23 个**(blocklist 模型:全量注册 ~99 − 黑名单 81;**tool_search 已禁用**,模型无法激活 deferred 工具;实测见 §2)。MCP `mcp_pinvou_present_artifact` 另接,共 24 入口 |
-| fork-guard | **38 指纹 + 回归测试**(submodule 27〔含工作流层 W1–W10,2026-06-12 补〕 + app 11);底座 lib **4218 pass** / app lib **105 pass**(单线程) |
-| system prompt | dump 与 sync 前**逐字节一致**(172 行,diff=0);per-turn `<runtime_prompt>` tag 注入已 gate |
+| submodule 分支 | **`pinvou3-clean`**(`.gitmodules` 追踪;旧 `pinvou3-patches` 留 fork 当备份);merge `fa412ca1` ← v0.8.60 |
+| fork drift | **+2335 / −360 行,43 文件**(`git -C DeepSeek-TUI diff v0.8.60..HEAD --shortstat`;主体是工作流层 W1–W12,已超 1500 软上限——见 §4 评估;app 层 prompt 走 override 注入,不计入此数) |
+| LLM 暴露 native 工具 | **23 个**(blocklist 模型:全量注册 − 黑名单 81;**tool_search 已禁用**,模型无法激活 deferred 工具;v0.8.60 无新 model-facing 工具、agent_eval 已在黑名单、fleet 是 CLI worker 非 ToolSpec)。MCP `mcp_pinvou_present_artifact` 另接,共 24 入口 |
+| fork-guard | **41 指纹 + 回归测试**(submodule + app;W9 已撤、新增 C5 ephemeral 砍空 + deny hook exit-2);底座 lib **4539 pass**(+1 flake:verifier 后台 shell 并行误报) / app lib **166 pass**(单线程) |
+| system prompt | dump 与 sync 前**逐字节一致**(210 行,diff=0);per-turn `<runtime_prompt>` tag + goal continuation 注入均已 gate(goal 走 is_active() 双闸,pinvou3 无 objective 不触发) |
 
 ---
 
@@ -114,6 +114,7 @@
 ### 2.2 已被上游 harvest(指纹撤除,非 fork-distinct)
 - **v0.8.53 及以前**:bing decode、network_policy fake-ip API、InstructionSource enum、base override hook(`set_*_override`)、EngineConfig.instructions、256K auto-compact 核心基础设施、MAX_OUTPUT env、file_search/grep_files timeout。
 - **v0.8.57 新增 harvest**:① **skills union 接线**(上游 `skills_directories` 10 目录 union)→ 删 pinvou3 重复定义;② **C4-a 多行逐行**(上游 `split_command_segments` 取代)→ 删 fork 块 + 撤指纹;③ **本地 Bocha commit**(= 自己上游化的 #2946 已 merge)→ 整文件取上游。
+- **v0.8.60 新增 harvest**:**W9 read_pdf catch_unwind** → 上游 `guard_pdf_extract`(`file.rs:447`,同语义 catch_unwind+错误映射,且带自测;W9 的 char-boundary 部分 `v0.8.60..HEAD` diff 为空 = 也已是上游自带)→ 撤 W9 指纹、两处 read_pdf 采上游版。代价仅罕见 font/CMap panic 时的中文提示(正常错误路径引导信息两版都在)。
 
 > 工具集合实测命令(sync 后盘点新工具是否漏入,见 §3 checklist):对比两版本 `ToolSpec::name()` 字面量集合差集。
 
@@ -148,6 +149,31 @@
 ---
 
 ## 4. Sync 历史
+
+### v0.8.60(2026-06-15,merge v0.8.57→v0.8.60,279 commit / 248 文件,commit `fa412ca1`)
+
+**大版本 sync**(规模与上次 v0.8.57 同量级)。上游主线:Native Anthropic provider、**Hooks v2(JSON allow/deny/ask 决策契约 #3026/#3049)**、Agent Fleet 真跑(durable worker 运行时)、/goal 目标管理、concise verbosity、interactive fanout 闸、多 provider/model(GLM-5.2/Z.ai/StepFun/MiniMax/Kimi K2.7/HF)、命令重构成 `commands/groups/`、constitution prompt 改 YAML+renderer。
+
+**冲突面出乎意料地小**:248 文件里 git 自动合并绝大多数,**仅 7 文件 / 14 冲突块**。`hooks.rs`/`shell.rs`/`tool_catalog.rs`/`skills/mod.rs`/`engine.rs` 等都干净自动合并。
+
+**冲突解决(7 文件)**:
+- `prompts.rs`(C7,2 块):保 pinvou3 宽 ctx forkguard 测试、删上游窄 ctx 测试;保 base 内容断言归 app 的 NOTE。**调用点 `effective_static_prompt_composer()`(上游名)对齐 pinvou3 访问器 `static_prompt_composer()`**(唯一非 test 真冲突)。
+- `turn_loop.rs`(C7,1 块):采上游 `messages.clone().into()` 类型 + 套 pinvou3 runtime_prompt tag gate。
+- `project_context.rs`(C5,3 块):上游 `auto_generate_context`→`generate_ephemeral_context`(改内存临时生成)。**保 pinvou3 砍空返 None**(workspace=$HOME 不能把家目录树扫成 overview 注入 prompt),仅采上游函数名让调用点(line ~763)编译。
+- `subagent/mod.rs`(工作流 W,4 块):imports union(broadcast+Semaphore)、constants union(budget+format_step_counter)、**W12 max_steps 喂上游新 worker_spec**、W5 role + 上游 launch gate union。
+- `subagent/tests.rs`(1 块):pinvou3 工作流测试 + 上游新测试 union(补闭合 `}`)。
+- `file.rs`(C3,2 块):**W9 catch_unwind 被上游 `guard_pdf_extract` harvest**(见 §2.2)。
+- `main.rs`(1 块):CLI EngineConfig builder 取上游 `execution_config.*`+append_system_prompt,保 pinvou3 `tool_whitelist`/`reasoning_effort` 字段。
+
+**🔴 抓到一处真安全回归(Hooks v2)**:`deny_sensitive_paths.sh`(敏感目录/关闭态 sudo 硬墙)靠 **exit 1** 拒绝;v0.8.60 `fold_tool_call_before_results`(turn_loop.rs:2545)改成**只认 `exit_code==2`** 为 hard-deny(exit 1 当 passthrough=ALLOW)→ 硬墙会**静默失效**。修法:脚本全部拒绝改 **exit 2** + 头部注释钉契约 + fork-guard 加指纹。**这正是评估时 P0 预判的 Hooks v2 风险点。**
+
+**app 层适配**:`build_engine_config` destructure+重建补 5 新字段(verbosity/interactive_launch_limit/goal_token_budget/goal_status/disallowed_tools,GUI 全透传 default);`Op::SendMessage` 补 goal_status/goal_token_budget/verbosity;`dump_system_prompt.rs` 补 PromptSessionContext 的 context_window_override/verbosity。
+
+**C1 lib.rs**:加 `pub mod fleet/context_report/model_inventory`,删孤儿 `prompt_persist`(上游 v0.8.60 删除该模块)。
+
+**验证**:dump prompt 逐字节稳定(210 行 diff=0,确认 prompt 来源重构未泄漏)、per-turn 注入全 gate(goal continuation 经 is_active() 双闸,pinvou3 无 objective 不触发)、blocklist 无需改(无新 model 工具)、fork-guard 41 指纹 + 行为测试全过、lib 4539 / app 166 pass。
+
+**教训**:① 上游同语义 API 名差异(`effective_static_prompt_composer` vs `static_prompt_composer`)merge 后调用点会取上游名,编译能抓;② **hook 决策协议变更(exit code 语义)是 dump/编译都抓不到的隐形安全回归——必须读 fold 逻辑确认退出码契约**;③ 大版本号差(3 patch)≠ 小 diff,commit/文件数才是真规模(279/248)。
 
 ### v0.8.57(2026-06-11,merge v0.8.53→v0.8.57,342 commit / 291 文件)
 
@@ -196,7 +222,7 @@
 | AgentComplete 信封 | +role(SDAN Result.from)+failed(宿主走失败路径,不再被陈旧产物洗成 PASS) |
 | mailbox + AgentSpawned | Op 路径 SubAgent 挂 Mailbox(TokenUsage 等信封直达宿主)+二发 AgentSpawned 关联 agent_id→role_id(edict-obs) |
 | 贪心解码 | SubAgent 每步 temperature=0(根治 NVFP4 下工具调用 XML 被采歪→空转) |
-| C8/C9 | SubAgent surface 注册 web/custom 工具;read_pdf catch_unwind+中文字符边界防 panic |
+| C8/C9 | SubAgent surface 注册 web/custom 工具;~~read_pdf catch_unwind+字符边界防 panic(W9)~~ **v0.8.60 被上游 `guard_pdf_extract` harvest,见 §2.2** |
 | reasoning_effort | `EngineConfig.reasoning_effort`(`[pinvou3-fork]`,Default=None);session 建时初始化,不依赖首条 SendMessage;`"off"` 由 app bridge 按 `provider==vllm` 注入(DeepSeek-TUI #3 并入 pinvou3-clean) |
 | submit_output 即收工 | `run_subagent` 结构化产出落盘成功(`output_schema.is_some() && output_submitted.is_some()`)即 break;否则 temp=0 模型确定性重复提交永动(menxia 实测第 1 步即成功却跑 173 步直到步数上限)。`final_result` 已在成功臂置好 |
 | registry max_steps 生效 | `SubAgentSpawnOptions.max_steps: Option<u32>` per-spawn 覆盖(`options.max_steps.unwrap_or(self.max_steps)`);此前 `Op::SpawnSubAgent` 派发臂 `max_steps: _` 静默丢弃 → 角色全回落 manager 默认 200,registry 的 15/20/30 失效。`AgentSpawnTool` 传 `None` 保旧行为。**填掉 process.md 的 max_steps 无界 backlog** |

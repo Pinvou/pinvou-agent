@@ -1,13 +1,13 @@
 # pinvou3 对 DeepSeek-TUI 底座的 fork 维护策略
 
-> 创建 2026-05-28 · 最后更新 2026-06-11(v0.8.57 sync)
+> 创建 2026-05-28 · 最后更新 2026-06-15(v0.8.60 sync)
 > 适用:每次新增 fork patch + 每次跟进上游 sync
 > 配套:`scripts/fork-guard.sh`、`bin/dump_system_prompt.rs`、`docs/fork-modifications.md`(现状清单 + 验证 checklist)
 
 ## 0. 现状
 
-- DeepSeek-TUI 是 `h3c-hexin/DeepSeek-TUI` fork(submodule,**`pinvou3-clean` 分支** ← upstream **v0.8.57**;`.gitmodules` 追踪;旧 `pinvou3-patches` 留 fork 当备份)
-- fork drift **+1364 / −307 行,30 文件**(vs v0.8.57;app 层 prompt override 不计入)
+- DeepSeek-TUI 是 `h3c-hexin/DeepSeek-TUI` fork(submodule,**`pinvou3-clean` 分支** ← upstream **v0.8.60**(merge `fa412ca1`);`.gitmodules` 追踪;旧 `pinvou3-patches` 留 fork 当备份)
+- fork drift **+2335 / −360 行,43 文件**(vs v0.8.60;主体是工作流层 W1–W12,**已超 1500 软上限**——撤回评估见 fork-modifications §4;app 层 prompt override 不计入)
 - fork 结构 = **C1–C7 逻辑主题**,详见 `docs/fork-modifications.md` §1
 - 路线:接受"重 fork",靠工程化(指纹 + 测试 + dump diff + 文档)控制维护成本。原 CLAUDE.md "≤50 行" 约定本文件已正式修订为下方软上限
 
