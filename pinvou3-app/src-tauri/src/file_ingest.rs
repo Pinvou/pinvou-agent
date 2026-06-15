@@ -75,6 +75,44 @@ pub fn system_tools() -> SystemTools {
     })
 }
 
+/// 设置页「依赖体检」一项：一类文件解析能力 + 它所需系统工具是否齐全 + 缺失时的 apt 包。
+/// `apt` 是空格分隔的包名串，可直接拼进 `sudo apt install <apt>`。能力名走前端 i18n（按 key 映射）。
+#[derive(Debug, Clone, Serialize)]
+pub struct DependencyCheckItem {
+    pub key: String,
+    pub installed: bool,
+    pub apt: String,
+}
+
+/// 体检各项可选依赖的安装状态。**实时检测（不走 `system_tools` 的 OnceLock 缓存）**——
+/// 用户照提示装完依赖后重新体检要能立刻反映，不能被首次缓存钉死。命名/分组与
+/// `ingest` 内各格式分支的 warning 文案同源，缺啥装啥一致。
+#[tauri::command]
+pub fn check_dependencies() -> Vec<DependencyCheckItem> {
+    let item = |key: &str, installed: bool, apt: &str| DependencyCheckItem {
+        key: key.into(),
+        installed,
+        apt: apt.into(),
+    };
+    let libreoffice = which("soffice") || which("libreoffice");
+    vec![
+        item("pdf", which("pdftotext"), "poppler-utils"),
+        item("office_modern", which("pandoc"), "pandoc"),
+        item("office_legacy", libreoffice, "libreoffice"),
+        item(
+            "ocr",
+            which("tesseract") && which("pdftoppm"),
+            "tesseract-ocr tesseract-ocr-chi-sim poppler-utils",
+        ),
+        item("archive", which("7z"), "p7zip-full"),
+        item(
+            "email",
+            which("python3") && which("msgconvert"),
+            "python3 libemail-outlook-message-perl",
+        ),
+    ]
+}
+
 /// tesseract 的 `-l` 语言参数。pinvou3 面向国内政企，中文是刚需，所以优先
 /// `chi_sim+eng`；若没装中文包(`tesseract-ocr-chi-sim`)则降级 `eng`，不报错。
 /// 探测一次缓存：跑 `tesseract --list-langs` 看输出里有没有 `chi_sim`。
@@ -1256,7 +1294,7 @@ fn ingest_email(
     };
 
     if !tools.python3 {
-        return mk(None, Some("邮件解析需要 python3".into()));
+        return mk(None, Some("邮件解析需要 python3，请运行: sudo apt install python3".into()));
     }
 
     let parsed = if kind == "msg" {

@@ -216,6 +216,11 @@
         cancel: '取消', cancelling: '取消中…',
         updateComplete: '升级完成，重启后生效', restartNow: '立即重启',
         updateCheckFailed: '检查失败',
+        depCheckTitle: '依赖体检', depChecking: '检测中…', depRecheck: '重新检测',
+        depAllOk: '文档解析依赖已就绪', depMissingSuffix: ' 项依赖缺失（对应能力将不可用）',
+        depInstallHint: '补齐缺失能力的安装命令（需联网或可用 apt 源）：', depCopy: '复制',
+        dep_pdf: 'PDF 文本提取', dep_office_modern: 'Office 文档（docx）', dep_office_legacy: '旧版 Office / 演示与表格',
+        dep_ocr: '图片 / 扫描件 OCR', dep_archive: '压缩包（zip/rar/7z）', dep_email: '邮件（.eml / .msg）',
         chatGreeting: '你好，今天想聊点什么？', artifacts: '产物与代码', placeholder: '询问 PINVOU 或输入指令', disclaimer: 'PINVOU 可能会生成不准确的信息，请仔细核实。', ctxUsage: '上下文',
         searchPlaceholder: 'Search chats',
         // —— 卡牌池(cp*)。注:卡牌内容(名称/简介/正文)是数据,不在 UI 词典内 ——
@@ -373,6 +378,11 @@
         cancel: 'Cancel', cancelling: 'Cancelling…',
         updateComplete: 'Update complete, restart to apply', restartNow: 'Restart Now',
         updateCheckFailed: 'Check failed',
+        depCheckTitle: 'Dependency Check', depChecking: 'Checking…', depRecheck: 'Re-check',
+        depAllOk: 'Document parsing dependencies ready', depMissingSuffix: ' dependency group(s) missing (those features unavailable)',
+        depInstallHint: 'Install command for missing features (needs network or an apt source):', depCopy: 'Copy',
+        dep_pdf: 'PDF text extraction', dep_office_modern: 'Office docs (docx)', dep_office_legacy: 'Legacy Office / slides & sheets',
+        dep_ocr: 'Image / scanned-PDF OCR', dep_archive: 'Archives (zip/rar/7z)', dep_email: 'Email (.eml / .msg)',
         chatGreeting: "Hi, what's good?", artifacts: 'Artifacts', placeholder: 'Ask PINVOU or enter a command', disclaimer: 'PINVOU may display inaccurate info, so double-check.', ctxUsage: 'Context',
         searchPlaceholder: 'Search chats',
         // —— Card Pool (cp*) ——
@@ -530,6 +540,11 @@
         cancel: 'キャンセル', cancelling: 'キャンセル中…',
         updateComplete: '更新が完了しました。再起動後に有効になります', restartNow: '今すぐ再起動',
         updateCheckFailed: '確認に失敗しました',
+        depCheckTitle: '依存関係チェック', depChecking: '確認中…', depRecheck: '再チェック',
+        depAllOk: 'ドキュメント解析の依存関係は準備済み', depMissingSuffix: ' 件の依存が不足（該当機能は利用不可）',
+        depInstallHint: '不足機能のインストールコマンド（ネットワークまたは apt ソースが必要）：', depCopy: 'コピー',
+        dep_pdf: 'PDF テキスト抽出', dep_office_modern: 'Office 文書（docx）', dep_office_legacy: '旧 Office / スライドと表計算',
+        dep_ocr: '画像 / スキャン PDF の OCR', dep_archive: 'アーカイブ（zip/rar/7z）', dep_email: 'メール（.eml / .msg）',
         chatGreeting: 'こんにちは、今日は何をしましょうか？', artifacts: '成果物とコード', placeholder: 'PINVOU に質問またはコマンドを入力', disclaimer: 'PINVOU は不正確な情報を生成する可能性があります。必ずご確認ください。', ctxUsage: 'コンテキスト',
         searchPlaceholder: 'チャットを検索',
         // —— カードプール (cp*) ——
@@ -1450,6 +1465,10 @@
       const isDark = activeTheme === 'dark';
       const [vllmDiscovery, setVllmDiscovery] = useState(null);
       const [vllmDiscovering, setVllmDiscovering] = useState(false);
+      // 进设置页自动体检一次可选依赖装齐没; 之后用户可手动「重新检测」
+      useEffect(() => {
+        if (bridge.available && !(bs && bs.deps) && !(bs && bs.depsChecking)) bridge.checkDependencies();
+      }, []);
       const presetOptions = [
         { key: 'local_vllm',  label: t.modelPresetLocalVllm },
         { key: 'deepseek',    label: t.modelPresetDeepseek },
@@ -1757,6 +1776,64 @@
                           {bs && bs.updateError && (
                             <span className="text-[13px] mt-3 block text-[#EA4335]">⚠️ {bs.updateError}</span>
                           )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </SCard>
+
+              {/* 依赖体检: 列各文件解析能力的系统依赖,缺失给一键 apt(对应 deb recommends) */}
+              <SCard isDark={isDark} title={t.depCheckTitle}>
+                {(() => {
+                  const deps = (bs && bs.deps) || [];
+                  const checking = !!(bs && bs.depsChecking);
+                  const subText = isDark ? 'text-[#C4C7C5]' : 'text-[#444746]';
+                  const missing = deps.filter(d => !d.installed);
+                  const aptCmd = missing.length ? ('sudo apt install ' + missing.map(d => d.apt).join(' ')) : '';
+                  return (
+                    <div>
+                      <div className="flex items-center justify-between mb-3">
+                        <span className={`text-[14px] leading-relaxed ${subText}`}>
+                          {checking ? t.depChecking
+                            : deps.length === 0 ? ''
+                            : missing.length === 0 ? ('✅ ' + t.depAllOk)
+                            : ('⚠️ ' + missing.length + t.depMissingSuffix)}
+                        </span>
+                        <button
+                          onClick={() => bridge.available && !checking && bridge.checkDependencies()}
+                          disabled={checking}
+                          className={`text-[12px] font-medium px-4 py-2 rounded-full whitespace-nowrap transition-colors ${
+                            isDark ? 'bg-[#333537] text-[#E3E3E3] hover:bg-[#444746]'
+                                   : 'bg-[#E1E5EA] text-[#1F1F1F] hover:bg-[#D3D9E0]'
+                          } ${checking ? 'opacity-50' : ''}`}
+                        >{t.depRecheck}</button>
+                      </div>
+
+                      {deps.length > 0 && (
+                        <div className="space-y-2">
+                          {deps.map(d => (
+                            <div key={d.key} className="flex items-center justify-between text-[14px]">
+                              <span>{(d.installed ? '✅ ' : '⚠️ ') + (t['dep_' + d.key] || d.key)}</span>
+                              {!d.installed && <span className={`text-[12px] ${subText}`}>{d.apt}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {missing.length > 0 && (
+                        <div className={`mt-4 pt-4 border-t ${isDark ? 'border-[#333537]' : 'border-[#DDE3EA]'}`}>
+                          <span className={`text-[12px] block mb-2 ${subText}`}>{t.depInstallHint}</span>
+                          <div className="flex items-center gap-2">
+                            <code className={`flex-1 text-[12px] px-3 py-2 rounded-lg overflow-x-auto whitespace-nowrap ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-[#F1F3F4] text-[#1F1F1F]'}`}>{aptCmd}</code>
+                            <button
+                              onClick={() => { if (navigator.clipboard) navigator.clipboard.writeText(aptCmd); }}
+                              className={`text-[12px] font-medium px-4 py-2 rounded-full whitespace-nowrap transition-colors ${
+                                isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]'
+                                       : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'
+                              }`}
+                            >{t.depCopy}</button>
+                          </div>
                         </div>
                       )}
                     </div>

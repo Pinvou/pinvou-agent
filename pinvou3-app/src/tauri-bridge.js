@@ -124,6 +124,9 @@
     updateReady: false,       // 安装完成,等用户点重启
     updateError: null,        // 下载/安装阶段错误(sha256/apt stderr 透传)
     updateCancelling: false,  // 用户点了取消,据此把后端「已取消下载」当正常而非错误
+    // 依赖体检(设置页): deps = [{key, installed, apt}], null = 尚未检测
+    deps: null,
+    depsChecking: false,
   };
   // 卡片池 1078 张卡的前端缓存。只读,通过 getPersonas() 取引用,不走 notify 快照。
   var personaPoolCache = [];
@@ -2109,6 +2112,18 @@
     invoke("restart_app").catch(function () { /* restart 成功不会返回 */ });
   }
 
+  // ── 依赖体检 ─────────────────────────────────────────────────────
+  // 实时检测各文件解析能力(PDF/Office/OCR/压缩包/邮件)的系统依赖是否齐全,
+  // 设置页展示缺失项 + 一键 apt 命令。后端 check_dependencies 不走缓存,装完可复检。
+  async function checkDependencies() {
+    if (state.depsChecking) return;
+    state.depsChecking = true; notify();
+    try {
+      state.deps = await invoke("check_dependencies");
+    } catch (e) { state.deps = []; }
+    state.depsChecking = false; notify();
+  }
+
   // ── skill 工作流：动作（invoke 包装）[2026-06-06 恢复] ────────────
   // 合并 973a6f0 把这 6 个函数定义弄丢了(导出/UI调用/后端命令都在,独缺定义)→
   // 导出对象构建撞 ReferenceError(loadSkills undefined)→ window.TauriBridge 整个没装上。
@@ -2372,6 +2387,7 @@
     downloadAndInstallUpdate: downloadAndInstallUpdate,
     cancelUpdate: cancelUpdate,
     restartApp: restartApp,
+    checkDependencies: checkDependencies,
   };
 
   // Auto-init after DOM ready

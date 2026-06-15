@@ -222,6 +222,7 @@ pub fn run() {
             updater::install_update,
             updater::restart_app,
             updater::cancel_download,
+            file_ingest::check_dependencies,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
