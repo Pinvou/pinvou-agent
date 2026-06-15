@@ -801,7 +801,8 @@
         if (!uiPrefsInitRef.current && bs.settings) {
           const lang = TAG_TO_LANG[bs.settings.language];
           if (lang && lang !== language) setLanguage(lang);
-          const th = bs.settings.theme === 'light' ? 'light' : 'dark';
+          // 后端 Theme 枚举(prefs.rs)只认 genesis/liquid-light/liquid-dark;深色=genesis,浅色=liquid-light
+          const th = bs.settings.theme === 'liquid-light' ? 'light' : 'dark';
           if (th !== activeTheme) setActiveTheme(th);
           uiPrefsInitRef.current = true;
         }
@@ -902,7 +903,7 @@
         const base = (bs && bs.settings) ? bs.settings : {};
         return {
           ...base,
-          theme: activeTheme === 'dark' ? 'genesis' : 'light',
+          theme: activeTheme === 'dark' ? 'genesis' : 'liquid-light',
           language: LANG_TO_TAG[language] || 'zh-Hans',
           search: {
             provider: searchProvider,
@@ -919,7 +920,7 @@
       function handleSetTheme(th) {
         setActiveTheme(th);
         if (bridge.available) {
-          bridge.saveSettings(buildFullSettings({ theme: th === 'dark' ? 'genesis' : 'light' }));
+          bridge.saveSettings(buildFullSettings({ theme: th === 'dark' ? 'genesis' : 'liquid-light' }));
         }
       }
 
