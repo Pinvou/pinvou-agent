@@ -178,6 +178,10 @@ const IWENCAI_MANIFEST_JSON: &str =
     include_str!("../../../resources/mcp-servers/iwencai/manifest.json");
 const QCC_MANIFEST_JSON: &str =
     include_str!("../../../resources/mcp-servers/qcc/manifest.json");
+const OBSIDIAN_SERVER_PY: &str =
+    include_str!("../../../resources/mcp-servers/obsidian/server.py");
+const OBSIDIAN_MANIFEST_JSON: &str =
+    include_str!("../../../resources/mcp-servers/obsidian/manifest.json");
 
 /// 内嵌的敏感目录拦截 shell 脚本——配合 bridge 注入的 hook 在 ToolCallBefore
 /// 时阻止 LLM 触碰 ~/.ssh/ ~/.gnupg/ 等。
@@ -365,6 +369,11 @@ impl Pinvou3Bundle {
         let qcc_dir = dir.join("qcc");
         std::fs::create_dir_all(&qcc_dir)?;
         std::fs::write(qcc_dir.join("manifest.json"), QCC_MANIFEST_JSON)?;
+        // 工具市场：Obsidian 知识库 MCP server（本地 stdio，检索本机 vault）
+        let obsidian_dir = dir.join("obsidian");
+        std::fs::create_dir_all(&obsidian_dir)?;
+        std::fs::write(obsidian_dir.join("server.py"), OBSIDIAN_SERVER_PY)?;
+        std::fs::write(obsidian_dir.join("manifest.json"), OBSIDIAN_MANIFEST_JSON)?;
         Ok(())
     }
 }
