@@ -50,6 +50,8 @@
 
 ## 4. 上游 sync 流程(小 sync 30–60 min;大版本如 v0.8.57/v0.8.60 约半天)
 
+> ⚠️ **验收硬 gate**:sync 完成的判据是 `docs/底座升级验收清单.md`(L0 编译 / L1 自动化测试 / L2 六大功能 / L3 回归专项 + 签收表)全过——本节是流程,验收单是 pass/fail。
+
 ### 4.1 sync 前
 ```bash
 git -C DeepSeek-TUI branch -f backup/pre-vX-sync pinvou3-clean   # 安全备份,出错可 reset --hard 回退
@@ -159,7 +161,8 @@ grep -rn "messages.push\|runtime_prompt" DeepSeek-TUI/crates/tui/src/core/engine
 **❌ 评估后不提**:C3(64KB cap / truncated_args_hint)—— 与 pinvou3 专属 `append_file` 深度耦合,上游无 append_file 去耦后引导无落点。
 
 ## 9. 相关文档
-- `docs/fork-modifications.md` — fork 现状清单(§1 C1–C7 结构 / §2 移除·harvest / §3 fork-guard + 验证 checklist / §4 sync 历史)
+- `docs/底座升级验收清单.md` — **每次升级必过的硬 gate**(L0 编译 / L1 自动化测试 / L2 六大功能验收 / L3 回归专项 + 签收表)
+- `docs/fork-modifications.md` — fork 现状清单(§1 C1–C7+W 结构 / §2 移除·harvest / §3 fork-guard + 验证 checklist / §4 sync 历史)
 - `docs/auto-compact-256K-tuning.md` — 256K 窗口 compact 阈值调参依据
 - `docs/system-prompt-架构.md` — system prompt 全链路梳理
 - `scripts/fork-guard.sh` — 指纹 + 回归测试守卫
