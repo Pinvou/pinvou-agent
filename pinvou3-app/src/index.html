@@ -213,6 +213,7 @@
         checkUpdate: '检查更新', checking: '检查中…', upToDate: '已是最新版本',
         newVersionFound: '发现新版本', updateNotes: '更新说明',
         downloadInstall: '下载并安装', downloading: '下载中…', installing: '安装中…',
+        cancel: '取消', cancelling: '取消中…',
         updateComplete: '升级完成，重启后生效', restartNow: '立即重启',
         updateCheckFailed: '检查失败',
         chatGreeting: '你好，今天想聊点什么？', artifacts: '产物与代码', placeholder: '询问 PINVOU 或输入指令', disclaimer: 'PINVOU 可能会生成不准确的信息，请仔细核实。', ctxUsage: '上下文',
@@ -369,6 +370,7 @@
         checkUpdate: 'Check for Updates', checking: 'Checking…', upToDate: 'Up to date',
         newVersionFound: 'New version available', updateNotes: 'Release Notes',
         downloadInstall: 'Download & Install', downloading: 'Downloading…', installing: 'Installing…',
+        cancel: 'Cancel', cancelling: 'Cancelling…',
         updateComplete: 'Update complete, restart to apply', restartNow: 'Restart Now',
         updateCheckFailed: 'Check failed',
         chatGreeting: "Hi, what's good?", artifacts: 'Artifacts', placeholder: 'Ask PINVOU or enter a command', disclaimer: 'PINVOU may display inaccurate info, so double-check.', ctxUsage: 'Context',
@@ -525,6 +527,7 @@
         checkUpdate: '更新を確認', checking: '確認中…', upToDate: '最新バージョンです',
         newVersionFound: '新しいバージョンがあります', updateNotes: '更新内容',
         downloadInstall: 'ダウンロードしてインストール', downloading: 'ダウンロード中…', installing: 'インストール中…',
+        cancel: 'キャンセル', cancelling: 'キャンセル中…',
         updateComplete: '更新が完了しました。再起動後に有効になります', restartNow: '今すぐ再起動',
         updateCheckFailed: '確認に失敗しました',
         chatGreeting: 'こんにちは、今日は何をしましょうか？', artifacts: '成果物とコード', placeholder: 'PINVOU に質問またはコマンドを入力', disclaimer: 'PINVOU は不正確な情報を生成する可能性があります。必ずご確認ください。', ctxUsage: 'コンテキスト',
@@ -1727,6 +1730,19 @@
                               <div className={`h-[6px] rounded-full overflow-hidden ${isDark ? 'bg-[#333537]' : 'bg-[#DDE3EA]'}`}>
                                 <div className="h-full rounded-full transition-all duration-200" style={{ width: progress + '%', backgroundColor: '#0B57D0' }} />
                               </div>
+                              {/* 取消仅下载阶段可用; 进 install(pkexec/apt)后系统接管不可中断 */}
+                              {progress < 100 && (
+                                <div className="flex justify-end mt-3">
+                                  <button
+                                    onClick={() => bridge.available && bridge.cancelUpdate()}
+                                    disabled={!!(bs && bs.updateCancelling)}
+                                    className={`text-[12px] font-medium px-4 py-2 rounded-full whitespace-nowrap transition-colors ${
+                                      isDark ? 'bg-[#333537] text-[#E3E3E3] hover:bg-[#444746]'
+                                             : 'bg-[#E1E5EA] text-[#1F1F1F] hover:bg-[#D3D9E0]'
+                                    } ${(bs && bs.updateCancelling) ? 'opacity-50' : ''}`}
+                                  >{(bs && bs.updateCancelling) ? t.cancelling : t.cancel}</button>
+                                </div>
+                              )}
                             </div>
                           ) : (
                             <button

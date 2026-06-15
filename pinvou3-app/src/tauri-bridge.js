@@ -123,6 +123,7 @@
     updateProgress: 0,        // 0-100
     updateReady: false,       // 安装完成,等用户点重启
     updateError: null,        // 下载/安装阶段错误(sha256/apt stderr 透传)
+    updateCancelling: false,  // 用户点了取消,据此把后端「已取消下载」当正常而非错误
   };
   // 卡片池 1078 张卡的前端缓存。只读,通过 getPersonas() 取引用,不走 notify 快照。
   var personaPoolCache = [];
@@ -2083,16 +2084,26 @@
   // 下载+安装一条龙: 下载完 pkexec 弹系统密码框,装完置 updateReady 等用户点重启。
   async function downloadAndInstallUpdate() {
     if (!state.updateInfo || !state.updateInfo.available || state.updateDownloading) return;
-    state.updateDownloading = true; state.updateProgress = 0; state.updateError = null; notify();
+    state.updateDownloading = true; state.updateCancelling = false;
+    state.updateProgress = 0; state.updateError = null; notify();
     try {
       var debPath = await invoke("download_update", { info: state.updateInfo });
       state.updateProgress = 100; notify();
       await invoke("install_update", { debPath: debPath });
       state.updateReady = true;
     } catch (e) {
-      state.updateError = String(e);
+      // 用户主动取消下载时后端返回「已取消下载」,当正常处理不弹错误
+      if (state.updateCancelling) state.updateProgress = 0;
+      else state.updateError = String(e);
     }
-    state.updateDownloading = false; notify();
+    state.updateDownloading = false; state.updateCancelling = false; notify();
+  }
+  // 取消进行中的下载: 置前端标志 + 通知后端中断下载循环。仅下载阶段有效;
+  // 已进入 install(pkexec/apt)则无效(系统接管,装一半不能停)。
+  function cancelUpdate() {
+    if (!state.updateDownloading || state.updateCancelling) return;
+    state.updateCancelling = true; notify();
+    invoke("cancel_download").catch(function () { /* 忽略,下载循环超时也会退 */ });
   }
   function restartApp() {
     invoke("restart_app").catch(function () { /* restart 成功不会返回 */ });
@@ -2359,6 +2370,7 @@
     // 应用内升级
     checkForUpdate: checkForUpdate,
     downloadAndInstallUpdate: downloadAndInstallUpdate,
+    cancelUpdate: cancelUpdate,
     restartApp: restartApp,
   };
 

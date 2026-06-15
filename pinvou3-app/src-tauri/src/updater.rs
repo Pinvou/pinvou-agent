@@ -14,15 +14,26 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
+use tokio::time::timeout;
 
 use crate::bridge::paths;
 
 const UPDATE_MANIFEST_URL: &str = "https://www.ma-xiao.com/pinvou3/latest.json";
+
+/// 下载停滞看门狗阈值：连上后单次等待数据超过此时长即判定挂死。
+/// 用「单 chunk 间隔」而非「总耗时」做超时——慢网持续小流量不会被误杀，
+/// 只有真正长时间收不到任何字节（更新源挂起 / 半开连接）才中断。
+const DOWNLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 下载取消标志。前端 `cancel_download` 置位，下载循环每轮检查一次。
+/// 进程级单例：同一时刻只允许一个下载在跑（前端 updateDownloading gate 保证）。
+static DOWNLOAD_CANCEL: AtomicBool = AtomicBool::new(false);
 
 fn manifest_url() -> String {
     std::env::var("PINVOU3_UPDATE_URL").unwrap_or_else(|_| UPDATE_MANIFEST_URL.to_string())
@@ -110,7 +121,8 @@ pub async fn download_update(info: UpdateInfo, app: AppHandle) -> Result<String,
         }
     }
 
-    // 只设连接超时，不设总超时——deb 几十 MB，总超时会误杀慢网下载
+    // 连接超时单设 10s；但**不设总超时**——deb 几十 MB，总超时会误杀慢网。
+    // 挂死场景改由下面的 stall 看门狗(单 chunk 间隔超时)覆盖。
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .build()
@@ -132,7 +144,29 @@ pub async fn download_update(info: UpdateInfo, app: AppHandle) -> Result<String,
     let mut hasher = Sha256::new();
     let mut downloaded: u64 = 0;
     let mut last_emit: u64 = 0;
-    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("下载中断: {e}"))? {
+    // 新一轮下载，清掉上次残留的取消标志
+    DOWNLOAD_CANCEL.store(false, Ordering::SeqCst);
+    loop {
+        // 取消优先：正常下载中点取消，下一个 chunk 到达即退出（挂死由 stall 超时兜底）
+        if DOWNLOAD_CANCEL.load(Ordering::SeqCst) {
+            drop(file);
+            let _ = std::fs::remove_file(&dest);
+            return Err("已取消下载".to_string());
+        }
+        // stall 看门狗：单次等数据超时即判定挂死，区别于慢网持续小流量
+        let chunk = match timeout(DOWNLOAD_STALL_TIMEOUT, resp.chunk()).await {
+            Err(_) => {
+                drop(file);
+                let _ = std::fs::remove_file(&dest);
+                return Err(format!(
+                    "下载停滞：超过 {}s 无数据，已中断（网络异常或更新源无响应）",
+                    DOWNLOAD_STALL_TIMEOUT.as_secs()
+                ));
+            }
+            Ok(Err(e)) => return Err(format!("下载中断: {e}")),
+            Ok(Ok(None)) => break, // 流正常结束
+            Ok(Ok(Some(c))) => c,
+        };
         file.write_all(&chunk).map_err(|e| format!("写盘失败: {e}"))?;
         hasher.update(&chunk);
         downloaded += chunk.len() as u64;
@@ -196,6 +230,13 @@ pub async fn install_update(deb_path: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn restart_app(app: AppHandle) -> Result<(), String> {
     app.restart();
+}
+
+/// 置位取消标志，让正在跑的 `download_update` 循环下一轮自行退出并清理半成品。
+/// 仅对下载阶段有效；install 阶段(pkexec/apt)已交给系统，不在此中断。
+#[tauri::command]
+pub fn cancel_download() {
+    DOWNLOAD_CANCEL.store(true, Ordering::SeqCst);
 }
 
 /// 校验 deb 路径：必须真实存在、canonicalize 后在 `~/.pinvou3/updates/` 内、
