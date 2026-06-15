@@ -121,6 +121,21 @@ pub async fn download_update(info: UpdateInfo, app: AppHandle) -> Result<String,
         }
     }
 
+    // 磁盘空间预检：下载前比对 info.size 与目标盘可用空间，不足提前报错（而非下到
+    // 一半 ENOSPC）。留 64MB 余量给 apt 解包安装；取不到可用空间则跳过预检不误报。
+    if info.size > 0 {
+        if let Some(avail) = available_bytes(&dir) {
+            let need = info.size.saturating_add(64 * 1024 * 1024);
+            if avail < need {
+                return Err(format!(
+                    "磁盘空间不足：需约 {} MB，当前可用 {} MB",
+                    need / 1_048_576,
+                    avail / 1_048_576
+                ));
+            }
+        }
+    }
+
     // 连接超时单设 10s；但**不设总超时**——deb 几十 MB，总超时会误杀慢网。
     // 挂死场景改由下面的 stall 看门狗(单 chunk 间隔超时)覆盖。
     let client = reqwest::Client::builder()
@@ -263,6 +278,26 @@ fn validate_deb_path(path: &Path) -> Result<PathBuf, String> {
 fn file_sha256(path: &Path) -> Option<String> {
     let bytes = std::fs::read(path).ok()?;
     Some(format!("{:x}", Sha256::digest(&bytes)))
+}
+
+/// 目录所在文件系统的可用字节数。调 coreutils `df`（deb 环境必装）解析，
+/// 命令/解析失败返回 None，调用方据此跳过磁盘预检而非误报空间不足。
+fn available_bytes(dir: &Path) -> Option<u64> {
+    let out = Command::new("df")
+        .args(["--output=avail", "-B1"])
+        .arg(dir)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    // 输出两行：表头 "Avail" + 数字（单位 1 字节，-B1）
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .nth(1)?
+        .trim()
+        .parse()
+        .ok()
 }
 
 fn parse_semver(v: &str) -> Option<(u64, u64, u64)> {
