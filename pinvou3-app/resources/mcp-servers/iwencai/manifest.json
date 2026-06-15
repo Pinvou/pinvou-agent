@@ -1,0 +1,31 @@
+{
+  "id": "iwencai",
+  "name": "同花顺问财",
+  "description": "A股行情、财务、选股、宏观、新闻 — 12个金融查询工具",
+  "version": "1.0.0",
+  "icon": "line-chart",
+  "category": "金融数据",
+  "mcp_tools": [
+    "hithink_market_query", "hithink_zhishu_query",
+    "hithink_finance_query", "hithink_macro_query",
+    "hithink_management_query", "hithink_business_query",
+    "hithink_event_query", "hithink_astock_selector",
+    "hithink_sector_selector", "hithink_industry_query",
+    "news_search", "announcement_search"
+  ],
+  "command": "python",
+  "args": ["server.py"],
+  "env": {
+    "IWENCAI_API_KEY": "sk-proj-00-TeCIrqynDmX2aQEuzcGxoxCfMtGdj1mkzm78J3LM0d9Nb45O15xwYzobGsKRPamJuORusZbdcOBQuPvBLdYnJtu0AYWgPvhWyIdseSiSJ08pGnBYklKXxLv6r5P5Nc4fcpo5aA"
+  },
+  "config_fields": [],
+  "routing_rules": [
+    "股票/股价/行情/涨跌/K线/走势/市盈率/基本面/个股/选股/板块/大盘/指数/宏观/CPI/GDP/公告/财报 → `hithink_*` / `news_search` / `announcement_search`，不要用 `web_search`"
+  ],
+  "tool_table_entries": [
+    "| 金融行情 | `hithink_market_query` / `hithink_zhishu_query` (同花顺问财,自然语言查询) |",
+    "| 财务/选股 | `hithink_finance_query` / `hithink_astock_selector` (同花顺问财) |",
+    "| 新闻/公告 | `news_search` / `announcement_search` (同花顺问财) |"
+  ],
+  "pip_dependencies": []
+}

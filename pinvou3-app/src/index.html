@@ -50,6 +50,13 @@
 
     /* Thinking animation */
     @keyframes spin-braille { 0%{content:"⠋"} 10%{content:"⠙"} 20%{content:"⠹"} 30%{content:"⠸"} 40%{content:"⠼"} 50%{content:"⠴"} 60%{content:"⠦"} 70%{content:"⠧"} 80%{content:"⠇"} 90%{content:"⠏"} }
+    /* Tool Store */
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    @keyframes tsModalIn { from { opacity:0; transform:scale(0.95); } to { opacity:1; transform:scale(1); } }
+    .ts-modal-in { animation: tsModalIn 0.2s ease-out; }
+    @keyframes tsAlertIn { from { opacity:0; transform:scale(1.05); } to { opacity:1; transform:scale(1); } }
+    @keyframes tsSpinner { to { transform: rotate(360deg); } }
 
     /* ===== 卡片池: tilt / spotlight / borderglow / 挂件 ===== */
     .ap-card { transform-style: preserve-3d; transition: transform .18s cubic-bezier(.2,.8,.2,1), box-shadow .25s, border-color .25s; will-change: transform; position: relative; }
@@ -152,6 +159,26 @@
     const ArrowLeft = (p) => <I {...p}><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></I>;
     const FolderOpen = (p) => <I {...p}><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></I>;
     const ExternalLink = (p) => <I {...p}><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></I>;
+    const BookOpen = (p) => <I {...p}><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></I>;
+    const Code = (p) => <I {...p}><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></I>;
+    const FileText = (p) => <I {...p}><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></I>;
+    const Hexagon = (p) => <I {...p}><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></I>;
+    const Layout = (p) => <I {...p}><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><line x1="3" x2="21" y1="9" y2="9"/><line x1="9" x2="9" y1="21" y2="9"/></I>;
+    const Mail = (p) => <I {...p}><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></I>;
+    const MessageCircle = (p) => <I {...p}><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></I>;
+    const Navigation = (p) => <I {...p}><polygon points="3 11 22 2 13 21 11 13 3 11"/></I>;
+    const Video = (p) => <I {...p}><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></I>;
+    const Puzzle = (p) => <I {...p}><path d="M19.439 7.85c-.049.322.059.648.289.878l1.568 1.568c.47.47.706 1.087.706 1.704s-.235 1.233-.706 1.704l-1.611 1.611a.98.98 0 0 1-.837.276c-.47-.07-.802-.48-.968-.925a2.501 2.501 0 1 0-3.214 3.214c.446.166.855.497.925.968a.979.979 0 0 1-.276.837l-1.61 1.61a2.404 2.404 0 0 1-1.705.707 2.402 2.402 0 0 1-1.704-.706l-1.568-1.568a1.026 1.026 0 0 0-.877-.29c-.493.074-.84.504-1.02.968a2.5 2.5 0 1 1-3.237-3.237c.464-.18.894-.527.967-1.02a1.026 1.026 0 0 0-.289-.877l-1.568-1.568A2.402 2.402 0 0 1 1.998 12c0-.617.236-1.234.706-1.704L4.23 8.77c.24-.24.581-.353.917-.303.515.077.877.528 1.073 1.01a2.5 2.5 0 1 0 3.259-3.259c-.482-.196-.933-.558-1.01-1.073-.05-.336.062-.676.303-.917l1.525-1.525A2.402 2.402 0 0 1 12 2c.617 0 1.234.236 1.704.706l1.568 1.568c.23.23.556.338.878.29.493-.074.84-.504 1.02-.968a2.5 2.5 0 1 1 3.237 3.237c-.464.18-.894.527-.968 1.02Z"/></I>;
+    const LineChart = (p) => <I {...p}><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></I>;
+    const Building2 = (p) => <I {...p}><path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/><path d="M10 6h4"/><path d="M10 10h4"/><path d="M10 14h4"/><path d="M10 18h4"/></I>;
+    const Cpu = (p) => <I {...p}><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></I>;
+    const Server = (p) => <I {...p}><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></I>;
+    const Globe = (p) => <I {...p}><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></I>;
+    const ChevronLeft = (p) => <I {...p}><path d="m15 18-6-6 6-6"/></I>;
+    const XIcon = (p) => <I {...p}><path d="M18 6 6 18"/><path d="m6 6 12 12"/></I>;
+    const CloudSun = (p) => <I {...p}><path d="M12 2v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="M20 12h2"/><path d="m19.07 4.93-1.41 1.41"/><path d="M15.947 12.65a4 4 0 0 0-5.925-4.128"/><path d="M13 22H7a5 5 0 1 1 4.9-6H13a3 3 0 0 1 0 6Z"/></I>;
+    const TrendingUp = (p) => <I {...p}><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></I>;
+    const TrendingDown = (p) => <I {...p}><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></I>;
 
     /* ==========================================
        i18n dictionary — 1:1 from 前端.html
@@ -160,7 +187,7 @@
     const dict = {
       zh: {
         langTag: 'zh',
-        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', cardPool: '卡牌池', recent: '近期', settings: '设置', localEnv: '本地环境',
+        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', toolStore: '工具商店', cardPool: '卡牌池', recent: '近期', settings: '设置', localEnv: '本地环境',
         sysStatus: '系统状态', sysDesc: '实时性能与资源指标', gpu: '图形处理器 (GPU)', gpuUnavail: '状态不可用', noSmi: '未检测到 nvidia-smi',
         vram: '显存占用', core: '计算核心', temp: '温度', power: '功耗', unifiedMem: '统一内存架构',
         ram: '系统内存 (RAM)', used: '已用', physical: '物理内存', total: '总计', swap: '交换空间',
@@ -322,7 +349,7 @@
       },
       en: {
         langTag: 'en',
-        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', cardPool: 'Card Deck', recent: 'Recent', settings: 'Settings', localEnv: 'Local Env',
+        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'Recent', settings: 'Settings', localEnv: 'Local Env',
         sysStatus: 'System Status', sysDesc: 'Real-time performance metrics', gpu: 'GPU', gpuUnavail: 'Unavailable', noSmi: 'nvidia-smi not found',
         vram: 'VRAM Usage', core: 'Core Usage', temp: 'Temp', power: 'Power', unifiedMem: 'Unified Memory',
         ram: 'System RAM', used: 'Used', physical: 'Physical RAM', total: 'Total', swap: 'Swap Space',
@@ -484,7 +511,7 @@
       },
       ja: {
         langTag: 'ja',
-        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', monitor: 'システムモニター', workflow: 'ワークフロー', cardPool: 'カードプール', recent: '最近', settings: '設定', localEnv: 'ローカル環境',
+        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', monitor: 'システムモニター', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '最近', settings: '設定', localEnv: 'ローカル環境',
         sysStatus: 'システム状態', sysDesc: 'リアルタイムの性能・リソース指標', gpu: 'GPU', gpuUnavail: '状態を取得できません', noSmi: 'nvidia-smi が見つかりません',
         vram: 'VRAM 使用量', core: 'コア使用率', temp: '温度', power: '消費電力', unifiedMem: 'ユニファイドメモリ',
         ram: 'システムメモリ (RAM)', used: '使用中', physical: '物理メモリ', total: '合計', swap: 'スワップ領域',
@@ -1024,6 +1051,13 @@
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => setCurrentView('workflow')}
               />
+              <NavItem
+                icon={<Puzzle size={18} />} label={t.toolStore}
+                active={currentView === 'toolStore'}
+                theme={activeTheme}
+                isSidebarOpen={isSidebarOpen}
+                onClick={() => setCurrentView('toolStore')}
+              />
               {/* 收起态专属:展开态近期列表的高亮项就是回会话入口,不重复渲染 */}
               {!isSidebarOpen && (
                 <NavItem
@@ -1137,6 +1171,7 @@
               />
             )}
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}
+            {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} />}
             {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} />}
             {/* 草稿态(无 session)也渲染挂件,但强制空态——让欢迎页保留「＋加持卡牌」入口。
@@ -2490,9 +2525,756 @@
       );
     };
     // 输出渲染分发：失败→红字；大输出→receipt；高频工具→定制视图；其余→纯文本
+    const tsToolsData = [
+      { id: 1, backendId: 'weather', title: '天气查询 MCP', subtitle: '高德地图实时天气与多日预报', category: 'mcp', type: 'MCP Server', version: 'v1.0.0', latency: '<50ms', desc: '通过高德地图 API 查询全国城市实时天气与未来多日预报。支持大模型自然语言调用，自动解析城市名，返回结构化天气数据并渲染可视化卡片。', icon: CloudSun, color: 'bg-gradient-to-b from-sky-400 to-blue-500', installed: false, authRequired: false, welcomeQueries: ['杭州今天天气', '北京这周会下雨吗', '上海明天穿什么'] },
+      { id: 2, backendId: 'iwencai', title: '同花顺问财', subtitle: 'A股行情、财务、选股、宏观、新闻', category: 'finance', type: 'MCP Server', version: 'v1.0.0', latency: '<500ms', desc: '基于同花顺问财官方 API，提供 12 个金融查询工具：实时行情、财务数据、多条件选股、宏观经济、指数行情、行业数据、公告搜索等。自然语言查询，无需记股票代码。', icon: LineChart, color: 'bg-gradient-to-b from-red-400 to-red-600', installed: false, authRequired: false, welcomeQueries: ['茅台最新股价', '今天大盘怎么样', '市盈率低于10的银行股', '最近降息新闻'] },
+      { id: 3, backendId: null, title: 'QQ邮箱 API', subtitle: '智能邮件收发与线程提炼', category: 'comm', type: 'REST API', version: 'v1.4.2', latency: '<120ms', desc: '提供标准的邮件收发、搜索和整理接口。结合大模型可实现自然语言读取邮件内容、汇总长线程对话、自动归档管理文件夹。', icon: Mail, color: 'bg-gradient-to-b from-amber-400 to-orange-500', installed: false, authRequired: true },
+      { id: 4, backendId: null, title: 'ima 知识库 Plugin', subtitle: '下一代企业级 AI 知识大脑', category: 'mcp', type: 'Native Skill', version: 'v3.0.0', latency: '<30ms', desc: '官方底层集成的知识库检索插件。支持大模型高精度引用知识库资料及文件，生成带溯源链接的回答。让团队知识沉淀与获取变得前所未有的简单。', icon: BookOpen, color: 'bg-gradient-to-b from-slate-100 to-slate-300 dark:from-slate-700 dark:to-slate-800 text-slate-800 dark:text-white border border-slate-200 dark:border-slate-600', installed: false, authRequired: false },
+      { id: 5, backendId: null, title: '乐享文档连接器', subtitle: '企业知识文档全量检索', category: 'comm', type: 'Webhook/API', version: 'v1.1.0', latency: '<80ms', desc: '支持通过 API 搜索、创建和管理乐享知识库中的文档。支持批量导入 Markdown、按标签整理内容、实时订阅团队文档的更新动态。', icon: Hexagon, color: 'bg-gradient-to-b from-blue-400 to-blue-600', installed: false, authRequired: true },
+      { id: 6, backendId: null, title: '腾讯文档 MCP', subtitle: '多人实时在线协作协议', category: 'mcp', type: 'MCP Server', version: 'v1.0.5', latency: '<60ms', desc: '将腾讯文档能力接入 AI。允许大模型读取、分析甚至辅助编写在线表格、文档和幻灯片，轻松完成跨维度的内容查询与数据分析。', icon: FileText, color: 'bg-gradient-to-b from-blue-500 to-indigo-600', installed: false, authRequired: true },
+      { id: 7, backendId: null, title: '腾讯会议助手', subtitle: '云视频会议自动化管控', category: 'comm', type: 'Action Skill', version: 'v2.2.1', latency: '<100ms', desc: '赋予 AI 调度会议室的能力。通过指令自动预定、查询和管理腾讯会议。支持一键发起会议、分发会议纪要、智能管理参会人员。', icon: Video, color: 'bg-gradient-to-b from-sky-400 to-blue-500', installed: false, authRequired: true },
+      { id: 8, backendId: null, title: '企微 Bot Hook', subtitle: '连接企业内部与外部生态', category: 'comm', type: 'Webhook', version: 'v4.0', latency: '<40ms', desc: '深度对接企业微信。支持机器人主动推送图文消息、查询通讯录架构、联动审批流与日程管理。', icon: MessageCircle, color: 'bg-gradient-to-b from-cyan-400 to-blue-500', installed: false, authRequired: false },
+      { id: 9, backendId: null, title: '飞书套件 MCP', subtitle: '先进企业协作与管理平台', category: 'mcp', type: 'MCP Server', version: 'v1.5.0', latency: '<50ms', desc: '大模型与飞书生态的终极桥梁。包含读写云文档、检索飞书消息、操作多维表格（Bitable）及日历调度的完整能力集。', icon: Send, color: 'bg-gradient-to-b from-teal-400 to-emerald-500', installed: false, authRequired: true },
+      { id: 10, backendId: null, title: '钉钉开放 API', subtitle: '企业级智能移动办公底座', category: 'comm', type: 'REST API', version: 'v3.1.2', latency: '<80ms', desc: '提供钉钉全产品能力的接口映射。包含 AI 表格、考勤打卡、群聊机器人对话流及通讯录同步管控。', icon: Navigation, color: 'bg-gradient-to-b from-blue-400 to-indigo-500', installed: false, authRequired: true },
+      { id: 11, backendId: null, title: 'TAPD 敏捷研发', subtitle: '缺陷与迭代的自动化追踪', category: 'dev', type: 'Action Skill', version: 'v2.8.0', latency: '<60ms', desc: '研发管理核心工具。允许 AI 查询项目迭代进度、自动拆分需求条目、更新缺陷状态，实现从需求到发布的研发全生命周期数字化。', icon: Layout, color: 'bg-gradient-to-b from-violet-500 to-fuchsia-600', installed: false, authRequired: true },
+      { id: 12, backendId: null, title: 'CNB 云原生管线', subtitle: '代码仓库与 CI/CD 调度', category: 'dev', type: 'MCP Server', version: 'v1.0.0', latency: '<40ms', desc: '将云原生开发能力赋予大模型。支持通过自然语言进行代码仓库检索、提交 Issue、审查 PR、触发并监控流水线部署等极客操作。', icon: Code, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: true },
+      { id: 13, backendId: 'qcc', title: '企查查', subtitle: '企业工商、风控、知产、经营数据查询', category: 'finance', type: 'MCP Server', version: 'v1.0.0', latency: '<500ms', desc: '接入企查查智能体数据平台，提供182个企业数据查询工具，覆盖工商登记、股东结构、风险预警、知识产权、招投标等六大模块。', icon: Building2, color: 'bg-gradient-to-br from-blue-600 to-cyan-500', installed: false, authRequired: false, welcomeQueries: ['查一下华为的工商信息', '腾讯有哪些风险预警', '比亚迪的专利有多少', '阿里巴巴的招投标记录'] },
+    ];
+
+    const WeatherCard = ({ data }) => {
+      const mode = data.queryMode || 'today';
+      const daily = Array.isArray(data.daily) ? data.daily : [];
+      if (mode === 'multi' && daily.length > 1) {
+        return (
+          <div style={{ background: 'linear-gradient(135deg,#325a86 0%,#25466a 100%)', boxShadow: '0 10px 30px rgba(37,70,106,.15)' }}
+            className="w-full rounded-[24px] p-8 text-white flex flex-col justify-center min-h-[220px]">
+            <div className="grid gap-4 w-full h-full items-center" style={{ gridTemplateColumns: `repeat(${daily.length},minmax(0,1fr))` }}>
+              {daily.map((item, i) => {
+                const label = i === 0 ? '今天' : i === 1 ? '明天' : i === 2 ? '后天' : (item.week || `第${i+1}天`);
+                const dateText = (item.date || '').length >= 10 ? item.date.slice(5).replace(/-/g, '/') : (item.date || '--/--');
+                return (
+                  <div key={i} className="flex flex-col items-center justify-center gap-3 px-2" style={i > 0 ? { borderLeft: '1px solid rgba(255,255,255,0.1)' } : {}}>
+                    <span className={`text-[15px] ${i === 0 ? 'font-medium' : 'text-white/90'}`}>{label} ({dateText})</span>
+                    <span dangerouslySetInnerHTML={{ __html: weatherIconSvg(item.iconCode || 'partly_cloudy') }} />
+                    <span className="text-[14px] text-white/80">{item.dayWeather || item.nightWeather || '天气'}</span>
+                    <span className="text-[16px] font-semibold mt-1">{item.dayTemp || '--'}° <span className="text-white/50 font-normal">{item.nightTemp || '--'}°</span></span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      }
+      // today / single_day
+      const forecastLabel = mode === 'single_day' ? '明日预测' : '今日预测';
+      const windText = [data.windDirection || '', data.windPower ? data.windPower + '级' : ''].join(' ').trim();
+      return (
+        <div style={{ background: 'linear-gradient(135deg,#325a86 0%,#25466a 100%)', boxShadow: '0 10px 30px rgba(37,70,106,.15)' }}
+          className="w-full rounded-[24px] p-8 text-white flex flex-col justify-between relative overflow-hidden min-h-[220px]">
+          <div className="flex justify-between items-start w-full">
+            <div className="flex flex-col gap-1">
+              <h2 className="text-3xl font-medium tracking-wide">{data.city || '当前城市'}</h2>
+              <p className="text-[15px] text-white/80">{data.weather || '天气'}</p>
+            </div>
+            <div className="mt-[-10px]" style={{ fontSize: '5.5rem', lineHeight: 1, fontWeight: 300, letterSpacing: '-2px' }}>{data.temperature || '--'}°</div>
+          </div>
+          <div className="flex justify-between items-end w-full mt-4">
+            <div className="flex items-center">
+              <span dangerouslySetInnerHTML={{ __html: weatherIconSvg(data.iconCode || (daily[0] && daily[0].iconCode) || 'partly_cloudy') }} />
+              {(data.humidity || windText) && <div style={{ width: 1, height: 32, backgroundColor: 'rgba(255,255,255,0.2)', margin: '0 16px' }} />}
+              <div className="flex gap-6 text-[13px] text-white/80 leading-relaxed">
+                {data.humidity && <div className="flex flex-col"><span className="text-[12px] opacity-70">湿度</span><span className="text-[15px] font-medium text-white">{data.humidity}%</span></div>}
+                {windText && <div className="flex flex-col"><span className="text-[12px] opacity-70">风向</span><span className="text-[15px] font-medium text-white">{windText}</span></div>}
+              </div>
+            </div>
+            <div className="flex flex-col items-end text-right">
+              <span className="text-[12px] text-white/70 mb-1">{forecastLabel}</span>
+              <span className="text-[16px] font-medium tracking-wide">最高 {data.highTemp || '--'}° <span className="opacity-50 mx-1">/</span> 最低 {data.lowTemp || '--'}°</span>
+            </div>
+          </div>
+        </div>
+      );
+    };
+    const isWeatherTool = (name) => name === 'mcp_weather_get_weather';
+    const isStockQuoteTool = (name) => name === 'mcp_iwencai_hithink_market_query';
+    const StockQuoteCard = ({ data, isDark }) => {
+      const price = typeof data.price === 'string' ? parseFloat(data.price) : data.price;
+      const changePercent = typeof data.changePercent === 'string' ? parseFloat(data.changePercent) : data.changePercent;
+      const open = typeof data.open === 'string' ? parseFloat(data.open) : data.open;
+      const high = typeof data.high === 'string' ? parseFloat(data.high) : data.high;
+      const low = typeof data.low === 'string' ? parseFloat(data.low) : data.low;
+      const isPositive = changePercent >= 0;
+      const mainColor = isPositive ? 'text-[#eb4335]' : 'text-[#34a853]';
+      const bgGradient = isPositive
+        ? (isDark ? 'bg-gradient-to-br from-red-950/30 to-[#1C1C1E]' : 'bg-gradient-to-br from-red-50 to-white')
+        : (isDark ? 'bg-gradient-to-br from-green-950/30 to-[#1C1C1E]' : 'bg-gradient-to-br from-green-50 to-white');
+      const badgeColor = isPositive
+        ? (isDark ? 'bg-red-900/40 text-red-400' : 'bg-red-100 text-red-600')
+        : (isDark ? 'bg-green-900/40 text-green-400' : 'bg-green-100 text-green-600');
+      const TrendIcon = isPositive ? TrendingUp : TrendingDown;
+      const fmt = (v) => isNaN(v) ? '--' : v.toFixed(2);
+      return (
+        <div className={`w-full max-w-md rounded-[24px] shadow-xl overflow-hidden border transition-all ${
+          isDark ? 'bg-[#1C1C1E] border-white/10 shadow-none' : 'bg-white border-slate-100 shadow-slate-200/50'
+        }`}>
+          <div className={`p-6 pb-5 ${bgGradient}`}>
+            <div className="flex justify-between items-start mb-4">
+              <div>
+                <h2 className={`text-2xl font-extrabold tracking-tight ${isDark ? 'text-white' : 'text-slate-900'}`}>{data.name}</h2>
+                <span className={`text-sm font-mono tracking-wider mt-1 block ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{data.code}</span>
+              </div>
+            </div>
+            <div className="flex items-end justify-between mt-6">
+              <div className="flex items-baseline space-x-4">
+                <span className={`text-[3.5rem] leading-none font-black tracking-tighter font-mono ${mainColor}`} style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(price)}</span>
+                <div className="flex flex-col justify-end pb-1 space-y-0.5">
+                  <span className={`text-sm font-bold font-mono px-1.5 py-0.5 rounded ${badgeColor}`}>{isPositive ? '+' : ''}{isNaN(changePercent) ? '--' : changePercent.toFixed(2)}%</span>
+                </div>
+              </div>
+              <TrendIcon className={`w-12 h-12 mb-2 opacity-15 ${mainColor}`} />
+            </div>
+          </div>
+          <div className={`h-px bg-gradient-to-r from-transparent via-current to-transparent ${isDark ? 'text-white/10' : 'text-slate-200'}`}></div>
+          <div className={`p-6 ${isDark ? 'bg-[#1C1C1E]' : 'bg-white'}`}>
+            <div className="grid grid-cols-3 gap-y-4 gap-x-4">
+              {[
+                { label: '今开', value: fmt(open) },
+                { label: '最高', value: fmt(high) },
+                { label: '最低', value: fmt(low) },
+              ].map((item, i) => (
+                <div key={i} className="flex flex-col space-y-1">
+                  <span className={`text-xs font-medium ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{item.label}</span>
+                  <span className={`text-sm font-mono ${isDark ? 'text-slate-200 font-medium' : 'text-slate-800 font-medium'}`}>{item.value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // ── 每工具定制结果视图（仿 Claude Code）：解析失败一律 fallback 纯文本，永不崩 ──
+
+    const tsCategories = [
+      { id: 'all', label: '全部工具' },
+      { id: 'mcp', label: 'MCP 核心' },
+      { id: 'comm', label: '协作办公' },
+      { id: 'dev', label: '研发治理' },
+      { id: 'finance', label: '金融数据' },
+    ];
+
+    const tsFeaturedCollections = [
+      { id: 'f6', label: '即装即用', title: '实时天气随口问', subtitle: '接入高德天气 API，自然语言查全国城市实时天气与多日预报，零配置一键安装。', bg: 'bg-gradient-to-br from-sky-500 via-blue-500 to-indigo-600', featuredToolId: 1 },
+      { id: 'f4', label: '数据引擎', title: '打造智能投研助理', subtitle: '集成同花顺问财 12 项金融工具，利用大模型快速输出深度个股诊断报告。', bg: 'bg-gradient-to-br from-red-600 via-rose-700 to-orange-600', featuredToolId: 2 },
+      { id: 'f7', label: '企业数据', title: '一键查透企业全貌', subtitle: '接入企查查 182 个工具，工商/风控/知产/经营数据信手拈来，免配置即装即用。', bg: 'bg-gradient-to-br from-blue-700 via-cyan-600 to-teal-500', featuredToolId: 13 },
+      { id: 'f1', label: '场景套件', title: '构建 AI 研发中枢', subtitle: '串联 TAPD 与 CNB，让 AI 帮你审查 PR、追踪缺陷并自动部署流水线。', bg: 'bg-gradient-to-br from-indigo-800 via-violet-700 to-fuchsia-600', featuredToolId: 12 },
+      { id: 'f2', label: '核心 MCP', title: '激活企业沉淀知识', subtitle: '挂载 ima 知识库底层能力，解锁毫秒级的海量文档精准召回与分析。', bg: 'bg-gradient-to-br from-blue-700 via-indigo-600 to-cyan-600', featuredToolId: 4 },
+      { id: 'f3', label: '效率编排', title: '跨平台消息中转', subtitle: '无缝打通企微、飞书与钉钉，实现重要告警与工作流消息的自动化流转。', bg: 'bg-gradient-to-br from-emerald-600 via-teal-700 to-cyan-800', featuredToolId: 9 },
+      { id: 'f5', label: '通信治理', title: '下一代智能云会议', subtitle: '调用腾讯会议高级能力，实现自动发起、录制总结与待办任务自动分配。', bg: 'bg-gradient-to-br from-sky-600 via-blue-600 to-indigo-700', featuredToolId: 7 },
+    ];
+
+    const TsActionBtn = ({ tool, busy, onAction, size = 'sm' }) => {
+      const isLg = size === 'lg';
+      if (!tool.backendId) {
+        return (
+          <button disabled className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold bg-slate-100 dark:bg-[#1C1C1E] border border-slate-200 dark:border-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed`}>
+            即将上线
+          </button>
+        );
+      }
+      if (busy) {
+        return (
+          <button disabled className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold opacity-50 cursor-wait bg-slate-100 dark:bg-[#1C1C1E] border border-slate-200 dark:border-slate-700 text-slate-500`}>
+            ...
+          </button>
+        );
+      }
+      if (tool.installed) {
+        return (
+          <button
+            onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, true); }}
+            className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-slate-100 dark:bg-[#2C2C2E] border border-slate-200 dark:border-slate-700 text-[#FF3B30] dark:text-[#FF453A] hover:bg-slate-200 dark:hover:bg-[#3A3A3C]`}
+          >
+            卸载
+          </button>
+        );
+      }
+      const hasConfig = tool.configFields && tool.configFields.length > 0;
+      return (
+        <button
+          onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, false); }}
+          className={`${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`}
+        >
+          {hasConfig ? '配置' : '安装'}
+        </button>
+      );
+    };
+
+    // iOS 风格弹窗（安装/卸载后提示需新建会话生效）
+    const TsAlert = ({ alert, theme, onDismiss, onNewChat }) => {
+      const isDark = theme === 'dark';
+      if (!alert.visible && !alert.loading) return null;
+      return (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div
+            className={`w-[280px] rounded-[20px] overflow-hidden shadow-2xl transition-transform duration-200 scale-100 ${
+              isDark ? 'bg-[#2C2C2E]' : 'bg-white/95 backdrop-blur-xl'
+            }`}
+            style={{ animation: 'tsAlertIn .2s ease-out' }}
+          >
+            {alert.loading ? (
+              <div className="px-6 py-8 text-center">
+                <div className="flex justify-center mb-4">
+                  <div className={`w-6 h-6 rounded-full border-[2.5px] border-t-transparent ${isDark ? 'border-[#0A84FF]' : 'border-[#007AFF]'}`}
+                    style={{ animation: 'tsSpinner .8s linear infinite' }} />
+                </div>
+                <div className={`text-[17px] font-semibold mb-1.5 ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                  {alert.title}
+                </div>
+                {alert.subtitle && (
+                  <div className={`text-[13px] leading-relaxed ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                    {alert.subtitle}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="px-6 pt-6 pb-5 text-center">
+                  <div className={`text-[17px] font-semibold mb-1.5 ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                    {alert.title}
+                  </div>
+                  {!alert.isError && (
+                    <div className={`text-[13px] leading-relaxed ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                      {alert.isInstall ? '新工具需要在新会话中生效' : '已移除，新会话将不再加载该工具'}
+                    </div>
+                  )}
+                </div>
+                <div className={`border-t ${isDark ? 'border-white/10' : 'border-slate-200'}`}>
+                  <button
+                    onClick={onDismiss}
+                    className={`w-full py-3 text-[17px] font-normal text-center transition-colors ${
+                      isDark ? 'text-[#0A84FF] active:bg-white/5' : 'text-[#007AFF] active:bg-slate-100'
+                    }`}
+                  >
+                    知道了
+                  </button>
+                </div>
+                {!alert.isError && (
+                  <div className={`border-t ${isDark ? 'border-white/10' : 'border-slate-200'}`}>
+                    <button
+                      onClick={onNewChat}
+                      className={`w-full py-3 text-[17px] font-semibold text-center transition-colors ${
+                        isDark ? 'text-[#0A84FF] active:bg-white/5' : 'text-[#007AFF] active:bg-slate-100'
+                      }`}
+                    >
+                      新建会话
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+    // API Key 配置弹窗（需要 config_fields 的工具安装前弹出）
+    const TsConfigDialog = ({ config, theme, onConfirm, onCancel }) => {
+      const isDark = theme === 'dark';
+      if (!config) return null;
+      const [values, setValues] = useState({});
+      const field = config.fields[0]; // v1 只支持单个配置字段
+      const canSubmit = field ? (values[field.key] || '').trim().length > 0 : false;
+      return (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div
+            className={`w-[280px] rounded-[20px] overflow-hidden shadow-2xl ${isDark ? 'bg-[#2C2C2E]' : 'bg-white/95 backdrop-blur-xl'}`}
+            style={{ animation: 'tsAlertIn .2s ease-out' }}
+          >
+            <div className="px-6 pt-6 pb-4 text-center">
+              <div className={`text-[17px] font-semibold mb-4 ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                配置「{config.name}」
+              </div>
+              {field && (
+                <div className="text-left mb-3">
+                  <label className={`text-[13px] font-medium mb-1.5 block ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>
+                    {field.label}
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="sk-..."
+                    value={values[field.key] || ''}
+                    onChange={e => setValues(v => ({ ...v, [field.key]: e.target.value }))}
+                    className={`w-full px-3 py-2 rounded-lg text-[14px] outline-none transition-colors ${
+                      isDark
+                        ? 'bg-[#1C1C1E] border border-[#3A3A3C] text-white placeholder-slate-500 focus:border-[#0A84FF]'
+                        : 'bg-slate-50 border border-slate-200 text-slate-900 placeholder-slate-400 focus:border-[#007AFF]'
+                    }`}
+                  />
+                </div>
+              )}
+              {field && field.helpUrl && (
+                <button
+                  onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: field.helpUrl })}
+                  className={`text-[13px] ${isDark ? 'text-[#0A84FF]' : 'text-[#007AFF]'} hover:underline`}
+                >
+                  免费获取 →
+                </button>
+              )}
+              {field && field.helpText && (
+                <div className={`text-[12px] mt-1 leading-relaxed ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                  {field.helpText}
+                </div>
+              )}
+            </div>
+            <div className={`border-t ${isDark ? 'border-white/10' : 'border-slate-200'}`}>
+              <button
+                onClick={onCancel}
+                className={`w-full py-3 text-[17px] font-normal text-center transition-colors ${isDark ? 'text-[#0A84FF] active:bg-white/5' : 'text-[#007AFF] active:bg-slate-100'}`}
+              >
+                取消
+              </button>
+            </div>
+            <div className={`border-t ${isDark ? 'border-white/10' : 'border-slate-200'}`}>
+              <button
+                onClick={() => canSubmit && onConfirm(values)}
+                disabled={!canSubmit}
+                className={`w-full py-3 text-[17px] font-semibold text-center transition-colors ${
+                  canSubmit
+                    ? (isDark ? 'text-[#0A84FF] active:bg-white/5' : 'text-[#007AFF] active:bg-slate-100')
+                    : (isDark ? 'text-slate-600' : 'text-slate-300')
+                }`}
+              >
+                安装
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const ToolStoreView = ({ theme, onNewChat }) => {
+      const isDark = theme === 'dark';
+      const [searchQuery, setSearchQuery] = useState('');
+      const [activeCategory, setActiveCategory] = useState('all');
+      const [selectedTool, setSelectedTool] = useState(null);
+      const featuredScrollRef = useRef(null);
+      const [isFeaturedHovered, setIsFeaturedHovered] = useState(false);
+      const [toolStates, setToolStates] = useState({});
+      const [busyId, setBusyId] = useState(null);
+      const [alert, setAlert] = useState({ visible: false, loading: false, title: '', subtitle: '', isInstall: false, isError: false });
+      const [configDialog, setConfigDialog] = useState(null); // { backendId, name, fields }
+
+      // 合并后端安装状态到 mock 数据
+      const tools = tsToolsData.map(t => ({
+        ...t,
+        installed: t.backendId ? (toolStates[t.backendId] || false) : false,
+      }));
+
+      const filteredTools = tools.filter(tool => {
+        const matchesSearch = tool.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                              tool.desc.toLowerCase().includes(searchQuery.toLowerCase());
+        const matchesCategory = activeCategory === 'all' || tool.category === activeCategory;
+        return matchesSearch && matchesCategory;
+      }).sort((a, b) => {
+        if (a.backendId && !b.backendId) return -1;
+        if (!a.backendId && b.backendId) return 1;
+        if (a.installed && !b.installed) return -1;
+        if (!a.installed && b.installed) return 1;
+        return 0;
+      });
+
+      // 从后端加载已安装状态
+      const loadBackendState = async () => {
+        try {
+          const list = await window.__TAURI__.core.invoke('list_marketplace_tools');
+          const states = {};
+          list.forEach(t => { states[t.id] = t.installed; });
+          setToolStates(states);
+        } catch (e) {
+          console.error('list_marketplace_tools failed:', e);
+        }
+      };
+
+      useEffect(() => { loadBackendState(); }, []);
+
+      // 执行安装（已拿到 config 或无需 config）
+      const doInstall = async (backendId, userConfig) => {
+        const t = tsToolsData.find(x => x.backendId === backendId);
+        const name = t ? t.title : backendId;
+        const hasPipDeps = !t?.configFields || t.configFields.length === 0; // 无 config 的本地工具可能有 pip deps
+        setBusyId(backendId);
+        if (hasPipDeps) {
+          setAlert({ loading: true, visible: false, title: `正在安装「${name}」`, subtitle: '首次安装需下载依赖，请耐心等待…', isInstall: true, isError: false });
+        }
+        try {
+          const args = { toolId: backendId };
+          if (userConfig && Object.keys(userConfig).length > 0) {
+            args.config = userConfig;
+          }
+          await window.__TAURI__.core.invoke('install_marketplace_tool', args);
+          await loadBackendState();
+          setAlert({ visible: true, loading: false, title: `已安装「${name}」`, isInstall: true, isError: false, toolId: backendId });
+          if (selectedTool && selectedTool.backendId === backendId) {
+            setSelectedTool(prev => ({ ...prev, installed: true }));
+          }
+        } catch (e) {
+          console.error('install failed:', e);
+          setAlert({ visible: true, loading: false, title: '操作失败，请重试', isInstall: false, isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+
+      // 安装/卸载入口
+      const handleAction = async (backendId, isInstalled) => {
+        const t = tsToolsData.find(x => x.backendId === backendId);
+        const name = t ? t.title : backendId;
+
+        // 安装：有 configFields 的工具先弹配置弹窗
+        if (!isInstalled) {
+          if (t?.configFields && t.configFields.length > 0) {
+            setConfigDialog({ backendId, name, fields: t.configFields });
+            return;
+          }
+          return doInstall(backendId, {});
+        }
+
+        // 卸载
+        setBusyId(backendId);
+        try {
+          await window.__TAURI__.core.invoke('uninstall_marketplace_tool', { toolId: backendId });
+          await loadBackendState();
+          setAlert({ visible: true, loading: false, title: `已卸载「${name}」`, isInstall: false, isError: false });
+          if (selectedTool && selectedTool.backendId === backendId) {
+            setSelectedTool(prev => ({ ...prev, installed: false }));
+          }
+        } catch (e) {
+          console.error('uninstall failed:', e);
+          setAlert({ visible: true, loading: false, title: '操作失败，请重试', isInstall: false, isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+
+      useEffect(() => {
+        if (selectedTool) document.body.style.overflow = 'hidden';
+        else document.body.style.overflow = 'unset';
+        return () => { document.body.style.overflow = 'unset'; };
+      }, [selectedTool]);
+
+      useEffect(() => {
+        if (isFeaturedHovered || searchQuery !== '' || activeCategory !== 'all') return;
+        const interval = setInterval(() => {
+          if (featuredScrollRef.current) {
+            const { scrollLeft, scrollWidth, clientWidth } = featuredScrollRef.current;
+            if (scrollLeft + clientWidth >= scrollWidth - 50) {
+              featuredScrollRef.current.scrollTo({ left: 0, behavior: 'smooth' });
+            } else {
+              featuredScrollRef.current.scrollBy({ left: 424, behavior: 'smooth' });
+            }
+          }
+        }, 4000);
+        return () => clearInterval(interval);
+      }, [isFeaturedHovered, searchQuery, activeCategory]);
+
+      const handleScrollFeatured = (direction) => {
+        if (featuredScrollRef.current) {
+          featuredScrollRef.current.scrollBy({
+            left: direction === 'left' ? -424 : 424,
+            behavior: 'smooth'
+          });
+        }
+      };
+
+      return (
+        <div className={`${isDark ? 'dark' : ''} flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden antialiased selection:bg-blue-200 dark:selection:bg-blue-900`}>
+          <TsAlert alert={alert} theme={theme} onDismiss={() => setAlert(a => ({ ...a, visible: false }))} onNewChat={() => { const tid = alert.toolId; setAlert(a => ({ ...a, visible: false })); if (onNewChat) onNewChat(tid); }} />
+          <TsConfigDialog
+            config={configDialog}
+            theme={theme}
+            onCancel={() => setConfigDialog(null)}
+            onConfirm={(values) => { setConfigDialog(null); doInstall(configDialog.backendId, values); }}
+          />
+          <div className="flex-1 flex flex-col bg-white dark:bg-black text-slate-900 dark:text-white transition-colors duration-300 font-sans overflow-hidden">
+
+            {/* Header */}
+            <header className="shrink-0 bg-white/80 dark:bg-black/80 backdrop-blur-2xl border-b border-slate-200/50 dark:border-white/10 pt-6 pb-4 px-6 md:px-10 transition-colors">
+              <div className="max-w-7xl mx-auto flex flex-col gap-5">
+                <div className="flex items-center gap-3">
+                  <Puzzle className="text-blue-600 dark:text-blue-500" size={32} strokeWidth={2.5} />
+                  <h1 className="text-3xl font-extrabold tracking-tight">探索工具</h1>
+                </div>
+                <div className="relative group">
+                  <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-500 transition-colors" size={20} />
+                  <input
+                    type="text"
+                    placeholder="搜索 MCP、API 或工作流工具"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full pl-11 pr-4 py-3 bg-slate-100 dark:bg-[#1C1C1E] border-none rounded-2xl text-[17px] focus:ring-2 focus:ring-blue-500/50 outline-none transition-all placeholder:text-slate-500 text-slate-900 dark:text-white"
+                  />
+                </div>
+              </div>
+            </header>
+
+            {/* Main scrollable area */}
+            <main className="flex-1 overflow-y-auto custom-scrollbar">
+              <div className="max-w-7xl mx-auto px-6 md:px-10 py-8 space-y-12">
+
+                {/* Featured carousel */}
+                {searchQuery === '' && activeCategory === 'all' && (
+                  <section
+                    className="relative group/featured"
+                    onMouseEnter={() => setIsFeaturedHovered(true)}
+                    onMouseLeave={() => setIsFeaturedHovered(false)}
+                  >
+                    <div className="flex items-end justify-between mb-5">
+                      <h2 className="text-2xl font-bold tracking-tight">精选能力推荐</h2>
+                    </div>
+
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleScrollFeatured('left'); }}
+                      className="absolute -left-5 top-[55%] -translate-y-1/2 z-20 w-12 h-12 rounded-full bg-white/90 dark:bg-slate-800/90 backdrop-blur-md shadow-[0_4px_20px_rgba(0,0,0,0.15)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.5)] flex items-center justify-center text-slate-800 dark:text-slate-200 opacity-0 group-hover/featured:opacity-100 hover:scale-110 transition-all border border-slate-200 dark:border-slate-700 hidden md:flex"
+                    >
+                      <ChevronLeft size={26} />
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleScrollFeatured('right'); }}
+                      className="absolute -right-5 top-[55%] -translate-y-1/2 z-20 w-12 h-12 rounded-full bg-white/90 dark:bg-slate-800/90 backdrop-blur-md shadow-[0_4px_20px_rgba(0,0,0,0.15)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.5)] flex items-center justify-center text-slate-800 dark:text-slate-200 opacity-0 group-hover/featured:opacity-100 hover:scale-110 transition-all border border-slate-200 dark:border-slate-700 hidden md:flex"
+                    >
+                      <ChevronRight size={26} />
+                    </button>
+
+                    <div
+                      ref={featuredScrollRef}
+                      className="flex gap-6 overflow-x-auto snap-x snap-mandatory pb-6 no-scrollbar relative"
+                      style={{ scrollbarWidth: 'none' }}
+                    >
+                      {tsFeaturedCollections.map((collection) => {
+                        const featTool = tools.find(a => a.id === collection.featuredToolId);
+                        return (
+                          <div
+                            key={collection.id}
+                            onClick={() => setSelectedTool(featTool)}
+                            className="relative min-w-[320px] md:min-w-[400px] h-[440px] rounded-[32px] snap-center shrink-0 overflow-hidden cursor-pointer group shadow-sm hover:shadow-xl dark:shadow-none border border-slate-200/50 dark:border-white/10 transition-all duration-500"
+                          >
+                            <div className={`absolute inset-0 ${collection.bg} transition-transform duration-700 group-hover:scale-105`} />
+                            <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-transparent to-black/60" />
+
+                            <div className="absolute top-0 left-0 w-full p-8 text-white z-10">
+                              <span className="text-xs font-bold text-white/70 uppercase tracking-widest mb-1.5 block">{collection.label}</span>
+                              <h3 className="text-[28px] font-bold tracking-tight leading-tight mb-3 text-white drop-shadow-sm">{collection.title}</h3>
+                              <p className="text-white/80 text-[15px] font-medium leading-relaxed max-w-[90%] drop-shadow-sm">{collection.subtitle}</p>
+                            </div>
+
+                            {featTool && (
+                              <div className="absolute bottom-6 left-6 right-6 z-10">
+                                <div className="bg-white/20 dark:bg-black/40 backdrop-blur-3xl border border-white/20 dark:border-white/10 rounded-2xl p-4 flex items-center gap-4 transition-transform group-hover:-translate-y-1">
+                                  <div className={`w-14 h-14 rounded-[14px] flex items-center justify-center flex-shrink-0 ${featTool.color} text-white shadow-inner`}>
+                                    <featTool.icon size={26} strokeWidth={1.5} />
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <h4 className="text-base font-bold text-white truncate drop-shadow-sm">{featTool.title}</h4>
+                                    <p className="text-xs text-white/70 truncate flex items-center gap-1.5">
+                                      <Cpu size={12} /> {featTool.type}
+                                    </p>
+                                  </div>
+                                  <TsActionBtn tool={featTool} busy={busyId === featTool.backendId} onAction={handleAction} />
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                )}
+
+                {/* Category filter + tool list */}
+                <section>
+                  <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6 border-b border-slate-200 dark:border-white/10 pb-5">
+                    <h2 className="text-2xl font-bold tracking-tight">
+                      {searchQuery ? '检索结果' : '热门协议与接口'}
+                    </h2>
+                    <div className="flex p-1 bg-slate-100 dark:bg-[#1C1C1E] rounded-xl overflow-x-auto no-scrollbar border border-slate-200/50 dark:border-white/5">
+                      {tsCategories.map((cat) => {
+                        const isActive = activeCategory === cat.id;
+                        return (
+                          <button
+                            key={cat.id}
+                            onClick={() => setActiveCategory(cat.id)}
+                            className={`px-5 py-1.5 rounded-lg text-[14px] font-semibold whitespace-nowrap transition-all duration-300 ${
+                              isActive
+                                ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm ring-1 ring-black/5 dark:ring-white/10'
+                                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                            }`}
+                          >
+                            {cat.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {filteredTools.length > 0 ? (
+                    <div className="grid gap-x-10 gap-y-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
+                      {filteredTools.map((tool) => (
+                        <div
+                          key={tool.id}
+                          onClick={() => setSelectedTool(tool)}
+                          className="group flex items-center gap-4 py-3 cursor-pointer hover:bg-slate-50 dark:hover:bg-[#1C1C1E]/50 rounded-2xl px-3 -mx-3 transition-colors border-b border-slate-100 dark:border-white/5 last:border-0"
+                        >
+                          <div className={`w-16 h-16 rounded-[16px] flex items-center justify-center flex-shrink-0 ${tool.color} text-white shadow-sm group-hover:shadow transition-shadow border border-black/5 dark:border-white/5`}>
+                            <tool.icon size={30} strokeWidth={1.5} />
+                          </div>
+                          <div className="flex-1 min-w-0 flex flex-col justify-center py-1">
+                            <h3 className="text-[17px] font-semibold text-slate-900 dark:text-white truncate tracking-tight">{tool.title}</h3>
+                            <p className="text-[13px] text-slate-500 dark:text-slate-400 truncate mt-0.5 font-medium">{tool.subtitle}</p>
+                            <div className="flex items-center gap-2 mt-1.5">
+                              <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded uppercase tracking-wide">{tool.type}</span>
+                              {tool.authRequired && (
+                                <span className="text-[10px] text-amber-500/80 dark:text-amber-400/80 flex items-center gap-0.5">
+                                  <Zap size={10} /> 需密钥
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex flex-col items-center justify-center gap-1 pl-2">
+                            <TsActionBtn tool={tool} busy={busyId === tool.backendId} onAction={handleAction} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="py-24 text-center flex flex-col items-center">
+                      <div className="w-16 h-16 mb-4 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400">
+                        <Server size={28} />
+                      </div>
+                      <h3 className="text-xl font-semibold text-slate-800 dark:text-slate-200 mb-2">未检索到工具</h3>
+                      <p className="text-slate-500 dark:text-slate-400">请尝试修改搜索词或查阅 API 开发文档。</p>
+                    </div>
+                  )}
+                </section>
+
+              </div>
+            </main>
+          </div>
+
+          {/* Detail modal */}
+          {selectedTool && (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-900/40 dark:bg-black/60 backdrop-blur-md transition-all duration-300"
+              onClick={() => setSelectedTool(null)}
+            >
+              <div
+                className="ts-modal-in relative w-full max-w-2xl bg-white dark:bg-[#1C1C1E] rounded-[32px] shadow-2xl overflow-hidden flex flex-col max-h-[90vh] border border-slate-200/50 dark:border-white/10"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="absolute top-0 right-0 w-full px-6 py-5 flex items-center justify-end z-20 pointer-events-none">
+                  <button
+                    onClick={() => setSelectedTool(null)}
+                    className="pointer-events-auto w-8 h-8 flex items-center justify-center rounded-full bg-slate-100/80 dark:bg-black/50 backdrop-blur text-slate-500 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-black transition-colors"
+                  >
+                    <XIcon size={18} />
+                  </button>
+                </div>
+
+                <div className="overflow-y-auto p-6 sm:p-10 no-scrollbar pt-12">
+                  <div className="flex flex-col sm:flex-row items-start gap-6 sm:gap-8 mb-8">
+                    <div className={`w-28 h-28 sm:w-32 sm:h-32 rounded-[28px] sm:rounded-[32px] flex items-center justify-center flex-shrink-0 ${selectedTool.color} shadow-md border border-black/5 dark:border-white/5`}>
+                      <selectedTool.icon size={56} strokeWidth={1.5} className="text-white" />
+                    </div>
+                    <div className="flex-1">
+                      <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white mb-2 tracking-tight">{selectedTool.title}</h2>
+                      <p className="text-[17px] text-slate-500 dark:text-slate-400 mb-5 font-medium">{selectedTool.subtitle}</p>
+                      <div className="flex items-center gap-4">
+                        <TsActionBtn tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} size="lg" />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between py-5 mb-8 border-y border-slate-100 dark:border-white/5 overflow-x-auto no-scrollbar gap-8">
+                    <div className="flex flex-col flex-shrink-0">
+                      <span className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider mb-1">接口类型</span>
+                      <span className="text-xl font-bold text-slate-800 dark:text-slate-200">{selectedTool.type}</span>
+                      <span className="text-[12px] text-slate-400 mt-1 flex items-center gap-1"><Server size={12}/> 官方支持</span>
+                    </div>
+                    <div className="w-px h-12 bg-slate-200 dark:bg-slate-800 flex-shrink-0" />
+                    <div className="flex flex-col flex-shrink-0">
+                      <span className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider mb-1">当前版本</span>
+                      <span className="text-xl font-bold text-slate-800 dark:text-slate-200">{selectedTool.version}</span>
+                      <span className="text-[12px] text-slate-400 mt-1">稳定版发布</span>
+                    </div>
+                    <div className="w-px h-12 bg-slate-200 dark:bg-slate-800 flex-shrink-0" />
+                    <div className="flex flex-col flex-shrink-0 pr-4">
+                      <span className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider mb-1">平均延迟</span>
+                      <span className="text-xl font-bold text-slate-800 dark:text-slate-200">{selectedTool.latency}</span>
+                      <span className="text-[12px] text-slate-400 mt-1 flex items-center gap-1"><Globe size={12}/> 全球加速</span>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 className="text-[19px] font-bold text-slate-900 dark:text-white mb-4">关于此能力</h3>
+                    <div className="text-slate-600 dark:text-slate-300 leading-relaxed text-[15px] space-y-4 font-medium">
+                      <p>{selectedTool.desc}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    // ==========================================
+    // Shared Components
+    // ==========================================
+
     const ToolOutput = ({ item, isDark, t }) => {
       const out = item.output;
       if (item.success === false) return <OutputError text={out} isDark={isDark} />;
+      if (isWeatherTool(item.name)) {
+        let raw = out;
+        const envelope = tryParseJson(out);
+        if (envelope && Array.isArray(envelope.content)) {
+          const t = envelope.content.find(c => c.type === 'text');
+          if (t && t.text) raw = t.text;
+        }
+        const w = tryParseJson(raw);
+        if (w && w.type === 'weather' && !w.error) return <WeatherCard data={w} />;
+      }
+      // 股票报价卡片：iwencai 返回表格数据 → 映射为卡片
+      if (isStockQuoteTool(item.name)) {
+        let raw = out;
+        const envelope = tryParseJson(out);
+        if (envelope && Array.isArray(envelope.content)) {
+          const t = envelope.content.find(c => c.type === 'text');
+          if (t && t.text) raw = t.text;
+        }
+        const w = tryParseJson(raw);
+        if (w && Array.isArray(w.datas) && w.datas.length > 0) {
+          const d = w.datas[0];
+          const findVal = (obj, keyword) => {
+            for (const k of Object.keys(obj)) {
+              if (k.includes(keyword)) return parseFloat(obj[k]);
+            }
+            return undefined;
+          };
+          const mapped = {
+            name: d['股票简称'] || '--',
+            code: (d['股票代码'] || '').replace(/\.\w+$/, ''),
+            price: parseFloat(d['最新价']),
+            changePercent: findVal(d, '涨跌幅'),
+            open: findVal(d, '开盘价'),
+            high: findVal(d, '最高价'),
+            low: findVal(d, '最低价'),
+          };
+          return <StockQuoteCard data={mapped} isDark={isDark} />;
+        }
+        if (w && w.type === 'stock_quote' && !w.error) return <StockQuoteCard data={w} isDark={isDark} />;
+      }
       if (isReceipt(out)) return <ReceiptBlock text={out} isDark={isDark} t={t} />;
       if (item.name === 'list_dir') { const v = tryParseJson(out); if (Array.isArray(v)) return <ListDirView items={v} isDark={isDark} t={t} />; }
       else if (item.name === 'grep_files') { const v = tryParseJson(out); if (v && Array.isArray(v.matches)) return <GrepView data={v} isDark={isDark} t={t} />; }
@@ -2512,7 +3294,10 @@
 
     const ToolCard = ({ item, theme, t }) => {
       const isDark = theme === 'dark';
-      const [expanded, setExpanded] = useState(false);
+      // 有可视化卡片的工具(天气/股票)完成后直接展开,不折叠
+      const hasCard = (isWeatherTool(item.name) || isStockQuoteTool(item.name)) && item.state === 'done';
+      const [expanded, setExpanded] = useState(hasCard);
+      useEffect(() => { if (hasCard) setExpanded(true); }, [hasCard]);
       const isRunning = item.state === 'running';
       const isDone = item.state === 'done';
       const isFailed = item.state === 'failed';

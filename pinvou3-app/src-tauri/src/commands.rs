@@ -1274,6 +1274,8 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
         "https://open.bochaai.com/",
         "https://console.bce.baidu.com/",
         "https://app.tavily.com/",
+        "https://www.iwencai.com/",
+        "https://agent.qcc.com/",
     ];
     if !ALLOWED_PREFIXES.iter().any(|p| url.starts_with(p)) {
         return Err(format!("URL not in allowlist: {url}"));
@@ -3450,4 +3452,35 @@ mod tests {
             std::fs::write(out, prompt).expect("写 prompt");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// 工具市场
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn list_marketplace_tools() -> Result<Vec<crate::bridge::marketplace::MarketplaceToolInfo>, String> {
+    let mgr = crate::bridge::marketplace::MarketplaceManager::new();
+    let tools = mgr.list_tools();
+    Ok(tools)
+}
+
+#[tauri::command]
+pub async fn install_marketplace_tool(
+    tool_id: String,
+    config: Option<std::collections::HashMap<String, String>>,
+) -> Result<(), String> {
+    let user_config = config.unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        let mgr = crate::bridge::marketplace::MarketplaceManager::new();
+        mgr.install(&tool_id, &user_config)
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))?
+}
+
+#[tauri::command]
+pub fn uninstall_marketplace_tool(tool_id: String) -> Result<(), String> {
+    let mgr = crate::bridge::marketplace::MarketplaceManager::new();
+    mgr.uninstall(&tool_id)
 }
