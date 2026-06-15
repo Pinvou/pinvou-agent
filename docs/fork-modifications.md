@@ -94,9 +94,10 @@
 - **第一轮(机制+初删 →13.6K)**:删 Personality(语气并入 base.md §Voice)/ Session Longevity(推 sub-agents,与 blocklist 矛盾)/ Efficient Approvals + Approval Policy(生产单 Yolo-Auto,Plan 入口已下线)/ prompt-cache 教学 / taxonomy(instructions 工具表覆盖)。
 - **第二轮(逐块反事实 →9.9K)**:Compaction Relay 模板全删(自动压缩走 `canonical_prompt()` 纯代码、手动走 `create_summary()` 独立 LLM,`handoff.md` 无写入通路 →模板无生产者无消费者);Article VII 九层→三行裁决(Tier 7/8/9 引用幽灵实体,长句与 Qwen3.6 有效文风相反;保留:Core duties→用户当前消息→instructions 项目法→工具输出 beats 记忆);Thinking budget 删(`reasoning_effort=off`)/ Sub-agents 删(工具不可见)/ 语言 bookend 压 1-2 句 / Authority Recap→Final Reminder 短版。
 - **第三轮(base↔instructions 去重 →8.9K)**:操作性原则归 instructions.md 单一来源,base.md 只留红线+裁决+语气。消三处真冲突:① "never end a turn with a promise" 挪进 MODE_EXECUTE_MD(执行态专属);② "写后必读回" 与 §3 及时交付张力 → 统一为"最相关检查或明说没验";③ Language 句幽灵引用删。
+- **第四轮(单一来源折叠 + 动态注入,2026-06-15,消融实测驱动)**:base.md(Constitution/裁决)+ AUTHORITY_RECAP **全折叠进 `instructions.md` §底线** —— instructions 成**唯一 pinvou3 prompt 来源**(为多模型广泛适配)。依据=ablation 实测(见 user memory `prompt-ablation-methodology`):base.md 对 Qwen3.6 可测量价值仅 Voice 语气,Verification 没用(模型自验);instructions 全量消融实测保住 load-bearing(密钥/反幻觉),5868→2067B 零回归。改动:`AUTHORITY_RECAP=""`、base.md 留空 stub、`compose_static_layers` 丢 base(静态层只剩 Mode,**Plan 模式仍按 mode 切**)。**+ 动态注入**:`build_session_system_prompt` 加 `{{PINVOU3_MODEL}}`(self.model)+`{{PINVOU3_DATE}}`(chrono Local 今天,治"编时间")。整 prompt 22590→16612B。**剩余大头=Skills~52%(`~/.agents/skills` 全局 lark 技能,待重设计)**。
 
 ### app 层 fork(不在 submodule —— 通过 override hook / bridge 注入,fork-guard 也守)
-- **prompt 内容**:`resources/bundle/base.md` + `bridge/bundle.rs`(Constitution + 三行裁决 / Mode 块 / `LOCALE_PREAMBLE/CLOSER` zh+ja 短版 / `AUTHORITY_RECAP`→Final Reminder),经 `set_*_override` + `set_static_prompt_composer_override` 注入。**submodule 内 prompt 文案 drift=0**。
+- **prompt 内容**:`resources/bundle/instructions.md`(**唯一来源**——base.md/裁决/AUTHORITY_RECAP 全折叠进 §底线;动态注入 model 名 + 今天日期,见第四轮)+ `bridge/bundle.rs`(Mode 块 / `LOCALE_PREAMBLE/CLOSER` zh+ja 短版;`AUTHORITY_RECAP=""`、base.md 留空 stub、`compose_static_layers` 丢 base 只剩 Mode),经 `set_*_override` + `set_static_prompt_composer_override` 注入。**submodule 内 prompt 文案 drift=0**。
 - **bridge config**(`bridge/mod.rs`):`subagent_api_timeout=300`、`max_subagents=1`、`network_policy` fake-ip CIDR 信任(`198.18.0.0/15`)、`compaction.token_threshold=190_000`(256K×74%,见 `docs/auto-compact-256K-tuning.md`)、`InstructionSource::Inline`(instructions 不落 disk)。⚠️ **v0.8.57 新字段 `stream_chunk_timeout` 现透传 default,本地慢 vLLM 或需调大,待实跑验证**。
 - **dump 工具**:`bin/dump_system_prompt.rs`(随上游 `PromptSessionContext` 字段 / prompt 函数签名变化维护)。
 
@@ -130,7 +131,7 @@
 
 **26 指纹**(`fingerprints=` 数组):
 - **submodule(17)**:file.rs 64KB · truncated_args_hint(dispatch) · tool_catalog blocklist · pinvou3_blocklist · **tool_search 注入受 blocklist gate** · **tool_search 进 blocklist** · careful shell YOLO-block · skills union(#25)· prompts skills union(#26)· skills 路径#41 · PROJECT_CONTEXT 砍空 · GLOBAL_PATHS 砍空 · constitution.json 短路 · static composer hook(#42)· ContextMgmt/COMPACT gate(#42)· **Runtime Policy Ref gate(#42)** · **per-turn runtime_prompt tag gate(#42)**
-- **app(11)**:bridge fake-ip(#18b)· bridge timeout(#16)· Constitution PINVOU3(#36)· Brother Whale 删(#36)· 冲突裁决三行(#43)· LOCALE zh 短版(#37)· AUTHORITY Final Reminder(#38)· Inline 注入 · composer 安装(#42)· compose_static_layers(#42)· LOCALE ja 短版(#42)
+- **app(11)**:bridge fake-ip(#18b)· bridge timeout(#16)· 宪法折叠 instructions(#36)· compose 丢 base 只剩 Mode(#43)· LOCALE zh 短版(#37)· AUTHORITY 清空(#38)· 动态注入 model 名(#45)· Inline 注入 · composer 安装(#42)· compose_static_layers(#42)· LOCALE ja 短版(#42)
 
 **回归测试**:
 | crate | 测试 |
