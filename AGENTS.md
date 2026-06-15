@@ -38,7 +38,6 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 - git log + commit message — 决策记录与已知坑修复
 
 <!-- SPECKIT START -->
-For additional context about technologies to be used, project structure,
-shell commands, and other important information, read
-`specs/001-windows-onboarding-docs/plan.md`.
+如需了解当前 Spec Kit feature 使用的技术、项目结构、shell 命令和其他重要信息，请阅读
+`specs/002-windows-msi-package/plan.md`.
 <!-- SPECKIT END -->
