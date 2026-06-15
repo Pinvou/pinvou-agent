@@ -14,15 +14,26 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
+use tokio::time::timeout;
 
 use crate::bridge::paths;
 
 const UPDATE_MANIFEST_URL: &str = "https://www.ma-xiao.com/pinvou3/latest.json";
+
+/// 下载停滞看门狗阈值：连上后单次等待数据超过此时长即判定挂死。
+/// 用「单 chunk 间隔」而非「总耗时」做超时——慢网持续小流量不会被误杀，
+/// 只有真正长时间收不到任何字节（更新源挂起 / 半开连接）才中断。
+const DOWNLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 下载取消标志。前端 `cancel_download` 置位，下载循环每轮检查一次。
+/// 进程级单例：同一时刻只允许一个下载在跑（前端 updateDownloading gate 保证）。
+static DOWNLOAD_CANCEL: AtomicBool = AtomicBool::new(false);
 
 fn manifest_url() -> String {
     std::env::var("PINVOU3_UPDATE_URL").unwrap_or_else(|_| UPDATE_MANIFEST_URL.to_string())
@@ -110,7 +121,23 @@ pub async fn download_update(info: UpdateInfo, app: AppHandle) -> Result<String,
         }
     }
 
-    // 只设连接超时，不设总超时——deb 几十 MB，总超时会误杀慢网下载
+    // 磁盘空间预检：下载前比对 info.size 与目标盘可用空间，不足提前报错（而非下到
+    // 一半 ENOSPC）。留 64MB 余量给 apt 解包安装；取不到可用空间则跳过预检不误报。
+    if info.size > 0 {
+        if let Some(avail) = available_bytes(&dir) {
+            let need = info.size.saturating_add(64 * 1024 * 1024);
+            if avail < need {
+                return Err(format!(
+                    "磁盘空间不足：需约 {} MB，当前可用 {} MB",
+                    need / 1_048_576,
+                    avail / 1_048_576
+                ));
+            }
+        }
+    }
+
+    // 连接超时单设 10s；但**不设总超时**——deb 几十 MB，总超时会误杀慢网。
+    // 挂死场景改由下面的 stall 看门狗(单 chunk 间隔超时)覆盖。
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .build()
@@ -132,7 +159,29 @@ pub async fn download_update(info: UpdateInfo, app: AppHandle) -> Result<String,
     let mut hasher = Sha256::new();
     let mut downloaded: u64 = 0;
     let mut last_emit: u64 = 0;
-    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("下载中断: {e}"))? {
+    // 新一轮下载，清掉上次残留的取消标志
+    DOWNLOAD_CANCEL.store(false, Ordering::SeqCst);
+    loop {
+        // 取消优先：正常下载中点取消，下一个 chunk 到达即退出（挂死由 stall 超时兜底）
+        if DOWNLOAD_CANCEL.load(Ordering::SeqCst) {
+            drop(file);
+            let _ = std::fs::remove_file(&dest);
+            return Err("已取消下载".to_string());
+        }
+        // stall 看门狗：单次等数据超时即判定挂死，区别于慢网持续小流量
+        let chunk = match timeout(DOWNLOAD_STALL_TIMEOUT, resp.chunk()).await {
+            Err(_) => {
+                drop(file);
+                let _ = std::fs::remove_file(&dest);
+                return Err(format!(
+                    "下载停滞：超过 {}s 无数据，已中断（网络异常或更新源无响应）",
+                    DOWNLOAD_STALL_TIMEOUT.as_secs()
+                ));
+            }
+            Ok(Err(e)) => return Err(format!("下载中断: {e}")),
+            Ok(Ok(None)) => break, // 流正常结束
+            Ok(Ok(Some(c))) => c,
+        };
         file.write_all(&chunk).map_err(|e| format!("写盘失败: {e}"))?;
         hasher.update(&chunk);
         downloaded += chunk.len() as u64;
@@ -198,6 +247,13 @@ pub async fn restart_app(app: AppHandle) -> Result<(), String> {
     app.restart();
 }
 
+/// 置位取消标志，让正在跑的 `download_update` 循环下一轮自行退出并清理半成品。
+/// 仅对下载阶段有效；install 阶段(pkexec/apt)已交给系统，不在此中断。
+#[tauri::command]
+pub fn cancel_download() {
+    DOWNLOAD_CANCEL.store(true, Ordering::SeqCst);
+}
+
 /// 校验 deb 路径：必须真实存在、canonicalize 后在 `~/.pinvou3/updates/` 内、
 /// `.deb` 结尾、不含单引号（要嵌进 sh -c 的单引号串）。防前端传任意路径喂给 root apt。
 fn validate_deb_path(path: &Path) -> Result<PathBuf, String> {
@@ -222,6 +278,26 @@ fn validate_deb_path(path: &Path) -> Result<PathBuf, String> {
 fn file_sha256(path: &Path) -> Option<String> {
     let bytes = std::fs::read(path).ok()?;
     Some(format!("{:x}", Sha256::digest(&bytes)))
+}
+
+/// 目录所在文件系统的可用字节数。调 coreutils `df`（deb 环境必装）解析，
+/// 命令/解析失败返回 None，调用方据此跳过磁盘预检而非误报空间不足。
+fn available_bytes(dir: &Path) -> Option<u64> {
+    let out = Command::new("df")
+        .args(["--output=avail", "-B1"])
+        .arg(dir)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    // 输出两行：表头 "Avail" + 数字（单位 1 字节，-B1）
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .nth(1)?
+        .trim()
+        .parse()
+        .ok()
 }
 
 fn parse_semver(v: &str) -> Option<(u64, u64, u64)> {

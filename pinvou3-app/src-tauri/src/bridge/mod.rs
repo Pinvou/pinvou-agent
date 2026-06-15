@@ -449,6 +449,8 @@ impl Pinvou3Bridge {
             // pinvou3-fork 自定义:工作流监工白名单。普通 session = None(不限);
             // workflow session 由 spawn_for_session 按 active_skill 覆盖。
             tool_whitelist: _,
+            // pinvou3-fork 自定义:会话初始思考开关(显式构造见下)
+            reasoning_effort: _,
             // —— v0.8.49 上游新增字段,透传 default ——
             allowed_tools,
             tools,
@@ -602,6 +604,15 @@ impl Pinvou3Bridge {
             // 普通 session 不限工具;workflow session 的监工白名单由
             // spawn_for_session 按 active_skill 覆盖(见 supervisor_tool_whitelist)。
             tool_whitelist: None,
+            // 会话初始思考开关:本地 vLLM(Qwen3.6)必须关 thinking。
+            // 关键:工作流会话只走 SpawnSubAgent、不发 SendMessage(对话型品悟
+            // 已取消),session 拿不到 SendMessage 里那份 off → 角色全员 thinking
+            // 全开(6/12 taizi 思考失控实证)。在 engine 配置层钉死,不依赖对话。
+            reasoning_effort: if self.provider() == "vllm" {
+                Some("off".to_string())
+            } else {
+                None
+            },
             // v0.8.49 上游新增,透传 default
             allowed_tools,
             tools,
@@ -1031,6 +1042,13 @@ mod tests {
             "project context pack 不开（非 dev 用户没 project）"
         );
         assert!(!cfg.memory_enabled, "memory feature 暂不开（Phase C）");
+        assert_eq!(
+            cfg.reasoning_effort.as_deref(),
+            Some("off"),
+            "本地 vLLM(Qwen3.6)会话初始 thinking 必须关。工作流会话只走 \
+             SpawnSubAgent 不发 SendMessage,引擎配置层不钉死 off 角色就全员 \
+             thinking 全开(6/12 taizi 思考失控实证)"
+        );
         assert_eq!(cfg.locale_tag, "zh-Hans", "默认中文 locale");
         assert_eq!(
             cfg.max_subagents, 10,

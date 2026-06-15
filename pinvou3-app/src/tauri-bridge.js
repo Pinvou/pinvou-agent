@@ -123,6 +123,12 @@
     updateProgress: 0,        // 0-100
     updateReady: false,       // 安装完成,等用户点重启
     updateError: null,        // 下载/安装阶段错误(sha256/apt stderr 透传)
+    updateCancelling: false,  // 用户点了取消,据此把后端「已取消下载」当正常而非错误
+    // 依赖体检(设置页): deps = [{key, installed, apt}], null = 尚未检测
+    deps: null,
+    depsChecking: false,
+    depsInstalling: false,    // 一键安装进行中(pkexec apt)
+    depsInstallError: null,   // 安装失败原因(apt stderr 透传/取消/pkexec 不可用)
   };
   // 卡片池 1078 张卡的前端缓存。只读,通过 getPersonas() 取引用,不走 notify 快照。
   var personaPoolCache = [];
@@ -1904,6 +1910,10 @@
   function openInSystem(path) { return invoke("open_in_system", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   // 仅放白名单 URL (metaso.cn / open.bochaai.com),后端 open_external_url 强制校验。
   function openExternalUrl(url) { return invoke("open_external_url", { url: url }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
+  // 奏折宝箱:列 run 成品文档(deliverables/ 下文件,二进制成品排前)
+  function listDeliverables(projectDir) {
+    return invoke("list_deliverables", { projectDir: projectDir }).catch(function () { return []; });
+  }
   // 外部打开产物：HTML 走 Tauri 独立窗口（绕沙箱），其他走系统应用
   function openArtifactExternal(path) {
     var ext = (String(path).split(".").pop() || "").toLowerCase();
@@ -2083,19 +2093,61 @@
   // 下载+安装一条龙: 下载完 pkexec 弹系统密码框,装完置 updateReady 等用户点重启。
   async function downloadAndInstallUpdate() {
     if (!state.updateInfo || !state.updateInfo.available || state.updateDownloading) return;
-    state.updateDownloading = true; state.updateProgress = 0; state.updateError = null; notify();
+    state.updateDownloading = true; state.updateCancelling = false;
+    state.updateProgress = 0; state.updateError = null; notify();
     try {
       var debPath = await invoke("download_update", { info: state.updateInfo });
       state.updateProgress = 100; notify();
       await invoke("install_update", { debPath: debPath });
       state.updateReady = true;
     } catch (e) {
-      state.updateError = String(e);
+      // 用户主动取消下载时后端返回「已取消下载」,当正常处理不弹错误
+      if (state.updateCancelling) state.updateProgress = 0;
+      else state.updateError = String(e);
     }
-    state.updateDownloading = false; notify();
+    state.updateDownloading = false; state.updateCancelling = false; notify();
+  }
+  // 取消进行中的下载: 置前端标志 + 通知后端中断下载循环。仅下载阶段有效;
+  // 已进入 install(pkexec/apt)则无效(系统接管,装一半不能停)。
+  function cancelUpdate() {
+    if (!state.updateDownloading || state.updateCancelling) return;
+    state.updateCancelling = true; notify();
+    invoke("cancel_download").catch(function () { /* 忽略,下载循环超时也会退 */ });
   }
   function restartApp() {
     invoke("restart_app").catch(function () { /* restart 成功不会返回 */ });
+  }
+
+  // ── 依赖体检 ─────────────────────────────────────────────────────
+  // 实时检测各文件解析能力(PDF/Office/OCR/压缩包/邮件)的系统依赖是否齐全,
+  // 设置页展示缺失项 + 一键 apt 命令。后端 check_dependencies 不走缓存,装完可复检。
+  async function checkDependencies() {
+    if (state.depsChecking) return;
+    state.depsChecking = true; state.depsInstallError = null; notify();
+    try {
+      state.deps = await invoke("check_dependencies");
+    } catch (e) { state.deps = []; }
+    state.depsChecking = false; notify();
+  }
+  // 一键安装缺失依赖: 收集缺失项的包名 → 后端 pkexec apt 提权安装 → 装完实时重检。
+  async function installDependencies() {
+    var deps = state.deps || [];
+    var missing = deps.filter(function (d) { return !d.installed; });
+    if (!missing.length || state.depsInstalling) return;
+    var pkgs = [];
+    missing.forEach(function (d) {
+      String(d.apt).split(/\s+/).forEach(function (p) {
+        if (p && pkgs.indexOf(p) < 0) pkgs.push(p);
+      });
+    });
+    state.depsInstalling = true; state.depsInstallError = null; notify();
+    try {
+      await invoke("install_dependencies", { packages: pkgs });
+      state.deps = await invoke("check_dependencies"); // 装完实时重检,缺失项应清空
+    } catch (e) {
+      state.depsInstallError = String(e);
+    }
+    state.depsInstalling = false; notify();
   }
 
   // ── skill 工作流：动作（invoke 包装）[2026-06-06 恢复] ────────────
@@ -2312,6 +2364,7 @@
     openContainingFolder: openContainingFolder,
     openInSystem: openInSystem,
     openArtifactExternal: openArtifactExternal,
+    listDeliverables: listDeliverables,
     openExternalUrl: openExternalUrl,
     // 附件
     addAttachmentByPath: addAttachmentByPath,
@@ -2359,7 +2412,10 @@
     // 应用内升级
     checkForUpdate: checkForUpdate,
     downloadAndInstallUpdate: downloadAndInstallUpdate,
+    cancelUpdate: cancelUpdate,
     restartApp: restartApp,
+    checkDependencies: checkDependencies,
+    installDependencies: installDependencies,
   };
 
   // Auto-init after DOM ready

@@ -26,7 +26,10 @@ REQUIRED_SCRIPTS = [
     "warmup_check.py",
     "workflow_logger.py",
 ]
-REQUIRED_ENVS = ["DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL", "PINVOU3_SEARCH_API_KEY"]
+# DEEPSEEK_BASE_URL 由宿主 harness::run_cmd 注入(env 优先,回退 settings.json custom_base_url)。
+# DEEPSEEK_MODEL 走 settings.json 不强制环境变量;PINVOU3_SEARCH_API_KEY 可降级
+# (缺失只 warn,见 check_search_api)——都不该阻塞工作流启动,故移出必需项。
+REQUIRED_ENVS = ["DEEPSEEK_BASE_URL"]
 
 
 def item(status, details, remedy=""):

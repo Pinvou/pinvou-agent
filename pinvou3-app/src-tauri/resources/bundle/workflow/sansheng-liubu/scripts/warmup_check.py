@@ -26,10 +26,10 @@ REQUIRED_SCRIPTS = [
     "warmup_check.py",
     "workflow_logger.py",
 ]
-# env check 降为 warn:Tauri app 通过 settings.json 配置 model/base_url,
-# 不一定 export 到进程 env;真正的端点可达性由 check_llm_endpoint 探测。
-REQUIRED_ENVS = []
-RECOMMENDED_ENVS = ["DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL"]
+# DEEPSEEK_BASE_URL 由宿主 harness::run_cmd 注入(env 优先,回退 settings.json custom_base_url)。
+# DEEPSEEK_MODEL 走 settings.json 不强制环境变量;PINVOU3_SEARCH_API_KEY 可降级
+# (缺失只 warn,见 check_search_api)——都不该阻塞工作流启动,故移出必需项。
+REQUIRED_ENVS = ["DEEPSEEK_BASE_URL"]
 
 
 def item(status, details, remedy=""):
@@ -85,32 +85,13 @@ def check_env():
     missing = [name for name in REQUIRED_ENVS if not os.environ.get(name)]
     if missing:
         return item("blocked", "missing environment variables: " + ", ".join(missing), "Export required environment variables before starting workflow")
-    recommended_missing = [name for name in RECOMMENDED_ENVS if not os.environ.get(name)]
-    if recommended_missing:
-        return item("warn", "env not set (Tauri may provide via settings): " + ", ".join(recommended_missing))
     return item("pass", "all required environment variables are set")
-
-
-def _read_base_url_from_settings():
-    """Fallback: read base_url from ~/.pinvou3/settings.json when env is not set."""
-    try:
-        settings_path = Path.home() / ".pinvou3" / "settings.json"
-        if settings_path.exists():
-            s = json.loads(settings_path.read_text(encoding="utf-8"))
-            url = (s.get("advanced") or {}).get("custom_base_url", "")
-            if url:
-                return url
-    except Exception:
-        pass
-    return ""
 
 
 def check_llm_endpoint():
     base = os.environ.get("DEEPSEEK_BASE_URL", "").rstrip("/")
     if not base:
-        base = _read_base_url_from_settings().rstrip("/")
-    if not base:
-        return item("blocked", "DEEPSEEK_BASE_URL is missing and settings.json has no custom_base_url", "Set DEEPSEEK_BASE_URL or configure in settings")
+        return item("blocked", "DEEPSEEK_BASE_URL is missing", "Set DEEPSEEK_BASE_URL")
     # DEEPSEEK_BASE_URL 通常已含 /v1（OpenAI 兼容惯例，launch 脚本与 bridge fallback 都带），
     # 直接拼 /v1/models 会变成 /v1/v1/models → 404。base 已以 /v1 结尾时只补 /models。
     url = base + "/models" if base.endswith("/v1") else base + "/v1/models"

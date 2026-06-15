@@ -15,7 +15,7 @@
 | submodule 分支 | **`pinvou3-clean`**(`.gitmodules` 追踪;旧 `pinvou3-patches` 留 fork 当备份) |
 | fork drift | **+1364 / −307 行,30 文件**(`git -C DeepSeek-TUI diff v0.8.57..HEAD --stat`;app 层 prompt 走 override 注入,不计入此数) |
 | LLM 暴露 native 工具 | **23 个**(blocklist 模型:全量注册 ~99 − 黑名单 81;**tool_search 已禁用**,模型无法激活 deferred 工具;实测见 §2)。MCP `mcp_pinvou_present_artifact` 另接,共 24 入口 |
-| fork-guard | **28 指纹 + 回归测试**(submodule 17 + app 11);底座 lib **4218 pass** / app lib **105 pass**(单线程) |
+| fork-guard | **38 指纹 + 回归测试**(submodule 27〔含工作流层 W1–W10,2026-06-12 补〕 + app 11);底座 lib **4218 pass** / app lib **105 pass**(单线程) |
 | system prompt | dump 与 sync 前**逐字节一致**(172 行,diff=0);per-turn `<runtime_prompt>` tag 注入已 gate |
 
 ---
@@ -182,7 +182,7 @@
 
 ---
 
-最后更新:2026-06-11(v0.8.57 sync;基线 v0.8.53→v0.8.57,正文校准 drift/指纹/工具数,旧 sync 历史压成教训速查)
+最后更新:2026-06-12(feat/sansheng-workflow PR:工作流层补 submit_output 即收工 + registry max_steps per-spawn 两修,W11/W12 指纹随附;clean 焊 1ad4f27d)
 
 ## 工作流底座层(feat/sansheng-workflow PR 随附,submodule 分支 pinvou3-workflow-v0857)
 
@@ -197,3 +197,7 @@
 | mailbox + AgentSpawned | Op 路径 SubAgent 挂 Mailbox(TokenUsage 等信封直达宿主)+二发 AgentSpawned 关联 agent_id→role_id(edict-obs) |
 | 贪心解码 | SubAgent 每步 temperature=0(根治 NVFP4 下工具调用 XML 被采歪→空转) |
 | C8/C9 | SubAgent surface 注册 web/custom 工具;read_pdf catch_unwind+中文字符边界防 panic |
+| reasoning_effort | `EngineConfig.reasoning_effort`(`[pinvou3-fork]`,Default=None);session 建时初始化,不依赖首条 SendMessage;`"off"` 由 app bridge 按 `provider==vllm` 注入(DeepSeek-TUI #3 并入 pinvou3-clean) |
+| submit_output 即收工 | `run_subagent` 结构化产出落盘成功(`output_schema.is_some() && output_submitted.is_some()`)即 break;否则 temp=0 模型确定性重复提交永动(menxia 实测第 1 步即成功却跑 173 步直到步数上限)。`final_result` 已在成功臂置好 |
+| registry max_steps 生效 | `SubAgentSpawnOptions.max_steps: Option<u32>` per-spawn 覆盖(`options.max_steps.unwrap_or(self.max_steps)`);此前 `Op::SpawnSubAgent` 派发臂 `max_steps: _` 静默丢弃 → 角色全回落 manager 默认 200,registry 的 15/20/30 失效。`AgentSpawnTool` 传 `None` 保旧行为。**填掉 process.md 的 max_steps 无界 backlog** |
+| fork-guard L1 | **W1–W12 指纹已补**(W1–W10 2026-06-12;**W11/W12 submit 收工/max_steps per-spawn 随 feat/sansheng-workflow PR 补**):ops/events/engine/file.rs + subagent/{mod,mailbox}.rs;此前整层无 L1 指纹,sync 静默丢只能靠编译/L2 抓。行为层仅 W10 reasoning_effort 有 `engine_config_locks_critical_fields`;其余 W* 暂只 L1,后续可按需补 forkguard_ 测试 |

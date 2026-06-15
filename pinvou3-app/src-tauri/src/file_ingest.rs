@@ -75,6 +75,98 @@ pub fn system_tools() -> SystemTools {
     })
 }
 
+/// 设置页「依赖体检」一项：一类文件解析能力 + 它所需系统工具是否齐全 + 缺失时的 apt 包。
+/// `apt` 是空格分隔的包名串，可直接拼进 `sudo apt install <apt>`。能力名走前端 i18n（按 key 映射）。
+#[derive(Debug, Clone, Serialize)]
+pub struct DependencyCheckItem {
+    pub key: String,
+    pub installed: bool,
+    pub apt: String,
+}
+
+/// 体检各项可选依赖的安装状态。**实时检测（不走 `system_tools` 的 OnceLock 缓存）**——
+/// 用户照提示装完依赖后重新体检要能立刻反映，不能被首次缓存钉死。命名/分组与
+/// `ingest` 内各格式分支的 warning 文案同源，缺啥装啥一致。
+#[tauri::command]
+pub fn check_dependencies() -> Vec<DependencyCheckItem> {
+    let item = |key: &str, installed: bool, apt: &str| DependencyCheckItem {
+        key: key.into(),
+        installed,
+        apt: apt.into(),
+    };
+    let libreoffice = which("soffice") || which("libreoffice");
+    vec![
+        item("pdf", which("pdftotext"), "poppler-utils"),
+        item("office_modern", which("pandoc"), "pandoc"),
+        item("office_legacy", libreoffice, "libreoffice"),
+        item(
+            "ocr",
+            which("tesseract") && which("pdftoppm"),
+            "tesseract-ocr tesseract-ocr-chi-sim poppler-utils",
+        ),
+        item("archive", which("7z"), "p7zip-full"),
+        item(
+            "email",
+            which("python3") && which("msgconvert"),
+            "python3 libemail-outlook-message-perl",
+        ),
+    ]
+}
+
+/// 允许 `install_dependencies` 安装的包白名单 —— 必须与 `check_dependencies` 各项的
+/// `apt` 字段保持一致。前端传回的包名先过这张白名单，防止被篡改成任意命令喂给 root apt。
+const KNOWN_DEP_PACKAGES: &[&str] = &[
+    "poppler-utils",
+    "pandoc",
+    "libreoffice",
+    "tesseract-ocr",
+    "tesseract-ocr-chi-sim",
+    "p7zip-full",
+    "python3",
+    "libemail-outlook-message-perl",
+];
+
+/// 体检卡「一键安装」：pkexec 提权 apt 安装缺失的依赖包。包名必须全在
+/// `KNOWN_DEP_PACKAGES` 白名单内（前端从 check_dependencies 收集，但仍后端校验）。
+/// 与 updater::install_update 同套路：blocking 线程跑 pkexec，透传 apt stderr 真因。
+#[tauri::command]
+pub async fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
+    if packages.is_empty() {
+        return Err("没有需要安装的依赖".into());
+    }
+    for p in &packages {
+        if !KNOWN_DEP_PACKAGES.contains(&p.as_str()) {
+            return Err(format!("非法包名（不在依赖白名单内）: {p}"));
+        }
+    }
+    // 包名已白名单校验（只含 [a-z0-9.+-]），拼进 sh -c 无注入面。
+    let script = format!(
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y {}",
+        packages.join(" ")
+    );
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new("pkexec").args(["sh", "-c", &script]).output()
+    })
+    .await
+    .map_err(|e| format!("安装任务失败: {e}"))?
+    .map_err(|e| format!("pkexec 启动失败: {e}"))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+    let code = output.status.code().unwrap_or(-1);
+    Err(match code {
+        126 => "用户取消授权".to_string(),
+        127 => "未授权或 pkexec 不可用".to_string(),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let tail: Vec<&str> = stderr.lines().rev().take(4).collect();
+            let tail: Vec<&str> = tail.into_iter().rev().collect();
+            format!("安装失败 (exit {code}): {}", tail.join(" / "))
+        }
+    })
+}
+
 /// tesseract 的 `-l` 语言参数。pinvou3 面向国内政企，中文是刚需，所以优先
 /// `chi_sim+eng`；若没装中文包(`tesseract-ocr-chi-sim`)则降级 `eng`，不报错。
 /// 探测一次缓存：跑 `tesseract --list-langs` 看输出里有没有 `chi_sim`。
@@ -1256,7 +1348,7 @@ fn ingest_email(
     };
 
     if !tools.python3 {
-        return mk(None, Some("邮件解析需要 python3".into()));
+        return mk(None, Some("邮件解析需要 python3，请运行: sudo apt install python3".into()));
     }
 
     let parsed = if kind == "msg" {
