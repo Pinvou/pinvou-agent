@@ -2,9 +2,24 @@
 DeepSeek-TUI/target/
 pinvou3-app/src-tauri/target/
 /target/
+debug/
+release/
+*.rs.bk
+*.rlib
+*.prof*
+
+# Node / frontend
+node_modules/
+dist/
+build/
+*.log
 
 # Python (sim 脚本缓存)
 __pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
 
 # IDE
 .idea/
@@ -18,6 +33,7 @@ Thumbs.db
 
 # Secrets
 .env
+.env*
 *.pem
 
 # Playwright
