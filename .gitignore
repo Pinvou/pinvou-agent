@@ -29,3 +29,8 @@ Thumbs.db
 
 # 临时 PR worktree(submodule 的 git worktree,勿提交)
 /DeepSeek-TUI-*-env/
+
+# 本地构建日志与临时截图(勿提交)
+build-logs/
+/20260615-115647.png
+/icon-preview.png
