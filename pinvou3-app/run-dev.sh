@@ -12,4 +12,11 @@ cd "$(dirname "$0")"
 # export PINVOU3_SKIP_WARMUP=1。
 export PINVOU3_SKIP_WARMUP="${PINVOU3_SKIP_WARMUP:-0}"
 
+# ── 远程 vLLM 连接(明文 HTTP)─────────────────────────────────────
+# 底座默认拒绝对非 loopback 的明文 http:// 发请求(client.rs validate_base_url_security),
+# 且 reqwest 默认协议协商在某些网关下会 502。开发机连内网 GB10(http://10.214.74.113:8000)
+# 必须显式放行明文 HTTP + 钉死 HTTP/1.1。可在外部 export 覆盖。
+export DEEPSEEK_ALLOW_INSECURE_HTTP="${DEEPSEEK_ALLOW_INSECURE_HTTP:-1}"
+export DEEPSEEK_FORCE_HTTP1="${DEEPSEEK_FORCE_HTTP1:-1}"
+
 exec npx tauri dev "$@"
