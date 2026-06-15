@@ -29,7 +29,7 @@
     .msg-md li { margin:0.2em 0; line-height:1.6; }
     .msg-md code { font-family:"JetBrains Mono","SF Mono",Consolas,monospace; font-size:0.88em; padding:0.15em 0.4em; border-radius:6px; }
     .msg-md pre { margin:0.6em 0; padding:1em; border-radius:12px; overflow-x:auto; font-size:0.88em; line-height:1.5; }
-    .artifact-preview .msg-md pre { white-space:pre-wrap; word-break:break-word; overflow-x:hidden; }
+
     .msg-md pre code { padding:0; background:none; }
     .msg-md blockquote { border-left:3px solid rgba(128,128,128,0.4); padding-left:1em; margin:0.5em 0; opacity:0.85; }
     .msg-md a { text-decoration:underline; }
@@ -128,8 +128,6 @@
     const ChevronLeft = (p) => <I {...p}><path d="m15 18-6-6 6-6"/></I>;
     const XIcon = (p) => <I {...p}><path d="M18 6 6 18"/><path d="m6 6 12 12"/></I>;
     const CloudSun = (p) => <I {...p}><path d="M12 2v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="M20 12h2"/><path d="m19.07 4.93-1.41 1.41"/><path d="M15.947 12.65a4 4 0 0 0-5.925-4.128"/><path d="M13 22H7a5 5 0 1 1 4.9-6H13a3 3 0 0 1 0 6Z"/></I>;
-    const FolderOpen = (p) => <I {...p}><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></I>;
-    const ExternalLink = (p) => <I {...p}><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></I>;
 
     /* ==========================================
        i18n dictionary — 1:1 from 前端.html
@@ -2129,15 +2127,13 @@
                       ${sel === a.path ? (isDark ? 'bg-[#333537]' : 'bg-[#E8EDF2]') : (isDark ? 'hover:bg-[#282A2C]' : 'hover:bg-[#F0F4F9]')}`}>
                     <span>{artifactIcon(a.basename)}</span>
                     <span className={`flex-1 truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`} title={a.path}>{a.basename}</span>
-                    <button title="打开所在目录" onClick={(e) => { e.stopPropagation(); bridge.openContainingFolder(a.path); }}
-                      className={`opacity-0 group-hover:opacity-100 w-6 h-6 rounded flex items-center justify-center transition-colors ${isDark ? 'text-[#9AA0A6] hover:bg-[#444746] hover:text-[#E3E3E3]' : 'text-[#5F6368] hover:bg-[#D3D7DB] hover:text-[#1F1F1F]'}`}><FolderOpen size={14} /></button>
-                    <button title="外部打开" onClick={(e) => { e.stopPropagation(); bridge.openArtifactExternal(a.path); }}
-                      className={`opacity-0 group-hover:opacity-100 w-6 h-6 rounded flex items-center justify-center transition-colors ${isDark ? 'text-[#9AA0A6] hover:bg-[#444746] hover:text-[#E3E3E3]' : 'text-[#5F6368] hover:bg-[#D3D7DB] hover:text-[#1F1F1F]'}`}><ExternalLink size={14} /></button>
+                    <button title="打开所在目录" onClick={(e) => { e.stopPropagation(); bridge.openContainingFolder(a.path); }} className="opacity-0 group-hover:opacity-100 text-[13px]">📂</button>
+                    <button title="外部打开" onClick={(e) => { e.stopPropagation(); bridge.openArtifactExternal(a.path); }} className="opacity-0 group-hover:opacity-100 text-[13px]">↗</button>
                   </div>
                 ))}
               </div>
               {/* preview */}
-              <div className="artifact-preview flex-1 overflow-y-auto custom-scrollbar p-4 min-w-0">
+              <div className="flex-1 overflow-y-auto custom-scrollbar p-4 min-w-0">
                 {!sel ? (
                   <div className={`text-[13px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>选择左侧产物预览</div>
                 ) : pv.loading ? (
@@ -2156,7 +2152,7 @@
                 ) : (
                   <div>
                     <p className={`text-[13px] mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{pv.kind === 'image' ? '图片预览暂不支持嵌入' : '此类型暂不支持预览'}</p>
-                    <button onClick={() => bridge.openArtifactExternal(sel)} className={cardBtnCls(isDark, 'primary')}><ExternalLink size={14} className="inline -mt-0.5 mr-1" />外部打开</button>
+                    <button onClick={() => bridge.openArtifactExternal(sel)} className={cardBtnCls(isDark, 'primary')}>↗ 外部打开</button>
                   </div>
                 )}
               </div>
@@ -3010,9 +3006,9 @@
               )}
               <div className="hidden group-hover:flex items-center gap-0.5 shrink-0">
                 <button title="重命名" onClick={(e) => { e.stopPropagation(); setVal(chat.title); setEditing(true); }}
-                  className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#9AA0A6] hover:bg-[#444746] hover:text-[#E3E3E3]' : 'text-[#5F6368] hover:bg-[#D3D7DB] hover:text-[#1F1F1F]'}`}><Edit2 size={13} /></button>
+                  className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${isDark ? 'hover:bg-[#444746]' : 'hover:bg-[#D3D7DB]'}`}>✏️</button>
                 <button title="删除" onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
-                  className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#9AA0A6] hover:bg-[#5c2b29] hover:text-[#F28B82]' : 'text-[#5F6368] hover:bg-[#FAD2CF] hover:text-[#C5221F]'}`}><Trash2 size={13} /></button>
+                  className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${isDark ? 'hover:bg-[#5c2b29]' : 'hover:bg-[#FAD2CF]'}`}>🗑</button>
               </div>
             </>
           )}
