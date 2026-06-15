@@ -2541,6 +2541,19 @@
       { id: 13, backendId: 'qcc', title: '企查查', subtitle: '企业工商、风控、知产、经营数据查询', category: 'finance', type: 'MCP Server', version: 'v1.0.0', latency: '<500ms', desc: '接入企查查智能体数据平台，提供182个企业数据查询工具，覆盖工商登记、股东结构、风险预警、知识产权、招投标等六大模块。', icon: Building2, color: 'bg-gradient-to-br from-blue-600 to-cyan-500', installed: false, authRequired: false, welcomeQueries: ['查一下华为的工商信息', '腾讯有哪些风险预警', '比亚迪的专利有多少', '阿里巴巴的招投标记录'] },
     ];
 
+    const weatherIconSvg = (code) => {
+      const svgs = {
+        sunny: '<svg viewBox="0 0 24 24" fill="currentColor" class="w-10 h-10 text-yellow-300"><circle cx="12" cy="12" r="5"></circle><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32l1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path></svg>',
+        partly_cloudy: '<svg viewBox="0 0 24 24" fill="currentColor" class="w-10 h-10 text-white"><path d="M6.5 19a4.5 4.5 0 0 1-.343-8.987 7.5 7.5 0 0 1 14.28 2.226A4 4 0 0 1 18 20H6.5z"></path><circle cx="7" cy="7" r="2.5" fill="currentColor" opacity="0.8"></circle></svg>',
+        cloudy: '<svg viewBox="0 0 24 24" fill="currentColor" class="w-10 h-10 text-white opacity-90"><path d="M6.5 17.5A4.5 4.5 0 0 1 6.5 8.5h.342a7.5 7.5 0 0 1 14.316 2.625A4.002 4.002 0 0 1 18 19H6.5v-1.5z"></path></svg>',
+        thunderstorm: '<svg viewBox="0 0 24 24" fill="currentColor" class="w-10 h-10 text-yellow-200"><path d="M6.5 17A4.5 4.5 0 0 1 6.5 8h.342a7.5 7.5 0 0 1 14.316 2.625A4 4 0 0 1 18 18H6.5z" opacity="0.7"></path><path d="M13 12l-2 5h3l-2 5" stroke="currentColor" stroke-width="1.5" fill="none"></path></svg>',
+        heavy_rain: '<svg viewBox="0 0 24 24" fill="currentColor" class="w-10 h-10 text-blue-300"><path d="M6.5 15A4.5 4.5 0 0 1 6.5 6h.342a7.5 7.5 0 0 1 14.316 2.625A4 4 0 0 1 18 16H6.5z" opacity="0.7"></path><path d="M9 18v3m4-4v3m4-2v3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path></svg>',
+        rainy: '<svg viewBox="0 0 24 24" fill="currentColor" class="w-10 h-10 text-blue-200"><path d="M6.5 15A4.5 4.5 0 0 1 6.5 6h.342a7.5 7.5 0 0 1 14.316 2.625A4 4 0 0 1 18 16H6.5z" opacity="0.7"></path><path d="M10 18v2m5-3v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path></svg>',
+        snowy: '<svg viewBox="0 0 24 24" fill="currentColor" class="w-10 h-10 text-blue-100"><path d="M6.5 15A4.5 4.5 0 0 1 6.5 6h.342a7.5 7.5 0 0 1 14.316 2.625A4 4 0 0 1 18 16H6.5z" opacity="0.7"></path><circle cx="9" cy="19" r="1"></circle><circle cx="14" cy="18" r="1"></circle><circle cx="11" cy="21" r="1"></circle></svg>',
+        foggy: '<svg viewBox="0 0 24 24" fill="currentColor" class="w-10 h-10 text-gray-300"><path d="M3 14h18M5 18h14M7 10h10" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none" opacity="0.6"></path></svg>',
+      };
+      return svgs[code] || svgs.partly_cloudy;
+    };
     const WeatherCard = ({ data }) => {
       const mode = data.queryMode || 'today';
       const daily = Array.isArray(data.daily) ? data.daily : [];
