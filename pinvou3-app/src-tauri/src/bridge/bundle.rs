@@ -109,7 +109,10 @@ pub fn compose_static_layers(ctx: &deepseek_tui::prompts::StaticPromptCtx<'_>) -
     use deepseek_tui::tui::app::AppMode;
     use deepseek_tui::tui::approval::ApprovalMode;
 
-    let base = BASE_PROMPT_MD.trim().replace("{model_id}", ctx.model_id);
+    // 底座宪法层(CONSTITUTION/WORKING RULES)已折叠进 instructions.md —— instructions 是
+    // 唯一 pinvou3 prompt 来源(单模型→多模型适配,2026-06-15 消融实测:base.md 对 Qwen3.6
+    // 可测量价值仅 Voice 语气,核心权威顺序/防编造已并进 instructions §底线)。静态层只剩 Mode。
+    let _ = ctx.model_id;
     let mode_block = match ctx.mode {
         AppMode::Plan => MODE_PLAN_MD,
         AppMode::Yolo => MODE_EXECUTE_MD,
@@ -119,17 +122,12 @@ pub fn compose_static_layers(ctx: &deepseek_tui::prompts::StaticPromptCtx<'_>) -
             ApprovalMode::Suggest | ApprovalMode::Never => MODE_AGENT_GATED_MD,
         },
     };
-    format!("{base}\n\n{mode_block}")
+    mode_block.to_string()
 }
 
-/// pinvou3 版 Authority Recap（替换底座 `AUTHORITY_RECAP`,瘦身版——recency 位置
-/// 只复述三条真干活的裁决,不再复述已删的九层 tier 体系）。
-pub const AUTHORITY_RECAP: &str = "\
-## Final Reminder
-
-Core duties first; the user's current message outranks everything else;
-the `<instructions>` block is project law. Live tool output beats memory.
-Never fabricate, never claim unverified success.";
+/// Authority Recap（Final Reminder）清空——其内容(裁决顺序/防编造)已折叠进
+/// instructions.md §底线,instructions 是唯一来源,不再单列末尾 recap。
+pub const AUTHORITY_RECAP: &str = "";
 
 /// 把 pinvou3 版 prompt 文案注入底座的 prompt 合成层。底座用 `OnceLock`,首次
 /// set 生效、后续返回 Err(rejected) —— 幂等,可在每个 `Bridge::boot` 入口重复调用
@@ -439,14 +437,6 @@ mod tests {
         cleanup(&tmp);
     }
 
-    #[test]
-    fn bundled_prompt_contracts_explain_append_file_tail_only() {
-        assert!(
-            INSTRUCTIONS_MD.contains("append_file` 只能追加到文件尾"),
-            "全局 instructions 必须说明 append_file 是尾追加"
-        );
-    }
-
     /// forkguard(composer): 静态层 composer 接管后,底座的 Personality/
     /// Session Longevity/Efficient Approvals/taxonomy 不得再进 prompt,
     /// pinvou3 自有的 mode 块 + 瘦身 compact 模板必须在。上游 sync 后此测试
@@ -489,14 +479,21 @@ mod tests {
         ] {
             assert!(!yolo.contains(gone), "底座静态块应被 composer 干掉: {gone}");
         }
-        // 吸收/保留的 pinvou3 块
-        for kept in [
+        // composer 静态层现在只剩 Mode —— 宪法/裁决/Voice 已折叠进 instructions.md §底线
+        // (单一来源,2026-06-15 第四轮),不再出现在静态层。
+        assert!(
+            yolo.contains("## Mode: Execute"),
+            "composer 静态层应含 Mode 块"
+        );
+        for folded in [
             "CONSTITUTION OF PINVOU3",
             "### When directives conflict",
-            "## Mode: Execute",
             "### Voice",
         ] {
-            assert!(yolo.contains(kept), "pinvou3 静态块缺失: {kept}");
+            assert!(
+                !yolo.contains(folded),
+                "宪法层应已折叠出静态层(并入 instructions): {folded}"
+            );
         }
     }
 

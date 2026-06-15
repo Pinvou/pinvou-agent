@@ -42,6 +42,11 @@ fn main() -> Result<()> {
         show_thinking: cfg.show_thinking,
         // v0.8.57:上游把 allow_shell 从 PromptSessionContext 移除(#2949,decouple
         // 静态前缀,allow_shell 改走 per-turn <runtime_prompt> tag),dump 同步去掉。
+        // v0.8.60 上游新增字段:
+        //   context_window_override: None = 用 model_id 派生的默认窗口(qwen36 → 256K)。
+        //   verbosity: None = GUI 不用 concise 输出模式(与 bridge Op::SendMessage 一致)。
+        context_window_override: None,
+        verbosity: None,
     };
 
     // v0.8.57:上游把 system prompt 改成 **mode-independent**(mode/approval 移出静态前缀,
