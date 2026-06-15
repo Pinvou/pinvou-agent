@@ -1266,8 +1266,11 @@ async fn large_xlsx_attachment_path_mode() {
     // 品牌最高频 WD(908 次,断崖领先第二名 Kingston 597)。行数按统计口径放宽到
     // 497x(物理行 vs 逻辑行 vs 是否含落盘文件头部注释行会差 1-3)。
     let text_up = summary.full_text.to_uppercase();
+    // 剥千分位分隔符(ASCII/全角逗号 + 空格):模型常写 "4,970" 条,原 contains("497")
+    // 会被中间的逗号("4,97")挡掉造成假阴性——答案其实正确。
+    let text_digits = text_up.replace([',', '，', ' ', '\u{00a0}'], "");
     assert!(
-        text_up.contains("497"),
+        text_digits.contains("497"),
         "[{scenario}] 答案应命中总行数 ~4970,实际文本={:?}",
         summary.full_text
     );
