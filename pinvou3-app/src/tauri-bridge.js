@@ -1910,6 +1910,10 @@
   function openInSystem(path) { return invoke("open_in_system", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   // 仅放白名单 URL (metaso.cn / open.bochaai.com),后端 open_external_url 强制校验。
   function openExternalUrl(url) { return invoke("open_external_url", { url: url }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
+  // 奏折宝箱:列 run 成品文档(deliverables/ 下文件,二进制成品排前)
+  function listDeliverables(projectDir) {
+    return invoke("list_deliverables", { projectDir: projectDir }).catch(function () { return []; });
+  }
   // 外部打开产物：HTML 走 Tauri 独立窗口（绕沙箱），其他走系统应用
   function openArtifactExternal(path) {
     var ext = (String(path).split(".").pop() || "").toLowerCase();
@@ -2360,6 +2364,7 @@
     openContainingFolder: openContainingFolder,
     openInSystem: openInSystem,
     openArtifactExternal: openArtifactExternal,
+    listDeliverables: listDeliverables,
     openExternalUrl: openExternalUrl,
     // 附件
     addAttachmentByPath: addAttachmentByPath,

@@ -160,6 +160,7 @@ pub fn run() {
             commands::cancel_generation,
             commands::edit_last_turn,
             commands::read_artifact_text,
+            commands::list_deliverables,
             commands::artifact_info,
             commands::render_artifact_visual,
             commands::read_artifact_image_b64,

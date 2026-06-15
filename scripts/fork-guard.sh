@@ -65,6 +65,8 @@ fingerprints=(
   "W8  |SubAgent web/custom 工具面      |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|with_full_agent_surface("
   "W9  |read_pdf catch_unwind 防 panic  |DeepSeek-TUI/crates/tui/src/tools/file.rs|[pinvou3-fork] catch_unwind prevents pdf-extract font/CMap panics"
   "W10 |reasoning_effort 会话初始注入   |DeepSeek-TUI/crates/tui/src/core/engine.rs|session.reasoning_effort = config.reasoning_effort"
+  "W11 |submit_output 成功即 break 收工 |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|if output_schema.is_some() && output_submitted.is_some()"
+  "W12 |registry max_steps per-spawn 生效|DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|options.max_steps.unwrap_or(self.max_steps)"
   # —— app 层 fork(pinvou3-app)——
   "#18b|bridge 透传 fake-ip 信任段      |pinvou3-app/src-tauri/src/bridge/mod.rs|with_trusted_fakeip_cidrs"
   "#16 |bridge subagent_api_timeout 300 |pinvou3-app/src-tauri/src/bridge/mod.rs|from_secs(300)"

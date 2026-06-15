@@ -78,6 +78,10 @@
     @keyframes memorial-roller-bottom-open { from { bottom: calc(50% - 9px) } to { bottom: -9px } }
     @keyframes memorial-roller-bottom-close { from { bottom: -9px } to { bottom: calc(50% - 9px) } }
     @keyframes memorial-stamp { from { opacity: 0; transform: rotate(-14deg) scale(1.8) } 70% { opacity: .9; transform: rotate(-14deg) scale(.94) } to { opacity: .82; transform: rotate(-14deg) scale(1) } }
+    /* 御赐宝箱:开箱金光迸出 + 成品文档逐件弹出 */
+    @keyframes chest-glow { from { opacity: 0; transform: translateX(-50%) scale(.4) } to { opacity: 1; transform: translateX(-50%) scale(1) } }
+    @keyframes chest-item-pop { from { opacity: 0; transform: translateY(16px) scale(.85) } to { opacity: 1; transform: none } }
+    @keyframes chest-open-bounce { 0% { transform: scale(1) } 35% { transform: scale(1.07) rotate(-1.5deg) } 70% { transform: scale(.98) rotate(1deg) } 100% { transform: scale(1.03) } }
     .lanyard-wrap { animation: lanyard-drop .55s cubic-bezier(.2,.9,.3,1.2) both; transform-origin: top center; }
     .lanyard-card { animation: lanyard-sway 4.5s ease-in-out infinite; transform-origin: top center; }
     /* 详情 modal 里的完整人设正文(markdown) prose 排版 */
@@ -4285,6 +4289,20 @@
     const ImperialMemorialModal = ({ projectDir, theme, onClose }) => {
       const [st, setSt] = useState({ loading: true, text: '', error: null });
       const [closing, setClosing] = useState(false);
+      // 御赐宝箱:两层——products=真成品(题目命名的最终报告+二进制成品),装箱;
+      // papers=六部过程文书,折叠降级展示(审计找得到,客户视角不被淹)。
+      const [deliv, setDeliv] = useState({ products: [], papers: [] });
+      const [chestOpen, setChestOpen] = useState(false);
+      useEffect(() => {
+        let alive = true;
+        const dir = (projectDir || '').replace(/\/$/, '');
+        if (dir && bridge.listDeliverables) {
+          bridge.listDeliverables(dir).then((r) => {
+            if (alive) setDeliv({ products: (r && r.products) || [], papers: (r && r.papers) || [] });
+          });
+        }
+        return () => { alive = false; };
+      }, [projectDir]);
       const closingRef = useRef(false);
       // 收卷:先放反向卷轴动画,卷合后再真正卸载
       const requestClose = () => {
@@ -4333,6 +4351,58 @@
                   : st.text ? <div className="msg-md light-code text-[14px] leading-[1.9]" style={{ color: '#3a2a18' }} dangerouslySetInnerHTML={{ __html: bridge.renderMarkdown(st.text) }} />
                   : <div style={{ color: '#7a5a2a' }} className="text-[13px] text-center py-10">尚无回奏内容</div>}
               </div>
+              {deliv.products.length > 0 && (
+                <div className="shrink-0 px-8 pt-2 pb-1 text-center" style={{ borderTop: '1px dashed #c9a96a' }}>
+                  {chestOpen && (
+                    <div className="flex flex-wrap justify-center gap-3 mb-2">
+                      {deliv.products.concat(deliv.papers).map((f, i) => {
+                        const isProduct = i < deliv.products.length;
+                        const ext = (String(f.name).split('.').pop() || '').toLowerCase();
+                        const chip = (ext === 'pptx' || ext === 'ppt') ? 'PPT' : ext === 'xlsx' ? '表格' : ext === 'pdf' ? 'PDF'
+                          : (ext === 'html' || ext === 'htm') ? '网页' : (ext === 'png' || ext === 'jpg' || ext === 'jpeg') ? '图' : '文书';
+                        const sz = f.size > 1048576 ? (f.size / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(f.size / 1024)) + ' KB';
+                        return (
+                          <button key={f.path} onClick={() => bridge.openArtifactExternal(f.path)} title={'打开:' + (f.title || f.name)}
+                            style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                              animation: `chest-item-pop .45s cubic-bezier(.3,1.4,.5,1) ${i * 0.09}s both` }}>
+                            {/* 展开的小卷轴(斜 45° 视角):两端轴杆 + 中间纸面写标题 */}
+                            <div style={{ transform: 'perspective(520px) rotateY(-14deg) rotateX(7deg)', transformStyle: 'preserve-3d' }}>
+                              <div className="relative flex items-stretch" style={{ width: '168px', height: '92px', filter: 'drop-shadow(3px 5px 6px rgba(58,42,24,.35))' }}>
+                                <div style={{ width: '10px', margin: '-5px 0', borderRadius: '5px', background: 'linear-gradient(90deg,#2e1f0e,#6b4a23 55%,#3a2812)' }}></div>
+                                <div className="flex-1 flex flex-col items-center justify-center px-2" style={{
+                                  background: 'linear-gradient(90deg,#e8d9b4 0%,#f7eed8 12%,#f7eed8 88%,#e8d9b4 100%)',
+                                  borderTop: '1px solid #c9a96a', borderBottom: '1px solid #c9a96a', position: 'relative' }}>
+                                  {isProduct && <div style={{ position: 'absolute', top: '3px', right: '4px', color: '#b21e1e', border: '1.5px solid #b21e1e',
+                                    borderRadius: '3px', padding: '0 3px', fontSize: '9px', fontFamily: 'serif', opacity: .85, transform: 'rotate(-8deg)' }}>成品</div>}
+                                  <div className="text-[12px] leading-[1.5] font-medium" style={{ color: '#3a2a18',
+                                    display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                                    maxHeight: '54px', wordBreak: 'break-all' }}>{f.title || f.name}</div>
+                                  <div className="text-[10px] mt-1" style={{ color: '#9a7b45' }}>{chip} · {sz}</div>
+                                </div>
+                                <div style={{ width: '10px', margin: '-5px 0', borderRadius: '5px', background: 'linear-gradient(90deg,#3a2812,#6b4a23 45%,#2e1f0e)' }}></div>
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {/* 宝箱(白浪选的钥匙孔款):点击开箱,金光迸出、成品弹出 */}
+                  <button onClick={() => setChestOpen((o) => !o)} title={chestOpen ? '收箱' : '点击开箱'}
+                    className="relative inline-block" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                    {chestOpen && <div style={{ position: 'absolute', left: '50%', top: '-14px', width: '170px', height: '64px',
+                      background: 'radial-gradient(ellipse at 50% 100%, rgba(255,200,60,.7) 0%, rgba(255,200,60,0) 70%)',
+                      animation: 'chest-glow .5s ease both', pointerEvents: 'none', zIndex: 0 }}></div>}
+                    <img src="avatars/chengpin_chest.png" alt="成品箱"
+                      style={{ width: '118px', display: 'block', borderRadius: '8px', position: 'relative', zIndex: 1,
+                        boxShadow: '0 4px 12px rgba(58,42,24,.3)',
+                        animation: chestOpen ? 'chest-open-bounce .5s cubic-bezier(.34,1.45,.6,1) both' : 'none' }} />
+                    <div className="text-[10px] mt-0.5" style={{ color: '#7a5a2a' }}>
+                      {chestOpen ? '▲ 收箱' : `▼ 点击开箱 · 文书 ${deliv.products.length + deliv.papers.length} 件`}
+                    </div>
+                  </button>
+                </div>
+              )}
               <div className="shrink-0 text-center py-3" style={{ borderTop: '1px solid #c9a96a' }}>
                 <div className="text-[15px]" style={{ color: '#8a1c1c', letterSpacing: '6px' }}>钦　此</div>
                 <button onClick={requestClose} className="mt-2 px-5 py-1.5 rounded-full text-[13px]" style={{ background: '#8a1c1c', color: '#f7eed6' }}>朕已阅 · 收卷</button>
