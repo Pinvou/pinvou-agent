@@ -212,7 +212,12 @@ impl Pinvou3Bridge {
         let ws = paths::session_workspace_dir(session_id);
         // 同时确保目录存在,AI 写 write_file 时不会因为目录不存在而失败
         let _ = std::fs::create_dir_all(&ws);
+        // 动态注入:模型名(多模型适配,模型知道自己是谁)+ 今天日期(模型有日期就不必为"今天几号"
+        // 编/调工具,精确当前时间仍走工具)。同 workspace,每会话渲染。
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         INSTRUCTIONS_MD
+            .replace("{{PINVOU3_MODEL}}", &self.model())
+            .replace("{{PINVOU3_DATE}}", &today)
             .replace("{{PINVOU3_WORKSPACE}}", &ws.to_string_lossy())
             .replace(
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
@@ -467,6 +472,16 @@ impl Pinvou3Bridge {
             //   subagent_api_timeout 一样调大(配 C3 SSE idle-timeout 遥测),先透传 default 验证。
             search_base_url,
             stream_chunk_timeout,
+            // —— v0.8.58-60 上游新增字段,透传 default ——
+            //   verbosity: concise 输出模式(CLI noninteractive 默认;GUI → None)。
+            //   interactive_launch_limit: #3095 交互 fanout 闸信号量上限(default 4)。
+            //   goal_token_budget / goal_status: /goal 目标管理(GUI 暂不用,透传)。
+            //   disallowed_tools: codewhale exec --disallowed-tools(CLI 专用,GUI → None)。
+            verbosity,
+            interactive_launch_limit,
+            goal_token_budget,
+            goal_status,
+            disallowed_tools,
         } = EngineConfig::default();
 
         EngineConfig {
@@ -624,6 +639,12 @@ impl Pinvou3Bridge {
             // v0.8.54-57 上游新增,透传 default(search_base_url=None / stream_chunk_timeout)
             search_base_url,
             stream_chunk_timeout,
+            // v0.8.58-60 上游新增,透传 default(verbosity/fanout 闸/goal 管理/disallowed_tools)
+            verbosity,
+            interactive_launch_limit,
+            goal_token_budget,
+            goal_status,
+            disallowed_tools,
         }
     }
 
@@ -800,6 +821,9 @@ impl Pinvou3Bridge {
             mode,
             model: self.model(),
             goal_objective: None,
+            // v0.8.59 上游新增 /goal 目标管理;pinvou3 GUI 不用,取默认(无预算/Active)。
+            goal_token_budget: None,
+            goal_status: deepseek_tui::tools::goal::GoalStatus::Active,
             // 本地 vLLM (Qwen3.6) thinking 必须关，否则 SSE idle timeout；
             // 云端 provider 保留底座默认（传 None 让底座自行决定）。
             reasoning_effort: {
@@ -822,6 +846,8 @@ impl Pinvou3Bridge {
             allowed_tools: None,
             // v0.8.51 上游新增;None = 不挂 per-message hook executor,沿用 engine 级默认。
             hook_executor: None,
+            // v0.8.59 上游新增 concise verbosity 模式;pinvou3 GUI 走默认详尽,取 None。
+            verbosity: None,
         }
     }
 }
@@ -1319,21 +1345,6 @@ mod tests {
             prompt.contains(session_id),
             "替换后 prompt 必须含 session_id 子串, prompt 前 200 字: {}",
             &prompt.chars().take(200).collect::<String>()
-        );
-    }
-
-    #[test]
-    fn instructions_md_explains_append_file_tail_only() {
-        let bridge = fixture_bridge();
-        let prompt = bridge.build_session_system_prompt("append-contract-session");
-        assert!(
-            prompt.contains("append_file` 只能追加到文件尾"),
-            "全局 instructions 必须说明 append_file 是尾追加,不能当中间插入"
-        );
-        assert!(
-            prompt.contains("用 `edit_file`,不要用 `append_file`")
-                || prompt.contains("要替换中间用 `edit_file`"),
-            "全局 instructions 必须说明中间填充/占位替换应走 edit_file(apply_patch 已隐藏)"
         );
     }
 

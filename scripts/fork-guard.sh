@@ -49,6 +49,7 @@ fingerprints=(
   "    |PROJECT_CONTEXT_FILES 砍空(C 终态)  |DeepSeek-TUI/crates/tui/src/project_context.rs|PROJECT_CONTEXT_FILES: &[&str] = &[]"
   "    |GLOBAL_PATHS 砍空                   |DeepSeek-TUI/crates/tui/src/project_context.rs|const GLOBAL_PATHS: &[&[&str]] = &[]"
   "53  |constitution.json loader 短路       |DeepSeek-TUI/crates/tui/src/project_context.rs|v0.8.53 上游引入 \`.codewhale/constitution.json\`"
+  "    |generate_ephemeral_context 砍空(C5) |DeepSeek-TUI/crates/tui/src/project_context.rs|[pinvou3-fork C5] 砍空返 None"
   "#42 |static composer hook(密封静态层)   |DeepSeek-TUI/crates/tui/src/prompts.rs|pub fn set_static_prompt_composer_override"
   "#42 |ContextMgmt/COMPACT 受 composer gate|DeepSeek-TUI/crates/tui/src/prompts.rs|static_prompt_composer().is_none()"
   "#42 |Runtime Policy Ref 受 composer gate |DeepSeek-TUI/crates/tui/src/prompts.rs|Policy Reference(agent/plan/yolo"
@@ -63,18 +64,22 @@ fingerprints=(
   "W6  |SubAgent Mailbox 信封           |DeepSeek-TUI/crates/tui/src/tools/subagent/mailbox.rs|pub struct MailboxEnvelope {"
   "W7  |SubAgent 贪心解码 temp=0        |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|const SUBAGENT_TEMPERATURE: f32 = 0.0;"
   "W8  |SubAgent web/custom 工具面      |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|with_full_agent_surface("
-  "W9  |read_pdf catch_unwind 防 panic  |DeepSeek-TUI/crates/tui/src/tools/file.rs|[pinvou3-fork] catch_unwind prevents pdf-extract font/CMap panics"
+  # W9 read_pdf catch_unwind 于 v0.8.60 sync 被上游 harvest(guard_pdf_extract,
+  # file.rs:447 同语义 catch_unwind 辅助函数;char-boundary 部分也已是上游自带)→ 撤指纹。
   "W10 |reasoning_effort 会话初始注入   |DeepSeek-TUI/crates/tui/src/core/engine.rs|session.reasoning_effort = config.reasoning_effort"
   "W11 |submit_output 成功即 break 收工 |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|if output_schema.is_some() && output_submitted.is_some()"
   "W12 |registry max_steps per-spawn 生效|DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|options.max_steps.unwrap_or(self.max_steps)"
   # —— app 层 fork(pinvou3-app)——
   "#18b|bridge 透传 fake-ip 信任段      |pinvou3-app/src-tauri/src/bridge/mod.rs|with_trusted_fakeip_cidrs"
   "#16 |bridge subagent_api_timeout 300 |pinvou3-app/src-tauri/src/bridge/mod.rs|from_secs(300)"
-  "#36 |Constitution 改 PINVOU3 brand      |pinvou3-app/src-tauri/resources/bundle/base.md|CONSTITUTION OF PINVOU3"
-  "#36 |Brother Whale preamble 已删         |pinvou3-app/src-tauri/resources/bundle/base.md|running inside pinvou3"
-  "#43 |冲突裁决三行(九层 tier 体系已删)    |pinvou3-app/src-tauri/resources/bundle/base.md|### When directives conflict"
+  # main #14 prompt 单一来源重构:宪法/裁决/Authority 从 base.md 折叠进 instructions.md,
+  # compose 丢弃 base(静态层只剩 Mode)→ 原 base.md 的 3 个指纹失效,改指向新落点。
+  "#36 |宪法核心折叠进 instructions(单一来源)|pinvou3-app/src-tauri/resources/bundle/instructions.md|权威顺序"
+  "#43 |compose 丢弃 base,静态层只剩 Mode   |pinvou3-app/src-tauri/src/bridge/bundle.rs|静态层只剩 Mode"
+  "    |敏感目录 deny hook hard-deny exit 2 |pinvou3-app/src-tauri/resources/bundle/deny_sensitive_paths.sh|hard-deny 必须 **exit 2**"
   "#37 |LOCALE_PREAMBLE_ZH_HANS 短版        |pinvou3-app/src-tauri/src/bridge/bundle.rs|pinvou3 界面语言为简体中文"
-  "#38 |AUTHORITY_RECAP 短版(Final Reminder)|pinvou3-app/src-tauri/src/bridge/bundle.rs|## Final Reminder"
+  "#38 |AUTHORITY_RECAP 清空(已折叠 instr)  |pinvou3-app/src-tauri/src/bridge/bundle.rs|Authority Recap（Final Reminder）清空"
+  "#45 |instructions 动态注入 model 名      |pinvou3-app/src-tauri/src/bridge/mod.rs|{{PINVOU3_MODEL}}"
   "    |C 方案 pinvou3 注入 Inline          |pinvou3-app/src-tauri/src/bridge/mod.rs|fn session_instructions(&self, session_id: &str) -> Vec<InstructionSource>"
   "#42 |app 装静态层 composer               |pinvou3-app/src-tauri/src/bridge/bundle.rs|set_static_prompt_composer_override"
   "#42 |pinvou3 Mode/compact 静态层文案     |pinvou3-app/src-tauri/src/bridge/bundle.rs|pub fn compose_static_layers"
