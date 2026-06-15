@@ -113,6 +113,60 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
     ]
 }
 
+/// 允许 `install_dependencies` 安装的包白名单 —— 必须与 `check_dependencies` 各项的
+/// `apt` 字段保持一致。前端传回的包名先过这张白名单，防止被篡改成任意命令喂给 root apt。
+const KNOWN_DEP_PACKAGES: &[&str] = &[
+    "poppler-utils",
+    "pandoc",
+    "libreoffice",
+    "tesseract-ocr",
+    "tesseract-ocr-chi-sim",
+    "p7zip-full",
+    "python3",
+    "libemail-outlook-message-perl",
+];
+
+/// 体检卡「一键安装」：pkexec 提权 apt 安装缺失的依赖包。包名必须全在
+/// `KNOWN_DEP_PACKAGES` 白名单内（前端从 check_dependencies 收集，但仍后端校验）。
+/// 与 updater::install_update 同套路：blocking 线程跑 pkexec，透传 apt stderr 真因。
+#[tauri::command]
+pub async fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
+    if packages.is_empty() {
+        return Err("没有需要安装的依赖".into());
+    }
+    for p in &packages {
+        if !KNOWN_DEP_PACKAGES.contains(&p.as_str()) {
+            return Err(format!("非法包名（不在依赖白名单内）: {p}"));
+        }
+    }
+    // 包名已白名单校验（只含 [a-z0-9.+-]），拼进 sh -c 无注入面。
+    let script = format!(
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y {}",
+        packages.join(" ")
+    );
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new("pkexec").args(["sh", "-c", &script]).output()
+    })
+    .await
+    .map_err(|e| format!("安装任务失败: {e}"))?
+    .map_err(|e| format!("pkexec 启动失败: {e}"))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+    let code = output.status.code().unwrap_or(-1);
+    Err(match code {
+        126 => "用户取消授权".to_string(),
+        127 => "未授权或 pkexec 不可用".to_string(),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let tail: Vec<&str> = stderr.lines().rev().take(4).collect();
+            let tail: Vec<&str> = tail.into_iter().rev().collect();
+            format!("安装失败 (exit {code}): {}", tail.join(" / "))
+        }
+    })
+}
+
 /// tesseract 的 `-l` 语言参数。pinvou3 面向国内政企，中文是刚需，所以优先
 /// `chi_sim+eng`；若没装中文包(`tesseract-ocr-chi-sim`)则降级 `eng`，不报错。
 /// 探测一次缓存：跑 `tesseract --list-langs` 看输出里有没有 `chi_sim`。

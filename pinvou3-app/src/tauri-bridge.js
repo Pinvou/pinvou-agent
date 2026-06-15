@@ -127,6 +127,8 @@
     // 依赖体检(设置页): deps = [{key, installed, apt}], null = 尚未检测
     deps: null,
     depsChecking: false,
+    depsInstalling: false,    // 一键安装进行中(pkexec apt)
+    depsInstallError: null,   // 安装失败原因(apt stderr 透传/取消/pkexec 不可用)
   };
   // 卡片池 1078 张卡的前端缓存。只读,通过 getPersonas() 取引用,不走 notify 快照。
   var personaPoolCache = [];
@@ -2117,11 +2119,31 @@
   // 设置页展示缺失项 + 一键 apt 命令。后端 check_dependencies 不走缓存,装完可复检。
   async function checkDependencies() {
     if (state.depsChecking) return;
-    state.depsChecking = true; notify();
+    state.depsChecking = true; state.depsInstallError = null; notify();
     try {
       state.deps = await invoke("check_dependencies");
     } catch (e) { state.deps = []; }
     state.depsChecking = false; notify();
+  }
+  // 一键安装缺失依赖: 收集缺失项的包名 → 后端 pkexec apt 提权安装 → 装完实时重检。
+  async function installDependencies() {
+    var deps = state.deps || [];
+    var missing = deps.filter(function (d) { return !d.installed; });
+    if (!missing.length || state.depsInstalling) return;
+    var pkgs = [];
+    missing.forEach(function (d) {
+      String(d.apt).split(/\s+/).forEach(function (p) {
+        if (p && pkgs.indexOf(p) < 0) pkgs.push(p);
+      });
+    });
+    state.depsInstalling = true; state.depsInstallError = null; notify();
+    try {
+      await invoke("install_dependencies", { packages: pkgs });
+      state.deps = await invoke("check_dependencies"); // 装完实时重检,缺失项应清空
+    } catch (e) {
+      state.depsInstallError = String(e);
+    }
+    state.depsInstalling = false; notify();
   }
 
   // ── skill 工作流：动作（invoke 包装）[2026-06-06 恢复] ────────────
@@ -2388,6 +2410,7 @@
     cancelUpdate: cancelUpdate,
     restartApp: restartApp,
     checkDependencies: checkDependencies,
+    installDependencies: installDependencies,
   };
 
   // Auto-init after DOM ready
