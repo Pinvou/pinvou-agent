@@ -32,7 +32,9 @@ fn snapshot_from_values(
     let used_phys_bytes = total_phys_bytes.saturating_sub(avail_phys_bytes);
     let used_commit_bytes = total_pagefile_bytes.saturating_sub(avail_pagefile_bytes);
     let swap_total_bytes = total_pagefile_bytes.saturating_sub(total_phys_bytes);
-    let swap_used_bytes = used_commit_bytes.saturating_sub(used_phys_bytes).min(swap_total_bytes);
+    let swap_used_bytes = used_commit_bytes
+        .saturating_sub(used_phys_bytes)
+        .min(swap_total_bytes);
 
     Some(RamSnapshot {
         total_kib: bytes_to_kib(total_phys_bytes),

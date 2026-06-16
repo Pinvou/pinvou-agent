@@ -124,6 +124,12 @@ pub fn updates_dir() -> PathBuf {
     pinvou3_home().join("updates")
 }
 
+/// `~/.pinvou3/updates/update-feedback.json` —— Windows OTA 安装器启动后
+/// 跨进程保留的待反馈记录。Linux .deb 更新不使用此文件。
+pub fn update_feedback_record_path() -> PathBuf {
+    updates_dir().join("update-feedback.json")
+}
+
 /// `~/.pinvou3/sessions/<session_id>/artifacts/` —— AI 默认产物落地目录。
 /// `$PINVOU3_SESSION_ARTIFACTS` 环境变量注入这个值给 engine + LLM。
 pub fn session_artifacts_dir(session_id: &str) -> PathBuf {
@@ -221,10 +227,7 @@ pub(crate) mod tests {
         let prev = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-wf-paths-test");
         let root = crate::os::platform_compat_path("/tmp/pinvou3-wf-paths-test");
-        assert_eq!(
-            workflows_root(),
-            root.join("workflows")
-        );
+        assert_eq!(workflows_root(), root.join("workflows"));
         assert_eq!(
             workflow_run_dir("wf-20260610-1432-a3f9"),
             root.join("workflows").join("wf-20260610-1432-a3f9")

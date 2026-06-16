@@ -248,6 +248,7 @@
         downloadInstall: '下载并安装', downloading: '下载中…', installing: '安装中…',
         cancel: '取消', cancelling: '取消中…',
         updateComplete: '升级完成，重启后生效', restartNow: '立即重启',
+        updateInstallerStarted: '安装器已启动，应用将自动退出',
         updateCheckFailed: '检查失败',
         depCheckTitle: '依赖体检', depChecking: '检测中…', depRecheck: '重新检测',
         depAllOk: '所有依赖项已就绪', depMissingSuffix: ' 项依赖缺失（对应能力将不可用）',
@@ -410,6 +411,7 @@
         downloadInstall: 'Download & Install', downloading: 'Downloading…', installing: 'Installing…',
         cancel: 'Cancel', cancelling: 'Cancelling…',
         updateComplete: 'Update complete, restart to apply', restartNow: 'Restart Now',
+        updateInstallerStarted: 'Installer started, the app will close automatically',
         updateCheckFailed: 'Check failed',
         depCheckTitle: 'Dependency Check', depChecking: 'Checking…', depRecheck: 'Re-check',
         depAllOk: 'All dependencies ready', depMissingSuffix: ' dependency group(s) missing (those features unavailable)',
@@ -572,6 +574,7 @@
         downloadInstall: 'ダウンロードしてインストール', downloading: 'ダウンロード中…', installing: 'インストール中…',
         cancel: 'キャンセル', cancelling: 'キャンセル中…',
         updateComplete: '更新が完了しました。再起動後に有効になります', restartNow: '今すぐ再起動',
+        updateInstallerStarted: 'インストーラーを起動しました。アプリは自動終了します',
         updateCheckFailed: '確認に失敗しました',
         depCheckTitle: '依存関係チェック', depChecking: '確認中…', depRecheck: '再チェック',
         depAllOk: 'すべての依存関係が準備済み', depMissingSuffix: ' 件の依存が不足（該当機能は利用不可）',
@@ -1743,7 +1746,7 @@
                 </div>
               </SCard>
 
-              {/* 版本与更新: 链路 检查 → 下载(进度) → pkexec 安装 → 重启 */}
+              {/* 版本与更新: Linux 检查→下载 deb→安装→重启;Windows 检查→下载 zip→启动 MSI→退出 */}
               <SCard isDark={isDark} title={t.versionUpdate}>
                 {(() => {
                   const upd = bs && bs.updateInfo;
@@ -1752,6 +1755,7 @@
                   const ready = !!(bs && bs.updateReady);
                   const progress = (bs && bs.updateProgress) || 0;
                   const subText = isDark ? 'text-[#C4C7C5]' : 'text-[#444746]';
+                  const isWindowsUpdate = !!(upd && upd.platform === 'windows');
                   return (
                     <div>
                       <div className="flex items-center justify-between">
@@ -1788,14 +1792,16 @@
 
                           {ready ? (
                             <div className="flex items-center justify-between">
-                              <span className="text-[14px]">✅ {t.updateComplete}</span>
-                              <button
-                                onClick={() => bridge.available && bridge.restartApp()}
-                                className={`text-[12px] font-medium px-4 py-2 rounded-full whitespace-nowrap transition-colors ${
-                                  isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]'
-                                         : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'
-                                }`}
-                              >{t.restartNow}</button>
+                              <span className="text-[14px]">✅ {isWindowsUpdate ? t.updateInstallerStarted : t.updateComplete}</span>
+                              {!isWindowsUpdate && (
+                                <button
+                                  onClick={() => bridge.available && bridge.restartApp()}
+                                  className={`text-[12px] font-medium px-4 py-2 rounded-full whitespace-nowrap transition-colors ${
+                                    isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]'
+                                           : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'
+                                  }`}
+                                >{t.restartNow}</button>
+                              )}
                             </div>
                           ) : downloading ? (
                             <div>

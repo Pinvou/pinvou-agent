@@ -2111,15 +2111,20 @@
     }
     state.updateChecking = false; notify();
   }
-  // 下载+安装一条龙: 下载完 pkexec 弹系统密码框,装完置 updateReady 等用户点重启。
+  // 下载+安装一条龙: Linux 下载 deb 后 pkexec apt;Windows 下载 zip 后解析 MSI,
+  // 安装器启动成功后后端退出当前进程。
   async function downloadAndInstallUpdate() {
     if (!state.updateInfo || !state.updateInfo.available || state.updateDownloading) return;
     state.updateDownloading = true; state.updateCancelling = false;
     state.updateProgress = 0; state.updateError = null; notify();
     try {
-      var debPath = await invoke("download_update", { info: state.updateInfo });
+      var downloadResult = await invoke("download_update", { info: state.updateInfo });
       state.updateProgress = 100; notify();
-      await invoke("install_update", { debPath: debPath });
+      if (downloadResult && typeof downloadResult === "object" && downloadResult.installer_path) {
+        await invoke("install_update", { installerPath: downloadResult.installer_path, info: state.updateInfo });
+      } else {
+        await invoke("install_update", { debPath: downloadResult });
+      }
       state.updateReady = true;
     } catch (e) {
       // 用户主动取消下载时后端返回「已取消下载」,当正常处理不弹错误
@@ -2137,6 +2142,9 @@
   }
   function restartApp() {
     invoke("restart_app").catch(function () { /* restart 成功不会返回 */ });
+  }
+  function reportPendingUpdateResult() {
+    invoke("report_pending_update_result").catch(function () { /* 静默重试,不阻塞启动 */ });
   }
 
   // ── 依赖体检 ─────────────────────────────────────────────────────
@@ -2331,6 +2339,7 @@
     loadPersonas(); // 预载卡池(让聊天里草稿"已存入"判定能查到同名自制卡), fire-and-forget
     pollBackendStatus();
     setInterval(pollBackendStatus, 10000);
+    reportPendingUpdateResult(); // Windows OTA 升级后反馈,失败保留记录下次再试
     checkForUpdateSilently(); // fire-and-forget,不阻塞启动
     await resumeWorkflowOnBoot(); // [2026-06-06] 有进行中的工作流 run 就自动挂回看板
     notify();

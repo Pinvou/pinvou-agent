@@ -18,5 +18,9 @@ pub fn command_exists(command: &str) -> bool {
 }
 
 pub fn nvidia_smi_candidates() -> Vec<&'static str> {
-    vec!["nvidia-smi", "/usr/bin/nvidia-smi", "/usr/local/bin/nvidia-smi"]
+    vec![
+        "nvidia-smi",
+        "/usr/bin/nvidia-smi",
+        "/usr/local/bin/nvidia-smi",
+    ]
 }

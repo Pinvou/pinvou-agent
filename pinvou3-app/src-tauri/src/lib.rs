@@ -224,6 +224,7 @@ pub fn run() {
             updater::install_update,
             updater::restart_app,
             updater::cancel_download,
+            updater::report_pending_update_result,
             file_ingest::check_dependencies,
             file_ingest::install_dependencies,
             commands::list_marketplace_tools,

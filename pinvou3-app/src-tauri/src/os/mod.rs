@@ -16,8 +16,9 @@ pub(crate) use unsupported as platform;
 pub(crate) use windows as platform;
 
 pub use interface::{
-    check_update_platform_support, command_exists, disable_super_permission,
-    enable_super_permission, install_dependencies, install_update_package, nvidia_smi_candidates,
-    open_target, platform_compat_path, ram_snapshot, super_permission_is_enabled,
-    super_permission_turn_reminder, user_home_dir,
+    check_for_update_info, command_exists, disable_super_permission, download_update_package,
+    enable_super_permission, install_dependencies, install_downloaded_update,
+    nvidia_smi_candidates, open_target, platform_compat_path, ram_snapshot,
+    report_pending_update_result_info, super_permission_is_enabled, super_permission_turn_reminder,
+    user_home_dir,
 };
