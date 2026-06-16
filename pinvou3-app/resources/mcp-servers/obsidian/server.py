@@ -69,14 +69,15 @@ def _read_text(full):
 
 
 def _safe_join(vault, rel):
-    """把用户给的相对路径限制在 vault 内，防 .. 越界。返回绝对路径或 None。"""
+    """把用户给的相对路径限制在 vault 内，realpath 解析后防 .. 与 symlink 越界。返回绝对路径或 None。"""
     if not rel:
         return None
     rel = rel.strip().strip('"').strip("'").replace("\\", "/")
-    candidate = os.path.normpath(os.path.join(vault, rel))
-    vault_norm = os.path.normpath(vault)
-    # 必须仍在 vault 根目录之内
-    if candidate != vault_norm and not candidate.startswith(vault_norm + os.sep):
+    vault_real = os.path.realpath(vault)
+    # realpath 解析路径中的 symlink，防 vault 内 symlink 指向外部目录/文件越界
+    candidate = os.path.realpath(os.path.join(vault_real, rel))
+    # 必须仍在 vault 真实根目录之内
+    if candidate != vault_real and not candidate.startswith(vault_real + os.sep):
         return None
     return candidate
 
@@ -149,11 +150,13 @@ def read_note(path=""):
     if not os.path.isdir(vault):
         return {"error": "vault 路径不存在: %s" % vault}
 
-    full = _safe_join(vault, path)
+    # 先补 .md 后缀再做越界校验,确保 realpath 校验的是最终文件(防 .md 本身是越界 symlink)
+    p = (path or "").strip().strip('"').strip("'")
+    if p and not p.lower().endswith(".md"):
+        p += ".md"
+    full = _safe_join(vault, p)
     if full is None:
         return {"error": "非法路径（越界或为空）: %s" % path}
-    if not full.lower().endswith(".md"):
-        full += ".md"          # 容忍用户省略 .md 后缀
     if not os.path.isfile(full):
         return {"error": "笔记不存在: %s" % path}
 

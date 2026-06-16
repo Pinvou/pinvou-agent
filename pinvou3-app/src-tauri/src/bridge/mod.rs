@@ -19,7 +19,6 @@ pub mod prefs;
 pub mod sessions;
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use anyhow::Result;
 use deepseek_tui::config::{
