@@ -1,0 +1,22 @@
+{
+  "id": "obsidian",
+  "name": "Obsidian 知识库",
+  "description": "检索本机 Obsidian 笔记库（vault），让大模型引用你的个人知识。笔记不出本机。",
+  "version": "1.0.0",
+  "icon": "book-open",
+  "category": "知识库",
+  "mcp_tools": ["mcp_obsidian_search", "mcp_obsidian_read_note", "mcp_obsidian_list"],
+  "command": "python",
+  "args": ["server.py"],
+  "env": {},
+  "config_fields": [
+    { "key": "OBSIDIAN_VAULT_PATH", "label": "Obsidian 库（vault）文件夹路径", "required": true, "target": "env" }
+  ],
+  "routing_rules": [
+    "我的笔记/知识库/之前记过/我记录的/Obsidian/vault → 先用 `mcp_obsidian_search` 检索本地笔记，不要用 `web_search`"
+  ],
+  "tool_table_entries": [
+    "| 个人知识库 | `mcp_obsidian_search` 检索 / `mcp_obsidian_read_note` 读全文 / `mcp_obsidian_list` 列目录(本机 Obsidian) |"
+  ],
+  "pip_dependencies": []
+}

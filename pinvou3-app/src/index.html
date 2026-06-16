@@ -709,7 +709,7 @@
         <div data-tauri-drag-region
           className={`h-9 shrink-0 flex items-center justify-between select-none ${isDark ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`}>
           <div data-tauri-drag-region className="flex items-center gap-2 px-3 text-[13px] font-medium pointer-events-none">
-            <Sparkles size={15} className={isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'} />
+            <img src="brand-blue.png" width={18} height={18} alt="" className="select-none" />
             {t.appTitle}
           </div>
           <div className="flex items-center h-full">
@@ -873,9 +873,14 @@
         working: !!sessionBusy[s.id], // 多 session 并发:该 session 是否正在后台生成
       })) : [];
 
-      function handleNewChat() {
+      const [justInstalledTool, setJustInstalledTool] = useState(null);
+
+      function handleNewChat(installedToolId) {
         if (bridge.available) bridge.createNewSession();
         setCurrentView('chat');
+        if (installedToolId) {
+          setJustInstalledTool(installedToolId);
+        }
       }
 
       function handleSwitchSession(id) {
@@ -1015,7 +1020,6 @@
                 <Menu size={20} className={activeTheme === 'dark' ? 'text-[#E3E3E3]' : 'text-[#444746]'} />
               </button>
               <span className={`text-[18px] font-medium tracking-wide flex items-center gap-2 whitespace-nowrap transition-opacity duration-200 ${isSidebarOpen ? 'opacity-100' : 'opacity-0 w-0'}`}>
-                <Sparkles size={20} className={activeTheme === 'dark' ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'} />
                 PINVOU
               </span>
             </div>
@@ -1178,7 +1182,7 @@
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} />}
-            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} />}
+            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} />}
             {/* 草稿态(无 session)也渲染挂件,但强制空态——让欢迎页保留「＋加持卡牌」入口。
                 点它跳卡牌池,选卡时 equipPersona 会先物化 session(lazy session)。 */}
             {currentView === 'chat' && bs && (
@@ -1897,7 +1901,76 @@
     // ==========================================
     // Chat View (Gemini Centered Style + Messages)
     // ==========================================
-    const ChatView = ({ theme, t, bs, prefill, onPrefillConsumed, onOpenEditor }) => {
+    // 安装工具后新建会话弹出的介绍卡片（纯前端，不发 LLM query，点 chip 才发消息）
+    const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
+      const isDark = theme === 'dark';
+      const [hovered, setHovered] = useState(null);
+      const tool = tsToolsData.find(t => t.backendId === toolId);
+      if (!tool || !tool.welcomeQueries) return null;
+      const ToolIcon = tool.icon || Sparkles;
+      return (
+        <div className="flex justify-start">
+          <div className={`max-w-[800px] w-full rounded-[2rem] overflow-hidden border transition-all ${
+            isDark ? 'bg-[#1E1F20] border-[#3A3A3C]/60' : 'bg-white border-slate-100 shadow-lg shadow-slate-200/30'
+          }`}>
+            <div className={`relative p-5 border-b flex items-center gap-3.5 ${
+              isDark ? 'bg-[#1E1F20] border-[#3A3A3C]/60' : 'bg-gradient-to-b from-blue-50/80 to-white border-slate-100'
+            }`}>
+              <div className="bg-gradient-to-tr from-blue-600 to-indigo-500 p-2.5 rounded-xl shadow-lg shadow-blue-500/30">
+                <ToolIcon size={22} className="text-white" />
+              </div>
+              <div>
+                <div className={`text-[1.05rem] font-bold tracking-tight ${isDark ? 'text-slate-100' : 'text-slate-800'}`}>{tool.title}</div>
+                <div className={`flex items-center text-xs mt-0.5 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                  <span className="relative flex h-2 w-2 mr-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                  </span>
+                  系统已就绪
+                </div>
+              </div>
+            </div>
+            <div className="p-5">
+              <p className={`leading-relaxed text-[15px] ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>
+                {tool.desc.split('。')[0]}。自然语言提问即可。
+              </p>
+              <div className="flex items-center my-5">
+                <div className={`flex-grow h-px ${isDark ? 'bg-gradient-to-r from-transparent via-[#3A3A3C] to-transparent' : 'bg-gradient-to-r from-transparent via-slate-200 to-transparent'}`}></div>
+                <span className={`px-4 text-[11px] uppercase tracking-wider font-semibold flex items-center gap-1.5 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                  <Sparkles size={13} />
+                  <span>试试问我</span>
+                </span>
+                <div className={`flex-grow h-px ${isDark ? 'bg-gradient-to-r from-transparent via-[#3A3A3C] to-transparent' : 'bg-gradient-to-r from-transparent via-slate-200 to-transparent'}`}></div>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                {tool.welcomeQueries.map((q, i) => (
+                  <button
+                    key={i}
+                    onMouseEnter={() => setHovered(i)}
+                    onMouseLeave={() => setHovered(null)}
+                    onClick={() => onSend && onSend(q)}
+                    className={`group relative flex items-center justify-between p-3 rounded-2xl border text-left transition-all duration-200 ${
+                      hovered === i
+                        ? (isDark ? 'border-blue-500/30 bg-blue-500/10 shadow-sm' : 'border-blue-200/80 bg-blue-50/50 shadow-sm')
+                        : (isDark ? 'border-[#3A3A3C]/50 bg-[#2A2B2D]/30 hover:border-[#555]' : 'border-slate-200/60 bg-slate-50/30 hover:border-blue-200')
+                    }`}
+                  >
+                    <span className={`text-sm font-medium transition-colors ${
+                      hovered === i ? (isDark ? 'text-blue-300' : 'text-blue-700') : (isDark ? 'text-slate-300' : 'text-slate-700')
+                    }`}>{q}</span>
+                    <ChevronRight size={15} className={`transition-all duration-200 ${
+                      hovered === i ? (isDark ? 'text-blue-400 opacity-100' : 'text-blue-500 opacity-100') : 'opacity-0 -translate-x-2'
+                    }`} />
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const ChatView = ({ theme, t, bs, prefill, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool }) => {
       const isDark = theme === 'dark';
       const [inputText, setInputText] = useState('');
       const [artifactsOpen, setArtifactsOpen] = useState(false);
@@ -1925,6 +1998,15 @@
         const el = scrollRef.current;
         if (el) el.scrollTop = el.scrollHeight;
       }, [chatItems.length, chatItems[chatItems.length - 1]?.html]);
+
+      // 安装工具后新建会话 → 本地显示欢迎卡片（不发 LLM query，不浪费 token）
+      const [welcomeToolId, setWelcomeToolId] = useState(null);
+      useEffect(() => {
+        if (justInstalledTool) {
+          setWelcomeToolId(justInstalledTool);
+          if (setJustInstalledTool) setJustInstalledTool(null);
+        }
+      }, [justInstalledTool]);
 
       function handleSend() {
         // 不再因 busy 拦截:bridge.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
@@ -1987,12 +2069,25 @@
           {/* Main Chat Area */}
           <div ref={scrollRef} className={`flex-1 min-h-0 overflow-y-auto px-4 md:px-20 lg:px-40 pb-40 custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
 
-            {!hasMessages && (
+            {!hasMessages && !welcomeToolId && (
               /* Gemini Style Centered Empty State */
               <div className="text-center mb-12 animate-in slide-in-from-bottom-4 duration-500">
                 <h1 className={`text-[44px] font-normal mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
                   {t.chatGreeting}
                 </h1>
+              </div>
+            )}
+
+            {!hasMessages && welcomeToolId && (
+              <div className="max-w-[800px] w-full mx-auto mt-8">
+                <ToolWelcomeCard
+                  toolId={welcomeToolId}
+                  theme={theme}
+                  onSend={(q) => {
+                    setWelcomeToolId(null);
+                    if (bridge.available) bridge.sendMessage(q);
+                  }}
+                />
               </div>
             )}
 
@@ -2538,7 +2633,7 @@
       { id: 1, backendId: 'weather', title: '天气查询 MCP', subtitle: '高德地图实时天气与多日预报', category: 'mcp', type: 'MCP Server', version: 'v1.0.0', latency: '<50ms', desc: '通过高德地图 API 查询全国城市实时天气与未来多日预报。支持大模型自然语言调用，自动解析城市名，返回结构化天气数据并渲染可视化卡片。', icon: CloudSun, color: 'bg-gradient-to-b from-sky-400 to-blue-500', installed: false, authRequired: false, welcomeQueries: ['杭州今天天气', '北京这周会下雨吗', '上海明天穿什么'] },
       { id: 2, backendId: 'iwencai', title: '同花顺问财', subtitle: 'A股行情、财务、选股、宏观、新闻', category: 'finance', type: 'MCP Server', version: 'v1.0.0', latency: '<500ms', desc: '基于同花顺问财官方 API，提供 12 个金融查询工具：实时行情、财务数据、多条件选股、宏观经济、指数行情、行业数据、公告搜索等。自然语言查询，无需记股票代码。', icon: LineChart, color: 'bg-gradient-to-b from-red-400 to-red-600', installed: false, authRequired: false, welcomeQueries: ['茅台最新股价', '今天大盘怎么样', '市盈率低于10的银行股', '最近降息新闻'] },
       { id: 3, backendId: null, title: 'QQ邮箱 API', subtitle: '智能邮件收发与线程提炼', category: 'comm', type: 'REST API', version: 'v1.4.2', latency: '<120ms', desc: '提供标准的邮件收发、搜索和整理接口。结合大模型可实现自然语言读取邮件内容、汇总长线程对话、自动归档管理文件夹。', icon: Mail, color: 'bg-gradient-to-b from-amber-400 to-orange-500', installed: false, authRequired: true },
-      { id: 4, backendId: null, title: 'ima 知识库 Plugin', subtitle: '下一代企业级 AI 知识大脑', category: 'mcp', type: 'Native Skill', version: 'v3.0.0', latency: '<30ms', desc: '官方底层集成的知识库检索插件。支持大模型高精度引用知识库资料及文件，生成带溯源链接的回答。让团队知识沉淀与获取变得前所未有的简单。', icon: BookOpen, color: 'bg-gradient-to-b from-slate-100 to-slate-300 dark:from-slate-700 dark:to-slate-800 text-slate-800 dark:text-white border border-slate-200 dark:border-slate-600', installed: false, authRequired: false },
+      { id: 4, backendId: null, title: 'ima 知识库', subtitle: '腾讯云端 AI 知识库（接入中）', category: 'kb', type: 'Cloud RAG', version: '—', latency: '云端', desc: '腾讯 ima 云端知识库，提供海量文档检索与带溯源的问答能力。云端服务，数据在腾讯云。官方开放 API 尚未发布，待其正式开放后提供登录授权集成（当前为占位，暂不可安装）。', icon: BookOpen, color: 'bg-gradient-to-b from-slate-100 to-slate-300 dark:from-slate-700 dark:to-slate-800 text-slate-800 dark:text-white border border-slate-200 dark:border-slate-600', installed: false, authRequired: false },
       { id: 5, backendId: null, title: '乐享文档连接器', subtitle: '企业知识文档全量检索', category: 'comm', type: 'Webhook/API', version: 'v1.1.0', latency: '<80ms', desc: '支持通过 API 搜索、创建和管理乐享知识库中的文档。支持批量导入 Markdown、按标签整理内容、实时订阅团队文档的更新动态。', icon: Hexagon, color: 'bg-gradient-to-b from-blue-400 to-blue-600', installed: false, authRequired: true },
       { id: 6, backendId: null, title: '腾讯文档 MCP', subtitle: '多人实时在线协作协议', category: 'mcp', type: 'MCP Server', version: 'v1.0.5', latency: '<60ms', desc: '将腾讯文档能力接入 AI。允许大模型读取、分析甚至辅助编写在线表格、文档和幻灯片，轻松完成跨维度的内容查询与数据分析。', icon: FileText, color: 'bg-gradient-to-b from-blue-500 to-indigo-600', installed: false, authRequired: true },
       { id: 7, backendId: null, title: '腾讯会议助手', subtitle: '云视频会议自动化管控', category: 'comm', type: 'Action Skill', version: 'v2.2.1', latency: '<100ms', desc: '赋予 AI 调度会议室的能力。通过指令自动预定、查询和管理腾讯会议。支持一键发起会议、分发会议纪要、智能管理参会人员。', icon: Video, color: 'bg-gradient-to-b from-sky-400 to-blue-500', installed: false, authRequired: true },
@@ -2548,6 +2643,7 @@
       { id: 11, backendId: null, title: 'TAPD 敏捷研发', subtitle: '缺陷与迭代的自动化追踪', category: 'dev', type: 'Action Skill', version: 'v2.8.0', latency: '<60ms', desc: '研发管理核心工具。允许 AI 查询项目迭代进度、自动拆分需求条目、更新缺陷状态，实现从需求到发布的研发全生命周期数字化。', icon: Layout, color: 'bg-gradient-to-b from-violet-500 to-fuchsia-600', installed: false, authRequired: true },
       { id: 12, backendId: null, title: 'CNB 云原生管线', subtitle: '代码仓库与 CI/CD 调度', category: 'dev', type: 'MCP Server', version: 'v1.0.0', latency: '<40ms', desc: '将云原生开发能力赋予大模型。支持通过自然语言进行代码仓库检索、提交 Issue、审查 PR、触发并监控流水线部署等极客操作。', icon: Code, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: true },
       { id: 13, backendId: 'qcc', title: '企查查', subtitle: '企业工商、风控、知产、经营数据查询', category: 'finance', type: 'MCP Server', version: 'v1.0.0', latency: '<500ms', desc: '接入企查查智能体数据平台，提供182个企业数据查询工具，覆盖工商登记、股东结构、风险预警、知识产权、招投标等六大模块。', icon: Building2, color: 'bg-gradient-to-br from-blue-600 to-cyan-500', installed: false, authRequired: false, welcomeQueries: ['查一下华为的工商信息', '腾讯有哪些风险预警', '比亚迪的专利有多少', '阿里巴巴的招投标记录'] },
+      { id: 14, backendId: 'obsidian', title: 'Obsidian 知识库', subtitle: '检索本机 Obsidian 笔记，引用你的个人知识', category: 'kb', type: 'MCP Server', version: 'v1.0.0', latency: '<30ms', desc: '把你本机的 Obsidian 笔记库（vault）接入大模型。支持全文检索、读取笔记全文、按目录/标签浏览，让 AI 基于你自己沉淀的知识作答。笔记不出本机、模型也在本机，知识与算力全链路不出域。', icon: BookOpen, color: 'bg-gradient-to-b from-violet-500 to-purple-700', installed: false, authRequired: true, configFields: [{ key: 'OBSIDIAN_VAULT_PATH', label: 'Obsidian 库（vault）文件夹路径', placeholder: 'C:\\Users\\你\\Documents\\我的笔记', helpText: '在 Obsidian 里打开「设置 → 关于」或库切换器可看到库的真实路径，复制粘贴到这里即可。' }], welcomeQueries: ['我笔记里关于会议纪要的内容', '总结一下我的读书笔记', '帮我找之前写的项目方案', '我的笔记里有哪些待办'] },
     ];
 
     const weatherIconSvg = (code) => {
@@ -2683,6 +2779,7 @@
       { id: 'comm', label: '协作办公' },
       { id: 'dev', label: '研发治理' },
       { id: 'finance', label: '金融数据' },
+      { id: 'kb', label: '知识库' },
     ];
 
     const tsFeaturedCollections = [
@@ -2824,7 +2921,7 @@
                   </label>
                   <input
                     type="text"
-                    placeholder="sk-..."
+                    placeholder={field.placeholder || "sk-..."}
                     value={values[field.key] || ''}
                     onChange={e => setValues(v => ({ ...v, [field.key]: e.target.value }))}
                     className={`w-full px-3 py-2 rounded-lg text-[14px] outline-none transition-colors ${
