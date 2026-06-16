@@ -52,3 +52,6 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 # File watcher：监听 ~/.pinvou3/sessions/*/workspace/ 新文件产出，
 # 自动入 session.artifacts (覆盖 write_file 之外的工具如 exec_shell pandoc 产出的 docx)
 notify = "6"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }

@@ -4677,6 +4677,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-log",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
