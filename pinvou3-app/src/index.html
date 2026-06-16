@@ -2094,10 +2094,14 @@
             {hasMessages && (
               <div className="max-w-[800px] w-full mx-auto space-y-4">
                 {(() => {
-                  let lastArtId = null; // 只最新成品卡有品悟入口:历史卡召唤会审到最新文件、造成误导
-                  for (let ci = chatItems.length - 1; ci >= 0; ci--) { if (chatItems[ci].type === 'artifact_card') { lastArtId = chatItems[ci].id; break; } }
+                  // 每个产物 path 只在它最新的那张卡上挂品悟入口:不同文件各自最新卡都给入口
+                  // (一轮多产物都能审);同文件的旧卡不挂,避免"点老卡却审到磁盘最新态"的错位
+                  // (后端 focus 按 path 定向、审 workspace 当前文件)。
+                  const latestArtIdByPath = {};
+                  chatItems.forEach((it) => { if (it.type === 'artifact_card' && it.path) latestArtIdByPath[it.path] = it.id; });
+                  const latestArtIds = new Set(Object.values(latestArtIdByPath));
                   return chatItems.map((item) => (
-                    <ChatBubble key={item.id} item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} editable={!busy && item.id === lastUserId} onOpenEditor={onOpenEditor} isLatestArtifact={item.id === lastArtId} />
+                    <ChatBubble key={item.id} item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} editable={!busy && item.id === lastUserId} onOpenEditor={onOpenEditor} isLatestArtifact={latestArtIds.has(item.id)} />
                   ));
                 })()}
                 {busy && <ThinkingBubble thinking={bs && bs.thinking} theme={theme} t={t} />}
