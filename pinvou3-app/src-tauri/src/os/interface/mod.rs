@@ -1,10 +1,12 @@
-﻿mod dependency;
+mod dependency;
+mod memory;
 mod path;
 mod permission;
 mod system;
 mod update;
 
 pub use dependency::install_dependencies;
+pub use memory::ram_snapshot;
 pub use path::{platform_compat_path, user_home_dir};
 pub use permission::{
     disable_super_permission, enable_super_permission, super_permission_is_enabled,
