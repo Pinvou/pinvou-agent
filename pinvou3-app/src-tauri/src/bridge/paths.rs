@@ -11,67 +11,13 @@ use std::path::PathBuf;
 /// AI 通过相对路径访问 → 落在家目录下；通过绝对路径访问 → trust_mode 放行
 /// 但敏感子目录由 path filter / instructions 引导拦截。
 pub fn user_home_dir() -> PathBuf {
-    #[cfg(windows)]
-    {
-        if let Ok(home) = std::env::var("USERPROFILE") {
-            if !home.trim().is_empty() {
-                return PathBuf::from(home);
-            }
-        }
-        if let (Ok(drive), Ok(path)) = (std::env::var("HOMEDRIVE"), std::env::var("HOMEPATH")) {
-            let home = format!("{drive}{path}");
-            if !home.trim().is_empty() {
-                return PathBuf::from(home);
-            }
-        }
-        if let Ok(home) = std::env::var("HOME") {
-            if !home.trim().is_empty() {
-                return windows_compat_path(&home);
-            }
-        }
-        std::env::temp_dir()
-    }
-    #[cfg(not(windows))]
-    {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        PathBuf::from(home)
-    }
-}
-
-#[cfg(windows)]
-fn platform_compat_path(value: &str) -> PathBuf {
-    windows_compat_path(value)
-}
-
-#[cfg(not(windows))]
-fn platform_compat_path(value: &str) -> PathBuf {
-    PathBuf::from(value)
-}
-
-#[cfg(windows)]
-fn windows_compat_path(value: &str) -> PathBuf {
-    // 兼容测试和类 Unix 环境里常见的 /tmp/...，避免 Windows 下变成
-    // “rooted but no prefix”的路径并被 SessionManager 拒绝。
-    let trimmed = value.trim();
-    let normalized = trimmed.replace('\\', "/");
-    if normalized == "/tmp" || normalized.starts_with("/tmp/") {
-        let rest = normalized
-            .trim_start_matches("/tmp")
-            .trim_start_matches('/');
-        return if rest.is_empty() {
-            std::env::temp_dir()
-        } else {
-            std::env::temp_dir().join(rest.replace('/', "\\"))
-        };
-    }
-
-    PathBuf::from(trimmed)
+    crate::os::user_home_dir()
 }
 
 /// `~/.pinvou3/` 根目录。
 pub fn pinvou3_home() -> PathBuf {
     if let Ok(custom) = std::env::var("PINVOU3_HOME") {
-        return platform_compat_path(&custom);
+        return crate::os::platform_compat_path(&custom);
     }
     user_home_dir().join(".pinvou3")
 }
@@ -250,11 +196,11 @@ pub(crate) mod tests {
         std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-test-override");
         assert_eq!(
             pinvou3_home(),
-            platform_compat_path("/tmp/pinvou3-test-override")
+            crate::os::platform_compat_path("/tmp/pinvou3-test-override")
         );
         assert_eq!(
             settings_path(),
-            platform_compat_path("/tmp/pinvou3-test-override").join("settings.json")
+            crate::os::platform_compat_path("/tmp/pinvou3-test-override").join("settings.json")
         );
         match prev {
             Some(v) => std::env::set_var("PINVOU3_HOME", v),
@@ -265,31 +211,7 @@ pub(crate) mod tests {
     /// `user_home_dir` 应该读 $HOME（pinvou3 engine workspace 之根）。
     #[test]
     fn user_home_dir_reads_home_env() {
-        #[cfg(windows)]
-        if let Ok(h) = std::env::var("USERPROFILE") {
-            assert_eq!(user_home_dir(), PathBuf::from(h));
-        }
-        #[cfg(not(windows))]
-        if let Ok(h) = std::env::var("HOME") {
-            assert_eq!(user_home_dir(), PathBuf::from(h));
-        }
-        // 没设 HOME 时 fallback /tmp（不强测，避免 race）
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_unix_tmp_override_maps_to_real_temp_dir() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-test-override");
-        assert_eq!(
-            pinvou3_home(),
-            std::env::temp_dir().join("pinvou3-test-override")
-        );
-        match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
-        }
+        assert!(!user_home_dir().as_os_str().is_empty());
     }
 
     /// workflow run 目录族必须落在 ~/.pinvou3/workflows/ 下（独立于 sessions/）。
@@ -298,7 +220,7 @@ pub(crate) mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-wf-paths-test");
-        let root = platform_compat_path("/tmp/pinvou3-wf-paths-test");
+        let root = crate::os::platform_compat_path("/tmp/pinvou3-wf-paths-test");
         assert_eq!(
             workflows_root(),
             root.join("workflows")
@@ -329,7 +251,7 @@ pub(crate) mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-artifacts-layout-test");
-        let root = platform_compat_path("/tmp/pinvou3-artifacts-layout-test");
+        let root = crate::os::platform_compat_path("/tmp/pinvou3-artifacts-layout-test");
         assert_eq!(
             session_artifacts_dir("abc123"),
             root.join("sessions").join("abc123").join("artifacts")
