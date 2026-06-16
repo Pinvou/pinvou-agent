@@ -1630,7 +1630,7 @@
           ? (snap.vllm.tpot_count / snap.vllm.tpot_sum_s).toFixed(1) + " tok/s" : "—",
         vllmTokTotal: snap.vllm && snap.vllm.generation_tokens_total != null
           ? fmtTok(snap.vllm.generation_tokens_total) + " / " + fmtTok(snap.vllm.prompt_tokens_total) : "—",
-        appVersion: snap.app ? snap.app.pinvou3_version : "—",
+        appVersion: snap.app ? snap.app.pinvou3_version + " (内测版)" : "—",
         dtVersion: snap.app ? snap.app.deepseek_tui_version : "—",
         uptime: snap.app ? fmtDuration(snap.app.session_uptime_secs) : "—",
         updatedAt: snap.generated_at_ms ? new Date(snap.generated_at_ms).toLocaleTimeString() : "—",
