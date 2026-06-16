@@ -1999,14 +1999,21 @@
         if (el) el.scrollTop = el.scrollHeight;
       }, [chatItems.length, chatItems[chatItems.length - 1]?.html]);
 
-      // 安装工具后新建会话 → 本地显示欢迎卡片（不发 LLM query，不浪费 token）
+      // 安装工具后新建会话 → 本地显示欢迎卡片（不发 LLM query，不浪费 token）。
+      // welcomeToolId 是一次性引导态,必须跟随会话身份:只有"装完工具"(justInstalledTool 非
+      // null)才显示;其余任何新建对话/切换会话(activeSessionId 变)都清掉,否则残留的工具卡会
+      // 顶掉「你好」欢迎语(该 tool 无 welcomeQueries 时 ToolWelcomeCard 渲染 null → 整块空白)。
+      // 设置与清空收进同一 effect,按 justInstalledTool 优先,避免多 effect 同帧竞态。
       const [welcomeToolId, setWelcomeToolId] = useState(null);
+      const activeSessionId = bs ? bs.activeSessionId : null;
       useEffect(() => {
         if (justInstalledTool) {
           setWelcomeToolId(justInstalledTool);
           if (setJustInstalledTool) setJustInstalledTool(null);
+        } else {
+          setWelcomeToolId(null);
         }
-      }, [justInstalledTool]);
+      }, [justInstalledTool, activeSessionId]);
 
       function handleSend() {
         // 不再因 busy 拦截:bridge.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
