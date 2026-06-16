@@ -1448,8 +1448,10 @@
     try {
       var r = await invoke("find_resumable_run");
       if (r && r.session_id) {
-        await switchToSession(r.session_id);
-        await attachRun(r.session_id, true); // 启动恢复:僵死 running → stale,露出重跑按钮
+        // [方案A] 不再 switchToSession 劫持聊天会话——启动恒落干净草稿页。
+        // 只把工作流看板挂回(attachRun 填 state.workflow.run,不动 activeSessionId
+        // 也不切 currentView),用户主动切「工作流」tab 才看到那个 run。
+        await attachRun(r.session_id, true); // 僵死 running → stale,露出重跑按钮
       }
     } catch (e) { console.warn("resumeWorkflowOnBoot failed", e); }
   }

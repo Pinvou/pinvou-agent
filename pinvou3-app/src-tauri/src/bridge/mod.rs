@@ -451,8 +451,8 @@ impl Pinvou3Bridge {
             goal_state,
             tools_always_load,
             prefer_bwrap,
-            // pinvou3-fork 自定义:工作流监工白名单。普通 session = None(不限);
-            // workflow session 由 spawn_for_session 按 active_skill 覆盖。
+            // pinvou3-fork 自定义:tool_whitelist 通用白名单机制。监工废弃后(2026-06-15)
+            // 已无人设值,普通 + workflow session 均 None(不限),机制保留待用。
             tool_whitelist: _,
             // pinvou3-fork 自定义:会话初始思考开关(显式构造见下)
             reasoning_effort: _,
@@ -616,8 +616,8 @@ impl Pinvou3Bridge {
             goal_state,
             tools_always_load,
             prefer_bwrap,
-            // 普通 session 不限工具;workflow session 的监工白名单由
-            // spawn_for_session 按 active_skill 覆盖(见 supervisor_tool_whitelist)。
+            // tool_whitelist 通用机制保留但不再设值:对话型监工(品悟)白名单已废弃,
+            // SubAgent 角色工具由 agent_registry.json 约束。
             tool_whitelist: None,
             // 会话初始思考开关:本地 vLLM(Qwen3.6)必须关 thinking。
             // 关键:工作流会话只走 SpawnSubAgent、不发 SendMessage(对话型品悟
@@ -662,26 +662,6 @@ impl Pinvou3Bridge {
         cfg
     }
 
-    /// 构造 **workflow run 专属** [`EngineConfig`]（P0 spec §5-C4）：
-    /// workspace = run 的 project 目录本身；tool_whitelist 直给监工白名单
-    /// （不再依赖 active_skill 判断后由 spawn_for_session 覆盖）；instructions
-    /// 极简占位——宿主主 loop 永远沉默，真 prompt 全在 roles/*.md 随
-    /// SpawnSubAgent 注入，绝不挂聊天助手人格（防"提示词广告全套工具"类坑）。
-    ///
-    /// [`build_engine_config`]: Self::build_engine_config
-    #[allow(dead_code)] // P0 Task5 接线后删
-    pub fn build_engine_config_for_workflow(&self, run_id: &str) -> EngineConfig {
-        let mut cfg = self.build_engine_config();
-        cfg.workspace = paths::workflow_project_dir(run_id);
-        cfg.instructions = vec![InstructionSource::Inline {
-            name: format!("pinvou3:workflows/{run_id}/instructions"),
-            content: "你是工作流的沉默宿主引擎。所有工作通过 SubAgent 派发执行;\
-                      你自身不响应自由对话。"
-                .to_string(),
-        }];
-        cfg.tool_whitelist = Some(Self::supervisor_tool_whitelist());
-        cfg
-    }
 
     /// 构造 deepseek-tui 顶层 [`DtConfig`]：按 `ModelPreset` 动态路由 provider /
     /// model / base_url / api_key，注入敏感目录拦截 hook。
@@ -726,22 +706,6 @@ impl Pinvou3Bridge {
         cfg
     }
 
-    /// [pinvou3-fork] 工作流监工(品悟)的硬工具白名单 = 只读 + 评审。
-    ///
-    /// 信任根原则⑥:品悟在工作流里只做三件事 ① chat 报进展(纯文本,无需工具)
-    /// ② Loop 调它交代任务(Step B/E,纯文本) ③ Gate L2 评审交付物(读文件 / 看渲染图)。
-    /// 因此结构性砍掉 `write_file/edit_file/append_file/exec_shell/load_skill/agent_*`
-    /// 等一切写入·调度·spawn 类工具,使品悟**物理上无法**自演整个流程(假 dispatch 根因)。
-    /// 由 [`spawn_for_session`] 在 workflow session(active_skill 非空)装配 EngineConfig
-    /// 时施加;`tool_catalog::apply_tool_whitelist` 在每 turn 硬过滤 catalog。
-    ///
-    /// [`spawn_for_session`]: crate::engine::AppEngine::spawn_for_session
-    pub fn supervisor_tool_whitelist() -> std::collections::HashSet<String> {
-        ["read_file", "image_analyze", "update_plan"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
-    }
 
     /// 注入硬拦截 hook：ToolCallBefore 时 spawn 一个 shell 脚本检查 tool args
     /// 是否触碰敏感目录（~/.ssh / ~/.gnupg / ~/.aws / 等），命中 exit 1
@@ -1407,57 +1371,6 @@ mod tests {
         assert!(content_b.contains(b));
     }
 
-    /// P0 run 实体化（spec §5-C4）：workflow run 的 EngineConfig 必须
-    ///   1. workspace = `~/.pinvou3/workflows/<run_id>/project`（run 的 project 目录本身）
-    ///   2. tool_whitelist 直给监工白名单（不再依赖 active_skill 后置覆盖）
-    ///   3. instructions = 极简 Inline 沉默宿主占位——绝不挂聊天助手人格
-    ///      （真 prompt 全在 roles/*.md 随 SpawnSubAgent 注入）。
-    /// 只断言路径后缀(ends_with)不断言绝对前缀,免拿 PINVOU3_HOME ENV_LOCK。
-    #[test]
-    fn workflow_engine_config_binds_run_project_and_whitelist() {
-        let bridge = fixture_bridge();
-        let cfg = bridge.build_engine_config_for_workflow("wf-20260610-0000-abcd");
-
-        assert!(
-            cfg.workspace
-                .ends_with("workflows/wf-20260610-0000-abcd/project"),
-            "workspace 必须是 run 的 project 目录本身, got: {}",
-            cfg.workspace.display()
-        );
-        assert_eq!(
-            cfg.tool_whitelist,
-            Some(Pinvou3Bridge::supervisor_tool_whitelist()),
-            "工作流 config 必须直给监工白名单,不靠 spawn 后按 active_skill 覆盖"
-        );
-
-        // instructions: 唯一一条 Inline 沉默宿主占位,非聊天助手人格
-        assert_eq!(
-            cfg.instructions.len(),
-            1,
-            "工作流宿主 instructions 必须只有一条极简占位(不挂用户自定义/聊天 prompt)"
-        );
-        match &cfg.instructions[0] {
-            InstructionSource::Inline { name, content } => {
-                assert!(
-                    name.contains("wf-20260610-0000-abcd"),
-                    "inline name 须含 run_id 便于排查, got: {name}"
-                );
-                assert!(
-                    content.contains("沉默宿主"),
-                    "instructions 必须声明沉默宿主语义, got: {content}"
-                );
-                assert!(
-                    content.contains("SubAgent"),
-                    "instructions 必须声明工作经 SubAgent 派发, got: {content}"
-                );
-                assert!(
-                    !content.contains("品悟") && !content.contains("助手") && !content.contains("{{PINVOU3_WORKSPACE}}"),
-                    "绝不挂聊天助手人格/模板残留(防'提示词广告全套工具'坑), got: {content}"
-                );
-            }
-            other => panic!("工作流 instructions 必须是 Inline 变体, got: {other:?}"),
-        }
-    }
 
     /// OpenaiCompatible preset 必须让用户提供的模型名生效，而不是回退到默认。
     #[test]
