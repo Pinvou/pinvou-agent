@@ -432,13 +432,9 @@ pub async fn clear_session() -> Result<(), String> {
 #[tauri::command]
 pub async fn get_monitor_snapshot(
     monitor: State<'_, MonitorState>,
+    pool: State<'_, EnginePool>,
 ) -> Result<MonitorSnapshot, String> {
-    let snapshot = crate::monitor::sample_all(
-        &monitor,
-        &crate::monitor::vllm_base_url(),
-        crate::monitor::vllm_configured_model(),
-    )
-    .await;
+    let snapshot = crate::monitor::sample_all(&monitor, pool.bridge.model_monitor_target()).await;
     Ok(snapshot)
 }
 
@@ -531,13 +527,12 @@ pub struct BackendStatus {
 }
 
 #[tauri::command]
-pub async fn get_backend_status(_monitor: State<'_, MonitorState>) -> Result<BackendStatus, String> {
+pub async fn get_backend_status(
+    _monitor: State<'_, MonitorState>,
+    pool: State<'_, EnginePool>,
+) -> Result<BackendStatus, String> {
     // Lightweight: 只 probe vLLM,不跑 nvidia-smi / RAM 采样
-    let vllm = crate::monitor::vllm_snapshot(
-        &crate::monitor::vllm_base_url(),
-        crate::monitor::vllm_configured_model(),
-    )
-    .await;
+    let vllm = crate::monitor::model_target_snapshot(pool.bridge.model_monitor_target()).await;
     let vllm_online = matches!(
         vllm.as_ref().map(|v| v.status),
         Some(VllmStatus::Ready) | Some(VllmStatus::Busy)

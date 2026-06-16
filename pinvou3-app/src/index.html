@@ -1326,6 +1326,9 @@
       const vllmStatus = fmt ? fmt.vllmStatus : 'OFFLINE';
       const vllmOnline = fmt ? fmt.vllmOnline : false;
       const vllmUpstream = fmt ? fmt.vllmUpstream : '—';
+      const vllmTargetKind = fmt ? fmt.vllmTargetKind : '配置异常';
+      const vllmDiagnostic = fmt ? fmt.vllmDiagnostic : null;
+      const vllmMetricDiagnostic = fmt ? fmt.vllmMetricDiagnostic : null;
       const vllmMaxLen = fmt ? fmt.vllmMaxLen : '—';
       const vllmQueue = fmt ? fmt.vllmQueue : '— / —';
       const vllmKv = fmt ? fmt.vllmKv : '—';
@@ -1406,15 +1409,22 @@
                       </p>
                     )}
                     <p className={`text-[13px] font-mono ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{vllmUpstream}</p>
+                    <p className={`text-[12px] mt-1 ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{vllmTargetKind}</p>
+                    {vllmDiagnostic && (
+                      <p className={`text-[12px] mt-1 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{vllmDiagnostic}</p>
+                    )}
+                    {!vllmDiagnostic && vllmMetricDiagnostic && (
+                      <p className={`text-[12px] mt-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#5F6368]'}`}>{vllmMetricDiagnostic}</p>
+                    )}
                   </div>
                   <div className={`px-3 py-1 rounded-full flex items-center gap-2 ${
-                    vllmStatus === 'MISMATCH'
+                    vllmStatus === 'MISMATCH' || vllmStatus === 'UNKNOWN'
                       ? (isDark ? 'bg-[#5C3A1E] text-[#F9AB00]' : 'bg-[#FEF3E8] text-[#B06000]')
                       : vllmOnline
                         ? (isDark ? 'bg-[#0F5223] text-[#93D5A6]' : 'bg-[#E6F4EA] text-[#137333]')
                         : (isDark ? 'bg-[#5C2020] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]')
                   }`}>
-                    {vllmStatus === 'MISMATCH' ? <AlertTriangle size={12} /> : <CheckCircle2 size={12} />}
+                    {vllmStatus === 'MISMATCH' || vllmStatus === 'UNKNOWN' || !vllmOnline ? <AlertTriangle size={12} /> : <CheckCircle2 size={12} />}
                     <span className="text-[11px] font-bold tracking-wider">{vllmStatus}</span>
                   </div>
                 </div>
