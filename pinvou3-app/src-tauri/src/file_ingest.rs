@@ -64,14 +64,14 @@ static SYSTEM_TOOLS: OnceLock<SystemTools> = OnceLock::new();
 /// 启动时（或第一次 ingest 时）检测一次系统工具。
 pub fn system_tools() -> SystemTools {
     *SYSTEM_TOOLS.get_or_init(|| SystemTools {
-        pandoc: which("pandoc"),
-        pdftotext: which("pdftotext"),
-        libreoffice: which("soffice") || which("libreoffice"),
-        tesseract: which("tesseract"),
-        pdftoppm: which("pdftoppm"),
-        sevenzip: which("7z"),
-        python3: which("python3"),
-        msgconvert: which("msgconvert"),
+        pandoc: crate::os::command_exists("pandoc"),
+        pdftotext: crate::os::command_exists("pdftotext"),
+        libreoffice: crate::os::command_exists("soffice") || crate::os::command_exists("libreoffice"),
+        tesseract: crate::os::command_exists("tesseract"),
+        pdftoppm: crate::os::command_exists("pdftoppm"),
+        sevenzip: crate::os::command_exists("7z"),
+        python3: crate::os::command_exists("python3"),
+        msgconvert: crate::os::command_exists("msgconvert"),
     })
 }
 
@@ -94,77 +94,32 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
         installed,
         apt: apt.into(),
     };
-    let libreoffice = which("soffice") || which("libreoffice");
+    let libreoffice = crate::os::command_exists("soffice") || crate::os::command_exists("libreoffice");
     vec![
-        item("pdf", which("pdftotext"), "poppler-utils"),
-        item("office_modern", which("pandoc"), "pandoc"),
+        item("pdf", crate::os::command_exists("pdftotext"), "poppler-utils"),
+        item("office_modern", crate::os::command_exists("pandoc"), "pandoc"),
         item("office_legacy", libreoffice, "libreoffice"),
         item(
             "ocr",
-            which("tesseract") && which("pdftoppm"),
+            crate::os::command_exists("tesseract") && crate::os::command_exists("pdftoppm"),
             "tesseract-ocr tesseract-ocr-chi-sim poppler-utils",
         ),
-        item("archive", which("7z"), "p7zip-full"),
+        item("archive", crate::os::command_exists("7z"), "p7zip-full"),
         item(
             "email",
-            which("python3") && which("msgconvert"),
+            crate::os::command_exists("python3") && crate::os::command_exists("msgconvert"),
             "python3 libemail-outlook-message-perl",
         ),
     ]
 }
 
-/// 允许 `install_dependencies` 安装的包白名单 —— 必须与 `check_dependencies` 各项的
-/// `apt` 字段保持一致。前端传回的包名先过这张白名单，防止被篡改成任意命令喂给 root apt。
-const KNOWN_DEP_PACKAGES: &[&str] = &[
-    "poppler-utils",
-    "pandoc",
-    "libreoffice",
-    "tesseract-ocr",
-    "tesseract-ocr-chi-sim",
-    "p7zip-full",
-    "python3",
-    "libemail-outlook-message-perl",
-];
-
-/// 体检卡「一键安装」：pkexec 提权 apt 安装缺失的依赖包。包名必须全在
-/// `KNOWN_DEP_PACKAGES` 白名单内（前端从 check_dependencies 收集，但仍后端校验）。
-/// 与 updater::install_update 同套路：blocking 线程跑 pkexec，透传 apt stderr 真因。
+/// 体检卡「一键安装」：委托 OS 调度层安装缺失依赖。
+/// Linux 由 OS 层保留包名白名单和 pkexec/apt 行为；其他系统清晰降级。
 #[tauri::command]
 pub async fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
-    if packages.is_empty() {
-        return Err("没有需要安装的依赖".into());
-    }
-    for p in &packages {
-        if !KNOWN_DEP_PACKAGES.contains(&p.as_str()) {
-            return Err(format!("非法包名（不在依赖白名单内）: {p}"));
-        }
-    }
-    // 包名已白名单校验（只含 [a-z0-9.+-]），拼进 sh -c 无注入面。
-    let script = format!(
-        "DEBIAN_FRONTEND=noninteractive apt-get install -y {}",
-        packages.join(" ")
-    );
-    let output = tokio::task::spawn_blocking(move || {
-        Command::new("pkexec").args(["sh", "-c", &script]).output()
-    })
-    .await
-    .map_err(|e| format!("安装任务失败: {e}"))?
-    .map_err(|e| format!("pkexec 启动失败: {e}"))?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-    let code = output.status.code().unwrap_or(-1);
-    Err(match code {
-        126 => "用户取消授权".to_string(),
-        127 => "未授权或 pkexec 不可用".to_string(),
-        _ => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let tail: Vec<&str> = stderr.lines().rev().take(4).collect();
-            let tail: Vec<&str> = tail.into_iter().rev().collect();
-            format!("安装失败 (exit {code}): {}", tail.join(" / "))
-        }
-    })
+    tokio::task::spawn_blocking(move || crate::os::install_dependencies(packages))
+        .await
+        .map_err(|e| format!("安装任务失败: {e}"))?
 }
 
 /// tesseract 的 `-l` 语言参数。pinvou3 面向国内政企，中文是刚需，所以优先
@@ -185,14 +140,6 @@ fn ocr_lang_arg() -> String {
         }
     })
     .clone()
-}
-
-fn which(cmd: &str) -> bool {
-    Command::new("which")
-        .arg(cmd)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 /// 主入口：派发到不同处理函数，返回统一 IngestResult。

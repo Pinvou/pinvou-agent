@@ -130,26 +130,13 @@ fn gpu_snapshot() -> Option<GpuSnapshot> {
         "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw",
         "--format=csv,noheader,nounits",
     ];
-    // 先试 PATH 查找，再试常见绝对路径
-    let out = std::process::Command::new("nvidia-smi")
-        .args(args)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .or_else(|| {
-            std::process::Command::new("/usr/bin/nvidia-smi")
-                .args(args)
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-        })
-        .or_else(|| {
-            std::process::Command::new("/usr/local/bin/nvidia-smi")
-                .args(args)
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-        })?;
+    let out = crate::os::nvidia_smi_candidates().into_iter().find_map(|cmd| {
+        std::process::Command::new(cmd)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+    })?;
     let line = std::str::from_utf8(&out.stdout).ok()?.lines().next()?;
     let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
     if parts.len() < 6 {

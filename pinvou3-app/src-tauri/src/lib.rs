@@ -22,6 +22,7 @@ pub mod file_ingest;
 mod file_watcher;
 mod harness;
 mod monitor;
+mod os;
 pub mod personas;
 mod pinvou_review;
 pub mod super_permission;

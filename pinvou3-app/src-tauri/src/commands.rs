@@ -1280,36 +1280,26 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
     if !ALLOWED_PREFIXES.iter().any(|p| url.starts_with(p)) {
         return Err(format!("URL not in allowlist: {url}"));
     }
-    std::process::Command::new("xdg-open")
-        .arg(&url)
-        .spawn()
-        .map_err(|e| format!("xdg-open({url}) failed: {e}"))?;
+    crate::os::open_target(&url, &url)?;
     Ok(())
 }
 
-/// 用系统默认应用打开文件（xdg-open / 文件管理器）。
+/// 用系统默认应用打开文件。
 #[tauri::command]
 pub async fn open_in_system(path: String) -> Result<(), String> {
     let p = validate_user_path(&path)?;
-    std::process::Command::new("xdg-open")
-        .arg(&p)
-        .spawn()
-        .map_err(|e| format!("xdg-open({}) failed: {e}", p.display()))?;
+    crate::os::open_target(&p, &p.display().to_string())?;
     Ok(())
 }
 
-/// 用文件管理器打开**所在目录**（不是文件本身）。xdg-open 一个目录路径
-/// → Ubuntu 走 Nautilus / Files；跨发行版（GNOME/KDE/XFCE）freedesktop 标准兼容。
+/// 用文件管理器打开**所在目录**（不是文件本身）。
 #[tauri::command]
 pub async fn open_containing_folder(path: String) -> Result<(), String> {
     let p = validate_user_path(&path)?;
     let dir = p
         .parent()
         .ok_or_else(|| format!("no parent dir for {}", p.display()))?;
-    std::process::Command::new("xdg-open")
-        .arg(dir)
-        .spawn()
-        .map_err(|e| format!("xdg-open({}) failed: {e}", dir.display()))?;
+    crate::os::open_target(dir, &dir.display().to_string())?;
     Ok(())
 }
 

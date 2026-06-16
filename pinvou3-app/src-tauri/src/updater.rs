@@ -12,7 +12,7 @@
 //!   `app.restart()` 按路径 exec 才换到新版。所以装完不强制重启，前端给按钮。
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -70,6 +70,7 @@ pub struct UpdateInfo {
 /// 手动检查才展示错误。
 #[tauri::command]
 pub async fn check_for_update() -> Result<UpdateInfo, String> {
+    crate::os::check_update_platform_support()?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -102,6 +103,7 @@ pub async fn check_for_update() -> Result<UpdateInfo, String> {
 /// 进度走 `update:progress` 事件。返回 deb 绝对路径。
 #[tauri::command]
 pub async fn download_update(info: UpdateInfo, app: AppHandle) -> Result<String, String> {
+    crate::os::check_update_platform_support()?;
     let dir = paths::updates_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建下载目录失败: {e}"))?;
     let dest = dir.join(format!("pinvou3_{}_amd64.deb", info.latest_version));
@@ -209,36 +211,9 @@ pub async fn download_update(info: UpdateInfo, app: AppHandle) -> Result<String,
 /// pkexec 提权 apt 安装下载好的 deb。成功后**不自动重启**，前端展示「重启」按钮。
 #[tauri::command]
 pub async fn install_update(deb_path: String) -> Result<(), String> {
-    let canon = validate_deb_path(Path::new(&deb_path))?;
-    // DEBIAN_FRONTEND 防 dpkg conffile 冲突卡交互；--reinstall 容错同版本重装。
-    // 路径已白名单校验（~/.pinvou3/updates/ 下 .deb 且无引号），注入面可控。
-    let script = format!(
-        "DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall '{}'",
-        canon.display()
-    );
-    // pkexec 等用户输密码可能很久，放 blocking 线程别占 async runtime
-    let output = tokio::task::spawn_blocking(move || {
-        Command::new("pkexec").args(["sh", "-c", &script]).output()
-    })
-    .await
-    .map_err(|e| format!("安装任务失败: {e}"))?
-    .map_err(|e| format!("pkexec 启动失败: {e}"))?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-    let code = output.status.code().unwrap_or(-1);
-    Err(match code {
-        126 => "用户取消授权".to_string(),
-        127 => "未授权或 pkexec 不可用".to_string(),
-        _ => {
-            // 透传 apt stderr 末尾几行：lock 占用 / 磁盘不足 / 依赖缺失等真实原因
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let tail: Vec<&str> = stderr.lines().rev().take(4).collect();
-            let tail: Vec<&str> = tail.into_iter().rev().collect();
-            format!("安装失败 (exit {code}): {}", tail.join(" / "))
-        }
-    })
+    tokio::task::spawn_blocking(move || crate::os::install_update_package(Path::new(&deb_path)))
+        .await
+        .map_err(|e| format!("安装任务失败: {e}"))?
 }
 
 /// 重启应用使新版本生效（exec 新 inode）。
@@ -252,27 +227,6 @@ pub async fn restart_app(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn cancel_download() {
     DOWNLOAD_CANCEL.store(true, Ordering::SeqCst);
-}
-
-/// 校验 deb 路径：必须真实存在、canonicalize 后在 `~/.pinvou3/updates/` 内、
-/// `.deb` 结尾、不含单引号（要嵌进 sh -c 的单引号串）。防前端传任意路径喂给 root apt。
-fn validate_deb_path(path: &Path) -> Result<PathBuf, String> {
-    let canon = path
-        .canonicalize()
-        .map_err(|e| format!("deb 文件不存在: {e}"))?;
-    let dir = paths::updates_dir()
-        .canonicalize()
-        .map_err(|e| format!("更新目录不存在: {e}"))?;
-    if !canon.starts_with(&dir) {
-        return Err("非法路径：deb 必须在更新下载目录内".to_string());
-    }
-    if canon.extension().is_none_or(|x| x != "deb") {
-        return Err("非法路径：只接受 .deb 文件".to_string());
-    }
-    if canon.to_string_lossy().contains('\'') {
-        return Err("非法路径：含引号".to_string());
-    }
-    Ok(canon)
 }
 
 fn file_sha256(path: &Path) -> Option<String> {
@@ -300,6 +254,7 @@ fn available_bytes(dir: &Path) -> Option<u64> {
         .ok()
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn parse_semver(v: &str) -> Option<(u64, u64, u64)> {
     let mut it = v.trim().trim_start_matches('v').splitn(3, '.');
     let major = it.next()?.parse().ok()?;
@@ -309,6 +264,7 @@ fn parse_semver(v: &str) -> Option<(u64, u64, u64)> {
 }
 
 /// 三段数字比较（非字典序：0.10.0 > 0.2.0）。任一边解析失败按「不更新」处理。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn is_newer(latest: &str, current: &str) -> bool {
     match (parse_semver(latest), parse_semver(current)) {
         (Some(l), Some(c)) => l > c,
@@ -371,45 +327,5 @@ mod tests {
             serde_json::from_str(r#"{"version":"0.3.0","url":"u","sha256":"s"}"#).unwrap();
         assert_eq!(m.notes, "");
         assert_eq!(m.size, 0);
-    }
-
-    #[test]
-    fn validate_deb_path_whitelist() {
-        // 串行锁：PINVOU3_HOME 是进程级 env，并行测试会互相覆盖
-        let _g = crate::bridge::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        let root = std::env::temp_dir().join("pinvou3-updater-test");
-        std::env::set_var("PINVOU3_HOME", &root);
-
-        let updates = paths::updates_dir();
-        std::fs::create_dir_all(&updates).unwrap();
-        let good = updates.join("pinvou3_9.9.9_amd64.deb");
-        std::fs::write(&good, b"fake").unwrap();
-        assert!(validate_deb_path(&good).is_ok());
-
-        // 目录外文件拒绝
-        let outside = root.join("evil.deb");
-        std::fs::write(&outside, b"fake").unwrap();
-        assert!(validate_deb_path(&outside).is_err());
-
-        // 非 .deb 拒绝
-        let txt = updates.join("note.txt");
-        std::fs::write(&txt, b"x").unwrap();
-        assert!(validate_deb_path(&txt).is_err());
-
-        // 不存在的文件拒绝（canonicalize 失败）
-        assert!(validate_deb_path(&updates.join("ghost.deb")).is_err());
-
-        // 路径穿越拒绝（canonicalize 解析 .. 后落在目录外）
-        let traversal = updates.join("../evil.deb");
-        assert!(validate_deb_path(&traversal).is_err());
-
-        let _ = std::fs::remove_dir_all(&root);
-        match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
-        }
     }
 }
