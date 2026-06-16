@@ -294,7 +294,10 @@
       suppressNotify = prev;
       saveWorkingSetTo(bg);
       state.activeSessionId = realId;
-      loadWorkingSetFrom(getBuffer(realId));
+      // realId 为 null(草稿态)时 getBuffer(null)=null、loadWorkingSetFrom(null) 是 no-op,
+      // 会把刚处理的后台 session 工作集泄漏进草稿视图(activeSessionId=null 却带着它的 chatItems),
+      // 召唤检阅等依赖 activeSessionId 的操作随之错乱。草稿态须切回干净的空工作集。
+      loadWorkingSetFrom(realId ? getBuffer(realId) : freshBuffer());
     }
   }
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
