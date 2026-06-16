@@ -70,7 +70,19 @@ pub struct UpdateInfo {
 /// 手动检查才展示错误。
 #[tauri::command]
 pub async fn check_for_update() -> Result<UpdateInfo, String> {
-    crate::os::check_update_platform_support()?;
+    let current = env!("CARGO_PKG_VERSION");
+    if crate::os::check_update_platform_support().is_err() {
+        return Ok(UpdateInfo {
+            available: false,
+            current_version: current.to_string(),
+            latest_version: current.to_string(),
+            notes: String::new(),
+            pub_date: String::new(),
+            url: String::new(),
+            sha256: String::new(),
+            size: 0,
+        });
+    }
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -85,7 +97,6 @@ pub async fn check_for_update() -> Result<UpdateInfo, String> {
         .json()
         .await
         .map_err(|e| format!("latest.json 解析失败: {e}"))?;
-    let current = env!("CARGO_PKG_VERSION");
     Ok(UpdateInfo {
         // 仅严格大于才提示 → 服务器版本 ≤ 本地时天然降级保护
         available: is_newer(&m.version, current),
