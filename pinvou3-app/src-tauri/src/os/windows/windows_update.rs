@@ -436,16 +436,10 @@ pub fn install_update_package(path: &Path) -> Result<(), String> {
     }
     let installer_arg = windows_tool_path(&canon);
     let args = msi_install_args(&installer_arg);
-    let status = Command::new("powershell.exe")
-        .args(elevated_msiexec_launcher_args(&args))
-        .status()
+    Command::new("powershell.exe")
+        .args(update_installer_launcher_args(&args))
+        .spawn()
         .map_err(|e| format!("Windows 安装器提权启动失败: {e}"))?;
-    if !status.success() {
-        return Err(format!(
-            "Windows 安装器提权启动失败: exit {}",
-            status.code().unwrap_or(-1)
-        ));
-    }
     Ok(())
 }
 
@@ -827,25 +821,28 @@ fn msi_install_args(installer: &Path) -> Vec<OsString> {
     vec![
         OsString::from("/i"),
         installer.as_os_str().to_os_string(),
-        OsString::from("REINSTALL=ALL"),
         OsString::from("REINSTALLMODE=vamus"),
-        OsString::from("AUTOLAUNCHAPP=1"),
-        OsString::from("WIXUI_EXITDIALOGOPTIONALCHECKBOX=1"),
-        OsString::from("LAUNCHAPPARGS="),
         OsString::from("/passive"),
         OsString::from("/norestart"),
     ]
 }
 
-fn elevated_msiexec_launcher_args(msi_args: &[OsString]) -> Vec<OsString> {
+fn update_installer_launcher_args(msi_args: &[OsString]) -> Vec<OsString> {
     let argument_list = msi_args
         .iter()
         .map(|arg| powershell_single_quoted(&arg.to_string_lossy()))
         .collect::<Vec<_>>()
         .join(", ");
-    let script = format!(
-        "$ErrorActionPreference = 'Stop'; Start-Process -FilePath 'msiexec.exe' -ArgumentList @({argument_list}) -Verb RunAs"
+    let mut script = format!(
+        "$ErrorActionPreference = 'Stop'; $p = Start-Process -FilePath 'msiexec.exe' -ArgumentList @({argument_list}) -Verb RunAs -Wait -PassThru; "
     );
+    script.push_str("$code = $p.ExitCode; if ($code -eq 0 -or $code -eq 3010) { ");
+    script.push_str("$installDir = $null; ");
+    script.push_str("try { $installDir = (Get-ItemProperty -Path 'HKCU:\\Software\\pinvou\\pinvou3' -Name 'InstallDir' -ErrorAction SilentlyContinue).InstallDir } catch {} ");
+    script.push_str("if ([string]::IsNullOrWhiteSpace($installDir)) { $installDir = Join-Path $env:ProgramFiles 'pinvou3' } ");
+    script.push_str("$exe = Join-Path $installDir 'pinvou3-tauri.exe'; ");
+    script.push_str("if (Test-Path -LiteralPath $exe) { Start-Process -FilePath $exe } ");
+    script.push('}');
     vec![
         OsString::from("-NoProfile"),
         OsString::from("-ExecutionPolicy"),
@@ -1202,28 +1199,28 @@ mod tests {
     }
 
     #[test]
-    fn msi_install_args_force_reinstall_without_restart() {
+    fn msi_install_args_install_without_reinstall_all() {
         let args: Vec<String> = msi_install_args(Path::new(r"C:\pinvou3.msi"))
             .into_iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
         assert_eq!(args[0], "/i");
         assert_eq!(args[1], r"C:\pinvou3.msi");
-        assert!(args.contains(&"REINSTALL=ALL".to_string()));
+        assert!(!args.contains(&"REINSTALL=ALL".to_string()));
         assert!(args.contains(&"REINSTALLMODE=vamus".to_string()));
-        assert!(args.contains(&"AUTOLAUNCHAPP=1".to_string()));
-        assert!(args.contains(&"WIXUI_EXITDIALOGOPTIONALCHECKBOX=1".to_string()));
-        assert!(args.contains(&"LAUNCHAPPARGS=".to_string()));
+        assert!(!args.contains(&"AUTOLAUNCHAPP=1".to_string()));
+        assert!(!args.contains(&"WIXUI_EXITDIALOGOPTIONALCHECKBOX=1".to_string()));
+        assert!(!args.contains(&"LAUNCHAPPARGS=".to_string()));
         assert!(args.contains(&"/passive".to_string()));
         assert!(args.contains(&"/norestart".to_string()));
     }
 
     #[test]
-    fn elevated_msiexec_launcher_uses_runas_and_quotes_args() {
-        let launcher_args = elevated_msiexec_launcher_args(&[
+    fn update_installer_launcher_uses_runas_wait_and_quotes_args() {
+        let launcher_args = update_installer_launcher_args(&[
             OsString::from("/i"),
             OsString::from(r"C:\updates\pinvou3's.msi"),
-            OsString::from("AUTOLAUNCHAPP=1"),
+            OsString::from("/passive"),
         ]);
         let rendered = launcher_args
             .into_iter()
@@ -1232,8 +1229,12 @@ mod tests {
             .join(" ");
         assert!(rendered.contains("-WindowStyle Hidden"));
         assert!(rendered.contains("-Verb RunAs"));
+        assert!(rendered.contains("-Wait"));
         assert!(rendered.contains("'C:\\updates\\pinvou3''s.msi'"));
-        assert!(rendered.contains("'AUTOLAUNCHAPP=1'"));
+        assert!(!rendered.contains("'REINSTALL=ALL'"));
+        assert!(rendered.contains("'/passive'"));
+        assert!(rendered.contains("HKCU:\\Software\\pinvou\\pinvou3"));
+        assert!(rendered.contains("pinvou3-tauri.exe"));
     }
 
     #[test]
