@@ -925,7 +925,7 @@
         handleNewChat();
         if (!bridge.available) return;
         await bridge.equipPersona('pinvou-card-creator');           // 先加持(落新 session + 加持气泡)
-        bridge.postChatItem({ type: 'card_creator_intro', time: '' }); // 再排在加持气泡之后
+        bridge.postCardCreatorIntro();                              // 再排在加持气泡之后(持久化,切会话/重启不丢)
       }
 
       function handleSwitchSession(id) {

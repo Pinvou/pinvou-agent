@@ -552,6 +552,7 @@
         if (isTail ? (ev.pos < atOrAfter) : (ev.pos !== atOrAfter)) continue;
         if (ev.kind === "equip" && ev.card) addChatItem({ type: "persona_equip", card: ev.card, time: "" });
         else if (ev.kind === "unequip") addChatItem({ type: "system", text: bt("personaUnequipped") + (ev.name || ""), time: "" });
+        else if (ev.kind === "card_creator_intro") addChatItem({ type: "card_creator_intro", time: "" });
       }
     }
     // 预扫 tool_result：tool_use 在 assistant 消息、result 在后续 user 消息，需提前建映射
@@ -2414,8 +2415,9 @@
     readPersonaBody: function (id) { return invoke("read_persona_body", { personaId: id }); }, // Side B: 详情拉完整正文
     equipPersona: equipPersona,
     unequipPersona: unequipPersona,
-    // 前端塞一条本地展示消息(如 AI 造卡入口的开场引导卡),不走 LLM
-    postChatItem: function (item) { addChatItem(item); notify(); },
+    // AI 造卡开场引导卡:落一条展示气泡 + 记一条 persona 事件(随会话持久化)。
+    // 走 personaEvents 时间线,冷重载时 rerenderFromMessages 按 pos 还原 → 切会话/重启不丢。
+    postCardCreatorIntro: function () { addChatItem({ type: "card_creator_intro", time: "" }); recordPersonaEvent({ kind: "card_creator_intro" }); notify(); },
     // 用户自创卡
     createPersona: createPersona,
     updatePersona: updatePersona,
