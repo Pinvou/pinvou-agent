@@ -2013,7 +2013,11 @@
         } else {
           setWelcomeToolId(null);
         }
-      }, [justInstalledTool, activeSessionId]);
+        // justInstalledTool 故意不放进依赖:否则上面 setJustInstalledTool(null) 清掉它会二次触发
+        // 本 effect → 这次走 else 把刚显示的欢迎卡又清空(表现为"装完工具欢迎卡一闪即消失")。
+        // 只依赖 activeSessionId:装工具必然 createNewSession() → 会话变 → 触发显示;读取当前
+        // justInstalledTool 即可,清空它不再回触发本 effect。
+      }, [activeSessionId]);
 
       function handleSend() {
         // 不再因 busy 拦截:bridge.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
