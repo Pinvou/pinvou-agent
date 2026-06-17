@@ -1587,6 +1587,15 @@
         snap.gpu._utilMax = Math.max.apply(null, [0].concat(gpuUtilHistory));
       }
       // Format values for display
+      var vllm = snap.vllm || null;
+      var metricsApplicable = vllm ? vllm.metrics_applicable !== false : false;
+      var metricNotApplicableText = "不适用";
+      var diagnostic = vllm && vllm.diagnostic ? vllm.diagnostic : null;
+      var metricDiagnostic = vllm && vllm.metric_diagnostics && vllm.metric_diagnostics.length
+        ? vllm.metric_diagnostics[0] : null;
+      var targetKind = vllm && vllm.target_kind ? vllm.target_kind : "invalid";
+      var targetKindLabel = targetKind === "remote" ? "远端模型" : (targetKind === "local" ? "本地模型" : "配置异常");
+      var vllmDisplayModel = vllm ? (vllm.model || vllm.configured_model || "—") : "—";
       snap._fmt = {
         gpuName: snap.gpu ? snap.gpu.name : bt("gpuUnavailable"),
         gpuVram: snap.gpu && snap.gpu.vram_total_mib > 0
@@ -1606,25 +1615,33 @@
         swapUsed: snap.ram ? fmtKiB(snap.ram.swap_used_kib) : "—",
         swapTotal: snap.ram ? fmtKiB(snap.ram.swap_total_kib) : "—",
         swapPct: snap.ram && snap.ram.swap_total_kib > 0 ? Math.round(snap.ram.swap_used_kib / snap.ram.swap_total_kib * 100) : 0,
-        vllmModel: snap.vllm ? (snap.vllm.model || "—") : "—",
-        vllmConfiguredModel: snap.vllm ? (snap.vllm.configured_model || null) : null,
-        vllmModelMismatch: snap.vllm && snap.vllm.configured_model && snap.vllm.model
-          ? snap.vllm.configured_model !== snap.vllm.model : false,
-        vllmStatus: snap.vllm ? snap.vllm.status.toUpperCase() : "OFFLINE",
-        vllmOnline: snap.vllm ? (snap.vllm.status !== "offline" && snap.vllm.status !== "mismatch") : false,
-        vllmUpstream: snap.vllm ? (snap.vllm.upstream || "—") : "—",
-        vllmMaxLen: snap.vllm ? (snap.vllm.max_model_len || "—") : "—",
-        vllmQueue: snap.vllm
-          ? (snap.vllm.num_requests_running != null ? snap.vllm.num_requests_running : "—") + " / " +
-            (snap.vllm.num_requests_waiting != null ? snap.vllm.num_requests_waiting : "—") : "— / —",
-        vllmKv: snap.vllm && snap.vllm.prefix_cache_hit_pct != null
-          ? snap.vllm.prefix_cache_hit_pct.toFixed(1) + "%" : "—",
-        vllmTtft: snap.vllm && snap.vllm.ttft_count > 0
-          ? (snap.vllm.ttft_sum_s / snap.vllm.ttft_count).toFixed(2) + " s" : "—",
-        vllmTps: snap.vllm && snap.vllm.tpot_sum_s > 0
-          ? (snap.vllm.tpot_count / snap.vllm.tpot_sum_s).toFixed(1) + " tok/s" : "—",
-        vllmTokTotal: snap.vllm && snap.vllm.generation_tokens_total != null
-          ? fmtTok(snap.vllm.generation_tokens_total) + " / " + fmtTok(snap.vllm.prompt_tokens_total) : "—",
+        vllmModel: vllmDisplayModel,
+        vllmConfiguredModel: vllm ? (vllm.configured_model || null) : null,
+        vllmModelMismatch: vllm && vllm.configured_model && vllm.model
+          ? vllm.configured_model !== vllm.model : false,
+        vllmStatus: vllm ? vllm.status.toUpperCase() : "OFFLINE",
+        vllmOnline: vllm ? (vllm.status === "ready" || vllm.status === "busy") : false,
+        vllmUpstream: vllm ? (vllm.upstream || "—") : "—",
+        vllmTargetKind: targetKindLabel,
+        vllmDiagnostic: diagnostic ? diagnostic.message : null,
+        vllmDiagnosticCode: diagnostic ? diagnostic.code : null,
+        vllmMetricsApplicable: metricsApplicable,
+        vllmMetricDiagnostic: metricDiagnostic ? metricDiagnostic.message : null,
+        vllmMaxLen: vllm ? (metricsApplicable ? (vllm.max_model_len || "—") : metricNotApplicableText) : "—",
+        vllmQueue: vllm
+          ? (metricsApplicable
+            ? (vllm.num_requests_running != null ? vllm.num_requests_running : "—") + " / " +
+              (vllm.num_requests_waiting != null ? vllm.num_requests_waiting : "—")
+            : metricNotApplicableText)
+          : "— / —",
+        vllmKv: vllm && metricsApplicable && vllm.prefix_cache_hit_pct != null
+          ? vllm.prefix_cache_hit_pct.toFixed(1) + "%" : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
+        vllmTtft: vllm && metricsApplicable && vllm.ttft_count > 0
+          ? (vllm.ttft_sum_s / vllm.ttft_count).toFixed(2) + " s" : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
+        vllmTps: vllm && metricsApplicable && vllm.tpot_sum_s > 0
+          ? (vllm.tpot_count / vllm.tpot_sum_s).toFixed(1) + " tok/s" : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
+        vllmTokTotal: vllm && metricsApplicable && vllm.generation_tokens_total != null
+          ? fmtTok(vllm.generation_tokens_total) + " / " + fmtTok(vllm.prompt_tokens_total) : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
         appVersion: snap.app ? snap.app.pinvou3_version : "—",
         dtVersion: snap.app ? snap.app.deepseek_tui_version : "—",
         uptime: snap.app ? fmtDuration(snap.app.session_uptime_secs) : "—",
@@ -2094,15 +2111,20 @@
     }
     state.updateChecking = false; notify();
   }
-  // 下载+安装一条龙: 下载完 pkexec 弹系统密码框,装完置 updateReady 等用户点重启。
+  // 下载+安装一条龙: Linux 下载 deb 后 pkexec apt;Windows 下载 zip 后解析 MSI,
+  // 安装器启动成功后后端退出当前进程。
   async function downloadAndInstallUpdate() {
     if (!state.updateInfo || !state.updateInfo.available || state.updateDownloading) return;
     state.updateDownloading = true; state.updateCancelling = false;
     state.updateProgress = 0; state.updateError = null; notify();
     try {
-      var debPath = await invoke("download_update", { info: state.updateInfo });
+      var downloadResult = await invoke("download_update", { info: state.updateInfo });
       state.updateProgress = 100; notify();
-      await invoke("install_update", { debPath: debPath });
+      if (downloadResult && typeof downloadResult === "object" && downloadResult.installer_path) {
+        await invoke("install_update", { installerPath: downloadResult.installer_path, info: state.updateInfo });
+      } else {
+        await invoke("install_update", { debPath: downloadResult });
+      }
       state.updateReady = true;
     } catch (e) {
       // 用户主动取消下载时后端返回「已取消下载」,当正常处理不弹错误
@@ -2120,6 +2142,9 @@
   }
   function restartApp() {
     invoke("restart_app").catch(function () { /* restart 成功不会返回 */ });
+  }
+  function reportPendingUpdateResult() {
+    invoke("report_pending_update_result").catch(function () { /* 静默重试,不阻塞启动 */ });
   }
 
   // ── 依赖体检 ─────────────────────────────────────────────────────
@@ -2314,6 +2339,7 @@
     loadPersonas(); // 预载卡池(让聊天里草稿"已存入"判定能查到同名自制卡), fire-and-forget
     pollBackendStatus();
     setInterval(pollBackendStatus, 10000);
+    reportPendingUpdateResult(); // Windows OTA 升级后反馈,失败保留记录下次再试
     checkForUpdateSilently(); // fire-and-forget,不阻塞启动
     await resumeWorkflowOnBoot(); // [2026-06-06] 有进行中的工作流 run 就自动挂回看板
     notify();

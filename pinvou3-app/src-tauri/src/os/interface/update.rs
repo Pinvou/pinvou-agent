@@ -1,19 +1,35 @@
-﻿use std::path::Path;
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
-pub fn check_update_platform_support() -> Result<(), String> {
-    super::super::platform::check_update_platform_support()
+use tauri::AppHandle;
+
+pub async fn check_for_update_info(
+    client: &reqwest::Client,
+    current_version: &str,
+) -> Result<crate::updater::UpdateInfo, String> {
+    super::super::platform::check_for_update_info(client, current_version).await
 }
 
-pub fn install_update_package(path: &Path) -> Result<(), String> {
-    super::super::platform::install_update_package(path)
+pub async fn download_update_package(
+    info: &crate::updater::UpdateInfo,
+    app: AppHandle,
+    cancel: &AtomicBool,
+    stall_timeout: Duration,
+) -> Result<crate::updater::DownloadUpdateResult, String> {
+    super::super::platform::download_update_package(info, app, cancel, stall_timeout).await
 }
 
-#[cfg(all(test, not(target_os = "linux")))]
-mod tests {
-    use super::*;
+pub fn install_downloaded_update(
+    deb_path: Option<String>,
+    installer_path: Option<String>,
+    info: Option<crate::updater::UpdateInfo>,
+) -> Result<bool, String> {
+    super::super::platform::install_downloaded_update(deb_path, installer_path, info)
+}
 
-    #[test]
-    fn deb_update_degrades_on_non_linux() {
-        assert!(check_update_platform_support().is_err());
-    }
+pub async fn report_pending_update_result_info(
+    client: &reqwest::Client,
+    current_version: &str,
+) -> Result<crate::updater::PendingUpdateReportResult, String> {
+    super::super::platform::report_pending_update_result_info(client, current_version).await
 }

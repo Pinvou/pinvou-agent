@@ -31,6 +31,7 @@ use deepseek_tui::hooks::{Hook, HookEvent, HooksConfig};
 use deepseek_tui::prompts::InstructionSource;
 use deepseek_tui::tui::app::AppMode;
 use deepseek_tui::tui::approval::ApprovalMode;
+use serde::Serialize;
 
 use self::bundle::{Pinvou3Bundle, INSTRUCTIONS_MD};
 use self::mode_state::PlanPhase;
@@ -55,6 +56,24 @@ const LOCAL_VLLM_MODEL: &str = "qwen36_35b_256k";
 const LOCAL_VLLM_BASE_URL: &str = "http://127.0.0.1:8000/v1";
 const LOCAL_VLLM_API_KEY: &str = "local-no-auth";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelMonitorTargetKind {
+    Local,
+    Remote,
+    Invalid,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelMonitorTarget {
+    pub base_url: String,
+    pub configured_model: Option<String>,
+    pub provider: String,
+    pub kind: ModelMonitorTargetKind,
+    pub source: String,
+    pub api_key: Option<String>,
+}
+
 fn is_official_deepseek_base_url(base_url: &str) -> bool {
     let normalized = base_url
         .trim()
@@ -75,6 +94,44 @@ fn official_deepseek_model_name(model: &str) -> String {
         "deepseek-v4-flash" => "deepseek-v4-flash".to_string(),
         _ => model,
     }
+}
+
+fn model_monitor_target_kind(base_url: &str, configured_model: &str) -> ModelMonitorTargetKind {
+    if base_url.trim().is_empty() || configured_model.trim().is_empty() {
+        return ModelMonitorTargetKind::Invalid;
+    }
+    let Ok(url) = reqwest::Url::parse(base_url.trim()) else {
+        return ModelMonitorTargetKind::Invalid;
+    };
+    match url.host_str().map(|h| h.to_ascii_lowercase()) {
+        Some(host)
+            if matches!(
+                host.as_str(),
+                "127.0.0.1" | "localhost" | "::1" | "[::1]"
+            ) =>
+        {
+            ModelMonitorTargetKind::Local
+        }
+        Some(_) => ModelMonitorTargetKind::Remote,
+        None => ModelMonitorTargetKind::Invalid,
+    }
+}
+
+fn model_monitor_source(prefs: &UserPrefs) -> String {
+    if std::env::var_os("DEEPSEEK_BASE_URL").is_some()
+        || std::env::var_os("DEEPSEEK_MODEL").is_some()
+        || std::env::var_os("DEEPSEEK_PROVIDER").is_some()
+        || std::env::var_os("DEEPSEEK_API_KEY").is_some()
+    {
+        return "env".to_string();
+    }
+    if prefs.advanced.custom_base_url.is_some()
+        || prefs.advanced.custom_model_name.is_some()
+        || prefs.advanced.custom_api_key.is_some()
+    {
+        return "settings".to_string();
+    }
+    "default".to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -362,6 +419,40 @@ impl Pinvou3Bridge {
                 .clone()
                 .unwrap_or_default(),
         }
+    }
+
+    pub fn model_monitor_target(&self) -> ModelMonitorTarget {
+        let base_url = self.base_url();
+        let configured_model = self.model();
+        let provider = self.provider();
+        let api_key = self.api_key();
+        let kind = model_monitor_target_kind(&base_url, &configured_model);
+        let source = model_monitor_source(&self.prefs);
+        ModelMonitorTarget {
+            base_url,
+            configured_model: if configured_model.trim().is_empty() {
+                None
+            } else {
+                Some(configured_model)
+            },
+            provider,
+            kind,
+            source,
+            api_key: if api_key.trim().is_empty() {
+                None
+            } else {
+                Some(api_key)
+            },
+        }
+    }
+
+    pub fn load_model_monitor_target() -> ModelMonitorTarget {
+        let bridge = Pinvou3Bridge {
+            prefs: UserPrefs::load(),
+            bundle: Pinvou3Bundle::paths(),
+            workspace: paths::user_home_dir(),
+        };
+        bridge.model_monitor_target()
     }
 
     /// env > prefs.advanced > 默认 true。
@@ -1503,6 +1594,57 @@ mod tests {
         assert_eq!(bridge.provider(), "env-provider");
         assert_eq!(bridge.base_url(), "http://env:8000/v1");
         assert_eq!(bridge.api_key(), "env-key");
+    }
+
+    #[test]
+    fn model_monitor_target_uses_bridge_settings() {
+        let _env = EnvGuard::new(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        for name in [
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ] {
+            std::env::remove_var(name);
+        }
+        let mut bridge = fixture_bridge();
+        bridge.prefs.advanced.model_preset = Some(ModelPreset::OpenaiCompatible);
+        bridge.prefs.advanced.custom_base_url = Some("https://api.example.com/v1".to_string());
+        bridge.prefs.advanced.custom_model_name = Some("remote-model".to_string());
+        bridge.prefs.advanced.custom_api_key = Some("sk-settings".to_string());
+
+        let target = bridge.model_monitor_target();
+        assert_eq!(target.base_url, "https://api.example.com/v1");
+        assert_eq!(target.configured_model.as_deref(), Some("remote-model"));
+        assert_eq!(target.provider, "openai");
+        assert_eq!(target.kind, ModelMonitorTargetKind::Remote);
+        assert_eq!(target.source, "settings");
+        assert_eq!(target.api_key.as_deref(), Some("sk-settings"));
+    }
+
+    #[test]
+    fn model_monitor_target_classifies_local_remote_and_invalid() {
+        assert_eq!(
+            model_monitor_target_kind("http://127.0.0.1:8000/v1", "qwen36_35b_256k"),
+            ModelMonitorTargetKind::Local
+        );
+        assert_eq!(
+            model_monitor_target_kind("https://api.deepseek.com", "deepseek-v4-pro"),
+            ModelMonitorTargetKind::Remote
+        );
+        assert_eq!(
+            model_monitor_target_kind("not a url", "model"),
+            ModelMonitorTargetKind::Invalid
+        );
+        assert_eq!(
+            model_monitor_target_kind("https://api.example.com/v1", ""),
+            ModelMonitorTargetKind::Invalid
+        );
     }
 
     /// DtConfig 在 OpenaiCompatible 模式下不应强制 reasoning_effort=off。

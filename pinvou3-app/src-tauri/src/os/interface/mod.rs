@@ -13,4 +13,7 @@ pub use permission::{
     super_permission_turn_reminder,
 };
 pub use system::{command_exists, nvidia_smi_candidates, open_target};
-pub use update::{check_update_platform_support, install_update_package};
+pub use update::{
+    check_for_update_info, download_update_package, install_downloaded_update,
+    report_pending_update_result_info,
+};

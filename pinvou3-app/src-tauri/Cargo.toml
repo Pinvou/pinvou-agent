@@ -1,6 +1,6 @@
 [package]
 name = "pinvou3-tauri"
-version = "0.4.3"
+version = "0.4.5"
 description = "pinvou3 智能助手 Tauri 后端（包装 DeepSeek-TUI EngineHandle）"
 authors = ["pinvou"]
 license = ""
@@ -40,8 +40,10 @@ deepseek-tui = { path = "../../DeepSeek-TUI/crates/tui", package = "codewhale-tu
 # Monitor 用：vLLM HTTP probe（/v1/models + Prometheus /metrics）
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
-# Updater 用：下载 deb 的 sha256 校验
+# Updater 用：下载 deb 的 sha256 校验；Windows OTA 包使用 zip + MD5
 sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+md5 = "0.7"
 
 # Session store 用：阻塞式 RwLock（sync 不需要 .await 拿读写锁）
 parking_lot = "0.12"
