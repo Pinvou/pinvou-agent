@@ -23,6 +23,7 @@ const OTA_SOFTWARE_ID_ENV: &str = "PINVOU3_OTA_SOFTWARE_ID";
 const CHECK_UPDATE_PATH: &str = "/ota/pkg/package/upgrade/check";
 const DOWNLOAD_INFO_PATH: &str = "/ota/pkg/package/upgrade/getDownloadInfo";
 const UPDATE_LOG_PATH: &str = "/ota/pkg/package/updateLog";
+const NO_AVAILABLE_UPDATE_CODE: i64 = 405000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowsUpdateInfo {
@@ -102,6 +103,10 @@ impl<T> OtaResponse<T> {
             return false;
         }
         self.success.unwrap_or(true) || self.message.contains("操作成功")
+    }
+
+    fn is_no_available_update(&self) -> bool {
+        self.code == NO_AVAILABLE_UPDATE_CODE
     }
 
     fn into_data(self, context: &str) -> Result<T, String> {
@@ -215,9 +220,23 @@ pub async fn check_for_update(
 ) -> Result<WindowsUpdateInfo, String> {
     let config = OtaConfig::from_env(current_version)?;
     let req = config.check_request();
-    let mut data: UpgradeData = post_json(client, &config.endpoint(CHECK_UPDATE_PATH), &req)
-        .await?
-        .into_data("获取升级信息")?;
+    let response: OtaResponse<UpgradeData> =
+        post_json(client, &config.endpoint(CHECK_UPDATE_PATH), &req).await?;
+    if response.is_no_available_update() {
+        return Ok(WindowsUpdateInfo {
+            available: false,
+            current_version: current_version.to_string(),
+            latest_version: current_version.to_string(),
+            notes: String::new(),
+            url: String::new(),
+            package_md5: String::new(),
+            size: 0,
+            software_id: config.software_id,
+            sn: config.sn,
+            update_type: String::new(),
+        });
+    }
+    let mut data: UpgradeData = response.into_data("获取升级信息")?;
 
     if data.update_version.trim().is_empty()
         || !is_newer_version(&data.update_version, current_version)
@@ -1042,6 +1061,11 @@ mod tests {
         let fail: OtaResponse<UpgradeData> =
             serde_json::from_str(r#"{"success":false,"code":500,"msg":"no"}"#).unwrap();
         assert!(fail.into_data("check").is_err());
+
+        let no_update: OtaResponse<UpgradeData> =
+            serde_json::from_str(r#"{"success":false,"code":405000,"msg":"无可用软件升级版本"}"#)
+                .unwrap();
+        assert!(no_update.is_no_available_update());
     }
 
     #[test]

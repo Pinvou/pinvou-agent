@@ -71,29 +71,10 @@ pub async fn chat(
         full = format!("{injected}\n\n---\n\n{full}");
     }
     if let Some(skill) = store.active_skill(&sid) {
-        if crate::workflow_registry::is_workflow_id(&skill.name) {
-            // [pinvou3-fork] 真 dispatch 架构:绑定名命中 WorkflowRegistry = workflow
-            // session(不是挂载式 skill;对所有工作流通用——h3c-ppt/sansheng-liubu/…)。
-            // 品悟在 workflow session 里是**监工**,不自演角色、不走 phase marker 流程
-            // (phase 机制已废弃,进度靠 workflow:agent_state_changed 事件驱动卡片)。
-            // 每个 user turn 重申监工身份,压过 instructions.md 的通用助手引导
-            // (后者教用 write_file/exec_shell,但监工工具白名单根本没给 → 否则品悟会
-            // 像 e2e 实测那样瞎读一堆不存在的文件去"推进")。见 feedback_skill_vs_workflow。
-            let reminder = "<system-reminder>\n\
-                你在一个工作流项目里,身份是**监工(品悟)**,不是执行者。\n\
-                - 真正的角色工作由 Harness 自动派发的\
-                独立 SubAgent 完成,你看不到、也不干预它们的执行过程。\n\
-                - 你的职责只有三件:① 跟用户报告工作流进展 ② Harness 调你时交代任务或评审\
-                交付物 ③ 回答用户关于本项目的问题。\n\
-                - 你**没有** write_file / edit_file / append_file / exec_shell 等执行类工具,\
-                也**不要**尝试自己写文件、跑命令、或读一堆文件去\"推进\"——那是 SubAgent 的活,\
-                你做不了也不该做。\n\
-                - 用户问进展时,用 read_file 看项目 `_state/` 下已有的交付物和 \
-                `_state/workflow_progress.json` 如实回答;不清楚就说不清楚,**不要瞎猜文件名乱读**。\n\
-                </system-reminder>";
-            full = format!("{reminder}\n\n{full}");
-        } else {
-            // 其他普通挂载式 skill(review 等)保留 phase marker 机制,供前端 chips 进度。
+        // 工作流会话(is_workflow_id)不再注入任何 reminder:对话型监工(品悟)已废弃,
+        // 进度走 workflow:agent_state_changed 卡片流,执行靠 Harness 直派 SubAgent,
+        // 都不经前台对话。普通挂载式 skill(review 等)仍需 phase marker 推前端 chips。
+        if !crate::workflow_registry::is_workflow_id(&skill.name) {
             let reminder = format!(
                 "<system-reminder>\n\
                  工作流 `{name}` 提醒:你的下一条回复**必须**以 `<phase id=\"...\"/>` \

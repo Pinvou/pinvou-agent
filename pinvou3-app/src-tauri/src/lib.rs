@@ -41,6 +41,17 @@ use crate::monitor::MonitorState;
 /// dev 启动走 run-dev.sh 已经 export 过的不会被覆盖（var_os().is_none() 守门）。
 fn ensure_release_env() {
     use std::env;
+    // Windows 没有 Unix 的 HOME 环境变量,但本 app 大量代码(paths.rs::user_home_dir /
+    // file_ingest / bridge)用 std::env::var("HOME") 解析 `~/.pinvou3` 路径树。HOME 缺失时
+    // user_home_dir() 退回 "/tmp" → 在 Windows 上拼出非法路径 `/tmp\.pinvou3\sessions`,
+    // SessionStore::boot 直接 panic 闪退。这里在启动最早期(单线程,Tauri builder 之前)把
+    // HOME 补成 USERPROFILE,一处设置让所有 HOME 读取点在 Windows 生效。
+    #[cfg(windows)]
+    if env::var_os("HOME").is_none() {
+        if let Some(profile) = env::var_os("USERPROFILE") {
+            env::set_var("HOME", profile);
+        }
+    }
     const DEFAULTS: &[(&str, &str)] = &[
         // —— vLLM 后端：BASE_URL/MODEL/API_KEY 已在 bridge/mod.rs 有默认常量，
         // 这里只补 run-dev.sh 额外注入但 Rust 没默认的 ——
@@ -219,6 +230,7 @@ pub fn run() {
             commands::delete_persona,
             commands::save_session_persona_events,
             commands::get_session_persona_events,
+            updater::get_app_version,
             updater::check_for_update,
             updater::download_update,
             updater::install_update,

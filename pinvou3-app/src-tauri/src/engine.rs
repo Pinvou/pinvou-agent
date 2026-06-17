@@ -58,12 +58,11 @@ impl AppEngine {
         bridge: Pinvou3Bridge,
         session_id: &str,
     ) -> Result<(Self, tauri::async_runtime::JoinHandle<()>)> {
-        // C 方案(P-no-disk): instructions 走 Inline,不再写 disk(远端);
-        // [pinvou3-fork] workflow session(绑 active_skill)→ 品悟监工硬白名单(本地保留)。
-        let mut engine_config = bridge.build_engine_config_for_session(session_id);
-        if store.active_skill(session_id).is_some() {
-            engine_config.tool_whitelist = Some(Pinvou3Bridge::supervisor_tool_whitelist());
-        }        let dt_config = bridge.build_dt_config();
+        // C 方案(P-no-disk): instructions 走 Inline,不再写 disk(远端)。
+        // 工作流会话不再施加监工白名单(对话型监工已废弃);SubAgent 角色的工具
+        // 由 agent_registry.json 各自约束,与此处无关。
+        let engine_config = bridge.build_engine_config_for_session(session_id);
+        let dt_config = bridge.build_dt_config();
 
         eprintln!(
             "[pinvou3-app] spawn_engine session={} model={} workspace={} instructions={}",

@@ -116,6 +116,7 @@
     // 不进 notify() 的 JSON 深拷贝(否则每个流式 token 都克隆 ~950KB,卡顿)。
     personaPool: { loadState: "idle" }, // idle | loading | ready | error
     // 应用内升级: updateInfo = check_for_update 返回值(available=true 才有意义)
+    appVersion: null,
     updateInfo: null,
     updateChecking: false,
     updateCheckError: null,   // 手动检查的错误/「已是最新」提示文案
@@ -294,7 +295,10 @@
       suppressNotify = prev;
       saveWorkingSetTo(bg);
       state.activeSessionId = realId;
-      loadWorkingSetFrom(getBuffer(realId));
+      // realId 为 null(草稿态)时 getBuffer(null)=null、loadWorkingSetFrom(null) 是 no-op,
+      // 会把刚处理的后台 session 工作集泄漏进草稿视图(activeSessionId=null 却带着它的 chatItems),
+      // 召唤检阅等依赖 activeSessionId 的操作随之错乱。草稿态须切回干净的空工作集。
+      loadWorkingSetFrom(realId ? getBuffer(realId) : freshBuffer());
     }
   }
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
@@ -330,13 +334,19 @@
 
   // ── Pub/Sub ──────────────────────────────────────────────────────
   var subscribers = [];
+  function snapshotState() {
+    if (typeof structuredClone === "function") {
+      try { return structuredClone(state); } catch (_) {}
+    }
+    return JSON.parse(JSON.stringify(state));
+  }
   function notify() {
     if (suppressNotify) return;
     // 会话列表「工作中」指示:active 取活动工作集 state.busy,其余取各自 buffer.busy
     state.sessionBusy = {};
     for (var id in sessionStates) state.sessionBusy[id] = !!sessionStates[id].busy;
     if (state.activeSessionId) state.sessionBusy[state.activeSessionId] = !!state.busy;
-    var snapshot = JSON.parse(JSON.stringify(state));
+    var snapshot = snapshotState();
     for (var i = 0; i < subscribers.length; i++) subscribers[i](snapshot);
   }
   function subscribe(fn) {
@@ -1448,8 +1458,10 @@
     try {
       var r = await invoke("find_resumable_run");
       if (r && r.session_id) {
-        await switchToSession(r.session_id);
-        await attachRun(r.session_id, true); // 启动恢复:僵死 running → stale,露出重跑按钮
+        // [方案A] 不再 switchToSession 劫持聊天会话——启动恒落干净草稿页。
+        // 只把工作流看板挂回(attachRun 填 state.workflow.run,不动 activeSessionId
+        // 也不切 currentView),用户主动切「工作流」tab 才看到那个 run。
+        await attachRun(r.session_id, true); // 僵死 running → stale,露出重跑按钮
       }
     } catch (e) { console.warn("resumeWorkflowOnBoot failed", e); }
   }
@@ -1642,7 +1654,7 @@
           ? (vllm.tpot_count / vllm.tpot_sum_s).toFixed(1) + " tok/s" : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
         vllmTokTotal: vllm && metricsApplicable && vllm.generation_tokens_total != null
           ? fmtTok(vllm.generation_tokens_total) + " / " + fmtTok(vllm.prompt_tokens_total) : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
-        appVersion: snap.app ? snap.app.pinvou3_version : "—",
+        appVersion: snap.app ? snap.app.pinvou3_version + " (内测版)" : "—",
         dtVersion: snap.app ? snap.app.deepseek_tui_version : "—",
         uptime: snap.app ? fmtDuration(snap.app.session_uptime_secs) : "—",
         updatedAt: snap.generated_at_ms ? new Date(snap.generated_at_ms).toLocaleTimeString() : "—",
@@ -2091,11 +2103,17 @@
     state.updateProgress = p.total ? Math.round((p.downloaded / p.total) * 100) : 0;
     notify();
   });
+  async function loadAppVersion() {
+    try {
+      state.appVersion = await invoke("get_app_version");
+    } catch (_) {}
+  }
   // 启动静默检查: 失败全吞(网络差/更新源挂了不打扰用户)。结果不管新旧都存——
   // available 驱动红点,current_version 给设置页显示当前版本用。
   async function checkForUpdateSilently() {
     try {
       var info = await invoke("check_for_update");
+      if (info && info.current_version) state.appVersion = info.current_version;
       if (info) { state.updateInfo = info; notify(); }
     } catch (e) { /* 静默 */ }
   }
@@ -2104,6 +2122,7 @@
     state.updateChecking = true; state.updateCheckError = null; notify();
     try {
       var info = await invoke("check_for_update");
+      if (info && info.current_version) state.appVersion = info.current_version;
       state.updateInfo = info;
       if (!info.available) state.updateCheckError = "latest"; // 前端按 i18n 显示「已是最新」
     } catch (e) {
@@ -2333,6 +2352,7 @@
   async function init() {
     await loadSettings();
     await loadEffectiveModelConfig();
+    await loadAppVersion();
     await refreshHistoryList();
     enterDraft(); // 启动落空白草稿页(lazy session:不自动选/建会话)
     await refreshSuperPerm();
@@ -2349,7 +2369,7 @@
   window.TauriBridge = {
     available: true,
     subscribe: subscribe,
-    getState: function () { return JSON.parse(JSON.stringify(state)); },
+    getState: function () { return snapshotState(); },
     init: init,
     sendMessage: sendMessage,
     removeQueued: removeQueued,
