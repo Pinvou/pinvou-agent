@@ -116,6 +116,7 @@
     // 不进 notify() 的 JSON 深拷贝(否则每个流式 token 都克隆 ~950KB,卡顿)。
     personaPool: { loadState: "idle" }, // idle | loading | ready | error
     // 应用内升级: updateInfo = check_for_update 返回值(available=true 才有意义)
+    appVersion: null,
     updateInfo: null,
     updateChecking: false,
     updateCheckError: null,   // 手动检查的错误/「已是最新」提示文案
@@ -2097,11 +2098,17 @@
     state.updateProgress = p.total ? Math.round((p.downloaded / p.total) * 100) : 0;
     notify();
   });
+  async function loadAppVersion() {
+    try {
+      state.appVersion = await invoke("get_app_version");
+    } catch (_) {}
+  }
   // 启动静默检查: 失败全吞(网络差/更新源挂了不打扰用户)。结果不管新旧都存——
   // available 驱动红点,current_version 给设置页显示当前版本用。
   async function checkForUpdateSilently() {
     try {
       var info = await invoke("check_for_update");
+      if (info && info.current_version) state.appVersion = info.current_version;
       if (info) { state.updateInfo = info; notify(); }
     } catch (e) { /* 静默 */ }
   }
@@ -2110,6 +2117,7 @@
     state.updateChecking = true; state.updateCheckError = null; notify();
     try {
       var info = await invoke("check_for_update");
+      if (info && info.current_version) state.appVersion = info.current_version;
       state.updateInfo = info;
       if (!info.available) state.updateCheckError = "latest"; // 前端按 i18n 显示「已是最新」
     } catch (e) {
@@ -2339,6 +2347,7 @@
   async function init() {
     await loadSettings();
     await loadEffectiveModelConfig();
+    await loadAppVersion();
     await refreshHistoryList();
     enterDraft(); // 启动落空白草稿页(lazy session:不自动选/建会话)
     await refreshSuperPerm();

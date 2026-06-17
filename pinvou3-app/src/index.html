@@ -1770,12 +1770,13 @@
                   const progress = (bs && bs.updateProgress) || 0;
                   const subText = isDark ? 'text-[#C4C7C5]' : 'text-[#444746]';
                   const isWindowsUpdate = !!(upd && upd.platform === 'windows');
+                  const currentVersion = (bs && bs.appVersion) || (upd && upd.current_version) || '—';
                   return (
                     <div>
                       <div className="flex items-center justify-between">
                         <div className="pr-8">
                           <span className="text-[16px] block mb-1">
-                            {t.curVer} v{(upd && upd.current_version) || '—'}
+                            {t.curVer} v{currentVersion}
                           </span>
                           <span className={`text-[14px] leading-relaxed block ${subText}`}>
                             {checking ? t.checking

@@ -74,6 +74,11 @@ pub struct PendingUpdateReportResult {
     pub message: String,
 }
 
+#[tauri::command]
+pub fn get_app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 /// 拉 latest.json 与当前版本比较。网络失败返回 Err——启动静默检查由前端吞掉，
 /// 手动检查才展示错误。
 #[tauri::command]

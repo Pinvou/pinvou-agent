@@ -219,6 +219,7 @@ pub fn run() {
             commands::delete_persona,
             commands::save_session_persona_events,
             commands::get_session_persona_events,
+            updater::get_app_version,
             updater::check_for_update,
             updater::download_update,
             updater::install_update,
