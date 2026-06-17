@@ -330,13 +330,19 @@
 
   // ── Pub/Sub ──────────────────────────────────────────────────────
   var subscribers = [];
+  function snapshotState() {
+    if (typeof structuredClone === "function") {
+      try { return structuredClone(state); } catch (_) {}
+    }
+    return JSON.parse(JSON.stringify(state));
+  }
   function notify() {
     if (suppressNotify) return;
     // 会话列表「工作中」指示:active 取活动工作集 state.busy,其余取各自 buffer.busy
     state.sessionBusy = {};
     for (var id in sessionStates) state.sessionBusy[id] = !!sessionStates[id].busy;
     if (state.activeSessionId) state.sessionBusy[state.activeSessionId] = !!state.busy;
-    var snapshot = JSON.parse(JSON.stringify(state));
+    var snapshot = snapshotState();
     for (var i = 0; i < subscribers.length; i++) subscribers[i](snapshot);
   }
   function subscribe(fn) {
@@ -2349,7 +2355,7 @@
   window.TauriBridge = {
     available: true,
     subscribe: subscribe,
-    getState: function () { return JSON.parse(JSON.stringify(state)); },
+    getState: function () { return snapshotState(); },
     init: init,
     sendMessage: sendMessage,
     removeQueued: removeQueued,

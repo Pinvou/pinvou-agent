@@ -1527,7 +1527,21 @@
       const [vllmDiscovering, setVllmDiscovering] = useState(false);
       // 进设置页自动体检一次可选依赖装齐没; 之后用户可手动「重新检测」
       useEffect(() => {
-        if (bridge.available && !(bs && bs.deps) && !(bs && bs.depsChecking)) bridge.checkDependencies();
+        if (!bridge.available || (bs && (bs.deps || bs.depsChecking))) return;
+        let cancelled = false;
+        const run = () => { if (!cancelled) bridge.checkDependencies(); };
+        if (window.requestIdleCallback) {
+          const idleId = window.requestIdleCallback(run, { timeout: 1200 });
+          return () => {
+            cancelled = true;
+            if (window.cancelIdleCallback) window.cancelIdleCallback(idleId);
+          };
+        }
+        const timerId = window.setTimeout(run, 300);
+        return () => {
+          cancelled = true;
+          window.clearTimeout(timerId);
+        };
       }, []);
       const presetOptions = [
         { key: 'local_vllm',  label: t.modelPresetLocalVllm },
