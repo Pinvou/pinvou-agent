@@ -295,7 +295,10 @@
       suppressNotify = prev;
       saveWorkingSetTo(bg);
       state.activeSessionId = realId;
-      loadWorkingSetFrom(getBuffer(realId));
+      // realId 为 null(草稿态)时 getBuffer(null)=null、loadWorkingSetFrom(null) 是 no-op,
+      // 会把刚处理的后台 session 工作集泄漏进草稿视图(activeSessionId=null 却带着它的 chatItems),
+      // 召唤检阅等依赖 activeSessionId 的操作随之错乱。草稿态须切回干净的空工作集。
+      loadWorkingSetFrom(realId ? getBuffer(realId) : freshBuffer());
     }
   }
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
@@ -1455,8 +1458,10 @@
     try {
       var r = await invoke("find_resumable_run");
       if (r && r.session_id) {
-        await switchToSession(r.session_id);
-        await attachRun(r.session_id, true); // 启动恢复:僵死 running → stale,露出重跑按钮
+        // [方案A] 不再 switchToSession 劫持聊天会话——启动恒落干净草稿页。
+        // 只把工作流看板挂回(attachRun 填 state.workflow.run,不动 activeSessionId
+        // 也不切 currentView),用户主动切「工作流」tab 才看到那个 run。
+        await attachRun(r.session_id, true); // 僵死 running → stale,露出重跑按钮
       }
     } catch (e) { console.warn("resumeWorkflowOnBoot failed", e); }
   }
@@ -1649,7 +1654,7 @@
           ? (vllm.tpot_count / vllm.tpot_sum_s).toFixed(1) + " tok/s" : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
         vllmTokTotal: vllm && metricsApplicable && vllm.generation_tokens_total != null
           ? fmtTok(vllm.generation_tokens_total) + " / " + fmtTok(vllm.prompt_tokens_total) : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
-        appVersion: snap.app ? snap.app.pinvou3_version : "—",
+        appVersion: snap.app ? snap.app.pinvou3_version + " (内测版)" : "—",
         dtVersion: snap.app ? snap.app.deepseek_tui_version : "—",
         uptime: snap.app ? fmtDuration(snap.app.session_uptime_secs) : "—",
         updatedAt: snap.generated_at_ms ? new Date(snap.generated_at_ms).toLocaleTimeString() : "—",
