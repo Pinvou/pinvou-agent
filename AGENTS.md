@@ -39,5 +39,5 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 
 <!-- SPECKIT START -->
 如需了解当前 Spec Kit feature 使用的技术、项目结构、shell 命令和其他重要信息，请阅读
-`specs/008-update-test-docs/plan.md`.
+`specs/009-ota-domain-bootstrap/plan.md`.
 <!-- SPECKIT END -->

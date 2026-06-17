@@ -75,6 +75,7 @@ pub async fn check_for_update_info(
         sn: String::new(),
         update_type: String::new(),
         platform: std::env::consts::OS.to_string(),
+        ota_host: String::new(),
     })
 }
 

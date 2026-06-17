@@ -63,6 +63,7 @@ pub async fn check_for_update_info(
         sn: String::new(),
         update_type: String::new(),
         platform: "linux".to_string(),
+        ota_host: String::new(),
     })
 }
 

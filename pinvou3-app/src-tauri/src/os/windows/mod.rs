@@ -1,4 +1,5 @@
 mod windows_dependency;
+mod windows_domain_bootstrap;
 mod windows_memory;
 mod windows_path;
 mod windows_permission;
