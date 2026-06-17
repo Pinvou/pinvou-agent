@@ -4,7 +4,7 @@
 
 ```text
 读取 bootstrap 配置
-  -> 读取/选择有效 SN
+  -> 读取设备 BIOS SN，并为域名引导选择 device_id
   -> POST bootstrap /v2/bootstrap
   -> 从 data.smarthubOta 得到 ota_host
   -> POST ota_host /ota/pkg/package/upgrade/check
@@ -26,7 +26,7 @@ Content-Type: application/json
 
 ```json
 {
-  "sn": "有效 SN",
+  "sn": "设备 BIOS SN",
   "softwareId": "Pinvou3_Win",
   "version": "0.4.6",
   "hardwareInfo": null
@@ -36,6 +36,8 @@ Content-Type: application/json
 行为约定：
 
 - `ota_host` 必须来自本次域名引导成功结果。
+- OTA 更新接口的 `sn` 必须使用设备 BIOS SN；固定 SN `219904A17T4257W00018` 只允许用于域名引导请求。
+- 如果无法读取设备 BIOS SN，本次 OTA 更新查询不得使用固定 SN 继续请求。
 - 无可用更新仍是正常查询结果，不应提示为检查失败。
 - 查询失败不得触发下载。
 - 返回给前端的 Windows 更新信息应携带 `ota_host`，用于后续安装反馈记录。
@@ -62,7 +64,7 @@ Content-Type: application/json
 ```json
 {
   "software_identification": "Pinvou3_Win",
-  "sn": "有效 SN",
+  "sn": "设备 BIOS SN",
   "current_version": "0.4.6",
   "update_version": "0.4.7",
   "update_result": "START_INSTALL",
@@ -93,7 +95,7 @@ Content-Type: application/json
 ```json
 {
   "softwareIdentification": "Pinvou3_Win",
-  "sn": "有效 SN",
+  "sn": "设备 BIOS SN",
   "currentVersion": "0.4.6",
   "updateVersion": "0.4.7",
   "updateErrorInfo": "",

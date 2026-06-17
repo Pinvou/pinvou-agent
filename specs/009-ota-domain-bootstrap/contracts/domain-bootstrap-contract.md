@@ -28,6 +28,7 @@ Content-Type: application/json
 - 读取设备 BIOS SN 并 trim。
 - SN 以 `2198` 或 `2199` 开头时，`device_id` 使用该 BIOS SN。
 - SN 为空、读取失败或不以 `2198`/`2199` 开头时，`device_id` 使用固定值 `219904A17T4257W00018`。
+- 本规则只适用于域名引导 `/v2/bootstrap` 请求；后续 OTA 更新接口的 `sn` 必须使用设备 BIOS SN，不使用固定值兜底。
 
 ## 签名规则
 

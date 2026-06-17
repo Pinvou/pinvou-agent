@@ -91,7 +91,7 @@ cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml updater --lib
 重点覆盖：
 
 - 配置文件缺失、为空、合法自定义地址和非法地址回退默认地址。
-- BIOS SN 以 `2198`、`2199`、其他前缀、空值、读取失败时的有效 SN 选择。
+- BIOS SN 以 `2198`、`2199`、其他前缀、空值、读取失败时的域名引导 `device_id` 选择；其他前缀但 BIOS SN 非空时，OTA 请求仍使用真实 BIOS SN。
 - 域名引导签名在固定 timestamp 下与 C# 参考算法一致。
 - 域名引导响应 `smarthubOta` 大小写不敏感匹配。
 - 域名引导失败时不继续 OTA 查询。
@@ -124,7 +124,7 @@ npm run dev
 - 域名引导返回缺少 `data`：不访问 OTA 后台。
 - 域名引导返回缺少 `smarthubOta`：不访问 OTA 后台。
 - `smarthubOta` 为非法 URL：不访问 OTA 后台。
-- BIOS SN 不符合前缀：请求使用固定 SN。
+- BIOS SN 不符合前缀：域名引导请求使用固定 SN；OTA 查询、下载信息和反馈请求仍使用真实 BIOS SN。
 
 ## 非 Windows 回归
 

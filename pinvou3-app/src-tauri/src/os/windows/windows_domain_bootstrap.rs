@@ -13,6 +13,7 @@ use crate::bridge::paths;
 pub(crate) const DEFAULT_BOOTSTRAP_HOST: &str = "https://bootstrap.magic.h3c.com";
 pub(crate) const FALLBACK_SN: &str = "219904A17T4257W00018";
 pub(crate) const SMARTHUB_OTA_KEY: &str = "smarthubOta";
+const MISSING_BIOS_SN_ERROR: &str = "读取设备 BIOS SN 失败，无法执行更新查询";
 
 const BOOTSTRAP_PATH: &str = "/v2/bootstrap";
 const PRODUCT_ID: &str = "61de63cd22271b82ccd9e1bc258b55e0";
@@ -126,9 +127,12 @@ pub(crate) async fn resolve_ota_host(
     let ota_host = request_smarthub_ota(client, &config.bootstrap_host, &identity.effective_sn)
         .await
         .map_err(|e| format!("获取域名引导失败：{e}"))?;
+    let update_sn = identity
+        .update_sn()
+        .ok_or_else(|| MISSING_BIOS_SN_ERROR.to_string())?;
     Ok(BootstrapResolution {
         ota_host,
-        sn: identity.effective_sn,
+        sn: update_sn.to_string(),
     })
 }
 
@@ -186,6 +190,10 @@ impl WindowsBootstrapIdentity {
             source: BootstrapSnSource::Fallback,
             matched_prefix: false,
         }
+    }
+
+    pub(crate) fn update_sn(&self) -> Option<&str> {
+        self.raw_bios_sn.as_deref()
     }
 }
 
@@ -412,16 +420,25 @@ mod tests {
     fn identity_uses_bios_sn_only_for_target_prefixes() {
         let id = WindowsBootstrapIdentity::from_bios_sn(Some(" 2198ABC "));
         assert_eq!(id.effective_sn, "2198ABC");
+        assert_eq!(id.update_sn(), Some("2198ABC"));
         assert_eq!(id.source, BootstrapSnSource::Bios);
         assert!(id.matched_prefix);
 
         let id = WindowsBootstrapIdentity::from_bios_sn(Some("2199XYZ"));
         assert_eq!(id.effective_sn, "2199XYZ");
+        assert_eq!(id.update_sn(), Some("2199XYZ"));
         assert_eq!(id.source, BootstrapSnSource::Bios);
 
-        for raw in [Some("1199XYZ"), Some(""), Some("   "), None] {
+        let id = WindowsBootstrapIdentity::from_bios_sn(Some("1199XYZ"));
+        assert_eq!(id.effective_sn, FALLBACK_SN);
+        assert_eq!(id.update_sn(), Some("1199XYZ"));
+        assert_eq!(id.source, BootstrapSnSource::Fallback);
+        assert!(!id.matched_prefix);
+
+        for raw in [Some(""), Some("   "), None] {
             let id = WindowsBootstrapIdentity::from_bios_sn(raw);
             assert_eq!(id.effective_sn, FALLBACK_SN);
+            assert_eq!(id.update_sn(), None);
             assert_eq!(id.source, BootstrapSnSource::Fallback);
             assert!(!id.matched_prefix);
         }

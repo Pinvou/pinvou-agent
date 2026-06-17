@@ -23,8 +23,9 @@
 
 **字段**
 
-- `raw_bios_sn`：读取到的原始 BIOS SN，可为空。
-- `effective_sn`：实际发送到域名引导后台的 SN。
+- `raw_bios_sn`：读取到并 trim 后的设备 BIOS SN，可为空。
+- `effective_sn`：实际发送到域名引导后台 `/v2/bootstrap` 的 SN。
+- `update_sn`：实际发送到 OTA 更新接口的 SN；必须来自 `raw_bios_sn`，不使用固定 SN 兜底。
 - `source`：`bios` 或 `fallback`。
 - `matched_prefix`：是否命中 `2198` 或 `2199` 前缀。
 
@@ -32,7 +33,9 @@
 
 - 判断前缀前必须 trim 原始 SN。
 - trim 后以 `2198` 或 `2199` 开头时，`effective_sn = raw_bios_sn.trim()`。
-- 其他前缀、空值、读取失败时，`effective_sn = 219904A17T4257W00018`。
+- 其他前缀、空值、读取失败时，域名引导请求的 `effective_sn = 219904A17T4257W00018`。
+- 其他前缀但 BIOS SN 非空时，更新接口仍使用真实 `raw_bios_sn`。
+- BIOS SN 为空或读取失败时，不得使用固定 SN 调用 OTA 更新接口。
 - 普通错误提示不展示完整 `raw_bios_sn` 或 `effective_sn`。
 
 ## DomainBootstrapRequest
@@ -81,12 +84,13 @@
 
 - `ota_host`：域名引导解析出的 OTA 后台根地址。
 - `software_id`：默认 `Pinvou3_Win`。
-- `sn`：本次 OTA 查询使用的有效 SN。
+- `sn`：本次 OTA 查询使用的设备 BIOS SN。
 - `current_version`：当前应用版本。
 
 **验证规则**
 
 - `ota_host` 必须来自成功的域名引导结果。
+- `sn` 必须来自设备 BIOS SN；固定 SN `219904A17T4257W00018` 只允许用于域名引导请求，不允许用于 `check`、`getDownloadInfo` 或 `updateLog`。
 - `check`、`getDownloadInfo` 和 `updateLog` endpoint 均基于 `ota_host` 拼接。
 - `ota_host` 不应回退到旧固定 OTA 默认地址。
 

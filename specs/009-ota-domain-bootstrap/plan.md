@@ -8,7 +8,7 @@
 
 ## 概要
 
-本 feature 将 Windows OTA 后台地址从固定默认地址调整为“域名引导结果”。Windows 用户点击“检查更新”或应用执行静默更新检查时，应用先读取可编辑配置中的域名引导后台地址，默认使用 `https://bootstrap.magic.h3c.com`，再使用设备 BIOS SN 或指定固定 SN 请求 `/v2/bootstrap`，从返回的 `data.smarthubOta` 取出本次 OTA 后台地址。随后查询更新、下载完整包和反馈升级结果都使用该 OTA 来源。
+本 feature 将 Windows OTA 后台地址从固定默认地址调整为“域名引导结果”。Windows 用户点击“检查更新”或应用执行静默更新检查时，应用先读取可编辑配置中的域名引导后台地址，默认使用 `https://bootstrap.magic.h3c.com`，再使用设备 BIOS SN 或指定固定 SN 请求 `/v2/bootstrap`，从返回的 `data.smarthubOta` 取出本次 OTA 后台地址。固定 SN 只用于域名引导请求；随后查询更新、下载完整包和反馈升级结果都使用该 OTA 来源，且请求 SN 使用设备 BIOS SN。
 
 实现边界保持在 `pinvou3-app` 的 Windows OS 分支内：新增 Windows 专用域名引导模块，改造 `windows_update.rs` 的 `OtaConfig` 解析路径，并在待反馈记录中保存本次解析出的 OTA host，保证升级后首次启动反馈仍指向安装前同一 OTA 来源。不修改 DeepSeek-TUI 底座，不改变 Linux 更新流程，也不新增配置 UI；配置通过 `~/.pinvou3/windows-ota-bootstrap.json` 外部文件完成。
 

@@ -678,18 +678,17 @@ impl OtaConfig {
     fn from_parts(current_version: &str, host: &str, sn: &str) -> Result<Self, String> {
         let host = normalize_ota_host(host)
             .ok_or_else(|| "OTA 后台地址无效，无法执行更新流程".to_string())?;
-        let sn = if sn.trim().is_empty() {
-            windows_domain_bootstrap::FALLBACK_SN.to_string()
-        } else {
-            sn.trim().to_string()
-        };
+        let sn = sn.trim();
+        if sn.is_empty() {
+            return Err("设备 BIOS SN 为空，无法执行更新流程".to_string());
+        }
         let software_id = std::env::var(OTA_SOFTWARE_ID_ENV)
             .ok()
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_SOFTWARE_ID.to_string());
         Ok(Self {
             host,
-            sn,
+            sn: sn.to_string(),
             software_id,
             current_version: current_version.to_string(),
         })
@@ -1123,6 +1122,7 @@ mod tests {
         );
         assert_eq!(config.check_request().sn, "SN001");
         assert!(OtaConfig::from_parts("0.4.3", "not-a-url", "SN001").is_err());
+        assert!(OtaConfig::from_parts("0.4.3", "http://127.0.0.1:8787", " ").is_err());
     }
 
     #[test]
