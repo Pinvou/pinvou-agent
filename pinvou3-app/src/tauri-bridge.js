@@ -2414,6 +2414,8 @@
     readPersonaBody: function (id) { return invoke("read_persona_body", { personaId: id }); }, // Side B: 详情拉完整正文
     equipPersona: equipPersona,
     unequipPersona: unequipPersona,
+    // 前端塞一条本地展示消息(如 AI 造卡入口的开场引导卡),不走 LLM
+    postChatItem: function (item) { addChatItem(item); notify(); },
     // 用户自创卡
     createPersona: createPersona,
     updatePersona: updatePersona,
