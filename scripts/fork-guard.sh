@@ -54,6 +54,10 @@ fingerprints=(
   "#42 |ContextMgmt/COMPACT 受 composer gate|DeepSeek-TUI/crates/tui/src/prompts.rs|static_prompt_composer().is_none()"
   "#42 |Runtime Policy Ref 受 composer gate |DeepSeek-TUI/crates/tui/src/prompts.rs|Policy Reference(agent/plan/yolo"
   "#42 |runtime_prompt tag 受 composer gate |DeepSeek-TUI/crates/tui/src/core/engine/turn_loop.rs|static_prompt_composer_installed()"
+  # —— prefix-cache 优化:pwd/workspace 移出静态 system → per-turn turn_meta(2026-06-17)——
+  # 每 session 变的 workspace 留在 static prefix → vLLM prefix-cache 部分命中×投机解码→工具调用退化。
+  "    |env block 移出 volatile pwd     |DeepSeek-TUI/crates/tui/src/prompts.rs|forkguard_environment_block_omits_volatile_pwd"
+  "    |turn_meta 注入 workspace        |DeepSeek-TUI/crates/tui/src/core/engine.rs|Current workspace: {}"
   # —— 工作流 fork 基座层(三省六部;feat/sansheng-workflow 随附,2026-06-12 补)——
   # 行为层已有 engine_config_locks_critical_fields(W10 reasoning_effort);其余 W* 暂只 L1。
   "W1  |SpawnSubAgent 扩展字段          |DeepSeek-TUI/crates/tui/src/core/ops.rs|expects_file_output: bool"

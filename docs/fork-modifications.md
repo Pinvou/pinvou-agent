@@ -16,7 +16,7 @@
 | fork drift | **+2335 / −360 行,43 文件**(`git -C DeepSeek-TUI diff v0.8.60..HEAD --shortstat`)。超 1500 软上限,主体是工作流层 W——属"接受重 fork"(fork-policy §0);app 层 prompt 走 override 注入,不计入 |
 | 历史 | v0.8.60 + 8 commit:C1 lib · C2 blocklist · C3 append_file · C4 safety · C5+C7 prompt-composer · C6 chore · W 工作流层 · docs |
 | LLM 暴露 native 工具 | **23 个**(全量注册 − 81 黑名单;**tool_search 已禁用**,模型无法激活 deferred 工具)。MCP `mcp_pinvou_present_artifact` 另接,共 24 入口 |
-| fork-guard | **41 指纹 + 回归测试**(`scripts/fork-guard.sh`);底座 lib 4539 pass(+1 已知 flake:verifier 后台 shell 并行误报)/ app lib 166 pass(单线程) |
+| fork-guard | **43 指纹 + 回归测试**(`scripts/fork-guard.sh`);底座 lib 4539 pass(+1 已知 flake:verifier 后台 shell 并行误报)/ app lib 166 pass(单线程) |
 | system prompt | dump 逐字节稳定(210 行,diff=0);per-turn `<runtime_prompt>` tag + goal continuation 均已 gate |
 
 ---
@@ -74,6 +74,13 @@
 - **测试**:submodule `forkguard_static_prompt_composer_*`;app `forkguard_static_composer_*`
 - 上游 PR:[#2786](https://github.com/Hmbown/CodeWhale/pull/2786) CLOSED(上游窄版,语义不同);pinvou3 宽版保 fork
 
+### P `prefix-cache` pwd/workspace 移出静态 system(2026-06-17)
+- **文件**:`prompts.rs`(render_environment_block 删 `- pwd` 行,与 C5/C7 共此文件)、`core/engine.rs`(turn_metadata_block 加 `Current workspace` 行)。app 层同步:`instructions.md` 删 `{{PINVOU3_WORKSPACE}}`/`{{PINVOU3_DATE}}`(改静态文案 + 相对路径引导)、`bridge/mod.rs` 删对应 replace
+- **改动**:每 session 变的 workspace 路径(pwd)从静态 `## Environment` **移出** → per-turn `<turn_meta>` 的 `Current workspace`;date 同理(turn_meta 本就有);产出引导改"用相对路径写,工具自动落 workspace"(实测 4/4,PathEscape 兜底)
+- **理由**:vLLM(开 `--enable-prefix-caching` + 投机解码 mtp)在 prefix-cache **部分命中**(system 前半命中上个 session、到 workspace 处分叉接续 prefill)时,分叉点 KV 不自洽 + mtp 对 KV 敏感 → 工具调用退化成裸 XML(实测 L1 single subagent 25%;**所有工具受影响**,read_file/exec_shell 部分命中下全 0~1/4)。移 pwd/workspace 让 static system 跨 session 字节静态 → 完整命中,25%→~100%。⚠️ **生产 GUI 有 cache warmup 自我预热完整 prefix、基本不犯**(B 5/6);此 fork 主要修 **L1 headless(无 warmup)测试准确性** + 防御(warmup 失效兜底)
+- **测试**:`forkguard_environment_block_omits_volatile_pwd`(指纹同名);L1 `subagent_single_simple`(25%→稳态100%,13/13)+ `relpath_write_file`(相对路径落 workspace,4/4)
+- 上游 PR:✅ **拟提**——prefix-cache 优化通用,且符合上游 environment-volatile 方向(§8 #2314 已 merged);PR 拟为 "move volatile pwd from static system prefix to per-turn turn_meta"
+
 ### W `workflow` 三省六部工作流底座层
 - **文件**:`tools/subagent/{mod,tests}.rs`、`core/ops.rs`、`core/events.rs`、`core/engine.rs`、`core/engine/{tests,approval,handle}.rs`、`tools/user_input.rs`、`runtime_threads.rs`、`tui/{sidebar,command_palette,ui,views/mod}.rs`、`main.rs`(EngineConfig 字段)
 - **子 patch**:
@@ -123,7 +130,7 @@
 ./scripts/fork-guard.sh --fast   # 仅指纹层,秒级(merge 后第一道快筛)
 ```
 
-两层:**指纹层** grep 每个 fork 标记是否还在(抓「merge 静默丢整段 patch」);**行为层** `cargo test` 跑回归测试(抓「值/逻辑被改回上游」)。**41 指纹**(submodule C1-C7+W / app),完整清单见 `fork-guard.sh` `fingerprints=` 数组——新增 fork patch 必同步加指纹(见 fork-policy §3)。
+两层:**指纹层** grep 每个 fork 标记是否还在(抓「merge 静默丢整段 patch」);**行为层** `cargo test` 跑回归测试(抓「值/逻辑被改回上游」)。**43 指纹**(submodule C1-C7+W+P / app),完整清单见 `fork-guard.sh` `fingerprints=` 数组——新增 fork patch 必同步加指纹(见 fork-policy §3)。
 
 ### ⚠️ sync 后必做验证 checklist(fork-guard **不够**,每条都踩过坑)
 1. **全量 lib 测试** `cargo test -p codewhale-tui --lib`——抓非 `forkguard_` 前缀的上游测试因 fork fail(v0.8.51 append_file 静默丢失靠此抓)

@@ -211,13 +211,12 @@ impl Pinvou3Bridge {
         let ws = paths::session_workspace_dir(session_id);
         // 同时确保目录存在,AI 写 write_file 时不会因为目录不存在而失败
         let _ = std::fs::create_dir_all(&ws);
-        // 动态注入:模型名(多模型适配,模型知道自己是谁)+ 今天日期(模型有日期就不必为"今天几号"
-        // 编/调工具,精确当前时间仍走工具)。同 workspace,每会话渲染。
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        // [pinvou3] date/workspace 已移出静态 system → per-turn <turn_meta>:每 session
+        // 变的 workspace 路径(及每天变的 date)若进 cached system prefix, vLLM prefix-cache
+        // MISS 时工具调用会退化成裸文本(实测 single subagent 25%→稳态~100%)。仅保留 model
+        // (固定值,不破坏 cache)与 sudo(静态文案兜底,实时状态走 super_permission::turn_reminder)。
         INSTRUCTIONS_MD
             .replace("{{PINVOU3_MODEL}}", &self.model())
-            .replace("{{PINVOU3_DATE}}", &today)
-            .replace("{{PINVOU3_WORKSPACE}}", &ws.to_string_lossy())
             .replace(
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
                 crate::super_permission::instruction_block(),
@@ -1292,9 +1291,11 @@ mod tests {
         );
     }
 
-    /// L2-8: build_session_system_prompt 必须把 `{{PINVOU3_WORKSPACE}}` 占位符
-    /// 替换为 session-specific 路径，且替换后的 prompt 必须含 session_id 子串
-    /// （session_workspace_dir 路径形如 `<root>/<session_id>/workspace`）。
+    /// L2-8: workspace 路径已从静态 system **移出** → per-turn `<turn_meta>` 的
+    /// `Current workspace`(见 engine.rs turn_metadata_block)。每 session 变的路径若进
+    /// cached system prefix 会让 vLLM prefix-cache MISS、工具调用退化成裸文本(实测 single
+    /// subagent 25%→稳态~100%),故 build_session_system_prompt 不再含 session-specific
+    /// 路径,保持跨 session 字节静态。
     #[test]
     fn instructions_md_session_workspace_subst() {
         let bridge = fixture_bridge();
@@ -1302,11 +1303,11 @@ mod tests {
         let prompt = bridge.build_session_system_prompt(session_id);
         assert!(
             !prompt.contains("{{PINVOU3_WORKSPACE}}"),
-            "占位符必须被替换,残留=死锁(AI 看不到真实路径)"
+            "WORKSPACE 占位符已删, 不该残留"
         );
         assert!(
-            prompt.contains(session_id),
-            "替换后 prompt 必须含 session_id 子串, prompt 前 200 字: {}",
+            !prompt.contains(session_id),
+            "workspace 路径(含 session_id)必须移出静态 system → turn_meta, 实际仍含: {}",
             &prompt.chars().take(200).collect::<String>()
         );
     }
