@@ -12,13 +12,11 @@ use tauri::{AppHandle, Emitter};
 use tokio::time::timeout;
 use zip::ZipArchive;
 
+use super::windows_domain_bootstrap;
 use crate::bridge::paths;
 
 const DEFAULT_SOFTWARE_ID: &str = "Pinvou3_Win";
 const DEFAULT_SOFTWARE_TYPE: &str = "Pinvou3";
-const DEFAULT_OTA_HOST: &str = "https://api.intcloud.h3c.com";
-const OTA_HOST_ENV: &str = "PINVOU3_OTA_HOST";
-const OTA_SN_ENV: &str = "PINVOU3_OTA_SN";
 const OTA_SOFTWARE_ID_ENV: &str = "PINVOU3_OTA_SOFTWARE_ID";
 const CHECK_UPDATE_PATH: &str = "/ota/pkg/package/upgrade/check";
 const DOWNLOAD_INFO_PATH: &str = "/ota/pkg/package/upgrade/getDownloadInfo";
@@ -37,6 +35,7 @@ pub struct WindowsUpdateInfo {
     pub software_id: String,
     pub sn: String,
     pub update_type: String,
+    pub ota_host: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +49,7 @@ pub struct WindowsPreparedUpdate {
 pub struct WindowsInstallContext {
     pub software_id: String,
     pub sn: String,
+    pub ota_host: String,
     pub current_version: String,
     pub update_version: String,
 }
@@ -71,6 +71,8 @@ pub struct UpdateFeedbackRecord {
     pub update_result: String,
     pub update_error_info: String,
     pub installer_path: String,
+    #[serde(default)]
+    pub ota_host: String,
     pub created_at: DateTime<Utc>,
     pub last_attempt_at: Option<DateTime<Utc>>,
     pub attempts: u32,
@@ -211,6 +213,7 @@ pub async fn check_for_update_info(
         sn: info.sn,
         update_type: info.update_type,
         platform: "windows".to_string(),
+        ota_host: info.ota_host,
     })
 }
 
@@ -218,7 +221,7 @@ pub async fn check_for_update(
     client: &reqwest::Client,
     current_version: &str,
 ) -> Result<WindowsUpdateInfo, String> {
-    let config = OtaConfig::from_env(current_version)?;
+    let config = OtaConfig::from_bootstrap(client, current_version).await?;
     let req = config.check_request();
     let response: OtaResponse<UpgradeData> =
         post_json(client, &config.endpoint(CHECK_UPDATE_PATH), &req).await?;
@@ -234,6 +237,7 @@ pub async fn check_for_update(
             software_id: config.software_id,
             sn: config.sn,
             update_type: String::new(),
+            ota_host: config.host,
         });
     }
     let mut data: UpgradeData = response.into_data("获取升级信息")?;
@@ -252,6 +256,7 @@ pub async fn check_for_update(
             software_id: config.software_id,
             sn: config.sn,
             update_type: update_type_name(data.update_type).to_string(),
+            ota_host: config.host,
         });
     }
 
@@ -280,6 +285,7 @@ pub async fn check_for_update(
         software_id: config.software_id,
         sn: config.sn,
         update_type: update_type_name(data.update_type).to_string(),
+        ota_host: config.host,
     })
 }
 
@@ -430,6 +436,7 @@ pub fn write_install_started_record(
         update_result: "START_INSTALL".to_string(),
         update_error_info: String::new(),
         installer_path: windows_tool_path(&installer).to_string_lossy().into_owned(),
+        ota_host: context.ota_host.clone(),
         created_at: Utc::now(),
         last_attempt_at: None,
         attempts: 0,
@@ -498,8 +505,8 @@ pub async fn report_pending_update_result(
         });
     }
 
-    let config = OtaConfig::from_env(current_version)?;
     let mut record: UpdateFeedbackRecord = read_json_file(&record_path, "update-feedback.json")?;
+    let config = OtaConfig::from_feedback_record(client, current_version, &record).await?;
     let result = if !record.update_version.is_empty()
         && version_at_least(current_version, &record.update_version)
     {
@@ -568,6 +575,7 @@ fn install_context_from_update_info(info: &crate::updater::UpdateInfo) -> Window
             info.software_id.clone()
         },
         sn: info.sn.clone(),
+        ota_host: info.ota_host.clone(),
         current_version: info.current_version.clone(),
         update_version: info.latest_version.clone(),
     }
@@ -648,17 +656,33 @@ struct OtaConfig {
 }
 
 impl OtaConfig {
-    fn from_env(current_version: &str) -> Result<Self, String> {
-        let host = std::env::var(OTA_HOST_ENV)
-            .ok()
-            .map(|v| v.trim().trim_end_matches('/').to_string())
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| DEFAULT_OTA_HOST.to_string());
-        let sn = std::env::var(OTA_SN_ENV)
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .or_else(|| std::env::var("COMPUTERNAME").ok())
-            .unwrap_or_else(|| "UNKNOWN".to_string());
+    async fn from_bootstrap(
+        client: &reqwest::Client,
+        current_version: &str,
+    ) -> Result<Self, String> {
+        let resolution = windows_domain_bootstrap::resolve_ota_host(client).await?;
+        Self::from_parts(current_version, &resolution.ota_host, &resolution.sn)
+    }
+
+    async fn from_feedback_record(
+        client: &reqwest::Client,
+        current_version: &str,
+        record: &UpdateFeedbackRecord,
+    ) -> Result<Self, String> {
+        if !record.ota_host.trim().is_empty() {
+            return Self::from_parts(current_version, &record.ota_host, &record.sn);
+        }
+        Self::from_bootstrap(client, current_version).await
+    }
+
+    fn from_parts(current_version: &str, host: &str, sn: &str) -> Result<Self, String> {
+        let host = normalize_ota_host(host)
+            .ok_or_else(|| "OTA 后台地址无效，无法执行更新流程".to_string())?;
+        let sn = if sn.trim().is_empty() {
+            windows_domain_bootstrap::FALLBACK_SN.to_string()
+        } else {
+            sn.trim().to_string()
+        };
         let software_id = std::env::var(OTA_SOFTWARE_ID_ENV)
             .ok()
             .filter(|v| !v.trim().is_empty())
@@ -682,6 +706,19 @@ impl OtaConfig {
             version: self.current_version.clone(),
             hardware_info: None,
         }
+    }
+}
+
+fn normalize_ota_host(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parsed = reqwest::Url::parse(trimmed).ok()?;
+    if matches!(parsed.scheme(), "http" | "https") && parsed.host_str().is_some() {
+        Some(trimmed.to_string())
+    } else {
+        None
     }
 }
 
@@ -1028,6 +1065,7 @@ mod tests {
         WindowsInstallContext {
             software_id: DEFAULT_SOFTWARE_ID.to_string(),
             sn: "SN001".to_string(),
+            ota_host: "https://ota.example.com".to_string(),
             current_version: "0.4.3".to_string(),
             update_version: "0.4.4.0".to_string(),
         }
@@ -1069,30 +1107,22 @@ mod tests {
     }
 
     #[test]
-    fn ota_host_defaults_to_h3c_and_allows_env_override() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var(OTA_HOST_ENV).ok();
-        std::env::remove_var(OTA_HOST_ENV);
-
-        let config = OtaConfig::from_env("0.4.3").unwrap();
-        assert_eq!(
-            config.endpoint(CHECK_UPDATE_PATH),
-            format!("{DEFAULT_OTA_HOST}{CHECK_UPDATE_PATH}")
-        );
-
-        std::env::set_var(OTA_HOST_ENV, "http://127.0.0.1:8787/");
-        let config = OtaConfig::from_env("0.4.3").unwrap();
+    fn ota_config_endpoints_use_resolved_host() {
+        let config = OtaConfig::from_parts("0.4.3", "http://127.0.0.1:8787/", "SN001").unwrap();
         assert_eq!(
             config.endpoint(CHECK_UPDATE_PATH),
             "http://127.0.0.1:8787/ota/pkg/package/upgrade/check"
         );
-
-        match prev {
-            Some(v) => std::env::set_var(OTA_HOST_ENV, v),
-            None => std::env::remove_var(OTA_HOST_ENV),
-        }
+        assert_eq!(
+            config.endpoint(DOWNLOAD_INFO_PATH),
+            "http://127.0.0.1:8787/ota/pkg/package/upgrade/getDownloadInfo"
+        );
+        assert_eq!(
+            config.endpoint(UPDATE_LOG_PATH),
+            "http://127.0.0.1:8787/ota/pkg/package/updateLog"
+        );
+        assert_eq!(config.check_request().sn, "SN001");
+        assert!(OtaConfig::from_parts("0.4.3", "not-a-url", "SN001").is_err());
     }
 
     #[test]
@@ -1186,6 +1216,7 @@ mod tests {
             update_result: "START_INSTALL".to_string(),
             update_error_info: String::new(),
             installer_path: "C:/x/pinvou3.msi".to_string(),
+            ota_host: "https://ota.example.com".to_string(),
             created_at: Utc::now(),
             last_attempt_at: None,
             attempts: 0,
@@ -1194,7 +1225,24 @@ mod tests {
         let json = serde_json::to_string(&record).unwrap();
         let back: UpdateFeedbackRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(back.update_result, "START_INSTALL");
+        assert_eq!(back.ota_host, "https://ota.example.com");
         assert!(!back.reported);
+
+        let old_json = r#"{
+            "software_identification":"Pinvou3_Win",
+            "sn":"SN001",
+            "current_version":"0.4.3",
+            "update_version":"0.4.4.0",
+            "update_result":"START_INSTALL",
+            "update_error_info":"",
+            "installer_path":"C:/x/pinvou3.msi",
+            "created_at":"2026-06-17T00:00:00Z",
+            "last_attempt_at":null,
+            "attempts":0,
+            "reported":false
+        }"#;
+        let old: UpdateFeedbackRecord = serde_json::from_str(old_json).unwrap();
+        assert!(old.ota_host.is_empty());
     }
 
     #[test]

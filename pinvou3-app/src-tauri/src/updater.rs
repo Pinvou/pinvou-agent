@@ -49,6 +49,8 @@ pub struct UpdateInfo {
     pub update_type: String,
     #[serde(default)]
     pub platform: String,
+    #[serde(default)]
+    pub ota_host: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
