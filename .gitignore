@@ -29,3 +29,6 @@ Thumbs.db
 
 # 临时 PR worktree(submodule 的 git worktree,勿提交)
 /DeepSeek-TUI-*-env/
+
+# 客户资料包:原始截图是中间产物(由 _tooling/shoot.js 再生成),只提交 shots-web/
+资料包/shots/
