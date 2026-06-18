@@ -697,18 +697,35 @@ fn run_cmd(program: &str, args: &[&str], cwd: &Path) -> Result<String, String> {
 }
 
 fn run_cmd_with_timeout(program: &str, args: &[&str], cwd: &Path, timeout_secs: u64) -> Result<String, String> {
-    // [pinvou3] warmup/scheduler 子进程需要 app 实际用的 vLLM endpoint。app 可能只配
-    // settings.json(custom_base_url)而不设 DEEPSEEK_BASE_URL 环境变量,那样 warmup 的
-    // endpoint 预检会误判 blocked → 工作流启动卡死。统一注入解析后的 base_url
-    // (env 优先,回退 settings.json),子进程不必关心配置来源。
-    let base_url = std::env::var("DEEPSEEK_BASE_URL")
-        .unwrap_or_else(|_| crate::bridge::Pinvou3Bridge::load_model_monitor_target().base_url);
-    let mut child = Command::new(program)
+    // [pinvou3] warmup/scheduler 子进程需要 app 实际用的模型配置。app 可能只配
+    // settings.json(custom_base_url/custom_api_key)而不设模型环境变量,那样
+    // warmup 的 endpoint 预检会误判 blocked → 工作流启动卡死。统一注入解析后的
+    // base_url/api_key(env 优先,回退 settings.json),子进程不必关心配置来源。
+    let model_target = crate::bridge::Pinvou3Bridge::load_model_monitor_target();
+    let base_url = std::env::var("PINVOU3_MODEL_BASE_URL")
+        .unwrap_or_else(|_| model_target.base_url.clone());
+    let api_key = std::env::var("PINVOU3_MODEL_API_KEY")
+        .ok()
+        .or_else(|| {
+            let key = model_target.api_key?;
+            let is_local_default = matches!(
+                model_target.kind,
+                crate::bridge::ModelMonitorTargetKind::Local
+            ) && key == "local-no-auth";
+            (!is_local_default).then_some(key)
+        })
+        .unwrap_or_default();
+    let mut command = Command::new(program);
+    command
         .args(args)
         .current_dir(cwd)
         .env("PYTHONPATH", cwd)
         .env("PYTHONIOENCODING", "utf-8") // Windows stdout 默认 GBK，中文 print 会 UnicodeEncodeError
-        .env("DEEPSEEK_BASE_URL", base_url)
+        .env("PINVOU3_MODEL_BASE_URL", base_url);
+    if !api_key.trim().is_empty() {
+        command.env("PINVOU3_MODEL_API_KEY", api_key);
+    }
+    let mut child = command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()

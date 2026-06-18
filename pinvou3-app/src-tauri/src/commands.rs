@@ -2142,6 +2142,47 @@ pub struct StartWorkflowResult {
     pub project_dir: String,
 }
 
+fn short_workflow_message(raw: &str, max_chars: usize) -> String {
+    let trimmed = raw.trim();
+    let mut out: String = trimmed.chars().take(max_chars).collect();
+    if trimmed.chars().count() > max_chars {
+        out.push('…');
+    }
+    out
+}
+
+fn summarize_workflow_blocked_message(message: &str) -> (String, Option<serde_json::Value>) {
+    let report = serde_json::from_str::<serde_json::Value>(message).ok();
+    if let Some(report) = report.as_ref() {
+        if let Some(checks) = report.get("checks").and_then(|v| v.as_object()) {
+            let blocked: Vec<String> = checks
+                .iter()
+                .filter_map(|(name, check)| {
+                    let status = check.get("status").and_then(|v| v.as_str())?;
+                    if status != "blocked" {
+                        return None;
+                    }
+                    let details = check
+                        .get("details")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("blocked");
+                    Some(format!("{name}: {details}"))
+                })
+                .collect();
+            if !blocked.is_empty() {
+                return (
+                    format!("预检失败：{}", blocked.join("；")),
+                    Some(report.clone()),
+                );
+            }
+        }
+        if let Some(status) = report.get("status").and_then(|v| v.as_str()) {
+            return (format!("工作流阻塞：{status}"), Some(report.clone()));
+        }
+    }
+    (short_workflow_message(message, 240), report)
+}
+
 #[tauri::command]
 pub async fn start_workflow(
     scenario: String,
@@ -2354,7 +2395,16 @@ pub async fn kick_workflow(
             Ok(format!("spawning {role_name} ({n} pages, 在飞={k})"))
         }
         crate::harness::HarnessAction::Blocked { message } => {
-            Err(format!("workflow blocked: {message}"))
+            let (display_message, warmup_report) = summarize_workflow_blocked_message(&message);
+            let mut payload = serde_json::json!({
+                "session_id": sid.clone(),
+                "message": display_message.clone(),
+            });
+            if let Some(report) = warmup_report {
+                payload["warmup_report"] = report;
+            }
+            let _ = app.emit("workflow:blocked", payload);
+            Err(format!("workflow blocked: {display_message}"))
         }
         _ => Ok("no dispatch (already running or not applicable)".to_string()),
     }
