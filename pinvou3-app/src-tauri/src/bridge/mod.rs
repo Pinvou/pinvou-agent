@@ -127,6 +127,7 @@ fn model_monitor_source(prefs: &UserPrefs) -> String {
     if prefs.advanced.custom_base_url.is_some()
         || prefs.advanced.custom_model_name.is_some()
         || prefs.advanced.custom_api_key.is_some()
+        || !prefs.advanced.model_profiles.is_empty()
     {
         return "settings".to_string();
     }
@@ -262,6 +263,32 @@ impl Pinvou3Bridge {
         self.prefs.language.locale_tag()
     }
 
+    fn model_preset(&self) -> ModelPreset {
+        self.prefs.advanced.model_preset.unwrap_or_default()
+    }
+
+    fn active_model_profile(&self) -> Option<&self::prefs::ModelProfilePrefs> {
+        self.prefs.advanced.model_profiles.get(&self.model_preset())
+    }
+
+    fn profile_model_name(&self) -> Option<String> {
+        self.active_model_profile()
+            .and_then(|profile| profile.model_name.clone())
+            .or_else(|| self.prefs.advanced.custom_model_name.clone())
+    }
+
+    fn profile_base_url(&self) -> Option<String> {
+        self.active_model_profile()
+            .and_then(|profile| profile.base_url.clone())
+            .or_else(|| self.prefs.advanced.custom_base_url.clone())
+    }
+
+    fn profile_api_key(&self) -> Option<String> {
+        self.active_model_profile()
+            .and_then(|profile| profile.api_key.clone())
+            .or_else(|| self.prefs.advanced.custom_api_key.clone())
+    }
+
     /// 用 INSTRUCTIONS_MD 模板，把 `{{PINVOU3_WORKSPACE}}` 替换成指定 session 的
     /// 独立 workspace 目录,返回渲染后的字符串(供 [`session_instructions`] 用)。
     pub fn build_session_system_prompt(&self, session_id: &str) -> String {
@@ -318,7 +345,7 @@ impl Pinvou3Bridge {
         if let Ok(v) = std::env::var("DEEPSEEK_PROVIDER") {
             return v;
         }
-        match self.prefs.advanced.model_preset.unwrap_or_default() {
+        match self.model_preset() {
             ModelPreset::LocalVllm => "vllm".to_string(),
             ModelPreset::Deepseek => "deepseek".to_string(),
             ModelPreset::Kimi => "moonshot".to_string(),
@@ -341,7 +368,7 @@ impl Pinvou3Bridge {
             }
             return v;
         }
-        if let Some(model) = self.prefs.advanced.custom_model_name.clone() {
+        if let Some(model) = self.profile_model_name() {
             if is_official_deepseek {
                 return official_deepseek_model_name(&model);
             }
@@ -355,7 +382,7 @@ impl Pinvou3Bridge {
 
     /// 各厂商默认模型名。
     fn default_model_for_preset(&self) -> String {
-        match self.prefs.advanced.model_preset.unwrap_or_default() {
+        match self.model_preset() {
             ModelPreset::LocalVllm => LOCAL_VLLM_MODEL.into(),
             ModelPreset::Deepseek => "deepseek-v4-pro".to_string(),
             ModelPreset::Kimi => "kimi-k2.6".to_string(),
@@ -374,16 +401,13 @@ impl Pinvou3Bridge {
         if let Ok(v) = std::env::var("DEEPSEEK_BASE_URL") {
             return v;
         }
-        self.prefs
-            .advanced
-            .custom_base_url
-            .clone()
+        self.profile_base_url()
             .unwrap_or_else(|| self.default_base_url_for_preset())
     }
 
     /// 各厂商默认 API base URL。
     fn default_base_url_for_preset(&self) -> String {
-        match self.prefs.advanced.model_preset.unwrap_or_default() {
+        match self.model_preset() {
             ModelPreset::LocalVllm => LOCAL_VLLM_BASE_URL.into(),
             ModelPreset::Deepseek => "https://api.deepseek.com".to_string(),
             ModelPreset::Kimi => "https://api.moonshot.cn/v1".to_string(),
@@ -402,21 +426,11 @@ impl Pinvou3Bridge {
             return v;
         }
         if is_official_deepseek_base_url(&self.base_url()) {
-            return self
-                .prefs
-                .advanced
-                .custom_api_key
-                .clone()
-                .unwrap_or_default();
+            return self.profile_api_key().unwrap_or_default();
         }
-        match self.prefs.advanced.model_preset.unwrap_or_default() {
+        match self.model_preset() {
             ModelPreset::LocalVllm => LOCAL_VLLM_API_KEY.into(),
-            _ => self
-                .prefs
-                .advanced
-                .custom_api_key
-                .clone()
-                .unwrap_or_default(),
+            _ => self.profile_api_key().unwrap_or_default(),
         }
     }
 
@@ -1643,6 +1657,43 @@ mod tests {
     }
 
     /// DtConfig 在 LocalVllm 模式下必须保持 reasoning_effort=off（防 SSE timeout）。
+    #[test]
+    fn active_model_profile_overrides_legacy_single_slot() {
+        let _env = EnvGuard::new(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        for name in [
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ] {
+            std::env::remove_var(name);
+        }
+
+        let mut bridge = fixture_bridge();
+        bridge.prefs.advanced.model_preset = Some(ModelPreset::Deepseek);
+        bridge.prefs.advanced.custom_model_name = Some("abab6.5s-chat".to_string());
+        bridge.prefs.advanced.custom_base_url = Some("https://api.minimax.chat/v1".to_string());
+        bridge.prefs.advanced.custom_api_key = Some("sk-minimax".to_string());
+        bridge.prefs.advanced.model_profiles.insert(
+            ModelPreset::Deepseek,
+            self::prefs::ModelProfilePrefs {
+                model_name: Some("deepseek-v4-pro".to_string()),
+                base_url: Some("https://api.deepseek.com".to_string()),
+                api_key: Some("sk-deepseek".to_string()),
+            },
+        );
+
+        assert_eq!(bridge.provider(), "deepseek");
+        assert_eq!(bridge.model(), "deepseek-v4-pro");
+        assert_eq!(bridge.base_url(), "https://api.deepseek.com");
+        assert_eq!(bridge.api_key(), "sk-deepseek");
+    }
+
     #[test]
     fn local_vllm_forces_reasoning_effort_off() {
         let bridge = fixture_bridge();

@@ -754,6 +754,7 @@
       const [customModelName, setCustomModelName] = useState('');
       const [customBaseUrl, setCustomBaseUrl] = useState('');
       const [customApiKey, setCustomApiKey] = useState('');
+      const [modelProfiles, setModelProfiles] = useState({});
       const modelConfigInitRef = useRef(false);
       const searchConfigInitRef = useRef(false);
       const uiPrefsInitRef = useRef(false);
@@ -774,6 +775,32 @@
         glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-4-plus' },
         mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2-flash' },
       };
+      function normalizedModelProfile(name, baseUrl, apiKey) {
+        const modelName = (name || '').trim();
+        const endpoint = (baseUrl || '').trim();
+        const key = (apiKey || '').trim();
+        return {
+          model_name: modelName || null,
+          base_url: endpoint || null,
+          api_key: key || null,
+        };
+      }
+      function modelDraftForPreset(preset, profiles, fallback) {
+        const defs = PRESET_DEFAULTS[preset] || PRESET_DEFAULTS.local_vllm;
+        const profile = (profiles && profiles[preset]) || {};
+        return {
+          preset,
+          name: profile.model_name || (fallback && fallback.name) || defs.model,
+          baseUrl: profile.base_url || (fallback && fallback.baseUrl) || defs.baseUrl,
+          apiKey: profile.api_key || (fallback && fallback.apiKey) || '',
+        };
+      }
+      function mergeModelDraft(profiles, preset, name, baseUrl, apiKey) {
+        return {
+          ...(profiles || {}),
+          [preset]: normalizedModelProfile(name, baseUrl, apiKey),
+        };
+      }
       const [isSidebarOpen, setIsSidebarOpen] = useState(false);
       const [chatPrefill, setChatPrefill] = useState('');
       const [personaEditor, setPersonaEditor] = useState(null); // 聊天里"存入卡牌池"草稿 → App 级编辑器
@@ -829,13 +856,15 @@
           const adv = bs.settings.advanced || {};
           const effective = bs.effectiveModelConfig || {};
           const preset = effective.preset || adv.model_preset || 'local_vllm';
-          const defs = PRESET_DEFAULTS[preset] || PRESET_DEFAULTS.local_vllm;
-          const saved = {
-            preset,
-            name: effective.model || adv.custom_model_name || defs.model,
-            baseUrl: effective.base_url || adv.custom_base_url || defs.baseUrl,
+          const profiles = { ...(adv.model_profiles || {}) };
+          const fallback = {
+            name: effective.model || adv.custom_model_name || '',
+            baseUrl: effective.base_url || adv.custom_base_url || '',
             apiKey: effective.api_key || adv.custom_api_key || '',
           };
+          const saved = modelDraftForPreset(preset, profiles, fallback);
+          profiles[preset] = normalizedModelProfile(saved.name, saved.baseUrl, saved.apiKey);
+          setModelProfiles(profiles);
           setModelPreset(saved.preset);
           setCustomModelName(saved.name);
           setCustomBaseUrl(saved.baseUrl);
@@ -909,19 +938,21 @@
       // 其他字段——之前漏 spread 会让后端 serde default 把它们重置(bug fix)。
       function buildFullSettings(overrides) {
         const base = (bs && bs.settings) ? bs.settings : {};
+        const advancedOverrides = (overrides && overrides.advanced) ? overrides.advanced : {};
+        const searchOverrides = (overrides && overrides.search) ? overrides.search : null;
+        const topOverrides = { ...(overrides || {}) };
+        delete topOverrides.advanced;
+        delete topOverrides.search;
         return {
           ...base,
-          theme: activeTheme === 'dark' ? 'genesis' : 'liquid-light',
-          language: LANG_TO_TAG[language] || 'zh-Hans',
-          search: {
+          ...topOverrides,
+          theme: topOverrides.theme !== undefined ? topOverrides.theme : (activeTheme === 'dark' ? 'genesis' : 'liquid-light'),
+          language: topOverrides.language !== undefined ? topOverrides.language : (LANG_TO_TAG[language] || 'zh-Hans'),
+          search: searchOverrides || {
             provider: searchProvider,
             api_key: normalizedSearchApiKeyValue(searchApiKey),
           },
-          advanced: {
-            ...buildAdvancedOverrides({}),
-            ...(overrides && overrides.advanced ? overrides.advanced : {}),
-          },
-          ...overrides,
+          advanced: buildAdvancedOverrides(advancedOverrides),
         };
       }
 
@@ -956,30 +987,46 @@
       }
 
       function buildAdvancedOverrides(overrides) {
+        const baseAdvanced = (bs && bs.settings && bs.settings.advanced) ? bs.settings.advanced : {};
+        const nextPreset = overrides.model_preset !== undefined ? overrides.model_preset : modelPreset;
+        const nextModelName = overrides.custom_model_name !== undefined ? overrides.custom_model_name : customModelName;
+        const nextBaseUrl = overrides.custom_base_url !== undefined ? overrides.custom_base_url : customBaseUrl;
+        const nextApiKey = overrides.custom_api_key !== undefined ? overrides.custom_api_key : customApiKey;
+        const nextProfiles = {
+          ...(baseAdvanced.model_profiles || {}),
+          ...(modelProfiles || {}),
+          [nextPreset]: normalizedModelProfile(nextModelName, nextBaseUrl, nextApiKey),
+        };
         return {
-          model_preset: overrides.model_preset !== undefined ? overrides.model_preset : modelPreset,
-          custom_model_name: overrides.custom_model_name !== undefined ? (overrides.custom_model_name || null) : (customModelName || null),
-          custom_base_url: overrides.custom_base_url !== undefined ? (overrides.custom_base_url || null) : (customBaseUrl || null),
-          custom_api_key: overrides.custom_api_key !== undefined ? (overrides.custom_api_key || null) : (customApiKey || null),
+          ...baseAdvanced,
+          ...overrides,
+          model_preset: nextPreset,
+          custom_model_name: nextModelName || null,
+          custom_base_url: nextBaseUrl || null,
+          custom_api_key: nextApiKey || null,
+          model_profiles: nextProfiles,
         };
       }
 
       // 模型配置改为草稿模式：只更新 state，点击确认后统一保存并重启
       function handleChangeModelPreset(p) {
+        const nextProfiles = mergeModelDraft(modelProfiles, modelPreset, customModelName, customBaseUrl, customApiKey);
         const saved = savedModelConfigRef.current;
         if (saved && p === saved.preset) {
           // 切回已保存的来源 → 还原已保存值（而非厂商默认），dirty 自然归零
+          setModelProfiles(nextProfiles);
           setModelPreset(saved.preset);
           setCustomModelName(saved.name);
           setCustomBaseUrl(saved.baseUrl);
           setCustomApiKey(saved.apiKey);
           return;
         }
-        const defs = PRESET_DEFAULTS[p] || PRESET_DEFAULTS.local_vllm;
+        const draft = modelDraftForPreset(p, nextProfiles);
+        setModelProfiles(nextProfiles);
         setModelPreset(p);
-        setCustomBaseUrl(defs.baseUrl);
-        setCustomModelName(defs.model);
-        setCustomApiKey(''); // 切换 provider 清空 api_key，避免跨厂商 key 混用
+        setCustomBaseUrl(draft.baseUrl);
+        setCustomModelName(draft.name);
+        setCustomApiKey(draft.apiKey);
       }
       function handleSetCustomModelName(v) {
         setCustomModelName(v);

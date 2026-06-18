@@ -5,6 +5,7 @@
 //! `settings.json` 或对应的 `PINVOU3_*` 环境变量调整。
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -58,7 +59,7 @@ impl Language {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelPreset {
     /// 默认本地 vLLM：qwen36_35b_256k @ 127.0.0.1:8000/v1
@@ -139,6 +140,14 @@ impl SearchPrefs {
 
 /// 开发者后门字段。GUI 永远不暴露这些，靠手改 settings.json 或 env 调。
 /// `None` 走 bridge 里的默认值；env 优先级高于 settings.json。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ModelProfilePrefs {
+    pub model_name: Option<String>,
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AdvancedPrefs {
@@ -153,6 +162,7 @@ pub struct AdvancedPrefs {
     pub custom_base_url: Option<String>,
     /// 自定义 API key（CustomLocal / Remote* 生效）
     pub custom_api_key: Option<String>,
+    pub model_profiles: BTreeMap<ModelPreset, ModelProfilePrefs>,
 }
 
 /// 用户偏好。`settings.json` 顶层结构。
@@ -329,5 +339,46 @@ mod tests {
         let prefs: UserPrefs = serde_json::from_str(json).unwrap();
         assert_eq!(prefs.search.provider, SearchProvider::Bing);
         assert!(prefs.search.api_key.is_none());
+    }
+
+    #[test]
+    fn model_profiles_roundtrip_with_preset_keys() {
+        let mut prefs = UserPrefs::default();
+        prefs.advanced
+            .model_profiles
+            .insert(ModelPreset::Deepseek, ModelProfilePrefs {
+                model_name: Some("deepseek-v4-pro".to_string()),
+                base_url: Some("https://api.deepseek.com".to_string()),
+                api_key: Some("sk-deepseek".to_string()),
+            });
+        prefs.advanced
+            .model_profiles
+            .insert(ModelPreset::Minimax, ModelProfilePrefs {
+                model_name: Some("abab6.5s-chat".to_string()),
+                base_url: Some("https://api.minimax.chat/v1".to_string()),
+                api_key: Some("sk-minimax".to_string()),
+            });
+
+        let json = serde_json::to_string(&prefs).unwrap();
+        assert!(json.contains(r#""deepseek""#));
+        assert!(json.contains(r#""minimax""#));
+
+        let parsed: UserPrefs = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed
+                .advanced
+                .model_profiles
+                .get(&ModelPreset::Deepseek)
+                .and_then(|profile| profile.api_key.as_deref()),
+            Some("sk-deepseek")
+        );
+        assert_eq!(
+            parsed
+                .advanced
+                .model_profiles
+                .get(&ModelPreset::Minimax)
+                .and_then(|profile| profile.api_key.as_deref()),
+            Some("sk-minimax")
+        );
     }
 }
