@@ -295,17 +295,25 @@ impl Pinvou3Bridge {
         let ws = paths::session_workspace_dir(session_id);
         // 同时确保目录存在,AI 写 write_file 时不会因为目录不存在而失败
         let _ = std::fs::create_dir_all(&ws);
-        // 动态注入:模型名(多模型适配,模型知道自己是谁)+ 今天日期(模型有日期就不必为"今天几号"
-        // 编/调工具,精确当前时间仍走工具)。同 workspace,每会话渲染。
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-        INSTRUCTIONS_MD
+        // [pinvou3] date/workspace 已移出静态 system → per-turn <turn_meta>:每 session
+        // 变的 workspace 路径(及每天变的 date)若进 cached system prefix, vLLM prefix-cache
+        // MISS 时工具调用会退化成裸文本(实测 single subagent 25%→稳态~100%)。仅保留 model
+        // (固定值,不破坏 cache)与 sudo(静态文案兜底,实时状态走 super_permission::turn_reminder)。
+        let mut rendered = INSTRUCTIONS_MD
             .replace("{{PINVOU3_MODEL}}", &self.model())
-            .replace("{{PINVOU3_DATE}}", &today)
-            .replace("{{PINVOU3_WORKSPACE}}", &ws.to_string_lossy())
             .replace(
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
                 crate::super_permission::instruction_block(),
-            )
+            );
+        // [pinvou3] 非中文 locale 的语言指令补丁:底座 locale_reinforcement_preamble
+        // 对 en 返回 None,而 pinvou3 整份 system prompt 是中文,会把回复语言拽回中文。
+        // 这里给底座留空的 locale 补一段 mirror 指令(zh-Hans/ja 已有底座 bookend,返回
+        // None 不重复)。固定值(随 language 变,不随 session 变)→ 不破 prefix-cache。
+        if let Some(block) = self.prefs.language.extra_language_directive() {
+            rendered.push_str("\n\n");
+            rendered.push_str(block);
+        }
+        rendered
     }
 
     /// 当前 active session 的 workspace 目录。
@@ -1298,6 +1306,28 @@ mod tests {
         assert_eq!(bridge.build_engine_config().locale_tag, "en");
     }
 
+    /// en locale 的 system prompt 必须带英文语言指令(底座 en→None,pinvou3 补)。
+    /// zh-Hans 走底座 bookend,不在 inline instructions 里重复补。
+    #[test]
+    fn en_locale_injects_english_language_directive() {
+        let mut bridge = fixture_bridge();
+        let sid = "__test_lang__";
+
+        bridge.prefs.language = prefs::Language::En;
+        let en_prompt = bridge.build_session_system_prompt(sid);
+        assert!(
+            en_prompt.contains("## Language") && en_prompt.contains("Respond in English"),
+            "en system prompt 缺英文语言指令:\n{en_prompt}"
+        );
+
+        bridge.prefs.language = prefs::Language::ZhHans;
+        let zh_prompt = bridge.build_session_system_prompt(sid);
+        assert!(
+            !zh_prompt.contains("Respond in English"),
+            "zh-Hans 不应在 inline instructions 重复注入英文指令(底座 bookend 已覆盖)"
+        );
+    }
+
     /// allow_shell 默认 true（pinvou3 yolo 模式需要）。
     #[test]
     fn allow_shell_defaults_to_true() {
@@ -1397,9 +1427,11 @@ mod tests {
         );
     }
 
-    /// L2-8: build_session_system_prompt 必须把 `{{PINVOU3_WORKSPACE}}` 占位符
-    /// 替换为 session-specific 路径，且替换后的 prompt 必须含 session_id 子串
-    /// （session_workspace_dir 路径形如 `<root>/<session_id>/workspace`）。
+    /// L2-8: workspace 路径已从静态 system **移出** → per-turn `<turn_meta>` 的
+    /// `Current workspace`(见 engine.rs turn_metadata_block)。每 session 变的路径若进
+    /// cached system prefix 会让 vLLM prefix-cache MISS、工具调用退化成裸文本(实测 single
+    /// subagent 25%→稳态~100%),故 build_session_system_prompt 不再含 session-specific
+    /// 路径,保持跨 session 字节静态。
     #[test]
     fn instructions_md_session_workspace_subst() {
         let bridge = fixture_bridge();
@@ -1407,11 +1439,11 @@ mod tests {
         let prompt = bridge.build_session_system_prompt(session_id);
         assert!(
             !prompt.contains("{{PINVOU3_WORKSPACE}}"),
-            "占位符必须被替换,残留=死锁(AI 看不到真实路径)"
+            "WORKSPACE 占位符已删, 不该残留"
         );
         assert!(
-            prompt.contains(session_id),
-            "替换后 prompt 必须含 session_id 子串, prompt 前 200 字: {}",
+            !prompt.contains(session_id),
+            "workspace 路径(含 session_id)必须移出静态 system → turn_meta, 实际仍含: {}",
             &prompt.chars().take(200).collect::<String>()
         );
     }
@@ -1436,8 +1468,8 @@ mod tests {
     }
 
     /// 多引擎并发隔离基石(C 方案 P-no-disk 版): 两个不同 session 的 EngineConfig
-    /// 必须 workspace 不同 + instructions 内容含各自 session_id(走 `InstructionSource::
-    /// Inline`,内存对象天然隔离,不再依赖 disk 文件)。
+    /// 必须 workspace 不同 + instructions 的 inline name 含各自 session_id(走
+    /// `InstructionSource::Inline`,内存对象天然隔离,不再依赖 disk 文件)。
     #[test]
     fn engine_config_for_session_paths_are_isolated() {
         let bridge = fixture_bridge();
@@ -1453,26 +1485,24 @@ mod tests {
         assert!(cfg_b.workspace.to_string_lossy().contains(b));
 
         // instructions 第一项是 session 专属 Inline source,name 含各自 session_id。
-        let extract = |s: &InstructionSource| -> (String, String) {
+        let name_of = |s: &InstructionSource| -> String {
             match s {
-                InstructionSource::Inline { name, content } => (name.clone(), content.clone()),
-                InstructionSource::File(p) => (p.display().to_string(), String::new()),
+                InstructionSource::Inline { name, .. } => name.clone(),
+                InstructionSource::File(p) => p.display().to_string(),
             }
         };
-        let (name_a, content_a) = extract(&cfg_a.instructions[0]);
-        let (name_b, content_b) = extract(&cfg_b.instructions[0]);
+        let name_a = name_of(&cfg_a.instructions[0]);
+        let name_b = name_of(&cfg_b.instructions[0]);
         assert!(
             matches!(cfg_a.instructions[0], InstructionSource::Inline { .. }),
             "session instructions 第一项必须是 Inline(C 方案 P-no-disk)"
         );
         assert_ne!(name_a, name_b, "两 session 的 inline name 必须不同");
         assert!(name_a.contains(a) && name_b.contains(b));
-        // 渲染后的内容含各自 session-specific workspace 路径(占位符替换生效)。
-        assert!(
-            content_a.contains(a),
-            "session A 的 inline content 必须含 session_id"
-        );
-        assert!(content_b.contains(b));
+        // session_id / workspace 已移出静态 content,走 per-turn <turn_meta>
+        // (见 build_session_system_prompt 注释:per-session 变动进 cache 前缀会
+        // 触发 vLLM prefix-cache MISS → 工具调用漂移)。故 content 不再含 session_id,
+        // 隔离已由上面"workspace 目录不同 + inline name 含 session_id"覆盖。
     }
 
 

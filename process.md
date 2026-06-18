@@ -2,7 +2,7 @@
 
 跨阶段定位 + 关键决策 + 待排期事项。**每条一句话,细节走 git log + `docs/`。**
 
-最后更新: 2026-06-08
+最后更新: 2026-06-18
 
 ---
 
@@ -65,6 +65,7 @@
 - **256K 真触发是 emergency 容量护栏**（2026-06-03）：静态 800K/500K 撞不到，靠 `context_input_budget`（窗口派生、绕 floor）；token_threshold 必须低于 budget 否则倒置 → 改 190K；output 按「≤16KB 分块写」重估 24K；不变式由回归测试锁
 - **大工具输出无需治理**（2026-06-03，A1 关）：底座 `compact_tool_result_for_context` 每结果硬压 12K 字符（256K 走小限档）；`large_output_router` synthesis 是 dead code，保持 `workshop=None`
 - **提问引导补丁不做**（2026-06-03）：隐藏 plan 后担心「提问引导真空」,A/B 验证(真实 base+instructions+reminder+request_user_input schema、不传 temperature 匹配 turn_loop None、每格 10 共 80 样本)证明现状 §2.4 已够——text列选项率 A=0/40,加「禁止在 text 列选项」禁令无益反升 B=4/40 且调工具率 62%→62% 零变化(疑弱模型反向暗示);早期 probe 的 20% 系 temp0.7+小样本噪声。教训:reminder/prompt 改动必须大样本+忠实参数 A/B,否则被抽奖噪声误导
+- **工具调用漂移=vLLM 特有,非 prompt/接线**（2026-06-18 实锤）：NVFP4+mtp 投机解码在新 session 首请求**冷 prefill 于 turn_meta 边界采歪**→首轮工具调用退化(把 turn_meta 元数据复读成正文/不调工具,**首轮 only、再问一句即自愈**;样本=「帮我写贪吃蛇」吐出 `Current local date/workspace` 且不写文件)。判据=revert warmup 立即复现 + **三方模型(Anthropic/OpenAI)同 prompt 零问题** → 坐实 vLLM 侧、非接线。解法**两层缺一就漂**:`5ce4a915`(pwd 移出 static system→turn_meta,治 system 部分命中)+`774477e`(session 首请求 warmup 预热整段前缀**到 turn_meta**,治 turn_meta 冷 prefill,**非冗余**);细节 memory `subagent_prefix_cache_miss_root_cause`。**上游根因=vLLM #43559**(2026-06-18 查实+实测):Qwen3.6-A3B `prefix-caching × MTP` 的 mamba state cache 边界不一致(@timothysu tool-eval-bench 工具调用准确率 90%→50%、多人复现,维护者 @zack041 #43650 在修);**`--enforce-eager` 实测无效**(关 CUDA graph 后仍 ~100% 全漂 → 根因非执行路径/非 CUDA graph);根治待上游修 or 关 `prefix-caching`/`MTP` 之一(单开都不漂),pwd移出+warmup 是应用层绕过
 
 ---
 

@@ -53,6 +53,10 @@
   var state = {
     sessions: [],
     activeSessionId: null,
+    // 「新建对话」点击计数:每次 enterDraft() 自增(含已在草稿态的提前返回)。前端 welcomeToolId
+    // 复位 effect 挂它 → 即便 activeSessionId 没变(draft→draft)也能重新求值,否则残留的工具欢迎卡
+    // 会一直顶掉「你好」欢迎语(该 tool 无 welcomeQueries 时整块空白)。
+    draftEpoch: 0,
     messages: [],      // Anthropic Messages schema
     chatItems: [],     // display items for React
     // 卡牌加持/卸下事件时间线(sidecar, 不进 messages/LLM)。每项 {kind,pos,...}。
@@ -405,7 +409,10 @@
   // session 在首次有实质内容(发消息 / 加卡牌,见 ensureSession)时才物化——这样会话列表里
   // 永远不会堆积没用过的空「新对话」(ChatGPT/Claude 式 lazy session)。
   function enterDraft() {
-    if (!state.activeSessionId && state.messages.length === 0) { notify(); return; } // 已在草稿态
+    state.draftEpoch++; // 每次点击都自增——含下面提前返回的「已在草稿态」分支,让前端能重置 welcomeToolId
+    // 已在干净草稿态 → 只 notify(epoch 已自增)。注意要连 chatItems 一起判空:messages 与 chatItems
+    // 会背离(persona 气泡 / ensureSession 失败的 system 报错卡只进 chatItems),否则残留卡顶掉「你好」。
+    if (!state.activeSessionId && state.messages.length === 0 && state.chatItems.length === 0) { notify(); return; }
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
     state.activeSessionId = null;
     loadWorkingSetFrom(freshBuffer());
@@ -559,6 +566,7 @@
         if (isTail ? (ev.pos < atOrAfter) : (ev.pos !== atOrAfter)) continue;
         if (ev.kind === "equip" && ev.card) addChatItem({ type: "persona_equip", card: ev.card, time: "" });
         else if (ev.kind === "unequip") addChatItem({ type: "system", text: bt("personaUnequipped") + (ev.name || ""), time: "" });
+        else if (ev.kind === "card_creator_intro") addChatItem({ type: "card_creator_intro", time: "" });
       }
     }
     // 预扫 tool_result：tool_use 在 assistant 消息、result 在后续 user 消息，需提前建映射
@@ -2455,6 +2463,9 @@
     readPersonaBody: function (id) { return invoke("read_persona_body", { personaId: id }); }, // Side B: 详情拉完整正文
     equipPersona: equipPersona,
     unequipPersona: unequipPersona,
+    // AI 造卡开场引导卡:落一条展示气泡 + 记一条 persona 事件(随会话持久化)。
+    // 走 personaEvents 时间线,冷重载时 rerenderFromMessages 按 pos 还原 → 切会话/重启不丢。
+    postCardCreatorIntro: function () { addChatItem({ type: "card_creator_intro", time: "" }); recordPersonaEvent({ kind: "card_creator_intro" }); notify(); },
     // 用户自创卡
     createPersona: createPersona,
     updatePersona: updatePersona,

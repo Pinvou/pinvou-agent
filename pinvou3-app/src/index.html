@@ -80,6 +80,11 @@
     @keyframes lanyard-sway { 0%,100%{ transform: rotate(-1.3deg) } 50%{ transform: rotate(1.3deg) } }
     /* 🏛️ 奏折卷轴:纸面从中线向上下展开(clip-path),两根轴杆从中间滚向边缘;收卷反向 */
     @keyframes memorial-fade { from { opacity: 0 } to { opacity: 1 } }
+    /* AI 造卡 banner 头像浮动 */
+    @keyframes bnrFloat1 { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
+    @keyframes bnrFloat2 { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
+    @keyframes bnrFloat3 { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-5px)} }
+    @media (max-width: 760px){ .bnr-avatars { display: none; } }
     @keyframes memorial-paper-open { from { clip-path: inset(50% 0 50% 0) } to { clip-path: inset(0 0 0 0) } }
     @keyframes memorial-paper-close { from { clip-path: inset(0 0 0 0) } to { clip-path: inset(50% 0 50% 0) } }
     @keyframes memorial-roller-top-open { from { top: calc(50% - 9px) } to { top: -9px } }
@@ -150,6 +155,15 @@
     const CheckCircle2 = (p) => <I {...p}><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></I>;
     const AlertTriangle = (p) => <I {...p}><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12.01" y1="17" y2="17"/></I>;
     const Menu = (p) => <I {...p}><line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/></I>;
+    const Check = (p) => <I {...p}><path d="M20 6 9 17l-5-5"/></I>;
+    const Filter = (p) => <I {...p}><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></I>;
+    const FolderPlus = (p) => <I {...p}><path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></I>;
+    const Award = (p) => <I {...p}><circle cx="12" cy="8" r="6"/><path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11"/></I>;
+    const Feather = (p) => <I {...p}><path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"/><line x1="16" x2="2" y1="8" y2="22"/><line x1="17.5" x2="9" y1="15" y2="15"/></I>;
+    const AppWindow = (p) => <I {...p}><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M10 4v4"/><path d="M2 8h20"/><path d="M6 4v4"/></I>;
+    const Radio = (p) => <I {...p}><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></I>;
+    const Palette = (p) => <I {...p}><circle cx="13.5" cy="6.5" r=".5"/><circle cx="17.5" cy="10.5" r=".5"/><circle cx="8.5" cy="7.5" r=".5"/><circle cx="6.5" cy="12.5" r=".5"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></I>;
+    const Briefcase = (p) => <I {...p}><rect width="20" height="14" x="2" y="7" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></I>;
     const Sparkles = (p) => <I {...p}><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/><path d="M5 3v4"/><path d="M19 17v4"/><path d="M3 5h4"/><path d="M17 19h4"/></I>;
     const StopCircle = (p) => <I {...p}><circle cx="12" cy="12" r="10"/><rect width="6" height="6" x="9" y="9"/></I>;
     const XCircle = (p) => <I {...p}><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></I>;
@@ -189,7 +203,7 @@
     const dict = {
       zh: {
         langTag: 'zh',
-        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', toolStore: '工具商店', cardPool: '卡牌池', recent: '近期', settings: '设置', localEnv: '本地环境',
+        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', toolStore: '工具商店', cardPool: '专家卡牌池', recent: '近期', settings: '设置', localEnv: '本地环境',
         sysStatus: '系统状态', sysDesc: '实时性能与资源指标', gpu: '图形处理器 (GPU)', gpuUnavail: '状态不可用', noSmi: '未检测到 nvidia-smi',
         vram: '显存占用', core: '计算核心', temp: '温度', power: '功耗', unifiedMem: '统一内存架构',
         ram: '系统内存 (RAM)', used: '已用', physical: '物理内存', total: '总计', swap: '交换空间',
@@ -241,6 +255,7 @@
         vllmDetectHint: '仅检测 127.0.0.1 / localhost 的 8000-8002 端口；使用后仍需保存并重启。',
         confirmAndRestart: '保存并重启',
         modelDirtyHint: '配置已修改，保存后应用将重启',
+        langRestartHint: '界面语言已切换；助手回复语言需重启应用后生效',
         sysPerm: '系统权限', sudo: '高级执行权限 (Sudo)', sudoDesc: '允许助手执行环境配置等高级指令',
         versionUpdate: '版本与更新',
         checkUpdate: '检查更新', checking: '检查中…', upToDate: '已是最新版本',
@@ -268,7 +283,7 @@
         cpMyCards: '我的卡牌', cpDept: '部门', cpResetFilter: '重置筛选',
         cpSearchPh: '搜专家:名称 / 描述 / 部门 (如 前端 / 增长 / 测试)',
         cpNoMatch: '没有匹配的专家，试试放宽筛选',
-        cpBadgeEquipped: '🎴 已加持', cpBadgeUser: '🃏 自制', cpNoDesc: '(无简介)',
+        cpBadgeEquipped: '已加持', cpBadgeUser: '自制', cpNoDesc: '(无简介)',
         cpEdit: '✎ 编辑', cpDelQ: '删?', cpDelCardTitle: '删除这张自制卡',
         cpUnequip: '取消', cpEquip: '加持给 AI',
         cpShowMore: n => `显示更多 (${n})`,
@@ -277,9 +292,15 @@
         cpToastUnequipped: n => `已摘下: ${n}`,
         cpToastEquipped: (target, n) => `已加持给「${target}」: ${n}`,
         cpToastSaved: n => `已保存: ${n}`, cpToastCreated: n => `已创建: ${n}`,
+        cpSavedTitle: '已存入卡牌池', cpSavedDesc: n => `「${n}」已加入你的卡牌`, cpSavedLater: '暂不', cpSavedView: '去查看',
         cpFullBody: '完整人设 (加持时一次性注入)',
         cpBodyLoading: '加载人设正文…', cpBodyLoadFailed: '（正文加载失败）',
-        cpEquippedTap: '🎴 已加持 · 点击摘下',
+        cpEquippedTap: '已加持 · 点击摘下',
+        cpAll: '全部', cpEquipShort: '加持', cpDetailUnequip: '取消加持', cpReqPh: '必填', cpMarkdownHint: '支持 Markdown', cpDelThisConfirm: '确认删除此卡',
+        cpEmptyHint: '尝试其他搜索词，或点右上角新建一张卡牌。', cpMenuEdit: '编辑',
+        cpAICreate: 'AI 造卡', bnrTitleHi: '一键生成专家卡', bnrStart: '开始造卡 →', bnrStep1: '描述需求', bnrStep2: 'AI 生成', bnrStep3: '投入卡池',
+        chooserRecommend: '推荐', chooserAIDesc: '描述需求，AI 自动生成专家卡', chooserManualTitle: '手动造卡', chooserManualDesc: '自己填写名称、人设',
+        bnrFaces: [['产品专家','产品设计'],['算法工程师','AI 模型'],['运营专家','增长运营'],['UI设计师','界面设计'],['数据分析师','数据洞察']],
         cpEditCard: '编辑卡牌',
         cpFieldName: '名称', cpFieldDesc: '一句话简介', cpFieldDescPh: '15 字内,卡片上显示',
         cpFieldBody: '人设正文', cpFieldBodyHint: '(加持时注入给 AI 的完整能力档案:职责/工作流/规则/交付物)',
@@ -291,9 +312,10 @@
         cpSaving: '保存中…', cpSaveEdit: '保存修改', cpCreate: '创建卡牌',
         cpLanyardEquip: '加持卡牌', cpLanyardEquipTitle: '加持一张卡牌',
         cpLanyardSwap: '点击换专家', cpLanyardRemove: '摘下面具',
-        cpDraftLabel: '卡牌草稿', cpDraftSaved: '✅ 已存入', cpDraftSavedTitle: '已有同名自制卡',
+        cpDraftLabel: '卡牌草稿', cpDraftSaved: '已存入', cpDraftSavedTitle: '已有同名自制卡',
         cpDraftView: '查看 / 存入', cpDraftViewTitle: '查看完整内容并存入卡牌池',
         cpDesigning: '🃏 正在设计卡牌…',
+        cpIntroTitle: '想要一张什么专家卡？直接把需求告诉我。',
         cpEquipBubbleSys: '系统',
         cpEquipBubbleTitle: n => `Boss 为你带上专家卡牌加持: ${n}`,
         cpDescLabel: '简介',
@@ -404,6 +426,7 @@
         vllmDetectHint: 'Checks only 127.0.0.1 / localhost ports 8000-8002. Save and restart to apply.',
         confirmAndRestart: 'Save & Restart',
         modelDirtyHint: 'Configuration changed — saving will restart the app',
+        langRestartHint: 'Interface language switched; restart the app to apply it to the assistant',
         sysPerm: 'System Permissions', sudo: 'Sudo Access', sudoDesc: 'Allow assistant to run high-privilege commands',
         versionUpdate: 'Version & Update',
         checkUpdate: 'Check for Updates', checking: 'Checking…', upToDate: 'Up to date',
@@ -431,7 +454,7 @@
         cpMyCards: 'My Cards', cpDept: 'Department', cpResetFilter: 'Reset Filters',
         cpSearchPh: 'Search experts: name / description / department',
         cpNoMatch: 'No matching experts — try widening the filters',
-        cpBadgeEquipped: '🎴 Equipped', cpBadgeUser: '🃏 Custom', cpNoDesc: '(no description)',
+        cpBadgeEquipped: 'Equipped', cpBadgeUser: 'Custom', cpNoDesc: '(no description)',
         cpEdit: '✎ Edit', cpDelQ: 'Del?', cpDelCardTitle: 'Delete this custom card',
         cpUnequip: 'Remove', cpEquip: 'Equip',
         cpShowMore: n => `Show more (${n})`,
@@ -440,9 +463,15 @@
         cpToastUnequipped: n => `Removed: ${n}`,
         cpToastEquipped: (target, n) => `Equipped to "${target}": ${n}`,
         cpToastSaved: n => `Saved: ${n}`, cpToastCreated: n => `Created: ${n}`,
+        cpSavedTitle: 'Saved to card pool', cpSavedDesc: n => `"${n}" added to your cards`, cpSavedLater: 'Not now', cpSavedView: 'View',
         cpFullBody: 'Full persona (injected once when equipped)',
         cpBodyLoading: 'Loading persona body…', cpBodyLoadFailed: '(failed to load body)',
-        cpEquippedTap: '🎴 Equipped · tap to remove',
+        cpEquippedTap: 'Equipped · tap to remove',
+        cpAll: 'All', cpEquipShort: 'Equip', cpDetailUnequip: 'Unequip', cpReqPh: 'Required', cpMarkdownHint: 'Markdown supported', cpDelThisConfirm: 'Confirm delete',
+        cpEmptyHint: 'Try another search term, or tap + to create a new card.', cpMenuEdit: 'Edit',
+        cpAICreate: 'AI Card', bnrTitleHi: 'Generate an expert card in one tap', bnrStart: 'Start →', bnrStep1: 'Describe', bnrStep2: 'AI generates', bnrStep3: 'Add to pool',
+        chooserRecommend: 'Recommended', chooserAIDesc: 'Describe what you need; AI generates the card', chooserManualTitle: 'Manual', chooserManualDesc: 'Fill in name and persona yourself',
+        bnrFaces: [['Product','Product design'],['ML Engineer','AI models'],['Growth','Growth ops'],['UI Designer','Interface'],['Data Analyst','Insights']],
         cpEditCard: 'Edit Card',
         cpFieldName: 'Name', cpFieldDesc: 'One-line description', cpFieldDescPh: 'Shown on the card — keep it short',
         cpFieldBody: 'Persona Body', cpFieldBodyHint: '(full capability profile injected to the AI: duties / workflow / rules / deliverables)',
@@ -454,9 +483,10 @@
         cpSaving: 'Saving…', cpSaveEdit: 'Save Changes', cpCreate: 'Create Card',
         cpLanyardEquip: 'Equip Card', cpLanyardEquipTitle: 'Equip a card',
         cpLanyardSwap: 'Click to switch expert', cpLanyardRemove: 'Remove',
-        cpDraftLabel: 'Card Draft', cpDraftSaved: '✅ Saved', cpDraftSavedTitle: 'A custom card with this name already exists',
+        cpDraftLabel: 'Card Draft', cpDraftSaved: 'Saved', cpDraftSavedTitle: 'A custom card with this name already exists',
         cpDraftView: 'View / Save', cpDraftViewTitle: 'View full content and save to card pool',
         cpDesigning: '🃏 Designing card…',
+        cpIntroTitle: 'What kind of expert card do you want? Just tell me what you need.',
         cpEquipBubbleSys: 'System',
         cpEquipBubbleTitle: n => `Boss equipped an expert card for you: ${n}`,
         cpDescLabel: 'Description',
@@ -567,6 +597,7 @@
         vllmDetectHint: '127.0.0.1 / localhost の 8000-8002 ポートのみ検出します。反映には保存して再起動してください。',
         confirmAndRestart: '保存して再起動',
         modelDirtyHint: '設定が変更されました。保存するとアプリが再起動します',
+        langRestartHint: 'UI言語を切り替えました。アシスタントに反映するにはアプリの再起動が必要です',
         sysPerm: 'システム権限', sudo: '高度な実行権限 (Sudo)', sudoDesc: 'アシスタントによる環境設定などの高度なコマンド実行を許可',
         versionUpdate: 'バージョンと更新',
         checkUpdate: '更新を確認', checking: '確認中…', upToDate: '最新バージョンです',
@@ -594,7 +625,7 @@
         cpMyCards: 'マイカード', cpDept: '部門', cpResetFilter: 'フィルターをリセット',
         cpSearchPh: 'エキスパートを検索：名前 / 説明 / 部門',
         cpNoMatch: '該当するエキスパートがありません。条件を緩めてみてください',
-        cpBadgeEquipped: '🎴 装備中', cpBadgeUser: '🃏 カスタム', cpNoDesc: '（説明なし）',
+        cpBadgeEquipped: '装備中', cpBadgeUser: 'カスタム', cpNoDesc: '（説明なし）',
         cpEdit: '✎ 編集', cpDelQ: '削除?', cpDelCardTitle: 'このカスタムカードを削除',
         cpUnequip: '外す', cpEquip: 'AI に装備',
         cpShowMore: n => `さらに表示 (${n})`,
@@ -603,9 +634,15 @@
         cpToastUnequipped: n => `外しました: ${n}`,
         cpToastEquipped: (target, n) => `「${target}」に装備しました: ${n}`,
         cpToastSaved: n => `保存しました: ${n}`, cpToastCreated: n => `作成しました: ${n}`,
+        cpSavedTitle: 'カードプールに保存', cpSavedDesc: n => `「${n}」をカードに追加しました`, cpSavedLater: '後で', cpSavedView: '見る',
         cpFullBody: 'ペルソナ全文（装備時に一度だけ注入）',
         cpBodyLoading: 'ペルソナ本文を読み込み中…', cpBodyLoadFailed: '（本文の読み込みに失敗）',
-        cpEquippedTap: '🎴 装備中 · タップで外す',
+        cpEquippedTap: '装備中 · タップで外す',
+        cpAll: 'すべて', cpEquipShort: '装備', cpDetailUnequip: '装備を外す', cpReqPh: '必須', cpMarkdownHint: 'Markdown 対応', cpDelThisConfirm: '削除を確認',
+        cpEmptyHint: '別のキーワードを試すか、右上の + から新規作成してください。', cpMenuEdit: '編集',
+        cpAICreate: 'AI 作成', bnrTitleHi: 'ワンタップで専門家カード生成', bnrStart: '作成を開始 →', bnrStep1: '要望を説明', bnrStep2: 'AI が生成', bnrStep3: 'カードプールへ',
+        chooserRecommend: 'おすすめ', chooserAIDesc: '要望を伝えると AI がカードを生成', chooserManualTitle: '手動作成', chooserManualDesc: '名前とペルソナを自分で入力',
+        bnrFaces: [['プロダクト','企画設計'],['ML エンジニア','AI モデル'],['グロース','成長運用'],['UI デザイナー','UI 設計'],['データ分析','分析']],
         cpEditCard: 'カードを編集',
         cpFieldName: '名前', cpFieldDesc: '一行説明', cpFieldDescPh: 'カードに表示されます。短めに',
         cpFieldBody: 'ペルソナ本文', cpFieldBodyHint: '（装備時に AI へ注入される能力プロファイル：職責/ワークフロー/ルール/成果物）',
@@ -617,9 +654,10 @@
         cpSaving: '保存中…', cpSaveEdit: '変更を保存', cpCreate: 'カードを作成',
         cpLanyardEquip: 'カードを装備', cpLanyardEquipTitle: 'カードを 1 枚装備',
         cpLanyardSwap: 'クリックで交代', cpLanyardRemove: '外す',
-        cpDraftLabel: 'カード下書き', cpDraftSaved: '✅ 保存済み', cpDraftSavedTitle: '同名のカスタムカードが既にあります',
+        cpDraftLabel: 'カード下書き', cpDraftSaved: '保存済み', cpDraftSavedTitle: '同名のカスタムカードが既にあります',
         cpDraftView: '表示 / 保存', cpDraftViewTitle: '全文を確認してカードプールに保存',
         cpDesigning: '🃏 カードを設計中…',
+        cpIntroTitle: 'どんな専門家カードにする？要望をそのまま教えてください。',
         cpEquipBubbleSys: 'システム',
         cpEquipBubbleTitle: n => `Boss がエキスパートカードを装備しました: ${n}`,
         cpDescLabel: '説明',
@@ -758,6 +796,9 @@
       const modelConfigInitRef = useRef(false);
       const searchConfigInitRef = useRef(false);
       const uiPrefsInitRef = useRef(false);
+      // engine 启动时生效的语言(= 进程启动时的 settings.language)。语言只写盘不重启
+      // engine,LLM 的 locale_tag 要重启 app 才更新 —— 草稿偏离此基线就提示「需重启」。
+      const bootedLanguageRef = useRef(null);
       // dirty 基线:已保存的模型配置(默认值填充后) / 已保存的搜索源配置。
       // 草稿偏离基线才显示「保存并重启」操作条。
       const savedModelConfigRef = useRef(null);
@@ -804,6 +845,8 @@
       const [isSidebarOpen, setIsSidebarOpen] = useState(false);
       const [chatPrefill, setChatPrefill] = useState('');
       const [personaEditor, setPersonaEditor] = useState(null); // 聊天里"存入卡牌池"草稿 → App 级编辑器
+      const [savedConfirm, setSavedConfirm] = useState(null); // 存入成功 → iOS 确认窗 {name}
+      const [poolMyOnly, setPoolMyOnly] = useState(false); // 跳卡池时是否直接落「我的卡牌」筛选(从确认窗"去查看"进来=true)
 
       const t = dict[language];
       // 有可用新版 → 侧边栏设置图标亮红点（不弹窗不打断）
@@ -831,6 +874,8 @@
         if (!uiPrefsInitRef.current && bs.settings) {
           const lang = TAG_TO_LANG[bs.settings.language];
           if (lang && lang !== language) setLanguage(lang);
+          // engine 已用此语言启动,作为「需重启」基线(切语言不重启 engine,见 commands.rs)
+          bootedLanguageRef.current = lang || 'zh';
           // 后端 Theme 枚举(prefs.rs)只认 genesis/liquid-light/liquid-dark;深色=genesis,浅色=liquid-light
           const th = bs.settings.theme === 'liquid-light' ? 'light' : 'dark';
           if (th !== activeTheme) setActiveTheme(th);
@@ -892,6 +937,8 @@
         searchProvider !== savedSearch.provider ||
         normalizedSearchApiKeyValue(searchApiKey) !== normalizedSearchApiKeyValue(savedSearch.apiKey)
       );
+      // 语言已即时写盘+切 UI,但 LLM 的 locale_tag 要重启 engine 才生效 → 偏离启动语言就提示。
+      const languageNeedsRestart = !!bootedLanguageRef.current && language !== bootedLanguageRef.current;
 
       // Build chat history from sessions
       const skillBindings = (bs && bs.workflow && bs.workflow.bindings) || {};
@@ -910,9 +957,21 @@
       function handleNewChat(installedToolId) {
         if (bridge.available) bridge.createNewSession();
         setCurrentView('chat');
-        if (installedToolId) {
+        // 类型守卫:installedToolId 必须是字符串 toolId。侧边栏按钮 onClick={() => handleNewChat()}
+        // 本不传参,但若哪天有调用点写成 onClick={handleNewChat},React 会把事件对象当首参塞进来——
+        // 那是 truthy 的 SyntheticEvent,会被当成 toolId 置进 welcomeToolId → ToolWelcomeCard 查不到
+        // 工具渲染 null → 欢迎语整块空白。守卫挡住这条暗坑。
+        if (typeof installedToolId === 'string' && installedToolId) {
           setJustInstalledTool(installedToolId);
         }
+      }
+
+      // AI 造卡:新对话 + 加持「卡牌制造专家」+ 一条 iOS 引导卡 → 用户在空输入框描述需求,复用 persona-card 草稿流程入库
+      async function startAICard() {
+        handleNewChat();
+        if (!bridge.available) return;
+        await bridge.equipPersona('pinvou-card-creator');           // 先加持(落新 session + 加持气泡)
+        bridge.postCardCreatorIntro();                              // 再排在加持气泡之后(持久化,切会话/重启不丢)
       }
 
       function handleSwitchSession(id) {
@@ -1080,7 +1139,7 @@
                 icon={<Edit2 size={18} />} label={t.newChat}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onClick={handleNewChat}
+                onClick={() => handleNewChat()}
               />
               <NavItem
                 icon={<Search size={18} />} label={t.searchChats}
@@ -1101,7 +1160,7 @@
                 active={currentView === 'cardpool'}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onClick={() => setCurrentView('cardpool')}
+                onClick={() => { setPoolMyOnly(false); setCurrentView('cardpool'); }}
               />
               <NavItem
                 icon={<ClipboardList size={18} />} label={t.workflow}
@@ -1225,20 +1284,21 @@
                 onConfirmSearchConfig={handleConfirmSearchConfig}
                 modelConfigDirty={modelConfigDirty}
                 searchNeedsRestart={searchNeedsRestart}
+                languageNeedsRestart={languageNeedsRestart}
                 bs={bs}
                 t={t}
               />
             )}
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} onNewChat={handleNewChat} />}
-            {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} />}
+            {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
             {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} />}
             {/* 草稿态(无 session)也渲染挂件,但强制空态——让欢迎页保留「＋加持卡牌」入口。
                 点它跳卡牌池,选卡时 equipPersona 会先物化 session(lazy session)。 */}
             {currentView === 'chat' && bs && (
               <Lanyard persona={bs.activeSessionId ? (bs.activePersona || null) : null} isDark={activeTheme === 'dark'} t={t}
                 onRemove={() => bridge.available && bridge.unequipPersona()}
-                onOpenPicker={() => setCurrentView('cardpool')} />
+                onOpenPicker={() => { setPoolMyOnly(false); setCurrentView('cardpool'); }} />
             )}
             {currentView === 'search' && <SearchView theme={activeTheme} history={chatHistory} t={t} onSelect={handleSwitchSession} />}
 
@@ -1246,8 +1306,26 @@
             {personaEditor && (
               <PersonaEditorModal initial={personaEditor.initial} isDark={activeTheme === 'dark'} t={t}
                 onClose={() => setPersonaEditor(null)}
-                onSaved={() => setPersonaEditor(null)}
+                onSaved={(sum) => { const isEdit = personaEditor.initial && personaEditor.initial.id; setPersonaEditor(null); if (!isEdit) setSavedConfirm({ name: sum && sum.name }); }}
                 onDeleted={() => setPersonaEditor(null)} />
+            )}
+
+            {/* 存入成功 → iOS 确认窗:去查看我的卡牌 / 暂不 */}
+            {savedConfirm && (
+              <div className="fixed inset-0 z-[80] flex items-center justify-center p-4" style={{ background:'rgba(0,0,0,.4)' }} onClick={() => setSavedConfirm(null)}>
+                <div onClick={(e) => e.stopPropagation()} className="w-[270px] rounded-[14px] overflow-hidden text-center"
+                  style={{ background: activeTheme === 'dark' ? 'rgba(44,44,46,.95)' : 'rgba(250,250,250,.95)', backdropFilter:'blur(20px)', WebkitBackdropFilter:'blur(20px)', fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
+                  <div className="px-4 pt-5 pb-4">
+                    <div className="text-[17px] font-semibold" style={{ color: activeTheme === 'dark' ? '#fff' : '#000' }}>{t.cpSavedTitle}</div>
+                    <div className="text-[13px] mt-1.5" style={{ color: activeTheme === 'dark' ? 'rgba(235,235,245,.6)' : 'rgba(60,60,67,.6)' }}>{t.cpSavedDesc(savedConfirm.name || '')}</div>
+                  </div>
+                  <div className="flex" style={{ borderTop: '0.5px solid ' + (activeTheme === 'dark' ? 'rgba(84,84,88,.65)' : 'rgba(60,60,67,.29)') }}>
+                    <button onClick={() => setSavedConfirm(null)} className="flex-1 h-11 text-[17px]" style={{ color: activeTheme === 'dark' ? '#0A84FF' : '#007AFF' }}>{t.cpSavedLater}</button>
+                    <div style={{ width:'0.5px', background: activeTheme === 'dark' ? 'rgba(84,84,88,.65)' : 'rgba(60,60,67,.29)' }} />
+                    <button onClick={() => { setPoolMyOnly(true); setSavedConfirm(null); setCurrentView('cardpool'); }} className="flex-1 h-11 text-[17px] font-semibold" style={{ color: activeTheme === 'dark' ? '#0A84FF' : '#007AFF' }}>{t.cpSavedView}</button>
+                  </div>
+                </div>
+              </div>
             )}
 
             {/* Pinvou 检阅弹窗(品/悟) —— 全局,任何视图都能弹;点背景或卡内「跳过」关闭 */}
@@ -1573,7 +1651,7 @@
       </div>
     );
 
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, modelPreset, onChangeModelPreset, customModelName, setCustomModelName, customBaseUrl, setCustomBaseUrl, customApiKey, setCustomApiKey, savedModel, onConfirmModelConfig, onConfirmSearchConfig, modelConfigDirty, searchNeedsRestart, bs, t }) => {
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, modelPreset, onChangeModelPreset, customModelName, setCustomModelName, customBaseUrl, setCustomBaseUrl, customApiKey, setCustomApiKey, savedModel, onConfirmModelConfig, onConfirmSearchConfig, modelConfigDirty, searchNeedsRestart, languageNeedsRestart, bs, t }) => {
       const isDark = activeTheme === 'dark';
       const [vllmDiscovery, setVllmDiscovery] = useState(null);
       const [vllmDiscovering, setVllmDiscovering] = useState(false);
@@ -1805,6 +1883,10 @@
                     <SSegmented isDark={isDark} value={language} onChange={setLanguage}
                       options={[{ key: 'zh', label: '中文' }, { key: 'en', label: 'English' }, { key: 'ja', label: '日本語' }]} />
                   </SRow>
+                  {languageNeedsRestart && (
+                    <SActionBar isDark={isDark} message={t.langRestartHint}
+                      actionLabel={t.restartNow} onAction={() => bridge.available && bridge.restartApp()} />
+                  )}
                   <SRow isDark={isDark} label={t.theme} desc={t.themeDesc}>
                     <SSegmented isDark={isDark} value={activeTheme} onChange={setActiveTheme}
                       options={[{ key: 'light', label: t.light }, { key: 'dark', label: t.dark }]} />
@@ -2084,6 +2166,7 @@
       // 设置与清空收进同一 effect,按 justInstalledTool 优先,避免多 effect 同帧竞态。
       const [welcomeToolId, setWelcomeToolId] = useState(null);
       const activeSessionId = bs ? bs.activeSessionId : null;
+      const draftEpoch = bs ? bs.draftEpoch : 0;
       useEffect(() => {
         if (justInstalledTool) {
           setWelcomeToolId(justInstalledTool);
@@ -2091,7 +2174,11 @@
         } else {
           setWelcomeToolId(null);
         }
-      }, [justInstalledTool, activeSessionId]);
+        // justInstalledTool 故意不放进依赖:否则上面 setJustInstalledTool(null) 清掉它会二次触发
+        // 本 effect → 这次走 else 把刚显示的欢迎卡又清空(表现为"装完工具欢迎卡一闪即消失")。
+        // 依赖 activeSessionId(切会话)+ draftEpoch(每次点「新建对话」自增):后者保证即便已在草稿态
+        // 再点「新建对话」(activeSessionId 不变 null→null)也能重新求值,否则残留工具卡顶掉「你好」。
+      }, [activeSessionId, draftEpoch]);
 
       function handleSend() {
         // 不再因 busy 拦截:bridge.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
@@ -2186,7 +2273,7 @@
                   chatItems.forEach((it) => { if (it.type === 'artifact_card' && it.path) latestArtIdByPath[it.path] = it.id; });
                   const latestArtIds = new Set(Object.values(latestArtIdByPath));
                   return chatItems.map((item) => (
-                    <ChatBubble key={item.id} item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} editable={!busy && item.id === lastUserId} onOpenEditor={onOpenEditor} isLatestArtifact={latestArtIds.has(item.id)} />
+                    <ChatBubble key={item.id} item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={(txt) => { if (bridge.available) bridge.sendMessage(txt); }} editable={!busy && item.id === lastUserId} onOpenEditor={onOpenEditor} isLatestArtifact={latestArtIds.has(item.id)} />
                   ));
                 })()}
                 {busy && <ThinkingBubble thinking={bs && bs.thinking} theme={theme} t={t} />}
@@ -2362,7 +2449,39 @@
     }
     function asDraft(d) {
       if (!d || typeof d !== 'object' || !d.name || !d.body) return null;
-      return { name: d.name, dept: d.dept || 'specialized', emoji: d.emoji || '🃏', color: d.color || '', description: d.description || '', body: d.body };
+      var dept = (d.dept && DEPT_ORDER.indexOf(d.dept) >= 0) ? d.dept : 'specialized';
+      return { name: d.name, dept: dept, emoji: d.emoji || '🃏', color: d.color || '', description: d.description || '', body: d.body };
+    }
+    // 模型偶尔给 JSON 末尾多带一个逗号(trailing comma)等小瑕疵 → 严格 JSON.parse 会整段拒掉,
+    // 导致草稿卡解析失败、不出「存入卡牌池」按钮。宽松解析:先严格,失败再去掉对象/数组结尾多余
+    // 逗号重试(去尾逗号对合法 JSON 无副作用)。失败返回 null(不抛)。
+    // 从第一个 { 起按括号配平截取一个完整 JSON 对象(尊重字符串/转义),容忍对象后面多余的 }
+    // 或杂物(模型偶发多打一个右括号、或 ``` 块后还粘了别的字符)。截断(没闭合)则返回 null。
+    function extractBalancedJson(s) {
+      var i = s.indexOf('{');
+      if (i < 0) return null;
+      var depth = 0, inStr = false, esc = false;
+      for (var j = i; j < s.length; j++) {
+        var c = s.charAt(j);
+        if (inStr) {
+          if (esc) esc = false;
+          else if (c === '\\') esc = true;
+          else if (c === '"') inStr = false;
+        } else if (c === '"') inStr = true;
+        else if (c === '{') depth++;
+        else if (c === '}') { depth--; if (depth === 0) return s.slice(i, j + 1); }
+      }
+      return null;
+    }
+    function parseLooseJson(raw) {
+      try { return JSON.parse(raw); } catch (e) {}
+      try { return JSON.parse(raw.replace(/,(\s*[}\]])/g, '$1')); } catch (e) {} // 去尾逗号
+      var bal = extractBalancedJson(raw);                                        // 容忍多余右括号/尾部杂物
+      if (bal) {
+        try { return JSON.parse(bal); } catch (e) {}
+        try { return JSON.parse(bal.replace(/,(\s*[}\]])/g, '$1')); } catch (e) {}
+      }
+      return null;
     }
     // 扫所有 ```代码块,任何能解析成「含 name+body 的 JSON」的就当卡牌草稿。
     // 不强求 ```persona-card 标签 —— 小模型常打 ```json 或不打标签,放宽识别更鲁棒。
@@ -2375,7 +2494,7 @@
         var raw = htmlUnescape(m[2]).trim();
         if (raw.charAt(0) !== '{') continue;
         try {
-          var draft = asDraft(JSON.parse(raw));
+          var draft = asDraft(parseLooseJson(raw));
           if (!draft) continue;
           if (/persona-card/.test(m[1])) { chosen = m[0]; chosenDraft = draft; break; } // 明确标签优先
           if (!chosenDraft) { chosen = m[0]; chosenDraft = draft; }
@@ -2384,16 +2503,38 @@
       if (!chosenDraft) return { draft: null, html: html };
       return { draft: chosenDraft, html: html.replace(chosen, '') };
     }
-    // 流式中: JSON 还没闭合无法解析,把正在生成的卡牌代码块折叠成占位,避免原始 JSON 一直刷屏。
+    // 卡牌制造专家追问时,若问题有可选项,会输出一个 ```card-question 块 {question, options[]}。
+    // 抠出来 → 渲染成可点击的 iOS 选项卡;点选项即把它作为回答发送。返回 { q, html(抹掉块) }。
+    function parseCardQuestion(html) {
+      if (!html || html.indexOf('card-question') < 0) return { q: null, html: html };
+      var re = /<pre[^>]*>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g, m;
+      while ((m = re.exec(html))) {
+        if (!/card-question/.test(m[1])) continue;
+        var raw = htmlUnescape(m[2]).trim();
+        if (raw.charAt(0) !== '{') continue;
+        var d = parseLooseJson(raw);
+        if (d && d.question && Array.isArray(d.options)) {
+          var opts = d.options.filter(function (o) { return typeof o === 'string' && o.trim(); });
+          if (opts.length) return { q: { question: String(d.question), options: opts }, html: html.replace(m[0], '') };
+        }
+      }
+      return { q: null, html: html };
+    }
+    // 点选项时实际发送的回答:取"短标签 —— 说明"里的短标签;没分隔符就发整句。
+    function optionAnswer(opt) {
+      var s = String(opt).split(/\s*(?:——|—|::|:|：|\(|（)/)[0].trim();
+      return s || String(opt).trim();
+    }
+    // 流式中: JSON 还没闭合无法解析,把正在生成的卡牌/选项代码块折叠成占位,避免原始 JSON 一直刷屏。
     function hideStreamingDraft(html, label) {
       if (!html) return html;
-      var m = /<pre[^>]*>\s*<code[^>]*persona-card[\s\S]*$/i.exec(html); // persona-card 标签块(到末尾)
+      var m = /<pre[^>]*>\s*<code[^>]*(?:persona-card|card-question)[\s\S]*$/i.exec(html); // persona-card / card-question 标签块(到末尾)
       if (!m) m = /<pre[^>]*>\s*<code[^>]*>\s*\{[\s\S]*?(?:name|&quot;name)[\s\S]*$/i.exec(html); // 兜底: 以 { 开头且含 name 的块
       if (!m) return html;
       return html.slice(0, m.index) + '<div style="margin-top:.5em;opacity:.7;font-size:13px">' + (label || '🃏 正在设计卡牌…') + '</div>';
     }
 
-    const ChatBubble = ({ item, theme, onPrefill, editable, onOpenEditor, t, isLatestArtifact }) => {
+    const ChatBubble = ({ item, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact }) => {
       const isDark = theme === 'dark';
 
       if (item.type === 'artifact_card') return <ArtifactCard item={item} theme={theme} t={t} isLatest={isLatestArtifact} />;
@@ -2404,30 +2545,55 @@
       if (item.type === 'user_input') return <UserInputCard item={item} theme={theme} t={t} />;
       if (item.type === 'user') return <UserBubble item={item} theme={theme} editable={editable} t={t} />;
 
+      if (item.type === 'card_creator_intro') {
+        return (
+          <div className="flex justify-start" style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
+            <div className="rounded-[14px] px-4 py-3 max-w-[440px] text-[15px] font-medium" style={{ background: isDark ? '#1C1C1E' : '#F2F2F7', color: isDark ? '#fff' : '#000' }}>{t.cpIntroTitle}</div>
+          </div>
+        );
+      }
+
       if (item.type === 'assistant') {
         if (item.streaming && !item.html) return null; // 空流式气泡交给 ThinkingBubble 表示
         const html = item.html || '';
         const pd = item.streaming ? { draft: null, html: hideStreamingDraft(html, t && t.cpDesigning) } : parsePersonaDraft(html);
+        const cq = item.streaming ? { q: null, html: pd.html } : parseCardQuestion(pd.html);
         // 草稿是否已存入(按名字在已加载的卡池里找同名自制卡 → 派生"已存入",免单独持久化)
         const draftSaved = pd.draft && bridge.available && bridge.getPersonas
           && bridge.getPersonas().some(function(c){ return c && c.source === 'user' && c.name === pd.draft.name; });
         return (
           <div className="flex justify-start">
-            <div className={`max-w-[95%] ${isDark ? 'dark-code' : 'light-code'}`}>
+            <div className={`${cq.q ? 'w-full' : 'max-w-[95%]'} ${isDark ? 'dark-code' : 'light-code'}`}>
               <div
                 className={`msg-md text-[15px] leading-relaxed ${item.streaming ? 'streaming-cursor' : ''} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}
-                dangerouslySetInnerHTML={{ __html: pd.html || '' }}
+                dangerouslySetInnerHTML={{ __html: cq.html || '' }}
               />
+              {cq.q ? (
+                <div className="mt-2 w-full" style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
+                  <div className="text-[14px] font-medium mb-2" style={{ color: isDark ? '#fff' : '#000' }}>{cq.q.question}</div>
+                  <div className="rounded-[14px] overflow-hidden" style={{ background: isDark ? '#1C1C1E' : '#fff', border: isDark ? 'none' : '0.5px solid rgba(60,60,67,.12)' }}>
+                    {cq.q.options.map((opt, i) => (
+                      <button key={i} onClick={()=> onSend && onSend(optionAnswer(opt))}
+                        className="w-full flex items-center gap-3 px-4 py-3 text-left transition-opacity active:opacity-60 hover:opacity-90"
+                        style={i ? { borderTop: '0.5px solid ' + (isDark ? 'rgba(84,84,88,.45)' : 'rgba(60,60,67,.12)') } : undefined}>
+                        <span className="text-[15px] shrink-0 text-right" style={{ color: '#8E8E93', width: 15, fontVariantNumeric: 'tabular-nums' }}>{i + 1}</span>
+                        <span className="text-[15px] flex-1 min-w-0" style={{ color: isDark ? '#fff' : '#000' }}>{opt}</span>
+                        <ChevronRight size={16} className="shrink-0" style={{ color: '#C7C7CC' }} />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               {pd.draft ? (
-                <div className="mt-2 rounded-xl border p-3 flex items-center gap-3 max-w-[460px]" style={{ background: isDark?'rgba(124,58,237,.10)':'rgba(124,58,237,.06)', borderColor:'rgba(149,128,255,.45)' }}>
-                  <div className="w-9 h-9 rounded-lg flex items-center justify-center text-[18px] shrink-0" style={{ background:'rgba(149,128,255,.2)' }}>{pd.draft.emoji}</div>
+                <div className="mt-2 rounded-[14px] p-3 flex items-center gap-3 max-w-[460px]" style={{ background: isDark ? '#1C1C1E' : '#F2F2F7' }}>
+                  <AppIcon card={pd.draft} isDark={isDark} cls="w-11 h-11 rounded-[12px]" fb={22} />
                   <div className="min-w-0 flex-1">
-                    <div className={`text-[13px] font-semibold ${isDark?'text-[#E3E3E3]':'text-[#1F1F1F]'}`}>🃏 {t.cpDraftLabel}: {pd.draft.name}</div>
-                    <div className="text-[11px] truncate" style={{ color: isDark?'#9aa0a6':'#5f6368' }}>{pd.draft.description || deptLabelFor(t, pd.draft.dept)}</div>
+                    <div className="text-[15px] font-semibold leading-snug truncate" style={{ color: isDark ? '#fff' : '#000' }}>{pd.draft.name}</div>
+                    <div className="text-[13px] truncate" style={{ color: isDark ? 'rgba(235,235,245,.6)' : 'rgba(60,60,67,.6)' }}>{pd.draft.description || deptLabelFor(t, pd.draft.dept)}</div>
                   </div>
                   {draftSaved
-                    ? <span className="shrink-0 px-3 py-1.5 rounded-lg text-[12px] font-semibold" style={{ background:'rgba(52,168,83,.16)', color:'#34A853' }} title={t.cpDraftSavedTitle}>{t.cpDraftSaved}</span>
-                    : <button onClick={()=> onOpenEditor && onOpenEditor(pd.draft)} className="shrink-0 px-3 py-1.5 rounded-lg text-[12px] font-semibold text-white" style={{ background:'#7C3AED' }} title={t.cpDraftViewTitle}>{t.cpDraftView}</button>}
+                    ? <span className="shrink-0 inline-flex items-center gap-1 h-8 px-1 text-[13px] font-medium" style={{ color:'#8E8E93' }} title={t.cpDraftSavedTitle}><Check size={15} strokeWidth={2.5} style={{ color:'#34C759' }} />{t.cpDraftSaved}</span>
+                    : <button onClick={()=> onOpenEditor && onOpenEditor(pd.draft)} className="shrink-0 px-4 h-8 rounded-full text-[13px] font-semibold text-white" style={{ background: isDark ? '#0A84FF' : '#007AFF' }} title={t.cpDraftViewTitle}>{t.cpDraftView}</button>}
                 </div>
               ) : null}
               {item.time && !item.streaming && (
@@ -2448,20 +2614,18 @@
         const deptLabel = deptLabelFor(t, c.dept);
         const cd = personaText(c, t);
         return (
-          <div className="flex flex-col gap-1">
-            <div className="text-[12px] font-semibold" style={{ color: isDark ? '#9aa0a6' : '#5f6368' }}>{t.cpEquipBubbleSys}</div>
-            <div className="rounded-xl border p-4 max-w-[640px]" style={{ background: isDark ? 'rgba(255,180,30,.06)' : 'rgba(255,180,30,.08)', borderColor: 'rgba(255,180,30,.35)' }}>
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-lg flex items-center justify-center text-[18px] shrink-0" style={{ background: tc + '22' }}>{c.emoji}</div>
-                <div className={`text-[14px] font-semibold ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.cpEquipBubbleTitle(cd.name)}</div>
+          <div className="flex flex-col gap-1.5" style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
+            <div className="text-[12px] font-medium" style={{ color: '#8E8E93' }}>{t.cpEquipBubbleSys}</div>
+            <div className="rounded-[14px] p-4 max-w-[560px]" style={{ background: isDark ? '#1C1C1E' : '#F2F2F7' }}>
+              <div className="flex items-center gap-3 mb-3">
+                <AppIcon card={c} isDark={isDark} cls="w-11 h-11 rounded-[12px]" fb={22} />
+                <div className="text-[15px] font-semibold leading-snug" style={{ color: isDark ? '#fff' : '#000' }}>{t.cpEquipBubbleTitle(cd.name)}</div>
               </div>
-              <div className="text-[12.5px] mt-2 space-y-0.5" style={{ color: isDark ? '#C4C7C5' : '#3c4043' }}>
-                <div>{t.cpDept}: <span style={{ color: tc, fontWeight: 700 }}>{deptLabel}</span></div>
+              <div className="text-[13px] space-y-1" style={{ color: isDark ? '#C7C7CC' : '#3C3C43' }}>
+                <div>{t.cpDept}: <span style={{ color: isDark ? '#0A84FF' : '#007AFF', fontWeight: 600 }}>{deptLabel}</span></div>
                 <div>{t.cpDescLabel}: {cd.description}</div>
               </div>
-              <div className="text-[11.5px] mt-2" style={{ color: isDark ? '#80868b' : '#757575' }}>
-                {t.cpEquipBubbleNote}
-              </div>
+              <div className="text-[12px] mt-2.5" style={{ color: '#8E8E93' }}>{t.cpEquipBubbleNote}</div>
             </div>
           </div>
         );
@@ -3210,8 +3374,7 @@
             <header className="shrink-0 bg-white/80 dark:bg-black/80 backdrop-blur-2xl border-b border-slate-200/50 dark:border-white/10 pt-6 pb-4 px-6 md:px-10 transition-colors">
               <div className="max-w-7xl mx-auto flex flex-col gap-5">
                 <div className="flex items-center gap-3">
-                  <Puzzle className="text-blue-600 dark:text-blue-500" size={32} strokeWidth={2.5} />
-                  <h1 className="text-3xl font-extrabold tracking-tight">探索工具</h1>
+                  <h1 className="text-[32px] font-normal tracking-tight">工具商店</h1>
                 </div>
                 <div className="relative group">
                   <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-500 transition-colors" size={20} />
@@ -4302,10 +4465,33 @@
       return { ...c, name: tr.name || c.name, description: tr.description || c.description };
     }
     const DEPT_ORDER = ['engineering','marketing','specialized','design','product','finance','sales','testing','project-management','paid-media','support','academic','game-development','spatial-computing','supply-chain','hr','legal','tool'];
+    const ALL_DEPT = '__all__'; // 分类「全部」哨兵(语言中立,显示走 t.cpAll)
     const DEPT_COLOR = { academic:'#8B5CF6', design:'#EC4899', engineering:'#06B6D4', finance:'#10B981', 'game-development':'#F59E0B', hr:'#F472B6', legal:'#6B7280', marketing:'#F97316', 'paid-media':'#EF4444', product:'#7C3AED', 'project-management':'#3B82F6', sales:'#14B8A6', 'spatial-computing':'#6366F1', specialized:'#64748B', 'supply-chain':'#84CC16', support:'#22D3EE', testing:'#A855F7', tool:'#7C3AED' };
     // 可在编辑器下拉选的部门(排除 tool —— 那是内置工具卡专用)
     const DEPT_OPTIONS = DEPT_ORDER.filter(function(d){ return d !== 'tool'; });
     const deptColor = (d) => DEPT_COLOR[d] || '#9aa0a6';
+    // 本地内置头像(50 张 Micah,src/avatars/),按卡 id 哈希固定分配
+    const AVATAR_N = 50;
+    function avatarSrc(id) {
+      let h = 0; const s = String(id || '');
+      for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+      const n = (h % AVATAR_N) + 1;
+      return 'avatars/avatar-' + (n < 10 ? '0' + n : n) + '.svg';
+    }
+    // 头像加载失败时按部门降级到本地图标
+    const DEPT_ICON = { engineering: Terminal, design: Palette, product: AppWindow, marketing: TrendingUp, finance: Briefcase, sales: TrendingUp, testing: Cpu, 'project-management': Briefcase, 'paid-media': Radio, support: User, academic: Award, 'game-development': Cpu, 'spatial-computing': Globe, 'supply-chain': Briefcase, hr: User, legal: Award, specialized: Feather, tool: Cpu };
+    // App Store 风头像块:本地头像图,失败降级图标(绝不显示文字)
+    const AppIcon = ({ card, isDark, cls = 'w-14 h-14 rounded-[14px]', fb = 26 }) => {
+      const [err, setErr] = useState(false);
+      const Fallback = DEPT_ICON[(card && card.dept)] || User;
+      return (
+        <div className={cls + ' shrink-0 overflow-hidden flex items-center justify-center'} style={{ background: isDark ? '#2C2C2E' : '#F2F2F7' }}>
+          {!err
+            ? <img src={avatarSrc(card && (card.id || card.name))} alt="" className="w-full h-full object-cover" onError={() => setErr(true)} />
+            : <Fallback size={fb} style={{ color: '#8E8E93' }} strokeWidth={1.5} />}
+        </div>
+      );
+    };
     const CLAMP3 = { display:'-webkit-box', WebkitLineClamp:3, WebkitBoxOrient:'vertical', overflow:'hidden' };
     const CLAMP2 = { display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical', overflow:'hidden' };
 
@@ -4313,47 +4499,29 @@
     //   未加持 → 占位卡"＋ 加持专家", 整卡点击打开专家池(入口)。
     //   已加持 → 显专家, 点卡片主体=换专家, 点 ✕=摘下。
     const Lanyard = ({ persona, isDark, onRemove, onOpenPicker, t }) => {
-      // 未加持: 占位入口
-      if (!persona) {
-        return (
-          <div className="absolute top-0 left-6 z-[15]" style={{ width:148 }}>
-            <div className="lanyard-wrap flex flex-col items-center">
-              <div style={{ width:2, height:60, background: isDark?'linear-gradient(#4a4d50,#303234)':'linear-gradient(#cfd2d6,#aeb2b6)' }}></div>
-              <div className="w-2.5 h-2.5 rounded-full -mt-1 mb-1.5" style={{ background: isDark?'#15171a':'#e8eaed', border:'2px solid '+(isDark?'#3c4043':'#bdc1c6') }}></div>
-              <div onClick={onOpenPicker} title={t.cpLanyardEquipTitle}
-                className="lanyard-card rounded-xl px-3 py-3.5 border border-dashed w-[140px] flex flex-col items-center gap-1 cursor-pointer transition-colors hover:border-solid"
-                style={{ background: isDark?'rgba(40,42,44,.5)':'rgba(255,255,255,.6)', borderColor: isDark?'#4a4d50':'#c4c7c5' }}>
-                <div className="w-8 h-8 rounded-lg flex items-center justify-center text-[18px] leading-none" style={{ background: isDark?'rgba(124,58,237,.16)':'rgba(124,58,237,.10)', color:'#9580FF' }}>＋</div>
-                <div className="text-[11.5px] font-medium" style={{ color: isDark?'#9aa0a6':'#5f6368' }}>{t.cpLanyardEquip}</div>
-                <div className="text-[8.5px] font-mono tracking-[0.18em]" style={{ color: isDark?'#5f6368':'#9aa0a6' }}>AI PERSONA</div>
-              </div>
-            </div>
-          </div>
-        );
-      }
-      // 已加持
-      const tc = deptColor(persona.dept);
+      // 没加持任何专家 → 整个挂件不显示
+      if (!persona) return null;
       const cd = personaText(persona, t);
       return (
-        <div className="absolute top-0 left-6 z-[15]" style={{ width:148 }}>
-          <div className="lanyard-wrap flex flex-col items-center">
-            {/* 挂绳 + 扣环(留出长度让卡片落到浮动 Artifacts 按钮下方) */}
-            <div style={{ width:2, height:60, background:'linear-gradient(#ff5a3c,#b3361f)' }}></div>
-            <div className="w-2.5 h-2.5 rounded-full -mt-1 mb-1.5" style={{ background: isDark?'#15171a':'#e8eaed', border:'2px solid '+(isDark?'#3c4043':'#bdc1c6') }}></div>
+        <div className="absolute top-0 left-6 z-[15]" style={{ width:150, fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
+          <div className="flex flex-col items-center">
+            {/* 挂绳 + 扣环 */}
+            <div style={{ width:2, height:52, background: isDark?'linear-gradient(#3a3a3c,#5a5a5e)':'linear-gradient(#d1d1d6,#aeaeb2)' }}></div>
+            <div className="w-2.5 h-2.5 rounded-full -mt-1 mb-2" style={{ background: isDark?'#1c1c1e':'#e8e8ed', border:'2px solid '+(isDark?'#48484a':'#c7c7cc') }}></div>
+            {/* 卡片 */}
             <div onClick={onOpenPicker} title={t.cpLanyardSwap}
-              className="lanyard-card relative rounded-xl p-3 border w-[140px] cursor-pointer"
-              style={{ background: isDark?'#1e2022':'#fff', borderColor:'rgba(255,180,30,.85)', boxShadow:'0 10px 30px -8px rgba(0,0,0,.5), 0 0 14px -3px rgba(255,180,30,.5)' }}>
-              <button onClick={(e)=>{ e.stopPropagation(); onRemove(); }} title={t.cpLanyardRemove} className="absolute -top-2 -right-2 w-5 h-5 rounded-full flex items-center justify-center text-[11px] leading-none"
-                style={{ background: isDark?'#2c2e30':'#eef0f3', color: isDark?'#9aa0a6':'#5f6368', border:'1px solid '+(isDark?'#3c4043':'#dadce0') }}>✕</button>
-              <div className="flex items-center gap-2">
-                <div className="w-9 h-9 rounded-lg flex items-center justify-center text-[18px] shrink-0" style={{ background: tc+'22' }}>{persona.emoji}</div>
-                <div className="min-w-0">
-                  <div className={`text-[12px] font-semibold leading-tight ${isDark?'text-[#E3E3E3]':'text-[#1F1F1F]'}`} style={CLAMP2}>{cd.name}</div>
-                  <span className="text-[10px] font-mono font-bold" style={{ color:tc }}>{deptLabelFor(t, persona.dept)}</span>
+              className="relative rounded-[14px] p-3 w-[150px] cursor-pointer transition-transform hover:-translate-y-0.5"
+              style={{ background: isDark?'#1C1C1E':'#fff', border:'1px solid '+(isDark?'#2c2c2e':'rgba(0,0,0,.06)'), boxShadow:'0 8px 24px -8px rgba(0,0,0,.3)' }}>
+              <button onClick={(e)=>{ e.stopPropagation(); onRemove(); }} title={t.cpLanyardRemove}
+                className="absolute -top-2 -right-2 w-5 h-5 rounded-full flex items-center justify-center text-[11px] leading-none"
+                style={{ background: isDark?'#2C2C2E':'#fff', color:'#8E8E93', border:'1px solid '+(isDark?'#48484a':'rgba(0,0,0,.1)'), boxShadow:'0 2px 6px rgba(0,0,0,.15)' }}>✕</button>
+              <div className="flex flex-col items-center text-center gap-2">
+                <AppIcon card={persona} isDark={isDark} cls="w-12 h-12 rounded-[14px]" fb={22} />
+                <div className="w-full min-w-0">
+                  <div className="text-[13px] font-semibold leading-tight truncate" style={{ color: isDark?'#fff':'#000' }}>{cd.name}</div>
+                  <div className="text-[11px] mt-0.5 truncate" style={{ color: isDark?'rgba(235,235,245,.6)':'rgba(60,60,67,.6)' }}>{deptLabelFor(t, persona.dept)}</div>
                 </div>
               </div>
-              <p className="text-[10px] leading-snug mt-1.5" style={{ ...CLAMP2, color: isDark?'#80868b':'#5f6368' }}>{cd.description}</p>
-              <div className="text-[8.5px] font-mono tracking-[0.18em] text-center mt-2 pt-1.5 border-t" style={{ color:'#ffae1e', borderColor: isDark?'rgba(255,255,255,.06)':'rgba(0,0,0,.06)' }}>AI PERSONA</div>
             </div>
           </div>
         </div>
@@ -4385,33 +4553,32 @@
       const tc = deptColor(card.dept);
       const cd = personaText(card, t);
       return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-6" style={{ background:'rgba(0,0,0,.55)' }} onClick={onClose}>
+        <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center md:p-6" style={{ background:'rgba(0,0,0,.6)', backdropFilter:'blur(2px)', WebkitBackdropFilter:'blur(2px)', fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }} onClick={onClose}>
           <div ref={panelRef} onClick={(e)=>e.stopPropagation()}
-            className="w-full max-w-[620px] max-h-[84vh] flex flex-col rounded-2xl border"
-            style={{ background: isDark?'#1e2022':'#ffffff', borderColor: isDark?'rgba(255,255,255,.10)':'rgba(0,0,0,.08)', boxShadow:'0 24px 80px -20px rgba(0,0,0,.6)' }}>
-            <div className="flex items-start gap-4 p-6 pb-3 shrink-0">
-              <div className="w-16 h-16 rounded-xl flex items-center justify-center text-[34px] shrink-0" style={{ background: tc+'22' }}>{card.emoji}</div>
+            className="w-full h-[88vh] md:h-auto md:max-h-[84vh] md:max-w-[560px] flex flex-col rounded-t-[14px] md:rounded-[14px] overflow-hidden"
+            style={{ background: isDark?'#1C1C1E':'#F2F2F7', color: isDark?'#fff':'#000' }}>
+            {/* 顶部:头像 + 名称/部门 + 关闭 */}
+            <div className="flex items-center gap-4 px-5 pt-5 pb-4 shrink-0" style={{ background: isDark?'#000':'#fff' }}>
+              <AppIcon card={card} isDark={isDark} />
               <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <h2 className={`text-[20px] font-semibold ${isDark?'text-[#E3E3E3]':'text-[#1F1F1F]'}`}>{cd.name}</h2>
-                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded" style={{ background: tc+'22', color: tc }}>{deptLabelFor(t, card.dept)}</span>
-                </div>
-                <div className="text-[12.5px] mt-1" style={{ color: isDark?'#C4C7C5':'#3c4043' }}>{cd.description}</div>
+                <h2 className="text-[20px] font-semibold truncate" style={{ color: isDark?'#fff':'#000' }}>{cd.name}</h2>
+                <p className="text-[13px] mt-0.5" style={{ color:'#8E8E93' }}>{deptLabelFor(t, card.dept)}{card.source==='user'?' · ' + t.cpBadgeUser:''}</p>
               </div>
-              <button onClick={onClose} className={`shrink-0 p-1 rounded-md ${isDark?'text-[#9aa0a6] hover:bg-[#2c2e30]':'text-[#5f6368] hover:bg-[#eef0f3]'}`}><X size={18}/></button>
+              <button onClick={onClose} className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center" style={{ background: isDark?'#2C2C2E':'#F2F2F7', color:'#8E8E93' }}><X size={16}/></button>
             </div>
-            {/* 完整人设正文 */}
-            <div className="flex-1 overflow-y-auto custom-scrollbar px-6 py-3 min-h-0 border-t" style={{ borderColor: isDark?'rgba(255,255,255,.06)':'rgba(0,0,0,.06)' }}>
-              <div className="text-[11px] font-semibold mb-2 font-mono tracking-wide" style={{ color: isDark?'#80868b':'#9aa0a6' }}>{t.cpFullBody}</div>
+            {cd.description ? <div className="px-5 py-3 text-[14px] shrink-0" style={{ color: isDark?'#C7C7CC':'#3C3C43', background: isDark?'#000':'#fff', borderTop:'1px solid '+(isDark?'#1C1C1E':'rgba(198,198,200,.4)') }}>{cd.description}</div> : null}
+            {/* 完整人设 */}
+            <div className="flex-1 overflow-y-auto custom-scrollbar px-5 py-4 min-h-0">
+              <p className="text-[12px] uppercase mb-2" style={{ color:'#8E8E93' }}>{t.cpFullBody}</p>
               {body===null
-                ? <div className="text-[13px] py-6 text-center" style={{ color: isDark?'#80868b':'#757575' }}>{t.cpBodyLoading}</div>
-                : <div className={`persona-body text-[13px] leading-relaxed ${isDark?'text-[#C4C7C5]':'text-[#3c4043]'}`} dangerouslySetInnerHTML={{ __html: bridge.renderMarkdown ? bridge.renderMarkdown(body) : body }} />}
+                ? <div className="text-[14px] py-8 text-center" style={{ color:'#8E8E93' }}>{t.cpBodyLoading}</div>
+                : <div className="persona-body text-[14px] leading-relaxed" style={{ color: isDark?'#C7C7CC':'#1C1C1E' }} dangerouslySetInnerHTML={{ __html: bridge.renderMarkdown ? bridge.renderMarkdown(body) : body }} />}
             </div>
-            <div className="p-5 pt-3 shrink-0 border-t" style={{ borderColor: isDark?'rgba(255,255,255,.06)':'rgba(0,0,0,.06)' }}>
-              <button onClick={()=>onEquip(card)}
-                className="w-full py-2.5 rounded-xl text-[14px] font-semibold transition-colors"
-                style={ equipped ? { background:'rgba(255,180,30,.18)', color:'#ffae1e' } : { background:'#7C3AED', color:'#fff' } }>
-                {equipped ? t.cpEquippedTap : t.cpEquip}
+            {/* 加持/取消 */}
+            <div className="p-4 shrink-0" style={{ borderTop:'1px solid '+(isDark?'#38383A':'rgba(198,198,200,.5)') }}>
+              <button onClick={()=>onEquip(card)} className="w-full py-3 rounded-[12px] text-[16px] font-semibold transition-colors"
+                style={ equipped ? { background: isDark?'#2C2C2E':'#E5E5EA', color: isDark?'#fff':'#000' } : { background: isDark?'#0A84FF':'#007AFF', color:'#fff' } }>
+                {equipped ? t.cpDetailUnequip : t.cpEquipShort}
               </button>
             </div>
           </div>
@@ -4438,8 +4605,8 @@
         }
       }, []);
       const tc = deptColor(dept);
-      const inputCls = "w-full px-3 py-2 rounded-lg text-[13px] outline-none border";
-      const inputStyle = { background: isDark ? '#131314' : '#fff', color: isDark ? '#E3E3E3' : '#1F1F1F', borderColor: isDark ? '#3c4043' : '#dadce0' };
+      const inputCls = "w-full px-5 py-4 rounded-2xl text-[15px] outline-none border transition-all";
+      const inputStyle = isDark ? { background:'rgba(24,24,27,.5)', borderColor:'#3f3f46', color:'#fff' } : { background:'#fafafa', borderColor:'#e4e4e7', color:'#18181b' };
       async function save() {
         if (!name.trim()) { setErr(t.cpErrName); return; }
         if (!body.trim()) { setErr(t.cpErrBody); return; }
@@ -4451,65 +4618,111 @@
           onClose();
         } catch (e) { setErr(t.cpErrSave(e)); setSaving(false); }
       }
+      const ph = isDark ? '#48484A' : '#C7C7CC';
       return (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-6" style={{ background:'rgba(0,0,0,.55)' }} onClick={onClose}>
-          <div onClick={(e)=>e.stopPropagation()} className="w-full max-w-[640px] max-h-[88vh] flex flex-col rounded-2xl border"
-            style={{ background: isDark?'#1e2022':'#fff', borderColor: isDark?'rgba(255,255,255,.10)':'rgba(0,0,0,.08)', boxShadow:'0 24px 80px -20px rgba(0,0,0,.6)' }}>
-            <div className="flex items-center justify-between px-6 pt-5 pb-3 shrink-0">
-              <h2 className={`text-[18px] font-semibold ${isDark?'text-[#E3E3E3]':'text-[#1F1F1F]'}`}>{isEdit ? t.cpEditCard : t.cpNewCard} <span className="text-[12px] font-normal" style={{color:'#9580FF'}}>{t.cpBadgeUser}</span></h2>
-              <button onClick={onClose} className={`p-1 rounded-md ${isDark?'text-[#9aa0a6] hover:bg-[#2c2e30]':'text-[#5f6368] hover:bg-[#eef0f3]'}`}><X size={18}/></button>
+        <div className="fixed inset-0 z-[60] flex items-end md:items-center justify-center md:p-4"
+          style={{ background:'rgba(0,0,0,.6)', backdropFilter:'blur(2px)', WebkitBackdropFilter:'blur(2px)', fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }} onClick={onClose}>
+          <div onClick={(e)=>e.stopPropagation()} className="w-full h-[90vh] md:h-auto md:max-h-[85vh] md:max-w-md flex flex-col rounded-t-[14px] md:rounded-[14px] overflow-hidden"
+            style={{ background: isDark ? '#1C1C1E' : '#F2F2F7', color: isDark ? '#fff' : '#000' }}>
+            {/* 导航栏 */}
+            <div className="flex justify-between items-center px-4 h-14 shrink-0 border-b" style={{ borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.5)' }}>
+              <button onClick={onClose} className="text-[17px]" style={{ color: isDark ? '#0A84FF' : '#007AFF' }}>{t.cpCancel}</button>
+              <span className="text-[17px] font-semibold">{isEdit ? t.cpEditCard : t.cpNewCard}</span>
+              <button onClick={save} disabled={saving} className="text-[17px] font-semibold" style={{ color: saving ? '#8E8E93' : (isDark ? '#0A84FF' : '#007AFF') }}>{saving ? t.cpSaving : (isEdit ? t.cpSaveEdit : t.cpCreate)}</button>
             </div>
-            <div className="flex-1 overflow-y-auto custom-scrollbar px-6 py-2 min-h-0 space-y-3">
-              <div className="flex gap-3">
-                <div className="w-16 shrink-0">
-                  <label className="text-[11px] font-medium block mb-1" style={{color: isDark?'#9aa0a6':'#5f6368'}}>emoji</label>
-                  <input value={emoji} onChange={e=>setEmoji(e.target.value)} maxLength={4} className={inputCls + " text-center text-[20px]"} style={inputStyle} />
+            {/* 表单 */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-6">
+              {err ? <div className="text-[13px] px-2" style={{ color:'#FF3B30' }}>{err}</div> : null}
+              {/* 名称 + 部门 */}
+              <div className="rounded-[10px] overflow-hidden" style={{ background: isDark ? '#000' : '#fff' }}>
+                <div className="flex items-center px-4 py-3 border-b" style={{ borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.5)' }}>
+                  <span className="w-20 text-[17px] shrink-0">{t.cpFieldName}</span>
+                  <input value={name} onChange={e=>setName(e.target.value)} placeholder={t.cpReqPh} className="flex-1 text-[17px] bg-transparent outline-none" style={{ color: isDark?'#fff':'#000', '::placeholder': ph }} />
                 </div>
-                <div className="flex-1">
-                  <label className="text-[11px] font-medium block mb-1" style={{color: isDark?'#9aa0a6':'#5f6368'}}>{t.cpFieldName} *</label>
-                  <input value={name} onChange={e=>setName(e.target.value)} placeholder={t.cpNamePh} className={inputCls} style={inputStyle} />
-                </div>
-                <div className="w-28 shrink-0">
-                  <label className="text-[11px] font-medium block mb-1" style={{color: isDark?'#9aa0a6':'#5f6368'}}>{t.cpDept}</label>
-                  <select value={dept} onChange={e=>setDept(e.target.value)} className={inputCls} style={inputStyle}>
-                    {DEPT_OPTIONS.map(function(d){ return <option key={d} value={d}>{deptLabelFor(t, d)}</option>; })}
+                <div className="flex items-center px-4 py-3">
+                  <span className="w-20 text-[17px] shrink-0">{t.cpDept}</span>
+                  <select value={dept} onChange={e=>setDept(e.target.value)} className="flex-1 text-[17px] bg-transparent outline-none" style={{ color: isDark?'#fff':'#000' }}>
+                    {DEPT_OPTIONS.map(function(d){ return <option key={d} value={d} style={{ color:'#000' }}>{deptLabelFor(t, d)}</option>; })}
                   </select>
                 </div>
               </div>
+              {/* 描述 */}
+              <div className="rounded-[10px] overflow-hidden" style={{ background: isDark ? '#000' : '#fff' }}>
+                <div className="px-4 py-3">
+                  <textarea rows={3} value={description} onChange={e=>setDescription(e.target.value)} placeholder={t.cpFieldDescPh} className="w-full text-[17px] bg-transparent outline-none resize-none" style={{ color: isDark?'#fff':'#000' }} />
+                </div>
+              </div>
+              {/* 系统人设 (必填) */}
               <div>
-                <label className="text-[11px] font-medium block mb-1" style={{color: isDark?'#9aa0a6':'#5f6368'}}>{t.cpFieldDesc}</label>
-                <input value={description} onChange={e=>setDescription(e.target.value)} placeholder={t.cpFieldDescPh} className={inputCls} style={inputStyle} />
+                <p className="text-[13px] ml-4 mb-1.5 uppercase" style={{ color:'#8E8E93' }}>{t.cpFieldBody} *  ·  {t.cpMarkdownHint}</p>
+                <div className="rounded-[10px] overflow-hidden" style={{ background: isDark ? '#000' : '#fff' }}>
+                  <div className="px-4 py-3">
+                    <textarea rows={7} value={body} onChange={e=>setBody(e.target.value)} placeholder={t.cpBodyPh} className="w-full text-[15px] font-mono leading-relaxed bg-transparent outline-none resize-none custom-scrollbar" style={{ color: isDark?'#fff':'#000', maxHeight:'40vh' }} />
+                  </div>
+                </div>
               </div>
-              <div>
-                <label className="text-[11px] font-medium block mb-1" style={{color: isDark?'#9aa0a6':'#5f6368'}}>{t.cpFieldBody} * <span style={{color: isDark?'#5f6368':'#9aa0a6'}}>{t.cpFieldBodyHint}</span></label>
-                <textarea value={body} onChange={e=>setBody(e.target.value)} rows={12}
-                  placeholder={t.cpBodyPh}
-                  className={inputCls + " resize-y font-mono leading-relaxed"} style={{...inputStyle, minHeight:220}} />
-              </div>
-              {err ? <div className="text-[12px] text-[#F28B82]">{err}</div> : null}
-            </div>
-            <div className="flex items-center justify-between gap-2 px-6 py-4 shrink-0 border-t" style={{borderColor: isDark?'rgba(255,255,255,.06)':'rgba(0,0,0,.06)'}}>
-              <div>
-                {isEdit ? (
-                  confirmDel
-                    ? <span className="flex items-center gap-2 text-[12.5px]"><span className="text-[#F28B82]">{t.cpConfirmDelete}</span>
-                        <button onClick={()=>{ bridge.deletePersona(init.id).then(()=>{ if(onDeleted) onDeleted(init); onClose(); }); }} className="px-2 py-1 rounded-md text-[12px] text-[#F28B82] border border-[#F28B82]/50">{t.cpDelete}</button>
-                        <button onClick={()=>setConfirmDel(false)} className="px-2 py-1 rounded-md text-[12px]" style={{color: isDark?'#9aa0a6':'#5f6368'}}>{t.cpCancel}</button>
-                      </span>
-                    : <button onClick={()=>setConfirmDel(true)} className="px-3 py-2 rounded-lg text-[12.5px] text-[#F28B82]">{t.cpDeleteThis}</button>
-                ) : null}
-              </div>
-              <div className="flex items-center gap-2">
-                <button onClick={onClose} className="px-4 py-2 rounded-lg text-[13px] border" style={{color: isDark?'#C4C7C5':'#3c4043', borderColor: isDark?'#3c4043':'#dadce0'}}>{t.cpCancel}</button>
-                <button onClick={save} disabled={saving} className="px-5 py-2 rounded-lg text-[13px] font-semibold text-white" style={{background: saving ? '#9aa0a6' : '#7C3AED'}}>{saving ? t.cpSaving : (isEdit ? t.cpSaveEdit : t.cpCreate)}</button>
-              </div>
+              {/* 删除(编辑态) */}
+              {isEdit ? (
+                <button onClick={()=>{ if(confirmDel){ bridge.deletePersona(init.id).then(()=>{ if(onDeleted) onDeleted(init); onClose(); }); } else setConfirmDel(true); }}
+                  className="w-full rounded-[10px] py-3 text-[17px] transition-colors" style={{ background: isDark?'#000':'#fff', color:'#FF3B30' }}>
+                  {confirmDel ? t.cpDelThisConfirm : t.cpDeleteThis}
+                </button>
+              ) : null}
             </div>
           </div>
         </div>
       );
     };
 
-    const CardPoolView = ({ theme, t, bs, onEquipped }) => {
+    // AI 造卡推广 banner(卡池顶部 hero):彩色渐变 + 标题 + 开始造卡 + 三步条 + 右侧浮动本地头像。
+    // 整条/按钮点击 → onStart(=startAICard)。深浅模式同一条彩色卡。窄屏由 .bnr-avatars 媒体查询隐藏头像。
+    const AICardBanner = ({ onStart, isDark, t }) => {
+      const F = (t && t.bnrFaces) || [];
+      const face = (i) => ({ name: (F[i] && F[i][0]) || '', role: (F[i] && F[i][1]) || '' });
+      const avs = [
+        { src:'avatars/banner-1.svg', ...face(0) },
+        { src:'avatars/banner-3.svg', ...face(1) },
+        { src:'avatars/banner-5.svg', ...face(2) },
+        { src:'avatars/banner-2.svg', ...face(3) },
+        { src:'avatars/banner-4.svg', ...face(4) },
+      ];
+      return (
+        <div onClick={onStart} className="relative w-full overflow-hidden cursor-pointer select-none flex items-stretch"
+          style={{ height:200, borderRadius:20, background:'linear-gradient(135deg, #EEEDFE 0%, #E6F1FB 50%, #E1F5EE 100%)',
+            boxShadow: isDark
+              ? '0 2px 8px rgba(0,0,0,.45), 0 24px 60px rgba(0,0,0,.65)'
+              : '0 8px 28px rgba(83,74,183,.16)',
+            border: isDark ? '1px solid rgba(255,255,255,.18)' : '1px solid rgba(83,74,183,.14)',
+            fontFamily:'-apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif' }}>
+          <div className="absolute rounded-full" style={{ width:240, height:240, background:'#AFA9EC', opacity:.16, top:-80, right:-40 }} />
+          <div className="absolute rounded-full" style={{ width:150, height:150, background:'#9FE1CB', opacity:.15, bottom:-50, right:120 }} />
+          {/* 左侧内容 */}
+          <div className="relative z-10 shrink-0 flex flex-col justify-center" style={{ width:430, padding:'0 36px' }}>
+            <div style={{ fontSize:28, fontWeight:800, color:'#26215C', lineHeight:1.15, letterSpacing:'-.5px', marginBottom:18 }}>{t.cpAICreate} <span style={{ color:'#534AB7' }}>{t.bnrTitleHi}</span></div>
+            <button onClick={(e)=>{ e.stopPropagation(); onStart && onStart(); }} className="inline-flex items-center gap-1.5 self-start active:opacity-80" style={{ background:'#534AB7', color:'#fff', padding:'10px 22px', borderRadius:14, fontSize:14, fontWeight:600, marginBottom:18, boxShadow:'0 4px 14px rgba(83,74,183,.35)' }}>{t.bnrStart}</button>
+            <div className="flex gap-2">
+              {[['1',t.bnrStep1],['2',t.bnrStep2],['3',t.bnrStep3]].map(s => (
+                <div key={s[0]} className="flex items-center gap-1.5" style={{ background:'rgba(255,255,255,.85)', borderRadius:10, padding:'7px 11px', border:'1px solid rgba(175,169,236,.3)' }}>
+                  <span className="flex items-center justify-center shrink-0" style={{ width:18, height:18, borderRadius:'50%', background:'#EEEDFE', color:'#534AB7', fontSize:10, fontWeight:700 }}>{s[0]}</span>
+                  <span style={{ fontSize:11.5, fontWeight:600, color:'#26215C', whiteSpace:'nowrap' }}>{s[1]}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          {/* 右侧:头像横向一排,垂直居中,各自浮动 */}
+          <div className="bnr-avatars relative z-0 flex-1 flex items-center justify-evenly" style={{ paddingRight:16 }}>
+            {avs.map((a,i) => (
+              <div key={i} className="flex flex-col items-center shrink-0" style={{ background:'#fff', borderRadius:18, padding:'14px 14px 11px', boxShadow:'0 10px 26px rgba(83,74,183,.22)', animation:`bnrFloat${(i%3)+1} ${(3.2+i*0.25).toFixed(2)}s ease-in-out infinite ${(i*0.3).toFixed(1)}s` }}>
+                <img src={a.src} width={80} height={80} alt="" style={{ borderRadius:14, display:'block' }} />
+                <div style={{ fontSize:13, fontWeight:600, color:'#26215C', marginTop:6, lineHeight:1.15, whiteSpace:'nowrap' }}>{a.name}</div>
+                <div style={{ fontSize:11, color:'#534AB7', opacity:.7, lineHeight:1.15, whiteSpace:'nowrap' }}>{a.role}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    };
+    const CardPoolView = ({ theme, t, bs, onEquipped, onAICreate, initialMyOnly }) => {
       const isDark = theme === 'dark';
       const pool = (bs && bs.personaPool) || { loadState: 'idle' };
       // 201 张卡走模块级缓存(不进 notify 快照),loadState 变化驱动重渲染。
@@ -4518,17 +4731,18 @@
       // 加持目标 = 当前对话(equipPersona 注入到 state.activeSessionId)。让用户始终知道注入到哪。
       const target = (bs && bs.sessions && bs.activeSessionId) ? bs.sessions.find(s => s.id === bs.activeSessionId) : null;
       const targetTitle = target ? (target.title || t.newChat) : null;
-      const [selDept, setSelDept] = useState([]);
+      const [activeDept, setActiveDept] = useState(ALL_DEPT);
       const [query, setQuery] = useState('');
       const [visible, setVisible] = useState(60);
       const [detail, setDetail] = useState(null);
       const [toast, setToast] = useState(null);
       const [editor, setEditor] = useState(null); // null | { initial }
-      const [myOnly, setMyOnly] = useState(false); // 「我的卡牌」facet
+      const [chooser, setChooser] = useState(false); // 造卡方式选择(AI/手动)
+      const [myOnly, setMyOnly] = useState(!!initialMyOnly); // 「我的卡牌」facet(从存入确认窗"去查看"进来则默认开)
       const [confirmDelId, setConfirmDelId] = useState(null); // 卡上删除二次确认
 
       useEffect(() => { if (bridge.available) bridge.loadPersonas(); }, []);
-      useEffect(() => { setVisible(60); }, [query, selDept, myOnly]);
+      useEffect(() => { setVisible(60); }, [query, activeDept, myOnly]);
       useEffect(() => { if (!toast) return; const id = setTimeout(() => setToast(null), 2400); return () => clearTimeout(id); }, [toast]);
 
       const counts = {}; list.forEach(c => { counts[c.dept] = (counts[c.dept]||0)+1; });
@@ -4536,7 +4750,7 @@
       const q = query.trim().toLowerCase();
       const filtered = list.filter(c => {
         if (myOnly && c.source !== 'user') return false;
-        if (selDept.length && selDept.indexOf(c.dept) < 0) return false;
+        if (activeDept !== ALL_DEPT && c.dept !== activeDept) return false;
         if (q) {
           // 原文 + 本地化名/简介都进搜索域,中英日关键词均可命中
           const loc = personaText(c, t);
@@ -4547,8 +4761,7 @@
       });
       const shown = filtered.slice(0, visible);
 
-      function toggle(arr, setArr, v) { setArr(arr.indexOf(v)>=0 ? arr.filter(x=>x!==v) : arr.concat([v])); }
-      function resetFacets() { setSelDept([]); setQuery(''); setMyOnly(false); }
+      function resetFacets() { setActiveDept(ALL_DEPT); setQuery(''); setMyOnly(false); }
       function editCard(card, e){ if(e) e.stopPropagation(); setEditor({ initial: card }); }
       function doDelete(card, e){ if(e) e.stopPropagation(); setConfirmDelId(null);
         Promise.resolve(bridge.deletePersona(card.id)).then(function(){ setToast(t.cpToastDeleted(card.name)); }).catch(function(){ setToast(t.cpToastDelFailed); }); }
@@ -4562,156 +4775,179 @@
       function openDetail(card, e){ const r=e.currentTarget.getBoundingClientRect();
         setDetail({ card, rect:{ left:r.left, top:r.top, width:r.width, height:r.height } }); }
 
+      // 分类横向滚动箭头(PC 鼠标无左滑)
+      const scrollRef = useRef(null);
+      const [showL, setShowL] = useState(false);
+      const [showR, setShowR] = useState(false);
+      const checkScroll = () => { const el = scrollRef.current; if (!el) return; setShowL(el.scrollLeft > 2); setShowR(el.scrollLeft < el.scrollWidth - el.clientWidth - 2); };
+      useEffect(() => { const el = scrollRef.current; if (!el) return; checkScroll(); el.addEventListener('scroll', checkScroll); window.addEventListener('resize', checkScroll); return () => { el.removeEventListener('scroll', checkScroll); window.removeEventListener('resize', checkScroll); }; }, [list.length]);
+      const scrollPills = (dx) => { if (scrollRef.current) scrollRef.current.scrollBy({ left: dx, behavior: 'smooth' }); };
+      // 右键上下文菜单(自制卡 编辑/删除,macOS 风);点别处/滚动关闭
+      const [ctx, setCtx] = useState(null); // { card, x, y }
+      useEffect(() => { if (!ctx) return; const close = () => setCtx(null); window.addEventListener('click', close); window.addEventListener('scroll', close, true); return () => { window.removeEventListener('click', close); window.removeEventListener('scroll', close, true); }; }, [ctx]);
+      function openCtx(card, e){ if (card.source !== 'user') return; e.preventDefault(); e.stopPropagation(); setCtx({ card, x: e.clientX, y: e.clientY }); }
+
       return (
-        <div className="flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden animate-in fade-in duration-300">
-          {/* Header */}
-          <div className="px-6 md:px-8 pt-6 pb-3 flex items-end justify-between gap-4 shrink-0">
-            <div className="min-w-0">
-              <h1 className={`text-[24px] font-normal tracking-wide ${isDark?'text-[#E3E3E3]':'text-[#1F1F1F]'}`}>
-                <span style={{ color:'#7C3AED', fontWeight:600 }}>{t.cardPool}</span> <span style={{ color: isDark?'#80868b':'#9aa0a6' }}>/ {t.cpSubtitle}</span>
-              </h1>
-              <div className="text-[12px] mt-1 truncate" style={{ color: isDark?'#80868b':'#757575' }} title={t.cpTaglineTitle}>{t.cpTagline}</div>
-              {/* 加持目标: 醒目横幅, 让用户一眼看清注入到哪个对话 */}
-              <div className="mt-2.5 inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[12.5px]"
-                style={ targetTitle
-                  ? { background: isDark?'rgba(124,58,237,.20)':'rgba(124,58,237,.10)', borderColor: isDark?'rgba(149,128,255,.6)':'rgba(124,58,237,.42)' }
-                  : { background: isDark?'rgba(242,139,130,.16)':'rgba(242,139,130,.10)', borderColor:'rgba(242,139,130,.55)' } }>
-                <span className="font-semibold whitespace-nowrap" style={{ color: targetTitle ? '#9580FF' : '#F28B82' }}>🎯 {t.cpTarget}</span>
-                {targetTitle
-                  ? <>
-                      <span className="font-semibold truncate max-w-[240px]" style={{ color: isDark?'#E3E3E3':'#1F1F1F' }} title={targetTitle}>「{targetTitle}」</span>
-                      {active
-                        ? <span className="whitespace-nowrap" style={{ color: isDark?'#9aa0a6':'#757575' }}>· {t.cpBannerEquipped} <span style={{ color:'#ffae1e', fontWeight:600 }}>{personaText(active, t).name}</span></span>
-                        : <span className="whitespace-nowrap" style={{ color: isDark?'#80868b':'#9aa0a6' }}>· {t.cpBannerNone}</span>}
-                    </>
-                  : <span className="font-medium whitespace-nowrap" style={{ color:'#F28B82' }}>{t.cpNoSession}</span>}
-              </div>
-            </div>
-            <div className="flex items-center gap-3 shrink-0">
-              <span className="text-[12px] font-mono" style={{ color: isDark?'#80868b':'#757575' }}>{filtered.length} / {list.length}</span>
-              <button onClick={()=>setEditor({ initial: null })} className="px-3 py-1.5 rounded-lg text-[12.5px] font-medium text-white flex items-center gap-1.5" style={{ background:'#7C3AED' }} title={t.cpNewCardTitle}>
-                <Plus size={15}/> {t.cpNewCard}
-              </button>
-            </div>
-          </div>
+        <div className="flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden animate-in fade-in duration-300"
+          style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif', background: isDark ? '#000' : '#fff' }}>
+          <div className="relative z-10 flex-1 min-h-0 overflow-y-auto custom-scrollbar">
+            <div className="max-w-[1400px] mx-auto">
 
-          {pool.loadState==='loading' ? (
-            <div className="flex-1 flex items-center justify-center text-[13px]" style={{ color: isDark?'#80868b':'#757575' }}>{t.cpLoading}</div>
-          ) : pool.loadState==='error' ? (
-            <div className="flex-1 flex items-center justify-center text-[13px] text-[#F28B82]">{t.cpLoadError}</div>
-          ) : (
-          <div className="flex-1 flex min-h-0">
-            {/* Facet 侧栏: 部门 */}
-            <aside className="w-[200px] shrink-0 overflow-y-auto custom-scrollbar px-5 py-2 hidden md:block">
-              {/* 我的卡牌 facet */}
-              <div onClick={()=>setMyOnly(!myOnly)} className="flex items-center justify-between cursor-pointer text-[12.5px] py-1.5 px-2 mb-3 rounded-lg border transition-colors"
-                style={ myOnly ? { background:'rgba(124,58,237,.16)', borderColor:'rgba(149,128,255,.55)', color:'#9580FF' } : { background:'transparent', borderColor: isDark?'#3c4043':'#dadce0', color: isDark?'#C4C7C5':'#3c4043' }}>
-                <span className="flex items-center gap-1.5 font-medium">🃏 {t.cpMyCards}</span>
-                <span className="font-mono text-[11px]" style={{ color: myOnly?'#9580FF':(isDark?'#5f6368':'#9aa0a6') }}>{userCount}</span>
+              {/* 头部:标题 + 加持目标小提示 / 我的专家 + 新建（无暗色toggle，用全局主题） */}
+              <div className="px-6 md:px-10 pt-8 pb-1 flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <h1 className="text-[32px] font-normal tracking-tight" style={{ color: isDark ? '#fff' : '#000' }}>专家卡牌池</h1>
+                  <div className="text-[13px] mt-1.5 truncate" style={{ color: isDark ? 'rgba(235,235,245,.6)' : 'rgba(60,60,67,.6)' }}>
+                    {active
+                      ? <span style={{ color: isDark ? '#0A84FF' : '#007AFF', fontWeight: 500 }}>✓ 已加持「{personaText(active, t).name}」</span>
+                      : t.cpTagline}
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 pt-2 shrink-0">
+                  <button onClick={() => setMyOnly(!myOnly)} className="px-4 h-9 rounded-full text-[14px] font-medium transition-colors whitespace-nowrap"
+                    style={ myOnly ? { background: isDark ? '#0A84FF' : '#007AFF', color: '#fff' } : { background: isDark ? '#2C2C2E' : '#F2F2F7', color: isDark ? '#0A84FF' : '#007AFF' } }>
+                    {t.cpMyCards}
+                  </button>
+                  <button onClick={() => setChooser(true)} title={t.cpNewCardTitle} className="w-9 h-9 rounded-full flex items-center justify-center transition-colors"
+                    style={{ background: isDark ? '#2C2C2E' : '#F2F2F7', color: isDark ? '#0A84FF' : '#007AFF' }}>
+                    <Plus size={20} />
+                  </button>
+                </div>
               </div>
-              <div className="text-[12px] font-semibold mb-2" style={{ color: isDark?'#9aa0a6':'#5f6368' }}>{t.cpDept}</div>
-              <div className="space-y-1 mb-5">
-                {DEPT_ORDER.filter(k=>counts[k]).map(k=>{
-                  const on = selDept.indexOf(k)>=0; const tc=deptColor(k);
-                  return (
-                    <div key={k} onClick={()=>toggle(selDept,setSelDept,k)} className="flex items-center justify-between cursor-pointer text-[12.5px] py-0.5 group">
-                      <span className="flex items-center gap-2">
-                        <span className="w-3.5 h-3.5 rounded-sm border flex items-center justify-center" style={{ borderColor: on?tc:(isDark?'#5f6368':'#bdc1c6'), background: on?tc:'transparent' }}>{on?<span className="text-white text-[9px] leading-none">✓</span>:null}</span>
-                        <span style={{ color: isDark?'#C4C7C5':'#3c4043' }}>{deptLabelFor(t, k)}</span>
-                      </span>
-                      <span className="font-mono text-[11px]" style={{ color: isDark?'#5f6368':'#9aa0a6' }}>{counts[k]}</span>
-                    </div>
-                  );
-                })}
-              </div>
-              <button onClick={resetFacets} className="w-full py-2 rounded-lg text-[12.5px] border transition-colors" style={{ color: isDark?'#C4C7C5':'#3c4043', borderColor: isDark?'#3c4043':'#dadce0' }}>{t.cpResetFilter}</button>
-            </aside>
 
-            {/* 卡片网格 */}
-            <div className="flex-1 min-w-0 flex flex-col">
-              {/* 搜索框 (前端关键词过滤) —— 置顶,符合"找搜索往上看"的直觉 */}
-              <div className="shrink-0 px-5 py-3 border-b flex items-center gap-3" style={{ borderColor: isDark?'rgba(255,255,255,.06)':'rgba(0,0,0,.06)' }}>
-                <Search size={16} className={isDark?'text-[#80868b]':'text-[#9aa0a6]'} />
-                <input value={query} onChange={e=>setQuery(e.target.value)} placeholder={t.cpSearchPh}
-                  className="flex-1 bg-transparent outline-none text-[13px]" style={{ color: isDark?'#E3E3E3':'#1F1F1F' }} />
-                {query ? <button onClick={()=>setQuery('')} className={isDark?'text-[#80868b] hover:text-[#E3E3E3]':'text-[#9aa0a6] hover:text-[#1F1F1F]'}><X size={14}/></button> : null}
+              {/* 搜索 */}
+              <div className="px-6 md:px-10 py-3">
+                <div className="relative">
+                  <Search size={18} className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: '#8E8E93' }} />
+                  <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t.cpSearchPh}
+                    className="w-full rounded-[10px] pl-9 pr-9 py-2 text-[16px] outline-none"
+                    style={{ background: isDark ? 'rgba(118,118,128,.24)' : 'rgba(118,118,128,.12)', color: isDark ? '#fff' : '#000' }} />
+                  {query ? <button onClick={() => setQuery('')} className="absolute right-2.5 top-1/2 -translate-y-1/2" style={{ color: '#8E8E93' }}><X size={16} /></button> : null}
+                </div>
               </div>
-              <div className="flex-1 overflow-y-auto custom-scrollbar px-5 pt-4 pb-4">
-                {shown.length===0 ? (
-                  <div className="h-full flex items-center justify-center text-[13px]" style={{ color: isDark?'#80868b':'#757575' }}>{t.cpNoMatch}</div>
-                ) : (
-                  <div className="grid gap-4" style={{ gridTemplateColumns:'repeat(auto-fill, minmax(256px, 1fr))' }}>
-                    {shown.map(c=>{ const eq = active && active.id===c.id; const tc=deptColor(c.dept); const isUser = c.source==='user'; const cd = personaText(c, t);
+
+              {/* AI 造卡推广 banner(搜索框下方,一直显示) */}
+              <div className="px-6 md:px-10 pt-3 pb-4">
+                <AICardBanner onStart={onAICreate} isDark={isDark} t={t} />
+              </div>
+
+              {/* 分类药丸 + 左右滚动箭头 */}
+              <div className="relative px-6 md:px-10 pt-2 pb-4 group">
+                {showL ? <button onClick={() => scrollPills(-220)} className="absolute left-4 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full flex items-center justify-center border opacity-0 group-hover:opacity-100 transition shadow-sm" style={{ background: isDark ? '#2C2C2E' : '#fff', color: isDark ? '#fff' : '#000', borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.6)' }}><ChevronLeft size={18} /></button> : null}
+                <div ref={scrollRef} className="flex overflow-x-auto gap-2 no-scrollbar scroll-smooth">
+                  {[ALL_DEPT].concat(DEPT_ORDER.filter(k => counts[k])).map(k => {
+                    const isAll = k === ALL_DEPT; const on = isAll ? activeDept === ALL_DEPT : activeDept === k;
+                    return (
+                      <button key={k} onClick={() => setActiveDept(k)} className="whitespace-nowrap shrink-0 text-[15px] px-4 py-1.5 rounded-full font-medium transition-colors"
+                        style={ on ? { background: isDark ? '#fff' : '#3A3A3C', color: isDark ? '#000' : '#fff' } : { background: isDark ? '#2C2C2E' : '#F2F2F7', color: isDark ? '#fff' : '#000' } }>
+                        {isAll ? t.cpAll : deptLabelFor(t, k)}
+                      </button>
+                    );
+                  })}
+                </div>
+                {showR ? <button onClick={() => scrollPills(220)} className="absolute right-4 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full flex items-center justify-center border opacity-0 group-hover:opacity-100 transition shadow-sm" style={{ background: isDark ? '#2C2C2E' : '#fff', color: isDark ? '#fff' : '#000', borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.6)' }}><ChevronRight size={18} /></button> : null}
+              </div>
+
+              {/* 列表 */}
+              <div className="px-6 md:px-10 pb-12">
+                {pool.loadState === 'loading' ? (
+                  <div className="py-24 text-center text-[15px]" style={{ color: '#8E8E93' }}>{t.cpLoading}</div>
+                ) : pool.loadState === 'error' ? (
+                  <div className="py-24 text-center text-[15px] text-[#FF3B30]">{t.cpLoadError}</div>
+                ) : shown.length > 0 ? (
+                  <div className="grid gap-x-8 gap-y-0" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))' }}>
+                    {shown.map(c => { const isEmpowered = active && active.id === c.id; const isUser = c.source === 'user'; const cd = personaText(c, t);
                       return (
-                        <div key={c.id}
-                          className={`ap-card ${eq?'equipped':''} rounded-xl p-3.5 flex flex-col gap-2 cursor-pointer border`}
-                          style={{ borderColor: isDark?'rgba(255,255,255,.08)':'rgba(0,0,0,.08)', background: isDark?'rgba(40,42,44,.55)':'rgba(255,255,255,.72)' }}
-                          onMouseMove={onMove} onMouseLeave={onLeave} onDoubleClick={(e)=>openDetail(c,e)}>
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="flex items-center gap-2.5 min-w-0">
-                              <div className="w-10 h-10 rounded-lg flex items-center justify-center text-[20px] shrink-0" style={{ background: tc+'2e' }}>{c.emoji}</div>
-                              <div className={`font-semibold text-[14.5px] truncate ${isDark?'text-[#E3E3E3]':'text-[#1F1F1F]'}`}>{cd.name}</div>
+                        <div key={c.id} onClick={(e) => openDetail(c, e)} onContextMenu={(e) => openCtx(c, e)}
+                          className="group py-4 flex flex-col gap-2.5 border-b cursor-pointer" style={{ borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.5)' }}>
+                          <div className="flex items-center gap-4">
+                            <AppIcon card={c} isDark={isDark} />
+                            <div className="flex-1 min-w-0">
+                              <h2 className="text-[17px] font-semibold tracking-tight truncate mb-0.5" style={{ color: isDark ? '#fff' : '#000' }}>{cd.name}</h2>
+                              <p className="text-[13px] truncate" style={{ color: isDark ? 'rgba(235,235,245,.6)' : 'rgba(60,60,67,.6)' }}>{deptLabelFor(t, c.dept)}{isUser ? ' · ' + t.cpBadgeUser : ''}</p>
                             </div>
-                            {eq
-                              ? <span className="shrink-0 text-[10.5px] font-semibold px-2 py-0.5 rounded-md whitespace-nowrap" style={{ background:'#ffae1e', color:'#3a2500' }}>{t.cpBadgeEquipped}</span>
-                              : isUser
-                                ? <span className="shrink-0 text-[10.5px] font-semibold px-1.5 py-0.5 rounded whitespace-nowrap" style={{ background:'rgba(149,128,255,.18)', color:'#9580FF' }}>{t.cpBadgeUser}</span>
-                                : <span className="shrink-0 text-[10.5px] font-semibold px-1.5 py-0.5 rounded whitespace-nowrap" style={{ background: tc+'22', color: tc }}>{deptLabelFor(t, c.dept)}</span>}
-                          </div>
-                          <p className="text-[11.5px] leading-snug flex-1" style={{ ...CLAMP3, color: isDark?'#9aa0a6':'#5f6368' }} title={cd.description}>{cd.description||t.cpNoDesc}</p>
-                          <div className="flex items-center justify-between text-[10.5px] font-mono gap-2">
-                            <span className="truncate flex items-center gap-2" style={{ color: isDark?'#80868b':'#9aa0a6' }}>
-                              {!isUser ? null
-                                : confirmDelId === c.id
-                                  ? <span className="flex items-center gap-1.5" onClick={(e)=>e.stopPropagation()}>
-                                      <span style={{color:'#F28B82'}}>{t.cpDelQ}</span>
-                                      <button onClick={(e)=>doDelete(c,e)} style={{color:'#F28B82'}}>✓</button>
-                                      <button onClick={(e)=>{e.stopPropagation();setConfirmDelId(null);}} style={{color:isDark?'#9aa0a6':'#5f6368'}}>✗</button>
-                                    </span>
-                                  : <>
-                                      <button onClick={(e)=>editCard(c,e)} className="hover:underline">{t.cpEdit}</button>
-                                      <button onClick={(e)=>{e.stopPropagation();setConfirmDelId(c.id);}} className="hover:underline" title={t.cpDelCardTitle}>🗑</button>
-                                    </>}
-                            </span>
-                            <button onClick={(e)=>equip(c,e)} className="shrink-0 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors"
-                              style={ eq ? { background:'rgba(255,180,30,.16)', color:'#ffae1e' } : { background: isDark?'rgba(124,58,237,.18)':'rgba(124,58,237,.10)', color:'#9580FF' } }>
-                              {eq ? t.cpUnequip : t.cpEquip}
+                            {isUser ? <button onClick={(e) => openCtx(c, e)} title={t.cpEdit} className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-[18px] opacity-0 group-hover:opacity-100 transition-opacity" style={{ color: '#8E8E93' }}>⋯</button> : null}
+                            <button onClick={(e) => equip(c, e)} className="shrink-0 text-[15px] font-bold px-5 py-1.5 rounded-full transition active:opacity-70"
+                              style={ isEmpowered ? { background: isDark ? '#2C2C2E' : '#F2F2F7', color: '#8E8E93' } : { background: isDark ? '#2C2C2E' : '#F2F2F7', color: isDark ? '#0A84FF' : '#007AFF' } }>
+                              {isEmpowered ? t.cpUnequip : t.cpEquipShort}
                             </button>
                           </div>
+                          <p className="text-[13px] leading-snug line-clamp-2" style={{ color: '#8E8E93' }}>{cd.description || t.cpNoDesc}</p>
                         </div>
                       );
                     })}
                   </div>
+                ) : (
+                  <div className="py-24 text-center">
+                    <p className="text-[17px] font-semibold" style={{ color: isDark ? '#fff' : '#000' }}>{t.cpNoMatch}</p>
+                    <p className="text-[15px] mt-1" style={{ color: '#8E8E93' }}>{t.cpEmptyHint}</p>
+                  </div>
                 )}
                 {filtered.length > visible ? (
-                  <div className="flex justify-center mt-4">
-                    <button onClick={()=>setVisible(visible+60)} className="px-4 py-2 rounded-lg text-[12.5px] border transition-colors" style={{ color: isDark?'#C4C7C5':'#3c4043', borderColor: isDark?'#3c4043':'#dadce0' }}>{t.cpShowMore(filtered.length - visible)}</button>
+                  <div className="flex justify-center mt-6">
+                    <button onClick={() => setVisible(visible + 60)} className="text-[15px] px-5 py-2" style={{ color: isDark ? '#0A84FF' : '#007AFF' }}>{t.cpShowMore(filtered.length - visible)}</button>
                   </div>
                 ) : null}
               </div>
+
             </div>
           </div>
-          )}
 
-          {detail ? (
+          {/* 右键菜单（自制卡 编辑/删除，macOS 风） */}
+          {ctx ? (
+            <div className="fixed z-[100] min-w-[128px] rounded-[10px] overflow-hidden border text-[14px]"
+              style={{ left: Math.min(ctx.x, (typeof window !== 'undefined' ? window.innerWidth : 9999) - 150), top: Math.min(ctx.y, (typeof window !== 'undefined' ? window.innerHeight : 9999) - 100), background: isDark ? '#2C2C2E' : '#fff', borderColor: isDark ? '#38383A' : 'rgba(0,0,0,.08)', boxShadow: '0 10px 40px rgba(0,0,0,.25)' }}
+              onClick={(e) => e.stopPropagation()}>
+              <button onClick={() => { editCard(ctx.card); setCtx(null); }} className="w-full text-left px-4 py-2.5" style={{ color: isDark ? '#fff' : '#000' }}>{t.cpMenuEdit}</button>
+              <div style={{ height: 1, background: isDark ? '#38383A' : 'rgba(0,0,0,.06)' }} />
+              <button onClick={() => { doDelete(ctx.card); setCtx(null); }} className="w-full text-left px-4 py-2.5" style={{ color: '#FF3B30' }}>{t.cpDelete}</button>
+            </div>
+          ) : null}
+
+          {detail ? ReactDOM.createPortal((
             <PersonaDetailModal card={detail.card} originRect={detail.rect} equipped={active && active.id===detail.card.id}
               isDark={isDark} t={t} onClose={()=>setDetail(null)}
               onEquip={(card)=>{ equip(card); }} />
-          ) : null}
+          ), document.body) : null}
 
-          {/* 自创卡编辑器(新建/编辑) */}
-          {editor ? (
+          {/* 自创卡编辑器(新建/编辑) —— portal 到 body,蒙层盖住侧边栏 */}
+          {editor ? ReactDOM.createPortal((
             <PersonaEditorModal initial={editor.initial} isDark={isDark} t={t}
               onClose={()=>setEditor(null)}
               onSaved={(sum)=>setToast((editor.initial && editor.initial.id ? t.cpToastSaved : t.cpToastCreated)(sum.name))}
               onDeleted={(card)=>setToast(t.cpToastDeleted(card.name))} />
-          ) : null}
+          ), document.body) : null}
 
-          {/* 加持反馈 toast */}
+          {/* 造卡方式选择(iOS action sheet) —— portal 到 body,跳出卡池 z-10 上下文,蒙层才能盖住侧边栏 */}
+          {chooser ? ReactDOM.createPortal((
+            <div className="fixed inset-0 z-[70] flex items-end md:items-center justify-center md:p-4" style={{ background:'rgba(0,0,0,.6)', backdropFilter:'blur(2px)', WebkitBackdropFilter:'blur(2px)' }} onClick={()=>setChooser(false)}>
+              <div onClick={(e)=>e.stopPropagation()} className="w-full md:max-w-sm flex flex-col gap-2 p-3 md:p-0">
+                <div className="rounded-[14px] overflow-hidden" style={{ background: isDark?'#1C1C1E':'#fff' }}>
+                  <button onClick={()=>{ setChooser(false); if (onAICreate) onAICreate(); }} className="w-full flex items-center gap-3 px-4 py-4 text-left border-b" style={{ borderColor: isDark?'#38383A':'rgba(198,198,200,.5)' }}>
+                    <div className="w-10 h-10 rounded-[12px] flex items-center justify-center shrink-0" style={{ background: isDark?'#0A84FF':'#007AFF' }}><Sparkles size={20} style={{ color:'#fff' }} /></div>
+                    <div className="min-w-0">
+                      <div className="text-[16px] font-semibold flex items-center gap-2" style={{ color: isDark?'#fff':'#000' }}>{t.cpAICreate} <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: isDark?'rgba(10,132,255,.2)':'rgba(0,122,255,.12)', color: isDark?'#0A84FF':'#007AFF' }}>{t.chooserRecommend}</span></div>
+                      <div className="text-[13px] mt-0.5" style={{ color: isDark?'rgba(235,235,245,.6)':'rgba(60,60,67,.6)' }}>{t.chooserAIDesc}</div>
+                    </div>
+                  </button>
+                  <button onClick={()=>{ setChooser(false); setEditor({ initial: null }); }} className="w-full flex items-center gap-3 px-4 py-4 text-left">
+                    <div className="w-10 h-10 rounded-[12px] flex items-center justify-center shrink-0" style={{ background: isDark?'#2C2C2E':'#F2F2F7', color: isDark?'#0A84FF':'#007AFF' }}><Plus size={20} /></div>
+                    <div className="min-w-0">
+                      <div className="text-[16px] font-semibold" style={{ color: isDark?'#fff':'#000' }}>{t.chooserManualTitle}</div>
+                      <div className="text-[13px] mt-0.5" style={{ color: isDark?'rgba(235,235,245,.6)':'rgba(60,60,67,.6)' }}>{t.chooserManualDesc}</div>
+                    </div>
+                  </button>
+                </div>
+                <button onClick={()=>setChooser(false)} className="w-full rounded-[14px] py-3.5 text-[17px] font-semibold" style={{ background: isDark?'#2C2C2E':'#fff', color: isDark?'#0A84FF':'#007AFF' }}>{t.cpCancel}</button>
+              </div>
+            </div>
+          ), document.body) : null}
+
+          {/* iOS 风 toast */}
           {toast ? (
-            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-40 px-4 py-2.5 rounded-xl text-[13px] font-medium animate-in fade-in slide-in-from-bottom-2 duration-200"
-              style={{ background: isDark?'#2c2e30':'#1F1F1F', color:'#fff', boxShadow:'0 10px 30px -8px rgba(0,0,0,.5)' }}>
-              🎴 {toast}
+            <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[90] px-5 py-2.5 rounded-full text-[14px] font-medium animate-in fade-in slide-in-from-bottom-2 duration-200"
+              style={{ background: isDark ? 'rgba(44,44,46,.96)' : 'rgba(0,0,0,.85)', color: '#fff', boxShadow: '0 8px 30px rgba(0,0,0,.3)' }}>
+              {toast}
             </div>
           ) : null}
         </div>
@@ -4764,12 +5000,12 @@
       return (
         <div onClick={() => onSelect(chat.id)}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
-          style={ personaTarget ? { background: isDark?'rgba(124,58,237,.22)':'rgba(124,58,237,.12)', boxShadow:'inset 0 0 0 1px '+(isDark?'rgba(149,128,255,.6)':'rgba(124,58,237,.42)'), color: isDark?'#fff':'#1F1F1F' } : undefined }
+          style={ personaTarget ? { background: isDark?'rgba(10,132,255,.20)':'rgba(0,122,255,.12)', boxShadow:'inset 0 0 0 1px '+(isDark?'rgba(10,132,255,.6)':'rgba(0,122,255,.45)'), color: isDark?'#fff':'#1F1F1F' } : undefined }
           className={`group flex items-center px-4 py-1.5 rounded-full cursor-pointer text-[13px] transition-all
             ${personaTarget ? ''
               : active ? (isDark ? 'bg-[#333537] text-white' : 'bg-[#E1E5EA] text-[#1F1F1F]')
                      : (isDark ? 'text-[#BDC1C6] hover:bg-[#282A2C] hover:text-[#E3E3E3]' : 'text-[#5F6368] hover:bg-[#E1E5EA] hover:text-[#1F1F1F]')}`}>
-          {personaTarget && <span className="shrink-0 mr-1.5 text-[12px]" title={t.cpTarget}>🎴</span>}
+          {personaTarget && <Sparkles size={13} className="shrink-0 mr-1.5" style={{ color: isDark?'#0A84FF':'#007AFF' }} />}
           <span className="truncate pr-2 leading-relaxed whitespace-nowrap flex-1">{chat.title}</span>
           {chat.working && <span className="shrink-0 mr-1 inline-block w-2 h-2 rounded-full bg-current opacity-70 animate-pulse" title={t.riGenerating}></span>}
           {chat.skill && <span className="text-[11px] shrink-0 opacity-70 mr-1" title={chat.skill}>🧭</span>}
@@ -5936,7 +6172,7 @@
         return (
           <div className={containerCls}>
             <div className="px-6 md:px-10 pt-8 pb-4">
-              <h1 className={`text-[28px] font-normal ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.workflow}</h1>
+              <h1 className={`text-[32px] font-normal tracking-tight ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.workflow}</h1>
               <p className={`text-[13px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>选择一个工作流模板开始</p>
             </div>
             <div className="flex-1 overflow-y-auto custom-scrollbar px-6 md:px-10 pb-10">
@@ -6001,7 +6237,7 @@
         <div className={containerCls}>
           <div className="flex items-center justify-between px-6 md:px-10 pt-8 pb-4">
             <div>
-              <h1 className={`text-[28px] font-normal ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{(run.ui && run.ui.header) || (runWorkflow && runWorkflow.ui && runWorkflow.ui.header) || '工作流'}</h1>
+              <h1 className={`text-[32px] font-normal tracking-tight ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{(run.ui && run.ui.header) || (runWorkflow && runWorkflow.ui && runWorkflow.ui.header) || '工作流'}</h1>
               <p className={`text-[13px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{statusText} · 卡片流</p>
             </div>
             <div className="flex items-center gap-2">
