@@ -33,8 +33,9 @@
 - 上游 PR:❌ pinvou3 专用
 
 ### C2 `tools` blocklist 工具门控
-- **文件**:`tools/pinvou3_blocklist.rs`(新建,**81 条黑名单**)、`core/engine/tool_catalog.rs`、`tools/registry.rs`、`tools/mod.rs`
-- **哲学**:上游(v0.8.47 起)是 **allowlist**;pinvou3 相反——**显示全部、只隐藏黑名单**,给 Qwen3.6 精简到 **23 工具**
+- **文件**:`tools/pinvou3_blocklist.rs`(新建,**76 条黑名单**)、`core/engine/tool_catalog.rs`、`tools/registry.rs`、`tools/mod.rs`
+- **哲学**:上游(v0.8.47 起)是 **allowlist**;pinvou3 相反——**显示全部、只隐藏黑名单**,给 Qwen3.6 精简到 **~25 工具**
+- **⭐subagent 生命周期放通(2026-06-17)**:放出 `agent_open`→`agent_eval`→`agent_close` 供模型直接派/收/关子 agent(修「能 spawn 却看不到收结果工具 → 误抓 `exec_shell_wait` → "Task agent_xxx not found"」);spawn 单一走 agent_open,故**隐藏实验性 `tool_agent`**;id-API 重复链路(agent_spawn/result/cancel/delegate_to_agent)+list/resume 仍隐藏,避免 eval↔result/close↔cancel/open↔spawn 混淆。**workflow 三省六部走后端 `Op::SpawnSubAgent`(role_id),不经此工具表,不受影响**(workflow 里 `tool_agent` 是角色名 `Self::ToolAgent`,非工具名,两 namespace)
 - **关键**:`pinvou3_should_defer_native_tool(name, mode, always_load)` **mode-aware**:Yolo 只 defer 黑名单。`request_user_input` 跨所有 mode 硬保留(否则 GUI 不出选择气泡);`image_analyze` 放出(需 bridge 开 `VisionModel` feature);`checklist_*` 有意可见。`PINVOU3_BLOCKLIST_OVERRIDE` env 供 L1 harness 解锁
 - **⚠️ tool_search 防御**:blocklist 是「defer 不删除」,工具仍在 catalog。上游 `tool_search`(`ensure_advanced_tooling` 注入)能让模型**搜索激活被 blocklist 的 deferred 工具**→ 击穿门控。修法:`tool_search_*` 进 blocklist + **注入处 gate**(`is_pinvou3_hidden(TOOL_SEARCH_*)` 为真不注入)→ catalog 根本不含
 - **测试**:`pinvou3_yolo_offers_nonblocklisted_tools_outside_upstream_default`、`forkguard_tool_search_not_injected_*`
@@ -112,7 +113,7 @@
 ## 2. 移除 / harvest 清单
 
 ### 2.1 clean re-fork 永久丢弃(2026-06-04,不再带入)
-- subagent 本地约束全套(MAX_STEPS/ELAPSED/resolve_agent_ref/tool_agent_route)——`agent_*`/`delegate` 全在 blocklist,生产不可达
+- subagent 本地约束全套(MAX_STEPS/ELAPSED/resolve_agent_ref/tool_agent_route)——丢弃理由是当时 `agent_*`/`delegate` 全在 blocklist 生产不可达。**⚠️ 2026-06-17 起此前提部分失效**:`agent_open`/`agent_eval`/`agent_close` 已放出供模型直接调(见 C2),模型派的子 agent 现走**上游默认步数/超时**(非 pinvou3 本地 cap);workflow 三省六部子 agent 仍由 W1/W12 的 role 白名单+max_steps 约束。若发现模型直接派的子 agent 跑飞,再评估补回本地 cap
 - phase/demo workflow(跨仓全删)——已由 W 三省六部重做
 - qwen-128K 死码(models.rs)——真实模型走上游 `_Nk` hint
 

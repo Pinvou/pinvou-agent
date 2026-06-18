@@ -263,7 +263,7 @@ mod blocklist_contract {
         // 立刻 fail）
         for sentinel in [
             "task_create",          // durable task
-            "agent_open",           // subagent
+            "tool_agent",           // subagent spawn 工具隐藏(spawn 单一走 agent_open)
             "rlm_eval",             // RLM
             "pr_attempt_record",    // PR 跟踪
             "create_goal",          // goal 状态管理
@@ -299,6 +299,9 @@ mod blocklist_contract {
             "git_diff",
             "diagnostics",
             "revert_turn",
+            "agent_open",  // subagent spawn(单一 spawn 入口)
+            "agent_eval",  // subagent 收结果
+            "agent_close", // subagent 释放 session
         ] {
             assert!(!is_pinvou3_hidden(core), "核心工具 {core} 不应该被隐藏");
         }
