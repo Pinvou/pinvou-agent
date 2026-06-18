@@ -80,6 +80,14 @@
 - **理由**:vLLM(开 `--enable-prefix-caching` + 投机解码 mtp)在 prefix-cache **部分命中**(system 前半命中上个 session、到 workspace 处分叉接续 prefill)时,分叉点 KV 不自洽 + mtp 对 KV 敏感 → 工具调用退化成裸 XML(实测 L1 single subagent 25%;**所有工具受影响**,read_file/exec_shell 部分命中下全 0~1/4)。移 pwd/workspace 让 static system 跨 session 字节静态 → 完整命中,25%→~100%。⚠️ **生产 GUI 有 cache warmup 自我预热完整 prefix、基本不犯**(B 5/6);此 fork 主要修 **L1 headless(无 warmup)测试准确性** + 防御(warmup 失效兜底)
 - **测试**:`forkguard_environment_block_omits_volatile_pwd`(指纹同名);L1 `subagent_single_simple`(25%→稳态100%,13/13)+ `relpath_write_file`(相对路径落 workspace,4/4)
 - 上游 PR:✅ **拟提**——prefix-cache 优化通用,且符合上游 environment-volatile 方向(§8 #2314 已 merged);PR 拟为 "move volatile pwd from static system prefix to per-turn turn_meta"
+> ⚠️ **2026-06-18 订正**:本节"生产 GUI 有 cache warmup 自我预热"是**错的**——`build_cache_warmup_request` 底座只有手动 `/cache warmup` TUI 命令触发,pinvou3 Tauri GUI **从不自动调**。真相是新 session **首请求**仍冷启动 × mtp → 首轮采歪(见 Q 节)。pwd-move 本身**与漂移无关**(实测放/不放都不是因),保留即可。
+
+### Q `prefix-cache` session 启动自动 cache warmup(2026-06-18)
+- **文件**:`core/session.rs`(`Session.cache_warmup_done` 运行时标志)、`core/engine/turn_loop.rs`(首请求前置 warmup)
+- **改动**:本 session **第一次发请求前**,用**完整本请求前缀(system+tools+当前轮 user 消息及其 `<turn_meta>`)** clone 一个 `max_tokens=1`/`tool_choice=none`/`stream=none`/响应丢弃的预热请求 `await` 发出,把整段冷前缀喂进 vLLM prefix-cache;一次性(flag)、不进 context、30s 超时兜底
+- **根因/理由**:vLLM(NVFP4)+ mtp 投机解码在新 session **首请求冷 prefill** 上把生成采歪——首个 `tool_call`/`<turn_meta>` 标签/系统指令被吐成裸文本(实测两 session:首轮漂、用户**问一句即自愈**——本质就是手动 warmup)。⚠️ **必须预热到 turn_meta**:模型恰在 `<turn_meta>` 处复读采歪(msg1 实锤 `...qwen36_35b_35b_256k...` 重复),v1 用 `build_cache_warmup_request`(剥掉当前轮 user 消息)漏热 turn_meta → 仍漂;v2 热完整首请求才根治。**漂移与工具表/subagent 放通无关**(兜大圈验证后定论:是首轮冷启动,非 schema)
+- **测试**:`forkguard` `session warmup flag` + `首请求 warmup 注入` 指纹;行为待补 L1(新 session 首轮 tool_call 不漂)
+- 上游 PR:✅ **拟提**——本地 vLLM+mtp 的通用 first-turn 防漂,自动 warmup 比手动 `/cache warmup` 更稳
 
 ### W `workflow` 三省六部工作流底座层
 - **文件**:`tools/subagent/{mod,tests}.rs`、`core/ops.rs`、`core/events.rs`、`core/engine.rs`、`core/engine/{tests,approval,handle}.rs`、`tools/user_input.rs`、`runtime_threads.rs`、`tui/{sidebar,command_palette,ui,views/mod}.rs`、`main.rs`(EngineConfig 字段)

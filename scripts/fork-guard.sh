@@ -58,6 +58,10 @@ fingerprints=(
   # 每 session 变的 workspace 留在 static prefix → vLLM prefix-cache 部分命中×投机解码→工具调用退化。
   "    |env block 移出 volatile pwd     |DeepSeek-TUI/crates/tui/src/prompts.rs|forkguard_environment_block_omits_volatile_pwd"
   "    |turn_meta 注入 workspace        |DeepSeek-TUI/crates/tui/src/core/engine.rs|Current workspace: {}"
+  # —— session 启动 cache warmup(2026-06-18):根治新 session 首请求冷 prefill × mtp 漂移 ——
+  # 首请求前预热完整前缀(含 turn_meta);只热 system+tools 不够(模型恰在 turn_meta 处复读采歪)。
+  "    |session warmup flag             |DeepSeek-TUI/crates/tui/src/core/session.rs|cache_warmup_done"
+  "    |首请求 warmup 注入              |DeepSeek-TUI/crates/tui/src/core/engine/turn_loop.rs|cache_warmup_done"
   # —— 工作流 fork 基座层(三省六部;feat/sansheng-workflow 随附,2026-06-12 补)——
   # 行为层已有 engine_config_locks_critical_fields(W10 reasoning_effort);其余 W* 暂只 L1。
   "W1  |SpawnSubAgent 扩展字段          |DeepSeek-TUI/crates/tui/src/core/ops.rs|expects_file_output: bool"
