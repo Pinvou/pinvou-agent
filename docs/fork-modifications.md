@@ -33,9 +33,9 @@
 - 上游 PR:❌ pinvou3 专用
 
 ### C2 `tools` blocklist 工具门控
-- **文件**:`tools/pinvou3_blocklist.rs`(新建,**76 条黑名单**)、`core/engine/tool_catalog.rs`、`tools/registry.rs`、`tools/mod.rs`
-- **哲学**:上游(v0.8.47 起)是 **allowlist**;pinvou3 相反——**显示全部、只隐藏黑名单**,给 Qwen3.6 精简到 **~25 工具**
-- **⭐subagent 生命周期放通(2026-06-17)**:放出 `agent_open`→`agent_eval`→`agent_close` 供模型直接派/收/关子 agent(修「能 spawn 却看不到收结果工具 → 误抓 `exec_shell_wait` → "Task agent_xxx not found"」);spawn 单一走 agent_open,故**隐藏实验性 `tool_agent`**;id-API 重复链路(agent_spawn/result/cancel/delegate_to_agent)+list/resume 仍隐藏,避免 eval↔result/close↔cancel/open↔spawn 混淆。**workflow 三省六部走后端 `Op::SpawnSubAgent`(role_id),不经此工具表,不受影响**(workflow 里 `tool_agent` 是角色名 `Self::ToolAgent`,非工具名,两 namespace)
+- **文件**:`tools/pinvou3_blocklist.rs`(新建,**81 条黑名单**)、`core/engine/tool_catalog.rs`、`tools/registry.rs`、`tools/mod.rs`
+- **哲学**:上游(v0.8.47 起)是 **allowlist**;pinvou3 相反——**显示全部、只隐藏黑名单**,给 Qwen3.6 精简到 **23 工具**
+- **⚠️ subagent 生命周期放通已回退(2026-06-18)**:曾试放出 `agent_open`/`agent_eval`/`agent_close`(隐藏 `tool_agent`)让模型直接收子 agent 结果。**实测确定性触发工具调用退化**(write_file 等吐裸文本而非 tool_call,与 pwd-move 同类 mtp drift)——pure 1161bc78(subagent 全隐藏)100% 好,加这一个 blocklist 文件改动就稳定坏。**机制未明**(工具目录对所有 session 不变、理应可缓存不引入分叉,却触发 drift,待查)。subagent 工具**保持隐藏**,放通方案搁置到机制查清。原始动机(subagent 收不到结果误抓 `exec_shell_wait`)仍待解
 - **关键**:`pinvou3_should_defer_native_tool(name, mode, always_load)` **mode-aware**:Yolo 只 defer 黑名单。`request_user_input` 跨所有 mode 硬保留(否则 GUI 不出选择气泡);`image_analyze` 放出(需 bridge 开 `VisionModel` feature);`checklist_*` 有意可见。`PINVOU3_BLOCKLIST_OVERRIDE` env 供 L1 harness 解锁
 - **⚠️ tool_search 防御**:blocklist 是「defer 不删除」,工具仍在 catalog。上游 `tool_search`(`ensure_advanced_tooling` 注入)能让模型**搜索激活被 blocklist 的 deferred 工具**→ 击穿门控。修法:`tool_search_*` 进 blocklist + **注入处 gate**(`is_pinvou3_hidden(TOOL_SEARCH_*)` 为真不注入)→ catalog 根本不含
 - **测试**:`pinvou3_yolo_offers_nonblocklisted_tools_outside_upstream_default`、`forkguard_tool_search_not_injected_*`
@@ -76,14 +76,12 @@
 - 上游 PR:[#2786](https://github.com/Hmbown/CodeWhale/pull/2786) CLOSED(上游窄版,语义不同);pinvou3 宽版保 fork
 
 ### P `prefix-cache` pwd/workspace 移出静态 system —— ❌ **已回退(2026-06-18)**
-> **结论:对生产净负,submodule patch 已弃**(submodule force-push 丢掉 commit `5ce4a915`)。app 层 `instructions.md`/`bridge/mod.rs` 的相对路径引导改动保留(无害)。pwd 留在静态 `## Environment`。
-- **当初做的(已弃)**:把每 session 变的 workspace 从静态 `## Environment` 移到 per-turn `<turn_meta>` 的 `Current workspace`,想让 static system 跨 session 字节静态、消除 prefix-cache 部分命中 × mtp 的工具调用退化。L1 headless 实测 single subagent 25%→100%。
-- **为什么是净负(真根因,2026-06-18 挖通)**:底座有 **cache warmup**(`client/chat.rs::build_cache_warmup_request`)预热"稳定前缀":`stable_system_prompt` **只含 Static 系统层**(`is_static_base_layer` 含 `"Environment"`)、`stable_history_messages` **砍掉最后一条 user 消息**(即当前轮 + 它的 `<turn_meta>` 永不预热)。
-  - **pwd 在 `## Environment`(warmup 罩得住)**:session 专属 workspace 在被预热的 Static 层 → 真实请求**热命中**,生成点前方无冷分叉 → 工具调用干净。**这才是生产一直好的原因**(不是"基本不犯",是 warmup 真覆盖了)。
-  - **pwd 移进 `<turn_meta>`(warmup 排除)**:workspace 落进**永不预热的当前轮、紧贴生成点** → 真实请求在 `...Current workspace: /sessions/` 后于 `{SID}` 处**冷分叉**,mtp 跨分叉采歪 → **首批生成 token(工具调用)吐成裸文本** `[write_file]({...})`,文件没写出来;多轮还诱发"越写越短"。间歇发作。
-- **教训**:① 易变 session 专属内容**必须放在 warmup 覆盖的 Static 系统层**,绝不能放进 warmup 排除的当前轮 turn_meta;② L1 headless 无 warmup 的测量**不能直接外推到生产**——pwd-move 修的是 L1 假象,真生产靠 warmup 本就没事。L1 测试准确性应**单独给 L1 harness 加 warmup**,不动生产 prompt。
-- **修正 user memory**:`subagent_prefix_cache_miss_root_cause` 原把"pwd 在 static system"当病根、移出当解药——经 warmup 覆盖维度修正后**相反**:pwd 在 system 才好,移出才坏。
-- 上游 PR:❌ **撤销拟提**(原方向错误,会把易变内容推出 warmup 覆盖)。`pinvou3-pr-env-pwd-volatile` 分支作废。
+> **结论:回退。submodule force-push 回 pure `1161bc78`,丢掉 pwd-move(`5ce4a915`)。app 层 `instructions.md`/`bridge/mod.rs` 的相对路径引导改动保留(无害)。pwd 留在静态 `## Environment`。**
+- **当初做的(已弃)**:把每 session 变的 workspace 从静态 `## Environment` 移到 per-turn `<turn_meta>` 的 `Current workspace`。L1 headless 实测 single subagent 25%→100%。
+- **回退原因(实测确定性,2026-06-18)**:生产 GUI 加了 pwd-move 后,工具调用稳定退化(write_file 吐裸文本 `[write_file]({...})` 而非 tool_call,文件没写出);回到 pure `1161bc78`(pwd 留 system)**100% 好**。⚠️ **同期发现:连 C2 的 subagent 放通(只改 blocklist 一个文件)也确定性触发同一类 drift**——所以这不是 pwd-move 独有,而是**任何对 prompt/工具表前缀的改动都可能触发 mtp 工具调用 drift**,pure `1161bc78` 是目前唯一确认 100% 好的基线。
+- **⚠️ 机制仍未查明(别再凭理论改 prompt)**:中途提出过两个理论均被推翻——① "turn_meta 累积";② "cache warmup 覆盖"(致命错误:`build_cache_warmup_request` **只有手动 `/cache warmup` TUI 命令触发,pinvou3 Tauri GUI 从不自动调它**,所谓"生产有 warmup 罩住"是想当然)。真机制 = vLLM mtp(`num_speculative_tokens:2`)× prefix-cache 在某种前缀变动下采歪结构化输出,**具体触发条件未定位**。下次动手前必须**先量化**(同任务 N 次数 drift 率)+ 单变量对照,严禁再凭理论改生产 prompt。
+- **修正 user memory**:`subagent_prefix_cache_miss_root_cause` 的"移 pwd 出 system 是解药"结论**作废**——pure 1161bc78(pwd 在 system)才好。
+- 上游 PR:❌ **撤销拟提**。`pinvou3-pr-env-pwd-volatile` 分支作废。
 
 ### W `workflow` 三省六部工作流底座层
 - **文件**:`tools/subagent/{mod,tests}.rs`、`core/ops.rs`、`core/events.rs`、`core/engine.rs`、`core/engine/{tests,approval,handle}.rs`、`tools/user_input.rs`、`runtime_threads.rs`、`tui/{sidebar,command_palette,ui,views/mod}.rs`、`main.rs`(EngineConfig 字段)
