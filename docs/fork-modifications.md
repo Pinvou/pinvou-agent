@@ -75,12 +75,15 @@
 - **测试**:submodule `forkguard_static_prompt_composer_*`;app `forkguard_static_composer_*`
 - 上游 PR:[#2786](https://github.com/Hmbown/CodeWhale/pull/2786) CLOSED(上游窄版,语义不同);pinvou3 宽版保 fork
 
-### P `prefix-cache` pwd/workspace 移出静态 system(2026-06-17)
-- **文件**:`prompts.rs`(render_environment_block 删 `- pwd` 行,与 C5/C7 共此文件)、`core/engine.rs`(turn_metadata_block 加 `Current workspace` 行)。app 层同步:`instructions.md` 删 `{{PINVOU3_WORKSPACE}}`/`{{PINVOU3_DATE}}`(改静态文案 + 相对路径引导)、`bridge/mod.rs` 删对应 replace
-- **改动**:每 session 变的 workspace 路径(pwd)从静态 `## Environment` **移出** → per-turn `<turn_meta>` 的 `Current workspace`;date 同理(turn_meta 本就有);产出引导改"用相对路径写,工具自动落 workspace"(实测 4/4,PathEscape 兜底)
-- **理由**:vLLM(开 `--enable-prefix-caching` + 投机解码 mtp)在 prefix-cache **部分命中**(system 前半命中上个 session、到 workspace 处分叉接续 prefill)时,分叉点 KV 不自洽 + mtp 对 KV 敏感 → 工具调用退化成裸 XML(实测 L1 single subagent 25%;**所有工具受影响**,read_file/exec_shell 部分命中下全 0~1/4)。移 pwd/workspace 让 static system 跨 session 字节静态 → 完整命中,25%→~100%。⚠️ **生产 GUI 有 cache warmup 自我预热完整 prefix、基本不犯**(B 5/6);此 fork 主要修 **L1 headless(无 warmup)测试准确性** + 防御(warmup 失效兜底)
-- **测试**:`forkguard_environment_block_omits_volatile_pwd`(指纹同名);L1 `subagent_single_simple`(25%→稳态100%,13/13)+ `relpath_write_file`(相对路径落 workspace,4/4)
-- 上游 PR:✅ **拟提**——prefix-cache 优化通用,且符合上游 environment-volatile 方向(§8 #2314 已 merged);PR 拟为 "move volatile pwd from static system prefix to per-turn turn_meta"
+### P `prefix-cache` pwd/workspace 移出静态 system —— ❌ **已回退(2026-06-18)**
+> **结论:对生产净负,submodule patch 已弃**(submodule force-push 丢掉 commit `5ce4a915`)。app 层 `instructions.md`/`bridge/mod.rs` 的相对路径引导改动保留(无害)。pwd 留在静态 `## Environment`。
+- **当初做的(已弃)**:把每 session 变的 workspace 从静态 `## Environment` 移到 per-turn `<turn_meta>` 的 `Current workspace`,想让 static system 跨 session 字节静态、消除 prefix-cache 部分命中 × mtp 的工具调用退化。L1 headless 实测 single subagent 25%→100%。
+- **为什么是净负(真根因,2026-06-18 挖通)**:底座有 **cache warmup**(`client/chat.rs::build_cache_warmup_request`)预热"稳定前缀":`stable_system_prompt` **只含 Static 系统层**(`is_static_base_layer` 含 `"Environment"`)、`stable_history_messages` **砍掉最后一条 user 消息**(即当前轮 + 它的 `<turn_meta>` 永不预热)。
+  - **pwd 在 `## Environment`(warmup 罩得住)**:session 专属 workspace 在被预热的 Static 层 → 真实请求**热命中**,生成点前方无冷分叉 → 工具调用干净。**这才是生产一直好的原因**(不是"基本不犯",是 warmup 真覆盖了)。
+  - **pwd 移进 `<turn_meta>`(warmup 排除)**:workspace 落进**永不预热的当前轮、紧贴生成点** → 真实请求在 `...Current workspace: /sessions/` 后于 `{SID}` 处**冷分叉**,mtp 跨分叉采歪 → **首批生成 token(工具调用)吐成裸文本** `[write_file]({...})`,文件没写出来;多轮还诱发"越写越短"。间歇发作。
+- **教训**:① 易变 session 专属内容**必须放在 warmup 覆盖的 Static 系统层**,绝不能放进 warmup 排除的当前轮 turn_meta;② L1 headless 无 warmup 的测量**不能直接外推到生产**——pwd-move 修的是 L1 假象,真生产靠 warmup 本就没事。L1 测试准确性应**单独给 L1 harness 加 warmup**,不动生产 prompt。
+- **修正 user memory**:`subagent_prefix_cache_miss_root_cause` 原把"pwd 在 static system"当病根、移出当解药——经 warmup 覆盖维度修正后**相反**:pwd 在 system 才好,移出才坏。
+- 上游 PR:❌ **撤销拟提**(原方向错误,会把易变内容推出 warmup 覆盖)。`pinvou3-pr-env-pwd-volatile` 分支作废。
 
 ### W `workflow` 三省六部工作流底座层
 - **文件**:`tools/subagent/{mod,tests}.rs`、`core/ops.rs`、`core/events.rs`、`core/engine.rs`、`core/engine/{tests,approval,handle}.rs`、`tools/user_input.rs`、`runtime_threads.rs`、`tui/{sidebar,command_palette,ui,views/mod}.rs`、`main.rs`(EngineConfig 字段)
