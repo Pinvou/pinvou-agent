@@ -915,7 +915,11 @@
       function handleNewChat(installedToolId) {
         if (bridge.available) bridge.createNewSession();
         setCurrentView('chat');
-        if (installedToolId) {
+        // 类型守卫:installedToolId 必须是字符串 toolId。侧边栏按钮 onClick={() => handleNewChat()}
+        // 本不传参,但若哪天有调用点写成 onClick={handleNewChat},React 会把事件对象当首参塞进来——
+        // 那是 truthy 的 SyntheticEvent,会被当成 toolId 置进 welcomeToolId → ToolWelcomeCard 查不到
+        // 工具渲染 null → 欢迎语整块空白。守卫挡住这条暗坑。
+        if (typeof installedToolId === 'string' && installedToolId) {
           setJustInstalledTool(installedToolId);
         }
       }
@@ -1075,7 +1079,7 @@
                 icon={<Edit2 size={18} />} label={t.newChat}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onClick={handleNewChat}
+                onClick={() => handleNewChat()}
               />
               <NavItem
                 icon={<Search size={18} />} label={t.searchChats}
@@ -2069,6 +2073,7 @@
       // 设置与清空收进同一 effect,按 justInstalledTool 优先,避免多 effect 同帧竞态。
       const [welcomeToolId, setWelcomeToolId] = useState(null);
       const activeSessionId = bs ? bs.activeSessionId : null;
+      const draftEpoch = bs ? bs.draftEpoch : 0;
       useEffect(() => {
         if (justInstalledTool) {
           setWelcomeToolId(justInstalledTool);
@@ -2078,9 +2083,9 @@
         }
         // justInstalledTool 故意不放进依赖:否则上面 setJustInstalledTool(null) 清掉它会二次触发
         // 本 effect → 这次走 else 把刚显示的欢迎卡又清空(表现为"装完工具欢迎卡一闪即消失")。
-        // 只依赖 activeSessionId:装工具必然 createNewSession() → 会话变 → 触发显示;读取当前
-        // justInstalledTool 即可,清空它不再回触发本 effect。
-      }, [activeSessionId]);
+        // 依赖 activeSessionId(切会话)+ draftEpoch(每次点「新建对话」自增):后者保证即便已在草稿态
+        // 再点「新建对话」(activeSessionId 不变 null→null)也能重新求值,否则残留工具卡顶掉「你好」。
+      }, [activeSessionId, draftEpoch]);
 
       function handleSend() {
         // 不再因 busy 拦截:bridge.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
