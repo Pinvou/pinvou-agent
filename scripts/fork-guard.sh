@@ -54,10 +54,10 @@ fingerprints=(
   "#42 |ContextMgmt/COMPACT 受 composer gate|DeepSeek-TUI/crates/tui/src/prompts.rs|static_prompt_composer().is_none()"
   "#42 |Runtime Policy Ref 受 composer gate |DeepSeek-TUI/crates/tui/src/prompts.rs|Policy Reference(agent/plan/yolo"
   "#42 |runtime_prompt tag 受 composer gate |DeepSeek-TUI/crates/tui/src/core/engine/turn_loop.rs|static_prompt_composer_installed()"
-  # —— pwd/workspace 移出静态 system(2026-06-17 P)已于 2026-06-18 回退:对生产净负 ——
-  # 真根因:cache warmup 只罩 Static 系统层(含 Environment),turn_meta 永不预热。pwd 移进
-  # turn_meta → 生成点前方冷分叉 × mtp → 工具调用吐裸文本。pwd 留 ## Environment 才对(warmup 罩得住)。
-  # 详见 fork-modifications.md「P」节。指纹随 patch 同删。
+  # —— prefix-cache 优化:pwd/workspace 移出静态 system → per-turn turn_meta(2026-06-17)——
+  # 每 session 变的 workspace 留在 static prefix → vLLM prefix-cache 部分命中×投机解码→工具调用退化。
+  "    |env block 移出 volatile pwd     |DeepSeek-TUI/crates/tui/src/prompts.rs|forkguard_environment_block_omits_volatile_pwd"
+  "    |turn_meta 注入 workspace        |DeepSeek-TUI/crates/tui/src/core/engine.rs|Current workspace: {}"
   # —— 工作流 fork 基座层(三省六部;feat/sansheng-workflow 随附,2026-06-12 补)——
   # 行为层已有 engine_config_locks_critical_fields(W10 reasoning_effort);其余 W* 暂只 L1。
   "W1  |SpawnSubAgent 扩展字段          |DeepSeek-TUI/crates/tui/src/core/ops.rs|expects_file_output: bool"
