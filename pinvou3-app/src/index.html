@@ -345,6 +345,17 @@
         stuckPlanPre: '⚠️ AI 在 Plan 模式调用了', stuckPlanPost: '但被白名单挡掉。Plan 模式只能讨论方案,不能动手。给你两个出路:',
         handled: '已处理',
         stuckReplan: '📋 让 AI 重出方案', stuckSelf: '我自己来', stuckGo: '直接动手(跳过方案)',
+        // 品悟检阅卡(PinvouSummonCard/Rows/Loading)。品/悟 字形是品牌、保留;周边文案随语言。
+        pvLoadingPin: 'Pinvou 品·查错检阅', pvLoadingWu: 'Pinvou 悟·发散补全',
+        pvLoadingPinSub: '正在逐条核对、揪问题', pvLoadingWuSub: '正在比对完整性维度、发散补点',
+        pvLoadingHint: '本地模型推理中，通常 5–30 秒，稍候～',
+        pvFail: '失败：', pvSkipped: '已跳过', pvPerspective: '视角', pvAlsoInvolves: '也涉及',
+        pvVerdictPass: '✓ 通过，可交付', pvFramework: '完整性框架', pvDims: '维', pvSuggest: '建议 ', pvNeedsVerify: '需核实',
+        pvActAdopt: '采纳建议', pvActAsk: '让 AI 问我', pvActVerify: '让 AI 核实', pvActConfirmed: '我确认没问题',
+        pvActModify: '让 AI 改', pvActAccept: '接受现状', pvActFill: '补上', pvActSkip: '暂不补',
+        pvHandToAi: n => `交给 AI 处理（${n} 条）`, pvSkip: '跳过', pvSkipTitle: '这次不处理，整张卡跳过',
+        pvBtnPinTitle: '品 · 查错：揪出产物的风险、遗漏、与你需求的偏差，逐条让 AI 改或你拍板接受',
+        pvBtnWuTitle: '悟 · 发散：以领域专家视角给出产物还能补的维度和新思路，挑中的一键加进去',
         fbTitle: '📝 AI 给了方案但没用 plan 工具',
         fbDesc: 'AI 在文本里描述了方案,但没调 update_plan 工具,所以没出方案卡片。你想怎么处理?',
         fbAccept: '✅ 直接采纳这段', fbRetry: '📋 让 AI 用工具重出',
@@ -515,6 +526,17 @@
         stuckPlanPre: '⚠️ In Plan mode the AI called', stuckPlanPost: 'but the whitelist blocked it. Plan mode is discussion-only. Two ways out:',
         handled: 'Handled',
         stuckReplan: '📋 Ask AI to re-plan', stuckSelf: "I'll do it myself", stuckGo: 'Just do it (skip planning)',
+        // Pinvou review card. 品/悟 glyphs are brand marks, kept; surrounding text follows language.
+        pvLoadingPin: 'Pinvou 品 · Review', pvLoadingWu: 'Pinvou 悟 · Explore',
+        pvLoadingPinSub: 'Checking point by point, hunting for issues', pvLoadingWuSub: 'Comparing completeness dimensions, finding gaps',
+        pvLoadingHint: 'Local model is thinking, usually 5–30s, hang tight…',
+        pvFail: 'Failed: ', pvSkipped: 'Skipped', pvPerspective: ' view', pvAlsoInvolves: 'also covers',
+        pvVerdictPass: '✓ Passed, ready to ship', pvFramework: 'Completeness framework', pvDims: ' dims', pvSuggest: 'Suggest ', pvNeedsVerify: 'Needs check',
+        pvActAdopt: 'Adopt', pvActAsk: 'Have AI ask me', pvActVerify: 'Have AI verify', pvActConfirmed: "It's fine",
+        pvActModify: 'Have AI fix', pvActAccept: 'Accept as is', pvActFill: 'Fill in', pvActSkip: 'Skip for now',
+        pvHandToAi: n => `Hand to AI (${n})`, pvSkip: 'Skip', pvSkipTitle: 'Skip this review card for now',
+        pvBtnPinTitle: '品 · Review: surface risks, omissions, and drift from your intent — fix each via AI or accept as is',
+        pvBtnWuTitle: '悟 · Explore: a domain expert lists dimensions and ideas the artifact could still add; add picks in one click',
         fbTitle: "📝 The AI wrote a plan but didn't use the plan tool",
         fbDesc: 'The AI described a plan in text without calling update_plan, so no plan card was created. What do you want to do?',
         fbAccept: '✅ Accept this text', fbRetry: '📋 Ask AI to redo it with the tool',
@@ -685,6 +707,17 @@
         stuckPlanPre: '⚠️ Plan モードで AI が', stuckPlanPost: 'を呼びましたがホワイトリストでブロックされました。Plan モードは議論専用です。選択肢は 2 つ:',
         handled: '処理済み',
         stuckReplan: '📋 AI にプランを出し直させる', stuckSelf: '自分でやる', stuckGo: 'そのまま実行（プランを省略）',
+        // 品悟レビューカード。品/悟 の字はブランド表記として保持、周囲の文言は言語に追従。
+        pvLoadingPin: 'Pinvou 品 · 検閲', pvLoadingWu: 'Pinvou 悟 · 発散補完',
+        pvLoadingPinSub: '一つずつ照合し、問題を洗い出し中', pvLoadingWuSub: '完全性の観点を比較し、補強点を発散中',
+        pvLoadingHint: 'ローカルモデルが推論中です。通常 5〜30 秒、お待ちください…',
+        pvFail: '失敗：', pvSkipped: 'スキップ済み', pvPerspective: 'の視点', pvAlsoInvolves: '関連',
+        pvVerdictPass: '✓ 合格・納品可能', pvFramework: '完全性フレームワーク', pvDims: '項目', pvSuggest: '提案 ', pvNeedsVerify: '要確認',
+        pvActAdopt: '提案を採用', pvActAsk: 'AI に質問させる', pvActVerify: 'AI に確認させる', pvActConfirmed: '問題ないと確認',
+        pvActModify: 'AI に修正させる', pvActAccept: '現状を受け入れる', pvActFill: '補う', pvActSkip: '今は補わない',
+        pvHandToAi: n => `AI に任せる（${n} 件）`, pvSkip: 'スキップ', pvSkipTitle: '今回は処理せず、このカードをスキップ',
+        pvBtnPinTitle: '品 · 検閲：成果物のリスク・抜け漏れ・要求とのズレを洗い出し、AI に修正させるか受け入れる',
+        pvBtnWuTitle: '悟 · 発散：専門家視点で成果物に補える観点や新案を提示、選んだものをワンクリックで追加',
         fbTitle: '📝 AI がプランを書いたのに plan ツールを使っていません',
         fbDesc: 'AI はテキストでプランを説明しましたが update_plan を呼んでいないため、プランカードが出ていません。どうしますか?',
         fbAccept: '✅ この内容を採用', fbRetry: '📋 ツールで出し直させる',
@@ -1286,7 +1319,7 @@
                     而召唤(直连 vLLM,5-30s)仍在后台跑、守卫仍 held → 表现为"闪一下就没反应、要等一会才能再点"。
                     锁住后 spinner+计时全程可见,出结果/错误后才可点背景关。 */}
                 <div className="w-full max-w-[560px] max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-                  <PinvouSummonCard item={bs.pinvouModal} theme={activeTheme} />
+                  <PinvouSummonCard item={bs.pinvouModal} theme={activeTheme} t={t} />
                 </div>
               </div>
             )}
@@ -2598,11 +2631,11 @@
                 <div className={`flex items-center justify-between mt-2 pt-2 border-t ${isDark ? 'border-[#D0BCFF]/15' : 'border-[#7C3AED]/15'}`}>
                   <span className={`text-[11px] font-mono truncate ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`} title={basename}>{basename}</span>
                   <div className="flex items-center gap-2.5 flex-shrink-0 ml-2">
-                    {isLatest && <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.summonPinvou(path); }} title="品 · 查错：揪出产物的风险、遗漏、与你需求的偏差，逐条让 AI 改或你拍板接受"
+                    {isLatest && <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.summonPinvou(path); }} title={t.pvBtnPinTitle}
                       className={`flex items-center gap-1 text-[12px] ${isDark ? 'text-[#D0BCFF] hover:text-[#E9DDFF]' : 'text-[#7C3AED] hover:text-[#6D28D9]'}`}>
                       「<span className="text-[11px]">📋</span> 品」
                     </button>}
-                    {isLatest && <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.inspectPinvou(path); }} title="悟 · 发散：以领域专家视角给出产物还能补的维度和新思路，挑中的一键加进去"
+                    {isLatest && <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.inspectPinvou(path); }} title={t.pvBtnWuTitle}
                       className={`flex items-center gap-1 text-[12px] ${isDark ? 'text-[#8AB4F8] hover:text-[#AECBFA]' : 'text-[#1967D2] hover:text-[#1A73E8]'}`}>
                       「<span className="text-[11px]">✨</span> 悟」
                     </button>}
@@ -3698,7 +3731,7 @@
     //   issue.needs_verify(外部事实,AI 无知识)→ 让 AI 核实 / 我确认没问题;
     //   issue 其他(产物缺陷,AI 改得动)→ 让 AI 改 / 接受现状(high 默认勾)。
     // 「交给 AI 处理」按各条动作组装定向指令走 B1。单独子组件:useState 放这避 hooks 错位。
-    const PinvouRows = ({ review, theme }) => {
+    const PinvouRows = ({ review, theme, t }) => {
       const isDark = theme === 'dark';
       const body = isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]';
       const muted = isDark ? 'text-[#C4C7C5]' : 'text-[#5f6368]';
@@ -3706,7 +3739,7 @@
       const rows = [
         ...(review.recommendations || []).map((x, i) => ({
           k: 'r' + i, raw: x, kind: 'rec', dot: '#7C3AED',
-          head: (x.topic ? x.topic + '：' : '') + '建议 ' + x.pick, sub: x.why,
+          head: (x.topic ? x.topic + '：' : '') + t.pvSuggest + x.pick, sub: x.why,
         })),
         ...(review.issues || []).map((x, i) => ({
           k: 'i' + i, raw: x, kind: x.kind === 'needs_verify' ? 'verify' : 'fix',
@@ -3720,10 +3753,10 @@
       ];
       // 每类二选一 [值,文案]:第一个=「要 AI 做」(高亮),第二个=Boss 自己消化(灰)。
       const ACT = {
-        rec: [['adopt', '采纳建议'], ['ask', '让 AI 问我']],
-        verify: [['verify', '让 AI 核实'], ['confirmed', '我确认没问题']],
-        fix: [['modify', '让 AI 改'], ['accept', '接受现状']],
-        gap: [['fill', '补上'], ['skip', '暂不补']],
+        rec: [['adopt', t.pvActAdopt], ['ask', t.pvActAsk]],
+        verify: [['verify', t.pvActVerify], ['confirmed', t.pvActConfirmed]],
+        fix: [['modify', t.pvActModify], ['accept', t.pvActAccept]],
+        gap: [['fill', t.pvActFill], ['skip', t.pvActSkip]],
       };
       const ACTIVE = { adopt: 1, ask: 1, verify: 1, modify: 1, fill: 1 }; // 需转交给 AI 的动作
       const [res, setRes] = useState(() => {
@@ -3773,7 +3806,7 @@
                     <span className="mt-[6px] w-[7px] h-[7px] rounded-full shrink-0" style={{ background: it.dot }} />
                     <div className="flex-1 min-w-0">
                       <div className={`text-[13px] leading-relaxed ${body}`}>
-                        {it.nv && <span className={`text-[10.5px] mr-1 px-1 py-px rounded ${isDark ? 'bg-[#FDD663]/20 text-[#FDD663]' : 'bg-[#FEF7E0] text-[#B06000]'}`}>需核实</span>}
+                        {it.nv && <span className={`text-[10.5px] mr-1 px-1 py-px rounded ${isDark ? 'bg-[#FDD663]/20 text-[#FDD663]' : 'bg-[#FEF7E0] text-[#B06000]'}`}>{t.pvNeedsVerify}</span>}
                         {it.head}
                       </div>
                       {it.sub && <div className={`text-[12px] mt-0.5 ${muted}`}>{it.sub}</div>}
@@ -3792,12 +3825,12 @@
             {activeCount > 0 && (
               <button onClick={onResolve}
                 className={`px-3 py-1.5 rounded-full text-[12.5px] font-medium transition-colors ${isDark ? 'bg-[#D0BCFF] text-[#381E72] hover:bg-[#E9DDFF]' : 'bg-[#7C3AED] text-white hover:bg-[#6D28D9]'}`}>
-                交给 AI 处理（{activeCount} 条）
+                {t.pvHandToAi(activeCount)}
               </button>
             )}
-            <button onClick={() => bridge.available && bridge.dismissPinvouReview()} title="这次不处理,整张卡跳过"
+            <button onClick={() => bridge.available && bridge.dismissPinvouReview()} title={t.pvSkipTitle}
               className={`px-3 py-1.5 rounded-full text-[12.5px] transition-colors ${isDark ? 'text-[#9AA0A6] hover:bg-white/5' : 'text-[#5f6368] hover:bg-black/5'}`}>
-              跳过
+              {t.pvSkip}
             </button>
           </div>
         </div>
@@ -3805,7 +3838,7 @@
     };
 
     // 检阅 loading:本地模型 5-30s,给 spinner+计时+安抚文字,别让 Boss 干等焦虑(以为卡死)。
-    const PinvouLoading = ({ isWu, icon, tint, accent, muted, isDark }) => {
+    const PinvouLoading = ({ isWu, icon, tint, accent, muted, isDark, t }) => {
       const [frame, setFrame] = useState(0);
       const [secs, setSecs] = useState(0);
       useEffect(() => {
@@ -3815,18 +3848,18 @@
       }, []);
       return (
         <div className={cardBoxCls(isDark, accent)}>
-          <div className={`flex items-center gap-2 text-[12px] font-semibold ${tint}`}><span>{icon}</span><span>{isWu ? 'Pinvou 悟·发散补全' : 'Pinvou 品·查错检阅'}</span></div>
+          <div className={`flex items-center gap-2 text-[12px] font-semibold ${tint}`}><span>{icon}</span><span>{isWu ? t.pvLoadingWu : t.pvLoadingPin}</span></div>
           <div className={`flex items-center gap-2 text-[13px] mt-2 ${muted}`}>
             <span className={`${tint} font-mono`}>{BRAILLE[frame]}</span>
-            <span>{isWu ? '正在比对完整性维度、发散补点' : '正在逐条核对、揪问题'}</span>
+            <span>{isWu ? t.pvLoadingWuSub : t.pvLoadingPinSub}</span>
             {secs > 0 && <span className="opacity-50 tabular-nums">{secs}s</span>}
           </div>
-          <div className={`text-[12px] mt-1.5 ${muted}`} style={{ opacity: 0.7 }}>本地模型推理中，通常 5–30 秒，稍候～</div>
+          <div className={`text-[12px] mt-1.5 ${muted}`} style={{ opacity: 0.7 }}>{t.pvLoadingHint}</div>
         </div>
       );
     };
 
-    const PinvouSummonCard = ({ item, theme }) => {
+    const PinvouSummonCard = ({ item, theme, t }) => {
       const isDark = theme === 'dark';
       // 品(查错)=紫;悟(发散,coverage)=蓝。
       const isWu = !!item.coverage;
@@ -3838,17 +3871,17 @@
                         : (isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]');
       const muted = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
       const body = isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]';
-      if (item.loading) return <PinvouLoading isWu={isWu} icon={icon} tint={tint} accent={accent} muted={muted} isDark={isDark} />;
+      if (item.loading) return <PinvouLoading isWu={isWu} icon={icon} tint={tint} accent={accent} muted={muted} isDark={isDark} t={t} />;
       if (item.error) return (
         <div className={cardBoxCls(isDark, accent)}>
-          <div className={`flex items-center gap-2 text-[12px] font-semibold ${tint}`}><span>{icon}</span><span>Pinvou {isWu ? '悟' : '品'}</span></div>
-          <div className={`text-[13px] mt-2 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>失败：{item.error}</div>
+          <div className={`flex items-center gap-2 text-[12px] font-semibold ${tint}`}><span>{icon}</span><span>Pinvou {role}</span></div>
+          <div className={`text-[13px] mt-2 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{t.pvFail}{item.error}</div>
         </div>
       );
       const r = item.review || {};
       if (r.dismissed) return (
         <div className={cardBoxCls(isDark, accent) + ' opacity-50'}>
-          <div className={`flex items-center gap-2 text-[12px] ${muted}`}><span>{icon}</span><span>{'Pinvou · ' + role + ' · 已跳过'}</span></div>
+          <div className={`flex items-center gap-2 text-[12px] ${muted}`}><span>{icon}</span><span>{'Pinvou · ' + role + ' · ' + t.pvSkipped}</span></div>
         </div>
       );
       const personas = r.personas || [];
@@ -3859,17 +3892,17 @@
         <div className={cardBoxCls(isDark, accent)}>
           <div className="flex items-center flex-wrap gap-x-2 gap-y-1 mb-2">
             <span className="text-[15px]">{icon}</span>
-            <span className={`text-[13px] font-semibold ${tint}`}>{'Pinvou · ' + role + (primary.label ? ' (' + primary.label + '视角)' : '')}</span>
-            {alts.length > 0 && <span className={`text-[12px] ${muted}`}>· 也涉及 {alts.join(' / ')}</span>}
-            {r.verdict === 'pass' && <span className={`text-[11px] font-semibold px-1.5 py-0.5 rounded ${isDark ? 'bg-[#37BE5F]/20 text-[#81C995]' : 'bg-[#E6F4EA] text-[#137333]'}`}>✓ 通过，可交付</span>}
+            <span className={`text-[13px] font-semibold ${tint}`}>{'Pinvou · ' + role + (primary.label ? ' (' + primary.label + t.pvPerspective + ')' : '')}</span>
+            {alts.length > 0 && <span className={`text-[12px] ${muted}`}>· {t.pvAlsoInvolves} {alts.join(' / ')}</span>}
+            {r.verdict === 'pass' && <span className={`text-[11px] font-semibold px-1.5 py-0.5 rounded ${isDark ? 'bg-[#37BE5F]/20 text-[#81C995]' : 'bg-[#E6F4EA] text-[#137333]'}`}>{t.pvVerdictPass}</span>}
           </div>
           {r.trace && <div className={`text-[13.5px] leading-relaxed mb-2.5 ${body}`}>{r.trace}</div>}
           {(r.framework || []).length > 0 && (
             <div className={`text-[11.5px] mb-2 px-2 py-1.5 rounded-lg leading-relaxed ${isDark ? 'bg-[#1A73E8]/10 text-[#8AB4F8]' : 'bg-[#1A73E8]/5 text-[#1967D2]'}`}>
-              <span className="opacity-70">完整性框架·{(r.framework || []).length}维：</span>{(r.framework || []).join(' · ')}
+              <span className="opacity-70">{t.pvFramework} · {(r.framework || []).length}{t.pvDims}: </span>{(r.framework || []).join(' · ')}
             </div>
           )}
-          {hasRows && <PinvouRows review={r} theme={theme} />}
+          {hasRows && <PinvouRows review={r} theme={theme} t={t} />}
         </div>
       );
     };

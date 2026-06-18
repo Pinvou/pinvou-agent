@@ -206,7 +206,7 @@ pub async fn summon(
     // COVERAGE_PROMPT 让模型临场列完整性框架+缺口。不走核账——体检是 Boss 主动的一次性深度动作。
     if mode == Some("coverage") {
         let raw = model_review(bridge, COVERAGE_PROMPT, &build_context(messages, workspace)).await?;
-        let mut review = apply_guard(raw);
+        let mut review = apply_guard(raw, bridge.locale_tag());
         review.artifact_path = artifact_path;
         return Ok(review);
     }
@@ -223,7 +223,7 @@ pub async fn summon(
         None => (PROMPT, build_context(messages, workspace)),
     };
     let raw = model_review(bridge, prompt, &context).await?;
-    let mut review = apply_guard(raw);
+    let mut review = apply_guard(raw, bridge.locale_tag());
     review.artifact_path = artifact_path;
     Ok(review)
 }
@@ -384,12 +384,51 @@ fn build_reconcile_context(prior: &[PinvouIssue], messages: &[Message], workspac
     out
 }
 
+/// 非中文 locale 的输出语言指令,追加到三个 prompt 末尾。三个 prompt 本体留中文(按收敛性精调过,
+/// 见设计文档,逐句翻译会引入行为漂移),只让模型把**自然语言字段值**切到目标语言——JSON key、枚举值
+/// (severity/kind/verdict/coverage/primary)、persona id slug 保持英文。zh-Hans 及未知 → None(no-op)。
+fn output_language_directive(locale_tag: &str) -> Option<String> {
+    let lang = match locale_tag {
+        "en" => "English",
+        "ja" => "Japanese (日本語)",
+        _ => return None, // zh-Hans 及未知 → prompt 原样中文
+    };
+    Some(format!(
+        "\n\n## Output Language (HARD override)\n\
+         Write EVERY natural-language value in your JSON output in {lang}: \
+         `trace`, `label`, `topic`, `pick`, `why`, `text`, `suggestion`, `dimension`, \
+         and every item in `framework`. This OVERRIDES any wording above that asks for \
+         Chinese (e.g. 「领域顾问中文名」「像微信」「给 Boss 看的一句话」). Keep all JSON keys \
+         and enum values (`severity`, `kind`, `verdict`, `coverage`, `primary`) plus the \
+         persona `id` slug exactly as specified — those stay ASCII/English."
+    ))
+}
+
+/// guard 空 trace 兜底文案,跟随 locale(§7)。模型正常会按 output_language_directive 返回本地化 trace,
+/// 这里只是它返回空时的保底,也得跟 UI 语言一致。
+fn default_trace(locale_tag: &str, clean: bool) -> String {
+    match (locale_tag, clean) {
+        ("en", true) => "Looked it over — no problems.",
+        ("en", false) => "I've reviewed it; a few points for you to confirm.",
+        ("ja", true) => "確認しました。問題ありません。",
+        ("ja", false) => "確認しました。いくつか確認したい点があります。",
+        (_, true) => "看过了，没问题。",
+        (_, false) => "我看过了，有几个点你确认下。",
+    }
+    .to_string()
+}
+
 async fn model_review(bridge: &Pinvou3Bridge, prompt: &str, user_content: &str) -> Result<ModelReview> {
     let client = Client::builder()
         .timeout(DEFAULT_TIMEOUT)
         .build()
         .context("build reqwest client")?;
     let url = format!("{}/chat/completions", bridge.base_url().trim_end_matches('/'));
+    // 非中文 locale 追加输出语言指令(覆盖 prompt 里的「中文」措辞)。
+    let prompt = match output_language_directive(bridge.locale_tag()) {
+        Some(suffix) => format!("{prompt}{suffix}"),
+        None => prompt.to_string(),
+    };
     let body = json!({
         "model": bridge.model(),
         "messages": [
@@ -566,7 +605,7 @@ fn truncate_chars(s: &str, n: usize) -> String {
 
 /// §7 guard：issues[].persona 必须在 personas∪alternates；空 trace 给默认。
 /// MVP 不校验 persona id 是否预注册（人格是"视角参数"，见设计 §7/§10.2）。
-fn apply_guard(raw: ModelReview) -> PinvouReview {
+fn apply_guard(raw: ModelReview, locale_tag: &str) -> PinvouReview {
     let valid: HashSet<String> = raw
         .personas
         .iter()
@@ -590,11 +629,7 @@ fn apply_guard(raw: ModelReview) -> PinvouReview {
         })
         .collect::<Vec<_>>();
     let trace = if raw.trace.trim().is_empty() {
-        if issues.is_empty() {
-            "看过了，没问题。".to_string()
-        } else {
-            "我看过了，有几个点你确认下。".to_string()
-        }
+        default_trace(locale_tag, issues.is_empty())
     } else {
         raw.trace
     };
@@ -704,10 +739,29 @@ mod tests {
             }],
             ..Default::default()
         };
-        let review = apply_guard(raw);
+        let review = apply_guard(raw, "zh-Hans");
         assert_eq!(review.framework, vec!["签证", "保险"]);
         assert_eq!(review.coverage.len(), 1);
         assert_eq!(review.coverage[0].dimension, "签证");
+    }
+
+    /// 非中文 locale 追加输出语言指令(覆盖 prompt 的中文措辞);zh-Hans/未知 → None(no-op)。
+    #[test]
+    fn output_language_directive_only_for_non_chinese() {
+        let en = output_language_directive("en").expect("en 应有指令");
+        assert!(en.contains("English") && en.contains("OVERRIDES"));
+        assert!(output_language_directive("ja").unwrap().contains("Japanese"));
+        assert!(output_language_directive("zh-Hans").is_none(), "中文 no-op");
+        assert!(output_language_directive("fr").is_none(), "未知回退 no-op");
+    }
+
+    /// 空 trace 兜底跟随 locale。
+    #[test]
+    fn default_trace_follows_locale() {
+        assert_eq!(default_trace("zh-Hans", true), "看过了，没问题。");
+        assert!(default_trace("en", true).starts_with("Looked"));
+        assert!(default_trace("en", false).contains("confirm"));
+        assert!(default_trace("ja", true).contains("問題ありません"));
     }
 
     fn user_text(t: &str) -> Message {
@@ -861,7 +915,7 @@ mod tests {
             framework: vec![],
             coverage: vec![],
         };
-        let r = apply_guard(raw);
+        let r = apply_guard(raw, "zh-Hans");
         assert_eq!(r.issues[0].persona, "travel", "未知 persona 归到 primary");
         assert_eq!(r.issues[1].persona, "budget", "合法 persona 保留");
         assert!(r.guard_reasons.iter().any(|g| g.contains("legal")));
@@ -880,7 +934,7 @@ mod tests {
             issues: vec![],
             ..Default::default()
         };
-        let r = apply_guard(raw);
+        let r = apply_guard(raw, "zh-Hans");
         assert_eq!(r.trace, "看过了，没问题。");
     }
 }
