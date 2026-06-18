@@ -38,6 +38,8 @@
     ],
     "linux": {
       "deb": {
+        "desktopTemplate": "desktop/pinvou3.desktop",
+        "postInstallScript": "scripts/postinst.sh",
         "preRemoveScript": "scripts/prerm.sh",
         "depends": [],
         "recommends": [
