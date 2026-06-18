@@ -1363,8 +1363,8 @@ mod tests {
     }
 
     /// 多引擎并发隔离基石(C 方案 P-no-disk 版): 两个不同 session 的 EngineConfig
-    /// 必须 workspace 不同 + instructions 内容含各自 session_id(走 `InstructionSource::
-    /// Inline`,内存对象天然隔离,不再依赖 disk 文件)。
+    /// 必须 workspace 不同 + instructions 的 inline name 含各自 session_id(走
+    /// `InstructionSource::Inline`,内存对象天然隔离,不再依赖 disk 文件)。
     #[test]
     fn engine_config_for_session_paths_are_isolated() {
         let bridge = fixture_bridge();
@@ -1380,26 +1380,24 @@ mod tests {
         assert!(cfg_b.workspace.to_string_lossy().contains(b));
 
         // instructions 第一项是 session 专属 Inline source,name 含各自 session_id。
-        let extract = |s: &InstructionSource| -> (String, String) {
+        let name_of = |s: &InstructionSource| -> String {
             match s {
-                InstructionSource::Inline { name, content } => (name.clone(), content.clone()),
-                InstructionSource::File(p) => (p.display().to_string(), String::new()),
+                InstructionSource::Inline { name, .. } => name.clone(),
+                InstructionSource::File(p) => p.display().to_string(),
             }
         };
-        let (name_a, content_a) = extract(&cfg_a.instructions[0]);
-        let (name_b, content_b) = extract(&cfg_b.instructions[0]);
+        let name_a = name_of(&cfg_a.instructions[0]);
+        let name_b = name_of(&cfg_b.instructions[0]);
         assert!(
             matches!(cfg_a.instructions[0], InstructionSource::Inline { .. }),
             "session instructions 第一项必须是 Inline(C 方案 P-no-disk)"
         );
         assert_ne!(name_a, name_b, "两 session 的 inline name 必须不同");
         assert!(name_a.contains(a) && name_b.contains(b));
-        // 渲染后的内容含各自 session-specific workspace 路径(占位符替换生效)。
-        assert!(
-            content_a.contains(a),
-            "session A 的 inline content 必须含 session_id"
-        );
-        assert!(content_b.contains(b));
+        // session_id / workspace 已移出静态 content,走 per-turn <turn_meta>
+        // (见 build_session_system_prompt 注释:per-session 变动进 cache 前缀会
+        // 触发 vLLM prefix-cache MISS → 工具调用漂移)。故 content 不再含 session_id,
+        // 隔离已由上面"workspace 目录不同 + inline name 含 session_id"覆盖。
     }
 
 
