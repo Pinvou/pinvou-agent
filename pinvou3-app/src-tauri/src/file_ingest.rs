@@ -1371,7 +1371,7 @@ atts = [p.get_filename() for p in msg.iter_attachments() if p.get_filename()]
 if atts:
     print('\n附件:', ', '.join(atts))
 "#;
-    let out = Command::new("python3")
+    let out = crate::process::HiddenCommand::new("python3")
         .arg("-c")
         .arg(SCRIPT)
         .arg(path)

@@ -1,9 +1,9 @@
 use std::ffi::OsStr;
 use std::path::Path;
-use std::process::Command;
+use crate::process::HiddenCommand;
 
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
-    Command::new("cmd")
+    HiddenCommand::new("cmd")
         .args(["/C", "start", ""])
         .arg(target.as_ref())
         .spawn()

@@ -25,6 +25,7 @@ mod monitor;
 mod os;
 pub mod personas;
 mod pinvou_review;
+mod process;
 pub mod super_permission;
 mod updater;
 mod workflow_migrate;
