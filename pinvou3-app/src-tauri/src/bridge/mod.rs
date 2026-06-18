@@ -215,12 +215,21 @@ impl Pinvou3Bridge {
         // 变的 workspace 路径(及每天变的 date)若进 cached system prefix, vLLM prefix-cache
         // MISS 时工具调用会退化成裸文本(实测 single subagent 25%→稳态~100%)。仅保留 model
         // (固定值,不破坏 cache)与 sudo(静态文案兜底,实时状态走 super_permission::turn_reminder)。
-        INSTRUCTIONS_MD
+        let mut rendered = INSTRUCTIONS_MD
             .replace("{{PINVOU3_MODEL}}", &self.model())
             .replace(
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
                 crate::super_permission::instruction_block(),
-            )
+            );
+        // [pinvou3] 非中文 locale 的语言指令补丁:底座 locale_reinforcement_preamble
+        // 对 en 返回 None,而 pinvou3 整份 system prompt 是中文,会把回复语言拽回中文。
+        // 这里给底座留空的 locale 补一段 mirror 指令(zh-Hans/ja 已有底座 bookend,返回
+        // None 不重复)。固定值(随 language 变,不随 session 变)→ 不破 prefix-cache。
+        if let Some(block) = self.prefs.language.extra_language_directive() {
+            rendered.push_str("\n\n");
+            rendered.push_str(block);
+        }
+        rendered
     }
 
     /// 当前 active session 的 workspace 目录。
@@ -1190,6 +1199,28 @@ mod tests {
         bridge.prefs.language = prefs::Language::En;
         assert_eq!(bridge.locale_tag(), "en");
         assert_eq!(bridge.build_engine_config().locale_tag, "en");
+    }
+
+    /// en locale 的 system prompt 必须带英文语言指令(底座 en→None,pinvou3 补)。
+    /// zh-Hans 走底座 bookend,不在 inline instructions 里重复补。
+    #[test]
+    fn en_locale_injects_english_language_directive() {
+        let mut bridge = fixture_bridge();
+        let sid = "__test_lang__";
+
+        bridge.prefs.language = prefs::Language::En;
+        let en_prompt = bridge.build_session_system_prompt(sid);
+        assert!(
+            en_prompt.contains("## Language") && en_prompt.contains("Respond in English"),
+            "en system prompt 缺英文语言指令:\n{en_prompt}"
+        );
+
+        bridge.prefs.language = prefs::Language::ZhHans;
+        let zh_prompt = bridge.build_session_system_prompt(sid);
+        assert!(
+            !zh_prompt.contains("Respond in English"),
+            "zh-Hans 不应在 inline instructions 重复注入英文指令(底座 bookend 已覆盖)"
+        );
     }
 
     /// allow_shell 默认 true（pinvou3 yolo 模式需要）。

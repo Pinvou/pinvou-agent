@@ -255,6 +255,7 @@
         vllmDetectHint: '仅检测 127.0.0.1 / localhost 的 8000-8002 端口；使用后仍需保存并重启。',
         confirmAndRestart: '保存并重启',
         modelDirtyHint: '配置已修改，保存后应用将重启',
+        langRestartHint: '界面语言已切换；助手回复语言需重启应用后生效',
         sysPerm: '系统权限', sudo: '高级执行权限 (Sudo)', sudoDesc: '允许助手执行环境配置等高级指令',
         versionUpdate: '版本与更新',
         checkUpdate: '检查更新', checking: '检查中…', upToDate: '已是最新版本',
@@ -424,6 +425,7 @@
         vllmDetectHint: 'Checks only 127.0.0.1 / localhost ports 8000-8002. Save and restart to apply.',
         confirmAndRestart: 'Save & Restart',
         modelDirtyHint: 'Configuration changed — saving will restart the app',
+        langRestartHint: 'Interface language switched; restart the app to apply it to the assistant',
         sysPerm: 'System Permissions', sudo: 'Sudo Access', sudoDesc: 'Allow assistant to run high-privilege commands',
         versionUpdate: 'Version & Update',
         checkUpdate: 'Check for Updates', checking: 'Checking…', upToDate: 'Up to date',
@@ -593,6 +595,7 @@
         vllmDetectHint: '127.0.0.1 / localhost の 8000-8002 ポートのみ検出します。反映には保存して再起動してください。',
         confirmAndRestart: '保存して再起動',
         modelDirtyHint: '設定が変更されました。保存するとアプリが再起動します',
+        langRestartHint: 'UI言語を切り替えました。アシスタントに反映するにはアプリの再起動が必要です',
         sysPerm: 'システム権限', sudo: '高度な実行権限 (Sudo)', sudoDesc: 'アシスタントによる環境設定などの高度なコマンド実行を許可',
         versionUpdate: 'バージョンと更新',
         checkUpdate: '更新を確認', checking: '確認中…', upToDate: '最新バージョンです',
@@ -789,6 +792,9 @@
       const modelConfigInitRef = useRef(false);
       const searchConfigInitRef = useRef(false);
       const uiPrefsInitRef = useRef(false);
+      // engine 启动时生效的语言(= 进程启动时的 settings.language)。语言只写盘不重启
+      // engine,LLM 的 locale_tag 要重启 app 才更新 —— 草稿偏离此基线就提示「需重启」。
+      const bootedLanguageRef = useRef(null);
       // dirty 基线:已保存的模型配置(默认值填充后) / 已保存的搜索源配置。
       // 草稿偏离基线才显示「保存并重启」操作条。
       const savedModelConfigRef = useRef(null);
@@ -838,6 +844,8 @@
         if (!uiPrefsInitRef.current && bs.settings) {
           const lang = TAG_TO_LANG[bs.settings.language];
           if (lang && lang !== language) setLanguage(lang);
+          // engine 已用此语言启动,作为「需重启」基线(切语言不重启 engine,见 commands.rs)
+          bootedLanguageRef.current = lang || 'zh';
           // 后端 Theme 枚举(prefs.rs)只认 genesis/liquid-light/liquid-dark;深色=genesis,浅色=liquid-light
           const th = bs.settings.theme === 'liquid-light' ? 'light' : 'dark';
           if (th !== activeTheme) setActiveTheme(th);
@@ -897,6 +905,8 @@
         searchProvider !== savedSearch.provider ||
         normalizedSearchApiKeyValue(searchApiKey) !== normalizedSearchApiKeyValue(savedSearch.apiKey)
       );
+      // 语言已即时写盘+切 UI,但 LLM 的 locale_tag 要重启 engine 才生效 → 偏离启动语言就提示。
+      const languageNeedsRestart = !!bootedLanguageRef.current && language !== bootedLanguageRef.current;
 
       // Build chat history from sessions
       const skillBindings = (bs && bs.workflow && bs.workflow.bindings) || {};
@@ -1224,6 +1234,7 @@
                 onConfirmSearchConfig={handleConfirmSearchConfig}
                 modelConfigDirty={modelConfigDirty}
                 searchNeedsRestart={searchNeedsRestart}
+                languageNeedsRestart={languageNeedsRestart}
                 bs={bs}
                 t={t}
               />
@@ -1580,7 +1591,7 @@
       </div>
     );
 
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, modelPreset, onChangeModelPreset, customModelName, setCustomModelName, customBaseUrl, setCustomBaseUrl, customApiKey, setCustomApiKey, savedModel, onConfirmModelConfig, onConfirmSearchConfig, modelConfigDirty, searchNeedsRestart, bs, t }) => {
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, modelPreset, onChangeModelPreset, customModelName, setCustomModelName, customBaseUrl, setCustomBaseUrl, customApiKey, setCustomApiKey, savedModel, onConfirmModelConfig, onConfirmSearchConfig, modelConfigDirty, searchNeedsRestart, languageNeedsRestart, bs, t }) => {
       const isDark = activeTheme === 'dark';
       const [vllmDiscovery, setVllmDiscovery] = useState(null);
       const [vllmDiscovering, setVllmDiscovering] = useState(false);
@@ -1798,6 +1809,10 @@
                     <SSegmented isDark={isDark} value={language} onChange={setLanguage}
                       options={[{ key: 'zh', label: '中文' }, { key: 'en', label: 'English' }, { key: 'ja', label: '日本語' }]} />
                   </SRow>
+                  {languageNeedsRestart && (
+                    <SActionBar isDark={isDark} message={t.langRestartHint}
+                      actionLabel={t.restartNow} onAction={() => bridge.available && bridge.restartApp()} />
+                  )}
                   <SRow isDark={isDark} label={t.theme} desc={t.themeDesc}>
                     <SSegmented isDark={isDark} value={activeTheme} onChange={setActiveTheme}
                       options={[{ key: 'light', label: t.light }, { key: 'dark', label: t.dark }]} />

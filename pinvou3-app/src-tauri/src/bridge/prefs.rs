@@ -56,6 +56,27 @@ impl Language {
             Language::Ja => "ja",
         }
     }
+
+    /// pinvou3 补丁:底座 `locale_reinforcement_preamble` 对 `en` 返回 `None`
+    /// (英文是模型默认语言,底座认为无需强化)。但 pinvou3 的 system prompt 主体
+    /// (instructions.md)整份是中文,会把模型的回复语言拽回中文 —— 故英文 UI 下
+    /// 仍中文回复。zh-Hans / ja 已由底座 bookend(见 `bridge::bundle` 的
+    /// `set_locale_preamble_*_override`)覆盖,这里只补底座留空的 locale,返回
+    /// `None` 的不再重复注入。文案采 mirror 语义,与 zh-Hans preamble 对称。
+    pub fn extra_language_directive(self) -> Option<&'static str> {
+        match self {
+            Language::En => Some(
+                "## Language\n\n\
+                 Respond in English by default, and mirror the language of the \
+                 user's latest message. Keep code, file paths, tool names \
+                 (e.g. `read_file`, `exec_shell`), environment variables, \
+                 command-line flags, and URLs verbatim — only natural-language \
+                 prose follows the language rule.",
+            ),
+            // 底座已注入对应 bookend,避免重复。
+            Language::ZhHans | Language::Ja => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
