@@ -220,6 +220,12 @@ impl Pinvou3Bridge {
             .replace(
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
                 crate::super_permission::instruction_block(),
+            )
+            // present_artifact 的 title 语言随 locale(原写死「中文 title」会把英文 UI 的产物
+            // 标题/描述/后续总结整段拽回中文,见 prefs::title_language_name 注释)。
+            .replace(
+                "{{PINVOU3_TITLE_LANG}}",
+                self.prefs.language.title_language_name(),
             );
         // [pinvou3] 非中文 locale 的语言指令补丁:底座 locale_reinforcement_preamble
         // 对 en 返回 None,而 pinvou3 整份 system prompt 是中文,会把回复语言拽回中文。

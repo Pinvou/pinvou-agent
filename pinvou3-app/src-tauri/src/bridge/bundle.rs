@@ -246,7 +246,10 @@ impl Pinvou3Bundle {
             .replace(
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
                 crate::super_permission::instruction_block(),
-            );
+            )
+            // 落盘副本无 per-session locale,默认填中文兜底(LLM 实际走 mod.rs 的 inline 渲染,
+            // 那里按 locale 填);此处仅防 {{PINVOU3_TITLE_LANG}} 占位符原文残留在 disk 文件。
+            .replace("{{PINVOU3_TITLE_LANG}}", "简体中文");
         std::fs::write(&self.instructions_md, rendered)?;
         // 敏感目录拦截脚本：写入 + 加可执行位
         std::fs::write(&self.deny_sensitive_sh, DENY_SENSITIVE_PATHS_SH)?;

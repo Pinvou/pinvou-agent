@@ -57,6 +57,17 @@ impl Language {
         }
     }
 
+    /// present_artifact 的 `title` 该用什么语言(instructions.md 的 {{PINVOU3_TITLE_LANG}})。
+    /// 原文写死"中文 title",英文 UI 下模型走到调 present_artifact 就生成中文标题、并把后续
+    /// 描述/总结也带回中文(tool-call 现场的具体指令压过通用语言规则)→ 改成跟 locale。
+    pub fn title_language_name(self) -> &'static str {
+        match self {
+            Language::ZhHans => "简体中文",
+            Language::En => "English",
+            Language::Ja => "日本語",
+        }
+    }
+
     /// pinvou3 补丁:底座 `locale_reinforcement_preamble` 对 `en` 返回 `None`
     /// (英文是模型默认语言,底座认为无需强化)。但 pinvou3 的 system prompt 主体
     /// (instructions.md)整份是中文,会把模型的回复语言拽回中文 —— 故英文 UI 下
