@@ -33,7 +33,7 @@ use deepseek_tui::tui::approval::ApprovalMode;
 
 use self::bundle::{Pinvou3Bundle, INSTRUCTIONS_MD};
 use self::mode_state::PlanPhase;
-use self::prefs::{ModelPreset, UserPrefs};
+use self::prefs::{ModelPreset, SavedModel, UserPrefs};
 
 /// Qwen3.6 在 vLLM 里是 passthrough 字符串（不走 alias）。
 ///
@@ -81,6 +81,9 @@ pub struct Pinvou3Bridge {
     pub prefs: UserPrefs,
     pub bundle: Pinvou3Bundle,
     pub workspace: PathBuf,
+    /// 本 engine 绑定的 session 锁定模型(per-session 不同模型)。None = 用 prefs 全局
+    /// active。EnginePool spawn 时按该 session 的 model_id 注入(见 `with_session_model`)。
+    pub session_model: Option<SavedModel>,
 }
 
 impl Pinvou3Bridge {
@@ -113,6 +116,7 @@ impl Pinvou3Bridge {
             prefs,
             bundle,
             workspace: paths::user_home_dir(),
+            session_model: None,
         };
         this.wire_max_output_tokens_env();
         // C 方案(P-no-disk)最终版: 清理所有 pinvou3 历史 disk 残留:
@@ -268,6 +272,27 @@ impl Pinvou3Bridge {
     }
 
     /// 当前 active provider 标识（传给底座 `DtConfig.provider`）。
+    /// 本 engine/session 实际生效的模型记录:session 锁定优先,否则全局 active。
+    /// load 后 prefs.active_model() 必非空,正常返回 Some。
+    fn effective_model(&self) -> Option<&SavedModel> {
+        self.session_model
+            .as_ref()
+            .or_else(|| self.prefs.active_model())
+    }
+
+    /// 当前生效模型的副本(session > active)。EnginePool 探测 vLLM served name 后
+    /// 用它克隆→改 model 名→塞回 session_model,实现「请求用 vLLM 实际名字」。
+    pub fn effective_model_owned(&self) -> Option<SavedModel> {
+        self.effective_model().cloned()
+    }
+
+    /// 克隆一份 bridge 并绑定 per-session 模型(EnginePool spawn 时按 session model_id 注入)。
+    pub fn with_session_model(&self, model: Option<SavedModel>) -> Self {
+        let mut b = self.clone();
+        b.session_model = model;
+        b
+    }
+
     pub fn provider(&self) -> String {
         if is_official_deepseek_base_url(&self.base_url()) {
             return "deepseek".to_string();
@@ -275,7 +300,8 @@ impl Pinvou3Bridge {
         if let Ok(v) = std::env::var("DEEPSEEK_PROVIDER") {
             return v;
         }
-        match self.prefs.advanced.model_preset.unwrap_or_default() {
+        let preset = self.effective_model().map(|m| m.preset).unwrap_or_default();
+        match preset {
             ModelPreset::LocalVllm => "vllm".to_string(),
             ModelPreset::Deepseek => "deepseek".to_string(),
             ModelPreset::Kimi => "moonshot".to_string(),
@@ -298,11 +324,11 @@ impl Pinvou3Bridge {
             }
             return v;
         }
-        if let Some(model) = self.prefs.advanced.custom_model_name.clone() {
+        if let Some(m) = self.effective_model() {
             if is_official_deepseek {
-                return official_deepseek_model_name(&model);
+                return official_deepseek_model_name(&m.model);
             }
-            return model;
+            return m.model.clone();
         }
         if is_official_deepseek {
             return "deepseek-v4-pro".to_string();
@@ -331,11 +357,10 @@ impl Pinvou3Bridge {
         if let Ok(v) = std::env::var("DEEPSEEK_BASE_URL") {
             return v;
         }
-        self.prefs
-            .advanced
-            .custom_base_url
-            .clone()
-            .unwrap_or_else(|| self.default_base_url_for_preset())
+        if let Some(m) = self.effective_model() {
+            return m.base_url.clone();
+        }
+        self.default_base_url_for_preset()
     }
 
     /// 各厂商默认 API base URL。
@@ -358,13 +383,12 @@ impl Pinvou3Bridge {
         if let Ok(v) = std::env::var("DEEPSEEK_API_KEY") {
             return v;
         }
-        if is_official_deepseek_base_url(&self.base_url()) {
-            return self
-                .prefs
-                .advanced
-                .custom_api_key
-                .clone()
-                .unwrap_or_default();
+        if let Some(m) = self.effective_model() {
+            // 本地 vLLM 不需鉴权:用户留空 key 兜底 local-no-auth(底座要求非空)。
+            if m.api_key.trim().is_empty() && m.preset == ModelPreset::LocalVllm {
+                return LOCAL_VLLM_API_KEY.to_string();
+            }
+            return m.api_key.clone();
         }
         match self.prefs.advanced.model_preset.unwrap_or_default() {
             ModelPreset::LocalVllm => LOCAL_VLLM_API_KEY.into(),
@@ -829,25 +853,56 @@ impl Pinvou3Bridge {
     }
 }
 
+// [消融实验 2026-06-18] (Plan,Planning) reminder 的可切换变体,env PINVOU3_ABLATION 控制。
+// full(默认)=现状;no_collect=删"方案清晰后→调 update_plan"收口条;no_block=删"禁写工具"条。
+// 仅用于量化每条对 Qwen3.6 的 load-bearing,实测完应回退(不进生产)。
+const PLAN_PLANNING_FULL: &str = "你现在在 Plan 模式 + Planning 阶段。本 turn 你必须按这个顺序行动:\n\
+     1. 任务有歧义 → 调 `request_user_input` 工具问澄清(给 2-3 个选项让用户点选)。\
+     不要在 text 里列 A/B/C 选项。\n\
+     2. 方案清晰后 → 调 `update_plan` 工具输出方案(explanation 字段写关键决策,\
+     items 写 3-8 个执行步骤)。如果产物预计超过 300 行或 20KB(如 HTML deck / 完整网页 / 长报告),\
+     plan 必须说明分块写法:`append_file` 只能追加到文件尾;要填已有文件中间或替换占位符,\
+     用 `edit_file`,不要用 `append_file`。\
+     可选再调 `checklist_write` 拆细。\n\
+     3. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
+     方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。\n\
+     4. **禁止**调 `write_file` / `append_file` / `edit_file` / `exec_shell` / `js_execution`——\
+     它们在 Plan 模式不可用,调了一定失败。";
+
+const PLAN_PLANNING_NO_COLLECT: &str = "你现在在 Plan 模式 + Planning 阶段。本 turn 你必须按这个顺序行动:\n\
+     1. 任务有歧义 → 调 `request_user_input` 工具问澄清(给 2-3 个选项让用户点选)。\
+     不要在 text 里列 A/B/C 选项。\n\
+     2. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
+     方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。\n\
+     3. **禁止**调 `write_file` / `append_file` / `edit_file` / `exec_shell` / `js_execution`——\
+     它们在 Plan 模式不可用,调了一定失败。";
+
+const PLAN_PLANNING_NO_BLOCK: &str = "你现在在 Plan 模式 + Planning 阶段。本 turn 你必须按这个顺序行动:\n\
+     1. 任务有歧义 → 调 `request_user_input` 工具问澄清(给 2-3 个选项让用户点选)。\
+     不要在 text 里列 A/B/C 选项。\n\
+     2. 方案清晰后 → 调 `update_plan` 工具输出方案(explanation 字段写关键决策,\
+     items 写 3-8 个执行步骤)。如果产物预计超过 300 行或 20KB(如 HTML deck / 完整网页 / 长报告),\
+     plan 必须说明分块写法:`append_file` 只能追加到文件尾;要填已有文件中间或替换占位符,\
+     用 `edit_file`,不要用 `append_file`。\
+     可选再调 `checklist_write` 拆细。\n\
+     3. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
+     方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。";
+
+fn plan_planning_reminder() -> Option<&'static str> {
+    match std::env::var("PINVOU3_ABLATION").ok().as_deref() {
+        Some("no_collect") => Some(PLAN_PLANNING_NO_COLLECT),
+        Some("no_block") => Some(PLAN_PLANNING_NO_BLOCK),
+        Some("none") => None,
+        _ => Some(PLAN_PLANNING_FULL),
+    }
+}
+
 /// M1: per-turn `<system-reminder>` 文案,按当前 mode+phase 选段。
 /// 决策文档 V2 §13.1。
 /// 命中率优先于优雅:每段都是命令式、短、列禁令清单(Qwen3.6 友好)。
 fn reminder_for(mode: AppMode, phase: PlanPhase) -> Option<&'static str> {
     match (mode, phase) {
-        (AppMode::Plan, PlanPhase::Planning) => Some(
-            "你现在在 Plan 模式 + Planning 阶段。本 turn 你必须按这个顺序行动:\n\
-             1. 任务有歧义 → 调 `request_user_input` 工具问澄清(给 2-3 个选项让用户点选)。\
-             不要在 text 里列 A/B/C 选项。\n\
-             2. 方案清晰后 → 调 `update_plan` 工具输出方案(explanation 字段写关键决策,\
-             items 写 3-8 个执行步骤)。如果产物预计超过 300 行或 20KB(如 HTML deck / 完整网页 / 长报告),\
-             plan 必须说明分块写法:`append_file` 只能追加到文件尾;要填已有文件中间或替换占位符,\
-             用 `edit_file`,不要用 `append_file`。\
-             可选再调 `checklist_write` 拆细。\n\
-             3. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
-             方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。\n\
-             4. **禁止**调 `write_file` / `append_file` / `edit_file` / `exec_shell` / `js_execution`——\
-             它们在 Plan 模式不可用,调了一定失败。",
-        ),
+        (AppMode::Plan, PlanPhase::Planning) => plan_planning_reminder(),
         (AppMode::Plan, PlanPhase::Ready) => Some(
             "Plan 模式 + Ready 阶段。AI 之前的方案已经在 plan 卡片上等用户决策。\n\
              如果用户发了新消息,说明用户在隐式修订——你必须调 `update_plan` 重出方案,\
@@ -917,6 +972,7 @@ mod tests {
             prefs: UserPrefs::default(),
             bundle: Pinvou3Bundle::paths(),
             workspace: std::env::temp_dir(),
+            session_model: None,
         }
     }
 

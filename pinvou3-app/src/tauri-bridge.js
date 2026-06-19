@@ -75,6 +75,10 @@
     monitor: null,
     backendOnline: null, // null=checking, true, false
     settings: null,
+    // 「添加模型」方案:已保存模型列表 + 全局默认 id + 当前会话绑定的模型 id
+    savedModels: [],
+    activeModelId: null,
+    currentSessionModelId: null, // 当前 active session 显式绑定的模型;null=跟随全局默认
     superPermEnabled: false,
     modeState: { mode: "yolo", plan_phase: "none" },
     // 最新 plan/todos 快照（用于 mode header 进度 chip，与 plan_ready 卡解耦）
@@ -1724,6 +1728,52 @@
     return await invoke("get_effective_model_config");
   }
 
+  // ── 模型列表(「添加模型」方案)─────────────────────────────────
+  async function loadModels() {
+    try {
+      var v = await invoke("list_models");
+      state.savedModels = (v && v.models) || [];
+      state.activeModelId = (v && v.active_model_id) || null;
+    } catch (e) {
+      state.savedModels = []; state.activeModelId = null;
+    }
+    notify();
+  }
+  // model 对象字段须是 snake_case(SavedModel serde): {id,name,preset,model,base_url,api_key}
+  async function saveModel(model) {
+    await invoke("save_model", { model: model });
+    await loadModels();
+  }
+  async function deleteModel(id) {
+    await invoke("delete_model", { id: id });
+    await loadModels();
+  }
+  async function setActiveModel(id) {
+    await invoke("set_active_model", { id: id });
+    await loadModels();
+  }
+  // 读某会话当前绑定的模型 id(切会话时刷新 chip)。
+  async function loadSessionModel(sessionId) {
+    if (!sessionId) { state.currentSessionModelId = null; notify(); return; }
+    try {
+      state.currentSessionModelId = await invoke("get_session_model_id", { sessionId: sessionId });
+    } catch (e) { state.currentSessionModelId = null; }
+    notify();
+  }
+  // 切当前会话模型(chip 热切)。无 session(草稿态)时改全局默认。
+  async function switchModel(sessionId, modelId) {
+    if (sessionId) {
+      await invoke("set_session_model", { sessionId: sessionId, modelId: modelId });
+      state.currentSessionModelId = modelId;
+      notify();
+    } else {
+      await setActiveModel(modelId);
+    }
+  }
+  async function testModelConnection(baseUrl, apiKey) {
+    return await invoke("test_model_connection", { baseUrl: baseUrl, apiKey: apiKey });
+  }
+
   // ── Super permission ─────────────────────────────────────────────
   async function refreshSuperPerm() {
     try {
@@ -2321,6 +2371,7 @@
   async function init() {
     await loadSettings();
     await loadEffectiveModelConfig();
+    await loadModels();
     await refreshHistoryList();
     enterDraft(); // 启动落空白草稿页(lazy session:不自动选/建会话)
     await refreshSuperPerm();
@@ -2351,6 +2402,13 @@
     saveSettingsAndRestart: saveSettingsAndRestart,
     discoverLocalVllm: discoverLocalVllm,
     getEffectiveModelConfig: getEffectiveModelConfig,
+    loadModels: loadModels,
+    saveModel: saveModel,
+    deleteModel: deleteModel,
+    setActiveModel: setActiveModel,
+    loadSessionModel: loadSessionModel,
+    switchModel: switchModel,
+    testModelConnection: testModelConnection,
     toggleSuperPerm: toggleSuperPerm,
     renderMarkdown: renderMarkdown,
     // Plan/YOLO

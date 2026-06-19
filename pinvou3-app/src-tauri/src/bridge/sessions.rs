@@ -46,6 +46,10 @@ pub struct SessionStore {
     active: Arc<RwLock<Option<String>>>,
     mode_states: Arc<RwLock<HashMap<String, SessionModeState>>>,
     auto_continue_count: Arc<RwLock<HashMap<String, u8>>>,
+    /// per-session 模型绑定:session_id → SavedModel.id。某 session 显式选过模型
+    /// 才有条目;没选的回退全局 active_model_id。落盘到 `_session_models.json`
+    /// (仿 skill_bindings),底座 SavedSession 不能加字段故独立存。
+    session_models: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl SessionStore {
@@ -59,6 +63,7 @@ impl SessionStore {
             active: Arc::new(RwLock::new(None)),
             mode_states: Arc::new(RwLock::new(HashMap::new())),
             auto_continue_count: Arc::new(RwLock::new(HashMap::new())),
+            session_models: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -98,6 +103,9 @@ impl SessionStore {
         }
         drop(active);
         self.mode_states.write().remove(id);
+        if self.session_models.write().remove(id).is_some() {
+            self.save_session_models();
+        }
         Ok(())
     }
 
@@ -112,12 +120,28 @@ impl SessionStore {
     /// 新建空 session（无 messages）。返回 SavedSession 让调用方
     /// 立刻 `Op::SyncSession` 同步给 engine，并 set_active(id)。
     /// 上游空消息时 title 默认 "New Session"，pinvou3 覆写成中文。
-    pub fn create_new(&self, model: String, workspace: PathBuf) -> Result<SavedSession> {
+    pub fn create_new(
+        &self,
+        model: String,
+        model_id: Option<String>,
+        workspace: PathBuf,
+    ) -> Result<SavedSession> {
         let id = generate_session_id();
-        let mut session =
-            create_saved_session_with_id_and_mode(id, &[], &model, &workspace, 0, None, None);
+        let mut session = create_saved_session_with_id_and_mode(
+            id.clone(),
+            &[],
+            &model,
+            &workspace,
+            0,
+            None,
+            None,
+        );
         session.metadata.title = "新对话".to_string();
         self.save(&session)?;
+        // per-session 模型:新建会话继承全局默认(active)模型 id,落盘记住。
+        if let Some(mid) = model_id {
+            self.set_session_model_id(&id, Some(mid));
+        }
         Ok(session)
     }
 
@@ -322,6 +346,60 @@ impl SessionStore {
         }
     }
 
+    // ===================== per-session 模型绑定 =====================
+
+    /// 取该 session 显式选定的模型 id(没选过返回 None,调用方回退全局 active)。
+    pub fn session_model_id(&self, id: &str) -> Option<String> {
+        self.session_models.read().get(id).cloned()
+    }
+
+    /// 设/清该 session 的模型 id 并落盘。`None` = 清除(回退全局默认)。
+    pub fn set_session_model_id(&self, id: &str, model_id: Option<String>) {
+        {
+            let mut m = self.session_models.write();
+            match model_id {
+                Some(mid) => {
+                    m.insert(id.to_string(), mid);
+                }
+                None => {
+                    m.remove(id);
+                }
+            }
+        }
+        self.save_session_models();
+    }
+
+    /// 持久化 per-session 模型绑定到 `~/.pinvou3/sessions/_session_models.json`。
+    pub fn save_session_models(&self) {
+        let file = super::paths::sessions_root().join("_session_models.json");
+        let m = self.session_models.read();
+        if m.is_empty() {
+            let _ = std::fs::remove_file(&file);
+            return;
+        }
+        if let Ok(json) = serde_json::to_string_pretty(&*m) {
+            let _ = std::fs::write(file, json);
+        }
+    }
+
+    /// 启动时从磁盘恢复 per-session 模型绑定。
+    pub fn load_session_models(&self) {
+        let file = super::paths::sessions_root().join("_session_models.json");
+        if !file.exists() {
+            return;
+        }
+        let content = match std::fs::read_to_string(&file) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        match serde_json::from_str::<HashMap<String, String>>(&content) {
+            Ok(map) => {
+                *self.session_models.write() = map;
+            }
+            Err(e) => eprintln!("[sessions] load_session_models failed: {e}"),
+        }
+    }
+
     // ===================== M2: auto-continue counter =====================
 
     /// 取当前 session 的 auto-continue 计数。
@@ -391,7 +469,7 @@ mod tests {
     fn create_new_persists_and_lists() {
         let (store, _g) = isolated_store();
         let s = store
-            .create_new("/model".into(), std::env::temp_dir())
+            .create_new("/model".into(), None, std::env::temp_dir())
             .expect("create");
         let list = store.list().expect("list");
         assert!(list.iter().any(|m| m.id == s.metadata.id));
@@ -401,7 +479,7 @@ mod tests {
     fn set_title_updates_metadata() {
         let (store, _g) = isolated_store();
         let s = store
-            .create_new("/model".into(), std::env::temp_dir())
+            .create_new("/model".into(), None, std::env::temp_dir())
             .expect("create");
         store
             .set_title(&s.metadata.id, "改个名字".into())
@@ -414,7 +492,7 @@ mod tests {
     fn delete_removes_session() {
         let (store, _g) = isolated_store();
         let s = store
-            .create_new("/model".into(), std::env::temp_dir())
+            .create_new("/model".into(), None, std::env::temp_dir())
             .expect("create");
         store.delete(&s.metadata.id).expect("delete");
         assert!(store.load(&s.metadata.id).is_err(), "load after delete");
@@ -434,7 +512,7 @@ mod tests {
     fn delete_active_clears_active_id() {
         let (store, _g) = isolated_store();
         let s = store
-            .create_new("/model".into(), std::env::temp_dir())
+            .create_new("/model".into(), None, std::env::temp_dir())
             .expect("create");
         store.set_active(Some(s.metadata.id.clone()));
         store.delete(&s.metadata.id).expect("delete");

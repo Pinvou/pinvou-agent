@@ -382,6 +382,27 @@ fn strip_v1_suffix(url: &str) -> Option<String> {
     )
 }
 
+/// 轻量探测本地 vLLM 实际 served 的模型名(只打 /v1/models,不读 metrics)。
+/// 用于发请求时用 vLLM 真实名字,免去写死名字与 `--served-model-name` 不一致的
+/// model_not_found。探测失败(vLLM 没起/超时)返回 None,调用方 fallback 配置值。
+pub async fn probe_vllm_served_model(base_url: &str) -> Option<String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .ok()?;
+    let url = if base_url.trim_end_matches('/').ends_with("/v1") {
+        format!("{}/models", base_url.trim_end_matches('/'))
+    } else {
+        format!("{}/v1/models", base_url.trim_end_matches('/'))
+    };
+    let resp = client.get(url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v = resp.json::<serde_json::Value>().await.ok()?;
+    parse_models_response(v).and_then(|(id, _)| id)
+}
+
 /// 当前 monitor/探测应使用的 vLLM base_url。
 /// 优先级：环境变量 `DEEPSEEK_BASE_URL` > settings.json `custom_base_url` > 默认值。
 /// 与 Engine 使用的逻辑保持一致（见 `bridge::Pinvou3Bridge::base_url`）。
@@ -391,8 +412,8 @@ pub fn vllm_base_url() -> String {
     }
     let prefs = crate::bridge::prefs::UserPrefs::load();
     prefs
-        .advanced
-        .custom_base_url
+        .active_model()
+        .map(|m| m.base_url.clone())
         .unwrap_or_else(|| "http://127.0.0.1:8000/v1".to_string())
 }
 
@@ -403,7 +424,13 @@ pub fn vllm_configured_model() -> Option<String> {
         return Some(v);
     }
     let prefs = crate::bridge::prefs::UserPrefs::load();
-    prefs.advanced.custom_model_name
+    match prefs.active_model() {
+        // 本地 vLLM 动态跟随实际 served name(见 EnginePool::fresh_bridge_for),
+        // 不声明固定配置目标 → 监控不做 mismatch 误报,只显示 vLLM 实际名字。
+        Some(m) if m.preset == crate::bridge::prefs::ModelPreset::LocalVllm => None,
+        Some(m) => Some(m.model.clone()),
+        None => None,
+    }
 }
 
 #[cfg(test)]

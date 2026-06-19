@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::bridge::mode_state::{PlanPhase, SerializableMode, SessionModeState};
-use crate::bridge::prefs::{ModelPreset, UserPrefs};
+use crate::bridge::prefs::{SavedModel, UserPrefs};
 use crate::bridge::sessions::SessionStore;
 use crate::engine_pool::EnginePool;
 use crate::monitor::{MonitorSnapshot, MonitorState, VllmStatus};
@@ -333,7 +333,10 @@ pub struct EffectiveModelConfig {
 pub async fn get_effective_model_config(
     pool: State<'_, EnginePool>,
 ) -> Result<EffectiveModelConfig, String> {
-    let bridge = &pool.bridge;
+    // 读 disk 最新 prefs(GUI 可能刚改过模型/默认),boot 快照会过时。
+    let mut bridge = pool.bridge.clone();
+    bridge.prefs = UserPrefs::load();
+    bridge.session_model = None; // 全局视角,不绑定具体 session
     let mut env_overrides = Vec::new();
     if std::env::var("DEEPSEEK_MODEL").is_ok() {
         env_overrides.push("model".to_string());
@@ -347,17 +350,12 @@ pub async fn get_effective_model_config(
     if std::env::var("DEEPSEEK_PROVIDER").is_ok_and(|provider| provider == bridge.provider()) {
         env_overrides.push("provider".to_string());
     }
-    let preset = match bridge.prefs.advanced.model_preset.unwrap_or_default() {
-        ModelPreset::LocalVllm => "local_vllm",
-        ModelPreset::Deepseek => "deepseek",
-        ModelPreset::Kimi => "kimi",
-        ModelPreset::OpenaiCompatible => "openai_compatible",
-        ModelPreset::Qwen => "qwen",
-        ModelPreset::Doubao => "doubao",
-        ModelPreset::Minimax => "minimax",
-        ModelPreset::Glm => "glm",
-        ModelPreset::Mimo => "mimo",
-    };
+    let preset = bridge
+        .prefs
+        .active_model()
+        .map(|m| m.preset)
+        .unwrap_or_default()
+        .as_str();
     Ok(EffectiveModelConfig {
         preset: preset.to_string(),
         model: bridge.model(),
@@ -366,6 +364,102 @@ pub async fn get_effective_model_config(
         provider: bridge.provider(),
         env_overrides,
     })
+}
+
+/// 「添加模型」方案:列出已保存模型 + 当前全局默认 id(前端高亮)。
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelsView {
+    pub models: Vec<SavedModel>,
+    pub active_model_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn list_models() -> Result<ModelsView, String> {
+    let prefs = UserPrefs::load();
+    Ok(ModelsView {
+        models: prefs.advanced.saved_models.clone(),
+        active_model_id: prefs.advanced.active_model_id.clone(),
+    })
+}
+
+/// 增或改一条模型(按 id)。前端负责生成稳定 id。
+#[tauri::command]
+pub async fn save_model(model: SavedModel) -> Result<(), String> {
+    let mut prefs = UserPrefs::load();
+    prefs.upsert_model(model);
+    prefs.save().map_err(|e| format!("save_model: {e:?}"))
+}
+
+/// 删一条模型。至少保留一条;删到当前 active 会自动回退列表首条。
+#[tauri::command]
+pub async fn delete_model(id: String) -> Result<(), String> {
+    let mut prefs = UserPrefs::load();
+    if prefs.advanced.saved_models.len() <= 1 {
+        return Err("至少保留一个模型".to_string());
+    }
+    prefs.remove_model(&id);
+    prefs.save().map_err(|e| format!("delete_model: {e:?}"))
+}
+
+/// 设全局默认模型(新建会话继承它)。不打断已在用的会话——它们各自保持 spawn
+/// 时的模型,想换在该会话的 chip 里切。
+#[tauri::command]
+pub async fn set_active_model(id: String) -> Result<(), String> {
+    let mut prefs = UserPrefs::load();
+    if prefs.model_by_id(&id).is_none() {
+        return Err(format!("model not found: {id}"));
+    }
+    prefs.advanced.active_model_id = Some(id);
+    prefs.save().map_err(|e| format!("set_active_model: {e:?}"))
+}
+
+/// 切某会话当前模型(聊天 chip 热切):写 per-session 绑定 + evict 该会话 engine,
+/// 下次发消息用新模型重建。`model_id = None` = 回退全局默认。
+/// 前端须保证非生成中调用(evict 会打断正在跑的 turn)。
+#[tauri::command]
+pub async fn set_session_model(
+    session_id: String,
+    model_id: Option<String>,
+    pool: State<'_, EnginePool>,
+) -> Result<(), String> {
+    if let Some(mid) = &model_id {
+        if UserPrefs::load().model_by_id(mid).is_none() {
+            return Err(format!("model not found: {mid}"));
+        }
+    }
+    pool.switch_session_model(&session_id, model_id).await;
+    Ok(())
+}
+
+/// 读某会话显式绑定的模型 id(没绑定返回 None = 跟随全局默认)。聊天 chip 显示用。
+#[tauri::command]
+pub async fn get_session_model_id(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<Option<String>, String> {
+    Ok(store.session_model_id(&session_id))
+}
+
+/// 测试连接:GET {base_url}/models(OpenAI 兼容标准端点),验 base_url + key 可达。
+#[tauri::command]
+pub async fn test_model_connection(base_url: String, api_key: String) -> Result<String, String> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("client: {e}"))?;
+    let mut req = client.get(&url);
+    let key = api_key.trim();
+    if !key.is_empty() {
+        req = req.bearer_auth(key);
+    }
+    match req.send().await {
+        Ok(resp) if resp.status().is_success() => {
+            Ok(format!("连接成功 (HTTP {})", resp.status().as_u16()))
+        }
+        Ok(resp) => Err(format!("HTTP {}", resp.status().as_u16())),
+        Err(e) => Err(format!("连接失败: {e}")),
+    }
 }
 
 /// 持久化 UserPrefs 到 `~/.pinvou3/settings.json`。
@@ -559,10 +653,10 @@ pub async fn create_session(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<SessionMetadata, String> {
-    let model = pool.bridge.model();
+    let (model, model_id) = pool.default_model_for_new_session();
     let workspace = pool.bridge.workspace.clone();
     let session = store
-        .create_new(model, workspace)
+        .create_new(model, model_id, workspace)
         .map_err(|e| format!("create_session: {e:?}"))?;
     store.set_active(Some(session.metadata.id.clone()));
     // 多 session 并发:不预热 engine(lazy)。新建的空 session 没有历史,首条 chat
@@ -2097,10 +2191,10 @@ pub async fn start_skill_session(
     }
 
     // 3) 没有已有 session → 新建(沿用 create_session 的 model + workspace 取值)
-    let model = pool.bridge.model();
+    let (model, model_id) = pool.default_model_for_new_session();
     let workspace = pool.bridge.workspace.clone();
     let session = store
-        .create_new(model, workspace)
+        .create_new(model, model_id, workspace)
         .map_err(|e| format!("create_session: {e:?}"))?;
     let sid = session.metadata.id.clone();
     store.set_active(Some(sid.clone()));
@@ -2204,9 +2298,9 @@ pub async fn start_workflow(
     let sid = if let Some(sid) = session_id {
         sid
     } else {
-        let model = pool.bridge.model();
+        let (model, model_id) = pool.default_model_for_new_session();
         let session = store
-            .create_new(model, pool.bridge.workspace.clone())
+            .create_new(model, model_id, pool.bridge.workspace.clone())
             .map_err(|e| format!("create_session: {e:?}"))?;
         let sid = session.metadata.id.clone();
         // 人话 title，工作流页/调试时一眼看出是哪个 PPT 项目

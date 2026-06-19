@@ -254,6 +254,11 @@
         vllmDetectedContext: '上下文',
         vllmDetectHint: '仅检测 127.0.0.1 / localhost 的 8000-8002 端口；使用后仍需保存并重启。',
         confirmAndRestart: '保存并重启',
+        addModel: '＋ 添加模型', editModel: '编辑', deleteModelBtn: '删除', setActiveModel: '设为默认', modelActiveTag: '默认',
+        modelFormAddTitle: '添加模型', modelFormEditTitle: '编辑模型', modelDisplayName: '显示名',
+        testConnection: '测试连接', testingConn: '测试中…', modelSaveBtn: '保存', manageModels: '管理模型…',
+        switchModelTitle: '切换模型', modelSwitchBusy: '生成中，无法切换', modelNonePick: '选择模型', modelDeleteMin: '至少保留一个模型',
+        modelEnvLocked: f => `环境变量已锁定：${f}，设置页改动不生效`, deleteModelConfirm: n => `删除模型「${n}」？`,
         modelDirtyHint: '配置已修改，保存后应用将重启',
         langRestartHint: '界面语言已切换；助手回复语言需重启应用后生效',
         sysPerm: '系统权限', sudo: '高级执行权限 (Sudo)', sudoDesc: '允许助手执行环境配置等高级指令',
@@ -435,6 +440,11 @@
         vllmDetectedContext: 'Context',
         vllmDetectHint: 'Checks only 127.0.0.1 / localhost ports 8000-8002. Save and restart to apply.',
         confirmAndRestart: 'Save & Restart',
+        addModel: '＋ Add Model', editModel: 'Edit', deleteModelBtn: 'Delete', setActiveModel: 'Set Default', modelActiveTag: 'Default',
+        modelFormAddTitle: 'Add Model', modelFormEditTitle: 'Edit Model', modelDisplayName: 'Display Name',
+        testConnection: 'Test Connection', testingConn: 'Testing…', modelSaveBtn: 'Save', manageModels: 'Manage models…',
+        switchModelTitle: 'Switch model', modelSwitchBusy: 'Busy generating, cannot switch', modelNonePick: 'Select model', modelDeleteMin: 'Keep at least one model',
+        modelEnvLocked: f => `Locked by env vars: ${f}; settings won't apply`, deleteModelConfirm: n => `Delete model "${n}"?`,
         modelDirtyHint: 'Configuration changed — saving will restart the app',
         langRestartHint: 'Interface language switched; restart the app to apply it to the assistant',
         sysPerm: 'System Permissions', sudo: 'Sudo Access', sudoDesc: 'Allow assistant to run high-privilege commands',
@@ -616,6 +626,11 @@
         vllmDetectedContext: 'コンテキスト',
         vllmDetectHint: '127.0.0.1 / localhost の 8000-8002 ポートのみ検出します。反映には保存して再起動してください。',
         confirmAndRestart: '保存して再起動',
+        addModel: '＋ モデルを追加', editModel: '編集', deleteModelBtn: '削除', setActiveModel: 'デフォルトに設定', modelActiveTag: 'デフォルト',
+        modelFormAddTitle: 'モデルを追加', modelFormEditTitle: 'モデルを編集', modelDisplayName: '表示名',
+        testConnection: '接続テスト', testingConn: 'テスト中…', modelSaveBtn: '保存', manageModels: 'モデルを管理…',
+        switchModelTitle: 'モデルを切り替え', modelSwitchBusy: '生成中のため切り替え不可', modelNonePick: 'モデルを選択', modelDeleteMin: 'モデルは最低 1 つ必要です',
+        modelEnvLocked: f => `環境変数でロック中：${f}（設定は反映されません）`, deleteModelConfirm: n => `モデル「${n}」を削除しますか？`,
         modelDirtyHint: '設定が変更されました。保存するとアプリが再起動します',
         langRestartHint: 'UI言語を切り替えました。アシスタントに反映するにはアプリの再起動が必要です',
         sysPerm: 'システム権限', sudo: '高度な実行権限 (Sudo)', sudoDesc: 'アシスタントによる環境設定などの高度なコマンド実行を許可',
@@ -1258,14 +1273,12 @@
                 superPerm={superPerm} setSuperPerm={handleToggleSuperPerm}
                 searchProvider={searchProvider} setSearchProvider={handleSetSearchProvider}
                 searchApiKey={searchApiKey} setSearchApiKey={handleSetSearchApiKey}
-                modelPreset={modelPreset} onChangeModelPreset={handleChangeModelPreset}
-                customModelName={customModelName} setCustomModelName={handleSetCustomModelName}
-                customBaseUrl={customBaseUrl} setCustomBaseUrl={handleSetCustomBaseUrl}
-                customApiKey={customApiKey} setCustomApiKey={handleSetCustomApiKey}
-                savedModel={savedModel}
-                onConfirmModelConfig={handleConfirmModelConfig}
+                savedModels={(bs && bs.savedModels) || []}
+                activeModelId={bs && bs.activeModelId}
+                onSaveModel={(m) => bridge.available && bridge.saveModel(m)}
+                onDeleteModel={(m) => { if (bridge.available && (typeof confirm !== 'function' || confirm(t.deleteModelConfirm(m.name)))) bridge.deleteModel(m.id); }}
+                onSetActiveModel={(id) => bridge.available && bridge.setActiveModel(id)}
                 onConfirmSearchConfig={handleConfirmSearchConfig}
-                modelConfigDirty={modelConfigDirty}
                 searchNeedsRestart={searchNeedsRestart}
                 languageNeedsRestart={languageNeedsRestart}
                 bs={bs}
@@ -1275,7 +1288,7 @@
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
-            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} />}
+            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => setCurrentView('settings')} />}
             {/* 草稿态(无 session)也渲染挂件,但强制空态——让欢迎页保留「＋加持卡牌」入口。
                 点它跳卡牌池,选卡时 equipPersona 会先物化 session(lazy session)。 */}
             {currentView === 'chat' && bs && (
@@ -1624,8 +1637,172 @@
       </div>
     );
 
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, modelPreset, onChangeModelPreset, customModelName, setCustomModelName, customBaseUrl, setCustomBaseUrl, customApiKey, setCustomApiKey, savedModel, onConfirmModelConfig, onConfirmSearchConfig, modelConfigDirty, searchNeedsRestart, languageNeedsRestart, bs, t }) => {
+    // ── 「添加模型」方案:模型快切 chip + 添加/编辑弹窗 ─────────────────
+    // 各预设默认 baseUrl/model 模板(与 bridge/prefs.rs 对齐),添加模型时自动填充。
+    const MODEL_PRESET_DEFS = {
+      local_vllm:  { baseUrl: 'http://127.0.0.1:8000/v1',                model: 'qwen36_35b_256k' },
+      deepseek:    { baseUrl: 'https://api.deepseek.com',                model: 'deepseek-v4-pro' },
+      kimi:        { baseUrl: 'https://api.moonshot.cn/v1',              model: 'kimi-k2.6' },
+      openai_compatible: { baseUrl: 'https://api.openai.com/v1',        model: 'gpt-4o' },
+      qwen:        { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-max' },
+      doubao:      { baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-pro-256k' },
+      minimax:     { baseUrl: 'https://api.minimax.chat/v1',            model: 'abab6.5s-chat' },
+      glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-4-plus' },
+      mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2-flash' },
+    };
+    function presetOptionsI18n(t) {
+      return [
+        { key: 'local_vllm', label: t.modelPresetLocalVllm },
+        { key: 'deepseek', label: t.modelPresetDeepseek },
+        { key: 'kimi', label: t.modelPresetKimi },
+        { key: 'openai_compatible', label: t.modelPresetOpenaiCompatible },
+        { key: 'qwen', label: t.modelPresetQwen },
+        { key: 'doubao', label: t.modelPresetDoubao },
+        { key: 'minimax', label: t.modelPresetMinimax },
+        { key: 'glm', label: t.modelPresetGlm },
+        { key: 'mimo', label: t.modelPresetMimo },
+      ];
+    }
+    function presetProviderLabel(preset, t) {
+      const m = {};
+      presetOptionsI18n(t).forEach(o => { m[o.key] = o.label; });
+      return m[preset] || preset;
+    }
+
+    // 聊天输入框上方:当前会话模型 chip + 下拉热切。
+    const ModelChip = ({ isDark, t, bs, onGotoSettings }) => {
+      const [open, setOpen] = useState(false);
+      const savedModels = (bs && bs.savedModels) || [];
+      const activeSessionId = bs ? bs.activeSessionId : null;
+      const activeModelId = bs && bs.activeModelId;
+      const currentSessionModelId = bs && bs.currentSessionModelId;
+      const busy = bs ? bs.busy : false;
+      const effectiveId = currentSessionModelId || activeModelId;
+      const current = savedModels.find(m => m.id === effectiveId);
+      if (!savedModels.length) return null;
+      function pick(id) {
+        setOpen(false);
+        if (id === effectiveId) return;
+        if (bridge.available) bridge.switchModel(activeSessionId, id);
+      }
+      return (
+        <div className="relative px-2 mb-2">
+          <button onClick={() => { if (!busy) setOpen(o => !o); }} disabled={busy}
+            title={busy ? t.modelSwitchBusy : t.switchModelTitle}
+            className={`inline-flex items-center gap-1.5 pl-3 pr-2 py-1 rounded-full text-[12px] font-medium transition-colors disabled:opacity-50 ${isDark ? 'bg-[#2A2B2D] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#EAEDF1] text-[#1F1F1F] hover:bg-[#E0E3E7]'}`}>
+            <span className="w-1.5 h-1.5 rounded-full bg-[#34A853]"></span>
+            <span className="max-w-[220px] truncate">{current ? current.name : t.modelNonePick}</span>
+            <ChevronDown size={13} />
+          </button>
+          {open && (
+            <div>
+              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
+              <div className={`absolute bottom-full left-2 mb-1 z-50 min-w-[240px] max-h-[340px] overflow-y-auto rounded-xl border shadow-lg py-1 ${isDark ? 'bg-[#1E1F20] border-[#333537]' : 'bg-white border-[#E0E3E7]'}`}>
+                {savedModels.map(m => (
+                  <button key={m.id} onClick={() => pick(m.id)}
+                    className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${isDark ? 'hover:bg-[#2A2B2D]' : 'hover:bg-[#F0F4F9]'}`}>
+                    <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${m.id === effectiveId ? 'bg-[#34A853]' : 'bg-transparent'}`}></span>
+                    <span className="flex-1 min-w-0">
+                      <span className={`block text-[13px] truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{m.name}</span>
+                      <span className={`block text-[11px] truncate ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{m.model}</span>
+                    </span>
+                    {m.id === activeModelId && <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${isDark ? 'bg-[#37393B] text-[#9AA0A6]' : 'bg-[#E8EAED] text-[#5F6368]'}`}>{t.modelActiveTag}</span>}
+                  </button>
+                ))}
+                <div className={`border-t mt-1 pt-1 ${isDark ? 'border-[#333537]' : 'border-[#E8EAED]'}`}>
+                  <button onClick={() => { setOpen(false); if (onGotoSettings) onGotoSettings(); }}
+                    className={`w-full px-3 py-1.5 text-left text-[12px] ${isDark ? 'text-[#9AA0A6] hover:bg-[#2A2B2D]' : 'text-[#5F6368] hover:bg-[#F0F4F9]'}`}>
+                    {t.manageModels}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    // 添加/编辑模型模态弹窗。
+    const ModelFormModal = ({ isDark, t, initial, onCancel, onSave }) => {
+      const [name, setName] = useState(initial.name || '');
+      const [preset, setPreset] = useState(initial.preset || 'local_vllm');
+      const [model, setModel] = useState(initial.model || '');
+      const [baseUrl, setBaseUrl] = useState(initial.base_url || '');
+      const [apiKey, setApiKey] = useState(initial.api_key || '');
+      const [showKey, setShowKey] = useState(false);
+      const [testing, setTesting] = useState(false);
+      const [testResult, setTestResult] = useState(null);
+      function applyPreset(p) {
+        setPreset(p);
+        const defs = MODEL_PRESET_DEFS[p] || MODEL_PRESET_DEFS.local_vllm;
+        setBaseUrl(defs.baseUrl); setModel(defs.model);
+        if (p !== 'local_vllm') setApiKey('');
+      }
+      async function handleTest() {
+        if (!bridge.available) return;
+        setTesting(true); setTestResult(null);
+        try { const msg = await bridge.testModelConnection(baseUrl.trim(), apiKey.trim()); setTestResult({ ok: true, msg: String(msg) }); }
+        catch (e) { setTestResult({ ok: false, msg: String(e) }); }
+        finally { setTesting(false); }
+      }
+      const canSave = !!(name.trim() && model.trim() && baseUrl.trim());
+      function doSave() {
+        if (!canSave) return;
+        const id = initial.__new ? ('m_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)) : initial.id;
+        onSave({ id: id, name: name.trim(), preset: preset, model: model.trim(), base_url: baseUrl.trim(), api_key: apiKey });
+      }
+      return (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150" onClick={onCancel}>
+          <div onClick={e => e.stopPropagation()}
+            className={`w-[460px] max-w-[92vw] max-h-[88vh] overflow-y-auto rounded-[24px] p-6 shadow-2xl ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
+            <h2 className="text-[18px] font-medium mb-5">{initial.__new ? t.modelFormAddTitle : t.modelFormEditTitle}</h2>
+            <div className="space-y-4">
+              <SField isDark={isDark} label={t.modelDisplayName} type="text" value={name} onChange={e => setName(e.target.value)} />
+              <div>
+                <span className={`text-[14px] block mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.modelPreset}</span>
+                <div className="relative">
+                  <select value={preset} onChange={e => applyPreset(e.target.value)}
+                    className={`w-full appearance-none px-4 py-2 pr-10 rounded-lg text-[14px] outline-none ${isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746]' : 'bg-white text-[#1F1F1F] border border-[#C4C7C5]'}`}>
+                    {presetOptionsI18n(t).map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+                  </select>
+                  <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none"><ChevronDown size={16} className={isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'} /></div>
+                </div>
+              </div>
+              <SField isDark={isDark} label={t.customModelName} type="text" value={model} onChange={e => setModel(e.target.value)} />
+              <SField isDark={isDark} label={t.customBaseUrl} type="text" value={baseUrl} onChange={e => setBaseUrl(e.target.value)} />
+              <div>
+                <span className={`text-[14px] block mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.customApiKey}</span>
+                <div className="relative">
+                  <input type={showKey ? 'text' : 'password'} value={apiKey} onChange={e => setApiKey(e.target.value)}
+                    placeholder={preset === 'local_vllm' ? 'local-no-auth' : 'sk-...'}
+                    className={`w-full px-4 py-2 pr-10 rounded-lg text-[14px] outline-none ${isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746] focus:border-[#A8C7FA]' : 'bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0]'}`} />
+                  <button onClick={() => setShowKey(s => !s)} className="absolute right-2 top-1/2 -translate-y-1/2 text-[14px] opacity-70 px-1">{showKey ? '🙈' : '👁'}</button>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 flex-wrap">
+                <button onClick={handleTest} disabled={testing || !baseUrl.trim()}
+                  className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors disabled:opacity-50 ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#F0F4F9] text-[#1F1F1F] hover:bg-[#E8EAED]'}`}>
+                  {testing ? t.testingConn : t.testConnection}
+                </button>
+                {testResult && (
+                  <span className={`text-[12px] max-w-[280px] truncate ${testResult.ok ? (isDark ? 'text-[#93D5A6]' : 'text-[#137333]') : (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]')}`}>{testResult.msg}</span>
+                )}
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-6">
+              <button onClick={onCancel} className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>{t.cpCancel}</button>
+              <button onClick={doSave} disabled={!canSave}
+                className={`text-[13px] font-medium px-5 py-2 rounded-full transition-colors disabled:opacity-50 ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'}`}>{t.modelSaveBtn}</button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onConfirmSearchConfig, searchNeedsRestart, languageNeedsRestart, bs, t }) => {
       const isDark = activeTheme === 'dark';
+      const [editingModel, setEditingModel] = useState(null);
+      const modelEnvLocked = (bs && bs.effectiveModelConfig && bs.effectiveModelConfig.env_overrides) || [];
       const [vllmDiscovery, setVllmDiscovery] = useState(null);
       const [vllmDiscovering, setVllmDiscovering] = useState(false);
       // 进设置页自动体检一次可选依赖装齐没; 之后用户可手动「重新检测」
@@ -1684,95 +1861,48 @@
               <div className="space-y-8">
 
               <SCard isDark={isDark} title={t.modelBackend}>
-                <div className="space-y-6">
-                  <SRow isDark={isDark} label={t.modelPreset} desc={t.modelBackendDesc}>
-                    <div className="relative">
-                      <select
-                        value={modelPreset}
-                        onChange={e => onChangeModelPreset(e.target.value)}
-                        className={`appearance-none px-4 py-2 pr-10 rounded-lg text-[14px] font-medium outline-none transition-colors cursor-pointer ${
-                          isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746] focus:border-[#A8C7FA]'
-                                 : 'bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0]'
-                        }`}
-                      >
-                        {presetOptions.map(opt => (
-                          <option key={opt.key} value={opt.key}>{opt.label}</option>
-                        ))}
-                      </select>
-                      <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
-                        <ChevronDown size={16} className={isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'} />
-                      </div>
+                <div className="space-y-4">
+                  <p className={`text-[13px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{t.modelBackendDesc}</p>
+                  {modelEnvLocked.length > 0 && (
+                    <div className={`text-[12px] rounded-lg px-3 py-2 ${isDark ? 'bg-[#3A2E1A] text-[#F9D67A]' : 'bg-[#FEF7E0] text-[#B06000]'}`}>
+                      {t.modelEnvLocked(modelEnvLocked.join(', '))}
                     </div>
-                  </SRow>
-
-                  {/* 输入框直接显示当前生效值（App 初始化时已用 PRESET_DEFAULTS 填充），不靠 placeholder 冒充 */}
-                  <div className="space-y-4">
-                    <SField isDark={isDark} label={t.customModelName} type="text"
-                      value={customModelName} onChange={e => setCustomModelName(e.target.value)} />
-                    <SField isDark={isDark} label={t.customBaseUrl} type="text"
-                      value={customBaseUrl} onChange={e => setCustomBaseUrl(e.target.value)} />
-	                    <SField isDark={isDark} label={t.customApiKey} type="password"
-	                      value={customApiKey} onChange={e => setCustomApiKey(e.target.value)}
-	                      placeholder={modelPreset === 'local_vllm' ? 'local-no-auth' : 'sk-...'} />
-	                    {modelPreset === 'local_vllm' && (
-	                      <div className={`rounded-xl border p-3 space-y-3 ${isDark ? 'border-[#333537] bg-[#131314]' : 'border-[#E0E3E7] bg-white'}`}>
-	                        <div className="flex items-center justify-between gap-3">
-	                          <span className={`text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{t.vllmDetectHint}</span>
-	                          <button
-	                            onClick={handleDetectLocalVllm}
-	                            disabled={vllmDiscovering || !bridge.available}
-	                            className={`shrink-0 text-[13px] font-medium px-4 py-2 rounded-full transition-colors disabled:opacity-60 ${
-	                              isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#333537]'
-	                                     : 'bg-[#F0F4F9] text-[#1F1F1F] hover:bg-[#E8EAED]'
-	                            }`}
-	                          >{vllmDiscovering ? t.detectingLocalVllm : t.detectLocalVllm}</button>
-	                        </div>
-	                        {vllmDiscovery && vllmDiscovery.error && (
-	                          <div className={`text-[12px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>
-	                            {t.vllmDetectError(vllmDiscovery.error)}
-	                          </div>
-	                        )}
-	                        {vllmDiscovery && !vllmDiscovery.error && (
-	                          <div className="space-y-2">
-	                            <div className={`text-[12px] ${vllmOnlineCandidates.length ? (isDark ? 'text-[#93D5A6]' : 'text-[#137333]') : (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]')}`}>
-	                              {vllmOnlineCandidates.length ? t.vllmDetectFound(vllmOnlineCandidates.length) : t.vllmDetectNone}
-	                            </div>
-	                            {vllmOnlineCandidates.map(candidate => {
-	                              return (
-	                                <div key={candidate.base_url} className={`flex items-center justify-between gap-3 rounded-lg px-3 py-2 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F8FAFD]'}`}>
-	                                  <div className="min-w-0">
-	                                    <div className="flex items-center gap-2">
-	                                      <span className="w-2 h-2 rounded-full bg-[#34A853]"></span>
-	                                      <span className={`text-[13px] font-medium truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{candidate.base_url}</span>
-	                                      <span className={`text-[11px] uppercase ${isDark ? 'text-[#93D5A6]' : 'text-[#137333]'}`}>{vllmStatusLabel(candidate.status)}</span>
-	                                    </div>
-	                                    <div className={`mt-1 text-[12px] truncate ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
-	                                      {t.vllmDetectedModel}: {candidate.model || '—'} · {t.vllmDetectedContext}: {candidate.max_model_len || '—'}
-	                                    </div>
-	                                  </div>
-	                                  <button
-	                                    onClick={() => handleUseVllmCandidate(candidate)}
-	                                    className={`shrink-0 text-[12px] font-medium px-3 py-1.5 rounded-full transition-colors ${
-	                                      isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]'
-	                                             : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'
-	                                    }`}
-	                                  >{t.useVllmConfig}</button>
-	                                </div>
-	                              );
-	                            })}
-	                          </div>
-	                        )}
-	                      </div>
-	                    )}
-	                  </div>
-
-                  {modelConfigDirty && (
-                    <SActionBar isDark={isDark} message={t.modelDirtyHint}
-                      actionLabel={t.confirmAndRestart} onAction={onConfirmModelConfig} />
                   )}
+                  <div className="space-y-2">
+                    {savedModels.map(m => {
+                      const isActive = m.id === activeModelId;
+                      return (
+                        <div key={m.id} className={`flex items-center gap-3 rounded-xl border px-4 py-3 ${isDark ? 'border-[#333537] bg-[#131314]' : 'border-[#E0E3E7] bg-white'}`}>
+                          <button onClick={() => { if (!isActive) onSetActiveModel(m.id); }} title={t.setActiveModel} className="shrink-0">
+                            <span className={`block w-4 h-4 rounded-full border-2 ${isActive ? 'border-[#0B57D0] bg-[#0B57D0]' : (isDark ? 'border-[#5F6368]' : 'border-[#9AA0A6]')}`}>
+                              {isActive && <span className="block w-1.5 h-1.5 mx-auto mt-[3px] rounded-full bg-white"></span>}
+                            </span>
+                          </button>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className={`text-[14px] font-medium truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{m.name}</span>
+                              <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${isDark ? 'bg-[#2A2B2D] text-[#9AA0A6]' : 'bg-[#F0F4F9] text-[#5F6368]'}`}>{presetProviderLabel(m.preset, t)}</span>
+                              {isActive && <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${isDark ? 'bg-[#1A3A1F] text-[#93D5A6]' : 'bg-[#E6F4EA] text-[#137333]'}`}>{t.modelActiveTag}</span>}
+                            </div>
+                            <div className={`text-[12px] truncate ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{m.model} · {m.base_url}</div>
+                          </div>
+                          <button onClick={() => setEditingModel(m)} title={t.editModel} className={`shrink-0 text-[12px] px-3 py-1.5 rounded-full transition-colors ${isDark ? 'text-[#A8C7FA] hover:bg-[#333537]' : 'text-[#0B57D0] hover:bg-[#F0F4F9]'}`}>{t.editModel}</button>
+                          {savedModels.length > 1 && (
+                            <button onClick={() => onDeleteModel(m)} title={t.deleteModelBtn} className={`shrink-0 text-[12px] px-3 py-1.5 rounded-full transition-colors ${isDark ? 'text-[#F28B82] hover:bg-[#333537]' : 'text-[#C5221F] hover:bg-[#FCE8E6]'}`}>{t.deleteModelBtn}</button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <button onClick={() => setEditingModel({ __new: true, id: '', name: '', preset: 'local_vllm', model: MODEL_PRESET_DEFS.local_vllm.model, base_url: MODEL_PRESET_DEFS.local_vllm.baseUrl, api_key: '' })}
+                    className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#F0F4F9] text-[#1F1F1F] hover:bg-[#E8EAED]'}`}>{t.addModel}</button>
                 </div>
               </SCard>
-
+              {editingModel && (
+                <ModelFormModal isDark={isDark} t={t} initial={editingModel}
+                  onCancel={() => setEditingModel(null)}
+                  onSave={m => { onSaveModel(m); setEditingModel(null); }} />
+              )}
               <SCard isDark={isDark} title={t.searchBackend}>
                 <div className="space-y-6">
                   <SRow isDark={isDark} label={t.searchSource} desc={t.searchBackendDesc}>
@@ -2085,7 +2215,7 @@
       );
     };
 
-    const ChatView = ({ theme, t, bs, prefill, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool }) => {
+    const ChatView = ({ theme, t, bs, prefill, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings }) => {
       const isDark = theme === 'dark';
       const [inputText, setInputText] = useState('');
       const [artifactsOpen, setArtifactsOpen] = useState(false);
@@ -2134,6 +2264,11 @@
         // 依赖 activeSessionId(切会话)+ draftEpoch(每次点「新建对话」自增):后者保证即便已在草稿态
         // 再点「新建对话」(activeSessionId 不变 null→null)也能重新求值,否则残留工具卡顶掉「你好」。
       }, [activeSessionId, draftEpoch]);
+
+      // chip 显示当前会话绑定的模型:切会话/草稿时刷新 currentSessionModelId
+      useEffect(() => {
+        if (bridge.available) bridge.loadSessionModel(activeSessionId);
+      }, [activeSessionId]);
 
       function handleSend() {
         // 不再因 busy 拦截:bridge.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
@@ -2251,6 +2386,7 @@
                 ))}
               </div>
             )}
+            <ModelChip isDark={isDark} t={t} bs={bs} onGotoSettings={onGotoSettings} />
             {/* 附件 chips */}
             {attachments.length > 0 && (
               <div className="flex flex-wrap gap-2 mb-2 px-2">
