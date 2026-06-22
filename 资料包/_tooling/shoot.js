@@ -78,6 +78,8 @@ function injectSource() {
       switch(cmd){
         case 'get_settings': return Promise.resolve(SETTINGS);
         case 'get_effective_model_config': return Promise.resolve(EM);
+        case 'list_models': return Promise.resolve({models:[{id:'m_local',name:'本地 Qwen3.6（默认）',preset:'local_vllm',model:'qwen36_35b_256k',base_url:'http://127.0.0.1:8000/v1',api_key:''},{id:'m_ds',name:'DeepSeek',preset:'deepseek',model:'deepseek-chat',base_url:'https://api.deepseek.com/v1',api_key:'sk-****'}],active_model_id:'m_local'});
+        case 'get_session_model_id': return Promise.resolve(null);
         case 'list_sessions': return Promise.resolve(SESSIONS);
         case 'get_super_permission_status': return Promise.resolve(false);
         case 'list_personas': return Promise.resolve(PERSONAS);
@@ -130,7 +132,7 @@ async function openArtifacts(page) {
 
 const SHOTS = [
   { key: 'home', w: 1440, h: 920, act: async () => {} },
-  { key: 'cardpool', w: 1440, h: 1120, act: async (p) => { await clickText(p, '卡牌池'); } },
+  { key: 'cardpool', w: 1440, h: 1120, act: async (p) => { await clickText(p, '专家卡牌池'); } },
   { key: 'toolStore', w: 1440, h: 1180, act: async (p) => { await clickText(p, '工具商店'); } },
   { key: 'settings', w: 1440, h: 2380, act: async (p) => { await gear(p); } },
   { key: 'conversation', w: 1440, h: 920, act: async (p) => { await clickText(p, '第三季度财报分析'); await sleep(1200); } },
