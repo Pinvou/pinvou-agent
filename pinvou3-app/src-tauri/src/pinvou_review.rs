@@ -423,14 +423,25 @@ async fn model_review(bridge: &Pinvou3Bridge, prompt: &str, user_content: &str) 
         .timeout(DEFAULT_TIMEOUT)
         .build()
         .context("build reqwest client")?;
-    let url = format!("{}/chat/completions", bridge.base_url().trim_end_matches('/'));
+    let base_url = bridge.base_url();
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    // 本地 vLLM：用实际 served name 发请求——vLLM 端改了 --served-model-name 后，配置里
+    // bridge.model() 可能仍是旧名（品悟走独立 HTTP，不经 engine 的 fresh_bridge_for 探测），
+    // 直接用会 404 model_not_found。探测失败回退配置值；云端 provider 不探测。
+    let model_name = if bridge.provider() == "vllm" {
+        crate::monitor::probe_vllm_served_model(&base_url)
+            .await
+            .unwrap_or_else(|| bridge.model())
+    } else {
+        bridge.model()
+    };
     // 非中文 locale 追加输出语言指令(覆盖 prompt 里的「中文」措辞)。
     let prompt = match output_language_directive(bridge.locale_tag()) {
         Some(suffix) => format!("{prompt}{suffix}"),
         None => prompt.to_string(),
     };
     let body = json!({
-        "model": bridge.model(),
+        "model": model_name,
         "messages": [
             { "role": "system", "content": prompt },
             { "role": "user", "content": user_content }
