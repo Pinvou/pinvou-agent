@@ -21,6 +21,7 @@ pub mod engine_pool;
 pub mod file_ingest;
 mod file_watcher;
 mod harness;
+mod knowledge;
 mod monitor;
 pub mod personas;
 mod pinvou_review;
@@ -151,6 +152,16 @@ pub fn run() {
             // File watcher: 监听 ~/.pinvou3/sessions/ 树,新文件 emit artifact:disk
             file_watcher::spawn(app.handle().clone(), bridge::paths::sessions_root());
 
+            // 本地知识底座 L0:全系统元数据索引(秒搜+去重)。这里只 manage,**不自动全盘扫**——
+            // 由前端「知识范围」首次进入触发 kb_start_scan,避免每次启动都扫全盘。
+            match knowledge::KnowledgeService::new(&knowledge::default_db_path()) {
+                Ok(svc) => {
+                    app.handle().manage(svc);
+                    eprintln!("[pinvou3-app] knowledge service ready");
+                }
+                Err(e) => eprintln!("[pinvou3-app] knowledge service init failed: {e:?}"),
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -250,6 +261,12 @@ pub fn run() {
             commands::list_marketplace_tools,
             commands::install_marketplace_tool,
             commands::uninstall_marketplace_tool,
+            knowledge::kb_start_scan,
+            knowledge::kb_scan_status,
+            knowledge::kb_cancel_scan,
+            knowledge::kb_search,
+            knowledge::kb_stats,
+            knowledge::kb_find_duplicates,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

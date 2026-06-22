@@ -52,3 +52,10 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 # File watcher：监听 ~/.pinvou3/sessions/*/workspace/ 新文件产出，
 # 自动入 session.artifacts (覆盖 write_file 之外的工具如 exec_shell pandoc 产出的 docx)
 notify = "6"
+
+# 本地知识底座 L0：全系统元数据索引 + 秒搜 + 去重（docs/本地知识底座-产品形态与架构.md）
+# rusqlite bundled —— 自带 SQLite + FTS5（名/路径秒搜），不依赖系统 libsqlite，
+# 对 .deb 离线分发友好（与 file_ingest 二进制依赖降 recommends 的思路一致）。
+rusqlite = { version = "0.31", features = ["bundled"] }
+# 全盘遍历：容错(权限不足跳过)、防 symlink 环。L0 扫描器用。
+walkdir = "2"

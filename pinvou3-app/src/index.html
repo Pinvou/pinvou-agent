@@ -204,6 +204,16 @@
       zh: {
         langTag: 'zh',
         newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', toolStore: '工具商店', cardPool: '专家卡牌池', recent: '近期', settings: '设置', localEnv: '本地环境',
+        knowledge: '本地知识',
+        kbTitle: '本地知识', kbDesc: '全系统秒搜 + 去重 · 仅索引元数据，不读内容',
+        kbRescan: '重新扫描', kbScanning: '扫描中', kbDeduping: '去重中', kbScanNow: '扫描本机',
+        kbTotalFiles: '已索引文件', kbDupFiles: '重复文件', kbWasted: '可回收',
+        kbTabSearch: '搜索', kbTabDups: '重复文件',
+        kbSearchPlaceholder: '试试：上周的 pdf、大于10mb的视频', kbSearchBtn: '搜索',
+        kbResults: '结果', kbNoResults: '没有匹配的文件',
+        kbEmptyHint: '还没建立索引。扫描本机后即可秒搜全盘文件、找出重复。',
+        kbDupNote: '内容完全相同的文件（删除动作将在后续版本支持）', kbNoDups: '没有发现重复文件', kbDupCopies: '份',
+        kbOpen: '打开', kbOpenFolder: '所在文件夹',
         sysStatus: '系统状态', sysDesc: '实时性能与资源指标', gpu: '图形处理器 (GPU)', gpuUnavail: '状态不可用', noSmi: '未检测到 nvidia-smi',
         vram: '显存占用', core: '计算核心', temp: '温度', power: '功耗', unifiedMem: '统一内存架构',
         ram: '系统内存 (RAM)', used: '已用', physical: '物理内存', total: '总计', swap: '交换空间',
@@ -390,6 +400,16 @@
       en: {
         langTag: 'en',
         newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'Recent', settings: 'Settings', localEnv: 'Local Env',
+        knowledge: 'Local Knowledge',
+        kbTitle: 'Local Knowledge', kbDesc: 'Whole-system instant search + dedup · metadata only, content not read',
+        kbRescan: 'Rescan', kbScanning: 'Scanning', kbDeduping: 'Deduping', kbScanNow: 'Scan this PC',
+        kbTotalFiles: 'Indexed files', kbDupFiles: 'Duplicates', kbWasted: 'Reclaimable',
+        kbTabSearch: 'Search', kbTabDups: 'Duplicates',
+        kbSearchPlaceholder: 'Try: pdf from last week, videos over 10mb', kbSearchBtn: 'Search',
+        kbResults: 'Results', kbNoResults: 'No matching files',
+        kbEmptyHint: 'No index yet. Scan this PC to instantly search all files and find duplicates.',
+        kbDupNote: 'Files with identical content (delete action coming in a later version)', kbNoDups: 'No duplicates found', kbDupCopies: 'copies',
+        kbOpen: 'Open', kbOpenFolder: 'Open folder',
         sysStatus: 'System Status', sysDesc: 'Real-time performance metrics', gpu: 'GPU', gpuUnavail: 'Unavailable', noSmi: 'nvidia-smi not found',
         vram: 'VRAM Usage', core: 'Core Usage', temp: 'Temp', power: 'Power', unifiedMem: 'Unified Memory',
         ram: 'System RAM', used: 'Used', physical: 'Physical RAM', total: 'Total', swap: 'Swap Space',
@@ -576,6 +596,16 @@
       ja: {
         langTag: 'ja',
         newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', monitor: 'システムモニター', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '最近', settings: '設定', localEnv: 'ローカル環境',
+        knowledge: 'ローカル知識',
+        kbTitle: 'ローカル知識', kbDesc: '全システム高速検索 + 重複検出 · メタデータのみ、内容は読まない',
+        kbRescan: '再スキャン', kbScanning: 'スキャン中', kbDeduping: '重複検出中', kbScanNow: 'このPCをスキャン',
+        kbTotalFiles: 'インデックス済み', kbDupFiles: '重複ファイル', kbWasted: '回収可能',
+        kbTabSearch: '検索', kbTabDups: '重複ファイル',
+        kbSearchPlaceholder: '例：先週のpdf、10mb以上の動画', kbSearchBtn: '検索',
+        kbResults: '結果', kbNoResults: '一致するファイルがありません',
+        kbEmptyHint: 'まだインデックスがありません。このPCをスキャンすると全ファイルを高速検索し重複を検出できます。',
+        kbDupNote: '内容が完全に同じファイル（削除操作は今後のバージョンで対応）', kbNoDups: '重複は見つかりませんでした', kbDupCopies: '個',
+        kbOpen: '開く', kbOpenFolder: 'フォルダを開く',
         sysStatus: 'システム状態', sysDesc: 'リアルタイムの性能・リソース指標', gpu: 'GPU', gpuUnavail: '状態を取得できません', noSmi: 'nvidia-smi が見つかりません',
         vram: 'VRAM 使用量', core: 'コア使用率', temp: '温度', power: '消費電力', unifiedMem: 'ユニファイドメモリ',
         ram: 'システムメモリ (RAM)', used: '使用中', physical: '物理メモリ', total: '合計', swap: 'スワップ領域',
@@ -1174,6 +1204,13 @@
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => setCurrentView('toolStore')}
               />
+              <NavItem
+                icon={<BookOpen size={18} />} label={t.knowledge}
+                active={currentView === 'knowledge'}
+                theme={activeTheme}
+                isSidebarOpen={isSidebarOpen}
+                onClick={() => setCurrentView('knowledge')}
+              />
               {/* 收起态专属:展开态近期列表的高亮项就是回会话入口,不重复渲染 */}
               {!isSidebarOpen && (
                 <NavItem
@@ -1297,6 +1334,7 @@
                 onOpenPicker={() => { setPoolMyOnly(false); setCurrentView('cardpool'); }} />
             )}
             {currentView === 'search' && <SearchView theme={activeTheme} history={chatHistory} t={t} onSelect={handleSwitchSession} />}
+            {currentView === 'knowledge' && <KnowledgeView theme={activeTheme} t={t} />}
 
             {/* App 级自创卡编辑器: 聊天里「存入卡牌池」草稿走这条 */}
             {personaEditor && (
@@ -1414,6 +1452,195 @@
                 ))}
               </div>
 
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+
+    // ==========================================
+    // Knowledge View — 本地知识 L0：全系统秒搜 + 去重
+    // 后端 kb_* 命令（src-tauri/src/knowledge）。纯 L0 元数据，不过模型。
+    // ==========================================
+    const KnowledgeView = ({ theme, t }) => {
+      const isDark = theme === 'dark';
+      const inv = (cmd, args) =>
+        (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke)
+          ? window.__TAURI__.core.invoke(cmd, args)
+          : Promise.reject('no-tauri');
+
+      const [tab, setTab] = useState('search'); // 'search' | 'dups'
+      const [query, setQuery] = useState('');
+      const [results, setResults] = useState([]);
+      const [searched, setSearched] = useState(false);
+      const [stats, setStats] = useState(null);
+      const [scan, setScan] = useState(null);
+      const [dups, setDups] = useState([]);
+
+      const refreshStatus = useCallback(async () => {
+        try { setScan(await inv('kb_scan_status')); } catch (e) {}
+        try { setStats(await inv('kb_stats')); } catch (e) {}
+      }, []);
+
+      useEffect(() => { refreshStatus(); }, []);
+      // 扫描中每 1.2s 刷新进度
+      useEffect(() => {
+        if (!scan || !scan.running) return;
+        const id = setInterval(refreshStatus, 1200);
+        return () => clearInterval(id);
+      }, [scan ? scan.running : false]);
+      useEffect(() => { if (tab === 'dups') loadDups(); }, [tab]);
+
+      const doSearch = async () => {
+        try { setResults(await inv('kb_search', { query: { text: query || null, limit: 200 } }) || []); }
+        catch (e) { setResults([]); }
+        setSearched(true);
+      };
+      const startScan = async () => { try { setScan(await inv('kb_start_scan', { roots: null })); } catch (e) {} };
+      const loadDups = async () => { try { setDups(await inv('kb_find_duplicates', { limit: 100 }) || []); } catch (e) {} };
+      const openFile = (p) => inv('open_in_system', { path: p }).catch(() => {});
+      const openFolder = (p) => inv('open_containing_folder', { path: p }).catch(() => {});
+
+      const fmtSize = (b) => {
+        if (b == null) return '';
+        if (b < 1024) return b + ' B';
+        if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+        if (b < 1073741824) return (b / 1048576).toFixed(1) + ' MB';
+        return (b / 1073741824).toFixed(2) + ' GB';
+      };
+      const fmtDate = (s) => {
+        if (!s) return '';
+        const d = new Date(s * 1000), p = (n) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+      };
+
+      const scanning = !!(scan && scan.running);
+      const total = stats ? stats.totalFiles : 0;
+      const dupFiles = stats ? stats.duplicateFiles : 0;
+      const wasted = stats ? stats.duplicateWastedBytes : 0;
+      const neverScanned = !scanning && total === 0;
+
+      const muted = isDark ? 'text-[#C4C7C5]' : 'text-[#444746]';
+      const card = isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]';
+
+      const Stat = ({ label, value }) => (
+        <div className={`px-4 py-2 rounded-2xl ${card}`}>
+          <div className={`text-[11px] ${muted}`}>{label}</div>
+          <div className="text-[16px] font-medium">{value}</div>
+        </div>
+      );
+
+      const FileRow = ({ f }) => (
+        <div className={`flex items-center gap-3 px-4 py-3 rounded-2xl transition-colors ${isDark ? 'hover:bg-[#1E1F20]' : 'hover:bg-[#F0F4F9]'}`}>
+          <FileText size={18} className={muted} />
+          <div className="flex-1 min-w-0">
+            <div className={`text-[15px] truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{f.name}</div>
+            <div className={`text-[12px] truncate ${muted}`}>{f.path}</div>
+          </div>
+          <div className={`text-[12px] shrink-0 text-right ${muted}`}>
+            <div>{fmtSize(f.size)}</div>
+            <div>{fmtDate(f.mtime)}</div>
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <button title={t.kbOpen} onClick={() => openFile(f.path)} className={`p-2 rounded-full ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]'}`}><ExternalLink size={16} /></button>
+            <button title={t.kbOpenFolder} onClick={() => openFolder(f.path)} className={`p-2 rounded-full ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]'}`}><BookOpen size={16} /></button>
+          </div>
+        </div>
+      );
+
+      return (
+        <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
+          {/* Header */}
+          <div className="px-16 pt-12 pb-4 flex items-end justify-between gap-6">
+            <div>
+              <h1 className="text-[32px] font-normal tracking-tight mb-2">{t.kbTitle}</h1>
+              <p className={`text-[15px] ${muted}`}>{t.kbDesc}</p>
+            </div>
+            <button
+              onClick={startScan}
+              disabled={scanning}
+              className={`flex items-center gap-2 px-5 py-2.5 rounded-full text-[14px] font-medium transition-colors ${scanning ? 'opacity-60 cursor-default' : ''} ${isDark ? 'bg-[#1E1F20] hover:bg-[#333537] text-[#A8C7FA]' : 'bg-[#F0F4F9] hover:bg-[#E1E5EA] text-[#0B57D0]'}`}
+            >
+              <RefreshCw size={16} className={scanning ? 'animate-spin' : ''} />
+              {scanning ? (scan.phase === 'deduping' ? `${t.kbDeduping} ${scan.dedupDone}/${scan.dedupTotal}` : `${t.kbScanning} ${scan.scanned}`) : t.kbRescan}
+            </button>
+          </div>
+
+          {/* Stats chips */}
+          <div className="px-16 pb-4 flex items-center gap-3 flex-wrap">
+            <Stat label={t.kbTotalFiles} value={total.toLocaleString()} />
+            <Stat label={t.kbDupFiles} value={dupFiles.toLocaleString()} />
+            <Stat label={t.kbWasted} value={fmtSize(wasted)} />
+          </div>
+
+          {/* Tabs */}
+          <div className="px-16 flex items-center gap-2 border-b border-gray-400/15">
+            {[['search', t.kbTabSearch], ['dups', t.kbTabDups]].map(([k, lbl]) => (
+              <button key={k} onClick={() => setTab(k)}
+                className={`px-4 py-2.5 text-[14px] font-medium border-b-2 -mb-[1px] transition-colors ${tab === k ? (isDark ? 'border-[#A8C7FA] text-[#A8C7FA]' : 'border-[#0B57D0] text-[#0B57D0]') : `border-transparent ${muted}`}`}>
+                {lbl}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex-1 overflow-y-auto custom-scrollbar px-16 py-6">
+            <div className="max-w-[900px]">
+              {neverScanned && (
+                <div className={`text-center py-20 ${muted}`}>
+                  <p className="text-[15px] mb-4">{t.kbEmptyHint}</p>
+                  <button onClick={startScan} className={`px-5 py-2.5 rounded-full text-[14px] font-medium ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>{t.kbScanNow}</button>
+                </div>
+              )}
+
+              {!neverScanned && tab === 'search' && (
+                <div>
+                  <div className={`flex items-center gap-3 px-6 py-4 rounded-full mb-6 ${card}`}>
+                    <Search size={20} className={muted} />
+                    <input
+                      type="text" value={query}
+                      placeholder={t.kbSearchPlaceholder}
+                      onChange={(e) => setQuery(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') doSearch(); }}
+                      className={`flex-1 bg-transparent border-none outline-none text-[16px] ${isDark ? 'placeholder:text-[#C4C7C5]' : 'placeholder:text-[#444746]'}`}
+                    />
+                    <button onClick={doSearch} className={`px-4 py-1.5 rounded-full text-[13px] font-medium ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>{t.kbSearchBtn}</button>
+                  </div>
+                  {results.length > 0 && (
+                    <div className="flex flex-col">
+                      <div className={`text-[13px] mb-2 px-4 ${muted}`}>{t.kbResults}: {results.length}</div>
+                      {results.map((f) => <FileRow key={f.path} f={f} />)}
+                    </div>
+                  )}
+                  {searched && results.length === 0 && (
+                    <div className={`text-center py-16 ${muted} text-[14px]`}>{t.kbNoResults}</div>
+                  )}
+                </div>
+              )}
+
+              {!neverScanned && tab === 'dups' && (
+                <div>
+                  <div className={`text-[13px] mb-4 px-1 ${muted}`}>{t.kbDupNote}</div>
+                  {dups.length === 0 && <div className={`text-center py-16 ${muted} text-[14px]`}>{t.kbNoDups}</div>}
+                  {dups.map((g, i) => (
+                    <div key={g.hash || i} className={`mb-3 p-4 rounded-2xl ${card}`}>
+                      <div className="flex items-center gap-2 mb-2">
+                        <Copy size={15} className={muted} />
+                        <span className="text-[13px] font-medium">{g.paths.length} {t.kbDupCopies} · {fmtSize(g.size)}</span>
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        {g.paths.map((p) => (
+                          <div key={p} className="flex items-center gap-2">
+                            <span className={`flex-1 min-w-0 truncate text-[13px] ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{p}</span>
+                            <button title={t.kbOpen} onClick={() => openFile(p)} className={`p-1.5 rounded-full ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]'}`}><ExternalLink size={14} /></button>
+                            <button title={t.kbOpenFolder} onClick={() => openFolder(p)} className={`p-1.5 rounded-full ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]'}`}><BookOpen size={14} /></button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>
