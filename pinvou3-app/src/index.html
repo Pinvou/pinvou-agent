@@ -212,6 +212,7 @@
         kbSearchPlaceholder: '试试：上周的 pdf、大于10mb的视频', kbSearchBtn: '搜索',
         kbResults: '结果', kbNoResults: '没有匹配的文件',
         kbEmptyHint: '还没建立索引。扫描本机后即可秒搜全盘文件、找出重复。',
+        kbBuildDups: '扫描重复', kbDupHint: '尚未建立去重数据，点「扫描重复」按需读取文件算指纹。',
         kbDupNote: '内容完全相同的文件（删除动作将在后续版本支持）', kbNoDups: '没有发现重复文件', kbDupCopies: '份',
         kbOpen: '打开', kbOpenFolder: '所在文件夹',
         sysStatus: '系统状态', sysDesc: '实时性能与资源指标', gpu: '图形处理器 (GPU)', gpuUnavail: '状态不可用', noSmi: '未检测到 nvidia-smi',
@@ -408,6 +409,7 @@
         kbSearchPlaceholder: 'Try: pdf from last week, videos over 10mb', kbSearchBtn: 'Search',
         kbResults: 'Results', kbNoResults: 'No matching files',
         kbEmptyHint: 'No index yet. Scan this PC to instantly search all files and find duplicates.',
+        kbBuildDups: 'Find duplicates', kbDupHint: 'No dedup data yet. Click "Find duplicates" to scan — reads files on demand to fingerprint.',
         kbDupNote: 'Files with identical content (delete action coming in a later version)', kbNoDups: 'No duplicates found', kbDupCopies: 'copies',
         kbOpen: 'Open', kbOpenFolder: 'Open folder',
         sysStatus: 'System Status', sysDesc: 'Real-time performance metrics', gpu: 'GPU', gpuUnavail: 'Unavailable', noSmi: 'nvidia-smi not found',
@@ -604,6 +606,7 @@
         kbSearchPlaceholder: '例：先週のpdf、10mb以上の動画', kbSearchBtn: '検索',
         kbResults: '結果', kbNoResults: '一致するファイルがありません',
         kbEmptyHint: 'まだインデックスがありません。このPCをスキャンすると全ファイルを高速検索し重複を検出できます。',
+        kbBuildDups: '重複をスキャン', kbDupHint: '重複データがありません。「重複をスキャン」で必要に応じてファイルを読み取り指紋化します。',
         kbDupNote: '内容が完全に同じファイル（削除操作は今後のバージョンで対応）', kbNoDups: '重複は見つかりませんでした', kbDupCopies: '個',
         kbOpen: '開く', kbOpenFolder: 'フォルダを開く',
         sysStatus: 'システム状態', sysDesc: 'リアルタイムの性能・リソース指標', gpu: 'GPU', gpuUnavail: '状態を取得できません', noSmi: 'nvidia-smi が見つかりません',
@@ -1491,6 +1494,10 @@
         return () => clearInterval(id);
       }, [scan ? scan.running : false]);
       useEffect(() => { if (tab === 'dups') loadDups(); }, [tab]);
+      // 扫描/去重完成(running 落回 false)后,在重复页则刷新列表 + 统计。
+      useEffect(() => {
+        if (scan && !scan.running && scan.phase === 'done' && tab === 'dups') { loadDups(); refreshStatus(); }
+      }, [scan ? scan.running : false]);
 
       const doSearch = async () => {
         try { setResults(await inv('kb_search', { query: { text: query || null, limit: 200 } }) || []); }
@@ -1498,6 +1505,7 @@
         setSearched(true);
       };
       const startScan = async () => { try { setScan(await inv('kb_start_scan', { roots: null })); } catch (e) {} };
+      const buildDedup = async () => { try { setScan(await inv('kb_build_dedup')); } catch (e) {} };
       const loadDups = async () => { try { setDups(await inv('kb_find_duplicates', { limit: 100 }) || []); } catch (e) {} };
       const openFile = (p) => inv('open_in_system', { path: p }).catch(() => {});
       const openFolder = (p) => inv('open_containing_folder', { path: p }).catch(() => {});
@@ -1620,8 +1628,17 @@
 
               {!neverScanned && tab === 'dups' && (
                 <div>
-                  <div className={`text-[13px] mb-4 px-1 ${muted}`}>{t.kbDupNote}</div>
-                  {dups.length === 0 && <div className={`text-center py-16 ${muted} text-[14px]`}>{t.kbNoDups}</div>}
+                  <div className="flex items-center justify-between gap-3 mb-4 px-1">
+                    <div className={`text-[13px] ${muted}`}>{t.kbDupNote}</div>
+                    <button onClick={buildDedup} disabled={scanning}
+                      className={`flex items-center gap-2 shrink-0 px-4 py-2 rounded-full text-[13px] font-medium transition-colors ${scanning ? 'opacity-60 cursor-default' : ''} ${isDark ? 'bg-[#1E1F20] hover:bg-[#333537] text-[#A8C7FA]' : 'bg-[#F0F4F9] hover:bg-[#E1E5EA] text-[#0B57D0]'}`}>
+                      <RefreshCw size={15} className={scanning ? 'animate-spin' : ''} />
+                      {scanning && scan.phase === 'deduping' ? `${t.kbDeduping} ${scan.dedupDone}/${scan.dedupTotal}` : t.kbBuildDups}
+                    </button>
+                  </div>
+                  {dups.length === 0 && !scanning && (
+                    <div className={`text-center py-16 ${muted} text-[14px]`}>{stats && stats.hashed > 0 ? t.kbNoDups : t.kbDupHint}</div>
+                  )}
                   {dups.map((g, i) => (
                     <div key={g.hash || i} className={`mb-3 p-4 rounded-2xl ${card}`}>
                       <div className="flex items-center gap-2 mb-2">

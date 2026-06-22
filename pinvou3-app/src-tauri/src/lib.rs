@@ -264,6 +264,7 @@ pub fn run() {
             knowledge::kb_start_scan,
             knowledge::kb_scan_status,
             knowledge::kb_cancel_scan,
+            knowledge::kb_build_dedup,
             knowledge::kb_search,
             knowledge::kb_stats,
             knowledge::kb_find_duplicates,

@@ -3,6 +3,7 @@
 use std::fs::File;
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
@@ -10,6 +11,10 @@ use super::store::Store;
 
 /// 超过此大小的文件跳过 hash（大视频/镜像，去重收益低、读取昂贵）。留 hash=NULL，不参与去重。
 const MAX_HASH_BYTES: u64 = 1024 * 1024 * 1024; // 1 GiB
+
+/// 每算 N 个 hash 后让步，避免去重读盘抢占前台 I/O（治「去重时设备卡顿」）。
+const THROTTLE_EVERY: u64 = 16;
+const THROTTLE_MS: u64 = 5;
 
 /// 跑一轮去重。返回实际算了 hash 的文件数。`on_progress(done, total)` 周期回调。
 pub fn run(
@@ -33,6 +38,9 @@ pub fn run(
             let _ = store.set_hash(c.id, &h);
         }
         on_progress(done, total);
+        if done % THROTTLE_EVERY == 0 {
+            std::thread::sleep(Duration::from_millis(THROTTLE_MS));
+        }
     }
     Ok(done)
 }
@@ -63,6 +71,7 @@ mod tests {
     use crate::knowledge::scanner;
     use crate::knowledge::store::Store;
     use crate::knowledge::Excluder;
+    use std::collections::{HashMap, HashSet};
     use std::fs;
 
     #[test]
@@ -78,7 +87,8 @@ mod tests {
 
         let store = Store::open_in_memory().unwrap();
         let cancel = AtomicBool::new(false);
-        scanner::scan(&base, &store, &Excluder::default(), &cancel, |_| {});
+        let mut visited = HashSet::new();
+        scanner::scan(&base, &store, &Excluder::default(), &cancel, &HashMap::new(), &mut visited, |_| {});
         run(&store, &cancel, |_, _| {}).unwrap();
 
         let groups = store.duplicate_groups(10).unwrap();

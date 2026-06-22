@@ -1,8 +1,9 @@
 //! 全盘遍历器：walkdir + 排除剪枝 → 批量喂 [`Store`]。只取元数据，不读内容。
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 
 use walkdir::{DirEntry, WalkDir};
 
@@ -12,17 +13,24 @@ use super::store::{FileRecord, Store};
 /// 单事务批量写入的条数。
 const BATCH: usize = 2000;
 
-/// 从一个根遍历并写入 store。返回写入的条目数。
-/// `on_progress(scanned)` 周期性回调累计条数；`cancel` 置位时尽快收尾。
+/// 每写一批后让步，避免后台扫描抢占前台 I/O/CPU（治「扫描时设备卡顿」）。
+const THROTTLE_MS: u64 = 4;
+
+/// 从一个根遍历并写入 store。返回**遍历**到的条目数（进度量）。
+/// 增量：`existing`(path→mtime,size) 里 mtime+size 都没变的文件直接跳过，不重写、不触发 FTS。
+/// 本次遍历到的每个 path 记入 `visited`，调用方据此删除「已消失」的旧条目。
+/// `on_progress(walked)` 周期回调；`cancel` 置位时尽快收尾。
 pub fn scan(
     root: &Path,
     store: &Store,
     ex: &Excluder,
     cancel: &AtomicBool,
+    existing: &HashMap<String, (i64, u64)>,
+    visited: &mut HashSet<String>,
     mut on_progress: impl FnMut(u64),
 ) -> u64 {
     let mut buf: Vec<FileRecord> = Vec::with_capacity(BATCH);
-    let mut total: u64 = 0;
+    let mut walked: u64 = 0;
 
     let walker = WalkDir::new(root)
         .follow_links(false)
@@ -37,20 +45,32 @@ pub fn scan(
         let Some(rec) = to_record(&entry) else {
             continue;
         };
+        walked += 1;
+        visited.insert(rec.path.clone());
+        // 增量：mtime + size 都没变 → 跳过（省去 upsert 写入 + FTS 触发器开销）。
+        if let Some(&(mt, sz)) = existing.get(&rec.path) {
+            if mt == rec.mtime && sz == rec.size {
+                if walked % 5000 == 0 {
+                    on_progress(walked);
+                }
+                continue;
+            }
+        }
         buf.push(rec);
         if buf.len() >= BATCH {
             let _ = store.upsert_many(&buf);
-            total += buf.len() as u64;
             buf.clear();
-            on_progress(total);
+            std::thread::sleep(Duration::from_millis(THROTTLE_MS));
+        }
+        if walked % 5000 == 0 {
+            on_progress(walked);
         }
     }
     if !buf.is_empty() {
         let _ = store.upsert_many(&buf);
-        total += buf.len() as u64;
-        on_progress(total);
     }
-    total
+    on_progress(walked);
+    walked
 }
 
 fn skipped(ex: &Excluder, e: &DirEntry) -> bool {
@@ -140,7 +160,8 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let ex = Excluder::default();
         let cancel = AtomicBool::new(false);
-        scan(&base, &store, &ex, &cancel, |_| {});
+        let mut visited = HashSet::new();
+        scan(&base, &store, &ex, &cancel, &HashMap::new(), &mut visited, |_| {});
 
         // 能搜到 Documents 下的文件
         let pdf = store

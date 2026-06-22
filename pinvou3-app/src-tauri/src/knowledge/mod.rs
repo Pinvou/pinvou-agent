@@ -94,28 +94,37 @@ impl KnowledgeService {
 
         thread::spawn(move || {
             let ex = Excluder::default();
+            // 增量：载入现有快照，scanner 只写 mtime/size 变化的文件，未变的跳过。
+            let existing = store.load_index().unwrap_or_default();
+            let mut visited = std::collections::HashSet::new();
             let mut scanned_total = 0u64;
             for root in &roots {
                 let base = scanned_total;
-                scanner::scan(root, &store, &ex, &cancel, |n| {
-                    scan_state.lock().scanned = base + n;
-                });
-                scanned_total = scan_state.lock().scanned;
+                let walked =
+                    scanner::scan(root, &store, &ex, &cancel, &existing, &mut visited, |n| {
+                        scan_state.lock().scanned = base + n;
+                    });
+                scanned_total = base + walked;
+                scan_state.lock().scanned = scanned_total;
                 if cancel.load(Ordering::Relaxed) {
                     break;
                 }
             }
 
-            let cancelled = cancel.load(Ordering::Relaxed);
-            scan_state.lock().phase = if cancelled { "cancelled" } else { "deduping" }.into();
-            if !cancelled {
-                let _ = dedup::run(&store, &cancel, |done, total| {
-                    let mut st = scan_state.lock();
-                    st.dedup_done = done;
-                    st.dedup_total = total;
-                });
+            // 清理「已消失」的文件（上次在库、本次没遍历到）。取消时不删，避免误删没扫完的部分。
+            if !cancel.load(Ordering::Relaxed) {
+                let stale: Vec<String> = existing
+                    .keys()
+                    .filter(|p| !visited.contains(*p))
+                    .cloned()
+                    .collect();
+                if !stale.is_empty() {
+                    let _ = store.delete_many(&stale);
+                }
             }
 
+            // 去重(算 hash)不再在扫描里自动跑——读盘昂贵、百万文件下永远跑不完且拖卡设备。
+            // 改由前端「重复文件」页按需触发 kb_build_dedup（见 start_dedup）。
             let mut st = scan_state.lock();
             st.running = false;
             st.finished_at = now();
@@ -135,6 +144,45 @@ impl KnowledgeService {
     }
 
     pub fn status(&self) -> ScanState {
+        self.scan_state.lock().clone()
+    }
+
+    /// 按需启动去重（算 hash）。独立于扫描、后台限速、可中断；复用 scan_state 表达进度
+    /// （phase=deduping + dedupDone/dedupTotal），同一时刻只跑一个后台任务。
+    pub fn start_dedup(&self) -> ScanState {
+        {
+            let mut st = self.scan_state.lock();
+            if st.running {
+                return st.clone();
+            }
+            self.cancel.store(false, Ordering::Relaxed);
+            *st = ScanState {
+                running: true,
+                phase: "deduping".into(),
+                started_at: now(),
+                ..Default::default()
+            };
+        }
+
+        let store = self.store.clone();
+        let scan_state = self.scan_state.clone();
+        let cancel = self.cancel.clone();
+        thread::spawn(move || {
+            let _ = dedup::run(&store, &cancel, |done, total| {
+                let mut st = scan_state.lock();
+                st.dedup_done = done;
+                st.dedup_total = total;
+            });
+            let mut st = scan_state.lock();
+            st.running = false;
+            st.finished_at = now();
+            st.phase = if cancel.load(Ordering::Relaxed) {
+                "cancelled"
+            } else {
+                "done"
+            }
+            .into();
+        });
         self.scan_state.lock().clone()
     }
 }
@@ -202,6 +250,12 @@ pub fn kb_scan_status(state: State<'_, KnowledgeService>) -> ScanState {
 #[tauri::command]
 pub fn kb_cancel_scan(state: State<'_, KnowledgeService>) {
     state.cancel_scan();
+}
+
+/// 按需算 hash 建立去重数据（扫描不再自动跑，避免每次扫描卡在读盘上）。进度走 kb_scan_status。
+#[tauri::command]
+pub fn kb_build_dedup(state: State<'_, KnowledgeService>) -> ScanState {
+    state.start_dedup()
 }
 
 /// 秒搜。文本会先过 NL 规则解析（"上周的 pdf" → exts+时间过滤+残余文本）；

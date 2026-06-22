@@ -9,12 +9,17 @@
 //! 并发：`Connection` Send 不 Sync，整库放 `Arc<Mutex<Connection>>`。扫描线程批量写、
 //! 前端查询读，都短暂持锁；v0 单连接足够，日后抽 daemon 再上 WAL/多连接。
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 use rusqlite::{params, params_from_iter, types::Value, Connection};
 use serde::Serialize;
+
+/// schema 版本。bump 后旧库会被删除重建（L0 是可重建缓存，无数据损失）。
+/// v2：FTS 砍掉 path 列（path-trigram 实测占 2/3 库体积、是写入 CPU 大头）。
+const SCHEMA_VERSION: i64 = 2;
 
 /// 建表 + FTS5 虚表 + 同步触发器。幂等（`IF NOT EXISTS`）。
 const SCHEMA: &str = r#"
@@ -38,22 +43,25 @@ CREATE INDEX IF NOT EXISTS idx_files_ext   ON files(ext);
 CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime);
 CREATE INDEX IF NOT EXISTS idx_files_hash  ON files(hash);
 
+-- FTS5 只索引文件名（trigram 子串搜索）。**不索引 path 全路径**：
+-- path-trigram 实测占 2/3 库体积、是写入 CPU 大头，而 path 精确匹配已有 UNIQUE 索引、
+-- 路径子串是低频需求（退回 search() 里 1-2 字符那条 LIKE 兜底）。
 CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
-    name, path,
+    name,
     content='files', content_rowid='id',
     tokenize='trigram'
 );
 
--- external-content FTS5 同步：只在 name/path 变化时重建索引行（hash 回填不触发）。
+-- external-content FTS5 同步：只在 name 变化时重建索引行（改内容=mtime/size 变但 name 不变 → 不触发）。
 CREATE TRIGGER IF NOT EXISTS files_ai AFTER INSERT ON files BEGIN
-    INSERT INTO files_fts(rowid, name, path) VALUES (new.id, new.name, new.path);
+    INSERT INTO files_fts(rowid, name) VALUES (new.id, new.name);
 END;
 CREATE TRIGGER IF NOT EXISTS files_ad AFTER DELETE ON files BEGIN
-    INSERT INTO files_fts(files_fts, rowid, name, path) VALUES('delete', old.id, old.name, old.path);
+    INSERT INTO files_fts(files_fts, rowid, name) VALUES('delete', old.id, old.name);
 END;
-CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE OF name, path ON files BEGIN
-    INSERT INTO files_fts(files_fts, rowid, name, path) VALUES('delete', old.id, old.name, old.path);
-    INSERT INTO files_fts(rowid, name, path) VALUES (new.id, new.name, new.path);
+CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE OF name ON files BEGIN
+    INSERT INTO files_fts(files_fts, rowid, name) VALUES('delete', old.id, old.name);
+    INSERT INTO files_fts(rowid, name) VALUES (new.id, new.name);
 END;
 "#;
 
@@ -141,12 +149,28 @@ pub struct Store {
 
 impl Store {
     /// 打开（或新建）磁盘库，建表。父目录会自动创建。
+    /// schema 版本不符 → 删库重建（L0 是可重建缓存，重扫即恢复；顺带回收旧版撑大的体积）。
     pub fn open(db_path: &Path) -> rusqlite::Result<Self> {
         if let Some(parent) = db_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let conn = Connection::open(db_path)?;
-        Self::from_conn(conn)
+        let stale = {
+            match Connection::open(db_path) {
+                Ok(c) => c
+                    .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                    .unwrap_or(0)
+                    != SCHEMA_VERSION,
+                Err(_) => false,
+            }
+        }; // 连接在此 drop，才能删文件
+        if stale {
+            let p = db_path.display().to_string();
+            let _ = std::fs::remove_file(db_path);
+            let _ = std::fs::remove_file(format!("{p}-wal"));
+            let _ = std::fs::remove_file(format!("{p}-shm"));
+            eprintln!("[knowledge] schema 升级到 v{SCHEMA_VERSION}，旧索引库已清空，需重新扫描");
+        }
+        Self::from_conn(Connection::open(db_path)?)
     }
 
     /// 内存库（单测用）。
@@ -157,6 +181,7 @@ impl Store {
 
     fn from_conn(conn: Connection) -> rusqlite::Result<Self> {
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -189,6 +214,32 @@ impl Store {
             .lock()
             .execute("DELETE FROM files WHERE path = ?1", params![path])?;
         Ok(())
+    }
+
+    /// 现有索引快照 `path → (mtime, size)`，给增量扫描比对用（只取未变文件可跳过 upsert）。
+    pub fn load_index(&self) -> rusqlite::Result<HashMap<String, (i64, u64)>> {
+        let guard = self.conn.lock();
+        let mut stmt = guard.prepare("SELECT path, mtime, size FROM files")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                (r.get::<_, i64>(1)?, r.get::<_, i64>(2)? as u64),
+            ))
+        })?;
+        rows.collect()
+    }
+
+    /// 批量删除（增量扫描清理本次未再见到的「已消失」文件）。单事务，FTS 由触发器同步。
+    pub fn delete_many(&self, paths: &[String]) -> rusqlite::Result<()> {
+        let mut guard = self.conn.lock();
+        let tx = guard.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached("DELETE FROM files WHERE path = ?1")?;
+            for p in paths {
+                stmt.execute(params![p])?;
+            }
+        }
+        tx.commit()
     }
 
     /// 回填 hash（去重 pass 用）。只动 hash 列，不触发 FTS 重建。
