@@ -1362,10 +1362,30 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 把成品卡里可能的**相对**路径落到当前 active session 的 workspace。
+///
+/// 背景:present_artifact 没调成(模型把工具名漂成 `pinvou-present_artifact` 之类
+/// → NotAvailable)时,成品卡由 write_file 兜底补出,path 直接用了 write_file 的
+/// 相对参数(如 `snake-game.html`)。点 Open 把相对路径丢给 `validate_user_path`
+/// → 直接拒「path must be absolute」。这里先按 workspace 解析,绝对路径原样返回
+/// (present_artifact 成功解析的 / 产物面板 list_workspace_files 给的已是绝对)。
+fn resolve_artifact_path(raw: &str, store: &SessionStore) -> String {
+    if std::path::Path::new(raw).is_absolute() {
+        return raw.to_string();
+    }
+    match store.active_id() {
+        Some(sid) => crate::bridge::paths::session_workspace_dir(&sid)
+            .join(raw)
+            .to_string_lossy()
+            .into_owned(),
+        None => raw.to_string(),
+    }
+}
+
 /// 用系统默认应用打开文件（xdg-open / 文件管理器）。
 #[tauri::command]
-pub async fn open_in_system(path: String) -> Result<(), String> {
-    let p = validate_user_path(&path)?;
+pub async fn open_in_system(path: String, store: State<'_, SessionStore>) -> Result<(), String> {
+    let p = validate_user_path(&resolve_artifact_path(&path, &store))?;
     std::process::Command::new("xdg-open")
         .arg(&p)
         .spawn()
@@ -1376,8 +1396,11 @@ pub async fn open_in_system(path: String) -> Result<(), String> {
 /// 用文件管理器打开**所在目录**（不是文件本身）。xdg-open 一个目录路径
 /// → Ubuntu 走 Nautilus / Files；跨发行版（GNOME/KDE/XFCE）freedesktop 标准兼容。
 #[tauri::command]
-pub async fn open_containing_folder(path: String) -> Result<(), String> {
-    let p = validate_user_path(&path)?;
+pub async fn open_containing_folder(
+    path: String,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    let p = validate_user_path(&resolve_artifact_path(&path, &store))?;
     let dir = p
         .parent()
         .ok_or_else(|| format!("no parent dir for {}", p.display()))?;
@@ -1391,10 +1414,14 @@ pub async fn open_containing_folder(path: String) -> Result<(), String> {
 /// 在 Tauri 新窗口里加载 HTML 产物。绕过 snap 浏览器对 `~/.xxx/` 隐藏目录的沙箱限制。
 /// 同一文件再次调用 → focus 已有窗口而非新建,防窗口爆炸。
 #[tauri::command]
-pub async fn open_artifact_window(path: String, app: tauri::AppHandle) -> Result<(), String> {
+pub async fn open_artifact_window(
+    path: String,
+    app: tauri::AppHandle,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
     use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
-    let p = validate_user_path(&path)?;
+    let p = validate_user_path(&resolve_artifact_path(&path, &store))?;
     if !p.is_file() {
         return Err(format!("not a file: {}", p.display()));
     }
@@ -3251,6 +3278,38 @@ pub async fn list_session_skill_bindings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// present_artifact 漂工具名失败时,成品卡兜底用 write_file 的相对 path
+    /// (如 `snake-game.html`),点 Open 必须先按 active session workspace 解析成
+    /// 绝对路径,否则 `validate_user_path` 直接拒「path must be absolute」。
+    #[test]
+    fn resolve_artifact_path_relative_joins_active_workspace() {
+        let _g = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-resolve-test");
+        let store = SessionStore::boot().expect("boot");
+
+        // 无 active session → 相对路径原样返回(解析不到 workspace,行为同旧版)
+        assert_eq!(
+            resolve_artifact_path("snake-game.html", &store),
+            "snake-game.html"
+        );
+
+        // 有 active session → 相对路径落到该 session 的 workspace
+        store.set_active(Some("sess-1".into()));
+        let want = crate::bridge::paths::session_workspace_dir("sess-1")
+            .join("snake-game.html")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(resolve_artifact_path("snake-game.html", &store), want);
+
+        // 绝对路径原样返回(present_artifact 成功 / 产物面板给的已是绝对)
+        assert_eq!(
+            resolve_artifact_path("/home/u/.pinvou3/sessions/x/workspace/a.html", &store),
+            "/home/u/.pinvou3/sessions/x/workspace/a.html"
+        );
+    }
 
     /// merge_resolutions 锁住实测 bug:勾选写进 sidecar 的 resolution 不能被后续不含
     /// resolution 的全量 save(典型=核账 record 的原始快照)覆盖,否则核账无法跳过「接受现状」。
