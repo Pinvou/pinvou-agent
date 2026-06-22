@@ -359,18 +359,24 @@
 
   // ── Chat Items (display format for React) ────────────────────────
   function addChatItem(item) {
-    // 成品卡按 basename 去重:模型常对同一产物多次 present(自发或自动续卡),只保留一张,
-    // 避免聊天流冒重复成品卡。同名已存在则跳过本次(品悟入口按 isLatest 动态算,留哪张都对)。
-    if (item && item.type === "artifact_card" && item.path) {
-      var _abn = basename(item.path);
-      if (_abn && state.chatItems.some(function (it) {
-        return it.type === "artifact_card" && basename(it.path) === _abn;
-      })) {
-        return;
-      }
-    }
     item.id = ++itemIdSeq;
     state.chatItems.push(item);
+  }
+  // 成品卡是否"重复出卡":从 chatItems 末尾往前扫——先遇到该文件的修改工具(write/append/edit)
+  // → 不算重复(文件改过了,该出新版卡/续卡,即"二次修改弹新卡");先遇到同名成品卡 → 算重复
+  // (同一产物没改又 present 一次,模型常见啰嗦)。判据=「上一张同名卡之后有没有改过这个文件」。
+  function isDuplicateArtifactCard(pathv) {
+    var bn = basename(pathv);
+    if (!bn) return false;
+    for (var i = state.chatItems.length - 1; i >= 0; i--) {
+      var it = state.chatItems[i];
+      if (it.type === "tool" && (it.name === "write_file" || it.name === "append_file" || it.name === "edit_file")) {
+        var ap = extractArtifactPath(it.args);
+        if (ap && basename(ap) === bn) return false;
+      }
+      if (it.type === "artifact_card" && basename(it.path) === bn) return true;
+    }
+    return false;
   }
   function addSystemItem(text) {
     addChatItem({ type: "system", text: text, time: timeStr() });
@@ -673,13 +679,16 @@
           if (isPresentArtifactTool(b.name)) {
             var pares = resultById[b.id];
             if (!(pares && pares.is_error)) {
-              addChatItem({
-                type: "artifact_card",
-                path: presentArtifactAbsPath(pares && pares.content, b.input && b.input.path),
-                title: (b.input && b.input.title) || "",
-                description: (b.input && b.input.description) || "",
-                time: "",
-              });
+              var rpp = presentArtifactAbsPath(pares && pares.content, b.input && b.input.path);
+              if (!isDuplicateArtifactCard(rpp)) {
+                addChatItem({
+                  type: "artifact_card",
+                  path: rpp,
+                  title: (b.input && b.input.title) || "",
+                  description: (b.input && b.input.description) || "",
+                  time: "",
+                });
+              }
               continue;
             }
           }
@@ -1195,13 +1204,16 @@
         // 用 server 解析好的绝对路径(present_artifact_server.py 的 abs_path),而非模型可能
         // 给的相对 args.path → 卡片 path 绝对,点 Open 不再报「path must be absolute」。
         var presentedPath = presentArtifactAbsPath(p.output, meta.args && meta.args.path);
-        addChatItem({
-          type: "artifact_card",
-          path: presentedPath,
-          title: (meta.args && meta.args.title) || "",
-          description: (meta.args && meta.args.description) || "",
-          time: timeStr(),
-        });
+        // 同一产物没改又 present 一次 → 跳过出卡(防模型啰嗦重复);改完再 present/续卡会保留。
+        if (!isDuplicateArtifactCard(presentedPath)) {
+          addChatItem({
+            type: "artifact_card",
+            path: presentedPath,
+            title: (meta.args && meta.args.title) || "",
+            description: (meta.args && meta.args.description) || "",
+            time: timeStr(),
+          });
+        }
         if (presentedPath) state.turnPresentedArtifacts.push(presentedPath); // 本 turn 已出成品卡,chat:done 不再兜底补
         delete toolMeta[p.id];
         currentStreamText = ""; currentStreamId = 0;
@@ -1273,7 +1285,10 @@
       // present 过的复用其 title/desc;AI 没 present 的兜底用文件名补首卡(否则没召唤入口=这次的 bug)。
       // 本 turn 刚 present_artifact 出过卡的跳过,不重复。edit/append 改多次也只补一张。
       (state.turnDirtyArtifacts || []).forEach(function (ap) {
-        if ((state.turnPresentedArtifacts || []).indexOf(ap) >= 0) return;
+        // 按 basename 比对:present 存 server 绝对路径、turnDirty 存 write 相对路径,
+        // 直接 indexOf 比不中 → present 过的文件会被兜底再补一张(重复)。
+        var _apbn = basename(ap);
+        if ((state.turnPresentedArtifacts || []).some(function (pp) { return basename(pp) === _apbn; })) return;
         var prev = findPresentedArtifact(ap);
         if (prev) addChatItem({ type: "artifact_card", path: prev.path, title: prev.title, description: prev.description, time: timeStr() });
         else addChatItem({ type: "artifact_card", path: ap, title: basename(ap), description: "", time: timeStr() });
