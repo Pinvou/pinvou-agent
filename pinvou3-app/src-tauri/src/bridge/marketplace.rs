@@ -75,6 +75,35 @@ pub struct MarketplaceToolInfo {
 }
 
 // ---------------------------------------------------------------------------
+// 会话工具开关:全局持久的"被禁用连接器"列表(用户关一次,所有新对话/窗口都继承,
+// 直到手动开回 —— 见「工具开关」方案,持久语义)。落盘到 ~/.pinvou3/disabled_connectors.json。
+// ---------------------------------------------------------------------------
+
+fn disabled_connectors_path() -> std::path::PathBuf {
+    paths::pinvou3_home().join("disabled_connectors.json")
+}
+
+/// 读全局被禁用的连接器 id 列表(读不到/空 → 空)。
+pub fn load_disabled_connectors() -> Vec<String> {
+    std::fs::read_to_string(disabled_connectors_path())
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .unwrap_or_default()
+}
+
+/// 写全局被禁用的连接器 id 列表。
+pub fn save_disabled_connectors(ids: &[String]) {
+    if let Ok(json) = serde_json::to_string(ids) {
+        let _ = std::fs::write(disabled_connectors_path(), json);
+    }
+}
+
+/// 当前被禁用连接器 → 模型可见工具全名(喂给引擎 disallowed_tools 的)。
+pub fn disabled_tool_names() -> Vec<String> {
+    MarketplaceManager::new().model_tool_names(&load_disabled_connectors())
+}
+
+// ---------------------------------------------------------------------------
 // MarketplaceManager
 // ---------------------------------------------------------------------------
 
@@ -236,6 +265,28 @@ impl MarketplaceManager {
         serde_json::from_str(&content).ok()
     }
 
+    /// pinvou3 工具开关:把"连接器 id 列表"映射成"模型可见工具全名"
+    /// (`mcp_{server}_{tool}`,小写 —— 引擎 `command_denies_tool` 按小写精确匹配)。
+    /// 关一个连接器要把它名下所有工具都列出来。
+    pub fn model_tool_names(&self, connector_ids: &[String]) -> Vec<String> {
+        let mut names = Vec::new();
+        for cid in connector_ids {
+            if let Some(m) = self.load_manifest(cid) {
+                for t in &m.mcp_tools {
+                    // manifest 的 mcp_tools 不统一:部分已是全名(mcp_xxx_yyy),部分是裸工具名。
+                    // 已带 `mcp_` 前缀的原样用,否则补 `mcp_{id}_` —— 与引擎 mcp_{server}_{tool} 对齐。
+                    let name = if t.starts_with("mcp_") {
+                        t.clone()
+                    } else {
+                        format!("mcp_{}_{}", m.id, t)
+                    };
+                    names.push(name.to_ascii_lowercase());
+                }
+            }
+        }
+        names
+    }
+
     fn save_installed(&self, ids: &[String]) -> Result<(), String> {
         let dir = self.installed_file.parent().unwrap();
         std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {e}"))?;
@@ -375,4 +426,71 @@ impl MarketplaceManager {
 
 fn default_mcp_json() -> serde_json::Value {
     serde_json::json!({"servers": {}})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bridge::paths::tests::ENV_LOCK;
+
+    /// 把 PINVOU3_HOME 指到一个干净临时目录跑闭包,跑完恢复并清理。
+    /// 借 paths 的 ENV_LOCK 跟其它 mutate PINVOU3_HOME 的测试串行,避免互相覆盖。
+    fn with_temp_home<F: FnOnce()>(f: F) {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let dir = std::env::temp_dir().join(format!("pinvou3-mkt-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PINVOU3_HOME", &dir);
+        f();
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 连接器 → 模型可见工具全名:裸名补 `mcp_{id}_` 前缀,已带 `mcp_` 的原样(不双前缀),
+    /// 一律小写;不存在的连接器跳过。这正是当初打印映射时抓到"双前缀 bug"的那段逻辑。
+    #[test]
+    fn model_tool_names_prefix_dedup_and_lowercase() {
+        with_temp_home(|| {
+            let dir = crate::bridge::paths::bundle_mcp_servers_dir().join("demo");
+            std::fs::create_dir_all(&dir).unwrap();
+            let manifest = r#"{
+                "id":"demo","name":"Demo","description":"d","version":"1","icon":"x","category":"c",
+                "mcp_tools":["bare_tool","mcp_demo_already","UPPER_Tool"],
+                "command":"python","args":[]
+            }"#;
+            std::fs::write(dir.join("manifest.json"), manifest).unwrap();
+
+            let mgr = MarketplaceManager::new();
+            let names = mgr.model_tool_names(&["demo".to_string()]);
+            assert_eq!(
+                names,
+                vec![
+                    "mcp_demo_bare_tool".to_string(),  // 裸名 → 补前缀
+                    "mcp_demo_already".to_string(),    // 已带 mcp_ → 原样,不变成 mcp_demo_mcp_demo_already
+                    "mcp_demo_upper_tool".to_string(), // 小写化
+                ]
+            );
+            // 没装/不存在的连接器 → 跳过(不报错,空)
+            assert!(mgr.model_tool_names(&["nope".to_string()]).is_empty());
+        });
+    }
+
+    /// 全局禁用列表落盘往返:存→读一致;清空→读空;没文件→读空。
+    #[test]
+    fn disabled_connectors_persist_roundtrip() {
+        with_temp_home(|| {
+            assert!(load_disabled_connectors().is_empty()); // 无文件 → 空
+            save_disabled_connectors(&["weather".to_string(), "pptx".to_string()]);
+            assert_eq!(
+                load_disabled_connectors(),
+                vec!["weather".to_string(), "pptx".to_string()]
+            );
+            save_disabled_connectors(&[]); // 全开回去
+            assert!(load_disabled_connectors().is_empty());
+        });
+    }
 }

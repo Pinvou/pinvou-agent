@@ -180,6 +180,8 @@ pub fn run() {
             commands::save_session_artifacts,
             commands::list_workspace_files,
             commands::cancel_generation,
+            commands::set_disabled_connectors,
+            commands::get_disabled_connectors,
             commands::edit_last_turn,
             commands::read_artifact_text,
             commands::list_deliverables,
