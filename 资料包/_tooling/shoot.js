@@ -153,6 +153,8 @@ const SHOTS = [
     await page.setViewport({ width: s.w, height: s.h, deviceScaleFactor: 2 });
     await page.goto(INDEX, { waitUntil: 'networkidle0' });
     await page.waitForFunction(() => document.body && document.body.innerText.includes('PINVOU'), { timeout: 15000 }).catch(() => {});
+    // 浅色主题下侧栏应为 #F0F4F9；headless 里 Tailwind 运行时偶把 bg-[#1E1F20] 盖过浅色 → 强制浅色胜出
+    await page.addStyleTag({ content: '.bg-\\[\\#F0F4F9\\]{background-color:#F0F4F9 !important}' }).catch(() => {});
     await sleep(900); await expand(page); await sleep(700);
     try { await s.act(page); } catch (e) { console.log('  act err', s.key, e.message); }
     await sleep(700);
