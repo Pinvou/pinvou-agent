@@ -665,7 +665,7 @@
             if (!(pares && pares.is_error)) {
               addChatItem({
                 type: "artifact_card",
-                path: (b.input && b.input.path) || "",
+                path: presentArtifactAbsPath(pares && pares.content, b.input && b.input.path),
                 title: (b.input && b.input.title) || "",
                 description: (b.input && b.input.description) || "",
                 time: "",
@@ -1088,6 +1088,24 @@
       (typeof name === "string" && name.endsWith("present_artifact"));
   }
 
+  // 成品卡路径:优先用 server(present_artifact_server.py)解析并验证过的绝对路径 abs_path——
+  // 模型常给相对路径,直接拿 args.path 渲染会让卡片 path 是相对,点 Open 报「path must be
+  // absolute」,且模型可能重试再 present 一次出双卡。取不到 abs_path 才回退原始 path。
+  // 兼容两种结果格式:直接 payload {abs_path} / MCP content 数组 {content:[{text}]} 包一层。
+  function presentArtifactAbsPath(toolResultContent, fallbackPath) {
+    fallbackPath = fallbackPath || "";
+    try {
+      var raw = typeof toolResultContent === "string" ? toolResultContent : JSON.stringify(toolResultContent || {});
+      var obj = JSON.parse(raw);
+      if (obj && typeof obj.abs_path === "string" && obj.abs_path) return obj.abs_path;
+      if (obj && obj.content && obj.content[0] && typeof obj.content[0].text === "string") {
+        var inner = JSON.parse(obj.content[0].text);
+        if (inner && typeof inner.abs_path === "string" && inner.abs_path) return inner.abs_path;
+      }
+    } catch (_) {}
+    return fallbackPath;
+  }
+
   listen("chat:tool_start", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
     if (p.session_id) turnUsageDirty[p.session_id] = true; // 多请求轮，usage 累加值不可当占用
@@ -1145,7 +1163,9 @@
     // messages(tool_start line 784),rerenderFromMessages 按 name 还原,切会话不丢。
     if (meta && isPresentArtifactTool(meta.name)) {
       if (p.success) {
-        var presentedPath = (meta.args && meta.args.path) || "";
+        // 用 server 解析好的绝对路径(present_artifact_server.py 的 abs_path),而非模型可能
+        // 给的相对 args.path → 卡片 path 绝对,点 Open 不再报「path must be absolute」。
+        var presentedPath = presentArtifactAbsPath(p.output, meta.args && meta.args.path);
         addChatItem({
           type: "artifact_card",
           path: presentedPath,
