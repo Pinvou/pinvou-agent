@@ -252,7 +252,7 @@
         vllmDetectMismatch: '配置不匹配',
         vllmDetectedModel: '模型',
         vllmDetectedContext: '上下文',
-        vllmDetectHint: '仅检测 127.0.0.1 / localhost 的 8000-8002 端口；使用后仍需保存并重启。',
+        vllmDetectHint: '仅检测本机 127.0.0.1 / localhost 的 8000-8002 端口；选用候选后记得保存。',
         confirmAndRestart: '保存并重启',
         addModel: '＋ 添加模型', editModel: '编辑', deleteModelBtn: '删除', setActiveModel: '设为默认', modelActiveTag: '默认',
         modelFormAddTitle: '添加模型', modelFormEditTitle: '编辑模型', modelDisplayName: '显示名',
@@ -438,7 +438,7 @@
         vllmDetectMismatch: 'Mismatch',
         vllmDetectedModel: 'Model',
         vllmDetectedContext: 'Context',
-        vllmDetectHint: 'Checks only 127.0.0.1 / localhost ports 8000-8002. Save and restart to apply.',
+        vllmDetectHint: 'Checks only 127.0.0.1 / localhost ports 8000-8002. Remember to save after picking a candidate.',
         confirmAndRestart: 'Save & Restart',
         addModel: '＋ Add Model', editModel: 'Edit', deleteModelBtn: 'Delete', setActiveModel: 'Set Default', modelActiveTag: 'Default',
         modelFormAddTitle: 'Add Model', modelFormEditTitle: 'Edit Model', modelDisplayName: 'Display Name',
@@ -624,7 +624,7 @@
         vllmDetectMismatch: '不一致',
         vllmDetectedModel: 'モデル',
         vllmDetectedContext: 'コンテキスト',
-        vllmDetectHint: '127.0.0.1 / localhost の 8000-8002 ポートのみ検出します。反映には保存して再起動してください。',
+        vllmDetectHint: '127.0.0.1 / localhost の 8000-8002 ポートのみ検出します。候補を選んだら保存してください。',
         confirmAndRestart: '保存して再起動',
         addModel: '＋ モデルを追加', editModel: '編集', deleteModelBtn: '削除', setActiveModel: 'デフォルトに設定', modelActiveTag: 'デフォルト',
         modelFormAddTitle: 'モデルを追加', modelFormEditTitle: 'モデルを編集', modelDisplayName: '表示名',
@@ -1732,6 +1732,8 @@
       const [showKey, setShowKey] = useState(false);
       const [testing, setTesting] = useState(false);
       const [testResult, setTestResult] = useState(null);
+      const [detecting, setDetecting] = useState(false);
+      const [detectResult, setDetectResult] = useState(null); // { candidates } | { error } | null
       function applyPreset(p) {
         setPreset(p);
         const defs = MODEL_PRESET_DEFS[p] || MODEL_PRESET_DEFS.local_vllm;
@@ -1744,6 +1746,36 @@
         try { const msg = await bridge.testModelConnection(baseUrl.trim(), apiKey.trim()); setTestResult({ ok: true, msg: String(msg) }); }
         catch (e) { setTestResult({ ok: false, msg: String(e) }); }
         finally { setTesting(false); }
+      }
+      // 探测本机 vLLM：只扫 127.0.0.1/localhost 的 8000-8002，探到唯一可用实例直接自动填充。
+      function applyCandidate(c) {
+        if (!c) return;
+        if (c.base_url) setBaseUrl(c.base_url);
+        if (c.model) { setModel(c.model); if (!name.trim()) setName(c.model); }
+        setApiKey('');
+      }
+      async function handleDetect() {
+        if (!bridge.available || detecting) return;
+        setDetecting(true); setDetectResult(null); setTestResult(null);
+        try {
+          const result = await bridge.discoverLocalVllm({
+            currentBaseUrl: baseUrl.trim() || null,
+            savedBaseUrl: initial.base_url || null,
+          });
+          const online = ((result && result.candidates) || []).filter(c => c.status !== 'offline');
+          setDetectResult({ candidates: online });
+          if (online.length === 1) applyCandidate(online[0]); // 唯一可用实例直接填充
+        } catch (e) {
+          setDetectResult({ error: String(e) });
+        } finally {
+          setDetecting(false);
+        }
+      }
+      function vllmStatusLabel(status) {
+        if (status === 'busy') return t.vllmDetectBusy;
+        if (status === 'ready') return t.vllmDetectReady;
+        if (status === 'mismatch') return t.vllmDetectMismatch;
+        return t.vllmDetectOffline;
       }
       const canSave = !!(name.trim() && model.trim() && baseUrl.trim());
       function doSave() {
@@ -1784,10 +1816,41 @@
                   className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors disabled:opacity-50 ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#F0F4F9] text-[#1F1F1F] hover:bg-[#E8EAED]'}`}>
                   {testing ? t.testingConn : t.testConnection}
                 </button>
+                {preset === 'local_vllm' && (
+                  <button onClick={handleDetect} disabled={detecting}
+                    className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors disabled:opacity-50 ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#F0F4F9] text-[#1F1F1F] hover:bg-[#E8EAED]'}`}>
+                    {detecting ? t.detectingLocalVllm : t.detectLocalVllm}
+                  </button>
+                )}
                 {testResult && (
                   <span className={`text-[12px] max-w-[280px] truncate ${testResult.ok ? (isDark ? 'text-[#93D5A6]' : 'text-[#137333]') : (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]')}`}>{testResult.msg}</span>
                 )}
               </div>
+              {preset === 'local_vllm' && detectResult && (
+                <div className={`rounded-xl border p-3 space-y-2 ${isDark ? 'border-[#333537] bg-[#131314]' : 'border-[#E0E3E7] bg-[#F8F9FB]'}`}>
+                  {detectResult.error ? (
+                    <span className={`text-[12px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{t.vllmDetectError(detectResult.error)}</span>
+                  ) : detectResult.candidates.length === 0 ? (
+                    <span className={`text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{t.vllmDetectNone}</span>
+                  ) : (
+                    <>
+                      <span className={`text-[12px] ${isDark ? 'text-[#93D5A6]' : 'text-[#137333]'}`}>{t.vllmDetectFound(detectResult.candidates.length)}</span>
+                      {detectResult.candidates.map(c => (
+                        <button key={c.base_url} onClick={() => applyCandidate(c)}
+                          className={`w-full text-left rounded-lg border px-3 py-2 transition-colors ${isDark ? 'border-[#333537] hover:bg-[#2A2B2D]' : 'border-[#E0E3E7] hover:bg-[#F0F4F9]'}`}>
+                          <div className={`text-[13px] truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{c.base_url}</div>
+                          <div className={`text-[11px] truncate ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
+                            {vllmStatusLabel(c.status)}
+                            {c.model ? ` · ${t.vllmDetectedModel}: ${c.model}` : ''}
+                            {c.max_model_len ? ` · ${t.vllmDetectedContext}: ${c.max_model_len}` : ''}
+                          </div>
+                        </button>
+                      ))}
+                    </>
+                  )}
+                  <span className={`text-[11px] block ${isDark ? 'text-[#5F6368]' : 'text-[#9AA0A6]'}`}>{t.vllmDetectHint}</span>
+                </div>
+              )}
             </div>
             <div className="flex justify-end gap-2 mt-6">
               <button onClick={onCancel} className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>{t.cpCancel}</button>
@@ -1803,8 +1866,6 @@
       const isDark = activeTheme === 'dark';
       const [editingModel, setEditingModel] = useState(null);
       const modelEnvLocked = (bs && bs.effectiveModelConfig && bs.effectiveModelConfig.env_overrides) || [];
-      const [vllmDiscovery, setVllmDiscovery] = useState(null);
-      const [vllmDiscovering, setVllmDiscovering] = useState(false);
       // 进设置页自动体检一次可选依赖装齐没; 之后用户可手动「重新检测」
       useEffect(() => {
         if (bridge.available && !(bs && bs.deps) && !(bs && bs.depsChecking)) bridge.checkDependencies();
@@ -1820,37 +1881,6 @@
         { key: 'glm',         label: t.modelPresetGlm },
         { key: 'mimo',        label: t.modelPresetMimo },
       ];
-      const vllmOnlineCandidates = vllmDiscovery && vllmDiscovery.candidates
-        ? vllmDiscovery.candidates.filter(c => c.status !== 'offline')
-        : [];
-      async function handleDetectLocalVllm() {
-        if (!bridge.available || vllmDiscovering) return;
-        setVllmDiscovering(true);
-        setVllmDiscovery(null);
-        try {
-          const result = await bridge.discoverLocalVllm({
-            currentBaseUrl: customBaseUrl,
-            savedBaseUrl: savedModel && savedModel.baseUrl,
-          });
-          setVllmDiscovery({ candidates: (result && result.candidates) || [] });
-        } catch (e) {
-          setVllmDiscovery({ error: String(e) });
-        } finally {
-          setVllmDiscovering(false);
-        }
-      }
-      function handleUseVllmCandidate(candidate) {
-        if (!candidate) return;
-        if (candidate.base_url) setCustomBaseUrl(candidate.base_url);
-        if (candidate.model) setCustomModelName(candidate.model);
-        setCustomApiKey('');
-      }
-      function vllmStatusLabel(status) {
-        if (status === 'busy') return t.vllmDetectBusy;
-        if (status === 'ready') return t.vllmDetectReady;
-        if (status === 'mismatch') return t.vllmDetectMismatch;
-        return t.vllmDetectOffline;
-      }
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
 
