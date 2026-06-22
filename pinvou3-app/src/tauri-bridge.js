@@ -359,6 +359,16 @@
 
   // ── Chat Items (display format for React) ────────────────────────
   function addChatItem(item) {
+    // 成品卡按 basename 去重:模型常对同一产物多次 present(自发或自动续卡),只保留一张,
+    // 避免聊天流冒重复成品卡。同名已存在则跳过本次(品悟入口按 isLatest 动态算,留哪张都对)。
+    if (item && item.type === "artifact_card" && item.path) {
+      var _abn = basename(item.path);
+      if (_abn && state.chatItems.some(function (it) {
+        return it.type === "artifact_card" && basename(it.path) === _abn;
+      })) {
+        return;
+      }
+    }
     item.id = ++itemIdSeq;
     state.chatItems.push(item);
   }
@@ -753,10 +763,24 @@
     var parts = String(p).split(/[\\/]/);
     return parts[parts.length - 1] || p;
   }
+  function isAbsPath(p) {
+    return typeof p === "string" && (p.charAt(0) === "/" || /^[A-Za-z]:[\\/]/.test(p));
+  }
   function trackArtifact(path) {
     if (!path) return;
-    if (state.artifacts.some(function (a) { return a.path === path; })) return;
-    state.artifacts.push({ path: path, basename: basename(path) });
+    var bn = basename(path);
+    for (var i = 0; i < state.artifacts.length; i++) {
+      if (basename(state.artifacts[i].path) === bn) {
+        // 已有同名:write_file 跟踪的是相对路径、disk watcher 推的是绝对路径——同一文件
+        // 两种 path 会重复。新 path 绝对而旧的相对则用绝对替换(open 可靠),否则忽略重复。
+        if (isAbsPath(path) && !isAbsPath(state.artifacts[i].path)) {
+          state.artifacts[i] = { path: path, basename: bn };
+          notify();
+        }
+        return;
+      }
+    }
+    state.artifacts.push({ path: path, basename: bn });
     notify();
   }
   function untrackArtifact(path) {
@@ -785,10 +809,15 @@
     try {
       var files = await invoke("list_workspace_files", { sessionId: sid });
       if (sid !== state.activeSessionId) return; // 已切走,放弃(避免写错 session)
-      var have = {};
-      state.artifacts.forEach(function (a) { have[a.path] = true; });
+      var byName = {};
+      state.artifacts.forEach(function (a) { byName[basename(a.path)] = a; });
       var added = false;
-      files.forEach(function (p) { if (!have[p]) { state.artifacts.push({ path: p, basename: basename(p) }); added = true; } });
+      files.forEach(function (p) {
+        var bn = basename(p);
+        var ex = byName[bn];
+        if (!ex) { var na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true; }
+        else if (isAbsPath(p) && !isAbsPath(ex.path)) { ex.path = p; added = true; } // 相对→绝对,open 可靠
+      });
       if (added) {
         notify();
         try { await invoke("save_session_artifacts", { id: sid, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch (_) {}
