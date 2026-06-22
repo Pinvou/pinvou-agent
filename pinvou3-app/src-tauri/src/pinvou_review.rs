@@ -388,10 +388,22 @@ fn build_reconcile_context(prior: &[PinvouIssue], messages: &[Message], workspac
 /// 见设计文档,逐句翻译会引入行为漂移),只让模型把**自然语言字段值**切到目标语言——JSON key、枚举值
 /// (severity/kind/verdict/coverage/primary)、persona id slug 保持英文。zh-Hans 及未知 → None(no-op)。
 fn output_language_directive(locale_tag: &str) -> Option<String> {
+    // zh-Hans:即使被审查的产物/代码是英文,finding 也强制简体中文——实测 Qwen3.6 在英文产物
+    // 上下文下会漂成英文 finding(中文 prompt 本体不够硬,需要一条显式输出语言指令兜住)。
+    if locale_tag == "zh-Hans" {
+        return Some(
+            "\n\n## 输出语言(强制)\n\
+             JSON 里所有自然语言字段值(trace / label / topic / pick / why / text / suggestion / \
+             dimension / framework 各项)必须用简体中文,即使被审查的产物/代码是英文也别跟着写英文。\
+             JSON 的 key、枚举值(severity / kind / verdict / coverage / primary)、persona id slug \
+             保持原样 ASCII。"
+                .to_string(),
+        );
+    }
     let lang = match locale_tag {
         "en" => "English",
         "ja" => "Japanese (日本語)",
-        _ => return None, // zh-Hans 及未知 → prompt 原样中文
+        _ => return None, // 未知 locale → prompt 原样中文
     };
     Some(format!(
         "\n\n## Output Language (HARD override)\n\
@@ -758,11 +770,14 @@ mod tests {
 
     /// 非中文 locale 追加输出语言指令(覆盖 prompt 的中文措辞);zh-Hans/未知 → None(no-op)。
     #[test]
-    fn output_language_directive_only_for_non_chinese() {
+    fn output_language_directive_per_locale() {
         let en = output_language_directive("en").expect("en 应有指令");
         assert!(en.contains("English") && en.contains("OVERRIDES"));
         assert!(output_language_directive("ja").unwrap().contains("Japanese"));
-        assert!(output_language_directive("zh-Hans").is_none(), "中文 no-op");
+        assert!(
+            output_language_directive("zh-Hans").unwrap().contains("简体中文"),
+            "中文也要强制输出语言(实测在英文产物上会漂英文)"
+        );
         assert!(output_language_directive("fr").is_none(), "未知回退 no-op");
     }
 
