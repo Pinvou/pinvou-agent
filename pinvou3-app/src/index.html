@@ -148,6 +148,7 @@
     const Paperclip = (p) => <I {...p}><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></I>;
     const Mic = (p) => <I {...p}><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></I>;
     const Send = (p) => <I {...p}><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></I>;
+    const Store = (p) => <I {...p}><path d="m2 7 4.41-4.41A2 2 0 0 1 7.83 2h8.34a2 2 0 0 1 1.42.59L22 7"/><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><path d="M15 22v-4a2 2 0 0 0-2-2h-2a2 2 0 0 0-2 2v4"/><path d="M2 7h20"/></I>;
     const Terminal = (p) => <I {...p}><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></I>;
     const ChevronDown = (p) => <I {...p}><path d="m6 9 6 6 6-6"/></I>;
     const ChevronRight = (p) => <I {...p}><path d="m9 18 6-6-6-6"/></I>;
@@ -332,6 +333,7 @@
         skillPrefill: name => `我要用 ${name} 完成: `,
         queuedTag: '排队中', queuedCancel: '撤销',
         attachParsing: '解析中…', attachFailed: '失败', attachAdd: '添加附件',
+        composerTools: '工具', composerInstalledTools: '已接入工具', composerNoTools: '暂无已装工具', composerToolOn: '已启用', composerManageTools: '管理工具',
         resend: '重新发送', editResend: '编辑并重发',
         thinkingLabel: '思考中', thinkingCall: (tool, s) => `调用 ${tool}... ${s}s`,
         hintSlow30: '本地模型生成中', hintSlow120: '本地模型在生成长内容,请耐心等',
@@ -518,6 +520,7 @@
         skillPrefill: name => `I want to use ${name} to: `,
         queuedTag: 'Queued', queuedCancel: 'Remove',
         attachParsing: 'Parsing…', attachFailed: 'Failed', attachAdd: 'Attach file',
+        composerTools: 'Tools', composerInstalledTools: 'Connected tools', composerNoTools: 'No tools installed', composerToolOn: 'On', composerManageTools: 'Manage tools',
         resend: 'Resend', editResend: 'Edit & resend',
         thinkingLabel: 'Thinking', thinkingCall: (tool, s) => `Calling ${tool}... ${s}s`,
         hintSlow30: 'local model generating', hintSlow120: 'local model is generating long content, hang tight',
@@ -704,6 +707,7 @@
         skillPrefill: name => `${name} を使ってやりたいこと: `,
         queuedTag: '待機中', queuedCancel: '取り消し',
         attachParsing: '解析中…', attachFailed: '失敗', attachAdd: 'ファイルを添付',
+        composerTools: 'ツール', composerInstalledTools: '接続済みツール', composerNoTools: 'ツールなし', composerToolOn: '有効', composerManageTools: 'ツール管理',
         resend: '再送信', editResend: '編集して再送信',
         thinkingLabel: '思考中', thinkingCall: (tool, s) => `${tool} を実行中... ${s}s`,
         hintSlow30: 'ローカルモデルが生成中', hintSlow120: 'ローカルモデルが長い内容を生成中です。しばらくお待ちください',
@@ -1288,7 +1292,7 @@
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
-            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => setCurrentView('settings')} />}
+            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => setCurrentView('settings')} onGotoTools={() => setCurrentView('toolStore')} />}
             {/* 草稿态(无 session)也渲染挂件,但强制空态——让欢迎页保留「＋加持卡牌」入口。
                 点它跳卡牌池,选卡时 equipPersona 会先物化 session(lazy session)。 */}
             {currentView === 'chat' && bs && (
@@ -1724,6 +1728,103 @@
                 </div>
               </div>
             </div>
+          )}
+        </div>
+      );
+    };
+
+    // 输入框底栏:模型选择器(iOS 化,复用 ModelChip 的 switchModel 逻辑;darkMode:'class' 故用 dark: 变体)。
+    const ComposerModelSelector = ({ t, bs, onGotoSettings }) => {
+      const [open, setOpen] = useState(false);
+      const savedModels = (bs && bs.savedModels) || [];
+      const activeSessionId = bs ? bs.activeSessionId : null;
+      const activeModelId = bs && bs.activeModelId;
+      const currentSessionModelId = bs && bs.currentSessionModelId;
+      const busy = bs ? bs.busy : false;
+      const effectiveId = currentSessionModelId || activeModelId;
+      const current = savedModels.find(m => m.id === effectiveId);
+      if (!savedModels.length) return null;
+      function pick(id) { setOpen(false); if (id !== effectiveId && bridge.available) bridge.switchModel(activeSessionId, id); }
+      return (
+        <div className="relative">
+          <button onClick={() => { if (!busy) setOpen(o => !o); }} disabled={busy}
+            title={busy ? t.modelSwitchBusy : t.switchModelTitle}
+            className="flex items-center gap-2 bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 px-3 py-1.5 rounded-xl text-[13px] font-semibold transition-colors border border-black/[0.04] dark:border-white/5 disabled:opacity-50">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#34C759]"></span>
+            <span className="max-w-[150px] truncate">{current ? current.name : t.modelNonePick}</span>
+            <ChevronDown size={14} className="opacity-50 shrink-0" />
+          </button>
+          {open && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
+              <div className="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+                {savedModels.map(m => (
+                  <button key={m.id} onClick={() => pick(m.id)}
+                    className="w-full flex items-center justify-between px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
+                    <span className="flex items-center gap-2.5 min-w-0">
+                      <Cpu size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
+                      <span className="truncate">{m.name}</span>
+                    </span>
+                    {m.id === effectiveId && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
+                  </button>
+                ))}
+                <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
+                <button onClick={() => { setOpen(false); if (onGotoSettings) onGotoSettings(); }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
+                  <Plus size={15} className="text-gray-400 group-hover:text-white/90" />
+                  {t.manageModels}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      );
+    };
+
+    // 输入框底栏:工具菜单(只展示已装工具 + 跳工具商店;无会话级开关——后端无此概念)。
+    const ComposerToolMenu = ({ t, onGotoTools }) => {
+      const [open, setOpen] = useState(false);
+      const [tools, setTools] = useState([]);
+      useEffect(() => {
+        if (!open) return;
+        let alive = true;
+        (async () => {
+          try {
+            const list = await window.__TAURI__.core.invoke('list_marketplace_tools');
+            if (alive) setTools((list || []).filter(x => x.installed));
+          } catch (e) { /* 忽略 */ }
+        })();
+        return () => { alive = false; };
+      }, [open]);
+      return (
+        <div className="relative">
+          <button onClick={() => setOpen(o => !o)}
+            className="flex items-center gap-2 bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 px-3 py-1.5 rounded-xl text-[13px] font-semibold transition-colors border border-black/[0.04] dark:border-white/5">
+            <Wrench size={14} className="opacity-70" />
+            {t.composerTools}
+            <ChevronDown size={14} className="opacity-50 shrink-0" />
+          </button>
+          {open && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
+              <div className="absolute bottom-full left-0 mb-2 z-50 w-64 bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+                <div className="px-3 py-2 text-[11px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider">{t.composerInstalledTools}</div>
+                {tools.length === 0 ? (
+                  <div className="px-3 py-2 text-[13px] text-gray-400 dark:text-gray-500">{t.composerNoTools}</div>
+                ) : tools.map(tl => (
+                  <div key={tl.id} className="flex items-center justify-between px-3 py-2.5 rounded-xl font-medium">
+                    <span className="text-[13px] text-gray-700 dark:text-gray-200 truncate">{tl.name || tl.title || tl.id}</span>
+                    <span className="text-[11px] text-[#34C759] font-semibold">{t.composerToolOn}</span>
+                  </div>
+                ))}
+                <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
+                <button onClick={() => { setOpen(false); if (onGotoTools) onGotoTools(); }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
+                  <Store size={15} className="text-gray-400 group-hover:text-white/90" />
+                  {t.composerManageTools}
+                </button>
+              </div>
+            </>
           )}
         </div>
       );
@@ -2252,11 +2353,34 @@
       );
     };
 
-    const ChatView = ({ theme, t, bs, prefill, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings }) => {
+    const ChatView = ({ theme, t, bs, prefill, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoTools }) => {
       const isDark = theme === 'dark';
       const [inputText, setInputText] = useState('');
       const [artifactsOpen, setArtifactsOpen] = useState(false);
       const scrollRef = useRef(null);
+      const composerRef = useRef(null);
+      // 输入框自动增高:随内容从最小(~2行)长到上限 160px,再内部滚动(iOS 手感)。
+      // 清空(发送后)inputText 变 '' → 自动缩回最小高。
+      useEffect(() => {
+        const el = composerRef.current;
+        if (!el) return;
+        el.style.height = 'auto';
+        el.style.height = Math.min(Math.max(el.scrollHeight, 48), 160) + 'px';
+      }, [inputText]);
+      // 输入框是浮动绝对定位,会随 auto-grow / 附件 / 排队 chips 变高 → 量它实际高度,
+      // 动态给滚动区底部留白(= 输入框高 + 间距),保证最后几条消息永不被遮挡、也不浪费空间。
+      const composerWrapRef = useRef(null);
+      const [composerH, setComposerH] = useState(0);
+      useEffect(() => {
+        const el = composerWrapRef.current;
+        if (!el) return;
+        const measure = () => setComposerH(el.offsetHeight);
+        measure();
+        if (!window.ResizeObserver) return;
+        const ro = new ResizeObserver(measure);
+        ro.observe(el);
+        return () => ro.disconnect();
+      }, []);
       const chatItems = bs ? bs.chatItems : [];
       const busy = bs ? bs.busy : false;
       const hasMessages = chatItems.length > 0;
@@ -2366,7 +2490,7 @@
 
 
           {/* Main Chat Area */}
-          <div ref={scrollRef} className={`flex-1 min-h-0 overflow-y-auto px-4 md:px-20 lg:px-40 pb-40 custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
+          <div ref={scrollRef} style={{ paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }} className={`flex-1 min-h-0 overflow-y-auto px-4 md:px-20 lg:px-40 custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
 
             {!hasMessages && !welcomeToolId && (
               /* Gemini Style Centered Empty State */
@@ -2409,8 +2533,12 @@
 
           </div>
 
+          {/* 底部渐变蒙层:内容滚到底时在输入框上方柔和淡出(pointer-events-none 不挡滑动/点击;高度跟随输入框 auto-grow)。 */}
+          <div className={`pointer-events-none absolute bottom-0 inset-x-0 z-[15] bg-gradient-to-t to-transparent from-30% via-70% ${isDark ? 'from-[#131314] via-[#131314]/95' : 'from-white via-white/95'}`}
+            style={{ height: (composerH ? composerH + 96 : 220) + 'px' }} />
           {/* Floating Input Area */}
-          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 w-full max-w-[800px] px-4 z-20">
+          <div ref={composerWrapRef} className="absolute bottom-8 inset-x-0 px-4 md:px-20 lg:px-40 z-20">
+            <div className="max-w-[800px] w-full mx-auto">
             {/* 排队待发消息 chips（生成中继续输入会积压到这里，本轮跑完自动发） */}
             {queued.length > 0 && (
               <div className="flex flex-col gap-1 mb-2 px-2">
@@ -2423,7 +2551,7 @@
                 ))}
               </div>
             )}
-            <ModelChip isDark={isDark} t={t} bs={bs} onGotoSettings={onGotoSettings} />
+            {/* 模型选择器已挪进下方底栏(ComposerModelSelector) */}
             {/* 附件 chips */}
             {attachments.length > 0 && (
               <div className="flex flex-wrap gap-2 mb-2 px-2">
@@ -2439,38 +2567,41 @@
                 ))}
               </div>
             )}
-            <div className={`flex items-center gap-3 p-2 rounded-full shadow-lg ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
-
-              <button onClick={() => bridge.available && bridge.pickAndAttach()} title={t.attachAdd}
-                className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>
-                <Paperclip size={20} />
-              </button>
-
-              <input
-                type="text"
-                placeholder={t.placeholder}
+            <div className="bg-white/80 dark:bg-[#161618]/85 backdrop-blur-2xl border border-black/[0.06] dark:border-white/10 rounded-[28px] shadow-lg focus-within:border-blue-400/50 dark:focus-within:border-blue-500/50 transition-colors px-4 pt-3 pb-2.5">
+              <textarea
+                ref={composerRef}
                 value={inputText}
                 onChange={e => setInputText(e.target.value)}
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
-                className={`flex-1 bg-transparent border-none outline-none text-[16px] py-3 ${isDark ? 'placeholder:text-[#C4C7C5]' : 'placeholder:text-gray-400'}`}
+                placeholder={t.placeholder}
+                rows={1}
+                className="w-full bg-transparent resize-none outline-none text-gray-800 dark:text-gray-100 text-[16px] leading-relaxed min-h-[48px] overflow-y-auto hide-scrollbar placeholder:text-gray-400 dark:placeholder:text-gray-500"
               />
-
-              {busy ? (
-                <button
-                  onClick={handleCancel}
-                  className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#F28B82] hover:bg-[#333537]' : 'text-[#C5221F] hover:bg-[#F0F4F9]'}`}
-                >
-                  <StopCircle size={20} />
-                </button>
-              ) : (
-                <button
-                  onClick={handleSend}
-                  className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}
-                >
-                  {(inputText.trim() || attachments.some(a => a.status === 'ready')) ? <Send size={18} /> : <Mic size={20} />}
-                </button>
-              )}
+              <div className="flex items-center justify-between mt-1.5 gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <button onClick={() => bridge.available && bridge.pickAndAttach()} title={t.attachAdd}
+                    className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-black/5 dark:hover:bg-white/10 transition-colors">
+                    <Paperclip size={20} />
+                  </button>
+                  <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoSettings} />
+                  <ComposerToolMenu t={t} onGotoTools={onGotoTools} />
+                </div>
+                {busy ? (
+                  <button onClick={handleCancel}
+                    className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-black/5 dark:bg-white/10 text-[#C5221F] dark:text-[#F28B82] hover:bg-black/10 dark:hover:bg-white/20 transition-colors">
+                    <StopCircle size={20} />
+                  </button>
+                ) : (() => {
+                  const ready = inputText.trim() || attachments.some(a => a.status === 'ready');
+                  return (
+                    <button onClick={handleSend} disabled={!ready} aria-label="发送"
+                      className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0' : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
+                      <Send size={17} className="translate-x-[1px]" />
+                    </button>
+                  );
+                })()}
+              </div>
             </div>
             {ctxTokens && ctxTokens.input > 0 && (
               <div className={`mt-1.5 px-5 text-[11px] font-mono ${
@@ -2482,6 +2613,7 @@
             )}
             <div className="flex items-center justify-center mt-3">
                <p className={`text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{t.disclaimer}</p>
+            </div>
             </div>
           </div>
 
