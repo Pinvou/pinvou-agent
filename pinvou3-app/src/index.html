@@ -1799,23 +1799,40 @@
     const ComposerToolMenu = ({ t, onGotoTools }) => {
       const [open, setOpen] = useState(false);
       const [tools, setTools] = useState([]);
+      const [disabled, setDisabled] = useState(() => new Set()); // 被关掉的连接器 id(全局持久)
+      // 启动时加载已装工具 + 全局持久的禁用列表(持久语义:新窗口/新对话都继承)
       useEffect(() => {
-        if (!open) return;
         let alive = true;
         (async () => {
           try {
             const list = await window.__TAURI__.core.invoke('list_marketplace_tools');
             if (alive) setTools((list || []).filter(x => x.installed));
           } catch (e) { /* 忽略 */ }
+          try {
+            const dis = await window.__TAURI__.core.invoke('get_disabled_connectors');
+            if (alive) setDisabled(new Set(dis || []));
+          } catch (e) { /* 忽略 */ }
         })();
         return () => { alive = false; };
-      }, [open]);
+      }, []);
+      function toggleTool(id) {
+        const next = new Set(disabled);
+        next.has(id) ? next.delete(id) : next.add(id);
+        setDisabled(next);
+        // 全局持久:落盘 + 广播给所有在跑引擎,关一次所有新对话/新窗口都继承。
+        if (bridge.available) {
+          window.__TAURI__.core.invoke('set_disabled_connectors',
+            { connectorIds: Array.from(next) }).catch(() => {});
+        }
+      }
+      const enabledCount = tools.filter(tl => !disabled.has(tl.id)).length;
       return (
         <div className="relative">
           <button onClick={() => setOpen(o => !o)}
             className="flex items-center gap-2 bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 px-3 py-1.5 rounded-xl text-[13px] font-semibold transition-colors border border-black/[0.04] dark:border-white/5">
             <Wrench size={14} className="opacity-70" />
             {t.composerTools}
+            {tools.length > 0 && <span className="text-[11px] bg-[#007AFF] text-white px-1.5 py-0.5 rounded-full leading-none font-bold shrink-0">{enabledCount}</span>}
             <ChevronDown size={14} className="opacity-50 shrink-0" />
           </button>
           {open && (
@@ -1825,12 +1842,18 @@
                 <div className="px-3 py-2 text-[11px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider">{t.composerInstalledTools}</div>
                 {tools.length === 0 ? (
                   <div className="px-3 py-2 text-[13px] text-gray-400 dark:text-gray-500">{t.composerNoTools}</div>
-                ) : tools.map(tl => (
-                  <div key={tl.id} className="flex items-center justify-between px-3 py-2.5 rounded-xl font-medium">
-                    <span className="text-[13px] text-gray-700 dark:text-gray-200 truncate">{tl.name || tl.title || tl.id}</span>
-                    <span className="text-[11px] text-[#34C759] font-semibold">{t.composerToolOn}</span>
-                  </div>
-                ))}
+                ) : tools.map(tl => {
+                  const on = !disabled.has(tl.id);
+                  return (
+                    <div key={tl.id} className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
+                      <span className="text-[13px] text-gray-700 dark:text-gray-200 truncate">{tl.name || tl.title || tl.id}</span>
+                      <button onClick={() => toggleTool(tl.id)} aria-label={tl.id}
+                        className={`relative inline-flex h-5 w-[34px] shrink-0 items-center rounded-full transition-colors ${on ? 'bg-[#34C759]' : 'bg-[#E5E5EA] dark:bg-[#39393D]'}`}>
+                        <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${on ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
+                      </button>
+                    </div>
+                  );
+                })}
                 <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
                 <button onClick={() => { setOpen(false); if (onGotoTools) onGotoTools(); }}
                   className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
@@ -2599,7 +2622,7 @@
                     <Paperclip size={20} />
                   </button>
                   <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoSettings} />
-                  <ComposerToolMenu t={t} onGotoTools={onGotoTools} />
+                  <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} />
                 </div>
                 {busy ? (
                   <button onClick={handleCancel}

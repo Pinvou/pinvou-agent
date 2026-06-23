@@ -791,6 +791,30 @@ pub async fn cancel_generation(
     Ok(())
 }
 
+/// pinvou3 工具开关(全局持久):设置当前被关掉的连接器(connector_ids = 市场工具 id)。
+/// 落盘 → 推算成模型可见工具全名广播给所有在跑引擎 → 隐藏这些工具。空 = 全开。
+/// 持久:用户关一次,所有新对话/新窗口都继承,直到手动开回。
+#[tauri::command]
+pub async fn set_disabled_connectors(
+    connector_ids: Vec<String>,
+    pool: State<'_, EnginePool>,
+) -> Result<(), String> {
+    let tools = tokio::task::spawn_blocking(move || {
+        crate::bridge::marketplace::save_disabled_connectors(&connector_ids);
+        crate::bridge::marketplace::MarketplaceManager::new().model_tool_names(&connector_ids)
+    })
+    .await
+    .map_err(|e| format!("compute disabled tools: {e}"))?;
+    pool.set_disallowed_all(tools).await;
+    Ok(())
+}
+
+/// pinvou3 工具开关:读全局被禁用的连接器 id 列表(前端启动时加载,初始化开关状态)。
+#[tauri::command]
+pub async fn get_disabled_connectors() -> Result<Vec<String>, String> {
+    Ok(crate::bridge::marketplace::load_disabled_connectors())
+}
+
 /// 编辑/重发最后一轮 user 消息。
 /// engine 砍掉 session 末尾最近的 user+assistant 后，用 new_message 重发。
 /// 前端在调这个命令之前必须自己更新 state.messages（删最后一对，加新 user）。
