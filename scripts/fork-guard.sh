@@ -62,6 +62,10 @@ fingerprints=(
   # 首请求前预热完整前缀(含 turn_meta);只热 system+tools 不够(模型恰在 turn_meta 处复读采歪)。
   "    |session warmup flag             |DeepSeek-TUI/crates/tui/src/core/session.rs|cache_warmup_done"
   "    |首请求 warmup 注入              |DeepSeek-TUI/crates/tui/src/core/engine/turn_loop.rs|cache_warmup_done"
+  # —— 会话工具开关(2026-06-23):pinvou3 connector 开关广播 disallowed_tools 给引擎(fork #4)——
+  # 引擎加 Op::SetDisallowedTools → 写 config.disallowed_tools → 下一轮 filter_tool_catalog_for_gates 隐藏。
+  "C8  |SetDisallowedTools op 定义       |DeepSeek-TUI/crates/tui/src/core/ops.rs|SetDisallowedTools { tools: Vec<String> }"
+  "C8  |SetDisallowedTools 写 disallowed |DeepSeek-TUI/crates/tui/src/core/engine.rs|Op::SetDisallowedTools { tools }"
   # —— 工作流 fork 基座层(三省六部;feat/sansheng-workflow 随附,2026-06-12 补)——
   # 行为层已有 engine_config_locks_critical_fields(W10 reasoning_effort);其余 W* 暂只 L1。
   "W1  |SpawnSubAgent 扩展字段          |DeepSeek-TUI/crates/tui/src/core/ops.rs|expects_file_output: bool"
