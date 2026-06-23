@@ -111,9 +111,36 @@ def _comprehensive_search(channel: str, query: str, call_type: str = "normal",
     return _post_json(url, payload, headers, timeout)
 
 
+# ── 商品/贵金属价格查询重定向(方案 B)─────────────────────────────────────
+# 问财行情接口对商品/贵金属(金价/银价/油价)支持差:无论关键词怎么调,NLP 多匹配成
+# "字段稀疏的外盘期货"(只有收盘价)→ 前端渲染成一堆 "--"。这类查询应走 news_search
+# (返回实时报价 + 新闻,实测金价/沪金/AU9999 数据齐全)。market_query 专注 A股/ETF/指数个股。
+# 含"股"则视为 A股个股(黄金股/个股/股价等),不拦。
+_COMMODITY_PRICE_TERMS = (
+    "金价", "银价", "油价", "铜价", "现货黄金", "现货白银", "纸黄金",
+    "xauusd", "xau", "comex", "贵金属", "金店",
+)
+
+
+def _is_commodity_price_query(query):
+    s = (query or "").lower()
+    if "股" in s:  # 黄金股 / 个股 / 股价 → A股,放行
+        return False
+    return any(t in s for t in _COMMODITY_PRICE_TERMS)
+
+
 # ── 12 个 Tool 函数 ──────────────────────────────────────────────────────
 
 def hithink_market_query(query, page="1", limit="10", timeout=60):
+    # 商品/贵金属价格 → 引导到 news_search,避免问财返回稀疏外盘数据(满屏 "--")
+    if _is_commodity_price_query(query):
+        return {
+            "ok": False,
+            "redirect": "news_search",
+            "hint": "问财行情(market_query)专注 A股/ETF/指数个股,不支持商品/贵金属价格"
+                    "(金价/银价/油价等)。请改用 news_search 查询(如 query='金价 黄金 最新行情'),"
+                    "可拿到实时报价 + 新闻。",
+        }
     return _query2data("hithink-market-query", query, page, limit, timeout=timeout)
 
 def hithink_finance_query(query, page="1", limit="10", timeout=60):
@@ -221,7 +248,7 @@ def _search_tool_schema(name: str, desc: str) -> dict:
 
 
 TOOL_SCHEMAS = [
-    _query_tool_schema("hithink_market_query", "查询股票/ETF/指数实时行情数据：价格、涨跌幅、成交量、主力资金流向、技术指标。数据来源：同花顺问财。"),
+    _query_tool_schema("hithink_market_query", "查询【A股/ETF/指数】个股实时行情：价格、涨跌幅、成交量、主力资金流向、技术指标。⚠️ 不支持商品/贵金属价格（金价/银价/油价/现货黄金等）——这类请用 news_search 查询（能拿到实时报价+新闻）。数据来源：同花顺问财。"),
     _query_tool_schema("hithink_finance_query", "查询个股财务数据：营业收入、净利润、ROE、ROA、负债率、PE/PB/PS等。数据来源：同花顺问财。"),
     _query_tool_schema("hithink_event_query", "查询个股事件数据：业绩预告、增发配股、股权质押、限售解禁等。数据来源：同花顺问财。"),
     _query_tool_schema("hithink_management_query", "查询公司股东股本信息：前十大股东、实控人、高管团队等。数据来源：同花顺问财。"),
@@ -231,7 +258,7 @@ TOOL_SCHEMAS = [
     _query_tool_schema("hithink_sector_selector", "智能筛选市场板块：按估值、资金流向、涨跌幅等条件。数据来源：同花顺问财。"),
     _query_tool_schema("hithink_astock_selector", "智能筛选A股：按行情、技术形态、财务等多条件选股。数据来源：同花顺问财。"),
     _query_tool_schema("hithink_macro_query", "查询宏观经济数据：GDP、CPI、PPI、PMI、LPR等。数据来源：同花顺问财。"),
-    _search_tool_schema("news_search", "搜索财经资讯：政策动态、行业新闻、企业进展。数据来源：同花顺问财。"),
+    _search_tool_schema("news_search", "搜索财经资讯：政策动态、行业新闻、企业进展，以及【商品/贵金属价格】（金价/银价/油价/现货黄金/AU9999 等的实时报价与走势）。数据来源：同花顺问财。"),
     _search_tool_schema("announcement_search", "搜索金融公告：财报、分红、回购、资产重组等。数据来源：同花顺问财。"),
 ]
 
