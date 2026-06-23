@@ -279,6 +279,7 @@ pub fn run() {
             knowledge::kb_documents,
             knowledge::kb_remove_document,
             knowledge::kb_retrieve,
+            knowledge::kb_embed_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

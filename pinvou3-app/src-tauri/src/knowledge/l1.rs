@@ -4,6 +4,7 @@
 //! `chunks.vec` 列留 NULL；向量(embedding)是 Phase 3，检索届时升级为 fts+向量混合。
 //! 复用 L0 的同一个 SQLite 连接(同库 index.db，见 [`super::store::Store::conn_arc`])。
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
@@ -11,6 +12,8 @@ use std::time::UNIX_EPOCH;
 use parking_lot::Mutex;
 use rusqlite::{params, Connection};
 use serde::Serialize;
+
+use super::embed::{self, Embedder};
 
 /// chunk 切块参数：~512 token ≈ 中文 600 字符；15% 重叠保留上下文。
 const CHUNK_CHARS: usize = 600;
@@ -62,11 +65,25 @@ pub struct ChunkHit {
 #[derive(Clone)]
 pub struct L1Store {
     conn: Arc<Mutex<Connection>>,
+    /// 配了 embedding 端点则启用向量;None → 纯全文 fts。
+    embedder: Option<Arc<Embedder>>,
 }
 
 impl L1Store {
-    pub fn new(conn: Arc<Mutex<Connection>>) -> Self {
-        Self { conn }
+    pub fn new(conn: Arc<Mutex<Connection>>, embedder: Option<Arc<Embedder>>) -> Self {
+        Self { conn, embedder }
+    }
+
+    #[allow(dead_code)] // 保留:将来检索/UI 判断是否启用向量
+    pub fn has_embedder(&self) -> bool {
+        self.embedder.is_some()
+    }
+
+    /// (source, model) — 给前端显示语义检索状态。
+    pub fn embed_info(&self) -> Option<(String, String)> {
+        self.embedder
+            .as_ref()
+            .map(|e| (e.source().to_string(), e.model().to_string()))
     }
 
     // ───────────────────────── 知识集 CRUD ─────────────────────────
@@ -215,21 +232,25 @@ impl L1Store {
         doc_id: i64,
         collection_id: i64,
         chunks: &[String],
+        vecs: Option<&[Vec<f32>]>,
     ) -> rusqlite::Result<()> {
         let mut guard = self.conn.lock();
         let tx = guard.transaction()?;
         tx.execute("DELETE FROM chunks WHERE document_id=?1", params![doc_id])?;
         {
             let mut stmt = tx.prepare_cached(
-                "INSERT INTO chunks(document_id,collection_id,ord,text,n_tokens) VALUES(?1,?2,?3,?4,?5)",
+                "INSERT INTO chunks(document_id,collection_id,ord,text,n_tokens,vec) VALUES(?1,?2,?3,?4,?5,?6)",
             )?;
             for (i, ch) in chunks.iter().enumerate() {
+                let blob: Option<Vec<u8>> =
+                    vecs.and_then(|vs| vs.get(i)).map(|v| embed::vec_to_blob(v));
                 stmt.execute(params![
                     doc_id,
                     collection_id,
                     i as i64,
                     ch,
-                    ch.chars().count() as i64
+                    ch.chars().count() as i64,
+                    blob
                 ])?;
             }
         }
@@ -281,7 +302,12 @@ impl L1Store {
             Some(md) if !md.trim().is_empty() => {
                 let chunks = chunk_text(&md, CHUNK_CHARS, CHUNK_OVERLAP);
                 let n = chunks.len();
-                if self.replace_doc_chunks(doc_id, collection_id, &chunks).is_err() {
+                // 配了 embedding 端点则算向量(失败则降级为仅全文,不阻断入库)。
+                let vecs = self.embedder.as_ref().and_then(|e| e.embed(&chunks).ok());
+                if self
+                    .replace_doc_chunks(doc_id, collection_id, &chunks, vecs.as_deref())
+                    .is_err()
+                {
                     self.set_doc_status(doc_id, "failed", 0);
                     return "failed".into();
                 }
@@ -298,15 +324,27 @@ impl L1Store {
 
     // ───────────────────────── 检索（全文，Phase 3 升级为混合） ─────────────────────────
 
-    /// 在某知识集内检索：≥3 字符走 FTS5 trigram(bm25 排序)，1-2 字符 LIKE 兜底。
+    /// 知识集内检索。配了 embedding → fts + 向量 RRF 混合;否则纯全文。
+    /// 注意：调用方需保证在非 async 上下文（embedding 走 reqwest::blocking）。
     pub fn search(&self, collection_id: i64, query: &str, k: usize) -> rusqlite::Result<Vec<ChunkHit>> {
         let q = query.trim();
         if q.is_empty() {
             return Ok(vec![]);
         }
-        let lim = if k == 0 { 20 } else { k } as i64;
+        let lim = if k == 0 { 20 } else { k };
+        let fts = self.search_fts(collection_id, q, lim * 2)?;
+        if let Some(emb) = &self.embedder {
+            if let Ok(qv) = emb.embed_one(q) {
+                let vec = self.search_vec(collection_id, &qv, lim * 2)?;
+                return Ok(rrf_merge(fts, vec, lim));
+            }
+        }
+        Ok(fts.into_iter().take(lim).collect())
+    }
+
+    /// 全文：≥3 字符走 FTS5 trigram(bm25)，1-2 字符 LIKE 兜底。
+    fn search_fts(&self, collection_id: i64, q: &str, lim: usize) -> rusqlite::Result<Vec<ChunkHit>> {
         let c = self.conn.lock();
-        let use_fts = q.chars().count() >= 3;
         let map = |r: &rusqlite::Row| -> rusqlite::Result<ChunkHit> {
             Ok(ChunkHit {
                 text: r.get(0)?,
@@ -316,7 +354,7 @@ impl L1Store {
                 ord: r.get(4)?,
             })
         };
-        if use_fts {
+        if q.chars().count() >= 3 {
             let m = format!("\"{}\"", q.replace('"', "\"\""));
             let mut stmt = c.prepare(
                 "SELECT k.text, bm25(chunks_fts) AS score, d.name, d.path, k.ord \
@@ -325,7 +363,7 @@ impl L1Store {
                  WHERE k.collection_id=?1 AND chunks_fts MATCH ?2 \
                  ORDER BY score LIMIT ?3",
             )?;
-            let rows = stmt.query_map(params![collection_id, m, lim], map)?;
+            let rows = stmt.query_map(params![collection_id, m, lim as i64], map)?;
             rows.collect()
         } else {
             let like = format!("%{}%", q.replace('%', "").replace('_', ""));
@@ -334,14 +372,67 @@ impl L1Store {
                  FROM chunks k JOIN documents d ON d.id=k.document_id \
                  WHERE k.collection_id=?1 AND k.text LIKE ?2 LIMIT ?3",
             )?;
-            let rows = stmt.query_map(params![collection_id, like, lim], map)?;
+            let rows = stmt.query_map(params![collection_id, like, lim as i64], map)?;
             rows.collect()
         }
+    }
+
+    /// 向量召回：加载该集所有有 vec 的 chunk，暴力算余弦，取 top（选定知识集规模下足够）。
+    fn search_vec(&self, collection_id: i64, qv: &[f32], lim: usize) -> rusqlite::Result<Vec<ChunkHit>> {
+        let c = self.conn.lock();
+        let mut stmt = c.prepare(
+            "SELECT k.text, k.vec, d.name, d.path, k.ord \
+             FROM chunks k JOIN documents d ON d.id=k.document_id \
+             WHERE k.collection_id=?1 AND k.vec IS NOT NULL",
+        )?;
+        let rows = stmt.query_map(params![collection_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Vec<u8>>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, i64>(4)?,
+            ))
+        })?;
+        let mut scored: Vec<(f32, ChunkHit)> = Vec::new();
+        for row in rows {
+            let (text, blob, doc_name, doc_path, ord) = row?;
+            let s = embed::cosine(qv, &embed::blob_to_vec(&blob));
+            scored.push((s, ChunkHit { text, score: s as f64, doc_name, doc_path, ord }));
+        }
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(scored.into_iter().take(lim).map(|(_, h)| h).collect())
     }
 }
 
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
+}
+
+/// 倒数排名融合(RRF)：两路结果按排名给分，按 (docPath#ord) 去重合并，取前 k。
+fn rrf_merge(fts: Vec<ChunkHit>, vec: Vec<ChunkHit>, k: usize) -> Vec<ChunkHit> {
+    const RRF_K: f64 = 60.0;
+    let mut score: HashMap<String, f64> = HashMap::new();
+    let mut keep: HashMap<String, ChunkHit> = HashMap::new();
+    for (rank, h) in fts.iter().enumerate() {
+        let key = format!("{}#{}", h.doc_path, h.ord);
+        *score.entry(key.clone()).or_insert(0.0) += 1.0 / (RRF_K + rank as f64 + 1.0);
+        keep.entry(key).or_insert_with(|| h.clone());
+    }
+    for (rank, h) in vec.iter().enumerate() {
+        let key = format!("{}#{}", h.doc_path, h.ord);
+        *score.entry(key.clone()).or_insert(0.0) += 1.0 / (RRF_K + rank as f64 + 1.0);
+        keep.entry(key).or_insert_with(|| h.clone());
+    }
+    let mut merged: Vec<ChunkHit> = keep
+        .into_iter()
+        .map(|(key, mut h)| {
+            h.score = *score.get(&key).unwrap_or(&0.0);
+            h
+        })
+        .collect();
+    merged.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    merged.into_iter().take(k).collect()
 }
 
 /// 把正文切成 ~max_chars 的块，相邻块重叠 overlap 字符。按字符窗口滑动（中文友好）。
@@ -381,7 +472,7 @@ mod tests {
 
     fn mem() -> L1Store {
         let store = Store::open_in_memory().unwrap();
-        L1Store::new(store.conn_arc())
+        L1Store::new(store.conn_arc(), None) // 单测：纯全文,不接 embedding
     }
 
     #[test]

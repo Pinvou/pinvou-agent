@@ -59,3 +59,7 @@ notify = "6"
 rusqlite = { version = "0.31", features = ["bundled"] }
 # 全盘遍历：容错(权限不足跳过)、防 symlink 环。L0 扫描器用。
 walkdir = "2"
+
+# 本地 embedding（L1 语义检索）：fastembed-rs 进程内 ONNX 推理（CPU EP），**不依赖 vLLM**。
+# 模型(bge-m3 ONNX)用户本地下载，UserDefinedEmbeddingModel 从目录加载，不走 HF 自动下载。
+fastembed = "4"

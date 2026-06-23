@@ -8,6 +8,7 @@
 //! LLM 理解是 L2（纯按需）。**绝不在这里全盘跑模型分类**——那是 Marvis 的坑。
 
 mod dedup;
+mod embed;
 mod exclude;
 mod l1;
 mod query;
@@ -77,7 +78,12 @@ impl KnowledgeService {
     /// 用磁盘库初始化（`~/.pinvou3/knowledge/index.db`）。
     pub fn new(db_path: &Path) -> rusqlite::Result<Self> {
         let store = Store::open(db_path)?;
-        let l1 = l1::L1Store::new(store.conn_arc());
+        // env 配了 embedding 端点则启用向量,否则知识库走纯全文(降级)。
+        let embedder = embed::Embedder::from_env().map(Arc::new);
+        if let Some(e) = &embedder {
+            eprintln!("[knowledge] L1 embedding 已启用: {} ({})", e.model(), e.source());
+        }
+        let l1 = l1::L1Store::new(store.conn_arc(), embedder);
         Ok(Self {
             store,
             l1,
@@ -451,7 +457,8 @@ pub fn kb_remove_document(state: State<'_, KnowledgeService>, doc_id: i64) -> Re
     state.l1().remove_document(doc_id).map_err(|e| e.to_string())
 }
 
-/// 知识集内检索（全文；Phase 3 升级为 fts+向量混合）。
+/// 知识集内检索（配 embedding 则 fts+向量混合，否则纯全文）。
+/// embedding 走 reqwest::blocking，放独立线程避免命令在 async runtime 上下文里阻塞。
 #[tauri::command]
 pub fn kb_retrieve(
     state: State<'_, KnowledgeService>,
@@ -459,10 +466,30 @@ pub fn kb_retrieve(
     query: String,
     k: Option<usize>,
 ) -> Result<Vec<ChunkHit>, String> {
-    state
-        .l1()
-        .search(collection_id, &query, k.unwrap_or(20))
-        .map_err(|e| e.to_string())
+    let l1 = state.l1().clone();
+    std::thread::spawn(move || {
+        l1.search(collection_id, &query, k.unwrap_or(20))
+            .map_err(|e| e.to_string())
+    })
+    .join()
+    .unwrap_or_else(|_| Err("retrieve thread panicked".into()))
+}
+
+/// 语义检索(embedding)状态，给前端显示「语义检索:已启用/未配置」。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbedInfo {
+    pub enabled: bool,
+    pub base_url: String,
+    pub model: String,
+}
+
+#[tauri::command]
+pub fn kb_embed_info(state: State<'_, KnowledgeService>) -> EmbedInfo {
+    match state.l1().embed_info() {
+        Some((base_url, model)) => EmbedInfo { enabled: true, base_url, model },
+        None => EmbedInfo { enabled: false, base_url: String::new(), model: String::new() },
+    }
 }
 
 /// 秒搜。文本会先过 NL 规则解析（"上周的 pdf" → exts+时间过滤+残余文本）；

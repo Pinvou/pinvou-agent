@@ -226,6 +226,7 @@
         kbStReady: '已就绪', kbStIndexing: '解析中', kbStPending: '待索引',
         kbDeleteColl: '删除知识集', kbRemove: '移除', kbCollEmpty: '还没有文档，点「添加文件」加入。',
         kbRetrPlaceholder: '在这个知识集里检索内容…', kbCollNamePh: '知识集名称', kbCollCatPh: '分类（可选）', kbCancel: '取消', kbCreate: '创建',
+        kbEmbedOn: '语义检索已启用', kbEmbedOff: '语义检索未配置 · 全文模式',
         sysStatus: '系统状态', sysDesc: '实时性能与资源指标', gpu: '图形处理器 (GPU)', gpuUnavail: '状态不可用', noSmi: '未检测到 nvidia-smi',
         vram: '显存占用', core: '计算核心', temp: '温度', power: '功耗', unifiedMem: '统一内存架构',
         ram: '系统内存 (RAM)', used: '已用', physical: '物理内存', total: '总计', swap: '交换空间',
@@ -434,6 +435,7 @@
         kbStReady: 'Ready', kbStIndexing: 'Parsing', kbStPending: 'Pending',
         kbDeleteColl: 'Delete collection', kbRemove: 'Remove', kbCollEmpty: 'No documents yet. Click "Add files".',
         kbRetrPlaceholder: 'Search inside this collection…', kbCollNamePh: 'Collection name', kbCollCatPh: 'Category (optional)', kbCancel: 'Cancel', kbCreate: 'Create',
+        kbEmbedOn: 'Semantic search on', kbEmbedOff: 'Semantic off · full-text only',
         sysStatus: 'System Status', sysDesc: 'Real-time performance metrics', gpu: 'GPU', gpuUnavail: 'Unavailable', noSmi: 'nvidia-smi not found',
         vram: 'VRAM Usage', core: 'Core Usage', temp: 'Temp', power: 'Power', unifiedMem: 'Unified Memory',
         ram: 'System RAM', used: 'Used', physical: 'Physical RAM', total: 'Total', swap: 'Swap Space',
@@ -1602,11 +1604,13 @@
       const [hits, setHits] = useState([]);
       const [retrSearched, setRetrSearched] = useState(false);
       const [newColl, setNewColl] = useState(null);
+      const [embedInfo, setEmbedInfo] = useState(null);
 
       const loadDocs = async (cid) => { try { setDocs(await inv('kb_documents', { collectionId: cid, limit: 0 }) || []); } catch (e) {} };
       const loadColls = useCallback(async () => {
         try { setColls(await inv('kb_collection_list') || []); } catch (e) {}
         try { setAllDocs(await inv('kb_documents', { collectionId: 0, limit: 50 }) || []); } catch (e) {}
+        try { setEmbedInfo(await inv('kb_embed_info')); } catch (e) {}
       }, []);
       useEffect(() => { loadColls(); }, []); // 挂载即加载,文件管理「加入知识库」浮层也要用
       useEffect(() => { if (sub === 'kb') loadColls(); }, [sub]);
@@ -1768,6 +1772,13 @@
                       <span key={i} className={`text-[12px] px-3 py-1.5 rounded-full ${isDark ? 'bg-white/10 text-[#C4C7C5]' : 'bg-white/70 text-[#54506b]'}`}><b className="text-[#6c5ce7]">{i + 1}</b> {s}</span>
                     ))}
                   </div>
+                </div>
+
+                {/* 语义检索状态 */}
+                <div className="flex items-center gap-2 mb-5 text-[12px]">
+                  <span className={`px-3 py-1 rounded-full ${embedInfo && embedInfo.enabled ? (isDark ? 'bg-[#13361f] text-[#7DD3A8]' : 'bg-[#e6f6ec] text-[#18a957]') : `${card} ${muted}`}`}>
+                    {embedInfo && embedInfo.enabled ? `${t.kbEmbedOn}（${embedInfo.model}）` : t.kbEmbedOff}
+                  </span>
                 </div>
 
                 {colls.length === 0 ? (
