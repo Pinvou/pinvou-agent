@@ -1,11 +1,49 @@
 ﻿use std::ffi::OsStr;
 
+use std::path::PathBuf;
+
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     super::super::platform::open_target(target, label)
 }
 
 pub fn command_exists(command: &str) -> bool {
     super::super::platform::command_exists(command)
+}
+
+pub fn pdf_tool_path(command: &str) -> PathBuf {
+    super::super::platform::pdf_tool_path(command)
+}
+
+pub fn pdf_tool_exists(command: &str) -> bool {
+    super::super::platform::pdf_tool_exists(command)
+}
+
+pub fn show_pdf_dependency_check() -> bool {
+    super::super::platform::show_pdf_dependency_check()
+}
+
+pub fn pdf_dependency_packages() -> &'static str {
+    super::super::platform::pdf_dependency_packages()
+}
+
+pub fn ocr_dependency_packages() -> &'static str {
+    super::super::platform::ocr_dependency_packages()
+}
+
+pub fn pdf_text_missing_message() -> &'static str {
+    super::super::platform::pdf_text_missing_message()
+}
+
+pub fn pdf_render_missing_message() -> &'static str {
+    super::super::platform::pdf_render_missing_message()
+}
+
+pub fn pdf_ocr_missing_message() -> &'static str {
+    super::super::platform::pdf_ocr_missing_message()
+}
+
+pub fn presentation_pdf_missing_message() -> &'static str {
+    super::super::platform::presentation_pdf_missing_message()
 }
 
 pub fn nvidia_smi_candidates() -> Vec<&'static str> {
@@ -19,5 +57,10 @@ mod tests {
     #[test]
     fn nvidia_smi_candidates_starts_with_generic_command() {
         assert_eq!(nvidia_smi_candidates().first().copied(), Some("nvidia-smi"));
+    }
+
+    #[test]
+    fn pdf_tool_path_returns_non_empty_program() {
+        assert!(!pdf_tool_path("pdftotext").as_os_str().is_empty());
     }
 }

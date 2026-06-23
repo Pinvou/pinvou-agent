@@ -27,7 +27,8 @@
   "bundle": {
     "active": true,
     "targets": [
-      "deb"
+      "deb",
+      "msi"
     ],
     "icon": [
       "icons/32x32.png",
@@ -36,6 +37,19 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": {
+      "resources/windows/poppler/": "poppler"
+    },
+    "windows": {
+      "wix": {
+        "fragmentPaths": [
+          "resources/windows/poppler-path.wxs"
+        ],
+        "componentRefs": [
+          "PopplerPathEnvironment"
+        ]
+      }
+    },
     "linux": {
       "deb": {
         "preRemoveScript": "scripts/prerm.sh",
