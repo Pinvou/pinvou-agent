@@ -38,15 +38,18 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "resources/windows/poppler/": "poppler"
+      "resources/windows/poppler/": "poppler",
+      "resources/windows/pandoc/": "pandoc"
     },
     "windows": {
       "wix": {
         "fragmentPaths": [
-          "resources/windows/poppler-path.wxs"
+          "resources/windows/poppler-path.wxs",
+          "resources/windows/pandoc-path.wxs"
         ],
         "componentRefs": [
-          "PopplerPathEnvironment"
+          "PopplerPathEnvironment",
+          "PandocPathEnvironment"
         ]
       }
     },

@@ -19,8 +19,40 @@ pub fn command_exists(command: &str) -> bool {
         .unwrap_or(false)
 }
 
+pub fn pandoc_tool_path() -> std::path::PathBuf {
+    linux_path::pandoc_tool_path()
+}
+
+pub fn pandoc_tool_exists() -> bool {
+    command_exists("pandoc")
+}
+
+pub fn show_pandoc_dependency_check() -> bool {
+    true
+}
+
+pub fn pandoc_dependency_packages() -> &'static str {
+    "pandoc"
+}
+
+pub fn pandoc_missing_message() -> &'static str {
+    "文档解析需要 pandoc，请运行: sudo apt install pandoc"
+}
+
 pub fn pdf_tool_path(command: &str) -> std::path::PathBuf {
     linux_path::pdf_tool_path(command)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn linux_keeps_pandoc_dependency_check_visible() {
+        assert!(show_pandoc_dependency_check());
+        assert_eq!(pandoc_dependency_packages(), "pandoc");
+        assert!(pandoc_missing_message().contains("sudo apt install pandoc"));
+    }
 }
 
 pub fn pdf_tool_exists(command: &str) -> bool {

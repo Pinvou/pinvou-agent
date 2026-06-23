@@ -10,6 +10,26 @@ pub fn command_exists(command: &str) -> bool {
     super::super::platform::command_exists(command)
 }
 
+pub fn pandoc_tool_path() -> PathBuf {
+    super::super::platform::pandoc_tool_path()
+}
+
+pub fn pandoc_tool_exists() -> bool {
+    super::super::platform::pandoc_tool_exists()
+}
+
+pub fn show_pandoc_dependency_check() -> bool {
+    super::super::platform::show_pandoc_dependency_check()
+}
+
+pub fn pandoc_dependency_packages() -> &'static str {
+    super::super::platform::pandoc_dependency_packages()
+}
+
+pub fn pandoc_missing_message() -> &'static str {
+    super::super::platform::pandoc_missing_message()
+}
+
 pub fn pdf_tool_path(command: &str) -> PathBuf {
     super::super::platform::pdf_tool_path(command)
 }
@@ -62,5 +82,10 @@ mod tests {
     #[test]
     fn pdf_tool_path_returns_non_empty_program() {
         assert!(!pdf_tool_path("pdftotext").as_os_str().is_empty());
+    }
+
+    #[test]
+    fn pandoc_tool_path_returns_non_empty_program() {
+        assert!(!pandoc_tool_path().as_os_str().is_empty());
     }
 }

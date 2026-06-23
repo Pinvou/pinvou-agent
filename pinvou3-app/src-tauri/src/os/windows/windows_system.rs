@@ -59,12 +59,26 @@ pub fn pdf_tool_path(command: &str) -> std::path::PathBuf {
     windows_path::pdf_tool_path(command)
 }
 
+pub fn pandoc_tool_path() -> std::path::PathBuf {
+    ensure_bundled_pandoc_on_process_path();
+    windows_path::pandoc_tool_path()
+}
+
 pub fn pdf_tool_exists(command: &str) -> bool {
     ensure_bundled_poppler_on_process_path();
     windows_path::bundled_pdf_tool_path(command).is_some() || command_exists(command)
 }
 
+pub fn pandoc_tool_exists() -> bool {
+    ensure_bundled_pandoc_on_process_path();
+    windows_path::bundled_pandoc_tool_path().is_some() || command_exists("pandoc")
+}
+
 pub fn show_pdf_dependency_check() -> bool {
+    false
+}
+
+pub fn show_pandoc_dependency_check() -> bool {
     false
 }
 
@@ -72,8 +86,16 @@ pub fn pdf_dependency_packages() -> &'static str {
     ""
 }
 
+pub fn pandoc_dependency_packages() -> &'static str {
+    ""
+}
+
 pub fn ocr_dependency_packages() -> &'static str {
     "tesseract-ocr tesseract-ocr-chi-sim"
+}
+
+pub fn pandoc_missing_message() -> &'static str {
+    "文档解析组件缺失或不可用：内置 Pandoc 未在安装目录 pandoc 下找到，请修复或重新安装 pinvou。"
 }
 
 pub fn pdf_text_missing_message() -> &'static str {
@@ -96,6 +118,17 @@ fn ensure_bundled_poppler_on_process_path() {
     let Some(dir) = windows_path::bundled_poppler_dir() else {
         return;
     };
+    ensure_dir_on_process_path(dir);
+}
+
+fn ensure_bundled_pandoc_on_process_path() {
+    let Some(dir) = windows_path::bundled_pandoc_dir() else {
+        return;
+    };
+    ensure_dir_on_process_path(dir);
+}
+
+fn ensure_dir_on_process_path(dir: std::path::PathBuf) {
     let current = std::env::var_os("PATH").unwrap_or_default();
     if std::env::split_paths(&current).any(|path| same_path(&path, &dir)) {
         return;

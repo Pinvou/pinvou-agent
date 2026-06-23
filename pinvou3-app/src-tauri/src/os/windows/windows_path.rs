@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 
 const PDF_TOOLS: &[&str] = &["pdftotext", "pdftoppm"];
+const PANDOC_TOOL: &str = "pandoc";
 
 pub fn user_home_dir() -> PathBuf {
     if let Ok(home) = std::env::var("USERPROFILE") {
@@ -53,11 +54,25 @@ pub fn bundled_poppler_dir() -> Option<PathBuf> {
         .filter(|path| path.is_dir())
 }
 
+pub fn bundled_pandoc_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .map(|exe| bundled_pandoc_dir_for_exe(&exe))
+        .filter(|path| path.is_dir())
+}
+
 pub fn bundled_poppler_dir_for_exe(exe_path: &Path) -> PathBuf {
     exe_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("poppler")
+}
+
+pub fn bundled_pandoc_dir_for_exe(exe_path: &Path) -> PathBuf {
+    exe_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("pandoc")
 }
 
 pub fn bundled_pdf_tool_path(command: &str) -> Option<PathBuf> {
@@ -66,14 +81,29 @@ pub fn bundled_pdf_tool_path(command: &str) -> Option<PathBuf> {
         .and_then(|exe| bundled_pdf_tool_path_for_exe(&exe, command))
 }
 
+pub fn bundled_pandoc_tool_path() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| bundled_pandoc_tool_path_for_exe(&exe))
+}
+
 pub fn bundled_pdf_tool_path_for_exe(exe_path: &Path, command: &str) -> Option<PathBuf> {
     let filename = pdf_tool_filename(command)?;
     let path = bundled_poppler_dir_for_exe(exe_path).join(filename);
     path.is_file().then_some(path)
 }
 
+pub fn bundled_pandoc_tool_path_for_exe(exe_path: &Path) -> Option<PathBuf> {
+    let path = bundled_pandoc_dir_for_exe(exe_path).join(pandoc_tool_filename());
+    path.is_file().then_some(path)
+}
+
 pub fn pdf_tool_path(command: &str) -> PathBuf {
     bundled_pdf_tool_path(command).unwrap_or_else(|| PathBuf::from(command))
+}
+
+pub fn pandoc_tool_path() -> PathBuf {
+    bundled_pandoc_tool_path().unwrap_or_else(|| PathBuf::from(PANDOC_TOOL))
 }
 
 fn pdf_tool_filename(command: &str) -> Option<String> {
@@ -85,6 +115,10 @@ fn pdf_tool_filename(command: &str) -> Option<String> {
         .iter()
         .any(|tool| tool.eq_ignore_ascii_case(stem))
         .then(|| format!("{stem}.exe"))
+}
+
+fn pandoc_tool_filename() -> &'static str {
+    "pandoc.exe"
 }
 
 #[cfg(test)]
@@ -105,6 +139,15 @@ mod tests {
         assert_eq!(
             bundled_poppler_dir_for_exe(exe),
             PathBuf::from(r"C:\Program Files\品眸 pinvou").join("poppler")
+        );
+    }
+
+    #[test]
+    fn bundled_pandoc_dir_handles_spaces_and_chinese_chars() {
+        let exe = Path::new(r"C:\Program Files\品眸 pinvou\pinvou3.exe");
+        assert_eq!(
+            bundled_pandoc_dir_for_exe(exe),
+            PathBuf::from(r"C:\Program Files\品眸 pinvou").join("pandoc")
         );
     }
 
@@ -131,6 +174,21 @@ mod tests {
         let exe = root.join("pinvou3.exe");
 
         assert_eq!(bundled_pdf_tool_path_for_exe(&exe, "pdftotext"), Some(tool));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn bundled_pandoc_tool_path_prefers_bundled_exe() {
+        let root =
+            std::env::temp_dir().join(format!("pinvou3 pandoc 路径测试 {}", std::process::id()));
+        let pandoc = root.join("pandoc");
+        std::fs::create_dir_all(&pandoc).unwrap();
+        let tool = pandoc.join("pandoc.exe");
+        std::fs::write(&tool, b"fake exe").unwrap();
+        let exe = root.join("pinvou3.exe");
+
+        assert_eq!(bundled_pandoc_tool_path_for_exe(&exe), Some(tool));
 
         std::fs::remove_dir_all(&root).ok();
     }

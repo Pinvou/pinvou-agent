@@ -15,6 +15,26 @@ pub fn command_exists(_command: &str) -> bool {
     false
 }
 
+pub fn pandoc_tool_path() -> PathBuf {
+    PathBuf::from("pandoc")
+}
+
+pub fn pandoc_tool_exists() -> bool {
+    false
+}
+
+pub fn show_pandoc_dependency_check() -> bool {
+    false
+}
+
+pub fn pandoc_dependency_packages() -> &'static str {
+    ""
+}
+
+pub fn pandoc_missing_message() -> &'static str {
+    "当前平台缺少可用的文档解析组件。"
+}
+
 pub fn pdf_tool_path(command: &str) -> PathBuf {
     PathBuf::from(command)
 }
