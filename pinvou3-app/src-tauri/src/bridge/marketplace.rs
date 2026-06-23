@@ -205,8 +205,9 @@ impl MarketplaceManager {
     }
 
     /// 装 `manifest.pip_dependencies` 里的 Python 依赖（跨平台）。
-    /// 用 `python -m pip install`（保证装进跑 MCP server 的同一个 python，不裸 `pip`）；
-    /// 先试 `--user`（免管理员），venv 下 `--user` 不可用则去掉重试；Windows 抑制黑窗口闪现。
+    /// 用 `python -m pip install`（保证装进跑 MCP server 的同一个 python，不裸 `pip`）。
+    /// ① 先预检依赖是否已可用（系统已装/此前装过）→ 命中即跳过，不跑 pip；
+    /// ② 否则按序兜底：`--user` → `--user --break-system-packages`（PEP 668）→ `--break-system-packages`，任一成功即 Ok。
     /// 零依赖工具（pip_dependencies 为空）直接返回 Ok，不影响 weather/obsidian 等。
     fn pip_install_deps(&self, manifest: &ToolManifest) -> Result<(), String> {
         if manifest.pip_dependencies.is_empty() {
@@ -218,39 +219,57 @@ impl MarketplaceManager {
             return Ok(());
         }
         let python_cmd = "python3";
+        let deps = &manifest.pip_dependencies;
 
-        let run = |user: bool| -> std::io::Result<std::process::Output> {
-            let mut cmd = std::process::Command::new(python_cmd);
-            cmd.args(["-m", "pip", "install", "--disable-pip-version-check", "--no-input"]);
-            if user {
-                cmd.arg("--user");
-            }
-            cmd.args(&manifest.pip_dependencies);
-            cmd.output()
-        };
-
-        let out = run(true).map_err(|e| {
-            format!("无法运行 {python_cmd}（请确认已安装 Python 且在 PATH 中）：{e}")
-        })?;
-        if out.status.success() {
+        // ① 预检:依赖已可用就直接 Ok,不跑 pip。用 importlib.metadata 按 PyPI 包名查
+        //    (python-pptx 等),全部命中即满足。修「明明已装(系统包/此前装过)却仍判失败」。
+        let satisfied = std::process::Command::new(python_cmd)
+            .arg("-c")
+            .arg("import importlib.metadata as m, sys; [m.version(p) for p in sys.argv[1:]]")
+            .args(deps)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if satisfied {
             return Ok(());
         }
-        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        // venv 里 `--user` 不可用 → 去掉重试
-        if stderr.contains("--user") || stderr.contains("user site-packages") {
-            let out2 = run(false).map_err(|e| format!("无法运行 {python_cmd}：{e}"))?;
-            if out2.status.success() {
-                return Ok(());
+
+        // ② pip 安装,按序兜底,任一成功即 Ok:
+        //    --user(常规)→ --user --break-system-packages(PEP 668:现代 Debian/Ubuntu 拦 --user,
+        //    装进 ~/.local 用户目录、不动系统/发行版包)→ --break-system-packages(某些环境 --user 不可用)。
+        let run = |extra: &[&str]| -> std::io::Result<std::process::Output> {
+            let mut cmd = std::process::Command::new(python_cmd);
+            cmd.args(["-m", "pip", "install", "--disable-pip-version-check", "--no-input"]);
+            cmd.args(extra);
+            cmd.args(deps);
+            cmd.output()
+        };
+        let attempts: [&[&str]; 3] = [
+            &["--user"],
+            &["--user", "--break-system-packages"],
+            &["--break-system-packages"],
+        ];
+        let mut last_err = String::new();
+        for extra in attempts {
+            match run(extra) {
+                Ok(o) if o.status.success() => return Ok(()),
+                Ok(o) => {
+                    last_err = String::from_utf8_lossy(&o.stderr)
+                        .trim()
+                        .lines()
+                        .last()
+                        .unwrap_or("")
+                        .to_string();
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "无法运行 {python_cmd}（请确认已安装 Python 且在 PATH 中）：{e}"
+                    ));
+                }
             }
-            let s2 = String::from_utf8_lossy(&out2.stderr);
-            return Err(format!(
-                "依赖安装失败（pip）：{}",
-                s2.trim().lines().last().unwrap_or("未知错误")
-            ));
         }
         Err(format!(
-            "依赖安装失败（pip）：{}",
-            stderr.trim().lines().last().unwrap_or("未知错误")
+            "依赖安装失败（pip）：{last_err}（已尝试 --user 与 --break-system-packages;请确认网络可达且 python3 自带 pip）"
         ))
     }
 
