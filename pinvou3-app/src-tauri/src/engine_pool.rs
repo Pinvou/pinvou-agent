@@ -29,6 +29,7 @@ use tauri::AppHandle;
 use tokio::sync::Mutex;
 
 use crate::bridge::mode_state::PlanPhase;
+use crate::bridge::prefs::UserPrefs;
 use crate::bridge::sessions::SessionStore;
 use crate::bridge::Pinvou3Bridge;
 use crate::engine::AppEngine;
@@ -63,6 +64,33 @@ impl EnginePool {
         })
     }
 
+    /// 为 spawn 构造该 session 的 bridge:从 disk 读最新 prefs(模型列表/默认可能刚被
+    /// GUI 改过),再按该 session 的显式 model_id 注入 session_model(没绑定则回退全局
+    /// active)。绑定指向已删模型时 `model_by_id` 返回 None,自然回退 active。
+    /// 这是「热切换不重启」的落点:改模型只写 disk + evict,下次 spawn 经此读到新配置。
+    async fn fresh_bridge_for(&self, session_id: &str) -> Pinvou3Bridge {
+        let mut b = self.bridge.clone();
+        b.prefs = UserPrefs::load();
+        b.session_model = self
+            .store
+            .session_model_id(session_id)
+            .and_then(|mid| b.prefs.model_by_id(&mid).cloned());
+        // 本地 vLLM:发请求的 model 名以 vLLM 实际 served name 为准(探测 /v1/models),
+        // 免去写死 qwen36_35b_256k 与 --served-model-name 不一致的 model_not_found。
+        // 探测失败(vLLM 没起)保持配置值;云端 provider 不探测。
+        if b.provider() == "vllm" {
+            if let Some(served) = crate::monitor::probe_vllm_served_model(&b.base_url()).await {
+                if let Some(mut m) = b.effective_model_owned() {
+                    if m.model != served {
+                        m.model = served;
+                        b.session_model = Some(m);
+                    }
+                }
+            }
+        }
+        b
+    }
+
     /// 取该 session 的 engine,没有就 spawn 一个。spawn 后若该 session 有磁盘历史
     /// 则一次性 `SyncSession` 把历史 messages 注水进新 engine(冷启动 / app 重启后
     /// 打开旧会话再发消息的场景)。
@@ -75,7 +103,7 @@ impl EnginePool {
         let (engine, forwarder) = AppEngine::spawn_for_session(
             self.app.clone(),
             self.store.clone(),
-            self.bridge.clone(),
+            self.fresh_bridge_for(session_id).await,
             session_id,
         )
         .await?;
@@ -124,6 +152,26 @@ impl EnginePool {
         }
     }
 
+    // ── 模型热切换(commands.rs 调用)──────────────────────────────
+
+    /// 新建会话用的默认模型:取全局 active model 的(model 名, id)。从 disk 读最新
+    /// (GUI 可能刚改过默认),失败回退 boot 快照。
+    pub fn default_model_for_new_session(&self) -> (String, Option<String>) {
+        let prefs = UserPrefs::load();
+        match prefs.active_model() {
+            Some(m) => (m.model.clone(), Some(m.id.clone())),
+            None => (self.bridge.model(), None),
+        }
+    }
+
+    /// 切某 session 的模型(聊天 chip 热切):写 per-session 绑定 + evict 该 session
+    /// engine。下次发消息 get_or_spawn 用新模型重建(跨 provider 重建 client;历史靠
+    /// SyncSession 注水)。`model_id = None` = 清除绑定回退全局默认。
+    pub async fn switch_session_model(&self, session_id: &str, model_id: Option<String>) {
+        self.store.set_session_model_id(session_id, model_id);
+        self.evict(session_id).await;
+    }
+
     // ── 高层路由(commands.rs 调用)─────────────────────────────────
 
     /// 发用户消息给指定 session 的 engine(没起则 lazy spawn)。
@@ -152,6 +200,24 @@ impl EnginePool {
     pub async fn cancel(&self, session_id: &str) {
         if let Some(engine) = self.handle_for(session_id).await {
             engine.cancel_current();
+        }
+    }
+
+    /// pinvou3 工具开关(全局持久):把"被禁用的工具全名"(模型可见全名,小写)广播给
+    /// **所有在跑的 session engine** → 写入各自 config.disallowed_tools,下一轮即隐藏。
+    /// 没起的会话下次 spawn 时从持久列表读初值(build_engine_config),所以新窗口/新对话
+    /// 都继承同一份禁用状态。
+    pub async fn set_disallowed_all(&self, tools: Vec<String>) {
+        let entries = self.entries.lock().await;
+        for (sid, entry) in entries.iter() {
+            if let Err(e) = entry
+                .engine
+                .handle
+                .send(Op::SetDisallowedTools { tools: tools.clone() })
+                .await
+            {
+                eprintln!("[engine_pool] set_disallowed_all {sid} failed: {e:?}");
+            }
         }
     }
 

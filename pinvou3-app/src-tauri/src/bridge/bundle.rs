@@ -25,7 +25,7 @@ static SANSHENG_LIUBU_DIR: Dir<'_> =
 ///      不再解包,既有装机的残留目录启动时清理
 /// 0.8: 上线三省六部卡片流工作流(sansheng-liubu):include_dir 内嵌 + 启动解包
 pub const BUNDLE_VERSION: &str = concat!(
-    "0.8-",
+    "0.9-",
     env!("BUNDLE_INSTRUCTIONS_HASH"),
     "-",
     env!("BUNDLE_WORKFLOW_HASH_SANSHENG"),
@@ -180,6 +180,10 @@ const OBSIDIAN_SERVER_PY: &str =
     include_str!("../../../resources/mcp-servers/obsidian/server.py");
 const OBSIDIAN_MANIFEST_JSON: &str =
     include_str!("../../../resources/mcp-servers/obsidian/manifest.json");
+const PPTX_SERVER_PY: &str =
+    include_str!("../../../resources/mcp-servers/pptx/server.py");
+const PPTX_MANIFEST_JSON: &str =
+    include_str!("../../../resources/mcp-servers/pptx/manifest.json");
 
 /// 内嵌的敏感目录拦截 shell 脚本——配合 bridge 注入的 hook 在 ToolCallBefore
 /// 时阻止 LLM 触碰 ~/.ssh/ ~/.gnupg/ 等。
@@ -246,7 +250,10 @@ impl Pinvou3Bundle {
             .replace(
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
                 crate::super_permission::instruction_block(),
-            );
+            )
+            // 落盘副本无 per-session locale,默认填中文兜底(LLM 实际走 mod.rs 的 inline 渲染,
+            // 那里按 locale 填);此处仅防 {{PINVOU3_TITLE_LANG}} 占位符原文残留在 disk 文件。
+            .replace("{{PINVOU3_TITLE_LANG}}", "简体中文");
         std::fs::write(&self.instructions_md, rendered)?;
         // 敏感目录拦截脚本：写入 + 加可执行位
         std::fs::write(&self.deny_sensitive_sh, DENY_SENSITIVE_PATHS_SH)?;
@@ -324,7 +331,8 @@ impl Pinvou3Bundle {
                 .insert("servers".into(), serde_json::json!({}));
         }
         let servers = mcp["servers"].as_object_mut().unwrap();
-        let python_cmd = if cfg!(target_os = "windows") { "python" } else { "python3" };
+        // Windows 用内置 pythonw(无窗口 + 自带依赖);其他平台系统 python3。见 paths::python_command。
+        let python_cmd = paths::python_command();
         servers.insert(
             "pinvou".to_string(),
             serde_json::json!({
@@ -372,6 +380,11 @@ impl Pinvou3Bundle {
         std::fs::create_dir_all(&obsidian_dir)?;
         std::fs::write(obsidian_dir.join("server.py"), OBSIDIAN_SERVER_PY)?;
         std::fs::write(obsidian_dir.join("manifest.json"), OBSIDIAN_MANIFEST_JSON)?;
+        // 工具市场：PPT 生成 MCP server（本地 stdio，python-pptx 直出 .pptx；非零依赖，装时自动 pip install）
+        let pptx_dir = dir.join("pptx");
+        std::fs::create_dir_all(&pptx_dir)?;
+        std::fs::write(pptx_dir.join("server.py"), PPTX_SERVER_PY)?;
+        std::fs::write(pptx_dir.join("manifest.json"), PPTX_MANIFEST_JSON)?;
         Ok(())
     }
 }

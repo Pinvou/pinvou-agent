@@ -75,6 +75,10 @@
     monitor: null,
     backendOnline: null, // null=checking, true, false
     settings: null,
+    // 「添加模型」方案:已保存模型列表 + 全局默认 id + 当前会话绑定的模型 id
+    savedModels: [],
+    activeModelId: null,
+    currentSessionModelId: null, // 当前 active session 显式绑定的模型;null=跟随全局默认
     superPermEnabled: false,
     modeState: { mode: "yolo", plan_phase: "none" },
     // 最新 plan/todos 快照（用于 mode header 进度 chip，与 plan_ready 卡解耦）
@@ -364,6 +368,22 @@
   function addChatItem(item) {
     item.id = ++itemIdSeq;
     state.chatItems.push(item);
+  }
+  // 成品卡是否"重复出卡":从 chatItems 末尾往前扫——先遇到该文件的修改工具(write/append/edit)
+  // → 不算重复(文件改过了,该出新版卡/续卡,即"二次修改弹新卡");先遇到同名成品卡 → 算重复
+  // (同一产物没改又 present 一次,模型常见啰嗦)。判据=「上一张同名卡之后有没有改过这个文件」。
+  function isDuplicateArtifactCard(pathv) {
+    var bn = basename(pathv);
+    if (!bn) return false;
+    for (var i = state.chatItems.length - 1; i >= 0; i--) {
+      var it = state.chatItems[i];
+      if (it.type === "tool" && (it.name === "write_file" || it.name === "append_file" || it.name === "edit_file")) {
+        var ap = extractArtifactPath(it.args);
+        if (ap && basename(ap) === bn) return false;
+      }
+      if (it.type === "artifact_card" && basename(it.path) === bn) return true;
+    }
+    return false;
   }
   function addSystemItem(text) {
     addChatItem({ type: "system", text: text, time: timeStr() });
@@ -666,13 +686,16 @@
           if (isPresentArtifactTool(b.name)) {
             var pares = resultById[b.id];
             if (!(pares && pares.is_error)) {
-              addChatItem({
-                type: "artifact_card",
-                path: (b.input && b.input.path) || "",
-                title: (b.input && b.input.title) || "",
-                description: (b.input && b.input.description) || "",
-                time: "",
-              });
+              var rpp = presentArtifactAbsPath(pares && pares.content, b.input && b.input.path);
+              if (!isDuplicateArtifactCard(rpp)) {
+                addChatItem({
+                  type: "artifact_card",
+                  path: rpp,
+                  title: (b.input && b.input.title) || "",
+                  description: (b.input && b.input.description) || "",
+                  time: "",
+                });
+              }
               continue;
             }
           }
@@ -756,10 +779,24 @@
     var parts = String(p).split(/[\\/]/);
     return parts[parts.length - 1] || p;
   }
+  function isAbsPath(p) {
+    return typeof p === "string" && (p.charAt(0) === "/" || /^[A-Za-z]:[\\/]/.test(p));
+  }
   function trackArtifact(path) {
     if (!path) return;
-    if (state.artifacts.some(function (a) { return a.path === path; })) return;
-    state.artifacts.push({ path: path, basename: basename(path) });
+    var bn = basename(path);
+    for (var i = 0; i < state.artifacts.length; i++) {
+      if (basename(state.artifacts[i].path) === bn) {
+        // 已有同名:write_file 跟踪的是相对路径、disk watcher 推的是绝对路径——同一文件
+        // 两种 path 会重复。新 path 绝对而旧的相对则用绝对替换(open 可靠),否则忽略重复。
+        if (isAbsPath(path) && !isAbsPath(state.artifacts[i].path)) {
+          state.artifacts[i] = { path: path, basename: bn };
+          notify();
+        }
+        return;
+      }
+    }
+    state.artifacts.push({ path: path, basename: bn });
     notify();
   }
   function untrackArtifact(path) {
@@ -788,10 +825,15 @@
     try {
       var files = await invoke("list_workspace_files", { sessionId: sid });
       if (sid !== state.activeSessionId) return; // 已切走,放弃(避免写错 session)
-      var have = {};
-      state.artifacts.forEach(function (a) { have[a.path] = true; });
+      var byName = {};
+      state.artifacts.forEach(function (a) { byName[basename(a.path)] = a; });
       var added = false;
-      files.forEach(function (p) { if (!have[p]) { state.artifacts.push({ path: p, basename: basename(p) }); added = true; } });
+      files.forEach(function (p) {
+        var bn = basename(p);
+        var ex = byName[bn];
+        if (!ex) { var na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true; }
+        else if (isAbsPath(p) && !isAbsPath(ex.path)) { ex.path = p; added = true; } // 相对→绝对,open 可靠
+      });
       if (added) {
         notify();
         try { await invoke("save_session_artifacts", { id: sid, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch (_) {}
@@ -1091,6 +1133,24 @@
       (typeof name === "string" && name.endsWith("present_artifact"));
   }
 
+  // 成品卡路径:优先用 server(present_artifact_server.py)解析并验证过的绝对路径 abs_path——
+  // 模型常给相对路径,直接拿 args.path 渲染会让卡片 path 是相对,点 Open 报「path must be
+  // absolute」,且模型可能重试再 present 一次出双卡。取不到 abs_path 才回退原始 path。
+  // 兼容两种结果格式:直接 payload {abs_path} / MCP content 数组 {content:[{text}]} 包一层。
+  function presentArtifactAbsPath(toolResultContent, fallbackPath) {
+    fallbackPath = fallbackPath || "";
+    try {
+      var raw = typeof toolResultContent === "string" ? toolResultContent : JSON.stringify(toolResultContent || {});
+      var obj = JSON.parse(raw);
+      if (obj && typeof obj.abs_path === "string" && obj.abs_path) return obj.abs_path;
+      if (obj && obj.content && obj.content[0] && typeof obj.content[0].text === "string") {
+        var inner = JSON.parse(obj.content[0].text);
+        if (inner && typeof inner.abs_path === "string" && inner.abs_path) return inner.abs_path;
+      }
+    } catch (_) {}
+    return fallbackPath;
+  }
+
   listen("chat:tool_start", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
     if (p.session_id) turnUsageDirty[p.session_id] = true; // 多请求轮，usage 累加值不可当占用
@@ -1148,15 +1208,23 @@
     // messages(tool_start line 784),rerenderFromMessages 按 name 还原,切会话不丢。
     if (meta && isPresentArtifactTool(meta.name)) {
       if (p.success) {
-        var presentedPath = (meta.args && meta.args.path) || "";
-        addChatItem({
-          type: "artifact_card",
-          path: presentedPath,
-          title: (meta.args && meta.args.title) || "",
-          description: (meta.args && meta.args.description) || "",
-          time: timeStr(),
-        });
+        // 用 server 解析好的绝对路径(present_artifact_server.py 的 abs_path),而非模型可能
+        // 给的相对 args.path → 卡片 path 绝对,点 Open 不再报「path must be absolute」。
+        var presentedPath = presentArtifactAbsPath(p.output, meta.args && meta.args.path);
+        // 同一产物没改又 present 一次 → 跳过出卡(防模型啰嗦重复);改完再 present/续卡会保留。
+        if (!isDuplicateArtifactCard(presentedPath)) {
+          addChatItem({
+            type: "artifact_card",
+            path: presentedPath,
+            title: (meta.args && meta.args.title) || "",
+            description: (meta.args && meta.args.description) || "",
+            time: timeStr(),
+          });
+        }
         if (presentedPath) state.turnPresentedArtifacts.push(presentedPath); // 本 turn 已出成品卡,chat:done 不再兜底补
+        // 同步进产物面板:present_artifact 出卡的产物也算「产出物」。修「自己生成文件、
+        // 不走 write_file 的工具(如 make_pptx)→ 卡有、面板无」。trackArtifact 已去重。
+        if (presentedPath) trackArtifact(presentedPath);
         delete toolMeta[p.id];
         currentStreamText = ""; currentStreamId = 0;
         notify();
@@ -1227,7 +1295,10 @@
       // present 过的复用其 title/desc;AI 没 present 的兜底用文件名补首卡(否则没召唤入口=这次的 bug)。
       // 本 turn 刚 present_artifact 出过卡的跳过,不重复。edit/append 改多次也只补一张。
       (state.turnDirtyArtifacts || []).forEach(function (ap) {
-        if ((state.turnPresentedArtifacts || []).indexOf(ap) >= 0) return;
+        // 按 basename 比对:present 存 server 绝对路径、turnDirty 存 write 相对路径,
+        // 直接 indexOf 比不中 → present 过的文件会被兜底再补一张(重复)。
+        var _apbn = basename(ap);
+        if ((state.turnPresentedArtifacts || []).some(function (pp) { return basename(pp) === _apbn; })) return;
         var prev = findPresentedArtifact(ap);
         if (prev) addChatItem({ type: "artifact_card", path: prev.path, title: prev.title, description: prev.description, time: timeStr() });
         else addChatItem({ type: "artifact_card", path: ap, title: basename(ap), description: "", time: timeStr() });
@@ -1748,6 +1819,52 @@
     return await invoke("get_effective_model_config");
   }
 
+  // ── 模型列表(「添加模型」方案)─────────────────────────────────
+  async function loadModels() {
+    try {
+      var v = await invoke("list_models");
+      state.savedModels = (v && v.models) || [];
+      state.activeModelId = (v && v.active_model_id) || null;
+    } catch (e) {
+      state.savedModels = []; state.activeModelId = null;
+    }
+    notify();
+  }
+  // model 对象字段须是 snake_case(SavedModel serde): {id,name,preset,model,base_url,api_key}
+  async function saveModel(model) {
+    await invoke("save_model", { model: model });
+    await loadModels();
+  }
+  async function deleteModel(id) {
+    await invoke("delete_model", { id: id });
+    await loadModels();
+  }
+  async function setActiveModel(id) {
+    await invoke("set_active_model", { id: id });
+    await loadModels();
+  }
+  // 读某会话当前绑定的模型 id(切会话时刷新 chip)。
+  async function loadSessionModel(sessionId) {
+    if (!sessionId) { state.currentSessionModelId = null; notify(); return; }
+    try {
+      state.currentSessionModelId = await invoke("get_session_model_id", { sessionId: sessionId });
+    } catch (e) { state.currentSessionModelId = null; }
+    notify();
+  }
+  // 切当前会话模型(chip 热切)。无 session(草稿态)时改全局默认。
+  async function switchModel(sessionId, modelId) {
+    if (sessionId) {
+      await invoke("set_session_model", { sessionId: sessionId, modelId: modelId });
+      state.currentSessionModelId = modelId;
+      notify();
+    } else {
+      await setActiveModel(modelId);
+    }
+  }
+  async function testModelConnection(baseUrl, apiKey) {
+    return await invoke("test_model_connection", { baseUrl: baseUrl, apiKey: apiKey });
+  }
+
   // ── Super permission ─────────────────────────────────────────────
   async function refreshSuperPerm() {
     try {
@@ -1946,6 +2063,8 @@
   function artifactInfo(path) { return invoke("artifact_info", { path: path }); }
   function readArtifactText(path) { return invoke("read_artifact_text", { path: path }); }
   function readArtifactImageB64(path) { return invoke("read_artifact_image_b64", { path: path }); }
+  // pptx 封面缩略图：读 docProps/thumbnail.jpeg → data URL（无则 null）。本地数据、无外链。
+  function readArtifactThumbnail(path) { return invoke("read_artifact_thumbnail", { path: path }).catch(function () { return null; }); }
   function renderArtifactVisual(path) { return invoke("render_artifact_visual", { path: path }); }
   function openContainingFolder(path) { return invoke("open_containing_folder", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   function openInSystem(path) { return invoke("open_in_system", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
@@ -1956,6 +2075,8 @@
     return invoke("list_deliverables", { projectDir: projectDir }).catch(function () { return []; });
   }
   // 外部打开产物：HTML 走 Tauri 独立窗口（绕沙箱），其他走系统应用
+  // 相对路径(write_file 兜底补卡的相对文件名)由后端 open_in_system/open_artifact_window
+  // 内的 resolve_artifact_path 按 active session workspace 解析,前端无需预处理。
   function openArtifactExternal(path) {
     var ext = (String(path).split(".").pop() || "").toLowerCase();
     var cmd = (ext === "html" || ext === "htm") ? "open_artifact_window" : "open_in_system";
@@ -2361,6 +2482,7 @@
     await loadSettings();
     await loadEffectiveModelConfig();
     await loadAppVersion();
+    await loadModels();
     await refreshHistoryList();
     enterDraft(); // 启动落空白草稿页(lazy session:不自动选/建会话)
     await refreshSuperPerm();
@@ -2392,6 +2514,13 @@
     saveSettingsAndRestart: saveSettingsAndRestart,
     discoverLocalVllm: discoverLocalVllm,
     getEffectiveModelConfig: getEffectiveModelConfig,
+    loadModels: loadModels,
+    saveModel: saveModel,
+    deleteModel: deleteModel,
+    setActiveModel: setActiveModel,
+    loadSessionModel: loadSessionModel,
+    switchModel: switchModel,
+    testModelConnection: testModelConnection,
     toggleSuperPerm: toggleSuperPerm,
     renderMarkdown: renderMarkdown,
     // Plan/YOLO
@@ -2418,6 +2547,7 @@
     artifactInfo: artifactInfo,
     readArtifactText: readArtifactText,
     readArtifactImageB64: readArtifactImageB64,
+    readArtifactThumbnail: readArtifactThumbnail,
     renderArtifactVisual: renderArtifactVisual,
     openContainingFolder: openContainingFolder,
     openInSystem: openInSystem,

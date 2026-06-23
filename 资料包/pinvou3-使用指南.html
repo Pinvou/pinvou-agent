@@ -231,7 +231,7 @@
       </div>
       <figure class="shot">
         <img src="shots-web/home.webp" alt="品悟主界面：左侧多对话列表与功能导航" loading="lazy">
-        <figcaption><b>主界面一览：</b>左侧从上到下是 新对话 / 搜索 / 系统监控 / 卡牌池 / 工作流 / 工具商店，下面是你的历史对话列表。</figcaption>
+        <figcaption><b>主界面一览：</b>左侧从上到下是 新对话 / 搜索 / 系统监控 / 专家卡牌池 / 工作流 / 工具商店，下面是你的历史对话列表。</figcaption>
       </figure>
     </section>
 
@@ -275,15 +275,15 @@
     <section class="block reveal" id="s6">
       <div class="sec-head"><div class="sec-num">06</div><div class="sec-titles">
         <h2>召唤领域专家</h2>
-        <div class="sub"><span class="ui">卡牌池</span> 里是一组"专家能力卡"。加持一张，AI 就以那个领域专家的标准来接你的活儿。</div>
+        <div class="sub"><span class="ui">专家卡牌池</span> 里是一组"专家能力卡"。加持一张，AI 就以那个领域专家的标准来接你的活儿。</div>
       </div></div>
       <div class="prose">
-        <p>左侧进 <span class="ui">卡牌池</span>，按部门或关键词找到合适的专家（如营销、测试、法务、财务、产品…），点 <span class="ui">加持给 AI</span> 即可。被加持后，AI 会带着该专家的方法论和交付规范来回答，明显更专业、更对路。</p>
-        <p class="muted">不满意随时<b>点卡片摘下</b>换一张；也能 <span class="ui">＋ 新建卡牌</span>，把你团队自己的标准打法沉淀成专属专家卡。</p>
+        <p>左侧进 <span class="ui">专家卡牌池</span>，按部门或关键词找到合适的专家（如营销、测试、法务、财务、产品…），点 <span class="ui">加持</span> 即可。被加持后，AI 会带着该专家的方法论和交付规范来回答，明显更专业、更对路。</p>
+        <p class="muted">没有合适的？顶部 <span class="ui">AI 造卡 · 一键生成专家卡</span> ——描述一句你要的角色，AI 帮你生成一张专属专家卡，沉淀你团队自己的标准打法。</p>
       </div>
       <figure class="shot">
-        <img src="shots-web/cardpool.webp" alt="卡牌池：各领域专家能力卡组" loading="lazy">
-        <figcaption><b>专家能力卡组：</b>左侧按部门筛选，右侧每张卡点「加持给 AI」即可；带 🃏 角标的是你自己建的卡。</figcaption>
+        <img src="shots-web/cardpool.webp" alt="专家卡牌池：各领域专家卡 + AI 一键造卡" loading="lazy">
+        <figcaption><b>专家卡牌池：</b>顶部可「AI 造卡」一键生成；下面按部门筛选，每张卡点「加持」即可让 AI 以该专家标准承接对话。</figcaption>
       </figure>
     </section>
 
@@ -303,6 +303,7 @@
           <span class="tag"><b>飞书套件</b></span>
           <span class="tag"><b>钉钉</b></span>
           <span class="tag"><b>企业微信</b></span>
+          <span class="tag"><b>Obsidian</b> 知识库</span>
           <span class="tag">腾讯会议 · QQ邮箱 · TAPD…</span>
         </div>
         <p class="muted">带 <b>⚡ 需密钥</b> 标记的工具要先填对应平台的 Key 才能用；天气、企查查等开箱即用。还能用顶部分类（MCP 核心 / 协作办公 / 金融 / 开发）快速筛选。</p>
@@ -323,12 +324,12 @@
       <div class="prose">
         <ul class="steps">
           <li><b>外观与语言</b>：主题 <span class="ui">浅色 / 深色</span>，界面语言 <span class="ui">中文 / English / 日本語</span>——都是<b>即时生效</b>。</li>
-          <li><b>模型与后端</b>：默认用本机 vLLM；也能切到 DeepSeek、Kimi、通义千问、豆包、智谱 GLM 等第三方 API，或点 <span class="ui">检测本机 vLLM</span> 自动填配置。</li>
+          <li><b>模型与后端</b>：默认用本机模型。点 <span class="ui">＋ 添加模型</span> 可加上 DeepSeek、Kimi、通义千问、豆包、智谱 GLM 等；列表里用圆点选哪个当前生效，每个都能编辑/删除。聊天输入框上方还有个小标签，可<b>临时切换本次对话用的模型</b>。</li>
           <li><b>联网搜索</b>：选搜索源 + 填 Key（见上一节）。</li>
           <li><b>系统权限</b>：<span class="ui">高级执行权限 (Sudo)</span> 开关，允许助手执行环境配置等高级指令（危险操作仍会被拦）。</li>
           <li><b>依赖体检</b>：检测文档/图片处理组件，缺失时 <span class="ui">一键安装</span>。</li>
         </ul>
-        <p class="muted">改外观、语言会立刻生效；改模型或搜索源会提示"保存后应用将重启"，按提示重启一下即可。</p>
+        <p class="muted">改外观、语言会立刻生效；改联网搜索源会提示"保存后应用将重启"，按提示重启一下即可。</p>
       </div>
       <figure class="shot">
         <img src="shots-web/settings.webp" alt="设置页：模型与后端、联网搜索、系统权限、外观与语言、版本与更新、依赖体检" loading="lazy">

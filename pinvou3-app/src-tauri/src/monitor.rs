@@ -12,8 +12,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use crate::bridge::{ModelMonitorTarget, ModelMonitorTargetKind};
-
 /// 单次完整采样结果。所有字段 `Option`——采集失败就为 None。
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct MonitorSnapshot {
@@ -47,16 +45,11 @@ pub struct RamSnapshot {
 #[derive(Debug, Clone, Serialize)]
 pub struct VllmSnapshot {
     pub status: VllmStatus,
-    pub target_kind: ModelMonitorTargetKind,
     /// vLLM `/v1/models` 返回的真实模型名。
     pub model: Option<String>,
     /// 用户 settings 中配置的模型名（与 `model` 可能不同）。
     pub configured_model: Option<String>,
-    pub provider: Option<String>,
     pub upstream: String,
-    pub diagnostic: Option<StatusDiagnostic>,
-    pub metrics_applicable: bool,
-    pub metric_diagnostics: Vec<StatusDiagnostic>,
     pub max_model_len: Option<u32>,
     pub num_requests_running: Option<f64>,
     pub num_requests_waiting: Option<f64>,
@@ -77,22 +70,14 @@ pub struct VllmSnapshot {
     pub prompt_tokens_total: Option<f64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VllmStatus {
     Offline,
     Ready,
     Busy,
-    Unknown,
     /// 配置的模型名与 vLLM 实际返回的模型名不一致。vLLM 服务在线但聊天会报 model_not_found。
     Mismatch,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct StatusDiagnostic {
-    pub code: &'static str,
-    pub message: String,
-    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -120,7 +105,7 @@ impl MonitorState {
     }
 }
 
-pub async fn sample_all(state: &MonitorState, model_target: ModelMonitorTarget) -> MonitorSnapshot {
+pub async fn sample_all(state: &MonitorState, vllm_upstream: &str, configured_model: Option<String>) -> MonitorSnapshot {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -128,8 +113,8 @@ pub async fn sample_all(state: &MonitorState, model_target: ModelMonitorTarget) 
     MonitorSnapshot {
         generated_at_ms: now_ms,
         gpu: gpu_snapshot(),
-        ram: crate::os::ram_snapshot(),
-        vllm: model_target_snapshot(model_target).await,
+        ram: ram_snapshot(),
+        vllm: vllm_snapshot(vllm_upstream, configured_model).await,
         app: AppSnapshot {
             pinvou3_version: env!("CARGO_PKG_VERSION"),
             deepseek_tui_version: env!("CARGO_PKG_VERSION"), // TODO: 从 deepseek-tui crate 取
@@ -145,13 +130,26 @@ fn gpu_snapshot() -> Option<GpuSnapshot> {
         "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw",
         "--format=csv,noheader,nounits",
     ];
-    let out = crate::os::nvidia_smi_candidates().into_iter().find_map(|cmd| {
-        std::process::Command::new(cmd)
-            .args(args)
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-    })?;
+    // 先试 PATH 查找，再试常见绝对路径
+    let out = std::process::Command::new("nvidia-smi")
+        .args(args)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .or_else(|| {
+            std::process::Command::new("/usr/bin/nvidia-smi")
+                .args(args)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+        })
+        .or_else(|| {
+            std::process::Command::new("/usr/local/bin/nvidia-smi")
+                .args(args)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+        })?;
     let line = std::str::from_utf8(&out.stdout).ok()?.lines().next()?;
     let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
     if parts.len() < 6 {
@@ -170,176 +168,39 @@ fn gpu_snapshot() -> Option<GpuSnapshot> {
     })
 }
 
-/// 健康探测 + Prometheus metrics 解析。
-/// `/v1/models` 返不到 200 → OFFLINE；返 200 但 metrics 拿不到 → READY 无指标。
-pub async fn vllm_snapshot(upstream: &str, configured_model: Option<String>) -> Option<VllmSnapshot> {
-    let target = ModelMonitorTarget {
-        base_url: upstream.to_string(),
-        configured_model,
-        provider: "vllm".to_string(),
-        kind: ModelMonitorTargetKind::Local,
-        source: "discover".to_string(),
-        api_key: None,
-    };
-    model_target_snapshot(target).await
-}
-
-pub async fn model_target_snapshot(target: ModelMonitorTarget) -> Option<VllmSnapshot> {
-    match target.kind {
-        ModelMonitorTargetKind::Invalid => Some(empty_snapshot(
-            target,
-            VllmStatus::Offline,
-            Some(diagnostic(
-                "invalid_config",
-                "模型配置无效",
-                Some("base_url 或模型名为空，或 base_url 不是有效 URL".to_string()),
-            )),
-            false,
-            Vec::new(),
-        )),
-        ModelMonitorTargetKind::Remote => remote_model_snapshot(target).await,
-        ModelMonitorTargetKind::Local => local_model_snapshot(target).await,
-    }
-}
-
-async fn remote_model_snapshot(target: ModelMonitorTarget) -> Option<VllmSnapshot> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .ok()?;
-    let models_url = models_url(&target.base_url);
-    let mut req = client.get(models_url);
-    if let Some(key) = target.api_key.as_deref().filter(|k| !k.trim().is_empty()) {
-        req = req.bearer_auth(key);
-    }
-    let resp = match req.send().await {
-        Ok(r) => r,
-        Err(e) => {
-            let code = if e.is_timeout() {
-                "request_timeout"
-            } else {
-                "connection_failed"
-            };
-            let message = if e.is_timeout() {
-                "远端模型请求超时"
-            } else {
-                "远端模型连接失败"
-            };
-            return Some(empty_snapshot(
-                target,
-                VllmStatus::Offline,
-                Some(diagnostic(code, message, Some(e.to_string()))),
-                false,
-                Vec::new(),
-            ));
-        }
-    };
-    if resp.status() == reqwest::StatusCode::UNAUTHORIZED
-        || resp.status() == reqwest::StatusCode::FORBIDDEN
-    {
-        return Some(empty_snapshot(
-            target,
-            VllmStatus::Offline,
-            Some(diagnostic(
-                "unauthorized",
-                "远端模型鉴权失败",
-                Some(format!("HTTP {}", resp.status())),
-            )),
-            false,
-            Vec::new(),
-        ));
-    }
-    if !resp.status().is_success() {
-        return Some(empty_snapshot(
-            target,
-            VllmStatus::Unknown,
-            Some(diagnostic(
-                "unexpected_response",
-                "远端模型响应异常，无法确认状态",
-                Some(format!("HTTP {}", resp.status())),
-            )),
-            false,
-            Vec::new(),
-        ));
-    }
-    let json = match resp.json::<serde_json::Value>().await {
-        Ok(v) => v,
-        Err(e) => {
-            return Some(empty_snapshot(
-                target,
-                VllmStatus::Unknown,
-                Some(diagnostic(
-                    "unexpected_response",
-                    "远端模型响应不是有效的模型列表",
-                    Some(e.to_string()),
-                )),
-                false,
-                Vec::new(),
-            ));
-        }
-    };
-    let ids = parse_model_ids(&json);
-    if ids.is_empty() {
-        return Some(empty_snapshot(
-            target,
-            VllmStatus::Unknown,
-            Some(diagnostic(
-                "unexpected_response",
-                "远端模型响应缺少模型列表",
-                None,
-            )),
-            false,
-            Vec::new(),
-        ));
-    }
-    let actual = match target.configured_model.as_deref() {
-        Some(configured) => ids
-            .iter()
-            .find(|id| id.trim() == configured.trim())
-            .cloned()
-            .or_else(|| ids.first().cloned()),
-        None => ids.first().cloned(),
-    };
-    let mut status = VllmStatus::Ready;
-    let mut diagnostic_value = None;
-    if let (Some(configured), Some(actual)) = (target.configured_model.as_deref(), actual.as_deref()) {
-        if configured.trim() != actual.trim() {
-            status = VllmStatus::Mismatch;
-            diagnostic_value = Some(diagnostic(
-                "model_mismatch",
-                "远端服务返回的模型与当前配置不一致",
-                Some(format!("configured={configured}, actual={actual}")),
-            ));
+/// 读 `/proc/meminfo`。Linux 专有，其他 OS → None。
+fn ram_snapshot() -> Option<RamSnapshot> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let mut total = None;
+    let mut available = None;
+    let mut swap_total = None;
+    let mut swap_free = None;
+    for line in text.lines() {
+        let (key, val) = line.split_once(':')?;
+        let kib: u64 = val.trim().trim_end_matches(" kB").parse().ok().unwrap_or(0);
+        match key {
+            "MemTotal" => total = Some(kib),
+            "MemAvailable" => available = Some(kib),
+            "SwapTotal" => swap_total = Some(kib),
+            "SwapFree" => swap_free = Some(kib),
+            _ => {}
         }
     }
-    Some(VllmSnapshot {
-        status,
-        target_kind: target.kind,
-        model: actual,
-        configured_model: target.configured_model,
-        provider: Some(target.provider),
-        upstream: target.base_url,
-        diagnostic: diagnostic_value,
-        metrics_applicable: false,
-        metric_diagnostics: vec![diagnostic(
-            "remote_metrics_not_applicable",
-            "远端模型不提供本地运行指标",
-            None,
-        )],
-        max_model_len: None,
-        num_requests_running: None,
-        num_requests_waiting: None,
-        prefix_cache_hit_pct: None,
-        ttft_sum_s: None,
-        ttft_count: None,
-        tpot_sum_s: None,
-        tpot_count: None,
-        generation_tokens_total: None,
-        prompt_tokens_total: None,
+    let total = total?;
+    let available = available?;
+    Some(RamSnapshot {
+        total_kib: total,
+        used_kib: total.saturating_sub(available),
+        swap_total_kib: swap_total.unwrap_or(0),
+        swap_used_kib: swap_total
+            .unwrap_or(0)
+            .saturating_sub(swap_free.unwrap_or(0)),
     })
 }
 
-async fn local_model_snapshot(target: ModelMonitorTarget) -> Option<VllmSnapshot> {
+/// 健康探测 + Prometheus metrics 解析。
+/// `/v1/models` 返不到 200 → OFFLINE；返 200 但 metrics 拿不到 → READY 无指标。
+pub async fn vllm_snapshot(upstream: &str, configured_model: Option<String>) -> Option<VllmSnapshot> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
@@ -348,40 +209,31 @@ async fn local_model_snapshot(target: ModelMonitorTarget) -> Option<VllmSnapshot
     // 1) /v1/models 健康
     // upstream 通常已带 `/v1` 后缀（DEEPSEEK_BASE_URL=http://...:8000/v1），
     // 所以直接拼 `/models`；不带的话补 `/v1/models`。
-    let models_resp = client.get(models_url(&target.base_url)).send().await;
+    let models_url = if upstream.trim_end_matches('/').ends_with("/v1") {
+        format!("{}/models", upstream.trim_end_matches('/'))
+    } else {
+        format!("{}/v1/models", upstream.trim_end_matches('/'))
+    };
+    let models_resp = client.get(models_url).send().await;
     let models_resp = match models_resp {
         Ok(r) if r.status().is_success() => r,
-        Ok(r) => {
-            return Some(empty_snapshot(
-                target,
-                VllmStatus::Offline,
-                Some(diagnostic(
-                    "unexpected_response",
-                    "本地模型响应异常或不是模型服务",
-                    Some(format!("HTTP {}", r.status())),
-                )),
-                true,
-                Vec::new(),
-            ));
-        }
-        Err(e) => {
-            let code = if e.is_timeout() {
-                "request_timeout"
-            } else {
-                "connection_failed"
-            };
-            let message = if e.is_timeout() {
-                "本地模型请求超时"
-            } else {
-                "本地模型连接失败"
-            };
-            return Some(empty_snapshot(
-                target,
-                VllmStatus::Offline,
-                Some(diagnostic(code, message, Some(e.to_string()))),
-                true,
-                Vec::new(),
-            ));
+        _ => {
+            return Some(VllmSnapshot {
+                status: VllmStatus::Offline,
+                model: None,
+                configured_model,
+                upstream: upstream.to_string(),
+                max_model_len: None,
+                num_requests_running: None,
+                num_requests_waiting: None,
+                prefix_cache_hit_pct: None,
+                ttft_sum_s: None,
+                ttft_count: None,
+                tpot_sum_s: None,
+                tpot_count: None,
+                generation_tokens_total: None,
+                prompt_tokens_total: None,
+            });
         }
     };
 
@@ -391,7 +243,7 @@ async fn local_model_snapshot(target: ModelMonitorTarget) -> Option<VllmSnapshot
     };
 
     // 2) /metrics（用 host 根目录，不带 /v1）
-    let metrics_url = strip_v1_suffix(&target.base_url).map(|h| format!("{h}/metrics"));
+    let metrics_url = strip_v1_suffix(upstream).map(|h| format!("{h}/metrics"));
     let metrics_text = match metrics_url {
         Some(u) => client.get(&u).send().await.ok(),
         None => None,
@@ -430,50 +282,21 @@ async fn local_model_snapshot(target: ModelMonitorTarget) -> Option<VllmSnapshot
         (_, Some(w)) if w > 0.0 => VllmStatus::Busy,
         _ => VllmStatus::Ready,
     };
-    let mut diagnostic_value = None;
     // 如果用户配置了模型名，但和 vLLM 实际返回的不一致，降级为 Mismatch。
     // 这样监控台不会显示绿色 READY，聊天 live dot 也会变红。
-    if let Some(ref cfg) = target.configured_model {
+    if let Some(ref cfg) = configured_model {
         if let Some(ref actual) = model_id {
             if cfg.trim() != actual.trim() {
                 status = VllmStatus::Mismatch;
-                diagnostic_value = Some(diagnostic(
-                    "model_mismatch",
-                    "本地服务返回的模型与当前配置不一致",
-                    Some(format!("configured={cfg}, actual={actual}")),
-                ));
             }
         }
-    }
-    let mut metric_diagnostics = Vec::new();
-    if metrics_text.is_none() {
-        metric_diagnostics.push(diagnostic(
-            "metrics_unavailable",
-            "本地模型运行指标暂不可用",
-            None,
-        ));
-    } else if running.is_none()
-        || waiting.is_none()
-        || max_model_len.is_none()
-        || prefix_hit_pct.is_none()
-    {
-        metric_diagnostics.push(diagnostic(
-            "metric_missing",
-            "部分本地模型运行指标缺失",
-            None,
-        ));
     }
 
     Some(VllmSnapshot {
         status,
-        target_kind: target.kind,
         model: model_id,
-        configured_model: target.configured_model,
-        provider: Some(target.provider),
-        upstream: target.base_url,
-        diagnostic: diagnostic_value,
-        metrics_applicable: true,
-        metric_diagnostics,
+        configured_model,
+        upstream: upstream.to_string(),
         max_model_len,
         num_requests_running: running,
         num_requests_waiting: waiting,
@@ -485,65 +308,6 @@ async fn local_model_snapshot(target: ModelMonitorTarget) -> Option<VllmSnapshot
         generation_tokens_total: perf.generation_tokens_total,
         prompt_tokens_total: perf.prompt_tokens_total,
     })
-}
-
-fn diagnostic(code: &'static str, message: &str, detail: Option<String>) -> StatusDiagnostic {
-    StatusDiagnostic {
-        code,
-        message: message.to_string(),
-        detail,
-    }
-}
-
-fn empty_snapshot(
-    target: ModelMonitorTarget,
-    status: VllmStatus,
-    diagnostic_value: Option<StatusDiagnostic>,
-    metrics_applicable: bool,
-    metric_diagnostics: Vec<StatusDiagnostic>,
-) -> VllmSnapshot {
-    VllmSnapshot {
-        status,
-        target_kind: target.kind,
-        model: None,
-        configured_model: target.configured_model,
-        provider: Some(target.provider),
-        upstream: target.base_url,
-        diagnostic: diagnostic_value,
-        metrics_applicable,
-        metric_diagnostics,
-        max_model_len: None,
-        num_requests_running: None,
-        num_requests_waiting: None,
-        prefix_cache_hit_pct: None,
-        ttft_sum_s: None,
-        ttft_count: None,
-        tpot_sum_s: None,
-        tpot_count: None,
-        generation_tokens_total: None,
-        prompt_tokens_total: None,
-    }
-}
-
-fn models_url(upstream: &str) -> String {
-    if upstream.trim_end_matches('/').ends_with("/v1") {
-        format!("{}/models", upstream.trim_end_matches('/'))
-    } else {
-        format!("{}/v1/models", upstream.trim_end_matches('/'))
-    }
-}
-
-fn parse_model_ids(v: &serde_json::Value) -> Vec<String> {
-    v.get("data")
-        .and_then(|v| v.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.get("id").and_then(|v| v.as_str()))
-                .map(ToString::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn parse_models_response(v: serde_json::Value) -> Option<(Option<String>, Option<u32>)> {
@@ -618,6 +382,57 @@ fn strip_v1_suffix(url: &str) -> Option<String> {
     )
 }
 
+/// 轻量探测本地 vLLM 实际 served 的模型名(只打 /v1/models,不读 metrics)。
+/// 用于发请求时用 vLLM 真实名字,免去写死名字与 `--served-model-name` 不一致的
+/// model_not_found。探测失败(vLLM 没起/超时)返回 None,调用方 fallback 配置值。
+pub async fn probe_vllm_served_model(base_url: &str) -> Option<String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .ok()?;
+    let url = if base_url.trim_end_matches('/').ends_with("/v1") {
+        format!("{}/models", base_url.trim_end_matches('/'))
+    } else {
+        format!("{}/v1/models", base_url.trim_end_matches('/'))
+    };
+    let resp = client.get(url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v = resp.json::<serde_json::Value>().await.ok()?;
+    parse_models_response(v).and_then(|(id, _)| id)
+}
+
+/// 当前 monitor/探测应使用的 vLLM base_url。
+/// 优先级：环境变量 `DEEPSEEK_BASE_URL` > settings.json `custom_base_url` > 默认值。
+/// 与 Engine 使用的逻辑保持一致（见 `bridge::Pinvou3Bridge::base_url`）。
+pub fn vllm_base_url() -> String {
+    if let Ok(v) = std::env::var("DEEPSEEK_BASE_URL") {
+        return v;
+    }
+    let prefs = crate::bridge::prefs::UserPrefs::load();
+    prefs
+        .active_model()
+        .map(|m| m.base_url.clone())
+        .unwrap_or_else(|| "http://127.0.0.1:8000/v1".to_string())
+}
+
+/// 用户配置的模型名（用于 monitor 显示"配置目标"）。
+/// 优先级：环境变量 `DEEPSEEK_MODEL` > settings.json `custom_model_name` > None。
+pub fn vllm_configured_model() -> Option<String> {
+    if let Ok(v) = std::env::var("DEEPSEEK_MODEL") {
+        return Some(v);
+    }
+    let prefs = crate::bridge::prefs::UserPrefs::load();
+    match prefs.active_model() {
+        // 本地 vLLM 动态跟随实际 served name(见 EnginePool::fresh_bridge_for),
+        // 不声明固定配置目标 → 监控不做 mismatch 误报,只显示 vLLM 实际名字。
+        Some(m) if m.preset == crate::bridge::prefs::ModelPreset::LocalVllm => None,
+        Some(m) => Some(m.model.clone()),
+        None => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -663,27 +478,11 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn sample_all_includes_os_ram_and_app_snapshot() {
-        let state = MonitorState::new();
-        let snapshot = sample_all(&state, test_target("http://127.0.0.1:1/v1", ModelMonitorTargetKind::Local)).await;
-
-        assert_eq!(snapshot.app.pinvou3_version, env!("CARGO_PKG_VERSION"));
-        assert!(snapshot.ram.is_some());
-        let ram = snapshot.ram.unwrap();
-        assert!(ram.total_kib > 0);
-        assert!(ram.used_kib <= ram.total_kib);
-    }
-
-    fn test_target(base_url: &str, kind: ModelMonitorTargetKind) -> ModelMonitorTarget {
-        ModelMonitorTarget {
-            base_url: base_url.to_string(),
-            configured_model: Some("qwen36_35b_256k".to_string()),
-            provider: "vllm".to_string(),
-            kind,
-            source: "test".to_string(),
-            api_key: None,
-        }
+    #[test]
+    fn ram_snapshot_succeeds_on_linux() {
+        // 跑测试的环境（GB10/笔记本都是 Linux）一定有 /proc/meminfo
+        let s = ram_snapshot().expect("/proc/meminfo should be readable");
+        assert!(s.total_kib > 0);
     }
 
     #[test]
@@ -695,41 +494,6 @@ mod tests {
         let (id, max) = parse_models_response(json).unwrap();
         assert_eq!(id.as_deref(), Some("/model"));
         assert_eq!(max, Some(65536));
-    }
-
-    #[test]
-    fn parse_model_ids_handles_openai_compatible_shape() {
-        let json: serde_json::Value = serde_json::from_str(
-            r#"{"object":"list","data":[{"id":"model-a"},{"id":"model-b"}]}"#,
-        )
-        .unwrap();
-        assert_eq!(parse_model_ids(&json), vec!["model-a".to_string(), "model-b".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn invalid_target_returns_invalid_config_diagnostic() {
-        let mut target = test_target("", ModelMonitorTargetKind::Invalid);
-        target.configured_model = None;
-        let snapshot = model_target_snapshot(target).await.unwrap();
-        assert_eq!(snapshot.status, VllmStatus::Offline);
-        assert_eq!(snapshot.target_kind, ModelMonitorTargetKind::Invalid);
-        assert_eq!(snapshot.diagnostic.as_ref().map(|d| d.code), Some("invalid_config"));
-        assert!(!snapshot.metrics_applicable);
-    }
-
-    #[tokio::test]
-    async fn remote_target_marks_local_metrics_not_applicable() {
-        let target = test_target("http://127.0.0.1:1/v1", ModelMonitorTargetKind::Remote);
-        let snapshot = model_target_snapshot(target).await.unwrap();
-        assert_eq!(snapshot.target_kind, ModelMonitorTargetKind::Remote);
-        assert!(!snapshot.metrics_applicable);
-        assert!(
-            snapshot
-                .metric_diagnostics
-                .iter()
-                .any(|d| d.code == "remote_metrics_not_applicable")
-                || snapshot.diagnostic.is_some()
-        );
     }
 
     /// 2026-06-10 本机 vLLM nightly(NVFP4) /metrics 实抓片段。
