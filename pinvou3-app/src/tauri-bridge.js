@@ -1215,6 +1215,9 @@
           });
         }
         if (presentedPath) state.turnPresentedArtifacts.push(presentedPath); // 本 turn 已出成品卡,chat:done 不再兜底补
+        // 同步进产物面板:present_artifact 出卡的产物也算「产出物」。修「自己生成文件、
+        // 不走 write_file 的工具(如 make_pptx)→ 卡有、面板无」。trackArtifact 已去重。
+        if (presentedPath) trackArtifact(presentedPath);
         delete toolMeta[p.id];
         currentStreamText = ""; currentStreamId = 0;
         notify();
