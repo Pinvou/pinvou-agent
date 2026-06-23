@@ -24,6 +24,8 @@ static SANSHENG_LIUBU_DIR: Dir<'_> =
 /// 0.7: 下线 Pinvou Review v2(EXIT GATE 评审被推翻,等新方案):两个 review skill
 ///      不再解包,既有装机的残留目录启动时清理
 /// 0.8: 上线三省六部卡片流工作流(sansheng-liubu):include_dir 内嵌 + 启动解包
+/// 注:「视觉设计」内置 skill 在 VERSION gate 之前由 write_builtin_skills 每启动防御性写出,
+///     不依赖版本号 bump(同 write_workflows / write_mcp_servers）。
 pub const BUNDLE_VERSION: &str = concat!(
     "0.9-",
     env!("BUNDLE_INSTRUCTIONS_HASH"),
@@ -33,6 +35,13 @@ pub const BUNDLE_VERSION: &str = concat!(
 
 /// pinvou3 内置的 instructions.md（Qwen3.6 适配 prompt），编译时内嵌。
 pub const INSTRUCTIONS_MD: &str = include_str!("../../resources/bundle/instructions.md");
+
+/// 内置「视觉设计」技能（设计系统直出 HTML）。编译期内嵌，解包到
+/// `~/.pinvou3/bundle/skills/visual-design/SKILL.md`，进 SkillRegistry 的 `## Skills`
+/// 目录。ascii 目录名避开中文路径在 include_str! 的坑；frontmatter `name: 视觉设计`
+/// 才是模型 load_skill 用的 id。
+const VISUAL_DESIGN_SKILL_MD: &str =
+    include_str!("../../resources/bundle/skills/visual-design/SKILL.md");
 
 /// pinvou3 版 base prompt（Constitution / 工具纪律 / embedder-aware / 删 RLM·Toolbox·V4），
 /// 编译期内嵌。通过底座 `prompts::set_base_prompt_override` 注入，替换底座的上游
@@ -229,6 +238,8 @@ impl Pinvou3Bundle {
         // 工作流目录同 skills:immutable bundle 资源,每次启动防御性重写
         // (防 "VERSION 对得上但目录缺失"),无副作用。
         self.write_workflows()?;
+        // 内置 skill 同 workflow:immutable bundle 资源,每次启动防御性重写。
+        self.write_builtin_skills()?;
         // MCP server 脚本同理。
         self.write_mcp_servers()?;
         // mcp.json merge:每次启动 upsert 内置 pinvou server,保留 marketplace 条目。
@@ -282,6 +293,15 @@ impl Pinvou3Bundle {
         for retired in ["h3c-ppt", "pinvou-review-plan", "pinvou-review-final"] {
             let _ = std::fs::remove_dir_all(self.skills_dir.join(retired));
         }
+        Ok(())
+    }
+
+    /// 解包内嵌的内置 skills 到 `~/.pinvou3/bundle/skills/`。
+    /// 每次启动防御性重写（immutable bundle 资源）。当前：视觉设计。
+    fn write_builtin_skills(&self) -> std::io::Result<()> {
+        let dir = self.skills_dir.join("visual-design");
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join("SKILL.md"), VISUAL_DESIGN_SKILL_MD)?;
         Ok(())
     }
 
