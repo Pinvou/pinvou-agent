@@ -181,6 +181,7 @@
     const FileText = (p) => <I {...p}><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></I>;
     const Hexagon = (p) => <I {...p}><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></I>;
     const Layout = (p) => <I {...p}><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><line x1="3" x2="21" y1="9" y2="9"/><line x1="9" x2="9" y1="21" y2="9"/></I>;
+    const Presentation = (p) => <I {...p}><path d="M2 3h20"/><path d="M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3"/><path d="m7 21 5-5 5 5"/><path d="M12 16v5"/></I>;
     const Mail = (p) => <I {...p}><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></I>;
     const MessageCircle = (p) => <I {...p}><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></I>;
     const Navigation = (p) => <I {...p}><polygon points="3 11 22 2 13 21 11 13 3 11"/></I>;
@@ -3242,6 +3243,7 @@
       { id: 12, backendId: null, title: 'CNB 云原生管线', subtitle: '代码仓库与 CI/CD 调度', category: 'dev', type: 'MCP Server', version: 'v1.0.0', latency: '<40ms', desc: '将云原生开发能力赋予大模型。支持通过自然语言进行代码仓库检索、提交 Issue、审查 PR、触发并监控流水线部署等极客操作。', icon: Code, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: true },
       { id: 13, backendId: 'qcc', title: '企查查', subtitle: '企业工商、风控、知产、经营数据查询', category: 'finance', type: 'MCP Server', version: 'v1.0.0', latency: '<500ms', desc: '接入企查查智能体数据平台，提供182个企业数据查询工具，覆盖工商登记、股东结构、风险预警、知识产权、招投标等六大模块。', icon: Building2, color: 'bg-gradient-to-br from-blue-600 to-cyan-500', installed: false, authRequired: false, welcomeQueries: ['查一下华为的工商信息', '腾讯有哪些风险预警', '比亚迪的专利有多少', '阿里巴巴的招投标记录'] },
       { id: 14, backendId: 'obsidian', title: 'Obsidian 知识库', subtitle: '检索本机 Obsidian 笔记，引用你的个人知识', category: 'kb', type: 'MCP Server', version: 'v1.0.0', latency: '<30ms', desc: '把你本机的 Obsidian 笔记库（vault）接入大模型。支持全文检索、读取笔记全文、按目录/标签浏览，让 AI 基于你自己沉淀的知识作答。笔记不出本机、模型也在本机，知识与算力全链路不出域。', icon: BookOpen, color: 'bg-gradient-to-b from-violet-500 to-purple-700', installed: false, authRequired: true, configFields: [{ key: 'OBSIDIAN_VAULT_PATH', label: 'Obsidian 库（vault）文件夹路径', placeholder: 'C:\\Users\\你\\Documents\\我的笔记', helpText: '在 Obsidian 里打开「设置 → 关于」或库切换器可看到库的真实路径，复制粘贴到这里即可。' }], welcomeQueries: ['我笔记里关于会议纪要的内容', '总结一下我的读书笔记', '帮我找之前写的项目方案', '我的笔记里有哪些待办'] },
+      { id: 15, backendId: 'pptx', title: 'PPT 生成', subtitle: '本地直出可编辑 PowerPoint，套主题模板、真图表、带封面', category: 'office', type: 'MCP Server', version: 'v1.0.0', latency: '本地', desc: '说“做个 PPT / 汇报”，AI 先列大纲让你确认，再按内容自动选主题（9 套）生成可编辑 .pptx——真·图表、自带封面缩略图，全程本地、数据不出机。首次安装会自动下载 python-pptx 依赖（需联网）。', icon: Presentation, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: false, welcomeQueries: ['做个 Q2 季度汇报 PPT', '帮我做一份产品介绍 PPT', '做个项目方案演示', '做个公司介绍 PPT'] },
     ];
 
     const weatherIconSvg = (code) => {
@@ -3375,6 +3377,7 @@
       { id: 'all', label: '全部工具' },
       { id: 'mcp', label: 'MCP 核心' },
       { id: 'comm', label: '协作办公' },
+      { id: 'office', label: '办公' },
       { id: 'dev', label: '研发治理' },
       { id: 'finance', label: '金融数据' },
       { id: 'kb', label: '知识库' },
@@ -4582,6 +4585,7 @@
       md: '📄', markdown: '📄', html: '🌐', htm: '🌐',
       png: '🖼️', jpg: '🖼️', jpeg: '🖼️', gif: '🖼️', webp: '🖼️', svg: '🖼️',
       pdf: '📕', csv: '📊', xlsx: '📊', json: '🔢', yaml: '🔢', yml: '🔢', txt: '📝',
+      pptx: '📊', ppt: '📊',
     };
     const artifactIcon = (name) => ARTIFACT_ICONS[(name.split('.').pop() || '').toLowerCase()] || '📎';
     const apPad2 = (x) => String(x).padStart(2, '0');
