@@ -268,6 +268,17 @@ pub fn run() {
             knowledge::kb_search,
             knowledge::kb_stats,
             knowledge::kb_find_duplicates,
+            knowledge::kb_type_counts,
+            knowledge::kb_collection_list,
+            knowledge::kb_collection_create,
+            knowledge::kb_collection_update,
+            knowledge::kb_collection_delete,
+            knowledge::kb_collection_add_sources,
+            knowledge::kb_index_status,
+            knowledge::kb_index_cancel,
+            knowledge::kb_documents,
+            knowledge::kb_remove_document,
+            knowledge::kb_retrieve,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

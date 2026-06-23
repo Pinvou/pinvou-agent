@@ -9,24 +9,28 @@
 
 mod dedup;
 mod exclude;
+mod l1;
 mod query;
 mod scanner;
 mod store;
 mod watcher;
 
 pub use exclude::Excluder;
+pub use l1::{ChunkHit, Collection, Document};
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::State;
+use walkdir::WalkDir;
 
 use store::{SearchQuery, Store};
-pub use store::{DupGroup, FileHit, Stats};
+pub use store::{DupGroup, FileHit, Stats, TypeCount};
 
 /// 后台扫描进度（回前端轮询）。
 #[derive(Debug, Clone, Serialize, Default)]
@@ -43,27 +47,132 @@ pub struct ScanState {
     pub finished_at: i64,
 }
 
-/// L0 知识服务：持有元数据库 + 后台扫描状态。Tauri managed state。
+/// L1 知识集索引进度（解析+切块，回前端轮询）。
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexState {
+    pub running: bool,
+    pub collection_id: i64,
+    /// idle / parsing / done / cancelled
+    pub phase: String,
+    pub done: u64,
+    pub total: u64,
+    pub started_at: i64,
+    pub finished_at: i64,
+}
+
+/// 知识服务：L0 元数据库 + 后台扫描状态 + L1 知识库(共享同一连接)。Tauri managed state。
 pub struct KnowledgeService {
     store: Store,
+    l1: l1::L1Store,
     scan_state: Arc<Mutex<ScanState>>,
     cancel: Arc<AtomicBool>,
     /// 实时 watcher 只起一次（首次 start_scan 时）。
     watcher_started: Arc<AtomicBool>,
+    index_state: Arc<Mutex<IndexState>>,
+    index_cancel: Arc<AtomicBool>,
 }
 
 impl KnowledgeService {
     /// 用磁盘库初始化（`~/.pinvou3/knowledge/index.db`）。
     pub fn new(db_path: &Path) -> rusqlite::Result<Self> {
+        let store = Store::open(db_path)?;
+        let l1 = l1::L1Store::new(store.conn_arc());
         Ok(Self {
-            store: Store::open(db_path)?,
+            store,
+            l1,
             scan_state: Arc::new(Mutex::new(ScanState {
                 phase: "idle".into(),
                 ..Default::default()
             })),
             cancel: Arc::new(AtomicBool::new(false)),
             watcher_started: Arc::new(AtomicBool::new(false)),
+            index_state: Arc::new(Mutex::new(IndexState {
+                phase: "idle".into(),
+                ..Default::default()
+            })),
+            index_cancel: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// L1 知识集句柄（命令层直接用）。
+    pub fn l1(&self) -> &l1::L1Store {
+        &self.l1
+    }
+
+    pub fn index_status(&self) -> IndexState {
+        self.index_state.lock().clone()
+    }
+
+    pub fn cancel_index(&self) {
+        self.index_cancel.store(true, Ordering::Relaxed);
+    }
+
+    /// 后台把若干路径(文件或目录)加入知识集：展开目录→解析→切块→入库。限速、可中断。
+    pub fn start_index(&self, collection_id: i64, roots: Vec<PathBuf>) -> IndexState {
+        {
+            let mut st = self.index_state.lock();
+            if st.running {
+                return st.clone();
+            }
+            self.index_cancel.store(false, Ordering::Relaxed);
+            *st = IndexState {
+                running: true,
+                collection_id,
+                phase: "parsing".into(),
+                started_at: now(),
+                ..Default::default()
+            };
+        }
+        self.l1.set_collection_status(collection_id, "indexing");
+
+        let l1 = self.l1.clone();
+        let index_state = self.index_state.clone();
+        let cancel = self.index_cancel.clone();
+        thread::spawn(move || {
+            // 展开目录(复用 Excluder 跳过 churn/隐私)，收集待解析文件。
+            let ex = Excluder::default();
+            let mut files: Vec<PathBuf> = Vec::new();
+            for root in &roots {
+                if root.is_file() {
+                    files.push(root.clone());
+                    continue;
+                }
+                let walker = WalkDir::new(root).follow_links(false).into_iter().filter_entry(|e| {
+                    let name = e.file_name().to_str().unwrap_or("");
+                    let is_dir = e.file_type().is_dir();
+                    let ext = if is_dir {
+                        None
+                    } else {
+                        e.path().extension().and_then(|s| s.to_str()).map(|s| s.to_lowercase())
+                    };
+                    !ex.is_skipped(name, is_dir, ext.as_deref())
+                });
+                for entry in walker.flatten() {
+                    if entry.file_type().is_file() {
+                        files.push(entry.path().to_path_buf());
+                    }
+                }
+            }
+            index_state.lock().total = files.len() as u64;
+
+            for (i, f) in files.iter().enumerate() {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                let _ = l1.ingest_file(collection_id, f);
+                index_state.lock().done = (i + 1) as u64;
+                std::thread::sleep(Duration::from_millis(3)); // 让步前台
+            }
+
+            let cancelled = cancel.load(Ordering::Relaxed);
+            l1.set_collection_status(collection_id, "ready");
+            let mut st = index_state.lock();
+            st.running = false;
+            st.finished_at = now();
+            st.phase = if cancelled { "cancelled" } else { "done" }.into();
+        });
+        self.index_state.lock().clone()
     }
 
     /// 启动后台全盘扫描（已在跑则原样返回当前状态）。立即返回，扫描在独立线程跑。
@@ -256,6 +365,104 @@ pub fn kb_cancel_scan(state: State<'_, KnowledgeService>) {
 #[tauri::command]
 pub fn kb_build_dedup(state: State<'_, KnowledgeService>) -> ScanState {
     state.start_dedup()
+}
+
+/// L0：按扩展名分类计数（文件管理「按类型浏览」用）。
+#[tauri::command]
+pub fn kb_type_counts(state: State<'_, KnowledgeService>) -> Result<Vec<TypeCount>, String> {
+    state.store.type_counts().map_err(|e| e.to_string())
+}
+
+// ───────────────────────── L1 知识库命令 ─────────────────────────
+
+#[tauri::command]
+pub fn kb_collection_list(state: State<'_, KnowledgeService>) -> Result<Vec<Collection>, String> {
+    state.l1().list_collections().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn kb_collection_create(
+    state: State<'_, KnowledgeService>,
+    name: String,
+    category: Option<String>,
+    description: Option<String>,
+) -> Result<i64, String> {
+    state
+        .l1()
+        .create_collection(&name, category.as_deref(), description.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn kb_collection_update(
+    state: State<'_, KnowledgeService>,
+    id: i64,
+    name: String,
+    category: Option<String>,
+    description: Option<String>,
+) -> Result<(), String> {
+    state
+        .l1()
+        .update_collection(id, &name, category.as_deref(), description.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn kb_collection_delete(state: State<'_, KnowledgeService>, id: i64) -> Result<(), String> {
+    state.l1().delete_collection(id).map_err(|e| e.to_string())
+}
+
+/// 把文件/目录加入知识集，后台解析+切块+入库。进度走 kb_index_status。
+#[tauri::command]
+pub fn kb_collection_add_sources(
+    state: State<'_, KnowledgeService>,
+    collection_id: i64,
+    paths: Vec<String>,
+) -> IndexState {
+    let roots = paths.into_iter().map(PathBuf::from).collect();
+    state.start_index(collection_id, roots)
+}
+
+#[tauri::command]
+pub fn kb_index_status(state: State<'_, KnowledgeService>) -> IndexState {
+    state.index_status()
+}
+
+#[tauri::command]
+pub fn kb_index_cancel(state: State<'_, KnowledgeService>) {
+    state.cancel_index();
+}
+
+/// 列出知识集文档（collectionId<=0 列出全部知识集，给「知识库内文件」表）。
+#[tauri::command]
+pub fn kb_documents(
+    state: State<'_, KnowledgeService>,
+    collection_id: i64,
+    limit: Option<usize>,
+) -> Result<Vec<Document>, String> {
+    state
+        .l1()
+        .list_documents(collection_id, limit.unwrap_or(0))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn kb_remove_document(state: State<'_, KnowledgeService>, doc_id: i64) -> Result<(), String> {
+    state.l1().remove_document(doc_id).map_err(|e| e.to_string())
+}
+
+/// 知识集内检索（全文；Phase 3 升级为 fts+向量混合）。
+#[tauri::command]
+pub fn kb_retrieve(
+    state: State<'_, KnowledgeService>,
+    collection_id: i64,
+    query: String,
+    k: Option<usize>,
+) -> Result<Vec<ChunkHit>, String> {
+    state
+        .l1()
+        .search(collection_id, &query, k.unwrap_or(20))
+        .map_err(|e| e.to_string())
 }
 
 /// 秒搜。文本会先过 NL 规则解析（"上周的 pdf" → exts+时间过滤+残余文本）；

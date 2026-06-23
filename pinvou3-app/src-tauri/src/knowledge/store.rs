@@ -19,7 +19,8 @@ use serde::Serialize;
 
 /// schema 版本。bump 后旧库会被删除重建（L0 是可重建缓存，无数据损失）。
 /// v2：FTS 砍掉 path 列（path-trigram 实测占 2/3 库体积、是写入 CPU 大头）。
-const SCHEMA_VERSION: i64 = 2;
+/// v3：新增 L1 知识库表（collections/documents/chunks/chunks_fts）。
+const SCHEMA_VERSION: i64 = 3;
 
 /// 建表 + FTS5 虚表 + 同步触发器。幂等（`IF NOT EXISTS`）。
 const SCHEMA: &str = r#"
@@ -62,6 +63,60 @@ END;
 CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE OF name ON files BEGIN
     INSERT INTO files_fts(files_fts, rowid, name) VALUES('delete', old.id, old.name);
     INSERT INTO files_fts(rowid, name) VALUES (new.id, new.name);
+END;
+
+-- ============ L1 知识库（见 l1.rs）============
+-- 知识集：用户圈定的一批文件，内容化后供检索/问答。
+CREATE TABLE IF NOT EXISTS collections (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL,
+    category    TEXT,
+    description TEXT,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    embed_model TEXT,                       -- 绑定的 embedding 模型（NULL=仅全文）
+    embed_dim   INTEGER NOT NULL DEFAULT 0, -- 向量维度，换模型→重建
+    status      TEXT NOT NULL DEFAULT 'ready' -- ready / indexing / pending
+);
+
+-- 知识集内文档（来源文件）。collection_id+path 唯一，避免重复加入。
+CREATE TABLE IF NOT EXISTS documents (
+    id            INTEGER PRIMARY KEY,
+    collection_id INTEGER NOT NULL,
+    path          TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    ext           TEXT,
+    mtime         INTEGER NOT NULL DEFAULT 0,
+    size          INTEGER NOT NULL DEFAULT 0,
+    parse_status  TEXT NOT NULL DEFAULT 'pending', -- pending/parsed/skipped/failed
+    n_chunks      INTEGER NOT NULL DEFAULT 0,
+    parsed_at     INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(collection_id, path)
+);
+CREATE INDEX IF NOT EXISTS idx_docs_coll ON documents(collection_id);
+
+-- 文本块 + 向量（vec 为 NULL 时退回全文检索）。
+CREATE TABLE IF NOT EXISTS chunks (
+    id            INTEGER PRIMARY KEY,
+    document_id   INTEGER NOT NULL,
+    collection_id INTEGER NOT NULL,
+    ord           INTEGER NOT NULL,
+    text          TEXT NOT NULL,
+    n_tokens      INTEGER NOT NULL DEFAULT 0,
+    vec           BLOB
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_doc  ON chunks(document_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_coll ON chunks(collection_id);
+
+-- chunk 全文索引（trigram 子串，中文友好）。
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+    text, content='chunks', content_rowid='id', tokenize='trigram'
+);
+CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
+    INSERT INTO chunks_fts(rowid, text) VALUES (new.id, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
+    INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', old.id, old.text);
 END;
 "#;
 
@@ -121,6 +176,14 @@ pub struct Stats {
     pub duplicate_files: u64,
     /// 去重可回收字节 = Σ(组内冗余份数 × 单份大小)。
     pub duplicate_wasted_bytes: u64,
+}
+
+/// 按扩展名的文件计数（文件管理「按类型浏览」用）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TypeCount {
+    pub ext: String,
+    pub count: u64,
 }
 
 /// 一组内容相同的重复文件。
@@ -185,6 +248,11 @@ impl Store {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    /// 共享底层连接给 L1（同一个 index.db、同一把锁，避免多连接 WAL 复杂度）。
+    pub(super) fn conn_arc(&self) -> Arc<Mutex<Connection>> {
+        self.conn.clone()
     }
 
     /// 批量 upsert（扫描器用，单事务）。size 变化会让旧 hash 失效。
@@ -357,6 +425,23 @@ impl Store {
             duplicate_files: dup_files,
             duplicate_wasted_bytes: wasted,
         })
+    }
+
+    /// 按扩展名分组计数（非目录、已索引），降序。
+    pub fn type_counts(&self) -> rusqlite::Result<Vec<TypeCount>> {
+        let guard = self.conn.lock();
+        let mut stmt = guard.prepare(
+            "SELECT ext, COUNT(*) FROM files \
+             WHERE status='indexed' AND is_dir=0 AND ext IS NOT NULL AND ext!='' \
+             GROUP BY ext ORDER BY COUNT(*) DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(TypeCount {
+                ext: r.get::<_, String>(0)?,
+                count: r.get::<_, i64>(1)? as u64,
+            })
+        })?;
+        rows.collect()
     }
 
     /// 待算 hash 的同 size 冲突项。唯一大小的文件不返回（永远不会重复）。

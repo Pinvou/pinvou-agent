@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pinvou3 · 本地文件管理 + 本地知识库 · 完整设计文档</title>
+<style>
+  :root{
+    --ink:#1b1b2e; --ink-2:#2c2c3c; --muted:#73737f; --muted-2:#9a9aa6;
+    --line:#e8e8ee; --line-2:#f1f2f6; --bg:#ffffff; --side:#fbfbfd; --field:#f5f6f8;
+    --blue:#2f6beb; --blue-soft:#eaf1ff; --purple:#6c5ce7; --purple-soft:#efecfd;
+    --green:#18a957; --green-bg:#e6f6ec; --amber:#c98a00; --amber-bg:#fcf3dd;
+    --red:#d63a3a; --red-bg:#fbe2e2;
+    --code-bg:#f7f8fb; --radius:14px;
+    --shadow:0 1px 2px rgba(24,24,40,.04), 0 8px 26px rgba(24,24,40,.05);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{font-family:"PingFang SC","Microsoft YaHei",-apple-system,system-ui,"Segoe UI",sans-serif;
+    color:var(--ink);background:#eef0f4;line-height:1.7;-webkit-font-smoothing:antialiased}
+  .layout{max-width:1240px;margin:0 auto;display:flex;gap:0;background:var(--bg);min-height:100vh;box-shadow:0 0 60px rgba(0,0,0,.06)}
+
+  /* TOC */
+  .toc{width:268px;flex:0 0 268px;position:sticky;top:0;align-self:flex-start;height:100vh;overflow-y:auto;
+    background:var(--side);border-right:1px solid var(--line-2);padding:26px 20px}
+  .toc .doc-mark{font-size:11px;font-weight:700;letter-spacing:1.5px;color:var(--purple);text-transform:uppercase}
+  .toc h3{font-size:15px;font-weight:800;margin:6px 0 16px;color:var(--ink);line-height:1.35}
+  .toc a{display:block;font-size:13px;color:var(--muted);text-decoration:none;padding:6px 11px;border-radius:8px;transition:.13s;margin-bottom:1px}
+  .toc a:hover{background:#eef0f5;color:var(--ink-2)}
+  .toc a.active{background:var(--blue-soft);color:var(--blue);font-weight:700}
+  .toc a .n{color:var(--muted-2);font-weight:700;margin-right:7px;font-size:12px}
+
+  /* content */
+  .doc{flex:1;min-width:0;padding:46px 56px 100px}
+  .hero{border-radius:20px;padding:32px 34px;margin-bottom:14px;
+    background:radial-gradient(120% 140% at 0% 0%, #ece8fc 0%, rgba(236,232,252,0) 55%),
+      linear-gradient(115deg,#e9e6fb 0%,#e3ecfb 55%,#dcebfb 100%)}
+  .hero .tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:1px;color:var(--purple);
+    background:rgba(255,255,255,.7);border-radius:999px;padding:4px 12px;text-transform:uppercase}
+  .hero h1{font-size:30px;font-weight:800;letter-spacing:-.4px;margin:14px 0 8px;color:#211f33}
+  .hero p{font-size:14.5px;color:#54506b;max-width:680px}
+  .meta-row{display:flex;gap:10px;margin-top:18px;flex-wrap:wrap}
+  .meta{background:rgba(255,255,255,.66);border:1px solid rgba(255,255,255,.9);border-radius:10px;padding:7px 13px;font-size:12px;color:#54506b}
+  .meta b{color:#322f45;font-weight:700}
+
+  h2{font-size:22px;font-weight:800;letter-spacing:-.3px;margin:44px 0 4px;padding-top:14px;color:var(--ink);scroll-margin-top:20px}
+  h2 .hn{color:var(--blue);font-weight:800;margin-right:10px}
+  .lead{font-size:14px;color:var(--muted);margin-bottom:18px}
+  h3{font-size:16.5px;font-weight:800;margin:26px 0 10px;color:var(--ink-2)}
+  h4{font-size:14px;font-weight:800;margin:18px 0 8px;color:var(--ink-2)}
+  p{font-size:14px;color:#3a3a46;margin:9px 0}
+  ul,ol{margin:9px 0 9px 4px;padding-left:20px}
+  li{font-size:14px;color:#3a3a46;margin:5px 0}
+  b,strong{color:var(--ink);font-weight:700}
+  code{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;background:var(--code-bg);
+    border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#4a4a7a}
+  a.ref{color:var(--blue);text-decoration:none;border-bottom:1px dashed #b9cdf5}
+
+  .callout{border-radius:12px;padding:14px 18px;margin:16px 0;font-size:13.5px;border:1px solid}
+  .callout b{display:block;margin-bottom:3px}
+  .callout.key{background:var(--blue-soft);border-color:#cfe0ff;color:#1c427e}
+  .callout.warn{background:var(--amber-bg);border-color:#f1dca0;color:#7a5600}
+  .callout.note{background:#f6f7fa;border-color:var(--line);color:#4a4a55}
+
+  pre{background:#1c1c2b;color:#d7d9e6;border-radius:12px;padding:16px 18px;overflow-x:auto;font-size:12.5px;
+    line-height:1.6;margin:14px 0;font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace}
+  pre .c{color:#7d8199} pre .k{color:#c792ea} pre .s{color:#c3e88d} pre .t{color:#82aaff} pre .f{color:#ffcb6b}
+
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13px;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  th{text-align:left;background:#fafbfd;font-size:11.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;padding:11px 14px;border-bottom:1px solid var(--line)}
+  td{padding:11px 14px;border-bottom:1px solid var(--line-2);color:#46464f;vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:#fafbff}
+
+  .chip{display:inline-block;font-size:11px;font-weight:700;border-radius:6px;padding:2px 8px;white-space:nowrap}
+  .chip.done{background:var(--green-bg);color:var(--green)}
+  .chip.wip{background:var(--blue-soft);color:var(--blue)}
+  .chip.todo{background:var(--amber-bg);color:var(--amber)}
+  .chip.new{background:var(--purple-soft);color:var(--purple)}
+
+  /* layered architecture diagram */
+  .arch{margin:20px 0;border:1px solid var(--line);border-radius:16px;overflow:hidden}
+  .layer{padding:16px 18px;border-bottom:1px solid var(--line)}
+  .layer:last-child{border-bottom:none}
+  .layer.l2{background:linear-gradient(90deg,#f3effe,#faf9ff)}
+  .layer.l1{background:linear-gradient(90deg,#eef4fe,#f8fbff)}
+  .layer.l0{background:linear-gradient(90deg,#eafaf1,#f7fdfa)}
+  .layer.store{background:#fbfbfd}
+  .layer-head{display:flex;align-items:center;gap:10px;margin-bottom:11px}
+  .layer-badge{font-size:11px;font-weight:800;color:#fff;border-radius:6px;padding:2px 9px}
+  .l2 .layer-badge{background:var(--purple)} .l1 .layer-badge{background:var(--blue)} .l0 .layer-badge{background:var(--green)} .store .layer-badge{background:#5a5a6a}
+  .layer-title{font-size:14px;font-weight:800;color:var(--ink)}
+  .layer-sub{font-size:12px;color:var(--muted);margin-left:auto}
+  .mods{display:flex;gap:9px;flex-wrap:wrap}
+  .mod{background:#fff;border:1px solid var(--line);border-radius:9px;padding:8px 12px;font-size:12px;color:#44444f;font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+  .mod span{display:block;font-size:10.5px;color:var(--muted-2);font-weight:500;margin-top:1px}
+  .flowarrow{text-align:center;color:var(--muted-2);font-size:18px;padding:3px 0;background:#fff}
+
+  /* pipeline */
+  .pipe{display:flex;align-items:stretch;gap:0;margin:18px 0;flex-wrap:wrap}
+  .pstep{flex:1;min-width:120px;background:#fff;border:1px solid var(--line);border-radius:11px;padding:12px 13px;position:relative;margin:5px}
+  .pstep .pi{font-size:10.5px;font-weight:800;color:var(--blue);letter-spacing:.5px}
+  .pstep .pt{font-size:13px;font-weight:700;color:var(--ink);margin:4px 0 2px}
+  .pstep .pd{font-size:11.5px;color:var(--muted);line-height:1.5}
+
+  /* roadmap */
+  .road{border-left:2px solid var(--line);margin:18px 0 8px 8px;padding-left:0}
+  .ph{position:relative;padding:0 0 22px 26px}
+  .ph::before{content:"";position:absolute;left:-7px;top:3px;width:12px;height:12px;border-radius:50%;background:var(--blue);border:3px solid #fff;box-shadow:0 0 0 1px var(--blue)}
+  .ph.p1::before{background:var(--green);box-shadow:0 0 0 1px var(--green)}
+  .ph.p4::before{background:var(--purple);box-shadow:0 0 0 1px var(--purple)}
+  .ph h4{margin:0 0 4px;font-size:14.5px}
+  .ph .pmeta{font-size:11.5px;color:var(--muted-2);font-weight:700;text-transform:uppercase;letter-spacing:.4px}
+
+  /* wireframe */
+  .wire{border:1px solid var(--line);border-radius:12px;overflow:hidden;margin:16px 0;font-size:12px}
+  .wire .wbar{background:#fbfbfd;border-bottom:1px solid var(--line);padding:9px 14px;font-weight:700;color:var(--ink-2);display:flex;gap:18px}
+  .wire .wbar .wt{color:var(--muted-2)} .wire .wbar .wt.on{color:var(--blue);border-bottom:2px solid var(--blue);padding-bottom:6px;margin-bottom:-9px}
+  .wire .wbody{display:flex;min-height:160px}
+  .wire .wcol{padding:13px 15px}
+  .wire .wleft{width:200px;flex:0 0 200px;background:#fafbfd;border-right:1px solid var(--line-2)}
+  .wire .wmain{flex:1}
+  .wbox{background:#f4f6f9;border:1px dashed #d4d8e2;border-radius:8px;padding:9px 11px;margin-bottom:8px;color:#666}
+  .wbox b{color:#444}
+
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:900px){.two{grid-template-columns:1fr}.toc{display:none}.doc{padding:30px 22px}}
+  .foot{margin-top:50px;padding-top:20px;border-top:1px solid var(--line);font-size:12px;color:var(--muted-2)}
+</style>
+</head>
+<body>
+<div class="layout">
+
+  <!-- ============ TOC ============ -->
+  <aside class="toc">
+    <div class="doc-mark">Design Doc</div>
+    <h3>本地文件管理 + 本地知识库</h3>
+    <a href="#s1"><span class="n">01</span>定位与目标</a>
+    <a href="#s2"><span class="n">02</span>分层架构(全链路)</a>
+    <a href="#s3"><span class="n">03</span>数据流四条链路</a>
+    <a href="#s4"><span class="n">04</span>技术选型</a>
+    <a href="#s5"><span class="n">05</span>存储设计 Schema</a>
+    <a href="#s6"><span class="n">06</span>接口设计 命令/MCP</a>
+    <a href="#s7"><span class="n">07</span>前端与交互</a>
+    <a href="#s8"><span class="n">08</span>资源·分发·性能预算</a>
+    <a href="#s9"><span class="n">09</span>演进路线</a>
+    <a href="#s10"><span class="n">10</span>风险与权衡</a>
+  </aside>
+
+  <!-- ============ CONTENT ============ -->
+  <main class="doc">
+
+    <div class="hero">
+      <span class="tag">pinvou3 · Design Doc</span>
+      <h1>本地文件管理 + 本地知识库 · 完整设计</h1>
+      <p>在 pinvou3(Tauri + 本地 GB10/Qwen3.6)之上，把"全盘文件查找"与"AI 可引用的本地知识库"做成一套分层系统：L0 全量元数据、L1 选定知识集内容化、L2 生成式 RAG 问答。本文档覆盖全链路（非 MVP），含架构、技术选型、存储、接口、交互与部署。</p>
+      <div class="meta-row">
+        <span class="meta">版本 <b>v1.0</b></span>
+        <span class="meta">日期 <b>2026-06-22</b></span>
+        <span class="meta">状态 <b>设计定稿 · 待动手</b></span>
+        <span class="meta">作者 <b>pinvou3 团队</b></span>
+        <span class="meta">分支 <b>feat/files-manager</b></span>
+      </div>
+    </div>
+
+    <!-- ===== 1 ===== -->
+    <h2 id="s1"><span class="hn">01</span>定位与目标</h2>
+    <p class="lead">先把"找文件"和"喂给 AI"这两件相反的事讲清楚——它们是两个产品、两种心智、两套范围策略。</p>
+
+    <h3>两个产品，一套入口</h3>
+    <table>
+      <thead><tr><th style="width:16%">能力</th><th style="width:24%">定位</th><th style="width:14%">范围</th><th style="width:18%">类比</th><th>核心价值</th></tr></thead>
+      <tbody>
+        <tr><td><b>本地文件管理</b><br><span class="chip done">L0 已实现</span></td><td>全盘文件查找 + 分类浏览 + 去重清理</td><td><b>全量</b>（家目录/选定根）</td><td>Everything / Spotlight</td><td>不知道文件在哪也能秒找到；去重要全量才有意义</td></tr>
+        <tr><td><b>本地知识库</b><br><span class="chip new">L1/L2 新建</span></td><td>精选资料内容化 → 语义检索 → AI 问答</td><td><b>选定</b>（知识集）</td><td>AnythingLLM / NotebookLM</td><td>让 35B 基于"我挑过的资料"回答并溯源</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout key">
+      <b>核心原则：L1 从 L0 长出来</b>
+      用户在 L0 全盘浏览/搜到文件 →「加入知识库」→ L1 才对这一小撮做内容解析与向量化。L0 是货架（轻、全量、零模型），L1 是挑进购物车的东西（重、选定、按需）。<b>绝不对全盘百万文件做内容化/向量化</b>——那是成本、噪音、隐私的三重灾难。
+    </div>
+
+    <h3>设计原则</h3>
+    <ul>
+      <li><b>本地优先</b>：全部能力在 GB10 本地完成，零云依赖；以当前 Qwen3.6-35B 能力为基线设计。</li>
+      <li><b>复用底座，不重造轮子</b>：解析复用 <code>file_ingest</code>、存储复用 <code>rusqlite</code>、生成复用 engine/vLLM、分发沿用 .deb 单体。</li>
+      <li><b>分层解耦</b>：L0/L1/L2 各自独立演进；embedding 与生成是两个独立模型，各跑各的，互不拖累。</li>
+      <li><b>可溯源高于聪明</b>：本地 35B 答案质量有基线上限，<b>每个回答必须带可点击的原文引用</b>——这是本地知识库相对云端的信任优势。</li>
+      <li><b>后台不打扰前台</b>：扫描/解析/embedding 全部节流让步，绝不卡设备（L0 性能教训已落地）。</li>
+    </ul>
+
+    <!-- ===== 2 ===== -->
+    <h2 id="s2"><span class="hn">02</span>分层架构（全链路）</h2>
+    <p class="lead">三层 + 一个共享存储层。L2 是纯查询时的 RAG，不预计算；L1 是知识库主体；L0 是地基。</p>
+
+    <div class="arch">
+      <div class="layer l2">
+        <div class="layer-head"><span class="layer-badge">L2</span><span class="layer-title">理解 / 问答层</span><span class="layer-sub">纯按需 · 查询时才跑</span></div>
+        <div class="mods">
+          <div class="mod">RAG 编排<span>召回→重排→生成</span></div>
+          <div class="mod">Qwen3.6-35B<span>带引用答案</span></div>
+          <div class="mod">对话联动<span>@知识集 / 品悟召唤</span></div>
+          <div class="mod">MCP 暴露<span>kb_query 给 LLM 自调</span></div>
+        </div>
+      </div>
+      <div class="flowarrow">▲ 检索片段 / ▼ 问题</div>
+      <div class="layer l1">
+        <div class="layer-head"><span class="layer-badge">L1</span><span class="layer-title">知识源层（选定·内容化）</span><span class="layer-sub">知识集 = 用户圈定的一批目录/文件</span></div>
+        <div class="mods">
+          <div class="mod">知识集管理<span>Collection CRUD</span></div>
+          <div class="mod">内容解析<span>复用 file_ingest</span></div>
+          <div class="mod">切块 Chunker<span>~512token/15%叠</span></div>
+          <div class="mod">Embedding<span>fastembed-rs · bge-m3</span></div>
+          <div class="mod">混合检索<span>fts + 向量 RRF</span></div>
+          <div class="mod">增量重解析<span>watcher 复用</span></div>
+        </div>
+      </div>
+      <div class="flowarrow">▲ 选文件加入 / ▼ 解析入库</div>
+      <div class="layer l0">
+        <div class="layer-head"><span class="layer-badge">L0</span><span class="layer-title">文件索引层（全量·轻·零模型）</span><span class="layer-sub">已实现 · src-tauri/src/knowledge</span></div>
+        <div class="mods">
+          <div class="mod">全盘扫描<span>walkdir + 增量</span></div>
+          <div class="mod">排除剪枝<span>隐私 + churn</span></div>
+          <div class="mod">秒搜<span>fts5(name) trigram</span></div>
+          <div class="mod">去重<span>同size→sha256 按需</span></div>
+          <div class="mod">实时增量<span>notify watcher</span></div>
+          <div class="mod">文件操作<span>打开/定位/管理</span></div>
+        </div>
+      </div>
+      <div class="layer store">
+        <div class="layer-head"><span class="layer-badge">DB</span><span class="layer-title">共享存储层</span><span class="layer-sub">~/.pinvou3/knowledge/index.db · SQLite(WAL)</span></div>
+        <div class="mods">
+          <div class="mod">files / files_fts<span>L0 元数据 + 全文</span></div>
+          <div class="mod">collections / documents<span>L1 知识集</span></div>
+          <div class="mod">chunks / vec_chunks<span>L1 文本块 + 向量</span></div>
+          <div class="mod">本地模型<span>~/.pinvou3/models/</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout note">
+      <b>进程拓扑</b>
+      全部在 Tauri 主进程内：L0/L1 逻辑是 Rust 模块，embedding 是进程内 ONNX（fastembed-rs），存储是进程内 SQLite。唯一的外部进程是已有的 <b>vLLM（跑 35B 生成）</b>。embedding <b>不依赖 vLLM</b>——隔离负载、互不拖累。
+    </div>
+
+    <!-- ===== 3 ===== -->
+    <h2 id="s3"><span class="hn">03</span>数据流：四条链路</h2>
+    <p class="lead">全链路拆成四条独立数据流。前两条是写入（建索引），后两条是读取（查询）。</p>
+
+    <h3>① 扫描链路（L0 建文件索引）</h3>
+    <div class="pipe">
+      <div class="pstep"><div class="pi">SCAN</div><div class="pt">walkdir 遍历</div><div class="pd">选定根/家目录，follow_links=false</div></div>
+      <div class="pstep"><div class="pi">PRUNE</div><div class="pt">排除剪枝</div><div class="pd">node_modules/.ssh/.cache 整株跳过</div></div>
+      <div class="pstep"><div class="pi">DIFF</div><div class="pt">增量比对</div><div class="pd">mtime+size 未变则跳过</div></div>
+      <div class="pstep"><div class="pi">WRITE</div><div class="pt">批量 upsert</div><div class="pd">2000/批 + 节流 sleep</div></div>
+      <div class="pstep"><div class="pi">FTS</div><div class="pt">触发器同步</div><div class="pd">files_fts(name) trigram</div></div>
+    </div>
+    <p>去重（算 sha256）<b>不在此链路自动跑</b>，改为「重复文件」页按需触发 <code>kb_build_dedup</code>。删除清理：本次未遍历到的旧条目批量删。</p>
+
+    <h3>② 知识集链路（L1 内容化）</h3>
+    <div class="pipe">
+      <div class="pstep"><div class="pi">SELECT</div><div class="pt">加入知识集</div><div class="pd">从 L0 选文件 / 选目录</div></div>
+      <div class="pstep"><div class="pi">PARSE</div><div class="pt">file_ingest 解析</div><div class="pd">pdf/docx/md/... → 正文</div></div>
+      <div class="pstep"><div class="pi">CHUNK</div><div class="pt">切块</div><div class="pd">~512 token，15% 重叠</div></div>
+      <div class="pstep"><div class="pi">EMBED</div><div class="pt">向量化</div><div class="pd">fastembed bge-m3 → 1024 维</div></div>
+      <div class="pstep"><div class="pi">STORE</div><div class="pt">入库</div><div class="pd">chunks + vec_chunks + fts</div></div>
+    </div>
+    <p>全程节流 + 进度回调 + 可中断（复用 L0 的 <code>ScanState</code> 模式）。增量：知识集内文件变更由 watcher 捕获，只重解析变化的文档。</p>
+
+    <h3>③ 检索链路（混合召回）</h3>
+    <div class="pipe">
+      <div class="pstep"><div class="pi">QUERY</div><div class="pt">查询输入</div><div class="pd">NL 规则解析 / 自然问句</div></div>
+      <div class="pstep"><div class="pi">RECALL</div><div class="pt">双路召回</div><div class="pd">fts5 关键词 + 向量近邻</div></div>
+      <div class="pstep"><div class="pi">FUSE</div><div class="pt">融合</div><div class="pd">RRF 倒数排名融合</div></div>
+      <div class="pstep"><div class="pi">RERANK</div><div class="pt">重排(可选)</div><div class="pd">35B listwise 精排 top-N</div></div>
+      <div class="pstep"><div class="pi">TOPK</div><div class="pt">返回片段</div><div class="pd">带 doc/file 溯源</div></div>
+    </div>
+
+    <h3>④ 问答链路（生成式 RAG）</h3>
+    <div class="pipe">
+      <div class="pstep"><div class="pi">RETRIEVE</div><div class="pt">检索③</div><div class="pd">拿 top-K 片段</div></div>
+      <div class="pstep"><div class="pi">PROMPT</div><div class="pt">组装上下文</div><div class="pd">片段 + 问题 + 引用指令</div></div>
+      <div class="pstep"><div class="pi">GENERATE</div><div class="pt">35B 生成</div><div class="pd">vLLM 流式，品悟人格</div></div>
+      <div class="pstep"><div class="pi">CITE</div><div class="pt">引用回填</div><div class="pd">来源可点击打开原文</div></div>
+    </div>
+    <div class="callout key">
+      <b>三个入口共用问答链路</b>
+      ① 知识库页内问答框；② 对话里 <code>@知识集名</code> 提问；③ 通过 MCP 把 <code>kb_query(collection, question)</code> 暴露给 35B，由模型自主决定查哪个知识集。小知识集（放得下上下文）可跳过检索，直接 context-stuffing。
+    </div>
+
+    <!-- ===== 4 ===== -->
+    <h2 id="s4"><span class="hn">04</span>技术选型</h2>
+    <p class="lead">每个环节给选型 + 理由 + 备选 + 何时切换。原则：嵌入式、进程内、Rust 原生，不破坏单体离线分发。</p>
+
+    <table>
+      <thead><tr><th style="width:13%">环节</th><th style="width:20%">选型</th><th style="width:32%">理由</th><th style="width:20%">备选 / 何时换</th><th style="width:9%">状态</th></tr></thead>
+      <tbody>
+        <tr><td><b>运行时</b></td><td>Tauri 2 + Rust</td><td>pinvou3 既有底座；单体、跨平台、Rust 后端</td><td>—</td><td><span class="chip done">既有</span></td></tr>
+        <tr><td><b>元数据/全文存储</b></td><td>SQLite (rusqlite) + FTS5 trigram</td><td>一个库装元数据+全文+向量；trigram 中文子串友好；WAL 并发</td><td>tantivy（更强相关性，规模大时）</td><td><span class="chip done">L0已用</span></td></tr>
+        <tr><td><b>文档解析</b></td><td>file_ingest（自建，复用）</td><td>已验证通路，覆盖 pdf/docx/md/xlsx/pptx；依赖降 recommends</td><td>—（别另造）</td><td><span class="chip done">既有</span></td></tr>
+        <tr><td><b>切块 Chunker</b></td><td>自研，按句/字符 ~512token + 15% 重叠</td><td>切分质量决定召回上限；保留标题/结构边界</td><td>按语义切（后续优化）</td><td><span class="chip new">新建</span></td></tr>
+        <tr><td><b>Embedding 模型</b></td><td>bge-m3（0.56B，1024 维）</td><td>MTEB 中文/多语第一梯队；ONNX 可得；自带稀疏可选</td><td>Qwen3-Embedding-0.6B；要更省 bge-small</td><td><span class="chip new">新建</span></td></tr>
+        <tr><td><b>Embedding 运行时</b></td><td>fastembed-rs（进程内 ONNX，CPU EP 起步）</td><td>零外部服务、契合单体；不抢 vLLM 显存、不连累其稳定性</td><td>vLLM embed 实例 / TEI（要 GPU 速度时）</td><td><span class="chip new">新建</span></td></tr>
+        <tr><td><b>向量检索</b></td><td>起步 BLOB + Rust 暴力余弦 → sqlite-vec</td><td>选定知识集几千~几万 chunk，暴力 KNN &lt;10ms，零扩展依赖</td><td>sqlite-vec / LanceDB（&gt;10万 chunk 上 ANN）</td><td><span class="chip new">新建</span></td></tr>
+        <tr><td><b>生成模型</b></td><td>Qwen3.6-35B-A3B-FP8（vLLM）</td><td>pinvou3 既有后端；RAG 答案生成 + 重排</td><td>—</td><td><span class="chip done">既有</span></td></tr>
+        <tr><td><b>重排</b></td><td>RRF 融合 + 可选 35B listwise</td><td>RRF 零成本融合双路；35B 重排在召回不准时兜底</td><td>专用 reranker（bge-reranker）</td><td><span class="chip new">新建</span></td></tr>
+        <tr><td><b>LLM 联动</b></td><td>MCP <code>kb_query</code></td><td>零 fork 加工具通路；模型自主调知识库</td><td>内部工具直注入</td><td><span class="chip new">新建</span></td></tr>
+        <tr><td><b>实时增量</b></td><td>notify watcher（复用 L0）</td><td>知识集内文件改动 → 重解析；L0 已有 watcher</td><td>周期重扫兜底</td><td><span class="chip wip">复用</span></td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout warn">
+      <b>选型上的两个真坑</b>
+      ① <b>ARM/Blackwell 上的 ONNX-GPU</b>：GB10 是 aarch64 + 新架构，onnxruntime CUDA EP 不一定现成 → 起步用 CPU EP（Grace 20 核跑 0.5B 后台建索引可接受），嫌慢再切 vLLM-embed 走已调通的 GPU 栈。② <b>维度/模型绑定</b>：换 embedding 模型必须重建全部向量，用 schema version 卡死。
+    </div>
+
+    <!-- ===== 5 ===== -->
+    <h2 id="s5"><span class="hn">05</span>存储设计 · Schema</h2>
+    <p class="lead">单库（index.db），L0 表已存在；L1 新增 collections / documents / chunks / vec_chunks。用 <code>PRAGMA user_version</code> 管迁移。</p>
+
+    <h4>L0（已实现，v2）</h4>
+    <pre><span class="c">-- 文件元数据（不存内容）</span>
+<span class="k">CREATE TABLE</span> files(
+  id INTEGER <span class="k">PRIMARY KEY</span>, path <span class="t">TEXT UNIQUE</span>, name <span class="t">TEXT</span>, ext <span class="t">TEXT</span>,
+  size INTEGER, mtime INTEGER, is_dir INTEGER, hash <span class="t">TEXT</span>, status <span class="t">TEXT</span>, indexed_at INTEGER);
+<span class="c">-- 只索引文件名（砍 path 全路径，省 2/3 体积）</span>
+<span class="k">CREATE VIRTUAL TABLE</span> files_fts <span class="k">USING</span> fts5(name, content='files', tokenize='trigram');</pre>
+
+    <h4>L1（新增，v3）</h4>
+    <pre><span class="c">-- 知识集</span>
+<span class="k">CREATE TABLE</span> collections(
+  id INTEGER <span class="k">PRIMARY KEY</span>, name <span class="t">TEXT</span>, category <span class="t">TEXT</span>, description <span class="t">TEXT</span>,
+  created_at INTEGER, updated_at INTEGER,
+  embed_model <span class="t">TEXT</span>, embed_dim INTEGER,        <span class="c">-- 绑定模型，换模型→重建</span>
+  status <span class="t">TEXT</span>);                            <span class="c">-- ready / indexing / pending</span>
+
+<span class="c">-- 知识集内文档（来源文件，关联 L0 的 files）</span>
+<span class="k">CREATE TABLE</span> documents(
+  id INTEGER <span class="k">PRIMARY KEY</span>, collection_id INTEGER, file_id INTEGER,  <span class="c">-- → files.id</span>
+  path <span class="t">TEXT</span>, name <span class="t">TEXT</span>, mtime INTEGER, parse_status <span class="t">TEXT</span>,    <span class="c">-- parsed/skipped/failed</span>
+  n_chunks INTEGER, parsed_at INTEGER);
+
+<span class="c">-- 文本块 + 向量</span>
+<span class="k">CREATE TABLE</span> chunks(
+  id INTEGER <span class="k">PRIMARY KEY</span>, document_id INTEGER, collection_id INTEGER,
+  ord INTEGER, text <span class="t">TEXT</span>, n_tokens INTEGER,
+  vec <span class="t">BLOB</span>);                              <span class="c">-- f32[1024]，起步暴力 KNN</span>
+<span class="k">CREATE VIRTUAL TABLE</span> chunks_fts <span class="k">USING</span> fts5(text, content='chunks', tokenize='trigram');
+
+<span class="c">-- 规模上来后改用 sqlite-vec 的 vec0 虚表（替代 chunks.vec BLOB）</span>
+<span class="c">-- CREATE VIRTUAL TABLE vec_chunks USING vec0(chunk_id INTEGER, embedding float[1024]);</span></pre>
+
+    <div class="callout note"><b>溯源链</b> <code>chunks.document_id → documents.file_id → files.path</code>，回答里的引用据此定位原文件，用 L0 的 <code>open_in_system</code> 打开。</div>
+
+    <!-- ===== 6 ===== -->
+    <h2 id="s6"><span class="hn">06</span>接口设计 · Tauri 命令 / MCP</h2>
+    <p class="lead">L0 命令已就绪；L1/L2 新增一组。前缀沿用 <code>kb_*</code>，对话/外部走 MCP。</p>
+
+    <table>
+      <thead><tr><th style="width:24%">命令</th><th style="width:30%">入参 → 出参</th><th style="width:10%">层</th><th>说明</th><th style="width:9%">状态</th></tr></thead>
+      <tbody>
+        <tr><td><code>kb_start_scan</code></td><td>roots? → ScanState</td><td>L0</td><td>全盘/选定根扫描（增量）</td><td><span class="chip done">有</span></td></tr>
+        <tr><td><code>kb_search</code></td><td>query → FileHit[]</td><td>L0</td><td>NL+结构化秒搜</td><td><span class="chip done">有</span></td></tr>
+        <tr><td><code>kb_stats</code> / <code>kb_find_duplicates</code> / <code>kb_build_dedup</code></td><td>→ Stats / DupGroup[] / ScanState</td><td>L0</td><td>统计 / 重复列表 / 按需去重</td><td><span class="chip done">有</span></td></tr>
+        <tr><td><code>kb_type_counts</code></td><td>→ {ext, count}[]</td><td>L0</td><td>分类浏览的类型计数</td><td><span class="chip todo">补</span></td></tr>
+        <tr><td><code>kb_collection_create / list / update / delete</code></td><td>... → Collection</td><td>L1</td><td>知识集 CRUD</td><td><span class="chip new">新</span></td></tr>
+        <tr><td><code>kb_collection_add_sources</code></td><td>{cid, paths[]} → job</td><td>L1</td><td>加文件/目录，后台解析+embed</td><td><span class="chip new">新</span></td></tr>
+        <tr><td><code>kb_index_status</code></td><td>cid → {phase, done, total}</td><td>L1</td><td>解析/索引进度（轮询）</td><td><span class="chip new">新</span></td></tr>
+        <tr><td><code>kb_retrieve</code></td><td>{cid, query, k} → Chunk[]（带溯源）</td><td>L1</td><td>混合检索（fts+向量+RRF）</td><td><span class="chip new">新</span></td></tr>
+        <tr><td><code>kb_ask</code></td><td>{cid, question} → 流式答案 + 引用</td><td>L2</td><td>RAG 问答（35B）</td><td><span class="chip new">新</span></td></tr>
+        <tr><td><code>mcp: kb_query</code></td><td>{collection, question} → 答案+来源</td><td>L2</td><td>暴露给 35B / 对话 @知识集</td><td><span class="chip new">新</span></td></tr>
+      </tbody>
+    </table>
+
+    <pre><span class="c">// L1 检索命令签名（Rust / Tauri）</span>
+<span class="k">#[tauri::command]</span>
+<span class="k">pub fn</span> <span class="f">kb_retrieve</span>(state: State&lt;KnowledgeService&gt;, cid: i64, query: String, k: usize)
+  -&gt; Result&lt;Vec&lt;ChunkHit&gt;, String&gt;;   <span class="c">// ChunkHit{ text, score, doc_name, file_path, ord }</span></pre>
+
+    <!-- ===== 7 ===== -->
+    <h2 id="s7"><span class="hn">07</span>前端与交互</h2>
+    <p class="lead">IA 已定：一个侧栏入口「本地文件与知识库」+ 顶部两 subtab（参照用户提供的设计稿）。翻译成 React+Tailwind 组件、配深色两套、三语 dict。</p>
+
+    <h3>信息架构</h3>
+    <div class="wire">
+      <div class="wbar">本地文件与知识库 &nbsp;&nbsp; <span class="wt on">文件管理</span> <span class="wt">知识库</span></div>
+      <div class="wbody">
+        <div class="wcol wmain" style="width:100%">
+          <div class="wbox"><b>🔍 搜索栏</b> · 名称 / 类型 / 路径（NL：上周的 pdf）</div>
+          <div class="wbox"><b>按类型浏览</b> · 全部 / 文档 / 表格 / 演示 / PDF / 图片 / 压缩包（点击筛选，类型计数）</div>
+          <div class="wbox"><b>最近修改</b> · 用 mtime（替代稿子"常用文件/打开次数"，L0 无访问数据）</div>
+          <div class="wbox"><b>全部文件表</b> · 文件名 / 位置 / 大小 / 修改时间 · 行内操作【预览｜<b>加入知识库</b>｜更多】</div>
+        </div>
+      </div>
+    </div>
+    <div class="wire">
+      <div class="wbar">本地文件与知识库 &nbsp;&nbsp; <span class="wt">文件管理</span> <span class="wt on">知识库</span></div>
+      <div class="wbody">
+        <div class="wcol wleft">
+          <div class="wbox"><b>+ 新建知识集</b></div>
+          <div class="wbox">● 产品资料 128 <span style="color:var(--green)">就绪</span></div>
+          <div class="wbox">○ 合同 12 <span style="color:var(--amber)">待索引</span></div>
+          <div class="wbox">○ 调研 解析中 62%</div>
+        </div>
+        <div class="wcol wmain">
+          <div class="wbox"><b>🔍 问这个知识集…</b> 【检索 ｜ 问答】</div>
+          <div class="wbox"><b>💬 答案</b>（35B 基于召回片段）<br>来源 ① 合同A.pdf·p3 ↗ ② 纪要.docx ↗</div>
+          <div class="wbox"><b>包含的文档</b> · 合同A.pdf 已解析12块 · 纪要.docx 已解析8块 · 扫描件.jpg 跳过(无文本)</div>
+          <div class="wbox" style="border-style:solid;color:var(--blue)">⬆ 拖文件到此 / 点击选择 加入知识集</div>
+        </div>
+      </div>
+    </div>
+
+    <h3>两座桥（文件 ↔ 知识库）</h3>
+    <ul>
+      <li><b>文件 → 知识库</b>：文件表行内「加入知识库」+ 知识库页拖拽区。两页唯一强连接，务必顺。</li>
+      <li><b>知识库 → 文件</b>：回答/检索结果的来源，点击用 L0 <code>open_in_system</code> 打开原文件溯源。</li>
+    </ul>
+
+    <h3>组件落点</h3>
+    <table>
+      <thead><tr><th style="width:26%">组件</th><th style="width:20%">替换/新增</th><th>对接</th></tr></thead>
+      <tbody>
+        <tr><td><code>FilesView</code></td><td>由现 <code>KnowledgeView</code> 拆出</td><td><code>kb_search/stats/type_counts/find_duplicates</code></td></tr>
+        <tr><td><code>KnowledgeBaseView</code></td><td>新增（照稿子）</td><td><code>kb_collection_*/retrieve/ask</code></td></tr>
+        <tr><td>侧栏入口</td><td>合并为一个「本地文件与知识库」</td><td>顶部 subtab 切换</td></tr>
+      </tbody>
+    </table>
+    <div class="callout warn"><b>三项适配别低估</b> ① 纯 HTML/CSS 稿 → React+Tailwind 组件；② 稿子全浅色硬编码 → 深色明暗两套（class 策略）；③ 全中文 → zh/en/ja 三语 dict（四处同步）。</div>
+
+    <!-- ===== 8 ===== -->
+    <h2 id="s8"><span class="hn">08</span>资源 · 分发 · 性能预算</h2>
+
+    <h3>资源占用（GB10 128GB 统一内存）</h3>
+    <table>
+      <thead><tr><th style="width:24%">组件</th><th style="width:22%">占用</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>35B-A3B-FP8（vLLM）</td><td>~35GB 显存 + KV</td><td>既有，生成 + 重排</td></tr>
+        <tr><td>bge-m3（fastembed）</td><td>~1.1GB（int8 ~0.7GB）</td><td>权重 + 激活；CPU EP 则不占 GPU</td></tr>
+        <tr><td>L0 索引库</td><td>~800MB / 149 万文件</td><td>砍 path-trigram 后，元数据为主</td></tr>
+        <tr><td>L1 向量</td><td>1024×4B = 4KB/chunk</td><td>1 万 chunk = 40MB，可忽略</td></tr>
+      </tbody>
+    </table>
+
+    <h3>性能预算（单知识集）</h3>
+    <table>
+      <thead><tr><th style="width:24%">规模</th><th style="width:28%">建索引（CPU）</th><th style="width:24%">检索</th><th>方案</th></tr></thead>
+      <tbody>
+        <tr><td>几千 chunk（百~千文档）</td><td>几分钟</td><td>暴力 &lt;5ms</td><td>BLOB+暴力 ✅</td></tr>
+        <tr><td>~1 万 chunk</td><td>十几分钟</td><td>~10ms</td><td>BLOB+暴力 ✅</td></tr>
+        <tr><td>~10 万 chunk</td><td>转 GPU 更佳</td><td>~50-100ms（内存~400MB）</td><td>暴力天花板</td></tr>
+        <tr><td>100 万+ chunk</td><td>需 GPU</td><td>毫秒（ANN）</td><td>换 sqlite-vec/LanceDB</td></tr>
+      </tbody>
+    </table>
+    <p>问答延迟：检索毫秒级 + 35B 生成秒级（本地基线）；35B 重排会额外加几秒，仅在召回不准时触发。</p>
+
+    <h3>模型分发</h3>
+    <ul>
+      <li>embedding 模型 ~1GB <b>不进 .deb</b>（太大）：首次按需下载 + <b>sha256 校验</b>（复用 sha2）+ 设置页"知识库模型"下载/体检卡（仿现有依赖体检卡）。</li>
+      <li>离线场景：允许手动放置模型到 <code>~/.pinvou3/models/</code>。</li>
+      <li>不破坏 OTA：模型缺失时知识库功能优雅降级（仅 fts 全文可用），运行时 chip 提示。</li>
+    </ul>
+
+    <!-- ===== 9 ===== -->
+    <h2 id="s9"><span class="hn">09</span>演进路线</h2>
+    <p class="lead">目标是全链路，但分阶段交付——每阶段都可独立用，后端与 UI 壳解耦推进。</p>
+
+    <div class="road">
+      <div class="ph p1">
+        <div class="pmeta">Phase 1 · 文件管理（后端就绪）</div>
+        <h4>FilesView 全量上线 <span class="chip done">L0 已备</span></h4>
+        <p>拆 <code>KnowledgeView</code> → <code>FilesView</code>；搜索 + 按类型浏览（补 <code>kb_type_counts</code>）+ 最近修改 + 全部文件表 + 行内"加入知识库"占位。深色 + 三语。最快出真实可用页面。</p>
+      </div>
+      <div class="ph">
+        <div class="pmeta">Phase 2 · 知识集 + 全文（零额外模型）</div>
+        <h4>L1 骨架 + fts 检索 <span class="chip new">MVP 验证</span></h4>
+        <p>collections/documents/chunks 表；知识集 CRUD UI（照稿）；file_ingest 解析 + chunker + <code>chunks_fts</code> 全文检索。<b>不碰向量</b>，先验证"选定范围 + 按内容找"的交互。</p>
+      </div>
+      <div class="ph">
+        <div class="pmeta">Phase 3 · 语义检索（加 embedding）</div>
+        <h4>fastembed-rs + 混合检索 <span class="chip new">语义</span></h4>
+        <p>接 bge-m3（CPU EP）；BLOB 向量 + 暴力 KNN；fts + 向量 RRF 融合。模型按需下载 + 校验 + 设置页卡。</p>
+      </div>
+      <div class="ph p4">
+        <div class="pmeta">Phase 4 · RAG 问答 + 联动（全链路）</div>
+        <h4>35B 问答 + 对话 @ + MCP <span class="chip new">完整</span></h4>
+        <p><code>kb_ask</code> 带引用的 RAG；可选 35B 重排；对话里 <code>@知识集</code>；MCP <code>kb_query</code> 暴露给模型自调；增量重解析；规模大时切 sqlite-vec/GPU。</p>
+      </div>
+    </div>
+
+    <!-- ===== 10 ===== -->
+    <h2 id="s10"><span class="hn">10</span>风险与权衡</h2>
+    <table>
+      <thead><tr><th style="width:22%">风险</th><th style="width:38%">影响</th><th>缓解</th></tr></thead>
+      <tbody>
+        <tr><td><b>ARM 上 ONNX-GPU</b></td><td>GB10 aarch64+Blackwell 上 onnxruntime CUDA EP 可能不现成</td><td>起步 CPU EP（够用）；嫌慢切 vLLM-embed 走已调通 GPU 栈</td></tr>
+        <tr><td><b>本地 35B RAG 质量</b></td><td>答案聪明度受本地模型基线封顶</td><td>强制可溯源（用户自校）；检索质量 &gt; 生成花哨；必要时 35B 重排</td></tr>
+        <tr><td><b>全量 vs 选定误用</b></td><td>对全盘做向量化=成本/噪音/隐私灾难</td><td>架构强约束：L1 只对选定知识集；UI 不提供"全盘建知识库"</td></tr>
+        <tr><td><b>切块质量</b></td><td>chunk 切不好直接拉低召回上限</td><td>保留结构边界 + 重叠；后续上语义切分</td></tr>
+        <tr><td><b>模型分发体积</b></td><td>~1GB 模型不能进 .deb</td><td>按需下载 + sha256 + 离线手动放置 + 缺失降级到 fts</td></tr>
+        <tr><td><b>vLLM 高负载卡死</b></td><td>GB10 上 vLLM 持续高负载会累积卡死</td><td>embedding 进程内隔离不压 vLLM；RAG 调用走既有跑批纪律</td></tr>
+        <tr><td><b>schema 迁移</b></td><td>换 embedding 模型/维度需重建向量</td><td><code>user_version</code> 卡死；L1 向量是可重建缓存，重建无数据损失</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout key">
+      <b>一句话总览</b>
+      L0 全量做货架（已就绪），L1 让用户圈选知识集做内容化（file_ingest 解析 + chunk + fastembed 进程内 + 混合检索），L2 用既有 35B 做可溯源的 RAG 问答并暴露给对话/MCP。全部进程内嵌入式、不依赖 vLLM 做 embedding、不破坏单体离线分发。先文件管理、再知识集全文、再语义、再问答——四阶段全链路落地。
+    </div>
+
+    <div class="foot">
+      pinvou3 · 本地文件管理 + 本地知识库 · 完整设计文档 v1.0 · 2026-06-22 ·
+      关联代码 <code>pinvou3-app/src-tauri/src/knowledge/</code> · 设计源参照 knowledge-base 交互稿
+    </div>
+
+  </main>
+</div>
+
+<script>
+  // TOC 滚动高亮
+  const links=[...document.querySelectorAll('.toc a')];
+  const secs=links.map(a=>document.querySelector(a.getAttribute('href')));
+  const onScroll=()=>{
+    let i=secs.findIndex((s,idx)=>{
+      const next=secs[idx+1];
+      const top=s.getBoundingClientRect().top;
+      return top<=120 && (!next || next.getBoundingClientRect().top>120);
+    });
+    links.forEach(l=>l.classList.remove('active'));
+    if(i>=0) links[i].classList.add('active');
+  };
+  document.addEventListener('scroll',onScroll,{passive:true});
+  window.addEventListener('load',onScroll);
+</script>
+</body>
+</html>
