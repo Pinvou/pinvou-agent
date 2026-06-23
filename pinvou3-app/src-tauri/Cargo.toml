@@ -52,3 +52,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 # File watcher：监听 ~/.pinvou3/sessions/*/workspace/ 新文件产出，
 # 自动入 session.artifacts (覆盖 write_file 之外的工具如 exec_shell pandoc 产出的 docx)
 notify = "6"
+
+# 产物卡封面：读 .pptx(zip)里的 docProps/thumbnail.jpeg。只需 stored/deflate，
+# 关掉默认的 bzip2/zstd/aes 等后端，保持依赖精简、跨平台无系统库要求。
+zip = { version = "2", default-features = false, features = ["deflate"] }

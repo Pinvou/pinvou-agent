@@ -188,6 +188,7 @@ pub fn run() {
             commands::artifact_info,
             commands::render_artifact_visual,
             commands::read_artifact_image_b64,
+            commands::read_artifact_thumbnail,
             commands::open_in_system,
             commands::open_containing_folder,
             commands::open_artifact_window,

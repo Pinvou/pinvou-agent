@@ -1215,6 +1215,9 @@
           });
         }
         if (presentedPath) state.turnPresentedArtifacts.push(presentedPath); // 本 turn 已出成品卡,chat:done 不再兜底补
+        // 同步进产物面板:present_artifact 出卡的产物也算「产出物」。修「自己生成文件、
+        // 不走 write_file 的工具(如 make_pptx)→ 卡有、面板无」。trackArtifact 已去重。
+        if (presentedPath) trackArtifact(presentedPath);
         delete toolMeta[p.id];
         currentStreamText = ""; currentStreamId = 0;
         notify();
@@ -2036,6 +2039,8 @@
   function artifactInfo(path) { return invoke("artifact_info", { path: path }); }
   function readArtifactText(path) { return invoke("read_artifact_text", { path: path }); }
   function readArtifactImageB64(path) { return invoke("read_artifact_image_b64", { path: path }); }
+  // pptx 封面缩略图：读 docProps/thumbnail.jpeg → data URL（无则 null）。本地数据、无外链。
+  function readArtifactThumbnail(path) { return invoke("read_artifact_thumbnail", { path: path }).catch(function () { return null; }); }
   function renderArtifactVisual(path) { return invoke("render_artifact_visual", { path: path }); }
   function openContainingFolder(path) { return invoke("open_containing_folder", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   function openInSystem(path) { return invoke("open_in_system", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
@@ -2046,6 +2051,8 @@
     return invoke("list_deliverables", { projectDir: projectDir }).catch(function () { return []; });
   }
   // 外部打开产物：HTML 走 Tauri 独立窗口（绕沙箱），其他走系统应用
+  // 相对路径(write_file 兜底补卡的相对文件名)由后端 open_in_system/open_artifact_window
+  // 内的 resolve_artifact_path 按 active session workspace 解析,前端无需预处理。
   function openArtifactExternal(path) {
     var ext = (String(path).split(".").pop() || "").toLowerCase();
     var cmd = (ext === "html" || ext === "htm") ? "open_artifact_window" : "open_in_system";
@@ -2499,6 +2506,7 @@
     artifactInfo: artifactInfo,
     readArtifactText: readArtifactText,
     readArtifactImageB64: readArtifactImageB64,
+    readArtifactThumbnail: readArtifactThumbnail,
     renderArtifactVisual: renderArtifactVisual,
     openContainingFolder: openContainingFolder,
     openInSystem: openInSystem,

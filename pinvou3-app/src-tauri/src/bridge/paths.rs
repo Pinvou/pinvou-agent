@@ -56,6 +56,38 @@ pub fn bundle_version_file() -> PathBuf {
     bundle_root().join("VERSION")
 }
 
+/// 拉起 python MCP server(present_artifact / pptx 等)用的解释器命令。
+///
+/// - **Windows**:优先用**随安装包内置**的 python(`python-win/pythonw.exe`,
+///   自带 python-pptx、且 `pythonw` 无控制台窗口 → 启动不弹黑框、不依赖用户机器上的
+///   python)。解析顺序:`PINVOU3_PYTHON` 环境变量(开发/测试覆盖)→ 与 exe 同级的
+///   `python-win/pythonw.exe`(prod 安装目录)→ 回退 PATH 上的 `pythonw`。
+/// - **其他平台**(Linux/macOS):用系统 `python3`(Linux 几乎自带;GUI 子进程不弹窗;
+///   依赖由 marketplace 的自动 pip 安装)。
+pub fn python_command() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(p) = std::env::var("PINVOU3_PYTHON") {
+            if !p.is_empty() && std::path::Path::new(&p).exists() {
+                return p;
+            }
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                let bundled = dir.join("python-win").join("pythonw.exe");
+                if bundled.is_file() {
+                    return bundled.to_string_lossy().into_owned();
+                }
+            }
+        }
+        "pythonw".to_string()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "python3".to_string()
+    }
+}
+
 pub fn user_root() -> PathBuf {
     pinvou3_home().join("user")
 }

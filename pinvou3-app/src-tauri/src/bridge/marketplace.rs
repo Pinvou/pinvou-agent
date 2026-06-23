@@ -188,6 +188,9 @@ impl MarketplaceManager {
             .load_manifest(tool_id)
             .ok_or_else(|| format!("工具 '{tool_id}' 不存在"))?;
 
+        // 先装 Python 依赖（跨平台 pip）；失败就不注册，让用户可重试。零依赖工具会直接跳过。
+        self.pip_install_deps(&manifest)?;
+
         // 更新 installed.json
         let mut installed = self.installed_ids();
         if !installed.contains(&tool_id.to_string()) {
@@ -199,6 +202,56 @@ impl MarketplaceManager {
         self.add_to_mcp_json(&manifest, user_config)?;
 
         Ok(())
+    }
+
+    /// 装 `manifest.pip_dependencies` 里的 Python 依赖（跨平台）。
+    /// 用 `python -m pip install`（保证装进跑 MCP server 的同一个 python，不裸 `pip`）；
+    /// 先试 `--user`（免管理员），venv 下 `--user` 不可用则去掉重试；Windows 抑制黑窗口闪现。
+    /// 零依赖工具（pip_dependencies 为空）直接返回 Ok，不影响 weather/obsidian 等。
+    fn pip_install_deps(&self, manifest: &ToolManifest) -> Result<(), String> {
+        if manifest.pip_dependencies.is_empty() {
+            return Ok(());
+        }
+        // Windows:python-pptx 等依赖已随内置 python(python-win)预装,不在用户机器
+        // 跑 pip —— 用户也就不需要自己装 python。仅 Linux/macOS 走系统 python3 联网 pip。
+        if cfg!(target_os = "windows") {
+            return Ok(());
+        }
+        let python_cmd = "python3";
+
+        let run = |user: bool| -> std::io::Result<std::process::Output> {
+            let mut cmd = std::process::Command::new(python_cmd);
+            cmd.args(["-m", "pip", "install", "--disable-pip-version-check", "--no-input"]);
+            if user {
+                cmd.arg("--user");
+            }
+            cmd.args(&manifest.pip_dependencies);
+            cmd.output()
+        };
+
+        let out = run(true).map_err(|e| {
+            format!("无法运行 {python_cmd}（请确认已安装 Python 且在 PATH 中）：{e}")
+        })?;
+        if out.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        // venv 里 `--user` 不可用 → 去掉重试
+        if stderr.contains("--user") || stderr.contains("user site-packages") {
+            let out2 = run(false).map_err(|e| format!("无法运行 {python_cmd}：{e}"))?;
+            if out2.status.success() {
+                return Ok(());
+            }
+            let s2 = String::from_utf8_lossy(&out2.stderr);
+            return Err(format!(
+                "依赖安装失败（pip）：{}",
+                s2.trim().lines().last().unwrap_or("未知错误")
+            ));
+        }
+        Err(format!(
+            "依赖安装失败（pip）：{}",
+            stderr.trim().lines().last().unwrap_or("未知错误")
+        ))
     }
 
     /// 卸载工具：从 installed.json + mcp.json 中移除
@@ -373,9 +426,9 @@ impl MarketplaceManager {
                 }
             }
 
-            let python_cmd = if cfg!(target_os = "windows") { "python" } else { "python3" };
+            // python 工具:Windows 用内置 pythonw(无窗口 + 自带依赖),其他平台系统 python3。
             let command = if manifest.command == "python" || manifest.command == "python3" {
-                python_cmd.to_string()
+                paths::python_command()
             } else {
                 manifest.command.clone()
             };
