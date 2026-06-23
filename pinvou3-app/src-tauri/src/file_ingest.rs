@@ -128,11 +128,11 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
 }
 
 fn pdf_tool_command(command: &str) -> Command {
-    Command::new(crate::os::pdf_tool_path(command))
+    crate::process::HiddenCommand::new(crate::os::pdf_tool_path(command))
 }
 
 fn pandoc_tool_command() -> Command {
-    Command::new(crate::os::pandoc_tool_path())
+    crate::process::HiddenCommand::new(crate::os::pandoc_tool_path())
 }
 
 /// 体检卡「一键安装」：委托 OS 调度层安装缺失依赖。
