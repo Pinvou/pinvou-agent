@@ -1812,6 +1812,9 @@
       console.warn("save settings and restart failed", e);
     }
   }
+  async function submitFeedback(request) {
+    return await invoke("submit_feedback", { request: request });
+  }
   async function discoverLocalVllm(request) {
     return await invoke("discover_local_vllm", { request: request || null });
   }
@@ -2444,6 +2447,17 @@
     if (!selected) return [];
     return Array.isArray(selected) ? selected : [selected];
   }
+  async function pickFeedbackFiles() {
+    if (!dialogOpen) return [];
+    var selected = await dialogOpen({
+      multiple: true,
+      filters: [
+        { name: "Images and videos", extensions: ["png", "jpg", "jpeg", "gif", "webp", "mp4", "mov", "webm"] },
+      ],
+    });
+    if (!selected) return [];
+    return Array.isArray(selected) ? selected : [selected];
+  }
   // [新建任务模态] start_workflow 建好 run 后,把已选路径拷进该 session 的配套材料/。
   async function addMaterialsToSession(sessionId, paths) {
     if (!paths || !paths.length) return [];
@@ -2512,6 +2526,7 @@
     stopMonitorPolling: stopMonitorPolling,
     saveSettings: saveSettings,
     saveSettingsAndRestart: saveSettingsAndRestart,
+    submitFeedback: submitFeedback,
     discoverLocalVllm: discoverLocalVllm,
     getEffectiveModelConfig: getEffectiveModelConfig,
     loadModels: loadModels,
@@ -2581,6 +2596,7 @@
     submitWorkflowUserInput: submitWorkflowUserInput,
     pickAndAddMaterials: pickAndAddMaterials,
     pickFiles: pickFiles,
+    pickFeedbackFiles: pickFeedbackFiles,
     addMaterialsToSession: addMaterialsToSession,
     attachRun: attachRun,
     resumeWorkflowOnBoot: resumeWorkflowOnBoot,
