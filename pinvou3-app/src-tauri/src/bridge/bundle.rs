@@ -245,6 +245,9 @@ impl Pinvou3Bundle {
         // mcp.json merge:每次启动 upsert 内置 pinvou server,保留 marketplace 条目。
         // 不受 VERSION gate 限制——marketplace 安装可能在任何时候发生。
         self.ensure_builtin_mcp_servers()?;
+        // 启动自愈:刷新 mcp.json 里陈旧的本地 python server command(安装时写死的裸
+        // "python" → 重解析成可用路径)。必须在引擎 spawn 前跑(引擎从 mcp.json 拉起 server)。
+        self.refresh_mcp_python_commands()?;
 
         if current.trim() == BUNDLE_VERSION {
             return Ok(());
@@ -368,6 +371,62 @@ impl Pinvou3Bundle {
         let json = serde_json::to_string_pretty(&mcp)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         std::fs::write(&self.mcp_json, json)
+    }
+
+    /// 启动自愈:`mcp.json` 里本地 python server 的 `command` 是**安装时写死**的,老条目
+    /// 常是裸 `"python"`/`"python3"` —— 在没把 python 加进 PATH 的机器(或只有 python3 的
+    /// Linux)上永远拉不起来(高德天气等 marketplace 工具静默失效)。每次启动重解析:凡
+    /// command 是裸 python 家族名、或指向不存在的 python 路径,统一替换成当前
+    /// `paths::python_command()`。`url` 型远程 server / 非 python command 一律不动。
+    fn refresh_mcp_python_commands(&self) -> std::io::Result<()> {
+        if !self.mcp_json.is_file() {
+            return Ok(());
+        }
+        let existing = std::fs::read_to_string(&self.mcp_json).unwrap_or_default();
+        let mut mcp: serde_json::Value = match serde_json::from_str(&existing) {
+            Ok(v) => v,
+            Err(_) => return Ok(()), // 坏 json 不碰
+        };
+        let resolved = paths::python_command();
+        let mut changed = false;
+        if let Some(servers) = mcp.get_mut("servers").and_then(|s| s.as_object_mut()) {
+            for (_name, entry) in servers.iter_mut() {
+                let Some(obj) = entry.as_object_mut() else {
+                    continue;
+                };
+                let Some(cmd) = obj.get("command").and_then(|c| c.as_str()) else {
+                    continue; // url 型远程 server 无 command 字段
+                };
+                if cmd != resolved && Self::is_stale_python_command(cmd) {
+                    obj.insert(
+                        "command".to_string(),
+                        serde_json::Value::String(resolved.clone()),
+                    );
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            let json = serde_json::to_string_pretty(&mcp)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            std::fs::write(&self.mcp_json, json)?;
+        }
+        Ok(())
+    }
+
+    /// command 是否是"需要重解析"的 python:裸解释器名(python/python3/pythonw[.exe]),
+    /// 或指向一个已不存在的 python 路径。非 python command 一律 false,绝不误伤别的工具。
+    fn is_stale_python_command(cmd: &str) -> bool {
+        let lower = cmd.to_ascii_lowercase();
+        let bare = !cmd.contains('/') && !cmd.contains('\\');
+        if bare {
+            return matches!(
+                lower.as_str(),
+                "python" | "python3" | "pythonw" | "python.exe" | "pythonw.exe" | "python3.exe"
+            );
+        }
+        // 带路径但文件不存在、且看起来是 python → 重解析(指向已删/搬走的解释器)
+        lower.contains("python") && !std::path::Path::new(cmd).exists()
     }
 
     /// 写出内置 MCP server 脚本到 `~/.pinvou3/bundle/mcp-servers/` + 加可执行位。
