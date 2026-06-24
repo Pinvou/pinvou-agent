@@ -138,6 +138,15 @@
     depsChecking: false,
     depsInstalling: false,    // 一键安装进行中(pkexec apt)
     depsInstallError: null,   // 安装失败原因(apt stderr 透传/取消/pkexec 不可用)
+    voiceInput: {
+      status: "idle",         // idle | requesting_permission | recording | transcribing | completed | cancelled | failed
+      message: "",
+      error: null,
+      category: null,
+      stage: null,
+      sessionId: null,
+      startedAt: 0,
+    },
   };
   // 卡片池 1078 张卡的前端缓存。只读,通过 getPersonas() 取引用,不走 notify 快照。
   var personaPoolCache = [];
@@ -2313,10 +2322,19 @@
     if (!missing.length || state.depsInstalling) return;
     var pkgs = [];
     missing.forEach(function (d) {
-      String(d.apt).split(/\s+/).forEach(function (p) {
-        if (p && pkgs.indexOf(p) < 0) pkgs.push(p);
+      var parts = String(d.apt).trim().split(/\s+/).filter(Boolean);
+      if (!parts.length || !parts.every(function (p) { return /^[a-z0-9][a-z0-9+.-]*$/i.test(p); })) {
+        return;
+      }
+      parts.forEach(function (p) {
+        if (pkgs.indexOf(p) < 0) pkgs.push(p);
       });
     });
+    if (!pkgs.length) {
+      state.depsInstallError = "当前缺失项无法一键安装，请按依赖说明安装离线组件后重新检测。";
+      notify();
+      return;
+    }
     state.depsInstalling = true; state.depsInstallError = null; notify();
     try {
       await invoke("install_dependencies", { packages: pkgs });
@@ -2325,6 +2343,309 @@
       state.depsInstallError = String(e);
     }
     state.depsInstalling = false; notify();
+  }
+
+  // ── 语音输入（Windows WebView one-shot 录音 → 本地 SenseVoice/FunASR ASR）──────────────
+  var activeVoiceInput = null;
+
+  function setVoiceInputStatus(status, patch) {
+    var next = Object.assign({}, state.voiceInput, patch || {});
+    next.status = status;
+    if (status !== "failed") {
+      next.error = null;
+      next.category = null;
+    }
+    state.voiceInput = next;
+    notify();
+  }
+
+  function emitVoiceDiagnostic(stage, level, message, userMessage, category) {
+    var event = {
+      stage: stage,
+      level: level,
+      message: message,
+      user_message: userMessage || "",
+      category: category || "",
+    };
+    var fn = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
+    fn.call(console, "[voice-input]", event);
+  }
+
+  function normalizeVoiceError(err, fallbackStage) {
+    var name = String((err && err.name) || "");
+    var rawCategory = (err && err.category) || "";
+    var rawStage = (err && err.stage) || fallbackStage || "recording";
+    var rawMessage = String((err && (err.message || err.toString && err.toString())) || err || "");
+    if (name === "NotAllowedError" || name === "SecurityError" || rawCategory === "permission_denied") {
+      return { category: "permission_denied", stage: "permission", message: "麦克风权限被拒绝，请在 Windows 或应用权限中允许麦克风访问。" };
+    }
+    if (name === "NotFoundError" || name === "DevicesNotFoundError" || rawCategory === "device_unavailable") {
+      return { category: "device_unavailable", stage: "device", message: "未检测到可用麦克风，请检查录音设备是否启用或被占用。" };
+    }
+    if (rawCategory === "empty_result") {
+      return { category: "empty_result", stage: rawStage, message: "未识别到语音内容，请靠近麦克风后重试。" };
+    }
+    if (rawCategory === "context_mismatch") {
+      return { category: "context_mismatch", stage: "writeback", message: "识别已完成，但当前会话已切换，结果未自动写入。" };
+    }
+    if (rawCategory === "timeout") {
+      return { category: "timeout", stage: "recording", message: "本次语音输入超时，请重试。" };
+    }
+    if (rawCategory === "recognition_failed") {
+      return { category: "recognition_failed", stage: rawStage, message: rawMessage || "语音识别失败，请稍后重试。" };
+    }
+    return {
+      category: rawCategory || "recording_failed",
+      stage: rawStage,
+      message: rawMessage || "语音输入失败，请检查麦克风后重试。",
+    };
+  }
+
+  function stopMediaTracks(stream) {
+    if (!stream) return;
+    stream.getTracks().forEach(function (track) { try { track.stop(); } catch (_) {} });
+  }
+
+  function cleanupVoiceInputSession(session) {
+    if (!session) return;
+    if (session.timeoutId) clearTimeout(session.timeoutId);
+    try { if (session.processor) session.processor.disconnect(); } catch (_) {}
+    try { if (session.source) session.source.disconnect(); } catch (_) {}
+    try { if (session.zeroGain) session.zeroGain.disconnect(); } catch (_) {}
+    stopMediaTracks(session.stream);
+    if (session.audioContext && session.audioContext.state !== "closed") {
+      session.audioContext.close().catch(function () {});
+    }
+  }
+
+  function mergeFloatChunks(chunks) {
+    var total = chunks.reduce(function (sum, chunk) { return sum + chunk.length; }, 0);
+    var out = new Float32Array(total);
+    var offset = 0;
+    chunks.forEach(function (chunk) {
+      out.set(chunk, offset);
+      offset += chunk.length;
+    });
+    return out;
+  }
+
+  function downsamplePcm(samples, sourceRate, targetRate) {
+    if (!samples.length || sourceRate === targetRate) return samples;
+    var ratio = sourceRate / targetRate;
+    var len = Math.max(1, Math.round(samples.length / ratio));
+    var out = new Float32Array(len);
+    for (var i = 0; i < len; i++) {
+      var start = Math.floor(i * ratio);
+      var end = Math.min(samples.length, Math.floor((i + 1) * ratio));
+      var sum = 0;
+      var count = 0;
+      for (var j = start; j < end; j++) { sum += samples[j]; count++; }
+      out[i] = count ? sum / count : samples[Math.min(start, samples.length - 1)];
+    }
+    return out;
+  }
+
+  function encodeWav(samples, sampleRate) {
+    var dataSize = samples.length * 2;
+    var buffer = new ArrayBuffer(44 + dataSize);
+    var view = new DataView(buffer);
+    function writeString(offset, value) {
+      for (var i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i));
+    }
+    writeString(0, "RIFF");
+    view.setUint32(4, 36 + dataSize, true);
+    writeString(8, "WAVE");
+    writeString(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(36, "data");
+    view.setUint32(40, dataSize, true);
+    var offset = 44;
+    for (var i = 0; i < samples.length; i++, offset += 2) {
+      var s = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    return buffer;
+  }
+
+  async function finishVoiceInput(cancelled, timedOut) {
+    var session = activeVoiceInput;
+    if (!session) return;
+    if (cancelled) {
+      cleanupVoiceInputSession(session);
+      activeVoiceInput = null;
+      setVoiceInputStatus("cancelled", { message: "已取消语音输入", completedAt: Date.now() });
+      emitVoiceDiagnostic("recording", "info", "voice input cancelled", "已取消语音输入", "cancelled");
+      return;
+    }
+
+    setVoiceInputStatus("transcribing", { message: "正在识别语音…", stage: "transcribing" });
+    cleanupVoiceInputSession(session);
+
+    try {
+      if (timedOut) {
+        emitVoiceDiagnostic("recording", "warn", "recording reached max duration", "", "timeout");
+      }
+      var raw = mergeFloatChunks(session.chunks);
+      var durationMs = raw.length / Math.max(1, session.sampleRate) * 1000;
+      if (durationMs < 300) {
+        throw { category: "recording_failed", stage: "recording", message: "录音时间过短，请重试。" };
+      }
+      var pcm = downsamplePcm(raw, session.sampleRate, 16000);
+      var wav = encodeWav(pcm, 16000);
+      var bytes = Array.from(new Uint8Array(wav));
+      var res = await invoke("transcribe_voice_audio", {
+        request: {
+          audio_bytes: bytes,
+          session_id: session.sessionId,
+        },
+      });
+      if (activeVoiceInput !== session) return;
+      var text = String((res && res.text) || "").trim();
+      if (!text) throw { category: "empty_result", stage: "transcribing", message: "未识别到语音内容" };
+      if (state.activeSessionId !== session.sessionId) {
+        throw { category: "context_mismatch", stage: "writeback", message: "voice result discarded because active session changed" };
+      }
+      if (typeof session.writeback === "function") {
+        session.writeback(text, session.draftBeforeStart);
+      }
+      setVoiceInputStatus("completed", { message: "语音已写入输入框", completedAt: Date.now() });
+      emitVoiceDiagnostic("writeback", "info", "voice text written back", "语音已写入输入框", "");
+    } catch (err) {
+      var normalized = normalizeVoiceError(err, "transcribing");
+      setVoiceInputStatus("failed", {
+        message: normalized.message,
+        error: normalized.message,
+        category: normalized.category,
+        stage: normalized.stage,
+        completedAt: Date.now(),
+      });
+      emitVoiceDiagnostic(normalized.stage, "error", normalized.category, normalized.message, normalized.category);
+    } finally {
+      if (activeVoiceInput === session) activeVoiceInput = null;
+    }
+  }
+
+  async function startVoiceInput(draftText, writeback) {
+    if (activeVoiceInput && state.voiceInput.status === "recording") {
+      finishVoiceInput(false, false);
+      return;
+    }
+    if (activeVoiceInput) {
+      finishVoiceInput(true, false);
+      return;
+    }
+
+    var AudioCtor = window.AudioContext || window.webkitAudioContext;
+    var session = {
+      id: Date.now().toString(36),
+      sessionId: state.activeSessionId || null,
+      draftBeforeStart: String(draftText || ""),
+      writeback: writeback,
+      chunks: [],
+      sampleRate: 16000,
+      startedAt: Date.now(),
+    };
+    activeVoiceInput = session;
+    setVoiceInputStatus("requesting_permission", {
+      message: "正在请求麦克风权限…",
+      sessionId: session.sessionId,
+      startedAt: session.startedAt,
+      stage: "permission",
+    });
+    emitVoiceDiagnostic("permission", "info", "requesting microphone permission", "", "");
+
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw { category: "device_unavailable", stage: "device", message: "当前 WebView 不支持麦克风采集。" };
+      }
+      if (!AudioCtor) {
+        throw { category: "recording_failed", stage: "recording", message: "当前 WebView 不支持音频录制。" };
+      }
+      session.stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      if (activeVoiceInput !== session) {
+        cleanupVoiceInputSession(session);
+        return;
+      }
+      session.audioContext = new AudioCtor();
+      session.sampleRate = session.audioContext.sampleRate || 16000;
+      session.source = session.audioContext.createMediaStreamSource(session.stream);
+      session.processor = session.audioContext.createScriptProcessor(4096, 1, 1);
+      session.zeroGain = session.audioContext.createGain();
+      session.zeroGain.gain.value = 0;
+      session.processor.onaudioprocess = function (event) {
+        if (activeVoiceInput !== session) return;
+        var input = event.inputBuffer.getChannelData(0);
+        session.chunks.push(new Float32Array(input));
+      };
+      session.source.connect(session.processor);
+      session.processor.connect(session.zeroGain);
+      session.zeroGain.connect(session.audioContext.destination);
+      session.timeoutId = setTimeout(function () { finishVoiceInput(false, true); }, 10000);
+      setVoiceInputStatus("recording", { message: "正在录音，再点一次结束", stage: "recording" });
+      emitVoiceDiagnostic("recording", "info", "recording started", "", "");
+    } catch (err) {
+      cleanupVoiceInputSession(session);
+      if (activeVoiceInput === session) activeVoiceInput = null;
+      var normalized = normalizeVoiceError(err, "recording");
+      setVoiceInputStatus("failed", {
+        message: normalized.message,
+        error: normalized.message,
+        category: normalized.category,
+        stage: normalized.stage,
+        completedAt: Date.now(),
+      });
+      emitVoiceDiagnostic(normalized.stage, "error", normalized.category, normalized.message, normalized.category);
+    }
+  }
+
+  function cancelVoiceInput() {
+    finishVoiceInput(true, false);
+  }
+
+  function clearVoiceInput() {
+    if (activeVoiceInput) {
+      finishVoiceInput(true, false);
+      return;
+    }
+    setVoiceInputStatus("idle", {
+      message: "",
+      error: null,
+      category: null,
+      stage: null,
+      sessionId: null,
+    });
+  }
+
+  function appendVoiceText(base, text) {
+    var left = String(base || "").trimEnd();
+    var right = String(text || "").trim();
+    if (!left) return right;
+    if (!right) return left;
+    return left + (/[。！？.!?，,;；:]$/.test(left) ? " " : "\n") + right;
+  }
+
+  function runVoiceInputDebugAssertions() {
+    var denied = normalizeVoiceError({ name: "NotAllowedError" });
+    var noDevice = normalizeVoiceError({ name: "NotFoundError" });
+    var mismatch = normalizeVoiceError({ category: "context_mismatch" });
+    console.assert(denied.category === "permission_denied", "permission error classified");
+    console.assert(noDevice.category === "device_unavailable", "device error classified");
+    console.assert(mismatch.stage === "writeback", "context mismatch classified");
+    console.assert(appendVoiceText("草稿", "识别文本") === "草稿\n识别文本", "voice text appended");
+    return true;
   }
 
   // ── skill 工作流：动作（invoke 包装）[2026-06-06 恢复] ────────────
@@ -2503,6 +2824,11 @@
     init: init,
     sendMessage: sendMessage,
     removeQueued: removeQueued,
+    startVoiceInput: startVoiceInput,
+    cancelVoiceInput: cancelVoiceInput,
+    clearVoiceInput: clearVoiceInput,
+    appendVoiceText: appendVoiceText,
+    runVoiceInputDebugAssertions: runVoiceInputDebugAssertions,
     cancelGeneration: cancelGeneration,
     createNewSession: createNewSession,
     switchToSession: switchToSession,

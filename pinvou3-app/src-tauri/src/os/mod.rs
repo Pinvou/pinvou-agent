@@ -16,6 +16,7 @@ pub(crate) use unsupported as platform;
 pub(crate) use windows as platform;
 
 pub use interface::{
+    asr_dependency_packages, asr_missing_message, asr_tool_exists, asr_tool_path,
     check_for_update_info, command_exists, disable_super_permission, download_update_package,
     enable_super_permission, install_dependencies, install_downloaded_update,
     nvidia_smi_candidates, ocr_dependency_packages, open_target, pandoc_dependency_packages,
