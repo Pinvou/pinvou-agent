@@ -205,7 +205,7 @@
     const dict = {
       zh: {
         langTag: 'zh',
-        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', toolStore: '工具商店', cardPool: '专家卡牌池', recent: '近期', settings: '设置', localEnv: '本地环境',
+        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', toolStore: '工具商店', cardPool: '专家卡牌池', recent: '历史对话', settings: '设置', localEnv: '本地环境',
         sysStatus: '系统状态', sysDesc: '实时性能与资源指标', gpu: '图形处理器 (GPU)', gpuUnavail: '状态不可用', noSmi: '未检测到 nvidia-smi',
         vram: '显存占用', core: '计算核心', temp: '温度', power: '功耗', unifiedMem: '统一内存架构',
         ram: '系统内存 (RAM)', used: '已用', physical: '物理内存', total: '总计', swap: '交换空间',
@@ -395,7 +395,7 @@
       },
       en: {
         langTag: 'en',
-        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'Recent', settings: 'Settings', localEnv: 'Local Env',
+        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'History', settings: 'Settings', localEnv: 'Local Env',
         sysStatus: 'System Status', sysDesc: 'Real-time performance metrics', gpu: 'GPU', gpuUnavail: 'Unavailable', noSmi: 'nvidia-smi not found',
         vram: 'VRAM Usage', core: 'Core Usage', temp: 'Temp', power: 'Power', unifiedMem: 'Unified Memory',
         ram: 'System RAM', used: 'Used', physical: 'Physical RAM', total: 'Total', swap: 'Swap Space',
@@ -585,7 +585,7 @@
       },
       ja: {
         langTag: 'ja',
-        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', monitor: 'システムモニター', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '最近', settings: '設定', localEnv: 'ローカル環境',
+        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', monitor: 'システムモニター', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '履歴', settings: '設定', localEnv: 'ローカル環境',
         sysStatus: 'システム状態', sysDesc: 'リアルタイムの性能・リソース指標', gpu: 'GPU', gpuUnavail: '状態を取得できません', noSmi: 'nvidia-smi が見つかりません',
         vram: 'VRAM 使用量', core: 'コア使用率', temp: '温度', power: '消費電力', unifiedMem: 'ユニファイドメモリ',
         ram: 'システムメモリ (RAM)', used: '使用中', physical: '物理メモリ', total: '合計', swap: 'スワップ領域',
@@ -1208,7 +1208,7 @@
             {isSidebarOpen && (
               <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-3 flex flex-col">
                 <div
-                  className="text-[11px] font-medium px-4 pt-6 pb-2 whitespace-nowrap shrink-0 sticky top-0 z-10"
+                  className="text-[13px] font-medium px-4 pt-6 pb-2 whitespace-nowrap shrink-0 sticky top-0 z-10"
                   style={{ color: activeTheme === 'dark' ? '#80868B' : '#5F6368', letterSpacing: '0.06em', background: activeTheme === 'dark' ? '#1E1F20' : '#F0F4F9' }}
                 >
                   {t.recent}
@@ -2765,7 +2765,14 @@
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
       const [val, setVal] = useState(item.text);
+      const [copied, setCopied] = useState(false);
       function commit() { const tx = val.trim(); setEditing(false); if (tx && bridge.available) bridge.editLastTurn(tx); }
+      function copyText() {
+        const tx = item.text || '';
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(tx).then(function () { setCopied(true); setTimeout(function () { setCopied(false); }, 1200); }).catch(function () {});
+        }
+      }
       if (editing) {
         return (
           <div className="flex justify-end">
@@ -2797,11 +2804,26 @@
           </div>
         );
       }
+      const actBtn = isDark
+        ? 'text-[#8E8E8E] hover:text-[#E3E3E3] hover:bg-white/10'
+        : 'text-[#9AA0A6] hover:text-[#444746] hover:bg-black/[0.06]';
       return (
         <div className="flex justify-end group">
-          <div className="flex items-center gap-2 max-w-[85%]">
-            {editable && <button title={t.editResend} onClick={() => { setVal(item.text); setEditing(true); }} className={`opacity-0 group-hover:opacity-100 text-[13px] shrink-0 ${isDark ? 'text-[#8E8E8E] hover:text-[#C4C7C5]' : 'text-[#9AA0A6] hover:text-[#444746]'}`}>✏️</button>}
+          <div className="flex flex-col items-end max-w-[85%]">
             <div className={`px-5 py-3 rounded-[20px] text-[15px] leading-relaxed whitespace-pre-wrap ${isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]'}`}>{item.text}</div>
+            {/* iOS 风操作条：hover 气泡时下方浮现。复制=所有 query；编辑重发=仅最新(editable)。 */}
+            <div className="flex items-center gap-0.5 mt-1 pr-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+              <button title={copied ? t.copied : t.copyMsg} onClick={copyText}
+                className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${actBtn}`}>
+                {copied ? <Check size={14} className="text-[#34C759]" /> : <Copy size={14} />}
+              </button>
+              {editable && (
+                <button title={t.editResend} onClick={() => { setVal(item.text); setEditing(true); }}
+                  className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${actBtn}`}>
+                  <Edit2 size={14} />
+                </button>
+              )}
+            </div>
           </div>
         </div>
       );
@@ -4704,13 +4726,17 @@
     // ==========================================
     // ArtifactsPanel — 产物面板（右侧抽屉 + 预览）
     // ==========================================
-    const ARTIFACT_ICONS = {
-      md: '📄', markdown: '📄', html: '🌐', htm: '🌐',
-      png: '🖼️', jpg: '🖼️', jpeg: '🖼️', gif: '🖼️', webp: '🖼️', svg: '🖼️',
-      pdf: '📕', csv: '📊', xlsx: '📊', json: '🔢', yaml: '🔢', yml: '🔢', txt: '📝',
-      pptx: '📊', ppt: '📊',
+    // 产物列表/预览的 iOS 风类型图标:配色圆角 tile + 白色字形。
+    // 复用成品卡那套 _ARTIFACT_FMT / _artifactKind / AcFmtIcon(line 3048+),列表与卡片视觉统一。
+    const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls = 'w-5 h-5' }) => {
+      const kind = _artifactKind(name);
+      const fmt = _ARTIFACT_FMT[kind] || _ARTIFACT_FMT.other;
+      return (
+        <span className={`shrink-0 inline-flex items-center justify-center ${tileCls}`} style={{ background: fmt.color }}>
+          <AcFmtIcon kind={kind} className={`${glyphCls} text-white`} />
+        </span>
+      );
     };
-    const artifactIcon = (name) => ARTIFACT_ICONS[(name.split('.').pop() || '').toLowerCase()] || '📎';
     const apPad2 = (x) => String(x).padStart(2, '0');
     const apFormatBytes = (n) => {
       if (n == null) return '';
@@ -4848,7 +4874,7 @@
         // 统一兜底卡(unsupported / 转换失败 / binary)
         return (
           <div className={`flex flex-col items-center justify-center text-center gap-3 py-10 ${muted}`}>
-            <span className="text-[44px]">{sel ? artifactIcon(sel.basename) : '📎'}</span>
+            {sel ? <ArtifactTileIcon name={sel.basename} tileCls="w-14 h-14 rounded-[16px]" glyphCls="w-7 h-7" /> : <span className="text-[44px]">📎</span>}
             <span className={`text-[14px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{sel && sel.basename}</span>
             <p className="text-[13px] max-w-[360px]">{(vis && vis.warning) || t.apUnsupported}</p>
             <button onClick={() => sel && bridge.openArtifactExternal(sel.path)} className={cardBtnCls(isDark, 'primary')}>
@@ -4883,7 +4909,7 @@
                       <div key={a.path} onClick={() => preview(a)}
                         className={`group flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer
                           ${sel && sel.path === a.path ? (isDark ? 'bg-[#333537]' : 'bg-[#E8EDF2]') : (isDark ? 'hover:bg-[#282A2C]' : 'hover:bg-[#F0F4F9]')}`}>
-                        <span className="text-[26px] leading-none shrink-0">{artifactIcon(a.basename)}</span>
+                        <ArtifactTileIcon name={a.basename} />
                         <div className="flex-1 min-w-0">
                           <div className={`text-[14px] truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`} title={a.path}>{a.basename}</div>
                           <div className={`text-[12px] truncate ${muted}`}>
@@ -5482,7 +5508,7 @@
               onClick={e => e.stopPropagation()}
               onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); save(); } else if (e.key === 'Escape') { setEditing(false); setVal(chat.title); } }}
               onBlur={save}
-              className={`w-full px-3 py-1 rounded-full text-[14px] outline-none ${isDark ? 'bg-[#131314] text-[#E3E3E3] ring-1 ring-[#A8C7FA]' : 'bg-white text-[#1F1F1F] ring-1 ring-[#0B57D0]'}`} />
+              className={`w-full px-3 py-1 rounded-full text-[15px] outline-none ${isDark ? 'bg-[#131314] text-[#E3E3E3] ring-1 ring-[#A8C7FA]' : 'bg-white text-[#1F1F1F] ring-1 ring-[#0B57D0]'}`} />
           </div>
         );
       }
@@ -5490,10 +5516,10 @@
         <div onClick={() => onSelect(chat.id)}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
           style={ personaTarget ? { background: isDark?'rgba(10,132,255,.20)':'rgba(0,122,255,.12)', boxShadow:'inset 0 0 0 1px '+(isDark?'rgba(10,132,255,.6)':'rgba(0,122,255,.45)'), color: isDark?'#fff':'#1F1F1F' } : undefined }
-          className={`group flex items-center px-4 py-1.5 rounded-full cursor-pointer text-[13px] transition-all
+          className={`group flex items-center px-4 py-1.5 rounded-full cursor-pointer text-[15px] transition-all
             ${personaTarget ? ''
               : active ? (isDark ? 'bg-[#333537] text-white' : 'bg-[#E1E5EA] text-[#1F1F1F]')
-                     : (isDark ? 'text-[#BDC1C6] hover:bg-[#282A2C] hover:text-[#E3E3E3]' : 'text-[#5F6368] hover:bg-[#E1E5EA] hover:text-[#1F1F1F]')}`}>
+                     : (isDark ? 'text-[#E3E3E3] hover:bg-[#282A2C]' : 'text-[#1F1F1F] hover:bg-[#E1E5EA]')}`}>
           {personaTarget && <Sparkles size={13} className="shrink-0 mr-1.5" style={{ color: isDark?'#0A84FF':'#007AFF' }} />}
           <span className="truncate pr-2 leading-relaxed whitespace-nowrap flex-1">{chat.title}</span>
           {chat.working && <span className="shrink-0 mr-1 inline-block w-2 h-2 rounded-full bg-current opacity-70 animate-pulse" title={t.riGenerating}></span>}
@@ -5502,9 +5528,9 @@
             <div className="flex items-center gap-0.5 shrink-0" onClick={e => e.stopPropagation()}>
               <span className={`text-[11px] mr-0.5 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{t.riDelQ}</span>
               <button title={t.riDelConfirm} onClick={(e) => { e.stopPropagation(); onDelete(chat.id); }}
-                className={`w-6 h-6 rounded-full flex items-center justify-center text-[12px] ${isDark ? 'text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#C5221F] hover:bg-[#FAD2CF]'}`}>✓</button>
+                className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#C5221F] hover:bg-[#FAD2CF]'}`}><Check size={14} /></button>
               <button title={t.cpCancel} onClick={(e) => { e.stopPropagation(); setConfirming(false); }}
-                className={`w-6 h-6 rounded-full flex items-center justify-center text-[12px] ${isDark ? 'hover:bg-[#444746]' : 'hover:bg-[#D3D7DB]'}`}>✗</button>
+                className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:bg-[#444746]' : 'text-[#5F6368] hover:bg-[#D3D7DB]'}`}><X size={13} /></button>
             </div>
           ) : (
             <>
@@ -5516,9 +5542,9 @@
               )}
               <div className="hidden group-hover:flex items-center gap-0.5 shrink-0">
                 <button title={t.riRename} onClick={(e) => { e.stopPropagation(); setVal(chat.title); setEditing(true); }}
-                  className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${isDark ? 'hover:bg-[#444746]' : 'hover:bg-[#D3D7DB]'}`}>✏️</button>
+                  className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:bg-[#444746]' : 'text-[#5F6368] hover:bg-[#D3D7DB]'}`}><Edit2 size={13} /></button>
                 <button title={t.cpDelete} onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
-                  className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${isDark ? 'hover:bg-[#5c2b29]' : 'hover:bg-[#FAD2CF]'}`}>🗑</button>
+                  className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#5F6368] hover:text-[#C5221F] hover:bg-[#FAD2CF]'}`}><Trash2 size={13} /></button>
               </div>
             </>
           )}
