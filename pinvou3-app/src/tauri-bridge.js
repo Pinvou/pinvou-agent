@@ -155,6 +155,17 @@
   var monitorIntervalId = null;
   var gpuUtilHistory = [];
   var maxModelLen = 32768;
+  // 监控页「清除统计」基准点：vLLM 的几个累计 counter（TTFT/TPOT/tokens/prefix
+  // cache）无法真正清零（它们跟随远端 vLLM 进程生命周期，归零要重启共享进程）。
+  // 改为记一个基准快照，显示值 = 当前 counter − 基准。换模型 / vLLM 重启 → counter
+  // 倒退到小于基准，自动判定基准失效并丢弃，回落到生命周期累计值。持久化到
+  // localStorage，关掉应用再开仍保持「自某时起」的统计。
+  var MONITOR_BASELINE_KEY = "pinvou3.monitorStatsBaseline";
+  var monitorBaseline = null;
+  try {
+    var _mb = localStorage.getItem(MONITOR_BASELINE_KEY);
+    if (_mb) monitorBaseline = JSON.parse(_mb);
+  } catch (e) { monitorBaseline = null; }
   var attachIdSeq = 0;
   // Plan 文本兜底卡片命中关键词（与 main.js 对齐）
   var PLAN_FALLBACK_KEYWORDS = ["方案", "步骤", "以下", "技术栈", "实现", "设计", "**"];
@@ -1661,6 +1672,72 @@
     return String(Math.round(n));
   }
 
+  function numOr0(x) { return (typeof x === "number" && isFinite(x)) ? x : 0; }
+
+  // 用基准点把 vLLM 累计 counter 换算成「自清除以来」的区间值。无基准 → 直接用
+  // 生命周期累计值。检测到任一 counter 倒退（< 基准，说明 vLLM 重启 / 换模型,
+  // counter 已归零）→ 丢弃失效基准,回落到累计值,避免显示负数。
+  function adjustVllmCounters(v) {
+    if (!v) return null;
+    var b = monitorBaseline;
+    if (b) {
+      var reset =
+        numOr0(v.ttft_sum_s) < b.ttft_sum_s ||
+        numOr0(v.tpot_sum_s) < b.tpot_sum_s ||
+        numOr0(v.generation_tokens_total) < b.gen_tokens ||
+        numOr0(v.prompt_tokens_total) < b.prompt_tokens ||
+        numOr0(v.prefix_cache_queries) < b.pc_queries;
+      if (reset) { clearMonitorBaseline(); b = null; }
+    }
+    if (!b) {
+      return {
+        cleared: false,
+        ttft_sum_s: v.ttft_sum_s, ttft_count: v.ttft_count,
+        tpot_sum_s: v.tpot_sum_s, tpot_count: v.tpot_count,
+        gen: v.generation_tokens_total, prompt: v.prompt_tokens_total,
+        kvPct: v.prefix_cache_hit_pct,
+      };
+    }
+    var hits = numOr0(v.prefix_cache_hits) - b.pc_hits;
+    var queries = numOr0(v.prefix_cache_queries) - b.pc_queries;
+    return {
+      cleared: true,
+      ttft_sum_s: numOr0(v.ttft_sum_s) - b.ttft_sum_s,
+      ttft_count: numOr0(v.ttft_count) - b.ttft_count,
+      tpot_sum_s: numOr0(v.tpot_sum_s) - b.tpot_sum_s,
+      tpot_count: numOr0(v.tpot_count) - b.tpot_count,
+      gen: numOr0(v.generation_tokens_total) - b.gen_tokens,
+      prompt: numOr0(v.prompt_tokens_total) - b.prompt_tokens,
+      kvPct: queries > 0 ? (hits / queries * 100) : null,
+      clearedAt: b.at || null,
+    };
+  }
+
+  function clearMonitorBaseline() {
+    monitorBaseline = null;
+    try { localStorage.removeItem(MONITOR_BASELINE_KEY); } catch (e) {}
+  }
+
+  // 把当前 vLLM counter 快照存为基准点 → 监控页「后 4 项」从此刻起重新计。
+  function clearMonitorStats() {
+    var v = state.monitor && state.monitor.vllm;
+    if (!v) return false;
+    monitorBaseline = {
+      ttft_sum_s: numOr0(v.ttft_sum_s),
+      ttft_count: numOr0(v.ttft_count),
+      tpot_sum_s: numOr0(v.tpot_sum_s),
+      tpot_count: numOr0(v.tpot_count),
+      gen_tokens: numOr0(v.generation_tokens_total),
+      prompt_tokens: numOr0(v.prompt_tokens_total),
+      pc_hits: numOr0(v.prefix_cache_hits),
+      pc_queries: numOr0(v.prefix_cache_queries),
+      at: Date.now(),  // 记录清除时刻，供「统计自 HH:MM 起」状态文字
+    };
+    try { localStorage.setItem(MONITOR_BASELINE_KEY, JSON.stringify(monitorBaseline)); } catch (e) {}
+    pollMonitor();  // 立即刷新显示，无需等下一个轮询周期
+    return true;
+  }
+
   async function pollMonitor() {
     try {
       var snap = await invoke("get_monitor_snapshot");
@@ -1670,6 +1747,8 @@
         if (gpuUtilHistory.length > 5) gpuUtilHistory.shift();
         snap.gpu._utilMax = Math.max.apply(null, [0].concat(gpuUtilHistory));
       }
+      // 监控页「后 4 项」累计指标：按「清除统计」基准点换算成区间值后再格式化。
+      var vadj = adjustVllmCounters(snap.vllm);
       // Format values for display
       snap._fmt = {
         gpuName: snap.gpu ? snap.gpu.name : bt("gpuUnavailable"),
@@ -1701,14 +1780,24 @@
         vllmQueue: snap.vllm
           ? (snap.vllm.num_requests_running != null ? snap.vllm.num_requests_running : "—") + " / " +
             (snap.vllm.num_requests_waiting != null ? snap.vllm.num_requests_waiting : "—") : "— / —",
-        vllmKv: snap.vllm && snap.vllm.prefix_cache_hit_pct != null
-          ? snap.vllm.prefix_cache_hit_pct.toFixed(1) + "%" : "—",
-        vllmTtft: snap.vllm && snap.vllm.ttft_count > 0
-          ? (snap.vllm.ttft_sum_s / snap.vllm.ttft_count).toFixed(2) + " s" : "—",
-        vllmTps: snap.vllm && snap.vllm.tpot_sum_s > 0
-          ? (snap.vllm.tpot_count / snap.vllm.tpot_sum_s).toFixed(1) + " tok/s" : "—",
-        vllmTokTotal: snap.vllm && snap.vllm.generation_tokens_total != null
-          ? fmtTok(snap.vllm.generation_tokens_total) + " / " + fmtTok(snap.vllm.prompt_tokens_total) : "—",
+        vllmKv: vadj && vadj.kvPct != null
+          ? vadj.kvPct.toFixed(1) + "%" : "—",
+        vllmTtft: vadj && vadj.ttft_count > 0
+          ? (vadj.ttft_sum_s / vadj.ttft_count).toFixed(2) + " s" : "—",
+        vllmTps: vadj && vadj.tpot_sum_s > 0
+          ? (vadj.tpot_count / vadj.tpot_sum_s).toFixed(1) + " tok/s" : "—",
+        vllmTokTotal: vadj && vadj.gen != null
+          ? fmtTok(vadj.gen) + " / " + fmtTok(vadj.prompt) : "—",
+        vllmStatsCleared: !!(vadj && vadj.cleared),
+        vllmClearedAt: vadj && vadj.cleared ? (vadj.clearedAt || null) : null,
+        // 区间原始数值（已扣基准），供前端「长按清除」的数字归零插值动画用。
+        vllmRaw: vadj ? {
+          kvPct: vadj.kvPct,
+          ttftS: vadj.ttft_count > 0 ? vadj.ttft_sum_s / vadj.ttft_count : null,
+          tps: vadj.tpot_sum_s > 0 ? vadj.tpot_count / vadj.tpot_sum_s : null,
+          gen: vadj.gen != null ? vadj.gen : null,
+          prompt: vadj.prompt != null ? vadj.prompt : null,
+        } : null,
         appVersion: snap.app ? snap.app.pinvou3_version + " (内测版)" : "—",
         dtVersion: snap.app ? snap.app.deepseek_tui_version : "—",
         uptime: snap.app ? fmtDuration(snap.app.session_uptime_secs) : "—",
@@ -2469,6 +2558,7 @@
     renameSession: renameSession,
     startMonitorPolling: startMonitorPolling,
     stopMonitorPolling: stopMonitorPolling,
+    clearMonitorStats: clearMonitorStats,
     saveSettings: saveSettings,
     saveSettingsAndRestart: saveSettingsAndRestart,
     discoverLocalVllm: discoverLocalVllm,

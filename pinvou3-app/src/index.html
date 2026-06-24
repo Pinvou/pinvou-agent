@@ -144,6 +144,7 @@
     const Zap = (p) => <I {...p}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></I>;
     const Package = (p) => <I {...p}><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></I>;
     const RefreshCw = (p) => <I {...p}><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></I>;
+    const RotateCcw = (p) => <I {...p}><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></I>;
     const Search = (p) => <I {...p}><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></I>;
     const Paperclip = (p) => <I {...p}><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></I>;
     const Mic = (p) => <I {...p}><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></I>;
@@ -209,7 +210,7 @@
         sysStatus: '系统状态', sysDesc: '实时性能与资源指标', gpu: '图形处理器 (GPU)', gpuUnavail: '状态不可用', noSmi: '未检测到 nvidia-smi',
         vram: '显存占用', core: '计算核心', temp: '温度', power: '功耗', unifiedMem: '统一内存架构',
         ram: '系统内存 (RAM)', used: '已用', physical: '物理内存', total: '总计', swap: '交换空间',
-        vllm: 'VLLM 推理引擎', ctx: '上下文长度', queue: '队列情况', kv: 'KV 命中率', ttft: '首字延迟·累积均值', tps: '生成速度·累积均值', tokTotal: '累计 tokens·生成/输入', app: '应用服务', appRunning: '核心守护进程运行中',
+        vllm: 'VLLM 推理引擎', ctx: '上下文长度', queue: '队列情况', kv: 'KV 命中率', ttft: '首字延迟·累积均值', tps: '生成速度·累积均值', tokTotal: '累计 tokens·生成/输入', clearHold: '按住清除', clearHolding: '继续按住…', clearDone: '已清除', clearHint: '按住「清除」直到填满即归零 · 松手取消', statsSince: '统计自 %t 起', statsAge: ' · 已运行 %m 分钟', statsJustReset: ' · 刚刚归零', statsLifetime: '自引擎启动累计', app: '应用服务', appRunning: '核心守护进程运行中',
         curVer: '当前版本', uiVer: 'UI 版本', uptime: '运行时长',
         appearance: '外观与语言', lang: '界面语言', langDesc: '切换应用的显示语言', theme: '主题模式', themeDesc: '选择适合你的色彩风格',
         light: '浅色', dark: '深色',
@@ -397,7 +398,7 @@
         sysStatus: 'System Status', sysDesc: 'Real-time performance metrics', gpu: 'GPU', gpuUnavail: 'Unavailable', noSmi: 'nvidia-smi not found',
         vram: 'VRAM Usage', core: 'Core Usage', temp: 'Temp', power: 'Power', unifiedMem: 'Unified Memory',
         ram: 'System RAM', used: 'Used', physical: 'Physical RAM', total: 'Total', swap: 'Swap Space',
-        vllm: 'VLLM Engine', ctx: 'Context Length', queue: 'Queue (Run/Wait)', kv: 'KV Hit Rate', ttft: 'TTFT · cum. avg', tps: 'Gen Speed · cum. avg', tokTotal: 'Total Tokens · gen/prompt', app: 'App Service', appRunning: 'Core daemon running',
+        vllm: 'VLLM Engine', ctx: 'Context Length', queue: 'Queue (Run/Wait)', kv: 'KV Hit Rate', ttft: 'TTFT · cum. avg', tps: 'Gen Speed · cum. avg', tokTotal: 'Total Tokens · gen/prompt', clearHold: 'Hold to reset', clearHolding: 'Keep holding…', clearDone: 'Cleared', clearHint: 'Hold "Reset" until full to clear · release to cancel', statsSince: 'Since %t', statsAge: ' · %m min running', statsJustReset: ' · just reset', statsLifetime: 'Lifetime total', app: 'App Service', appRunning: 'Core daemon running',
         curVer: 'App Version', uiVer: 'UI Version', uptime: 'Uptime',
         appearance: 'Appearance & Language', lang: 'Language', langDesc: 'Switch application display language', theme: 'Theme', themeDesc: 'Choose your color style',
         light: 'Light', dark: 'Dark',
@@ -585,7 +586,7 @@
         sysStatus: 'システム状態', sysDesc: 'リアルタイムの性能・リソース指標', gpu: 'GPU', gpuUnavail: '状態を取得できません', noSmi: 'nvidia-smi が見つかりません',
         vram: 'VRAM 使用量', core: 'コア使用率', temp: '温度', power: '消費電力', unifiedMem: 'ユニファイドメモリ',
         ram: 'システムメモリ (RAM)', used: '使用中', physical: '物理メモリ', total: '合計', swap: 'スワップ領域',
-        vllm: 'vLLM 推論エンジン', ctx: 'コンテキスト長', queue: 'キュー状況', kv: 'KV ヒット率', ttft: '初回遅延・累積平均', tps: '生成速度・累積平均', tokTotal: '累計トークン・生成/入力', app: 'アプリサービス', appRunning: 'コアデーモン稼働中',
+        vllm: 'vLLM 推論エンジン', ctx: 'コンテキスト長', queue: 'キュー状況', kv: 'KV ヒット率', ttft: '初回遅延・累積平均', tps: '生成速度・累積平均', tokTotal: '累計トークン・生成/入力', clearHold: '長押しで消去', clearHolding: 'そのまま…', clearDone: '消去完了', clearHint: '「消去」を満たすまで長押しでリセット · 離すと取消', statsSince: '%t から集計', statsAge: ' · %m 分経過', statsJustReset: ' · 今リセット', statsLifetime: 'エンジン起動からの累計', app: 'アプリサービス', appRunning: 'コアデーモン稼働中',
         curVer: '現在のバージョン', uiVer: 'UI バージョン', uptime: '稼働時間',
         appearance: '外観と言語', lang: '表示言語', langDesc: 'アプリの表示言語を切り替え', theme: 'テーマ', themeDesc: 'お好みの配色を選択',
         light: 'ライト', dark: 'ダーク',
@@ -1449,6 +1450,90 @@
     // ==========================================
     // Monitor View (Material 3 Style)
     // ==========================================
+    // 长按确认清除按钮（hold-to-confirm，防误触）：按住 850ms 进度填满才执行，
+    // 松手 / 移开 / 失焦即取消；执行时图标转一圈、变绿「已清除」，900ms 后复位。
+    // 鼠标 / 触摸 / 键盘(空格·回车)均支持。数字归零动画由父级 onClear 负责。
+    const ClearStatsHold = ({ theme, t, onClear }) => {
+      const isDark = theme === 'dark';
+      const HOLD_MS = 850;
+      const [fillPct, setFillPct] = useState(0);
+      const [phase, setPhase] = useState('idle');  // idle | holding | done
+      const rafRef = useRef(0);
+      const holdStartRef = useRef(0);
+      const committedRef = useRef(false);
+      const activeRef = useRef(false);
+      const resetTimerRef = useRef(0);
+
+      const commit = () => {
+        if (committedRef.current) return;
+        committedRef.current = true;
+        activeRef.current = false;
+        cancelAnimationFrame(rafRef.current);
+        setFillPct(100);
+        setPhase('done');
+        onClear && onClear();
+        resetTimerRef.current = setTimeout(() => {
+          setFillPct(0);
+          setPhase('idle');
+          committedRef.current = false;
+        }, 900);
+      };
+      const tick = (now) => {
+        const p = Math.min((now - holdStartRef.current) / HOLD_MS, 1);
+        setFillPct(p * 100);
+        if (p >= 1) { commit(); return; }
+        rafRef.current = requestAnimationFrame(tick);
+      };
+      const begin = () => {
+        if (activeRef.current || committedRef.current) return;
+        activeRef.current = true;
+        setPhase('holding');
+        holdStartRef.current = performance.now();
+        rafRef.current = requestAnimationFrame(tick);
+      };
+      const cancel = () => {
+        if (!activeRef.current || committedRef.current) return;
+        activeRef.current = false;
+        cancelAnimationFrame(rafRef.current);
+        setPhase('idle');
+        setFillPct(0);
+      };
+      useEffect(() => () => { cancelAnimationFrame(rafRef.current); clearTimeout(resetTimerRef.current); }, []);
+
+      const label = phase === 'done' ? t.clearDone : phase === 'holding' ? t.clearHolding : t.clearHold;
+      const fillColor = isDark ? 'rgba(220,47,68,0.24)' : '#fce7ea';
+      const toneClass = phase === 'done'
+        ? (isDark ? 'text-[#93D5A6] border-[#2c5234]' : 'text-[#1f9d51] border-[#bfe7cc]')
+        : phase === 'holding'
+          ? (isDark ? 'text-[#F28B82] border-[#7a3b3b]' : 'text-[#dc2f44] border-[#f1c4cb]')
+          : (isDark ? 'text-[#C4C7C5] border-[#3c4043] hover:bg-[#2a2b2d]' : 'text-[#5b6473] border-[#e3e7ec] hover:bg-[#fafbfc]');
+      return (
+        <button
+          type="button"
+          aria-label={t.clearHold}
+          onMouseDown={(e) => { e.preventDefault(); begin(); }}
+          onMouseUp={cancel}
+          onMouseLeave={cancel}
+          onTouchStart={(e) => { e.preventDefault(); begin(); }}
+          onTouchEnd={(e) => { e.preventDefault(); cancel(); }}
+          onTouchCancel={cancel}
+          onKeyDown={(e) => { if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); begin(); } }}
+          onKeyUp={(e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); cancel(); } }}
+          onBlur={cancel}
+          className={`relative overflow-hidden flex-shrink-0 inline-flex items-center text-[13px] font-medium px-4 py-2 rounded-[9px] border select-none transition-colors ${toneClass} ${isDark ? 'bg-[#1a1b1c]' : 'bg-white'}`}
+        >
+          <span
+            className="absolute left-0 top-0 bottom-0 z-0"
+            style={{ width: fillPct + '%', background: fillColor, transition: activeRef.current ? 'none' : 'width .22s ease' }}
+          ></span>
+          <span className="relative z-[1] inline-flex items-center gap-1.5">
+            <RotateCcw size={15} style={{ animation: phase === 'done' ? 'tsSpinner .5s ease' : 'none' }} />
+            {label}
+          </span>
+        </button>
+      );
+    };
+
     const MonitorView = ({ theme, t, bs }) => {
       const isDark = theme === 'dark';
       const fmt = bs && bs.monitor && bs.monitor._fmt;
@@ -1486,9 +1571,54 @@
       const vllmTtft = fmt ? fmt.vllmTtft : '—';
       const vllmTps = fmt ? fmt.vllmTps : '—';
       const vllmTokTotal = fmt ? fmt.vllmTokTotal : '—';
+      const vllmStatsCleared = fmt ? fmt.vllmStatsCleared : false;
+      const vllmClearedAt = fmt ? fmt.vllmClearedAt : null;
+      const vllmRaw = fmt ? fmt.vllmRaw : null;
       const appVersion = fmt ? fmt.appVersion : '—';
       const dtVersion = fmt ? fmt.dtVersion : '—';
       const uptime = fmt ? fmt.uptime : '—';
+
+      // 长按清除：先放数字归零插值动画（覆盖显示），动画跑完才真正设基准点清除，
+      // 之后下一次 poll 接管显示「自此刻起」的区间值（KV/TTFT/TPS → —，tokens → 0/0）。
+      const [clearOverride, setClearOverride] = useState(null);
+      const clearRafRef = useRef(0);
+      const reduceMotionRef = useRef(window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+      useEffect(() => () => cancelAnimationFrame(clearRafRef.current), []);
+      const fmtTokLocal = (n) => {
+        if (n == null) return '—';
+        if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+        if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
+        return String(Math.round(n));
+      };
+      const doClear = useCallback(() => {
+        const reallyClear = () => { if (bridge.available && bridge.clearMonitorStats) bridge.clearMonitorStats(); };
+        const raw = vllmRaw;
+        if (!raw || reduceMotionRef.current) { reallyClear(); return; }
+        const from = { kv: raw.kvPct, ttftS: raw.ttftS, tps: raw.tps, gen: raw.gen || 0, prompt: raw.prompt || 0 };
+        const startT = performance.now(), dur = 480;
+        cancelAnimationFrame(clearRafRef.current);
+        const step = (now) => {
+          const p = Math.min((now - startT) / dur, 1);
+          const k = Math.pow(1 - p, 3);  // easeOutCubic 的剩余比例：1 → 0
+          setClearOverride({
+            kv: from.kv != null ? (from.kv * k).toFixed(1) + '%' : '—',
+            ttft: from.ttftS != null ? (from.ttftS * k).toFixed(2) + ' s' : '—',
+            tps: from.tps != null ? (from.tps * k).toFixed(1) + ' tok/s' : '—',
+            tokTotal: fmtTokLocal(Math.round(from.gen * k)) + ' / ' + fmtTokLocal(Math.round(from.prompt * k)),
+          });
+          if (p >= 1) { reallyClear(); setClearOverride(null); return; }
+          clearRafRef.current = requestAnimationFrame(step);
+        };
+        clearRafRef.current = requestAnimationFrame(step);
+      }, [vllmRaw]);
+      const pad2 = (n) => (n < 10 ? '0' + n : '' + n);
+      let vllmStatusText = t.statsLifetime;
+      if (vllmStatsCleared && vllmClearedAt) {
+        const d = new Date(vllmClearedAt);
+        const hhmm = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+        const mins = Math.max(0, Math.round((Date.now() - vllmClearedAt) / 60000));
+        vllmStatusText = t.statsSince.replace('%t', hhmm) + (mins === 0 ? t.statsJustReset : t.statsAge.replace('%m', mins));
+      }
 
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
@@ -1575,11 +1705,19 @@
                 <div className={`rounded-[16px] p-2 mt-auto ${isDark ? 'bg-[#131314]' : 'bg-[#F8F9FA]'}`}>
                   <ListRow label={t.ctx} value={String(vllmMaxLen)} theme={theme} />
                   <ListRow label={t.queue} value={vllmQueue} theme={theme} />
-                  <ListRow label={t.kv} value={vllmKv} theme={theme} />
-                  <ListRow label={t.ttft} value={vllmTtft} theme={theme} />
-                  <ListRow label={t.tps} value={vllmTps} theme={theme} />
-                  <ListRow label={t.tokTotal} value={vllmTokTotal} border={false} theme={theme} />
+                  <ListRow label={t.kv} value={clearOverride ? clearOverride.kv : vllmKv} theme={theme} />
+                  <ListRow label={t.ttft} value={clearOverride ? clearOverride.ttft : vllmTtft} theme={theme} />
+                  <ListRow label={t.tps} value={clearOverride ? clearOverride.tps : vllmTps} theme={theme} />
+                  <ListRow label={t.tokTotal} value={clearOverride ? clearOverride.tokTotal : vllmTokTotal} border={false} theme={theme} />
                 </div>
+                <div className="flex items-center justify-between gap-3 mt-3 px-1 min-h-[30px]">
+                  <span className={`text-[12px] flex items-center gap-1.5 min-w-0 ${isDark ? 'text-[#9aa1ac]' : 'text-[#80868B]'}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${vllmOnline ? 'bg-[#188038]' : 'bg-[#9aa1ac]'}`}></span>
+                    <span className="truncate">{vllmStatusText}</span>
+                  </span>
+                  <ClearStatsHold theme={theme} t={t} onClear={doClear} />
+                </div>
+                <p className={`text-center text-[11px] mt-3 ${isDark ? 'text-[#7a7d7b]' : 'text-[#9aa1ac]'}`}>{t.clearHint}</p>
               </WidgetCard>
 
               <WidgetCard title={t.app} theme={theme}>
@@ -1587,7 +1725,8 @@
                   <h3 className="text-[22px] font-medium mb-1">pinvou3-app</h3>
                   <p className={`text-[14px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.appRunning}</p>
                 </div>
-                <div className={`rounded-[16px] p-2 mt-auto ${isDark ? 'bg-[#131314]' : 'bg-[#F8F9FA]'}`}>
+                {/* 不用 mt-auto：右卡内容少，让版本表格紧跟标题，与左卡表格顶部对齐而非沉底 */}
+                <div className={`rounded-[16px] p-2 ${isDark ? 'bg-[#131314]' : 'bg-[#F8F9FA]'}`}>
                   <ListRow label={t.curVer} value={appVersion} theme={theme} />
                   <ListRow label={t.uiVer} value={dtVersion} theme={theme} />
                   <ListRow label={t.uptime} value={uptime} border={false} theme={theme} />
