@@ -835,6 +835,30 @@ pub async fn cancel_generation(
     Ok(())
 }
 
+/// pinvou3 工具开关(全局持久):设置当前被关掉的连接器(connector_ids = 市场工具 id)。
+/// 落盘 → 推算成模型可见工具全名广播给所有在跑引擎 → 隐藏这些工具。空 = 全开。
+/// 持久:用户关一次,所有新对话/新窗口都继承,直到手动开回。
+#[tauri::command]
+pub async fn set_disabled_connectors(
+    connector_ids: Vec<String>,
+    pool: State<'_, EnginePool>,
+) -> Result<(), String> {
+    let tools = tokio::task::spawn_blocking(move || {
+        crate::bridge::marketplace::save_disabled_connectors(&connector_ids);
+        crate::bridge::marketplace::MarketplaceManager::new().model_tool_names(&connector_ids)
+    })
+    .await
+    .map_err(|e| format!("compute disabled tools: {e}"))?;
+    pool.set_disallowed_all(tools).await;
+    Ok(())
+}
+
+/// pinvou3 工具开关:读全局被禁用的连接器 id 列表(前端启动时加载,初始化开关状态)。
+#[tauri::command]
+pub async fn get_disabled_connectors() -> Result<Vec<String>, String> {
+    Ok(crate::bridge::marketplace::load_disabled_connectors())
+}
+
 /// 编辑/重发最后一轮 user 消息。
 /// engine 砍掉 session 末尾最近的 user+assistant 后，用 new_message 重发。
 /// 前端在调这个命令之前必须自己更新 state.messages（删最后一对，加新 user）。
@@ -1209,6 +1233,42 @@ pub async fn read_artifact_image_b64(path: String) -> Result<String, String> {
     Ok(format!("data:{mime};base64,{b64}"))
 }
 
+/// [2026-06-22] pptx 封面缩略图：打开 .pptx(zip)读 `docProps/thumbnail.jpeg`
+/// → base64 data url，给产物卡顶部 16:9 封面用。无缩略图 / 非 zip / 损坏 → Ok(None)
+/// （前端据此回退紧凑态，不报错）。本地数据、无外链，内网离线安全。
+/// validate_user_path 防路径穿越；跨平台（zip 纯 Rust，Windows/Linux 一致）。
+#[tauri::command]
+pub async fn read_artifact_thumbnail(path: String) -> Result<Option<String>, String> {
+    use std::io::Read;
+    let p = validate_user_path(&path).map_err(|_| "路径不允许".to_string())?;
+    if !p.is_file() {
+        return Ok(None);
+    }
+    let file = std::fs::File::open(&p).map_err(|e| format!("打开失败: {e}"))?;
+    let mut archive = match zip::ZipArchive::new(file) {
+        Ok(z) => z,
+        Err(_) => return Ok(None), // 非 zip / 损坏：前端走紧凑态
+    };
+    // OOXML 缩略图固定路径；兜底几种扩展名（Office 默认写 .jpeg）。
+    for name in ["docProps/thumbnail.jpeg", "docProps/thumbnail.jpg", "docProps/thumbnail.png"] {
+        let mut entry = match archive.by_name(name) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        if entry.size() > 25_000_000 {
+            return Ok(None);
+        }
+        let mut buf = Vec::new();
+        if entry.read_to_end(&mut buf).is_err() || buf.is_empty() {
+            continue;
+        }
+        let mime = if name.ends_with(".png") { "image/png" } else { "image/jpeg" };
+        let b64 = crate::file_ingest::base64_encode(&buf);
+        return Ok(Some(format!("data:{mime};base64,{b64}")));
+    }
+    Ok(None)
+}
+
 pub(crate) fn artifact_info_impl(path: &str) -> Result<ArtifactInfo, String> {
     let p = match validate_user_path(path) {
         Ok(p) => p,
@@ -1383,6 +1443,50 @@ pub async fn render_artifact_visual(path: String) -> Result<VisualResult, String
     Ok(result)
 }
 
+/// 跨平台"用系统默认程序打开"(文件 / 目录 / URL)。
+/// Windows: `cmd /C start`（`start` 是 cmd 内建；首个引号参数是窗口标题，用空串占位）；
+/// macOS: `open`；Linux/其它: `xdg-open`（freedesktop，跨发行版兼容）。
+/// 调用方对文件/目录路径应先过 `strip_verbatim` 去掉 `\\?\` 前缀（start/explorer 不认）。
+fn shell_open(arg: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "start", ""]);
+        c.arg(arg);
+        c
+    };
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("open");
+        c.arg(arg);
+        c
+    };
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let mut cmd = {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(arg);
+        c
+    };
+    cmd.spawn().map_err(|e| format!("open({arg}) failed: {e}"))?;
+    Ok(())
+}
+
+/// 去掉 Windows `canonicalize` 产出的 `\\?\` verbatim 前缀（含 UNC 形式）。
+/// start/explorer 不识别该前缀，不剥会"打不开"。非 Windows 原样返回。
+fn strip_verbatim(p: &std::path::Path) -> String {
+    let s = p.to_string_lossy();
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{rest}");
+        }
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            return rest.to_string();
+        }
+    }
+    s.to_string()
+}
+
 /// 用系统默认浏览器打开**允许列表**里的 https URL。
 /// 用于 Settings 面板的"获取 API key"链接(Metaso/Bocha 注册页)。
 /// 白名单写死,前端没法用这个 command 打开任意 URL。
@@ -1399,11 +1503,7 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
     if !ALLOWED_PREFIXES.iter().any(|p| url.starts_with(p)) {
         return Err(format!("URL not in allowlist: {url}"));
     }
-    std::process::Command::new("xdg-open")
-        .arg(&url)
-        .spawn()
-        .map_err(|e| format!("xdg-open({url}) failed: {e}"))?;
-    Ok(())
+    shell_open(&url)
 }
 
 /// 把成品卡里可能的**相对**路径落到当前 active session 的 workspace。
@@ -1426,19 +1526,16 @@ fn resolve_artifact_path(raw: &str, store: &SessionStore) -> String {
     }
 }
 
-/// 用系统默认应用打开文件（xdg-open / 文件管理器）。
+/// 用系统默认应用打开文件（跨平台：Win `start` / mac `open` / Linux `xdg-open`）；
+/// 相对路径先按 active session 的 workspace 解析（合并 main 的相对路径修复 + 跨平台打开）。
 #[tauri::command]
 pub async fn open_in_system(path: String, store: State<'_, SessionStore>) -> Result<(), String> {
     let p = validate_user_path(&resolve_artifact_path(&path, &store))?;
-    std::process::Command::new("xdg-open")
-        .arg(&p)
-        .spawn()
-        .map_err(|e| format!("xdg-open({}) failed: {e}", p.display()))?;
-    Ok(())
+    shell_open(&strip_verbatim(&p))
 }
 
-/// 用文件管理器打开**所在目录**（不是文件本身）。xdg-open 一个目录路径
-/// → Ubuntu 走 Nautilus / Files；跨发行版（GNOME/KDE/XFCE）freedesktop 标准兼容。
+/// 用文件管理器打开**所在目录**（不是文件本身）。跨平台：Win explorer / mac Finder /
+/// Linux Nautilus 等（freedesktop，跨 GNOME/KDE/XFCE 兼容）。
 #[tauri::command]
 pub async fn open_containing_folder(
     path: String,
@@ -1448,11 +1545,7 @@ pub async fn open_containing_folder(
     let dir = p
         .parent()
         .ok_or_else(|| format!("no parent dir for {}", p.display()))?;
-    std::process::Command::new("xdg-open")
-        .arg(dir)
-        .spawn()
-        .map_err(|e| format!("xdg-open({}) failed: {e}", dir.display()))?;
-    Ok(())
+    shell_open(&strip_verbatim(dir))
 }
 
 /// 在 Tauri 新窗口里加载 HTML 产物。绕过 snap 浏览器对 `~/.xxx/` 隐藏目录的沙箱限制。

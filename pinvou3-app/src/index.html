@@ -144,10 +144,12 @@
     const Zap = (p) => <I {...p}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></I>;
     const Package = (p) => <I {...p}><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></I>;
     const RefreshCw = (p) => <I {...p}><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></I>;
+    const RotateCcw = (p) => <I {...p}><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></I>;
     const Search = (p) => <I {...p}><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></I>;
     const Paperclip = (p) => <I {...p}><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></I>;
     const Mic = (p) => <I {...p}><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></I>;
     const Send = (p) => <I {...p}><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></I>;
+    const Store = (p) => <I {...p}><path d="m2 7 4.41-4.41A2 2 0 0 1 7.83 2h8.34a2 2 0 0 1 1.42.59L22 7"/><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><path d="M15 22v-4a2 2 0 0 0-2-2h-2a2 2 0 0 0-2 2v4"/><path d="M2 7h20"/></I>;
     const Terminal = (p) => <I {...p}><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></I>;
     const ChevronDown = (p) => <I {...p}><path d="m6 9 6 6 6-6"/></I>;
     const ChevronRight = (p) => <I {...p}><path d="m9 18 6-6-6-6"/></I>;
@@ -180,6 +182,7 @@
     const FileText = (p) => <I {...p}><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></I>;
     const Hexagon = (p) => <I {...p}><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></I>;
     const Layout = (p) => <I {...p}><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><line x1="3" x2="21" y1="9" y2="9"/><line x1="9" x2="9" y1="21" y2="9"/></I>;
+    const Presentation = (p) => <I {...p}><path d="M2 3h20"/><path d="M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3"/><path d="m7 21 5-5 5 5"/><path d="M12 16v5"/></I>;
     const Mail = (p) => <I {...p}><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></I>;
     const MessageCircle = (p) => <I {...p}><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></I>;
     const Navigation = (p) => <I {...p}><polygon points="3 11 22 2 13 21 11 13 3 11"/></I>;
@@ -198,7 +201,7 @@
     /* 文件类型卡专用图标(对齐设计稿:每类一个独立形状) */
     const GridIcon = (p) => <I {...p}><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></I>;
     const TableIcon = (p) => <I {...p}><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="3" x2="9" y2="21"/></I>;
-    const Presentation = (p) => <I {...p}><rect x="3" y="4" width="18" height="12" rx="2"/><line x1="12" y1="16" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></I>;
+    const PresentationIcon = (p) => <I {...p}><rect x="3" y="4" width="18" height="12" rx="2"/><line x1="12" y1="16" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></I>;
     const ImageIcon = (p) => <I {...p}><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/></I>;
     const Archive = (p) => <I {...p}><rect x="2" y="4" width="20" height="5" rx="1"/><path d="M4 9v10a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9"/><path d="M10 13h4"/></I>;
 
@@ -238,7 +241,7 @@
         sysStatus: '系统状态', sysDesc: '实时性能与资源指标', gpu: '图形处理器 (GPU)', gpuUnavail: '状态不可用', noSmi: '未检测到 nvidia-smi',
         vram: '显存占用', core: '计算核心', temp: '温度', power: '功耗', unifiedMem: '统一内存架构',
         ram: '系统内存 (RAM)', used: '已用', physical: '物理内存', total: '总计', swap: '交换空间',
-        vllm: 'VLLM 推理引擎', ctx: '上下文长度', queue: '队列情况', kv: 'KV 命中率', ttft: '首字延迟·累积均值', tps: '生成速度·累积均值', tokTotal: '累计 tokens·生成/输入', app: '应用服务', appRunning: '核心守护进程运行中',
+        vllm: 'VLLM 推理引擎', ctx: '上下文长度', queue: '队列情况', kv: 'KV 命中率', ttft: '首字延迟·累积均值', tps: '生成速度·累积均值', tokTotal: '累计 tokens·生成/输入', clearHold: '按住清除', clearHolding: '继续按住…', clearDone: '已清除', clearHint: '按住「清除」直到填满即归零 · 松手取消', statsSince: '统计自 %t 起', statsAge: ' · 已运行 %m 分钟', statsJustReset: ' · 刚刚归零', statsLifetime: '自引擎启动累计', app: '应用服务', appRunning: '核心守护进程运行中',
         curVer: '当前版本', uiVer: 'UI 版本', uptime: '运行时长',
         appearance: '外观与语言', lang: '界面语言', langDesc: '切换应用的显示语言', theme: '主题模式', themeDesc: '选择适合你的色彩风格',
         light: '浅色', dark: '深色',
@@ -363,6 +366,7 @@
         skillPrefill: name => `我要用 ${name} 完成: `,
         queuedTag: '排队中', queuedCancel: '撤销',
         attachParsing: '解析中…', attachFailed: '失败', attachAdd: '添加附件',
+        composerTools: '工具', composerInstalledTools: '已接入工具', composerNoTools: '暂无已装工具', composerToolOn: '已启用', composerManageTools: '管理工具',
         resend: '重新发送', editResend: '编辑并重发',
         thinkingLabel: '思考中', thinkingCall: (tool, s) => `调用 ${tool}... ${s}s`,
         hintSlow30: '本地模型生成中', hintSlow120: '本地模型在生成长内容,请耐心等',
@@ -392,6 +396,7 @@
         pvHandToAi: n => `交给 AI 处理（${n} 条）`, pvSkip: '跳过', pvSkipTitle: '这次不处理，整张卡跳过',
         pvBtnPinTitle: '品 · 查错：揪出产物的风险、遗漏、与你需求的偏差，逐条让 AI 改或你拍板接受',
         pvBtnWuTitle: '悟 · 发散：以领域专家视角给出产物还能补的维度和新思路，挑中的一键加进去',
+        pvBtnPinLabel: '品 · 智能找错', pvBtnWuLabel: '悟 · 深度查漏',
         fbTitle: '📝 AI 给了方案但没用 plan 工具',
         fbDesc: 'AI 在文本里描述了方案,但没调 update_plan 工具,所以没出方案卡片。你想怎么处理?',
         fbAccept: '✅ 直接采纳这段', fbRetry: '📋 让 AI 用工具重出',
@@ -449,7 +454,7 @@
         sysStatus: 'System Status', sysDesc: 'Real-time performance metrics', gpu: 'GPU', gpuUnavail: 'Unavailable', noSmi: 'nvidia-smi not found',
         vram: 'VRAM Usage', core: 'Core Usage', temp: 'Temp', power: 'Power', unifiedMem: 'Unified Memory',
         ram: 'System RAM', used: 'Used', physical: 'Physical RAM', total: 'Total', swap: 'Swap Space',
-        vllm: 'VLLM Engine', ctx: 'Context Length', queue: 'Queue (Run/Wait)', kv: 'KV Hit Rate', ttft: 'TTFT · cum. avg', tps: 'Gen Speed · cum. avg', tokTotal: 'Total Tokens · gen/prompt', app: 'App Service', appRunning: 'Core daemon running',
+        vllm: 'VLLM Engine', ctx: 'Context Length', queue: 'Queue (Run/Wait)', kv: 'KV Hit Rate', ttft: 'TTFT · cum. avg', tps: 'Gen Speed · cum. avg', tokTotal: 'Total Tokens · gen/prompt', clearHold: 'Hold to reset', clearHolding: 'Keep holding…', clearDone: 'Cleared', clearHint: 'Hold "Reset" until full to clear · release to cancel', statsSince: 'Since %t', statsAge: ' · %m min running', statsJustReset: ' · just reset', statsLifetime: 'Lifetime total', app: 'App Service', appRunning: 'Core daemon running',
         curVer: 'App Version', uiVer: 'UI Version', uptime: 'Uptime',
         appearance: 'Appearance & Language', lang: 'Language', langDesc: 'Switch application display language', theme: 'Theme', themeDesc: 'Choose your color style',
         light: 'Light', dark: 'Dark',
@@ -574,6 +579,7 @@
         skillPrefill: name => `I want to use ${name} to: `,
         queuedTag: 'Queued', queuedCancel: 'Remove',
         attachParsing: 'Parsing…', attachFailed: 'Failed', attachAdd: 'Attach file',
+        composerTools: 'Tools', composerInstalledTools: 'Connected tools', composerNoTools: 'No tools installed', composerToolOn: 'On', composerManageTools: 'Manage tools',
         resend: 'Resend', editResend: 'Edit & resend',
         thinkingLabel: 'Thinking', thinkingCall: (tool, s) => `Calling ${tool}... ${s}s`,
         hintSlow30: 'local model generating', hintSlow120: 'local model is generating long content, hang tight',
@@ -603,6 +609,7 @@
         pvHandToAi: n => `Hand to AI (${n})`, pvSkip: 'Skip', pvSkipTitle: 'Skip this review card for now',
         pvBtnPinTitle: '品 · Review: surface risks, omissions, and drift from your intent — fix each via AI or accept as is',
         pvBtnWuTitle: '悟 · Explore: a domain expert lists dimensions and ideas the artifact could still add; add picks in one click',
+        pvBtnPinLabel: '品 · Review', pvBtnWuLabel: '悟 · Explore',
         fbTitle: "📝 The AI wrote a plan but didn't use the plan tool",
         fbDesc: 'The AI described a plan in text without calling update_plan, so no plan card was created. What do you want to do?',
         fbAccept: '✅ Accept this text', fbRetry: '📋 Ask AI to redo it with the tool',
@@ -659,7 +666,7 @@
         sysStatus: 'システム状態', sysDesc: 'リアルタイムの性能・リソース指標', gpu: 'GPU', gpuUnavail: '状態を取得できません', noSmi: 'nvidia-smi が見つかりません',
         vram: 'VRAM 使用量', core: 'コア使用率', temp: '温度', power: '消費電力', unifiedMem: 'ユニファイドメモリ',
         ram: 'システムメモリ (RAM)', used: '使用中', physical: '物理メモリ', total: '合計', swap: 'スワップ領域',
-        vllm: 'vLLM 推論エンジン', ctx: 'コンテキスト長', queue: 'キュー状況', kv: 'KV ヒット率', ttft: '初回遅延・累積平均', tps: '生成速度・累積平均', tokTotal: '累計トークン・生成/入力', app: 'アプリサービス', appRunning: 'コアデーモン稼働中',
+        vllm: 'vLLM 推論エンジン', ctx: 'コンテキスト長', queue: 'キュー状況', kv: 'KV ヒット率', ttft: '初回遅延・累積平均', tps: '生成速度・累積平均', tokTotal: '累計トークン・生成/入力', clearHold: '長押しで消去', clearHolding: 'そのまま…', clearDone: '消去完了', clearHint: '「消去」を満たすまで長押しでリセット · 離すと取消', statsSince: '%t から集計', statsAge: ' · %m 分経過', statsJustReset: ' · 今リセット', statsLifetime: 'エンジン起動からの累計', app: 'アプリサービス', appRunning: 'コアデーモン稼働中',
         curVer: '現在のバージョン', uiVer: 'UI バージョン', uptime: '稼働時間',
         appearance: '外観と言語', lang: '表示言語', langDesc: 'アプリの表示言語を切り替え', theme: 'テーマ', themeDesc: 'お好みの配色を選択',
         light: 'ライト', dark: 'ダーク',
@@ -784,6 +791,7 @@
         skillPrefill: name => `${name} を使ってやりたいこと: `,
         queuedTag: '待機中', queuedCancel: '取り消し',
         attachParsing: '解析中…', attachFailed: '失敗', attachAdd: 'ファイルを添付',
+        composerTools: 'ツール', composerInstalledTools: '接続済みツール', composerNoTools: 'ツールなし', composerToolOn: '有効', composerManageTools: 'ツール管理',
         resend: '再送信', editResend: '編集して再送信',
         thinkingLabel: '思考中', thinkingCall: (tool, s) => `${tool} を実行中... ${s}s`,
         hintSlow30: 'ローカルモデルが生成中', hintSlow120: 'ローカルモデルが長い内容を生成中です。しばらくお待ちください',
@@ -813,6 +821,7 @@
         pvHandToAi: n => `AI に任せる（${n} 件）`, pvSkip: 'スキップ', pvSkipTitle: '今回は処理せず、このカードをスキップ',
         pvBtnPinTitle: '品 · 検閲：成果物のリスク・抜け漏れ・要求とのズレを洗い出し、AI に修正させるか受け入れる',
         pvBtnWuTitle: '悟 · 発散：専門家視点で成果物に補える観点や新案を提示、選んだものをワンクリックで追加',
+        pvBtnPinLabel: '品 · 検閲', pvBtnWuLabel: '悟 · 発散',
         fbTitle: '📝 AI がプランを書いたのに plan ツールを使っていません',
         fbDesc: 'AI はテキストでプランを説明しましたが update_plan を呼んでいないため、プランカードが出ていません。どうしますか?',
         fbAccept: '✅ この内容を採用', fbRetry: '📋 ツールで出し直させる',
@@ -1375,7 +1384,7 @@
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
-            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => setCurrentView('settings')} />}
+            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => setCurrentView('settings')} onGotoTools={() => setCurrentView('toolStore')} />}
             {/* 草稿态(无 session)也渲染挂件,但强制空态——让欢迎页保留「＋加持卡牌」入口。
                 点它跳卡牌池,选卡时 equipPersona 会先物化 session(lazy session)。 */}
             {currentView === 'chat' && bs && (
@@ -1412,15 +1421,25 @@
               </div>
             )}
 
-            {/* Pinvou 检阅弹窗(品/悟) —— 全局,任何视图都能弹;点背景或卡内「跳过」关闭 */}
+            {/* Pinvou 检阅弹窗(品/悟) —— 居中弹窗 + 毛玻璃背景(虚化身后 app);全局,任何视图都能弹;点背景或卡内「跳过」关闭 */}
             {bs && bs.pinvouModal && (
-              <div className="fixed inset-0 z-[55] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }}
+              <div className="fixed inset-0 z-[55] flex items-center justify-center p-6"
+                   style={{ background: activeTheme === 'dark' ? 'rgba(0,0,0,.45)' : 'rgba(255,255,255,.35)', backdropFilter: 'blur(20px) saturate(140%)', WebkitBackdropFilter: 'blur(20px) saturate(140%)' }}
                    onClick={() => { if (!bs.pinvouModal.loading) bridge.dismissPinvouReview(); }}>
-                {/* loading 期间禁止背景点击关窗:那张 loading 卡小且居中,点背景极易误关 spinner,
-                    而召唤(直连 vLLM,5-30s)仍在后台跑、守卫仍 held → 表现为"闪一下就没反应、要等一会才能再点"。
-                    锁住后 spinner+计时全程可见,出结果/错误后才可点背景关。 */}
-                <div className="w-full max-w-[560px] max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-                  <PinvouSummonCard item={bs.pinvouModal} theme={activeTheme} t={t} />
+                {/* loading 期间禁止背景点击关窗:召唤(直连 vLLM,5-30s)仍在后台跑、守卫仍 held,
+                    点背景误关会表现为"闪一下没反应、要等一会才能再点"。锁住后 spinner 全程可见,
+                    出结果/错误后才可点背景关。 */}
+                <div className="relative w-full max-w-[720px] overflow-hidden bg-white dark:bg-[#1C1C1E] rounded-[20px] shadow-[0_20px_60px_rgba(0,0,0,0.28)] ts-modal-in"
+                     onClick={(e) => e.stopPropagation()}
+                     style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
+                  {/* 关闭按钮：所有状态(含 loading)常驻;loading 时点它=取消等待并关窗,in-flight 结果由守卫丢弃 */}
+                  <button onClick={() => bridge.available && bridge.dismissPinvouReview()} aria-label={t.pvSkip}
+                    className="absolute top-3.5 right-3.5 z-10 w-7 h-7 flex items-center justify-center rounded-full bg-black/[0.06] dark:bg-white/10 text-[#8E8E93] hover:bg-black/10 dark:hover:bg-white/15 active:scale-90 transition-colors">
+                    <X size={16} />
+                  </button>
+                  <div className="max-h-[90vh] overflow-y-auto custom-scrollbar px-5 pt-5 pb-6">
+                    <PinvouSummonCard item={bs.pinvouModal} theme={activeTheme} t={t} />
+                  </div>
                 </div>
               </div>
             )}
@@ -1438,19 +1457,26 @@
       if (!ts) return '';
       const d = new Date(typeof ts === 'number' ? ts : ts);
       const now = new Date();
-      const diff = now - d;
+      let diff = now - d;
+      if (diff < 0) diff = 0; // 时钟漂移/未来时间戳 → 当「刚刚」,不出现负数
       const L = {
-        zh: { yesterday: '昨天', daysAgo: n => `${n} 天前`, locale: 'zh-CN' },
-        ja: { yesterday: '昨日', daysAgo: n => `${n} 日前`, locale: 'ja-JP' },
-        en: { yesterday: 'Yesterday', daysAgo: n => `${n}d ago`, locale: 'en-US' },
-      }[language] || { yesterday: 'Yesterday', daysAgo: n => `${n}d ago`, locale: 'en-US' };
-      // 今天的会话显示具体时间——同日多条全写「今天」毫无区分度
-      if (diff < 86400000 && d.getDate() === now.getDate()) return d.toLocaleTimeString(L.locale, { hour: '2-digit', minute: '2-digit', hour12: false });
-      if (diff < 172800000) return L.yesterday;
-      // 7 天内显示「X 天前」/「X days ago」,更早显示日期
+        zh: { justNow: '刚刚', minsAgo: n => `${n} 分钟前`, hoursAgo: n => `${n} 小时前`, yesterday: '昨天', daysAgo: n => `${n} 天前`, locale: 'zh-CN' },
+        ja: { justNow: 'たった今', minsAgo: n => `${n} 分前`, hoursAgo: n => `${n} 時間前`, yesterday: '昨日', daysAgo: n => `${n} 日前`, locale: 'ja-JP' },
+        en: { justNow: 'Just now', minsAgo: n => `${n}m ago`, hoursAgo: n => `${n}h ago`, yesterday: 'Yesterday', daysAgo: n => `${n}d ago`, locale: 'en-US' },
+      }[language] || { justNow: 'Just now', minsAgo: n => `${n}m ago`, hoursAgo: n => `${n}h ago`, yesterday: 'Yesterday', daysAgo: n => `${n}d ago`, locale: 'en-US' };
+      // 今天之内:相对时间(刚刚 / X分钟前 / X小时前)——比绝对钟点更直观传达「多近」,
+      // 且不同时间天然有区分度(不会同日多条都一样)。
+      if (diff < 60000) return L.justNow;                                  // < 60 秒
+      if (diff < 3600000) return L.minsAgo(Math.floor(diff / 60000));      // < 60 分钟
+      if (diff < 86400000) return L.hoursAgo(Math.floor(diff / 3600000));  // < 24 小时
+      if (diff < 172800000) return L.yesterday;                           // 24~47 小时
       const days = Math.floor(diff / 86400000);
-      if (days < 7) return L.daysAgo(days);
-      return d.toLocaleDateString(L.locale, { month: 'short', day: 'numeric' });
+      if (days < 7) return L.daysAgo(days);                               // 2~6 天
+      // ≥7 天:日期;跨年带年份(只写月日会有歧义)
+      const opts = d.getFullYear() === now.getFullYear()
+        ? { month: 'short', day: 'numeric' }
+        : { year: 'numeric', month: 'short', day: 'numeric' };
+      return d.toLocaleDateString(L.locale, opts);
     }
 
     // ==========================================
@@ -1564,7 +1590,7 @@
       const extLabel = (e) => (e || '?').toUpperCase().slice(0, 4);
       const CAT_COLOR = { all:'#6a6a78', doc:'#2f6beb', sheet:'#18a957', ppt:'#e0773a', pdf:'#d63a3a', img:'#d6589a', zip:'#8a6ad6' };
       // 每个类型卡的独立图标(对齐设计稿,不再全用 FileText)
-      const CAT_ICON = { all:GridIcon, doc:FileText, sheet:TableIcon, ppt:Presentation, pdf:FileText, img:ImageIcon, zip:Archive };
+      const CAT_ICON = { all:GridIcon, doc:FileText, sheet:TableIcon, ppt:PresentationIcon, pdf:FileText, img:ImageIcon, zip:Archive };
       // 知识库 → 按分类/名稳定配色(对齐设计稿彩色卡片图标)
       const COLL_PALETTE = ['#3f7bf0','#7b5fe6','#1aa07a','#d6873e','#d6589a','#4b7bd6','#e0903a','#2b9d7a','#7d6ae6'];
       const collColor = (c) => COLL_PALETTE[Math.abs(String((c && (c.category || c.name)) || '').split('').reduce((a, ch) => a + ch.charCodeAt(0), 0)) % COLL_PALETTE.length];
@@ -2108,6 +2134,90 @@
     // ==========================================
     // Monitor View (Material 3 Style)
     // ==========================================
+    // 长按确认清除按钮（hold-to-confirm，防误触）：按住 850ms 进度填满才执行，
+    // 松手 / 移开 / 失焦即取消；执行时图标转一圈、变绿「已清除」，900ms 后复位。
+    // 鼠标 / 触摸 / 键盘(空格·回车)均支持。数字归零动画由父级 onClear 负责。
+    const ClearStatsHold = ({ theme, t, onClear }) => {
+      const isDark = theme === 'dark';
+      const HOLD_MS = 850;
+      const [fillPct, setFillPct] = useState(0);
+      const [phase, setPhase] = useState('idle');  // idle | holding | done
+      const rafRef = useRef(0);
+      const holdStartRef = useRef(0);
+      const committedRef = useRef(false);
+      const activeRef = useRef(false);
+      const resetTimerRef = useRef(0);
+
+      const commit = () => {
+        if (committedRef.current) return;
+        committedRef.current = true;
+        activeRef.current = false;
+        cancelAnimationFrame(rafRef.current);
+        setFillPct(100);
+        setPhase('done');
+        onClear && onClear();
+        resetTimerRef.current = setTimeout(() => {
+          setFillPct(0);
+          setPhase('idle');
+          committedRef.current = false;
+        }, 900);
+      };
+      const tick = (now) => {
+        const p = Math.min((now - holdStartRef.current) / HOLD_MS, 1);
+        setFillPct(p * 100);
+        if (p >= 1) { commit(); return; }
+        rafRef.current = requestAnimationFrame(tick);
+      };
+      const begin = () => {
+        if (activeRef.current || committedRef.current) return;
+        activeRef.current = true;
+        setPhase('holding');
+        holdStartRef.current = performance.now();
+        rafRef.current = requestAnimationFrame(tick);
+      };
+      const cancel = () => {
+        if (!activeRef.current || committedRef.current) return;
+        activeRef.current = false;
+        cancelAnimationFrame(rafRef.current);
+        setPhase('idle');
+        setFillPct(0);
+      };
+      useEffect(() => () => { cancelAnimationFrame(rafRef.current); clearTimeout(resetTimerRef.current); }, []);
+
+      const label = phase === 'done' ? t.clearDone : phase === 'holding' ? t.clearHolding : t.clearHold;
+      const fillColor = isDark ? 'rgba(220,47,68,0.24)' : '#fce7ea';
+      const toneClass = phase === 'done'
+        ? (isDark ? 'text-[#93D5A6] border-[#2c5234]' : 'text-[#1f9d51] border-[#bfe7cc]')
+        : phase === 'holding'
+          ? (isDark ? 'text-[#F28B82] border-[#7a3b3b]' : 'text-[#dc2f44] border-[#f1c4cb]')
+          : (isDark ? 'text-[#C4C7C5] border-[#3c4043] hover:bg-[#2a2b2d]' : 'text-[#5b6473] border-[#e3e7ec] hover:bg-[#fafbfc]');
+      return (
+        <button
+          type="button"
+          aria-label={t.clearHold}
+          onMouseDown={(e) => { e.preventDefault(); begin(); }}
+          onMouseUp={cancel}
+          onMouseLeave={cancel}
+          onTouchStart={(e) => { e.preventDefault(); begin(); }}
+          onTouchEnd={(e) => { e.preventDefault(); cancel(); }}
+          onTouchCancel={cancel}
+          onKeyDown={(e) => { if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); begin(); } }}
+          onKeyUp={(e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); cancel(); } }}
+          onBlur={cancel}
+          className={`relative overflow-hidden flex-shrink-0 inline-flex items-center text-[13px] font-medium px-4 py-2 rounded-[9px] border select-none transition-colors ${toneClass} ${isDark ? 'bg-[#1a1b1c]' : 'bg-white'}`}
+        >
+          <span
+            className="absolute left-0 top-0 bottom-0 z-0"
+            style={{ width: fillPct + '%', background: fillColor, transition: activeRef.current ? 'none' : 'width .22s ease' }}
+          ></span>
+          <span className="relative z-[1] inline-flex items-center gap-1.5">
+            <RotateCcw size={15} style={{ animation: phase === 'done' ? 'tsSpinner .5s ease' : 'none' }} />
+            {label}
+          </span>
+        </button>
+      );
+    };
+
     const MonitorView = ({ theme, t, bs }) => {
       const isDark = theme === 'dark';
       const fmt = bs && bs.monitor && bs.monitor._fmt;
@@ -2145,9 +2255,54 @@
       const vllmTtft = fmt ? fmt.vllmTtft : '—';
       const vllmTps = fmt ? fmt.vllmTps : '—';
       const vllmTokTotal = fmt ? fmt.vllmTokTotal : '—';
+      const vllmStatsCleared = fmt ? fmt.vllmStatsCleared : false;
+      const vllmClearedAt = fmt ? fmt.vllmClearedAt : null;
+      const vllmRaw = fmt ? fmt.vllmRaw : null;
       const appVersion = fmt ? fmt.appVersion : '—';
       const dtVersion = fmt ? fmt.dtVersion : '—';
       const uptime = fmt ? fmt.uptime : '—';
+
+      // 长按清除：先放数字归零插值动画（覆盖显示），动画跑完才真正设基准点清除，
+      // 之后下一次 poll 接管显示「自此刻起」的区间值（KV/TTFT/TPS → —，tokens → 0/0）。
+      const [clearOverride, setClearOverride] = useState(null);
+      const clearRafRef = useRef(0);
+      const reduceMotionRef = useRef(window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+      useEffect(() => () => cancelAnimationFrame(clearRafRef.current), []);
+      const fmtTokLocal = (n) => {
+        if (n == null) return '—';
+        if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+        if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
+        return String(Math.round(n));
+      };
+      const doClear = useCallback(() => {
+        const reallyClear = () => { if (bridge.available && bridge.clearMonitorStats) bridge.clearMonitorStats(); };
+        const raw = vllmRaw;
+        if (!raw || reduceMotionRef.current) { reallyClear(); return; }
+        const from = { kv: raw.kvPct, ttftS: raw.ttftS, tps: raw.tps, gen: raw.gen || 0, prompt: raw.prompt || 0 };
+        const startT = performance.now(), dur = 480;
+        cancelAnimationFrame(clearRafRef.current);
+        const step = (now) => {
+          const p = Math.min((now - startT) / dur, 1);
+          const k = Math.pow(1 - p, 3);  // easeOutCubic 的剩余比例：1 → 0
+          setClearOverride({
+            kv: from.kv != null ? (from.kv * k).toFixed(1) + '%' : '—',
+            ttft: from.ttftS != null ? (from.ttftS * k).toFixed(2) + ' s' : '—',
+            tps: from.tps != null ? (from.tps * k).toFixed(1) + ' tok/s' : '—',
+            tokTotal: fmtTokLocal(Math.round(from.gen * k)) + ' / ' + fmtTokLocal(Math.round(from.prompt * k)),
+          });
+          if (p >= 1) { reallyClear(); setClearOverride(null); return; }
+          clearRafRef.current = requestAnimationFrame(step);
+        };
+        clearRafRef.current = requestAnimationFrame(step);
+      }, [vllmRaw]);
+      const pad2 = (n) => (n < 10 ? '0' + n : '' + n);
+      let vllmStatusText = t.statsLifetime;
+      if (vllmStatsCleared && vllmClearedAt) {
+        const d = new Date(vllmClearedAt);
+        const hhmm = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+        const mins = Math.max(0, Math.round((Date.now() - vllmClearedAt) / 60000));
+        vllmStatusText = t.statsSince.replace('%t', hhmm) + (mins === 0 ? t.statsJustReset : t.statsAge.replace('%m', mins));
+      }
 
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
@@ -2234,11 +2389,19 @@
                 <div className={`rounded-[16px] p-2 mt-auto ${isDark ? 'bg-[#131314]' : 'bg-[#F8F9FA]'}`}>
                   <ListRow label={t.ctx} value={String(vllmMaxLen)} theme={theme} />
                   <ListRow label={t.queue} value={vllmQueue} theme={theme} />
-                  <ListRow label={t.kv} value={vllmKv} theme={theme} />
-                  <ListRow label={t.ttft} value={vllmTtft} theme={theme} />
-                  <ListRow label={t.tps} value={vllmTps} theme={theme} />
-                  <ListRow label={t.tokTotal} value={vllmTokTotal} border={false} theme={theme} />
+                  <ListRow label={t.kv} value={clearOverride ? clearOverride.kv : vllmKv} theme={theme} />
+                  <ListRow label={t.ttft} value={clearOverride ? clearOverride.ttft : vllmTtft} theme={theme} />
+                  <ListRow label={t.tps} value={clearOverride ? clearOverride.tps : vllmTps} theme={theme} />
+                  <ListRow label={t.tokTotal} value={clearOverride ? clearOverride.tokTotal : vllmTokTotal} border={false} theme={theme} />
                 </div>
+                <div className="flex items-center justify-between gap-3 mt-3 px-1 min-h-[30px]">
+                  <span className={`text-[12px] flex items-center gap-1.5 min-w-0 ${isDark ? 'text-[#9aa1ac]' : 'text-[#80868B]'}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${vllmOnline ? 'bg-[#188038]' : 'bg-[#9aa1ac]'}`}></span>
+                    <span className="truncate">{vllmStatusText}</span>
+                  </span>
+                  <ClearStatsHold theme={theme} t={t} onClear={doClear} />
+                </div>
+                <p className={`text-center text-[11px] mt-3 ${isDark ? 'text-[#7a7d7b]' : 'text-[#9aa1ac]'}`}>{t.clearHint}</p>
               </WidgetCard>
 
               <WidgetCard title={t.app} theme={theme}>
@@ -2246,7 +2409,8 @@
                   <h3 className="text-[22px] font-medium mb-1">pinvou3-app</h3>
                   <p className={`text-[14px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.appRunning}</p>
                 </div>
-                <div className={`rounded-[16px] p-2 mt-auto ${isDark ? 'bg-[#131314]' : 'bg-[#F8F9FA]'}`}>
+                {/* 不用 mt-auto：右卡内容少，让版本表格紧跟标题，与左卡表格顶部对齐而非沉底 */}
+                <div className={`rounded-[16px] p-2 ${isDark ? 'bg-[#131314]' : 'bg-[#F8F9FA]'}`}>
                   <ListRow label={t.curVer} value={appVersion} theme={theme} />
                   <ListRow label={t.uiVer} value={dtVersion} theme={theme} />
                   <ListRow label={t.uptime} value={uptime} border={false} theme={theme} />
@@ -2401,6 +2565,126 @@
                 </div>
               </div>
             </div>
+          )}
+        </div>
+      );
+    };
+
+    // 输入框底栏:模型选择器(iOS 化,复用 ModelChip 的 switchModel 逻辑;darkMode:'class' 故用 dark: 变体)。
+    const ComposerModelSelector = ({ t, bs, onGotoSettings }) => {
+      const [open, setOpen] = useState(false);
+      const savedModels = (bs && bs.savedModels) || [];
+      const activeSessionId = bs ? bs.activeSessionId : null;
+      const activeModelId = bs && bs.activeModelId;
+      const currentSessionModelId = bs && bs.currentSessionModelId;
+      const busy = bs ? bs.busy : false;
+      const effectiveId = currentSessionModelId || activeModelId;
+      const current = savedModels.find(m => m.id === effectiveId);
+      if (!savedModels.length) return null;
+      function pick(id) { setOpen(false); if (id !== effectiveId && bridge.available) bridge.switchModel(activeSessionId, id); }
+      return (
+        <div className="relative">
+          <button onClick={() => { if (!busy) setOpen(o => !o); }} disabled={busy}
+            title={busy ? t.modelSwitchBusy : t.switchModelTitle}
+            className="flex items-center gap-2 bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 px-3 py-1.5 rounded-xl text-[13px] font-semibold transition-colors border border-black/[0.04] dark:border-white/5 disabled:opacity-50">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#34C759]"></span>
+            <span className="max-w-[150px] truncate">{current ? current.name : t.modelNonePick}</span>
+            <ChevronDown size={14} className="opacity-50 shrink-0" />
+          </button>
+          {open && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
+              <div className="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+                {savedModels.map(m => (
+                  <button key={m.id} onClick={() => pick(m.id)}
+                    className="w-full flex items-center justify-between px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
+                    <span className="flex items-center gap-2.5 min-w-0">
+                      <Cpu size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
+                      <span className="truncate">{m.name}</span>
+                    </span>
+                    {m.id === effectiveId && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
+                  </button>
+                ))}
+                <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
+                <button onClick={() => { setOpen(false); if (onGotoSettings) onGotoSettings(); }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
+                  <Plus size={15} className="text-gray-400 group-hover:text-white/90" />
+                  {t.manageModels}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      );
+    };
+
+    // 输入框底栏:工具菜单(只展示已装工具 + 跳工具商店;无会话级开关——后端无此概念)。
+    const ComposerToolMenu = ({ t, onGotoTools }) => {
+      const [open, setOpen] = useState(false);
+      const [tools, setTools] = useState([]);
+      const [disabled, setDisabled] = useState(() => new Set()); // 被关掉的连接器 id(全局持久)
+      // 启动时加载已装工具 + 全局持久的禁用列表(持久语义:新窗口/新对话都继承)
+      useEffect(() => {
+        let alive = true;
+        (async () => {
+          try {
+            const list = await window.__TAURI__.core.invoke('list_marketplace_tools');
+            if (alive) setTools((list || []).filter(x => x.installed));
+          } catch (e) { /* 忽略 */ }
+          try {
+            const dis = await window.__TAURI__.core.invoke('get_disabled_connectors');
+            if (alive) setDisabled(new Set(dis || []));
+          } catch (e) { /* 忽略 */ }
+        })();
+        return () => { alive = false; };
+      }, []);
+      function toggleTool(id) {
+        const next = new Set(disabled);
+        next.has(id) ? next.delete(id) : next.add(id);
+        setDisabled(next);
+        // 全局持久:落盘 + 广播给所有在跑引擎,关一次所有新对话/新窗口都继承。
+        if (bridge.available) {
+          window.__TAURI__.core.invoke('set_disabled_connectors',
+            { connectorIds: Array.from(next) }).catch(() => {});
+        }
+      }
+      const enabledCount = tools.filter(tl => !disabled.has(tl.id)).length;
+      return (
+        <div className="relative">
+          <button onClick={() => setOpen(o => !o)}
+            className="flex items-center gap-2 bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 px-3 py-1.5 rounded-xl text-[13px] font-semibold transition-colors border border-black/[0.04] dark:border-white/5">
+            <Wrench size={14} className="opacity-70" />
+            {t.composerTools}
+            {tools.length > 0 && <span className="text-[11px] bg-[#007AFF] text-white px-1.5 py-0.5 rounded-full leading-none font-bold shrink-0">{enabledCount}</span>}
+            <ChevronDown size={14} className="opacity-50 shrink-0" />
+          </button>
+          {open && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
+              <div className="absolute bottom-full left-0 mb-2 z-50 w-64 bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+                <div className="px-3 py-2 text-[11px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider">{t.composerInstalledTools}</div>
+                {tools.length === 0 ? (
+                  <div className="px-3 py-2 text-[13px] text-gray-400 dark:text-gray-500">{t.composerNoTools}</div>
+                ) : tools.map(tl => {
+                  const on = !disabled.has(tl.id);
+                  return (
+                    <div key={tl.id} className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
+                      <span className="text-[13px] text-gray-700 dark:text-gray-200 truncate">{tl.name || tl.title || tl.id}</span>
+                      <button onClick={() => toggleTool(tl.id)} aria-label={tl.id}
+                        className={`relative inline-flex h-5 w-[34px] shrink-0 items-center rounded-full transition-colors ${on ? 'bg-[#34C759]' : 'bg-[#E5E5EA] dark:bg-[#39393D]'}`}>
+                        <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${on ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
+                      </button>
+                    </div>
+                  );
+                })}
+                <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
+                <button onClick={() => { setOpen(false); if (onGotoTools) onGotoTools(); }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
+                  <Store size={15} className="text-gray-400 group-hover:text-white/90" />
+                  {t.composerManageTools}
+                </button>
+              </div>
+            </>
           )}
         </div>
       );
@@ -2929,13 +3213,12 @@
       );
     };
 
-    // 知识库挂载条:给当前对话挂一个知识集(会话级粘连)。挂上后每条消息发送前后端
-    // 自动检索注入相关片段(commands::chat)。范式仿人设卡 Lanyard:挂载态显示 chip+×,
-    // 未挂载显示按钮+下拉选择器。草稿态选集会经 bridge.mountCollection 先物化 session。
-    const KbMountBar = ({ bs, t, isDark }) => {
+    // 输入框底栏:知识库挂载选择器(与 ComposerModelSelector/ComposerToolMenu 同款 pill,
+    // class 暗色策略)。给当前对话挂一个知识集(会话级粘连),挂上后每条消息发送前后端自动
+    // 检索注入相关片段(commands::chat)。草稿态选集会经 bridge.mountCollection 先物化 session。
+    const ComposerKbSelector = ({ t, bs }) => {
       const [open, setOpen] = useState(false);
       const [collections, setCollections] = useState(null); // null=未加载
-      const ref = useRef(null);
       const mountedId = (bs && bs.mountedCollection != null) ? bs.mountedCollection : null;
 
       const loadList = async () => {
@@ -2947,67 +3230,90 @@
       useEffect(() => {
         if (mountedId != null && collections === null) loadList();
       }, [mountedId]);
-      // 点下拉外部关闭。
-      useEffect(() => {
-        if (!open) return undefined;
-        const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-        document.addEventListener('mousedown', onDoc);
-        return () => document.removeEventListener('mousedown', onDoc);
-      }, [open]);
 
       const mounted = (collections || []).find(c => c.id === mountedId) || null;
       const mountedName = mounted ? mounted.name : (mountedId != null ? ('#' + mountedId) : null);
+      const active = mountedId != null;
 
-      const toggle = () => {
-        const next = !open;
-        setOpen(next);
-        if (next && collections === null) loadList();
-      };
-      const pick = (c) => { setOpen(false); if (bridge.available) bridge.mountCollection(c.id); };
-      const remove = () => { if (bridge.available) bridge.unmountCollection(); };
+      function toggle() { const next = !open; setOpen(next); if (next && collections === null) loadList(); }
+      function pick(id) { setOpen(false); if (id !== mountedId && bridge.available) bridge.mountCollection(id); }
+      function unmount() { setOpen(false); if (bridge.available) bridge.unmountCollection(); }
 
       return (
-        <div ref={ref} className="relative px-2 mb-2">
-          {mountedId != null ? (
-            <div className={`inline-flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 rounded-full text-[12px] ${isDark ? 'bg-[#1E1F20] text-[#A8C7FA]' : 'bg-[#E8F0FE] text-[#1A73E8]'}`}>
-              <BookOpen size={13} />
-              <span className="opacity-70">{t.kbMountedTag}</span>
-              <span className="max-w-[200px] truncate font-medium">{mountedName}</span>
-              <button onClick={remove} title={t.kbMountRemove} className={`w-5 h-5 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-white'}`}>×</button>
-            </div>
-          ) : (
-            <button onClick={toggle} title={t.kbMountTitle}
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[12px] transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>
-              <BookOpen size={13} />
-              <span>{t.kbMount}</span>
-              <ChevronDown size={12} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
-            </button>
-          )}
-          {open && mountedId == null && (
-            <div className={`absolute bottom-full left-2 mb-1 z-30 min-w-[220px] max-h-[280px] overflow-y-auto rounded-xl py-1 shadow-xl ${isDark ? 'bg-[#1E1F20] border border-[#333537]' : 'bg-white border border-gray-200'}`}>
-              {collections === null ? (
-                <div className={`px-3 py-2 text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-gray-400'}`}>…</div>
-              ) : collections.length === 0 ? (
-                <div className={`px-3 py-2 text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-gray-400'}`}>{t.kbMountNone}</div>
-              ) : collections.map(c => (
-                <button key={c.id} onClick={() => pick(c)}
-                  className={`w-full text-left px-3 py-2 text-[13px] flex items-center gap-2 ${isDark ? 'hover:bg-[#2A2B2D] text-[#E3E3E3]' : 'hover:bg-[#F0F4F9] text-[#1F1F1F]'}`}>
-                  <BookOpen size={14} className="opacity-60 shrink-0" />
-                  <span className="truncate flex-1">{c.name}</span>
-                  <span className={`text-[11px] ${isDark ? 'text-[#8E8E8E]' : 'text-gray-400'}`}>{c.docCount}</span>
-                </button>
-              ))}
-            </div>
+        <div className="relative">
+          <button onClick={toggle} title={active ? mountedName : t.kbMountTitle}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-[13px] font-semibold transition-colors border ${active
+              ? 'bg-[#E8F0FE] dark:bg-[#1A3A5C] text-[#1A73E8] dark:text-[#A8C7FA] border-[#1A73E8]/20 dark:border-[#A8C7FA]/25'
+              : 'bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-black/[0.04] dark:border-white/5'}`}>
+            <BookOpen size={14} className="opacity-70 shrink-0" />
+            <span className="max-w-[140px] truncate">{active ? mountedName : t.kbMount}</span>
+            <ChevronDown size={14} className="opacity-50 shrink-0" />
+          </button>
+          {open && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
+              <div className="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+                {collections === null ? (
+                  <div className="px-3 py-2.5 text-[13px] text-gray-400 dark:text-gray-500">…</div>
+                ) : collections.length === 0 ? (
+                  <div className="px-3 py-2.5 text-[13px] text-gray-400 dark:text-gray-500">{t.kbMountNone}</div>
+                ) : collections.map(c => (
+                  <button key={c.id} onClick={() => pick(c.id)}
+                    className="w-full flex items-center justify-between px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
+                    <span className="flex items-center gap-2.5 min-w-0">
+                      <BookOpen size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
+                      <span className="truncate">{c.name}</span>
+                    </span>
+                    {c.id === mountedId
+                      ? <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />
+                      : <span className="text-[11px] text-gray-400 group-hover:text-white/80 shrink-0">{c.docCount}</span>}
+                  </button>
+                ))}
+                {active && (
+                  <>
+                    <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
+                    <button onClick={unmount}
+                      className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
+                      <X size={15} className="text-gray-400 group-hover:text-white/90" />
+                      {t.kbMountRemove}
+                    </button>
+                  </>
+                )}
+              </div>
+            </>
           )}
         </div>
       );
     };
 
-    const ChatView = ({ theme, t, bs, prefill, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings }) => {
+    const ChatView = ({ theme, t, bs, prefill, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoTools }) => {
       const isDark = theme === 'dark';
       const [inputText, setInputText] = useState('');
       const [artifactsOpen, setArtifactsOpen] = useState(false);
       const scrollRef = useRef(null);
+      const composerRef = useRef(null);
+      // 输入框自动增高:随内容从最小(~2行)长到上限 160px,再内部滚动(iOS 手感)。
+      // 清空(发送后)inputText 变 '' → 自动缩回最小高。
+      useEffect(() => {
+        const el = composerRef.current;
+        if (!el) return;
+        el.style.height = 'auto';
+        el.style.height = Math.min(Math.max(el.scrollHeight, 48), 160) + 'px';
+      }, [inputText]);
+      // 输入框是浮动绝对定位,会随 auto-grow / 附件 / 排队 chips 变高 → 量它实际高度,
+      // 动态给滚动区底部留白(= 输入框高 + 间距),保证最后几条消息永不被遮挡、也不浪费空间。
+      const composerWrapRef = useRef(null);
+      const [composerH, setComposerH] = useState(0);
+      useEffect(() => {
+        const el = composerWrapRef.current;
+        if (!el) return;
+        const measure = () => setComposerH(el.offsetHeight);
+        measure();
+        if (!window.ResizeObserver) return;
+        const ro = new ResizeObserver(measure);
+        ro.observe(el);
+        return () => ro.disconnect();
+      }, []);
       const chatItems = bs ? bs.chatItems : [];
       const busy = bs ? bs.busy : false;
       const hasMessages = chatItems.length > 0;
@@ -3117,7 +3423,7 @@
 
 
           {/* Main Chat Area */}
-          <div ref={scrollRef} className={`flex-1 min-h-0 overflow-y-auto px-4 md:px-20 lg:px-40 pb-40 custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
+          <div ref={scrollRef} style={{ paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }} className={`flex-1 min-h-0 overflow-y-auto px-4 md:px-20 lg:px-40 custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
 
             {!hasMessages && !welcomeToolId && (
               /* Gemini Style Centered Empty State */
@@ -3160,8 +3466,12 @@
 
           </div>
 
+          {/* 底部渐变蒙层:内容滚到底时在输入框上方柔和淡出(pointer-events-none 不挡滑动/点击;高度跟随输入框 auto-grow)。 */}
+          <div className={`pointer-events-none absolute bottom-0 inset-x-0 z-[15] bg-gradient-to-t to-transparent from-30% via-70% ${isDark ? 'from-[#131314] via-[#131314]/95' : 'from-white via-white/95'}`}
+            style={{ height: (composerH ? composerH + 96 : 220) + 'px' }} />
           {/* Floating Input Area */}
-          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 w-full max-w-[800px] px-4 z-20">
+          <div ref={composerWrapRef} className="absolute bottom-8 inset-x-0 px-4 md:px-20 lg:px-40 z-20">
+            <div className="max-w-[800px] w-full mx-auto">
             {/* 排队待发消息 chips（生成中继续输入会积压到这里，本轮跑完自动发） */}
             {queued.length > 0 && (
               <div className="flex flex-col gap-1 mb-2 px-2">
@@ -3174,9 +3484,7 @@
                 ))}
               </div>
             )}
-            <ModelChip isDark={isDark} t={t} bs={bs} onGotoSettings={onGotoSettings} />
-            {/* 知识库挂载条:挂上知识集后每条消息自动检索注入 */}
-            <KbMountBar bs={bs} t={t} isDark={isDark} />
+            {/* 模型选择器/知识库挂载已挪进下方底栏(ComposerModelSelector/ComposerKbSelector) */}
             {/* 附件 chips */}
             {attachments.length > 0 && (
               <div className="flex flex-wrap gap-2 mb-2 px-2">
@@ -3192,38 +3500,42 @@
                 ))}
               </div>
             )}
-            <div className={`flex items-center gap-3 p-2 rounded-full shadow-lg ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
-
-              <button onClick={() => bridge.available && bridge.pickAndAttach()} title={t.attachAdd}
-                className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>
-                <Paperclip size={20} />
-              </button>
-
-              <input
-                type="text"
-                placeholder={t.placeholder}
+            <div className="bg-white/80 dark:bg-[#161618]/85 backdrop-blur-2xl border border-black/[0.06] dark:border-white/10 rounded-[28px] shadow-lg focus-within:border-blue-400/50 dark:focus-within:border-blue-500/50 transition-colors px-4 pt-3 pb-2.5">
+              <textarea
+                ref={composerRef}
                 value={inputText}
                 onChange={e => setInputText(e.target.value)}
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
-                className={`flex-1 bg-transparent border-none outline-none text-[16px] py-3 ${isDark ? 'placeholder:text-[#C4C7C5]' : 'placeholder:text-gray-400'}`}
+                placeholder={t.placeholder}
+                rows={1}
+                className="w-full bg-transparent resize-none outline-none text-gray-800 dark:text-gray-100 text-[16px] leading-relaxed min-h-[48px] overflow-y-auto hide-scrollbar placeholder:text-gray-400 dark:placeholder:text-gray-500"
               />
-
-              {busy ? (
-                <button
-                  onClick={handleCancel}
-                  className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#F28B82] hover:bg-[#333537]' : 'text-[#C5221F] hover:bg-[#F0F4F9]'}`}
-                >
-                  <StopCircle size={20} />
-                </button>
-              ) : (
-                <button
-                  onClick={handleSend}
-                  className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}
-                >
-                  {(inputText.trim() || attachments.some(a => a.status === 'ready')) ? <Send size={18} /> : <Mic size={20} />}
-                </button>
-              )}
+              <div className="flex items-center justify-between mt-1.5 gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <button onClick={() => bridge.available && bridge.pickAndAttach()} title={t.attachAdd}
+                    className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-black/5 dark:hover:bg-white/10 transition-colors">
+                    <Paperclip size={20} />
+                  </button>
+                  <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoSettings} />
+                  <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} />
+                  <ComposerKbSelector t={t} bs={bs} />
+                </div>
+                {busy ? (
+                  <button onClick={handleCancel}
+                    className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-black/5 dark:bg-white/10 text-[#C5221F] dark:text-[#F28B82] hover:bg-black/10 dark:hover:bg-white/20 transition-colors">
+                    <StopCircle size={20} />
+                  </button>
+                ) : (() => {
+                  const ready = inputText.trim() || attachments.some(a => a.status === 'ready');
+                  return (
+                    <button onClick={handleSend} disabled={!ready} aria-label="发送"
+                      className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0' : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
+                      <Send size={17} className="translate-x-[1px]" />
+                    </button>
+                  );
+                })()}
+              </div>
             </div>
             {ctxTokens && ctxTokens.input > 0 && (
               <div className={`mt-1.5 px-5 text-[11px] font-mono ${
@@ -3235,6 +3547,7 @@
             )}
             <div className="flex items-center justify-center mt-3">
                <p className={`text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{t.disclaimer}</p>
+            </div>
             </div>
           </div>
 
@@ -3527,49 +3840,121 @@
     // ==========================================
     // Artifact Card — present_artifact 成品卡（点击打开预览）
     // ==========================================
-    const _ARTIFACT_ICON = { html: '🌐', markdown: '📄', image: '🖼️', other: '📎' };
+    // 产物类型 → { 角标/标签文字, tile 配色, lucide 内联 SVG 路径 }（零下载；仅无封面紧凑态显图标）。
+    // 配色/字形照搬 产物卡图标预览.html（唯一权威）。
+    const _ARTIFACT_FMT = {
+      pptx:     { label: 'PPTX', color: '#D24726', glyph: '<path d="M2 3h20"/><path d="M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3"/><path d="m7 21 5-5 5 5"/>' },
+      docx:     { label: 'DOCX', color: '#2B579A', glyph: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/>' },
+      xlsx:     { label: 'XLSX', color: '#217346', glyph: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M12 3v18"/>' },
+      pdf:      { label: 'PDF',  color: '#E5352B', glyph: '<path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><path d="M14 2v6h6"/><path d="M9 13h6"/><path d="M9 17h3"/>' },
+      image:    { label: 'IMG',  color: '#8E8E93', glyph: '<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>' },
+      html:     { label: 'HTML', color: '#22A7C2', glyph: '<path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/>' },
+      markdown: { label: 'MD',   color: '#6B7280', glyph: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 16V8l3 3 3-3v8"/><path d="M18 8v6l-2-2"/><path d="m16 12 2 2 2-2"/>' },
+      other:    { label: 'FILE', color: '#6B7280', glyph: '<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>' },
+    };
     const _artifactKind = (p) => {
       const ext = (String(p || '').split('.').pop() || '').toLowerCase();
+      if (ext === 'pptx' || ext === 'ppt') return 'pptx';
+      if (ext === 'docx' || ext === 'doc') return 'docx';
+      if (ext === 'xlsx' || ext === 'xls' || ext === 'csv') return 'xlsx';
+      if (ext === 'pdf') return 'pdf';
+      if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].indexOf(ext) >= 0) return 'image';
       if (ext === 'html' || ext === 'htm') return 'html';
       if (ext === 'md' || ext === 'markdown') return 'markdown';
-      if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].indexOf(ext) >= 0) return 'image';
       return 'other';
     };
+    // 文件类型图标（白色，置于配色 tile 上）。
+    const AcFmtIcon = ({ kind, className }) => (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+        className={className} dangerouslySetInnerHTML={{ __html: (_ARTIFACT_FMT[kind] || _ARTIFACT_FMT.other).glyph }} />
+    );
+    // 设计稿专用图标（逐字照搬 前端-产物卡片.txt，含其独有 strokeWidth）。
+    const AcShieldCheck = ({ className }) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>;
+    const AcSparkles = ({ className }) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>;
+    const AcArrowUpRight = ({ className }) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg>;
+    const AcFolder = ({ className }) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>;
+
     const ArtifactCard = ({ item, theme, t, isLatest }) => {
-      const isDark = theme === 'dark';
       const path = item.path || '';
       const kind = _artifactKind(path);
-      const icon = _ARTIFACT_ICON[kind] || '📎';
-      const basename = (String(path).split('/').pop()) || '';
+      const fmt = _ARTIFACT_FMT[kind] || _ARTIFACT_FMT.other;
+      const basename = (String(path).split(/[\\/]/).pop()) || '';
+      const title = item.title || basename || t.artifactLabel;
       const open = () => { if (bridge.available && path) bridge.openArtifactExternal(path); };
+
+      // 封面缩略图：仅 pptx 异步抽取（Rust read_artifact_thumbnail 读 docProps/thumbnail.jpeg → data URL）。
+      // 拿不到则 hasCover=false，走紧凑态。本地数据、无外链。
+      const [coverUrl, setCoverUrl] = useState(null);
+      useEffect(() => {
+        let alive = true;
+        setCoverUrl(null);
+        if (kind === 'pptx' && bridge.available && bridge.readArtifactThumbnail && path) {
+          bridge.readArtifactThumbnail(path).then((u) => { if (alive && u) setCoverUrl(u); }).catch(() => {});
+        }
+        return () => { alive = false; };
+      }, [path, kind]);
+      const hasCover = !!coverUrl;
+
       return (
-        <div className="flex justify-start">
-          <div onClick={open}
-            className={`max-w-[95%] w-full rounded-[16px] border p-3 cursor-pointer transition-all ${isDark ? 'bg-[#7C3AED]/10 border-[#D0BCFF]/30 hover:border-[#D0BCFF]/60' : 'bg-[#7C3AED]/5 border-[#7C3AED]/20 hover:border-[#7C3AED]/50'}`}>
-            <div className="flex items-start gap-3">
-              <div className="text-[26px] leading-none flex-shrink-0">{icon}</div>
-              <div className="flex-1 min-w-0">
-                <div className={`text-[11px] font-mono uppercase tracking-wider mb-0.5 ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>{t.artifactLabel} · {kind}</div>
-                <div className={`text-[15px] font-semibold truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{item.title || t.artifactLabel}</div>
-                {item.description && (
-                  <div className={`text-[13px] mt-0.5 line-clamp-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{item.description}</div>
-                )}
-                <div className={`flex items-center justify-between mt-2 pt-2 border-t ${isDark ? 'border-[#D0BCFF]/15' : 'border-[#7C3AED]/15'}`}>
-                  <span className={`text-[11px] font-mono truncate ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`} title={basename}>{basename}</span>
-                  <div className="flex items-center gap-2.5 flex-shrink-0 ml-2">
-                    {isLatest && <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.summonPinvou(path); }} title={t.pvBtnPinTitle}
-                      className={`flex items-center gap-1 text-[12px] ${isDark ? 'text-[#D0BCFF] hover:text-[#E9DDFF]' : 'text-[#7C3AED] hover:text-[#6D28D9]'}`}>
-                      「<span className="text-[11px]">📋</span> 品」
-                    </button>}
-                    {isLatest && <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.inspectPinvou(path); }} title={t.pvBtnWuTitle}
-                      className={`flex items-center gap-1 text-[12px] ${isDark ? 'text-[#8AB4F8] hover:text-[#AECBFA]' : 'text-[#1967D2] hover:text-[#1A73E8]'}`}>
-                      「<span className="text-[11px]">✨</span> 悟」
-                    </button>}
-                    <span className={`text-[12px] ml-2 pl-2 border-l ${isDark ? 'text-[#D0BCFF] border-[#D0BCFF]/20' : 'text-[#7C3AED] border-[#7C3AED]/20'}`}>{t.clickToOpen}</span>
-                  </div>
+        <div className="flex justify-start" style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
+          <div className="w-full bg-white dark:bg-[#1E1E1E] rounded-[24px] shadow-[0_8px_30px_rgba(0,0,0,0.04)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.2)] border border-black/[0.04] dark:border-white/[0.06] p-3 flex flex-col transition-all duration-300">
+
+            {/* 封面区域 */}
+            {hasCover ? (
+              <div className="relative group/cover cursor-pointer rounded-[16px] overflow-hidden bg-gray-100 dark:bg-[#2C2C2E] border border-black/[0.02] dark:border-white/[0.02]" onClick={open}>
+                <div className="w-full aspect-[16/9] relative">
+                  <img src={coverUrl} alt="Cover" className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover/cover:scale-[1.02]" />
+                </div>
+                <div className="absolute top-3 right-3 px-2.5 py-1 rounded-[6px] bg-white/95 dark:bg-[#2C2C2E]/95 text-[#111] dark:text-[#eee] text-[11px] font-bold uppercase tracking-widest shadow-sm">
+                  {fmt.label}
                 </div>
               </div>
+            ) : (
+              <div className="px-3 pt-3 pb-2 flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-[8px] flex items-center justify-center shrink-0" style={{ background: fmt.color }}>
+                  <AcFmtIcon kind={kind} className="w-5 h-5 text-white" />
+                </div>
+                <span className="text-[13px] font-semibold text-[#888] dark:text-[#999] uppercase tracking-wider">
+                  {fmt.label}
+                </span>
+              </div>
+            )}
+
+            {/* 标题与打开按钮区 */}
+            <div onClick={open} className="px-3 pt-4 pb-5 flex justify-between items-center gap-4 group/header cursor-pointer">
+              <h2 className="text-[20px] font-semibold tracking-tight text-[#111] dark:text-[#eee] leading-snug truncate group-hover/header:text-[#007AFF] transition-colors">
+                {title}
+              </h2>
+              <button onClick={(e) => { e.stopPropagation(); open(); }} className="flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-full bg-gray-100 dark:bg-white/5 group-hover/header:bg-gray-200 dark:group-hover/header:bg-white/10 text-[#007AFF] dark:text-[#0A84FF] transition-colors active:scale-95" aria-label="打开">
+                <AcArrowUpRight className="w-[18px] h-[18px]" />
+              </button>
             </div>
+
+            {/* 智能操作区：品 / 悟，横排单行、无副标题；仅最新产物显示 */}
+            {isLatest && (
+              <div className="grid grid-cols-2 gap-3 mb-4 px-3">
+                <button onClick={() => bridge.available && bridge.summonPinvou(path)} title={t.pvBtnPinTitle}
+                  className="flex items-center justify-center py-3.5 px-4 rounded-[12px] bg-[#F9F9F9] dark:bg-white/5 hover:bg-[#F0F0F0] dark:hover:bg-white/10 transition-colors active:scale-[0.98] group/btn" aria-label="智能找错">
+                  <AcShieldCheck className="w-[18px] h-[18px] text-[#FF9500] dark:text-[#FF9F0A] mr-2.5 shrink-0" />
+                  <span className="text-[14px] font-medium text-[#111] dark:text-[#eee]">{t.pvBtnPinLabel}</span>
+                </button>
+
+                <button onClick={() => bridge.available && bridge.inspectPinvou(path)} title={t.pvBtnWuTitle}
+                  className="flex items-center justify-center py-3.5 px-4 rounded-[12px] bg-[#F9F9F9] dark:bg-white/5 hover:bg-[#F0F0F0] dark:hover:bg-white/10 transition-colors active:scale-[0.98] group/btn" aria-label="深度查漏">
+                  <AcSparkles className="w-[18px] h-[18px] text-[#5E5CE6] dark:text-[#5E5CE6] mr-2.5 shrink-0" />
+                  <span className="text-[14px] font-medium text-[#111] dark:text-[#eee]">{t.pvBtnWuLabel}</span>
+                </button>
+              </div>
+            )}
+
+            {/* 底部路径 */}
+            <div className="mx-3 mt-1 mb-2 pt-3 border-t border-gray-100 dark:border-white/[0.05]">
+              <div className="flex items-center gap-1.5 text-[12px] text-[#999] dark:text-[#777]">
+                <AcFolder className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate" title={path}>{path}</span>
+              </div>
+            </div>
+
           </div>
         </div>
       );
@@ -3778,6 +4163,7 @@
       { id: 12, backendId: null, title: 'CNB 云原生管线', subtitle: '代码仓库与 CI/CD 调度', category: 'dev', type: 'MCP Server', version: 'v1.0.0', latency: '<40ms', desc: '将云原生开发能力赋予大模型。支持通过自然语言进行代码仓库检索、提交 Issue、审查 PR、触发并监控流水线部署等极客操作。', icon: Code, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: true },
       { id: 13, backendId: 'qcc', title: '企查查', subtitle: '企业工商、风控、知产、经营数据查询', category: 'finance', type: 'MCP Server', version: 'v1.0.0', latency: '<500ms', desc: '接入企查查智能体数据平台，提供182个企业数据查询工具，覆盖工商登记、股东结构、风险预警、知识产权、招投标等六大模块。', icon: Building2, color: 'bg-gradient-to-br from-blue-600 to-cyan-500', installed: false, authRequired: false, welcomeQueries: ['查一下华为的工商信息', '腾讯有哪些风险预警', '比亚迪的专利有多少', '阿里巴巴的招投标记录'] },
       { id: 14, backendId: 'obsidian', title: 'Obsidian 知识库', subtitle: '检索本机 Obsidian 笔记，引用你的个人知识', category: 'kb', type: 'MCP Server', version: 'v1.0.0', latency: '<30ms', desc: '把你本机的 Obsidian 笔记库（vault）接入大模型。支持全文检索、读取笔记全文、按目录/标签浏览，让 AI 基于你自己沉淀的知识作答。笔记不出本机、模型也在本机，知识与算力全链路不出域。', icon: BookOpen, color: 'bg-gradient-to-b from-violet-500 to-purple-700', installed: false, authRequired: true, configFields: [{ key: 'OBSIDIAN_VAULT_PATH', label: 'Obsidian 库（vault）文件夹路径', placeholder: 'C:\\Users\\你\\Documents\\我的笔记', helpText: '在 Obsidian 里打开「设置 → 关于」或库切换器可看到库的真实路径，复制粘贴到这里即可。' }], welcomeQueries: ['我笔记里关于会议纪要的内容', '总结一下我的读书笔记', '帮我找之前写的项目方案', '我的笔记里有哪些待办'] },
+      { id: 15, backendId: 'pptx', title: 'PPT 生成', subtitle: '本地直出可编辑 PowerPoint，套主题模板、真图表、带封面', category: 'office', type: 'MCP Server', version: 'v1.0.0', latency: '本地', desc: '说“做个 PPT / 汇报”，AI 先列大纲让你确认，再按内容自动选主题（9 套）生成可编辑 .pptx——真·图表、自带封面缩略图，全程本地、数据不出机。首次安装会自动下载 python-pptx 依赖（需联网）。', icon: Presentation, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: false, welcomeQueries: ['做个 Q2 季度汇报 PPT', '帮我做一份产品介绍 PPT', '做个项目方案演示', '做个公司介绍 PPT'] },
     ];
 
     const weatherIconSvg = (code) => {
@@ -3911,6 +4297,7 @@
       { id: 'all', label: '全部工具' },
       { id: 'mcp', label: 'MCP 核心' },
       { id: 'comm', label: '协作办公' },
+      { id: 'office', label: '办公' },
       { id: 'dev', label: '研发治理' },
       { id: 'finance', label: '金融数据' },
       { id: 'kb', label: '知识库' },
@@ -4648,6 +5035,14 @@
       return `${base} ${isDark ? 'bg-[#333537] text-[#E3E3E3] hover:bg-[#444746]' : 'bg-white text-[#1F1F1F] hover:bg-[#E1E5EA] border border-black/10'}`;
     };
 
+    // 品悟角色配色（与产物卡一致）：品=盾·橙 #FF9500/#FF9F0A，悟=闪光·紫 #5E5CE6。
+    // 返回 { name, accentHex, text(类), softBg(类), Icon }。
+    const pvRole = (isWu, isDark) => isWu
+      ? { name: '悟', accentHex: '#5E5CE6', text: 'text-[#5E5CE6]',
+          softBg: isDark ? 'bg-[#5E5CE6]/15' : 'bg-[#5E5CE6]/[0.10]', Icon: AcSparkles }
+      : { name: '品', accentHex: isDark ? '#FF9F0A' : '#FF9500', text: isDark ? 'text-[#FF9F0A]' : 'text-[#FF9500]',
+          softBg: isDark ? 'bg-[#FF9F0A]/15' : 'bg-[#FF9500]/[0.10]', Icon: AcShieldCheck };
+
     // ==========================================
     // PinvouSummonCard — 🧭 召唤式检阅（Boss 主动呼叫 Pinvou）
     // 自报家门人格(单主+alternates,§3.3) + trace + issues(severity 分色)。
@@ -4657,14 +5052,16 @@
     //   issue.needs_verify(外部事实,AI 无知识)→ 让 AI 核实 / 我确认没问题;
     //   issue 其他(产物缺陷,AI 改得动)→ 让 AI 改 / 接受现状(high 默认勾)。
     // 「交给 AI 处理」按各条动作组装定向指令走 B1。单独子组件:useState 放这避 hooks 错位。
-    const PinvouRows = ({ review, theme, t }) => {
+    const PinvouRows = ({ review, theme, t, role }) => {
       const isDark = theme === 'dark';
-      const body = isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]';
-      const muted = isDark ? 'text-[#C4C7C5]' : 'text-[#5f6368]';
-      const sevDot = (s) => s === 'high' ? '#EA4335' : s === 'medium' ? '#E37400' : '#9AA0A6';
+      role = role || pvRole(false, isDark);
+      const body = isDark ? 'text-[#fff]' : 'text-[#000]';
+      const muted = isDark ? 'text-[#EBEBF5]/60' : 'text-[#3C3C43]/60';
+      // iOS 语义色：high 红 / medium 橙 / low 灰
+      const sevDot = (s) => s === 'high' ? '#FF3B30' : s === 'medium' ? '#FF9500' : '#C7C7CC';
       const rows = [
         ...(review.recommendations || []).map((x, i) => ({
-          k: 'r' + i, raw: x, kind: 'rec', dot: '#7C3AED',
+          k: 'r' + i, raw: x, kind: 'rec', dot: '#FF9500',
           head: (x.topic ? x.topic + '：' : '') + t.pvSuggest + x.pick, sub: x.why,
         })),
         ...(review.issues || []).map((x, i) => ({
@@ -4673,7 +5070,7 @@
           head: x.text, sub: x.suggestion,
         })),
         ...(review.coverage || []).map((x, i) => ({
-          k: 'c' + i, raw: x, kind: 'gap', dot: x.severity === 'high' ? '#1A73E8' : '#669DF6',
+          k: 'c' + i, raw: x, kind: 'gap', dot: '#5E5CE6',
           sev: x.severity, head: x.dimension + (x.text ? '：' + x.text : ''), sub: x.suggestion,
         })),
       ];
@@ -4696,10 +5093,11 @@
       });
       const setOne = (k, v) => setRes(p => ({ ...p, [k]: p[k] === v ? null : v }));
       const activeCount = rows.filter(it => ACTIVE[res[it.k]]).length;
-      const chip = (on, active) => `text-[11.5px] px-2 py-0.5 rounded-full border transition-colors ${on
-        ? (active ? (isDark ? 'bg-[#D0BCFF] text-[#381E72] border-transparent' : 'bg-[#7C3AED] text-white border-transparent')
-                  : (isDark ? 'bg-white/15 text-[#E3E3E3] border-transparent' : 'bg-black/10 text-[#1F1F1F] border-transparent'))
-        : (isDark ? 'border-white/15 text-[#9AA0A6] hover:bg-white/5' : 'border-black/15 text-[#757575] hover:bg-black/5')}`;
+      // iOS 分段按钮风：选中且需转交 AI=填充角色色(背景走 style)；选中但自行消化=灰填充；未选=描边。
+      const chip = (on, active) => `text-[12px] px-2.5 py-1 rounded-full font-medium transition-all active:scale-[0.96] ${on
+        ? (active ? 'text-white border border-transparent'
+                  : (isDark ? 'bg-white/15 text-[#fff] border border-transparent' : 'bg-black/[0.08] text-[#000] border border-transparent'))
+        : (isDark ? 'border border-white/15 text-[#EBEBF5]/70 hover:bg-white/5' : 'border border-black/[0.12] text-[#3C3C43]/80 hover:bg-black/5')}`;
       const onResolve = () => {
         if (!bridge.available) return;
         // 弹窗里 review 是 notify 深拷贝,写它的 resolution 落不到原 state;把裁决按下标传给 bridge,
@@ -4727,18 +5125,19 @@
               const decided = res[it.k];
               const passive = decided === 'accept' || decided === 'confirmed' || decided === 'skip';
               return (
-                <div key={it.k} className={`rounded-lg px-2.5 py-2 transition-opacity ${passive ? 'opacity-45' : ''} ${isDark ? 'bg-white/[0.04]' : 'bg-black/[0.03]'}`}>
-                  <div className="flex gap-2">
-                    <span className="mt-[6px] w-[7px] h-[7px] rounded-full shrink-0" style={{ background: it.dot }} />
+                <div key={it.k} className={`rounded-[12px] px-3 py-2.5 transition-opacity ${passive ? 'opacity-40' : ''} ${isDark ? 'bg-white/[0.06]' : 'bg-[#F2F2F7]'}`}>
+                  <div className="flex gap-2.5">
+                    <span className="mt-[7px] w-[7px] h-[7px] rounded-full shrink-0" style={{ background: it.dot }} />
                     <div className="flex-1 min-w-0">
-                      <div className={`text-[13px] leading-relaxed ${body}`}>
-                        {it.nv && <span className={`text-[10.5px] mr-1 px-1 py-px rounded ${isDark ? 'bg-[#FDD663]/20 text-[#FDD663]' : 'bg-[#FEF7E0] text-[#B06000]'}`}>{t.pvNeedsVerify}</span>}
+                      <div className={`text-[14px] leading-relaxed ${body}`}>
+                        {it.nv && <span className={`text-[10.5px] font-medium mr-1.5 px-1.5 py-px rounded-full align-[1px] ${isDark ? 'bg-[#FFD60A]/20 text-[#FFD60A]' : 'bg-[#FFF8E1] text-[#B25000]'}`}>{t.pvNeedsVerify}</span>}
                         {it.head}
                       </div>
-                      {it.sub && <div className={`text-[12px] mt-0.5 ${muted}`}>{it.sub}</div>}
-                      <div className="flex gap-1.5 mt-1.5">
+                      {it.sub && <div className={`text-[13px] mt-0.5 ${muted}`}>{it.sub}</div>}
+                      <div className="flex gap-2 mt-2">
                         {ACT[it.kind].map(([v, label]) => (
-                          <button key={v} onClick={() => setOne(it.k, v)} className={chip(decided === v, !!ACTIVE[v])}>{label}</button>
+                          <button key={v} onClick={() => setOne(it.k, v)} className={chip(decided === v, !!ACTIVE[v])}
+                            style={decided === v && ACTIVE[v] ? { background: role.accentHex } : undefined}>{label}</button>
                         ))}
                       </div>
                     </div>
@@ -4747,15 +5146,16 @@
               );
             })}
           </div>
-          <div className="flex items-center gap-2 mt-3">
+          <div className="flex items-center gap-2 mt-4 pt-1">
             {activeCount > 0 && (
               <button onClick={onResolve}
-                className={`px-3 py-1.5 rounded-full text-[12.5px] font-medium transition-colors ${isDark ? 'bg-[#D0BCFF] text-[#381E72] hover:bg-[#E9DDFF]' : 'bg-[#7C3AED] text-white hover:bg-[#6D28D9]'}`}>
+                className="px-4 py-2 rounded-full text-[14px] font-semibold text-white active:scale-[0.97] transition-transform"
+                style={{ background: role.accentHex }}>
                 {t.pvHandToAi(activeCount)}
               </button>
             )}
             <button onClick={() => bridge.available && bridge.dismissPinvouReview()} title={t.pvSkipTitle}
-              className={`px-3 py-1.5 rounded-full text-[12.5px] transition-colors ${isDark ? 'text-[#9AA0A6] hover:bg-white/5' : 'text-[#5f6368] hover:bg-black/5'}`}>
+              className={`px-4 py-2 rounded-full text-[14px] font-medium transition-colors ${isDark ? 'text-[#EBEBF5]/70 hover:bg-white/5' : 'text-[#3C3C43]/70 hover:bg-black/5'}`}>
               {t.pvSkip}
             </button>
           </div>
@@ -4763,72 +5163,77 @@
       );
     };
 
-    // 检阅 loading:本地模型 5-30s,给 spinner+计时+安抚文字,别让 Boss 干等焦虑(以为卡死)。
-    const PinvouLoading = ({ isWu, icon, tint, accent, muted, isDark, t }) => {
-      const [frame, setFrame] = useState(0);
+    // 检阅 loading:本地模型 5-30s,iOS 旋转菊花 spinner + 计时 + 安抚文字,别让 Boss 干等焦虑。
+    const PinvouLoading = ({ isWu, isDark, t }) => {
       const [secs, setSecs] = useState(0);
       useEffect(() => {
-        const a = setInterval(() => setFrame(f => (f + 1) % BRAILLE.length), 90);
         const b = setInterval(() => setSecs(s => s + 1), 1000);
-        return () => { clearInterval(a); clearInterval(b); };
+        return () => clearInterval(b);
       }, []);
+      const role = pvRole(isWu, isDark);
+      const muted = isDark ? 'text-[#EBEBF5]/60' : 'text-[#3C3C43]/60';
       return (
-        <div className={cardBoxCls(isDark, accent)}>
-          <div className={`flex items-center gap-2 text-[12px] font-semibold ${tint}`}><span>{icon}</span><span>{isWu ? t.pvLoadingWu : t.pvLoadingPin}</span></div>
-          <div className={`flex items-center gap-2 text-[13px] mt-2 ${muted}`}>
-            <span className={`${tint} font-mono`}>{BRAILLE[frame]}</span>
-            <span>{isWu ? t.pvLoadingWuSub : t.pvLoadingPinSub}</span>
-            {secs > 0 && <span className="opacity-50 tabular-nums">{secs}s</span>}
+        <div className="py-8 flex flex-col items-center text-center">
+          {/* iOS activity spinner：底环 + 角色色弧，匀速旋转 */}
+          <svg className="w-9 h-9" viewBox="0 0 24 24" fill="none" style={{ animation: 'tsSpinner 0.8s linear infinite' }}>
+            <circle cx="12" cy="12" r="9" stroke={isDark ? 'rgba(255,255,255,.12)' : 'rgba(0,0,0,.08)'} strokeWidth="3" />
+            <path d="M12 3a9 9 0 0 1 9 9" stroke={role.accentHex} strokeWidth="3" strokeLinecap="round" />
+          </svg>
+          <div className={`flex items-center gap-1.5 mt-4 text-[15px] font-semibold ${role.text}`}>
+            <role.Icon className="w-[18px] h-[18px]" />
+            <span>{isWu ? t.pvLoadingWu : t.pvLoadingPin}</span>
           </div>
-          <div className={`text-[12px] mt-1.5 ${muted}`} style={{ opacity: 0.7 }}>{t.pvLoadingHint}</div>
+          <div className={`text-[13px] mt-1.5 ${muted}`}>
+            {isWu ? t.pvLoadingWuSub : t.pvLoadingPinSub}
+            {secs > 0 && <span className="ml-1.5 tabular-nums opacity-70">{secs}s</span>}
+          </div>
+          <div className={`text-[12px] mt-1 ${muted}`} style={{ opacity: 0.6 }}>{t.pvLoadingHint}</div>
         </div>
       );
     };
 
+    // 检阅结果卡（在底部 sheet 内渲染，无外层卡框；品=橙 / 悟=紫，与产物卡一致）。
     const PinvouSummonCard = ({ item, theme, t }) => {
       const isDark = theme === 'dark';
-      // 品(查错)=紫;悟(发散,coverage)=蓝。
-      const isWu = !!item.coverage;
-      const icon = isWu ? '✨' : '📋';
-      const role = isWu ? '悟' : '品';
-      const accent = isWu ? (isDark ? 'border-[#8AB4F8]/30' : 'border-[#1A73E8]/25')
-                          : (isDark ? 'border-[#D0BCFF]/30' : 'border-[#7C3AED]/25');
-      const tint = isWu ? (isDark ? 'text-[#8AB4F8]' : 'text-[#1967D2]')
-                        : (isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]');
-      const muted = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
-      const body = isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]';
-      if (item.loading) return <PinvouLoading isWu={isWu} icon={icon} tint={tint} accent={accent} muted={muted} isDark={isDark} t={t} />;
+      const isWu = !!item.coverage; // 悟=发散(coverage)；品=查错
+      const role = pvRole(isWu, isDark);
+      const muted = isDark ? 'text-[#EBEBF5]/60' : 'text-[#3C3C43]/60';
+      const body = isDark ? 'text-[#fff]' : 'text-[#000]';
+      if (item.loading) return <PinvouLoading isWu={isWu} isDark={isDark} t={t} />;
       if (item.error) return (
-        <div className={cardBoxCls(isDark, accent)}>
-          <div className={`flex items-center gap-2 text-[12px] font-semibold ${tint}`}><span>{icon}</span><span>Pinvou {role}</span></div>
-          <div className={`text-[13px] mt-2 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{t.pvFail}{item.error}</div>
+        <div className="py-2">
+          <div className={`flex items-center gap-1.5 text-[15px] font-semibold ${role.text}`}><role.Icon className="w-[18px] h-[18px]" /><span>Pinvou {role.name}</span></div>
+          <div className={`text-[14px] mt-2 ${isDark ? 'text-[#FF453A]' : 'text-[#FF3B30]'}`}>{t.pvFail}{item.error}</div>
         </div>
       );
       const r = item.review || {};
       if (r.dismissed) return (
-        <div className={cardBoxCls(isDark, accent) + ' opacity-50'}>
-          <div className={`flex items-center gap-2 text-[12px] ${muted}`}><span>{icon}</span><span>{'Pinvou · ' + role + ' · ' + t.pvSkipped}</span></div>
-        </div>
+        <div className={`py-2 flex items-center gap-1.5 text-[14px] ${muted}`}><role.Icon className="w-4 h-4" /><span>{'Pinvou · ' + role.name + ' · ' + t.pvSkipped}</span></div>
       );
       const personas = r.personas || [];
       const primary = personas.find(p => p && p.primary) || personas[0] || {};
       const alts = r.alternates || [];
       const hasRows = (r.recommendations || []).length > 0 || (r.issues || []).length > 0 || (r.coverage || []).length > 0;
       return (
-        <div className={cardBoxCls(isDark, accent)}>
-          <div className="flex items-center flex-wrap gap-x-2 gap-y-1 mb-2">
-            <span className="text-[15px]">{icon}</span>
-            <span className={`text-[13px] font-semibold ${tint}`}>{'Pinvou · ' + role + (primary.label ? ' (' + primary.label + t.pvPerspective + ')' : '')}</span>
-            {alts.length > 0 && <span className={`text-[12px] ${muted}`}>· {t.pvAlsoInvolves} {alts.join(' / ')}</span>}
-            {r.verdict === 'pass' && <span className={`text-[11px] font-semibold px-1.5 py-0.5 rounded ${isDark ? 'bg-[#37BE5F]/20 text-[#81C995]' : 'bg-[#E6F4EA] text-[#137333]'}`}>{t.pvVerdictPass}</span>}
+        <div>
+          <div className="flex items-center flex-wrap gap-x-2 gap-y-1 mb-2.5">
+            <span className={`inline-flex items-center justify-center w-7 h-7 rounded-full ${role.softBg}`}>
+              <role.Icon className={`w-[17px] h-[17px] ${role.text}`} />
+            </span>
+            <span className={`text-[16px] font-semibold ${body}`}>
+              {'Pinvou · ' + role.name}
+              {primary.label && <span className={`text-[14px] font-normal ${muted}`}> · {primary.label + t.pvPerspective}</span>}
+            </span>
+            {r.verdict === 'pass' && <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${isDark ? 'bg-[#30D158]/20 text-[#30D158]' : 'bg-[#34C759]/15 text-[#248A3D]'}`}>{t.pvVerdictPass}</span>}
           </div>
-          {r.trace && <div className={`text-[13.5px] leading-relaxed mb-2.5 ${body}`}>{r.trace}</div>}
+          {alts.length > 0 && <div className={`text-[12px] -mt-1 mb-2 ${muted}`}>{t.pvAlsoInvolves} {alts.join(' / ')}</div>}
+          {r.trace && <div className={`text-[14px] leading-relaxed mb-3 ${body}`}>{r.trace}</div>}
           {(r.framework || []).length > 0 && (
-            <div className={`text-[11.5px] mb-2 px-2 py-1.5 rounded-lg leading-relaxed ${isDark ? 'bg-[#1A73E8]/10 text-[#8AB4F8]' : 'bg-[#1A73E8]/5 text-[#1967D2]'}`}>
+            <div className={`text-[12px] mb-3 px-3 py-2 rounded-[12px] leading-relaxed ${role.softBg} ${role.text}`}>
               <span className="opacity-70">{t.pvFramework} · {(r.framework || []).length}{t.pvDims}: </span>{(r.framework || []).join(' · ')}
             </div>
           )}
-          {hasRows && <PinvouRows review={r} theme={theme} t={t} />}
+          {hasRows && <PinvouRows review={r} theme={theme} t={t} role={role} />}
         </div>
       );
     };
@@ -5100,6 +5505,7 @@
       md: '📄', markdown: '📄', html: '🌐', htm: '🌐',
       png: '🖼️', jpg: '🖼️', jpeg: '🖼️', gif: '🖼️', webp: '🖼️', svg: '🖼️',
       pdf: '📕', csv: '📊', xlsx: '📊', json: '🔢', yaml: '🔢', yml: '🔢', txt: '📝',
+      pptx: '📊', ppt: '📊',
     };
     const artifactIcon = (name) => ARTIFACT_ICONS[(name.split('.').pop() || '').toLowerCase()] || '📎';
     const apPad2 = (x) => String(x).padStart(2, '0');

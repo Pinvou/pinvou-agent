@@ -203,6 +203,24 @@ impl EnginePool {
         }
     }
 
+    /// pinvou3 工具开关(全局持久):把"被禁用的工具全名"(模型可见全名,小写)广播给
+    /// **所有在跑的 session engine** → 写入各自 config.disallowed_tools,下一轮即隐藏。
+    /// 没起的会话下次 spawn 时从持久列表读初值(build_engine_config),所以新窗口/新对话
+    /// 都继承同一份禁用状态。
+    pub async fn set_disallowed_all(&self, tools: Vec<String>) {
+        let entries = self.entries.lock().await;
+        for (sid, entry) in entries.iter() {
+            if let Err(e) = entry
+                .engine
+                .handle
+                .send(Op::SetDisallowedTools { tools: tools.clone() })
+                .await
+            {
+                eprintln!("[engine_pool] set_disallowed_all {sid} failed: {e:?}");
+            }
+        }
+    }
+
     /// 编辑/重发指定 session 最后一轮 user 消息。
     pub async fn edit_last_turn(&self, session_id: &str, new_message: String) -> Result<()> {
         self.get_or_spawn(session_id)

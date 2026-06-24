@@ -518,7 +518,7 @@ impl Pinvou3Bridge {
             interactive_launch_limit,
             goal_token_budget,
             goal_status,
-            disallowed_tools,
+            disallowed_tools: _, // pinvou3 从持久列表算初值(见构造处),默认值忽略
             extra_tools,
         } = EngineConfig::default();
 
@@ -682,7 +682,12 @@ impl Pinvou3Bridge {
             interactive_launch_limit,
             goal_token_budget,
             goal_status,
-            disallowed_tools,
+            // pinvou3 工具开关:从全局持久的"被禁用连接器"算出禁用工具全名作为初值,
+            // 让新对话/新窗口的引擎都继承用户的开关状态(持久语义)。
+            disallowed_tools: {
+                let n = crate::bridge::marketplace::disabled_tool_names();
+                if n.is_empty() { None } else { Some(n) }
+            },
             // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
             extra_tools,
         }
