@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use tokio::process::Command;
 use tokio::time::timeout;
 
 use crate::bridge::paths;
@@ -257,7 +256,7 @@ fn is_target_sn(sn: &str) -> bool {
 
 async fn read_bios_sn() -> Option<String> {
     let output = timeout(Duration::from_secs(3), async {
-        Command::new("powershell.exe")
+        crate::process::HiddenTokioCommand::new("powershell.exe")
         .args([
             "-NoProfile",
             "-NonInteractive",

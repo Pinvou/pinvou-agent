@@ -18,7 +18,9 @@ pub(crate) use windows as platform;
 pub use interface::{
     check_for_update_info, command_exists, disable_super_permission, download_update_package,
     enable_super_permission, install_dependencies, install_downloaded_update,
-    nvidia_smi_candidates, open_target, platform_compat_path, ram_snapshot,
-    report_pending_update_result_info, super_permission_is_enabled, super_permission_turn_reminder,
-    user_home_dir,
+    nvidia_smi_candidates, ocr_dependency_packages, open_target, pdf_dependency_packages,
+    pdf_ocr_missing_message, pdf_render_missing_message, pdf_text_missing_message, pdf_tool_exists,
+    pdf_tool_path, platform_compat_path, presentation_pdf_missing_message, ram_snapshot,
+    report_pending_update_result_info, show_pdf_dependency_check, super_permission_is_enabled,
+    super_permission_turn_reminder, user_home_dir,
 };

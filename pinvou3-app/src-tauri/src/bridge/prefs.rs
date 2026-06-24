@@ -5,6 +5,7 @@
 //! `settings.json` 或对应的 `PINVOU3_*` 环境变量调整。
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -56,9 +57,30 @@ impl Language {
             Language::Ja => "ja",
         }
     }
+
+    /// pinvou3 补丁:底座 `locale_reinforcement_preamble` 对 `en` 返回 `None`
+    /// (英文是模型默认语言,底座认为无需强化)。但 pinvou3 的 system prompt 主体
+    /// (instructions.md)整份是中文,会把模型的回复语言拽回中文 —— 故英文 UI 下
+    /// 仍中文回复。zh-Hans / ja 已由底座 bookend(见 `bridge::bundle` 的
+    /// `set_locale_preamble_*_override`)覆盖,这里只补底座留空的 locale,返回
+    /// `None` 的不再重复注入。文案采 mirror 语义,与 zh-Hans preamble 对称。
+    pub fn extra_language_directive(self) -> Option<&'static str> {
+        match self {
+            Language::En => Some(
+                "## Language\n\n\
+                 Respond in English by default, and mirror the language of the \
+                 user's latest message. Keep code, file paths, tool names \
+                 (e.g. `read_file`, `exec_shell`), environment variables, \
+                 command-line flags, and URLs verbatim — only natural-language \
+                 prose follows the language rule.",
+            ),
+            // 底座已注入对应 bookend,避免重复。
+            Language::ZhHans | Language::Ja => None,
+        }
+    }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelPreset {
     /// 默认本地 vLLM：qwen36_35b_256k @ 127.0.0.1:8000/v1
@@ -139,6 +161,14 @@ impl SearchPrefs {
 
 /// 开发者后门字段。GUI 永远不暴露这些，靠手改 settings.json 或 env 调。
 /// `None` 走 bridge 里的默认值；env 优先级高于 settings.json。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ModelProfilePrefs {
+    pub model_name: Option<String>,
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AdvancedPrefs {
@@ -153,6 +183,7 @@ pub struct AdvancedPrefs {
     pub custom_base_url: Option<String>,
     /// 自定义 API key（CustomLocal / Remote* 生效）
     pub custom_api_key: Option<String>,
+    pub model_profiles: BTreeMap<ModelPreset, ModelProfilePrefs>,
 }
 
 /// 用户偏好。`settings.json` 顶层结构。
@@ -329,5 +360,46 @@ mod tests {
         let prefs: UserPrefs = serde_json::from_str(json).unwrap();
         assert_eq!(prefs.search.provider, SearchProvider::Bing);
         assert!(prefs.search.api_key.is_none());
+    }
+
+    #[test]
+    fn model_profiles_roundtrip_with_preset_keys() {
+        let mut prefs = UserPrefs::default();
+        prefs.advanced
+            .model_profiles
+            .insert(ModelPreset::Deepseek, ModelProfilePrefs {
+                model_name: Some("deepseek-v4-pro".to_string()),
+                base_url: Some("https://api.deepseek.com".to_string()),
+                api_key: Some("sk-deepseek".to_string()),
+            });
+        prefs.advanced
+            .model_profiles
+            .insert(ModelPreset::Minimax, ModelProfilePrefs {
+                model_name: Some("abab6.5s-chat".to_string()),
+                base_url: Some("https://api.minimax.chat/v1".to_string()),
+                api_key: Some("sk-minimax".to_string()),
+            });
+
+        let json = serde_json::to_string(&prefs).unwrap();
+        assert!(json.contains(r#""deepseek""#));
+        assert!(json.contains(r#""minimax""#));
+
+        let parsed: UserPrefs = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed
+                .advanced
+                .model_profiles
+                .get(&ModelPreset::Deepseek)
+                .and_then(|profile| profile.api_key.as_deref()),
+            Some("sk-deepseek")
+        );
+        assert_eq!(
+            parsed
+                .advanced
+                .model_profiles
+                .get(&ModelPreset::Minimax)
+                .and_then(|profile| profile.api_key.as_deref()),
+            Some("sk-minimax")
+        );
     }
 }

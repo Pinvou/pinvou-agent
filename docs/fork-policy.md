@@ -142,7 +142,11 @@ grep -rn "messages.push\|runtime_prompt" DeepSeek-TUI/crates/tui/src/core/engine
 
 > `gh pr list --repo Hmbown/CodeWhale --author h3c-hexin --state all` 核。head 走 `h3c-hexin/DeepSeek-TUI` 跨 fork。v0.8.60 sync 无新提 PR。
 
-**🟡 OPEN**:(无)
+**🟡 OPEN**
+
+| PR | 内容 | 处置 |
+|---|---|---|
+| [#3288](https://github.com/Hmbown/CodeWhale/pull/3288) | move volatile pwd out of static system prefix → per-turn turn_meta(prefix-cache 优化:每 session 变的 workspace 留 static prefix 致部分命中×投机解码工具调用退化) | 2026-06-17 提(对应 fork P 主题);accept 后下次 sync harvest、撤 P 指纹;close 则 P 保 fork |
 
 **⏹️ CLOSED —— 上游独立实现或不跟进**(fork 侧已取上游版 / 保 fork patch)
 

@@ -2,7 +2,6 @@ use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -462,7 +461,7 @@ pub fn install_update_package(path: &Path) -> Result<(), String> {
     }
     let installer_arg = windows_tool_path(&canon);
     let args = msi_install_args(&installer_arg);
-    Command::new("powershell.exe")
+    crate::process::HiddenCommand::new("powershell.exe")
         .args(update_installer_launcher_args(&args))
         .spawn()
         .map_err(|e| format!("Windows 安装器提权启动失败: {e}"))?;

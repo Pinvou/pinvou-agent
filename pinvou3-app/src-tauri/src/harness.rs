@@ -19,11 +19,11 @@
 //! ```
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
 use crate::bridge::paths;
+use crate::process::HiddenCommand;
 
 /// 按 UTF-8 char 边界向下取整截断 `s` 到 ≤ `max_bytes` 字节，返回前缀切片。
 /// 直接 `&s[..max_bytes]` 在 max_bytes 落在多字节字符(中文)中间时会 panic——
@@ -663,7 +663,7 @@ fn log_flow(project: &Path, event: &str, extra: &[(&str, &str)]) {
         scripts = script.parent().unwrap().display(),
     );
 
-    let mut child = match Command::new(python_cmd())
+    let mut child = match HiddenCommand::new(python_cmd())
         .args(["-c", &py_code])
         .env("PYTHONIOENCODING", "utf-8")
         .stdin(std::process::Stdio::piped())
@@ -715,7 +715,7 @@ fn run_cmd_with_timeout(program: &str, args: &[&str], cwd: &Path, timeout_secs: 
             (!is_local_default).then_some(key)
         })
         .unwrap_or_default();
-    let mut command = Command::new(program);
+    let mut command = HiddenCommand::new(program);
     command
         .args(args)
         .current_dir(cwd)

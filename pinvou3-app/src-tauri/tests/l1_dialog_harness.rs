@@ -1001,6 +1001,36 @@ async fn subagent_single_simple() {
     .await;
 }
 
+/// 验证"相对路径"方案:instructions 改成引导相对路径后,模型用相对路径调 write_file,
+/// 且文件真落到本会话 workspace(相对路径解析相对 workspace + 不逃逸)。
+/// 硬断言 files_exist 是 judge 摸不到的磁盘验证,故不委托 judge。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "L1 真 vLLM 端到端,默认不跑"]
+async fn relpath_write_file() {
+    let scenario = "relpath_write_file";
+    if !require_vllm(scenario).await {
+        return;
+    }
+    let (engine, ws) = spawn_for_scenario(scenario).await;
+
+    let mut expect = Expect::default();
+    expect.max_duration_s = 90.0;
+    // 相对路径 relpath_report.txt 必须落到本会话 workspace 根。
+    expect.files_exist = vec![ws.join("relpath_report.txt")];
+
+    run_turn(
+        &engine,
+        "用 write_file 工具把一句话 'hello pinvou3 relpath ok' 写到文件 relpath_report.txt。\
+         直接用相对路径(就写 relpath_report.txt),别用绝对路径、别用 ~。",
+        AppMode::Yolo,
+        PlanPhase::None,
+        &expect,
+        scenario,
+        Duration::from_secs(120),
+    )
+    .await;
+}
+
 /// C-1 subagent_compare_3_libs (核心场景): context isolation + 任务并行拆分。
 /// 让 Qwen 开 3 个 subagent 各研究 1 个 Rust 异步运行时,综合成对比表。
 /// 主评:任务拆分合理性 + 结果综合能力 + 不爆主 agent context。

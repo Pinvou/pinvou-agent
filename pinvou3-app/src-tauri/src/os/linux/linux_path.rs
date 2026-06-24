@@ -8,3 +8,7 @@ pub fn user_home_dir() -> PathBuf {
 pub fn platform_compat_path(value: &str) -> PathBuf {
     PathBuf::from(value)
 }
+
+pub fn pdf_tool_path(command: &str) -> PathBuf {
+    PathBuf::from(command)
+}

@@ -2946,7 +2946,7 @@ pub async fn cancel_workflow_role(
         // 走 scheduler 通用入口（用 std::process::Command 直接调）
         let scheduler =
             crate::harness::scheduler_path_for(&crate::harness::workflow_name_for_scenario(&scenario));
-        let output = std::process::Command::new("python3")
+        let output = crate::process::HiddenCommand::new("python3")
             .args([
                 scheduler.to_string_lossy().as_ref(),
                 project.to_string_lossy().as_ref(),

@@ -15,6 +15,42 @@ pub fn command_exists(_command: &str) -> bool {
     false
 }
 
+pub fn pdf_tool_path(command: &str) -> PathBuf {
+    PathBuf::from(command)
+}
+
+pub fn pdf_tool_exists(_command: &str) -> bool {
+    false
+}
+
+pub fn show_pdf_dependency_check() -> bool {
+    false
+}
+
+pub fn pdf_dependency_packages() -> &'static str {
+    ""
+}
+
+pub fn ocr_dependency_packages() -> &'static str {
+    "tesseract"
+}
+
+pub fn pdf_text_missing_message() -> &'static str {
+    "当前平台缺少可用的 PDF 文本解析组件。"
+}
+
+pub fn pdf_render_missing_message() -> &'static str {
+    "当前平台缺少可用的 PDF 渲染组件。"
+}
+
+pub fn pdf_ocr_missing_message() -> &'static str {
+    "当前平台缺少可用的 PDF OCR 组件。"
+}
+
+pub fn presentation_pdf_missing_message() -> &'static str {
+    "当前平台缺少可用的演示文稿 PDF 文本解析组件。"
+}
+
 pub fn nvidia_smi_candidates() -> Vec<&'static str> {
     vec!["nvidia-smi"]
 }

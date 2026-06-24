@@ -65,10 +65,10 @@ static SYSTEM_TOOLS: OnceLock<SystemTools> = OnceLock::new();
 pub fn system_tools() -> SystemTools {
     *SYSTEM_TOOLS.get_or_init(|| SystemTools {
         pandoc: crate::os::command_exists("pandoc"),
-        pdftotext: crate::os::command_exists("pdftotext"),
+        pdftotext: crate::os::pdf_tool_exists("pdftotext"),
         libreoffice: crate::os::command_exists("soffice") || crate::os::command_exists("libreoffice"),
         tesseract: crate::os::command_exists("tesseract"),
-        pdftoppm: crate::os::command_exists("pdftoppm"),
+        pdftoppm: crate::os::pdf_tool_exists("pdftoppm"),
         sevenzip: crate::os::command_exists("7z"),
         python3: crate::os::command_exists("python3"),
         msgconvert: crate::os::command_exists("msgconvert"),
@@ -95,14 +95,21 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
         apt: apt.into(),
     };
     let libreoffice = crate::os::command_exists("soffice") || crate::os::command_exists("libreoffice");
-    vec![
-        item("pdf", crate::os::command_exists("pdftotext"), "poppler-utils"),
+    let mut items = Vec::new();
+    if crate::os::show_pdf_dependency_check() {
+        items.push(item(
+            "pdf",
+            crate::os::pdf_tool_exists("pdftotext"),
+            crate::os::pdf_dependency_packages(),
+        ));
+    }
+    items.extend([
         item("office_modern", crate::os::command_exists("pandoc"), "pandoc"),
         item("office_legacy", libreoffice, "libreoffice"),
         item(
             "ocr",
-            crate::os::command_exists("tesseract") && crate::os::command_exists("pdftoppm"),
-            "tesseract-ocr tesseract-ocr-chi-sim poppler-utils",
+            crate::os::command_exists("tesseract") && crate::os::pdf_tool_exists("pdftoppm"),
+            crate::os::ocr_dependency_packages(),
         ),
         item("archive", crate::os::command_exists("7z"), "p7zip-full"),
         item(
@@ -110,7 +117,12 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
             crate::os::command_exists("python3") && crate::os::command_exists("msgconvert"),
             "python3 libemail-outlook-message-perl",
         ),
-    ]
+    ]);
+    items
+}
+
+fn pdf_tool_command(command: &str) -> Command {
+    Command::new(crate::os::pdf_tool_path(command))
 }
 
 /// 体检卡「一键安装」：委托 OS 调度层安装缺失依赖。
@@ -274,11 +286,11 @@ fn ingest_pdf(path: &Path, basename: String, path_str: String, byte_size: u64) -
             markdown: None,
             token_estimate: 0,
             byte_size,
-            warning: Some("PDF 解析需要 pdftotext，请运行: sudo apt install poppler-utils".into()),
+            warning: Some(crate::os::pdf_text_missing_message().into()),
         };
     }
     // pdftotext -layout <path> -  → stdout
-    let out = Command::new("pdftotext")
+    let out = pdf_tool_command("pdftotext")
         .arg("-layout")
         .arg(path)
         .arg("-")
@@ -600,7 +612,7 @@ pub fn office_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<Strin
         return Err("需要 LibreOffice，请运行: sudo apt install libreoffice".into());
     }
     if !tools.pdftoppm {
-        return Err("幻灯片渲染需要 poppler-utils: sudo apt install poppler-utils".into());
+        return Err(crate::os::pdf_render_missing_message().into());
     }
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -641,7 +653,7 @@ pub fn office_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<Strin
 
         // 2) PDF → PNG 页(直接在同一 tmpdir,避免再开目录)。
         let prefix = tmpdir.join("page");
-        let conv = Command::new("pdftoppm")
+        let conv = pdf_tool_command("pdftoppm")
             .arg("-png")
             .arg("-r")
             .arg("110")
@@ -691,7 +703,7 @@ pub fn office_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<Strin
 /// 但 110 dpi(预览够清又不至于 data URI 过大)。返回 (data_uris, 是否因上限截断)。
 pub fn pdf_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<String>, bool), String> {
     if !system_tools().pdftoppm {
-        return Err("PDF 预览需要 poppler-utils: sudo apt install poppler-utils".into());
+        return Err(crate::os::pdf_render_missing_message().into());
     }
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -701,7 +713,7 @@ pub fn pdf_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<String>,
     std::fs::create_dir_all(&tmpdir).map_err(|e| format!("创建临时目录失败: {e}"))?;
     let prefix = tmpdir.join("page");
 
-    let convert = Command::new("pdftoppm")
+    let convert = pdf_tool_command("pdftoppm")
         .arg("-png")
         .arg("-r")
         .arg("110")
@@ -834,11 +846,7 @@ fn ingest_presentation(
             markdown: None,
             token_estimate: 0,
             byte_size,
-            warning: Some(
-                "演示文稿解析需要 LibreOffice + poppler-utils: \
-                 sudo apt install libreoffice poppler-utils"
-                    .into(),
-            ),
+            warning: Some(crate::os::presentation_pdf_missing_message().into()),
         };
     }
     match libreoffice_presentation_text(path) {
@@ -901,7 +909,7 @@ fn libreoffice_presentation_text(path: &Path) -> Result<String, String> {
                 .and_then(|s| s.to_str())
                 .unwrap_or("converted");
             let pdf_path = tmpdir.join(format!("{stem}.pdf"));
-            Command::new("pdftotext")
+            pdf_tool_command("pdftotext")
                 .arg("-layout")
                 .arg(&pdf_path)
                 .arg("-")
@@ -979,11 +987,7 @@ fn ocr_pdf(path: &Path, basename: String, path_str: String, byte_size: u64) -> I
             markdown: None,
             token_estimate: 0,
             byte_size,
-            warning: Some(
-                "PDF 无文字层（疑似扫描件），OCR 兜底需要 poppler-utils + tesseract: \
-                 sudo apt install poppler-utils tesseract-ocr tesseract-ocr-chi-sim"
-                    .into(),
-            ),
+            warning: Some(crate::os::pdf_ocr_missing_message().into()),
         };
     }
 
@@ -1007,7 +1011,7 @@ fn ocr_pdf(path: &Path, basename: String, path_str: String, byte_size: u64) -> I
 
     let prefix = tmpdir.join("page");
     // pdftoppm -png -r 150 -l <max> <pdf> <prefix> → prefix-1.png, prefix-2.png ...
-    let convert = Command::new("pdftoppm")
+    let convert = pdf_tool_command("pdftoppm")
         .arg("-png")
         .arg("-r")
         .arg("150")
@@ -1371,7 +1375,7 @@ atts = [p.get_filename() for p in msg.iter_attachments() if p.get_filename()]
 if atts:
     print('\n附件:', ', '.join(atts))
 "#;
-    let out = Command::new("python3")
+    let out = crate::process::HiddenCommand::new("python3")
         .arg("-c")
         .arg(SCRIPT)
         .arg(path)
@@ -1477,11 +1481,11 @@ pub fn validate_path(raw: &str) -> Result<PathBuf, String> {
     if !p.is_absolute() {
         return Err(format!("path must be absolute: {raw}"));
     }
-    let canon = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
-    let home = match std::env::var("HOME") {
-        Ok(h) => PathBuf::from(h),
-        Err(_) => return Err("HOME not set".into()),
-    };
+    let canon = normalize_validated_path(&std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone()));
+    let home_raw = crate::os::user_home_dir();
+    let home = normalize_validated_path(
+        &std::fs::canonicalize(&home_raw).unwrap_or_else(|_| home_raw.clone()),
+    );
     if !canon.starts_with(&home) {
         return Err(format!("path {} not under $HOME", canon.display()));
     }
@@ -1498,6 +1502,10 @@ pub fn validate_path(raw: &str) -> Result<PathBuf, String> {
         }
     }
     Ok(canon)
+}
+
+fn normalize_validated_path(path: &Path) -> PathBuf {
+    crate::os::platform_compat_path(&path.to_string_lossy())
 }
 
 #[cfg(test)]
@@ -1596,6 +1604,22 @@ mod tests {
         assert!(validate_path("/etc/passwd").is_err());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn validate_path_accepts_windows_canonicalized_home_file() {
+        let home = crate::os::user_home_dir();
+        let file = home.join(format!(
+            "pinvou3-validate-path-{}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&file, "ok").unwrap();
+
+        let validated = validate_path(file.to_str().unwrap()).unwrap();
+        assert!(validated.starts_with(&home));
+
+        std::fs::remove_file(&file).ok();
+    }
+
     #[test]
     fn classify_routes_image_formats_by_vision_support() {
         // 视觉(image_analyze)支持的位图走 image。
@@ -1606,6 +1630,32 @@ mod tests {
         // 否则会被暂存后 image_analyze 报 Unsupported image format。
         for e in ["svg", "tiff", "tif"] {
             assert_eq!(classify(e), "binary", "{e} 不应走 image,应落 binary 兜底");
+        }
+    }
+
+    #[test]
+    fn pdf_tool_command_uses_os_layer_program() {
+        let command = pdf_tool_command("pdftotext");
+        assert_eq!(
+            command.get_program(),
+            crate::os::pdf_tool_path("pdftotext").as_os_str()
+        );
+    }
+
+    #[test]
+    fn dependency_check_respects_pdf_visibility_policy() {
+        let deps = check_dependencies();
+        let has_pdf = deps.iter().any(|item| item.key == "pdf");
+        assert_eq!(has_pdf, crate::os::show_pdf_dependency_check());
+        assert!(deps.iter().any(|item| item.key == "office_modern"));
+        assert!(deps.iter().any(|item| item.key == "ocr"));
+
+        if !crate::os::show_pdf_dependency_check() {
+            assert!(
+                deps.iter()
+                    .all(|item| !item.apt.contains("poppler") && !item.apt.contains("pdfto")),
+                "hidden Windows Poppler dependency should not leave install hints: {deps:?}"
+            );
         }
     }
 
