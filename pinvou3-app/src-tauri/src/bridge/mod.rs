@@ -300,7 +300,13 @@ impl Pinvou3Bridge {
         if let Ok(v) = std::env::var("DEEPSEEK_PROVIDER") {
             return v;
         }
-        let preset = self.effective_model().map(|m| m.preset).unwrap_or_default();
+        // active model(列表化后的真实来源)优先;无 active model 时回退 legacy
+        // model_preset 字段——与 model()/base_url()/api_key() 的三段式兜底保持一致,
+        // 避免 provider 说 vllm 而 base_url/model 已按 legacy preset 走的分叉。
+        let preset = self
+            .effective_model()
+            .map(|m| m.preset)
+            .unwrap_or_else(|| self.prefs.advanced.model_preset.unwrap_or_default());
         match preset {
             ModelPreset::LocalVllm => "vllm".to_string(),
             ModelPreset::Deepseek => "deepseek".to_string(),
@@ -1472,11 +1478,14 @@ mod tests {
 
 
     /// OpenaiCompatible preset 必须让用户提供的模型名生效，而不是回退到默认。
+    /// 9e296c4 模型列表化后,legacy preset+custom_* 经 `migrate_models()`(每次
+    /// `UserPrefs::load()` 都跑)物化成 active SavedModel 才生效——测试显式调一次模拟之。
     #[test]
     fn openai_compatible_uses_user_provided_name() {
         let mut bridge = fixture_bridge();
         bridge.prefs.advanced.model_preset = Some(ModelPreset::OpenaiCompatible);
         bridge.prefs.advanced.custom_model_name = Some("my-custom-model".to_string());
+        bridge.prefs.migrate_models();
         assert_eq!(bridge.model(), "my-custom-model");
         assert_eq!(bridge.provider(), "openai");
     }
@@ -1547,6 +1556,7 @@ mod tests {
         bridge.prefs.advanced.custom_base_url = Some("https://api.deepseek.com/".to_string());
         bridge.prefs.advanced.custom_model_name = Some("DeepSeek-V4-Flash".to_string());
         bridge.prefs.advanced.custom_api_key = Some("sk-test".to_string());
+        bridge.prefs.migrate_models(); // 同 load():custom_* → active SavedModel
 
         assert_eq!(bridge.provider(), "deepseek");
         assert_eq!(bridge.api_key(), "sk-test");

@@ -16,7 +16,7 @@
 | fork drift | **+2335 / −360 行,43 文件**(`git -C DeepSeek-TUI diff v0.8.60..HEAD --shortstat`)。超 1500 软上限,主体是工作流层 W——属"接受重 fork"(fork-policy §0);app 层 prompt 走 override 注入,不计入 |
 | 历史 | v0.8.60 + 8 commit:C1 lib · C2 blocklist · C3 append_file · C4 safety · C5+C7 prompt-composer · C6 chore · W 工作流层 · docs。后续叠加:C8 会话工具开关 op(#4,`a0efea0b`,2026-06-23) · R extra_tools 注入口(`6b3059da`,2026-06-24) |
 | LLM 暴露 native 工具 | **23 个**(全量注册 − 81 黑名单;**tool_search 已禁用**,模型无法激活 deferred 工具)。MCP `mcp_pinvou_present_artifact` 另接,共 24 入口 |
-| fork-guard | **49 指纹 + 回归测试**(`scripts/fork-guard.sh`;+C8 会话工具开关 2 条 +RAG1/RAG2 守 extra_tools 注入口);底座 lib 4539 pass(+1 已知 flake:verifier 后台 shell 并行误报)/ app lib 190 pass(单线程;另 5 个 `bridge::tests` legacy model_preset 测试 9e296c4 模型列表化后过时失败,main 上即如此,非合并回归) |
+| fork-guard | **49 指纹 + 回归测试**(`scripts/fork-guard.sh`;+C8 会话工具开关 2 条 +RAG1/RAG2 守 extra_tools 注入口);底座 lib 4539 pass(+1 已知 flake:verifier 后台 shell 并行误报)/ app lib 195 pass(单线程) |
 | system prompt | dump 逐字节稳定(210 行,diff=0);per-turn `<runtime_prompt>` tag + goal continuation 均已 gate |
 
 ---
