@@ -174,6 +174,7 @@ pub fn run() {
             commands::set_session_model,
             commands::get_session_model_id,
             commands::test_model_connection,
+            commands::transcribe_voice_audio,
             commands::list_sessions,
             commands::create_session,
             commands::load_session,

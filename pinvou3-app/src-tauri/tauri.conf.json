@@ -39,7 +39,8 @@
     ],
     "resources": {
       "resources/windows/poppler/": "poppler",
-      "resources/windows/pandoc/": "pandoc"
+      "resources/windows/pandoc/": "pandoc",
+      "resources/windows/asr/": "asr"
     },
     "windows": {
       "wix": {

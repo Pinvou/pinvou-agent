@@ -64,6 +64,29 @@ pub fn pandoc_tool_path() -> std::path::PathBuf {
     windows_path::pandoc_tool_path()
 }
 
+pub fn asr_tool_path() -> std::path::PathBuf {
+    if let Ok(path) = std::env::var("PINVOU3_ASR_CMD") {
+        if !path.trim().is_empty() {
+            return std::path::PathBuf::from(path);
+        }
+    }
+    if let Ok(path) = std::env::var("PINVOU3_DEEPSPEECH2_CMD") {
+        if !path.trim().is_empty() {
+            return std::path::PathBuf::from(path);
+        }
+    }
+    if let Ok(path) = std::env::var("PADDLESPEECH_BIN") {
+        if !path.trim().is_empty() {
+            return std::path::PathBuf::from(path);
+        }
+    }
+    ensure_bundled_asr_on_process_path();
+    if let Some(path) = windows_path::bundled_asr_tool_path() {
+        return path;
+    }
+    std::path::PathBuf::from("pinvou-asr")
+}
+
 pub fn pdf_tool_exists(command: &str) -> bool {
     ensure_bundled_poppler_on_process_path();
     windows_path::bundled_pdf_tool_path(command).is_some() || command_exists(command)
@@ -72,6 +95,26 @@ pub fn pdf_tool_exists(command: &str) -> bool {
 pub fn pandoc_tool_exists() -> bool {
     ensure_bundled_pandoc_on_process_path();
     windows_path::bundled_pandoc_tool_path().is_some() || command_exists("pandoc")
+}
+
+pub fn asr_tool_exists() -> bool {
+    if let Ok(path) = std::env::var("PINVOU3_ASR_CMD") {
+        if !path.trim().is_empty() {
+            return command_exists(&path);
+        }
+    }
+    if let Ok(path) = std::env::var("PINVOU3_DEEPSPEECH2_CMD") {
+        if !path.trim().is_empty() {
+            return command_exists(&path);
+        }
+    }
+    if let Ok(path) = std::env::var("PADDLESPEECH_BIN") {
+        if !path.trim().is_empty() {
+            return command_exists(&path);
+        }
+    }
+    ensure_bundled_asr_on_process_path();
+    windows_path::bundled_asr_tool_path().is_some() || command_exists("pinvou-asr")
 }
 
 pub fn show_pdf_dependency_check() -> bool {
@@ -90,8 +133,16 @@ pub fn pandoc_dependency_packages() -> &'static str {
     ""
 }
 
+pub fn asr_dependency_packages() -> &'static str {
+    "安装 pinvou3-asr-windows-x64 离线语音包到安装目录 asr 文件夹"
+}
+
 pub fn ocr_dependency_packages() -> &'static str {
     "tesseract-ocr tesseract-ocr-chi-sim"
+}
+
+pub fn asr_missing_message() -> &'static str {
+    "本地语音识别组件缺失或不可用：请安装 pinvou3-asr-windows-x64 SenseVoice 离线语音包到安装目录 asr 文件夹，或通过 PINVOU3_ASR_CMD 指向 pinvou-asr.exe。"
 }
 
 pub fn pandoc_missing_message() -> &'static str {
@@ -123,6 +174,13 @@ fn ensure_bundled_poppler_on_process_path() {
 
 fn ensure_bundled_pandoc_on_process_path() {
     let Some(dir) = windows_path::bundled_pandoc_dir() else {
+        return;
+    };
+    ensure_dir_on_process_path(dir);
+}
+
+fn ensure_bundled_asr_on_process_path() {
+    let Some(dir) = windows_path::bundled_asr_dir() else {
         return;
     };
     ensure_dir_on_process_path(dir);

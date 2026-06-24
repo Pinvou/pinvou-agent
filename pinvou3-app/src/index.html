@@ -276,7 +276,7 @@
         depAllOk: '所有依赖项已就绪', depMissingSuffix: ' 项依赖缺失（对应能力将不可用）',
         depInstalling: '安装中…', depInstallBtn: '一键安装', depInstallNote: '将提权安装缺失依赖（需联网或可用 apt 源）',
         dep_pdf: 'PDF 文本提取', dep_office_modern: 'Office 文档（docx）', dep_office_legacy: '旧版 Office / 演示与表格',
-        dep_ocr: '图片 / 扫描件 OCR', dep_archive: '压缩包（zip/rar/7z）', dep_email: '邮件（.eml / .msg）',
+        dep_ocr: '图片 / 扫描件 OCR', dep_archive: '压缩包（zip/rar/7z）', dep_email: '邮件（.eml / .msg）', dep_voice_asr: '本地语音识别',
         feedbackTitle: '帮助与反馈', feedbackDesc: '反馈使用中的问题和建议，可附带截图或短视频。',
         feedbackOpen: '我要反馈', feedbackDialogTitle: '我要反馈', feedbackType: '反馈类型',
         feedbackIssue: '问题', feedbackSuggestion: '建议',
@@ -347,6 +347,9 @@
         skillPrefill: name => `我要用 ${name} 完成: `,
         queuedTag: '排队中', queuedCancel: '撤销',
         attachParsing: '解析中…', attachFailed: '失败', attachAdd: '添加附件',
+        voiceStart: '语音输入', voiceStop: '结束录音', voiceCancel: '取消语音输入', voiceRetry: '重试',
+        voiceRequesting: '正在请求麦克风权限…', voiceRecording: '正在录音，再点一次结束', voiceTranscribing: '正在识别语音…',
+        voiceCompleted: '语音已写入输入框', voiceClose: '关闭语音提示',
         composerTools: '工具', composerInstalledTools: '已接入工具', composerNoTools: '暂无已装工具', composerToolOn: '已启用', composerManageTools: '管理工具',
         resend: '重新发送', editResend: '编辑并重发',
         thinkingLabel: '思考中', thinkingCall: (tool, s) => `调用 ${tool}... ${s}s`,
@@ -477,7 +480,7 @@
         depAllOk: 'All dependencies ready', depMissingSuffix: ' dependency group(s) missing (those features unavailable)',
         depInstalling: 'Installing…', depInstallBtn: 'Install', depInstallNote: 'Installs missing deps via elevated apt (needs network or an apt source)',
         dep_pdf: 'PDF text extraction', dep_office_modern: 'Office docs (docx)', dep_office_legacy: 'Legacy Office / slides & sheets',
-        dep_ocr: 'Image / scanned-PDF OCR', dep_archive: 'Archives (zip/rar/7z)', dep_email: 'Email (.eml / .msg)',
+        dep_ocr: 'Image / scanned-PDF OCR', dep_archive: 'Archives (zip/rar/7z)', dep_email: 'Email (.eml / .msg)', dep_voice_asr: 'Local voice recognition',
         feedbackTitle: 'Help & Feedback', feedbackDesc: 'Send issues or suggestions with screenshots or short videos.',
         feedbackOpen: 'Send feedback', feedbackDialogTitle: 'Send feedback', feedbackType: 'Type',
         feedbackIssue: 'Issue', feedbackSuggestion: 'Suggestion',
@@ -548,6 +551,9 @@
         skillPrefill: name => `I want to use ${name} to: `,
         queuedTag: 'Queued', queuedCancel: 'Remove',
         attachParsing: 'Parsing…', attachFailed: 'Failed', attachAdd: 'Attach file',
+        voiceStart: 'Voice input', voiceStop: 'Stop recording', voiceCancel: 'Cancel voice input', voiceRetry: 'Retry',
+        voiceRequesting: 'Requesting microphone permission…', voiceRecording: 'Recording, click again to stop', voiceTranscribing: 'Transcribing voice…',
+        voiceCompleted: 'Voice text added', voiceClose: 'Close voice notice',
         composerTools: 'Tools', composerInstalledTools: 'Connected tools', composerNoTools: 'No tools installed', composerToolOn: 'On', composerManageTools: 'Manage tools',
         resend: 'Resend', editResend: 'Edit & resend',
         thinkingLabel: 'Thinking', thinkingCall: (tool, s) => `Calling ${tool}... ${s}s`,
@@ -678,8 +684,8 @@
         depAllOk: 'すべての依存関係が準備済み', depMissingSuffix: ' 件の依存が不足（該当機能は利用不可）',
         depInstalling: 'インストール中…', depInstallBtn: 'インストール', depInstallNote: '権限昇格して不足依存をインストール（ネットワークまたは apt ソースが必要）',
         dep_pdf: 'PDF テキスト抽出', dep_office_modern: 'Office 文書（docx）', dep_office_legacy: '旧 Office / スライドと表計算',
-        dep_ocr: '画像 / スキャン PDF の OCR', dep_archive: 'アーカイブ（zip/rar/7z）', dep_email: 'メール（.eml / .msg）',
-        feedbackTitle: 'ヘルプとフィードバック', feedbackDesc: '問題、バグ、意見、提案をスクリーンショットや短い動画付きで送信できます。',
+        dep_ocr: '画像 / スキャン PDF の OCR', dep_archive: 'アーカイブ（zip/rar/7z）', dep_email: 'メール（.eml / .msg）', dep_voice_asr: 'ローカル音声認識',
+        feedbackTitle: 'ヘルプとフィードバック', feedbackDesc: '問題や提案をスクリーンショットや短い動画付きで送信できます。',
         feedbackOpen: 'フィードバック', feedbackDialogTitle: 'フィードバック', feedbackType: '種類',
         feedbackIssue: '問題', feedbackSuggestion: '提案',
         feedbackSubject: 'タイトル', feedbackSubjectPh: '短い概要（任意）',
@@ -749,6 +755,9 @@
         skillPrefill: name => `${name} を使ってやりたいこと: `,
         queuedTag: '待機中', queuedCancel: '取り消し',
         attachParsing: '解析中…', attachFailed: '失敗', attachAdd: 'ファイルを添付',
+        voiceStart: '音声入力', voiceStop: '録音を終了', voiceCancel: '音声入力をキャンセル', voiceRetry: '再試行',
+        voiceRequesting: 'マイク権限を確認中…', voiceRecording: '録音中。もう一度押すと終了', voiceTranscribing: '音声を認識中…',
+        voiceCompleted: '音声テキストを追加しました', voiceClose: '音声通知を閉じる',
         composerTools: 'ツール', composerInstalledTools: '接続済みツール', composerNoTools: 'ツールなし', composerToolOn: '有効', composerManageTools: 'ツール管理',
         resend: '再送信', editResend: '編集して再送信',
         thinkingLabel: '思考中', thinkingCall: (tool, s) => `${tool} を実行中... ${s}s`,
@@ -2734,6 +2743,10 @@
       const [welcomeToolId, setWelcomeToolId] = useState(null);
       const activeSessionId = bs ? bs.activeSessionId : null;
       const draftEpoch = bs ? bs.draftEpoch : 0;
+      const voiceInput = (bs && bs.voiceInput) || { status: 'idle' };
+      const voiceActive = voiceInput.status === 'requesting_permission' || voiceInput.status === 'recording' || voiceInput.status === 'transcribing';
+      const voiceRecording = voiceInput.status === 'recording';
+      const voiceNotice = voiceInput.status !== 'idle' && voiceInput.message;
       useEffect(() => {
         if (justInstalledTool) {
           setWelcomeToolId(justInstalledTool);
@@ -2769,6 +2782,23 @@
 
       function handleCancel() {
         if (bridge.available) bridge.cancelGeneration();
+      }
+
+      function handleVoiceClick() {
+        if (!bridge.available) return;
+        if (voiceInput.status === 'recording') {
+          bridge.startVoiceInput(inputText, (text) => setInputText(prev => bridge.appendVoiceText(prev, text)));
+          return;
+        }
+        bridge.startVoiceInput(inputText, (text) => setInputText(prev => bridge.appendVoiceText(prev, text)));
+      }
+
+      function handleVoiceCancel() {
+        if (bridge.available) bridge.cancelVoiceInput();
+      }
+
+      function handleVoiceClose() {
+        if (bridge.available) bridge.clearVoiceInput();
       }
 
       function handlePaste(e) {
@@ -2888,6 +2918,32 @@
                 ))}
               </div>
             )}
+            {voiceNotice && (
+              <div className={`flex items-center justify-between gap-2 mb-2 px-3 py-2 rounded-2xl text-[12px] ${
+                voiceInput.status === 'failed'
+                  ? (isDark ? 'bg-[#3A1F1F] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]')
+                  : (isDark ? 'bg-[#1E2B3A] text-[#A8C7FA]' : 'bg-[#E8F0FE] text-[#174EA6]')
+              }`}>
+                <span className="min-w-0 truncate">
+                  {voiceInput.status === 'requesting_permission' ? t.voiceRequesting
+                    : voiceInput.status === 'recording' ? t.voiceRecording
+                    : voiceInput.status === 'transcribing' ? t.voiceTranscribing
+                    : voiceInput.status === 'completed' ? t.voiceCompleted
+                    : voiceInput.message}
+                </span>
+                <div className="flex items-center gap-1 shrink-0">
+                  {voiceInput.status === 'failed' && (
+                    <button onClick={handleVoiceClick} className={`px-2 py-1 rounded-full ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{t.voiceRetry}</button>
+                  )}
+                  {voiceActive && (
+                    <button onClick={handleVoiceCancel} className={`px-2 py-1 rounded-full ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{t.voiceCancel}</button>
+                  )}
+                  {!voiceActive && (
+                    <button onClick={handleVoiceClose} title={t.voiceClose} className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>×</button>
+                  )}
+                </div>
+              </div>
+            )}
             <div className="bg-white/80 dark:bg-[#161618]/85 backdrop-blur-2xl border border-black/[0.06] dark:border-white/10 rounded-[28px] shadow-lg focus-within:border-blue-400/50 dark:focus-within:border-blue-500/50 transition-colors px-4 pt-3 pb-2.5">
               <textarea
                 ref={composerRef}
@@ -2904,6 +2960,16 @@
                   <button onClick={() => bridge.available && bridge.pickAndAttach()} title={t.attachAdd}
                     className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-black/5 dark:hover:bg-white/10 transition-colors">
                     <Paperclip size={20} />
+                  </button>
+                  <button onClick={handleVoiceClick} title={voiceRecording ? t.voiceStop : t.voiceStart}
+                    className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${
+                      voiceRecording
+                        ? 'bg-[#C5221F] text-white hover:bg-[#A50E0E]'
+                        : voiceActive
+                          ? (isDark ? 'bg-[#1E2B3A] text-[#A8C7FA] hover:bg-[#24364C]' : 'bg-[#E8F0FE] text-[#174EA6] hover:bg-[#D2E3FC]')
+                          : 'text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-black/5 dark:hover:bg-white/10'
+                    }`}>
+                    <Mic size={20} />
                   </button>
                   <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoSettings} />
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} />
