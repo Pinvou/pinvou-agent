@@ -296,10 +296,15 @@ impl Pinvou3Bundle {
         Ok(())
     }
 
-    /// 解包内嵌的内置 skills 到 `~/.pinvou3/bundle/skills/`。
-    /// 每次启动防御性重写（immutable bundle 资源）。当前：视觉设计。
+    /// 解包内嵌的内置 skills。**落位到 `~/.agents/skills/`**——引擎 fork patch #41 让
+    /// `load_skill` 工具只扫这个目录(`agents_global_skills_dir`);bundle/skills 只进
+    /// system-prompt catalogue 的 union、`load_skill` 不认。落错目录会"列得出、load 不到"。
+    /// 每次启动防御性重写(immutable 内置资源)。当前:视觉设计。
     fn write_builtin_skills(&self) -> std::io::Result<()> {
-        let dir = self.skills_dir.join("visual-design");
+        let Some(agents) = deepseek_tui::skills::agents_global_skills_dir() else {
+            return Ok(()); // 拿不到 home 目录就跳过,不致命
+        };
+        let dir = agents.join("visual-design");
         std::fs::create_dir_all(&dir)?;
         std::fs::write(dir.join("SKILL.md"), VISUAL_DESIGN_SKILL_MD)?;
         Ok(())

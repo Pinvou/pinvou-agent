@@ -53,6 +53,9 @@
   var state = {
     sessions: [],
     activeSessionId: null,
+    // 模型 load_skill 触发的当前技能 id（如 'visual-design'）→ 点亮 composer 技能标；null=无。
+    // 内置自动技能（视觉设计）的"正在使用"指示：新一轮用户消息时清、相关时再点亮。
+    activeSkill: null,
     // 「新建对话」点击计数:每次 enterDraft() 自增(含已在草稿态的提前返回)。前端 welcomeToolId
     // 复位 effect 挂它 → 即便 activeSessionId 没变(draft→draft)也能重新求值,否则残留的工具欢迎卡
     // 会一直顶掉「你好」欢迎语(该 tool 无 welcomeQueries 时整块空白)。
@@ -642,7 +645,9 @@
               updateToolItem(c.tool_use_id, c.content, false); // 被拦=失败态,与实时一致
               addChatItem({ type: "careful_blocked", args: tm.args, metadata: blockedMd, time: "" });
             } else {
-              updateToolItem(c.tool_use_id, c.content, !c.is_error);
+              // load_skill 同样脱敏：重载历史时也不还原 SKILL.md 全文，展开只见占位。
+              var contentForCard = (tm.name === "load_skill") ? "（技能已加载，内容不展示）" : c.content;
+              updateToolItem(c.tool_use_id, contentForCard, !c.is_error);
             }
           }
         }
@@ -924,6 +929,9 @@
       if (!state.activeSessionId) return;
     }
 
+    // 新一轮用户消息 → 先熄灭技能标；本轮若模型再 load_skill 会重新点亮（sticky-ish 生命周期）。
+    state.activeSkill = null;
+
     // 展示文本：把附件 chip 名附在用户消息末尾
     var displayText = readyAttachments.length > 0
       ? text + (text ? "\n\n" : "") + "📎 " + readyAttachments.map(function (a) { return a.basename; }).join(" · ")
@@ -1166,6 +1174,17 @@
     // present_artifact：不渲染灰色工具卡，等 tool_end 成功时渲染成品卡
     if (isPresentArtifactTool(p.name)) { notify(); return; }
 
+    // load_skill：模型加载技能 → 点亮 composer 技能标（内置自动技能"正在使用"指示），
+    // 不渲染裸工具卡（用药丸指示器替代）。当前只识别视觉设计。
+    if (p.name === "load_skill") {
+      var skArg = ((p.args && (p.args.name || p.args.skill)) || "").toString();
+      if (skArg.indexOf("视觉设计") >= 0 || skArg.toLowerCase().indexOf("visual-design") >= 0) {
+        state.activeSkill = "visual-design";
+      }
+      // 不 return：照常出工具卡。卡内容在 tool_end / rerender 处脱敏成占位，
+      // 展开看不到 SKILL.md 全文（防设计系统泄露），但保留"加载了技能"的痕迹。
+    }
+
     // Add tool card
     addChatItem({
       type: "tool", toolId: p.id, name: p.name, args: p.args,
@@ -1234,7 +1253,9 @@
       return;
     }
 
-    updateToolItem(p.id, p.output, p.success);
+    // load_skill：卡照出，但不把返回的 SKILL.md 全文写进卡，展开只见占位（防设计系统泄露）。
+    var outForCard = (meta && meta.name === "load_skill") ? "（技能已加载，内容不展示）" : p.output;
+    updateToolItem(p.id, outForCard, p.success);
 
     // Careful hook：DeepSeek-TUI shell.rs 拦截 Dangerous → 红色拦截卡
     var md = p.metadata;
