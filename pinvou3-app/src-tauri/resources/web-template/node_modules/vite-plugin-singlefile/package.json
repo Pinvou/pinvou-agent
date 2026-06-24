@@ -1,0 +1,82 @@
+{
+	"name": "vite-plugin-singlefile",
+	"version": "2.3.3",
+	"description": "Vite plugin for inlining all JavaScript and CSS resources",
+	"main": "dist/cjs/index.js",
+	"type": "module",
+	"module": "dist/esm/index.js",
+	"exports": {
+		".": {
+			"types": "./dist/esm/declarations/index.d.ts",
+			"import": "./dist/esm/index.js",
+			"require": "./dist/cjs/index.js"
+		}
+	},
+	"typings": "dist/esm/declarations/index.d.ts",
+	"files": [
+		"dist"
+	],
+	"engines": {
+		"node": ">18.0.0"
+	},
+	"scripts": {
+		"dev": "rimraf dist && tsc -w -p tsconfig.json",
+		"prepare": "npm run build",
+		"build": "rimraf dist && tsc -p tsconfig.json && tsc -p tsconfig-cjs.json && node fixup.cjs",
+		"test": "vitest --run",
+		"test:watch": "vitest watch",
+		"test:vite-versions": "bash test-vite-versions.sh",
+		"lint": "eslint src/index.ts"
+	},
+	"keywords": [
+		"vite",
+		"inline",
+		"css",
+		"SFA",
+		"single-file"
+	],
+	"author": "richard@tallent.us",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/richardtallent/vite-plugin-singlefile"
+	},
+	"bugs": {
+		"url": "https://github.com/richardtallent/vite-plugin-singlefile/issues"
+	},
+	"homepage": "https://github.com/richardtallent/vite-plugin-singlefile/tree/main/#readme",
+	"dependencies": {
+		"micromatch": "^4.0.8"
+	},
+	"peerDependencies": {
+		"rollup": "^4.59.0",
+		"vite": "^5.4.21 || ^6.0.0 || ^7.0.0 || ^8.0.0"
+	},
+	"peerDependenciesMeta": {
+		"rollup": {
+			"optional": true
+		}
+	},
+	"devDependencies": {
+		"@eslint/eslintrc": "^3.3.5",
+		"@eslint/js": "^9.39.4",
+		"@types/jest": "^30.0.0",
+		"@types/micromatch": "^4.0.10",
+		"@types/node": "latest",
+		"@typescript-eslint/eslint-plugin": "^8.58.2",
+		"@typescript-eslint/parser": "^8.58.2",
+		"eslint": "^9.39.4",
+		"globale": "^1.0.0",
+		"rimraf": "^6.1.3",
+		"typescript": "^6.0.3",
+		"vitest": "^4.1.4"
+	},
+	"prettier": {
+		"useTabs": true,
+		"semi": false,
+		"singleQuote": false,
+		"bracketSpacing": true,
+		"trailingComma": "es5",
+		"printWidth": 180
+	}
+}

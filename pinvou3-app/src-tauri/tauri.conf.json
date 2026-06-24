@@ -30,7 +30,8 @@
       "deb"
     ],
     "resources": [
-      "resources/bge-m3"
+      "resources/bge-m3",
+      "resources/web-template"
     ],
     "icon": [
       "icons/32x32.png",

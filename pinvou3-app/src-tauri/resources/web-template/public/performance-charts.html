@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LinSeer MegaCube 性能数据可视化</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; background: #f0f2f5; color: #333; padding: 20px; }
+  .container { max-width: 1400px; margin: 0 auto; }
+  h1 { text-align: center; font-size: 28px; color: #1a1a2e; margin-bottom: 8px; }
+  .subtitle { text-align: center; color: #666; margin-bottom: 30px; font-size: 14px; }
+  .section { background: #fff; border-radius: 12px; padding: 24px; margin-bottom: 24px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+  .section h2 { font-size: 20px; color: #16213e; border-left: 4px solid #0f3460; padding-left: 12px; margin-bottom: 16px; }
+  .section h3 { font-size: 16px; color: #1a1a2e; margin: 16px 0 12px; }
+  .chart-row { display: flex; gap: 20px; flex-wrap: wrap; }
+  .chart-box { flex: 1; min-width: 500px; background: #fafbfc; border-radius: 8px; padding: 16px; border: 1px solid #e8e8e8; }
+  .chart-box canvas { max-height: 400px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 12px; }
+  th, td { border: 1px solid #ddd; padding: 8px 10px; text-align: center; }
+  th { background: #16213e; color: #fff; font-weight: 600; }
+  tr:nth-child(even) { background: #f8f9fa; }
+  tr:hover { background: #e8f4fd; }
+  .summary-cards { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+  .card { flex: 1; min-width: 200px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 10px; padding: 20px; color: #fff; text-align: center; }
+  .card.green { background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); }
+  .card.orange { background: linear-gradient(135deg, #f2994a 0%, #f2c94c 100%); }
+  .card.blue { background: linear-gradient(135deg, #2193b0 0%, #6dd5ed 100%); }
+  .card h4 { font-size: 14px; opacity: 0.9; margin-bottom: 8px; }
+  .card .value { font-size: 28px; font-weight: 700; }
+  .card .unit { font-size: 12px; opacity: 0.85; }
+  .legend { font-size: 12px; color: #888; margin-top: 8px; }
+  .data-source { font-size: 12px; color: #999; margin-top: 12px; font-style: italic; }
+  .highlight { color: #e74c3c; font-weight: 700; }
+  .good { color: #27ae60; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>H3C LinSeer MegaCube 性能数据可视化</h1>
+  <p class="subtitle">单台性能与多台堆叠性能测试报告 | 数据来源：配套材料/LinSeer_MegaCube-单台性能测试数据.md、配套材料/LinSeer_MegaCube-多台堆叠性能测试数据.md</p>
+
+  <!-- 关键指标概览 -->
+  <div class="section">
+    <h2>一、关键性能指标概览</h2>
+    <div class="summary-cards">
+      <div class="card">
+        <h4>单台最高 TPS (Qwen3 8B)</h4>
+        <div class="value">502.6</div>
+        <div class="unit">Tokens/s (并发16)</div>
+      </div>
+      <div class="card green">
+        <h4>最佳 TTFT (LLaMA 3.1 8B)</h4>
+        <div class="value">0.083</div>
+        <div class="unit">秒 (并发16)</div>
+      </div>
+      <div class="card orange">
+        <h4>最大堆叠 TPS (Qwen3 32B)</h4>
+        <div class="value">19.19</div>
+        <div class="unit">Tokens/s (4台堆叠)</div>
+      </div>
+      <div class="card blue">
+        <h4>堆叠扩展效率 (405B)</h4>
+        <div class="value">2.07x</div>
+        <div class="unit">4台→8台 TPS 3.0→6.2</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 单台性能图表 -->
+  <div class="section">
+    <h2>二、单台性能测试数据</h2>
+
+    <h3>2.1 TTFT 随并发数变化趋势</h3>
+    <div class="chart-row">
+      <div class="chart-box">
+        <canvas id="ttftChart"></canvas>
+      </div>
+    </div>
+
+    <h3>2.2 Tokens/s 随并发数变化趋势</h3>
+    <div class="chart-row">
+      <div class="chart-box">
+        <canvas id="tpsChart"></canvas>
+      </div>
+    </div>
+
+    <h3>2.3 各模型并发 16 下 TPS 对比</h3>
+    <div class="chart-row">
+      <div class="chart-box">
+        <canvas id="tpsCompareChart"></canvas>
+      </div>
+    </div>
+
+    <h3>2.4 各模型并发 16 下 TTFT 对比</h3>
+    <div class="chart-row">
+      <div class="chart-box">
+        <canvas id="ttftCompareChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- 多台堆叠性能图表 -->
+  <div class="section">
+    <h2>三、多台堆叠性能测试数据</h2>
+
+    <h3>3.1 各堆叠模型 Token 生成速率</h3>
+    <div class="chart-row">
+      <div class="chart-box">
+        <canvas id="stackTpsChart"></canvas>
+      </div>
+    </div>
+
+    <h3>3.2 各堆叠模型 GPU 使用率</h3>
+    <div class="chart-row">
+      <div class="chart-box">
+        <canvas id="gpuChart"></canvas>
+      </div>
+    </div>
+
+    <h3>3.3 各堆叠模型网口带宽占用</h3>
+    <div class="chart-row">
+      <div class="chart-box">
+        <canvas id="bandwidthChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <p class="data-source">数据来源：配套材料/LinSeer_MegaCube-单台性能测试数据.md、配套材料/LinSeer_MegaCube-多台堆叠性能测试数据.md</p>
+</div>
+
+<script>
+// 全局 Chart.js 配置
+Chart.defaults.font.family = '"Microsoft YaHei", "PingFang SC", sans-serif';
+Chart.defaults.font.size = 12;
+Chart.defaults.color = '#666';
+
+const modelColors = {
+  'Qwen3 8B': '#0057b8',
+  'LLaMA 3.1 8B': '#00b4d8',
+  'Qwen3 32B': '#e67e22',
+  'DeepSeek R1 32B': '#27ae60',
+  'LLaMA 3.3 70B': '#8e44ad'
+};
+
+// 2.1 TTFT 随并发变化
+new Chart(document.getElementById('ttftChart'), {
+  type: 'line',
+  data: {
+    labels: ['并发 1', '并发 2', '并发 4', '并发 8', '并发 16'],
+    datasets: [
+      { label: 'Qwen3 8B', data: [0.037, 0.0565, 0.0794, 0.0774, 0.1018], borderColor: modelColors['Qwen3 8B'], backgroundColor: modelColors['Qwen3 8B'] + '20', fill: false, tension: 0.3 },
+      { label: 'LLaMA 3.1 8B', data: [0.0488, 0.0955, 0.0679, 0.0709, 0.0833], borderColor: modelColors['LLaMA 3.1 8B'], backgroundColor: modelColors['LLaMA 3.1 8B'] + '20', fill: false, tension: 0.3 },
+      { label: 'Qwen3 32B', data: [0.1456, 0.2629, 0.2271, 0.2356, 0.2484], borderColor: modelColors['Qwen3 32B'], backgroundColor: modelColors['Qwen3 32B'] + '20', fill: false, tension: 0.3 },
+      { label: 'DeepSeek R1 32B', data: [0.1472, 0.254, 0.2389, 0.2526, 0.2592], borderColor: modelColors['DeepSeek R1 32B'], backgroundColor: modelColors['DeepSeek R1 32B'] + '20', fill: false, tension: 0.3 },
+      { label: 'LLaMA 3.3 70B', data: [0.3156, 0.5675, 0.5297, 0.5237, 0.5405], borderColor: modelColors['LLaMA 3.3 70B'], backgroundColor: modelColors['LLaMA 3.3 70B'] + '20', fill: false, tension: 0.3 }
+    ]
+  },
+  options: { responsive: true, plugins: { title: { display: true, text: 'TTFT (秒) 随并发数变化' } } }
+});
+
+// 2.2 TPS 随并发变化
+new Chart(document.getElementById('tpsChart'), {
+  type: 'line',
+  data: {
+    labels: ['并发 1', '并发 2', '并发 4', '并发 8', '并发 16'],
+    datasets: [
+      { label: 'Qwen3 8B', data: [42.68, 78.48, 153.13, 275.89, 502.6], borderColor: modelColors['Qwen3 8B'], fill: false, tension: 0.3 },
+      { label: 'LLaMA 3.1 8B', data: [19.94, 80.1, 156.75, 265.91, 387.71], borderColor: modelColors['LLaMA 3.1 8B'], fill: false, tension: 0.3 },
+      { label: 'Qwen3 32B', data: [11.06, 22.99, 39.29, 73.7, 143.19], borderColor: modelColors['Qwen3 32B'], fill: false, tension: 0.3 },
+      { label: 'DeepSeek R1 32B', data: [9.25, 25.21, 43.01, 77.95, 140.03], borderColor: modelColors['DeepSeek R1 32B'], fill: false, tension: 0.3 },
+      { label: 'LLaMA 3.3 70B', data: [5.06, 12.73, 18.6, 33.4, 61.83], borderColor: modelColors['LLaMA 3.3 70B'], fill: false, tension: 0.3 }
+    ]
+  },
+  options: { responsive: true, plugins: { title: { display: true, text: 'Tokens/s 随并发数变化' } } }
+});
+
+// 2.3 TPS 对比柱状图
+new Chart(document.getElementById('tpsCompareChart'), {
+  type: 'bar',
+  data: {
+    labels: ['Qwen3 8B', 'LLaMA 3.1 8B', 'Qwen3 32B', 'DeepSeek R1 32B', 'LLaMA 3.3 70B'],
+    datasets: [{
+      label: 'TPS (Tokens/s)',
+      data: [502.6, 387.71, 143.19, 140.03, 61.83],
+      backgroundColor: ['Qwen3 8B', 'LLaMA 3.1 8B', 'Qwen3 32B', 'DeepSeek R1 32B', 'LLaMA 3.3 70B'].map(m => modelColors[m] + 'CC')
+    }]
+  },
+  options: { responsive: true, plugins: { title: { display: true, text: '各模型并发 16 下 TPS 对比' } }, scales: { y: { beginAtZero: true, title: { display: true, text: 'TPS (Tokens/s)' } } } }
+});
+
+// 2.4 TTFT 对比柱状图
+new Chart(document.getElementById('ttftCompareChart'), {
+  type: 'bar',
+  data: {
+    labels: ['Qwen3 8B', 'LLaMA 3.1 8B', 'Qwen3 32B', 'DeepSeek R1 32B', 'LLaMA 3.3 70B'],
+    datasets: [{
+      label: 'TTFT (秒)',
+      data: [0.1018, 0.0833, 0.2484, 0.2592, 0.5405],
+      backgroundColor: ['Qwen3 8B', 'LLaMA 3.1 8B', 'Qwen3 32B', 'DeepSeek R1 32B', 'LLaMA 3.3 70B'].map(m => modelColors[m] + 'CC')
+    }]
+  },
+  options: { responsive: true, indexAxis: 'y', plugins: { title: { display: true, text: '各模型并发 16 下 TTFT 对比（越低越好）' } }, scales: { x: { beginAtZero: true, title: { display: true, text: 'TTFT (秒)' } } } }
+});
+
+// 3.1 堆叠 TPS 柱状图
+new Chart(document.getElementById('stackTpsChart'), {
+  type: 'bar',
+  data: {
+    labels: ['Qwen3-Coder 480B (4台)', 'Qwen3 235B (4台)', 'GLM-4.5 355B (4台)', 'Qwen3 32B (4台)', 'LLaMA 3.1 70B (4台)', 'llama3.1 405B (8台)'],
+    datasets: [{
+      label: 'TPS (Tokens/s)',
+      data: [15.4, 13.65, 12.75, 19.19, 7.17, 6.2],
+      backgroundColor: ['#0057b8', '#00b4d8', '#e67e22', '#27ae60', '#8e44ad', '#c0392b']
+    }]
+  },
+  options: { responsive: true, plugins: { title: { display: true, text: '各堆叠模型 Token 生成速率' } }, scales: { y: { beginAtZero: true, title: { display: true, text: 'TPS (Tokens/s)' } } } }
+});
+
+// 3.2 GPU 使用率
+new Chart(document.getElementById('gpuChart'), {
+  type: 'bar',
+  data: {
+    labels: ['llama3.1 405B (4台)', 'Qwen3-Coder 480B (4台)', 'Qwen3-235B (4台)', 'GLM-4.5 FP8 355B (5台)', 'GLM-4.5 AWQ 355B (4台)', 'Qwen3-32B AWQ (4台)', 'Qwen3-32B FP4 (4台)', 'llama3.1 70B FP8 (4台)', 'llama3.1 70B FP4 (单台)'],
+    datasets: [{
+      label: 'GPU 使用率 (%)',
+      data: [92, 87, 85, 83, 87, 72, 89, 86, 88],
+      backgroundColor: function(context) {
+        const value = context.dataset.data[context.dataIndex];
+        return value >= 85 ? '#27ae60' : value >= 75 ? '#f39c12' : '#e74c3c';
+      }
+    }]
+  },
+  options: { responsive: true, plugins: { title: { display: true, text: '各堆叠模型 GPU 使用率' } }, scales: { y: { beginAtZero: true, max: 100, title: { display: true, text: 'GPU 使用率 (%)' } } } }
+});
+
+// 3.3 带宽占用
+new Chart(document.getElementById('bandwidthChart'), {
+  type: 'bar',
+  data: {
+    labels: ['Qwen3-Coder 480B (4台)', 'Qwen3 235B (4台)', 'GLM-4.5 FP8 355B (5台)', 'GLM-4.5 AWQ 355B (4台)', 'Qwen3 32B (4台)', 'LLaMA 3.1 70B (4台)', 'llama3.1 405B (8台)'],
+    datasets: [
+      { label: '平均带宽 (Mbps)', data: [380, 284, 0.26, 1120, 333, 285, 180], backgroundColor: '#0057b880' },
+      { label: '峰值带宽 (Mbps)', data: [1550, 1135, 1.3, 4480, 1330, 1140, 1440], backgroundColor: '#0057b8' }
+    ]
+  },
+  options: { responsive: true, plugins: { title: { display: true, text: '各堆叠模型网口带宽占用' } }, scales: { y: { beginAtZero: true, title: { display: true, text: '带宽 (Mbps)' } } } }
+});
+</script>
+</body>
+</html>
