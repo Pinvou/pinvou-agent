@@ -44,6 +44,8 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 md5 = "0.7"
+flate2 = "1"
+tar = "0.4"
 
 # Session store 用：阻塞式 RwLock（sync 不需要 .await 拿读写锁）
 parking_lot = "0.12"

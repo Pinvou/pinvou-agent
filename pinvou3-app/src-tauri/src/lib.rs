@@ -13,6 +13,7 @@
 mod audit;
 pub mod bridge;
 mod commands;
+pub mod feedback;
 // L1 harness 的附件 e2e 要走「真实 ingest → 注入分流 → 真 vLLM」全链路:
 // 暴露注入收口函数 + file_ingest。
 pub use commands::build_message_with_attachments;
@@ -158,6 +159,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::chat,
             commands::get_settings,
+            commands::submit_feedback,
             commands::get_effective_model_config,
             commands::update_settings,
             commands::save_settings_and_restart,

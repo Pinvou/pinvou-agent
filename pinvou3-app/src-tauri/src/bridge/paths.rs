@@ -156,6 +156,21 @@ pub fn updates_dir() -> PathBuf {
     pinvou3_home().join("updates")
 }
 
+/// `~/.pinvou3/feedback/` —— 用户主动提交的反馈包、失败待重试内容和提交回执。
+pub fn feedback_root() -> PathBuf {
+    pinvou3_home().join("feedback")
+}
+
+/// `~/.pinvou3/feedback/pending/` —— 上传失败或正在准备的反馈包目录。
+pub fn feedback_pending_dir() -> PathBuf {
+    feedback_root().join("pending")
+}
+
+/// `~/.pinvou3/feedback/receipts/` —— 成功提交后保留的轻量回执。
+pub fn feedback_receipts_dir() -> PathBuf {
+    feedback_root().join("receipts")
+}
+
 /// `~/.pinvou3/updates/update-feedback.json` —— Windows OTA 安装器启动后
 /// 跨进程保留的待反馈记录。Linux .deb 更新不使用此文件。
 pub fn update_feedback_record_path() -> PathBuf {

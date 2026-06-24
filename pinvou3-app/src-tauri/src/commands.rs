@@ -315,6 +315,15 @@ pub async fn get_settings() -> Result<UserPrefs, String> {
     Ok(UserPrefs::load())
 }
 
+#[tauri::command]
+pub async fn submit_feedback(
+    request: crate::feedback::FeedbackSubmitRequest,
+) -> Result<crate::feedback::FeedbackReceipt, String> {
+    crate::feedback::submit_feedback(request)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// 实际生效的模型配置（环境变量可能覆盖 settings.json）。
 /// 前端设置页初始化时优先用这个，避免"改了 settings 但实际不生效"的困惑。
 #[derive(Debug, Clone, Serialize)]
