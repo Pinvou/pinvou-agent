@@ -88,6 +88,12 @@ pub struct SessionModeState {
     /// 该 session 绑定的工作流 skill。`None` = 普通对话。
     #[serde(default)]
     pub active_skill: Option<ActiveSkillBinding>,
+    /// 该 session 挂载的本地知识集 id(会话级粘连)。`None` = 未挂载。
+    /// 挂上后每条 user 消息发送前,用消息文本对该集 `kb_retrieve`,把命中片段
+    /// 当附件一样注入(见 `commands::chat`)。与 `active_persona` 一样仅驻内存,
+    /// 不落盘——重启 app 后回到未挂载。
+    #[serde(default)]
+    pub mounted_collection: Option<i64>,
 }
 
 impl Default for SessionModeState {
@@ -99,6 +105,7 @@ impl Default for SessionModeState {
             active_skill: None,
             active_persona: None,
             pending_persona_body: None,
+            mounted_collection: None,
         }
     }
 }
@@ -153,6 +160,7 @@ mod tests {
             active_skill: None,
             active_persona: None,
             pending_persona_body: None,
+            mounted_collection: None,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"mode\":\"plan\""));

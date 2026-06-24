@@ -519,6 +519,7 @@ impl Pinvou3Bridge {
             goal_token_budget,
             goal_status,
             disallowed_tools,
+            extra_tools,
         } = EngineConfig::default();
 
         EngineConfig {
@@ -682,6 +683,8 @@ impl Pinvou3Bridge {
             goal_token_budget,
             goal_status,
             disallowed_tools,
+            // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
+            extra_tools,
         }
     }
 

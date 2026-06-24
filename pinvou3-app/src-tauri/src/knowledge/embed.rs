@@ -5,7 +5,7 @@
 //! 向量化只在后台 `std::thread`（解析/检索线程）里调用，避免阻塞 async runtime。
 //! 端点/模型未配置（env 缺失或加载失败）时上层退回全文 fts 检索。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use fastembed::{
@@ -45,20 +45,23 @@ impl Embedder {
         })
     }
 
-    /// 从 env 读模型目录：`PINVOU3_KB_EMBED_MODEL_DIR` + `PINVOU3_KB_EMBED_MODEL`(默认 bge-m3)。
-    /// 未配置或加载失败 → None（上层 fts-only）。
-    pub fn from_env() -> Option<Self> {
-        let dir = std::env::var("PINVOU3_KB_EMBED_MODEL_DIR")
+    /// 定位模型目录并加载。优先 env `PINVOU3_KB_EMBED_MODEL_DIR`(开发用 run-dev.sh 设);
+    /// env 缺失则用 `fallback`(生产=随 deb 打包的资源目录,见 lib.rs)。两者都无 → None(fts-only)。
+    /// 名称 env `PINVOU3_KB_EMBED_MODEL`(默认 bge-m3)。加载失败也 → None,不阻断,上层退全文检索。
+    pub fn from_env_or_dir(fallback: Option<&Path>) -> Option<Self> {
+        let dir: PathBuf = std::env::var("PINVOU3_KB_EMBED_MODEL_DIR")
             .ok()
-            .filter(|s| !s.trim().is_empty())?;
+            .filter(|s| !s.trim().is_empty())
+            .map(PathBuf::from)
+            .or_else(|| fallback.map(|p| p.to_path_buf()))?;
         let name = std::env::var("PINVOU3_KB_EMBED_MODEL")
             .ok()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| "bge-m3".into());
-        match Self::from_dir(Path::new(&dir), &name) {
+        match Self::from_dir(&dir, &name) {
             Ok(e) => Some(e),
             Err(err) => {
-                eprintln!("[knowledge] embedding 模型加载失败({dir}): {err}");
+                eprintln!("[knowledge] embedding 模型加载失败({}): {err}", dir.display());
                 None
             }
         }
@@ -135,7 +138,7 @@ mod tests {
     #[test]
     #[ignore]
     fn embed_smoke() {
-        let emb = match Embedder::from_env() {
+        let emb = match Embedder::from_env_or_dir(None) {
             Some(e) => e,
             None => {
                 eprintln!("SKIP: 未设 PINVOU3_KB_EMBED_MODEL_DIR");

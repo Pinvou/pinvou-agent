@@ -7,16 +7,22 @@
 //! 分层提醒：本模块只做 **L0 元数据**（零模型）。内容解析 / 全文 / 向量是 L1（后续），
 //! LLM 理解是 L2（纯按需）。**绝不在这里全盘跑模型分类**——那是 Marvis 的坑。
 
-mod dedup;
 mod embed;
 mod exclude;
+mod kb_tool;
 mod l1;
 mod query;
 mod scanner;
 mod store;
+/// 实时 watcher 现已不接（懒触发后不常驻，避免监听全 $HOME 长期占 inotify/内存）。
+/// 保留模块供未来 daemon 版的「热点 watch + 周期重扫」混合策略复用。
+#[allow(dead_code)]
 mod watcher;
+#[cfg(test)]
+mod e2e_test;
 
 pub use exclude::Excluder;
+pub use kb_tool::KbSearchTool;
 pub use l1::{ChunkHit, Collection, Document};
 
 use std::path::{Path, PathBuf};
@@ -31,7 +37,7 @@ use tauri::State;
 use walkdir::WalkDir;
 
 use store::{SearchQuery, Store};
-pub use store::{DupGroup, FileHit, Stats, TypeCount};
+pub use store::{FileHit, Stats, TypeCount};
 
 /// 后台扫描进度（回前端轮询）。
 #[derive(Debug, Clone, Serialize, Default)]
@@ -68,18 +74,17 @@ pub struct KnowledgeService {
     l1: l1::L1Store,
     scan_state: Arc<Mutex<ScanState>>,
     cancel: Arc<AtomicBool>,
-    /// 实时 watcher 只起一次（首次 start_scan 时）。
-    watcher_started: Arc<AtomicBool>,
     index_state: Arc<Mutex<IndexState>>,
     index_cancel: Arc<AtomicBool>,
 }
 
 impl KnowledgeService {
-    /// 用磁盘库初始化（`~/.pinvou3/knowledge/index.db`）。
-    pub fn new(db_path: &Path) -> rusqlite::Result<Self> {
+    /// 用磁盘库初始化（`~/.pinvou3/knowledge/index.db`）。`model_dir`=embedding 模型目录的
+    /// fallback（生产=随 deb 打包的资源目录;dev 走 env 优先,见 embed::from_env_or_dir）。
+    pub fn new(db_path: &Path, model_dir: Option<&Path>) -> rusqlite::Result<Self> {
         let store = Store::open(db_path)?;
-        // env 配了 embedding 端点则启用向量,否则知识库走纯全文(降级)。
-        let embedder = embed::Embedder::from_env().map(Arc::new);
+        // env(dev) 优先,否则用打包资源目录(prod);都无/加载失败则知识库走纯全文(降级)。
+        let embedder = embed::Embedder::from_env_or_dir(model_dir).map(Arc::new);
         if let Some(e) = &embedder {
             eprintln!("[knowledge] L1 embedding 已启用: {} ({})", e.model(), e.source());
         }
@@ -92,7 +97,6 @@ impl KnowledgeService {
                 ..Default::default()
             })),
             cancel: Arc::new(AtomicBool::new(false)),
-            watcher_started: Arc::new(AtomicBool::new(false)),
             index_state: Arc::new(Mutex::new(IndexState {
                 phase: "idle".into(),
                 ..Default::default()
@@ -181,7 +185,9 @@ impl KnowledgeService {
         self.index_state.lock().clone()
     }
 
-    /// 启动后台全盘扫描（已在跑则原样返回当前状态）。立即返回，扫描在独立线程跑。
+    /// 启动一轮增量扫描（后台线程，立即返回；已在跑则原样返回当前状态）。**懒触发**：由前端
+    /// 进入文件管理页时调，不进页 = 零扫描。不再常驻 watcher / 周期重扫——文件管理是低频功能，
+    /// 不该长期占资源。增量只处理 mtime/size 变化的文件，进页时前端先用缓存秒显、扫完再刷新。
     pub fn start_scan(&self, roots: Vec<PathBuf>) -> ScanState {
         {
             let mut st = self.scan_state.lock();
@@ -196,11 +202,6 @@ impl KnowledgeService {
                 started_at: now(),
                 ..Default::default()
             };
-        }
-
-        // 首次扫描时把实时 watcher 起在同一批根上（只起一次）。
-        if !self.watcher_started.swap(true, Ordering::Relaxed) {
-            watcher::spawn(self.store.clone(), roots.clone());
         }
 
         let store = self.store.clone();
@@ -238,8 +239,7 @@ impl KnowledgeService {
                 }
             }
 
-            // 去重(算 hash)不再在扫描里自动跑——读盘昂贵、百万文件下永远跑不完且拖卡设备。
-            // 改由前端「重复文件」页按需触发 kb_build_dedup（见 start_dedup）。
+            // 去重(算 hash)不在扫描里跑——读盘昂贵、百万文件下永远跑不完且拖卡设备。去重功能已下线。
             let mut st = scan_state.lock();
             st.running = false;
             st.finished_at = now();
@@ -259,45 +259,6 @@ impl KnowledgeService {
     }
 
     pub fn status(&self) -> ScanState {
-        self.scan_state.lock().clone()
-    }
-
-    /// 按需启动去重（算 hash）。独立于扫描、后台限速、可中断；复用 scan_state 表达进度
-    /// （phase=deduping + dedupDone/dedupTotal），同一时刻只跑一个后台任务。
-    pub fn start_dedup(&self) -> ScanState {
-        {
-            let mut st = self.scan_state.lock();
-            if st.running {
-                return st.clone();
-            }
-            self.cancel.store(false, Ordering::Relaxed);
-            *st = ScanState {
-                running: true,
-                phase: "deduping".into(),
-                started_at: now(),
-                ..Default::default()
-            };
-        }
-
-        let store = self.store.clone();
-        let scan_state = self.scan_state.clone();
-        let cancel = self.cancel.clone();
-        thread::spawn(move || {
-            let _ = dedup::run(&store, &cancel, |done, total| {
-                let mut st = scan_state.lock();
-                st.dedup_done = done;
-                st.dedup_total = total;
-            });
-            let mut st = scan_state.lock();
-            st.running = false;
-            st.finished_at = now();
-            st.phase = if cancel.load(Ordering::Relaxed) {
-                "cancelled"
-            } else {
-                "done"
-            }
-            .into();
-        });
         self.scan_state.lock().clone()
     }
 }
@@ -344,6 +305,18 @@ impl From<SearchQueryDto> for SearchQuery {
     }
 }
 
+/// 把阻塞的 DB 查询挪出主线程执行。Tauri 同步命令(`fn`)在**主线程**跑，大库(百万行)
+/// 全表 COUNT/GROUP BY 会冻死整个 UI——慢查询命令一律改 `async fn` + 本 helper。
+async fn spawn_db<T, F>(f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("db task join: {e}"))?
+}
+
 /// 启动/续跑全盘扫描。`roots` 省略时默认用户家目录。
 #[tauri::command]
 pub fn kb_start_scan(
@@ -367,55 +340,57 @@ pub fn kb_cancel_scan(state: State<'_, KnowledgeService>) {
     state.cancel_scan();
 }
 
-/// 按需算 hash 建立去重数据（扫描不再自动跑，避免每次扫描卡在读盘上）。进度走 kb_scan_status。
-#[tauri::command]
-pub fn kb_build_dedup(state: State<'_, KnowledgeService>) -> ScanState {
-    state.start_dedup()
-}
 
 /// L0：按扩展名分类计数（文件管理「按类型浏览」用）。
 #[tauri::command]
-pub fn kb_type_counts(state: State<'_, KnowledgeService>) -> Result<Vec<TypeCount>, String> {
-    state.store.type_counts().map_err(|e| e.to_string())
+pub async fn kb_type_counts(state: State<'_, KnowledgeService>) -> Result<Vec<TypeCount>, String> {
+    let store = state.store.clone();
+    spawn_db(move || store.type_counts().map_err(|e| e.to_string())).await
 }
 
 // ───────────────────────── L1 知识库命令 ─────────────────────────
 
 #[tauri::command]
-pub fn kb_collection_list(state: State<'_, KnowledgeService>) -> Result<Vec<Collection>, String> {
-    state.l1().list_collections().map_err(|e| e.to_string())
+pub async fn kb_collection_list(state: State<'_, KnowledgeService>) -> Result<Vec<Collection>, String> {
+    let l1 = state.l1().clone();
+    spawn_db(move || l1.list_collections().map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-pub fn kb_collection_create(
+pub async fn kb_collection_create(
     state: State<'_, KnowledgeService>,
     name: String,
     category: Option<String>,
     description: Option<String>,
 ) -> Result<i64, String> {
-    state
-        .l1()
-        .create_collection(&name, category.as_deref(), description.as_deref())
-        .map_err(|e| e.to_string())
+    let l1 = state.l1().clone();
+    spawn_db(move || {
+        l1.create_collection(&name, category.as_deref(), description.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn kb_collection_update(
+pub async fn kb_collection_update(
     state: State<'_, KnowledgeService>,
     id: i64,
     name: String,
     category: Option<String>,
     description: Option<String>,
 ) -> Result<(), String> {
-    state
-        .l1()
-        .update_collection(id, &name, category.as_deref(), description.as_deref())
-        .map_err(|e| e.to_string())
+    let l1 = state.l1().clone();
+    spawn_db(move || {
+        l1.update_collection(id, &name, category.as_deref(), description.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn kb_collection_delete(state: State<'_, KnowledgeService>, id: i64) -> Result<(), String> {
-    state.l1().delete_collection(id).map_err(|e| e.to_string())
+pub async fn kb_collection_delete(state: State<'_, KnowledgeService>, id: i64) -> Result<(), String> {
+    let l1 = state.l1().clone();
+    spawn_db(move || l1.delete_collection(id).map_err(|e| e.to_string())).await
 }
 
 /// 把文件/目录加入知识集，后台解析+切块+入库。进度走 kb_index_status。
@@ -441,38 +416,23 @@ pub fn kb_index_cancel(state: State<'_, KnowledgeService>) {
 
 /// 列出知识集文档（collectionId<=0 列出全部知识集，给「知识库内文件」表）。
 #[tauri::command]
-pub fn kb_documents(
+pub async fn kb_documents(
     state: State<'_, KnowledgeService>,
     collection_id: i64,
     limit: Option<usize>,
 ) -> Result<Vec<Document>, String> {
-    state
-        .l1()
-        .list_documents(collection_id, limit.unwrap_or(0))
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn kb_remove_document(state: State<'_, KnowledgeService>, doc_id: i64) -> Result<(), String> {
-    state.l1().remove_document(doc_id).map_err(|e| e.to_string())
-}
-
-/// 知识集内检索（配 embedding 则 fts+向量混合，否则纯全文）。
-/// embedding 走 reqwest::blocking，放独立线程避免命令在 async runtime 上下文里阻塞。
-#[tauri::command]
-pub fn kb_retrieve(
-    state: State<'_, KnowledgeService>,
-    collection_id: i64,
-    query: String,
-    k: Option<usize>,
-) -> Result<Vec<ChunkHit>, String> {
     let l1 = state.l1().clone();
-    std::thread::spawn(move || {
-        l1.search(collection_id, &query, k.unwrap_or(20))
+    spawn_db(move || {
+        l1.list_documents(collection_id, limit.unwrap_or(0))
             .map_err(|e| e.to_string())
     })
-    .join()
-    .unwrap_or_else(|_| Err("retrieve thread panicked".into()))
+    .await
+}
+
+#[tauri::command]
+pub async fn kb_remove_document(state: State<'_, KnowledgeService>, doc_id: i64) -> Result<(), String> {
+    let l1 = state.l1().clone();
+    spawn_db(move || l1.remove_document(doc_id).map_err(|e| e.to_string())).await
 }
 
 /// 语义检索(embedding)状态，给前端显示「语义检索:已启用/未配置」。
@@ -495,7 +455,7 @@ pub fn kb_embed_info(state: State<'_, KnowledgeService>) -> EmbedInfo {
 /// 秒搜。文本会先过 NL 规则解析（"上周的 pdf" → exts+时间过滤+残余文本）；
 /// 前端**显式**传入的结构化过滤优先于解析结果，不被覆盖。
 #[tauri::command]
-pub fn kb_search(
+pub async fn kb_search(
     state: State<'_, KnowledgeService>,
     query: SearchQueryDto,
 ) -> Result<Vec<FileHit>, String> {
@@ -519,21 +479,13 @@ pub fn kb_search(
             sq.max_size = parsed.max_size;
         }
     }
-    state.store.search(&sq).map_err(|e| e.to_string())
+    let store = state.store.clone();
+    spawn_db(move || store.search(&sq).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-pub fn kb_stats(state: State<'_, KnowledgeService>) -> Result<Stats, String> {
-    state.store.stats().map_err(|e| e.to_string())
+pub async fn kb_stats(state: State<'_, KnowledgeService>) -> Result<Stats, String> {
+    let store = state.store.clone();
+    spawn_db(move || store.stats().map_err(|e| e.to_string())).await
 }
 
-#[tauri::command]
-pub fn kb_find_duplicates(
-    state: State<'_, KnowledgeService>,
-    limit: Option<usize>,
-) -> Result<Vec<DupGroup>, String> {
-    state
-        .store
-        .duplicate_groups(limit.unwrap_or(200))
-        .map_err(|e| e.to_string())
-}

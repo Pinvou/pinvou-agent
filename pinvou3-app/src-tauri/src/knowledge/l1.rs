@@ -4,13 +4,13 @@
 //! `chunks.vec` 列留 NULL；向量(embedding)是 Phase 3，检索届时升级为 fts+向量混合。
 //! 复用 L0 的同一个 SQLite 连接(同库 index.db，见 [`super::store::Store::conn_arc`])。
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 
 use parking_lot::Mutex;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
 use super::embed::{self, Embedder};
@@ -18,6 +18,16 @@ use super::embed::{self, Embedder};
 /// chunk 切块参数：~512 token ≈ 中文 600 字符；15% 重叠保留上下文。
 const CHUNK_CHARS: usize = 600;
 const CHUNK_OVERLAP: usize = 90;
+/// 单文档向量化块数上限。超过 → 跳过向量、**仅全文检索**（避免上千块在 CPU 上一次性 embedding
+/// 把入库卡死，如 5000 行电子表格 ≈ 1845 块）。表格类大文档关键词检索本就够用。
+const MAX_EMBED_CHUNKS: usize = 300;
+/// embedding 分批大小：批间让步，不长时间独占模型锁/CPU。
+const EMBED_BATCH: usize = 32;
+
+/// 对话注入门控阈值：bge-m3 归一化向量，相关内容余弦通常 0.4~0.7，闲聊/无关 < 0.3。
+/// 向量 top 余弦低于此且 FTS 也无命中 → 判定该消息与知识集无关，不注入（治"挂了知识集后
+/// 连'谢谢''继续'都注入无关片段"）。经验值，偏保守（宁可多注入也别漏召回真问题）。
+const RELEVANCE_MIN_COSINE: f64 = 0.35;
 
 /// 知识集（camelCase 回前端）。
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -128,6 +138,14 @@ impl L1Store {
             })
         })?;
         rows.collect()
+    }
+
+    /// 单个知识集名（注入对话上下文块的标题用）。不存在返回 None。
+    pub fn collection_name(&self, id: i64) -> rusqlite::Result<Option<String>> {
+        self.conn
+            .lock()
+            .query_row("SELECT name FROM collections WHERE id=?1", params![id], |r| r.get(0))
+            .optional()
     }
 
     pub fn update_collection(
@@ -298,12 +316,19 @@ impl L1Store {
 
         // 复用 file_ingest 解析正文（pdf/docx/md/xlsx/pptx/...）。
         let res = crate::file_ingest::ingest(path);
-        match res.markdown {
+        // 图片无正文 → KB 专用 OCR 取图中文字（截图/扫描件/PPT 图等）。仅知识库入库触发，
+        // 对话附件图仍走视觉。OCR 没装/失败/识别为空 → 落 skipped（下面 `_` 分支）。
+        let body = match res.markdown {
+            Some(md) if !md.trim().is_empty() => Some(md),
+            _ if res.kind == "image" => crate::file_ingest::ocr_image_for_kb(path),
+            _ => None,
+        };
+        match body {
             Some(md) if !md.trim().is_empty() => {
                 let chunks = chunk_text(&md, CHUNK_CHARS, CHUNK_OVERLAP);
                 let n = chunks.len();
-                // 配了 embedding 端点则算向量(失败则降级为仅全文,不阻断入库)。
-                let vecs = self.embedder.as_ref().and_then(|e| e.embed(&chunks).ok());
+                // 配了 embedding 则算向量;大文档跳向量、失败降级——都只影响向量,不阻断入库(仍走全文)。
+                let vecs = self.embed_chunks_bounded(&chunks);
                 if self
                     .replace_doc_chunks(doc_id, collection_id, &chunks, vecs.as_deref())
                     .is_err()
@@ -322,25 +347,36 @@ impl L1Store {
         }
     }
 
+    /// 算分块向量（配了 embedding 才算）。**大文档保护**：块数超 `MAX_EMBED_CHUNKS` 直接跳过
+    /// 向量化（仅全文检索），避免上千块在 CPU 上一次性 embedding 把入库卡死（5000 行表格 ≈ 1845
+    /// 块的实测卡死根因）。块数内则**分批** embedding，批间让步，不长时间独占模型锁/CPU。
+    /// 无 embedder / 任一批失败 → None（降级仅全文，不阻断入库）。
+    fn embed_chunks_bounded(&self, chunks: &[String]) -> Option<Vec<Vec<f32>>> {
+        let emb = self.embedder.as_ref()?;
+        if chunks.len() > MAX_EMBED_CHUNKS {
+            eprintln!(
+                "[knowledge] 文档块数 {} 超向量化上限 {}，跳过向量、仅全文检索（关键词可命中）",
+                chunks.len(),
+                MAX_EMBED_CHUNKS
+            );
+            return None;
+        }
+        let mut out = Vec::with_capacity(chunks.len());
+        for batch in chunks.chunks(EMBED_BATCH) {
+            match emb.embed(batch) {
+                Ok(mut v) => out.append(&mut v),
+                Err(e) => {
+                    eprintln!("[knowledge] embedding 批失败，该文档降级仅全文: {e}");
+                    return None;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(2)); // 让步：别长时间霸占 CPU/模型锁
+        }
+        Some(out)
+    }
+
     // ───────────────────────── 检索（全文，Phase 3 升级为混合） ─────────────────────────
 
-    /// 知识集内检索。配了 embedding → fts + 向量 RRF 混合;否则纯全文。
-    /// 注意：调用方需保证在非 async 上下文（embedding 走 reqwest::blocking）。
-    pub fn search(&self, collection_id: i64, query: &str, k: usize) -> rusqlite::Result<Vec<ChunkHit>> {
-        let q = query.trim();
-        if q.is_empty() {
-            return Ok(vec![]);
-        }
-        let lim = if k == 0 { 20 } else { k };
-        let fts = self.search_fts(collection_id, q, lim * 2)?;
-        if let Some(emb) = &self.embedder {
-            if let Ok(qv) = emb.embed_one(q) {
-                let vec = self.search_vec(collection_id, &qv, lim * 2)?;
-                return Ok(rrf_merge(fts, vec, lim));
-            }
-        }
-        Ok(fts.into_iter().take(lim).collect())
-    }
 
     /// 全文：≥3 字符走 FTS5 trigram(bm25)，1-2 字符 LIKE 兜底。
     fn search_fts(&self, collection_id: i64, q: &str, lim: usize) -> rusqlite::Result<Vec<ChunkHit>> {
@@ -402,6 +438,122 @@ impl L1Store {
         }
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         Ok(scored.into_iter().take(lim).map(|(_, h)| h).collect())
+    }
+
+    /// 对话注入专用检索（区别于通用 `search`：知识库页主动检索不该门控/聚合，仍用 `search`）。
+    /// 在混合检索基础上加两层处理：
+    /// 1. **相关性门控**：配了 embedding 时，向量 top 余弦低于 [`RELEVANCE_MIN_COSINE`] 且
+    ///    FTS 也无命中 → 判定与知识集无关，返回空（调用方据此不注入）。纯 FTS 降级模式无
+    ///    统一阈值，维持"有命中即返回"。
+    /// 2. **邻域扩展**：命中 chunk 按文档聚合，各取 ord±`neighbor_radius` 的相邻块拼成连续
+    ///    上下文（答案常跨多个相邻 chunk，只给命中块易缺信息）。数据全在库内，纯 SQL，
+    ///    不重读原文件（原文件多是二进制，read_file 也读不出）。
+    pub fn retrieve_for_chat(
+        &self,
+        collection_id: i64,
+        query: &str,
+        k: usize,
+        neighbor_radius: usize,
+    ) -> rusqlite::Result<Vec<ChunkHit>> {
+        let q = query.trim();
+        if q.is_empty() {
+            return Ok(vec![]);
+        }
+        let lim = if k == 0 { 5 } else { k };
+        let fts = self.search_fts(collection_id, q, lim * 2)?;
+        let ranked = if let Some(emb) = &self.embedder {
+            match emb.embed_one(q) {
+                Ok(qv) => {
+                    let vec = self.search_vec(collection_id, &qv, lim * 2)?;
+                    // search_vec 的 score 此刻是余弦（rrf_merge 之后才被改写成 RRF 分）。
+                    let top_cos = vec.first().map(|h| h.score).unwrap_or(f64::NEG_INFINITY);
+                    if top_cos < RELEVANCE_MIN_COSINE && fts.is_empty() {
+                        return Ok(vec![]); // 门控：既无语义相关也无关键词命中
+                    }
+                    rrf_merge(fts, vec, lim)
+                }
+                Err(_) => fts.into_iter().take(lim).collect(),
+            }
+        } else {
+            fts.into_iter().take(lim).collect()
+        };
+        if ranked.is_empty() || neighbor_radius == 0 {
+            return Ok(ranked);
+        }
+        self.expand_neighbors(collection_id, ranked, neighbor_radius)
+    }
+
+    /// 命中按文档聚合，各文档取其命中 ord 的 ±radius 邻域并集，从库里拉这些 chunk 按 ord
+    /// 升序拼成连续上下文。文档间保持相关性排序（按各文档最高命中分），不连续的 ord 区间
+    /// 之间插 `…` 断档标记。切块本身有 ~15% 重叠，拼接处少量重复无伤注入，不额外去重。
+    fn expand_neighbors(
+        &self,
+        collection_id: i64,
+        hits: Vec<ChunkHit>,
+        radius: usize,
+    ) -> rusqlite::Result<Vec<ChunkHit>> {
+        // path -> (最高分, doc_name, 命中 ord 列表)；order 记录首次出现顺序以保相关性序。
+        let mut order: Vec<String> = Vec::new();
+        let mut by_doc: HashMap<String, (f64, String, Vec<i64>)> = HashMap::new();
+        for h in hits {
+            let e = by_doc.entry(h.doc_path.clone()).or_insert_with(|| {
+                order.push(h.doc_path.clone());
+                (f64::NEG_INFINITY, h.doc_name.clone(), Vec::new())
+            });
+            if h.score > e.0 {
+                e.0 = h.score;
+            }
+            e.2.push(h.ord);
+        }
+        let c = self.conn.lock();
+        let mut stmt = c.prepare(
+            "SELECT k.ord, k.text FROM chunks k JOIN documents d ON d.id=k.document_id \
+             WHERE k.collection_id=?1 AND d.path=?2 AND k.ord BETWEEN ?3 AND ?4 ORDER BY k.ord",
+        )?;
+        let mut out: Vec<ChunkHit> = Vec::new();
+        for path in order {
+            let (best, doc_name, ords) = by_doc.remove(&path).expect("aggregated");
+            // 命中 ord 各自 ±radius 的并集（去重、有序）。
+            let mut want: BTreeSet<i64> = BTreeSet::new();
+            for o in ords {
+                let lo = (o - radius as i64).max(0);
+                for x in lo..=(o + radius as i64) {
+                    want.insert(x);
+                }
+            }
+            let lo = *want.iter().next().unwrap();
+            let hi = *want.iter().last().unwrap();
+            let rows = stmt.query_map(params![collection_id, path, lo, hi], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })?;
+            let mut text = String::new();
+            let mut start_ord = lo;
+            let mut prev: Option<i64> = None;
+            for row in rows {
+                let (ord, t) = row?;
+                if !want.contains(&ord) {
+                    continue; // 落在 [lo,hi] 但不在并集内（多命中区间之间的空档）
+                }
+                match prev {
+                    None => start_ord = ord,
+                    Some(p) if ord > p + 1 => text.push_str("\n…\n"), // 区间断档
+                    Some(_) => text.push('\n'),
+                }
+                text.push_str(t.trim());
+                prev = Some(ord);
+            }
+            if !text.trim().is_empty() {
+                out.push(ChunkHit {
+                    text,
+                    score: best,
+                    doc_name,
+                    doc_path: path,
+                    ord: start_ord,
+                });
+            }
+        }
+        out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(out)
     }
 }
 
@@ -516,8 +668,8 @@ mod tests {
         assert_eq!(docs[0].parse_status, "parsed");
         assert!(docs[0].n_chunks >= 1);
 
-        // FTS（≥3 字符）
-        let hits = l1.search(cid, "交强险", 10).unwrap();
+        // FTS（≥3 字符）—— 走对话检索通路(retrieve_for_chat,半径0)
+        let hits = l1.retrieve_for_chat(cid, "交强险", 10, 0).unwrap();
         assert!(!hits.is_empty(), "应检索到含'交强险'的块");
         assert!(hits[0].text.contains("交强险"));
         assert_eq!(hits[0].doc_name, "访谈纪要.md");
@@ -528,5 +680,43 @@ mod tests {
         assert!(coll.chunk_count >= 1);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn retrieve_for_chat_neighbor_and_gate() {
+        let l1 = mem(); // 无 embedder → 纯 FTS,门控走"无命中即空"分支
+        let cid = l1.create_collection("调研", None, None).unwrap();
+        let doc = l1
+            .upsert_document(cid, "/tmp/doc.md", "doc.md", Some("md"), 100, 0)
+            .unwrap();
+        let chunks: Vec<String> = vec![
+            "第零段甲甲甲".into(),
+            "第一段乙乙乙".into(),
+            "第二段丙丙丙独有锚点词".into(),
+            "第三段丁丁丁".into(),
+            "第四段戊戊戊".into(),
+        ];
+        l1.replace_doc_chunks(doc, cid, &chunks, None).unwrap();
+
+        // 命中 ord=2,radius=1 → 聚合成一个文档块,拼接 ord 1/2/3。
+        let hits = l1.retrieve_for_chat(cid, "独有锚点词", 5, 1).unwrap();
+        assert_eq!(hits.len(), 1, "同文档命中聚合成 1 块");
+        let t = &hits[0].text;
+        assert!(t.contains("第一段乙乙乙"), "带前邻 ord=1");
+        assert!(t.contains("第二段丙丙丙"), "含命中 ord=2");
+        assert!(t.contains("第三段丁丁丁"), "带后邻 ord=3");
+        assert!(!t.contains("第零段"), "ord=0 在邻域外");
+        assert!(!t.contains("第四段"), "ord=4 在邻域外");
+        assert_eq!(hits[0].ord, 1, "起始 ord");
+
+        // radius=0 → 不扩展,只给命中块。
+        let only = l1.retrieve_for_chat(cid, "独有锚点词", 5, 0).unwrap();
+        assert_eq!(only.len(), 1);
+        assert!(only[0].text.contains("第二段丙丙丙"));
+        assert!(!only[0].text.contains("第一段"), "radius=0 不带邻居");
+
+        // 门控:无关键词命中 → 空(不注入)。空 query → 空。
+        assert!(l1.retrieve_for_chat(cid, "彻底无关的查询词组", 5, 1).unwrap().is_empty());
+        assert!(l1.retrieve_for_chat(cid, "   ", 5, 1).unwrap().is_empty());
     }
 }

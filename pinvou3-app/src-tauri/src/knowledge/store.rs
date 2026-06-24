@@ -186,28 +186,12 @@ pub struct TypeCount {
     pub count: u64,
 }
 
-/// 一组内容相同的重复文件。
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct DupGroup {
-    pub hash: String,
-    pub size: u64,
-    pub paths: Vec<String>,
-}
-
-/// 同 size 冲突、尚未算 hash 的待办项（去重 pass 的输入）。
-#[derive(Debug, Clone)]
-pub struct HashCandidate {
-    pub id: i64,
-    pub path: String,
-    pub size: u64,
-}
-
-/// 路径里不可能出现的分隔符，用于 GROUP_CONCAT 拆分组内路径。
-const SEP: char = '\u{1f}'; // ASCII Unit Separator
-
 #[derive(Clone)]
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
+    /// 独立只读连接：WAL 下并发读，扫描的写锁不堵查询(治「扫描中切 tab 卡死」)。
+    /// 内存库(测试)无并发扫描，read 与 conn 共用同一连接。
+    read: Arc<Mutex<Connection>>,
 }
 
 impl Store {
@@ -233,7 +217,16 @@ impl Store {
             let _ = std::fs::remove_file(format!("{p}-shm"));
             eprintln!("[knowledge] schema 升级到 v{SCHEMA_VERSION}，旧索引库已清空，需重新扫描");
         }
-        Self::from_conn(Connection::open(db_path)?)
+        let w = Connection::open(db_path)?;
+        w.execute_batch(SCHEMA)?;
+        w.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+        // 独立只读连接：WAL 下与写连接并发，扫描写锁不堵前端查询。
+        let r = Connection::open(db_path)?;
+        r.execute_batch("PRAGMA query_only = ON;")?;
+        Ok(Self {
+            conn: Arc::new(Mutex::new(w)),
+            read: Arc::new(Mutex::new(r)),
+        })
     }
 
     /// 内存库（单测用）。
@@ -245,8 +238,11 @@ impl Store {
     fn from_conn(conn: Connection) -> rusqlite::Result<Self> {
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+        // 内存库(测试)：无并发扫描，读写共用同一连接。
+        let arc = Arc::new(Mutex::new(conn));
         Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: arc.clone(),
+            read: arc,
         })
     }
 
@@ -286,7 +282,7 @@ impl Store {
 
     /// 现有索引快照 `path → (mtime, size)`，给增量扫描比对用（只取未变文件可跳过 upsert）。
     pub fn load_index(&self) -> rusqlite::Result<HashMap<String, (i64, u64)>> {
-        let guard = self.conn.lock();
+        let guard = self.read.lock();
         let mut stmt = guard.prepare("SELECT path, mtime, size FROM files")?;
         let rows = stmt.query_map([], |r| {
             Ok((
@@ -310,14 +306,6 @@ impl Store {
         tx.commit()
     }
 
-    /// 回填 hash（去重 pass 用）。只动 hash 列，不触发 FTS 重建。
-    pub fn set_hash(&self, id: i64, hash: &str) -> rusqlite::Result<()> {
-        self.conn
-            .lock()
-            .execute("UPDATE files SET hash = ?1 WHERE id = ?2", params![hash, id])?;
-        Ok(())
-    }
-
     /// 秒搜：text 走 FTS5(≥3 字符) 或 LIKE 兜底(1-2 字符)，叠加结构化过滤。
     pub fn search(&self, q: &SearchQuery) -> rusqlite::Result<Vec<FileHit>> {
         let limit = if q.limit == 0 { 200 } else { q.limit } as i64;
@@ -331,13 +319,13 @@ impl Store {
             sql.push_str(
                 "SELECT f.path, f.name, f.ext, f.size, f.mtime, f.is_dir \
                  FROM files_fts JOIN files f ON f.id = files_fts.rowid \
-                 WHERE f.status='indexed' AND files_fts MATCH ?",
+                 WHERE f.status='indexed' AND f.is_dir=0 AND files_fts MATCH ?",
             );
             // trigram：双引号包成字符串字面量做子串匹配，内部引号翻倍转义。
             let t = text.unwrap().replace('"', "\"\"");
             vals.push(Value::Text(format!("\"{t}\"")));
         } else {
-            sql.push_str("SELECT f.path, f.name, f.ext, f.size, f.mtime, f.is_dir FROM files f WHERE f.status='indexed'");
+            sql.push_str("SELECT f.path, f.name, f.ext, f.size, f.mtime, f.is_dir FROM files f WHERE f.status='indexed' AND f.is_dir=0");
             if let Some(t) = text {
                 sql.push_str(" AND (f.name LIKE ? OR f.path LIKE ?)");
                 let like = format!("%{}%", escape_like(t));
@@ -372,7 +360,7 @@ impl Store {
         sql.push_str(" ORDER BY f.mtime DESC LIMIT ?");
         vals.push(Value::Integer(limit));
 
-        let guard = self.conn.lock();
+        let guard = self.read.lock();
         let mut stmt = guard.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(vals.iter()), |row| {
             Ok(FileHit {
@@ -389,7 +377,7 @@ impl Store {
 
     /// 索引概况 + 去重统计。
     pub fn stats(&self) -> rusqlite::Result<Stats> {
-        let guard = self.conn.lock();
+        let guard = self.read.lock();
         let (total_files, total_bytes, hashed) = guard.query_row(
             "SELECT COUNT(*), COALESCE(SUM(size),0), \
              COALESCE(SUM(CASE WHEN hash IS NOT NULL THEN 1 ELSE 0 END),0) \
@@ -429,7 +417,7 @@ impl Store {
 
     /// 按扩展名分组计数（非目录、已索引），降序。
     pub fn type_counts(&self) -> rusqlite::Result<Vec<TypeCount>> {
-        let guard = self.conn.lock();
+        let guard = self.read.lock();
         let mut stmt = guard.prepare(
             "SELECT ext, COUNT(*) FROM files \
              WHERE status='indexed' AND is_dir=0 AND ext IS NOT NULL AND ext!='' \
@@ -444,48 +432,6 @@ impl Store {
         rows.collect()
     }
 
-    /// 待算 hash 的同 size 冲突项。唯一大小的文件不返回（永远不会重复）。
-    pub fn dup_hash_candidates(&self) -> rusqlite::Result<Vec<HashCandidate>> {
-        let guard = self.conn.lock();
-        let mut stmt = guard.prepare(
-            "SELECT id, path, size FROM files \
-             WHERE status='indexed' AND is_dir=0 AND hash IS NULL AND size>0 \
-               AND size IN (SELECT size FROM files \
-                            WHERE status='indexed' AND is_dir=0 AND size>0 \
-                            GROUP BY size HAVING COUNT(*)>1)",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(HashCandidate {
-                id: row.get(0)?,
-                path: row.get(1)?,
-                size: row.get::<_, i64>(2)? as u64,
-            })
-        })?;
-        rows.collect()
-    }
-
-    /// 已确认的重复组（hash 相同、份数>1），按可回收空间降序。
-    pub fn duplicate_groups(&self, limit: usize) -> rusqlite::Result<Vec<DupGroup>> {
-        let guard = self.conn.lock();
-        let mut stmt = guard.prepare(
-            "SELECT hash, size, GROUP_CONCAT(path, char(31)) \
-             FROM files \
-             WHERE status='indexed' AND is_dir=0 AND hash IS NOT NULL \
-             GROUP BY hash HAVING COUNT(*)>1 \
-             ORDER BY size*(COUNT(*)-1) DESC LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(params![limit as i64], |row| {
-            let hash: String = row.get(0)?;
-            let size = row.get::<_, i64>(1)? as u64;
-            let joined: String = row.get(2)?;
-            Ok(DupGroup {
-                hash,
-                size,
-                paths: joined.split(SEP).map(|s| s.to_string()).collect(),
-            })
-        })?;
-        rows.collect()
-    }
 }
 
 /// 转义 LIKE 的通配符（默认无 ESCAPE 子句时 `%`/`_` 会被当通配）。这里用 `\` 转义，
@@ -579,51 +525,6 @@ mod tests {
     }
 
     #[test]
-    fn upsert_updates_and_invalidates_hash_on_size_change() {
-        let s = Store::open_in_memory().unwrap();
-        s.upsert_many(&[rec("/a/x.bin", "x.bin", Some("bin"), 100, 1)])
-            .unwrap();
-        // 同 size 再来一个，构成冲突组
-        s.upsert_many(&[rec("/a/y.bin", "y.bin", Some("bin"), 100, 1)])
-            .unwrap();
-        let cands = s.dup_hash_candidates().unwrap();
-        assert_eq!(cands.len(), 2);
-        for c in &cands {
-            s.set_hash(c.id, "deadbeef").unwrap();
-        }
-        // hash 一致 → 一组重复
-        let groups = s.duplicate_groups(10).unwrap();
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].paths.len(), 2);
-
-        // 改 x.bin 的 size → hash 失效，且不再与 y 同 size
-        s.upsert_many(&[rec("/a/x.bin", "x.bin", Some("bin"), 999, 2)])
-            .unwrap();
-        let groups2 = s.duplicate_groups(10).unwrap();
-        assert!(groups2.is_empty(), "size 变了不该还算重复");
-    }
-
-    #[test]
-    fn dedup_stats_and_wasted_bytes() {
-        let s = Store::open_in_memory().unwrap();
-        s.upsert_many(&[
-            rec("/a/1.pdf", "1.pdf", Some("pdf"), 500, 1),
-            rec("/a/2.pdf", "2.pdf", Some("pdf"), 500, 1),
-            rec("/a/3.pdf", "3.pdf", Some("pdf"), 500, 1),
-            rec("/a/u.pdf", "u.pdf", Some("pdf"), 777, 1), // 唯一大小，不参与
-        ])
-        .unwrap();
-        for c in s.dup_hash_candidates().unwrap() {
-            s.set_hash(c.id, "samehash").unwrap();
-        }
-        let st = s.stats().unwrap();
-        assert_eq!(st.total_files, 4);
-        assert_eq!(st.duplicate_groups, 1);
-        assert_eq!(st.duplicate_files, 3);
-        assert_eq!(st.duplicate_wasted_bytes, 2 * 500); // 3 份留 1，省 2 份
-    }
-
-    #[test]
     fn delete_removes_from_fts() {
         let s = seed();
         s.delete_by_path("/home/u/Desktop/notes.md").unwrap();
@@ -635,5 +536,26 @@ mod tests {
             })
             .unwrap();
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn search_excludes_directories() {
+        let s = Store::open_in_memory().unwrap();
+        s.upsert_many(&[
+            FileRecord { path: "/a/项目文档".into(), name: "项目文档".into(), ext: None, size: 0, mtime: 1, is_dir: true },
+            FileRecord { path: "/a/项目文档.pdf".into(), name: "项目文档.pdf".into(), ext: Some("pdf".into()), size: 100, mtime: 2, is_dir: false },
+        ])
+        .unwrap();
+        // FTS 路径(≥3 字符)：目录不应出现在结果里
+        let hits = s
+            .search(&SearchQuery { text: Some("项目文档".into()), limit: 10, ..Default::default() })
+            .unwrap();
+        assert!(hits.iter().all(|h| !h.is_dir), "search(FTS) 不应返回目录");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].name, "项目文档.pdf");
+        // 无 text 全量路径：同样排除目录
+        let all = s.search(&SearchQuery { limit: 10, ..Default::default() }).unwrap();
+        assert!(all.iter().all(|h| !h.is_dir), "search(全量) 不应返回目录");
+        assert_eq!(all.len(), 1);
     }
 }

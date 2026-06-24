@@ -63,6 +63,8 @@ function injectSource() {
         case 'kb_collection_create': return Promise.resolve(3);
         case 'kb_collection_add_sources': return Promise.resolve({running:true,phase:'parsing',done:0,total:2});
         case 'kb_retrieve': return Promise.resolve([{text:'受访者认为保险报价流程过于繁琐，希望一键比价。竞品在交强险环节体验更顺畅。',score:-1.5,docName:'访谈纪要.md',docPath:'/home/x/访谈纪要.md',ord:0}]);
+        case 'kb_embed_info': return Promise.resolve({enabled:true,baseUrl:'local(fastembed)',model:'bge-m3'});
+        case 'kb_ask': return Promise.resolve({answer:'受访者认为保险报价流程过于繁琐，希望一键比价 [1]。竞品在交强险环节体验更顺畅 [1]。',citations:[{idx:1,docName:'访谈纪要.md',docPath:'/home/x/访谈纪要.md',ord:0,snippet:'受访者认为保险报价流程过于繁琐…'}],noContext:false});
         default: return Promise.resolve(null);
       }
     }
@@ -135,21 +137,32 @@ async function clickContains(page, sel, text) {
   await sleep(1000);
   const detail = await page.evaluate(() => {
     const x = document.body.innerText;
-    return { retr: x.includes('检索') || document.querySelector('input[placeholder*="检索"]') != null, docList: x.includes('路线图.md'), addBtn: x.includes('添加文件') };
+    const input = document.querySelector('input[placeholder*="问"],input[placeholder*="检索"]');
+    return { modes: x.includes('问答') && x.includes('检索'), input: input != null, docList: x.includes('路线图.md'), addBtn: x.includes('添加文件') };
   });
-  rec('④ 知识集详情(检索框/文档列表/添加文件)', (detail.retr && detail.docList && detail.addBtn), JSON.stringify(detail));
+  rec('④ 知识集详情(问答/检索模式切换/输入框/文档列表/添加文件)', (detail.modes && detail.input && detail.docList && detail.addBtn), JSON.stringify(detail));
 
-  // 详情内检索
-  await page.evaluate(() => { const i = document.querySelector('input[placeholder*="检索"]'); if (i) { i.focus(); } });
+  // 默认问答模式：提问 → 35B(mock) 答案 + 可点击来源
+  await page.evaluate(() => {
+    const i = document.querySelector('input[placeholder*="问"]');
+    if (i) { const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set; set.call(i,'报价流程有什么问题'); i.dispatchEvent(new Event('input',{bubbles:true})); i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})); }
+  });
+  await sleep(900);
+  const asked = await page.evaluate(() => { const x = document.body.innerText; return { answer: x.includes('一键比价'), source: x.includes('访谈纪要.md'), label: x.includes('回答') && x.includes('来源') }; });
+  rec('⑤ 问答返回答案 + 可点击来源溯源', asked.answer && asked.source && asked.label, JSON.stringify(asked));
+
+  // 切「检索」模式 → 返回原文片段 + 溯源
+  await clickContains(page, 'button', '检索');
+  await sleep(400);
   await page.evaluate(() => {
     const i = document.querySelector('input[placeholder*="检索"]');
     if (i) { const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set; set.call(i,'交强险'); i.dispatchEvent(new Event('input',{bubbles:true})); i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})); }
   });
-  await sleep(800);
+  await sleep(700);
   const retrived = await page.evaluate(() => document.body.innerText.includes('交强险') && (document.body.innerText.includes('访谈纪要.md')));
-  rec('⑤ 知识集内检索返回片段+溯源', retrived);
+  rec('⑥ 切检索模式返回片段+溯源', retrived);
 
-  rec('⑥ 全程无运行时报错(ReferenceError 等)', errs.length === 0, errs.length ? errs.slice(0,3).join(' | ') : '');
+  rec('⑦ 全程无运行时报错(ReferenceError 等)', errs.length === 0, errs.length ? errs.slice(0,3).join(' | ') : '');
 
   await browser.close();
   const failed = results.filter(r => !r.pass).length;

@@ -16,7 +16,7 @@
 | fork drift | **+2335 / −360 行,43 文件**(`git -C DeepSeek-TUI diff v0.8.60..HEAD --shortstat`)。超 1500 软上限,主体是工作流层 W——属"接受重 fork"(fork-policy §0);app 层 prompt 走 override 注入,不计入 |
 | 历史 | v0.8.60 + 8 commit:C1 lib · C2 blocklist · C3 append_file · C4 safety · C5+C7 prompt-composer · C6 chore · W 工作流层 · docs |
 | LLM 暴露 native 工具 | **23 个**(全量注册 − 81 黑名单;**tool_search 已禁用**,模型无法激活 deferred 工具)。MCP `mcp_pinvou_present_artifact` 另接,共 24 入口 |
-| fork-guard | **43 指纹 + 回归测试**(`scripts/fork-guard.sh`);底座 lib 4539 pass(+1 已知 flake:verifier 后台 shell 并行误报)/ app lib 166 pass(单线程) |
+| fork-guard | **45 指纹 + 回归测试**(`scripts/fork-guard.sh`;+RAG1/RAG2 守 extra_tools 注入口);底座 lib 4539 pass(+1 已知 flake:verifier 后台 shell 并行误报)/ app lib 167 pass(单线程) |
 | system prompt | dump 逐字节稳定(210 行,diff=0);per-turn `<runtime_prompt>` tag + goal continuation 均已 gate |
 
 ---
@@ -88,6 +88,13 @@
 - **根因/理由**:vLLM(NVFP4)+ mtp 投机解码在新 session **首请求冷 prefill** 上把生成采歪——首个 `tool_call`/`<turn_meta>` 标签/系统指令被吐成裸文本(实测两 session:首轮漂、用户**问一句即自愈**——本质就是手动 warmup)。⚠️ **必须预热到 turn_meta**:模型恰在 `<turn_meta>` 处复读采歪(msg1 实锤 `...qwen36_35b_35b_256k...` 重复),v1 用 `build_cache_warmup_request`(剥掉当前轮 user 消息)漏热 turn_meta → 仍漂;v2 热完整首请求才根治。**漂移与工具表/subagent 放通无关**(兜大圈验证后定论:是首轮冷启动,非 schema)
 - **测试**:`forkguard` `session warmup flag` + `首请求 warmup 注入` 指纹;行为待补 L1(新 session 首轮 tool_call 不漂)
 - 上游 PR:✅ **拟提**——本地 vLLM+mtp 的通用 first-turn 防漂,自动 warmup 比手动 `/cache warmup` 更稳
+
+### R `agentic-rag` EngineConfig.extra_tools 应用层工具注入口(2026-06-24)
+- **文件**:`core/engine.rs`(`ExtraTools` newtype + `EngineConfig.extra_tools` 字段 + Default)、`core/engine/tool_setup.rs`(`build_turn_tool_registry_builder` 末尾 `with_tool` 循环注册);连带补 3 处 TUI 路径 EngineConfig literal(`runtime_threads.rs`/`tui/ui.rs`/`main.rs`,`extra_tools: Default::default()`)
+- **改动**:给 `EngineConfig` 加 `pub extra_tools: ExtraTools`(newtype 包 `Vec<Arc<dyn ToolSpec>>`,手写 Debug 输出工具名——`dyn ToolSpec` 非 Debug,否则破 `#[derive(Debug)]`),每 turn build registry 时 append 到 builder。让**嵌入应用**(pinvou3-app)无需 fork 工具表即可注册自定义 `ToolSpec`
+- **理由/用途**:Agentic RAG——app 层 `KbSearchTool`(`knowledge/kb_tool.rs`,持 `session_id`,execute 查该会话挂载知识集 → `L1Store::retrieve_for_chat`)经此注入,让本地 LLM 自主调 `kb_search` 检索本地知识(替代旧注入式)。`spawn_for_session` 按 session push,工具持 session_id 解决 `ToolContext` 无 session_id 的问题
+- **测试**:`forkguard` `RAG1 extra_tools 字段` + `RAG2 tool_setup 注册` 指纹;app lib `blocklist_contract`(kb_search 可见)+ `kb_tool::tests`;真机测自发调用率/幻觉率
+- 上游 PR:✅ **拟提**——`extra_tools` 是通用扩展点(任何嵌入方可注册工具),与具体 kb_search 解耦
 
 ### W `workflow` 三省六部工作流底座层
 - **文件**:`tools/subagent/{mod,tests}.rs`、`core/ops.rs`、`core/events.rs`、`core/engine.rs`、`core/engine/{tests,approval,handle}.rs`、`tools/user_input.rs`、`runtime_threads.rs`、`tui/{sidebar,command_palette,ui,views/mod}.rs`、`main.rs`(EngineConfig 字段)

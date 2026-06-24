@@ -61,7 +61,12 @@ impl AppEngine {
         // C 方案(P-no-disk): instructions 走 Inline,不再写 disk(远端)。
         // 工作流会话不再施加监工白名单(对话型监工已废弃);SubAgent 角色的工具
         // 由 agent_registry.json 各自约束,与此处无关。
-        let engine_config = bridge.build_engine_config_for_session(session_id);
+        let mut engine_config = bridge.build_engine_config_for_session(session_id);
+        // Agentic RAG:给该 session 的 engine 注入 kb_search 工具(持 session_id,execute 时
+        // 查该会话挂载的知识集)。工具常驻所有会话,挂没挂集由其运行时判断。
+        engine_config.extra_tools.0.push(std::sync::Arc::new(
+            crate::knowledge::KbSearchTool::new(app.clone(), session_id.to_string()),
+        ));
         let dt_config = bridge.build_dt_config();
 
         eprintln!(
