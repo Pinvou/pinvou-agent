@@ -14,9 +14,10 @@ pub use permission::{
 };
 pub use system::{
     command_exists, nvidia_smi_candidates, ocr_dependency_packages, open_target,
+    pandoc_dependency_packages, pandoc_missing_message, pandoc_tool_exists, pandoc_tool_path,
     pdf_dependency_packages, pdf_ocr_missing_message, pdf_render_missing_message,
     pdf_text_missing_message, pdf_tool_exists, pdf_tool_path, presentation_pdf_missing_message,
-    show_pdf_dependency_check,
+    show_pandoc_dependency_check, show_pdf_dependency_check,
 };
 pub use update::{
     check_for_update_info, download_update_package, install_downloaded_update,

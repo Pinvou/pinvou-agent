@@ -64,7 +64,7 @@ static SYSTEM_TOOLS: OnceLock<SystemTools> = OnceLock::new();
 /// 启动时（或第一次 ingest 时）检测一次系统工具。
 pub fn system_tools() -> SystemTools {
     *SYSTEM_TOOLS.get_or_init(|| SystemTools {
-        pandoc: crate::os::command_exists("pandoc"),
+        pandoc: crate::os::pandoc_tool_exists(),
         pdftotext: crate::os::pdf_tool_exists("pdftotext"),
         libreoffice: crate::os::command_exists("soffice") || crate::os::command_exists("libreoffice"),
         tesseract: crate::os::command_exists("tesseract"),
@@ -103,8 +103,14 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
             crate::os::pdf_dependency_packages(),
         ));
     }
+    if crate::os::show_pandoc_dependency_check() {
+        items.push(item(
+            "office_modern",
+            crate::os::pandoc_tool_exists(),
+            crate::os::pandoc_dependency_packages(),
+        ));
+    }
     items.extend([
-        item("office_modern", crate::os::command_exists("pandoc"), "pandoc"),
         item("office_legacy", libreoffice, "libreoffice"),
         item(
             "ocr",
@@ -122,7 +128,11 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
 }
 
 fn pdf_tool_command(command: &str) -> Command {
-    Command::new(crate::os::pdf_tool_path(command))
+    crate::process::HiddenCommand::new(crate::os::pdf_tool_path(command))
+}
+
+fn pandoc_tool_command() -> Command {
+    crate::process::HiddenCommand::new(crate::os::pandoc_tool_path())
 }
 
 /// 体检卡「一键安装」：委托 OS 调度层安装缺失依赖。
@@ -354,12 +364,10 @@ fn ingest_pandoc(
             markdown: None,
             token_estimate: 0,
             byte_size,
-            warning: Some(format!(
-                "{label} 解析需要 pandoc，请运行: sudo apt install pandoc"
-            )),
+            warning: Some(crate::os::pandoc_missing_message().into()),
         };
     }
-    let out = Command::new("pandoc")
+    let out = pandoc_tool_command()
         .arg("-t")
         .arg("markdown")
         .arg(path)
@@ -1646,8 +1654,9 @@ mod tests {
     fn dependency_check_respects_pdf_visibility_policy() {
         let deps = check_dependencies();
         let has_pdf = deps.iter().any(|item| item.key == "pdf");
+        let has_pandoc = deps.iter().any(|item| item.key == "office_modern");
         assert_eq!(has_pdf, crate::os::show_pdf_dependency_check());
-        assert!(deps.iter().any(|item| item.key == "office_modern"));
+        assert_eq!(has_pandoc, crate::os::show_pandoc_dependency_check());
         assert!(deps.iter().any(|item| item.key == "ocr"));
 
         if !crate::os::show_pdf_dependency_check() {
@@ -1657,6 +1666,30 @@ mod tests {
                 "hidden Windows Poppler dependency should not leave install hints: {deps:?}"
             );
         }
+        if !crate::os::show_pandoc_dependency_check() {
+            assert!(
+                deps.iter()
+                    .all(|item| !item.apt.contains("pandoc") && item.key != "office_modern"),
+                "hidden Windows Pandoc dependency should not leave install hints: {deps:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pandoc_tool_command_uses_os_layer_program() {
+        let command = pandoc_tool_command();
+        assert_eq!(
+            command.get_program(),
+            crate::os::pandoc_tool_path().as_os_str()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_pandoc_missing_message_points_to_repair_install() {
+        let message = crate::os::pandoc_missing_message();
+        assert!(!message.contains("sudo apt install pandoc"));
+        assert!(message.contains("修复") || message.contains("重新安装"));
     }
 
     /// 端到端 OCR 实测：依赖本机装了 tesseract + chi_sim，且 /tmp 下有用

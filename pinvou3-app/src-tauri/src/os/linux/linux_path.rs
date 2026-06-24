@@ -12,3 +12,7 @@ pub fn platform_compat_path(value: &str) -> PathBuf {
 pub fn pdf_tool_path(command: &str) -> PathBuf {
     PathBuf::from(command)
 }
+
+pub fn pandoc_tool_path() -> PathBuf {
+    PathBuf::from("pandoc")
+}
