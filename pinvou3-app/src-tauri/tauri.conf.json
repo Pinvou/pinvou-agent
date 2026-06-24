@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "pinvou3",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "identifier": "com.pinvou.pinvou3",
   "build": {
     "frontendDist": "../src"
@@ -39,7 +39,8 @@
     ],
     "resources": {
       "resources/windows/poppler/": "poppler",
-      "resources/windows/pandoc/": "pandoc"
+      "resources/windows/pandoc/": "pandoc",
+      "resources/windows/asr/": "asr"
     },
     "windows": {
       "wix": {
@@ -55,6 +56,8 @@
     },
     "linux": {
       "deb": {
+        "desktopTemplate": "desktop/pinvou3.desktop",
+        "postInstallScript": "scripts/postinst.sh",
         "preRemoveScript": "scripts/prerm.sh",
         "depends": [],
         "recommends": [

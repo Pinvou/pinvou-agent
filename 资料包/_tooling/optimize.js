@@ -7,7 +7,7 @@ const OUT = '/home/hexin/opencode_projects/pinvou3-model-download/资料包/shot
 fs.mkdirSync(OUT, { recursive: true });
 
 // key → 可选裁剪 {top,height}（基于 2880x1840 原图）
-const CROP = { attachments: { left: 0, top: 1140, width: 2880, height: 700 } };
+const CROP = { attachments: { left: 0, top: 1060, width: 2880, height: 780 } };
 
 (async () => {
   const files = fs.readdirSync(SRC).filter(f => f.endsWith('.png'));

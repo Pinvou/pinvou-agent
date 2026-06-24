@@ -148,6 +148,7 @@
     const Paperclip = (p) => <I {...p}><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></I>;
     const Mic = (p) => <I {...p}><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></I>;
     const Send = (p) => <I {...p}><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></I>;
+    const Store = (p) => <I {...p}><path d="m2 7 4.41-4.41A2 2 0 0 1 7.83 2h8.34a2 2 0 0 1 1.42.59L22 7"/><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><path d="M15 22v-4a2 2 0 0 0-2-2h-2a2 2 0 0 0-2 2v4"/><path d="M2 7h20"/></I>;
     const Terminal = (p) => <I {...p}><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></I>;
     const ChevronDown = (p) => <I {...p}><path d="m6 9 6 6 6-6"/></I>;
     const ChevronRight = (p) => <I {...p}><path d="m9 18 6-6-6-6"/></I>;
@@ -180,6 +181,7 @@
     const FileText = (p) => <I {...p}><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></I>;
     const Hexagon = (p) => <I {...p}><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></I>;
     const Layout = (p) => <I {...p}><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><line x1="3" x2="21" y1="9" y2="9"/><line x1="9" x2="9" y1="21" y2="9"/></I>;
+    const Presentation = (p) => <I {...p}><path d="M2 3h20"/><path d="M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3"/><path d="m7 21 5-5 5 5"/><path d="M12 16v5"/></I>;
     const Mail = (p) => <I {...p}><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></I>;
     const MessageCircle = (p) => <I {...p}><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></I>;
     const Navigation = (p) => <I {...p}><polygon points="3 11 22 2 13 21 11 13 3 11"/></I>;
@@ -252,8 +254,13 @@
         vllmDetectMismatch: '配置不匹配',
         vllmDetectedModel: '模型',
         vllmDetectedContext: '上下文',
-        vllmDetectHint: '仅检测 127.0.0.1 / localhost 的 8000-8002 端口；使用后仍需保存并重启。',
+        vllmDetectHint: '仅检测本机 127.0.0.1 / localhost 的 8000-8002 端口；选用候选后记得保存。',
         confirmAndRestart: '保存并重启',
+        addModel: '＋ 添加模型', editModel: '编辑', deleteModelBtn: '删除', setActiveModel: '设为默认', modelActiveTag: '默认',
+        modelFormAddTitle: '添加模型', modelFormEditTitle: '编辑模型', modelDisplayName: '显示名',
+        testConnection: '测试连接', testingConn: '测试中…', modelSaveBtn: '保存', manageModels: '管理模型…',
+        switchModelTitle: '切换模型', modelSwitchBusy: '生成中，无法切换', modelNonePick: '选择模型', modelDeleteMin: '至少保留一个模型',
+        modelEnvLocked: f => `环境变量已锁定：${f}，设置页改动不生效`, deleteModelConfirm: n => `删除模型「${n}」？`,
         modelDirtyHint: '配置已修改，保存后应用将重启',
         langRestartHint: '界面语言已切换；助手回复语言需重启应用后生效',
         sysPerm: '系统权限', sudo: '高级执行权限 (Sudo)', sudoDesc: '允许助手执行环境配置等高级指令',
@@ -269,7 +276,7 @@
         depAllOk: '所有依赖项已就绪', depMissingSuffix: ' 项依赖缺失（对应能力将不可用）',
         depInstalling: '安装中…', depInstallBtn: '一键安装', depInstallNote: '将提权安装缺失依赖（需联网或可用 apt 源）',
         dep_pdf: 'PDF 文本提取', dep_office_modern: 'Office 文档（docx）', dep_office_legacy: '旧版 Office / 演示与表格',
-        dep_ocr: '图片 / 扫描件 OCR', dep_archive: '压缩包（zip/rar/7z）', dep_email: '邮件（.eml / .msg）',
+        dep_ocr: '图片 / 扫描件 OCR', dep_archive: '压缩包（zip/rar/7z）', dep_email: '邮件（.eml / .msg）', dep_voice_asr: '本地语音识别',
         chatGreeting: '你好，今天想聊点什么？', artifacts: '产物与代码', placeholder: '询问 PINVOU 或输入指令', disclaimer: 'PINVOU 可能会生成不准确的信息，请仔细核实。', ctxUsage: '上下文',
         searchPlaceholder: 'Search chats',
         // —— 卡牌池(cp*)。注:卡牌内容(名称/简介/正文)是数据,不在 UI 词典内 ——
@@ -328,6 +335,10 @@
         skillPrefill: name => `我要用 ${name} 完成: `,
         queuedTag: '排队中', queuedCancel: '撤销',
         attachParsing: '解析中…', attachFailed: '失败', attachAdd: '添加附件',
+        voiceStart: '语音输入', voiceStop: '结束录音', voiceCancel: '取消语音输入', voiceRetry: '重试',
+        voiceRequesting: '正在请求麦克风权限…', voiceRecording: '正在录音，再点一次结束', voiceTranscribing: '正在识别语音…',
+        voiceCompleted: '语音已写入输入框', voiceClose: '关闭语音提示',
+        composerTools: '工具', composerInstalledTools: '已接入工具', composerNoTools: '暂无已装工具', composerToolOn: '已启用', composerManageTools: '管理工具',
         resend: '重新发送', editResend: '编辑并重发',
         thinkingLabel: '思考中', thinkingCall: (tool, s) => `调用 ${tool}... ${s}s`,
         hintSlow30: '本地模型生成中', hintSlow120: '本地模型在生成长内容,请耐心等',
@@ -346,6 +357,18 @@
         stuckPlanPre: '⚠️ AI 在 Plan 模式调用了', stuckPlanPost: '但被白名单挡掉。Plan 模式只能讨论方案,不能动手。给你两个出路:',
         handled: '已处理',
         stuckReplan: '📋 让 AI 重出方案', stuckSelf: '我自己来', stuckGo: '直接动手(跳过方案)',
+        // 品悟检阅卡(PinvouSummonCard/Rows/Loading)。品/悟 字形是品牌、保留;周边文案随语言。
+        pvLoadingPin: 'Pinvou 品·查错检阅', pvLoadingWu: 'Pinvou 悟·发散补全',
+        pvLoadingPinSub: '正在逐条核对、揪问题', pvLoadingWuSub: '正在比对完整性维度、发散补点',
+        pvLoadingHint: '本地模型推理中，通常 5–30 秒，稍候～',
+        pvFail: '失败：', pvSkipped: '已跳过', pvPerspective: '视角', pvAlsoInvolves: '也涉及',
+        pvVerdictPass: '✓ 通过，可交付', pvFramework: '完整性框架', pvDims: '维', pvSuggest: '建议 ', pvNeedsVerify: '需核实',
+        pvActAdopt: '采纳建议', pvActAsk: '让 AI 问我', pvActVerify: '让 AI 核实', pvActConfirmed: '我确认没问题',
+        pvActModify: '让 AI 改', pvActAccept: '接受现状', pvActFill: '补上', pvActSkip: '暂不补',
+        pvHandToAi: n => `交给 AI 处理（${n} 条）`, pvSkip: '跳过', pvSkipTitle: '这次不处理，整张卡跳过',
+        pvBtnPinTitle: '品 · 查错：揪出产物的风险、遗漏、与你需求的偏差，逐条让 AI 改或你拍板接受',
+        pvBtnWuTitle: '悟 · 发散：以领域专家视角给出产物还能补的维度和新思路，挑中的一键加进去',
+        pvBtnPinLabel: '品 · 智能找错', pvBtnWuLabel: '悟 · 深度查漏',
         fbTitle: '📝 AI 给了方案但没用 plan 工具',
         fbDesc: 'AI 在文本里描述了方案,但没调 update_plan 工具,所以没出方案卡片。你想怎么处理?',
         fbAccept: '✅ 直接采纳这段', fbRetry: '📋 让 AI 用工具重出',
@@ -423,8 +446,13 @@
         vllmDetectMismatch: 'Mismatch',
         vllmDetectedModel: 'Model',
         vllmDetectedContext: 'Context',
-        vllmDetectHint: 'Checks only 127.0.0.1 / localhost ports 8000-8002. Save and restart to apply.',
+        vllmDetectHint: 'Checks only 127.0.0.1 / localhost ports 8000-8002. Remember to save after picking a candidate.',
         confirmAndRestart: 'Save & Restart',
+        addModel: '＋ Add Model', editModel: 'Edit', deleteModelBtn: 'Delete', setActiveModel: 'Set Default', modelActiveTag: 'Default',
+        modelFormAddTitle: 'Add Model', modelFormEditTitle: 'Edit Model', modelDisplayName: 'Display Name',
+        testConnection: 'Test Connection', testingConn: 'Testing…', modelSaveBtn: 'Save', manageModels: 'Manage models…',
+        switchModelTitle: 'Switch model', modelSwitchBusy: 'Busy generating, cannot switch', modelNonePick: 'Select model', modelDeleteMin: 'Keep at least one model',
+        modelEnvLocked: f => `Locked by env vars: ${f}; settings won't apply`, deleteModelConfirm: n => `Delete model "${n}"?`,
         modelDirtyHint: 'Configuration changed — saving will restart the app',
         langRestartHint: 'Interface language switched; restart the app to apply it to the assistant',
         sysPerm: 'System Permissions', sudo: 'Sudo Access', sudoDesc: 'Allow assistant to run high-privilege commands',
@@ -440,7 +468,7 @@
         depAllOk: 'All dependencies ready', depMissingSuffix: ' dependency group(s) missing (those features unavailable)',
         depInstalling: 'Installing…', depInstallBtn: 'Install', depInstallNote: 'Installs missing deps via elevated apt (needs network or an apt source)',
         dep_pdf: 'PDF text extraction', dep_office_modern: 'Office docs (docx)', dep_office_legacy: 'Legacy Office / slides & sheets',
-        dep_ocr: 'Image / scanned-PDF OCR', dep_archive: 'Archives (zip/rar/7z)', dep_email: 'Email (.eml / .msg)',
+        dep_ocr: 'Image / scanned-PDF OCR', dep_archive: 'Archives (zip/rar/7z)', dep_email: 'Email (.eml / .msg)', dep_voice_asr: 'Local voice recognition',
         chatGreeting: "Hi, what's good?", artifacts: 'Artifacts', placeholder: 'Ask PINVOU or enter a command', disclaimer: 'PINVOU may display inaccurate info, so double-check.', ctxUsage: 'Context',
         searchPlaceholder: 'Search chats',
         // —— Card Pool (cp*) ——
@@ -499,6 +527,10 @@
         skillPrefill: name => `I want to use ${name} to: `,
         queuedTag: 'Queued', queuedCancel: 'Remove',
         attachParsing: 'Parsing…', attachFailed: 'Failed', attachAdd: 'Attach file',
+        voiceStart: 'Voice input', voiceStop: 'Stop recording', voiceCancel: 'Cancel voice input', voiceRetry: 'Retry',
+        voiceRequesting: 'Requesting microphone permission…', voiceRecording: 'Recording, click again to stop', voiceTranscribing: 'Transcribing voice…',
+        voiceCompleted: 'Voice text added', voiceClose: 'Close voice notice',
+        composerTools: 'Tools', composerInstalledTools: 'Connected tools', composerNoTools: 'No tools installed', composerToolOn: 'On', composerManageTools: 'Manage tools',
         resend: 'Resend', editResend: 'Edit & resend',
         thinkingLabel: 'Thinking', thinkingCall: (tool, s) => `Calling ${tool}... ${s}s`,
         hintSlow30: 'local model generating', hintSlow120: 'local model is generating long content, hang tight',
@@ -517,6 +549,18 @@
         stuckPlanPre: '⚠️ In Plan mode the AI called', stuckPlanPost: 'but the whitelist blocked it. Plan mode is discussion-only. Two ways out:',
         handled: 'Handled',
         stuckReplan: '📋 Ask AI to re-plan', stuckSelf: "I'll do it myself", stuckGo: 'Just do it (skip planning)',
+        // Pinvou review card. 品/悟 glyphs are brand marks, kept; surrounding text follows language.
+        pvLoadingPin: 'Pinvou 品 · Review', pvLoadingWu: 'Pinvou 悟 · Explore',
+        pvLoadingPinSub: 'Checking point by point, hunting for issues', pvLoadingWuSub: 'Comparing completeness dimensions, finding gaps',
+        pvLoadingHint: 'Local model is thinking, usually 5–30s, hang tight…',
+        pvFail: 'Failed: ', pvSkipped: 'Skipped', pvPerspective: ' view', pvAlsoInvolves: 'also covers',
+        pvVerdictPass: '✓ Passed, ready to ship', pvFramework: 'Completeness framework', pvDims: ' dims', pvSuggest: 'Suggest ', pvNeedsVerify: 'Needs check',
+        pvActAdopt: 'Adopt', pvActAsk: 'Have AI ask me', pvActVerify: 'Have AI verify', pvActConfirmed: "It's fine",
+        pvActModify: 'Have AI fix', pvActAccept: 'Accept as is', pvActFill: 'Fill in', pvActSkip: 'Skip for now',
+        pvHandToAi: n => `Hand to AI (${n})`, pvSkip: 'Skip', pvSkipTitle: 'Skip this review card for now',
+        pvBtnPinTitle: '品 · Review: surface risks, omissions, and drift from your intent — fix each via AI or accept as is',
+        pvBtnWuTitle: '悟 · Explore: a domain expert lists dimensions and ideas the artifact could still add; add picks in one click',
+        pvBtnPinLabel: '品 · Review', pvBtnWuLabel: '悟 · Explore',
         fbTitle: "📝 The AI wrote a plan but didn't use the plan tool",
         fbDesc: 'The AI described a plan in text without calling update_plan, so no plan card was created. What do you want to do?',
         fbAccept: '✅ Accept this text', fbRetry: '📋 Ask AI to redo it with the tool',
@@ -594,8 +638,13 @@
         vllmDetectMismatch: '不一致',
         vllmDetectedModel: 'モデル',
         vllmDetectedContext: 'コンテキスト',
-        vllmDetectHint: '127.0.0.1 / localhost の 8000-8002 ポートのみ検出します。反映には保存して再起動してください。',
+        vllmDetectHint: '127.0.0.1 / localhost の 8000-8002 ポートのみ検出します。候補を選んだら保存してください。',
         confirmAndRestart: '保存して再起動',
+        addModel: '＋ モデルを追加', editModel: '編集', deleteModelBtn: '削除', setActiveModel: 'デフォルトに設定', modelActiveTag: 'デフォルト',
+        modelFormAddTitle: 'モデルを追加', modelFormEditTitle: 'モデルを編集', modelDisplayName: '表示名',
+        testConnection: '接続テスト', testingConn: 'テスト中…', modelSaveBtn: '保存', manageModels: 'モデルを管理…',
+        switchModelTitle: 'モデルを切り替え', modelSwitchBusy: '生成中のため切り替え不可', modelNonePick: 'モデルを選択', modelDeleteMin: 'モデルは最低 1 つ必要です',
+        modelEnvLocked: f => `環境変数でロック中：${f}（設定は反映されません）`, deleteModelConfirm: n => `モデル「${n}」を削除しますか？`,
         modelDirtyHint: '設定が変更されました。保存するとアプリが再起動します',
         langRestartHint: 'UI言語を切り替えました。アシスタントに反映するにはアプリの再起動が必要です',
         sysPerm: 'システム権限', sudo: '高度な実行権限 (Sudo)', sudoDesc: 'アシスタントによる環境設定などの高度なコマンド実行を許可',
@@ -611,7 +660,7 @@
         depAllOk: 'すべての依存関係が準備済み', depMissingSuffix: ' 件の依存が不足（該当機能は利用不可）',
         depInstalling: 'インストール中…', depInstallBtn: 'インストール', depInstallNote: '権限昇格して不足依存をインストール（ネットワークまたは apt ソースが必要）',
         dep_pdf: 'PDF テキスト抽出', dep_office_modern: 'Office 文書（docx）', dep_office_legacy: '旧 Office / スライドと表計算',
-        dep_ocr: '画像 / スキャン PDF の OCR', dep_archive: 'アーカイブ（zip/rar/7z）', dep_email: 'メール（.eml / .msg）',
+        dep_ocr: '画像 / スキャン PDF の OCR', dep_archive: 'アーカイブ（zip/rar/7z）', dep_email: 'メール（.eml / .msg）', dep_voice_asr: 'ローカル音声認識',
         chatGreeting: 'こんにちは、今日は何をしましょうか？', artifacts: '成果物とコード', placeholder: 'PINVOU に質問またはコマンドを入力', disclaimer: 'PINVOU は不正確な情報を生成する可能性があります。必ずご確認ください。', ctxUsage: 'コンテキスト',
         searchPlaceholder: 'チャットを検索',
         // —— カードプール (cp*) ——
@@ -670,6 +719,10 @@
         skillPrefill: name => `${name} を使ってやりたいこと: `,
         queuedTag: '待機中', queuedCancel: '取り消し',
         attachParsing: '解析中…', attachFailed: '失敗', attachAdd: 'ファイルを添付',
+        voiceStart: '音声入力', voiceStop: '録音を終了', voiceCancel: '音声入力をキャンセル', voiceRetry: '再試行',
+        voiceRequesting: 'マイク権限を確認中…', voiceRecording: '録音中。もう一度押すと終了', voiceTranscribing: '音声を認識中…',
+        voiceCompleted: '音声テキストを追加しました', voiceClose: '音声通知を閉じる',
+        composerTools: 'ツール', composerInstalledTools: '接続済みツール', composerNoTools: 'ツールなし', composerToolOn: '有効', composerManageTools: 'ツール管理',
         resend: '再送信', editResend: '編集して再送信',
         thinkingLabel: '思考中', thinkingCall: (tool, s) => `${tool} を実行中... ${s}s`,
         hintSlow30: 'ローカルモデルが生成中', hintSlow120: 'ローカルモデルが長い内容を生成中です。しばらくお待ちください',
@@ -688,6 +741,18 @@
         stuckPlanPre: '⚠️ Plan モードで AI が', stuckPlanPost: 'を呼びましたがホワイトリストでブロックされました。Plan モードは議論専用です。選択肢は 2 つ:',
         handled: '処理済み',
         stuckReplan: '📋 AI にプランを出し直させる', stuckSelf: '自分でやる', stuckGo: 'そのまま実行（プランを省略）',
+        // 品悟レビューカード。品/悟 の字はブランド表記として保持、周囲の文言は言語に追従。
+        pvLoadingPin: 'Pinvou 品 · 検閲', pvLoadingWu: 'Pinvou 悟 · 発散補完',
+        pvLoadingPinSub: '一つずつ照合し、問題を洗い出し中', pvLoadingWuSub: '完全性の観点を比較し、補強点を発散中',
+        pvLoadingHint: 'ローカルモデルが推論中です。通常 5〜30 秒、お待ちください…',
+        pvFail: '失敗：', pvSkipped: 'スキップ済み', pvPerspective: 'の視点', pvAlsoInvolves: '関連',
+        pvVerdictPass: '✓ 合格・納品可能', pvFramework: '完全性フレームワーク', pvDims: '項目', pvSuggest: '提案 ', pvNeedsVerify: '要確認',
+        pvActAdopt: '提案を採用', pvActAsk: 'AI に質問させる', pvActVerify: 'AI に確認させる', pvActConfirmed: '問題ないと確認',
+        pvActModify: 'AI に修正させる', pvActAccept: '現状を受け入れる', pvActFill: '補う', pvActSkip: '今は補わない',
+        pvHandToAi: n => `AI に任せる（${n} 件）`, pvSkip: 'スキップ', pvSkipTitle: '今回は処理せず、このカードをスキップ',
+        pvBtnPinTitle: '品 · 検閲：成果物のリスク・抜け漏れ・要求とのズレを洗い出し、AI に修正させるか受け入れる',
+        pvBtnWuTitle: '悟 · 発散：専門家視点で成果物に補える観点や新案を提示、選んだものをワンクリックで追加',
+        pvBtnPinLabel: '品 · 検閲', pvBtnWuLabel: '悟 · 発散',
         fbTitle: '📝 AI がプランを書いたのに plan ツールを使っていません',
         fbDesc: 'AI はテキストでプランを説明しましたが update_plan を呼んでいないため、プランカードが出ていません。どうしますか?',
         fbAccept: '✅ この内容を採用', fbRetry: '📋 ツールで出し直させる',
@@ -1275,14 +1340,12 @@
                 superPerm={superPerm} setSuperPerm={handleToggleSuperPerm}
                 searchProvider={searchProvider} setSearchProvider={handleSetSearchProvider}
                 searchApiKey={searchApiKey} setSearchApiKey={handleSetSearchApiKey}
-                modelPreset={modelPreset} onChangeModelPreset={handleChangeModelPreset}
-                customModelName={customModelName} setCustomModelName={handleSetCustomModelName}
-                customBaseUrl={customBaseUrl} setCustomBaseUrl={handleSetCustomBaseUrl}
-                customApiKey={customApiKey} setCustomApiKey={handleSetCustomApiKey}
-                savedModel={savedModel}
-                onConfirmModelConfig={handleConfirmModelConfig}
+                savedModels={(bs && bs.savedModels) || []}
+                activeModelId={bs && bs.activeModelId}
+                onSaveModel={(m) => bridge.available && bridge.saveModel(m)}
+                onDeleteModel={(m) => { if (bridge.available && (typeof confirm !== 'function' || confirm(t.deleteModelConfirm(m.name)))) bridge.deleteModel(m.id); }}
+                onSetActiveModel={(id) => bridge.available && bridge.setActiveModel(id)}
                 onConfirmSearchConfig={handleConfirmSearchConfig}
-                modelConfigDirty={modelConfigDirty}
                 searchNeedsRestart={searchNeedsRestart}
                 languageNeedsRestart={languageNeedsRestart}
                 bs={bs}
@@ -1292,7 +1355,7 @@
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
-            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} />}
+            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => setCurrentView('settings')} onGotoTools={() => setCurrentView('toolStore')} />}
             {/* 草稿态(无 session)也渲染挂件,但强制空态——让欢迎页保留「＋加持卡牌」入口。
                 点它跳卡牌池,选卡时 equipPersona 会先物化 session(lazy session)。 */}
             {currentView === 'chat' && bs && (
@@ -1328,15 +1391,25 @@
               </div>
             )}
 
-            {/* Pinvou 检阅弹窗(品/悟) —— 全局,任何视图都能弹;点背景或卡内「跳过」关闭 */}
+            {/* Pinvou 检阅弹窗(品/悟) —— 居中弹窗 + 毛玻璃背景(虚化身后 app);全局,任何视图都能弹;点背景或卡内「跳过」关闭 */}
             {bs && bs.pinvouModal && (
-              <div className="fixed inset-0 z-[55] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }}
+              <div className="fixed inset-0 z-[55] flex items-center justify-center p-6"
+                   style={{ background: activeTheme === 'dark' ? 'rgba(0,0,0,.45)' : 'rgba(255,255,255,.35)', backdropFilter: 'blur(20px) saturate(140%)', WebkitBackdropFilter: 'blur(20px) saturate(140%)' }}
                    onClick={() => { if (!bs.pinvouModal.loading) bridge.dismissPinvouReview(); }}>
-                {/* loading 期间禁止背景点击关窗:那张 loading 卡小且居中,点背景极易误关 spinner,
-                    而召唤(直连 vLLM,5-30s)仍在后台跑、守卫仍 held → 表现为"闪一下就没反应、要等一会才能再点"。
-                    锁住后 spinner+计时全程可见,出结果/错误后才可点背景关。 */}
-                <div className="w-full max-w-[560px] max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-                  <PinvouSummonCard item={bs.pinvouModal} theme={activeTheme} />
+                {/* loading 期间禁止背景点击关窗:召唤(直连 vLLM,5-30s)仍在后台跑、守卫仍 held,
+                    点背景误关会表现为"闪一下没反应、要等一会才能再点"。锁住后 spinner 全程可见,
+                    出结果/错误后才可点背景关。 */}
+                <div className="relative w-full max-w-[720px] overflow-hidden bg-white dark:bg-[#1C1C1E] rounded-[20px] shadow-[0_20px_60px_rgba(0,0,0,0.28)] ts-modal-in"
+                     onClick={(e) => e.stopPropagation()}
+                     style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
+                  {/* 关闭按钮：所有状态(含 loading)常驻;loading 时点它=取消等待并关窗,in-flight 结果由守卫丢弃 */}
+                  <button onClick={() => bridge.available && bridge.dismissPinvouReview()} aria-label={t.pvSkip}
+                    className="absolute top-3.5 right-3.5 z-10 w-7 h-7 flex items-center justify-center rounded-full bg-black/[0.06] dark:bg-white/10 text-[#8E8E93] hover:bg-black/10 dark:hover:bg-white/15 active:scale-90 transition-colors">
+                    <X size={16} />
+                  </button>
+                  <div className="max-h-[90vh] overflow-y-auto custom-scrollbar px-5 pt-5 pb-6">
+                    <PinvouSummonCard item={bs.pinvouModal} theme={activeTheme} t={t} />
+                  </div>
                 </div>
               </div>
             )}
@@ -1354,19 +1427,26 @@
       if (!ts) return '';
       const d = new Date(typeof ts === 'number' ? ts : ts);
       const now = new Date();
-      const diff = now - d;
+      let diff = now - d;
+      if (diff < 0) diff = 0; // 时钟漂移/未来时间戳 → 当「刚刚」,不出现负数
       const L = {
-        zh: { yesterday: '昨天', daysAgo: n => `${n} 天前`, locale: 'zh-CN' },
-        ja: { yesterday: '昨日', daysAgo: n => `${n} 日前`, locale: 'ja-JP' },
-        en: { yesterday: 'Yesterday', daysAgo: n => `${n}d ago`, locale: 'en-US' },
-      }[language] || { yesterday: 'Yesterday', daysAgo: n => `${n}d ago`, locale: 'en-US' };
-      // 今天的会话显示具体时间——同日多条全写「今天」毫无区分度
-      if (diff < 86400000 && d.getDate() === now.getDate()) return d.toLocaleTimeString(L.locale, { hour: '2-digit', minute: '2-digit', hour12: false });
-      if (diff < 172800000) return L.yesterday;
-      // 7 天内显示「X 天前」/「X days ago」,更早显示日期
+        zh: { justNow: '刚刚', minsAgo: n => `${n} 分钟前`, hoursAgo: n => `${n} 小时前`, yesterday: '昨天', daysAgo: n => `${n} 天前`, locale: 'zh-CN' },
+        ja: { justNow: 'たった今', minsAgo: n => `${n} 分前`, hoursAgo: n => `${n} 時間前`, yesterday: '昨日', daysAgo: n => `${n} 日前`, locale: 'ja-JP' },
+        en: { justNow: 'Just now', minsAgo: n => `${n}m ago`, hoursAgo: n => `${n}h ago`, yesterday: 'Yesterday', daysAgo: n => `${n}d ago`, locale: 'en-US' },
+      }[language] || { justNow: 'Just now', minsAgo: n => `${n}m ago`, hoursAgo: n => `${n}h ago`, yesterday: 'Yesterday', daysAgo: n => `${n}d ago`, locale: 'en-US' };
+      // 今天之内:相对时间(刚刚 / X分钟前 / X小时前)——比绝对钟点更直观传达「多近」,
+      // 且不同时间天然有区分度(不会同日多条都一样)。
+      if (diff < 60000) return L.justNow;                                  // < 60 秒
+      if (diff < 3600000) return L.minsAgo(Math.floor(diff / 60000));      // < 60 分钟
+      if (diff < 86400000) return L.hoursAgo(Math.floor(diff / 3600000));  // < 24 小时
+      if (diff < 172800000) return L.yesterday;                           // 24~47 小时
       const days = Math.floor(diff / 86400000);
-      if (days < 7) return L.daysAgo(days);
-      return d.toLocaleDateString(L.locale, { month: 'short', day: 'numeric' });
+      if (days < 7) return L.daysAgo(days);                               // 2~6 天
+      // ≥7 天:日期;跨年带年份(只写月日会有歧义)
+      const opts = d.getFullYear() === now.getFullYear()
+        ? { month: 'short', day: 'numeric' }
+        : { year: 'numeric', month: 'short', day: 'numeric' };
+      return d.toLocaleDateString(L.locale, opts);
     }
 
     // ==========================================
@@ -1651,10 +1731,355 @@
       </div>
     );
 
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, modelPreset, onChangeModelPreset, customModelName, setCustomModelName, customBaseUrl, setCustomBaseUrl, customApiKey, setCustomApiKey, savedModel, onConfirmModelConfig, onConfirmSearchConfig, modelConfigDirty, searchNeedsRestart, languageNeedsRestart, bs, t }) => {
+    // ── 「添加模型」方案:模型快切 chip + 添加/编辑弹窗 ─────────────────
+    // 各预设默认 baseUrl/model 模板(与 bridge/prefs.rs 对齐),添加模型时自动填充。
+    const MODEL_PRESET_DEFS = {
+      local_vllm:  { baseUrl: 'http://127.0.0.1:8000/v1',                model: 'qwen36_35b_256k' },
+      deepseek:    { baseUrl: 'https://api.deepseek.com',                model: 'deepseek-v4-pro' },
+      kimi:        { baseUrl: 'https://api.moonshot.cn/v1',              model: 'kimi-k2.6' },
+      openai_compatible: { baseUrl: 'https://api.openai.com/v1',        model: 'gpt-4o' },
+      qwen:        { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-max' },
+      doubao:      { baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-pro-256k' },
+      minimax:     { baseUrl: 'https://api.minimax.chat/v1',            model: 'abab6.5s-chat' },
+      glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-4-plus' },
+      mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2-flash' },
+    };
+    function presetOptionsI18n(t) {
+      return [
+        { key: 'local_vllm', label: t.modelPresetLocalVllm },
+        { key: 'deepseek', label: t.modelPresetDeepseek },
+        { key: 'kimi', label: t.modelPresetKimi },
+        { key: 'openai_compatible', label: t.modelPresetOpenaiCompatible },
+        { key: 'qwen', label: t.modelPresetQwen },
+        { key: 'doubao', label: t.modelPresetDoubao },
+        { key: 'minimax', label: t.modelPresetMinimax },
+        { key: 'glm', label: t.modelPresetGlm },
+        { key: 'mimo', label: t.modelPresetMimo },
+      ];
+    }
+    function presetProviderLabel(preset, t) {
+      const m = {};
+      presetOptionsI18n(t).forEach(o => { m[o.key] = o.label; });
+      return m[preset] || preset;
+    }
+
+    // 聊天输入框上方:当前会话模型 chip + 下拉热切。
+    const ModelChip = ({ isDark, t, bs, onGotoSettings }) => {
+      const [open, setOpen] = useState(false);
+      const savedModels = (bs && bs.savedModels) || [];
+      const activeSessionId = bs ? bs.activeSessionId : null;
+      const activeModelId = bs && bs.activeModelId;
+      const currentSessionModelId = bs && bs.currentSessionModelId;
+      const busy = bs ? bs.busy : false;
+      const effectiveId = currentSessionModelId || activeModelId;
+      const current = savedModels.find(m => m.id === effectiveId);
+      if (!savedModels.length) return null;
+      function pick(id) {
+        setOpen(false);
+        if (id === effectiveId) return;
+        if (bridge.available) bridge.switchModel(activeSessionId, id);
+      }
+      return (
+        <div className="relative px-2 mb-2">
+          <button onClick={() => { if (!busy) setOpen(o => !o); }} disabled={busy}
+            title={busy ? t.modelSwitchBusy : t.switchModelTitle}
+            className={`inline-flex items-center gap-1.5 pl-3 pr-2 py-1 rounded-full text-[12px] font-medium transition-colors disabled:opacity-50 ${isDark ? 'bg-[#2A2B2D] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#EAEDF1] text-[#1F1F1F] hover:bg-[#E0E3E7]'}`}>
+            <span className="w-1.5 h-1.5 rounded-full bg-[#34A853]"></span>
+            <span className="max-w-[220px] truncate">{current ? current.name : t.modelNonePick}</span>
+            <ChevronDown size={13} />
+          </button>
+          {open && (
+            <div>
+              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
+              <div className={`absolute bottom-full left-2 mb-1 z-50 min-w-[240px] max-h-[340px] overflow-y-auto rounded-xl border shadow-lg py-1 ${isDark ? 'bg-[#1E1F20] border-[#333537]' : 'bg-white border-[#E0E3E7]'}`}>
+                {savedModels.map(m => (
+                  <button key={m.id} onClick={() => pick(m.id)}
+                    className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${isDark ? 'hover:bg-[#2A2B2D]' : 'hover:bg-[#F0F4F9]'}`}>
+                    <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${m.id === effectiveId ? 'bg-[#34A853]' : 'bg-transparent'}`}></span>
+                    <span className="flex-1 min-w-0">
+                      <span className={`block text-[13px] truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{m.name}</span>
+                      <span className={`block text-[11px] truncate ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{m.model}</span>
+                    </span>
+                    {m.id === activeModelId && <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${isDark ? 'bg-[#37393B] text-[#9AA0A6]' : 'bg-[#E8EAED] text-[#5F6368]'}`}>{t.modelActiveTag}</span>}
+                  </button>
+                ))}
+                <div className={`border-t mt-1 pt-1 ${isDark ? 'border-[#333537]' : 'border-[#E8EAED]'}`}>
+                  <button onClick={() => { setOpen(false); if (onGotoSettings) onGotoSettings(); }}
+                    className={`w-full px-3 py-1.5 text-left text-[12px] ${isDark ? 'text-[#9AA0A6] hover:bg-[#2A2B2D]' : 'text-[#5F6368] hover:bg-[#F0F4F9]'}`}>
+                    {t.manageModels}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    // 输入框底栏:模型选择器(iOS 化,复用 ModelChip 的 switchModel 逻辑;darkMode:'class' 故用 dark: 变体)。
+    const ComposerModelSelector = ({ t, bs, onGotoSettings }) => {
+      const [open, setOpen] = useState(false);
+      const savedModels = (bs && bs.savedModels) || [];
+      const activeSessionId = bs ? bs.activeSessionId : null;
+      const activeModelId = bs && bs.activeModelId;
+      const currentSessionModelId = bs && bs.currentSessionModelId;
+      const busy = bs ? bs.busy : false;
+      const effectiveId = currentSessionModelId || activeModelId;
+      const current = savedModels.find(m => m.id === effectiveId);
+      if (!savedModels.length) return null;
+      function pick(id) { setOpen(false); if (id !== effectiveId && bridge.available) bridge.switchModel(activeSessionId, id); }
+      return (
+        <div className="relative">
+          <button onClick={() => { if (!busy) setOpen(o => !o); }} disabled={busy}
+            title={busy ? t.modelSwitchBusy : t.switchModelTitle}
+            className="flex items-center gap-2 bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 px-3 py-1.5 rounded-xl text-[13px] font-semibold transition-colors border border-black/[0.04] dark:border-white/5 disabled:opacity-50">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#34C759]"></span>
+            <span className="max-w-[150px] truncate">{current ? current.name : t.modelNonePick}</span>
+            <ChevronDown size={14} className="opacity-50 shrink-0" />
+          </button>
+          {open && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
+              <div className="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+                {savedModels.map(m => (
+                  <button key={m.id} onClick={() => pick(m.id)}
+                    className="w-full flex items-center justify-between px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
+                    <span className="flex items-center gap-2.5 min-w-0">
+                      <Cpu size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
+                      <span className="truncate">{m.name}</span>
+                    </span>
+                    {m.id === effectiveId && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
+                  </button>
+                ))}
+                <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
+                <button onClick={() => { setOpen(false); if (onGotoSettings) onGotoSettings(); }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
+                  <Plus size={15} className="text-gray-400 group-hover:text-white/90" />
+                  {t.manageModels}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      );
+    };
+
+    // 输入框底栏:工具菜单(只展示已装工具 + 跳工具商店;无会话级开关——后端无此概念)。
+    const ComposerToolMenu = ({ t, onGotoTools }) => {
+      const [open, setOpen] = useState(false);
+      const [tools, setTools] = useState([]);
+      const [disabled, setDisabled] = useState(() => new Set()); // 被关掉的连接器 id(全局持久)
+      // 启动时加载已装工具 + 全局持久的禁用列表(持久语义:新窗口/新对话都继承)
+      useEffect(() => {
+        let alive = true;
+        (async () => {
+          try {
+            const list = await window.__TAURI__.core.invoke('list_marketplace_tools');
+            if (alive) setTools((list || []).filter(x => x.installed));
+          } catch (e) { /* 忽略 */ }
+          try {
+            const dis = await window.__TAURI__.core.invoke('get_disabled_connectors');
+            if (alive) setDisabled(new Set(dis || []));
+          } catch (e) { /* 忽略 */ }
+        })();
+        return () => { alive = false; };
+      }, []);
+      function toggleTool(id) {
+        const next = new Set(disabled);
+        next.has(id) ? next.delete(id) : next.add(id);
+        setDisabled(next);
+        // 全局持久:落盘 + 广播给所有在跑引擎,关一次所有新对话/新窗口都继承。
+        if (bridge.available) {
+          window.__TAURI__.core.invoke('set_disabled_connectors',
+            { connectorIds: Array.from(next) }).catch(() => {});
+        }
+      }
+      const enabledCount = tools.filter(tl => !disabled.has(tl.id)).length;
+      return (
+        <div className="relative">
+          <button onClick={() => setOpen(o => !o)}
+            className="flex items-center gap-2 bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 px-3 py-1.5 rounded-xl text-[13px] font-semibold transition-colors border border-black/[0.04] dark:border-white/5">
+            <Wrench size={14} className="opacity-70" />
+            {t.composerTools}
+            {tools.length > 0 && <span className="text-[11px] bg-[#007AFF] text-white px-1.5 py-0.5 rounded-full leading-none font-bold shrink-0">{enabledCount}</span>}
+            <ChevronDown size={14} className="opacity-50 shrink-0" />
+          </button>
+          {open && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
+              <div className="absolute bottom-full left-0 mb-2 z-50 w-64 bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+                <div className="px-3 py-2 text-[11px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider">{t.composerInstalledTools}</div>
+                {tools.length === 0 ? (
+                  <div className="px-3 py-2 text-[13px] text-gray-400 dark:text-gray-500">{t.composerNoTools}</div>
+                ) : tools.map(tl => {
+                  const on = !disabled.has(tl.id);
+                  return (
+                    <div key={tl.id} className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
+                      <span className="text-[13px] text-gray-700 dark:text-gray-200 truncate">{tl.name || tl.title || tl.id}</span>
+                      <button onClick={() => toggleTool(tl.id)} aria-label={tl.id}
+                        className={`relative inline-flex h-5 w-[34px] shrink-0 items-center rounded-full transition-colors ${on ? 'bg-[#34C759]' : 'bg-[#E5E5EA] dark:bg-[#39393D]'}`}>
+                        <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${on ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
+                      </button>
+                    </div>
+                  );
+                })}
+                <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
+                <button onClick={() => { setOpen(false); if (onGotoTools) onGotoTools(); }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
+                  <Store size={15} className="text-gray-400 group-hover:text-white/90" />
+                  {t.composerManageTools}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      );
+    };
+
+    // 添加/编辑模型模态弹窗。
+    const ModelFormModal = ({ isDark, t, initial, onCancel, onSave }) => {
+      const [name, setName] = useState(initial.name || '');
+      const [preset, setPreset] = useState(initial.preset || 'local_vllm');
+      const [model, setModel] = useState(initial.model || '');
+      const [baseUrl, setBaseUrl] = useState(initial.base_url || '');
+      const [apiKey, setApiKey] = useState(initial.api_key || '');
+      const [showKey, setShowKey] = useState(false);
+      const [testing, setTesting] = useState(false);
+      const [testResult, setTestResult] = useState(null);
+      const [detecting, setDetecting] = useState(false);
+      const [detectResult, setDetectResult] = useState(null); // { candidates } | { error } | null
+      function applyPreset(p) {
+        setPreset(p);
+        const defs = MODEL_PRESET_DEFS[p] || MODEL_PRESET_DEFS.local_vllm;
+        setBaseUrl(defs.baseUrl); setModel(defs.model);
+        if (p !== 'local_vllm') setApiKey('');
+      }
+      async function handleTest() {
+        if (!bridge.available) return;
+        setTesting(true); setTestResult(null);
+        try { const msg = await bridge.testModelConnection(baseUrl.trim(), apiKey.trim()); setTestResult({ ok: true, msg: String(msg) }); }
+        catch (e) { setTestResult({ ok: false, msg: String(e) }); }
+        finally { setTesting(false); }
+      }
+      // 探测本机 vLLM：只扫 127.0.0.1/localhost 的 8000-8002，探到唯一可用实例直接自动填充。
+      function applyCandidate(c) {
+        if (!c) return;
+        if (c.base_url) setBaseUrl(c.base_url);
+        if (c.model) { setModel(c.model); if (!name.trim()) setName(c.model); }
+        setApiKey('');
+      }
+      async function handleDetect() {
+        if (!bridge.available || detecting) return;
+        setDetecting(true); setDetectResult(null); setTestResult(null);
+        try {
+          const result = await bridge.discoverLocalVllm({
+            currentBaseUrl: baseUrl.trim() || null,
+            savedBaseUrl: initial.base_url || null,
+          });
+          const online = ((result && result.candidates) || []).filter(c => c.status !== 'offline');
+          setDetectResult({ candidates: online });
+          if (online.length === 1) applyCandidate(online[0]); // 唯一可用实例直接填充
+        } catch (e) {
+          setDetectResult({ error: String(e) });
+        } finally {
+          setDetecting(false);
+        }
+      }
+      function vllmStatusLabel(status) {
+        if (status === 'busy') return t.vllmDetectBusy;
+        if (status === 'ready') return t.vllmDetectReady;
+        if (status === 'mismatch') return t.vllmDetectMismatch;
+        return t.vllmDetectOffline;
+      }
+      const canSave = !!(name.trim() && model.trim() && baseUrl.trim());
+      function doSave() {
+        if (!canSave) return;
+        const id = initial.__new ? ('m_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)) : initial.id;
+        onSave({ id: id, name: name.trim(), preset: preset, model: model.trim(), base_url: baseUrl.trim(), api_key: apiKey });
+      }
+      return (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150" onClick={onCancel}>
+          <div onClick={e => e.stopPropagation()}
+            className={`w-[460px] max-w-[92vw] max-h-[88vh] overflow-y-auto rounded-[24px] p-6 shadow-2xl ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
+            <h2 className="text-[18px] font-medium mb-5">{initial.__new ? t.modelFormAddTitle : t.modelFormEditTitle}</h2>
+            <div className="space-y-4">
+              <SField isDark={isDark} label={t.modelDisplayName} type="text" value={name} onChange={e => setName(e.target.value)} />
+              <div>
+                <span className={`text-[14px] block mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.modelPreset}</span>
+                <div className="relative">
+                  <select value={preset} onChange={e => applyPreset(e.target.value)}
+                    className={`w-full appearance-none px-4 py-2 pr-10 rounded-lg text-[14px] outline-none ${isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746]' : 'bg-white text-[#1F1F1F] border border-[#C4C7C5]'}`}>
+                    {presetOptionsI18n(t).map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+                  </select>
+                  <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none"><ChevronDown size={16} className={isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'} /></div>
+                </div>
+              </div>
+              <SField isDark={isDark} label={t.customModelName} type="text" value={model} onChange={e => setModel(e.target.value)} />
+              <SField isDark={isDark} label={t.customBaseUrl} type="text" value={baseUrl} onChange={e => setBaseUrl(e.target.value)} />
+              <div>
+                <span className={`text-[14px] block mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.customApiKey}</span>
+                <div className="relative">
+                  <input type={showKey ? 'text' : 'password'} value={apiKey} onChange={e => setApiKey(e.target.value)}
+                    placeholder={preset === 'local_vllm' ? 'local-no-auth' : 'sk-...'}
+                    className={`w-full px-4 py-2 pr-10 rounded-lg text-[14px] outline-none ${isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746] focus:border-[#A8C7FA]' : 'bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0]'}`} />
+                  <button onClick={() => setShowKey(s => !s)} className="absolute right-2 top-1/2 -translate-y-1/2 text-[14px] opacity-70 px-1">{showKey ? '🙈' : '👁'}</button>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 flex-wrap">
+                <button onClick={handleTest} disabled={testing || !baseUrl.trim()}
+                  className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors disabled:opacity-50 ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#F0F4F9] text-[#1F1F1F] hover:bg-[#E8EAED]'}`}>
+                  {testing ? t.testingConn : t.testConnection}
+                </button>
+                {preset === 'local_vllm' && (
+                  <button onClick={handleDetect} disabled={detecting}
+                    className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors disabled:opacity-50 ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#F0F4F9] text-[#1F1F1F] hover:bg-[#E8EAED]'}`}>
+                    {detecting ? t.detectingLocalVllm : t.detectLocalVllm}
+                  </button>
+                )}
+                {testResult && (
+                  <span className={`text-[12px] max-w-[280px] truncate ${testResult.ok ? (isDark ? 'text-[#93D5A6]' : 'text-[#137333]') : (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]')}`}>{testResult.msg}</span>
+                )}
+              </div>
+              {preset === 'local_vllm' && detectResult && (
+                <div className={`rounded-xl border p-3 space-y-2 ${isDark ? 'border-[#333537] bg-[#131314]' : 'border-[#E0E3E7] bg-[#F8F9FB]'}`}>
+                  {detectResult.error ? (
+                    <span className={`text-[12px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{t.vllmDetectError(detectResult.error)}</span>
+                  ) : detectResult.candidates.length === 0 ? (
+                    <span className={`text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{t.vllmDetectNone}</span>
+                  ) : (
+                    <>
+                      <span className={`text-[12px] ${isDark ? 'text-[#93D5A6]' : 'text-[#137333]'}`}>{t.vllmDetectFound(detectResult.candidates.length)}</span>
+                      {detectResult.candidates.map(c => (
+                        <button key={c.base_url} onClick={() => applyCandidate(c)}
+                          className={`w-full text-left rounded-lg border px-3 py-2 transition-colors ${isDark ? 'border-[#333537] hover:bg-[#2A2B2D]' : 'border-[#E0E3E7] hover:bg-[#F0F4F9]'}`}>
+                          <div className={`text-[13px] truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{c.base_url}</div>
+                          <div className={`text-[11px] truncate ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
+                            {vllmStatusLabel(c.status)}
+                            {c.model ? ` · ${t.vllmDetectedModel}: ${c.model}` : ''}
+                            {c.max_model_len ? ` · ${t.vllmDetectedContext}: ${c.max_model_len}` : ''}
+                          </div>
+                        </button>
+                      ))}
+                    </>
+                  )}
+                  <span className={`text-[11px] block ${isDark ? 'text-[#5F6368]' : 'text-[#9AA0A6]'}`}>{t.vllmDetectHint}</span>
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end gap-2 mt-6">
+              <button onClick={onCancel} className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>{t.cpCancel}</button>
+              <button onClick={doSave} disabled={!canSave}
+                className={`text-[13px] font-medium px-5 py-2 rounded-full transition-colors disabled:opacity-50 ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'}`}>{t.modelSaveBtn}</button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onConfirmSearchConfig, searchNeedsRestart, languageNeedsRestart, bs, t }) => {
       const isDark = activeTheme === 'dark';
-      const [vllmDiscovery, setVllmDiscovery] = useState(null);
-      const [vllmDiscovering, setVllmDiscovering] = useState(false);
+      const [editingModel, setEditingModel] = useState(null);
+      const modelEnvLocked = (bs && bs.effectiveModelConfig && bs.effectiveModelConfig.env_overrides) || [];
       // 进设置页自动体检一次可选依赖装齐没; 之后用户可手动「重新检测」
       useEffect(() => {
         if (!bridge.available || (bs && (bs.deps || bs.depsChecking))) return;
@@ -1684,37 +2109,6 @@
         { key: 'glm',         label: t.modelPresetGlm },
         { key: 'mimo',        label: t.modelPresetMimo },
       ];
-      const vllmOnlineCandidates = vllmDiscovery && vllmDiscovery.candidates
-        ? vllmDiscovery.candidates.filter(c => c.status !== 'offline')
-        : [];
-      async function handleDetectLocalVllm() {
-        if (!bridge.available || vllmDiscovering) return;
-        setVllmDiscovering(true);
-        setVllmDiscovery(null);
-        try {
-          const result = await bridge.discoverLocalVllm({
-            currentBaseUrl: customBaseUrl,
-            savedBaseUrl: savedModel && savedModel.baseUrl,
-          });
-          setVllmDiscovery({ candidates: (result && result.candidates) || [] });
-        } catch (e) {
-          setVllmDiscovery({ error: String(e) });
-        } finally {
-          setVllmDiscovering(false);
-        }
-      }
-      function handleUseVllmCandidate(candidate) {
-        if (!candidate) return;
-        if (candidate.base_url) setCustomBaseUrl(candidate.base_url);
-        if (candidate.model) setCustomModelName(candidate.model);
-        setCustomApiKey('');
-      }
-      function vllmStatusLabel(status) {
-        if (status === 'busy') return t.vllmDetectBusy;
-        if (status === 'ready') return t.vllmDetectReady;
-        if (status === 'mismatch') return t.vllmDetectMismatch;
-        return t.vllmDetectOffline;
-      }
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
 
@@ -1725,95 +2119,48 @@
               <div className="space-y-8">
 
               <SCard isDark={isDark} title={t.modelBackend}>
-                <div className="space-y-6">
-                  <SRow isDark={isDark} label={t.modelPreset} desc={t.modelBackendDesc}>
-                    <div className="relative">
-                      <select
-                        value={modelPreset}
-                        onChange={e => onChangeModelPreset(e.target.value)}
-                        className={`appearance-none px-4 py-2 pr-10 rounded-lg text-[14px] font-medium outline-none transition-colors cursor-pointer ${
-                          isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746] focus:border-[#A8C7FA]'
-                                 : 'bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0]'
-                        }`}
-                      >
-                        {presetOptions.map(opt => (
-                          <option key={opt.key} value={opt.key}>{opt.label}</option>
-                        ))}
-                      </select>
-                      <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
-                        <ChevronDown size={16} className={isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'} />
-                      </div>
+                <div className="space-y-4">
+                  <p className={`text-[13px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{t.modelBackendDesc}</p>
+                  {modelEnvLocked.length > 0 && (
+                    <div className={`text-[12px] rounded-lg px-3 py-2 ${isDark ? 'bg-[#3A2E1A] text-[#F9D67A]' : 'bg-[#FEF7E0] text-[#B06000]'}`}>
+                      {t.modelEnvLocked(modelEnvLocked.join(', '))}
                     </div>
-                  </SRow>
-
-                  {/* 输入框直接显示当前生效值（App 初始化时已用 PRESET_DEFAULTS 填充），不靠 placeholder 冒充 */}
-                  <div className="space-y-4">
-                    <SField isDark={isDark} label={t.customModelName} type="text"
-                      value={customModelName} onChange={e => setCustomModelName(e.target.value)} />
-                    <SField isDark={isDark} label={t.customBaseUrl} type="text"
-                      value={customBaseUrl} onChange={e => setCustomBaseUrl(e.target.value)} />
-	                    <SField isDark={isDark} label={t.customApiKey} type="password"
-	                      value={customApiKey} onChange={e => setCustomApiKey(e.target.value)}
-	                      placeholder={modelPreset === 'local_vllm' ? 'local-no-auth' : 'sk-...'} />
-	                    {modelPreset === 'local_vllm' && (
-	                      <div className={`rounded-xl border p-3 space-y-3 ${isDark ? 'border-[#333537] bg-[#131314]' : 'border-[#E0E3E7] bg-white'}`}>
-	                        <div className="flex items-center justify-between gap-3">
-	                          <span className={`text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{t.vllmDetectHint}</span>
-	                          <button
-	                            onClick={handleDetectLocalVllm}
-	                            disabled={vllmDiscovering || !bridge.available}
-	                            className={`shrink-0 text-[13px] font-medium px-4 py-2 rounded-full transition-colors disabled:opacity-60 ${
-	                              isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#333537]'
-	                                     : 'bg-[#F0F4F9] text-[#1F1F1F] hover:bg-[#E8EAED]'
-	                            }`}
-	                          >{vllmDiscovering ? t.detectingLocalVllm : t.detectLocalVllm}</button>
-	                        </div>
-	                        {vllmDiscovery && vllmDiscovery.error && (
-	                          <div className={`text-[12px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>
-	                            {t.vllmDetectError(vllmDiscovery.error)}
-	                          </div>
-	                        )}
-	                        {vllmDiscovery && !vllmDiscovery.error && (
-	                          <div className="space-y-2">
-	                            <div className={`text-[12px] ${vllmOnlineCandidates.length ? (isDark ? 'text-[#93D5A6]' : 'text-[#137333]') : (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]')}`}>
-	                              {vllmOnlineCandidates.length ? t.vllmDetectFound(vllmOnlineCandidates.length) : t.vllmDetectNone}
-	                            </div>
-	                            {vllmOnlineCandidates.map(candidate => {
-	                              return (
-	                                <div key={candidate.base_url} className={`flex items-center justify-between gap-3 rounded-lg px-3 py-2 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F8FAFD]'}`}>
-	                                  <div className="min-w-0">
-	                                    <div className="flex items-center gap-2">
-	                                      <span className="w-2 h-2 rounded-full bg-[#34A853]"></span>
-	                                      <span className={`text-[13px] font-medium truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{candidate.base_url}</span>
-	                                      <span className={`text-[11px] uppercase ${isDark ? 'text-[#93D5A6]' : 'text-[#137333]'}`}>{vllmStatusLabel(candidate.status)}</span>
-	                                    </div>
-	                                    <div className={`mt-1 text-[12px] truncate ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
-	                                      {t.vllmDetectedModel}: {candidate.model || '—'} · {t.vllmDetectedContext}: {candidate.max_model_len || '—'}
-	                                    </div>
-	                                  </div>
-	                                  <button
-	                                    onClick={() => handleUseVllmCandidate(candidate)}
-	                                    className={`shrink-0 text-[12px] font-medium px-3 py-1.5 rounded-full transition-colors ${
-	                                      isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]'
-	                                             : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'
-	                                    }`}
-	                                  >{t.useVllmConfig}</button>
-	                                </div>
-	                              );
-	                            })}
-	                          </div>
-	                        )}
-	                      </div>
-	                    )}
-	                  </div>
-
-                  {modelConfigDirty && (
-                    <SActionBar isDark={isDark} message={t.modelDirtyHint}
-                      actionLabel={t.confirmAndRestart} onAction={onConfirmModelConfig} />
                   )}
+                  <div className="space-y-2">
+                    {savedModels.map(m => {
+                      const isActive = m.id === activeModelId;
+                      return (
+                        <div key={m.id} className={`flex items-center gap-3 rounded-xl border px-4 py-3 ${isDark ? 'border-[#333537] bg-[#131314]' : 'border-[#E0E3E7] bg-white'}`}>
+                          <button onClick={() => { if (!isActive) onSetActiveModel(m.id); }} title={t.setActiveModel} className="shrink-0">
+                            <span className={`block w-4 h-4 rounded-full border-2 ${isActive ? 'border-[#0B57D0] bg-[#0B57D0]' : (isDark ? 'border-[#5F6368]' : 'border-[#9AA0A6]')}`}>
+                              {isActive && <span className="block w-1.5 h-1.5 mx-auto mt-[3px] rounded-full bg-white"></span>}
+                            </span>
+                          </button>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className={`text-[14px] font-medium truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{m.name}</span>
+                              <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${isDark ? 'bg-[#2A2B2D] text-[#9AA0A6]' : 'bg-[#F0F4F9] text-[#5F6368]'}`}>{presetProviderLabel(m.preset, t)}</span>
+                              {isActive && <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${isDark ? 'bg-[#1A3A1F] text-[#93D5A6]' : 'bg-[#E6F4EA] text-[#137333]'}`}>{t.modelActiveTag}</span>}
+                            </div>
+                            <div className={`text-[12px] truncate ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{m.model} · {m.base_url}</div>
+                          </div>
+                          <button onClick={() => setEditingModel(m)} title={t.editModel} className={`shrink-0 text-[12px] px-3 py-1.5 rounded-full transition-colors ${isDark ? 'text-[#A8C7FA] hover:bg-[#333537]' : 'text-[#0B57D0] hover:bg-[#F0F4F9]'}`}>{t.editModel}</button>
+                          {savedModels.length > 1 && (
+                            <button onClick={() => onDeleteModel(m)} title={t.deleteModelBtn} className={`shrink-0 text-[12px] px-3 py-1.5 rounded-full transition-colors ${isDark ? 'text-[#F28B82] hover:bg-[#333537]' : 'text-[#C5221F] hover:bg-[#FCE8E6]'}`}>{t.deleteModelBtn}</button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <button onClick={() => setEditingModel({ __new: true, id: '', name: '', preset: 'local_vllm', model: MODEL_PRESET_DEFS.local_vllm.model, base_url: MODEL_PRESET_DEFS.local_vllm.baseUrl, api_key: '' })}
+                    className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#F0F4F9] text-[#1F1F1F] hover:bg-[#E8EAED]'}`}>{t.addModel}</button>
                 </div>
               </SCard>
-
+              {editingModel && (
+                <ModelFormModal isDark={isDark} t={t} initial={editingModel}
+                  onCancel={() => setEditingModel(null)}
+                  onSave={m => { onSaveModel(m); setEditingModel(null); }} />
+              )}
               <SCard isDark={isDark} title={t.searchBackend}>
                 <div className="space-y-6">
                   <SRow isDark={isDark} label={t.searchSource} desc={t.searchBackendDesc}>
@@ -2130,11 +2477,34 @@
       );
     };
 
-    const ChatView = ({ theme, t, bs, prefill, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool }) => {
+    const ChatView = ({ theme, t, bs, prefill, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoTools }) => {
       const isDark = theme === 'dark';
       const [inputText, setInputText] = useState('');
       const [artifactsOpen, setArtifactsOpen] = useState(false);
       const scrollRef = useRef(null);
+      const composerRef = useRef(null);
+      // 输入框自动增高:随内容从最小(~2行)长到上限 160px,再内部滚动(iOS 手感)。
+      // 清空(发送后)inputText 变 '' → 自动缩回最小高。
+      useEffect(() => {
+        const el = composerRef.current;
+        if (!el) return;
+        el.style.height = 'auto';
+        el.style.height = Math.min(Math.max(el.scrollHeight, 48), 160) + 'px';
+      }, [inputText]);
+      // 输入框是浮动绝对定位,会随 auto-grow / 附件 / 排队 chips 变高 → 量它实际高度,
+      // 动态给滚动区底部留白(= 输入框高 + 间距),保证最后几条消息永不被遮挡、也不浪费空间。
+      const composerWrapRef = useRef(null);
+      const [composerH, setComposerH] = useState(0);
+      useEffect(() => {
+        const el = composerWrapRef.current;
+        if (!el) return;
+        const measure = () => setComposerH(el.offsetHeight);
+        measure();
+        if (!window.ResizeObserver) return;
+        const ro = new ResizeObserver(measure);
+        ro.observe(el);
+        return () => ro.disconnect();
+      }, []);
       const chatItems = bs ? bs.chatItems : [];
       const busy = bs ? bs.busy : false;
       const hasMessages = chatItems.length > 0;
@@ -2167,6 +2537,10 @@
       const [welcomeToolId, setWelcomeToolId] = useState(null);
       const activeSessionId = bs ? bs.activeSessionId : null;
       const draftEpoch = bs ? bs.draftEpoch : 0;
+      const voiceInput = (bs && bs.voiceInput) || { status: 'idle' };
+      const voiceActive = voiceInput.status === 'requesting_permission' || voiceInput.status === 'recording' || voiceInput.status === 'transcribing';
+      const voiceRecording = voiceInput.status === 'recording';
+      const voiceNotice = voiceInput.status !== 'idle' && voiceInput.message;
       useEffect(() => {
         if (justInstalledTool) {
           setWelcomeToolId(justInstalledTool);
@@ -2179,6 +2553,11 @@
         // 依赖 activeSessionId(切会话)+ draftEpoch(每次点「新建对话」自增):后者保证即便已在草稿态
         // 再点「新建对话」(activeSessionId 不变 null→null)也能重新求值,否则残留工具卡顶掉「你好」。
       }, [activeSessionId, draftEpoch]);
+
+      // chip 显示当前会话绑定的模型:切会话/草稿时刷新 currentSessionModelId
+      useEffect(() => {
+        if (bridge.available) bridge.loadSessionModel(activeSessionId);
+      }, [activeSessionId]);
 
       function handleSend() {
         // 不再因 busy 拦截:bridge.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
@@ -2197,6 +2576,23 @@
 
       function handleCancel() {
         if (bridge.available) bridge.cancelGeneration();
+      }
+
+      function handleVoiceClick() {
+        if (!bridge.available) return;
+        if (voiceInput.status === 'recording') {
+          bridge.startVoiceInput(inputText, (text) => setInputText(prev => bridge.appendVoiceText(prev, text)));
+          return;
+        }
+        bridge.startVoiceInput(inputText, (text) => setInputText(prev => bridge.appendVoiceText(prev, text)));
+      }
+
+      function handleVoiceCancel() {
+        if (bridge.available) bridge.cancelVoiceInput();
+      }
+
+      function handleVoiceClose() {
+        if (bridge.available) bridge.clearVoiceInput();
       }
 
       function handlePaste(e) {
@@ -2239,7 +2635,7 @@
 
 
           {/* Main Chat Area */}
-          <div ref={scrollRef} className={`flex-1 min-h-0 overflow-y-auto px-4 md:px-20 lg:px-40 pb-40 custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
+          <div ref={scrollRef} style={{ paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }} className={`flex-1 min-h-0 overflow-y-auto px-4 md:px-20 lg:px-40 custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
 
             {!hasMessages && !welcomeToolId && (
               /* Gemini Style Centered Empty State */
@@ -2282,8 +2678,12 @@
 
           </div>
 
+          {/* 底部渐变蒙层:内容滚到底时在输入框上方柔和淡出(pointer-events-none 不挡滑动/点击;高度跟随输入框 auto-grow)。 */}
+          <div className={`pointer-events-none absolute bottom-0 inset-x-0 z-[15] bg-gradient-to-t to-transparent from-30% via-70% ${isDark ? 'from-[#131314] via-[#131314]/95' : 'from-white via-white/95'}`}
+            style={{ height: (composerH ? composerH + 96 : 220) + 'px' }} />
           {/* Floating Input Area */}
-          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 w-full max-w-[800px] px-4 z-20">
+          <div ref={composerWrapRef} className="absolute bottom-8 inset-x-0 px-4 md:px-20 lg:px-40 z-20">
+            <div className="max-w-[800px] w-full mx-auto">
             {/* 排队待发消息 chips（生成中继续输入会积压到这里，本轮跑完自动发） */}
             {queued.length > 0 && (
               <div className="flex flex-col gap-1 mb-2 px-2">
@@ -2296,6 +2696,7 @@
                 ))}
               </div>
             )}
+            {/* 模型选择器已挪进下方底栏(ComposerModelSelector) */}
             {/* 附件 chips */}
             {attachments.length > 0 && (
               <div className="flex flex-wrap gap-2 mb-2 px-2">
@@ -2311,38 +2712,77 @@
                 ))}
               </div>
             )}
-            <div className={`flex items-center gap-3 p-2 rounded-full shadow-lg ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
-
-              <button onClick={() => bridge.available && bridge.pickAndAttach()} title={t.attachAdd}
-                className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>
-                <Paperclip size={20} />
-              </button>
-
-              <input
-                type="text"
-                placeholder={t.placeholder}
+            {voiceNotice && (
+              <div className={`flex items-center justify-between gap-2 mb-2 px-3 py-2 rounded-2xl text-[12px] ${
+                voiceInput.status === 'failed'
+                  ? (isDark ? 'bg-[#3A1F1F] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]')
+                  : (isDark ? 'bg-[#1E2B3A] text-[#A8C7FA]' : 'bg-[#E8F0FE] text-[#174EA6]')
+              }`}>
+                <span className="min-w-0 truncate">
+                  {voiceInput.status === 'requesting_permission' ? t.voiceRequesting
+                    : voiceInput.status === 'recording' ? t.voiceRecording
+                    : voiceInput.status === 'transcribing' ? t.voiceTranscribing
+                    : voiceInput.status === 'completed' ? t.voiceCompleted
+                    : voiceInput.message}
+                </span>
+                <div className="flex items-center gap-1 shrink-0">
+                  {voiceInput.status === 'failed' && (
+                    <button onClick={handleVoiceClick} className={`px-2 py-1 rounded-full ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{t.voiceRetry}</button>
+                  )}
+                  {voiceActive && (
+                    <button onClick={handleVoiceCancel} className={`px-2 py-1 rounded-full ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{t.voiceCancel}</button>
+                  )}
+                  {!voiceActive && (
+                    <button onClick={handleVoiceClose} title={t.voiceClose} className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>×</button>
+                  )}
+                </div>
+              </div>
+            )}
+            <div className="bg-white/80 dark:bg-[#161618]/85 backdrop-blur-2xl border border-black/[0.06] dark:border-white/10 rounded-[28px] shadow-lg focus-within:border-blue-400/50 dark:focus-within:border-blue-500/50 transition-colors px-4 pt-3 pb-2.5">
+              <textarea
+                ref={composerRef}
                 value={inputText}
                 onChange={e => setInputText(e.target.value)}
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
-                className={`flex-1 bg-transparent border-none outline-none text-[16px] py-3 ${isDark ? 'placeholder:text-[#C4C7C5]' : 'placeholder:text-gray-400'}`}
+                placeholder={t.placeholder}
+                rows={1}
+                className="w-full bg-transparent resize-none outline-none text-gray-800 dark:text-gray-100 text-[16px] leading-relaxed min-h-[48px] overflow-y-auto hide-scrollbar placeholder:text-gray-400 dark:placeholder:text-gray-500"
               />
-
-              {busy ? (
-                <button
-                  onClick={handleCancel}
-                  className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#F28B82] hover:bg-[#333537]' : 'text-[#C5221F] hover:bg-[#F0F4F9]'}`}
-                >
-                  <StopCircle size={20} />
-                </button>
-              ) : (
-                <button
-                  onClick={handleSend}
-                  className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}
-                >
-                  {(inputText.trim() || attachments.some(a => a.status === 'ready')) ? <Send size={18} /> : <Mic size={20} />}
-                </button>
-              )}
+              <div className="flex items-center justify-between mt-1.5 gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <button onClick={() => bridge.available && bridge.pickAndAttach()} title={t.attachAdd}
+                    className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-black/5 dark:hover:bg-white/10 transition-colors">
+                    <Paperclip size={20} />
+                  </button>
+                  <button onClick={handleVoiceClick} title={voiceRecording ? t.voiceStop : t.voiceStart}
+                    className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${
+                      voiceRecording
+                        ? 'bg-[#C5221F] text-white hover:bg-[#A50E0E]'
+                        : voiceActive
+                          ? (isDark ? 'bg-[#1E2B3A] text-[#A8C7FA] hover:bg-[#24364C]' : 'bg-[#E8F0FE] text-[#174EA6] hover:bg-[#D2E3FC]')
+                          : 'text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-black/5 dark:hover:bg-white/10'
+                    }`}>
+                    <Mic size={20} />
+                  </button>
+                  <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoSettings} />
+                  <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} />
+                </div>
+                {busy ? (
+                  <button onClick={handleCancel}
+                    className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-black/5 dark:bg-white/10 text-[#C5221F] dark:text-[#F28B82] hover:bg-black/10 dark:hover:bg-white/20 transition-colors">
+                    <StopCircle size={20} />
+                  </button>
+                ) : (() => {
+                  const ready = inputText.trim() || attachments.some(a => a.status === 'ready');
+                  return (
+                    <button onClick={handleSend} disabled={!ready} aria-label="发送"
+                      className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0' : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
+                      <Send size={17} className="translate-x-[1px]" />
+                    </button>
+                  );
+                })()}
+              </div>
             </div>
             {ctxTokens && ctxTokens.input > 0 && (
               <div className={`mt-1.5 px-5 text-[11px] font-mono ${
@@ -2354,6 +2794,7 @@
             )}
             <div className="flex items-center justify-center mt-3">
                <p className={`text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{t.disclaimer}</p>
+            </div>
             </div>
           </div>
 
@@ -2646,49 +3087,121 @@
     // ==========================================
     // Artifact Card — present_artifact 成品卡（点击打开预览）
     // ==========================================
-    const _ARTIFACT_ICON = { html: '🌐', markdown: '📄', image: '🖼️', other: '📎' };
+    // 产物类型 → { 角标/标签文字, tile 配色, lucide 内联 SVG 路径 }（零下载；仅无封面紧凑态显图标）。
+    // 配色/字形照搬 产物卡图标预览.html（唯一权威）。
+    const _ARTIFACT_FMT = {
+      pptx:     { label: 'PPTX', color: '#D24726', glyph: '<path d="M2 3h20"/><path d="M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3"/><path d="m7 21 5-5 5 5"/>' },
+      docx:     { label: 'DOCX', color: '#2B579A', glyph: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/>' },
+      xlsx:     { label: 'XLSX', color: '#217346', glyph: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M12 3v18"/>' },
+      pdf:      { label: 'PDF',  color: '#E5352B', glyph: '<path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><path d="M14 2v6h6"/><path d="M9 13h6"/><path d="M9 17h3"/>' },
+      image:    { label: 'IMG',  color: '#8E8E93', glyph: '<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>' },
+      html:     { label: 'HTML', color: '#22A7C2', glyph: '<path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/>' },
+      markdown: { label: 'MD',   color: '#6B7280', glyph: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 16V8l3 3 3-3v8"/><path d="M18 8v6l-2-2"/><path d="m16 12 2 2 2-2"/>' },
+      other:    { label: 'FILE', color: '#6B7280', glyph: '<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>' },
+    };
     const _artifactKind = (p) => {
       const ext = (String(p || '').split('.').pop() || '').toLowerCase();
+      if (ext === 'pptx' || ext === 'ppt') return 'pptx';
+      if (ext === 'docx' || ext === 'doc') return 'docx';
+      if (ext === 'xlsx' || ext === 'xls' || ext === 'csv') return 'xlsx';
+      if (ext === 'pdf') return 'pdf';
+      if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].indexOf(ext) >= 0) return 'image';
       if (ext === 'html' || ext === 'htm') return 'html';
       if (ext === 'md' || ext === 'markdown') return 'markdown';
-      if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].indexOf(ext) >= 0) return 'image';
       return 'other';
     };
+    // 文件类型图标（白色，置于配色 tile 上）。
+    const AcFmtIcon = ({ kind, className }) => (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+        className={className} dangerouslySetInnerHTML={{ __html: (_ARTIFACT_FMT[kind] || _ARTIFACT_FMT.other).glyph }} />
+    );
+    // 设计稿专用图标（逐字照搬 前端-产物卡片.txt，含其独有 strokeWidth）。
+    const AcShieldCheck = ({ className }) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>;
+    const AcSparkles = ({ className }) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>;
+    const AcArrowUpRight = ({ className }) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg>;
+    const AcFolder = ({ className }) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>;
+
     const ArtifactCard = ({ item, theme, t, isLatest }) => {
-      const isDark = theme === 'dark';
       const path = item.path || '';
       const kind = _artifactKind(path);
-      const icon = _ARTIFACT_ICON[kind] || '📎';
-      const basename = (String(path).split('/').pop()) || '';
+      const fmt = _ARTIFACT_FMT[kind] || _ARTIFACT_FMT.other;
+      const basename = (String(path).split(/[\\/]/).pop()) || '';
+      const title = item.title || basename || t.artifactLabel;
       const open = () => { if (bridge.available && path) bridge.openArtifactExternal(path); };
+
+      // 封面缩略图：仅 pptx 异步抽取（Rust read_artifact_thumbnail 读 docProps/thumbnail.jpeg → data URL）。
+      // 拿不到则 hasCover=false，走紧凑态。本地数据、无外链。
+      const [coverUrl, setCoverUrl] = useState(null);
+      useEffect(() => {
+        let alive = true;
+        setCoverUrl(null);
+        if (kind === 'pptx' && bridge.available && bridge.readArtifactThumbnail && path) {
+          bridge.readArtifactThumbnail(path).then((u) => { if (alive && u) setCoverUrl(u); }).catch(() => {});
+        }
+        return () => { alive = false; };
+      }, [path, kind]);
+      const hasCover = !!coverUrl;
+
       return (
-        <div className="flex justify-start">
-          <div onClick={open}
-            className={`max-w-[95%] w-full rounded-[16px] border p-3 cursor-pointer transition-all ${isDark ? 'bg-[#7C3AED]/10 border-[#D0BCFF]/30 hover:border-[#D0BCFF]/60' : 'bg-[#7C3AED]/5 border-[#7C3AED]/20 hover:border-[#7C3AED]/50'}`}>
-            <div className="flex items-start gap-3">
-              <div className="text-[26px] leading-none flex-shrink-0">{icon}</div>
-              <div className="flex-1 min-w-0">
-                <div className={`text-[11px] font-mono uppercase tracking-wider mb-0.5 ${isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]'}`}>{t.artifactLabel} · {kind}</div>
-                <div className={`text-[15px] font-semibold truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{item.title || t.artifactLabel}</div>
-                {item.description && (
-                  <div className={`text-[13px] mt-0.5 line-clamp-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{item.description}</div>
-                )}
-                <div className={`flex items-center justify-between mt-2 pt-2 border-t ${isDark ? 'border-[#D0BCFF]/15' : 'border-[#7C3AED]/15'}`}>
-                  <span className={`text-[11px] font-mono truncate ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`} title={basename}>{basename}</span>
-                  <div className="flex items-center gap-2.5 flex-shrink-0 ml-2">
-                    {isLatest && <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.summonPinvou(path); }} title="品 · 查错：揪出产物的风险、遗漏、与你需求的偏差，逐条让 AI 改或你拍板接受"
-                      className={`flex items-center gap-1 text-[12px] ${isDark ? 'text-[#D0BCFF] hover:text-[#E9DDFF]' : 'text-[#7C3AED] hover:text-[#6D28D9]'}`}>
-                      「<span className="text-[11px]">📋</span> 品」
-                    </button>}
-                    {isLatest && <button onClick={(e) => { e.stopPropagation(); bridge.available && bridge.inspectPinvou(path); }} title="悟 · 发散：以领域专家视角给出产物还能补的维度和新思路，挑中的一键加进去"
-                      className={`flex items-center gap-1 text-[12px] ${isDark ? 'text-[#8AB4F8] hover:text-[#AECBFA]' : 'text-[#1967D2] hover:text-[#1A73E8]'}`}>
-                      「<span className="text-[11px]">✨</span> 悟」
-                    </button>}
-                    <span className={`text-[12px] ml-2 pl-2 border-l ${isDark ? 'text-[#D0BCFF] border-[#D0BCFF]/20' : 'text-[#7C3AED] border-[#7C3AED]/20'}`}>{t.clickToOpen}</span>
-                  </div>
+        <div className="flex justify-start" style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
+          <div className="w-full bg-white dark:bg-[#1E1E1E] rounded-[24px] shadow-[0_8px_30px_rgba(0,0,0,0.04)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.2)] border border-black/[0.04] dark:border-white/[0.06] p-3 flex flex-col transition-all duration-300">
+
+            {/* 封面区域 */}
+            {hasCover ? (
+              <div className="relative group/cover cursor-pointer rounded-[16px] overflow-hidden bg-gray-100 dark:bg-[#2C2C2E] border border-black/[0.02] dark:border-white/[0.02]" onClick={open}>
+                <div className="w-full aspect-[16/9] relative">
+                  <img src={coverUrl} alt="Cover" className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover/cover:scale-[1.02]" />
+                </div>
+                <div className="absolute top-3 right-3 px-2.5 py-1 rounded-[6px] bg-white/95 dark:bg-[#2C2C2E]/95 text-[#111] dark:text-[#eee] text-[11px] font-bold uppercase tracking-widest shadow-sm">
+                  {fmt.label}
                 </div>
               </div>
+            ) : (
+              <div className="px-3 pt-3 pb-2 flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-[8px] flex items-center justify-center shrink-0" style={{ background: fmt.color }}>
+                  <AcFmtIcon kind={kind} className="w-5 h-5 text-white" />
+                </div>
+                <span className="text-[13px] font-semibold text-[#888] dark:text-[#999] uppercase tracking-wider">
+                  {fmt.label}
+                </span>
+              </div>
+            )}
+
+            {/* 标题与打开按钮区 */}
+            <div onClick={open} className="px-3 pt-4 pb-5 flex justify-between items-center gap-4 group/header cursor-pointer">
+              <h2 className="text-[20px] font-semibold tracking-tight text-[#111] dark:text-[#eee] leading-snug truncate group-hover/header:text-[#007AFF] transition-colors">
+                {title}
+              </h2>
+              <button onClick={(e) => { e.stopPropagation(); open(); }} className="flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-full bg-gray-100 dark:bg-white/5 group-hover/header:bg-gray-200 dark:group-hover/header:bg-white/10 text-[#007AFF] dark:text-[#0A84FF] transition-colors active:scale-95" aria-label="打开">
+                <AcArrowUpRight className="w-[18px] h-[18px]" />
+              </button>
             </div>
+
+            {/* 智能操作区：品 / 悟，横排单行、无副标题；仅最新产物显示 */}
+            {isLatest && (
+              <div className="grid grid-cols-2 gap-3 mb-4 px-3">
+                <button onClick={() => bridge.available && bridge.summonPinvou(path)} title={t.pvBtnPinTitle}
+                  className="flex items-center justify-center py-3.5 px-4 rounded-[12px] bg-[#F9F9F9] dark:bg-white/5 hover:bg-[#F0F0F0] dark:hover:bg-white/10 transition-colors active:scale-[0.98] group/btn" aria-label="智能找错">
+                  <AcShieldCheck className="w-[18px] h-[18px] text-[#FF9500] dark:text-[#FF9F0A] mr-2.5 shrink-0" />
+                  <span className="text-[14px] font-medium text-[#111] dark:text-[#eee]">{t.pvBtnPinLabel}</span>
+                </button>
+
+                <button onClick={() => bridge.available && bridge.inspectPinvou(path)} title={t.pvBtnWuTitle}
+                  className="flex items-center justify-center py-3.5 px-4 rounded-[12px] bg-[#F9F9F9] dark:bg-white/5 hover:bg-[#F0F0F0] dark:hover:bg-white/10 transition-colors active:scale-[0.98] group/btn" aria-label="深度查漏">
+                  <AcSparkles className="w-[18px] h-[18px] text-[#5E5CE6] dark:text-[#5E5CE6] mr-2.5 shrink-0" />
+                  <span className="text-[14px] font-medium text-[#111] dark:text-[#eee]">{t.pvBtnWuLabel}</span>
+                </button>
+              </div>
+            )}
+
+            {/* 底部路径 */}
+            <div className="mx-3 mt-1 mb-2 pt-3 border-t border-gray-100 dark:border-white/[0.05]">
+              <div className="flex items-center gap-1.5 text-[12px] text-[#999] dark:text-[#777]">
+                <AcFolder className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate" title={path}>{path}</span>
+              </div>
+            </div>
+
           </div>
         </div>
       );
@@ -2897,6 +3410,7 @@
       { id: 12, backendId: null, title: 'CNB 云原生管线', subtitle: '代码仓库与 CI/CD 调度', category: 'dev', type: 'MCP Server', version: 'v1.0.0', latency: '<40ms', desc: '将云原生开发能力赋予大模型。支持通过自然语言进行代码仓库检索、提交 Issue、审查 PR、触发并监控流水线部署等极客操作。', icon: Code, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: true },
       { id: 13, backendId: 'qcc', title: '企查查', subtitle: '企业工商、风控、知产、经营数据查询', category: 'finance', type: 'MCP Server', version: 'v1.0.0', latency: '<500ms', desc: '接入企查查智能体数据平台，提供182个企业数据查询工具，覆盖工商登记、股东结构、风险预警、知识产权、招投标等六大模块。', icon: Building2, color: 'bg-gradient-to-br from-blue-600 to-cyan-500', installed: false, authRequired: false, welcomeQueries: ['查一下华为的工商信息', '腾讯有哪些风险预警', '比亚迪的专利有多少', '阿里巴巴的招投标记录'] },
       { id: 14, backendId: 'obsidian', title: 'Obsidian 知识库', subtitle: '检索本机 Obsidian 笔记，引用你的个人知识', category: 'kb', type: 'MCP Server', version: 'v1.0.0', latency: '<30ms', desc: '把你本机的 Obsidian 笔记库（vault）接入大模型。支持全文检索、读取笔记全文、按目录/标签浏览，让 AI 基于你自己沉淀的知识作答。笔记不出本机、模型也在本机，知识与算力全链路不出域。', icon: BookOpen, color: 'bg-gradient-to-b from-violet-500 to-purple-700', installed: false, authRequired: true, configFields: [{ key: 'OBSIDIAN_VAULT_PATH', label: 'Obsidian 库（vault）文件夹路径', placeholder: 'C:\\Users\\你\\Documents\\我的笔记', helpText: '在 Obsidian 里打开「设置 → 关于」或库切换器可看到库的真实路径，复制粘贴到这里即可。' }], welcomeQueries: ['我笔记里关于会议纪要的内容', '总结一下我的读书笔记', '帮我找之前写的项目方案', '我的笔记里有哪些待办'] },
+      { id: 15, backendId: 'pptx', title: 'PPT 生成', subtitle: '本地直出可编辑 PowerPoint，套主题模板、真图表、带封面', category: 'office', type: 'MCP Server', version: 'v1.0.0', latency: '本地', desc: '说“做个 PPT / 汇报”，AI 先列大纲让你确认，再按内容自动选主题（9 套）生成可编辑 .pptx——真·图表、自带封面缩略图，全程本地、数据不出机。首次安装会自动下载 python-pptx 依赖（需联网）。', icon: Presentation, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: false, welcomeQueries: ['做个 Q2 季度汇报 PPT', '帮我做一份产品介绍 PPT', '做个项目方案演示', '做个公司介绍 PPT'] },
     ];
 
     const weatherIconSvg = (code) => {
@@ -3030,6 +3544,7 @@
       { id: 'all', label: '全部工具' },
       { id: 'mcp', label: 'MCP 核心' },
       { id: 'comm', label: '协作办公' },
+      { id: 'office', label: '办公' },
       { id: 'dev', label: '研发治理' },
       { id: 'finance', label: '金融数据' },
       { id: 'kb', label: '知识库' },
@@ -3767,6 +4282,14 @@
       return `${base} ${isDark ? 'bg-[#333537] text-[#E3E3E3] hover:bg-[#444746]' : 'bg-white text-[#1F1F1F] hover:bg-[#E1E5EA] border border-black/10'}`;
     };
 
+    // 品悟角色配色（与产物卡一致）：品=盾·橙 #FF9500/#FF9F0A，悟=闪光·紫 #5E5CE6。
+    // 返回 { name, accentHex, text(类), softBg(类), Icon }。
+    const pvRole = (isWu, isDark) => isWu
+      ? { name: '悟', accentHex: '#5E5CE6', text: 'text-[#5E5CE6]',
+          softBg: isDark ? 'bg-[#5E5CE6]/15' : 'bg-[#5E5CE6]/[0.10]', Icon: AcSparkles }
+      : { name: '品', accentHex: isDark ? '#FF9F0A' : '#FF9500', text: isDark ? 'text-[#FF9F0A]' : 'text-[#FF9500]',
+          softBg: isDark ? 'bg-[#FF9F0A]/15' : 'bg-[#FF9500]/[0.10]', Icon: AcShieldCheck };
+
     // ==========================================
     // PinvouSummonCard — 🧭 召唤式检阅（Boss 主动呼叫 Pinvou）
     // 自报家门人格(单主+alternates,§3.3) + trace + issues(severity 分色)。
@@ -3776,15 +4299,17 @@
     //   issue.needs_verify(外部事实,AI 无知识)→ 让 AI 核实 / 我确认没问题;
     //   issue 其他(产物缺陷,AI 改得动)→ 让 AI 改 / 接受现状(high 默认勾)。
     // 「交给 AI 处理」按各条动作组装定向指令走 B1。单独子组件:useState 放这避 hooks 错位。
-    const PinvouRows = ({ review, theme }) => {
+    const PinvouRows = ({ review, theme, t, role }) => {
       const isDark = theme === 'dark';
-      const body = isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]';
-      const muted = isDark ? 'text-[#C4C7C5]' : 'text-[#5f6368]';
-      const sevDot = (s) => s === 'high' ? '#EA4335' : s === 'medium' ? '#E37400' : '#9AA0A6';
+      role = role || pvRole(false, isDark);
+      const body = isDark ? 'text-[#fff]' : 'text-[#000]';
+      const muted = isDark ? 'text-[#EBEBF5]/60' : 'text-[#3C3C43]/60';
+      // iOS 语义色：high 红 / medium 橙 / low 灰
+      const sevDot = (s) => s === 'high' ? '#FF3B30' : s === 'medium' ? '#FF9500' : '#C7C7CC';
       const rows = [
         ...(review.recommendations || []).map((x, i) => ({
-          k: 'r' + i, raw: x, kind: 'rec', dot: '#7C3AED',
-          head: (x.topic ? x.topic + '：' : '') + '建议 ' + x.pick, sub: x.why,
+          k: 'r' + i, raw: x, kind: 'rec', dot: '#FF9500',
+          head: (x.topic ? x.topic + '：' : '') + t.pvSuggest + x.pick, sub: x.why,
         })),
         ...(review.issues || []).map((x, i) => ({
           k: 'i' + i, raw: x, kind: x.kind === 'needs_verify' ? 'verify' : 'fix',
@@ -3792,16 +4317,16 @@
           head: x.text, sub: x.suggestion,
         })),
         ...(review.coverage || []).map((x, i) => ({
-          k: 'c' + i, raw: x, kind: 'gap', dot: x.severity === 'high' ? '#1A73E8' : '#669DF6',
+          k: 'c' + i, raw: x, kind: 'gap', dot: '#5E5CE6',
           sev: x.severity, head: x.dimension + (x.text ? '：' + x.text : ''), sub: x.suggestion,
         })),
       ];
       // 每类二选一 [值,文案]:第一个=「要 AI 做」(高亮),第二个=Boss 自己消化(灰)。
       const ACT = {
-        rec: [['adopt', '采纳建议'], ['ask', '让 AI 问我']],
-        verify: [['verify', '让 AI 核实'], ['confirmed', '我确认没问题']],
-        fix: [['modify', '让 AI 改'], ['accept', '接受现状']],
-        gap: [['fill', '补上'], ['skip', '暂不补']],
+        rec: [['adopt', t.pvActAdopt], ['ask', t.pvActAsk]],
+        verify: [['verify', t.pvActVerify], ['confirmed', t.pvActConfirmed]],
+        fix: [['modify', t.pvActModify], ['accept', t.pvActAccept]],
+        gap: [['fill', t.pvActFill], ['skip', t.pvActSkip]],
       };
       const ACTIVE = { adopt: 1, ask: 1, verify: 1, modify: 1, fill: 1 }; // 需转交给 AI 的动作
       const [res, setRes] = useState(() => {
@@ -3815,10 +4340,11 @@
       });
       const setOne = (k, v) => setRes(p => ({ ...p, [k]: p[k] === v ? null : v }));
       const activeCount = rows.filter(it => ACTIVE[res[it.k]]).length;
-      const chip = (on, active) => `text-[11.5px] px-2 py-0.5 rounded-full border transition-colors ${on
-        ? (active ? (isDark ? 'bg-[#D0BCFF] text-[#381E72] border-transparent' : 'bg-[#7C3AED] text-white border-transparent')
-                  : (isDark ? 'bg-white/15 text-[#E3E3E3] border-transparent' : 'bg-black/10 text-[#1F1F1F] border-transparent'))
-        : (isDark ? 'border-white/15 text-[#9AA0A6] hover:bg-white/5' : 'border-black/15 text-[#757575] hover:bg-black/5')}`;
+      // iOS 分段按钮风：选中且需转交 AI=填充角色色(背景走 style)；选中但自行消化=灰填充；未选=描边。
+      const chip = (on, active) => `text-[12px] px-2.5 py-1 rounded-full font-medium transition-all active:scale-[0.96] ${on
+        ? (active ? 'text-white border border-transparent'
+                  : (isDark ? 'bg-white/15 text-[#fff] border border-transparent' : 'bg-black/[0.08] text-[#000] border border-transparent'))
+        : (isDark ? 'border border-white/15 text-[#EBEBF5]/70 hover:bg-white/5' : 'border border-black/[0.12] text-[#3C3C43]/80 hover:bg-black/5')}`;
       const onResolve = () => {
         if (!bridge.available) return;
         // 弹窗里 review 是 notify 深拷贝,写它的 resolution 落不到原 state;把裁决按下标传给 bridge,
@@ -3846,18 +4372,19 @@
               const decided = res[it.k];
               const passive = decided === 'accept' || decided === 'confirmed' || decided === 'skip';
               return (
-                <div key={it.k} className={`rounded-lg px-2.5 py-2 transition-opacity ${passive ? 'opacity-45' : ''} ${isDark ? 'bg-white/[0.04]' : 'bg-black/[0.03]'}`}>
-                  <div className="flex gap-2">
-                    <span className="mt-[6px] w-[7px] h-[7px] rounded-full shrink-0" style={{ background: it.dot }} />
+                <div key={it.k} className={`rounded-[12px] px-3 py-2.5 transition-opacity ${passive ? 'opacity-40' : ''} ${isDark ? 'bg-white/[0.06]' : 'bg-[#F2F2F7]'}`}>
+                  <div className="flex gap-2.5">
+                    <span className="mt-[7px] w-[7px] h-[7px] rounded-full shrink-0" style={{ background: it.dot }} />
                     <div className="flex-1 min-w-0">
-                      <div className={`text-[13px] leading-relaxed ${body}`}>
-                        {it.nv && <span className={`text-[10.5px] mr-1 px-1 py-px rounded ${isDark ? 'bg-[#FDD663]/20 text-[#FDD663]' : 'bg-[#FEF7E0] text-[#B06000]'}`}>需核实</span>}
+                      <div className={`text-[14px] leading-relaxed ${body}`}>
+                        {it.nv && <span className={`text-[10.5px] font-medium mr-1.5 px-1.5 py-px rounded-full align-[1px] ${isDark ? 'bg-[#FFD60A]/20 text-[#FFD60A]' : 'bg-[#FFF8E1] text-[#B25000]'}`}>{t.pvNeedsVerify}</span>}
                         {it.head}
                       </div>
-                      {it.sub && <div className={`text-[12px] mt-0.5 ${muted}`}>{it.sub}</div>}
-                      <div className="flex gap-1.5 mt-1.5">
+                      {it.sub && <div className={`text-[13px] mt-0.5 ${muted}`}>{it.sub}</div>}
+                      <div className="flex gap-2 mt-2">
                         {ACT[it.kind].map(([v, label]) => (
-                          <button key={v} onClick={() => setOne(it.k, v)} className={chip(decided === v, !!ACTIVE[v])}>{label}</button>
+                          <button key={v} onClick={() => setOne(it.k, v)} className={chip(decided === v, !!ACTIVE[v])}
+                            style={decided === v && ACTIVE[v] ? { background: role.accentHex } : undefined}>{label}</button>
                         ))}
                       </div>
                     </div>
@@ -3866,88 +4393,94 @@
               );
             })}
           </div>
-          <div className="flex items-center gap-2 mt-3">
+          <div className="flex items-center gap-2 mt-4 pt-1">
             {activeCount > 0 && (
               <button onClick={onResolve}
-                className={`px-3 py-1.5 rounded-full text-[12.5px] font-medium transition-colors ${isDark ? 'bg-[#D0BCFF] text-[#381E72] hover:bg-[#E9DDFF]' : 'bg-[#7C3AED] text-white hover:bg-[#6D28D9]'}`}>
-                交给 AI 处理（{activeCount} 条）
+                className="px-4 py-2 rounded-full text-[14px] font-semibold text-white active:scale-[0.97] transition-transform"
+                style={{ background: role.accentHex }}>
+                {t.pvHandToAi(activeCount)}
               </button>
             )}
-            <button onClick={() => bridge.available && bridge.dismissPinvouReview()} title="这次不处理,整张卡跳过"
-              className={`px-3 py-1.5 rounded-full text-[12.5px] transition-colors ${isDark ? 'text-[#9AA0A6] hover:bg-white/5' : 'text-[#5f6368] hover:bg-black/5'}`}>
-              跳过
+            <button onClick={() => bridge.available && bridge.dismissPinvouReview()} title={t.pvSkipTitle}
+              className={`px-4 py-2 rounded-full text-[14px] font-medium transition-colors ${isDark ? 'text-[#EBEBF5]/70 hover:bg-white/5' : 'text-[#3C3C43]/70 hover:bg-black/5'}`}>
+              {t.pvSkip}
             </button>
           </div>
         </div>
       );
     };
 
-    // 检阅 loading:本地模型 5-30s,给 spinner+计时+安抚文字,别让 Boss 干等焦虑(以为卡死)。
-    const PinvouLoading = ({ isWu, icon, tint, accent, muted, isDark }) => {
-      const [frame, setFrame] = useState(0);
+    // 检阅 loading:本地模型 5-30s,iOS 旋转菊花 spinner + 计时 + 安抚文字,别让 Boss 干等焦虑。
+    const PinvouLoading = ({ isWu, isDark, t }) => {
       const [secs, setSecs] = useState(0);
       useEffect(() => {
-        const a = setInterval(() => setFrame(f => (f + 1) % BRAILLE.length), 90);
         const b = setInterval(() => setSecs(s => s + 1), 1000);
-        return () => { clearInterval(a); clearInterval(b); };
+        return () => clearInterval(b);
       }, []);
+      const role = pvRole(isWu, isDark);
+      const muted = isDark ? 'text-[#EBEBF5]/60' : 'text-[#3C3C43]/60';
       return (
-        <div className={cardBoxCls(isDark, accent)}>
-          <div className={`flex items-center gap-2 text-[12px] font-semibold ${tint}`}><span>{icon}</span><span>{isWu ? 'Pinvou 悟·发散补全' : 'Pinvou 品·查错检阅'}</span></div>
-          <div className={`flex items-center gap-2 text-[13px] mt-2 ${muted}`}>
-            <span className={`${tint} font-mono`}>{BRAILLE[frame]}</span>
-            <span>{isWu ? '正在比对完整性维度、发散补点' : '正在逐条核对、揪问题'}</span>
-            {secs > 0 && <span className="opacity-50 tabular-nums">{secs}s</span>}
+        <div className="py-8 flex flex-col items-center text-center">
+          {/* iOS activity spinner：底环 + 角色色弧，匀速旋转 */}
+          <svg className="w-9 h-9" viewBox="0 0 24 24" fill="none" style={{ animation: 'tsSpinner 0.8s linear infinite' }}>
+            <circle cx="12" cy="12" r="9" stroke={isDark ? 'rgba(255,255,255,.12)' : 'rgba(0,0,0,.08)'} strokeWidth="3" />
+            <path d="M12 3a9 9 0 0 1 9 9" stroke={role.accentHex} strokeWidth="3" strokeLinecap="round" />
+          </svg>
+          <div className={`flex items-center gap-1.5 mt-4 text-[15px] font-semibold ${role.text}`}>
+            <role.Icon className="w-[18px] h-[18px]" />
+            <span>{isWu ? t.pvLoadingWu : t.pvLoadingPin}</span>
           </div>
-          <div className={`text-[12px] mt-1.5 ${muted}`} style={{ opacity: 0.7 }}>本地模型推理中，通常 5–30 秒，稍候～</div>
+          <div className={`text-[13px] mt-1.5 ${muted}`}>
+            {isWu ? t.pvLoadingWuSub : t.pvLoadingPinSub}
+            {secs > 0 && <span className="ml-1.5 tabular-nums opacity-70">{secs}s</span>}
+          </div>
+          <div className={`text-[12px] mt-1 ${muted}`} style={{ opacity: 0.6 }}>{t.pvLoadingHint}</div>
         </div>
       );
     };
 
-    const PinvouSummonCard = ({ item, theme }) => {
+    // 检阅结果卡（在底部 sheet 内渲染，无外层卡框；品=橙 / 悟=紫，与产物卡一致）。
+    const PinvouSummonCard = ({ item, theme, t }) => {
       const isDark = theme === 'dark';
-      // 品(查错)=紫;悟(发散,coverage)=蓝。
-      const isWu = !!item.coverage;
-      const icon = isWu ? '✨' : '📋';
-      const role = isWu ? '悟' : '品';
-      const accent = isWu ? (isDark ? 'border-[#8AB4F8]/30' : 'border-[#1A73E8]/25')
-                          : (isDark ? 'border-[#D0BCFF]/30' : 'border-[#7C3AED]/25');
-      const tint = isWu ? (isDark ? 'text-[#8AB4F8]' : 'text-[#1967D2]')
-                        : (isDark ? 'text-[#D0BCFF]' : 'text-[#7C3AED]');
-      const muted = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
-      const body = isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]';
-      if (item.loading) return <PinvouLoading isWu={isWu} icon={icon} tint={tint} accent={accent} muted={muted} isDark={isDark} />;
+      const isWu = !!item.coverage; // 悟=发散(coverage)；品=查错
+      const role = pvRole(isWu, isDark);
+      const muted = isDark ? 'text-[#EBEBF5]/60' : 'text-[#3C3C43]/60';
+      const body = isDark ? 'text-[#fff]' : 'text-[#000]';
+      if (item.loading) return <PinvouLoading isWu={isWu} isDark={isDark} t={t} />;
       if (item.error) return (
-        <div className={cardBoxCls(isDark, accent)}>
-          <div className={`flex items-center gap-2 text-[12px] font-semibold ${tint}`}><span>{icon}</span><span>Pinvou {isWu ? '悟' : '品'}</span></div>
-          <div className={`text-[13px] mt-2 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>失败：{item.error}</div>
+        <div className="py-2">
+          <div className={`flex items-center gap-1.5 text-[15px] font-semibold ${role.text}`}><role.Icon className="w-[18px] h-[18px]" /><span>Pinvou {role.name}</span></div>
+          <div className={`text-[14px] mt-2 ${isDark ? 'text-[#FF453A]' : 'text-[#FF3B30]'}`}>{t.pvFail}{item.error}</div>
         </div>
       );
       const r = item.review || {};
       if (r.dismissed) return (
-        <div className={cardBoxCls(isDark, accent) + ' opacity-50'}>
-          <div className={`flex items-center gap-2 text-[12px] ${muted}`}><span>{icon}</span><span>{'Pinvou · ' + role + ' · 已跳过'}</span></div>
-        </div>
+        <div className={`py-2 flex items-center gap-1.5 text-[14px] ${muted}`}><role.Icon className="w-4 h-4" /><span>{'Pinvou · ' + role.name + ' · ' + t.pvSkipped}</span></div>
       );
       const personas = r.personas || [];
       const primary = personas.find(p => p && p.primary) || personas[0] || {};
       const alts = r.alternates || [];
       const hasRows = (r.recommendations || []).length > 0 || (r.issues || []).length > 0 || (r.coverage || []).length > 0;
       return (
-        <div className={cardBoxCls(isDark, accent)}>
-          <div className="flex items-center flex-wrap gap-x-2 gap-y-1 mb-2">
-            <span className="text-[15px]">{icon}</span>
-            <span className={`text-[13px] font-semibold ${tint}`}>{'Pinvou · ' + role + (primary.label ? ' (' + primary.label + '视角)' : '')}</span>
-            {alts.length > 0 && <span className={`text-[12px] ${muted}`}>· 也涉及 {alts.join(' / ')}</span>}
-            {r.verdict === 'pass' && <span className={`text-[11px] font-semibold px-1.5 py-0.5 rounded ${isDark ? 'bg-[#37BE5F]/20 text-[#81C995]' : 'bg-[#E6F4EA] text-[#137333]'}`}>✓ 通过，可交付</span>}
+        <div>
+          <div className="flex items-center flex-wrap gap-x-2 gap-y-1 mb-2.5">
+            <span className={`inline-flex items-center justify-center w-7 h-7 rounded-full ${role.softBg}`}>
+              <role.Icon className={`w-[17px] h-[17px] ${role.text}`} />
+            </span>
+            <span className={`text-[16px] font-semibold ${body}`}>
+              {'Pinvou · ' + role.name}
+              {primary.label && <span className={`text-[14px] font-normal ${muted}`}> · {primary.label + t.pvPerspective}</span>}
+            </span>
+            {r.verdict === 'pass' && <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${isDark ? 'bg-[#30D158]/20 text-[#30D158]' : 'bg-[#34C759]/15 text-[#248A3D]'}`}>{t.pvVerdictPass}</span>}
           </div>
-          {r.trace && <div className={`text-[13.5px] leading-relaxed mb-2.5 ${body}`}>{r.trace}</div>}
+          {alts.length > 0 && <div className={`text-[12px] -mt-1 mb-2 ${muted}`}>{t.pvAlsoInvolves} {alts.join(' / ')}</div>}
+          {r.trace && <div className={`text-[14px] leading-relaxed mb-3 ${body}`}>{r.trace}</div>}
           {(r.framework || []).length > 0 && (
-            <div className={`text-[11.5px] mb-2 px-2 py-1.5 rounded-lg leading-relaxed ${isDark ? 'bg-[#1A73E8]/10 text-[#8AB4F8]' : 'bg-[#1A73E8]/5 text-[#1967D2]'}`}>
-              <span className="opacity-70">完整性框架·{(r.framework || []).length}维：</span>{(r.framework || []).join(' · ')}
+            <div className={`text-[12px] mb-3 px-3 py-2 rounded-[12px] leading-relaxed ${role.softBg} ${role.text}`}>
+              <span className="opacity-70">{t.pvFramework} · {(r.framework || []).length}{t.pvDims}: </span>{(r.framework || []).join(' · ')}
             </div>
           )}
-          {hasRows && <PinvouRows review={r} theme={theme} />}
+          {hasRows && <PinvouRows review={r} theme={theme} t={t} role={role} />}
         </div>
       );
     };
@@ -4219,6 +4752,7 @@
       md: '📄', markdown: '📄', html: '🌐', htm: '🌐',
       png: '🖼️', jpg: '🖼️', jpeg: '🖼️', gif: '🖼️', webp: '🖼️', svg: '🖼️',
       pdf: '📕', csv: '📊', xlsx: '📊', json: '🔢', yaml: '🔢', yml: '🔢', txt: '📝',
+      pptx: '📊', ppt: '📊',
     };
     const artifactIcon = (name) => ARTIFACT_ICONS[(name.split('.').pop() || '').toLowerCase()] || '📎';
     const apPad2 = (x) => String(x).padStart(2, '0');

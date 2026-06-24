@@ -75,6 +75,35 @@ pub struct MarketplaceToolInfo {
 }
 
 // ---------------------------------------------------------------------------
+// 会话工具开关:全局持久的"被禁用连接器"列表(用户关一次,所有新对话/窗口都继承,
+// 直到手动开回 —— 见「工具开关」方案,持久语义)。落盘到 ~/.pinvou3/disabled_connectors.json。
+// ---------------------------------------------------------------------------
+
+fn disabled_connectors_path() -> std::path::PathBuf {
+    paths::pinvou3_home().join("disabled_connectors.json")
+}
+
+/// 读全局被禁用的连接器 id 列表(读不到/空 → 空)。
+pub fn load_disabled_connectors() -> Vec<String> {
+    std::fs::read_to_string(disabled_connectors_path())
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .unwrap_or_default()
+}
+
+/// 写全局被禁用的连接器 id 列表。
+pub fn save_disabled_connectors(ids: &[String]) {
+    if let Ok(json) = serde_json::to_string(ids) {
+        let _ = std::fs::write(disabled_connectors_path(), json);
+    }
+}
+
+/// 当前被禁用连接器 → 模型可见工具全名(喂给引擎 disallowed_tools 的)。
+pub fn disabled_tool_names() -> Vec<String> {
+    MarketplaceManager::new().model_tool_names(&load_disabled_connectors())
+}
+
+// ---------------------------------------------------------------------------
 // MarketplaceManager
 // ---------------------------------------------------------------------------
 
@@ -159,6 +188,9 @@ impl MarketplaceManager {
             .load_manifest(tool_id)
             .ok_or_else(|| format!("工具 '{tool_id}' 不存在"))?;
 
+        // 先装 Python 依赖（跨平台 pip）；失败就不注册，让用户可重试。零依赖工具会直接跳过。
+        self.pip_install_deps(&manifest)?;
+
         // 更新 installed.json
         let mut installed = self.installed_ids();
         if !installed.contains(&tool_id.to_string()) {
@@ -170,6 +202,75 @@ impl MarketplaceManager {
         self.add_to_mcp_json(&manifest, user_config)?;
 
         Ok(())
+    }
+
+    /// 装 `manifest.pip_dependencies` 里的 Python 依赖（跨平台）。
+    /// 用 `python -m pip install`（保证装进跑 MCP server 的同一个 python，不裸 `pip`）。
+    /// ① 先预检依赖是否已可用（系统已装/此前装过）→ 命中即跳过，不跑 pip；
+    /// ② 否则按序兜底：`--user` → `--user --break-system-packages`（PEP 668）→ `--break-system-packages`，任一成功即 Ok。
+    /// 零依赖工具（pip_dependencies 为空）直接返回 Ok，不影响 weather/obsidian 等。
+    fn pip_install_deps(&self, manifest: &ToolManifest) -> Result<(), String> {
+        if manifest.pip_dependencies.is_empty() {
+            return Ok(());
+        }
+        // Windows:python-pptx 等依赖已随内置 python(python-win)预装,不在用户机器
+        // 跑 pip —— 用户也就不需要自己装 python。仅 Linux/macOS 走系统 python3 联网 pip。
+        if cfg!(target_os = "windows") {
+            return Ok(());
+        }
+        let python_cmd = "python3";
+        let deps = &manifest.pip_dependencies;
+
+        // ① 预检:依赖已可用就直接 Ok,不跑 pip。用 importlib.metadata 按 PyPI 包名查
+        //    (python-pptx 等),全部命中即满足。修「明明已装(系统包/此前装过)却仍判失败」。
+        let satisfied = std::process::Command::new(python_cmd)
+            .arg("-c")
+            .arg("import importlib.metadata as m, sys; [m.version(p) for p in sys.argv[1:]]")
+            .args(deps)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if satisfied {
+            return Ok(());
+        }
+
+        // ② pip 安装,按序兜底,任一成功即 Ok:
+        //    --user(常规)→ --user --break-system-packages(PEP 668:现代 Debian/Ubuntu 拦 --user,
+        //    装进 ~/.local 用户目录、不动系统/发行版包)→ --break-system-packages(某些环境 --user 不可用)。
+        let run = |extra: &[&str]| -> std::io::Result<std::process::Output> {
+            let mut cmd = std::process::Command::new(python_cmd);
+            cmd.args(["-m", "pip", "install", "--disable-pip-version-check", "--no-input"]);
+            cmd.args(extra);
+            cmd.args(deps);
+            cmd.output()
+        };
+        let attempts: [&[&str]; 3] = [
+            &["--user"],
+            &["--user", "--break-system-packages"],
+            &["--break-system-packages"],
+        ];
+        let mut last_err = String::new();
+        for extra in attempts {
+            match run(extra) {
+                Ok(o) if o.status.success() => return Ok(()),
+                Ok(o) => {
+                    last_err = String::from_utf8_lossy(&o.stderr)
+                        .trim()
+                        .lines()
+                        .last()
+                        .unwrap_or("")
+                        .to_string();
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "无法运行 {python_cmd}（请确认已安装 Python 且在 PATH 中）：{e}"
+                    ));
+                }
+            }
+        }
+        Err(format!(
+            "依赖安装失败（pip）：{last_err}（已尝试 --user 与 --break-system-packages;请确认网络可达且 python3 自带 pip）"
+        ))
     }
 
     /// 卸载工具：从 installed.json + mcp.json 中移除
@@ -234,6 +335,28 @@ impl MarketplaceManager {
         let path = self.servers_dir.join(tool_id).join("manifest.json");
         let content = std::fs::read_to_string(&path).ok()?;
         serde_json::from_str(&content).ok()
+    }
+
+    /// pinvou3 工具开关:把"连接器 id 列表"映射成"模型可见工具全名"
+    /// (`mcp_{server}_{tool}`,小写 —— 引擎 `command_denies_tool` 按小写精确匹配)。
+    /// 关一个连接器要把它名下所有工具都列出来。
+    pub fn model_tool_names(&self, connector_ids: &[String]) -> Vec<String> {
+        let mut names = Vec::new();
+        for cid in connector_ids {
+            if let Some(m) = self.load_manifest(cid) {
+                for t in &m.mcp_tools {
+                    // manifest 的 mcp_tools 不统一:部分已是全名(mcp_xxx_yyy),部分是裸工具名。
+                    // 已带 `mcp_` 前缀的原样用,否则补 `mcp_{id}_` —— 与引擎 mcp_{server}_{tool} 对齐。
+                    let name = if t.starts_with("mcp_") {
+                        t.clone()
+                    } else {
+                        format!("mcp_{}_{}", m.id, t)
+                    };
+                    names.push(name.to_ascii_lowercase());
+                }
+            }
+        }
+        names
     }
 
     fn save_installed(&self, ids: &[String]) -> Result<(), String> {
@@ -322,9 +445,9 @@ impl MarketplaceManager {
                 }
             }
 
-            let python_cmd = if cfg!(target_os = "windows") { "python" } else { "python3" };
+            // python 工具:Windows 用内置 pythonw(无窗口 + 自带依赖),其他平台系统 python3。
             let command = if manifest.command == "python" || manifest.command == "python3" {
-                python_cmd.to_string()
+                paths::python_command()
             } else {
                 manifest.command.clone()
             };
@@ -375,4 +498,71 @@ impl MarketplaceManager {
 
 fn default_mcp_json() -> serde_json::Value {
     serde_json::json!({"servers": {}})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bridge::paths::tests::ENV_LOCK;
+
+    /// 把 PINVOU3_HOME 指到一个干净临时目录跑闭包,跑完恢复并清理。
+    /// 借 paths 的 ENV_LOCK 跟其它 mutate PINVOU3_HOME 的测试串行,避免互相覆盖。
+    fn with_temp_home<F: FnOnce()>(f: F) {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let dir = std::env::temp_dir().join(format!("pinvou3-mkt-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PINVOU3_HOME", &dir);
+        f();
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 连接器 → 模型可见工具全名:裸名补 `mcp_{id}_` 前缀,已带 `mcp_` 的原样(不双前缀),
+    /// 一律小写;不存在的连接器跳过。这正是当初打印映射时抓到"双前缀 bug"的那段逻辑。
+    #[test]
+    fn model_tool_names_prefix_dedup_and_lowercase() {
+        with_temp_home(|| {
+            let dir = crate::bridge::paths::bundle_mcp_servers_dir().join("demo");
+            std::fs::create_dir_all(&dir).unwrap();
+            let manifest = r#"{
+                "id":"demo","name":"Demo","description":"d","version":"1","icon":"x","category":"c",
+                "mcp_tools":["bare_tool","mcp_demo_already","UPPER_Tool"],
+                "command":"python","args":[]
+            }"#;
+            std::fs::write(dir.join("manifest.json"), manifest).unwrap();
+
+            let mgr = MarketplaceManager::new();
+            let names = mgr.model_tool_names(&["demo".to_string()]);
+            assert_eq!(
+                names,
+                vec![
+                    "mcp_demo_bare_tool".to_string(),  // 裸名 → 补前缀
+                    "mcp_demo_already".to_string(),    // 已带 mcp_ → 原样,不变成 mcp_demo_mcp_demo_already
+                    "mcp_demo_upper_tool".to_string(), // 小写化
+                ]
+            );
+            // 没装/不存在的连接器 → 跳过(不报错,空)
+            assert!(mgr.model_tool_names(&["nope".to_string()]).is_empty());
+        });
+    }
+
+    /// 全局禁用列表落盘往返:存→读一致;清空→读空;没文件→读空。
+    #[test]
+    fn disabled_connectors_persist_roundtrip() {
+        with_temp_home(|| {
+            assert!(load_disabled_connectors().is_empty()); // 无文件 → 空
+            save_disabled_connectors(&["weather".to_string(), "pptx".to_string()]);
+            assert_eq!(
+                load_disabled_connectors(),
+                vec!["weather".to_string(), "pptx".to_string()]
+            );
+            save_disabled_connectors(&[]); // 全开回去
+            assert!(load_disabled_connectors().is_empty());
+        });
+    }
 }

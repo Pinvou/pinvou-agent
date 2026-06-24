@@ -30,11 +30,10 @@ use deepseek_tui::hooks::{Hook, HookEvent, HooksConfig};
 use deepseek_tui::prompts::InstructionSource;
 use deepseek_tui::tui::app::AppMode;
 use deepseek_tui::tui::approval::ApprovalMode;
-use serde::Serialize;
 
 use self::bundle::{Pinvou3Bundle, INSTRUCTIONS_MD};
 use self::mode_state::PlanPhase;
-use self::prefs::{ModelPreset, UserPrefs};
+use self::prefs::{ModelPreset, SavedModel, UserPrefs};
 
 /// Qwen3.6 在 vLLM 里是 passthrough 字符串（不走 alias）。
 ///
@@ -54,24 +53,6 @@ const LOCAL_VLLM_MODEL: &str = "qwen36_35b_256k";
 // 用 loopback 免疫 DHCP 换 IP,别再写具体内网 IP。
 const LOCAL_VLLM_BASE_URL: &str = "http://127.0.0.1:8000/v1";
 const LOCAL_VLLM_API_KEY: &str = "local-no-auth";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ModelMonitorTargetKind {
-    Local,
-    Remote,
-    Invalid,
-}
-
-#[derive(Debug, Clone)]
-pub struct ModelMonitorTarget {
-    pub base_url: String,
-    pub configured_model: Option<String>,
-    pub provider: String,
-    pub kind: ModelMonitorTargetKind,
-    pub source: String,
-    pub api_key: Option<String>,
-}
 
 fn is_official_deepseek_base_url(base_url: &str) -> bool {
     let normalized = base_url
@@ -95,50 +76,14 @@ fn official_deepseek_model_name(model: &str) -> String {
     }
 }
 
-fn model_monitor_target_kind(base_url: &str, configured_model: &str) -> ModelMonitorTargetKind {
-    if base_url.trim().is_empty() || configured_model.trim().is_empty() {
-        return ModelMonitorTargetKind::Invalid;
-    }
-    let Ok(url) = reqwest::Url::parse(base_url.trim()) else {
-        return ModelMonitorTargetKind::Invalid;
-    };
-    match url.host_str().map(|h| h.to_ascii_lowercase()) {
-        Some(host)
-            if matches!(
-                host.as_str(),
-                "127.0.0.1" | "localhost" | "::1" | "[::1]"
-            ) =>
-        {
-            ModelMonitorTargetKind::Local
-        }
-        Some(_) => ModelMonitorTargetKind::Remote,
-        None => ModelMonitorTargetKind::Invalid,
-    }
-}
-
-fn model_monitor_source(prefs: &UserPrefs) -> String {
-    if std::env::var_os("DEEPSEEK_BASE_URL").is_some()
-        || std::env::var_os("DEEPSEEK_MODEL").is_some()
-        || std::env::var_os("DEEPSEEK_PROVIDER").is_some()
-        || std::env::var_os("DEEPSEEK_API_KEY").is_some()
-    {
-        return "env".to_string();
-    }
-    if prefs.advanced.custom_base_url.is_some()
-        || prefs.advanced.custom_model_name.is_some()
-        || prefs.advanced.custom_api_key.is_some()
-        || !prefs.advanced.model_profiles.is_empty()
-    {
-        return "settings".to_string();
-    }
-    "default".to_string()
-}
-
 #[derive(Debug, Clone)]
 pub struct Pinvou3Bridge {
     pub prefs: UserPrefs,
     pub bundle: Pinvou3Bundle,
     pub workspace: PathBuf,
+    /// 本 engine 绑定的 session 锁定模型(per-session 不同模型)。None = 用 prefs 全局
+    /// active。EnginePool spawn 时按该 session 的 model_id 注入(见 `with_session_model`)。
+    pub session_model: Option<SavedModel>,
 }
 
 impl Pinvou3Bridge {
@@ -171,6 +116,7 @@ impl Pinvou3Bridge {
             prefs,
             bundle,
             workspace: paths::user_home_dir(),
+            session_model: None,
         };
         this.wire_max_output_tokens_env();
         // C 方案(P-no-disk)最终版: 清理所有 pinvou3 历史 disk 残留:
@@ -263,32 +209,6 @@ impl Pinvou3Bridge {
         self.prefs.language.locale_tag()
     }
 
-    fn model_preset(&self) -> ModelPreset {
-        self.prefs.advanced.model_preset.unwrap_or_default()
-    }
-
-    fn active_model_profile(&self) -> Option<&self::prefs::ModelProfilePrefs> {
-        self.prefs.advanced.model_profiles.get(&self.model_preset())
-    }
-
-    fn profile_model_name(&self) -> Option<String> {
-        self.active_model_profile()
-            .and_then(|profile| profile.model_name.clone())
-            .or_else(|| self.prefs.advanced.custom_model_name.clone())
-    }
-
-    fn profile_base_url(&self) -> Option<String> {
-        self.active_model_profile()
-            .and_then(|profile| profile.base_url.clone())
-            .or_else(|| self.prefs.advanced.custom_base_url.clone())
-    }
-
-    fn profile_api_key(&self) -> Option<String> {
-        self.active_model_profile()
-            .and_then(|profile| profile.api_key.clone())
-            .or_else(|| self.prefs.advanced.custom_api_key.clone())
-    }
-
     /// 用 INSTRUCTIONS_MD 模板，把 `{{PINVOU3_WORKSPACE}}` 替换成指定 session 的
     /// 独立 workspace 目录,返回渲染后的字符串(供 [`session_instructions`] 用)。
     pub fn build_session_system_prompt(&self, session_id: &str) -> String {
@@ -304,6 +224,12 @@ impl Pinvou3Bridge {
             .replace(
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
                 crate::super_permission::instruction_block(),
+            )
+            // present_artifact 的 title 语言随 locale(原写死「中文 title」会把英文 UI 的产物
+            // 标题/描述/后续总结整段拽回中文,见 prefs::title_language_name 注释)。
+            .replace(
+                "{{PINVOU3_TITLE_LANG}}",
+                self.prefs.language.title_language_name(),
             );
         // [pinvou3] 非中文 locale 的语言指令补丁:底座 locale_reinforcement_preamble
         // 对 en 返回 None,而 pinvou3 整份 system prompt 是中文,会把回复语言拽回中文。
@@ -346,6 +272,27 @@ impl Pinvou3Bridge {
     }
 
     /// 当前 active provider 标识（传给底座 `DtConfig.provider`）。
+    /// 本 engine/session 实际生效的模型记录:session 锁定优先,否则全局 active。
+    /// load 后 prefs.active_model() 必非空,正常返回 Some。
+    fn effective_model(&self) -> Option<&SavedModel> {
+        self.session_model
+            .as_ref()
+            .or_else(|| self.prefs.active_model())
+    }
+
+    /// 当前生效模型的副本(session > active)。EnginePool 探测 vLLM served name 后
+    /// 用它克隆→改 model 名→塞回 session_model,实现「请求用 vLLM 实际名字」。
+    pub fn effective_model_owned(&self) -> Option<SavedModel> {
+        self.effective_model().cloned()
+    }
+
+    /// 克隆一份 bridge 并绑定 per-session 模型(EnginePool spawn 时按 session model_id 注入)。
+    pub fn with_session_model(&self, model: Option<SavedModel>) -> Self {
+        let mut b = self.clone();
+        b.session_model = model;
+        b
+    }
+
     pub fn provider(&self) -> String {
         if is_official_deepseek_base_url(&self.base_url()) {
             return "deepseek".to_string();
@@ -353,7 +300,8 @@ impl Pinvou3Bridge {
         if let Ok(v) = std::env::var("DEEPSEEK_PROVIDER") {
             return v;
         }
-        match self.model_preset() {
+        let preset = self.effective_model().map(|m| m.preset).unwrap_or_default();
+        match preset {
             ModelPreset::LocalVllm => "vllm".to_string(),
             ModelPreset::Deepseek => "deepseek".to_string(),
             ModelPreset::Kimi => "moonshot".to_string(),
@@ -376,11 +324,11 @@ impl Pinvou3Bridge {
             }
             return v;
         }
-        if let Some(model) = self.profile_model_name() {
+        if let Some(m) = self.effective_model() {
             if is_official_deepseek {
-                return official_deepseek_model_name(&model);
+                return official_deepseek_model_name(&m.model);
             }
-            return model;
+            return m.model.clone();
         }
         if is_official_deepseek {
             return "deepseek-v4-pro".to_string();
@@ -390,7 +338,7 @@ impl Pinvou3Bridge {
 
     /// 各厂商默认模型名。
     fn default_model_for_preset(&self) -> String {
-        match self.model_preset() {
+        match self.prefs.advanced.model_preset.unwrap_or_default() {
             ModelPreset::LocalVllm => LOCAL_VLLM_MODEL.into(),
             ModelPreset::Deepseek => "deepseek-v4-pro".to_string(),
             ModelPreset::Kimi => "kimi-k2.6".to_string(),
@@ -409,13 +357,15 @@ impl Pinvou3Bridge {
         if let Ok(v) = std::env::var("DEEPSEEK_BASE_URL") {
             return v;
         }
-        self.profile_base_url()
-            .unwrap_or_else(|| self.default_base_url_for_preset())
+        if let Some(m) = self.effective_model() {
+            return m.base_url.clone();
+        }
+        self.default_base_url_for_preset()
     }
 
     /// 各厂商默认 API base URL。
     fn default_base_url_for_preset(&self) -> String {
-        match self.model_preset() {
+        match self.prefs.advanced.model_preset.unwrap_or_default() {
             ModelPreset::LocalVllm => LOCAL_VLLM_BASE_URL.into(),
             ModelPreset::Deepseek => "https://api.deepseek.com".to_string(),
             ModelPreset::Kimi => "https://api.moonshot.cn/v1".to_string(),
@@ -433,47 +383,22 @@ impl Pinvou3Bridge {
         if let Ok(v) = std::env::var("DEEPSEEK_API_KEY") {
             return v;
         }
-        if is_official_deepseek_base_url(&self.base_url()) {
-            return self.profile_api_key().unwrap_or_default();
+        if let Some(m) = self.effective_model() {
+            // 本地 vLLM 不需鉴权:用户留空 key 兜底 local-no-auth(底座要求非空)。
+            if m.api_key.trim().is_empty() && m.preset == ModelPreset::LocalVllm {
+                return LOCAL_VLLM_API_KEY.to_string();
+            }
+            return m.api_key.clone();
         }
-        match self.model_preset() {
+        match self.prefs.advanced.model_preset.unwrap_or_default() {
             ModelPreset::LocalVllm => LOCAL_VLLM_API_KEY.into(),
-            _ => self.profile_api_key().unwrap_or_default(),
+            _ => self
+                .prefs
+                .advanced
+                .custom_api_key
+                .clone()
+                .unwrap_or_default(),
         }
-    }
-
-    pub fn model_monitor_target(&self) -> ModelMonitorTarget {
-        let base_url = self.base_url();
-        let configured_model = self.model();
-        let provider = self.provider();
-        let api_key = self.api_key();
-        let kind = model_monitor_target_kind(&base_url, &configured_model);
-        let source = model_monitor_source(&self.prefs);
-        ModelMonitorTarget {
-            base_url,
-            configured_model: if configured_model.trim().is_empty() {
-                None
-            } else {
-                Some(configured_model)
-            },
-            provider,
-            kind,
-            source,
-            api_key: if api_key.trim().is_empty() {
-                None
-            } else {
-                Some(api_key)
-            },
-        }
-    }
-
-    pub fn load_model_monitor_target() -> ModelMonitorTarget {
-        let bridge = Pinvou3Bridge {
-            prefs: UserPrefs::load(),
-            bundle: Pinvou3Bundle::paths(),
-            workspace: paths::user_home_dir(),
-        };
-        bridge.model_monitor_target()
     }
 
     /// env > prefs.advanced > 默认 true。
@@ -593,7 +518,7 @@ impl Pinvou3Bridge {
             interactive_launch_limit,
             goal_token_budget,
             goal_status,
-            disallowed_tools,
+            disallowed_tools: _, // pinvou3 从持久列表算初值(见构造处),默认值忽略
         } = EngineConfig::default();
 
         EngineConfig {
@@ -756,7 +681,12 @@ impl Pinvou3Bridge {
             interactive_launch_limit,
             goal_token_budget,
             goal_status,
-            disallowed_tools,
+            // pinvou3 工具开关:从全局持久的"被禁用连接器"算出禁用工具全名作为初值,
+            // 让新对话/新窗口的引擎都继承用户的开关状态(持久语义)。
+            disallowed_tools: {
+                let n = crate::bridge::marketplace::disabled_tool_names();
+                if n.is_empty() { None } else { Some(n) }
+            },
         }
     }
 
@@ -928,25 +858,56 @@ impl Pinvou3Bridge {
     }
 }
 
+// [消融实验 2026-06-18] (Plan,Planning) reminder 的可切换变体,env PINVOU3_ABLATION 控制。
+// full(默认)=现状;no_collect=删"方案清晰后→调 update_plan"收口条;no_block=删"禁写工具"条。
+// 仅用于量化每条对 Qwen3.6 的 load-bearing,实测完应回退(不进生产)。
+const PLAN_PLANNING_FULL: &str = "你现在在 Plan 模式 + Planning 阶段。本 turn 你必须按这个顺序行动:\n\
+     1. 任务有歧义 → 调 `request_user_input` 工具问澄清(给 2-3 个选项让用户点选)。\
+     不要在 text 里列 A/B/C 选项。\n\
+     2. 方案清晰后 → 调 `update_plan` 工具输出方案(explanation 字段写关键决策,\
+     items 写 3-8 个执行步骤)。如果产物预计超过 300 行或 20KB(如 HTML deck / 完整网页 / 长报告),\
+     plan 必须说明分块写法:`append_file` 只能追加到文件尾;要填已有文件中间或替换占位符,\
+     用 `edit_file`,不要用 `append_file`。\
+     可选再调 `checklist_write` 拆细。\n\
+     3. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
+     方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。\n\
+     4. **禁止**调 `write_file` / `append_file` / `edit_file` / `exec_shell` / `js_execution`——\
+     它们在 Plan 模式不可用,调了一定失败。";
+
+const PLAN_PLANNING_NO_COLLECT: &str = "你现在在 Plan 模式 + Planning 阶段。本 turn 你必须按这个顺序行动:\n\
+     1. 任务有歧义 → 调 `request_user_input` 工具问澄清(给 2-3 个选项让用户点选)。\
+     不要在 text 里列 A/B/C 选项。\n\
+     2. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
+     方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。\n\
+     3. **禁止**调 `write_file` / `append_file` / `edit_file` / `exec_shell` / `js_execution`——\
+     它们在 Plan 模式不可用,调了一定失败。";
+
+const PLAN_PLANNING_NO_BLOCK: &str = "你现在在 Plan 模式 + Planning 阶段。本 turn 你必须按这个顺序行动:\n\
+     1. 任务有歧义 → 调 `request_user_input` 工具问澄清(给 2-3 个选项让用户点选)。\
+     不要在 text 里列 A/B/C 选项。\n\
+     2. 方案清晰后 → 调 `update_plan` 工具输出方案(explanation 字段写关键决策,\
+     items 写 3-8 个执行步骤)。如果产物预计超过 300 行或 20KB(如 HTML deck / 完整网页 / 长报告),\
+     plan 必须说明分块写法:`append_file` 只能追加到文件尾;要填已有文件中间或替换占位符,\
+     用 `edit_file`,不要用 `append_file`。\
+     可选再调 `checklist_write` 拆细。\n\
+     3. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
+     方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。";
+
+fn plan_planning_reminder() -> Option<&'static str> {
+    match std::env::var("PINVOU3_ABLATION").ok().as_deref() {
+        Some("no_collect") => Some(PLAN_PLANNING_NO_COLLECT),
+        Some("no_block") => Some(PLAN_PLANNING_NO_BLOCK),
+        Some("none") => None,
+        _ => Some(PLAN_PLANNING_FULL),
+    }
+}
+
 /// M1: per-turn `<system-reminder>` 文案,按当前 mode+phase 选段。
 /// 决策文档 V2 §13.1。
 /// 命中率优先于优雅:每段都是命令式、短、列禁令清单(Qwen3.6 友好)。
 fn reminder_for(mode: AppMode, phase: PlanPhase) -> Option<&'static str> {
     match (mode, phase) {
-        (AppMode::Plan, PlanPhase::Planning) => Some(
-            "你现在在 Plan 模式 + Planning 阶段。本 turn 你必须按这个顺序行动:\n\
-             1. 任务有歧义 → 调 `request_user_input` 工具问澄清(给 2-3 个选项让用户点选)。\
-             不要在 text 里列 A/B/C 选项。\n\
-             2. 方案清晰后 → 调 `update_plan` 工具输出方案(explanation 字段写关键决策,\
-             items 写 3-8 个执行步骤)。如果产物预计超过 300 行或 20KB(如 HTML deck / 完整网页 / 长报告),\
-             plan 必须说明分块写法:`append_file` 只能追加到文件尾;要填已有文件中间或替换占位符,\
-             用 `edit_file`,不要用 `append_file`。\
-             可选再调 `checklist_write` 拆细。\n\
-             3. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
-             方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。\n\
-             4. **禁止**调 `write_file` / `append_file` / `edit_file` / `exec_shell` / `js_execution`——\
-             它们在 Plan 模式不可用,调了一定失败。",
-        ),
+        (AppMode::Plan, PlanPhase::Planning) => plan_planning_reminder(),
         (AppMode::Plan, PlanPhase::Ready) => Some(
             "Plan 模式 + Ready 阶段。AI 之前的方案已经在 plan 卡片上等用户决策。\n\
              如果用户发了新消息,说明用户在隐式修订——你必须调 `update_plan` 重出方案,\
@@ -1016,6 +977,7 @@ mod tests {
             prefs: UserPrefs::default(),
             bundle: Pinvou3Bundle::paths(),
             workspace: std::env::temp_dir(),
+            session_model: None,
         }
     }
 
@@ -1552,57 +1514,6 @@ mod tests {
         assert_eq!(bridge.api_key(), "env-key");
     }
 
-    #[test]
-    fn model_monitor_target_uses_bridge_settings() {
-        let _env = EnvGuard::new(&[
-            "DEEPSEEK_MODEL",
-            "DEEPSEEK_PROVIDER",
-            "DEEPSEEK_BASE_URL",
-            "DEEPSEEK_API_KEY",
-        ]);
-        for name in [
-            "DEEPSEEK_MODEL",
-            "DEEPSEEK_PROVIDER",
-            "DEEPSEEK_BASE_URL",
-            "DEEPSEEK_API_KEY",
-        ] {
-            std::env::remove_var(name);
-        }
-        let mut bridge = fixture_bridge();
-        bridge.prefs.advanced.model_preset = Some(ModelPreset::OpenaiCompatible);
-        bridge.prefs.advanced.custom_base_url = Some("https://api.example.com/v1".to_string());
-        bridge.prefs.advanced.custom_model_name = Some("remote-model".to_string());
-        bridge.prefs.advanced.custom_api_key = Some("sk-settings".to_string());
-
-        let target = bridge.model_monitor_target();
-        assert_eq!(target.base_url, "https://api.example.com/v1");
-        assert_eq!(target.configured_model.as_deref(), Some("remote-model"));
-        assert_eq!(target.provider, "openai");
-        assert_eq!(target.kind, ModelMonitorTargetKind::Remote);
-        assert_eq!(target.source, "settings");
-        assert_eq!(target.api_key.as_deref(), Some("sk-settings"));
-    }
-
-    #[test]
-    fn model_monitor_target_classifies_local_remote_and_invalid() {
-        assert_eq!(
-            model_monitor_target_kind("http://127.0.0.1:8000/v1", "qwen36_35b_256k"),
-            ModelMonitorTargetKind::Local
-        );
-        assert_eq!(
-            model_monitor_target_kind("https://api.deepseek.com", "deepseek-v4-pro"),
-            ModelMonitorTargetKind::Remote
-        );
-        assert_eq!(
-            model_monitor_target_kind("not a url", "model"),
-            ModelMonitorTargetKind::Invalid
-        );
-        assert_eq!(
-            model_monitor_target_kind("https://api.example.com/v1", ""),
-            ModelMonitorTargetKind::Invalid
-        );
-    }
-
     /// DtConfig 在 OpenaiCompatible 模式下不应强制 reasoning_effort=off。
     #[test]
     fn remote_provider_keeps_default_reasoning_effort() {
@@ -1687,43 +1598,6 @@ mod tests {
     }
 
     /// DtConfig 在 LocalVllm 模式下必须保持 reasoning_effort=off（防 SSE timeout）。
-    #[test]
-    fn active_model_profile_overrides_legacy_single_slot() {
-        let _env = EnvGuard::new(&[
-            "DEEPSEEK_MODEL",
-            "DEEPSEEK_PROVIDER",
-            "DEEPSEEK_BASE_URL",
-            "DEEPSEEK_API_KEY",
-        ]);
-        for name in [
-            "DEEPSEEK_MODEL",
-            "DEEPSEEK_PROVIDER",
-            "DEEPSEEK_BASE_URL",
-            "DEEPSEEK_API_KEY",
-        ] {
-            std::env::remove_var(name);
-        }
-
-        let mut bridge = fixture_bridge();
-        bridge.prefs.advanced.model_preset = Some(ModelPreset::Deepseek);
-        bridge.prefs.advanced.custom_model_name = Some("abab6.5s-chat".to_string());
-        bridge.prefs.advanced.custom_base_url = Some("https://api.minimax.chat/v1".to_string());
-        bridge.prefs.advanced.custom_api_key = Some("sk-minimax".to_string());
-        bridge.prefs.advanced.model_profiles.insert(
-            ModelPreset::Deepseek,
-            self::prefs::ModelProfilePrefs {
-                model_name: Some("deepseek-v4-pro".to_string()),
-                base_url: Some("https://api.deepseek.com".to_string()),
-                api_key: Some("sk-deepseek".to_string()),
-            },
-        );
-
-        assert_eq!(bridge.provider(), "deepseek");
-        assert_eq!(bridge.model(), "deepseek-v4-pro");
-        assert_eq!(bridge.base_url(), "https://api.deepseek.com");
-        assert_eq!(bridge.api_key(), "sk-deepseek");
-    }
-
     #[test]
     fn local_vllm_forces_reasoning_effort_off() {
         let bridge = fixture_bridge();

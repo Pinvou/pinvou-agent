@@ -75,6 +75,10 @@
     monitor: null,
     backendOnline: null, // null=checking, true, false
     settings: null,
+    // 「添加模型」方案:已保存模型列表 + 全局默认 id + 当前会话绑定的模型 id
+    savedModels: [],
+    activeModelId: null,
+    currentSessionModelId: null, // 当前 active session 显式绑定的模型;null=跟随全局默认
     superPermEnabled: false,
     modeState: { mode: "yolo", plan_phase: "none" },
     // 最新 plan/todos 快照（用于 mode header 进度 chip，与 plan_ready 卡解耦）
@@ -134,6 +138,15 @@
     depsChecking: false,
     depsInstalling: false,    // 一键安装进行中(pkexec apt)
     depsInstallError: null,   // 安装失败原因(apt stderr 透传/取消/pkexec 不可用)
+    voiceInput: {
+      status: "idle",         // idle | requesting_permission | recording | transcribing | completed | cancelled | failed
+      message: "",
+      error: null,
+      category: null,
+      stage: null,
+      sessionId: null,
+      startedAt: 0,
+    },
   };
   // 卡片池 1078 张卡的前端缓存。只读,通过 getPersonas() 取引用,不走 notify 快照。
   var personaPoolCache = [];
@@ -364,6 +377,22 @@
   function addChatItem(item) {
     item.id = ++itemIdSeq;
     state.chatItems.push(item);
+  }
+  // 成品卡是否"重复出卡":从 chatItems 末尾往前扫——先遇到该文件的修改工具(write/append/edit)
+  // → 不算重复(文件改过了,该出新版卡/续卡,即"二次修改弹新卡");先遇到同名成品卡 → 算重复
+  // (同一产物没改又 present 一次,模型常见啰嗦)。判据=「上一张同名卡之后有没有改过这个文件」。
+  function isDuplicateArtifactCard(pathv) {
+    var bn = basename(pathv);
+    if (!bn) return false;
+    for (var i = state.chatItems.length - 1; i >= 0; i--) {
+      var it = state.chatItems[i];
+      if (it.type === "tool" && (it.name === "write_file" || it.name === "append_file" || it.name === "edit_file")) {
+        var ap = extractArtifactPath(it.args);
+        if (ap && basename(ap) === bn) return false;
+      }
+      if (it.type === "artifact_card" && basename(it.path) === bn) return true;
+    }
+    return false;
   }
   function addSystemItem(text) {
     addChatItem({ type: "system", text: text, time: timeStr() });
@@ -666,13 +695,16 @@
           if (isPresentArtifactTool(b.name)) {
             var pares = resultById[b.id];
             if (!(pares && pares.is_error)) {
-              addChatItem({
-                type: "artifact_card",
-                path: (b.input && b.input.path) || "",
-                title: (b.input && b.input.title) || "",
-                description: (b.input && b.input.description) || "",
-                time: "",
-              });
+              var rpp = presentArtifactAbsPath(pares && pares.content, b.input && b.input.path);
+              if (!isDuplicateArtifactCard(rpp)) {
+                addChatItem({
+                  type: "artifact_card",
+                  path: rpp,
+                  title: (b.input && b.input.title) || "",
+                  description: (b.input && b.input.description) || "",
+                  time: "",
+                });
+              }
               continue;
             }
           }
@@ -756,10 +788,24 @@
     var parts = String(p).split(/[\\/]/);
     return parts[parts.length - 1] || p;
   }
+  function isAbsPath(p) {
+    return typeof p === "string" && (p.charAt(0) === "/" || /^[A-Za-z]:[\\/]/.test(p));
+  }
   function trackArtifact(path) {
     if (!path) return;
-    if (state.artifacts.some(function (a) { return a.path === path; })) return;
-    state.artifacts.push({ path: path, basename: basename(path) });
+    var bn = basename(path);
+    for (var i = 0; i < state.artifacts.length; i++) {
+      if (basename(state.artifacts[i].path) === bn) {
+        // 已有同名:write_file 跟踪的是相对路径、disk watcher 推的是绝对路径——同一文件
+        // 两种 path 会重复。新 path 绝对而旧的相对则用绝对替换(open 可靠),否则忽略重复。
+        if (isAbsPath(path) && !isAbsPath(state.artifacts[i].path)) {
+          state.artifacts[i] = { path: path, basename: bn };
+          notify();
+        }
+        return;
+      }
+    }
+    state.artifacts.push({ path: path, basename: bn });
     notify();
   }
   function untrackArtifact(path) {
@@ -788,10 +834,15 @@
     try {
       var files = await invoke("list_workspace_files", { sessionId: sid });
       if (sid !== state.activeSessionId) return; // 已切走,放弃(避免写错 session)
-      var have = {};
-      state.artifacts.forEach(function (a) { have[a.path] = true; });
+      var byName = {};
+      state.artifacts.forEach(function (a) { byName[basename(a.path)] = a; });
       var added = false;
-      files.forEach(function (p) { if (!have[p]) { state.artifacts.push({ path: p, basename: basename(p) }); added = true; } });
+      files.forEach(function (p) {
+        var bn = basename(p);
+        var ex = byName[bn];
+        if (!ex) { var na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true; }
+        else if (isAbsPath(p) && !isAbsPath(ex.path)) { ex.path = p; added = true; } // 相对→绝对,open 可靠
+      });
       if (added) {
         notify();
         try { await invoke("save_session_artifacts", { id: sid, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch (_) {}
@@ -1091,6 +1142,24 @@
       (typeof name === "string" && name.endsWith("present_artifact"));
   }
 
+  // 成品卡路径:优先用 server(present_artifact_server.py)解析并验证过的绝对路径 abs_path——
+  // 模型常给相对路径,直接拿 args.path 渲染会让卡片 path 是相对,点 Open 报「path must be
+  // absolute」,且模型可能重试再 present 一次出双卡。取不到 abs_path 才回退原始 path。
+  // 兼容两种结果格式:直接 payload {abs_path} / MCP content 数组 {content:[{text}]} 包一层。
+  function presentArtifactAbsPath(toolResultContent, fallbackPath) {
+    fallbackPath = fallbackPath || "";
+    try {
+      var raw = typeof toolResultContent === "string" ? toolResultContent : JSON.stringify(toolResultContent || {});
+      var obj = JSON.parse(raw);
+      if (obj && typeof obj.abs_path === "string" && obj.abs_path) return obj.abs_path;
+      if (obj && obj.content && obj.content[0] && typeof obj.content[0].text === "string") {
+        var inner = JSON.parse(obj.content[0].text);
+        if (inner && typeof inner.abs_path === "string" && inner.abs_path) return inner.abs_path;
+      }
+    } catch (_) {}
+    return fallbackPath;
+  }
+
   listen("chat:tool_start", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
     if (p.session_id) turnUsageDirty[p.session_id] = true; // 多请求轮，usage 累加值不可当占用
@@ -1148,15 +1217,23 @@
     // messages(tool_start line 784),rerenderFromMessages 按 name 还原,切会话不丢。
     if (meta && isPresentArtifactTool(meta.name)) {
       if (p.success) {
-        var presentedPath = (meta.args && meta.args.path) || "";
-        addChatItem({
-          type: "artifact_card",
-          path: presentedPath,
-          title: (meta.args && meta.args.title) || "",
-          description: (meta.args && meta.args.description) || "",
-          time: timeStr(),
-        });
+        // 用 server 解析好的绝对路径(present_artifact_server.py 的 abs_path),而非模型可能
+        // 给的相对 args.path → 卡片 path 绝对,点 Open 不再报「path must be absolute」。
+        var presentedPath = presentArtifactAbsPath(p.output, meta.args && meta.args.path);
+        // 同一产物没改又 present 一次 → 跳过出卡(防模型啰嗦重复);改完再 present/续卡会保留。
+        if (!isDuplicateArtifactCard(presentedPath)) {
+          addChatItem({
+            type: "artifact_card",
+            path: presentedPath,
+            title: (meta.args && meta.args.title) || "",
+            description: (meta.args && meta.args.description) || "",
+            time: timeStr(),
+          });
+        }
         if (presentedPath) state.turnPresentedArtifacts.push(presentedPath); // 本 turn 已出成品卡,chat:done 不再兜底补
+        // 同步进产物面板:present_artifact 出卡的产物也算「产出物」。修「自己生成文件、
+        // 不走 write_file 的工具(如 make_pptx)→ 卡有、面板无」。trackArtifact 已去重。
+        if (presentedPath) trackArtifact(presentedPath);
         delete toolMeta[p.id];
         currentStreamText = ""; currentStreamId = 0;
         notify();
@@ -1227,7 +1304,10 @@
       // present 过的复用其 title/desc;AI 没 present 的兜底用文件名补首卡(否则没召唤入口=这次的 bug)。
       // 本 turn 刚 present_artifact 出过卡的跳过,不重复。edit/append 改多次也只补一张。
       (state.turnDirtyArtifacts || []).forEach(function (ap) {
-        if ((state.turnPresentedArtifacts || []).indexOf(ap) >= 0) return;
+        // 按 basename 比对:present 存 server 绝对路径、turnDirty 存 write 相对路径,
+        // 直接 indexOf 比不中 → present 过的文件会被兜底再补一张(重复)。
+        var _apbn = basename(ap);
+        if ((state.turnPresentedArtifacts || []).some(function (pp) { return basename(pp) === _apbn; })) return;
         var prev = findPresentedArtifact(ap);
         if (prev) addChatItem({ type: "artifact_card", path: prev.path, title: prev.title, description: prev.description, time: timeStr() });
         else addChatItem({ type: "artifact_card", path: ap, title: basename(ap), description: "", time: timeStr() });
@@ -1748,6 +1828,52 @@
     return await invoke("get_effective_model_config");
   }
 
+  // ── 模型列表(「添加模型」方案)─────────────────────────────────
+  async function loadModels() {
+    try {
+      var v = await invoke("list_models");
+      state.savedModels = (v && v.models) || [];
+      state.activeModelId = (v && v.active_model_id) || null;
+    } catch (e) {
+      state.savedModels = []; state.activeModelId = null;
+    }
+    notify();
+  }
+  // model 对象字段须是 snake_case(SavedModel serde): {id,name,preset,model,base_url,api_key}
+  async function saveModel(model) {
+    await invoke("save_model", { model: model });
+    await loadModels();
+  }
+  async function deleteModel(id) {
+    await invoke("delete_model", { id: id });
+    await loadModels();
+  }
+  async function setActiveModel(id) {
+    await invoke("set_active_model", { id: id });
+    await loadModels();
+  }
+  // 读某会话当前绑定的模型 id(切会话时刷新 chip)。
+  async function loadSessionModel(sessionId) {
+    if (!sessionId) { state.currentSessionModelId = null; notify(); return; }
+    try {
+      state.currentSessionModelId = await invoke("get_session_model_id", { sessionId: sessionId });
+    } catch (e) { state.currentSessionModelId = null; }
+    notify();
+  }
+  // 切当前会话模型(chip 热切)。无 session(草稿态)时改全局默认。
+  async function switchModel(sessionId, modelId) {
+    if (sessionId) {
+      await invoke("set_session_model", { sessionId: sessionId, modelId: modelId });
+      state.currentSessionModelId = modelId;
+      notify();
+    } else {
+      await setActiveModel(modelId);
+    }
+  }
+  async function testModelConnection(baseUrl, apiKey) {
+    return await invoke("test_model_connection", { baseUrl: baseUrl, apiKey: apiKey });
+  }
+
   // ── Super permission ─────────────────────────────────────────────
   async function refreshSuperPerm() {
     try {
@@ -1946,6 +2072,8 @@
   function artifactInfo(path) { return invoke("artifact_info", { path: path }); }
   function readArtifactText(path) { return invoke("read_artifact_text", { path: path }); }
   function readArtifactImageB64(path) { return invoke("read_artifact_image_b64", { path: path }); }
+  // pptx 封面缩略图：读 docProps/thumbnail.jpeg → data URL（无则 null）。本地数据、无外链。
+  function readArtifactThumbnail(path) { return invoke("read_artifact_thumbnail", { path: path }).catch(function () { return null; }); }
   function renderArtifactVisual(path) { return invoke("render_artifact_visual", { path: path }); }
   function openContainingFolder(path) { return invoke("open_containing_folder", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   function openInSystem(path) { return invoke("open_in_system", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
@@ -1956,6 +2084,8 @@
     return invoke("list_deliverables", { projectDir: projectDir }).catch(function () { return []; });
   }
   // 外部打开产物：HTML 走 Tauri 独立窗口（绕沙箱），其他走系统应用
+  // 相对路径(write_file 兜底补卡的相对文件名)由后端 open_in_system/open_artifact_window
+  // 内的 resolve_artifact_path 按 active session workspace 解析,前端无需预处理。
   function openArtifactExternal(path) {
     var ext = (String(path).split(".").pop() || "").toLowerCase();
     var cmd = (ext === "html" || ext === "htm") ? "open_artifact_window" : "open_in_system";
@@ -2192,10 +2322,19 @@
     if (!missing.length || state.depsInstalling) return;
     var pkgs = [];
     missing.forEach(function (d) {
-      String(d.apt).split(/\s+/).forEach(function (p) {
-        if (p && pkgs.indexOf(p) < 0) pkgs.push(p);
+      var parts = String(d.apt).trim().split(/\s+/).filter(Boolean);
+      if (!parts.length || !parts.every(function (p) { return /^[a-z0-9][a-z0-9+.-]*$/i.test(p); })) {
+        return;
+      }
+      parts.forEach(function (p) {
+        if (pkgs.indexOf(p) < 0) pkgs.push(p);
       });
     });
+    if (!pkgs.length) {
+      state.depsInstallError = "当前缺失项无法一键安装，请按依赖说明安装离线组件后重新检测。";
+      notify();
+      return;
+    }
     state.depsInstalling = true; state.depsInstallError = null; notify();
     try {
       await invoke("install_dependencies", { packages: pkgs });
@@ -2204,6 +2343,309 @@
       state.depsInstallError = String(e);
     }
     state.depsInstalling = false; notify();
+  }
+
+  // ── 语音输入（Windows WebView one-shot 录音 → 本地 SenseVoice/FunASR ASR）──────────────
+  var activeVoiceInput = null;
+
+  function setVoiceInputStatus(status, patch) {
+    var next = Object.assign({}, state.voiceInput, patch || {});
+    next.status = status;
+    if (status !== "failed") {
+      next.error = null;
+      next.category = null;
+    }
+    state.voiceInput = next;
+    notify();
+  }
+
+  function emitVoiceDiagnostic(stage, level, message, userMessage, category) {
+    var event = {
+      stage: stage,
+      level: level,
+      message: message,
+      user_message: userMessage || "",
+      category: category || "",
+    };
+    var fn = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
+    fn.call(console, "[voice-input]", event);
+  }
+
+  function normalizeVoiceError(err, fallbackStage) {
+    var name = String((err && err.name) || "");
+    var rawCategory = (err && err.category) || "";
+    var rawStage = (err && err.stage) || fallbackStage || "recording";
+    var rawMessage = String((err && (err.message || err.toString && err.toString())) || err || "");
+    if (name === "NotAllowedError" || name === "SecurityError" || rawCategory === "permission_denied") {
+      return { category: "permission_denied", stage: "permission", message: "麦克风权限被拒绝，请在 Windows 或应用权限中允许麦克风访问。" };
+    }
+    if (name === "NotFoundError" || name === "DevicesNotFoundError" || rawCategory === "device_unavailable") {
+      return { category: "device_unavailable", stage: "device", message: "未检测到可用麦克风，请检查录音设备是否启用或被占用。" };
+    }
+    if (rawCategory === "empty_result") {
+      return { category: "empty_result", stage: rawStage, message: "未识别到语音内容，请靠近麦克风后重试。" };
+    }
+    if (rawCategory === "context_mismatch") {
+      return { category: "context_mismatch", stage: "writeback", message: "识别已完成，但当前会话已切换，结果未自动写入。" };
+    }
+    if (rawCategory === "timeout") {
+      return { category: "timeout", stage: "recording", message: "本次语音输入超时，请重试。" };
+    }
+    if (rawCategory === "recognition_failed") {
+      return { category: "recognition_failed", stage: rawStage, message: rawMessage || "语音识别失败，请稍后重试。" };
+    }
+    return {
+      category: rawCategory || "recording_failed",
+      stage: rawStage,
+      message: rawMessage || "语音输入失败，请检查麦克风后重试。",
+    };
+  }
+
+  function stopMediaTracks(stream) {
+    if (!stream) return;
+    stream.getTracks().forEach(function (track) { try { track.stop(); } catch (_) {} });
+  }
+
+  function cleanupVoiceInputSession(session) {
+    if (!session) return;
+    if (session.timeoutId) clearTimeout(session.timeoutId);
+    try { if (session.processor) session.processor.disconnect(); } catch (_) {}
+    try { if (session.source) session.source.disconnect(); } catch (_) {}
+    try { if (session.zeroGain) session.zeroGain.disconnect(); } catch (_) {}
+    stopMediaTracks(session.stream);
+    if (session.audioContext && session.audioContext.state !== "closed") {
+      session.audioContext.close().catch(function () {});
+    }
+  }
+
+  function mergeFloatChunks(chunks) {
+    var total = chunks.reduce(function (sum, chunk) { return sum + chunk.length; }, 0);
+    var out = new Float32Array(total);
+    var offset = 0;
+    chunks.forEach(function (chunk) {
+      out.set(chunk, offset);
+      offset += chunk.length;
+    });
+    return out;
+  }
+
+  function downsamplePcm(samples, sourceRate, targetRate) {
+    if (!samples.length || sourceRate === targetRate) return samples;
+    var ratio = sourceRate / targetRate;
+    var len = Math.max(1, Math.round(samples.length / ratio));
+    var out = new Float32Array(len);
+    for (var i = 0; i < len; i++) {
+      var start = Math.floor(i * ratio);
+      var end = Math.min(samples.length, Math.floor((i + 1) * ratio));
+      var sum = 0;
+      var count = 0;
+      for (var j = start; j < end; j++) { sum += samples[j]; count++; }
+      out[i] = count ? sum / count : samples[Math.min(start, samples.length - 1)];
+    }
+    return out;
+  }
+
+  function encodeWav(samples, sampleRate) {
+    var dataSize = samples.length * 2;
+    var buffer = new ArrayBuffer(44 + dataSize);
+    var view = new DataView(buffer);
+    function writeString(offset, value) {
+      for (var i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i));
+    }
+    writeString(0, "RIFF");
+    view.setUint32(4, 36 + dataSize, true);
+    writeString(8, "WAVE");
+    writeString(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(36, "data");
+    view.setUint32(40, dataSize, true);
+    var offset = 44;
+    for (var i = 0; i < samples.length; i++, offset += 2) {
+      var s = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    return buffer;
+  }
+
+  async function finishVoiceInput(cancelled, timedOut) {
+    var session = activeVoiceInput;
+    if (!session) return;
+    if (cancelled) {
+      cleanupVoiceInputSession(session);
+      activeVoiceInput = null;
+      setVoiceInputStatus("cancelled", { message: "已取消语音输入", completedAt: Date.now() });
+      emitVoiceDiagnostic("recording", "info", "voice input cancelled", "已取消语音输入", "cancelled");
+      return;
+    }
+
+    setVoiceInputStatus("transcribing", { message: "正在识别语音…", stage: "transcribing" });
+    cleanupVoiceInputSession(session);
+
+    try {
+      if (timedOut) {
+        emitVoiceDiagnostic("recording", "warn", "recording reached max duration", "", "timeout");
+      }
+      var raw = mergeFloatChunks(session.chunks);
+      var durationMs = raw.length / Math.max(1, session.sampleRate) * 1000;
+      if (durationMs < 300) {
+        throw { category: "recording_failed", stage: "recording", message: "录音时间过短，请重试。" };
+      }
+      var pcm = downsamplePcm(raw, session.sampleRate, 16000);
+      var wav = encodeWav(pcm, 16000);
+      var bytes = Array.from(new Uint8Array(wav));
+      var res = await invoke("transcribe_voice_audio", {
+        request: {
+          audio_bytes: bytes,
+          session_id: session.sessionId,
+        },
+      });
+      if (activeVoiceInput !== session) return;
+      var text = String((res && res.text) || "").trim();
+      if (!text) throw { category: "empty_result", stage: "transcribing", message: "未识别到语音内容" };
+      if (state.activeSessionId !== session.sessionId) {
+        throw { category: "context_mismatch", stage: "writeback", message: "voice result discarded because active session changed" };
+      }
+      if (typeof session.writeback === "function") {
+        session.writeback(text, session.draftBeforeStart);
+      }
+      setVoiceInputStatus("completed", { message: "语音已写入输入框", completedAt: Date.now() });
+      emitVoiceDiagnostic("writeback", "info", "voice text written back", "语音已写入输入框", "");
+    } catch (err) {
+      var normalized = normalizeVoiceError(err, "transcribing");
+      setVoiceInputStatus("failed", {
+        message: normalized.message,
+        error: normalized.message,
+        category: normalized.category,
+        stage: normalized.stage,
+        completedAt: Date.now(),
+      });
+      emitVoiceDiagnostic(normalized.stage, "error", normalized.category, normalized.message, normalized.category);
+    } finally {
+      if (activeVoiceInput === session) activeVoiceInput = null;
+    }
+  }
+
+  async function startVoiceInput(draftText, writeback) {
+    if (activeVoiceInput && state.voiceInput.status === "recording") {
+      finishVoiceInput(false, false);
+      return;
+    }
+    if (activeVoiceInput) {
+      finishVoiceInput(true, false);
+      return;
+    }
+
+    var AudioCtor = window.AudioContext || window.webkitAudioContext;
+    var session = {
+      id: Date.now().toString(36),
+      sessionId: state.activeSessionId || null,
+      draftBeforeStart: String(draftText || ""),
+      writeback: writeback,
+      chunks: [],
+      sampleRate: 16000,
+      startedAt: Date.now(),
+    };
+    activeVoiceInput = session;
+    setVoiceInputStatus("requesting_permission", {
+      message: "正在请求麦克风权限…",
+      sessionId: session.sessionId,
+      startedAt: session.startedAt,
+      stage: "permission",
+    });
+    emitVoiceDiagnostic("permission", "info", "requesting microphone permission", "", "");
+
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw { category: "device_unavailable", stage: "device", message: "当前 WebView 不支持麦克风采集。" };
+      }
+      if (!AudioCtor) {
+        throw { category: "recording_failed", stage: "recording", message: "当前 WebView 不支持音频录制。" };
+      }
+      session.stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      if (activeVoiceInput !== session) {
+        cleanupVoiceInputSession(session);
+        return;
+      }
+      session.audioContext = new AudioCtor();
+      session.sampleRate = session.audioContext.sampleRate || 16000;
+      session.source = session.audioContext.createMediaStreamSource(session.stream);
+      session.processor = session.audioContext.createScriptProcessor(4096, 1, 1);
+      session.zeroGain = session.audioContext.createGain();
+      session.zeroGain.gain.value = 0;
+      session.processor.onaudioprocess = function (event) {
+        if (activeVoiceInput !== session) return;
+        var input = event.inputBuffer.getChannelData(0);
+        session.chunks.push(new Float32Array(input));
+      };
+      session.source.connect(session.processor);
+      session.processor.connect(session.zeroGain);
+      session.zeroGain.connect(session.audioContext.destination);
+      session.timeoutId = setTimeout(function () { finishVoiceInput(false, true); }, 10000);
+      setVoiceInputStatus("recording", { message: "正在录音，再点一次结束", stage: "recording" });
+      emitVoiceDiagnostic("recording", "info", "recording started", "", "");
+    } catch (err) {
+      cleanupVoiceInputSession(session);
+      if (activeVoiceInput === session) activeVoiceInput = null;
+      var normalized = normalizeVoiceError(err, "recording");
+      setVoiceInputStatus("failed", {
+        message: normalized.message,
+        error: normalized.message,
+        category: normalized.category,
+        stage: normalized.stage,
+        completedAt: Date.now(),
+      });
+      emitVoiceDiagnostic(normalized.stage, "error", normalized.category, normalized.message, normalized.category);
+    }
+  }
+
+  function cancelVoiceInput() {
+    finishVoiceInput(true, false);
+  }
+
+  function clearVoiceInput() {
+    if (activeVoiceInput) {
+      finishVoiceInput(true, false);
+      return;
+    }
+    setVoiceInputStatus("idle", {
+      message: "",
+      error: null,
+      category: null,
+      stage: null,
+      sessionId: null,
+    });
+  }
+
+  function appendVoiceText(base, text) {
+    var left = String(base || "").trimEnd();
+    var right = String(text || "").trim();
+    if (!left) return right;
+    if (!right) return left;
+    return left + (/[。！？.!?，,;；:]$/.test(left) ? " " : "\n") + right;
+  }
+
+  function runVoiceInputDebugAssertions() {
+    var denied = normalizeVoiceError({ name: "NotAllowedError" });
+    var noDevice = normalizeVoiceError({ name: "NotFoundError" });
+    var mismatch = normalizeVoiceError({ category: "context_mismatch" });
+    console.assert(denied.category === "permission_denied", "permission error classified");
+    console.assert(noDevice.category === "device_unavailable", "device error classified");
+    console.assert(mismatch.stage === "writeback", "context mismatch classified");
+    console.assert(appendVoiceText("草稿", "识别文本") === "草稿\n识别文本", "voice text appended");
+    return true;
   }
 
   // ── skill 工作流：动作（invoke 包装）[2026-06-06 恢复] ────────────
@@ -2361,6 +2803,7 @@
     await loadSettings();
     await loadEffectiveModelConfig();
     await loadAppVersion();
+    await loadModels();
     await refreshHistoryList();
     enterDraft(); // 启动落空白草稿页(lazy session:不自动选/建会话)
     await refreshSuperPerm();
@@ -2381,6 +2824,11 @@
     init: init,
     sendMessage: sendMessage,
     removeQueued: removeQueued,
+    startVoiceInput: startVoiceInput,
+    cancelVoiceInput: cancelVoiceInput,
+    clearVoiceInput: clearVoiceInput,
+    appendVoiceText: appendVoiceText,
+    runVoiceInputDebugAssertions: runVoiceInputDebugAssertions,
     cancelGeneration: cancelGeneration,
     createNewSession: createNewSession,
     switchToSession: switchToSession,
@@ -2392,6 +2840,13 @@
     saveSettingsAndRestart: saveSettingsAndRestart,
     discoverLocalVllm: discoverLocalVllm,
     getEffectiveModelConfig: getEffectiveModelConfig,
+    loadModels: loadModels,
+    saveModel: saveModel,
+    deleteModel: deleteModel,
+    setActiveModel: setActiveModel,
+    loadSessionModel: loadSessionModel,
+    switchModel: switchModel,
+    testModelConnection: testModelConnection,
     toggleSuperPerm: toggleSuperPerm,
     renderMarkdown: renderMarkdown,
     // Plan/YOLO
@@ -2418,6 +2873,7 @@
     artifactInfo: artifactInfo,
     readArtifactText: readArtifactText,
     readArtifactImageB64: readArtifactImageB64,
+    readArtifactThumbnail: readArtifactThumbnail,
     renderArtifactVisual: renderArtifactVisual,
     openContainingFolder: openContainingFolder,
     openInSystem: openInSystem,

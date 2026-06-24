@@ -701,17 +701,20 @@ fn run_cmd_with_timeout(program: &str, args: &[&str], cwd: &Path, timeout_secs: 
     // settings.json(custom_base_url/custom_api_key)而不设模型环境变量,那样
     // warmup 的 endpoint 预检会误判 blocked → 工作流启动卡死。统一注入解析后的
     // base_url/api_key(env 优先,回退 settings.json),子进程不必关心配置来源。
-    let model_target = crate::bridge::Pinvou3Bridge::load_model_monitor_target();
+    let bridge = crate::bridge::Pinvou3Bridge::boot().ok();
     let base_url = std::env::var("PINVOU3_MODEL_BASE_URL")
-        .unwrap_or_else(|_| model_target.base_url.clone());
+        .unwrap_or_else(|_| {
+            bridge
+                .as_ref()
+                .map(|b| b.base_url())
+                .unwrap_or_else(crate::monitor::vllm_base_url)
+        });
     let api_key = std::env::var("PINVOU3_MODEL_API_KEY")
         .ok()
         .or_else(|| {
-            let key = model_target.api_key?;
-            let is_local_default = matches!(
-                model_target.kind,
-                crate::bridge::ModelMonitorTargetKind::Local
-            ) && key == "local-no-auth";
+            let bridge = bridge.as_ref()?;
+            let key = bridge.api_key();
+            let is_local_default = bridge.provider() == "vllm" && key == "local-no-auth";
             (!is_local_default).then_some(key)
         })
         .unwrap_or_default();

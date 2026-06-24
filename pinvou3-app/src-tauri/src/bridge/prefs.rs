@@ -5,7 +5,6 @@
 //! `settings.json` 或对应的 `PINVOU3_*` 环境变量调整。
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -58,6 +57,17 @@ impl Language {
         }
     }
 
+    /// present_artifact 的 `title` 该用什么语言(instructions.md 的 {{PINVOU3_TITLE_LANG}})。
+    /// 原文写死"中文 title",英文 UI 下模型走到调 present_artifact 就生成中文标题、并把后续
+    /// 描述/总结也带回中文(tool-call 现场的具体指令压过通用语言规则)→ 改成跟 locale。
+    pub fn title_language_name(self) -> &'static str {
+        match self {
+            Language::ZhHans => "简体中文",
+            Language::En => "English",
+            Language::Ja => "日本語",
+        }
+    }
+
     /// pinvou3 补丁:底座 `locale_reinforcement_preamble` 对 `en` 返回 `None`
     /// (英文是模型默认语言,底座认为无需强化)。但 pinvou3 的 system prompt 主体
     /// (instructions.md)整份是中文,会把模型的回复语言拽回中文 —— 故英文 UI 下
@@ -80,7 +90,7 @@ impl Language {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelPreset {
     /// 默认本地 vLLM：qwen36_35b_256k @ 127.0.0.1:8000/v1
@@ -105,6 +115,51 @@ pub enum ModelPreset {
 impl Default for ModelPreset {
     fn default() -> Self {
         ModelPreset::LocalVllm
+    }
+}
+impl ModelPreset {
+    /// 与前端 preset key、settings.json 序列化值一致的稳定串(snake_case)。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ModelPreset::LocalVllm => "local_vllm",
+            ModelPreset::Deepseek => "deepseek",
+            ModelPreset::Kimi => "kimi",
+            ModelPreset::OpenaiCompatible => "openai_compatible",
+            ModelPreset::Qwen => "qwen",
+            ModelPreset::Doubao => "doubao",
+            ModelPreset::Minimax => "minimax",
+            ModelPreset::Glm => "glm",
+            ModelPreset::Mimo => "mimo",
+        }
+    }
+    /// 各预设默认 base_url(与 bridge `default_base_url_for_preset` 对齐;迁移/添加模型模板兜底)。
+    pub fn default_base_url(&self) -> &'static str {
+        match self {
+            ModelPreset::LocalVllm => "http://127.0.0.1:8000/v1",
+            ModelPreset::Deepseek => "https://api.deepseek.com",
+            ModelPreset::Kimi => "https://api.moonshot.cn/v1",
+            ModelPreset::OpenaiCompatible => "https://api.openai.com/v1",
+            ModelPreset::Qwen => "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            ModelPreset::Doubao => "https://ark.cn-beijing.volces.com/api/v3",
+            ModelPreset::Minimax => "https://api.minimax.chat/v1",
+            ModelPreset::Glm => "https://open.bigmodel.cn/api/paas/v4",
+            ModelPreset::Mimo => "https://api.xiaomimimo.com/v1",
+        }
+    }
+    /// 各预设默认模型名(与 bridge `default_model_for_preset` 对齐)。
+    /// LocalVllm 的 `qwen36_35b_256k` 后缀语义见 bridge `LOCAL_VLLM_MODEL`。
+    pub fn default_model(&self) -> &'static str {
+        match self {
+            ModelPreset::LocalVllm => "qwen36_35b_256k",
+            ModelPreset::Deepseek => "deepseek-v4-pro",
+            ModelPreset::Kimi => "kimi-k2.6",
+            ModelPreset::OpenaiCompatible => "gpt-4o",
+            ModelPreset::Qwen => "qwen-max",
+            ModelPreset::Doubao => "doubao-pro-256k",
+            ModelPreset::Minimax => "abab6.5s-chat",
+            ModelPreset::Glm => "glm-4-plus",
+            ModelPreset::Mimo => "mimo-v2-flash",
+        }
     }
 }
 
@@ -159,16 +214,23 @@ impl SearchPrefs {
     }
 }
 
-/// 开发者后门字段。GUI 永远不暴露这些，靠手改 settings.json 或 env 调。
-/// `None` 走 bridge 里的默认值；env 优先级高于 settings.json。
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct ModelProfilePrefs {
-    pub model_name: Option<String>,
-    pub base_url: Option<String>,
-    pub api_key: Option<String>,
+/// 一条用户保存的模型配置:GUI「模型列表」的一项,也是热切换的最小单位。
+/// `id` 稳定(前端生成),被 `active_model_id` / session `model_id` 引用。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SavedModel {
+    pub id: String,
+    /// 用户起的显示名("本地 Qwen"/"DeepSeek 线上")。
+    pub name: String,
+    /// 决定 provider 路由 + 模板,复用现有 9 预设枚举。
+    pub preset: ModelPreset,
+    pub model: String,
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: String,
 }
 
+/// 开发者后门字段。GUI 永远不暴露这些，靠手改 settings.json 或 env 调。
+/// `None` 走 bridge 里的默认值；env 优先级高于 settings.json。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AdvancedPrefs {
@@ -183,7 +245,13 @@ pub struct AdvancedPrefs {
     pub custom_base_url: Option<String>,
     /// 自定义 API key（CustomLocal / Remote* 生效）
     pub custom_api_key: Option<String>,
-    pub model_profiles: BTreeMap<ModelPreset, ModelProfilePrefs>,
+    /// 「添加模型」方案:已保存模型列表(GUI 增删改)。空 = 触发迁移兜底
+    /// (见 `UserPrefs::migrate_models`),把旧 model_preset+custom_* 合成一条。
+    #[serde(default)]
+    pub saved_models: Vec<SavedModel>,
+    /// 全局默认/当前激活模型 id(新建会话继承它)。None = 回退列表首条。
+    #[serde(default)]
+    pub active_model_id: Option<String>,
 }
 
 /// 用户偏好。`settings.json` 顶层结构。
@@ -201,13 +269,15 @@ impl UserPrefs {
     /// 从 `~/.pinvou3/settings.json` 读。文件不存在或 JSON 解析失败时返回默认。
     pub fn load() -> Self {
         let path = super::paths::settings_path();
-        match std::fs::read_to_string(&path) {
+        let mut prefs = match std::fs::read_to_string(&path) {
             Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
                 eprintln!("[pinvou3-app] settings.json parse failed ({e}), using defaults");
                 Self::default()
             }),
             Err(_) => Self::default(),
-        }
+        };
+        prefs.migrate_models();
+        prefs
     }
 
     pub fn save(&self) -> std::io::Result<()> {
@@ -220,11 +290,128 @@ impl UserPrefs {
         let s = serde_json::to_string_pretty(&normalized).expect("UserPrefs serialize");
         std::fs::write(path, s)
     }
+
+    /// 迁移:旧版只有 `model_preset`+`custom_*` 单组配置 → 合成一条 `SavedModel`
+    /// 进列表并设为 active。幂等(仅当 `saved_models` 为空,多次 load 安全)。
+    /// 全新用户(default prefs)也走这里,得到一条默认 LocalVllm 模型。
+    fn migrate_models(&mut self) {
+        if !self.advanced.saved_models.is_empty() {
+            return;
+        }
+        let preset = self.advanced.model_preset.unwrap_or_default();
+        let model = self
+            .advanced
+            .custom_model_name
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| preset.default_model().to_string());
+        let base_url = self
+            .advanced
+            .custom_base_url
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| preset.default_base_url().to_string());
+        let api_key = self.advanced.custom_api_key.clone().unwrap_or_default();
+        let id = "default".to_string();
+        self.advanced.saved_models.push(SavedModel {
+            id: id.clone(),
+            name: model.clone(),
+            preset,
+            model,
+            base_url,
+            api_key,
+        });
+        if self.advanced.active_model_id.is_none() {
+            self.advanced.active_model_id = Some(id);
+        }
+    }
+
+    /// 当前全局激活模型:`active_model_id` 指向的那条,失效则回退列表首条。
+    /// load 后 `saved_models` 必非空(migrate 保证),故正常返回 Some。
+    pub fn active_model(&self) -> Option<&SavedModel> {
+        if let Some(id) = &self.advanced.active_model_id {
+            if let Some(m) = self.advanced.saved_models.iter().find(|m| &m.id == id) {
+                return Some(m);
+            }
+        }
+        self.advanced.saved_models.first()
+    }
+
+    /// 按 id 查模型(session per-model 解析用)。
+    pub fn model_by_id(&self, id: &str) -> Option<&SavedModel> {
+        self.advanced.saved_models.iter().find(|m| m.id == id)
+    }
+
+    /// 增或改(按 id)一条模型。
+    pub fn upsert_model(&mut self, m: SavedModel) {
+        if let Some(existing) = self.advanced.saved_models.iter_mut().find(|x| x.id == m.id) {
+            *existing = m;
+        } else {
+            self.advanced.saved_models.push(m);
+        }
+    }
+
+    /// 删一条模型;若删的是当前 active,回退到列表首条。
+    pub fn remove_model(&mut self, id: &str) {
+        self.advanced.saved_models.retain(|m| m.id != id);
+        if self.advanced.active_model_id.as_deref() == Some(id) {
+            self.advanced.active_model_id =
+                self.advanced.saved_models.first().map(|m| m.id.clone());
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migrate_creates_default_model_for_fresh_prefs() {
+        let mut prefs = UserPrefs::default();
+        prefs.migrate_models();
+        assert_eq!(prefs.advanced.saved_models.len(), 1);
+        let m = &prefs.advanced.saved_models[0];
+        assert_eq!(m.preset, ModelPreset::LocalVllm);
+        assert_eq!(m.model, "qwen36_35b_256k");
+        assert_eq!(prefs.advanced.active_model_id.as_deref(), Some("default"));
+        assert_eq!(prefs.active_model().map(|m| m.id.as_str()), Some("default"));
+    }
+
+    #[test]
+    fn migrate_is_idempotent_and_preserves_custom() {
+        let mut prefs = UserPrefs::default();
+        prefs.advanced.model_preset = Some(ModelPreset::Deepseek);
+        prefs.advanced.custom_model_name = Some("deepseek-v4-flash".into());
+        prefs.advanced.custom_api_key = Some("sk-x".into());
+        prefs.migrate_models();
+        let snapshot = prefs.advanced.saved_models.clone();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].preset, ModelPreset::Deepseek);
+        assert_eq!(snapshot[0].model, "deepseek-v4-flash");
+        assert_eq!(snapshot[0].base_url, "https://api.deepseek.com");
+        assert_eq!(snapshot[0].api_key, "sk-x");
+        // 再次迁移幂等
+        prefs.migrate_models();
+        assert_eq!(prefs.advanced.saved_models, snapshot);
+    }
+
+    #[test]
+    fn remove_active_model_falls_back_to_first() {
+        let mut prefs = UserPrefs::default();
+        prefs.migrate_models();
+        prefs.upsert_model(SavedModel {
+            id: "m2".into(),
+            name: "Kimi".into(),
+            preset: ModelPreset::Kimi,
+            model: "kimi-k2.6".into(),
+            base_url: "https://api.moonshot.cn/v1".into(),
+            api_key: String::new(),
+        });
+        prefs.advanced.active_model_id = Some("m2".into());
+        prefs.remove_model("m2");
+        assert_eq!(prefs.advanced.active_model_id.as_deref(), Some("default"));
+        assert!(prefs.model_by_id("m2").is_none());
+    }
 
     #[test]
     fn prefs_roundtrip() {
@@ -360,46 +547,5 @@ mod tests {
         let prefs: UserPrefs = serde_json::from_str(json).unwrap();
         assert_eq!(prefs.search.provider, SearchProvider::Bing);
         assert!(prefs.search.api_key.is_none());
-    }
-
-    #[test]
-    fn model_profiles_roundtrip_with_preset_keys() {
-        let mut prefs = UserPrefs::default();
-        prefs.advanced
-            .model_profiles
-            .insert(ModelPreset::Deepseek, ModelProfilePrefs {
-                model_name: Some("deepseek-v4-pro".to_string()),
-                base_url: Some("https://api.deepseek.com".to_string()),
-                api_key: Some("sk-deepseek".to_string()),
-            });
-        prefs.advanced
-            .model_profiles
-            .insert(ModelPreset::Minimax, ModelProfilePrefs {
-                model_name: Some("abab6.5s-chat".to_string()),
-                base_url: Some("https://api.minimax.chat/v1".to_string()),
-                api_key: Some("sk-minimax".to_string()),
-            });
-
-        let json = serde_json::to_string(&prefs).unwrap();
-        assert!(json.contains(r#""deepseek""#));
-        assert!(json.contains(r#""minimax""#));
-
-        let parsed: UserPrefs = serde_json::from_str(&json).unwrap();
-        assert_eq!(
-            parsed
-                .advanced
-                .model_profiles
-                .get(&ModelPreset::Deepseek)
-                .and_then(|profile| profile.api_key.as_deref()),
-            Some("sk-deepseek")
-        );
-        assert_eq!(
-            parsed
-                .advanced
-                .model_profiles
-                .get(&ModelPreset::Minimax)
-                .and_then(|profile| profile.api_key.as_deref()),
-            Some("sk-minimax")
-        );
     }
 }

@@ -110,6 +110,11 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
             crate::os::pandoc_dependency_packages(),
         ));
     }
+    items.push(item(
+        "voice_asr",
+        crate::os::asr_tool_exists(),
+        crate::os::asr_dependency_packages(),
+    ));
     items.extend([
         item("office_legacy", libreoffice, "libreoffice"),
         item(

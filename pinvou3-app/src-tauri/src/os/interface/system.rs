@@ -14,8 +14,16 @@ pub fn pandoc_tool_path() -> PathBuf {
     super::super::platform::pandoc_tool_path()
 }
 
+pub fn asr_tool_path() -> PathBuf {
+    super::super::platform::asr_tool_path()
+}
+
 pub fn pandoc_tool_exists() -> bool {
     super::super::platform::pandoc_tool_exists()
+}
+
+pub fn asr_tool_exists() -> bool {
+    super::super::platform::asr_tool_exists()
 }
 
 pub fn show_pandoc_dependency_check() -> bool {
@@ -26,8 +34,16 @@ pub fn pandoc_dependency_packages() -> &'static str {
     super::super::platform::pandoc_dependency_packages()
 }
 
+pub fn asr_dependency_packages() -> &'static str {
+    super::super::platform::asr_dependency_packages()
+}
+
 pub fn pandoc_missing_message() -> &'static str {
     super::super::platform::pandoc_missing_message()
+}
+
+pub fn asr_missing_message() -> &'static str {
+    super::super::platform::asr_missing_message()
 }
 
 pub fn pdf_tool_path(command: &str) -> PathBuf {
@@ -87,5 +103,10 @@ mod tests {
     #[test]
     fn pandoc_tool_path_returns_non_empty_program() {
         assert!(!pandoc_tool_path().as_os_str().is_empty());
+    }
+
+    #[test]
+    fn asr_tool_path_returns_non_empty_program() {
+        assert!(!asr_tool_path().as_os_str().is_empty());
     }
 }

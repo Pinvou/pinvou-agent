@@ -61,6 +61,13 @@ pub fn bundled_pandoc_dir() -> Option<PathBuf> {
         .filter(|path| path.is_dir())
 }
 
+pub fn bundled_asr_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .map(|exe| bundled_asr_dir_for_exe(&exe))
+        .filter(|path| path.is_dir())
+}
+
 pub fn bundled_poppler_dir_for_exe(exe_path: &Path) -> PathBuf {
     exe_path
         .parent()
@@ -75,6 +82,13 @@ pub fn bundled_pandoc_dir_for_exe(exe_path: &Path) -> PathBuf {
         .join("pandoc")
 }
 
+pub fn bundled_asr_dir_for_exe(exe_path: &Path) -> PathBuf {
+    exe_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("asr")
+}
+
 pub fn bundled_pdf_tool_path(command: &str) -> Option<PathBuf> {
     std::env::current_exe()
         .ok()
@@ -87,6 +101,12 @@ pub fn bundled_pandoc_tool_path() -> Option<PathBuf> {
         .and_then(|exe| bundled_pandoc_tool_path_for_exe(&exe))
 }
 
+pub fn bundled_asr_tool_path() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| bundled_asr_tool_path_for_exe(&exe))
+}
+
 pub fn bundled_pdf_tool_path_for_exe(exe_path: &Path, command: &str) -> Option<PathBuf> {
     let filename = pdf_tool_filename(command)?;
     let path = bundled_poppler_dir_for_exe(exe_path).join(filename);
@@ -95,6 +115,11 @@ pub fn bundled_pdf_tool_path_for_exe(exe_path: &Path, command: &str) -> Option<P
 
 pub fn bundled_pandoc_tool_path_for_exe(exe_path: &Path) -> Option<PathBuf> {
     let path = bundled_pandoc_dir_for_exe(exe_path).join(pandoc_tool_filename());
+    path.is_file().then_some(path)
+}
+
+pub fn bundled_asr_tool_path_for_exe(exe_path: &Path) -> Option<PathBuf> {
+    let path = bundled_asr_dir_for_exe(exe_path).join(asr_tool_filename());
     path.is_file().then_some(path)
 }
 
@@ -119,6 +144,10 @@ fn pdf_tool_filename(command: &str) -> Option<String> {
 
 fn pandoc_tool_filename() -> &'static str {
     "pandoc.exe"
+}
+
+fn asr_tool_filename() -> &'static str {
+    "pinvou-asr.exe"
 }
 
 #[cfg(test)]

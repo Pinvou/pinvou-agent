@@ -9,7 +9,10 @@ use tokio::time::timeout;
 
 use crate::bridge::paths;
 
-pub(crate) const DEFAULT_BOOTSTRAP_HOST: &str = "https://bootstrap.magic.h3c.com";
+#[allow(dead_code)]
+pub(crate) const FORMAL_BOOTSTRAP_HOST: &str = "https://bootstrap.magic.h3c.com";
+// Internal beta default. Switch back to FORMAL_BOOTSTRAP_HOST for formal releases.
+pub(crate) const DEFAULT_BOOTSTRAP_HOST: &str = "https://sohord10.h3c.com";
 pub(crate) const FALLBACK_SN: &str = "219904A17T4257W00018";
 pub(crate) const SMARTHUB_OTA_KEY: &str = "smarthubOta";
 const MISSING_BIOS_SN_ERROR: &str = "读取设备 BIOS SN 失败，无法执行更新查询";

@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::bridge::mode_state::{PlanPhase, SerializableMode, SessionModeState};
-use crate::bridge::prefs::{ModelPreset, UserPrefs};
+use crate::bridge::prefs::{SavedModel, UserPrefs};
 use crate::bridge::sessions::SessionStore;
 use crate::engine_pool::EnginePool;
 use crate::monitor::{MonitorSnapshot, MonitorState, VllmStatus};
@@ -333,7 +333,10 @@ pub struct EffectiveModelConfig {
 pub async fn get_effective_model_config(
     pool: State<'_, EnginePool>,
 ) -> Result<EffectiveModelConfig, String> {
-    let bridge = &pool.bridge;
+    // 读 disk 最新 prefs(GUI 可能刚改过模型/默认),boot 快照会过时。
+    let mut bridge = pool.bridge.clone();
+    bridge.prefs = UserPrefs::load();
+    bridge.session_model = None; // 全局视角,不绑定具体 session
     let mut env_overrides = Vec::new();
     if std::env::var("DEEPSEEK_MODEL").is_ok() {
         env_overrides.push("model".to_string());
@@ -347,17 +350,12 @@ pub async fn get_effective_model_config(
     if std::env::var("DEEPSEEK_PROVIDER").is_ok_and(|provider| provider == bridge.provider()) {
         env_overrides.push("provider".to_string());
     }
-    let preset = match bridge.prefs.advanced.model_preset.unwrap_or_default() {
-        ModelPreset::LocalVllm => "local_vllm",
-        ModelPreset::Deepseek => "deepseek",
-        ModelPreset::Kimi => "kimi",
-        ModelPreset::OpenaiCompatible => "openai_compatible",
-        ModelPreset::Qwen => "qwen",
-        ModelPreset::Doubao => "doubao",
-        ModelPreset::Minimax => "minimax",
-        ModelPreset::Glm => "glm",
-        ModelPreset::Mimo => "mimo",
-    };
+    let preset = bridge
+        .prefs
+        .active_model()
+        .map(|m| m.preset)
+        .unwrap_or_default()
+        .as_str();
     Ok(EffectiveModelConfig {
         preset: preset.to_string(),
         model: bridge.model(),
@@ -368,6 +366,406 @@ pub async fn get_effective_model_config(
     })
 }
 
+/// 「添加模型」方案:列出已保存模型 + 当前全局默认 id(前端高亮)。
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelsView {
+    pub models: Vec<SavedModel>,
+    pub active_model_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn list_models() -> Result<ModelsView, String> {
+    let prefs = UserPrefs::load();
+    Ok(ModelsView {
+        models: prefs.advanced.saved_models.clone(),
+        active_model_id: prefs.advanced.active_model_id.clone(),
+    })
+}
+
+/// 增或改一条模型(按 id)。前端负责生成稳定 id。
+#[tauri::command]
+pub async fn save_model(model: SavedModel) -> Result<(), String> {
+    let mut prefs = UserPrefs::load();
+    prefs.upsert_model(model);
+    prefs.save().map_err(|e| format!("save_model: {e:?}"))
+}
+
+/// 删一条模型。至少保留一条;删到当前 active 会自动回退列表首条。
+#[tauri::command]
+pub async fn delete_model(id: String) -> Result<(), String> {
+    let mut prefs = UserPrefs::load();
+    if prefs.advanced.saved_models.len() <= 1 {
+        return Err("至少保留一个模型".to_string());
+    }
+    prefs.remove_model(&id);
+    prefs.save().map_err(|e| format!("delete_model: {e:?}"))
+}
+
+/// 设全局默认模型(新建会话继承它)。不打断已在用的会话——它们各自保持 spawn
+/// 时的模型,想换在该会话的 chip 里切。
+#[tauri::command]
+pub async fn set_active_model(id: String) -> Result<(), String> {
+    let mut prefs = UserPrefs::load();
+    if prefs.model_by_id(&id).is_none() {
+        return Err(format!("model not found: {id}"));
+    }
+    prefs.advanced.active_model_id = Some(id);
+    prefs.save().map_err(|e| format!("set_active_model: {e:?}"))
+}
+
+/// 切某会话当前模型(聊天 chip 热切):写 per-session 绑定 + evict 该会话 engine,
+/// 下次发消息用新模型重建。`model_id = None` = 回退全局默认。
+/// 前端须保证非生成中调用(evict 会打断正在跑的 turn)。
+#[tauri::command]
+pub async fn set_session_model(
+    session_id: String,
+    model_id: Option<String>,
+    pool: State<'_, EnginePool>,
+) -> Result<(), String> {
+    if let Some(mid) = &model_id {
+        if UserPrefs::load().model_by_id(mid).is_none() {
+            return Err(format!("model not found: {mid}"));
+        }
+    }
+    pool.switch_session_model(&session_id, model_id).await;
+    Ok(())
+}
+
+/// 读某会话显式绑定的模型 id(没绑定返回 None = 跟随全局默认)。聊天 chip 显示用。
+#[tauri::command]
+pub async fn get_session_model_id(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<Option<String>, String> {
+    Ok(store.session_model_id(&session_id))
+}
+
+/// 测试连接:GET {base_url}/models(OpenAI 兼容标准端点),验 base_url + key 可达。
+#[tauri::command]
+pub async fn test_model_connection(base_url: String, api_key: String) -> Result<String, String> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("client: {e}"))?;
+    let mut req = client.get(&url);
+    let key = api_key.trim();
+    if !key.is_empty() {
+        req = req.bearer_auth(key);
+    }
+    match req.send().await {
+        Ok(resp) if resp.status().is_success() => {
+            Ok(format!("连接成功 (HTTP {})", resp.status().as_u16()))
+        }
+        Ok(resp) => Err(format!("HTTP {}", resp.status().as_u16())),
+        Err(e) => Err(format!("连接失败: {e}")),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VoiceTranscriptionRequest {
+    /// WAV bytes captured by the WebView.
+    pub audio_bytes: Vec<u8>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VoiceTranscriptionResponse {
+    pub text: String,
+    pub source: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VoiceCommandError {
+    pub category: String,
+    pub stage: String,
+    pub message: String,
+}
+
+impl VoiceCommandError {
+    fn new(category: &str, stage: &str, message: impl Into<String>) -> Self {
+        Self {
+            category: category.to_string(),
+            stage: stage.to_string(),
+            message: message.into(),
+        }
+    }
+}
+
+fn local_asr_command_name() -> String {
+    crate::os::asr_tool_path().to_string_lossy().into_owned()
+}
+
+fn local_asr_model_name() -> String {
+    std::env::var("PINVOU3_ASR_MODEL")
+        .or_else(|_| std::env::var("PINVOU3_DEEPSPEECH2_MODEL"))
+        .unwrap_or_else(|_| "sensevoice-q8".to_string())
+}
+
+fn local_asr_language() -> String {
+    std::env::var("PINVOU3_ASR_LANG")
+        .or_else(|_| std::env::var("PINVOU3_DEEPSPEECH2_LANG"))
+        .unwrap_or_else(|_| "zh".to_string())
+}
+
+fn local_asr_timeout() -> std::time::Duration {
+    let secs = std::env::var("PINVOU3_ASR_TIMEOUT_SECS")
+        .or_else(|_| std::env::var("PINVOU3_DEEPSPEECH2_TIMEOUT_SECS"))
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .unwrap_or(60);
+    std::time::Duration::from_secs(secs)
+}
+
+fn voice_temp_wav_path() -> std::path::PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    std::env::temp_dir().join(format!(
+        "pinvou3-voice-{}-{stamp}.wav",
+        std::process::id()
+    ))
+}
+
+#[cfg(windows)]
+fn hide_child_console(command: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn hide_child_console(_command: &mut std::process::Command) {}
+
+struct LocalAsrOutput {
+    text: String,
+}
+
+fn compact_process_output(stdout: &str, stderr: &str) -> String {
+    let joined = [stdout.trim(), stderr.trim()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if joined.chars().count() <= 2000 {
+        return joined;
+    }
+    let tail = joined
+        .chars()
+        .rev()
+        .take(2000)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    format!("...{tail}")
+}
+
+fn parse_local_asr_text(stdout: &str, stderr: &str) -> Option<String> {
+    let combined = format!("{stdout}\n{stderr}");
+    let result_prefixes = [
+        "result:",
+        "asr result:",
+        "recognition result:",
+        "text:",
+        "output:",
+    ];
+
+    for line in combined.lines().rev() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        for prefix in result_prefixes {
+            if lower.starts_with(prefix) {
+                let text = line[prefix.len()..].trim();
+                if !text.is_empty() {
+                    return Some(text.to_string());
+                }
+            }
+        }
+        if (line.starts_with("['") && line.ends_with("']"))
+            || (line.starts_with("[\"") && line.ends_with("\"]"))
+        {
+            let text = line
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim_matches('\'')
+                .trim_matches('"')
+                .trim();
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+        if lower.contains("error")
+            || lower.contains("warning")
+            || lower.contains("paddlespeech")
+            || lower.contains("sensevoice")
+            || lower.contains("funasr")
+            || lower.contains("gguf")
+            || lower.contains("python")
+            || lower.contains("download")
+            || lower.starts_with('[')
+        {
+            continue;
+        }
+        if line
+            .chars()
+            .any(|ch| ch.is_alphabetic() || ('\u{4e00}'..='\u{9fff}').contains(&ch))
+        {
+            return Some(line.to_string());
+        }
+    }
+    None
+}
+
+fn run_local_asr_cli(wav_path: &std::path::Path) -> Result<LocalAsrOutput, VoiceCommandError> {
+    use std::io::Read;
+    use std::process::Stdio;
+
+    let executable = local_asr_command_name();
+    let model = local_asr_model_name();
+    let language = local_asr_language();
+    let timeout = local_asr_timeout();
+
+    let mut command = std::process::Command::new(&executable);
+    command
+        .arg("asr")
+        .arg("--model")
+        .arg(&model)
+        .arg("--lang")
+        .arg(&language)
+        .arg("--input")
+        .arg(wav_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    hide_child_console(&mut command);
+
+    let mut child = command.spawn().map_err(|e| {
+        let message = if e.kind() == std::io::ErrorKind::NotFound {
+            format!(
+                "{} Runtime path: `{executable}`.",
+                crate::os::asr_missing_message()
+            )
+        } else {
+            format!("Failed to start local SenseVoice/FunASR ASR: {e}")
+        };
+        VoiceCommandError::new("recognition_failed", "transcribing", message)
+    })?;
+
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(VoiceCommandError::new(
+                        "recognition_failed",
+                        "transcribing",
+                        format!(
+                            "Local SenseVoice/FunASR ASR timed out after {} seconds. Check that the q8 model is bundled and the runtime works offline.",
+                            timeout.as_secs()
+                        ),
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(VoiceCommandError::new(
+                    "recognition_failed",
+                    "transcribing",
+                    format!("Failed while waiting for local SenseVoice/FunASR ASR: {e}"),
+                ));
+            }
+        }
+    };
+
+    let mut stdout = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        let _ = pipe.read_to_string(&mut stdout);
+    }
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+
+    if !status.success() {
+        return Err(VoiceCommandError::new(
+            "recognition_failed",
+            "transcribing",
+            format!(
+                "Local SenseVoice/FunASR ASR failed (exit {}): {}",
+                status
+                    .code()
+                    .map_or_else(|| "unknown".to_string(), |code| code.to_string()),
+                compact_process_output(&stdout, &stderr)
+            ),
+        ));
+    }
+
+    let text = parse_local_asr_text(&stdout, &stderr).ok_or_else(|| {
+        VoiceCommandError::new(
+            "empty_result",
+            "transcribing",
+            format!(
+                "Local SenseVoice/FunASR ASR returned no usable text: {}",
+                compact_process_output(&stdout, &stderr)
+            ),
+        )
+    })?;
+
+    Ok(LocalAsrOutput { text })
+}
+
+/// Transcribe a short one-shot voice capture from the desktop WebView using
+/// local SenseVoice/FunASR ASR.
+#[tauri::command]
+pub async fn transcribe_voice_audio(
+    request: VoiceTranscriptionRequest,
+) -> Result<VoiceTranscriptionResponse, VoiceCommandError> {
+    if request.audio_bytes.len() < 44 {
+        return Err(VoiceCommandError::new(
+            "recording_failed",
+            "recording",
+            "Recorded audio is empty or invalid.",
+        ));
+    }
+
+    let wav_path = voice_temp_wav_path();
+    let audio_bytes = request.audio_bytes;
+    let asr_output = tokio::task::spawn_blocking(move || {
+        std::fs::write(&wav_path, &audio_bytes).map_err(|e| {
+            VoiceCommandError::new(
+                "recording_failed",
+                "recording",
+                format!("Failed to write temporary voice audio: {e}"),
+            )
+        })?;
+        let result = run_local_asr_cli(&wav_path);
+        let _ = std::fs::remove_file(&wav_path);
+        result
+    })
+    .await
+    .map_err(|e| {
+        VoiceCommandError::new(
+            "recognition_failed",
+            "transcribing",
+            format!("Local SenseVoice/FunASR ASR task failed: {e}"),
+        )
+    })??;
+
+    Ok(VoiceTranscriptionResponse {
+        text: asr_output.text,
+        source: "pinvou-webview-sensevoice-local".to_string(),
+    })
+}
 /// 持久化 UserPrefs 到 `~/.pinvou3/settings.json`。
 ///
 /// **当前 MVP 限制**：写盘后不重启 Engine。所以：
@@ -413,9 +811,13 @@ pub async fn clear_session() -> Result<(), String> {
 #[tauri::command]
 pub async fn get_monitor_snapshot(
     monitor: State<'_, MonitorState>,
-    pool: State<'_, EnginePool>,
 ) -> Result<MonitorSnapshot, String> {
-    let snapshot = crate::monitor::sample_all(&monitor, pool.bridge.model_monitor_target()).await;
+    let snapshot = crate::monitor::sample_all(
+        &monitor,
+        &crate::monitor::vllm_base_url(),
+        crate::monitor::vllm_configured_model(),
+    )
+    .await;
     Ok(snapshot)
 }
 
@@ -508,12 +910,13 @@ pub struct BackendStatus {
 }
 
 #[tauri::command]
-pub async fn get_backend_status(
-    _monitor: State<'_, MonitorState>,
-    pool: State<'_, EnginePool>,
-) -> Result<BackendStatus, String> {
+pub async fn get_backend_status(_monitor: State<'_, MonitorState>) -> Result<BackendStatus, String> {
     // Lightweight: 只 probe vLLM,不跑 nvidia-smi / RAM 采样
-    let vllm = crate::monitor::model_target_snapshot(pool.bridge.model_monitor_target()).await;
+    let vllm = crate::monitor::vllm_snapshot(
+        &crate::monitor::vllm_base_url(),
+        crate::monitor::vllm_configured_model(),
+    )
+    .await;
     let vllm_online = matches!(
         vllm.as_ref().map(|v| v.status),
         Some(VllmStatus::Ready) | Some(VllmStatus::Busy)
@@ -554,10 +957,10 @@ pub async fn create_session(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<SessionMetadata, String> {
-    let model = pool.bridge.model();
+    let (model, model_id) = pool.default_model_for_new_session();
     let workspace = pool.bridge.workspace.clone();
     let session = store
-        .create_new(model, workspace)
+        .create_new(model, model_id, workspace)
         .map_err(|e| format!("create_session: {e:?}"))?;
     store.set_active(Some(session.metadata.id.clone()));
     // 多 session 并发:不预热 engine(lazy)。新建的空 session 没有历史,首条 chat
@@ -690,6 +1093,30 @@ pub async fn cancel_generation(
         pool.cancel(&sid).await;
     }
     Ok(())
+}
+
+/// pinvou3 工具开关(全局持久):设置当前被关掉的连接器(connector_ids = 市场工具 id)。
+/// 落盘 → 推算成模型可见工具全名广播给所有在跑引擎 → 隐藏这些工具。空 = 全开。
+/// 持久:用户关一次,所有新对话/新窗口都继承,直到手动开回。
+#[tauri::command]
+pub async fn set_disabled_connectors(
+    connector_ids: Vec<String>,
+    pool: State<'_, EnginePool>,
+) -> Result<(), String> {
+    let tools = tokio::task::spawn_blocking(move || {
+        crate::bridge::marketplace::save_disabled_connectors(&connector_ids);
+        crate::bridge::marketplace::MarketplaceManager::new().model_tool_names(&connector_ids)
+    })
+    .await
+    .map_err(|e| format!("compute disabled tools: {e}"))?;
+    pool.set_disallowed_all(tools).await;
+    Ok(())
+}
+
+/// pinvou3 工具开关:读全局被禁用的连接器 id 列表(前端启动时加载,初始化开关状态)。
+#[tauri::command]
+pub async fn get_disabled_connectors() -> Result<Vec<String>, String> {
+    Ok(crate::bridge::marketplace::load_disabled_connectors())
 }
 
 /// 编辑/重发最后一轮 user 消息。
@@ -1066,6 +1493,42 @@ pub async fn read_artifact_image_b64(path: String) -> Result<String, String> {
     Ok(format!("data:{mime};base64,{b64}"))
 }
 
+/// [2026-06-22] pptx 封面缩略图：打开 .pptx(zip)读 `docProps/thumbnail.jpeg`
+/// → base64 data url，给产物卡顶部 16:9 封面用。无缩略图 / 非 zip / 损坏 → Ok(None)
+/// （前端据此回退紧凑态，不报错）。本地数据、无外链，内网离线安全。
+/// validate_user_path 防路径穿越；跨平台（zip 纯 Rust，Windows/Linux 一致）。
+#[tauri::command]
+pub async fn read_artifact_thumbnail(path: String) -> Result<Option<String>, String> {
+    use std::io::Read;
+    let p = validate_user_path(&path).map_err(|_| "路径不允许".to_string())?;
+    if !p.is_file() {
+        return Ok(None);
+    }
+    let file = std::fs::File::open(&p).map_err(|e| format!("打开失败: {e}"))?;
+    let mut archive = match zip::ZipArchive::new(file) {
+        Ok(z) => z,
+        Err(_) => return Ok(None), // 非 zip / 损坏：前端走紧凑态
+    };
+    // OOXML 缩略图固定路径；兜底几种扩展名（Office 默认写 .jpeg）。
+    for name in ["docProps/thumbnail.jpeg", "docProps/thumbnail.jpg", "docProps/thumbnail.png"] {
+        let mut entry = match archive.by_name(name) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        if entry.size() > 25_000_000 {
+            return Ok(None);
+        }
+        let mut buf = Vec::new();
+        if entry.read_to_end(&mut buf).is_err() || buf.is_empty() {
+            continue;
+        }
+        let mime = if name.ends_with(".png") { "image/png" } else { "image/jpeg" };
+        let b64 = crate::file_ingest::base64_encode(&buf);
+        return Ok(Some(format!("data:{mime};base64,{b64}")));
+    }
+    Ok(None)
+}
+
 pub(crate) fn artifact_info_impl(path: &str) -> Result<ArtifactInfo, String> {
     let p = match validate_user_path(path) {
         Ok(p) => p,
@@ -1240,6 +1703,50 @@ pub async fn render_artifact_visual(path: String) -> Result<VisualResult, String
     Ok(result)
 }
 
+/// 跨平台"用系统默认程序打开"(文件 / 目录 / URL)。
+/// Windows: `cmd /C start`（`start` 是 cmd 内建；首个引号参数是窗口标题，用空串占位）；
+/// macOS: `open`；Linux/其它: `xdg-open`（freedesktop，跨发行版兼容）。
+/// 调用方对文件/目录路径应先过 `strip_verbatim` 去掉 `\\?\` 前缀（start/explorer 不认）。
+fn shell_open(arg: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "start", ""]);
+        c.arg(arg);
+        c
+    };
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("open");
+        c.arg(arg);
+        c
+    };
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let mut cmd = {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(arg);
+        c
+    };
+    cmd.spawn().map_err(|e| format!("open({arg}) failed: {e}"))?;
+    Ok(())
+}
+
+/// 去掉 Windows `canonicalize` 产出的 `\\?\` verbatim 前缀（含 UNC 形式）。
+/// start/explorer 不识别该前缀，不剥会"打不开"。非 Windows 原样返回。
+fn strip_verbatim(p: &std::path::Path) -> String {
+    let s = p.to_string_lossy();
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{rest}");
+        }
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            return rest.to_string();
+        }
+    }
+    s.to_string()
+}
+
 /// 用系统默认浏览器打开**允许列表**里的 https URL。
 /// 用于 Settings 面板的"获取 API key"链接(Metaso/Bocha 注册页)。
 /// 白名单写死,前端没法用这个 command 打开任意 URL。
@@ -1256,36 +1763,62 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
     if !ALLOWED_PREFIXES.iter().any(|p| url.starts_with(p)) {
         return Err(format!("URL not in allowlist: {url}"));
     }
-    crate::os::open_target(&url, &url)?;
-    Ok(())
+    shell_open(&url)
 }
 
-/// 用系统默认应用打开文件。
-#[tauri::command]
-pub async fn open_in_system(path: String) -> Result<(), String> {
-    let p = validate_user_path(&path)?;
-    crate::os::open_target(&p, &p.display().to_string())?;
-    Ok(())
+/// 把成品卡里可能的**相对**路径落到当前 active session 的 workspace。
+///
+/// 背景:present_artifact 没调成(模型把工具名漂成 `pinvou-present_artifact` 之类
+/// → NotAvailable)时,成品卡由 write_file 兜底补出,path 直接用了 write_file 的
+/// 相对参数(如 `snake-game.html`)。点 Open 把相对路径丢给 `validate_user_path`
+/// → 直接拒「path must be absolute」。这里先按 workspace 解析,绝对路径原样返回
+/// (present_artifact 成功解析的 / 产物面板 list_workspace_files 给的已是绝对)。
+fn resolve_artifact_path(raw: &str, store: &SessionStore) -> String {
+    if std::path::Path::new(raw).is_absolute() {
+        return raw.to_string();
+    }
+    match store.active_id() {
+        Some(sid) => crate::bridge::paths::session_workspace_dir(&sid)
+            .join(raw)
+            .to_string_lossy()
+            .into_owned(),
+        None => raw.to_string(),
+    }
 }
 
-/// 用文件管理器打开**所在目录**（不是文件本身）。
+/// 用系统默认应用打开文件（跨平台：Win `start` / mac `open` / Linux `xdg-open`）；
+/// 相对路径先按 active session 的 workspace 解析（合并 main 的相对路径修复 + 跨平台打开）。
 #[tauri::command]
-pub async fn open_containing_folder(path: String) -> Result<(), String> {
-    let p = validate_user_path(&path)?;
+pub async fn open_in_system(path: String, store: State<'_, SessionStore>) -> Result<(), String> {
+    let p = validate_user_path(&resolve_artifact_path(&path, &store))?;
+    shell_open(&strip_verbatim(&p))
+}
+
+/// 用文件管理器打开**所在目录**（不是文件本身）。跨平台：Win explorer / mac Finder /
+/// Linux Nautilus 等（freedesktop，跨 GNOME/KDE/XFCE 兼容）。
+#[tauri::command]
+pub async fn open_containing_folder(
+    path: String,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    let p = validate_user_path(&resolve_artifact_path(&path, &store))?;
     let dir = p
         .parent()
         .ok_or_else(|| format!("no parent dir for {}", p.display()))?;
-    crate::os::open_target(dir, &dir.display().to_string())?;
-    Ok(())
+    shell_open(&strip_verbatim(dir))
 }
 
 /// 在 Tauri 新窗口里加载 HTML 产物。绕过 snap 浏览器对 `~/.xxx/` 隐藏目录的沙箱限制。
 /// 同一文件再次调用 → focus 已有窗口而非新建,防窗口爆炸。
 #[tauri::command]
-pub async fn open_artifact_window(path: String, app: tauri::AppHandle) -> Result<(), String> {
+pub async fn open_artifact_window(
+    path: String,
+    app: tauri::AppHandle,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
     use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
-    let p = validate_user_path(&path)?;
+    let p = validate_user_path(&resolve_artifact_path(&path, &store))?;
     if !p.is_file() {
         return Err(format!("not a file: {}", p.display()));
     }
@@ -2082,10 +2615,10 @@ pub async fn start_skill_session(
     }
 
     // 3) 没有已有 session → 新建(沿用 create_session 的 model + workspace 取值)
-    let model = pool.bridge.model();
+    let (model, model_id) = pool.default_model_for_new_session();
     let workspace = pool.bridge.workspace.clone();
     let session = store
-        .create_new(model, workspace)
+        .create_new(model, model_id, workspace)
         .map_err(|e| format!("create_session: {e:?}"))?;
     let sid = session.metadata.id.clone();
     store.set_active(Some(sid.clone()));
@@ -2142,47 +2675,6 @@ pub struct StartWorkflowResult {
     pub project_dir: String,
 }
 
-fn short_workflow_message(raw: &str, max_chars: usize) -> String {
-    let trimmed = raw.trim();
-    let mut out: String = trimmed.chars().take(max_chars).collect();
-    if trimmed.chars().count() > max_chars {
-        out.push('…');
-    }
-    out
-}
-
-fn summarize_workflow_blocked_message(message: &str) -> (String, Option<serde_json::Value>) {
-    let report = serde_json::from_str::<serde_json::Value>(message).ok();
-    if let Some(report) = report.as_ref() {
-        if let Some(checks) = report.get("checks").and_then(|v| v.as_object()) {
-            let blocked: Vec<String> = checks
-                .iter()
-                .filter_map(|(name, check)| {
-                    let status = check.get("status").and_then(|v| v.as_str())?;
-                    if status != "blocked" {
-                        return None;
-                    }
-                    let details = check
-                        .get("details")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("blocked");
-                    Some(format!("{name}: {details}"))
-                })
-                .collect();
-            if !blocked.is_empty() {
-                return (
-                    format!("预检失败：{}", blocked.join("；")),
-                    Some(report.clone()),
-                );
-            }
-        }
-        if let Some(status) = report.get("status").and_then(|v| v.as_str()) {
-            return (format!("工作流阻塞：{status}"), Some(report.clone()));
-        }
-    }
-    (short_workflow_message(message, 240), report)
-}
-
 #[tauri::command]
 pub async fn start_workflow(
     scenario: String,
@@ -2230,9 +2722,9 @@ pub async fn start_workflow(
     let sid = if let Some(sid) = session_id {
         sid
     } else {
-        let model = pool.bridge.model();
+        let (model, model_id) = pool.default_model_for_new_session();
         let session = store
-            .create_new(model, pool.bridge.workspace.clone())
+            .create_new(model, model_id, pool.bridge.workspace.clone())
             .map_err(|e| format!("create_session: {e:?}"))?;
         let sid = session.metadata.id.clone();
         // 人话 title，工作流页/调试时一眼看出是哪个 PPT 项目
@@ -2395,16 +2887,7 @@ pub async fn kick_workflow(
             Ok(format!("spawning {role_name} ({n} pages, 在飞={k})"))
         }
         crate::harness::HarnessAction::Blocked { message } => {
-            let (display_message, warmup_report) = summarize_workflow_blocked_message(&message);
-            let mut payload = serde_json::json!({
-                "session_id": sid.clone(),
-                "message": display_message.clone(),
-            });
-            if let Some(report) = warmup_report {
-                payload["warmup_report"] = report;
-            }
-            let _ = app.emit("workflow:blocked", payload);
-            Err(format!("workflow blocked: {display_message}"))
+            Err(format!("workflow blocked: {message}"))
         }
         _ => Ok("no dispatch (already running or not applicable)".to_string()),
     }
@@ -2946,7 +3429,7 @@ pub async fn cancel_workflow_role(
         // 走 scheduler 通用入口（用 std::process::Command 直接调）
         let scheduler =
             crate::harness::scheduler_path_for(&crate::harness::workflow_name_for_scenario(&scenario));
-        let output = crate::process::HiddenCommand::new("python3")
+        let output = std::process::Command::new("python3")
             .args([
                 scheduler.to_string_lossy().as_ref(),
                 project.to_string_lossy().as_ref(),
@@ -3192,6 +3675,51 @@ pub async fn list_session_skill_bindings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_local_asr_plain_text_output() {
+        let text = parse_local_asr_text("hello from voice\n", "").expect("plain text");
+        assert_eq!(text, "hello from voice");
+    }
+
+    #[test]
+    fn parses_local_asr_list_output() {
+        let text = parse_local_asr_text("[INFO] loading\n['hello from voice']\n", "")
+            .expect("list output");
+        assert_eq!(text, "hello from voice");
+    }
+
+    /// present_artifact 漂工具名失败时,成品卡兜底用 write_file 的相对 path
+    /// (如 `snake-game.html`),点 Open 必须先按 active session workspace 解析成
+    /// 绝对路径,否则 `validate_user_path` 直接拒「path must be absolute」。
+    #[test]
+    fn resolve_artifact_path_relative_joins_active_workspace() {
+        let _g = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-resolve-test");
+        let store = SessionStore::boot().expect("boot");
+
+        // 无 active session → 相对路径原样返回(解析不到 workspace,行为同旧版)
+        assert_eq!(
+            resolve_artifact_path("snake-game.html", &store),
+            "snake-game.html"
+        );
+
+        // 有 active session → 相对路径落到该 session 的 workspace
+        store.set_active(Some("sess-1".into()));
+        let want = crate::bridge::paths::session_workspace_dir("sess-1")
+            .join("snake-game.html")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(resolve_artifact_path("snake-game.html", &store), want);
+
+        // 绝对路径原样返回(present_artifact 成功 / 产物面板给的已是绝对)
+        assert_eq!(
+            resolve_artifact_path("/home/u/.pinvou3/sessions/x/workspace/a.html", &store),
+            "/home/u/.pinvou3/sessions/x/workspace/a.html"
+        );
+    }
 
     /// merge_resolutions 锁住实测 bug:勾选写进 sidecar 的 resolution 不能被后续不含
     /// resolution 的全量 save(典型=核账 record 的原始快照)覆盖,否则核账无法跳过「接受现状」。

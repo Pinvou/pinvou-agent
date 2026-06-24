@@ -56,7 +56,10 @@ fn ensure_release_env() {
     const DEFAULTS: &[(&str, &str)] = &[
         // —— vLLM 后端：BASE_URL/MODEL/API_KEY 已在 bridge/mod.rs 有默认常量，
         // 这里只补 run-dev.sh 额外注入但 Rust 没默认的 ——
-        ("DEEPSEEK_PROVIDER", "vllm"),
+        // ⚠️ 不再注入 DEEPSEEK_PROVIDER：它会被 bridge.provider() 当成 env 覆盖
+        //   （env 优先级高于 preset），在「添加模型」多 provider 方案下钉死路由——
+        //   切到 kimi/openai/qwen 等仍被当 vllm，且设置页误报「环境变量已锁定 provider」。
+        //   provider 现由 active_model.preset 决定（LocalVllm→vllm 默认仍成立）。
         ("DEEPSEEK_REASONING_EFFORT", "off"),
         ("DEEPSEEK_ALLOW_INSECURE_HTTP", "1"),
         ("DEEPSEEK_FORCE_HTTP1", "1"),
@@ -108,6 +111,7 @@ pub fn run() {
             let session_store = match SessionStore::boot() {
                 Ok(store) => {
                     store.load_skill_bindings();
+                    store.load_session_models();
                     eprintln!("[pinvou3-app] session store ready");
                     Some(store)
                 }
@@ -161,6 +165,14 @@ pub fn run() {
             commands::get_monitor_snapshot,
             commands::get_backend_status,
             commands::discover_local_vllm,
+            commands::list_models,
+            commands::save_model,
+            commands::delete_model,
+            commands::set_active_model,
+            commands::set_session_model,
+            commands::get_session_model_id,
+            commands::test_model_connection,
+            commands::transcribe_voice_audio,
             commands::list_sessions,
             commands::create_session,
             commands::load_session,
@@ -171,12 +183,15 @@ pub fn run() {
             commands::save_session_artifacts,
             commands::list_workspace_files,
             commands::cancel_generation,
+            commands::set_disabled_connectors,
+            commands::get_disabled_connectors,
             commands::edit_last_turn,
             commands::read_artifact_text,
             commands::list_deliverables,
             commands::artifact_info,
             commands::render_artifact_visual,
             commands::read_artifact_image_b64,
+            commands::read_artifact_thumbnail,
             commands::open_in_system,
             commands::open_containing_folder,
             commands::open_artifact_window,

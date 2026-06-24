@@ -58,6 +58,7 @@ function injectSource() {
         case 'list_workspace_files': return Promise.resolve([]);
         case 'get_session_persona_events': return Promise.resolve([]);
         case 'get_session_pinvou_reviews': return Promise.resolve([]);
+        case 'summon_pinvou': return Promise.resolve({personas:[{id:'travel',label:'旅行规划',primary:true}],alternates:['budget'],trace:'看了下，有几点确认',recommendations:[{topic:'预算',pick:'中档',why:'稳妥'}],issues:[{severity:'high',kind:'quality',persona:'travel',text:'日期冲突',suggestion:'对齐'}],coverage:[],framework:[],risk:'medium',confidence:0.8});
         case 'load_session': return Promise.resolve(CONV[args&&args.id]||{metadata:{id:'x'},messages:[],artifacts:[]});
         case 'artifact_info': return Promise.resolve({exists:true,kind:'md',size:2048,modified:1});
         case 'read_artifact_text': return Promise.resolve('# 会议纪要');
@@ -117,6 +118,15 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     .map(b => ({ t: b.getAttribute('title') || '', x: (b.textContent || '').trim() }))
     .filter(o => o.t.includes('查错') || o.t.includes('发散') || /品|悟/.test(o.x)).length);
   rec('③ 产物卡挂出 品/悟 召唤pinvou按钮', hit >= 2, `命中${hit}个`);
+
+  // ④ 品悟检阅 modal 本地化渲染:threading t 不报错 + 裁决标签/trace 出现(i18n 回归)
+  await page.evaluate(() => window.TauriBridge.summonPinvou('/home/x/会议纪要.md'));
+  await sleep(900);
+  const modal = await page.evaluate(() => {
+    const txt = document.body.innerText;
+    return { trace: txt.includes('有几点确认'), adopt: txt.includes('采纳建议'), skip: txt.includes('跳过'), persona: txt.includes('旅行规划') };
+  });
+  rec('④ 品悟检阅卡本地化渲染(t 线程通)', modal.trace && modal.adopt && modal.skip, JSON.stringify(modal));
 
   if (errs.length) console.log('⚠️ PAGEERRORS:', errs.slice(0, 3).join(' | '));
   await browser.close();
