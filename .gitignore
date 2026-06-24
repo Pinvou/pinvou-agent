@@ -48,3 +48,4 @@ pinvou3-app/src-tauri/icon-source-new.png
 
 # 客户资料包:原始截图是中间产物(由 _tooling/shoot.js 再生成),只提交 shots-web/
 资料包/shots/
+pinvou3-app/src-tauri/resources/bge-m3/

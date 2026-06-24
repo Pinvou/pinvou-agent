@@ -21,6 +21,7 @@ pub mod engine_pool;
 pub mod file_ingest;
 mod file_watcher;
 mod harness;
+mod knowledge;
 mod monitor;
 pub mod personas;
 mod pinvou_review;
@@ -151,6 +152,24 @@ pub fn run() {
             // File watcher: 监听 ~/.pinvou3/sessions/ 树,新文件 emit artifact:disk
             file_watcher::spawn(app.handle().clone(), bridge::paths::sessions_root());
 
+            // 本地知识底座 L0:全系统元数据索引(秒搜+去重)。这里只 manage,**不自动扫**——
+            // 扫描改懒触发:由前端进入文件管理页时增量扫(不进页=零扫描),不常驻 watcher/周期
+            // 重扫。文件管理是低频功能,不该长期占资源。
+            // embedding 模型目录:dev 走 env(run-dev.sh);生产=随 deb 打包到资源目录(tauri.conf
+            // bundle.resources)。容错 tauri 资源落点的几种布局,取含 model.onnx 的那个。
+            let kb_model_dir = app.path().resource_dir().ok().and_then(|res| {
+                [res.join("bge-m3"), res.join("resources/bge-m3"), res.join("resources").join("bge-m3")]
+                    .into_iter()
+                    .find(|d| d.join("model.onnx").exists() || d.join("onnx").join("model.onnx").exists())
+            });
+            match knowledge::KnowledgeService::new(&knowledge::default_db_path(), kb_model_dir.as_deref()) {
+                Ok(svc) => {
+                    app.handle().manage(svc);
+                    eprintln!("[pinvou3-app] knowledge service ready");
+                }
+                Err(e) => eprintln!("[pinvou3-app] knowledge service init failed: {e:?}"),
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -253,6 +272,25 @@ pub fn run() {
             commands::list_marketplace_tools,
             commands::install_marketplace_tool,
             commands::uninstall_marketplace_tool,
+            knowledge::kb_start_scan,
+            knowledge::kb_scan_status,
+            knowledge::kb_cancel_scan,
+            knowledge::kb_search,
+            knowledge::kb_stats,
+            knowledge::kb_type_counts,
+            knowledge::kb_collection_list,
+            knowledge::kb_collection_create,
+            knowledge::kb_collection_update,
+            knowledge::kb_collection_delete,
+            knowledge::kb_collection_add_sources,
+            knowledge::kb_index_status,
+            knowledge::kb_index_cancel,
+            knowledge::kb_documents,
+            knowledge::kb_remove_document,
+            knowledge::kb_embed_info,
+            commands::session_mount_collection,
+            commands::session_unmount_collection,
+            commands::session_mounted_collection,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -316,6 +354,7 @@ mod blocklist_contract {
             "agent_open",  // subagent spawn(单一 spawn 入口)
             "agent_eval",  // subagent 收结果
             "agent_close", // subagent 释放 session
+            "kb_search",   // Agentic RAG: app 注入的本地知识检索工具,必须对模型可见
         ] {
             assert!(!is_pinvou3_hidden(core), "核心工具 {core} 不应该被隐藏");
         }

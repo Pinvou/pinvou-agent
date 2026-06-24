@@ -17,12 +17,13 @@ use deepseek_tui::models::Message;
 use deepseek_tui::session_manager::{SavedSession, SessionMetadata};
 use deepseek_tui::tools::user_input::{UserInputAnswer, UserInputResponse};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::bridge::mode_state::{PlanPhase, SerializableMode, SessionModeState};
 use crate::bridge::prefs::{SavedModel, UserPrefs};
 use crate::bridge::sessions::SessionStore;
 use crate::engine_pool::EnginePool;
+use crate::knowledge::KnowledgeService;
 use crate::monitor::{MonitorSnapshot, MonitorState, VllmStatus};
 
 /// 接收用户消息并转发给 Engine。
@@ -45,6 +46,7 @@ pub async fn chat(
     session_id: Option<String>,
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
+    app: AppHandle,
 ) -> Result<(), String> {
     let trimmed = message.trim();
     if trimmed.is_empty() && attachments.as_ref().map_or(true, |a| a.is_empty()) {
@@ -98,6 +100,15 @@ pub async fn chat(
     if let Some(body) = store.take_pending_persona_body(&sid) {
         full = format!("{body}\n\n---\n\n{full}");
     }
+    // Agentic RAG:该 session 挂了知识集 → 每 turn prepend Self-RAG 自检引导,让模型自己
+    // 调 kb_search 工具(engine 已注入)检索、严格基于结果作答、无依据就说不知道。不再自动
+    // 注入片段(注入式已废弃)。collection_name 是单行查询,直接调即可(非大查询不必 spawn)。
+    if let Some(cid) = store.mounted_collection(&sid) {
+        let coll_name = app
+            .try_state::<KnowledgeService>()
+            .and_then(|kb| kb.l1().collection_name(cid).ok().flatten());
+        full = format!("{}\n\n---\n\n{full}", build_kb_agentic_guide(coll_name.as_deref()));
+    }
     // 取该 session 的 mode + phase。
     let s = store.mode_state(&sid);
     let (mode, phase) = (s.mode, s.plan_phase);
@@ -106,6 +117,39 @@ pub async fn chat(
     pool.send_user_message(&sid, full, mode.to_app_mode(), phase)
         .await
         .map_err(|e| format!("send_user_message failed: {e:?}"))
+}
+
+/// Agentic RAG 的 Self-RAG 自检引导:挂了知识集时每 turn prepend(动态状态走 per-turn
+/// 注入)。引导模型自调 `kb_search`、严格基于检索结果作答、无依据就说不知道——治本地小
+/// 模型"该查不查 → 凭记忆幻觉"(去掉注入式兜底后这是关键防线)。
+fn build_kb_agentic_guide(collection_name: Option<&str>) -> String {
+    let title = collection_name.unwrap_or("本地知识集");
+    format!(
+        "<system-reminder>\n\
+         本会话挂载了知识集《{title}》。涉及用户本地资料/文档的问题,你**必须先调用 \
+         `kb_search` 工具**检索,再**严格基于返回的片段**作答并注明来源文件;检索不到相关\
+         内容就如实告诉用户「未在知识集中找到」,**绝不凭记忆编造**。与本地资料无关的闲聊/\
+         常识问题不必检索,正常回答即可。\n\
+         </system-reminder>"
+    )
+}
+
+/// 给会话挂载一个知识集(会话级粘连)。后续每条消息发送前自动检索注入。
+#[tauri::command]
+pub fn session_mount_collection(session_id: String, collection_id: i64, store: State<'_, SessionStore>) {
+    store.set_mounted_collection(&session_id, Some(collection_id));
+}
+
+/// 摘下会话的知识集挂载。
+#[tauri::command]
+pub fn session_unmount_collection(session_id: String, store: State<'_, SessionStore>) {
+    store.set_mounted_collection(&session_id, None);
+}
+
+/// 读会话当前挂载的知识集 id(前端切会话时重读,恢复挂载条显示)。
+#[tauri::command]
+pub fn session_mounted_collection(session_id: String, store: State<'_, SessionStore>) -> Option<i64> {
+    store.mounted_collection(&session_id)
 }
 
 /// 把图片附件拷进 session workspace 的 `attachments/` 子目录,返回供 `image_analyze`
@@ -3371,6 +3415,16 @@ pub async fn list_session_skill_bindings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 挂集时 Self-RAG 引导:含知识集名 + 必调 kb_search + 无依据说不知道;空名兜底。
+    #[test]
+    fn agentic_guide_mentions_collection_and_kb_search() {
+        let g = build_kb_agentic_guide(Some("硬件资料"));
+        assert!(g.contains("《硬件资料》"));
+        assert!(g.contains("kb_search"));
+        assert!(g.contains("绝不凭记忆编造"));
+        assert!(build_kb_agentic_guide(None).contains("《本地知识集》"));
+    }
 
     /// present_artifact 漂工具名失败时,成品卡兜底用 write_file 的相对 path
     /// (如 `snake-game.html`),点 Open 必须先按 active session workspace 解析成

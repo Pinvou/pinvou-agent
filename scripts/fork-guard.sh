@@ -81,6 +81,11 @@ fingerprints=(
   "W10 |reasoning_effort 会话初始注入   |DeepSeek-TUI/crates/tui/src/core/engine.rs|session.reasoning_effort = config.reasoning_effort"
   "W11 |submit_output 成功即 break 收工 |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|if output_schema.is_some() && output_submitted.is_some()"
   "W12 |registry max_steps per-spawn 生效|DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|options.max_steps.unwrap_or(self.max_steps)"
+  # —— Agentic RAG: EngineConfig.extra_tools 应用层工具注入口(2026-06-24)——
+  # 通用扩展点(可上游 PR):app 注入 kb_search 等 ToolSpec,无需 fork 工具表。丢了 → app
+  # 的 kb_search 工具静默不进 registry,Agentic RAG 整条失效却不报错。
+  "RAG1|EngineConfig.extra_tools 字段     |DeepSeek-TUI/crates/tui/src/core/engine.rs|pub extra_tools: ExtraTools"
+  "RAG2|tool_setup 注册 extra_tools       |DeepSeek-TUI/crates/tui/src/core/engine/tool_setup.rs|&self.config.extra_tools.0"
   # —— app 层 fork(pinvou3-app)——
   "#18b|bridge 透传 fake-ip 信任段      |pinvou3-app/src-tauri/src/bridge/mod.rs|with_trusted_fakeip_cidrs"
   "#16 |bridge subagent_api_timeout 300 |pinvou3-app/src-tauri/src/bridge/mod.rs|from_secs(300)"

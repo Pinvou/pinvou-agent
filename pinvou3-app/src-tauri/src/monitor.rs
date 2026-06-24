@@ -57,6 +57,11 @@ pub struct VllmSnapshot {
     /// 反映"重复 prompt prefix 复用 KV 比例",直接关联首字延迟。
     /// 瞬时 kv_cache_usage_perc 单用户场景一直是 0-2%,意义不大,已替换。
     pub prefix_cache_hit_pct: Option<f64>,
+    /// prefix cache 原始计数器（hits_total / queries_total）。前端「清除统计」
+    /// 用基准点对各累计 counter 做减法重算,命中率必须拿到原始分子/分母,
+    /// 只给百分比无法做区间重算,故一并暴露。
+    pub prefix_cache_hits: Option<f64>,
+    pub prefix_cache_queries: Option<f64>,
     /// TTFT 直方图累计值（vllm:time_to_first_token_seconds_sum/_count）。
     /// 累积平均 = sum/count。counter 跟随 vLLM 进程生命周期，
     /// 换模型 = 重启进程 = 自动归零，因此天然按模型分段。
@@ -227,6 +232,8 @@ pub async fn vllm_snapshot(upstream: &str, configured_model: Option<String>) -> 
                 num_requests_running: None,
                 num_requests_waiting: None,
                 prefix_cache_hit_pct: None,
+                prefix_cache_hits: None,
+                prefix_cache_queries: None,
                 ttft_sum_s: None,
                 ttft_count: None,
                 tpot_sum_s: None,
@@ -262,15 +269,16 @@ pub async fn vllm_snapshot(upstream: &str, configured_model: Option<String>) -> 
     // 历史累计 prefix cache 命中率: hits/queries × 100。两个都是 vLLM Prometheus
     // counter (单调递增,vLLM 进程生命周期内累积)。queries=0 时返回 None 显示 "—"
     // 而非 NaN。
-    let prefix_hit_pct = metrics_text.as_deref().and_then(|t| {
-        let hits = parse_prom_metric(t, "vllm:prefix_cache_hits_total")?;
-        let queries = parse_prom_metric(t, "vllm:prefix_cache_queries_total")?;
-        if queries > 0.0 {
-            Some(hits / queries * 100.0)
-        } else {
-            None
-        }
-    });
+    let prefix_cache_hits = metrics_text
+        .as_deref()
+        .and_then(|t| parse_prom_metric(t, "vllm:prefix_cache_hits_total"));
+    let prefix_cache_queries = metrics_text
+        .as_deref()
+        .and_then(|t| parse_prom_metric(t, "vllm:prefix_cache_queries_total"));
+    let prefix_hit_pct = match (prefix_cache_hits, prefix_cache_queries) {
+        (Some(h), Some(q)) if q > 0.0 => Some(h / q * 100.0),
+        _ => None,
+    };
 
     let perf = metrics_text
         .as_deref()
@@ -301,6 +309,8 @@ pub async fn vllm_snapshot(upstream: &str, configured_model: Option<String>) -> 
         num_requests_running: running,
         num_requests_waiting: waiting,
         prefix_cache_hit_pct: prefix_hit_pct,
+        prefix_cache_hits,
+        prefix_cache_queries,
         ttft_sum_s: perf.ttft_sum_s,
         ttft_count: perf.ttft_count,
         tpot_sum_s: perf.tpot_sum_s,
