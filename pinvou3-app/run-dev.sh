@@ -26,4 +26,9 @@ export DEEPSEEK_FORCE_HTTP1="${DEEPSEEK_FORCE_HTTP1:-1}"
 # (生产 deb 的模型下载/配置入口=设置页"知识库模型"卡,Phase 3 收尾待做。)
 export PINVOU3_KB_EMBED_MODEL_DIR="${PINVOU3_KB_EMBED_MODEL_DIR:-$HOME/models/bge-m3}"
 
+# ── 三省六部「网页类」预置模板 seed 源(dev)──────────────────────────
+# 工部角色 `cp -r ~/.pinvou3/web-template ...` 的母版,首次启动从此处复制(prod 走随 deb 的
+# resource_dir)。目录需含 package.json + 预装 node_modules(离线可 npm run build 出单文件)。
+export PINVOU3_WEB_TEMPLATE_DIR="${PINVOU3_WEB_TEMPLATE_DIR:-$HOME/models/web-template}"
+
 exec npx tauri dev "$@"
