@@ -13,6 +13,7 @@
 mod audit;
 pub mod bridge;
 mod commands;
+pub mod feedback;
 // L1 harness 的附件 e2e 要走「真实 ingest → 注入分流 → 真 vLLM」全链路:
 // 暴露注入收口函数 + file_ingest。
 pub use commands::build_message_with_attachments;
@@ -23,8 +24,10 @@ mod file_watcher;
 mod harness;
 mod knowledge;
 mod monitor;
+mod os;
 pub mod personas;
 mod pinvou_review;
+mod process;
 pub mod super_permission;
 mod updater;
 mod workflow_migrate;
@@ -256,6 +259,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::chat,
             commands::get_settings,
+            commands::submit_feedback,
             commands::get_effective_model_config,
             commands::update_settings,
             commands::save_settings_and_restart,
@@ -270,6 +274,7 @@ pub fn run() {
             commands::set_session_model,
             commands::get_session_model_id,
             commands::test_model_connection,
+            commands::transcribe_voice_audio,
             commands::list_sessions,
             commands::create_session,
             commands::load_session,
@@ -343,11 +348,13 @@ pub fn run() {
             commands::delete_persona,
             commands::save_session_persona_events,
             commands::get_session_persona_events,
+            updater::get_app_version,
             updater::check_for_update,
             updater::download_update,
             updater::install_update,
             updater::restart_app,
             updater::cancel_download,
+            updater::report_pending_update_result,
             file_ingest::check_dependencies,
             file_ingest::install_dependencies,
             commands::list_marketplace_tools,

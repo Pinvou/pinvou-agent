@@ -4314,6 +4314,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "md5"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "490cc448043f947bae3cbee9c203358d62dbee0db12107a74be5c30ccfd09771"
+
+[[package]]
 name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5353,7 +5359,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pinvou3-tauri"
-version = "0.4.9"
+version = "0.4.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5361,8 +5367,10 @@ dependencies = [
  "chrono",
  "codewhale-tui",
  "fastembed",
+ "flate2",
  "include_dir",
  "log",
+ "md5",
  "notify",
  "parking_lot",
  "reqwest 0.12.28",
@@ -5370,12 +5378,14 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-log",
  "tokio",
  "walkdir",
+ "windows-sys 0.61.2",
  "zip",
 ]
 
