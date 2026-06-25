@@ -5,7 +5,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 /// 鬼影窗口 label。用 detached- 前缀 → 被 capabilities 的 `detached-*` glob 覆盖。
 const GHOST_LABEL: &str = "detached-ghost";
@@ -84,8 +84,10 @@ pub fn create_detached_at(
         .map_err(|e| format!("build detached window: {e}"))?;
 
     // 用 PhysicalPosition 落位:device_query 给的是全局物理像素,绕开 logical/scale 换算。
+    // 落位即"全屏":先放到目标屏,再 maximize → 填满该显示器(保留标题栏可关)。
     if let Some((x, y)) = pos {
         let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+        let _ = win.maximize();
     }
     Ok(())
 }
@@ -197,6 +199,8 @@ pub async fn begin_detach_drag(
             }
             std::thread::sleep(std::time::Duration::from_millis(16));
         }
+        // 拖拽结束(落位/取消/超时任一)→ 广播,让前端浮起的源标签复位。
+        let _ = app.emit("detach:drag-ended", ());
         DRAG_ACTIVE.store(false, Ordering::SeqCst);
     });
 

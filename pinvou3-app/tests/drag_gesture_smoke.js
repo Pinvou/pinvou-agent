@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 拖拽起手冒烟：主窗口展开侧边栏 → 在「系统监控」项行内 pointer 按下并拖动超阈值 →
+ * 长按起手冒烟：主窗口展开侧边栏 → 在「系统监控」项上 pointer 按住 ~450ms 不动(长按) →
  * 断言以 {kind:'monitor'} 调了 begin_detach_drag(原生鬼影由此接管,头less 无法继续验,属手动验收)。
  * 用法：node pinvou3-app/tests/drag_gesture_smoke.js   (PASS→0 / FAIL→1 / 缺依赖→2)
  */
@@ -53,25 +53,23 @@ function injectSource(){return `(function(){
   if(!toggle){console.error('FAIL: 无 data-sidebar-toggle');ok=false;}
   else{ await toggle.click(); await new Promise(r=>setTimeout(r,400)); }
 
-  // 取「系统监控」行(⧉ 按钮的父行),从行左侧空白处起手拖,避开按钮。
+  // 取「系统监控」导航行(data-nav="monitor"),在其上长按起手。
   const box=ok?await page.evaluate(()=>{
-    const btn=document.querySelector('[data-tearoff="monitor"]');
-    const row=btn&&btn.closest('div');
+    const row=document.querySelector('[data-nav="monitor"]');
     if(!row) return null;
     const r=row.getBoundingClientRect();
     return {x:r.x,y:r.y,w:r.width,h:r.height};
   }):null;
   if(ok&&!box){console.error('FAIL: 找不到 monitor 行');ok=false;}
   else if(box){
-    const sx=box.x+20, sy=box.y+box.h/2;       // 行左侧(图标处),非 ⧉ 按钮
+    const sx=box.x+20, sy=box.y+box.h/2;       // 行左侧(图标处)
     await page.mouse.move(sx,sy);
     await page.mouse.down();
-    await page.mouse.move(sx+14,sy+4,{steps:3}); // 超 6px 阈值
-    await new Promise(r=>setTimeout(r,150));
+    await new Promise(r=>setTimeout(r,480));    // 长按 > 350ms,期间不动
     const calls=await page.evaluate(()=>window.__CALLS__.filter(c=>c.cmd==='begin_detach_drag'));
     await page.mouse.up();
-    if(!calls.some(c=>c.args&&c.args.kind==='monitor')){console.error('FAIL: 拖拽未以 kind=monitor 调 begin_detach_drag，实际:',JSON.stringify(calls));ok=false;}
+    if(!calls.some(c=>c.args&&c.args.kind==='monitor')){console.error('FAIL: 长按未以 kind=monitor 调 begin_detach_drag，实际:',JSON.stringify(calls));ok=false;}
   }
   await browser.close();fs.rmSync(PROFILE,{recursive:true,force:true});
-  if(ok){console.log('PASS: 侧边栏拖拽起手触发 begin_detach_drag(kind=monitor)');process.exit(0);} process.exit(1);
+  if(ok){console.log('PASS: 侧边栏长按起手触发 begin_detach_drag(kind=monitor)');process.exit(0);} process.exit(1);
 })();
