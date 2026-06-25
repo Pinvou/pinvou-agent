@@ -815,11 +815,16 @@ impl Pinvou3Bridge {
         };
         // 超级权限状态每 turn 实时注入(is_enabled() 每次读 disk),绕开
         // refresh_all_instructions no-op 导致的"切开关不生效"——静态 prompt
-        // spawn 时渲染一次就过时,这里每 turn 重出。始终注入(连 mode/phase
-        // reminder 为 None 的纯 Yolo 态也带上)。
+        // spawn 时渲染一次就过时,这里每 turn 重出。
+        // 但只对**能跑命令**的 mode 注入:Plan 是只读、无 exec_shell(底座只读工具集),
+        // sudo 用不用对它毫无意义,注入纯浪费 ~110 字/turn。
         let sudo = crate::super_permission::turn_reminder();
         let mut reminder_body = match reminder_for(mode) {
+            // Plan: 无 exec,不带 sudo。
+            Some(r) if matches!(mode, AppMode::Plan) => r.to_string(),
+            // Yolo: reminder + sudo(能 exec,sudo 状态 load-bearing)。
             Some(r) => format!("{r}\n\n{sudo}"),
+            // Agent(pinvou3 不暴露,reminder_for=None): 能 exec,带 sudo。
             None => sudo.to_string(),
         };
         // 卡片池: 该 session 加持了专家面具时,每 turn 注入 persona 人设(粘性身份)。
@@ -873,20 +878,15 @@ const PLAN_REMINDER: &str = "你现在在 Plan 模式(只读调研)。本 turn:\
      2. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
      方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。";
 
-/// 纯 Yolo per-turn reminder:只放"大产物拆块"硬规则(实测 h3c-ppt P7 单文件撞 SSE timeout)。
-const YOLO_REMINDER: &str = "你在 Yolo 模式,直接调工具产出。产物预计超过 300 行或 20KB\
-     (HTML deck / 完整网页 / 长报告)时,**禁止**一次 `write_file` 写完整文件;\
-     分块前先选策略:`append_file` 只能追加到文件尾;要填已有文件中间或替换占位符,\
-     用 `edit_file`,不要用 `append_file`;完成后读回关键片段验证。";
-
 /// M1: per-turn `<system-reminder>` 文案,按当前 mode 选段(砍 PlanPhase 后只剩 mode 维度)。
 /// 命中率优先于优雅:每段都是命令式、短、列禁令清单(Qwen3.6 友好)。
 fn reminder_for(mode: AppMode) -> Option<&'static str> {
     match mode {
         AppMode::Plan => Some(PLAN_REMINDER),
-        AppMode::Yolo => Some(YOLO_REMINDER),
-        // Agent pinvou3 不暴露
-        AppMode::Agent => None,
+        // Yolo: 大产物分块实测不再 load-bearing(landing.html 397 行一次 write_file、73.8s 不撞
+        // timeout——idle timeout 早从 90s 提到 240-280s;且 h3c-ppt 等大-deck workflow 已下线,
+        // 无依赖)→ 砍光 YOLO_REMINDER。Yolo per-turn 只剩 sudo(动态状态)。Agent pinvou3 不暴露。
+        AppMode::Yolo | AppMode::Agent => None,
     }
 }
 
@@ -953,23 +953,25 @@ mod tests {
         );
     }
 
-    /// 超级权限状态必须每 turn 注入 system-reminder——哪怕 mode/phase reminder
-    /// 为 None 的纯 Yolo 态也要带上,否则切开关对当前会话不生效(refresh no-op)。
-    /// 锁住:任意 mode/phase 下 op content 都含 `<system-reminder>` + 超级权限字样。
+    /// 超级权限状态对**能 exec 的 mode**(Yolo)必须每 turn 注入(切开关即时生效,
+    /// refresh no-op);Plan 只读无 exec,sudo 无意义→不注入(省 ~110 字/turn)。
     #[test]
-    fn build_send_message_op_always_injects_super_permission_reminder() {
+    fn build_send_message_op_injects_sudo_for_yolo_not_plan() {
         let bridge = fixture_bridge();
-        for mode in [AppMode::Yolo, AppMode::Plan] {
-            let op = bridge.build_send_message_op("用户消息".to_string(), mode, None);
-            let content = match op {
-                Op::SendMessage { content, .. } => content,
-                other => panic!("期望 SendMessage,得到 {other:?}"),
-            };
-            assert!(
-                content.contains("<system-reminder>") && content.contains("超级权限"),
-                "mode={mode:?} 的 op 必须每 turn 注入超级权限状态,得到:\n{content}"
-            );
-        }
+        let content_of = |mode| match bridge.build_send_message_op("用户消息".to_string(), mode, None) {
+            Op::SendMessage { content, .. } => content,
+            other => panic!("期望 SendMessage,得到 {other:?}"),
+        };
+        let yolo = content_of(AppMode::Yolo);
+        assert!(
+            yolo.contains("<system-reminder>") && yolo.contains("超级权限"),
+            "Yolo 能 exec,必须每 turn 注入超级权限状态,得到:\n{yolo}"
+        );
+        let plan = content_of(AppMode::Plan);
+        assert!(
+            !plan.contains("超级权限"),
+            "Plan 无 exec,不该注入 sudo reminder(纯浪费),得到:\n{plan}"
+        );
     }
 
     /// 卡片池: 该 session 加持了专家面具时,persona reminder 必须进 per-turn
@@ -1355,18 +1357,14 @@ mod tests {
     }
 
     #[test]
-    fn yolo_reminder_explains_append_file_tail_only_plan_has_no_chunking() {
-        // 大产物分块只在 Yolo reminder——Plan 模式不写文件,分块规则已从 Plan 砍掉。
-        let yolo = reminder_for(AppMode::Yolo).expect("yolo reminder exists");
+    fn yolo_has_no_mode_reminder_plan_reminder_has_no_write_content() {
+        // 大产物分块实测不再 load-bearing(397 行一次写 73.8s 不撞 timeout)→ YOLO_REMINDER 砍光,
+        // Yolo 生产主路径无 mode reminder(per-turn 只剩 sudo)。
         assert!(
-            yolo.contains("append_file` 只能追加到文件尾"),
-            "Yolo reminder 必须锁住 append_file 尾追加语义"
+            reminder_for(AppMode::Yolo).is_none(),
+            "Yolo 不该再有 mode reminder(大产物分块已砍)"
         );
-        assert!(
-            yolo.contains("用 `edit_file`,不要用 `append_file`"),
-            "Yolo reminder 必须给中间填充/占位替换的正确工具(edit_file,apply_patch 已隐藏)"
-        );
-        // Plan 模式只读不写,reminder 不该再带任何写文件/分块内容(防回退重新塞进来)。
+        // Plan 仍有 reminder,但只读不写,不含任何写文件/分块内容。
         let plan = reminder_for(AppMode::Plan).expect("plan reminder exists");
         assert!(
             !plan.contains("append_file") && !plan.contains("write_file"),

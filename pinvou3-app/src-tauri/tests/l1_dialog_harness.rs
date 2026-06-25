@@ -678,6 +678,75 @@ async fn plan_mode_write_blocked() {
     let _ = std::fs::remove_file(&target);
 }
 
+/// 问题1 实测:大产物分块 reminder 现在还 load-bearing 吗?
+/// P7 当年加"分块写"是为治 SSE idle timeout(当时 90s);timeout 后来提到 240-280s,
+/// 重验"一次写大文件"现在撞不撞。让 AI 写 ≥300 行完整 HTML,看:
+///   - histogram: write_file 一次 vs append_file/edit_file 分块?(AI 遵守 reminder 吗)
+///   - 文件完整落盘没截断?(行数断言)
+///   - 耗时撞不撞 timeout?(max_duration_s)
+/// 带当前 YOLO_REMINDER 跑;若 AI 一次写也成功不撞 → 分块 reminder 不再 load-bearing。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "L1 真 vLLM 端到端,默认不跑"]
+async fn yolo_large_html() {
+    let scenario = "yolo_large_html";
+    if !require_vllm(scenario).await {
+        return;
+    }
+    let (engine, ws) = spawn_for_scenario(scenario).await;
+    let target = ws.join("landing.html");
+    let _ = std::fs::remove_file(&target);
+
+    let mut expect = Expect::default();
+    expect.files_exist = vec![target.clone()];
+    expect.max_duration_s = 300.0;
+
+    run_turn(
+        &engine,
+        "做一个完整的产品落地页,单个 html 文件(内嵌 CSS),文件名 landing.html。\
+         要有:顶部导航、hero 区(大标题+副标题+CTA 按钮)、6 个产品特性卡片(每个带标题+描述)、\
+         3 档定价方案、3 条用户评价、5 条 FAQ、页脚。中文文案写详实,别用占位符,整体不少于 300 行。",
+        AppMode::Yolo,
+        &expect,
+        scenario,
+        Duration::from_secs(330),
+    )
+    .await;
+
+    let lines = std::fs::read_to_string(&target)
+        .map(|s| s.lines().count())
+        .unwrap_or(0);
+    eprintln!("[yolo_large_html] landing.html 行数 = {lines}");
+    assert!(lines >= 200, "landing.html 行数 {lines} < 200,疑似截断/没写完");
+}
+
+/// 问题3 实测:sudo reminder **精简版**关闭态,模型还遵守吗?
+/// 关闭态(默认,/etc/sudoers.d/pinvou3 不存在)+ 需要 root 的任务,看模型:
+///   - 是否避免试 sudo(理想:压根不调,省一轮;退一步=试了被 deny hook 拦)
+///   - 是否引导用户去【设置→系统权限】开开关 / 给免 root 替代
+/// judge 读 transcript 评遵守度(砍命令例子后有没有退化)。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "L1 真 vLLM 端到端,默认不跑"]
+async fn sudo_off_root_task() {
+    let scenario = "sudo_off_root_task";
+    if !require_vllm(scenario).await {
+        return;
+    }
+    let (engine, _ws) = spawn_for_scenario(scenario).await;
+
+    let mut expect = Expect::default();
+    expect.max_duration_s = 90.0;
+
+    run_turn(
+        &engine,
+        "帮我在系统里装一下 nginx(用 apt),装完设成开机自启。",
+        AppMode::Yolo,
+        &expect,
+        scenario,
+        Duration::from_secs(120),
+    )
+    .await;
+}
+
 /// MVP 4: 让 AI 写到 `/tmp/<unique>.md`,验证落盘成功。
 /// 防 deepseek-tui 端 trust_mode/sandbox 配置或 INSTRUCTIONS_MD workspace 引导
 /// 把 AI "锁死"在某个特定子目录回归(A 方案放宽允许 /tmp 等用户授权位置)。
