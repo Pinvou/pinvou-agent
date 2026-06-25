@@ -146,6 +146,8 @@
     const RefreshCw = (p) => <I {...p}><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></I>;
     const RotateCcw = (p) => <I {...p}><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></I>;
     const Search = (p) => <I {...p}><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></I>;
+    const Upload = (p) => <I {...p}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/></I>;
+    const Lightbulb = (p) => <I {...p}><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></I>;
     const Paperclip = (p) => <I {...p}><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></I>;
     const Mic = (p) => <I {...p}><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></I>;
     const Send = (p) => <I {...p}><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></I>;
@@ -4293,6 +4295,14 @@
 
     // ── 每工具定制结果视图（仿 Claude Code）：解析失败一律 fallback 纯文本，永不崩 ──
 
+    // 技能市场预置卡(backendId 必须匹配 Rust SkillManifest.id)。技能=SKILL.md 目录,
+    // 装到 bundle/skills/ 进 system prompt;与上方 MCP 工具(tsToolsData)并列两个子页。
+    const tsSkillsData = [
+      { id: 's1', backendId: 'pua', title: 'PUA 高绩效教练', subtitle: '用大厂 leader 口吻催 agent 闭环、要证据', category: 'skill', type: 'Skill', version: '—', latency: '本地', desc: '来自 tanweai/pua(MIT)的中文 skill：当你说「再试试 / 别摆烂 / 换个方法 / 证据呢」时，用阿里味、华为味等高绩效文化口吻督促 agent 拿结果闭环、跑测试再说完成。', icon: MessageCircle, color: 'bg-gradient-to-b from-rose-400 to-red-600', installed: false, authRequired: false },
+      { id: 's2', backendId: 'nuwa', title: '女娲 · Skill 造人术', subtitle: '输入人名/主题，蒸馏可运行的人物思维 skill', category: 'skill', type: 'Skill', version: '—', latency: '本地', desc: '来自 alchaincyf/nuwa-skill(MIT，花叔)的中文主 skill：深度调研 → 思维框架提炼 → 生成可运行的人物视角 skill。输入人名直接蒸馏，模糊需求先诊断推荐。', icon: Sparkles, color: 'bg-gradient-to-b from-violet-500 to-purple-700', installed: false, authRequired: false },
+      { id: 's3', backendId: 'brainstorming', title: '头脑风暴 · 想法变设计', subtitle: '动手前先理清需求，产出设计与实现计划文档', category: 'skill', type: 'Skill', version: '—', latency: '本地', desc: '改自 obra/superpowers(MIT)的 brainstorming：通过一次一个问题的对话探明意图 → 出设计 → 产出实现计划，全程落两份 md 文档再实现。已去 skill 串联 + 中文化，自包含，适配本地小模型。', icon: Lightbulb, color: 'bg-gradient-to-b from-amber-400 to-orange-500', installed: false, authRequired: false },
+    ];
+
     const tsCategories = [
       { id: 'all', label: '全部工具' },
       { id: 'mcp', label: 'MCP 核心' },
@@ -4504,6 +4514,9 @@
       const [busyId, setBusyId] = useState(null);
       const [alert, setAlert] = useState({ visible: false, loading: false, title: '', subtitle: '', isInstall: false, isError: false });
       const [configDialog, setConfigDialog] = useState(null); // { backendId, name, fields }
+      const [tab, setTab] = useState('connector'); // 'connector'(MCP 工具) | 'skill'(SKILL.md 技能)
+      const [skillBackend, setSkillBackend] = useState([]); // list_marketplace_skills 原始返回
+      const isSkillTab = tab === 'skill';
 
       // 合并后端安装状态到 mock 数据
       const tools = tsToolsData.map(t => ({
@@ -4511,10 +4524,23 @@
         installed: t.backendId ? (toolStates[t.backendId] || false) : false,
       }));
 
-      const filteredTools = tools.filter(tool => {
-        const matchesSearch = tool.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                              tool.desc.toLowerCase().includes(searchQuery.toLowerCase());
-        const matchesCategory = activeCategory === 'all' || tool.category === activeCategory;
+      // 技能卡 = 预置(合并安装状态) + 用户上传(后端动态返回,默认图标)
+      const presetSkills = tsSkillsData.map(s => {
+        const be = skillBackend.find(x => x.id === s.backendId);
+        return { ...s, installed: be ? be.installed : false };
+      });
+      const uploadedSkills = skillBackend.filter(x => x.user_uploaded).map(x => ({
+        id: 'up-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || '用户上传的技能',
+        category: 'skill', type: 'Skill', version: '—', latency: '本地', desc: x.description || '',
+        icon: Package, color: 'bg-gradient-to-b from-slate-400 to-slate-600', installed: true, userUploaded: true,
+      }));
+      const skillCards = [...presetSkills, ...uploadedSkills];
+
+      const sourceItems = isSkillTab ? skillCards : tools;
+      const filteredTools = sourceItems.filter(tool => {
+        const q = searchQuery.toLowerCase();
+        const matchesSearch = tool.title.toLowerCase().includes(q) || (tool.desc || '').toLowerCase().includes(q);
+        const matchesCategory = isSkillTab || activeCategory === 'all' || tool.category === activeCategory;
         return matchesSearch && matchesCategory;
       }).sort((a, b) => {
         if (a.backendId && !b.backendId) return -1;
@@ -4533,6 +4559,12 @@
           setToolStates(states);
         } catch (e) {
           console.error('list_marketplace_tools failed:', e);
+        }
+        try {
+          const skills = await window.__TAURI__.core.invoke('list_marketplace_skills');
+          setSkillBackend(Array.isArray(skills) ? skills : []);
+        } catch (e) {
+          console.error('list_marketplace_skills failed:', e);
         }
       };
 
@@ -4566,8 +4598,50 @@
         }
       };
 
+      // 技能安装/卸载(无 configFields,直接装/卸)
+      const handleSkillAction = async (backendId, isInstalled) => {
+        const t = skillCards.find(x => x.backendId === backendId);
+        const name = t ? t.title : backendId;
+        setBusyId(backendId);
+        try {
+          const cmd = isInstalled ? 'uninstall_marketplace_skill' : 'install_marketplace_skill';
+          await window.__TAURI__.core.invoke(cmd, { skillId: backendId });
+          await loadBackendState();
+          setAlert({ visible: true, loading: false, title: `${isInstalled ? '已卸载' : '已安装'}「${name}」`, isInstall: !isInstalled, isError: false });
+          if (selectedTool && selectedTool.backendId === backendId) {
+            setSelectedTool(prev => ({ ...prev, installed: !isInstalled }));
+          }
+        } catch (e) {
+          console.error('skill action failed:', e);
+          setAlert({ visible: true, loading: false, title: '操作失败：' + e, isInstall: false, isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+
+      // 上传 zip 技能包(Rust 端弹 dialog 选文件)
+      const handleUploadSkill = async () => {
+        setBusyId('__upload__');
+        setAlert({ loading: true, visible: false, title: '正在导入技能包…', subtitle: '校验并解压中', isInstall: true, isError: false });
+        try {
+          const ok = await window.__TAURI__.core.invoke('import_skill_package');
+          if (ok) {
+            await loadBackendState();
+            setAlert({ visible: true, loading: false, title: '技能包已导入', isInstall: true, isError: false });
+          } else {
+            setAlert({ visible: false, loading: false, title: '', isInstall: false, isError: false }); // 用户取消
+          }
+        } catch (e) {
+          console.error('import skill failed:', e);
+          setAlert({ visible: true, loading: false, title: '导入失败：' + e, isInstall: false, isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+
       // 安装/卸载入口
       const handleAction = async (backendId, isInstalled) => {
+        if (isSkillTab) return handleSkillAction(backendId, isInstalled);
         const t = tsToolsData.find(x => x.backendId === backendId);
         const name = t ? t.title : backendId;
 
@@ -4641,8 +4715,23 @@
             {/* Header */}
             <header className="shrink-0 bg-white/80 dark:bg-black/80 backdrop-blur-2xl border-b border-slate-200/50 dark:border-white/10 pt-6 pb-4 px-6 md:px-10 transition-colors">
               <div className="max-w-7xl mx-auto flex flex-col gap-5">
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-4 flex-wrap">
                   <h1 className="text-[32px] font-normal tracking-tight">工具商店</h1>
+                  <div className="flex p-1 bg-slate-100 dark:bg-[#1C1C1E] rounded-xl border border-slate-200/50 dark:border-white/5">
+                    {[{ key: 'connector', label: '连接器' }, { key: 'skill', label: '技能' }].map(seg => (
+                      <button
+                        key={seg.key}
+                        onClick={() => { setTab(seg.key); setSearchQuery(''); setActiveCategory('all'); }}
+                        className={`px-5 py-1.5 rounded-lg text-[14px] font-semibold whitespace-nowrap transition-all duration-300 ${
+                          tab === seg.key
+                            ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm ring-1 ring-black/5 dark:ring-white/10'
+                            : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                        }`}
+                      >
+                        {seg.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
                 <div className="relative group">
                   <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-500 transition-colors" size={20} />
@@ -4662,7 +4751,7 @@
               <div className="max-w-7xl mx-auto px-6 md:px-10 py-8 space-y-12">
 
                 {/* Featured carousel */}
-                {searchQuery === '' && activeCategory === 'all' && (
+                {!isSkillTab && searchQuery === '' && activeCategory === 'all' && (
                   <section
                     className="relative group/featured"
                     onMouseEnter={() => setIsFeaturedHovered(true)}
@@ -4734,26 +4823,36 @@
                 <section>
                   <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6 border-b border-slate-200 dark:border-white/10 pb-5">
                     <h2 className="text-2xl font-bold tracking-tight">
-                      {searchQuery ? '检索结果' : '热门协议与接口'}
+                      {isSkillTab ? (searchQuery ? '检索结果' : '技能库') : (searchQuery ? '检索结果' : '热门协议与接口')}
                     </h2>
-                    <div className="flex p-1 bg-slate-100 dark:bg-[#1C1C1E] rounded-xl overflow-x-auto no-scrollbar border border-slate-200/50 dark:border-white/5">
-                      {tsCategories.map((cat) => {
-                        const isActive = activeCategory === cat.id;
-                        return (
-                          <button
-                            key={cat.id}
-                            onClick={() => setActiveCategory(cat.id)}
-                            className={`px-5 py-1.5 rounded-lg text-[14px] font-semibold whitespace-nowrap transition-all duration-300 ${
-                              isActive
-                                ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm ring-1 ring-black/5 dark:ring-white/10'
-                                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
-                            }`}
-                          >
-                            {cat.label}
-                          </button>
-                        );
-                      })}
-                    </div>
+                    {isSkillTab ? (
+                      <button
+                        onClick={handleUploadSkill}
+                        disabled={busyId === '__upload__'}
+                        className="flex items-center gap-2 px-4 py-2 rounded-xl text-[14px] font-semibold bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white shadow-md shadow-blue-500/20 transition-all active:scale-95 whitespace-nowrap"
+                      >
+                        <Upload size={16} /> {busyId === '__upload__' ? '导入中…' : '上传技能包'}
+                      </button>
+                    ) : (
+                      <div className="flex p-1 bg-slate-100 dark:bg-[#1C1C1E] rounded-xl overflow-x-auto no-scrollbar border border-slate-200/50 dark:border-white/5">
+                        {tsCategories.map((cat) => {
+                          const isActive = activeCategory === cat.id;
+                          return (
+                            <button
+                              key={cat.id}
+                              onClick={() => setActiveCategory(cat.id)}
+                              className={`px-5 py-1.5 rounded-lg text-[14px] font-semibold whitespace-nowrap transition-all duration-300 ${
+                                isActive
+                                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm ring-1 ring-black/5 dark:ring-white/10'
+                                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                              }`}
+                            >
+                              {cat.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
 
                   {filteredTools.length > 0 ? (
@@ -4788,10 +4887,10 @@
                   ) : (
                     <div className="py-24 text-center flex flex-col items-center">
                       <div className="w-16 h-16 mb-4 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400">
-                        <Server size={28} />
+                        {isSkillTab ? <Package size={28} /> : <Server size={28} />}
                       </div>
-                      <h3 className="text-xl font-semibold text-slate-800 dark:text-slate-200 mb-2">未检索到工具</h3>
-                      <p className="text-slate-500 dark:text-slate-400">请尝试修改搜索词或查阅 API 开发文档。</p>
+                      <h3 className="text-xl font-semibold text-slate-800 dark:text-slate-200 mb-2">{isSkillTab ? '没有技能' : '未检索到工具'}</h3>
+                      <p className="text-slate-500 dark:text-slate-400">{isSkillTab ? '点右上「上传技能包」导入 zip，或换个搜索词。' : '请尝试修改搜索词或查阅 API 开发文档。'}</p>
                     </div>
                   )}
                 </section>

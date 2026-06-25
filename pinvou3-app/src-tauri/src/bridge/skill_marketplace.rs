@@ -1,0 +1,617 @@
+//! 技能市场管理器 — 管理 skill(SKILL.md 目录)的安装/卸载/上传导入。
+//!
+//! 与 MCP 工具市场([`super::marketplace`])刻意分开:MCP 工具是 server 进程(改
+//! mcp.json),技能是磁盘上的 SKILL.md 目录(落 `bundle/skills/`,进 system prompt)。
+//!
+//! 预置技能(pua/nuwa)随 app 编译进二进制(`include_dir`),点装即从嵌入资源复制到
+//! `~/.pinvou3/bundle/skills/<name>/`——这是底座聊天**唯一加载**的 pinvou3 私有
+//! skill 目录(fork patch #41 砍掉了其余扫描路径)。用户也可上传 zip 技能包。
+//!
+//! 为何不复用底座 `skills::install`:那条通路对 monorepo / 带 plugin.json / 超
+//! 5MiB 的仓库一律拒装(pua 46 个 SKILL.md+plugin.json、nuwa 38MB 全中),且选路
+//! 逻辑私有硬编码。此处只做"已知来源的精确落盘",自带等价的路径穿越/symlink/
+//! 大小安全防护(参照底座 install.rs 的判断)。
+
+use std::io::Read;
+use std::path::{Path, PathBuf};
+
+use include_dir::{include_dir, Dir};
+use serde::{Deserialize, Serialize};
+
+use super::paths;
+
+/// 预置技能资源:编译进二进制。每个子目录(pua/ nuwa/)是一个含 SKILL.md 的 skill。
+static MARKETPLACE_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/resources/skill-marketplace");
+
+/// 单个 skill 子树未压缩大小上限(防御性,预置/上传都适用)。
+const MAX_SKILL_SIZE_BYTES: u64 = 5 * 1024 * 1024;
+
+/// 安装来源标记文件名。卸载时校验它存在,避免误删内置/手放的 skill。
+const INSTALLED_FROM_MARKER: &str = ".installed-from";
+
+/// 底座每次启动会清掉的已下线 skill 名;安装时拒绝撞名,免得装了被清。
+const RETIRED_SKILL_NAMES: &[&str] = &["h3c-ppt", "pinvou-review-plan", "pinvou-review-final"];
+
+// 预置技能清单 ----------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct SkillManifest {
+    /// 市场 key(前端/卸载用)
+    id: &'static str,
+    /// = SKILL.md frontmatter name = 落盘目录名
+    skill_name: &'static str,
+    /// MARKETPLACE_DIR 下的子目录名
+    source_dir: &'static str,
+    title: &'static str,
+    subtitle: &'static str,
+    description: &'static str,
+    /// lucide 图标名(前端映射成组件)
+    icon: &'static str,
+    /// Tailwind 渐变 class
+    color: &'static str,
+}
+
+fn preset_manifests() -> &'static [SkillManifest] {
+    &[
+        SkillManifest {
+            id: "pua",
+            skill_name: "pua",
+            source_dir: "pua",
+            title: "PUA 高绩效教练",
+            subtitle: "用大厂 leader 口吻催 agent 闭环、要证据",
+            description: "来自 tanweai/pua(MIT)的中文 skill:当你说「再试试 / 别摆烂 / 换个方法 / 证据呢」时,用阿里味、华为味等高绩效文化口吻督促 agent 拿结果闭环、跑测试再说完成。",
+            icon: "MessageCircle",
+            color: "bg-gradient-to-b from-rose-400 to-red-600",
+        },
+        SkillManifest {
+            id: "nuwa",
+            skill_name: "huashu-nuwa",
+            source_dir: "nuwa",
+            title: "女娲 · Skill 造人术",
+            subtitle: "输入人名/主题,蒸馏出可运行的人物思维 skill",
+            description: "来自 alchaincyf/nuwa-skill(MIT,花叔)的中文主 skill:深度调研 → 思维框架提炼 → 生成可运行的人物视角 skill。输入人名直接蒸馏,模糊需求先诊断推荐。",
+            icon: "Sparkles",
+            color: "bg-gradient-to-b from-violet-500 to-purple-700",
+        },
+        SkillManifest {
+            id: "brainstorming",
+            skill_name: "brainstorming",
+            source_dir: "brainstorming",
+            title: "头脑风暴 · 想法变设计",
+            subtitle: "动手前先理清需求,产出设计与实现计划文档",
+            description: "改自 obra/superpowers(MIT)的 brainstorming:通过一次一个问题的对话探明意图 → 出设计 → 产出实现计划,全程落两份 md 文档再实现。已去 skill 串联 + 中文化,自包含,适配本地小模型。",
+            icon: "Lightbulb",
+            color: "bg-gradient-to-b from-amber-400 to-orange-500",
+        },
+    ]
+}
+
+// 前端展示态 ------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketplaceSkillInfo {
+    pub id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub description: String,
+    pub icon: String,
+    pub color: String,
+    pub installed: bool,
+    /// true = 用户上传的(非预置),前端用默认图标渲染。
+    pub user_uploaded: bool,
+}
+
+// Manager ---------------------------------------------------------------------
+
+pub struct SkillMarketplaceManager {
+    /// 安装目标:bundle/skills/(底座聊天唯一加载的 pinvou3 私有 skill 目录)
+    skills_dir: PathBuf,
+}
+
+impl Default for SkillMarketplaceManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SkillMarketplaceManager {
+    pub fn new() -> Self {
+        Self {
+            skills_dir: paths::bundle_skills_dir(),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_skills_dir(dir: PathBuf) -> Self {
+        Self { skills_dir: dir }
+    }
+
+    /// 前端列表:预置技能(带 installed 状态) + 用户上传的技能(扫 bundle/skills/ 里
+    /// 带 `.installed-from=upload:` 标记、不在预置清单的目录)。
+    pub fn list_skills(&self) -> Vec<MarketplaceSkillInfo> {
+        let presets = preset_manifests();
+        let mut out: Vec<MarketplaceSkillInfo> = presets
+            .iter()
+            .map(|m| MarketplaceSkillInfo {
+                id: m.id.to_string(),
+                title: m.title.to_string(),
+                subtitle: m.subtitle.to_string(),
+                description: m.description.to_string(),
+                icon: m.icon.to_string(),
+                color: m.color.to_string(),
+                installed: self.is_installed(m.skill_name),
+                user_uploaded: false,
+            })
+            .collect();
+
+        // 扫上传的(带 upload: 标记、非预置目录名)
+        let preset_names: Vec<&str> = presets.iter().map(|m| m.skill_name).collect();
+        if let Ok(rd) = std::fs::read_dir(&self.skills_dir) {
+            for entry in rd.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if preset_names.contains(&name.as_str()) {
+                    continue;
+                }
+                let Ok(marker) = std::fs::read_to_string(path.join(INSTALLED_FROM_MARKER)) else {
+                    continue;
+                };
+                if !marker.starts_with("upload:") {
+                    continue;
+                }
+                out.push(MarketplaceSkillInfo {
+                    id: name.clone(),
+                    title: name.clone(),
+                    subtitle: "用户上传的技能".to_string(),
+                    description: String::new(),
+                    icon: "Package".to_string(),
+                    color: "bg-gradient-to-b from-slate-400 to-slate-600".to_string(),
+                    installed: true,
+                    user_uploaded: true,
+                });
+            }
+        }
+        out
+    }
+
+    fn is_installed(&self, skill_name: &str) -> bool {
+        self.skills_dir.join(skill_name).join("SKILL.md").is_file()
+    }
+
+    fn preset(&self, id: &str) -> Option<&'static SkillManifest> {
+        preset_manifests().iter().find(|m| m.id == id)
+    }
+
+    /// 安装预置技能:从嵌入资源复制到 `bundle/skills/<name>/`(原子:.tmp → rename)。
+    pub fn install(&self, skill_id: &str) -> Result<(), String> {
+        let m = self
+            .preset(skill_id)
+            .ok_or_else(|| format!("未知预置技能 '{skill_id}'"))?;
+        if RETIRED_SKILL_NAMES.contains(&m.skill_name) {
+            return Err(format!("技能名 '{}' 与已下线内置冲突", m.skill_name));
+        }
+        let src = MARKETPLACE_DIR
+            .get_dir(m.source_dir)
+            .ok_or_else(|| format!("嵌入资源缺失: {}", m.source_dir))?;
+
+        std::fs::create_dir_all(&self.skills_dir).map_err(|e| format!("创建 skills 目录: {e}"))?;
+        let staged = self.skills_dir.join(format!("{}.tmp", m.skill_name));
+        let _ = std::fs::remove_dir_all(&staged);
+        std::fs::create_dir_all(&staged).map_err(|e| format!("创建暂存目录: {e}"))?;
+
+        let result = (|| -> Result<(), String> {
+            extract_embedded_subdir(src, m.source_dir, &staged)
+                .map_err(|e| format!("解包嵌入资源: {e}"))?;
+            // 校验 SKILL.md 存在 + name 与预期一致
+            let name = read_skill_name(&staged.join("SKILL.md"))
+                .ok_or("解包后 SKILL.md 缺 name 字段")?;
+            if name != m.skill_name {
+                return Err(format!("SKILL.md name '{name}' 与预期 '{}' 不符", m.skill_name));
+            }
+            std::fs::write(
+                staged.join(INSTALLED_FROM_MARKER),
+                format!("pinvou3-marketplace:{}", m.id),
+            )
+            .map_err(|e| format!("写标记: {e}"))?;
+            Ok(())
+        })();
+        if let Err(e) = result {
+            let _ = std::fs::remove_dir_all(&staged);
+            return Err(e);
+        }
+
+        let dest = self.skills_dir.join(m.skill_name);
+        let _ = std::fs::remove_dir_all(&dest);
+        std::fs::rename(&staged, &dest).map_err(|e| {
+            let _ = std::fs::remove_dir_all(&staged);
+            format!("落盘: {e}")
+        })?;
+        Ok(())
+    }
+
+    /// 卸载:校验 `.installed-from` 标记后删目录(保护内置/手放的 skill 不被误删)。
+    pub fn uninstall(&self, skill_id: &str) -> Result<(), String> {
+        // 预置 id(pua/nuwa) → skill_name;上传技能 id 即目录名本身。
+        let dir_name = self
+            .preset(skill_id)
+            .map(|m| m.skill_name.to_string())
+            .unwrap_or_else(|| skill_id.to_string());
+        if !is_safe_skill_name(&dir_name) {
+            return Err(format!("非法技能名 '{dir_name}'"));
+        }
+        let dir = self.skills_dir.join(&dir_name);
+        if !dir.join(INSTALLED_FROM_MARKER).is_file() {
+            return Err(format!("技能 '{dir_name}' 非市场安装(无标记),拒绝删除"));
+        }
+        std::fs::remove_dir_all(&dir).map_err(|e| format!("删除失败: {e}"))?;
+        Ok(())
+    }
+
+    /// 导入用户上传的 zip 技能包:解压找 SKILL.md → 安全校验 → 落盘到
+    /// `bundle/skills/<name>/`。穿越/symlink/大小防护对齐底座 install.rs。
+    pub fn import_package(&self, zip_path: &str) -> Result<(), String> {
+        let file = std::fs::File::open(zip_path).map_err(|e| format!("打开 zip: {e}"))?;
+        let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("读取 zip: {e}"))?;
+
+        // pass1:逐 entry 安全校验 + 累计大小 + 找最优 SKILL.md(定 skill_root)。
+        let mut best: Option<(usize, String)> = None; // (rank, skill_root)
+        let mut total: u64 = 0;
+        for i in 0..archive.len() {
+            let entry = archive.by_index(i).map_err(|e| format!("zip 条目 #{i}: {e}"))?;
+            // 路径穿越:enclosed_name 为 None 即不安全(.. / 绝对路径)。
+            let Some(enclosed) = entry.enclosed_name() else {
+                return Err("zip 含不安全路径(穿越),拒绝".to_string());
+            };
+            // symlink/hardlink 拒绝
+            if let Some(mode) = entry.unix_mode() {
+                if mode & 0o170000 == 0o120000 {
+                    return Err("zip 含 symlink,拒绝".to_string());
+                }
+            }
+            total = total.saturating_add(entry.size());
+            if total > MAX_SKILL_SIZE_BYTES {
+                return Err(format!(
+                    "技能包解压超过 {} MiB 上限",
+                    MAX_SKILL_SIZE_BYTES / 1024 / 1024
+                ));
+            }
+            if entry.is_dir() {
+                continue;
+            }
+            let path_str = enclosed.to_string_lossy().replace('\\', "/");
+            if let Some(rank) = skill_md_rank(&path_str) {
+                let root = skill_root_of(&path_str);
+                if best.as_ref().is_none_or(|(r, _)| rank < *r) {
+                    best = Some((rank, root));
+                }
+            }
+        }
+        let (_, skill_root) = best.ok_or("zip 里没找到 SKILL.md")?;
+
+        // 读 SKILL.md 拿 frontmatter name
+        let md_rel = if skill_root.is_empty() {
+            "SKILL.md".to_string()
+        } else {
+            format!("{skill_root}/SKILL.md")
+        };
+        let name = {
+            let mut md = archive
+                .by_name(&md_rel)
+                .map_err(|e| format!("读 SKILL.md: {e}"))?;
+            let mut buf = String::new();
+            md.read_to_string(&mut buf)
+                .map_err(|e| format!("读 SKILL.md: {e}"))?;
+            read_skill_name_from_str(&buf).ok_or("SKILL.md 缺 name 字段")?
+        };
+        if !is_safe_skill_name(&name) {
+            return Err(format!("非法技能名 '{name}'"));
+        }
+        if RETIRED_SKILL_NAMES.contains(&name.as_str()) {
+            return Err(format!("技能名 '{name}' 与已下线内置冲突,拒绝"));
+        }
+
+        // pass2:写出 skill_root 子树到 staged
+        std::fs::create_dir_all(&self.skills_dir).map_err(|e| format!("创建 skills 目录: {e}"))?;
+        let staged = self.skills_dir.join(format!("{name}.tmp"));
+        let _ = std::fs::remove_dir_all(&staged);
+        std::fs::create_dir_all(&staged).map_err(|e| format!("暂存目录: {e}"))?;
+        let prefix = if skill_root.is_empty() {
+            String::new()
+        } else {
+            format!("{skill_root}/")
+        };
+
+        let result = (|| -> Result<(), String> {
+            for i in 0..archive.len() {
+                let mut entry = archive.by_index(i).map_err(|e| format!("zip 条目 #{i}: {e}"))?;
+                if entry.is_dir() {
+                    continue;
+                }
+                let Some(enclosed) = entry.enclosed_name() else {
+                    continue;
+                };
+                let path_str = enclosed.to_string_lossy().replace('\\', "/");
+                // 只取 skill_root 子树
+                let rel = if prefix.is_empty() {
+                    path_str.clone()
+                } else {
+                    match path_str.strip_prefix(&prefix) {
+                        Some(r) => r.to_string(),
+                        None => continue,
+                    }
+                };
+                if rel.is_empty() {
+                    continue;
+                }
+                // 跳过隐藏/版本控制目录(.git/.github 等)
+                if rel.split('/').any(|c| c.starts_with('.')) {
+                    continue;
+                }
+                let target = staged.join(&rel);
+                if !target.starts_with(&staged) {
+                    return Err("路径穿越,拒绝".to_string());
+                }
+                if let Some(p) = target.parent() {
+                    std::fs::create_dir_all(p).map_err(|e| format!("建目录: {e}"))?;
+                }
+                let mut buf = Vec::new();
+                entry
+                    .read_to_end(&mut buf)
+                    .map_err(|e| format!("读条目: {e}"))?;
+                std::fs::write(&target, buf).map_err(|e| format!("写文件: {e}"))?;
+            }
+            let fname = Path::new(zip_path)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "package.zip".to_string());
+            std::fs::write(
+                staged.join(INSTALLED_FROM_MARKER),
+                format!("upload:{fname}"),
+            )
+            .map_err(|e| format!("写标记: {e}"))?;
+            Ok(())
+        })();
+        if let Err(e) = result {
+            let _ = std::fs::remove_dir_all(&staged);
+            return Err(e);
+        }
+
+        let dest = self.skills_dir.join(&name);
+        let _ = std::fs::remove_dir_all(&dest);
+        std::fs::rename(&staged, &dest).map_err(|e| {
+            let _ = std::fs::remove_dir_all(&staged);
+            format!("落盘: {e}")
+        })?;
+        Ok(())
+    }
+}
+
+// 辅助 ------------------------------------------------------------------------
+
+/// 递归写出 `include_dir` 子目录到 `dest`,strip 掉 `source_dir` 前缀
+/// (`file.path()` 是相对最外层 include_dir 根的完整路径,如 "pua/SKILL.md")。
+/// 跳过 vendored 来源标注文件 SOURCE.md(非 skill 运行内容)。
+fn extract_embedded_subdir(dir: &Dir<'_>, source_dir: &str, dest: &Path) -> std::io::Result<()> {
+    let prefix = format!("{source_dir}/");
+    for file in dir.files() {
+        let p = file.path().to_string_lossy();
+        let rel = p.strip_prefix(&prefix).unwrap_or(&p);
+        if Path::new(rel).file_name().and_then(|s| s.to_str()) == Some("SOURCE.md") {
+            continue;
+        }
+        let target = dest.join(rel);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&target, file.contents())?;
+    }
+    for sub in dir.dirs() {
+        extract_embedded_subdir(sub, source_dir, dest)?;
+    }
+    Ok(())
+}
+
+fn read_skill_name(md_path: &Path) -> Option<String> {
+    read_skill_name_from_str(&std::fs::read_to_string(md_path).ok()?)
+}
+
+/// 解析 SKILL.md frontmatter 的 `name:`(前两个 `---` 之间的第一个顶层 name 行)。
+fn read_skill_name_from_str(content: &str) -> Option<String> {
+    let mut lines = content.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+    for line in lines {
+        let t = line.trim();
+        if t == "---" {
+            break;
+        }
+        if let Some(rest) = t.strip_prefix("name:") {
+            let v = rest.trim().trim_matches('"').trim_matches('\'').trim();
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// SKILL.md 布局优先级(越小越优先):根 SKILL.md(0) > `*/skills/<n>/SKILL.md`(1)
+/// > `<n>/SKILL.md`(2) > 更深嵌套(3)。仿底座 scan_tarball 的 rank。
+fn skill_md_rank(path: &str) -> Option<usize> {
+    if !path.eq_ignore_ascii_case("SKILL.md") && !path.to_ascii_lowercase().ends_with("/skill.md") {
+        return None;
+    }
+    let parts: Vec<&str> = path.split('/').collect();
+    match parts.len() {
+        1 => Some(0),
+        2 => Some(2),
+        n if parts[n - 3].eq_ignore_ascii_case("skills") => Some(1),
+        _ => Some(3),
+    }
+}
+
+/// 含 SKILL.md 的目录(skill_root);根级 SKILL.md → 空串。
+fn skill_root_of(path: &str) -> String {
+    match path.rfind('/') {
+        Some(i) => path[..i].to_string(),
+        None => String::new(),
+    }
+}
+
+fn is_safe_skill_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name != "."
+        && name != ".."
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_frontmatter_name() {
+        let md = "---\nname: pua\ndescription: x\n---\n# h";
+        assert_eq!(read_skill_name_from_str(md).as_deref(), Some("pua"));
+        let multiline = "---\nname: huashu-nuwa\ndescription: |\n  多行\n  描述\n---\n";
+        assert_eq!(
+            read_skill_name_from_str(multiline).as_deref(),
+            Some("huashu-nuwa")
+        );
+        assert!(read_skill_name_from_str("no frontmatter").is_none());
+    }
+
+    #[test]
+    fn ranks_skill_md_layouts() {
+        assert_eq!(skill_md_rank("SKILL.md"), Some(0));
+        assert_eq!(skill_md_rank("my-skill/SKILL.md"), Some(2));
+        assert_eq!(skill_md_rank("repo/skills/foo/SKILL.md"), Some(1));
+        assert_eq!(skill_md_rank("a/b/c/SKILL.md"), Some(3));
+        assert_eq!(skill_md_rank("README.md"), None);
+    }
+
+    #[test]
+    fn rejects_unsafe_names() {
+        assert!(is_safe_skill_name("pua"));
+        assert!(is_safe_skill_name("huashu-nuwa"));
+        assert!(!is_safe_skill_name(""));
+        assert!(!is_safe_skill_name(".."));
+        assert!(!is_safe_skill_name("a/b"));
+        assert!(!is_safe_skill_name("../etc"));
+    }
+
+    fn fresh_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("pinvou3_skilltest_{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 预置 pua 从嵌入资源落盘 → list 反映 installed → 卸载删目录的全链路。
+    #[test]
+    fn install_then_uninstall_preset_roundtrip() {
+        let tmp = fresh_dir("roundtrip");
+        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
+
+        mgr.install("pua").unwrap();
+        let skill_dir = tmp.join("pua");
+        assert!(skill_dir.join("SKILL.md").is_file(), "SKILL.md 应落盘");
+        assert!(skill_dir.join(".installed-from").is_file(), "应写安装标记");
+        assert!(skill_dir.join("references").is_dir(), "references/ 应一并复制");
+        assert!(!skill_dir.join("SOURCE.md").exists(), "SOURCE.md 应被跳过");
+        assert_eq!(read_skill_name(&skill_dir.join("SKILL.md")).as_deref(), Some("pua"));
+        assert!(mgr.list_skills().iter().any(|s| s.id == "pua" && s.installed));
+
+        mgr.uninstall("pua").unwrap();
+        assert!(!skill_dir.exists(), "卸载应删目录");
+        assert!(mgr.list_skills().iter().any(|s| s.id == "pua" && !s.installed));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 没有 `.installed-from` 标记的目录(手放/内置)拒绝卸载,防误删。
+    #[test]
+    fn uninstall_refuses_unmarked_dir() {
+        let tmp = fresh_dir("protect");
+        std::fs::create_dir_all(tmp.join("pua")).unwrap();
+        std::fs::write(tmp.join("pua").join("SKILL.md"), "---\nname: pua\n---").unwrap();
+        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
+        assert!(mgr.uninstall("pua").is_err(), "无标记应拒删");
+        assert!(tmp.join("pua").exists(), "目录应保留");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 用户上传 zip:解压找 SKILL.md → 按 frontmatter name 落盘 → list 标 user_uploaded。
+    #[test]
+    fn import_zip_lands_subtree_by_frontmatter_name() {
+        use std::io::Write;
+        let tmp = fresh_dir("import");
+        let zip_path = tmp.join("pkg.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            // 顶层目录包裹(rank 2)：my-skill/ 下含 SKILL.md + 辅助 + 应被跳过的 .git/
+            zw.start_file("my-skill/SKILL.md", opts).unwrap();
+            zw.write_all(b"---\nname: my-test-skill\ndescription: t\n---\n# hi").unwrap();
+            zw.start_file("my-skill/ref.md", opts).unwrap();
+            zw.write_all(b"reference body").unwrap();
+            zw.start_file("my-skill/.git/config", opts).unwrap();
+            zw.write_all(b"[core]").unwrap();
+            zw.finish().unwrap();
+        }
+        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
+        mgr.import_package(zip_path.to_str().unwrap()).unwrap();
+
+        let dest = tmp.join("my-test-skill");
+        assert!(dest.join("SKILL.md").is_file(), "按 frontmatter name 落盘");
+        assert!(dest.join("ref.md").is_file(), "辅助文件应带过来");
+        assert!(!dest.join(".git").exists(), ".git 等隐藏目录应跳过");
+        let marker = std::fs::read_to_string(dest.join(".installed-from")).unwrap();
+        assert!(marker.starts_with("upload:"), "标记应为 upload:");
+        assert!(mgr
+            .list_skills()
+            .iter()
+            .any(|s| s.id == "my-test-skill" && s.user_uploaded && s.installed));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// nuwa 的 source_dir(nuwa) ≠ skill_name(huashu-nuwa):落盘按 frontmatter name,
+    /// 卸载用市场 id 映射回目录名。覆盖 pua 测不到的不对称路径。
+    #[test]
+    fn install_nuwa_maps_source_dir_to_frontmatter_name() {
+        let tmp = fresh_dir("nuwa");
+        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
+        mgr.install("nuwa").unwrap();
+        assert!(tmp.join("huashu-nuwa").join("SKILL.md").is_file(), "按 name 落盘");
+        assert!(!tmp.join("nuwa").exists(), "不应用 source_dir 名落盘");
+        assert!(tmp.join("huashu-nuwa").join("LICENSE").is_file(), "LICENSE 应保留");
+        mgr.uninstall("nuwa").unwrap(); // 用 id 卸载,内部映射到 huashu-nuwa
+        assert!(!tmp.join("huashu-nuwa").exists(), "卸载应删 name 目录");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// brainstorming 改造版(source_dir==skill_name):验证嵌入资源 SKILL.md
+    /// frontmatter name 校验通过 + LICENSE 保留 + SOURCE.md 跳过。
+    #[test]
+    fn install_brainstorming_preset() {
+        let tmp = fresh_dir("brainstorming");
+        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
+        mgr.install("brainstorming").unwrap();
+        let dir = tmp.join("brainstorming");
+        assert!(dir.join("SKILL.md").is_file());
+        assert!(dir.join("LICENSE").is_file(), "MIT LICENSE 应保留");
+        assert!(!dir.join("SOURCE.md").exists(), "SOURCE.md 应跳过");
+        assert_eq!(
+            read_skill_name(&dir.join("SKILL.md")).as_deref(),
+            Some("brainstorming")
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

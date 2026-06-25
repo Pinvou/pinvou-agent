@@ -277,10 +277,18 @@ impl Pinvou3Bundle {
     /// 调用,每次启动都跑):
     /// - h3c-ppt:0.5 下线(workflow 功能转"开发中")
     /// - pinvou-review-plan / pinvou-review-final:0.7 下线(EXIT GATE 评审被推翻)
+    ///
+    /// 技能市场([`super::skill_marketplace`])装的技能带 `.installed-from` 标记、
+    /// 落在同一 `bundle/skills/` 目录。清理时显式跳过带标记的目录——这是保护契约,
+    /// 任何未来对 `skills_dir` 的全量重写也必须遵守,否则会误删用户装的技能。
     fn cleanup_retired_skills(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.skills_dir)?;
         for retired in ["h3c-ppt", "pinvou-review-plan", "pinvou-review-final"] {
-            let _ = std::fs::remove_dir_all(self.skills_dir.join(retired));
+            let dir = self.skills_dir.join(retired);
+            if dir.join(".installed-from").is_file() {
+                continue; // marketplace 技能占用了该名,保护不删
+            }
+            let _ = std::fs::remove_dir_all(dir);
         }
         Ok(())
     }

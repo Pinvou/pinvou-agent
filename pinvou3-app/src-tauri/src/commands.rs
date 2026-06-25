@@ -3765,3 +3765,49 @@ pub fn uninstall_marketplace_tool(tool_id: String) -> Result<(), String> {
     let mgr = crate::bridge::marketplace::MarketplaceManager::new();
     mgr.uninstall(&tool_id)
 }
+
+// ---------------------------------------------------------------------------
+// 技能市场（与工具市场并列：工具=MCP server，技能=SKILL.md 目录落 bundle/skills/）
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn list_marketplace_skills(
+) -> Result<Vec<crate::bridge::skill_marketplace::MarketplaceSkillInfo>, String> {
+    Ok(crate::bridge::skill_marketplace::SkillMarketplaceManager::new().list_skills())
+}
+
+#[tauri::command]
+pub async fn install_marketplace_skill(skill_id: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        crate::bridge::skill_marketplace::SkillMarketplaceManager::new().install(&skill_id)
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))?
+}
+
+/// 弹文件选择框选 zip 技能包并导入。前端无法用 plugin-dialog 的 JS API
+/// (单 HTML 无 bundler 引不进),所以选文件走 Rust 端 dialog。
+/// 返回 true=已导入,false=用户取消。
+#[tauri::command]
+pub fn import_skill_package(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .add_filter("技能包 (zip)", &["zip"])
+        .blocking_pick_file()
+    else {
+        return Ok(false); // 用户取消
+    };
+    let path = picked
+        .into_path()
+        .map_err(|e| format!("解析文件路径: {e}"))?;
+    crate::bridge::skill_marketplace::SkillMarketplaceManager::new()
+        .import_package(&path.to_string_lossy())?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn uninstall_marketplace_skill(skill_id: String) -> Result<(), String> {
+    crate::bridge::skill_marketplace::SkillMarketplaceManager::new().uninstall(&skill_id)
+}

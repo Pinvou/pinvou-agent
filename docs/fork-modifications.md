@@ -57,7 +57,7 @@
 ### C5 `prompt` GUI prompt / context / skills
 - **文件**:`project_context.rs`、`project_context_cache.rs`、`skills/mod.rs`、`commands/groups/skills/skills.rs`、`tools/skill.rs`、`prompts.rs`(与 C7 共此文件)
 - **project_context**:`PROJECT_CONTEXT_FILES`/`GLOBAL_PATHS` **砍空**(workspace=$HOME GUI 助手,不读其他 AI 工具配置);`load_repo_constitution_block` **短路**;`generate_ephemeral_context` **砍空返 None**(防 $HOME 树扫成 overview 注入 prompt,仅采上游函数名让调用点编译)
-- **skills**:扫描路径只留 `~/.agents/skills`(原 10 路径,#41;union 接线已被上游 harvest,只剩路径收窄)
+- **skills**:扫描路径=`~/.pinvou3/bundle/skills`(私有:技能市场+bundle 内置)+`~/.agents/skills`(全局:飞书 lark 等)(原 10 路径 #41 收窄;union 接线已被上游 harvest)。**2026-06-22 加 bundle/skills**:`load_skill` 工具用 `discover_in_workspace`(只走 `skills_directories`、不 union `EngineConfig.skills_dir`),不把 bundle/skills 放进 `skills_directories` 就会"prompt catalogue 列了 bundle/skills 技能、load_skill 却扫不到→报 not found"(技能市场真机实测);`~/.agents/skills` 必须同时保留,否则飞书技能从 prompt 消失
 - **测试**:`forkguard_skills_dir_unions_*`;project_context_cache / skills 多路径上游测试 `#[ignore]`
 - 上游 PR:skills union → [#2737](https://github.com/Hmbown/CodeWhale/pull/2737) CLOSED(上游已 harvest);constitution 短路 ❌ 专用
 

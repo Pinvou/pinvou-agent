@@ -372,6 +372,10 @@ pub fn run() {
             commands::session_mount_collection,
             commands::session_unmount_collection,
             commands::session_mounted_collection,
+            commands::list_marketplace_skills,
+            commands::install_marketplace_skill,
+            commands::import_skill_package,
+            commands::uninstall_marketplace_skill,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
