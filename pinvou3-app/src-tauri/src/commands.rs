@@ -1455,6 +1455,8 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
         "https://app.tavily.com/",
         "https://www.iwencai.com/",
         "https://agent.qcc.com/",
+        // MegaCube 官网(侧边栏 footer 入口跳转)
+        "https://www.h3c.com/",
     ];
     if !ALLOWED_PREFIXES.iter().any(|p| url.starts_with(p)) {
         return Err(format!("URL not in allowlist: {url}"));

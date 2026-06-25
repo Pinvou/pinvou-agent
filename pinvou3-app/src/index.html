@@ -205,7 +205,7 @@
     const dict = {
       zh: {
         langTag: 'zh',
-        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', toolStore: '工具商店', cardPool: '专家卡牌池', recent: '近期', settings: '设置', localEnv: '本地环境',
+        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', toolStore: '工具商店', cardPool: '专家卡牌池', recent: '近期', settings: '设置', localEnv: '本地环境', megacubeSite: '打开 MegaCube 官网',
         sysStatus: '系统状态', sysDesc: '实时性能与资源指标', gpu: '图形处理器 (GPU)', gpuUnavail: '状态不可用', noSmi: '未检测到 nvidia-smi',
         vram: '显存占用', core: '计算核心', temp: '温度', power: '功耗', unifiedMem: '统一内存架构',
         ram: '系统内存 (RAM)', used: '已用', physical: '物理内存', total: '总计', swap: '交换空间',
@@ -393,7 +393,7 @@
       },
       en: {
         langTag: 'en',
-        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'Recent', settings: 'Settings', localEnv: 'Local Env',
+        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'Recent', settings: 'Settings', localEnv: 'Local Env', megacubeSite: 'Open MegaCube site',
         sysStatus: 'System Status', sysDesc: 'Real-time performance metrics', gpu: 'GPU', gpuUnavail: 'Unavailable', noSmi: 'nvidia-smi not found',
         vram: 'VRAM Usage', core: 'Core Usage', temp: 'Temp', power: 'Power', unifiedMem: 'Unified Memory',
         ram: 'System RAM', used: 'Used', physical: 'Physical RAM', total: 'Total', swap: 'Swap Space',
@@ -581,7 +581,7 @@
       },
       ja: {
         langTag: 'ja',
-        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', monitor: 'システムモニター', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '最近', settings: '設定', localEnv: 'ローカル環境',
+        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', monitor: 'システムモニター', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '最近', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く',
         sysStatus: 'システム状態', sysDesc: 'リアルタイムの性能・リソース指標', gpu: 'GPU', gpuUnavail: '状態を取得できません', noSmi: 'nvidia-smi が見つかりません',
         vram: 'VRAM 使用量', core: 'コア使用率', temp: '温度', power: '消費電力', unifiedMem: 'ユニファイドメモリ',
         ram: 'システムメモリ (RAM)', used: '使用中', physical: '物理メモリ', total: '合計', swap: 'スワップ領域',
@@ -1237,17 +1237,16 @@
                   {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
                 </button>
               )}
-              <div className={`flex items-center ${isSidebarOpen ? 'px-2 gap-3' : 'justify-center'}`}>
-                <div title={t.localEnv} className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-[12px] font-bold ${activeTheme === 'dark' ? 'bg-[#9580FF] text-white' : 'bg-[#7C3AED] text-white'}`}>
-                  GB
-                </div>
+              <button
+                onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: 'https://www.h3c.com/cn/pub/minisite/202606/MegaCube/megacube/index.html' })}
+                title={t.megacubeSite}
+                className={`flex items-center rounded-xl transition-colors ${isSidebarOpen ? 'flex-1 min-w-0 px-2 py-1.5 gap-3' : 'justify-center w-10 h-10'} ${activeTheme === 'dark' ? 'hover:bg-[#333537] active:bg-[#3A3C3E]' : 'hover:bg-[#E1E5EA] active:bg-[#D8DCE1]'}`}
+              >
+                <img src="assets/megacube-icon.png" alt="MegaCube" className="w-8 h-8 shrink-0 rounded-lg object-contain" />
                 {isSidebarOpen && (
-                  <div className="flex flex-col whitespace-nowrap overflow-hidden">
-                    <span className="text-[14px] font-medium leading-none mb-1">{t.localEnv}</span>
-                    <span className={`text-[12px] ${activeTheme === 'dark' ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>GB10 Node</span>
-                  </div>
+                  <span className="text-[14px] font-medium leading-none whitespace-nowrap text-left">MegaCube</span>
                 )}
-              </div>
+              </button>
               {isSidebarOpen && (
                 <button
                   onClick={() => setCurrentView('settings')}
