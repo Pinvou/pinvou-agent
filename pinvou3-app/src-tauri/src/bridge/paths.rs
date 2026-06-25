@@ -56,6 +56,14 @@ pub fn bundle_version_file() -> PathBuf {
     bundle_root().join("VERSION")
 }
 
+/// `~/.pinvou3/web-template` —— 三省六部「网页类」差事的预置脚手架(Vite + React +
+/// vite-plugin-singlefile,含预装 node_modules,离线可 `npm run build` 出单文件 HTML)。
+/// 工部(gongbu)角色提示词硬编码此路径:`cp -r ~/.pinvou3/web-template deliverables/<站名>`。
+/// 由首次启动 seed(从只读 resource_dir 复制过来,见 lib.rs::seed_web_template)。
+pub fn web_template_dir() -> PathBuf {
+    pinvou3_home().join("web-template")
+}
+
 /// 拉起 python MCP server(present_artifact / pptx 等)用的解释器命令。
 ///
 /// - **Windows**:优先用**随安装包内置**的 python(`python-win/pythonw.exe`,

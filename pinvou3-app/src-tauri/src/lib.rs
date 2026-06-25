@@ -21,6 +21,7 @@ pub mod engine_pool;
 pub mod file_ingest;
 mod file_watcher;
 mod harness;
+mod knowledge;
 mod monitor;
 pub mod personas;
 mod pinvou_review;
@@ -35,6 +36,65 @@ use tauri::Manager;
 use crate::bridge::sessions::SessionStore;
 use crate::engine_pool::EnginePool;
 use crate::monitor::MonitorState;
+
+/// 把三省六部「网页类」预置模板 seed 到 `~/.pinvou3/web-template`（工部提示词硬编码此路径,
+/// 要在副本里 `npm run build` 写盘,而随 deb 的 resource_dir 是只读安装目录,故首次启动复制一份)。
+/// 已就位则跳过；用「临时目录 + 原子 rename」防半截复制留下残缺模板。失败只警告——网页类差事
+/// 不可用,但不连累其余工作流。
+fn seed_web_template(src: Option<std::path::PathBuf>) {
+    let dst = crate::bridge::paths::web_template_dir();
+    if dst.join("package.json").exists() {
+        return; // 已就位
+    }
+    let Some(src) = src else {
+        eprintln!(
+            "[pinvou3-app] web-template 源缺失(resource_dir / PINVOU3_WEB_TEMPLATE_DIR 都没找到),网页类差事不可用"
+        );
+        return;
+    };
+    if let Some(parent) = dst.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let tmp = dst.with_file_name("web-template.seeding");
+    let _ = std::fs::remove_dir_all(&tmp); // 清上次中断的残留
+    match copy_dir_all(&src, &tmp).and_then(|()| std::fs::rename(&tmp, &dst)) {
+        Ok(()) => eprintln!("[pinvou3-app] web-template seeded -> {}", dst.display()),
+        Err(e) => {
+            eprintln!("[pinvou3-app] web-template seed 失败: {e}");
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+    }
+}
+
+/// 递归复制目录,保留 symlink(node_modules/.bin/* 是相对 symlink,原样重建才不悬空)。
+fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if ft.is_symlink() {
+            let target = std::fs::read_link(&from)?;
+            #[cfg(unix)]
+            {
+                // 已存在的目标(重试场景)先删,symlink 才能重建
+                let _ = std::fs::remove_file(&to);
+                std::os::unix::fs::symlink(&target, &to)?;
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = target;
+                std::fs::copy(&from, &to)?;
+            }
+        } else if ft.is_dir() {
+            copy_dir_all(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
 
 /// 为 release 安装包（.deb 双击启动场景）注入 run-dev.sh 里集中处理的运行时 env。
 /// dev 启动走 run-dev.sh 已经 export 过的不会被覆盖（var_os().is_none() 守门）。
@@ -151,6 +211,46 @@ pub fn run() {
             // File watcher: 监听 ~/.pinvou3/sessions/ 树,新文件 emit artifact:disk
             file_watcher::spawn(app.handle().clone(), bridge::paths::sessions_root());
 
+            // 本地知识底座 L0:全系统元数据索引(秒搜+去重)。这里只 manage,**不自动扫**——
+            // 扫描改懒触发:由前端进入文件管理页时增量扫(不进页=零扫描),不常驻 watcher/周期
+            // 重扫。文件管理是低频功能,不该长期占资源。
+            // embedding 模型目录:dev 走 env(run-dev.sh);生产=随 deb 打包到资源目录(tauri.conf
+            // bundle.resources)。容错 tauri 资源落点的几种布局,取含 model.onnx 的那个。
+            let kb_model_dir = app.path().resource_dir().ok().and_then(|res| {
+                [res.join("bge-m3"), res.join("resources/bge-m3"), res.join("resources").join("bge-m3")]
+                    .into_iter()
+                    .find(|d| d.join("model.onnx").exists() || d.join("onnx").join("model.onnx").exists())
+            });
+            match knowledge::KnowledgeService::new(&knowledge::default_db_path(), kb_model_dir.as_deref()) {
+                Ok(svc) => {
+                    app.handle().manage(svc);
+                    eprintln!("[pinvou3-app] knowledge service ready");
+                }
+                Err(e) => eprintln!("[pinvou3-app] knowledge service init failed: {e:?}"),
+            }
+
+            // 三省六部「网页类」预置模板 seed(工部 `cp -r ~/.pinvou3/web-template ...` 的母版)。
+            // dev 走 env PINVOU3_WEB_TEMPLATE_DIR(run-dev.sh 注入 ~/models/web-template);prod 从
+            // 随 deb 的 resource_dir 容错三布局取(对齐上面 bge-m3 那段)。69M/2904 文件,放后台
+            // 线程复制,不阻塞启动；已就位则秒跳过。
+            {
+                let web_tpl_src = std::env::var_os("PINVOU3_WEB_TEMPLATE_DIR")
+                    .map(std::path::PathBuf::from)
+                    .filter(|d| d.join("package.json").exists())
+                    .or_else(|| {
+                        app.path().resource_dir().ok().and_then(|res| {
+                            [
+                                res.join("web-template"),
+                                res.join("resources/web-template"),
+                                res.join("resources").join("web-template"),
+                            ]
+                            .into_iter()
+                            .find(|d| d.join("package.json").exists())
+                        })
+                    });
+                std::thread::spawn(move || seed_web_template(web_tpl_src));
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -253,6 +353,25 @@ pub fn run() {
             commands::list_marketplace_tools,
             commands::install_marketplace_tool,
             commands::uninstall_marketplace_tool,
+            knowledge::kb_start_scan,
+            knowledge::kb_scan_status,
+            knowledge::kb_cancel_scan,
+            knowledge::kb_search,
+            knowledge::kb_stats,
+            knowledge::kb_type_counts,
+            knowledge::kb_collection_list,
+            knowledge::kb_collection_create,
+            knowledge::kb_collection_update,
+            knowledge::kb_collection_delete,
+            knowledge::kb_collection_add_sources,
+            knowledge::kb_index_status,
+            knowledge::kb_index_cancel,
+            knowledge::kb_documents,
+            knowledge::kb_remove_document,
+            knowledge::kb_embed_info,
+            commands::session_mount_collection,
+            commands::session_unmount_collection,
+            commands::session_mounted_collection,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -316,8 +435,55 @@ mod blocklist_contract {
             "agent_open",  // subagent spawn(单一 spawn 入口)
             "agent_eval",  // subagent 收结果
             "agent_close", // subagent 释放 session
+            "kb_search",   // Agentic RAG: app 注入的本地知识检索工具,必须对模型可见
         ] {
             assert!(!is_pinvou3_hidden(core), "核心工具 {core} 不应该被隐藏");
         }
+    }
+}
+
+#[cfg(test)]
+mod web_template_seed {
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn tmp_root(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("pinvou3-wt-{tag}-{}", std::process::id()))
+    }
+
+    /// copy_dir_all 的关键不变量:递归复制文件 + **保留 symlink**。
+    /// web-template 的 node_modules/.bin/* 全是相对 symlink,被解引用成普通文件会撑爆体积
+    /// 且破坏 npm 可执行入口 → `npm run build` 失败。
+    #[test]
+    #[cfg(unix)]
+    fn copy_dir_all_preserves_files_and_symlinks() {
+        let root = tmp_root("copy");
+        let _ = fs::remove_dir_all(&root);
+        let src = root.join("src");
+        let dst = root.join("dst");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::write(src.join("a.txt"), b"hello").unwrap();
+        fs::write(src.join("sub/b.txt"), b"world").unwrap();
+        std::os::unix::fs::symlink("sub/b.txt", src.join("link")).unwrap();
+
+        super::copy_dir_all(&src, &dst).unwrap();
+
+        assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"hello");
+        assert_eq!(fs::read(dst.join("sub/b.txt")).unwrap(), b"world");
+        let meta = fs::symlink_metadata(dst.join("link")).unwrap();
+        assert!(meta.file_type().is_symlink(), "symlink 必须保留为 symlink,不能解引用");
+        assert_eq!(
+            fs::read_link(dst.join("link")).unwrap(),
+            PathBuf::from("sub/b.txt"),
+            "symlink target 不变"
+        );
+        assert_eq!(fs::read(dst.join("link")).unwrap(), b"world", "跟随 symlink 仍读到内容");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn web_template_dir_named_web_template() {
+        assert!(crate::bridge::paths::web_template_dir().ends_with("web-template"));
     }
 }
