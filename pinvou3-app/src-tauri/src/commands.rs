@@ -19,7 +19,7 @@ use deepseek_tui::tools::user_input::{UserInputAnswer, UserInputResponse};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::bridge::mode_state::{PlanPhase, SerializableMode, SessionModeState};
+use crate::bridge::mode_state::{SerializableMode, SessionModeState};
 use crate::bridge::prefs::{SavedModel, UserPrefs};
 use crate::bridge::sessions::SessionStore;
 use crate::engine_pool::EnginePool;
@@ -90,12 +90,9 @@ pub async fn chat(
             .and_then(|kb| kb.l1().collection_name(cid).ok().flatten());
         full = format!("{}\n\n---\n\n{full}", build_kb_agentic_guide(coll_name.as_deref()));
     }
-    // 取该 session 的 mode + phase。
-    let s = store.mode_state(&sid);
-    let (mode, phase) = (s.mode, s.plan_phase);
-    // M2: 用户主动消息重置 auto-continue 计数器(新任务从 0 开始算 max 3 次)
-    store.reset_auto_continue(&sid);
-    pool.send_user_message(&sid, full, mode.to_app_mode(), phase)
+    // 取该 session 的 mode。
+    let mode = store.mode_state(&sid).mode;
+    pool.send_user_message(&sid, full, mode.to_app_mode())
         .await
         .map_err(|e| format!("send_user_message failed: {e:?}"))
 }
@@ -1850,32 +1847,32 @@ pub async fn get_active_persona(
         .and_then(|pid| crate::personas::get(&pid).map(|c| c.summary())))
 }
 
-/// 用户点 💡 进入 Plan 流程：设 mode=Plan + phase=Planning。
-/// 下一条 chat 消息会带 mode=Plan 发送，底座自动切只读工具集 + ReadOnly sandbox。
+/// 用户在 composer chip 选 Plan：设 mode=Plan。
+/// 下一条 chat 消息带 mode=Plan 发送，底座自动切只读工具集 + ReadOnly sandbox。
 #[tauri::command]
 pub async fn set_plan_mode_next(
     session_id: String,
     store: State<'_, SessionStore>,
 ) -> Result<SessionModeState, String> {
-    store.set_mode_state(&session_id, SerializableMode::Plan, PlanPhase::Planning);
+    store.set_mode(&session_id, SerializableMode::Plan);
     Ok(store.mode_state(&session_id))
 }
 
-/// 用户点 [⚡ 直接动手]（Planning 态 chip 退出按钮）：跳过 plan 流程，凭对话历史自由干。
-/// mode 切回 Yolo + phase=None。对话历史天然保留，AI 在 YOLO 下能看到之前讨论的 context。
+/// 用户在 composer chip 选 Yolo（从 Plan 退回）：mode 切 Yolo。
+/// 对话历史天然保留，AI 在 YOLO 下能看到之前讨论的 context。
 #[tauri::command]
 pub async fn exit_plan_to_yolo(
     session_id: String,
     store: State<'_, SessionStore>,
 ) -> Result<SessionModeState, String> {
-    store.set_mode_state(&session_id, SerializableMode::Yolo, PlanPhase::None);
+    store.set_mode(&session_id, SerializableMode::Yolo);
     Ok(store.mode_state(&session_id))
 }
 
-/// 用户点 plan_card [✅ 就这么干]：接受 plan，切 YOLO 执行。
+/// 用户点 plan_card [✅ 就这么干]：接受 plan，切 YOLO 执行(对齐底座 accept-yolo)。
 /// 流程：
-///   1. 设 mode=Yolo, phase=Executing
-///   2. 用 plan_markdown 作为指令前缀发一条 user message 触发执行
+///   1. 设 mode=Yolo
+///   2. 用 plan_markdown 作为指令前缀发一条 user message 触发执行(底座共享 PlanState 仍在)
 /// 前端在调用前应在消息流追加 user 气泡显示「✅ 就这么干」让用户感知。
 #[tauri::command]
 pub async fn accept_plan(
@@ -1884,14 +1881,12 @@ pub async fn accept_plan(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<SessionModeState, String> {
-    store.set_mode_state(&session_id, SerializableMode::Yolo, PlanPhase::Executing);
-    // 简短指令——主约束由 M1 per-turn system-reminder 提供(bridge 按 phase=Executing 注入)。
+    store.set_mode(&session_id, SerializableMode::Yolo);
     let instruction = format!("用户已批准方案,立即开始执行。方案:\n\n{plan_markdown}");
     pool.send_user_message(
         &session_id,
         instruction,
         SerializableMode::Yolo.to_app_mode(),
-        PlanPhase::Executing,
     )
     .await
     .map_err(|e| format!("accept_plan send_user_message: {e:?}"))?;
@@ -1964,14 +1959,14 @@ pub async fn read_skill_body(name: String) -> Result<String, String> {
 // 用户点 [✏️ 改改] 时前端走 DeepSeek-TUI 底座做法:不切 phase, 仅 input 预填"修订方案:"前缀.
 // phase 保持 Ready, 下一条 chat 触发的 Ready reminder 已包含"用户发新消息=隐式修订"语义.
 
-/// 用户点 plan_card [🚪 算了]：放弃整个任务，回 YOLO 默认态。
+/// 用户点 plan_card [🚪 算了]：放弃方案，回 YOLO。
 /// 与 exit_plan_to_yolo 区别：⚡ 是「不要 plan 直接干」，🚪 是「这事不干了」。
 #[tauri::command]
 pub async fn discard_plan(
     session_id: String,
     store: State<'_, SessionStore>,
 ) -> Result<SessionModeState, String> {
-    store.set_mode_state(&session_id, SerializableMode::Yolo, PlanPhase::None);
+    store.set_mode(&session_id, SerializableMode::Yolo);
     Ok(store.mode_state(&session_id))
 }
 
