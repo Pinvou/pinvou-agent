@@ -215,6 +215,7 @@
         newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', toolStore: '工具商店', cardPool: '专家卡牌池', recent: '近期', settings: '设置', localEnv: '本地环境',
         knowledge: '本地知识',
         kbMount: '知识库', kbMountTitle: '挂载知识集到本对话', kbMountPick: '选择知识集', kbMountNone: '还没有知识集，去「本地知识」创建', kbMountRemove: '取消挂载', kbMountedTag: '已挂载',
+        modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: '切换工作模式', modeYoloDesc: '直接动手执行', modePlanDesc: '先出方案，确认后执行',
         kbTitle: '本地知识', kbDesc: '全系统秒搜 + 去重 · 仅索引元数据，不读内容',
         kbRescan: '重新扫描', kbScanning: '扫描中', kbDeduping: '去重中', kbScanNow: '扫描本机',
         kbTotalFiles: '已索引文件', kbDupFiles: '重复文件', kbWasted: '可回收',
@@ -428,6 +429,7 @@
         newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'Recent', settings: 'Settings', localEnv: 'Local Env',
         knowledge: 'Local Knowledge',
         kbMount: 'Knowledge', kbMountTitle: 'Attach a collection to this chat', kbMountPick: 'Pick a collection', kbMountNone: 'No collections yet — create one in Local Knowledge', kbMountRemove: 'Unmount', kbMountedTag: 'Mounted',
+        modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: 'Switch mode', modeYoloDesc: 'Act directly', modePlanDesc: 'Plan first, then execute',
         kbTitle: 'Local Knowledge', kbDesc: 'Whole-system instant search + dedup · metadata only, content not read',
         kbRescan: 'Rescan', kbScanning: 'Scanning', kbDeduping: 'Deduping', kbScanNow: 'Scan this PC',
         kbTotalFiles: 'Indexed files', kbDupFiles: 'Duplicates', kbWasted: 'Reclaimable',
@@ -641,6 +643,7 @@
         newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', monitor: 'システムモニター', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '最近', settings: '設定', localEnv: 'ローカル環境',
         knowledge: 'ローカル知識',
         kbMount: 'ナレッジ', kbMountTitle: 'このチャットにコレクションをリンク', kbMountPick: 'コレクションを選択', kbMountNone: 'コレクションがありません — 「ローカル知識」で作成', kbMountRemove: 'リンク解除', kbMountedTag: 'リンク中',
+        modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: 'モード切替', modeYoloDesc: 'すぐ実行', modePlanDesc: '計画してから実行',
         kbTitle: 'ローカル知識', kbDesc: '全システム高速検索 + 重複検出 · メタデータのみ、内容は読まない',
         kbRescan: '再スキャン', kbScanning: 'スキャン中', kbDeduping: '重複検出中', kbScanNow: 'このPCをスキャン',
         kbTotalFiles: 'インデックス済み', kbDupFiles: '重複ファイル', kbWasted: '回収可能',
@@ -3286,6 +3289,58 @@
       );
     };
 
+    // [plan/yolo] composer 模式 chip:默认 Yolo,下拉手切 Plan。进 Plan=只读调研
+    // (底座 ReadOnly+只读工具集),调 update_plan 出方案卡决策。切换逻辑搬自旧 ModeHeader。
+    const ComposerModeChip = ({ t, bs }) => {
+      const [open, setOpen] = useState(false);
+      const ms = (bs && bs.modeState) || { mode: 'yolo' };
+      const isPlan = ms.mode === 'plan';
+      async function switchTo(target) {
+        setOpen(false);
+        if (!bridge.available) return;
+        if (target === 'plan' && !isPlan) {
+          await bridge.setPlanModeNext();
+        } else if (target === 'yolo' && isPlan) {
+          if (bs && bs.busy) await bridge.cancelGeneration();
+          await bridge.exitPlanToYolo();
+        }
+      }
+      const optCls = "w-full flex items-center justify-between px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group";
+      return (
+        <div className="relative">
+          <button onClick={() => setOpen(!open)} title={t.modeSwitchTitle}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-[13px] font-semibold transition-colors border ${isPlan
+              ? 'bg-[#E8F0FE] dark:bg-[#1A3A5C] text-[#1A73E8] dark:text-[#A8C7FA] border-[#1A73E8]/20 dark:border-[#A8C7FA]/25'
+              : 'bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-black/[0.04] dark:border-white/5'}`}>
+            <Zap size={14} className="opacity-70 shrink-0" />
+            <span>{isPlan ? t.modePlan : t.modeYolo}</span>
+            <ChevronDown size={14} className="opacity-50 shrink-0" />
+          </button>
+          {open && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
+              <div className="absolute bottom-full left-0 mb-2 z-50 w-60 bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+                <button onClick={() => switchTo('yolo')} className={optCls}>
+                  <span className="flex flex-col items-start min-w-0">
+                    <span className="font-semibold">{t.modeYolo}</span>
+                    <span className="text-[11px] text-gray-400 group-hover:text-white/80">{t.modeYoloDesc}</span>
+                  </span>
+                  {!isPlan && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
+                </button>
+                <button onClick={() => switchTo('plan')} className={optCls}>
+                  <span className="flex flex-col items-start min-w-0">
+                    <span className="font-semibold">{t.modePlan}</span>
+                    <span className="text-[11px] text-gray-400 group-hover:text-white/80">{t.modePlanDesc}</span>
+                  </span>
+                  {isPlan && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      );
+    };
+
     const ChatView = ({ theme, t, bs, prefill, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoTools }) => {
       const isDark = theme === 'dark';
       const [inputText, setInputText] = useState('');
@@ -3520,6 +3575,7 @@
                   <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoSettings} />
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} />
                   <ComposerKbSelector t={t} bs={bs} />
+                  <ComposerModeChip t={t} bs={bs} />
                 </div>
                 {busy ? (
                   <button onClick={handleCancel}

@@ -128,6 +128,21 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
   });
   rec('④ 品悟检阅卡本地化渲染(t 线程通)', modal.trace && modal.adopt && modal.skip, JSON.stringify(modal));
 
+  // ⑤ composer 模式 chip 渲染 + 默认 YOLO + 下拉两项(plan/yolo 回归底座式入口)
+  const chip = await page.evaluate(() => {
+    const b = document.querySelector('[title="切换工作模式"]');
+    if (!b) return { found: false };
+    const label = (b.textContent || '').trim();
+    b.click();
+    return { found: true, label };
+  });
+  await sleep(300);
+  const chipMenu = await page.evaluate(() => {
+    const txt = document.body.innerText;
+    return { yoloDesc: txt.includes('直接动手执行'), planDesc: txt.includes('先出方案') };
+  });
+  rec('⑤ composer 模式 chip 渲染+下拉两项', chip.found && /YOLO/.test(chip.label || '') && chipMenu.yoloDesc && chipMenu.planDesc, JSON.stringify({ ...chip, ...chipMenu }));
+
   if (errs.length) console.log('⚠️ PAGEERRORS:', errs.slice(0, 3).join(' | '));
   await browser.close();
 
