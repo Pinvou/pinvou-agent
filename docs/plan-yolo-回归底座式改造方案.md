@@ -143,8 +143,19 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 
 1. ✅ **砍 M2 自驱**（D4）：执行不自动续跑、回到底座由用户驱动——可接受。
 2. ✅ **chip 带下拉**（D1）：默认 Yolo，Plan 需手切。下拉两项各带说明。
-3. ✅ **M3 重做**（D5）：放弃旧 `text_len>300` 判据，依据现有测试情况重评——现状 M3 零单测、plan 测试全是 L1 端到端。阶段3 重做时先定可靠收口失败信号 + 建测试。
+3. ✅ ~~M3 重做~~ → **M3 放弃不做**（D5，2026-06-25 终决）：见 §7。
 4. ✅ **阶段顺序**：先接 chip 验证端到端，再减法。
 
 ### 遗留物处理提醒
 - `pinvou3-ablation`（`ablation-clean` 分支）worktree + `pinvou3-mode-select` worktree 里未提交的 `l1_dialog_harness.rs`（`plan_ablation`/`plan_write_urge` 消融用例，用 `PlanPhase::Planning`）= 旧消融脚手架。阶段4 删消融时一并清理（这些测试随 PlanPhase 删除会编译失败，要同步处理）。
+
+## 7. 阶段3 终决：放弃 M3（2026-06-25）
+
+阶段2 已删 M3 后端 emit，前端监听器随之成死代码（永不触发）。本次评估后**决定不重做 M3，把残骸清干净**。
+
+**为什么放弃**（推翻 §6.3 原"重做"决议）：
+1. 底座 `update_plan → chat:plan_ready → 方案卡「✅就这么干」→ 切 Yolo` 这条链在 AI 调了 `update_plan` 时 100% 可靠（两个真机 session 端到端验过）。"有方案就能切 Yolo"已被底座保证，M3 不是这条主路的一环。
+2. 唯一漏的"AI 光用文本写方案、没调 update_plan"是少数情况，已有两条自救路径覆盖：① composer chip 随时手切 Yolo ② AI 真去 write/exec 撞只读时弹 `plan_stuck` 卡「⚡直接干」。
+3. M3 的判据本身是噪音——命中词含 markdown 粗体 `**`，几乎每条回复都误触发，净负收益。
+
+**已清残骸**：`engine.rs` M3 占位注释改写为"放弃"说明；`tauri-bridge.js` 删 `PLAN_FALLBACK_KEYWORDS` / `plan_text_fallback` 监听 / `planFallbackAccept`+`planFallbackRetry`+导出 / 孤儿 bt 键 `adoptingPlan`+`adoptEcho`；顺带清同族孤儿 `executionStuckReplan`（阶段4 删 execution_stuck 后无调用方）；`index.html` 删 `PlanFallbackCard` 组件 + render 分支 + 三语 `fb*` i18n。`cargo check` exit 0、headless 5/5。**阶段1/2/3/4 全 done，方案收尾。**

@@ -890,9 +890,11 @@ fn spawn_event_forwarder(
                             });
                         }
 
-                        // ── [回归底座式] M2 Executing 自驱 + M3 Planning 文本兜底已随 PlanPhase 砍掉 ──
-                        // M2:执行不自动续跑,回底座由用户驱动。M3 收口兜底(Plan 写了方案没调
-                        // update_plan)待阶段3 用可靠判据 + 测试重做,见 docs/ 改造方案 D5。
+                        // ── [回归底座式] M2 自驱 + M3 文本兜底已彻底砍掉 ──
+                        // M2:执行不自动续跑,回底座由用户驱动。M3(Plan 写了方案没调
+                        // update_plan 的救援)放弃不做:底座 update_plan→plan_ready→方案卡
+                        // 这条链已可靠,漏的少数"光说不出卡"由 composer chip 手切 + plan_stuck
+                        // 卡兜底,不值得用噪音判据再造一层。
                     }
                     let _ = app.emit(
                         "chat:done",

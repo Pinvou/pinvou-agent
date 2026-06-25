@@ -170,8 +170,6 @@
     if (_mb) monitorBaseline = JSON.parse(_mb);
   } catch (e) { monitorBaseline = null; }
   var attachIdSeq = 0;
-  // Plan 文本兜底卡片命中关键词（与 main.js 对齐）
-  var PLAN_FALLBACK_KEYWORDS = ["方案", "步骤", "以下", "技术栈", "实现", "设计", "**"];
 
   // ── bridge 层 UI 文案（系统消息/状态标签）──────────────────────
   // bridge 在事件回调里生成文案,拿不到 React 的 t;按 state.settings.language 取词,中文兜底。
@@ -188,7 +186,7 @@
       approved: "✅ Approved", echoGo: "✅ Do it",
       acceptPlanFailed: "⚠️ accept_plan failed: ",
       exitedPlan: "🚪 Exited Plan", discardPlanFailed: "⚠️ discard_plan failed: ", exitPlanFailed: "⚠️ Failed to exit Plan: ", switchModeFailed: "⚠️ Failed to switch mode: ",
-      replanRequested: "📋 Asking the AI to re-plan…", adoptingPlan: "✅ Adopting...", adoptEcho: "✅ Adopt this plan",
+      replanRequested: "📋 Asking the AI to re-plan…",
       openFailed: "⚠️ Open failed: ", pasteImageFailed: "⚠️ Paste image failed: ",
       filePickUnavailable: "⚠️ File picker unavailable", filePickFailed: "⚠️ File selection failed: ",
       equipNoSession: "⚠️ Open or create a chat before equipping an expert", equipFailed: "⚠️ Equip failed: ",
@@ -204,7 +202,7 @@
       approved: "✅ 承認済み", echoGo: "✅ これでいく",
       acceptPlanFailed: "⚠️ accept_plan に失敗: ",
       exitedPlan: "🚪 Plan を終了", discardPlanFailed: "⚠️ discard_plan に失敗: ", exitPlanFailed: "⚠️ Plan の終了に失敗: ", switchModeFailed: "⚠️ モード切替に失敗: ",
-      replanRequested: "📋 AI にプランを出し直させています…", adoptingPlan: "✅ 採用中...", adoptEcho: "✅ このプランを採用",
+      replanRequested: "📋 AI にプランを出し直させています…",
       openFailed: "⚠️ 開けませんでした: ", pasteImageFailed: "⚠️ 画像の貼り付けに失敗: ",
       filePickUnavailable: "⚠️ ファイル選択を利用できません", filePickFailed: "⚠️ ファイル選択に失敗: ",
       equipNoSession: "⚠️ エキスパートを装備する前にチャットを開くか新規作成してください", equipFailed: "⚠️ 装備に失敗: ",
@@ -220,7 +218,7 @@
       approved: "✅ 已批准", echoGo: "✅ 就这么干",
       acceptPlanFailed: "⚠️ accept_plan 失败: ",
       exitedPlan: "🚪 已退出 Plan", discardPlanFailed: "⚠️ discard_plan 失败: ", exitPlanFailed: "⚠️ 退出 Plan 失败: ", switchModeFailed: "⚠️ 切换模式失败: ",
-      replanRequested: "📋 让 AI 重出方案…", adoptingPlan: "✅ 采纳中...", adoptEcho: "✅ 采纳此方案",
+      replanRequested: "📋 让 AI 重出方案…",
       openFailed: "⚠️ 打开失败: ", pasteImageFailed: "⚠️ 粘贴图片失败: ",
       filePickUnavailable: "⚠️ 文件选择不可用", filePickFailed: "⚠️ 选择文件失败: ",
       equipNoSession: "⚠️ 请先打开或新建一个对话再加持专家", equipFailed: "⚠️ 加持失败: ",
@@ -1417,24 +1415,6 @@
     notify();
   }); });
 
-  // chat:plan_text_fallback —— Planning 态 AI 没调 plan 工具但 text 写了方案
-  listen("chat:plan_text_fallback", function (e) { onSessionEvent(e, function () {
-    var lastText = "";
-    for (var i = state.messages.length - 1; i >= 0; i--) {
-      if (state.messages[i].role === "assistant") {
-        var parts = state.messages[i].content || [];
-        for (var k = 0; k < parts.length; k++) { if (parts[k].type === "text" && parts[k].text) lastText += parts[k].text; }
-        break;
-      }
-    }
-    if (!lastText) return;
-    var hit = PLAN_FALLBACK_KEYWORDS.some(function (kw) { return lastText.includes(kw); });
-    if (!hit) return;
-    if (hasUnresolvedItem("plan_text_fallback")) return;
-    addChatItem({ type: "plan_text_fallback", text: lastText, resolved: false, time: timeStr() });
-    notify();
-  }); });
-
   // workflow:project_started —— start_workflow 后端建项目+绑定 session 后 emit。
   // 必须真正 switchToSession 切过去（load 新 session 的空 messages + sync engine +
   // syncSessionSkill），否则只设 activeSessionId 会让旧对话的 messages 残留在屏上，
@@ -2038,18 +2018,6 @@
     await exitPlanToYolo();
     await sendMessage("按上面讨论的方案继续执行任务,直接写文件/跑命令,不要再讨论方案。");
   }
-  async function planFallbackAccept(itemId, text) {
-    patchItemById(itemId, { resolved: true, statusLabel: bt("adoptingPlan") }); notify();
-    await acceptPlan(null, text || "", bt("adoptEcho"));
-  }
-  async function planFallbackRetry(itemId) {
-    patchItemById(itemId, { resolved: true }); notify();
-    await sendMessage("请用 update_plan 工具把上面的方案重新输出一遍,我才能在卡片上决策。");
-  }
-  async function executionStuckReplan(itemId) {
-    patchItemById(itemId, { resolved: true }); notify();
-    await sendMessage("你卡住了。请重新用 update_plan 工具列方案,我们再开始。");
-  }
 
   // ── 用户交互卡 ───────────────────────────────────────────────────
   async function submitUserInput(itemId, toolCallId, answers, questions) {
@@ -2595,9 +2563,6 @@
     setPlanModeNext: setPlanModeNext,
     planStuckReplan: planStuckReplan,
     planStuckGo: planStuckGo,
-    planFallbackAccept: planFallbackAccept,
-    planFallbackRetry: planFallbackRetry,
-    executionStuckReplan: executionStuckReplan,
     // 用户交互
     submitUserInput: submitUserInput,
     cancelUserInput: cancelUserInput,
