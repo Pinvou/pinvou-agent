@@ -5385,6 +5385,7 @@ dependencies = [
  "tauri-plugin-log",
  "tokio",
  "walkdir",
+ "webkit2gtk",
  "windows-sys 0.61.2",
  "zip",
 ]

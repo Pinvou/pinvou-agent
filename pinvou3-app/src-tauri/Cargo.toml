@@ -77,3 +77,8 @@ calamine = "0.26"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }
+
+# Linux webview(webkit2gtk)默认拒绝 getUserMedia → 语音输入点麦克风被拒。
+# 连 permission-request 信号放行 UserMedia(麦克风)请求。版本对齐 wry 0.55 用的 2.0.x。
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "2.0"

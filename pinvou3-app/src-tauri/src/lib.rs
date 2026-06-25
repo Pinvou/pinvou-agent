@@ -159,6 +159,30 @@ pub fn run() {
                 )?;
             }
 
+            // Linux webview(webkit2gtk)默认拒绝 getUserMedia,语音输入点麦克风会被拒。
+            // 给 main 窗口 webview 挂 permission-request:只放行 UserMedia(麦克风/摄像头)
+            // 请求,定位/通知等其余权限仍按默认拒绝。Windows/macOS 的 WebView2/WKWebView
+            // 自带系统级麦克风授权,不走这条。
+            #[cfg(target_os = "linux")]
+            {
+                use tauri::Manager;
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.with_webview(|webview| {
+                        use webkit2gtk::glib::prelude::ObjectExt;
+                        use webkit2gtk::{PermissionRequestExt, WebViewExt};
+                        let wv = webview.inner();
+                        wv.connect_permission_request(|_wv, req| {
+                            if req.type_().name() == "WebKitUserMediaPermissionRequest" {
+                                req.allow();
+                                true
+                            } else {
+                                false
+                            }
+                        });
+                    });
+                }
+            }
+
             // run 实体化一次性迁移：必须在 SessionStore boot **之前**跑
             // （迁移会动 _skill_bindings.json 和 sessions/ 目录，boot 之后再动
             // 会跟内存态打架）。失败只警告不 panic——app 仍可用，下次 boot 续跑。
