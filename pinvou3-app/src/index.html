@@ -2623,6 +2623,8 @@
       const [open, setOpen] = useState(false);
       const [tools, setTools] = useState([]);
       const [disabled, setDisabled] = useState(() => new Set()); // 被关掉的连接器 id(全局持久)
+      const [feishuOn, setFeishuOn] = useState(false); // 飞书是否已连接(CLI 路线)
+      const [feishuEnabled, setFeishuEnabled] = useState(true); // 飞书技能是否启用(未手动停用)
       // 启动时加载已装工具 + 全局持久的禁用列表(持久语义:新窗口/新对话都继承)
       useEffect(() => {
         let alive = true;
@@ -2634,6 +2636,10 @@
           try {
             const dis = await window.__TAURI__.core.invoke('get_disabled_connectors');
             if (alive) setDisabled(new Set(dis || []));
+          } catch (e) { /* 忽略 */ }
+          try {
+            const fs = await window.__TAURI__.core.invoke('feishu_skills_state');
+            if (alive) { setFeishuOn(!!(fs && fs.connected)); setFeishuEnabled(!fs || fs.enabled !== false); }
           } catch (e) { /* 忽略 */ }
         })();
         return () => { alive = false; };
@@ -2655,7 +2661,7 @@
             className="flex items-center gap-2 bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 px-3 py-1.5 rounded-xl text-[13px] font-semibold transition-colors border border-black/[0.04] dark:border-white/5">
             <Wrench size={14} className="opacity-70" />
             {t.composerTools}
-            {tools.length > 0 && <span className="text-[11px] bg-[#007AFF] text-white px-1.5 py-0.5 rounded-full leading-none font-bold shrink-0">{enabledCount}</span>}
+            {(tools.length > 0 || feishuOn) && <span className="text-[11px] bg-[#007AFF] text-white px-1.5 py-0.5 rounded-full leading-none font-bold shrink-0">{enabledCount + (feishuOn ? 1 : 0)}</span>}
             <ChevronDown size={14} className="opacity-50 shrink-0" />
           </button>
           {open && (
@@ -2663,7 +2669,13 @@
               <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
               <div className="absolute bottom-full left-0 mb-2 z-50 w-64 bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
                 <div className="px-3 py-2 text-[11px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider">{t.composerInstalledTools}</div>
-                {tools.length === 0 ? (
+                {feishuOn && (
+                  <div className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
+                    <span className="text-[13px] text-gray-700 dark:text-gray-200 truncate">飞书（Lark）</span>
+                    <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold text-[#34C759] bg-[#34C759]/10 px-2 py-0.5 rounded-full leading-none"><span className="w-1.5 h-1.5 rounded-full bg-[#34C759]" />已连接</span>
+                  </div>
+                )}
+                {tools.length === 0 && !feishuOn ? (
                   <div className="px-3 py-2 text-[13px] text-gray-400 dark:text-gray-500">{t.composerNoTools}</div>
                 ) : tools.map(tl => {
                   const on = !disabled.has(tl.id);
@@ -4157,7 +4169,7 @@
       { id: 6, backendId: null, title: '腾讯文档 MCP', subtitle: '多人实时在线协作协议', category: 'mcp', type: 'MCP Server', version: 'v1.0.5', latency: '<60ms', desc: '将腾讯文档能力接入 AI。允许大模型读取、分析甚至辅助编写在线表格、文档和幻灯片，轻松完成跨维度的内容查询与数据分析。', icon: FileText, color: 'bg-gradient-to-b from-blue-500 to-indigo-600', installed: false, authRequired: true },
       { id: 7, backendId: null, title: '腾讯会议助手', subtitle: '云视频会议自动化管控', category: 'comm', type: 'Action Skill', version: 'v2.2.1', latency: '<100ms', desc: '赋予 AI 调度会议室的能力。通过指令自动预定、查询和管理腾讯会议。支持一键发起会议、分发会议纪要、智能管理参会人员。', icon: Video, color: 'bg-gradient-to-b from-sky-400 to-blue-500', installed: false, authRequired: true },
       { id: 8, backendId: null, title: '企微 Bot Hook', subtitle: '连接企业内部与外部生态', category: 'comm', type: 'Webhook', version: 'v4.0', latency: '<40ms', desc: '深度对接企业微信。支持机器人主动推送图文消息、查询通讯录架构、联动审批流与日程管理。', icon: MessageCircle, color: 'bg-gradient-to-b from-cyan-400 to-blue-500', installed: false, authRequired: false },
-      { id: 9, backendId: null, title: '飞书套件 MCP', subtitle: '先进企业协作与管理平台', category: 'mcp', type: 'MCP Server', version: 'v1.5.0', latency: '<50ms', desc: '大模型与飞书生态的终极桥梁。包含读写云文档、检索飞书消息、操作多维表格（Bitable）及日历调度的完整能力集。', icon: Send, color: 'bg-gradient-to-b from-teal-400 to-emerald-500', installed: false, authRequired: true },
+      { id: 9, backendId: 'feishu', feishuCli: true, title: '飞书（Lark）', subtitle: '以你本人身份操作飞书文档/日历/表格/消息', category: 'comm', type: 'CLI + 官方技能', version: 'v1.0.56', latency: '云端', desc: '接入飞书官方 CLI + 官方域技能（MIT）：让 AI 以你本人身份读写云文档、查改日历、操作多维表格（Base）、收发消息、管理知识库与任务。点「连接飞书」浏览器一键授权，全程不填 key。数据经飞书云 OpenAPI（可选联网功能，opt-in）。', icon: Send, color: 'bg-gradient-to-b from-teal-400 to-emerald-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['读飞书文档帮我做一份 PPT', '把飞书文档整理成摘要', '查我今天的飞书日历', '看看我飞书里的待办任务'] },
       { id: 10, backendId: null, title: '钉钉开放 API', subtitle: '企业级智能移动办公底座', category: 'comm', type: 'REST API', version: 'v3.1.2', latency: '<80ms', desc: '提供钉钉全产品能力的接口映射。包含 AI 表格、考勤打卡、群聊机器人对话流及通讯录同步管控。', icon: Navigation, color: 'bg-gradient-to-b from-blue-400 to-indigo-500', installed: false, authRequired: true },
       { id: 11, backendId: null, title: 'TAPD 敏捷研发', subtitle: '缺陷与迭代的自动化追踪', category: 'dev', type: 'Action Skill', version: 'v2.8.0', latency: '<60ms', desc: '研发管理核心工具。允许 AI 查询项目迭代进度、自动拆分需求条目、更新缺陷状态，实现从需求到发布的研发全生命周期数字化。', icon: Layout, color: 'bg-gradient-to-b from-violet-500 to-fuchsia-600', installed: false, authRequired: true },
       { id: 12, backendId: null, title: 'CNB 云原生管线', subtitle: '代码仓库与 CI/CD 调度', category: 'dev', type: 'MCP Server', version: 'v1.0.0', latency: '<40ms', desc: '将云原生开发能力赋予大模型。支持通过自然语言进行代码仓库检索、提交 Issue、审查 PR、触发并监控流水线部署等极客操作。', icon: Code, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: true },
@@ -4335,7 +4347,7 @@
             onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, true); }}
             className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-slate-100 dark:bg-[#2C2C2E] border border-slate-200 dark:border-slate-700 text-[#FF3B30] dark:text-[#FF453A] hover:bg-slate-200 dark:hover:bg-[#3A3A3C]`}
           >
-            卸载
+            {tool.feishuCli ? '断开' : '卸载'}
           </button>
         );
       }
@@ -4345,7 +4357,7 @@
           onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, false); }}
           className={`${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`}
         >
-          {hasConfig ? '配置' : '安装'}
+          {tool.feishuCli ? '连接' : (hasConfig ? '配置' : '安装')}
         </button>
       );
     };
@@ -4423,20 +4435,30 @@
       const isDark = theme === 'dark';
       if (!config) return null;
       const [values, setValues] = useState({});
-      const field = config.fields[0]; // v1 只支持单个配置字段
-      const canSubmit = field ? (values[field.key] || '').trim().length > 0 : false;
+      const fields = config.fields || [];
+      const canSubmit = fields.length > 0 && fields.every(f => (values[f.key] || '').trim().length > 0);
       return (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
           <div
-            className={`w-[280px] rounded-[20px] overflow-hidden shadow-2xl ${isDark ? 'bg-[#2C2C2E]' : 'bg-white/95 backdrop-blur-xl'}`}
+            className={`w-[300px] rounded-[20px] overflow-hidden shadow-2xl ${isDark ? 'bg-[#2C2C2E]' : 'bg-white/95 backdrop-blur-xl'}`}
             style={{ animation: 'tsAlertIn .2s ease-out' }}
           >
-            <div className="px-6 pt-6 pb-4 text-center">
-              <div className={`text-[17px] font-semibold mb-4 ${isDark ? 'text-white' : 'text-slate-900'}`}>
+            <div className="px-6 pt-6 pb-4 text-center max-h-[70vh] overflow-y-auto">
+              <div className={`text-[17px] font-semibold mb-3 ${isDark ? 'text-white' : 'text-slate-900'}`}>
                 配置「{config.name}」
               </div>
-              {field && (
-                <div className="text-left mb-3">
+              {/* 引导链接放最上,不夹在输入框中间 */}
+              {fields.find(f => f.helpUrl) && (
+                <button
+                  onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: fields.find(f => f.helpUrl).helpUrl })}
+                  className={`text-[13px] mb-4 inline-block ${isDark ? 'text-[#0A84FF]' : 'text-[#007AFF]'} hover:underline`}
+                >
+                  不会建应用？去飞书开放平台建一个 →
+                </button>
+              )}
+              {/* 所有输入框紧挨着 */}
+              {fields.map((field) => (
+                <div key={field.key} className="text-left mb-3">
                   <label className={`text-[13px] font-medium mb-1.5 block ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>
                     {field.label}
                   </label>
@@ -4451,21 +4473,13 @@
                         : 'bg-slate-50 border border-slate-200 text-slate-900 placeholder-slate-400 focus:border-[#007AFF]'
                     }`}
                   />
+                  {field.helpText && (
+                    <div className={`text-[11px] mt-1 leading-snug ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                      {field.helpText}
+                    </div>
+                  )}
                 </div>
-              )}
-              {field && field.helpUrl && (
-                <button
-                  onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: field.helpUrl })}
-                  className={`text-[13px] ${isDark ? 'text-[#0A84FF]' : 'text-[#007AFF]'} hover:underline`}
-                >
-                  免费获取 →
-                </button>
-              )}
-              {field && field.helpText && (
-                <div className={`text-[12px] mt-1 leading-relaxed ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-                  {field.helpText}
-                </div>
-              )}
+              ))}
             </div>
             <div className={`border-t ${isDark ? 'border-white/10' : 'border-slate-200'}`}>
               <button
@@ -4485,7 +4499,7 @@
                     : (isDark ? 'text-slate-600' : 'text-slate-300')
                 }`}
               >
-                安装
+                {config.backendId === 'feishu' ? '连接' : '安装'}
               </button>
             </div>
           </div>
@@ -4504,11 +4518,46 @@
       const [busyId, setBusyId] = useState(null);
       const [alert, setAlert] = useState({ visible: false, loading: false, title: '', subtitle: '', isInstall: false, isError: false });
       const [configDialog, setConfigDialog] = useState(null); // { backendId, name, fields }
+      // 飞书(CLI 路线)连接态:不走 marketplace,由 lark-cli auth status 判定
+      const [feishuConnected, setFeishuConnected] = useState(false);
+      const [feishuQr, setFeishuQr] = useState(null); // { qr: dataUrl, url } 扫码弹窗
+      const refreshFeishu = async () => {
+        try {
+          const s = await window.__TAURI__.core.invoke('feishu_status');
+          setFeishuConnected(!!(s && s.connected));
+        } catch (e) { console.error('feishu_status failed:', e); }
+      };
+      useEffect(() => { refreshFeishu(); }, []);
 
-      // 合并后端安装状态到 mock 数据
+      // 飞书连接编排事件(config init --new 两段扫码):后端推进度,前端驱动 UI。
+      useEffect(() => {
+        const ev = window.__TAURI__ && window.__TAURI__.event;
+        if (!ev) return;
+        const unlisten = [];
+        ev.listen('feishu:qr', (e) => {
+          const p = e.payload || {};
+          setFeishuQr({ qr: p.qr_data_url, url: p.url, phase: p.phase });
+        }).then(u => unlisten.push(u));
+        ev.listen('feishu:connected', () => {
+          setFeishuQr(null); setFeishuConnected(true); setBusyId(null);
+          // 连上 → 按规则写技能(默认启用)+ 广播刷新,飞书技能即刻对模型可见。
+          window.__TAURI__.core.invoke('feishu_apply_skills').catch(() => {});
+          setAlert({ visible: true, loading: false, title: '已连接飞书', subtitle: '', isInstall: true, isError: false, toolId: 'feishu' });
+        }).then(u => unlisten.push(u));
+        ev.listen('feishu:error', (e) => {
+          const p = e.payload || {};
+          setFeishuQr(null); setBusyId(null);
+          setAlert({ visible: true, loading: false, title: '飞书连接失败', subtitle: String(p.message || '').slice(0, 240), isError: true });
+        }).then(u => unlisten.push(u));
+        return () => { unlisten.forEach(u => { try { u(); } catch (_) {} }); };
+      }, []);
+
+      // 合并后端安装状态到 mock 数据(飞书的 installed = 已连接)
       const tools = tsToolsData.map(t => ({
         ...t,
-        installed: t.backendId ? (toolStates[t.backendId] || false) : false,
+        installed: t.feishuCli
+          ? feishuConnected
+          : (t.backendId ? (toolStates[t.backendId] || false) : false),
       }));
 
       const filteredTools = tools.filter(tool => {
@@ -4566,8 +4615,48 @@
         }
       };
 
+      // 连接飞书(config init --new 自建 app,两段扫码):事件驱动。
+      // 进度走后端事件 feishu:qr / feishu:phase / feishu:connected / feishu:error
+      //(监听见下方 useEffect);这里只 ensure cli + 触发 begin。busyId 在事件里清。
+      const connectFeishu = async () => {
+        setBusyId('feishu');
+        setAlert({ loading: true, visible: false, title: '正在准备飞书连接…', subtitle: '首次需安装 lark-cli（联网，稍候）', isInstall: true, isError: false });
+        try {
+          await window.__TAURI__.core.invoke('feishu_ensure_cli');
+          setAlert({ visible: false, loading: false, title: '', subtitle: '', isInstall: false, isError: false });
+          await window.__TAURI__.core.invoke('feishu_connect_begin');
+          // 后续:feishu:qr 出二维码 → 用户扫码 → feishu:connected 收尾。
+        } catch (e) {
+          console.error('feishu connect failed:', e);
+          setFeishuQr(null);
+          setBusyId(null);
+          setAlert({ visible: true, loading: false, title: '飞书连接失败', subtitle: String(e).slice(0, 240), isError: true });
+        }
+      };
+      const disconnectFeishu = async () => {
+        setBusyId('feishu');
+        try {
+          await window.__TAURI__.core.invoke('feishu_logout');
+          // 断开 → 撤掉技能(should_show 变 false)+ 广播刷新。
+          await window.__TAURI__.core.invoke('feishu_apply_skills').catch(() => {});
+          setFeishuConnected(false);
+          setAlert({ visible: true, loading: false, title: '已断开飞书', isInstall: false, isError: false });
+        } catch (e) {
+          console.error('feishu logout failed:', e);
+          setAlert({ visible: true, loading: false, title: '操作失败，请重试', isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+
       // 安装/卸载入口
       const handleAction = async (backendId, isInstalled) => {
+        // 飞书走 CLI 连接流程,不走 marketplace install
+        if (backendId === 'feishu') {
+          if (isInstalled) return disconnectFeishu();
+          // 未连接 → 直接触发 config init --new(浏览器自动建 app + 两段扫码,不收表单)
+          return connectFeishu();
+        }
         const t = tsToolsData.find(x => x.backendId === backendId);
         const name = t ? t.title : backendId;
 
@@ -4629,13 +4718,34 @@
 
       return (
         <div className={`${isDark ? 'dark' : ''} flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden antialiased selection:bg-blue-200 dark:selection:bg-blue-900`}>
-          <TsAlert alert={alert} theme={theme} onDismiss={() => setAlert(a => ({ ...a, visible: false }))} onNewChat={() => { const tid = alert.toolId; setAlert(a => ({ ...a, visible: false })); if (onNewChat) onNewChat(tid); }} />
-          <TsConfigDialog
+          {ReactDOM.createPortal(<TsAlert alert={alert} theme={theme} onDismiss={() => setAlert(a => ({ ...a, visible: false }))} onNewChat={() => { const tid = alert.toolId; setAlert(a => ({ ...a, visible: false })); if (onNewChat) onNewChat(tid); }} />, document.body)}
+          {ReactDOM.createPortal(<TsConfigDialog
             config={configDialog}
             theme={theme}
             onCancel={() => setConfigDialog(null)}
-            onConfirm={(values) => { setConfigDialog(null); doInstall(configDialog.backendId, values); }}
-          />
+            onConfirm={(values) => { const bid = configDialog.backendId; setConfigDialog(null); doInstall(bid, values); }}
+          />, document.body)}
+          {feishuQr && (() => {
+            const isAuth = feishuQr.phase === 'authorize';
+            const cancel = () => { window.__TAURI__.core.invoke('feishu_cancel').catch(() => {}); setFeishuQr(null); setBusyId(null); };
+            return ReactDOM.createPortal((
+            <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
+              <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-7 w-full max-w-[360px] flex flex-col items-center text-center shadow-2xl" onClick={e => e.stopPropagation()}>
+                <div className="text-[12px] font-bold text-teal-600 dark:text-teal-400 mb-1 tracking-wide">{isAuth ? '第 2 步 / 共 2 步' : '第 1 步 / 共 2 步'}</div>
+                <h3 className="text-[19px] font-bold text-slate-900 dark:text-white mb-1">{isAuth ? '扫码授权' : '扫码注册飞书应用'}</h3>
+                <p className="text-[13px] text-slate-500 dark:text-slate-400 mb-4">{isAuth ? '用飞书 App 扫一扫，授权以你的身份操作飞书' : '用飞书 App 扫一扫，确认创建应用'}</p>
+                {feishuQr.qr
+                  ? <img src={feishuQr.qr} alt="飞书二维码" className="w-52 h-52 rounded-2xl border border-slate-200 dark:border-white/10 bg-white" />
+                  : <div className="w-52 h-52 rounded-2xl border border-dashed border-slate-300 dark:border-white/10 flex items-center justify-center text-[12px] text-slate-400 px-4">二维码生成失败，请用下方浏览器授权</div>}
+                <div className="flex items-center gap-1.5 mt-4 text-[13px] text-slate-500 dark:text-slate-400">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> {isAuth ? '等待授权中…' : '等待注册中…'}
+                </div>
+                <button onClick={() => { if (feishuQr.url) window.__TAURI__.core.invoke('open_external_url', { url: feishuQr.url }); }} className="mt-4 text-[13px] text-blue-600 dark:text-blue-400 hover:underline">在浏览器打开</button>
+                <button onClick={cancel} className="mt-3 px-6 py-2 rounded-full text-[14px] font-semibold bg-slate-100 dark:bg-[#2C2C2E] text-slate-600 dark:text-slate-300">取消</button>
+              </div>
+            </div>
+            ), document.body);
+          })()}
           <div className="flex-1 flex flex-col bg-white dark:bg-black text-slate-900 dark:text-white transition-colors duration-300 font-sans overflow-hidden">
 
             {/* Header */}

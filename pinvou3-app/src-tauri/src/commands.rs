@@ -1499,6 +1499,12 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
         "https://app.tavily.com/",
         "https://www.iwencai.com/",
         "https://agent.qcc.com/",
+        // 飞书/Lark OAuth(device flow 授权页 + 账号页);连接飞书走这里开浏览器
+        "https://open.feishu.cn/",
+        "https://accounts.feishu.cn/",
+        "https://www.feishu.cn/",
+        "https://open.larksuite.com/",
+        "https://accounts.larksuite.com/",
     ];
     if !ALLOWED_PREFIXES.iter().any(|p| url.starts_with(p)) {
         return Err(format!("URL not in allowlist: {url}"));
