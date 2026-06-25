@@ -3305,6 +3305,7 @@
       // ── 产物分栏:宽屏(≥900)并排可拖、窄屏回退覆盖抽屉 ──
       const ART_MIN = 360, ART_MAX_RATIO = 0.65, ART_DEFAULT_RATIO = 0.45, ART_NARROW = 900;
       const rootRef = useRef(null);
+      const artColRef = useRef(null);
       const [isWide, setIsWide] = useState(() => (typeof window !== 'undefined' ? window.innerWidth : 1200) >= ART_NARROW);
       const [artifactW, setArtifactW] = useState(() => {
         const s = parseInt(localStorage.getItem('pinvou_artifactW') || '', 10);
@@ -3324,16 +3325,25 @@
       const startArtifactDrag = (e) => {
         e.preventDefault();
         const rect = rootRef.current ? rootRef.current.getBoundingClientRect() : { right: window.innerWidth, width: window.innerWidth };
-        let last = artifactW;
+        const max = Math.min(rect.width * ART_MAX_RATIO, rect.width - ART_MIN);
+        const col = artColRef.current;
+        let last = artifactW, raf = 0;
+        if (col) col.style.pointerEvents = 'none';   // 拖动时让产物 iframe 不吃 mousemove(否则往右拖发涩)
         const onMove = (ev) => {
-          const max = Math.min(rect.width * ART_MAX_RATIO, rect.width - ART_MIN);
           last = Math.max(ART_MIN, Math.min(rect.right - ev.clientX, max));
-          setArtifactW(last);
+          if (raf) return;                            // rAF 合帧:每帧最多改一次
+          raf = requestAnimationFrame(() => {
+            raf = 0;
+            if (col) col.style.width = last + 'px';    // 直接改 DOM 宽度,拖动期间不触发 React 重渲染
+          });
         };
         const onUp = () => {
           document.removeEventListener('mousemove', onMove);
           document.removeEventListener('mouseup', onUp);
+          if (raf) cancelAnimationFrame(raf);
+          if (col) col.style.pointerEvents = '';
           document.body.style.cursor = ''; document.body.style.userSelect = '';
+          setArtifactW(last);                          // 仅松手时提交一次 state + 落盘
           localStorage.setItem('pinvou_artifactW', String(Math.round(last)));
         };
         document.addEventListener('mousemove', onMove);
@@ -3613,7 +3623,7 @@
             <>
               <div onMouseDown={startArtifactDrag} onDoubleClick={resetArtifactW} role="separator" aria-orientation="vertical"
                 className={`shrink-0 w-1.5 h-full cursor-col-resize transition-colors ${isDark ? 'bg-white/10 hover:bg-[#A8C7FA]/60' : 'bg-black/10 hover:bg-[#0B57D0]/50'}`} />
-              <div className="shrink-0 h-full relative" style={{ width: artifactW + 'px' }}>
+              <div ref={artColRef} className="shrink-0 h-full relative" style={{ width: artifactW + 'px' }}>
                 <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} isWide={true} />
               </div>
             </>
