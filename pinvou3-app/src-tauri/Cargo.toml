@@ -29,6 +29,7 @@ tauri-plugin-dialog = "2"
 
 # 异步 / 错误
 anyhow = "1.0"
+async-trait = "0.1" # impl 底座 ToolSpec(kb_search Agentic 工具)
 tokio = { version = "1.49", features = ["full"] }
 
 # 底层 Agent —— DeepSeek-TUI 提供 LLM 调用 + 工具循环 + 流式事件。
@@ -52,6 +53,22 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 # File watcher：监听 ~/.pinvou3/sessions/*/workspace/ 新文件产出，
 # 自动入 session.artifacts (覆盖 write_file 之外的工具如 exec_shell pandoc 产出的 docx)
 notify = "6"
+
+# 本地知识底座 L0：全系统元数据索引 + 秒搜 + 去重（docs/本地知识底座-产品形态与架构.md）
+# rusqlite bundled —— 自带 SQLite + FTS5（名/路径秒搜），不依赖系统 libsqlite，
+# 对 .deb 离线分发友好（与 file_ingest 二进制依赖降 recommends 的思路一致）。
+rusqlite = { version = "0.31", features = ["bundled"] }
+# 全盘遍历：容错(权限不足跳过)、防 symlink 环。L0 扫描器用。
+walkdir = "2"
+
+# 本地 embedding（L1 语义检索）：fastembed-rs 进程内 ONNX 推理（CPU EP），**不依赖 vLLM**。
+# 模型(bge-m3 ONNX)用户本地下载，UserDefinedEmbeddingModel 从目录加载，不走 HF 自动下载。
+fastembed = "4"
+
+# 电子表格解析（file_ingest 用）：纯 Rust 读 xlsx/xls/ods 的**全部工作表**。
+# 旧实现走 LibreOffice CSV 只导「活动工作表」，多 sheet 文件会丢 90% 内容（实测散热
+# 报告 4 sheet 只抽到首页 418 字）；calamine 直接按 reader 嗅探格式、逐 sheet 逐行读。
+calamine = "0.26"
 
 # 产物卡封面：读 .pptx(zip)里的 docProps/thumbnail.jpeg。只需 stored/deflate，
 # 关掉默认的 bzip2/zstd/aes 等后端，保持依赖精简、跨平台无系统库要求。
