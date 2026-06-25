@@ -955,6 +955,26 @@
       const [savedConfirm, setSavedConfirm] = useState(null); // 存入成功 → iOS 确认窗 {name}
       const [poolMyOnly, setPoolMyOnly] = useState(false); // 跳卡池时是否直接落「我的卡牌」筛选(从确认窗"去查看"进来=true)
 
+      // ── 多窗口(撕离/tear-off):把某菜单项弹成独立窗口 ──────────────────────────
+      // detachedSet 记已撕离项(key = kind + ':' + id),侧边栏对应项显示 • 角标;后端按
+      // label 去重,重复 tearOff = 聚焦已有窗口。撕离窗口关闭时 emit 'detach:closed' 回坞。
+      const [detachedSet, setDetachedSet] = useState(() => new Set());
+      const tearOff = (kind, id) => {
+        const inv = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+        if (!inv) return;
+        inv('open_detached_window', id != null ? { kind, id } : { kind });
+        setDetachedSet(prev => new Set(prev).add(kind + ':' + (id != null ? id : '')));
+      };
+      useEffect(() => {
+        if (!window.__TAURI__ || !window.__TAURI__.event) return;
+        let un;
+        window.__TAURI__.event.listen('detach:closed', (e) => {
+          const key = e && e.payload; if (!key) return;
+          setDetachedSet(prev => { const n = new Set(prev); n.delete(key); return n; });
+        }).then(f => { un = f; });
+        return () => { if (un) un(); };
+      }, []);
+
       const t = dict[language];
       // 有可用新版 → 侧边栏设置图标亮红点（不弹窗不打断）
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
@@ -1209,6 +1229,7 @@
             {/* Header / Logo */}
             <div className={`px-4 py-4 flex items-center ${isSidebarOpen ? 'gap-3' : 'justify-center'} overflow-hidden`}>
               <button
+                data-sidebar-toggle
                 onClick={() => setIsSidebarOpen(!isSidebarOpen)}
                 title={isSidebarOpen ? t.sidebarCollapse : t.sidebarExpand}
                 className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]'}`}
@@ -1241,6 +1262,7 @@
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => setCurrentView('monitor')}
+                onTearOff={() => tearOff('monitor')} tearoffKind="monitor" detached={detachedSet.has('monitor:')} tearoffHint={t.tearoffHint}
               />
               <NavItem
                 icon={<Layers size={18} />} label={t.cardPool}
@@ -1248,6 +1270,7 @@
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => { setPoolMyOnly(false); setCurrentView('cardpool'); }}
+                onTearOff={() => tearOff('cardpool')} tearoffKind="cardpool" detached={detachedSet.has('cardpool:')} tearoffHint={t.tearoffHint}
               />
               <NavItem
                 icon={<ClipboardList size={18} />} label={t.workflow}
@@ -1255,6 +1278,7 @@
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => setCurrentView('workflow')}
+                onTearOff={() => tearOff('workflow')} tearoffKind="workflow" detached={detachedSet.has('workflow:')} tearoffHint={t.tearoffHint}
               />
               <NavItem
                 icon={<Puzzle size={18} />} label={t.toolStore}
@@ -1262,6 +1286,7 @@
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => setCurrentView('toolStore')}
+                onTearOff={() => tearOff('toolstore')} tearoffKind="toolstore" detached={detachedSet.has('toolstore:')} tearoffHint={t.tearoffHint}
               />
               <NavItem
                 icon={<BookOpen size={18} />} label={t.knowledge}
@@ -1269,6 +1294,7 @@
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => setCurrentView('knowledge')}
+                onTearOff={() => tearOff('knowledge')} tearoffKind="knowledge" detached={detachedSet.has('knowledge:')} tearoffHint={t.tearoffHint}
               />
               {/* 收起态专属:展开态近期列表的高亮项就是回会话入口,不重复渲染 */}
               {!isSidebarOpen && (
@@ -1307,6 +1333,8 @@
                       onSelect={handleSwitchSession}
                       onRename={handleRenameSession}
                       onDelete={handleDeleteSession}
+                      detached={detachedSet.has('session:' + chat.id)}
+                      onTearOff={() => tearOff('session', chat.id)}
                     />
                   ))}
                 </div>
@@ -6245,13 +6273,13 @@
     // Shared Components
     // ==========================================
 
-    const NavItem = ({ icon, label, active, theme, isSidebarOpen = true, onClick }) => {
+    const NavItem = ({ icon, label, active, theme, isSidebarOpen = true, onClick, onTearOff, tearoffKind, detached, tearoffHint }) => {
       const isDark = theme === 'dark';
       return (
         <div
           onClick={onClick}
           title={!isSidebarOpen ? label : ""}
-          className={`flex items-center cursor-pointer text-[15px] font-medium transition-colors overflow-hidden
+          className={`group flex items-center cursor-pointer text-[15px] font-medium transition-colors overflow-hidden
           ${isSidebarOpen ? 'px-4 py-3 rounded-full w-full' : 'w-10 h-10 justify-center rounded-full mx-auto shrink-0'}
           ${active
             ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-[#D3E3FD] text-[#041E49]')
@@ -6261,12 +6289,20 @@
             {icon}
           </div>
           {isSidebarOpen && <span className="whitespace-nowrap">{label}</span>}
+          {isSidebarOpen && onTearOff && (
+            <button
+              data-tearoff={tearoffKind}
+              title={tearoffHint}
+              onClick={(e) => { e.stopPropagation(); onTearOff(); }}
+              className="ml-auto shrink-0 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity px-1 text-[13px] leading-none"
+            >⧉{detached ? ' •' : ''}</button>
+          )}
         </div>
       );
     };
 
     // 近期会话项：支持重命名(内联编辑) + 删除(内联二次确认)
-    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete }) => {
+    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, detached, onTearOff }) => {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
@@ -6296,6 +6332,7 @@
           <span className="truncate pr-2 leading-relaxed whitespace-nowrap flex-1">{chat.title}</span>
           {chat.working && <span className="shrink-0 mr-1 inline-block w-2 h-2 rounded-full bg-current opacity-70 animate-pulse" title={t.riGenerating}></span>}
           {chat.skill && <span className="text-[11px] shrink-0 opacity-70 mr-1" title={chat.skill}>🧭</span>}
+          {detached && <span className="text-[11px] shrink-0 opacity-70 mr-1" title={t.tearoffTitle}>⧉</span>}
           {confirming ? (
             <div className="flex items-center gap-0.5 shrink-0" onClick={e => e.stopPropagation()}>
               <span className={`text-[11px] mr-0.5 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{t.riDelQ}</span>
@@ -6313,6 +6350,8 @@
                 </span>
               )}
               <div className="hidden group-hover:flex items-center gap-0.5 shrink-0">
+                <button data-tearoff="session" title={t.tearoffHint} onClick={(e) => { e.stopPropagation(); onTearOff && onTearOff(); }}
+                  className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${isDark ? 'hover:bg-[#444746]' : 'hover:bg-[#D3D7DB]'}`}>⧉</button>
                 <button title={t.riRename} onClick={(e) => { e.stopPropagation(); setVal(chat.title); setEditing(true); }}
                   className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${isDark ? 'hover:bg-[#444746]' : 'hover:bg-[#D3D7DB]'}`}>✏️</button>
                 <button title={t.cpDelete} onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
