@@ -73,3 +73,8 @@ calamine = "0.26"
 # 产物卡封面：读 .pptx(zip)里的 docProps/thumbnail.jpeg。只需 stored/deflate，
 # 关掉默认的 bzip2/zstd/aes 等后端，保持依赖精简、跨平台无系统库要求。
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+# 仅 Phase 0 spike example(examples/tearoff_spike.rs)用:验证 X11 全局鼠标坐标+按键。
+# 放 dev-dependencies → 不进生产 deb;对 examples 可见,对 src/bin 不可见。
+device_query = "2"

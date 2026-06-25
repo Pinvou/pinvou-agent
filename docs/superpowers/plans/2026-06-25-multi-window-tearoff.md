@@ -25,7 +25,7 @@
 ## File Structure
 
 **新建：**
-- `pinvou3-app/src-tauri/src/bin/tearoff_spike.rs` — Phase 0 一次性 spike bin，验证 device_query 在本机 X11 读全局鼠标坐标+左键状态。验收后保留作回归参考。
+- `pinvou3-app/src-tauri/examples/tearoff_spike.rs` — Phase 0 一次性 spike example，验证 device_query 在本机 X11 读全局鼠标坐标+左键状态。用 example 而非 src/bin：dev-dependencies 只对 examples/tests 可见，src/bin 看不到。验收后保留作回归参考。
 - `pinvou3-app/src-tauri/src/detach.rs` — 撕离窗口的 Rust 模块：`detached_label` / `view_title` 纯函数 + `open_detached_window` command。
 - `pinvou3-app/tests/detached_boot_smoke.js` — puppeteer 冒烟：以 `?detached=1` 加载 index.html，断言只渲染目标面板、无侧边栏。
 - `pinvou3-app/tests/tearoff_buttons_smoke.js` — puppeteer 冒烟：断言侧边栏各项有"⧉ 弹出"入口且点击以正确参数调 `open_detached_window`。
@@ -47,7 +47,7 @@
 唯一真正的未知点：本机 X11 下能否稳定读全局鼠标坐标 + 左键按下状态（Phase 2 鬼影跟随+松手判定的地基）。WebviewWindowBuilder 跨屏建窗已有 `open_artifact_window` 先例，低风险，不在 spike 内。
 
 **Files:**
-- Create: `pinvou3-app/src-tauri/src/bin/tearoff_spike.rs`
+- Create: `pinvou3-app/src-tauri/examples/tearoff_spike.rs`
 - Modify: `pinvou3-app/src-tauri/Cargo.toml`
 
 **Interfaces:**
@@ -62,17 +62,17 @@
 device_query = "2"
 ```
 
-> 放 dev-dependencies：spike bin 只在开发期手动跑，不进生产 deb。Phase 2 真正用到时再决定是否升为正式 dependency（届时另起计划）。
+> 放 dev-dependencies：spike 只在开发期手动跑，不进生产 deb。dev-deps 对 examples 可见、对 src/bin 不可见，故 spike 必须是 example。Phase 2 真正用到时再决定是否升为正式 dependency（届时另起计划）。
 
-- [ ] **Step 2: 写 spike bin**
+- [ ] **Step 2: 写 spike example**
 
-Create `pinvou3-app/src-tauri/src/bin/tearoff_spike.rs`：
+Create `pinvou3-app/src-tauri/examples/tearoff_spike.rs`：
 
 ```rust
 //! 一次性 spike：验证本机 X11 下 device_query 能读全局鼠标坐标 + 左键状态。
-//! 跑法：cd pinvou3-app/src-tauri && cargo run --bin tearoff_spike
+//! 跑法：cd pinvou3-app/src-tauri && cargo run --example tearoff_spike
 //! 预期：移动鼠标 / 按住左键时下面打印的坐标和 down=true 实时变化(跨 3 屏都更新)。
-//! Ctrl-C 退出。device_query 在 dev-dependencies，故用 `cargo run` 默认 dev profile 可见。
+//! Ctrl-C 退出。device_query 在 dev-dependencies，对 examples 可见。
 
 use device_query::{DeviceQuery, DeviceState, MouseState};
 use std::{thread, time::Duration};
@@ -98,7 +98,7 @@ fn main() {
 
 Run:
 ```bash
-cd pinvou3-app/src-tauri && cargo run --bin tearoff_spike
+cd pinvou3-app/src-tauri && cargo run --example tearoff_spike
 ```
 Expected：
 - 鼠标移到**第二/第三台显示器**（x 进入 1920–3839 / ≥3840 区间，本机布局 HDMI-0@0 / USB-C-1@1920 / USB-C-0@3840）时坐标持续更新；
@@ -111,7 +111,7 @@ Expected：
 
 ```bash
 cd /home/bailang/WorkSpace/Pinvou3-multiwindow
-git add pinvou3-app/src-tauri/src/bin/tearoff_spike.rs pinvou3-app/src-tauri/Cargo.toml
+git add pinvou3-app/src-tauri/examples/tearoff_spike.rs pinvou3-app/src-tauri/Cargo.toml
 git commit -m "chore(multi-window): Phase0 spike 验证 X11 全局鼠标(device_query)"
 ```
 
