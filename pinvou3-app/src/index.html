@@ -1887,7 +1887,7 @@
     };
 
     // 输入框底栏:模型选择器(iOS 化,复用 ModelChip 的 switchModel 逻辑;darkMode:'class' 故用 dark: 变体)。
-    const ComposerModelSelector = ({ t, bs, onGotoSettings }) => {
+    const ComposerModelSelector = ({ t, bs, onGotoSettings, compact }) => {
       const [open, setOpen] = useState(false);
       const savedModels = (bs && bs.savedModels) || [];
       const activeSessionId = bs ? bs.activeSessionId : null;
@@ -1899,13 +1899,22 @@
       if (!savedModels.length) return null;
       function pick(id) { setOpen(false); if (id !== effectiveId && bridge.available) bridge.switchModel(activeSessionId, id); }
       return (
-        <div className="relative">
+        <div className="relative min-w-0">
           <button onClick={() => { if (!busy) setOpen(o => !o); }} disabled={busy}
-            title={busy ? t.modelSwitchBusy : t.switchModelTitle}
-            className="flex items-center gap-2 bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 px-3 py-1.5 rounded-xl text-[13px] font-semibold transition-colors border border-black/[0.04] dark:border-white/5 disabled:opacity-50">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#34C759]"></span>
-            <span className="max-w-[150px] truncate">{current ? current.name : t.modelNonePick}</span>
-            <ChevronDown size={14} className="opacity-50 shrink-0" />
+            title={(current ? current.name : t.modelNonePick) + (busy ? ' · ' + t.modelSwitchBusy : '')}
+            className={`relative shrink-0 flex items-center justify-center bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 transition-colors border border-black/[0.04] dark:border-white/5 disabled:opacity-50 ${compact ? 'w-9 h-9 rounded-full' : 'gap-2 px-3 py-1.5 rounded-xl text-[13px] font-semibold min-w-0 max-w-full'}`}>
+            {compact ? (
+              <>
+                <Cpu size={18} className="opacity-80" />
+                <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-[#34C759] ring-2 ring-white dark:ring-[#161618]"></span>
+              </>
+            ) : (
+              <>
+                <span className="w-1.5 h-1.5 shrink-0 rounded-full bg-[#34C759]"></span>
+                <span className="max-w-[150px] truncate">{current ? current.name : t.modelNonePick}</span>
+                <ChevronDown size={14} className="opacity-50 shrink-0" />
+              </>
+            )}
           </button>
           {open && (
             <>
@@ -1935,7 +1944,7 @@
     };
 
     // 输入框底栏:工具菜单(只展示已装工具 + 跳工具商店;无会话级开关——后端无此概念)。
-    const ComposerToolMenu = ({ t, onGotoTools }) => {
+    const ComposerToolMenu = ({ t, onGotoTools, compact }) => {
       const [open, setOpen] = useState(false);
       const [tools, setTools] = useState([]);
       const [disabled, setDisabled] = useState(() => new Set()); // 被关掉的连接器 id(全局持久)
@@ -1966,13 +1975,15 @@
       }
       const enabledCount = tools.filter(tl => !disabled.has(tl.id)).length;
       return (
-        <div className="relative">
-          <button onClick={() => setOpen(o => !o)}
-            className="flex items-center gap-2 bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 px-3 py-1.5 rounded-xl text-[13px] font-semibold transition-colors border border-black/[0.04] dark:border-white/5">
-            <Wrench size={14} className="opacity-70" />
-            {t.composerTools}
-            {tools.length > 0 && <span className="text-[11px] bg-[#007AFF] text-white px-1.5 py-0.5 rounded-full leading-none font-bold shrink-0">{enabledCount}</span>}
-            <ChevronDown size={14} className="opacity-50 shrink-0" />
+        <div className="relative shrink-0">
+          <button onClick={() => setOpen(o => !o)} title={t.composerTools}
+            className={`relative shrink-0 flex items-center justify-center bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 transition-colors border border-black/[0.04] dark:border-white/5 ${compact ? 'w-9 h-9 rounded-full' : 'gap-2 px-3 py-1.5 rounded-xl text-[13px] font-semibold whitespace-nowrap'}`}>
+            <Wrench size={compact ? 18 : 14} className="opacity-80" />
+            {!compact && t.composerTools}
+            {tools.length > 0 && (compact
+              ? <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 text-[10px] leading-4 text-center font-bold bg-[#007AFF] text-white rounded-full">{enabledCount}</span>
+              : <span className="text-[11px] bg-[#007AFF] text-white px-1.5 py-0.5 rounded-full leading-none font-bold shrink-0">{enabledCount}</span>)}
+            {!compact && <ChevronDown size={14} className="opacity-50 shrink-0" />}
           </button>
           {open && (
             <>
@@ -2533,6 +2544,48 @@
       const isDark = theme === 'dark';
       const [inputText, setInputText] = useState('');
       const [artifactsOpen, setArtifactsOpen] = useState(false);
+      // ── 产物分栏:宽屏(≥900)并排可拖、窄屏回退覆盖抽屉 ──
+      const ART_MIN = 360, ART_MAX_RATIO = 0.65, ART_DEFAULT_RATIO = 0.45, ART_NARROW = 900;
+      const rootRef = useRef(null);
+      const [isWide, setIsWide] = useState(() => (typeof window !== 'undefined' ? window.innerWidth : 1200) >= ART_NARROW);
+      const [artifactW, setArtifactW] = useState(() => {
+        const s = parseInt(localStorage.getItem('pinvou_artifactW') || '', 10);
+        const w = (typeof window !== 'undefined' ? window.innerWidth : 1200);
+        return Number.isFinite(s) && s >= ART_MIN ? s : Math.round(w * ART_DEFAULT_RATIO);
+      });
+      useEffect(() => {
+        const onResize = () => {
+          setIsWide(window.innerWidth >= ART_NARROW);
+          setArtifactW(w => Math.max(ART_MIN, Math.min(w, Math.round(window.innerWidth * ART_MAX_RATIO))));
+        };
+        onResize();                 // 挂载即测一次(maximized 启动时 init 可能读到小值,这里校正)
+        const t = setTimeout(onResize, 300);  // 再补一发,防 webview 首帧尺寸未定
+        window.addEventListener('resize', onResize);
+        return () => { clearTimeout(t); window.removeEventListener('resize', onResize); };
+      }, []);
+      const startArtifactDrag = (e) => {
+        e.preventDefault();
+        const rect = rootRef.current ? rootRef.current.getBoundingClientRect() : { right: window.innerWidth, width: window.innerWidth };
+        let last = artifactW;
+        const onMove = (ev) => {
+          const max = Math.min(rect.width * ART_MAX_RATIO, rect.width - ART_MIN);
+          last = Math.max(ART_MIN, Math.min(rect.right - ev.clientX, max));
+          setArtifactW(last);
+        };
+        const onUp = () => {
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+          document.body.style.cursor = ''; document.body.style.userSelect = '';
+          localStorage.setItem('pinvou_artifactW', String(Math.round(last)));
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+        document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';
+      };
+      const resetArtifactW = () => {
+        const w = Math.round((rootRef.current ? rootRef.current.getBoundingClientRect().width : window.innerWidth) * ART_DEFAULT_RATIO);
+        setArtifactW(w); localStorage.setItem('pinvou_artifactW', String(w));
+      };
       const scrollRef = useRef(null);
       const composerRef = useRef(null);
       // 输入框自动增高:随内容从最小(~2行)长到上限 160px,再内部滚动(iOS 手感)。
@@ -2547,10 +2600,13 @@
       // 动态给滚动区底部留白(= 输入框高 + 间距),保证最后几条消息永不被遮挡、也不浪费空间。
       const composerWrapRef = useRef(null);
       const [composerH, setComposerH] = useState(0);
+      // 底栏响应式:输入框实际可用宽 < 阈值 → 控件收成纯图标;够宽 → 图标+文字(像 WorkBuddy)
+      const [composerCompact, setComposerCompact] = useState(false);
+      const COMPOSER_COMPACT_W = 540;
       useEffect(() => {
         const el = composerWrapRef.current;
         if (!el) return;
-        const measure = () => setComposerH(el.offsetHeight);
+        const measure = () => { setComposerH(el.offsetHeight); setComposerCompact(el.clientWidth < COMPOSER_COMPACT_W); };
         measure();
         if (!window.ResizeObserver) return;
         const ro = new ResizeObserver(measure);
@@ -2645,8 +2701,8 @@
       }
 
       return (
-        <div className="flex-1 flex flex-col w-full h-full min-h-0 relative z-10 animate-in fade-in duration-300">
-          {artifactsOpen && <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} />}
+        <div ref={rootRef} className="flex-1 flex flex-row w-full h-full min-h-0 relative z-10 animate-in fade-in duration-300">
+          <div className="flex-1 flex flex-col min-w-0 relative h-full">
 
           {/* Top Header (浮动) */}
           <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-20 pointer-events-none">
@@ -2666,7 +2722,7 @@
 
 
           {/* Main Chat Area */}
-          <div ref={scrollRef} style={{ paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }} className={`flex-1 min-h-0 overflow-y-auto px-4 md:px-20 lg:px-40 custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
+          <div ref={scrollRef} style={{ paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }} className={`flex-1 min-h-0 overflow-y-auto ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'} custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
 
             {!hasMessages && !welcomeToolId && (
               /* Gemini Style Centered Empty State */
@@ -2713,7 +2769,7 @@
           <div className={`pointer-events-none absolute bottom-0 inset-x-0 z-[15] bg-gradient-to-t to-transparent from-30% via-70% ${isDark ? 'from-[#131314] via-[#131314]/95' : 'from-white via-white/95'}`}
             style={{ height: (composerH ? composerH + 96 : 220) + 'px' }} />
           {/* Floating Input Area */}
-          <div ref={composerWrapRef} className="absolute bottom-8 inset-x-0 px-4 md:px-20 lg:px-40 z-20">
+          <div ref={composerWrapRef} className={`absolute bottom-8 inset-x-0 z-20 ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'}`}>
             <div className="max-w-[800px] w-full mx-auto">
             {/* 排队待发消息 chips（生成中继续输入会积压到这里，本轮跑完自动发） */}
             {queued.length > 0 && (
@@ -2755,13 +2811,13 @@
                 className="w-full bg-transparent resize-none outline-none text-gray-800 dark:text-gray-100 text-[16px] leading-relaxed min-h-[48px] overflow-y-auto hide-scrollbar placeholder:text-gray-400 dark:placeholder:text-gray-500"
               />
               <div className="flex items-center justify-between mt-1.5 gap-2">
-                <div className="flex items-center gap-2 min-w-0">
+                <div className="flex items-center gap-2 min-w-0 flex-1">
                   <button onClick={() => bridge.available && bridge.pickAndAttach()} title={t.attachAdd}
                     className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-black/5 dark:hover:bg-white/10 transition-colors">
                     <Paperclip size={20} />
                   </button>
-                  <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoSettings} />
-                  <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} />
+                  <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoSettings} compact={composerCompact} />
+                  <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} compact={composerCompact} />
                 </div>
                 {busy ? (
                   <button onClick={handleCancel}
@@ -2792,7 +2848,18 @@
             </div>
             </div>
           </div>
+          </div>{/* /对话列 */}
 
+          {artifactsOpen && isWide && (
+            <>
+              <div onMouseDown={startArtifactDrag} onDoubleClick={resetArtifactW} role="separator" aria-orientation="vertical"
+                className={`shrink-0 w-1.5 h-full cursor-col-resize transition-colors ${isDark ? 'bg-white/10 hover:bg-[#A8C7FA]/60' : 'bg-black/10 hover:bg-[#0B57D0]/50'}`} />
+              <div className="shrink-0 h-full relative" style={{ width: artifactW + 'px' }}>
+                <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} isWide={true} />
+              </div>
+            </>
+          )}
+          {artifactsOpen && !isWide && <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} isWide={false} />}
         </div>
       );
     };
@@ -3176,15 +3243,15 @@
             {isLatest && (
               <div className="grid grid-cols-2 gap-3 mb-4 px-3">
                 <button onClick={() => bridge.available && bridge.summonPinvou(path)} title={t.pvBtnPinTitle}
-                  className="flex items-center justify-center py-3.5 px-4 rounded-[12px] bg-[#F9F9F9] dark:bg-white/5 hover:bg-[#F0F0F0] dark:hover:bg-white/10 transition-colors active:scale-[0.98] group/btn" aria-label="智能找错">
-                  <AcShieldCheck className="w-[18px] h-[18px] text-[#FF9500] dark:text-[#FF9F0A] mr-2.5 shrink-0" />
-                  <span className="text-[14px] font-medium text-[#111] dark:text-[#eee]">{t.pvBtnPinLabel}</span>
+                  className="flex items-center justify-center min-w-0 py-3.5 px-3 rounded-[12px] bg-[#F9F9F9] dark:bg-white/5 hover:bg-[#F0F0F0] dark:hover:bg-white/10 transition-colors active:scale-[0.98] group/btn" aria-label="智能找错">
+                  <AcShieldCheck className="w-[18px] h-[18px] text-[#FF9500] dark:text-[#FF9F0A] mr-2 shrink-0" />
+                  <span className="text-[14px] font-medium text-[#111] dark:text-[#eee] truncate">{t.pvBtnPinLabel}</span>
                 </button>
 
                 <button onClick={() => bridge.available && bridge.inspectPinvou(path)} title={t.pvBtnWuTitle}
-                  className="flex items-center justify-center py-3.5 px-4 rounded-[12px] bg-[#F9F9F9] dark:bg-white/5 hover:bg-[#F0F0F0] dark:hover:bg-white/10 transition-colors active:scale-[0.98] group/btn" aria-label="深度查漏">
-                  <AcSparkles className="w-[18px] h-[18px] text-[#5E5CE6] dark:text-[#5E5CE6] mr-2.5 shrink-0" />
-                  <span className="text-[14px] font-medium text-[#111] dark:text-[#eee]">{t.pvBtnWuLabel}</span>
+                  className="flex items-center justify-center min-w-0 py-3.5 px-3 rounded-[12px] bg-[#F9F9F9] dark:bg-white/5 hover:bg-[#F0F0F0] dark:hover:bg-white/10 transition-colors active:scale-[0.98] group/btn" aria-label="深度查漏">
+                  <AcSparkles className="w-[18px] h-[18px] text-[#5E5CE6] dark:text-[#5E5CE6] mr-2 shrink-0" />
+                  <span className="text-[14px] font-medium text-[#111] dark:text-[#eee] truncate">{t.pvBtnWuLabel}</span>
                 </button>
               </div>
             )}
@@ -4780,7 +4847,7 @@
       + 'img{max-width:100%;height:auto;}'
       + '</style>';
 
-    const ArtifactsPanel = ({ bs, theme, t, onClose }) => {
+    const ArtifactsPanel = ({ bs, theme, t, onClose, isWide }) => {
       const isDark = theme === 'dark';
       const artifacts = (bs && bs.artifacts) || [];
       const [tab, setTab] = useState('list');     // 'list' | 'preview'
@@ -4899,9 +4966,9 @@
       };
 
       return (
-        <div className="absolute inset-0 z-30 flex justify-end pointer-events-auto">
-          <div className="absolute inset-0 bg-black/40" onClick={onClose}></div>
-          <div className={`relative w-[680px] max-w-[88vw] h-full flex flex-col shadow-2xl ${isDark ? 'bg-[#1E1F20]' : 'bg-white'} animate-in slide-in-from-right duration-200`}>
+        <div className={isWide ? "relative w-full h-full" : "absolute inset-0 z-30 flex justify-end pointer-events-auto"}>
+          {!isWide && <div className="absolute inset-0 bg-black/40" onClick={onClose}></div>}
+          <div className={`relative h-full flex flex-col ${isDark ? 'bg-[#1E1F20]' : 'bg-white'} ${isWide ? 'w-full border-l ' + (isDark ? 'border-white/10' : 'border-black/10') : 'w-[680px] max-w-[88vw] shadow-2xl animate-in slide-in-from-right duration-200'}`}>
             {/* header + tabs */}
             <div className={`flex items-center justify-between px-3 py-2.5 border-b ${isDark ? 'border-white/10' : 'border-black/10'}`}>
               <div className={`flex items-center gap-1 rounded-full p-0.5 ${isDark ? 'bg-[#141517]' : 'bg-[#F0F4F9]'}`}>
