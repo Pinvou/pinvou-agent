@@ -212,7 +212,7 @@
     const dict = {
       zh: {
         langTag: 'zh',
-        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', toolStore: '工具商店', cardPool: '专家卡牌池', recent: '近期', settings: '设置', localEnv: '本地环境',
+        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', toolStore: '工具商店', cardPool: '专家卡牌池', recent: '近期', settings: '设置', localEnv: '本地环境', tearoffTitle: '撕离窗口', tearoffHint: '弹出为独立窗口',
         knowledge: '本地知识',
         kbMount: '知识库', kbMountTitle: '挂载知识集到本对话', kbMountPick: '选择知识集', kbMountNone: '还没有知识集，去「本地知识」创建', kbMountRemove: '取消挂载', kbMountedTag: '已挂载',
         kbTitle: '本地知识', kbDesc: '全系统秒搜 + 去重 · 仅索引元数据，不读内容',
@@ -425,7 +425,7 @@
       },
       en: {
         langTag: 'en',
-        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'Recent', settings: 'Settings', localEnv: 'Local Env',
+        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'Recent', settings: 'Settings', localEnv: 'Local Env', tearoffTitle: 'Detached', tearoffHint: 'Pop out to its own window',
         knowledge: 'Local Knowledge',
         kbMount: 'Knowledge', kbMountTitle: 'Attach a collection to this chat', kbMountPick: 'Pick a collection', kbMountNone: 'No collections yet — create one in Local Knowledge', kbMountRemove: 'Unmount', kbMountedTag: 'Mounted',
         kbTitle: 'Local Knowledge', kbDesc: 'Whole-system instant search + dedup · metadata only, content not read',
@@ -638,7 +638,7 @@
       },
       ja: {
         langTag: 'ja',
-        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', monitor: 'システムモニター', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '最近', settings: '設定', localEnv: 'ローカル環境',
+        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', monitor: 'システムモニター', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '最近', settings: '設定', localEnv: 'ローカル環境', tearoffTitle: '切り離し', tearoffHint: '別ウィンドウに切り離す',
         knowledge: 'ローカル知識',
         kbMount: 'ナレッジ', kbMountTitle: 'このチャットにコレクションをリンク', kbMountPick: 'コレクションを選択', kbMountNone: 'コレクションがありません — 「ローカル知識」で作成', kbMountRemove: 'リンク解除', kbMountedTag: 'リンク中',
         kbTitle: 'ローカル知識', kbDesc: '全システム高速検索 + 重複検出 · メタデータのみ、内容は読まない',
@@ -7556,10 +7556,88 @@
 
 
     // ==========================================
+    // 撕离窗口(tear-off):同一个 index.html 以 ?detached=1&kind=&id= 启动,只挂载该面板,无侧边栏。
+    // 窗口间强独立:各自 useBridge()/init(),不做 live 数据同步(真相源在后端,进程内共享)。
+    // ==========================================
+    const useDetachedBase = () => {
+      const bs = useBridge();
+      const [language, setLanguage] = useState('zh');
+      const [activeTheme, setActiveTheme] = useState('dark');
+      const initRef = useRef(false);
+      // 一次性从落盘 settings 恢复语言/主题(镜像 App 的恢复逻辑,但自包含,不动 App)。
+      useEffect(() => {
+        if (initRef.current || !bs || !bs.settings) return;
+        const lang = TAG_TO_LANG[bs.settings.language];
+        if (lang) setLanguage(lang);
+        setActiveTheme(bs.settings.theme === 'liquid-light' ? 'light' : 'dark');
+        initRef.current = true;
+      }, [bs]);
+      useEffect(() => { document.documentElement.classList.toggle('dark', activeTheme === 'dark'); }, [activeTheme]);
+      return { bs, activeTheme, t: dict[language] };
+    };
+
+    // 撕离窗口的面板错误边界:某个 View 抛错时不白屏,退化为提示,保留标题栏可关窗。
+    class DetachedErrorBoundary extends React.Component {
+      constructor(p) { super(p); this.state = { err: null }; }
+      static getDerivedStateFromError(err) { return { err }; }
+      render() {
+        if (this.state.err) {
+          return <div className="p-6 text-sm opacity-70">面板加载失败:{String(this.state.err && this.state.err.message || this.state.err)}</div>;
+        }
+        return this.props.children;
+      }
+    }
+
+    // kind → 撕离窗口该挂载的面板。复用主窗口同款 View 组件(见主渲染区 currentView 分支);
+    // 跨视图导航类 handler 在撕离窗口里是 no-op(单视图,无处可跳)。
+    const DETACHED_VIEWS = {
+      session:   ({ theme, t, bs }) => <ChatView theme={theme} t={t} bs={bs} prefill="" onPrefillConsumed={()=>{}} onOpenEditor={()=>{}} justInstalledTool={null} setJustInstalledTool={()=>{}} onGotoSettings={()=>{}} onGotoTools={()=>{}} />,
+      workflow:  ({ theme, t, bs }) => <WorkflowView theme={theme} t={t} bs={bs} />,
+      monitor:   ({ theme, t, bs }) => <MonitorView theme={theme} t={t} bs={bs} />,
+      cardpool:  ({ theme, t, bs }) => <CardPoolView theme={theme} t={t} bs={bs} onEquipped={()=>{}} onAICreate={()=>{}} initialMyOnly={false} />,
+      toolstore: ({ theme, t, bs }) => <ToolStoreView theme={theme} onNewChat={()=>{}} />,
+      knowledge: ({ theme, t, bs }) => <KnowledgeView theme={theme} t={t} />,
+    };
+
+    const DetachedShell = ({ kind, id }) => {
+      const { bs, activeTheme, t } = useDetachedBase();
+      // session 窗口:boot 时把该 session 切为 active,让 ChatView 显示它。
+      useEffect(() => {
+        if (kind === 'session' && id && bridge.available && bridge.switchToSession) bridge.switchToSession(id);
+      }, [kind, id]);
+      // 关闭时通知主窗口回坞(去角标)。
+      useEffect(() => {
+        const key = kind + ':' + (id || '');
+        const onUnload = () => { try { window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.emit('detach:closed', key); } catch (_) {} };
+        window.addEventListener('beforeunload', onUnload);
+        return () => window.removeEventListener('beforeunload', onUnload);
+      }, [kind, id]);
+      const View = DETACHED_VIEWS[kind] || DETACHED_VIEWS.monitor;
+      const isDark = activeTheme === 'dark';
+      return (
+        <div className={`h-screen w-screen flex flex-col ${isDark ? 'bg-[#1B1C1D] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
+          <div data-tauri-drag-region className="h-9 shrink-0 flex items-center px-3 text-[13px] font-medium select-none"
+               style={{ borderBottom: '1px solid rgba(128,128,128,.2)' }}>
+            <span data-tauri-drag-region className="pointer-events-none">{(t && t.tearoffTitle) || '撕离窗口'} · {kind}</span>
+          </div>
+          <div className="flex-1 min-h-0 overflow-auto">
+            {bs ? <DetachedErrorBoundary><View theme={activeTheme} t={t} bs={bs} /></DetachedErrorBoundary> : <div className="p-6 text-sm opacity-60">…</div>}
+          </div>
+        </div>
+      );
+    };
+
+    // ==========================================
     // Render
     // ==========================================
     const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(<App />);
+    const __q = new URLSearchParams(window.location.search);
+    if (__q.get('detached') === '1') {
+      window.__PINVOU_DETACHED__ = true;
+      root.render(<DetachedShell kind={__q.get('kind') || 'monitor'} id={__q.get('id') || ''} />);
+    } else {
+      root.render(<App />);
+    }
   </script>
 </body>
 </html>
