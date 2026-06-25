@@ -75,18 +75,20 @@ pub const MODE_EXECUTE_MD: &str = "\
 Tools run without per-call approval — the user has already authorized
 execution. Produce files and run commands now; never end the turn with
 a promise of future action. Then verify and report. Follow each
-message's `<system-reminder>` phase rules.";
+message's `<system-reminder>`.";
 
 /// pinvou3 版静态层 mode 块——Plan（底座强制 approval=Never + ReadOnly sandbox）。
-/// 注意:前端 Plan 入口已下线([plan/yolo 收敛],index.html),生产全 Yolo 单模式
-/// 到不了这里——防御性保留,底座 AppMode::Plan 通路仍在,恢复入口即生效。
+/// ⚠️ **当前选不中、不进 prompt**:compose_static_layers 虽按 ctx.mode 选块,但底座
+/// v0.8.57 mode-independent 后调 composer 钉死传常量 Yolo → 恒选 MODE_EXECUTE_MD
+/// (dump 传 plan 参数实测静态层仍出 `## Mode: Execute`)。Plan 模式真相全靠 per-turn
+/// PLAN_REMINDER。防御性保留:composer 若恢复按真实 mode 选即生效。
 pub const MODE_PLAN_MD: &str = "\
 ## Mode: Plan
 
 Read-only: discovery tools work; file writes and shell mutations are
 blocked by the runtime. Your deliverable is a plan via `update_plan` —
 clarify real ambiguity with `request_user_input` first. Follow each
-message's `<system-reminder>` phase rules.";
+message's `<system-reminder>`.";
 
 /// Agent+非Auto 兜底（pinvou3 不暴露 Agent mode,防御性保留）。
 pub const MODE_AGENT_GATED_MD: &str = "\
