@@ -1451,15 +1451,6 @@
     notify();
   }); });
 
-  // chat:phase_changed —— 底座从 LLM 回复抽 <phase id="..."/> marker 触发。
-  // workflow phase chips 是全局(跟 active skill 走),后台 session 的 phase 变更不动 active chips。
-  listen("chat:phase_changed", function (e) {
-    var sid = e.payload && e.payload.session_id;
-    if (sid && sid !== state.activeSessionId) return;
-    var phaseId = e.payload && (e.payload.phase_id || e.payload.phaseId);
-    setCurrentPhase(phaseId, "llm");
-  });
-
   // workflow:project_started —— start_workflow 后端建项目+绑定 session 后 emit。
   // 必须真正 switchToSession 切过去（load 新 session 的空 messages + sync engine +
   // syncSessionSkill），否则只设 activeSessionId 会让旧对话的 messages 残留在屏上，

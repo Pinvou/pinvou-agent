@@ -72,28 +72,9 @@ pub async fn chat(
     if let Some(injected) = store.take_pending_skill_instruction(&sid) {
         full = format!("{injected}\n\n---\n\n{full}");
     }
-    if let Some(skill) = store.active_skill(&sid) {
-        // 工作流会话(is_workflow_id)不再注入任何 reminder:对话型监工(品悟)已废弃,
-        // 进度走 workflow:agent_state_changed 卡片流,执行靠 Harness 直派 SubAgent,
-        // 都不经前台对话。普通挂载式 skill(review 等)仍需 phase marker 推前端 chips。
-        if !crate::workflow_registry::is_workflow_id(&skill.name) {
-            let reminder = format!(
-                "<system-reminder>\n\
-                 工作流 `{name}` 提醒:你的下一条回复**必须**以 `<phase id=\"...\"/>` \
-                 单独一行开头(literal XML 标签,不是 markdown 加粗,不是自然语言)。\n\
-                 - 自然语言里写 \"进入 P5\" / \"现在做 HTML 实现\" **不算** marker,\
-                 必须输出字面 `<phase id=\"p5\"/>` 然后空行然后正文。\n\
-                 - 跳过 phase 也要显式输出对应 marker(从 p3 直接做 p5 → 输出 \
-                 `<phase id=\"p5\"/>`,别不出标)。\n\
-                 - 留在同一 phase 多个 turn 也要每次都输出该 phase 的 marker,\
-                 不要因为\"没换 phase\"省略。\n\
-                 pinvou3 UI chips 条靠这个 marker 推进度,漏标 = 用户看不到进展。\n\
-                 </system-reminder>",
-                name = skill.name,
-            );
-            full = format!("{reminder}\n\n{full}");
-        }
-    }
+    // [phase marker 下线] 原 active_skill 非工作流分支每 turn 注入 `<phase id=.../>`
+    // marker reminder,但消费链(底座抽取 → chat:phase_changed → 前端 chips)已整体拆除,
+    // marker 产出后无人消费。已删。active_skill 的 pending_instruction(skill body)仍走上面。
 
     // Side B 卡片池: 加持后首条消息一次性 prepend 完整人设 body(agency-agents-zh)。
     // 之后每 turn 只靠 equip_anchor 轻锚点维持身份(EnginePool 注入),不再重灌 body。
@@ -2366,20 +2347,14 @@ pub async fn start_skill_session(
     // 多 session 并发:不预热 engine(lazy)。首条 chat 时 EnginePool 为这个空 session
     //    spawn 专属 engine,空历史无需 SyncSession。
 
-    let injected = format!(
-        "[pinvou3-app] 用户在「工作流」视图启用了 skill: `{name}`。\
-         请按该 skill 的 phases 流程响应 — engine 会自动从你回复里抽 \
-         `<phase id=\"...\"/>` marker 驱动 UI 上方的 phase chip 条,\
-         **每条回复必须以该 marker 单独一行开头**(详见 system prompt 里 \
-         「Phase tracking — MANDATORY for phased skills」段)。",
-        name = skill.name,
-    );
-
+    // [phase marker 下线] 原 pending_instruction 注入"按 phases 流程响应 + engine 自动抽
+    // <phase> marker + Phase tracking 段"的引导,这些底座机制(Skill.phases / marker 抽取)
+    // 已随 v0.8.57 退役。绑定只留 name,skill 能力走底座 progressive disclosure。
     store.bind_skill(
         &sid,
         ActiveSkillBinding {
             name: skill.name.clone(),
-            pending_instruction: Some(injected),
+            pending_instruction: None,
             phases: phases.clone(),
             project_dir: None,
         },
