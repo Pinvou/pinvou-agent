@@ -7,10 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
-/// 鬼影窗口 label。用 detached- 前缀 → 被 capabilities 的 `detached-*` glob 覆盖。
-const GHOST_LABEL: &str = "detached-ghost";
-
-/// 同一时刻只允许一个撕离拖拽,防止多个跟随循环抢鬼影。
+/// 同一时刻只允许一个撕离拖拽,防止多个跟随循环并存。
 static DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// 撕离窗口 label。Tauri label 仅允许 a-zA-Z0-9-_，故 id 用 16 位 hex 哈希而非原样拼接，
@@ -112,90 +109,39 @@ fn main_window_contains(app: &AppHandle, px: i32, py: i32) -> bool {
     false
 }
 
-/// 撕离拖拽起手:起鬼影窗口跨屏跟随光标,松手落位/取消。
-/// 前端在侧边栏项 pointer 拖拽超阈值时调用;之后全程由原生层接管。
+/// 撕离拖拽起手:原生层只负责"读全局光标+左键、判松手落点"。视觉跟随由前端 DOM avatar 完成
+/// (在主窗内丝滑跟手,WM 无关、无文字选中)。本函数松手时按全局落点决定建窗(主窗外那一屏
+/// 最大化)或取消,并广播 detach:drag-ended 让前端收起 avatar。
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
 pub async fn begin_detach_drag(
     kind: String,
     id: Option<String>,
-    label: Option<String>,
-    dx: i32, // 按下点相对被抓标签左上角的偏移(物理像素)→ 鬼影 = 光标 - (dx,dy),保持"相对位置不变"
-    dy: i32,
-    w: i32, // 被抓标签尺寸 → 鬼影同尺寸,看起来就是那个标签被拎起来
-    h: i32,
     app: AppHandle,
 ) -> Result<(), String> {
     if DRAG_ACTIVE.swap(true, Ordering::SeqCst) {
         return Ok(()); // 已有拖拽进行中,忽略重复起手
     }
-    let gw = w.clamp(80, 600) as f64;
-    let gh = h.clamp(28, 120) as f64;
 
-    // 清掉可能残留的鬼影
-    if let Some(w) = app.get_webview_window(GHOST_LABEL) {
-        let _ = w.destroy();
-    }
-    let mut gurl = format!("ghost=1&kind={}", urlencode(&kind));
-    if let Some(ref l) = label {
-        gurl.push_str(&format!("&label={}", urlencode(l)));
-    }
-    let ghost = WebviewWindowBuilder::new(&app, GHOST_LABEL, WebviewUrl::App(format!("index.html?{gurl}").into()))
-        .inner_size(gw, gh)
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .focused(false)
-        .resizable(false)
-        .build();
-    let ghost = match ghost {
-        Ok(g) => g,
-        Err(e) => {
-            DRAG_ACTIVE.store(false, Ordering::SeqCst);
-            return Err(format!("ghost build: {e}"));
-        }
-    };
-    let _ = ghost.set_ignore_cursor_events(true); // click-through,不抢焦点
-
-    // 跟随循环:device_query 硬件状态轮询(独立 OS 线程),窗口操作一律 marshal 回主线程。
+    // device_query 硬件状态轮询(独立 OS 线程);窗口操作 marshal 回主线程。
     std::thread::spawn(move || {
         use device_query::{DeviceQuery, DeviceState};
         let dev = DeviceState::new();
         let mut was_down = false;
         let mut idle_ticks = 0u32;
-        let mut tick = 0u32;
         loop {
             let m = dev.get_mouse();
             let (mx, my) = m.coords;
             let down = *m.button_pressed.get(1).unwrap_or(&false);
 
-            // 鬼影紧贴光标:左上角 = 光标 - 抓取偏移 → 光标始终落在标签上当初按下的同一点。
-            let gx = mx - dx;
-            let gy = my - dy;
-            if tick % 40 == 0 {
-                eprintln!("[tearoff] cursor=({mx},{my}) ghost=({gx},{gy}) down={down}");
-            }
-            tick = tick.wrapping_add(1);
-            let a_inner = app.clone();
-            let _ = app.run_on_main_thread(move || {
-                if let Some(g) = a_inner.get_webview_window(GHOST_LABEL) {
-                    let _ = g.set_position(tauri::PhysicalPosition::new(gx, gy));
-                }
-            });
-
             if down {
                 was_down = true;
             }
             if was_down && !down {
-                // 松手:销毁鬼影 + 落位判定(全在主线程)
+                // 松手:落点在主窗外那一屏 → 最大化建窗;在内 → 取消。
                 let a2 = app.clone();
                 let kind2 = kind.clone();
                 let id2 = id.clone();
                 let _ = app.run_on_main_thread(move || {
-                    if let Some(g) = a2.get_webview_window(GHOST_LABEL) {
-                        let _ = g.destroy();
-                    }
                     if !main_window_contains(&a2, mx, my) {
                         let _ = create_detached_at(&a2, &kind2, id2.as_deref(), Some((mx, my)));
                     }
@@ -204,20 +150,13 @@ pub async fn begin_detach_drag(
             }
             if !was_down {
                 idle_ticks += 1;
-                if idle_ticks > 120 {
-                    // ~2s 没等到按下(异常起手)→ 取消,清鬼影
-                    let a3 = app.clone();
-                    let _ = app.run_on_main_thread(move || {
-                        if let Some(g) = a3.get_webview_window(GHOST_LABEL) {
-                            let _ = g.destroy();
-                        }
-                    });
-                    break;
+                if idle_ticks > 250 {
+                    break; // ~3s 没等到按下(异常起手)→ 放弃
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(8));
+            std::thread::sleep(std::time::Duration::from_millis(12));
         }
-        // 拖拽结束(落位/取消/超时任一)→ 广播,让前端浮起的源标签复位。
+        // 拖拽结束(落位/取消/超时任一)→ 广播,让前端收起 avatar。
         let _ = app.emit("detach:drag-ended", ());
         DRAG_ACTIVE.store(false, Ordering::SeqCst);
     });

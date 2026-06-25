@@ -955,24 +955,43 @@
       const [savedConfirm, setSavedConfirm] = useState(null); // 存入成功 → iOS 确认窗 {name}
       const [poolMyOnly, setPoolMyOnly] = useState(false); // 跳卡池时是否直接落「我的卡牌」筛选(从确认窗"去查看"进来=true)
 
-      // ── 多窗口(撕离/tear-off):长按标签 → 浮起 → 拖到目标屏 → 松手 → 该屏最大化打开 ──
-      // draggingKey 标记当前被"拎起"的项(kind:id),对应标签做浮起动画;beginTearOff 调原生
-      // begin_detach_drag(鬼影跨屏跟随+落位);原生拖拽结束广播 detach:drag-ended → 清浮起。
-      const [draggingKey, setDraggingKey] = useState(null);
-      const beginTearOff = (kind, id, label, geom) => {
+      // ── 多窗口(撕离/tear-off):长按标签 → 浮起跟手 → 拖到目标屏 → 松手 → 该屏最大化打开 ──
+      // dragAvatar = 被拎起的标签副本(跟随光标的 DOM 元素);null=没在拖。原生只判落点,视觉全在这。
+      const [dragAvatar, setDragAvatar] = useState(null); // {key,label,dx,dy,w,h,x,y}
+      const dragOffsetRef = useRef({ dx: 0, dy: 0 });
+      const beginTearOff = (kind, id, label, info) => {
         const inv = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
-        if (!inv) return;
-        const g = geom || { dx: 12, dy: 12, w: 200, h: 44 };
-        inv('begin_detach_drag', {
-          kind, id: id != null ? id : null, label: label || null,
-          dx: g.dx, dy: g.dy, w: g.w, h: g.h,
+        if (!inv || !info) return;
+        inv('begin_detach_drag', { kind, id: id != null ? id : null });
+        dragOffsetRef.current = { dx: info.dx, dy: info.dy };
+        setDragAvatar({
+          key: kind + ':' + (id != null ? id : ''), label: label || kind,
+          w: info.w, h: info.h, x: info.startX - info.dx, y: info.startY - info.dy,
         });
-        setDraggingKey(kind + ':' + (id != null ? id : ''));
+        if (window.getSelection) { const s = window.getSelection(); if (s && s.removeAllRanges) s.removeAllRanges(); }
       };
+      // 拖拽中:光标移动 → 更新 avatar 位置(光标 - 抓取偏移,相对位置锁定);禁选 + 抓手光标。
+      useEffect(() => {
+        if (!dragAvatar) return;
+        const prevUS = document.body.style.userSelect, prevCur = document.body.style.cursor;
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = 'grabbing';
+        const onMove = (e) => {
+          const o = dragOffsetRef.current;
+          setDragAvatar(a => a ? { ...a, x: e.clientX - o.dx, y: e.clientY - o.dy } : a);
+        };
+        window.addEventListener('pointermove', onMove);
+        return () => {
+          window.removeEventListener('pointermove', onMove);
+          document.body.style.userSelect = prevUS;
+          document.body.style.cursor = prevCur;
+        };
+      }, [!!dragAvatar]);
+      // 原生拖拽结束(松手/取消)→ 收起 avatar。
       useEffect(() => {
         if (!window.__TAURI__ || !window.__TAURI__.event) return;
         let un;
-        window.__TAURI__.event.listen('detach:drag-ended', () => setDraggingKey(null)).then(f => { un = f; });
+        window.__TAURI__.event.listen('detach:drag-ended', () => setDragAvatar(null)).then(f => { un = f; });
         return () => { if (un) un(); };
       }, []);
 
@@ -1220,6 +1239,17 @@
       return (
         <div className={`flex flex-col h-screen font-sans overflow-hidden antialiased transition-colors duration-300 ${activeTheme === 'dark' ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
 
+          {/* 撕离拖拽 avatar:被拎起的标签,跟随光标(DOM 实现,丝滑跟手、不选中文字) */}
+          {dragAvatar && (
+            <div style={{ position:'fixed', left: dragAvatar.x, top: dragAvatar.y, width: dragAvatar.w, height: dragAvatar.h,
+              pointerEvents:'none', zIndex:9999, borderRadius:14, overflow:'hidden', whiteSpace:'nowrap',
+              display:'flex', alignItems:'center', padding:'0 16px', fontWeight:600, fontSize:15,
+              background: activeTheme === 'dark' ? '#A8C7FA' : '#0B57D0', color: activeTheme === 'dark' ? '#041E49' : '#ffffff',
+              boxShadow:'0 14px 34px rgba(0,0,0,.5)', transform:'scale(1.03)', opacity:0.96 }}>
+              {dragAvatar.label}
+            </div>
+          )}
+
           <TitleBar theme={activeTheme} t={t} />
 
           <div className="flex flex-1 min-h-0">
@@ -1263,7 +1293,7 @@
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => setCurrentView('monitor')}
-                dragKind="monitor" dragging={draggingKey === 'monitor:'} onPickUp={(geom) => beginTearOff('monitor', undefined, t.monitor, geom)}
+                dragKind="monitor" dragging={!!dragAvatar && dragAvatar.key === 'monitor:'} onPickUp={(geom) => beginTearOff('monitor', undefined, t.monitor, geom)}
               />
               <NavItem
                 icon={<Layers size={18} />} label={t.cardPool}
@@ -1271,7 +1301,7 @@
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => { setPoolMyOnly(false); setCurrentView('cardpool'); }}
-                dragKind="cardpool" dragging={draggingKey === 'cardpool:'} onPickUp={(geom) => beginTearOff('cardpool', undefined, t.cardPool, geom)}
+                dragKind="cardpool" dragging={!!dragAvatar && dragAvatar.key === 'cardpool:'} onPickUp={(geom) => beginTearOff('cardpool', undefined, t.cardPool, geom)}
               />
               <NavItem
                 icon={<ClipboardList size={18} />} label={t.workflow}
@@ -1279,7 +1309,7 @@
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => setCurrentView('workflow')}
-                dragKind="workflow" dragging={draggingKey === 'workflow:'} onPickUp={(geom) => beginTearOff('workflow', undefined, t.workflow, geom)}
+                dragKind="workflow" dragging={!!dragAvatar && dragAvatar.key === 'workflow:'} onPickUp={(geom) => beginTearOff('workflow', undefined, t.workflow, geom)}
               />
               <NavItem
                 icon={<Puzzle size={18} />} label={t.toolStore}
@@ -1287,7 +1317,7 @@
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => setCurrentView('toolStore')}
-                dragKind="toolstore" dragging={draggingKey === 'toolstore:'} onPickUp={(geom) => beginTearOff('toolstore', undefined, t.toolStore, geom)}
+                dragKind="toolstore" dragging={!!dragAvatar && dragAvatar.key === 'toolstore:'} onPickUp={(geom) => beginTearOff('toolstore', undefined, t.toolStore, geom)}
               />
               <NavItem
                 icon={<BookOpen size={18} />} label={t.knowledge}
@@ -1295,7 +1325,7 @@
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => setCurrentView('knowledge')}
-                dragKind="knowledge" dragging={draggingKey === 'knowledge:'} onPickUp={(geom) => beginTearOff('knowledge', undefined, t.knowledge, geom)}
+                dragKind="knowledge" dragging={!!dragAvatar && dragAvatar.key === 'knowledge:'} onPickUp={(geom) => beginTearOff('knowledge', undefined, t.knowledge, geom)}
               />
               {/* 收起态专属:展开态近期列表的高亮项就是回会话入口,不重复渲染 */}
               {!isSidebarOpen && (
@@ -1334,7 +1364,7 @@
                       onSelect={handleSwitchSession}
                       onRename={handleRenameSession}
                       onDelete={handleDeleteSession}
-                      dragging={draggingKey === 'session:' + chat.id}
+                      dragging={!!dragAvatar && dragAvatar.key === 'session:' + chat.id}
                       onPickUp={(geom) => beginTearOff('session', chat.id, chat.title, geom)}
                     />
                   ))}
@@ -6285,7 +6315,7 @@
           {...dragProps}
           data-nav={dragKind || undefined}
           title={!isSidebarOpen ? label : ""}
-          style={dragging ? { transform: 'scale(1.06)', boxShadow: '0 10px 26px rgba(0,0,0,.4)', opacity: 0.9, zIndex: 50, position: 'relative' } : undefined}
+          style={dragging ? { opacity: 0.4 } : undefined}
           className={`group flex items-center cursor-pointer text-[15px] font-medium transition-all overflow-hidden select-none
           ${isSidebarOpen ? 'px-4 py-3 rounded-full w-full' : 'w-10 h-10 justify-center rounded-full mx-auto shrink-0'}
           ${active
@@ -6324,7 +6354,7 @@
         <div onClick={drag.guardClick(() => onSelect(chat.id))}
           {...drag.handlers}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
-          style={ dragging ? { transform:'scale(1.04)', boxShadow:'0 10px 26px rgba(0,0,0,.4)', opacity:0.9, zIndex:50, position:'relative' } : (personaTarget ? { background: isDark?'rgba(10,132,255,.20)':'rgba(0,122,255,.12)', boxShadow:'inset 0 0 0 1px '+(isDark?'rgba(10,132,255,.6)':'rgba(0,122,255,.45)'), color: isDark?'#fff':'#1F1F1F' } : undefined) }
+          style={ dragging ? { opacity: 0.4 } : (personaTarget ? { background: isDark?'rgba(10,132,255,.20)':'rgba(0,122,255,.12)', boxShadow:'inset 0 0 0 1px '+(isDark?'rgba(10,132,255,.6)':'rgba(0,122,255,.45)'), color: isDark?'#fff':'#1F1F1F' } : undefined) }
           className={`group flex items-center px-4 py-1.5 rounded-full cursor-pointer text-[13px] transition-all
             ${personaTarget ? ''
               : active ? (isDark ? 'bg-[#333537] text-white' : 'bg-[#E1E5EA] text-[#1F1F1F]')
@@ -7664,19 +7694,9 @@
       );
     };
 
-    // 鬼影窗口(?ghost=1):拖拽时跨屏跟随光标的半透明小卡片。无 bridge、无侧边栏、click-through。
-    const GHOST_LABELS = { session:'对话', persona:'专家', workflow:'工作流', monitor:'系统监控', toolstore:'工具商店', cardpool:'专家卡牌池', knowledge:'知识库' };
-    // 鬼影填满整窗(窗口尺寸=被抓标签尺寸),看起来就是那个标签被拎起来跟着光标。
-    const GhostChip = ({ kind, label }) => (
-      <div className="h-screen w-screen flex items-center px-4 rounded-[16px] text-[15px] font-semibold text-white overflow-hidden"
-           style={{ background: 'rgba(11,87,208,.96)', boxShadow: '0 14px 34px rgba(0,0,0,.5)', whiteSpace: 'nowrap' }}>
-        {label || GHOST_LABELS[kind] || kind}
-      </div>
-    );
-
-    // 长按撕离:按住 ~350ms 不动 → onPickUp()(标签浮起 + begin_detach_drag,原生鬼影接管);
+    // 长按撕离:按住 ~350ms 不动 → onPickUp(info)(DOM avatar 浮起跟手 + begin_detach_drag 原生判落点);
     // 长按达成前移动 >10px = 视为滚动/取消;长按达成后吞掉随之而来的 click(避免又切视图);
-    // 按在内部按钮/输入框上不起手(让它们自理)。
+    // 按在内部按钮/输入框上不起手(让它们自理)。按下即禁选,防止长按选中下方文字。
     const LONGPRESS_MS = 350;
     const MOVE_CANCEL = 10;
     const useLongPressDrag = (kind, onPickUp) => {
@@ -7686,6 +7706,7 @@
       const clearPress = () => {
         if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
         startRef.current = null;
+        document.body.style.userSelect = '';
       };
       const onPointerDown = (e) => {
         if (e.button !== 0 || !kind) return;
@@ -7693,19 +7714,21 @@
         const rect = e.currentTarget.getBoundingClientRect();
         startRef.current = { x: e.clientX, y: e.clientY, rect };
         pickedRef.current = false;
+        document.body.style.userSelect = 'none'; // 长按期间禁选,防止选中下方会话文字
         timerRef.current = setTimeout(() => {
           pickedRef.current = true;
           timerRef.current = null;
-          // 算出按下点相对标签左上角的偏移 + 标签尺寸(物理像素)→ 让鬼影紧贴光标、相对位置锁定。
+          // 客户端像素:按下点相对标签左上角的偏移 + 标签尺寸 + 起点 → 喂给 DOM avatar 锁定相对位置。
           const r = startRef.current.rect;
-          const dpr = window.devicePixelRatio || 1;
-          const geom = {
-            dx: Math.round((startRef.current.x - r.left) * dpr),
-            dy: Math.round((startRef.current.y - r.top) * dpr),
-            w: Math.round(r.width * dpr),
-            h: Math.round(r.height * dpr),
+          const info = {
+            dx: startRef.current.x - r.left,
+            dy: startRef.current.y - r.top,
+            w: r.width,
+            h: r.height,
+            startX: startRef.current.x,
+            startY: startRef.current.y,
           };
-          if (onPickUp) onPickUp(geom);
+          if (onPickUp) onPickUp(info);
         }, LONGPRESS_MS);
       };
       const onPointerMove = (e) => {
@@ -7726,12 +7749,7 @@
     // ==========================================
     const root = ReactDOM.createRoot(document.getElementById('root'));
     const __q = new URLSearchParams(window.location.search);
-    if (__q.get('ghost') === '1') {
-      window.__PINVOU_GHOST__ = true;
-      document.documentElement.style.background = 'transparent';
-      document.body.style.background = 'transparent';
-      root.render(<GhostChip kind={__q.get('kind') || ''} label={__q.get('label') || ''} />);
-    } else if (__q.get('detached') === '1') {
+    if (__q.get('detached') === '1') {
       window.__PINVOU_DETACHED__ = true;
       root.render(<DetachedShell kind={__q.get('kind') || 'monitor'} id={__q.get('id') || ''} />);
     } else {
