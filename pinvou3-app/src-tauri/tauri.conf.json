@@ -41,19 +41,22 @@
       "resources/windows/poppler/": "poppler",
       "resources/windows/pandoc/": "pandoc",
       "resources/windows/tesseract/": "tesseract",
-      "resources/windows/asr/": "asr"
+      "resources/windows/asr/": "asr",
+      "resources/windows/7zip/": "7zip"
     },
     "windows": {
       "wix": {
         "fragmentPaths": [
           "resources/windows/poppler-path.wxs",
           "resources/windows/pandoc-path.wxs",
-          "resources/windows/tesseract-path.wxs"
+          "resources/windows/tesseract-path.wxs",
+          "resources/windows/7zip-path.wxs"
         ],
         "componentRefs": [
           "PopplerPathEnvironment",
           "PandocPathEnvironment",
-          "TesseractPathEnvironment"
+          "TesseractPathEnvironment",
+          "SevenZipPathEnvironment"
         ]
       }
     },

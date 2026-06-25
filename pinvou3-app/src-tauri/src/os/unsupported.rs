@@ -31,6 +31,10 @@ pub fn asr_tool_path() -> PathBuf {
     PathBuf::from("paddlespeech")
 }
 
+pub fn archive_tool_path() -> PathBuf {
+    PathBuf::from("7z")
+}
+
 pub fn pandoc_tool_exists() -> bool {
     false
 }
@@ -40,6 +44,10 @@ pub fn ocr_tool_exists() -> bool {
 }
 
 pub fn asr_tool_exists() -> bool {
+    false
+}
+
+pub fn archive_tool_exists() -> bool {
     false
 }
 
@@ -63,11 +71,19 @@ pub fn show_ocr_dependency_check() -> bool {
     false
 }
 
+pub fn show_archive_dependency_check() -> bool {
+    false
+}
+
 pub fn pandoc_dependency_packages() -> &'static str {
     ""
 }
 
 pub fn asr_dependency_packages() -> &'static str {
+    ""
+}
+
+pub fn archive_dependency_packages() -> &'static str {
     ""
 }
 
@@ -214,4 +230,17 @@ pub async fn report_pending_update_result_info(
         result: String::new(),
         message: "当前平台没有待反馈升级结果".to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_archive_runtime_is_not_advertised() {
+        assert!(!archive_tool_exists());
+        assert!(!show_archive_dependency_check());
+        assert_eq!(archive_dependency_packages(), "");
+        assert_eq!(archive_tool_path(), PathBuf::from("7z"));
+    }
 }

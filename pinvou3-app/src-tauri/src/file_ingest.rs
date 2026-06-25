@@ -51,7 +51,7 @@ pub struct SystemTools {
     pub tesseract: bool,
     /// pdftoppm（poppler-utils）—— 把扫描件 PDF 逐页转图再喂给 tesseract。
     pub pdftoppm: bool,
-    /// 7z（p7zip-full）—— 解 zip/7z/rar 等压缩包。
+    /// 7z —— 解 zip/7z/rar 等压缩包；Windows 优先使用内置 7-Zip。
     pub sevenzip: bool,
     /// python3 —— 解析 .eml 邮件（标准库 email 模块，无额外依赖）。
     pub python3: bool,
@@ -69,7 +69,7 @@ pub fn system_tools() -> SystemTools {
         libreoffice: crate::os::command_exists("soffice") || crate::os::command_exists("libreoffice"),
         tesseract: crate::os::ocr_tool_exists(),
         pdftoppm: crate::os::pdf_tool_exists("pdftoppm"),
-        sevenzip: crate::os::command_exists("7z"),
+        sevenzip: crate::os::archive_tool_exists(),
         python3: crate::os::command_exists("python3"),
         msgconvert: !crate::os::msg_converter_required() || crate::os::command_exists("msgconvert"),
     })
@@ -123,14 +123,18 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
             crate::os::ocr_dependency_packages(),
         ));
     }
-    items.extend([
-        item("archive", crate::os::command_exists("7z"), "p7zip-full"),
-        item(
-            "email",
-            crate::os::email_tool_exists(),
-            crate::os::email_dependency_packages(),
-        ),
-    ]);
+    if crate::os::show_archive_dependency_check() {
+        items.push(item(
+            "archive",
+            crate::os::archive_tool_exists(),
+            crate::os::archive_dependency_packages(),
+        ));
+    }
+    items.push(item(
+        "email",
+        crate::os::email_tool_exists(),
+        crate::os::email_dependency_packages(),
+    ));
     items
 }
 
@@ -144,6 +148,10 @@ fn pandoc_tool_command() -> Command {
 
 fn ocr_tool_command() -> Command {
     crate::process::HiddenCommand::new(crate::os::ocr_tool_path())
+}
+
+fn archive_tool_command() -> Command {
+    crate::process::HiddenCommand::new(crate::os::archive_tool_path())
 }
 
 fn add_ocr_tessdata_arg(command: &mut Command) {
@@ -1160,7 +1168,7 @@ fn ingest_archive(
     };
 
     if !system_tools().sevenzip {
-        return mk_err("压缩包解析需要 7z: sudo apt install p7zip-full".into());
+        return mk_err(archive_tool_missing_message());
     }
 
     // 预检：解压前就用 7z 列表拦截压缩炸弹。
@@ -1189,7 +1197,7 @@ fn ingest_archive(
         return mk_err(format!("创建临时目录失败: {e}"));
     }
 
-    let extract = Command::new("7z")
+    let extract = archive_tool_command()
         .arg("x")
         .arg("-y")
         .arg(format!("-o{}", tmpdir.display()))
@@ -1257,7 +1265,7 @@ fn ingest_archive(
 
 /// `7z l -slt` 列出条目，返回 (文件数, 解压后总字节)。用于解压前的炸弹预检。
 fn archive_list_stats(path: &Path) -> Result<(usize, u64), String> {
-    let out = Command::new("7z")
+    let out = archive_tool_command()
         .arg("l")
         .arg("-slt")
         .arg(path)
@@ -1278,6 +1286,19 @@ fn archive_list_stats(path: &Path) -> Result<(usize, u64), String> {
         .filter(|l| l.trim_start().starts_with("Path = "))
         .count();
     Ok((paths.saturating_sub(1), total))
+}
+
+fn archive_tool_missing_message() -> String {
+    if crate::os::show_archive_dependency_check() {
+        let packages = crate::os::archive_dependency_packages();
+        if packages.trim().is_empty() {
+            "压缩包解析需要 7z，请按当前系统方式安装压缩包解析工具".into()
+        } else {
+            format!("压缩包解析需要 7z: sudo apt install {packages}")
+        }
+    } else {
+        "内置压缩包解析组件缺失或不可用，请修复或重新安装 pinvou。".into()
+    }
 }
 
 /// 递归收集目录下的普通文件（不含目录本身），到达 `limit` 即停。
@@ -1979,14 +2000,22 @@ mod tests {
     }
 
     #[test]
+    fn archive_tool_command_uses_os_layer_program() {
+        let command = archive_tool_command();
+        assert_eq!(command.get_program(), crate::os::archive_tool_path().as_os_str());
+    }
+
+    #[test]
     fn dependency_check_respects_pdf_visibility_policy() {
         let deps = check_dependencies();
         let has_pdf = deps.iter().any(|item| item.key == "pdf");
         let has_pandoc = deps.iter().any(|item| item.key == "office_modern");
         let has_ocr = deps.iter().any(|item| item.key == "ocr");
+        let has_archive = deps.iter().any(|item| item.key == "archive");
         assert_eq!(has_pdf, crate::os::show_pdf_dependency_check());
         assert_eq!(has_pandoc, crate::os::show_pandoc_dependency_check());
         assert_eq!(has_ocr, crate::os::show_ocr_dependency_check());
+        assert_eq!(has_archive, crate::os::show_archive_dependency_check());
 
         if !crate::os::show_pdf_dependency_check() {
             assert!(
@@ -2010,6 +2039,23 @@ mod tests {
                 "hidden Windows OCR dependency should not leave install hints: {deps:?}"
             );
         }
+        if !crate::os::show_archive_dependency_check() {
+            assert!(
+                deps.iter()
+                    .all(|item| !item.apt.contains("p7zip") && item.key != "archive"),
+                "hidden Windows archive dependency should not leave install hints: {deps:?}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_archive_missing_message_points_to_bundled_runtime() {
+        let message = archive_tool_missing_message();
+
+        assert!(message.contains("内置压缩包解析组件"));
+        assert!(!message.contains("sudo apt install"));
+        assert!(!message.contains("p7zip-full"));
     }
 
     #[test]

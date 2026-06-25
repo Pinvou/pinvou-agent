@@ -96,6 +96,11 @@ pub fn asr_tool_path() -> std::path::PathBuf {
     std::path::PathBuf::from("pinvou-asr")
 }
 
+pub fn archive_tool_path() -> PathBuf {
+    ensure_bundled_archive_on_process_path();
+    windows_path::archive_tool_path()
+}
+
 pub fn pdf_tool_exists(command: &str) -> bool {
     ensure_bundled_poppler_on_process_path();
     windows_path::bundled_pdf_tool_path(command).is_some() || command_exists(command)
@@ -135,6 +140,11 @@ pub fn asr_tool_exists() -> bool {
     windows_path::bundled_asr_tool_path().is_some() || command_exists("pinvou-asr")
 }
 
+pub fn archive_tool_exists() -> bool {
+    ensure_bundled_archive_on_process_path();
+    windows_path::bundled_archive_tool_path().is_some() || command_exists("7z")
+}
+
 pub fn msg_native_supported() -> bool {
     true
 }
@@ -159,6 +169,10 @@ pub fn show_ocr_dependency_check() -> bool {
     false
 }
 
+pub fn show_archive_dependency_check() -> bool {
+    false
+}
+
 pub fn pdf_dependency_packages() -> &'static str {
     ""
 }
@@ -169,6 +183,10 @@ pub fn pandoc_dependency_packages() -> &'static str {
 
 pub fn asr_dependency_packages() -> &'static str {
     "安装 pinvou3-asr-windows-x64 离线语音包到安装目录 asr 文件夹"
+}
+
+pub fn archive_dependency_packages() -> &'static str {
+    ""
 }
 
 pub fn email_dependency_packages() -> &'static str {
@@ -231,6 +249,13 @@ fn ensure_bundled_tesseract_on_process_path() {
     ensure_dir_on_process_path(dir);
 }
 
+fn ensure_bundled_archive_on_process_path() {
+    let Some(dir) = windows_path::bundled_archive_dir() else {
+        return;
+    };
+    ensure_dir_on_process_path(dir);
+}
+
 fn ensure_dir_on_process_path(dir: std::path::PathBuf) {
     let current = std::env::var_os("PATH").unwrap_or_default();
     if std::env::split_paths(&current).any(|path| same_path(&path, &dir)) {
@@ -255,4 +280,15 @@ pub fn nvidia_smi_candidates() -> Vec<&'static str> {
         r"C:\Windows\System32\nvidia-smi.exe",
         r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_hides_archive_dependency_check() {
+        assert!(!show_archive_dependency_check());
+        assert_eq!(archive_dependency_packages(), "");
+    }
 }

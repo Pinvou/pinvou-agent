@@ -26,6 +26,10 @@ pub fn asr_tool_path() -> PathBuf {
     super::super::platform::asr_tool_path()
 }
 
+pub fn archive_tool_path() -> PathBuf {
+    super::super::platform::archive_tool_path()
+}
+
 pub fn pandoc_tool_exists() -> bool {
     super::super::platform::pandoc_tool_exists()
 }
@@ -36,6 +40,10 @@ pub fn ocr_tool_exists() -> bool {
 
 pub fn asr_tool_exists() -> bool {
     super::super::platform::asr_tool_exists()
+}
+
+pub fn archive_tool_exists() -> bool {
+    super::super::platform::archive_tool_exists()
 }
 
 pub fn msg_native_supported() -> bool {
@@ -58,12 +66,20 @@ pub fn show_ocr_dependency_check() -> bool {
     super::super::platform::show_ocr_dependency_check()
 }
 
+pub fn show_archive_dependency_check() -> bool {
+    super::super::platform::show_archive_dependency_check()
+}
+
 pub fn pandoc_dependency_packages() -> &'static str {
     super::super::platform::pandoc_dependency_packages()
 }
 
 pub fn asr_dependency_packages() -> &'static str {
     super::super::platform::asr_dependency_packages()
+}
+
+pub fn archive_dependency_packages() -> &'static str {
+    super::super::platform::archive_dependency_packages()
 }
 
 pub fn email_dependency_packages() -> &'static str {
@@ -145,5 +161,10 @@ mod tests {
     #[test]
     fn asr_tool_path_returns_non_empty_program() {
         assert!(!asr_tool_path().as_os_str().is_empty());
+    }
+
+    #[test]
+    fn archive_tool_path_returns_non_empty_program() {
+        assert!(!archive_tool_path().as_os_str().is_empty());
     }
 }

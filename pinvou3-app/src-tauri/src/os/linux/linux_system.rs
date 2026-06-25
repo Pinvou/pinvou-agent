@@ -50,6 +50,10 @@ pub fn asr_tool_path() -> std::path::PathBuf {
     std::path::PathBuf::from("pinvou-asr")
 }
 
+pub fn archive_tool_path() -> std::path::PathBuf {
+    std::path::PathBuf::from("7z")
+}
+
 pub fn pandoc_tool_exists() -> bool {
     command_exists("pandoc")
 }
@@ -77,6 +81,10 @@ pub fn asr_tool_exists() -> bool {
     command_exists("pinvou-asr")
 }
 
+pub fn archive_tool_exists() -> bool {
+    command_exists("7z")
+}
+
 pub fn msg_native_supported() -> bool {
     false
 }
@@ -97,12 +105,20 @@ pub fn show_ocr_dependency_check() -> bool {
     true
 }
 
+pub fn show_archive_dependency_check() -> bool {
+    true
+}
+
 pub fn pandoc_dependency_packages() -> &'static str {
     "pandoc"
 }
 
 pub fn asr_dependency_packages() -> &'static str {
     "安装 pinvou ASR runtime，或设置 PINVOU3_ASR_CMD"
+}
+
+pub fn archive_dependency_packages() -> &'static str {
+    "p7zip-full"
 }
 
 pub fn pandoc_missing_message() -> &'static str {
@@ -145,6 +161,13 @@ mod tests {
             email_dependency_packages(),
             "python3 libemail-outlook-message-perl"
         );
+    }
+
+    #[test]
+    fn linux_keeps_archive_dependency_check_visible() {
+        assert!(show_archive_dependency_check());
+        assert_eq!(archive_dependency_packages(), "p7zip-full");
+        assert_eq!(archive_tool_path(), std::path::PathBuf::from("7z"));
     }
 }
 
