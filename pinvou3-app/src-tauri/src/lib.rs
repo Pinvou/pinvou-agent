@@ -294,6 +294,7 @@ pub fn run() {
             commands::open_containing_folder,
             commands::open_artifact_window,
             detach::open_detached_window,
+            detach::begin_detach_drag,
             commands::open_external_url,
             commands::ingest_file,
             commands::detect_system_tools,

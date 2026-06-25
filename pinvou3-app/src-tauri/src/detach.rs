@@ -3,8 +3,15 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+
+/// 鬼影窗口 label。用 detached- 前缀 → 被 capabilities 的 `detached-*` glob 覆盖。
+const GHOST_LABEL: &str = "detached-ghost";
+
+/// 同一时刻只允许一个撕离拖拽,防止多个跟随循环抢鬼影。
+static DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// 撕离窗口 label。Tauri label 仅允许 a-zA-Z0-9-_，故 id 用 16 位 hex 哈希而非原样拼接，
 /// 避免 id 里的非法字符 / 冲突。同一 (kind,id) → 同一 label，用于去重 + 聚焦。
@@ -46,34 +53,153 @@ fn urlencode(s: &str) -> String {
         .collect()
 }
 
-/// 建/聚焦某菜单项的撕离窗口。已存在同 (kind,id) 窗口则只聚焦。
+/// 建/聚焦撕离窗口的核心。已存在同 (kind,id) 窗口则只聚焦。
+/// pos=Some 时建好后把窗口左上角移到全局物理坐标(拖拽松手落位,跨屏)。
 /// 撕离窗口加载同一个 index.html，带 ?detached=1&kind=&id=，前端据此只渲染该面板。
-#[tauri::command]
-pub async fn open_detached_window(
-    kind: String,
-    id: Option<String>,
-    app: AppHandle,
+pub fn create_detached_at(
+    app: &AppHandle,
+    kind: &str,
+    id: Option<&str>,
+    pos: Option<(i32, i32)>,
 ) -> Result<(), String> {
-    let label = detached_label(&kind, id.as_deref());
+    let label = detached_label(kind, id);
     if let Some(existing) = app.get_webview_window(&label) {
         let _ = existing.set_focus();
         return Ok(());
     }
 
     // index.html?detached=1&kind=<kind>&id=<id>。id 做 URL 编码，空 id 省略。
-    let mut query = format!("detached=1&kind={}", urlencode(&kind));
-    if let Some(ref i) = id {
+    let mut query = format!("detached=1&kind={}", urlencode(kind));
+    if let Some(i) = id {
         query.push_str(&format!("&id={}", urlencode(i)));
     }
     let url = WebviewUrl::App(format!("index.html?{query}").into());
 
-    WebviewWindowBuilder::new(&app, &label, url)
-        .title(view_title(&kind))
+    let win = WebviewWindowBuilder::new(app, &label, url)
+        .title(view_title(kind))
         .inner_size(900.0, 720.0)
         .resizable(true)
         .decorations(true)
         .build()
         .map_err(|e| format!("build detached window: {e}"))?;
+
+    // 用 PhysicalPosition 落位:device_query 给的是全局物理像素,绕开 logical/scale 换算。
+    if let Some((x, y)) = pos {
+        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+    }
+    Ok(())
+}
+
+/// 建/聚焦某菜单项的撕离窗口(按钮触发,默认位置)。
+#[tauri::command]
+pub async fn open_detached_window(
+    kind: String,
+    id: Option<String>,
+    app: AppHandle,
+) -> Result<(), String> {
+    create_detached_at(&app, &kind, id.as_deref(), None)
+}
+
+/// 主窗口外接矩形是否包含全局点 (px,py)。拿不到主窗口几何 → 视为不包含(倾向于建窗)。
+fn main_window_contains(app: &AppHandle, px: i32, py: i32) -> bool {
+    if let Some(w) = app.get_webview_window("main") {
+        if let (Ok(pos), Ok(size)) = (w.outer_position(), w.outer_size()) {
+            return point_in_rect(px, py, pos.x, pos.y, size.width as i32, size.height as i32);
+        }
+    }
+    false
+}
+
+/// 撕离拖拽起手:起鬼影窗口跨屏跟随光标,松手落位/取消。
+/// 前端在侧边栏项 pointer 拖拽超阈值时调用;之后全程由原生层接管。
+#[tauri::command]
+pub async fn begin_detach_drag(
+    kind: String,
+    id: Option<String>,
+    app: AppHandle,
+) -> Result<(), String> {
+    if DRAG_ACTIVE.swap(true, Ordering::SeqCst) {
+        return Ok(()); // 已有拖拽进行中,忽略重复起手
+    }
+
+    // 清掉可能残留的鬼影
+    if let Some(w) = app.get_webview_window(GHOST_LABEL) {
+        let _ = w.destroy();
+    }
+    let gurl = WebviewUrl::App(format!("index.html?ghost=1&kind={}", urlencode(&kind)).into());
+    let ghost = WebviewWindowBuilder::new(&app, GHOST_LABEL, gurl)
+        .inner_size(190.0, 46.0)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .focused(false)
+        .resizable(false)
+        .build();
+    let ghost = match ghost {
+        Ok(g) => g,
+        Err(e) => {
+            DRAG_ACTIVE.store(false, Ordering::SeqCst);
+            return Err(format!("ghost build: {e}"));
+        }
+    };
+    let _ = ghost.set_ignore_cursor_events(true); // click-through,不抢焦点
+
+    // 跟随循环:device_query 硬件状态轮询(独立 OS 线程),窗口操作一律 marshal 回主线程。
+    std::thread::spawn(move || {
+        use device_query::{DeviceQuery, DeviceState};
+        let dev = DeviceState::new();
+        let mut was_down = false;
+        let mut idle_ticks = 0u32;
+        loop {
+            let m = dev.get_mouse();
+            let (mx, my) = m.coords;
+            let down = *m.button_pressed.get(1).unwrap_or(&false);
+
+            // 鬼影跟随(略偏移,避免压在光标正下)
+            let a_inner = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                if let Some(g) = a_inner.get_webview_window(GHOST_LABEL) {
+                    let _ = g.set_position(tauri::PhysicalPosition::new(mx + 12, my + 12));
+                }
+            });
+
+            if down {
+                was_down = true;
+            }
+            if was_down && !down {
+                // 松手:销毁鬼影 + 落位判定(全在主线程)
+                let a2 = app.clone();
+                let kind2 = kind.clone();
+                let id2 = id.clone();
+                let _ = app.run_on_main_thread(move || {
+                    if let Some(g) = a2.get_webview_window(GHOST_LABEL) {
+                        let _ = g.destroy();
+                    }
+                    if !main_window_contains(&a2, mx, my) {
+                        let _ = create_detached_at(&a2, &kind2, id2.as_deref(), Some((mx, my)));
+                    }
+                });
+                break;
+            }
+            if !was_down {
+                idle_ticks += 1;
+                if idle_ticks > 120 {
+                    // ~2s 没等到按下(异常起手)→ 取消,清鬼影
+                    let a3 = app.clone();
+                    let _ = app.run_on_main_thread(move || {
+                        if let Some(g) = a3.get_webview_window(GHOST_LABEL) {
+                            let _ = g.destroy();
+                        }
+                    });
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        DRAG_ACTIVE.store(false, Ordering::SeqCst);
+    });
+
     Ok(())
 }
 
