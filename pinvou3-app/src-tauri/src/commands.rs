@@ -699,10 +699,7 @@ fn run_local_asr_cli(wav_path: &std::path::Path) -> Result<LocalAsrOutput, Voice
 
     let mut child = command.spawn().map_err(|e| {
         let message = if e.kind() == std::io::ErrorKind::NotFound {
-            format!(
-                "{} Runtime path: `{executable}`.",
-                crate::os::asr_missing_message()
-            )
+            crate::os::asr_missing_message().to_string()
         } else {
             format!("Failed to start local SenseVoice/FunASR ASR: {e}")
         };

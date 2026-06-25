@@ -381,7 +381,7 @@
         attachParsing: '解析中…', attachFailed: '失败', attachAdd: '添加附件',
         voiceStart: '语音输入', voiceStop: '结束录音', voiceCancel: '取消语音输入', voiceRetry: '重试',
         voiceRequesting: '正在请求麦克风权限…', voiceRecording: '正在录音，再点一次结束', voiceTranscribing: '正在识别语音…',
-        voiceCompleted: '语音已写入输入框', voiceClose: '关闭语音提示',
+        voiceCompleted: '语音已写入输入框', voiceClose: '关闭语音提示', voiceGotoDeps: '去依赖体检',
         composerTools: '工具', composerInstalledTools: '已接入工具', composerNoTools: '暂无已装工具', composerToolOn: '已启用', composerManageTools: '管理工具',
         resend: '重新发送', editResend: '编辑并重发',
         thinkingLabel: '思考中', thinkingCall: (tool, s) => `调用 ${tool}... ${s}s`,
@@ -610,7 +610,7 @@
         attachParsing: 'Parsing…', attachFailed: 'Failed', attachAdd: 'Attach file',
         voiceStart: 'Voice input', voiceStop: 'Stop recording', voiceCancel: 'Cancel voice input', voiceRetry: 'Retry',
         voiceRequesting: 'Requesting microphone permission…', voiceRecording: 'Recording, click again to stop', voiceTranscribing: 'Transcribing voice…',
-        voiceCompleted: 'Voice text added', voiceClose: 'Close voice notice',
+        voiceCompleted: 'Voice text added', voiceClose: 'Close voice notice', voiceGotoDeps: 'Open dependency check',
         composerTools: 'Tools', composerInstalledTools: 'Connected tools', composerNoTools: 'No tools installed', composerToolOn: 'On', composerManageTools: 'Manage tools',
         resend: 'Resend', editResend: 'Edit & resend',
         thinkingLabel: 'Thinking', thinkingCall: (tool, s) => `Calling ${tool}... ${s}s`,
@@ -838,7 +838,7 @@
         attachParsing: '解析中…', attachFailed: '失敗', attachAdd: 'ファイルを添付',
         voiceStart: '音声入力', voiceStop: '録音を終了', voiceCancel: '音声入力をキャンセル', voiceRetry: '再試行',
         voiceRequesting: 'マイク権限を確認中…', voiceRecording: '録音中。もう一度押すと終了', voiceTranscribing: '音声を認識中…',
-        voiceCompleted: '音声テキストを追加しました', voiceClose: '音声通知を閉じる',
+        voiceCompleted: '音声テキストを追加しました', voiceClose: '音声通知を閉じる', voiceGotoDeps: '依存関係チェックへ',
         composerTools: 'ツール', composerInstalledTools: '接続済みツール', composerNoTools: 'ツールなし', composerToolOn: '有効', composerManageTools: 'ツール管理',
         resend: '再送信', editResend: '編集して再送信',
         thinkingLabel: '思考中', thinkingCall: (tool, s) => `${tool} を実行中... ${s}s`,
@@ -3828,6 +3828,9 @@
                     : voiceInput.message}
                 </span>
                 <div className="flex items-center gap-1 shrink-0">
+                  {voiceInput.status === 'failed' && voiceInput.category === 'recognition_failed' && onGotoSettings && (
+                    <button onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium ${isDark ? 'bg-white/10 hover:bg-white/20' : 'bg-black/5 hover:bg-black/10'}`}>{t.voiceGotoDeps}</button>
+                  )}
                   {voiceInput.status === 'failed' && (
                     <button onClick={handleVoiceClick} className={`px-2 py-1 rounded-full ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{t.voiceRetry}</button>
                   )}

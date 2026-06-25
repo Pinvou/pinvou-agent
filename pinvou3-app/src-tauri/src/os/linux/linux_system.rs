@@ -74,7 +74,7 @@ pub fn pandoc_dependency_packages() -> &'static str {
 }
 
 pub fn asr_dependency_packages() -> &'static str {
-    "安装 pinvou ASR runtime，或设置 PINVOU3_ASR_CMD"
+    "本地语音识别引擎（需单独安装）"
 }
 
 pub fn pandoc_missing_message() -> &'static str {
@@ -114,7 +114,7 @@ pub fn ocr_dependency_packages() -> &'static str {
 }
 
 pub fn asr_missing_message() -> &'static str {
-    "本地语音识别需要 SenseVoice/FunASR 运行时，请安装 pinvou ASR runtime，或通过 PINVOU3_ASR_CMD 指向 pinvou-asr。"
+    "本地语音识别还没准备好，请在「设置 → 依赖体检」中查看安装方法。"
 }
 
 pub fn pdf_text_missing_message() -> &'static str {
