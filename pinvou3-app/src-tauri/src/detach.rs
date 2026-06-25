@@ -115,22 +115,33 @@ fn main_window_contains(app: &AppHandle, px: i32, py: i32) -> bool {
 /// 撕离拖拽起手:起鬼影窗口跨屏跟随光标,松手落位/取消。
 /// 前端在侧边栏项 pointer 拖拽超阈值时调用;之后全程由原生层接管。
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn begin_detach_drag(
     kind: String,
     id: Option<String>,
+    label: Option<String>,
+    dx: i32, // 按下点相对被抓标签左上角的偏移(物理像素)→ 鬼影 = 光标 - (dx,dy),保持"相对位置不变"
+    dy: i32,
+    w: i32, // 被抓标签尺寸 → 鬼影同尺寸,看起来就是那个标签被拎起来
+    h: i32,
     app: AppHandle,
 ) -> Result<(), String> {
     if DRAG_ACTIVE.swap(true, Ordering::SeqCst) {
         return Ok(()); // 已有拖拽进行中,忽略重复起手
     }
+    let gw = w.clamp(80, 600) as f64;
+    let gh = h.clamp(28, 120) as f64;
 
     // 清掉可能残留的鬼影
     if let Some(w) = app.get_webview_window(GHOST_LABEL) {
         let _ = w.destroy();
     }
-    let gurl = WebviewUrl::App(format!("index.html?ghost=1&kind={}", urlencode(&kind)).into());
-    let ghost = WebviewWindowBuilder::new(&app, GHOST_LABEL, gurl)
-        .inner_size(190.0, 46.0)
+    let mut gurl = format!("ghost=1&kind={}", urlencode(&kind));
+    if let Some(ref l) = label {
+        gurl.push_str(&format!("&label={}", urlencode(l)));
+    }
+    let ghost = WebviewWindowBuilder::new(&app, GHOST_LABEL, WebviewUrl::App(format!("index.html?{gurl}").into()))
+        .inner_size(gw, gh)
         .decorations(false)
         .transparent(true)
         .always_on_top(true)
@@ -153,16 +164,23 @@ pub async fn begin_detach_drag(
         let dev = DeviceState::new();
         let mut was_down = false;
         let mut idle_ticks = 0u32;
+        let mut tick = 0u32;
         loop {
             let m = dev.get_mouse();
             let (mx, my) = m.coords;
             let down = *m.button_pressed.get(1).unwrap_or(&false);
 
-            // 鬼影跟随(略偏移,避免压在光标正下)
+            // 鬼影紧贴光标:左上角 = 光标 - 抓取偏移 → 光标始终落在标签上当初按下的同一点。
+            let gx = mx - dx;
+            let gy = my - dy;
+            if tick % 40 == 0 {
+                eprintln!("[tearoff] cursor=({mx},{my}) ghost=({gx},{gy}) down={down}");
+            }
+            tick = tick.wrapping_add(1);
             let a_inner = app.clone();
             let _ = app.run_on_main_thread(move || {
                 if let Some(g) = a_inner.get_webview_window(GHOST_LABEL) {
-                    let _ = g.set_position(tauri::PhysicalPosition::new(mx + 12, my + 12));
+                    let _ = g.set_position(tauri::PhysicalPosition::new(gx, gy));
                 }
             });
 
@@ -197,7 +215,7 @@ pub async fn begin_detach_drag(
                     break;
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(16));
+            std::thread::sleep(std::time::Duration::from_millis(8));
         }
         // 拖拽结束(落位/取消/超时任一)→ 广播,让前端浮起的源标签复位。
         let _ = app.emit("detach:drag-ended", ());
