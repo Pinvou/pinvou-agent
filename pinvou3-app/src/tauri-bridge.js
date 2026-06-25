@@ -120,6 +120,9 @@
     // 卡片池: 专家面具。activePersona = 当前 session 加持的专家卡(完整对象)或 null,
     // 驱动聊天室右上角挂件。
     activePersona: null,
+    // 知识库挂载: 当前 session 挂载的知识集 id(number)或 null。仿 activePersona 走 buffer,
+    // 仅驻内存(后端也只驻内存),重启回到未挂载。名字由前端用知识集列表解析。
+    mountedCollection: null,
     // personaPool 只放轻量元信息(loadState),1078 张卡放模块级 personaPoolCache,
     // 不进 notify() 的 JSON 深拷贝(否则每个流式 token 都克隆 ~950KB,卡顿)。
     personaPool: { loadState: "idle" }, // idle | loading | ready | error
@@ -248,6 +251,7 @@
       thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
       tokens: { input: 0, max: maxModelLen },
       activePersona: null, // 卡片池: 该 session 加持的专家面具(挂件用)
+      mountedCollection: null, // 知识库: 该 session 挂载的知识集 id 或 null
 
       stream: {
         currentStreamText: "", currentStreamId: 0, pendingAssistantText: "",
@@ -268,6 +272,7 @@
     buf.busy = state.busy; buf.planSnapshot = state.planSnapshot; buf.modeState = state.modeState;
     buf.thinking = state.thinking; buf.tokens = state.tokens; buf.queued = state.queued;
     buf.activePersona = state.activePersona;
+    buf.mountedCollection = state.mountedCollection;
     buf.stream = {
       currentStreamText: currentStreamText, currentStreamId: currentStreamId,
       pendingAssistantText: pendingAssistantText, pendingAssistantBlocks: pendingAssistantBlocks,
@@ -285,6 +290,7 @@
     state.busy = buf.busy; state.planSnapshot = buf.planSnapshot; state.modeState = buf.modeState;
     state.thinking = buf.thinking; state.tokens = buf.tokens; state.queued = buf.queued || [];
     state.activePersona = buf.activePersona || null;
+    state.mountedCollection = buf.mountedCollection || null;
     var s = buf.stream || {};
     currentStreamText = s.currentStreamText || ""; currentStreamId = s.currentStreamId || 0;
     pendingAssistantText = s.pendingAssistantText || ""; pendingAssistantBlocks = s.pendingAssistantBlocks || [];
@@ -456,6 +462,7 @@
       await refreshHistoryList();
       await syncModeState();
       await syncActivePersona();
+      await syncMountedCollection();
       notify();
       return state.activeSessionId;
     } catch (e) {
@@ -473,6 +480,7 @@
       switchActiveTo(id, null);
       await syncModeState();
       await syncActivePersona();
+      await syncMountedCollection();
       notify();
       reconcileArtifacts(id); // 对账磁盘产物(fire-and-forget)
       return;
@@ -494,6 +502,7 @@
       rerenderFromMessages();
       await syncModeState();
       await syncActivePersona();
+      await syncMountedCollection();
       notify();
       reconcileArtifacts(id); // 对账磁盘产物(修重启/跟踪遗漏导致的面板缺文件)
     } catch (e) {
@@ -2289,6 +2298,38 @@
     } catch (e) { /* 旧 session 无加持,忽略 */ }
   }
 
+  // ── 知识库挂载(会话级粘连,仿 persona) ──
+  // 给当前对话挂一个知识集;草稿态先物化 session(同 equipPersona)。挂上后每条消息
+  // 发送前后端自动检索注入(commands::chat)。返回挂载的 id 或 null(失败)。
+  async function mountCollection(collectionId) {
+    if (collectionId == null) return null;
+    if (!state.activeSessionId) {
+      await ensureSession();
+      if (!state.activeSessionId) return null;
+    }
+    try {
+      await invoke("session_mount_collection", { sessionId: state.activeSessionId, collectionId: collectionId });
+      state.mountedCollection = collectionId;
+      notify();
+      return collectionId;
+    } catch (e) { addSystemItem("挂载知识集失败: " + e); return null; }
+  }
+  // 摘下当前对话的知识集挂载。
+  async function unmountCollection() {
+    if (!state.activeSessionId) { state.mountedCollection = null; notify(); return; }
+    try { await invoke("session_unmount_collection", { sessionId: state.activeSessionId }); } catch (e) { /* 前端照样摘 */ }
+    state.mountedCollection = null;
+    notify();
+  }
+  // 切换/重载 session 后从后端还原挂载状态(backend 是真相;仅驻内存,重启后为 null)。
+  async function syncMountedCollection() {
+    if (!state.activeSessionId) { state.mountedCollection = null; return; }
+    try {
+      var cid = await invoke("session_mounted_collection", { sessionId: state.activeSessionId });
+      state.mountedCollection = (cid == null) ? null : cid;
+    } catch (e) { state.mountedCollection = null; }
+  }
+
   // ── 应用内升级 ───────────────────────────────────────────────────
   // 链路: check_for_update(对比服务器 latest.json) → download_update(流式下载+sha256,
   // 进度走 update:progress 事件) → install_update(pkexec apt) → restart_app。
@@ -2642,6 +2683,10 @@
     readPersonaBody: function (id) { return invoke("read_persona_body", { personaId: id }); }, // Side B: 详情拉完整正文
     equipPersona: equipPersona,
     unequipPersona: unequipPersona,
+    // 知识库挂载(会话级)
+    mountCollection: mountCollection,
+    unmountCollection: unmountCollection,
+    listCollections: function () { return invoke("kb_collection_list"); }, // 挂载选择器用
     // AI 造卡开场引导卡:落一条展示气泡 + 记一条 persona 事件(随会话持久化)。
     // 走 personaEvents 时间线,冷重载时 rerenderFromMessages 按 pos 还原 → 切会话/重启不丢。
     postCardCreatorIntro: function () { addChatItem({ type: "card_creator_intro", time: "" }); recordPersonaEvent({ kind: "card_creator_intro" }); notify(); },

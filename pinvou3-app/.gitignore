@@ -4,6 +4,11 @@ src-tauri/target/
 
 # 前端依赖（@tauri-apps/cli native binary 等）
 node_modules/
+# 例外：三省六部「网页类」预置模板的依赖必须进 git——客户机沙箱断网装不了,
+# 靠这份预装 node_modules 离线 `npm run build` 出单文件(见 src-tauri/tauri.conf resources）。
+# 两条覆盖顶层 + 嵌套(如 micromatch/node_modules)。
+!src-tauri/resources/web-template/node_modules/
+!src-tauri/resources/web-template/**/node_modules/
 
 # Tauri 生成的快照
 src-tauri/gen/

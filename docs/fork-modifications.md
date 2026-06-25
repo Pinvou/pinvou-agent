@@ -14,16 +14,16 @@
 |---|---|
 | submodule 分支 | **`pinvou3-clean`**(`.gitmodules` 追踪);HEAD `1161bc78`;备份 `backup/pre-reclean-v0.8.60` |
 | fork drift | **+2335 / −360 行,43 文件**(`git -C DeepSeek-TUI diff v0.8.60..HEAD --shortstat`)。超 1500 软上限,主体是工作流层 W——属"接受重 fork"(fork-policy §0);app 层 prompt 走 override 注入,不计入 |
-| 历史 | v0.8.60 + 8 commit:C1 lib · C2 blocklist · C3 append_file · C4 safety · C5+C7 prompt-composer · C6 chore · W 工作流层 · docs。后续叠加:C8 会话工具开关 op(#4,`a0efea0b`,2026-06-23) |
+| 历史 | v0.8.60 + 8 commit:C1 lib · C2 blocklist · C3 append_file · C4 safety · C5+C7 prompt-composer · C6 chore · W 工作流层 · docs。后续叠加:C8 会话工具开关 op(#4,`a0efea0b`,2026-06-23) · R extra_tools 注入口(`6b3059da`,2026-06-24) |
 | LLM 暴露 native 工具 | **23 个**(全量注册 − 81 黑名单;**tool_search 已禁用**,模型无法激活 deferred 工具)。MCP `mcp_pinvou_present_artifact` 另接,共 24 入口 |
-| fork-guard | **45 指纹 + 回归测试**(`scripts/fork-guard.sh`;+C8 会话工具开关 2 条);底座 lib 4539 pass(+1 已知 flake:verifier 后台 shell 并行误报)/ app lib 166 pass(单线程) |
+| fork-guard | **49 指纹 + 回归测试**(`scripts/fork-guard.sh`;+C8 会话工具开关 2 条 +RAG1/RAG2 守 extra_tools 注入口);底座 lib 4539 pass(+1 已知 flake:verifier 后台 shell 并行误报)/ app lib 195 pass(单线程) |
 | system prompt | dump 逐字节稳定(210 行,diff=0);per-turn `<runtime_prompt>` tag + goal continuation 均已 gate |
 
 ---
 
-## 1. fork 结构(C1–C8 + W 逻辑主题)
+## 1. fork 结构(C1–C8 + R + W 逻辑主题)
 
-> 逻辑分组,对应 8 个主题 commit。看某文件 fork-distinct 改动:`git -C DeepSeek-TUI diff v0.8.60..HEAD -- <file>`。
+> 逻辑分组,对应主题 commit。看某文件 fork-distinct 改动:`git -C DeepSeek-TUI diff v0.8.60..HEAD -- <file>`。
 > 冲突易出血优先级(sync review 顺序):**prompts.rs(C5+C7) > turn_loop.rs(C7) > subagent/mod.rs(W) > tool_catalog.rs(C2) > project_context.rs(C5)**。
 
 ### C1 `lib` library facade
@@ -96,6 +96,13 @@
 - **来源**:fork PR h3c-hexin/DeepSeek-TUI#4(已 ff 进 `pinvou3-clean`,commit `a0efea0b`)
 - **测试**:`forkguard` `SetDisallowedTools op 定义` + `SetDisallowedTools 写 disallowed` 指纹(L1);行为 L2 待补
 - 上游 PR:❌ pinvou3 专用(留 fork)
+
+### R `agentic-rag` EngineConfig.extra_tools 应用层工具注入口(2026-06-24)
+- **文件**:`core/engine.rs`(`ExtraTools` newtype + `EngineConfig.extra_tools` 字段 + Default)、`core/engine/tool_setup.rs`(`build_turn_tool_registry_builder` 末尾 `with_tool` 循环注册);连带补 3 处 TUI 路径 EngineConfig literal(`runtime_threads.rs`/`tui/ui.rs`/`main.rs`,`extra_tools: Default::default()`)
+- **改动**:给 `EngineConfig` 加 `pub extra_tools: ExtraTools`(newtype 包 `Vec<Arc<dyn ToolSpec>>`,手写 Debug 输出工具名——`dyn ToolSpec` 非 Debug,否则破 `#[derive(Debug)]`),每 turn build registry 时 append 到 builder。让**嵌入应用**(pinvou3-app)无需 fork 工具表即可注册自定义 `ToolSpec`
+- **理由/用途**:Agentic RAG——app 层 `KbSearchTool`(`knowledge/kb_tool.rs`,持 `session_id`,execute 查该会话挂载知识集 → `L1Store::retrieve_for_chat`)经此注入,让本地 LLM 自主调 `kb_search` 检索本地知识(替代旧注入式)。`spawn_for_session` 按 session push,工具持 session_id 解决 `ToolContext` 无 session_id 的问题
+- **测试**:`forkguard` `RAG1 extra_tools 字段` + `RAG2 tool_setup 注册` 指纹;app lib `blocklist_contract`(kb_search 可见)+ `kb_tool::tests`;真机测自发调用率/幻觉率
+- 上游 PR:✅ **拟提**——`extra_tools` 是通用扩展点(任何嵌入方可注册工具),与具体 kb_search 解耦
 
 ### W `workflow` 三省六部工作流底座层
 - **文件**:`tools/subagent/{mod,tests}.rs`、`core/ops.rs`、`core/events.rs`、`core/engine.rs`、`core/engine/{tests,approval,handle}.rs`、`tools/user_input.rs`、`runtime_threads.rs`、`tui/{sidebar,command_palette,ui,views/mod}.rs`、`main.rs`(EngineConfig 字段)
