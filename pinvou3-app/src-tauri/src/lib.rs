@@ -13,6 +13,7 @@
 mod audit;
 pub mod bridge;
 mod commands;
+mod detach;
 // L1 harness 的附件 e2e 要走「真实 ingest → 注入分流 → 真 vLLM」全链路:
 // 暴露注入收口函数 + file_ingest。
 pub use commands::build_message_with_attachments;
@@ -292,6 +293,7 @@ pub fn run() {
             commands::open_in_system,
             commands::open_containing_folder,
             commands::open_artifact_window,
+            detach::open_detached_window,
             commands::open_external_url,
             commands::ingest_file,
             commands::detect_system_tools,
