@@ -80,7 +80,7 @@
     activeModelId: null,
     currentSessionModelId: null, // 当前 active session 显式绑定的模型;null=跟随全局默认
     superPermEnabled: false,
-    modeState: { mode: "yolo", plan_phase: "none" },
+    modeState: { mode: "yolo" },
     // 最新 plan/todos 快照（用于 mode header 进度 chip，与 plan_ready 卡解耦）
     planSnapshot: { plan: null, todos: null },
     // 当前 session 产物列表 [{ path, basename }]
@@ -247,7 +247,7 @@
     return {
       messages: [], chatItems: [], personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
       planSnapshot: { plan: null, todos: null },
-      modeState: { mode: "yolo", plan_phase: "none" },
+      modeState: { mode: "yolo" },
       thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
       tokens: { input: 0, max: maxModelLen },
       activePersona: null, // 卡片池: 该 session 加持的专家面具(挂件用)
@@ -1299,7 +1299,6 @@
   // 不依赖工作集 —— 这样后台 session 跑完也能正确落盘。
   listen("chat:done", function (e) {
     var sid = (e.payload && e.payload.session_id) || state.activeSessionId;
-    var flags = { wasExecuting: false };
     runSyncOnSession(sid, function () {
       var error = e.payload && e.payload.error;
       if (error) addSystemItem("⚠️ " + error);
@@ -1329,16 +1328,10 @@
       stopThinking();
       currentStreamText = "";
       currentStreamId = 0;
-      // 执行 plan 完成 → 回 yolo 默认态(plan_phase 从 executing → none)
-      if (state.modeState.plan_phase === "executing") {
-        flags.wasExecuting = true;
-        state.modeState = { mode: "yolo", plan_phase: "none" };
-      }
     });
     notify();
     // 异步收尾(按 sid 路由,active/后台通用)
     (async function () {
-      if (flags.wasExecuting) { try { await invoke("discard_plan", { sessionId: sid }); } catch (_) {} }
       await persistMessagesFor(sid);
       await refreshHistoryList();
       notify();
@@ -1407,10 +1400,9 @@
     notify();
   }); });
 
-  // chat:plan_ready —— 任一层快照非空就渲染方案卡（plan_phase → ready）
+  // chat:plan_ready —— 底座式:Plan 模式调过 update_plan 即弹方案卡(快照非空)
   listen("chat:plan_ready", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
-    state.modeState.plan_phase = "ready";
     // 新方案出现 → 旧的 active 方案卡冻结
     state.chatItems.forEach(function (it) {
       if (it.type === "plan_card" && it.cardState === "active") {
@@ -1440,14 +1432,6 @@
     if (!hit) return;
     if (hasUnresolvedItem("plan_text_fallback")) return;
     addChatItem({ type: "plan_text_fallback", text: lastText, resolved: false, time: timeStr() });
-    notify();
-  }); });
-
-  // chat:execution_stuck —— Executing 自驱 N 次后仍卡
-  listen("chat:execution_stuck", function (e) { onSessionEvent(e, function () {
-    var p = e.payload || {};
-    if (hasUnresolvedItem("execution_stuck")) return;
-    addChatItem({ type: "execution_stuck", tries: p.auto_continue_tried || 0, resolved: false, time: timeStr() });
     notify();
   }); });
 
@@ -1956,14 +1940,14 @@
   // ── Mode state ───────────────────────────────────────────────────
   async function syncModeState() {
     if (!state.activeSessionId) {
-      state.modeState = { mode: "yolo", plan_phase: "none" };
+      state.modeState = { mode: "yolo" };
       return;
     }
     try {
       var ms = await invoke("get_mode_state", { sessionId: state.activeSessionId });
-      state.modeState = { mode: ms.mode || "yolo", plan_phase: ms.plan_phase || "none" };
+      state.modeState = { mode: ms.mode || "yolo" };
     } catch (e) {
-      state.modeState = { mode: "yolo", plan_phase: "none" };
+      state.modeState = { mode: "yolo" };
     }
   }
 
@@ -1993,10 +1977,7 @@
   function thinkingIdle() { state.thinking = { active: true, phase: "thinking", toolName: "", startedAt: Date.now() }; }
   function stopThinking() { state.thinking = { active: false, phase: "thinking", toolName: "", startedAt: 0 }; }
   function applyModeFromState(st) {
-    state.modeState = {
-      mode: st.mode || "yolo",
-      plan_phase: st.plan_phase || "none",
-    };
+    state.modeState = { mode: st.mode || "yolo" };
   }
 
   // ── Plan/YOLO 命令 ───────────────────────────────────────────────
