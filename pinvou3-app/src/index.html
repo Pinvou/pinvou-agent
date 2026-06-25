@@ -3760,6 +3760,16 @@
             <div className={`${cq.q ? 'w-full' : 'max-w-[95%]'} ${isDark ? 'dark-code' : 'light-code'}`}>
               <div
                 className={`msg-md text-[15px] leading-relaxed ${item.streaming ? 'streaming-cursor' : ''} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}
+                onClick={(e) => {
+                  // 聊天里的链接(如飞书授权 URL)点击 → 走系统浏览器,别导航主窗口/不可点。
+                  const a = e.target && e.target.closest && e.target.closest('a[href]');
+                  if (!a) return;
+                  const href = a.getAttribute('href') || '';
+                  if (/^https?:\/\//i.test(href)) {
+                    e.preventDefault();
+                    window.__TAURI__.core.invoke('open_external_url', { url: href }).catch(() => {});
+                  }
+                }}
                 dangerouslySetInnerHTML={{ __html: cq.html || '' }}
               />
               {cq.q ? (
