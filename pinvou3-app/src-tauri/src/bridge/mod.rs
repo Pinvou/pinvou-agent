@@ -867,27 +867,17 @@ impl Pinvou3Bridge {
 
 /// Plan 模式 per-turn reminder:命令式、短、列禁令(Qwen3.6 友好)。写保护真防线是底座
 /// 只读工具集 + ReadOnly sandbox,禁写条只是减少弱模型撞墙的引导(消融证非 load-bearing)。
-const PLAN_REMINDER: &str = "你现在在 Plan 模式(只读调研)。本 turn 按这个顺序行动:\n\
-     1. 任务有歧义 → 调 `request_user_input` 工具问澄清(给 2-3 个选项让用户点选)。\
-     不要在 text 里列 A/B/C 选项。\n\
-     2. 方案清晰后 → 调 `update_plan` 工具输出方案(explanation 字段写关键决策,\
-     items 写 3-8 个执行步骤)。如果产物预计超过 300 行或 20KB(如 HTML deck / 完整网页 / 长报告),\
-     plan 必须说明分块写法:`append_file` 只能追加到文件尾;要填已有文件中间或替换占位符,\
-     用 `edit_file`,不要用 `append_file`。\
-     可选再调 `checklist_write` 拆细。\n\
-     3. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
-     方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。\n\
-     4. **禁止**调 `write_file` / `append_file` / `edit_file` / `exec_shell` / `js_execution`——\
-     它们在 Plan 模式不可用,调了一定失败。如果用户让你写文件或动手执行,别自己编模式名\
-     (没有\"Executing 模式\"、也没有\"设置里开写权限\"这种东西),只说一句:请切到 **Yolo 模式**\
-     (输入框左下角的模式 chip),或点方案卡上的「就这么干」,我就能动手。";
+const PLAN_REMINDER: &str = "你现在在 Plan 模式(只读调研)。本 turn:\n\
+     1. 想清楚后 → 调 `update_plan` 工具输出方案(explanation 字段写关键决策,\
+     items 写 3-8 个执行步骤),可选再调 `checklist_write` 拆细。\n\
+     2. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
+     方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。";
 
 /// 纯 Yolo per-turn reminder:只放"大产物拆块"硬规则(实测 h3c-ppt P7 单文件撞 SSE timeout)。
 const YOLO_REMINDER: &str = "你在 Yolo 模式,直接调工具产出。产物预计超过 300 行或 20KB\
      (HTML deck / 完整网页 / 长报告)时,**禁止**一次 `write_file` 写完整文件;\
      分块前先选策略:`append_file` 只能追加到文件尾;要填已有文件中间或替换占位符,\
-     用 `edit_file`,不要用 `append_file`;完成后读回关键片段验证。\
-     **禁止**在 text 里贴完整代码代替工具调用——磁盘上不会有文件。";
+     用 `edit_file`,不要用 `append_file`;完成后读回关键片段验证。";
 
 /// M1: per-turn `<system-reminder>` 文案,按当前 mode 选段(砍 PlanPhase 后只剩 mode 维度)。
 /// 命中率优先于优雅:每段都是命令式、短、列禁令清单(Qwen3.6 友好)。
@@ -1365,18 +1355,23 @@ mod tests {
     }
 
     #[test]
-    fn large_artifact_reminders_explain_append_file_tail_only() {
-        for mode in [AppMode::Plan, AppMode::Yolo] {
-            let reminder = reminder_for(mode).expect("large artifact reminder exists");
-            assert!(
-                reminder.contains("append_file` 只能追加到文件尾"),
-                "reminder 必须锁住 append_file 尾追加语义: mode={mode:?}"
-            );
-            assert!(
-                reminder.contains("用 `edit_file`,不要用 `append_file`"),
-                "reminder 必须给中间填充/占位替换的正确工具(edit_file,apply_patch 已隐藏): mode={mode:?}"
-            );
-        }
+    fn yolo_reminder_explains_append_file_tail_only_plan_has_no_chunking() {
+        // 大产物分块只在 Yolo reminder——Plan 模式不写文件,分块规则已从 Plan 砍掉。
+        let yolo = reminder_for(AppMode::Yolo).expect("yolo reminder exists");
+        assert!(
+            yolo.contains("append_file` 只能追加到文件尾"),
+            "Yolo reminder 必须锁住 append_file 尾追加语义"
+        );
+        assert!(
+            yolo.contains("用 `edit_file`,不要用 `append_file`"),
+            "Yolo reminder 必须给中间填充/占位替换的正确工具(edit_file,apply_patch 已隐藏)"
+        );
+        // Plan 模式只读不写,reminder 不该再带任何写文件/分块内容(防回退重新塞进来)。
+        let plan = reminder_for(AppMode::Plan).expect("plan reminder exists");
+        assert!(
+            !plan.contains("append_file") && !plan.contains("write_file"),
+            "Plan reminder 不该含写文件/分块内容: {plan}"
+        );
     }
 
     /// 多引擎并发隔离基石(C 方案 P-no-disk 版): 两个不同 session 的 EngineConfig
