@@ -1,0 +1,77 @@
+#!/usr/bin/env node
+/**
+ * 拖拽起手冒烟：主窗口展开侧边栏 → 在「系统监控」项行内 pointer 按下并拖动超阈值 →
+ * 断言以 {kind:'monitor'} 调了 begin_detach_drag(原生鬼影由此接管,头less 无法继续验,属手动验收)。
+ * 用法：node pinvou3-app/tests/drag_gesture_smoke.js   (PASS→0 / FAIL→1 / 缺依赖→2)
+ */
+const fs = require('fs'), path = require('path'), os = require('os');
+function loadPuppeteer(){ try{return require('puppeteer-core');}catch(e){}
+  const npx=path.join(os.homedir(),'.npm','_npx');
+  if(fs.existsSync(npx))for(const d of fs.readdirSync(npx)){const p=path.join(npx,d,'node_modules','puppeteer-core');
+    if(fs.existsSync(p)){try{return require(p);}catch(e){}}}
+  console.error('SKIP: 找不到 puppeteer-core');process.exit(2);}
+const puppeteer=loadPuppeteer();
+const INDEX='file://'+path.join(__dirname,'..','src','index.html');
+const CHROME=process.env.CHROME||['/snap/bin/chromium','/usr/bin/chromium','/usr/bin/chromium-browser','/usr/bin/google-chrome','/usr/bin/google-chrome-stable'].find(p=>fs.existsSync(p));
+if(!CHROME){console.error('SKIP: 未找到 chromium');process.exit(2);}
+const PROFILE=fs.mkdtempSync(path.join(os.tmpdir(),'pinvou-drag-'));
+function injectSource(){return `(function(){
+  window.__CALLS__=[];
+  function resp(cmd){
+    switch(cmd){
+      case 'get_settings': return {theme:'liquid-light',language:'zh-Hans'};
+      case 'get_effective_model_config': return {model:'m',base_url:'http://127.0.0.1:8000/v1',api_key_set:false};
+      case 'list_sessions': case 'list_personas': case 'list_marketplace_tools':
+      case 'list_workflows': case 'list_workspace_files': case 'check_dependencies':
+      case 'get_session_persona_events': case 'get_session_pinvou_reviews': return [];
+      case 'get_super_permission_status': return false;
+      case 'get_backend_status': return {online:true,ok:true,status:'online',model:'m'};
+      case 'check_for_update': return {available:false};
+      case 'find_resumable_run': return null;
+      case 'get_mode_state': return {mode:'yolo',plan_phase:'none'};
+      case 'get_active_persona': return null;
+      default: return null;
+    }
+  }
+  window.__TAURI__={
+    core:{invoke:async(cmd,args)=>{window.__CALLS__.push({cmd,args});return resp(cmd);}},
+    event:{listen:async()=>(()=>{}),emit:async()=>{}},
+    window:{getCurrentWindow:()=>({minimize(){},maximize(){},close(){},toggleMaximize(){},isMaximized:async()=>false,onResized:async()=>(()=>{}),startDragging(){}})},
+    dialog:{open:async()=>null}
+  };
+})();`;}
+(async()=>{
+  const browser=await puppeteer.launch({executablePath:CHROME,headless:'new',userDataDir:PROFILE,args:['--no-sandbox']});
+  const page=await browser.newPage();
+  await page.setViewport({width:1440,height:1000,deviceScaleFactor:1});
+  await page.evaluateOnNewDocument(injectSource());
+  await page.goto(INDEX,{waitUntil:'networkidle0'});
+  await new Promise(r=>setTimeout(r,1500));
+  let ok=true;
+
+  const toggle=await page.$('[data-sidebar-toggle]');
+  if(!toggle){console.error('FAIL: 无 data-sidebar-toggle');ok=false;}
+  else{ await toggle.click(); await new Promise(r=>setTimeout(r,400)); }
+
+  // 取「系统监控」行(⧉ 按钮的父行),从行左侧空白处起手拖,避开按钮。
+  const box=ok?await page.evaluate(()=>{
+    const btn=document.querySelector('[data-tearoff="monitor"]');
+    const row=btn&&btn.closest('div');
+    if(!row) return null;
+    const r=row.getBoundingClientRect();
+    return {x:r.x,y:r.y,w:r.width,h:r.height};
+  }):null;
+  if(ok&&!box){console.error('FAIL: 找不到 monitor 行');ok=false;}
+  else if(box){
+    const sx=box.x+20, sy=box.y+box.h/2;       // 行左侧(图标处),非 ⧉ 按钮
+    await page.mouse.move(sx,sy);
+    await page.mouse.down();
+    await page.mouse.move(sx+14,sy+4,{steps:3}); // 超 6px 阈值
+    await new Promise(r=>setTimeout(r,150));
+    const calls=await page.evaluate(()=>window.__CALLS__.filter(c=>c.cmd==='begin_detach_drag'));
+    await page.mouse.up();
+    if(!calls.some(c=>c.args&&c.args.kind==='monitor')){console.error('FAIL: 拖拽未以 kind=monitor 调 begin_detach_drag，实际:',JSON.stringify(calls));ok=false;}
+  }
+  await browser.close();fs.rmSync(PROFILE,{recursive:true,force:true});
+  if(ok){console.log('PASS: 侧边栏拖拽起手触发 begin_detach_drag(kind=monitor)');process.exit(0);} process.exit(1);
+})();

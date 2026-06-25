@@ -6275,9 +6275,13 @@
 
     const NavItem = ({ icon, label, active, theme, isSidebarOpen = true, onClick, onTearOff, tearoffKind, detached, tearoffHint }) => {
       const isDark = theme === 'dark';
+      const drag = useDetachDrag(tearoffKind, undefined);
+      const dragProps = onTearOff ? drag.handlers : {};
+      const clickH = onTearOff ? drag.guardClick(onClick) : onClick;
       return (
         <div
-          onClick={onClick}
+          onClick={clickH}
+          {...dragProps}
           title={!isSidebarOpen ? label : ""}
           className={`group flex items-center cursor-pointer text-[15px] font-medium transition-colors overflow-hidden
           ${isSidebarOpen ? 'px-4 py-3 rounded-full w-full' : 'w-10 h-10 justify-center rounded-full mx-auto shrink-0'}
@@ -6307,6 +6311,7 @@
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
       const [val, setVal] = useState(chat.title);
+      const drag = useDetachDrag('session', chat.id);
       function save() { const tx = val.trim(); setEditing(false); if (tx && tx !== chat.title) onRename(chat.id, tx); }
       if (editing) {
         return (
@@ -6321,7 +6326,8 @@
         );
       }
       return (
-        <div onClick={() => onSelect(chat.id)}
+        <div onClick={drag.guardClick(() => onSelect(chat.id))}
+          {...drag.handlers}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
           style={ personaTarget ? { background: isDark?'rgba(10,132,255,.20)':'rgba(0,122,255,.12)', boxShadow:'inset 0 0 0 1px '+(isDark?'rgba(10,132,255,.6)':'rgba(0,122,255,.45)'), color: isDark?'#fff':'#1F1F1F' } : undefined }
           className={`group flex items-center px-4 py-1.5 rounded-full cursor-pointer text-[13px] transition-all
@@ -7666,12 +7672,57 @@
       );
     };
 
+    // 鬼影窗口(?ghost=1):拖拽时跨屏跟随光标的半透明小卡片。无 bridge、无侧边栏、click-through。
+    const GHOST_LABELS = { session:'对话', persona:'专家', workflow:'工作流', monitor:'系统监控', toolstore:'工具商店', cardpool:'专家卡牌池', knowledge:'知识库' };
+    const GhostChip = ({ kind }) => (
+      <div className="h-screen w-screen flex items-center justify-center" style={{ background: 'transparent' }}>
+        <div className="px-4 py-2 rounded-full text-[13px] font-medium text-white"
+             style={{ background: 'rgba(11,87,208,.92)', boxShadow: '0 6px 20px rgba(0,0,0,.35)', whiteSpace: 'nowrap' }}>
+          ⧉ {GHOST_LABELS[kind] || kind}
+        </div>
+      </div>
+    );
+
+    // 撕离拖拽起手:侧边栏项 pointer 移动超阈值 → 调 begin_detach_drag,原生鬼影接管;
+    // 拖拽后吞掉随之而来的 click(避免又切视图)。按在内部按钮上不起拖拽(让按钮自理)。
+    const DRAG_THRESHOLD = 6;
+    const useDetachDrag = (kind, id) => {
+      const startRef = useRef(null);
+      const startedRef = useRef(false);
+      const onPointerDown = (e) => {
+        if (e.button !== 0) return;
+        if (e.target && e.target.closest && e.target.closest('button')) return;
+        startRef.current = { x: e.clientX, y: e.clientY };
+        startedRef.current = false;
+      };
+      const onPointerMove = (e) => {
+        const s = startRef.current;
+        if (!s || startedRef.current || !kind) return;
+        if (Math.hypot(e.clientX - s.x, e.clientY - s.y) > DRAG_THRESHOLD) {
+          startedRef.current = true;
+          const inv = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+          if (inv) inv('begin_detach_drag', id != null ? { kind, id } : { kind });
+        }
+      };
+      const onPointerUp = () => { startRef.current = null; };
+      const guardClick = (fn) => (e) => {
+        if (startedRef.current) { startedRef.current = false; e.stopPropagation(); if (e.preventDefault) e.preventDefault(); return; }
+        if (fn) fn(e);
+      };
+      return { handlers: { onPointerDown, onPointerMove, onPointerUp }, guardClick };
+    };
+
     // ==========================================
     // Render
     // ==========================================
     const root = ReactDOM.createRoot(document.getElementById('root'));
     const __q = new URLSearchParams(window.location.search);
-    if (__q.get('detached') === '1') {
+    if (__q.get('ghost') === '1') {
+      window.__PINVOU_GHOST__ = true;
+      document.documentElement.style.background = 'transparent';
+      document.body.style.background = 'transparent';
+      root.render(<GhostChip kind={__q.get('kind') || ''} />);
+    } else if (__q.get('detached') === '1') {
       window.__PINVOU_DETACHED__ = true;
       root.render(<DetachedShell kind={__q.get('kind') || 'monitor'} id={__q.get('id') || ''} />);
     } else {
