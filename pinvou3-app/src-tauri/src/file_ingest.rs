@@ -67,7 +67,7 @@ pub fn system_tools() -> SystemTools {
         pandoc: crate::os::pandoc_tool_exists(),
         pdftotext: crate::os::pdf_tool_exists("pdftotext"),
         libreoffice: crate::os::command_exists("soffice") || crate::os::command_exists("libreoffice"),
-        tesseract: crate::os::command_exists("tesseract"),
+        tesseract: crate::os::ocr_tool_exists(),
         pdftoppm: crate::os::pdf_tool_exists("pdftoppm"),
         sevenzip: crate::os::command_exists("7z"),
         python3: crate::os::command_exists("python3"),
@@ -115,13 +115,15 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
         crate::os::asr_tool_exists(),
         crate::os::asr_dependency_packages(),
     ));
-    items.extend([
-        item("office_legacy", libreoffice, "libreoffice"),
-        item(
+    items.push(item("office_legacy", libreoffice, "libreoffice"));
+    if crate::os::show_ocr_dependency_check() {
+        items.push(item(
             "ocr",
-            crate::os::command_exists("tesseract") && crate::os::pdf_tool_exists("pdftoppm"),
+            crate::os::ocr_tool_exists() && crate::os::pdf_tool_exists("pdftoppm"),
             crate::os::ocr_dependency_packages(),
-        ),
+        ));
+    }
+    items.extend([
         item("archive", crate::os::command_exists("7z"), "p7zip-full"),
         item(
             "email",
@@ -140,6 +142,16 @@ fn pandoc_tool_command() -> Command {
     crate::process::HiddenCommand::new(crate::os::pandoc_tool_path())
 }
 
+fn ocr_tool_command() -> Command {
+    crate::process::HiddenCommand::new(crate::os::ocr_tool_path())
+}
+
+fn add_ocr_tessdata_arg(command: &mut Command) {
+    if let Some(tessdata_dir) = crate::os::ocr_tessdata_dir() {
+        command.arg("--tessdata-dir").arg(tessdata_dir);
+    }
+}
+
 /// 体检卡「一键安装」：委托 OS 调度层安装缺失依赖。
 /// Linux 由 OS 层保留包名白名单和 pkexec/apt 行为；其他系统清晰降级。
 #[tauri::command]
@@ -155,8 +167,10 @@ pub async fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
 fn ocr_lang_arg() -> String {
     static LANG: OnceLock<String> = OnceLock::new();
     LANG.get_or_init(|| {
-        let listed = Command::new("tesseract")
-            .arg("--list-langs")
+        let mut command = ocr_tool_command();
+        command.arg("--list-langs");
+        add_ocr_tessdata_arg(&mut command);
+        let listed = command
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
             .unwrap_or_default();
@@ -969,11 +983,10 @@ fn ingest_image(_path: &Path, basename: String, path_str: String, byte_size: u64
 /// 对单张图片跑 tesseract，识别文字到 stdout。`tesseract <img> - -l <langs>`。
 fn ocr_image(path: &Path) -> Result<String, String> {
     let lang = ocr_lang_arg();
-    let out = Command::new("tesseract")
-        .arg(path)
-        .arg("-")
-        .arg("-l")
-        .arg(&lang)
+    let mut command = ocr_tool_command();
+    command.arg(path).arg("-").arg("-l").arg(&lang);
+    add_ocr_tessdata_arg(&mut command);
+    let out = command
         .output()
         .map_err(|e| format!("tesseract 调用失败: {e}"))?;
     if out.status.success() {
@@ -1660,9 +1673,10 @@ mod tests {
         let deps = check_dependencies();
         let has_pdf = deps.iter().any(|item| item.key == "pdf");
         let has_pandoc = deps.iter().any(|item| item.key == "office_modern");
+        let has_ocr = deps.iter().any(|item| item.key == "ocr");
         assert_eq!(has_pdf, crate::os::show_pdf_dependency_check());
         assert_eq!(has_pandoc, crate::os::show_pandoc_dependency_check());
-        assert!(deps.iter().any(|item| item.key == "ocr"));
+        assert_eq!(has_ocr, crate::os::show_ocr_dependency_check());
 
         if !crate::os::show_pdf_dependency_check() {
             assert!(
@@ -1678,6 +1692,14 @@ mod tests {
                 "hidden Windows Pandoc dependency should not leave install hints: {deps:?}"
             );
         }
+        if !crate::os::show_ocr_dependency_check() {
+            assert!(
+                deps.iter().all(|item| {
+                    !item.apt.contains("tesseract") && !item.apt.contains("tesseract-ocr")
+                }),
+                "hidden Windows OCR dependency should not leave install hints: {deps:?}"
+            );
+        }
     }
 
     #[test]
@@ -1687,6 +1709,28 @@ mod tests {
             command.get_program(),
             crate::os::pandoc_tool_path().as_os_str()
         );
+    }
+
+    #[test]
+    fn ocr_tool_command_uses_os_layer_program() {
+        let command = ocr_tool_command();
+        assert_eq!(
+            command.get_program(),
+            crate::os::ocr_tool_path().as_os_str()
+        );
+    }
+
+    #[test]
+    fn ocr_tessdata_arg_is_added_when_os_layer_provides_dir() {
+        let mut command = ocr_tool_command();
+        add_ocr_tessdata_arg(&mut command);
+        let args: Vec<_> = command.get_args().map(|arg| arg.to_os_string()).collect();
+        if let Some(dir) = crate::os::ocr_tessdata_dir() {
+            assert!(args.iter().any(|arg| arg == "--tessdata-dir"));
+            assert!(args.iter().any(|arg| arg == dir.as_os_str()));
+        } else {
+            assert!(args.iter().all(|arg| arg != "--tessdata-dir"));
+        }
     }
 
     #[cfg(windows)]

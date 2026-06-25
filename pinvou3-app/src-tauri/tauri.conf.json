@@ -40,17 +40,20 @@
     "resources": {
       "resources/windows/poppler/": "poppler",
       "resources/windows/pandoc/": "pandoc",
+      "resources/windows/tesseract/": "tesseract",
       "resources/windows/asr/": "asr"
     },
     "windows": {
       "wix": {
         "fragmentPaths": [
           "resources/windows/poppler-path.wxs",
-          "resources/windows/pandoc-path.wxs"
+          "resources/windows/pandoc-path.wxs",
+          "resources/windows/tesseract-path.wxs"
         ],
         "componentRefs": [
           "PopplerPathEnvironment",
-          "PandocPathEnvironment"
+          "PandocPathEnvironment",
+          "TesseractPathEnvironment"
         ]
       }
     },

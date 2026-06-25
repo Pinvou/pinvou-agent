@@ -14,6 +14,14 @@ pub fn pandoc_tool_path() -> PathBuf {
     super::super::platform::pandoc_tool_path()
 }
 
+pub fn ocr_tool_path() -> PathBuf {
+    super::super::platform::ocr_tool_path()
+}
+
+pub fn ocr_tessdata_dir() -> Option<PathBuf> {
+    super::super::platform::ocr_tessdata_dir()
+}
+
 pub fn asr_tool_path() -> PathBuf {
     super::super::platform::asr_tool_path()
 }
@@ -22,12 +30,20 @@ pub fn pandoc_tool_exists() -> bool {
     super::super::platform::pandoc_tool_exists()
 }
 
+pub fn ocr_tool_exists() -> bool {
+    super::super::platform::ocr_tool_exists()
+}
+
 pub fn asr_tool_exists() -> bool {
     super::super::platform::asr_tool_exists()
 }
 
 pub fn show_pandoc_dependency_check() -> bool {
     super::super::platform::show_pandoc_dependency_check()
+}
+
+pub fn show_ocr_dependency_check() -> bool {
+    super::super::platform::show_ocr_dependency_check()
 }
 
 pub fn pandoc_dependency_packages() -> &'static str {
@@ -103,6 +119,11 @@ mod tests {
     #[test]
     fn pandoc_tool_path_returns_non_empty_program() {
         assert!(!pandoc_tool_path().as_os_str().is_empty());
+    }
+
+    #[test]
+    fn ocr_tool_path_returns_non_empty_program() {
+        assert!(!ocr_tool_path().as_os_str().is_empty());
     }
 
     #[test]

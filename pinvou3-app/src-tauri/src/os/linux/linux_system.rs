@@ -23,6 +23,14 @@ pub fn pandoc_tool_path() -> std::path::PathBuf {
     linux_path::pandoc_tool_path()
 }
 
+pub fn ocr_tool_path() -> std::path::PathBuf {
+    std::path::PathBuf::from("tesseract")
+}
+
+pub fn ocr_tessdata_dir() -> Option<std::path::PathBuf> {
+    None
+}
+
 pub fn asr_tool_path() -> std::path::PathBuf {
     if let Ok(path) = std::env::var("PINVOU3_ASR_CMD") {
         if !path.trim().is_empty() {
@@ -46,6 +54,10 @@ pub fn pandoc_tool_exists() -> bool {
     command_exists("pandoc")
 }
 
+pub fn ocr_tool_exists() -> bool {
+    command_exists("tesseract")
+}
+
 pub fn asr_tool_exists() -> bool {
     if let Ok(path) = std::env::var("PINVOU3_ASR_CMD") {
         if !path.trim().is_empty() {
@@ -66,6 +78,10 @@ pub fn asr_tool_exists() -> bool {
 }
 
 pub fn show_pandoc_dependency_check() -> bool {
+    true
+}
+
+pub fn show_ocr_dependency_check() -> bool {
     true
 }
 
@@ -94,6 +110,15 @@ mod tests {
         assert!(show_pandoc_dependency_check());
         assert_eq!(pandoc_dependency_packages(), "pandoc");
         assert!(pandoc_missing_message().contains("sudo apt install pandoc"));
+    }
+
+    #[test]
+    fn linux_keeps_ocr_dependency_check_visible() {
+        assert!(show_ocr_dependency_check());
+        assert_eq!(
+            ocr_dependency_packages(),
+            "tesseract-ocr tesseract-ocr-chi-sim poppler-utils"
+        );
     }
 }
 

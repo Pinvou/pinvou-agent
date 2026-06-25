@@ -1,6 +1,6 @@
 use crate::process::HiddenCommand;
 use std::ffi::OsStr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::windows_path;
 
@@ -64,6 +64,15 @@ pub fn pandoc_tool_path() -> std::path::PathBuf {
     windows_path::pandoc_tool_path()
 }
 
+pub fn ocr_tool_path() -> PathBuf {
+    ensure_bundled_tesseract_on_process_path();
+    windows_path::tesseract_tool_path()
+}
+
+pub fn ocr_tessdata_dir() -> Option<PathBuf> {
+    windows_path::bundled_tessdata_dir()
+}
+
 pub fn asr_tool_path() -> std::path::PathBuf {
     if let Ok(path) = std::env::var("PINVOU3_ASR_CMD") {
         if !path.trim().is_empty() {
@@ -97,6 +106,15 @@ pub fn pandoc_tool_exists() -> bool {
     windows_path::bundled_pandoc_tool_path().is_some() || command_exists("pandoc")
 }
 
+pub fn ocr_tool_exists() -> bool {
+    ensure_bundled_tesseract_on_process_path();
+    if windows_path::bundled_tesseract_dir().is_some() {
+        return windows_path::bundled_tesseract_tool_path().is_some()
+            && windows_path::bundled_tessdata_has_required_languages();
+    }
+    command_exists("tesseract")
+}
+
 pub fn asr_tool_exists() -> bool {
     if let Ok(path) = std::env::var("PINVOU3_ASR_CMD") {
         if !path.trim().is_empty() {
@@ -125,6 +143,10 @@ pub fn show_pandoc_dependency_check() -> bool {
     false
 }
 
+pub fn show_ocr_dependency_check() -> bool {
+    false
+}
+
 pub fn pdf_dependency_packages() -> &'static str {
     ""
 }
@@ -138,7 +160,7 @@ pub fn asr_dependency_packages() -> &'static str {
 }
 
 pub fn ocr_dependency_packages() -> &'static str {
-    "tesseract-ocr tesseract-ocr-chi-sim"
+    ""
 }
 
 pub fn asr_missing_message() -> &'static str {
@@ -181,6 +203,13 @@ fn ensure_bundled_pandoc_on_process_path() {
 
 fn ensure_bundled_asr_on_process_path() {
     let Some(dir) = windows_path::bundled_asr_dir() else {
+        return;
+    };
+    ensure_dir_on_process_path(dir);
+}
+
+fn ensure_bundled_tesseract_on_process_path() {
+    let Some(dir) = windows_path::bundled_tesseract_dir() else {
         return;
     };
     ensure_dir_on_process_path(dir);

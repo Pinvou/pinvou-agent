@@ -19,6 +19,14 @@ pub fn pandoc_tool_path() -> PathBuf {
     PathBuf::from("pandoc")
 }
 
+pub fn ocr_tool_path() -> PathBuf {
+    PathBuf::from("tesseract")
+}
+
+pub fn ocr_tessdata_dir() -> Option<PathBuf> {
+    None
+}
+
 pub fn asr_tool_path() -> PathBuf {
     PathBuf::from("paddlespeech")
 }
@@ -27,11 +35,19 @@ pub fn pandoc_tool_exists() -> bool {
     false
 }
 
+pub fn ocr_tool_exists() -> bool {
+    false
+}
+
 pub fn asr_tool_exists() -> bool {
     false
 }
 
 pub fn show_pandoc_dependency_check() -> bool {
+    false
+}
+
+pub fn show_ocr_dependency_check() -> bool {
     false
 }
 
