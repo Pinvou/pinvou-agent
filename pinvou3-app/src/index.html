@@ -3558,10 +3558,10 @@
                     className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-black/5 dark:hover:bg-white/10 transition-colors">
                     <Paperclip size={20} />
                   </button>
+                  <ComposerModeChip t={t} bs={bs} />
                   <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoSettings} />
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} />
                   <ComposerKbSelector t={t} bs={bs} />
-                  <ComposerModeChip t={t} bs={bs} />
                 </div>
                 {busy ? (
                   <button onClick={handleCancel}
