@@ -52,6 +52,9 @@ function injectSource() {
         case 'get_workflow_state': return Promise.resolve(WF_STATE);
         case 'check_dependencies': return Promise.resolve([]);
         case 'list_marketplace_tools': return Promise.resolve([]);
+        case 'create_session': return Promise.resolve({id:'s-new',metadata:{id:'s-new'}});
+        case 'set_plan_mode_next': return Promise.resolve({mode:'plan',plan_phase:'planning'});
+        case 'exit_plan_to_yolo': return Promise.resolve({mode:'yolo',plan_phase:'none'});
         case 'get_mode_state': return Promise.resolve({mode:'yolo',plan_phase:'none'});
         case 'get_active_persona': return Promise.resolve(null);
         case 'list_workflows': return Promise.resolve([]);
@@ -128,7 +131,7 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
   });
   rec('④ 品悟检阅卡本地化渲染(t 线程通)', modal.trace && modal.adopt && modal.skip, JSON.stringify(modal));
 
-  // ⑤ composer 模式 chip 渲染 + 默认 YOLO + 下拉两项(plan/yolo 回归底座式入口)
+  // ⑤ composer 模式 chip:渲染 + 默认 YOLO + 下拉两项 + 点 Plan 真切到 Plan(防 setPlanModeNext 草稿态静默 return 回归)
   const chip = await page.evaluate(() => {
     const b = document.querySelector('[title="切换工作模式"]');
     if (!b) return { found: false };
@@ -141,7 +144,13 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     const txt = document.body.innerText;
     return { yoloDesc: txt.includes('直接动手执行'), planDesc: txt.includes('先出方案') };
   });
-  rec('⑤ composer 模式 chip 渲染+下拉两项', chip.found && /YOLO/.test(chip.label || '') && chipMenu.yoloDesc && chipMenu.planDesc, JSON.stringify({ ...chip, ...chipMenu }));
+  await clickText(page, 'Plan');
+  await sleep(700);
+  const afterLabel = await page.evaluate(() => {
+    const b = document.querySelector('[title="切换工作模式"]');
+    return b ? (b.textContent || '').trim() : '';
+  });
+  rec('⑤ chip 渲染+下拉两项+点Plan切到Plan', chip.found && /YOLO/.test(chip.label || '') && chipMenu.yoloDesc && chipMenu.planDesc && /Plan/.test(afterLabel), JSON.stringify({ ...chip, ...chipMenu, afterLabel }));
 
   if (errs.length) console.log('⚠️ PAGEERRORS:', errs.slice(0, 3).join(' | '));
   await browser.close();

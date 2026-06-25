@@ -2037,9 +2037,12 @@
   }
   // 灯泡 toggle：plan ↔ yolo
   async function setPlanModeNext() {
-    if (!state.activeSessionId) return;
+    // 草稿态(无 session)先物化:mode 是 per-session 状态,进 Plan 必须先有 session,
+    // 否则草稿页点 Plan 会静默 return 不切换(composer chip 入口暴露的缺陷)。
+    var sid = await ensureSession();
+    if (!sid) return;
     try {
-      var st = await invoke("set_plan_mode_next", { sessionId: state.activeSessionId });
+      var st = await invoke("set_plan_mode_next", { sessionId: sid });
       applyModeFromState(st);
     } catch (e) { addSystemItem(bt("switchModeFailed") + e); }
     notify();
