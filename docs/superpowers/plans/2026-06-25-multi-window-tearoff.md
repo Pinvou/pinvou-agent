@@ -710,6 +710,62 @@ git commit -m "feat(multi-window): 侧边栏 ⧉ 弹出入口 + 角标 + 去重�
 
 ---
 
+## Phase 2 — 原生鬼影拖拽手势（spike 已确认 GO）
+
+把"⧉ 按钮触发"升级为"从侧边栏拖出、跨屏跟随鬼影、松手即落位"。device_query 在本机 X11 已实测可读跨屏全局坐标+左键(Task 0)。窗口操作走 tauri async_runtime（与现有 command 同上下文，open_artifact_window 已证可在该上下文建窗），device 读取内联（get_mouse 是快 syscall）。
+
+### Task 5: device_query 转正 + 命中判定纯函数
+
+**Files:** Modify `Cargo.toml`（device_query 从 dev-deps 移到 deps）、`src/detach.rs`（加 `point_in_rect` + 测试）
+
+- [ ] Step 1: Cargo.toml 把 `device_query = "2"` 从 `[dev-dependencies]` 移到 `[dependencies]`（spike example 仍可用）。保留注释说明 Phase 2 运行期要用。
+- [ ] Step 2: 在 detach.rs 加纯函数 + 测试：
+```rust
+/// 点 (px,py) 是否落在矩形 [x, x+w) × [y, y+h) 内(物理像素，全局虚拟桌面坐标)。
+pub fn point_in_rect(px: i32, py: i32, x: i32, y: i32, w: i32, h: i32) -> bool {
+    px >= x && px < x + w && py >= y && py < y + h
+}
+```
+测试：
+```rust
+    #[test]
+    fn point_in_rect_basic() {
+        assert!(point_in_rect(10, 10, 0, 0, 100, 100));
+        assert!(!point_in_rect(100, 10, 0, 0, 100, 100)); // 右边界开区间
+        assert!(!point_in_rect(-1, 10, 0, 0, 100, 100));
+        assert!(point_in_rect(2000, 50, 1920, 0, 1920, 1080)); // 第二屏
+    }
+```
+- [ ] Step 3: `cargo test --lib detach` 全绿；`cargo check`。
+- [ ] Step 4: commit `chore(multi-window): device_query 转正式依赖 + point_in_rect`
+
+### Task 6: begin_detach_drag —— 鬼影 + 跟随 + 松手落位
+
+**Files:** Modify `src/detach.rs`（鬼影窗口 + async 跟随循环 + 落位/取消；重构出 `create_detached_at` 供 open_detached_window 与落位共用）、`src/lib.rs`（注册 `begin_detach_drag`）
+
+- [ ] Step 1: 重构 `open_detached_window` 抽出 `create_detached_at(app, kind, id, pos: Option<(i32,i32)>)`，pos=Some 时 `.position(x,y)`。open_detached_window 调它 pos=None。
+- [ ] Step 2: 加 `begin_detach_drag` command：
+  - `DRAG_ACTIVE: AtomicBool` 保证同时只一个拖拽。
+  - 建鬼影窗 label `detached-ghost`（被 `detached-*` capability glob 覆盖）：`index.html?ghost=1&kind=`，`transparent(true).always_on_top(true).skip_taskbar(true).decorations(false).focused(false).resizable(false)` + `set_ignore_cursor_events(true)`。
+  - `tauri::async_runtime::spawn` 跑循环：`DeviceState::new()` 一次；每 16ms 读 `get_mouse()` → 移鬼影到 `(mx+12,my+12)`；记录 `was_down`；`was_down && !down` → 落位：销毁鬼影；用 main 窗口 `outer_position()/outer_size()` + `point_in_rect` 判定，落点在外 → `create_detached_at(Some((mx,my)))`，在内 → 取消；置 `DRAG_ACTIVE=false` 退出。从未按下宽限 ~1.5s 超时取消。
+- [ ] Step 3: lib.rs 注册 `detach::begin_detach_drag`。
+- [ ] Step 4: `cargo test --lib detach` + `cargo build` 全过。
+- [ ] Step 5: commit `feat(multi-window): begin_detach_drag 原生鬼影跟随+松手落位`
+
+### Task 7: 前端鬼影渲染 + 侧边栏拖拽起手
+
+**Files:** Modify `src/index.html`（ghost 模式渲染；NavItem/RecentItem 加 pointer 拖拽起手 + 点击抑制）、Create `tests/ghost_boot_smoke.js`
+
+- [ ] Step 1: 启动分支加 ghost 模式：`?ghost=1` → 渲染一个小 chip（图标+kind 名，半透明圆角），不挂 bridge、不要侧边栏。
+- [ ] Step 2: 加 `useDetachDrag(kind, id)` 返回 `{onPointerDown}`：pointerdown 记起点+setPointerCapture；window pointermove 超 6px 阈值且未起手 → `invoke('begin_detach_drag',{kind,id})` 并标记 started + 记一次性"抑制下次 click"；pointerup 清状态。NavItem/RecentItem 根节点接 onPointerDown，onClick 时若 started 则吞掉。
+- [ ] Step 3: ghost_boot_smoke：`?ghost=1&kind=workflow` 加载，断言渲染出 chip 文本、无侧边栏、`window.__PINVOU_GHOST__===true`。
+- [ ] Step 4: 跑 ghost_boot_smoke + detached_boot + tearoff_buttons + ui_smoke 全绿。
+- [ ] Step 5: 手动验收（run-dev，真三屏）：从侧边栏拖某项 → 鬼影跨屏跟随 → 监视器2松手 → 该屏出窗；窗口内松手 → 无操作；点击(不拖)仍切视图。
+- [ ] Step 6: commit `feat(multi-window): 前端鬼影渲染 + 侧边栏拖拽起手(pointer 阈值+点击抑制)`
+
+### Task 8: Wayland/受限降级（记录，暂不实现）
+device_query 不可用时 `begin_detach_drag` 应降级为"在副屏直接开窗"。本机 X11 已 GO，降级留后续；当前 begin_detach_drag 在无 device 能力时超时取消，不崩。
+
 ## Self-Review（已对照 spec 核查）
 
 - **Spec §1/§3 各 kind 撕离**：Task 3 ViewRegistry 覆盖 session/persona/workflow/monitor/toolstore/cardpool/localenv；Task 4 给 monitor/cardpool/workflow/toolstore/session 加入口（persona 等的入口在 Phase 3 卡牌池内细化，已在"Phase 2/3 不在本计划"注明）。

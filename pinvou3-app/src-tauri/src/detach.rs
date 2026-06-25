@@ -28,6 +28,12 @@ pub fn view_title(kind: &str) -> &'static str {
     }
 }
 
+/// 点 (px,py) 是否落在矩形 [x, x+w) × [y, y+h) 内(物理像素，全局虚拟桌面坐标)。
+/// 撕离落位判定用:松手点在主窗口外接矩形外 → 建窗;在内 → 取消。
+pub fn point_in_rect(px: i32, py: i32, x: i32, y: i32, w: i32, h: i32) -> bool {
+    px >= x && px < x + w && py >= y && py < y + h
+}
+
 /// 极简 URL 编码：只转义 query 里会出问题的字符，足够 kind/id 用。
 fn urlencode(s: &str) -> String {
     s.bytes()
@@ -110,5 +116,13 @@ mod tests {
     fn urlencode_escapes_unsafe() {
         assert_eq!(urlencode("a-b_1.~"), "a-b_1.~");
         assert_eq!(urlencode("a b&c=d"), "a%20b%26c%3Dd");
+    }
+
+    #[test]
+    fn point_in_rect_basic() {
+        assert!(point_in_rect(10, 10, 0, 0, 100, 100));
+        assert!(!point_in_rect(100, 10, 0, 0, 100, 100)); // 右边界开区间
+        assert!(!point_in_rect(-1, 10, 0, 0, 100, 100));
+        assert!(point_in_rect(2000, 50, 1920, 0, 1920, 1080)); // 第二屏
     }
 }
