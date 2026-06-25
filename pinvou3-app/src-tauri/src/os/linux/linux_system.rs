@@ -77,6 +77,18 @@ pub fn asr_tool_exists() -> bool {
     command_exists("pinvou-asr")
 }
 
+pub fn msg_native_supported() -> bool {
+    false
+}
+
+pub fn msg_converter_required() -> bool {
+    true
+}
+
+pub fn email_tool_exists() -> bool {
+    command_exists("python3") && command_exists("msgconvert")
+}
+
 pub fn show_pandoc_dependency_check() -> bool {
     true
 }
@@ -95,6 +107,10 @@ pub fn asr_dependency_packages() -> &'static str {
 
 pub fn pandoc_missing_message() -> &'static str {
     "文档解析需要 pandoc，请运行: sudo apt install pandoc"
+}
+
+pub fn email_dependency_packages() -> &'static str {
+    "python3 libemail-outlook-message-perl"
 }
 
 pub fn pdf_tool_path(command: &str) -> std::path::PathBuf {
@@ -118,6 +134,16 @@ mod tests {
         assert_eq!(
             ocr_dependency_packages(),
             "tesseract-ocr tesseract-ocr-chi-sim poppler-utils"
+        );
+    }
+
+    #[test]
+    fn linux_keeps_email_msgconvert_dependency_visible() {
+        assert!(!msg_native_supported());
+        assert!(msg_converter_required());
+        assert_eq!(
+            email_dependency_packages(),
+            "python3 libemail-outlook-message-perl"
         );
     }
 }

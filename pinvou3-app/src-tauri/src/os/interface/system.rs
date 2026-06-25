@@ -38,6 +38,18 @@ pub fn asr_tool_exists() -> bool {
     super::super::platform::asr_tool_exists()
 }
 
+pub fn msg_native_supported() -> bool {
+    super::super::platform::msg_native_supported()
+}
+
+pub fn msg_converter_required() -> bool {
+    super::super::platform::msg_converter_required()
+}
+
+pub fn email_tool_exists() -> bool {
+    super::super::platform::email_tool_exists()
+}
+
 pub fn show_pandoc_dependency_check() -> bool {
     super::super::platform::show_pandoc_dependency_check()
 }
@@ -52,6 +64,10 @@ pub fn pandoc_dependency_packages() -> &'static str {
 
 pub fn asr_dependency_packages() -> &'static str {
     super::super::platform::asr_dependency_packages()
+}
+
+pub fn email_dependency_packages() -> &'static str {
+    super::super::platform::email_dependency_packages()
 }
 
 pub fn pandoc_missing_message() -> &'static str {

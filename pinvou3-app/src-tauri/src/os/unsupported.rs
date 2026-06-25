@@ -43,6 +43,18 @@ pub fn asr_tool_exists() -> bool {
     false
 }
 
+pub fn msg_native_supported() -> bool {
+    false
+}
+
+pub fn msg_converter_required() -> bool {
+    false
+}
+
+pub fn email_tool_exists() -> bool {
+    false
+}
+
 pub fn show_pandoc_dependency_check() -> bool {
     false
 }
@@ -65,6 +77,10 @@ pub fn pandoc_missing_message() -> &'static str {
 
 pub fn asr_missing_message() -> &'static str {
     "当前平台缺少可用的本地语音识别组件。"
+}
+
+pub fn email_dependency_packages() -> &'static str {
+    ""
 }
 
 pub fn pdf_tool_path(command: &str) -> PathBuf {

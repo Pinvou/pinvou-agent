@@ -135,6 +135,18 @@ pub fn asr_tool_exists() -> bool {
     windows_path::bundled_asr_tool_path().is_some() || command_exists("pinvou-asr")
 }
 
+pub fn msg_native_supported() -> bool {
+    true
+}
+
+pub fn msg_converter_required() -> bool {
+    false
+}
+
+pub fn email_tool_exists() -> bool {
+    msg_native_supported()
+}
+
 pub fn show_pdf_dependency_check() -> bool {
     false
 }
@@ -157,6 +169,10 @@ pub fn pandoc_dependency_packages() -> &'static str {
 
 pub fn asr_dependency_packages() -> &'static str {
     "安装 pinvou3-asr-windows-x64 离线语音包到安装目录 asr 文件夹"
+}
+
+pub fn email_dependency_packages() -> &'static str {
+    ""
 }
 
 pub fn ocr_dependency_packages() -> &'static str {
