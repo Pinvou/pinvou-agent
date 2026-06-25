@@ -185,7 +185,7 @@
       superOn: "⚠️ Super permission enabled", superOff: "Super permission disabled",
       approved: "✅ Approved", echoGo: "✅ Do it",
       acceptPlanFailed: "⚠️ accept_plan failed: ",
-      exitedPlan: "🚪 Exited Plan", discardPlanFailed: "⚠️ discard_plan failed: ", exitPlanFailed: "⚠️ Failed to exit Plan: ", switchModeFailed: "⚠️ Failed to switch mode: ",
+      planDiscarded: "🚪 Plan discarded", discardPlanFailed: "⚠️ discard_plan failed: ", exitPlanFailed: "⚠️ Failed to exit Plan: ", switchModeFailed: "⚠️ Failed to switch mode: ",
       replanRequested: "📋 Asking the AI to re-plan…",
       openFailed: "⚠️ Open failed: ", pasteImageFailed: "⚠️ Paste image failed: ",
       filePickUnavailable: "⚠️ File picker unavailable", filePickFailed: "⚠️ File selection failed: ",
@@ -201,7 +201,7 @@
       superOn: "⚠️ スーパー権限が有効になりました", superOff: "スーパー権限が無効になりました",
       approved: "✅ 承認済み", echoGo: "✅ これでいく",
       acceptPlanFailed: "⚠️ accept_plan に失敗: ",
-      exitedPlan: "🚪 Plan を終了", discardPlanFailed: "⚠️ discard_plan に失敗: ", exitPlanFailed: "⚠️ Plan の終了に失敗: ", switchModeFailed: "⚠️ モード切替に失敗: ",
+      planDiscarded: "🚪 プランを破棄", discardPlanFailed: "⚠️ discard_plan に失敗: ", exitPlanFailed: "⚠️ Plan の終了に失敗: ", switchModeFailed: "⚠️ モード切替に失敗: ",
       replanRequested: "📋 AI にプランを出し直させています…",
       openFailed: "⚠️ 開けませんでした: ", pasteImageFailed: "⚠️ 画像の貼り付けに失敗: ",
       filePickUnavailable: "⚠️ ファイル選択を利用できません", filePickFailed: "⚠️ ファイル選択に失敗: ",
@@ -217,7 +217,7 @@
       superOn: "⚠️ 超级权限已开启", superOff: "超级权限已关闭",
       approved: "✅ 已批准", echoGo: "✅ 就这么干",
       acceptPlanFailed: "⚠️ accept_plan 失败: ",
-      exitedPlan: "🚪 已退出 Plan", discardPlanFailed: "⚠️ discard_plan 失败: ", exitPlanFailed: "⚠️ 退出 Plan 失败: ", switchModeFailed: "⚠️ 切换模式失败: ",
+      planDiscarded: "🚪 已放弃此方案", discardPlanFailed: "⚠️ discard_plan 失败: ", exitPlanFailed: "⚠️ 退出 Plan 失败: ", switchModeFailed: "⚠️ 切换模式失败: ",
       replanRequested: "📋 让 AI 重出方案…",
       openFailed: "⚠️ 打开失败: ", pasteImageFailed: "⚠️ 粘贴图片失败: ",
       filePickUnavailable: "⚠️ 文件选择不可用", filePickFailed: "⚠️ 选择文件失败: ",
@@ -1980,7 +1980,7 @@
     notify();
   }
   async function discardPlan(itemId) {
-    if (itemId) patchItemById(itemId, { cardState: "frozen", statusLabel: bt("exitedPlan"), resolved: true });
+    if (itemId) patchItemById(itemId, { cardState: "frozen", statusLabel: bt("planDiscarded"), resolved: true });
     if (!state.activeSessionId) { notify(); return; }
     try {
       var st = await invoke("discard_plan", { sessionId: state.activeSessionId });

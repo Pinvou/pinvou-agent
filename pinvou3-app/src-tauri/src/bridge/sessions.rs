@@ -516,11 +516,12 @@ mod tests {
         ));
     }
 
-    /// 模式切换闭环(回归底座二态后的核心契约):流转命令 set_plan_mode_next /
-    /// accept_plan / exit_plan_to_yolo / discard_plan 实质都只调 set_mode,全程
-    /// **只动 mode**——品悟开关 / 挂载知识集 / 人格卡 / skill 绑定等正交状态必须
-    /// 原样保留。防有人给流转命令加副作用,或把 set_mode 改成整体覆盖式写法时
-    /// 连带清掉这些字段。比 set_mode_preserves_pinvou_review 更全(多步往返 + 四字段)。
+    /// 模式切换闭环(回归底座二态后的核心契约):流转命令 set_plan_mode_next(→Plan) /
+    /// accept_plan / exit_plan_to_yolo(→Yolo) 实质都只调 set_mode,全程**只动 mode**——
+    /// 品悟开关 / 挂载知识集 / 人格卡 / skill 绑定等正交状态必须原样保留。
+    /// (discard_plan「算了」不在此列:放弃方案但留在当前 mode,不调 set_mode。)
+    /// 防有人给流转命令加副作用,或把 set_mode 改成整体覆盖式写法时连带清掉这些字段。
+    /// 比 set_mode_preserves_pinvou_review 更全(多步往返 + 四字段)。
     #[test]
     fn mode_switch_loop_preserves_orthogonal_state() {
         use super::super::mode_state::SerializableMode;
@@ -542,7 +543,7 @@ mod tests {
             },
         );
 
-        // 闭环往返两轮:Yolo →(set_plan_mode_next)→ Plan →(accept/exit/discard)→ Yolo
+        // 闭环往返两轮:Yolo →(set_plan_mode_next)→ Plan →(accept/exit)→ Yolo
         for _ in 0..2 {
             store.set_mode(sid, SerializableMode::Plan);
             assert_eq!(store.mode_state(sid).mode, SerializableMode::Plan);

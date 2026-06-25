@@ -1965,14 +1965,15 @@ pub async fn read_skill_body(name: String) -> Result<String, String> {
 // 用户点 [✏️ 改改] 时前端走 DeepSeek-TUI 底座做法:不切 phase, 仅 input 预填"修订方案:"前缀.
 // phase 保持 Ready, 下一条 chat 触发的 Ready reminder 已包含"用户发新消息=隐式修订"语义.
 
-/// 用户点 plan_card [🚪 算了]：放弃方案，回 YOLO。
-/// 与 exit_plan_to_yolo 区别：⚡ 是「不要 plan 直接干」，🚪 是「这事不干了」。
+/// 用户点 plan_card [🚪 算了]：放弃这个方案,但**留在当前模式**(Plan 不踢回 Yolo)。
+/// "算了"= 这个方案不要了,不等于退出规划态;要换模式用户自己点 chip。
+/// 与 accept_plan(切 Yolo 执行) / exit_plan_to_yolo(切 Yolo 直接干) 区别:discard 只关卡片、不动 mode。
 #[tauri::command]
 pub async fn discard_plan(
     session_id: String,
     store: State<'_, SessionStore>,
 ) -> Result<SessionModeState, String> {
-    store.set_mode(&session_id, SerializableMode::Yolo);
+    // 不动 mode——放弃方案 ≠ 退出 Plan;仅回传当前状态供前端刷新卡片。
     Ok(store.mode_state(&session_id))
 }
 
