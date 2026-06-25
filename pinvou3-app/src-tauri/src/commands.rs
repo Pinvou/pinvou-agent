@@ -1869,6 +1869,12 @@ pub async fn exit_plan_to_yolo(
     Ok(store.mode_state(&session_id))
 }
 
+/// `accept_plan` 切 Yolo 后注入的执行指令文本。抽成函数供单测钉契约:
+/// 必须裹住方案全文 + 带明确"立即执行"信号,否则切了 Yolo 但 AI 收到空指令不知道干嘛。
+fn accept_plan_instruction(plan_markdown: &str) -> String {
+    format!("用户已批准方案,立即开始执行。方案:\n\n{plan_markdown}")
+}
+
 /// 用户点 plan_card [✅ 就这么干]：接受 plan，切 YOLO 执行(对齐底座 accept-yolo)。
 /// 流程：
 ///   1. 设 mode=Yolo
@@ -1882,7 +1888,7 @@ pub async fn accept_plan(
     pool: State<'_, EnginePool>,
 ) -> Result<SessionModeState, String> {
     store.set_mode(&session_id, SerializableMode::Yolo);
-    let instruction = format!("用户已批准方案,立即开始执行。方案:\n\n{plan_markdown}");
+    let instruction = accept_plan_instruction(&plan_markdown);
     pool.send_user_message(
         &session_id,
         instruction,
@@ -3385,6 +3391,16 @@ pub async fn list_session_skill_bindings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// accept_plan 切 Yolo 后注入的执行指令必须裹住方案全文 + 带"立即执行"信号——
+    /// 否则切了模式但 AI 收到一句空指令,不知道要执行什么(切了白切)。
+    #[test]
+    fn accept_plan_instruction_embeds_full_plan() {
+        let plan = "1. 建目录\n2. 写 index.html\n3. 起本地服务器";
+        let msg = accept_plan_instruction(plan);
+        assert!(msg.contains(plan), "注入指令丢了方案全文");
+        assert!(msg.contains("立即开始执行"), "缺少明确执行信号");
+    }
 
     /// 挂集时 Self-RAG 引导:含知识集名 + 必调 kb_search + 无依据说不知道;空名兜底。
     #[test]

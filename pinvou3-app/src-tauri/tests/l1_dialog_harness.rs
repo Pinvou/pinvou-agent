@@ -570,6 +570,114 @@ async fn plan_mode_list_dir() {
     .await;
 }
 
+/// 常见场景 A:Plan 模式纯规划问答(不碰文件系统)——pinvou3 最高频的 Plan 用法。
+/// 测 AI 在不需要任何工具时能干净地一次 update_plan 出方案,不像探目录那样陷入
+/// 工具往返。judge 看:有没有调 update_plan / 有没有瞎调无关工具 / 方案是否分阶段。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "L1 真 vLLM 端到端,默认不跑"]
+async fn plan_pure_planning() {
+    let scenario = "plan_pure_planning";
+    if !require_vllm(scenario).await {
+        return;
+    }
+    let (engine, _ws) = spawn_for_scenario(scenario).await;
+
+    let mut expect = Expect::default();
+    expect.max_duration_s = 120.0;
+
+    run_turn(
+        &engine,
+        "我想用三个月业余时间从零学会做家常菜。先用 update_plan 给我一个分阶段的\
+         学习计划(4-6 步,每步一句话即可),不用调别的工具。",
+        AppMode::Plan,
+        &expect,
+        scenario,
+        Duration::from_secs(150),
+    )
+    .await;
+}
+
+/// 常见场景 B:Plan 模式规划编程任务——pinvou3 核心用例(让 AI 写东西,先要方案)。
+/// 用户明确"先别写代码,给方案"。测 AI 出多步开发方案 + **不偷写 .html**
+/// (Plan 模式无写工具,要防 AI 误以为该动手)。硬断言 workspace 无 .html 落盘。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "L1 真 vLLM 端到端,默认不跑"]
+async fn plan_dev_task_plan() {
+    let scenario = "plan_dev_task_plan";
+    if !require_vllm(scenario).await {
+        return;
+    }
+    let (engine, ws) = spawn_for_scenario(scenario).await;
+
+    let mut expect = Expect::default();
+    expect.max_duration_s = 150.0;
+
+    run_turn(
+        &engine,
+        "我想做一个纯前端的待办事项网页(单个 html 文件,含 js)。先别写代码,\
+         用 update_plan 给我开发步骤(4-6 步)。",
+        AppMode::Plan,
+        &expect,
+        scenario,
+        Duration::from_secs(180),
+    )
+    .await;
+
+    // Plan 模式不该真写出 html;扫 workspace 确认无 .html 落盘。
+    let leaked: Vec<String> = std::fs::read_dir(&ws)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.ends_with(".html"))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(leaked.is_empty(), "Plan 模式偷写了 html 文件: {leaked:?}");
+}
+
+/// 常见场景 C:Plan 模式下用户直接命令写文件——测写保护硬边界。
+/// Plan 模式不注册 write_file 工具,AI 调了会被底座拦(judge 看 AI 是否改为
+/// 说明需切 Yolo / 出方案)。硬断言:目标文件绝不落盘。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "L1 真 vLLM 端到端,默认不跑"]
+async fn plan_mode_write_blocked() {
+    let scenario = "plan_mode_write_blocked";
+    if !require_vllm(scenario).await {
+        return;
+    }
+    let (engine, _ws) = spawn_for_scenario(scenario).await;
+    let ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let target = std::env::temp_dir().join(format!("pinvou3-l1-plan-blocked-{ns}.py"));
+    let _ = std::fs::remove_file(&target);
+
+    let mut expect = Expect::default();
+    expect.max_duration_s = 90.0;
+
+    let prompt = format!(
+        "用 write_file 工具在 {} 创建一个 Python 文件,内容是 print('hello')。",
+        target.display()
+    );
+    run_turn(
+        &engine,
+        &prompt,
+        AppMode::Plan,
+        &expect,
+        scenario,
+        Duration::from_secs(120),
+    )
+    .await;
+
+    assert!(
+        !target.exists(),
+        "Plan 模式 write_file 应被拦,文件不该落盘: {}",
+        target.display()
+    );
+    let _ = std::fs::remove_file(&target);
+}
+
 /// MVP 4: 让 AI 写到 `/tmp/<unique>.md`,验证落盘成功。
 /// 防 deepseek-tui 端 trust_mode/sandbox 配置或 INSTRUCTIONS_MD workspace 引导
 /// 把 AI "锁死"在某个特定子目录回归(A 方案放宽允许 /tmp 等用户授权位置)。

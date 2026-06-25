@@ -878,7 +878,9 @@ const PLAN_REMINDER: &str = "你现在在 Plan 模式(只读调研)。本 turn �
      3. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
      方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。\n\
      4. **禁止**调 `write_file` / `append_file` / `edit_file` / `exec_shell` / `js_execution`——\
-     它们在 Plan 模式不可用,调了一定失败。";
+     它们在 Plan 模式不可用,调了一定失败。如果用户让你写文件或动手执行,别自己编模式名\
+     (没有\"Executing 模式\"、也没有\"设置里开写权限\"这种东西),只说一句:请切到 **Yolo 模式**\
+     (输入框左下角的模式 chip),或点方案卡上的「就这么干」,我就能动手。";
 
 /// 纯 Yolo per-turn reminder:只放"大产物拆块"硬规则(实测 h3c-ppt P7 单文件撞 SSE timeout)。
 const YOLO_REMINDER: &str = "你在 Yolo 模式,直接调工具产出。产物预计超过 300 行或 20KB\

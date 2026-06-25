@@ -516,6 +516,56 @@ mod tests {
         ));
     }
 
+    /// 模式切换闭环(回归底座二态后的核心契约):流转命令 set_plan_mode_next /
+    /// accept_plan / exit_plan_to_yolo / discard_plan 实质都只调 set_mode,全程
+    /// **只动 mode**——品悟开关 / 挂载知识集 / 人格卡 / skill 绑定等正交状态必须
+    /// 原样保留。防有人给流转命令加副作用,或把 set_mode 改成整体覆盖式写法时
+    /// 连带清掉这些字段。比 set_mode_preserves_pinvou_review 更全(多步往返 + 四字段)。
+    #[test]
+    fn mode_switch_loop_preserves_orthogonal_state() {
+        use super::super::mode_state::SerializableMode;
+        let (store, _g) = isolated_store();
+        let sid = "s-loop";
+
+        // 起始默认 Yolo,挂满正交状态
+        assert_eq!(store.mode_state(sid).mode, SerializableMode::Yolo);
+        store.set_pinvou_review(sid, true);
+        store.set_mounted_collection(sid, Some(42));
+        store.set_active_persona(sid, Some("expert-x".into()));
+        store.bind_skill(
+            sid,
+            ActiveSkillBinding {
+                name: "h3c-ppt".into(),
+                pending_instruction: None,
+                phases: vec![],
+                project_dir: None,
+            },
+        );
+
+        // 闭环往返两轮:Yolo →(set_plan_mode_next)→ Plan →(accept/exit/discard)→ Yolo
+        for _ in 0..2 {
+            store.set_mode(sid, SerializableMode::Plan);
+            assert_eq!(store.mode_state(sid).mode, SerializableMode::Plan);
+            store.set_mode(sid, SerializableMode::Yolo);
+            assert_eq!(store.mode_state(sid).mode, SerializableMode::Yolo);
+        }
+
+        // 四个正交字段全保留
+        let st = store.mode_state(sid);
+        assert!(st.pinvou_review_enabled, "切 mode 清了品悟开关");
+        assert_eq!(st.mounted_collection, Some(42), "切 mode 卸载了知识集");
+        assert_eq!(
+            st.active_persona.as_deref(),
+            Some("expert-x"),
+            "切 mode 清了人格"
+        );
+        assert_eq!(
+            st.active_skill.map(|s| s.name),
+            Some("h3c-ppt".to_string()),
+            "切 mode 解绑了 skill"
+        );
+    }
+
     #[test]
     fn bind_skill_then_take_consumes_once_and_returns_binding() {
         let (store, _g) = isolated_store();
