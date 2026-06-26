@@ -14,6 +14,19 @@ use super::paths;
 static SANSHENG_LIUBU_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/workflow/sansheng-liubu");
 
+/// 飞书官方域技能（lark-*，MIT，sync 自 github.com/larksuite/cli `skills/`）：
+/// 编译期内嵌整个 skills 目录树（各域 SKILL.md + references/*.md + NOTICE.md）。
+/// 启动解包到 `bundle_skills_dir`，供引擎 `SkillRegistry` 发现、`load_skill` 渐进披露。
+static LARK_SKILLS_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/skills");
+
+/// 9 个 lark 域技能目录名(门控写/删共用)。skills_dir 下这些目录在不在
+/// = 飞书技能对模型可见与否(引擎 `SkillRegistry` 扫目录)。
+const LARK_SKILL_DIRS: [&str; 9] = [
+    "lark-shared", "lark-calendar", "lark-doc", "lark-drive",
+    "lark-sheets", "lark-im", "lark-task", "lark-wiki", "lark-base",
+];
+
 /// Bundle 版本号：手动 base + 自动 instructions.md 内容 hash（build.rs 注入）。
 /// 改 INSTRUCTIONS_MD 时不需要 bump base —— hash 自动变，ensure_extracted 自动覆写。
 /// 改其他 bundle 资源（mcp.json 默认 / skills 模板等）才需要手动 bump base。
@@ -24,8 +37,12 @@ static SANSHENG_LIUBU_DIR: Dir<'_> =
 /// 0.7: 下线 Pinvou Review v2(EXIT GATE 评审被推翻,等新方案):两个 review skill
 ///      不再解包,既有装机的残留目录启动时清理
 /// 0.8: 上线三省六部卡片流工作流(sansheng-liubu):include_dir 内嵌 + 启动解包
+/// 注:「视觉设计」内置 skill 在 VERSION gate 之前由 write_builtin_skills 每启动防御性写出,
+///     不依赖版本号 bump(同 write_workflows / write_mcp_servers）。
+/// 0.10: 接入飞书官方域技能(lark-shared + calendar/doc/drive/sheets/im/task/wiki/base):
+///       include_dir 内嵌 + 启动解包到 bundle_skills_dir,供 SkillRegistry 发现
 pub const BUNDLE_VERSION: &str = concat!(
-    "0.9-",
+    "0.10-",
     env!("BUNDLE_INSTRUCTIONS_HASH"),
     "-",
     env!("BUNDLE_WORKFLOW_HASH_SANSHENG"),
@@ -33,6 +50,13 @@ pub const BUNDLE_VERSION: &str = concat!(
 
 /// pinvou3 内置的 instructions.md（Qwen3.6 适配 prompt），编译时内嵌。
 pub const INSTRUCTIONS_MD: &str = include_str!("../../resources/bundle/instructions.md");
+
+/// 内置「视觉设计」技能（设计系统直出 HTML）。编译期内嵌，解包到
+/// `~/.pinvou3/bundle/skills/visual-design/SKILL.md`，进 SkillRegistry 的 `## Skills`
+/// 目录。ascii 目录名避开中文路径在 include_str! 的坑；frontmatter `name: 视觉设计`
+/// 才是模型 load_skill 用的 id。
+const VISUAL_DESIGN_SKILL_MD: &str =
+    include_str!("../../resources/bundle/skills/visual-design/SKILL.md");
 
 /// pinvou3 版 base prompt（Constitution / 工具纪律 / embedder-aware / 删 RLM·Toolbox·V4），
 /// 编译期内嵌。通过底座 `prompts::set_base_prompt_override` 注入，替换底座的上游
@@ -69,6 +93,13 @@ pub const LOCALE_CLOSER_JA: &str = "## 言語再確認\n\n\
 /// 行为引导大头已由 `bridge::reminder_for` 每 turn `<system-reminder>` 注入,
 /// 静态块只立常驻事实;底座 YOLO_MODE/AUTO_APPROVAL/Session Longevity/
 /// Efficient Approvals 的逐条教学全不保留。
+///
+/// ⚠️ **句尾「phase rules」别删**:b891b2f 当「过时幽灵」删掉这 2 个 token,GUI 真机
+/// 首请求即把 `write_file` 调用采歪成 `<write_file>` 裸文本(磁盘无文件、用户拿不到成品)。
+/// git 二分实锤就这处——删 → 必歪,恢复 → 不歪。机制:GUI 真实 mtp 投机解码 +
+/// chunked-prefill 对这块结尾的 token 序列敏感(curl/headless 单请求复现不了,11次0漂)。
+/// 语义过时无妨,token 序列本身 load-bearing。**改此 const 务必 GUI 真机回归
+/// 「首轮直接写文件」场景(如"做一个贪吃蛇")**,别只信单测/curl。
 pub const MODE_EXECUTE_MD: &str = "\
 ## Mode: Execute
 
@@ -76,25 +107,6 @@ Tools run without per-call approval — the user has already authorized
 execution. Produce files and run commands now; never end the turn with
 a promise of future action. Then verify and report. Follow each
 message's `<system-reminder>` phase rules.";
-
-/// pinvou3 版静态层 mode 块——Plan（底座强制 approval=Never + ReadOnly sandbox）。
-/// 注意:前端 Plan 入口已下线([plan/yolo 收敛],index.html),生产全 Yolo 单模式
-/// 到不了这里——防御性保留,底座 AppMode::Plan 通路仍在,恢复入口即生效。
-pub const MODE_PLAN_MD: &str = "\
-## Mode: Plan
-
-Read-only: discovery tools work; file writes and shell mutations are
-blocked by the runtime. Your deliverable is a plan via `update_plan` —
-clarify real ambiguity with `request_user_input` first. Follow each
-message's `<system-reminder>` phase rules.";
-
-/// Agent+非Auto 兜底（pinvou3 不暴露 Agent mode,防御性保留）。
-pub const MODE_AGENT_GATED_MD: &str = "\
-## Mode: Agent
-
-Autonomous task execution. Reads run silently; writes, patches, and
-shell execution request user approval first — batch independent writes
-into one approval, not a series of surprise prompts.";
 
 /// pinvou3 版静态层 composer：接管底座全部编译期静态文案
 /// (taxonomy/base/personality/mode/approval/ContextMgmt/compact 模板)。
@@ -105,24 +117,15 @@ into one approval, not a series of surprise prompts.";
 /// `canonical_prompt()` 代码拼装、手动压缩走 `create_summary()` 独立 LLM
 /// 调用,二者均不按模板;`.codewhale/handoff.md` 在 pinvou3 无写入通路,
 /// `load_handoff_block` 永远 None——模板既无生产者也无消费者)。
-pub fn compose_static_layers(ctx: &deepseek_tui::prompts::StaticPromptCtx<'_>) -> String {
-    use deepseek_tui::tui::app::AppMode;
-    use deepseek_tui::tui::approval::ApprovalMode;
-
+pub fn compose_static_layers(_ctx: &deepseek_tui::prompts::StaticPromptCtx<'_>) -> String {
     // 底座宪法层(CONSTITUTION/WORKING RULES)已折叠进 instructions.md —— instructions 是
     // 唯一 pinvou3 prompt 来源(单模型→多模型适配,2026-06-15 消融实测:base.md 对 Qwen3.6
     // 可测量价值仅 Voice 语气,核心权威顺序/防编造已并进 instructions §底线)。静态层只剩 Mode。
-    let _ = ctx.model_id;
-    let mode_block = match ctx.mode {
-        AppMode::Plan => MODE_PLAN_MD,
-        AppMode::Yolo => MODE_EXECUTE_MD,
-        // pinvou3 生产链路不发 Agent;万一出现按 approval 兜底
-        AppMode::Agent => match ctx.approval_mode {
-            ApprovalMode::Auto => MODE_EXECUTE_MD,
-            ApprovalMode::Suggest | ApprovalMode::Never => MODE_AGENT_GATED_MD,
-        },
-    };
-    mode_block.to_string()
+    //
+    // 不再按 `ctx.mode` 选块:底座 v0.8.57 把 mode/approval 移到 per-turn,调 composer 钉死传
+    // 常量 Yolo → 静态层恒为 Execute 块(dump 传 plan 实测亦出 `## Mode: Execute`)。Plan/Agent
+    // 的 mode 真相全靠 per-turn reminder,不在静态层;原 Plan/Agent 块是选不中的死代码,已删。
+    MODE_EXECUTE_MD.to_string()
 }
 
 /// Authority Recap（Final Reminder）清空——其内容(裁决顺序/防编造)已折叠进
@@ -229,11 +232,19 @@ impl Pinvou3Bundle {
         // 工作流目录同 skills:immutable bundle 资源,每次启动防御性重写
         // (防 "VERSION 对得上但目录缺失"),无副作用。
         self.write_workflows()?;
+        // 内置 skill 同 workflow:immutable bundle 资源,每次启动防御性重写。
+        self.write_builtin_skills()?;
+        // 飞书官方域技能:按门控规则(已连接 && 未手动停用)决定解包还是删除——
+        // 没连飞书的用户不写这 9 个技能,省 token(§八.4 装了才启用)。
+        self.apply_feishu_skills(crate::feishu::feishu_skills_should_show())?;
         // MCP server 脚本同理。
         self.write_mcp_servers()?;
         // mcp.json merge:每次启动 upsert 内置 pinvou server,保留 marketplace 条目。
         // 不受 VERSION gate 限制——marketplace 安装可能在任何时候发生。
         self.ensure_builtin_mcp_servers()?;
+        // 启动自愈:刷新 mcp.json 里陈旧的本地 python server command(安装时写死的裸
+        // "python" → 重解析成可用路径)。必须在引擎 spawn 前跑(引擎从 mcp.json 拉起 server)。
+        self.refresh_mcp_python_commands()?;
 
         if current.trim() == BUNDLE_VERSION {
             return Ok(());
@@ -285,6 +296,20 @@ impl Pinvou3Bundle {
         Ok(())
     }
 
+    /// 解包内嵌的内置 skills。**落位到 `~/.agents/skills/`**——引擎 fork patch #41 让
+    /// `load_skill` 工具只扫这个目录(`agents_global_skills_dir`);bundle/skills 只进
+    /// system-prompt catalogue 的 union、`load_skill` 不认。落错目录会"列得出、load 不到"。
+    /// 每次启动防御性重写(immutable 内置资源)。当前:视觉设计。
+    fn write_builtin_skills(&self) -> std::io::Result<()> {
+        let Some(agents) = deepseek_tui::skills::agents_global_skills_dir() else {
+            return Ok(()); // 拿不到 home 目录就跳过,不致命
+        };
+        let dir = agents.join("visual-design");
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join("SKILL.md"), VISUAL_DESIGN_SKILL_MD)?;
+        Ok(())
+    }
+
     /// 解包内嵌的工作流目录到 `~/.pinvou3/bundle/workflow/`。
     /// 每次启动防御性重写（immutable bundle 资源）。
     fn write_workflows(&self) -> std::io::Result<()> {
@@ -292,6 +317,25 @@ impl Pinvou3Bundle {
         // sansheng-liubu
         let dest = workflow_root.join("sansheng-liubu");
         Self::extract_dir(&SANSHENG_LIUBU_DIR, &dest)?;
+        Ok(())
+    }
+
+    /// 解包内嵌的飞书官方域技能(lark-*)到 `~/.pinvou3/bundle/skills/`。
+    /// 每次启动防御性重写（immutable bundle 资源）。`LARK_SKILLS_DIR` 的根对应
+    /// `bundle/skills/`,内含 `lark-<域>/SKILL.md` + `references/`,直接铺到
+    /// `skills_dir`——引擎 `SkillRegistry` 扫该目录的每个含 `SKILL.md` 的子目录。
+    /// (顶层散落的 NOTICE.md 不含 SKILL.md,会被注册表忽略。)
+    /// 飞书技能门控:`show` → 解包 9 个 lark 技能到 `skills_dir`;否则**删掉**它们(+ NOTICE.md)。
+    /// 幂等(删不存在的目录不报错)。可见性 = 目录在不在,引擎重刷系统提示时重扫即生效。
+    pub fn apply_feishu_skills(&self, show: bool) -> std::io::Result<()> {
+        if show {
+            Self::extract_dir(&LARK_SKILLS_DIR, &self.skills_dir)?;
+        } else {
+            for d in LARK_SKILL_DIRS {
+                let _ = std::fs::remove_dir_all(self.skills_dir.join(d));
+            }
+            let _ = std::fs::remove_file(self.skills_dir.join("NOTICE.md"));
+        }
         Ok(())
     }
 
@@ -343,6 +387,62 @@ impl Pinvou3Bundle {
         let json = serde_json::to_string_pretty(&mcp)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         std::fs::write(&self.mcp_json, json)
+    }
+
+    /// 启动自愈:`mcp.json` 里本地 python server 的 `command` 是**安装时写死**的,老条目
+    /// 常是裸 `"python"`/`"python3"` —— 在没把 python 加进 PATH 的机器(或只有 python3 的
+    /// Linux)上永远拉不起来(高德天气等 marketplace 工具静默失效)。每次启动重解析:凡
+    /// command 是裸 python 家族名、或指向不存在的 python 路径,统一替换成当前
+    /// `paths::python_command()`。`url` 型远程 server / 非 python command 一律不动。
+    fn refresh_mcp_python_commands(&self) -> std::io::Result<()> {
+        if !self.mcp_json.is_file() {
+            return Ok(());
+        }
+        let existing = std::fs::read_to_string(&self.mcp_json).unwrap_or_default();
+        let mut mcp: serde_json::Value = match serde_json::from_str(&existing) {
+            Ok(v) => v,
+            Err(_) => return Ok(()), // 坏 json 不碰
+        };
+        let resolved = paths::python_command();
+        let mut changed = false;
+        if let Some(servers) = mcp.get_mut("servers").and_then(|s| s.as_object_mut()) {
+            for (_name, entry) in servers.iter_mut() {
+                let Some(obj) = entry.as_object_mut() else {
+                    continue;
+                };
+                let Some(cmd) = obj.get("command").and_then(|c| c.as_str()) else {
+                    continue; // url 型远程 server 无 command 字段
+                };
+                if cmd != resolved && Self::is_stale_python_command(cmd) {
+                    obj.insert(
+                        "command".to_string(),
+                        serde_json::Value::String(resolved.clone()),
+                    );
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            let json = serde_json::to_string_pretty(&mcp)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            std::fs::write(&self.mcp_json, json)?;
+        }
+        Ok(())
+    }
+
+    /// command 是否是"需要重解析"的 python:裸解释器名(python/python3/pythonw[.exe]),
+    /// 或指向一个已不存在的 python 路径。非 python command 一律 false,绝不误伤别的工具。
+    fn is_stale_python_command(cmd: &str) -> bool {
+        let lower = cmd.to_ascii_lowercase();
+        let bare = !cmd.contains('/') && !cmd.contains('\\');
+        if bare {
+            return matches!(
+                lower.as_str(),
+                "python" | "python3" | "pythonw" | "python.exe" | "pythonw.exe" | "python3.exe"
+            );
+        }
+        // 带路径但文件不存在、且看起来是 python → 重解析(指向已删/搬走的解释器)
+        lower.contains("python") && !std::path::Path::new(cmd).exists()
     }
 
     /// 写出内置 MCP server 脚本到 `~/.pinvou3/bundle/mcp-servers/` + 加可执行位。

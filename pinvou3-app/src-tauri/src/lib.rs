@@ -13,20 +13,25 @@
 mod audit;
 pub mod bridge;
 mod commands;
+pub mod feedback;
 // L1 harness 的附件 e2e 要走「真实 ingest → 注入分流 → 真 vLLM」全链路:
 // 暴露注入收口函数 + file_ingest。
 pub use commands::build_message_with_attachments;
 pub mod engine;
 pub mod engine_pool;
+mod feishu;
 pub mod file_ingest;
 mod file_watcher;
 mod harness;
 mod knowledge;
 mod monitor;
+mod os;
 pub mod personas;
 mod pinvou_review;
+mod process;
 pub mod super_permission;
 mod updater;
+mod voice_asr;
 mod workflow_migrate;
 pub mod workflow_registry;
 mod workflow_runs;
@@ -156,6 +161,30 @@ pub fn run() {
                 )?;
             }
 
+            // Linux webview(webkit2gtk)默认拒绝 getUserMedia,语音输入点麦克风会被拒。
+            // 给 main 窗口 webview 挂 permission-request:只放行 UserMedia(麦克风/摄像头)
+            // 请求,定位/通知等其余权限仍按默认拒绝。Windows/macOS 的 WebView2/WKWebView
+            // 自带系统级麦克风授权,不走这条。
+            #[cfg(target_os = "linux")]
+            {
+                use tauri::Manager;
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.with_webview(|webview| {
+                        use webkit2gtk::glib::prelude::ObjectExt;
+                        use webkit2gtk::{PermissionRequestExt, WebViewExt};
+                        let wv = webview.inner();
+                        wv.connect_permission_request(|_wv, req| {
+                            if req.type_().name() == "WebKitUserMediaPermissionRequest" {
+                                req.allow();
+                                true
+                            } else {
+                                false
+                            }
+                        });
+                    });
+                }
+            }
+
             // run 实体化一次性迁移：必须在 SessionStore boot **之前**跑
             // （迁移会动 _skill_bindings.json 和 sessions/ 目录，boot 之后再动
             // 会跟内存态打架）。失败只警告不 panic——app 仍可用，下次 boot 续跑。
@@ -204,6 +233,9 @@ pub fn run() {
             let monitor_state = MonitorState::new();
             app.handle().manage(monitor_state);
 
+            // 飞书连接编排状态(长驻子进程 PID + 取消标志),供 feishu_connect_begin/cancel 用。
+            app.handle().manage(feishu::FeishuConn::default());
+
             // 工作流 Phase 可视化:skill 绑定挂在 SessionStore.mode_state 上,
             // per-session 隔离(start_skill_session 命令负责新建 session + bind)。
             // 不再需要全局 ActiveSkillStore。
@@ -221,6 +253,16 @@ pub fn run() {
                     .into_iter()
                     .find(|d| d.join("model.onnx").exists() || d.join("onnx").join("model.onnx").exists())
             });
+            // 语音识别引擎 sense-voice-main 随 deb 打包,容错同 bge-m3 的资源布局,
+            // 注入给 voice_asr 作为 ~/.pinvou3/asr/ 之外的回退查找目录。
+            if let Some(asr_res) = app.path().resource_dir().ok().and_then(|res| {
+                [res.join("asr"), res.join("resources/asr"), res.join("resources").join("asr")]
+                    .into_iter()
+                    .find(|d| d.join("sense-voice-main").exists())
+            }) {
+                voice_asr::set_bundled_engine_dir(asr_res);
+            }
+
             match knowledge::KnowledgeService::new(&knowledge::default_db_path(), kb_model_dir.as_deref()) {
                 Ok(svc) => {
                     app.handle().manage(svc);
@@ -255,7 +297,16 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::chat,
+            feishu::feishu_ensure_cli,
+            feishu::feishu_status,
+            feishu::feishu_connect_begin,
+            feishu::feishu_cancel,
+            feishu::feishu_logout,
+            feishu::feishu_apply_skills,
+            feishu::set_feishu_enabled,
+            feishu::feishu_skills_state,
             commands::get_settings,
+            commands::submit_feedback,
             commands::get_effective_model_config,
             commands::update_settings,
             commands::save_settings_and_restart,
@@ -270,6 +321,9 @@ pub fn run() {
             commands::set_session_model,
             commands::get_session_model_id,
             commands::test_model_connection,
+            commands::transcribe_voice_audio,
+            voice_asr::voice_asr_status,
+            voice_asr::install_voice_asr,
             commands::list_sessions,
             commands::create_session,
             commands::load_session,
@@ -343,11 +397,13 @@ pub fn run() {
             commands::delete_persona,
             commands::save_session_persona_events,
             commands::get_session_persona_events,
+            updater::get_app_version,
             updater::check_for_update,
             updater::download_update,
             updater::install_update,
             updater::restart_app,
             updater::cancel_download,
+            updater::report_pending_update_result,
             file_ingest::check_dependencies,
             file_ingest::install_dependencies,
             commands::list_marketplace_tools,

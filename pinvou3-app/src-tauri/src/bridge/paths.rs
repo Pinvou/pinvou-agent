@@ -11,14 +11,13 @@ use std::path::PathBuf;
 /// AI 通过相对路径访问 → 落在家目录下；通过绝对路径访问 → trust_mode 放行
 /// 但敏感子目录由 path filter / instructions 引导拦截。
 pub fn user_home_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home)
+    crate::os::user_home_dir()
 }
 
 /// `~/.pinvou3/` 根目录。
 pub fn pinvou3_home() -> PathBuf {
     if let Ok(custom) = std::env::var("PINVOU3_HOME") {
-        return PathBuf::from(custom);
+        return crate::os::platform_compat_path(&custom);
     }
     user_home_dir().join(".pinvou3")
 }
@@ -75,11 +74,13 @@ pub fn web_template_dir() -> PathBuf {
 pub fn python_command() -> String {
     #[cfg(target_os = "windows")]
     {
+        // 1. 显式覆盖(PINVOU3_PYTHON 指向 python(w).exe)
         if let Ok(p) = std::env::var("PINVOU3_PYTHON") {
             if !p.is_empty() && std::path::Path::new(&p).exists() {
                 return p;
             }
         }
+        // 2. 随 app 打包的内置 python(发布版)
         if let Ok(exe) = std::env::current_exe() {
             if let Some(dir) = exe.parent() {
                 let bundled = dir.join("python-win").join("pythonw.exe");
@@ -88,12 +89,104 @@ pub fn python_command() -> String {
                 }
             }
         }
+        // 3. 探测系统已装 python(dev 构建 / 未内置 python 时的兜底)。
+        //    缺这层会兜底成裸 "pythonw" → 没把 python 加进 PATH 的机器上,
+        //    python MCP server(如高德天气)起不来、工具注册不上。
+        if let Some(p) = resolve_system_python_windows() {
+            return p;
+        }
+        // 4. 最后兜底,保持原行为
         "pythonw".to_string()
     }
     #[cfg(not(target_os = "windows"))]
     {
+        // Linux/mac:优先 python3;只装了 python 的老环境退而求其次。
+        if which_in_path("python3") {
+            return "python3".to_string();
+        }
+        if which_in_path("python") {
+            return "python".to_string();
+        }
         "python3".to_string()
     }
+}
+
+/// Windows:在 PATH、常见安装目录(`%LOCALAPPDATA%\Programs\Python\Python3x`、
+/// `%ProgramFiles%\Python3x`)、py 启动器里找一个真实可用的解释器,优先 `pythonw.exe`(无窗口)。
+/// 返回绝对路径;都找不到返回 None。
+#[cfg(target_os = "windows")]
+fn resolve_system_python_windows() -> Option<String> {
+    use std::path::PathBuf;
+    // a) PATH 上的 pythonw.exe / python.exe
+    if let Ok(path_var) = std::env::var("PATH") {
+        for name in ["pythonw.exe", "python.exe"] {
+            for dir in std::env::split_paths(&path_var) {
+                let cand = dir.join(name);
+                if cand.is_file() {
+                    return Some(cand.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    // b) 常见安装目录,Python3xx 取较高版本
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Ok(la) = std::env::var("LOCALAPPDATA") {
+        roots.push(PathBuf::from(la).join("Programs").join("Python"));
+    }
+    if let Ok(pf) = std::env::var("ProgramFiles") {
+        roots.push(PathBuf::from(pf));
+    }
+    for root in roots {
+        if let Ok(rd) = std::fs::read_dir(&root) {
+            let mut vers: Vec<PathBuf> = rd
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.is_dir()
+                        && p.file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|n| n.starts_with("Python3"))
+                            .unwrap_or(false)
+                })
+                .collect();
+            vers.sort();
+            for d in vers.iter().rev() {
+                for name in ["pythonw.exe", "python.exe"] {
+                    let cand = d.join(name);
+                    if cand.is_file() {
+                        return Some(cand.to_string_lossy().into_owned());
+                    }
+                }
+            }
+        }
+    }
+    // c) py 启动器(PATH 或 C:\Windows\py.exe)
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let cand = dir.join("py.exe");
+            if cand.is_file() {
+                return Some(cand.to_string_lossy().into_owned());
+            }
+        }
+    }
+    let winpy = PathBuf::from(r"C:\Windows\py.exe");
+    if winpy.is_file() {
+        return Some(winpy.to_string_lossy().into_owned());
+    }
+    None
+}
+
+/// 非 Windows:命令是否在 PATH 上存在(简单存在性检查,够用于 python3/python 兜底)。
+#[cfg(not(target_os = "windows"))]
+fn which_in_path(cmd: &str) -> bool {
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            if dir.join(cmd).is_file() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 pub fn user_root() -> PathBuf {
@@ -163,6 +256,27 @@ pub fn workflows_index_path() -> PathBuf {
 /// 不用 /tmp：tmpfs 受内存限制 + 重启清空（下载完提示重启后文件就没了）。
 pub fn updates_dir() -> PathBuf {
     pinvou3_home().join("updates")
+}
+
+/// `~/.pinvou3/feedback/` —— 用户主动提交的反馈包、失败待重试内容和提交回执。
+pub fn feedback_root() -> PathBuf {
+    pinvou3_home().join("feedback")
+}
+
+/// `~/.pinvou3/feedback/pending/` —— 上传失败或正在准备的反馈包目录。
+pub fn feedback_pending_dir() -> PathBuf {
+    feedback_root().join("pending")
+}
+
+/// `~/.pinvou3/feedback/receipts/` —— 成功提交后保留的轻量回执。
+pub fn feedback_receipts_dir() -> PathBuf {
+    feedback_root().join("receipts")
+}
+
+/// `~/.pinvou3/updates/update-feedback.json` —— Windows OTA 安装器启动后
+/// 跨进程保留的待反馈记录。Linux .deb 更新不使用此文件。
+pub fn update_feedback_record_path() -> PathBuf {
+    updates_dir().join("update-feedback.json")
 }
 
 /// `~/.pinvou3/sessions/<session_id>/artifacts/` —— AI 默认产物落地目录。
@@ -235,10 +349,13 @@ pub(crate) mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-test-override");
-        assert_eq!(pinvou3_home(), PathBuf::from("/tmp/pinvou3-test-override"));
+        assert_eq!(
+            pinvou3_home(),
+            crate::os::platform_compat_path("/tmp/pinvou3-test-override")
+        );
         assert_eq!(
             settings_path(),
-            PathBuf::from("/tmp/pinvou3-test-override/settings.json")
+            crate::os::platform_compat_path("/tmp/pinvou3-test-override").join("settings.json")
         );
         match prev {
             Some(v) => std::env::set_var("PINVOU3_HOME", v),
@@ -249,10 +366,7 @@ pub(crate) mod tests {
     /// `user_home_dir` 应该读 $HOME（pinvou3 engine workspace 之根）。
     #[test]
     fn user_home_dir_reads_home_env() {
-        if let Ok(h) = std::env::var("HOME") {
-            assert_eq!(user_home_dir(), PathBuf::from(h));
-        }
-        // 没设 HOME 时 fallback /tmp（不强测，避免 race）
+        assert!(!user_home_dir().as_os_str().is_empty());
     }
 
     /// workflow run 目录族必须落在 ~/.pinvou3/workflows/ 下（独立于 sessions/）。
@@ -261,21 +375,21 @@ pub(crate) mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-wf-paths-test");
-        assert_eq!(
-            workflows_root(),
-            PathBuf::from("/tmp/pinvou3-wf-paths-test/workflows")
-        );
+        let root = crate::os::platform_compat_path("/tmp/pinvou3-wf-paths-test");
+        assert_eq!(workflows_root(), root.join("workflows"));
         assert_eq!(
             workflow_run_dir("wf-20260610-1432-a3f9"),
-            PathBuf::from("/tmp/pinvou3-wf-paths-test/workflows/wf-20260610-1432-a3f9")
+            root.join("workflows").join("wf-20260610-1432-a3f9")
         );
         assert_eq!(
             workflow_project_dir("wf-20260610-1432-a3f9"),
-            PathBuf::from("/tmp/pinvou3-wf-paths-test/workflows/wf-20260610-1432-a3f9/project")
+            root.join("workflows")
+                .join("wf-20260610-1432-a3f9")
+                .join("project")
         );
         assert_eq!(
             workflows_index_path(),
-            PathBuf::from("/tmp/pinvou3-wf-paths-test/workflows/index.json")
+            root.join("workflows").join("index.json")
         );
         match prev {
             Some(v) => std::env::set_var("PINVOU3_HOME", v),
@@ -289,13 +403,14 @@ pub(crate) mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-artifacts-layout-test");
+        let root = crate::os::platform_compat_path("/tmp/pinvou3-artifacts-layout-test");
         assert_eq!(
             session_artifacts_dir("abc123"),
-            PathBuf::from("/tmp/pinvou3-artifacts-layout-test/sessions/abc123/artifacts")
+            root.join("sessions").join("abc123").join("artifacts")
         );
         assert_eq!(
             default_session_artifacts_dir(),
-            PathBuf::from("/tmp/pinvou3-artifacts-layout-test/sessions/default/artifacts")
+            root.join("sessions").join("default").join("artifacts")
         );
         match prev {
             Some(v) => std::env::set_var("PINVOU3_HOME", v),

@@ -212,9 +212,10 @@
     const dict = {
       zh: {
         langTag: 'zh',
-        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', toolStore: '工具商店', cardPool: '专家卡牌池', recent: '近期', settings: '设置', localEnv: '本地环境',
+        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', toolStore: '工具商店', cardPool: '专家卡牌池', recent: '历史对话', settings: '设置', localEnv: '本地环境', megacubeSite: '打开 MegaCube 官网',
         knowledge: '本地知识',
         kbMount: '知识库', kbMountTitle: '挂载知识集到本对话', kbMountPick: '选择知识集', kbMountNone: '还没有知识集，去「本地知识」创建', kbMountRemove: '取消挂载', kbMountedTag: '已挂载',
+        modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: '切换工作模式', modeYoloDesc: '直接动手执行', modePlanDesc: '先出方案，确认后执行',
         kbTitle: '本地知识', kbDesc: '全系统秒搜 + 去重 · 仅索引元数据，不读内容',
         kbRescan: '重新扫描', kbScanning: '扫描中', kbDeduping: '去重中', kbScanNow: '扫描本机',
         kbTotalFiles: '已索引文件', kbDupFiles: '重复文件', kbWasted: '可回收',
@@ -302,12 +303,25 @@
         downloadInstall: '下载并安装', downloading: '下载中…', installing: '安装中…',
         cancel: '取消', cancelling: '取消中…',
         updateComplete: '升级完成，重启后生效', restartNow: '立即重启',
+        updateInstallerStarted: '安装器已启动，应用将自动退出',
         updateCheckFailed: '检查失败',
         depCheckTitle: '依赖体检', depChecking: '检测中…', depRecheck: '重新检测',
         depAllOk: '所有依赖项已就绪', depMissingSuffix: ' 项依赖缺失（对应能力将不可用）',
         depInstalling: '安装中…', depInstallBtn: '一键安装', depInstallNote: '将提权安装缺失依赖（需联网或可用 apt 源）',
         dep_pdf: 'PDF 文本提取', dep_office_modern: 'Office 文档（docx）', dep_office_legacy: '旧版 Office / 演示与表格',
-        dep_ocr: '图片 / 扫描件 OCR', dep_archive: '压缩包（zip/rar/7z）', dep_email: '邮件（.eml / .msg）',
+        dep_ocr: '图片 / 扫描件 OCR', dep_archive: '压缩包（zip/rar/7z）', dep_email: '邮件（.eml / .msg）', dep_voice_asr: '本地语音识别',
+        feedbackTitle: '帮助与反馈', feedbackDesc: '反馈使用中的问题和建议，可附带截图或短视频。',
+        feedbackOpen: '我要反馈', feedbackDialogTitle: '我要反馈', feedbackType: '反馈类型',
+        feedbackIssue: '问题', feedbackSuggestion: '建议',
+        feedbackSubject: '标题', feedbackSubjectPh: '一句话概括（选填）',
+        feedbackBody: '说明', feedbackBodyPh: '请描述你遇到的情况、期望结果或建议',
+        feedbackAttachments: '附件', feedbackAddAttachment: '添加图片或视频', feedbackNoAttachments: '未添加附件',
+        feedbackAttachmentHint: '支持 png、jpg、jpeg、gif、webp、mp4、mov、webm；最多 5 个。',
+        feedbackPrivacy: '提交会发送你填写的内容、所选附件和非敏感环境摘要，不会自动附带聊天记录或密钥。',
+        feedbackSubmit: '提交反馈', feedbackSubmitting: '提交中…', feedbackSubmitted: '反馈已提交，感谢你的帮助。',
+        feedbackRetry: '重试提交', feedbackCloseConfirm: '反馈内容尚未提交，确定关闭吗？',
+        feedbackBodyRequired: '请填写反馈说明。', feedbackUnsupportedFile: '附件格式不支持。',
+        feedbackTooManyFiles: '最多只能上传 5 个附件。', feedbackPickUnavailable: '当前环境无法打开文件选择器。',
         chatGreeting: '你好，今天想聊点什么？', artifacts: '产物与代码', placeholder: '询问 PINVOU 或输入指令', disclaimer: 'PINVOU 可能会生成不准确的信息，请仔细核实。', ctxUsage: '上下文',
         searchPlaceholder: 'Search chats',
         // —— 卡牌池(cp*)。注:卡牌内容(名称/简介/正文)是数据,不在 UI 词典内 ——
@@ -366,8 +380,13 @@
         skillPrefill: name => `我要用 ${name} 完成: `,
         queuedTag: '排队中', queuedCancel: '撤销',
         attachParsing: '解析中…', attachFailed: '失败', attachAdd: '添加附件',
+        voiceStart: '语音输入', voiceStop: '结束录音', voiceCancel: '取消语音输入', voiceRetry: '重试',
+        voiceRequesting: '正在请求麦克风权限…', voiceRecording: '正在录音，再点一次结束', voiceTranscribing: '正在识别语音…',
+        voiceCompleted: '语音已写入输入框', voiceClose: '关闭语音提示', voiceGotoDeps: '去依赖体检',
         composerTools: '工具', composerInstalledTools: '已接入工具', composerNoTools: '暂无已装工具', composerToolOn: '已启用', composerManageTools: '管理工具',
-        resend: '重新发送', editResend: '编辑并重发',
+        composerMode: '技能', composerModeTitle: '技能', composerModeNone: '暂无可用技能',
+        composerSkillAuto: '内置·自动', composerSkillInUse: '使用中', composerSkillSoon: '待上线',
+        resend: '重新发送', editResend: '编辑并重发', copyMsg: '复制', copied: '已复制',
         thinkingLabel: '思考中', thinkingCall: (tool, s) => `调用 ${tool}... ${s}s`,
         hintSlow30: '本地模型生成中', hintSlow120: '本地模型在生成长内容,请耐心等',
         artifactLabel: '成品', clickToOpen: '点击打开 →',
@@ -397,9 +416,6 @@
         pvBtnPinTitle: '品 · 查错：揪出产物的风险、遗漏、与你需求的偏差，逐条让 AI 改或你拍板接受',
         pvBtnWuTitle: '悟 · 发散：以领域专家视角给出产物还能补的维度和新思路，挑中的一键加进去',
         pvBtnPinLabel: '品 · 智能找错', pvBtnWuLabel: '悟 · 深度查漏',
-        fbTitle: '📝 AI 给了方案但没用 plan 工具',
-        fbDesc: 'AI 在文本里描述了方案,但没调 update_plan 工具,所以没出方案卡片。你想怎么处理?',
-        fbAccept: '✅ 直接采纳这段', fbRetry: '📋 让 AI 用工具重出',
         cbTitle: '🛑 拦下了一条危险操作', cbWant: 'AI 想执行：', cbWhy: '为什么拦它',
         cbNote: '这是系统自带的安全保护，一直开着。AI 不会被允许做这种危险事；要真是你想要的，得你自己手动来。',
         cbTechShow: '技术详情', cbTechHide: '收起技术详情', cbCmdUnknown: '(命令未知)',
@@ -425,9 +441,10 @@
       },
       en: {
         langTag: 'en',
-        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'Recent', settings: 'Settings', localEnv: 'Local Env',
+        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'History', settings: 'Settings', localEnv: 'Local Env', megacubeSite: 'Open MegaCube site',
         knowledge: 'Local Knowledge',
         kbMount: 'Knowledge', kbMountTitle: 'Attach a collection to this chat', kbMountPick: 'Pick a collection', kbMountNone: 'No collections yet — create one in Local Knowledge', kbMountRemove: 'Unmount', kbMountedTag: 'Mounted',
+        modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: 'Switch mode', modeYoloDesc: 'Act directly', modePlanDesc: 'Plan first, then execute',
         kbTitle: 'Local Knowledge', kbDesc: 'Whole-system instant search + dedup · metadata only, content not read',
         kbRescan: 'Rescan', kbScanning: 'Scanning', kbDeduping: 'Deduping', kbScanNow: 'Scan this PC',
         kbTotalFiles: 'Indexed files', kbDupFiles: 'Duplicates', kbWasted: 'Reclaimable',
@@ -515,12 +532,25 @@
         downloadInstall: 'Download & Install', downloading: 'Downloading…', installing: 'Installing…',
         cancel: 'Cancel', cancelling: 'Cancelling…',
         updateComplete: 'Update complete, restart to apply', restartNow: 'Restart Now',
+        updateInstallerStarted: 'Installer started, the app will close automatically',
         updateCheckFailed: 'Check failed',
         depCheckTitle: 'Dependency Check', depChecking: 'Checking…', depRecheck: 'Re-check',
         depAllOk: 'All dependencies ready', depMissingSuffix: ' dependency group(s) missing (those features unavailable)',
         depInstalling: 'Installing…', depInstallBtn: 'Install', depInstallNote: 'Installs missing deps via elevated apt (needs network or an apt source)',
         dep_pdf: 'PDF text extraction', dep_office_modern: 'Office docs (docx)', dep_office_legacy: 'Legacy Office / slides & sheets',
-        dep_ocr: 'Image / scanned-PDF OCR', dep_archive: 'Archives (zip/rar/7z)', dep_email: 'Email (.eml / .msg)',
+        dep_ocr: 'Image / scanned-PDF OCR', dep_archive: 'Archives (zip/rar/7z)', dep_email: 'Email (.eml / .msg)', dep_voice_asr: 'Local voice recognition',
+        feedbackTitle: 'Help & Feedback', feedbackDesc: 'Send issues or suggestions with screenshots or short videos.',
+        feedbackOpen: 'Send feedback', feedbackDialogTitle: 'Send feedback', feedbackType: 'Type',
+        feedbackIssue: 'Issue', feedbackSuggestion: 'Suggestion',
+        feedbackSubject: 'Title', feedbackSubjectPh: 'Short summary (optional)',
+        feedbackBody: 'Details', feedbackBodyPh: 'Describe what happened, what you expected, or your suggestion',
+        feedbackAttachments: 'Attachments', feedbackAddAttachment: 'Add image or video', feedbackNoAttachments: 'No attachments',
+        feedbackAttachmentHint: 'Supports png, jpg, jpeg, gif, webp, mp4, mov, webm; up to 5 files.',
+        feedbackPrivacy: 'This sends your text, selected files, and non-sensitive app context. Chats and keys are not attached automatically.',
+        feedbackSubmit: 'Submit', feedbackSubmitting: 'Submitting…', feedbackSubmitted: 'Feedback submitted. Thank you.',
+        feedbackRetry: 'Retry', feedbackCloseConfirm: 'Feedback draft has not been submitted. Close it?',
+        feedbackBodyRequired: 'Please enter feedback details.', feedbackUnsupportedFile: 'Unsupported attachment format.',
+        feedbackTooManyFiles: 'You can attach up to 5 files.', feedbackPickUnavailable: 'File picker is unavailable.',
         chatGreeting: "Hi, what's good?", artifacts: 'Artifacts', placeholder: 'Ask PINVOU or enter a command', disclaimer: 'PINVOU may display inaccurate info, so double-check.', ctxUsage: 'Context',
         searchPlaceholder: 'Search chats',
         // —— Card Pool (cp*) ——
@@ -579,8 +609,13 @@
         skillPrefill: name => `I want to use ${name} to: `,
         queuedTag: 'Queued', queuedCancel: 'Remove',
         attachParsing: 'Parsing…', attachFailed: 'Failed', attachAdd: 'Attach file',
+        voiceStart: 'Voice input', voiceStop: 'Stop recording', voiceCancel: 'Cancel voice input', voiceRetry: 'Retry',
+        voiceRequesting: 'Requesting microphone permission…', voiceRecording: 'Recording, click again to stop', voiceTranscribing: 'Transcribing voice…',
+        voiceCompleted: 'Voice text added', voiceClose: 'Close voice notice', voiceGotoDeps: 'Open dependency check',
         composerTools: 'Tools', composerInstalledTools: 'Connected tools', composerNoTools: 'No tools installed', composerToolOn: 'On', composerManageTools: 'Manage tools',
-        resend: 'Resend', editResend: 'Edit & resend',
+        composerMode: 'Skill', composerModeTitle: 'Skills', composerModeNone: 'No skills available',
+        composerSkillAuto: 'Built-in', composerSkillInUse: 'In use', composerSkillSoon: 'Soon',
+        resend: 'Resend', editResend: 'Edit & resend', copyMsg: 'Copy', copied: 'Copied',
         thinkingLabel: 'Thinking', thinkingCall: (tool, s) => `Calling ${tool}... ${s}s`,
         hintSlow30: 'local model generating', hintSlow120: 'local model is generating long content, hang tight',
         artifactLabel: 'Artifact', clickToOpen: 'Open →',
@@ -610,9 +645,6 @@
         pvBtnPinTitle: '品 · Review: surface risks, omissions, and drift from your intent — fix each via AI or accept as is',
         pvBtnWuTitle: '悟 · Explore: a domain expert lists dimensions and ideas the artifact could still add; add picks in one click',
         pvBtnPinLabel: '品 · Review', pvBtnWuLabel: '悟 · Explore',
-        fbTitle: "📝 The AI wrote a plan but didn't use the plan tool",
-        fbDesc: 'The AI described a plan in text without calling update_plan, so no plan card was created. What do you want to do?',
-        fbAccept: '✅ Accept this text', fbRetry: '📋 Ask AI to redo it with the tool',
         cbTitle: '🛑 Blocked a dangerous operation', cbWant: 'The AI tried to run:', cbWhy: 'Why it was blocked',
         cbNote: "This built-in safety guard is always on. The AI is never allowed to do this; if you really want it, run it yourself.",
         cbTechShow: 'Technical details', cbTechHide: 'Hide technical details', cbCmdUnknown: '(unknown command)',
@@ -638,9 +670,10 @@
       },
       ja: {
         langTag: 'ja',
-        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', monitor: 'システムモニター', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '最近', settings: '設定', localEnv: 'ローカル環境',
+        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', monitor: 'システムモニター', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '履歴', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く',
         knowledge: 'ローカル知識',
         kbMount: 'ナレッジ', kbMountTitle: 'このチャットにコレクションをリンク', kbMountPick: 'コレクションを選択', kbMountNone: 'コレクションがありません — 「ローカル知識」で作成', kbMountRemove: 'リンク解除', kbMountedTag: 'リンク中',
+        modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: 'モード切替', modeYoloDesc: 'すぐ実行', modePlanDesc: '計画してから実行',
         kbTitle: 'ローカル知識', kbDesc: '全システム高速検索 + 重複検出 · メタデータのみ、内容は読まない',
         kbRescan: '再スキャン', kbScanning: 'スキャン中', kbDeduping: '重複検出中', kbScanNow: 'このPCをスキャン',
         kbTotalFiles: 'インデックス済み', kbDupFiles: '重複ファイル', kbWasted: '回収可能',
@@ -727,12 +760,25 @@
         downloadInstall: 'ダウンロードしてインストール', downloading: 'ダウンロード中…', installing: 'インストール中…',
         cancel: 'キャンセル', cancelling: 'キャンセル中…',
         updateComplete: '更新が完了しました。再起動後に有効になります', restartNow: '今すぐ再起動',
+        updateInstallerStarted: 'インストーラーを起動しました。アプリは自動終了します',
         updateCheckFailed: '確認に失敗しました',
         depCheckTitle: '依存関係チェック', depChecking: '確認中…', depRecheck: '再チェック',
         depAllOk: 'すべての依存関係が準備済み', depMissingSuffix: ' 件の依存が不足（該当機能は利用不可）',
         depInstalling: 'インストール中…', depInstallBtn: 'インストール', depInstallNote: '権限昇格して不足依存をインストール（ネットワークまたは apt ソースが必要）',
         dep_pdf: 'PDF テキスト抽出', dep_office_modern: 'Office 文書（docx）', dep_office_legacy: '旧 Office / スライドと表計算',
-        dep_ocr: '画像 / スキャン PDF の OCR', dep_archive: 'アーカイブ（zip/rar/7z）', dep_email: 'メール（.eml / .msg）',
+        dep_ocr: '画像 / スキャン PDF の OCR', dep_archive: 'アーカイブ（zip/rar/7z）', dep_email: 'メール（.eml / .msg）', dep_voice_asr: 'ローカル音声認識',
+        feedbackTitle: 'ヘルプとフィードバック', feedbackDesc: '問題や提案をスクリーンショットや短い動画付きで送信できます。',
+        feedbackOpen: 'フィードバック', feedbackDialogTitle: 'フィードバック', feedbackType: '種類',
+        feedbackIssue: '問題', feedbackSuggestion: '提案',
+        feedbackSubject: 'タイトル', feedbackSubjectPh: '短い概要（任意）',
+        feedbackBody: '内容', feedbackBodyPh: '状況、期待した結果、提案を入力してください',
+        feedbackAttachments: '添付', feedbackAddAttachment: '画像または動画を追加', feedbackNoAttachments: '添付なし',
+        feedbackAttachmentHint: 'png、jpg、jpeg、gif、webp、mp4、mov、webm に対応。最大 5 件。',
+        feedbackPrivacy: '入力内容、選択した添付、非機密の環境概要を送信します。チャット履歴やキーは自動添付しません。',
+        feedbackSubmit: '送信', feedbackSubmitting: '送信中…', feedbackSubmitted: '送信しました。ありがとうございます。',
+        feedbackRetry: '再試行', feedbackCloseConfirm: '未送信の内容があります。閉じますか？',
+        feedbackBodyRequired: '内容を入力してください。', feedbackUnsupportedFile: '対応していない添付形式です。',
+        feedbackTooManyFiles: '添付は最大 5 件です。', feedbackPickUnavailable: 'ファイル選択を利用できません。',
         chatGreeting: 'こんにちは、今日は何をしましょうか？', artifacts: '成果物とコード', placeholder: 'PINVOU に質問またはコマンドを入力', disclaimer: 'PINVOU は不正確な情報を生成する可能性があります。必ずご確認ください。', ctxUsage: 'コンテキスト',
         searchPlaceholder: 'チャットを検索',
         // —— カードプール (cp*) ——
@@ -791,8 +837,13 @@
         skillPrefill: name => `${name} を使ってやりたいこと: `,
         queuedTag: '待機中', queuedCancel: '取り消し',
         attachParsing: '解析中…', attachFailed: '失敗', attachAdd: 'ファイルを添付',
+        voiceStart: '音声入力', voiceStop: '録音を終了', voiceCancel: '音声入力をキャンセル', voiceRetry: '再試行',
+        voiceRequesting: 'マイク権限を確認中…', voiceRecording: '録音中。もう一度押すと終了', voiceTranscribing: '音声を認識中…',
+        voiceCompleted: '音声テキストを追加しました', voiceClose: '音声通知を閉じる', voiceGotoDeps: '依存関係チェックへ',
         composerTools: 'ツール', composerInstalledTools: '接続済みツール', composerNoTools: 'ツールなし', composerToolOn: '有効', composerManageTools: 'ツール管理',
-        resend: '再送信', editResend: '編集して再送信',
+        composerMode: 'スキル', composerModeTitle: 'スキル', composerModeNone: '利用可能なスキルなし',
+        composerSkillAuto: '内蔵', composerSkillInUse: '使用中', composerSkillSoon: '近日',
+        resend: '再送信', editResend: '編集して再送信', copyMsg: 'コピー', copied: 'コピー済み',
         thinkingLabel: '思考中', thinkingCall: (tool, s) => `${tool} を実行中... ${s}s`,
         hintSlow30: 'ローカルモデルが生成中', hintSlow120: 'ローカルモデルが長い内容を生成中です。しばらくお待ちください',
         artifactLabel: '成果物', clickToOpen: 'クリックで開く →',
@@ -822,9 +873,6 @@
         pvBtnPinTitle: '品 · 検閲：成果物のリスク・抜け漏れ・要求とのズレを洗い出し、AI に修正させるか受け入れる',
         pvBtnWuTitle: '悟 · 発散：専門家視点で成果物に補える観点や新案を提示、選んだものをワンクリックで追加',
         pvBtnPinLabel: '品 · 検閲', pvBtnWuLabel: '悟 · 発散',
-        fbTitle: '📝 AI がプランを書いたのに plan ツールを使っていません',
-        fbDesc: 'AI はテキストでプランを説明しましたが update_plan を呼んでいないため、プランカードが出ていません。どうしますか?',
-        fbAccept: '✅ この内容を採用', fbRetry: '📋 ツールで出し直させる',
         cbTitle: '🛑 危険な操作をブロックしました', cbWant: 'AI が実行しようとしたコマンド：', cbWhy: 'ブロックした理由',
         cbNote: 'これはシステム標準の安全保護で、常時有効です。AI にこの種の危険な操作は許可されません。本当に必要なら、ご自身で手動実行してください。',
         cbTechShow: '技術詳細', cbTechHide: '技術詳細を閉じる', cbCmdUnknown: '（コマンド不明）',
@@ -926,6 +974,7 @@
       const [customModelName, setCustomModelName] = useState('');
       const [customBaseUrl, setCustomBaseUrl] = useState('');
       const [customApiKey, setCustomApiKey] = useState('');
+      const [modelProfiles, setModelProfiles] = useState({});
       const modelConfigInitRef = useRef(false);
       const searchConfigInitRef = useRef(false);
       const uiPrefsInitRef = useRef(false);
@@ -949,6 +998,32 @@
         glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-4-plus' },
         mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2-flash' },
       };
+      function normalizedModelProfile(name, baseUrl, apiKey) {
+        const modelName = (name || '').trim();
+        const endpoint = (baseUrl || '').trim();
+        const key = (apiKey || '').trim();
+        return {
+          model_name: modelName || null,
+          base_url: endpoint || null,
+          api_key: key || null,
+        };
+      }
+      function modelDraftForPreset(preset, profiles, fallback) {
+        const defs = PRESET_DEFAULTS[preset] || PRESET_DEFAULTS.local_vllm;
+        const profile = (profiles && profiles[preset]) || {};
+        return {
+          preset,
+          name: profile.model_name || (fallback && fallback.name) || defs.model,
+          baseUrl: profile.base_url || (fallback && fallback.baseUrl) || defs.baseUrl,
+          apiKey: profile.api_key || (fallback && fallback.apiKey) || '',
+        };
+      }
+      function mergeModelDraft(profiles, preset, name, baseUrl, apiKey) {
+        return {
+          ...(profiles || {}),
+          [preset]: normalizedModelProfile(name, baseUrl, apiKey),
+        };
+      }
       const [isSidebarOpen, setIsSidebarOpen] = useState(false);
       const [chatPrefill, setChatPrefill] = useState('');
       const [personaEditor, setPersonaEditor] = useState(null); // 聊天里"存入卡牌池"草稿 → App 级编辑器
@@ -1008,13 +1083,15 @@
           const adv = bs.settings.advanced || {};
           const effective = bs.effectiveModelConfig || {};
           const preset = effective.preset || adv.model_preset || 'local_vllm';
-          const defs = PRESET_DEFAULTS[preset] || PRESET_DEFAULTS.local_vllm;
-          const saved = {
-            preset,
-            name: effective.model || adv.custom_model_name || defs.model,
-            baseUrl: effective.base_url || adv.custom_base_url || defs.baseUrl,
+          const profiles = { ...(adv.model_profiles || {}) };
+          const fallback = {
+            name: effective.model || adv.custom_model_name || '',
+            baseUrl: effective.base_url || adv.custom_base_url || '',
             apiKey: effective.api_key || adv.custom_api_key || '',
           };
+          const saved = modelDraftForPreset(preset, profiles, fallback);
+          profiles[preset] = normalizedModelProfile(saved.name, saved.baseUrl, saved.apiKey);
+          setModelProfiles(profiles);
           setModelPreset(saved.preset);
           setCustomModelName(saved.name);
           setCustomBaseUrl(saved.baseUrl);
@@ -1102,19 +1179,21 @@
       // 其他字段——之前漏 spread 会让后端 serde default 把它们重置(bug fix)。
       function buildFullSettings(overrides) {
         const base = (bs && bs.settings) ? bs.settings : {};
+        const advancedOverrides = (overrides && overrides.advanced) ? overrides.advanced : {};
+        const searchOverrides = (overrides && overrides.search) ? overrides.search : null;
+        const topOverrides = { ...(overrides || {}) };
+        delete topOverrides.advanced;
+        delete topOverrides.search;
         return {
           ...base,
-          theme: activeTheme === 'dark' ? 'genesis' : 'liquid-light',
-          language: LANG_TO_TAG[language] || 'zh-Hans',
-          search: {
+          ...topOverrides,
+          theme: topOverrides.theme !== undefined ? topOverrides.theme : (activeTheme === 'dark' ? 'genesis' : 'liquid-light'),
+          language: topOverrides.language !== undefined ? topOverrides.language : (LANG_TO_TAG[language] || 'zh-Hans'),
+          search: searchOverrides || {
             provider: searchProvider,
             api_key: normalizedSearchApiKeyValue(searchApiKey),
           },
-          advanced: {
-            ...buildAdvancedOverrides({}),
-            ...(overrides && overrides.advanced ? overrides.advanced : {}),
-          },
-          ...overrides,
+          advanced: buildAdvancedOverrides(advancedOverrides),
         };
       }
 
@@ -1149,30 +1228,46 @@
       }
 
       function buildAdvancedOverrides(overrides) {
+        const baseAdvanced = (bs && bs.settings && bs.settings.advanced) ? bs.settings.advanced : {};
+        const nextPreset = overrides.model_preset !== undefined ? overrides.model_preset : modelPreset;
+        const nextModelName = overrides.custom_model_name !== undefined ? overrides.custom_model_name : customModelName;
+        const nextBaseUrl = overrides.custom_base_url !== undefined ? overrides.custom_base_url : customBaseUrl;
+        const nextApiKey = overrides.custom_api_key !== undefined ? overrides.custom_api_key : customApiKey;
+        const nextProfiles = {
+          ...(baseAdvanced.model_profiles || {}),
+          ...(modelProfiles || {}),
+          [nextPreset]: normalizedModelProfile(nextModelName, nextBaseUrl, nextApiKey),
+        };
         return {
-          model_preset: overrides.model_preset !== undefined ? overrides.model_preset : modelPreset,
-          custom_model_name: overrides.custom_model_name !== undefined ? (overrides.custom_model_name || null) : (customModelName || null),
-          custom_base_url: overrides.custom_base_url !== undefined ? (overrides.custom_base_url || null) : (customBaseUrl || null),
-          custom_api_key: overrides.custom_api_key !== undefined ? (overrides.custom_api_key || null) : (customApiKey || null),
+          ...baseAdvanced,
+          ...overrides,
+          model_preset: nextPreset,
+          custom_model_name: nextModelName || null,
+          custom_base_url: nextBaseUrl || null,
+          custom_api_key: nextApiKey || null,
+          model_profiles: nextProfiles,
         };
       }
 
       // 模型配置改为草稿模式：只更新 state，点击确认后统一保存并重启
       function handleChangeModelPreset(p) {
+        const nextProfiles = mergeModelDraft(modelProfiles, modelPreset, customModelName, customBaseUrl, customApiKey);
         const saved = savedModelConfigRef.current;
         if (saved && p === saved.preset) {
           // 切回已保存的来源 → 还原已保存值（而非厂商默认），dirty 自然归零
+          setModelProfiles(nextProfiles);
           setModelPreset(saved.preset);
           setCustomModelName(saved.name);
           setCustomBaseUrl(saved.baseUrl);
           setCustomApiKey(saved.apiKey);
           return;
         }
-        const defs = PRESET_DEFAULTS[p] || PRESET_DEFAULTS.local_vllm;
+        const draft = modelDraftForPreset(p, nextProfiles);
+        setModelProfiles(nextProfiles);
         setModelPreset(p);
-        setCustomBaseUrl(defs.baseUrl);
-        setCustomModelName(defs.model);
-        setCustomApiKey(''); // 切换 provider 清空 api_key，避免跨厂商 key 混用
+        setCustomBaseUrl(draft.baseUrl);
+        setCustomModelName(draft.name);
+        setCustomApiKey(draft.apiKey);
       }
       function handleSetCustomModelName(v) {
         setCustomModelName(v);
@@ -1290,7 +1385,7 @@
             {isSidebarOpen && (
               <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-3 flex flex-col">
                 <div
-                  className="text-[11px] font-medium px-4 pt-6 pb-2 whitespace-nowrap shrink-0 sticky top-0 z-10"
+                  className="text-[13px] font-medium px-4 pt-6 pb-2 whitespace-nowrap shrink-0 sticky top-0 z-10"
                   style={{ color: activeTheme === 'dark' ? '#80868B' : '#5F6368', letterSpacing: '0.06em', background: activeTheme === 'dark' ? '#1E1F20' : '#F0F4F9' }}
                 >
                   {t.recent}
@@ -1325,17 +1420,16 @@
                   {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
                 </button>
               )}
-              <div className={`flex items-center ${isSidebarOpen ? 'px-2 gap-3' : 'justify-center'}`}>
-                <div title={t.localEnv} className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-[12px] font-bold ${activeTheme === 'dark' ? 'bg-[#9580FF] text-white' : 'bg-[#7C3AED] text-white'}`}>
-                  GB
-                </div>
+              <button
+                onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: 'https://www.h3c.com/cn/pub/minisite/202606/MegaCube/megacube/index.html' })}
+                title={t.megacubeSite}
+                className={`flex items-center rounded-xl transition-colors ${isSidebarOpen ? 'flex-1 min-w-0 px-2 py-1.5 gap-3' : 'justify-center w-10 h-10'} ${activeTheme === 'dark' ? 'hover:bg-[#333537] active:bg-[#3A3C3E]' : 'hover:bg-[#E1E5EA] active:bg-[#D8DCE1]'}`}
+              >
+                <img src="assets/megacube-icon.png" alt="MegaCube" className="w-8 h-8 shrink-0 rounded-lg object-contain" />
                 {isSidebarOpen && (
-                  <div className="flex flex-col whitespace-nowrap overflow-hidden">
-                    <span className="text-[14px] font-medium leading-none mb-1">{t.localEnv}</span>
-                    <span className={`text-[12px] ${activeTheme === 'dark' ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>GB10 Node</span>
-                  </div>
+                  <span className="text-[14px] font-medium leading-none whitespace-nowrap text-left">MegaCube</span>
                 )}
-              </div>
+              </button>
               {isSidebarOpen && (
                 <button
                   onClick={() => setCurrentView('settings')}
@@ -2249,6 +2343,9 @@
       const vllmStatus = fmt ? fmt.vllmStatus : 'OFFLINE';
       const vllmOnline = fmt ? fmt.vllmOnline : false;
       const vllmUpstream = fmt ? fmt.vllmUpstream : '—';
+      const vllmTargetKind = fmt ? fmt.vllmTargetKind : '配置异常';
+      const vllmDiagnostic = fmt ? fmt.vllmDiagnostic : null;
+      const vllmMetricDiagnostic = fmt ? fmt.vllmMetricDiagnostic : null;
       const vllmMaxLen = fmt ? fmt.vllmMaxLen : '—';
       const vllmQueue = fmt ? fmt.vllmQueue : '— / —';
       const vllmKv = fmt ? fmt.vllmKv : '—';
@@ -2374,15 +2471,22 @@
                       </p>
                     )}
                     <p className={`text-[13px] font-mono ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{vllmUpstream}</p>
+                    <p className={`text-[12px] mt-1 ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{vllmTargetKind}</p>
+                    {vllmDiagnostic && (
+                      <p className={`text-[12px] mt-1 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{vllmDiagnostic}</p>
+                    )}
+                    {!vllmDiagnostic && vllmMetricDiagnostic && (
+                      <p className={`text-[12px] mt-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#5F6368]'}`}>{vllmMetricDiagnostic}</p>
+                    )}
                   </div>
                   <div className={`px-3 py-1 rounded-full flex items-center gap-2 ${
-                    vllmStatus === 'MISMATCH'
+                    vllmStatus === 'MISMATCH' || vllmStatus === 'UNKNOWN'
                       ? (isDark ? 'bg-[#5C3A1E] text-[#F9AB00]' : 'bg-[#FEF3E8] text-[#B06000]')
                       : vllmOnline
                         ? (isDark ? 'bg-[#0F5223] text-[#93D5A6]' : 'bg-[#E6F4EA] text-[#137333]')
                         : (isDark ? 'bg-[#5C2020] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]')
                   }`}>
-                    {vllmStatus === 'MISMATCH' ? <AlertTriangle size={12} /> : <CheckCircle2 size={12} />}
+                    {vllmStatus === 'MISMATCH' || vllmStatus === 'UNKNOWN' || !vllmOnline ? <AlertTriangle size={12} /> : <CheckCircle2 size={12} />}
                     <span className="text-[11px] font-bold tracking-wider">{vllmStatus}</span>
                   </div>
                 </div>
@@ -2571,7 +2675,7 @@
     };
 
     // 输入框底栏:模型选择器(iOS 化,复用 ModelChip 的 switchModel 逻辑;darkMode:'class' 故用 dark: 变体)。
-    const ComposerModelSelector = ({ t, bs, onGotoSettings }) => {
+    const ComposerModelSelector = ({ t, bs, onGotoSettings, compact }) => {
       const [open, setOpen] = useState(false);
       const savedModels = (bs && bs.savedModels) || [];
       const activeSessionId = bs ? bs.activeSessionId : null;
@@ -2583,13 +2687,22 @@
       if (!savedModels.length) return null;
       function pick(id) { setOpen(false); if (id !== effectiveId && bridge.available) bridge.switchModel(activeSessionId, id); }
       return (
-        <div className="relative">
+        <div className="relative min-w-0">
           <button onClick={() => { if (!busy) setOpen(o => !o); }} disabled={busy}
-            title={busy ? t.modelSwitchBusy : t.switchModelTitle}
-            className="flex items-center gap-2 bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 px-3 py-1.5 rounded-xl text-[13px] font-semibold transition-colors border border-black/[0.04] dark:border-white/5 disabled:opacity-50">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#34C759]"></span>
-            <span className="max-w-[150px] truncate">{current ? current.name : t.modelNonePick}</span>
-            <ChevronDown size={14} className="opacity-50 shrink-0" />
+            title={(current ? current.name : t.modelNonePick) + (busy ? ' · ' + t.modelSwitchBusy : '')}
+            className={`relative shrink-0 flex items-center justify-center bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 transition-colors border border-black/[0.04] dark:border-white/5 disabled:opacity-50 ${compact ? 'w-9 h-9 rounded-full' : 'gap-2 px-3 py-1.5 rounded-xl text-[13px] font-semibold min-w-0 max-w-full'}`}>
+            {compact ? (
+              <>
+                <Cpu size={18} className="opacity-80" />
+                <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-[#34C759] ring-2 ring-white dark:ring-[#161618]"></span>
+              </>
+            ) : (
+              <>
+                <span className="w-1.5 h-1.5 shrink-0 rounded-full bg-[#34C759]"></span>
+                <span className="max-w-[150px] truncate">{current ? current.name : t.modelNonePick}</span>
+                <ChevronDown size={14} className="opacity-50 shrink-0" />
+              </>
+            )}
           </button>
           {open && (
             <>
@@ -2619,10 +2732,105 @@
     };
 
     // 输入框底栏:工具菜单(只展示已装工具 + 跳工具商店;无会话级开关——后端无此概念)。
-    const ComposerToolMenu = ({ t, onGotoTools }) => {
+    // 产物 HTML 预览：测内容自然尺寸，比面板宽就整体等比缩小铺满（只缩不放）。
+    // 治"固定尺寸 banner 在窄预览面板里溢出、出滚动条、只露一角"。响应式整页缩放比≈1、不受影响。
+    const ScaledHtmlPreview = ({ html }) => {
+      const wrapRef = useRef(null);
+      const frameRef = useRef(null);
+      const [box, setBox] = useState(null); // { w, h, scale }
+      const measure = () => {
+        try {
+          const fr = frameRef.current, wrap = wrapRef.current;
+          if (!fr || !wrap || !fr.contentWindow) return;
+          const doc = fr.contentWindow.document;
+          const de = doc.documentElement, bd = doc.body;
+          const w = Math.max(de ? de.scrollWidth : 0, bd ? bd.scrollWidth : 0);
+          const h = Math.max(de ? de.scrollHeight : 0, bd ? bd.scrollHeight : 0);
+          const panelW = wrap.clientWidth;
+          const scale = (w > panelW && w > 0) ? panelW / w : 1;
+          setBox({ w, h, scale });
+        } catch (e) { /* 未就绪/跨域，忽略 */ }
+      };
+      useEffect(() => {
+        if (!wrapRef.current || typeof ResizeObserver === 'undefined') return;
+        const ro = new ResizeObserver(() => measure());
+        ro.observe(wrapRef.current);
+        return () => ro.disconnect();
+      }, []);
+      const scaled = box && box.scale < 1;
+      return (
+        <div ref={wrapRef} className="w-full" style={scaled ? { height: Math.ceil(box.h * box.scale) } : { minHeight: 480, height: '100%' }}>
+          <iframe ref={frameRef} sandbox="allow-same-origin allow-scripts" onLoad={measure}
+            className="border-0 block bg-white"
+            style={scaled
+              ? { width: box.w + 'px', height: box.h + 'px', transform: 'scale(' + box.scale + ')', transformOrigin: 'top left' }
+              : { width: '100%', height: '100%', minHeight: '480px' }}
+            srcDoc={"<script>"
+              + "document.addEventListener('contextmenu',function(e){e.preventDefault();});"
+              // 预览内拦截 <a> 导航：srcDoc 的 base 是父文档(app)，放任会把 iframe 跳成 app 首页。
+              // 阻止默认导航；页内 #锚点 改为在预览内滚动；外链/# 不跳走。<button> 的 onclick 不受影响。
+              + "document.addEventListener('click',function(e){var a=e.target&&e.target.closest?e.target.closest('a'):null;if(!a)return;e.preventDefault();var h=a.getAttribute('href')||'';if(h.charAt(0)==='#'&&h.length>1){var el=document.getElementById(h.slice(1));if(el)el.scrollIntoView({behavior:'smooth'});}},true);"
+              + "document.addEventListener('submit',function(e){e.preventDefault();},true);"
+              + "<\/script>" + (html || '')} />
+        </div>
+      );
+    };
+
+    // 输入框「技能」入口：⚡ 药丸 + popover。视觉设计=内置自动技能（只读，模型 load_skill 时显"使用中"
+    // 并高亮药丸）；头脑风暴=待上线占位（灰禁用）。activeSkill 由 bridge 检测 load_skill 设，纯只读指示。
+    const ComposerModeMenu = ({ t, bs, compact }) => {
+      const [open, setOpen] = useState(false);
+      const SKILLS = [
+        { id: 'visual-design', name: '视觉设计', desc: '设计系统直出网页/banner/海报/简历…', kind: 'auto' },
+        { id: 'brainstorm', name: '头脑风暴', desc: '帮你发散点子、理清思路', kind: 'soon' },
+      ];
+      const activeId = bs && bs.activeSkill;
+      const cur = SKILLS.find(s => s.id === activeId && s.kind === 'auto');
+      return (
+        <div className="relative">
+          <button onClick={() => setOpen(o => !o)} title={cur ? cur.name : t.composerMode}
+            className={`flex items-center font-semibold transition-colors border ${compact ? 'justify-center w-9 h-9 rounded-full' : 'gap-2 px-3 py-1.5 rounded-xl text-[13px]'} ${cur
+              ? 'bg-[#007AFF]/[0.1] dark:bg-[#0A84FF]/20 text-[#007AFF] dark:text-[#5AC8FA] border-[#007AFF]/20 dark:border-[#0A84FF]/30'
+              : 'bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-black/[0.04] dark:border-white/5'}`}>
+            <Zap size={14} className={cur ? '' : 'opacity-70'} />
+            {!compact && (cur ? cur.name : t.composerMode)}
+            {!compact && <ChevronDown size={14} className="opacity-50 shrink-0" />}
+          </button>
+          {open && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
+              <div className="absolute bottom-full left-0 mb-2 z-50 w-64 bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+                <div className="px-3 py-2 text-[11px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider">{t.composerModeTitle}</div>
+                {SKILLS.map(s => {
+                  const soon = s.kind === 'soon';
+                  const inUse = s.kind === 'auto' && activeId === s.id;
+                  return (
+                    <div key={s.id} className={`flex items-start justify-between gap-2 px-3 py-2.5 rounded-xl ${soon ? 'opacity-50' : ''}`}>
+                      <span className="min-w-0">
+                        <span className="block text-[13px] font-medium text-gray-800 dark:text-gray-100 truncate">{s.name}</span>
+                        <span className="block text-[11px] text-gray-400 dark:text-gray-500 truncate">{s.desc}</span>
+                      </span>
+                      {soon
+                        ? <span className="shrink-0 text-[10px] font-semibold text-gray-400 dark:text-gray-500 bg-black/[0.04] dark:bg-white/10 px-2 py-0.5 rounded-full leading-none mt-0.5">{t.composerSkillSoon}</span>
+                        : inUse
+                          ? <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold text-[#34C759] bg-[#34C759]/10 px-2 py-0.5 rounded-full leading-none mt-0.5"><span className="w-1.5 h-1.5 rounded-full bg-[#34C759]" />{t.composerSkillInUse}</span>
+                          : <span className="shrink-0 text-[10px] font-semibold text-[#007AFF] dark:text-[#5AC8FA] bg-[#007AFF]/10 dark:bg-[#0A84FF]/15 px-2 py-0.5 rounded-full leading-none mt-0.5">{t.composerSkillAuto}</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      );
+    };
+
+    const ComposerToolMenu = ({ t, onGotoTools, compact }) => {
       const [open, setOpen] = useState(false);
       const [tools, setTools] = useState([]);
       const [disabled, setDisabled] = useState(() => new Set()); // 被关掉的连接器 id(全局持久)
+      const [feishuOn, setFeishuOn] = useState(false); // 飞书是否已连接(CLI 路线)
+      const [feishuEnabled, setFeishuEnabled] = useState(true); // 飞书技能是否启用(未手动停用)
       // 启动时加载已装工具 + 全局持久的禁用列表(持久语义:新窗口/新对话都继承)
       useEffect(() => {
         let alive = true;
@@ -2634,6 +2842,10 @@
           try {
             const dis = await window.__TAURI__.core.invoke('get_disabled_connectors');
             if (alive) setDisabled(new Set(dis || []));
+          } catch (e) { /* 忽略 */ }
+          try {
+            const fs = await window.__TAURI__.core.invoke('feishu_skills_state');
+            if (alive) { setFeishuOn(!!(fs && fs.connected)); setFeishuEnabled(!fs || fs.enabled !== false); }
           } catch (e) { /* 忽略 */ }
         })();
         return () => { alive = false; };
@@ -2650,20 +2862,28 @@
       }
       const enabledCount = tools.filter(tl => !disabled.has(tl.id)).length;
       return (
-        <div className="relative">
-          <button onClick={() => setOpen(o => !o)}
-            className="flex items-center gap-2 bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 px-3 py-1.5 rounded-xl text-[13px] font-semibold transition-colors border border-black/[0.04] dark:border-white/5">
-            <Wrench size={14} className="opacity-70" />
-            {t.composerTools}
-            {tools.length > 0 && <span className="text-[11px] bg-[#007AFF] text-white px-1.5 py-0.5 rounded-full leading-none font-bold shrink-0">{enabledCount}</span>}
-            <ChevronDown size={14} className="opacity-50 shrink-0" />
+        <div className="relative shrink-0">
+          <button onClick={() => setOpen(o => !o)} title={t.composerTools}
+            className={`relative shrink-0 flex items-center justify-center bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 transition-colors border border-black/[0.04] dark:border-white/5 ${compact ? 'w-9 h-9 rounded-full' : 'gap-2 px-3 py-1.5 rounded-xl text-[13px] font-semibold whitespace-nowrap'}`}>
+            <Wrench size={compact ? 18 : 14} className="opacity-80" />
+            {!compact && t.composerTools}
+            {(tools.length > 0 || feishuOn) && (compact
+              ? <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 text-[10px] leading-4 text-center font-bold bg-[#007AFF] text-white rounded-full">{enabledCount + (feishuOn ? 1 : 0)}</span>
+              : <span className="text-[11px] bg-[#007AFF] text-white px-1.5 py-0.5 rounded-full leading-none font-bold shrink-0">{enabledCount + (feishuOn ? 1 : 0)}</span>)}
+            {!compact && <ChevronDown size={14} className="opacity-50 shrink-0" />}
           </button>
           {open && (
             <>
               <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
               <div className="absolute bottom-full left-0 mb-2 z-50 w-64 bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
                 <div className="px-3 py-2 text-[11px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider">{t.composerInstalledTools}</div>
-                {tools.length === 0 ? (
+                {feishuOn && (
+                  <div className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
+                    <span className="text-[13px] text-gray-700 dark:text-gray-200 truncate">飞书（Lark）</span>
+                    <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold text-[#34C759] bg-[#34C759]/10 px-2 py-0.5 rounded-full leading-none"><span className="w-1.5 h-1.5 rounded-full bg-[#34C759]" />已连接</span>
+                  </div>
+                )}
+                {tools.length === 0 && !feishuOn ? (
                   <div className="px-3 py-2 text-[13px] text-gray-400 dark:text-gray-500">{t.composerNoTools}</div>
                 ) : tools.map(tl => {
                   const on = !disabled.has(tl.id);
@@ -2834,9 +3054,110 @@
       const isDark = activeTheme === 'dark';
       const [editingModel, setEditingModel] = useState(null);
       const modelEnvLocked = (bs && bs.effectiveModelConfig && bs.effectiveModelConfig.env_overrides) || [];
+      const [feedbackOpen, setFeedbackOpen] = useState(false);
+      const [feedbackDraft, setFeedbackDraft] = useState({ type: 'issue', title: '', description: '', attachments: [] });
+      const [feedbackStatus, setFeedbackStatus] = useState({ state: 'idle', message: '', receipt: null });
+      const feedbackTypes = [
+        { key: 'issue', label: t.feedbackIssue },
+        { key: 'suggestion', label: t.feedbackSuggestion },
+      ];
+      const feedbackAllowedExt = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'mov', 'webm']);
+      const feedbackVideoExt = new Set(['mp4', 'mov', 'webm']);
+      const feedbackBaseName = p => String(p || '').replace(/\\/g, '/').split('/').pop() || String(p || '');
+      const feedbackExt = p => {
+        const name = feedbackBaseName(p);
+        const idx = name.lastIndexOf('.');
+        return idx >= 0 ? name.slice(idx + 1).toLowerCase() : '';
+      };
+      const resetFeedback = () => {
+        setFeedbackDraft({ type: 'issue', title: '', description: '', attachments: [] });
+        setFeedbackStatus({ state: 'idle', message: '', receipt: null });
+      };
+      const closeFeedback = () => {
+        const dirty = feedbackDraft.title.trim() || feedbackDraft.description.trim() || feedbackDraft.attachments.length > 0;
+        if (dirty && feedbackStatus.state !== 'submitted' && !window.confirm(t.feedbackCloseConfirm)) return;
+        setFeedbackOpen(false);
+        if (feedbackStatus.state === 'submitted') resetFeedback();
+      };
+      const pickFeedbackAttachments = async () => {
+        if (!bridge.available || !bridge.pickFeedbackFiles) {
+          setFeedbackStatus({ state: 'failed_validation', message: t.feedbackPickUnavailable, receipt: null });
+          return;
+        }
+        const paths = await bridge.pickFeedbackFiles();
+        if (!paths || paths.length === 0) return;
+        setFeedbackDraft(prev => {
+          const next = prev.attachments.slice();
+          for (const path of paths) {
+            if (next.length >= 5) {
+              setFeedbackStatus({ state: 'failed_validation', message: t.feedbackTooManyFiles, receipt: null });
+              break;
+            }
+            const ext = feedbackExt(path);
+            if (!feedbackAllowedExt.has(ext)) {
+              setFeedbackStatus({ state: 'failed_validation', message: t.feedbackUnsupportedFile, receipt: null });
+              continue;
+            }
+            const name = feedbackBaseName(path);
+            next.push({
+              path,
+              name,
+              media_type: feedbackVideoExt.has(ext) ? 'video' : 'image',
+              mime: null,
+              size_bytes: null,
+            });
+          }
+          return { ...prev, attachments: next };
+        });
+      };
+      const submitFeedbackDraft = async () => {
+        if (!feedbackDraft.description.trim()) {
+          setFeedbackStatus({ state: 'failed_validation', message: t.feedbackBodyRequired, receipt: null });
+          return;
+        }
+        setFeedbackStatus({ state: 'submitting', message: '', receipt: null });
+        try {
+          const receipt = await bridge.submitFeedback({
+            type: feedbackDraft.type,
+            title: feedbackDraft.title.trim() || null,
+            description: feedbackDraft.description,
+            entry_point: 'settings',
+            error_summary: null,
+            attachments: feedbackDraft.attachments,
+            privacy_notice_version: '2026-06-24',
+          });
+          if (receipt && receipt.status === 'submitted') {
+            window.alert((receipt && receipt.message) || t.feedbackSubmitted);
+            resetFeedback();
+            setFeedbackOpen(false);
+            return;
+          }
+          setFeedbackStatus({
+            state: 'failed_retryable',
+            message: (receipt && receipt.message) || '',
+            receipt,
+          });
+        } catch (e) {
+          setFeedbackStatus({ state: 'failed_validation', message: String(e), receipt: null });
+        }
+      };
       // 进设置页自动体检一次可选依赖装齐没; 之后用户可手动「重新检测」
       useEffect(() => {
-        if (bridge.available && !(bs && bs.deps) && !(bs && bs.depsChecking)) bridge.checkDependencies();
+        if (!bridge.available || (bs && (bs.deps || bs.depsChecking))) return;
+        let cancelled = false;
+        const run = () => { if (!cancelled) bridge.checkDependencies(); };
+        if (window.requestIdleCallback) {
+          const idleId = window.requestIdleCallback(run, { timeout: 1200 });
+          return () => {
+            cancelled = true;
+            if (window.cancelIdleCallback) window.cancelIdleCallback(idleId);
+          };
+        }
+        const timerId = window.setTimeout(run, 300);
+        return () => {
+          cancelled = true;
+          window.clearTimeout(timerId);
+        };
       }, []);
       const presetOptions = [
         { key: 'local_vllm',  label: t.modelPresetLocalVllm },
@@ -2857,6 +3178,20 @@
             <div className="max-w-[800px]">
               <h1 className="text-[32px] font-normal tracking-tight pt-12 pb-8">{t.settings}</h1>
               <div className="space-y-8">
+
+              <SCard isDark={isDark} title={t.feedbackTitle}>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className={`text-[14px] leading-relaxed ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.feedbackDesc}</p>
+                  </div>
+                  <button
+                    onClick={() => { setFeedbackOpen(true); if (feedbackStatus.state === 'submitted') resetFeedback(); }}
+                    className={`shrink-0 inline-flex items-center gap-2 text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'}`}
+                  >
+                    <MessageSquare size={16} /> {t.feedbackOpen}
+                  </button>
+                </div>
+              </SCard>
 
               <SCard isDark={isDark} title={t.modelBackend}>
                 <div className="space-y-4">
@@ -2981,7 +3316,7 @@
                 </div>
               </SCard>
 
-              {/* 版本与更新: 链路 检查 → 下载(进度) → pkexec 安装 → 重启 */}
+              {/* 版本与更新: Linux 检查→下载 deb→安装→重启;Windows 检查→下载 zip→启动 MSI→退出 */}
               <SCard isDark={isDark} title={t.versionUpdate}>
                 {(() => {
                   const upd = bs && bs.updateInfo;
@@ -2990,12 +3325,14 @@
                   const ready = !!(bs && bs.updateReady);
                   const progress = (bs && bs.updateProgress) || 0;
                   const subText = isDark ? 'text-[#C4C7C5]' : 'text-[#444746]';
+                  const isWindowsUpdate = !!(upd && upd.platform === 'windows');
+                  const currentVersion = (bs && bs.appVersion) || (upd && upd.current_version) || '—';
                   return (
                     <div>
                       <div className="flex items-center justify-between">
                         <div className="pr-8">
                           <span className="text-[16px] block mb-1">
-                            {t.curVer} v{(upd && upd.current_version) || '—'} (内测版)
+                            {t.curVer} v{currentVersion} (内测版)
                           </span>
                           <span className={`text-[14px] leading-relaxed block ${subText}`}>
                             {checking ? t.checking
@@ -3026,14 +3363,16 @@
 
                           {ready ? (
                             <div className="flex items-center justify-between">
-                              <span className="text-[14px]">✅ {t.updateComplete}</span>
-                              <button
-                                onClick={() => bridge.available && bridge.restartApp()}
-                                className={`text-[12px] font-medium px-4 py-2 rounded-full whitespace-nowrap transition-colors ${
-                                  isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]'
-                                         : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'
-                                }`}
-                              >{t.restartNow}</button>
+                              <span className="text-[14px]">✅ {isWindowsUpdate ? t.updateInstallerStarted : t.updateComplete}</span>
+                              {!isWindowsUpdate && (
+                                <button
+                                  onClick={() => bridge.available && bridge.restartApp()}
+                                  className={`text-[12px] font-medium px-4 py-2 rounded-full whitespace-nowrap transition-colors ${
+                                    isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]'
+                                           : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'
+                                  }`}
+                                >{t.restartNow}</button>
+                              )}
                             </div>
                           ) : downloading ? (
                             <div>
@@ -3137,6 +3476,75 @@
               </div>
             </div>
           </div>
+          {feedbackOpen && (
+            <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/45">
+              <div className={`w-full max-w-[680px] max-h-[88vh] overflow-y-auto rounded-[20px] shadow-2xl ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
+                <div className={`sticky top-0 z-10 flex items-center justify-between gap-3 px-6 py-4 border-b ${isDark ? 'bg-[#1E1F20] border-[#333537]' : 'bg-white border-[#E0E3E7]'}`}>
+                  <h2 className="text-[18px] font-medium">{t.feedbackDialogTitle}</h2>
+                  <button onClick={closeFeedback} className={`w-9 h-9 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#F0F4F9]'}`}><X size={18} /></button>
+                </div>
+                <div className="p-6 space-y-5">
+                  <div>
+                    <label className="block text-[13px] font-medium mb-2">{t.feedbackType}</label>
+                    <SSegmented isDark={isDark} value={feedbackDraft.type} onChange={type => setFeedbackDraft(prev => ({ ...prev, type }))} options={feedbackTypes} />
+                  </div>
+                  <div>
+                    <label className="block text-[13px] font-medium mb-2">{t.feedbackSubject}</label>
+                    <input value={feedbackDraft.title} maxLength={120} onChange={e => setFeedbackDraft(prev => ({ ...prev, title: e.target.value }))}
+                      placeholder={t.feedbackSubjectPh}
+                      className={`w-full rounded-xl px-4 py-3 text-[14px] outline-none border ${isDark ? 'bg-[#131314] border-[#333537] text-[#E3E3E3]' : 'bg-[#F8F9FB] border-[#DDE3EA] text-[#1F1F1F]'}`} />
+                  </div>
+                  <div>
+                    <label className="block text-[13px] font-medium mb-2">{t.feedbackBody}</label>
+                    <textarea value={feedbackDraft.description} maxLength={5000} onChange={e => setFeedbackDraft(prev => ({ ...prev, description: e.target.value }))}
+                      placeholder={t.feedbackBodyPh} rows={6}
+                      className={`w-full resize-y rounded-xl px-4 py-3 text-[14px] leading-relaxed outline-none border ${isDark ? 'bg-[#131314] border-[#333537] text-[#E3E3E3]' : 'bg-[#F8F9FB] border-[#DDE3EA] text-[#1F1F1F]'}`} />
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between gap-3 mb-2">
+                      <label className="text-[13px] font-medium">{t.feedbackAttachments}</label>
+                      <button onClick={pickFeedbackAttachments} className={`inline-flex items-center gap-2 text-[12px] font-medium px-3 py-2 rounded-full ${isDark ? 'bg-[#333537] hover:bg-[#444746]' : 'bg-[#E8EEF7] hover:bg-[#DCE6F5]'}`}>
+                        <Paperclip size={15} /> {t.feedbackAddAttachment}
+                      </button>
+                    </div>
+                    <p className={`text-[12px] mb-3 ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{t.feedbackAttachmentHint}</p>
+                    {feedbackDraft.attachments.length === 0 ? (
+                      <div className={`text-[13px] rounded-xl border px-4 py-3 ${isDark ? 'border-[#333537] text-[#9AA0A6]' : 'border-[#DDE3EA] text-[#5F6368]'}`}>{t.feedbackNoAttachments}</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {feedbackDraft.attachments.map((a, idx) => (
+                          <div key={`${a.path}-${idx}`} className={`flex items-center justify-between gap-3 rounded-xl border px-3 py-2 ${isDark ? 'border-[#333537] bg-[#131314]' : 'border-[#DDE3EA] bg-[#F8F9FB]'}`}>
+                            <div className="min-w-0 flex items-center gap-2">
+                              {a.media_type === 'video' ? <Video size={16} /> : <FileText size={16} />}
+                              <span className="truncate text-[13px]">{a.name}</span>
+                            </div>
+                            <button onClick={() => setFeedbackDraft(prev => ({ ...prev, attachments: prev.attachments.filter((_, i) => i !== idx) }))}
+                              className={`w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#E8EEF7]'}`}><Trash2 size={15} /></button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div className={`rounded-xl px-4 py-3 text-[12px] leading-relaxed ${isDark ? 'bg-[#131314] text-[#C4C7C5]' : 'bg-[#F8F9FB] text-[#444746]'}`}>{t.feedbackPrivacy}</div>
+                  {feedbackStatus.message && (
+                    <div className={`rounded-xl px-4 py-3 text-[13px] ${feedbackStatus.state === 'submitted' ? (isDark ? 'bg-[#17351F] text-[#93D5A6]' : 'bg-[#E6F4EA] text-[#137333]') : (isDark ? 'bg-[#3A1E1E] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]')}`}>
+                      {feedbackStatus.message}
+                    </div>
+                  )}
+                  <div className="flex items-center justify-end gap-2">
+                    <button onClick={closeFeedback} className={`text-[13px] font-medium px-4 py-2 rounded-full ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#F0F4F9]'}`}>{t.cancel}</button>
+                    {feedbackStatus.state === 'failed_retryable' && (
+                      <button onClick={submitFeedbackDraft} className={`text-[13px] font-medium px-4 py-2 rounded-full ${isDark ? 'bg-[#333537] hover:bg-[#444746]' : 'bg-[#E8EEF7] hover:bg-[#DCE6F5]'}`}>{t.feedbackRetry}</button>
+                    )}
+                    <button onClick={submitFeedbackDraft} disabled={feedbackStatus.state === 'submitting'}
+                      className={`text-[13px] font-medium px-5 py-2 rounded-full disabled:opacity-50 ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'}`}>
+                      {feedbackStatus.state === 'submitting' ? t.feedbackSubmitting : t.feedbackSubmit}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       );
     };
@@ -3216,7 +3624,7 @@
     // 输入框底栏:知识库挂载选择器(与 ComposerModelSelector/ComposerToolMenu 同款 pill,
     // class 暗色策略)。给当前对话挂一个知识集(会话级粘连),挂上后每条消息发送前后端自动
     // 检索注入相关片段(commands::chat)。草稿态选集会经 bridge.mountCollection 先物化 session。
-    const ComposerKbSelector = ({ t, bs }) => {
+    const ComposerKbSelector = ({ t, bs, compact }) => {
       const [open, setOpen] = useState(false);
       const [collections, setCollections] = useState(null); // null=未加载
       const mountedId = (bs && bs.mountedCollection != null) ? bs.mountedCollection : null;
@@ -3242,12 +3650,13 @@
       return (
         <div className="relative">
           <button onClick={toggle} title={active ? mountedName : t.kbMountTitle}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-[13px] font-semibold transition-colors border ${active
+            className={`relative shrink-0 flex items-center justify-center transition-colors border ${compact ? 'w-9 h-9 rounded-full' : 'gap-2 px-3 py-1.5 rounded-xl text-[13px] font-semibold'} ${active
               ? 'bg-[#E8F0FE] dark:bg-[#1A3A5C] text-[#1A73E8] dark:text-[#A8C7FA] border-[#1A73E8]/20 dark:border-[#A8C7FA]/25'
               : 'bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-black/[0.04] dark:border-white/5'}`}>
-            <BookOpen size={14} className="opacity-70 shrink-0" />
-            <span className="max-w-[140px] truncate">{active ? mountedName : t.kbMount}</span>
-            <ChevronDown size={14} className="opacity-50 shrink-0" />
+            <BookOpen size={compact ? 18 : 14} className="opacity-70 shrink-0" />
+            {!compact && <span className="max-w-[140px] truncate">{active ? mountedName : t.kbMount}</span>}
+            {!compact && <ChevronDown size={14} className="opacity-50 shrink-0" />}
+            {compact && active && <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-[#1A73E8] dark:bg-[#A8C7FA] ring-2 ring-white dark:ring-[#161618]"></span>}
           </button>
           {open && (
             <>
@@ -3286,10 +3695,114 @@
       );
     };
 
+    // [plan/yolo] composer 模式 chip:默认 Yolo,下拉手切 Plan。进 Plan=只读调研
+    // (底座 ReadOnly+只读工具集),调 update_plan 出方案卡决策。切换逻辑搬自旧 ModeHeader。
+    const ComposerModeChip = ({ t, bs }) => {
+      const [open, setOpen] = useState(false);
+      const ms = (bs && bs.modeState) || { mode: 'yolo' };
+      const isPlan = ms.mode === 'plan';
+      async function switchTo(target) {
+        setOpen(false);
+        if (!bridge.available) return;
+        if (target === 'plan' && !isPlan) {
+          await bridge.setPlanModeNext();
+        } else if (target === 'yolo' && isPlan) {
+          if (bs && bs.busy) await bridge.cancelGeneration();
+          await bridge.exitPlanToYolo();
+        }
+      }
+      const optCls = "w-full flex items-center justify-between px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group";
+      return (
+        <div className="relative">
+          <button onClick={() => setOpen(!open)} title={t.modeSwitchTitle}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-[13px] font-semibold transition-colors border ${isPlan
+              ? 'bg-[#E8F0FE] dark:bg-[#1A3A5C] text-[#1A73E8] dark:text-[#A8C7FA] border-[#1A73E8]/20 dark:border-[#A8C7FA]/25'
+              : 'bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-black/[0.04] dark:border-white/5'}`}>
+            <Zap size={14} className="opacity-70 shrink-0" />
+            <span>{isPlan ? t.modePlan : t.modeYolo}</span>
+            <ChevronDown size={14} className="opacity-50 shrink-0" />
+          </button>
+          {open && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
+              <div className="absolute bottom-full left-0 mb-2 z-50 w-60 bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+                <button onClick={() => switchTo('yolo')} className={optCls}>
+                  <span className="flex flex-col items-start min-w-0">
+                    <span className="font-semibold">{t.modeYolo}</span>
+                    <span className="text-[11px] text-gray-400 group-hover:text-white/80">{t.modeYoloDesc}</span>
+                  </span>
+                  {!isPlan && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
+                </button>
+                <button onClick={() => switchTo('plan')} className={optCls}>
+                  <span className="flex flex-col items-start min-w-0">
+                    <span className="font-semibold">{t.modePlan}</span>
+                    <span className="text-[11px] text-gray-400 group-hover:text-white/80">{t.modePlanDesc}</span>
+                  </span>
+                  {isPlan && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      );
+    };
+
     const ChatView = ({ theme, t, bs, prefill, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoTools }) => {
       const isDark = theme === 'dark';
       const [inputText, setInputText] = useState('');
       const [artifactsOpen, setArtifactsOpen] = useState(false);
+      // ── 产物分栏:宽屏(≥900)并排可拖、窄屏回退覆盖抽屉 ──
+      const ART_MIN = 360, ART_MAX_RATIO = 0.65, ART_DEFAULT_RATIO = 0.45, ART_NARROW = 900;
+      const rootRef = useRef(null);
+      const artColRef = useRef(null);
+      const [isWide, setIsWide] = useState(() => (typeof window !== 'undefined' ? window.innerWidth : 1200) >= ART_NARROW);
+      const [artifactW, setArtifactW] = useState(() => {
+        const s = parseInt(localStorage.getItem('pinvou_artifactW') || '', 10);
+        const w = (typeof window !== 'undefined' ? window.innerWidth : 1200);
+        return Number.isFinite(s) && s >= ART_MIN ? s : Math.round(w * ART_DEFAULT_RATIO);
+      });
+      useEffect(() => {
+        const onResize = () => {
+          setIsWide(window.innerWidth >= ART_NARROW);
+          setArtifactW(w => Math.max(ART_MIN, Math.min(w, Math.round(window.innerWidth * ART_MAX_RATIO))));
+        };
+        onResize();                 // 挂载即测一次(maximized 启动时 init 可能读到小值,这里校正)
+        const t = setTimeout(onResize, 300);  // 再补一发,防 webview 首帧尺寸未定
+        window.addEventListener('resize', onResize);
+        return () => { clearTimeout(t); window.removeEventListener('resize', onResize); };
+      }, []);
+      const startArtifactDrag = (e) => {
+        e.preventDefault();
+        const rect = rootRef.current ? rootRef.current.getBoundingClientRect() : { right: window.innerWidth, width: window.innerWidth };
+        const max = Math.min(rect.width * ART_MAX_RATIO, rect.width - ART_MIN);
+        const col = artColRef.current;
+        let last = artifactW, raf = 0;
+        if (col) col.style.pointerEvents = 'none';   // 拖动时让产物 iframe 不吃 mousemove(否则往右拖发涩)
+        const onMove = (ev) => {
+          last = Math.max(ART_MIN, Math.min(rect.right - ev.clientX, max));
+          if (raf) return;                            // rAF 合帧:每帧最多改一次
+          raf = requestAnimationFrame(() => {
+            raf = 0;
+            if (col) col.style.width = last + 'px';    // 直接改 DOM 宽度,拖动期间不触发 React 重渲染
+          });
+        };
+        const onUp = () => {
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+          if (raf) cancelAnimationFrame(raf);
+          if (col) col.style.pointerEvents = '';
+          document.body.style.cursor = ''; document.body.style.userSelect = '';
+          setArtifactW(last);                          // 仅松手时提交一次 state + 落盘
+          localStorage.setItem('pinvou_artifactW', String(Math.round(last)));
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+        document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';
+      };
+      const resetArtifactW = () => {
+        const w = Math.round((rootRef.current ? rootRef.current.getBoundingClientRect().width : window.innerWidth) * ART_DEFAULT_RATIO);
+        setArtifactW(w); localStorage.setItem('pinvou_artifactW', String(w));
+      };
       const scrollRef = useRef(null);
       const composerRef = useRef(null);
       // 输入框自动增高:随内容从最小(~2行)长到上限 160px,再内部滚动(iOS 手感)。
@@ -3304,10 +3817,13 @@
       // 动态给滚动区底部留白(= 输入框高 + 间距),保证最后几条消息永不被遮挡、也不浪费空间。
       const composerWrapRef = useRef(null);
       const [composerH, setComposerH] = useState(0);
+      // 底栏响应式:输入框实际可用宽 < 阈值 → 控件收成纯图标;够宽 → 图标+文字(像 WorkBuddy)
+      const [composerCompact, setComposerCompact] = useState(false);
+      const COMPOSER_COMPACT_W = 540;
       useEffect(() => {
         const el = composerWrapRef.current;
         if (!el) return;
-        const measure = () => setComposerH(el.offsetHeight);
+        const measure = () => { setComposerH(el.offsetHeight); setComposerCompact(el.clientWidth < COMPOSER_COMPACT_W); };
         measure();
         if (!window.ResizeObserver) return;
         const ro = new ResizeObserver(measure);
@@ -3346,6 +3862,11 @@
       const [welcomeToolId, setWelcomeToolId] = useState(null);
       const activeSessionId = bs ? bs.activeSessionId : null;
       const draftEpoch = bs ? bs.draftEpoch : 0;
+      const voiceInput = (bs && bs.voiceInput) || { status: 'idle' };
+      const voiceActive = voiceInput.status === 'requesting_permission' || voiceInput.status === 'recording' || voiceInput.status === 'transcribing';
+      const voiceRecording = voiceInput.status === 'recording';
+      const voiceNotice = voiceInput.status !== 'idle' && voiceInput.message;
+      const voiceAsrSetup = (bs && bs.voiceAsrSetup) || { open: false };
       useEffect(() => {
         if (justInstalledTool) {
           setWelcomeToolId(justInstalledTool);
@@ -3383,6 +3904,23 @@
         if (bridge.available) bridge.cancelGeneration();
       }
 
+      function handleVoiceClick() {
+        if (!bridge.available) return;
+        if (voiceInput.status === 'recording') {
+          bridge.startVoiceInput(inputText, (text) => setInputText(prev => bridge.appendVoiceText(prev, text)));
+          return;
+        }
+        bridge.startVoiceInput(inputText, (text) => setInputText(prev => bridge.appendVoiceText(prev, text)));
+      }
+
+      function handleVoiceCancel() {
+        if (bridge.available) bridge.cancelVoiceInput();
+      }
+
+      function handleVoiceClose() {
+        if (bridge.available) bridge.clearVoiceInput();
+      }
+
       function handlePaste(e) {
         const items = (e.clipboardData && e.clipboardData.items) || [];
         for (const it of items) {
@@ -3402,17 +3940,12 @@
       }
 
       return (
-        <div className="flex-1 flex flex-col w-full h-full min-h-0 relative z-10 animate-in fade-in duration-300">
-          {artifactsOpen && <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} />}
+        <div ref={rootRef} className="flex-1 flex flex-row w-full h-full min-h-0 relative z-10 animate-in fade-in duration-300">
+          <div className="flex-1 flex flex-col min-w-0 relative h-full">
 
           {/* Top Header (浮动) */}
           <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-20 pointer-events-none">
-            <div className="flex items-center gap-2">
-              {/* [plan/yolo 收敛] Plan 模式入口已下线：全局 Yolo 单模式。
-                  ModeHeader 组件及 bridge 逻辑保留，取消注释即恢复，待重评是否彻底移除。
-                  (品悟开关已彻底移除——v2 评审方案被推翻,等新方案。) */}
-              {/* <ModeHeader bs={bs} theme={theme} /> */}
-            </div>
+            <div className="flex items-center gap-2"></div>
             <button
               onClick={() => setArtifactsOpen(true)}
               className={`pointer-events-auto px-4 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm'}`}>
@@ -3423,7 +3956,7 @@
 
 
           {/* Main Chat Area */}
-          <div ref={scrollRef} style={{ paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }} className={`flex-1 min-h-0 overflow-y-auto px-4 md:px-20 lg:px-40 custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
+          <div ref={scrollRef} style={{ paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }} className={`flex-1 min-h-0 overflow-y-auto ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'} custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
 
             {!hasMessages && !welcomeToolId && (
               /* Gemini Style Centered Empty State */
@@ -3470,7 +4003,7 @@
           <div className={`pointer-events-none absolute bottom-0 inset-x-0 z-[15] bg-gradient-to-t to-transparent from-30% via-70% ${isDark ? 'from-[#131314] via-[#131314]/95' : 'from-white via-white/95'}`}
             style={{ height: (composerH ? composerH + 96 : 220) + 'px' }} />
           {/* Floating Input Area */}
-          <div ref={composerWrapRef} className="absolute bottom-8 inset-x-0 px-4 md:px-20 lg:px-40 z-20">
+          <div ref={composerWrapRef} className={`absolute bottom-8 inset-x-0 z-20 ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'}`}>
             <div className="max-w-[800px] w-full mx-auto">
             {/* 排队待发消息 chips（生成中继续输入会积压到这里，本轮跑完自动发） */}
             {queued.length > 0 && (
@@ -3500,6 +4033,74 @@
                 ))}
               </div>
             )}
+            {voiceNotice && (
+              <div className={`flex items-center justify-between gap-2 mb-2 px-3 py-2 rounded-2xl text-[12px] ${
+                voiceInput.status === 'failed'
+                  ? (isDark ? 'bg-[#3A1F1F] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]')
+                  : (isDark ? 'bg-[#1E2B3A] text-[#A8C7FA]' : 'bg-[#E8F0FE] text-[#174EA6]')
+              }`}>
+                <span className="min-w-0 truncate">
+                  {voiceInput.status === 'requesting_permission' ? t.voiceRequesting
+                    : voiceInput.status === 'recording' ? t.voiceRecording
+                    : voiceInput.status === 'transcribing' ? t.voiceTranscribing
+                    : voiceInput.status === 'completed' ? t.voiceCompleted
+                    : voiceInput.message}
+                </span>
+                <div className="flex items-center gap-1 shrink-0">
+                  {voiceInput.status === 'failed' && voiceInput.category === 'recognition_failed' && onGotoSettings && (
+                    <button onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium ${isDark ? 'bg-white/10 hover:bg-white/20' : 'bg-black/5 hover:bg-black/10'}`}>{t.voiceGotoDeps}</button>
+                  )}
+                  {voiceInput.status === 'failed' && (
+                    <button onClick={handleVoiceClick} className={`px-2 py-1 rounded-full ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{t.voiceRetry}</button>
+                  )}
+                  {voiceActive && (
+                    <button onClick={handleVoiceCancel} className={`px-2 py-1 rounded-full ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{t.voiceCancel}</button>
+                  )}
+                  {!voiceActive && (
+                    <button onClick={handleVoiceClose} title={t.voiceClose} className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>×</button>
+                  )}
+                </div>
+              </div>
+            )}
+            {voiceAsrSetup.open && (() => {
+              const su = voiceAsrSetup;
+              const prog = su.progress || {};
+              const pct = (prog.stage === 'model' && prog.total) ? Math.floor(prog.downloaded / prog.total * 100) : null;
+              const missing = (su.status && su.status.missing) || [];
+              const needFfmpeg = missing.indexOf('ffmpeg') >= 0;
+              return (
+                <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/45"
+                  onClick={() => { if (!su.installing) bridge.closeVoiceAsrSetup(); }}>
+                  <div className={`w-full max-w-[440px] rounded-[20px] shadow-2xl p-6 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}
+                    onClick={e => e.stopPropagation()}>
+                    <h3 className="text-[16px] font-semibold mb-2">启用本地语音识别</h3>
+                    <p className="text-[13px] leading-relaxed opacity-80 mb-4">
+                      首次使用需要安装语音识别组件（模型约 174MB{needFfmpeg ? ' + ffmpeg' : ''}），完全本地运行、语音不上传云端。
+                    </p>
+                    {su.installing && (
+                      <div className="mb-4">
+                        <div className="text-[12px] opacity-70 mb-1">
+                          {prog.stage === 'ffmpeg' ? '正在安装 ffmpeg（可能弹系统授权框）…'
+                            : prog.stage === 'model' ? ('正在下载模型 ' + (pct != null ? pct + '%' : '…'))
+                            : prog.stage === 'done' ? '完成' : '准备中…'}
+                        </div>
+                        <div className={`h-2 rounded-full overflow-hidden ${isDark ? 'bg-white/10' : 'bg-black/10'}`}>
+                          <div className="h-full bg-[#0B57D0] transition-all" style={{ width: (pct != null ? pct : 30) + '%' }} />
+                        </div>
+                      </div>
+                    )}
+                    {su.error && <div className="text-[13px] text-[#EA4335] mb-3">❌ {su.error}</div>}
+                    <div className="flex items-center justify-end gap-2">
+                      <button onClick={() => bridge.closeVoiceAsrSetup()} disabled={su.installing}
+                        className={`text-[13px] px-4 py-2 rounded-full ${isDark ? 'bg-[#333537] hover:bg-[#444746]' : 'bg-[#E1E5EA] hover:bg-[#D3D9E0]'} ${su.installing ? 'opacity-50' : ''}`}>取消</button>
+                      <button onClick={() => bridge.installVoiceAsr()} disabled={su.installing}
+                        className={`text-[13px] font-medium px-4 py-2 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'} ${su.installing ? 'opacity-50' : ''}`}>
+                        {su.installing ? '安装中…' : '安装'}</button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
             <div className="bg-white/80 dark:bg-[#161618]/85 backdrop-blur-2xl border border-black/[0.06] dark:border-white/10 rounded-[28px] shadow-lg focus-within:border-blue-400/50 dark:focus-within:border-blue-500/50 transition-colors px-4 pt-3 pb-2.5">
               <textarea
                 ref={composerRef}
@@ -3512,14 +4113,26 @@
                 className="w-full bg-transparent resize-none outline-none text-gray-800 dark:text-gray-100 text-[16px] leading-relaxed min-h-[48px] overflow-y-auto hide-scrollbar placeholder:text-gray-400 dark:placeholder:text-gray-500"
               />
               <div className="flex items-center justify-between mt-1.5 gap-2">
-                <div className="flex items-center gap-2 min-w-0">
+                <div className="flex items-center gap-2 min-w-0 flex-1">
                   <button onClick={() => bridge.available && bridge.pickAndAttach()} title={t.attachAdd}
                     className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-black/5 dark:hover:bg-white/10 transition-colors">
                     <Paperclip size={20} />
                   </button>
-                  <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoSettings} />
-                  <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} />
-                  <ComposerKbSelector t={t} bs={bs} />
+                  <ComposerModeChip t={t} bs={bs} />
+                  <button onClick={handleVoiceClick} title={voiceRecording ? t.voiceStop : t.voiceStart}
+                    className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${
+                      voiceRecording
+                        ? 'bg-[#C5221F] text-white hover:bg-[#A50E0E]'
+                        : voiceActive
+                          ? (isDark ? 'bg-[#1E2B3A] text-[#A8C7FA] hover:bg-[#24364C]' : 'bg-[#E8F0FE] text-[#174EA6] hover:bg-[#D2E3FC]')
+                          : 'text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-black/5 dark:hover:bg-white/10'
+                    }`}>
+                    <Mic size={20} />
+                  </button>
+                  <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoSettings} compact={composerCompact} />
+                  <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} compact={composerCompact} />
+                  <ComposerModeMenu t={t} bs={bs} compact={composerCompact} />
+                  <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
                 </div>
                 {busy ? (
                   <button onClick={handleCancel}
@@ -3550,7 +4163,18 @@
             </div>
             </div>
           </div>
+          </div>{/* /对话列 */}
 
+          {artifactsOpen && isWide && (
+            <>
+              <div onMouseDown={startArtifactDrag} onDoubleClick={resetArtifactW} role="separator" aria-orientation="vertical"
+                className={`shrink-0 w-1.5 h-full cursor-col-resize transition-colors ${isDark ? 'bg-white/10 hover:bg-[#A8C7FA]/60' : 'bg-black/10 hover:bg-[#0B57D0]/50'}`} />
+              <div ref={artColRef} className="shrink-0 h-full relative" style={{ width: artifactW + 'px' }}>
+                <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} isWide={true} />
+              </div>
+            </>
+          )}
+          {artifactsOpen && !isWide && <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} isWide={false} />}
         </div>
       );
     };
@@ -3562,7 +4186,14 @@
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
       const [val, setVal] = useState(item.text);
+      const [copied, setCopied] = useState(false);
       function commit() { const tx = val.trim(); setEditing(false); if (tx && bridge.available) bridge.editLastTurn(tx); }
+      function copyText() {
+        const tx = item.text || '';
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(tx).then(function () { setCopied(true); setTimeout(function () { setCopied(false); }, 1200); }).catch(function () {});
+        }
+      }
       if (editing) {
         return (
           <div className="flex justify-end">
@@ -3594,11 +4225,26 @@
           </div>
         );
       }
+      const actBtn = isDark
+        ? 'text-[#8E8E8E] hover:text-[#E3E3E3] hover:bg-white/10'
+        : 'text-[#9AA0A6] hover:text-[#444746] hover:bg-black/[0.06]';
       return (
         <div className="flex justify-end group">
-          <div className="flex items-center gap-2 max-w-[85%]">
-            {editable && <button title={t.editResend} onClick={() => { setVal(item.text); setEditing(true); }} className={`opacity-0 group-hover:opacity-100 text-[13px] shrink-0 ${isDark ? 'text-[#8E8E8E] hover:text-[#C4C7C5]' : 'text-[#9AA0A6] hover:text-[#444746]'}`}>✏️</button>}
+          <div className="flex flex-col items-end max-w-[85%]">
             <div className={`px-5 py-3 rounded-[20px] text-[15px] leading-relaxed whitespace-pre-wrap ${isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]'}`}>{item.text}</div>
+            {/* iOS 风操作条：hover 气泡时下方浮现。复制=所有 query；编辑重发=仅最新(editable)。 */}
+            <div className="flex items-center gap-0.5 mt-1 pr-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+              <button title={copied ? t.copied : t.copyMsg} onClick={copyText}
+                className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${actBtn}`}>
+                {copied ? <Check size={14} className="text-[#34C759]" /> : <Copy size={14} />}
+              </button>
+              {editable && (
+                <button title={t.editResend} onClick={() => { setVal(item.text); setEditing(true); }}
+                  className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${actBtn}`}>
+                  <Edit2 size={14} />
+                </button>
+              )}
+            </div>
           </div>
         </div>
       );
@@ -3733,8 +4379,7 @@
 
       if (item.type === 'artifact_card') return <ArtifactCard item={item} theme={theme} t={t} isLatest={isLatestArtifact} />;
       if (item.type === 'plan_card') return <PlanCard item={item} theme={theme} t={t} onPrefill={onPrefill} />;
-      if (item.type === 'plan_stuck' || item.type === 'execution_stuck') return <PlanStuckCard item={item} theme={theme} t={t} />;
-      if (item.type === 'plan_text_fallback') return <PlanFallbackCard item={item} theme={theme} t={t} />;
+      if (item.type === 'plan_stuck') return <PlanStuckCard item={item} theme={theme} t={t} />;
       if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} theme={theme} t={t} />;
       if (item.type === 'user_input') return <UserInputCard item={item} theme={theme} t={t} />;
       if (item.type === 'user') return <UserBubble item={item} theme={theme} editable={editable} t={t} />;
@@ -3760,6 +4405,16 @@
             <div className={`${cq.q ? 'w-full' : 'max-w-[95%]'} ${isDark ? 'dark-code' : 'light-code'}`}>
               <div
                 className={`msg-md text-[15px] leading-relaxed ${item.streaming ? 'streaming-cursor' : ''} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}
+                onClick={(e) => {
+                  // 聊天里的链接(如飞书授权 URL)点击 → 走系统浏览器,别导航主窗口/不可点。
+                  const a = e.target && e.target.closest && e.target.closest('a[href]');
+                  if (!a) return;
+                  const href = a.getAttribute('href') || '';
+                  if (/^https?:\/\//i.test(href)) {
+                    e.preventDefault();
+                    window.__TAURI__.core.invoke('open_external_url', { url: href }).catch(() => {});
+                  }
+                }}
                 dangerouslySetInnerHTML={{ __html: cq.html || '' }}
               />
               {cq.q ? (
@@ -3934,15 +4589,15 @@
             {isLatest && (
               <div className="grid grid-cols-2 gap-3 mb-4 px-3">
                 <button onClick={() => bridge.available && bridge.summonPinvou(path)} title={t.pvBtnPinTitle}
-                  className="flex items-center justify-center py-3.5 px-4 rounded-[12px] bg-[#F9F9F9] dark:bg-white/5 hover:bg-[#F0F0F0] dark:hover:bg-white/10 transition-colors active:scale-[0.98] group/btn" aria-label="智能找错">
-                  <AcShieldCheck className="w-[18px] h-[18px] text-[#FF9500] dark:text-[#FF9F0A] mr-2.5 shrink-0" />
-                  <span className="text-[14px] font-medium text-[#111] dark:text-[#eee]">{t.pvBtnPinLabel}</span>
+                  className="flex items-center justify-center min-w-0 py-3.5 px-3 rounded-[12px] bg-[#F9F9F9] dark:bg-white/5 hover:bg-[#F0F0F0] dark:hover:bg-white/10 transition-colors active:scale-[0.98] group/btn" aria-label="智能找错">
+                  <AcShieldCheck className="w-[18px] h-[18px] text-[#FF9500] dark:text-[#FF9F0A] mr-2 shrink-0" />
+                  <span className="text-[14px] font-medium text-[#111] dark:text-[#eee] truncate">{t.pvBtnPinLabel}</span>
                 </button>
 
                 <button onClick={() => bridge.available && bridge.inspectPinvou(path)} title={t.pvBtnWuTitle}
-                  className="flex items-center justify-center py-3.5 px-4 rounded-[12px] bg-[#F9F9F9] dark:bg-white/5 hover:bg-[#F0F0F0] dark:hover:bg-white/10 transition-colors active:scale-[0.98] group/btn" aria-label="深度查漏">
-                  <AcSparkles className="w-[18px] h-[18px] text-[#5E5CE6] dark:text-[#5E5CE6] mr-2.5 shrink-0" />
-                  <span className="text-[14px] font-medium text-[#111] dark:text-[#eee]">{t.pvBtnWuLabel}</span>
+                  className="flex items-center justify-center min-w-0 py-3.5 px-3 rounded-[12px] bg-[#F9F9F9] dark:bg-white/5 hover:bg-[#F0F0F0] dark:hover:bg-white/10 transition-colors active:scale-[0.98] group/btn" aria-label="深度查漏">
+                  <AcSparkles className="w-[18px] h-[18px] text-[#5E5CE6] dark:text-[#5E5CE6] mr-2 shrink-0" />
+                  <span className="text-[14px] font-medium text-[#111] dark:text-[#eee] truncate">{t.pvBtnWuLabel}</span>
                 </button>
               </div>
             )}
@@ -4157,7 +4812,7 @@
       { id: 6, backendId: null, title: '腾讯文档 MCP', subtitle: '多人实时在线协作协议', category: 'mcp', type: 'MCP Server', version: 'v1.0.5', latency: '<60ms', desc: '将腾讯文档能力接入 AI。允许大模型读取、分析甚至辅助编写在线表格、文档和幻灯片，轻松完成跨维度的内容查询与数据分析。', icon: FileText, color: 'bg-gradient-to-b from-blue-500 to-indigo-600', installed: false, authRequired: true },
       { id: 7, backendId: null, title: '腾讯会议助手', subtitle: '云视频会议自动化管控', category: 'comm', type: 'Action Skill', version: 'v2.2.1', latency: '<100ms', desc: '赋予 AI 调度会议室的能力。通过指令自动预定、查询和管理腾讯会议。支持一键发起会议、分发会议纪要、智能管理参会人员。', icon: Video, color: 'bg-gradient-to-b from-sky-400 to-blue-500', installed: false, authRequired: true },
       { id: 8, backendId: null, title: '企微 Bot Hook', subtitle: '连接企业内部与外部生态', category: 'comm', type: 'Webhook', version: 'v4.0', latency: '<40ms', desc: '深度对接企业微信。支持机器人主动推送图文消息、查询通讯录架构、联动审批流与日程管理。', icon: MessageCircle, color: 'bg-gradient-to-b from-cyan-400 to-blue-500', installed: false, authRequired: false },
-      { id: 9, backendId: null, title: '飞书套件 MCP', subtitle: '先进企业协作与管理平台', category: 'mcp', type: 'MCP Server', version: 'v1.5.0', latency: '<50ms', desc: '大模型与飞书生态的终极桥梁。包含读写云文档、检索飞书消息、操作多维表格（Bitable）及日历调度的完整能力集。', icon: Send, color: 'bg-gradient-to-b from-teal-400 to-emerald-500', installed: false, authRequired: true },
+      { id: 9, backendId: 'feishu', feishuCli: true, title: '飞书（Lark）', subtitle: '以你本人身份操作飞书文档/日历/表格/消息', category: 'comm', type: 'CLI + 官方技能', version: 'v1.0.56', latency: '云端', desc: '接入飞书官方 CLI + 官方域技能（MIT）：让 AI 以你本人身份读写云文档、查改日历、操作多维表格（Base）、收发消息、管理知识库与任务。点「连接飞书」浏览器一键授权，全程不填 key。数据经飞书云 OpenAPI（可选联网功能，opt-in）。', icon: Send, color: 'bg-gradient-to-b from-teal-400 to-emerald-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['读飞书文档帮我做一份 PPT', '把飞书文档整理成摘要', '查我今天的飞书日历', '看看我飞书里的待办任务'] },
       { id: 10, backendId: null, title: '钉钉开放 API', subtitle: '企业级智能移动办公底座', category: 'comm', type: 'REST API', version: 'v3.1.2', latency: '<80ms', desc: '提供钉钉全产品能力的接口映射。包含 AI 表格、考勤打卡、群聊机器人对话流及通讯录同步管控。', icon: Navigation, color: 'bg-gradient-to-b from-blue-400 to-indigo-500', installed: false, authRequired: true },
       { id: 11, backendId: null, title: 'TAPD 敏捷研发', subtitle: '缺陷与迭代的自动化追踪', category: 'dev', type: 'Action Skill', version: 'v2.8.0', latency: '<60ms', desc: '研发管理核心工具。允许 AI 查询项目迭代进度、自动拆分需求条目、更新缺陷状态，实现从需求到发布的研发全生命周期数字化。', icon: Layout, color: 'bg-gradient-to-b from-violet-500 to-fuchsia-600', installed: false, authRequired: true },
       { id: 12, backendId: null, title: 'CNB 云原生管线', subtitle: '代码仓库与 CI/CD 调度', category: 'dev', type: 'MCP Server', version: 'v1.0.0', latency: '<40ms', desc: '将云原生开发能力赋予大模型。支持通过自然语言进行代码仓库检索、提交 Issue、审查 PR、触发并监控流水线部署等极客操作。', icon: Code, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: true },
@@ -4335,7 +4990,7 @@
             onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, true); }}
             className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-slate-100 dark:bg-[#2C2C2E] border border-slate-200 dark:border-slate-700 text-[#FF3B30] dark:text-[#FF453A] hover:bg-slate-200 dark:hover:bg-[#3A3A3C]`}
           >
-            卸载
+            {tool.feishuCli ? '断开' : '卸载'}
           </button>
         );
       }
@@ -4345,7 +5000,7 @@
           onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, false); }}
           className={`${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`}
         >
-          {hasConfig ? '配置' : '安装'}
+          {tool.feishuCli ? '连接' : (hasConfig ? '配置' : '安装')}
         </button>
       );
     };
@@ -4423,20 +5078,30 @@
       const isDark = theme === 'dark';
       if (!config) return null;
       const [values, setValues] = useState({});
-      const field = config.fields[0]; // v1 只支持单个配置字段
-      const canSubmit = field ? (values[field.key] || '').trim().length > 0 : false;
+      const fields = config.fields || [];
+      const canSubmit = fields.length > 0 && fields.every(f => (values[f.key] || '').trim().length > 0);
       return (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
           <div
-            className={`w-[280px] rounded-[20px] overflow-hidden shadow-2xl ${isDark ? 'bg-[#2C2C2E]' : 'bg-white/95 backdrop-blur-xl'}`}
+            className={`w-[300px] rounded-[20px] overflow-hidden shadow-2xl ${isDark ? 'bg-[#2C2C2E]' : 'bg-white/95 backdrop-blur-xl'}`}
             style={{ animation: 'tsAlertIn .2s ease-out' }}
           >
-            <div className="px-6 pt-6 pb-4 text-center">
-              <div className={`text-[17px] font-semibold mb-4 ${isDark ? 'text-white' : 'text-slate-900'}`}>
+            <div className="px-6 pt-6 pb-4 text-center max-h-[70vh] overflow-y-auto">
+              <div className={`text-[17px] font-semibold mb-3 ${isDark ? 'text-white' : 'text-slate-900'}`}>
                 配置「{config.name}」
               </div>
-              {field && (
-                <div className="text-left mb-3">
+              {/* 引导链接放最上,不夹在输入框中间 */}
+              {fields.find(f => f.helpUrl) && (
+                <button
+                  onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: fields.find(f => f.helpUrl).helpUrl })}
+                  className={`text-[13px] mb-4 inline-block ${isDark ? 'text-[#0A84FF]' : 'text-[#007AFF]'} hover:underline`}
+                >
+                  不会建应用？去飞书开放平台建一个 →
+                </button>
+              )}
+              {/* 所有输入框紧挨着 */}
+              {fields.map((field) => (
+                <div key={field.key} className="text-left mb-3">
                   <label className={`text-[13px] font-medium mb-1.5 block ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>
                     {field.label}
                   </label>
@@ -4451,21 +5116,13 @@
                         : 'bg-slate-50 border border-slate-200 text-slate-900 placeholder-slate-400 focus:border-[#007AFF]'
                     }`}
                   />
+                  {field.helpText && (
+                    <div className={`text-[11px] mt-1 leading-snug ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                      {field.helpText}
+                    </div>
+                  )}
                 </div>
-              )}
-              {field && field.helpUrl && (
-                <button
-                  onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: field.helpUrl })}
-                  className={`text-[13px] ${isDark ? 'text-[#0A84FF]' : 'text-[#007AFF]'} hover:underline`}
-                >
-                  免费获取 →
-                </button>
-              )}
-              {field && field.helpText && (
-                <div className={`text-[12px] mt-1 leading-relaxed ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-                  {field.helpText}
-                </div>
-              )}
+              ))}
             </div>
             <div className={`border-t ${isDark ? 'border-white/10' : 'border-slate-200'}`}>
               <button
@@ -4485,7 +5142,7 @@
                     : (isDark ? 'text-slate-600' : 'text-slate-300')
                 }`}
               >
-                安装
+                {config.backendId === 'feishu' ? '连接' : '安装'}
               </button>
             </div>
           </div>
@@ -4504,11 +5161,46 @@
       const [busyId, setBusyId] = useState(null);
       const [alert, setAlert] = useState({ visible: false, loading: false, title: '', subtitle: '', isInstall: false, isError: false });
       const [configDialog, setConfigDialog] = useState(null); // { backendId, name, fields }
+      // 飞书(CLI 路线)连接态:不走 marketplace,由 lark-cli auth status 判定
+      const [feishuConnected, setFeishuConnected] = useState(false);
+      const [feishuQr, setFeishuQr] = useState(null); // { qr: dataUrl, url } 扫码弹窗
+      const refreshFeishu = async () => {
+        try {
+          const s = await window.__TAURI__.core.invoke('feishu_status');
+          setFeishuConnected(!!(s && s.connected));
+        } catch (e) { console.error('feishu_status failed:', e); }
+      };
+      useEffect(() => { refreshFeishu(); }, []);
 
-      // 合并后端安装状态到 mock 数据
+      // 飞书连接编排事件(config init --new 两段扫码):后端推进度,前端驱动 UI。
+      useEffect(() => {
+        const ev = window.__TAURI__ && window.__TAURI__.event;
+        if (!ev) return;
+        const unlisten = [];
+        ev.listen('feishu:qr', (e) => {
+          const p = e.payload || {};
+          setFeishuQr({ qr: p.qr_data_url, url: p.url, phase: p.phase });
+        }).then(u => unlisten.push(u));
+        ev.listen('feishu:connected', () => {
+          setFeishuQr(null); setFeishuConnected(true); setBusyId(null);
+          // 连上 → 按规则写技能(默认启用)+ 广播刷新,飞书技能即刻对模型可见。
+          window.__TAURI__.core.invoke('feishu_apply_skills').catch(() => {});
+          setAlert({ visible: true, loading: false, title: '已连接飞书', subtitle: '', isInstall: true, isError: false, toolId: 'feishu' });
+        }).then(u => unlisten.push(u));
+        ev.listen('feishu:error', (e) => {
+          const p = e.payload || {};
+          setFeishuQr(null); setBusyId(null);
+          setAlert({ visible: true, loading: false, title: '飞书连接失败', subtitle: String(p.message || '').slice(0, 240), isError: true });
+        }).then(u => unlisten.push(u));
+        return () => { unlisten.forEach(u => { try { u(); } catch (_) {} }); };
+      }, []);
+
+      // 合并后端安装状态到 mock 数据(飞书的 installed = 已连接)
       const tools = tsToolsData.map(t => ({
         ...t,
-        installed: t.backendId ? (toolStates[t.backendId] || false) : false,
+        installed: t.feishuCli
+          ? feishuConnected
+          : (t.backendId ? (toolStates[t.backendId] || false) : false),
       }));
 
       const filteredTools = tools.filter(tool => {
@@ -4566,8 +5258,48 @@
         }
       };
 
+      // 连接飞书(config init --new 自建 app,两段扫码):事件驱动。
+      // 进度走后端事件 feishu:qr / feishu:phase / feishu:connected / feishu:error
+      //(监听见下方 useEffect);这里只 ensure cli + 触发 begin。busyId 在事件里清。
+      const connectFeishu = async () => {
+        setBusyId('feishu');
+        setAlert({ loading: true, visible: false, title: '正在准备飞书连接…', subtitle: '首次需安装 lark-cli（联网，稍候）', isInstall: true, isError: false });
+        try {
+          await window.__TAURI__.core.invoke('feishu_ensure_cli');
+          setAlert({ visible: false, loading: false, title: '', subtitle: '', isInstall: false, isError: false });
+          await window.__TAURI__.core.invoke('feishu_connect_begin');
+          // 后续:feishu:qr 出二维码 → 用户扫码 → feishu:connected 收尾。
+        } catch (e) {
+          console.error('feishu connect failed:', e);
+          setFeishuQr(null);
+          setBusyId(null);
+          setAlert({ visible: true, loading: false, title: '飞书连接失败', subtitle: String(e).slice(0, 240), isError: true });
+        }
+      };
+      const disconnectFeishu = async () => {
+        setBusyId('feishu');
+        try {
+          await window.__TAURI__.core.invoke('feishu_logout');
+          // 断开 → 撤掉技能(should_show 变 false)+ 广播刷新。
+          await window.__TAURI__.core.invoke('feishu_apply_skills').catch(() => {});
+          setFeishuConnected(false);
+          setAlert({ visible: true, loading: false, title: '已断开飞书', isInstall: false, isError: false });
+        } catch (e) {
+          console.error('feishu logout failed:', e);
+          setAlert({ visible: true, loading: false, title: '操作失败，请重试', isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+
       // 安装/卸载入口
       const handleAction = async (backendId, isInstalled) => {
+        // 飞书走 CLI 连接流程,不走 marketplace install
+        if (backendId === 'feishu') {
+          if (isInstalled) return disconnectFeishu();
+          // 未连接 → 直接触发 config init --new(浏览器自动建 app + 两段扫码,不收表单)
+          return connectFeishu();
+        }
         const t = tsToolsData.find(x => x.backendId === backendId);
         const name = t ? t.title : backendId;
 
@@ -4629,13 +5361,34 @@
 
       return (
         <div className={`${isDark ? 'dark' : ''} flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden antialiased selection:bg-blue-200 dark:selection:bg-blue-900`}>
-          <TsAlert alert={alert} theme={theme} onDismiss={() => setAlert(a => ({ ...a, visible: false }))} onNewChat={() => { const tid = alert.toolId; setAlert(a => ({ ...a, visible: false })); if (onNewChat) onNewChat(tid); }} />
-          <TsConfigDialog
+          {ReactDOM.createPortal(<TsAlert alert={alert} theme={theme} onDismiss={() => setAlert(a => ({ ...a, visible: false }))} onNewChat={() => { const tid = alert.toolId; setAlert(a => ({ ...a, visible: false })); if (onNewChat) onNewChat(tid); }} />, document.body)}
+          {ReactDOM.createPortal(<TsConfigDialog
             config={configDialog}
             theme={theme}
             onCancel={() => setConfigDialog(null)}
-            onConfirm={(values) => { setConfigDialog(null); doInstall(configDialog.backendId, values); }}
-          />
+            onConfirm={(values) => { const bid = configDialog.backendId; setConfigDialog(null); doInstall(bid, values); }}
+          />, document.body)}
+          {feishuQr && (() => {
+            const isAuth = feishuQr.phase === 'authorize';
+            const cancel = () => { window.__TAURI__.core.invoke('feishu_cancel').catch(() => {}); setFeishuQr(null); setBusyId(null); };
+            return ReactDOM.createPortal((
+            <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
+              <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-7 w-full max-w-[360px] flex flex-col items-center text-center shadow-2xl" onClick={e => e.stopPropagation()}>
+                <div className="text-[12px] font-bold text-teal-600 dark:text-teal-400 mb-1 tracking-wide">{isAuth ? '第 2 步 / 共 2 步' : '第 1 步 / 共 2 步'}</div>
+                <h3 className="text-[19px] font-bold text-slate-900 dark:text-white mb-1">{isAuth ? '扫码授权' : '扫码注册飞书应用'}</h3>
+                <p className="text-[13px] text-slate-500 dark:text-slate-400 mb-4">{isAuth ? '用飞书 App 扫一扫，授权以你的身份操作飞书' : '用飞书 App 扫一扫，确认创建应用'}</p>
+                {feishuQr.qr
+                  ? <img src={feishuQr.qr} alt="飞书二维码" className="w-52 h-52 rounded-2xl border border-slate-200 dark:border-white/10 bg-white" />
+                  : <div className="w-52 h-52 rounded-2xl border border-dashed border-slate-300 dark:border-white/10 flex items-center justify-center text-[12px] text-slate-400 px-4">二维码生成失败，请用下方浏览器授权</div>}
+                <div className="flex items-center gap-1.5 mt-4 text-[13px] text-slate-500 dark:text-slate-400">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> {isAuth ? '等待授权中…' : '等待注册中…'}
+                </div>
+                <button onClick={() => { if (feishuQr.url) window.__TAURI__.core.invoke('open_external_url', { url: feishuQr.url }); }} className="mt-4 text-[13px] text-blue-600 dark:text-blue-400 hover:underline">在浏览器打开</button>
+                <button onClick={cancel} className="mt-3 px-6 py-2 rounded-full text-[14px] font-semibold bg-slate-100 dark:bg-[#2C2C2E] text-slate-600 dark:text-slate-300">取消</button>
+              </div>
+            </div>
+            ), document.body);
+          })()}
           <div className="flex-1 flex flex-col bg-white dark:bg-black text-slate-900 dark:text-white transition-colors duration-300 font-sans overflow-hidden">
 
             {/* Header */}
@@ -5269,48 +6022,22 @@
     };
 
     // ==========================================
-    // PlanStuckCard — Plan 死锁 / 执行卡住 兜底
+    // PlanStuckCard — Plan 模式 AI 撞只读保护(白名单/sandbox)的兜底卡
     // ==========================================
     const PlanStuckCard = ({ item, theme, t }) => {
       const isDark = theme === 'dark';
-      const isExec = item.type === 'execution_stuck';
       const done = item.resolved;
       return (
         <div className={cardBoxCls(isDark, isDark ? 'border-[#FDD663]/30' : 'border-[#E37400]/20')}>
           <div className={`text-[13px] leading-relaxed mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
-            {isExec
-              ? <>{t.stuckExec(item.tries)}</>
-              : <>{t.stuckPlanPre} <code className="px-1 rounded bg-black/20">{item.toolName || '(unknown)'}</code> {t.stuckPlanPost}</>}
+            {t.stuckPlanPre} <code className="px-1 rounded bg-black/20">{item.toolName || '(unknown)'}</code> {t.stuckPlanPost}
           </div>
           {done ? (
             <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{item.statusLabel || t.handled}</div>
           ) : (
             <div className="flex items-center gap-2 flex-wrap">
-              <button className={cardBtnCls(isDark)} onClick={() => isExec ? bridge.executionStuckReplan(item.id) : bridge.planStuckReplan(item.id)}>{t.stuckReplan}</button>
-              <button className={cardBtnCls(isDark, 'primary')} onClick={() => isExec ? bridge.discardPlan(item.id) : bridge.planStuckGo(item.id)}>⚡ {isExec ? t.stuckSelf : t.stuckGo}</button>
-            </div>
-          )}
-        </div>
-      );
-    };
-
-    // ==========================================
-    // PlanFallbackCard — AI 给了方案但没用 plan 工具
-    // ==========================================
-    const PlanFallbackCard = ({ item, theme, t }) => {
-      const isDark = theme === 'dark';
-      const done = item.resolved;
-      return (
-        <div className={cardBoxCls(isDark, isDark ? 'border-[#FDD663]/30' : 'border-[#E37400]/20')}>
-          <div className={`text-[14px] font-semibold mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.fbTitle}</div>
-          <div className={`text-[13px] leading-relaxed mb-3 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.fbDesc}</div>
-          {done ? (
-            <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{item.statusLabel || t.handled}</div>
-          ) : (
-            <div className="flex items-center gap-2 flex-wrap">
-              <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.planFallbackAccept(item.id, item.text)}>{t.fbAccept}</button>
-              <button className={cardBtnCls(isDark)} onClick={() => bridge.planFallbackRetry(item.id)}>{t.fbRetry}</button>
-              <button className={cardBtnCls(isDark)} onClick={() => bridge.discardPlan(item.id)}>{t.planDrop}</button>
+              <button className={cardBtnCls(isDark)} onClick={() => bridge.planStuckReplan(item.id)}>{t.stuckReplan}</button>
+              <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.planStuckGo(item.id)}>⚡ {t.stuckGo}</button>
             </div>
           )}
         </div>
@@ -5466,48 +6193,19 @@
     };
 
     // ==========================================
-    // ModeHeader — Plan/YOLO 模式指示 + 灯泡切换
-    // ==========================================
-    const PHASE_LABEL = { planning: '讨论方案', ready: '方案就绪', executing: '执行中' };
-    const ModeHeader = ({ bs, theme }) => {
-      const isDark = theme === 'dark';
-      const ms = (bs && bs.modeState) || { mode: 'yolo', plan_phase: 'none' };
-      const isPlan = ms.mode === 'plan';
-      const phaseLabel = PHASE_LABEL[ms.plan_phase] || '';
-      async function toggleMode() {
-        if (!bridge.available) return;
-        if (ms.mode === 'plan') {
-          // 已在 Plan(任何 phase)→ 退出回 YOLO(busy 先停当前 turn)
-          if (bs && bs.busy) await bridge.cancelGeneration();
-          await bridge.exitPlanToYolo();
-        } else {
-          await bridge.setPlanModeNext(); // YOLO → 进入 Plan
-        }
-      }
-      return (
-        <button
-          onClick={toggleMode}
-          title={isPlan ? '点击退出 Plan 回 YOLO' : '点击进入 Plan 模式'}
-          className={`pointer-events-auto px-3 py-2 rounded-full text-[13px] font-medium flex items-center gap-2 transition-colors
-            ${isPlan
-              ? (isDark ? 'bg-[#0B57D0]/30 text-[#A8C7FA]' : 'bg-[#0B57D0]/10 text-[#0B57D0]')
-              : (isDark ? 'bg-[#1E1F20] text-[#C4C7C5] hover:bg-[#333537]' : 'bg-white text-[#444746] hover:bg-[#F0F4F9] shadow-sm')}`}
-        >
-          <Zap size={15} /> {isPlan ? ('Plan' + (phaseLabel ? ' · ' + phaseLabel : '')) : 'YOLO'}
-        </button>
-      );
-    };
-
-    // ==========================================
     // ArtifactsPanel — 产物面板（右侧抽屉 + 预览）
     // ==========================================
-    const ARTIFACT_ICONS = {
-      md: '📄', markdown: '📄', html: '🌐', htm: '🌐',
-      png: '🖼️', jpg: '🖼️', jpeg: '🖼️', gif: '🖼️', webp: '🖼️', svg: '🖼️',
-      pdf: '📕', csv: '📊', xlsx: '📊', json: '🔢', yaml: '🔢', yml: '🔢', txt: '📝',
-      pptx: '📊', ppt: '📊',
+    // 产物列表/预览的 iOS 风类型图标:配色圆角 tile + 白色字形。
+    // 复用成品卡那套 _ARTIFACT_FMT / _artifactKind / AcFmtIcon(line 3048+),列表与卡片视觉统一。
+    const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls = 'w-5 h-5' }) => {
+      const kind = _artifactKind(name);
+      const fmt = _ARTIFACT_FMT[kind] || _ARTIFACT_FMT.other;
+      return (
+        <span className={`shrink-0 inline-flex items-center justify-center ${tileCls}`} style={{ background: fmt.color }}>
+          <AcFmtIcon kind={kind} className={`${glyphCls} text-white`} />
+        </span>
+      );
     };
-    const artifactIcon = (name) => ARTIFACT_ICONS[(name.split('.').pop() || '').toLowerCase()] || '📎';
     const apPad2 = (x) => String(x).padStart(2, '0');
     const apFormatBytes = (n) => {
       if (n == null) return '';
@@ -5538,7 +6236,7 @@
       + 'img{max-width:100%;height:auto;}'
       + '</style>';
 
-    const ArtifactsPanel = ({ bs, theme, t, onClose }) => {
+    const ArtifactsPanel = ({ bs, theme, t, onClose, isWide }) => {
       const isDark = theme === 'dark';
       const artifacts = (bs && bs.artifacts) || [];
       const [tab, setTab] = useState('list');     // 'list' | 'preview'
@@ -5616,8 +6314,7 @@
         if (pv.kind === 'html') {
           // 方角 + 不裁剪:WebKitGTK 对「会内部滚动的 iframe」做任何 border-radius 裁剪
           // (含外层 overflow-hidden)都会在边缘留黑色梳齿残影。去掉圆角是唯一彻底解。
-          return <iframe sandbox="allow-same-origin allow-scripts" className="w-full h-full min-h-[480px] border-0 block bg-white"
-            srcDoc={"<script>document.addEventListener('contextmenu',function(e){e.preventDefault();})<\/script>" + (pv.text || '')} />;
+          return <ScaledHtmlPreview html={pv.text || ''} />;
         }
         if (pv.kind === 'text') {
           return <pre className={`text-[12px] whitespace-pre-wrap break-words font-mono ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{pv.text}</pre>;
@@ -5646,7 +6343,7 @@
         // 统一兜底卡(unsupported / 转换失败 / binary)
         return (
           <div className={`flex flex-col items-center justify-center text-center gap-3 py-10 ${muted}`}>
-            <span className="text-[44px]">{sel ? artifactIcon(sel.basename) : '📎'}</span>
+            {sel ? <ArtifactTileIcon name={sel.basename} tileCls="w-14 h-14 rounded-[16px]" glyphCls="w-7 h-7" /> : <span className="text-[44px]">📎</span>}
             <span className={`text-[14px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{sel && sel.basename}</span>
             <p className="text-[13px] max-w-[360px]">{(vis && vis.warning) || t.apUnsupported}</p>
             <button onClick={() => sel && bridge.openArtifactExternal(sel.path)} className={cardBtnCls(isDark, 'primary')}>
@@ -5657,9 +6354,9 @@
       };
 
       return (
-        <div className="absolute inset-0 z-30 flex justify-end pointer-events-auto">
-          <div className="absolute inset-0 bg-black/40" onClick={onClose}></div>
-          <div className={`relative w-[680px] max-w-[88vw] h-full flex flex-col shadow-2xl ${isDark ? 'bg-[#1E1F20]' : 'bg-white'} animate-in slide-in-from-right duration-200`}>
+        <div className={isWide ? "relative w-full h-full" : "absolute inset-0 z-30 flex justify-end pointer-events-auto"}>
+          {!isWide && <div className="absolute inset-0 bg-black/40" onClick={onClose}></div>}
+          <div className={`relative h-full flex flex-col ${isDark ? 'bg-[#1E1F20]' : 'bg-white'} ${isWide ? 'w-full border-l ' + (isDark ? 'border-white/10' : 'border-black/10') : 'w-[680px] max-w-[88vw] shadow-2xl animate-in slide-in-from-right duration-200'}`}>
             {/* header + tabs */}
             <div className={`flex items-center justify-between px-3 py-2.5 border-b ${isDark ? 'border-white/10' : 'border-black/10'}`}>
               <div className={`flex items-center gap-1 rounded-full p-0.5 ${isDark ? 'bg-[#141517]' : 'bg-[#F0F4F9]'}`}>
@@ -5681,7 +6378,7 @@
                       <div key={a.path} onClick={() => preview(a)}
                         className={`group flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer
                           ${sel && sel.path === a.path ? (isDark ? 'bg-[#333537]' : 'bg-[#E8EDF2]') : (isDark ? 'hover:bg-[#282A2C]' : 'hover:bg-[#F0F4F9]')}`}>
-                        <span className="text-[26px] leading-none shrink-0">{artifactIcon(a.basename)}</span>
+                        <ArtifactTileIcon name={a.basename} />
                         <div className="flex-1 min-w-0">
                           <div className={`text-[14px] truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`} title={a.path}>{a.basename}</div>
                           <div className={`text-[12px] truncate ${muted}`}>
@@ -6280,7 +6977,7 @@
               onClick={e => e.stopPropagation()}
               onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); save(); } else if (e.key === 'Escape') { setEditing(false); setVal(chat.title); } }}
               onBlur={save}
-              className={`w-full px-3 py-1 rounded-full text-[14px] outline-none ${isDark ? 'bg-[#131314] text-[#E3E3E3] ring-1 ring-[#A8C7FA]' : 'bg-white text-[#1F1F1F] ring-1 ring-[#0B57D0]'}`} />
+              className={`w-full px-3 py-1 rounded-full text-[15px] outline-none ${isDark ? 'bg-[#131314] text-[#E3E3E3] ring-1 ring-[#A8C7FA]' : 'bg-white text-[#1F1F1F] ring-1 ring-[#0B57D0]'}`} />
           </div>
         );
       }
@@ -6288,10 +6985,10 @@
         <div onClick={() => onSelect(chat.id)}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
           style={ personaTarget ? { background: isDark?'rgba(10,132,255,.20)':'rgba(0,122,255,.12)', boxShadow:'inset 0 0 0 1px '+(isDark?'rgba(10,132,255,.6)':'rgba(0,122,255,.45)'), color: isDark?'#fff':'#1F1F1F' } : undefined }
-          className={`group flex items-center px-4 py-1.5 rounded-full cursor-pointer text-[13px] transition-all
+          className={`group flex items-center px-4 py-1.5 rounded-full cursor-pointer text-[15px] transition-all
             ${personaTarget ? ''
               : active ? (isDark ? 'bg-[#333537] text-white' : 'bg-[#E1E5EA] text-[#1F1F1F]')
-                     : (isDark ? 'text-[#BDC1C6] hover:bg-[#282A2C] hover:text-[#E3E3E3]' : 'text-[#5F6368] hover:bg-[#E1E5EA] hover:text-[#1F1F1F]')}`}>
+                     : (isDark ? 'text-[#E3E3E3] hover:bg-[#282A2C]' : 'text-[#1F1F1F] hover:bg-[#E1E5EA]')}`}>
           {personaTarget && <Sparkles size={13} className="shrink-0 mr-1.5" style={{ color: isDark?'#0A84FF':'#007AFF' }} />}
           <span className="truncate pr-2 leading-relaxed whitespace-nowrap flex-1">{chat.title}</span>
           {chat.working && <span className="shrink-0 mr-1 inline-block w-2 h-2 rounded-full bg-current opacity-70 animate-pulse" title={t.riGenerating}></span>}
@@ -6300,9 +6997,9 @@
             <div className="flex items-center gap-0.5 shrink-0" onClick={e => e.stopPropagation()}>
               <span className={`text-[11px] mr-0.5 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{t.riDelQ}</span>
               <button title={t.riDelConfirm} onClick={(e) => { e.stopPropagation(); onDelete(chat.id); }}
-                className={`w-6 h-6 rounded-full flex items-center justify-center text-[12px] ${isDark ? 'text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#C5221F] hover:bg-[#FAD2CF]'}`}>✓</button>
+                className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#C5221F] hover:bg-[#FAD2CF]'}`}><Check size={14} /></button>
               <button title={t.cpCancel} onClick={(e) => { e.stopPropagation(); setConfirming(false); }}
-                className={`w-6 h-6 rounded-full flex items-center justify-center text-[12px] ${isDark ? 'hover:bg-[#444746]' : 'hover:bg-[#D3D7DB]'}`}>✗</button>
+                className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:bg-[#444746]' : 'text-[#5F6368] hover:bg-[#D3D7DB]'}`}><X size={13} /></button>
             </div>
           ) : (
             <>
@@ -6314,9 +7011,9 @@
               )}
               <div className="hidden group-hover:flex items-center gap-0.5 shrink-0">
                 <button title={t.riRename} onClick={(e) => { e.stopPropagation(); setVal(chat.title); setEditing(true); }}
-                  className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${isDark ? 'hover:bg-[#444746]' : 'hover:bg-[#D3D7DB]'}`}>✏️</button>
+                  className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:bg-[#444746]' : 'text-[#5F6368] hover:bg-[#D3D7DB]'}`}><Edit2 size={13} /></button>
                 <button title={t.cpDelete} onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
-                  className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${isDark ? 'hover:bg-[#5c2b29]' : 'hover:bg-[#FAD2CF]'}`}>🗑</button>
+                  className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#5F6368] hover:text-[#C5221F] hover:bg-[#FAD2CF]'}`}><Trash2 size={13} /></button>
               </div>
             </>
           )}
