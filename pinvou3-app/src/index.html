@@ -1006,7 +1006,7 @@
           const fallback = {
             name: effective.model || adv.custom_model_name || '',
             baseUrl: effective.base_url || adv.custom_base_url || '',
-            apiKey: effective.api_key || adv.custom_api_key || '',
+            apiKey: '',
           };
           const saved = modelDraftForPreset(preset, profiles, fallback);
           profiles[preset] = normalizedModelProfile(saved.name, saved.baseUrl, saved.apiKey);
@@ -1978,7 +1978,8 @@
       const [preset, setPreset] = useState(initial.preset || 'local_vllm');
       const [model, setModel] = useState(initial.model || '');
       const [baseUrl, setBaseUrl] = useState(initial.base_url || '');
-      const [apiKey, setApiKey] = useState(initial.api_key || '');
+      const [apiKey, setApiKey] = useState('');
+      const [keyAction, setKeyAction] = useState(initial.__new ? 'replace' : 'keep_existing');
       const [showKey, setShowKey] = useState(false);
       const [testing, setTesting] = useState(false);
       const [testResult, setTestResult] = useState(null);
@@ -1988,12 +1989,12 @@
         setPreset(p);
         const defs = MODEL_PRESET_DEFS[p] || MODEL_PRESET_DEFS.local_vllm;
         setBaseUrl(defs.baseUrl); setModel(defs.model);
-        if (p !== 'local_vllm') setApiKey('');
+        if (p !== 'local_vllm') { setApiKey(''); setKeyAction(initial.__new ? 'replace' : 'keep_existing'); }
       }
       async function handleTest() {
         if (!bridge.available) return;
         setTesting(true); setTestResult(null);
-        try { const msg = await bridge.testModelConnection(baseUrl.trim(), apiKey.trim()); setTestResult({ ok: true, msg: String(msg) }); }
+        try { const msg = await bridge.testModelConnection(baseUrl.trim(), keyAction === 'replace' ? apiKey.trim() : '', initial.__new ? null : initial.id); setTestResult({ ok: true, msg: String(msg) }); }
         catch (e) { setTestResult({ ok: false, msg: String(e) }); }
         finally { setTesting(false); }
       }
@@ -2003,6 +2004,7 @@
         if (c.base_url) setBaseUrl(c.base_url);
         if (c.model) { setModel(c.model); if (!name.trim()) setName(c.model); }
         setApiKey('');
+        setKeyAction(initial.__new ? 'replace' : 'keep_existing');
       }
       async function handleDetect() {
         if (!bridge.available || detecting) return;
@@ -2031,8 +2033,14 @@
       function doSave() {
         if (!canSave) return;
         const id = initial.__new ? ('m_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)) : initial.id;
-        onSave({ id: id, name: name.trim(), preset: preset, model: model.trim(), base_url: baseUrl.trim(), api_key: apiKey });
+        onSave({ id: id, name: name.trim(), preset: preset, model: model.trim(), base_url: baseUrl.trim(), api_key: keyAction === 'replace' ? apiKey.trim() : '', credential_action: keyAction });
       }
+      const credentialState = initial.credential_state || (initial.has_secret ? 'configured' : 'missing');
+      const hasSavedKey = !!initial.has_secret || credentialState === 'configured' || credentialState === 'env_override';
+      const keyStatusText = credentialState === 'env_override' ? '由环境变量覆盖'
+        : credentialState === 'unavailable' ? '凭据不可用，请重新配置'
+        : hasSavedKey ? '已配置'
+        : '未配置';
       return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150" onClick={onCancel}>
           <div onClick={e => e.stopPropagation()}
@@ -2054,12 +2062,23 @@
               <SField isDark={isDark} label={t.customBaseUrl} type="text" value={baseUrl} onChange={e => setBaseUrl(e.target.value)} />
               <div>
                 <span className={`text-[14px] block mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.customApiKey}</span>
+                <div className={`mb-2 text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{keyStatusText}</div>
                 <div className="relative">
-                  <input type={showKey ? 'text' : 'password'} value={apiKey} onChange={e => setApiKey(e.target.value)}
-                    placeholder={preset === 'local_vllm' ? 'local-no-auth' : 'sk-...'}
+                  <input type={showKey ? 'text' : 'password'} value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
+                    placeholder={hasSavedKey ? '输入新 Key 以替换' : (preset === 'local_vllm' ? 'local-no-auth' : 'sk-...')}
                     className={`w-full px-4 py-2 pr-10 rounded-lg text-[14px] outline-none ${isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746] focus:border-[#A8C7FA]' : 'bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0]'}`} />
                   <button onClick={() => setShowKey(s => !s)} className="absolute right-2 top-1/2 -translate-y-1/2 text-[14px] opacity-70 px-1">{showKey ? '🙈' : '👁'}</button>
                 </div>
+                {hasSavedKey && (
+                  <div className="mt-2 flex items-center gap-2 flex-wrap">
+                    <button onClick={() => { setKeyAction('keep_existing'); setApiKey(''); }}
+                      className={`text-[12px] px-3 py-1.5 rounded-full ${keyAction === 'keep_existing' ? (isDark ? 'bg-[#174EA6] text-white' : 'bg-[#D2E3FC] text-[#174EA6]') : (isDark ? 'bg-[#2B2C2F] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]')}`}>保留现有</button>
+                    <button onClick={() => setKeyAction('replace')}
+                      className={`text-[12px] px-3 py-1.5 rounded-full ${keyAction === 'replace' ? (isDark ? 'bg-[#174EA6] text-white' : 'bg-[#D2E3FC] text-[#174EA6]') : (isDark ? 'bg-[#2B2C2F] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]')}`}>替换</button>
+                    <button onClick={() => { setKeyAction('delete'); setApiKey(''); }}
+                      className={`text-[12px] px-3 py-1.5 rounded-full ${keyAction === 'delete' ? (isDark ? 'bg-[#5F2120] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]') : (isDark ? 'bg-[#2B2C2F] text-[#F28B82]' : 'bg-[#F0F4F9] text-[#C5221F]')}`}>删除 Key</button>
+                  </div>
+                )}
               </div>
               <div className="flex items-center gap-3 flex-wrap">
                 <button onClick={handleTest} disabled={testing || !baseUrl.trim()}

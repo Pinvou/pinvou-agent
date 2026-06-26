@@ -4708,6 +4708,7 @@ dependencies = [
  "codewhale-tui",
  "flate2",
  "include_dir",
+ "keyring",
  "log",
  "md5",
  "msg_parser",
