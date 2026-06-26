@@ -9,6 +9,7 @@ const KNOWN_DEP_PACKAGES: &[&str] = &[
     "p7zip-full",
     "python3",
     "libemail-outlook-message-perl",
+    "ffmpeg",
 ];
 
 pub fn install_dependencies(packages: Vec<String>) -> Result<(), String> {

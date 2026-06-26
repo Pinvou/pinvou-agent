@@ -798,7 +798,16 @@ pub async fn transcribe_voice_audio(
                 format!("Failed to write temporary voice audio: {e}"),
             )
         })?;
-        let result = run_local_asr_cli(&wav_path);
+        // 优先用内置 SenseVoice 引擎（转码+识别+清洗全在 Rust，无需 shim/环境变量）；
+        // 引擎或模型未就绪时回退原 CLI 路径（PINVOU3_ASR_CMD / pinvou-asr）。
+        let result = if crate::voice_asr::engine_path().is_file()
+            && crate::voice_asr::model_path().is_file()
+        {
+            crate::voice_asr::transcribe(&wav_path).map(|text| LocalAsrOutput { text })
+                .map_err(|e| VoiceCommandError::new("recognition_failed", "transcribing", e))
+        } else {
+            run_local_asr_cli(&wav_path)
+        };
         let _ = std::fs::remove_file(&wav_path);
         result
     })

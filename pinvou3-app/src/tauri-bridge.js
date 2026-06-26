@@ -150,6 +150,14 @@
       sessionId: null,
       startedAt: 0,
     },
+    // 本地语音识别依赖安装引导（首次点麦克风缺组件时弹框）
+    voiceAsrSetup: {
+      open: false,        // 弹框是否展示
+      status: null,       // voice_asr_status 返回 { engine, ffmpeg, model, ready, missing }
+      installing: false,  // 安装中
+      progress: null,     // { stage:'ffmpeg'|'model'|'done', downloaded, total }
+      error: null,
+    },
   };
   // 卡片池 1078 张卡的前端缓存。只读,通过 getPersonas() 取引用,不走 notify 快照。
   var personaPoolCache = [];
@@ -1415,6 +1423,14 @@
     });
   });
 
+  // 本地语音识别依赖安装进度（模型下载 / ffmpeg 安装）
+  listen("voice_asr:progress", function (e) {
+    var p = e && e.payload;
+    if (!p) return;
+    state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { progress: p });
+    notify();
+  });
+
   // chat:plan_snapshot —— update_plan/checklist_write 后实时更新进度，与 plan_ready 解耦
   listen("chat:plan_snapshot", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
@@ -2664,6 +2680,29 @@
     }
   }
 
+  // 一键安装本地语音识别依赖（模型下载 + 缺 ffmpeg 走 pkexec apt），进度走
+  // voice_asr:progress 事件。装完 ready 自动关框。
+  async function installVoiceAsr() {
+    if (state.voiceAsrSetup.installing) return;
+    state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { installing: true, error: null, progress: { stage: "start" } });
+    notify();
+    try {
+      var st = await invoke("install_voice_asr");
+      var patch = { installing: false, status: st, progress: { stage: "done" } };
+      if (st && st.ready) patch.open = false;
+      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, patch);
+      notify();
+    } catch (e) {
+      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { installing: false, error: String(e) });
+      notify();
+    }
+  }
+
+  function closeVoiceAsrSetup() {
+    state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { open: false });
+    notify();
+  }
+
   async function startVoiceInput(draftText, writeback) {
     if (activeVoiceInput && state.voiceInput.status === "recording") {
       finishVoiceInput(false, false);
@@ -2672,6 +2711,18 @@
     if (activeVoiceInput) {
       finishVoiceInput(true, false);
       return;
+    }
+
+    // 首次/缺组件：先检测本地语音识别依赖，缺则弹安装框、不进录音。
+    try {
+      var asrStatus = await invoke("voice_asr_status");
+      if (asrStatus && !asrStatus.ready) {
+        state.voiceAsrSetup = { open: true, status: asrStatus, installing: false, progress: null, error: null };
+        notify();
+        return;
+      }
+    } catch (e) {
+      // 检测失败（如 mock 环境/旧后端）不阻塞，继续走原录音路径（环境变量/兜底引擎）
     }
 
     var AudioCtor = window.AudioContext || window.webkitAudioContext;
@@ -2969,6 +3020,8 @@
     sendMessage: sendMessage,
     removeQueued: removeQueued,
     startVoiceInput: startVoiceInput,
+    installVoiceAsr: installVoiceAsr,
+    closeVoiceAsrSetup: closeVoiceAsrSetup,
     cancelVoiceInput: cancelVoiceInput,
     clearVoiceInput: clearVoiceInput,
     appendVoiceText: appendVoiceText,

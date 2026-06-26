@@ -30,6 +30,7 @@ mod pinvou_review;
 mod process;
 pub mod super_permission;
 mod updater;
+mod voice_asr;
 mod workflow_migrate;
 pub mod workflow_registry;
 mod workflow_runs;
@@ -248,6 +249,16 @@ pub fn run() {
                     .into_iter()
                     .find(|d| d.join("model.onnx").exists() || d.join("onnx").join("model.onnx").exists())
             });
+            // 语音识别引擎 sense-voice-main 随 deb 打包,容错同 bge-m3 的资源布局,
+            // 注入给 voice_asr 作为 ~/.pinvou3/asr/ 之外的回退查找目录。
+            if let Some(asr_res) = app.path().resource_dir().ok().and_then(|res| {
+                [res.join("asr"), res.join("resources/asr"), res.join("resources").join("asr")]
+                    .into_iter()
+                    .find(|d| d.join("sense-voice-main").exists())
+            }) {
+                voice_asr::set_bundled_engine_dir(asr_res);
+            }
+
             match knowledge::KnowledgeService::new(&knowledge::default_db_path(), kb_model_dir.as_deref()) {
                 Ok(svc) => {
                     app.handle().manage(svc);
@@ -299,6 +310,8 @@ pub fn run() {
             commands::get_session_model_id,
             commands::test_model_connection,
             commands::transcribe_voice_audio,
+            voice_asr::voice_asr_status,
+            voice_asr::install_voice_asr,
             commands::list_sessions,
             commands::create_session,
             commands::load_session,

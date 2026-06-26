@@ -3643,6 +3643,7 @@
       const voiceActive = voiceInput.status === 'requesting_permission' || voiceInput.status === 'recording' || voiceInput.status === 'transcribing';
       const voiceRecording = voiceInput.status === 'recording';
       const voiceNotice = voiceInput.status !== 'idle' && voiceInput.message;
+      const voiceAsrSetup = (bs && bs.voiceAsrSetup) || { open: false };
       useEffect(() => {
         if (justInstalledTool) {
           setWelcomeToolId(justInstalledTool);
@@ -3843,6 +3844,45 @@
                 </div>
               </div>
             )}
+            {voiceAsrSetup.open && (() => {
+              const su = voiceAsrSetup;
+              const prog = su.progress || {};
+              const pct = (prog.stage === 'model' && prog.total) ? Math.floor(prog.downloaded / prog.total * 100) : null;
+              const missing = (su.status && su.status.missing) || [];
+              const needFfmpeg = missing.indexOf('ffmpeg') >= 0;
+              return (
+                <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/45"
+                  onClick={() => { if (!su.installing) bridge.closeVoiceAsrSetup(); }}>
+                  <div className={`w-full max-w-[440px] rounded-[20px] shadow-2xl p-6 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}
+                    onClick={e => e.stopPropagation()}>
+                    <h3 className="text-[16px] font-semibold mb-2">启用本地语音识别</h3>
+                    <p className="text-[13px] leading-relaxed opacity-80 mb-4">
+                      首次使用需要安装语音识别组件（模型约 174MB{needFfmpeg ? ' + ffmpeg' : ''}），完全本地运行、语音不上传云端。
+                    </p>
+                    {su.installing && (
+                      <div className="mb-4">
+                        <div className="text-[12px] opacity-70 mb-1">
+                          {prog.stage === 'ffmpeg' ? '正在安装 ffmpeg（可能弹系统授权框）…'
+                            : prog.stage === 'model' ? ('正在下载模型 ' + (pct != null ? pct + '%' : '…'))
+                            : prog.stage === 'done' ? '完成' : '准备中…'}
+                        </div>
+                        <div className={`h-2 rounded-full overflow-hidden ${isDark ? 'bg-white/10' : 'bg-black/10'}`}>
+                          <div className="h-full bg-[#0B57D0] transition-all" style={{ width: (pct != null ? pct : 30) + '%' }} />
+                        </div>
+                      </div>
+                    )}
+                    {su.error && <div className="text-[13px] text-[#EA4335] mb-3">❌ {su.error}</div>}
+                    <div className="flex items-center justify-end gap-2">
+                      <button onClick={() => bridge.closeVoiceAsrSetup()} disabled={su.installing}
+                        className={`text-[13px] px-4 py-2 rounded-full ${isDark ? 'bg-[#333537] hover:bg-[#444746]' : 'bg-[#E1E5EA] hover:bg-[#D3D9E0]'} ${su.installing ? 'opacity-50' : ''}`}>取消</button>
+                      <button onClick={() => bridge.installVoiceAsr()} disabled={su.installing}
+                        className={`text-[13px] font-medium px-4 py-2 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'} ${su.installing ? 'opacity-50' : ''}`}>
+                        {su.installing ? '安装中…' : '安装'}</button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
             <div className="bg-white/80 dark:bg-[#161618]/85 backdrop-blur-2xl border border-black/[0.06] dark:border-white/10 rounded-[28px] shadow-lg focus-within:border-blue-400/50 dark:focus-within:border-blue-500/50 transition-colors px-4 pt-3 pb-2.5">
               <textarea
                 ref={composerRef}
