@@ -203,8 +203,10 @@ pub async fn download_model(app: &tauri::AppHandle) -> Result<(), String> {
     }
 
     let url = std::env::var("PINVOU3_ASR_MODEL_URL").unwrap_or_else(|_| MODEL_URL.to_string());
+    // modelscope CDN 拒绝空 User-Agent（reqwest 默认不发 UA）→ 403；设一个非空 UA。
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(15))
+        .user_agent("pinvou3-asr/1.0")
         .build()
         .map_err(|e| format!("HTTP client 构建失败: {e}"))?;
     let mut resp = client
