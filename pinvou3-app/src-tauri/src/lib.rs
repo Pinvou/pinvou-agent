@@ -13,6 +13,7 @@
 mod audit;
 pub mod bridge;
 mod commands;
+pub mod credential_store;
 pub mod feedback;
 // L1 harness 的附件 e2e 要走「真实 ingest → 注入分流 → 真 vLLM」全链路:
 // 暴露注入收口函数 + file_ingest。

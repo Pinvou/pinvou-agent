@@ -4701,13 +4701,14 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pinvou3-tauri"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "anyhow",
  "chrono",
  "codewhale-tui",
  "flate2",
  "include_dir",
+ "keyring",
  "log",
  "md5",
  "msg_parser",

@@ -1842,7 +1842,7 @@
     }
     notify();
   }
-  // model 对象字段须是 snake_case(SavedModel serde): {id,name,preset,model,base_url,api_key}
+  // model 对象字段须是 snake_case(SavedModel serde): {id,name,preset,model,base_url,api_key,credential_action}
   async function saveModel(model) {
     await invoke("save_model", { model: model });
     await loadModels();
@@ -1873,8 +1873,8 @@
       await setActiveModel(modelId);
     }
   }
-  async function testModelConnection(baseUrl, apiKey) {
-    return await invoke("test_model_connection", { baseUrl: baseUrl, apiKey: apiKey });
+  async function testModelConnection(baseUrl, apiKey, modelId) {
+    return await invoke("test_model_connection", { baseUrl: baseUrl, apiKey: apiKey, modelId: modelId || null });
   }
 
   // ── Super permission ─────────────────────────────────────────────

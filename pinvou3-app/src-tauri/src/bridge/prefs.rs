@@ -6,6 +6,11 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::credential_store::{
+    CredentialEditAction, CredentialMigrationResult, CredentialReference, CredentialState,
+    CredentialStore, SystemCredentialStore,
+};
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Theme {
@@ -225,8 +230,49 @@ pub struct SavedModel {
     pub preset: ModelPreset,
     pub model: String,
     pub base_url: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub api_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_ref: Option<CredentialReference>,
+    #[serde(default)]
+    pub credential_state: CredentialState,
+    #[serde(default)]
+    pub has_secret: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_action: Option<CredentialEditAction>,
+}
+
+impl SavedModel {
+    pub fn credential_reference(&self) -> CredentialReference {
+        self.credential_ref
+            .clone()
+            .unwrap_or_else(|| CredentialReference::for_model(&self.id))
+    }
+
+    pub fn clear_plaintext_key(&mut self) {
+        self.api_key.clear();
+        self.credential_action = None;
+    }
+
+    pub fn mark_configured(&mut self, reference: CredentialReference) {
+        self.credential_ref = Some(reference);
+        self.credential_state = CredentialState::Configured;
+        self.has_secret = true;
+        self.clear_plaintext_key();
+    }
+
+    pub fn mark_missing(&mut self) {
+        self.credential_ref = None;
+        self.credential_state = CredentialState::Missing;
+        self.has_secret = false;
+        self.clear_plaintext_key();
+    }
+
+    pub fn mark_unavailable(&mut self) {
+        self.credential_state = CredentialState::Unavailable;
+        self.has_secret = self.credential_ref.is_some();
+        self.clear_plaintext_key();
+    }
 }
 
 /// 开发者后门字段。GUI 永远不暴露这些，靠手改 settings.json 或 env 调。
@@ -244,6 +290,7 @@ pub struct AdvancedPrefs {
     /// 自定义 API base URL（CustomLocal / Remote* 生效）
     pub custom_base_url: Option<String>,
     /// 自定义 API key（CustomLocal / Remote* 生效）
+    #[serde(default, skip_serializing)]
     pub custom_api_key: Option<String>,
     /// 「添加模型」方案:已保存模型列表(GUI 增删改)。空 = 触发迁移兜底
     /// (见 `UserPrefs::migrate_models`),把旧 model_preset+custom_* 合成一条。
@@ -277,6 +324,13 @@ impl UserPrefs {
             Err(_) => Self::default(),
         };
         prefs.migrate_models();
+        let migration = prefs.migrate_plaintext_api_keys_with_store(&SystemCredentialStore::new());
+        if migration.settings_sanitized {
+            if let Err(e) = prefs.save() {
+                eprintln!("[pinvou3-app] settings credential migration save failed: {e:?}");
+            }
+        }
+        prefs.sanitize_plaintext_api_keys();
         prefs
     }
 
@@ -287,6 +341,7 @@ impl UserPrefs {
         }
         let mut normalized = self.clone();
         normalized.search.normalize();
+        normalized.sanitize_plaintext_api_keys();
         let s = serde_json::to_string_pretty(&normalized).expect("UserPrefs serialize");
         std::fs::write(path, s)
     }
@@ -320,9 +375,131 @@ impl UserPrefs {
             model,
             base_url,
             api_key,
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
         });
+        self.advanced.custom_api_key = None;
         if self.advanced.active_model_id.is_none() {
             self.advanced.active_model_id = Some(id);
+        }
+    }
+
+    pub fn migrate_plaintext_api_keys_with_store<S: CredentialStore>(
+        &mut self,
+        store: &S,
+    ) -> CredentialMigrationResult {
+        let mut result = CredentialMigrationResult::default();
+
+        for model in &mut self.advanced.saved_models {
+            let key = model.api_key.trim().to_string();
+            if key.is_empty() {
+                if model.credential_ref.is_some() {
+                    model.has_secret = true;
+                    if model.credential_state == CredentialState::Missing {
+                        model.credential_state = CredentialState::Configured;
+                    }
+                } else {
+                    result.skipped_count += 1;
+                }
+                model.clear_plaintext_key();
+                continue;
+            }
+
+            let reference = model.credential_reference();
+            match store.set(&reference, &key) {
+                Ok(()) => {
+                    model.mark_configured(reference);
+                    result.migrated_count += 1;
+                    result.settings_sanitized = true;
+                }
+                Err(err) => {
+                    eprintln!(
+                        "[pinvou3-app] credential migration failed for model {}: {}",
+                        model.id,
+                        err.user_message()
+                    );
+                    model.credential_state = CredentialState::Unavailable;
+                    model.has_secret = false;
+                    result.failed_model_ids.push(model.id.clone());
+                }
+            }
+        }
+
+        if let Some(key) = self
+            .advanced
+            .custom_api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .map(ToString::to_string)
+        {
+            let model_index = self
+                .advanced
+                .active_model_id
+                .as_deref()
+                .and_then(|id| self.advanced.saved_models.iter().position(|m| m.id == id))
+                .or_else(|| (!self.advanced.saved_models.is_empty()).then_some(0));
+            if let Some(index) = model_index {
+                let model = &mut self.advanced.saved_models[index];
+                let reference = model.credential_reference();
+                match store.set(&reference, &key) {
+                    Ok(()) => {
+                        model.mark_configured(reference);
+                        result.migrated_count += 1;
+                        result.settings_sanitized = true;
+                        self.advanced.custom_api_key = None;
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "[pinvou3-app] custom_api_key migration failed for model {}: {}",
+                            model.id,
+                            err.user_message()
+                        );
+                        model.credential_state = CredentialState::Unavailable;
+                        result.failed_model_ids.push(model.id.clone());
+                    }
+                }
+            }
+        } else {
+            self.advanced.custom_api_key = None;
+        }
+
+        result
+    }
+
+    pub fn sanitize_plaintext_api_keys(&mut self) {
+        self.advanced.custom_api_key = None;
+        for model in &mut self.advanced.saved_models {
+            model.clear_plaintext_key();
+            if model.credential_ref.is_some() && model.credential_state == CredentialState::Missing {
+                model.credential_state = CredentialState::Configured;
+                model.has_secret = true;
+            }
+        }
+    }
+
+    pub fn refresh_credential_states_with_store<S: CredentialStore>(&mut self, store: &S) {
+        let env_override = std::env::var("DEEPSEEK_API_KEY")
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
+        for model in &mut self.advanced.saved_models {
+            if env_override {
+                model.credential_state = CredentialState::EnvOverride;
+                model.has_secret = model.credential_ref.is_some();
+                model.clear_plaintext_key();
+                continue;
+            }
+            let Some(reference) = model.credential_ref.clone() else {
+                model.mark_missing();
+                continue;
+            };
+            match store.get(&reference) {
+                Ok(Some(value)) if !value.trim().is_empty() => model.mark_configured(reference),
+                Ok(_) => model.mark_missing(),
+                Err(_) => model.mark_unavailable(),
+            }
         }
     }
 
@@ -364,6 +541,7 @@ impl UserPrefs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credential_store::MemoryCredentialStore;
 
     #[test]
     fn migrate_creates_default_model_for_fresh_prefs() {
@@ -406,11 +584,92 @@ mod tests {
             model: "kimi-k2.6".into(),
             base_url: "https://api.moonshot.cn/v1".into(),
             api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
         });
         prefs.advanced.active_model_id = Some("m2".into());
         prefs.remove_model("m2");
         assert_eq!(prefs.advanced.active_model_id.as_deref(), Some("default"));
         assert!(prefs.model_by_id("m2").is_none());
+    }
+
+    #[test]
+    fn saved_model_api_key_is_not_serialized() {
+        let mut prefs = UserPrefs::default();
+        prefs.migrate_models();
+        prefs.advanced.saved_models[0].api_key = "sk-test-secret-1234567890".into();
+        prefs.advanced.custom_api_key = Some("sk-legacy-secret-1234567890".into());
+
+        let json = serde_json::to_string(&prefs).unwrap();
+
+        assert!(!json.contains("sk-test-secret"));
+        assert!(!json.contains("sk-legacy-secret"));
+        assert!(!json.contains("custom_api_key"));
+    }
+
+    #[test]
+    fn migrate_saved_model_plaintext_key_to_reference_with_memory_store() {
+        let store = MemoryCredentialStore::default();
+        let mut prefs = UserPrefs::default();
+        prefs.migrate_models();
+        prefs.advanced.saved_models[0].api_key = "sk-model-secret-1234567890".into();
+
+        let result = prefs.migrate_plaintext_api_keys_with_store(&store);
+
+        assert_eq!(result.migrated_count, 1);
+        assert!(result.settings_sanitized);
+        let model = &prefs.advanced.saved_models[0];
+        let reference = model.credential_ref.clone().expect("credential reference");
+        assert_eq!(model.credential_state, CredentialState::Configured);
+        assert!(model.has_secret);
+        assert!(model.api_key.is_empty());
+        assert_eq!(
+            store.get(&reference).unwrap().as_deref(),
+            Some("sk-model-secret-1234567890")
+        );
+    }
+
+    #[test]
+    fn migrate_custom_api_key_to_active_model_with_memory_store() {
+        let store = MemoryCredentialStore::default();
+        let mut prefs = UserPrefs::default();
+        prefs.advanced.model_preset = Some(ModelPreset::Deepseek);
+        prefs.advanced.custom_api_key = Some("sk-custom-secret-1234567890".into());
+        prefs.migrate_models();
+
+        let result = prefs.migrate_plaintext_api_keys_with_store(&store);
+
+        assert_eq!(result.migrated_count, 1);
+        assert!(result.settings_sanitized);
+        assert!(prefs.advanced.custom_api_key.is_none());
+        let model = prefs.active_model().expect("active model");
+        let reference = model.credential_ref.clone().expect("credential reference");
+        assert_eq!(model.credential_state, CredentialState::Configured);
+        assert_eq!(
+            store.get(&reference).unwrap().as_deref(),
+            Some("sk-custom-secret-1234567890")
+        );
+    }
+
+    #[test]
+    fn credential_migration_is_idempotent() {
+        let store = MemoryCredentialStore::default();
+        let mut prefs = UserPrefs::default();
+        prefs.migrate_models();
+        prefs.advanced.saved_models[0].api_key = "sk-once-secret-1234567890".into();
+
+        let first = prefs.migrate_plaintext_api_keys_with_store(&store);
+        let second = prefs.migrate_plaintext_api_keys_with_store(&store);
+
+        assert_eq!(first.migrated_count, 1);
+        assert_eq!(second.migrated_count, 0);
+        assert_eq!(second.failed_model_ids.len(), 0);
+        assert!(!second.settings_sanitized);
+        let model = &prefs.advanced.saved_models[0];
+        assert!(model.api_key.is_empty());
+        assert_eq!(model.credential_state, CredentialState::Configured);
     }
 
     #[test]
