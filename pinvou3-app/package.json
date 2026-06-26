@@ -1,6 +1,6 @@
 {
   "name": "pinvou3-app",
-  "version": "0.4.11",
+  "version": "0.4.12",
   "description": "pinvou3 智能助手桌面应用（Tauri 2.0 + DeepSeek-TUI + Qwen3.6）",
   "private": true,
   "scripts": {
