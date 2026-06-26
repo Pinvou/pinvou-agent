@@ -130,7 +130,14 @@ pub fn transcribe(wav: &Path) -> Result<String, String> {
         wav.to_path_buf()
     };
 
+    // 引擎运行时会把 fbank_lfr_cmvn_feature.json(~290KB)写进当前工作目录。
+    // 默认 CWD 在 dev 下是 src-tauri/——会被 tauri dev 的文件监视器当成源码改动而
+    // 重编/重启 app(表现为「识别完 app 崩溃」),在 deb 安装态还可能是只读目录。
+    // 钉死 CWD 到可写的 asr_dir,让这个副产物落在那里、不污染源码树。
+    let work_dir = asr_dir();
+    let _ = std::fs::create_dir_all(&work_dir);
     let out = Command::new(&engine)
+        .current_dir(&work_dir)
         .arg("-m")
         .arg(&model)
         .arg(&input)

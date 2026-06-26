@@ -2558,12 +2558,24 @@
   function cleanupVoiceInputSession(session) {
     if (!session) return;
     if (session.timeoutId) clearTimeout(session.timeoutId);
+    // 先摘掉音频回调：webkit2gtk 的 WebAudio 是 GStreamer 后端，ScriptProcessorNode 的
+    // onaudioprocess 跑在音频线程，若在 disconnect/close 期间再触发一次、访问已释放的
+    // 缓冲，会让 WebProcess 段错误（表现为「识别出文字后 app 崩溃」）。务必先置 null。
+    try { if (session.processor) session.processor.onaudioprocess = null; } catch (_) {}
     try { if (session.processor) session.processor.disconnect(); } catch (_) {}
     try { if (session.source) session.source.disconnect(); } catch (_) {}
     try { if (session.zeroGain) session.zeroGain.disconnect(); } catch (_) {}
     stopMediaTracks(session.stream);
-    if (session.audioContext && session.audioContext.state !== "closed") {
-      session.audioContext.close().catch(function () {});
+    session.processor = null;
+    session.source = null;
+    session.zeroGain = null;
+    session.stream = null;
+    // close() 触发 GStreamer 管线异步拆解，与上面的 disconnect/track.stop 在同一拍里竞争最易崩；
+    // 摘干净节点后挪到下一个事件循环再关，并吞掉 close 的异常。
+    var ctx = session.audioContext;
+    session.audioContext = null;
+    if (ctx && ctx.state !== "closed") {
+      setTimeout(function () { try { ctx.close().catch(function () {}); } catch (_) {} }, 0);
     }
   }
 
