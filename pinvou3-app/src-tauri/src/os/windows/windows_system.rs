@@ -96,6 +96,10 @@ pub fn asr_tool_path() -> std::path::PathBuf {
     std::path::PathBuf::from("pinvou-asr")
 }
 
+pub fn asr_model_filename() -> &'static str {
+    "sensevoice-small-q8.gguf"
+}
+
 pub fn archive_tool_path() -> PathBuf {
     ensure_bundled_archive_on_process_path();
     windows_path::archive_tool_path()
@@ -137,7 +141,25 @@ pub fn asr_tool_exists() -> bool {
         }
     }
     ensure_bundled_asr_on_process_path();
-    windows_path::bundled_asr_tool_path().is_some() || command_exists("pinvou-asr")
+    windows_path::bundled_asr_tool_path().is_some()
+        && windows_path::bundled_asr_backend_path().is_some()
+        && windows_path::bundled_asr_model_path().is_some()
+}
+
+pub fn asr_bundled_runtime_status() -> Option<bool> {
+    Some(asr_tool_exists())
+}
+
+pub fn asr_dependency_installable() -> bool {
+    false
+}
+
+pub fn asr_install_unavailable_message() -> &'static str {
+    "ASR runtime is bundled on Windows; please repair or reinstall Pinvou."
+}
+
+pub async fn install_asr_runtime(_app: tauri::AppHandle) -> Result<(), String> {
+    Err(asr_install_unavailable_message().to_string())
 }
 
 pub fn archive_tool_exists() -> bool {

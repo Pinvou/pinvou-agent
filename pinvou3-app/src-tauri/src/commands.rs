@@ -17,15 +17,16 @@ use deepseek_tui::models::Message;
 use deepseek_tui::session_manager::{SavedSession, SessionMetadata};
 use deepseek_tui::tools::user_input::{UserInputAnswer, UserInputResponse};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::bridge::mode_state::{PlanPhase, SerializableMode, SessionModeState};
+use crate::bridge::mode_state::{SerializableMode, SessionModeState};
 use crate::bridge::prefs::{SavedModel, UserPrefs};
 use crate::bridge::sessions::SessionStore;
 use crate::credential_store::{
     CredentialEditAction, CredentialState, CredentialStore, SystemCredentialStore,
 };
 use crate::engine_pool::EnginePool;
+use crate::knowledge::KnowledgeService;
 use crate::monitor::{MonitorSnapshot, MonitorState, VllmStatus};
 
 /// 接收用户消息并转发给 Engine。
@@ -48,6 +49,7 @@ pub async fn chat(
     session_id: Option<String>,
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
+    app: AppHandle,
 ) -> Result<(), String> {
     let trimmed = message.trim();
     if trimmed.is_empty() && attachments.as_ref().map_or(true, |a| a.is_empty()) {
@@ -73,42 +75,62 @@ pub async fn chat(
     if let Some(injected) = store.take_pending_skill_instruction(&sid) {
         full = format!("{injected}\n\n---\n\n{full}");
     }
-    if let Some(skill) = store.active_skill(&sid) {
-        // 工作流会话(is_workflow_id)不再注入任何 reminder:对话型监工(品悟)已废弃,
-        // 进度走 workflow:agent_state_changed 卡片流,执行靠 Harness 直派 SubAgent,
-        // 都不经前台对话。普通挂载式 skill(review 等)仍需 phase marker 推前端 chips。
-        if !crate::workflow_registry::is_workflow_id(&skill.name) {
-            let reminder = format!(
-                "<system-reminder>\n\
-                 工作流 `{name}` 提醒:你的下一条回复**必须**以 `<phase id=\"...\"/>` \
-                 单独一行开头(literal XML 标签,不是 markdown 加粗,不是自然语言)。\n\
-                 - 自然语言里写 \"进入 P5\" / \"现在做 HTML 实现\" **不算** marker,\
-                 必须输出字面 `<phase id=\"p5\"/>` 然后空行然后正文。\n\
-                 - 跳过 phase 也要显式输出对应 marker(从 p3 直接做 p5 → 输出 \
-                 `<phase id=\"p5\"/>`,别不出标)。\n\
-                 - 留在同一 phase 多个 turn 也要每次都输出该 phase 的 marker,\
-                 不要因为\"没换 phase\"省略。\n\
-                 pinvou3 UI chips 条靠这个 marker 推进度,漏标 = 用户看不到进展。\n\
-                 </system-reminder>",
-                name = skill.name,
-            );
-            full = format!("{reminder}\n\n{full}");
-        }
-    }
+    // [phase marker 下线] 原 active_skill 非工作流分支每 turn 注入 `<phase id=.../>`
+    // marker reminder,但消费链(底座抽取 → chat:phase_changed → 前端 chips)已整体拆除,
+    // marker 产出后无人消费。已删。active_skill 的 pending_instruction(skill body)仍走上面。
 
     // Side B 卡片池: 加持后首条消息一次性 prepend 完整人设 body(agency-agents-zh)。
     // 之后每 turn 只靠 equip_anchor 轻锚点维持身份(EnginePool 注入),不再重灌 body。
     if let Some(body) = store.take_pending_persona_body(&sid) {
         full = format!("{body}\n\n---\n\n{full}");
     }
-    // 取该 session 的 mode + phase。
-    let s = store.mode_state(&sid);
-    let (mode, phase) = (s.mode, s.plan_phase);
-    // M2: 用户主动消息重置 auto-continue 计数器(新任务从 0 开始算 max 3 次)
-    store.reset_auto_continue(&sid);
-    pool.send_user_message(&sid, full, mode.to_app_mode(), phase)
+    // Agentic RAG:该 session 挂了知识集 → 每 turn prepend Self-RAG 自检引导,让模型自己
+    // 调 kb_search 工具(engine 已注入)检索、严格基于结果作答、无依据就说不知道。不再自动
+    // 注入片段(注入式已废弃)。collection_name 是单行查询,直接调即可(非大查询不必 spawn)。
+    if let Some(cid) = store.mounted_collection(&sid) {
+        let coll_name = app
+            .try_state::<KnowledgeService>()
+            .and_then(|kb| kb.l1().collection_name(cid).ok().flatten());
+        full = format!("{}\n\n---\n\n{full}", build_kb_agentic_guide(coll_name.as_deref()));
+    }
+    // 取该 session 的 mode。
+    let mode = store.mode_state(&sid).mode;
+    pool.send_user_message(&sid, full, mode.to_app_mode())
         .await
         .map_err(|e| format!("send_user_message failed: {e:?}"))
+}
+
+/// Agentic RAG 的 Self-RAG 自检引导:挂了知识集时每 turn prepend(动态状态走 per-turn
+/// 注入)。引导模型自调 `kb_search`、严格基于检索结果作答、无依据就说不知道——治本地小
+/// 模型"该查不查 → 凭记忆幻觉"(去掉注入式兜底后这是关键防线)。
+fn build_kb_agentic_guide(collection_name: Option<&str>) -> String {
+    let title = collection_name.unwrap_or("本地知识集");
+    format!(
+        "<system-reminder>\n\
+         本会话挂载了知识集《{title}》。涉及用户本地资料/文档的问题,你**必须先调用 \
+         `kb_search` 工具**检索,再**严格基于返回的片段**作答并注明来源文件;检索不到相关\
+         内容就如实告诉用户「未在知识集中找到」,**绝不凭记忆编造**。与本地资料无关的闲聊/\
+         常识问题不必检索,正常回答即可。\n\
+         </system-reminder>"
+    )
+}
+
+/// 给会话挂载一个知识集(会话级粘连)。后续每条消息发送前自动检索注入。
+#[tauri::command]
+pub fn session_mount_collection(session_id: String, collection_id: i64, store: State<'_, SessionStore>) {
+    store.set_mounted_collection(&session_id, Some(collection_id));
+}
+
+/// 摘下会话的知识集挂载。
+#[tauri::command]
+pub fn session_unmount_collection(session_id: String, store: State<'_, SessionStore>) {
+    store.set_mounted_collection(&session_id, None);
+}
+
+/// 读会话当前挂载的知识集 id(前端切会话时重读,恢复挂载条显示)。
+#[tauri::command]
+pub fn session_mounted_collection(session_id: String, store: State<'_, SessionStore>) -> Option<i64> {
+    store.mounted_collection(&session_id)
 }
 
 /// 把图片附件拷进 session workspace 的 `attachments/` 子目录,返回供 `image_analyze`
@@ -779,10 +801,7 @@ fn run_local_asr_cli(wav_path: &std::path::Path) -> Result<LocalAsrOutput, Voice
 
     let mut child = command.spawn().map_err(|e| {
         let message = if e.kind() == std::io::ErrorKind::NotFound {
-            format!(
-                "{} Runtime path: `{executable}`.",
-                crate::os::asr_missing_message()
-            )
+            crate::os::asr_missing_message().to_string()
         } else {
             format!("Failed to start local SenseVoice/FunASR ASR: {e}")
         };
@@ -881,7 +900,17 @@ pub async fn transcribe_voice_audio(
                 format!("Failed to write temporary voice audio: {e}"),
             )
         })?;
-        let result = run_local_asr_cli(&wav_path);
+        // 优先用内置 SenseVoice 引擎（转码+识别+清洗全在 Rust，无需 shim/环境变量）；
+        // 引擎或模型未就绪时回退原 CLI 路径（PINVOU3_ASR_CMD / pinvou-asr）。
+        let result = if crate::os::asr_bundled_runtime_status().is_none()
+            && crate::voice_asr::engine_path().is_file()
+            && crate::voice_asr::model_path().is_file()
+        {
+            crate::voice_asr::transcribe(&wav_path).map(|text| LocalAsrOutput { text })
+                .map_err(|e| VoiceCommandError::new("recognition_failed", "transcribing", e))
+        } else {
+            run_local_asr_cli(&wav_path)
+        };
         let _ = std::fs::remove_file(&wav_path);
         result
     })
@@ -1892,6 +1921,14 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
         "https://app.tavily.com/",
         "https://www.iwencai.com/",
         "https://agent.qcc.com/",
+        // MegaCube 官网(侧边栏 footer 入口跳转)
+        "https://www.h3c.com/",
+        // 飞书/Lark OAuth(device flow 授权页 + 账号页);连接飞书走这里开浏览器
+        "https://open.feishu.cn/",
+        "https://accounts.feishu.cn/",
+        "https://www.feishu.cn/",
+        "https://open.larksuite.com/",
+        "https://accounts.larksuite.com/",
     ];
     if !ALLOWED_PREFIXES.iter().any(|p| url.starts_with(p)) {
         return Err(format!("URL not in allowlist: {url}"));
@@ -1899,18 +1936,27 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
     shell_open(&url)
 }
 
-/// 把成品卡里可能的**相对**路径落到当前 active session 的 workspace。
+/// 把成品卡里可能的**相对**路径落到产物所属 session 的 workspace。
 ///
 /// 背景:present_artifact 没调成(模型把工具名漂成 `pinvou-present_artifact` 之类
 /// → NotAvailable)时,成品卡由 write_file 兜底补出,path 直接用了 write_file 的
 /// 相对参数(如 `snake-game.html`)。点 Open 把相对路径丢给 `validate_user_path`
 /// → 直接拒「path must be absolute」。这里先按 workspace 解析,绝对路径原样返回
 /// (present_artifact 成功解析的 / 产物面板 list_workspace_files 给的已是绝对)。
-fn resolve_artifact_path(raw: &str, store: &SessionStore) -> String {
+///
+/// `session_id` = 卡片携带的**产物所属** session,**优先**用它而非全局 active_id:
+/// 切回「已访问过(有 buffer)」的会话时,前端走 switchActiveTo 不调 load_session,
+/// 后端 active_id 不更新 → 仍指向切走时去的那个 session → 相对路径被拼到错的
+/// workspace(报「not a file」)。卡片自带 session 才能跨会话切换稳定解析。
+/// None 时(老卡无此字段 / 绝对路径)回退 active_id,行为同旧版。
+fn resolve_artifact_path(raw: &str, session_id: Option<&str>, store: &SessionStore) -> String {
     if std::path::Path::new(raw).is_absolute() {
         return raw.to_string();
     }
-    match store.active_id() {
+    let sid = session_id
+        .map(|s| s.to_string())
+        .or_else(|| store.active_id());
+    match sid {
         Some(sid) => crate::bridge::paths::session_workspace_dir(&sid)
             .join(raw)
             .to_string_lossy()
@@ -1920,10 +1966,14 @@ fn resolve_artifact_path(raw: &str, store: &SessionStore) -> String {
 }
 
 /// 用系统默认应用打开文件（跨平台：Win `start` / mac `open` / Linux `xdg-open`）；
-/// 相对路径先按 active session 的 workspace 解析（合并 main 的相对路径修复 + 跨平台打开）。
+/// 相对路径先按产物所属 session（前端传 `sessionId`，缺则 active）的 workspace 解析。
 #[tauri::command]
-pub async fn open_in_system(path: String, store: State<'_, SessionStore>) -> Result<(), String> {
-    let p = validate_user_path(&resolve_artifact_path(&path, &store))?;
+pub async fn open_in_system(
+    path: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    let p = validate_user_path(&resolve_artifact_path(&path, session_id.as_deref(), &store))?;
     shell_open(&strip_verbatim(&p))
 }
 
@@ -1932,9 +1982,10 @@ pub async fn open_in_system(path: String, store: State<'_, SessionStore>) -> Res
 #[tauri::command]
 pub async fn open_containing_folder(
     path: String,
+    session_id: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    let p = validate_user_path(&resolve_artifact_path(&path, &store))?;
+    let p = validate_user_path(&resolve_artifact_path(&path, session_id.as_deref(), &store))?;
     let dir = p
         .parent()
         .ok_or_else(|| format!("no parent dir for {}", p.display()))?;
@@ -1946,12 +1997,13 @@ pub async fn open_containing_folder(
 #[tauri::command]
 pub async fn open_artifact_window(
     path: String,
+    session_id: Option<String>,
     app: tauri::AppHandle,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
     use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
-    let p = validate_user_path(&resolve_artifact_path(&path, &store))?;
+    let p = validate_user_path(&resolve_artifact_path(&path, session_id.as_deref(), &store))?;
     if !p.is_file() {
         return Err(format!("not a file: {}", p.display()));
     }
@@ -2262,32 +2314,38 @@ pub async fn get_active_persona(
         .and_then(|pid| crate::personas::get(&pid).map(|c| c.summary())))
 }
 
-/// 用户点 💡 进入 Plan 流程：设 mode=Plan + phase=Planning。
-/// 下一条 chat 消息会带 mode=Plan 发送，底座自动切只读工具集 + ReadOnly sandbox。
+/// 用户在 composer chip 选 Plan：设 mode=Plan。
+/// 下一条 chat 消息带 mode=Plan 发送，底座自动切只读工具集 + ReadOnly sandbox。
 #[tauri::command]
 pub async fn set_plan_mode_next(
     session_id: String,
     store: State<'_, SessionStore>,
 ) -> Result<SessionModeState, String> {
-    store.set_mode_state(&session_id, SerializableMode::Plan, PlanPhase::Planning);
+    store.set_mode(&session_id, SerializableMode::Plan);
     Ok(store.mode_state(&session_id))
 }
 
-/// 用户点 [⚡ 直接动手]（Planning 态 chip 退出按钮）：跳过 plan 流程，凭对话历史自由干。
-/// mode 切回 Yolo + phase=None。对话历史天然保留，AI 在 YOLO 下能看到之前讨论的 context。
+/// 用户在 composer chip 选 Yolo（从 Plan 退回）：mode 切 Yolo。
+/// 对话历史天然保留，AI 在 YOLO 下能看到之前讨论的 context。
 #[tauri::command]
 pub async fn exit_plan_to_yolo(
     session_id: String,
     store: State<'_, SessionStore>,
 ) -> Result<SessionModeState, String> {
-    store.set_mode_state(&session_id, SerializableMode::Yolo, PlanPhase::None);
+    store.set_mode(&session_id, SerializableMode::Yolo);
     Ok(store.mode_state(&session_id))
 }
 
-/// 用户点 plan_card [✅ 就这么干]：接受 plan，切 YOLO 执行。
+/// `accept_plan` 切 Yolo 后注入的执行指令文本。抽成函数供单测钉契约:
+/// 必须裹住方案全文 + 带明确"立即执行"信号,否则切了 Yolo 但 AI 收到空指令不知道干嘛。
+fn accept_plan_instruction(plan_markdown: &str) -> String {
+    format!("用户已批准方案,立即开始执行。方案:\n\n{plan_markdown}")
+}
+
+/// 用户点 plan_card [✅ 就这么干]：接受 plan，切 YOLO 执行(对齐底座 accept-yolo)。
 /// 流程：
-///   1. 设 mode=Yolo, phase=Executing
-///   2. 用 plan_markdown 作为指令前缀发一条 user message 触发执行
+///   1. 设 mode=Yolo
+///   2. 用 plan_markdown 作为指令前缀发一条 user message 触发执行(底座共享 PlanState 仍在)
 /// 前端在调用前应在消息流追加 user 气泡显示「✅ 就这么干」让用户感知。
 #[tauri::command]
 pub async fn accept_plan(
@@ -2296,14 +2354,12 @@ pub async fn accept_plan(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<SessionModeState, String> {
-    store.set_mode_state(&session_id, SerializableMode::Yolo, PlanPhase::Executing);
-    // 简短指令——主约束由 M1 per-turn system-reminder 提供(bridge 按 phase=Executing 注入)。
-    let instruction = format!("用户已批准方案,立即开始执行。方案:\n\n{plan_markdown}");
+    store.set_mode(&session_id, SerializableMode::Yolo);
+    let instruction = accept_plan_instruction(&plan_markdown);
     pool.send_user_message(
         &session_id,
         instruction,
         SerializableMode::Yolo.to_app_mode(),
-        PlanPhase::Executing,
     )
     .await
     .map_err(|e| format!("accept_plan send_user_message: {e:?}"))?;
@@ -2376,14 +2432,15 @@ pub async fn read_skill_body(name: String) -> Result<String, String> {
 // 用户点 [✏️ 改改] 时前端走 DeepSeek-TUI 底座做法:不切 phase, 仅 input 预填"修订方案:"前缀.
 // phase 保持 Ready, 下一条 chat 触发的 Ready reminder 已包含"用户发新消息=隐式修订"语义.
 
-/// 用户点 plan_card [🚪 算了]：放弃整个任务，回 YOLO 默认态。
-/// 与 exit_plan_to_yolo 区别：⚡ 是「不要 plan 直接干」，🚪 是「这事不干了」。
+/// 用户点 plan_card [🚪 算了]：放弃这个方案,但**留在当前模式**(Plan 不踢回 Yolo)。
+/// "算了"= 这个方案不要了,不等于退出规划态;要换模式用户自己点 chip。
+/// 与 accept_plan(切 Yolo 执行) / exit_plan_to_yolo(切 Yolo 直接干) 区别:discard 只关卡片、不动 mode。
 #[tauri::command]
 pub async fn discard_plan(
     session_id: String,
     store: State<'_, SessionStore>,
 ) -> Result<SessionModeState, String> {
-    store.set_mode_state(&session_id, SerializableMode::Yolo, PlanPhase::None);
+    // 不动 mode——放弃方案 ≠ 退出 Plan;仅回传当前状态供前端刷新卡片。
     Ok(store.mode_state(&session_id))
 }
 
@@ -2759,20 +2816,14 @@ pub async fn start_skill_session(
     // 多 session 并发:不预热 engine(lazy)。首条 chat 时 EnginePool 为这个空 session
     //    spawn 专属 engine,空历史无需 SyncSession。
 
-    let injected = format!(
-        "[pinvou3-app] 用户在「工作流」视图启用了 skill: `{name}`。\
-         请按该 skill 的 phases 流程响应 — engine 会自动从你回复里抽 \
-         `<phase id=\"...\"/>` marker 驱动 UI 上方的 phase chip 条,\
-         **每条回复必须以该 marker 单独一行开头**(详见 system prompt 里 \
-         「Phase tracking — MANDATORY for phased skills」段)。",
-        name = skill.name,
-    );
-
+    // [phase marker 下线] 原 pending_instruction 注入"按 phases 流程响应 + engine 自动抽
+    // <phase> marker + Phase tracking 段"的引导,这些底座机制(Skill.phases / marker 抽取)
+    // 已随 v0.8.57 退役。绑定只留 name,skill 能力走底座 progressive disclosure。
     store.bind_skill(
         &sid,
         ActiveSkillBinding {
             name: skill.name.clone(),
-            pending_instruction: Some(injected),
+            pending_instruction: None,
             phases: phases.clone(),
             project_dir: None,
         },
@@ -3809,6 +3860,26 @@ pub async fn list_session_skill_bindings(
 mod tests {
     use super::*;
 
+    /// accept_plan 切 Yolo 后注入的执行指令必须裹住方案全文 + 带"立即执行"信号——
+    /// 否则切了模式但 AI 收到一句空指令,不知道要执行什么(切了白切)。
+    #[test]
+    fn accept_plan_instruction_embeds_full_plan() {
+        let plan = "1. 建目录\n2. 写 index.html\n3. 起本地服务器";
+        let msg = accept_plan_instruction(plan);
+        assert!(msg.contains(plan), "注入指令丢了方案全文");
+        assert!(msg.contains("立即开始执行"), "缺少明确执行信号");
+    }
+
+    /// 挂集时 Self-RAG 引导:含知识集名 + 必调 kb_search + 无依据说不知道;空名兜底。
+    #[test]
+    fn agentic_guide_mentions_collection_and_kb_search() {
+        let g = build_kb_agentic_guide(Some("硬件资料"));
+        assert!(g.contains("《硬件资料》"));
+        assert!(g.contains("kb_search"));
+        assert!(g.contains("绝不凭记忆编造"));
+        assert!(build_kb_agentic_guide(None).contains("《本地知识集》"));
+    }
+
     #[test]
     fn parses_local_asr_plain_text_output() {
         let text = parse_local_asr_text("hello from voice\n", "").expect("plain text");
@@ -3823,8 +3894,8 @@ mod tests {
     }
 
     /// present_artifact 漂工具名失败时,成品卡兜底用 write_file 的相对 path
-    /// (如 `snake-game.html`),点 Open 必须先按 active session workspace 解析成
-    /// 绝对路径,否则 `validate_user_path` 直接拒「path must be absolute」。
+    /// (如 `snake-game.html`),点 Open 必须先按 session workspace 解析成绝对路径,
+    /// 否则 `validate_user_path` 直接拒「path must be absolute」。
     #[test]
     fn resolve_artifact_path_relative_joins_active_workspace() {
         let _g = crate::bridge::paths::tests::ENV_LOCK
@@ -3833,23 +3904,38 @@ mod tests {
         std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-resolve-test");
         let store = SessionStore::boot().expect("boot");
 
-        // 无 active session → 相对路径原样返回(解析不到 workspace,行为同旧版)
+        // 无 active session 且无显式 session → 相对路径原样返回(行为同旧版)
         assert_eq!(
-            resolve_artifact_path("snake-game.html", &store),
+            resolve_artifact_path("snake-game.html", None, &store),
             "snake-game.html"
         );
 
-        // 有 active session → 相对路径落到该 session 的 workspace
+        // 有 active session、无显式 session → 回退 active 的 workspace
         store.set_active(Some("sess-1".into()));
         let want = crate::bridge::paths::session_workspace_dir("sess-1")
             .join("snake-game.html")
             .to_string_lossy()
             .into_owned();
-        assert_eq!(resolve_artifact_path("snake-game.html", &store), want);
+        assert_eq!(resolve_artifact_path("snake-game.html", None, &store), want);
 
-        // 绝对路径原样返回(present_artifact 成功 / 产物面板给的已是绝对)
+        // 显式 session **优先**于 active:卡片自带 session 才能跨会话切换稳定解析
+        // (active 停在切走时去的会话也不影响)。这是本次跨 session「打不开」的修复点。
+        let want_explicit = crate::bridge::paths::session_workspace_dir("sess-owner")
+            .join("snake-game.html")
+            .to_string_lossy()
+            .into_owned();
         assert_eq!(
-            resolve_artifact_path("/home/u/.pinvou3/sessions/x/workspace/a.html", &store),
+            resolve_artifact_path("snake-game.html", Some("sess-owner"), &store),
+            want_explicit
+        );
+
+        // 绝对路径原样返回,无视 session(present_artifact 成功 / 产物面板给的已是绝对)
+        assert_eq!(
+            resolve_artifact_path(
+                "/home/u/.pinvou3/sessions/x/workspace/a.html",
+                Some("sess-owner"),
+                &store
+            ),
             "/home/u/.pinvou3/sessions/x/workspace/a.html"
         );
     }

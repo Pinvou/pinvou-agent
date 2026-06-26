@@ -1,198 +1,205 @@
-# DeepSeek-TUI Fork 修改清单
+﻿# DeepSeek-TUI Fork 淇敼娓呭崟
 
-> pinvou3 对 `DeepSeek-TUI`(已 rebrand `CodeWhale`)底座所有 fork 修改的**单一现状清单**。
-> 用途:① sync 后查 patch 存活 ② 交接 / onboarding ③ 上游 PR 定位改动点。
-> 配套:`scripts/fork-guard.sh`(指纹 + 回归测试守卫)、`docs/fork-policy.md`(维护策略 + sync 流程 + PR 状态)。
+> pinvou3 瀵?`DeepSeek-TUI`(宸?rebrand `CodeWhale`)搴曞骇鎵€鏈?fork 淇敼鐨?*鍗曚竴鐜扮姸娓呭崟**銆?
+> 鐢ㄩ€?鈶?sync 鍚庢煡 patch 瀛樻椿 鈶?浜ゆ帴 / onboarding 鈶?涓婃父 PR 瀹氫綅鏀瑰姩鐐广€?
+> 閰嶅:`scripts/fork-guard.sh`(鎸囩汗 + 鍥炲綊娴嬭瘯瀹堝崼)銆乣docs/fork-policy.md`(缁存姢绛栫暐 + sync 娴佺▼ + PR 鐘舵€?銆?
 >
-> **当前基线**:submodule 分支 `pinvou3-clean` ← upstream **v0.8.60**;HEAD `1161bc78` = v0.8.60 + 8 主题 commit(2026-06-15 clean re-fork,线性历史)。
+> **褰撳墠鍩虹嚎**:submodule 鍒嗘敮 `pinvou3-clean` 鈫?upstream **v0.8.60**;HEAD `1161bc78` = v0.8.60 + 8 涓婚 commit(2026-06-15 clean re-fork,绾挎€у巻鍙?銆?
 
 ---
 
-## 0. 当前状态速览(2026-06-15)
+## 0. 褰撳墠鐘舵€侀€熻(2026-06-15)
 
-| 项 | 值 |
+| 椤?| 鍊?|
 |---|---|
-| submodule 分支 | **`pinvou3-clean`**(`.gitmodules` 追踪);HEAD `1161bc78`;备份 `backup/pre-reclean-v0.8.60` |
-| fork drift | **+2335 / −360 行,43 文件**(`git -C DeepSeek-TUI diff v0.8.60..HEAD --shortstat`)。超 1500 软上限,主体是工作流层 W——属"接受重 fork"(fork-policy §0);app 层 prompt 走 override 注入,不计入 |
-| 历史 | v0.8.60 + 8 commit:C1 lib · C2 blocklist · C3 append_file · C4 safety · C5+C7 prompt-composer · C6 chore · W 工作流层 · docs。后续叠加:C8 会话工具开关 op(#4,`a0efea0b`,2026-06-23) |
-| LLM 暴露 native 工具 | **23 个**(全量注册 − 81 黑名单;**tool_search 已禁用**,模型无法激活 deferred 工具)。MCP `mcp_pinvou_present_artifact` 另接,共 24 入口 |
-| fork-guard | **45 指纹 + 回归测试**(`scripts/fork-guard.sh`;+C8 会话工具开关 2 条);底座 lib 4539 pass(+1 已知 flake:verifier 后台 shell 并行误报)/ app lib 166 pass(单线程) |
-| system prompt | dump 逐字节稳定(210 行,diff=0);per-turn `<runtime_prompt>` tag + goal continuation 均已 gate |
+| submodule 鍒嗘敮 | **`pinvou3-clean`**(`.gitmodules` 杩借釜);HEAD `1161bc78`;澶囦唤 `backup/pre-reclean-v0.8.60` |
+| fork drift | **+2335 / 鈭?60 琛?43 鏂囦欢**(`git -C DeepSeek-TUI diff v0.8.60..HEAD --shortstat`)銆傝秴 1500 杞笂闄?涓讳綋鏄伐浣滄祦灞?W鈥斺€斿睘"鎺ュ彈閲?fork"(fork-policy 搂0);app 灞?prompt 璧?override 娉ㄥ叆,涓嶈鍏?|
+| 鍘嗗彶 | v0.8.60 + 8 commit:C1 lib 路 C2 blocklist 路 C3 append_file 路 C4 safety 路 C5+C7 prompt-composer 路 C6 chore 路 W 宸ヤ綔娴佸眰 路 docs銆傚悗缁彔鍔?C8 浼氳瘽宸ュ叿寮€鍏?op(#4,`a0efea0b`,2026-06-23) 路 R extra_tools 娉ㄥ叆鍙?`6b3059da`,2026-06-24) |
+| LLM 鏆撮湶 native 宸ュ叿 | **23 涓?*(鍏ㄩ噺娉ㄥ唽 鈭?81 榛戝悕鍗?**tool_search 宸茬鐢?*,妯″瀷鏃犳硶婵€娲?deferred 宸ュ叿)銆侻CP `mcp_pinvou_present_artifact` 鍙︽帴,鍏?24 鍏ュ彛 |
+| fork-guard | **49 鎸囩汗 + 鍥炲綊娴嬭瘯**(`scripts/fork-guard.sh`;+C8 浼氳瘽宸ュ叿寮€鍏?2 鏉?+RAG1/RAG2 瀹?extra_tools 娉ㄥ叆鍙?;搴曞骇 lib 4539 pass(+1 宸茬煡 flake:verifier 鍚庡彴 shell 骞惰璇姤)/ app lib 195 pass(鍗曠嚎绋? |
+| system prompt | dump 閫愬瓧鑺傜ǔ瀹?210 琛?diff=0);per-turn `<runtime_prompt>` tag + goal continuation 鍧囧凡 gate |
 
 ---
 
-## 1. fork 结构(C1–C8 + W 逻辑主题)
+## 1. fork 缁撴瀯(C1鈥揅8 + R + W 閫昏緫涓婚)
 
-> 逻辑分组,对应 8 个主题 commit。看某文件 fork-distinct 改动:`git -C DeepSeek-TUI diff v0.8.60..HEAD -- <file>`。
-> 冲突易出血优先级(sync review 顺序):**prompts.rs(C5+C7) > turn_loop.rs(C7) > subagent/mod.rs(W) > tool_catalog.rs(C2) > project_context.rs(C5)**。
+> 閫昏緫鍒嗙粍,瀵瑰簲涓婚 commit銆傜湅鏌愭枃浠?fork-distinct 鏀瑰姩:`git -C DeepSeek-TUI diff v0.8.60..HEAD -- <file>`銆?
+> 鍐茬獊鏄撳嚭琛€浼樺厛绾?sync review 椤哄簭):**prompts.rs(C5+C7) > turn_loop.rs(C7) > subagent/mod.rs(W) > tool_catalog.rs(C2) > project_context.rs(C5)**銆?
 
 ### C1 `lib` library facade
-- **文件**:`crates/tui/src/lib.rs`(整文件——上游只有 `main.rs`,无 lib target)
-- **改动**:`pub mod` 暴露内部模块 + `#[cfg(test)] pub mod test_support`,让 pinvou3-app 以 `deepseek_tui::*` as-library 调用 + `cargo test --lib` 能跑
-- **⚠️ 维护**:上游每加/删模块要**手动同步 `pub mod`**(上游无 lib.rs,3-way 不会自动改)。孤儿 `pub mod` 会编译错(v0.8.51 `cycle_manager` / v0.8.60 `prompt_persist` 删除即此坑);`acp_server` 依赖 bin 专属符号不能进 lib
-- 上游 PR:❌ pinvou3 专用
+- **鏂囦欢**:`crates/tui/src/lib.rs`(鏁存枃浠垛€斺€斾笂娓稿彧鏈?`main.rs`,鏃?lib target)
+- **鏀瑰姩**:`pub mod` 鏆撮湶鍐呴儴妯″潡 + `#[cfg(test)] pub mod test_support`,璁?pinvou3-app 浠?`deepseek_tui::*` as-library 璋冪敤 + `cargo test --lib` 鑳借窇
+- **鈿狅笍 缁存姢**:涓婃父姣忓姞/鍒犳ā鍧楄**鎵嬪姩鍚屾 `pub mod`**(涓婃父鏃?lib.rs,3-way 涓嶄細鑷姩鏀?銆傚鍎?`pub mod` 浼氱紪璇戦敊(v0.8.51 `cycle_manager` / v0.8.60 `prompt_persist` 鍒犻櫎鍗虫鍧?;`acp_server` 渚濊禆 bin 涓撳睘绗﹀彿涓嶈兘杩?lib
+- 涓婃父 PR:鉂?pinvou3 涓撶敤
 
-### C2 `tools` blocklist 工具门控
-- **文件**:`tools/pinvou3_blocklist.rs`(新建,**81 条黑名单**)、`core/engine/tool_catalog.rs`、`tools/registry.rs`、`tools/mod.rs`
-- **哲学**:上游(v0.8.47 起)是 **allowlist**;pinvou3 相反——**显示全部、只隐藏黑名单**,给 Qwen3.6 精简到 **23 工具**
-- **关键**:`pinvou3_should_defer_native_tool(name, mode, always_load)` **mode-aware**:Yolo 只 defer 黑名单。`request_user_input` 跨所有 mode 硬保留(否则 GUI 不出选择气泡);`image_analyze` 放出(需 bridge 开 `VisionModel` feature);`checklist_*` 有意可见。`PINVOU3_BLOCKLIST_OVERRIDE` env 供 L1 harness 解锁
-- **⚠️ tool_search 防御**:blocklist 是「defer 不删除」,工具仍在 catalog。上游 `tool_search`(`ensure_advanced_tooling` 注入)能让模型**搜索激活被 blocklist 的 deferred 工具**→ 击穿门控。修法:`tool_search_*` 进 blocklist + **注入处 gate**(`is_pinvou3_hidden(TOOL_SEARCH_*)` 为真不注入)→ catalog 根本不含
-- **测试**:`pinvou3_yolo_offers_nonblocklisted_tools_outside_upstream_default`、`forkguard_tool_search_not_injected_*`
-- 上游 PR:❌ 哲学相反
+### C2 `tools` blocklist 宸ュ叿闂ㄦ帶
+- **鏂囦欢**:`tools/pinvou3_blocklist.rs`(鏂板缓,**81 鏉￠粦鍚嶅崟**)銆乣core/engine/tool_catalog.rs`銆乣tools/registry.rs`銆乣tools/mod.rs`
+- **鍝插**:涓婃父(v0.8.47 璧?鏄?**allowlist**;pinvou3 鐩稿弽鈥斺€?*鏄剧ず鍏ㄩ儴銆佸彧闅愯棌榛戝悕鍗?*,缁?Qwen3.6 绮剧畝鍒?**23 宸ュ叿**
+- **鍏抽敭**:`pinvou3_should_defer_native_tool(name, mode, always_load)` **mode-aware**:Yolo 鍙?defer 榛戝悕鍗曘€俙request_user_input` 璺ㄦ墍鏈?mode 纭繚鐣?鍚﹀垯 GUI 涓嶅嚭閫夋嫨姘旀场);`image_analyze` 鏀惧嚭(闇€ bridge 寮€ `VisionModel` feature);`checklist_*` 鏈夋剰鍙銆俙PINVOU3_BLOCKLIST_OVERRIDE` env 渚?L1 harness 瑙ｉ攣
+- **鈿狅笍 tool_search 闃插尽**:blocklist 鏄€宒efer 涓嶅垹闄ゃ€?宸ュ叿浠嶅湪 catalog銆備笂娓?`tool_search`(`ensure_advanced_tooling` 娉ㄥ叆)鑳借妯″瀷**鎼滅储婵€娲昏 blocklist 鐨?deferred 宸ュ叿**鈫?鍑荤┛闂ㄦ帶銆備慨娉?`tool_search_*` 杩?blocklist + **娉ㄥ叆澶?gate**(`is_pinvou3_hidden(TOOL_SEARCH_*)` 涓虹湡涓嶆敞鍏?鈫?catalog 鏍规湰涓嶅惈
+- **娴嬭瘯**:`pinvou3_yolo_offers_nonblocklisted_tools_outside_upstream_default`銆乣forkguard_tool_search_not_injected_*`
+- 涓婃父 PR:鉂?鍝插鐩稿弽
 
-### C3 `tools` append_file + 大产物保护
-- **文件**:`tools/file.rs`、`core/engine/dispatch.rs`、`client/chat.rs`、`tools/registry.rs`(`with_file_tools`)、`tui/approval.rs`、`tui/widgets/tool_card.rs`、`tools/approval_cache.rs`
-- **改动**:`append_file` 工具(上游没有)+ content **64KB 硬上限** + `truncated_args_hint`(流截断缺字段→引导分块)+ SSE idle-timeout 遥测 + undo 快照纳入
-- **理由**:本地慢 vLLM 大产物(PPT/长文档)>240s idle timeout 流截断;`write_file` 写 skeleton(≤8KB)→ `append_file` 追加 chunk(≤16KB)
-- **测试**:`truncated_args_hint_*`、`test_{write,append}_file_rejects_oversized_content`
-- 上游 PR:❌ 与专属 `append_file` 深耦合,去耦后无落点
+### C3 `tools` append_file + 澶т骇鐗╀繚鎶?
+- **鏂囦欢**:`tools/file.rs`銆乣core/engine/dispatch.rs`銆乣client/chat.rs`銆乣tools/registry.rs`(`with_file_tools`)銆乣tui/approval.rs`銆乣tui/widgets/tool_card.rs`銆乣tools/approval_cache.rs`
+- **鏀瑰姩**:`append_file` 宸ュ叿(涓婃父娌℃湁)+ content **64KB 纭笂闄?* + `truncated_args_hint`(娴佹埅鏂己瀛楁鈫掑紩瀵煎垎鍧?+ SSE idle-timeout 閬ユ祴 + undo 蹇収绾冲叆
+- **鐞嗙敱**:鏈湴鎱?vLLM 澶т骇鐗?PPT/闀挎枃妗?>240s idle timeout 娴佹埅鏂?`write_file` 鍐?skeleton(鈮?KB)鈫?`append_file` 杩藉姞 chunk(鈮?6KB)
+- **娴嬭瘯**:`truncated_args_hint_*`銆乣test_{write,append}_file_rejects_oversized_content`
+- 涓婃父 PR:鉂?涓庝笓灞?`append_file` 娣辫€﹀悎,鍘昏€﹀悗鏃犺惤鐐?
 
-### C4 `safety` careful 安全 hook
-- **文件**:`tools/shell.rs`、`command_safety.rs`
-- **改动**:Dangerous 命令(`rm -rf /`·`~`·`$HOME`·`/*`、fork bomb)在 **YOLO 也 BLOCKED**(上游 YOLO 跳过)。"YOLO 只是免审批弹窗,不等于允许毁灭性命令"
-- **为何留**(2026-06-15 评估):pinvou3 默认 YOLO + 弱模型 + workspace=$HOME,这是唯一拦 `rm -rf ~` 的网(deny hook 只覆盖敏感路径/sudo,upstream careful 在 YOLO 跳过)。可移 app deny hook 但会削弱(裸字符串匹配 vs `analyze_command` 解包裹 + 丢 `safety_level` 红卡 metadata),不值得
-- **测试**:`forkguard` careful shell YOLO-block 指纹 + `command_safety` Dangerous 测试(含 `bash -lc 'rm -rf /'` 包裹)
-- 上游 PR:❌ 安全模型专用 ·(C4-a 多行逐行已被上游 `split_command_segments` harvest)
+### C4 `safety` careful 瀹夊叏 hook
+- **鏂囦欢**:`tools/shell.rs`銆乣command_safety.rs`
+- **鏀瑰姩**:Dangerous 鍛戒护(`rm -rf /`路`~`路`$HOME`路`/*`銆乫ork bomb)鍦?**YOLO 涔?BLOCKED**(涓婃父 YOLO 璺宠繃)銆?YOLO 鍙槸鍏嶅鎵瑰脊绐?涓嶇瓑浜庡厑璁告瘉鐏€у懡浠?
+- **涓轰綍鐣?*(2026-06-15 璇勪及):pinvou3 榛樿 YOLO + 寮辨ā鍨?+ workspace=$HOME,杩欐槸鍞竴鎷?`rm -rf ~` 鐨勭綉(deny hook 鍙鐩栨晱鎰熻矾寰?sudo,upstream careful 鍦?YOLO 璺宠繃)銆傚彲绉?app deny hook 浣嗕細鍓婂急(瑁稿瓧绗︿覆鍖归厤 vs `analyze_command` 瑙ｅ寘瑁?+ 涓?`safety_level` 绾㈠崱 metadata),涓嶅€煎緱
+- **娴嬭瘯**:`forkguard` careful shell YOLO-block 鎸囩汗 + `command_safety` Dangerous 娴嬭瘯(鍚?`bash -lc 'rm -rf /'` 鍖呰９)
+- 涓婃父 PR:鉂?瀹夊叏妯″瀷涓撶敤 路(C4-a 澶氳閫愯宸茶涓婃父 `split_command_segments` harvest)
 
 ### C5 `prompt` GUI prompt / context / skills
-- **文件**:`project_context.rs`、`project_context_cache.rs`、`skills/mod.rs`、`commands/groups/skills/skills.rs`、`tools/skill.rs`、`prompts.rs`(与 C7 共此文件)
-- **project_context**:`PROJECT_CONTEXT_FILES`/`GLOBAL_PATHS` **砍空**(workspace=$HOME GUI 助手,不读其他 AI 工具配置);`load_repo_constitution_block` **短路**;`generate_ephemeral_context` **砍空返 None**(防 $HOME 树扫成 overview 注入 prompt,仅采上游函数名让调用点编译)
-- **skills**:扫描路径只留 `~/.agents/skills`(原 10 路径,#41;union 接线已被上游 harvest,只剩路径收窄)
-- **测试**:`forkguard_skills_dir_unions_*`;project_context_cache / skills 多路径上游测试 `#[ignore]`
-- 上游 PR:skills union → [#2737](https://github.com/Hmbown/CodeWhale/pull/2737) CLOSED(上游已 harvest);constitution 短路 ❌ 专用
+- **鏂囦欢**:`project_context.rs`銆乣project_context_cache.rs`銆乣skills/mod.rs`銆乣commands/groups/skills/skills.rs`銆乣tools/skill.rs`銆乣prompts.rs`(涓?C7 鍏辨鏂囦欢)
+- **project_context**:`PROJECT_CONTEXT_FILES`/`GLOBAL_PATHS` **鐮嶇┖**(workspace=$HOME GUI 鍔╂墜,涓嶈鍏朵粬 AI 宸ュ叿閰嶇疆);`load_repo_constitution_block` **鐭矾**;`generate_ephemeral_context` **鐮嶇┖杩?None**(闃?$HOME 鏍戞壂鎴?overview 娉ㄥ叆 prompt,浠呴噰涓婃父鍑芥暟鍚嶈璋冪敤鐐圭紪璇?
+- **skills**:鎵弿璺緞鍙暀 `~/.agents/skills`(鍘?10 璺緞,#41;union 鎺ョ嚎宸茶涓婃父 harvest,鍙墿璺緞鏀剁獎)
+- **娴嬭瘯**:`forkguard_skills_dir_unions_*`;project_context_cache / skills 澶氳矾寰勪笂娓告祴璇?`#[ignore]`
+- 涓婃父 PR:skills union 鈫?[#2737](https://github.com/Hmbown/CodeWhale/pull/2737) CLOSED(涓婃父宸?harvest);constitution 鐭矾 鉂?涓撶敤
 
-### C6 `chore` 零碎适配
-- **文件**:`llm_client/mod.rs`、`core/engine/lsp_hooks.rs`、`lsp/mod.rs`、`hooks.rs`(append_file 入 file_write 类)、`core/turn.rs`、`tui/app.rs`、`.gitignore`
-- **改动**:编译 / 接线层零碎适配(各 1-5 行)
+### C6 `chore` 闆剁閫傞厤
+- **鏂囦欢**:`llm_client/mod.rs`銆乣core/engine/lsp_hooks.rs`銆乣lsp/mod.rs`銆乣hooks.rs`(append_file 鍏?file_write 绫?銆乣core/turn.rs`銆乣tui/app.rs`銆乣.gitignore`
+- **鏀瑰姩**:缂栬瘧 / 鎺ョ嚎灞傞浂纰庨€傞厤(鍚?1-5 琛?
 
-### C7 `prompt` static composer hook(密封静态层)
-- **文件**:`prompts.rs`、`core/engine/turn_loop.rs`
-- **机制**:`set_static_prompt_composer_override(Box<dyn Fn(&StaticPromptCtx)->String>)`——embedder 一个 hook **全量接管编译期静态文案**。`StaticPromptCtx` 是 pinvou3 **宽版**(mode/approval_mode/model_id/allow_shell/default_layers)
-- **密封范围**:装了 composer 则后置 append 全 gate 掉——**ContextMgmt + COMPACT_TEMPLATE + Runtime Policy Reference**(`static_prompt_composer().is_none()`)+ **per-turn `<runtime_prompt>` tag**(`static_prompt_composer_installed()`)
-- **理由**:逐块 `set_*_override` 防不住"上游新增块漏进 prompt";composer 把静态层密封,上游升级新 doctrine 进不了 pinvou3 prompt
-- **⚠️ 同名 API 语义分叉**:上游独立实现**窄版** composer(`StaticPromptCtx{model_id, personality, default_layers}`)。决议:删上游窄版、保 pinvou3 宽 ctx;采上游 mode-independent 管线但在 `apply_static_prompt_composer` 内以常量 Yolo/Auto 构造宽 ctx。(v0.8.60 merge:调用点 `effective_static_prompt_composer()` 对齐 pinvou3 访问器 `static_prompt_composer()`)
-- **测试**:submodule `forkguard_static_prompt_composer_*`;app `forkguard_static_composer_*`
-- 上游 PR:[#2786](https://github.com/Hmbown/CodeWhale/pull/2786) CLOSED(上游窄版,语义不同);pinvou3 宽版保 fork
+### C7 `prompt` static composer hook(瀵嗗皝闈欐€佸眰)
+- **鏂囦欢**:`prompts.rs`銆乣core/engine/turn_loop.rs`
+- **鏈哄埗**:`set_static_prompt_composer_override(Box<dyn Fn(&StaticPromptCtx)->String>)`鈥斺€攅mbedder 涓€涓?hook **鍏ㄩ噺鎺ョ缂栬瘧鏈熼潤鎬佹枃妗?*銆俙StaticPromptCtx` 鏄?pinvou3 **瀹界増**(mode/approval_mode/model_id/allow_shell/default_layers)
+- **瀵嗗皝鑼冨洿**:瑁呬簡 composer 鍒欏悗缃?append 鍏?gate 鎺夆€斺€?*ContextMgmt + COMPACT_TEMPLATE + Runtime Policy Reference**(`static_prompt_composer().is_none()`)+ **per-turn `<runtime_prompt>` tag**(`static_prompt_composer_installed()`)
+- **鐞嗙敱**:閫愬潡 `set_*_override` 闃蹭笉浣?涓婃父鏂板鍧楁紡杩?prompt";composer 鎶婇潤鎬佸眰瀵嗗皝,涓婃父鍗囩骇鏂?doctrine 杩涗笉浜?pinvou3 prompt
+- **鈿狅笍 鍚屽悕 API 璇箟鍒嗗弶**:涓婃父鐙珛瀹炵幇**绐勭増** composer(`StaticPromptCtx{model_id, personality, default_layers}`)銆傚喅璁?鍒犱笂娓哥獎鐗堛€佷繚 pinvou3 瀹?ctx;閲囦笂娓?mode-independent 绠＄嚎浣嗗湪 `apply_static_prompt_composer` 鍐呬互甯搁噺 Yolo/Auto 鏋勯€犲 ctx銆?v0.8.60 merge:璋冪敤鐐?`effective_static_prompt_composer()` 瀵归綈 pinvou3 璁块棶鍣?`static_prompt_composer()`)
+- **娴嬭瘯**:submodule `forkguard_static_prompt_composer_*`;app `forkguard_static_composer_*`
+- 涓婃父 PR:[#2786](https://github.com/Hmbown/CodeWhale/pull/2786) CLOSED(涓婃父绐勭増,璇箟涓嶅悓);pinvou3 瀹界増淇?fork
 
-### P `prefix-cache` pwd/workspace 移出静态 system(2026-06-17)
-- **文件**:`prompts.rs`(render_environment_block 删 `- pwd` 行,与 C5/C7 共此文件)、`core/engine.rs`(turn_metadata_block 加 `Current workspace` 行)。app 层同步:`instructions.md` 删 `{{PINVOU3_WORKSPACE}}`/`{{PINVOU3_DATE}}`(改静态文案 + 相对路径引导)、`bridge/mod.rs` 删对应 replace
-- **改动**:每 session 变的 workspace 路径(pwd)从静态 `## Environment` **移出** → per-turn `<turn_meta>` 的 `Current workspace`;date 同理(turn_meta 本就有);产出引导改"用相对路径写,工具自动落 workspace"(实测 4/4,PathEscape 兜底)
-- **理由**:vLLM(开 `--enable-prefix-caching` + 投机解码 mtp)在 prefix-cache **部分命中**(system 前半命中上个 session、到 workspace 处分叉接续 prefill)时,分叉点 KV 不自洽 + mtp 对 KV 敏感 → 工具调用退化成裸 XML(实测 L1 single subagent 25%;**所有工具受影响**,read_file/exec_shell 部分命中下全 0~1/4)。移 pwd/workspace 让 static system 跨 session 字节静态 → 完整命中,25%→~100%。⚠️ **生产 GUI 有 cache warmup 自我预热完整 prefix、基本不犯**(B 5/6);此 fork 主要修 **L1 headless(无 warmup)测试准确性** + 防御(warmup 失效兜底)
-- **测试**:`forkguard_environment_block_omits_volatile_pwd`(指纹同名);L1 `subagent_single_simple`(25%→稳态100%,13/13)+ `relpath_write_file`(相对路径落 workspace,4/4)
-- 上游 PR:✅ **拟提**——prefix-cache 优化通用,且符合上游 environment-volatile 方向(§8 #2314 已 merged);PR 拟为 "move volatile pwd from static system prefix to per-turn turn_meta"
-> ⚠️ **2026-06-18 订正**:本节"生产 GUI 有 cache warmup 自我预热"是**错的**——`build_cache_warmup_request` 底座只有手动 `/cache warmup` TUI 命令触发,pinvou3 Tauri GUI **从不自动调**。真相是新 session **首请求**仍冷启动 × mtp → 首轮采歪(见 Q 节)。pwd-move 本身**与漂移无关**(实测放/不放都不是因),保留即可。
+### P `prefix-cache` pwd/workspace 绉诲嚭闈欐€?system(2026-06-17)
+- **鏂囦欢**:`prompts.rs`(render_environment_block 鍒?`- pwd` 琛?涓?C5/C7 鍏辨鏂囦欢)銆乣core/engine.rs`(turn_metadata_block 鍔?`Current workspace` 琛?銆俛pp 灞傚悓姝?`instructions.md` 鍒?`{{PINVOU3_WORKSPACE}}`/`{{PINVOU3_DATE}}`(鏀归潤鎬佹枃妗?+ 鐩稿璺緞寮曞)銆乣bridge/mod.rs` 鍒犲搴?replace
+- **鏀瑰姩**:姣?session 鍙樼殑 workspace 璺緞(pwd)浠庨潤鎬?`## Environment` **绉诲嚭** 鈫?per-turn `<turn_meta>` 鐨?`Current workspace`;date 鍚岀悊(turn_meta 鏈氨鏈?;浜у嚭寮曞鏀?鐢ㄧ浉瀵硅矾寰勫啓,宸ュ叿鑷姩钀?workspace"(瀹炴祴 4/4,PathEscape 鍏滃簳)
+- **鐞嗙敱**:vLLM(寮€ `--enable-prefix-caching` + 鎶曟満瑙ｇ爜 mtp)鍦?prefix-cache **閮ㄥ垎鍛戒腑**(system 鍓嶅崐鍛戒腑涓婁釜 session銆佸埌 workspace 澶勫垎鍙夋帴缁?prefill)鏃?鍒嗗弶鐐?KV 涓嶈嚜娲?+ mtp 瀵?KV 鏁忔劅 鈫?宸ュ叿璋冪敤閫€鍖栨垚瑁?XML(瀹炴祴 L1 single subagent 25%;**鎵€鏈夊伐鍏峰彈褰卞搷**,read_file/exec_shell 閮ㄥ垎鍛戒腑涓嬪叏 0~1/4)銆傜Щ pwd/workspace 璁?static system 璺?session 瀛楄妭闈欐€?鈫?瀹屾暣鍛戒腑,25%鈫拁100%銆傗殸锔?**鐢熶骇 GUI 鏈?cache warmup 鑷垜棰勭儹瀹屾暣 prefix銆佸熀鏈笉鐘?*(B 5/6);姝?fork 涓昏淇?**L1 headless(鏃?warmup)娴嬭瘯鍑嗙‘鎬?* + 闃插尽(warmup 澶辨晥鍏滃簳)
+- **娴嬭瘯**:`forkguard_environment_block_omits_volatile_pwd`(鎸囩汗鍚屽悕);L1 `subagent_single_simple`(25%鈫掔ǔ鎬?00%,13/13)+ `relpath_write_file`(鐩稿璺緞钀?workspace,4/4)
+- 涓婃父 PR:鉁?**鎷熸彁**鈥斺€攑refix-cache 浼樺寲閫氱敤,涓旂鍚堜笂娓?environment-volatile 鏂瑰悜(搂8 #2314 宸?merged);PR 鎷熶负 "move volatile pwd from static system prefix to per-turn turn_meta"
+> 鈿狅笍 **2026-06-18 璁㈡**:鏈妭"鐢熶骇 GUI 鏈?cache warmup 鑷垜棰勭儹"鏄?*閿欑殑**鈥斺€擿build_cache_warmup_request` 搴曞骇鍙湁鎵嬪姩 `/cache warmup` TUI 鍛戒护瑙﹀彂,pinvou3 Tauri GUI **浠庝笉鑷姩璋?*銆傜湡鐩告槸鏂?session **棣栬姹?*浠嶅喎鍚姩 脳 mtp 鈫?棣栬疆閲囨(瑙?Q 鑺?銆俻wd-move 鏈韩**涓庢紓绉绘棤鍏?*(瀹炴祴鏀?涓嶆斁閮戒笉鏄洜),淇濈暀鍗冲彲銆?
 
-### Q `prefix-cache` session 启动自动 cache warmup(2026-06-18)
-- **文件**:`core/session.rs`(`Session.cache_warmup_done` 运行时标志)、`core/engine/turn_loop.rs`(首请求前置 warmup)
-- **改动**:本 session **第一次发请求前**,用**完整本请求前缀(system+tools+当前轮 user 消息及其 `<turn_meta>`)** clone 一个 `max_tokens=1`/`tool_choice=none`/`stream=none`/响应丢弃的预热请求 `await` 发出,把整段冷前缀喂进 vLLM prefix-cache;一次性(flag)、不进 context、30s 超时兜底
-- **根因/理由**:vLLM(NVFP4)+ mtp 投机解码在新 session **首请求冷 prefill** 上把生成采歪——首个 `tool_call`/`<turn_meta>` 标签/系统指令被吐成裸文本(实测两 session:首轮漂、用户**问一句即自愈**——本质就是手动 warmup)。⚠️ **必须预热到 turn_meta**:模型恰在 `<turn_meta>` 处复读采歪(msg1 实锤 `...qwen36_35b_35b_256k...` 重复),v1 用 `build_cache_warmup_request`(剥掉当前轮 user 消息)漏热 turn_meta → 仍漂;v2 热完整首请求才根治。**漂移与工具表/subagent 放通无关**(兜大圈验证后定论:是首轮冷启动,非 schema)
-- **测试**:`forkguard` `session warmup flag` + `首请求 warmup 注入` 指纹;行为待补 L1(新 session 首轮 tool_call 不漂)
-- 上游 PR:✅ **拟提**——本地 vLLM+mtp 的通用 first-turn 防漂,自动 warmup 比手动 `/cache warmup` 更稳
+### Q `prefix-cache` session 鍚姩鑷姩 cache warmup(2026-06-18)
+- **鏂囦欢**:`core/session.rs`(`Session.cache_warmup_done` 杩愯鏃舵爣蹇?銆乣core/engine/turn_loop.rs`(棣栬姹傚墠缃?warmup)
+- **鏀瑰姩**:鏈?session **绗竴娆″彂璇锋眰鍓?*,鐢?*瀹屾暣鏈姹傚墠缂€(system+tools+褰撳墠杞?user 娑堟伅鍙婂叾 `<turn_meta>`)** clone 涓€涓?`max_tokens=1`/`tool_choice=none`/`stream=none`/鍝嶅簲涓㈠純鐨勯鐑姹?`await` 鍙戝嚭,鎶婃暣娈靛喎鍓嶇紑鍠傝繘 vLLM prefix-cache;涓€娆℃€?flag)銆佷笉杩?context銆?0s 瓒呮椂鍏滃簳
+- **鏍瑰洜/鐞嗙敱**:vLLM(NVFP4)+ mtp 鎶曟満瑙ｇ爜鍦ㄦ柊 session **棣栬姹傚喎 prefill** 涓婃妸鐢熸垚閲囨鈥斺€旈涓?`tool_call`/`<turn_meta>` 鏍囩/绯荤粺鎸囦护琚悙鎴愯８鏂囨湰(瀹炴祴涓?session:棣栬疆婕傘€佺敤鎴?*闂竴鍙ュ嵆鑷剤**鈥斺€旀湰璐ㄥ氨鏄墜鍔?warmup)銆傗殸锔?**蹇呴』棰勭儹鍒?turn_meta**:妯″瀷鎭板湪 `<turn_meta>` 澶勫璇婚噰姝?msg1 瀹為敜 `...qwen36_35b_35b_256k...` 閲嶅),v1 鐢?`build_cache_warmup_request`(鍓ユ帀褰撳墠杞?user 娑堟伅)婕忕儹 turn_meta 鈫?浠嶆紓;v2 鐑畬鏁撮璇锋眰鎵嶆牴娌汇€?*婕傜Щ涓庡伐鍏疯〃/subagent 鏀鹃€氭棤鍏?*(鍏滃ぇ鍦堥獙璇佸悗瀹氳:鏄杞喎鍚姩,闈?schema)
+- **娴嬭瘯**:`forkguard` `session warmup flag` + `棣栬姹?warmup 娉ㄥ叆` 鎸囩汗;琛屼负寰呰ˉ L1(鏂?session 棣栬疆 tool_call 涓嶆紓)
+- 涓婃父 PR:鉁?**鎷熸彁**鈥斺€旀湰鍦?vLLM+mtp 鐨勯€氱敤 first-turn 闃叉紓,鑷姩 warmup 姣旀墜鍔?`/cache warmup` 鏇寸ǔ
 
-### C8 `ops` 会话工具开关(SetDisallowedTools)
-- **文件**:`core/ops.rs`(新增 `Op::SetDisallowedTools { tools: Vec<String> }`)、`core/engine.rs`(handler 写入 `config.disallowed_tools`)
-- **改动**:运行时把"被禁用工具全名(模型可见,小写)"广播给在跑引擎 → 写 `config.disallowed_tools`,下一轮 `filter_tool_catalog_for_gates` 即对模型隐藏。空 = 不禁用
-- **理由**:pinvou3「会话工具开关」需要把用户在 GUI 关掉的 connector 即时同步给引擎(中途生效);消费方在 pinvou3-app `engine_pool::set_disallowed_all` + `commands::set_disabled_connectors`
-- **来源**:fork PR h3c-hexin/DeepSeek-TUI#4(已 ff 进 `pinvou3-clean`,commit `a0efea0b`)
-- **测试**:`forkguard` `SetDisallowedTools op 定义` + `SetDisallowedTools 写 disallowed` 指纹(L1);行为 L2 待补
-- 上游 PR:❌ pinvou3 专用(留 fork)
+### C8 `ops` 浼氳瘽宸ュ叿寮€鍏?SetDisallowedTools)
+- **鏂囦欢**:`core/ops.rs`(鏂板 `Op::SetDisallowedTools { tools: Vec<String> }`)銆乣core/engine.rs`(handler 鍐欏叆 `config.disallowed_tools`)
+- **鏀瑰姩**:杩愯鏃舵妸"琚鐢ㄥ伐鍏峰叏鍚?妯″瀷鍙,灏忓啓)"骞挎挱缁欏湪璺戝紩鎿?鈫?鍐?`config.disallowed_tools`,涓嬩竴杞?`filter_tool_catalog_for_gates` 鍗冲妯″瀷闅愯棌銆傜┖ = 涓嶇鐢?
+- **鐞嗙敱**:pinvou3銆屼細璇濆伐鍏峰紑鍏炽€嶉渶瑕佹妸鐢ㄦ埛鍦?GUI 鍏虫帀鐨?connector 鍗虫椂鍚屾缁欏紩鎿?涓€旂敓鏁?;娑堣垂鏂瑰湪 pinvou3-app `engine_pool::set_disallowed_all` + `commands::set_disabled_connectors`
+- **鏉ユ簮**:fork PR h3c-hexin/DeepSeek-TUI#4(宸?ff 杩?`pinvou3-clean`,commit `a0efea0b`)
+- **娴嬭瘯**:`forkguard` `SetDisallowedTools op 瀹氫箟` + `SetDisallowedTools 鍐?disallowed` 鎸囩汗(L1);琛屼负 L2 寰呰ˉ
+- 涓婃父 PR:鉂?pinvou3 涓撶敤(鐣?fork)
 
-### C9 `mcp` 配置值 `${ENV}` 展开(2026-06-26)
-- **文件**:`crates/tui/src/mcp.rs`
-- **改动**:MCP `headers` 与 stdio `env` 配置值支持 `${ENV_NAME}` 占位符,连接/启动前从当前进程环境展开;缺失或格式非法时返回可诊断错误。配置文件本身仍只保存占位符。
-- **理由**:pinvou3 内置同花顺/企查查/高德天气 MCP 不能再把供应商 API Key 明文写进 `~/.pinvou3/bundle/mcp.json`。Pinvou app 层把真实密钥放进系统凭据存储,运行时同步到进程环境;底座只负责把 mcp.json 中的 `${PINVOU3_MCP_SECRET_*}` 展开后传给 MCP HTTP headers 或 stdio 子进程环境。
-- **安全边界**:不从父进程透传任意 `*_API_KEY`;只展开配置文件显式引用的变量。日志和 spawn 错误仍只打印 env key 列表,不打印值。
-- **测试**:新增 `mcp.rs` 单测覆盖 header/env 展开与缺失变量报错;pinvou3-app marketplace 测试覆盖 mcp.json 不落明文。
-- 上游 PR:✅ 候选。Claude/Codex/OpenCode 风格 mcp config 中常见 `${TOKEN}` 占位,上游注释已提示 v0.8.31 不替换;实现通用且能减少 mcp.json 明文密钥。
+### C9 `mcp` 閰嶇疆鍊?`${ENV}` 灞曞紑(2026-06-26)
+- **鏂囦欢**:`crates/tui/src/mcp.rs`
+- **鏀瑰姩**:MCP `headers` 涓?stdio `env` 閰嶇疆鍊兼敮鎸?`${ENV_NAME}` 鍗犱綅绗?杩炴帴/鍚姩鍓嶄粠褰撳墠杩涚▼鐜灞曞紑;缂哄け鎴栨牸寮忛潪娉曟椂杩斿洖鍙瘖鏂敊璇€傞厤缃枃浠舵湰韬粛鍙繚瀛樺崰浣嶇銆?
+- **鐞嗙敱**:pinvou3 鍐呯疆鍚岃姳椤?浼佹煡鏌?楂樺痉澶╂皵 MCP 涓嶈兘鍐嶆妸渚涘簲鍟?API Key 鏄庢枃鍐欒繘 `~/.pinvou3/bundle/mcp.json`銆侾invou app 灞傛妸鐪熷疄瀵嗛挜鏀捐繘绯荤粺鍑嵁瀛樺偍,杩愯鏃跺悓姝ュ埌杩涚▼鐜;搴曞骇鍙礋璐ｆ妸 mcp.json 涓殑 `${PINVOU3_MCP_SECRET_*}` 灞曞紑鍚庝紶缁?MCP HTTP headers 鎴?stdio 瀛愯繘绋嬬幆澧冦€?
+- **瀹夊叏杈圭晫**:涓嶄粠鐖惰繘绋嬮€忎紶浠绘剰 `*_API_KEY`;鍙睍寮€閰嶇疆鏂囦欢鏄惧紡寮曠敤鐨勫彉閲忋€傛棩蹇楀拰 spawn 閿欒浠嶅彧鎵撳嵃 env key 鍒楄〃,涓嶆墦鍗板€笺€?
+- **娴嬭瘯**:鏂板 `mcp.rs` 鍗曟祴瑕嗙洊 header/env 灞曞紑涓庣己澶卞彉閲忔姤閿?pinvou3-app marketplace 娴嬭瘯瑕嗙洊 mcp.json 涓嶈惤鏄庢枃銆?
+- 涓婃父 PR:鉁?鍊欓€夈€侰laude/Codex/OpenCode 椋庢牸 mcp config 涓父瑙?`${TOKEN}` 鍗犱綅,涓婃父娉ㄩ噴宸叉彁绀?v0.8.31 涓嶆浛鎹?瀹炵幇閫氱敤涓旇兘鍑忓皯 mcp.json 鏄庢枃瀵嗛挜銆?
 
 - **Verification**: `cargo test --manifest-path DeepSeek-TUI/crates/tui/Cargo.toml expand_env_placeholders --lib` PASS (3 passed, 2026-06-26).
-### W `workflow` 三省六部工作流底座层
-- **文件**:`tools/subagent/{mod,tests}.rs`、`core/ops.rs`、`core/events.rs`、`core/engine.rs`、`core/engine/{tests,approval,handle}.rs`、`tools/user_input.rs`、`runtime_threads.rs`、`tui/{sidebar,command_palette,ui,views/mod}.rs`、`main.rs`(EngineConfig 字段)
-- **子 patch**:
+### R `agentic-rag` EngineConfig.extra_tools 搴旂敤灞傚伐鍏锋敞鍏ュ彛(2026-06-24)
+- **鏂囦欢**:`core/engine.rs`(`ExtraTools` newtype + `EngineConfig.extra_tools` 瀛楁 + Default)銆乣core/engine/tool_setup.rs`(`build_turn_tool_registry_builder` 鏈熬 `with_tool` 寰幆娉ㄥ唽);杩炲甫琛?3 澶?TUI 璺緞 EngineConfig literal(`runtime_threads.rs`/`tui/ui.rs`/`main.rs`,`extra_tools: Default::default()`)
+- **鏀瑰姩**:缁?`EngineConfig` 鍔?`pub extra_tools: ExtraTools`(newtype 鍖?`Vec<Arc<dyn ToolSpec>>`,鎵嬪啓 Debug 杈撳嚭宸ュ叿鍚嶁€斺€擿dyn ToolSpec` 闈?Debug,鍚﹀垯鐮?`#[derive(Debug)]`),姣?turn build registry 鏃?append 鍒?builder銆傝**宓屽叆搴旂敤**(pinvou3-app)鏃犻渶 fork 宸ュ叿琛ㄥ嵆鍙敞鍐岃嚜瀹氫箟 `ToolSpec`
+- **鐞嗙敱/鐢ㄩ€?*:Agentic RAG鈥斺€攁pp 灞?`KbSearchTool`(`knowledge/kb_tool.rs`,鎸?`session_id`,execute 鏌ヨ浼氳瘽鎸傝浇鐭ヨ瘑闆?鈫?`L1Store::retrieve_for_chat`)缁忔娉ㄥ叆,璁╂湰鍦?LLM 鑷富璋?`kb_search` 妫€绱㈡湰鍦扮煡璇?鏇夸唬鏃ф敞鍏ュ紡)銆俙spawn_for_session` 鎸?session push,宸ュ叿鎸?session_id 瑙ｅ喅 `ToolContext` 鏃?session_id 鐨勯棶棰?
+- **娴嬭瘯**:`forkguard` `RAG1 extra_tools 瀛楁` + `RAG2 tool_setup 娉ㄥ唽` 鎸囩汗;app lib `blocklist_contract`(kb_search 鍙)+ `kb_tool::tests`;鐪熸満娴嬭嚜鍙戣皟鐢ㄧ巼/骞昏鐜?
+- 涓婃父 PR:鉁?**鎷熸彁**鈥斺€擿extra_tools` 鏄€氱敤鎵╁睍鐐?浠讳綍宓屽叆鏂瑰彲娉ㄥ唽宸ュ叿),涓庡叿浣?kb_search 瑙ｈ€?
 
-  | | 内容 |
+### W `workflow` 涓夌渷鍏儴宸ヤ綔娴佸簳搴у眰
+- **鏂囦欢**:`tools/subagent/{mod,tests}.rs`銆乣core/ops.rs`銆乣core/events.rs`銆乣core/engine.rs`銆乣core/engine/{tests,approval,handle}.rs`銆乣tools/user_input.rs`銆乣runtime_threads.rs`銆乣tui/{sidebar,command_palette,ui,views/mod}.rs`銆乣main.rs`(EngineConfig 瀛楁)
+- **瀛?patch**:
+
+  | | 鍐呭 |
   |---|---|
-  | W1 | `Op::SpawnSubAgent` +role_id/allowed_tools/max_steps/output_schema/expects_file_output;engine 按角色白名单+步数派 Custom SubAgent;空白名单 fail-fast |
-  | W2/W3/W11 | StructuredOutput:`submit_output` 工具 + schema 校验 + x-output-file 落盘;催交重试上限(`MAX_STRUCTURED_OUTPUT_RETRIES`),耗尽置 failed;**结构化产出落盘成功即 break**(否则 temp=0 永动) |
-  | W4 | `request_user_input` 答案总线路由给 SubAgent(`user_input_tx`,不吃 TOOL_TIMEOUT) |
-  | W5 | `AgentComplete` +role(SDAN)+failed(宿主走失败路径,不被陈旧产物洗成 PASS) |
-  | W6 | SubAgent Mailbox(TokenUsage 等信封直达宿主)+ AgentSpawned 关联 agent_id→role_id |
-  | W7 | 贪心解码:SubAgent 每步 `temperature=0`(根治 NVFP4 下工具调用 XML 被采歪→空转) |
-  | W8 | SubAgent surface 注册 web/custom 工具 |
-  | W9 | ~~read_pdf catch_unwind 防 panic~~ **v0.8.60 被上游 `guard_pdf_extract` harvest**(见 §2.2) |
-  | W10 | `EngineConfig.reasoning_effort` 会话建时初始化(不依赖首条 SendMessage);`"off"` 由 app bridge 按 `provider==vllm` 注入 |
-  | W12 | `SubAgentSpawnOptions.max_steps` per-spawn 覆盖(`options.max_steps.unwrap_or(self.max_steps)`),registry 的 15/20/30 真生效 |
-- **tool_whitelist**(与 C2 blocklist **互补两层,不冲突**):`EngineConfig.tool_whitelist` 通用白名单机制(submodule 字段 + turn_loop `retain`)。blocklist 全局减法(建 catalog 时);tool_whitelist per-session `retain`(turn_loop 最后)。whitelist 在 blocklist 过滤后的集上 retain → **无法重新暴露黑名单工具**。⚠️ **app 层监工用法已删(2026-06-15,对话型监工废弃)**:`supervisor_tool_whitelist()` + `spawn_for_session` 施加 + 死代码 `build_engine_config_for_workflow` 均移除,**机制本身(submodule)保留待用,字段恒 None**;submodule `engine.rs:263` doc 仍有一处指向已删函数的悬空引用,待下次 sync 顺带清。
-- **验证**:L1 subagent scenarios 真 vLLM 跑通(`subagent_compare_3_libs` 并行 3 agent / 487s);W1–W12 forkguard 指纹;行为层仅 W10 `engine_config_locks_critical_fields`
-- 上游 PR:❌ pinvou3 专用(可复用上游 WhaleFlow 基础 crate,暂未迁)
+  | W1 | `Op::SpawnSubAgent` +role_id/allowed_tools/max_steps/output_schema/expects_file_output;engine 鎸夎鑹茬櫧鍚嶅崟+姝ユ暟娲?Custom SubAgent;绌虹櫧鍚嶅崟 fail-fast |
+  | W2/W3/W11 | StructuredOutput:`submit_output` 宸ュ叿 + schema 鏍￠獙 + x-output-file 钀界洏;鍌氦閲嶈瘯涓婇檺(`MAX_STRUCTURED_OUTPUT_RETRIES`),鑰楀敖缃?failed;**缁撴瀯鍖栦骇鍑鸿惤鐩樻垚鍔熷嵆 break**(鍚﹀垯 temp=0 姘稿姩) |
+  | W4 | `request_user_input` 绛旀鎬荤嚎璺敱缁?SubAgent(`user_input_tx`,涓嶅悆 TOOL_TIMEOUT) |
+  | W5 | `AgentComplete` +role(SDAN)+failed(瀹夸富璧板け璐ヨ矾寰?涓嶈闄堟棫浜х墿娲楁垚 PASS) |
+  | W6 | SubAgent Mailbox(TokenUsage 绛変俊灏佺洿杈惧涓?+ AgentSpawned 鍏宠仈 agent_id鈫抮ole_id |
+  | W7 | 璐績瑙ｇ爜:SubAgent 姣忔 `temperature=0`(鏍规不 NVFP4 涓嬪伐鍏疯皟鐢?XML 琚噰姝啋绌鸿浆) |
+  | W8 | SubAgent surface 娉ㄥ唽 web/custom 宸ュ叿 |
+  | W9 | ~~read_pdf catch_unwind 闃?panic~~ **v0.8.60 琚笂娓?`guard_pdf_extract` harvest**(瑙?搂2.2) |
+  | W10 | `EngineConfig.reasoning_effort` 浼氳瘽寤烘椂鍒濆鍖?涓嶄緷璧栭鏉?SendMessage);`"off"` 鐢?app bridge 鎸?`provider==vllm` 娉ㄥ叆 |
+  | W12 | `SubAgentSpawnOptions.max_steps` per-spawn 瑕嗙洊(`options.max_steps.unwrap_or(self.max_steps)`),registry 鐨?15/20/30 鐪熺敓鏁?|
+- **tool_whitelist**(涓?C2 blocklist **浜掕ˉ涓ゅ眰,涓嶅啿绐?*):`EngineConfig.tool_whitelist` 閫氱敤鐧藉悕鍗曟満鍒?submodule 瀛楁 + turn_loop `retain`)銆俠locklist 鍏ㄥ眬鍑忔硶(寤?catalog 鏃?;tool_whitelist per-session `retain`(turn_loop 鏈€鍚?銆倃hitelist 鍦?blocklist 杩囨护鍚庣殑闆嗕笂 retain 鈫?**鏃犳硶閲嶆柊鏆撮湶榛戝悕鍗曞伐鍏?*銆傗殸锔?**app 灞傜洃宸ョ敤娉曞凡鍒?2026-06-15,瀵硅瘽鍨嬬洃宸ュ簾寮?**:`supervisor_tool_whitelist()` + `spawn_for_session` 鏂藉姞 + 姝讳唬鐮?`build_engine_config_for_workflow` 鍧囩Щ闄?**鏈哄埗鏈韩(submodule)淇濈暀寰呯敤,瀛楁鎭?None**;submodule `engine.rs:263` doc 浠嶆湁涓€澶勬寚鍚戝凡鍒犲嚱鏁扮殑鎮┖寮曠敤,寰呬笅娆?sync 椤哄甫娓呫€?
+- **楠岃瘉**:L1 subagent scenarios 鐪?vLLM 璺戦€?`subagent_compare_3_libs` 骞惰 3 agent / 487s);W1鈥揥12 forkguard 鎸囩汗;琛屼负灞備粎 W10 `engine_config_locks_critical_fields`
+- 涓婃父 PR:鉂?pinvou3 涓撶敤(鍙鐢ㄤ笂娓?WhaleFlow 鍩虹 crate,鏆傛湭杩?
 
-### app 层 fork(不在 submodule —— override hook / bridge 注入,fork-guard 也守)
-- **prompt 内容(单一来源,main #14 重构 2026-06-15)**:`resources/bundle/instructions.md` 是**唯一 pinvou3 prompt 来源**——宪法/裁决/`AUTHORITY_RECAP` 全折叠进 §底线 + 动态注入 `{{PINVOU3_MODEL}}`/`{{PINVOU3_DATE}}`(治"编时间");`bridge/bundle.rs` 只剩 Mode 块 + `LOCALE_PREAMBLE/CLOSER` zh+ja 短版(`AUTHORITY_RECAP=""`、base.md 留空 stub、`compose_static_layers` 丢 base 只剩 Mode,**Plan 模式仍按 mode 切**)。经 `set_*_override` + `set_static_prompt_composer_override` 注入。**submodule 内 prompt 文案 drift=0**。依据=ablation 实测(user memory `prompt-ablation-methodology`):base.md 对 Qwen3.6 可测价值仅 Voice;整 prompt 22590→16612B,剩余大头=Skills~52%(`~/.agents/skills` 全局 lark 技能,待重设计)
-- **bridge config**(`bridge/mod.rs`):`subagent_api_timeout=300`、`max_subagents`(prefs 默认)、`network_policy` fake-ip CIDR(`198.18.0.0/15`)、`compaction.token_threshold=190_000`(256K×74%)、`InstructionSource::Inline`。v0.8.58-60 新字段(verbosity/interactive_launch_limit/goal_*/disallowed_tools)全透传 default
-- **敏感目录 deny hook**:`resources/bundle/deny_sensitive_paths.sh`——ToolCallBefore 拦敏感路径 + 关闭态 sudo。**hard-deny 必须 `exit 2`**(v0.8.60 Hooks v2 `fold_tool_call_before_results` 只认 exit_code==2,旧 exit 1 被当 passthrough)
-- **dump 工具**:`bin/dump_system_prompt.rs`(随 `PromptSessionContext` 字段 / prompt 函数签名维护)
-
----
-
-## 2. 移除 / harvest 清单
-
-### 2.1 clean re-fork 永久丢弃(2026-06-04,不再带入)
-- subagent 本地约束全套(MAX_STEPS/ELAPSED/resolve_agent_ref/tool_agent_route)——`agent_*`/`delegate` 全在 blocklist,生产不可达
-- phase/demo workflow(跨仓全删)——已由 W 三省六部重做
-- qwen-128K 死码(models.rs)——真实模型走上游 `_Nk` hint
-
-### 2.2 已被上游 harvest(指纹撤除,非 fork-distinct)
-- **v0.8.53 及以前**:bing decode、network_policy fake-ip API、InstructionSource enum、base override hook、EngineConfig.instructions、256K auto-compact 基础设施、MAX_OUTPUT env、file_search/grep_files timeout
-- **v0.8.57**:skills union 接线、C4-a 多行逐行(`split_command_segments`)、本地 Bocha(#2946)
-- **v0.8.60**:**W9 read_pdf catch_unwind** → 上游 `guard_pdf_extract`(`file.rs`,同语义 catch_unwind+错误映射,带自测;char-boundary 部分也已是上游自带)。代价仅罕见 font/CMap panic 的中文提示
+### app 灞?fork(涓嶅湪 submodule 鈥斺€?override hook / bridge 娉ㄥ叆,fork-guard 涔熷畧)
+- **prompt 鍐呭(鍗曚竴鏉ユ簮,main #14 閲嶆瀯 2026-06-15)**:`resources/bundle/instructions.md` 鏄?*鍞竴 pinvou3 prompt 鏉ユ簮**鈥斺€斿娉?瑁佸喅/`AUTHORITY_RECAP` 鍏ㄦ姌鍙犺繘 搂搴曠嚎 + 鍔ㄦ€佹敞鍏?`{{PINVOU3_MODEL}}`/`{{PINVOU3_DATE}}`(娌?缂栨椂闂?);`bridge/bundle.rs` 鍙墿 Mode 鍧?+ `LOCALE_PREAMBLE/CLOSER` zh+ja 鐭増(`AUTHORITY_RECAP=""`銆乥ase.md 鐣欑┖ stub銆乣compose_static_layers` 涓?base 鍙墿 Mode,**Plan 妯″紡浠嶆寜 mode 鍒?*)銆傜粡 `set_*_override` + `set_static_prompt_composer_override` 娉ㄥ叆銆?*submodule 鍐?prompt 鏂囨 drift=0**銆備緷鎹?ablation 瀹炴祴(user memory `prompt-ablation-methodology`):base.md 瀵?Qwen3.6 鍙祴浠峰€间粎 Voice;鏁?prompt 22590鈫?6612B,鍓╀綑澶уご=Skills~52%(`~/.agents/skills` 鍏ㄥ眬 lark 鎶€鑳?寰呴噸璁捐)
+- **bridge config**(`bridge/mod.rs`):`subagent_api_timeout=300`銆乣max_subagents`(prefs 榛樿)銆乣network_policy` fake-ip CIDR(`198.18.0.0/15`)銆乣compaction.token_threshold=190_000`(256K脳74%)銆乣InstructionSource::Inline`銆倂0.8.58-60 鏂板瓧娈?verbosity/interactive_launch_limit/goal_*/disallowed_tools)鍏ㄩ€忎紶 default
+- **鏁忔劅鐩綍 deny hook**:`resources/bundle/deny_sensitive_paths.sh`鈥斺€擳oolCallBefore 鎷︽晱鎰熻矾寰?+ 鍏抽棴鎬?sudo銆?*hard-deny 蹇呴』 `exit 2`**(v0.8.60 Hooks v2 `fold_tool_call_before_results` 鍙 exit_code==2,鏃?exit 1 琚綋 passthrough)
+- **dump 宸ュ叿**:`bin/dump_system_prompt.rs`(闅?`PromptSessionContext` 瀛楁 / prompt 鍑芥暟绛惧悕缁存姢)
 
 ---
 
-## 3. fork-guard 守护 + sync 后验证
+## 2. 绉婚櫎 / harvest 娓呭崟
+
+### 2.1 clean re-fork 姘镐箙涓㈠純(2026-06-04,涓嶅啀甯﹀叆)
+- subagent 鏈湴绾︽潫鍏ㄥ(MAX_STEPS/ELAPSED/resolve_agent_ref/tool_agent_route)鈥斺€擿agent_*`/`delegate` 鍏ㄥ湪 blocklist,鐢熶骇涓嶅彲杈?
+- phase/demo workflow(璺ㄤ粨鍏ㄥ垹)鈥斺€斿凡鐢?W 涓夌渷鍏儴閲嶅仛
+- qwen-128K 姝荤爜(models.rs)鈥斺€旂湡瀹炴ā鍨嬭蛋涓婃父 `_Nk` hint
+
+### 2.2 宸茶涓婃父 harvest(鎸囩汗鎾ら櫎,闈?fork-distinct)
+- **v0.8.53 鍙婁互鍓?*:bing decode銆乶etwork_policy fake-ip API銆両nstructionSource enum銆乥ase override hook銆丒ngineConfig.instructions銆?56K auto-compact 鍩虹璁炬柦銆丮AX_OUTPUT env銆乫ile_search/grep_files timeout
+- **v0.8.57**:skills union 鎺ョ嚎銆丆4-a 澶氳閫愯(`split_command_segments`)銆佹湰鍦?Bocha(#2946)
+- **v0.8.60**:**W9 read_pdf catch_unwind** 鈫?涓婃父 `guard_pdf_extract`(`file.rs`,鍚岃涔?catch_unwind+閿欒鏄犲皠,甯﹁嚜娴?char-boundary 閮ㄥ垎涔熷凡鏄笂娓歌嚜甯?銆備唬浠蜂粎缃曡 font/CMap panic 鐨勪腑鏂囨彁绀?
+
+---
+
+## 3. fork-guard 瀹堟姢 + sync 鍚庨獙璇?
 
 ```bash
-./scripts/fork-guard.sh          # 全量:指纹层 + 编译跑回归测试
-./scripts/fork-guard.sh --fast   # 仅指纹层,秒级(merge 后第一道快筛)
+./scripts/fork-guard.sh          # 鍏ㄩ噺:鎸囩汗灞?+ 缂栬瘧璺戝洖褰掓祴璇?
+./scripts/fork-guard.sh --fast   # 浠呮寚绾瑰眰,绉掔骇(merge 鍚庣涓€閬撳揩绛?
 ```
 
-两层:**指纹层** grep 每个 fork 标记是否还在(抓「merge 静默丢整段 patch」);**行为层** `cargo test` 跑回归测试(抓「值/逻辑被改回上游」)。**43 指纹**(submodule C1-C7+W+P / app),完整清单见 `fork-guard.sh` `fingerprints=` 数组——新增 fork patch 必同步加指纹(见 fork-policy §3)。
+涓ゅ眰:**鎸囩汗灞?* grep 姣忎釜 fork 鏍囪鏄惁杩樺湪(鎶撱€宮erge 闈欓粯涓㈡暣娈?patch銆?;**琛屼负灞?* `cargo test` 璺戝洖褰掓祴璇?鎶撱€屽€?閫昏緫琚敼鍥炰笂娓搞€?銆?*43 鎸囩汗**(submodule C1-C7+W+P / app),瀹屾暣娓呭崟瑙?`fork-guard.sh` `fingerprints=` 鏁扮粍鈥斺€旀柊澧?fork patch 蹇呭悓姝ュ姞鎸囩汗(瑙?fork-policy 搂3)銆?
 
-### ⚠️ sync 后必做验证 checklist(fork-guard **不够**,每条都踩过坑)
-1. **全量 lib 测试** `cargo test -p codewhale-tui --lib`——抓非 `forkguard_` 前缀的上游测试因 fork fail(v0.8.51 append_file 静默丢失靠此抓)
-2. **dump_system_prompt 前后 diff**(不在 fork-guard 构建里)——非 0 就逐块查谁漏进静态 prompt(v0.8.57 Runtime Policy 141 行泄漏靠此抓)
-3. **扫 per-turn message 构造路径** `grep -rn "runtime_prompt\|messages.push" turn_loop.rs engine.rs`——上游可能新增每请求注入的 transient 消息,dump 抓不到
-4. **工具集合 + 激活机制盘点**:① 对比两版 `ToolSpec::name()` 集合,新工具漏入要补黑名单;② **更要查上游有没有新增能激活 deferred 工具的机制**(`tool_search`/`ensure_advanced_tooling` 类)——blocklist 是 defer 非删除,任何激活 deferred 的新路径都击穿门控
-5. **hook 决策协议**:上游可能改 hook 退出码/JSON 契约(v0.8.60 Hooks v2 把 hard-deny 从「非零」改成「exit 2」)——dump/编译都抓不到,必须读 `fold_tool_call_before_results` 确认 deny 脚本退出码契约
-6. **app 端单线程测试** `cargo test --manifest-path pinvou3-app/.../Cargo.toml --lib -- --test-threads=1`——bridge env 测试并行会 flake(非回归)
+### 鈿狅笍 sync 鍚庡繀鍋氶獙璇?checklist(fork-guard **涓嶅**,姣忔潯閮借俯杩囧潙)
+1. **鍏ㄩ噺 lib 娴嬭瘯** `cargo test -p codewhale-tui --lib`鈥斺€旀姄闈?`forkguard_` 鍓嶇紑鐨勪笂娓告祴璇曞洜 fork fail(v0.8.51 append_file 闈欓粯涓㈠け闈犳鎶?
+2. **dump_system_prompt 鍓嶅悗 diff**(涓嶅湪 fork-guard 鏋勫缓閲?鈥斺€旈潪 0 灏遍€愬潡鏌ヨ皝婕忚繘闈欐€?prompt(v0.8.57 Runtime Policy 141 琛屾硠婕忛潬姝ゆ姄)
+3. **鎵?per-turn message 鏋勯€犺矾寰?* `grep -rn "runtime_prompt\|messages.push" turn_loop.rs engine.rs`鈥斺€斾笂娓稿彲鑳芥柊澧炴瘡璇锋眰娉ㄥ叆鐨?transient 娑堟伅,dump 鎶撲笉鍒?
+4. **宸ュ叿闆嗗悎 + 婵€娲绘満鍒剁洏鐐?*:鈶?瀵规瘮涓ょ増 `ToolSpec::name()` 闆嗗悎,鏂板伐鍏锋紡鍏ヨ琛ラ粦鍚嶅崟;鈶?**鏇磋鏌ヤ笂娓告湁娌℃湁鏂板鑳芥縺娲?deferred 宸ュ叿鐨勬満鍒?*(`tool_search`/`ensure_advanced_tooling` 绫?鈥斺€攂locklist 鏄?defer 闈炲垹闄?浠讳綍婵€娲?deferred 鐨勬柊璺緞閮藉嚮绌块棬鎺?
+5. **hook 鍐崇瓥鍗忚**:涓婃父鍙兘鏀?hook 閫€鍑虹爜/JSON 濂戠害(v0.8.60 Hooks v2 鎶?hard-deny 浠庛€岄潪闆躲€嶆敼鎴愩€宔xit 2銆?鈥斺€攄ump/缂栬瘧閮芥姄涓嶅埌,蹇呴』璇?`fold_tool_call_before_results` 纭 deny 鑴氭湰閫€鍑虹爜濂戠害
+6. **app 绔崟绾跨▼娴嬭瘯** `cargo test --manifest-path pinvou3-app/.../Cargo.toml --lib -- --test-threads=1`鈥斺€攂ridge env 娴嬭瘯骞惰浼?flake(闈炲洖褰?
 
 ---
 
-## 4. Sync 历史
+## 4. Sync 鍘嗗彶
 
 ### Clean re-fork(2026-06-15,HEAD `1161bc78`)
-第 2 次 clean re-fork(首次 2026-06-04 ← v0.8.53)。动机:v0.8.60 merge 后历史乱(26 commit / ~10 merge / fork 散落三次 sync)。
-- **做法**:`git reset --soft v0.8.60` 保留全部 fork 树 → 按 file→theme 重组成 8 个线性主题 commit,**最终树与 merge `fa412ca1` 字节等价**(fork-guard 41 指纹全过)。备份 `backup/pre-reclean-v0.8.60`
-- **逐 patch 评估**:全部 C1-C7+W 都在用(L1 21/21 + L2 166 + forkguard 验证),无活代码可删;C4 评估为留(YOLO 防灾难网);tool_whitelist↔blocklist 不冲突(互补两层);Plan 模式属 app 层独立清理,本次不动
-- **清理**:shell.rs 删已推翻的 `嘴替设计.md` 引用;engine.rs 去过时品悟引用 + 加 tool_whitelist 两层模型 doc
+绗?2 娆?clean re-fork(棣栨 2026-06-04 鈫?v0.8.53)銆傚姩鏈?v0.8.60 merge 鍚庡巻鍙蹭贡(26 commit / ~10 merge / fork 鏁ｈ惤涓夋 sync)銆?
+- **鍋氭硶**:`git reset --soft v0.8.60` 淇濈暀鍏ㄩ儴 fork 鏍?鈫?鎸?file鈫抰heme 閲嶇粍鎴?8 涓嚎鎬т富棰?commit,**鏈€缁堟爲涓?merge `fa412ca1` 瀛楄妭绛変环**(fork-guard 41 鎸囩汗鍏ㄨ繃)銆傚浠?`backup/pre-reclean-v0.8.60`
+- **閫?patch 璇勪及**:鍏ㄩ儴 C1-C7+W 閮藉湪鐢?L1 21/21 + L2 166 + forkguard 楠岃瘉),鏃犳椿浠ｇ爜鍙垹;C4 璇勪及涓虹暀(YOLO 闃茬伨闅剧綉);tool_whitelist鈫攂locklist 涓嶅啿绐?浜掕ˉ涓ゅ眰);Plan 妯″紡灞?app 灞傜嫭绔嬫竻鐞?鏈涓嶅姩
+- **娓呯悊**:shell.rs 鍒犲凡鎺ㄧ炕鐨?`鍢存浛璁捐.md` 寮曠敤;engine.rs 鍘昏繃鏃跺搧鎮熷紩鐢?+ 鍔?tool_whitelist 涓ゅ眰妯″瀷 doc
 
-### v0.8.60(2026-06-15,merge v0.8.57→v0.8.60,279 commit / 248 文件)
-**大版本 sync**。上游主线:Native Anthropic provider、**Hooks v2(JSON allow/deny/ask 决策契约)**、Agent Fleet 真跑、/goal 目标管理、concise verbosity、interactive fanout 闸、多 provider/model、命令重构成 `commands/groups/`、constitution prompt 改 YAML+renderer。
-- **冲突面小**:248 文件仅 **7 文件 / 14 冲突块**(其余自动合并)。详:prompts.rs(C7 测试 + 访问器名对齐)/ turn_loop.rs(C7 gate)/ project_context.rs(C5 砍空保 None)/ subagent/mod.rs(W union)/ subagent/tests.rs(W union)/ file.rs(W9 harvest)/ main.rs(EngineConfig 字段)
-- **🔴 抓到真安全回归**:`deny_sensitive_paths.sh` 靠 **exit 1** 拒绝,但 Hooks v2 改成只认 `exit_code==2`(exit 1 当 ALLOW)→ 硬墙静默失效。修:全改 exit 2 + fork-guard 加指纹
-- **app 适配**:EngineConfig/Op/dump 补 5+3+2 个新字段(GUI 全透传 default);lib.rs 加 `pub mod fleet/context_report/model_inventory`、删孤儿 `prompt_persist`
-- **验证**:dump 字节稳定、blocklist 无需改(无新 model 工具)、fork-guard 全过、lib 4539/app 166 pass、L1 21/21
-- **教训**:① 上游同语义 API 名差异(`effective_static_prompt_composer`)merge 取上游名,编译能抓;② **hook 决策协议变更是 dump/编译都抓不到的隐形安全回归——必须读 fold 逻辑**;③ 大版本号差≠小 diff,commit/文件数才是真规模
+### v0.8.60(2026-06-15,merge v0.8.57鈫抳0.8.60,279 commit / 248 鏂囦欢)
+**澶х増鏈?sync**銆備笂娓镐富绾?Native Anthropic provider銆?*Hooks v2(JSON allow/deny/ask 鍐崇瓥濂戠害)**銆丄gent Fleet 鐪熻窇銆?goal 鐩爣绠＄悊銆乧oncise verbosity銆乮nteractive fanout 闂搞€佸 provider/model銆佸懡浠ら噸鏋勬垚 `commands/groups/`銆乧onstitution prompt 鏀?YAML+renderer銆?
+- **鍐茬獊闈㈠皬**:248 鏂囦欢浠?**7 鏂囦欢 / 14 鍐茬獊鍧?*(鍏朵綑鑷姩鍚堝苟)銆傝:prompts.rs(C7 娴嬭瘯 + 璁块棶鍣ㄥ悕瀵归綈)/ turn_loop.rs(C7 gate)/ project_context.rs(C5 鐮嶇┖淇?None)/ subagent/mod.rs(W union)/ subagent/tests.rs(W union)/ file.rs(W9 harvest)/ main.rs(EngineConfig 瀛楁)
+- **馃敶 鎶撳埌鐪熷畨鍏ㄥ洖褰?*:`deny_sensitive_paths.sh` 闈?**exit 1** 鎷掔粷,浣?Hooks v2 鏀规垚鍙 `exit_code==2`(exit 1 褰?ALLOW)鈫?纭闈欓粯澶辨晥銆備慨:鍏ㄦ敼 exit 2 + fork-guard 鍔犳寚绾?
+- **app 閫傞厤**:EngineConfig/Op/dump 琛?5+3+2 涓柊瀛楁(GUI 鍏ㄩ€忎紶 default);lib.rs 鍔?`pub mod fleet/context_report/model_inventory`銆佸垹瀛ゅ効 `prompt_persist`
+- **楠岃瘉**:dump 瀛楄妭绋冲畾銆乥locklist 鏃犻渶鏀?鏃犳柊 model 宸ュ叿)銆乫ork-guard 鍏ㄨ繃銆乴ib 4539/app 166 pass銆丩1 21/21
+- **鏁欒**:鈶?涓婃父鍚岃涔?API 鍚嶅樊寮?`effective_static_prompt_composer`)merge 鍙栦笂娓稿悕,缂栬瘧鑳芥姄;鈶?**hook 鍐崇瓥鍗忚鍙樻洿鏄?dump/缂栬瘧閮芥姄涓嶅埌鐨勯殣褰㈠畨鍏ㄥ洖褰掆€斺€斿繀椤昏 fold 閫昏緫**;鈶?澶х増鏈彿宸墵灏?diff,commit/鏂囦欢鏁版墠鏄湡瑙勬ā
 
-### v0.8.57(2026-06-11,merge v0.8.53→v0.8.57,342 commit)
-DeepSeek→CodeWhale rebrand + **system prompt 改 mode-independent**(mode/approval 移出静态前缀走 per-turn `<runtime_prompt>` tag)。关键判断:C7 composer 同名 API 语义分叉(保宽 ctx)、Runtime Policy + runtime_prompt tag 两道新 gate(#42)、**tool_search 击穿 blocklist**(上游新注入路径激活 deferred agent 工具 → 前端裸 JSON;靠 `spawn_headless` probe 真实链路定位,修法见 C2)。
+### v0.8.57(2026-06-11,merge v0.8.53鈫抳0.8.57,342 commit)
+DeepSeek鈫扖odeWhale rebrand + **system prompt 鏀?mode-independent**(mode/approval 绉诲嚭闈欐€佸墠缂€璧?per-turn `<runtime_prompt>` tag)銆傚叧閿垽鏂?C7 composer 鍚屽悕 API 璇箟鍒嗗弶(淇濆 ctx)銆丷untime Policy + runtime_prompt tag 涓ら亾鏂?gate(#42)銆?*tool_search 鍑荤┛ blocklist**(涓婃父鏂版敞鍏ヨ矾寰勬縺娲?deferred agent 宸ュ叿 鈫?鍓嶇瑁?JSON;闈?`spawn_headless` probe 鐪熷疄閾捐矾瀹氫綅,淇硶瑙?C2)銆?
 
-### 旧版教训速查(v0.8.47–53,per-conflict 细节已废弃)
-| 版本 | 可复用教训 |
+### 鏃х増鏁欒閫熸煡(v0.8.47鈥?3,per-conflict 缁嗚妭宸插簾寮?
+| 鐗堟湰 | 鍙鐢ㄦ暀璁?|
 |---|---|
-| v0.8.53 | dump bin 不在 fork-guard 构建里,**sync 后单跑**(`PromptSessionContext` 漏字段靠它抓) |
-| v0.8.51 | **sync 后必跑全量 lib 测试**(merge 取上游 `Implementer.allowed_tools` 静默丢 append_file) |
-| v0.8.49 | **整文件 `--theirs` 危险**(冲掉不在冲突区的 fork patch)→ fork-distinct 文件逐 hunk 解 |
-| v0.8.47 | 上游把工具 deferral 翻成 allowlist(`request_user_input` 被 defer 气泡消失)→ C2 的由来 |
+| v0.8.53 | dump bin 涓嶅湪 fork-guard 鏋勫缓閲?**sync 鍚庡崟璺?*(`PromptSessionContext` 婕忓瓧娈甸潬瀹冩姄) |
+| v0.8.51 | **sync 鍚庡繀璺戝叏閲?lib 娴嬭瘯**(merge 鍙栦笂娓?`Implementer.allowed_tools` 闈欓粯涓?append_file) |
+| v0.8.49 | **鏁存枃浠?`--theirs` 鍗遍櫓**(鍐叉帀涓嶅湪鍐茬獊鍖虹殑 fork patch)鈫?fork-distinct 鏂囦欢閫?hunk 瑙?|
+| v0.8.47 | 涓婃父鎶婂伐鍏?deferral 缈绘垚 allowlist(`request_user_input` 琚?defer 姘旀场娑堝け)鈫?C2 鐨勭敱鏉?|
 
-### app 层 prompt 瘦身(2026-06-05,20.2K→8.9K,迭代 prompt 前必读)
-反事实审计(「没它哪条生产路径会变」)删:Personality(并入 base.md §Voice)/ Session Longevity(与 blocklist 矛盾)/ Approval Policy(单 Yolo-Auto)/ prompt-cache 教学 / Compaction Relay 模板(无生产者无消费者)/ Article VII 九层→三行裁决 / Sub-agents(工具不可见)。操作性原则归 instructions.md 单一来源,base.md 只留红线+裁决+语气。
+### app 灞?prompt 鐦﹁韩(2026-06-05,20.2K鈫?.9K,杩唬 prompt 鍓嶅繀璇?
+鍙嶄簨瀹炲璁?銆屾病瀹冨摢鏉＄敓浜ц矾寰勪細鍙樸€?鍒?Personality(骞跺叆 base.md 搂Voice)/ Session Longevity(涓?blocklist 鐭涚浘)/ Approval Policy(鍗?Yolo-Auto)/ prompt-cache 鏁欏 / Compaction Relay 妯℃澘(鏃犵敓浜ц€呮棤娑堣垂鑰?/ Article VII 涔濆眰鈫掍笁琛岃鍐?/ Sub-agents(宸ュ叿涓嶅彲瑙?銆傛搷浣滄€у師鍒欏綊 instructions.md 鍗曚竴鏉ユ簮,base.md 鍙暀绾㈢嚎+瑁佸喅+璇皵銆?

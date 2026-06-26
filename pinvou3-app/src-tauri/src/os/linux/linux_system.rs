@@ -1,7 +1,14 @@
 use std::ffi::OsStr;
+use std::io::Write;
 use std::process::Command;
 
+use tauri::Emitter;
+
 use super::linux_path;
+
+const ASR_MODEL_URL: &str =
+    "https://www.modelscope.cn/models/lovemefan/SenseVoiceGGUF/resolve/master/sense-voice-small-q4_k.gguf";
+const ASR_MODEL_SIZE: u64 = 182_278_688;
 
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     Command::new("xdg-open")
@@ -50,6 +57,10 @@ pub fn asr_tool_path() -> std::path::PathBuf {
     std::path::PathBuf::from("pinvou-asr")
 }
 
+pub fn asr_model_filename() -> &'static str {
+    "sense-voice-small-q4_k.gguf"
+}
+
 pub fn archive_tool_path() -> std::path::PathBuf {
     std::path::PathBuf::from("7z")
 }
@@ -78,7 +89,93 @@ pub fn asr_tool_exists() -> bool {
             return command_exists(&path);
         }
     }
+    // Bundled SenseVoice runtime, installed as an app resource or into ~/.pinvou3/asr.
+    if crate::voice_asr::engine_path().is_file() {
+        return true;
+    }
     command_exists("pinvou-asr")
+}
+
+pub fn asr_bundled_runtime_status() -> Option<bool> {
+    None
+}
+
+pub fn asr_dependency_installable() -> bool {
+    true
+}
+
+pub fn asr_install_unavailable_message() -> &'static str {
+    "当前 Linux 环境可通过一键安装补全语音识别依赖。"
+}
+
+pub async fn install_asr_runtime(app: tauri::AppHandle) -> Result<(), String> {
+    if !crate::voice_asr::ffmpeg_available() {
+        let _ = app.emit(
+            "voice_asr:progress",
+            serde_json::json!({ "stage": "ffmpeg", "downloaded": 0, "total": 0 }),
+        );
+        tokio::task::spawn_blocking(|| super::linux_dependency::install_dependencies(vec!["ffmpeg".to_string()]))
+            .await
+            .map_err(|e| format!("ffmpeg install task failed: {e}"))??;
+    }
+
+    if !crate::voice_asr::model_path().is_file() {
+        download_asr_model(&app).await?;
+    }
+
+    Ok(())
+}
+
+async fn download_asr_model(app: &tauri::AppHandle) -> Result<(), String> {
+    let dir = crate::voice_asr::asr_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建 ASR 目录失败: {e}"))?;
+    let dest = crate::voice_asr::model_path();
+    if dest
+        .metadata()
+        .map(|m| m.len() == ASR_MODEL_SIZE)
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    let url = std::env::var("PINVOU3_ASR_MODEL_URL").unwrap_or_else(|_| ASR_MODEL_URL.to_string());
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .user_agent("pinvou3-asr/1.0")
+        .build()
+        .map_err(|e| format!("构建 ASR 模型下载客户端失败: {e}"))?;
+    let mut resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("连接 ASR 模型源失败: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("ASR 模型源响应异常: {e}"))?;
+
+    let total = resp.content_length().unwrap_or(ASR_MODEL_SIZE);
+    let tmp = dir.join(format!("{}.part", asr_model_filename()));
+    let mut file = std::fs::File::create(&tmp).map_err(|e| format!("创建 ASR 模型文件失败: {e}"))?;
+    let mut downloaded: u64 = 0;
+    let mut last_emit: u64 = 0;
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("ASR 模型下载中断: {e}"))?
+    {
+        file.write_all(&chunk)
+            .map_err(|e| format!("写入 ASR 模型失败: {e}"))?;
+        downloaded += chunk.len() as u64;
+        if downloaded - last_emit >= 1_048_576 || downloaded == total {
+            last_emit = downloaded;
+            let _ = app.emit(
+                "voice_asr:progress",
+                serde_json::json!({ "stage": "model", "downloaded": downloaded, "total": total }),
+            );
+        }
+    }
+    drop(file);
+    std::fs::rename(&tmp, &dest).map_err(|e| format!("保存 ASR 模型失败: {e}"))?;
+    Ok(())
 }
 
 pub fn archive_tool_exists() -> bool {

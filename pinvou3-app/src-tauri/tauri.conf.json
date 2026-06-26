@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "pinvou3",
-  "version": "0.4.12",
+  "version": "0.5.1",
   "identifier": "com.pinvou.pinvou3",
   "build": {
     "frontendDist": "../src"
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "PINVOU 智能助手",
+        "title": "PINVOU ????",
         "width": 1100,
         "height": 760,
         "resizable": true,
@@ -38,6 +38,8 @@
       "icons/icon.ico"
     ],
     "resources": {
+      "resources/web-template/": "web-template",
+      "resources/asr/": "asr",
       "resources/windows/poppler/": "poppler",
       "resources/windows/pandoc/": "pandoc",
       "resources/windows/tesseract/": "tesseract",

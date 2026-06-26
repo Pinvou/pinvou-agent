@@ -93,12 +93,23 @@ def _query_mode(days):
     return "single_day"
 
 
+# 高德是国内 API：强制直连、绕过代理。Clash 等代理路由国内域名时会偶发掐断 TLS
+# （SSL UNEXPECTED_EOF）。ProxyHandler({}) 清空代理；再对瞬时网络抖动做 3 次重试。
+_DIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def _http_get(url, params):
     query = urllib.parse.urlencode(params)
     full_url = f"{url}?{query}"
-    req = urllib.request.Request(full_url)
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    req = urllib.request.Request(full_url, headers={"User-Agent": "Mozilla/5.0"})
+    last_err = None
+    for _ in range(3):
+        try:
+            with _DIRECT_OPENER.open(req, timeout=10) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            last_err = e
+    raise last_err
 
 
 def get_weather(city="", days="[0]"):

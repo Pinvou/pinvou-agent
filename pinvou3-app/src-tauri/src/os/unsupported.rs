@@ -31,6 +31,10 @@ pub fn asr_tool_path() -> PathBuf {
     PathBuf::from("paddlespeech")
 }
 
+pub fn asr_model_filename() -> &'static str {
+    "sense-voice-small-q4_k.gguf"
+}
+
 pub fn archive_tool_path() -> PathBuf {
     PathBuf::from("7z")
 }
@@ -45,6 +49,22 @@ pub fn ocr_tool_exists() -> bool {
 
 pub fn asr_tool_exists() -> bool {
     false
+}
+
+pub fn asr_bundled_runtime_status() -> Option<bool> {
+    None
+}
+
+pub fn asr_dependency_installable() -> bool {
+    false
+}
+
+pub fn asr_install_unavailable_message() -> &'static str {
+    "ASR runtime installation is not supported on this platform."
+}
+
+pub async fn install_asr_runtime(_app: tauri::AppHandle) -> Result<(), String> {
+    Err(asr_install_unavailable_message().to_string())
 }
 
 pub fn archive_tool_exists() -> bool {

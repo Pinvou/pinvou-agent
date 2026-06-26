@@ -31,6 +31,24 @@ fi
 VERSION="$V_TAURI"
 echo "=== 发布 pinvou3 v$VERSION ==="
 
+# ── 1.5 确保 embedding 模型就位（随 deb 打包,见 tauri.conf bundle.resources）──────
+# 模型 559MB 不进 git(gitignore),打包前从本地模型目录拷到 resources/bge-m3。
+# 源默认 ~/models/bge-m3,可用 PINVOU3_KB_EMBED_MODEL_DIR 覆盖。
+MODEL_DST="$APP_DIR/src-tauri/resources/bge-m3"
+MODEL_SRC="${PINVOU3_KB_EMBED_MODEL_DIR:-$HOME/models/bge-m3}"
+if [ ! -f "$MODEL_DST/model.onnx" ]; then
+  echo "=== 拷贝 embedding 模型 (int8) 到打包资源目录 ==="
+  mkdir -p "$MODEL_DST"
+  cp "$MODEL_SRC/onnx/model_int8.onnx" "$MODEL_DST/model.onnx" 2>/dev/null \
+    || cp "$MODEL_SRC/model.onnx" "$MODEL_DST/model.onnx"
+  cp "$MODEL_SRC"/tokenizer.json "$MODEL_SRC"/config.json \
+     "$MODEL_SRC"/special_tokens_map.json "$MODEL_SRC"/tokenizer_config.json "$MODEL_DST/"
+fi
+if [ ! -f "$MODEL_DST/model.onnx" ]; then
+  echo "❌ embedding 模型缺失,无法打包。设 PINVOU3_KB_EMBED_MODEL_DIR 指向模型目录,或放到 ~/models/bge-m3" >&2
+  exit 1
+fi
+
 # ── 2. 构建 deb（前端纯静态无构建步骤,tauri build 直接打包）──────
 (cd "$APP_DIR" && npx tauri build)
 

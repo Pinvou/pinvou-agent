@@ -349,7 +349,8 @@ impl UserPrefs {
     /// 迁移:旧版只有 `model_preset`+`custom_*` 单组配置 → 合成一条 `SavedModel`
     /// 进列表并设为 active。幂等(仅当 `saved_models` 为空,多次 load 安全)。
     /// 全新用户(default prefs)也走这里,得到一条默认 LocalVllm 模型。
-    fn migrate_models(&mut self) {
+    /// `pub(crate)`:bridge 测试模拟 `load()` 的迁移路径(custom_* → active model)。
+    pub(crate) fn migrate_models(&mut self) {
         if !self.advanced.saved_models.is_empty() {
             return;
         }
