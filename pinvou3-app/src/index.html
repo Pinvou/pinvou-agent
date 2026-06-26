@@ -212,7 +212,7 @@
     const dict = {
       zh: {
         langTag: 'zh',
-        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', toolStore: '工具商店', cardPool: '专家卡牌池', recent: '历史对话', settings: '设置', localEnv: '本地环境', megacubeSite: '打开 MegaCube 官网',
+        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', toolStore: '工具商店', cardPool: '专家卡牌池', recent: '历史对话', settings: '设置', localEnv: '本地环境', megacubeSite: '打开 MegaCube 官网', tearoffTitle: '撕离窗口', tearoffHint: '弹出为独立窗口',
         knowledge: '本地知识',
         kbMount: '知识库', kbMountTitle: '挂载知识集到本对话', kbMountPick: '选择知识集', kbMountNone: '还没有知识集，去「本地知识」创建', kbMountRemove: '取消挂载', kbMountedTag: '已挂载',
         modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: '切换工作模式', modeYoloDesc: '直接动手执行', modePlanDesc: '先出方案，确认后执行',
@@ -441,7 +441,7 @@
       },
       en: {
         langTag: 'en',
-        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'History', settings: 'Settings', localEnv: 'Local Env', megacubeSite: 'Open MegaCube site',
+        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'History', settings: 'Settings', localEnv: 'Local Env', megacubeSite: 'Open MegaCube site', tearoffTitle: 'Detached', tearoffHint: 'Pop out to its own window',
         knowledge: 'Local Knowledge',
         kbMount: 'Knowledge', kbMountTitle: 'Attach a collection to this chat', kbMountPick: 'Pick a collection', kbMountNone: 'No collections yet — create one in Local Knowledge', kbMountRemove: 'Unmount', kbMountedTag: 'Mounted',
         modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: 'Switch mode', modeYoloDesc: 'Act directly', modePlanDesc: 'Plan first, then execute',
@@ -670,7 +670,7 @@
       },
       ja: {
         langTag: 'ja',
-        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', monitor: 'システムモニター', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '履歴', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く',
+        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', monitor: 'システムモニター', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '履歴', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く', tearoffTitle: '切り離し', tearoffHint: '別ウィンドウに切り離す',
         knowledge: 'ローカル知識',
         kbMount: 'ナレッジ', kbMountTitle: 'このチャットにコレクションをリンク', kbMountPick: 'コレクションを選択', kbMountNone: 'コレクションがありません — 「ローカル知識」で作成', kbMountRemove: 'リンク解除', kbMountedTag: 'リンク中',
         modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: 'モード切替', modeYoloDesc: 'すぐ実行', modePlanDesc: '計画してから実行',
@@ -1030,6 +1030,46 @@
       const [savedConfirm, setSavedConfirm] = useState(null); // 存入成功 → iOS 确认窗 {name}
       const [poolMyOnly, setPoolMyOnly] = useState(false); // 跳卡池时是否直接落「我的卡牌」筛选(从确认窗"去查看"进来=true)
 
+      // ── 多窗口(撕离/tear-off):长按标签 → 浮起跟手 → 拖到目标屏 → 松手 → 该屏最大化打开 ──
+      // dragAvatar = 被拎起的标签副本(跟随光标的 DOM 元素);null=没在拖。原生只判落点,视觉全在这。
+      const [dragAvatar, setDragAvatar] = useState(null); // {key,label,dx,dy,w,h,x,y}
+      const dragOffsetRef = useRef({ dx: 0, dy: 0 });
+      const beginTearOff = (kind, id, label, info) => {
+        const inv = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+        if (!inv || !info) return;
+        inv('begin_detach_drag', { kind, id: id != null ? id : null });
+        dragOffsetRef.current = { dx: info.dx, dy: info.dy };
+        setDragAvatar({
+          key: kind + ':' + (id != null ? id : ''), label: label || kind,
+          w: info.w, h: info.h, x: info.startX - info.dx, y: info.startY - info.dy,
+        });
+        if (window.getSelection) { const s = window.getSelection(); if (s && s.removeAllRanges) s.removeAllRanges(); }
+      };
+      // 拖拽中:光标移动 → 更新 avatar 位置(光标 - 抓取偏移,相对位置锁定);禁选 + 抓手光标。
+      useEffect(() => {
+        if (!dragAvatar) return;
+        const prevUS = document.body.style.userSelect, prevCur = document.body.style.cursor;
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = 'grabbing';
+        const onMove = (e) => {
+          const o = dragOffsetRef.current;
+          setDragAvatar(a => a ? { ...a, x: e.clientX - o.dx, y: e.clientY - o.dy } : a);
+        };
+        window.addEventListener('pointermove', onMove);
+        return () => {
+          window.removeEventListener('pointermove', onMove);
+          document.body.style.userSelect = prevUS;
+          document.body.style.cursor = prevCur;
+        };
+      }, [!!dragAvatar]);
+      // 原生拖拽结束(松手/取消)→ 收起 avatar。
+      useEffect(() => {
+        if (!window.__TAURI__ || !window.__TAURI__.event) return;
+        let un;
+        window.__TAURI__.event.listen('detach:drag-ended', () => setDragAvatar(null)).then(f => { un = f; });
+        return () => { if (un) un(); };
+      }, []);
+
       const t = dict[language];
       // 有可用新版 → 侧边栏设置图标亮红点（不弹窗不打断）
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
@@ -1294,6 +1334,17 @@
       return (
         <div className={`flex flex-col h-screen font-sans overflow-hidden antialiased transition-colors duration-300 ${activeTheme === 'dark' ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
 
+          {/* 撕离拖拽 avatar:被拎起的标签,跟随光标(DOM 实现,丝滑跟手、不选中文字) */}
+          {dragAvatar && (
+            <div style={{ position:'fixed', left: dragAvatar.x, top: dragAvatar.y, width: dragAvatar.w, height: dragAvatar.h,
+              pointerEvents:'none', zIndex:9999, borderRadius:14, overflow:'hidden', whiteSpace:'nowrap',
+              display:'flex', alignItems:'center', padding:'0 16px', fontWeight:600, fontSize:15,
+              background: activeTheme === 'dark' ? '#A8C7FA' : '#0B57D0', color: activeTheme === 'dark' ? '#041E49' : '#ffffff',
+              boxShadow:'0 14px 34px rgba(0,0,0,.5)', transform:'scale(1.03)', opacity:0.96 }}>
+              {dragAvatar.label}
+            </div>
+          )}
+
           <TitleBar theme={activeTheme} t={t} />
 
           <div className="flex flex-1 min-h-0">
@@ -1304,6 +1355,7 @@
             {/* Header / Logo */}
             <div className={`px-4 py-4 flex items-center ${isSidebarOpen ? 'gap-3' : 'justify-center'} overflow-hidden`}>
               <button
+                data-sidebar-toggle
                 onClick={() => setIsSidebarOpen(!isSidebarOpen)}
                 title={isSidebarOpen ? t.sidebarCollapse : t.sidebarExpand}
                 className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]'}`}
@@ -1336,6 +1388,7 @@
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => setCurrentView('monitor')}
+                dragKind="monitor" dragging={!!dragAvatar && dragAvatar.key === 'monitor:'} onPickUp={(geom) => beginTearOff('monitor', undefined, t.monitor, geom)}
               />
               <NavItem
                 icon={<Layers size={18} />} label={t.cardPool}
@@ -1343,6 +1396,7 @@
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => { setPoolMyOnly(false); setCurrentView('cardpool'); }}
+                dragKind="cardpool" dragging={!!dragAvatar && dragAvatar.key === 'cardpool:'} onPickUp={(geom) => beginTearOff('cardpool', undefined, t.cardPool, geom)}
               />
               <NavItem
                 icon={<ClipboardList size={18} />} label={t.workflow}
@@ -1350,6 +1404,7 @@
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => setCurrentView('workflow')}
+                dragKind="workflow" dragging={!!dragAvatar && dragAvatar.key === 'workflow:'} onPickUp={(geom) => beginTearOff('workflow', undefined, t.workflow, geom)}
               />
               <NavItem
                 icon={<Puzzle size={18} />} label={t.toolStore}
@@ -1357,6 +1412,7 @@
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => setCurrentView('toolStore')}
+                dragKind="toolstore" dragging={!!dragAvatar && dragAvatar.key === 'toolstore:'} onPickUp={(geom) => beginTearOff('toolstore', undefined, t.toolStore, geom)}
               />
               <NavItem
                 icon={<BookOpen size={18} />} label={t.knowledge}
@@ -1364,6 +1420,7 @@
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => setCurrentView('knowledge')}
+                dragKind="knowledge" dragging={!!dragAvatar && dragAvatar.key === 'knowledge:'} onPickUp={(geom) => beginTearOff('knowledge', undefined, t.knowledge, geom)}
               />
               {/* 收起态专属:展开态近期列表的高亮项就是回会话入口,不重复渲染 */}
               {!isSidebarOpen && (
@@ -1402,6 +1459,8 @@
                       onSelect={handleSwitchSession}
                       onRename={handleRenameSession}
                       onDelete={handleDeleteSession}
+                      dragging={!!dragAvatar && dragAvatar.key === 'session:' + chat.id}
+                      onPickUp={(geom) => beginTearOff('session', chat.id, chat.title, geom)}
                     />
                   ))}
                 </div>
@@ -6942,13 +7001,19 @@
     // Shared Components
     // ==========================================
 
-    const NavItem = ({ icon, label, active, theme, isSidebarOpen = true, onClick }) => {
+    const NavItem = ({ icon, label, active, theme, isSidebarOpen = true, onClick, dragKind, dragging, onPickUp }) => {
       const isDark = theme === 'dark';
+      const drag = useLongPressDrag(dragKind, onPickUp);
+      const dragProps = dragKind ? drag.handlers : {};
+      const clickH = dragKind ? drag.guardClick(onClick) : onClick;
       return (
         <div
-          onClick={onClick}
+          onClick={clickH}
+          {...dragProps}
+          data-nav={dragKind || undefined}
           title={!isSidebarOpen ? label : ""}
-          className={`flex items-center cursor-pointer text-[15px] font-medium transition-colors overflow-hidden
+          style={dragging ? { opacity: 0.4 } : undefined}
+          className={`group flex items-center cursor-pointer text-[15px] font-medium transition-all overflow-hidden select-none
           ${isSidebarOpen ? 'px-4 py-3 rounded-full w-full' : 'w-10 h-10 justify-center rounded-full mx-auto shrink-0'}
           ${active
             ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-[#D3E3FD] text-[#041E49]')
@@ -6963,11 +7028,12 @@
     };
 
     // 近期会话项：支持重命名(内联编辑) + 删除(内联二次确认)
-    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete }) => {
+    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, dragging, onPickUp }) => {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
       const [val, setVal] = useState(chat.title);
+      const drag = useLongPressDrag('session', onPickUp);
       function save() { const tx = val.trim(); setEditing(false); if (tx && tx !== chat.title) onRename(chat.id, tx); }
       if (editing) {
         return (
@@ -6982,9 +7048,10 @@
         );
       }
       return (
-        <div onClick={() => onSelect(chat.id)}
+        <div onClick={drag.guardClick(() => onSelect(chat.id))}
+          {...drag.handlers}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
-          style={ personaTarget ? { background: isDark?'rgba(10,132,255,.20)':'rgba(0,122,255,.12)', boxShadow:'inset 0 0 0 1px '+(isDark?'rgba(10,132,255,.6)':'rgba(0,122,255,.45)'), color: isDark?'#fff':'#1F1F1F' } : undefined }
+          style={ dragging ? { opacity: 0.4 } : (personaTarget ? { background: isDark?'rgba(10,132,255,.20)':'rgba(0,122,255,.12)', boxShadow:'inset 0 0 0 1px '+(isDark?'rgba(10,132,255,.6)':'rgba(0,122,255,.45)'), color: isDark?'#fff':'#1F1F1F' } : undefined) }
           className={`group flex items-center px-4 py-1.5 rounded-full cursor-pointer text-[15px] transition-all
             ${personaTarget ? ''
               : active ? (isDark ? 'bg-[#333537] text-white' : 'bg-[#E1E5EA] text-[#1F1F1F]')
@@ -8253,10 +8320,138 @@
 
 
     // ==========================================
+    // 撕离窗口(tear-off):同一个 index.html 以 ?detached=1&kind=&id= 启动,只挂载该面板,无侧边栏。
+    // 窗口间强独立:各自 useBridge()/init(),不做 live 数据同步(真相源在后端,进程内共享)。
+    // ==========================================
+    const useDetachedBase = () => {
+      const bs = useBridge();
+      const [language, setLanguage] = useState('zh');
+      const [activeTheme, setActiveTheme] = useState('dark');
+      const initRef = useRef(false);
+      // 一次性从落盘 settings 恢复语言/主题(镜像 App 的恢复逻辑,但自包含,不动 App)。
+      useEffect(() => {
+        if (initRef.current || !bs || !bs.settings) return;
+        const lang = TAG_TO_LANG[bs.settings.language];
+        if (lang) setLanguage(lang);
+        setActiveTheme(bs.settings.theme === 'liquid-light' ? 'light' : 'dark');
+        initRef.current = true;
+      }, [bs]);
+      useEffect(() => { document.documentElement.classList.toggle('dark', activeTheme === 'dark'); }, [activeTheme]);
+      return { bs, activeTheme, t: dict[language] };
+    };
+
+    // 撕离窗口的面板错误边界:某个 View 抛错时不白屏,退化为提示,保留标题栏可关窗。
+    class DetachedErrorBoundary extends React.Component {
+      constructor(p) { super(p); this.state = { err: null }; }
+      static getDerivedStateFromError(err) { return { err }; }
+      render() {
+        if (this.state.err) {
+          return <div className="p-6 text-sm opacity-70">面板加载失败:{String(this.state.err && this.state.err.message || this.state.err)}</div>;
+        }
+        return this.props.children;
+      }
+    }
+
+    // kind → 撕离窗口该挂载的面板。复用主窗口同款 View 组件(见主渲染区 currentView 分支);
+    // 跨视图导航类 handler 在撕离窗口里是 no-op(单视图,无处可跳)。
+    const DETACHED_VIEWS = {
+      session:   ({ theme, t, bs }) => <ChatView theme={theme} t={t} bs={bs} prefill="" onPrefillConsumed={()=>{}} onOpenEditor={()=>{}} justInstalledTool={null} setJustInstalledTool={()=>{}} onGotoSettings={()=>{}} onGotoTools={()=>{}} />,
+      workflow:  ({ theme, t, bs }) => <WorkflowView theme={theme} t={t} bs={bs} />,
+      monitor:   ({ theme, t, bs }) => <MonitorView theme={theme} t={t} bs={bs} />,
+      cardpool:  ({ theme, t, bs }) => <CardPoolView theme={theme} t={t} bs={bs} onEquipped={()=>{}} onAICreate={()=>{}} initialMyOnly={false} />,
+      toolstore: ({ theme, t, bs }) => <ToolStoreView theme={theme} onNewChat={()=>{}} />,
+      knowledge: ({ theme, t, bs }) => <KnowledgeView theme={theme} t={t} />,
+    };
+
+    const DetachedShell = ({ kind, id }) => {
+      const { bs, activeTheme, t } = useDetachedBase();
+      // session 窗口:boot 时把该 session 切为 active,让 ChatView 显示它。
+      useEffect(() => {
+        if (kind === 'session' && id && bridge.available && bridge.switchToSession) bridge.switchToSession(id);
+      }, [kind, id]);
+      // 关闭时通知主窗口回坞(去角标)。
+      useEffect(() => {
+        const key = kind + ':' + (id || '');
+        const onUnload = () => { try { window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.emit('detach:closed', key); } catch (_) {} };
+        window.addEventListener('beforeunload', onUnload);
+        return () => window.removeEventListener('beforeunload', onUnload);
+      }, [kind, id]);
+      const View = DETACHED_VIEWS[kind] || DETACHED_VIEWS.monitor;
+      const isDark = activeTheme === 'dark';
+      return (
+        <div className={`h-screen w-screen flex flex-col ${isDark ? 'bg-[#1B1C1D] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
+          <div data-tauri-drag-region className="h-9 shrink-0 flex items-center px-3 text-[13px] font-medium select-none"
+               style={{ borderBottom: '1px solid rgba(128,128,128,.2)' }}>
+            <span data-tauri-drag-region className="pointer-events-none">{(t && t.tearoffTitle) || '撕离窗口'} · {kind}</span>
+          </div>
+          <div className="flex-1 min-h-0 overflow-auto">
+            {bs ? <DetachedErrorBoundary><View theme={activeTheme} t={t} bs={bs} /></DetachedErrorBoundary> : <div className="p-6 text-sm opacity-60">…</div>}
+          </div>
+        </div>
+      );
+    };
+
+    // 长按撕离:按住 ~350ms 不动 → onPickUp(info)(DOM avatar 浮起跟手 + begin_detach_drag 原生判落点);
+    // 长按达成前移动 >10px = 视为滚动/取消;长按达成后吞掉随之而来的 click(避免又切视图);
+    // 按在内部按钮/输入框上不起手(让它们自理)。按下即禁选,防止长按选中下方文字。
+    const LONGPRESS_MS = 350;
+    const MOVE_CANCEL = 10;
+    const useLongPressDrag = (kind, onPickUp) => {
+      const startRef = useRef(null);
+      const timerRef = useRef(null);
+      const pickedRef = useRef(false);
+      const clearPress = () => {
+        if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+        startRef.current = null;
+        document.body.style.userSelect = '';
+      };
+      const onPointerDown = (e) => {
+        if (e.button !== 0 || !kind) return;
+        if (e.target && e.target.closest && e.target.closest('button,input')) return;
+        const rect = e.currentTarget.getBoundingClientRect();
+        startRef.current = { x: e.clientX, y: e.clientY, rect };
+        pickedRef.current = false;
+        document.body.style.userSelect = 'none'; // 长按期间禁选,防止选中下方会话文字
+        timerRef.current = setTimeout(() => {
+          pickedRef.current = true;
+          timerRef.current = null;
+          // 客户端像素:按下点相对标签左上角的偏移 + 标签尺寸 + 起点 → 喂给 DOM avatar 锁定相对位置。
+          const r = startRef.current.rect;
+          const info = {
+            dx: startRef.current.x - r.left,
+            dy: startRef.current.y - r.top,
+            w: r.width,
+            h: r.height,
+            startX: startRef.current.x,
+            startY: startRef.current.y,
+          };
+          if (onPickUp) onPickUp(info);
+        }, LONGPRESS_MS);
+      };
+      const onPointerMove = (e) => {
+        const s = startRef.current;
+        if (!s || pickedRef.current) return;
+        if (Math.hypot(e.clientX - s.x, e.clientY - s.y) > MOVE_CANCEL) clearPress();
+      };
+      const onPointerUp = () => clearPress();
+      const guardClick = (fn) => (e) => {
+        if (pickedRef.current) { pickedRef.current = false; e.stopPropagation(); if (e.preventDefault) e.preventDefault(); return; }
+        if (fn) fn(e);
+      };
+      return { handlers: { onPointerDown, onPointerMove, onPointerUp }, guardClick };
+    };
+
+    // ==========================================
     // Render
     // ==========================================
     const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(<App />);
+    const __q = new URLSearchParams(window.location.search);
+    if (__q.get('detached') === '1') {
+      window.__PINVOU_DETACHED__ = true;
+      root.render(<DetachedShell kind={__q.get('kind') || 'monitor'} id={__q.get('id') || ''} />);
+    } else {
+      root.render(<App />);
+    }
   </script>
 </body>
 </html>

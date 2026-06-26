@@ -75,6 +75,10 @@ fastembed = "4"
 # 报告 4 sheet 只抽到首页 418 字）；calamine 直接按 reader 嗅探格式、逐 sheet 逐行读。
 calamine = "0.26"
 
+# 多窗口撕离(Phase 2):运行期读 X11 全局鼠标坐标+左键状态,驱动鬼影跨屏跟随+松手落位。
+# 详见 src/detach.rs begin_detach_drag;spike example 也复用。Wayland 下不可用 → 降级(Task 8)。
+device_query = "2"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }
 
