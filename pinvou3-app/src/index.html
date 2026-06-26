@@ -215,6 +215,7 @@
         newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', toolStore: '工具商店', cardPool: '专家卡牌池', recent: '近期', settings: '设置', localEnv: '本地环境',
         knowledge: '本地知识',
         kbMount: '知识库', kbMountTitle: '挂载知识集到本对话', kbMountPick: '选择知识集', kbMountNone: '还没有知识集，去「本地知识」创建', kbMountRemove: '取消挂载', kbMountedTag: '已挂载',
+        modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: '切换工作模式', modeYoloDesc: '直接动手执行', modePlanDesc: '先出方案，确认后执行',
         kbTitle: '本地知识', kbDesc: '全系统秒搜 + 去重 · 仅索引元数据，不读内容',
         kbRescan: '重新扫描', kbScanning: '扫描中', kbDeduping: '去重中', kbScanNow: '扫描本机',
         kbTotalFiles: '已索引文件', kbDupFiles: '重复文件', kbWasted: '可回收',
@@ -413,9 +414,6 @@
         pvBtnPinTitle: '品 · 查错：揪出产物的风险、遗漏、与你需求的偏差，逐条让 AI 改或你拍板接受',
         pvBtnWuTitle: '悟 · 发散：以领域专家视角给出产物还能补的维度和新思路，挑中的一键加进去',
         pvBtnPinLabel: '品 · 智能找错', pvBtnWuLabel: '悟 · 深度查漏',
-        fbTitle: '📝 AI 给了方案但没用 plan 工具',
-        fbDesc: 'AI 在文本里描述了方案,但没调 update_plan 工具,所以没出方案卡片。你想怎么处理?',
-        fbAccept: '✅ 直接采纳这段', fbRetry: '📋 让 AI 用工具重出',
         cbTitle: '🛑 拦下了一条危险操作', cbWant: 'AI 想执行：', cbWhy: '为什么拦它',
         cbNote: '这是系统自带的安全保护，一直开着。AI 不会被允许做这种危险事；要真是你想要的，得你自己手动来。',
         cbTechShow: '技术详情', cbTechHide: '收起技术详情', cbCmdUnknown: '(命令未知)',
@@ -444,6 +442,7 @@
         newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'Recent', settings: 'Settings', localEnv: 'Local Env',
         knowledge: 'Local Knowledge',
         kbMount: 'Knowledge', kbMountTitle: 'Attach a collection to this chat', kbMountPick: 'Pick a collection', kbMountNone: 'No collections yet — create one in Local Knowledge', kbMountRemove: 'Unmount', kbMountedTag: 'Mounted',
+        modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: 'Switch mode', modeYoloDesc: 'Act directly', modePlanDesc: 'Plan first, then execute',
         kbTitle: 'Local Knowledge', kbDesc: 'Whole-system instant search + dedup · metadata only, content not read',
         kbRescan: 'Rescan', kbScanning: 'Scanning', kbDeduping: 'Deduping', kbScanNow: 'Scan this PC',
         kbTotalFiles: 'Indexed files', kbDupFiles: 'Duplicates', kbWasted: 'Reclaimable',
@@ -642,9 +641,6 @@
         pvBtnPinTitle: '品 · Review: surface risks, omissions, and drift from your intent — fix each via AI or accept as is',
         pvBtnWuTitle: '悟 · Explore: a domain expert lists dimensions and ideas the artifact could still add; add picks in one click',
         pvBtnPinLabel: '品 · Review', pvBtnWuLabel: '悟 · Explore',
-        fbTitle: "📝 The AI wrote a plan but didn't use the plan tool",
-        fbDesc: 'The AI described a plan in text without calling update_plan, so no plan card was created. What do you want to do?',
-        fbAccept: '✅ Accept this text', fbRetry: '📋 Ask AI to redo it with the tool',
         cbTitle: '🛑 Blocked a dangerous operation', cbWant: 'The AI tried to run:', cbWhy: 'Why it was blocked',
         cbNote: "This built-in safety guard is always on. The AI is never allowed to do this; if you really want it, run it yourself.",
         cbTechShow: 'Technical details', cbTechHide: 'Hide technical details', cbCmdUnknown: '(unknown command)',
@@ -673,6 +669,7 @@
         newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', monitor: 'システムモニター', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '最近', settings: '設定', localEnv: 'ローカル環境',
         knowledge: 'ローカル知識',
         kbMount: 'ナレッジ', kbMountTitle: 'このチャットにコレクションをリンク', kbMountPick: 'コレクションを選択', kbMountNone: 'コレクションがありません — 「ローカル知識」で作成', kbMountRemove: 'リンク解除', kbMountedTag: 'リンク中',
+        modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: 'モード切替', modeYoloDesc: 'すぐ実行', modePlanDesc: '計画してから実行',
         kbTitle: 'ローカル知識', kbDesc: '全システム高速検索 + 重複検出 · メタデータのみ、内容は読まない',
         kbRescan: '再スキャン', kbScanning: 'スキャン中', kbDeduping: '重複検出中', kbScanNow: 'このPCをスキャン',
         kbTotalFiles: 'インデックス済み', kbDupFiles: '重複ファイル', kbWasted: '回収可能',
@@ -870,9 +867,6 @@
         pvBtnPinTitle: '品 · 検閲：成果物のリスク・抜け漏れ・要求とのズレを洗い出し、AI に修正させるか受け入れる',
         pvBtnWuTitle: '悟 · 発散：専門家視点で成果物に補える観点や新案を提示、選んだものをワンクリックで追加',
         pvBtnPinLabel: '品 · 検閲', pvBtnWuLabel: '悟 · 発散',
-        fbTitle: '📝 AI がプランを書いたのに plan ツールを使っていません',
-        fbDesc: 'AI はテキストでプランを説明しましたが update_plan を呼んでいないため、プランカードが出ていません。どうしますか?',
-        fbAccept: '✅ この内容を採用', fbRetry: '📋 ツールで出し直させる',
         cbTitle: '🛑 危険な操作をブロックしました', cbWant: 'AI が実行しようとしたコマンド：', cbWhy: 'ブロックした理由',
         cbNote: 'これはシステム標準の安全保護で、常時有効です。AI にこの種の危険な操作は許可されません。本当に必要なら、ご自身で手動実行してください。',
         cbTechShow: '技術詳細', cbTechHide: '技術詳細を閉じる', cbCmdUnknown: '（コマンド不明）',
@@ -3579,6 +3573,58 @@
       );
     };
 
+    // [plan/yolo] composer 模式 chip:默认 Yolo,下拉手切 Plan。进 Plan=只读调研
+    // (底座 ReadOnly+只读工具集),调 update_plan 出方案卡决策。切换逻辑搬自旧 ModeHeader。
+    const ComposerModeChip = ({ t, bs }) => {
+      const [open, setOpen] = useState(false);
+      const ms = (bs && bs.modeState) || { mode: 'yolo' };
+      const isPlan = ms.mode === 'plan';
+      async function switchTo(target) {
+        setOpen(false);
+        if (!bridge.available) return;
+        if (target === 'plan' && !isPlan) {
+          await bridge.setPlanModeNext();
+        } else if (target === 'yolo' && isPlan) {
+          if (bs && bs.busy) await bridge.cancelGeneration();
+          await bridge.exitPlanToYolo();
+        }
+      }
+      const optCls = "w-full flex items-center justify-between px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group";
+      return (
+        <div className="relative">
+          <button onClick={() => setOpen(!open)} title={t.modeSwitchTitle}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-[13px] font-semibold transition-colors border ${isPlan
+              ? 'bg-[#E8F0FE] dark:bg-[#1A3A5C] text-[#1A73E8] dark:text-[#A8C7FA] border-[#1A73E8]/20 dark:border-[#A8C7FA]/25'
+              : 'bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-black/[0.04] dark:border-white/5'}`}>
+            <Zap size={14} className="opacity-70 shrink-0" />
+            <span>{isPlan ? t.modePlan : t.modeYolo}</span>
+            <ChevronDown size={14} className="opacity-50 shrink-0" />
+          </button>
+          {open && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
+              <div className="absolute bottom-full left-0 mb-2 z-50 w-60 bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+                <button onClick={() => switchTo('yolo')} className={optCls}>
+                  <span className="flex flex-col items-start min-w-0">
+                    <span className="font-semibold">{t.modeYolo}</span>
+                    <span className="text-[11px] text-gray-400 group-hover:text-white/80">{t.modeYoloDesc}</span>
+                  </span>
+                  {!isPlan && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
+                </button>
+                <button onClick={() => switchTo('plan')} className={optCls}>
+                  <span className="flex flex-col items-start min-w-0">
+                    <span className="font-semibold">{t.modePlan}</span>
+                    <span className="text-[11px] text-gray-400 group-hover:text-white/80">{t.modePlanDesc}</span>
+                  </span>
+                  {isPlan && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      );
+    };
+
     const ChatView = ({ theme, t, bs, prefill, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoTools }) => {
       const isDark = theme === 'dark';
       const [inputText, setInputText] = useState('');
@@ -3722,12 +3768,7 @@
 
           {/* Top Header (浮动) */}
           <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-20 pointer-events-none">
-            <div className="flex items-center gap-2">
-              {/* [plan/yolo 收敛] Plan 模式入口已下线：全局 Yolo 单模式。
-                  ModeHeader 组件及 bridge 逻辑保留，取消注释即恢复，待重评是否彻底移除。
-                  (品悟开关已彻底移除——v2 评审方案被推翻,等新方案。) */}
-              {/* <ModeHeader bs={bs} theme={theme} /> */}
-            </div>
+            <div className="flex items-center gap-2"></div>
             <button
               onClick={() => setArtifactsOpen(true)}
               className={`pointer-events-auto px-4 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm'}`}>
@@ -3900,6 +3941,7 @@
                     className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-black/5 dark:hover:bg-white/10 transition-colors">
                     <Paperclip size={20} />
                   </button>
+                  <ComposerModeChip t={t} bs={bs} />
                   <button onClick={handleVoiceClick} title={voiceRecording ? t.voiceStop : t.voiceStart}
                     className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${
                       voiceRecording
@@ -4126,8 +4168,7 @@
 
       if (item.type === 'artifact_card') return <ArtifactCard item={item} theme={theme} t={t} isLatest={isLatestArtifact} />;
       if (item.type === 'plan_card') return <PlanCard item={item} theme={theme} t={t} onPrefill={onPrefill} />;
-      if (item.type === 'plan_stuck' || item.type === 'execution_stuck') return <PlanStuckCard item={item} theme={theme} t={t} />;
-      if (item.type === 'plan_text_fallback') return <PlanFallbackCard item={item} theme={theme} t={t} />;
+      if (item.type === 'plan_stuck') return <PlanStuckCard item={item} theme={theme} t={t} />;
       if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} theme={theme} t={t} />;
       if (item.type === 'user_input') return <UserInputCard item={item} theme={theme} t={t} />;
       if (item.type === 'user') return <UserBubble item={item} theme={theme} editable={editable} t={t} />;
@@ -5662,48 +5703,22 @@
     };
 
     // ==========================================
-    // PlanStuckCard — Plan 死锁 / 执行卡住 兜底
+    // PlanStuckCard — Plan 模式 AI 撞只读保护(白名单/sandbox)的兜底卡
     // ==========================================
     const PlanStuckCard = ({ item, theme, t }) => {
       const isDark = theme === 'dark';
-      const isExec = item.type === 'execution_stuck';
       const done = item.resolved;
       return (
         <div className={cardBoxCls(isDark, isDark ? 'border-[#FDD663]/30' : 'border-[#E37400]/20')}>
           <div className={`text-[13px] leading-relaxed mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
-            {isExec
-              ? <>{t.stuckExec(item.tries)}</>
-              : <>{t.stuckPlanPre} <code className="px-1 rounded bg-black/20">{item.toolName || '(unknown)'}</code> {t.stuckPlanPost}</>}
+            {t.stuckPlanPre} <code className="px-1 rounded bg-black/20">{item.toolName || '(unknown)'}</code> {t.stuckPlanPost}
           </div>
           {done ? (
             <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{item.statusLabel || t.handled}</div>
           ) : (
             <div className="flex items-center gap-2 flex-wrap">
-              <button className={cardBtnCls(isDark)} onClick={() => isExec ? bridge.executionStuckReplan(item.id) : bridge.planStuckReplan(item.id)}>{t.stuckReplan}</button>
-              <button className={cardBtnCls(isDark, 'primary')} onClick={() => isExec ? bridge.discardPlan(item.id) : bridge.planStuckGo(item.id)}>⚡ {isExec ? t.stuckSelf : t.stuckGo}</button>
-            </div>
-          )}
-        </div>
-      );
-    };
-
-    // ==========================================
-    // PlanFallbackCard — AI 给了方案但没用 plan 工具
-    // ==========================================
-    const PlanFallbackCard = ({ item, theme, t }) => {
-      const isDark = theme === 'dark';
-      const done = item.resolved;
-      return (
-        <div className={cardBoxCls(isDark, isDark ? 'border-[#FDD663]/30' : 'border-[#E37400]/20')}>
-          <div className={`text-[14px] font-semibold mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.fbTitle}</div>
-          <div className={`text-[13px] leading-relaxed mb-3 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.fbDesc}</div>
-          {done ? (
-            <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{item.statusLabel || t.handled}</div>
-          ) : (
-            <div className="flex items-center gap-2 flex-wrap">
-              <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.planFallbackAccept(item.id, item.text)}>{t.fbAccept}</button>
-              <button className={cardBtnCls(isDark)} onClick={() => bridge.planFallbackRetry(item.id)}>{t.fbRetry}</button>
-              <button className={cardBtnCls(isDark)} onClick={() => bridge.discardPlan(item.id)}>{t.planDrop}</button>
+              <button className={cardBtnCls(isDark)} onClick={() => bridge.planStuckReplan(item.id)}>{t.stuckReplan}</button>
+              <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.planStuckGo(item.id)}>⚡ {t.stuckGo}</button>
             </div>
           )}
         </div>
@@ -5855,39 +5870,6 @@
           </div>
           {statusText && <div className={`mt-3 text-[13px] ${item.error ? (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]') : (isDark ? 'text-[#93D5A6]' : 'text-[#137333]')}`}>{statusText}</div>}
         </div>
-      );
-    };
-
-    // ==========================================
-    // ModeHeader — Plan/YOLO 模式指示 + 灯泡切换
-    // ==========================================
-    const PHASE_LABEL = { planning: '讨论方案', ready: '方案就绪', executing: '执行中' };
-    const ModeHeader = ({ bs, theme }) => {
-      const isDark = theme === 'dark';
-      const ms = (bs && bs.modeState) || { mode: 'yolo', plan_phase: 'none' };
-      const isPlan = ms.mode === 'plan';
-      const phaseLabel = PHASE_LABEL[ms.plan_phase] || '';
-      async function toggleMode() {
-        if (!bridge.available) return;
-        if (ms.mode === 'plan') {
-          // 已在 Plan(任何 phase)→ 退出回 YOLO(busy 先停当前 turn)
-          if (bs && bs.busy) await bridge.cancelGeneration();
-          await bridge.exitPlanToYolo();
-        } else {
-          await bridge.setPlanModeNext(); // YOLO → 进入 Plan
-        }
-      }
-      return (
-        <button
-          onClick={toggleMode}
-          title={isPlan ? '点击退出 Plan 回 YOLO' : '点击进入 Plan 模式'}
-          className={`pointer-events-auto px-3 py-2 rounded-full text-[13px] font-medium flex items-center gap-2 transition-colors
-            ${isPlan
-              ? (isDark ? 'bg-[#0B57D0]/30 text-[#A8C7FA]' : 'bg-[#0B57D0]/10 text-[#0B57D0]')
-              : (isDark ? 'bg-[#1E1F20] text-[#C4C7C5] hover:bg-[#333537]' : 'bg-white text-[#444746] hover:bg-[#F0F4F9] shadow-sm')}`}
-        >
-          <Zap size={15} /> {isPlan ? ('Plan' + (phaseLabel ? ' · ' + phaseLabel : '')) : 'YOLO'}
-        </button>
       );
     };
 

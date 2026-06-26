@@ -80,7 +80,7 @@
     activeModelId: null,
     currentSessionModelId: null, // 当前 active session 显式绑定的模型;null=跟随全局默认
     superPermEnabled: false,
-    modeState: { mode: "yolo", plan_phase: "none" },
+    modeState: { mode: "yolo" },
     // 最新 plan/todos 快照（用于 mode header 进度 chip，与 plan_ready 卡解耦）
     planSnapshot: { plan: null, todos: null },
     // 当前 session 产物列表 [{ path, basename }]
@@ -188,8 +188,6 @@
     if (_mb) monitorBaseline = JSON.parse(_mb);
   } catch (e) { monitorBaseline = null; }
   var attachIdSeq = 0;
-  // Plan 文本兜底卡片命中关键词（与 main.js 对齐）
-  var PLAN_FALLBACK_KEYWORDS = ["方案", "步骤", "以下", "技术栈", "实现", "设计", "**"];
 
   // ── bridge 层 UI 文案（系统消息/状态标签）──────────────────────
   // bridge 在事件回调里生成文案,拿不到 React 的 t;按 state.settings.language 取词,中文兜底。
@@ -205,8 +203,8 @@
       superOn: "⚠️ Super permission enabled", superOff: "Super permission disabled",
       approved: "✅ Approved", echoGo: "✅ Do it",
       acceptPlanFailed: "⚠️ accept_plan failed: ",
-      exitedPlan: "🚪 Exited Plan", discardPlanFailed: "⚠️ discard_plan failed: ", exitPlanFailed: "⚠️ Failed to exit Plan: ", switchModeFailed: "⚠️ Failed to switch mode: ",
-      replanRequested: "📋 Asking the AI to re-plan…", adoptingPlan: "✅ Adopting...", adoptEcho: "✅ Adopt this plan",
+      planDiscarded: "🚪 Plan discarded", discardPlanFailed: "⚠️ discard_plan failed: ", exitPlanFailed: "⚠️ Failed to exit Plan: ", switchModeFailed: "⚠️ Failed to switch mode: ",
+      replanRequested: "📋 Asking the AI to re-plan…",
       openFailed: "⚠️ Open failed: ", pasteImageFailed: "⚠️ Paste image failed: ",
       filePickUnavailable: "⚠️ File picker unavailable", filePickFailed: "⚠️ File selection failed: ",
       equipNoSession: "⚠️ Open or create a chat before equipping an expert", equipFailed: "⚠️ Equip failed: ",
@@ -221,8 +219,8 @@
       superOn: "⚠️ スーパー権限が有効になりました", superOff: "スーパー権限が無効になりました",
       approved: "✅ 承認済み", echoGo: "✅ これでいく",
       acceptPlanFailed: "⚠️ accept_plan に失敗: ",
-      exitedPlan: "🚪 Plan を終了", discardPlanFailed: "⚠️ discard_plan に失敗: ", exitPlanFailed: "⚠️ Plan の終了に失敗: ", switchModeFailed: "⚠️ モード切替に失敗: ",
-      replanRequested: "📋 AI にプランを出し直させています…", adoptingPlan: "✅ 採用中...", adoptEcho: "✅ このプランを採用",
+      planDiscarded: "🚪 プランを破棄", discardPlanFailed: "⚠️ discard_plan に失敗: ", exitPlanFailed: "⚠️ Plan の終了に失敗: ", switchModeFailed: "⚠️ モード切替に失敗: ",
+      replanRequested: "📋 AI にプランを出し直させています…",
       openFailed: "⚠️ 開けませんでした: ", pasteImageFailed: "⚠️ 画像の貼り付けに失敗: ",
       filePickUnavailable: "⚠️ ファイル選択を利用できません", filePickFailed: "⚠️ ファイル選択に失敗: ",
       equipNoSession: "⚠️ エキスパートを装備する前にチャットを開くか新規作成してください", equipFailed: "⚠️ 装備に失敗: ",
@@ -237,8 +235,8 @@
       superOn: "⚠️ 超级权限已开启", superOff: "超级权限已关闭",
       approved: "✅ 已批准", echoGo: "✅ 就这么干",
       acceptPlanFailed: "⚠️ accept_plan 失败: ",
-      exitedPlan: "🚪 已退出 Plan", discardPlanFailed: "⚠️ discard_plan 失败: ", exitPlanFailed: "⚠️ 退出 Plan 失败: ", switchModeFailed: "⚠️ 切换模式失败: ",
-      replanRequested: "📋 让 AI 重出方案…", adoptingPlan: "✅ 采纳中...", adoptEcho: "✅ 采纳此方案",
+      planDiscarded: "🚪 已放弃此方案", discardPlanFailed: "⚠️ discard_plan 失败: ", exitPlanFailed: "⚠️ 退出 Plan 失败: ", switchModeFailed: "⚠️ 切换模式失败: ",
+      replanRequested: "📋 让 AI 重出方案…",
       openFailed: "⚠️ 打开失败: ", pasteImageFailed: "⚠️ 粘贴图片失败: ",
       filePickUnavailable: "⚠️ 文件选择不可用", filePickFailed: "⚠️ 选择文件失败: ",
       equipNoSession: "⚠️ 请先打开或新建一个对话再加持专家", equipFailed: "⚠️ 加持失败: ",
@@ -265,7 +263,7 @@
     return {
       messages: [], chatItems: [], personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
       planSnapshot: { plan: null, todos: null },
-      modeState: { mode: "yolo", plan_phase: "none" },
+      modeState: { mode: "yolo" },
       thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
       tokens: { input: 0, max: maxModelLen },
       activePersona: null, // 卡片池: 该 session 加持的专家面具(挂件用)
@@ -1323,7 +1321,6 @@
   // 不依赖工作集 —— 这样后台 session 跑完也能正确落盘。
   listen("chat:done", function (e) {
     var sid = (e.payload && e.payload.session_id) || state.activeSessionId;
-    var flags = { wasExecuting: false };
     runSyncOnSession(sid, function () {
       var error = e.payload && e.payload.error;
       if (error) addSystemItem("⚠️ " + error);
@@ -1353,16 +1350,10 @@
       stopThinking();
       currentStreamText = "";
       currentStreamId = 0;
-      // 执行 plan 完成 → 回 yolo 默认态(plan_phase 从 executing → none)
-      if (state.modeState.plan_phase === "executing") {
-        flags.wasExecuting = true;
-        state.modeState = { mode: "yolo", plan_phase: "none" };
-      }
     });
     notify();
     // 异步收尾(按 sid 路由,active/后台通用)
     (async function () {
-      if (flags.wasExecuting) { try { await invoke("discard_plan", { sessionId: sid }); } catch (_) {} }
       await persistMessagesFor(sid);
       await refreshHistoryList();
       notify();
@@ -1439,10 +1430,9 @@
     notify();
   }); });
 
-  // chat:plan_ready —— 任一层快照非空就渲染方案卡（plan_phase → ready）
+  // chat:plan_ready —— 底座式:Plan 模式调过 update_plan 即弹方案卡(快照非空)
   listen("chat:plan_ready", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
-    state.modeState.plan_phase = "ready";
     // 新方案出现 → 旧的 active 方案卡冻结
     state.chatItems.forEach(function (it) {
       if (it.type === "plan_card" && it.cardState === "active") {
@@ -1456,41 +1446,6 @@
     });
     notify();
   }); });
-
-  // chat:plan_text_fallback —— Planning 态 AI 没调 plan 工具但 text 写了方案
-  listen("chat:plan_text_fallback", function (e) { onSessionEvent(e, function () {
-    var lastText = "";
-    for (var i = state.messages.length - 1; i >= 0; i--) {
-      if (state.messages[i].role === "assistant") {
-        var parts = state.messages[i].content || [];
-        for (var k = 0; k < parts.length; k++) { if (parts[k].type === "text" && parts[k].text) lastText += parts[k].text; }
-        break;
-      }
-    }
-    if (!lastText) return;
-    var hit = PLAN_FALLBACK_KEYWORDS.some(function (kw) { return lastText.includes(kw); });
-    if (!hit) return;
-    if (hasUnresolvedItem("plan_text_fallback")) return;
-    addChatItem({ type: "plan_text_fallback", text: lastText, resolved: false, time: timeStr() });
-    notify();
-  }); });
-
-  // chat:execution_stuck —— Executing 自驱 N 次后仍卡
-  listen("chat:execution_stuck", function (e) { onSessionEvent(e, function () {
-    var p = e.payload || {};
-    if (hasUnresolvedItem("execution_stuck")) return;
-    addChatItem({ type: "execution_stuck", tries: p.auto_continue_tried || 0, resolved: false, time: timeStr() });
-    notify();
-  }); });
-
-  // chat:phase_changed —— 底座从 LLM 回复抽 <phase id="..."/> marker 触发。
-  // workflow phase chips 是全局(跟 active skill 走),后台 session 的 phase 变更不动 active chips。
-  listen("chat:phase_changed", function (e) {
-    var sid = e.payload && e.payload.session_id;
-    if (sid && sid !== state.activeSessionId) return;
-    var phaseId = e.payload && (e.payload.phase_id || e.payload.phaseId);
-    setCurrentPhase(phaseId, "llm");
-  });
 
   // workflow:project_started —— start_workflow 后端建项目+绑定 session 后 emit。
   // 必须真正 switchToSession 切过去（load 新 session 的空 messages + sync engine +
@@ -2017,14 +1972,14 @@
   // ── Mode state ───────────────────────────────────────────────────
   async function syncModeState() {
     if (!state.activeSessionId) {
-      state.modeState = { mode: "yolo", plan_phase: "none" };
+      state.modeState = { mode: "yolo" };
       return;
     }
     try {
       var ms = await invoke("get_mode_state", { sessionId: state.activeSessionId });
-      state.modeState = { mode: ms.mode || "yolo", plan_phase: ms.plan_phase || "none" };
+      state.modeState = { mode: ms.mode || "yolo" };
     } catch (e) {
-      state.modeState = { mode: "yolo", plan_phase: "none" };
+      state.modeState = { mode: "yolo" };
     }
   }
 
@@ -2054,10 +2009,7 @@
   function thinkingIdle() { state.thinking = { active: true, phase: "thinking", toolName: "", startedAt: Date.now() }; }
   function stopThinking() { state.thinking = { active: false, phase: "thinking", toolName: "", startedAt: 0 }; }
   function applyModeFromState(st) {
-    state.modeState = {
-      mode: st.mode || "yolo",
-      plan_phase: st.plan_phase || "none",
-    };
+    state.modeState = { mode: st.mode || "yolo" };
   }
 
   // ── Plan/YOLO 命令 ───────────────────────────────────────────────
@@ -2080,7 +2032,7 @@
     notify();
   }
   async function discardPlan(itemId) {
-    if (itemId) patchItemById(itemId, { cardState: "frozen", statusLabel: bt("exitedPlan"), resolved: true });
+    if (itemId) patchItemById(itemId, { cardState: "frozen", statusLabel: bt("planDiscarded"), resolved: true });
     if (!state.activeSessionId) { notify(); return; }
     try {
       var st = await invoke("discard_plan", { sessionId: state.activeSessionId });
@@ -2098,9 +2050,12 @@
   }
   // 灯泡 toggle：plan ↔ yolo
   async function setPlanModeNext() {
-    if (!state.activeSessionId) return;
+    // 草稿态(无 session)先物化:mode 是 per-session 状态,进 Plan 必须先有 session,
+    // 否则草稿页点 Plan 会静默 return 不切换(composer chip 入口暴露的缺陷)。
+    var sid = await ensureSession();
+    if (!sid) return;
     try {
-      var st = await invoke("set_plan_mode_next", { sessionId: state.activeSessionId });
+      var st = await invoke("set_plan_mode_next", { sessionId: sid });
       applyModeFromState(st);
     } catch (e) { addSystemItem(bt("switchModeFailed") + e); }
     notify();
@@ -2114,18 +2069,6 @@
     patchItemById(itemId, { resolved: true }); notify();
     await exitPlanToYolo();
     await sendMessage("按上面讨论的方案继续执行任务,直接写文件/跑命令,不要再讨论方案。");
-  }
-  async function planFallbackAccept(itemId, text) {
-    patchItemById(itemId, { resolved: true, statusLabel: bt("adoptingPlan") }); notify();
-    await acceptPlan(null, text || "", bt("adoptEcho"));
-  }
-  async function planFallbackRetry(itemId) {
-    patchItemById(itemId, { resolved: true }); notify();
-    await sendMessage("请用 update_plan 工具把上面的方案重新输出一遍,我才能在卡片上决策。");
-  }
-  async function executionStuckReplan(itemId) {
-    patchItemById(itemId, { resolved: true }); notify();
-    await sendMessage("你卡住了。请重新用 update_plan 工具列方案,我们再开始。");
   }
 
   // ── 用户交互卡 ───────────────────────────────────────────────────
@@ -3067,9 +3010,6 @@
     setPlanModeNext: setPlanModeNext,
     planStuckReplan: planStuckReplan,
     planStuckGo: planStuckGo,
-    planFallbackAccept: planFallbackAccept,
-    planFallbackRetry: planFallbackRetry,
-    executionStuckReplan: executionStuckReplan,
     // 用户交互
     submitUserInput: submitUserInput,
     cancelUserInput: cancelUserInput,

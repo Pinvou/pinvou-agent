@@ -69,6 +69,13 @@ pub const LOCALE_CLOSER_JA: &str = "## 言語再確認\n\n\
 /// 行为引导大头已由 `bridge::reminder_for` 每 turn `<system-reminder>` 注入,
 /// 静态块只立常驻事实;底座 YOLO_MODE/AUTO_APPROVAL/Session Longevity/
 /// Efficient Approvals 的逐条教学全不保留。
+///
+/// ⚠️ **句尾「phase rules」别删**:b891b2f 当「过时幽灵」删掉这 2 个 token,GUI 真机
+/// 首请求即把 `write_file` 调用采歪成 `<write_file>` 裸文本(磁盘无文件、用户拿不到成品)。
+/// git 二分实锤就这处——删 → 必歪,恢复 → 不歪。机制:GUI 真实 mtp 投机解码 +
+/// chunked-prefill 对这块结尾的 token 序列敏感(curl/headless 单请求复现不了,11次0漂)。
+/// 语义过时无妨,token 序列本身 load-bearing。**改此 const 务必 GUI 真机回归
+/// 「首轮直接写文件」场景(如"做一个贪吃蛇")**,别只信单测/curl。
 pub const MODE_EXECUTE_MD: &str = "\
 ## Mode: Execute
 
@@ -76,25 +83,6 @@ Tools run without per-call approval — the user has already authorized
 execution. Produce files and run commands now; never end the turn with
 a promise of future action. Then verify and report. Follow each
 message's `<system-reminder>` phase rules.";
-
-/// pinvou3 版静态层 mode 块——Plan（底座强制 approval=Never + ReadOnly sandbox）。
-/// 注意:前端 Plan 入口已下线([plan/yolo 收敛],index.html),生产全 Yolo 单模式
-/// 到不了这里——防御性保留,底座 AppMode::Plan 通路仍在,恢复入口即生效。
-pub const MODE_PLAN_MD: &str = "\
-## Mode: Plan
-
-Read-only: discovery tools work; file writes and shell mutations are
-blocked by the runtime. Your deliverable is a plan via `update_plan` —
-clarify real ambiguity with `request_user_input` first. Follow each
-message's `<system-reminder>` phase rules.";
-
-/// Agent+非Auto 兜底（pinvou3 不暴露 Agent mode,防御性保留）。
-pub const MODE_AGENT_GATED_MD: &str = "\
-## Mode: Agent
-
-Autonomous task execution. Reads run silently; writes, patches, and
-shell execution request user approval first — batch independent writes
-into one approval, not a series of surprise prompts.";
 
 /// pinvou3 版静态层 composer：接管底座全部编译期静态文案
 /// (taxonomy/base/personality/mode/approval/ContextMgmt/compact 模板)。
@@ -105,24 +93,15 @@ into one approval, not a series of surprise prompts.";
 /// `canonical_prompt()` 代码拼装、手动压缩走 `create_summary()` 独立 LLM
 /// 调用,二者均不按模板;`.codewhale/handoff.md` 在 pinvou3 无写入通路,
 /// `load_handoff_block` 永远 None——模板既无生产者也无消费者)。
-pub fn compose_static_layers(ctx: &deepseek_tui::prompts::StaticPromptCtx<'_>) -> String {
-    use deepseek_tui::tui::app::AppMode;
-    use deepseek_tui::tui::approval::ApprovalMode;
-
+pub fn compose_static_layers(_ctx: &deepseek_tui::prompts::StaticPromptCtx<'_>) -> String {
     // 底座宪法层(CONSTITUTION/WORKING RULES)已折叠进 instructions.md —— instructions 是
     // 唯一 pinvou3 prompt 来源(单模型→多模型适配,2026-06-15 消融实测:base.md 对 Qwen3.6
     // 可测量价值仅 Voice 语气,核心权威顺序/防编造已并进 instructions §底线)。静态层只剩 Mode。
-    let _ = ctx.model_id;
-    let mode_block = match ctx.mode {
-        AppMode::Plan => MODE_PLAN_MD,
-        AppMode::Yolo => MODE_EXECUTE_MD,
-        // pinvou3 生产链路不发 Agent;万一出现按 approval 兜底
-        AppMode::Agent => match ctx.approval_mode {
-            ApprovalMode::Auto => MODE_EXECUTE_MD,
-            ApprovalMode::Suggest | ApprovalMode::Never => MODE_AGENT_GATED_MD,
-        },
-    };
-    mode_block.to_string()
+    //
+    // 不再按 `ctx.mode` 选块:底座 v0.8.57 把 mode/approval 移到 per-turn,调 composer 钉死传
+    // 常量 Yolo → 静态层恒为 Execute 块(dump 传 plan 实测亦出 `## Mode: Execute`)。Plan/Agent
+    // 的 mode 真相全靠 per-turn reminder,不在静态层;原 Plan/Agent 块是选不中的死代码,已删。
+    MODE_EXECUTE_MD.to_string()
 }
 
 /// Authority Recap（Final Reminder）清空——其内容(裁决顺序/防编造)已折叠进
