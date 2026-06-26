@@ -19,6 +19,7 @@ pub mod feedback;
 pub use commands::build_message_with_attachments;
 pub mod engine;
 pub mod engine_pool;
+mod feishu;
 pub mod file_ingest;
 mod file_watcher;
 mod harness;
@@ -232,6 +233,9 @@ pub fn run() {
             let monitor_state = MonitorState::new();
             app.handle().manage(monitor_state);
 
+            // 飞书连接编排状态(长驻子进程 PID + 取消标志),供 feishu_connect_begin/cancel 用。
+            app.handle().manage(feishu::FeishuConn::default());
+
             // 工作流 Phase 可视化:skill 绑定挂在 SessionStore.mode_state 上,
             // per-session 隔离(start_skill_session 命令负责新建 session + bind)。
             // 不再需要全局 ActiveSkillStore。
@@ -293,6 +297,14 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::chat,
+            feishu::feishu_ensure_cli,
+            feishu::feishu_status,
+            feishu::feishu_connect_begin,
+            feishu::feishu_cancel,
+            feishu::feishu_logout,
+            feishu::feishu_apply_skills,
+            feishu::set_feishu_enabled,
+            feishu::feishu_skills_state,
             commands::get_settings,
             commands::submit_feedback,
             commands::get_effective_model_config,

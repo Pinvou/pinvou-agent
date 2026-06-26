@@ -14,6 +14,19 @@ use super::paths;
 static SANSHENG_LIUBU_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/workflow/sansheng-liubu");
 
+/// 飞书官方域技能（lark-*，MIT，sync 自 github.com/larksuite/cli `skills/`）：
+/// 编译期内嵌整个 skills 目录树（各域 SKILL.md + references/*.md + NOTICE.md）。
+/// 启动解包到 `bundle_skills_dir`，供引擎 `SkillRegistry` 发现、`load_skill` 渐进披露。
+static LARK_SKILLS_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/skills");
+
+/// 9 个 lark 域技能目录名(门控写/删共用)。skills_dir 下这些目录在不在
+/// = 飞书技能对模型可见与否(引擎 `SkillRegistry` 扫目录)。
+const LARK_SKILL_DIRS: [&str; 9] = [
+    "lark-shared", "lark-calendar", "lark-doc", "lark-drive",
+    "lark-sheets", "lark-im", "lark-task", "lark-wiki", "lark-base",
+];
+
 /// Bundle 版本号：手动 base + 自动 instructions.md 内容 hash（build.rs 注入）。
 /// 改 INSTRUCTIONS_MD 时不需要 bump base —— hash 自动变，ensure_extracted 自动覆写。
 /// 改其他 bundle 资源（mcp.json 默认 / skills 模板等）才需要手动 bump base。
@@ -26,8 +39,10 @@ static SANSHENG_LIUBU_DIR: Dir<'_> =
 /// 0.8: 上线三省六部卡片流工作流(sansheng-liubu):include_dir 内嵌 + 启动解包
 /// 注:「视觉设计」内置 skill 在 VERSION gate 之前由 write_builtin_skills 每启动防御性写出,
 ///     不依赖版本号 bump(同 write_workflows / write_mcp_servers）。
+/// 0.10: 接入飞书官方域技能(lark-shared + calendar/doc/drive/sheets/im/task/wiki/base):
+///       include_dir 内嵌 + 启动解包到 bundle_skills_dir,供 SkillRegistry 发现
 pub const BUNDLE_VERSION: &str = concat!(
-    "0.9-",
+    "0.10-",
     env!("BUNDLE_INSTRUCTIONS_HASH"),
     "-",
     env!("BUNDLE_WORKFLOW_HASH_SANSHENG"),
@@ -219,6 +234,9 @@ impl Pinvou3Bundle {
         self.write_workflows()?;
         // 内置 skill 同 workflow:immutable bundle 资源,每次启动防御性重写。
         self.write_builtin_skills()?;
+        // 飞书官方域技能:按门控规则(已连接 && 未手动停用)决定解包还是删除——
+        // 没连飞书的用户不写这 9 个技能,省 token(§八.4 装了才启用)。
+        self.apply_feishu_skills(crate::feishu::feishu_skills_should_show())?;
         // MCP server 脚本同理。
         self.write_mcp_servers()?;
         // mcp.json merge:每次启动 upsert 内置 pinvou server,保留 marketplace 条目。
@@ -299,6 +317,25 @@ impl Pinvou3Bundle {
         // sansheng-liubu
         let dest = workflow_root.join("sansheng-liubu");
         Self::extract_dir(&SANSHENG_LIUBU_DIR, &dest)?;
+        Ok(())
+    }
+
+    /// 解包内嵌的飞书官方域技能(lark-*)到 `~/.pinvou3/bundle/skills/`。
+    /// 每次启动防御性重写（immutable bundle 资源）。`LARK_SKILLS_DIR` 的根对应
+    /// `bundle/skills/`,内含 `lark-<域>/SKILL.md` + `references/`,直接铺到
+    /// `skills_dir`——引擎 `SkillRegistry` 扫该目录的每个含 `SKILL.md` 的子目录。
+    /// (顶层散落的 NOTICE.md 不含 SKILL.md,会被注册表忽略。)
+    /// 飞书技能门控:`show` → 解包 9 个 lark 技能到 `skills_dir`;否则**删掉**它们(+ NOTICE.md)。
+    /// 幂等(删不存在的目录不报错)。可见性 = 目录在不在,引擎重刷系统提示时重扫即生效。
+    pub fn apply_feishu_skills(&self, show: bool) -> std::io::Result<()> {
+        if show {
+            Self::extract_dir(&LARK_SKILLS_DIR, &self.skills_dir)?;
+        } else {
+            for d in LARK_SKILL_DIRS {
+                let _ = std::fs::remove_dir_all(self.skills_dir.join(d));
+            }
+            let _ = std::fs::remove_file(self.skills_dir.join("NOTICE.md"));
+        }
         Ok(())
     }
 

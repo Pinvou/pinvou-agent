@@ -11,7 +11,7 @@
   "env": {},
   "config_fields": [],
   "routing_rules": [
-    "用户要做 PPT / 幻灯片 / 演示文稿 / 汇报 / 方案 → ① 先列一版大纲（章节 + 每页要点）给用户确认/修改；② 确认后产结构化 deck（封面/目录/章节/要点/双栏/KPI/图表/表格/配图/结尾）；③ 按 PPT 内容自动选一套主题（business-blue/tech-dark/gov-red/creative-purple/fresh-green/warm-orange/navy-gold/minimal-mono/midnight）并一句话说明理由，用户可改；④ 调 `mcp_pptx_make_pptx` 生成 .pptx；⑤ 拿到 path 后**必须再调 `present_artifact(path, title)`** 上产物卡。全程**不要用 HTML 代替**。"
+    "用户要做 PPT / 幻灯片 / 演示文稿 / 汇报 / 方案 → ① 先列一版大纲（章节 + 每页要点）给用户确认/修改；② 确认后产结构化 deck（封面/目录/章节/要点/双栏/KPI/图表/表格/配图/结尾）；③ 按 PPT 内容自动选一套主题（business-blue/tech-dark/gov-red/creative-purple/fresh-green/warm-orange/navy-gold/minimal-mono/midnight）并一句话说明理由，用户可改；④ 调 `mcp_pptx_make_pptx` 生成 .pptx；⑤ 拿到 path 后**必须再调 `present_artifact(path, title)`** 上产物卡。全程**不要用 HTML 代替**;**没点名平台时默认本地生成 .pptx,不要用飞书/在线文档代替——只有用户明确说\"做成飞书文档 / 发到飞书\"才走飞书技能**。"
   ],
   "tool_table_entries": [
     "| PPT 生成 | `mcp_pptx_make_pptx` 产可编辑 .pptx（9 主题按内容自动选、真图表、带封面缩略图）→ 再 `present_artifact` 上卡 |"
