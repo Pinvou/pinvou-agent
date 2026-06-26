@@ -3756,7 +3756,7 @@
 
     // [plan/yolo] composer 模式 chip:默认 Yolo,下拉手切 Plan。进 Plan=只读调研
     // (底座 ReadOnly+只读工具集),调 update_plan 出方案卡决策。切换逻辑搬自旧 ModeHeader。
-    const ComposerModeChip = ({ t, bs }) => {
+    const ComposerModeChip = ({ t, bs, compact }) => {
       const [open, setOpen] = useState(false);
       const ms = (bs && bs.modeState) || { mode: 'yolo' };
       const isPlan = ms.mode === 'plan';
@@ -3773,13 +3773,15 @@
       const optCls = "w-full flex items-center justify-between px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group";
       return (
         <div className="relative">
-          <button onClick={() => setOpen(!open)} title={t.modeSwitchTitle}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold transition-colors border ${isPlan
+          <button onClick={() => setOpen(!open)} title={t.modeSwitchTitle + ' · ' + (isPlan ? t.modePlan : t.modeYolo)}
+            className={`flex items-center shrink-0 font-semibold transition-colors border ${compact ? 'justify-center w-9 h-9 rounded-full' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px]'} ${isPlan
               ? 'bg-[#E8F0FE] dark:bg-[#1A3A5C] text-[#1A73E8] dark:text-[#A8C7FA] border-[#1A73E8]/20 dark:border-[#A8C7FA]/25'
               : 'bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-black/[0.04] dark:border-white/5'}`}>
-            <Zap size={14} className="opacity-70 shrink-0" />
-            <span>{isPlan ? t.modePlan : t.modeYolo}</span>
-            <ChevronDown size={14} className="opacity-50 shrink-0" />
+            {isPlan
+              ? <ClipboardList size={compact ? 18 : 14} className="opacity-70 shrink-0" />
+              : <Zap size={compact ? 18 : 14} className="opacity-70 shrink-0" />}
+            {!compact && <span>{isPlan ? t.modePlan : t.modeYolo}</span>}
+            {!compact && <ChevronDown size={14} className="opacity-50 shrink-0" />}
           </button>
           {open && (
             <>
@@ -4187,7 +4189,7 @@
                     }`}>
                     <Mic size={20} />
                   </button>
-                  <ComposerModeChip t={t} bs={bs} />
+                  <ComposerModeChip t={t} bs={bs} compact={composerCompact} />
                   <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoSettings} compact={composerCompact} />
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} compact={composerCompact} />
                   <ComposerModeMenu t={t} bs={bs} compact={composerCompact} />

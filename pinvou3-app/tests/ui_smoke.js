@@ -133,9 +133,10 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
 
   // ⑤ composer 模式 chip:渲染 + 默认 YOLO + 下拉两项 + 点 Plan 真切到 Plan(防 setPlanModeNext 草稿态静默 return 回归)
   const chip = await page.evaluate(() => {
-    const b = document.querySelector('[title="切换工作模式"]');
+    // title 前缀匹配:compact 下 chip 收成图标(无可见文字),且 title 现含当前模式名 → 用 title 判模式
+    const b = document.querySelector('[title^="切换工作模式"]');
     if (!b) return { found: false };
-    const label = (b.textContent || '').trim();
+    const label = (b.getAttribute('title') || '').trim();
     b.click();
     return { found: true, label };
   });
@@ -147,8 +148,8 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
   await clickText(page, 'Plan');
   await sleep(700);
   const afterLabel = await page.evaluate(() => {
-    const b = document.querySelector('[title="切换工作模式"]');
-    return b ? (b.textContent || '').trim() : '';
+    const b = document.querySelector('[title^="切换工作模式"]');
+    return b ? (b.getAttribute('title') || '').trim() : '';
   });
   rec('⑤ chip 渲染+下拉两项+点Plan切到Plan', chip.found && /YOLO/.test(chip.label || '') && chipMenu.yoloDesc && chipMenu.planDesc && /Plan/.test(afterLabel), JSON.stringify({ ...chip, ...chipMenu, afterLabel }));
 
