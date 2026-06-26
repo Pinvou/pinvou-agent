@@ -155,11 +155,14 @@ pub fn install_prompt_overrides() {
 /// 内置 MCP 默认配置:注册 present_artifact server(成品卡)。`{{PINVOU3_PRESENT_SERVER}}`
 /// 占位符在 `ensure_extracted` 写出时被替换成解包后的 server 脚本绝对路径(常量无法
 /// 编译期拿到 `~/.pinvou3/bundle/` 运行时路径,同 INSTRUCTIONS_MD 的 `{{PINVOU3_WORKSPACE}}`)。
-/// server key `pinvou` + tool `present_artifact` → 底座透传给前端的工具名是
-/// `mcp_pinvou_present_artifact`(底座 `mcp.rs:all_tools` 格式 `mcp_{server}_{tool}`)。
-/// instructions.md 的引导名与前端匹配都按这个全名;前端 `isPresentArtifactTool`
-/// 用 `endsWith("present_artifact")` 命中,改 server 名也不破。
-pub const DEFAULT_MCP_JSON: &str = "{\n  \"servers\": {\n    \"pinvou\": {\n      \"command\": \"python3\",\n      \"args\": [\"{{PINVOU3_PRESENT_SERVER}}\"]\n    }\n  }\n}\n";
+/// server key `pinvou3` + tool `present_artifact` → 底座透传给前端的工具名是
+/// `mcp_pinvou3_present_artifact`(底座 `mcp.rs:all_tools` 格式 `mcp_{server}_{tool}`)。
+/// **server 名特意取 `pinvou3`(=产品名)而非 `pinvou`**:Qwen3.6 上下文里 `pinvou3`
+/// (产品名 + 满屏 `.pinvou3/` 工作目录路径)无处不在、`pinvou` 仅工具引导一处出现,
+/// 采样必把 server 名漂成 `pinvou3` → 旧名 `pinvou` 稳定复现 `Failed to find MCP
+/// server: pinvou3`。对齐产品名消除「差一个 3」的撞脸。改名安全:instructions.md 引导名
+/// 与前端 `isPresentArtifactTool` 的 `endsWith("present_artifact")` 后缀匹配都不破。
+pub const DEFAULT_MCP_JSON: &str = "{\n  \"servers\": {\n    \"pinvou3\": {\n      \"command\": \"python3\",\n      \"args\": [\"{{PINVOU3_PRESENT_SERVER}}\"]\n    }\n  }\n}\n";
 
 /// present_artifact MCP server 脚本(零依赖 python stdio),编译期内嵌,解包到
 /// `~/.pinvou3/bundle/mcp-servers/`。底座按 mcp.json 用 `python3 <path>` 拉起它。
@@ -373,10 +376,14 @@ impl Pinvou3Bundle {
                 .insert("servers".into(), serde_json::json!({}));
         }
         let servers = mcp["servers"].as_object_mut().unwrap();
+        // 迁移:旧版 server key 是 `pinvou`(与产品名 `pinvou3` 差一个 3,模型采样必漂成
+        // pinvou3 → `Failed to find MCP server: pinvou3`)。改用 `pinvou3` 对齐产品名,并删掉
+        // 旧 `pinvou` 条目——upsert 不会自动删旧名,不删会留两个指向同一脚本的 server。
+        servers.remove("pinvou");
         // Windows 用内置 pythonw(无窗口 + 自带依赖);其他平台系统 python3。见 paths::python_command。
         let python_cmd = paths::python_command();
         servers.insert(
-            "pinvou".to_string(),
+            "pinvou3".to_string(),
             serde_json::json!({
                 "command": python_cmd,
                 "args": [present_server.to_string_lossy()]
@@ -521,6 +528,15 @@ mod tests {
             !mcp.contains("{{PINVOU3_PRESENT_SERVER}}"),
             "mcp.json 的 server 路径占位符应被替换"
         );
+        // present server key 必须是 pinvou3(对齐产品名,消除模型把 pinvou 漂成 pinvou3 的撞脸);
+        // 旧 pinvou 名不残留。
+        let mcp_keys: serde_json::Value = serde_json::from_str(&mcp).unwrap();
+        let server_keys = mcp_keys["servers"].as_object().unwrap();
+        assert!(
+            server_keys.contains_key("pinvou3") && !server_keys.contains_key("pinvou"),
+            "present server key 应为 pinvou3、旧 pinvou 不残留,实际={:?}",
+            server_keys.keys().collect::<Vec<_>>()
+        );
         // 已下线 skills(h3c-ppt / pinvou-review-*)不应再被写出。
         for retired in ["h3c-ppt", "pinvou-review-plan", "pinvou-review-final"] {
             assert!(
@@ -554,6 +570,40 @@ mod tests {
             "VERSION 匹配时不应覆写已存在的 bundle 文件"
         );
 
+        cleanup(&tmp);
+    }
+
+    /// 旧版 mcp.json 的 present server key 是 `pinvou`(与产品名差一个 3,模型采样必漂成
+    /// pinvou3 → `Failed to find MCP server: pinvou3`)。升级时 ensure_builtin_mcp_servers
+    /// 必须迁成 `pinvou3`、删干净旧 `pinvou`,且不碰 marketplace 已装条目。
+    #[test]
+    fn migrates_legacy_pinvou_server_key_to_pinvou3() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        paths::ensure_dirs().unwrap();
+        let bundle = Pinvou3Bundle::paths();
+        std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
+        // 模拟旧版本写下的 mcp.json:present server 仍叫 pinvou + 一个 marketplace 条目(weather)。
+        std::fs::write(
+            &bundle.mcp_json,
+            r#"{"servers":{"pinvou":{"command":"python3","args":["/old/present.py"]},"weather":{"command":"python3","args":["/x/w.py"]}}}"#,
+        )
+        .unwrap();
+        bundle.ensure_builtin_mcp_servers().unwrap();
+        let mcp: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap()).unwrap();
+        let servers = mcp["servers"].as_object().unwrap();
+        assert!(
+            servers.contains_key("pinvou3"),
+            "应迁到 pinvou3,实际={:?}",
+            servers.keys().collect::<Vec<_>>()
+        );
+        assert!(!servers.contains_key("pinvou"), "旧 pinvou 应删除,不留残");
+        assert!(
+            servers.contains_key("weather"),
+            "marketplace 条目 weather 不应被迁移误删"
+        );
         cleanup(&tmp);
     }
 
