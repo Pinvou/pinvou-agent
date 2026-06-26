@@ -1811,18 +1811,27 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
     shell_open(&url)
 }
 
-/// 把成品卡里可能的**相对**路径落到当前 active session 的 workspace。
+/// 把成品卡里可能的**相对**路径落到产物所属 session 的 workspace。
 ///
 /// 背景:present_artifact 没调成(模型把工具名漂成 `pinvou-present_artifact` 之类
 /// → NotAvailable)时,成品卡由 write_file 兜底补出,path 直接用了 write_file 的
 /// 相对参数(如 `snake-game.html`)。点 Open 把相对路径丢给 `validate_user_path`
 /// → 直接拒「path must be absolute」。这里先按 workspace 解析,绝对路径原样返回
 /// (present_artifact 成功解析的 / 产物面板 list_workspace_files 给的已是绝对)。
-fn resolve_artifact_path(raw: &str, store: &SessionStore) -> String {
+///
+/// `session_id` = 卡片携带的**产物所属** session,**优先**用它而非全局 active_id:
+/// 切回「已访问过(有 buffer)」的会话时,前端走 switchActiveTo 不调 load_session,
+/// 后端 active_id 不更新 → 仍指向切走时去的那个 session → 相对路径被拼到错的
+/// workspace(报「not a file」)。卡片自带 session 才能跨会话切换稳定解析。
+/// None 时(老卡无此字段 / 绝对路径)回退 active_id,行为同旧版。
+fn resolve_artifact_path(raw: &str, session_id: Option<&str>, store: &SessionStore) -> String {
     if std::path::Path::new(raw).is_absolute() {
         return raw.to_string();
     }
-    match store.active_id() {
+    let sid = session_id
+        .map(|s| s.to_string())
+        .or_else(|| store.active_id());
+    match sid {
         Some(sid) => crate::bridge::paths::session_workspace_dir(&sid)
             .join(raw)
             .to_string_lossy()
@@ -1832,10 +1841,14 @@ fn resolve_artifact_path(raw: &str, store: &SessionStore) -> String {
 }
 
 /// 用系统默认应用打开文件（跨平台：Win `start` / mac `open` / Linux `xdg-open`）；
-/// 相对路径先按 active session 的 workspace 解析（合并 main 的相对路径修复 + 跨平台打开）。
+/// 相对路径先按产物所属 session（前端传 `sessionId`，缺则 active）的 workspace 解析。
 #[tauri::command]
-pub async fn open_in_system(path: String, store: State<'_, SessionStore>) -> Result<(), String> {
-    let p = validate_user_path(&resolve_artifact_path(&path, &store))?;
+pub async fn open_in_system(
+    path: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    let p = validate_user_path(&resolve_artifact_path(&path, session_id.as_deref(), &store))?;
     shell_open(&strip_verbatim(&p))
 }
 
@@ -1844,9 +1857,10 @@ pub async fn open_in_system(path: String, store: State<'_, SessionStore>) -> Res
 #[tauri::command]
 pub async fn open_containing_folder(
     path: String,
+    session_id: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    let p = validate_user_path(&resolve_artifact_path(&path, &store))?;
+    let p = validate_user_path(&resolve_artifact_path(&path, session_id.as_deref(), &store))?;
     let dir = p
         .parent()
         .ok_or_else(|| format!("no parent dir for {}", p.display()))?;
@@ -1858,12 +1872,13 @@ pub async fn open_containing_folder(
 #[tauri::command]
 pub async fn open_artifact_window(
     path: String,
+    session_id: Option<String>,
     app: tauri::AppHandle,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
     use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
-    let p = validate_user_path(&resolve_artifact_path(&path, &store))?;
+    let p = validate_user_path(&resolve_artifact_path(&path, session_id.as_deref(), &store))?;
     if !p.is_file() {
         return Err(format!("not a file: {}", p.display()));
     }
@@ -3754,8 +3769,8 @@ mod tests {
     }
 
     /// present_artifact 漂工具名失败时,成品卡兜底用 write_file 的相对 path
-    /// (如 `snake-game.html`),点 Open 必须先按 active session workspace 解析成
-    /// 绝对路径,否则 `validate_user_path` 直接拒「path must be absolute」。
+    /// (如 `snake-game.html`),点 Open 必须先按 session workspace 解析成绝对路径,
+    /// 否则 `validate_user_path` 直接拒「path must be absolute」。
     #[test]
     fn resolve_artifact_path_relative_joins_active_workspace() {
         let _g = crate::bridge::paths::tests::ENV_LOCK
@@ -3764,23 +3779,38 @@ mod tests {
         std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-resolve-test");
         let store = SessionStore::boot().expect("boot");
 
-        // 无 active session → 相对路径原样返回(解析不到 workspace,行为同旧版)
+        // 无 active session 且无显式 session → 相对路径原样返回(行为同旧版)
         assert_eq!(
-            resolve_artifact_path("snake-game.html", &store),
+            resolve_artifact_path("snake-game.html", None, &store),
             "snake-game.html"
         );
 
-        // 有 active session → 相对路径落到该 session 的 workspace
+        // 有 active session、无显式 session → 回退 active 的 workspace
         store.set_active(Some("sess-1".into()));
         let want = crate::bridge::paths::session_workspace_dir("sess-1")
             .join("snake-game.html")
             .to_string_lossy()
             .into_owned();
-        assert_eq!(resolve_artifact_path("snake-game.html", &store), want);
+        assert_eq!(resolve_artifact_path("snake-game.html", None, &store), want);
 
-        // 绝对路径原样返回(present_artifact 成功 / 产物面板给的已是绝对)
+        // 显式 session **优先**于 active:卡片自带 session 才能跨会话切换稳定解析
+        // (active 停在切走时去的会话也不影响)。这是本次跨 session「打不开」的修复点。
+        let want_explicit = crate::bridge::paths::session_workspace_dir("sess-owner")
+            .join("snake-game.html")
+            .to_string_lossy()
+            .into_owned();
         assert_eq!(
-            resolve_artifact_path("/home/u/.pinvou3/sessions/x/workspace/a.html", &store),
+            resolve_artifact_path("snake-game.html", Some("sess-owner"), &store),
+            want_explicit
+        );
+
+        // 绝对路径原样返回,无视 session(present_artifact 成功 / 产物面板给的已是绝对)
+        assert_eq!(
+            resolve_artifact_path(
+                "/home/u/.pinvou3/sessions/x/workspace/a.html",
+                Some("sess-owner"),
+                &store
+            ),
             "/home/u/.pinvou3/sessions/x/workspace/a.html"
         );
     }

@@ -734,6 +734,7 @@
                   title: (b.input && b.input.title) || "",
                   description: (b.input && b.input.description) || "",
                   time: "",
+                  sessionId: state.activeSessionId,
                 });
               }
               continue;
@@ -761,11 +762,11 @@
               if (wprev) {
                 addChatItem({
                   type: "artifact_card", path: wprev.path, title: wprev.title,
-                  description: wprev.description, time: "",
+                  description: wprev.description, time: "", sessionId: state.activeSessionId,
                 });
               } else if (writtenArtifacts[wap] && !presentedArtifacts[wap]) {
                 // AI 写了产物但全程没 present_artifact → 兜底补首卡(与实时 chat:done 对齐)
-                addChatItem({ type: "artifact_card", path: wap, title: basename(wap), description: "", time: "" });
+                addChatItem({ type: "artifact_card", path: wap, title: basename(wap), description: "", time: "", sessionId: state.activeSessionId });
               }
             }
           }
@@ -1290,6 +1291,7 @@
             title: (meta.args && meta.args.title) || "",
             description: (meta.args && meta.args.description) || "",
             time: timeStr(),
+            sessionId: p.session_id || state.activeSessionId,
           });
         }
         if (presentedPath) state.turnPresentedArtifacts.push(presentedPath); // 本 turn 已出成品卡,chat:done 不再兜底补
@@ -1333,7 +1335,11 @@
         if (meta.name !== "edit_file" && (isDeliverable(ap) || findPresentedArtifact(ap))) trackArtifact(ap);
         // 产物(present 过的成品 或 write/append 写进产物列表的)被写/改 → turn 结束补卡。
         // 不再要求 present 过:AI 经常写完产物忘了 present_artifact → 没成品卡 = 没召唤入口。
-        var isArtifact = !!findPresentedArtifact(ap) || state.artifacts.some(function (a) { return a.path === ap; });
+        // 按 basename 比对:disk watcher(artifact:disk)写盘后抢先用**绝对**路径 trackArtifact
+        // 占了名额,而这里 ap 是 write_file 的**相对**参数 —— 用 a.path===ap 比绝对≠相对永远落空,
+        // turnDirty 收不到 → 实时不补成品卡(只能靠重启 rerender 才出)。basename 比对消除该竞态。
+        var _apbn = basename(ap);
+        var isArtifact = !!findPresentedArtifact(ap) || state.artifacts.some(function (a) { return basename(a.path) === _apbn; });
         if (isArtifact && state.turnDirtyArtifacts.indexOf(ap) < 0) {
           state.turnDirtyArtifacts.push(ap);
         }
@@ -1374,8 +1380,12 @@
         var _apbn = basename(ap);
         if ((state.turnPresentedArtifacts || []).some(function (pp) { return basename(pp) === _apbn; })) return;
         var prev = findPresentedArtifact(ap);
-        if (prev) addChatItem({ type: "artifact_card", path: prev.path, title: prev.title, description: prev.description, time: timeStr() });
-        else addChatItem({ type: "artifact_card", path: ap, title: basename(ap), description: "", time: timeStr() });
+        // 补卡 path 优先用 disk watcher 落进产物列表的同名**绝对**路径(open 可靠、跨 session 稳);
+        // 没有再退回 write_file 的相对 ap(由 sessionId 兜底解析)。
+        var tracked = state.artifacts.find(function (a) { return basename(a.path) === _apbn && isAbsPath(a.path); });
+        var cardPath = (tracked && tracked.path) || ap;
+        if (prev) addChatItem({ type: "artifact_card", path: prev.path, title: prev.title, description: prev.description, time: timeStr(), sessionId: sid });
+        else addChatItem({ type: "artifact_card", path: cardPath, title: basename(ap), description: "", time: timeStr(), sessionId: sid });
       });
       state.turnDirtyArtifacts = [];
       state.turnPresentedArtifacts = [];
@@ -2185,13 +2195,14 @@
   function listDeliverables(projectDir) {
     return invoke("list_deliverables", { projectDir: projectDir }).catch(function () { return []; });
   }
-  // 外部打开产物：HTML 走 Tauri 独立窗口（绕沙箱），其他走系统应用
-  // 相对路径(write_file 兜底补卡的相对文件名)由后端 open_in_system/open_artifact_window
-  // 内的 resolve_artifact_path 按 active session workspace 解析,前端无需预处理。
-  function openArtifactExternal(path) {
+  // 外部打开产物：HTML 走 Tauri 独立窗口（绕沙箱），其他走系统应用。
+  // sessionId = 卡片携带的产物所属 session。后端 resolve_artifact_path 用它(而非全局
+  // active_id)解析相对路径 —— 切回「有 buffer」的会话后端 active 不更新,只有卡片自带
+  // session 才解析得准(否则相对路径被拼到错的 workspace 报 not a file)。绝对路径无视它。
+  function openArtifactExternal(path, sessionId) {
     var ext = (String(path).split(".").pop() || "").toLowerCase();
     var cmd = (ext === "html" || ext === "htm") ? "open_artifact_window" : "open_in_system";
-    return invoke(cmd, { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
+    return invoke(cmd, { path: path, sessionId: sessionId || null }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
   }
 
   // ── 附件 ────────────────────────────────────────────────────────
