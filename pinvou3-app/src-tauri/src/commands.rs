@@ -19,7 +19,7 @@ use deepseek_tui::tools::user_input::{UserInputAnswer, UserInputResponse};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::bridge::mode_state::{PlanPhase, SerializableMode, SessionModeState};
+use crate::bridge::mode_state::{SerializableMode, SessionModeState};
 use crate::bridge::prefs::{SavedModel, UserPrefs};
 use crate::bridge::sessions::SessionStore;
 use crate::engine_pool::EnginePool;
@@ -72,28 +72,9 @@ pub async fn chat(
     if let Some(injected) = store.take_pending_skill_instruction(&sid) {
         full = format!("{injected}\n\n---\n\n{full}");
     }
-    if let Some(skill) = store.active_skill(&sid) {
-        // 工作流会话(is_workflow_id)不再注入任何 reminder:对话型监工(品悟)已废弃,
-        // 进度走 workflow:agent_state_changed 卡片流,执行靠 Harness 直派 SubAgent,
-        // 都不经前台对话。普通挂载式 skill(review 等)仍需 phase marker 推前端 chips。
-        if !crate::workflow_registry::is_workflow_id(&skill.name) {
-            let reminder = format!(
-                "<system-reminder>\n\
-                 工作流 `{name}` 提醒:你的下一条回复**必须**以 `<phase id=\"...\"/>` \
-                 单独一行开头(literal XML 标签,不是 markdown 加粗,不是自然语言)。\n\
-                 - 自然语言里写 \"进入 P5\" / \"现在做 HTML 实现\" **不算** marker,\
-                 必须输出字面 `<phase id=\"p5\"/>` 然后空行然后正文。\n\
-                 - 跳过 phase 也要显式输出对应 marker(从 p3 直接做 p5 → 输出 \
-                 `<phase id=\"p5\"/>`,别不出标)。\n\
-                 - 留在同一 phase 多个 turn 也要每次都输出该 phase 的 marker,\
-                 不要因为\"没换 phase\"省略。\n\
-                 pinvou3 UI chips 条靠这个 marker 推进度,漏标 = 用户看不到进展。\n\
-                 </system-reminder>",
-                name = skill.name,
-            );
-            full = format!("{reminder}\n\n{full}");
-        }
-    }
+    // [phase marker 下线] 原 active_skill 非工作流分支每 turn 注入 `<phase id=.../>`
+    // marker reminder,但消费链(底座抽取 → chat:phase_changed → 前端 chips)已整体拆除,
+    // marker 产出后无人消费。已删。active_skill 的 pending_instruction(skill body)仍走上面。
 
     // Side B 卡片池: 加持后首条消息一次性 prepend 完整人设 body(agency-agents-zh)。
     // 之后每 turn 只靠 equip_anchor 轻锚点维持身份(EnginePool 注入),不再重灌 body。
@@ -109,12 +90,9 @@ pub async fn chat(
             .and_then(|kb| kb.l1().collection_name(cid).ok().flatten());
         full = format!("{}\n\n---\n\n{full}", build_kb_agentic_guide(coll_name.as_deref()));
     }
-    // 取该 session 的 mode + phase。
-    let s = store.mode_state(&sid);
-    let (mode, phase) = (s.mode, s.plan_phase);
-    // M2: 用户主动消息重置 auto-continue 计数器(新任务从 0 开始算 max 3 次)
-    store.reset_auto_continue(&sid);
-    pool.send_user_message(&sid, full, mode.to_app_mode(), phase)
+    // 取该 session 的 mode。
+    let mode = store.mode_state(&sid).mode;
+    pool.send_user_message(&sid, full, mode.to_app_mode())
         .await
         .map_err(|e| format!("send_user_message failed: {e:?}"))
 }
@@ -359,6 +337,15 @@ pub async fn get_settings() -> Result<UserPrefs, String> {
     Ok(UserPrefs::load())
 }
 
+#[tauri::command]
+pub async fn submit_feedback(
+    request: crate::feedback::FeedbackSubmitRequest,
+) -> Result<crate::feedback::FeedbackReceipt, String> {
+    crate::feedback::submit_feedback(request)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// 实际生效的模型配置（环境变量可能覆盖 settings.json）。
 /// 前端设置页初始化时优先用这个，避免"改了 settings 但实际不生效"的困惑。
 #[derive(Debug, Clone, Serialize)]
@@ -506,6 +493,316 @@ pub async fn test_model_connection(base_url: String, api_key: String) -> Result<
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct VoiceTranscriptionRequest {
+    /// WAV bytes captured by the WebView.
+    pub audio_bytes: Vec<u8>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VoiceTranscriptionResponse {
+    pub text: String,
+    pub source: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VoiceCommandError {
+    pub category: String,
+    pub stage: String,
+    pub message: String,
+}
+
+impl VoiceCommandError {
+    fn new(category: &str, stage: &str, message: impl Into<String>) -> Self {
+        Self {
+            category: category.to_string(),
+            stage: stage.to_string(),
+            message: message.into(),
+        }
+    }
+}
+
+fn local_asr_command_name() -> String {
+    crate::os::asr_tool_path().to_string_lossy().into_owned()
+}
+
+fn local_asr_model_name() -> String {
+    std::env::var("PINVOU3_ASR_MODEL")
+        .or_else(|_| std::env::var("PINVOU3_DEEPSPEECH2_MODEL"))
+        .unwrap_or_else(|_| "sensevoice-q8".to_string())
+}
+
+fn local_asr_language() -> String {
+    std::env::var("PINVOU3_ASR_LANG")
+        .or_else(|_| std::env::var("PINVOU3_DEEPSPEECH2_LANG"))
+        .unwrap_or_else(|_| "zh".to_string())
+}
+
+fn local_asr_timeout() -> std::time::Duration {
+    let secs = std::env::var("PINVOU3_ASR_TIMEOUT_SECS")
+        .or_else(|_| std::env::var("PINVOU3_DEEPSPEECH2_TIMEOUT_SECS"))
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .unwrap_or(60);
+    std::time::Duration::from_secs(secs)
+}
+
+fn voice_temp_wav_path() -> std::path::PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    std::env::temp_dir().join(format!(
+        "pinvou3-voice-{}-{stamp}.wav",
+        std::process::id()
+    ))
+}
+
+#[cfg(windows)]
+fn hide_child_console(command: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn hide_child_console(_command: &mut std::process::Command) {}
+
+struct LocalAsrOutput {
+    text: String,
+}
+
+fn compact_process_output(stdout: &str, stderr: &str) -> String {
+    let joined = [stdout.trim(), stderr.trim()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if joined.chars().count() <= 2000 {
+        return joined;
+    }
+    let tail = joined
+        .chars()
+        .rev()
+        .take(2000)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    format!("...{tail}")
+}
+
+fn parse_local_asr_text(stdout: &str, stderr: &str) -> Option<String> {
+    let combined = format!("{stdout}\n{stderr}");
+    let result_prefixes = [
+        "result:",
+        "asr result:",
+        "recognition result:",
+        "text:",
+        "output:",
+    ];
+
+    for line in combined.lines().rev() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        for prefix in result_prefixes {
+            if lower.starts_with(prefix) {
+                let text = line[prefix.len()..].trim();
+                if !text.is_empty() {
+                    return Some(text.to_string());
+                }
+            }
+        }
+        if (line.starts_with("['") && line.ends_with("']"))
+            || (line.starts_with("[\"") && line.ends_with("\"]"))
+        {
+            let text = line
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim_matches('\'')
+                .trim_matches('"')
+                .trim();
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+        if lower.contains("error")
+            || lower.contains("warning")
+            || lower.contains("paddlespeech")
+            || lower.contains("sensevoice")
+            || lower.contains("funasr")
+            || lower.contains("gguf")
+            || lower.contains("python")
+            || lower.contains("download")
+            || lower.starts_with('[')
+        {
+            continue;
+        }
+        if line
+            .chars()
+            .any(|ch| ch.is_alphabetic() || ('\u{4e00}'..='\u{9fff}').contains(&ch))
+        {
+            return Some(line.to_string());
+        }
+    }
+    None
+}
+
+fn run_local_asr_cli(wav_path: &std::path::Path) -> Result<LocalAsrOutput, VoiceCommandError> {
+    use std::io::Read;
+    use std::process::Stdio;
+
+    let executable = local_asr_command_name();
+    let model = local_asr_model_name();
+    let language = local_asr_language();
+    let timeout = local_asr_timeout();
+
+    let mut command = std::process::Command::new(&executable);
+    command
+        .arg("asr")
+        .arg("--model")
+        .arg(&model)
+        .arg("--lang")
+        .arg(&language)
+        .arg("--input")
+        .arg(wav_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    hide_child_console(&mut command);
+
+    let mut child = command.spawn().map_err(|e| {
+        let message = if e.kind() == std::io::ErrorKind::NotFound {
+            crate::os::asr_missing_message().to_string()
+        } else {
+            format!("Failed to start local SenseVoice/FunASR ASR: {e}")
+        };
+        VoiceCommandError::new("recognition_failed", "transcribing", message)
+    })?;
+
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(VoiceCommandError::new(
+                        "recognition_failed",
+                        "transcribing",
+                        format!(
+                            "Local SenseVoice/FunASR ASR timed out after {} seconds. Check that the q8 model is bundled and the runtime works offline.",
+                            timeout.as_secs()
+                        ),
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(VoiceCommandError::new(
+                    "recognition_failed",
+                    "transcribing",
+                    format!("Failed while waiting for local SenseVoice/FunASR ASR: {e}"),
+                ));
+            }
+        }
+    };
+
+    let mut stdout = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        let _ = pipe.read_to_string(&mut stdout);
+    }
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+
+    if !status.success() {
+        return Err(VoiceCommandError::new(
+            "recognition_failed",
+            "transcribing",
+            format!(
+                "Local SenseVoice/FunASR ASR failed (exit {}): {}",
+                status
+                    .code()
+                    .map_or_else(|| "unknown".to_string(), |code| code.to_string()),
+                compact_process_output(&stdout, &stderr)
+            ),
+        ));
+    }
+
+    let text = parse_local_asr_text(&stdout, &stderr).ok_or_else(|| {
+        VoiceCommandError::new(
+            "empty_result",
+            "transcribing",
+            format!(
+                "Local SenseVoice/FunASR ASR returned no usable text: {}",
+                compact_process_output(&stdout, &stderr)
+            ),
+        )
+    })?;
+
+    Ok(LocalAsrOutput { text })
+}
+
+/// Transcribe a short one-shot voice capture from the desktop WebView using
+/// local SenseVoice/FunASR ASR.
+#[tauri::command]
+pub async fn transcribe_voice_audio(
+    request: VoiceTranscriptionRequest,
+) -> Result<VoiceTranscriptionResponse, VoiceCommandError> {
+    if request.audio_bytes.len() < 44 {
+        return Err(VoiceCommandError::new(
+            "recording_failed",
+            "recording",
+            "Recorded audio is empty or invalid.",
+        ));
+    }
+
+    let wav_path = voice_temp_wav_path();
+    let audio_bytes = request.audio_bytes;
+    let asr_output = tokio::task::spawn_blocking(move || {
+        std::fs::write(&wav_path, &audio_bytes).map_err(|e| {
+            VoiceCommandError::new(
+                "recording_failed",
+                "recording",
+                format!("Failed to write temporary voice audio: {e}"),
+            )
+        })?;
+        // 优先用内置 SenseVoice 引擎（转码+识别+清洗全在 Rust，无需 shim/环境变量）；
+        // 引擎或模型未就绪时回退原 CLI 路径（PINVOU3_ASR_CMD / pinvou-asr）。
+        let result = if crate::voice_asr::engine_path().is_file()
+            && crate::voice_asr::model_path().is_file()
+        {
+            crate::voice_asr::transcribe(&wav_path).map(|text| LocalAsrOutput { text })
+                .map_err(|e| VoiceCommandError::new("recognition_failed", "transcribing", e))
+        } else {
+            run_local_asr_cli(&wav_path)
+        };
+        let _ = std::fs::remove_file(&wav_path);
+        result
+    })
+    .await
+    .map_err(|e| {
+        VoiceCommandError::new(
+            "recognition_failed",
+            "transcribing",
+            format!("Local SenseVoice/FunASR ASR task failed: {e}"),
+        )
+    })??;
+
+    Ok(VoiceTranscriptionResponse {
+        text: asr_output.text,
+        source: "pinvou-webview-sensevoice-local".to_string(),
+    })
+}
 /// 持久化 UserPrefs 到 `~/.pinvou3/settings.json`。
 ///
 /// **当前 MVP 限制**：写盘后不重启 Engine。所以：
@@ -1499,6 +1796,8 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
         "https://app.tavily.com/",
         "https://www.iwencai.com/",
         "https://agent.qcc.com/",
+        // MegaCube 官网(侧边栏 footer 入口跳转)
+        "https://www.h3c.com/",
     ];
     if !ALLOWED_PREFIXES.iter().any(|p| url.starts_with(p)) {
         return Err(format!("URL not in allowlist: {url}"));
@@ -1869,32 +2168,38 @@ pub async fn get_active_persona(
         .and_then(|pid| crate::personas::get(&pid).map(|c| c.summary())))
 }
 
-/// 用户点 💡 进入 Plan 流程：设 mode=Plan + phase=Planning。
-/// 下一条 chat 消息会带 mode=Plan 发送，底座自动切只读工具集 + ReadOnly sandbox。
+/// 用户在 composer chip 选 Plan：设 mode=Plan。
+/// 下一条 chat 消息带 mode=Plan 发送，底座自动切只读工具集 + ReadOnly sandbox。
 #[tauri::command]
 pub async fn set_plan_mode_next(
     session_id: String,
     store: State<'_, SessionStore>,
 ) -> Result<SessionModeState, String> {
-    store.set_mode_state(&session_id, SerializableMode::Plan, PlanPhase::Planning);
+    store.set_mode(&session_id, SerializableMode::Plan);
     Ok(store.mode_state(&session_id))
 }
 
-/// 用户点 [⚡ 直接动手]（Planning 态 chip 退出按钮）：跳过 plan 流程，凭对话历史自由干。
-/// mode 切回 Yolo + phase=None。对话历史天然保留，AI 在 YOLO 下能看到之前讨论的 context。
+/// 用户在 composer chip 选 Yolo（从 Plan 退回）：mode 切 Yolo。
+/// 对话历史天然保留，AI 在 YOLO 下能看到之前讨论的 context。
 #[tauri::command]
 pub async fn exit_plan_to_yolo(
     session_id: String,
     store: State<'_, SessionStore>,
 ) -> Result<SessionModeState, String> {
-    store.set_mode_state(&session_id, SerializableMode::Yolo, PlanPhase::None);
+    store.set_mode(&session_id, SerializableMode::Yolo);
     Ok(store.mode_state(&session_id))
 }
 
-/// 用户点 plan_card [✅ 就这么干]：接受 plan，切 YOLO 执行。
+/// `accept_plan` 切 Yolo 后注入的执行指令文本。抽成函数供单测钉契约:
+/// 必须裹住方案全文 + 带明确"立即执行"信号,否则切了 Yolo 但 AI 收到空指令不知道干嘛。
+fn accept_plan_instruction(plan_markdown: &str) -> String {
+    format!("用户已批准方案,立即开始执行。方案:\n\n{plan_markdown}")
+}
+
+/// 用户点 plan_card [✅ 就这么干]：接受 plan，切 YOLO 执行(对齐底座 accept-yolo)。
 /// 流程：
-///   1. 设 mode=Yolo, phase=Executing
-///   2. 用 plan_markdown 作为指令前缀发一条 user message 触发执行
+///   1. 设 mode=Yolo
+///   2. 用 plan_markdown 作为指令前缀发一条 user message 触发执行(底座共享 PlanState 仍在)
 /// 前端在调用前应在消息流追加 user 气泡显示「✅ 就这么干」让用户感知。
 #[tauri::command]
 pub async fn accept_plan(
@@ -1903,14 +2208,12 @@ pub async fn accept_plan(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<SessionModeState, String> {
-    store.set_mode_state(&session_id, SerializableMode::Yolo, PlanPhase::Executing);
-    // 简短指令——主约束由 M1 per-turn system-reminder 提供(bridge 按 phase=Executing 注入)。
-    let instruction = format!("用户已批准方案,立即开始执行。方案:\n\n{plan_markdown}");
+    store.set_mode(&session_id, SerializableMode::Yolo);
+    let instruction = accept_plan_instruction(&plan_markdown);
     pool.send_user_message(
         &session_id,
         instruction,
         SerializableMode::Yolo.to_app_mode(),
-        PlanPhase::Executing,
     )
     .await
     .map_err(|e| format!("accept_plan send_user_message: {e:?}"))?;
@@ -1983,14 +2286,15 @@ pub async fn read_skill_body(name: String) -> Result<String, String> {
 // 用户点 [✏️ 改改] 时前端走 DeepSeek-TUI 底座做法:不切 phase, 仅 input 预填"修订方案:"前缀.
 // phase 保持 Ready, 下一条 chat 触发的 Ready reminder 已包含"用户发新消息=隐式修订"语义.
 
-/// 用户点 plan_card [🚪 算了]：放弃整个任务，回 YOLO 默认态。
-/// 与 exit_plan_to_yolo 区别：⚡ 是「不要 plan 直接干」，🚪 是「这事不干了」。
+/// 用户点 plan_card [🚪 算了]：放弃这个方案,但**留在当前模式**(Plan 不踢回 Yolo)。
+/// "算了"= 这个方案不要了,不等于退出规划态;要换模式用户自己点 chip。
+/// 与 accept_plan(切 Yolo 执行) / exit_plan_to_yolo(切 Yolo 直接干) 区别:discard 只关卡片、不动 mode。
 #[tauri::command]
 pub async fn discard_plan(
     session_id: String,
     store: State<'_, SessionStore>,
 ) -> Result<SessionModeState, String> {
-    store.set_mode_state(&session_id, SerializableMode::Yolo, PlanPhase::None);
+    // 不动 mode——放弃方案 ≠ 退出 Plan;仅回传当前状态供前端刷新卡片。
     Ok(store.mode_state(&session_id))
 }
 
@@ -2366,20 +2670,14 @@ pub async fn start_skill_session(
     // 多 session 并发:不预热 engine(lazy)。首条 chat 时 EnginePool 为这个空 session
     //    spawn 专属 engine,空历史无需 SyncSession。
 
-    let injected = format!(
-        "[pinvou3-app] 用户在「工作流」视图启用了 skill: `{name}`。\
-         请按该 skill 的 phases 流程响应 — engine 会自动从你回复里抽 \
-         `<phase id=\"...\"/>` marker 驱动 UI 上方的 phase chip 条,\
-         **每条回复必须以该 marker 单独一行开头**(详见 system prompt 里 \
-         「Phase tracking — MANDATORY for phased skills」段)。",
-        name = skill.name,
-    );
-
+    // [phase marker 下线] 原 pending_instruction 注入"按 phases 流程响应 + engine 自动抽
+    // <phase> marker + Phase tracking 段"的引导,这些底座机制(Skill.phases / marker 抽取)
+    // 已随 v0.8.57 退役。绑定只留 name,skill 能力走底座 progressive disclosure。
     store.bind_skill(
         &sid,
         ActiveSkillBinding {
             name: skill.name.clone(),
-            pending_instruction: Some(injected),
+            pending_instruction: None,
             phases: phases.clone(),
             project_dir: None,
         },
@@ -3416,6 +3714,16 @@ pub async fn list_session_skill_bindings(
 mod tests {
     use super::*;
 
+    /// accept_plan 切 Yolo 后注入的执行指令必须裹住方案全文 + 带"立即执行"信号——
+    /// 否则切了模式但 AI 收到一句空指令,不知道要执行什么(切了白切)。
+    #[test]
+    fn accept_plan_instruction_embeds_full_plan() {
+        let plan = "1. 建目录\n2. 写 index.html\n3. 起本地服务器";
+        let msg = accept_plan_instruction(plan);
+        assert!(msg.contains(plan), "注入指令丢了方案全文");
+        assert!(msg.contains("立即开始执行"), "缺少明确执行信号");
+    }
+
     /// 挂集时 Self-RAG 引导:含知识集名 + 必调 kb_search + 无依据说不知道;空名兜底。
     #[test]
     fn agentic_guide_mentions_collection_and_kb_search() {
@@ -3424,6 +3732,19 @@ mod tests {
         assert!(g.contains("kb_search"));
         assert!(g.contains("绝不凭记忆编造"));
         assert!(build_kb_agentic_guide(None).contains("《本地知识集》"));
+    }
+
+    #[test]
+    fn parses_local_asr_plain_text_output() {
+        let text = parse_local_asr_text("hello from voice\n", "").expect("plain text");
+        assert_eq!(text, "hello from voice");
+    }
+
+    #[test]
+    fn parses_local_asr_list_output() {
+        let text = parse_local_asr_text("[INFO] loading\n['hello from voice']\n", "")
+            .expect("list output");
+        assert_eq!(text, "hello from voice");
     }
 
     /// present_artifact 漂工具名失败时,成品卡兜底用 write_file 的相对 path

@@ -28,7 +28,6 @@ use tauri::async_runtime::JoinHandle;
 use tauri::AppHandle;
 use tokio::sync::Mutex;
 
-use crate::bridge::mode_state::PlanPhase;
 use crate::bridge::prefs::UserPrefs;
 use crate::bridge::sessions::SessionStore;
 use crate::bridge::Pinvou3Bridge;
@@ -180,7 +179,6 @@ impl EnginePool {
         session_id: &str,
         content: String,
         mode: AppMode,
-        phase: PlanPhase,
     ) -> Result<()> {
         // Side B 卡片池: 该 session 加持了专家面具时,每 turn 注入轻锚点(短)维持身份。
         // 完整 body 已在加持首条消息一次性注入(commands::chat take_pending_persona_body)。
@@ -192,7 +190,7 @@ impl EnginePool {
             .map(|c| crate::personas::equip_anchor(&c));
         self.get_or_spawn(session_id)
             .await?
-            .send_user_message(content, mode, phase, persona_reminder)
+            .send_user_message(content, mode, persona_reminder)
             .await
     }
 

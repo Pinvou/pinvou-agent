@@ -1,4 +1,5 @@
-//! 超级权限开关：通过 pkexec 写入 `/etc/sudoers.d/pinvou3` 让当前用户跑 sudo 免密。
+//! 超级权限开关：Linux 通过 pkexec 写入 `/etc/sudoers.d/pinvou3` 让当前用户跑 sudo 免密。
+//! Windows 不支持该 Linux sudoers 机制，相关开关降级为不可用。
 //!
 //! 设计要点：
 //! - **源真相是文件系统**：`/etc/sudoers.d/pinvou3` 存在 = 开；不存在 = 关。不在 settings.json 里冗余存。
@@ -13,13 +14,8 @@
 //!
 //! 维护：卸载 .deb 时由 `prerm` 删 `/etc/sudoers.d/pinvou3`，避免遗留授权。
 
-use std::path::Path;
-use std::process::Command;
-
-const SUDOERS_PATH: &str = "/etc/sudoers.d/pinvou3";
-
 pub fn is_enabled() -> bool {
-    Path::new(SUDOERS_PATH).exists()
+    crate::os::super_permission_is_enabled()
 }
 
 /// 静态 system prompt 的 §7 占位段。**不含开关状态**。
@@ -42,74 +38,13 @@ pub fn instruction_block() -> &'static str {
 /// **开启**:直接 sudo 一步到位,别先试裸命令(否则模型对 `/etc` 写只会裸 touch 然后放弃)。
 /// **关闭**:禁 sudo(会被 deny hook 拦或卡超时),引导用户开开关。
 pub fn turn_reminder() -> &'static str {
-    if is_enabled() {
-        "超级权限【已开启】(sudo 免密)。需要 root 时**直接用 sudo 一步到位,绝不先试不带 sudo 的命令再回头补**:写系统路径用 `sudo touch`/`sudo tee`/`sudo mkdir -p`/`sudo rm`,装包/服务用 `sudo apt install`/`sudo systemctl`。仍不要碰密钥/凭证(`~/.ssh`、含 `credentials`/`id_rsa`/`token` 的路径、`/etc/shadow`、`/etc/sudoers`),开 root 也禁。"
-    } else {
-        "超级权限【已关闭】。**禁止用 sudo**(会被系统拦截或卡到超时,白费一轮,别试 `sudo xxx` 也别试 `echo '' | sudo -S xxx`)。需要 root(写 `/etc`、`apt`、`systemctl` 等)时:告诉用户去【设置 → 系统权限】打开开关后重试,或把命令贴给用户自己跑;优先找免 root 替代(`--user`、`~/.local`)。"
-    }
+    crate::os::super_permission_turn_reminder()
 }
 
 pub fn enable() -> Result<(), String> {
-    let user = std::env::var("USER").map_err(|_| "USER 环境变量未设置".to_string())?;
-    validate_username(&user)?;
-    // sudoers 文件内容固定一行 + chmod 0440（visudo 标准权限）
-    let script = format!(
-        "set -e; printf '%s ALL=(ALL) NOPASSWD: ALL\\n' '{user}' > {SUDOERS_PATH}; chmod 0440 {SUDOERS_PATH}"
-    );
-    run_pkexec(&["bash", "-c", &script])
+    crate::os::enable_super_permission()
 }
 
 pub fn disable() -> Result<(), String> {
-    if !is_enabled() {
-        return Ok(());
-    }
-    run_pkexec(&["rm", "-f", SUDOERS_PATH])
-}
-
-fn run_pkexec(args: &[&str]) -> Result<(), String> {
-    let status = Command::new("pkexec")
-        .args(args)
-        .status()
-        .map_err(|e| format!("pkexec 启动失败: {e}"))?;
-    if status.success() {
-        return Ok(());
-    }
-    let code = status.code().unwrap_or(-1);
-    Err(match code {
-        126 => "用户取消授权".to_string(),
-        127 => "未授权或 pkexec 不可用".to_string(),
-        _ => format!("pkexec 失败 (exit {code})"),
-    })
-}
-
-fn validate_username(user: &str) -> Result<(), String> {
-    if user.is_empty() || user.len() > 32 {
-        return Err(format!("USER 值非法: {user:?}"));
-    }
-    if !user
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err(format!("USER 含非法字符: {user:?}"));
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn validate_username_accepts_typical() {
-        assert!(validate_username("hexin").is_ok());
-        assert!(validate_username("user-1_test").is_ok());
-    }
-
-    #[test]
-    fn validate_username_rejects_injection() {
-        assert!(validate_username("foo;rm -rf /").is_err());
-        assert!(validate_username("foo'\"bar").is_err());
-        assert!(validate_username("").is_err());
-        assert!(validate_username(&"a".repeat(33)).is_err());
-    }
+    crate::os::disable_super_permission()
 }

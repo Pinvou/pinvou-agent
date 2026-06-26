@@ -83,7 +83,7 @@
     activeModelId: null,
     currentSessionModelId: null, // 当前 active session 显式绑定的模型;null=跟随全局默认
     superPermEnabled: false,
-    modeState: { mode: "yolo", plan_phase: "none" },
+    modeState: { mode: "yolo" },
     // 最新 plan/todos 快照（用于 mode header 进度 chip，与 plan_ready 卡解耦）
     planSnapshot: { plan: null, todos: null },
     // 当前 session 产物列表 [{ path, basename }]
@@ -130,6 +130,7 @@
     // 不进 notify() 的 JSON 深拷贝(否则每个流式 token 都克隆 ~950KB,卡顿)。
     personaPool: { loadState: "idle" }, // idle | loading | ready | error
     // 应用内升级: updateInfo = check_for_update 返回值(available=true 才有意义)
+    appVersion: null,
     updateInfo: null,
     updateChecking: false,
     updateCheckError: null,   // 手动检查的错误/「已是最新」提示文案
@@ -143,6 +144,23 @@
     depsChecking: false,
     depsInstalling: false,    // 一键安装进行中(pkexec apt)
     depsInstallError: null,   // 安装失败原因(apt stderr 透传/取消/pkexec 不可用)
+    voiceInput: {
+      status: "idle",         // idle | requesting_permission | recording | transcribing | completed | cancelled | failed
+      message: "",
+      error: null,
+      category: null,
+      stage: null,
+      sessionId: null,
+      startedAt: 0,
+    },
+    // 本地语音识别依赖安装引导（首次点麦克风缺组件时弹框）
+    voiceAsrSetup: {
+      open: false,        // 弹框是否展示
+      status: null,       // voice_asr_status 返回 { engine, ffmpeg, model, ready, missing }
+      installing: false,  // 安装中
+      progress: null,     // { stage:'ffmpeg'|'model'|'done', downloaded, total }
+      error: null,
+    },
   };
   // 卡片池 1078 张卡的前端缓存。只读,通过 getPersonas() 取引用,不走 notify 快照。
   var personaPoolCache = [];
@@ -173,8 +191,6 @@
     if (_mb) monitorBaseline = JSON.parse(_mb);
   } catch (e) { monitorBaseline = null; }
   var attachIdSeq = 0;
-  // Plan 文本兜底卡片命中关键词（与 main.js 对齐）
-  var PLAN_FALLBACK_KEYWORDS = ["方案", "步骤", "以下", "技术栈", "实现", "设计", "**"];
 
   // ── bridge 层 UI 文案（系统消息/状态标签）──────────────────────
   // bridge 在事件回调里生成文案,拿不到 React 的 t;按 state.settings.language 取词,中文兜底。
@@ -190,8 +206,8 @@
       superOn: "⚠️ Super permission enabled", superOff: "Super permission disabled",
       approved: "✅ Approved", echoGo: "✅ Do it",
       acceptPlanFailed: "⚠️ accept_plan failed: ",
-      exitedPlan: "🚪 Exited Plan", discardPlanFailed: "⚠️ discard_plan failed: ", exitPlanFailed: "⚠️ Failed to exit Plan: ", switchModeFailed: "⚠️ Failed to switch mode: ",
-      replanRequested: "📋 Asking the AI to re-plan…", adoptingPlan: "✅ Adopting...", adoptEcho: "✅ Adopt this plan",
+      planDiscarded: "🚪 Plan discarded", discardPlanFailed: "⚠️ discard_plan failed: ", exitPlanFailed: "⚠️ Failed to exit Plan: ", switchModeFailed: "⚠️ Failed to switch mode: ",
+      replanRequested: "📋 Asking the AI to re-plan…",
       openFailed: "⚠️ Open failed: ", pasteImageFailed: "⚠️ Paste image failed: ",
       filePickUnavailable: "⚠️ File picker unavailable", filePickFailed: "⚠️ File selection failed: ",
       equipNoSession: "⚠️ Open or create a chat before equipping an expert", equipFailed: "⚠️ Equip failed: ",
@@ -206,8 +222,8 @@
       superOn: "⚠️ スーパー権限が有効になりました", superOff: "スーパー権限が無効になりました",
       approved: "✅ 承認済み", echoGo: "✅ これでいく",
       acceptPlanFailed: "⚠️ accept_plan に失敗: ",
-      exitedPlan: "🚪 Plan を終了", discardPlanFailed: "⚠️ discard_plan に失敗: ", exitPlanFailed: "⚠️ Plan の終了に失敗: ", switchModeFailed: "⚠️ モード切替に失敗: ",
-      replanRequested: "📋 AI にプランを出し直させています…", adoptingPlan: "✅ 採用中...", adoptEcho: "✅ このプランを採用",
+      planDiscarded: "🚪 プランを破棄", discardPlanFailed: "⚠️ discard_plan に失敗: ", exitPlanFailed: "⚠️ Plan の終了に失敗: ", switchModeFailed: "⚠️ モード切替に失敗: ",
+      replanRequested: "📋 AI にプランを出し直させています…",
       openFailed: "⚠️ 開けませんでした: ", pasteImageFailed: "⚠️ 画像の貼り付けに失敗: ",
       filePickUnavailable: "⚠️ ファイル選択を利用できません", filePickFailed: "⚠️ ファイル選択に失敗: ",
       equipNoSession: "⚠️ エキスパートを装備する前にチャットを開くか新規作成してください", equipFailed: "⚠️ 装備に失敗: ",
@@ -222,8 +238,8 @@
       superOn: "⚠️ 超级权限已开启", superOff: "超级权限已关闭",
       approved: "✅ 已批准", echoGo: "✅ 就这么干",
       acceptPlanFailed: "⚠️ accept_plan 失败: ",
-      exitedPlan: "🚪 已退出 Plan", discardPlanFailed: "⚠️ discard_plan 失败: ", exitPlanFailed: "⚠️ 退出 Plan 失败: ", switchModeFailed: "⚠️ 切换模式失败: ",
-      replanRequested: "📋 让 AI 重出方案…", adoptingPlan: "✅ 采纳中...", adoptEcho: "✅ 采纳此方案",
+      planDiscarded: "🚪 已放弃此方案", discardPlanFailed: "⚠️ discard_plan 失败: ", exitPlanFailed: "⚠️ 退出 Plan 失败: ", switchModeFailed: "⚠️ 切换模式失败: ",
+      replanRequested: "📋 让 AI 重出方案…",
       openFailed: "⚠️ 打开失败: ", pasteImageFailed: "⚠️ 粘贴图片失败: ",
       filePickUnavailable: "⚠️ 文件选择不可用", filePickFailed: "⚠️ 选择文件失败: ",
       equipNoSession: "⚠️ 请先打开或新建一个对话再加持专家", equipFailed: "⚠️ 加持失败: ",
@@ -250,7 +266,7 @@
     return {
       messages: [], chatItems: [], personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
       planSnapshot: { plan: null, todos: null },
-      modeState: { mode: "yolo", plan_phase: "none" },
+      modeState: { mode: "yolo" },
       thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
       tokens: { input: 0, max: maxModelLen },
       activePersona: null, // 卡片池: 该 session 加持的专家面具(挂件用)
@@ -361,13 +377,19 @@
 
   // ── Pub/Sub ──────────────────────────────────────────────────────
   var subscribers = [];
+  function snapshotState() {
+    if (typeof structuredClone === "function") {
+      try { return structuredClone(state); } catch (_) {}
+    }
+    return JSON.parse(JSON.stringify(state));
+  }
   function notify() {
     if (suppressNotify) return;
     // 会话列表「工作中」指示:active 取活动工作集 state.busy,其余取各自 buffer.busy
     state.sessionBusy = {};
     for (var id in sessionStates) state.sessionBusy[id] = !!sessionStates[id].busy;
     if (state.activeSessionId) state.sessionBusy[state.activeSessionId] = !!state.busy;
-    var snapshot = JSON.parse(JSON.stringify(state));
+    var snapshot = snapshotState();
     for (var i = 0; i < subscribers.length; i++) subscribers[i](snapshot);
   }
   function subscribe(fn) {
@@ -1320,7 +1342,6 @@
   // 不依赖工作集 —— 这样后台 session 跑完也能正确落盘。
   listen("chat:done", function (e) {
     var sid = (e.payload && e.payload.session_id) || state.activeSessionId;
-    var flags = { wasExecuting: false };
     runSyncOnSession(sid, function () {
       var error = e.payload && e.payload.error;
       if (error) addSystemItem("⚠️ " + error);
@@ -1350,16 +1371,10 @@
       stopThinking();
       currentStreamText = "";
       currentStreamId = 0;
-      // 执行 plan 完成 → 回 yolo 默认态(plan_phase 从 executing → none)
-      if (state.modeState.plan_phase === "executing") {
-        flags.wasExecuting = true;
-        state.modeState = { mode: "yolo", plan_phase: "none" };
-      }
     });
     notify();
     // 异步收尾(按 sid 路由,active/后台通用)
     (async function () {
-      if (flags.wasExecuting) { try { await invoke("discard_plan", { sessionId: sid }); } catch (_) {} }
       await persistMessagesFor(sid);
       await refreshHistoryList();
       notify();
@@ -1420,6 +1435,14 @@
     });
   });
 
+  // 本地语音识别依赖安装进度（模型下载 / ffmpeg 安装）
+  listen("voice_asr:progress", function (e) {
+    var p = e && e.payload;
+    if (!p) return;
+    state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { progress: p });
+    notify();
+  });
+
   // chat:plan_snapshot —— update_plan/checklist_write 后实时更新进度，与 plan_ready 解耦
   listen("chat:plan_snapshot", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
@@ -1428,10 +1451,9 @@
     notify();
   }); });
 
-  // chat:plan_ready —— 任一层快照非空就渲染方案卡（plan_phase → ready）
+  // chat:plan_ready —— 底座式:Plan 模式调过 update_plan 即弹方案卡(快照非空)
   listen("chat:plan_ready", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
-    state.modeState.plan_phase = "ready";
     // 新方案出现 → 旧的 active 方案卡冻结
     state.chatItems.forEach(function (it) {
       if (it.type === "plan_card" && it.cardState === "active") {
@@ -1445,41 +1467,6 @@
     });
     notify();
   }); });
-
-  // chat:plan_text_fallback —— Planning 态 AI 没调 plan 工具但 text 写了方案
-  listen("chat:plan_text_fallback", function (e) { onSessionEvent(e, function () {
-    var lastText = "";
-    for (var i = state.messages.length - 1; i >= 0; i--) {
-      if (state.messages[i].role === "assistant") {
-        var parts = state.messages[i].content || [];
-        for (var k = 0; k < parts.length; k++) { if (parts[k].type === "text" && parts[k].text) lastText += parts[k].text; }
-        break;
-      }
-    }
-    if (!lastText) return;
-    var hit = PLAN_FALLBACK_KEYWORDS.some(function (kw) { return lastText.includes(kw); });
-    if (!hit) return;
-    if (hasUnresolvedItem("plan_text_fallback")) return;
-    addChatItem({ type: "plan_text_fallback", text: lastText, resolved: false, time: timeStr() });
-    notify();
-  }); });
-
-  // chat:execution_stuck —— Executing 自驱 N 次后仍卡
-  listen("chat:execution_stuck", function (e) { onSessionEvent(e, function () {
-    var p = e.payload || {};
-    if (hasUnresolvedItem("execution_stuck")) return;
-    addChatItem({ type: "execution_stuck", tries: p.auto_continue_tried || 0, resolved: false, time: timeStr() });
-    notify();
-  }); });
-
-  // chat:phase_changed —— 底座从 LLM 回复抽 <phase id="..."/> marker 触发。
-  // workflow phase chips 是全局(跟 active skill 走),后台 session 的 phase 变更不动 active chips。
-  listen("chat:phase_changed", function (e) {
-    var sid = e.payload && e.payload.session_id;
-    if (sid && sid !== state.activeSessionId) return;
-    var phaseId = e.payload && (e.payload.phase_id || e.payload.phaseId);
-    setCurrentPhase(phaseId, "llm");
-  });
 
   // workflow:project_started —— start_workflow 后端建项目+绑定 session 后 emit。
   // 必须真正 switchToSession 切过去（load 新 session 的空 messages + sync engine +
@@ -1780,6 +1767,15 @@
       // 监控页「后 4 项」累计指标：按「清除统计」基准点换算成区间值后再格式化。
       var vadj = adjustVllmCounters(snap.vllm);
       // Format values for display
+      var vllm = snap.vllm || null;
+      var metricsApplicable = vllm ? vllm.metrics_applicable !== false : false;
+      var metricNotApplicableText = "不适用";
+      var diagnostic = vllm && vllm.diagnostic ? vllm.diagnostic : null;
+      var metricDiagnostic = vllm && vllm.metric_diagnostics && vllm.metric_diagnostics.length
+        ? vllm.metric_diagnostics[0] : null;
+      var targetKind = vllm && vllm.target_kind ? vllm.target_kind : "invalid";
+      var targetKindLabel = targetKind === "remote" ? "远端模型" : (targetKind === "local" ? "本地模型" : "配置异常");
+      var vllmDisplayModel = vllm ? (vllm.model || vllm.configured_model || "—") : "—";
       snap._fmt = {
         gpuName: snap.gpu ? snap.gpu.name : bt("gpuUnavailable"),
         gpuVram: snap.gpu && snap.gpu.vram_total_mib > 0
@@ -1799,29 +1795,37 @@
         swapUsed: snap.ram ? fmtKiB(snap.ram.swap_used_kib) : "—",
         swapTotal: snap.ram ? fmtKiB(snap.ram.swap_total_kib) : "—",
         swapPct: snap.ram && snap.ram.swap_total_kib > 0 ? Math.round(snap.ram.swap_used_kib / snap.ram.swap_total_kib * 100) : 0,
-        vllmModel: snap.vllm ? (snap.vllm.model || "—") : "—",
-        vllmConfiguredModel: snap.vllm ? (snap.vllm.configured_model || null) : null,
-        vllmModelMismatch: snap.vllm && snap.vllm.configured_model && snap.vllm.model
-          ? snap.vllm.configured_model !== snap.vllm.model : false,
-        vllmStatus: snap.vllm ? snap.vllm.status.toUpperCase() : "OFFLINE",
-        vllmOnline: snap.vllm ? (snap.vllm.status !== "offline" && snap.vllm.status !== "mismatch") : false,
-        vllmUpstream: snap.vllm ? (snap.vllm.upstream || "—") : "—",
-        vllmMaxLen: snap.vllm ? (snap.vllm.max_model_len || "—") : "—",
-        vllmQueue: snap.vllm
-          ? (snap.vllm.num_requests_running != null ? snap.vllm.num_requests_running : "—") + " / " +
-            (snap.vllm.num_requests_waiting != null ? snap.vllm.num_requests_waiting : "—") : "— / —",
-        vllmKv: vadj && vadj.kvPct != null
-          ? vadj.kvPct.toFixed(1) + "%" : "—",
-        vllmTtft: vadj && vadj.ttft_count > 0
-          ? (vadj.ttft_sum_s / vadj.ttft_count).toFixed(2) + " s" : "—",
-        vllmTps: vadj && vadj.tpot_sum_s > 0
-          ? (vadj.tpot_count / vadj.tpot_sum_s).toFixed(1) + " tok/s" : "—",
-        vllmTokTotal: vadj && vadj.gen != null
-          ? fmtTok(vadj.gen) + " / " + fmtTok(vadj.prompt) : "—",
-        vllmStatsCleared: !!(vadj && vadj.cleared),
-        vllmClearedAt: vadj && vadj.cleared ? (vadj.clearedAt || null) : null,
+        vllmModel: vllmDisplayModel,
+        vllmConfiguredModel: vllm ? (vllm.configured_model || null) : null,
+        vllmModelMismatch: vllm && vllm.configured_model && vllm.model
+          ? vllm.configured_model !== vllm.model : false,
+        vllmStatus: vllm ? vllm.status.toUpperCase() : "OFFLINE",
+        vllmOnline: vllm ? (vllm.status === "ready" || vllm.status === "busy") : false,
+        vllmUpstream: vllm ? (vllm.upstream || "—") : "—",
+        vllmTargetKind: targetKindLabel,
+        vllmDiagnostic: diagnostic ? diagnostic.message : null,
+        vllmDiagnosticCode: diagnostic ? diagnostic.code : null,
+        vllmMetricsApplicable: metricsApplicable,
+        vllmMetricDiagnostic: metricDiagnostic ? metricDiagnostic.message : null,
+        vllmMaxLen: vllm ? (metricsApplicable ? (vllm.max_model_len || "—") : metricNotApplicableText) : "—",
+        vllmQueue: vllm
+          ? (metricsApplicable
+            ? (vllm.num_requests_running != null ? vllm.num_requests_running : "—") + " / " +
+              (vllm.num_requests_waiting != null ? vllm.num_requests_waiting : "—")
+            : metricNotApplicableText)
+          : "— / —",
+        vllmKv: vllm && metricsApplicable && vadj && vadj.kvPct != null
+          ? vadj.kvPct.toFixed(1) + "%" : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
+        vllmTtft: vllm && metricsApplicable && vadj && vadj.ttft_count > 0
+          ? (vadj.ttft_sum_s / vadj.ttft_count).toFixed(2) + " s" : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
+        vllmTps: vllm && metricsApplicable && vadj && vadj.tpot_sum_s > 0
+          ? (vadj.tpot_count / vadj.tpot_sum_s).toFixed(1) + " tok/s" : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
+        vllmTokTotal: vllm && metricsApplicable && vadj && vadj.gen != null
+          ? fmtTok(vadj.gen) + " / " + fmtTok(vadj.prompt) : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
+        vllmStatsCleared: !!(vllm && metricsApplicable && vadj && vadj.cleared),
+        vllmClearedAt: vllm && metricsApplicable && vadj && vadj.cleared ? (vadj.clearedAt || null) : null,
         // 区间原始数值（已扣基准），供前端「长按清除」的数字归零插值动画用。
-        vllmRaw: vadj ? {
+        vllmRaw: vllm && metricsApplicable && vadj ? {
           kvPct: vadj.kvPct,
           ttftS: vadj.ttft_count > 0 ? vadj.ttft_sum_s / vadj.ttft_count : null,
           tps: vadj.tpot_sum_s > 0 ? vadj.tpot_count / vadj.tpot_sum_s : null,
@@ -1907,6 +1911,9 @@
       console.warn("save settings and restart failed", e);
     }
   }
+  async function submitFeedback(request) {
+    return await invoke("submit_feedback", { request: request });
+  }
   async function discoverLocalVllm(request) {
     return await invoke("discover_local_vllm", { request: request || null });
   }
@@ -1986,14 +1993,14 @@
   // ── Mode state ───────────────────────────────────────────────────
   async function syncModeState() {
     if (!state.activeSessionId) {
-      state.modeState = { mode: "yolo", plan_phase: "none" };
+      state.modeState = { mode: "yolo" };
       return;
     }
     try {
       var ms = await invoke("get_mode_state", { sessionId: state.activeSessionId });
-      state.modeState = { mode: ms.mode || "yolo", plan_phase: ms.plan_phase || "none" };
+      state.modeState = { mode: ms.mode || "yolo" };
     } catch (e) {
-      state.modeState = { mode: "yolo", plan_phase: "none" };
+      state.modeState = { mode: "yolo" };
     }
   }
 
@@ -2023,10 +2030,7 @@
   function thinkingIdle() { state.thinking = { active: true, phase: "thinking", toolName: "", startedAt: Date.now() }; }
   function stopThinking() { state.thinking = { active: false, phase: "thinking", toolName: "", startedAt: 0 }; }
   function applyModeFromState(st) {
-    state.modeState = {
-      mode: st.mode || "yolo",
-      plan_phase: st.plan_phase || "none",
-    };
+    state.modeState = { mode: st.mode || "yolo" };
   }
 
   // ── Plan/YOLO 命令 ───────────────────────────────────────────────
@@ -2049,7 +2053,7 @@
     notify();
   }
   async function discardPlan(itemId) {
-    if (itemId) patchItemById(itemId, { cardState: "frozen", statusLabel: bt("exitedPlan"), resolved: true });
+    if (itemId) patchItemById(itemId, { cardState: "frozen", statusLabel: bt("planDiscarded"), resolved: true });
     if (!state.activeSessionId) { notify(); return; }
     try {
       var st = await invoke("discard_plan", { sessionId: state.activeSessionId });
@@ -2067,9 +2071,12 @@
   }
   // 灯泡 toggle：plan ↔ yolo
   async function setPlanModeNext() {
-    if (!state.activeSessionId) return;
+    // 草稿态(无 session)先物化:mode 是 per-session 状态,进 Plan 必须先有 session,
+    // 否则草稿页点 Plan 会静默 return 不切换(composer chip 入口暴露的缺陷)。
+    var sid = await ensureSession();
+    if (!sid) return;
     try {
-      var st = await invoke("set_plan_mode_next", { sessionId: state.activeSessionId });
+      var st = await invoke("set_plan_mode_next", { sessionId: sid });
       applyModeFromState(st);
     } catch (e) { addSystemItem(bt("switchModeFailed") + e); }
     notify();
@@ -2083,18 +2090,6 @@
     patchItemById(itemId, { resolved: true }); notify();
     await exitPlanToYolo();
     await sendMessage("按上面讨论的方案继续执行任务,直接写文件/跑命令,不要再讨论方案。");
-  }
-  async function planFallbackAccept(itemId, text) {
-    patchItemById(itemId, { resolved: true, statusLabel: bt("adoptingPlan") }); notify();
-    await acceptPlan(null, text || "", bt("adoptEcho"));
-  }
-  async function planFallbackRetry(itemId) {
-    patchItemById(itemId, { resolved: true }); notify();
-    await sendMessage("请用 update_plan 工具把上面的方案重新输出一遍,我才能在卡片上决策。");
-  }
-  async function executionStuckReplan(itemId) {
-    patchItemById(itemId, { resolved: true }); notify();
-    await sendMessage("你卡住了。请重新用 update_plan 工具列方案,我们再开始。");
   }
 
   // ── 用户交互卡 ───────────────────────────────────────────────────
@@ -2359,11 +2354,17 @@
     state.updateProgress = p.total ? Math.round((p.downloaded / p.total) * 100) : 0;
     notify();
   });
+  async function loadAppVersion() {
+    try {
+      state.appVersion = await invoke("get_app_version");
+    } catch (_) {}
+  }
   // 启动静默检查: 失败全吞(网络差/更新源挂了不打扰用户)。结果不管新旧都存——
   // available 驱动红点,current_version 给设置页显示当前版本用。
   async function checkForUpdateSilently() {
     try {
       var info = await invoke("check_for_update");
+      if (info && info.current_version) state.appVersion = info.current_version;
       if (info) { state.updateInfo = info; notify(); }
     } catch (e) { /* 静默 */ }
   }
@@ -2372,6 +2373,7 @@
     state.updateChecking = true; state.updateCheckError = null; notify();
     try {
       var info = await invoke("check_for_update");
+      if (info && info.current_version) state.appVersion = info.current_version;
       state.updateInfo = info;
       if (!info.available) state.updateCheckError = "latest"; // 前端按 i18n 显示「已是最新」
     } catch (e) {
@@ -2379,15 +2381,20 @@
     }
     state.updateChecking = false; notify();
   }
-  // 下载+安装一条龙: 下载完 pkexec 弹系统密码框,装完置 updateReady 等用户点重启。
+  // 下载+安装一条龙: Linux 下载 deb 后 pkexec apt;Windows 下载 zip 后解析 MSI,
+  // 安装器启动成功后后端退出当前进程。
   async function downloadAndInstallUpdate() {
     if (!state.updateInfo || !state.updateInfo.available || state.updateDownloading) return;
     state.updateDownloading = true; state.updateCancelling = false;
     state.updateProgress = 0; state.updateError = null; notify();
     try {
-      var debPath = await invoke("download_update", { info: state.updateInfo });
+      var downloadResult = await invoke("download_update", { info: state.updateInfo });
       state.updateProgress = 100; notify();
-      await invoke("install_update", { debPath: debPath });
+      if (downloadResult && typeof downloadResult === "object" && downloadResult.installer_path) {
+        await invoke("install_update", { installerPath: downloadResult.installer_path, info: state.updateInfo });
+      } else {
+        await invoke("install_update", { debPath: downloadResult });
+      }
       state.updateReady = true;
     } catch (e) {
       // 用户主动取消下载时后端返回「已取消下载」,当正常处理不弹错误
@@ -2405,6 +2412,9 @@
   }
   function restartApp() {
     invoke("restart_app").catch(function () { /* restart 成功不会返回 */ });
+  }
+  function reportPendingUpdateResult() {
+    invoke("report_pending_update_result").catch(function () { /* 静默重试,不阻塞启动 */ });
   }
 
   // ── 依赖体检 ─────────────────────────────────────────────────────
@@ -2425,10 +2435,19 @@
     if (!missing.length || state.depsInstalling) return;
     var pkgs = [];
     missing.forEach(function (d) {
-      String(d.apt).split(/\s+/).forEach(function (p) {
-        if (p && pkgs.indexOf(p) < 0) pkgs.push(p);
+      var parts = String(d.apt).trim().split(/\s+/).filter(Boolean);
+      if (!parts.length || !parts.every(function (p) { return /^[a-z0-9][a-z0-9+.-]*$/i.test(p); })) {
+        return;
+      }
+      parts.forEach(function (p) {
+        if (pkgs.indexOf(p) < 0) pkgs.push(p);
       });
     });
+    if (!pkgs.length) {
+      state.depsInstallError = "当前缺失项无法一键安装，请按依赖说明安装离线组件后重新检测。";
+      notify();
+      return;
+    }
     state.depsInstalling = true; state.depsInstallError = null; notify();
     try {
       await invoke("install_dependencies", { packages: pkgs });
@@ -2437,6 +2456,356 @@
       state.depsInstallError = String(e);
     }
     state.depsInstalling = false; notify();
+  }
+
+  // ── 语音输入（WebView one-shot 录音 → 本地 SenseVoice/FunASR ASR；Linux webview 录音授权见 lib.rs setup）──────────────
+  var activeVoiceInput = null;
+
+  function setVoiceInputStatus(status, patch) {
+    var next = Object.assign({}, state.voiceInput, patch || {});
+    next.status = status;
+    if (status !== "failed") {
+      next.error = null;
+      next.category = null;
+    }
+    state.voiceInput = next;
+    notify();
+  }
+
+  function emitVoiceDiagnostic(stage, level, message, userMessage, category) {
+    var event = {
+      stage: stage,
+      level: level,
+      message: message,
+      user_message: userMessage || "",
+      category: category || "",
+    };
+    var fn = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
+    fn.call(console, "[voice-input]", event);
+  }
+
+  function normalizeVoiceError(err, fallbackStage) {
+    var name = String((err && err.name) || "");
+    var rawCategory = (err && err.category) || "";
+    var rawStage = (err && err.stage) || fallbackStage || "recording";
+    var rawMessage = String((err && (err.message || err.toString && err.toString())) || err || "");
+    if (name === "NotAllowedError" || name === "SecurityError" || rawCategory === "permission_denied") {
+      return { category: "permission_denied", stage: "permission", message: "麦克风权限被拒绝，请在系统设置中允许本应用访问麦克风后重试。" };
+    }
+    if (name === "NotFoundError" || name === "DevicesNotFoundError" || rawCategory === "device_unavailable") {
+      return { category: "device_unavailable", stage: "device", message: "未检测到可用麦克风，请检查录音设备是否启用或被占用。" };
+    }
+    if (rawCategory === "empty_result") {
+      return { category: "empty_result", stage: rawStage, message: "未识别到语音内容，请靠近麦克风后重试。" };
+    }
+    if (rawCategory === "context_mismatch") {
+      return { category: "context_mismatch", stage: "writeback", message: "识别已完成，但当前会话已切换，结果未自动写入。" };
+    }
+    if (rawCategory === "timeout") {
+      return { category: "timeout", stage: "recording", message: "本次语音输入超时，请重试。" };
+    }
+    if (rawCategory === "recognition_failed") {
+      return { category: "recognition_failed", stage: rawStage, message: rawMessage || "语音识别失败，请稍后重试。" };
+    }
+    return {
+      category: rawCategory || "recording_failed",
+      stage: rawStage,
+      message: rawMessage || "语音输入失败，请检查麦克风后重试。",
+    };
+  }
+
+  function stopMediaTracks(stream) {
+    if (!stream) return;
+    stream.getTracks().forEach(function (track) { try { track.stop(); } catch (_) {} });
+  }
+
+  function cleanupVoiceInputSession(session) {
+    if (!session) return;
+    if (session.timeoutId) clearTimeout(session.timeoutId);
+    // 先摘掉音频回调：webkit2gtk 的 WebAudio 是 GStreamer 后端，ScriptProcessorNode 的
+    // onaudioprocess 跑在音频线程，若在 disconnect/close 期间再触发一次、访问已释放的
+    // 缓冲，会让 WebProcess 段错误（表现为「识别出文字后 app 崩溃」）。务必先置 null。
+    try { if (session.processor) session.processor.onaudioprocess = null; } catch (_) {}
+    try { if (session.processor) session.processor.disconnect(); } catch (_) {}
+    try { if (session.source) session.source.disconnect(); } catch (_) {}
+    try { if (session.zeroGain) session.zeroGain.disconnect(); } catch (_) {}
+    stopMediaTracks(session.stream);
+    session.processor = null;
+    session.source = null;
+    session.zeroGain = null;
+    session.stream = null;
+    // close() 触发 GStreamer 管线异步拆解，与上面的 disconnect/track.stop 在同一拍里竞争最易崩；
+    // 摘干净节点后挪到下一个事件循环再关，并吞掉 close 的异常。
+    var ctx = session.audioContext;
+    session.audioContext = null;
+    if (ctx && ctx.state !== "closed") {
+      setTimeout(function () { try { ctx.close().catch(function () {}); } catch (_) {} }, 0);
+    }
+  }
+
+  function mergeFloatChunks(chunks) {
+    var total = chunks.reduce(function (sum, chunk) { return sum + chunk.length; }, 0);
+    var out = new Float32Array(total);
+    var offset = 0;
+    chunks.forEach(function (chunk) {
+      out.set(chunk, offset);
+      offset += chunk.length;
+    });
+    return out;
+  }
+
+  function downsamplePcm(samples, sourceRate, targetRate) {
+    if (!samples.length || sourceRate === targetRate) return samples;
+    var ratio = sourceRate / targetRate;
+    var len = Math.max(1, Math.round(samples.length / ratio));
+    var out = new Float32Array(len);
+    for (var i = 0; i < len; i++) {
+      var start = Math.floor(i * ratio);
+      var end = Math.min(samples.length, Math.floor((i + 1) * ratio));
+      var sum = 0;
+      var count = 0;
+      for (var j = start; j < end; j++) { sum += samples[j]; count++; }
+      out[i] = count ? sum / count : samples[Math.min(start, samples.length - 1)];
+    }
+    return out;
+  }
+
+  function encodeWav(samples, sampleRate) {
+    var dataSize = samples.length * 2;
+    var buffer = new ArrayBuffer(44 + dataSize);
+    var view = new DataView(buffer);
+    function writeString(offset, value) {
+      for (var i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i));
+    }
+    writeString(0, "RIFF");
+    view.setUint32(4, 36 + dataSize, true);
+    writeString(8, "WAVE");
+    writeString(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(36, "data");
+    view.setUint32(40, dataSize, true);
+    var offset = 44;
+    for (var i = 0; i < samples.length; i++, offset += 2) {
+      var s = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    return buffer;
+  }
+
+  async function finishVoiceInput(cancelled, timedOut) {
+    var session = activeVoiceInput;
+    if (!session) return;
+    if (cancelled) {
+      cleanupVoiceInputSession(session);
+      activeVoiceInput = null;
+      setVoiceInputStatus("cancelled", { message: "已取消语音输入", completedAt: Date.now() });
+      emitVoiceDiagnostic("recording", "info", "voice input cancelled", "已取消语音输入", "cancelled");
+      return;
+    }
+
+    setVoiceInputStatus("transcribing", { message: "正在识别语音…", stage: "transcribing" });
+    cleanupVoiceInputSession(session);
+
+    try {
+      if (timedOut) {
+        emitVoiceDiagnostic("recording", "warn", "recording reached max duration", "", "timeout");
+      }
+      var raw = mergeFloatChunks(session.chunks);
+      var durationMs = raw.length / Math.max(1, session.sampleRate) * 1000;
+      if (durationMs < 300) {
+        throw { category: "recording_failed", stage: "recording", message: "录音时间过短，请重试。" };
+      }
+      var pcm = downsamplePcm(raw, session.sampleRate, 16000);
+      var wav = encodeWav(pcm, 16000);
+      var bytes = Array.from(new Uint8Array(wav));
+      var res = await invoke("transcribe_voice_audio", {
+        request: {
+          audio_bytes: bytes,
+          session_id: session.sessionId,
+        },
+      });
+      if (activeVoiceInput !== session) return;
+      var text = String((res && res.text) || "").trim();
+      if (!text) throw { category: "empty_result", stage: "transcribing", message: "未识别到语音内容" };
+      if (state.activeSessionId !== session.sessionId) {
+        throw { category: "context_mismatch", stage: "writeback", message: "voice result discarded because active session changed" };
+      }
+      if (typeof session.writeback === "function") {
+        session.writeback(text, session.draftBeforeStart);
+      }
+      setVoiceInputStatus("completed", { message: "语音已写入输入框", completedAt: Date.now() });
+      emitVoiceDiagnostic("writeback", "info", "voice text written back", "语音已写入输入框", "");
+    } catch (err) {
+      var normalized = normalizeVoiceError(err, "transcribing");
+      setVoiceInputStatus("failed", {
+        message: normalized.message,
+        error: normalized.message,
+        category: normalized.category,
+        stage: normalized.stage,
+        completedAt: Date.now(),
+      });
+      emitVoiceDiagnostic(normalized.stage, "error", normalized.category, normalized.message, normalized.category);
+    } finally {
+      if (activeVoiceInput === session) activeVoiceInput = null;
+    }
+  }
+
+  // 一键安装本地语音识别依赖（模型下载 + 缺 ffmpeg 走 pkexec apt），进度走
+  // voice_asr:progress 事件。装完 ready 自动关框。
+  async function installVoiceAsr() {
+    if (state.voiceAsrSetup.installing) return;
+    state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { installing: true, error: null, progress: { stage: "start" } });
+    notify();
+    try {
+      var st = await invoke("install_voice_asr");
+      var patch = { installing: false, status: st, progress: { stage: "done" } };
+      if (st && st.ready) patch.open = false;
+      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, patch);
+      notify();
+    } catch (e) {
+      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { installing: false, error: String(e) });
+      notify();
+    }
+  }
+
+  function closeVoiceAsrSetup() {
+    state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { open: false });
+    notify();
+  }
+
+  async function startVoiceInput(draftText, writeback) {
+    if (activeVoiceInput && state.voiceInput.status === "recording") {
+      finishVoiceInput(false, false);
+      return;
+    }
+    if (activeVoiceInput) {
+      finishVoiceInput(true, false);
+      return;
+    }
+
+    // 首次/缺组件：先检测本地语音识别依赖，缺则弹安装框、不进录音。
+    try {
+      var asrStatus = await invoke("voice_asr_status");
+      if (asrStatus && !asrStatus.ready) {
+        state.voiceAsrSetup = { open: true, status: asrStatus, installing: false, progress: null, error: null };
+        notify();
+        return;
+      }
+    } catch (e) {
+      // 检测失败（如 mock 环境/旧后端）不阻塞，继续走原录音路径（环境变量/兜底引擎）
+    }
+
+    var AudioCtor = window.AudioContext || window.webkitAudioContext;
+    var session = {
+      id: Date.now().toString(36),
+      sessionId: state.activeSessionId || null,
+      draftBeforeStart: String(draftText || ""),
+      writeback: writeback,
+      chunks: [],
+      sampleRate: 16000,
+      startedAt: Date.now(),
+    };
+    activeVoiceInput = session;
+    setVoiceInputStatus("requesting_permission", {
+      message: "正在请求麦克风权限…",
+      sessionId: session.sessionId,
+      startedAt: session.startedAt,
+      stage: "permission",
+    });
+    emitVoiceDiagnostic("permission", "info", "requesting microphone permission", "", "");
+
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw { category: "device_unavailable", stage: "device", message: "当前 WebView 不支持麦克风采集。" };
+      }
+      if (!AudioCtor) {
+        throw { category: "recording_failed", stage: "recording", message: "当前 WebView 不支持音频录制。" };
+      }
+      session.stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      if (activeVoiceInput !== session) {
+        cleanupVoiceInputSession(session);
+        return;
+      }
+      session.audioContext = new AudioCtor();
+      session.sampleRate = session.audioContext.sampleRate || 16000;
+      session.source = session.audioContext.createMediaStreamSource(session.stream);
+      session.processor = session.audioContext.createScriptProcessor(4096, 1, 1);
+      session.zeroGain = session.audioContext.createGain();
+      session.zeroGain.gain.value = 0;
+      session.processor.onaudioprocess = function (event) {
+        if (activeVoiceInput !== session) return;
+        var input = event.inputBuffer.getChannelData(0);
+        session.chunks.push(new Float32Array(input));
+      };
+      session.source.connect(session.processor);
+      session.processor.connect(session.zeroGain);
+      session.zeroGain.connect(session.audioContext.destination);
+      session.timeoutId = setTimeout(function () { finishVoiceInput(false, true); }, 10000);
+      setVoiceInputStatus("recording", { message: "正在录音，再点一次结束", stage: "recording" });
+      emitVoiceDiagnostic("recording", "info", "recording started", "", "");
+    } catch (err) {
+      cleanupVoiceInputSession(session);
+      if (activeVoiceInput === session) activeVoiceInput = null;
+      var normalized = normalizeVoiceError(err, "recording");
+      setVoiceInputStatus("failed", {
+        message: normalized.message,
+        error: normalized.message,
+        category: normalized.category,
+        stage: normalized.stage,
+        completedAt: Date.now(),
+      });
+      emitVoiceDiagnostic(normalized.stage, "error", normalized.category, normalized.message, normalized.category);
+    }
+  }
+
+  function cancelVoiceInput() {
+    finishVoiceInput(true, false);
+  }
+
+  function clearVoiceInput() {
+    if (activeVoiceInput) {
+      finishVoiceInput(true, false);
+      return;
+    }
+    setVoiceInputStatus("idle", {
+      message: "",
+      error: null,
+      category: null,
+      stage: null,
+      sessionId: null,
+    });
+  }
+
+  function appendVoiceText(base, text) {
+    var left = String(base || "").trimEnd();
+    var right = String(text || "").trim();
+    if (!left) return right;
+    if (!right) return left;
+    return left + (/[。！？.!?，,;；:]$/.test(left) ? " " : "\n") + right;
+  }
+
+  function runVoiceInputDebugAssertions() {
+    var denied = normalizeVoiceError({ name: "NotAllowedError" });
+    var noDevice = normalizeVoiceError({ name: "NotFoundError" });
+    var mismatch = normalizeVoiceError({ category: "context_mismatch" });
+    console.assert(denied.category === "permission_denied", "permission error classified");
+    console.assert(noDevice.category === "device_unavailable", "device error classified");
+    console.assert(mismatch.stage === "writeback", "context mismatch classified");
+    console.assert(appendVoiceText("草稿", "识别文本") === "草稿\n识别文本", "voice text appended");
+    return true;
   }
 
   // ── skill 工作流：动作（invoke 包装）[2026-06-06 恢复] ────────────
@@ -2556,6 +2925,17 @@
     if (!selected) return [];
     return Array.isArray(selected) ? selected : [selected];
   }
+  async function pickFeedbackFiles() {
+    if (!dialogOpen) return [];
+    var selected = await dialogOpen({
+      multiple: true,
+      filters: [
+        { name: "Images and videos", extensions: ["png", "jpg", "jpeg", "gif", "webp", "mp4", "mov", "webm"] },
+      ],
+    });
+    if (!selected) return [];
+    return Array.isArray(selected) ? selected : [selected];
+  }
   // [新建任务模态] start_workflow 建好 run 后,把已选路径拷进该 session 的配套材料/。
   async function addMaterialsToSession(sessionId, paths) {
     if (!paths || !paths.length) return [];
@@ -2593,6 +2973,7 @@
   async function init() {
     await loadSettings();
     await loadEffectiveModelConfig();
+    await loadAppVersion();
     await loadModels();
     await refreshHistoryList();
     enterDraft(); // 启动落空白草稿页(lazy session:不自动选/建会话)
@@ -2600,6 +2981,7 @@
     loadPersonas(); // 预载卡池(让聊天里草稿"已存入"判定能查到同名自制卡), fire-and-forget
     pollBackendStatus();
     setInterval(pollBackendStatus, 10000);
+    reportPendingUpdateResult(); // Windows OTA 升级后反馈,失败保留记录下次再试
     checkForUpdateSilently(); // fire-and-forget,不阻塞启动
     await resumeWorkflowOnBoot(); // [2026-06-06] 有进行中的工作流 run 就自动挂回看板
     notify();
@@ -2609,10 +2991,17 @@
   window.TauriBridge = {
     available: true,
     subscribe: subscribe,
-    getState: function () { return JSON.parse(JSON.stringify(state)); },
+    getState: function () { return snapshotState(); },
     init: init,
     sendMessage: sendMessage,
     removeQueued: removeQueued,
+    startVoiceInput: startVoiceInput,
+    installVoiceAsr: installVoiceAsr,
+    closeVoiceAsrSetup: closeVoiceAsrSetup,
+    cancelVoiceInput: cancelVoiceInput,
+    clearVoiceInput: clearVoiceInput,
+    appendVoiceText: appendVoiceText,
+    runVoiceInputDebugAssertions: runVoiceInputDebugAssertions,
     cancelGeneration: cancelGeneration,
     createNewSession: createNewSession,
     switchToSession: switchToSession,
@@ -2623,6 +3012,7 @@
     clearMonitorStats: clearMonitorStats,
     saveSettings: saveSettings,
     saveSettingsAndRestart: saveSettingsAndRestart,
+    submitFeedback: submitFeedback,
     discoverLocalVllm: discoverLocalVllm,
     getEffectiveModelConfig: getEffectiveModelConfig,
     loadModels: loadModels,
@@ -2641,9 +3031,6 @@
     setPlanModeNext: setPlanModeNext,
     planStuckReplan: planStuckReplan,
     planStuckGo: planStuckGo,
-    planFallbackAccept: planFallbackAccept,
-    planFallbackRetry: planFallbackRetry,
-    executionStuckReplan: executionStuckReplan,
     // 用户交互
     submitUserInput: submitUserInput,
     cancelUserInput: cancelUserInput,
@@ -2692,6 +3079,7 @@
     submitWorkflowUserInput: submitWorkflowUserInput,
     pickAndAddMaterials: pickAndAddMaterials,
     pickFiles: pickFiles,
+    pickFeedbackFiles: pickFeedbackFiles,
     addMaterialsToSession: addMaterialsToSession,
     attachRun: attachRun,
     resumeWorkflowOnBoot: resumeWorkflowOnBoot,
