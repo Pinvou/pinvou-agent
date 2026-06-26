@@ -823,8 +823,13 @@
     return typeof p === "string" && (p.charAt(0) === "/" || /^[A-Za-z]:[\\/]/.test(p));
   }
   // 「成品型」扩展名:write_file 写出这类文件即自动当成品进面板(模型常忘 present_artifact)。
-  // 中间/草稿(.txt/.json/.xml 等)不在此列 → 不进面板,避免一堆过程文件污染产物列表。
-  var DELIVERABLE_EXTS = ["pptx", "ppt", "docx", "doc", "pdf", "html", "htm", "xlsx", "xls"];
+  // 办公文档 + markdown 报告 + 数据表 + 图片 + 打包件都算成品(覆盖 AI 常见产出格式)。
+  // 中间/草稿(.txt/.json/.xml 等)刻意不在此列 → 不进面板,避免一堆过程文件污染产物列表;
+  // 这类格式若确是成品,靠模型 present_artifact 显式挂出(present 过的不受扩展名门控)。
+  var DELIVERABLE_EXTS = [
+    "pptx", "ppt", "docx", "doc", "pdf", "html", "htm", "xlsx", "xls",
+    "md", "csv", "png", "jpg", "jpeg", "svg", "gif", "webp", "zip",
+  ];
   function isDeliverable(path) {
     var ext = (String(path || "").split(".").pop() || "").toLowerCase();
     return DELIVERABLE_EXTS.indexOf(ext) >= 0;
