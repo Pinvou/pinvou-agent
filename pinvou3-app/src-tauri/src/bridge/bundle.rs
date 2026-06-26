@@ -229,8 +229,22 @@ impl Pinvou3Bundle {
         // 工作流目录同 skills:immutable bundle 资源,每次启动防御性重写
         // (防 "VERSION 对得上但目录缺失"),无副作用。
         self.write_workflows()?;
-        // MCP server 脚本同理。
-        self.write_mcp_servers()?;
+        // MCP 密钥迁移必须在重写内置 manifest 前执行，否则旧版用户目录中的
+        // 明文 env 会被新版脱敏 manifest 覆盖，失去自动迁移机会。
+        let mcp_secret_migration_ok = match crate::bridge::marketplace::MarketplaceManager::new()
+            .migrate_mcp_plaintext_secrets()
+        {
+            Ok(_) => true,
+            Err(err) => {
+                eprintln!("[pinvou3-app] MCP secret migration skipped: {err}");
+                false
+            }
+        };
+        // MCP server 脚本同理。若旧明文迁移失败,保留旧文件作为可恢复来源,避免覆盖掉
+        // 用户唯一的密钥副本；下一次启动或重新安装工具会再次尝试迁移。
+        if mcp_secret_migration_ok {
+            self.write_mcp_servers()?;
+        }
         // mcp.json merge:每次启动 upsert 内置 pinvou server,保留 marketplace 条目。
         // 不受 VERSION gate 限制——marketplace 安装可能在任何时候发生。
         self.ensure_builtin_mcp_servers()?;

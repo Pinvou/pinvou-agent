@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 const MODEL_API_KEY_SERVICE: &str = "pinvou3-model-api-key";
+const MCP_SECRET_SERVICE: &str = "pinvou3-mcp-secret";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CredentialReference {
@@ -16,6 +17,14 @@ impl CredentialReference {
         Self {
             service: MODEL_API_KEY_SERVICE.to_string(),
             account: format!("model:{model_id}"),
+            version: 1,
+        }
+    }
+
+    pub fn for_mcp_secret(tool_id: &str, target: &str, secret_name: &str) -> Self {
+        Self {
+            service: MCP_SECRET_SERVICE.to_string(),
+            account: format!("mcp:{tool_id}:{target}:{secret_name}"),
             version: 1,
         }
     }
@@ -240,7 +249,8 @@ impl CredentialStore for MemoryCredentialStore {
 }
 
 pub fn redact_secret(input: &str) -> String {
-    input
+    let bearer_redacted = redact_bearer_tokens(input);
+    bearer_redacted
         .split_whitespace()
         .map(|part| {
             if is_secret_like(part) {
@@ -253,6 +263,25 @@ pub fn redact_secret(input: &str) -> String {
         .join(" ")
 }
 
+fn redact_bearer_tokens(input: &str) -> String {
+    let mut output = Vec::new();
+    let mut redact_next = false;
+    for part in input.split_whitespace() {
+        if redact_next {
+            output.push("[REDACTED]");
+            redact_next = false;
+            continue;
+        }
+        output.push(part);
+        if part.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';')
+            .eq_ignore_ascii_case("bearer")
+        {
+            redact_next = true;
+        }
+    }
+    output.join(" ")
+}
+
 pub fn is_secret_like(value: &str) -> bool {
     let trimmed = value.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';');
     if trimmed.len() < 8 {
@@ -263,6 +292,7 @@ pub fn is_secret_like(value: &str) -> bool {
         || lower.starts_with("ak-")
         || lower.starts_with("bce-v3/")
         || lower.starts_with("tvly-")
+        || lower.starts_with("mgp")
         || (trimmed.len() >= 24
             && trimmed.chars().any(|c| c.is_ascii_digit())
             && trimmed.chars().any(|c| c.is_ascii_alphabetic()))
@@ -288,6 +318,22 @@ mod tests {
         let err = CredentialError::new("write failed for sk-test-secret-1234567890");
         assert!(!err.user_message().contains("sk-test-secret"));
         assert!(err.user_message().contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn mcp_reference_uses_separate_service() {
+        let reference = CredentialReference::for_mcp_secret("iwencai", "env", "IWENCAI_API_KEY");
+        assert_eq!(reference.service, "pinvou3-mcp-secret");
+        assert_eq!(reference.account, "mcp:iwencai:env:IWENCAI_API_KEY");
+        assert_eq!(reference.version, 1);
+    }
+
+    #[test]
+    fn credential_error_redacts_mcp_bearer_tokens() {
+        let err = CredentialError::new("request failed Authorization Bearer qcc-secret-token-1234567890");
+        let message = err.user_message();
+        assert!(!message.contains("qcc-secret-token"));
+        assert!(message.contains("[REDACTED]"));
     }
 
     #[test]

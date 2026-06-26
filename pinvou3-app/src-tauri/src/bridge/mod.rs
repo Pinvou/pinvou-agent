@@ -107,6 +107,9 @@ impl Pinvou3Bridge {
         paths::ensure_dirs()?;
         let bundle = Pinvou3Bundle::paths();
         bundle.ensure_extracted()?;
+        if let Err(err) = marketplace::sync_mcp_secret_env_vars() {
+            eprintln!("[pinvou3-app] MCP secret env sync skipped: {err}");
+        }
         let prefs = UserPrefs::load();
         if !paths::settings_path().exists() {
             prefs.save().ok();

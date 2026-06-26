@@ -4232,7 +4232,7 @@
           }
         } catch (e) {
           console.error('install failed:', e);
-          setAlert({ visible: true, loading: false, title: '操作失败，请重试', isInstall: false, isError: true });
+          setAlert({ visible: true, loading: false, title: '操作失败，请重试: ' + String(e && e.message ? e.message : e), isInstall: false, isError: true });
         } finally {
           setBusyId(null);
         }

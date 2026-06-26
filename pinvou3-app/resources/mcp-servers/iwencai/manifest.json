@@ -15,9 +15,13 @@
   ],
   "command": "python",
   "args": ["server.py"],
-  "env": {
-    "IWENCAI_API_KEY": "sk-proj-00-TeCIrqynDmX2aQEuzcGxoxCfMtGdj1mkzm78J3LM0d9Nb45O15xwYzobGsKRPamJuORusZbdcOBQuPvBLdYnJtu0AYWgPvhWyIdseSiSJ08pGnBYklKXxLv6r5P5Nc4fcpo5aA"
-  },
+  "secret_env": [
+    {
+      "key": "IWENCAI_API_KEY",
+      "provider": "iwencai",
+      "required": true
+    }
+  ],
   "config_fields": [],
   "routing_rules": [
     "股票/股价/行情/涨跌/K线/走势/市盈率/基本面/个股/选股/板块/大盘/指数/宏观/CPI/GDP/公告/财报 → `hithink_*` / `news_search` / `announcement_search`，不要用 `web_search`"
