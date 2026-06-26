@@ -1798,6 +1798,12 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
         "https://agent.qcc.com/",
         // MegaCube 官网(侧边栏 footer 入口跳转)
         "https://www.h3c.com/",
+        // 飞书/Lark OAuth(device flow 授权页 + 账号页);连接飞书走这里开浏览器
+        "https://open.feishu.cn/",
+        "https://accounts.feishu.cn/",
+        "https://www.feishu.cn/",
+        "https://open.larksuite.com/",
+        "https://accounts.larksuite.com/",
     ];
     if !ALLOWED_PREFIXES.iter().any(|p| url.starts_with(p)) {
         return Err(format!("URL not in allowlist: {url}"));
