@@ -25,7 +25,7 @@ use parking_lot::Mutex;
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
 
-use crate::bridge::mode_state::{PlanPhase, SerializableMode};
+use crate::bridge::mode_state::SerializableMode;
 use crate::bridge::sessions::SessionStore;
 use crate::bridge::Pinvou3Bridge;
 
@@ -113,12 +113,11 @@ impl AppEngine {
         &self,
         content: String,
         mode: AppMode,
-        phase: PlanPhase,
         persona_reminder: Option<String>,
     ) -> Result<()> {
         let op = self
             .bridge
-            .build_send_message_op(content, mode, phase, persona_reminder);
+            .build_send_message_op(content, mode, persona_reminder);
         self.handle.send(op).await?;
         Ok(())
     }
@@ -220,13 +219,6 @@ struct TurnPlanTracker {
     /// `{ items: [{id, content, status}], completion_pct, in_progress_id }`
     /// 上游 `TodoWriteTool::execute` 返回 "Todo list updated (...)\n<json>"。
     last_todos_snapshot: Option<serde_json::Value>,
-    /// 本 turn 是否调过任何会真正改变世界的工具(write_file / append_file /
-    /// edit_file / exec_shell / code_execution)。M2 自驱判据:Executing 态 turn end +
-    /// write_tool_used==false → 是"假执行",触发 auto-continue。
-    write_tool_used: bool,
-    /// 本 turn assistant text 累积字符数。M3 判据:Planning 态 + 没调 plan 工具 +
-    /// text > 阈值 + 含关键词 → 弹文本兜底卡片。
-    assistant_text_len: usize,
 }
 
 /// [edict-obs] per-role token 账本：role_id → (input 累计, output 累计, 调用次数)。
@@ -245,23 +237,6 @@ impl TokenLedger {
         e.2 += 1;
         *e
     }
-}
-
-/// 判断 plan_snapshot 是否还有"未完成"的步骤(status != "completed")。
-/// snapshot 结构:{ explanation, items: [{step, status}] }。
-fn plan_has_pending(snapshot: &serde_json::Value) -> bool {
-    snapshot
-        .get("items")
-        .and_then(|v| v.as_array())
-        .map(|items| {
-            items.iter().any(|item| {
-                item.get("status")
-                    .and_then(|s| s.as_str())
-                    .map(|s| s != "completed")
-                    .unwrap_or(true)
-            })
-        })
-        .unwrap_or(false)
 }
 
 /// [per_page] 把某 fan-out 节点的逐页状态(queued/running/done/retrying)推给前端，
@@ -461,7 +436,6 @@ fn spawn_event_forwarder(
         while let Some(event) = rx.recv().await {
             match event {
                 Event::MessageDelta { content, .. } => {
-                    plan_tracker.lock().assistant_text_len += content.chars().count();
                     let _ = app.emit(
                         "chat:delta",
                         json!({ "session_id": session_id, "text": content }),
@@ -518,19 +492,6 @@ fn spawn_event_forwarder(
                                 "todos_snapshot": todos_emit,
                             }),
                         );
-                    }
-                    // M2: 跟踪本 turn 是否调过会真正产出的工具
-                    if success
-                        && matches!(
-                            name.as_str(),
-                            "write_file"
-                                | "append_file"
-                                | "edit_file"
-                                | "exec_shell"
-                                | "code_execution"
-                        )
-                    {
-                        plan_tracker.lock().write_tool_used = true;
                     }
                     let _ = app.emit(
                         "chat:tool_end",
@@ -860,15 +821,13 @@ fn spawn_event_forwarder(
                     // 用独立 block 把 parking_lot guard 的生命周期限死在这里:下方
                     // H1 harness 段有 .await(spawn_blocking),guard 是 !Send,若跨
                     // await 会让整个 forwarder future 变 !Send(tauri::spawn 要求 Send)。
-                    let (plan_used, write_used, text_len, plan_snapshot, todos_snapshot) = {
+                    let (plan_used, plan_snapshot, todos_snapshot) = {
                         let mut tracker = plan_tracker.lock();
                         let plan_used = tracker.plan_tool_used;
-                        let write_used = tracker.write_tool_used;
-                        let text_len = tracker.assistant_text_len;
                         let plan_snapshot = tracker.last_plan_snapshot.take();
                         let todos_snapshot = tracker.last_todos_snapshot.take();
                         *tracker = TurnPlanTracker::default();
-                        (plan_used, write_used, text_len, plan_snapshot, todos_snapshot)
+                        (plan_used, plan_snapshot, todos_snapshot)
                     };
 
                     {
@@ -877,16 +836,10 @@ fn spawn_event_forwarder(
                         let state = store.mode_state(&active_id);
 
                         // ── plan_ready 触发(Plan + 调过 plan 类工具) ──
-                        // 覆盖两个场景:
-                        //   1. Planning: 初次出方案 (phase: Planning → Ready)
-                        //   2. Ready (修订): 用户在 Ready 态发新消息让 AI 重出方案 (phase 保持 Ready,
-                        //      set_plan_phase(Ready) 幂等). 修法 D: revise 不切回 Planning,
-                        //      所以触发条件不能绑死 Planning,否则新卡片不弹.
-                        if plan_used
-                            && state.mode == SerializableMode::Plan
-                            && matches!(state.plan_phase, PlanPhase::Planning | PlanPhase::Ready)
-                        {
-                            store.set_plan_phase(&active_id, PlanPhase::Ready);
+                        // 底座式:Plan 模式调过 update_plan = 出方案 → 弹决策卡。不再设 phase
+                        // (已砍 PlanPhase),mode 留 Plan 直到用户 accept/discard 切 Yolo。
+                        // 修订(还在 Plan 时再调 update_plan)天然幂等:再弹一张新卡。
+                        if plan_used && state.mode == SerializableMode::Plan {
                             let _ = app.emit(
                                 "chat:plan_ready",
                                 json!({
@@ -937,75 +890,11 @@ fn spawn_event_forwarder(
                             });
                         }
 
-                        // ── M2: Executing 自驱(仅在 harness 不适用时) ──
-                        // 条件:mode=Yolo + phase=Executing + 本 turn 没调 write 类工具 +
-                        // plan 仍有未完成步骤 + auto_continue 未到上限。
-                        // 满足 → 自动 send "继续" 用户消息(注:不重置 turn,作为新 user message)
-                        let plan_pending = plan_snapshot
-                            .as_ref()
-                            .map(plan_has_pending)
-                            .unwrap_or(false);
-                        if !harness_handled
-                            && state.mode == SerializableMode::Yolo
-                            && state.plan_phase == PlanPhase::Executing
-                            && !write_used
-                            && plan_pending
-                        {
-                            let n = store.bump_auto_continue(&active_id);
-                            // skill session 角色多、产出大,放宽自驱上限到 8(普通对话仍 3)
-                            let cap = if state.active_skill.is_some() { 8 } else { 3 };
-                            if n <= cap {
-                                eprintln!(
-                                    "[pinvou3-app] M2 auto-continue #{} (Executing 假执行)",
-                                    n
-                                );
-                                let bridge_clone = bridge.clone();
-                                let handle_clone = approve_handle.clone();
-                                // 卡片池: auto-continue 这一轮也带上该 session 当前加持的专家面具,
-                                // 否则系统自动追问会丢掉 persona 视角。
-                                let persona_reminder = store
-                                    .active_persona_id(&active_id)
-                                    .and_then(|pid| crate::personas::get(&pid))
-                                    .map(|c| crate::personas::equip_anchor(&c));
-                                tauri::async_runtime::spawn(async move {
-                                    let op = bridge_clone.build_send_message_op(
-                                        "继续执行下一步,记得用 write_file/append_file/edit_file/exec_shell \
-                                         实际产出文件,不要只调 update_plan 标记进度。"
-                                            .to_string(),
-                                        deepseek_tui::tui::app::AppMode::Yolo,
-                                        PlanPhase::Executing,
-                                        persona_reminder,
-                                    );
-                                    if let Err(e) = handle_clone.send(op).await {
-                                        eprintln!("[M2 auto-continue] send failed: {e:?}");
-                                    }
-                                });
-                            } else {
-                                // 超上限 → 弹兜底事件让前端展示卡顿提示
-                                let _ = app.emit(
-                                    "chat:execution_stuck",
-                                    json!({ "session_id": active_id.clone(), "auto_continue_tried": n }),
-                                );
-                            }
-                        }
-
-                        // ── M3: Planning 文本兜底(没调 plan 工具但 text 长 + 含关键词) ──
-                        if !plan_used
-                            && state.mode == SerializableMode::Plan
-                            && state.plan_phase == PlanPhase::Planning
-                            && text_len > 300
-                        {
-                            // 关键词在 text 累积里检测——但 text 已 stream 到前端,
-                            // 后端没保留完整 string。改用 text_len 阈值 + 让前端做关键词判断。
-                            // 这里只 emit 事件,前端从 messages 数组拿最后一条 assistant text 检关键词。
-                            let _ = app.emit(
-                                "chat:plan_text_fallback",
-                                json!({
-                                    "session_id": active_id.clone(),
-                                    "text_len": text_len,
-                                }),
-                            );
-                        }
+                        // ── [回归底座式] M2 自驱 + M3 文本兜底已彻底砍掉 ──
+                        // M2:执行不自动续跑,回底座由用户驱动。M3(Plan 写了方案没调
+                        // update_plan 的救援)放弃不做:底座 update_plan→plan_ready→方案卡
+                        // 这条链已可靠,漏的少数"光说不出卡"由 composer chip 手切 + plan_stuck
+                        // 卡兜底,不值得用噪音判据再造一层。
                     }
                     let _ = app.emit(
                         "chat:done",
