@@ -2688,7 +2688,11 @@
       const [inputText, setInputText] = useState('');
       const [artifactsOpen, setArtifactsOpen] = useState(false);
       const scrollRef = useRef(null);
+      const chatRootRef = useRef(null);
       const composerRef = useRef(null);
+      const floatingVoiceRef = useRef(null);
+      const voiceDragRef = useRef({ timer: null, dragging: false, suppressClick: false, pointerId: null, offsetX: 0, offsetY: 0 });
+      const [floatingVoicePos, setFloatingVoicePos] = useState(null);
       // 输入框自动增高:随内容从最小(~2行)长到上限 160px,再内部滚动(iOS 手感)。
       // 清空(发送后)inputText 变 '' → 自动缩回最小高。
       useEffect(() => {
@@ -2746,7 +2750,49 @@
       const voiceInput = (bs && bs.voiceInput) || { status: 'idle' };
       const voiceActive = voiceInput.status === 'requesting_permission' || voiceInput.status === 'recording' || voiceInput.status === 'transcribing';
       const voiceRecording = voiceInput.status === 'recording';
+      const voiceBusy = voiceInput.status === 'requesting_permission' || voiceInput.status === 'transcribing';
       const voiceNotice = voiceInput.status !== 'idle' && voiceInput.message;
+      const hasDraftText = inputText.trim().length > 0;
+      const hasReadyAttachment = attachments.some(a => a.status === 'ready');
+      const canSend = hasDraftText || hasReadyAttachment;
+      const canFloatingSend = canSend && !voiceActive;
+      const canClearInput = hasDraftText && !voiceActive;
+      const [deviceMode, setDeviceMode] = useState(() => {
+        const w = typeof window !== 'undefined' ? window.innerWidth : 1280;
+        const h = typeof window !== 'undefined' ? window.innerHeight : 900;
+        const coarse = typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(pointer: coarse)').matches : false;
+        const touch = coarse || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0);
+        return { w, h, touch };
+      });
+      const isTabletSized = Math.min(deviceMode.w, deviceMode.h) <= 820 || Math.max(deviceMode.w, deviceMode.h) <= 1180;
+      const tabletVoiceMode = deviceMode.touch || isTabletSized;
+      const primaryVoiceDisabled = !bridge.available || voiceBusy;
+      const primaryVoiceLabel = voiceInput.status === 'recording'
+        ? t.voiceStop
+        : voiceInput.status === 'failed'
+          ? t.voiceRetry
+          : voiceInput.status === 'requesting_permission'
+            ? t.voiceRequesting
+            : voiceInput.status === 'transcribing'
+              ? t.voiceTranscribing
+              : t.voiceStart;
+      function clampFloatingVoicePos(x, y) {
+        const root = chatRootRef.current;
+        const floater = floatingVoiceRef.current;
+        if (!root || !floater) return { x, y };
+        const rootRect = root.getBoundingClientRect();
+        const floatRect = floater.getBoundingClientRect();
+        const margin = 12;
+        const maxX = Math.max(margin, rootRect.width - floatRect.width - margin);
+        const maxY = Math.max(margin, rootRect.height - floatRect.height - margin);
+        return {
+          x: Math.min(Math.max(x, margin), maxX),
+          y: Math.min(Math.max(y, margin), maxY),
+        };
+      }
+      const floatingVoiceStyle = floatingVoicePos
+        ? { left: floatingVoicePos.x + 'px', top: floatingVoicePos.y + 'px' }
+        : { left: 'calc(100% - 220px)', top: '50%', transform: 'translateY(-50%)' };
       useEffect(() => {
         if (justInstalledTool) {
           setWelcomeToolId(justInstalledTool);
@@ -2760,6 +2806,40 @@
         // 再点「新建对话」(activeSessionId 不变 null→null)也能重新求值,否则残留工具卡顶掉「你好」。
       }, [activeSessionId, draftEpoch]);
 
+      useEffect(() => {
+        const measureDeviceMode = () => {
+          const w = window.innerWidth;
+          const h = window.innerHeight;
+          const coarse = window.matchMedia ? window.matchMedia('(pointer: coarse)').matches : false;
+          const touch = coarse || navigator.maxTouchPoints > 0;
+          setDeviceMode({ w, h, touch });
+        };
+        measureDeviceMode();
+        window.addEventListener('resize', measureDeviceMode);
+        window.addEventListener('orientationchange', measureDeviceMode);
+        const mq = window.matchMedia ? window.matchMedia('(pointer: coarse)') : null;
+        if (mq && mq.addEventListener) mq.addEventListener('change', measureDeviceMode);
+        return () => {
+          window.removeEventListener('resize', measureDeviceMode);
+          window.removeEventListener('orientationchange', measureDeviceMode);
+          if (mq && mq.removeEventListener) mq.removeEventListener('change', measureDeviceMode);
+        };
+      }, []);
+
+      useEffect(() => {
+        return () => {
+          if (voiceDragRef.current.timer) clearTimeout(voiceDragRef.current.timer);
+        };
+      }, []);
+
+      useEffect(() => {
+        if (!tabletVoiceMode || !floatingVoicePos) return;
+        const raf = requestAnimationFrame(() => {
+          setFloatingVoicePos(pos => pos ? clampFloatingVoicePos(pos.x, pos.y) : pos);
+        });
+        return () => cancelAnimationFrame(raf);
+      }, [tabletVoiceMode, hasDraftText, hasReadyAttachment, deviceMode.w, deviceMode.h]);
+
       // chip 显示当前会话绑定的模型:切会话/草稿时刷新 currentSessionModelId
       useEffect(() => {
         if (bridge.available) bridge.loadSessionModel(activeSessionId);
@@ -2767,8 +2847,7 @@
 
       function handleSend() {
         // 不再因 busy 拦截:bridge.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
-        const hasReady = attachments.some(a => a.status === 'ready');
-        if (!inputText.trim() && !hasReady) return;
+        if (!canSend) return;
         if (bridge.available) bridge.sendMessage(inputText.trim());
         setInputText('');
       }
@@ -2785,12 +2864,79 @@
       }
 
       function handleVoiceClick() {
+        if (voiceDragRef.current.suppressClick) {
+          voiceDragRef.current.suppressClick = false;
+          return;
+        }
         if (!bridge.available) return;
+        if (voiceBusy) return;
         if (voiceInput.status === 'recording') {
           bridge.startVoiceInput(inputText, (text) => setInputText(prev => bridge.appendVoiceText(prev, text)));
           return;
         }
         bridge.startVoiceInput(inputText, (text) => setInputText(prev => bridge.appendVoiceText(prev, text)));
+      }
+
+      function handleFloatingVoicePointerDown(e) {
+        if (!tabletVoiceMode) return;
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        const root = chatRootRef.current;
+        const floater = floatingVoiceRef.current;
+        if (!root || !floater) return;
+        if (voiceDragRef.current.timer) clearTimeout(voiceDragRef.current.timer);
+        const rootRect = root.getBoundingClientRect();
+        const floatRect = floater.getBoundingClientRect();
+        const target = e.currentTarget;
+        const drag = {
+          timer: null,
+          dragging: false,
+          suppressClick: false,
+          pointerId: e.pointerId,
+          offsetX: e.clientX - floatRect.left,
+          offsetY: e.clientY - floatRect.top,
+        };
+        voiceDragRef.current = drag;
+        drag.timer = setTimeout(() => {
+          if (voiceDragRef.current !== drag) return;
+          drag.dragging = true;
+          drag.suppressClick = true;
+          setFloatingVoicePos(clampFloatingVoicePos(floatRect.left - rootRect.left, floatRect.top - rootRect.top));
+          try { target.setPointerCapture(e.pointerId); } catch (_) {}
+        }, 360);
+      }
+
+      function handleFloatingVoicePointerMove(e) {
+        const drag = voiceDragRef.current;
+        if (!drag.dragging || drag.pointerId !== e.pointerId) return;
+        const root = chatRootRef.current;
+        if (!root) return;
+        e.preventDefault();
+        const rootRect = root.getBoundingClientRect();
+        setFloatingVoicePos(clampFloatingVoicePos(
+          e.clientX - rootRect.left - drag.offsetX,
+          e.clientY - rootRect.top - drag.offsetY
+        ));
+      }
+
+      function handleFloatingVoicePointerEnd(e) {
+        const drag = voiceDragRef.current;
+        if (drag.timer) {
+          clearTimeout(drag.timer);
+          drag.timer = null;
+        }
+        const wasDragging = drag.dragging && drag.pointerId === e.pointerId;
+        drag.dragging = false;
+        drag.pointerId = null;
+        if (wasDragging) {
+          e.preventDefault();
+          setTimeout(() => { drag.suppressClick = false; }, 120);
+        }
+        try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (_) {}
+      }
+
+      function handleClearInput() {
+        if (!canClearInput) return;
+        setInputText('');
       }
 
       function handleVoiceCancel() {
@@ -2820,7 +2966,7 @@
       }
 
       return (
-        <div className="flex-1 flex flex-col w-full h-full min-h-0 relative z-10 animate-in fade-in duration-300">
+        <div ref={chatRootRef} className="flex-1 flex flex-col w-full h-full min-h-0 relative z-10 animate-in fade-in duration-300">
           {artifactsOpen && <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} />}
 
           {/* Top Header (浮动) */}
@@ -2887,6 +3033,50 @@
           {/* 底部渐变蒙层:内容滚到底时在输入框上方柔和淡出(pointer-events-none 不挡滑动/点击;高度跟随输入框 auto-grow)。 */}
           <div className={`pointer-events-none absolute bottom-0 inset-x-0 z-[15] bg-gradient-to-t to-transparent from-30% via-70% ${isDark ? 'from-[#131314] via-[#131314]/95' : 'from-white via-white/95'}`}
             style={{ height: (composerH ? composerH + 96 : 220) + 'px' }} />
+          {tabletVoiceMode && (
+            <div ref={floatingVoiceRef} style={floatingVoiceStyle} className="absolute z-30 flex items-center gap-2">
+              <button
+                onClick={handleVoiceClick}
+                onPointerDown={handleFloatingVoicePointerDown}
+                onPointerMove={handleFloatingVoicePointerMove}
+                onPointerUp={handleFloatingVoicePointerEnd}
+                onPointerCancel={handleFloatingVoicePointerEnd}
+                disabled={primaryVoiceDisabled}
+                aria-label={primaryVoiceLabel}
+                title={primaryVoiceLabel}
+                className={`w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-xl backdrop-blur-2xl touch-none select-none ${
+                  voiceRecording
+                    ? 'bg-[#C5221F] text-white shadow-red-500/25 hover:bg-[#A50E0E]'
+                    : voiceBusy
+                      ? (isDark ? 'bg-[#1E2B3A] text-[#A8C7FA] cursor-wait' : 'bg-[#E8F0FE] text-[#174EA6] cursor-wait')
+                      : voiceInput.status === 'failed'
+                        ? (isDark ? 'bg-[#3A1F1F] text-[#F28B82] hover:bg-[#4A2525]' : 'bg-[#FCE8E6] text-[#C5221F] hover:bg-[#FAD2CF]')
+                        : (isDark ? 'bg-[#A8C7FA] text-[#062E6F] hover:bg-[#D3E3FD]' : 'bg-[#0B57D0] text-white hover:bg-[#0842A0] shadow-blue-500/25')
+                } ${primaryVoiceDisabled ? 'opacity-80' : 'active:scale-95'}`}>
+                {voiceRecording ? <StopCircle size={26} /> : <Mic size={26} />}
+              </button>
+              {hasDraftText && (
+                <button onClick={handleClearInput} disabled={!canClearInput} aria-label="Clear input" title="Clear input"
+                  className={`w-12 h-12 rounded-full flex items-center justify-center border shadow-lg backdrop-blur-2xl transition-all ${
+                    canClearInput
+                      ? (isDark ? 'bg-[#161618]/90 border-white/10 text-[#C4C7C5] hover:bg-[#252629]' : 'bg-white/90 border-black/[0.06] text-[#5F6368] hover:bg-[#F1F3F4]')
+                      : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed opacity-60'
+                  }`}>
+                  <Trash2 size={20} />
+                </button>
+              )}
+              {(hasDraftText || hasReadyAttachment) && (
+                <button onClick={handleSend} disabled={!canFloatingSend} aria-label="Send" title="Send"
+                  className={`w-12 h-12 rounded-full flex items-center justify-center shadow-lg transition-all ${
+                    canFloatingSend
+                      ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white hover:-translate-y-0.5 active:translate-y-0'
+                      : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'
+                  }`}>
+                  <Send size={19} className="translate-x-[1px]" />
+                </button>
+              )}
+            </div>
+          )}
           {/* Floating Input Area */}
           <div ref={composerWrapRef} className="absolute bottom-8 inset-x-0 px-4 md:px-20 lg:px-40 z-20">
             <div className="max-w-[800px] w-full mx-auto">
@@ -2961,28 +3151,38 @@
                     className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-black/5 dark:hover:bg-white/10 transition-colors">
                     <Paperclip size={20} />
                   </button>
-                  <button onClick={handleVoiceClick} title={voiceRecording ? t.voiceStop : t.voiceStart}
+                  <button onClick={handleVoiceClick} disabled={primaryVoiceDisabled} aria-label={primaryVoiceLabel} title={primaryVoiceLabel}
                     className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${
                       voiceRecording
                         ? 'bg-[#C5221F] text-white hover:bg-[#A50E0E]'
                         : voiceActive
                           ? (isDark ? 'bg-[#1E2B3A] text-[#A8C7FA] hover:bg-[#24364C]' : 'bg-[#E8F0FE] text-[#174EA6] hover:bg-[#D2E3FC]')
                           : 'text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-black/5 dark:hover:bg-white/10'
-                    }`}>
+                    } ${primaryVoiceDisabled ? 'opacity-70 cursor-wait' : ''}`}>
                     <Mic size={20} />
                   </button>
                   <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoSettings} />
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} />
                 </div>
+                {!tabletVoiceMode && hasDraftText && (
+                  <button onClick={handleClearInput} disabled={!canClearInput} aria-label="Clear input" title="Clear input"
+                    className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${
+                      canClearInput
+                        ? (isDark ? 'text-[#C4C7C5] hover:bg-white/10' : 'text-[#5F6368] hover:bg-black/5')
+                        : 'text-gray-400 cursor-not-allowed opacity-60'
+                    }`}>
+                    <Trash2 size={18} />
+                  </button>
+                )}
                 {busy ? (
                   <button onClick={handleCancel}
                     className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-black/5 dark:bg-white/10 text-[#C5221F] dark:text-[#F28B82] hover:bg-black/10 dark:hover:bg-white/20 transition-colors">
                     <StopCircle size={20} />
                   </button>
                 ) : (() => {
-                  const ready = inputText.trim() || attachments.some(a => a.status === 'ready');
+                  const ready = canSend;
                   return (
-                    <button onClick={handleSend} disabled={!ready} aria-label="发送"
+                    <button onClick={handleSend} disabled={!ready} aria-label="Send" title="Send"
                       className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0' : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
                       <Send size={17} className="translate-x-[1px]" />
                     </button>
