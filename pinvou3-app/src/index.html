@@ -2690,7 +2690,7 @@
         <div className="relative min-w-0">
           <button onClick={() => { if (!busy) setOpen(o => !o); }} disabled={busy}
             title={(current ? current.name : t.modelNonePick) + (busy ? ' · ' + t.modelSwitchBusy : '')}
-            className={`relative shrink-0 flex items-center justify-center bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 transition-colors border border-black/[0.04] dark:border-white/5 disabled:opacity-50 ${compact ? 'w-9 h-9 rounded-full' : 'gap-2 px-3 py-1.5 rounded-xl text-[13px] font-semibold min-w-0 max-w-full'}`}>
+            className={`relative shrink-0 flex items-center justify-center bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 transition-colors border border-black/[0.04] dark:border-white/5 disabled:opacity-50 ${compact ? 'w-9 h-9 rounded-full' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold min-w-0 max-w-full'}`}>
             {compact ? (
               <>
                 <Cpu size={18} className="opacity-80" />
@@ -2699,7 +2699,7 @@
             ) : (
               <>
                 <span className="w-1.5 h-1.5 shrink-0 rounded-full bg-[#34C759]"></span>
-                <span className="max-w-[150px] truncate">{current ? current.name : t.modelNonePick}</span>
+                <span className="max-w-[92px] truncate">{current ? current.name : t.modelNonePick}</span>
                 <ChevronDown size={14} className="opacity-50 shrink-0" />
               </>
             )}
@@ -2789,7 +2789,7 @@
       return (
         <div className="relative">
           <button onClick={() => setOpen(o => !o)} title={cur ? cur.name : t.composerMode}
-            className={`flex items-center font-semibold transition-colors border ${compact ? 'justify-center w-9 h-9 rounded-full' : 'gap-2 px-3 py-1.5 rounded-xl text-[13px]'} ${cur
+            className={`flex items-center shrink-0 font-semibold transition-colors border ${compact ? 'justify-center w-9 h-9 rounded-full' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] whitespace-nowrap'} ${cur
               ? 'bg-[#007AFF]/[0.1] dark:bg-[#0A84FF]/20 text-[#007AFF] dark:text-[#5AC8FA] border-[#007AFF]/20 dark:border-[#0A84FF]/30'
               : 'bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-black/[0.04] dark:border-white/5'}`}>
             <Zap size={14} className={cur ? '' : 'opacity-70'} />
@@ -2864,7 +2864,7 @@
       return (
         <div className="relative shrink-0">
           <button onClick={() => setOpen(o => !o)} title={t.composerTools}
-            className={`relative shrink-0 flex items-center justify-center bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 transition-colors border border-black/[0.04] dark:border-white/5 ${compact ? 'w-9 h-9 rounded-full' : 'gap-2 px-3 py-1.5 rounded-xl text-[13px] font-semibold whitespace-nowrap'}`}>
+            className={`relative shrink-0 flex items-center justify-center bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 transition-colors border border-black/[0.04] dark:border-white/5 ${compact ? 'w-9 h-9 rounded-full' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold whitespace-nowrap'}`}>
             <Wrench size={compact ? 18 : 14} className="opacity-80" />
             {!compact && t.composerTools}
             {(tools.length > 0 || feishuOn) && (compact
@@ -3650,7 +3650,7 @@
       return (
         <div className="relative">
           <button onClick={toggle} title={active ? mountedName : t.kbMountTitle}
-            className={`relative shrink-0 flex items-center justify-center transition-colors border ${compact ? 'w-9 h-9 rounded-full' : 'gap-2 px-3 py-1.5 rounded-xl text-[13px] font-semibold'} ${active
+            className={`relative shrink-0 flex items-center justify-center transition-colors border ${compact ? 'w-9 h-9 rounded-full' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold'} ${active
               ? 'bg-[#E8F0FE] dark:bg-[#1A3A5C] text-[#1A73E8] dark:text-[#A8C7FA] border-[#1A73E8]/20 dark:border-[#A8C7FA]/25'
               : 'bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-black/[0.04] dark:border-white/5'}`}>
             <BookOpen size={compact ? 18 : 14} className="opacity-70 shrink-0" />
@@ -3715,7 +3715,7 @@
       return (
         <div className="relative">
           <button onClick={() => setOpen(!open)} title={t.modeSwitchTitle}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-[13px] font-semibold transition-colors border ${isPlan
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold transition-colors border ${isPlan
               ? 'bg-[#E8F0FE] dark:bg-[#1A3A5C] text-[#1A73E8] dark:text-[#A8C7FA] border-[#1A73E8]/20 dark:border-[#A8C7FA]/25'
               : 'bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-black/[0.04] dark:border-white/5'}`}>
             <Zap size={14} className="opacity-70 shrink-0" />
@@ -3819,7 +3819,7 @@
       const [composerH, setComposerH] = useState(0);
       // 底栏响应式:输入框实际可用宽 < 阈值 → 控件收成纯图标;够宽 → 图标+文字(像 WorkBuddy)
       const [composerCompact, setComposerCompact] = useState(false);
-      const COMPOSER_COMPACT_W = 540;
+      const COMPOSER_COMPACT_W = 660;
       useEffect(() => {
         const el = composerWrapRef.current;
         if (!el) return;
@@ -4113,12 +4113,11 @@
                 className="w-full bg-transparent resize-none outline-none text-gray-800 dark:text-gray-100 text-[16px] leading-relaxed min-h-[48px] overflow-y-auto hide-scrollbar placeholder:text-gray-400 dark:placeholder:text-gray-500"
               />
               <div className="flex items-center justify-between mt-1.5 gap-2">
-                <div className="flex items-center gap-2 min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 min-w-0 flex-1">
                   <button onClick={() => bridge.available && bridge.pickAndAttach()} title={t.attachAdd}
                     className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-black/5 dark:hover:bg-white/10 transition-colors">
                     <Paperclip size={20} />
                   </button>
-                  <ComposerModeChip t={t} bs={bs} />
                   <button onClick={handleVoiceClick} title={voiceRecording ? t.voiceStop : t.voiceStart}
                     className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${
                       voiceRecording
@@ -4129,6 +4128,7 @@
                     }`}>
                     <Mic size={20} />
                   </button>
+                  <ComposerModeChip t={t} bs={bs} />
                   <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoSettings} compact={composerCompact} />
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} compact={composerCompact} />
                   <ComposerModeMenu t={t} bs={bs} compact={composerCompact} />
