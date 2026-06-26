@@ -97,6 +97,15 @@
 - **测试**:`forkguard` `SetDisallowedTools op 定义` + `SetDisallowedTools 写 disallowed` 指纹(L1);行为 L2 待补
 - 上游 PR:❌ pinvou3 专用(留 fork)
 
+### C9 `mcp` 配置值 `${ENV}` 展开(2026-06-26)
+- **文件**:`crates/tui/src/mcp.rs`
+- **改动**:MCP `headers` 与 stdio `env` 配置值支持 `${ENV_NAME}` 占位符,连接/启动前从当前进程环境展开;缺失或格式非法时返回可诊断错误。配置文件本身仍只保存占位符。
+- **理由**:pinvou3 内置同花顺/企查查/高德天气 MCP 不能再把供应商 API Key 明文写进 `~/.pinvou3/bundle/mcp.json`。Pinvou app 层把真实密钥放进系统凭据存储,运行时同步到进程环境;底座只负责把 mcp.json 中的 `${PINVOU3_MCP_SECRET_*}` 展开后传给 MCP HTTP headers 或 stdio 子进程环境。
+- **安全边界**:不从父进程透传任意 `*_API_KEY`;只展开配置文件显式引用的变量。日志和 spawn 错误仍只打印 env key 列表,不打印值。
+- **测试**:新增 `mcp.rs` 单测覆盖 header/env 展开与缺失变量报错;pinvou3-app marketplace 测试覆盖 mcp.json 不落明文。
+- 上游 PR:✅ 候选。Claude/Codex/OpenCode 风格 mcp config 中常见 `${TOKEN}` 占位,上游注释已提示 v0.8.31 不替换;实现通用且能减少 mcp.json 明文密钥。
+
+- **Verification**: `cargo test --manifest-path DeepSeek-TUI/crates/tui/Cargo.toml expand_env_placeholders --lib` PASS (3 passed, 2026-06-26).
 ### W `workflow` 三省六部工作流底座层
 - **文件**:`tools/subagent/{mod,tests}.rs`、`core/ops.rs`、`core/events.rs`、`core/engine.rs`、`core/engine/{tests,approval,handle}.rs`、`tools/user_input.rs`、`runtime_threads.rs`、`tui/{sidebar,command_palette,ui,views/mod}.rs`、`main.rs`(EngineConfig 字段)
 - **子 patch**:

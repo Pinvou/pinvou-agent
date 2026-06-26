@@ -9,6 +9,9 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use super::paths;
+use crate::credential_store::{
+    redact_secret, CredentialError, CredentialReference, CredentialStore, SystemCredentialStore,
+};
 
 // ---------------------------------------------------------------------------
 // Manifest — 每个 MCP 工具的元数据
@@ -28,6 +31,10 @@ pub struct ToolManifest {
     #[serde(default)]
     pub env: std::collections::HashMap<String, String>,
     #[serde(default)]
+    pub secret_env: Vec<SecretEnv>,
+    #[serde(default)]
+    pub secret_headers: Vec<SecretHeader>,
+    #[serde(default)]
     pub config_fields: Vec<ConfigField>,
     #[serde(default)]
     pub routing_rules: Vec<String>,
@@ -46,6 +53,25 @@ pub struct RemoteServer {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretEnv {
+    pub key: String,
+    pub provider: String,
+    #[serde(default = "default_required")]
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretHeader {
+    pub header: String,
+    #[serde(default = "default_bearer_scheme")]
+    pub scheme: String,
+    pub source_key: String,
+    pub provider: String,
+    #[serde(default = "default_required")]
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigField {
     pub key: String,
     pub label: String,
@@ -53,10 +79,122 @@ pub struct ConfigField {
     /// "env" = 写入 mcp.json env 字段, "bearer" = 写入 headers Authorization
     #[serde(default = "default_target")]
     pub target: String,
+    #[serde(default)]
+    pub secret: bool,
 }
 
 fn default_target() -> String {
     "env".to_string()
+}
+
+fn default_required() -> bool {
+    true
+}
+
+fn default_bearer_scheme() -> String {
+    "Bearer".to_string()
+}
+
+fn is_sensitive_key_name(key: &str) -> bool {
+    let upper = key.to_ascii_uppercase();
+    upper.ends_with("_API_KEY")
+        || upper.ends_with("_TOKEN")
+        || upper.ends_with("_SECRET")
+        || upper == "API_KEY"
+        || upper == "TOKEN"
+        || upper == "SECRET"
+        || upper == "KEY"
+}
+
+fn mcp_secret_env_var(secret_name: &str) -> String {
+    let suffix = secret_name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    format!("PINVOU3_MCP_SECRET_{suffix}")
+}
+
+fn mcp_secret_placeholder(secret_name: &str) -> String {
+    format!("${{{}}}", mcp_secret_env_var(secret_name))
+}
+
+fn write_json_pretty(path: &std::path::Path, value: &serde_json::Value) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
+    std::fs::write(path, json).map_err(|e| format!("写入 {} 失败: {e}", path.display()))
+}
+
+fn mcp_secret_reference(tool_id: &str, target: &str, key: &str) -> CredentialReference {
+    CredentialReference::for_mcp_secret(tool_id, target, key)
+}
+
+fn mcp_secret_missing_error(tool_id: &str, key: &str) -> String {
+    format!("MCP 工具 '{tool_id}' 缺少密钥 {key}，请重新配置后再启用该工具")
+}
+
+fn mcp_secret_store_error(tool_id: &str, key: &str, error: CredentialError) -> String {
+    redact_secret(&format!(
+        "MCP 工具 '{tool_id}' 的密钥 {key} 无法访问: {}",
+        error.user_message()
+    ))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BuiltinMcpSecretSpec {
+    tool_id: &'static str,
+    target: &'static str,
+    key: &'static str,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpSecretMigrationResult {
+    pub migrated_count: usize,
+    pub skipped_count: usize,
+    pub failed_count: usize,
+    pub messages: Vec<String>,
+}
+
+fn builtin_mcp_secret_specs() -> &'static [BuiltinMcpSecretSpec] {
+    &[
+        BuiltinMcpSecretSpec {
+            tool_id: "weather",
+            target: "env",
+            key: "AMAP_KEY",
+        },
+        BuiltinMcpSecretSpec {
+            tool_id: "iwencai",
+            target: "env",
+            key: "IWENCAI_API_KEY",
+        },
+        BuiltinMcpSecretSpec {
+            tool_id: "qcc",
+            target: "header",
+            key: "QCC_API_KEY",
+        },
+    ]
+}
+
+fn builtin_spec_for_tool(tool_id: &str) -> Option<&'static BuiltinMcpSecretSpec> {
+    builtin_mcp_secret_specs()
+        .iter()
+        .find(|spec| spec.tool_id == tool_id)
+}
+
+fn builtin_spec_for_server_name(server_name: &str) -> Option<&'static BuiltinMcpSecretSpec> {
+    if server_name == "weather" {
+        builtin_spec_for_tool("weather")
+    } else if server_name == "iwencai" {
+        builtin_spec_for_tool("iwencai")
+    } else if server_name.starts_with("qcc-") {
+        builtin_spec_for_tool("qcc")
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +236,21 @@ pub fn save_disabled_connectors(ids: &[String]) {
     }
 }
 
+pub fn sync_mcp_secret_env_vars() -> Result<(), String> {
+    let store = SystemCredentialStore::new();
+    for spec in builtin_mcp_secret_specs() {
+        let reference = mcp_secret_reference(spec.tool_id, spec.target, spec.key);
+        match store.get(&reference) {
+            Ok(Some(value)) if !value.trim().is_empty() => {
+                std::env::set_var(mcp_secret_env_var(spec.key), value);
+            }
+            Ok(_) => {}
+            Err(e) => return Err(mcp_secret_store_error(spec.tool_id, spec.key, e)),
+        }
+    }
+    Ok(())
+}
+
 /// 当前被禁用连接器 → 模型可见工具全名(喂给引擎 disallowed_tools 的)。
 pub fn disabled_tool_names() -> Vec<String> {
     MarketplaceManager::new().model_tool_names(&load_disabled_connectors())
@@ -107,20 +260,28 @@ pub fn disabled_tool_names() -> Vec<String> {
 // MarketplaceManager
 // ---------------------------------------------------------------------------
 
-pub struct MarketplaceManager {
+pub struct MarketplaceManager<S: CredentialStore = SystemCredentialStore> {
     /// bundle 解包后的 MCP servers 目录 (~/.pinvou3/bundle/mcp-servers/)
     servers_dir: PathBuf,
     /// 已安装工具列表文件 (~/.pinvou3/marketplace/installed.json)
     installed_file: PathBuf,
+    credential_store: S,
 }
 
-impl MarketplaceManager {
+impl MarketplaceManager<SystemCredentialStore> {
     pub fn new() -> Self {
+        Self::with_store(SystemCredentialStore::new())
+    }
+}
+
+impl<S: CredentialStore> MarketplaceManager<S> {
+    pub fn with_store(credential_store: S) -> Self {
         let servers_dir = paths::bundle_mcp_servers_dir();
         let installed_file = paths::pinvou3_home().join("marketplace").join("installed.json");
         Self {
             servers_dir,
             installed_file,
+            credential_store,
         }
     }
 
@@ -184,6 +345,7 @@ impl MarketplaceManager {
         tool_id: &str,
         user_config: &std::collections::HashMap<String, String>,
     ) -> Result<(), String> {
+        self.migrate_mcp_plaintext_secrets()?;
         let manifest = self
             .load_manifest(tool_id)
             .ok_or_else(|| format!("工具 '{tool_id}' 不存在"))?;
@@ -202,6 +364,21 @@ impl MarketplaceManager {
         self.add_to_mcp_json(&manifest, user_config)?;
 
         Ok(())
+    }
+
+    pub fn migrate_mcp_plaintext_secrets(&self) -> Result<McpSecretMigrationResult, String> {
+        let mut result = McpSecretMigrationResult::default();
+        for spec in builtin_mcp_secret_specs() {
+            let path = self.servers_dir.join(spec.tool_id).join("manifest.json");
+            if path.is_file() {
+                self.migrate_manifest_file(&path, spec, &mut result)?;
+            }
+        }
+        let mcp_path = paths::mcp_config_path();
+        if mcp_path.is_file() {
+            self.migrate_mcp_json_file(&mcp_path, &mut result)?;
+        }
+        Ok(result)
     }
 
     /// 装 `manifest.pip_dependencies` 里的 Python 依赖（跨平台）。
@@ -271,6 +448,178 @@ impl MarketplaceManager {
         Err(format!(
             "依赖安装失败（pip）：{last_err}（已尝试 --user 与 --break-system-packages;请确认网络可达且 python3 自带 pip）"
         ))
+    }
+
+    fn resolve_secret_placeholder(
+        &self,
+        tool_id: &str,
+        target: &str,
+        key: &str,
+        user_config: &std::collections::HashMap<String, String>,
+        legacy_env: &std::collections::HashMap<String, String>,
+    ) -> Result<String, String> {
+        let reference = mcp_secret_reference(tool_id, target, key);
+        if let Some(value) = user_config.get(key).filter(|v| !v.trim().is_empty()) {
+            self.credential_store
+                .set(&reference, value)
+                .map_err(|e| mcp_secret_store_error(tool_id, key, e))?;
+            std::env::set_var(mcp_secret_env_var(key), value);
+            return Ok(mcp_secret_placeholder(key));
+        }
+
+        match self.credential_store.get(&reference) {
+            Ok(Some(value)) if !value.trim().is_empty() => {
+                std::env::set_var(mcp_secret_env_var(key), value);
+                Ok(mcp_secret_placeholder(key))
+            }
+            Ok(_) => {
+                if let Some(value) = legacy_env.get(key).filter(|v| !v.trim().is_empty()) {
+                    self.credential_store
+                        .set(&reference, value)
+                        .map_err(|e| mcp_secret_store_error(tool_id, key, e))?;
+                    std::env::set_var(mcp_secret_env_var(key), value);
+                    Ok(mcp_secret_placeholder(key))
+                } else {
+                    Err(mcp_secret_missing_error(tool_id, key))
+                }
+            }
+            Err(e) => Err(mcp_secret_store_error(tool_id, key, e)),
+        }
+    }
+
+    fn migrate_manifest_file(
+        &self,
+        path: &std::path::Path,
+        spec: &BuiltinMcpSecretSpec,
+        result: &mut McpSecretMigrationResult,
+    ) -> Result<(), String> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
+        let mut json: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| format!("解析 {} 失败: {e}", path.display()))?;
+        let Some(value) = json
+            .get("env")
+            .and_then(|env| env.get(spec.key))
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.trim().is_empty())
+            .map(ToOwned::to_owned)
+        else {
+            return Ok(());
+        };
+
+        self.store_migrated_secret(spec, &value, result)?;
+        if let Some(env) = json.get_mut("env").and_then(|env| env.as_object_mut()) {
+            env.remove(spec.key);
+            if env.is_empty() {
+                json.as_object_mut().map(|obj| obj.remove("env"));
+            }
+        }
+        write_json_pretty(path, &json)?;
+        Ok(())
+    }
+
+    fn migrate_mcp_json_file(
+        &self,
+        path: &std::path::Path,
+        result: &mut McpSecretMigrationResult,
+    ) -> Result<(), String> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
+        let mut json: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| format!("解析 {} 失败: {e}", path.display()))?;
+        let mut changed = false;
+        let Some(servers) = json.get_mut("servers").and_then(|servers| servers.as_object_mut())
+        else {
+            return Ok(());
+        };
+
+        for (server_name, entry) in servers.iter_mut() {
+            let Some(spec) = builtin_spec_for_server_name(server_name) else {
+                continue;
+            };
+            if let Some(env) = entry.get_mut("env").and_then(|env| env.as_object_mut()) {
+                if let Some(value) = env
+                    .get(spec.key)
+                    .and_then(|v| v.as_str())
+                    .filter(|v| !v.trim().is_empty())
+                    .map(ToOwned::to_owned)
+                {
+                    self.store_migrated_secret(spec, &value, result)?;
+                    env.insert(
+                        spec.key.to_string(),
+                        serde_json::Value::String(mcp_secret_placeholder(spec.key)),
+                    );
+                    changed = true;
+                }
+            }
+            if let Some(headers) = entry
+                .get_mut("headers")
+                .and_then(|headers| headers.as_object_mut())
+            {
+                if let Some(auth) = headers
+                    .get("Authorization")
+                    .and_then(|v| v.as_str())
+                    .filter(|v| !v.trim().is_empty())
+                    .map(ToOwned::to_owned)
+                {
+                    if let Some(secret) = auth.strip_prefix("Bearer ").filter(|v| !v.is_empty()) {
+                        self.store_migrated_secret(spec, secret, result)?;
+                        headers.insert(
+                            "Authorization".to_string(),
+                            serde_json::Value::String(format!(
+                                "Bearer {}",
+                                mcp_secret_placeholder(spec.key)
+                            )),
+                        );
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        if changed {
+            write_json_pretty(path, &json)?;
+        }
+        Ok(())
+    }
+
+    fn store_migrated_secret(
+        &self,
+        spec: &BuiltinMcpSecretSpec,
+        value: &str,
+        result: &mut McpSecretMigrationResult,
+    ) -> Result<(), String> {
+        let reference = mcp_secret_reference(spec.tool_id, spec.target, spec.key);
+        let env_value = match self.credential_store.get(&reference) {
+            Ok(Some(existing)) if !existing.trim().is_empty() => {
+                result.skipped_count += 1;
+                result.messages.push(format!(
+                    "MCP 工具 '{}' 的密钥 {} 已存在，已跳过覆盖并清理旧明文",
+                    spec.tool_id, spec.key
+                ));
+                existing
+            }
+            Ok(_) => {
+                self.credential_store
+                    .set(&reference, value)
+                    .map_err(|e| {
+                        result.failed_count += 1;
+                        mcp_secret_store_error(spec.tool_id, spec.key, e)
+                    })?;
+                result.migrated_count += 1;
+                result.messages.push(format!(
+                    "MCP 工具 '{}' 的密钥 {} 已迁移到系统凭据存储",
+                    spec.tool_id, spec.key
+                ));
+                value.to_string()
+            }
+            Err(e) => {
+                result.failed_count += 1;
+                return Err(mcp_secret_store_error(spec.tool_id, spec.key, e));
+            }
+        };
+        std::env::set_var(mcp_secret_env_var(spec.key), env_value);
+        Ok(())
     }
 
     /// 卸载工具：从 installed.json + mcp.json 中移除
@@ -394,21 +743,59 @@ impl MarketplaceManager {
                 for field in &manifest.config_fields {
                     if field.target == "bearer" {
                         if let Some(val) = user_config.get(&field.key) {
-                            headers.insert(
-                                "Authorization".to_string(),
-                                serde_json::Value::String(format!("Bearer {}", val)),
-                            );
+                            if field.secret {
+                                let placeholder = self.resolve_secret_placeholder(
+                                    &manifest.id,
+                                    "header",
+                                    &field.key,
+                                    user_config,
+                                    &manifest.env,
+                                )?;
+                                headers.insert(
+                                    "Authorization".to_string(),
+                                    serde_json::Value::String(format!("Bearer {}", placeholder)),
+                                );
+                            } else {
+                                headers.insert(
+                                    "Authorization".to_string(),
+                                    serde_json::Value::String(format!("Bearer {}", val)),
+                                );
+                            }
                         }
                     }
                 }
 
-                // 2. manifest.env 中以 _API_KEY 结尾的字段（内置 Key 阶段）
+                // 2. manifest.secret_headers 声明的敏感 header（不落明文）
+                for secret in &manifest.secret_headers {
+                    let placeholder = self.resolve_secret_placeholder(
+                        &manifest.id,
+                        "header",
+                        &secret.source_key,
+                        user_config,
+                        &manifest.env,
+                    )?;
+                    let value = if secret.scheme.trim().is_empty() {
+                        placeholder
+                    } else {
+                        format!("{} {}", secret.scheme, placeholder)
+                    };
+                    headers.insert(secret.header.clone(), serde_json::Value::String(value));
+                }
+
+                // 3. 兼容旧 manifest.env 中以 _API_KEY 结尾的字段，迁移后只写占位。
                 if headers.is_empty() {
-                    for (k, v) in &manifest.env {
-                        if k.ends_with("_API_KEY") && !v.is_empty() {
+                    for k in manifest.env.keys() {
+                        if is_sensitive_key_name(k) {
+                            let placeholder = self.resolve_secret_placeholder(
+                                &manifest.id,
+                                "header",
+                                k,
+                                user_config,
+                                &manifest.env,
+                            )?;
                             headers.insert(
                                 "Authorization".to_string(),
-                                serde_json::Value::String(format!("Bearer {}", v)),
+                                serde_json::Value::String(format!("Bearer {}", placeholder)),
                             );
                             break;
                         }
@@ -436,12 +823,50 @@ impl MarketplaceManager {
                 })
                 .collect();
 
-            let mut env = manifest.env.clone();
+            let mut env = manifest
+                .env
+                .iter()
+                .filter(|(k, _)| !is_sensitive_key_name(k))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<std::collections::HashMap<_, _>>();
             for field in &manifest.config_fields {
                 if field.target == "env" {
                     if let Some(val) = user_config.get(&field.key) {
-                        env.insert(field.key.clone(), val.clone());
+                        if field.secret || is_sensitive_key_name(&field.key) {
+                            let placeholder = self.resolve_secret_placeholder(
+                                &manifest.id,
+                                "env",
+                                &field.key,
+                                user_config,
+                                &manifest.env,
+                            )?;
+                            env.insert(field.key.clone(), placeholder);
+                        } else {
+                            env.insert(field.key.clone(), val.clone());
+                        }
                     }
+                }
+            }
+            for secret in &manifest.secret_env {
+                let placeholder = self.resolve_secret_placeholder(
+                    &manifest.id,
+                    "env",
+                    &secret.key,
+                    user_config,
+                    &manifest.env,
+                )?;
+                env.insert(secret.key.clone(), placeholder);
+            }
+            for key in manifest.env.keys().filter(|k| is_sensitive_key_name(k)) {
+                if !env.contains_key(key) {
+                    let placeholder = self.resolve_secret_placeholder(
+                        &manifest.id,
+                        "env",
+                        key,
+                        user_config,
+                        &manifest.env,
+                    )?;
+                    env.insert(key.clone(), placeholder);
                 }
             }
 
@@ -462,8 +887,7 @@ impl MarketplaceManager {
             servers.insert(manifest.id.clone(), entry);
         }
 
-        let json = serde_json::to_string_pretty(&mcp).map_err(|e| e.to_string())?;
-        std::fs::write(&mcp_path, json).map_err(|e| format!("写入 mcp.json: {e}"))
+        write_json_pretty(&mcp_path, &mcp)
     }
 
     fn remove_from_mcp_json(&self, tool_id: &str) -> Result<(), String> {
@@ -504,12 +928,16 @@ fn default_mcp_json() -> serde_json::Value {
 mod tests {
     use super::*;
     use crate::bridge::paths::tests::ENV_LOCK;
+    use crate::credential_store::{CredentialStore, MemoryCredentialStore};
 
     /// 把 PINVOU3_HOME 指到一个干净临时目录跑闭包,跑完恢复并清理。
     /// 借 paths 的 ENV_LOCK 跟其它 mutate PINVOU3_HOME 的测试串行,避免互相覆盖。
     fn with_temp_home<F: FnOnce()>(f: F) {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
+        let prev_amap = std::env::var("PINVOU3_MCP_SECRET_AMAP_KEY").ok();
+        let prev_iwencai = std::env::var("PINVOU3_MCP_SECRET_IWENCAI_API_KEY").ok();
+        let prev_qcc = std::env::var("PINVOU3_MCP_SECRET_QCC_API_KEY").ok();
         let dir = std::env::temp_dir().join(format!("pinvou3-mkt-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -519,7 +947,32 @@ mod tests {
             Some(v) => std::env::set_var("PINVOU3_HOME", v),
             None => std::env::remove_var("PINVOU3_HOME"),
         }
+        for (key, value) in [
+            ("PINVOU3_MCP_SECRET_AMAP_KEY", prev_amap),
+            ("PINVOU3_MCP_SECRET_IWENCAI_API_KEY", prev_iwencai),
+            ("PINVOU3_MCP_SECRET_QCC_API_KEY", prev_qcc),
+        ] {
+            match value {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn write_tool_manifest(tool_id: &str, manifest: &str) {
+        let dir = crate::bridge::paths::bundle_mcp_servers_dir().join(tool_id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("manifest.json"), manifest).unwrap();
+    }
+
+    fn read_mcp_json() -> serde_json::Value {
+        let content = std::fs::read_to_string(crate::bridge::paths::mcp_config_path()).unwrap();
+        serde_json::from_str(&content).unwrap()
+    }
+
+    fn secret_value(name: &str) -> String {
+        format!("test-secret-{name}-value-123456")
     }
 
     /// 连接器 → 模型可见工具全名:裸名补 `mcp_{id}_` 前缀,已带 `mcp_` 的原样(不双前缀),
@@ -563,6 +1016,230 @@ mod tests {
             );
             save_disabled_connectors(&[]); // 全开回去
             assert!(load_disabled_connectors().is_empty());
+        });
+    }
+
+    #[test]
+    fn secret_manifest_parses_declarations_without_plain_secret_values() {
+        let weather: ToolManifest = serde_json::from_str(
+            r#"{
+                "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
+                "mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
+                "secret_env":[{"key":"AMAP_KEY","provider":"amap","required":true}]
+            }"#,
+        )
+        .unwrap();
+        assert!(weather.env.is_empty());
+        assert_eq!(weather.secret_env[0].key, "AMAP_KEY");
+
+        let qcc: ToolManifest = serde_json::from_str(
+            r#"{
+                "id":"qcc","name":"QCC","description":"d","version":"1","icon":"x","category":"c",
+                "mcp_tools":[],"command":"","args":[],
+                "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"QCC_API_KEY","provider":"qcc","required":true}],
+                "servers":[{"name":"qcc-company","url":"https://example.invalid/mcp"}]
+            }"#,
+        )
+        .unwrap();
+        assert!(qcc.env.is_empty());
+        assert_eq!(qcc.secret_headers[0].source_key, "QCC_API_KEY");
+    }
+
+    #[test]
+    fn install_local_secret_env_writes_placeholder_without_plain_secret() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "weather",
+                r#"{
+                    "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
+                    "secret_env":[{"key":"AMAP_KEY","provider":"amap","required":true}]
+                }"#,
+            );
+            let store = MemoryCredentialStore::default();
+            let secret = secret_value("amap");
+            store
+                .set(&mcp_secret_reference("weather", "env", "AMAP_KEY"), &secret)
+                .unwrap();
+            let mgr = MarketplaceManager::with_store(store);
+
+            mgr.install("weather", &std::collections::HashMap::new())
+                .unwrap();
+
+            let mcp = read_mcp_json();
+            let amap = mcp["servers"]["weather"]["env"]["AMAP_KEY"]
+                .as_str()
+                .unwrap();
+            assert_eq!(amap, "${PINVOU3_MCP_SECRET_AMAP_KEY}");
+            assert!(!mcp.to_string().contains(&secret));
+        });
+    }
+
+    #[test]
+    fn install_remote_secret_header_writes_placeholder_without_plain_secret() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "qcc",
+                r#"{
+                    "id":"qcc","name":"QCC","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"","args":[],
+                    "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"QCC_API_KEY","provider":"qcc","required":true}],
+                    "servers":[{"name":"qcc-company","url":"https://example.invalid/mcp"}]
+                }"#,
+            );
+            let store = MemoryCredentialStore::default();
+            let secret = secret_value("qcc");
+            store
+                .set(&mcp_secret_reference("qcc", "header", "QCC_API_KEY"), &secret)
+                .unwrap();
+            let mgr = MarketplaceManager::with_store(store);
+
+            mgr.install("qcc", &std::collections::HashMap::new()).unwrap();
+
+            let mcp = read_mcp_json();
+            let authorization = mcp["servers"]["qcc-company"]["headers"]["Authorization"]
+                .as_str()
+                .unwrap();
+            assert_eq!(authorization, "Bearer ${PINVOU3_MCP_SECRET_QCC_API_KEY}");
+            assert!(!mcp.to_string().contains(&secret));
+        });
+    }
+
+    #[test]
+    fn migrate_legacy_manifest_env_moves_secret_to_store_and_removes_plaintext() {
+        with_temp_home(|| {
+            let secret = secret_value("legacy-amap");
+            write_tool_manifest(
+                "weather",
+                &format!(
+                    r#"{{
+                        "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
+                        "mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
+                        "env":{{"AMAP_KEY":"{secret}","SAFE_VALUE":"kept"}}
+                    }}"#
+                ),
+            );
+            let store = MemoryCredentialStore::default();
+            let mgr = MarketplaceManager::with_store(store.clone());
+
+            let result = mgr.migrate_mcp_plaintext_secrets().unwrap();
+
+            assert_eq!(result.migrated_count, 1);
+            let stored = store
+                .get(&mcp_secret_reference("weather", "env", "AMAP_KEY"))
+                .unwrap();
+            assert_eq!(stored.as_deref(), Some(secret.as_str()));
+            let content = std::fs::read_to_string(
+                crate::bridge::paths::bundle_mcp_servers_dir()
+                    .join("weather")
+                    .join("manifest.json"),
+            )
+            .unwrap();
+            assert!(!content.contains(&secret));
+            assert!(content.contains("SAFE_VALUE"));
+        });
+    }
+
+    #[test]
+    fn migrate_legacy_qcc_bearer_header_writes_placeholder_and_stores_secret() {
+        with_temp_home(|| {
+            let secret = secret_value("legacy-qcc");
+            let mcp_path = crate::bridge::paths::mcp_config_path();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &mcp_path,
+                format!(
+                    r#"{{
+                        "servers": {{
+                            "qcc-company": {{
+                                "url": "https://example.invalid/mcp",
+                                "headers": {{"Authorization": "Bearer {secret}"}}
+                            }}
+                        }}
+                    }}"#
+                ),
+            )
+            .unwrap();
+            let store = MemoryCredentialStore::default();
+            let mgr = MarketplaceManager::with_store(store.clone());
+
+            let result = mgr.migrate_mcp_plaintext_secrets().unwrap();
+
+            assert_eq!(result.migrated_count, 1);
+            let stored = store
+                .get(&mcp_secret_reference("qcc", "header", "QCC_API_KEY"))
+                .unwrap();
+            assert_eq!(stored.as_deref(), Some(secret.as_str()));
+            let content = std::fs::read_to_string(&mcp_path).unwrap();
+            assert!(!content.contains(&secret));
+            assert!(content.contains("Bearer ${PINVOU3_MCP_SECRET_QCC_API_KEY}"));
+        });
+    }
+
+    #[test]
+    fn migration_does_not_overwrite_existing_credential_but_cleans_file() {
+        with_temp_home(|| {
+            let old_secret = secret_value("old-qcc");
+            let kept_secret = secret_value("kept-qcc");
+            let mcp_path = crate::bridge::paths::mcp_config_path();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &mcp_path,
+                format!(
+                    r#"{{
+                        "servers": {{
+                            "qcc-company": {{
+                                "url": "https://example.invalid/mcp",
+                                "headers": {{"Authorization": "Bearer {old_secret}"}}
+                            }}
+                        }}
+                    }}"#
+                ),
+            )
+            .unwrap();
+            let store = MemoryCredentialStore::default();
+            store
+                .set(
+                    &mcp_secret_reference("qcc", "header", "QCC_API_KEY"),
+                    &kept_secret,
+                )
+                .unwrap();
+            let mgr = MarketplaceManager::with_store(store.clone());
+
+            let result = mgr.migrate_mcp_plaintext_secrets().unwrap();
+
+            assert_eq!(result.skipped_count, 1);
+            let stored = store
+                .get(&mcp_secret_reference("qcc", "header", "QCC_API_KEY"))
+                .unwrap();
+            assert_eq!(stored.as_deref(), Some(kept_secret.as_str()));
+            let content = std::fs::read_to_string(&mcp_path).unwrap();
+            assert!(!content.contains(&old_secret));
+            assert!(!content.contains(&kept_secret));
+            assert!(content.contains("Bearer ${PINVOU3_MCP_SECRET_QCC_API_KEY}"));
+        });
+    }
+
+    #[test]
+    fn install_missing_required_secret_returns_recoverable_redacted_error() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "iwencai",
+                r#"{
+                    "id":"iwencai","name":"Iwencai","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":["mcp_iwencai_query"],"command":"python","args":["server.py"],
+                    "secret_env":[{"key":"IWENCAI_API_KEY","provider":"iwencai","required":true}]
+                }"#,
+            );
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let err = mgr
+                .install("iwencai", &std::collections::HashMap::new())
+                .unwrap_err();
+
+            assert!(err.contains("iwencai"));
+            assert!(err.contains("IWENCAI_API_KEY"));
+            assert!(!err.contains("test-secret"));
         });
     }
 }
