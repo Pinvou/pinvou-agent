@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "pinvou3",
-  "version": "0.4.9",
+  "version": "0.4.11",
   "identifier": "com.pinvou.pinvou3",
   "build": {
     "frontendDist": "../src"
@@ -40,17 +40,23 @@
     "resources": {
       "resources/windows/poppler/": "poppler",
       "resources/windows/pandoc/": "pandoc",
-      "resources/windows/asr/": "asr"
+      "resources/windows/tesseract/": "tesseract",
+      "resources/windows/asr/": "asr",
+      "resources/windows/7zip/": "7zip"
     },
     "windows": {
       "wix": {
         "fragmentPaths": [
           "resources/windows/poppler-path.wxs",
-          "resources/windows/pandoc-path.wxs"
+          "resources/windows/pandoc-path.wxs",
+          "resources/windows/tesseract-path.wxs",
+          "resources/windows/7zip-path.wxs"
         ],
         "componentRefs": [
           "PopplerPathEnvironment",
-          "PandocPathEnvironment"
+          "PandocPathEnvironment",
+          "TesseractPathEnvironment",
+          "SevenZipPathEnvironment"
         ]
       }
     },

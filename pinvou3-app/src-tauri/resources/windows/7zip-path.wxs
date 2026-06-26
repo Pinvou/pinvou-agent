@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="SevenZipPathEnvironment" Guid="71e2dcd8-7873-446a-8159-3b77c1b49f4f">
+        <RegistryValue Root="HKLM"
+                       Key="Software\pinvou\pinvou3"
+                       Name="SevenZipPathEnvironment"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+        <Environment Id="PinvouSevenZipPath"
+                     Name="PATH"
+                     Value="[INSTALLDIR]7zip"
+                     Action="set"
+                     Part="last"
+                     System="yes"
+                     Permanent="no" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>

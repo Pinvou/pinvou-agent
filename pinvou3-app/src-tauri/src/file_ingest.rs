@@ -51,11 +51,11 @@ pub struct SystemTools {
     pub tesseract: bool,
     /// pdftoppm（poppler-utils）—— 把扫描件 PDF 逐页转图再喂给 tesseract。
     pub pdftoppm: bool,
-    /// 7z（p7zip-full）—— 解 zip/7z/rar 等压缩包。
+    /// 7z —— 解 zip/7z/rar 等压缩包；Windows 优先使用内置 7-Zip。
     pub sevenzip: bool,
     /// python3 —— 解析 .eml 邮件（标准库 email 模块，无额外依赖）。
     pub python3: bool,
-    /// msgconvert（libemail-outlook-message-perl）—— .msg → .eml。
+    /// msgconvert（libemail-outlook-message-perl）—— Linux .msg → .eml；Windows 走 Rust 原生解析。
     pub msgconvert: bool,
 }
 
@@ -67,11 +67,11 @@ pub fn system_tools() -> SystemTools {
         pandoc: crate::os::pandoc_tool_exists(),
         pdftotext: crate::os::pdf_tool_exists("pdftotext"),
         libreoffice: crate::os::command_exists("soffice") || crate::os::command_exists("libreoffice"),
-        tesseract: crate::os::command_exists("tesseract"),
+        tesseract: crate::os::ocr_tool_exists(),
         pdftoppm: crate::os::pdf_tool_exists("pdftoppm"),
-        sevenzip: crate::os::command_exists("7z"),
+        sevenzip: crate::os::archive_tool_exists(),
         python3: crate::os::command_exists("python3"),
-        msgconvert: crate::os::command_exists("msgconvert"),
+        msgconvert: !crate::os::msg_converter_required() || crate::os::command_exists("msgconvert"),
     })
 }
 
@@ -115,20 +115,26 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
         crate::os::asr_tool_exists(),
         crate::os::asr_dependency_packages(),
     ));
-    items.extend([
-        item("office_legacy", libreoffice, "libreoffice"),
-        item(
+    items.push(item("office_legacy", libreoffice, "libreoffice"));
+    if crate::os::show_ocr_dependency_check() {
+        items.push(item(
             "ocr",
-            crate::os::command_exists("tesseract") && crate::os::pdf_tool_exists("pdftoppm"),
+            crate::os::ocr_tool_exists() && crate::os::pdf_tool_exists("pdftoppm"),
             crate::os::ocr_dependency_packages(),
-        ),
-        item("archive", crate::os::command_exists("7z"), "p7zip-full"),
-        item(
-            "email",
-            crate::os::command_exists("python3") && crate::os::command_exists("msgconvert"),
-            "python3 libemail-outlook-message-perl",
-        ),
-    ]);
+        ));
+    }
+    if crate::os::show_archive_dependency_check() {
+        items.push(item(
+            "archive",
+            crate::os::archive_tool_exists(),
+            crate::os::archive_dependency_packages(),
+        ));
+    }
+    items.push(item(
+        "email",
+        crate::os::email_tool_exists(),
+        crate::os::email_dependency_packages(),
+    ));
     items
 }
 
@@ -138,6 +144,20 @@ fn pdf_tool_command(command: &str) -> Command {
 
 fn pandoc_tool_command() -> Command {
     crate::process::HiddenCommand::new(crate::os::pandoc_tool_path())
+}
+
+fn ocr_tool_command() -> Command {
+    crate::process::HiddenCommand::new(crate::os::ocr_tool_path())
+}
+
+fn archive_tool_command() -> Command {
+    crate::process::HiddenCommand::new(crate::os::archive_tool_path())
+}
+
+fn add_ocr_tessdata_arg(command: &mut Command) {
+    if let Some(tessdata_dir) = crate::os::ocr_tessdata_dir() {
+        command.arg("--tessdata-dir").arg(tessdata_dir);
+    }
 }
 
 /// 体检卡「一键安装」：委托 OS 调度层安装缺失依赖。
@@ -155,8 +175,10 @@ pub async fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
 fn ocr_lang_arg() -> String {
     static LANG: OnceLock<String> = OnceLock::new();
     LANG.get_or_init(|| {
-        let listed = Command::new("tesseract")
-            .arg("--list-langs")
+        let mut command = ocr_tool_command();
+        command.arg("--list-langs");
+        add_ocr_tessdata_arg(&mut command);
+        let listed = command
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
             .unwrap_or_default();
@@ -256,7 +278,7 @@ fn classify(ext: &str) -> &'static str {
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => "image",
         // 压缩包：解压后递归识别（7z 统一处理 zip/rar/7z）
         "zip" | "rar" | "7z" => "archive",
-        // 邮件：eml 走 python email 标准库；msg 先 msgconvert 转 eml
+        // 邮件：eml 走 python email 标准库；msg 按 OS 策略解析
         "eml" | "msg" => "email",
         // 音视频：本地语音转录(whisper)尚未部署，先优雅降级标「未处理」
         "mp4" | "avi" | "mov" | "mkv" | "webm" | "flv" | "wmv" | "m4v" | "mp3" | "wav"
@@ -969,11 +991,10 @@ fn ingest_image(_path: &Path, basename: String, path_str: String, byte_size: u64
 /// 对单张图片跑 tesseract，识别文字到 stdout。`tesseract <img> - -l <langs>`。
 fn ocr_image(path: &Path) -> Result<String, String> {
     let lang = ocr_lang_arg();
-    let out = Command::new("tesseract")
-        .arg(path)
-        .arg("-")
-        .arg("-l")
-        .arg(&lang)
+    let mut command = ocr_tool_command();
+    command.arg(path).arg("-").arg("-l").arg(&lang);
+    add_ocr_tessdata_arg(&mut command);
+    let out = command
         .output()
         .map_err(|e| format!("tesseract 调用失败: {e}"))?;
     if out.status.success() {
@@ -1147,7 +1168,7 @@ fn ingest_archive(
     };
 
     if !system_tools().sevenzip {
-        return mk_err("压缩包解析需要 7z: sudo apt install p7zip-full".into());
+        return mk_err(archive_tool_missing_message());
     }
 
     // 预检：解压前就用 7z 列表拦截压缩炸弹。
@@ -1176,7 +1197,7 @@ fn ingest_archive(
         return mk_err(format!("创建临时目录失败: {e}"));
     }
 
-    let extract = Command::new("7z")
+    let extract = archive_tool_command()
         .arg("x")
         .arg("-y")
         .arg(format!("-o{}", tmpdir.display()))
@@ -1244,7 +1265,7 @@ fn ingest_archive(
 
 /// `7z l -slt` 列出条目，返回 (文件数, 解压后总字节)。用于解压前的炸弹预检。
 fn archive_list_stats(path: &Path) -> Result<(usize, u64), String> {
-    let out = Command::new("7z")
+    let out = archive_tool_command()
         .arg("l")
         .arg("-slt")
         .arg(path)
@@ -1265,6 +1286,19 @@ fn archive_list_stats(path: &Path) -> Result<(usize, u64), String> {
         .filter(|l| l.trim_start().starts_with("Path = "))
         .count();
     Ok((paths.saturating_sub(1), total))
+}
+
+fn archive_tool_missing_message() -> String {
+    if crate::os::show_archive_dependency_check() {
+        let packages = crate::os::archive_dependency_packages();
+        if packages.trim().is_empty() {
+            "压缩包解析需要 7z，请按当前系统方式安装压缩包解析工具".into()
+        } else {
+            format!("压缩包解析需要 7z: sudo apt install {packages}")
+        }
+    } else {
+        "内置压缩包解析组件缺失或不可用，请修复或重新安装 pinvou。".into()
+    }
 }
 
 /// 递归收集目录下的普通文件（不含目录本身），到达 `limit` 即停。
@@ -1289,7 +1323,7 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>, limit: usize) {
 }
 
 /// 邮件（.eml / .msg）：.eml 直接用 python 标准库 email 模块解出收发件人/主题/
-/// 日期/正文/附件名；.msg（Outlook 专有 OLE）先用 msgconvert 转成 .eml 再同样处理。
+/// 日期/正文/附件名；.msg 在 Windows 走 Rust 原生解析，非 Windows 保留 msgconvert 转 .eml。
 fn ingest_email(
     path: &Path,
     basename: String,
@@ -1310,6 +1344,13 @@ fn ingest_email(
             warning,
         }
     };
+
+    if kind == "msg" && crate::os::msg_native_supported() {
+        return match parse_msg_via_msg_parser(path) {
+            Ok(text) => mk(Some(text), None),
+            Err(e) => mk(None, Some(e)),
+        };
+    }
 
     if !tools.python3 {
         return mk(None, Some("邮件解析需要 python3，请运行: sudo apt install python3".into()));
@@ -1358,6 +1399,309 @@ fn ingest_email(
         Ok(text) => mk(Some(text), None),
         Err(e) => mk(None, Some(e)),
     }
+}
+
+/// Outlook .msg 解析结果格式化为与 .eml 接近的可读邮件文本。
+#[derive(Default)]
+struct MsgMarkdownParts {
+    sender: String,
+    to: Vec<String>,
+    cc: Vec<String>,
+    bcc: Vec<String>,
+    subject: String,
+    date: String,
+    body: String,
+    attachments: Vec<String>,
+}
+
+fn parse_msg_via_msg_parser(path: &Path) -> Result<String, String> {
+    let outlook =
+        msg_parser::Outlook::from_path(path).map_err(|e| format!(".msg 解析失败: {e}"))?;
+    let body = decode_msg_body(&outlook);
+    let parts = MsgMarkdownParts {
+        sender: person_to_text(&outlook.sender),
+        to: people_to_text(&outlook.to),
+        cc: people_to_text(&outlook.cc),
+        bcc: people_to_text(&outlook.bcc),
+        subject: clean_msg_text(&outlook.subject),
+        date: first_non_empty([
+            outlook.message_delivery_time.as_str(),
+            outlook.client_submit_time.as_str(),
+            outlook.headers.date.as_str(),
+            outlook.creation_time.as_str(),
+        ]),
+        body,
+        attachments: outlook
+            .attachments
+            .iter()
+            .map(attachment_to_name)
+            .filter(|name| !name.is_empty())
+            .collect(),
+    };
+    let markdown = format_msg_as_markdown(&parts);
+    if markdown.trim().is_empty() {
+        Err(".msg 解析失败: 未提取到邮件内容".into())
+    } else {
+        Ok(markdown)
+    }
+}
+
+fn format_msg_as_markdown(parts: &MsgMarkdownParts) -> String {
+    let mut out = String::new();
+    push_mail_line(&mut out, "发件人", &parts.sender);
+    push_mail_line(&mut out, "收件人", &parts.to.join(", "));
+    push_mail_line(&mut out, "抄送", &parts.cc.join(", "));
+    push_mail_line(&mut out, "密送", &parts.bcc.join(", "));
+    push_mail_line(&mut out, "主题", &parts.subject);
+    push_mail_line(&mut out, "日期", &parts.date);
+    if !parts.body.trim().is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str("正文:\n");
+        out.push_str(parts.body.trim());
+        out.push('\n');
+    }
+    if !parts.attachments.is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str("附件: ");
+        out.push_str(&parts.attachments.join(", "));
+    }
+    out.trim_end().to_string()
+}
+
+fn push_mail_line(out: &mut String, label: &str, value: &str) {
+    let value = value.trim();
+    if value.is_empty() {
+        return;
+    }
+    out.push_str(label);
+    out.push_str(": ");
+    out.push_str(value);
+    out.push('\n');
+}
+
+fn people_to_text(people: &[msg_parser::Person]) -> Vec<String> {
+    people
+        .iter()
+        .map(person_to_text)
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn person_to_text(person: &msg_parser::Person) -> String {
+    clean_msg_text(&person.to_string())
+}
+
+fn attachment_to_name(attachment: &msg_parser::Attachment) -> String {
+    [
+        &attachment.long_file_name,
+        &attachment.file_name,
+        &attachment.display_name,
+    ]
+    .into_iter()
+    .map(|value| clean_msg_text(value))
+    .find(|value| !value.is_empty())
+    .unwrap_or_default()
+}
+
+fn first_non_empty<'a>(values: impl IntoIterator<Item = &'a str>) -> String {
+    values
+        .into_iter()
+        .map(clean_msg_text)
+        .find(|value| !value.is_empty())
+        .unwrap_or_default()
+}
+
+fn decode_msg_body(outlook: &msg_parser::Outlook) -> String {
+    let body = clean_msg_text(&outlook.body);
+    if !body.is_empty() {
+        return body;
+    }
+
+    let html = if outlook.html.trim().is_empty() {
+        outlook.html_from_rtf().unwrap_or_default()
+    } else {
+        outlook.html.clone()
+    };
+    let decoded = decode_msg_html_payload(&html);
+    let text = html_to_text(&decoded);
+    if text.is_empty() {
+        decoded
+    } else {
+        text
+    }
+}
+
+fn clean_msg_text(value: &str) -> String {
+    value.chars().filter(|ch| *ch != '\0').collect::<String>().trim().to_string()
+}
+
+fn decode_msg_html_payload(value: &str) -> String {
+    let value = clean_msg_text(value);
+    if value.len() < 8 || value.len() % 2 != 0 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return value;
+    }
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    let raw = value.as_bytes();
+    for pair in raw.chunks_exact(2) {
+        let Ok(hex) = std::str::from_utf8(pair) else {
+            return value;
+        };
+        let Ok(byte) = u8::from_str_radix(hex, 16) else {
+            return value;
+        };
+        bytes.push(byte);
+    }
+    decode_msg_bytes(&bytes)
+}
+
+fn decode_msg_bytes(bytes: &[u8]) -> String {
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        return decode_utf16le(&bytes[2..]);
+    }
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        return decode_utf16be(&bytes[2..]);
+    }
+    if let Ok(text) = String::from_utf8(bytes.to_vec()) {
+        return clean_msg_text(&text);
+    }
+    let nul_count = bytes.iter().filter(|byte| **byte == 0).count();
+    if nul_count > bytes.len() / 4 {
+        decode_utf16le(bytes)
+    } else {
+        clean_msg_text(&String::from_utf8_lossy(bytes))
+    }
+}
+
+fn decode_utf16le(bytes: &[u8]) -> String {
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect();
+    clean_msg_text(&String::from_utf16_lossy(&units))
+}
+
+fn decode_utf16be(bytes: &[u8]) -> String {
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
+        .collect();
+    clean_msg_text(&String::from_utf16_lossy(&units))
+}
+
+fn html_to_text(html: &str) -> String {
+    let html = remove_html_section(html, "script");
+    let html = remove_html_section(&html, "style");
+    let html = remove_html_section(&html, "head");
+    let html = html
+        .replace("<br>", "\n")
+        .replace("<br/>", "\n")
+        .replace("<br />", "\n")
+        .replace("</p>", "\n")
+        .replace("</div>", "\n")
+        .replace("</tr>", "\n")
+        .replace("</li>", "\n");
+
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for ch in html.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => {
+                in_tag = false;
+                out.push(' ');
+            }
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    collapse_text(&decode_html_entities(&out))
+}
+
+fn remove_html_section(input: &str, tag: &str) -> String {
+    let mut out = input.to_string();
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+    loop {
+        let lower = out.to_ascii_lowercase();
+        let Some(start) = lower.find(&open) else {
+            break;
+        };
+        let Some(end_rel) = lower[start..].find(&close) else {
+            out.truncate(start);
+            break;
+        };
+        let end = start + end_rel + close.len();
+        out.replace_range(start..end, " ");
+    }
+    out
+}
+
+fn decode_html_entities(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(start) = rest.find('&') {
+        out.push_str(&rest[..start]);
+        let after_amp = &rest[start + 1..];
+        let Some(end) = after_amp.find(';') else {
+            out.push('&');
+            rest = after_amp;
+            continue;
+        };
+        let entity = &after_amp[..end];
+        if let Some(decoded) = decode_html_entity(entity) {
+            out.push(decoded);
+        } else {
+            out.push('&');
+            out.push_str(entity);
+            out.push(';');
+        }
+        rest = &after_amp[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn decode_html_entity(entity: &str) -> Option<char> {
+    match entity {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        "nbsp" => Some(' '),
+        _ if entity.starts_with("#x") || entity.starts_with("#X") => {
+            u32::from_str_radix(&entity[2..], 16).ok().and_then(char::from_u32)
+        }
+        _ if entity.starts_with('#') => {
+            entity[1..].parse::<u32>().ok().and_then(char::from_u32)
+        }
+        _ => None,
+    }
+}
+
+fn collapse_text(value: &str) -> String {
+    let mut out = String::new();
+    let mut blank_lines = 0;
+    for line in value.lines() {
+        let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        if line.is_empty() {
+            blank_lines += 1;
+            if blank_lines <= 1 && !out.is_empty() {
+                out.push('\n');
+            }
+        } else {
+            blank_lines = 0;
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&line);
+        }
+    }
+    out.trim().to_string()
 }
 
 /// 用 python 标准库 email 模块把 .eml 解析成可读文本（收发件人/主题/日期/正文/
@@ -1656,13 +2000,22 @@ mod tests {
     }
 
     #[test]
+    fn archive_tool_command_uses_os_layer_program() {
+        let command = archive_tool_command();
+        assert_eq!(command.get_program(), crate::os::archive_tool_path().as_os_str());
+    }
+
+    #[test]
     fn dependency_check_respects_pdf_visibility_policy() {
         let deps = check_dependencies();
         let has_pdf = deps.iter().any(|item| item.key == "pdf");
         let has_pandoc = deps.iter().any(|item| item.key == "office_modern");
+        let has_ocr = deps.iter().any(|item| item.key == "ocr");
+        let has_archive = deps.iter().any(|item| item.key == "archive");
         assert_eq!(has_pdf, crate::os::show_pdf_dependency_check());
         assert_eq!(has_pandoc, crate::os::show_pandoc_dependency_check());
-        assert!(deps.iter().any(|item| item.key == "ocr"));
+        assert_eq!(has_ocr, crate::os::show_ocr_dependency_check());
+        assert_eq!(has_archive, crate::os::show_archive_dependency_check());
 
         if !crate::os::show_pdf_dependency_check() {
             assert!(
@@ -1678,6 +2031,161 @@ mod tests {
                 "hidden Windows Pandoc dependency should not leave install hints: {deps:?}"
             );
         }
+        if !crate::os::show_ocr_dependency_check() {
+            assert!(
+                deps.iter().all(|item| {
+                    !item.apt.contains("tesseract") && !item.apt.contains("tesseract-ocr")
+                }),
+                "hidden Windows OCR dependency should not leave install hints: {deps:?}"
+            );
+        }
+        if !crate::os::show_archive_dependency_check() {
+            assert!(
+                deps.iter()
+                    .all(|item| !item.apt.contains("p7zip") && item.key != "archive"),
+                "hidden Windows archive dependency should not leave install hints: {deps:?}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_archive_missing_message_points_to_bundled_runtime() {
+        let message = archive_tool_missing_message();
+
+        assert!(message.contains("内置压缩包解析组件"));
+        assert!(!message.contains("sudo apt install"));
+        assert!(!message.contains("p7zip-full"));
+    }
+
+    #[test]
+    fn msg_markdown_format_includes_headers_body_and_attachments() {
+        let parts = MsgMarkdownParts {
+            sender: "alice@example.com".into(),
+            to: vec!["bob@example.com".into()],
+            cc: vec!["carol@example.com".into()],
+            bcc: vec!["audit@example.com".into()],
+            subject: "项目进展".into(),
+            date: "2026-06-25T10:00:00Z".into(),
+            body: "这是邮件正文".into(),
+            attachments: vec!["report.pdf".into(), "报价.xlsx".into()],
+        };
+
+        let markdown = format_msg_as_markdown(&parts);
+
+        assert!(markdown.contains("发件人: alice@example.com"));
+        assert!(markdown.contains("收件人: bob@example.com"));
+        assert!(markdown.contains("抄送: carol@example.com"));
+        assert!(markdown.contains("密送: audit@example.com"));
+        assert!(markdown.contains("主题: 项目进展"));
+        assert!(markdown.contains("日期: 2026-06-25T10:00:00Z"));
+        assert!(markdown.contains("正文:\n这是邮件正文"));
+        assert!(markdown.contains("附件: report.pdf, 报价.xlsx"));
+    }
+
+    #[test]
+    fn msg_text_cleanup_removes_nul_padding() {
+        assert_eq!(clean_msg_text("OpenAI\0"), "OpenAI");
+        assert_eq!(clean_msg_text("你的临时 OpenAI 登录代码\0"), "你的临时 OpenAI 登录代码");
+    }
+
+    #[test]
+    fn msg_hex_html_body_decodes_to_readable_text() {
+        let html_hex = "3c68746d6c3e3c686561643e3c7374796c653e2e78207b20636f6c6f723a207265643b207d3c2f7374796c653e3c2f686561643e3c626f64793e3c703e4f70656e414920e799bbe5bd95e4bba3e7a081efbc9a203132333435363c2f703e3c703ee8afb7e58bbfe58886e4baab3c2f703e3c2f626f64793e3c2f68746d6c3e";
+        let text = html_to_text(&decode_msg_html_payload(html_hex));
+
+        assert!(text.contains("OpenAI 登录代码"));
+        assert!(text.contains("123456"));
+        assert!(text.contains("请勿分享"));
+        assert!(!text.contains("3c68746d6c"));
+        assert!(!text.contains("<html>"));
+    }
+
+    #[test]
+    fn msg_sample_from_env_decodes_when_provided() {
+        let Ok(path) = std::env::var("PINVOU3_MSG_SAMPLE") else {
+            return;
+        };
+        let parsed = parse_msg_via_msg_parser(Path::new(&path)).unwrap();
+
+        assert!(!parsed.contains('\0'));
+        assert!(!parsed.contains("3c68746d6c"));
+        assert!(parsed.contains("OpenAI") || parsed.contains("正文:"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_invalid_msg_returns_warning_without_msgconvert_dependency() {
+        let tmp = std::env::temp_dir().join("pinvou3-invalid-msg-test.msg");
+        std::fs::write(&tmp, b"not an outlook msg").unwrap();
+
+        let r = ingest(&tmp);
+
+        std::fs::remove_file(&tmp).ok();
+        assert_eq!(r.kind, "msg");
+        assert_eq!(r.basename, "pinvou3-invalid-msg-test.msg");
+        assert_eq!(r.path, tmp.to_string_lossy());
+        assert_eq!(r.byte_size, "not an outlook msg".len() as u64);
+        assert!(r.markdown.is_none());
+        let warning = r.warning.unwrap_or_default();
+        assert!(warning.contains(".msg"));
+        assert!(!warning.contains("libemail-outlook-message-perl"));
+        assert!(!warning.contains("msgconvert"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_email_dependency_check_uses_native_msg_parser() {
+        let deps = check_dependencies();
+        let email = deps
+            .iter()
+            .find(|item| item.key == "email")
+            .expect("email dependency item should exist");
+
+        assert!(email.installed);
+        assert!(email.apt.is_empty());
+        assert!(!email.apt.contains("libemail-outlook-message-perl"));
+        assert!(!email.apt.contains("msgconvert"));
+    }
+
+    #[test]
+    fn eml_regression_parses_headers_body_and_attachment_when_python_available() {
+        if !crate::os::command_exists("python3") {
+            eprintln!("skip: python3 is not available");
+            return;
+        }
+
+        let dir =
+            std::env::temp_dir().join(format!("pinvou3-eml-regression-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let eml = dir.join("m.eml");
+        let raw = concat!(
+            "From: alice@example.com\r\n",
+            "To: bob@example.com\r\n",
+            "Subject: Project Update\r\n",
+            "Date: Thu, 25 Jun 2026 10:00:00 +0800\r\n",
+            "MIME-Version: 1.0\r\n",
+            "Content-Type: multipart/mixed; boundary=\"b\"\r\n\r\n",
+            "--b\r\n",
+            "Content-Type: text/plain; charset=utf-8\r\n\r\n",
+            "This is email body\r\n",
+            "--b\r\n",
+            "Content-Type: text/plain; name=\"note.txt\"\r\n",
+            "Content-Disposition: attachment; filename=\"note.txt\"\r\n\r\n",
+            "attachment\r\n",
+            "--b--\r\n",
+        );
+        std::fs::write(&eml, raw).unwrap();
+
+        let parsed = parse_eml_via_python(&eml).unwrap();
+
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(parsed.contains("alice@example.com"));
+        assert!(parsed.contains("bob@example.com"));
+        assert!(parsed.contains("Project Update"));
+        assert!(parsed.contains("Thu, 25 Jun 2026 10:00:00 +0800"));
+        assert!(parsed.contains("This is email body"));
+        assert!(parsed.contains("note.txt"));
     }
 
     #[test]
@@ -1687,6 +2195,28 @@ mod tests {
             command.get_program(),
             crate::os::pandoc_tool_path().as_os_str()
         );
+    }
+
+    #[test]
+    fn ocr_tool_command_uses_os_layer_program() {
+        let command = ocr_tool_command();
+        assert_eq!(
+            command.get_program(),
+            crate::os::ocr_tool_path().as_os_str()
+        );
+    }
+
+    #[test]
+    fn ocr_tessdata_arg_is_added_when_os_layer_provides_dir() {
+        let mut command = ocr_tool_command();
+        add_ocr_tessdata_arg(&mut command);
+        let args: Vec<_> = command.get_args().map(|arg| arg.to_os_string()).collect();
+        if let Some(dir) = crate::os::ocr_tessdata_dir() {
+            assert!(args.iter().any(|arg| arg == "--tessdata-dir"));
+            assert!(args.iter().any(|arg| arg == dir.as_os_str()));
+        } else {
+            assert!(args.iter().all(|arg| arg != "--tessdata-dir"));
+        }
     }
 
     #[cfg(windows)]
@@ -1861,8 +2391,8 @@ mod tests {
 
         // 预期能解析出正文的扩展（其余 mp3/bin 预期只给 warning）。
         let expect_md = [
-            "txt", "md", "csv", "json", "docx", "odt", "rtf", "doc", "pptx", "ppt", "xlsx",
-            "ods", "xls", "png", "pdf", "zip", "7z", "eml",
+            "txt", "md", "csv", "json", "docx", "odt", "rtf", "doc", "pptx", "ppt", "xlsx", "ods",
+            "xls", "png", "pdf", "zip", "7z", "eml",
         ];
 
         println!(
@@ -1890,11 +2420,18 @@ mod tests {
                 name, r.kind, md_flag, r.token_estimate, preview
             );
             if expect_md.contains(&ext.as_str()) && r.markdown.is_none() {
-                failures.push(format!("{name} ({ext}) 预期产 markdown 但为空: {:?}", r.warning));
+                failures.push(format!(
+                    "{name} ({ext}) 预期产 markdown 但为空: {:?}",
+                    r.warning
+                ));
             }
         }
         println!("{}", "-".repeat(100));
-        assert!(failures.is_empty(), "以下类型解析失败:\n{}", failures.join("\n"));
+        assert!(
+            failures.is_empty(),
+            "以下类型解析失败:\n{}",
+            failures.join("\n")
+        );
     }
 }
 
@@ -1915,29 +2452,53 @@ mod visual_preview_smoke {
         let md = dir.join("doc.md");
         std::fs::write(&md, "# 标题\n\n正文一段。\n\n- 列表项\n").unwrap();
         let docx = dir.join("doc.docx");
-        let ok = Command::new("pandoc").arg(&md).arg("-o").arg(&docx).status().map(|s| s.success()).unwrap_or(false);
+        let ok = Command::new("pandoc")
+            .arg(&md)
+            .arg("-o")
+            .arg(&docx)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
         assert!(ok && docx.exists(), "pandoc 造 docx 失败");
         let html = libreoffice_to_inline_html(&docx).expect("office->html 应成功");
         assert!(html.contains("标题"), "HTML 应含正文文字");
-        assert!(!html.contains("src=\"doc_html"), "旁置图片应已内联(不应残留相对 src)");
+        assert!(
+            !html.contains("src=\"doc_html"),
+            "旁置图片应已内联(不应残留相对 src)"
+        );
 
         // 2) md -> pdf (soffice via docx) -> png 页
         let pdf = dir.join("doc.pdf");
         let _ = Command::new("soffice")
             .arg(format!("-env:UserInstallation=file://{}/p", dir.display()))
             .args(["--headless", "--convert-to", "pdf", "--outdir"])
-            .arg(&dir).arg(&docx).status();
+            .arg(&dir)
+            .arg(&docx)
+            .status();
         if pdf.exists() {
             let (imgs, _trunc) = pdf_to_png_data_uris(&pdf, 30).expect("pdf->png 应成功");
             assert!(!imgs.is_empty(), "应产出至少一页");
-            assert!(imgs[0].starts_with("data:image/png;base64,"), "应为 png data URI");
+            assert!(
+                imgs[0].starts_with("data:image/png;base64,"),
+                "应为 png data URI"
+            );
         }
 
         // 3) md -> pptx (pandoc) -> office_to_png(演示稿走 PDF→PNG)
         let pptx = dir.join("deck.pptx");
-        if Command::new("pandoc").arg(&md).arg("-o").arg(&pptx).status().map(|s| s.success()).unwrap_or(false) {
+        if Command::new("pandoc")
+            .arg(&md)
+            .arg("-o")
+            .arg(&pptx)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
             let (imgs, _t) = office_to_png_data_uris(&pptx, 30).expect("pptx->png 应成功");
-            assert!(!imgs.is_empty() && imgs[0].starts_with("data:image/png;base64,"), "pptx 应产出页图");
+            assert!(
+                !imgs.is_empty() && imgs[0].starts_with("data:image/png;base64,"),
+                "pptx 应产出页图"
+            );
         }
 
         // 4) csv -> xlsx (soffice) -> inline html(电子表格走 HTML 表格)
@@ -1946,11 +2507,16 @@ mod visual_preview_smoke {
         let _ = Command::new("soffice")
             .arg(format!("-env:UserInstallation=file://{}/p2", dir.display()))
             .args(["--headless", "--convert-to", "xlsx", "--outdir"])
-            .arg(&dir).arg(&csv).status();
+            .arg(&dir)
+            .arg(&csv)
+            .status();
         let xlsx = dir.join("data.xlsx");
         if xlsx.exists() {
             let html = libreoffice_to_inline_html(&xlsx).expect("xlsx->html 应成功");
-            assert!(html.contains('甲') || html.to_lowercase().contains("table"), "xlsx HTML 应含表格内容");
+            assert!(
+                html.contains('甲') || html.to_lowercase().contains("table"),
+                "xlsx HTML 应含表格内容"
+            );
         }
 
         let _ = std::fs::remove_dir_all(&dir);

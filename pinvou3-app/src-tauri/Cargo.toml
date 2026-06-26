@@ -1,6 +1,6 @@
 [package]
 name = "pinvou3-tauri"
-version = "0.4.9"
+version = "0.4.11"
 description = "pinvou3 智能助手 Tauri 后端（包装 DeepSeek-TUI EngineHandle）"
 authors = ["pinvou"]
 license = ""
@@ -56,6 +56,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 # File watcher：监听 ~/.pinvou3/sessions/*/workspace/ 新文件产出，
 # 自动入 session.artifacts (覆盖 write_file 之外的工具如 exec_shell pandoc 产出的 docx)
 notify = "6"
+msg_parser = "0.3.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }
