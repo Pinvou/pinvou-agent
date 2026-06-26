@@ -94,19 +94,17 @@ pub const LOCALE_CLOSER_JA: &str = "## 言語再確認\n\n\
 /// 静态块只立常驻事实;底座 YOLO_MODE/AUTO_APPROVAL/Session Longevity/
 /// Efficient Approvals 的逐条教学全不保留。
 ///
-/// ⚠️ **句尾「phase rules」别删**:b891b2f 当「过时幽灵」删掉这 2 个 token,GUI 真机
-/// 首请求即把 `write_file` 调用采歪成 `<write_file>` 裸文本(磁盘无文件、用户拿不到成品)。
-/// git 二分实锤就这处——删 → 必歪,恢复 → 不歪。机制:GUI 真实 mtp 投机解码 +
-/// chunked-prefill 对这块结尾的 token 序列敏感(curl/headless 单请求复现不了,11次0漂)。
-/// 语义过时无妨,token 序列本身 load-bearing。**改此 const 务必 GUI 真机回归
-/// 「首轮直接写文件」场景(如"做一个贪吃蛇")**,别只信单测/curl。
+/// (史料,防重蹈:句尾曾有「phase rules」尾巴,是 phase 时代残留;b891b2f 删它属正确清理。
+/// 我一度误以为删它致 GUI 首请求采歪、还恢复过(8e20f16)——实为 **gongwen MCP 工具才是
+/// 真因**(用户移除 gongwen 即不漂、删 phase 也不漂),phase 是被其开关混淆的红鲱鱼。
+/// git 二分时 gongwen 开关状态不一致 → 误判。详见 memory。)
 pub const MODE_EXECUTE_MD: &str = "\
 ## Mode: Execute
 
 Tools run without per-call approval — the user has already authorized
 execution. Produce files and run commands now; never end the turn with
 a promise of future action. Then verify and report. Follow each
-message's `<system-reminder>` phase rules.";
+message's `<system-reminder>`.";
 
 /// pinvou3 版静态层 composer：接管底座全部编译期静态文案
 /// (taxonomy/base/personality/mode/approval/ContextMgmt/compact 模板)。
