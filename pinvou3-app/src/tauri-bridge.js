@@ -822,6 +822,18 @@
   function isAbsPath(p) {
     return typeof p === "string" && (p.charAt(0) === "/" || /^[A-Za-z]:[\\/]/.test(p));
   }
+  // 「成品型」扩展名:write_file 写出这类文件即自动当成品进面板(模型常忘 present_artifact)。
+  // 办公文档 + markdown 报告 + 数据表 + 图片 + 打包件都算成品(覆盖 AI 常见产出格式)。
+  // 中间/草稿(.txt/.json/.xml 等)刻意不在此列 → 不进面板,避免一堆过程文件污染产物列表;
+  // 这类格式若确是成品,靠模型 present_artifact 显式挂出(present 过的不受扩展名门控)。
+  var DELIVERABLE_EXTS = [
+    "pptx", "ppt", "docx", "doc", "pdf", "html", "htm", "xlsx", "xls",
+    "md", "csv", "png", "jpg", "jpeg", "svg", "gif", "webp", "zip",
+  ];
+  function isDeliverable(path) {
+    var ext = (String(path || "").split(".").pop() || "").toLowerCase();
+    return DELIVERABLE_EXTS.indexOf(ext) >= 0;
+  }
   function trackArtifact(path) {
     if (!path) return;
     var bn = basename(path);
@@ -871,7 +883,12 @@
       files.forEach(function (p) {
         var bn = basename(p);
         var ex = byName[bn];
-        if (!ex) { var na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true; }
+        // 已 present_artifact 过的成品在 saved.artifacts(ex 命中);扫盘只「新增」成品型文件,
+        // 不再把所有过程文件全扫进面板(修「飞书 CLI scratch 全暴露成产物」)。
+        if (!ex) {
+          if (!isDeliverable(p)) return;
+          var na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true;
+        }
         else if (isAbsPath(p) && !isAbsPath(ex.path)) { ex.path = p; added = true; } // 相对→绝对,open 可靠
       });
       if (added) {
@@ -1311,7 +1328,9 @@
     if (p.success && meta && (meta.name === "write_file" || meta.name === "append_file" || meta.name === "edit_file")) {
       var ap = extractArtifactPath(meta.args);
       if (ap) {
-        if (meta.name !== "edit_file") trackArtifact(ap); // edit_file 只改已有,不新建产物
+        // 面板只收「成品」:成品型扩展名(自动当成品)或之前 present_artifact 过的文件;
+        // 中间草稿(content_p1.txt / *_params.json 等)不进面板。edit_file 只改已有不新建。
+        if (meta.name !== "edit_file" && (isDeliverable(ap) || findPresentedArtifact(ap))) trackArtifact(ap);
         // 产物(present 过的成品 或 write/append 写进产物列表的)被写/改 → turn 结束补卡。
         // 不再要求 present 过:AI 经常写完产物忘了 present_artifact → 没成品卡 = 没召唤入口。
         var isArtifact = !!findPresentedArtifact(ap) || state.artifacts.some(function (a) { return a.path === ap; });
@@ -1430,8 +1449,10 @@
     var p = e.payload || {};
     if (!p.path) return;
     onSessionEvent(e, function () {
-      if (p.event === "removed") untrackArtifact(p.path);
-      else trackArtifact(p.path);
+      if (p.event === "removed") { untrackArtifact(p.path); return; }
+      // 面板只收成品:成品型扩展名 或 present_artifact 过的;中间 / infra / 目录不进面板
+      // (file_watcher 递归会推 tmp/ _state/ 等子目录与 infra 文件 → 此处兜住)。
+      if (isDeliverable(p.path) || findPresentedArtifact(p.path)) trackArtifact(p.path);
     });
   });
 
