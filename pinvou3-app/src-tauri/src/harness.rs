@@ -19,11 +19,11 @@
 //! ```
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
 use crate::bridge::paths;
+use crate::process::HiddenCommand;
 
 /// 按 UTF-8 char 边界向下取整截断 `s` 到 ≤ `max_bytes` 字节，返回前缀切片。
 /// 直接 `&s[..max_bytes]` 在 max_bytes 落在多字节字符(中文)中间时会 panic——
@@ -663,7 +663,7 @@ fn log_flow(project: &Path, event: &str, extra: &[(&str, &str)]) {
         scripts = script.parent().unwrap().display(),
     );
 
-    let mut child = match Command::new(python_cmd())
+    let mut child = match HiddenCommand::new(python_cmd())
         .args(["-c", &py_code])
         .env("PYTHONIOENCODING", "utf-8")
         .stdin(std::process::Stdio::piped())
@@ -697,18 +697,38 @@ fn run_cmd(program: &str, args: &[&str], cwd: &Path) -> Result<String, String> {
 }
 
 fn run_cmd_with_timeout(program: &str, args: &[&str], cwd: &Path, timeout_secs: u64) -> Result<String, String> {
-    // [pinvou3] warmup/scheduler 子进程需要 app 实际用的 vLLM endpoint。app 可能只配
-    // settings.json(custom_base_url)而不设 DEEPSEEK_BASE_URL 环境变量,那样 warmup 的
-    // endpoint 预检会误判 blocked → 工作流启动卡死。统一注入解析后的 base_url
-    // (env 优先,回退 settings.json),子进程不必关心配置来源。
-    let base_url = std::env::var("DEEPSEEK_BASE_URL")
-        .unwrap_or_else(|_| crate::monitor::vllm_base_url());
-    let mut child = Command::new(program)
+    // [pinvou3] warmup/scheduler 子进程需要 app 实际用的模型配置。app 可能只配
+    // settings.json(custom_base_url/custom_api_key)而不设模型环境变量,那样
+    // warmup 的 endpoint 预检会误判 blocked → 工作流启动卡死。统一注入解析后的
+    // base_url/api_key(env 优先,回退 settings.json),子进程不必关心配置来源。
+    let bridge = crate::bridge::Pinvou3Bridge::boot().ok();
+    let base_url = std::env::var("PINVOU3_MODEL_BASE_URL")
+        .unwrap_or_else(|_| {
+            bridge
+                .as_ref()
+                .map(|b| b.base_url())
+                .unwrap_or_else(crate::monitor::vllm_base_url)
+        });
+    let api_key = std::env::var("PINVOU3_MODEL_API_KEY")
+        .ok()
+        .or_else(|| {
+            let bridge = bridge.as_ref()?;
+            let key = bridge.api_key();
+            let is_local_default = bridge.provider() == "vllm" && key == "local-no-auth";
+            (!is_local_default).then_some(key)
+        })
+        .unwrap_or_default();
+    let mut command = HiddenCommand::new(program);
+    command
         .args(args)
         .current_dir(cwd)
         .env("PYTHONPATH", cwd)
         .env("PYTHONIOENCODING", "utf-8") // Windows stdout 默认 GBK，中文 print 会 UnicodeEncodeError
-        .env("DEEPSEEK_BASE_URL", base_url)
+        .env("PINVOU3_MODEL_BASE_URL", base_url);
+    if !api_key.trim().is_empty() {
+        command.env("PINVOU3_MODEL_API_KEY", api_key);
+    }
+    let mut child = command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
