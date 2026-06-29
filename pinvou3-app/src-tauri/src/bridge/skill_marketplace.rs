@@ -89,7 +89,7 @@ fn preset_manifests() -> &'static [SkillManifest] {
             source_dir: "government-writing",
             title: "党政机关公文写作",
             subtitle: "通知/意见等法定文种，套话术、层级序号、自检",
-            description: "撰写规范的党政机关公文（通知、意见…）：内置文种结构骨架、固定话术库、层级序号体系与立账核账自检，产出结构化公文内容。配合工具商店的「公文套版」工具即可直出 GB/T 9704 合规 .docx。",
+            description: "撰写规范的党政机关公文（通知、意见…）：内置文种结构骨架、固定话术库、层级序号体系与立账核账自检，产出结构化公文内容。配合工具商店的「公文写作」工具即可直出 GB/T 9704 合规 .docx。",
             icon: "FileText",
             color: "bg-gradient-to-b from-red-500 to-rose-700",
         },

@@ -4,7 +4,7 @@ description: 撰写规范的党政机关公文。当用户要"写/起草/拟一�
 metadata:
   requires:
     mcp: ["gongwen"]
-  note: "需配套安装『公文套版』MCP（工具商店·连接器页）——它提供 make_gongwen（出件前自带合规校验）；缺失时只能产纯文本草稿、无法渲染合规 .docx。"
+  note: "需配套安装『公文写作』MCP（工具商店·连接器页）——它提供 make_gongwen（出件前自带合规校验）；缺失时只能产纯文本草稿、无法渲染合规 .docx。"
 ---
 
 # 党政机关公文写作
@@ -18,7 +18,7 @@ metadata:
 4. **套话术** —— 主送/承启/结尾/落款/公开方式用固定话术库。
 5. **自检** —— 过"立账核账"清单逐项打勾。
 6. **出件** —— 按**公文字段契约**（见下方）调 `mcp_gongwen_make_gongwen` 渲染合规 .docx → 拿到 path **必须再 `present_artifact(path, title)`** 上产物卡。
-   - **依赖检查**：本技能靠『公文套版』MCP 出件。若 `mcp_gongwen_make_gongwen` 不存在/不可用，**别硬拼纯文本冒充成品**——提示用户去工具商店·连接器页安装『公文套版』引擎，装好再出件。
+   - **依赖检查**：本技能靠『公文写作』MCP 出件。若 `mcp_gongwen_make_gongwen` 不存在/不可用，**别硬拼纯文本冒充成品**——提示用户去工具商店·连接器页安装『公文写作』引擎，装好再出件。
    - `make_gongwen` 出件前自带立账核账：若返回 `ok:false` 且 `blocked_by_validate`，说明有 error 级硬伤（正文为空 / 缺主送 / 缺成文日期等），**按 `issues` 补全字段后重调**，绝不跳过、绝不拿空壳去 present。
    - .docx 是**二进制成品**：要改内容就改字段重调 `make_gongwen`，**绝不用 `read_file`/`edit_file` 去读写 .docx**（读不出文本是正常的）。
    - **不要自己拼 markdown 当公文成品**——内容你写进字段，套版交给渲染器。
