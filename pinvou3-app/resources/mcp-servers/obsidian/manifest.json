@@ -17,9 +17,7 @@
   "command": "python",
   "args": ["server.py"],
   "env": {},
-  "config_fields": [
-    { "key": "OBSIDIAN_VAULT_PATH", "label": "Obsidian 库（vault）文件夹路径（留空则自动发现当前打开的库）", "required": false, "target": "env" }
-  ],
+  "config_fields": [],
   "routing_rules": [
     "我的笔记/知识库/之前记过/我记录的/Obsidian/vault → 先用 `mcp_obsidian_search` 检索本地笔记，不要用 `web_search`",
     "新建/记一篇/保存到笔记 → `mcp_obsidian_create_note`；追加/补充到某篇 → `mcp_obsidian_edit_note`",

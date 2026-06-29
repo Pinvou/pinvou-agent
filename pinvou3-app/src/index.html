@@ -4880,7 +4880,7 @@
       { id: 11, backendId: null, title: 'TAPD 敏捷研发', subtitle: '缺陷与迭代的自动化追踪', category: 'dev', type: 'Action Skill', version: 'v2.8.0', latency: '<60ms', desc: '研发管理核心工具。允许 AI 查询项目迭代进度、自动拆分需求条目、更新缺陷状态，实现从需求到发布的研发全生命周期数字化。', icon: Layout, color: 'bg-gradient-to-b from-violet-500 to-fuchsia-600', installed: false, authRequired: true },
       { id: 12, backendId: null, title: 'CNB 云原生管线', subtitle: '代码仓库与 CI/CD 调度', category: 'dev', type: 'MCP Server', version: 'v1.0.0', latency: '<40ms', desc: '将云原生开发能力赋予大模型。支持通过自然语言进行代码仓库检索、提交 Issue、审查 PR、触发并监控流水线部署等极客操作。', icon: Code, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: true },
       { id: 13, backendId: 'qcc', title: '企查查', subtitle: '企业工商、风控、知产、经营数据查询', category: 'finance', type: 'MCP Server', version: 'v1.0.0', latency: '<500ms', desc: '接入企查查智能体数据平台，提供182个企业数据查询工具，覆盖工商登记、股东结构、风险预警、知识产权、招投标等六大模块。', icon: Building2, color: 'bg-gradient-to-br from-blue-600 to-cyan-500', installed: false, authRequired: false, welcomeQueries: ['查一下华为的工商信息', '腾讯有哪些风险预警', '比亚迪的专利有多少', '阿里巴巴的招投标记录'] },
-      { id: 14, backendId: 'obsidian', title: 'Obsidian 知识库', subtitle: '检索本机 Obsidian 笔记，引用你的个人知识', category: 'kb', type: 'MCP Server', version: 'v1.0.0', latency: '<30ms', desc: '把你本机的 Obsidian 笔记库（vault）接入大模型。支持全文检索、读取笔记全文、按目录/标签浏览，让 AI 基于你自己沉淀的知识作答。笔记不出本机、模型也在本机，知识与算力全链路不出域。', icon: BookOpen, color: 'bg-gradient-to-b from-violet-500 to-purple-700', installed: false, authRequired: true, configFields: [{ key: 'OBSIDIAN_VAULT_PATH', label: 'Obsidian 库（vault）文件夹路径', placeholder: 'C:\\Users\\你\\Documents\\我的笔记', helpText: '在 Obsidian 里打开「设置 → 关于」或库切换器可看到库的真实路径，复制粘贴到这里即可。' }], welcomeQueries: ['我笔记里关于会议纪要的内容', '总结一下我的读书笔记', '帮我找之前写的项目方案', '我的笔记里有哪些待办'] },
+      { id: 14, backendId: 'obsidian', title: 'Obsidian 知识库', subtitle: '检索并管理本机 Obsidian 笔记，读写你的个人知识', category: 'kb', type: 'MCP Server', version: 'v1.1.0', latency: '<30ms', desc: '把你本机的 Obsidian 笔记库（vault）接入大模型。支持全文检索、读取、新建、编辑、改名（自动修双链）与删除——让 AI 基于并维护你自己沉淀的知识。自动识别当前打开的库，无需手动配置；笔记不出本机、模型也在本机，知识与算力全链路不出域。', icon: BookOpen, color: 'bg-gradient-to-b from-violet-500 to-purple-700', installed: false, authRequired: false, welcomeQueries: ['帮我搜一下我的笔记', '帮我新建一篇笔记记录今天的想法', '我的知识库有哪些文档？', '总结一下我的笔记'] },
       { id: 15, backendId: 'pptx', title: 'PPT 生成', subtitle: '本地直出可编辑 PowerPoint，套主题模板、真图表、带封面', category: 'office', type: 'MCP Server', version: 'v1.0.0', latency: '本地', desc: '说“做个 PPT / 汇报”，AI 先列大纲让你确认，再按内容自动选主题（9 套）生成可编辑 .pptx——真·图表、自带封面缩略图，全程本地、数据不出机。首次安装会自动下载 python-pptx 依赖（需联网）。', icon: Presentation, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: false, welcomeQueries: ['做个 Q2 季度汇报 PPT', '帮我做一份产品介绍 PPT', '做个项目方案演示', '做个公司介绍 PPT'] },
       { id: 16, backendId: 'gongwen', title: '公文套版', subtitle: '党政机关公文直出 GB/T 9704 合规 .docx', category: 'office', type: 'MCP Server', version: 'v1.0.0', latency: '本地', desc: '说“写个通知 / 起草意见”，AI 按文种结构与固定话术写好内容，渲染器套党政机关公文国标格式（方正小标宋标题、仿宋_GB2312 正文、国标页边距、红头与红色分隔线）直出 .docx，全程本地、数据不出机。配合「党政机关公文写作」技能效果最佳。首次安装自动下载 python-docx 依赖（需联网）。', icon: FileText, color: 'bg-gradient-to-b from-red-500 to-rose-700', installed: false, authRequired: false, welcomeQueries: ['起草一份关于印发管理办法的通知', '写一份加强某项工作的实施意见', '拟一份会议通知', '写一份情况报告'] },
     ];
@@ -5223,6 +5223,37 @@
       );
     };
 
+    // Obsidian 连接前探测引导卡：未安装 → 引导下载；没库 / 库丢失 → 引导建库/重开
+    const TsObsidianGuide = ({ guide, theme, onCancel, onDownload, onRetry }) => {
+      const isDark = theme === 'dark';
+      if (!guide) return null;
+      const COPY = {
+        not_installed: { title: '需要先安装 Obsidian', body: '「Obsidian 知识库」需配合 Obsidian 使用。检测到你尚未安装，安装并创建一个库后即可连接。', primary: '下载 Obsidian', retry: '我已安装，重新检测' },
+        no_vault: { title: '还没有笔记库', body: '已检测到 Obsidian，但你还没创建过笔记库。请在 Obsidian 里新建一个库后再连接。', primary: null, retry: '我已新建，重新检测' },
+        vault_missing: { title: '库文件夹不存在', body: '上次的笔记库文件夹找不到了。请在 Obsidian 重新打开，或新建一个库后再连接。', primary: null, retry: '重新检测' },
+      };
+      const c = COPY[guide.state] || COPY.not_installed;
+      const btn = (label, on, cls) => (
+        <div className={`border-t ${isDark ? 'border-white/10' : 'border-slate-200'}`}>
+          <button onClick={on} className={`w-full py-3 text-center transition-colors ${cls}`}>{label}</button>
+        </div>
+      );
+      return (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className={`w-[300px] rounded-[20px] overflow-hidden shadow-2xl ${isDark ? 'bg-[#2C2C2E]' : 'bg-white/95 backdrop-blur-xl'}`} style={{ animation: 'tsAlertIn .2s ease-out' }}>
+            <div className="px-6 pt-6 pb-4 text-center">
+              <div className="text-[34px] mb-2">📖</div>
+              <div className={`text-[17px] font-semibold mb-2 ${isDark ? 'text-white' : 'text-slate-900'}`}>{c.title}</div>
+              <div className={`text-[13px] leading-relaxed ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{c.body}</div>
+            </div>
+            {c.primary && btn(c.primary, onDownload, `text-[17px] font-semibold ${isDark ? 'text-[#0A84FF] active:bg-white/5' : 'text-[#007AFF] active:bg-slate-100'}`)}
+            {btn(c.retry, onRetry, `text-[15px] ${isDark ? 'text-slate-300 active:bg-white/5' : 'text-slate-600 active:bg-slate-100'}`)}
+            {btn('取消', onCancel, `text-[15px] ${isDark ? 'text-slate-500 active:bg-white/5' : 'text-slate-400 active:bg-slate-100'}`)}
+          </div>
+        </div>
+      );
+    };
+
     const ToolStoreView = ({ theme, onNewChat }) => {
       const isDark = theme === 'dark';
       const [searchQuery, setSearchQuery] = useState('');
@@ -5234,6 +5265,7 @@
       const [busyId, setBusyId] = useState(null);
       const [alert, setAlert] = useState({ visible: false, loading: false, title: '', subtitle: '', isInstall: false, isError: false });
       const [configDialog, setConfigDialog] = useState(null); // { backendId, name, fields }
+      const [obsidianGuide, setObsidianGuide] = useState(null); // {backendId,name,state,vault_path} 未安装/没库引导
       const [tab, setTab] = useState('connector'); // 'connector'(MCP 工具) | 'skill'(SKILL.md 技能)
       const [skillBackend, setSkillBackend] = useState([]); // list_marketplace_skills 原始返回
       const [disabledSkills, setDisabledSkills] = useState([]); // 被停用技能 id(全局持久,从 ## Skills 隐藏但不卸载)
@@ -5464,6 +5496,13 @@
 
         // 安装：有 configFields 的工具先弹配置弹窗
         if (!isInstalled) {
+          // Obsidian：连接前先探测本机状态——没装/没库就引导，不默默装个用不了的连接器
+          if (backendId === 'obsidian') {
+            let st = null;
+            try { st = await window.__TAURI__.core.invoke('detect_obsidian'); } catch (e) {}
+            if (st && st.state && st.state !== 'ok') { setObsidianGuide({ backendId, name, ...st }); return; }
+            return doInstall(backendId, {});
+          }
           if (t?.configFields && t.configFields.length > 0) {
             setConfigDialog({ backendId, name, fields: t.configFields });
             return;
@@ -5526,6 +5565,18 @@
             theme={theme}
             onCancel={() => setConfigDialog(null)}
             onConfirm={(values) => { const bid = configDialog.backendId; setConfigDialog(null); doInstall(bid, values); }}
+          />, document.body)}
+          {ReactDOM.createPortal(<TsObsidianGuide
+            guide={obsidianGuide}
+            theme={theme}
+            onCancel={() => setObsidianGuide(null)}
+            onDownload={() => window.__TAURI__.core.invoke('open_external_url', { url: 'https://obsidian.md/' }).catch(() => {})}
+            onRetry={async () => {
+              let st = null;
+              try { st = await window.__TAURI__.core.invoke('detect_obsidian'); } catch (e) {}
+              if (st && st.state === 'ok') { const bid = obsidianGuide.backendId; setObsidianGuide(null); doInstall(bid, {}); }
+              else setObsidianGuide(g => g ? { ...g, ...(st || {}) } : g);
+            }}
           />, document.body)}
           {feishuQr && (() => {
             const isAuth = feishuQr.phase === 'authorize';

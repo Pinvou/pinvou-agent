@@ -418,6 +418,7 @@ pub fn run() {
             commands::list_marketplace_tools,
             commands::install_marketplace_tool,
             commands::uninstall_marketplace_tool,
+            commands::detect_obsidian,
             knowledge::kb_start_scan,
             knowledge::kb_scan_status,
             knowledge::kb_cancel_scan,
