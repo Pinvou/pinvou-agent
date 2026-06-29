@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
 """
-pinvou3 Obsidian 知识库 MCP server —— 检索本机 Obsidian vault（零第三方依赖，纯 stdlib）。
+pinvou3 Obsidian 知识库 MCP server —— 检索 + 管理本机 Obsidian vault（零第三方依赖，纯 stdlib）。
 
 用法：由 DeepSeek-TUI MCP client 通过 stdio 启动。
-配置：~/.pinvou3/.../mcp.json 中注册，OBSIDIAN_VAULT_PATH 通过 env 传入。
+配置：~/.pinvou3/.../mcp.json 中注册。OBSIDIAN_VAULT_PATH 可选——
+      没配则自动读 Obsidian 的 obsidian.json 发现当前库（跨 Win/mac/Linux）。
 
 协议：newline-delimited JSON-RPC 2.0 over stdio（骨架对齐 weather/server.py）。
-LLM 可见工具名：mcp_obsidian_search / mcp_obsidian_read_note / mcp_obsidian_list
+LLM 可见工具：
+  读：mcp_obsidian_search / mcp_obsidian_read_note / mcp_obsidian_list
+  写：mcp_obsidian_create_note / mcp_obsidian_edit_note /
+      mcp_obsidian_rename_note / mcp_obsidian_delete_note
 
 特性：
-- 只读：搜索 / 读取 / 列目录，不改用户笔记。
+- 读：搜索 / 读取 / 列目录。
+- 写：新建 / 编辑追加 / 改名搬移（自动修全库 [[wikilinks]]）/ 删除。
+- 自动发现 vault：未配 OBSIDIAN_VAULT_PATH 时读 obsidian.json 取 open:true 的库。
 - 只索引 .md，跳过 .obsidian 配置目录与附件二进制。
-- read_note 做路径越界（..）防护，强制限定在 vault 根目录内。
+- 一切路径做越界（..）+ symlink 防护，强制限定在 vault 根目录内。
+- 删除 / 改名默认人在环中：先返回 confirm_required 预览，带 confirm=true 才真正执行。
 """
 import io
 import json
@@ -25,13 +32,38 @@ if sys.platform == "win32":
     sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8")
 
 
+# ── vault 定位（手配优先，否则自动发现）──────────────────────────────────────
+
+def _obsidian_config_path():
+    """Obsidian 记录"有哪些库 / 哪个开着"的 obsidian.json，跨平台路径。"""
+    if sys.platform == "win32":
+        return os.path.join(os.environ.get("APPDATA", ""), "obsidian", "obsidian.json")
+    if sys.platform == "darwin":
+        return os.path.expanduser("~/Library/Application Support/obsidian/obsidian.json")
+    return os.path.expanduser("~/.config/obsidian/obsidian.json")  # Linux
+
+
+def _autodiscover_vault():
+    """读 obsidian.json：优先 open:true 的库，否则取最近打开（ts 最大）的。"""
+    try:
+        with open(_obsidian_config_path(), "r", encoding="utf-8-sig") as f:
+            vaults = json.load(f).get("vaults", {})
+    except (OSError, ValueError):
+        return ""
+    if not vaults:
+        return ""
+    opened = [v for v in vaults.values() if v.get("open")]
+    pick = opened[0] if opened else max(vaults.values(), key=lambda v: v.get("ts", 0))
+    return os.path.normpath(os.path.expanduser(pick.get("path", "")))
+
+
 def _vault_path():
-    """读取并清洗 vault 路径：去首尾引号/空格、容忍尾部斜杠、展开 ~。"""
+    """vault 根目录：手配的 OBSIDIAN_VAULT_PATH 优先，没配就自动发现。"""
     raw = os.environ.get("OBSIDIAN_VAULT_PATH", "")
     raw = raw.strip().strip('"').strip("'").strip()
-    if not raw:
-        return ""
-    return os.path.normpath(os.path.expanduser(raw))
+    if raw:
+        return os.path.normpath(os.path.expanduser(raw))
+    return _autodiscover_vault()
 
 
 SKIP_DIRS = {".obsidian", ".trash", ".git", "node_modules"}
@@ -68,6 +100,13 @@ def _read_text(full):
         return ""
 
 
+def _write_text(full, text):
+    """写文件（UTF-8），自动建父目录。"""
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
 def _safe_join(vault, rel):
     """把用户给的相对路径限制在 vault 内，realpath 解析后防 .. 与 symlink 越界。返回绝对路径或 None。"""
     if not rel:
@@ -82,12 +121,20 @@ def _safe_join(vault, rel):
     return candidate
 
 
-# ── 三个工具实现 ──────────────────────────────────────────────────────────
+def _norm_md(path):
+    """补 .md 后缀。"""
+    p = (path or "").strip().strip('"').strip("'")
+    if p and not p.lower().endswith(".md"):
+        p += ".md"
+    return p
+
+
+# ── 读：三个工具实现 ──────────────────────────────────────────────────────
 
 def search(query="", limit=DEFAULT_SEARCH_LIMIT):
     vault = _vault_path()
     if not vault:
-        return {"error": "OBSIDIAN_VAULT_PATH 未配置"}
+        return {"error": "未找到 vault：请配置 OBSIDIAN_VAULT_PATH 或先在 Obsidian 打开一个库"}
     if not os.path.isdir(vault):
         return {"error": "vault 路径不存在或不是文件夹: %s" % vault}
 
@@ -146,15 +193,11 @@ def _snippet(text, terms):
 def read_note(path=""):
     vault = _vault_path()
     if not vault:
-        return {"error": "OBSIDIAN_VAULT_PATH 未配置"}
+        return {"error": "未找到 vault：请配置 OBSIDIAN_VAULT_PATH 或先在 Obsidian 打开一个库"}
     if not os.path.isdir(vault):
         return {"error": "vault 路径不存在: %s" % vault}
 
-    # 先补 .md 后缀再做越界校验,确保 realpath 校验的是最终文件(防 .md 本身是越界 symlink)
-    p = (path or "").strip().strip('"').strip("'")
-    if p and not p.lower().endswith(".md"):
-        p += ".md"
-    full = _safe_join(vault, p)
+    full = _safe_join(vault, _norm_md(path))
     if full is None:
         return {"error": "非法路径（越界或为空）: %s" % path}
     if not os.path.isfile(full):
@@ -174,7 +217,7 @@ def read_note(path=""):
 def list_notes(folder="", tag="", limit=DEFAULT_LIST_LIMIT):
     vault = _vault_path()
     if not vault:
-        return {"error": "OBSIDIAN_VAULT_PATH 未配置"}
+        return {"error": "未找到 vault：请配置 OBSIDIAN_VAULT_PATH 或先在 Obsidian 打开一个库"}
     if not os.path.isdir(vault):
         return {"error": "vault 路径不存在: %s" % vault}
 
@@ -224,6 +267,116 @@ def _frontmatter_has_tag(text, tag):
     return bool(re.search(r"^\s*-\s*" + re.escape(tag) + r"\s*$", fm, re.MULTILINE))
 
 
+# ── 写：新建 / 编辑 / 改名修双链 / 删除 ────────────────────────────────────
+
+def create_note(path="", content=""):
+    """新建笔记。已存在则报错（不覆盖，改用 edit_note）。"""
+    vault = _vault_path()
+    if not vault or not os.path.isdir(vault):
+        return {"error": "未找到 vault"}
+    full = _safe_join(vault, _norm_md(path))
+    if full is None:
+        return {"error": "非法路径（越界或为空）: %s" % path}
+    if os.path.exists(full):
+        return {"error": "笔记已存在，改用 edit_note: %s" % path}
+    _write_text(full, content or "")
+    return {"type": "obsidian_created", "path": _rel(vault, full)}
+
+
+def edit_note(path="", content="", mode="append"):
+    """编辑笔记。mode=append 追加 / replace 整篇替换。"""
+    vault = _vault_path()
+    if not vault or not os.path.isdir(vault):
+        return {"error": "未找到 vault"}
+    full = _safe_join(vault, _norm_md(path))
+    if full is None or not os.path.isfile(full):
+        return {"error": "笔记不存在: %s" % path}
+    if mode not in ("append", "replace"):
+        return {"error": "mode 只能是 append 或 replace"}
+    if mode == "append":
+        old = _read_text(full)
+        new = old + ("\n" if old and not old.endswith("\n") else "") + (content or "")
+    else:
+        new = content or ""
+    _write_text(full, new)
+    return {"type": "obsidian_edited", "path": _rel(vault, full), "mode": mode}
+
+
+def _wikilink_rewrites(vault, old_name, new_name):
+    """扫全库，算出把指向 old_name 的引用改成 new_name 后需要改写的文件。
+    覆盖 [[名]] / [[名|别名]] / [[名#标题]] / [[名#^块]] / ![[名]] 以及 ](名.md)。
+    返回 [(file, new_text), ...]。按笔记名（basename）匹配——Obsidian 默认引用方式。"""
+    # 名后必跟 # | 或 ]（避免误伤前缀相同的别的笔记名）
+    wiki = re.compile(r"(!?\[\[)" + re.escape(old_name) + r"(?=[#|\]])")
+    # markdown 链接形式 ](可能的路径/old.md)
+    mdlink = re.compile(r"(\]\([^)]*?)" + re.escape(old_name) + r"\.md(\))")
+    out = []
+    for f in _iter_md(vault):
+        text = _read_text(f)
+        new_text = wiki.sub(lambda m: m.group(1) + new_name, text)
+        new_text = mdlink.sub(lambda m: m.group(1) + new_name + ".md" + m.group(2), new_text)
+        if new_text != text:
+            out.append((f, new_text))
+    return out
+
+
+def rename_note(old="", new="", confirm=False):
+    """改名/搬移笔记，并自动重写全库指向它的 [[wikilinks]] 与 md 链接。
+    confirm=False 时只返回预览（将影响几处引用），带 confirm=true 才真正执行。"""
+    vault = _vault_path()
+    if not vault or not os.path.isdir(vault):
+        return {"error": "未找到 vault"}
+    src = _safe_join(vault, _norm_md(old))
+    dst = _safe_join(vault, _norm_md(new))
+    if src is None or not os.path.isfile(src):
+        return {"error": "源笔记不存在: %s" % old}
+    if dst is None:
+        return {"error": "目标路径非法（越界）: %s" % new}
+    if os.path.exists(dst):
+        return {"error": "目标已存在: %s" % new}
+
+    old_name = os.path.splitext(os.path.basename(src))[0]
+    new_name = os.path.splitext(os.path.basename(dst))[0]
+    rewrites = _wikilink_rewrites(vault, old_name, new_name)
+
+    if not confirm:
+        return {
+            "type": "confirm_required", "action": "rename",
+            "from": _rel(vault, src), "to": _rel(vault, dst),
+            "links_to_fix": len(rewrites),
+            "files_affected": [_rel(vault, f) for f, _ in rewrites],
+            "hint": "确认无误请再次调用并带 confirm=true",
+        }
+
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    os.rename(src, dst)
+    for f, new_text in rewrites:
+        _write_text(f, new_text)
+    return {
+        "type": "obsidian_renamed",
+        "from": _rel(vault, src), "to": _rel(vault, dst),
+        "links_fixed": len(rewrites),
+    }
+
+
+def delete_note(path="", confirm=False):
+    """删除笔记。confirm=False 只返回预览，带 confirm=true 才真删。"""
+    vault = _vault_path()
+    if not vault or not os.path.isdir(vault):
+        return {"error": "未找到 vault"}
+    full = _safe_join(vault, _norm_md(path))
+    if full is None or not os.path.isfile(full):
+        return {"error": "笔记不存在: %s" % path}
+    rel = _rel(vault, full)
+    if not confirm:
+        return {
+            "type": "confirm_required", "action": "delete", "path": rel,
+            "hint": "确认删除请再次调用并带 confirm=true（不可恢复）",
+        }
+    os.remove(full)
+    return {"type": "obsidian_deleted", "path": rel}
+
+
 # ── 工具定义 ──────────────────────────────────────────────────────────────
 
 TOOL_DEFS = [
@@ -263,12 +416,66 @@ TOOL_DEFS = [
             "required": [],
         },
     },
+    {
+        "name": "create_note",
+        "description": "新建笔记。path 为相对 vault 的路径，content 为正文。笔记已存在会报错（改用 edit_note）。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "相对 vault 的笔记路径，.md 后缀可省略"},
+                "content": {"type": "string", "description": "笔记正文（Markdown）"},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "edit_note",
+        "description": "编辑已存在的笔记。mode=append 在末尾追加，mode=replace 整篇替换。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "相对 vault 的笔记路径"},
+                "content": {"type": "string", "description": "要写入的内容"},
+                "mode": {"type": "string", "description": "append（默认）或 replace"},
+            },
+            "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "rename_note",
+        "description": "改名或搬移笔记，并自动修好全库指向它的 [[双链]] 引用。先不带 confirm 调用看影响范围，再带 confirm=true 执行。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "old": {"type": "string", "description": "原路径（相对 vault）"},
+                "new": {"type": "string", "description": "新路径（相对 vault，可换目录=搬移）"},
+                "confirm": {"type": "boolean", "description": "true 才真正执行；false/省略只返回预览"},
+            },
+            "required": ["old", "new"],
+        },
+    },
+    {
+        "name": "delete_note",
+        "description": "删除笔记（不可恢复）。先不带 confirm 调用确认目标，再带 confirm=true 执行。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "相对 vault 的笔记路径"},
+                "confirm": {"type": "boolean", "description": "true 才真正删除；false/省略只返回预览"},
+            },
+            "required": ["path"],
+        },
+    },
 ]
 
 DISPATCH = {
     "search": search,
     "read_note": read_note,
     "list": list_notes,
+    "create_note": create_note,
+    "edit_note": edit_note,
+    "rename_note": rename_note,
+    "delete_note": delete_note,
 }
 
 
@@ -298,7 +505,7 @@ def _handle(msg):
         _result(req_id, {
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "pinvou3-obsidian", "version": "1.0.0"},
+            "serverInfo": {"name": "pinvou3-obsidian", "version": "1.1.0"},
         })
     elif method == "tools/list":
         _result(req_id, {"tools": TOOL_DEFS})

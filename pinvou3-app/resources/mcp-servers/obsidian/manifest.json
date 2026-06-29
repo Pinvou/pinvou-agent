@@ -1,22 +1,32 @@
 {
   "id": "obsidian",
   "name": "Obsidian 知识库",
-  "description": "检索本机 Obsidian 笔记库（vault），让大模型引用你的个人知识。笔记不出本机。",
-  "version": "1.0.0",
+  "description": "检索并管理本机 Obsidian 笔记库（vault）：搜索、读取、新建、编辑、改名（自动修双链）、删除。让大模型引用并维护你的个人知识。笔记不出本机。",
+  "version": "1.1.0",
   "icon": "book-open",
   "category": "知识库",
-  "mcp_tools": ["mcp_obsidian_search", "mcp_obsidian_read_note", "mcp_obsidian_list"],
+  "mcp_tools": [
+    "mcp_obsidian_search",
+    "mcp_obsidian_read_note",
+    "mcp_obsidian_list",
+    "mcp_obsidian_create_note",
+    "mcp_obsidian_edit_note",
+    "mcp_obsidian_rename_note",
+    "mcp_obsidian_delete_note"
+  ],
   "command": "python",
   "args": ["server.py"],
   "env": {},
   "config_fields": [
-    { "key": "OBSIDIAN_VAULT_PATH", "label": "Obsidian 库（vault）文件夹路径", "required": true, "target": "env" }
+    { "key": "OBSIDIAN_VAULT_PATH", "label": "Obsidian 库（vault）文件夹路径（留空则自动发现当前打开的库）", "required": false, "target": "env" }
   ],
   "routing_rules": [
-    "我的笔记/知识库/之前记过/我记录的/Obsidian/vault → 先用 `mcp_obsidian_search` 检索本地笔记，不要用 `web_search`"
+    "我的笔记/知识库/之前记过/我记录的/Obsidian/vault → 先用 `mcp_obsidian_search` 检索本地笔记，不要用 `web_search`",
+    "新建/记一篇/保存到笔记 → `mcp_obsidian_create_note`；追加/补充到某篇 → `mcp_obsidian_edit_note`",
+    "改名/重命名/搬移笔记 → `mcp_obsidian_rename_note`（会自动修双链）；删除 → `mcp_obsidian_delete_note`。两者先不带 confirm 拿预览，向用户确认后再带 confirm=true 执行"
   ],
   "tool_table_entries": [
-    "| 个人知识库 | `mcp_obsidian_search` 检索 / `mcp_obsidian_read_note` 读全文 / `mcp_obsidian_list` 列目录(本机 Obsidian) |"
+    "| 个人知识库 | `mcp_obsidian_search` 检索 / `mcp_obsidian_read_note` 读全文 / `mcp_obsidian_list` 列目录 / `mcp_obsidian_create_note` 新建 / `mcp_obsidian_edit_note` 编辑 / `mcp_obsidian_rename_note` 改名修双链 / `mcp_obsidian_delete_note` 删除(本机 Obsidian) |"
   ],
   "pip_dependencies": []
 }
