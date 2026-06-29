@@ -67,6 +67,15 @@ pub async fn check_for_update_info(
     })
 }
 
+/// Debian 架构名（deb 包文件名后缀），与 dpkg --print-architecture 一致。
+fn deb_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        other => other,
+    }
+}
+
 pub async fn download_update_package(
     info: &crate::updater::UpdateInfo,
     app: AppHandle,
@@ -76,7 +85,7 @@ pub async fn download_update_package(
     check_update_platform_support()?;
     let dir = paths::updates_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建下载目录失败: {e}"))?;
-    let dest = dir.join(format!("pinvou3_{}_amd64.deb", info.latest_version));
+    let dest = dir.join(format!("pinvou3_{}_{}.deb", info.latest_version, deb_arch()));
     let expected = info.sha256.to_lowercase();
 
     if dest.exists() && file_sha256(&dest).as_deref() == Some(expected.as_str()) {

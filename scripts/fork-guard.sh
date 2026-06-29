@@ -44,10 +44,13 @@ fingerprints=(
   # 自带 split_command_segments+analyze_destructive_patterns,已取代,fork 块已删。
   "    |careful shell YOLO 也 BLOCK     |DeepSeek-TUI/crates/tui/src/tools/shell.rs|Dangerous commands are BLOCKED in ALL modes"
   "#25 |skills union pub API            |DeepSeek-TUI/crates/tui/src/skills/mod.rs|pub fn render_available_skills_context_for_workspace_and_dir"
+  # v0.8.65 集成:#41 收窄到只 ~/.pinvou3/bundle/skills(2026-06-29 决策,去 .agents/skills);
+  # skill 市场停用开关(MKT)取 origin/main 更全的 3 条指纹。
   "#26 |prompts skills_block union 调用 |DeepSeek-TUI/crates/tui/src/prompts.rs|render_available_skills_context_for_workspace_and_dir_with_mode("
   "#41 |skill 路径只剩 ~/.pinvou3/bundle/skills|DeepSeek-TUI/crates/tui/src/skills/mod.rs|home.join(\".pinvou3\").join(\"bundle\").join(\"skills\")"
-  "    |skill 市场 disabled 开关         |DeepSeek-TUI/crates/tui/src/skills/mod.rs|pub fn is_skill_disabled"
-  "    |load_skill 拒绝 disabled 技能    |DeepSeek-TUI/crates/tui/src/tools/skill.rs|is_skill_disabled(name)"
+  "MKT |skill 停用过滤器 setter         |DeepSeek-TUI/crates/tui/src/skills/mod.rs|pub fn set_disabled_skills"
+  "MKT |render 跳过停用 skill           |DeepSeek-TUI/crates/tui/src/skills/mod.rs|if is_skill_disabled(&skill.name)"
+  "MKT |load_skill 停用即 not-found     |DeepSeek-TUI/crates/tui/src/tools/skill.rs|crate::skills::is_skill_disabled(name)"
   "    |PROJECT_CONTEXT_FILES 砍空(C 终态)  |DeepSeek-TUI/crates/tui/src/project_context.rs|PROJECT_CONTEXT_FILES: &[&str] = &[]"
   "    |GLOBAL_PATHS 砍空                   |DeepSeek-TUI/crates/tui/src/project_context.rs|const GLOBAL_PATHS: &[&[&str]] = &[]"
   "53  |constitution.json loader 短路       |DeepSeek-TUI/crates/tui/src/project_context.rs|v0.8.53 上游引入 \`.codewhale/constitution.json\`"

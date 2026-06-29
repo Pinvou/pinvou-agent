@@ -1,0 +1,21 @@
+{
+  "id": "gongwen",
+  "name": "公文套版",
+  "description": "本地直出合规党政机关公文（.docx）：模型按文种写结构化公文内容，渲染器套 GB/T 9704-2012 格式（方正小标宋标题、仿宋_GB2312 正文、国标页边距、红头与红色分隔线），数据不出机。配合「党政机关公文写作」技能效果最佳。",
+  "version": "1.0.0",
+  "icon": "file-text",
+  "category": "办公",
+  "mcp_tools": ["mcp_gongwen_make_gongwen", "mcp_gongwen_validate_gongwen"],
+  "command": "python",
+  "args": ["server.py"],
+  "env": {},
+  "config_fields": [],
+  "routing_rules": [
+    "用户要写/起草党政机关公文（通知/意见/请示/报告/函/批复…）→ ① 判文种，缺要素（发文机关/事由/主送范围/字号性质/成文日期等）一次性问全；② 按文种结构与固定话术写正文（印发型通知=一句壳+主件放『附件』；意见=总体要求-分项举措-组织保障三段），层级序号严格 一、→（一）→1.；③ 组装成公文 JSON（字段见 make_gongwen 的 inputSchema），出件前可先调 `mcp_gongwen_validate_gongwen` 立账核账；④ 调 `mcp_gongwen_make_gongwen` 生成 .docx；⑤ 拿到 path **必须再调 `present_artifact(path, title)`** 上产物卡。内容你写进 JSON，套版（字体字号/红头/页边距）交给渲染器，**不要自己拼 markdown 当公文**。"
+  ],
+  "tool_table_entries": [
+    "| 公文套版 | `mcp_gongwen_make_gongwen` 把公文 JSON 渲染成 GB/T 9704 合规 .docx → 再 `present_artifact` 上卡；`mcp_gongwen_validate_gongwen` 做出件前自检 |"
+  ],
+  "pip_dependencies": ["python-docx"],
+  "companion_skills": ["government-writing"]
+}

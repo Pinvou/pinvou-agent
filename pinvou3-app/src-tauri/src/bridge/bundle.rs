@@ -188,6 +188,12 @@ const PPTX_SERVER_PY: &str =
     include_str!("../../../resources/mcp-servers/pptx/server.py");
 const PPTX_MANIFEST_JSON: &str =
     include_str!("../../../resources/mcp-servers/pptx/manifest.json");
+const GONGWEN_SERVER_PY: &str =
+    include_str!("../../../resources/mcp-servers/gongwen/server.py");
+const GONGWEN_MANIFEST_JSON: &str =
+    include_str!("../../../resources/mcp-servers/gongwen/manifest.json");
+const GONGWEN_STYLES_PY: &str =
+    include_str!("../../../resources/mcp-servers/gongwen/gbt9704_styles.py");
 
 /// 内嵌的敏感目录拦截 shell 脚本——配合 bridge 注入的 hook 在 ToolCallBefore
 /// 时阻止 LLM 触碰 ~/.ssh/ ~/.gnupg/ 等。
@@ -289,10 +295,18 @@ impl Pinvou3Bundle {
     /// 调用,每次启动都跑):
     /// - h3c-ppt:0.5 下线(workflow 功能转"开发中")
     /// - pinvou-review-plan / pinvou-review-final:0.7 下线(EXIT GATE 评审被推翻)
+    ///
+    /// 技能市场([`super::skill_marketplace`])装的技能带 `.installed-from` 标记、
+    /// 落在同一 `bundle/skills/` 目录。清理时显式跳过带标记的目录——这是保护契约,
+    /// 任何未来对 `skills_dir` 的全量重写也必须遵守,否则会误删用户装的技能。
     fn cleanup_retired_skills(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.skills_dir)?;
         for retired in ["h3c-ppt", "pinvou-review-plan", "pinvou-review-final"] {
-            let _ = std::fs::remove_dir_all(self.skills_dir.join(retired));
+            let dir = self.skills_dir.join(retired);
+            if dir.join(".installed-from").is_file() {
+                continue; // marketplace 技能占用了该名,保护不删
+            }
+            let _ = std::fs::remove_dir_all(dir);
         }
         Ok(())
     }
@@ -490,6 +504,13 @@ impl Pinvou3Bundle {
         std::fs::create_dir_all(&pptx_dir)?;
         std::fs::write(pptx_dir.join("server.py"), PPTX_SERVER_PY)?;
         std::fs::write(pptx_dir.join("manifest.json"), PPTX_MANIFEST_JSON)?;
+        // 工具市场：公文套版 MCP server（本地 stdio，python-docx 直出 GB/T 9704 .docx；
+        // 比别的多一个 gbt9704_styles.py 渲染模块，server.py 同目录 import 它）
+        let gongwen_dir = dir.join("gongwen");
+        std::fs::create_dir_all(&gongwen_dir)?;
+        std::fs::write(gongwen_dir.join("server.py"), GONGWEN_SERVER_PY)?;
+        std::fs::write(gongwen_dir.join("manifest.json"), GONGWEN_MANIFEST_JSON)?;
+        std::fs::write(gongwen_dir.join("gbt9704_styles.py"), GONGWEN_STYLES_PY)?;
         Ok(())
     }
 }

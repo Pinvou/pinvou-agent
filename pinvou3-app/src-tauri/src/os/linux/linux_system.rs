@@ -62,6 +62,10 @@ pub fn asr_tool_exists() -> bool {
             return command_exists(&path);
         }
     }
+    // 内置 SenseVoice 引擎：deb 打包在资源目录，或手动装到 ~/.pinvou3/asr/
+    if crate::voice_asr::engine_path().is_file() {
+        return true;
+    }
     command_exists("pinvou-asr")
 }
 
@@ -74,7 +78,7 @@ pub fn pandoc_dependency_packages() -> &'static str {
 }
 
 pub fn asr_dependency_packages() -> &'static str {
-    "本地语音识别引擎（需单独安装）"
+    "ffmpeg"
 }
 
 pub fn pandoc_missing_message() -> &'static str {

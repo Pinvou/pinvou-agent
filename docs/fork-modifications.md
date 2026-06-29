@@ -14,11 +14,11 @@
 |---|---|
 | submodule 分支 | **`pinvou3-clean`**(`.gitmodules` 追踪);HEAD `945cdf44`;备份 `backup/v0.8.65-merge-result`(merge 树)、`backup/pre-reclean-trial-tip`(旧 fork tip `6b3059da`)、`backup/pre-v0.8.65-sync`(旧远程 pinvou3-clean `4518f845`) |
 | fork drift | **+6734 / −4917 行,49 文件**(`git -C DeepSeek-TUI diff v0.8.65..HEAD --shortstat`)。比 v0.8.60(43 文件)涨,因 v0.8.65 改动多 subagent/manager/route/config API,fork 跟改面大;主体仍是工作流层 W——属"接受重 fork"(fork-policy §0);app 层 prompt 走 override 注入,不计入 |
-| 历史 | v0.8.65 + 8 主题 commit:C1 lib · C2 blocklist · C3 append_file · C4 safety · **C5+C7 prompt-composer(含 Q 首请求 warmup)** · C6 chore · **W 工作流层(含 C8 会话工具开关 op + R extra_tools 注入口)** · test(适配 + 三省六部 mock-LLM e2e ×2) |
+| 历史 | v0.8.65 + 9 主题 commit:C1 lib · C2 blocklist · C3 append_file · C4 safety · **C5+C7 prompt-composer(含 Q 首请求 warmup)** · C6 chore · **W 工作流层(含 C8 会话工具开关 op + R extra_tools 注入口)** · test(适配 + 三省六部 mock-LLM e2e ×2) · **C5/skills 市场(bundle/skills + disabled 开关)** |
 | LLM 暴露 native 工具 | **23 个**(全量注册 − 黑名单;**tool_search 已禁用**,模型无法激活 deferred 工具)。MCP `mcp_pinvou_present_artifact` 另接,共 24 入口 |
-| fork-guard | 指纹 + 回归测试(`scripts/fork-guard.sh`;**v0.8.65 撤 P pwd-move 2 条**=上游已 harvest);底座 lib **5148 pass**(+55 ignored fork 基底行为 +1 已知 flake:verifier 后台 shell 并行误报)+ 工作流 e2e ×2 |
+| fork-guard | 指纹 + 回归测试(`scripts/fork-guard.sh`;**v0.8.65 撤 P pwd-move 2 条**=上游已 harvest;+MKT skill 停用 3 条);底座 lib **5149 pass**(+55 ignored fork 基底行为 +1 已知 flake:verifier 后台 shell 并行误报)+ 工作流 e2e ×2 |
 | system prompt | dump 逐字节稳定;per-turn `<runtime_prompt>` tag + goal continuation 均已 gate |
-| v0.8.65 决策 | **W 全保 fork**(三省六部 harness 命脉,不换上游单 agent);**P 已被上游 harvest**;**决策③**:token-budget scope-gate **不港**(fork 用步数上限)、`MAX_SPAWN_DEPTH_CEILING` **用上游 8** |
+| v0.8.65 决策 | **W 全保 fork**(三省六部 harness 命脉,不换上游单 agent);**P 已被上游 harvest**;**决策③**:token-budget scope-gate **不港**(fork 用步数上限)、`MAX_SPAWN_DEPTH_CEILING` **用上游 8**;**skills 收窄到只 `~/.pinvou3/bundle/skills`**(去 `.agents/skills`) |
 
 ---
 
@@ -58,8 +58,9 @@
 ### C5 `prompt` GUI prompt / context / skills
 - **文件**:`project_context.rs`、`project_context_cache.rs`、`skills/mod.rs`、`commands/groups/skills/skills.rs`、`tools/skill.rs`、`prompts.rs`(与 C7 共此文件)
 - **project_context**:`PROJECT_CONTEXT_FILES`/`GLOBAL_PATHS` **砍空**(workspace=$HOME GUI 助手,不读其他 AI 工具配置);`load_repo_constitution_block` **短路**;`generate_ephemeral_context` **砍空返 None**(防 $HOME 树扫成 overview 注入 prompt,仅采上游函数名让调用点编译)
-- **skills**:扫描路径只留 `~/.agents/skills`(原 10 路径,#41;union 接线已被上游 harvest,只剩路径收窄)
-- **测试**:`forkguard_skills_dir_unions_*`;project_context_cache / skills 多路径上游测试 `#[ignore]`
+- **skills**:扫描路径**只** `~/.pinvou3/bundle/skills`(私有:技能市场装的技能 + bundle 内置;= `EngineConfig.skills_dir`)(原 10 路径 #41 收窄;union 接线已被上游 harvest)。**bundle/skills 必须进 `skills_directories`**:`load_skill` 工具用 `discover_in_workspace`(只走 `skills_directories`、不 union `EngineConfig.skills_dir`),不放进去就会"prompt catalogue 列了、load_skill 却扫不到→报 not found"(技能市场真机实测)。**2026-06-29 决策**:`~/.agents/skills` 也砍掉——pinvou3 技能统一走技能市场落 bundle/skills,不再扫全局 .agents/skills(连带 `agents_global_skills_dir()` 仅留作 helper)
+- **skill 停用开关(技能市场 toggle,2026-06-25)**:`skills/mod.rs` 进程级 `DISABLED_SKILLS` + `set_disabled_skills()`/`is_skill_disabled()`,`render_skills_block` 跳过停用 skill(从 `## Skills` catalogue 隐藏)、`tools/skill.rs` `load_skill` 对停用 skill 当 not-found。镜像 connector `disabled_connectors`「全局持久」语义,但 skill 是 render 收口自由函数→进程级集即可(无需 Op/EngineConfig 字段)。消费方=app `bridge/skill_marketplace.rs`(`disabled_skills.json` + `model_skill_names` id→落盘名)+ `commands::set/get_disabled_skills` + 启动 `refresh_disabled_skills`。不上游(依赖 pinvou3 市场)
+- **测试**:`forkguard_skills_dir_unions_*`、`forkguard_disabled_skill_hidden_from_catalogue`;project_context_cache / skills 多路径上游测试 `#[ignore]`
 - 上游 PR:skills union → [#2737](https://github.com/Hmbown/CodeWhale/pull/2737) CLOSED(上游已 harvest);constitution 短路 ❌ 专用
 
 ### C6 `chore` 零碎适配
