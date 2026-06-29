@@ -6,7 +6,7 @@
 
 ## 0. 现状
 
-- DeepSeek-TUI 是 `h3c-hexin/DeepSeek-TUI` fork(submodule,**`pinvou3-clean` 分支** ← upstream **v0.8.60**;HEAD `1161bc78` = v0.8.60 + 8 主题 commit(2026-06-15 第 2 次 clean re-fork);`.gitmodules` 追踪;备份 `backup/pre-reclean-v0.8.60`)
+- DeepSeek-TUI 是 `h3c-hexin/DeepSeek-TUI` fork(submodule,**`pinvou3-clean` 分支** ← upstream **v0.8.65**;HEAD `6445fc4c` = v0.8.65 + 8 主题 commit(2026-06-29 第 3 次 clean re-fork);`.gitmodules` 追踪;备份 `backup/v0.8.65-merge-result` + `backup/pre-reclean-trial-tip`)
 - fork drift **+2335 / −360 行,43 文件**(vs v0.8.60;主体是工作流层 W1–W12,**已超 1500 软上限**——撤回评估见 fork-modifications §4;app 层 prompt override 不计入)
 - fork 结构 = **C1–C7 + W 逻辑主题**(W = 三省六部工作流层),详见 `docs/fork-modifications.md` §1
 - 路线:接受"重 fork",靠工程化(指纹 + 测试 + dump diff + 文档)控制维护成本。当前 drift 2335 已超软上限,2026-06-15 评估=主体必需、保留(见 fork-modifications §4)

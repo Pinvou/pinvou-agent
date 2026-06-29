@@ -17,6 +17,7 @@ pub mod mode_state;
 pub mod paths;
 pub mod prefs;
 pub mod sessions;
+pub mod skill_marketplace;
 
 use std::path::PathBuf;
 
@@ -491,7 +492,6 @@ impl Pinvou3Bridge {
             // —— 上游 default 透传（命名后放进新结构体）——
             features,
             compaction,
-            capacity,
             todos,
             plan_state,
             max_spawn_depth,
@@ -536,10 +536,24 @@ impl Pinvou3Bridge {
             //   goal_token_budget / goal_status: /goal 目标管理(GUI 暂不用,透传)。
             //   disallowed_tools: codewhale exec --disallowed-tools(CLI 专用,GUI → None)。
             verbosity,
-            interactive_launch_limit,
+            launch_concurrency,
             goal_token_budget,
             goal_status,
             disallowed_tools: _, // pinvou3 从持久列表算初值(见构造处),默认值忽略
+            // —— v0.8.65 上游新增字段,透传 default ——
+            //   subagents_enabled: default true(三省六部走 SpawnSubAgent,必须开)。
+            //   launch_concurrency/max_admitted_subagents/subagent_token_budget: subagent
+            //   资源闸(决策③ fork 基底用步数上限,token_budget 透传 default 不启用)。
+            //   auto_review_policy/exec_policy_engine: 审查/exec 策略。
+            //   active_route_limits/skills_scan_codewhale_only/workspace_follow_symlinks: 透传。
+            active_route_limits,
+            skills_scan_codewhale_only,
+            max_admitted_subagents,
+            subagents_enabled,
+            auto_review_policy,
+            subagent_token_budget,
+            workspace_follow_symlinks,
+            exec_policy_engine,
             extra_tools,
         } = EngineConfig::default();
 
@@ -626,7 +640,6 @@ impl Pinvou3Bridge {
             // VerifyWithToolReplay 改写会话。
             // auto compact 直接用上游 turn_loop:90 的 should_compact preflight,
             // 语义干净:按 token_threshold/auto_floor 决定是否走 LLM 摘要。
-            capacity,
             todos,
             plan_state,
             max_spawn_depth,
@@ -700,7 +713,7 @@ impl Pinvou3Bridge {
             stream_chunk_timeout,
             // v0.8.58-60 上游新增,透传 default(verbosity/fanout 闸/goal 管理/disallowed_tools)
             verbosity,
-            interactive_launch_limit,
+            launch_concurrency,
             goal_token_budget,
             goal_status,
             // pinvou3 工具开关:从全局持久的"被禁用连接器"算出禁用工具全名作为初值,
@@ -710,6 +723,20 @@ impl Pinvou3Bridge {
                 if n.is_empty() { None } else { Some(n) }
             },
             // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
+            // —— v0.8.65 上游新增字段,透传 default ——
+            //   subagents_enabled: default true(三省六部走 SpawnSubAgent,必须开)。
+            //   launch_concurrency/max_admitted_subagents/subagent_token_budget: subagent
+            //   资源闸(决策③ fork 基底用步数上限,token_budget 透传 default 不启用)。
+            //   auto_review_policy/exec_policy_engine: 审查/exec 策略。
+            //   active_route_limits/skills_scan_codewhale_only/workspace_follow_symlinks: 透传。
+            active_route_limits,
+            skills_scan_codewhale_only,
+            max_admitted_subagents,
+            subagents_enabled,
+            auto_review_policy,
+            subagent_token_budget,
+            workspace_follow_symlinks,
+            exec_policy_engine,
             extra_tools,
         }
     }
@@ -888,6 +915,14 @@ impl Pinvou3Bridge {
             hook_executor: None,
             // v0.8.59 上游新增 concise verbosity 模式;pinvou3 GUI 走默认详尽,取 None。
             verbosity: None,
+            // —— v0.8.65 上游新增字段 ——
+            // provider: auto-route 选不同已认证 provider 时用;pinvou3 走 config 固定
+            // provider,这里 None 让 engine 沿用配置。
+            provider: None,
+            // dynamic_tools: per-message 动态工具;pinvou3 不用,空。
+            dynamic_tools: Vec::new(),
+            // provenance: 消息来源。build_send_message_op 是用户内容 → ExternalUser。
+            provenance: deepseek_tui::core::ops::UserInputProvenance::ExternalUser,
         }
     }
 }

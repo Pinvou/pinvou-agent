@@ -237,6 +237,10 @@ pub fn run() {
                 }
             }
 
+            // 技能停用开关:启动时把 disabled_skills.json 推给底座进程级过滤器,
+            // 让被停用的技能从首轮 prompt 起就不出现在 ## Skills catalogue。
+            crate::bridge::skill_marketplace::refresh_disabled_skills();
+
             // Monitor 按需采样：state 只持有 session_uptime，sample 由前端调
             // get_monitor_snapshot 时触发（监控页面 1s interval，离开页面停）。
             let monitor_state = MonitorState::new();
@@ -345,6 +349,8 @@ pub fn run() {
             commands::cancel_generation,
             commands::set_disabled_connectors,
             commands::get_disabled_connectors,
+            commands::set_disabled_skills,
+            commands::get_disabled_skills,
             commands::edit_last_turn,
             commands::read_artifact_text,
             commands::list_deliverables,
@@ -439,6 +445,10 @@ pub fn run() {
             commands::session_mount_collection,
             commands::session_unmount_collection,
             commands::session_mounted_collection,
+            commands::list_marketplace_skills,
+            commands::install_marketplace_skill,
+            commands::import_skill_package,
+            commands::uninstall_marketplace_skill,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

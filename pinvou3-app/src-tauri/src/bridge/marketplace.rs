@@ -44,6 +44,9 @@ pub struct ToolManifest {
     pub pip_dependencies: Vec<String>,
     #[serde(default)]
     pub servers: Vec<RemoteServer>,
+    /// 配套技能 id:装该 MCP 时一并装、卸时一并删(让"一个能力"=引擎+引导整体装卸)。
+    #[serde(default)]
+    pub companion_skills: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -633,6 +636,14 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         self.remove_from_mcp_json(tool_id)?;
 
         Ok(())
+    }
+
+    /// manifest 声明的配套技能 id(装该 MCP 时一并装、卸时一并删)。
+    /// uninstall 不删 manifest 文件,故卸载后仍可读到。
+    pub fn companion_skills(&self, tool_id: &str) -> Vec<String> {
+        self.load_manifest(tool_id)
+            .map(|m| m.companion_skills)
+            .unwrap_or_default()
     }
 
     /// 根据已安装工具生成 instructions 路由规则段 + 工具表条目

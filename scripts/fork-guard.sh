@@ -38,14 +38,19 @@ fingerprints=(
   "#15 |truncated_args_hint 截断提示    |DeepSeek-TUI/crates/tui/src/core/engine/dispatch.rs|truncated_args_hint"
   "    |tool_catalog blocklist 模型     |DeepSeek-TUI/crates/tui/src/core/engine/tool_catalog.rs|pinvou3_should_defer_native_tool"
   "    |pinvou3_blocklist 工具表        |DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs|fn is_pinvou3_hidden"
-  "    |tool_search 注入受 blocklist gate|DeepSeek-TUI/crates/tui/src/core/engine/tool_catalog.rs|is_pinvou3_hidden(TOOL_SEARCH_REGEX_NAME)"
+  "    |tool_search 注入受 blocklist gate|DeepSeek-TUI/crates/tui/src/core/engine/tool_catalog.rs|is_pinvou3_hidden(TOOL_SEARCH_NAME)"
   "    |tool_search 进 blocklist        |DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs|tool_search_tool_regex"
   # C4-a「多行逐行取最严」指纹于 v0.8.57 撤除:上游 18df8db0 extract neutral command support
   # 自带 split_command_segments+analyze_destructive_patterns,已取代,fork 块已删。
   "    |careful shell YOLO 也 BLOCK     |DeepSeek-TUI/crates/tui/src/tools/shell.rs|Dangerous commands are BLOCKED in ALL modes"
   "#25 |skills union pub API            |DeepSeek-TUI/crates/tui/src/skills/mod.rs|pub fn render_available_skills_context_for_workspace_and_dir"
-  "#26 |prompts skills_block union 调用 |DeepSeek-TUI/crates/tui/src/prompts.rs|render_available_skills_context_for_workspace_and_dir(workspace, dir)"
-  "#41 |skill 路径只剩 ~/.agents/skills    |DeepSeek-TUI/crates/tui/src/skills/mod.rs|patch #41): 砍掉底座的 10 路径扫描清单"
+  # v0.8.65 集成:#41 收窄到只 ~/.pinvou3/bundle/skills(2026-06-29 决策,去 .agents/skills);
+  # skill 市场停用开关(MKT)取 origin/main 更全的 3 条指纹。
+  "#26 |prompts skills_block union 调用 |DeepSeek-TUI/crates/tui/src/prompts.rs|render_available_skills_context_for_workspace_and_dir_with_mode("
+  "#41 |skill 路径只剩 ~/.pinvou3/bundle/skills|DeepSeek-TUI/crates/tui/src/skills/mod.rs|home.join(\".pinvou3\").join(\"bundle\").join(\"skills\")"
+  "MKT |skill 停用过滤器 setter         |DeepSeek-TUI/crates/tui/src/skills/mod.rs|pub fn set_disabled_skills"
+  "MKT |render 跳过停用 skill           |DeepSeek-TUI/crates/tui/src/skills/mod.rs|if is_skill_disabled(&skill.name)"
+  "MKT |load_skill 停用即 not-found     |DeepSeek-TUI/crates/tui/src/tools/skill.rs|crate::skills::is_skill_disabled(name)"
   "    |PROJECT_CONTEXT_FILES 砍空(C 终态)  |DeepSeek-TUI/crates/tui/src/project_context.rs|PROJECT_CONTEXT_FILES: &[&str] = &[]"
   "    |GLOBAL_PATHS 砍空                   |DeepSeek-TUI/crates/tui/src/project_context.rs|const GLOBAL_PATHS: &[&[&str]] = &[]"
   "53  |constitution.json loader 短路       |DeepSeek-TUI/crates/tui/src/project_context.rs|v0.8.53 上游引入 \`.codewhale/constitution.json\`"
@@ -54,10 +59,9 @@ fingerprints=(
   "#42 |ContextMgmt/COMPACT 受 composer gate|DeepSeek-TUI/crates/tui/src/prompts.rs|static_prompt_composer().is_none()"
   "#42 |Runtime Policy Ref 受 composer gate |DeepSeek-TUI/crates/tui/src/prompts.rs|Policy Reference(agent/plan/yolo"
   "#42 |runtime_prompt tag 受 composer gate |DeepSeek-TUI/crates/tui/src/core/engine/turn_loop.rs|static_prompt_composer_installed()"
-  # —— prefix-cache 优化:pwd/workspace 移出静态 system → per-turn turn_meta(2026-06-17)——
-  # 每 session 变的 workspace 留在 static prefix → vLLM prefix-cache 部分命中×投机解码→工具调用退化。
-  "    |env block 移出 volatile pwd     |DeepSeek-TUI/crates/tui/src/prompts.rs|forkguard_environment_block_omits_volatile_pwd"
-  "    |turn_meta 注入 workspace        |DeepSeek-TUI/crates/tui/src/core/engine.rs|Current workspace: {}"
+  # —— P(pwd/workspace 移出静态 system → per-turn turn_meta)指纹已撤(2026-06-29 v0.8.65)——
+  #    上游 v0.8.65 已 harvest 该优化(render_environment_block 不再输出 pwd + turn_meta 带
+  #    workspace),不再 fork-distinct;详见 fork-modifications §2.2。
   # —— session 启动 cache warmup(2026-06-18):根治新 session 首请求冷 prefill × mtp 漂移 ——
   # 首请求前预热完整前缀(含 turn_meta);只热 system+tools 不够(模型恰在 turn_meta 处复读采歪)。
   "    |session warmup flag             |DeepSeek-TUI/crates/tui/src/core/session.rs|cache_warmup_done"
