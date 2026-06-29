@@ -4,7 +4,7 @@ description: 撰写规范的党政机关公文。当用户要"写/起草/拟一�
 metadata:
   requires:
     mcp: ["gongwen"]
-  note: "需配套安装『公文套版』MCP（工具商店·连接器页）——它提供 make_gongwen / validate_gongwen；缺失时只能产纯文本草稿、无法渲染合规 .docx。"
+  note: "需配套安装『公文套版』MCP（工具商店·连接器页）——它提供 make_gongwen（出件前自带合规校验）；缺失时只能产纯文本草稿、无法渲染合规 .docx。"
 ---
 
 # 党政机关公文写作
