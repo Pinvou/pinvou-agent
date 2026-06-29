@@ -16,5 +16,6 @@
   "tool_table_entries": [
     "| 公文套版 | `mcp_gongwen_make_gongwen` 把公文 JSON 渲染成 GB/T 9704 合规 .docx → 再 `present_artifact` 上卡；`mcp_gongwen_validate_gongwen` 做出件前自检 |"
   ],
-  "pip_dependencies": ["python-docx"]
+  "pip_dependencies": ["python-docx"],
+  "companion_skills": ["government-writing"]
 }

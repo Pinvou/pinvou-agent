@@ -40,6 +40,7 @@ _EN2CN = {
     "recipient": "主送机关", "main_recipient": "主送机关", "body": "正文",
     "signer": "落款机关", "date": "成文日期", "disclosure": "公开方式",
     "print_note": "印发说明", "attachments": "附件",
+    "attachment_title": "附件标题", "attachment_body": "附件正文",
     "level": "级别", "text": "文字",
 }
 
@@ -51,6 +52,34 @@ def _remap_keys(obj):
     if isinstance(obj, list):
         return [_remap_keys(x) for x in obj]
     return obj
+
+
+def _text_to_blocks(text):
+    """正文/主件纯文本(每段一行)→ [{级别,文字}]。级别按行首序号前缀判(与渲染器
+       _infer_level 同源,模型不必标),供 _check 层级校验与渲染共用。"""
+    blocks = []
+    for line in (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = line.strip()
+        if line:
+            blocks.append({"级别": gbt9704_styles._infer_level(line, None), "文字": line})
+    return blocks
+
+
+def _body_to_blocks(v):
+    """body / 附件正文 统一成 blocks。新契约 = 多行纯文本字符串(扁平字段,无 JSON 转义);
+       belt 兼容 list、JSON 字符串数组(模型偶发仍序列化成 array)。"""
+    if isinstance(v, list):
+        return [_remap_keys(b) for b in v if isinstance(b, dict)]
+    if isinstance(v, str):
+        if v.lstrip()[:1] == "[":  # 像 JSON 数组
+            try:
+                arr = json.loads(v)
+                if isinstance(arr, list):
+                    return [_remap_keys(b) for b in arr if isinstance(b, dict)]
+            except Exception:
+                pass
+        return _text_to_blocks(v)
+    return []
 
 
 def _auto_split_attachment(doc):
@@ -99,9 +128,10 @@ def _auto_split_attachment(doc):
 
 def _normalize_doc(filename, fields):
     """统一取出公文 dict(中文内部 key)。兼容:
-       ① 英文 key 平铺(匹配 inputSchema,模型默认这么调:doc_type=…、title=…、body=[…]);
-       ② 中文 key 平铺 / 整体裹进 gongwen=（dict 或 JSON 字符串）——均 belt 兼容。
-       并把 body / attachments[].body 里被序列化成字符串的数组解析回 list。"""
+       ① 扁平 string 字段(匹配 inputSchema,模型默认这么调:doc_type=…、body='多行纯文本'、
+          attachment_title/attachment_body=印发主件);
+       ② 整体裹进 gongwen=（dict 或 JSON 字符串）——belt 兼容。
+       body / 附件正文 = 多行纯文本(新契约),也兼容 list / JSON 字符串数组(belt)。"""
     if list(fields.keys()) == ["gongwen"]:
         doc = fields["gongwen"]
         if isinstance(doc, str):
@@ -110,14 +140,21 @@ def _normalize_doc(filename, fields):
         doc = dict(fields)
     if not isinstance(doc, dict):
         raise ValueError("公文参数必须是对象")
-    doc = _remap_keys(doc)  # 英文 key → 中文(顶层 + 已是 list 的 block)
-    doc["正文"] = [_remap_keys(b) for b in _coerce_list(doc.get("正文"))]
+    doc = _remap_keys(doc)  # 英文 key → 中文
+    doc["正文"] = _body_to_blocks(doc.get("正文"))
+    # 附件:优先 belt 的数组;否则用扁平 附件标题/附件正文 组装单主件
     atts = []
     for a in _coerce_list(doc.get("附件")):
         a = _remap_keys(a) if isinstance(a, dict) else a
         if isinstance(a, dict):
-            a["正文"] = [_remap_keys(b) for b in _coerce_list(a.get("正文"))]
-        atts.append(a)
+            a["正文"] = _body_to_blocks(a.get("正文"))
+            atts.append(a)
+    if not atts:
+        at = doc.get("附件标题")
+        at = at.strip() if isinstance(at, str) else ""
+        blocks = _body_to_blocks(doc.get("附件正文"))
+        if at or blocks:
+            atts = [{"标题": at, "正文": blocks}]
     doc["附件"] = atts
     return _auto_split_attachment(doc)
 
@@ -186,6 +223,13 @@ def _check(d):
         err("缺『主送机关』")
     if not body:
         err("『正文』为空")
+    # 印发主件型(标题印发《X办法/规定…》)只传了壳话术、主件章条既没进 body 也没进附件 → 空壳。
+    # P0(正文为空)拦不住(承启句让 body 非空);判据=正文无任何章节序号结构(第N章/第N条/一、/（一）)。
+    elif re.search(r"印发《.+?(办法|规定|规划|方案|细则|条例|意见)》", title) and not d.get("附件"):
+        _struct = re.compile(r"^\s*(第[一二三四五六七八九十百]+[章条]|[一二三四五六七八九十]+、|（[一二三四五六七八九十]+）)")
+        if not any(_struct.match(b.get("文字") or "") for b in body):
+            err("印发《…》型缺主件正文:办法/规定主件未传入(疑似只写进了对话、未进 attachment_body);"
+                "把主件章条写进 attachment_title/attachment_body 重新出件")
     # 层级序号校验:出现的级别是否按 一、→（一）→1. 顺序、不跳级
     seen = [b.get("级别") for b in body if b.get("级别")]
     order = {"一级": 1, "二级": 2, "三级": 3, "四级": 4, "正文": 0}
@@ -251,29 +295,37 @@ def make_gongwen(filename=None, **fields):
 
 
 # ── 工具定义 ────────────────────────────────────────────────────────────────
+# 工具表 schema = 一组扁平 string 字段。两条真机教训叠出来的形状:
+#   ① 嵌套 array-of-object(body/attachments) 会污染 Qwen3.6 mtp 的 tool_call 格式参照,把别的
+#      工具(write_file/web_search)采歪成裸文本 → 故不用嵌套(对比不漂的 pptx 全扁平 string)。
+#   ② 把整份公文 JSON 当单个 string 参数传,模型要做"双层 JSON 转义"(外层 tool_call + 内层公文
+#      JSON),长文档(5000+字符)必在某处转义错 → 故不塞 JSON 字符串。
+# 解:顶层全扁平 string 字段,function-calling 单独编码每个、保证合法;body/附件正文是"多行纯文本"
+# (模型当普通写作输出,级别由渲染器按行首序号前缀自动判,无需标级别、无需任何 JSON 转义)。
 _BODY_DESC = (
-    "body 数组,每项 {level, text}。level 取 一级|二级|三级|四级|正文,渲染器据此套字体字号"
-    "(一级=黑体三号;二级=楷体三号;三级=仿宋三号加粗;正文=仿宋三号首行缩进2字)。"
-    "text 含序号前缀本身(一级写 一、,二级写 （一）,三级写 1.),渲染器只套字体不补序号。"
+    "正文。多行纯文本,一段一行(不是 JSON、不是数组)。直接按公文层级序号逐段写,渲染器按行首前缀"
+    "自动套字体:『一、…』黑体一级、『（一）…』楷体二级、『1.…』三级、无序号前缀的顶格段(承启句/"
+    "过渡句)仿宋正文。各段之间用换行分隔。"
+)
+_ATT_DESC = (
+    "印发型主件(办法/规定/细则)正文,多行纯文本,法规体例,无主件则留空。渲染器按前缀自动套版:"
+    "『第一章 …』黑体居中章标题、『第一条 …』仿宋正文条文。各条之间用换行分隔。"
 )
 _GONGWEN_SCHEMA = {
     "type": "object",
     "properties": {
         "doc_type": {"type": "string", "description": "文种:通知/意见/请示/报告/函/批复"},
-        "issuer": {"type": "string", "description": "发文机关,如 广州市人民政府办公厅(作红头与落款兜底)"},
-        "doc_number": {"type": "string", "description": "发文字号,完整如 穗府办规〔2026〕12号;规范性文件用 …规,函式用 …函,普通用 …"},
-        "title": {"type": "string", "description": "标题=发文机关+关于+事由+文种;印发型务必含书名号《主件名》;除书名号外不用标点"},
-        "recipient": {"type": "string", "description": "主送机关,如 各区人民政府，市政府各部门、各直属机构(渲染器自动补末尾冒号)"},
-        "body": {"type": "array", "items": {"type": "object"}, "description": _BODY_DESC},
+        "issuer": {"type": "string", "description": "发文机关,如 广州市人民政府办公厅(红头与落款兜底)"},
+        "doc_number": {"type": "string", "description": "发文字号,如 穗府办规〔2026〕X号(序号待编可留 X)"},
+        "title": {"type": "string", "description": "标题=发文机关+关于+事由+文种;印发型含《主件名》;除书名号外不用标点"},
+        "recipient": {"type": "string", "description": "主送机关,如 各区人民政府、市政府各部门、各直属机构"},
+        "body": {"type": "string", "description": _BODY_DESC},
         "signer": {"type": "string", "description": "落款机关,缺省=发文机关"},
-        "date": {"type": "string", "description": "成文日期,阿拉伯数字如 2026年5月28日;不留 XX 占位"},
+        "date": {"type": "string", "description": "成文日期,阿拉伯数字如 2026年5月28日;不留占位"},
         "disclosure": {"type": "string", "description": "公开方式,缺省 主动公开"},
-        "print_note": {"type": "string", "description": "印发说明,如 广州市人民政府办公厅秘书处 2026年5月29日印发(可空)"},
-        "attachments": {
-            "type": "array",
-            "description": "印发型通知的主件(办法/措施/规划等):每项 {title, body:[blocks]},渲染时换页+居中标题。",
-            "items": {"type": "object"},
-        },
+        "print_note": {"type": "string", "description": "印发说明,可空"},
+        "attachment_title": {"type": "string", "description": "印发型主件标题(办法/规定…),不带书名号;无主件留空"},
+        "attachment_body": {"type": "string", "description": _ATT_DESC},
     },
     "required": ["doc_type", "title", "recipient", "body", "date"],
 }
@@ -281,14 +333,13 @@ _GONGWEN_SCHEMA = {
 TOOL_DEFS = [
     {
         "name": "make_gongwen",
-        "description": ("结构化公文 JSON → 合规 .docx(GB/T 9704 党政机关公文格式:方正小标宋标题、仿宋_GB2312 正文、"
-                        "国标页边距/行距、红头与红色分隔线)。内容你来写进 JSON,套版由它做。生成后拿 path 再调 present_artifact 上卡。"),
+        "description": "把结构化公文字段渲染成 GB/T 9704 合规 .docx,返回结果含 path;随后**直接用该 path 调 present_artifact 上卡,切勿自己 ls/find 文件**。内容你写进字段,套版交给渲染器。",
         "inputSchema": _GONGWEN_SCHEMA,
     },
     {
         "name": "validate_gongwen",
-        "description": "立账核账:对公文字段逐项查党政机关公文规范(标题/字号/主送/层级序号/落款日期/承启句),返回 issues 清单。字段平铺,同 make_gongwen。出件前自检用。",
-        "inputSchema": {"type": "object", "properties": _GONGWEN_SCHEMA["properties"]},
+        "description": "对公文字段立账核账(查标题/字号/主送/层级/落款日期等),返回 issues 清单;出件前自检用。字段同 make_gongwen。",
+        "inputSchema": _GONGWEN_SCHEMA,
     },
 ]
 DISPATCH = {"make_gongwen": make_gongwen, "validate_gongwen": validate_gongwen}

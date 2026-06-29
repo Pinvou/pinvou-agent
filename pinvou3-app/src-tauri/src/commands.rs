@@ -4132,7 +4132,17 @@ pub async fn install_marketplace_tool(
     let user_config = config.unwrap_or_default();
     tokio::task::spawn_blocking(move || {
         let mgr = crate::bridge::marketplace::MarketplaceManager::new();
-        mgr.install(&tool_id, &user_config)
+        mgr.install(&tool_id, &user_config)?;
+        // 联动:装该 MCP 声明的配套技能(引擎+引导整体到位)。
+        // skill 是增强,装失败只记日志、不让已成功的 MCP 安装回滚。
+        for sid in mgr.companion_skills(&tool_id) {
+            if let Err(e) =
+                crate::bridge::skill_marketplace::SkillMarketplaceManager::new().install(&sid)
+            {
+                eprintln!("[marketplace] 配套技能 '{sid}' 安装失败: {e}");
+            }
+        }
+        Ok(())
     })
     .await
     .map_err(|e| format!("任务执行失败: {e}"))?
@@ -4141,7 +4151,13 @@ pub async fn install_marketplace_tool(
 #[tauri::command]
 pub fn uninstall_marketplace_tool(tool_id: String) -> Result<(), String> {
     let mgr = crate::bridge::marketplace::MarketplaceManager::new();
-    mgr.uninstall(&tool_id)
+    let companions = mgr.companion_skills(&tool_id); // 卸前先取(manifest 不删,卸后也能读,保险先读)
+    mgr.uninstall(&tool_id)?;
+    // 联动:删配套技能(best-effort,删不掉不影响 MCP 卸载)。
+    for sid in companions {
+        let _ = crate::bridge::skill_marketplace::SkillMarketplaceManager::new().uninstall(&sid);
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
