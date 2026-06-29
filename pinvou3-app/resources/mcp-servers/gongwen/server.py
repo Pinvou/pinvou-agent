@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""pinvou3 公文套版 MCP server。
+"""pinvou3 公文写作 MCP server。
 
 工具 make_gongwen —— 结构化公文字段(扁平 string)→ GB/T 9704 .docx(落产物目录);
 出件前自带合规校验(_check,有 error 级硬伤则拒绝渲染并带回 issues)。

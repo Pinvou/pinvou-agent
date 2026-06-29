@@ -504,7 +504,7 @@ impl Pinvou3Bundle {
         std::fs::create_dir_all(&pptx_dir)?;
         std::fs::write(pptx_dir.join("server.py"), PPTX_SERVER_PY)?;
         std::fs::write(pptx_dir.join("manifest.json"), PPTX_MANIFEST_JSON)?;
-        // 工具市场：公文套版 MCP server（本地 stdio，python-docx 直出 GB/T 9704 .docx；
+        // 工具市场：公文写作 MCP server（本地 stdio，python-docx 直出 GB/T 9704 .docx；
         // 比别的多一个 gbt9704_styles.py 渲染模块，server.py 同目录 import 它）
         let gongwen_dir = dir.join("gongwen");
         std::fs::create_dir_all(&gongwen_dir)?;
