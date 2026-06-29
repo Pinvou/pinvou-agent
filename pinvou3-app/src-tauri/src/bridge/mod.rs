@@ -33,7 +33,6 @@ use deepseek_tui::tui::app::AppMode;
 use deepseek_tui::tui::approval::ApprovalMode;
 
 use self::bundle::{Pinvou3Bundle, INSTRUCTIONS_MD};
-use self::mode_state::PlanPhase;
 use self::prefs::{ModelPreset, SavedModel, UserPrefs};
 
 /// Qwen3.6 在 vLLM 里是 passthrough 字符串（不走 alias）。
@@ -802,7 +801,6 @@ impl Pinvou3Bridge {
         &self,
         content: String,
         mode: AppMode,
-        phase: PlanPhase,
         persona_reminder: Option<String>,
     ) -> Op {
         let (allow_shell, trust_mode) = match mode {
@@ -818,11 +816,16 @@ impl Pinvou3Bridge {
         };
         // 超级权限状态每 turn 实时注入(is_enabled() 每次读 disk),绕开
         // refresh_all_instructions no-op 导致的"切开关不生效"——静态 prompt
-        // spawn 时渲染一次就过时,这里每 turn 重出。始终注入(连 mode/phase
-        // reminder 为 None 的纯 Yolo 态也带上)。
+        // spawn 时渲染一次就过时,这里每 turn 重出。
+        // 但只对**能跑命令**的 mode 注入:Plan 是只读、无 exec_shell(底座只读工具集),
+        // sudo 用不用对它毫无意义,注入纯浪费 ~110 字/turn。
         let sudo = crate::super_permission::turn_reminder();
-        let mut reminder_body = match reminder_for(mode, phase) {
+        let mut reminder_body = match reminder_for(mode) {
+            // Plan: 无 exec,不带 sudo。
+            Some(r) if matches!(mode, AppMode::Plan) => r.to_string(),
+            // Yolo: reminder + sudo(能 exec,sudo 状态 load-bearing)。
             Some(r) => format!("{r}\n\n{sudo}"),
+            // Agent(pinvou3 不暴露,reminder_for=None): 能 exec,带 sudo。
             None => sudo.to_string(),
         };
         // 卡片池: 该 session 加持了专家面具时,每 turn 注入 persona 人设(粘性身份)。
@@ -868,86 +871,23 @@ impl Pinvou3Bridge {
     }
 }
 
-// [消融实验 2026-06-18] (Plan,Planning) reminder 的可切换变体,env PINVOU3_ABLATION 控制。
-// full(默认)=现状;no_collect=删"方案清晰后→调 update_plan"收口条;no_block=删"禁写工具"条。
-// 仅用于量化每条对 Qwen3.6 的 load-bearing,实测完应回退(不进生产)。
-const PLAN_PLANNING_FULL: &str = "你现在在 Plan 模式 + Planning 阶段。本 turn 你必须按这个顺序行动:\n\
-     1. 任务有歧义 → 调 `request_user_input` 工具问澄清(给 2-3 个选项让用户点选)。\
-     不要在 text 里列 A/B/C 选项。\n\
-     2. 方案清晰后 → 调 `update_plan` 工具输出方案(explanation 字段写关键决策,\
-     items 写 3-8 个执行步骤)。如果产物预计超过 300 行或 20KB(如 HTML deck / 完整网页 / 长报告),\
-     plan 必须说明分块写法:`append_file` 只能追加到文件尾;要填已有文件中间或替换占位符,\
-     用 `edit_file`,不要用 `append_file`。\
-     可选再调 `checklist_write` 拆细。\n\
-     3. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
-     方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。\n\
-     4. **禁止**调 `write_file` / `append_file` / `edit_file` / `exec_shell` / `js_execution`——\
-     它们在 Plan 模式不可用,调了一定失败。";
-
-const PLAN_PLANNING_NO_COLLECT: &str = "你现在在 Plan 模式 + Planning 阶段。本 turn 你必须按这个顺序行动:\n\
-     1. 任务有歧义 → 调 `request_user_input` 工具问澄清(给 2-3 个选项让用户点选)。\
-     不要在 text 里列 A/B/C 选项。\n\
+/// Plan 模式 per-turn reminder:命令式、短、列禁令(Qwen3.6 友好)。写保护真防线是底座
+/// 只读工具集 + ReadOnly sandbox,禁写条只是减少弱模型撞墙的引导(消融证非 load-bearing)。
+const PLAN_REMINDER: &str = "你现在在 Plan 模式(只读调研)。本 turn:\n\
+     1. 想清楚后 → 调 `update_plan` 工具输出方案(explanation 字段写关键决策,\
+     items 写 3-8 个执行步骤),可选再调 `checklist_write` 拆细。\n\
      2. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
-     方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。\n\
-     3. **禁止**调 `write_file` / `append_file` / `edit_file` / `exec_shell` / `js_execution`——\
-     它们在 Plan 模式不可用,调了一定失败。";
-
-const PLAN_PLANNING_NO_BLOCK: &str = "你现在在 Plan 模式 + Planning 阶段。本 turn 你必须按这个顺序行动:\n\
-     1. 任务有歧义 → 调 `request_user_input` 工具问澄清(给 2-3 个选项让用户点选)。\
-     不要在 text 里列 A/B/C 选项。\n\
-     2. 方案清晰后 → 调 `update_plan` 工具输出方案(explanation 字段写关键决策,\
-     items 写 3-8 个执行步骤)。如果产物预计超过 300 行或 20KB(如 HTML deck / 完整网页 / 长报告),\
-     plan 必须说明分块写法:`append_file` 只能追加到文件尾;要填已有文件中间或替换占位符,\
-     用 `edit_file`,不要用 `append_file`。\
-     可选再调 `checklist_write` 拆细。\n\
-     3. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
      方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。";
 
-fn plan_planning_reminder() -> Option<&'static str> {
-    match std::env::var("PINVOU3_ABLATION").ok().as_deref() {
-        Some("no_collect") => Some(PLAN_PLANNING_NO_COLLECT),
-        Some("no_block") => Some(PLAN_PLANNING_NO_BLOCK),
-        Some("none") => None,
-        _ => Some(PLAN_PLANNING_FULL),
-    }
-}
-
-/// M1: per-turn `<system-reminder>` 文案,按当前 mode+phase 选段。
-/// 决策文档 V2 §13.1。
+/// M1: per-turn `<system-reminder>` 文案,按当前 mode 选段(砍 PlanPhase 后只剩 mode 维度)。
 /// 命中率优先于优雅:每段都是命令式、短、列禁令清单(Qwen3.6 友好)。
-fn reminder_for(mode: AppMode, phase: PlanPhase) -> Option<&'static str> {
-    match (mode, phase) {
-        (AppMode::Plan, PlanPhase::Planning) => plan_planning_reminder(),
-        (AppMode::Plan, PlanPhase::Ready) => Some(
-            "Plan 模式 + Ready 阶段。AI 之前的方案已经在 plan 卡片上等用户决策。\n\
-             如果用户发了新消息,说明用户在隐式修订——你必须调 `update_plan` 重出方案,\
-             不要只在 text 描述,不要假定用户已批准。",
-        ),
-        (AppMode::Yolo, PlanPhase::Executing) => Some(
-            "你现在在执行阶段(用户已批准方案)。本 turn 你必须:\n\
-             1. **第一动作**:用 `write_file` / `append_file` / `edit_file` / `exec_shell` 等工具\
-             **实际产出文件或代码**。\n\
-             2. **禁止**只调 `update_plan` 标记 in_progress 就结束 turn——\
-             那是假执行,用户什么文件都没拿到。\n\
-             3. 预计超过 300 行或 20KB 的产物,**禁止**一次 `write_file` 写完整文件;\
-             分块前先选策略:`append_file` 只能追加到文件尾;要填已有文件中间或替换占位符,\
-             用 `edit_file`,不要用 `append_file`。\n\
-             4. 一个 turn 内**连续调多个工具**直到所有步骤完成,不要中途停下来等用户。\n\
-             5. 完成一步后调 `update_plan` 把对应步骤标 completed,继续下一步。\n\
-             6. **禁止**在 text 里贴完整代码代替 write_file/append_file——磁盘上不会有文件。",
-        ),
-        // 纯 Yolo 路径(用户没进 Plan 模式直接发 task,plan_phase 一直 None):
-        // 此前命中 `_ => None` 没注入"大产物拆"规则, 实测 h3c-ppt P7 阶段
-        // LLM 决定"create as single mega HTML"撞 SSE timeout。跟 Plan/Executing
-        // 同风格:命令式 + 短 + 一句话讲清规则,不暴露底座细节。
-        (AppMode::Yolo, PlanPhase::None) => Some(
-            "你在 Yolo 模式,直接调工具产出。产物预计超过 300 行或 20KB\
-             (HTML deck / 完整网页 / 长报告)时,**禁止**一次 `write_file` 写完整文件;\
-             分块前先选策略:`append_file` 只能追加到文件尾;要填已有文件中间或替换占位符,\
-             用 `edit_file`,不要用 `append_file`;完成后读回关键片段验证。\
-             **禁止**在 text 里贴完整代码代替工具调用——磁盘上不会有文件。",
-        ),
-        _ => None,
+fn reminder_for(mode: AppMode) -> Option<&'static str> {
+    match mode {
+        AppMode::Plan => Some(PLAN_REMINDER),
+        // Yolo: 大产物分块实测不再 load-bearing(landing.html 397 行一次 write_file、73.8s 不撞
+        // timeout——idle timeout 早从 90s 提到 240-280s;且 h3c-ppt 等大-deck workflow 已下线,
+        // 无依赖)→ 砍光 YOLO_REMINDER。Yolo per-turn 只剩 sudo(动态状态)。Agent pinvou3 不暴露。
+        AppMode::Yolo | AppMode::Agent => None,
     }
 }
 
@@ -1014,27 +954,25 @@ mod tests {
         );
     }
 
-    /// 超级权限状态必须每 turn 注入 system-reminder——哪怕 mode/phase reminder
-    /// 为 None 的纯 Yolo 态也要带上,否则切开关对当前会话不生效(refresh no-op)。
-    /// 锁住:任意 mode/phase 下 op content 都含 `<system-reminder>` + 超级权限字样。
+    /// 超级权限状态对**能 exec 的 mode**(Yolo)必须每 turn 注入(切开关即时生效,
+    /// refresh no-op);Plan 只读无 exec,sudo 无意义→不注入(省 ~110 字/turn)。
     #[test]
-    fn build_send_message_op_always_injects_super_permission_reminder() {
+    fn build_send_message_op_injects_sudo_for_yolo_not_plan() {
         let bridge = fixture_bridge();
-        for (mode, phase) in [
-            (AppMode::Yolo, PlanPhase::None),
-            (AppMode::Yolo, PlanPhase::Executing),
-            (AppMode::Plan, PlanPhase::Planning),
-        ] {
-            let op = bridge.build_send_message_op("用户消息".to_string(), mode, phase, None);
-            let content = match op {
-                Op::SendMessage { content, .. } => content,
-                other => panic!("期望 SendMessage,得到 {other:?}"),
-            };
-            assert!(
-                content.contains("<system-reminder>") && content.contains("超级权限"),
-                "mode={mode:?} phase={phase:?} 的 op 必须每 turn 注入超级权限状态,得到:\n{content}"
-            );
-        }
+        let content_of = |mode| match bridge.build_send_message_op("用户消息".to_string(), mode, None) {
+            Op::SendMessage { content, .. } => content,
+            other => panic!("期望 SendMessage,得到 {other:?}"),
+        };
+        let yolo = content_of(AppMode::Yolo);
+        assert!(
+            yolo.contains("<system-reminder>") && yolo.contains("超级权限"),
+            "Yolo 能 exec,必须每 turn 注入超级权限状态,得到:\n{yolo}"
+        );
+        let plan = content_of(AppMode::Plan);
+        assert!(
+            !plan.contains("超级权限"),
+            "Plan 无 exec,不该注入 sudo reminder(纯浪费),得到:\n{plan}"
+        );
     }
 
     /// 卡片池: 该 session 加持了专家面具时,persona reminder 必须进 per-turn
@@ -1046,7 +984,6 @@ mod tests {
         let op = bridge.build_send_message_op(
             "用户消息".to_string(),
             AppMode::Yolo,
-            PlanPhase::None,
             Some(persona.clone()),
         );
         let content = match op {
@@ -1059,7 +996,7 @@ mod tests {
         );
         // None 时不应出现该文案
         let op_none =
-            bridge.build_send_message_op("hi".to_string(), AppMode::Yolo, PlanPhase::None, None);
+            bridge.build_send_message_op("hi".to_string(), AppMode::Yolo, None);
         if let Op::SendMessage { content, .. } = op_none {
             assert!(!content.contains("数据库架构师"), "未加持不应注入 persona");
         }
@@ -1364,7 +1301,7 @@ mod tests {
     fn bridge_yolo_mode_trust_mode_true() {
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         let bridge = fixture_bridge();
-        let op = bridge.build_send_message_op("hi".into(), AppMode::Yolo, PlanPhase::None, None);
+        let op = bridge.build_send_message_op("hi".into(), AppMode::Yolo, None);
         let (_allow_shell, trust_mode) = extract_shell_trust(op);
         assert!(trust_mode, "Yolo 模式 trust_mode 必须 true");
     }
@@ -1375,7 +1312,7 @@ mod tests {
     fn bridge_plan_mode_trust_mode_true_after_p1() {
         let bridge = fixture_bridge();
         let op =
-            bridge.build_send_message_op("list dir".into(), AppMode::Plan, PlanPhase::Planning, None);
+            bridge.build_send_message_op("list dir".into(), AppMode::Plan, None);
         let (_allow_shell, trust_mode) = extract_shell_trust(op);
         assert!(
             trust_mode,
@@ -1391,7 +1328,7 @@ mod tests {
     fn bridge_plan_mode_allow_shell_true() {
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         let bridge = fixture_bridge();
-        let op = bridge.build_send_message_op("exec ls".into(), AppMode::Plan, PlanPhase::Planning, None);
+        let op = bridge.build_send_message_op("exec ls".into(), AppMode::Plan, None);
         let (allow_shell, _trust_mode) = extract_shell_trust(op);
         assert!(
             allow_shell,
@@ -1421,22 +1358,19 @@ mod tests {
     }
 
     #[test]
-    fn large_artifact_reminders_explain_append_file_tail_only() {
-        for (mode, phase) in [
-            (AppMode::Plan, PlanPhase::Planning),
-            (AppMode::Yolo, PlanPhase::Executing),
-            (AppMode::Yolo, PlanPhase::None),
-        ] {
-            let reminder = reminder_for(mode, phase).expect("large artifact reminder exists");
-            assert!(
-                reminder.contains("append_file` 只能追加到文件尾"),
-                "reminder 必须锁住 append_file 尾追加语义: mode={mode:?} phase={phase:?}"
-            );
-            assert!(
-                reminder.contains("用 `edit_file`,不要用 `append_file`"),
-                "reminder 必须给中间填充/占位替换的正确工具(edit_file,apply_patch 已隐藏): mode={mode:?} phase={phase:?}"
-            );
-        }
+    fn yolo_has_no_mode_reminder_plan_reminder_has_no_write_content() {
+        // 大产物分块实测不再 load-bearing(397 行一次写 73.8s 不撞 timeout)→ YOLO_REMINDER 砍光,
+        // Yolo 生产主路径无 mode reminder(per-turn 只剩 sudo)。
+        assert!(
+            reminder_for(AppMode::Yolo).is_none(),
+            "Yolo 不该再有 mode reminder(大产物分块已砍)"
+        );
+        // Plan 仍有 reminder,但只读不写,不含任何写文件/分块内容。
+        let plan = reminder_for(AppMode::Plan).expect("plan reminder exists");
+        assert!(
+            !plan.contains("append_file") && !plan.contains("write_file"),
+            "Plan reminder 不该含写文件/分块内容: {plan}"
+        );
     }
 
     /// 多引擎并发隔离基石(C 方案 P-no-disk 版): 两个不同 session 的 EngineConfig
