@@ -537,11 +537,13 @@ fn spawn_event_forwarder(
                 // 第二发来自 fork 的 Op::SpawnSubAgent 成功臂(prompt=role_id)。
                 // FIFO 保证第二发后到 → HashMap::insert last-write-wins,最终值
                 // 必为 role_id。这是有意设计,别"去重优化"。
-                Event::AgentSpawned { id, prompt } => {
+                // v0.8.65 上游给 AgentSpawned 加 parent_run_id/spawn_depth(谱系遥测);
+                // pinvou3 forwarder 只用 id→role(prompt)关联,新字段 `..` 忽略。
+                Event::AgentSpawned { id, prompt, .. } => {
                     agent_roles.insert(id, prompt);
                 }
                 // [edict-obs] SubAgent 每步进展(底座自动发,不靠 prompt 纪律)→ 前端看板。
-                Event::AgentProgress { id, status } => {
+                Event::AgentProgress { id, status, .. } => {
                     // 早期事件可能赶在第二发 AgentSpawned(role_id)之前到 —— 兜底用
                     // agent_id 而不是空串,跟 TokenUsage 臂的 fallback 语义一致。
                     let role = agent_roles.get(&id).cloned().unwrap_or_else(|| id.clone());

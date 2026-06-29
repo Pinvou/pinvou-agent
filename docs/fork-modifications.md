@@ -4,20 +4,21 @@
 > 用途:① sync 后查 patch 存活 ② 交接 / onboarding ③ 上游 PR 定位改动点。
 > 配套:`scripts/fork-guard.sh`(指纹 + 回归测试守卫)、`docs/fork-policy.md`(维护策略 + sync 流程 + PR 状态)。
 >
-> **当前基线**:submodule 分支 `pinvou3-clean` ← upstream **v0.8.60**;HEAD `1161bc78` = v0.8.60 + 8 主题 commit(2026-06-15 clean re-fork,线性历史)。
+> **当前基线**:submodule 分支 `pinvou3-clean` ← upstream **v0.8.65**;HEAD `945cdf44` = v0.8.65 + 9 主题 commit(2026-06-29 第 3 次 clean re-fork,线性历史)。
 
 ---
 
-## 0. 当前状态速览(2026-06-15)
+## 0. 当前状态速览(2026-06-29 · v0.8.65)
 
 | 项 | 值 |
 |---|---|
-| submodule 分支 | **`pinvou3-clean`**(`.gitmodules` 追踪);HEAD `1161bc78`;备份 `backup/pre-reclean-v0.8.60` |
-| fork drift | **+2335 / −360 行,43 文件**(`git -C DeepSeek-TUI diff v0.8.60..HEAD --shortstat`)。超 1500 软上限,主体是工作流层 W——属"接受重 fork"(fork-policy §0);app 层 prompt 走 override 注入,不计入 |
-| 历史 | v0.8.60 + 8 commit:C1 lib · C2 blocklist · C3 append_file · C4 safety · C5+C7 prompt-composer · C6 chore · W 工作流层 · docs。后续叠加:C8 会话工具开关 op(#4,`a0efea0b`,2026-06-23) · R extra_tools 注入口(`6b3059da`,2026-06-24) |
-| LLM 暴露 native 工具 | **23 个**(全量注册 − 81 黑名单;**tool_search 已禁用**,模型无法激活 deferred 工具)。MCP `mcp_pinvou_present_artifact` 另接,共 24 入口 |
-| fork-guard | **49 指纹 + 回归测试**(`scripts/fork-guard.sh`;+C8 会话工具开关 2 条 +RAG1/RAG2 守 extra_tools 注入口);底座 lib 4539 pass(+1 已知 flake:verifier 后台 shell 并行误报)/ app lib 195 pass(单线程) |
-| system prompt | dump 逐字节稳定(210 行,diff=0);per-turn `<runtime_prompt>` tag + goal continuation 均已 gate |
+| submodule 分支 | **`pinvou3-clean`**(`.gitmodules` 追踪);HEAD `945cdf44`;备份 `backup/v0.8.65-merge-result`(merge 树)、`backup/pre-reclean-trial-tip`(旧 fork tip `6b3059da`)、`backup/pre-v0.8.65-sync`(旧远程 pinvou3-clean `4518f845`) |
+| fork drift | **+6734 / −4917 行,49 文件**(`git -C DeepSeek-TUI diff v0.8.65..HEAD --shortstat`)。比 v0.8.60(43 文件)涨,因 v0.8.65 改动多 subagent/manager/route/config API,fork 跟改面大;主体仍是工作流层 W——属"接受重 fork"(fork-policy §0);app 层 prompt 走 override 注入,不计入 |
+| 历史 | v0.8.65 + 8 主题 commit:C1 lib · C2 blocklist · C3 append_file · C4 safety · **C5+C7 prompt-composer(含 Q 首请求 warmup)** · C6 chore · **W 工作流层(含 C8 会话工具开关 op + R extra_tools 注入口)** · test(适配 + 三省六部 mock-LLM e2e ×2) |
+| LLM 暴露 native 工具 | **23 个**(全量注册 − 黑名单;**tool_search 已禁用**,模型无法激活 deferred 工具)。MCP `mcp_pinvou_present_artifact` 另接,共 24 入口 |
+| fork-guard | 指纹 + 回归测试(`scripts/fork-guard.sh`;**v0.8.65 撤 P pwd-move 2 条**=上游已 harvest);底座 lib **5148 pass**(+55 ignored fork 基底行为 +1 已知 flake:verifier 后台 shell 并行误报)+ 工作流 e2e ×2 |
+| system prompt | dump 逐字节稳定;per-turn `<runtime_prompt>` tag + goal continuation 均已 gate |
+| v0.8.65 决策 | **W 全保 fork**(三省六部 harness 命脉,不换上游单 agent);**P 已被上游 harvest**;**决策③**:token-budget scope-gate **不港**(fork 用步数上限)、`MAX_SPAWN_DEPTH_CEILING` **用上游 8** |
 
 ---
 
@@ -74,13 +75,8 @@
 - **测试**:submodule `forkguard_static_prompt_composer_*`;app `forkguard_static_composer_*`
 - 上游 PR:[#2786](https://github.com/Hmbown/CodeWhale/pull/2786) CLOSED(上游窄版,语义不同);pinvou3 宽版保 fork
 
-### P `prefix-cache` pwd/workspace 移出静态 system(2026-06-17)
-- **文件**:`prompts.rs`(render_environment_block 删 `- pwd` 行,与 C5/C7 共此文件)、`core/engine.rs`(turn_metadata_block 加 `Current workspace` 行)。app 层同步:`instructions.md` 删 `{{PINVOU3_WORKSPACE}}`/`{{PINVOU3_DATE}}`(改静态文案 + 相对路径引导)、`bridge/mod.rs` 删对应 replace
-- **改动**:每 session 变的 workspace 路径(pwd)从静态 `## Environment` **移出** → per-turn `<turn_meta>` 的 `Current workspace`;date 同理(turn_meta 本就有);产出引导改"用相对路径写,工具自动落 workspace"(实测 4/4,PathEscape 兜底)
-- **理由**:vLLM(开 `--enable-prefix-caching` + 投机解码 mtp)在 prefix-cache **部分命中**(system 前半命中上个 session、到 workspace 处分叉接续 prefill)时,分叉点 KV 不自洽 + mtp 对 KV 敏感 → 工具调用退化成裸 XML(实测 L1 single subagent 25%;**所有工具受影响**,read_file/exec_shell 部分命中下全 0~1/4)。移 pwd/workspace 让 static system 跨 session 字节静态 → 完整命中,25%→~100%。⚠️ **生产 GUI 有 cache warmup 自我预热完整 prefix、基本不犯**(B 5/6);此 fork 主要修 **L1 headless(无 warmup)测试准确性** + 防御(warmup 失效兜底)
-- **测试**:`forkguard_environment_block_omits_volatile_pwd`(指纹同名);L1 `subagent_single_simple`(25%→稳态100%,13/13)+ `relpath_write_file`(相对路径落 workspace,4/4)
-- 上游 PR:✅ **拟提**——prefix-cache 优化通用,且符合上游 environment-volatile 方向(§8 #2314 已 merged);PR 拟为 "move volatile pwd from static system prefix to per-turn turn_meta"
-> ⚠️ **2026-06-18 订正**:本节"生产 GUI 有 cache warmup 自我预热"是**错的**——`build_cache_warmup_request` 底座只有手动 `/cache warmup` TUI 命令触发,pinvou3 Tauri GUI **从不自动调**。真相是新 session **首请求**仍冷启动 × mtp → 首轮采歪(见 Q 节)。pwd-move 本身**与漂移无关**(实测放/不放都不是因),保留即可。
+### ~~P `prefix-cache` pwd/workspace 移出静态 system~~ → **v0.8.65 已被上游 harvest**(撤指纹,见 §2.2)
+> pwd/workspace 从静态 `## Environment` 移出 → per-turn `<turn_meta>`,让 static system 跨 session 字节静态、命中 vLLM prefix-cache。**上游 v0.8.65 已自带同优化**(render_environment_block 不再输出 pwd;turn_meta 带 workspace),不再 fork-distinct。真正修首轮漂移的是 **Q 节**(session 启动 cache warmup),pwd-move 本身与漂移无关。
 
 ### Q `prefix-cache` session 启动自动 cache warmup(2026-06-18)
 - **文件**:`core/session.rs`(`Session.cache_warmup_done` 运行时标志)、`core/engine/turn_loop.rs`(首请求前置 warmup)
@@ -143,6 +139,7 @@
 - **v0.8.53 及以前**:bing decode、network_policy fake-ip API、InstructionSource enum、base override hook、EngineConfig.instructions、256K auto-compact 基础设施、MAX_OUTPUT env、file_search/grep_files timeout
 - **v0.8.57**:skills union 接线、C4-a 多行逐行(`split_command_segments`)、本地 Bocha(#2946)
 - **v0.8.60**:**W9 read_pdf catch_unwind** → 上游 `guard_pdf_extract`(`file.rs`,同语义 catch_unwind+错误映射,带自测;char-boundary 部分也已是上游自带)。代价仅罕见 font/CMap panic 的中文提示
+- **v0.8.65**:**P pwd/workspace 移出静态 system**(`render_environment_block` 不再输出 pwd + turn_meta 带 `Current workspace`)——上游 v0.8.65 已自带同优化(hexin 本人 PR `f981134d` harvest),撤 fork-guard P 2 条指纹(`env block 移出 volatile pwd` / `turn_meta 注入 workspace`)
 
 ---
 
@@ -166,6 +163,15 @@
 ---
 
 ## 4. Sync 历史
+
+### v0.8.65 + 第 3 次 clean re-fork(2026-06-29,HEAD `6445fc4c`)
+**史上最大 sync**:merge v0.8.60→v0.8.65,**659 commit / 561 文件 / 52 冲突块(16 文件)**;命中 fork-policy §5 撤回评估三触发(drift 2443>1500 / conflict 52>10 / 上游新 API 与 W 重叠)。
+- **W 层撤回评估结论(关键修正)**:原评估"撤 W5/6/8/10/12 用上游"**高估了撤回面**——W 工作流层(`Op::SpawnSubAgent` 多字段 + `AgentComplete{role,failed}` + `AgentSpawned` role 关联 + structured output 落盘)是 **pinvou3-app harness(三省六部)的底座接口**,撤掉直接断工作流。**定案=fork 基底**:`subagent/{mod,tests,mailbox}` 整套取 fork(W + 对话工具 agent_open/eval/close 全保,**Qwen3.6 零风险,不换上游单 agent**),只适配上游编译变化。真正撤回只剩 **P**(pwd-move,上游已 harvest)。
+- **冲突解法**:25 块手解(engine #5 match 用 ops.rs canonical enum 整段重建 / prompts 8 块 C7 保宽版 / project_context 砍空 / skills #41 在上游 SkillDiscoveryMode API 重表达 / app 取上游 `mod tests;`)。
+- **编译涟漪(大头)**:fork v0.8.60-era subagent 移植 v0.8.65 适配 104→0 error。关键:C1 facade lib.rs 删 3 stale + 加 11 上游新 mod;`SubAgentResult` 加 4 上游字段 + `SubAgentStatus::BudgetExhausted`;从上游移植 `terminal_results_excluding`/`update_runtime_limits`(token_budget 参数 `_` 忽略)/`subagent_completion_from_result` 等进 fork manager;manager 构造器 4→6 arg;`AgentWorkerSpec` 加 `runtime_profile`;恢复 fork C7 三件套(`runtime_prompt_message`/`runtime_prompt_text`/`approval_mode_for`)。
+- **决策③(runaway 护栏,用户拍板)**:token-budget scope-gate 遥测**不港**(fork 用步数上限 max_steps;上游 receipts 测试 `#[cfg(any())]` 排除);`MAX_SPAWN_DEPTH_CEILING` **用上游 8**(均为 merged 现状,零改动)。
+- **验证**:lib **5148 pass**(+55 ignored fork 基底行为 +1 verifier 并行 flake)+ **三省六部 mock-LLM e2e ×2**(wiremock 绕过 #402:SpawnSubAgent→submit_output→AgentComplete happy + fail-closed);pinvou3-app harness 适配新 API(build_engine_config 删 capacity/改名 launch_concurrency/加 8 字段、Op::SendMessage +provider/provenance/dynamic_tools、AgentSpawned/Progress +`..`、dump +skills_scan_codewhale_only)后 GUI 手动走查通过。
+- **clean re-fork**:`git reset --soft v0.8.65` 保树 → 8 主题 commit(C1/C2/C3/C4/C5+C7/C6/W/test),**最终树与 merge `f6558746` 字节等价 diff=0**。备份 `backup/v0.8.65-merge-result` + `backup/pre-reclean-trial-tip`。
 
 ### Clean re-fork(2026-06-15,HEAD `1161bc78`)
 第 2 次 clean re-fork(首次 2026-06-04 ← v0.8.53)。动机:v0.8.60 merge 后历史乱(26 commit / ~10 merge / fork 散落三次 sync)。
