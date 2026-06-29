@@ -83,6 +83,16 @@ fn preset_manifests() -> &'static [SkillManifest] {
             icon: "Lightbulb",
             color: "bg-gradient-to-b from-amber-400 to-orange-500",
         },
+        SkillManifest {
+            id: "government-writing",
+            skill_name: "government-writing",
+            source_dir: "government-writing",
+            title: "党政机关公文写作",
+            subtitle: "通知/意见等法定文种，套话术、层级序号、自检",
+            description: "撰写规范的党政机关公文（通知、意见…）：内置文种结构骨架、固定话术库、层级序号体系与立账核账自检，产出结构化公文内容。配合工具商店的「公文套版」工具即可直出 GB/T 9704 合规 .docx。",
+            icon: "FileText",
+            color: "bg-gradient-to-b from-red-500 to-rose-700",
+        },
     ]
 }
 
@@ -99,6 +109,40 @@ pub struct MarketplaceSkillInfo {
     pub installed: bool,
     /// true = 用户上传的(非预置),前端用默认图标渲染。
     pub user_uploaded: bool,
+}
+
+// 停用开关(全局持久)----------------------------------------------------------
+//
+// 镜像 MCP 连接器的 disabled_connectors:存市场 id(前端 round-trip 设开关态),
+// 推给底座时映射成落盘 skill 名。skill 没有 per-session catalog,底座侧是 render
+// 收口的进程级过滤器(见 deepseek_tui::skills::set_disabled_skills),故无需 Op /
+// engine_pool 广播——一次 set 全 session 下轮生效。
+
+fn disabled_skills_path() -> PathBuf {
+    paths::pinvou3_home().join("disabled_skills.json")
+}
+
+/// 读全局被停用的技能 id 列表(读不到/空 → 空)。
+pub fn load_disabled_skills() -> Vec<String> {
+    std::fs::read_to_string(disabled_skills_path())
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .unwrap_or_default()
+}
+
+/// 写全局被停用的技能 id 列表。
+pub fn save_disabled_skills(ids: &[String]) {
+    if let Ok(json) = serde_json::to_string(ids) {
+        let _ = std::fs::write(disabled_skills_path(), json);
+    }
+}
+
+/// 把当前停用集(id → 落盘 skill 名)推给底座进程级过滤器。启动时 + 每次 toggle
+/// 调用;空集 = 全开。下一轮 prompt 构建即生效(一次 prefix-cache miss 后稳定)。
+pub fn refresh_disabled_skills() {
+    let ids = load_disabled_skills();
+    let names = SkillMarketplaceManager::new().model_skill_names(&ids);
+    deepseek_tui::skills::set_disabled_skills(names);
 }
 
 // Manager ---------------------------------------------------------------------
@@ -183,6 +227,18 @@ impl SkillMarketplaceManager {
 
     fn preset(&self, id: &str) -> Option<&'static SkillManifest> {
         preset_manifests().iter().find(|m| m.id == id)
+    }
+
+    /// 市场 id → 落盘 skill 名(= SKILL.md frontmatter `name` = 底座 `Skill.name`)。
+    /// 预置查清单(nuwa → huashu-nuwa);上传技能的 id 即目录名,直通。底座按此名过滤。
+    pub fn model_skill_names(&self, ids: &[String]) -> Vec<String> {
+        ids.iter()
+            .map(|id| {
+                self.preset(id)
+                    .map(|m| m.skill_name.to_string())
+                    .unwrap_or_else(|| id.clone())
+            })
+            .collect()
     }
 
     /// 安装预置技能:从嵌入资源复制到 `bundle/skills/<name>/`(原子:.tmp → rename)。

@@ -859,6 +859,27 @@ pub async fn get_disabled_connectors() -> Result<Vec<String>, String> {
     Ok(crate::bridge::marketplace::load_disabled_connectors())
 }
 
+/// pinvou3 技能开关(全局持久):设置当前被停用的技能(skill_ids = 市场技能 id)。
+/// 落盘 → 映射成落盘 skill 名 → 推给底座进程级过滤器,从 ## Skills catalogue 隐藏。
+/// 空 = 全开。持久:关一次所有新对话/新窗口都继承,直到手动开回。skill 无 per-session
+/// catalog,底座侧是 render 收口过滤器,故无需 pool 广播——一次 set 全 session 下轮生效。
+#[tauri::command]
+pub async fn set_disabled_skills(skill_ids: Vec<String>) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        crate::bridge::skill_marketplace::save_disabled_skills(&skill_ids);
+        crate::bridge::skill_marketplace::refresh_disabled_skills();
+    })
+    .await
+    .map_err(|e| format!("set disabled skills: {e}"))?;
+    Ok(())
+}
+
+/// pinvou3 技能开关:读全局被停用的技能 id 列表(前端启动时加载,初始化开关状态)。
+#[tauri::command]
+pub async fn get_disabled_skills() -> Result<Vec<String>, String> {
+    Ok(crate::bridge::skill_marketplace::load_disabled_skills())
+}
+
 /// 编辑/重发最后一轮 user 消息。
 /// engine 砍掉 session 末尾最近的 user+assistant 后，用 new_message 重发。
 /// 前端在调这个命令之前必须自己更新 state.messages（删最后一对，加新 user）。

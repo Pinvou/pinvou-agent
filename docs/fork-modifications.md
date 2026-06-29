@@ -16,7 +16,7 @@
 | fork drift | **+2335 / −360 行,43 文件**(`git -C DeepSeek-TUI diff v0.8.60..HEAD --shortstat`)。超 1500 软上限,主体是工作流层 W——属"接受重 fork"(fork-policy §0);app 层 prompt 走 override 注入,不计入 |
 | 历史 | v0.8.60 + 8 commit:C1 lib · C2 blocklist · C3 append_file · C4 safety · C5+C7 prompt-composer · C6 chore · W 工作流层 · docs。后续叠加:C8 会话工具开关 op(#4,`a0efea0b`,2026-06-23) · R extra_tools 注入口(`6b3059da`,2026-06-24) |
 | LLM 暴露 native 工具 | **23 个**(全量注册 − 81 黑名单;**tool_search 已禁用**,模型无法激活 deferred 工具)。MCP `mcp_pinvou_present_artifact` 另接,共 24 入口 |
-| fork-guard | **49 指纹 + 回归测试**(`scripts/fork-guard.sh`;+C8 会话工具开关 2 条 +RAG1/RAG2 守 extra_tools 注入口);底座 lib 4539 pass(+1 已知 flake:verifier 后台 shell 并行误报)/ app lib 195 pass(单线程) |
+| fork-guard | **52 指纹 + 回归测试**(`scripts/fork-guard.sh`;+C8 会话工具开关 2 条 +RAG1/RAG2 守 extra_tools 注入口 +MKT skill 停用过滤器 3 条);底座 lib 4539 pass(+1 已知 flake:verifier 后台 shell 并行误报)/ app lib 195 pass(单线程) |
 | system prompt | dump 逐字节稳定(210 行,diff=0);per-turn `<runtime_prompt>` tag + goal continuation 均已 gate |
 
 ---
@@ -58,7 +58,8 @@
 - **文件**:`project_context.rs`、`project_context_cache.rs`、`skills/mod.rs`、`commands/groups/skills/skills.rs`、`tools/skill.rs`、`prompts.rs`(与 C7 共此文件)
 - **project_context**:`PROJECT_CONTEXT_FILES`/`GLOBAL_PATHS` **砍空**(workspace=$HOME GUI 助手,不读其他 AI 工具配置);`load_repo_constitution_block` **短路**;`generate_ephemeral_context` **砍空返 None**(防 $HOME 树扫成 overview 注入 prompt,仅采上游函数名让调用点编译)
 - **skills**:扫描路径=`~/.pinvou3/bundle/skills`(私有:技能市场+bundle 内置)+`~/.agents/skills`(全局:飞书 lark 等)(原 10 路径 #41 收窄;union 接线已被上游 harvest)。**2026-06-22 加 bundle/skills**:`load_skill` 工具用 `discover_in_workspace`(只走 `skills_directories`、不 union `EngineConfig.skills_dir`),不把 bundle/skills 放进 `skills_directories` 就会"prompt catalogue 列了 bundle/skills 技能、load_skill 却扫不到→报 not found"(技能市场真机实测);`~/.agents/skills` 必须同时保留,否则飞书技能从 prompt 消失
-- **测试**:`forkguard_skills_dir_unions_*`;project_context_cache / skills 多路径上游测试 `#[ignore]`
+- **skill 停用开关(技能市场 toggle,2026-06-25)**:`skills/mod.rs` 进程级 `DISABLED_SKILLS` + `set_disabled_skills()`/`is_skill_disabled()`,`render_skills_block` 跳过停用 skill(从 `## Skills` catalogue 隐藏)、`tools/skill.rs` `load_skill` 对停用 skill 当 not-found。镜像 connector `disabled_connectors`「全局持久」语义,但 skill 是 render 收口自由函数→进程级集即可(无需 Op/EngineConfig 字段)。消费方=app `bridge/skill_marketplace.rs`(`disabled_skills.json` + `model_skill_names` id→落盘名)+ `commands::set/get_disabled_skills` + 启动 `refresh_disabled_skills`。不上游(依赖 pinvou3 市场)
+- **测试**:`forkguard_skills_dir_unions_*`、`forkguard_disabled_skill_hidden_from_catalogue`;project_context_cache / skills 多路径上游测试 `#[ignore]`
 - 上游 PR:skills union → [#2737](https://github.com/Hmbown/CodeWhale/pull/2737) CLOSED(上游已 harvest);constitution 短路 ❌ 专用
 
 ### C6 `chore` 零碎适配
