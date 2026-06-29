@@ -307,7 +307,7 @@
         updateCheckFailed: '检查失败',
         depCheckTitle: '依赖体检', depChecking: '检测中…', depRecheck: '重新检测',
         depAllOk: '所有依赖项已就绪', depMissingSuffix: ' 项依赖缺失（对应能力将不可用）',
-        depInstalling: '安装中…', depInstallBtn: '一键安装', depInstallNote: '将提权安装缺失依赖（需联网或可用 apt 源）',
+        depInstalling: '安装中…', depInstallBtn: '一键安装', depInstallNote: '将提权安装缺失依赖（需联网或可用 apt 源）', depInstallNoteWindows: '将通过 winget 提权安装 LibreOffice（需联网）',
         dep_pdf: 'PDF 文本提取', dep_office_modern: 'Office 文档（docx）', dep_office_legacy: '旧版 Office / 演示与表格',
         dep_ocr: '图片 / 扫描件 OCR', dep_archive: '压缩包（zip/rar/7z）', dep_email: '邮件（.eml / .msg）', dep_voice_asr: '本地语音识别',
         feedbackTitle: '帮助与反馈', feedbackDesc: '反馈使用中的问题和建议，可附带截图或短视频。',
@@ -536,7 +536,7 @@
         updateCheckFailed: 'Check failed',
         depCheckTitle: 'Dependency Check', depChecking: 'Checking…', depRecheck: 'Re-check',
         depAllOk: 'All dependencies ready', depMissingSuffix: ' dependency group(s) missing (those features unavailable)',
-        depInstalling: 'Installing…', depInstallBtn: 'Install', depInstallNote: 'Installs missing deps via elevated apt (needs network or an apt source)',
+        depInstalling: 'Installing…', depInstallBtn: 'Install', depInstallNote: 'Installs missing deps via elevated apt (needs network or an apt source)', depInstallNoteWindows: 'Installs LibreOffice through elevated winget (requires network)',
         dep_pdf: 'PDF text extraction', dep_office_modern: 'Office docs (docx)', dep_office_legacy: 'Legacy Office / slides & sheets',
         dep_ocr: 'Image / scanned-PDF OCR', dep_archive: 'Archives (zip/rar/7z)', dep_email: 'Email (.eml / .msg)', dep_voice_asr: 'Local voice recognition',
         feedbackTitle: 'Help & Feedback', feedbackDesc: 'Send issues or suggestions with screenshots or short videos.',
@@ -764,7 +764,7 @@
         updateCheckFailed: '確認に失敗しました',
         depCheckTitle: '依存関係チェック', depChecking: '確認中…', depRecheck: '再チェック',
         depAllOk: 'すべての依存関係が準備済み', depMissingSuffix: ' 件の依存が不足（該当機能は利用不可）',
-        depInstalling: 'インストール中…', depInstallBtn: 'インストール', depInstallNote: '権限昇格して不足依存をインストール（ネットワークまたは apt ソースが必要）',
+        depInstalling: 'インストール中…', depInstallBtn: 'インストール', depInstallNote: '権限昇格して不足依存をインストール（ネットワークまたは apt ソースが必要）', depInstallNoteWindows: 'winget を権限昇格して LibreOffice をインストール（ネットワークが必要）',
         dep_pdf: 'PDF テキスト抽出', dep_office_modern: 'Office 文書（docx）', dep_office_legacy: '旧 Office / スライドと表計算',
         dep_ocr: '画像 / スキャン PDF の OCR', dep_archive: 'アーカイブ（zip/rar/7z）', dep_email: 'メール（.eml / .msg）', dep_voice_asr: 'ローカル音声認識',
         feedbackTitle: 'ヘルプとフィードバック', feedbackDesc: '問題や提案をスクリーンショットや短い動画付きで送信できます。',
@@ -3539,7 +3539,7 @@
                             ))}
                           </div>
                           <div className="flex items-center justify-between gap-3">
-                            <span className={`text-[12px] ${subText}`}>{t.depInstallNote}</span>
+                            <span className={`text-[12px] ${subText}`}>{isWindows ? t.depInstallNoteWindows : t.depInstallNote}</span>
                             <button
                               onClick={() => bridge.available && !busy && bridge.installDependencies()}
                               disabled={busy}
