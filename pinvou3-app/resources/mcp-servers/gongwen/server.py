@@ -2,11 +2,10 @@
 # -*- coding: utf-8 -*-
 """pinvou3 公文套版 MCP server。
 
-两个工具:
-  make_gongwen(gongwen, filename) —— 结构化公文 JSON → GB/T 9704 .docx(落产物目录)。
-  validate_gongwen(gongwen)       —— 立账核账:按党政机关公文规范逐项查,返回问题清单。
+工具 make_gongwen —— 结构化公文字段(扁平 string)→ GB/T 9704 .docx(落产物目录);
+出件前自带合规校验(_check,有 error 级硬伤则拒绝渲染并带回 issues)。
 
-写作(文种/话术/序号)由 skill 指导模型产出进 JSON;此 server 只做确定性套版与校验,
+写作(文种/话术/序号)由 skill 指导模型产出进字段;此 server 只做确定性套版与校验,
 一个字不改写内容。渲染细节见同目录 gbt9704_styles.py。
 """
 import sys, os, io, json, re
@@ -259,15 +258,6 @@ def _check(d):
     return {"ok": ok, "issues": issues, "checked": True}
 
 
-def validate_gongwen(filename=None, **fields):
-    """立账核账 MCP 入口。字段平铺(同 make_gongwen),也兼容 gongwen= 整传。"""
-    try:
-        d = _normalize_doc(filename, fields)
-    except Exception as e:
-        return {"ok": False, "issues": [{"level": "error", "msg": "公文参数无法解析:%s" % e}]}
-    return _check(d)
-
-
 def make_gongwen(filename=None, **fields):
     """结构化公文字段 → GB/T 9704 .docx。字段平铺(见 inputSchema)。返回 {ok, path, validate}。"""
     try:
@@ -303,13 +293,12 @@ def make_gongwen(filename=None, **fields):
 # 解:顶层全扁平 string 字段,function-calling 单独编码每个、保证合法;body/附件正文是"多行纯文本"
 # (模型当普通写作输出,级别由渲染器按行首序号前缀自动判,无需标级别、无需任何 JSON 转义)。
 _BODY_DESC = (
-    "正文。多行纯文本,一段一行(不是 JSON、不是数组)。直接按公文层级序号逐段写,渲染器按行首前缀"
-    "自动套字体:『一、…』黑体一级、『（一）…』楷体二级、『1.…』三级、无序号前缀的顶格段(承启句/"
-    "过渡句)仿宋正文。各段之间用换行分隔。"
+    "正文,多行纯文本、一段一行(非 JSON)。按公文序号逐段写,渲染器按行首前缀自动套版:"
+    "一、=一级、(一)=二级、1.=三级、无前缀段=正文。换行分段。"
 )
 _ATT_DESC = (
-    "印发型主件(办法/规定/细则)正文,多行纯文本,法规体例,无主件则留空。渲染器按前缀自动套版:"
-    "『第一章 …』黑体居中章标题、『第一条 …』仿宋正文条文。各条之间用换行分隔。"
+    "印发型主件(办法/规定)正文,多行纯文本、法规体例,无则留空。"
+    "渲染器按前缀套版:第一章=居中章标题、第一条=正文条文。"
 )
 _GONGWEN_SCHEMA = {
     "type": "object",
@@ -330,19 +319,16 @@ _GONGWEN_SCHEMA = {
     "required": ["doc_type", "title", "recipient", "body", "date"],
 }
 
+# 只暴露 make_gongwen 一个工具:validate 冗余(make 出件前自带同一个 _check、blocked_by_validate
+# 拦 error),单列只会把整份 12 字段 schema 在工具表里塞第二遍、加重 mtp 残留毒,故去掉。
 TOOL_DEFS = [
     {
         "name": "make_gongwen",
-        "description": "把结构化公文字段渲染成 GB/T 9704 合规 .docx,返回结果含 path;随后**直接用该 path 调 present_artifact 上卡,切勿自己 ls/find 文件**。内容你写进字段,套版交给渲染器。",
-        "inputSchema": _GONGWEN_SCHEMA,
-    },
-    {
-        "name": "validate_gongwen",
-        "description": "对公文字段立账核账(查标题/字号/主送/层级/落款日期等),返回 issues 清单;出件前自检用。字段同 make_gongwen。",
+        "description": "把公文字段渲染成 GB/T 9704 合规 .docx,返回含 path(出件前自带合规校验);随后直接用该 path 调 present_artifact 上卡,勿自己 ls/find。",
         "inputSchema": _GONGWEN_SCHEMA,
     },
 ]
-DISPATCH = {"make_gongwen": make_gongwen, "validate_gongwen": validate_gongwen}
+DISPATCH = {"make_gongwen": make_gongwen}
 
 
 # ── MCP stdio JSON-RPC(套 pptx server 范式)────────────────────────────────
