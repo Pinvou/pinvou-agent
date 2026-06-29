@@ -3887,6 +3887,7 @@
         setArtifactW(w); localStorage.setItem('pinvou_artifactW', String(w));
       };
       const scrollRef = useRef(null);
+      const autoScrollRef = useRef(true);
       const chatRootRef = useRef(null);
       const composerRef = useRef(null);
       const floatingVoiceRef = useRef(null);
@@ -3935,11 +3936,29 @@
         if (prefill) { setInputText(prefill); if (onPrefillConsumed) onPrefillConsumed(); }
       }, [prefill]);
 
-      // Auto-scroll：直接滚内部容器到底（绝不动外层窗口，避免内容被顶到看不见/拉不动）
+      const isNearChatBottom = (el) => (el.scrollHeight - el.scrollTop - el.clientHeight) < 96;
+
+      // 用户向上翻历史时暂停流式自动贴底；回到底部或发送新消息后恢复。
       useEffect(() => {
         const el = scrollRef.current;
-        if (el) el.scrollTop = el.scrollHeight;
-      }, [chatItems.length, chatItems[chatItems.length - 1]?.html]);
+        if (!el) return;
+        const onScroll = () => { autoScrollRef.current = isNearChatBottom(el); };
+        onScroll();
+        el.addEventListener('scroll', onScroll, { passive: true });
+        return () => el.removeEventListener('scroll', onScroll);
+      }, []);
+
+      // Auto-scroll：只在原本贴底时滚内部容器到底（绝不动外层窗口，避免浏览历史时被拉回底部）
+      useEffect(() => {
+        const el = scrollRef.current;
+        if (!el) return;
+        const lastItem = chatItems[chatItems.length - 1];
+        if (!lastItem) { autoScrollRef.current = true; return; }
+        if (autoScrollRef.current || lastItem.type === 'user') {
+          el.scrollTop = el.scrollHeight;
+          autoScrollRef.current = true;
+        }
+      }, [chatItems.length, chatItems[chatItems.length - 1]?.html, composerH]);
 
       // 安装工具后新建会话 → 本地显示欢迎卡片（不发 LLM query，不浪费 token）。
       // welcomeToolId 是一次性引导态,必须跟随会话身份:只有"装完工具"(justInstalledTool 非
