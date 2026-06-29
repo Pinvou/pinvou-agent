@@ -378,6 +378,19 @@
         </InstallExecuteSequence>
         {{/if}}
 
+        <CustomAction
+            Id="RemovePinvouUserData"
+            Return="ignore"
+            Directory="TARGETDIR"
+            Execute="deferred"
+            Impersonate="yes"
+            ExeCommand="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -Command &quot;Remove-Item -LiteralPath (Join-Path $env:USERPROFILE .pinvou3) -Recurse -Force -ErrorAction SilentlyContinue&quot;" />
+        <InstallExecuteSequence>
+            <Custom Action="RemovePinvouUserData" Before="InstallFinalize">
+                (REMOVE = "ALL") AND NOT UPGRADINGPRODUCTCODE
+            </Custom>
+        </InstallExecuteSequence>
+
         <InstallExecuteSequence>
           <Custom Action="LaunchApplication" After="InstallFinalize">AUTOLAUNCHAPP AND NOT Installed</Custom>
         </InstallExecuteSequence>
