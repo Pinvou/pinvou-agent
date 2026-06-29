@@ -17,6 +17,7 @@ pub mod mode_state;
 pub mod paths;
 pub mod prefs;
 pub mod sessions;
+pub mod skill_marketplace;
 
 use std::path::PathBuf;
 
