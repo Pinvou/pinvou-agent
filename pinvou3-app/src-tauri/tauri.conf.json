@@ -48,6 +48,7 @@
     },
     "windows": {
       "wix": {
+        "template": "resources/windows/main.wxs",
         "fragmentPaths": [
           "resources/windows/poppler-path.wxs",
           "resources/windows/pandoc-path.wxs",
