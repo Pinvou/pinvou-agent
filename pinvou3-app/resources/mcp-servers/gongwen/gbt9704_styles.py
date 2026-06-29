@@ -89,15 +89,19 @@ def _red_separator(doc):
 
 
 # 序号前缀 → 级别(确定性纠偏:模型偶发把『二、』标成二级致字体打架,按前缀强制对齐)
+_RE_CHAPTER = re.compile(r"^第[一二三四五六七八九十百零〇]+[章节]")  # 第一章/第二节(法规体例)
 _RE_L1 = re.compile(r"^[一二三四五六七八九十]+、")          # 一、总体要求
 _RE_L2 = re.compile(r"^[（(][一二三四五六七八九十]+[）)]")    # （一）…
 _RE_L3 = re.compile(r"^\d+[.．、]")                          # 1. / 1、
 
 
 def _infer_level(text, declared):
-    """『级别』优先由序号前缀确定(一、=一级 / （一）=二级 / 1.=三级),
-       前缀不明确时才尊重模型自报的 declared,缺省『正文』。"""
+    """『级别』优先由序号前缀确定(第N章=章 / 一、=一级 / （一）=二级 / 1.=三级),
+       前缀不明确时才尊重模型自报的 declared,缺省『正文』。
+       『第N条』不特判:它本就是仿宋正文(首行缩进2字),走缺省即可。"""
     t = text.lstrip()
+    if _RE_CHAPTER.match(t):
+        return "章"
     if _RE_L1.match(t):
         return "一级"
     if _RE_L2.match(t):
@@ -114,6 +118,10 @@ def _render_body(doc, blocks):
         if not text:
             continue
         level = _infer_level(text, (b.get("级别") or "").strip())
+        if level == "章":  # 法规体例「第N章」:黑体三号·居中(区别于条文正文)
+            _para(doc, text, F_HEITI, SZ_SANHAO,
+                  align=WD_ALIGN_PARAGRAPH.CENTER, space_after=4)
+            continue
         font, bold = LEVEL_FONT.get(level, (F_FANGSONG, False))
         indent = 2 if level == "正文" else 0
         _para(doc, text, font, SZ_SANHAO, bold=bold,

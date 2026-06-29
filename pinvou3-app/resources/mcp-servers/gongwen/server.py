@@ -31,11 +31,77 @@ def _coerce_list(v):
     return v if isinstance(v, list) else []
 
 
+# 对外 schema 用英文 key(见 _GONGWEN_SCHEMA),进来后映射回中文内部 key。
+# 工具表里若出现唯一中文 key/全角符号的 schema,会污染 Qwen3.6 mtp 的 tool_call
+# 格式参照、把别的工具(write_file)采歪成裸文本——这条漂因 warmup 堵不住(预热的是
+# KV cache 冷热,改不了工具表内容)。所以 schema 全英文 key,翻译留在这层。
+_EN2CN = {
+    "doc_type": "文种", "issuer": "发文机关", "doc_number": "发文字号", "title": "标题",
+    "recipient": "主送机关", "main_recipient": "主送机关", "body": "正文",
+    "signer": "落款机关", "date": "成文日期", "disclosure": "公开方式",
+    "print_note": "印发说明", "attachments": "附件",
+    "level": "级别", "text": "文字",
+}
+
+
+def _remap_keys(obj):
+    """英文 key → 中文内部 key(递归);中文 key 原样保留(belt:模型若仍产中文也认)。幂等。"""
+    if isinstance(obj, dict):
+        return {_EN2CN.get(k, k): _remap_keys(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_remap_keys(x) for x in obj]
+    return obj
+
+
+def _auto_split_attachment(doc):
+    """印发/转发型主件(办法/规定/规划等)规整,两种错位都纠:
+       ① 主件塞进 正文 而非 附件 → 拆进 附件,壳话术(承启句)留 正文;
+       ② 主件同时塞进 正文 和 附件(模型重复)→ 剥掉 正文里的主件,只留壳话术,
+          防双份渲染(真机实测过的坑)。
+       锚点 = 正文里第一个『主件起始』block(文字以 一、/第N章 起,或 == 主件名);
+       非印发型、正文无主件(纯壳话术)、主件在最前(无壳话术)时不动。
+       注:广州印发件标题不加书名号,故主件名按『印发…的通知』提取。"""
+    title = (doc.get("标题") or "").strip()
+    if "印发" not in title and "转发" not in title:
+        return doc
+    body = doc.get("正文") or []
+    m = re.search(r"(?:印发|转发)《?(.+?)》?的(?:通知|函|意见|批复|报告|命令|公告)", title)
+    main_name = m.group(1).strip().strip("《》") if m else None
+
+    def _is_main_start(b):
+        # 纯看文字前缀(不信模型标的 级别,它常打错):一、/第N章 是法规体例起始;或独立主件名行
+        t = (b.get("文字") or "").strip().strip("《》")
+        return (bool(re.match(r"^[一二三四五六七八九十]+、", t))
+                or bool(re.match(r"^第[一二三四五六七八九十百]+[章节]", t))
+                or (main_name and t == main_name))
+
+    cut = next((i for i, b in enumerate(body) if _is_main_start(b)), None)
+    if cut:  # cut>0:前面是壳话术,cut 起是混入/待拆的主件(cut=0/None 不动)
+        shell, main_blocks = body[:cut], body[cut:]
+        doc["正文"] = shell
+        if not doc.get("附件"):
+            # 主件只在正文 → 拆进附件(首块若就是主件标题,提为附件标题不重复)
+            first = (main_blocks[0].get("文字") or "").strip().strip("《》") if main_blocks else ""
+            if main_name and first == main_name:
+                doc["附件"] = [{"标题": main_name, "正文": main_blocks[1:]}]
+            else:
+                doc["附件"] = [{"标题": main_name or first, "正文": main_blocks}]
+        # else: 附件已有主件 → 正文剥离的主件直接丢弃(去重)
+
+    # 附件内再去一层重:附件正文首块若与附件标题同名(模型常多写一行标题),删掉
+    for a in (doc.get("附件") or []):
+        ab = a.get("正文") or []
+        at = (a.get("标题") or "").strip().strip("《》")
+        if ab and (ab[0].get("文字") or "").strip().strip("《》") == at:
+            a["正文"] = ab[1:]
+    return doc
+
+
 def _normalize_doc(filename, fields):
-    """统一取出公文 dict。兼容两种调法:
-       ① 字段平铺(匹配 inputSchema,模型默认这么调:文种=…、标题=…、正文=[…]);
-       ② 整体裹进 gongwen=（dict 或 JSON 字符串）。
-       并把 正文 / 附件[].正文 里被序列化成字符串的数组解析回 list。"""
+    """统一取出公文 dict(中文内部 key)。兼容:
+       ① 英文 key 平铺(匹配 inputSchema,模型默认这么调:doc_type=…、title=…、body=[…]);
+       ② 中文 key 平铺 / 整体裹进 gongwen=（dict 或 JSON 字符串）——均 belt 兼容。
+       并把 body / attachments[].body 里被序列化成字符串的数组解析回 list。"""
     if list(fields.keys()) == ["gongwen"]:
         doc = fields["gongwen"]
         if isinstance(doc, str):
@@ -44,13 +110,16 @@ def _normalize_doc(filename, fields):
         doc = dict(fields)
     if not isinstance(doc, dict):
         raise ValueError("公文参数必须是对象")
-    doc["正文"] = _coerce_list(doc.get("正文"))
-    atts = _coerce_list(doc.get("附件"))
-    for a in atts:
+    doc = _remap_keys(doc)  # 英文 key → 中文(顶层 + 已是 list 的 block)
+    doc["正文"] = [_remap_keys(b) for b in _coerce_list(doc.get("正文"))]
+    atts = []
+    for a in _coerce_list(doc.get("附件")):
+        a = _remap_keys(a) if isinstance(a, dict) else a
         if isinstance(a, dict):
-            a["正文"] = _coerce_list(a.get("正文"))
+            a["正文"] = [_remap_keys(b) for b in _coerce_list(a.get("正文"))]
+        atts.append(a)
     doc["附件"] = atts
-    return doc
+    return _auto_split_attachment(doc)
 
 
 def _sanitize_filename(name):
@@ -107,11 +176,12 @@ def _check(d):
             warn("标题缺『关于…的』结构")
         if title.count("，") or title.count("。") or title.count("、"):
             warn("标题含逗号/句号/顿号等标点(公文标题除书名号外不用标点)")
-    # 发文字号后缀性质
+    # 发文字号后缀性质。序号留 X/N 占位是起草纪律的合法状态(序号由发文机关登记后赋予),
+    # 放行不报;只对真正的格式错误(缺〔〕、序号非数字非占位)报 warn。
     if not fwzh:
         warn("缺『发文字号』")
-    elif not re.search(r"〔\d{4}〕\d+号$", fwzh):
-        warn("发文字号格式异常,应形如『穗府办规〔2026〕12号』")
+    elif not re.search(r"〔\d{4}〕(\d+|[XxNn×])号$", fwzh):
+        warn("发文字号格式异常,应形如『穗府办规〔2026〕12号』(序号待编可留 X)")
     if not zhusong:
         err("缺『主送机关』")
     if not body:
@@ -182,30 +252,30 @@ def make_gongwen(filename=None, **fields):
 
 # ── 工具定义 ────────────────────────────────────────────────────────────────
 _BODY_DESC = (
-    "正文 block 数组,每项 {级别, 文字}。`级别`∈ 一级|二级|三级|四级|正文,渲染器据此套字体字号"
-    "(一级『一、』=黑体三号;二级『（一）』=楷体三号;三级『1.』=仿宋三号加粗;正文=仿宋三号首行缩进2字)。"
-    "`文字`要含序号前缀本身(如『一、总体要求』『（一）…』),渲染器只套字体不补序号。"
+    "body 数组,每项 {level, text}。level 取 一级|二级|三级|四级|正文,渲染器据此套字体字号"
+    "(一级=黑体三号;二级=楷体三号;三级=仿宋三号加粗;正文=仿宋三号首行缩进2字)。"
+    "text 含序号前缀本身(一级写 一、,二级写 （一）,三级写 1.),渲染器只套字体不补序号。"
 )
 _GONGWEN_SCHEMA = {
     "type": "object",
     "properties": {
-        "文种": {"type": "string", "description": "通知/意见/请示/报告/函/批复…"},
-        "发文机关": {"type": "string", "description": "如 广州市人民政府办公厅(作红头与落款兜底)"},
-        "发文字号": {"type": "string", "description": "完整,如 穗府办规〔2026〕12号。规范性文件用『…规』,函式用『…函』,普通用『…』"},
-        "标题": {"type": "string", "description": "发文机关+关于+事由+文种;印发型务必含书名号《主件名》;除书名号外不用标点"},
-        "主送机关": {"type": "string", "description": "如 各区人民政府，市政府各部门、各直属机构(渲染器自动补末尾冒号)"},
-        "正文": {"type": "array", "items": {"type": "object"}, "description": _BODY_DESC},
-        "落款机关": {"type": "string", "description": "缺省=发文机关"},
-        "成文日期": {"type": "string", "description": "阿拉伯数字,如 2026年5月28日;不留 XX 占位"},
-        "公开方式": {"type": "string", "description": "缺省 主动公开"},
-        "印发说明": {"type": "string", "description": "如 广州市人民政府办公厅秘书处 2026年5月29日印发(可空)"},
-        "附件": {
+        "doc_type": {"type": "string", "description": "文种:通知/意见/请示/报告/函/批复"},
+        "issuer": {"type": "string", "description": "发文机关,如 广州市人民政府办公厅(作红头与落款兜底)"},
+        "doc_number": {"type": "string", "description": "发文字号,完整如 穗府办规〔2026〕12号;规范性文件用 …规,函式用 …函,普通用 …"},
+        "title": {"type": "string", "description": "标题=发文机关+关于+事由+文种;印发型务必含书名号《主件名》;除书名号外不用标点"},
+        "recipient": {"type": "string", "description": "主送机关,如 各区人民政府，市政府各部门、各直属机构(渲染器自动补末尾冒号)"},
+        "body": {"type": "array", "items": {"type": "object"}, "description": _BODY_DESC},
+        "signer": {"type": "string", "description": "落款机关,缺省=发文机关"},
+        "date": {"type": "string", "description": "成文日期,阿拉伯数字如 2026年5月28日;不留 XX 占位"},
+        "disclosure": {"type": "string", "description": "公开方式,缺省 主动公开"},
+        "print_note": {"type": "string", "description": "印发说明,如 广州市人民政府办公厅秘书处 2026年5月29日印发(可空)"},
+        "attachments": {
             "type": "array",
-            "description": "印发型通知的主件(办法/措施/规划等):每项 {标题, 正文:[blocks]},渲染时换页+居中标题。",
+            "description": "印发型通知的主件(办法/措施/规划等):每项 {title, body:[blocks]},渲染时换页+居中标题。",
             "items": {"type": "object"},
         },
     },
-    "required": ["文种", "标题", "主送机关", "正文", "成文日期"],
+    "required": ["doc_type", "title", "recipient", "body", "date"],
 }
 
 TOOL_DEFS = [
