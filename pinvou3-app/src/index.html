@@ -3130,6 +3130,7 @@
 
     const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onConfirmSearchConfig, searchNeedsRestart, languageNeedsRestart, bs, t }) => {
       const isDark = activeTheme === 'dark';
+      const isWindows = /Windows/i.test(navigator.userAgent || '');
       const [editingModel, setEditingModel] = useState(null);
       const modelEnvLocked = (bs && bs.effectiveModelConfig && bs.effectiveModelConfig.env_overrides) || [];
       const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -3365,6 +3366,7 @@
                 </div>
               </SCard>
 
+              {!isWindows && (
               <SCard isDark={isDark} title={t.sysPerm}>
                 <SRow isDark={isDark} label={t.sudo} desc={t.sudoDesc}>
                   <button
@@ -3376,6 +3378,7 @@
                   </button>
                 </SRow>
               </SCard>
+              )}
 
               <SCard isDark={isDark} title={t.appearance}>
                 <div className="space-y-8">
