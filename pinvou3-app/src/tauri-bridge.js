@@ -2410,7 +2410,7 @@
     if (!match) return message;
     var prefix = String(match[1] || '').trim().replace(/[:：]\s*$/, '');
     var detail = String(match[2] || '').trim();
-    if (prefix && detail) return prefix + '\uFF1A' + detail;
+    if (prefix && detail) return prefix + '\uFF0C' + detail;
     return detail || prefix || message;
   }
   async function checkForUpdate() {
