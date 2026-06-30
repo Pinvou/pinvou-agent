@@ -1,9 +1,11 @@
 name: PR Check
 
-# P0/P1 第一步:秒级门(不编译、零外部依赖)。
+# P0/P1 秒级门(无 Rust 编译依赖)。
 # - fork-guard 指纹层:抓 sync/merge 静默丢 fork patch(纯 grep submodule 文件)。
 # - fork 合规联动:改了 submodule gitlink 却没更新 fork-modifications.md → fail(治 #70 漏指纹)。
-# 编译类(clippy / cargo test)与 fmt 是后续独立步骤,见 PR 描述。
+# - Python MCP server 测试:跑 mcp-servers/*/test_*.py(覆盖 obsidian 改名正则那类)。
+# Rust 编译类(cargo test / clippy)是后续独立 job(需 bge-m3 占位 + cache);
+# clippy/fmt 现有代码各 75/329 处不符合,要先清理才能加 -D gate。
 
 on:
   pull_request:
@@ -33,3 +35,19 @@ jobs:
 
       - name: fork 合规联动 (gitlink ↔ fork-modifications)
         run: ./scripts/ci-fork-link-check.sh "origin/${{ github.base_ref }}"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Python MCP server 测试 (mcp-servers/*/test_*.py)
+        run: |
+          python3 -m pip install --quiet python-pptx   # pptx test 的唯一第三方依赖
+          fail=0
+          for t in pinvou3-app/resources/mcp-servers/*/test_*.py; do
+            [ -f "$t" ] || continue
+            echo "== $t =="
+            ( cd "$(dirname "$t")" && python3 "$(basename "$t")" ) || fail=1
+          done
+          [ "$fail" -eq 0 ]
