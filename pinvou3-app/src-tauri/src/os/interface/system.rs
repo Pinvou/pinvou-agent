@@ -26,6 +26,10 @@ pub fn asr_tool_path() -> PathBuf {
     super::super::platform::asr_tool_path()
 }
 
+pub fn asr_model_filename() -> &'static str {
+    super::super::platform::asr_model_filename()
+}
+
 pub fn archive_tool_path() -> PathBuf {
     super::super::platform::archive_tool_path()
 }
@@ -40,6 +44,22 @@ pub fn ocr_tool_exists() -> bool {
 
 pub fn asr_tool_exists() -> bool {
     super::super::platform::asr_tool_exists()
+}
+
+pub fn asr_bundled_runtime_status() -> Option<bool> {
+    super::super::platform::asr_bundled_runtime_status()
+}
+
+pub fn asr_dependency_installable() -> bool {
+    super::super::platform::asr_dependency_installable()
+}
+
+pub fn asr_install_unavailable_message() -> &'static str {
+    super::super::platform::asr_install_unavailable_message()
+}
+
+pub async fn install_asr_runtime(app: tauri::AppHandle) -> Result<(), String> {
+    super::super::platform::install_asr_runtime(app).await
 }
 
 pub fn archive_tool_exists() -> bool {

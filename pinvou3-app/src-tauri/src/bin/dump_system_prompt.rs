@@ -47,6 +47,10 @@ fn main() -> Result<()> {
         //   verbosity: None = GUI 不用 concise 输出模式(与 bridge Op::SendMessage 一致)。
         context_window_override: None,
         verbosity: None,
+        // v0.8.65 上游新增(C5):skills 扫描 CodeWhale-only 开关。pinvou3 #41 已把扫描
+        // 收窄成只 ~/.pinvou3/bundle/skills(技能市场私有区,两 mode 行为一致),此值无
+        // 实际影响,取 false(Compatible)。
+        skills_scan_codewhale_only: false,
     };
 
     // v0.8.57:上游把 system prompt 改成 **mode-independent**(mode/approval 移出静态前缀,

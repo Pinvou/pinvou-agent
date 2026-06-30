@@ -28,7 +28,7 @@ use deepseek_tui::session_manager::{
 };
 use parking_lot::RwLock;
 
-use super::mode_state::{ActiveSkillBinding, PlanPhase, SerializableMode, SessionModeState};
+use super::mode_state::{ActiveSkillBinding, SerializableMode, SessionModeState};
 use super::paths;
 
 /// pinvou3 session 存储：包 SessionManager + active id 跟踪 + per-session mode 状态。
@@ -39,13 +39,11 @@ use super::paths;
 ///
 /// `auto_continue_count`：M2 弱模型加固——Executing 态 LLM 调一次工具就停时,
 /// bridge 自动 send "继续"消息驱动 agent loop。每个用户主动消息重置为 0,
-/// 单次任务内 max 3 次连续 auto-continue 防失控。见决策文档 V2 §13.2。
 #[derive(Clone)]
 pub struct SessionStore {
     manager: Arc<SessionManager>,
     active: Arc<RwLock<Option<String>>>,
     mode_states: Arc<RwLock<HashMap<String, SessionModeState>>>,
-    auto_continue_count: Arc<RwLock<HashMap<String, u8>>>,
     /// per-session 模型绑定:session_id → SavedModel.id。某 session 显式选过模型
     /// 才有条目;没选的回退全局 active_model_id。落盘到 `_session_models.json`
     /// (仿 skill_bindings),底座 SavedSession 不能加字段故独立存。
@@ -62,7 +60,6 @@ impl SessionStore {
             manager: Arc::new(manager),
             active: Arc::new(RwLock::new(None)),
             mode_states: Arc::new(RwLock::new(HashMap::new())),
-            auto_continue_count: Arc::new(RwLock::new(HashMap::new())),
             session_models: Arc::new(RwLock::new(HashMap::new())),
         })
     }
@@ -203,34 +200,12 @@ impl SessionStore {
         self.mode_states.read().get(id).cloned().unwrap_or_default()
     }
 
-    /// 设置 mode（影响下一条消息发送时 `build_send_message_op` 取值）。
-    /// 同时调整 plan_phase 让状态保持一致：
-    /// - 切到 Plan 且当前 phase=None → phase=Planning
-    /// - 切到 Yolo → phase 不动（调用方决定 None/Executing）
+    /// 设置 mode。砍 PlanPhase 后是 Plan/Yolo 唯一 setter(流转命令都调它),
+    /// 只改 mode,保留 pinvou_review_enabled 等其他字段。
     pub fn set_mode(&self, id: &str, mode: SerializableMode) {
         let mut m = self.mode_states.write();
         let entry = m.entry(id.to_string()).or_default();
         entry.mode = mode;
-        if mode == SerializableMode::Plan && entry.plan_phase == PlanPhase::None {
-            entry.plan_phase = PlanPhase::Planning;
-        }
-    }
-
-    /// 设置 plan_phase（细粒度状态转移：Planning↔Ready / Executing / None）。
-    pub fn set_plan_phase(&self, id: &str, phase: PlanPhase) {
-        let mut m = self.mode_states.write();
-        let entry = m.entry(id.to_string()).or_default();
-        entry.plan_phase = phase;
-    }
-
-    /// 一次性原子更新 mode + phase（用户 accept_plan / exit_plan_to_yolo 等场景）。
-    /// **保留现有 pinvou_review_enabled**(品悟开关与 mode/phase 正交)。
-    pub fn set_mode_state(&self, id: &str, mode: SerializableMode, phase: PlanPhase) {
-        let mut m = self.mode_states.write();
-        let entry = m.entry(id.to_string()).or_default();
-        entry.mode = mode;
-        entry.plan_phase = phase;
-        // pinvou_review_enabled 不动
     }
 
     /// 设置品悟 review 开关（用户在 UI 顶部 toggle 切换）。
@@ -286,6 +261,14 @@ impl SessionStore {
     }
     pub fn take_pending_persona_body(&self, id: &str) -> Option<String> {
         self.mode_states.write().get_mut(id)?.pending_persona_body.take()
+    }
+
+    // ── 知识库挂载(会话级粘连,仿 persona,仅驻内存) ──
+    pub fn set_mounted_collection(&self, id: &str, collection_id: Option<i64>) {
+        self.mode_states.write().entry(id.to_string()).or_default().mounted_collection = collection_id;
+    }
+    pub fn mounted_collection(&self, id: &str) -> Option<i64> {
+        self.mode_states.read().get(id)?.mounted_collection
     }
 
     pub fn unbind_skill(&self, id: &str) {
@@ -400,29 +383,6 @@ impl SessionStore {
         }
     }
 
-    // ===================== M2: auto-continue counter =====================
-
-    /// 取当前 session 的 auto-continue 计数。
-    pub fn auto_continue_count(&self, id: &str) -> u8 {
-        self.auto_continue_count
-            .read()
-            .get(id)
-            .copied()
-            .unwrap_or(0)
-    }
-
-    /// +1 并返回新值。Executing 卡顿时 forwarder 调用。
-    pub fn bump_auto_continue(&self, id: &str) -> u8 {
-        let mut m = self.auto_continue_count.write();
-        let n = m.entry(id.to_string()).or_insert(0);
-        *n = n.saturating_add(1);
-        *n
-    }
-
-    /// 清零。用户主动发消息(commands::chat) 调用。
-    pub fn reset_auto_continue(&self, id: &str) {
-        self.auto_continue_count.write().remove(id);
-    }
 }
 
 /// 生成 URL-safe session id（短 8 字节 timestamp + nanos hash）。
@@ -543,25 +503,68 @@ mod tests {
     }
 
     #[test]
-    fn set_mode_state_preserves_pinvou_review() {
-        // 关键不变量:plan→execute 流转(set_mode_state)不能覆盖品悟开关。
+    fn set_mode_preserves_pinvou_review() {
+        // 关键不变量:切 mode(set_mode)不能覆盖品悟开关。
         let (store, _g) = isolated_store();
         store.set_pinvou_review("s1", true);
-        store.set_mode_state(
-            "s1",
-            super::super::mode_state::SerializableMode::Yolo,
-            super::super::mode_state::PlanPhase::Executing,
-        );
+        store.set_mode("s1", super::super::mode_state::SerializableMode::Yolo);
         let state = store.mode_state("s1");
         assert!(state.pinvou_review_enabled);
         assert!(matches!(
             state.mode,
             super::super::mode_state::SerializableMode::Yolo
         ));
-        assert!(matches!(
-            state.plan_phase,
-            super::super::mode_state::PlanPhase::Executing
-        ));
+    }
+
+    /// 模式切换闭环(回归底座二态后的核心契约):流转命令 set_plan_mode_next(→Plan) /
+    /// accept_plan / exit_plan_to_yolo(→Yolo) 实质都只调 set_mode,全程**只动 mode**——
+    /// 品悟开关 / 挂载知识集 / 人格卡 / skill 绑定等正交状态必须原样保留。
+    /// (discard_plan「算了」不在此列:放弃方案但留在当前 mode,不调 set_mode。)
+    /// 防有人给流转命令加副作用,或把 set_mode 改成整体覆盖式写法时连带清掉这些字段。
+    /// 比 set_mode_preserves_pinvou_review 更全(多步往返 + 四字段)。
+    #[test]
+    fn mode_switch_loop_preserves_orthogonal_state() {
+        use super::super::mode_state::SerializableMode;
+        let (store, _g) = isolated_store();
+        let sid = "s-loop";
+
+        // 起始默认 Yolo,挂满正交状态
+        assert_eq!(store.mode_state(sid).mode, SerializableMode::Yolo);
+        store.set_pinvou_review(sid, true);
+        store.set_mounted_collection(sid, Some(42));
+        store.set_active_persona(sid, Some("expert-x".into()));
+        store.bind_skill(
+            sid,
+            ActiveSkillBinding {
+                name: "h3c-ppt".into(),
+                pending_instruction: None,
+                phases: vec![],
+                project_dir: None,
+            },
+        );
+
+        // 闭环往返两轮:Yolo →(set_plan_mode_next)→ Plan →(accept/exit)→ Yolo
+        for _ in 0..2 {
+            store.set_mode(sid, SerializableMode::Plan);
+            assert_eq!(store.mode_state(sid).mode, SerializableMode::Plan);
+            store.set_mode(sid, SerializableMode::Yolo);
+            assert_eq!(store.mode_state(sid).mode, SerializableMode::Yolo);
+        }
+
+        // 四个正交字段全保留
+        let st = store.mode_state(sid);
+        assert!(st.pinvou_review_enabled, "切 mode 清了品悟开关");
+        assert_eq!(st.mounted_collection, Some(42), "切 mode 卸载了知识集");
+        assert_eq!(
+            st.active_persona.as_deref(),
+            Some("expert-x"),
+            "切 mode 清了人格"
+        );
+        assert_eq!(
+            st.active_skill.map(|s| s.name),
+            Some("h3c-ppt".to_string()),
+            "切 mode 解绑了 skill"
+        );
     }
 
     #[test]
@@ -609,15 +612,11 @@ mod tests {
     }
 
     #[test]
-    fn bind_skill_preserves_mode_and_phase() {
-        // 绑定/解绑 skill 不能动 mode / plan_phase / pinvou_review_enabled。
+    fn bind_skill_preserves_mode() {
+        // 绑定/解绑 skill 不能动 mode / pinvou_review_enabled。
         let (store, _g) = isolated_store();
         store.set_pinvou_review("s1", true);
-        store.set_mode_state(
-            "s1",
-            super::super::mode_state::SerializableMode::Plan,
-            super::super::mode_state::PlanPhase::Planning,
-        );
+        store.set_mode("s1", super::super::mode_state::SerializableMode::Plan);
         store.bind_skill(
             "s1",
             ActiveSkillBinding {

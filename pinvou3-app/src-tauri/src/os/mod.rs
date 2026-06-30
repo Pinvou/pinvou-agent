@@ -16,11 +16,13 @@ pub(crate) use unsupported as platform;
 pub(crate) use windows as platform;
 
 pub use interface::{
-    archive_dependency_packages, archive_tool_exists, archive_tool_path, asr_dependency_packages,
-    asr_missing_message, asr_tool_exists, asr_tool_path, check_for_update_info, command_exists,
-    disable_super_permission, download_update_package, email_dependency_packages,
-    email_tool_exists, enable_super_permission, install_dependencies, install_downloaded_update,
-    msg_converter_required, msg_native_supported,
+    archive_dependency_packages, archive_tool_exists, archive_tool_path,
+    asr_bundled_runtime_status, asr_dependency_installable, asr_dependency_packages,
+    asr_install_unavailable_message, asr_missing_message, asr_model_filename, asr_tool_exists,
+    asr_tool_path, check_for_update_info, command_exists, disable_super_permission,
+    download_update_package, email_dependency_packages, email_tool_exists, enable_super_permission,
+    install_dependencies, install_asr_runtime, install_downloaded_update, msg_converter_required,
+    msg_native_supported,
     nvidia_smi_candidates, ocr_dependency_packages, ocr_tessdata_dir, ocr_tool_exists,
     ocr_tool_path, open_target, pandoc_dependency_packages, pandoc_missing_message,
     pandoc_tool_exists, pandoc_tool_path, pdf_dependency_packages, pdf_ocr_missing_message,

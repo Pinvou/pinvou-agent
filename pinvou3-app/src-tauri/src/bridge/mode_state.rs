@@ -1,9 +1,9 @@
-//! Per-session mode + plan_phase 状态。
+//! Per-session mode 状态。
 //!
-//! pinvou3 把底座 `AppMode::Plan / Yolo` 简化暴露给用户，加一个 `PlanPhase`
-//! 子状态机跟踪 Plan 流程的生命周期。
+//! pinvou3 把底座 `AppMode::Plan / Yolo` 二态暴露给用户。Plan 流程的交接
+//! (出方案→accept→执行) 复用底座原生闭环,app 不再自建 phase 状态机。
 //!
-//! 决策来源：`docs/Plan-YOLO双模式-设计决策.md` 第 3 节状态机。
+//! 决策来源：`docs/plan-yolo-回归底座式改造方案.md`。
 
 use deepseek_tui::tui::app::AppMode;
 use serde::{Deserialize, Serialize};
@@ -29,27 +29,6 @@ pub struct ActiveSkillBinding {
     /// 能继续找到对应项目。
     #[serde(default)]
     pub project_dir: Option<String>,
-}
-
-/// Plan 流程的子阶段。`mode = Plan` 时 phase 在 Planning/Ready 间流转；
-/// 用户 accept plan 后 `mode = Yolo, phase = Executing`；执行完毕 `phase = None`。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PlanPhase {
-    /// YOLO 默认态，无 plan 流程
-    None,
-    /// 用户已进 Plan，AI 在调研 / 用户在讨论
-    Planning,
-    /// AI 已出完整 plan，等用户决策（✅/✏️/🚪）
-    Ready,
-    /// 用户已接受 plan，AI 在 YOLO 模式按 plan 执行
-    Executing,
-}
-
-impl Default for PlanPhase {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 /// 单 session 的 mode 状态。前端通过 `get_mode_state` 拉取，
@@ -80,7 +59,6 @@ pub struct SessionModeState {
     pub pending_persona_body: Option<String>,
     /// 当前激活 mode。`build_send_message_op` 用这个值。
     pub mode: SerializableMode,
-    pub plan_phase: PlanPhase,
     /// 品悟 review 质量护栏开关。默认 false(保持现状)。
     /// 开启后 accept_plan / exit_plan_to_yolo 触发 EXIT GATE。
     #[serde(default)]
@@ -88,17 +66,23 @@ pub struct SessionModeState {
     /// 该 session 绑定的工作流 skill。`None` = 普通对话。
     #[serde(default)]
     pub active_skill: Option<ActiveSkillBinding>,
+    /// 该 session 挂载的本地知识集 id(会话级粘连)。`None` = 未挂载。
+    /// 挂上后每条 user 消息发送前,用消息文本对该集 `kb_retrieve`,把命中片段
+    /// 当附件一样注入(见 `commands::chat`)。与 `active_persona` 一样仅驻内存,
+    /// 不落盘——重启 app 后回到未挂载。
+    #[serde(default)]
+    pub mounted_collection: Option<i64>,
 }
 
 impl Default for SessionModeState {
     fn default() -> Self {
         Self {
             mode: SerializableMode::Yolo,
-            plan_phase: PlanPhase::None,
             pinvou_review_enabled: false,
             active_skill: None,
             active_persona: None,
             pending_persona_body: None,
+            mounted_collection: None,
         }
     }
 }
@@ -126,10 +110,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_is_yolo_none() {
+    fn default_is_yolo() {
         let s = SessionModeState::default();
         assert_eq!(s.mode, SerializableMode::Yolo);
-        assert_eq!(s.plan_phase, PlanPhase::None);
     }
 
     #[test]
@@ -148,15 +131,14 @@ mod tests {
     fn serializes_to_snake_case() {
         let s = SessionModeState {
             mode: SerializableMode::Plan,
-            plan_phase: PlanPhase::Planning,
             pinvou_review_enabled: false,
             active_skill: None,
             active_persona: None,
             pending_persona_body: None,
+            mounted_collection: None,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"mode\":\"plan\""));
-        assert!(json.contains("\"plan_phase\":\"planning\""));
     }
 
     #[test]

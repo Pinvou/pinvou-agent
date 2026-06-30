@@ -53,6 +53,9 @@
   var state = {
     sessions: [],
     activeSessionId: null,
+    // 模型 load_skill 触发的当前技能 id（如 'visual-design'）→ 点亮 composer 技能标；null=无。
+    // 内置自动技能（视觉设计）的"正在使用"指示：新一轮用户消息时清、相关时再点亮。
+    activeSkill: null,
     // 「新建对话」点击计数:每次 enterDraft() 自增(含已在草稿态的提前返回)。前端 welcomeToolId
     // 复位 effect 挂它 → 即便 activeSessionId 没变(draft→draft)也能重新求值,否则残留的工具欢迎卡
     // 会一直顶掉「你好」欢迎语(该 tool 无 welcomeQueries 时整块空白)。
@@ -80,7 +83,7 @@
     activeModelId: null,
     currentSessionModelId: null, // 当前 active session 显式绑定的模型;null=跟随全局默认
     superPermEnabled: false,
-    modeState: { mode: "yolo", plan_phase: "none" },
+    modeState: { mode: "yolo" },
     // 最新 plan/todos 快照（用于 mode header 进度 chip，与 plan_ready 卡解耦）
     planSnapshot: { plan: null, todos: null },
     // 当前 session 产物列表 [{ path, basename }]
@@ -120,6 +123,9 @@
     // 卡片池: 专家面具。activePersona = 当前 session 加持的专家卡(完整对象)或 null,
     // 驱动聊天室右上角挂件。
     activePersona: null,
+    // 知识库挂载: 当前 session 挂载的知识集 id(number)或 null。仿 activePersona 走 buffer,
+    // 仅驻内存(后端也只驻内存),重启回到未挂载。名字由前端用知识集列表解析。
+    mountedCollection: null,
     // personaPool 只放轻量元信息(loadState),1078 张卡放模块级 personaPoolCache,
     // 不进 notify() 的 JSON 深拷贝(否则每个流式 token 都克隆 ~950KB,卡顿)。
     personaPool: { loadState: "idle" }, // idle | loading | ready | error
@@ -147,6 +153,14 @@
       sessionId: null,
       startedAt: 0,
     },
+    // 本地语音识别依赖安装引导（首次点麦克风缺组件时弹框）
+    voiceAsrSetup: {
+      open: false,        // 弹框是否展示
+      status: null,       // voice_asr_status 返回 { engine, ffmpeg, model, ready, missing }
+      installing: false,  // 安装中
+      progress: null,     // { stage:'ffmpeg'|'model'|'done', downloaded, total }
+      error: null,
+    },
   };
   // 卡片池 1078 张卡的前端缓存。只读,通过 getPersonas() 取引用,不走 notify 快照。
   var personaPoolCache = [];
@@ -165,9 +179,18 @@
   var monitorIntervalId = null;
   var gpuUtilHistory = [];
   var maxModelLen = 32768;
+  // 监控页「清除统计」基准点：vLLM 的几个累计 counter（TTFT/TPOT/tokens/prefix
+  // cache）无法真正清零（它们跟随远端 vLLM 进程生命周期，归零要重启共享进程）。
+  // 改为记一个基准快照，显示值 = 当前 counter − 基准。换模型 / vLLM 重启 → counter
+  // 倒退到小于基准，自动判定基准失效并丢弃，回落到生命周期累计值。持久化到
+  // localStorage，关掉应用再开仍保持「自某时起」的统计。
+  var MONITOR_BASELINE_KEY = "pinvou3.monitorStatsBaseline";
+  var monitorBaseline = null;
+  try {
+    var _mb = localStorage.getItem(MONITOR_BASELINE_KEY);
+    if (_mb) monitorBaseline = JSON.parse(_mb);
+  } catch (e) { monitorBaseline = null; }
   var attachIdSeq = 0;
-  // Plan 文本兜底卡片命中关键词（与 main.js 对齐）
-  var PLAN_FALLBACK_KEYWORDS = ["方案", "步骤", "以下", "技术栈", "实现", "设计", "**"];
 
   // ── bridge 层 UI 文案（系统消息/状态标签）──────────────────────
   // bridge 在事件回调里生成文案,拿不到 React 的 t;按 state.settings.language 取词,中文兜底。
@@ -183,8 +206,8 @@
       superOn: "⚠️ Super permission enabled", superOff: "Super permission disabled",
       approved: "✅ Approved", echoGo: "✅ Do it",
       acceptPlanFailed: "⚠️ accept_plan failed: ",
-      exitedPlan: "🚪 Exited Plan", discardPlanFailed: "⚠️ discard_plan failed: ", exitPlanFailed: "⚠️ Failed to exit Plan: ", switchModeFailed: "⚠️ Failed to switch mode: ",
-      replanRequested: "📋 Asking the AI to re-plan…", adoptingPlan: "✅ Adopting...", adoptEcho: "✅ Adopt this plan",
+      planDiscarded: "🚪 Plan discarded", discardPlanFailed: "⚠️ discard_plan failed: ", exitPlanFailed: "⚠️ Failed to exit Plan: ", switchModeFailed: "⚠️ Failed to switch mode: ",
+      replanRequested: "📋 Asking the AI to re-plan…",
       openFailed: "⚠️ Open failed: ", pasteImageFailed: "⚠️ Paste image failed: ",
       filePickUnavailable: "⚠️ File picker unavailable", filePickFailed: "⚠️ File selection failed: ",
       equipNoSession: "⚠️ Open or create a chat before equipping an expert", equipFailed: "⚠️ Equip failed: ",
@@ -199,8 +222,8 @@
       superOn: "⚠️ スーパー権限が有効になりました", superOff: "スーパー権限が無効になりました",
       approved: "✅ 承認済み", echoGo: "✅ これでいく",
       acceptPlanFailed: "⚠️ accept_plan に失敗: ",
-      exitedPlan: "🚪 Plan を終了", discardPlanFailed: "⚠️ discard_plan に失敗: ", exitPlanFailed: "⚠️ Plan の終了に失敗: ", switchModeFailed: "⚠️ モード切替に失敗: ",
-      replanRequested: "📋 AI にプランを出し直させています…", adoptingPlan: "✅ 採用中...", adoptEcho: "✅ このプランを採用",
+      planDiscarded: "🚪 プランを破棄", discardPlanFailed: "⚠️ discard_plan に失敗: ", exitPlanFailed: "⚠️ Plan の終了に失敗: ", switchModeFailed: "⚠️ モード切替に失敗: ",
+      replanRequested: "📋 AI にプランを出し直させています…",
       openFailed: "⚠️ 開けませんでした: ", pasteImageFailed: "⚠️ 画像の貼り付けに失敗: ",
       filePickUnavailable: "⚠️ ファイル選択を利用できません", filePickFailed: "⚠️ ファイル選択に失敗: ",
       equipNoSession: "⚠️ エキスパートを装備する前にチャットを開くか新規作成してください", equipFailed: "⚠️ 装備に失敗: ",
@@ -215,8 +238,8 @@
       superOn: "⚠️ 超级权限已开启", superOff: "超级权限已关闭",
       approved: "✅ 已批准", echoGo: "✅ 就这么干",
       acceptPlanFailed: "⚠️ accept_plan 失败: ",
-      exitedPlan: "🚪 已退出 Plan", discardPlanFailed: "⚠️ discard_plan 失败: ", exitPlanFailed: "⚠️ 退出 Plan 失败: ", switchModeFailed: "⚠️ 切换模式失败: ",
-      replanRequested: "📋 让 AI 重出方案…", adoptingPlan: "✅ 采纳中...", adoptEcho: "✅ 采纳此方案",
+      planDiscarded: "🚪 已放弃此方案", discardPlanFailed: "⚠️ discard_plan 失败: ", exitPlanFailed: "⚠️ 退出 Plan 失败: ", switchModeFailed: "⚠️ 切换模式失败: ",
+      replanRequested: "📋 让 AI 重出方案…",
       openFailed: "⚠️ 打开失败: ", pasteImageFailed: "⚠️ 粘贴图片失败: ",
       filePickUnavailable: "⚠️ 文件选择不可用", filePickFailed: "⚠️ 选择文件失败: ",
       equipNoSession: "⚠️ 请先打开或新建一个对话再加持专家", equipFailed: "⚠️ 加持失败: ",
@@ -243,10 +266,11 @@
     return {
       messages: [], chatItems: [], personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
       planSnapshot: { plan: null, todos: null },
-      modeState: { mode: "yolo", plan_phase: "none" },
+      modeState: { mode: "yolo" },
       thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
       tokens: { input: 0, max: maxModelLen },
       activePersona: null, // 卡片池: 该 session 加持的专家面具(挂件用)
+      mountedCollection: null, // 知识库: 该 session 挂载的知识集 id 或 null
 
       stream: {
         currentStreamText: "", currentStreamId: 0, pendingAssistantText: "",
@@ -267,6 +291,7 @@
     buf.busy = state.busy; buf.planSnapshot = state.planSnapshot; buf.modeState = state.modeState;
     buf.thinking = state.thinking; buf.tokens = state.tokens; buf.queued = state.queued;
     buf.activePersona = state.activePersona;
+    buf.mountedCollection = state.mountedCollection;
     buf.stream = {
       currentStreamText: currentStreamText, currentStreamId: currentStreamId,
       pendingAssistantText: pendingAssistantText, pendingAssistantBlocks: pendingAssistantBlocks,
@@ -284,6 +309,7 @@
     state.busy = buf.busy; state.planSnapshot = buf.planSnapshot; state.modeState = buf.modeState;
     state.thinking = buf.thinking; state.tokens = buf.tokens; state.queued = buf.queued || [];
     state.activePersona = buf.activePersona || null;
+    state.mountedCollection = buf.mountedCollection || null;
     var s = buf.stream || {};
     currentStreamText = s.currentStreamText || ""; currentStreamId = s.currentStreamId || 0;
     pendingAssistantText = s.pendingAssistantText || ""; pendingAssistantBlocks = s.pendingAssistantBlocks || [];
@@ -381,6 +407,8 @@
   // 成品卡是否"重复出卡":从 chatItems 末尾往前扫——先遇到该文件的修改工具(write/append/edit)
   // → 不算重复(文件改过了,该出新版卡/续卡,即"二次修改弹新卡");先遇到同名成品卡 → 算重复
   // (同一产物没改又 present 一次,模型常见啰嗦)。判据=「上一张同名卡之后有没有改过这个文件」。
+  // 例外:扫到**用户发言**就放行——用户在上一张卡之后又开了口(典型「再推一次」「没看到」),
+  // 这次 present 是新请求的响应,不是模型自发啰嗦;再去重 = 用户主动要却看不到任何反馈(实测 bug)。
   function isDuplicateArtifactCard(pathv) {
     var bn = basename(pathv);
     if (!bn) return false;
@@ -390,6 +418,7 @@
         var ap = extractArtifactPath(it.args);
         if (ap && basename(ap) === bn) return false;
       }
+      if (it.type === "user") return false;
       if (it.type === "artifact_card" && basename(it.path) === bn) return true;
     }
     return false;
@@ -461,6 +490,7 @@
       await refreshHistoryList();
       await syncModeState();
       await syncActivePersona();
+      await syncMountedCollection();
       notify();
       return state.activeSessionId;
     } catch (e) {
@@ -478,6 +508,7 @@
       switchActiveTo(id, null);
       await syncModeState();
       await syncActivePersona();
+      await syncMountedCollection();
       notify();
       reconcileArtifacts(id); // 对账磁盘产物(fire-and-forget)
       return;
@@ -499,6 +530,7 @@
       rerenderFromMessages();
       await syncModeState();
       await syncActivePersona();
+      await syncMountedCollection();
       notify();
       reconcileArtifacts(id); // 对账磁盘产物(修重启/跟踪遗漏导致的面板缺文件)
     } catch (e) {
@@ -658,7 +690,9 @@
               updateToolItem(c.tool_use_id, c.content, false); // 被拦=失败态,与实时一致
               addChatItem({ type: "careful_blocked", args: tm.args, metadata: blockedMd, time: "" });
             } else {
-              updateToolItem(c.tool_use_id, c.content, !c.is_error);
+              // load_skill 同样脱敏：重载历史时也不还原 SKILL.md 全文，展开只见占位。
+              var contentForCard = (tm.name === "load_skill") ? "（技能已加载，内容不展示）" : c.content;
+              updateToolItem(c.tool_use_id, contentForCard, !c.is_error);
             }
           }
         }
@@ -703,6 +737,7 @@
                   title: (b.input && b.input.title) || "",
                   description: (b.input && b.input.description) || "",
                   time: "",
+                  sessionId: state.activeSessionId,
                 });
               }
               continue;
@@ -730,11 +765,11 @@
               if (wprev) {
                 addChatItem({
                   type: "artifact_card", path: wprev.path, title: wprev.title,
-                  description: wprev.description, time: "",
+                  description: wprev.description, time: "", sessionId: state.activeSessionId,
                 });
               } else if (writtenArtifacts[wap] && !presentedArtifacts[wap]) {
                 // AI 写了产物但全程没 present_artifact → 兜底补首卡(与实时 chat:done 对齐)
-                addChatItem({ type: "artifact_card", path: wap, title: basename(wap), description: "", time: "" });
+                addChatItem({ type: "artifact_card", path: wap, title: basename(wap), description: "", time: "", sessionId: state.activeSessionId });
               }
             }
           }
@@ -791,6 +826,18 @@
   function isAbsPath(p) {
     return typeof p === "string" && (p.charAt(0) === "/" || /^[A-Za-z]:[\\/]/.test(p));
   }
+  // 「成品型」扩展名:write_file 写出这类文件即自动当成品进面板(模型常忘 present_artifact)。
+  // 办公文档 + markdown 报告 + 数据表 + 图片 + 打包件都算成品(覆盖 AI 常见产出格式)。
+  // 中间/草稿(.txt/.json/.xml 等)刻意不在此列 → 不进面板,避免一堆过程文件污染产物列表;
+  // 这类格式若确是成品,靠模型 present_artifact 显式挂出(present 过的不受扩展名门控)。
+  var DELIVERABLE_EXTS = [
+    "pptx", "ppt", "docx", "doc", "pdf", "html", "htm", "xlsx", "xls",
+    "md", "csv", "png", "jpg", "jpeg", "svg", "gif", "webp", "zip",
+  ];
+  function isDeliverable(path) {
+    var ext = (String(path || "").split(".").pop() || "").toLowerCase();
+    return DELIVERABLE_EXTS.indexOf(ext) >= 0;
+  }
   function trackArtifact(path) {
     if (!path) return;
     var bn = basename(path);
@@ -840,7 +887,12 @@
       files.forEach(function (p) {
         var bn = basename(p);
         var ex = byName[bn];
-        if (!ex) { var na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true; }
+        // 已 present_artifact 过的成品在 saved.artifacts(ex 命中);扫盘只「新增」成品型文件,
+        // 不再把所有过程文件全扫进面板(修「飞书 CLI scratch 全暴露成产物」)。
+        if (!ex) {
+          if (!isDeliverable(p)) return;
+          var na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true;
+        }
         else if (isAbsPath(p) && !isAbsPath(ex.path)) { ex.path = p; added = true; } // 相对→绝对,open 可靠
       });
       if (added) {
@@ -939,6 +991,9 @@
       await ensureSession(); // 草稿态首条消息 → 物化 session(命名靠下方 persistSession auto-title)
       if (!state.activeSessionId) return;
     }
+
+    // 新一轮用户消息 → 先熄灭技能标；本轮若模型再 load_skill 会重新点亮（sticky-ish 生命周期）。
+    state.activeSkill = null;
 
     // 展示文本：把附件 chip 名附在用户消息末尾
     var displayText = readyAttachments.length > 0
@@ -1182,6 +1237,17 @@
     // present_artifact：不渲染灰色工具卡，等 tool_end 成功时渲染成品卡
     if (isPresentArtifactTool(p.name)) { notify(); return; }
 
+    // load_skill：模型加载技能 → 点亮 composer 技能标（内置自动技能"正在使用"指示），
+    // 不渲染裸工具卡（用药丸指示器替代）。当前只识别视觉设计。
+    if (p.name === "load_skill") {
+      var skArg = ((p.args && (p.args.name || p.args.skill)) || "").toString();
+      if (skArg.indexOf("视觉设计") >= 0 || skArg.toLowerCase().indexOf("visual-design") >= 0) {
+        state.activeSkill = "visual-design";
+      }
+      // 不 return：照常出工具卡。卡内容在 tool_end / rerender 处脱敏成占位，
+      // 展开看不到 SKILL.md 全文（防设计系统泄露），但保留"加载了技能"的痕迹。
+    }
+
     // Add tool card
     addChatItem({
       type: "tool", toolId: p.id, name: p.name, args: p.args,
@@ -1228,6 +1294,7 @@
             title: (meta.args && meta.args.title) || "",
             description: (meta.args && meta.args.description) || "",
             time: timeStr(),
+            sessionId: p.session_id || state.activeSessionId,
           });
         }
         if (presentedPath) state.turnPresentedArtifacts.push(presentedPath); // 本 turn 已出成品卡,chat:done 不再兜底补
@@ -1250,7 +1317,9 @@
       return;
     }
 
-    updateToolItem(p.id, p.output, p.success);
+    // load_skill：卡照出，但不把返回的 SKILL.md 全文写进卡，展开只见占位（防设计系统泄露）。
+    var outForCard = (meta && meta.name === "load_skill") ? "（技能已加载，内容不展示）" : p.output;
+    updateToolItem(p.id, outForCard, p.success);
 
     // Careful hook：DeepSeek-TUI shell.rs 拦截 Dangerous → 红色拦截卡
     var md = p.metadata;
@@ -1264,10 +1333,16 @@
     if (p.success && meta && (meta.name === "write_file" || meta.name === "append_file" || meta.name === "edit_file")) {
       var ap = extractArtifactPath(meta.args);
       if (ap) {
-        if (meta.name !== "edit_file") trackArtifact(ap); // edit_file 只改已有,不新建产物
+        // 面板只收「成品」:成品型扩展名(自动当成品)或之前 present_artifact 过的文件;
+        // 中间草稿(content_p1.txt / *_params.json 等)不进面板。edit_file 只改已有不新建。
+        if (meta.name !== "edit_file" && (isDeliverable(ap) || findPresentedArtifact(ap))) trackArtifact(ap);
         // 产物(present 过的成品 或 write/append 写进产物列表的)被写/改 → turn 结束补卡。
         // 不再要求 present 过:AI 经常写完产物忘了 present_artifact → 没成品卡 = 没召唤入口。
-        var isArtifact = !!findPresentedArtifact(ap) || state.artifacts.some(function (a) { return a.path === ap; });
+        // 按 basename 比对:disk watcher(artifact:disk)写盘后抢先用**绝对**路径 trackArtifact
+        // 占了名额,而这里 ap 是 write_file 的**相对**参数 —— 用 a.path===ap 比绝对≠相对永远落空,
+        // turnDirty 收不到 → 实时不补成品卡(只能靠重启 rerender 才出)。basename 比对消除该竞态。
+        var _apbn = basename(ap);
+        var isArtifact = !!findPresentedArtifact(ap) || state.artifacts.some(function (a) { return basename(a.path) === _apbn; });
         if (isArtifact && state.turnDirtyArtifacts.indexOf(ap) < 0) {
           state.turnDirtyArtifacts.push(ap);
         }
@@ -1295,7 +1370,6 @@
   // 不依赖工作集 —— 这样后台 session 跑完也能正确落盘。
   listen("chat:done", function (e) {
     var sid = (e.payload && e.payload.session_id) || state.activeSessionId;
-    var flags = { wasExecuting: false };
     runSyncOnSession(sid, function () {
       var error = e.payload && e.payload.error;
       if (error) addSystemItem("⚠️ " + error);
@@ -1309,8 +1383,12 @@
         var _apbn = basename(ap);
         if ((state.turnPresentedArtifacts || []).some(function (pp) { return basename(pp) === _apbn; })) return;
         var prev = findPresentedArtifact(ap);
-        if (prev) addChatItem({ type: "artifact_card", path: prev.path, title: prev.title, description: prev.description, time: timeStr() });
-        else addChatItem({ type: "artifact_card", path: ap, title: basename(ap), description: "", time: timeStr() });
+        // 补卡 path 优先用 disk watcher 落进产物列表的同名**绝对**路径(open 可靠、跨 session 稳);
+        // 没有再退回 write_file 的相对 ap(由 sessionId 兜底解析)。
+        var tracked = state.artifacts.find(function (a) { return basename(a.path) === _apbn && isAbsPath(a.path); });
+        var cardPath = (tracked && tracked.path) || ap;
+        if (prev) addChatItem({ type: "artifact_card", path: prev.path, title: prev.title, description: prev.description, time: timeStr(), sessionId: sid });
+        else addChatItem({ type: "artifact_card", path: cardPath, title: basename(ap), description: "", time: timeStr(), sessionId: sid });
       });
       state.turnDirtyArtifacts = [];
       state.turnPresentedArtifacts = [];
@@ -1325,16 +1403,10 @@
       stopThinking();
       currentStreamText = "";
       currentStreamId = 0;
-      // 执行 plan 完成 → 回 yolo 默认态(plan_phase 从 executing → none)
-      if (state.modeState.plan_phase === "executing") {
-        flags.wasExecuting = true;
-        state.modeState = { mode: "yolo", plan_phase: "none" };
-      }
     });
     notify();
     // 异步收尾(按 sid 路由,active/后台通用)
     (async function () {
-      if (flags.wasExecuting) { try { await invoke("discard_plan", { sessionId: sid }); } catch (_) {} }
       await persistMessagesFor(sid);
       await refreshHistoryList();
       notify();
@@ -1390,9 +1462,19 @@
     var p = e.payload || {};
     if (!p.path) return;
     onSessionEvent(e, function () {
-      if (p.event === "removed") untrackArtifact(p.path);
-      else trackArtifact(p.path);
+      if (p.event === "removed") { untrackArtifact(p.path); return; }
+      // 面板只收成品:成品型扩展名 或 present_artifact 过的;中间 / infra / 目录不进面板
+      // (file_watcher 递归会推 tmp/ _state/ 等子目录与 infra 文件 → 此处兜住)。
+      if (isDeliverable(p.path) || findPresentedArtifact(p.path)) trackArtifact(p.path);
     });
+  });
+
+  // 本地语音识别依赖安装进度（模型下载 / ffmpeg 安装）
+  listen("voice_asr:progress", function (e) {
+    var p = e && e.payload;
+    if (!p) return;
+    state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { progress: p });
+    notify();
   });
 
   // chat:plan_snapshot —— update_plan/checklist_write 后实时更新进度，与 plan_ready 解耦
@@ -1403,10 +1485,9 @@
     notify();
   }); });
 
-  // chat:plan_ready —— 任一层快照非空就渲染方案卡（plan_phase → ready）
+  // chat:plan_ready —— 底座式:Plan 模式调过 update_plan 即弹方案卡(快照非空)
   listen("chat:plan_ready", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
-    state.modeState.plan_phase = "ready";
     // 新方案出现 → 旧的 active 方案卡冻结
     state.chatItems.forEach(function (it) {
       if (it.type === "plan_card" && it.cardState === "active") {
@@ -1420,41 +1501,6 @@
     });
     notify();
   }); });
-
-  // chat:plan_text_fallback —— Planning 态 AI 没调 plan 工具但 text 写了方案
-  listen("chat:plan_text_fallback", function (e) { onSessionEvent(e, function () {
-    var lastText = "";
-    for (var i = state.messages.length - 1; i >= 0; i--) {
-      if (state.messages[i].role === "assistant") {
-        var parts = state.messages[i].content || [];
-        for (var k = 0; k < parts.length; k++) { if (parts[k].type === "text" && parts[k].text) lastText += parts[k].text; }
-        break;
-      }
-    }
-    if (!lastText) return;
-    var hit = PLAN_FALLBACK_KEYWORDS.some(function (kw) { return lastText.includes(kw); });
-    if (!hit) return;
-    if (hasUnresolvedItem("plan_text_fallback")) return;
-    addChatItem({ type: "plan_text_fallback", text: lastText, resolved: false, time: timeStr() });
-    notify();
-  }); });
-
-  // chat:execution_stuck —— Executing 自驱 N 次后仍卡
-  listen("chat:execution_stuck", function (e) { onSessionEvent(e, function () {
-    var p = e.payload || {};
-    if (hasUnresolvedItem("execution_stuck")) return;
-    addChatItem({ type: "execution_stuck", tries: p.auto_continue_tried || 0, resolved: false, time: timeStr() });
-    notify();
-  }); });
-
-  // chat:phase_changed —— 底座从 LLM 回复抽 <phase id="..."/> marker 触发。
-  // workflow phase chips 是全局(跟 active skill 走),后台 session 的 phase 变更不动 active chips。
-  listen("chat:phase_changed", function (e) {
-    var sid = e.payload && e.payload.session_id;
-    if (sid && sid !== state.activeSessionId) return;
-    var phaseId = e.payload && (e.payload.phase_id || e.payload.phaseId);
-    setCurrentPhase(phaseId, "llm");
-  });
 
   // workflow:project_started —— start_workflow 后端建项目+绑定 session 后 emit。
   // 必须真正 switchToSession 切过去（load 新 session 的空 messages + sync engine +
@@ -1677,6 +1723,72 @@
     return String(Math.round(n));
   }
 
+  function numOr0(x) { return (typeof x === "number" && isFinite(x)) ? x : 0; }
+
+  // 用基准点把 vLLM 累计 counter 换算成「自清除以来」的区间值。无基准 → 直接用
+  // 生命周期累计值。检测到任一 counter 倒退（< 基准，说明 vLLM 重启 / 换模型,
+  // counter 已归零）→ 丢弃失效基准,回落到累计值,避免显示负数。
+  function adjustVllmCounters(v) {
+    if (!v) return null;
+    var b = monitorBaseline;
+    if (b) {
+      var reset =
+        numOr0(v.ttft_sum_s) < b.ttft_sum_s ||
+        numOr0(v.tpot_sum_s) < b.tpot_sum_s ||
+        numOr0(v.generation_tokens_total) < b.gen_tokens ||
+        numOr0(v.prompt_tokens_total) < b.prompt_tokens ||
+        numOr0(v.prefix_cache_queries) < b.pc_queries;
+      if (reset) { clearMonitorBaseline(); b = null; }
+    }
+    if (!b) {
+      return {
+        cleared: false,
+        ttft_sum_s: v.ttft_sum_s, ttft_count: v.ttft_count,
+        tpot_sum_s: v.tpot_sum_s, tpot_count: v.tpot_count,
+        gen: v.generation_tokens_total, prompt: v.prompt_tokens_total,
+        kvPct: v.prefix_cache_hit_pct,
+      };
+    }
+    var hits = numOr0(v.prefix_cache_hits) - b.pc_hits;
+    var queries = numOr0(v.prefix_cache_queries) - b.pc_queries;
+    return {
+      cleared: true,
+      ttft_sum_s: numOr0(v.ttft_sum_s) - b.ttft_sum_s,
+      ttft_count: numOr0(v.ttft_count) - b.ttft_count,
+      tpot_sum_s: numOr0(v.tpot_sum_s) - b.tpot_sum_s,
+      tpot_count: numOr0(v.tpot_count) - b.tpot_count,
+      gen: numOr0(v.generation_tokens_total) - b.gen_tokens,
+      prompt: numOr0(v.prompt_tokens_total) - b.prompt_tokens,
+      kvPct: queries > 0 ? (hits / queries * 100) : null,
+      clearedAt: b.at || null,
+    };
+  }
+
+  function clearMonitorBaseline() {
+    monitorBaseline = null;
+    try { localStorage.removeItem(MONITOR_BASELINE_KEY); } catch (e) {}
+  }
+
+  // 把当前 vLLM counter 快照存为基准点 → 监控页「后 4 项」从此刻起重新计。
+  function clearMonitorStats() {
+    var v = state.monitor && state.monitor.vllm;
+    if (!v) return false;
+    monitorBaseline = {
+      ttft_sum_s: numOr0(v.ttft_sum_s),
+      ttft_count: numOr0(v.ttft_count),
+      tpot_sum_s: numOr0(v.tpot_sum_s),
+      tpot_count: numOr0(v.tpot_count),
+      gen_tokens: numOr0(v.generation_tokens_total),
+      prompt_tokens: numOr0(v.prompt_tokens_total),
+      pc_hits: numOr0(v.prefix_cache_hits),
+      pc_queries: numOr0(v.prefix_cache_queries),
+      at: Date.now(),  // 记录清除时刻，供「统计自 HH:MM 起」状态文字
+    };
+    try { localStorage.setItem(MONITOR_BASELINE_KEY, JSON.stringify(monitorBaseline)); } catch (e) {}
+    pollMonitor();  // 立即刷新显示，无需等下一个轮询周期
+    return true;
+  }
+
   async function pollMonitor() {
     try {
       var snap = await invoke("get_monitor_snapshot");
@@ -1686,6 +1798,8 @@
         if (gpuUtilHistory.length > 5) gpuUtilHistory.shift();
         snap.gpu._utilMax = Math.max.apply(null, [0].concat(gpuUtilHistory));
       }
+      // 监控页「后 4 项」累计指标：按「清除统计」基准点换算成区间值后再格式化。
+      var vadj = adjustVllmCounters(snap.vllm);
       // Format values for display
       var vllm = snap.vllm || null;
       var metricsApplicable = vllm ? vllm.metrics_applicable !== false : false;
@@ -1734,14 +1848,24 @@
               (vllm.num_requests_waiting != null ? vllm.num_requests_waiting : "—")
             : metricNotApplicableText)
           : "— / —",
-        vllmKv: vllm && metricsApplicable && vllm.prefix_cache_hit_pct != null
-          ? vllm.prefix_cache_hit_pct.toFixed(1) + "%" : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
-        vllmTtft: vllm && metricsApplicable && vllm.ttft_count > 0
-          ? (vllm.ttft_sum_s / vllm.ttft_count).toFixed(2) + " s" : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
-        vllmTps: vllm && metricsApplicable && vllm.tpot_sum_s > 0
-          ? (vllm.tpot_count / vllm.tpot_sum_s).toFixed(1) + " tok/s" : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
-        vllmTokTotal: vllm && metricsApplicable && vllm.generation_tokens_total != null
-          ? fmtTok(vllm.generation_tokens_total) + " / " + fmtTok(vllm.prompt_tokens_total) : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
+        vllmKv: vllm && metricsApplicable && vadj && vadj.kvPct != null
+          ? vadj.kvPct.toFixed(1) + "%" : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
+        vllmTtft: vllm && metricsApplicable && vadj && vadj.ttft_count > 0
+          ? (vadj.ttft_sum_s / vadj.ttft_count).toFixed(2) + " s" : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
+        vllmTps: vllm && metricsApplicable && vadj && vadj.tpot_sum_s > 0
+          ? (vadj.tpot_count / vadj.tpot_sum_s).toFixed(1) + " tok/s" : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
+        vllmTokTotal: vllm && metricsApplicable && vadj && vadj.gen != null
+          ? fmtTok(vadj.gen) + " / " + fmtTok(vadj.prompt) : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
+        vllmStatsCleared: !!(vllm && metricsApplicable && vadj && vadj.cleared),
+        vllmClearedAt: vllm && metricsApplicable && vadj && vadj.cleared ? (vadj.clearedAt || null) : null,
+        // 区间原始数值（已扣基准），供前端「长按清除」的数字归零插值动画用。
+        vllmRaw: vllm && metricsApplicable && vadj ? {
+          kvPct: vadj.kvPct,
+          ttftS: vadj.ttft_count > 0 ? vadj.ttft_sum_s / vadj.ttft_count : null,
+          tps: vadj.tpot_sum_s > 0 ? vadj.tpot_count / vadj.tpot_sum_s : null,
+          gen: vadj.gen != null ? vadj.gen : null,
+          prompt: vadj.prompt != null ? vadj.prompt : null,
+        } : null,
         appVersion: snap.app ? snap.app.pinvou3_version + " (内测版)" : "—",
         dtVersion: snap.app ? snap.app.deepseek_tui_version : "—",
         uptime: snap.app ? fmtDuration(snap.app.session_uptime_secs) : "—",
@@ -1903,14 +2027,14 @@
   // ── Mode state ───────────────────────────────────────────────────
   async function syncModeState() {
     if (!state.activeSessionId) {
-      state.modeState = { mode: "yolo", plan_phase: "none" };
+      state.modeState = { mode: "yolo" };
       return;
     }
     try {
       var ms = await invoke("get_mode_state", { sessionId: state.activeSessionId });
-      state.modeState = { mode: ms.mode || "yolo", plan_phase: ms.plan_phase || "none" };
+      state.modeState = { mode: ms.mode || "yolo" };
     } catch (e) {
-      state.modeState = { mode: "yolo", plan_phase: "none" };
+      state.modeState = { mode: "yolo" };
     }
   }
 
@@ -1940,10 +2064,7 @@
   function thinkingIdle() { state.thinking = { active: true, phase: "thinking", toolName: "", startedAt: Date.now() }; }
   function stopThinking() { state.thinking = { active: false, phase: "thinking", toolName: "", startedAt: 0 }; }
   function applyModeFromState(st) {
-    state.modeState = {
-      mode: st.mode || "yolo",
-      plan_phase: st.plan_phase || "none",
-    };
+    state.modeState = { mode: st.mode || "yolo" };
   }
 
   // ── Plan/YOLO 命令 ───────────────────────────────────────────────
@@ -1966,7 +2087,7 @@
     notify();
   }
   async function discardPlan(itemId) {
-    if (itemId) patchItemById(itemId, { cardState: "frozen", statusLabel: bt("exitedPlan"), resolved: true });
+    if (itemId) patchItemById(itemId, { cardState: "frozen", statusLabel: bt("planDiscarded"), resolved: true });
     if (!state.activeSessionId) { notify(); return; }
     try {
       var st = await invoke("discard_plan", { sessionId: state.activeSessionId });
@@ -1984,9 +2105,12 @@
   }
   // 灯泡 toggle：plan ↔ yolo
   async function setPlanModeNext() {
-    if (!state.activeSessionId) return;
+    // 草稿态(无 session)先物化:mode 是 per-session 状态,进 Plan 必须先有 session,
+    // 否则草稿页点 Plan 会静默 return 不切换(composer chip 入口暴露的缺陷)。
+    var sid = await ensureSession();
+    if (!sid) return;
     try {
-      var st = await invoke("set_plan_mode_next", { sessionId: state.activeSessionId });
+      var st = await invoke("set_plan_mode_next", { sessionId: sid });
       applyModeFromState(st);
     } catch (e) { addSystemItem(bt("switchModeFailed") + e); }
     notify();
@@ -2000,18 +2124,6 @@
     patchItemById(itemId, { resolved: true }); notify();
     await exitPlanToYolo();
     await sendMessage("按上面讨论的方案继续执行任务,直接写文件/跑命令,不要再讨论方案。");
-  }
-  async function planFallbackAccept(itemId, text) {
-    patchItemById(itemId, { resolved: true, statusLabel: bt("adoptingPlan") }); notify();
-    await acceptPlan(null, text || "", bt("adoptEcho"));
-  }
-  async function planFallbackRetry(itemId) {
-    patchItemById(itemId, { resolved: true }); notify();
-    await sendMessage("请用 update_plan 工具把上面的方案重新输出一遍,我才能在卡片上决策。");
-  }
-  async function executionStuckReplan(itemId) {
-    patchItemById(itemId, { resolved: true }); notify();
-    await sendMessage("你卡住了。请重新用 update_plan 工具列方案,我们再开始。");
   }
 
   // ── 用户交互卡 ───────────────────────────────────────────────────
@@ -2086,13 +2198,14 @@
   function listDeliverables(projectDir) {
     return invoke("list_deliverables", { projectDir: projectDir }).catch(function () { return []; });
   }
-  // 外部打开产物：HTML 走 Tauri 独立窗口（绕沙箱），其他走系统应用
-  // 相对路径(write_file 兜底补卡的相对文件名)由后端 open_in_system/open_artifact_window
-  // 内的 resolve_artifact_path 按 active session workspace 解析,前端无需预处理。
-  function openArtifactExternal(path) {
+  // 外部打开产物：HTML 走 Tauri 独立窗口（绕沙箱），其他走系统应用。
+  // sessionId = 卡片携带的产物所属 session。后端 resolve_artifact_path 用它(而非全局
+  // active_id)解析相对路径 —— 切回「有 buffer」的会话后端 active 不更新,只有卡片自带
+  // session 才解析得准(否则相对路径被拼到错的 workspace 报 not a file)。绝对路径无视它。
+  function openArtifactExternal(path, sessionId) {
     var ext = (String(path).split(".").pop() || "").toLowerCase();
     var cmd = (ext === "html" || ext === "htm") ? "open_artifact_window" : "open_in_system";
-    return invoke(cmd, { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
+    return invoke(cmd, { path: path, sessionId: sessionId || null }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
   }
 
   // ── 附件 ────────────────────────────────────────────────────────
@@ -2236,6 +2349,38 @@
     } catch (e) { /* 旧 session 无加持,忽略 */ }
   }
 
+  // ── 知识库挂载(会话级粘连,仿 persona) ──
+  // 给当前对话挂一个知识集;草稿态先物化 session(同 equipPersona)。挂上后每条消息
+  // 发送前后端自动检索注入(commands::chat)。返回挂载的 id 或 null(失败)。
+  async function mountCollection(collectionId) {
+    if (collectionId == null) return null;
+    if (!state.activeSessionId) {
+      await ensureSession();
+      if (!state.activeSessionId) return null;
+    }
+    try {
+      await invoke("session_mount_collection", { sessionId: state.activeSessionId, collectionId: collectionId });
+      state.mountedCollection = collectionId;
+      notify();
+      return collectionId;
+    } catch (e) { addSystemItem("挂载知识集失败: " + e); return null; }
+  }
+  // 摘下当前对话的知识集挂载。
+  async function unmountCollection() {
+    if (!state.activeSessionId) { state.mountedCollection = null; notify(); return; }
+    try { await invoke("session_unmount_collection", { sessionId: state.activeSessionId }); } catch (e) { /* 前端照样摘 */ }
+    state.mountedCollection = null;
+    notify();
+  }
+  // 切换/重载 session 后从后端还原挂载状态(backend 是真相;仅驻内存,重启后为 null)。
+  async function syncMountedCollection() {
+    if (!state.activeSessionId) { state.mountedCollection = null; return; }
+    try {
+      var cid = await invoke("session_mounted_collection", { sessionId: state.activeSessionId });
+      state.mountedCollection = (cid == null) ? null : cid;
+    } catch (e) { state.mountedCollection = null; }
+  }
+
   // ── 应用内升级 ───────────────────────────────────────────────────
   // 链路: check_for_update(对比服务器 latest.json) → download_update(流式下载+sha256,
   // 进度走 update:progress 事件) → install_update(pkexec apt) → restart_app。
@@ -2348,7 +2493,7 @@
     state.depsInstalling = false; notify();
   }
 
-  // ── 语音输入（Windows WebView one-shot 录音 → 本地 SenseVoice/FunASR ASR）──────────────
+  // ── 语音输入（WebView one-shot 录音 → 本地 SenseVoice/FunASR ASR；Linux webview 录音授权见 lib.rs setup）──────────────
   var activeVoiceInput = null;
 
   function setVoiceInputStatus(status, patch) {
@@ -2380,7 +2525,7 @@
     var rawStage = (err && err.stage) || fallbackStage || "recording";
     var rawMessage = String((err && (err.message || err.toString && err.toString())) || err || "");
     if (name === "NotAllowedError" || name === "SecurityError" || rawCategory === "permission_denied") {
-      return { category: "permission_denied", stage: "permission", message: "麦克风权限被拒绝，请在 Windows 或应用权限中允许麦克风访问。" };
+      return { category: "permission_denied", stage: "permission", message: "麦克风权限被拒绝，请在系统设置中允许本应用访问麦克风后重试。" };
     }
     if (name === "NotFoundError" || name === "DevicesNotFoundError" || rawCategory === "device_unavailable") {
       return { category: "device_unavailable", stage: "device", message: "未检测到可用麦克风，请检查录音设备是否启用或被占用。" };
@@ -2412,12 +2557,24 @@
   function cleanupVoiceInputSession(session) {
     if (!session) return;
     if (session.timeoutId) clearTimeout(session.timeoutId);
+    // 先摘掉音频回调：webkit2gtk 的 WebAudio 是 GStreamer 后端，ScriptProcessorNode 的
+    // onaudioprocess 跑在音频线程，若在 disconnect/close 期间再触发一次、访问已释放的
+    // 缓冲，会让 WebProcess 段错误（表现为「识别出文字后 app 崩溃」）。务必先置 null。
+    try { if (session.processor) session.processor.onaudioprocess = null; } catch (_) {}
     try { if (session.processor) session.processor.disconnect(); } catch (_) {}
     try { if (session.source) session.source.disconnect(); } catch (_) {}
     try { if (session.zeroGain) session.zeroGain.disconnect(); } catch (_) {}
     stopMediaTracks(session.stream);
-    if (session.audioContext && session.audioContext.state !== "closed") {
-      session.audioContext.close().catch(function () {});
+    session.processor = null;
+    session.source = null;
+    session.zeroGain = null;
+    session.stream = null;
+    // close() 触发 GStreamer 管线异步拆解，与上面的 disconnect/track.stop 在同一拍里竞争最易崩；
+    // 摘干净节点后挪到下一个事件循环再关，并吞掉 close 的异常。
+    var ctx = session.audioContext;
+    session.audioContext = null;
+    if (ctx && ctx.state !== "closed") {
+      setTimeout(function () { try { ctx.close().catch(function () {}); } catch (_) {} }, 0);
     }
   }
 
@@ -2534,6 +2691,29 @@
     }
   }
 
+  // 一键安装本地语音识别依赖（模型下载 + 缺 ffmpeg 走 pkexec apt），进度走
+  // voice_asr:progress 事件。装完 ready 自动关框。
+  async function installVoiceAsr() {
+    if (state.voiceAsrSetup.installing) return;
+    state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { installing: true, error: null, progress: { stage: "start" } });
+    notify();
+    try {
+      var st = await invoke("install_voice_asr");
+      var patch = { installing: false, status: st, progress: { stage: "done" } };
+      if (st && st.ready) patch.open = false;
+      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, patch);
+      notify();
+    } catch (e) {
+      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { installing: false, error: String(e) });
+      notify();
+    }
+  }
+
+  function closeVoiceAsrSetup() {
+    state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { open: false });
+    notify();
+  }
+
   async function startVoiceInput(draftText, writeback) {
     if (activeVoiceInput && state.voiceInput.status === "recording") {
       finishVoiceInput(false, false);
@@ -2542,6 +2722,18 @@
     if (activeVoiceInput) {
       finishVoiceInput(true, false);
       return;
+    }
+
+    // 首次/缺组件：先检测本地语音识别依赖，缺则弹安装框、不进录音。
+    try {
+      var asrStatus = await invoke("voice_asr_status");
+      if (asrStatus && !asrStatus.ready && asrStatus.installable) {
+        state.voiceAsrSetup = { open: true, status: asrStatus, installing: false, progress: null, error: null };
+        notify();
+        return;
+      }
+    } catch (e) {
+      // 检测失败（如 mock 环境/旧后端）不阻塞，继续走原录音路径（环境变量/兜底引擎）
     }
 
     var AudioCtor = window.AudioContext || window.webkitAudioContext;
@@ -2839,6 +3031,8 @@
     sendMessage: sendMessage,
     removeQueued: removeQueued,
     startVoiceInput: startVoiceInput,
+    installVoiceAsr: installVoiceAsr,
+    closeVoiceAsrSetup: closeVoiceAsrSetup,
     cancelVoiceInput: cancelVoiceInput,
     clearVoiceInput: clearVoiceInput,
     appendVoiceText: appendVoiceText,
@@ -2850,6 +3044,7 @@
     renameSession: renameSession,
     startMonitorPolling: startMonitorPolling,
     stopMonitorPolling: stopMonitorPolling,
+    clearMonitorStats: clearMonitorStats,
     saveSettings: saveSettings,
     saveSettingsAndRestart: saveSettingsAndRestart,
     submitFeedback: submitFeedback,
@@ -2871,9 +3066,6 @@
     setPlanModeNext: setPlanModeNext,
     planStuckReplan: planStuckReplan,
     planStuckGo: planStuckGo,
-    planFallbackAccept: planFallbackAccept,
-    planFallbackRetry: planFallbackRetry,
-    executionStuckReplan: executionStuckReplan,
     // 用户交互
     submitUserInput: submitUserInput,
     cancelUserInput: cancelUserInput,
@@ -2935,6 +3127,10 @@
     readPersonaBody: function (id) { return invoke("read_persona_body", { personaId: id }); }, // Side B: 详情拉完整正文
     equipPersona: equipPersona,
     unequipPersona: unequipPersona,
+    // 知识库挂载(会话级)
+    mountCollection: mountCollection,
+    unmountCollection: unmountCollection,
+    listCollections: function () { return invoke("kb_collection_list"); }, // 挂载选择器用
     // AI 造卡开场引导卡:落一条展示气泡 + 记一条 persona 事件(随会话持久化)。
     // 走 personaEvents 时间线,冷重载时 rerenderFromMessages 按 pos 还原 → 切会话/重启不丢。
     postCardCreatorIntro: function () { addChatItem({ type: "card_creator_intro", time: "" }); recordPersonaEvent({ kind: "card_creator_intro" }); notify(); },

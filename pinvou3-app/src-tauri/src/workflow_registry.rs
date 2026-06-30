@@ -78,11 +78,6 @@ pub fn by_scenario(scenario: &str) -> Option<WorkflowInfo> {
         .find(|workflow| workflow.scenarios.iter().any(|s| s == scenario))
 }
 
-/// 绑定名是否为已发现的工作流 id(用于区分工作流会话与普通挂载式 skill)。
-pub fn is_workflow_id(id: &str) -> bool {
-    discover().iter().any(|w| w.id == id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

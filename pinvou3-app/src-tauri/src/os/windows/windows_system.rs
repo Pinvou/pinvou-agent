@@ -19,10 +19,7 @@ pub fn command_exists(command: &str) -> bool {
         return command_path.is_file();
     }
 
-    let path = match std::env::var_os("PATH") {
-        Some(path) => path,
-        None => return false,
-    };
+    let path = std::env::var_os("PATH").unwrap_or_default();
     let pathext = std::env::var_os("PATHEXT")
         .and_then(|v| v.into_string().ok())
         .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string());
@@ -50,6 +47,12 @@ pub fn command_exists(command: &str) -> bool {
                 return true;
             }
         }
+    }
+    if let Some(path) = common_libreoffice_tool_path(command) {
+        if let Some(dir) = path.parent() {
+            ensure_dir_on_process_path(dir.to_path_buf());
+        }
+        return true;
     }
     false
 }
@@ -96,6 +99,10 @@ pub fn asr_tool_path() -> std::path::PathBuf {
     std::path::PathBuf::from("pinvou-asr")
 }
 
+pub fn asr_model_filename() -> &'static str {
+    "sensevoice-small-q8.gguf"
+}
+
 pub fn archive_tool_path() -> PathBuf {
     ensure_bundled_archive_on_process_path();
     windows_path::archive_tool_path()
@@ -137,7 +144,25 @@ pub fn asr_tool_exists() -> bool {
         }
     }
     ensure_bundled_asr_on_process_path();
-    windows_path::bundled_asr_tool_path().is_some() || command_exists("pinvou-asr")
+    windows_path::bundled_asr_tool_path().is_some()
+        && windows_path::bundled_asr_backend_path().is_some()
+        && windows_path::bundled_asr_model_path().is_some()
+}
+
+pub fn asr_bundled_runtime_status() -> Option<bool> {
+    Some(asr_tool_exists())
+}
+
+pub fn asr_dependency_installable() -> bool {
+    false
+}
+
+pub fn asr_install_unavailable_message() -> &'static str {
+    "ASR runtime is bundled on Windows; please repair or reinstall Pinvou."
+}
+
+pub async fn install_asr_runtime(_app: tauri::AppHandle) -> Result<(), String> {
+    Err(asr_install_unavailable_message().to_string())
 }
 
 pub fn archive_tool_exists() -> bool {
@@ -274,6 +299,38 @@ fn same_path(left: &Path, right: &Path) -> bool {
         .eq_ignore_ascii_case(&right.as_os_str().to_string_lossy())
 }
 
+fn common_libreoffice_tool_path(command: &str) -> Option<PathBuf> {
+    if !is_libreoffice_command(command) {
+        return None;
+    }
+    let mut roots = Vec::new();
+    if let Some(program_files) = std::env::var_os("ProgramFiles") {
+        roots.push(PathBuf::from(program_files));
+    }
+    if let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") {
+        roots.push(PathBuf::from(program_files_x86));
+    }
+    roots.push(PathBuf::from(r"C:\Program Files"));
+    roots.push(PathBuf::from(r"C:\Program Files (x86)"));
+
+    roots
+        .into_iter()
+        .map(|root| root.join("LibreOffice").join("program").join("soffice.exe"))
+        .find(|path| path.is_file())
+}
+
+fn is_libreoffice_command(command: &str) -> bool {
+    let name = Path::new(command)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(command)
+        .to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "soffice" | "soffice.exe" | "libreoffice" | "libreoffice.exe"
+    )
+}
+
 pub fn nvidia_smi_candidates() -> Vec<&'static str> {
     vec![
         "nvidia-smi",
@@ -290,5 +347,13 @@ mod tests {
     fn windows_hides_archive_dependency_check() {
         assert!(!show_archive_dependency_check());
         assert_eq!(archive_dependency_packages(), "");
+    }
+
+    #[test]
+    fn detects_libreoffice_command_names() {
+        assert!(is_libreoffice_command("soffice"));
+        assert!(is_libreoffice_command("soffice.exe"));
+        assert!(is_libreoffice_command("libreoffice"));
+        assert!(!is_libreoffice_command("pandoc"));
     }
 }

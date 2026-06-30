@@ -5,7 +5,7 @@
 //! - 文本类(txt/md/json/csv/yaml/code) → `fs::read_to_string`
 //! - PDF → `pdftotext -layout` (`poppler-utils`)
 //! - docx/pptx/odt → `pandoc -t markdown`
-//! - xlsx → `pandoc -t markdown`（pandoc 支持 office 格式）
+//! - xlsx/xls/ods → calamine 读**全部工作表**逐行抽取（回退 LibreOffice CSV）
 //! - 图片 → 不读像素，只标记 `model_no_vision`(配合 prompt 防臆测)
 //! - 其他 → binary 占位
 //!
@@ -824,9 +824,10 @@ fn ingest_office_text(
     }
 }
 
-/// 电子表格（.xlsx/.ods/.xls + WPS .et）：pandoc **不支持表格输入**，走 LibreOffice
-/// 转 CSV。注意 LibreOffice CSV 只导「活动工作表」（通常首个），多工作表会丢——
-/// 故在内容前显式标注，让 LLM/用户心里有数。
+/// 电子表格（.xlsx/.ods/.xls + WPS .et）：用 calamine 纯 Rust 读**全部工作表**逐行抽取。
+/// 旧实现走 LibreOffice CSV 只导「活动工作表」，多 sheet 文件丢 90% 内容（实测 4 sheet
+/// 散热报告只抽到首页 418 字、CPU/温升数据全丢）。calamine 失败时（私有 .et 格式等）
+/// 回退 LibreOffice CSV，至少拿到首个工作表，不退化于旧行为。
 fn ingest_spreadsheet(
     path: &Path,
     basename: String,
@@ -834,32 +835,83 @@ fn ingest_spreadsheet(
     byte_size: u64,
     kind: &str,
 ) -> IngestResult {
-    match libreoffice_convert_text(path, "csv:Text - txt - csv (StarCalc)", "csv") {
-        Ok(content) => {
-            let body = format!(
-                "> 注：电子表格已转 CSV；若原文件含多个工作表，此处仅含首个工作表。\n\n{content}"
-            );
-            let tokens = estimate_tokens(&body);
-            IngestResult {
-                kind: kind.into(),
-                basename,
-                path: path_str,
-                markdown: Some(body),
-                token_estimate: tokens,
-                byte_size,
-                warning: None,
+    // (markdown, warning)：calamine 成功取全表；失败回退 LibreOffice CSV（仅首个工作表）。
+    let (markdown, warning) = match spreadsheet_all_sheets_text(path) {
+        Ok(body) if !body.trim().is_empty() => (Some(body), None),
+        other => {
+            let fb_err = other.err();
+            match libreoffice_convert_text(path, "csv:Text - txt - csv (StarCalc)", "csv") {
+                Ok(content) => (
+                    Some(format!(
+                        "> 注：表格解析回退到 CSV，若原文件含多个工作表，此处仅含首个工作表。\n\n{content}"
+                    )),
+                    None,
+                ),
+                Err(e) => (None, Some(fb_err.unwrap_or(e))),
             }
         }
-        Err(e) => IngestResult {
-            kind: kind.into(),
-            basename,
-            path: path_str,
-            markdown: None,
-            token_estimate: 0,
-            byte_size,
-            warning: Some(e),
-        },
+    };
+    let token_estimate = markdown.as_deref().map(estimate_tokens).unwrap_or(0);
+    IngestResult {
+        kind: kind.into(),
+        basename,
+        path: path_str,
+        markdown,
+        token_estimate,
+        byte_size,
+        warning,
     }
+}
+
+/// calamine 读电子表格全部工作表 → 逐行文本。每个工作表加 `## 工作表：名` 小标题，
+/// 每行用 ` | ` 连接非空尾部单元格（去掉行尾连续空单元格），整行空则跳过。
+/// 单元格内换行折成空格，避免破坏「一行 = 一条记录」的语义（利于切块/检索）。
+fn spreadsheet_all_sheets_text(path: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("读取文件失败: {e}"))?;
+    spreadsheet_text_from_bytes(bytes)
+}
+
+/// 抽取核心（接收字节，便于单测喂 fixture）。见 [`spreadsheet_all_sheets_text`]。
+fn spreadsheet_text_from_bytes(bytes: Vec<u8>) -> Result<String, String> {
+    // DataType trait 提供 Data::is_empty()（calamine 0.26 是 trait 方法，非固有）。
+    use calamine::{open_workbook_auto_from_rs, Data, DataType, Reader};
+
+    let mut wb = open_workbook_auto_from_rs(std::io::Cursor::new(bytes))
+        .map_err(|e| format!("calamine 解析失败: {e}"))?;
+
+    let cell = |c: &Data| -> String {
+        if c.is_empty() {
+            String::new()
+        } else {
+            c.to_string().replace(['\n', '\r', '\t'], " ").trim().to_string()
+        }
+    };
+
+    let mut out = String::new();
+    let names: Vec<String> = wb.sheet_names().to_owned();
+    for name in names {
+        let range = match wb.worksheet_range(&name) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if range.is_empty() {
+            continue;
+        }
+        out.push_str("## 工作表：");
+        out.push_str(&name);
+        out.push('\n');
+        for row in range.rows() {
+            let cells: Vec<String> = row.iter().map(&cell).collect();
+            let last = match cells.iter().rposition(|c| !c.is_empty()) {
+                Some(i) => i,
+                None => continue, // 整行空
+            };
+            out.push_str(&cells[..=last].join(" | "));
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    Ok(out)
 }
 
 /// 演示类（.pptx/.ppt/.odp + WPS .dps）：LibreOffice **没有 Impress→txt 导出**
@@ -1010,6 +1062,19 @@ fn ocr_image(path: &Path) -> Result<String, String> {
 
 /// 扫描件 PDF OCR 兜底：pdftoppm 逐页转 PNG（150 dpi），每页跑 tesseract，拼接。
 /// 页数封顶 PDF_OCR_MAX_PAGES，超出截断并在末尾标注，避免几十页扫描件把上下文撑爆。
+/// 知识库专用：对图片做 OCR 取文字。**只在 KB 入库调**——对话附件图仍走视觉(image_analyze)，
+/// `ingest_image` 不在这里 OCR（保留 2026-05-28「图片不预解析、交给视觉」的对话侧设计）。
+/// 没装 tesseract / OCR 失败 / 识别为空 → None（调用方落 skipped）。
+pub fn ocr_image_for_kb(path: &Path) -> Option<String> {
+    if !system_tools().tesseract {
+        return None;
+    }
+    match ocr_image(path) {
+        Ok(t) if !t.trim().is_empty() => Some(t),
+        _ => None,
+    }
+}
+
 fn ocr_pdf(path: &Path, basename: String, path_str: String, byte_size: u64) -> IngestResult {
     const PDF_OCR_MAX_PAGES: u32 = 30;
     let tools = system_tools();
@@ -1922,6 +1987,27 @@ mod tests {
     }
 
     #[test]
+    fn spreadsheet_extracts_all_sheets() {
+        // 防回归：旧实现走 LibreOffice CSV 只导「活动工作表」，多 sheet 文件丢 90% 内容
+        // （实测 4-sheet 散热报告只抽到首页、CPU/温升数据全失）。calamine 必须把
+        // 全部工作表逐行抽出。fixture 是 3-sheet 合成表（Cover/配置表/温升表）。
+        let bytes = include_bytes!("../test-fixtures/multi_sheet.xlsx").to_vec();
+        let txt = spreadsheet_text_from_bytes(bytes).expect("calamine 应能解析 fixture");
+        // 三个工作表标题都要在
+        assert!(txt.contains("## 工作表：Cover"), "缺 Cover sheet");
+        assert!(txt.contains("## 工作表：System configuration"), "缺配置表 sheet");
+        assert!(txt.contains("## 工作表：Thermal test result"), "缺温升表 sheet");
+        // 非首表的关键内容（旧 CSV 实现会整段丢失）
+        assert!(txt.contains("Ultra 7 258V"), "应抽到第二表的 CPU 型号");
+        assert!(txt.contains("83.6"), "应抽到第三表的温度实测值");
+        // 行结构保留：同一行单元格用 ' | ' 连接
+        assert!(
+            txt.contains("CPU | key part | model | Ultra 7 258V SRPMN"),
+            "同一行单元格应保留在一行"
+        );
+    }
+
+    #[test]
     fn ingest_oversize_rejected() {
         // 模拟超大文件：write 21MB 内容，应被拒
         let tmp = std::env::temp_dir().join("pinvou3-ingest-oversize-test.bin");
@@ -2522,3 +2608,4 @@ mod visual_preview_smoke {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
