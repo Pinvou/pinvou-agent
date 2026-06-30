@@ -1805,31 +1805,112 @@ fn strip_verbatim(p: &std::path::Path) -> String {
     s.to_string()
 }
 
+/// 外部链接白名单：前端 webview 万一被 XSS 时的最后一道防线。
+/// **扩这个列表必须同步加测试**（见 `external_allowlist_*` 单测）。
+const EXTERNAL_URL_ALLOWLIST: &[&str] = &[
+    "https://metaso.cn/",
+    "https://open.bochaai.com/",
+    "https://console.bce.baidu.com/",
+    "https://app.tavily.com/",
+    "https://www.iwencai.com/",
+    "https://agent.qcc.com/",
+    // MegaCube 官网(侧边栏 footer 入口跳转)
+    "https://www.h3c.com/",
+    // 飞书/Lark OAuth(device flow 授权页 + 账号页);连接飞书走这里开浏览器
+    "https://open.feishu.cn/",
+    "https://accounts.feishu.cn/",
+    "https://www.feishu.cn/",
+    "https://open.larksuite.com/",
+    "https://accounts.larksuite.com/",
+    // Obsidian 官网:知识库连接器探测到未安装时,引导用户下载
+    "https://obsidian.md/",
+];
+
+/// URL 是否命中外部链接白名单(纯函数,便于单测)。
+fn url_in_external_allowlist(url: &str) -> bool {
+    EXTERNAL_URL_ALLOWLIST.iter().any(|p| url.starts_with(p))
+}
+
 /// 用系统默认浏览器打开**允许列表**里的 https URL。
-/// 用于 Settings 面板的"获取 API key"链接(Metaso/Bocha 注册页)。
+/// 用于 Settings 面板的"获取 API key"链接(Metaso/Bocha 注册页)等。
 /// 白名单写死,前端没法用这个 command 打开任意 URL。
 #[tauri::command]
 pub async fn open_external_url(url: String) -> Result<(), String> {
-    const ALLOWED_PREFIXES: &[&str] = &[
-        "https://metaso.cn/",
-        "https://open.bochaai.com/",
-        "https://console.bce.baidu.com/",
-        "https://app.tavily.com/",
-        "https://www.iwencai.com/",
-        "https://agent.qcc.com/",
-        // MegaCube 官网(侧边栏 footer 入口跳转)
-        "https://www.h3c.com/",
-        // 飞书/Lark OAuth(device flow 授权页 + 账号页);连接飞书走这里开浏览器
-        "https://open.feishu.cn/",
-        "https://accounts.feishu.cn/",
-        "https://www.feishu.cn/",
-        "https://open.larksuite.com/",
-        "https://accounts.larksuite.com/",
-    ];
-    if !ALLOWED_PREFIXES.iter().any(|p| url.starts_with(p)) {
+    if !url_in_external_allowlist(&url) {
         return Err(format!("URL not in allowlist: {url}"));
     }
     shell_open(&url)
+}
+
+/// 本机 Obsidian 状态(供工具市场"连接"前分支)。
+/// state: `not_installed` | `no_vault` | `vault_missing` | `ok`
+#[derive(serde::Serialize)]
+pub struct ObsidianStatus {
+    pub state: String,
+    pub vault_path: Option<String>,
+}
+
+/// Obsidian 桌面端记录库列表的 `obsidian.json` 路径(跨平台)。
+fn obsidian_config_path() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var_os("APPDATA")
+            .map(|p| std::path::Path::new(&p).join("obsidian").join("obsidian.json"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME").map(|p| {
+            std::path::Path::new(&p)
+                .join("Library/Application Support/obsidian/obsidian.json")
+        })
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::env::var_os("HOME")
+            .map(|p| std::path::Path::new(&p).join(".config/obsidian/obsidian.json"))
+    }
+}
+
+/// 从 obsidian.json 文本里挑出当前库路径:优先 `open:true`,否则 `ts` 最大。
+/// 与 `mcp-servers/obsidian/server.py` 的 `_autodiscover_vault` 同规则,需保持一致。
+fn pick_vault_path(text: &str) -> Option<String> {
+    let text = text.trim_start_matches('\u{feff}'); // 剥 BOM
+    let json: serde_json::Value = serde_json::from_str(text).ok()?;
+    let vaults = json.get("vaults")?.as_object()?;
+    if vaults.is_empty() {
+        return None;
+    }
+    let pick = vaults
+        .values()
+        .find(|v| v.get("open").and_then(|o| o.as_bool()).unwrap_or(false))
+        .or_else(|| {
+            vaults
+                .values()
+                .max_by_key(|v| v.get("ts").and_then(|t| t.as_i64()).unwrap_or(0))
+        })?;
+    pick.get("path")?.as_str().map(|s| s.to_string())
+}
+
+/// 探测本机 Obsidian 状态,供工具市场"连接 Obsidian"前分支:
+/// 没装就引导下载,没库就引导建库,而不是默默装上一个用不了的连接器。
+#[tauri::command]
+pub fn detect_obsidian() -> ObsidianStatus {
+    let not_installed = || ObsidianStatus { state: "not_installed".into(), vault_path: None };
+    let cfg = match obsidian_config_path() {
+        Some(p) if p.is_file() => p,
+        _ => return not_installed(),
+    };
+    let text = match std::fs::read_to_string(&cfg) {
+        Ok(t) => t,
+        Err(_) => return not_installed(),
+    };
+    match pick_vault_path(&text) {
+        None => ObsidianStatus { state: "no_vault".into(), vault_path: None },
+        Some(p) if std::path::Path::new(&p).is_dir() => {
+            ObsidianStatus { state: "ok".into(), vault_path: Some(p) }
+        }
+        Some(p) => ObsidianStatus { state: "vault_missing".into(), vault_path: Some(p) },
+    }
 }
 
 /// 把成品卡里可能的**相对**路径落到产物所属 session 的 workspace。
@@ -3896,6 +3977,28 @@ mod tests {
                 "reject reason should name allowlist for {url:?}, got {err:?}"
             );
         }
+    }
+
+    /// 扩 EXTERNAL_URL_ALLOWLIST 必须加测试:obsidian.md 放行,仿冒/非 https 拒绝。
+    #[test]
+    fn external_allowlist_allows_obsidian_rejects_lookalikes() {
+        assert!(url_in_external_allowlist("https://obsidian.md/download"));
+        assert!(url_in_external_allowlist("https://metaso.cn/"));
+        assert!(!url_in_external_allowlist("https://obsidian.md.evil.com/"));
+        assert!(!url_in_external_allowlist("http://obsidian.md/"));
+        assert!(!url_in_external_allowlist("https://evil.example.com/"));
+    }
+
+    /// detect_obsidian 选库规则:open:true 优先,否则 ts 最大;空/无 vaults → None;容忍 BOM。
+    #[test]
+    fn pick_vault_path_prefers_open_then_latest() {
+        let j = r#"{"vaults":{"a":{"path":"/A","ts":100},"b":{"path":"/B","ts":1,"open":true}}}"#;
+        assert_eq!(pick_vault_path(j).as_deref(), Some("/B"));
+        let j = r#"{"vaults":{"a":{"path":"/A","ts":100},"b":{"path":"/B","ts":9}}}"#;
+        assert_eq!(pick_vault_path(j).as_deref(), Some("/A"));
+        assert_eq!(pick_vault_path(r#"{"vaults":{}}"#), None);
+        let j = "\u{feff}{\"vaults\":{\"a\":{\"path\":\"/A\",\"ts\":1,\"open\":true}}}";
+        assert_eq!(pick_vault_path(j).as_deref(), Some("/A"));
     }
 
     /// 成品归属推断:成品词出现在质检节时必须归被审对象,不归审核者
