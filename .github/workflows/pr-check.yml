@@ -1,8 +1,10 @@
 name: PR Check
 
-# 两个 job:
-# - fast-gate(秒级,无 Rust 编译):fork-guard 指纹 + fork 合规联动 + Python MCP 测试。
-# - rust-test(编译类):占位 bge-m3 → cargo test --lib(~240 单测;真 bge-m3/vLLM 测试已 #[ignore])。
+# Jobs:
+# - fast-gate(秒级,每 PR 都跑):fork-guard 指纹 + fork 合规联动 + Python MCP 测试。
+# - changes:检测本 PR 有没有 Rust/依赖改动,给 rust-test 做 paths filter。
+# - rust-test(编译类):**仅当改了 Rust/Cargo/submodule 才跑**(非 Rust PR 直接 skip,不耗
+#   编译时间)。占位 bge-m3 → cargo test --lib(~240 单测;真 bge-m3/vLLM 测试已 #[ignore])。
 # 未上:clippy/fmt(现有代码各 75/329 处不符合,要先清理才能加 -D gate)。
 
 on:
@@ -18,6 +20,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 检测本 PR 改了哪些类别,给 rust-test 做条件触发(非 Rust PR 跳过编译)。
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - '**/*.rs'
+              - '**/Cargo.toml'
+              - '**/Cargo.lock'
+              - 'DeepSeek-TUI'
+
   fast-gate:
     name: fast-gate
     runs-on: ubuntu-latest
@@ -52,6 +72,8 @@ jobs:
 
   rust-test:
     name: rust-test
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'   # 只在改了 Rust/Cargo/submodule 时跑
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (含 submodule)
