@@ -180,6 +180,14 @@ impl L1Store {
 
     // ───────────────────────── 文档 ─────────────────────────
 
+    /// 库里是否存在任意已入库文档（任一知识集）。用于「知识库为空时隐藏 kb_search 工具」门控：
+    /// 删光所有文件后不让模型目录里还留着检索工具。EXISTS 子查询走索引，常数时间。
+    pub fn has_any_document(&self) -> rusqlite::Result<bool> {
+        self.conn
+            .lock()
+            .query_row("SELECT EXISTS(SELECT 1 FROM documents)", [], |r| r.get(0))
+    }
+
     /// 列出某知识集文档（collection_id<=0 则列出全部知识集的，按最近解析倒序，给"知识库内文件"表）。
     pub fn list_documents(&self, collection_id: i64, limit: usize) -> rusqlite::Result<Vec<Document>> {
         let c = self.conn.lock();
