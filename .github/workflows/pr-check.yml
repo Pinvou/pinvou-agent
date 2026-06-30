@@ -1,0 +1,35 @@
+name: PR Check
+
+# P0/P1 第一步:秒级门(不编译、零外部依赖)。
+# - fork-guard 指纹层:抓 sync/merge 静默丢 fork patch(纯 grep submodule 文件)。
+# - fork 合规联动:改了 submodule gitlink 却没更新 fork-modifications.md → fail(治 #70 漏指纹)。
+# 编译类(clippy / cargo test)与 fmt 是后续独立步骤,见 PR 描述。
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# 同一 PR 连续 push 时,取消上一次未跑完的检查,省 runner。
+concurrency:
+  group: pr-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  fast-gate:
+    name: fast-gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (含 submodule,fork 为 public 直接拉)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: fork-guard 指纹层 (秒级,不编译)
+        run: ./scripts/fork-guard.sh --fast
+
+      - name: fork 合规联动 (gitlink ↔ fork-modifications)
+        run: ./scripts/ci-fork-link-check.sh "origin/${{ github.base_ref }}"
