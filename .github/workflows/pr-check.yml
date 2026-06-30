@@ -59,6 +59,18 @@ jobs:
         with:
           submodules: recursive
 
+      # pinvou3 编译链接的系统库(本地 pkg-config 实测:gtk/webkit/soup/rsvg/openssl/
+      # X11×3/appindicator)。ubuntu runner 默认没装,否则 glib-sys 等 build script 失败。
+      - name: 装 Tauri + pinvou3 Linux 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            librsvg2-dev libssl-dev \
+            libx11-dev libxi-dev libxtst-dev \
+            libayatana-appindicator3-dev \
+            build-essential pkg-config
+
       # bge-m3 是 gitignored 大资源(559M),CI 干净 checkout 没有它,而 tauri_build::build()
       # 会校验 tauri.conf resources 路径存在。单测用 mem()=embedder None、不加载真模型,真
       # bge-m3/vLLM 的 e2e 测试都已 #[ignore] —— 故造空占位文件骗过资源校验即可(已实测可行)。
