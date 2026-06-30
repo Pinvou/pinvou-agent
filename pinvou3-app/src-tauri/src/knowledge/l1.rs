@@ -659,6 +659,33 @@ mod tests {
         assert!(l1.list_collections().unwrap().is_empty());
     }
 
+    /// kb_search 门控核心:has_any_document 反映"库里有没有文档"。空知识集不算;
+    /// 删文档 / 删知识集后都应归 false —— 对应 kb_remove_document / kb_collection_delete
+    /// 删后 refresh_kb_tool_gate 把 kb_search 加进 disallowed（库空就该隐藏检索工具）。
+    #[test]
+    fn has_any_document_reflects_emptiness() {
+        let l1 = mem();
+        assert!(!l1.has_any_document().unwrap(), "空库应为 false");
+
+        let cid = l1.create_collection("库", None, None).unwrap();
+        assert!(!l1.has_any_document().unwrap(), "空知识集（无文档）不算有内容");
+
+        let doc = l1
+            .upsert_document(cid, "/tmp/a.md", "a.md", Some("md"), 10, 0)
+            .unwrap();
+        assert!(l1.has_any_document().unwrap(), "入库一篇后应为 true");
+
+        l1.remove_document(doc).unwrap();
+        assert!(!l1.has_any_document().unwrap(), "删光文档后应回到 false");
+
+        // 删整个知识集这条路径:连带清文档,也应归 false
+        l1.upsert_document(cid, "/tmp/b.md", "b.md", Some("md"), 10, 0)
+            .unwrap();
+        assert!(l1.has_any_document().unwrap());
+        l1.delete_collection(cid).unwrap();
+        assert!(!l1.has_any_document().unwrap(), "删知识集应连带清空文档");
+    }
+
     #[test]
     fn ingest_and_search() {
         let l1 = mem();
