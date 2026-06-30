@@ -1,11 +1,9 @@
 name: PR Check
 
-# P0/P1 秒级门(无 Rust 编译依赖)。
-# - fork-guard 指纹层:抓 sync/merge 静默丢 fork patch(纯 grep submodule 文件)。
-# - fork 合规联动:改了 submodule gitlink 却没更新 fork-modifications.md → fail(治 #70 漏指纹)。
-# - Python MCP server 测试:跑 mcp-servers/*/test_*.py(覆盖 obsidian 改名正则那类)。
-# Rust 编译类(cargo test / clippy)是后续独立 job(需 bge-m3 占位 + cache);
-# clippy/fmt 现有代码各 75/329 处不符合,要先清理才能加 -D gate。
+# 两个 job:
+# - fast-gate(秒级,无 Rust 编译):fork-guard 指纹 + fork 合规联动 + Python MCP 测试。
+# - rust-test(编译类):占位 bge-m3 → cargo test --lib(~240 单测;真 bge-m3/vLLM 测试已 #[ignore])。
+# 未上:clippy/fmt(现有代码各 75/329 处不符合,要先清理才能加 -D gate)。
 
 on:
   pull_request:
@@ -51,3 +49,35 @@ jobs:
             ( cd "$(dirname "$t")" && python3 "$(basename "$t")" ) || fail=1
           done
           [ "$fail" -eq 0 ]
+
+  rust-test:
+    name: rust-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (含 submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # bge-m3 是 gitignored 大资源(559M),CI 干净 checkout 没有它,而 tauri_build::build()
+      # 会校验 tauri.conf resources 路径存在。单测用 mem()=embedder None、不加载真模型,真
+      # bge-m3/vLLM 的 e2e 测试都已 #[ignore] —— 故造空占位文件骗过资源校验即可(已实测可行)。
+      - name: bge-m3 占位 (骗过 tauri-build 资源校验)
+        run: |
+          d=pinvou3-app/src-tauri/resources/bge-m3
+          mkdir -p "$d"
+          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
+            : > "$d/$f"
+          done
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou3-app/src-tauri
+
+      # --test-threads=1:bridge 测试读/写全局 env,并行会竞争(qwen_preset/vllm 等 flaky)。
+      - name: cargo test --lib (真 bge-m3/vLLM 测试已 #[ignore])
+        run: cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1

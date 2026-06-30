@@ -13,16 +13,22 @@
 
 ## main 受 CI 门控保护
 
-每个 PR 自动跑 **`fast-gate`**(`.github/workflows/pr-check.yml`),红的合不了。两道检查:
+每个 PR 自动跑两个 job(`.github/workflows/pr-check.yml`),红的合不了:
 
-| 检查 | 红的原因 | 怎么修 |
+| 检查 | 在哪 | 红了怎么办 |
 |---|---|---|
-| **fork-guard 指纹** | sync / merge 静默丢了某个 fork patch | 对照 `docs/fork-policy.md` 找回被删的 patch |
-| **fork 合规联动** | 改了 submodule(`DeepSeek-TUI`)的 gitlink,却没更新 `docs/fork-modifications.md` | 同 PR 补 fork-modifications 条目 + `scripts/fork-guard.sh` 指纹(脚本报错里有指引) |
+| **fork-guard 指纹** | fast-gate | sync/merge 静默丢了 fork patch → 对照 `docs/fork-policy.md` 找回 |
+| **fork 合规联动** | fast-gate | 改了 `DeepSeek-TUI` gitlink 没更新 `docs/fork-modifications.md` → 补登记 + 指纹(脚本报错有指引) |
+| **Python MCP 测试** | fast-gate | `mcp-servers/*/test_*.py` 挂 → 看 test 输出 |
+| **cargo test --lib** | rust-test | Rust 单测挂 → 本地 `cargo test --lib -- --test-threads=1` 复现(见下) |
+
+> **新单测自动进 CI**:`cargo test --lib`(全跑 `src/` 下所有 `#[test]`)+ `mcp-servers/*/test_*.py`(glob)都是**通配**,新加的测试无需改 workflow 自动被跑。但有两条铁律,否则你的新测试会让 CI 红:
+> 1. **依赖外部资源**(网络/真 bge-m3/vLLM/真模型)的测试**必须标 `#[ignore]`** —— CI 的 bge-m3 是空占位、无网络。参照现有 `e2e_test` / `l1_harness`。
+> 2. 本地复现 CI 用 **`cargo test --lib -- --test-threads=1`** —— bridge 等测试读写全局 env,并行会竞争 flaky(CI 已锁单线程)。
 
 另外 main 要求 **PR up-to-date**:别人先合了你就得 rebase——GitHub 会显示 "Update branch",点一下或本地 `git rebase origin/main`。合并还需 **1 个 review approval**。
 
-> 注:**fmt 与编译类(clippy / cargo test)暂未进 gate**(fmt 需先全仓格式化、编译类需 cache + bge-m3 占位),后续再加。当前本地编译/测试仍需自行跑。
+> 注:**fmt / clippy 暂未进 gate**(现有代码各 329/75 处不符合,要先清理才能加 `-D` gate),后续再说。
 
 ## 改 fork(DeepSeek-TUI submodule)的铁律
 
