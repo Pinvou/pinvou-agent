@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read   # dorny/paths-filter 调 API 读 PR 改了哪些文件
 
 # 同一 PR 连续 push 时,取消上一次未跑完的检查,省 runner。
 concurrency:
