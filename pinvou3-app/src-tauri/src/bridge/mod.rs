@@ -20,6 +20,7 @@ pub mod sessions;
 pub mod skill_marketplace;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 use deepseek_tui::config::{
@@ -27,7 +28,7 @@ use deepseek_tui::config::{
 };
 use deepseek_tui::core::engine::EngineConfig;
 use deepseek_tui::core::ops::Op;
-use deepseek_tui::hooks::{Hook, HookEvent, HooksConfig};
+use deepseek_tui::hooks::{Hook, HookEvent, HookExecutor, HooksConfig};
 use deepseek_tui::prompts::InstructionSource;
 use deepseek_tui::tui::app::AppMode;
 use deepseek_tui::tui::approval::ApprovalMode;
@@ -519,7 +520,7 @@ impl Pinvou3Bridge {
             tools,
             // —— v0.8.51 上游新增字段,透传 default(speech 输出目录 / hook executor)——
             speech_output_dir,
-            hook_executor,
+            hook_executor: _,
             // —— v0.8.53 上游新增字段,透传 default(subagent 心跳超时;配 subagent
             //    lifecycle hooks feat)。⚠️ 本地慢 vLLM 下或需像 subagent_api_timeout
             //    一样调大,先透传 default,验证后再评估。——
@@ -705,7 +706,10 @@ impl Pinvou3Bridge {
             tools,
             // v0.8.51 上游新增,透传 default
             speech_output_dir,
-            hook_executor,
+            hook_executor: Some(Arc::new(HookExecutor::new(
+                self.build_hooks_config(),
+                self.workspace.clone(),
+            ))),
             // v0.8.53 上游新增,透传 default
             subagent_heartbeat_timeout,
             // v0.8.54-57 上游新增,透传 default(search_base_url=None / stream_chunk_timeout)
@@ -811,12 +815,25 @@ impl Pinvou3Bridge {
     /// 让上游拒绝该 tool 调用。脚本本体在 bundle 中,首次启动解包到
     /// `~/.pinvou3/bundle/deny_sensitive_paths.sh`。
     fn build_hooks_config(&self) -> HooksConfig {
-        let script = self.bundle.deny_sensitive_sh.to_string_lossy().to_string();
+        #[cfg(windows)]
+        let command = {
+            let script = self.bundle.deny_sensitive_ps1.to_string_lossy();
+            format!("powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{script}\"")
+        };
+        #[cfg(not(windows))]
+        let command = {
+            let script = self
+                .bundle
+                .deny_sensitive_sh
+                .to_string_lossy()
+                .replace('\'', "'\\''");
+            format!("bash '{script}'")
+        };
         HooksConfig {
             enabled: true,
             hooks: vec![Hook {
                 event: HookEvent::ToolCallBefore,
-                command: format!("bash {script}"),
+                command,
                 condition: None,
                 timeout_secs: 5,
                 background: false,
@@ -985,6 +1002,48 @@ mod tests {
             workspace: std::env::temp_dir(),
             session_model: None,
         }
+    }
+
+    #[test]
+    fn sensitive_firewall_hook_uses_platform_script() {
+        let bridge = fixture_bridge();
+        let hooks = bridge.build_hooks_config();
+        let command = &hooks.hooks[0].command;
+
+        #[cfg(windows)]
+        {
+            assert!(
+                command.contains("powershell.exe") && command.contains("deny_sensitive_paths.ps1"),
+                "Windows sensitive firewall hook must use PowerShell, got: {command}"
+            );
+            assert!(
+                !command.contains("bash"),
+                "Windows sensitive firewall hook must not require bash, got: {command}"
+            );
+        }
+
+        #[cfg(not(windows))]
+        {
+            assert!(
+                command.starts_with("bash ") && command.contains("deny_sensitive_paths.sh"),
+                "non-Windows sensitive firewall hook must use bash script, got: {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn engine_config_registers_sensitive_firewall_hook() {
+        let bridge = fixture_bridge();
+        let config = bridge.build_engine_config();
+        let executor = config
+            .hook_executor
+            .as_ref()
+            .expect("engine config must register pinvou3 sensitive firewall hook");
+        let hooks = executor.config();
+        assert!(hooks.enabled);
+        assert_eq!(hooks.hooks.len(), 1);
+        assert_eq!(hooks.hooks[0].name.as_deref(), Some("pinvou3-sensitive-firewall"));
+        assert_eq!(hooks.hooks[0].event, HookEvent::ToolCallBefore);
     }
 
     fn set_active_model(
