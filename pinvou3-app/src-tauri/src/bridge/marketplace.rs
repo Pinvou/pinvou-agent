@@ -578,17 +578,22 @@ mod tests {
                 "command":"python","args":[],
                 "servers":[
                     {"name":"qcc-company","url":"https://agent.qcc.com/mcp/company/stream"},
-                    {"name":"qcc-risk","url":"https://agent.qcc.com/mcp/risk/stream"}
+                    {"name":"qcc-risk","url":"https://agent.qcc.com/mcp/risk/stream"},
+                    {"name":"qcc-ipr","url":"https://agent.qcc.com/mcp/ipr/stream"},
+                    {"name":"qcc-operation","url":"https://agent.qcc.com/mcp/operation/stream"}
                 ]
             }"#;
             std::fs::write(dir.join("manifest.json"), manifest).unwrap();
 
             let mgr = MarketplaceManager::new();
+            // 对齐真实 qcc manifest 的 4 个远程 server —— 每个生成一条前缀规则。
             assert_eq!(
                 mgr.model_tool_names(&["qcc".to_string()]),
                 vec![
                     "mcp_qcc-company_*".to_string(),
                     "mcp_qcc-risk_*".to_string(),
+                    "mcp_qcc-ipr_*".to_string(),
+                    "mcp_qcc-operation_*".to_string(),
                 ]
             );
         });
