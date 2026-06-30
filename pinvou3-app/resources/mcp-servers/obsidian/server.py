@@ -308,8 +308,9 @@ def _wikilink_rewrites(vault, old_name, new_name):
     返回 [(file, new_text), ...]。按笔记名（basename）匹配——Obsidian 默认引用方式。"""
     # 名后必跟 # | 或 ]（避免误伤前缀相同的别的笔记名）
     wiki = re.compile(r"(!?\[\[)" + re.escape(old_name) + r"(?=[#|\]])")
-    # markdown 链接形式 ](可能的路径/old.md)
-    mdlink = re.compile(r"(\]\([^)]*?)" + re.escape(old_name) + r"\.md(\))")
+    # markdown 链接形式 ](可能的路径/old.md)。old 前必须紧跟 `(` 或以 `/` 结尾的
+    # 路径前缀,否则 `](my_old.md)` 里的 `old.md` 会被误匹配 → 改坏别的笔记的链接。
+    mdlink = re.compile(r"(\]\((?:[^)]*/)?)" + re.escape(old_name) + r"\.md(\))")
     out = []
     for f in _iter_md(vault):
         text = _read_text(f)
@@ -343,9 +344,10 @@ def rename_note(old="", new="", confirm=False):
         return {
             "type": "confirm_required", "action": "rename",
             "from": _rel(vault, src), "to": _rel(vault, dst),
-            "links_to_fix": len(rewrites),
+            "files_to_fix": len(rewrites),
             "files_affected": [_rel(vault, f) for f, _ in rewrites],
-            "hint": "确认无误请再次调用并带 confirm=true",
+            "hint": "确认无误请再次调用并带 confirm=true；引用按笔记名匹配，"
+                    "若库内有同名笔记可能误改，建议核对 files_affected。",
         }
 
     os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -355,7 +357,7 @@ def rename_note(old="", new="", confirm=False):
     return {
         "type": "obsidian_renamed",
         "from": _rel(vault, src), "to": _rel(vault, dst),
-        "links_fixed": len(rewrites),
+        "files_fixed": len(rewrites),
     }
 
 
