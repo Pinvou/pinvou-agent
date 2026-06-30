@@ -67,6 +67,11 @@ impl AppEngine {
         engine_config.extra_tools.0.push(std::sync::Arc::new(
             crate::knowledge::KbSearchTool::new(app.clone(), session_id.to_string()),
         ));
+        // 工具门控:连接器开关禁用 +(知识库为空时)隐藏 kb_search。compute 返回**完整**列表
+        // (已含连接器禁用),直接覆盖 build_engine_config 设的「连接器-only」初值,让新会话天生正确
+        // ——空知识库就看不到 kb_search,不会宣称能本地检索。
+        let disallowed = crate::commands::compute_disallowed_tools(&app);
+        engine_config.disallowed_tools = if disallowed.is_empty() { None } else { Some(disallowed) };
         let dt_config = bridge.build_dt_config();
 
         eprintln!(

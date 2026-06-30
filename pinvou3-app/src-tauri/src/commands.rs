@@ -1132,17 +1132,39 @@ pub async fn cancel_generation(
     Ok(())
 }
 
+/// 计算当前应「对模型隐藏」的工具全名**完整列表**(小写)。
+///
+/// 因 `EnginePool::set_disallowed_all` 是**全量替换** `config.disallowed_tools`,任何调用方
+/// 都必须传完整列表,不能传增量。组成 = 市场连接器开关禁用的工具名 +(知识库为空时)`kb_search`。
+/// 知识库删光文件后 kb_search 进列表 → 模型目录里看不到 → AI 不再宣称能本地检索。
+/// KnowledgeService state 取不到时保守按「无内容」(隐藏 kb_search,宁可少功能不误宣传)。
+pub fn compute_disallowed_tools(app: &AppHandle) -> Vec<String> {
+    let mut tools = crate::bridge::marketplace::disabled_tool_names();
+    let has_content = app
+        .try_state::<KnowledgeService>()
+        .map(|s| s.has_indexed_content())
+        .unwrap_or(false);
+    if !has_content {
+        tools.push("kb_search".to_string());
+    }
+    tools
+}
+
 /// pinvou3 工具开关(全局持久):设置当前被关掉的连接器(connector_ids = 市场工具 id)。
 /// 落盘 → 推算成模型可见工具全名广播给所有在跑引擎 → 隐藏这些工具。空 = 全开。
 /// 持久:用户关一次,所有新对话/新窗口都继承,直到手动开回。
 #[tauri::command]
 pub async fn set_disabled_connectors(
     connector_ids: Vec<String>,
+    app: AppHandle,
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
+    // 落盘后用 compute_disallowed_tools 重算**完整**禁用列表(含连接器禁用 + kb gate),否则
+    // 切连接器开关的全量替换会冲掉知识库为空时的 kb_search 隐藏。
+    let app2 = app.clone();
     let tools = tokio::task::spawn_blocking(move || {
         crate::bridge::marketplace::save_disabled_connectors(&connector_ids);
-        crate::bridge::marketplace::MarketplaceManager::new().model_tool_names(&connector_ids)
+        compute_disallowed_tools(&app2)
     })
     .await
     .map_err(|e| format!("compute disabled tools: {e}"))?;
