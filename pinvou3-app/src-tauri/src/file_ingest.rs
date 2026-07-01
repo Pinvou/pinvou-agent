@@ -1915,8 +1915,7 @@ pub fn save_paste_image(filename: &str, bytes: &[u8]) -> Result<PathBuf, String>
             bytes.len() as f64 / 1024.0 / 1024.0
         ));
     }
-    let home = std::env::var("HOME").map_err(|_| "HOME not set")?;
-    let pastes = PathBuf::from(home).join(".pinvou3").join("pastes");
+    let pastes = crate::os::user_home_dir().join(".pinvou3").join("pastes");
     std::fs::create_dir_all(&pastes).map_err(|e| format!("create pastes dir: {e}"))?;
     let safe_name = sanitize_filename(filename);
     let ts = std::time::SystemTime::now()
@@ -1951,7 +1950,7 @@ fn sanitize_filename(raw: &str) -> String {
     }
 }
 
-/// 校验路径：必须绝对 + 在 $HOME 下 + 不在敏感目录。
+/// 校验上传路径：必须绝对 + 指向普通文件 + 满足当前系统的上传位置策略 + 不在敏感目录。
 /// 跟 commands::validate_user_path 同语义，单独抽出供前端 ingest 入口调用。
 pub fn validate_path(raw: &str) -> Result<PathBuf, String> {
     let p = PathBuf::from(raw);
@@ -1959,17 +1958,16 @@ pub fn validate_path(raw: &str) -> Result<PathBuf, String> {
         return Err(format!("path must be absolute: {raw}"));
     }
     let canon = normalize_validated_path(&std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone()));
-    let home_raw = crate::os::user_home_dir();
-    let home = normalize_validated_path(
-        &std::fs::canonicalize(&home_raw).unwrap_or_else(|_| home_raw.clone()),
-    );
-    if !canon.starts_with(&home) {
-        return Err(format!("path {} not under $HOME", canon.display()));
+    let metadata = std::fs::metadata(&canon)
+        .map_err(|e| format!("path {} is not readable: {e}", canon.display()))?;
+    if !metadata.is_file() {
+        return Err(format!("path {} is not a file", canon.display()));
     }
+    crate::os::validate_upload_location(&canon)?;
     for blocked in &[".ssh", ".gnupg", ".aws", ".docker", ".kube"] {
         if canon
             .components()
-            .any(|c| c.as_os_str() == std::ffi::OsStr::new(blocked))
+            .any(|c| crate::os::path_component_eq(c.as_os_str(), blocked))
         {
             return Err(format!(
                 "path {} crosses sensitive dir {}",
@@ -2095,11 +2093,6 @@ mod tests {
     #[test]
     fn validate_path_rejects_relative() {
         assert!(validate_path("relative/path.txt").is_err());
-    }
-
-    #[test]
-    fn validate_path_rejects_outside_home() {
-        assert!(validate_path("/etc/passwd").is_err());
     }
 
     #[cfg(target_os = "windows")]
