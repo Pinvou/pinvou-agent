@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 
 const PDF_TOOLS: &[&str] = &["pdftotext", "pdftoppm"];
@@ -47,6 +48,59 @@ pub fn platform_compat_path(value: &str) -> PathBuf {
     }
 
     PathBuf::from(trimmed)
+}
+
+pub fn validate_upload_location(canon: &Path) -> Result<(), String> {
+    for (label, value) in windows_sensitive_roots() {
+        let root = platform_compat_path(
+            &std::fs::canonicalize(&value)
+                .unwrap_or_else(|_| value.clone())
+                .to_string_lossy(),
+        );
+        if path_starts_with_case_insensitive(canon, &root) {
+            return Err(format!(
+                "path {} under sensitive system dir {}",
+                canon.display(),
+                label
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
+    component.to_string_lossy().eq_ignore_ascii_case(expected)
+}
+
+fn windows_sensitive_roots() -> Vec<(&'static str, PathBuf)> {
+    [
+        ("WINDIR", "WINDIR"),
+        ("SystemRoot", "SystemRoot"),
+        ("ProgramFiles", "ProgramFiles"),
+        ("ProgramFiles(x86)", "ProgramFiles(x86)"),
+        ("ProgramData", "ProgramData"),
+    ]
+    .into_iter()
+    .filter_map(|(label, key)| {
+        std::env::var(key)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| (label, PathBuf::from(value)))
+    })
+    .collect()
+}
+
+fn path_starts_with_case_insensitive(path: &Path, base: &Path) -> bool {
+    let path = normalized_path_key(path);
+    let base = normalized_path_key(base);
+    path == base || path.starts_with(&(base + "/"))
+}
+
+fn normalized_path_key(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
 }
 
 pub fn bundled_poppler_dir() -> Option<PathBuf> {
@@ -322,6 +376,24 @@ mod tests {
             platform_compat_path(r"\\?\UNC\server\share\a.pdf"),
             PathBuf::from(r"\\server\share\a.pdf")
         );
+    }
+
+    #[test]
+    fn upload_location_allows_windows_upload_file_outside_home() {
+        let file = Path::new(r"D:\company docs\report.pptx");
+        assert!(validate_upload_location(file).is_ok());
+    }
+
+    #[test]
+    fn upload_location_matches_windows_roots_case_insensitively() {
+        assert!(path_starts_with_case_insensitive(
+            Path::new(r"C:\WINDOWS\System32\drivers\etc\hosts"),
+            Path::new(r"c:\windows")
+        ));
+        assert!(!path_starts_with_case_insensitive(
+            Path::new(r"D:\company docs\report.pptx"),
+            Path::new(r"C:\Windows")
+        ));
     }
 
     #[test]

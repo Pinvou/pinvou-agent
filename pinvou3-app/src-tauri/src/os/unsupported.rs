@@ -177,6 +177,23 @@ pub fn platform_compat_path(value: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
+pub fn validate_upload_location(canon: &Path) -> Result<(), String> {
+    let home_raw = user_home_dir();
+    let home = platform_compat_path(
+        &std::fs::canonicalize(&home_raw)
+            .unwrap_or_else(|_| home_raw.clone())
+            .to_string_lossy(),
+    );
+    if !canon.starts_with(&home) {
+        return Err(format!("path {} not under $HOME", canon.display()));
+    }
+    Ok(())
+}
+
+pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
+    component == OsStr::new(expected)
+}
+
 pub fn super_permission_is_enabled() -> bool {
     false
 }
@@ -266,5 +283,10 @@ mod tests {
         assert!(!show_archive_dependency_check());
         assert_eq!(archive_dependency_packages(), "");
         assert_eq!(archive_tool_path(), PathBuf::from("7z"));
+    }
+
+    #[test]
+    fn upload_location_rejects_outside_home() {
+        assert!(validate_upload_location(Path::new("/etc/passwd")).is_err());
     }
 }
