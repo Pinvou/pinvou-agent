@@ -2605,9 +2605,12 @@
     // Settings View (Material 3 Style)
     // ==========================================
     // 统一排版原语：卡片 / 行(label 左 + 控件右) / 纵向输入字段 / 分段选择 / 改动操作条
-    const SCard = ({ isDark, title, children }) => (
+    const SCard = ({ isDark, title, titleAdornment, children }) => (
       <section className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
-        <h2 className="text-[18px] font-medium mb-6">{title}</h2>
+        <h2 className="text-[18px] font-medium mb-6 flex items-center gap-2">
+          <span>{title}</span>
+          {titleAdornment}
+        </h2>
         {children}
       </section>
     );
@@ -3151,6 +3154,7 @@
       const [feedbackOpen, setFeedbackOpen] = useState(false);
       const [feedbackDraft, setFeedbackDraft] = useState({ type: 'issue', title: '', description: '', attachments: [] });
       const [feedbackStatus, setFeedbackStatus] = useState({ state: 'idle', message: '', receipt: null });
+      const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
       const feedbackTypes = [
         { key: 'issue', label: t.feedbackIssue },
         { key: 'suggestion', label: t.feedbackSuggestion },
@@ -3413,7 +3417,11 @@
               </SCard>
 
               {/* 版本与更新: Linux 检查→下载 deb→安装→重启;Windows 检查→下载 zip→启动 MSI→退出 */}
-              <SCard isDark={isDark} title={t.versionUpdate}>
+              <SCard
+                isDark={isDark}
+                title={t.versionUpdate}
+                titleAdornment={hasUpdate ? <span className="w-2 h-2 rounded-full bg-[#EA4335]" /> : null}
+              >
                 {(() => {
                   const upd = bs && bs.updateInfo;
                   const checking = !!(bs && bs.updateChecking);

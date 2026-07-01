@@ -2219,6 +2219,78 @@
     } catch (e) { att.status = "error"; att.error = String(e); }
     notify();
   }
+  var recentDroppedPaths = {};
+  var DROP_DEDUP_MS = 1500;
+  function dropPathKey(path) {
+    return String(path || "").toLowerCase();
+  }
+  function droppedFilePaths(payload) {
+    if (!payload) return [];
+    if (Array.isArray(payload)) return payload.filter(Boolean);
+    if (payload.payload) return droppedFilePaths(payload.payload);
+    if (payload.type && payload.type !== "drop") return [];
+    if (Array.isArray(payload.paths)) return payload.paths.filter(Boolean);
+    if (Array.isArray(payload.files)) return payload.files.filter(Boolean);
+    if (typeof payload.path === "string") return [payload.path];
+    if (typeof payload === "string") return [payload];
+    return [];
+  }
+  async function addDroppedAttachments(paths) {
+    var now = Date.now();
+    var seen = {};
+    var list = (paths || []).filter(function (p) {
+      var key = dropPathKey(p);
+      if (!p || seen[key]) return false;
+      seen[key] = true;
+      if (recentDroppedPaths[key] && now - recentDroppedPaths[key] < DROP_DEDUP_MS) return false;
+      recentDroppedPaths[key] = now;
+      return true;
+    });
+    Object.keys(recentDroppedPaths).forEach(function (key) {
+      if (now - recentDroppedPaths[key] > DROP_DEDUP_MS * 4) delete recentDroppedPaths[key];
+    });
+    for (var i = 0; i < list.length; i++) {
+      await addAttachmentByPath(list[i]);
+    }
+  }
+  function initAttachmentDrop() {
+    if (initAttachmentDrop.done) return;
+    initAttachmentDrop.done = true;
+
+    var currentWindow = TAURI.window && TAURI.window.getCurrentWindow ? TAURI.window.getCurrentWindow() : null;
+    if (currentWindow && typeof currentWindow.onDragDropEvent === "function") {
+      currentWindow.onDragDropEvent(function (event) {
+        var paths = droppedFilePaths(event);
+        if (paths.length) addDroppedAttachments(paths);
+      }).catch(function (e) { console.warn("[attachment] drag-drop listener failed", e); });
+    }
+
+    listen("tauri://file-drop", function (event) {
+      var paths = droppedFilePaths(event);
+      if (paths.length) addDroppedAttachments(paths);
+    }).catch(function () {});
+    listen("tauri://drag-drop", function (event) {
+      var paths = droppedFilePaths(event);
+      if (paths.length) addDroppedAttachments(paths);
+    }).catch(function () {});
+
+    document.addEventListener("dragover", function (e) {
+      if (e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], "Files") >= 0) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      }
+    });
+    document.addEventListener("drop", function (e) {
+      var files = e.dataTransfer && e.dataTransfer.files;
+      if (!files || files.length === 0) return;
+      e.preventDefault();
+      var paths = [];
+      for (var i = 0; i < files.length; i++) {
+        if (files[i] && files[i].path) paths.push(files[i].path);
+      }
+      if (paths.length) addDroppedAttachments(paths);
+    });
+  }
   async function addPasteImage(filename, bytes) {
     try {
       var path = await invoke("save_paste_image", { filename: filename, bytes: bytes });
@@ -2240,6 +2312,7 @@
       for (var i = 0; i < paths.length; i++) { await addAttachmentByPath(paths[i]); }
     } catch (e) { addSystemItem(bt("filePickFailed") + e); }
   }
+  initAttachmentDrop();
 
 
   // ── 卡片池: 专家面具加持 ─────────────────────────────────────────
