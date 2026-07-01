@@ -704,6 +704,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         let mut names = Vec::new();
         for cid in connector_ids {
             if let Some(m) = self.load_manifest(cid) {
+                for server in &m.servers {
+                    names.push(format!("mcp_{}_*", server.name).to_ascii_lowercase());
+                }
                 for t in &m.mcp_tools {
                     // manifest 的 mcp_tools 不统一:部分已是全名(mcp_xxx_yyy),部分是裸工具名。
                     // 已带 `mcp_` 前缀的原样用,否则补 `mcp_{id}_` —— 与引擎 mcp_{server}_{tool} 对齐。
@@ -1012,6 +1015,40 @@ mod tests {
             );
             // 没装/不存在的连接器 → 跳过(不报错,空)
             assert!(mgr.model_tool_names(&["nope".to_string()]).is_empty());
+        });
+    }
+
+    /// 远程多 server 连接器可能没有静态 mcp_tools 列表(qcc 即如此)。禁用时必须按
+    /// server 名生成前缀规则,否则底座仍会暴露该连接器动态发现出来的全部工具。
+    #[test]
+    fn model_tool_names_generates_prefix_rules_for_remote_servers() {
+        with_temp_home(|| {
+            let dir = crate::bridge::paths::bundle_mcp_servers_dir().join("qcc");
+            std::fs::create_dir_all(&dir).unwrap();
+            let manifest = r#"{
+                "id":"qcc","name":"企查查","description":"d","version":"1","icon":"x","category":"c",
+                "mcp_tools":[],
+                "command":"python","args":[],
+                "servers":[
+                    {"name":"qcc-company","url":"https://agent.qcc.com/mcp/company/stream"},
+                    {"name":"qcc-risk","url":"https://agent.qcc.com/mcp/risk/stream"},
+                    {"name":"qcc-ipr","url":"https://agent.qcc.com/mcp/ipr/stream"},
+                    {"name":"qcc-operation","url":"https://agent.qcc.com/mcp/operation/stream"}
+                ]
+            }"#;
+            std::fs::write(dir.join("manifest.json"), manifest).unwrap();
+
+            let mgr = MarketplaceManager::new();
+            // 对齐真实 qcc manifest 的 4 个远程 server —— 每个生成一条前缀规则。
+            assert_eq!(
+                mgr.model_tool_names(&["qcc".to_string()]),
+                vec![
+                    "mcp_qcc-company_*".to_string(),
+                    "mcp_qcc-risk_*".to_string(),
+                    "mcp_qcc-ipr_*".to_string(),
+                    "mcp_qcc-operation_*".to_string(),
+                ]
+            );
         });
     }
 

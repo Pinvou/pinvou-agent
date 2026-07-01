@@ -70,6 +70,8 @@ fingerprints=(
   # 引擎加 Op::SetDisallowedTools → 写 config.disallowed_tools → 下一轮 filter_tool_catalog_for_gates 隐藏。
   "C8  |SetDisallowedTools op 定义       |DeepSeek-TUI/crates/tui/src/core/ops.rs|SetDisallowedTools { tools: Vec<String> }"
   "C8  |SetDisallowedTools 写 disallowed |DeepSeek-TUI/crates/tui/src/core/engine.rs|Op::SetDisallowedTools { tools }"
+  # —— C9(2026-06-30,fork #5):disallowed_tools 规则支持 `*` 后缀前缀通配,禁掉远程 MCP 动态工具 ——
+  "C9  |command_denies_tool 前缀通配    |DeepSeek-TUI/crates/tui/src/core/engine/turn_loop.rs|rule.strip_suffix('*')"
   # —— 工作流 fork 基座层(三省六部;feat/sansheng-workflow 随附,2026-06-12 补)——
   # 行为层已有 engine_config_locks_critical_fields(W10 reasoning_effort);其余 W* 暂只 L1。
   "W1  |SpawnSubAgent 扩展字段          |DeepSeek-TUI/crates/tui/src/core/ops.rs|expects_file_output: bool"
@@ -132,7 +134,8 @@ bold "── 第 2 层:fork 回归测试 (codewhale-tui) ──"
     truncated_args_hint_fires_for_file_write_missing_field \
     truncated_args_hint_skips_other_tools_and_other_errors \
     test_write_file_rejects_oversized_content \
-    test_append_file_rejects_oversized_content ) || fail=1
+    test_append_file_rejects_oversized_content \
+    disallowed_tools_gate_blocks_prefix_wildcard ) || fail=1
 
 echo
 bold "── 第 2 层:fork 回归测试 (pinvou3-tauri / bridge) ──"

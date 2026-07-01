@@ -94,6 +94,14 @@
 - **测试**:`forkguard` `SetDisallowedTools op 定义` + `SetDisallowedTools 写 disallowed` 指纹(L1);行为 L2 待补
 - 上游 PR:❌ pinvou3 专用(留 fork)
 
+### C9 `engine` disallowed_tools 前缀通配匹配(2026-06-30)
+- **文件**:`core/engine/turn_loop.rs`(`command_denies_tool` 支持 `*` 后缀通配)
+- **改动**:`disallowed_tools` 规则以 `*` 结尾时按前缀匹配(`mcp_qcc-company_*` 命中该 server 名下**所有动态发现**的工具),否则精确匹配。向后兼容(无 `*` 行为不变)
+- **理由**:远程 MCP 连接器(qcc)工具名连上后动态发现、manifest `mcp_tools` 为空,精确名禁用失效;只有按静态可知的 server 名生成 `mcp_{server}_*` 前缀规则、且匹配层支持通配,才能在工具发现**之前**就把禁用规则写好(规则与发现解耦)。与 C8 同 disallowed_tools 主题(C8=广播 op / C9=匹配逻辑)。消费方=pinvou3-app `marketplace::model_tool_names` 对 manifest 每个 `servers[]` 生成前缀规则
+- **来源**:fork PR h3c-hexin/DeepSeek-TUI#5(已进 `pinvou3-clean`,commit `8dcd29c2`)
+- **测试**:`forkguard` `command_denies_tool 前缀通配` 指纹(L1) + `disallowed_tools_gate_blocks_prefix_wildcard` 回归(L2)
+- 上游 PR:🔜 通用增强(disallowed 支持 glob,非 pinvou3 专用),建议提 Hmbown/CodeWhale
+
 ### R `agentic-rag` EngineConfig.extra_tools 应用层工具注入口(2026-06-24)
 - **文件**:`core/engine.rs`(`ExtraTools` newtype + `EngineConfig.extra_tools` 字段 + Default)、`core/engine/tool_setup.rs`(`build_turn_tool_registry_builder` 末尾 `with_tool` 循环注册);连带补 3 处 TUI 路径 EngineConfig literal(`runtime_threads.rs`/`tui/ui.rs`/`main.rs`,`extra_tools: Default::default()`)
 - **改动**:给 `EngineConfig` 加 `pub extra_tools: ExtraTools`(newtype 包 `Vec<Arc<dyn ToolSpec>>`,手写 Debug 输出工具名——`dyn ToolSpec` 非 Debug,否则破 `#[derive(Debug)]`),每 turn build registry 时 append 到 builder。让**嵌入应用**(pinvou3-app)无需 fork 工具表即可注册自定义 `ToolSpec`

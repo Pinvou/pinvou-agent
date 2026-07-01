@@ -1,0 +1,118 @@
+name: PR Check
+
+# Jobs:
+# - fast-gate(秒级,每 PR 都跑):fork-guard 指纹 + fork 合规联动 + Python MCP 测试。
+# - changes:检测本 PR 有没有 Rust/依赖改动,给 rust-test 做 paths filter。
+# - rust-test(编译类):**仅当改了 Rust/Cargo/submodule 才跑**(非 Rust PR 直接 skip,不耗
+#   编译时间)。占位 bge-m3 → cargo test --lib(~240 单测;真 bge-m3/vLLM 测试已 #[ignore])。
+# 未上:clippy/fmt(现有代码各 75/329 处不符合,要先清理才能加 -D gate)。
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read   # dorny/paths-filter 调 API 读 PR 改了哪些文件
+
+# 同一 PR 连续 push 时,取消上一次未跑完的检查,省 runner。
+concurrency:
+  group: pr-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # 检测本 PR 改了哪些类别,给 rust-test 做条件触发(非 Rust PR 跳过编译)。
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - '**/*.rs'
+              - '**/Cargo.toml'
+              - '**/Cargo.lock'
+              - 'DeepSeek-TUI'
+
+  fast-gate:
+    name: fast-gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (含 submodule,fork 为 public 直接拉)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: fork-guard 指纹层 (秒级,不编译)
+        run: ./scripts/fork-guard.sh --fast
+
+      - name: fork 合规联动 (gitlink ↔ fork-modifications)
+        run: ./scripts/ci-fork-link-check.sh "origin/${{ github.base_ref }}"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Python MCP server 测试 (mcp-servers/*/test_*.py)
+        run: |
+          python3 -m pip install --quiet python-pptx   # pptx test 的唯一第三方依赖
+          fail=0
+          for t in pinvou3-app/resources/mcp-servers/*/test_*.py; do
+            [ -f "$t" ] || continue
+            echo "== $t =="
+            ( cd "$(dirname "$t")" && python3 "$(basename "$t")" ) || fail=1
+          done
+          [ "$fail" -eq 0 ]
+
+  rust-test:
+    name: rust-test
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'   # 只在改了 Rust/Cargo/submodule 时跑
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (含 submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # pinvou3 编译链接的系统库(本地 pkg-config 实测:gtk/webkit/soup/rsvg/openssl/
+      # X11×3/appindicator)。ubuntu runner 默认没装,否则 glib-sys 等 build script 失败。
+      - name: 装 Tauri + pinvou3 Linux 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            librsvg2-dev libssl-dev \
+            libx11-dev libxi-dev libxtst-dev \
+            libayatana-appindicator3-dev \
+            build-essential pkg-config
+
+      # bge-m3 是 gitignored 大资源(559M),CI 干净 checkout 没有它,而 tauri_build::build()
+      # 会校验 tauri.conf resources 路径存在。单测用 mem()=embedder None、不加载真模型,真
+      # bge-m3/vLLM 的 e2e 测试都已 #[ignore] —— 故造空占位文件骗过资源校验即可(已实测可行)。
+      - name: bge-m3 占位 (骗过 tauri-build 资源校验)
+        run: |
+          d=pinvou3-app/src-tauri/resources/bge-m3
+          mkdir -p "$d"
+          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
+            : > "$d/$f"
+          done
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou3-app/src-tauri
+
+      # --test-threads=1:bridge 测试读/写全局 env,并行会竞争(qwen_preset/vllm 等 flaky)。
+      - name: cargo test --lib (真 bge-m3/vLLM 测试已 #[ignore])
+        run: cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
