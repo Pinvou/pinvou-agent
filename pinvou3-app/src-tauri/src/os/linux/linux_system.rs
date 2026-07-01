@@ -30,6 +30,10 @@ pub fn pandoc_tool_path() -> std::path::PathBuf {
     linux_path::pandoc_tool_path()
 }
 
+pub fn libreoffice_tool_path() -> std::path::PathBuf {
+    std::path::PathBuf::from("soffice")
+}
+
 pub fn ocr_tool_path() -> std::path::PathBuf {
     std::path::PathBuf::from("tesseract")
 }

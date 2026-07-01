@@ -67,6 +67,21 @@ pub fn pandoc_tool_path() -> std::path::PathBuf {
     windows_path::pandoc_tool_path()
 }
 
+pub fn libreoffice_tool_path() -> PathBuf {
+    if let Ok(path) = std::env::var("PINVOU3_LIBREOFFICE_CMD") {
+        if !path.trim().is_empty() {
+            return PathBuf::from(path);
+        }
+    }
+    if let Some(path) = common_libreoffice_tool_path("soffice") {
+        if let Some(dir) = path.parent() {
+            ensure_dir_on_process_path(dir.to_path_buf());
+        }
+        return path;
+    }
+    PathBuf::from("soffice")
+}
+
 pub fn ocr_tool_path() -> PathBuf {
     ensure_bundled_tesseract_on_process_path();
     windows_path::tesseract_tool_path()
@@ -313,10 +328,12 @@ fn common_libreoffice_tool_path(command: &str) -> Option<PathBuf> {
     roots.push(PathBuf::from(r"C:\Program Files"));
     roots.push(PathBuf::from(r"C:\Program Files (x86)"));
 
-    roots
-        .into_iter()
-        .map(|root| root.join("LibreOffice").join("program").join("soffice.exe"))
-        .find(|path| path.is_file())
+    roots.into_iter().find_map(|root| {
+        let program = root.join("LibreOffice").join("program");
+        [program.join("soffice.com"), program.join("soffice.exe")]
+            .into_iter()
+            .find(|path| path.is_file())
+    })
 }
 
 fn is_libreoffice_command(command: &str) -> bool {
@@ -327,7 +344,7 @@ fn is_libreoffice_command(command: &str) -> bool {
         .to_ascii_lowercase();
     matches!(
         name.as_str(),
-        "soffice" | "soffice.exe" | "libreoffice" | "libreoffice.exe"
+        "soffice" | "soffice.exe" | "soffice.com" | "libreoffice" | "libreoffice.exe"
     )
 }
 
@@ -353,7 +370,13 @@ mod tests {
     fn detects_libreoffice_command_names() {
         assert!(is_libreoffice_command("soffice"));
         assert!(is_libreoffice_command("soffice.exe"));
+        assert!(is_libreoffice_command("soffice.com"));
         assert!(is_libreoffice_command("libreoffice"));
         assert!(!is_libreoffice_command("pandoc"));
+    }
+
+    #[test]
+    fn libreoffice_tool_path_returns_program() {
+        assert!(!libreoffice_tool_path().as_os_str().is_empty());
     }
 }
