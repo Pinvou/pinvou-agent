@@ -2404,6 +2404,15 @@
     } catch (e) { /* 静默 */ }
   }
   // 设置页手动检查: 错误和「已是最新」都要反馈。
+  function formatUpdateCheckError(error) {
+    var message = String(error || '').trim();
+    var match = message.match(/^(.*?)(?:[:：]\s*)?code=\d+\s+msg=(.*)$/i);
+    if (!match) return message;
+    var prefix = String(match[1] || '').trim().replace(/[:：]\s*$/, '');
+    var detail = String(match[2] || '').trim();
+    if (prefix && detail) return prefix + '\uFF0C' + detail;
+    return detail || prefix || message;
+  }
   async function checkForUpdate() {
     state.updateChecking = true; state.updateCheckError = null; notify();
     try {
@@ -2412,7 +2421,7 @@
       state.updateInfo = info;
       if (!info.available) state.updateCheckError = "latest"; // 前端按 i18n 显示「已是最新」
     } catch (e) {
-      state.updateCheckError = String(e);
+      state.updateCheckError = formatUpdateCheckError(e);
     }
     state.updateChecking = false; notify();
   }

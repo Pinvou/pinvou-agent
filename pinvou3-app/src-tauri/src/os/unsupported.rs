@@ -19,6 +19,10 @@ pub fn pandoc_tool_path() -> PathBuf {
     PathBuf::from("pandoc")
 }
 
+pub fn libreoffice_tool_path() -> PathBuf {
+    PathBuf::from("soffice")
+}
+
 pub fn ocr_tool_path() -> PathBuf {
     PathBuf::from("tesseract")
 }

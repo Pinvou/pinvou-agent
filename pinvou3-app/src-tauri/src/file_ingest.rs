@@ -154,6 +154,61 @@ fn archive_tool_command() -> Command {
     crate::process::HiddenCommand::new(crate::os::archive_tool_path())
 }
 
+fn libreoffice_tool_command() -> Command {
+    crate::process::HiddenCommand::new(crate::os::libreoffice_tool_path())
+}
+
+fn libreoffice_user_installation_arg(profile_dir: &Path) -> String {
+    format!(
+        "-env:UserInstallation={}",
+        path_to_libreoffice_file_url(profile_dir)
+    )
+}
+
+fn path_to_libreoffice_file_url(path: &Path) -> String {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join(path)
+    };
+    let normalized = path.as_os_str().to_string_lossy().replace('\\', "/");
+    let escaped = escape_file_url_path(&normalized);
+
+    #[cfg(target_os = "windows")]
+    {
+        if escaped.starts_with("//") {
+            return format!("file:{escaped}");
+        }
+        return format!("file:///{escaped}");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        format!("file://{escaped}")
+    }
+}
+
+fn escape_file_url_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for byte in path.as_bytes() {
+        match *byte {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'~'
+            | b'/'
+            | b':' => out.push(*byte as char),
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 fn add_ocr_tessdata_arg(command: &mut Command) {
     if let Some(tessdata_dir) = crate::os::ocr_tessdata_dir() {
         command.arg("--tessdata-dir").arg(tessdata_dir);
@@ -458,8 +513,8 @@ fn libreoffice_convert_text(
 
     // 独立 UserInstallation profile：LibreOffice 同一 profile 不能并发(会 lock)，
     // 用户一次拖多个 office 文件时前端会并发 ingest_file，必须各用各的 profile。
-    let out = Command::new("soffice")
-        .arg(format!("-env:UserInstallation=file://{}/profile", tmpdir.display()))
+    let out = libreoffice_tool_command()
+        .arg(libreoffice_user_installation_arg(&tmpdir.join("profile")))
         .arg("--headless")
         .arg("--convert-to")
         .arg(convert_to)
@@ -591,8 +646,8 @@ pub fn libreoffice_to_inline_html(path: &Path) -> Result<String, String> {
     let tmpdir = std::env::temp_dir().join(format!("pinvou3-lo-html-{ts}"));
     std::fs::create_dir_all(&tmpdir).map_err(|e| format!("创建临时目录失败: {e}"))?;
 
-    let out = Command::new("soffice")
-        .arg(format!("-env:UserInstallation=file://{}/profile", tmpdir.display()))
+    let out = libreoffice_tool_command()
+        .arg(libreoffice_user_installation_arg(&tmpdir.join("profile")))
         .arg("--headless")
         .arg("--convert-to")
         // 不写死 `html:HTML`(那是 Writer 专用 filter,套到 Calc/Impress 会无产出)。
@@ -658,8 +713,8 @@ pub fn office_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<Strin
 
     let result = (|| -> Result<(Vec<String>, bool), String> {
         // 1) office → PDF
-        let out = Command::new("soffice")
-            .arg(format!("-env:UserInstallation=file://{}/profile", tmpdir.display()))
+        let out = libreoffice_tool_command()
+            .arg(libreoffice_user_installation_arg(&tmpdir.join("profile")))
             .arg("--headless")
             .arg("--convert-to")
             .arg("pdf")
@@ -979,8 +1034,8 @@ fn libreoffice_presentation_text(path: &Path) -> Result<String, String> {
     let tmpdir = std::env::temp_dir().join(format!("pinvou3-pptpdf-{ts}"));
     std::fs::create_dir_all(&tmpdir).map_err(|e| format!("创建临时目录失败: {e}"))?;
 
-    let convert = Command::new("soffice")
-        .arg(format!("-env:UserInstallation=file://{}/profile", tmpdir.display()))
+    let convert = libreoffice_tool_command()
+        .arg(libreoffice_user_installation_arg(&tmpdir.join("profile")))
         .arg("--headless")
         .arg("--convert-to")
         .arg("pdf")
@@ -2047,6 +2102,25 @@ mod tests {
         assert!(validate_path("/etc/passwd").is_err());
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn libreoffice_user_installation_uses_windows_file_url() {
+        let arg = libreoffice_user_installation_arg(Path::new(
+            r"C:\Users\pinvou\AppData\Local\Temp\profile dir",
+        ));
+        assert_eq!(
+            arg,
+            "-env:UserInstallation=file:///C:/Users/pinvou/AppData/Local/Temp/profile%20dir"
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn libreoffice_user_installation_uses_posix_file_url() {
+        let arg = libreoffice_user_installation_arg(Path::new("/tmp/profile dir"));
+        assert_eq!(arg, "-env:UserInstallation=file:///tmp/profile%20dir");
+    }
+
     #[cfg(windows)]
     #[test]
     fn validate_path_accepts_windows_canonicalized_home_file() {
@@ -2555,8 +2629,8 @@ mod visual_preview_smoke {
 
         // 2) md -> pdf (soffice via docx) -> png 页
         let pdf = dir.join("doc.pdf");
-        let _ = Command::new("soffice")
-            .arg(format!("-env:UserInstallation=file://{}/p", dir.display()))
+        let _ = libreoffice_tool_command()
+            .arg(libreoffice_user_installation_arg(&dir.join("p")))
             .args(["--headless", "--convert-to", "pdf", "--outdir"])
             .arg(&dir)
             .arg(&docx)
@@ -2590,8 +2664,8 @@ mod visual_preview_smoke {
         // 4) csv -> xlsx (soffice) -> inline html(电子表格走 HTML 表格)
         let csv = dir.join("data.csv");
         std::fs::write(&csv, "甲,乙\n1,2\n3,4\n").unwrap();
-        let _ = Command::new("soffice")
-            .arg(format!("-env:UserInstallation=file://{}/p2", dir.display()))
+        let _ = libreoffice_tool_command()
+            .arg(libreoffice_user_installation_arg(&dir.join("p2")))
             .args(["--headless", "--convert-to", "xlsx", "--outdir"])
             .arg(&dir)
             .arg(&csv)

@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "pinvou3",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "identifier": "com.pinvou.pinvou3",
   "build": {
     "frontendDist": "../src"
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "PINVOU ????",
+        "title": "PINVOU 智能助手（内测版）",
         "width": 1100,
         "height": 760,
         "resizable": true,

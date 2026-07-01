@@ -41,8 +41,9 @@ const LARK_SKILL_DIRS: [&str; 9] = [
 ///     不依赖版本号 bump(同 write_workflows / write_mcp_servers）。
 /// 0.10: 接入飞书官方域技能(lark-shared + calendar/doc/drive/sheets/im/task/wiki/base):
 ///       include_dir 内嵌 + 启动解包到 bundle_skills_dir,供 SkillRegistry 发现
+/// 0.11: Windows 敏感路径硬拦截新增 PowerShell hook,并补充 Credential Manager 相关拦截规则
 pub const BUNDLE_VERSION: &str = concat!(
-    "0.10-",
+    "0.11-",
     env!("BUNDLE_INSTRUCTIONS_HASH"),
     "-",
     env!("BUNDLE_WORKFLOW_HASH_SANSHENG"),
@@ -199,6 +200,8 @@ const GONGWEN_STYLES_PY: &str =
 /// 时阻止 LLM 触碰 ~/.ssh/ ~/.gnupg/ 等。
 pub const DENY_SENSITIVE_PATHS_SH: &str =
     include_str!("../../resources/bundle/deny_sensitive_paths.sh");
+pub const DENY_SENSITIVE_PATHS_PS1: &str =
+    include_str!("../../resources/bundle/deny_sensitive_paths.ps1");
 
 #[derive(Debug, Clone)]
 pub struct Pinvou3Bundle {
@@ -208,6 +211,7 @@ pub struct Pinvou3Bundle {
     pub user_skills_dir: PathBuf,
     pub mcp_json: PathBuf,
     pub deny_sensitive_sh: PathBuf,
+    pub deny_sensitive_ps1: PathBuf,
 }
 
 impl Pinvou3Bundle {
@@ -219,6 +223,7 @@ impl Pinvou3Bundle {
             user_skills_dir: paths::user_skills_dir(),
             mcp_json: paths::bundle_mcp_json(),
             deny_sensitive_sh: paths::bundle_root().join("deny_sensitive_paths.sh"),
+            deny_sensitive_ps1: paths::bundle_root().join("deny_sensitive_paths.ps1"),
         }
     }
 
@@ -289,6 +294,7 @@ impl Pinvou3Bundle {
         std::fs::write(&self.instructions_md, rendered)?;
         // 敏感目录拦截脚本：写入 + 加可执行位
         std::fs::write(&self.deny_sensitive_sh, DENY_SENSITIVE_PATHS_SH)?;
+        std::fs::write(&self.deny_sensitive_ps1, DENY_SENSITIVE_PATHS_PS1)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -548,6 +554,8 @@ mod tests {
         bundle.ensure_extracted().unwrap();
         assert!(bundle.instructions_md.is_file());
         assert!(bundle.mcp_json.is_file());
+        assert!(bundle.deny_sensitive_sh.is_file());
+        assert!(bundle.deny_sensitive_ps1.is_file());
         assert!(paths::bundle_version_file().is_file());
         // present_artifact MCP server 应解包,mcp.json 注册且占位符替换成绝对路径
         assert!(

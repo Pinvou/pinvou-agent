@@ -14,6 +14,10 @@ pub fn pandoc_tool_path() -> PathBuf {
     super::super::platform::pandoc_tool_path()
 }
 
+pub fn libreoffice_tool_path() -> PathBuf {
+    super::super::platform::libreoffice_tool_path()
+}
+
 pub fn ocr_tool_path() -> PathBuf {
     super::super::platform::ocr_tool_path()
 }
@@ -171,6 +175,11 @@ mod tests {
     #[test]
     fn pandoc_tool_path_returns_non_empty_program() {
         assert!(!pandoc_tool_path().as_os_str().is_empty());
+    }
+
+    #[test]
+    fn libreoffice_tool_path_returns_non_empty_program() {
+        assert!(!libreoffice_tool_path().as_os_str().is_empty());
     }
 
     #[test]
