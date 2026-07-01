@@ -440,7 +440,8 @@ async fn model_review(bridge: &Pinvou3Bridge, prompt: &str, user_content: &str) 
     // 本地 vLLM：用实际 served name 发请求——vLLM 端改了 --served-model-name 后，配置里
     // bridge.model() 可能仍是旧名（品悟走独立 HTTP，不经 engine 的 fresh_bridge_for 探测），
     // 直接用会 404 model_not_found。探测失败回退配置值；云端 provider 不探测。
-    let model_name = if bridge.provider() == "vllm" {
+    let provider = bridge.provider();
+    let model_name = if provider == "vllm" {
         crate::monitor::probe_vllm_served_model(&base_url)
             .await
             .unwrap_or_else(|| bridge.model())
@@ -452,7 +453,7 @@ async fn model_review(bridge: &Pinvou3Bridge, prompt: &str, user_content: &str) 
         Some(suffix) => format!("{prompt}{suffix}"),
         None => prompt.to_string(),
     };
-    let body = json!({
+    let mut body = json!({
         "model": model_name,
         "messages": [
             { "role": "system", "content": prompt },
@@ -461,13 +462,13 @@ async fn model_review(bridge: &Pinvou3Bridge, prompt: &str, user_content: &str) 
         "temperature": 0,
         "max_tokens": 1600,
         "stream": false,
-        "chat_template_kwargs": { "enable_thinking": false },
         // 根治偶发非法 JSON(qwen36 长输出漏逗号/字符串内未转义引号,实测 line N col M 解析炸):
         // vLLM guided decoding token 级保证输出合法 JSON 语法,不靠事后 find('{')..rfind('}') 补救。
         // 后端实测 json_object/guided_json/json_schema 四种约束均支持,取最通用的 json_object;
         // 三个 prompt 均含「输出只能是 JSON」字样,满足 json mode 前置要求。
         "response_format": { "type": "json_object" }
     });
+    apply_review_reasoning_controls(&mut body, &provider);
     let resp = client
         .post(url)
         .bearer_auth(bridge.api_key())
@@ -487,6 +488,18 @@ async fn model_review(bridge: &Pinvou3Bridge, prompt: &str, user_content: &str) 
         .and_then(Value::as_str)
         .unwrap_or_default();
     parse_model_review(content).context("parse Pinvou review")
+}
+
+fn apply_review_reasoning_controls(body: &mut Value, provider: &str) {
+    match provider {
+        "deepseek" => {
+            body["thinking"] = json!({ "type": "disabled" });
+        }
+        "vllm" => {
+            body["chat_template_kwargs"] = json!({ "enable_thinking": false });
+        }
+        _ => {}
+    }
 }
 
 fn parse_model_review(content: &str) -> Result<ModelReview> {
@@ -675,6 +688,27 @@ fn apply_guard(raw: ModelReview, locale_tag: &str) -> PinvouReview {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_reasoning_controls_match_provider() {
+        let mut deepseek = json!({});
+        apply_review_reasoning_controls(&mut deepseek, "deepseek");
+        assert_eq!(
+            deepseek["thinking"],
+            json!({ "type": "disabled" }),
+            "DeepSeek official API needs the top-level thinking disable field"
+        );
+        assert!(deepseek.get("chat_template_kwargs").is_none());
+
+        let mut vllm = json!({});
+        apply_review_reasoning_controls(&mut vllm, "vllm");
+        assert_eq!(
+            vllm["chat_template_kwargs"],
+            json!({ "enable_thinking": false }),
+            "vLLM needs chat_template_kwargs to disable thinking"
+        );
+        assert!(vllm.get("thinking").is_none());
+    }
 
     /// 核账跳过哪些动作的契约：只有 accept(接受现状)/confirmed(需核实已确认)算已结，其余
     /// 都保留核。漏掉 confirmed 会让 Boss 已确认的账被重核→震荡(pkx4clhny5jd0 实测暴露)。
