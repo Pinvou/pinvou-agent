@@ -180,6 +180,14 @@ impl L1Store {
 
     // ───────────────────────── 文档 ─────────────────────────
 
+    /// 库里是否存在任意已入库文档（任一知识集）。用于「知识库为空时隐藏 kb_search 工具」门控：
+    /// 删光所有文件后不让模型目录里还留着检索工具。EXISTS 子查询走索引，常数时间。
+    pub fn has_any_document(&self) -> rusqlite::Result<bool> {
+        self.conn
+            .lock()
+            .query_row("SELECT EXISTS(SELECT 1 FROM documents)", [], |r| r.get(0))
+    }
+
     /// 列出某知识集文档（collection_id<=0 则列出全部知识集的，按最近解析倒序，给"知识库内文件"表）。
     pub fn list_documents(&self, collection_id: i64, limit: usize) -> rusqlite::Result<Vec<Document>> {
         let c = self.conn.lock();
@@ -649,6 +657,33 @@ mod tests {
         assert_eq!(l1.list_collections().unwrap()[0].name, "产品资料库");
         l1.delete_collection(id).unwrap();
         assert!(l1.list_collections().unwrap().is_empty());
+    }
+
+    /// kb_search 门控核心:has_any_document 反映"库里有没有文档"。空知识集不算;
+    /// 删文档 / 删知识集后都应归 false —— 对应 kb_remove_document / kb_collection_delete
+    /// 删后 refresh_kb_tool_gate 把 kb_search 加进 disallowed（库空就该隐藏检索工具）。
+    #[test]
+    fn has_any_document_reflects_emptiness() {
+        let l1 = mem();
+        assert!(!l1.has_any_document().unwrap(), "空库应为 false");
+
+        let cid = l1.create_collection("库", None, None).unwrap();
+        assert!(!l1.has_any_document().unwrap(), "空知识集（无文档）不算有内容");
+
+        let doc = l1
+            .upsert_document(cid, "/tmp/a.md", "a.md", Some("md"), 10, 0)
+            .unwrap();
+        assert!(l1.has_any_document().unwrap(), "入库一篇后应为 true");
+
+        l1.remove_document(doc).unwrap();
+        assert!(!l1.has_any_document().unwrap(), "删光文档后应回到 false");
+
+        // 删整个知识集这条路径:连带清文档,也应归 false
+        l1.upsert_document(cid, "/tmp/b.md", "b.md", Some("md"), 10, 0)
+            .unwrap();
+        assert!(l1.has_any_document().unwrap());
+        l1.delete_collection(cid).unwrap();
+        assert!(!l1.has_any_document().unwrap(), "删知识集应连带清空文档");
     }
 
     #[test]
