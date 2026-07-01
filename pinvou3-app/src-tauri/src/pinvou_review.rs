@@ -17,7 +17,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::bridge::Pinvou3Bridge;
+use crate::bridge::{prefs::ModelPreset, Pinvou3Bridge};
 
 const PROMPT: &str = r#"你是 Pinvou，Boss 身边的独立检阅顾问，召之即来。
 
@@ -441,6 +441,7 @@ async fn model_review(bridge: &Pinvou3Bridge, prompt: &str, user_content: &str) 
     // bridge.model() 可能仍是旧名（品悟走独立 HTTP，不经 engine 的 fresh_bridge_for 探测），
     // 直接用会 404 model_not_found。探测失败回退配置值；云端 provider 不探测。
     let provider = bridge.provider();
+    let preset = review_model_preset(bridge);
     let model_name = if provider == "vllm" {
         crate::monitor::probe_vllm_served_model(&base_url)
             .await
@@ -468,7 +469,7 @@ async fn model_review(bridge: &Pinvou3Bridge, prompt: &str, user_content: &str) 
         // 三个 prompt 均含「输出只能是 JSON」字样,满足 json mode 前置要求。
         "response_format": { "type": "json_object" }
     });
-    apply_review_reasoning_controls(&mut body, &provider);
+    apply_review_reasoning_controls(&mut body, preset, &provider, &base_url, &model_name);
     let resp = client
         .post(url)
         .bearer_auth(bridge.api_key())
@@ -490,16 +491,118 @@ async fn model_review(bridge: &Pinvou3Bridge, prompt: &str, user_content: &str) 
     parse_model_review(content).context("parse Pinvou review")
 }
 
-fn apply_review_reasoning_controls(body: &mut Value, provider: &str) {
-    match provider {
-        "deepseek" => {
+fn review_model_preset(bridge: &Pinvou3Bridge) -> ModelPreset {
+    bridge
+        .effective_model_owned()
+        .map(|m| m.preset)
+        .unwrap_or_else(|| bridge.prefs.advanced.model_preset.unwrap_or_default())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReviewReasoningDialect {
+    None,
+    ThinkingDisabled,
+    QwenEnableThinking,
+    VllmChatTemplate,
+    Minimax,
+}
+
+fn apply_review_reasoning_controls(
+    body: &mut Value,
+    preset: ModelPreset,
+    provider: &str,
+    base_url: &str,
+    model: &str,
+) {
+    match review_reasoning_dialect(preset, provider, base_url, model) {
+        ReviewReasoningDialect::ThinkingDisabled => {
             body["thinking"] = json!({ "type": "disabled" });
         }
-        "vllm" => {
+        ReviewReasoningDialect::QwenEnableThinking => {
+            body["enable_thinking"] = json!(false);
+        }
+        ReviewReasoningDialect::VllmChatTemplate => {
             body["chat_template_kwargs"] = json!({ "enable_thinking": false });
         }
-        _ => {}
+        ReviewReasoningDialect::Minimax => {
+            body["thinking"] = json!({ "type": "disabled" });
+            body["reasoning_split"] = json!(true);
+        }
+        ReviewReasoningDialect::None => {}
     }
+}
+
+fn review_reasoning_dialect(
+    preset: ModelPreset,
+    provider: &str,
+    base_url: &str,
+    model: &str,
+) -> ReviewReasoningDialect {
+    if provider == "vllm" || preset == ModelPreset::LocalVllm {
+        return ReviewReasoningDialect::VllmChatTemplate;
+    }
+    if provider == "deepseek" || preset == ModelPreset::Deepseek {
+        return ReviewReasoningDialect::ThinkingDisabled;
+    }
+
+    match preset {
+        ModelPreset::Kimi => {
+            if kimi_supports_disabled_thinking(model) {
+                ReviewReasoningDialect::ThinkingDisabled
+            } else {
+                ReviewReasoningDialect::None
+            }
+        }
+        ModelPreset::Qwen => ReviewReasoningDialect::QwenEnableThinking,
+        ModelPreset::Doubao | ModelPreset::Glm | ModelPreset::Mimo => {
+            ReviewReasoningDialect::ThinkingDisabled
+        }
+        ModelPreset::Minimax => ReviewReasoningDialect::Minimax,
+        ModelPreset::OpenaiCompatible | ModelPreset::LocalVllm | ModelPreset::Deepseek => {
+            review_reasoning_dialect_from_base_url(base_url, model)
+        }
+    }
+}
+
+fn review_reasoning_dialect_from_base_url(base_url: &str, model: &str) -> ReviewReasoningDialect {
+    let normalized = base_url
+        .trim()
+        .trim_end_matches('/')
+        .trim_end_matches("/chat/completions")
+        .trim_end_matches("/v1")
+        .to_ascii_lowercase();
+
+    if normalized.contains("api.deepseek.com") || normalized.contains("api.deepseeki.com") {
+        ReviewReasoningDialect::ThinkingDisabled
+    } else if normalized.contains("dashscope.aliyuncs.com") {
+        ReviewReasoningDialect::QwenEnableThinking
+    } else if normalized.contains("moonshot.cn") || normalized.contains("moonshot.ai") {
+        if kimi_supports_disabled_thinking(model) {
+            ReviewReasoningDialect::ThinkingDisabled
+        } else {
+            ReviewReasoningDialect::None
+        }
+    } else if normalized.contains("volces.com")
+        || normalized.contains("volcengine")
+        || normalized.contains("byteplus.com")
+    {
+        ReviewReasoningDialect::ThinkingDisabled
+    } else if normalized.contains("minimax.chat") || normalized.contains("minimaxi.com") {
+        ReviewReasoningDialect::Minimax
+    } else if normalized.contains("bigmodel.cn") || normalized.contains("z.ai") {
+        ReviewReasoningDialect::ThinkingDisabled
+    } else if normalized.contains("xiaomimimo.com") {
+        ReviewReasoningDialect::ThinkingDisabled
+    } else {
+        ReviewReasoningDialect::None
+    }
+}
+
+fn kimi_supports_disabled_thinking(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    (model.contains("kimi-k2.5") || model.contains("kimi-k2.6"))
+        && !model.contains("thinking")
+        && !model.contains("k2.7")
 }
 
 fn parse_model_review(content: &str) -> Result<ModelReview> {
@@ -692,7 +795,13 @@ mod tests {
     #[test]
     fn review_reasoning_controls_match_provider() {
         let mut deepseek = json!({});
-        apply_review_reasoning_controls(&mut deepseek, "deepseek");
+        apply_review_reasoning_controls(
+            &mut deepseek,
+            ModelPreset::Deepseek,
+            "deepseek",
+            ModelPreset::Deepseek.default_base_url(),
+            "deepseek-v4-pro",
+        );
         assert_eq!(
             deepseek["thinking"],
             json!({ "type": "disabled" }),
@@ -701,13 +810,106 @@ mod tests {
         assert!(deepseek.get("chat_template_kwargs").is_none());
 
         let mut vllm = json!({});
-        apply_review_reasoning_controls(&mut vllm, "vllm");
+        apply_review_reasoning_controls(
+            &mut vllm,
+            ModelPreset::LocalVllm,
+            "vllm",
+            ModelPreset::LocalVllm.default_base_url(),
+            "qwen36_35b_256k",
+        );
         assert_eq!(
             vllm["chat_template_kwargs"],
             json!({ "enable_thinking": false }),
             "vLLM needs chat_template_kwargs to disable thinking"
         );
         assert!(vllm.get("thinking").is_none());
+    }
+
+    #[test]
+    fn review_reasoning_controls_cover_builtin_presets() {
+        let mut qwen = json!({});
+        apply_review_reasoning_controls(
+            &mut qwen,
+            ModelPreset::Qwen,
+            "openai",
+            ModelPreset::Qwen.default_base_url(),
+            "qwen3.6-plus",
+        );
+        assert_eq!(qwen["enable_thinking"], json!(false));
+
+        for preset in [ModelPreset::Doubao, ModelPreset::Glm, ModelPreset::Mimo] {
+            let mut body = json!({});
+            apply_review_reasoning_controls(
+                &mut body,
+                preset,
+                "openai",
+                preset.default_base_url(),
+                preset.default_model(),
+            );
+            assert_eq!(body["thinking"], json!({ "type": "disabled" }));
+        }
+
+        let mut minimax = json!({});
+        apply_review_reasoning_controls(
+            &mut minimax,
+            ModelPreset::Minimax,
+            "openai",
+            ModelPreset::Minimax.default_base_url(),
+            "MiniMax-M3",
+        );
+        assert_eq!(minimax["thinking"], json!({ "type": "disabled" }));
+        assert_eq!(minimax["reasoning_split"], json!(true));
+
+        let mut kimi = json!({});
+        apply_review_reasoning_controls(
+            &mut kimi,
+            ModelPreset::Kimi,
+            "moonshot",
+            ModelPreset::Kimi.default_base_url(),
+            "kimi-k2.6",
+        );
+        assert_eq!(kimi["thinking"], json!({ "type": "disabled" }));
+
+        let mut kimi_thinking_only = json!({});
+        apply_review_reasoning_controls(
+            &mut kimi_thinking_only,
+            ModelPreset::Kimi,
+            "moonshot",
+            ModelPreset::Kimi.default_base_url(),
+            "kimi-k2.7-code",
+        );
+        assert!(kimi_thinking_only.get("thinking").is_none());
+    }
+
+    #[test]
+    fn review_reasoning_controls_infer_known_openai_compatible_base_urls() {
+        assert_eq!(
+            review_reasoning_dialect(
+                ModelPreset::OpenaiCompatible,
+                "openai",
+                "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "qwen3.6-flash",
+            ),
+            ReviewReasoningDialect::QwenEnableThinking
+        );
+        assert_eq!(
+            review_reasoning_dialect(
+                ModelPreset::OpenaiCompatible,
+                "openai",
+                "https://open.bigmodel.cn/api/paas/v4",
+                "glm-5.1",
+            ),
+            ReviewReasoningDialect::ThinkingDisabled
+        );
+        assert_eq!(
+            review_reasoning_dialect(
+                ModelPreset::OpenaiCompatible,
+                "openai",
+                "https://api.openai.com/v1",
+                "gpt-4o",
+            ),
+            ReviewReasoningDialect::None
+        );
     }
 
     /// 核账跳过哪些动作的契约：只有 accept(接受现状)/confirmed(需核实已确认)算已结，其余
