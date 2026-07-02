@@ -19,10 +19,13 @@ pub mod feedback;
 // L1 harness 的附件 e2e 要走「真实 ingest → 注入分流 → 真 vLLM」全链路:
 // 暴露注入收口函数 + file_ingest。
 pub use commands::build_message_with_attachments;
+// CLI 连接器公共管道(飞书 / 企微共享:起进程 / 扫码 / 事件 / 取消)。
+mod connector_cli;
 pub mod engine;
 pub mod engine_pool;
 mod eip;
 mod feishu;
+mod wecom;
 pub mod file_ingest;
 mod file_watcher;
 mod harness;
@@ -268,8 +271,9 @@ pub fn run() {
             let monitor_state = MonitorState::new();
             app.handle().manage(monitor_state);
 
-            // 飞书连接编排状态(长驻子进程 PID + 取消标志),供 feishu_connect_begin/cancel 用。
-            app.handle().manage(feishu::FeishuConn::default());
+            // CLI 连接器连接编排状态(按连接器 id 存长驻子进程 PID + 取消标志),
+            // 飞书 / 企微共用,供 *_connect_begin / *_cancel 用。
+            app.handle().manage(connector_cli::ConnectorConn::default());
 
             // EIP 连接编排状态(SSO 登录轮询取消标志),供 eip_connect_begin/cancel 用。
             app.handle().manage(eip::EipConn::default());
@@ -345,6 +349,14 @@ pub fn run() {
             feishu::feishu_apply_skills,
             feishu::set_feishu_enabled,
             feishu::feishu_skills_state,
+            wecom::wecom_ensure_cli,
+            wecom::wecom_status,
+            wecom::wecom_connect_begin,
+            wecom::wecom_cancel,
+            wecom::wecom_logout,
+            wecom::wecom_apply_skills,
+            wecom::set_wecom_enabled,
+            wecom::wecom_skills_state,
             eip::eip_status,
             eip::eip_connect_begin,
             eip::eip_cancel,

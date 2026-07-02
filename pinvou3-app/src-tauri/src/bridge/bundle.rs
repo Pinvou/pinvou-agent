@@ -40,6 +40,19 @@ const LARK_SKILL_DIRS: [&str; 9] = [
     "lark-sheets", "lark-im", "lark-task", "lark-wiki", "lark-base",
 ];
 
+/// 企微官方域技能(wecomcli-*,MIT,来自 github.com/WecomTeam/wecom-cli `skills/`):
+/// 编译期内嵌整个 wecom-skills 目录树。**单独放 `wecom-skills/`**(不进 `skills/`)——
+/// `skills/` 整目录被 `LARK_SKILLS_DIR` 内嵌、随飞书门控解包,企微若混进去会被飞书
+/// 连带控制,故隔离成独立 include_dir + 独立门控。
+static WECOM_SKILLS_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/wecom-skills");
+
+/// 7 个企微域技能目录名(门控写 / 删共用)。
+const WECOM_SKILL_DIRS: [&str; 7] = [
+    "wecomcli-msg", "wecomcli-doc", "wecomcli-meeting", "wecomcli-schedule",
+    "wecomcli-todo", "wecomcli-contact", "wecomcli-smartsheet",
+];
+
 /// Bundle 版本号：手动 base + 自动 instructions.md 内容 hash（build.rs 注入）。
 /// 改 INSTRUCTIONS_MD 时不需要 bump base —— hash 自动变，ensure_extracted 自动覆写。
 /// 改其他 bundle 资源（mcp.json 默认 / skills 模板等）才需要手动 bump base。
@@ -55,8 +68,9 @@ const LARK_SKILL_DIRS: [&str; 9] = [
 /// 0.10: 接入飞书官方域技能(lark-shared + calendar/doc/drive/sheets/im/task/wiki/base):
 ///       include_dir 内嵌 + 启动解包到 bundle_skills_dir,供 SkillRegistry 发现
 /// 0.11: 接入 H3C 知道知识库技能(zhidao CLI + SKILL.md),与 EIP 并列门控
+/// 0.12: 接入企微官方域技能(wecomcli-*,MIT):独立 wecom-skills/ 内嵌 + 独立门控
 pub const BUNDLE_VERSION: &str = concat!(
-    "0.11-",
+    "0.12-",
     env!("BUNDLE_INSTRUCTIONS_HASH"),
     "-",
     env!("BUNDLE_WORKFLOW_HASH_SANSHENG"),
@@ -269,6 +283,8 @@ impl Pinvou3Bundle {
         self.write_builtin_skills()?;
         // Feishu official domain skills are shown only when the gate says so.
         self.apply_feishu_skills(crate::feishu::feishu_skills_should_show())?;
+        // 企微官方域技能:同飞书,按门控(已连接 && 未停用)决定解包还是删除。
+        self.apply_wecom_skills(crate::wecom::wecom_skills_should_show())?;
         // EIP 技能:二进制 ~23MB,不像小文本那样每启动防御性重写——仅在二进制缺失时
         // 解包(自愈),避免每次启动写 23MB。改 SKILL.md/包装脚本后想刷新:删 skills_dir/eip。
         let eip_bin_name = if cfg!(windows) { "eip-cli.exe" } else { "eip-cli" };
@@ -402,6 +418,24 @@ impl Pinvou3Bundle {
                 let _ = std::fs::remove_dir_all(self.skills_dir.join(d));
             }
             let _ = std::fs::remove_file(self.skills_dir.join("NOTICE.md"));
+        }
+        Ok(())
+    }
+
+    /// 企微域技能门控:`show` → 解包 7 个 wecomcli 技能到 `skills_dir`;否则**删掉**它们。
+    /// 幂等。与飞书门控正交(各自的连接 / 停用状态独立)。
+    /// 注:`WECOM_SKILLS_DIR` 根 = `wecom-skills/`,内含 `wecomcli-<域>/SKILL.md`(+ NOTICE.md);
+    /// 直接铺到 `skills_dir`,引擎 `SkillRegistry` 扫每个含 `SKILL.md` 的子目录。
+    /// 出处声明用 `NOTICE-wecom.md`(避开飞书的 `NOTICE.md`,两者解包到同一 skills_dir
+    /// 不会互相覆盖)。隐藏时一并删掉。
+    pub fn apply_wecom_skills(&self, show: bool) -> std::io::Result<()> {
+        if show {
+            Self::extract_dir(&WECOM_SKILLS_DIR, &self.skills_dir)?;
+        } else {
+            for d in WECOM_SKILL_DIRS {
+                let _ = std::fs::remove_dir_all(self.skills_dir.join(d));
+            }
+            let _ = std::fs::remove_file(self.skills_dir.join("NOTICE-wecom.md"));
         }
         Ok(())
     }
