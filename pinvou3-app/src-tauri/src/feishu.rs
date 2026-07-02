@@ -88,9 +88,26 @@ fn run(mut cmd: Command) -> Result<(bool, String, String), String> {
 }
 
 /// 跑命令并带**超时**(防 npx 卡在网络/代理/无 TTY 提示上无限转)。
-/// stdout/stderr 丢弃(install 输出不解析),避免管道写满导致的死锁。
+///
+/// 两处关键(修 "install 卡死/无从诊断"):
+/// 1. **stdin 显式接 null**。app 是无窗口 GUI 进程,继承来的 stdin 是坏句柄,
+///    `@larksuite` 安装器读它会**死等 → 每次卡到超时**(手动在终端跑却 26s 就成)。
+///    给个立即 EOF 的 null stdin,安装器走非交互分支直接跑通。
+/// 2. **stdout/stderr 落日志文件**(不再 `null` 丢弃),失败可诊断:
+///    `~/.pinvou3/feishu-install.log`。写文件不是管道、无写满死锁之虞。
 fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
-    cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    let log_path = crate::bridge::paths::pinvou3_home().join("feishu-install.log");
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let (out, err) = match std::fs::File::create(&log_path) {
+        Ok(f) => match f.try_clone() {
+            Ok(f2) => (Stdio::from(f), Stdio::from(f2)),
+            Err(_) => (Stdio::null(), Stdio::null()),
+        },
+        Err(_) => (Stdio::null(), Stdio::null()), // 落不了盘也别卡,回退丢弃
+    };
+    cmd.stdin(Stdio::null()).stdout(out).stderr(err);
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("启动失败: {e}(需要 Node)"))?;
@@ -103,7 +120,8 @@ fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
                     let _ = child.kill();
                     return Err(format!(
                         "lark-cli 安装超时({secs}s):可能是网络/代理(Clash)拦截,\
-                         或需手动跑 `npx -y @larksuite/cli@latest install`"
+                         或需手动跑 `npx -y @larksuite/cli@latest install`(日志见 {})",
+                        log_path.display()
                     ));
                 }
                 std::thread::sleep(Duration::from_millis(300));

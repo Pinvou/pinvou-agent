@@ -5204,6 +5204,172 @@
       );
     };
 
+    // ── 飞书连接流程卡（内联、非阻塞；取代旧的阻塞式扫码浮层）──
+    const FEISHU_STEPS = [
+      { key: 'runtime', label: '准备运行时', sub: '解压 Node 到 ~/.pinvou3' },
+      { key: 'cli', label: '安装连接组件', sub: 'lark-cli · 首次约 40 秒' },
+      { key: 'connect', label: '连接并授权', sub: '创建应用身份' },
+      { key: 'qr', label: '扫码登录', sub: '飞书 App 扫一扫' },
+    ];
+    const FeishuStepIcon = ({ st }) => {
+      if (st === 'done') return <span className="w-5 h-5 rounded-full bg-emerald-500 grid place-items-center text-white text-[11px]">✓</span>;
+      if (st === 'active') return <span className="w-5 h-5 rounded-full bg-blue-600 grid place-items-center text-white text-[10px] animate-pulse">●</span>;
+      if (st === 'error') return <span className="w-5 h-5 rounded-full bg-rose-500 grid place-items-center text-white text-[11px]">✕</span>;
+      return <span className="w-5 h-5 rounded-full border-2 border-slate-300 dark:border-white/20 inline-block" />;
+    };
+    const FeishuBar = ({ pct, creep }) => (
+      <div className="mt-1.5 h-1.5 w-full rounded-full bg-slate-200 dark:bg-white/10 overflow-hidden">
+        <div className={`h-full rounded-full transition-all ${creep ? 'bg-blue-500' : 'bg-emerald-500'}`} style={{ width: (pct || 0) + '%' }} />
+      </div>
+    );
+    const FeishuFlowCard = ({ flow, onRetry, onCancel, name = '飞书', twoStep = true, browserAuth = false }) => {
+      if (!flow) return null;
+      const isErr = flow.phase === 'error';
+      return (
+        <div className="mb-8 rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5 overflow-hidden">
+          <div className="flex items-center gap-3 px-5 pt-4 pb-2">
+            <span className={`w-2 h-2 rounded-full ${isErr ? 'bg-rose-500' : 'bg-blue-500 animate-pulse'}`} />
+            <span className="font-semibold text-[14px]">{isErr ? `${name}接入未完成` : (flow.phase === 'done' ? `已连接${name}` : `正在接入${name}`)}</span>
+            <span className="flex-1" />
+            {(flow.phase === 'running' || flow.phase === 'qr') && <button onClick={onCancel} className="text-[12px] text-slate-400 hover:text-slate-600">取消</button>}
+          </div>
+          <div className="px-5 pb-4 space-y-1">
+            {FEISHU_STEPS.map(s => {
+              const st = (flow.steps && flow.steps[s.key]) || 'wait';
+              const active = st === 'active';
+              return (
+                <div key={s.key} className={`flex gap-3 py-1.5 ${st === 'wait' ? 'opacity-45' : ''}`}>
+                  <div className="pt-0.5"><FeishuStepIcon st={st} /></div>
+                  <div className="flex-1 min-w-0">
+                    <div className={`text-[13.5px] font-medium ${st === 'done' ? 'text-slate-400 line-through decoration-slate-300' : ''}`}>{s.label}</div>
+                    {active && s.key === 'runtime' && (<><FeishuBar pct={flow.pct} /><div className="text-[11px] text-slate-400 mt-1">解压中 {Math.round(flow.pct || 0)}%</div></>)}
+                    {active && s.key === 'cli' && (<><FeishuBar pct={flow.pct} creep /><div className="flex items-center justify-between mt-1"><div className="text-[11px] text-slate-400 truncate max-w-[260px] font-mono">{flow.log || 'npm: starting…'}</div><div className="text-[11px] text-slate-400 tabular-nums">已 {flow.sec || 0}s</div></div></>)}
+                    {!active && <div className="text-[11.5px] text-slate-400">{s.sub}</div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {flow.phase === 'qr' && (flow.qr || browserAuth) && (
+            <div className="px-5 pb-5">
+              <div className="flex items-center gap-5 p-4 rounded-xl bg-white dark:bg-black/30 border border-slate-200 dark:border-white/10">
+                {browserAuth
+                  ? <div className="w-36 h-36 rounded-xl bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30 grid place-items-center text-blue-500 shrink-0 text-center text-[12px] px-3 leading-relaxed">已在浏览器<br/>打开登录页</div>
+                  : <img src={flow.qr} alt={`${name}二维码`} className="w-36 h-36 rounded-xl border border-slate-200 bg-white shrink-0" />}
+                <div>
+                  {browserAuth ? (
+                    <>
+                      <div className="font-medium text-[14px] mb-1">在浏览器里扫码登录{name}</div>
+                      <div className="text-[12px] text-slate-500 dark:text-slate-400 mb-3">已自动打开{name}登录页 → 用手机{name} 扫<b>页面上的</b>二维码确认。没弹出就点下面重开。</div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="font-medium text-[14px] mb-1">{twoStep ? (flow.qrPhase === 'authorize' ? '第 2 步 / 共 2 步：扫码授权' : '第 1 步 / 共 2 步：扫码注册应用') : `扫码登录${name}`}</div>
+                      <div className="text-[12px] text-slate-500 dark:text-slate-400 mb-3">用{name} App 扫一扫 → 确认</div>
+                    </>
+                  )}
+                  {flow.qrUrl && <button onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: flow.qrUrl })} className="text-[13px] text-blue-600 dark:text-blue-400 hover:underline">{browserAuth ? '重新打开登录页 ↗' : '在浏览器打开 ↗'}</button>}
+                </div>
+              </div>
+            </div>
+          )}
+          {isErr && (
+            <div className="px-5 pb-5">
+              <div className="rounded-xl border border-rose-200 dark:border-rose-500/30 bg-rose-50 dark:bg-rose-500/10 p-3">
+                <div className="text-[13px] font-medium text-rose-700 dark:text-rose-300 mb-1.5">连接未完成</div>
+                <pre className="text-[11.5px] leading-relaxed text-rose-800/80 dark:text-rose-200/70 whitespace-pre-wrap max-h-28 overflow-auto font-mono">{flow.err}</pre>
+                <div className="flex gap-2 mt-3 justify-end">
+                  <button onClick={onCancel} className="px-3 py-1.5 rounded-lg bg-slate-200 dark:bg-white/10 text-[13px]">关闭</button>
+                  <button onClick={onRetry} className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-[13px]">重试</button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    };
+    // 商店列表行内的迷你进度（详情弹窗关掉后，后台仍在跑）
+    const FeishuMini = ({ flow, onClick }) => {
+      const label = flow.phase === 'qr' ? '待扫码'
+        : (flow.active === 'cli' ? `装 ${Math.round(flow.pct || 0)}%`
+        : (flow.active === 'runtime' ? `解压 ${Math.round(flow.pct || 0)}%` : '接入中'));
+      return (
+        <button onClick={(e) => { e.stopPropagation(); onClick(); }} title="点开查看进度" className="shrink-0 flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-full bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30 text-blue-600 dark:text-blue-300 text-[12px] font-medium">
+          <span className="w-3 h-3 rounded-full border-2 border-blue-500 border-t-transparent animate-spin inline-block shrink-0" />
+          <span className="tabular-nums whitespace-nowrap">{label}</span>
+        </button>
+      );
+    };
+
+    // ── 飞书连接流程 · 跨视图持久 store ──
+    // ToolStoreView 随左栏切换会卸载；连接是长流程（装 CLI ~40s + 扫码），进度/监听/秒表
+    // 若放组件 useState，一离开工具商店就全丢 → 回来按钮又变“连接”。故挂在模块级单例，
+    // 活在组件生命周期之外；组件只订阅它做镜像渲染。
+    const feishuConn = {
+      flow: null,
+      tick: null,
+      listenersReady: false,
+      subs: new Set(),
+      subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
+      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch (_) {} }); },
+      startTick() {
+        this.stopTick();
+        this.tick = setInterval(() => this.setFlow(f => {
+          if (!f || f.phase !== 'running') return f;
+          const nf = { ...f, sec: (f.sec || 0) + 1 };
+          if (f.active === 'cli') nf.pct = Math.min(90, (f.pct || 0) + (90 - (f.pct || 0)) * 0.06 + 1);
+          return nf;
+        }), 1000);
+      },
+      stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
+    };
+    // 后端连接事件只注册一次（幂等，跨 ToolStoreView 多次挂载不重复注册）。
+    function ensureFeishuListeners() {
+      if (feishuConn.listenersReady) return;
+      const ev = window.__TAURI__ && window.__TAURI__.event;
+      if (!ev) return;
+      feishuConn.listenersReady = true;
+      ev.listen('feishu:progress', (e) => {
+        const p = e.payload || {};
+        feishuConn.setFlow(f => {
+          const nf = f ? { ...f, steps: { ...(f.steps || {}) } } : { phase: 'running', steps: {}, active: null, pct: 0, sec: 0, log: '' };
+          if (p.step) { nf.active = p.step; nf.steps[p.step] = p.status === 'done' ? 'done' : 'active'; }
+          if (typeof p.pct === 'number') nf.pct = p.pct;
+          if (p.log) nf.log = p.log;
+          if (nf.phase !== 'error') nf.phase = 'running';
+          return nf;
+        });
+      });
+      ev.listen('feishu:qr', (e) => {
+        const p = e.payload || {};
+        feishuConn.stopTick();
+        feishuConn.setFlow(f => {
+          const prev = (f && f.steps) || {};
+          return {
+            ...(f || {}), phase: 'qr', active: 'qr',
+            steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), connect: 'done', qr: 'active' },
+            qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase,
+          };
+        });
+      });
+      ev.listen('feishu:connected', () => {
+        feishuConn.stopTick();
+        feishuConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
+        // 连上 → 按规则写技能（默认启用）+ 广播刷新；跟视图无关，放全局做。
+        window.__TAURI__.core.invoke('feishu_apply_skills').catch(() => {});
+        // 稍后自动收起流程卡（详情里的“已连接”态改由 feishuConnected 驱动）
+        setTimeout(() => feishuConn.setFlow(null), 1800);
+      });
+      ev.listen('feishu:error', (e) => {
+        const p = e.payload || {};
+        feishuConn.stopTick();
+        feishuConn.setFlow(f => {
+          const step = (f && f.active) || 'cli';
+          return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || '连接失败'), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } };
+        });
+      });
+    }
+
     // iOS 风格弹窗（安装/卸载后提示需新建会话生效）
     const TsAlert = ({ alert, theme, onDismiss, onNewChat }) => {
       const isDark = theme === 'dark';
@@ -5398,7 +5564,9 @@
       const isSkillTab = tab === 'skill';
       // 飞书(CLI 路线)连接态:不走 marketplace,由 lark-cli auth status 判定
       const [feishuConnected, setFeishuConnected] = useState(false);
-      const [feishuQr, setFeishuQr] = useState(null); // { qr: dataUrl, url } 扫码弹窗
+      // 飞书连接流程状态机（取代旧阻塞式扫码浮层）：null=idle
+      // { phase:'running'|'qr'|'error'|'done', steps:{runtime,cli,connect,qr}, active, pct, sec, log, err, qr, qrUrl, qrPhase }
+      const [feishuFlow, setFeishuFlow] = useState(feishuConn.flow); // 从跨视图 store 水合：切走再回来不丢进度
       const refreshFeishu = async () => {
         try {
           const s = await window.__TAURI__.core.invoke('feishu_status');
@@ -5407,27 +5575,26 @@
       };
       useEffect(() => { refreshFeishu(); }, []);
 
-      // 飞书连接编排事件(config init --new 两段扫码):后端推进度,前端驱动 UI。
+      // 订阅跨视图 store：把 store 状态镜像进本组件渲染，并在完成/失败时做组件级收尾
+      //（弹窗、刷新连接态）。真正的事件监听/秒表在模块级 feishuConn 里，切视图不丢。
       useEffect(() => {
-        const ev = window.__TAURI__ && window.__TAURI__.event;
-        if (!ev) return;
-        const unlisten = [];
-        ev.listen('feishu:qr', (e) => {
-          const p = e.payload || {};
-          setFeishuQr({ qr: p.qr_data_url, url: p.url, phase: p.phase });
-        }).then(u => unlisten.push(u));
-        ev.listen('feishu:connected', () => {
-          setFeishuQr(null); setFeishuConnected(true); setBusyId(null);
-          // 连上 → 按规则写技能(默认启用)+ 广播刷新,飞书技能即刻对模型可见。
-          window.__TAURI__.core.invoke('feishu_apply_skills').catch(() => {});
-          setAlert({ visible: true, loading: false, title: '已连接飞书', subtitle: '', isInstall: true, isError: false, toolId: 'feishu' });
-        }).then(u => unlisten.push(u));
-        ev.listen('feishu:error', (e) => {
-          const p = e.payload || {};
-          setFeishuQr(null); setBusyId(null);
-          setAlert({ visible: true, loading: false, title: '飞书连接失败', subtitle: String(p.message || '').slice(0, 240), isError: true });
-        }).then(u => unlisten.push(u));
-        return () => { unlisten.forEach(u => { try { u(); } catch (_) {} }); };
+        ensureFeishuListeners();
+        let prevPhase = feishuConn.flow && feishuConn.flow.phase;
+        const unsub = feishuConn.subscribe((flow) => {
+          setFeishuFlow(flow);
+          const ph = flow && flow.phase;
+          if (ph !== prevPhase) {
+            if (ph === 'done') {
+              setFeishuConnected(true); setBusyId(null);
+              setAlert({ visible: true, loading: false, title: '已连接飞书', subtitle: '官方技能已启用，可新建对话直接用', isInstall: true, isError: false, toolId: 'feishu' });
+            } else if (ph === 'error') {
+              setBusyId(null);
+            }
+            prevPhase = ph;
+          }
+        });
+        setFeishuFlow(feishuConn.flow); // (重)挂载即水合当前进度
+        return unsub;
       }, []);
 
       // 合并后端安装状态到 mock 数据(飞书的 installed = 已连接)
@@ -5579,19 +5746,36 @@
       //(监听见下方 useEffect);这里只 ensure cli + 触发 begin。busyId 在事件里清。
       const connectFeishu = async () => {
         setBusyId('feishu');
-        setAlert({ loading: true, visible: false, title: '正在准备飞书连接…', subtitle: '首次需安装 lark-cli（联网，稍候）', isInstall: true, isError: false });
+        ensureFeishuListeners();
+        // 开流程卡（无阻塞弹窗）：先起“准备运行时”步。写进跨视图 store，切走不丢。
+        feishuConn.setFlow({ phase: 'running', steps: { runtime: 'active' }, active: 'runtime', pct: 0, sec: 0, log: '' });
+        // 客户端秒表 + 爬行条：后端 feishu:progress 有真实 pct 时会覆盖；没有也不至于像卡死。
+        feishuConn.startTick();
         try {
+          // ① 确保 CLI（B 方案下可能联网安装 ~40s，会 emit feishu:progress step=cli）
+          feishuConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: 'npm: starting…', steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
           await window.__TAURI__.core.invoke('feishu_ensure_cli');
-          setAlert({ visible: false, loading: false, title: '', subtitle: '', isInstall: false, isError: false });
+          feishuConn.setFlow(f => ({ ...(f || {}), active: 'connect', pct: 100, steps: { ...((f && f.steps) || {}), cli: 'done', connect: 'active' } }));
+          // ② 连接编排（后端 emit feishu:qr / connected / error）
           await window.__TAURI__.core.invoke('feishu_connect_begin');
-          // 后续:feishu:qr 出二维码 → 用户扫码 → feishu:connected 收尾。
         } catch (e) {
           console.error('feishu connect failed:', e);
-          setFeishuQr(null);
+          feishuConn.stopTick();
           setBusyId(null);
-          setAlert({ visible: true, loading: false, title: '飞书连接失败', subtitle: String(e).slice(0, 240), isError: true });
+          feishuConn.setFlow(f => {
+            const step = (f && f.active) || 'cli';
+            return { ...(f || { steps: {} }), phase: 'error', err: String(e).slice(0, 300), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } };
+          });
         }
       };
+      // 取消/关闭流程卡：置取消 + kill 子进程 + 清状态。
+      const feishuResetFlow = () => {
+        feishuConn.stopTick();
+        window.__TAURI__.core.invoke('feishu_cancel').catch(() => {});
+        feishuConn.setFlow(null); setBusyId(null);
+      };
+      // 重试：ensure_cli 幂等，直接重跑整个连接流程。
+      const feishuRetry = () => { connectFeishu(); };
       const disconnectFeishu = async () => {
         setBusyId('feishu');
         try {
@@ -5614,7 +5798,9 @@
         // 飞书走 CLI 连接流程,不走 marketplace install
         if (backendId === 'feishu') {
           if (isInstalled) return disconnectFeishu();
-          // 未连接 → 直接触发 config init --new(浏览器自动建 app + 两段扫码,不收表单)
+          // 未连接 → 弹详情弹窗（里面有进度卡）+ 触发 config init --new(浏览器自动建 app + 两段扫码,不收表单)
+          const ft = tools.find(x => x.feishuCli) || tsToolsData.find(x => x.backendId === 'feishu');
+          if (ft) setSelectedTool(ft);
           return connectFeishu();
         }
         const t = tsToolsData.find(x => x.backendId === backendId);
@@ -5704,27 +5890,7 @@
               else setObsidianGuide(g => g ? { ...g, ...(st || {}) } : g);
             }}
           />, document.body)}
-          {feishuQr && (() => {
-            const isAuth = feishuQr.phase === 'authorize';
-            const cancel = () => { window.__TAURI__.core.invoke('feishu_cancel').catch(() => {}); setFeishuQr(null); setBusyId(null); };
-            return ReactDOM.createPortal((
-            <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
-              <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-7 w-full max-w-[360px] flex flex-col items-center text-center shadow-2xl" onClick={e => e.stopPropagation()}>
-                <div className="text-[12px] font-bold text-teal-600 dark:text-teal-400 mb-1 tracking-wide">{isAuth ? '第 2 步 / 共 2 步' : '第 1 步 / 共 2 步'}</div>
-                <h3 className="text-[19px] font-bold text-slate-900 dark:text-white mb-1">{isAuth ? '扫码授权' : '扫码注册飞书应用'}</h3>
-                <p className="text-[13px] text-slate-500 dark:text-slate-400 mb-4">{isAuth ? '用飞书 App 扫一扫，授权以你的身份操作飞书' : '用飞书 App 扫一扫，确认创建应用'}</p>
-                {feishuQr.qr
-                  ? <img src={feishuQr.qr} alt="飞书二维码" className="w-52 h-52 rounded-2xl border border-slate-200 dark:border-white/10 bg-white" />
-                  : <div className="w-52 h-52 rounded-2xl border border-dashed border-slate-300 dark:border-white/10 flex items-center justify-center text-[12px] text-slate-400 px-4">二维码生成失败，请用下方浏览器授权</div>}
-                <div className="flex items-center gap-1.5 mt-4 text-[13px] text-slate-500 dark:text-slate-400">
-                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> {isAuth ? '等待授权中…' : '等待注册中…'}
-                </div>
-                <button onClick={() => { if (feishuQr.url) window.__TAURI__.core.invoke('open_external_url', { url: feishuQr.url }); }} className="mt-4 text-[13px] text-blue-600 dark:text-blue-400 hover:underline">在浏览器打开</button>
-                <button onClick={cancel} className="mt-3 px-6 py-2 rounded-full text-[14px] font-semibold bg-slate-100 dark:bg-[#2C2C2E] text-slate-600 dark:text-slate-300">取消</button>
-              </div>
-            </div>
-            ), document.body);
-          })()}
+          {/* 扫码二维码已内联进 FeishuFlowCard（详情弹窗内），不再单独浮层 */}
           <div className="flex-1 flex flex-col bg-white dark:bg-black text-slate-900 dark:text-white transition-colors duration-300 font-sans overflow-hidden">
 
             {/* Header */}
@@ -5894,7 +6060,12 @@
                             </div>
                           </div>
                           <div className="flex flex-col items-center justify-center gap-1 pl-2">
-                            <TsActionBtn tool={tool} busy={busyId === tool.backendId} onAction={handleAction} />
+                            {(() => {
+                              const cf = tool.feishuCli ? feishuFlow : null;
+                              return (cf && (cf.phase === 'running' || cf.phase === 'qr'))
+                                ? <FeishuMini flow={cf} onClick={() => setSelectedTool(tool)} />
+                                : <TsActionBtn tool={tool} busy={busyId === tool.backendId} onAction={handleAction} />;
+                            })()}
                             {isSkillTab && tool.installed && tool.backendId && (
                               <button
                                 onClick={(e) => { e.stopPropagation(); handleSkillToggle(tool.backendId); }}
@@ -5923,10 +6094,11 @@
             </main>
           </div>
 
-          {/* Detail modal */}
-          {selectedTool && (
+          {/* Detail modal — portal 到 body：否则被主内容区 backdrop-blur 祖先造的包含块困住，
+              fixed inset-0 只盖住右侧内容区、盖不到左侧栏。portal 后蒙层铺满整个视口。 */}
+          {selectedTool && ReactDOM.createPortal((
             <div
-              className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-900/40 dark:bg-black/60 backdrop-blur-md transition-all duration-300"
+              className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-6 bg-slate-900/40 dark:bg-black/60 backdrop-blur-md transition-all duration-300"
               onClick={() => setSelectedTool(null)}
             >
               <div
@@ -5951,7 +6123,9 @@
                       <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white mb-2 tracking-tight">{selectedTool.title}</h2>
                       <p className="text-[17px] text-slate-500 dark:text-slate-400 mb-5 font-medium">{selectedTool.subtitle}</p>
                       <div className="flex items-center gap-4">
-                        <TsActionBtn tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} size="lg" />
+                        {selectedTool.feishuCli && feishuFlow && (feishuFlow.phase === 'running' || feishuFlow.phase === 'qr')
+                          ? <FeishuMini flow={feishuFlow} onClick={() => {}} />
+                          : <TsActionBtn tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} size="lg" />}
                         {isSkillTab && selectedTool.installed && selectedTool.backendId && (
                           <div className="flex items-center gap-2.5">
                             <span className="text-[14px] font-semibold text-slate-600 dark:text-slate-300">
@@ -5990,6 +6164,16 @@
                     </div>
                   </div>
 
+                  {selectedTool.feishuCli && feishuFlow && (
+                    <FeishuFlowCard flow={feishuFlow} onRetry={feishuRetry} onCancel={feishuResetFlow} />
+                  )}
+                  {selectedTool.feishuCli && feishuConnected && !feishuFlow && (
+                    <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
+                      <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
+                      <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">已连接飞书 · 官方技能已启用，可直接对它下指令</span>
+                    </div>
+                  )}
+
                   <div>
                     <h3 className="text-[19px] font-bold text-slate-900 dark:text-white mb-4">关于此能力</h3>
                     <div className="text-slate-600 dark:text-slate-300 leading-relaxed text-[15px] space-y-4 font-medium">
@@ -5999,7 +6183,7 @@
                 </div>
               </div>
             </div>
-          )}
+          ), document.body)}
         </div>
       );
     };
