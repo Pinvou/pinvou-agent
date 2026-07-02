@@ -50,6 +50,12 @@ pub struct VllmSnapshot {
     /// 用户 settings 中配置的模型名（与 `model` 可能不同）。
     pub configured_model: Option<String>,
     pub upstream: String,
+    /// 后端类型(前端监控卡显示标签 + 决定 vLLM 指标是否适用 + 小窗口告警是否触发):
+    /// `local` 本地推理引擎(环回/私有 IP,自托管 vLLM,有 Prometheus 指标)/
+    /// `remote` 云端 API(公网,无 /metrics)/ `invalid` 配置异常(base_url 解析失败)。
+    pub target_kind: String,
+    /// vLLM Prometheus 指标是否适用(= `target_kind == "local"`);云端 API 无 /metrics。
+    pub metrics_applicable: bool,
     pub max_model_len: Option<u32>,
     pub num_requests_running: Option<f64>,
     pub num_requests_waiting: Option<f64>,
@@ -210,6 +216,7 @@ pub async fn vllm_snapshot(upstream: &str, configured_model: Option<String>) -> 
         .timeout(Duration::from_secs(3))
         .build()
         .ok()?;
+    let target_kind = vllm_target_kind(upstream);
 
     // 1) /v1/models 健康
     // upstream 通常已带 `/v1` 后缀（DEEPSEEK_BASE_URL=http://...:8000/v1），
@@ -228,6 +235,8 @@ pub async fn vllm_snapshot(upstream: &str, configured_model: Option<String>) -> 
                 model: None,
                 configured_model,
                 upstream: upstream.to_string(),
+                target_kind: target_kind.to_string(),
+                metrics_applicable: target_kind == "local",
                 max_model_len: None,
                 num_requests_running: None,
                 num_requests_waiting: None,
@@ -305,6 +314,8 @@ pub async fn vllm_snapshot(upstream: &str, configured_model: Option<String>) -> 
         model: model_id,
         configured_model,
         upstream: upstream.to_string(),
+        target_kind: target_kind.to_string(),
+        metrics_applicable: target_kind == "local",
         max_model_len,
         num_requests_running: running,
         num_requests_waiting: waiting,
@@ -382,6 +393,41 @@ fn parse_prom_metric(text: &str, name: &str) -> Option<f64> {
     None
 }
 
+/// 按 base_url 主机段判后端类型:环回/私有 IP 段 = 本地推理引擎(`local`,自托管 vLLM,
+/// 有 Prometheus 指标);公网域名/IP = 云端 API(`remote`);空/解析失败 = 配置异常(`invalid`)。
+/// 前端监控卡的「本地模型/远端模型/配置异常」标签 + 指标适用性 + 小窗口告警都据此。
+fn vllm_target_kind(upstream: &str) -> &'static str {
+    let s = upstream.trim();
+    if s.is_empty() {
+        return "invalid";
+    }
+    let Some(rest) = s.strip_prefix("http://").or_else(|| s.strip_prefix("https://")) else {
+        return "invalid";
+    };
+    let Some(host_port) = rest.split('/').next() else {
+        return "invalid";
+    };
+    // 去端口 + ipv6 括号
+    let host = host_port.rsplit_once(':').map_or(host_port, |(h, _)| h);
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.is_empty() {
+        return "invalid";
+    }
+    if host == "localhost" || host == "::1" {
+        return "local";
+    }
+    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+        let o = ip.octets();
+        let private = o[0] == 127
+            || o[0] == 10
+            || (o[0] == 172 && (16..=31).contains(&o[1]))
+            || (o[0] == 192 && o[1] == 168);
+        return if private { "local" } else { "remote" };
+    }
+    // 域名或公网 IPv6 → 云端 API
+    "remote"
+}
+
 fn strip_v1_suffix(url: &str) -> Option<String> {
     let trimmed = url.trim_end_matches('/');
     Some(
@@ -392,25 +438,33 @@ fn strip_v1_suffix(url: &str) -> Option<String> {
     )
 }
 
-/// 轻量探测本地 vLLM 实际 served 的模型名(只打 /v1/models,不读 metrics)。
-/// 用于发请求时用 vLLM 真实名字,免去写死名字与 `--served-model-name` 不一致的
-/// model_not_found。探测失败(vLLM 没起/超时)返回 None,调用方 fallback 配置值。
-pub async fn probe_vllm_served_model(base_url: &str) -> Option<String> {
-    let client = reqwest::Client::builder()
+/// 轻量探测本地 vLLM:一次 `/v1/models` 拿两样——实际 served 模型名 + `max_model_len`
+/// (上下文窗口)。名字用于发请求(免写死名字与 `--served-model-name` 不一致的
+/// model_not_found);窗口用于填 `active_route_limits.context_tokens`,让压缩阈值按真实
+/// 窗口推导(见 docs/context-compaction-设计.md)。探测失败(vLLM 没起/超时)返回
+/// `(None, None)`,调用方 fallback 配置值 + 名字 hint 老路。
+pub async fn probe_vllm_model_info(base_url: &str) -> (Option<String>, Option<u32>) {
+    let Ok(client) = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
-        .ok()?;
+    else {
+        return (None, None);
+    };
     let url = if base_url.trim_end_matches('/').ends_with("/v1") {
         format!("{}/models", base_url.trim_end_matches('/'))
     } else {
         format!("{}/v1/models", base_url.trim_end_matches('/'))
     };
-    let resp = client.get(url).send().await.ok()?;
+    let Ok(resp) = client.get(url).send().await else {
+        return (None, None);
+    };
     if !resp.status().is_success() {
-        return None;
+        return (None, None);
     }
-    let v = resp.json::<serde_json::Value>().await.ok()?;
-    parse_models_response(v).and_then(|(id, _)| id)
+    let Ok(v) = resp.json::<serde_json::Value>().await else {
+        return (None, None);
+    };
+    parse_models_response(v).unwrap_or((None, None))
 }
 
 /// 当前 monitor/探测应使用的 vLLM base_url。
@@ -496,6 +550,23 @@ mod tests {
     }
 
     #[test]
+    fn vllm_target_kind_classifies_by_host() {
+        // 本地推理引擎:环回 + 私有 IP 段(含用户的 10.214.74.113 局域网自托管 vLLM)
+        assert_eq!(vllm_target_kind("http://10.214.74.113:8000/v1"), "local");
+        assert_eq!(vllm_target_kind("http://127.0.0.1:8000/v1"), "local");
+        assert_eq!(vllm_target_kind("http://localhost:8000/v1"), "local");
+        assert_eq!(vllm_target_kind("http://192.168.1.5:8000/v1"), "local");
+        assert_eq!(vllm_target_kind("http://172.16.0.9:8000/v1"), "local");
+        // 云端 API:公网域名 / 公网 IP
+        assert_eq!(vllm_target_kind("https://api.deepseek.com/v1"), "remote");
+        assert_eq!(vllm_target_kind("http://8.8.8.8:8000/v1"), "remote");
+        assert_eq!(vllm_target_kind("http://172.32.0.1:8000/v1"), "remote"); // 172.32 不在私有段
+        // 配置异常:空 / 非 URL
+        assert_eq!(vllm_target_kind(""), "invalid");
+        assert_eq!(vllm_target_kind("not-a-url"), "invalid");
+    }
+
+    #[test]
     fn parse_models_response_handles_vllm_shape() {
         let json: serde_json::Value = serde_json::from_str(
             r#"{"object":"list","data":[{"id":"/model","object":"model","max_model_len":65536}]}"#,
@@ -504,6 +575,39 @@ mod tests {
         let (id, max) = parse_models_response(json).unwrap();
         assert_eq!(id.as_deref(), Some("/model"));
         assert_eq!(max, Some(65536));
+    }
+
+    /// 真机冒烟(#[ignore]):对活着的本地 vLLM 跑 `probe_vllm_model_info`,确认拿到
+    /// **served name + max_model_len**——客户 bug 的核心修复点(丢 --served-model-name
+    /// 后,名字虽无 _Nk 后缀,但 /v1/models 仍带 max_model_len,探测据此绕过名字依赖)。
+    /// 跑法:
+    ///   PINVOU3_LIVE_VLLM=http://10.214.74.113:8000/v1 cargo test --manifest-path \
+    ///     pinvou3-app/src-tauri/Cargo.toml --lib -- --ignored --nocapture live_probe
+    #[tokio::test]
+    #[ignore]
+    async fn live_probe_returns_window() {
+        let base = std::env::var("PINVOU3_LIVE_VLLM")
+            .unwrap_or_else(|_| "http://10.214.74.113:8000/v1".to_string());
+        let (name, window) = probe_vllm_model_info(&base).await;
+        eprintln!("live probe @ {base}: name={name:?} max_model_len={window:?}");
+        let window = window.expect("真机 vLLM 必须探测到 max_model_len(客户 bug 的核心修复)");
+        assert!(
+            window >= 100_000,
+            "窗口应为真实 max_model_len(期望 262144),实得 {window}"
+        );
+        // 端到端佐证:探测窗口喂进 derive 公式应得按窗口缩放的 T(非写死 190K)。
+        // 复算 derive_compaction_threshold(bridge 私有,此处内联同公式):
+        //   E = W − O − 1024;T = (E−S)/1.5 − 22000, clamp[4096, 0.75W]。O=24576(默认预留)。
+        let e = (window as usize).saturating_sub(24_576).saturating_sub(1_024);
+        let t = (e.saturating_sub(4_000).saturating_mul(2) / 3)
+            .saturating_sub(22_000)
+            .clamp(4_096, window as usize * 3 / 4);
+        eprintln!("derived token_threshold for W={window}: T={t}  E={e}");
+        assert!(
+            t < e,
+            "推导 T({t}) 必须低于紧急线 E({e})——nice 主路径先于 emergency(不倒置);\
+             按真实窗口缩放,而非写死单值"
+        );
     }
 
     /// 2026-06-10 本机 vLLM nightly(NVFP4) /metrics 实抓片段。

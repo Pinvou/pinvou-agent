@@ -443,8 +443,9 @@ async fn model_review(bridge: &Pinvou3Bridge, prompt: &str, user_content: &str) 
     let provider = bridge.provider();
     let preset = review_model_preset(bridge);
     let model_name = if provider == "vllm" {
-        crate::monitor::probe_vllm_served_model(&base_url)
+        crate::monitor::probe_vllm_model_info(&base_url)
             .await
+            .0
             .unwrap_or_else(|| bridge.model())
     } else {
         bridge.model()

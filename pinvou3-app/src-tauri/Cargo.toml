@@ -57,6 +57,11 @@ deepseek-tui = { path = "../../DeepSeek-TUI/crates/tui", package = "codewhale-tu
 # 不再在 app 层自建 keyring 封装;headless/无 D-Bus 服务器也能存凭证。
 codewhale-secrets = { path = "../../DeepSeek-TUI/crates/secrets" }
 
+# 复用底座 codewhale-config 的 RouteLimits 类型(填 active_route_limits.context_tokens,
+# 把 vLLM 探测的窗口喂给底座压缩阈值推导)。facade(deepseek-tui)不 re-export 该类型,
+# 直接引 crate;它已在依赖图内,Cargo.lock 几乎不动。
+codewhale-config = { path = "../../DeepSeek-TUI/crates/config" }
+
 # Monitor 用：vLLM HTTP probe（/v1/models + Prometheus /metrics）
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 

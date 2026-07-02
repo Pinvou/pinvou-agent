@@ -269,6 +269,9 @@ impl Pinvou3Bundle {
         // 已下线 skills 每次启动都清理(防御性):既有装机的残留目录若不清,
         // SkillRegistry 仍会从 disk 发现它们、重新触发对应协议 prompt。
         self.cleanup_retired_skills()?;
+        // 已从技能市场下架的预置技能(pua/女娲/头脑风暴):它们曾走 marketplace 装、带
+        // `pinvou3-marketplace:` 标记,故按标记内容精确删,只跳过用户上传的同名目录。
+        self.cleanup_removed_marketplace_skills()?;
         // 工作流目录同 skills:immutable bundle 资源,每次启动防御性重写
         // (防 "VERSION 对得上但目录缺失"),无副作用。
         self.write_workflows()?;
@@ -381,6 +384,34 @@ impl Pinvou3Bundle {
                 continue; // marketplace 技能占用了该名,保护不删
             }
             let _ = std::fs::remove_dir_all(dir);
+        }
+        Ok(())
+    }
+
+    /// 清理已从技能市场移除的预置技能残留(dir 名 → 原市场 id)。
+    ///
+    /// 与 [`Self::cleanup_retired_skills`] 相反:这些**曾是** marketplace 技能、装时写了
+    /// `pinvou3-marketplace:<id>` 标记,所以不能沿用"带标记即跳过"的保护——否则永远删不掉。
+    /// 改为**按标记内容精确匹配**:只删标记恰为本技能市场安装(或无标记的裸残留),
+    /// 显式跳过 `upload:` 开头的用户上传目录,避免误删用户自己传的同名技能。
+    fn cleanup_removed_marketplace_skills(&self) -> std::io::Result<()> {
+        for (dir_name, market_id) in [
+            ("pua", "pua"),
+            ("huashu-nuwa", "nuwa"),
+            ("brainstorming", "brainstorming"),
+        ] {
+            let dir = self.skills_dir.join(dir_name);
+            if !dir.exists() {
+                continue;
+            }
+            let marker = std::fs::read_to_string(dir.join(".installed-from")).unwrap_or_default();
+            let marker = marker.trim();
+            if marker.starts_with("upload:") {
+                continue; // 用户上传的同名技能,保护不删
+            }
+            if marker.is_empty() || marker == format!("pinvou3-marketplace:{market_id}") {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
         }
         Ok(())
     }
@@ -760,6 +791,36 @@ mod tests {
             content, "USER TOUCHED",
             "VERSION 匹配时不应覆写已存在的 bundle 文件"
         );
+
+        cleanup(&tmp);
+    }
+
+    /// 已下架预置技能的清理:市场标记的删、无标记裸残留的删、用户上传(upload:)的保。
+    #[test]
+    fn cleanup_removed_marketplace_skills_respects_upload_marker() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = Pinvou3Bundle::paths();
+        std::fs::create_dir_all(&bundle.skills_dir).unwrap();
+
+        // pua:本市场装的(标记匹配)→ 应删
+        let pua = bundle.skills_dir.join("pua");
+        std::fs::create_dir_all(&pua).unwrap();
+        std::fs::write(pua.join(".installed-from"), "pinvou3-marketplace:pua").unwrap();
+        // huashu-nuwa:无标记裸残留 → 应删
+        let nuwa = bundle.skills_dir.join("huashu-nuwa");
+        std::fs::create_dir_all(&nuwa).unwrap();
+        // brainstorming:用户上传的同名 → 应保
+        let brainstorm = bundle.skills_dir.join("brainstorming");
+        std::fs::create_dir_all(&brainstorm).unwrap();
+        std::fs::write(brainstorm.join(".installed-from"), "upload:my.zip").unwrap();
+
+        bundle.cleanup_removed_marketplace_skills().unwrap();
+
+        assert!(!pua.exists(), "市场标记的 pua 应被删");
+        assert!(!nuwa.exists(), "无标记的 huashu-nuwa 残留应被删");
+        assert!(brainstorm.exists(), "用户上传(upload:)的同名目录应保留");
 
         cleanup(&tmp);
     }

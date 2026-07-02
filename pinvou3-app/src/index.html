@@ -154,6 +154,8 @@
     const Store = (p) => <I {...p}><path d="m2 7 4.41-4.41A2 2 0 0 1 7.83 2h8.34a2 2 0 0 1 1.42.59L22 7"/><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><path d="M15 22v-4a2 2 0 0 0-2-2h-2a2 2 0 0 0-2 2v4"/><path d="M2 7h20"/></I>;
     const Terminal = (p) => <I {...p}><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></I>;
     const ChevronDown = (p) => <I {...p}><path d="m6 9 6 6 6-6"/></I>;
+    const IconGrid = (p) => <I {...p}><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></I>;
+    const IconList = (p) => <I {...p}><line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/></I>;
     const ChevronRight = (p) => <I {...p}><path d="m9 18 6-6-6-6"/></I>;
     const Copy = (p) => <I {...p}><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></I>;
     const CheckCircle2 = (p) => <I {...p}><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></I>;
@@ -252,7 +254,7 @@
         sysStatus: '系统状态', sysDesc: '实时性能与资源指标', gpu: '图形处理器 (GPU)', gpuUnavail: '状态不可用', noSmi: '未检测到 nvidia-smi',
         vram: '显存占用', core: '计算核心', temp: '温度', power: '功耗', unifiedMem: '统一内存架构',
         ram: '系统内存 (RAM)', used: '已用', physical: '物理内存', total: '总计', swap: '交换空间',
-        vllm: 'VLLM 推理引擎', ctx: '上下文长度', queue: '队列情况', kv: 'KV 命中率', ttft: '首字延迟·累积均值', tps: '生成速度·累积均值', tokTotal: '累计 tokens·生成/输入', clearHold: '按住清除', clearHolding: '继续按住…', clearDone: '已清除', clearHint: '按住「清除」直到填满即归零 · 松手取消', statsSince: '统计自 %t 起', statsAge: ' · 已运行 %m 分钟', statsJustReset: ' · 刚刚归零', statsLifetime: '自引擎启动累计', app: '应用服务', appRunning: '核心守护进程运行中',
+        vllm: 'VLLM 推理引擎', ctx: '上下文长度', ctxWarn: '⚠️ 窗口偏小(当前 %s,低于 128k),长对话会频繁压缩、保留历史更少;建议换 ≥128k 窗口的模型或调大 --max-model-len', queue: '队列情况', kv: 'KV 命中率', ttft: '首字延迟·累积均值', tps: '生成速度·累积均值', tokTotal: '累计 tokens·生成/输入', clearHold: '按住清除', clearHolding: '继续按住…', clearDone: '已清除', clearHint: '按住「清除」直到填满即归零 · 松手取消', statsSince: '统计自 %t 起', statsAge: ' · 已运行 %m 分钟', statsJustReset: ' · 刚刚归零', statsLifetime: '自引擎启动累计', app: '应用服务', appRunning: '核心守护进程运行中',
         curVer: '当前版本', uiVer: 'UI 版本', uptime: '运行时长',
         appearance: '外观与语言', lang: '界面语言', langDesc: '切换应用的显示语言', theme: '主题模式', themeDesc: '选择适合你的色彩风格',
         light: '浅色', dark: '深色',
@@ -498,7 +500,7 @@
         sysStatus: 'System Status', sysDesc: 'Real-time performance metrics', gpu: 'GPU', gpuUnavail: 'Unavailable', noSmi: 'nvidia-smi not found',
         vram: 'VRAM Usage', core: 'Core Usage', temp: 'Temp', power: 'Power', unifiedMem: 'Unified Memory',
         ram: 'System RAM', used: 'Used', physical: 'Physical RAM', total: 'Total', swap: 'Swap Space',
-        vllm: 'VLLM Engine', ctx: 'Context Length', queue: 'Queue (Run/Wait)', kv: 'KV Hit Rate', ttft: 'TTFT · cum. avg', tps: 'Gen Speed · cum. avg', tokTotal: 'Total Tokens · gen/prompt', clearHold: 'Hold to reset', clearHolding: 'Keep holding…', clearDone: 'Cleared', clearHint: 'Hold "Reset" until full to clear · release to cancel', statsSince: 'Since %t', statsAge: ' · %m min running', statsJustReset: ' · just reset', statsLifetime: 'Lifetime total', app: 'App Service', appRunning: 'Core daemon running',
+        vllm: 'VLLM Engine', ctx: 'Context Length', ctxWarn: '⚠️ Small context window (%s, below 128k). Long chats compact often and keep less history; use a model with ≥128k window or raise --max-model-len', queue: 'Queue (Run/Wait)', kv: 'KV Hit Rate', ttft: 'TTFT · cum. avg', tps: 'Gen Speed · cum. avg', tokTotal: 'Total Tokens · gen/prompt', clearHold: 'Hold to reset', clearHolding: 'Keep holding…', clearDone: 'Cleared', clearHint: 'Hold "Reset" until full to clear · release to cancel', statsSince: 'Since %t', statsAge: ' · %m min running', statsJustReset: ' · just reset', statsLifetime: 'Lifetime total', app: 'App Service', appRunning: 'Core daemon running',
         curVer: 'App Version', uiVer: 'UI Version', uptime: 'Uptime',
         appearance: 'Appearance & Language', lang: 'Language', langDesc: 'Switch application display language', theme: 'Theme', themeDesc: 'Choose your color style',
         light: 'Light', dark: 'Dark',
@@ -743,7 +745,7 @@
         sysStatus: 'システム状態', sysDesc: 'リアルタイムの性能・リソース指標', gpu: 'GPU', gpuUnavail: '状態を取得できません', noSmi: 'nvidia-smi が見つかりません',
         vram: 'VRAM 使用量', core: 'コア使用率', temp: '温度', power: '消費電力', unifiedMem: 'ユニファイドメモリ',
         ram: 'システムメモリ (RAM)', used: '使用中', physical: '物理メモリ', total: '合計', swap: 'スワップ領域',
-        vllm: 'vLLM 推論エンジン', ctx: 'コンテキスト長', queue: 'キュー状況', kv: 'KV ヒット率', ttft: '初回遅延・累積平均', tps: '生成速度・累積平均', tokTotal: '累計トークン・生成/入力', clearHold: '長押しで消去', clearHolding: 'そのまま…', clearDone: '消去完了', clearHint: '「消去」を満たすまで長押しでリセット · 離すと取消', statsSince: '%t から集計', statsAge: ' · %m 分経過', statsJustReset: ' · 今リセット', statsLifetime: 'エンジン起動からの累計', app: 'アプリサービス', appRunning: 'コアデーモン稼働中',
+        vllm: 'vLLM 推論エンジン', ctx: 'コンテキスト長', ctxWarn: '⚠️ コンテキスト窓が小さい(現在 %s、128k 未満)。長い会話は頻繁に圧縮され履歴が減ります。128k 以上のモデルを使うか --max-model-len を上げてください', queue: 'キュー状況', kv: 'KV ヒット率', ttft: '初回遅延・累積平均', tps: '生成速度・累積平均', tokTotal: '累計トークン・生成/入力', clearHold: '長押しで消去', clearHolding: 'そのまま…', clearDone: '消去完了', clearHint: '「消去」を満たすまで長押しでリセット · 離すと取消', statsSince: '%t から集計', statsAge: ' · %m 分経過', statsJustReset: ' · 今リセット', statsLifetime: 'エンジン起動からの累計', app: 'アプリサービス', appRunning: 'コアデーモン稼働中',
         curVer: '現在のバージョン', uiVer: 'UI バージョン', uptime: '稼働時間',
         appearance: '外観と言語', lang: '表示言語', langDesc: 'アプリの表示言語を切り替え', theme: 'テーマ', themeDesc: 'お好みの配色を選択',
         light: 'ライト', dark: 'ダーク',
@@ -2762,6 +2764,7 @@
       const vllmDiagnostic = fmt ? fmt.vllmDiagnostic : null;
       const vllmMetricDiagnostic = fmt ? fmt.vllmMetricDiagnostic : null;
       const vllmMaxLen = fmt ? fmt.vllmMaxLen : '—';
+      const vllmCtxWarn = fmt ? fmt.vllmCtxWarn : null;
       const vllmQueue = fmt ? fmt.vllmQueue : '— / —';
       const vllmKv = fmt ? fmt.vllmKv : '—';
       const vllmTtft = fmt ? fmt.vllmTtft : '—';
@@ -2907,6 +2910,12 @@
                 </div>
                 <div className={`rounded-[16px] p-2 mt-auto ${isDark ? 'bg-[#131314]' : 'bg-[#F8F9FA]'}`}>
                   <ListRow label={t.ctx} value={String(vllmMaxLen)} theme={theme} />
+                  {vllmCtxWarn && (
+                    <div className={`flex items-start gap-1 px-1 pt-1 pb-1 text-[10px] leading-snug ${isDark ? 'text-amber-400' : 'text-amber-600'}`}>
+                      <AlertTriangle size={11} className="shrink-0 mt-[1px]" />
+                      <span>{t.ctxWarn.replace('%s', Math.round(vllmCtxWarn / 1024) + 'k')}</span>
+                    </div>
+                  )}
                   <ListRow label={t.queue} value={vllmQueue} theme={theme} />
                   <ListRow label={t.kv} value={clearOverride ? clearOverride.kv : vllmKv} theme={theme} />
                   <ListRow label={t.ttft} value={clearOverride ? clearOverride.ttft : vllmTtft} theme={theme} />
@@ -3195,12 +3204,11 @@
     };
 
     // 输入框「技能」入口：⚡ 药丸 + popover。视觉设计=内置自动技能（只读，模型 load_skill 时显"使用中"
-    // 并高亮药丸）；头脑风暴=待上线占位（灰禁用）。activeSkill 由 bridge 检测 load_skill 设，纯只读指示。
+    // 并高亮药丸）。activeSkill 由 bridge 检测 load_skill 设，纯只读指示。
     const ComposerModeMenu = ({ t, bs, compact }) => {
       const [open, setOpen] = useState(false);
       const SKILLS = [
         { id: 'visual-design', name: '视觉设计', desc: '设计系统直出网页/banner/海报/简历…', kind: 'auto' },
-        { id: 'brainstorm', name: '头脑风暴', desc: '帮你发散点子、理清思路', kind: 'soon' },
       ];
       const activeId = bs && bs.activeSkill;
       const cur = SKILLS.find(s => s.id === activeId && s.kind === 'auto');
@@ -5868,7 +5876,7 @@
     };
     // 输出渲染分发：失败→红字；大输出→receipt；高频工具→定制视图；其余→纯文本
     const tsToolsData = [
-      { id: 1, backendId: 'weather', title: '天气查询 MCP', subtitle: '高德地图实时天气与多日预报', category: 'mcp', type: 'MCP Server', version: 'v1.0.0', latency: '<50ms', desc: '通过高德地图 API 查询全国城市实时天气与未来多日预报。支持大模型自然语言调用，自动解析城市名，返回结构化天气数据并渲染可视化卡片。', icon: CloudSun, color: 'bg-gradient-to-b from-sky-400 to-blue-500', installed: false, authRequired: false, welcomeQueries: ['杭州今天天气', '北京这周会下雨吗', '上海明天穿什么'] },
+      { id: 1, backendId: 'weather', title: '高德天气', subtitle: '高德地图实时天气与多日预报', category: 'mcp', type: 'MCP Server', version: 'v1.0.0', latency: '<50ms', desc: '通过高德地图 API 查询全国城市实时天气与未来多日预报。支持大模型自然语言调用，自动解析城市名，返回结构化天气数据并渲染可视化卡片。', icon: CloudSun, color: 'bg-gradient-to-b from-sky-400 to-blue-500', installed: false, authRequired: false, welcomeQueries: ['杭州今天天气', '北京这周会下雨吗', '上海明天穿什么'] },
       { id: 2, backendId: 'iwencai', title: '同花顺问财', subtitle: 'A股行情、财务、选股、宏观、新闻', category: 'finance', type: 'MCP Server', version: 'v1.0.0', latency: '<500ms', desc: '基于同花顺问财官方 API，提供 12 个金融查询工具：实时行情、财务数据、多条件选股、宏观经济、指数行情、行业数据、公告搜索等。自然语言查询，无需记股票代码。', icon: LineChart, color: 'bg-gradient-to-b from-red-400 to-red-600', installed: false, authRequired: false, welcomeQueries: ['茅台最新股价', '今天大盘怎么样', '市盈率低于10的银行股', '最近降息新闻'] },
       { id: 3, backendId: null, title: 'QQ邮箱 API', subtitle: '智能邮件收发与线程提炼', category: 'comm', type: 'REST API', version: 'v1.4.2', latency: '<120ms', desc: '提供标准的邮件收发、搜索和整理接口。结合大模型可实现自然语言读取邮件内容、汇总长线程对话、自动归档管理文件夹。', icon: Mail, color: 'bg-gradient-to-b from-amber-400 to-orange-500', installed: false, authRequired: true },
       { id: 4, backendId: null, title: 'ima 知识库', subtitle: '腾讯云端 AI 知识库（接入中）', category: 'kb', type: 'Cloud RAG', version: '—', latency: '云端', desc: '腾讯 ima 云端知识库，提供海量文档检索与带溯源的问答能力。云端服务，数据在腾讯云。官方开放 API 尚未发布，待其正式开放后提供登录授权集成（当前为占位，暂不可安装）。', icon: BookOpen, color: 'bg-gradient-to-b from-slate-100 to-slate-300 dark:from-slate-700 dark:to-slate-800 text-slate-800 dark:text-white border border-slate-200 dark:border-slate-600', installed: false, authRequired: false },
@@ -6019,35 +6027,39 @@
     // 技能市场预置卡(backendId 必须匹配 Rust SkillManifest.id)。技能=SKILL.md 目录,
     // 装到 bundle/skills/ 进 system prompt;与上方 MCP 工具(tsToolsData)并列两个子页。
     const tsSkillsData = [
-      { id: 's1', backendId: 'pua', title: 'PUA 高绩效教练', subtitle: '用大厂 leader 口吻催 agent 闭环、要证据', category: 'skill', type: 'Skill', version: '—', latency: '本地', desc: '来自 tanweai/pua(MIT)的中文 skill：当你说「再试试 / 别摆烂 / 换个方法 / 证据呢」时，用阿里味、华为味等高绩效文化口吻督促 agent 拿结果闭环、跑测试再说完成。', icon: MessageCircle, color: 'bg-gradient-to-b from-rose-400 to-red-600', installed: false, authRequired: false },
-      { id: 's2', backendId: 'nuwa', title: '女娲 · Skill 造人术', subtitle: '输入人名/主题，蒸馏可运行的人物思维 skill', category: 'skill', type: 'Skill', version: '—', latency: '本地', desc: '来自 alchaincyf/nuwa-skill(MIT，花叔)的中文主 skill：深度调研 → 思维框架提炼 → 生成可运行的人物视角 skill。输入人名直接蒸馏，模糊需求先诊断推荐。', icon: Sparkles, color: 'bg-gradient-to-b from-violet-500 to-purple-700', installed: false, authRequired: false },
-      { id: 's3', backendId: 'brainstorming', title: '头脑风暴 · 想法变设计', subtitle: '动手前先理清需求，产出设计与实现计划文档', category: 'skill', type: 'Skill', version: '—', latency: '本地', desc: '改自 obra/superpowers(MIT)的 brainstorming：通过一次一个问题的对话探明意图 → 出设计 → 产出实现计划，全程落两份 md 文档再实现。已去 skill 串联 + 中文化，自包含，适配本地小模型。', icon: Lightbulb, color: 'bg-gradient-to-b from-amber-400 to-orange-500', installed: false, authRequired: false },
-      { id: 's4', backendId: 'government-writing', title: '党政机关公文写作', subtitle: '通知/意见等法定文种，套话术、层级序号、自检', category: 'skill', type: 'Skill', version: '—', latency: '本地', desc: '撰写规范的党政机关公文（通知、意见…）：内置文种结构骨架、固定话术库、层级序号体系与立账核账自检，产出结构化公文内容。配合工具商店的「公文写作」工具即可直出 GB/T 9704 合规 .docx。', icon: FileText, color: 'bg-gradient-to-b from-red-500 to-rose-700', installed: false, authRequired: false },
+      { id: 's4', backendId: 'government-writing', title: '党政机关公文写作', subtitle: '通知/意见等法定文种，套话术、层级序号、自检', category: 'skill', type: 'Skill', version: '—', latency: '本地', desc: '撰写规范的党政机关公文（通知、意见…）：内置文种结构骨架、固定话术库、层级序号体系与立账核账自检，产出结构化公文内容。配合工具商店的「公文写作」工具即可直出 GB/T 9704 合规 .docx。', icon: FileText, color: 'bg-gradient-to-b from-red-500 to-rose-700', installed: false, authRequired: false, todayImg: 'assets/skill-doc.jpg', todayLabel: '编辑之选 · 专业辅助', todayTitle: '规范公文\n一键起草', todayVariant: 'photo', cardW: 'flex-[1.4]' },
+      { id: 's6', backendId: 'pptx', title: 'PPT 生成', subtitle: '本地直出可编辑 PowerPoint，套主题模板、真图表、带封面', category: 'skill', type: 'Skill', version: '—', latency: '本地', desc: '本地直出可编辑 PowerPoint:套主题模板、真图表、带封面,输入主题即可快速生成结构化演示文稿。', icon: Presentation, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: false, todayImg: 'assets/skill-ppt.jpg', todayLabel: '演示利器', todayTitle: '一句话\n做完\nPPT', todayVariant: 'drama', cardW: 'flex-1' },
+      { id: 's5', title: '视觉设计', subtitle: '设计系统直出网页 / banner / 海报 / 简历', category: 'skill', type: 'Skill', version: '内置', latency: '本地', desc: '内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', icon: Palette, color: 'bg-gradient-to-b from-pink-400 to-fuchsia-600', installed: true, authRequired: false, builtin: true, todayImg: 'assets/skill-visual.jpg', todayLabel: '创意探索', todayTitle: '视觉设计\n信手拈来', todayVariant: 'appimg', cardW: 'flex-1' },
     ];
 
     const tsCategories = [
-      { id: 'all', label: '全部工具' },
-      { id: 'h3c', label: 'H3C 集团内部' },
-      { id: 'mcp', label: 'MCP 核心' },
-      { id: 'comm', label: '协作办公' },
-      { id: 'office', label: '办公' },
-      { id: 'dev', label: '研发治理' },
+      { id: 'all', label: '全部' },
+      { id: 'h3c', label: 'H3C 内部' },
+      { id: 'collab', label: '沟通协作' },
+      { id: 'docs', label: '文档知识' },
+      { id: 'dev', label: '研发' },
       { id: 'finance', label: '金融数据' },
-      { id: 'kb', label: '知识库' },
+      { id: 'life', label: '生活实用' },
+      { id: 'skill', label: '技能' },
     ];
 
     const tsFeaturedCollections = [
-      { id: 'f6', label: '即装即用', title: '实时天气随口问', subtitle: '接入高德天气 API，自然语言查全国城市实时天气与多日预报，零配置一键安装。', bg: 'bg-gradient-to-br from-sky-500 via-blue-500 to-indigo-600', featuredToolId: 1 },
-      { id: 'f4', label: '数据引擎', title: '打造智能投研助理', subtitle: '集成同花顺问财 12 项金融工具，利用大模型快速输出深度个股诊断报告。', bg: 'bg-gradient-to-br from-red-600 via-rose-700 to-orange-600', featuredToolId: 2 },
-      { id: 'f7', label: '企业数据', title: '一键查透企业全貌', subtitle: '接入企查查 182 个工具，工商/风控/知产/经营数据信手拈来，免配置即装即用。', bg: 'bg-gradient-to-br from-blue-700 via-cyan-600 to-teal-500', featuredToolId: 13 },
-      { id: 'f1', label: '场景套件', title: '构建 AI 研发中枢', subtitle: '串联 TAPD 与 CNB，让 AI 帮你审查 PR、追踪缺陷并自动部署流水线。', bg: 'bg-gradient-to-br from-indigo-800 via-violet-700 to-fuchsia-600', featuredToolId: 12 },
-      { id: 'f2', label: '核心 MCP', title: '激活企业沉淀知识', subtitle: '挂载 ima 知识库底层能力，解锁毫秒级的海量文档精准召回与分析。', bg: 'bg-gradient-to-br from-blue-700 via-indigo-600 to-cyan-600', featuredToolId: 4 },
-      { id: 'f3', label: '效率编排', title: '跨平台消息中转', subtitle: '无缝打通企微、飞书与钉钉，实现重要告警与工作流消息的自动化流转。', bg: 'bg-gradient-to-br from-emerald-600 via-teal-700 to-cyan-800', featuredToolId: 9 },
-      { id: 'f5', label: '通信治理', title: '下一代智能云会议', subtitle: '调用腾讯会议高级能力，实现自动发起、录制总结与待办任务自动分配。', bg: 'bg-gradient-to-br from-sky-600 via-blue-600 to-indigo-700', featuredToolId: 7 },
+      { id: 'f6', label: '即装即用', title: '实时天气随口问', subtitle: '接入高德天气 API，自然语言查全国城市实时天气与多日预报，零配置一键安装。', img: 'assets/banner-weather.jpg', bg: 'bg-gradient-to-br from-sky-500 via-blue-500 to-indigo-600', featuredToolId: 1 },
+      { id: 'f4', label: '数据引擎', title: '打造智能投研助理', subtitle: '集成同花顺问财 12 项金融工具，利用大模型快速输出深度个股诊断报告。', img: 'assets/banner-invest.jpg', bg: 'bg-gradient-to-br from-red-600 via-rose-700 to-orange-600', featuredToolId: 2 },
+      { id: 'f7', label: '企业数据', title: '一键查透企业全貌', subtitle: '接入企查查 182 个工具，工商/风控/知产/经营数据信手拈来，免配置即装即用。', img: 'assets/banner-company.jpg', bg: 'bg-gradient-to-br from-blue-700 via-cyan-600 to-teal-500', featuredToolId: 13 },
+      { id: 'f1', label: '即时沟通', title: '打通企业微信', subtitle: '以你本人身份操作企微消息、文档、会议与日程，扫码授权、全程不填 key。', img: 'assets/banner-wecom.jpg', bg: 'bg-gradient-to-br from-green-600 via-emerald-600 to-teal-600', featuredToolId: 99 },
+      { id: 'f2', label: '个人知识', title: '激活你的本地笔记', subtitle: '接入本机 Obsidian 笔记库，全文检索、读写与维护双链，让 AI 基于你的知识作答。', img: 'assets/banner-obsidian.jpg', bg: 'bg-gradient-to-br from-violet-700 via-purple-600 to-fuchsia-600', featuredToolId: 14 },
+      { id: 'f3', label: '效率编排', title: '跨平台消息中转', subtitle: '无缝打通企微、飞书与钉钉，实现重要告警与工作流消息的自动化流转。', img: 'assets/banner-message.jpg', bg: 'bg-gradient-to-br from-emerald-600 via-teal-700 to-cyan-800', featuredToolId: 9 },
+      { id: 'f5', label: '通信治理', title: '下一代智能云会议', subtitle: '调用腾讯会议高级能力，实现自动发起、录制总结与待办任务自动分配。', img: 'assets/banner-meeting.jpg', bg: 'bg-gradient-to-br from-sky-600 via-blue-600 to-indigo-700', featuredToolId: 7 },
     ];
 
     const TsActionBtn = ({ tool, busy, onAction, size = 'sm' }) => {
       const isLg = size === 'lg';
+      if (tool.builtin) {
+        return (
+          <span className={`${isLg ? 'px-6 py-2.5 text-[15px]' : 'px-4 py-1.5 text-[13px]'} rounded-full font-bold bg-slate-100 dark:bg-[#2C2C2E] text-slate-500 dark:text-slate-400 whitespace-nowrap`}>内置 · 已启用</span>
+        );
+      }
       if (!tool.backendId) {
         return (
           <button disabled className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold bg-slate-100 dark:bg-[#1C1C1E] border border-slate-200 dark:border-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed`}>
@@ -6090,6 +6102,12 @@
       { key: 'connect', label: '连接并授权', sub: '创建应用身份' },
       { key: 'qr', label: '扫码登录', sub: '飞书 App 扫一扫' },
     ];
+    // 企业微信:纯扫码单段,无「创建应用身份」步骤(复用 runtime/cli/qr 的进度条逻辑)
+    const WECOM_STEPS = [
+      { key: 'runtime', label: '准备运行时', sub: '解压 Node 到 ~/.pinvou3' },
+      { key: 'cli', label: '安装连接组件', sub: 'wecom-cli · 首次约 40 秒' },
+      { key: 'qr', label: '扫码登录', sub: '企业微信 App 扫一扫' },
+    ];
     const FeishuStepIcon = ({ st }) => {
       if (st === 'done') return <span className="w-5 h-5 rounded-full bg-emerald-500 grid place-items-center text-white text-[11px]">✓</span>;
       if (st === 'active') return <span className="w-5 h-5 rounded-full bg-blue-600 grid place-items-center text-white text-[10px] animate-pulse">●</span>;
@@ -6101,7 +6119,7 @@
         <div className={`h-full rounded-full transition-all ${creep ? 'bg-blue-500' : 'bg-emerald-500'}`} style={{ width: (pct || 0) + '%' }} />
       </div>
     );
-    const FeishuFlowCard = ({ flow, onRetry, onCancel, name = '飞书', twoStep = true, browserAuth = false }) => {
+    const FeishuFlowCard = ({ flow, onRetry, onCancel, name = '飞书', twoStep = true, browserAuth = false, steps = FEISHU_STEPS }) => {
       if (!flow) return null;
       const isErr = flow.phase === 'error';
       return (
@@ -6113,7 +6131,7 @@
             {(flow.phase === 'running' || flow.phase === 'qr') && <button onClick={onCancel} className="text-[12px] text-slate-400 hover:text-slate-600">取消</button>}
           </div>
           <div className="px-5 pb-4 space-y-1">
-            {FEISHU_STEPS.map(s => {
+            {steps.map(s => {
               const st = (flow.steps && flow.steps[s.key]) || 'wait';
               const active = st === 'active';
               return (
@@ -6246,6 +6264,50 @@
           const step = (f && f.active) || 'cli';
           return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || '连接失败'), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } };
         });
+      });
+    }
+
+    // ── 企业微信连接流程 · 跨视图持久 store(镜像 feishuConn;企微纯扫码单段）──
+    const wecomConn = {
+      flow: null, tick: null, listenersReady: false, subs: new Set(),
+      subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
+      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch (_) {} }); },
+      startTick() {
+        this.stopTick();
+        this.tick = setInterval(() => this.setFlow(f => {
+          if (!f || f.phase !== 'running') return f;
+          const nf = { ...f, sec: (f.sec || 0) + 1 };
+          if (f.active === 'cli') nf.pct = Math.min(90, (f.pct || 0) + (90 - (f.pct || 0)) * 0.06 + 1);
+          return nf;
+        }), 1000);
+      },
+      stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
+    };
+    function ensureWecomListeners() {
+      if (wecomConn.listenersReady) return;
+      const ev = window.__TAURI__ && window.__TAURI__.event;
+      if (!ev) return;
+      wecomConn.listenersReady = true;
+      ev.listen('wecom:qr', (e) => {
+        const p = e.payload || {};
+        wecomConn.stopTick();
+        wecomConn.setFlow(f => {
+          const prev = (f && f.steps) || {};
+          return { ...(f || {}), phase: 'qr', active: 'qr',
+            steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), qr: 'active' },
+            qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase };
+        });
+      });
+      ev.listen('wecom:connected', () => {
+        wecomConn.stopTick();
+        wecomConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
+        window.__TAURI__.core.invoke('wecom_apply_skills').catch(() => {});
+        setTimeout(() => wecomConn.setFlow(null), 1800);
+      });
+      ev.listen('wecom:error', (e) => {
+        const p = e.payload || {};
+        wecomConn.stopTick();
+        wecomConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || '连接失败'), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } }; });
       });
     }
 
@@ -6439,10 +6501,13 @@
       const [alert, setAlert] = useState({ visible: false, loading: false, title: '', subtitle: '', isInstall: false, isError: false });
       const [configDialog, setConfigDialog] = useState(null); // { backendId, name, fields }
       const [obsidianGuide, setObsidianGuide] = useState(null); // {backendId,name,state,vault_path} 未安装/没库引导
-      const [tab, setTab] = useState('connector'); // 'connector'(MCP 工具) | 'skill'(SKILL.md 技能)
+      const [viewMode, setViewMode] = useState('card'); // 'card'(卡片视图) | 'list'(列表视图)
+      const [installedOnly, setInstalledOnly] = useState(false); // 头像入口:只看已安装
       const [skillBackend, setSkillBackend] = useState([]); // list_marketplace_skills 原始返回
-      const [disabledSkills, setDisabledSkills] = useState([]); // 被停用技能 id(全局持久,从 ## Skills 隐藏但不卸载)
-      const isSkillTab = tab === 'skill';
+      const isCard = viewMode === 'card';
+      const isSkillTab = isCard; // 兼容:卡片视图 = 渲染本地技能 Today 卡
+      // 连接器 tab 只显示"需连外部数据"的工具,排除本地生成类(PPT / 公文)
+      const LOCAL_TOOLS = ['pptx', 'gongwen'];
       // 飞书(CLI 路线)连接态:不走 marketplace,由 lark-cli auth status 判定
       const [feishuConnected, setFeishuConnected] = useState(false);
       // 飞书连接流程状态机（取代旧阻塞式扫码浮层）：null=idle
@@ -6459,6 +6524,7 @@
       // 企业微信(CLI 路线)连接态:同飞书,由 wecom-cli auth show 判定
       const [wecomConnected, setWecomConnected] = useState(false);
       const [wecomQr, setWecomQr] = useState(null); // { qr: dataUrl, url } 扫码弹窗(单段)
+      const [wecomFlow, setWecomFlow] = useState(wecomConn.flow); // 企微连接流程卡(跨视图水合)
       const refreshWecom = async () => {
         try {
           const s = await window.__TAURI__.core.invoke('wecom_status');
@@ -6486,6 +6552,27 @@
           }
         });
         setFeishuFlow(feishuConn.flow); // (重)挂载即水合当前进度
+        return unsub;
+      }, []);
+
+      // 订阅企业微信 store(镜像飞书):镜像进渲染 + 完成/失败收尾
+      useEffect(() => {
+        ensureWecomListeners();
+        let prevPhase = wecomConn.flow && wecomConn.flow.phase;
+        const unsub = wecomConn.subscribe((flow) => {
+          setWecomFlow(flow);
+          const ph = flow && flow.phase;
+          if (ph !== prevPhase) {
+            if (ph === 'done') {
+              setWecomConnected(true); setBusyId(null);
+              setAlert({ visible: true, loading: false, title: '已连接企业微信', subtitle: '官方技能已启用，可新建对话直接用', isInstall: true, isError: false, toolId: 'wecom' });
+            } else if (ph === 'error') {
+              setBusyId(null);
+            }
+            prevPhase = ph;
+          }
+        });
+        setWecomFlow(wecomConn.flow);
         return unsub;
       }, []);
 
@@ -6560,8 +6647,11 @@
       }, []);
 
       // 合并后端安装状态到 mock 数据(飞书/企微/EIP/知道 的 installed = 已连接)
+      // 新分类映射(按工具 id):沟通协作 / 文档知识 / 研发 / 金融数据 / 生活实用 / H3C 内部
+      const CAT_BY_ID = { 1: 'life', 2: 'finance', 3: 'collab', 4: 'docs', 5: 'docs', 6: 'docs', 7: 'collab', 8: 'collab', 9: 'collab', 10: 'collab', 11: 'dev', 12: 'dev', 13: 'finance', 14: 'docs', 17: 'h3c', 18: 'h3c', 99: 'collab' };
       const tools = tsToolsData.map(t => ({
         ...t,
+        category: CAT_BY_ID[t.id] || t.category,
         installed: t.feishuCli
           ? feishuConnected
           : t.wecomCli
@@ -6575,6 +6665,9 @@
 
       // 技能卡 = 预置(合并安装状态) + 用户上传(后端动态返回,默认图标)
       const presetSkills = tsSkillsData.map(s => {
+        if (s.builtin) return { ...s, installed: true };
+        // 工具型技能(如 PPT=pptx)按 marketplace 工具安装态;真技能按 skill 后端
+        if (tsToolsData.some(t => t.backendId === s.backendId)) return { ...s, installed: !!toolStates[s.backendId] };
         const be = skillBackend.find(x => x.id === s.backendId);
         return { ...s, installed: be ? be.installed : false };
       });
@@ -6585,15 +6678,25 @@
       }));
       const skillCards = [...presetSkills, ...uploadedSkills];
 
-      const sourceItems = isSkillTab ? skillCards : tools;
+      const connectorTools = tools.filter(t => !LOCAL_TOOLS.includes(t.backendId));
+      const listItems = [...connectorTools, ...skillCards]; // 列表视图:连接器 + 技能全放一起
+      // 独家技能:公文写作 / PPT 生成 / 视觉设计(按此序;视觉无 backendId,PIN 后自然排末)
+      const FEATURED_SKILL = s => ['government-writing', 'pptx'].includes(s.backendId) || s.id === 's5';
+      // 搜索全局:有搜索词时跨「连接器 + 全部技能」检索,不受卡片视图/分类限制(「我的工具」内搜索仍限已安装)
+      const searching = searchQuery.trim() !== '';
+      const sourceItems = (searching && !installedOnly) ? listItems : (isCard ? skillCards.filter(FEATURED_SKILL) : listItems);
+      const PIN = ['government-writing', 'pptx'];
       const filteredTools = sourceItems.filter(tool => {
         const q = searchQuery.toLowerCase();
         const matchesSearch = tool.title.toLowerCase().includes(q) || (tool.desc || '').toLowerCase().includes(q);
-        const matchesCategory = isSkillTab || activeCategory === 'all' || (activeCategory === 'h3c' ? !!tool.internal : tool.category === activeCategory);
+        if (installedOnly && !isCard) return matchesSearch && tool.installed;
+        const matchesCategory = searching || isCard || activeCategory === 'all' || (activeCategory === 'h3c' ? (tool.category === 'h3c' || !!tool.internal) : tool.category === activeCategory);
         return matchesSearch && matchesCategory;
       }).sort((a, b) => {
-        if (a.backendId && !b.backendId) return -1;
-        if (!a.backendId && b.backendId) return 1;
+        if (isCard && !searching) { const r = x => { const i = PIN.indexOf(x.backendId); return i === -1 ? 99 : i; }; if (r(a) !== r(b)) return r(a) - r(b); }
+        // 已上线(有 backendId 或内置)排在未上线(即将上线)之前
+        const onA = !!a.backendId || !!a.builtin, onB = !!b.backendId || !!b.builtin;
+        if (onA !== onB) return onA ? -1 : 1;
         if (a.installed && !b.installed) return -1;
         if (!a.installed && b.installed) return 1;
         return 0;
@@ -6614,12 +6717,6 @@
           setSkillBackend(Array.isArray(skills) ? skills : []);
         } catch (e) {
           console.error('list_marketplace_skills failed:', e);
-        }
-        try {
-          const ds = await window.__TAURI__.core.invoke('get_disabled_skills');
-          setDisabledSkills(Array.isArray(ds) ? ds : []);
-        } catch (e) {
-          console.error('get_disabled_skills failed:', e);
         }
       };
 
@@ -6671,21 +6768,6 @@
           setAlert({ visible: true, loading: false, title: '操作失败：' + e, isInstall: false, isError: true });
         } finally {
           setBusyId(null);
-        }
-      };
-
-      // 技能启用/停用(全局持久):停用 = 从 ## Skills prompt catalogue 隐藏,但不卸载。
-      // backendId = 市场技能 id;后端映射成落盘 skill 名推给底座过滤器,下轮对话即生效。
-      const handleSkillToggle = async (backendId) => {
-        const next = disabledSkills.includes(backendId)
-          ? disabledSkills.filter(x => x !== backendId)
-          : [...disabledSkills, backendId];
-        setDisabledSkills(next); // 乐观更新
-        try {
-          await window.__TAURI__.core.invoke('set_disabled_skills', { skillIds: next });
-        } catch (e) {
-          console.error('set_disabled_skills failed:', e);
-          setDisabledSkills(disabledSkills); // 回滚
         }
       };
 
@@ -6760,24 +6842,36 @@
         }
       };
 
-      // 连接企业微信(单段扫码):ensure cli + begin,进度走 wecom:* 事件。
+      // 连接企业微信(单段扫码):流程卡驱动(镜像飞书),进度走 wecom:* 事件。
       const connectWecom = async () => {
         setBusyId('wecom');
-        setAlert({ loading: true, visible: false, title: '正在准备企业微信连接…', subtitle: '首次需安装 wecom-cli（联网，稍候）', isInstall: true, isError: false });
+        ensureWecomListeners();
+        // 开流程卡(无阻塞弹窗):先起"准备运行时"步,写进跨视图 store,切走不丢。
+        wecomConn.setFlow({ phase: 'running', steps: { runtime: 'active' }, active: 'runtime', pct: 0, sec: 0, log: '' });
+        wecomConn.startTick();
         try {
+          // ① 确保 CLI(首次联网装 wecom-cli ~40s)
+          wecomConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: 'npm: starting…', steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
           await window.__TAURI__.core.invoke('wecom_ensure_cli');
-          // 不在此清 loading —— CLI 已装时 ensure 秒返回,清了会导致"闪一下"+ 后续几秒空窗。
-          // loading 持续到 wecom:qr 事件到达(二维码真出现)时再由监听器清掉。
-          setAlert({ loading: true, visible: false, title: '正在生成登录二维码…', subtitle: '请稍候', isInstall: true, isError: false });
+          wecomConn.setFlow(f => ({ ...(f || {}), pct: 100, steps: { ...((f && f.steps) || {}), cli: 'done' } }));
+          // ② 连接编排(后端 emit wecom:qr / connected / error)
           await window.__TAURI__.core.invoke('wecom_connect_begin');
-          // 后续:wecom:qr 出二维码 → 用户扫码 → wecom:connected 收尾。
         } catch (e) {
           console.error('wecom connect failed:', e);
-          setWecomQr(null);
+          wecomConn.stopTick();
           setBusyId(null);
-          setAlert({ visible: true, loading: false, title: '企业微信连接失败', subtitle: String(e).slice(0, 240), isError: true });
+          wecomConn.setFlow(f => {
+            const step = (f && f.active) || 'cli';
+            return { ...(f || { steps: {} }), phase: 'error', err: String(e).slice(0, 300), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } };
+          });
         }
       };
+      const wecomResetFlow = () => {
+        wecomConn.stopTick();
+        window.__TAURI__.core.invoke('wecom_cancel').catch(() => {});
+        wecomConn.setFlow(null); setBusyId(null);
+      };
+      const wecomRetry = () => { connectWecom(); };
       const disconnectWecom = async () => {
         setBusyId('wecom');
         try {
@@ -6847,7 +6941,8 @@
 
       // 安装/卸载入口
       const handleAction = async (backendId, isInstalled) => {
-        if (isSkillTab) return handleSkillAction(backendId, isInstalled);
+        // 技能 tab 里的"工具型"条目(如 PPT=pptx)走正常工具安装,不误走 handleSkillAction
+        if (tsSkillsData.some(s => s.backendId === backendId) && !tsToolsData.some(t => t.backendId === backendId)) return handleSkillAction(backendId, isInstalled);
         // 飞书走 CLI 连接流程,不走 marketplace install
         if (backendId === 'feishu') {
           if (isInstalled) return disconnectFeishu();
@@ -6859,6 +6954,9 @@
         // 企微同走 CLI 连接流程(单段扫码)
         if (backendId === 'wecom') {
           if (isInstalled) return disconnectWecom();
+          // 打开详情弹窗(里面有流程卡)+ 触发连接
+          const wt = tools.find(x => x.wecomCli) || tsToolsData.find(x => x.backendId === 'wecom');
+          if (wt) setSelectedTool(wt);
           return connectWecom();
         }
         // EIP 走 CLI 连接流程(浏览器 SSO 一键登录),不走 marketplace install
@@ -7017,30 +7115,23 @@
             </div>
             ), document.body);
           })()}
-          <div className="flex-1 flex flex-col bg-white dark:bg-black text-slate-900 dark:text-white transition-colors duration-300 font-sans overflow-hidden">
+          <div className="flex-1 flex flex-col bg-white dark:bg-[#131314] text-slate-900 dark:text-white transition-colors duration-300 font-sans overflow-y-auto custom-scrollbar">
 
             {/* Header */}
-            <header className="shrink-0 bg-white/80 dark:bg-black/80 backdrop-blur-2xl border-b border-slate-200/50 dark:border-white/10 pt-6 pb-4 px-6 md:px-10 transition-colors">
-              <div className="max-w-7xl mx-auto flex flex-col gap-5">
-                <h1 className="text-[32px] font-normal tracking-tight">工具商店</h1>
-                <div className="flex">
-                  <div className="flex p-1 bg-slate-100 dark:bg-[#1C1C1E] rounded-xl border border-slate-200/50 dark:border-white/5">
-                    {[{ key: 'connector', label: '连接器' }, { key: 'skill', label: '技能' }].map(seg => (
-                      <button
-                        key={seg.key}
-                        onClick={() => { setTab(seg.key); setSearchQuery(''); setActiveCategory('all'); }}
-                        className={`px-5 py-1.5 rounded-lg text-[14px] font-semibold whitespace-nowrap transition-all duration-300 ${
-                          tab === seg.key
-                            ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm ring-1 ring-black/5 dark:ring-white/10'
-                            : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
-                        }`}
-                      >
-                        {seg.label}
-                      </button>
-                    ))}
+            <header className="sticky top-0 z-30 bg-white/80 dark:bg-black/80 backdrop-blur-2xl border-b border-slate-200/50 dark:border-white/10 pt-6 pb-4 transition-colors">
+              <div className="max-w-7xl mx-auto px-6 md:px-10 flex flex-col gap-5">
+                <div className="flex items-center justify-between gap-4">
+                  <h1 className="text-[32px] font-normal tracking-tight">工具商店</h1>
+                  <div className={`flex items-center gap-3 ${installedOnly ? 'hidden' : ''}`}>
+                    {/* 已安装入口(App Store 风:头像 + 文字);进「我的工具」后隐藏 */}
+                    <button onClick={() => { setViewMode('list'); setInstalledOnly(true); setSearchQuery(''); }} title="我的工具 · 已安装"
+                      className="flex items-center gap-2 pl-1 pr-3.5 py-1 rounded-full bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 transition-colors">
+                      <span className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-400 to-indigo-500 flex items-center justify-center text-white shrink-0"><User size={15} /></span>
+                      <span className="text-[14px] font-semibold">我的工具</span>
+                    </button>
                   </div>
                 </div>
-                <div className="relative group">
+                <div className={`relative group ${installedOnly ? 'hidden' : ''}`}>
                   <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-500 transition-colors" size={20} />
                   <input
                     type="text"
@@ -7054,18 +7145,34 @@
             </header>
 
             {/* Main scrollable area */}
-            <main className="flex-1 overflow-y-auto custom-scrollbar">
+            <main className="flex-1">
               <div className="max-w-7xl mx-auto px-6 md:px-10 py-8 space-y-12">
 
+                {/* 视图切换:卡片 / 列表(内容区顶部右对齐;进「我的工具」时隐藏)*/}
+                <div className={`flex justify-end ${installedOnly ? 'hidden' : ''}`}>
+                  <div className="flex p-1 bg-slate-100 dark:bg-[#1C1C1E] rounded-xl border border-slate-200/50 dark:border-white/5">
+                    {[{ key: 'card', label: '卡片', Icon: IconGrid }, { key: 'list', label: '列表', Icon: IconList }].map(seg => (
+                      <button key={seg.key} onClick={() => { setViewMode(seg.key); setInstalledOnly(false); setSearchQuery(''); setActiveCategory('all'); }}
+                        className={`px-4 py-1.5 rounded-lg text-[14px] font-semibold whitespace-nowrap transition-all duration-300 flex items-center gap-1.5 ${
+                          viewMode === seg.key
+                            ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm ring-1 ring-black/5 dark:ring-white/10'
+                            : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                        }`}>
+                        <seg.Icon size={15} /> {seg.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 {/* Featured carousel */}
-                {!isSkillTab && searchQuery === '' && activeCategory === 'all' && (
+                {isCard && searchQuery === '' && activeCategory === 'all' && (
                   <section
                     className="relative group/featured"
                     onMouseEnter={() => setIsFeaturedHovered(true)}
                     onMouseLeave={() => setIsFeaturedHovered(false)}
                   >
                     <div className="flex items-end justify-between mb-5">
-                      <h2 className="text-2xl font-bold tracking-tight">精选能力推荐</h2>
+                      <h2 className="text-2xl font-bold tracking-tight">精选连接器</h2>
                     </div>
 
                     <button
@@ -7084,12 +7191,12 @@
                     <div
                       ref={featuredScrollRef}
                       className="flex gap-6 overflow-x-auto snap-x snap-mandatory pb-6 no-scrollbar relative"
-                      style={{ scrollbarWidth: 'none' }}
+                      style={{ scrollbarWidth: 'none', maskImage: 'linear-gradient(to right,#000 0,#000 92%,transparent 100%)', WebkitMaskImage: 'linear-gradient(to right,#000 0,#000 92%,transparent 100%)' }}
                     >
                       {/* H3C 集团内部工具合集 —— 精选第一张，点击展开详情 */}
                       <div
                         onClick={() => setShowH3cModal(true)}
-                        className="relative min-w-[320px] md:min-w-[400px] h-[440px] rounded-[32px] snap-center shrink-0 overflow-hidden cursor-pointer group shadow-sm hover:shadow-xl transition-all duration-500"
+                        className="relative min-w-[320px] md:min-w-[400px] h-[440px] rounded-[32px] snap-start shrink-0 overflow-hidden cursor-pointer group shadow-sm hover:shadow-xl transition-all duration-500"
                       >
                         <img src="assets/h3c-banner.jpg" alt="" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
                         <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/15 to-black/70" />
@@ -7102,17 +7209,17 @@
                           <p className="text-white/85 text-[15px] font-medium mt-3 max-w-[88%]">以你本人 SSO 身份直连集团内部系统，全程不填 key</p>
                         </div>
                         <div className="absolute bottom-6 left-6 right-6">
-                          <div className="bg-white/90 backdrop-blur-xl rounded-2xl p-4 flex items-center justify-between shadow-lg transition-transform group-hover:-translate-y-1">
+                          <div className="bg-white/20 dark:bg-black/40 backdrop-blur-3xl border border-white/20 dark:border-white/10 rounded-2xl p-4 flex items-center justify-between shadow-lg transition-transform group-hover:-translate-y-1">
                             <div className="flex items-center gap-3">
                               <div className="w-12 h-12 rounded-[13px] flex items-center justify-center text-white shadow-inner" style={{ background: 'linear-gradient(135deg,#ff2a43,#a30010)' }}>
                                 <Briefcase size={22} strokeWidth={1.6} />
                               </div>
                               <div>
-                                <h4 className="text-[14px] font-bold text-slate-900">H3C 集团内部工具</h4>
-                                <p className="text-[12px] text-slate-500 mt-0.5">2 个工具 · 需内网</p>
+                                <h4 className="text-[14px] font-bold text-white drop-shadow-sm">H3C 集团内部工具</h4>
+                                <p className="text-[12px] text-white/70 mt-0.5">2 个工具 · 需内网</p>
                               </div>
                             </div>
-                            <span className="text-[#E60012] font-bold text-[14px]">查看</span>
+                            <span className="text-white font-bold text-[14px] drop-shadow-sm">查看</span>
                           </div>
                         </div>
                       </div>
@@ -7122,9 +7229,11 @@
                           <div
                             key={collection.id}
                             onClick={() => setSelectedTool(featTool)}
-                            className="relative min-w-[320px] md:min-w-[400px] h-[440px] rounded-[32px] snap-center shrink-0 overflow-hidden cursor-pointer group shadow-sm hover:shadow-xl dark:shadow-none border border-slate-200/50 dark:border-white/10 transition-all duration-500"
+                            className="relative min-w-[320px] md:min-w-[400px] h-[440px] rounded-[32px] snap-start shrink-0 overflow-hidden cursor-pointer group shadow-sm hover:shadow-xl dark:shadow-none border border-slate-200/50 dark:border-white/10 transition-all duration-500"
                           >
-                            <div className={`absolute inset-0 ${collection.bg} transition-transform duration-700 group-hover:scale-105`} />
+                            {collection.img
+                              ? <img src={collection.img} alt="" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
+                              : <div className={`absolute inset-0 ${collection.bg} transition-transform duration-700 group-hover:scale-105`} />}
                             <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-transparent to-black/60" />
 
                             <div className="absolute top-0 left-0 w-full p-8 text-white z-10">
@@ -7158,26 +7267,26 @@
 
                 {/* Category filter + tool list */}
                 <section>
-                  <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6 border-b border-slate-200 dark:border-white/10 pb-5">
-                    <h2 className="text-2xl font-bold tracking-tight">
-                      {isSkillTab ? (searchQuery ? '检索结果' : '技能库') : (searchQuery ? '检索结果' : '热门协议与接口')}
-                    </h2>
-                    {isSkillTab ? (
-                      <button
-                        onClick={handleUploadSkill}
-                        disabled={busyId === '__upload__'}
-                        className="flex items-center gap-2 px-4 py-2 rounded-xl text-[14px] font-semibold bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white shadow-md shadow-blue-500/20 transition-all active:scale-95 whitespace-nowrap"
-                      >
-                        <Upload size={16} /> {busyId === '__upload__' ? '导入中…' : '上传技能包'}
-                      </button>
-                    ) : (
+                  <div className={`flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6 ${isCard ? '' : 'border-b border-slate-200 dark:border-white/10 pb-5'}`}>
+                    <div className="flex items-center gap-3">
+                      {installedOnly && (
+                        <button onClick={() => { setInstalledOnly(false); setViewMode('card'); }} title="返回商店"
+                          className="w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 flex items-center justify-center text-slate-600 dark:text-slate-300 transition-colors shrink-0">
+                          <ChevronLeft size={20} />
+                        </button>
+                      )}
+                      <h2 className="text-2xl font-bold tracking-tight">
+                        {isCard ? (searchQuery ? '检索结果' : '独家技能') : (installedOnly ? '我的工具' : (searchQuery ? '检索结果' : '全部工具'))}
+                      </h2>
+                    </div>
+                    {!isCard && !installedOnly && (
                       <div className="flex flex-wrap gap-2 overflow-x-auto no-scrollbar">
                         {tsCategories.map((cat) => {
                           const isActive = activeCategory === cat.id;
                           return (
                             <button
                               key={cat.id}
-                              onClick={() => setActiveCategory(cat.id)}
+                              onClick={() => { setActiveCategory(cat.id); setInstalledOnly(false); }}
                               className={`shrink-0 px-4 py-1.5 rounded-full text-[13px] font-semibold whitespace-nowrap transition-colors ${
                                 isActive
                                   ? 'bg-blue-600 text-white'
@@ -7193,6 +7302,73 @@
                   </div>
 
                   {filteredTools.length > 0 ? (
+                    (isSkillTab && !searching) ? (
+                    <div className="flex flex-col md:flex-row gap-6">
+                      {filteredTools.map((tool) => {
+                        const v = tool.todayVariant || 'fallback';
+                        const bar = (
+                          <div className="absolute bottom-4 left-4 right-4 bg-white/92 dark:bg-[#1c1c1e]/92 backdrop-blur-xl rounded-2xl p-3 flex items-center gap-3 shadow-lg">
+                            <div className={`w-12 h-12 rounded-[13px] ${tool.color} flex items-center justify-center text-white shadow-inner shrink-0`}><tool.icon size={22} strokeWidth={1.6} /></div>
+                            <div className="flex-1 min-w-0"><h4 className="text-[15px] font-bold truncate text-slate-900 dark:text-white">{tool.title}</h4><p className="text-[12px] text-slate-500 dark:text-slate-400 truncate">{tool.subtitle}</p></div>
+                            <TsActionBtn tool={tool} busy={busyId === tool.backendId} onAction={handleAction} />
+                          </div>
+                        );
+                        return (
+                          <div key={tool.id} onClick={() => setSelectedTool(tool)} className={`today-card group relative ${tool.cardW || 'flex-1'} min-w-0 h-[440px] rounded-[22px] overflow-hidden cursor-pointer shadow-[0_12px_36px_-14px_rgba(0,0,0,0.3)] transition-all duration-500 hover:shadow-[0_24px_54px_-14px_rgba(0,0,0,0.5)] hover:-translate-y-1`}>
+                            {v === 'light' ? (
+                              <>
+                                <div className="p-6"><p className="text-slate-500 dark:text-slate-400 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-[30px] font-bold leading-[1.1] tracking-tight whitespace-pre-line text-slate-900 dark:text-white">{tool.todayTitle}</h2></div>
+                                {tool.todayImg && <img src={tool.todayImg} className="absolute bottom-0 left-0 w-full h-[62%] object-cover" />}
+                                {bar}
+                              </>
+                            ) : v === 'drama' ? (
+                              <>
+                                {tool.todayImg && <img src={tool.todayImg} className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
+                                <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/25 to-black/40" />
+                                <div className="absolute top-0 left-0 p-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em]">{tool.todayLabel}</p></div>
+                                <div className="absolute bottom-0 left-0 p-6"><h2 className="text-white text-[32px] font-bold leading-[1.05] tracking-tight drop-shadow mb-2 whitespace-pre-line">{tool.todayTitle}</h2><p className="text-white/85 text-[14px] font-medium">{tool.subtitle}</p></div>
+                              </>
+                            ) : v === 'appbar' ? (
+                              <>
+                                {tool.todayImg && <img src={tool.todayImg} className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
+                                <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-black/10 to-black/35" />
+                                <div className="absolute top-0 left-0 p-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-white text-[30px] font-bold leading-[1.1] tracking-tight drop-shadow whitespace-pre-line">{tool.todayTitle}</h2></div>
+                                {bar}
+                              </>
+                            ) : v === 'appimg' ? (
+                              <>
+                                {tool.todayImg && <img src={tool.todayImg} className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
+                                <div className="absolute inset-0 bg-gradient-to-b from-black/50 via-black/5 to-black/80" />
+                                <div className="absolute top-0 left-0 p-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-white text-[30px] font-bold leading-[1.1] tracking-tight drop-shadow whitespace-pre-line">{tool.todayTitle}</h2></div>
+                                <div className="absolute bottom-0 left-0 right-0 p-6 flex items-center gap-3">
+                                  <div className={`w-12 h-12 rounded-[13px] ${tool.color} flex items-center justify-center text-white text-xl shadow-lg shrink-0`}><tool.icon size={22} strokeWidth={1.6} /></div>
+                                  <div className="flex-1 min-w-0"><h4 className="text-white text-[15px] font-bold truncate drop-shadow">{tool.title}</h4><p className="text-white/80 text-[12px] truncate drop-shadow">{tool.subtitle}</p></div>
+                                  {tool.builtin
+                                    ? <span className="text-white text-[12px] font-bold bg-white/20 backdrop-blur px-3 py-1 rounded-full shrink-0">内置</span>
+                                    : <TsActionBtn tool={tool} busy={busyId === tool.backendId} onAction={handleAction} />}
+                                </div>
+                              </>
+                            ) : v === 'fallback' ? (
+                              <>
+                                <div className={`absolute inset-0 ${tool.color}`} />
+                                <div className="absolute inset-0 bg-gradient-to-b from-black/25 via-transparent to-black/55" />
+                                <div className="absolute top-6 left-6 right-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">技能</p><h2 className="text-white text-[28px] font-bold leading-[1.1] tracking-tight drop-shadow">{tool.title}</h2></div>
+                                <tool.icon size={120} strokeWidth={1} className="absolute -bottom-3 -right-1 text-white/15" />
+                                {bar}
+                              </>
+                            ) : (
+                              <>
+                                {tool.todayImg && <img src={tool.todayImg} className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
+                                <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-transparent to-black/70" />
+                                <div className="absolute top-0 left-0 p-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-white text-[30px] font-bold leading-[1.1] tracking-tight drop-shadow whitespace-pre-line">{tool.todayTitle}</h2></div>
+                                <p className="absolute bottom-5 left-6 right-6 text-white/90 text-[14px] font-medium leading-snug">{tool.subtitle}</p>
+                              </>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    ) : (
                     <div className="grid gap-x-10 gap-y-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
                       {filteredTools.map((tool) => (
                         <div
@@ -7222,31 +7398,23 @@
                           </div>
                           <div className="flex flex-col items-center justify-center gap-1 pl-2">
                             {(() => {
-                              const cf = tool.feishuCli ? feishuFlow : null;
+                              const cf = tool.feishuCli ? feishuFlow : tool.wecomCli ? wecomFlow : null;
                               return (cf && (cf.phase === 'running' || cf.phase === 'qr'))
                                 ? <FeishuMini flow={cf} onClick={() => setSelectedTool(tool)} />
                                 : <TsActionBtn tool={tool} busy={busyId === tool.backendId} onAction={handleAction} />;
                             })()}
-                            {isSkillTab && tool.installed && tool.backendId && (
-                              <button
-                                onClick={(e) => { e.stopPropagation(); handleSkillToggle(tool.backendId); }}
-                                aria-label={'toggle ' + tool.backendId}
-                                title={disabledSkills.includes(tool.backendId) ? '已停用·点击启用' : '已启用·点击停用'}
-                                className={`relative inline-flex h-5 w-[34px] shrink-0 items-center rounded-full transition-colors ${!disabledSkills.includes(tool.backendId) ? 'bg-[#34C759]' : 'bg-[#E5E5EA] dark:bg-[#39393D]'}`}>
-                                <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${!disabledSkills.includes(tool.backendId) ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
-                              </button>
-                            )}
                           </div>
                         </div>
                       ))}
                     </div>
+                    )
                   ) : (
                     <div className="py-24 text-center flex flex-col items-center">
                       <div className="w-16 h-16 mb-4 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400">
                         {isSkillTab ? <Package size={28} /> : <Server size={28} />}
                       </div>
-                      <h3 className="text-xl font-semibold text-slate-800 dark:text-slate-200 mb-2">{isSkillTab ? '没有技能' : '未检索到工具'}</h3>
-                      <p className="text-slate-500 dark:text-slate-400">{isSkillTab ? '点右上「上传技能包」导入 zip，或换个搜索词。' : '请尝试修改搜索词或查阅 API 开发文档。'}</p>
+                      <h3 className="text-xl font-semibold text-slate-800 dark:text-slate-200 mb-2">{searching ? '未找到匹配的工具' : (installedOnly ? '还没有已安装的工具' : (isSkillTab ? '没有技能' : '未检索到工具'))}</h3>
+                      <p className="text-slate-500 dark:text-slate-400">{searching ? '换个关键词试试，或检查一下拼写。' : (installedOnly ? '去商店安装连接器或技能后，会出现在这里。' : (isSkillTab ? '点右上「上传技能包」导入 zip。' : '请尝试修改搜索词或查阅 API 开发文档。'))}</p>
                     </div>
                   )}
                 </section>
@@ -7330,23 +7498,9 @@
                       <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white mb-2 tracking-tight">{selectedTool.title}</h2>
                       <p className="text-[17px] text-slate-500 dark:text-slate-400 mb-5 font-medium">{selectedTool.subtitle}</p>
                       <div className="flex items-center gap-4">
-                        {selectedTool.feishuCli && feishuFlow && (feishuFlow.phase === 'running' || feishuFlow.phase === 'qr')
-                          ? <FeishuMini flow={feishuFlow} onClick={() => {}} />
-                          : <TsActionBtn tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} size="lg" />}
-                        {isSkillTab && selectedTool.installed && selectedTool.backendId && (
-                          <div className="flex items-center gap-2.5">
-                            <span className="text-[14px] font-semibold text-slate-600 dark:text-slate-300">
-                              {disabledSkills.includes(selectedTool.backendId) ? '已停用' : '已启用'}
-                            </span>
-                            <button
-                              onClick={() => handleSkillToggle(selectedTool.backendId)}
-                              aria-label={'toggle ' + selectedTool.backendId}
-                              title="停用 = 从对话的 ## Skills 列表隐藏，但不卸载文件"
-                              className={`relative inline-flex h-6 w-[44px] shrink-0 items-center rounded-full transition-colors ${!disabledSkills.includes(selectedTool.backendId) ? 'bg-[#34C759]' : 'bg-[#E5E5EA] dark:bg-[#39393D]'}`}>
-                              <span className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${!disabledSkills.includes(selectedTool.backendId) ? 'translate-x-[20px]' : 'translate-x-[2px]'}`} />
-                            </button>
-                          </div>
-                        )}
+                        {(() => { const sf = selectedTool.feishuCli ? feishuFlow : selectedTool.wecomCli ? wecomFlow : null; return (sf && (sf.phase === 'running' || sf.phase === 'qr'))
+                          ? <FeishuMini flow={sf} onClick={() => {}} />
+                          : <TsActionBtn tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} size="lg" />; })()}
                       </div>
                     </div>
                   </div>
@@ -7374,10 +7528,19 @@
                   {selectedTool.feishuCli && feishuFlow && (
                     <FeishuFlowCard flow={feishuFlow} onRetry={feishuRetry} onCancel={feishuResetFlow} />
                   )}
+                  {selectedTool.wecomCli && wecomFlow && (
+                    <FeishuFlowCard flow={wecomFlow} steps={WECOM_STEPS} name="企业微信" twoStep={false} onRetry={wecomRetry} onCancel={wecomResetFlow} />
+                  )}
                   {selectedTool.feishuCli && feishuConnected && !feishuFlow && (
                     <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
                       <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
                       <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">已连接飞书 · 官方技能已启用，可直接对它下指令</span>
+                    </div>
+                  )}
+                  {selectedTool.wecomCli && wecomConnected && !wecomFlow && (
+                    <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
+                      <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
+                      <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">已连接企业微信 · 官方技能已启用，可直接对它下指令</span>
                     </div>
                   )}
 
@@ -8548,7 +8711,7 @@
 
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden animate-in fade-in duration-300"
-          style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif', background: isDark ? '#000' : '#fff' }}>
+          style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif', background: isDark ? '#131314' : '#fff' }}>
           <div className="relative z-10 flex-1 min-h-0 overflow-y-auto custom-scrollbar">
             <div className="max-w-[1400px] mx-auto">
 

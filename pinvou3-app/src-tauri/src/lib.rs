@@ -262,8 +262,8 @@ pub fn run() {
                 }
             }
 
-            // 技能停用开关:启动时把 disabled_skills.json 推给底座进程级过滤器,
-            // 让被停用的技能从首轮 prompt 起就不出现在 ## Skills catalogue。
+            // 技能停用联动:启动时按当前被禁用连接器的 companion_skills 推给底座进程级
+            // 过滤器,让(如公文 MCP 关掉时的)关联技能从首轮 prompt 起就不出现在 ## Skills。
             crate::bridge::skill_marketplace::refresh_disabled_skills();
 
             // Monitor 按需采样：state 只持有 session_uptime，sample 由前端调
@@ -399,8 +399,6 @@ pub fn run() {
             commands::cancel_generation,
             commands::set_disabled_connectors,
             commands::get_disabled_connectors,
-            commands::set_disabled_skills,
-            commands::get_disabled_skills,
             commands::edit_last_turn,
             commands::read_artifact_text,
             commands::list_deliverables,

@@ -1178,6 +1178,34 @@ mod tests {
         });
     }
 
+    /// 连接器禁用联动技能:禁用声明了 companion_skills 的连接器 → 该技能进底座停用集;
+    /// 开回来 → 移出。守"公文 MCP 关掉 → government-writing 从 ## Skills 隐藏"这条链路。
+    #[test]
+    fn disabling_connector_hides_companion_skill() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "gongwen",
+                r#"{"id":"gongwen","name":"公文写作","description":"d","version":"1.0.0","icon":"file-text","category":"办公","mcp_tools":["mcp_gongwen_make_gongwen"],"command":"python","args":["server.py"],"companion_skills":["government-writing"]}"#,
+            );
+
+            // 禁用公文 MCP → 联动刷新 → 关联技能进底座停用集
+            save_disabled_connectors(&["gongwen".to_string()]);
+            crate::bridge::skill_marketplace::refresh_disabled_skills();
+            assert!(
+                deepseek_tui::skills::is_skill_disabled("government-writing"),
+                "禁用公文 MCP 后关联技能应被停用"
+            );
+
+            // 开回来 → 移出停用集
+            save_disabled_connectors(&[]);
+            crate::bridge::skill_marketplace::refresh_disabled_skills();
+            assert!(
+                !deepseek_tui::skills::is_skill_disabled("government-writing"),
+                "启用公文 MCP 后关联技能应恢复"
+            );
+        });
+    }
+
     #[test]
     fn secret_manifest_parses_declarations_without_plain_secret_values() {
         let weather: ToolManifest = serde_json::from_str(

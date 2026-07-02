@@ -86,6 +86,10 @@ pub struct Pinvou3Bridge {
     /// 本 engine 绑定的 session 锁定模型(per-session 不同模型)。None = 用 prefs 全局
     /// active。EnginePool spawn 时按该 session 的 model_id 注入(见 `with_session_model`)。
     pub session_model: Option<SavedModel>,
+    /// 本地 vLLM `/v1/models` 探测到的 `max_model_len`(上下文窗口)。EnginePool spawn
+    /// 时由 `probe_vllm_model_info` 注入。Some → 填 active_route_limits.context_tokens +
+    /// 按真实窗口推导压缩阈值;None(探测失败/云端 provider)→ 走底座名字 hint 老路。
+    pub probed_context_tokens: Option<u32>,
 }
 
 impl Pinvou3Bridge {
@@ -122,6 +126,7 @@ impl Pinvou3Bridge {
             bundle,
             workspace: paths::user_home_dir(),
             session_model: None,
+            probed_context_tokens: None,
         };
         this.wire_max_output_tokens_env();
         // C 方案(P-no-disk)最终版: 清理所有 pinvou3 历史 disk 残留:
@@ -477,6 +482,57 @@ impl Pinvou3Bridge {
         self.prefs.advanced.max_output_tokens.unwrap_or(24_576)
     }
 
+    /// 底座 emergency 线用的 context window。probed(vLLM `/v1/models` 的 `max_model_len`)
+    /// 优先;否则按模型名 hint——与底座 `provider_capability` 的 generic 分支一致
+    /// (`context_window_for_model` 有值则用,否则 LEGACY 128K)。
+    ///
+    /// ⚠️ **填 active_route_limits 与推导 token_threshold 必须共用这一个 window**,
+    /// 否则 T(正常线)/E(紧急线)用不同窗口 → 倒置(见 docs/context-compaction-设计.md)。
+    fn effective_context_window(&self) -> u32 {
+        self.probed_context_tokens.unwrap_or_else(|| {
+            deepseek_tui::models::context_window_for_model(&self.model()).unwrap_or(128_000)
+        })
+    }
+
+    /// 按窗口推导 `should_compact` 的 `token_threshold`(nice 主路径触发线 T)。
+    /// 公式与常数见 docs/context-compaction-设计.md §3(2026-07-02 实测校准):
+    ///
+    ///   T = (E − S)/1.5 − FIXED,   clamp[4096, 0.75·W]
+    ///   E = W − O − 1024           (底座 emergency 线,conservative 全量尺)
+    ///   O 按窗口分档(镜像底座):≥500K → 262144;否则 max_output_tokens()(见下)
+    ///
+    /// ÷1.5 把 conservative 全量尺换算回 `should_compact` 的 raw 子集尺(k=1.5 实测精确,
+    /// pinvou 关 thinking 无偏移)。S=4000(system 保守估算,dump 实测 ~1.4K + 余量);
+    /// FIXED=22000(framing ~2.5K + pinned/recent R ~4.5K + safety margin ~15K)。
+    /// 写死单值对任一窗口非倒置即过保守,故按窗口推导(实证:262K→~133K / 131K→~46K)。
+    fn derive_compaction_threshold(&self) -> usize {
+        let window = self.effective_context_window() as usize;
+        // ⚠️ output 预留必须与底座 route_output_reservation_for_window 完全一致,否则我算的
+        // E 与底座算的 E 不一致 → 倒置。底座分档:
+        //   大窗口(≥500K,如云端 deepseek-v4-pro / gpt-5.5 1M)留 TURN_MAX_OUTPUT_TOKENS=262144;
+        //   小窗口(本地 vLLM 256K/128K)留 effective_max_output = DEEPSEEK_MAX_OUTPUT_TOKENS env
+        //   = max_output_tokens()(24576)。
+        // 只用 24576 会让大窗口云端模型 E 偏大 → T 偏大 → 倒置(改动前写死 190K 反而安全)。
+        const BASE_LARGE_WINDOW: usize = 500_000; // 底座 INTERNAL_BUDGET_LARGE_WINDOW_THRESHOLD
+        const BASE_TURN_MAX_OUTPUT: usize = 262_144; // 底座 TURN_MAX_OUTPUT_TOKENS
+        let output = if window >= BASE_LARGE_WINDOW {
+            BASE_TURN_MAX_OUTPUT
+        } else {
+            self.max_output_tokens() as usize
+        };
+        let emergency = window.saturating_sub(output).saturating_sub(1_024);
+        const S: usize = 4_000;
+        const FIXED: usize = 22_000;
+        // ÷1.5 == ×2/3
+        let raw_equiv = emergency.saturating_sub(S).saturating_mul(2) / 3;
+        let threshold = raw_equiv.saturating_sub(FIXED);
+        // ⚠️ 上界 `.max(4_096)`:探测到病态小窗口(W<5461 → W*3/4<4096)时,裸 clamp 的
+        // min(4096)>max 会触发 `Ord::clamp` 的 `assert!(min<=max)` panic → build_engine_config
+        // 崩,该 session engine 起不来。此类窗口(如 LM Studio 默认 4096、小窗口 vLLM)
+        // T 本就该贴 floor;抬高上界到 ≥floor 使 clamp 合法,结果恒 =4096(配 UI 小窗口告警)。
+        threshold.clamp(4_096, (window * 3 / 4).max(4_096))
+    }
+
     /// legacy 单引擎路径(headless harness 用):走 INSTRUCTIONS_MD inline + 用户自定义。
     /// 跟 [`session_instructions`] 区别仅在不带 session_id —— 直接用 INSTRUCTIONS_MD 原文
     /// (不替换 `{{PINVOU3_WORKSPACE}}`)。
@@ -577,7 +633,7 @@ impl Pinvou3Bridge {
             //   资源闸(决策③ fork 基底用步数上限,token_budget 透传 default 不启用)。
             //   auto_review_policy/exec_policy_engine: 审查/exec 策略。
             //   active_route_limits/skills_scan_codewhale_only/workspace_follow_symlinks: 透传。
-            active_route_limits,
+            active_route_limits: _, // pinvou3 显式构造(见下,填 vLLM 探测窗口),不透传 default
             skills_scan_codewhale_only,
             max_admitted_subagents,
             subagents_enabled,
@@ -635,29 +691,25 @@ impl Pinvou3Bridge {
             // compaction model 默认 deepseek-v4-pro,本地 vLLM 没这个模型,
             // 必须改成 pinvou3 当前用的 model,否则手动 /compact 报 404。
             //
-            // 本地 Qwen3.6 vLLM 跑 256K (max_model_len=262144)。
-            // 两条压缩触发(turn_loop 内顺序:先 should_compact:116,后 emergency:201):
-            //  - should_compact(nice LLM 摘要):可摘要子集 > token_threshold − pinned,
-            //    等价于 总量 > ~token_threshold + 近4条。
-            //  - emergency(强制,recover_context_overflow):全量 input > context_input_budget
-            //    = 窗口 − effective_max_output(24,576) − headroom(1,024) = 230,400 (256K 上)。
+            // 两条压缩触发(turn_loop 内顺序:先 should_compact,后 emergency),用**两把尺**:
+            //  - should_compact(nice LLM 摘要,正常线 T):可摘要**子集**的 raw 尺 > T − pinned。
+            //  - emergency(强制 recover_context_overflow,紧急线 E):**全量** input 的
+            //    conservative 尺(raw×1.5 + system + framing) > W − O − 1024。
             //
-            // ⚠️ 关键:emergency 的 230,400 是**派生硬天花板**(留满 24K 输出的输入上限,
-            //    随 max_output_tokens 改而变)。token_threshold 必须**显著低于**它,否则
-            //    should_compact 永远轮不到——emergency 先越线,nice 路径死掉,每个长会话
-            //    都走"Emergency"强制路径(重试 2 次救不回就硬报 context_overflow)。
-            //    2026-05 旧值 200K > 当时 budget 189,440 正是这个倒置 bug
-            //    (详见 docs/auto-compact-256K-tuning.md「当前实测阈值」)。
-            //  - token_threshold = 190K (256K × ~74%):should_compact 在总量 ~195K 触发,
-            //    稳在 230,400 安全网之下 ~35K,nice=主路径 / emergency=真·安全网。
-            //    回归测试 compaction_threshold_stays_below_emergency_budget 按 max_output
-            //    动态算 budget 锁住这个不变式,改 output 预留会自动跟着校验。
-            // 上游默认 token_threshold=800K,对 256K 窗口永远撞不到,**必须显式 set**。
+            // ⚠️ 两把尺差 ×1.5 乘性,T 必须换算后仍显著低于 E,否则 emergency 抢先、nice 死
+            //    (倒置 bug)。且 W 必须探测真实 max_model_len:写死单值(旧 190K)对任一窗口
+            //    非倒置即过保守——2026-07-02 实证坐实 190K 在健康 256K 机也倒置(emergency@198
+            //    早于 should_compact@255)。故 token_threshold 改**按窗口推导**:
+            //    derive_compaction_threshold() = (E−S)/1.5 − 22000, clamp[4096, 0.75W];
+            //    W 来源 = 探测(active_route_limits.context_tokens)优先,否则名字 hint。
+            //    公式常数与实证见 docs/context-compaction-设计.md;同尺不变式由回归测试
+            //    forkguard_compaction_threshold_below_emergency_all_windows 四窗口锁住。
+            // 上游默认 token_threshold=800K,对本地窗口永远撞不到,**必须显式 set**。
             // ⚠️ v0.8.51 上游移除了 CompactionConfig.auto_floor_tokens 字段(floor 概念
             //    随 cycle removal 一并去掉),原 60K 下限设置失效,删除。
             compaction: deepseek_tui::compaction::CompactionConfig {
                 model: self.model(),
-                token_threshold: 190_000,
+                token_threshold: self.derive_compaction_threshold(),
                 ..compaction
             },
             // ⚠️ v0.8.51 上游整体移除 cycle 子系统(release "cycle removal"):
@@ -763,7 +815,16 @@ impl Pinvou3Bridge {
             //   资源闸(决策③ fork 基底用步数上限,token_budget 透传 default 不启用)。
             //   auto_review_policy/exec_policy_engine: 审查/exec 策略。
             //   active_route_limits/skills_scan_codewhale_only/workspace_follow_symlinks: 透传。
-            active_route_limits,
+            // [pinvou3-fork] active_route_limits:填 vLLM 探测到的窗口(context_tokens),
+            // 让底座 emergency 线 + footer 百分比按真实 max_model_len 计;探测失败(None)
+            // → 透传 None,底座回退模型名 hint 老路。只填 context_tokens,输出预留仍走
+            // DEEPSEEK_MAX_OUTPUT_TOKENS(见 max_output_tokens / wire_max_output_tokens_env)。
+            active_route_limits: self.probed_context_tokens.map(|w| {
+                codewhale_config::route::RouteLimits {
+                    context_tokens: Some(u64::from(w)),
+                    ..Default::default()
+                }
+            }),
             skills_scan_codewhale_only,
             max_admitted_subagents,
             subagents_enabled,
@@ -1031,6 +1092,7 @@ mod tests {
             bundle: Pinvou3Bundle::paths(),
             workspace: std::env::temp_dir(),
             session_model: None,
+            probed_context_tokens: None,
         }
     }
 
@@ -1096,6 +1158,92 @@ mod tests {
             credential_action: None,
         }];
         bridge.prefs.advanced.active_model_id = Some("test-model".to_string());
+    }
+
+    /// 128K 上下文的两种情况(客户翻车场景的正反面),端到端走 build_engine_config:
+    ///  A. 真实 128K 部署——vLLM max_model_len=131072、探测成功 → 窗口正确、T 按 131072 缩。
+    ///  B. 客户 bug 兜底——丢 `--served-model-name`(名字无 _Nk)+ 探测失败 → 底座 legacy
+    ///     128000,T 按 128000 推导。两种都 nice 主路径活(T ≪ E),不再是写死 190K 的倒置
+    ///     抖动(190K > 128K 窗口的 E,必倒置——正是客户机每 1-2 工具调用一次 Emergency 的根因)。
+    #[test]
+    fn compaction_128k_scenarios() {
+        // A. 真实 128K 部署:探测拿到 131072
+        let mut a = fixture_bridge();
+        a.probed_context_tokens = Some(131_072);
+        let cfg_a = a.build_engine_config();
+        let t_a = cfg_a.compaction.token_threshold;
+        let e_a = 131_072usize - a.max_output_tokens() as usize - 1_024;
+        eprintln!(
+            "[A 真实128K部署] probed=131072 → T={t_a}  E={e_a}  route_limits={:?}",
+            cfg_a.active_route_limits.and_then(|l| l.context_tokens)
+        );
+        assert_eq!(
+            cfg_a.active_route_limits.and_then(|l| l.context_tokens),
+            Some(131_072),
+            "探测成功必须填 route_limits.context_tokens"
+        );
+        assert!((40_000..=55_000).contains(&t_a), "128K 窗口 T 应 ~46K,实得 {t_a}");
+        assert!(t_a < e_a, "T 必须低于 E(nice 先于 emergency)");
+
+        // B. 客户 bug 兜底:名字无 _Nk 后缀 + 探测失败(vLLM 没起)
+        let mut b = fixture_bridge();
+        set_active_model(&mut b, ModelPreset::LocalVllm, "qwen3.6-35b", "http://x/v1", "");
+        b.probed_context_tokens = None;
+        let win_b = b.effective_context_window();
+        let cfg_b = b.build_engine_config();
+        let t_b = cfg_b.compaction.token_threshold;
+        let e_b = win_b as usize - b.max_output_tokens() as usize - 1_024;
+        eprintln!(
+            "[B 客户bug兜底] name=qwen3.6-35b probed=None → window={win_b}  T={t_b}  E={e_b}  route_limits={:?}",
+            cfg_b.active_route_limits.and_then(|l| l.context_tokens)
+        );
+        assert_eq!(
+            win_b, 128_000,
+            "无 _Nk 名字 + 探测失败 → 底座 legacy 128000(与 provider_capability generic 分支对齐)"
+        );
+        assert!(
+            cfg_b.active_route_limits.is_none(),
+            "探测失败 → route_limits None(走底座名字 hint 老路)"
+        );
+        assert!((38_000..=50_000).contains(&t_b), "128000 兜底 T 应 ~44K,实得 {t_b}");
+        assert!(
+            t_b < e_b,
+            "T({t_b}) 必须低于紧急线 E({e_b})——nice 先于 emergency(不倒置)"
+        );
+    }
+
+    /// 实际会用的云端大窗口模型(不探测 → probed=None,window 走 catalog/名字 hint)。
+    /// 断言 derive 的 T 换算 conservative 后 < 底座 E(不倒置)。deepseek-v4-pro(1M,≥500K)
+    /// 走 output 预留分档(底座 TURN_MAX_OUTPUT=262144),锁住 2026-07-02 修的大窗口倒置。
+    #[test]
+    fn compaction_cloud_large_window_models() {
+        // T(raw 子集尺)换算回 emergency 的 conservative 全量尺(同 forkguard 常数)
+        const K_NUM: usize = 3;
+        const K_DEN: usize = 2;
+        const R: usize = 4_500;
+        const S: usize = 4_000;
+        const FRAMING: usize = 2_500;
+        // (模型名, 期望窗口, 底座该窗口的 output 预留)
+        let cases = [
+            ("deepseek-v4-pro", 1_000_000usize, 262_144usize), // ≥500K → 底座 TURN_MAX
+            ("kimi-k2.6", 262_144, 24_576),                    // <500K → effective_max_output
+            ("doubao-pro-256k", 256_000, 24_576),
+        ];
+        for (model, want_window, output) in cases {
+            let mut b = fixture_bridge();
+            set_active_model(&mut b, ModelPreset::Deepseek, model, "https://x/v1", "");
+            b.probed_context_tokens = None; // 云端不探测
+            let win = b.effective_context_window() as usize;
+            assert_eq!(win, want_window, "{model} 窗口应 {want_window}(catalog/hint),实得 {win}");
+            let t = b.build_engine_config().compaction.token_threshold;
+            let e = win - output - 1_024;
+            let conservative = (t + R) * K_NUM / K_DEN + S + FRAMING;
+            eprintln!("[云端 {model}] window={win} output={output} → T={t}  E={e}  conservative={conservative}");
+            assert!(
+                conservative <= e,
+                "{model}: T={t} 换算 conservative={conservative} 必须 ≤ E={e}(不倒置)"
+            );
+        }
     }
 
     /// 默认模型名必须能被底座 `context_window_for_model` 识别出窗口,
@@ -1241,37 +1389,80 @@ mod tests {
         );
     }
 
-    /// 不变式:should_compact 的 `token_threshold` 必须**显著低于** emergency 的
-    /// `context_input_budget`,否则 emergency 先越线、nice LLM 摘要路径永远轮不到
-    /// ——2026-06 抓到的倒置 bug(旧值 200K > budget 189,440,每个长会话都走
-    /// "Emergency" 强制路径 + 2 次救不回硬报 context_overflow)。
-    /// 锁住「nice 主路径 / emergency 真·安全网」的层级,谁动 token_threshold 或
-    /// max_output_tokens 导致倒置都会被这条测试挡下。详见 docs/auto-compact-256K-tuning.md。
+    /// 同尺守护:把推导出的 `token_threshold`(T,should_compact 的 raw 子集尺)换算回
+    /// conservative 全量尺后,必须 ≤ emergency 线 E,否则 emergency 抢先、nice LLM 摘要
+    /// 路径永远轮不到(倒置 bug)。四窗口参数化——2026-07-02 实证坐实写死 190K 在健康
+    /// 256K 机也倒置(emergency@198 早于 should_compact@255),故按窗口推导。
+    ///
+    /// 换算用实测常数(docs/context-compaction-设计.md §6):k=1.5、pinned/recent R=4500、
+    /// system S=4000、framing=2500。旧测试锁的 `threshold + 20K ≤ budget` 是**跨尺**假
+    /// 不变式(T 用子集 raw、budget 用全量 conservative,差 ×1.5 乘性),已废弃。
+    /// 谁改 derive_compaction_threshold 或 max_output_tokens 导致倒置都会被这条挡下。
     #[test]
-    fn compaction_threshold_stays_below_emergency_budget() {
-        let bridge = fixture_bridge();
-        let model = bridge.model();
-        let window = deepseek_tui::models::context_window_for_model(&model)
-            .expect("默认模型必须有已知窗口(否则 budget 静默 None)") as usize;
-        // 复刻底座 context_input_budget(engine/context.rs):
-        //   window<500K 时 = window − effective_max_output − headroom。
-        //   effective_max_output 即 wire 给 DEEPSEEK_MAX_OUTPUT_TOKENS 的 max_output_tokens()。
-        let effective_output = bridge.max_output_tokens() as usize;
-        const HEADROOM: usize = 1_024; // 底座 CONTEXT_HEADROOM_TOKENS(context.rs 私有常量)
-        let emergency_budget = window - effective_output - HEADROOM;
+    fn forkguard_compaction_threshold_below_emergency_all_windows() {
+        // 把 T 从 should_compact 的 raw 子集尺 → emergency 的 conservative 全量尺
+        const K_NUM: usize = 3; // ÷ K_DEN == ×1.5
+        const K_DEN: usize = 2;
+        const R: usize = 4_500; // pinned(近 4 条 + query)raw,实测 4,358,与会话长无关
+        const S: usize = 4_000; // system 保守估算
+        const FRAMING: usize = 2_500; // messages.len()×12+48,长会话量级
 
-        let cfg = bridge.build_engine_config();
-        let threshold = cfg.compaction.token_threshold;
-        // v0.8.51 上游移除 auto_floor_tokens 字段(floor 概念随 cycle removal 去掉),
-        // 原 floor < threshold 不变式已无对应字段,删除该断言。
+        // 正常窗口:同尺不变式必须成立(nice 先于 emergency)
+        for window in [262_144u32, 131_072, 65_536] {
+            let mut bridge = fixture_bridge();
+            bridge.probed_context_tokens = Some(window);
+            let output = bridge.max_output_tokens() as usize;
+            let emergency = (window as usize) - output - 1_024;
+            let t = bridge.build_engine_config().compaction.token_threshold;
+            // T(raw 子集)换算回 conservative 全量:≈ k·(T + R) + S + framing
+            let conservative_equiv = (t + R) * K_NUM / K_DEN + S + FRAMING;
+            assert!(
+                conservative_equiv <= emergency,
+                "W={window}: T={t} 换算 conservative={conservative_equiv} 必须 ≤ emergency E={emergency},\
+                 否则倒置(nice 死)。"
+            );
+        }
 
-        // ≥20K margin:should_compact 用「可摘要子集」度量、emergency 用「全量 input
-        // (含 system+tools)」度量,要留够余量保证 nice 在 emergency 之前清晰触发。
-        const MARGIN: usize = 20_000;
+        // 病态小窗口(O > W):公式自然算成负值 → saturating + clamp 到 floor,
+        // 只保证不 panic / 不归零(threshold=0 会退化成按消息数触发的压缩风暴)。
+        let mut tiny = fixture_bridge();
+        tiny.probed_context_tokens = Some(16_384);
+        let t = tiny.build_engine_config().compaction.token_threshold;
         assert!(
-            threshold + MARGIN <= emergency_budget,
-            "token_threshold({threshold}) 必须 ≤ emergency_budget({emergency_budget}) − {MARGIN}(margin);\
-             否则 emergency 抢先、nice 路径死掉(倒置 bug)。window={window} effective_output={effective_output}"
+            t >= 4_096,
+            "病态小窗口 T 必须 clamp 到 floor ≥4096(防压缩风暴),实得 {t}"
+        );
+
+        // 极端小窗口(W<5461 → W*3/4<4096):clamp 上界 < floor,若不 `.max(4_096)`
+        // 则 `Ord::clamp` 的 min>max 断言 panic(build_engine_config 崩、engine 起不来)。
+        // LM Studio 默认 4096 / 小窗口 vLLM 探测即触发。断言不 panic 且 T 落 floor。
+        for w in [4_096u32, 5_460, 8_192] {
+            let mut b = fixture_bridge();
+            b.probed_context_tokens = Some(w);
+            let t = b.build_engine_config().compaction.token_threshold; // 不得 panic
+            assert_eq!(t, 4_096, "极端小窗口 W={w} 应 clamp 到 floor 4096,实得 {t}");
+        }
+    }
+
+    /// probed_context_tokens=Some → 必须填进 active_route_limits.context_tokens
+    /// (底座 emergency 线 + footer 百分比据此按真实 max_model_len 计);None → 透传 None
+    /// (走底座名字 hint 老路)。下次 sync 若构造块把 active_route_limits 改回透传 default,
+    /// 本测试立刻报错。
+    #[test]
+    fn forkguard_probed_window_fills_route_limits() {
+        let mut bridge = fixture_bridge();
+        bridge.probed_context_tokens = Some(262_144);
+        let cfg = bridge.build_engine_config();
+        assert_eq!(
+            cfg.active_route_limits.and_then(|l| l.context_tokens),
+            Some(262_144),
+            "probed_context_tokens=Some 必须填进 active_route_limits.context_tokens"
+        );
+
+        let cfg_none = fixture_bridge().build_engine_config();
+        assert!(
+            cfg_none.active_route_limits.is_none(),
+            "未探测(probed=None)应透传 None,走底座名字 hint 老路"
         );
     }
 

@@ -6,10 +6,19 @@ name: PR Check
 # - rust-test(编译类):**仅当改了 Rust/Cargo/submodule 才跑**(非 Rust PR 直接 skip,不耗
 #   编译时间)。占位 bge-m3 → cargo test --lib(~240 单测;真 bge-m3/vLLM 测试已 #[ignore])。
 # 未上:clippy/fmt(现有代码各 75/329 处不符合,要先清理才能加 -D gate)。
+#
+# Cache 策略(2026-07 诊断:PR cache 挂 refs/pull/N/merge 作用域互不可见 + 1.3GB/份
+# 顶死 10GB 限额被 LRU 秒驱逐 → 每轮全冷编译 ~9min):
+# - push main 也跑 rust-test:cache 存 main 作用域,所有 PR 都读得到(暖 cache 唯一来源)。
+# - save-if 仅 main:PR 侧只读不写,不再刷爆限额挤掉暖 cache。
+# - rust-cache 的 restore 有前缀回退(restoreKey 不含 lockfile hash),PR 改 Cargo.lock
+#   也能从 main cache 增量编译,不再全冷。
 
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [main]   # 暖 cache:见上方 Cache 策略
 
 permissions:
   contents: read
@@ -17,13 +26,14 @@ permissions:
 
 # 同一 PR 连续 push 时,取消上一次未跑完的检查,省 runner。
 concurrency:
-  group: pr-check-${{ github.event.pull_request.number }}
+  group: pr-check-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   # 检测本 PR 改了哪些类别,给 rust-test 做条件触发(非 Rust PR 跳过编译)。
   changes:
     name: changes
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
@@ -38,9 +48,12 @@ jobs:
               - '**/Cargo.toml'
               - '**/Cargo.lock'
               - 'DeepSeek-TUI'
+              - '.github/workflows/pr-check.yml'
 
   fast-gate:
     name: fast-gate
+    # 只在 PR 跑:fork 合规联动比对 origin/${base_ref},push 事件 base_ref 为空会炸。
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (含 submodule,fork 为 public 直接拉)
@@ -74,8 +87,14 @@ jobs:
   rust-test:
     name: rust-test
     needs: changes
-    if: needs.changes.outputs.rust == 'true'   # 只在改了 Rust/Cargo/submodule 时跑
+    # PR:只在改了 Rust/Cargo/submodule 时跑;push main:恒跑(暖 cache)。
+    # changes 在 push 时被 skip,需 !cancelled() 才能让本 job 不被连带 skip。
+    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
+    env:
+      # 测试编译不需要完整 debug info:line-tables-only 保留 panic 行号,
+      # 编译提速 ~30%、target/cache 体积大减(限额内能容纳更多份)。
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v4
@@ -112,6 +131,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: pinvou3-app/src-tauri
+          # 稳定 key 前缀(跨 PR/push 一致);restore 按前缀回退,lock 变了也增量。
+          shared-key: rust-test
+          # 只在 main 保存(暖 cache 唯一来源);PR 侧只读,不占 10GB 限额。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # --test-threads=1:bridge 测试读/写全局 env,并行会竞争(qwen_preset/vllm 等 flaky)。
       - name: cargo test --lib (真 bge-m3/vLLM 测试已 #[ignore])
