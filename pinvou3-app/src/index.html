@@ -407,7 +407,7 @@
         composerTools: '工具', composerInstalledTools: '已接入工具', composerNoTools: '暂无已装工具', composerToolOn: '已启用', composerManageTools: '管理工具',
         composerMode: '技能', composerModeTitle: '技能', composerModeNone: '暂无可用技能',
         composerSkillAuto: '内置·自动', composerSkillInUse: '使用中', composerSkillSoon: '待上线',
-        resend: '重新发送', editResend: '编辑并重发', selectAllMsg: '全选', copyMsg: '复制', pasteMsg: '粘贴', copied: '已复制',
+        resend: '重新发送', editResend: '编辑并重发', selectAllMsg: '全选', copyMsg: '复制', pasteMsg: '粘贴', copied: '已复制', backToBottom: '回到底部',
         thinkingLabel: '思考中', thinkingCall: (tool, s) => `调用 ${tool}... ${s}s`,
         hintSlow30: '本地模型生成中', hintSlow120: '本地模型在生成长内容,请耐心等',
         artifactLabel: '成品', clickToOpen: '点击打开 →',
@@ -653,7 +653,7 @@
         composerTools: 'Tools', composerInstalledTools: 'Connected tools', composerNoTools: 'No tools installed', composerToolOn: 'On', composerManageTools: 'Manage tools',
         composerMode: 'Skill', composerModeTitle: 'Skills', composerModeNone: 'No skills available',
         composerSkillAuto: 'Built-in', composerSkillInUse: 'In use', composerSkillSoon: 'Soon',
-        resend: 'Resend', editResend: 'Edit & resend', selectAllMsg: 'Select all', copyMsg: 'Copy', pasteMsg: 'Paste', copied: 'Copied',
+        resend: 'Resend', editResend: 'Edit & resend', selectAllMsg: 'Select all', copyMsg: 'Copy', pasteMsg: 'Paste', copied: 'Copied', backToBottom: 'Back to bottom',
         thinkingLabel: 'Thinking', thinkingCall: (tool, s) => `Calling ${tool}... ${s}s`,
         hintSlow30: 'local model generating', hintSlow120: 'local model is generating long content, hang tight',
         artifactLabel: 'Artifact', clickToOpen: 'Open →',
@@ -898,7 +898,7 @@
         composerTools: 'ツール', composerInstalledTools: '接続済みツール', composerNoTools: 'ツールなし', composerToolOn: '有効', composerManageTools: 'ツール管理',
         composerMode: 'スキル', composerModeTitle: 'スキル', composerModeNone: '利用可能なスキルなし',
         composerSkillAuto: '内蔵', composerSkillInUse: '使用中', composerSkillSoon: '近日',
-        resend: '再送信', editResend: '編集して再送信', selectAllMsg: 'すべて選択', copyMsg: 'コピー', pasteMsg: '貼り付け', copied: 'コピー済み',
+        resend: '再送信', editResend: '編集して再送信', selectAllMsg: 'すべて選択', copyMsg: 'コピー', pasteMsg: '貼り付け', copied: 'コピー済み', backToBottom: '一番下へ',
         thinkingLabel: '思考中', thinkingCall: (tool, s) => `${tool} を実行中... ${s}s`,
         hintSlow30: 'ローカルモデルが生成中', hintSlow120: 'ローカルモデルが長い内容を生成中です。しばらくお待ちください',
         artifactLabel: '成果物', clickToOpen: 'クリックで開く →',
@@ -4230,6 +4230,7 @@
       };
       const scrollRef = useRef(null);
       const autoScrollRef = useRef(true);
+      const [showScrollBottom, setShowScrollBottom] = useState(false);
       const chatRootRef = useRef(null);
       const composerRef = useRef(null);
       const floatingVoiceRef = useRef(null);
@@ -4291,21 +4292,38 @@
       useEffect(() => {
         const el = scrollRef.current;
         if (!el) return;
-        const onScroll = () => { autoScrollRef.current = isNearChatBottom(el); };
+        const onScroll = () => {
+          const near = isNearChatBottom(el);
+          const shouldShow = !near && el.scrollHeight > el.clientHeight + 4;
+          autoScrollRef.current = near;
+          setShowScrollBottom(v => v === shouldShow ? v : shouldShow);
+        };
         onScroll();
         el.addEventListener('scroll', onScroll, { passive: true });
         return () => el.removeEventListener('scroll', onScroll);
       }, []);
+
+      function scrollChatToBottom() {
+        const el = scrollRef.current;
+        if (!el) return;
+        autoScrollRef.current = true;
+        setShowScrollBottom(false);
+        el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+      }
 
       // Auto-scroll：只在原本贴底时滚内部容器到底（绝不动外层窗口，避免浏览历史时被拉回底部）
       useEffect(() => {
         const el = scrollRef.current;
         if (!el) return;
         const lastItem = chatItems[chatItems.length - 1];
-        if (!lastItem) { autoScrollRef.current = true; return; }
+        if (!lastItem) { autoScrollRef.current = true; setShowScrollBottom(false); return; }
         if (autoScrollRef.current || lastItem.type === 'user') {
           el.scrollTop = el.scrollHeight;
           autoScrollRef.current = true;
+          setShowScrollBottom(false);
+        } else {
+          const shouldShow = !isNearChatBottom(el) && el.scrollHeight > el.clientHeight + 4;
+          setShowScrollBottom(v => v === shouldShow ? v : shouldShow);
         }
       }, [chatItems.length, chatItems[chatItems.length - 1]?.html, composerH]);
 
@@ -4599,6 +4617,21 @@
           {/* 底部渐变蒙层:内容滚到底时在输入框上方柔和淡出(pointer-events-none 不挡滑动/点击;高度跟随输入框 auto-grow)。 */}
           <div className={`pointer-events-none absolute bottom-0 inset-x-0 z-[15] bg-gradient-to-t to-transparent from-30% via-70% ${isDark ? 'from-[#131314] via-[#131314]/95' : 'from-white via-white/95'}`}
             style={{ height: (composerH ? composerH + 96 : 220) + 'px' }} />
+          {hasMessages && showScrollBottom && (
+            <div className="pointer-events-none absolute inset-x-0 z-[25] flex justify-center"
+              style={{ bottom: (composerH ? composerH + 54 : 172) + 'px' }}>
+              <button
+                type="button"
+                onClick={scrollChatToBottom}
+                aria-label={t.backToBottom}
+                title={t.backToBottom}
+                className={`pointer-events-auto w-9 h-9 rounded-full flex items-center justify-center shadow-lg backdrop-blur transition-all hover:-translate-y-0.5 active:translate-y-0 ${
+                  isDark ? 'bg-[#2B2C2F]/95 text-[#E3E3E3] border border-white/10 hover:bg-[#34363A]' : 'bg-white/95 text-[#1F1F1F] border border-black/10 hover:bg-[#F8FAFF]'
+                }`}>
+                <ChevronDown size={15} />
+              </button>
+            </div>
+          )}
           {tabletVoiceMode && (
             <div ref={floatingVoiceRef} style={floatingVoiceStyle} className="absolute z-30 flex items-center gap-2">
               <button
