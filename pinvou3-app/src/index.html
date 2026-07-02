@@ -320,6 +320,16 @@
         depInstalling: '安装中…', depInstallBtn: '一键安装', depInstallNote: '将提权安装缺失依赖（需联网或可用 apt 源）',
         dep_pdf: 'PDF 文本提取', dep_office_modern: 'Office 文档（docx）', dep_office_legacy: '旧版 Office / 演示与表格',
         dep_ocr: '图片 / 扫描件 OCR', dep_archive: '压缩包（zip/rar/7z）', dep_email: '邮件（.eml / .msg）', dep_voice_asr: '本地语音识别',
+        vllmSetupTitle: '启用本地大模型', vllmSetupDesc: '检测到本机已预装本地大模型环境，是否现在启用？将拉起推理引擎并配置为开机自启，随后自动设为默认模型。',
+        vllmSetupEnable: '启用', vllmSetupSkip: '暂不',
+        vllmSetupRunning: '正在拉起推理引擎，首次加载模型较慢（最长约 10 分钟），请保持应用打开…',
+        vllmSetupDone: '本地大模型已就绪，重启应用即可使用。', vllmSetupFailed: '启用失败', vllmSetupRetry: '重试',
+        vllmStepAuth: '授权并启动引擎', vllmStepWait: '等待模型加载就绪', vllmStepReady: '完成',
+        vllmElapsed: '已等待', vllmProbing: (n) => '第 ' + n + ' 次探测',
+        vllmSetupNever: '不再提醒',
+        vllmDeclineTitle: '确认不启用本地大模型？', vllmDeclineDesc: '确认后本提示不再自动弹出。届时需自行配置云端大模型，或日后在「设置 → 模型管理 → 检测本机 vLLM」中启用本地预装大模型。',
+        vllmDeclineConfirm: '确认不启用', vllmDeclineReconsider: '再想想',
+        vllmReentryOffer: '检测到本机预装了本地大模型环境，是否现在启用？',
         feedbackTitle: '帮助与反馈', feedbackDesc: '反馈使用中的问题和建议，可附带截图或短视频。',
         feedbackOpen: '我要反馈', feedbackDialogTitle: '我要反馈', feedbackType: '反馈类型',
         feedbackIssue: '问题', feedbackSuggestion: '建议',
@@ -555,6 +565,16 @@
         depInstalling: 'Installing…', depInstallBtn: 'Install', depInstallNote: 'Installs missing deps via elevated apt (needs network or an apt source)',
         dep_pdf: 'PDF text extraction', dep_office_modern: 'Office docs (docx)', dep_office_legacy: 'Legacy Office / slides & sheets',
         dep_ocr: 'Image / scanned-PDF OCR', dep_archive: 'Archives (zip/rar/7z)', dep_email: 'Email (.eml / .msg)', dep_voice_asr: 'Local voice recognition',
+        vllmSetupTitle: 'Enable Local Model', vllmSetupDesc: 'A local model environment is pre-installed on this machine. Enable it now? This starts the inference engine, sets it to auto-start on boot, and makes it the default model.',
+        vllmSetupEnable: 'Enable', vllmSetupSkip: 'Not now',
+        vllmSetupRunning: 'Starting the inference engine. The first model load can be slow (up to ~10 min) — keep the app open…',
+        vllmSetupDone: 'Local model is ready. Restart the app to use it.', vllmSetupFailed: 'Enable failed', vllmSetupRetry: 'Retry',
+        vllmStepAuth: 'Authorize & start engine', vllmStepWait: 'Waiting for model to load', vllmStepReady: 'Done',
+        vllmElapsed: 'Elapsed', vllmProbing: (n) => 'probe #' + n,
+        vllmSetupNever: "Don't ask again",
+        vllmDeclineTitle: 'Skip local model setup?', vllmDeclineDesc: "This prompt won't show automatically anymore. You'll need to configure a cloud model yourself, or enable the pre-installed local model later via Settings → Models → Detect local vLLM.",
+        vllmDeclineConfirm: "Don't enable", vllmDeclineReconsider: 'Reconsider',
+        vllmReentryOffer: 'A local model environment is pre-installed on this machine. Enable it now?',
         feedbackTitle: 'Help & Feedback', feedbackDesc: 'Send issues or suggestions with screenshots or short videos.',
         feedbackOpen: 'Send feedback', feedbackDialogTitle: 'Send feedback', feedbackType: 'Type',
         feedbackIssue: 'Issue', feedbackSuggestion: 'Suggestion',
@@ -789,6 +809,16 @@
         depInstalling: 'インストール中…', depInstallBtn: 'インストール', depInstallNote: '権限昇格して不足依存をインストール（ネットワークまたは apt ソースが必要）',
         dep_pdf: 'PDF テキスト抽出', dep_office_modern: 'Office 文書（docx）', dep_office_legacy: '旧 Office / スライドと表計算',
         dep_ocr: '画像 / スキャン PDF の OCR', dep_archive: 'アーカイブ（zip/rar/7z）', dep_email: 'メール（.eml / .msg）', dep_voice_asr: 'ローカル音声認識',
+        vllmSetupTitle: 'ローカルモデルを有効化', vllmSetupDesc: 'この端末にローカルモデル環境がプリインストールされています。今すぐ有効化しますか？推論エンジンを起動し、起動時の自動起動を設定して、既定モデルにします。',
+        vllmSetupEnable: '有効化', vllmSetupSkip: '後で',
+        vllmSetupRunning: '推論エンジンを起動中。初回のモデル読み込みは遅い場合があります（最大約10分）。アプリを開いたままにしてください…',
+        vllmSetupDone: 'ローカルモデルの準備ができました。アプリを再起動してご利用ください。', vllmSetupFailed: '有効化に失敗しました', vllmSetupRetry: '再試行',
+        vllmStepAuth: 'エンジンを認可・起動', vllmStepWait: 'モデルの読み込みを待機', vllmStepReady: '完了',
+        vllmElapsed: '経過', vllmProbing: (n) => 'プローブ #' + n,
+        vllmSetupNever: '今後表示しない',
+        vllmDeclineTitle: 'ローカルモデルを有効化しませんか？', vllmDeclineDesc: 'この案内は今後自動表示されません。利用するにはクラウドモデルを自分で設定するか、後で「設定 → モデル管理 → 本機 vLLM を検出」からプリインストール済みローカルモデルを有効化してください。',
+        vllmDeclineConfirm: '有効化しない', vllmDeclineReconsider: 'やめておく',
+        vllmReentryOffer: 'この端末にローカルモデル環境がプリインストールされています。今すぐ有効化しますか？',
         feedbackTitle: 'ヘルプとフィードバック', feedbackDesc: '問題や提案をスクリーンショットや短い動画付きで送信できます。',
         feedbackOpen: 'フィードバック', feedbackDialogTitle: 'フィードバック', feedbackType: '種類',
         feedbackIssue: '問題', feedbackSuggestion: '提案',
@@ -976,6 +1006,53 @@
     };
 
     /* ==========================================
+       MegaCube 本地大模型引导:进行中步骤指示 + 自跑计时
+       (后端 vllm-setup:phase 事件给 phase/attempt;秒数本组件自跑,pkexec 阻塞期也在涨)
+       ========================================== */
+    const VllmSetupProgress = ({ phase, attempt, isDark, t }) => {
+      const [secs, setSecs] = useState(0);
+      useEffect(() => { const id = setInterval(() => setSecs(s => s + 1), 1000); return () => clearInterval(id); }, []);
+      const steps = [
+        { key: 'authorizing', label: t.vllmStepAuth },
+        { key: 'waiting', label: t.vllmStepWait },
+        { key: 'ready', label: t.vllmStepReady },
+      ];
+      const order = { authorizing: 0, waiting: 1, ready: 2 };
+      const cur = order[phase] != null ? order[phase] : 0;
+      const mmss = Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
+      const accent = isDark ? '#0A84FF' : '#007AFF';
+      const muted = isDark ? '#8E8E8E' : '#757575';
+      const bodyClr = isDark ? '#E3E3E3' : '#1F1F1F';
+      return (
+        <div className="py-1">
+          <div className="space-y-2.5 mb-3">
+            {steps.map((s, i) => {
+              const done = i < cur, active = i === cur;
+              return (
+                <div key={s.key} className="flex items-center gap-2.5">
+                  {done ? (
+                    <span className="w-5 h-5 shrink-0 rounded-full flex items-center justify-center text-white text-[11px]" style={{ background: accent }}>✓</span>
+                  ) : active ? (
+                    <span className={`w-5 h-5 shrink-0 rounded-full border-[2.5px] border-t-transparent ${isDark ? 'border-[#0A84FF]' : 'border-[#007AFF]'}`}
+                      style={{ animation: 'tsSpinner .8s linear infinite' }} />
+                  ) : (
+                    <span className="w-5 h-5 shrink-0 rounded-full border-2" style={{ borderColor: muted, opacity: .35 }} />
+                  )}
+                  <span className="text-[14px]" style={{ color: active ? bodyClr : muted, fontWeight: active ? 600 : 400, opacity: done ? .7 : 1 }}>{s.label}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex items-center gap-2 text-[12.5px]" style={{ color: muted }}>
+            <span className="tabular-nums">{t.vllmElapsed} {mmss}</span>
+            {phase === 'waiting' && attempt > 0 && <span style={{ opacity: .7 }}>· {t.vllmProbing(attempt)}</span>}
+          </div>
+          <div className="text-[12px] mt-1.5" style={{ color: muted, opacity: .7 }}>{t.vllmSetupRunning}</div>
+        </div>
+      );
+    };
+
+    /* ==========================================
        App — 1:1 matching 前端.html structure
        ========================================== */
     const App = () => {
@@ -985,6 +1062,9 @@
       const [activeTheme, setActiveTheme] = useState('dark');
       // 工具商店/卡片用 Tailwind dark: 变体(darkMode:'class'),全局挂 <html>.dark 让其随 app 主题切换
       useEffect(() => { document.documentElement.classList.toggle('dark', activeTheme === 'dark'); }, [activeTheme]);
+      // MegaCube(GB10) 首屏检测:仅启动一次,检测「预装但未启用」本地大模型环境(后端短路保证普通机零开销)。
+      useEffect(() => { if (bridge.available) bridge.detectLocalVllmSetup(); }, []);
+      const [vllmDeclineConfirm, setVllmDeclineConfirm] = useState(false); // 引导框「不再提醒」二次确认子态
       const [language, setLanguage] = useState('zh');
       const [superPerm, setSuperPerm] = useState(false);
       // search 后端配置:provider 默认 bing(对齐 bridge prefs::SearchProvider::default());
@@ -1592,6 +1672,66 @@
                     <div style={{ width:'0.5px', background: activeTheme === 'dark' ? 'rgba(84,84,88,.65)' : 'rgba(60,60,67,.29)' }} />
                     <button onClick={() => { setPoolMyOnly(true); setSavedConfirm(null); setCurrentView('cardpool'); }} className="flex-1 h-11 text-[17px] font-semibold" style={{ color: activeTheme === 'dark' ? '#0A84FF' : '#007AFF' }}>{t.cpSavedView}</button>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* MegaCube(GB10) 本地大模型一键引导 —— 全局首屏弹窗;引导中禁止背景关窗 */}
+            {bs && bs.vllmSetup && bs.vllmSetup.eligible && !bs.vllmSetupDismissed && (
+              <div className="fixed inset-0 z-[56] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }}
+                   onClick={() => { if (!bs.vllmBootstrapping) bridge.dismissVllmSetup(); }}>
+                <div className="w-full max-w-[440px] rounded-2xl p-6 ts-modal-in" onClick={(e) => e.stopPropagation()}
+                     style={{ background: activeTheme === 'dark' ? '#1E1F20' : '#FFFFFF', color: activeTheme === 'dark' ? '#E3E3E3' : '#1F1F1F', boxShadow: '0 12px 48px rgba(0,0,0,.35)' }}>
+                  <div className="flex items-center gap-2 mb-3">
+                    <img src="brand-blue.png" width={22} height={22} alt="" className="select-none" />
+                    <div className="text-[17px] font-semibold">{vllmDeclineConfirm && !bs.vllmBootstrapping && !bs.vllmBootstrapDone && !bs.vllmBootstrapError ? t.vllmDeclineTitle : t.vllmSetupTitle}</div>
+                  </div>
+                  {bs.vllmBootstrapping ? (
+                    <VllmSetupProgress phase={bs.vllmSetupPhase} attempt={bs.vllmSetupAttempt} isDark={activeTheme === 'dark'} t={t} />
+                  ) : bs.vllmBootstrapDone ? (
+                    <div>
+                      <div className="text-[14px] leading-relaxed mb-4">{t.vllmSetupDone}</div>
+                      <div className="flex justify-end">
+                        <button onClick={() => bridge.available && bridge.restartApp()}
+                          className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.restartNow}</button>
+                      </div>
+                    </div>
+                  ) : bs.vllmBootstrapError ? (
+                    <div>
+                      <div className="text-[14px] font-medium mb-1" style={{ color: '#E5484D' }}>{t.vllmSetupFailed}</div>
+                      <div className="text-[13px] leading-relaxed mb-4 break-words" style={{ opacity: .75 }}>{bs.vllmBootstrapError}</div>
+                      <div className="flex justify-end gap-2">
+                        <button onClick={() => bridge.dismissVllmSetup()}
+                          className="h-9 px-4 rounded-lg text-[14px]" style={{ background: activeTheme === 'dark' ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.06)' }}>{t.vllmSetupSkip}</button>
+                        <button onClick={() => bridge.bootstrapLocalVllm()}
+                          className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.vllmSetupRetry}</button>
+                      </div>
+                    </div>
+                  ) : vllmDeclineConfirm ? (
+                    <div>
+                      <div className="text-[14px] leading-relaxed mb-4" style={{ opacity: .85 }}>{t.vllmDeclineDesc}</div>
+                      <div className="flex justify-end gap-2">
+                        <button onClick={() => setVllmDeclineConfirm(false)}
+                          className="h-9 px-4 rounded-lg text-[14px]" style={{ background: activeTheme === 'dark' ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.06)' }}>{t.vllmDeclineReconsider}</button>
+                        <button onClick={() => { setVllmDeclineConfirm(false); bridge.declineVllmSetup(); }}
+                          className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#E5484D' }}>{t.vllmDeclineConfirm}</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="text-[14px] leading-relaxed mb-4" style={{ opacity: .85 }}>{t.vllmSetupDesc}</div>
+                      <div className="flex items-center justify-between gap-2">
+                        <button onClick={() => setVllmDeclineConfirm(true)}
+                          className="h-9 px-3 rounded-lg text-[13px] hover:underline" style={{ color: activeTheme === 'dark' ? '#8E8E8E' : '#757575' }}>{t.vllmSetupNever}</button>
+                        <div className="flex gap-2">
+                          <button onClick={() => bridge.dismissVllmSetup()}
+                            className="h-9 px-4 rounded-lg text-[14px]" style={{ background: activeTheme === 'dark' ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.06)' }}>{t.vllmSetupSkip}</button>
+                          <button onClick={() => bridge.bootstrapLocalVllm()}
+                            className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.vllmSetupEnable}</button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -3093,7 +3233,7 @@
     };
 
     // 添加/编辑模型模态弹窗。
-    const ModelFormModal = ({ isDark, t, initial, onCancel, onSave }) => {
+    const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs }) => {
       const [name, setName] = useState(initial.name || '');
       const [preset, setPreset] = useState(initial.preset || 'local_vllm');
       const [model, setModel] = useState(initial.model || '');
@@ -3104,6 +3244,9 @@
       const [testResult, setTestResult] = useState(null);
       const [detecting, setDetecting] = useState(false);
       const [detectResult, setDetectResult] = useState(null); // { candidates } | { error } | null
+      // 本机预装大模型「再入口」:检测无运行实例但有预装时,提示启用;走同一 bootstrap。
+      const [offerSetup, setOfferSetup] = useState(false);   // 检测到预装,显示启用提示
+      const [bootstrapHere, setBootstrapHere] = useState(false); // 从本页发起了 bootstrap(隔离全局态,避免开机引导的成功态串到这里)
       function applyPreset(p) {
         setPreset(p);
         const defs = MODEL_PRESET_DEFS[p] || MODEL_PRESET_DEFS.local_vllm;
@@ -3126,7 +3269,7 @@
       }
       async function handleDetect() {
         if (!bridge.available || detecting) return;
-        setDetecting(true); setDetectResult(null); setTestResult(null);
+        setDetecting(true); setDetectResult(null); setTestResult(null); setOfferSetup(false); setBootstrapHere(false);
         try {
           const result = await bridge.discoverLocalVllm({
             currentBaseUrl: baseUrl.trim() || null,
@@ -3135,6 +3278,11 @@
           const online = ((result && result.candidates) || []).filter(c => c.status !== 'offline');
           setDetectResult({ candidates: online });
           if (online.length === 1) applyCandidate(online[0]); // 唯一可用实例直接填充
+          else if (online.length === 0) {
+            // 没探到运行中的实例:看本机是否有预装大模型,有则提示一键启用(走同一 bootstrap)。
+            const setup = await bridge.detectLocalVllmSetup();
+            if (setup && setup.has_packages && !setup.vllm_online) setOfferSetup(true);
+          }
         } catch (e) {
           setDetectResult({ error: String(e) });
         } finally {
@@ -3219,6 +3367,44 @@
                     </>
                   )}
                   <span className={`text-[11px] block ${isDark ? 'text-[#5F6368]' : 'text-[#9AA0A6]'}`}>{t.vllmDetectHint}</span>
+                </div>
+              )}
+              {preset === 'local_vllm' && (offerSetup || bootstrapHere) && (
+                <div className={`rounded-xl border p-3 ${isDark ? 'border-[#333537] bg-[#131314]' : 'border-[#E0E3E7] bg-[#F8F9FB]'}`}>
+                  {bootstrapHere ? (
+                    bs && bs.vllmBootstrapDone ? (
+                      <div>
+                        <div className="text-[13px] leading-relaxed mb-3">{t.vllmSetupDone}</div>
+                        <div className="flex justify-end">
+                          <button onClick={() => bridge.available && bridge.restartApp()}
+                            className="h-8 px-4 rounded-lg text-[13px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.restartNow}</button>
+                        </div>
+                      </div>
+                    ) : bs && bs.vllmBootstrapError ? (
+                      <div>
+                        <div className="text-[12px] font-medium mb-1" style={{ color: '#E5484D' }}>{t.vllmSetupFailed}</div>
+                        <div className="text-[12px] leading-relaxed mb-3 break-words" style={{ opacity: .75 }}>{bs.vllmBootstrapError}</div>
+                        <div className="flex justify-end gap-2">
+                          <button onClick={() => { setBootstrapHere(false); setOfferSetup(false); }}
+                            className={`h-8 px-4 rounded-lg text-[13px] ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`}>{t.cpCancel}</button>
+                          <button onClick={() => bridge.bootstrapLocalVllm()}
+                            className="h-8 px-4 rounded-lg text-[13px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.vllmSetupRetry}</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <VllmSetupProgress phase={bs && bs.vllmSetupPhase} attempt={(bs && bs.vllmSetupAttempt) || 0} isDark={isDark} t={t} />
+                    )
+                  ) : (
+                    <div>
+                      <div className="text-[13px] leading-relaxed mb-3">{t.vllmReentryOffer}</div>
+                      <div className="flex justify-end gap-2">
+                        <button onClick={() => setOfferSetup(false)}
+                          className={`h-8 px-4 rounded-lg text-[13px] ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`}>{t.cpCancel}</button>
+                        <button onClick={() => { setBootstrapHere(true); bridge.bootstrapLocalVllm(); }}
+                          className="h-8 px-4 rounded-lg text-[13px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.vllmSetupEnable}</button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -3415,7 +3601,7 @@
                 </div>
               </SCard>
               {editingModel && (
-                <ModelFormModal isDark={isDark} t={t} initial={editingModel}
+                <ModelFormModal isDark={isDark} t={t} initial={editingModel} bs={bs}
                   onCancel={() => setEditingModel(null)}
                   onSave={m => { onSaveModel(m); setEditingModel(null); }} />
               )}

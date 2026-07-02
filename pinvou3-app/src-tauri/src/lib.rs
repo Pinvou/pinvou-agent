@@ -25,6 +25,7 @@ pub mod file_ingest;
 mod file_watcher;
 mod harness;
 mod knowledge;
+mod local_vllm_setup;
 mod monitor;
 mod os;
 pub mod personas;
@@ -318,6 +319,9 @@ pub fn run() {
             commands::get_monitor_snapshot,
             commands::get_backend_status,
             commands::discover_local_vllm,
+            local_vllm_setup::detect_local_vllm_setup,
+            local_vllm_setup::bootstrap_local_vllm,
+            local_vllm_setup::decline_local_vllm_setup,
             commands::list_models,
             commands::save_model,
             commands::delete_model,

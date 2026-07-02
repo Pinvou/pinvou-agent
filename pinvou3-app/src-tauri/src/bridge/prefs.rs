@@ -252,6 +252,14 @@ pub struct AdvancedPrefs {
     /// 全局默认/当前激活模型 id(新建会话继承它)。None = 回退列表首条。
     #[serde(default)]
     pub active_model_id: Option<String>,
+    /// MegaCube(GB10) 本地大模型一键引导是否成功跑过一次。
+    /// 置真后首屏引导框永不再弹(见 `local_vllm_setup::detect`)。引导失败/被跳过不置真。
+    #[serde(default)]
+    pub local_vllm_bootstrapped: bool,
+    /// 用户点「不再提醒 → 确认」婉拒预装本地大模型:置真后开机引导框不再自动弹。
+    /// 与 bootstrapped 区别:婉拒是"我先不要",仍可在设置→模型管理「检测本机 vLLM」里手动启用。
+    #[serde(default)]
+    pub local_vllm_setup_declined: bool,
 }
 
 /// 用户偏好。`settings.json` 顶层结构。
