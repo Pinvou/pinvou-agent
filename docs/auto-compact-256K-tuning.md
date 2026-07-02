@@ -1,5 +1,11 @@
 # Auto Compact 调参记录 (Qwen3.6 + 256K context)
 
+> ⚠️ **方案部分已被 `docs/context-compaction-设计.md` 取代**（2026-07-02）：本文的
+> B1/B2 fork patch（`_Nk` 名字后缀派生窗口 + `context_input_budget` 按窗口分级）已被
+> 上游 v0.8.65 吸收进 `route_budget`/`RouteLimits`，新方案改走探测 `max_model_len` →
+> `active_route_limits.context_tokens` 官方口子，零 fork。本文保留作**推导史料**
+> （尤其倒置 bug 的发现过程、Codex review 历程、大工具输出 bound 结论仍有效）。
+
 日期：2026-05-19
 背景：用户问"我现在 context 是 256K，auto compact 应该如何触发，不需要手动触发"。
 

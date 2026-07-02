@@ -5470,6 +5470,7 @@ dependencies = [
  "async-trait",
  "calamine",
  "chrono",
+ "codewhale-config",
  "codewhale-secrets",
  "codewhale-tui",
  "device_query",

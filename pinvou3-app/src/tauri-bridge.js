@@ -1874,6 +1874,10 @@
         vllmMetricsApplicable: metricsApplicable,
         vllmMetricDiagnostic: metricDiagnostic ? metricDiagnostic.message : null,
         vllmMaxLen: vllm ? (metricsApplicable ? (vllm.max_model_len || "—") : metricNotApplicableText) : "—",
+        // 本地推理引擎(target_kind=local)且探测窗口 < 128k(131072):监控卡给告警。
+        // 云端(remote)/v1/models 不返回 max_model_len,自然不触发。传原始值供前端拼文案。
+        vllmCtxWarn: (vllm && targetKind === "local" && vllm.max_model_len && vllm.max_model_len < 131072)
+          ? vllm.max_model_len : null,
         vllmQueue: vllm
           ? (metricsApplicable
             ? (vllm.num_requests_running != null ? vllm.num_requests_running : "—") + " / " +

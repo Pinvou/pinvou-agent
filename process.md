@@ -84,7 +84,8 @@
 
 - `docs/fork-modifications.md` — fork 修改清单 + 上游 PR 状态（单一真相源）
 - `docs/工具表精简方案.md` — 工具精简 + 附件 pipeline + 视觉模型
-- `docs/auto-compact-256K-tuning.md` — 256K 窗口调优 + 大工具输出 bound
+- `docs/context-compaction-设计.md` — ⭐上下文压缩总纲：优化目标（最小化压缩次数）+ 水位线 W/O/T/E + 分期（一期探测适配零fork / 二期手动配窗 / 上游线 usage 回灌）
+- `docs/auto-compact-256K-tuning.md` — （史料）方案部分已被上文取代；倒置 bug 发现过程 + 大工具输出 bound 仍有效
 - `docs/archived/Pinvou-品悟设计.md` — 品悟 v2 review 系统（已推翻，实现已移除）
 - `docs/L1-judge-rubric.md` / `docs/l1-baselines/` — Judge rubric + baseline
 - `docs/自动化测试方案.md` — 测试系统现状
