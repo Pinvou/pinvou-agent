@@ -15,7 +15,9 @@
       "required": true
     }
   ],
-  "config_fields": [],
+  "config_fields": [
+    { "key": "AMAP_KEY", "label": "高德 API Key（留空用内置共享额度）", "required": false, "target": "env", "secret": true }
+  ],
   "routing_rules": [
     "天气/气温/温度/下雨/下雪/穿衣/带伞 → `mcp_weather_get_weather`，不要用 `web_search`"
   ],

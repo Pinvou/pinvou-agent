@@ -1,3 +1,4 @@
+use codewhale_secrets::{DefaultKeyringStore, Secrets, SecretsError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -93,107 +94,71 @@ pub trait CredentialStore {
     fn delete(&self, reference: &CredentialReference) -> Result<(), CredentialError>;
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct SystemCredentialStore;
+fn secrets_error(err: SecretsError) -> CredentialError {
+    CredentialError::new(format!(
+        "credential store access failed; please reconfigure API Key or repair system credential access: {err}"
+    ))
+}
+
+/// 复用底座 codewhale-secrets,但**按 `reference.service` 选 keyring 命名空间**:
+/// keyring 条目 = `(reference.service, reference.account)`,与历史命名空间
+/// (`pinvou3-model-api-key` / `pinvou3-mcp-secret`)**保持一致** —— 升级不丢已存凭据。
+/// OS keyring 优先,不可用(无 D-Bus / headless 服务器)自动回退 FileKeyringStore。
+/// 每个 service 一个 `Secrets`,首次用到时惰性构造并缓存。
+#[derive(Clone, Default)]
+pub struct SystemCredentialStore {
+    cache: Arc<Mutex<HashMap<String, Arc<Secrets>>>>,
+}
 
 impl SystemCredentialStore {
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    /// 取(或惰性构造 + 缓存)某 keyring service 对应的 Secrets 后端。
+    fn secrets_for(&self, service: &str) -> Arc<Secrets> {
+        let mut cache = self.cache.lock().expect("credential store cache lock");
+        if let Some(existing) = cache.get(service) {
+            return existing.clone();
+        }
+        let store = DefaultKeyringStore::new(service);
+        let secrets = match store.probe() {
+            Ok(()) => Secrets::new(Arc::new(store)),
+            Err(err) => {
+                log::warn!("OS keyring 不可用({err}),改用文件回退凭证存储");
+                Secrets::file_backed()
+            }
+        };
+        let arc = Arc::new(secrets);
+        cache.insert(service.to_string(), arc.clone());
+        arc
+    }
+}
+
+impl std::fmt::Debug for SystemCredentialStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SystemCredentialStore").finish()
     }
 }
 
 impl CredentialStore for SystemCredentialStore {
     fn get(&self, reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
-        #[cfg(any(
-            target_os = "macos",
-            target_os = "windows",
-            all(target_os = "linux", not(target_env = "ohos"), not(target_env = "musl"))
-        ))]
-        {
-            let entry = keyring::Entry::new(&reference.service, &reference.account)
-                .map_err(|err| keyring_error("open", err))?;
-            match entry.get_password() {
-                Ok(value) => Ok(Some(value)),
-                Err(keyring::Error::NoEntry) => Ok(None),
-                Err(err) => Err(keyring_error("read", err)),
-            }
-        }
-        #[cfg(not(any(
-            target_os = "macos",
-            target_os = "windows",
-            all(target_os = "linux", not(target_env = "ohos"), not(target_env = "musl"))
-        )))]
-        {
-            let _ = reference;
-            Err(CredentialError::new(
-                "system credential store is unavailable on this platform; please reconfigure API Key",
-            ))
-        }
+        self.secrets_for(&reference.service)
+            .get(&reference.account)
+            .map_err(secrets_error)
     }
 
     fn set(&self, reference: &CredentialReference, value: &str) -> Result<(), CredentialError> {
-        #[cfg(any(
-            target_os = "macos",
-            target_os = "windows",
-            all(target_os = "linux", not(target_env = "ohos"), not(target_env = "musl"))
-        ))]
-        {
-            let entry = keyring::Entry::new(&reference.service, &reference.account)
-                .map_err(|err| keyring_error("open", err))?;
-            entry
-                .set_password(value)
-                .map_err(|err| keyring_error("write", err))
-        }
-        #[cfg(not(any(
-            target_os = "macos",
-            target_os = "windows",
-            all(target_os = "linux", not(target_env = "ohos"), not(target_env = "musl"))
-        )))]
-        {
-            let _ = (reference, value);
-            Err(CredentialError::new(
-                "system credential store is unavailable on this platform; please reconfigure API Key",
-            ))
-        }
+        self.secrets_for(&reference.service)
+            .set(&reference.account, value)
+            .map_err(secrets_error)
     }
 
     fn delete(&self, reference: &CredentialReference) -> Result<(), CredentialError> {
-        #[cfg(any(
-            target_os = "macos",
-            target_os = "windows",
-            all(target_os = "linux", not(target_env = "ohos"), not(target_env = "musl"))
-        ))]
-        {
-            let entry = keyring::Entry::new(&reference.service, &reference.account)
-                .map_err(|err| keyring_error("open", err))?;
-            match entry.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-                Err(err) => Err(keyring_error("delete", err)),
-            }
-        }
-        #[cfg(not(any(
-            target_os = "macos",
-            target_os = "windows",
-            all(target_os = "linux", not(target_env = "ohos"), not(target_env = "musl"))
-        )))]
-        {
-            let _ = reference;
-            Err(CredentialError::new(
-                "system credential store is unavailable on this platform; please reconfigure API Key",
-            ))
-        }
+        self.secrets_for(&reference.service)
+            .delete(&reference.account)
+            .map_err(secrets_error)
     }
-}
-
-#[cfg(any(
-    target_os = "macos",
-    target_os = "windows",
-    all(target_os = "linux", not(target_env = "ohos"), not(target_env = "musl"))
-))]
-fn keyring_error(action: &str, err: keyring::Error) -> CredentialError {
-    CredentialError::new(format!(
-        "credential store {action} failed; please reconfigure API Key or repair system credential access: {err}"
-    ))
 }
 
 #[derive(Debug, Clone, Default)]

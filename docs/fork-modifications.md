@@ -84,7 +84,7 @@
 - **改动**:本 session **第一次发请求前**,用**完整本请求前缀(system+tools+当前轮 user 消息及其 `<turn_meta>`)** clone 一个 `max_tokens=1`/`tool_choice=none`/`stream=none`/响应丢弃的预热请求 `await` 发出,把整段冷前缀喂进 vLLM prefix-cache;一次性(flag)、不进 context、30s 超时兜底
 - **根因/理由**:vLLM(NVFP4)+ mtp 投机解码在新 session **首请求冷 prefill** 上把生成采歪——首个 `tool_call`/`<turn_meta>` 标签/系统指令被吐成裸文本(实测两 session:首轮漂、用户**问一句即自愈**——本质就是手动 warmup)。⚠️ **必须预热到 turn_meta**:模型恰在 `<turn_meta>` 处复读采歪(msg1 实锤 `...qwen36_35b_35b_256k...` 重复),v1 用 `build_cache_warmup_request`(剥掉当前轮 user 消息)漏热 turn_meta → 仍漂;v2 热完整首请求才根治。**漂移与工具表/subagent 放通无关**(兜大圈验证后定论:是首轮冷启动,非 schema)
 - **测试**:`forkguard` `session warmup flag` + `首请求 warmup 注入` 指纹;行为待补 L1(新 session 首轮 tool_call 不漂)
-- 上游 PR:✅ **拟提**——本地 vLLM+mtp 的通用 first-turn 防漂,自动 warmup 比手动 `/cache warmup` 更稳
+- 上游 PR:❌ **暂不提**(2026-06-30 复核):上游 turn_loop/session 确实零 warmup(engine 级自动首请求预热 novel,上游只有 TUI 层 `/cache warmup` 手动命令),但 fork 是 **always-on**——对不吃 prefix-cache 的 provider(Anthropic native 等)白加一次往返,不合上游多 provider 设计。要提需先改成 **opt-in config 开关**(默认关),属小重设计;留 fork,需要时再做 opt-in 版
 
 ### C8 `ops` 会话工具开关(SetDisallowedTools)
 - **文件**:`core/ops.rs`(新增 `Op::SetDisallowedTools { tools: Vec<String> }`)、`core/engine.rs`(handler 写入 `config.disallowed_tools`)
@@ -100,14 +100,29 @@
 - **理由**:远程 MCP 连接器(qcc)工具名连上后动态发现、manifest `mcp_tools` 为空,精确名禁用失效;只有按静态可知的 server 名生成 `mcp_{server}_*` 前缀规则、且匹配层支持通配,才能在工具发现**之前**就把禁用规则写好(规则与发现解耦)。与 C8 同 disallowed_tools 主题(C8=广播 op / C9=匹配逻辑)。消费方=pinvou3-app `marketplace::model_tool_names` 对 manifest 每个 `servers[]` 生成前缀规则
 - **来源**:fork PR h3c-hexin/DeepSeek-TUI#5(已进 `pinvou3-clean`,commit `8dcd29c2`)
 - **测试**:`forkguard` `command_denies_tool 前缀通配` 指纹(L1) + `disallowed_tools_gate_blocks_prefix_wildcard` 回归(L2)
-- 上游 PR:🔜 通用增强(disallowed 支持 glob,非 pinvou3 专用),建议提 Hmbown/CodeWhale
+- 上游 PR:🟢 [#3824](https://github.com/Hmbown/CodeWhale/pull/3824) **MERGED**(2026-06-30,merge `4150b4835ca6`;测试 fixture 已泛化 `mcp_acme_*`,去 qcc/gongwen)。**下次 sync harvest 后撤 C9 指纹**
+
+### C10 `runtime` MCP env placeholder + Windows child console suppression(2026-06-30)
+- **文件**:`mcp.rs`、`mcp/tests.rs`、`dependencies.rs`、`hooks.rs`、`tools/plugin.rs`、`tools/shell.rs`、`utils.rs`
+- **改动**:
+  - MCP server 配置支持 `${NAME}` 占位符,在启动 MCP client 前从进程环境解析,用于 pinvou3-app 注入 keyring 取出的 API key/secret,避免把密钥落入 manifest 明文。
+  - Windows 上启动 MCP / hook / plugin / shell 子进程时复用 `CommandExt::creation_flags(CREATE_NO_WINDOW)`,抑制后台控制台闪窗;非 Windows 平台无行为变化。
+  - 与 C9 同步保留 `disallowed_tools` 前缀通配逻辑,让动态 MCP 工具可在发现前按 server 前缀禁用。
+- **理由**:pinvou3-app 已把 MCP 密钥迁移到 OS keyring,manifest 只保留 env placeholder;若 DeepSeek-TUI 不解析 placeholder,天气/问财/企查查等 MCP 启动后拿不到密钥。Windows GUI 场景下后台子进程弹控制台会打断用户输入,需要在底座统一抑制;该实现只加 Windows cfg,跨平台构建不受影响。
+- **来源**:fork PR h3c-hexin/DeepSeek-TUI#6(**已合并入 pinvou3-clean**)/ main PR pinvou3#72,submodule commit `01b51974`(= pinvou3-clean head;含 `3d2be320` env placeholder + `01b51974` windows console。原 PR head `af124353` 经 rebase 合并重写为此 hash,内容一致)
+- **测试**:`mcp/tests.rs` 覆盖 env placeholder 解析;`forkguard` C9 指纹覆盖前缀通配;pinvou3-app `cargo check` 通过。Windows console suppression 为平台行为,本次按 `#[cfg(windows)]` 编译路径与手动运行观察验证。
+- 上游 PR(2026-06-30 提交 + 当日合入,**拆两个独立 PR**;均从 origin/main 手动应用——上游 mcp.rs 大改、stdio 外移到 `mcp/stdio.rs`,cherry-pick 会冲突):
+  - **env placeholder** → 🟢 [#3825](https://github.com/Hmbown/CodeWhale/pull/3825) **MERGED**(merge `f4f4555cc968`)。**只提 stdio 子进程 env 展开**(`StdioTransport::spawn` 内 `expand_env_placeholders_map(&config.env)`);测试 fixture 泛化 `MCP_TEST_SECRET_TOKEN`(去 PINVOU3_*/QCC/AMAP)。补底座真缺口:MCP stdio 子进程 env 走 allowlist 过滤(`sanitized_mcp_env`),secret env var 继承不到→config.env 必须显式带值,又不能明文落 mcp.json。(首推曾因 rustfmt 单行超宽 Lint fail,fmt 后重推即过)
+  - **Windows child console** → 🟢 [#3823](https://github.com/Hmbown/CodeWhale/pull/3823) **MERGED**(merge `d87dabcd0cba`)。`CREATE_NO_WINDOW` 抹子进程闪窗,`#[cfg(windows)]` no-op off-Windows;上游已把 stdio spawn 重构进 `mcp/stdio.rs`,suppress 落新 spawn 点。
+  - **header 展开未提**(冗余):底座原生 `bearer_token_env_var`/`env_headers`(`McpHttpAuth::resolved_headers`)已覆盖 header secret,故上游 PR 剥掉 header 展开只留 stdio env;app 层 qcc 宜改用底座原生(follow-up,仍 fork)。
+  - **下次 sync harvest**:上游已合 stdio env 展开 + Windows 抑窗两块,sync 后撤对应指纹;**C10-env 的 header 展开部分仍 fork 保留**(pinvou3 在用,上游未收)。
 
 ### R `agentic-rag` EngineConfig.extra_tools 应用层工具注入口(2026-06-24)
 - **文件**:`core/engine.rs`(`ExtraTools` newtype + `EngineConfig.extra_tools` 字段 + Default)、`core/engine/tool_setup.rs`(`build_turn_tool_registry_builder` 末尾 `with_tool` 循环注册);连带补 3 处 TUI 路径 EngineConfig literal(`runtime_threads.rs`/`tui/ui.rs`/`main.rs`,`extra_tools: Default::default()`)
 - **改动**:给 `EngineConfig` 加 `pub extra_tools: ExtraTools`(newtype 包 `Vec<Arc<dyn ToolSpec>>`,手写 Debug 输出工具名——`dyn ToolSpec` 非 Debug,否则破 `#[derive(Debug)]`),每 turn build registry 时 append 到 builder。让**嵌入应用**(pinvou3-app)无需 fork 工具表即可注册自定义 `ToolSpec`
 - **理由/用途**:Agentic RAG——app 层 `KbSearchTool`(`knowledge/kb_tool.rs`,持 `session_id`,execute 查该会话挂载知识集 → `L1Store::retrieve_for_chat`)经此注入,让本地 LLM 自主调 `kb_search` 检索本地知识(替代旧注入式)。`spawn_for_session` 按 session push,工具持 session_id 解决 `ToolContext` 无 session_id 的问题
 - **测试**:`forkguard` `RAG1 extra_tools 字段` + `RAG2 tool_setup 注册` 指纹;app lib `blocklist_contract`(kb_search 可见)+ `kb_tool::tests`;真机测自发调用率/幻觉率
-- 上游 PR:✅ **拟提**——`extra_tools` 是通用扩展点(任何嵌入方可注册工具),与具体 kb_search 解耦
+- 上游 PR:❌ **暂不提**(2026-06-30 复核纠正原"拟提"):上游 codewhale-tui 是纯 binary(**无 lib target**,C1 facade 是 fork 专属),且 `app-server` crate 不依赖 tui / 不构造 EngineConfig——`EngineConfig.extra_tools` 在上游**无任何 in-tree 消费者**,提了大概率被以「加无消费者的 public API」关。留 fork,等上游真出现嵌入/SDK 需求或能附 in-tree 消费者再提
 
 ### W `workflow` 三省六部工作流底座层
 - **文件**:`tools/subagent/{mod,tests}.rs`、`core/ops.rs`、`core/events.rs`、`core/engine.rs`、`core/engine/{tests,approval,handle}.rs`、`tools/user_input.rs`、`runtime_threads.rs`、`tui/{sidebar,command_palette,ui,views/mod}.rs`、`main.rs`(EngineConfig 字段)

@@ -142,11 +142,17 @@ grep -rn "messages.push\|runtime_prompt" DeepSeek-TUI/crates/tui/src/core/engine
 
 > `gh pr list --repo Hmbown/CodeWhale --author h3c-hexin --state all` 核。head 走 `h3c-hexin/DeepSeek-TUI` 跨 fork。v0.8.60 sync 无新提 PR。
 
-**🟡 OPEN**
+**🟢 已 MERGED**(2026-06-30 提交 + 当日合入,head 走 `h3c-hexin/DeepSeek-TUI` 跨 fork。下次 sync 随上游 harvest,撤对应 fork-guard 指纹)
 
-| PR | 内容 | 处置 |
+| PR | 内容 | merge commit |
 |---|---|---|
-| [#3288](https://github.com/Hmbown/CodeWhale/pull/3288) | move volatile pwd out of static system prefix → per-turn turn_meta(prefix-cache 优化:每 session 变的 workspace 留 static prefix 致部分命中×投机解码工具调用退化) | 2026-06-17 提(对应 fork P 主题);accept 后下次 sync harvest、撤 P 指纹;close 则 P 保 fork |
+| [#3823](https://github.com/Hmbown/CodeWhale/pull/3823) | suppress background console windows on Windows(C10-win;`CREATE_NO_WINDOW` 抹掉子进程闪窗,非 Windows no-op) | `d87dabcd0cba` |
+| [#3824](https://github.com/Hmbown/CodeWhale/pull/3824) | wildcard disallowed tool prefixes(C9;`disallowed_tools` 规则尾 `*` 前缀匹配,向后兼容) | `4150b4835ca6` |
+| [#3825](https://github.com/Hmbown/CodeWhale/pull/3825) | `${VAR}` env placeholders in MCP stdio config(C10-env;只 stdio 子进程 env,**header 展开未提**=底座原生 `bearer_token_env_var`/`env_headers` 已覆盖) | `f4f4555cc968` |
+
+> 提交纪律:三 PR 均从 `origin/main`(= 上游,386 commit ahead of v0.8.65)切净分支手动应用 + 泛化(去 Pinvou/qcc/gongwen/PINVOU3_* 测试 fixture)+ `cargo test`/`cargo fmt --check` 验证;commit/PR body 无 Claude 署名、无品牌泄漏。#3825 首推曾因 rustfmt 单行超宽 Lint fail,`cargo fmt` 修后 amend 重推即过。
+> **下次 sync 待办**:这三块(C9 / C10-env / C10-win)上游已 harvest,sync 时按文件级 diff 确认后**撤 fork-guard 指纹 + fork-modifications §1 对应小节标 harvested**(C10-env 的 header 展开部分仍 fork 保留)。
+> **2026-06-30 评估后不提**:R(extra_tools)= 上游无 lib target / app-server 不构造 EngineConfig,无 in-tree 消费者会被关;Q(自动 warmup)= novel 但 always-on 不合上游多 provider,需先改 opt-in config。详见 fork-modifications §R/§Q。
 
 **⏹️ CLOSED —— 上游独立实现或不跟进**(fork 侧已取上游版 / 保 fork patch)
 
@@ -160,7 +166,7 @@ grep -rn "messages.push\|runtime_prompt" DeepSeek-TUI/crates/tui/src/core/engine
 | #2044 / #1790 | file_search cancel/timeout | 上游 #2035 自家实现覆盖,fork 撤回留上游版 |
 | #1480 | vLLM chat_template_kwargs | 留 fork |
 
-**✅ 已 MERGED(下次 sync 随上游归零,别重复提)**:#1511 exec reasoning_effort · #1686 OpenAI batch tool_calls · #2057 subagent completion role · #2060 256K auto-compact · #2146 grep_files timeout · #2147 max_output_tokens env · #2245 web_search bing 解码 · #2311 InstructionSource · #2313 Tier5 cover · #2314 environment volatile · #2354 subagent stop-on-failure · #2355 fetch_url fake-ip · **#2946 Bocha 响应解析**(v0.8.57)。
+**✅ 已 MERGED(下次 sync 随上游归零,别重复提)**:#1511 exec reasoning_effort · #1686 OpenAI batch tool_calls · #2057 subagent completion role · #2060 256K auto-compact · #2146 grep_files timeout · #2147 max_output_tokens env · #2245 web_search bing 解码 · #2311 InstructionSource · #2313 Tier5 cover · #2314 environment volatile · #2354 subagent stop-on-failure · #2355 fetch_url fake-ip · #2946 Bocha 响应解析(v0.8.57) · **#3288 pwd 移出静态前缀**(= P,v0.8.65 harvest)。
 
 **❌ 评估后不提**:C3(64KB cap / truncated_args_hint)—— 与 pinvou3 专属 `append_file` 深度耦合,上游无 append_file 去耦后引导无落点。
 

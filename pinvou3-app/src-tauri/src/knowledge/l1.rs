@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
@@ -75,23 +75,34 @@ pub struct ChunkHit {
 #[derive(Clone)]
 pub struct L1Store {
     conn: Arc<Mutex<Connection>>,
-    /// 配了 embedding 端点则启用向量;None → 纯全文 fts。
-    embedder: Option<Arc<Embedder>>,
+    /// 配了 embedding 模型则启用向量;None → 纯全文 fts。**可换共享槽**:模型按需下载完成后
+    /// `set_embedder` 热加载,所有 L1Store clone(含已在跑的后台线程/会话)立即见新,免重启。
+    embedder: Arc<RwLock<Option<Arc<Embedder>>>>,
 }
 
 impl L1Store {
     pub fn new(conn: Arc<Mutex<Connection>>, embedder: Option<Arc<Embedder>>) -> Self {
-        Self { conn, embedder }
+        Self { conn, embedder: Arc::new(RwLock::new(embedder)) }
     }
 
-    #[allow(dead_code)] // 保留:将来检索/UI 判断是否启用向量
+    /// 取当前 embedder 的克隆句柄(只在锁内拷 Arc,立即释锁,不持锁跑推理)。
+    fn embedder(&self) -> Option<Arc<Embedder>> {
+        self.embedder.read().clone()
+    }
+
+    /// 热加载:换 embedding 模型(模型下载完成后调)。None=卸载回纯全文检索。
+    pub fn set_embedder(&self, embedder: Option<Arc<Embedder>>) {
+        *self.embedder.write() = embedder;
+    }
+
     pub fn has_embedder(&self) -> bool {
-        self.embedder.is_some()
+        self.embedder.read().is_some()
     }
 
     /// (source, model) — 给前端显示语义检索状态。
     pub fn embed_info(&self) -> Option<(String, String)> {
         self.embedder
+            .read()
             .as_ref()
             .map(|e| (e.source().to_string(), e.model().to_string()))
     }
@@ -360,7 +371,7 @@ impl L1Store {
     /// 块的实测卡死根因）。块数内则**分批** embedding，批间让步，不长时间独占模型锁/CPU。
     /// 无 embedder / 任一批失败 → None（降级仅全文，不阻断入库）。
     fn embed_chunks_bounded(&self, chunks: &[String]) -> Option<Vec<Vec<f32>>> {
-        let emb = self.embedder.as_ref()?;
+        let emb = self.embedder()?;
         if chunks.len() > MAX_EMBED_CHUNKS {
             eprintln!(
                 "[knowledge] 文档块数 {} 超向量化上限 {}，跳过向量、仅全文检索（关键词可命中）",
@@ -469,7 +480,7 @@ impl L1Store {
         }
         let lim = if k == 0 { 5 } else { k };
         let fts = self.search_fts(collection_id, q, lim * 2)?;
-        let ranked = if let Some(emb) = &self.embedder {
+        let ranked = if let Some(emb) = self.embedder() {
             match emb.embed_one(q) {
                 Ok(qv) => {
                     let vec = self.search_vec(collection_id, &qv, lim * 2)?;
@@ -684,6 +695,29 @@ mod tests {
         assert!(l1.has_any_document().unwrap());
         l1.delete_collection(cid).unwrap();
         assert!(!l1.has_any_document().unwrap(), "删知识集应连带清空文档");
+    }
+
+    /// 热加载槽:set_embedder 换值,L1Store clone 共享同一槽(下载完成后所有在跑线程见新);
+    /// 换槽不破坏纯全文检索通路。无法廉价构造真实 Embedder,故只验 None 语义 + 共享 + fts 存活。
+    #[test]
+    fn embedder_slot_swap_and_share() {
+        let l1 = mem();
+        assert!(!l1.has_embedder());
+        let clone = l1.clone();
+        l1.set_embedder(None); // 卸载(本就 None)
+        assert!(!clone.has_embedder(), "clone 共享同一 embedder 槽");
+
+        // 换槽后纯全文检索仍可用。
+        let cid = l1.create_collection("库", None, None).unwrap();
+        let doc = l1
+            .upsert_document(cid, "/tmp/x.md", "x.md", Some("md"), 10, 0)
+            .unwrap();
+        l1.replace_doc_chunks(doc, cid, &["语义检索测试段落".to_string()], None)
+            .unwrap();
+        assert!(!clone
+            .retrieve_for_chat(cid, "语义检索", 5, 0)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

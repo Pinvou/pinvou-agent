@@ -1260,16 +1260,17 @@ pub async fn cancel_generation(
 /// 计算当前应「对模型隐藏」的工具全名**完整列表**(小写)。
 ///
 /// 因 `EnginePool::set_disallowed_all` 是**全量替换** `config.disallowed_tools`,任何调用方
-/// 都必须传完整列表,不能传增量。组成 = 市场连接器开关禁用的工具名 +(知识库为空时)`kb_search`。
-/// 知识库删光文件后 kb_search 进列表 → 模型目录里看不到 → AI 不再宣称能本地检索。
-/// KnowledgeService state 取不到时保守按「无内容」(隐藏 kb_search,宁可少功能不误宣传)。
+/// 都必须传完整列表,不能传增量。组成 = 市场连接器开关禁用的工具名 +(知识库不可用时)`kb_search`。
+/// 知识库"可用" = 有已入库内容 **且** embedding 模型已就绪(semantic_ready)。embedding 模型按需
+/// 下载,没装时知识库走完全门控 → kb_search 进列表 → 模型目录里看不到 → AI 不再宣称能本地检索;
+/// 库删光文件后同理。KnowledgeService state 取不到时保守隐藏(宁可少功能不误宣传)。
 pub fn compute_disallowed_tools(app: &AppHandle) -> Vec<String> {
     let mut tools = crate::bridge::marketplace::disabled_tool_names();
-    let has_content = app
+    let kb_usable = app
         .try_state::<KnowledgeService>()
-        .map(|s| s.has_indexed_content())
+        .map(|s| s.has_indexed_content() && s.semantic_ready())
         .unwrap_or(false);
-    if !has_content {
+    if !kb_usable {
         tools.push("kb_search".to_string());
     }
     tools
