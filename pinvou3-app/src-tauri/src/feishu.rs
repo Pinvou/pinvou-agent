@@ -117,25 +117,27 @@ fn lark_cli_present() -> bool {
     matches!(run(lark(&["--version"])), Ok((true, _, _)))
 }
 
-/// 把授权 URL 生成二维码 PNG,返回 data URL(供前端 `<img>` 显示)。
-/// 用 `lark-cli auth qrcode <url> --output <相对名>`(--output 只收 cwd 下相对路径),
-/// 故把 cwd 设到 temp 目录、输出相对名、再读回。失败返回 None(前端回退开浏览器)。
+/// 把授权 URL 生成二维码,返回 data URL(供前端 `<img>` 显示)。
+///
+/// **本地生成**(qrcode crate),不再 shell 调 `lark-cli auth qrcode`。
+/// 真因:部分用户 `npm i` 装到的是**老版本 lark-cli**,它没有 `auth qrcode`
+/// 子命令 → 那条路径必然失败、二维码弹不出来。本地生成只依赖 URL 本身,
+/// 与 CLI 版本彻底解耦,任何环境都能出码。
+/// 产物是 SVG(矢量、清晰、体积小),编码成 data URL。失败返回 None(前端回退开浏览器)。
 fn make_qr(url: &str) -> Option<String> {
-    let dir = std::env::temp_dir();
-    let fname = "pinvou3_feishu_qr.png";
-    let mut cmd = base_cmd("lark-cli");
-    cmd.args(["auth", "qrcode", url, "--output", fname])
-        .current_dir(&dir);
-    if !matches!(run(cmd), Ok((true, _, _))) {
-        return None;
-    }
-    let path = dir.join(fname);
-    let bytes = std::fs::read(&path).ok()?;
-    let _ = std::fs::remove_file(&path);
-    if bytes.is_empty() {
-        return None;
-    }
-    Some(format!("data:image/png;base64,{}", b64(&bytes)))
+    use qrcode::render::svg;
+    use qrcode::{EcLevel, QrCode};
+
+    // 授权 URL 较长,EcLevel::M 在容错与密度间平衡。
+    let code = QrCode::with_error_correction_level(url.as_bytes(), EcLevel::M).ok()?;
+    let svg_xml = code
+        .render::<svg::Color>()
+        .min_dimensions(220, 220)
+        .quiet_zone(true)
+        .dark_color(svg::Color("#0f172a"))
+        .light_color(svg::Color("#ffffff"))
+        .build();
+    Some(format!("data:image/svg+xml;base64,{}", b64(svg_xml.as_bytes())))
 }
 
 /// 标准 base64 编码(避免引新依赖)。
@@ -533,4 +535,45 @@ pub async fn feishu_skills_state() -> Result<Value, String> {
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 本地生成二维码:任意 URL 都能出码(不依赖 lark-cli 版本),
+    /// 且是可直接塞进 <img> 的 SVG data URL。
+    #[test]
+    fn make_qr_local_produces_svg_data_url() {
+        let url = "https://accounts.feishu.cn/oauth/authorize?client_id=cli_abc&device_code=xyz&scope=a%20b";
+        let qr = make_qr(url).expect("本地二维码生成不应失败");
+        assert!(qr.starts_with("data:image/svg+xml;base64,"), "应是 SVG data URL");
+        // 解码回 SVG,确认是真实矢量二维码(含 <svg> 与绘制的模块 path/rect)。
+        let b64 = qr.trim_start_matches("data:image/svg+xml;base64,");
+        let svg = String::from_utf8(b64_decode(b64)).unwrap();
+        assert!(svg.contains("<svg"), "应含 <svg> 根节点");
+        assert!(svg.contains("#0f172a"), "应含深色模块颜色");
+    }
+
+    // 测试辅助:标准 base64 解码(生产 b64 的逆运算,仅测试用)。
+    fn b64_decode(s: &str) -> Vec<u8> {
+        const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let val = |c: u8| A.iter().position(|&x| x == c).unwrap() as u32;
+        let mut out = Vec::new();
+        let clean: Vec<u8> = s.bytes().filter(|&c| c != b'=').collect();
+        for chunk in clean.chunks(4) {
+            let mut n = 0u32;
+            for (i, &c) in chunk.iter().enumerate() {
+                n |= val(c) << (18 - 6 * i);
+            }
+            out.push((n >> 16) as u8);
+            if chunk.len() > 2 {
+                out.push((n >> 8) as u8);
+            }
+            if chunk.len() > 3 {
+                out.push(n as u8);
+            }
+        }
+        out
+    }
 }

@@ -5465,6 +5465,7 @@ dependencies = [
  "md5",
  "notify",
  "parking_lot",
+ "qrcode",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",

@@ -49,6 +49,10 @@ md5 = "0.7"
 flate2 = "1"
 tar = "0.4"
 
+# 飞书扫码：本地生成二维码(不依赖 lark-cli auth qrcode——老版本 CLI 无此命令)。
+# svg 特性零额外系统依赖、产物是矢量字符串,直接塞进 <img> 的 data URL。
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+
 # Session store 用：阻塞式 RwLock（sync 不需要 .await 拿读写锁）
 parking_lot = "0.12"
 
