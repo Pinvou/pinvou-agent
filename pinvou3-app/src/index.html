@@ -3124,12 +3124,11 @@
     };
 
     // 输入框「技能」入口：⚡ 药丸 + popover。视觉设计=内置自动技能（只读，模型 load_skill 时显"使用中"
-    // 并高亮药丸）；头脑风暴=待上线占位（灰禁用）。activeSkill 由 bridge 检测 load_skill 设，纯只读指示。
+    // 并高亮药丸）。activeSkill 由 bridge 检测 load_skill 设，纯只读指示。
     const ComposerModeMenu = ({ t, bs, compact }) => {
       const [open, setOpen] = useState(false);
       const SKILLS = [
         { id: 'visual-design', name: '视觉设计', desc: '设计系统直出网页/banner/海报/简历…', kind: 'auto' },
-        { id: 'brainstorm', name: '头脑风暴', desc: '帮你发散点子、理清思路', kind: 'soon' },
       ];
       const activeId = bs && bs.activeSkill;
       const cur = SKILLS.find(s => s.id === activeId && s.kind === 'auto');
