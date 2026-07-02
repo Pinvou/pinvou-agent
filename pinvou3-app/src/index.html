@@ -4838,6 +4838,150 @@
     // ==========================================
     // Chat Bubble (message rendering)
     // ==========================================
+    function fallbackCopyText(tx) {
+      return new Promise(function (resolve) {
+        var ta = null;
+        try {
+          ta = document.createElement('textarea');
+          ta.value = String(tx || '');
+          ta.setAttribute('readonly', '');
+          ta.style.position = 'fixed';
+          ta.style.left = '-9999px';
+          ta.style.top = '-9999px';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.focus();
+          ta.select();
+          ta.setSelectionRange(0, ta.value.length);
+          resolve(!!document.execCommand('copy'));
+        } catch (e) {
+          resolve(false);
+        } finally {
+          if (ta && ta.parentNode) ta.parentNode.removeChild(ta);
+        }
+      });
+    }
+
+    function copyClipboardText(tx) {
+      tx = String(tx || '');
+      if (!tx) return Promise.resolve(false);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(tx).then(function () { return true; }).catch(function () {
+          return fallbackCopyText(tx);
+        });
+      }
+      return fallbackCopyText(tx);
+    }
+
+    const SelectionCopyButton = ({ hostRef, targetRef, theme, t }) => {
+      const isDark = theme === 'dark';
+      const [selCopy, setSelCopy] = useState({ visible: false, copied: false, text: '', x: 0, y: 0 });
+      const hideTimerRef = useRef(null);
+
+      const hideSelectionCopy = useCallback(() => {
+        if (hideTimerRef.current) {
+          clearTimeout(hideTimerRef.current);
+          hideTimerRef.current = null;
+        }
+        setSelCopy(s => s.visible ? { ...s, visible: false, copied: false } : s);
+      }, []);
+
+      const updateSelectionCopy = useCallback(() => {
+        const target = targetRef.current;
+        const host = hostRef.current;
+        if (!target || !host || !window.getSelection) return;
+        const selection = window.getSelection();
+        if (!selection || selection.rangeCount === 0) { hideSelectionCopy(); return; }
+        const text = selection.toString();
+        if (!text || !text.trim()) { hideSelectionCopy(); return; }
+        if (!selection.anchorNode || !selection.focusNode) { hideSelectionCopy(); return; }
+        if (!target.contains(selection.anchorNode) || !target.contains(selection.focusNode)) {
+          hideSelectionCopy();
+          return;
+        }
+        const range = selection.getRangeAt(0);
+        const rects = Array.prototype.slice.call(range.getClientRects()).filter(function (r) {
+          return r && (r.width > 0 || r.height > 0);
+        });
+        const rect = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect();
+        const hostRect = host.getBoundingClientRect();
+        if (!rect || !hostRect || (!rect.width && !rect.height)) { hideSelectionCopy(); return; }
+        const minX = 38;
+        const maxX = Math.max(minX, hostRect.width - 38);
+        const x = Math.max(minX, Math.min(rect.left + rect.width / 2 - hostRect.left, maxX));
+        let y = rect.top - hostRect.top - 38;
+        if (y < 4) y = rect.bottom - hostRect.top + 8;
+        setSelCopy({ visible: true, copied: false, text: text, x: x, y: y });
+      }, [hideSelectionCopy, hostRef, targetRef]);
+
+      useEffect(() => {
+        return () => {
+          if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+        };
+      }, []);
+
+      useEffect(() => {
+        const target = targetRef.current;
+        if (!target) return;
+        const onSelectEnd = () => setTimeout(updateSelectionCopy, 0);
+        target.addEventListener('mouseup', onSelectEnd);
+        target.addEventListener('touchend', onSelectEnd);
+        target.addEventListener('keyup', onSelectEnd);
+        return () => {
+          target.removeEventListener('mouseup', onSelectEnd);
+          target.removeEventListener('touchend', onSelectEnd);
+          target.removeEventListener('keyup', onSelectEnd);
+        };
+      }, [targetRef, updateSelectionCopy]);
+
+      useEffect(() => {
+        if (!selCopy.visible) return;
+        const onDown = (e) => {
+          const target = targetRef.current;
+          if (e.target && e.target.closest && e.target.closest('[data-selection-copy-button]')) return;
+          if (target && target.contains(e.target)) return;
+          hideSelectionCopy();
+        };
+        const onKey = (e) => { if (e.key === 'Escape') hideSelectionCopy(); };
+        document.addEventListener('mousedown', onDown, true);
+        document.addEventListener('keydown', onKey, true);
+        return () => {
+          document.removeEventListener('mousedown', onDown, true);
+          document.removeEventListener('keydown', onKey, true);
+        };
+      }, [hideSelectionCopy, targetRef, selCopy.visible]);
+
+      const onCopy = () => {
+        copyClipboardText(selCopy.text).then(function (ok) {
+          if (!ok) return;
+          setSelCopy(s => ({ ...s, copied: true }));
+          if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+          hideTimerRef.current = setTimeout(function () {
+            hideTimerRef.current = null;
+            hideSelectionCopy();
+          }, 900);
+        });
+      };
+
+      if (!selCopy.visible) return null;
+      return (
+        <button
+          type="button"
+          data-selection-copy-button="true"
+          title={selCopy.copied ? t.copied : t.copyMsg}
+          onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onCopy(); }}
+          className={`absolute z-30 h-8 px-2.5 rounded-full flex items-center gap-1.5 text-[12px] font-medium shadow-lg backdrop-blur transition-colors ${
+            isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#34363A] border border-white/10' : 'bg-white text-[#1F1F1F] hover:bg-[#F8FAFF] border border-black/10'
+          }`}
+          style={{ left: selCopy.x + 'px', top: selCopy.y + 'px', transform: 'translateX(-50%)' }}
+        >
+          {selCopy.copied ? <Check size={13} className="text-[#34C759]" /> : <Copy size={13} />}
+          <span>{selCopy.copied ? t.copied : t.copyMsg}</span>
+        </button>
+      );
+    };
+
     const UserBubble = ({ item, theme, editable, t }) => {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
@@ -4846,9 +4990,11 @@
       function commit() { const tx = val.trim(); setEditing(false); if (tx && bridge.available) bridge.editLastTurn(tx); }
       function copyText() {
         const tx = item.text || '';
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(tx).then(function () { setCopied(true); setTimeout(function () { setCopied(false); }, 1200); }).catch(function () {});
-        }
+        copyClipboardText(tx).then(function (ok) {
+          if (!ok) return;
+          setCopied(true);
+          setTimeout(function () { setCopied(false); }, 1200);
+        });
       }
       if (editing) {
         return (
@@ -5032,6 +5178,8 @@
 
     const ChatBubble = ({ item, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact }) => {
       const isDark = theme === 'dark';
+      const assistantSelectionHostRef = useRef(null);
+      const assistantSelectionTargetRef = useRef(null);
 
       if (item.type === 'artifact_card') return <ArtifactCard item={item} theme={theme} t={t} isLatest={isLatestArtifact} />;
       if (item.type === 'plan_card') return <PlanCard item={item} theme={theme} t={t} onPrefill={onPrefill} />;
@@ -5058,8 +5206,9 @@
           && bridge.getPersonas().some(function(c){ return c && c.source === 'user' && c.name === pd.draft.name; });
         return (
           <div className="flex justify-start">
-            <div className={`${cq.q ? 'w-full' : 'max-w-[95%]'} ${isDark ? 'dark-code' : 'light-code'}`}>
+            <div ref={assistantSelectionHostRef} className={`relative ${cq.q ? 'w-full' : 'max-w-[95%]'} ${isDark ? 'dark-code' : 'light-code'}`}>
               <div
+                ref={assistantSelectionTargetRef}
                 className={`msg-md text-[15px] leading-relaxed ${item.streaming ? 'streaming-cursor' : ''} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}
                 onClick={(e) => {
                   // 聊天里的链接(如飞书授权 URL)点击 → 走系统浏览器,别导航主窗口/不可点。
@@ -5073,6 +5222,7 @@
                 }}
                 dangerouslySetInnerHTML={{ __html: cq.html || '' }}
               />
+              <SelectionCopyButton hostRef={assistantSelectionHostRef} targetRef={assistantSelectionTargetRef} theme={theme} t={t} />
               {cq.q ? (
                 <div className="mt-2 w-full" style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
                   <div className="text-[14px] font-medium mb-2" style={{ color: isDark ? '#fff' : '#000' }}>{cq.q.question}</div>
