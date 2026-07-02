@@ -5474,6 +5474,12 @@
       { key: 'connect', label: '连接并授权', sub: '创建应用身份' },
       { key: 'qr', label: '扫码登录', sub: '飞书 App 扫一扫' },
     ];
+    // 企业微信:纯扫码单段,无「创建应用身份」步骤(复用 runtime/cli/qr 的进度条逻辑)
+    const WECOM_STEPS = [
+      { key: 'runtime', label: '准备运行时', sub: '解压 Node 到 ~/.pinvou3' },
+      { key: 'cli', label: '安装连接组件', sub: 'wecom-cli · 首次约 40 秒' },
+      { key: 'qr', label: '扫码登录', sub: '企业微信 App 扫一扫' },
+    ];
     const FeishuStepIcon = ({ st }) => {
       if (st === 'done') return <span className="w-5 h-5 rounded-full bg-emerald-500 grid place-items-center text-white text-[11px]">✓</span>;
       if (st === 'active') return <span className="w-5 h-5 rounded-full bg-blue-600 grid place-items-center text-white text-[10px] animate-pulse">●</span>;
@@ -5485,7 +5491,7 @@
         <div className={`h-full rounded-full transition-all ${creep ? 'bg-blue-500' : 'bg-emerald-500'}`} style={{ width: (pct || 0) + '%' }} />
       </div>
     );
-    const FeishuFlowCard = ({ flow, onRetry, onCancel, name = '飞书', twoStep = true, browserAuth = false }) => {
+    const FeishuFlowCard = ({ flow, onRetry, onCancel, name = '飞书', twoStep = true, browserAuth = false, steps = FEISHU_STEPS }) => {
       if (!flow) return null;
       const isErr = flow.phase === 'error';
       return (
@@ -5497,7 +5503,7 @@
             {(flow.phase === 'running' || flow.phase === 'qr') && <button onClick={onCancel} className="text-[12px] text-slate-400 hover:text-slate-600">取消</button>}
           </div>
           <div className="px-5 pb-4 space-y-1">
-            {FEISHU_STEPS.map(s => {
+            {steps.map(s => {
               const st = (flow.steps && flow.steps[s.key]) || 'wait';
               const active = st === 'active';
               return (
@@ -5630,6 +5636,50 @@
           const step = (f && f.active) || 'cli';
           return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || '连接失败'), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } };
         });
+      });
+    }
+
+    // ── 企业微信连接流程 · 跨视图持久 store(镜像 feishuConn;企微纯扫码单段）──
+    const wecomConn = {
+      flow: null, tick: null, listenersReady: false, subs: new Set(),
+      subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
+      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch (_) {} }); },
+      startTick() {
+        this.stopTick();
+        this.tick = setInterval(() => this.setFlow(f => {
+          if (!f || f.phase !== 'running') return f;
+          const nf = { ...f, sec: (f.sec || 0) + 1 };
+          if (f.active === 'cli') nf.pct = Math.min(90, (f.pct || 0) + (90 - (f.pct || 0)) * 0.06 + 1);
+          return nf;
+        }), 1000);
+      },
+      stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
+    };
+    function ensureWecomListeners() {
+      if (wecomConn.listenersReady) return;
+      const ev = window.__TAURI__ && window.__TAURI__.event;
+      if (!ev) return;
+      wecomConn.listenersReady = true;
+      ev.listen('wecom:qr', (e) => {
+        const p = e.payload || {};
+        wecomConn.stopTick();
+        wecomConn.setFlow(f => {
+          const prev = (f && f.steps) || {};
+          return { ...(f || {}), phase: 'qr', active: 'qr',
+            steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), qr: 'active' },
+            qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase };
+        });
+      });
+      ev.listen('wecom:connected', () => {
+        wecomConn.stopTick();
+        wecomConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
+        window.__TAURI__.core.invoke('wecom_apply_skills').catch(() => {});
+        setTimeout(() => wecomConn.setFlow(null), 1800);
+      });
+      ev.listen('wecom:error', (e) => {
+        const p = e.payload || {};
+        wecomConn.stopTick();
+        wecomConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || '连接失败'), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } }; });
       });
     }
 
@@ -5839,6 +5889,7 @@
       // 企业微信(CLI 路线)连接态:同飞书,由 wecom-cli auth show 判定
       const [wecomConnected, setWecomConnected] = useState(false);
       const [wecomQr, setWecomQr] = useState(null); // { qr: dataUrl, url } 扫码弹窗(单段)
+      const [wecomFlow, setWecomFlow] = useState(wecomConn.flow); // 企微连接流程卡(跨视图水合)
       const refreshWecom = async () => {
         try {
           const s = await window.__TAURI__.core.invoke('wecom_status');
@@ -5866,6 +5917,27 @@
           }
         });
         setFeishuFlow(feishuConn.flow); // (重)挂载即水合当前进度
+        return unsub;
+      }, []);
+
+      // 订阅企业微信 store(镜像飞书):镜像进渲染 + 完成/失败收尾
+      useEffect(() => {
+        ensureWecomListeners();
+        let prevPhase = wecomConn.flow && wecomConn.flow.phase;
+        const unsub = wecomConn.subscribe((flow) => {
+          setWecomFlow(flow);
+          const ph = flow && flow.phase;
+          if (ph !== prevPhase) {
+            if (ph === 'done') {
+              setWecomConnected(true); setBusyId(null);
+              setAlert({ visible: true, loading: false, title: '已连接企业微信', subtitle: '官方技能已启用，可新建对话直接用', isInstall: true, isError: false, toolId: 'wecom' });
+            } else if (ph === 'error') {
+              setBusyId(null);
+            }
+            prevPhase = ph;
+          }
+        });
+        setWecomFlow(wecomConn.flow);
         return unsub;
       }, []);
 
@@ -6059,24 +6131,36 @@
         }
       };
 
-      // 连接企业微信(单段扫码):ensure cli + begin,进度走 wecom:* 事件。
+      // 连接企业微信(单段扫码):流程卡驱动(镜像飞书),进度走 wecom:* 事件。
       const connectWecom = async () => {
         setBusyId('wecom');
-        setAlert({ loading: true, visible: false, title: '正在准备企业微信连接…', subtitle: '首次需安装 wecom-cli（联网，稍候）', isInstall: true, isError: false });
+        ensureWecomListeners();
+        // 开流程卡(无阻塞弹窗):先起"准备运行时"步,写进跨视图 store,切走不丢。
+        wecomConn.setFlow({ phase: 'running', steps: { runtime: 'active' }, active: 'runtime', pct: 0, sec: 0, log: '' });
+        wecomConn.startTick();
         try {
+          // ① 确保 CLI(首次联网装 wecom-cli ~40s)
+          wecomConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: 'npm: starting…', steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
           await window.__TAURI__.core.invoke('wecom_ensure_cli');
-          // 不在此清 loading —— CLI 已装时 ensure 秒返回,清了会导致"闪一下"+ 后续几秒空窗。
-          // loading 持续到 wecom:qr 事件到达(二维码真出现)时再由监听器清掉。
-          setAlert({ loading: true, visible: false, title: '正在生成登录二维码…', subtitle: '请稍候', isInstall: true, isError: false });
+          wecomConn.setFlow(f => ({ ...(f || {}), pct: 100, steps: { ...((f && f.steps) || {}), cli: 'done' } }));
+          // ② 连接编排(后端 emit wecom:qr / connected / error)
           await window.__TAURI__.core.invoke('wecom_connect_begin');
-          // 后续:wecom:qr 出二维码 → 用户扫码 → wecom:connected 收尾。
         } catch (e) {
           console.error('wecom connect failed:', e);
-          setWecomQr(null);
+          wecomConn.stopTick();
           setBusyId(null);
-          setAlert({ visible: true, loading: false, title: '企业微信连接失败', subtitle: String(e).slice(0, 240), isError: true });
+          wecomConn.setFlow(f => {
+            const step = (f && f.active) || 'cli';
+            return { ...(f || { steps: {} }), phase: 'error', err: String(e).slice(0, 300), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } };
+          });
         }
       };
+      const wecomResetFlow = () => {
+        wecomConn.stopTick();
+        window.__TAURI__.core.invoke('wecom_cancel').catch(() => {});
+        wecomConn.setFlow(null); setBusyId(null);
+      };
+      const wecomRetry = () => { connectWecom(); };
       const disconnectWecom = async () => {
         setBusyId('wecom');
         try {
@@ -6157,6 +6241,9 @@
         // 企微同走 CLI 连接流程(单段扫码)
         if (backendId === 'wecom') {
           if (isInstalled) return disconnectWecom();
+          // 打开详情弹窗(里面有流程卡)+ 触发连接
+          const wt = tools.find(x => x.wecomCli) || tsToolsData.find(x => x.backendId === 'wecom');
+          if (wt) setSelectedTool(wt);
           return connectWecom();
         }
         // EIP 走 CLI 连接流程(浏览器 SSO 一键登录),不走 marketplace install
@@ -6493,7 +6580,7 @@
                           </div>
                           <div className="flex flex-col items-center justify-center gap-1 pl-2">
                             {(() => {
-                              const cf = tool.feishuCli ? feishuFlow : null;
+                              const cf = tool.feishuCli ? feishuFlow : tool.wecomCli ? wecomFlow : null;
                               return (cf && (cf.phase === 'running' || cf.phase === 'qr'))
                                 ? <FeishuMini flow={cf} onClick={() => setSelectedTool(tool)} />
                                 : <TsActionBtn tool={tool} busy={busyId === tool.backendId} onAction={handleAction} />;
@@ -6592,9 +6679,9 @@
                       <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white mb-2 tracking-tight">{selectedTool.title}</h2>
                       <p className="text-[17px] text-slate-500 dark:text-slate-400 mb-5 font-medium">{selectedTool.subtitle}</p>
                       <div className="flex items-center gap-4">
-                        {selectedTool.feishuCli && feishuFlow && (feishuFlow.phase === 'running' || feishuFlow.phase === 'qr')
-                          ? <FeishuMini flow={feishuFlow} onClick={() => {}} />
-                          : <TsActionBtn tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} size="lg" />}
+                        {(() => { const sf = selectedTool.feishuCli ? feishuFlow : selectedTool.wecomCli ? wecomFlow : null; return (sf && (sf.phase === 'running' || sf.phase === 'qr'))
+                          ? <FeishuMini flow={sf} onClick={() => {}} />
+                          : <TsActionBtn tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} size="lg" />; })()}
                       </div>
                     </div>
                   </div>
@@ -6622,10 +6709,19 @@
                   {selectedTool.feishuCli && feishuFlow && (
                     <FeishuFlowCard flow={feishuFlow} onRetry={feishuRetry} onCancel={feishuResetFlow} />
                   )}
+                  {selectedTool.wecomCli && wecomFlow && (
+                    <FeishuFlowCard flow={wecomFlow} steps={WECOM_STEPS} name="企业微信" twoStep={false} onRetry={wecomRetry} onCancel={wecomResetFlow} />
+                  )}
                   {selectedTool.feishuCli && feishuConnected && !feishuFlow && (
                     <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
                       <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
                       <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">已连接飞书 · 官方技能已启用，可直接对它下指令</span>
+                    </div>
+                  )}
+                  {selectedTool.wecomCli && wecomConnected && !wecomFlow && (
+                    <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
+                      <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
+                      <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">已连接企业微信 · 官方技能已启用，可直接对它下指令</span>
                     </div>
                   )}
 
