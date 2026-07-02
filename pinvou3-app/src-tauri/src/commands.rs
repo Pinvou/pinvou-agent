@@ -350,7 +350,7 @@ fn sanitize_command_error(context: &str, err: impl std::fmt::Display) -> String 
 fn prepare_prefs_for_save(mut prefs: UserPrefs) -> Result<UserPrefs, String> {
     let store = SystemCredentialStore::new();
     let migration = prefs.migrate_plaintext_api_keys_with_store(&store);
-    if !migration.failed_model_ids.is_empty() {
+    if !migration.failed_model_ids.is_empty() || !migration.failed_search_providers.is_empty() {
         return Err("credential store unavailable; please reconfigure API Key".to_string());
     }
     prefs.sanitize_plaintext_api_keys();

@@ -959,6 +959,7 @@
     // 这里 / dict / Rust prefs.rs Language 枚举
     const LANG_TO_TAG = { zh: 'zh-Hans', en: 'en', ja: 'ja' };
     const TAG_TO_LANG = { 'zh-Hans': 'zh', 'en': 'en', 'ja': 'ja' };
+    const SEARCH_KEY_PROVIDERS = ['metaso', 'bocha', 'baidu', 'tavily'];
 
     /* ==========================================
        TauriBridge hook
@@ -1074,6 +1075,8 @@
       // bs.settings 加载后 useEffect 同步进来。
       const [searchProvider, setSearchProvider] = useState('bing');
       const [searchApiKey, setSearchApiKey] = useState('');
+      const [searchKeyDrafts, setSearchKeyDrafts] = useState({});
+      const [searchKeyActions, setSearchKeyActions] = useState({});
       // 模型配置（动态适配）——草稿模式，确认后才保存
       const [modelPreset, setModelPreset] = useState('local_vllm');
       const [customModelName, setCustomModelName] = useState('');
@@ -1211,12 +1214,26 @@
         // 搜索配置：只在第一次从后端加载初始值，后续走草稿模式（确认后才保存并重启）。
         if (!searchConfigInitRef.current && bs.settings) {
           const search = bs.settings.search || {};
+          const credentials = search.credentials || {};
           const saved = {
             provider: search.provider || 'bing',
             apiKey: search.api_key || '',
+            credentials: credentials,
           };
+          const drafts = {};
+          const actions = {};
+          SEARCH_KEY_PROVIDERS.forEach(p => {
+            drafts[p] = '';
+            actions[p] = 'keep_existing';
+          });
+          if (saved.apiKey && saved.provider !== 'bing') {
+            drafts[saved.provider] = saved.apiKey;
+            actions[saved.provider] = 'replace';
+          }
           setSearchProvider(saved.provider);
-          setSearchApiKey(saved.apiKey);
+          setSearchApiKey(drafts[saved.provider] || '');
+          setSearchKeyDrafts(drafts);
+          setSearchKeyActions(actions);
           savedSearchConfigRef.current = saved;
           searchConfigInitRef.current = true;
         }
@@ -1258,11 +1275,50 @@
         const trimmed = (value || '').trim();
         return trimmed ? trimmed : null;
       }
+      function searchCredentialForProvider(provider) {
+        const saved = savedSearchConfigRef.current;
+        return (saved && saved.credentials && saved.credentials[provider]) || {};
+      }
+      function searchHasSavedKey(provider) {
+        const credential = searchCredentialForProvider(provider);
+        const state = credential.credential_state || (credential.has_secret ? 'configured' : 'missing');
+        return !!credential.has_secret || state === 'configured' || state === 'env_override';
+      }
+      function searchProviderKeyAction(provider) {
+        return searchKeyActions[provider] || 'keep_existing';
+      }
+      function searchProviderCredentialDirty(provider) {
+        const action = searchProviderKeyAction(provider);
+        const draft = searchKeyDrafts[provider] || '';
+        return action === 'delete' || (action === 'replace' && !!draft.trim());
+      }
+      function buildSearchSettingsPayload() {
+        const baseSearch = (bs && bs.settings && bs.settings.search) || {};
+        const credentials = { ...(baseSearch.credentials || {}) };
+        SEARCH_KEY_PROVIDERS.forEach(provider => {
+          const action = searchProviderKeyAction(provider);
+          const draft = searchKeyDrafts[provider] || '';
+          if (action === 'delete' || (action === 'replace' && draft.trim())) {
+            credentials[provider] = {
+              ...(credentials[provider] || {}),
+              api_key: action === 'replace' ? draft.trim() : '',
+              credential_action: action,
+            };
+          }
+        });
+        return {
+          ...baseSearch,
+          provider: searchProvider,
+          api_key: null,
+          credentials,
+        };
+      }
       // 搜索配置也影响 EngineConfig,需保存后重启进程才生效。
       const savedSearch = savedSearchConfigRef.current;
+      const searchCredentialDirty = SEARCH_KEY_PROVIDERS.some(searchProviderCredentialDirty);
       const searchNeedsRestart = !!savedSearch && (
         searchProvider !== savedSearch.provider ||
-        normalizedSearchApiKeyValue(searchApiKey) !== normalizedSearchApiKeyValue(savedSearch.apiKey)
+        searchCredentialDirty
       );
       // 语言已即时写盘+切 UI,但 LLM 的 locale_tag 要重启 engine 才生效 → 偏离启动语言就提示。
       const languageNeedsRestart = !!bootedLanguageRef.current && language !== bootedLanguageRef.current;
@@ -1329,15 +1385,13 @@
         const topOverrides = { ...(overrides || {}) };
         delete topOverrides.advanced;
         delete topOverrides.search;
+        const baseSearch = base.search || { provider: 'bing', api_key: null, credentials: {} };
         return {
           ...base,
           ...topOverrides,
           theme: topOverrides.theme !== undefined ? topOverrides.theme : (activeTheme === 'dark' ? 'genesis' : 'liquid-light'),
           language: topOverrides.language !== undefined ? topOverrides.language : (LANG_TO_TAG[language] || 'zh-Hans'),
-          search: searchOverrides || {
-            provider: searchProvider,
-            api_key: normalizedSearchApiKeyValue(searchApiKey),
-          },
+          search: searchOverrides ? { ...baseSearch, ...searchOverrides } : baseSearch,
           advanced: buildAdvancedOverrides(advancedOverrides),
         };
       }
@@ -1350,17 +1404,37 @@
       }
 
       function handleSetSearchProvider(p) {
+        if (p === searchProvider) return;
         setSearchProvider(p);
+        setSearchApiKey(searchKeyDrafts[p] || '');
       }
 
       function handleSetSearchApiKey(k) {
         setSearchApiKey(k);
+        setSearchKeyDrafts(prev => ({ ...prev, [searchProvider]: k }));
+        setSearchKeyActions(prev => ({ ...prev, [searchProvider]: k.trim() ? 'replace' : 'keep_existing' }));
+      }
+
+      function handleKeepSearchApiKey() {
+        setSearchApiKey('');
+        setSearchKeyDrafts(prev => ({ ...prev, [searchProvider]: '' }));
+        setSearchKeyActions(prev => ({ ...prev, [searchProvider]: 'keep_existing' }));
+      }
+
+      function handleReplaceSearchApiKey() {
+        setSearchKeyActions(prev => ({ ...prev, [searchProvider]: 'replace' }));
+      }
+
+      function handleDeleteSearchApiKey() {
+        setSearchApiKey('');
+        setSearchKeyDrafts(prev => ({ ...prev, [searchProvider]: '' }));
+        setSearchKeyActions(prev => ({ ...prev, [searchProvider]: 'delete' }));
       }
 
       function handleConfirmSearchConfig() {
         if (bridge.available) {
           bridge.saveSettingsAndRestart(buildFullSettings({
-            search: { provider: searchProvider, api_key: normalizedSearchApiKeyValue(searchApiKey) },
+            search: buildSearchSettingsPayload(),
           }));
         }
       }
@@ -1627,6 +1701,12 @@
                 superPerm={superPerm} setSuperPerm={handleToggleSuperPerm}
                 searchProvider={searchProvider} setSearchProvider={handleSetSearchProvider}
                 searchApiKey={searchApiKey} setSearchApiKey={handleSetSearchApiKey}
+                searchCredential={searchCredentialForProvider(searchProvider)}
+                searchKeyAction={searchProviderKeyAction(searchProvider)}
+                searchHasSavedKey={searchHasSavedKey(searchProvider)}
+                onKeepSearchApiKey={handleKeepSearchApiKey}
+                onReplaceSearchApiKey={handleReplaceSearchApiKey}
+                onDeleteSearchApiKey={handleDeleteSearchApiKey}
                 savedModels={(bs && bs.savedModels) || []}
                 activeModelId={bs && bs.activeModelId}
                 onSaveModel={(m) => bridge.available && bridge.saveModel(m)}
@@ -3465,7 +3545,7 @@
       );
     };
 
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onConfirmSearchConfig, searchNeedsRestart, languageNeedsRestart, bs, t }) => {
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, searchCredential, searchKeyAction, searchHasSavedKey, onKeepSearchApiKey, onReplaceSearchApiKey, onDeleteSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onConfirmSearchConfig, searchNeedsRestart, languageNeedsRestart, bs, t }) => {
       const isDark = activeTheme === 'dark';
       const isWindows = /Windows/i.test(navigator.userAgent || '');
       const [editingModel, setEditingModel] = useState(null);
@@ -3473,6 +3553,11 @@
       const [feedbackOpen, setFeedbackOpen] = useState(false);
       const [feedbackDraft, setFeedbackDraft] = useState({ type: 'issue', title: '', description: '', attachments: [] });
       const [feedbackStatus, setFeedbackStatus] = useState({ state: 'idle', message: '', receipt: null });
+      const searchCredentialState = (searchCredential && searchCredential.credential_state) || (searchHasSavedKey ? 'configured' : 'missing');
+      const searchKeyStatusText = searchCredentialState === 'env_override' ? t.credEnvOverride
+        : searchCredentialState === 'unavailable' ? t.credUnavailable
+        : searchHasSavedKey ? t.credConfigured
+        : t.credNotConfigured;
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
       const feedbackTypes = [
         { key: 'issue', label: t.feedbackIssue },
@@ -3666,9 +3751,20 @@
                     </span>
                   ) : (
                     <div>
+                      <div className={`mb-2 text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{searchKeyStatusText}</div>
                       <SField isDark={isDark} label={t.searchKey} type="password"
                         value={searchApiKey} onChange={e => setSearchApiKey(e.target.value)}
-                        placeholder={t.searchKeyPlaceholder} />
+                        placeholder={searchHasSavedKey ? t.credEnterNewKey : t.searchKeyPlaceholder} />
+                      {searchHasSavedKey && (
+                        <div className="mt-2 flex items-center gap-2 flex-wrap">
+                          <button onClick={onKeepSearchApiKey}
+                            className={`text-[12px] px-3 py-1.5 rounded-full ${searchKeyAction === 'keep_existing' ? (isDark ? 'bg-[#174EA6] text-white' : 'bg-[#D2E3FC] text-[#174EA6]') : (isDark ? 'bg-[#2B2C2F] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]')}`}>{t.credKeep}</button>
+                          <button onClick={onReplaceSearchApiKey}
+                            className={`text-[12px] px-3 py-1.5 rounded-full ${searchKeyAction === 'replace' ? (isDark ? 'bg-[#174EA6] text-white' : 'bg-[#D2E3FC] text-[#174EA6]') : (isDark ? 'bg-[#2B2C2F] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]')}`}>{t.credReplace}</button>
+                          <button onClick={onDeleteSearchApiKey}
+                            className={`text-[12px] px-3 py-1.5 rounded-full ${searchKeyAction === 'delete' ? (isDark ? 'bg-[#5F2120] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]') : (isDark ? 'bg-[#2B2C2F] text-[#F28B82]' : 'bg-[#F0F4F9] text-[#C5221F]')}`}>{t.credDeleteKey}</button>
+                        </div>
+                      )}
                       <span className={`text-[12px] mt-2 block ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
                         {searchProvider === 'metaso' ? t.searchKeyHintMetaso : searchProvider === 'baidu' ? t.searchKeyHintBaidu : searchProvider === 'tavily' ? t.searchKeyHintTavily : t.searchKeyHintBocha}
                       </span>

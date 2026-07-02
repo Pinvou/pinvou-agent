@@ -424,6 +424,36 @@ impl Pinvou3Bridge {
         }
     }
 
+    /// Current search API key from env or encrypted credential store.
+    pub fn search_api_key(&self) -> Option<String> {
+        let provider = self.prefs.search.provider;
+        for name in provider.env_key_names() {
+            if let Ok(value) = std::env::var(name) {
+                let trimmed = value.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+        if let Some(credential) = self.prefs.search.credentials.get(&provider) {
+            if let Some(reference) = &credential.credential_ref {
+                let store = SystemCredentialStore::new();
+                match store.get(reference) {
+                    Ok(Some(key)) if !key.trim().is_empty() => return Some(key),
+                    Ok(_) => {}
+                    Err(err) => {
+                        eprintln!(
+                            "[pinvou3-app] search credential read failed for {}: {}",
+                            provider.as_str(),
+                            err.user_message()
+                        );
+                    }
+                }
+            }
+        }
+        self.prefs.search.normalized_api_key()
+    }
+
     /// env > prefs.advanced > 默认 true。
     pub fn allow_shell(&self) -> bool {
         if let Ok(v) = std::env::var("PINVOU3_ALLOW_SHELL") {
@@ -683,7 +713,7 @@ impl Pinvou3Bridge {
                 prefs::SearchProvider::Baidu => deepseek_tui::config::SearchProvider::Baidu,
                 prefs::SearchProvider::Tavily => deepseek_tui::config::SearchProvider::Tavily,
             },
-            search_api_key: self.prefs.search.normalized_api_key(),
+            search_api_key: self.search_api_key(),
             // v0.8.47 上游新增,透传 default
             show_thinking,
             goal_state,
@@ -1263,6 +1293,7 @@ mod tests {
         bridge.prefs.search = prefs::SearchPrefs {
             provider: prefs::SearchProvider::Metaso,
             api_key: Some("mk-user-key".to_string()),
+            ..Default::default()
         };
         let cfg = bridge.build_engine_config();
         assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Metaso);
@@ -1275,6 +1306,7 @@ mod tests {
         bridge.prefs.search = prefs::SearchPrefs {
             provider: prefs::SearchProvider::Metaso,
             api_key: Some("   ".to_string()),
+            ..Default::default()
         };
         let cfg = bridge.build_engine_config();
         assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Metaso);
@@ -1285,6 +1317,7 @@ mod tests {
         bridge.prefs.search = prefs::SearchPrefs {
             provider: prefs::SearchProvider::Bocha,
             api_key: None,
+            ..Default::default()
         };
         let cfg = bridge.build_engine_config();
         assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Bocha);
@@ -1295,6 +1328,7 @@ mod tests {
         bridge.prefs.search = prefs::SearchPrefs {
             provider: prefs::SearchProvider::Baidu,
             api_key: Some("bce-v3-user-key".to_string()),
+            ..Default::default()
         };
         let cfg = bridge.build_engine_config();
         assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Baidu);
@@ -1305,6 +1339,7 @@ mod tests {
         bridge.prefs.search = prefs::SearchPrefs {
             provider: prefs::SearchProvider::Baidu,
             api_key: Some("\n\t ".to_string()),
+            ..Default::default()
         };
         let cfg = bridge.build_engine_config();
         assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Baidu);
@@ -1315,6 +1350,7 @@ mod tests {
         bridge.prefs.search = prefs::SearchPrefs {
             provider: prefs::SearchProvider::Tavily,
             api_key: Some("tvly-user-key".to_string()),
+            ..Default::default()
         };
         let cfg = bridge.build_engine_config();
         assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Tavily);
