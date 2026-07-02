@@ -1,0 +1,13 @@
+#!/bin/sh
+# 品悟知道 CLI 包装(Linux/macOS)。
+# 模型 shell 工具的环境被白名单消毒,AGENT_* 直接继承会被丢弃,
+# 故在子进程内部注入再 exec 真正的 zhidao-cli。device_id / credentials 与 pinvou3 的
+# zhidao.rs 共用同一份(~/.pinvou3/zhidao/),确保登录(tauri 调)与业务(本脚本)登录态一致。
+d="$HOME/.pinvou3/zhidao"
+if [ -f "$d/device_id" ]; then
+  AGENT_DEVICE_ID="$(cat "$d/device_id")"
+  export AGENT_DEVICE_ID
+fi
+export AGENT_CREDENTIALS_DIR="$d/credentials"
+export AGENT_NON_INTERACTIVE=1
+exec "$(dirname "$0")/zhidao-cli" "$@"

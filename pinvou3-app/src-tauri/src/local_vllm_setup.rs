@@ -23,6 +23,7 @@ use serde::Serialize;
 use tauri::Emitter;
 
 use crate::bridge::prefs::{ModelPreset, SavedModel, UserPrefs};
+use crate::credential_store::CredentialState;
 use crate::monitor::{self, VllmStatus};
 
 /// 引导阶段事件名(前端 listen 更新步骤指示 + 计时)。
@@ -263,9 +264,10 @@ pub async fn bootstrap_local_vllm(app: tauri::AppHandle) -> Result<BootstrapResu
         model: model.clone(),
         base_url: base_url.clone(),
         api_key: String::new(),
-        has_secret: false,
+        // 本地 vLLM 无 key,凭证字段同 prefs.rs 内置模型的无 key 缺省
         credential_ref: None,
-        credential_state: crate::credential_store::CredentialState::Missing,
+        credential_state: CredentialState::Missing,
+        has_secret: false,
         credential_action: None,
     });
     prefs.advanced.active_model_id = Some(BOOTSTRAP_MODEL_ID.to_string());

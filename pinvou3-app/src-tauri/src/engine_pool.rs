@@ -151,6 +151,14 @@ impl EnginePool {
         }
     }
 
+    /// 回收当前 active session 的 engine。用于全局能力开关/连接器状态变化后,
+    /// 让下一轮按最新 Skill catalogue 重建 system prompt。
+    pub async fn evict_active(&self) {
+        if let Some(session_id) = self.store.active_id() {
+            self.evict(&session_id).await;
+        }
+    }
+
     // ── 模型热切换(commands.rs 调用)──────────────────────────────
 
     /// 新建会话用的默认模型:取全局 active model 的(model 名, id)。从 disk 读最新

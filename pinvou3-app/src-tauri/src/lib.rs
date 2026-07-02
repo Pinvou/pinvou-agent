@@ -19,9 +19,13 @@ pub mod feedback;
 // L1 harness 的附件 e2e 要走「真实 ingest → 注入分流 → 真 vLLM」全链路:
 // 暴露注入收口函数 + file_ingest。
 pub use commands::build_message_with_attachments;
+// CLI 连接器公共管道(飞书 / 企微共享:起进程 / 扫码 / 事件 / 取消)。
+mod connector_cli;
 pub mod engine;
 pub mod engine_pool;
+mod eip;
 mod feishu;
+mod wecom;
 pub mod file_ingest;
 mod file_watcher;
 mod harness;
@@ -38,6 +42,7 @@ mod voice_asr;
 mod workflow_migrate;
 pub mod workflow_registry;
 mod workflow_runs;
+mod zhidao;
 
 use tauri::Manager;
 
@@ -148,6 +153,25 @@ fn ensure_release_env() {
             env::set_var(k, v);
         }
     }
+
+    // IT 内部 CLI 业务调用走 bin 里的包装脚本(`eip`/`zhidao` 等,内部注入 AGENT_*)——因为模型
+    // shell 工具的环境是白名单消毒过的,AGENT_DEVICE_ID/CREDENTIALS_DIR/NON_INTERACTIVE
+    // 直接继承会被过滤掉(见 eip.rs 顶注 + EIP 接入方案 §2.5)。PATH 在白名单内可继承,
+    // 故把 `~/.pinvou3/bundle/skills/{eip,zhidao}/bin` 前插进程 PATH,模型即可像 lark-cli 一样
+    // 直接调用。目录此刻可能尚未解包,但 PATH 含不存在目录无害。
+    {
+        let skills_dir = crate::bridge::paths::bundle_skills_dir();
+        if let Some(old) = env::var_os("PATH") {
+            let mut dirs = vec![
+                skills_dir.join("eip").join("bin"),
+                skills_dir.join("zhidao").join("bin"),
+            ];
+            dirs.extend(env::split_paths(&old));
+            if let Ok(joined) = env::join_paths(dirs) {
+                env::set_var("PATH", joined);
+            }
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -247,8 +271,15 @@ pub fn run() {
             let monitor_state = MonitorState::new();
             app.handle().manage(monitor_state);
 
-            // 飞书连接编排状态(长驻子进程 PID + 取消标志),供 feishu_connect_begin/cancel 用。
-            app.handle().manage(feishu::FeishuConn::default());
+            // CLI 连接器连接编排状态(按连接器 id 存长驻子进程 PID + 取消标志),
+            // 飞书 / 企微共用,供 *_connect_begin / *_cancel 用。
+            app.handle().manage(connector_cli::ConnectorConn::default());
+
+            // EIP 连接编排状态(SSO 登录轮询取消标志),供 eip_connect_begin/cancel 用。
+            app.handle().manage(eip::EipConn::default());
+
+            // 知道连接编排状态(SSO 登录取消标志),供 zhidao_connect_begin/cancel 用。
+            app.handle().manage(zhidao::ZhidaoConn::default());
 
             // 工作流 Phase 可视化:skill 绑定挂在 SessionStore.mode_state 上,
             // per-session 隔离(start_skill_session 命令负责新建 session + bind)。
@@ -318,6 +349,22 @@ pub fn run() {
             feishu::feishu_apply_skills,
             feishu::set_feishu_enabled,
             feishu::feishu_skills_state,
+            wecom::wecom_ensure_cli,
+            wecom::wecom_status,
+            wecom::wecom_connect_begin,
+            wecom::wecom_cancel,
+            wecom::wecom_logout,
+            wecom::wecom_apply_skills,
+            wecom::set_wecom_enabled,
+            wecom::wecom_skills_state,
+            eip::eip_status,
+            eip::eip_connect_begin,
+            eip::eip_cancel,
+            eip::eip_logout,
+            zhidao::zhidao_status,
+            zhidao::zhidao_connect_begin,
+            zhidao::zhidao_cancel,
+            zhidao::zhidao_logout,
             commands::get_settings,
             commands::submit_feedback,
             commands::get_effective_model_config,
