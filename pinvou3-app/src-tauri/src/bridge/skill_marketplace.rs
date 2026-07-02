@@ -3,14 +3,15 @@
 //! 与 MCP 工具市场([`super::marketplace`])刻意分开:MCP 工具是 server 进程(改
 //! mcp.json),技能是磁盘上的 SKILL.md 目录(落 `bundle/skills/`,进 system prompt)。
 //!
-//! 预置技能(pua/nuwa)随 app 编译进二进制(`include_dir`),点装即从嵌入资源复制到
+//! 预置技能(government-writing)随 app 编译进二进制(`include_dir`),从嵌入资源复制到
 //! `~/.pinvou3/bundle/skills/<name>/`——这是底座聊天**唯一加载**的 pinvou3 私有
-//! skill 目录(fork patch #41 砍掉了其余扫描路径)。用户也可上传 zip 技能包。
+//! skill 目录(fork patch #41 砍掉了其余扫描路径)。安装入口为 MCP 工具的配套技能
+//! 联动(见 `marketplace::companion_skills`:装「公文写作」gongwen MCP 时一并装
+//! government-writing),已无独立「技能」市场页;用户上传 zip 技能包能力保留。
 //!
 //! 为何不复用底座 `skills::install`:那条通路对 monorepo / 带 plugin.json / 超
-//! 5MiB 的仓库一律拒装(pua 46 个 SKILL.md+plugin.json、nuwa 38MB 全中),且选路
-//! 逻辑私有硬编码。此处只做"已知来源的精确落盘",自带等价的路径穿越/symlink/
-//! 大小安全防护(参照底座 install.rs 的判断)。
+//! 5MiB 的仓库一律拒装,且选路逻辑私有硬编码。此处只做"已知来源的精确落盘",
+//! 自带等价的路径穿越/symlink/大小安全防护(参照底座 install.rs 的判断)。
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -54,36 +55,6 @@ struct SkillManifest {
 fn preset_manifests() -> &'static [SkillManifest] {
     &[
         SkillManifest {
-            id: "pua",
-            skill_name: "pua",
-            source_dir: "pua",
-            title: "PUA 高绩效教练",
-            subtitle: "用大厂 leader 口吻催 agent 闭环、要证据",
-            description: "来自 tanweai/pua(MIT)的中文 skill:当你说「再试试 / 别摆烂 / 换个方法 / 证据呢」时,用阿里味、华为味等高绩效文化口吻督促 agent 拿结果闭环、跑测试再说完成。",
-            icon: "MessageCircle",
-            color: "bg-gradient-to-b from-rose-400 to-red-600",
-        },
-        SkillManifest {
-            id: "nuwa",
-            skill_name: "huashu-nuwa",
-            source_dir: "nuwa",
-            title: "女娲 · Skill 造人术",
-            subtitle: "输入人名/主题,蒸馏出可运行的人物思维 skill",
-            description: "来自 alchaincyf/nuwa-skill(MIT,花叔)的中文主 skill:深度调研 → 思维框架提炼 → 生成可运行的人物视角 skill。输入人名直接蒸馏,模糊需求先诊断推荐。",
-            icon: "Sparkles",
-            color: "bg-gradient-to-b from-violet-500 to-purple-700",
-        },
-        SkillManifest {
-            id: "brainstorming",
-            skill_name: "brainstorming",
-            source_dir: "brainstorming",
-            title: "头脑风暴 · 想法变设计",
-            subtitle: "动手前先理清需求,产出设计与实现计划文档",
-            description: "改自 obra/superpowers(MIT)的 brainstorming:通过一次一个问题的对话探明意图 → 出设计 → 产出实现计划,全程落两份 md 文档再实现。已去 skill 串联 + 中文化,自包含,适配本地小模型。",
-            icon: "Lightbulb",
-            color: "bg-gradient-to-b from-amber-400 to-orange-500",
-        },
-        SkillManifest {
             id: "government-writing",
             skill_name: "government-writing",
             source_dir: "government-writing",
@@ -113,35 +84,24 @@ pub struct MarketplaceSkillInfo {
 
 // 停用开关(全局持久)----------------------------------------------------------
 //
-// 镜像 MCP 连接器的 disabled_connectors:存市场 id(前端 round-trip 设开关态),
-// 推给底座时映射成落盘 skill 名。skill 没有 per-session catalog,底座侧是 render
-// 收口的进程级过滤器(见 deepseek_tui::skills::set_disabled_skills),故无需 Op /
-// engine_pool 广播——一次 set 全 session 下轮生效。
+// 技能停用**没有独立开关**:改由连接器禁用联动驱动——被禁用连接器
+// ([`marketplace::load_disabled_connectors`])声明的 `companion_skills` 即视为停用。
+// 语义 = "公文 MCP 关掉 → government-writing 一并从 `## Skills` catalogue 隐藏;开回来
+// 即恢复"(装/卸走 companion install/uninstall,禁用/启用走这里,三态一致)。
+// skill 没有 per-session catalog,底座侧是 render 收口的进程级过滤器(见
+// deepseek_tui::skills::set_disabled_skills),故无需 Op / engine_pool 广播——一次 set
+// 全 session 下轮生效。
 
-fn disabled_skills_path() -> PathBuf {
-    paths::pinvou3_home().join("disabled_skills.json")
-}
-
-/// 读全局被停用的技能 id 列表(读不到/空 → 空)。
-pub fn load_disabled_skills() -> Vec<String> {
-    std::fs::read_to_string(disabled_skills_path())
-        .ok()
-        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
-        .unwrap_or_default()
-}
-
-/// 写全局被停用的技能 id 列表。
-pub fn save_disabled_skills(ids: &[String]) {
-    if let Ok(json) = serde_json::to_string(ids) {
-        let _ = std::fs::write(disabled_skills_path(), json);
-    }
-}
-
-/// 把当前停用集(id → 落盘 skill 名)推给底座进程级过滤器。启动时 + 每次 toggle
-/// 调用;空集 = 全开。下一轮 prompt 构建即生效(一次 prefix-cache miss 后稳定)。
+/// 把当前停用集(被禁用连接器的 companion_skills → 落盘 skill 名)推给底座进程级过滤器。
+/// 启动时 + 每次 `set_disabled_connectors` 调用;空集 = 全开。下一轮 prompt 构建即生效
+/// (一次 prefix-cache miss 后稳定)。
 pub fn refresh_disabled_skills() {
-    let ids = load_disabled_skills();
-    let names = SkillMarketplaceManager::new().model_skill_names(&ids);
+    let market = crate::bridge::marketplace::MarketplaceManager::new();
+    let companion_ids: Vec<String> = crate::bridge::marketplace::load_disabled_connectors()
+        .iter()
+        .flat_map(|cid| market.companion_skills(cid))
+        .collect();
+    let names = SkillMarketplaceManager::new().model_skill_names(&companion_ids);
     deepseek_tui::skills::set_disabled_skills(names);
 }
 
@@ -230,7 +190,7 @@ impl SkillMarketplaceManager {
     }
 
     /// 市场 id → 落盘 skill 名(= SKILL.md frontmatter `name` = 底座 `Skill.name`)。
-    /// 预置查清单(nuwa → huashu-nuwa);上传技能的 id 即目录名,直通。底座按此名过滤。
+    /// 预置查清单(id 可与 skill_name 不同);上传技能的 id 即目录名,直通。底座按此名过滤。
     pub fn model_skill_names(&self, ids: &[String]) -> Vec<String> {
         ids.iter()
             .map(|id| {
@@ -570,24 +530,32 @@ mod tests {
         dir
     }
 
-    /// 预置 pua 从嵌入资源落盘 → list 反映 installed → 卸载删目录的全链路。
+    /// 预置 government-writing 从嵌入资源落盘 → list 反映 installed → 卸载删目录的全链路。
     #[test]
     fn install_then_uninstall_preset_roundtrip() {
         let tmp = fresh_dir("roundtrip");
         let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
 
-        mgr.install("pua").unwrap();
-        let skill_dir = tmp.join("pua");
+        mgr.install("government-writing").unwrap();
+        let skill_dir = tmp.join("government-writing");
         assert!(skill_dir.join("SKILL.md").is_file(), "SKILL.md 应落盘");
         assert!(skill_dir.join(".installed-from").is_file(), "应写安装标记");
-        assert!(skill_dir.join("references").is_dir(), "references/ 应一并复制");
-        assert!(!skill_dir.join("SOURCE.md").exists(), "SOURCE.md 应被跳过");
-        assert_eq!(read_skill_name(&skill_dir.join("SKILL.md")).as_deref(), Some("pua"));
-        assert!(mgr.list_skills().iter().any(|s| s.id == "pua" && s.installed));
+        assert!(skill_dir.join("templates").is_dir(), "templates/ 应一并复制");
+        assert_eq!(
+            read_skill_name(&skill_dir.join("SKILL.md")).as_deref(),
+            Some("government-writing")
+        );
+        assert!(mgr
+            .list_skills()
+            .iter()
+            .any(|s| s.id == "government-writing" && s.installed));
 
-        mgr.uninstall("pua").unwrap();
+        mgr.uninstall("government-writing").unwrap();
         assert!(!skill_dir.exists(), "卸载应删目录");
-        assert!(mgr.list_skills().iter().any(|s| s.id == "pua" && !s.installed));
+        assert!(mgr
+            .list_skills()
+            .iter()
+            .any(|s| s.id == "government-writing" && !s.installed));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -638,36 +606,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// nuwa 的 source_dir(nuwa) ≠ skill_name(huashu-nuwa):落盘按 frontmatter name,
-    /// 卸载用市场 id 映射回目录名。覆盖 pua 测不到的不对称路径。
-    #[test]
-    fn install_nuwa_maps_source_dir_to_frontmatter_name() {
-        let tmp = fresh_dir("nuwa");
-        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
-        mgr.install("nuwa").unwrap();
-        assert!(tmp.join("huashu-nuwa").join("SKILL.md").is_file(), "按 name 落盘");
-        assert!(!tmp.join("nuwa").exists(), "不应用 source_dir 名落盘");
-        assert!(tmp.join("huashu-nuwa").join("LICENSE").is_file(), "LICENSE 应保留");
-        mgr.uninstall("nuwa").unwrap(); // 用 id 卸载,内部映射到 huashu-nuwa
-        assert!(!tmp.join("huashu-nuwa").exists(), "卸载应删 name 目录");
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    /// brainstorming 改造版(source_dir==skill_name):验证嵌入资源 SKILL.md
-    /// frontmatter name 校验通过 + LICENSE 保留 + SOURCE.md 跳过。
-    #[test]
-    fn install_brainstorming_preset() {
-        let tmp = fresh_dir("brainstorming");
-        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
-        mgr.install("brainstorming").unwrap();
-        let dir = tmp.join("brainstorming");
-        assert!(dir.join("SKILL.md").is_file());
-        assert!(dir.join("LICENSE").is_file(), "MIT LICENSE 应保留");
-        assert!(!dir.join("SOURCE.md").exists(), "SOURCE.md 应跳过");
-        assert_eq!(
-            read_skill_name(&dir.join("SKILL.md")).as_deref(),
-            Some("brainstorming")
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
 }
