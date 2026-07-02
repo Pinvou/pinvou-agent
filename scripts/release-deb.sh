@@ -35,6 +35,32 @@ echo "=== 发布 pinvou3 v$VERSION ==="
 # 模型(bge-m3)改由客户端在知识库页**按需下载**,见 scripts/release-kb-model.sh(一次性发布到
 # OTA 源 kb-model/bge-m3.tar.gz,变更模型才跑)。这里不再拷模型进 resources/bge-m3。
 
+# ── 内置工具共享 key 注入(编译期 option_env! 读,见 marketplace resolve_secret_placeholder 兜底)──
+# key 不进 git:放 gitignored 的 scripts/.builtin-secrets.env(模板见同名 .example)。
+# **硬检查**:缺文件 / key 为空直接报错退出 —— 防止静默发出「内置工具对新用户不可用」的坏包
+# (option_env! 取不到值编译不报错,漏填会悄悄发坏版本)。确要发不带内置 key 的版本:
+# 设 PINVOU3_SKIP_BUILTIN_SECRETS=1 显式跳过。
+SECRETS_ENV="$REPO_ROOT/scripts/.builtin-secrets.env"
+if [ "${PINVOU3_SKIP_BUILTIN_SECRETS:-0}" = "1" ]; then
+  echo "⚠️  PINVOU3_SKIP_BUILTIN_SECRETS=1 → 本版不含内置共享 key(新用户装天气/问财/企查查需自填)" >&2
+elif [ -f "$SECRETS_ENV" ]; then
+  set -a; . "$SECRETS_ENV"; set +a
+  missing=""
+  [ -z "${PINVOU3_BUILTIN_AMAP_KEY:-}" ]    && missing="$missing AMAP"
+  [ -z "${PINVOU3_BUILTIN_IWENCAI_KEY:-}" ] && missing="$missing IWENCAI"
+  [ -z "${PINVOU3_BUILTIN_QCC_KEY:-}" ]     && missing="$missing QCC"
+  if [ -n "$missing" ]; then
+    echo "❌ $SECRETS_ENV 里这些 key 为空:$missing" >&2
+    echo "   填好三个 key,或设 PINVOU3_SKIP_BUILTIN_SECRETS=1 显式发不带内置 key 的版本。" >&2
+    exit 1
+  fi
+  echo "✓ 已加载内置共享 key(AMAP/IWENCAI/QCC),将编译进二进制"
+else
+  echo "❌ $SECRETS_ENV 不存在 —— 直接发版会静默发出「内置工具对新用户不可用」的坏包。" >&2
+  echo "   从 scripts/.builtin-secrets.env.example 复制并填 key,或设 PINVOU3_SKIP_BUILTIN_SECRETS=1 显式跳过。" >&2
+  exit 1
+fi
+
 # ── 2. 构建 deb（前端纯静态无构建步骤,tauri build 直接打包）──────
 (cd "$APP_DIR" && npx tauri build)
 

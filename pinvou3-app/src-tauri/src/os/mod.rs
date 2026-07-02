@@ -16,9 +16,9 @@ pub(crate) use unsupported as platform;
 pub(crate) use windows as platform;
 
 pub use interface::{
-    asr_dependency_packages, asr_missing_message, asr_tool_exists, asr_tool_path,
-    check_for_update_info, command_exists, disable_super_permission, download_update_package,
-    enable_super_permission, install_dependencies, install_downloaded_update,
+    asr_bundled_runtime_status, asr_dependency_packages, asr_missing_message, asr_tool_exists,
+    asr_tool_path, check_for_update_info, command_exists, disable_super_permission,
+    download_update_package, enable_super_permission, install_dependencies, install_downloaded_update,
     ocr_dependency_packages, pandoc_dependency_packages,
     pandoc_missing_message, pandoc_tool_exists, pandoc_tool_path, pdf_dependency_packages,
     pdf_ocr_missing_message, pdf_render_missing_message, pdf_text_missing_message, pdf_tool_exists,

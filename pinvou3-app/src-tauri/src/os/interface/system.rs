@@ -26,6 +26,10 @@ pub fn asr_tool_exists() -> bool {
     super::super::platform::asr_tool_exists()
 }
 
+pub fn asr_bundled_runtime_status() -> Option<bool> {
+    super::super::platform::asr_bundled_runtime_status()
+}
+
 pub fn show_pandoc_dependency_check() -> bool {
     super::super::platform::show_pandoc_dependency_check()
 }

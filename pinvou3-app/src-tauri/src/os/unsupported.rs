@@ -51,6 +51,10 @@ pub fn asr_missing_message() -> &'static str {
     "当前平台缺少可用的本地语音识别组件。"
 }
 
+pub fn asr_bundled_runtime_status() -> Option<bool> {
+    None
+}
+
 pub fn pdf_tool_path(command: &str) -> PathBuf {
     PathBuf::from(command)
 }

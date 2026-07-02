@@ -34,6 +34,7 @@ use deepseek_tui::tui::approval::ApprovalMode;
 
 use self::bundle::{Pinvou3Bundle, INSTRUCTIONS_MD};
 use self::prefs::{ModelPreset, SavedModel, UserPrefs};
+use crate::credential_store::{CredentialStore, SystemCredentialStore};
 
 /// Qwen3.6 在 vLLM 里是 passthrough 字符串（不走 alias）。
 ///
@@ -106,6 +107,9 @@ impl Pinvou3Bridge {
         paths::ensure_dirs()?;
         let bundle = Pinvou3Bundle::paths();
         bundle.ensure_extracted()?;
+        if let Err(err) = marketplace::sync_mcp_secret_env_vars() {
+            eprintln!("[pinvou3-app] MCP secret env sync skipped: {err}");
+        }
         let prefs = UserPrefs::load();
         if !paths::settings_path().exists() {
             prefs.save().ok();
@@ -390,20 +394,32 @@ impl Pinvou3Bridge {
             return v;
         }
         if let Some(m) = self.effective_model() {
+            let store = SystemCredentialStore::new();
+            if let Some(reference) = &m.credential_ref {
+                match store.get(reference) {
+                    Ok(Some(key)) if !key.trim().is_empty() => return key,
+                    Ok(_) => {}
+                    Err(err) => {
+                        eprintln!(
+                            "[pinvou3-app] credential read failed for model {}: {}",
+                            m.id,
+                            err.user_message()
+                        );
+                    }
+                }
+            }
             // 本地 vLLM 不需鉴权:用户留空 key 兜底 local-no-auth(底座要求非空)。
-            if m.api_key.trim().is_empty() && m.preset == ModelPreset::LocalVllm {
+            if m.preset == ModelPreset::LocalVllm && self.provider() == "vllm" {
                 return LOCAL_VLLM_API_KEY.to_string();
             }
             return m.api_key.clone();
         }
-        match self.prefs.advanced.model_preset.unwrap_or_default() {
-            ModelPreset::LocalVllm => LOCAL_VLLM_API_KEY.into(),
-            _ => self
-                .prefs
-                .advanced
-                .custom_api_key
-                .clone()
-                .unwrap_or_default(),
+        match (
+            self.prefs.advanced.model_preset.unwrap_or_default(),
+            self.provider().as_str(),
+        ) {
+            (ModelPreset::LocalVllm, "vllm") => LOCAL_VLLM_API_KEY.into(),
+            _ => String::new(),
         }
     }
 
@@ -750,31 +766,37 @@ impl Pinvou3Bridge {
         let api_key = self.api_key();
         cfg.api_key = Some(api_key.clone());
         let base_url = self.base_url();
+        let model = self.model();
         let providers = cfg.providers.get_or_insert_with(ProvidersConfig::default);
         // 按 provider 写对应 provider 配置的 base_url + api_key
         match provider.as_str() {
             "vllm" => {
                 providers.vllm.base_url = Some(base_url);
                 providers.vllm.api_key = Some(api_key);
+                providers.vllm.model = Some(model.clone());
             }
             "openai" => {
                 providers.openai.base_url = Some(base_url);
                 providers.openai.api_key = Some(api_key);
+                providers.openai.model = Some(model.clone());
             }
             "deepseek" => {
                 providers.deepseek.base_url = Some(base_url);
                 providers.deepseek.api_key = Some(api_key);
+                providers.deepseek.model = Some(model.clone());
             }
             "moonshot" => {
                 providers.moonshot.base_url = Some(base_url);
                 providers.moonshot.api_key = Some(api_key);
+                providers.moonshot.model = Some(model.clone());
             }
             _ => {
                 providers.vllm.base_url = Some(base_url);
                 providers.vllm.api_key = Some(api_key);
+                providers.vllm.model = Some(model.clone());
             }
         }
-        cfg.default_text_model = Some(self.model());
+        cfg.default_text_model = Some(model);
         // 本地 vLLM (Qwen3.6) thinking 必须关，否则 SSE idle timeout；
         // 云端 provider 保留底座默认（用户可在 settings.toml 中覆盖）。
         if self.provider() == "vllm" {
@@ -963,6 +985,28 @@ mod tests {
             workspace: std::env::temp_dir(),
             session_model: None,
         }
+    }
+
+    fn set_active_model(
+        bridge: &mut Pinvou3Bridge,
+        preset: ModelPreset,
+        model: &str,
+        base_url: &str,
+        api_key: &str,
+    ) {
+        bridge.prefs.advanced.saved_models = vec![SavedModel {
+            id: "test-model".to_string(),
+            name: model.to_string(),
+            preset,
+            model: model.to_string(),
+            base_url: base_url.to_string(),
+            api_key: api_key.to_string(),
+            credential_ref: None,
+            credential_state: crate::credential_store::CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        }];
+        bridge.prefs.advanced.active_model_id = Some("test-model".to_string());
     }
 
     /// 默认模型名必须能被底座 `context_window_for_model` 识别出窗口,
@@ -1452,9 +1496,13 @@ mod tests {
     #[test]
     fn openai_compatible_uses_user_provided_name() {
         let mut bridge = fixture_bridge();
-        bridge.prefs.advanced.model_preset = Some(ModelPreset::OpenaiCompatible);
-        bridge.prefs.advanced.custom_model_name = Some("my-custom-model".to_string());
-        bridge.prefs.migrate_models();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "my-custom-model",
+            "https://api.openai.com/v1",
+            "",
+        );
         assert_eq!(bridge.model(), "my-custom-model");
         assert_eq!(bridge.provider(), "openai");
     }
@@ -1463,10 +1511,13 @@ mod tests {
     #[test]
     fn openai_compatible_passthrough_model_name() {
         let mut bridge = fixture_bridge();
-        bridge.prefs.advanced.model_preset = Some(ModelPreset::OpenaiCompatible);
-        bridge.prefs.advanced.custom_model_name = Some("gpt-4o".to_string());
-        bridge.prefs.advanced.custom_base_url = Some("https://api.openai.com/v1".to_string());
-        bridge.prefs.advanced.custom_api_key = Some("sk-xxx".to_string());
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "gpt-4o",
+            "https://api.openai.com/v1",
+            "sk-xxx",
+        );
         assert_eq!(bridge.model(), "gpt-4o");
         assert_eq!(bridge.provider(), "openai");
         assert_eq!(bridge.base_url(), "https://api.openai.com/v1");
@@ -1499,8 +1550,13 @@ mod tests {
     #[test]
     fn remote_provider_keeps_default_reasoning_effort() {
         let mut bridge = fixture_bridge();
-        bridge.prefs.advanced.model_preset = Some(ModelPreset::OpenaiCompatible);
-        bridge.prefs.advanced.custom_model_name = Some("gpt-4o".to_string());
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "gpt-4o",
+            "https://api.openai.com/v1",
+            "",
+        );
         let cfg = bridge.build_dt_config();
         assert_eq!(cfg.reasoning_effort, None);
     }
@@ -1521,22 +1577,24 @@ mod tests {
     #[test]
     fn official_deepseek_base_url_forces_deepseek_provider() {
         let mut bridge = fixture_bridge();
-        bridge.prefs.advanced.model_preset = Some(ModelPreset::LocalVllm);
-        bridge.prefs.advanced.custom_base_url = Some("https://api.deepseek.com/".to_string());
-        bridge.prefs.advanced.custom_model_name = Some("DeepSeek-V4-Flash".to_string());
-        bridge.prefs.advanced.custom_api_key = Some("sk-test".to_string());
-        bridge.prefs.migrate_models(); // 同 load():custom_* → active SavedModel
+        set_active_model(
+            &mut bridge,
+            ModelPreset::LocalVllm,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com/",
+            "sk-test",
+        );
 
         assert_eq!(bridge.provider(), "deepseek");
         assert_eq!(bridge.api_key(), "sk-test");
         let cfg = bridge.build_dt_config();
         assert_eq!(cfg.api_provider(), deepseek_tui::config::ApiProvider::Deepseek);
         assert_eq!(cfg.deepseek_base_url(), "https://api.deepseek.com");
-        assert_eq!(cfg.default_model(), "deepseek-v4-flash");
+        assert_eq!(cfg.default_model(), "deepseek-v4-pro");
         assert_eq!(cfg.reasoning_effort, None);
         assert_eq!(
             deepseek_tui::config::wire_model_for_provider(cfg.api_provider(), &bridge.model()),
-            "deepseek-v4-flash"
+            "deepseek-v4-pro"
         );
     }
 
@@ -1551,8 +1609,13 @@ mod tests {
             "DEEPSEEK_API_KEY",
         ]);
         let mut bridge = fixture_bridge();
-        bridge.prefs.advanced.model_preset = Some(ModelPreset::LocalVllm);
-        bridge.prefs.advanced.custom_api_key = Some("sk-test".to_string());
+        set_active_model(
+            &mut bridge,
+            ModelPreset::LocalVllm,
+            "qwen36_35b_256k",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
         std::env::set_var("DEEPSEEK_PROVIDER", "vllm");
         std::env::set_var("DEEPSEEK_BASE_URL", "https://api.deepseek.com/");
         std::env::set_var("DEEPSEEK_MODEL", "deepseek-ai/DeepSeek-V4-Pro");
@@ -1573,7 +1636,13 @@ mod tests {
     #[test]
     fn qwen_preset_defaults() {
         let mut bridge = fixture_bridge();
-        bridge.prefs.advanced.model_preset = Some(ModelPreset::Qwen);
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Qwen,
+            ModelPreset::Qwen.default_model(),
+            ModelPreset::Qwen.default_base_url(),
+            "",
+        );
         assert_eq!(bridge.provider(), "openai");
         assert_eq!(bridge.model(), "qwen-max");
         assert_eq!(bridge.base_url(), "https://dashscope.aliyuncs.com/compatible-mode/v1");

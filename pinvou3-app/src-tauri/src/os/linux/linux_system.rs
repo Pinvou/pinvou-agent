@@ -81,6 +81,10 @@ pub fn asr_dependency_packages() -> &'static str {
     "ffmpeg"
 }
 
+pub fn asr_bundled_runtime_status() -> Option<bool> {
+    None
+}
+
 pub fn pandoc_missing_message() -> &'static str {
     "文档解析需要 pandoc，请运行: sudo apt install pandoc"
 }

@@ -26,6 +26,7 @@ log = "0.4"
 tauri = { version = "2.11.1", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2.4.2"
 
 # 异步 / 错误
 anyhow = "1.0"
@@ -37,6 +38,10 @@ tokio = { version = "1.49", features = ["full"] }
 # 重命名保留本地别名 deepseek-tui，全部 `use deepseek_tui::*` 无需改动
 # （上游自己也保留 deepseek-tui bin shim 做 back-compat，做法一致）。
 deepseek-tui = { path = "../../DeepSeek-TUI/crates/tui", package = "codewhale-tui" }
+
+# 凭证存储复用底座 codewhale-secrets(DefaultKeyringStore + FileKeyringStore 文件回退),
+# 不再在 app 层自建 keyring 封装;headless/无 D-Bus 服务器也能存凭证。
+codewhale-secrets = { path = "../../DeepSeek-TUI/crates/secrets" }
 
 # Monitor 用：vLLM HTTP probe（/v1/models + Prometheus /metrics）
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
@@ -83,6 +88,7 @@ calamine = "0.26"
 # 详见 src/detach.rs begin_detach_drag;spike example 也复用。Wayland 下不可用 → 降级(Task 8)。
 device_query = "2"
 
+# keyring 不再直接依赖 —— 凭证走底座 codewhale-secrets(它内部按平台引 keyring)。
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }
 

@@ -285,6 +285,7 @@
         customModelName: '模型名称',
         customBaseUrl: 'API 地址',
         customApiKey: 'API Key',
+        credEnvOverride: '环境变量覆盖', credUnavailable: '凭证不可用', credConfigured: '已配置', credNotConfigured: '未配置', credEnterNewKey: '输入新 Key 替换', credKeep: '保留', credReplace: '替换', credDeleteKey: '删除 Key', clearSearch: '清除搜索', clearInput: '清除输入', sendMsg: '发送',
         detectLocalVllm: '检测本机 vLLM',
         detectingLocalVllm: '检测中…',
         useVllmConfig: '使用此配置',
@@ -530,6 +531,7 @@
         customModelName: 'Model Name',
         customBaseUrl: 'API Base URL',
         customApiKey: 'API Key',
+        credEnvOverride: 'Env override', credUnavailable: 'Credential unavailable', credConfigured: 'Configured', credNotConfigured: 'Not configured', credEnterNewKey: 'Enter new key to replace', credKeep: 'Keep', credReplace: 'Replace', credDeleteKey: 'Delete Key', clearSearch: 'Clear search', clearInput: 'Clear input', sendMsg: 'Send',
         detectLocalVllm: 'Detect local vLLM',
         detectingLocalVllm: 'Detecting…',
         useVllmConfig: 'Use config',
@@ -774,6 +776,7 @@
         customModelName: 'モデル名',
         customBaseUrl: 'API ベース URL',
         customApiKey: 'API Key',
+        credEnvOverride: '環境変数で上書き', credUnavailable: '資格情報が利用不可', credConfigured: '設定済み', credNotConfigured: '未設定', credEnterNewKey: '置き換える新しいキーを入力', credKeep: '保持', credReplace: '置換', credDeleteKey: 'キー削除', clearSearch: '検索をクリア', clearInput: '入力をクリア', sendMsg: '送信',
         detectLocalVllm: 'ローカル vLLM を検出',
         detectingLocalVllm: '検出中…',
         useVllmConfig: 'この設定を使用',
@@ -1800,6 +1803,7 @@
     const SearchView = ({ theme, history, t, onSelect }) => {
       const isDark = theme === 'dark';
       const [query, setQuery] = useState('');
+      const inputRef = useRef(null);
       const filtered = query
         ? history.filter(h => h.title.toLowerCase().includes(query.toLowerCase()))
         : history;
@@ -1813,12 +1817,24 @@
               <div className={`flex items-center gap-3 px-6 py-4 rounded-full mb-10 transition-colors ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`}>
                 <Search size={22} className={isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'} />
                 <input
+                  ref={inputRef}
                   type="text"
                   placeholder={t.searchPlaceholder}
                   value={query}
                   onChange={e => setQuery(e.target.value)}
                   className={`flex-1 bg-transparent border-none outline-none text-[16px] placeholder:text-[16px] ${isDark ? 'placeholder:text-[#C4C7C5]' : 'placeholder:text-[#444746]'}`}
                 />
+                {query ? (
+                  <button
+                    type="button"
+                    aria-label={t.clearSearch}
+                    title={t.clearSearch}
+                    onClick={() => { setQuery(''); inputRef.current && inputRef.current.focus(); }}
+                    className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#DDE3EA]'}`}
+                  >
+                    <X size={16} />
+                  </button>
+                ) : null}
               </div>
 
               {/* List Section */}
@@ -3238,7 +3254,8 @@
       const [preset, setPreset] = useState(initial.preset || 'local_vllm');
       const [model, setModel] = useState(initial.model || '');
       const [baseUrl, setBaseUrl] = useState(initial.base_url || '');
-      const [apiKey, setApiKey] = useState(initial.api_key || '');
+      const [apiKey, setApiKey] = useState('');
+      const [keyAction, setKeyAction] = useState(initial.__new ? 'replace' : 'keep_existing');
       const [showKey, setShowKey] = useState(false);
       const [testing, setTesting] = useState(false);
       const [testResult, setTestResult] = useState(null);
@@ -3251,12 +3268,12 @@
         setPreset(p);
         const defs = MODEL_PRESET_DEFS[p] || MODEL_PRESET_DEFS.local_vllm;
         setBaseUrl(defs.baseUrl); setModel(defs.model);
-        if (p !== 'local_vllm') setApiKey('');
+        if (p !== 'local_vllm') { setApiKey(''); setKeyAction(initial.__new ? 'replace' : 'keep_existing'); }
       }
       async function handleTest() {
         if (!bridge.available) return;
         setTesting(true); setTestResult(null);
-        try { const msg = await bridge.testModelConnection(baseUrl.trim(), apiKey.trim()); setTestResult({ ok: true, msg: String(msg) }); }
+        try { const msg = await bridge.testModelConnection(baseUrl.trim(), keyAction === 'replace' ? apiKey.trim() : '', initial.__new ? null : initial.id); setTestResult({ ok: true, msg: String(msg) }); }
         catch (e) { setTestResult({ ok: false, msg: String(e) }); }
         finally { setTesting(false); }
       }
@@ -3266,6 +3283,7 @@
         if (c.base_url) setBaseUrl(c.base_url);
         if (c.model) { setModel(c.model); if (!name.trim()) setName(c.model); }
         setApiKey('');
+        setKeyAction(initial.__new ? 'replace' : 'keep_existing');
       }
       async function handleDetect() {
         if (!bridge.available || detecting) return;
@@ -3299,8 +3317,14 @@
       function doSave() {
         if (!canSave) return;
         const id = initial.__new ? ('m_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)) : initial.id;
-        onSave({ id: id, name: name.trim(), preset: preset, model: model.trim(), base_url: baseUrl.trim(), api_key: apiKey });
+        onSave({ id: id, name: name.trim(), preset: preset, model: model.trim(), base_url: baseUrl.trim(), api_key: keyAction === 'replace' ? apiKey.trim() : '', credential_action: keyAction });
       }
+      const credentialState = initial.credential_state || (initial.has_secret ? 'configured' : 'missing');
+      const hasSavedKey = !!initial.has_secret || credentialState === 'configured' || credentialState === 'env_override';
+      const keyStatusText = credentialState === 'env_override' ? t.credEnvOverride
+        : credentialState === 'unavailable' ? t.credUnavailable
+        : hasSavedKey ? t.credConfigured
+        : t.credNotConfigured;
       return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150" onClick={onCancel}>
           <div onClick={e => e.stopPropagation()}
@@ -3322,13 +3346,24 @@
               <SField isDark={isDark} label={t.customBaseUrl} type="text" value={baseUrl} onChange={e => setBaseUrl(e.target.value)} />
               <div>
                 <span className={`text-[14px] block mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.customApiKey}</span>
+                <div className={`mb-2 text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{keyStatusText}</div>
                 <div className="relative">
-                  <input type={showKey ? 'text' : 'password'} value={apiKey} onChange={e => setApiKey(e.target.value)}
-                    placeholder={preset === 'local_vllm' ? 'local-no-auth' : 'sk-...'}
+                  <input type={showKey ? 'text' : 'password'} value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
+                    placeholder={hasSavedKey ? t.credEnterNewKey : (preset === 'local_vllm' ? 'local-no-auth' : 'sk-...')}
                     className={`w-full px-4 py-2 pr-10 rounded-lg text-[14px] outline-none ${isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746] focus:border-[#A8C7FA]' : 'bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0]'}`} />
                   <button onClick={() => setShowKey(s => !s)} className="absolute right-2 top-1/2 -translate-y-1/2 text-[14px] opacity-70 px-1">{showKey ? '🙈' : '👁'}</button>
                 </div>
               </div>
+                {hasSavedKey && (
+                  <div className="mt-2 flex items-center gap-2 flex-wrap">
+                    <button onClick={() => { setKeyAction('keep_existing'); setApiKey(''); }}
+                      className={`text-[12px] px-3 py-1.5 rounded-full ${keyAction === 'keep_existing' ? (isDark ? 'bg-[#174EA6] text-white' : 'bg-[#D2E3FC] text-[#174EA6]') : (isDark ? 'bg-[#2B2C2F] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]')}`}>{t.credKeep}</button>
+                    <button onClick={() => setKeyAction('replace')}
+                      className={`text-[12px] px-3 py-1.5 rounded-full ${keyAction === 'replace' ? (isDark ? 'bg-[#174EA6] text-white' : 'bg-[#D2E3FC] text-[#174EA6]') : (isDark ? 'bg-[#2B2C2F] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]')}`}>{t.credReplace}</button>
+                    <button onClick={() => { setKeyAction('delete'); setApiKey(''); }}
+                      className={`text-[12px] px-3 py-1.5 rounded-full ${keyAction === 'delete' ? (isDark ? 'bg-[#5F2120] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]') : (isDark ? 'bg-[#2B2C2F] text-[#F28B82]' : 'bg-[#F0F4F9] text-[#C5221F]')}`}>{t.credDeleteKey}</button>
+                  </div>
+                )}
               <div className="flex items-center gap-3 flex-wrap">
                 <button onClick={handleTest} disabled={testing || !baseUrl.trim()}
                   className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors disabled:opacity-50 ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#F0F4F9] text-[#1F1F1F] hover:bg-[#E8EAED]'}`}>
@@ -4179,6 +4214,7 @@
         setArtifactW(w); localStorage.setItem('pinvou_artifactW', String(w));
       };
       const scrollRef = useRef(null);
+      const autoScrollRef = useRef(true);
       const composerRef = useRef(null);
       // 输入框自动增高:随内容从最小(~2行)长到上限 160px,再内部滚动(iOS 手感)。
       // 清空(发送后)inputText 变 '' → 自动缩回最小高。
@@ -4224,10 +4260,27 @@
       }, [prefill]);
 
       // Auto-scroll：直接滚内部容器到底（绝不动外层窗口，避免内容被顶到看不见/拉不动）
+      const isNearChatBottom = (el) => (el.scrollHeight - el.scrollTop - el.clientHeight) < 96;
+
       useEffect(() => {
         const el = scrollRef.current;
-        if (el) el.scrollTop = el.scrollHeight;
-      }, [chatItems.length, chatItems[chatItems.length - 1]?.html]);
+        if (!el) return;
+        const onScroll = () => { autoScrollRef.current = isNearChatBottom(el); };
+        onScroll();
+        el.addEventListener('scroll', onScroll, { passive: true });
+        return () => el.removeEventListener('scroll', onScroll);
+      }, []);
+
+      useEffect(() => {
+        const el = scrollRef.current;
+        if (!el) return;
+        const lastItem = chatItems[chatItems.length - 1];
+        if (!lastItem) { autoScrollRef.current = true; return; }
+        if (autoScrollRef.current || lastItem.type === 'user') {
+          el.scrollTop = el.scrollHeight;
+          autoScrollRef.current = true;
+        }
+      }, [chatItems.length, chatItems[chatItems.length - 1]?.html, composerH]);
 
       // 安装工具后新建会话 → 本地显示欢迎卡片（不发 LLM query，不浪费 token）。
       // welcomeToolId 是一次性引导态,必须跟随会话身份:只有"装完工具"(justInstalledTool 非
@@ -4241,6 +4294,10 @@
       const voiceActive = voiceInput.status === 'requesting_permission' || voiceInput.status === 'recording' || voiceInput.status === 'transcribing';
       const voiceRecording = voiceInput.status === 'recording';
       const voiceNotice = voiceInput.status !== 'idle' && voiceInput.message;
+      const hasDraftText = inputText.trim().length > 0;
+      const hasReadyAttachment = attachments.some(a => a.status === 'ready');
+      const canSend = hasDraftText || hasReadyAttachment;
+      const canClearInput = hasDraftText && !voiceActive;
       const voiceAsrSetup = (bs && bs.voiceAsrSetup) || { open: false };
       useEffect(() => {
         if (justInstalledTool) {
@@ -4262,8 +4319,7 @@
 
       function handleSend() {
         // 不再因 busy 拦截:bridge.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
-        const hasReady = attachments.some(a => a.status === 'ready');
-        if (!inputText.trim() && !hasReady) return;
+        if (!canSend) return;
         if (bridge.available) bridge.sendMessage(inputText.trim());
         setInputText('');
       }
@@ -4286,6 +4342,11 @@
           return;
         }
         bridge.startVoiceInput(inputText, (text) => setInputText(prev => bridge.appendVoiceText(prev, text)));
+      }
+
+      function handleClearInput() {
+        if (!canClearInput) return;
+        setInputText('');
       }
 
       function handleVoiceCancel() {
@@ -4509,15 +4570,25 @@
                   <ComposerModeMenu t={t} bs={bs} compact={composerCompact} />
                   <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
                 </div>
+                {hasDraftText && (
+                  <button onClick={handleClearInput} disabled={!canClearInput} aria-label={t.clearInput} title={t.clearInput}
+                    className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${
+                      canClearInput
+                        ? (isDark ? 'text-[#C4C7C5] hover:bg-white/10' : 'text-[#5F6368] hover:bg-black/5')
+                        : 'text-gray-400 cursor-not-allowed opacity-60'
+                    }`}>
+                    <Trash2 size={18} />
+                  </button>
+                )}
                 {busy ? (
                   <button onClick={handleCancel}
                     className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-black/5 dark:bg-white/10 text-[#C5221F] dark:text-[#F28B82] hover:bg-black/10 dark:hover:bg-white/20 transition-colors">
                     <StopCircle size={20} />
                   </button>
                 ) : (() => {
-                  const ready = inputText.trim() || attachments.some(a => a.status === 'ready');
+                  const ready = canSend;
                   return (
-                    <button onClick={handleSend} disabled={!ready} aria-label="发送"
+                    <button onClick={handleSend} disabled={!ready} aria-label={t.sendMsg} title={t.sendMsg}
                       className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0' : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
                       <Send size={17} className="translate-x-[1px]" />
                     </button>
@@ -5630,7 +5701,8 @@
       if (!config) return null;
       const [values, setValues] = useState({});
       const fields = config.fields || [];
-      const canSubmit = fields.length > 0 && fields.every(f => (values[f.key] || '').trim().length > 0);
+      // required:false 的字段可留空(留空→用内置共享 key);只有 required:true 字段强制填。
+      const canSubmit = fields.every(f => f.required === false || (values[f.key] || '').trim().length > 0);
       return (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
           <div

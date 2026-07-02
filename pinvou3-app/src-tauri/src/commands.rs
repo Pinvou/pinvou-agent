@@ -22,6 +22,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::bridge::mode_state::{SerializableMode, SessionModeState};
 use crate::bridge::prefs::{SavedModel, UserPrefs};
 use crate::bridge::sessions::SessionStore;
+use crate::credential_store::{
+    CredentialEditAction, CredentialState, CredentialStore, SystemCredentialStore,
+};
 use crate::engine_pool::EnginePool;
 use crate::knowledge::KnowledgeService;
 use crate::monitor::{MonitorSnapshot, MonitorState, VllmStatus};
@@ -334,7 +337,100 @@ pub fn build_message_with_attachments(
 /// `get_settings()` 能立刻拿到，不需要 reload bridge。
 #[tauri::command]
 pub async fn get_settings() -> Result<UserPrefs, String> {
-    Ok(UserPrefs::load())
+    Ok(refresh_safe_prefs(UserPrefs::load()))
+}
+
+fn sanitize_command_error(context: &str, err: impl std::fmt::Display) -> String {
+    format!(
+        "{context}: {}",
+        crate::credential_store::redact_secret(&err.to_string())
+    )
+}
+
+fn prepare_prefs_for_save(mut prefs: UserPrefs) -> Result<UserPrefs, String> {
+    let store = SystemCredentialStore::new();
+    let migration = prefs.migrate_plaintext_api_keys_with_store(&store);
+    if !migration.failed_model_ids.is_empty() {
+        return Err("credential store unavailable; please reconfigure API Key".to_string());
+    }
+    prefs.sanitize_plaintext_api_keys();
+    Ok(prefs)
+}
+
+fn refresh_safe_prefs(mut prefs: UserPrefs) -> UserPrefs {
+    prefs.refresh_credential_states_with_store(&SystemCredentialStore::new());
+    prefs.sanitize_plaintext_api_keys();
+    prefs
+}
+
+fn apply_model_credential(mut model: SavedModel, old: Option<&SavedModel>) -> Result<SavedModel, String> {
+    let store = SystemCredentialStore::new();
+    let action = model.credential_action.unwrap_or_else(|| {
+        if model.api_key.trim().is_empty() {
+            CredentialEditAction::KeepExisting
+        } else {
+            CredentialEditAction::Replace
+        }
+    });
+
+    match action {
+        CredentialEditAction::KeepExisting => {
+            if let Some(old) = old {
+                model.credential_ref = old.credential_ref.clone();
+                model.credential_state = old.credential_state;
+                model.has_secret = old.has_secret;
+            } else if model.api_key.trim().is_empty() {
+                model.mark_missing();
+            } else {
+                let reference = model.credential_reference();
+                store
+                    .set(&reference, model.api_key.trim())
+                    .map_err(|e| e.user_message())?;
+                model.mark_configured(reference);
+            }
+        }
+        CredentialEditAction::Replace => {
+            let key = model.api_key.trim().to_string();
+            if key.is_empty() {
+                model.mark_missing();
+            } else {
+                let reference = model.credential_reference();
+                store
+                    .set(&reference, &key)
+                    .map_err(|e| e.user_message())?;
+                model.mark_configured(reference);
+            }
+        }
+        CredentialEditAction::Delete => {
+            let reference = model
+                .credential_ref
+                .clone()
+                .or_else(|| old.and_then(|m| m.credential_ref.clone()))
+                .unwrap_or_else(|| model.credential_reference());
+            store
+                .delete(&reference)
+                .map_err(|e| e.user_message())?;
+            model.mark_missing();
+        }
+    }
+    model.clear_plaintext_key();
+    Ok(model)
+}
+
+fn resolve_saved_model_key(model_id: Option<&str>) -> Result<Option<String>, String> {
+    let prefs = UserPrefs::load();
+    let model = model_id
+        .and_then(|id| prefs.model_by_id(id))
+        .or_else(|| prefs.active_model());
+    let Some(model) = model else {
+        return Ok(None);
+    };
+    let Some(reference) = &model.credential_ref else {
+        return Ok(None);
+    };
+    SystemCredentialStore::new()
+        .get(reference)
+        .map_err(|e| e.user_message())
 }
 
 #[tauri::command]
@@ -354,6 +450,8 @@ pub struct EffectiveModelConfig {
     pub model: String,
     pub base_url: String,
     pub api_key: String,
+    pub credential_state: CredentialState,
+    pub has_secret: bool,
     pub provider: String,
     /// 被环境变量覆盖的字段名列表（如 `["model", "base_url"]`）。
     /// 空列表表示全部走 settings.json，用户修改会生效。
@@ -387,11 +485,20 @@ pub async fn get_effective_model_config(
         .map(|m| m.preset)
         .unwrap_or_default()
         .as_str();
+    let active = bridge.prefs.active_model();
     Ok(EffectiveModelConfig {
         preset: preset.to_string(),
         model: bridge.model(),
         base_url: bridge.base_url(),
-        api_key: bridge.api_key(),
+        api_key: String::new(),
+        credential_state: if std::env::var("DEEPSEEK_API_KEY").is_ok() {
+            CredentialState::EnvOverride
+        } else {
+            active
+                .map(|m| m.credential_state)
+                .unwrap_or(CredentialState::Missing)
+        },
+        has_secret: active.map(|m| m.has_secret).unwrap_or(false),
         provider: bridge.provider(),
         env_overrides,
     })
@@ -406,7 +513,7 @@ pub struct ModelsView {
 
 #[tauri::command]
 pub async fn list_models() -> Result<ModelsView, String> {
-    let prefs = UserPrefs::load();
+    let prefs = refresh_safe_prefs(UserPrefs::load());
     Ok(ModelsView {
         models: prefs.advanced.saved_models.clone(),
         active_model_id: prefs.advanced.active_model_id.clone(),
@@ -417,6 +524,9 @@ pub async fn list_models() -> Result<ModelsView, String> {
 #[tauri::command]
 pub async fn save_model(model: SavedModel) -> Result<(), String> {
     let mut prefs = UserPrefs::load();
+    let old = prefs.model_by_id(&model.id).cloned();
+    let model = apply_model_credential(model, old.as_ref())
+        .map_err(|e| sanitize_command_error("save_model", e))?;
     prefs.upsert_model(model);
     prefs.save().map_err(|e| format!("save_model: {e:?}"))
 }
@@ -427,6 +537,11 @@ pub async fn delete_model(id: String) -> Result<(), String> {
     let mut prefs = UserPrefs::load();
     if prefs.advanced.saved_models.len() <= 1 {
         return Err("至少保留一个模型".to_string());
+    }
+    if let Some(reference) = prefs.model_by_id(&id).and_then(|m| m.credential_ref.clone()) {
+        SystemCredentialStore::new()
+            .delete(&reference)
+            .map_err(|e| sanitize_command_error("delete_model", e.user_message()))?;
     }
     prefs.remove_model(&id);
     prefs.save().map_err(|e| format!("delete_model: {e:?}"))
@@ -473,16 +588,25 @@ pub async fn get_session_model_id(
 
 /// 测试连接:GET {base_url}/models(OpenAI 兼容标准端点),验 base_url + key 可达。
 #[tauri::command]
-pub async fn test_model_connection(base_url: String, api_key: String) -> Result<String, String> {
+pub async fn test_model_connection(
+    base_url: String,
+    api_key: String,
+    model_id: Option<String>,
+) -> Result<String, String> {
     let url = format!("{}/models", base_url.trim_end_matches('/'));
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
         .build()
         .map_err(|e| format!("client: {e}"))?;
     let mut req = client.get(&url);
-    let key = api_key.trim();
-    if !key.is_empty() {
-        req = req.bearer_auth(key);
+    let provided_key = api_key.trim().to_string();
+    let key = if provided_key.is_empty() {
+        resolve_saved_model_key(model_id.as_deref())?.unwrap_or_default()
+    } else {
+        provided_key
+    };
+    if !key.trim().is_empty() {
+        req = req.bearer_auth(key.trim());
     }
     match req.send().await {
         Ok(resp) if resp.status().is_success() => {
@@ -778,7 +902,8 @@ pub async fn transcribe_voice_audio(
         })?;
         // 优先用内置 SenseVoice 引擎（转码+识别+清洗全在 Rust，无需 shim/环境变量）；
         // 引擎或模型未就绪时回退原 CLI 路径（PINVOU3_ASR_CMD / pinvou-asr）。
-        let result = if crate::voice_asr::engine_path().is_file()
+        let result = if crate::os::asr_bundled_runtime_status().is_none()
+            && crate::voice_asr::engine_path().is_file()
             && crate::voice_asr::model_path().is_file()
         {
             crate::voice_asr::transcribe(&wav_path).map(|text| LocalAsrOutput { text })
@@ -813,7 +938,7 @@ pub async fn transcribe_voice_audio(
 /// Phase C 会做 in-place engine restart（处理 in-flight turn）。
 #[tauri::command]
 pub async fn update_settings(prefs: UserPrefs) -> Result<(), String> {
-    prefs
+    prepare_prefs_for_save(prefs)?
         .save()
         .map_err(|e| format!("save settings failed: {e:?}"))
 }
@@ -821,7 +946,7 @@ pub async fn update_settings(prefs: UserPrefs) -> Result<(), String> {
 /// 保存设置后立即重启应用（模型/后端切换后需要重启才能生效）。
 #[tauri::command]
 pub async fn save_settings_and_restart(prefs: UserPrefs, app: tauri::AppHandle) -> Result<(), String> {
-    prefs
+    prepare_prefs_for_save(prefs)?
         .save()
         .map_err(|e| format!("save settings failed: {e:?}"))?;
     eprintln!("[pinvou3-app] settings saved, restarting app...");

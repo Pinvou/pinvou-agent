@@ -13,6 +13,7 @@
 mod audit;
 pub mod bridge;
 mod commands;
+pub mod credential_store;
 mod detach;
 pub mod feedback;
 // L1 harness 的附件 e2e 要走「真实 ingest → 注入分流 → 真 vLLM」全链路:
@@ -153,6 +154,13 @@ fn ensure_release_env() {
 pub fn run() {
     ensure_release_env();
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             if cfg!(debug_assertions) {

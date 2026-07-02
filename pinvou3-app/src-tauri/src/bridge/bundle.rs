@@ -239,13 +239,27 @@ impl Pinvou3Bundle {
         // 工作流目录同 skills:immutable bundle 资源,每次启动防御性重写
         // (防 "VERSION 对得上但目录缺失"),无副作用。
         self.write_workflows()?;
-        // 内置 skill 同 workflow:immutable bundle 资源,每次启动防御性重写。
+        // Migrate plaintext MCP secrets before bundled manifests are rewritten. If migration
+        // fails, keep the old files as a recoverable source instead of overwriting the only
+        // remaining plaintext copy.
+        let mcp_secret_migration_ok = match crate::bridge::marketplace::MarketplaceManager::new()
+            .migrate_mcp_plaintext_secrets()
+        {
+            Ok(_) => true,
+            Err(err) => {
+                eprintln!("[pinvou3-app] MCP secret migration skipped: {err}");
+                false
+            }
+        };
+        // Built-in skills and workflow resources are immutable bundle assets.
         self.write_builtin_skills()?;
-        // 飞书官方域技能:按门控规则(已连接 && 未手动停用)决定解包还是删除——
-        // 没连飞书的用户不写这 9 个技能,省 token(§八.4 装了才启用)。
+        // Feishu official domain skills are shown only when the gate says so.
         self.apply_feishu_skills(crate::feishu::feishu_skills_should_show())?;
-        // MCP server 脚本同理。
-        self.write_mcp_servers()?;
+        // MCP server scripts are immutable as well, but wait for secret migration to avoid
+        // deleting legacy plaintext before it has been copied into the credential store.
+        if mcp_secret_migration_ok {
+            self.write_mcp_servers()?;
+        }
         // mcp.json merge:每次启动 upsert 内置 pinvou server,保留 marketplace 条目。
         // 不受 VERSION gate 限制——marketplace 安装可能在任何时候发生。
         self.ensure_builtin_mcp_servers()?;

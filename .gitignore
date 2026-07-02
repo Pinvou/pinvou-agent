@@ -34,6 +34,8 @@ Thumbs.db
 # Secrets
 .env
 .env*
+# 内置共享 key(明文 export,模板见 .builtin-secrets.env.example)
+scripts/.builtin-secrets.env
 *.pem
 
 # Playwright

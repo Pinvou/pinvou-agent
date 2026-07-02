@@ -8,10 +8,18 @@
   "mcp_tools": [],
   "command": "",
   "args": [],
-  "env": {
-    "QCC_API_KEY": "MGpgzxyMHOHsqq74qFMhds0aSjCIRV9XcQVagPDAh7f9pAk7"
-  },
-  "config_fields": [],
+  "secret_headers": [
+    {
+      "header": "Authorization",
+      "scheme": "Bearer",
+      "source_key": "QCC_API_KEY",
+      "provider": "qcc",
+      "required": true
+    }
+  ],
+  "config_fields": [
+    { "key": "QCC_API_KEY", "label": "企查查 API Key（留空用内置共享额度）", "required": false, "target": "bearer", "secret": true }
+  ],
   "servers": [
     { "name": "qcc-company",   "url": "https://agent.qcc.com/mcp/company/stream" },
     { "name": "qcc-risk",      "url": "https://agent.qcc.com/mcp/risk/stream" },

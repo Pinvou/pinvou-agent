@@ -117,6 +117,10 @@ pub fn asr_tool_exists() -> bool {
     windows_path::bundled_asr_tool_path().is_some() || command_exists("pinvou-asr")
 }
 
+pub fn asr_bundled_runtime_status() -> Option<bool> {
+    Some(asr_tool_exists())
+}
+
 pub fn show_pdf_dependency_check() -> bool {
     false
 }

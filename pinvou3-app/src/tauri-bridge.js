@@ -2039,7 +2039,7 @@
     }
     notify();
   }
-  // model 对象字段须是 snake_case(SavedModel serde): {id,name,preset,model,base_url,api_key}
+  // model 对象字段须是 snake_case(SavedModel serde): {id,name,preset,model,base_url,api_key,credential_action}
   async function saveModel(model) {
     await invoke("save_model", { model: model });
     await loadModels();
@@ -2070,8 +2070,8 @@
       await setActiveModel(modelId);
     }
   }
-  async function testModelConnection(baseUrl, apiKey) {
-    return await invoke("test_model_connection", { baseUrl: baseUrl, apiKey: apiKey });
+  async function testModelConnection(baseUrl, apiKey, modelId) {
+    return await invoke("test_model_connection", { baseUrl: baseUrl, apiKey: apiKey, modelId: modelId || null });
   }
 
   // ── Super permission ─────────────────────────────────────────────
@@ -2895,6 +2895,8 @@
     // 首次/缺组件：先检测本地语音识别依赖，缺则弹安装框、不进录音。
     try {
       var asrStatus = await invoke("voice_asr_status");
+      // VoiceAsrStatus 只有 engine/ffmpeg/model/ready/missing,无 installable 字段。
+      // 未装好即弹安装引导;平台 gating 若要做,需先给后端补 installable(当前无此需求)。
       if (asrStatus && !asrStatus.ready) {
         state.voiceAsrSetup = { open: true, status: asrStatus, installing: false, progress: null, error: null };
         notify();
