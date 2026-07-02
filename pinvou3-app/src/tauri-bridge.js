@@ -161,6 +161,13 @@
       progress: null,     // { stage:'ffmpeg'|'model'|'done', downloaded, total }
       error: null,
     },
+    // 知识库 embedding 模型按需下载引导（知识库页未装模型时显 gate）
+    kbModelSetup: {
+      downloading: false, // 下载/部署中
+      status: null,       // kb_model_status 返回 { installed, downloading, sizeBytes, installedBytes, version }
+      progress: null,     // kb_model:progress 事件 { stage:'download'|'verify'|'extract'|'done', downloaded, total, ready }
+      error: null,
+    },
   };
   // 卡片池 1078 张卡的前端缓存。只读,通过 getPersonas() 取引用,不走 notify 快照。
   var personaPoolCache = [];
@@ -1477,6 +1484,14 @@
     notify();
   });
 
+  // 知识库 embedding 模型下载进度（download → verify → extract → done）
+  listen("kb_model:progress", function (e) {
+    var p = e && e.payload;
+    if (!p) return;
+    state.kbModelSetup = Object.assign({}, state.kbModelSetup, { progress: p });
+    notify();
+  });
+
   // chat:plan_snapshot —— update_plan/checklist_write 后实时更新进度，与 plan_ready 解耦
   listen("chat:plan_snapshot", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
@@ -2787,6 +2802,28 @@
     notify();
   }
 
+  // 知识库 embedding 模型按需下载（下载 → 校验 → 解压部署 → 热加载），进度走
+  // kb_model:progress 事件。resolve 时模型已就绪，调用方据 status.installed 收起 gate。
+  async function downloadKbModel() {
+    if (state.kbModelSetup.downloading) return state.kbModelSetup.status;
+    state.kbModelSetup = Object.assign({}, state.kbModelSetup, { downloading: true, error: null, progress: { stage: "start" } });
+    notify();
+    try {
+      var st = await invoke("kb_model_download");
+      state.kbModelSetup = Object.assign({}, state.kbModelSetup, { downloading: false, status: st, progress: { stage: "done" } });
+      notify();
+      return st;
+    } catch (e) {
+      state.kbModelSetup = Object.assign({}, state.kbModelSetup, { downloading: false, error: String(e) });
+      notify();
+      throw e;
+    }
+  }
+
+  function cancelKbModel() {
+    invoke("kb_model_cancel").catch(function () {});
+  }
+
   async function startVoiceInput(draftText, writeback) {
     if (activeVoiceInput && state.voiceInput.status === "recording") {
       finishVoiceInput(false, false);
@@ -3106,6 +3143,8 @@
     startVoiceInput: startVoiceInput,
     installVoiceAsr: installVoiceAsr,
     closeVoiceAsrSetup: closeVoiceAsrSetup,
+    downloadKbModel: downloadKbModel,
+    cancelKbModel: cancelKbModel,
     cancelVoiceInput: cancelVoiceInput,
     clearVoiceInput: clearVoiceInput,
     appendVoiceText: appendVoiceText,

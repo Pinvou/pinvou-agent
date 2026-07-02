@@ -30,7 +30,6 @@
       "deb"
     ],
     "resources": [
-      "resources/bge-m3",
       "resources/web-template",
       "resources/asr"
     ],

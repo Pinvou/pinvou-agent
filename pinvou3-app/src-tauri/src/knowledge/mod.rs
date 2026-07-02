@@ -11,6 +11,9 @@ mod embed;
 mod exclude;
 mod kb_tool;
 mod l1;
+/// embedding 模型按需下载命令（pub mod：tauri::command 宏生成的 `__cmd__` 助手需经全路径
+/// `knowledge::model_download::kb_model_*` 引用，`pub use` 重导出函数带不出宏）。
+pub mod model_download;
 mod query;
 mod scanner;
 mod store;
@@ -108,6 +111,23 @@ impl KnowledgeService {
     /// L1 知识集句柄（命令层直接用）。
     pub fn l1(&self) -> &l1::L1Store {
         &self.l1
+    }
+
+    /// 语义检索是否就绪（embedding 模型已加载）。完全门控用：模型没装 → 知识库不可用。
+    pub fn semantic_ready(&self) -> bool {
+        self.l1.has_embedder()
+    }
+
+    /// 热加载 embedding 模型（按需下载完成后调）：按 dev-env 优先 / 下载落点兜底重新定位并加载，
+    /// 换进所有在跑会话/后台线程共享的 embedder 槽，**免重启**。返回是否就绪。
+    pub fn reload_embedder(&self) -> bool {
+        let emb = embed::Embedder::from_env_or_dir(Some(&model_dir())).map(Arc::new);
+        let ready = emb.is_some();
+        if let Some(e) = &emb {
+            eprintln!("[knowledge] L1 embedding 已热加载: {} ({})", e.model(), e.source());
+        }
+        self.l1.set_embedder(emb);
+        ready
     }
 
     /// 知识库是否有任何已入库内容（任一知识集存在文档）。门控 kb_search 工具的对外可见性：
@@ -275,6 +295,16 @@ pub fn default_db_path() -> PathBuf {
     crate::bridge::paths::pinvou3_home()
         .join("knowledge")
         .join("index.db")
+}
+
+/// embedding 模型按需下载落点：`~/.pinvou3/knowledge/models/bge-m3`。
+/// 模型不再随 deb 打包（deb 瘦 ~559MB）；用户在知识库页主动下载部署到此目录后才启用语义检索。
+/// dev 仍可用 env `PINVOU3_KB_EMBED_MODEL_DIR` 覆盖（见 embed::from_env_or_dir）。
+pub fn model_dir() -> PathBuf {
+    crate::bridge::paths::pinvou3_home()
+        .join("knowledge")
+        .join("models")
+        .join("bge-m3")
 }
 
 fn now() -> i64 {
