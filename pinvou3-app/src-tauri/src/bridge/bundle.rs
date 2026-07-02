@@ -20,6 +20,19 @@ static SANSHENG_LIUBU_DIR: Dir<'_> =
 static LARK_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/skills");
 
+/// H3C EIP 员工门户技能(SKILL.md + bin/ 包装脚本与二进制)。独立于 lark skills 的
+/// include_dir(故放在 `bundle/eip/` 而非 `bundle/skills/`,避免被 LARK_SKILLS_DIR
+/// 卷入、跟飞书门控耦合)。启动解包到 `skills_dir/eip`,见 `write_eip_skill`。
+/// 注:`bin/eip-cli`/`eip-cli.exe` 是 IT 内部二进制,本地 gitignore、不进 git;
+/// 但编译期 include_dir 仍会嵌进 app(发布形态 A/C 待与 IT 定,见接入方案)。
+static EIP_SKILL_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/eip");
+
+/// H3C 知道知识库技能(SKILL.md + zhidao CLI)。与 EIP 同属 IT 内部 CLI 连接器,
+/// 独立内嵌并解包到 `skills_dir/zhidao`,用连接标记门控 SKILL.md 可见性。
+static ZHIDAO_SKILL_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/zhidao");
+
 /// 9 个 lark 域技能目录名(门控写/删共用)。skills_dir 下这些目录在不在
 /// = 飞书技能对模型可见与否(引擎 `SkillRegistry` 扫目录)。
 const LARK_SKILL_DIRS: [&str; 9] = [
@@ -41,8 +54,9 @@ const LARK_SKILL_DIRS: [&str; 9] = [
 ///     不依赖版本号 bump(同 write_workflows / write_mcp_servers）。
 /// 0.10: 接入飞书官方域技能(lark-shared + calendar/doc/drive/sheets/im/task/wiki/base):
 ///       include_dir 内嵌 + 启动解包到 bundle_skills_dir,供 SkillRegistry 发现
+/// 0.11: 接入 H3C 知道知识库技能(zhidao CLI + SKILL.md),与 EIP 并列门控
 pub const BUNDLE_VERSION: &str = concat!(
-    "0.10-",
+    "0.11-",
     env!("BUNDLE_INSTRUCTIONS_HASH"),
     "-",
     env!("BUNDLE_WORKFLOW_HASH_SANSHENG"),
@@ -255,6 +269,30 @@ impl Pinvou3Bundle {
         self.write_builtin_skills()?;
         // Feishu official domain skills are shown only when the gate says so.
         self.apply_feishu_skills(crate::feishu::feishu_skills_should_show())?;
+        // EIP 技能:二进制 ~23MB,不像小文本那样每启动防御性重写——仅在二进制缺失时
+        // 解包(自愈),避免每次启动写 23MB。改 SKILL.md/包装脚本后想刷新:删 skills_dir/eip。
+        let eip_bin_name = if cfg!(windows) { "eip-cli.exe" } else { "eip-cli" };
+        if !self.skills_dir.join("eip").join("bin").join(eip_bin_name).is_file() {
+            self.write_eip_skill()?;
+        }
+        // EIP 技能门控:仅"已连接"用户(本机有连接标记)才放 SKILL.md(模型可见);
+        // 未连接 / 非 EIP 用户删 SKILL.md(留 bin/ 供连接用),不背 EIP prompt
+        //(§八.4 装了才启用,同飞书 apply_feishu_skills)。
+        self.apply_eip_skill_visibility(crate::eip::eip_skills_should_show())?;
+        // 自愈按**当前平台实际要跑的**二进制判缺失(同上方 EIP):Windows 跑 zhidao-cli.exe
+        // (Rust 直调 + 模型 shell 经 zhidao.cmd),Unix 跑 zhidao 包装脚本 exec zhidao-cli。
+        // 旧实现在所有平台只查 Linux 的 zhidao/zhidao-cli,Windows 下若 zhidao-cli.exe 被
+        // 杀软隔离/删除(未签名 Go exe 常见),这俩 Linux 文件仍在→自愈不触发→知道永久不可用。
+        let zhidao_bin = self.skills_dir.join("zhidao").join("bin");
+        let zhidao_healthy = if cfg!(windows) {
+            zhidao_bin.join("zhidao-cli.exe").is_file()
+        } else {
+            zhidao_bin.join("zhidao").is_file() && zhidao_bin.join("zhidao-cli").is_file()
+        };
+        if !zhidao_healthy {
+            self.write_zhidao_skill()?;
+        }
+        self.apply_zhidao_skill_visibility(crate::zhidao::zhidao_skills_should_show())?;
         // MCP server scripts are immutable as well, but wait for secret migration to avoid
         // deleting legacy plaintext before it has been copied into the credential store.
         if mcp_secret_migration_ok {
@@ -364,6 +402,82 @@ impl Pinvou3Bundle {
                 let _ = std::fs::remove_dir_all(self.skills_dir.join(d));
             }
             let _ = std::fs::remove_file(self.skills_dir.join("NOTICE.md"));
+        }
+        Ok(())
+    }
+
+    /// 解包内嵌的 EIP 员工门户技能到 `skills_dir/eip`(SKILL.md + bin/ 包装脚本&二进制)。
+    /// Linux 下给包装脚本 `eip` 和二进制 `eip-cli` 补执行位(include_dir 不保留权限,
+    /// 缺执行位则模型 shell 跑 `eip` / 包装内 exec `eip-cli` 都会 Permission denied)。
+    fn write_eip_skill(&self) -> std::io::Result<()> {
+        let dest = self.skills_dir.join("eip");
+        Self::extract_dir(&EIP_SKILL_DIR, &dest)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for rel in ["bin/eip", "bin/eip-cli"] {
+                let p = dest.join(rel);
+                if p.is_file() {
+                    let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 解包内嵌的 H3C 知道技能到 `skills_dir/zhidao`。Linux 下给 CLI 补执行位。
+    fn write_zhidao_skill(&self) -> std::io::Result<()> {
+        let dest = self.skills_dir.join("zhidao");
+        Self::extract_dir(&ZHIDAO_SKILL_DIR, &dest)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for name in ["zhidao", "zhidao-cli"] {
+                let p = dest.join("bin").join(name);
+                if p.is_file() {
+                    let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// EIP 技能门控:`show` → 确保 `eip/SKILL.md` 在位(已连接,模型可见);否则**删
+    /// SKILL.md**——保留 `bin/`(连接 / 查状态仍需二进制),仅令 `SkillRegistry` 扫不到
+    /// 该目录(无 SKILL.md 的目录不注册),非 EIP / 未连接用户即不背 EIP prompt。
+    /// 由 `eip.rs` 在 **连接成功 / 登出 / 启动**(按连接标记)调用。幂等;可见性 =
+    /// SKILL.md 在不在,引擎重扫 `skills_dir` 即生效。删后可从内嵌 `EIP_SKILL_DIR` 复原。
+    pub fn apply_eip_skill_visibility(&self, show: bool) -> std::io::Result<()> {
+        let skill_md = self.skills_dir.join("eip").join("SKILL.md");
+        if show {
+            if !skill_md.is_file() {
+                if let Some(f) = EIP_SKILL_DIR.get_file("SKILL.md") {
+                    if let Some(parent) = skill_md.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&skill_md, f.contents())?;
+                }
+            }
+        } else {
+            let _ = std::fs::remove_file(&skill_md);
+        }
+        Ok(())
+    }
+
+    /// 知道技能门控:连接成功后放出 SKILL.md,未连接/登出时只保留 bin/。
+    pub fn apply_zhidao_skill_visibility(&self, show: bool) -> std::io::Result<()> {
+        let skill_md = self.skills_dir.join("zhidao").join("SKILL.md");
+        if show {
+            if !skill_md.is_file() {
+                if let Some(f) = ZHIDAO_SKILL_DIR.get_file("SKILL.md") {
+                    if let Some(parent) = skill_md.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&skill_md, f.contents())?;
+                }
+            }
+        } else {
+            let _ = std::fs::remove_file(&skill_md);
         }
         Ok(())
     }

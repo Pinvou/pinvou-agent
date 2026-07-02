@@ -1,0 +1,3 @@
+# EIP 包装脚本必须 LF：CRLF 会让 Linux 上 `#!/bin/sh` 变 `bad interpreter`，
+# 且 include_dir 嵌的是构建机工作树内容，故钉死 LF 防任意平台 checkout 转 CRLF。
+resources/bundle/eip/bin/eip text eol=lf

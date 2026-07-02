@@ -5259,6 +5259,8 @@
       { id: 7, backendId: null, title: '腾讯会议助手', subtitle: '云视频会议自动化管控', category: 'comm', type: 'Action Skill', version: 'v2.2.1', latency: '<100ms', desc: '赋予 AI 调度会议室的能力。通过指令自动预定、查询和管理腾讯会议。支持一键发起会议、分发会议纪要、智能管理参会人员。', icon: Video, color: 'bg-gradient-to-b from-sky-400 to-blue-500', installed: false, authRequired: true },
       { id: 8, backendId: null, title: '企微 Bot Hook', subtitle: '连接企业内部与外部生态', category: 'comm', type: 'Webhook', version: 'v4.0', latency: '<40ms', desc: '深度对接企业微信。支持机器人主动推送图文消息、查询通讯录架构、联动审批流与日程管理。', icon: MessageCircle, color: 'bg-gradient-to-b from-cyan-400 to-blue-500', installed: false, authRequired: false },
       { id: 9, backendId: 'feishu', feishuCli: true, title: '飞书（Lark）', subtitle: '以你本人身份操作飞书文档/日历/表格/消息', category: 'comm', type: 'CLI + 官方技能', version: 'v1.0.56', latency: '云端', desc: '接入飞书官方 CLI + 官方域技能（MIT）：让 AI 以你本人身份读写云文档、查改日历、操作多维表格（Base）、收发消息、管理知识库与任务。点「连接飞书」浏览器一键授权，全程不填 key。数据经飞书云 OpenAPI（可选联网功能，opt-in）。', icon: Send, color: 'bg-gradient-to-b from-teal-400 to-emerald-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['读飞书文档帮我做一份 PPT', '把飞书文档整理成摘要', '查我今天的飞书日历', '看看我飞书里的待办任务'] },
+      { id: 17, backendId: 'eip', eipCli: true, internal: 'H3C', title: 'H3C 员工门户（EIP）', subtitle: '以你本人 SSO 身份查考勤/假期/加班/待办/找人/资讯/消费', category: 'comm', type: 'CLI + 官方技能', version: 'v1.0.0', latency: '内网', desc: '接入 H3C EIP 员工门户：以你本人 SSO 身份查考勤打卡、假期余额、加班时数、待办审批、搜同事、看集团新闻公告、查食堂消费与报销等。点「连接」浏览器 SSO 一键登录，全程不填 key。需公司内网。', icon: Briefcase, color: 'bg-gradient-to-b from-indigo-400 to-blue-600', installed: false, authRequired: true, configFields: [], welcomeQueries: ['我这个月考勤有没有异常', '我还有几天年假', '有没有待办审批', '帮我查同事的联系方式'] },
+      { id: 18, backendId: 'zhidao', zhidaoCli: true, internal: 'H3C', title: 'H3C 知道 · 内部知识库', subtitle: '以你本人 SSO 身份检索 H3C 内部知识与资料', category: 'kb', type: 'CLI + 官方技能', version: 'v1.0.0', latency: '内网', desc: '接入 H3C「知道」内部知识库：以你本人 SSO 身份搜索知识条目、资料库和文档内容，支持基于企业内部知识进行问答与资料定位。点「连接」扫码或浏览器 SSO 登录，全程不填 key。需公司内网。', icon: BookOpen, color: 'bg-gradient-to-b from-emerald-400 to-teal-600', installed: false, authRequired: true, configFields: [], welcomeQueries: ['在知道里搜一下交换机配置规范', '帮我查内部资料库里的安全方案', '知道里有没有这类故障处理文档', '帮我找这个产品的内部知识'] },
       { id: 10, backendId: null, title: '钉钉开放 API', subtitle: '企业级智能移动办公底座', category: 'comm', type: 'REST API', version: 'v3.1.2', latency: '<80ms', desc: '提供钉钉全产品能力的接口映射。包含 AI 表格、考勤打卡、群聊机器人对话流及通讯录同步管控。', icon: Navigation, color: 'bg-gradient-to-b from-blue-400 to-indigo-500', installed: false, authRequired: true },
       { id: 11, backendId: null, title: 'TAPD 敏捷研发', subtitle: '缺陷与迭代的自动化追踪', category: 'dev', type: 'Action Skill', version: 'v2.8.0', latency: '<60ms', desc: '研发管理核心工具。允许 AI 查询项目迭代进度、自动拆分需求条目、更新缺陷状态，实现从需求到发布的研发全生命周期数字化。', icon: Layout, color: 'bg-gradient-to-b from-violet-500 to-fuchsia-600', installed: false, authRequired: true },
       { id: 12, backendId: null, title: 'CNB 云原生管线', subtitle: '代码仓库与 CI/CD 调度', category: 'dev', type: 'MCP Server', version: 'v1.0.0', latency: '<40ms', desc: '将云原生开发能力赋予大模型。支持通过自然语言进行代码仓库检索、提交 Issue、审查 PR、触发并监控流水线部署等极客操作。', icon: Code, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: true },
@@ -5406,6 +5408,7 @@
 
     const tsCategories = [
       { id: 'all', label: '全部工具' },
+      { id: 'h3c', label: 'H3C 集团内部' },
       { id: 'mcp', label: 'MCP 核心' },
       { id: 'comm', label: '协作办公' },
       { id: 'office', label: '办公' },
@@ -5446,7 +5449,7 @@
             onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, true); }}
             className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-slate-100 dark:bg-[#2C2C2E] border border-slate-200 dark:border-slate-700 text-[#FF3B30] dark:text-[#FF453A] hover:bg-slate-200 dark:hover:bg-[#3A3A3C]`}
           >
-            {tool.feishuCli ? '断开' : '卸载'}
+            {(tool.feishuCli || tool.eipCli || tool.zhidaoCli) ? '断开' : '卸载'}
           </button>
         );
       }
@@ -5456,7 +5459,7 @@
           onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, false); }}
           className={`${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`}
         >
-          {tool.feishuCli ? '连接' : (hasConfig ? '配置' : '安装')}
+          {(tool.feishuCli || tool.eipCli || tool.zhidaoCli) ? '连接' : (hasConfig ? '配置' : '安装')}
         </button>
       );
     };
@@ -5809,6 +5812,7 @@
       const [searchQuery, setSearchQuery] = useState('');
       const [activeCategory, setActiveCategory] = useState('all');
       const [selectedTool, setSelectedTool] = useState(null);
+      const [showH3cModal, setShowH3cModal] = useState(false); // H3C 集团内部工具合集详情
       const featuredScrollRef = useRef(null);
       const [isFeaturedHovered, setIsFeaturedHovered] = useState(false);
       const [toolStates, setToolStates] = useState({});
@@ -5855,11 +5859,68 @@
         return unsub;
       }, []);
 
-      // 合并后端安装状态到 mock 数据(飞书的 installed = 已连接)
+      // EIP(CLI 路线)连接态:由 eip-cli auth status 判定(同飞书)。
+      const [eipConnected, setEipConnected] = useState(false);
+      const [eipSso, setEipSso] = useState(null); // { url, qr } SSO 登录引导弹窗
+      const [zhidaoConnected, setZhidaoConnected] = useState(false);
+      const [zhidaoSso, setZhidaoSso] = useState(null); // { url, qr } SSO 登录引导弹窗
+      const refreshEip = async () => {
+        try {
+          const s = await window.__TAURI__.core.invoke('eip_status');
+          setEipConnected(!!(s && s.connected));
+        } catch (e) { console.error('eip_status failed:', e); }
+      };
+      const refreshZhidao = async () => {
+        try {
+          const s = await window.__TAURI__.core.invoke('zhidao_status');
+          setZhidaoConnected(!!(s && s.connected));
+        } catch (e) { console.error('zhidao_status failed:', e); }
+      };
+      useEffect(() => { refreshEip(); refreshZhidao(); }, []);
+
+      // EIP 连接编排事件(SSO 轮询自动收):后端推进度,前端驱动 UI。
+      useEffect(() => {
+        const ev = window.__TAURI__ && window.__TAURI__.event;
+        if (!ev) return;
+        const unlisten = [];
+        ev.listen('eip:sso', (e) => {
+          const p = e.payload || {};
+          setEipSso({ url: p.url, qr: p.qr_data_url });
+        }).then(u => unlisten.push(u));
+        ev.listen('eip:connected', () => {
+          setEipSso(null); setEipConnected(true); setBusyId(null);
+          setAlert({ visible: true, loading: false, title: '已连接员工门户（EIP）', subtitle: '', isInstall: true, isError: false, toolId: 'eip' });
+        }).then(u => unlisten.push(u));
+        ev.listen('eip:error', (e) => {
+          const p = e.payload || {};
+          setEipSso(null); setBusyId(null);
+          setAlert({ visible: true, loading: false, title: 'EIP 连接失败', subtitle: String(p.message || '').slice(0, 240), isError: true });
+        }).then(u => unlisten.push(u));
+        ev.listen('zhidao:sso', (e) => {
+          const p = e.payload || {};
+          setZhidaoSso({ url: p.url, qr: p.qr_data_url });
+        }).then(u => unlisten.push(u));
+        ev.listen('zhidao:connected', () => {
+          setZhidaoSso(null); setZhidaoConnected(true); setBusyId(null);
+          setAlert({ visible: true, loading: false, title: '已连接知道知识库', subtitle: '', isInstall: true, isError: false, toolId: 'zhidao' });
+        }).then(u => unlisten.push(u));
+        ev.listen('zhidao:error', (e) => {
+          const p = e.payload || {};
+          setZhidaoSso(null); setBusyId(null);
+          setAlert({ visible: true, loading: false, title: '知道连接失败', subtitle: String(p.message || '').slice(0, 240), isError: true });
+        }).then(u => unlisten.push(u));
+        return () => { unlisten.forEach(u => { try { u(); } catch (_) {} }); };
+      }, []);
+
+      // 合并后端安装状态到 mock 数据(飞书/EIP/知道 的 installed = 已连接)
       const tools = tsToolsData.map(t => ({
         ...t,
         installed: t.feishuCli
           ? feishuConnected
+          : t.eipCli
+          ? eipConnected
+          : t.zhidaoCli
+          ? zhidaoConnected
           : (t.backendId ? (toolStates[t.backendId] || false) : false),
       }));
 
@@ -5879,7 +5940,7 @@
       const filteredTools = sourceItems.filter(tool => {
         const q = searchQuery.toLowerCase();
         const matchesSearch = tool.title.toLowerCase().includes(q) || (tool.desc || '').toLowerCase().includes(q);
-        const matchesCategory = isSkillTab || activeCategory === 'all' || tool.category === activeCategory;
+        const matchesCategory = isSkillTab || activeCategory === 'all' || (activeCategory === 'h3c' ? !!tool.internal : tool.category === activeCategory);
         return matchesSearch && matchesCategory;
       }).sort((a, b) => {
         if (a.backendId && !b.backendId) return -1;
@@ -6050,6 +6111,57 @@
         }
       };
 
+      // 连接 EIP(SSO 轮询自动收):事件驱动。二进制内置,无需 ensure_cli/扫码。
+      const connectEip = async () => {
+        setBusyId('eip');
+        try {
+          await window.__TAURI__.core.invoke('eip_connect_begin');
+          // 后续:eip:sso 出登录地址 → 用户浏览器 SSO 登录 → eip:connected 收尾。
+        } catch (e) {
+          console.error('eip connect failed:', e);
+          setEipSso(null); setBusyId(null);
+          setAlert({ visible: true, loading: false, title: 'EIP 连接失败', subtitle: String(e).slice(0, 240), isError: true });
+        }
+      };
+      const disconnectEip = async () => {
+        setBusyId('eip');
+        try {
+          await window.__TAURI__.core.invoke('eip_logout');
+          setEipConnected(false);
+          setAlert({ visible: true, loading: false, title: '已断开员工门户（EIP）', isInstall: false, isError: false });
+        } catch (e) {
+          console.error('eip logout failed:', e);
+          setAlert({ visible: true, loading: false, title: '操作失败，请重试', isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+
+      // 连接知道知识库(SSO 轮询自动收):事件驱动。二进制内置,无需手工粘贴 token。
+      const connectZhidao = async () => {
+        setBusyId('zhidao');
+        try {
+          await window.__TAURI__.core.invoke('zhidao_connect_begin');
+        } catch (e) {
+          console.error('zhidao connect failed:', e);
+          setZhidaoSso(null); setBusyId(null);
+          setAlert({ visible: true, loading: false, title: '知道连接失败', subtitle: String(e).slice(0, 240), isError: true });
+        }
+      };
+      const disconnectZhidao = async () => {
+        setBusyId('zhidao');
+        try {
+          await window.__TAURI__.core.invoke('zhidao_logout');
+          setZhidaoConnected(false);
+          setAlert({ visible: true, loading: false, title: '已断开知道知识库', isInstall: false, isError: false });
+        } catch (e) {
+          console.error('zhidao logout failed:', e);
+          setAlert({ visible: true, loading: false, title: '操作失败，请重试', isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+
       // 安装/卸载入口
       const handleAction = async (backendId, isInstalled) => {
         if (isSkillTab) return handleSkillAction(backendId, isInstalled);
@@ -6060,6 +6172,16 @@
           const ft = tools.find(x => x.feishuCli) || tsToolsData.find(x => x.backendId === 'feishu');
           if (ft) setSelectedTool(ft);
           return connectFeishu();
+        }
+        // EIP 走 CLI 连接流程(浏览器 SSO 一键登录),不走 marketplace install
+        if (backendId === 'eip') {
+          if (isInstalled) return disconnectEip();
+          return connectEip();
+        }
+        // 知道知识库走 CLI + SSO 自动轮询流程,不走 marketplace install
+        if (backendId === 'zhidao') {
+          if (isInstalled) return disconnectZhidao();
+          return connectZhidao();
         }
         const t = tsToolsData.find(x => x.backendId === backendId);
         const name = t ? t.title : backendId;
@@ -6148,14 +6270,52 @@
               else setObsidianGuide(g => g ? { ...g, ...(st || {}) } : g);
             }}
           />, document.body)}
-          {/* 扫码二维码已内联进 FeishuFlowCard（详情弹窗内），不再单独浮层 */}
+          {/* 飞书扫码二维码已内联进 FeishuFlowCard（详情弹窗内），不再单独浮层 */}
+          {eipSso && (() => {
+            const cancel = () => { window.__TAURI__.core.invoke('eip_cancel').catch(() => {}); setEipSso(null); setBusyId(null); };
+            return ReactDOM.createPortal((
+            <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
+              <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-7 w-full max-w-[360px] flex flex-col items-center text-center shadow-2xl" onClick={e => e.stopPropagation()}>
+                <h3 className="text-[19px] font-bold text-slate-900 dark:text-white mb-1">登录员工门户（EIP）</h3>
+                <p className="text-[13px] text-slate-500 dark:text-slate-400 mb-5">扫码或在浏览器完成 SSO 登录，登录后会自动连接（需公司内网）</p>
+                {eipSso.qr
+                  ? <img src={eipSso.qr} alt="EIP 登录二维码" className="w-52 h-52 rounded-2xl border border-slate-200 dark:border-white/10 bg-white" />
+                  : <div className="w-52 h-52 rounded-2xl border border-dashed border-slate-300 dark:border-white/10 flex items-center justify-center text-[13px] text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-white/5">二维码生成中…</div>}
+                <button onClick={() => { if (eipSso.url) window.__TAURI__.core.invoke('open_external_url', { url: eipSso.url }); }} className="mt-4 px-6 py-2.5 rounded-full text-[14px] font-semibold bg-blue-600 hover:bg-blue-700 text-white">在浏览器打开登录</button>
+                <div className="flex items-center gap-1.5 mt-5 text-[13px] text-slate-500 dark:text-slate-400">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> 等待登录中…
+                </div>
+                <button onClick={cancel} className="mt-3 px-6 py-2 rounded-full text-[14px] font-semibold bg-slate-100 dark:bg-[#2C2C2E] text-slate-600 dark:text-slate-300">取消</button>
+              </div>
+            </div>
+            ), document.body);
+          })()}
+          {zhidaoSso && (() => {
+            const cancel = () => { window.__TAURI__.core.invoke('zhidao_cancel').catch(() => {}); setZhidaoSso(null); setBusyId(null); };
+            return ReactDOM.createPortal((
+            <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
+              <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-7 w-full max-w-[360px] flex flex-col items-center text-center shadow-2xl" onClick={e => e.stopPropagation()}>
+                <h3 className="text-[19px] font-bold text-slate-900 dark:text-white mb-1">登录知道知识库</h3>
+                <p className="text-[13px] text-slate-500 dark:text-slate-400 mb-5">扫码或在浏览器完成 SSO 登录，登录后会自动连接（需公司内网）</p>
+                {zhidaoSso.qr
+                  ? <img src={zhidaoSso.qr} alt="知道登录二维码" className="w-52 h-52 rounded-2xl border border-slate-200 dark:border-white/10 bg-white" />
+                  : <div className="w-52 h-52 rounded-2xl border border-dashed border-slate-300 dark:border-white/10 flex items-center justify-center text-[13px] text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-white/5">二维码生成中…</div>}
+                <button onClick={() => { if (zhidaoSso.url) window.__TAURI__.core.invoke('open_external_url', { url: zhidaoSso.url }); }} className="mt-4 px-6 py-2.5 rounded-full text-[14px] font-semibold bg-blue-600 hover:bg-blue-700 text-white">在浏览器打开登录</button>
+                <div className="flex items-center gap-1.5 mt-5 text-[13px] text-slate-500 dark:text-slate-400">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> 等待登录中…
+                </div>
+                <button onClick={cancel} className="mt-3 px-6 py-2 rounded-full text-[14px] font-semibold bg-slate-100 dark:bg-[#2C2C2E] text-slate-600 dark:text-slate-300">取消</button>
+              </div>
+            </div>
+            ), document.body);
+          })()}
           <div className="flex-1 flex flex-col bg-white dark:bg-black text-slate-900 dark:text-white transition-colors duration-300 font-sans overflow-hidden">
 
             {/* Header */}
             <header className="shrink-0 bg-white/80 dark:bg-black/80 backdrop-blur-2xl border-b border-slate-200/50 dark:border-white/10 pt-6 pb-4 px-6 md:px-10 transition-colors">
               <div className="max-w-7xl mx-auto flex flex-col gap-5">
-                <div className="flex items-center gap-4 flex-wrap">
-                  <h1 className="text-[32px] font-normal tracking-tight">工具商店</h1>
+                <h1 className="text-[32px] font-normal tracking-tight">工具商店</h1>
+                <div className="flex">
                   <div className="flex p-1 bg-slate-100 dark:bg-[#1C1C1E] rounded-xl border border-slate-200/50 dark:border-white/5">
                     {[{ key: 'connector', label: '连接器' }, { key: 'skill', label: '技能' }].map(seg => (
                       <button
@@ -6218,6 +6378,36 @@
                       className="flex gap-6 overflow-x-auto snap-x snap-mandatory pb-6 no-scrollbar relative"
                       style={{ scrollbarWidth: 'none' }}
                     >
+                      {/* H3C 集团内部工具合集 —— 精选第一张，点击展开详情 */}
+                      <div
+                        onClick={() => setShowH3cModal(true)}
+                        className="relative min-w-[320px] md:min-w-[400px] h-[440px] rounded-[32px] snap-center shrink-0 overflow-hidden cursor-pointer group shadow-sm hover:shadow-xl transition-all duration-500"
+                      >
+                        <img src="assets/h3c-banner.jpg" alt="" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
+                        <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/15 to-black/70" />
+                        <div className="relative p-8 text-white">
+                          <div className="flex items-center justify-between mb-4">
+                            <span className="text-[11px] font-bold text-white/85 uppercase tracking-[0.15em] bg-white/15 backdrop-blur px-2.5 py-1 rounded-full">集团内部 · 员工专属</span>
+                            <span className="text-[12px] font-black text-white border border-white/45 rounded-md px-1.5 py-0.5">H3C</span>
+                          </div>
+                          <h3 className="text-[30px] font-bold tracking-tight leading-tight drop-shadow-sm">H3C 办公生态<br/>一键接入</h3>
+                          <p className="text-white/85 text-[15px] font-medium mt-3 max-w-[88%]">以你本人 SSO 身份直连集团内部系统，全程不填 key</p>
+                        </div>
+                        <div className="absolute bottom-6 left-6 right-6">
+                          <div className="bg-white/90 backdrop-blur-xl rounded-2xl p-4 flex items-center justify-between shadow-lg transition-transform group-hover:-translate-y-1">
+                            <div className="flex items-center gap-3">
+                              <div className="w-12 h-12 rounded-[13px] flex items-center justify-center text-white shadow-inner" style={{ background: 'linear-gradient(135deg,#ff2a43,#a30010)' }}>
+                                <Briefcase size={22} strokeWidth={1.6} />
+                              </div>
+                              <div>
+                                <h4 className="text-[14px] font-bold text-slate-900">H3C 集团内部工具</h4>
+                                <p className="text-[12px] text-slate-500 mt-0.5">2 个工具 · 需内网</p>
+                              </div>
+                            </div>
+                            <span className="text-[#E60012] font-bold text-[14px]">查看</span>
+                          </div>
+                        </div>
+                      </div>
                       {tsFeaturedCollections.map((collection) => {
                         const featTool = tools.find(a => a.id === collection.featuredToolId);
                         return (
@@ -6273,17 +6463,17 @@
                         <Upload size={16} /> {busyId === '__upload__' ? '导入中…' : '上传技能包'}
                       </button>
                     ) : (
-                      <div className="flex p-1 bg-slate-100 dark:bg-[#1C1C1E] rounded-xl overflow-x-auto no-scrollbar border border-slate-200/50 dark:border-white/5">
+                      <div className="flex flex-wrap gap-2 overflow-x-auto no-scrollbar">
                         {tsCategories.map((cat) => {
                           const isActive = activeCategory === cat.id;
                           return (
                             <button
                               key={cat.id}
                               onClick={() => setActiveCategory(cat.id)}
-                              className={`px-5 py-1.5 rounded-lg text-[14px] font-semibold whitespace-nowrap transition-all duration-300 ${
+                              className={`shrink-0 px-4 py-1.5 rounded-full text-[13px] font-semibold whitespace-nowrap transition-colors ${
                                 isActive
-                                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm ring-1 ring-black/5 dark:ring-white/10'
-                                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                                  ? 'bg-blue-600 text-white'
+                                  : 'text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-500'
                               }`}
                             >
                               {cat.label}
@@ -6302,15 +6492,20 @@
                           onClick={() => setSelectedTool(tool)}
                           className="group flex items-center gap-4 py-3 cursor-pointer hover:bg-slate-50 dark:hover:bg-[#1C1C1E]/50 rounded-2xl px-3 -mx-3 transition-colors border-b border-slate-100 dark:border-white/5 last:border-0"
                         >
-                          <div className={`w-16 h-16 rounded-[16px] flex items-center justify-center flex-shrink-0 ${tool.color} text-white shadow-sm group-hover:shadow transition-shadow border border-black/5 dark:border-white/5`}>
+                          <div className={`relative w-16 h-16 rounded-[16px] flex items-center justify-center flex-shrink-0 ${tool.color} text-white shadow-sm group-hover:shadow transition-shadow border border-black/5 dark:border-white/5`}>
                             <tool.icon size={30} strokeWidth={1.5} />
+                            {tool.internal && (
+                              <span className="absolute -bottom-1.5 -right-1.5 text-[8px] leading-none font-black tracking-tight px-1 py-0.5 rounded-md bg-white text-[#E60012] ring-1 ring-black/5 shadow-sm">H3C</span>
+                            )}
                           </div>
                           <div className="flex-1 min-w-0 flex flex-col justify-center py-1">
                             <h3 className="text-[17px] font-semibold text-slate-900 dark:text-white truncate tracking-tight">{tool.title}</h3>
                             <p className="text-[13px] text-slate-500 dark:text-slate-400 truncate mt-0.5 font-medium">{tool.subtitle}</p>
                             <div className="flex items-center gap-2 mt-1.5">
                               <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded uppercase tracking-wide">{tool.type}</span>
-                              {tool.authRequired && (
+                              {tool.internal ? (
+                                <span className="text-[10px] font-semibold text-sky-700 dark:text-sky-300 bg-sky-100 dark:bg-sky-500/15 px-1.5 py-0.5 rounded-full">内网直连</span>
+                              ) : tool.authRequired && (
                                 <span className="text-[10px] text-amber-500/80 dark:text-amber-400/80 flex items-center gap-0.5">
                                   <Zap size={10} /> 需密钥
                                 </span>
@@ -6352,6 +6547,52 @@
             </main>
           </div>
 
+          {/* H3C 合集详情 — 同 selectedTool,portal 到 body 避开 backdrop-blur 包含块 */}
+          {showH3cModal && ReactDOM.createPortal((
+            <div
+              className="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-6 bg-slate-900/50 dark:bg-black/60 backdrop-blur-md"
+              onClick={() => setShowH3cModal(false)}
+            >
+              <div
+                className="ts-modal-in relative w-full max-w-[560px] max-h-[90vh] overflow-y-auto no-scrollbar bg-white dark:bg-[#1C1C1E] rounded-[32px] shadow-2xl border border-slate-200/50 dark:border-white/10"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="relative h-[200px] shrink-0">
+                  <img src="assets/h3c-banner.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
+                  <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-black/15 to-black/60" />
+                  <button onClick={() => setShowH3cModal(false)} className="absolute top-4 right-4 w-9 h-9 rounded-full bg-black/30 backdrop-blur text-white flex items-center justify-center z-10 text-[18px] leading-none">✕</button>
+                  <div className="absolute bottom-0 p-7 text-white">
+                    <span className="text-[11px] font-bold text-white/85 uppercase tracking-[0.15em] bg-white/15 backdrop-blur px-2.5 py-1 rounded-full">集团内部 · 员工专属</span>
+                    <h2 className="text-[28px] font-bold tracking-tight drop-shadow mt-2.5">H3C 办公生态 一键接入</h2>
+                  </div>
+                </div>
+                <div className="px-6 py-6">
+                  <p className="text-[14px] text-slate-600 dark:text-slate-300 leading-relaxed mb-6">以你<b>本人 SSO 身份</b>直连 H3C 集团内部系统，浏览器 / 扫码登录、<b>全程不填 key</b>；数据经公司内网、不出集团。<span className="text-slate-400">需连接公司内网使用。</span></p>
+                  <h3 className="text-[16px] font-bold mb-4">包含的工具 (2)</h3>
+                  <div className="space-y-4">
+                    {tools.filter(t => t.internal).map(t => (
+                      <div key={t.id} className="flex items-start gap-4">
+                        <div className={`relative w-[56px] h-[56px] rounded-[14px] flex items-center justify-center flex-shrink-0 ${t.color} text-white shadow-sm`}>
+                          <t.icon size={26} strokeWidth={1.5} />
+                          <span className="absolute -bottom-1.5 -right-1.5 text-[8px] leading-none font-black tracking-tight px-1 py-0.5 rounded-md bg-white text-[#E60012] ring-1 ring-black/5 shadow-sm">H3C</span>
+                        </div>
+                        <div className="flex-1 min-w-0 border-b border-slate-100 dark:border-white/5 pb-4">
+                          <div className="flex justify-between items-center gap-2 mb-1">
+                            <h4 className="text-[15px] font-bold truncate">{t.title}</h4>
+                            <TsActionBtn tool={t} busy={busyId === t.backendId} onAction={handleAction} />
+                          </div>
+                          <p className="text-[12px] text-slate-500 dark:text-slate-400 leading-relaxed">{t.subtitle}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-6 pt-4 border-t border-slate-100 dark:border-white/10 text-center">
+                    <p className="text-[11px] text-slate-400">需连接公司内网 · 首次点「连接」浏览器 / 扫码 SSO 登录，不填 key</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ), document.body)}
           {/* Detail modal — portal 到 body：否则被主内容区 backdrop-blur 祖先造的包含块困住，
               fixed inset-0 只盖住右侧内容区、盖不到左侧栏。portal 后蒙层铺满整个视口。 */}
           {selectedTool && ReactDOM.createPortal((
