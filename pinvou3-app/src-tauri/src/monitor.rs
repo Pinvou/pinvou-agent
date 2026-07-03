@@ -274,7 +274,7 @@ pub async fn sample_all(state: &MonitorState, vllm_upstream: &str, configured_mo
     MonitorSnapshot {
         generated_at_ms: now_ms,
         gpu: gpu_snapshot(),
-        ram: ram_snapshot(),
+        ram: crate::os::ram_snapshot(),
         vllm: vllm_snapshot(vllm_upstream, configured_model).await,
         self_perf: state.self_metrics.snapshot(),
         app: AppSnapshot {
@@ -316,36 +316,6 @@ fn gpu_snapshot() -> Option<GpuSnapshot> {
         utilization_pct: parts[3].parse().unwrap_or(0),
         temperature_c: parts[4].parse().ok(),
         power_w: parts[5].parse().ok(),
-    })
-}
-
-/// 读 `/proc/meminfo`。Linux 专有，其他 OS → None。
-fn ram_snapshot() -> Option<RamSnapshot> {
-    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
-    let mut total = None;
-    let mut available = None;
-    let mut swap_total = None;
-    let mut swap_free = None;
-    for line in text.lines() {
-        let (key, val) = line.split_once(':')?;
-        let kib: u64 = val.trim().trim_end_matches(" kB").parse().ok().unwrap_or(0);
-        match key {
-            "MemTotal" => total = Some(kib),
-            "MemAvailable" => available = Some(kib),
-            "SwapTotal" => swap_total = Some(kib),
-            "SwapFree" => swap_free = Some(kib),
-            _ => {}
-        }
-    }
-    let total = total?;
-    let available = available?;
-    Some(RamSnapshot {
-        total_kib: total,
-        used_kib: total.saturating_sub(available),
-        swap_total_kib: swap_total.unwrap_or(0),
-        swap_used_kib: swap_total
-            .unwrap_or(0)
-            .saturating_sub(swap_free.unwrap_or(0)),
     })
 }
 
@@ -770,9 +740,8 @@ mod tests {
     }
 
     #[test]
-    fn ram_snapshot_succeeds_on_linux() {
-        // 跑测试的环境（GB10/笔记本都是 Linux）一定有 /proc/meminfo
-        let s = ram_snapshot().expect("/proc/meminfo should be readable");
+    fn ram_snapshot_succeeds_on_supported_platform() {
+        let s = crate::os::ram_snapshot().expect("RAM snapshot should be readable");
         assert!(s.total_kib > 0);
     }
 
