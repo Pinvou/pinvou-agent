@@ -199,7 +199,7 @@
   // 改为记一个基准快照，显示值 = 当前 counter − 基准。换模型 / vLLM 重启 → counter
   // 倒退到小于基准，自动判定基准失效并丢弃，回落到生命周期累计值。持久化到
   // localStorage，关掉应用再开仍保持「自某时起」的统计。
-  var MONITOR_BASELINE_KEY = "pinvou3.monitorStatsBaseline";
+  var MONITOR_BASELINE_KEY = "pinvou3.monitorStatsBaseline.self";
   var monitorBaseline = null;
   try {
     var _mb = localStorage.getItem(MONITOR_BASELINE_KEY);
@@ -1509,6 +1509,9 @@
     notify();
   });
 
+  // Dock/侧边栏"新建窗口"——单实例插件回调 emit,复用新建会话逻辑
+  listen("dock:new_instance", function (_e) { createNewSession(); });
+
   // chat:plan_snapshot —— update_plan/checklist_write 后实时更新进度，与 plan_ready 解耦
   listen("chat:plan_snapshot", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
@@ -1757,42 +1760,51 @@
 
   function numOr0(x) { return (typeof x === "number" && isFinite(x)) ? x : 0; }
 
-  // 用基准点把 vLLM 累计 counter 换算成「自清除以来」的区间值。无基准 → 直接用
-  // 生命周期累计值。检测到任一 counter 倒退（< 基准，说明 vLLM 重启 / 换模型,
-  // counter 已归零）→ 丢弃失效基准,回落到累计值,避免显示负数。
-  function adjustVllmCounters(v) {
-    if (!v) return null;
+  // 用基准点把累计 counter 换算成「自清除以来」的区间值。sp=app 自测(snap.self_perf,
+  // TTFT/TPS/tokens 全从这);v=vllm(仅 KV 的本地 prefix_cache 分支要它)。无基准 → 直接
+  // 用进程生命周期累计值。任一 counter 倒退（< 基准：app 或 vLLM 重启、counter 归零）
+  // → 丢弃失效基准，回落到累计值，避免负数。
+  // KV 命中率(混合):本地 vLLM 用 /metrics prefix_cache(vllmKvPct);拿不到再用 usage 的
+  // cache token 口径(selfKvPct,给云端/D3)。二者都按区间(扣基准)重算。
+  function adjustCounters(sp, v) {
+    sp = sp || {};
+    var kvRatio = function (hit, miss) {
+      var d = hit + miss;
+      return d > 0 ? (hit / d * 100) : null;
+    };
     var b = monitorBaseline;
     if (b) {
       var reset =
-        numOr0(v.ttft_sum_s) < b.ttft_sum_s ||
-        numOr0(v.tpot_sum_s) < b.tpot_sum_s ||
-        numOr0(v.generation_tokens_total) < b.gen_tokens ||
-        numOr0(v.prompt_tokens_total) < b.prompt_tokens ||
-        numOr0(v.prefix_cache_queries) < b.pc_queries;
+        numOr0(sp.ttft_sum_s) < b.ttft_sum_s ||
+        numOr0(sp.tps_time_s) < b.tps_time_s ||
+        numOr0(sp.gen_tokens_total) < b.gen_tokens ||
+        numOr0(sp.prompt_tokens_total) < b.prompt_tokens ||
+        numOr0(sp.cache_hit_tokens) < b.cache_hit ||
+        numOr0(sp.cache_miss_tokens) < b.cache_miss ||
+        (v && numOr0(v.prefix_cache_queries) < numOr0(b.pc_queries));
       if (reset) { clearMonitorBaseline(); b = null; }
     }
-    if (!b) {
-      return {
-        cleared: false,
-        ttft_sum_s: v.ttft_sum_s, ttft_count: v.ttft_count,
-        tpot_sum_s: v.tpot_sum_s, tpot_count: v.tpot_count,
-        gen: v.generation_tokens_total, prompt: v.prompt_tokens_total,
-        kvPct: v.prefix_cache_hit_pct,
-      };
+    var base = function (k) { return b ? numOr0(b[k]) : 0; };
+    var vllmKvPct = null;
+    if (v) {
+      var pcH = numOr0(v.prefix_cache_hits) - base("pc_hits");
+      var pcQ = numOr0(v.prefix_cache_queries) - base("pc_queries");
+      vllmKvPct = pcQ > 0 ? (pcH / pcQ * 100) : null;
     }
-    var hits = numOr0(v.prefix_cache_hits) - b.pc_hits;
-    var queries = numOr0(v.prefix_cache_queries) - b.pc_queries;
     return {
-      cleared: true,
-      ttft_sum_s: numOr0(v.ttft_sum_s) - b.ttft_sum_s,
-      ttft_count: numOr0(v.ttft_count) - b.ttft_count,
-      tpot_sum_s: numOr0(v.tpot_sum_s) - b.tpot_sum_s,
-      tpot_count: numOr0(v.tpot_count) - b.tpot_count,
-      gen: numOr0(v.generation_tokens_total) - b.gen_tokens,
-      prompt: numOr0(v.prompt_tokens_total) - b.prompt_tokens,
-      kvPct: queries > 0 ? (hits / queries * 100) : null,
-      clearedAt: b.at || null,
+      cleared: !!b,
+      ttft_sum_s: numOr0(sp.ttft_sum_s) - base("ttft_sum_s"),
+      ttft_count: numOr0(sp.ttft_count) - base("ttft_count"),
+      tps_tokens: numOr0(sp.tps_tokens) - base("tps_tokens"),
+      tps_time_s: numOr0(sp.tps_time_s) - base("tps_time_s"),
+      gen: numOr0(sp.gen_tokens_total) - base("gen_tokens"),
+      prompt: numOr0(sp.prompt_tokens_total) - base("prompt_tokens"),
+      vllmKvPct: vllmKvPct,
+      selfKvPct: kvRatio(
+        numOr0(sp.cache_hit_tokens) - base("cache_hit"),
+        numOr0(sp.cache_miss_tokens) - base("cache_miss")
+      ),
+      clearedAt: b ? (b.at || null) : null,
     };
   }
 
@@ -1801,17 +1813,21 @@
     try { localStorage.removeItem(MONITOR_BASELINE_KEY); } catch (e) {}
   }
 
-  // 把当前 vLLM counter 快照存为基准点 → 监控页「后 4 项」从此刻起重新计。
+  // 把当前 counter 快照存为基准点 → 监控页「后 4 项」从此刻起重新计。
+  // 自测计数(TTFT/TPS/tokens/usage-cache)+ vLLM prefix_cache(供本地 KV 分支)一起存。
   function clearMonitorStats() {
-    var v = state.monitor && state.monitor.vllm;
-    if (!v) return false;
+    var sp = state.monitor && state.monitor.self_perf;
+    if (!sp) return false;
+    var v = (state.monitor && state.monitor.vllm) || {};
     monitorBaseline = {
-      ttft_sum_s: numOr0(v.ttft_sum_s),
-      ttft_count: numOr0(v.ttft_count),
-      tpot_sum_s: numOr0(v.tpot_sum_s),
-      tpot_count: numOr0(v.tpot_count),
-      gen_tokens: numOr0(v.generation_tokens_total),
-      prompt_tokens: numOr0(v.prompt_tokens_total),
+      ttft_sum_s: numOr0(sp.ttft_sum_s),
+      ttft_count: numOr0(sp.ttft_count),
+      tps_tokens: numOr0(sp.tps_tokens),
+      tps_time_s: numOr0(sp.tps_time_s),
+      gen_tokens: numOr0(sp.gen_tokens_total),
+      prompt_tokens: numOr0(sp.prompt_tokens_total),
+      cache_hit: numOr0(sp.cache_hit_tokens),
+      cache_miss: numOr0(sp.cache_miss_tokens),
       pc_hits: numOr0(v.prefix_cache_hits),
       pc_queries: numOr0(v.prefix_cache_queries),
       at: Date.now(),  // 记录清除时刻，供「统计自 HH:MM 起」状态文字
@@ -1830,8 +1846,13 @@
         if (gpuUtilHistory.length > 5) gpuUtilHistory.shift();
         snap.gpu._utilMax = Math.max.apply(null, [0].concat(gpuUtilHistory));
       }
-      // 监控页「后 4 项」累计指标：按「清除统计」基准点换算成区间值后再格式化。
-      var vadj = adjustVllmCounters(snap.vllm);
+      // 监控页「后 4 项」累计指标：TTFT/TPS/tokens 来自 app 侧自测(snap.self_perf,
+      // 任何后端都有);KV 混合(本地 vLLM prefix_cache 优先,否则 usage 口径)。
+      // 按「清除统计」基准点换算成区间值后再格式化。
+      var sadj = adjustCounters(snap.self_perf, snap.vllm);
+      // KV 显示值:本地 vLLM 的 /metrics prefix_cache 优先,拿不到用 usage cache 口径(云端)。
+      var kvShown = sadj ? (sadj.vllmKvPct != null ? sadj.vllmKvPct
+        : (sadj.selfKvPct != null ? sadj.selfKvPct : null)) : null;
       // Format values for display
       var vllm = snap.vllm || null;
       var metricsApplicable = vllm ? vllm.metrics_applicable !== false : false;
@@ -1869,6 +1890,9 @@
         vllmOnline: vllm ? (vllm.status === "ready" || vllm.status === "busy") : false,
         vllmUpstream: vllm ? (vllm.upstream || "—") : "—",
         vllmTargetKind: targetKindLabel,
+        // 云端(remote)不做健康探测(无 auth 的 /v1/models 必 401)→ 不显示 OFFLINE。
+        // 暴露原始 kind 供前端判定(别比本地化 label)。
+        vllmIsRemote: targetKind === "remote",
         vllmDiagnostic: diagnostic ? diagnostic.message : null,
         vllmDiagnosticCode: diagnostic ? diagnostic.code : null,
         vllmMetricsApplicable: metricsApplicable,
@@ -1884,23 +1908,25 @@
               (vllm.num_requests_waiting != null ? vllm.num_requests_waiting : "—")
             : metricNotApplicableText)
           : "— / —",
-        vllmKv: vllm && metricsApplicable && vadj && vadj.kvPct != null
-          ? vadj.kvPct.toFixed(1) + "%" : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
-        vllmTtft: vllm && metricsApplicable && vadj && vadj.ttft_count > 0
-          ? (vadj.ttft_sum_s / vadj.ttft_count).toFixed(2) + " s" : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
-        vllmTps: vllm && metricsApplicable && vadj && vadj.tpot_sum_s > 0
-          ? (vadj.tpot_count / vadj.tpot_sum_s).toFixed(1) + " tok/s" : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
-        vllmTokTotal: vllm && metricsApplicable && vadj && vadj.gen != null
-          ? fmtTok(vadj.gen) + " / " + fmtTok(vadj.prompt) : (vllm && !metricsApplicable ? metricNotApplicableText : "—"),
-        vllmStatsCleared: !!(vllm && metricsApplicable && vadj && vadj.cleared),
-        vllmClearedAt: vllm && metricsApplicable && vadj && vadj.cleared ? (vadj.clearedAt || null) : null,
+        // TTFT/TPS/tokens 一律用 app 侧自测——任何后端(vLLM/LM Studio/Ollama/云端)都有值,
+        // 不再受 metricsApplicable 门控。KV 见 kvShown(本地 prefix_cache / 云端 usage 口径),
+        // 拿不到则 "—"。队列仍归 vLLM(见 vllmQueue)。
+        vllmKv: kvShown != null ? kvShown.toFixed(1) + "%" : "—",
+        vllmTtft: sadj && sadj.ttft_count > 0
+          ? (sadj.ttft_sum_s / sadj.ttft_count).toFixed(2) + " s" : "—",
+        vllmTps: sadj && sadj.tps_time_s > 0
+          ? (sadj.tps_tokens / sadj.tps_time_s).toFixed(1) + " tok/s" : "—",
+        vllmTokTotal: sadj
+          ? fmtTok(sadj.gen) + " / " + fmtTok(sadj.prompt) : "—",
+        vllmStatsCleared: !!(sadj && sadj.cleared),
+        vllmClearedAt: sadj && sadj.cleared ? (sadj.clearedAt || null) : null,
         // 区间原始数值（已扣基准），供前端「长按清除」的数字归零插值动画用。
-        vllmRaw: vllm && metricsApplicable && vadj ? {
-          kvPct: vadj.kvPct,
-          ttftS: vadj.ttft_count > 0 ? vadj.ttft_sum_s / vadj.ttft_count : null,
-          tps: vadj.tpot_sum_s > 0 ? vadj.tpot_count / vadj.tpot_sum_s : null,
-          gen: vadj.gen != null ? vadj.gen : null,
-          prompt: vadj.prompt != null ? vadj.prompt : null,
+        vllmRaw: sadj ? {
+          kvPct: kvShown,
+          ttftS: sadj.ttft_count > 0 ? sadj.ttft_sum_s / sadj.ttft_count : null,
+          tps: sadj.tps_time_s > 0 ? sadj.tps_tokens / sadj.tps_time_s : null,
+          gen: sadj.gen != null ? sadj.gen : null,
+          prompt: sadj.prompt != null ? sadj.prompt : null,
         } : null,
         appVersion: snap.app ? snap.app.pinvou3_version + " (内测版)" : "—",
         dtVersion: snap.app ? snap.app.deepseek_tui_version : "—",
@@ -3318,6 +3344,7 @@
     mountCollection: mountCollection,
     unmountCollection: unmountCollection,
     listCollections: function () { return invoke("kb_collection_list"); }, // 挂载选择器用
+    kbModelStatus: function () { return invoke("kb_model_status"); }, // 挂载选择器门控:模型未装则不可选
     // AI 造卡开场引导卡:落一条展示气泡 + 记一条 persona 事件(随会话持久化)。
     // 走 personaEvents 时间线,冷重载时 rerenderFromMessages 按 pos 还原 → 切会话/重启不丢。
     postCardCreatorIntro: function () { addChatItem({ type: "card_creator_intro", time: "" }); recordPersonaEvent({ kind: "card_creator_intro" }); notify(); },

@@ -237,7 +237,7 @@ async fn run_turn(
     turn_timeout: Duration,
 ) {
     engine
-        .send_user_message(user.to_string(), mode, None)
+        .send_user_message(user.to_string(), mode, None, false)
         .await
         .expect("send_user_message");
     let (timeline, elapsed, timed_out) = collect_turn_events(engine, turn_timeout).await;
@@ -1343,7 +1343,7 @@ async fn image_vision_analyze() {
     expect.max_duration_s = 120.0; // image_analyze 含 thinking 单次 ~17s,主 loop 多轮留足
 
     engine
-        .send_user_message(user.to_string(), AppMode::Yolo, None)
+        .send_user_message(user.to_string(), AppMode::Yolo, None, false)
         .await
         .expect("send_user_message");
     let (timeline, elapsed, timed_out) =
@@ -1420,7 +1420,7 @@ async fn large_xlsx_attachment_path_mode() {
     expect.max_duration_s = 240.0;
 
     engine
-        .send_user_message(user.clone(), AppMode::Yolo, None)
+        .send_user_message(user.clone(), AppMode::Yolo, None, false)
         .await
         .expect("send_user_message");
     let (timeline, elapsed, timed_out) =

@@ -195,14 +195,20 @@ impl EnginePool {
         // Side B 卡片池: 该 session 加持了专家面具时,每 turn 注入轻锚点(短)维持身份。
         // 完整 body 已在加持首条消息一次性注入(commands::chat take_pending_persona_body)。
         // 在 pool 层解析,所有上层调用(chat / accept_plan)自动带上锚点。
-        let persona_reminder = self
+        // 同一张卡派生两样每-turn 状态: ① 轻锚点(粘性身份) ② 是否清空工具表
+        // (纯对话元卡如卡牌制造专家 → 本轮零工具,防它误写文件)。每 turn 实时读 active
+        // persona,戴上即限 / 卸下即恢复 / 换卡按新卡走,无持久状态、无需 equip/unequip 同步。
+        let active_card = self
             .store
             .active_persona_id(session_id)
-            .and_then(|pid| crate::personas::get(&pid))
-            .map(|c| crate::personas::equip_anchor(&c));
+            .and_then(|pid| crate::personas::get(&pid));
+        let persona_reminder = active_card.as_ref().map(crate::personas::equip_anchor);
+        let restrict_tools = active_card
+            .as_ref()
+            .map_or(false, |c| c.conversational_only);
         self.get_or_spawn(session_id)
             .await?
-            .send_user_message(content, mode, persona_reminder)
+            .send_user_message(content, mode, persona_reminder, restrict_tools)
             .await
     }
 

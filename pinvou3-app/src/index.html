@@ -220,7 +220,7 @@
         langTag: 'zh',
         newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', toolStore: '工具商店', cardPool: '专家卡牌池', recent: '历史对话', settings: '设置', localEnv: '本地环境', megacubeSite: '打开 MegaCube 官网', tearoffTitle: '撕离窗口', tearoffHint: '弹出为独立窗口',
         knowledge: '本地知识',
-        kbMount: '知识库', kbMountTitle: '挂载知识集到本对话', kbMountPick: '选择知识集', kbMountNone: '还没有知识集，去「本地知识」创建', kbMountRemove: '取消挂载', kbMountedTag: '已挂载',
+        kbMount: '知识库', kbMountTitle: '挂载知识集到本对话', kbMountPick: '选择知识集', kbMountNone: '还没有知识集，去「本地知识」创建', kbMountRemove: '取消挂载', kbMountedTag: '已挂载', kbMountNoModel: '需先安装 Embedding 模型：去「本地知识 → 知识库」下载后即可挂载',
         modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: '切换工作模式', modeYoloDesc: '直接动手执行', modePlanDesc: '先出方案，确认后执行',
         kbTitle: '本地知识', kbDesc: '全系统秒搜 + 去重 · 仅索引元数据，不读内容',
         kbRescan: '重新扫描', kbScanning: '扫描中', kbDeduping: '去重中', kbScanNow: '扫描本机',
@@ -254,7 +254,7 @@
         sysStatus: '系统状态', sysDesc: '实时性能与资源指标', gpu: '图形处理器 (GPU)', gpuUnavail: '状态不可用', noSmi: '未检测到 nvidia-smi',
         vram: '显存占用', core: '计算核心', temp: '温度', power: '功耗', unifiedMem: '统一内存架构',
         ram: '系统内存 (RAM)', used: '已用', physical: '物理内存', total: '总计', swap: '交换空间',
-        vllm: 'VLLM 推理引擎', ctx: '上下文长度', ctxWarn: '⚠️ 窗口偏小(当前 %s,低于 128k),长对话会频繁压缩、保留历史更少;建议换 ≥128k 窗口的模型或调大 --max-model-len', queue: '队列情况', kv: 'KV 命中率', ttft: '首字延迟·累积均值', tps: '生成速度·累积均值', tokTotal: '累计 tokens·生成/输入', clearHold: '按住清除', clearHolding: '继续按住…', clearDone: '已清除', clearHint: '按住「清除」直到填满即归零 · 松手取消', statsSince: '统计自 %t 起', statsAge: ' · 已运行 %m 分钟', statsJustReset: ' · 刚刚归零', statsLifetime: '自引擎启动累计', app: '应用服务', appRunning: '核心守护进程运行中',
+        vllm: '推理引擎', ctx: '上下文长度', ctxWarn: '⚠️ 窗口偏小(当前 %s,低于 128k),长对话会频繁压缩、保留历史更少;建议换 ≥128k 窗口的模型或调大 --max-model-len', queue: '队列情况', kv: 'KV 命中率', ttft: '首字延迟·累积均值', tps: '生成速度·累积均值', tokTotal: '累计 tokens·生成/输入', clearHold: '按住清除', clearHolding: '继续按住…', clearDone: '已清除', clearHint: '按住「清除」直到填满即归零 · 松手取消', statsSince: '统计自 %t 起', statsAge: ' · 已运行 %m 分钟', statsJustReset: ' · 刚刚归零', statsLifetime: '自引擎启动累计', app: '应用服务', appRunning: '核心守护进程运行中',
         curVer: '当前版本', uiVer: 'UI 版本', uptime: '运行时长',
         appearance: '外观与语言', lang: '界面语言', langDesc: '切换应用的显示语言', theme: '主题模式', themeDesc: '选择适合你的色彩风格',
         light: '浅色', dark: '深色',
@@ -466,7 +466,7 @@
         langTag: 'en',
         newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'History', settings: 'Settings', localEnv: 'Local Env', megacubeSite: 'Open MegaCube site', tearoffTitle: 'Detached', tearoffHint: 'Pop out to its own window',
         knowledge: 'Local Knowledge',
-        kbMount: 'Knowledge', kbMountTitle: 'Attach a collection to this chat', kbMountPick: 'Pick a collection', kbMountNone: 'No collections yet — create one in Local Knowledge', kbMountRemove: 'Unmount', kbMountedTag: 'Mounted',
+        kbMount: 'Knowledge', kbMountTitle: 'Attach a collection to this chat', kbMountPick: 'Pick a collection', kbMountNone: 'No collections yet — create one in Local Knowledge', kbMountRemove: 'Unmount', kbMountedTag: 'Mounted', kbMountNoModel: 'Install the embedding model first (Local Knowledge → Knowledge) to attach a collection',
         modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: 'Switch mode', modeYoloDesc: 'Act directly', modePlanDesc: 'Plan first, then execute',
         kbTitle: 'Local Knowledge', kbDesc: 'Whole-system instant search + dedup · metadata only, content not read',
         kbRescan: 'Rescan', kbScanning: 'Scanning', kbDeduping: 'Deduping', kbScanNow: 'Scan this PC',
@@ -500,7 +500,7 @@
         sysStatus: 'System Status', sysDesc: 'Real-time performance metrics', gpu: 'GPU', gpuUnavail: 'Unavailable', noSmi: 'nvidia-smi not found',
         vram: 'VRAM Usage', core: 'Core Usage', temp: 'Temp', power: 'Power', unifiedMem: 'Unified Memory',
         ram: 'System RAM', used: 'Used', physical: 'Physical RAM', total: 'Total', swap: 'Swap Space',
-        vllm: 'VLLM Engine', ctx: 'Context Length', ctxWarn: '⚠️ Small context window (%s, below 128k). Long chats compact often and keep less history; use a model with ≥128k window or raise --max-model-len', queue: 'Queue (Run/Wait)', kv: 'KV Hit Rate', ttft: 'TTFT · cum. avg', tps: 'Gen Speed · cum. avg', tokTotal: 'Total Tokens · gen/prompt', clearHold: 'Hold to reset', clearHolding: 'Keep holding…', clearDone: 'Cleared', clearHint: 'Hold "Reset" until full to clear · release to cancel', statsSince: 'Since %t', statsAge: ' · %m min running', statsJustReset: ' · just reset', statsLifetime: 'Lifetime total', app: 'App Service', appRunning: 'Core daemon running',
+        vllm: 'Inference Engine', ctx: 'Context Length', ctxWarn: '⚠️ Small context window (%s, below 128k). Long chats compact often and keep less history; use a model with ≥128k window or raise --max-model-len', queue: 'Queue (Run/Wait)', kv: 'KV Hit Rate', ttft: 'TTFT · cum. avg', tps: 'Gen Speed · cum. avg', tokTotal: 'Total Tokens · gen/prompt', clearHold: 'Hold to reset', clearHolding: 'Keep holding…', clearDone: 'Cleared', clearHint: 'Hold "Reset" until full to clear · release to cancel', statsSince: 'Since %t', statsAge: ' · %m min running', statsJustReset: ' · just reset', statsLifetime: 'Lifetime total', app: 'App Service', appRunning: 'Core daemon running',
         curVer: 'App Version', uiVer: 'UI Version', uptime: 'Uptime',
         appearance: 'Appearance & Language', lang: 'Language', langDesc: 'Switch application display language', theme: 'Theme', themeDesc: 'Choose your color style',
         light: 'Light', dark: 'Dark',
@@ -712,7 +712,7 @@
         langTag: 'ja',
         newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', monitor: 'システムモニター', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '履歴', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く', tearoffTitle: '切り離し', tearoffHint: '別ウィンドウに切り離す',
         knowledge: 'ローカル知識',
-        kbMount: 'ナレッジ', kbMountTitle: 'このチャットにコレクションをリンク', kbMountPick: 'コレクションを選択', kbMountNone: 'コレクションがありません — 「ローカル知識」で作成', kbMountRemove: 'リンク解除', kbMountedTag: 'リンク中',
+        kbMount: 'ナレッジ', kbMountTitle: 'このチャットにコレクションをリンク', kbMountPick: 'コレクションを選択', kbMountNone: 'コレクションがありません — 「ローカル知識」で作成', kbMountRemove: 'リンク解除', kbMountedTag: 'リンク中', kbMountNoModel: 'まず Embedding モデルをインストール（ローカル知識 → ナレッジ）するとリンクできます',
         modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: 'モード切替', modeYoloDesc: 'すぐ実行', modePlanDesc: '計画してから実行',
         kbTitle: 'ローカル知識', kbDesc: '全システム高速検索 + 重複検出 · メタデータのみ、内容は読まない',
         kbRescan: '再スキャン', kbScanning: 'スキャン中', kbDeduping: '重複検出中', kbScanNow: 'このPCをスキャン',
@@ -745,7 +745,7 @@
         sysStatus: 'システム状態', sysDesc: 'リアルタイムの性能・リソース指標', gpu: 'GPU', gpuUnavail: '状態を取得できません', noSmi: 'nvidia-smi が見つかりません',
         vram: 'VRAM 使用量', core: 'コア使用率', temp: '温度', power: '消費電力', unifiedMem: 'ユニファイドメモリ',
         ram: 'システムメモリ (RAM)', used: '使用中', physical: '物理メモリ', total: '合計', swap: 'スワップ領域',
-        vllm: 'vLLM 推論エンジン', ctx: 'コンテキスト長', ctxWarn: '⚠️ コンテキスト窓が小さい(現在 %s、128k 未満)。長い会話は頻繁に圧縮され履歴が減ります。128k 以上のモデルを使うか --max-model-len を上げてください', queue: 'キュー状況', kv: 'KV ヒット率', ttft: '初回遅延・累積平均', tps: '生成速度・累積平均', tokTotal: '累計トークン・生成/入力', clearHold: '長押しで消去', clearHolding: 'そのまま…', clearDone: '消去完了', clearHint: '「消去」を満たすまで長押しでリセット · 離すと取消', statsSince: '%t から集計', statsAge: ' · %m 分経過', statsJustReset: ' · 今リセット', statsLifetime: 'エンジン起動からの累計', app: 'アプリサービス', appRunning: 'コアデーモン稼働中',
+        vllm: '推論エンジン', ctx: 'コンテキスト長', ctxWarn: '⚠️ コンテキスト窓が小さい(現在 %s、128k 未満)。長い会話は頻繁に圧縮され履歴が減ります。128k 以上のモデルを使うか --max-model-len を上げてください', queue: 'キュー状況', kv: 'KV ヒット率', ttft: '初回遅延・累積平均', tps: '生成速度・累積平均', tokTotal: '累計トークン・生成/入力', clearHold: '長押しで消去', clearHolding: 'そのまま…', clearDone: '消去完了', clearHint: '「消去」を満たすまで長押しでリセット · 離すと取消', statsSince: '%t から集計', statsAge: ' · %m 分経過', statsJustReset: ' · 今リセット', statsLifetime: 'エンジン起動からの累計', app: 'アプリサービス', appRunning: 'コアデーモン稼働中',
         curVer: '現在のバージョン', uiVer: 'UI バージョン', uptime: '稼働時間',
         appearance: '外観と言語', lang: '表示言語', langDesc: 'アプリの表示言語を切り替え', theme: 'テーマ', themeDesc: 'お好みの配色を選択',
         light: 'ライト', dark: 'ダーク',
@@ -2204,21 +2204,21 @@
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
           {/* Header */}
-          <div className="px-16 pt-12 pb-3">
-            <h1 className="text-[27px] font-extrabold tracking-[-0.3px] mb-1.5">{t.kbPageTitle}</h1>
+          <div className="w-full max-w-7xl mx-auto px-6 md:px-10 pt-12 pb-3">
+            <h1 className="text-[32px] font-normal tracking-tight mb-1.5">{t.kbPageTitle}</h1>
             <p className={`text-[14px] ${muted}`}>{sub === 'files' ? t.kbFilesSub : t.kbKbSub}</p>
           </div>
           {/* Sub-tabs */}
-          <div className="px-16 flex items-center gap-7 border-b border-gray-400/15">
+          <div className="w-full max-w-7xl mx-auto px-6 md:px-10 flex items-center gap-7 border-b border-gray-400/15">
             <SubTab k="files" label={t.kbSubFiles} count={total ? total.toLocaleString() : null} />
             <SubTab k="kb" label={t.kbSubKb} count={modelInstalled ? (colls.length || null) : null} />
           </div>
 
-          <div className="flex-1 overflow-y-auto custom-scrollbar px-16 py-6">
+          <div className="flex-1 overflow-y-auto custom-scrollbar py-6">
 
             {/* ============ 文件管理 ============ */}
             {sub === 'files' && (
-              <div className="max-w-[1100px]">
+              <div className="max-w-7xl mx-auto px-6 md:px-10">
                 {!loaded ? (
                   // 加载骨架:页面壳即时呈现(搜索栏+真实类型卡,数字/文件用灰条占位),数据 async 填,
                   // 避免整页空白死等 refreshL0(大库冷读时尤其明显)。loaded 后切真实数据,结构一致很平滑。
@@ -2427,7 +2427,7 @@
 
             {/* ============ 知识库 列表（模型已就绪）============ */}
             {sub === 'kb' && modelInstalled && (
-              <div className="max-w-[1100px]">
+              <div className="max-w-7xl mx-auto px-6 md:px-10">
                 <div className={`rounded-3xl p-7 mb-6 flex items-center gap-6 ${isDark ? 'bg-gradient-to-br from-[#2A2440] to-[#1E2438]' : 'bg-gradient-to-br from-[#ece8fc] to-[#dcebfb]'}`}>
                   <div className="flex-1 min-w-0">
                     <h2 className={`text-[20px] font-bold mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#211f33]'}`}>{t.kbBannerTitle}</h2>
@@ -2761,6 +2761,7 @@
       const vllmOnline = fmt ? fmt.vllmOnline : false;
       const vllmUpstream = fmt ? fmt.vllmUpstream : '—';
       const vllmTargetKind = fmt ? fmt.vllmTargetKind : '配置异常';
+      const vllmIsRemote = fmt ? fmt.vllmIsRemote : false;
       const vllmDiagnostic = fmt ? fmt.vllmDiagnostic : null;
       const vllmMetricDiagnostic = fmt ? fmt.vllmMetricDiagnostic : null;
       const vllmMaxLen = fmt ? fmt.vllmMaxLen : '—';
@@ -2822,13 +2823,13 @@
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
 
-          <div className="px-16 pt-12 pb-6 flex items-end justify-between">
+          <div className="w-full max-w-7xl mx-auto px-6 md:px-10 pt-12 pb-6 flex items-end justify-between">
             <div>
               <h1 className="text-[32px] font-normal tracking-tight mb-2">{t.sysStatus}</h1>
               <p className={`text-[15px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.sysDesc}</p>
             </div>
             <div className={`flex items-center gap-3 px-5 py-2.5 rounded-full ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
-              <div className={`w-2 h-2 rounded-full ${vllmOnline ? 'bg-[#188038] animate-pulse' : 'bg-[#EA4335]'}`}></div>
+              <div className={`w-2 h-2 rounded-full ${vllmIsRemote ? 'bg-[#9aa1ac]' : (vllmOnline ? 'bg-[#188038] animate-pulse' : 'bg-[#EA4335]')}`}></div>
               <span className={`text-[13px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{updatedAt}</span>
               <div className="w-[1px] h-4 bg-gray-400/30 mx-2"></div>
               <button
@@ -2840,8 +2841,8 @@
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto px-16 py-8 custom-scrollbar">
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 max-w-[1200px]">
+          <div className="flex-1 overflow-y-auto py-8 custom-scrollbar">
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 max-w-7xl mx-auto px-6 md:px-10">
 
               <WidgetCard title={t.gpu} theme={theme}>
                 <div className="mb-10">
@@ -2897,6 +2898,9 @@
                       <p className={`text-[12px] mt-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#5F6368]'}`}>{vllmMetricDiagnostic}</p>
                     )}
                   </div>
+                  {/* 云端(remote)不做健康探测 → 非在线时不显示徽章(不误报 OFFLINE);
+                      本地仍显示 READY/BUSY/OFFLINE/MISMATCH。 */}
+                  {(!vllmIsRemote || vllmOnline) && (
                   <div className={`px-3 py-1 rounded-full flex items-center gap-2 ${
                     vllmStatus === 'MISMATCH' || vllmStatus === 'UNKNOWN'
                       ? (isDark ? 'bg-[#5C3A1E] text-[#F9AB00]' : 'bg-[#FEF3E8] text-[#B06000]')
@@ -2907,6 +2911,7 @@
                     {vllmStatus === 'MISMATCH' || vllmStatus === 'UNKNOWN' || !vllmOnline ? <AlertTriangle size={12} /> : <CheckCircle2 size={12} />}
                     <span className="text-[11px] font-bold tracking-wider">{vllmStatus}</span>
                   </div>
+                  )}
                 </div>
                 <div className={`rounded-[16px] p-2 mt-auto ${isDark ? 'bg-[#131314]' : 'bg-[#F8F9FA]'}`}>
                   <ListRow label={t.ctx} value={String(vllmMaxLen)} theme={theme} />
@@ -4154,6 +4159,7 @@
     const ComposerKbSelector = ({ t, bs, compact }) => {
       const [open, setOpen] = useState(false);
       const [collections, setCollections] = useState(null); // null=未加载
+      const [installed, setInstalled] = useState(null); // embedding 模型是否已装:null=未知(不闪 gate,mock/旧后端当已装)
       const mountedId = (bs && bs.mountedCollection != null) ? bs.mountedCollection : null;
 
       const loadList = async () => {
@@ -4161,6 +4167,15 @@
         try { setCollections((await bridge.listCollections()) || []); }
         catch (e) { setCollections([]); }
       };
+      const refreshInstalled = async () => {
+        if (!bridge.available || !bridge.kbModelStatus) { setInstalled(true); return; } // mock/旧后端不 gate
+        try { const m = await bridge.kbModelStatus(); setInstalled(m ? !!m.installed : true); }
+        catch (e) { setInstalled(true); }
+      };
+      useEffect(() => { refreshInstalled(); }, []);
+      // 下载部署完成后 bs.kbModelSetup.status.installed 变 true → 立即开门,免重开菜单。
+      const setupInstalled = !!(bs && bs.kbModelSetup && bs.kbModelSetup.status && bs.kbModelSetup.status.installed);
+      useEffect(() => { if (setupInstalled) setInstalled(true); }, [setupInstalled]);
       // 已挂载但还没列表 → 拉一次用于显示名字。
       useEffect(() => {
         if (mountedId != null && collections === null) loadList();
@@ -4169,17 +4184,20 @@
       const mounted = (collections || []).find(c => c.id === mountedId) || null;
       const mountedName = mounted ? mounted.name : (mountedId != null ? ('#' + mountedId) : null);
       const active = mountedId != null;
+      const modelMissing = installed === false; // 仅"明确未装"才门控;未知/已装都放行
 
-      function toggle() { const next = !open; setOpen(next); if (next && collections === null) loadList(); }
-      function pick(id) { setOpen(false); if (id !== mountedId && bridge.available) bridge.mountCollection(id); }
+      function toggle() { const next = !open; setOpen(next); if (next) { refreshInstalled(); if (collections === null) loadList(); } }
+      function pick(id) { if (modelMissing) return; setOpen(false); if (id !== mountedId && bridge.available) bridge.mountCollection(id); }
       function unmount() { setOpen(false); if (bridge.available) bridge.unmountCollection(); }
 
       return (
         <div className="relative">
-          <button onClick={toggle} title={active ? mountedName : t.kbMountTitle}
+          <button onClick={toggle} title={modelMissing ? t.kbMountNoModel : (active ? mountedName : t.kbMountTitle)}
             className={`relative shrink-0 flex items-center justify-center transition-colors border ${compact ? 'w-9 h-9 rounded-full' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold'} ${active
               ? 'bg-[#E8F0FE] dark:bg-[#1A3A5C] text-[#1A73E8] dark:text-[#A8C7FA] border-[#1A73E8]/20 dark:border-[#A8C7FA]/25'
-              : 'bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-black/[0.04] dark:border-white/5'}`}>
+              : modelMissing
+                ? 'bg-gray-100 dark:bg-white/5 text-gray-400 dark:text-gray-600 border-black/[0.04] dark:border-white/5 opacity-70'
+                : 'bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-black/[0.04] dark:border-white/5'}`}>
             <BookOpen size={compact ? 18 : 14} className="opacity-70 shrink-0" />
             {!compact && <span className="max-w-[140px] truncate">{active ? mountedName : t.kbMount}</span>}
             {!compact && <ChevronDown size={14} className="opacity-50 shrink-0" />}
@@ -4189,7 +4207,9 @@
             <>
               <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
               <div className="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
-                {collections === null ? (
+                {modelMissing ? (
+                  <div className="px-3 py-2.5 text-[13px] text-gray-400 dark:text-gray-500">{t.kbMountNoModel}</div>
+                ) : collections === null ? (
                   <div className="px-3 py-2.5 text-[13px] text-gray-400 dark:text-gray-500">…</div>
                 ) : collections.length === 0 ? (
                   <div className="px-3 py-2.5 text-[13px] text-gray-400 dark:text-gray-500">{t.kbMountNone}</div>
@@ -5381,15 +5401,27 @@
       }
       return null;
     }
-    function parseLooseJson(raw) {
-      try { return JSON.parse(raw); } catch (e) {}
-      try { return JSON.parse(raw.replace(/,(\s*[}\]])/g, '$1')); } catch (e) {} // 去尾逗号
-      var bal = extractBalancedJson(raw);                                        // 容忍多余右括号/尾部杂物
+    // 一条完整解析链: 严格 → 去尾逗号 → 从首个 { 括号配平截取(+去尾逗号)。失败返回 null。
+    // (名字避开本文件里另一个 tryParseJson —— 那是工具结果视图用的简单版)
+    function parseJsonChain(s) {
+      try { return JSON.parse(s); } catch (e) {}
+      try { return JSON.parse(s.replace(/,(\s*[}\]])/g, '$1')); } catch (e) {} // 去尾逗号
+      var bal = extractBalancedJson(s);                                        // 容忍多余右括号/尾部杂物
       if (bal) {
         try { return JSON.parse(bal); } catch (e) {}
         try { return JSON.parse(bal.replace(/,(\s*[}\]])/g, '$1')); } catch (e) {}
       }
       return null;
+    }
+    function parseLooseJson(raw) {
+      var v = parseJsonChain(raw);
+      if (v) return v;
+      // 最后手段: 模型偶尔把本该是普通 " 的地方(数组/对象边界处)打成转义 \",令整段 JSON 非法,
+      // 上面的链全兜不住(实例: card-question 的 options 后两项被写成 \"...\")。去掉多余转义引号
+      // 再走一遍完整链。仅对**已解析失败**的输入生效 —— 合法用了 \" 的 JSON 在 parseJsonChain(raw)
+      // 第一步就成功、走不到这里,故不受影响。
+      var deesc = raw.replace(/\\"/g, '"');
+      return deesc !== raw ? parseJsonChain(deesc) : null;
     }
     // 扫所有 ```代码块,任何能解析成「含 name+body 的 JSON」的就当卡牌草稿。
     // 不强求 ```persona-card 标签 —— 小模型常打 ```json 或不打标签,放宽识别更鲁棒。
@@ -7118,7 +7150,7 @@
           <div className="flex-1 flex flex-col bg-white dark:bg-[#131314] text-slate-900 dark:text-white transition-colors duration-300 font-sans overflow-y-auto custom-scrollbar">
 
             {/* Header */}
-            <header className="sticky top-0 z-30 bg-white/80 dark:bg-black/80 backdrop-blur-2xl border-b border-slate-200/50 dark:border-white/10 pt-6 pb-4 transition-colors">
+            <header className="sticky top-0 z-30 bg-white/80 dark:bg-[#131314]/80 backdrop-blur-2xl border-b border-slate-200/50 dark:border-white/10 pt-6 pb-4 transition-colors">
               <div className="max-w-7xl mx-auto px-6 md:px-10 flex flex-col gap-5">
                 <div className="flex items-center justify-between gap-4">
                   <h1 className="text-[32px] font-normal tracking-tight">工具商店</h1>
@@ -7444,7 +7476,7 @@
                 </div>
                 <div className="px-6 py-6">
                   <p className="text-[14px] text-slate-600 dark:text-slate-300 leading-relaxed mb-6">以你<b>本人 SSO 身份</b>直连 H3C 集团内部系统，浏览器 / 扫码登录、<b>全程不填 key</b>；数据经公司内网、不出集团。<span className="text-slate-400">需连接公司内网使用。</span></p>
-                  <h3 className="text-[16px] font-bold mb-4">包含的工具 (2)</h3>
+                  <h3 className="text-[16px] font-bold mb-4 text-slate-900 dark:text-white">包含的工具 (2)</h3>
                   <div className="space-y-4">
                     {tools.filter(t => t.internal).map(t => (
                       <div key={t.id} className="flex items-start gap-4">
@@ -7454,7 +7486,7 @@
                         </div>
                         <div className="flex-1 min-w-0 border-b border-slate-100 dark:border-white/5 pb-4">
                           <div className="flex justify-between items-center gap-2 mb-1">
-                            <h4 className="text-[15px] font-bold truncate">{t.title}</h4>
+                            <h4 className="text-[15px] font-bold truncate text-slate-900 dark:text-white">{t.title}</h4>
                             <TsActionBtn tool={t} busy={busyId === t.backendId} onAction={handleAction} />
                           </div>
                           <p className="text-[12px] text-slate-500 dark:text-slate-400 leading-relaxed">{t.subtitle}</p>
@@ -7463,7 +7495,7 @@
                     ))}
                   </div>
                   <div className="mt-6 pt-4 border-t border-slate-100 dark:border-white/10 text-center">
-                    <p className="text-[11px] text-slate-400">需连接公司内网 · 首次点「连接」浏览器 / 扫码 SSO 登录，不填 key</p>
+                    <p className="text-[11px] text-slate-400 dark:text-slate-500">需连接公司内网 · 首次点「连接」浏览器 / 扫码 SSO 登录，不填 key</p>
                   </div>
                 </div>
               </div>
@@ -8713,7 +8745,7 @@
         <div className="flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden animate-in fade-in duration-300"
           style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif', background: isDark ? '#131314' : '#fff' }}>
           <div className="relative z-10 flex-1 min-h-0 overflow-y-auto custom-scrollbar">
-            <div className="max-w-[1400px] mx-auto">
+            <div className="max-w-7xl mx-auto">
 
               {/* 头部:标题 + 加持目标小提示 / 我的专家 + 新建（无暗色toggle，用全局主题） */}
               <div className="px-6 md:px-10 pt-8 pb-1 flex items-start justify-between gap-4">
@@ -10112,12 +10144,12 @@
       if (!inBoard) {
         return (
           <div className={containerCls}>
-            <div className="px-6 md:px-10 pt-8 pb-4">
+            <div className="w-full max-w-7xl mx-auto px-6 md:px-10 pt-8 pb-4">
               <h1 className={`text-[32px] font-normal tracking-tight ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.workflow}</h1>
               <p className={`text-[13px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>选择一个工作流模板开始</p>
             </div>
-            <div className="flex-1 overflow-y-auto custom-scrollbar px-6 md:px-10 pb-10">
-              <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
+            <div className="flex-1 overflow-y-auto custom-scrollbar pb-10">
+              <div className="grid gap-4 max-w-7xl mx-auto px-6 md:px-10" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
                 {/* [工作流分离 Stage D] 模板卡 = 后端 list_workflows(各 workflow.json 的
                     ui.template)。点开:当前 run 属于该工作流(scenario 命中它认领的场景)
                     → 续看板;否则弹该工作流自己的新建表单。 */}
@@ -10178,7 +10210,7 @@
 
       return (
         <div className={containerCls}>
-          <div className="flex items-center justify-between px-6 md:px-10 pt-8 pb-4">
+          <div className="w-full max-w-7xl mx-auto flex items-center justify-between px-6 md:px-10 pt-8 pb-4">
             <div>
               <h1 className={`text-[32px] font-normal tracking-tight ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{(run.ui && run.ui.header) || (runWorkflow && runWorkflow.ui && runWorkflow.ui.header) || '工作流'}</h1>
               <p className={`text-[13px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{statusText} · 卡片流</p>

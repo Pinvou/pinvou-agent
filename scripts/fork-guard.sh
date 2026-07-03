@@ -39,7 +39,10 @@ fingerprints=(
   "    |tool_catalog blocklist 模型     |DeepSeek-TUI/crates/tui/src/core/engine/tool_catalog.rs|pinvou3_should_defer_native_tool"
   "    |pinvou3_blocklist 工具表        |DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs|fn is_pinvou3_hidden"
   "    |tool_search 注入受 blocklist gate|DeepSeek-TUI/crates/tui/src/core/engine/tool_catalog.rs|is_pinvou3_hidden(TOOL_SEARCH_NAME)"
-  "    |tool_search 进 blocklist        |DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs|tool_search_tool_regex"
+  # 2026-07-03:v0.8.65 上游把 tool_search 折叠成**单名**,门控 TOOL_SEARCH_NAME=\"tool_search\" 依赖
+  # blocklist 含**裸单名**。原指纹查废弃双旧名 tool_search_tool_regex(空防、恒在),bug 时照样命中→
+  # 没抓住漏注入。改查裸单名;真正行为守护靠 forkguard_tool_search_not_injected 测试(已修断言)。
+  "    |tool_search 裸单名进 blocklist   |DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs|\"tool_search\","
   # C4-a「多行逐行取最严」指纹于 v0.8.57 撤除:上游 18df8db0 extract neutral command support
   # 自带 split_command_segments+analyze_destructive_patterns,已取代,fork 块已删。
   "    |careful shell YOLO 也 BLOCK     |DeepSeek-TUI/crates/tui/src/tools/shell.rs|Dangerous commands are BLOCKED in ALL modes"
@@ -77,6 +80,9 @@ fingerprints=(
   "C10 |MCP env placeholder 回归        |DeepSeek-TUI/crates/tui/src/mcp/tests.rs|PINVOU3_MCP_SECRET_QCC_API_KEY"
   "C10 |Windows 子进程无控制台 helper   |DeepSeek-TUI/crates/tui/src/utils.rs|pub(crate) fn suppress_tokio_console_window"
   "C10 |MCP 启动应用无控制台 helper     |DeepSeek-TUI/crates/tui/src/mcp.rs|suppress_tokio_console_window(&mut cmd)"
+  # —— P1(2026-07-03):list_mcp_resources/templates 按对应集合非空 gate(上游原为 servers 非空即注入)——
+  # pinvou3 MCP server 全 tools-only,原条件下这两个元工具永久空转;改按 resources/templates 非空注入。可上游。
+  "P1  |list_mcp_resources 按 resources 非空 gate|DeepSeek-TUI/crates/tui/src/mcp.rs|if !self.all_resource_templates().is_empty()"
   # —— 工作流 fork 基座层(三省六部;feat/sansheng-workflow 随附,2026-06-12 补)——
   # 行为层已有 engine_config_locks_critical_fields(W10 reasoning_effort);其余 W* 暂只 L1。
   "W1  |SpawnSubAgent 扩展字段          |DeepSeek-TUI/crates/tui/src/core/ops.rs|expects_file_output: bool"
