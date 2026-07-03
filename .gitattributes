@@ -1,3 +1,5 @@
 pinvou3-app/src-tauri/resources/windows/pandoc/pandoc.exe filter=lfs diff=lfs merge=lfs -text
 pinvou3-app/src-tauri/resources/windows/vc_redist/VC_redist.x64.exe filter=lfs diff=lfs merge=lfs -text
 pinvou3-app/src-tauri/resources/windows/asr/models/*.gguf filter=lfs diff=lfs merge=lfs -text
+.githooks/* text eol=lf
+scripts/validate-commit-msg.py text eol=lf

@@ -1,6 +1,7 @@
 name: PR Check
 
 # Jobs:
+# - commit-message:强制校验 PR/push 的 Git commit 信息规范。
 # - fast-gate(秒级,每 PR 都跑):fork-guard 指纹 + fork 合规联动 + Python MCP 测试。
 # - changes:检测本 PR 有没有 Rust/依赖改动,给 rust-test 做 paths filter。
 # - rust-test(编译类):**仅当改了 Rust/Cargo/submodule 才跑**(非 Rust PR 直接 skip,不耗
@@ -30,6 +31,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  commit-message:
+    name: commit-message
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 校验 commit 信息规范
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            python3 scripts/validate-commit-msg.py --range "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
+          else
+            before="${{ github.event.before }}"
+            if [ "$before" = "0000000000000000000000000000000000000000" ]; then
+              before="$(git rev-list --max-parents=0 HEAD)"
+            fi
+            python3 scripts/validate-commit-msg.py --range "$before" "${{ github.sha }}"
+          fi
+
   # 检测本 PR 改了哪些类别,给 rust-test 做条件触发(非 Rust PR 跳过编译)。
   changes:
     name: changes
