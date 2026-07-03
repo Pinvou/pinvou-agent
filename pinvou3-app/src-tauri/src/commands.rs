@@ -87,11 +87,21 @@ pub async fn chat(
     // Agentic RAG:该 session 挂了知识集 → 每 turn prepend Self-RAG 自检引导,让模型自己
     // 调 kb_search 工具(engine 已注入)检索、严格基于结果作答、无依据就说不知道。不再自动
     // 注入片段(注入式已废弃)。collection_name 是单行查询,直接调即可(非大查询不必 spawn)。
+    //
+    // 关键防线:kb_search 的可见性是 engine config.disallowed_tools 控制的,而知识库模型/
+    // 索引状态可能在 engine spawn 后才变化。挂集 turn 先刷新 live engine 的工具门控;
+    // 若 kb_search 当前仍不可用,不要注入“必须调用 kb_search”的提示,避免模型把提示/sudo
+    // 状态当普通文本复述给用户。
     if let Some(cid) = store.mounted_collection(&sid) {
-        let coll_name = app
-            .try_state::<KnowledgeService>()
-            .and_then(|kb| kb.l1().collection_name(cid).ok().flatten());
-        full = format!("{}\n\n---\n\n{full}", build_kb_agentic_guide(coll_name.as_deref()));
+        let disallowed = compute_disallowed_tools(&app);
+        let kb_search_hidden = disallowed.iter().any(|t| t.eq_ignore_ascii_case("kb_search"));
+        pool.set_disallowed_all(disallowed).await;
+        if !kb_search_hidden {
+            let coll_name = app
+                .try_state::<KnowledgeService>()
+                .and_then(|kb| kb.l1().collection_name(cid).ok().flatten());
+            full = format!("{}\n\n---\n\n{full}", build_kb_agentic_guide(coll_name.as_deref()));
+        }
     }
     // 取该 session 的 mode。
     let mode = store.mode_state(&sid).mode;
