@@ -7261,7 +7261,7 @@
                 </div>
                 <div className="px-6 py-6">
                   <p className="text-[14px] text-slate-600 dark:text-slate-300 leading-relaxed mb-6">以你<b>本人 SSO 身份</b>直连 H3C 集团内部系统，浏览器 / 扫码登录、<b>全程不填 key</b>；数据经公司内网、不出集团。<span className="text-slate-400">需连接公司内网使用。</span></p>
-                  <h3 className="text-[16px] font-bold mb-4">包含的工具 (2)</h3>
+                  <h3 className="text-[16px] font-bold mb-4 text-slate-900 dark:text-white">包含的工具 (2)</h3>
                   <div className="space-y-4">
                     {tools.filter(t => t.internal).map(t => (
                       <div key={t.id} className="flex items-start gap-4">
@@ -7271,7 +7271,7 @@
                         </div>
                         <div className="flex-1 min-w-0 border-b border-slate-100 dark:border-white/5 pb-4">
                           <div className="flex justify-between items-center gap-2 mb-1">
-                            <h4 className="text-[15px] font-bold truncate">{t.title}</h4>
+                            <h4 className="text-[15px] font-bold truncate text-slate-900 dark:text-white">{t.title}</h4>
                             <TsActionBtn tool={t} busy={busyId === t.backendId} onAction={handleAction} />
                           </div>
                           <p className="text-[12px] text-slate-500 dark:text-slate-400 leading-relaxed">{t.subtitle}</p>
@@ -7280,7 +7280,7 @@
                     ))}
                   </div>
                   <div className="mt-6 pt-4 border-t border-slate-100 dark:border-white/10 text-center">
-                    <p className="text-[11px] text-slate-400">需连接公司内网 · 首次点「连接」浏览器 / 扫码 SSO 登录，不填 key</p>
+                    <p className="text-[11px] text-slate-400 dark:text-slate-500">需连接公司内网 · 首次点「连接」浏览器 / 扫码 SSO 登录，不填 key</p>
                   </div>
                 </div>
               </div>
