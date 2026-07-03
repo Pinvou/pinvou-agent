@@ -6,7 +6,8 @@
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
-    "build": "tauri build"
+    "build": "tauri build",
+    "build:nsis": "tauri build --features dev-tools --bundles nsis"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0"
