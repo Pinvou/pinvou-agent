@@ -349,11 +349,7 @@ fn is_libreoffice_command(command: &str) -> bool {
 }
 
 pub fn nvidia_smi_candidates() -> Vec<&'static str> {
-    vec![
-        "nvidia-smi",
-        r"C:\Windows\System32\nvidia-smi.exe",
-        r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
-    ]
+    Vec::new()
 }
 
 #[cfg(test)]
