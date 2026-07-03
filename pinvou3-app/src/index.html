@@ -2124,21 +2124,21 @@
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
           {/* Header */}
-          <div className="px-16 pt-12 pb-3">
-            <h1 className="text-[27px] font-extrabold tracking-[-0.3px] mb-1.5">{t.kbPageTitle}</h1>
+          <div className="w-full max-w-7xl mx-auto px-6 md:px-10 pt-12 pb-3">
+            <h1 className="text-[32px] font-normal tracking-tight mb-1.5">{t.kbPageTitle}</h1>
             <p className={`text-[14px] ${muted}`}>{sub === 'files' ? t.kbFilesSub : t.kbKbSub}</p>
           </div>
           {/* Sub-tabs */}
-          <div className="px-16 flex items-center gap-7 border-b border-gray-400/15">
+          <div className="w-full max-w-7xl mx-auto px-6 md:px-10 flex items-center gap-7 border-b border-gray-400/15">
             <SubTab k="files" label={t.kbSubFiles} count={total ? total.toLocaleString() : null} />
             <SubTab k="kb" label={t.kbSubKb} count={modelInstalled ? (colls.length || null) : null} />
           </div>
 
-          <div className="flex-1 overflow-y-auto custom-scrollbar px-16 py-6">
+          <div className="flex-1 overflow-y-auto custom-scrollbar py-6">
 
             {/* ============ 文件管理 ============ */}
             {sub === 'files' && (
-              <div className="max-w-[1100px]">
+              <div className="max-w-7xl mx-auto px-6 md:px-10">
                 {!loaded ? (
                   // 加载骨架:页面壳即时呈现(搜索栏+真实类型卡,数字/文件用灰条占位),数据 async 填,
                   // 避免整页空白死等 refreshL0(大库冷读时尤其明显)。loaded 后切真实数据,结构一致很平滑。
@@ -2347,7 +2347,7 @@
 
             {/* ============ 知识库 列表（模型已就绪）============ */}
             {sub === 'kb' && modelInstalled && (
-              <div className="max-w-[1100px]">
+              <div className="max-w-7xl mx-auto px-6 md:px-10">
                 <div className={`rounded-3xl p-7 mb-6 flex items-center gap-6 ${isDark ? 'bg-gradient-to-br from-[#2A2440] to-[#1E2438]' : 'bg-gradient-to-br from-[#ece8fc] to-[#dcebfb]'}`}>
                   <div className="flex-1 min-w-0">
                     <h2 className={`text-[20px] font-bold mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#211f33]'}`}>{t.kbBannerTitle}</h2>
@@ -2742,7 +2742,7 @@
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
 
-          <div className="px-16 pt-12 pb-6 flex items-end justify-between">
+          <div className="w-full max-w-7xl mx-auto px-6 md:px-10 pt-12 pb-6 flex items-end justify-between">
             <div>
               <h1 className="text-[32px] font-normal tracking-tight mb-2">{t.sysStatus}</h1>
               <p className={`text-[15px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.sysDesc}</p>
@@ -2760,8 +2760,8 @@
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto px-16 py-8 custom-scrollbar">
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 max-w-[1200px]">
+          <div className="flex-1 overflow-y-auto py-8 custom-scrollbar">
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 max-w-7xl mx-auto px-6 md:px-10">
 
               <WidgetCard title={t.gpu} theme={theme}>
                 <div className="mb-10">
@@ -8122,7 +8122,7 @@
         <div className="flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden animate-in fade-in duration-300"
           style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif', background: isDark ? '#131314' : '#fff' }}>
           <div className="relative z-10 flex-1 min-h-0 overflow-y-auto custom-scrollbar">
-            <div className="max-w-[1400px] mx-auto">
+            <div className="max-w-7xl mx-auto">
 
               {/* 头部:标题 + 加持目标小提示 / 我的专家 + 新建（无暗色toggle，用全局主题） */}
               <div className="px-6 md:px-10 pt-8 pb-1 flex items-start justify-between gap-4">
@@ -9521,12 +9521,12 @@
       if (!inBoard) {
         return (
           <div className={containerCls}>
-            <div className="px-6 md:px-10 pt-8 pb-4">
+            <div className="w-full max-w-7xl mx-auto px-6 md:px-10 pt-8 pb-4">
               <h1 className={`text-[32px] font-normal tracking-tight ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.workflow}</h1>
               <p className={`text-[13px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>选择一个工作流模板开始</p>
             </div>
-            <div className="flex-1 overflow-y-auto custom-scrollbar px-6 md:px-10 pb-10">
-              <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
+            <div className="flex-1 overflow-y-auto custom-scrollbar pb-10">
+              <div className="grid gap-4 max-w-7xl mx-auto px-6 md:px-10" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
                 {/* [工作流分离 Stage D] 模板卡 = 后端 list_workflows(各 workflow.json 的
                     ui.template)。点开:当前 run 属于该工作流(scenario 命中它认领的场景)
                     → 续看板;否则弹该工作流自己的新建表单。 */}
@@ -9587,7 +9587,7 @@
 
       return (
         <div className={containerCls}>
-          <div className="flex items-center justify-between px-6 md:px-10 pt-8 pb-4">
+          <div className="w-full max-w-7xl mx-auto flex items-center justify-between px-6 md:px-10 pt-8 pb-4">
             <div>
               <h1 className={`text-[32px] font-normal tracking-tight ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{(run.ui && run.ui.header) || (runWorkflow && runWorkflow.ui && runWorkflow.ui.header) || '工作流'}</h1>
               <p className={`text-[13px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{statusText} · 卡片流</p>
