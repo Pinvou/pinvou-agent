@@ -409,7 +409,7 @@
         composerTools: '工具', composerInstalledTools: '已接入工具', composerNoTools: '暂无已装工具', composerToolOn: '已启用', composerManageTools: '管理工具',
         composerMode: '技能', composerModeTitle: '技能', composerModeNone: '暂无可用技能',
         composerSkillAuto: '内置·自动', composerSkillInUse: '使用中', composerSkillSoon: '待上线',
-        resend: '重新发送', editResend: '编辑并重发', copyMsg: '复制', copied: '已复制',
+        resend: '重新发送', editResend: '编辑并重发', selectAllMsg: '全选', copyMsg: '复制', pasteMsg: '粘贴', copied: '已复制', backToBottom: '回到底部',
         thinkingLabel: '思考中', thinkingCall: (tool, s) => `调用 ${tool}... ${s}s`,
         hintSlow30: '本地模型生成中', hintSlow120: '本地模型在生成长内容,请耐心等',
         artifactLabel: '成品', clickToOpen: '点击打开 →',
@@ -655,7 +655,7 @@
         composerTools: 'Tools', composerInstalledTools: 'Connected tools', composerNoTools: 'No tools installed', composerToolOn: 'On', composerManageTools: 'Manage tools',
         composerMode: 'Skill', composerModeTitle: 'Skills', composerModeNone: 'No skills available',
         composerSkillAuto: 'Built-in', composerSkillInUse: 'In use', composerSkillSoon: 'Soon',
-        resend: 'Resend', editResend: 'Edit & resend', copyMsg: 'Copy', copied: 'Copied',
+        resend: 'Resend', editResend: 'Edit & resend', selectAllMsg: 'Select all', copyMsg: 'Copy', pasteMsg: 'Paste', copied: 'Copied', backToBottom: 'Back to bottom',
         thinkingLabel: 'Thinking', thinkingCall: (tool, s) => `Calling ${tool}... ${s}s`,
         hintSlow30: 'local model generating', hintSlow120: 'local model is generating long content, hang tight',
         artifactLabel: 'Artifact', clickToOpen: 'Open →',
@@ -900,7 +900,7 @@
         composerTools: 'ツール', composerInstalledTools: '接続済みツール', composerNoTools: 'ツールなし', composerToolOn: '有効', composerManageTools: 'ツール管理',
         composerMode: 'スキル', composerModeTitle: 'スキル', composerModeNone: '利用可能なスキルなし',
         composerSkillAuto: '内蔵', composerSkillInUse: '使用中', composerSkillSoon: '近日',
-        resend: '再送信', editResend: '編集して再送信', copyMsg: 'コピー', copied: 'コピー済み',
+        resend: '再送信', editResend: '編集して再送信', selectAllMsg: 'すべて選択', copyMsg: 'コピー', pasteMsg: '貼り付け', copied: 'コピー済み', backToBottom: '一番下へ',
         thinkingLabel: '思考中', thinkingCall: (tool, s) => `${tool} を実行中... ${s}s`,
         hintSlow30: 'ローカルモデルが生成中', hintSlow120: 'ローカルモデルが長い内容を生成中です。しばらくお待ちください',
         artifactLabel: '成果物', clickToOpen: 'クリックで開く →',
@@ -961,6 +961,7 @@
     // 这里 / dict / Rust prefs.rs Language 枚举
     const LANG_TO_TAG = { zh: 'zh-Hans', en: 'en', ja: 'ja' };
     const TAG_TO_LANG = { 'zh-Hans': 'zh', 'en': 'en', 'ja': 'ja' };
+    const SEARCH_KEY_PROVIDERS = ['metaso', 'bocha', 'baidu', 'tavily'];
 
     /* ==========================================
        TauriBridge hook
@@ -1076,6 +1077,8 @@
       // bs.settings 加载后 useEffect 同步进来。
       const [searchProvider, setSearchProvider] = useState('bing');
       const [searchApiKey, setSearchApiKey] = useState('');
+      const [searchKeyDrafts, setSearchKeyDrafts] = useState({});
+      const [searchKeyActions, setSearchKeyActions] = useState({});
       // 模型配置（动态适配）——草稿模式，确认后才保存
       const [modelPreset, setModelPreset] = useState('local_vllm');
       const [customModelName, setCustomModelName] = useState('');
@@ -1213,12 +1216,26 @@
         // 搜索配置：只在第一次从后端加载初始值，后续走草稿模式（确认后才保存并重启）。
         if (!searchConfigInitRef.current && bs.settings) {
           const search = bs.settings.search || {};
+          const credentials = search.credentials || {};
           const saved = {
             provider: search.provider || 'bing',
             apiKey: search.api_key || '',
+            credentials: credentials,
           };
+          const drafts = {};
+          const actions = {};
+          SEARCH_KEY_PROVIDERS.forEach(p => {
+            drafts[p] = '';
+            actions[p] = 'keep_existing';
+          });
+          if (saved.apiKey && saved.provider !== 'bing') {
+            drafts[saved.provider] = saved.apiKey;
+            actions[saved.provider] = 'replace';
+          }
           setSearchProvider(saved.provider);
-          setSearchApiKey(saved.apiKey);
+          setSearchApiKey(drafts[saved.provider] || '');
+          setSearchKeyDrafts(drafts);
+          setSearchKeyActions(actions);
           savedSearchConfigRef.current = saved;
           searchConfigInitRef.current = true;
         }
@@ -1260,11 +1277,50 @@
         const trimmed = (value || '').trim();
         return trimmed ? trimmed : null;
       }
+      function searchCredentialForProvider(provider) {
+        const saved = savedSearchConfigRef.current;
+        return (saved && saved.credentials && saved.credentials[provider]) || {};
+      }
+      function searchHasSavedKey(provider) {
+        const credential = searchCredentialForProvider(provider);
+        const state = credential.credential_state || (credential.has_secret ? 'configured' : 'missing');
+        return !!credential.has_secret || state === 'configured' || state === 'env_override';
+      }
+      function searchProviderKeyAction(provider) {
+        return searchKeyActions[provider] || 'keep_existing';
+      }
+      function searchProviderCredentialDirty(provider) {
+        const action = searchProviderKeyAction(provider);
+        const draft = searchKeyDrafts[provider] || '';
+        return action === 'delete' || (action === 'replace' && !!draft.trim());
+      }
+      function buildSearchSettingsPayload() {
+        const baseSearch = (bs && bs.settings && bs.settings.search) || {};
+        const credentials = { ...(baseSearch.credentials || {}) };
+        SEARCH_KEY_PROVIDERS.forEach(provider => {
+          const action = searchProviderKeyAction(provider);
+          const draft = searchKeyDrafts[provider] || '';
+          if (action === 'delete' || (action === 'replace' && draft.trim())) {
+            credentials[provider] = {
+              ...(credentials[provider] || {}),
+              api_key: action === 'replace' ? draft.trim() : '',
+              credential_action: action,
+            };
+          }
+        });
+        return {
+          ...baseSearch,
+          provider: searchProvider,
+          api_key: null,
+          credentials,
+        };
+      }
       // 搜索配置也影响 EngineConfig,需保存后重启进程才生效。
       const savedSearch = savedSearchConfigRef.current;
+      const searchCredentialDirty = SEARCH_KEY_PROVIDERS.some(searchProviderCredentialDirty);
       const searchNeedsRestart = !!savedSearch && (
         searchProvider !== savedSearch.provider ||
-        normalizedSearchApiKeyValue(searchApiKey) !== normalizedSearchApiKeyValue(savedSearch.apiKey)
+        searchCredentialDirty
       );
       // 语言已即时写盘+切 UI,但 LLM 的 locale_tag 要重启 engine 才生效 → 偏离启动语言就提示。
       const languageNeedsRestart = !!bootedLanguageRef.current && language !== bootedLanguageRef.current;
@@ -1331,15 +1387,13 @@
         const topOverrides = { ...(overrides || {}) };
         delete topOverrides.advanced;
         delete topOverrides.search;
+        const baseSearch = base.search || { provider: 'bing', api_key: null, credentials: {} };
         return {
           ...base,
           ...topOverrides,
           theme: topOverrides.theme !== undefined ? topOverrides.theme : (activeTheme === 'dark' ? 'genesis' : 'liquid-light'),
           language: topOverrides.language !== undefined ? topOverrides.language : (LANG_TO_TAG[language] || 'zh-Hans'),
-          search: searchOverrides || {
-            provider: searchProvider,
-            api_key: normalizedSearchApiKeyValue(searchApiKey),
-          },
+          search: searchOverrides ? { ...baseSearch, ...searchOverrides } : baseSearch,
           advanced: buildAdvancedOverrides(advancedOverrides),
         };
       }
@@ -1352,17 +1406,37 @@
       }
 
       function handleSetSearchProvider(p) {
+        if (p === searchProvider) return;
         setSearchProvider(p);
+        setSearchApiKey(searchKeyDrafts[p] || '');
       }
 
       function handleSetSearchApiKey(k) {
         setSearchApiKey(k);
+        setSearchKeyDrafts(prev => ({ ...prev, [searchProvider]: k }));
+        setSearchKeyActions(prev => ({ ...prev, [searchProvider]: k.trim() ? 'replace' : 'keep_existing' }));
+      }
+
+      function handleKeepSearchApiKey() {
+        setSearchApiKey('');
+        setSearchKeyDrafts(prev => ({ ...prev, [searchProvider]: '' }));
+        setSearchKeyActions(prev => ({ ...prev, [searchProvider]: 'keep_existing' }));
+      }
+
+      function handleReplaceSearchApiKey() {
+        setSearchKeyActions(prev => ({ ...prev, [searchProvider]: 'replace' }));
+      }
+
+      function handleDeleteSearchApiKey() {
+        setSearchApiKey('');
+        setSearchKeyDrafts(prev => ({ ...prev, [searchProvider]: '' }));
+        setSearchKeyActions(prev => ({ ...prev, [searchProvider]: 'delete' }));
       }
 
       function handleConfirmSearchConfig() {
         if (bridge.available) {
           bridge.saveSettingsAndRestart(buildFullSettings({
-            search: { provider: searchProvider, api_key: normalizedSearchApiKeyValue(searchApiKey) },
+            search: buildSearchSettingsPayload(),
           }));
         }
       }
@@ -1629,6 +1703,12 @@
                 superPerm={superPerm} setSuperPerm={handleToggleSuperPerm}
                 searchProvider={searchProvider} setSearchProvider={handleSetSearchProvider}
                 searchApiKey={searchApiKey} setSearchApiKey={handleSetSearchApiKey}
+                searchCredential={searchCredentialForProvider(searchProvider)}
+                searchKeyAction={searchProviderKeyAction(searchProvider)}
+                searchHasSavedKey={searchHasSavedKey(searchProvider)}
+                onKeepSearchApiKey={handleKeepSearchApiKey}
+                onReplaceSearchApiKey={handleReplaceSearchApiKey}
+                onDeleteSearchApiKey={handleDeleteSearchApiKey}
                 savedModels={(bs && bs.savedModels) || []}
                 activeModelId={bs && bs.activeModelId}
                 onSaveModel={(m) => bridge.available && bridge.saveModel(m)}
@@ -3473,13 +3553,18 @@
       );
     };
 
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onConfirmSearchConfig, searchNeedsRestart, languageNeedsRestart, bs, t }) => {
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, searchCredential, searchKeyAction, searchHasSavedKey, onKeepSearchApiKey, onReplaceSearchApiKey, onDeleteSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onConfirmSearchConfig, searchNeedsRestart, languageNeedsRestart, bs, t }) => {
       const isDark = activeTheme === 'dark';
       const [editingModel, setEditingModel] = useState(null);
       const modelEnvLocked = (bs && bs.effectiveModelConfig && bs.effectiveModelConfig.env_overrides) || [];
       const [feedbackOpen, setFeedbackOpen] = useState(false);
       const [feedbackDraft, setFeedbackDraft] = useState({ type: 'issue', title: '', description: '', attachments: [] });
       const [feedbackStatus, setFeedbackStatus] = useState({ state: 'idle', message: '', receipt: null });
+      const searchCredentialState = (searchCredential && searchCredential.credential_state) || (searchHasSavedKey ? 'configured' : 'missing');
+      const searchKeyStatusText = searchCredentialState === 'env_override' ? t.credEnvOverride
+        : searchCredentialState === 'unavailable' ? t.credUnavailable
+        : searchHasSavedKey ? t.credConfigured
+        : t.credNotConfigured;
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
       const feedbackTypes = [
         { key: 'issue', label: t.feedbackIssue },
@@ -3673,9 +3758,20 @@
                     </span>
                   ) : (
                     <div>
+                      <div className={`mb-2 text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{searchKeyStatusText}</div>
                       <SField isDark={isDark} label={t.searchKey} type="password"
                         value={searchApiKey} onChange={e => setSearchApiKey(e.target.value)}
-                        placeholder={t.searchKeyPlaceholder} />
+                        placeholder={searchHasSavedKey ? t.credEnterNewKey : t.searchKeyPlaceholder} />
+                      {searchHasSavedKey && (
+                        <div className="mt-2 flex items-center gap-2 flex-wrap">
+                          <button onClick={onKeepSearchApiKey}
+                            className={`text-[12px] px-3 py-1.5 rounded-full ${searchKeyAction === 'keep_existing' ? (isDark ? 'bg-[#174EA6] text-white' : 'bg-[#D2E3FC] text-[#174EA6]') : (isDark ? 'bg-[#2B2C2F] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]')}`}>{t.credKeep}</button>
+                          <button onClick={onReplaceSearchApiKey}
+                            className={`text-[12px] px-3 py-1.5 rounded-full ${searchKeyAction === 'replace' ? (isDark ? 'bg-[#174EA6] text-white' : 'bg-[#D2E3FC] text-[#174EA6]') : (isDark ? 'bg-[#2B2C2F] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]')}`}>{t.credReplace}</button>
+                          <button onClick={onDeleteSearchApiKey}
+                            className={`text-[12px] px-3 py-1.5 rounded-full ${searchKeyAction === 'delete' ? (isDark ? 'bg-[#5F2120] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]') : (isDark ? 'bg-[#2B2C2F] text-[#F28B82]' : 'bg-[#F0F4F9] text-[#C5221F]')}`}>{t.credDeleteKey}</button>
+                        </div>
+                      )}
                       <span className={`text-[12px] mt-2 block ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
                         {searchProvider === 'metaso' ? t.searchKeyHintMetaso : searchProvider === 'baidu' ? t.searchKeyHintBaidu : searchProvider === 'tavily' ? t.searchKeyHintTavily : t.searchKeyHintBocha}
                       </span>
@@ -4250,6 +4346,7 @@
       };
       const scrollRef = useRef(null);
       const autoScrollRef = useRef(true);
+      const [showScrollBottom, setShowScrollBottom] = useState(false);
       const composerRef = useRef(null);
       // 输入框自动增高:随内容从最小(~2行)长到上限 160px,再内部滚动(iOS 手感)。
       // 清空(发送后)inputText 变 '' → 自动缩回最小高。
@@ -4300,20 +4397,37 @@
       useEffect(() => {
         const el = scrollRef.current;
         if (!el) return;
-        const onScroll = () => { autoScrollRef.current = isNearChatBottom(el); };
+        const onScroll = () => {
+          const near = isNearChatBottom(el);
+          const shouldShow = !near && el.scrollHeight > el.clientHeight + 4;
+          autoScrollRef.current = near;
+          setShowScrollBottom(v => v === shouldShow ? v : shouldShow);
+        };
         onScroll();
         el.addEventListener('scroll', onScroll, { passive: true });
         return () => el.removeEventListener('scroll', onScroll);
       }, []);
 
+      function scrollChatToBottom() {
+        const el = scrollRef.current;
+        if (!el) return;
+        autoScrollRef.current = true;
+        setShowScrollBottom(false);
+        el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+      }
+
       useEffect(() => {
         const el = scrollRef.current;
         if (!el) return;
         const lastItem = chatItems[chatItems.length - 1];
-        if (!lastItem) { autoScrollRef.current = true; return; }
+        if (!lastItem) { autoScrollRef.current = true; setShowScrollBottom(false); return; }
         if (autoScrollRef.current || lastItem.type === 'user') {
           el.scrollTop = el.scrollHeight;
           autoScrollRef.current = true;
+          setShowScrollBottom(false);
+        } else {
+          const shouldShow = !isNearChatBottom(el) && el.scrollHeight > el.clientHeight + 4;
+          setShowScrollBottom(v => v === shouldShow ? v : shouldShow);
         }
       }, [chatItems.length, chatItems[chatItems.length - 1]?.html, composerH]);
 
@@ -4473,6 +4587,21 @@
           {/* 底部渐变蒙层:内容滚到底时在输入框上方柔和淡出(pointer-events-none 不挡滑动/点击;高度跟随输入框 auto-grow)。 */}
           <div className={`pointer-events-none absolute bottom-0 inset-x-0 z-[15] bg-gradient-to-t to-transparent from-30% via-70% ${isDark ? 'from-[#131314] via-[#131314]/95' : 'from-white via-white/95'}`}
             style={{ height: (composerH ? composerH + 96 : 220) + 'px' }} />
+          {hasMessages && showScrollBottom && (
+            <div className="pointer-events-none absolute inset-x-0 z-[25] flex justify-center"
+              style={{ bottom: (composerH ? composerH + 54 : 172) + 'px' }}>
+              <button
+                type="button"
+                onClick={scrollChatToBottom}
+                aria-label={t.backToBottom}
+                title={t.backToBottom}
+                className={`pointer-events-auto w-9 h-9 rounded-full flex items-center justify-center shadow-lg backdrop-blur transition-all hover:-translate-y-0.5 active:translate-y-0 ${
+                  isDark ? 'bg-[#2B2C2F]/95 text-[#E3E3E3] border border-white/10 hover:bg-[#34363A]' : 'bg-white/95 text-[#1F1F1F] border border-black/10 hover:bg-[#F8FAFF]'
+                }`}>
+                <ChevronDown size={15} />
+              </button>
+            </div>
+          )}
           {/* Floating Input Area */}
           <div ref={composerWrapRef} className={`absolute bottom-8 inset-x-0 z-20 ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'}`}>
             <div className="max-w-[800px] w-full mx-auto">
@@ -4583,6 +4712,7 @@
                 rows={1}
                 className="w-full bg-transparent resize-none outline-none text-gray-800 dark:text-gray-100 text-[16px] leading-relaxed min-h-[48px] overflow-y-auto hide-scrollbar placeholder:text-gray-400 dark:placeholder:text-gray-500"
               />
+              <TextareaContextMenu inputRef={composerRef} setValue={setInputText} theme={theme} t={t} />
               <div className="flex items-center justify-between mt-1.5 gap-2">
                 <div className="flex items-center gap-1.5 min-w-0 flex-1">
                   <button onClick={() => bridge.available && bridge.pickAndAttach()} title={t.attachAdd}
@@ -4663,6 +4793,278 @@
     // ==========================================
     // Chat Bubble (message rendering)
     // ==========================================
+    function fallbackCopyText(tx) {
+      return new Promise(function (resolve) {
+        var ta = null;
+        try {
+          ta = document.createElement('textarea');
+          ta.value = String(tx || '');
+          ta.setAttribute('readonly', '');
+          ta.style.position = 'fixed';
+          ta.style.left = '-9999px';
+          ta.style.top = '-9999px';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.focus();
+          ta.select();
+          ta.setSelectionRange(0, ta.value.length);
+          resolve(!!document.execCommand('copy'));
+        } catch (e) {
+          resolve(false);
+        } finally {
+          if (ta && ta.parentNode) ta.parentNode.removeChild(ta);
+        }
+      });
+    }
+
+    function copyClipboardText(tx) {
+      tx = String(tx || '');
+      if (!tx) return Promise.resolve(false);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(tx).then(function () { return true; }).catch(function () {
+          return fallbackCopyText(tx);
+        });
+      }
+      return fallbackCopyText(tx);
+    }
+
+    function readClipboardText() {
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        return navigator.clipboard.readText().catch(function () { return ''; });
+      }
+      return Promise.resolve('');
+    }
+
+    const SelectionCopyButton = ({ hostRef, targetRef, theme, t }) => {
+      const isDark = theme === 'dark';
+      const [selCopy, setSelCopy] = useState({ visible: false, copied: false, text: '', x: 0, y: 0 });
+      const hideTimerRef = useRef(null);
+
+      const hideSelectionCopy = useCallback(() => {
+        if (hideTimerRef.current) {
+          clearTimeout(hideTimerRef.current);
+          hideTimerRef.current = null;
+        }
+        setSelCopy(s => s.visible ? { ...s, visible: false, copied: false } : s);
+      }, []);
+
+      const openSelectionCopyMenu = useCallback((event) => {
+        const target = targetRef.current;
+        const host = hostRef.current;
+        if (!target || !host || !window.getSelection) return false;
+        const selection = window.getSelection();
+        if (!selection || selection.rangeCount === 0) { hideSelectionCopy(); return false; }
+        const text = selection.toString();
+        if (!text || !text.trim()) { hideSelectionCopy(); return false; }
+        if (!selection.anchorNode || !selection.focusNode) { hideSelectionCopy(); return false; }
+        if (!target.contains(selection.anchorNode) || !target.contains(selection.focusNode)) {
+          hideSelectionCopy();
+          return false;
+        }
+        const hostRect = host.getBoundingClientRect();
+        if (!hostRect) { hideSelectionCopy(); return false; }
+        const minX = 4;
+        const maxX = Math.max(minX, hostRect.width - 100);
+        const x = Math.max(minX, Math.min(event.clientX - hostRect.left, maxX));
+        const y = Math.max(4, event.clientY - hostRect.top + 8);
+        setSelCopy({ visible: true, copied: false, text: text, x: x, y: y });
+        return true;
+      }, [hideSelectionCopy, hostRef, targetRef]);
+
+      useEffect(() => {
+        return () => {
+          if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+        };
+      }, []);
+
+      useEffect(() => {
+        const target = targetRef.current;
+        if (!target) return;
+        const onContextMenu = (e) => {
+          if (openSelectionCopyMenu(e)) {
+            e.preventDefault();
+            e.stopPropagation();
+          } else {
+            hideSelectionCopy();
+          }
+        };
+        target.addEventListener('contextmenu', onContextMenu);
+        return () => {
+          target.removeEventListener('contextmenu', onContextMenu);
+        };
+      }, [hideSelectionCopy, openSelectionCopyMenu, targetRef]);
+
+      useEffect(() => {
+        if (!selCopy.visible) return;
+        const onDown = (e) => {
+          if (e.target && e.target.closest && e.target.closest('[data-selection-copy-button]')) return;
+          hideSelectionCopy();
+        };
+        const onKey = (e) => { if (e.key === 'Escape') hideSelectionCopy(); };
+        document.addEventListener('mousedown', onDown, true);
+        document.addEventListener('keydown', onKey, true);
+        return () => {
+          document.removeEventListener('mousedown', onDown, true);
+          document.removeEventListener('keydown', onKey, true);
+        };
+      }, [hideSelectionCopy, selCopy.visible]);
+
+      const onCopy = () => {
+        copyClipboardText(selCopy.text).then(function (ok) {
+          if (!ok) return;
+          setSelCopy(s => ({ ...s, copied: true }));
+          if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+          hideTimerRef.current = setTimeout(function () {
+            hideTimerRef.current = null;
+            hideSelectionCopy();
+          }, 900);
+        });
+      };
+
+      if (!selCopy.visible) return null;
+      return (
+        <button
+          type="button"
+          data-selection-copy-button="true"
+          title={selCopy.copied ? t.copied : t.copyMsg}
+          onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onCopy(); }}
+          className={`absolute z-30 h-9 min-w-[92px] px-3 rounded-[10px] flex items-center justify-start gap-2 text-[13px] font-medium shadow-lg backdrop-blur transition-colors ${
+            isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#34363A] border border-white/10' : 'bg-white text-[#1F1F1F] hover:bg-[#F8FAFF] border border-black/10'
+          }`}
+          style={{ left: selCopy.x + 'px', top: selCopy.y + 'px' }}
+        >
+          {selCopy.copied ? <Check size={13} className="text-[#34C759]" /> : <Copy size={13} />}
+          <span>{selCopy.copied ? t.copied : t.copyMsg}</span>
+        </button>
+      );
+    };
+
+    const TextareaContextMenu = ({ inputRef, setValue, theme, t }) => {
+      const isDark = theme === 'dark';
+      const [menu, setMenu] = useState({ visible: false, x: 0, y: 0, canCopy: false });
+
+      const closeMenu = useCallback(() => {
+        setMenu(m => m.visible ? { ...m, visible: false } : m);
+      }, []);
+
+      const selectedText = useCallback(() => {
+        const el = inputRef.current;
+        if (!el) return '';
+        const start = typeof el.selectionStart === 'number' ? el.selectionStart : 0;
+        const end = typeof el.selectionEnd === 'number' ? el.selectionEnd : start;
+        return start === end ? '' : String(el.value || '').slice(start, end);
+      }, [inputRef]);
+
+      const replaceSelection = useCallback((text) => {
+        const el = inputRef.current;
+        if (!el || !text) return;
+        const raw = String(el.value || '');
+        const start = typeof el.selectionStart === 'number' ? el.selectionStart : raw.length;
+        const end = typeof el.selectionEnd === 'number' ? el.selectionEnd : start;
+        const next = raw.slice(0, start) + text + raw.slice(end);
+        const cursor = start + text.length;
+        setValue(next);
+        requestAnimationFrame(function () {
+          el.focus();
+          try { el.setSelectionRange(cursor, cursor); } catch (e) {}
+        });
+      }, [inputRef, setValue]);
+
+      useEffect(() => {
+        const el = inputRef.current;
+        if (!el) return;
+        const openMenu = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const start = typeof el.selectionStart === 'number' ? el.selectionStart : 0;
+          const end = typeof el.selectionEnd === 'number' ? el.selectionEnd : start;
+          const menuW = 136;
+          const menuH = 116;
+          const x = Math.max(6, Math.min(e.clientX, window.innerWidth - menuW - 6));
+          const y = Math.max(6, Math.min(e.clientY, window.innerHeight - menuH - 6));
+          setMenu({ visible: true, x: x, y: y, canCopy: start !== end });
+        };
+        const onContextMenu = (e) => openMenu(e);
+        const onMouseDown = (e) => { if (e.button === 2) openMenu(e); };
+        el.addEventListener('contextmenu', onContextMenu, true);
+        el.addEventListener('mousedown', onMouseDown, true);
+        return () => {
+          el.removeEventListener('contextmenu', onContextMenu, true);
+          el.removeEventListener('mousedown', onMouseDown, true);
+        };
+      }, [inputRef]);
+
+      useEffect(() => {
+        if (!menu.visible) return;
+        const onDown = (e) => {
+          if (e.target && e.target.closest && e.target.closest('[data-textarea-context-menu]')) return;
+          closeMenu();
+        };
+        const onKey = (e) => { if (e.key === 'Escape') closeMenu(); };
+        const onScrollOrResize = () => closeMenu();
+        document.addEventListener('mousedown', onDown, true);
+        document.addEventListener('keydown', onKey, true);
+        window.addEventListener('resize', onScrollOrResize);
+        window.addEventListener('scroll', onScrollOrResize, true);
+        return () => {
+          document.removeEventListener('mousedown', onDown, true);
+          document.removeEventListener('keydown', onKey, true);
+          window.removeEventListener('resize', onScrollOrResize);
+          window.removeEventListener('scroll', onScrollOrResize, true);
+        };
+      }, [closeMenu, menu.visible]);
+
+      const menuItemCls = (disabled) => `w-full h-9 px-3 flex items-center gap-2 text-left text-[13px] transition-colors ${
+        disabled
+          ? (isDark ? 'text-white/30 cursor-not-allowed' : 'text-black/30 cursor-not-allowed')
+          : (isDark ? 'text-[#E3E3E3] hover:bg-white/10' : 'text-[#1F1F1F] hover:bg-black/[0.06]')
+      }`;
+
+      const selectAll = () => {
+        const el = inputRef.current;
+        if (!el) return;
+        el.focus();
+        el.select();
+        closeMenu();
+      };
+
+      const copySelected = () => {
+        const tx = selectedText();
+        if (!tx) return;
+        copyClipboardText(tx).then(function () { closeMenu(); });
+      };
+
+      const pasteText = () => {
+        readClipboardText().then(function (tx) {
+          replaceSelection(tx);
+          closeMenu();
+        });
+      };
+
+      if (!menu.visible) return null;
+      return ReactDOM.createPortal((
+        <div
+          data-textarea-context-menu="true"
+          className={`w-[136px] overflow-hidden rounded-[12px] py-1 shadow-xl backdrop-blur border ${
+            isDark ? 'bg-[#2B2C2F] border-white/10' : 'bg-white border-black/10'
+          }`}
+          style={{ position: 'fixed', zIndex: 9999, left: menu.x + 'px', top: menu.y + 'px' }}
+          onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+        >
+          <button type="button" className={menuItemCls(false)} onClick={selectAll}>
+            <span className="w-4 text-center text-[12px]">A</span><span>{t.selectAllMsg || 'Select all'}</span>
+          </button>
+          <button type="button" disabled={!menu.canCopy} className={menuItemCls(!menu.canCopy)} onClick={copySelected}>
+            <Copy size={14} /><span>{t.copyMsg}</span>
+          </button>
+          <button type="button" className={menuItemCls(false)} onClick={pasteText}>
+            <ClipboardList size={14} /><span>{t.pasteMsg || 'Paste'}</span>
+          </button>
+        </div>
+      ), document.body);
+    };
+
     const UserBubble = ({ item, theme, editable, t }) => {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
@@ -4671,9 +5073,11 @@
       function commit() { const tx = val.trim(); setEditing(false); if (tx && bridge.available) bridge.editLastTurn(tx); }
       function copyText() {
         const tx = item.text || '';
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(tx).then(function () { setCopied(true); setTimeout(function () { setCopied(false); }, 1200); }).catch(function () {});
-        }
+        copyClipboardText(tx).then(function (ok) {
+          if (!ok) return;
+          setCopied(true);
+          setTimeout(function () { setCopied(false); }, 1200);
+        });
       }
       if (editing) {
         return (
@@ -4857,6 +5261,8 @@
 
     const ChatBubble = ({ item, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact }) => {
       const isDark = theme === 'dark';
+      const assistantSelectionHostRef = useRef(null);
+      const assistantSelectionTargetRef = useRef(null);
 
       if (item.type === 'artifact_card') return <ArtifactCard item={item} theme={theme} t={t} isLatest={isLatestArtifact} />;
       if (item.type === 'plan_card') return <PlanCard item={item} theme={theme} t={t} onPrefill={onPrefill} />;
@@ -4883,8 +5289,9 @@
           && bridge.getPersonas().some(function(c){ return c && c.source === 'user' && c.name === pd.draft.name; });
         return (
           <div className="flex justify-start">
-            <div className={`${cq.q ? 'w-full' : 'max-w-[95%]'} ${isDark ? 'dark-code' : 'light-code'}`}>
+            <div ref={assistantSelectionHostRef} className={`relative ${cq.q ? 'w-full' : 'max-w-[95%]'} ${isDark ? 'dark-code' : 'light-code'}`}>
               <div
+                ref={assistantSelectionTargetRef}
                 className={`msg-md text-[15px] leading-relaxed ${item.streaming ? 'streaming-cursor' : ''} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}
                 onClick={(e) => {
                   // 聊天里的链接(如飞书授权 URL)点击 → 走系统浏览器,别导航主窗口/不可点。
@@ -4898,6 +5305,7 @@
                 }}
                 dangerouslySetInnerHTML={{ __html: cq.html || '' }}
               />
+              <SelectionCopyButton hostRef={assistantSelectionHostRef} targetRef={assistantSelectionTargetRef} theme={theme} t={t} />
               {cq.q ? (
                 <div className="mt-2 w-full" style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
                   <div className="text-[14px] font-medium mb-2" style={{ color: isDark ? '#fff' : '#000' }}>{cq.q.question}</div>

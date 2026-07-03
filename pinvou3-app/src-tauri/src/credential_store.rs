@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 const MODEL_API_KEY_SERVICE: &str = "pinvou3-model-api-key";
+const SEARCH_API_KEY_SERVICE: &str = "pinvou3-search-api-key";
 const MCP_SECRET_SERVICE: &str = "pinvou3-mcp-secret";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -18,6 +19,14 @@ impl CredentialReference {
         Self {
             service: MODEL_API_KEY_SERVICE.to_string(),
             account: format!("model:{model_id}"),
+            version: 1,
+        }
+    }
+
+    pub fn for_search_provider(provider: &str) -> Self {
+        Self {
+            service: SEARCH_API_KEY_SERVICE.to_string(),
+            account: format!("search:{provider}"),
             version: 1,
         }
     }
@@ -60,6 +69,7 @@ pub struct CredentialMigrationResult {
     pub migrated_count: usize,
     pub skipped_count: usize,
     pub failed_model_ids: Vec<String>,
+    pub failed_search_providers: Vec<String>,
     pub settings_sanitized: bool,
 }
 
@@ -290,6 +300,14 @@ mod tests {
         let reference = CredentialReference::for_mcp_secret("iwencai", "env", "IWENCAI_API_KEY");
         assert_eq!(reference.service, "pinvou3-mcp-secret");
         assert_eq!(reference.account, "mcp:iwencai:env:IWENCAI_API_KEY");
+        assert_eq!(reference.version, 1);
+    }
+
+    #[test]
+    fn search_reference_uses_separate_service() {
+        let reference = CredentialReference::for_search_provider("metaso");
+        assert_eq!(reference.service, "pinvou3-search-api-key");
+        assert_eq!(reference.account, "search:metaso");
         assert_eq!(reference.version, 1);
     }
 

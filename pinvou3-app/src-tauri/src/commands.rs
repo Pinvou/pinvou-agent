@@ -361,7 +361,7 @@ fn sanitize_command_error(context: &str, err: impl std::fmt::Display) -> String 
 fn prepare_prefs_for_save(mut prefs: UserPrefs) -> Result<UserPrefs, String> {
     let store = SystemCredentialStore::new();
     let migration = prefs.migrate_plaintext_api_keys_with_store(&store);
-    if !migration.failed_model_ids.is_empty() {
+    if !migration.failed_model_ids.is_empty() || !migration.failed_search_providers.is_empty() {
         return Err("credential store unavailable; please reconfigure API Key".to_string());
     }
     prefs.sanitize_plaintext_api_keys();
@@ -1947,6 +1947,12 @@ fn strip_verbatim(p: &std::path::Path) -> String {
     s.to_string()
 }
 
+fn file_url_from_path(p: &std::path::Path) -> Result<tauri::Url, String> {
+    let normal_path = std::path::PathBuf::from(strip_verbatim(p));
+    tauri::Url::from_file_path(&normal_path)
+        .map_err(|_| format!("convert file url: {}", p.display()))
+}
+
 /// 外部链接白名单：前端 webview 万一被 XSS 时的最后一道防线。
 /// **扩这个列表必须同步加测试**（见 `external_allowlist_*` 单测）。
 const EXTERNAL_URL_ALLOWLIST: &[&str] = &[
@@ -2138,10 +2144,7 @@ pub async fn open_artifact_window(
         return Ok(());
     }
 
-    let url_str = format!("file://{}", p.display());
-    let url = url_str
-        .parse()
-        .map_err(|e| format!("parse file url: {e}"))?;
+    let url = file_url_from_path(&p)?;
     let title = p
         .file_name()
         .and_then(|s| s.to_str())
@@ -2151,6 +2154,7 @@ pub async fn open_artifact_window(
     WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(url))
         .title(title)
         .inner_size(1024.0, 768.0)
+        .center()
         .resizable(true)
         .build()
         .map_err(|e| format!("build artifact window: {e}"))?;
@@ -3978,6 +3982,29 @@ pub async fn list_session_skill_bindings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_url_from_path_encodes_local_artifact_paths() {
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3 file-url test {}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let path = tmp.join("中文 page.html");
+        std::fs::write(&path, "<!doctype html>").unwrap();
+
+        let canon = std::fs::canonicalize(&path).unwrap();
+        let url = file_url_from_path(&canon).unwrap();
+        let text = url.as_str();
+
+        assert_eq!(url.scheme(), "file");
+        assert!(text.starts_with("file://"), "unexpected file URL: {text}");
+        assert!(!text.contains('\\'), "file URL must not contain backslashes: {text}");
+        assert!(!text.contains(r"\\?\"), "file URL must not contain verbatim prefix: {text}");
+        assert!(text.contains("%20"), "spaces should be percent-encoded: {text}");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     /// accept_plan 切 Yolo 后注入的执行指令必须裹住方案全文 + 带"立即执行"信号——
     /// 否则切了模式但 AI 收到一句空指令,不知道要执行什么(切了白切)。
