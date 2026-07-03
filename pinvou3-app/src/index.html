@@ -220,7 +220,7 @@
         langTag: 'zh',
         newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', toolStore: '工具商店', cardPool: '专家卡牌池', recent: '历史对话', settings: '设置', localEnv: '本地环境', megacubeSite: '打开 MegaCube 官网', tearoffTitle: '撕离窗口', tearoffHint: '弹出为独立窗口',
         knowledge: '本地知识',
-        kbMount: '知识库', kbMountTitle: '挂载知识集到本对话', kbMountPick: '选择知识集', kbMountNone: '还没有知识集，去「本地知识」创建', kbMountRemove: '取消挂载', kbMountedTag: '已挂载',
+        kbMount: '知识库', kbMountTitle: '挂载知识集到本对话', kbMountPick: '选择知识集', kbMountNone: '还没有知识集，去「本地知识」创建', kbMountRemove: '取消挂载', kbMountedTag: '已挂载', kbMountNoModel: '需先安装 Embedding 模型：去「本地知识 → 知识库」下载后即可挂载',
         modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: '切换工作模式', modeYoloDesc: '直接动手执行', modePlanDesc: '先出方案，确认后执行',
         kbTitle: '本地知识', kbDesc: '全系统秒搜 + 去重 · 仅索引元数据，不读内容',
         kbRescan: '重新扫描', kbScanning: '扫描中', kbDeduping: '去重中', kbScanNow: '扫描本机',
@@ -466,7 +466,7 @@
         langTag: 'en',
         newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'History', settings: 'Settings', localEnv: 'Local Env', megacubeSite: 'Open MegaCube site', tearoffTitle: 'Detached', tearoffHint: 'Pop out to its own window',
         knowledge: 'Local Knowledge',
-        kbMount: 'Knowledge', kbMountTitle: 'Attach a collection to this chat', kbMountPick: 'Pick a collection', kbMountNone: 'No collections yet — create one in Local Knowledge', kbMountRemove: 'Unmount', kbMountedTag: 'Mounted',
+        kbMount: 'Knowledge', kbMountTitle: 'Attach a collection to this chat', kbMountPick: 'Pick a collection', kbMountNone: 'No collections yet — create one in Local Knowledge', kbMountRemove: 'Unmount', kbMountedTag: 'Mounted', kbMountNoModel: 'Install the embedding model first (Local Knowledge → Knowledge) to attach a collection',
         modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: 'Switch mode', modeYoloDesc: 'Act directly', modePlanDesc: 'Plan first, then execute',
         kbTitle: 'Local Knowledge', kbDesc: 'Whole-system instant search + dedup · metadata only, content not read',
         kbRescan: 'Rescan', kbScanning: 'Scanning', kbDeduping: 'Deduping', kbScanNow: 'Scan this PC',
@@ -712,7 +712,7 @@
         langTag: 'ja',
         newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', monitor: 'システムモニター', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '履歴', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く', tearoffTitle: '切り離し', tearoffHint: '別ウィンドウに切り離す',
         knowledge: 'ローカル知識',
-        kbMount: 'ナレッジ', kbMountTitle: 'このチャットにコレクションをリンク', kbMountPick: 'コレクションを選択', kbMountNone: 'コレクションがありません — 「ローカル知識」で作成', kbMountRemove: 'リンク解除', kbMountedTag: 'リンク中',
+        kbMount: 'ナレッジ', kbMountTitle: 'このチャットにコレクションをリンク', kbMountPick: 'コレクションを選択', kbMountNone: 'コレクションがありません — 「ローカル知識」で作成', kbMountRemove: 'リンク解除', kbMountedTag: 'リンク中', kbMountNoModel: 'まず Embedding モデルをインストール（ローカル知識 → ナレッジ）するとリンクできます',
         modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: 'モード切替', modeYoloDesc: 'すぐ実行', modePlanDesc: '計画してから実行',
         kbTitle: 'ローカル知識', kbDesc: '全システム高速検索 + 重複検出 · メタデータのみ、内容は読まない',
         kbRescan: '再スキャン', kbScanning: 'スキャン中', kbDeduping: '重複検出中', kbScanNow: 'このPCをスキャン',
@@ -4055,6 +4055,7 @@
     const ComposerKbSelector = ({ t, bs, compact }) => {
       const [open, setOpen] = useState(false);
       const [collections, setCollections] = useState(null); // null=未加载
+      const [installed, setInstalled] = useState(null); // embedding 模型是否已装:null=未知(不闪 gate,mock/旧后端当已装)
       const mountedId = (bs && bs.mountedCollection != null) ? bs.mountedCollection : null;
 
       const loadList = async () => {
@@ -4062,6 +4063,15 @@
         try { setCollections((await bridge.listCollections()) || []); }
         catch (e) { setCollections([]); }
       };
+      const refreshInstalled = async () => {
+        if (!bridge.available || !bridge.kbModelStatus) { setInstalled(true); return; } // mock/旧后端不 gate
+        try { const m = await bridge.kbModelStatus(); setInstalled(m ? !!m.installed : true); }
+        catch (e) { setInstalled(true); }
+      };
+      useEffect(() => { refreshInstalled(); }, []);
+      // 下载部署完成后 bs.kbModelSetup.status.installed 变 true → 立即开门,免重开菜单。
+      const setupInstalled = !!(bs && bs.kbModelSetup && bs.kbModelSetup.status && bs.kbModelSetup.status.installed);
+      useEffect(() => { if (setupInstalled) setInstalled(true); }, [setupInstalled]);
       // 已挂载但还没列表 → 拉一次用于显示名字。
       useEffect(() => {
         if (mountedId != null && collections === null) loadList();
@@ -4070,17 +4080,20 @@
       const mounted = (collections || []).find(c => c.id === mountedId) || null;
       const mountedName = mounted ? mounted.name : (mountedId != null ? ('#' + mountedId) : null);
       const active = mountedId != null;
+      const modelMissing = installed === false; // 仅"明确未装"才门控;未知/已装都放行
 
-      function toggle() { const next = !open; setOpen(next); if (next && collections === null) loadList(); }
-      function pick(id) { setOpen(false); if (id !== mountedId && bridge.available) bridge.mountCollection(id); }
+      function toggle() { const next = !open; setOpen(next); if (next) { refreshInstalled(); if (collections === null) loadList(); } }
+      function pick(id) { if (modelMissing) return; setOpen(false); if (id !== mountedId && bridge.available) bridge.mountCollection(id); }
       function unmount() { setOpen(false); if (bridge.available) bridge.unmountCollection(); }
 
       return (
         <div className="relative">
-          <button onClick={toggle} title={active ? mountedName : t.kbMountTitle}
+          <button onClick={toggle} title={modelMissing ? t.kbMountNoModel : (active ? mountedName : t.kbMountTitle)}
             className={`relative shrink-0 flex items-center justify-center transition-colors border ${compact ? 'w-9 h-9 rounded-full' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold'} ${active
               ? 'bg-[#E8F0FE] dark:bg-[#1A3A5C] text-[#1A73E8] dark:text-[#A8C7FA] border-[#1A73E8]/20 dark:border-[#A8C7FA]/25'
-              : 'bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-black/[0.04] dark:border-white/5'}`}>
+              : modelMissing
+                ? 'bg-gray-100 dark:bg-white/5 text-gray-400 dark:text-gray-600 border-black/[0.04] dark:border-white/5 opacity-70'
+                : 'bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-black/[0.04] dark:border-white/5'}`}>
             <BookOpen size={compact ? 18 : 14} className="opacity-70 shrink-0" />
             {!compact && <span className="max-w-[140px] truncate">{active ? mountedName : t.kbMount}</span>}
             {!compact && <ChevronDown size={14} className="opacity-50 shrink-0" />}
@@ -4090,7 +4103,9 @@
             <>
               <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
               <div className="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
-                {collections === null ? (
+                {modelMissing ? (
+                  <div className="px-3 py-2.5 text-[13px] text-gray-400 dark:text-gray-500">{t.kbMountNoModel}</div>
+                ) : collections === null ? (
                   <div className="px-3 py-2.5 text-[13px] text-gray-400 dark:text-gray-500">…</div>
                 ) : collections.length === 0 ? (
                   <div className="px-3 py-2.5 text-[13px] text-gray-400 dark:text-gray-500">{t.kbMountNone}</div>

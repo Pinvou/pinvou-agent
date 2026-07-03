@@ -3311,6 +3311,7 @@
     mountCollection: mountCollection,
     unmountCollection: unmountCollection,
     listCollections: function () { return invoke("kb_collection_list"); }, // 挂载选择器用
+    kbModelStatus: function () { return invoke("kb_model_status"); }, // 挂载选择器门控:模型未装则不可选
     // AI 造卡开场引导卡:落一条展示气泡 + 记一条 persona 事件(随会话持久化)。
     // 走 personaEvents 时间线,冷重载时 rerenderFromMessages 按 pos 还原 → 切会话/重启不丢。
     postCardCreatorIntro: function () { addChatItem({ type: "card_creator_intro", time: "" }); recordPersonaEvent({ kind: "card_creator_intro" }); notify(); },
