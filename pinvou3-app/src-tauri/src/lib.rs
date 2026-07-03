@@ -44,7 +44,7 @@ pub mod workflow_registry;
 mod workflow_runs;
 mod zhidao;
 
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 use crate::bridge::sessions::SessionStore;
 use crate::engine_pool::EnginePool;
@@ -183,7 +183,6 @@ pub fn run() {
                 let _ = window.show();
                 let _ = window.unminimize();
                 let _ = window.set_focus();
-                let _ = app.emit("dock:new_instance", ());
             }
         }))
         .plugin(tauri_plugin_dialog::init())
