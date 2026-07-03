@@ -39,6 +39,13 @@ pub struct PersonaCard {
     /// "builtin"(内嵌/pinvou3 内置) | "user"(用户自创)。前端据此着色 + 决定可否编辑/删除。
     #[serde(default = "default_source")]
     pub source: String,
+    /// 内部行为标记(不入 json、不下发前端):加持这张卡时**本轮清空工具表**——模型看
+    /// 不到 write_file / present_artifact 等任何工具。用于"产出是结构化数据而非文件"的
+    /// 元卡(目前只有卡牌制造专家),防小模型误走写文件路径、产出无法被前端识别收藏的卡。
+    /// 默认 false(普通领域卡照常带全量工具)。判定每 turn 实时读 active_persona,
+    /// 戴上即限 / 卸下即恢复 / 换卡按新卡走,无持久状态。
+    #[serde(skip)]
+    pub conversational_only: bool,
 }
 
 /// 不含 body 的轻量摘要,给前端卡片网格用(list_personas 返回它,避免 1.2MB body 全量下发)。
@@ -273,6 +280,9 @@ fn builtin_extra() -> Vec<PersonaCard> {
         color: "#7C3AED".to_string(),
         source: "builtin".to_string(),
         body: CARD_CREATOR_BODY.to_string(),
+        // 纯对话元卡:产出是内联 persona-card JSON 块(前端抠出→存入卡牌池),绝不写文件。
+        // 加持期间清空工具表,从工具层杜绝小模型误走 write_file/present_artifact 路径。
+        conversational_only: true,
     }]
 }
 
@@ -413,6 +423,7 @@ mod tests {
             color: "#10B981".to_string(),
             body: "正文方法论".to_string(),
             source: "builtin".to_string(),
+            conversational_only: false,
         };
 
         // create

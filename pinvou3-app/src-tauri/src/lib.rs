@@ -44,7 +44,7 @@ pub mod workflow_registry;
 mod workflow_runs;
 mod zhidao;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use crate::bridge::sessions::SessionStore;
 use crate::engine_pool::EnginePool;
@@ -183,6 +183,7 @@ pub fn run() {
                 let _ = window.show();
                 let _ = window.unminimize();
                 let _ = window.set_focus();
+                let _ = app.emit("dock:new_instance", ());
             }
         }))
         .plugin(tauri_plugin_dialog::init())
@@ -557,9 +558,7 @@ mod blocklist_contract {
             "list_dir",
             "request_user_input",
             "exec_shell_wait",
-            "git_status",
-            "git_diff",
-            "diagnostics",
+            // git_status/git_diff/diagnostics 已于 2026-07-03 纯办公定位决策砍入 blocklist（放弃代码辅助），不再要求可见
             "revert_turn",
             "agent_open",  // subagent spawn(单一 spawn 入口)
             "agent_eval",  // subagent 收结果

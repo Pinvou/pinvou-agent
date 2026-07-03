@@ -15,7 +15,7 @@
 | submodule 分支 | **`pinvou3-clean`**(`.gitmodules` 追踪);HEAD `945cdf44`;备份 `backup/v0.8.65-merge-result`(merge 树)、`backup/pre-reclean-trial-tip`(旧 fork tip `6b3059da`)、`backup/pre-v0.8.65-sync`(旧远程 pinvou3-clean `4518f845`) |
 | fork drift | **+6734 / −4917 行,49 文件**(`git -C DeepSeek-TUI diff v0.8.65..HEAD --shortstat`)。比 v0.8.60(43 文件)涨,因 v0.8.65 改动多 subagent/manager/route/config API,fork 跟改面大;主体仍是工作流层 W——属"接受重 fork"(fork-policy §0);app 层 prompt 走 override 注入,不计入 |
 | 历史 | v0.8.65 + 9 主题 commit:C1 lib · C2 blocklist · C3 append_file · C4 safety · **C5+C7 prompt-composer(含 Q 首请求 warmup)** · C6 chore · **W 工作流层(含 C8 会话工具开关 op + R extra_tools 注入口)** · test(适配 + 三省六部 mock-LLM e2e ×2) · **C5/skills 市场(bundle/skills + disabled 开关)** |
-| LLM 暴露 native 工具 | **23 个**(全量注册 − 黑名单;**tool_search 已禁用**,模型无法激活 deferred 工具)。MCP `mcp_pinvou_present_artifact` 另接,共 24 入口 |
+| LLM 暴露 native 工具 | **20 个**(全量注册 − 黑名单;原 23,2026-07-03 纯办公定位再砍 git_status/git_diff/diagnostics)。**tool_search 已禁用**(⚠️2026-07-03 修:v0.8.65 折叠单名后门控名与双旧名对不上一度漏注入,已补裸名,详见 C2)。MCP `mcp_pinvou_present_artifact` 另接,共 21 入口 |
 | fork-guard | 指纹 + 回归测试(`scripts/fork-guard.sh`;**v0.8.65 撤 P pwd-move 2 条**=上游已 harvest;+MKT skill 停用 3 条);底座 lib **5149 pass**(+55 ignored fork 基底行为 +1 已知 flake:verifier 后台 shell 并行误报)+ 工作流 e2e ×2 |
 | system prompt | dump 逐字节稳定;per-turn `<runtime_prompt>` tag + goal continuation 均已 gate |
 | v0.8.65 决策 | **W 全保 fork**(三省六部 harness 命脉,不换上游单 agent);**P 已被上游 harvest**;**决策③**:token-budget scope-gate **不港**(fork 用步数上限)、`MAX_SPAWN_DEPTH_CEILING` **用上游 8**;**skills 收窄到只 `~/.pinvou3/bundle/skills`**(去 `.agents/skills`) |
@@ -35,11 +35,18 @@
 
 ### C2 `tools` blocklist 工具门控
 - **文件**:`tools/pinvou3_blocklist.rs`(新建,**81 条黑名单**)、`core/engine/tool_catalog.rs`、`tools/registry.rs`、`tools/mod.rs`
-- **哲学**:上游(v0.8.47 起)是 **allowlist**;pinvou3 相反——**显示全部、只隐藏黑名单**,给 Qwen3.6 精简到 **23 工具**
+- **哲学**:上游(v0.8.47 起)是 **allowlist**;pinvou3 相反——**显示全部、只隐藏黑名单**,给 Qwen3.6 精简到 **20 工具**(2026-07-03 纯办公定位:git_status/git_diff/diagnostics 也隐藏)
 - **关键**:`pinvou3_should_defer_native_tool(name, mode, always_load)` **mode-aware**:Yolo 只 defer 黑名单。`request_user_input` 跨所有 mode 硬保留(否则 GUI 不出选择气泡);`image_analyze` 放出(需 bridge 开 `VisionModel` feature);`checklist_*` 有意可见。`PINVOU3_BLOCKLIST_OVERRIDE` env 供 L1 harness 解锁
-- **⚠️ tool_search 防御**:blocklist 是「defer 不删除」,工具仍在 catalog。上游 `tool_search`(`ensure_advanced_tooling` 注入)能让模型**搜索激活被 blocklist 的 deferred 工具**→ 击穿门控。修法:`tool_search_*` 进 blocklist + **注入处 gate**(`is_pinvou3_hidden(TOOL_SEARCH_*)` 为真不注入)→ catalog 根本不含
-- **测试**:`pinvou3_yolo_offers_nonblocklisted_tools_outside_upstream_default`、`forkguard_tool_search_not_injected_*`
+- **⚠️ tool_search 防御**:blocklist 是「defer 不删除」,工具仍在 catalog。上游 `tool_search`(`ensure_advanced_tooling` 注入)能让模型**搜索激活被 blocklist 的 deferred 工具**→ 击穿门控。修法:`tool_search` 进 blocklist + **注入处 gate**(`is_pinvou3_hidden(TOOL_SEARCH_NAME)` 为真不注入)→ catalog 根本不含
+- **⚠️ v0.8.65 单名折叠 + 2026-07-03 修**:上游 v0.8.57 是双工具 `tool_search_tool_regex/bm25`,**v0.8.65 折叠成单名 `tool_search`**(门控 `TOOL_SEARCH_NAME="tool_search"`)。sync 后 blocklist 仍只有双旧名 → `is_pinvou3_hidden("tool_search")` 为 false → **门控失效、tool_search 漏注入且首轮可见**(`defer_loading=false`),模型可反向激活全部 deferred 工具。**端到端实测坐实**(改回归断言为精确名跑 `ensure_advanced_tooling(Yolo)`,catalog=[…,`tool_search`])。守护为何漏抓:fork-guard 指纹查废弃双旧名(空防、恒在)、回归测试断言查 `starts_with("tool_search_tool")`(单名恒真通过)。**修**:补裸名 `tool_search`(保留双旧名前向兼容)+ 测试断言改精确名 `== "tool_search"` + fork-guard 指纹改查裸名。详见 `docs/工具表精简方案.md` §8.2
+- **测试**:`pinvou3_yolo_offers_nonblocklisted_tools_outside_upstream_default`、`forkguard_tool_search_not_injected_*`(断言已改精确名)
 - 上游 PR:❌ 哲学相反
+
+### P1 `mcp` list_mcp_resources 空转 gate(2026-07-03)
+- **文件**:`crates/tui/src/mcp.rs`(`to_api_tools`)
+- **改动**:上游 `list_mcp_resources` / `list_mcp_resource_templates` 注入条件是 `!self.config.servers.is_empty()`——只要注册任何 MCP server 就注入,与是否真暴露 resources 无关。pinvou3 的 MCP server 全 tools-only(present_artifact/gongwen/weather/iwencai 的 `resources/list` 均返回 `-32601`),这两个元工具**永久空转**、纯占工具槽+token、52 session 零调用。改为按 `all_resources()` / `all_resource_templates()` 非空**分别 gate**,与下方 `mcp_read_resource`(`!resources.is_empty()`)一致
+- **测试**:`mcp::tests` 全过(P1 不破坏);fork-guard 指纹 `P1 list_mcp_resources 按 resources 非空 gate`
+- 上游 PR:✅ **可提**(通用优化:有 server 但零 resources 时不该注入 list 工具)
 
 ### C3 `tools` append_file + 大产物保护
 - **文件**:`tools/file.rs`、`core/engine/dispatch.rs`、`client/chat.rs`、`tools/registry.rs`(`with_file_tools`)、`tui/approval.rs`、`tui/widgets/tool_card.rs`、`tools/approval_cache.rs`
