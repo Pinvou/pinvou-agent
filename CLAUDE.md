@@ -11,9 +11,8 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 | 想做的事 | 用哪个 |
 |---|---|
 | 加领域 agent / 工具组合 | SKILL.md（复用 SkillRegistry） |
-| 加 `/xxx` 命令 | `~/.deepseek/commands/xxx.md` |
 | 接外部 API | 写独立 MCP server |
-| 改 LLM 行为引导 | `.deepseek/instructions.md` |
+| 改 LLM 行为引导 | `instructions.md`（见下「主体」bundle 布局） |
 | Tauri UI / Rust wrapper / Engine 配置 | pinvou3-app 内 Rust |
 | 修上游 bug | DeepSeek-TUI fork(详见 `docs/fork-policy.md`,软上限 1500 行) + 视情况 PR |
 
@@ -30,6 +29,8 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 
 - `pinvou3-app/` — 🟢 Tauri 2.0 + EngineHandle wrapper（主线）
 - `DeepSeek-TUI/` — submodule（h3c-hexin/DeepSeek-TUI fork），改动遵循约束 1
+- 运行时数据在 `~/.pinvou3/`（sessions / settings.json / bundle / knowledge）
+- 扩展物（instructions.md / skills / mcp-servers / personas）源码在 `pinvou3-app/.../resources/bundle/`，**编译进 app**，启动释放到 `~/.pinvou3/bundle/`
 
 启动：`./pinvou3-app/run-dev.sh`
 
@@ -37,5 +38,4 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 
 - `CONTRIBUTING.md` — 贡献 / PR 流程 + CI 门控(人类协作者入口)
 - `docs/验证报告-qwen3.6-deepseek-tui.md` — 阶段 A 实证报告
-- `process.md` — 跨阶段待办 / 长期搁置项
 - git log + commit message — 决策记录与已知坑修复
