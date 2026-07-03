@@ -5198,15 +5198,27 @@
       }
       return null;
     }
-    function parseLooseJson(raw) {
-      try { return JSON.parse(raw); } catch (e) {}
-      try { return JSON.parse(raw.replace(/,(\s*[}\]])/g, '$1')); } catch (e) {} // 去尾逗号
-      var bal = extractBalancedJson(raw);                                        // 容忍多余右括号/尾部杂物
+    // 一条完整解析链: 严格 → 去尾逗号 → 从首个 { 括号配平截取(+去尾逗号)。失败返回 null。
+    // (名字避开本文件里另一个 tryParseJson —— 那是工具结果视图用的简单版)
+    function parseJsonChain(s) {
+      try { return JSON.parse(s); } catch (e) {}
+      try { return JSON.parse(s.replace(/,(\s*[}\]])/g, '$1')); } catch (e) {} // 去尾逗号
+      var bal = extractBalancedJson(s);                                        // 容忍多余右括号/尾部杂物
       if (bal) {
         try { return JSON.parse(bal); } catch (e) {}
         try { return JSON.parse(bal.replace(/,(\s*[}\]])/g, '$1')); } catch (e) {}
       }
       return null;
+    }
+    function parseLooseJson(raw) {
+      var v = parseJsonChain(raw);
+      if (v) return v;
+      // 最后手段: 模型偶尔把本该是普通 " 的地方(数组/对象边界处)打成转义 \",令整段 JSON 非法,
+      // 上面的链全兜不住(实例: card-question 的 options 后两项被写成 \"...\")。去掉多余转义引号
+      // 再走一遍完整链。仅对**已解析失败**的输入生效 —— 合法用了 \" 的 JSON 在 parseJsonChain(raw)
+      // 第一步就成功、走不到这里,故不受影响。
+      var deesc = raw.replace(/\\"/g, '"');
+      return deesc !== raw ? parseJsonChain(deesc) : null;
     }
     // 扫所有 ```代码块,任何能解析成「含 name+body 的 JSON」的就当卡牌草稿。
     // 不强求 ```persona-card 标签 —— 小模型常打 ```json 或不打标签,放宽识别更鲁棒。

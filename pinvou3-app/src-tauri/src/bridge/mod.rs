@@ -941,6 +941,7 @@ impl Pinvou3Bridge {
         content: String,
         mode: AppMode,
         persona_reminder: Option<String>,
+        restrict_tools: bool,
     ) -> Op {
         let (allow_shell, trust_mode) = match mode {
             AppMode::Yolo => (self.allow_shell(), true),
@@ -1000,8 +1001,13 @@ impl Pinvou3Bridge {
             translation_enabled: false,
             // v0.8.47 上游新增;pinvou3 reasoning_effort=off 故无实际影响,取默认。
             show_thinking: true,
-            // v0.8.49 上游新增;None = 不限制本次消息可用工具,沿用 engine 全量工具表。
-            allowed_tools: None,
+            // v0.8.49 上游新增。Some(空表) = 本轮零工具:底座 filter_tool_catalog_for_gates
+            // 直接从发给模型的 schema 里 retain 掉全部工具,模型根本看不到 write_file /
+            // present_artifact 等。卡牌制造专家等"纯对话元卡"用它,从工具层杜绝小模型误走
+            // 写文件路径、产出无法收藏的产物卡(不靠模型自觉遵守 prompt 硬规则)。None = 不
+            // 限制,沿用 engine 全量工具表。判定源 = 每 turn 实时 active_persona(engine_pool
+            // 解析后经 restrict_tools 传入),戴上即限 / 卸下即恢复,无持久状态。
+            allowed_tools: if restrict_tools { Some(Vec::new()) } else { None },
             // v0.8.51 上游新增;None = 不挂 per-message hook executor,沿用 engine 级默认。
             hook_executor: None,
             // v0.8.59 上游新增 concise verbosity 模式;pinvou3 GUI 走默认详尽,取 None。
@@ -1215,7 +1221,7 @@ mod tests {
     #[test]
     fn build_send_message_op_injects_sudo_for_yolo_not_plan() {
         let bridge = fixture_bridge();
-        let content_of = |mode| match bridge.build_send_message_op("用户消息".to_string(), mode, None) {
+        let content_of = |mode| match bridge.build_send_message_op("用户消息".to_string(), mode, None, false) {
             Op::SendMessage { content, .. } => content,
             other => panic!("期望 SendMessage,得到 {other:?}"),
         };
@@ -1241,6 +1247,7 @@ mod tests {
             "用户消息".to_string(),
             AppMode::Yolo,
             Some(persona.clone()),
+            false,
         );
         let content = match op {
             Op::SendMessage { content, .. } => content,
@@ -1252,10 +1259,33 @@ mod tests {
         );
         // None 时不应出现该文案
         let op_none =
-            bridge.build_send_message_op("hi".to_string(), AppMode::Yolo, None);
+            bridge.build_send_message_op("hi".to_string(), AppMode::Yolo, None, false);
         if let Op::SendMessage { content, .. } = op_none {
             assert!(!content.contains("数据库架构师"), "未加持不应注入 persona");
         }
+    }
+
+    /// gating: 纯对话元卡(restrict_tools=true)→ 本轮 allowed_tools=Some(空表)=零工具;
+    /// 普通卡 / 未加持(false)→ None=不限制。这是卡牌制造专家"只产可收藏的内联卡、绝不
+    /// 写文件"的**工具层**强制手段(底座从 schema 删工具),不靠模型自觉遵守 prompt。
+    #[test]
+    fn build_send_message_op_restricts_tools_for_conversational_persona() {
+        let bridge = fixture_bridge();
+        let allowed = |restrict| match bridge.build_send_message_op(
+            "hi".to_string(),
+            AppMode::Yolo,
+            None,
+            restrict,
+        ) {
+            Op::SendMessage { allowed_tools, .. } => allowed_tools,
+            other => panic!("期望 SendMessage,得到 {other:?}"),
+        };
+        assert_eq!(
+            allowed(true),
+            Some(Vec::new()),
+            "纯对话元卡本轮必须零工具(空白名单),把 write_file/present_artifact 挡在模型视野外"
+        );
+        assert_eq!(allowed(false), None, "普通卡 / 未加持不限制工具,沿用 engine 全量工具表");
     }
 
     /// `wire_max_output_tokens_env` 必须把 self.max_output_tokens() 设给底座
@@ -1606,7 +1636,7 @@ mod tests {
     fn bridge_yolo_mode_trust_mode_true() {
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         let bridge = fixture_bridge();
-        let op = bridge.build_send_message_op("hi".into(), AppMode::Yolo, None);
+        let op = bridge.build_send_message_op("hi".into(), AppMode::Yolo, None, false);
         let (_allow_shell, trust_mode) = extract_shell_trust(op);
         assert!(trust_mode, "Yolo 模式 trust_mode 必须 true");
     }
@@ -1617,7 +1647,7 @@ mod tests {
     fn bridge_plan_mode_trust_mode_true_after_p1() {
         let bridge = fixture_bridge();
         let op =
-            bridge.build_send_message_op("list dir".into(), AppMode::Plan, None);
+            bridge.build_send_message_op("list dir".into(), AppMode::Plan, None, false);
         let (_allow_shell, trust_mode) = extract_shell_trust(op);
         assert!(
             trust_mode,
@@ -1633,7 +1663,7 @@ mod tests {
     fn bridge_plan_mode_allow_shell_true() {
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         let bridge = fixture_bridge();
-        let op = bridge.build_send_message_op("exec ls".into(), AppMode::Plan, None);
+        let op = bridge.build_send_message_op("exec ls".into(), AppMode::Plan, None, false);
         let (allow_shell, _trust_mode) = extract_shell_trust(op);
         assert!(
             allow_shell,

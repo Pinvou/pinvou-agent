@@ -2277,6 +2277,8 @@ impl PersonaInput {
             color: if self.color.is_empty() { "#7C3AED".into() } else { self.color },
             body: self.body,
             source: "user".into(),
+            // 用户自创卡都是干活的领域卡,照常带全量工具;元卡标记只属内置卡。
+            conversational_only: false,
         }
     }
 }

@@ -119,10 +119,11 @@ impl AppEngine {
         content: String,
         mode: AppMode,
         persona_reminder: Option<String>,
+        restrict_tools: bool,
     ) -> Result<()> {
-        let op = self
-            .bridge
-            .build_send_message_op(content, mode, persona_reminder);
+        let op =
+            self.bridge
+                .build_send_message_op(content, mode, persona_reminder, restrict_tools);
         self.handle.send(op).await?;
         Ok(())
     }
