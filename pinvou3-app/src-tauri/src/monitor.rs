@@ -8,8 +8,11 @@
 //! 设计原则：**任何采样失败都 graceful degrade**——返回 None / OFFLINE，
 //! 而不是 panic 或让上层崩。pinvou3 用户可能没装 nvidia-smi，可能没启 vLLM。
 
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use parking_lot::Mutex;
 use serde::Serialize;
 
 /// 单次完整采样结果。所有字段 `Option`——采集失败就为 None。
@@ -19,6 +22,10 @@ pub struct MonitorSnapshot {
     pub gpu: Option<GpuSnapshot>,
     pub ram: Option<RamSnapshot>,
     pub vllm: Option<VllmSnapshot>,
+    /// app 侧自测推理指标(TTFT / 生成速度 / 累计 tokens / KV)。与 vLLM `/metrics`
+    /// 无关,任何后端(本地 vLLM / LM Studio / Ollama / 云端 API)都有值——因为是在
+    /// 流式转发通路上就地测的。前端一律用这块显示这四项(vllm 块只剩队列/窗口/健康)。
+    pub self_perf: SelfPerfSnapshot,
     pub app: AppSnapshot,
 }
 
@@ -98,21 +105,164 @@ pub struct AppSnapshot {
     pub session_uptime_secs: u64,
 }
 
-/// Monitor 状态——只持有 session 起始时间，sample 全部按需。
+/// app 侧自测指标的对外快照（单调累计，进程生命周期）。字段与 vLLM `/metrics`
+/// 同"sum+count"形状，好让监控页「按住清除」的区间重算逻辑原样复用。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SelfPerfSnapshot {
+    /// 首字延迟：Σ(TTFT) / 次数，仅纯文本轮（无工具调用）计入。
+    pub ttft_sum_s: f64,
+    pub ttft_count: u64,
+    /// 生成速度：tps_tokens / tps_time_s = tok/s。同样仅纯文本轮计入
+    /// （工具轮墙钟含工具执行耗时，计进去会把速度拉低失真，D2 决定跳过）。
+    pub tps_tokens: u64,
+    pub tps_time_s: f64,
+    /// 累计 tokens：**全部轮**（含工具轮）真实 usage 之和。
+    pub gen_tokens_total: u64,
+    pub prompt_tokens_total: u64,
+    /// KV 命中率（token 口径）：cache_hit /(hit+miss)×100。来自 usage 的
+    /// prompt_cache_hit/miss_tokens——DeepSeek/部分云端会返回，返回不了的后端保持 0。
+    pub cache_hit_tokens: u64,
+    pub cache_miss_tokens: u64,
+}
+
+#[derive(Debug, Default)]
+struct SelfPerfInner {
+    ttft_sum_s: f64,
+    ttft_count: u64,
+    tps_tokens: u64,
+    tps_time_s: f64,
+    gen_tokens_total: u64,
+    prompt_tokens_total: u64,
+    cache_hit_tokens: u64,
+    cache_miss_tokens: u64,
+}
+
+/// 单个 session 在途轮次的计时状态（TTFT 需要"起始"与"首 token"两个时点）。
+#[derive(Debug)]
+struct TurnTiming {
+    start: Instant,
+    first: Option<Instant>,
+    had_tool: bool,
+}
+
+/// app 侧自测推理指标累加器。流式转发通路（engine.rs forwarder）在
+/// TurnStarted / 首个 MessageDelta / ToolCallStarted / TurnComplete 四处打点写入，
+/// `sample_all` 读出。`inflight` 按 `session_id` 键控——多 session 并发各测各的，
+/// 不串台；`perf` 是全局单调累计，各轮把自己的增量加进去。
+#[derive(Debug, Default)]
+pub struct SelfMetrics {
+    perf: Mutex<SelfPerfInner>,
+    inflight: Mutex<HashMap<String, TurnTiming>>,
+    /// 已完成过至少一轮的 session。每 session 首个完成轮 = 带底座 cache warmup 的**冷轮**
+    /// (warmup 同步跑完整段冷 prefill,TurnStarted→首token 窗口吃满冷启),TTFT/TPS 不代表
+    /// 稳态,故跳过(tokens 照记)。warmup 恰好只在 session 首轮跑,此集合精确识别那一轮。
+    warmed_sessions: Mutex<HashSet<String>>,
+}
+
+impl SelfMetrics {
+    /// TurnStarted：打点本轮起始。覆盖任何残留（上一轮异常未收尾）。
+    pub fn on_turn_started(&self, session_id: &str) {
+        self.inflight.lock().insert(
+            session_id.to_string(),
+            TurnTiming {
+                start: Instant::now(),
+                first: None,
+                had_tool: false,
+            },
+        );
+    }
+
+    /// 首个 MessageDelta：记首 token 时点（仅首次）。TTFT 的停表点 + 生成时长起点。
+    pub fn on_first_delta(&self, session_id: &str) {
+        if let Some(t) = self.inflight.lock().get_mut(session_id) {
+            if t.first.is_none() {
+                t.first = Some(Instant::now());
+            }
+        }
+    }
+
+    /// 本轮出现过工具调用 → 标记。收尾时据此跳过 TTFT/TPS（D2）。
+    pub fn on_tool(&self, session_id: &str) {
+        if let Some(t) = self.inflight.lock().get_mut(session_id) {
+            t.had_tool = true;
+        }
+    }
+
+    /// TurnComplete：用精确 usage 累加。tokens/KV 永远记；TTFT/TPS 仅**纯文本 & 非首轮**记
+    /// (工具轮墙钟含工具耗时 → D2 跳过；每 session 首轮含 cache warmup 冷启 → A 跳过)。
+    /// 调用方已过滤 `output_tokens == 0` 的非 LLM/错误轮。
+    pub fn on_turn_complete(
+        &self,
+        session_id: &str,
+        input_tokens: u32,
+        output_tokens: u32,
+        cache_hit: Option<u32>,
+        cache_miss: Option<u32>,
+    ) {
+        let timing = self.inflight.lock().remove(session_id);
+        // HashSet::insert 返回 true = 之前不在集合里 = 这是该 session 首个完成轮(冷/warmup)。
+        let is_first_turn = self.warmed_sessions.lock().insert(session_id.to_string());
+        let mut p = self.perf.lock();
+        p.gen_tokens_total += output_tokens as u64;
+        p.prompt_tokens_total += input_tokens as u64;
+        if let Some(h) = cache_hit {
+            p.cache_hit_tokens += h as u64;
+        }
+        if let Some(m) = cache_miss {
+            p.cache_miss_tokens += m as u64;
+        }
+        if let Some(t) = timing {
+            if !t.had_tool && !is_first_turn {
+                if let Some(first) = t.first {
+                    p.ttft_sum_s += first.duration_since(t.start).as_secs_f64();
+                    p.ttft_count += 1;
+                    let gen_s = first.elapsed().as_secs_f64();
+                    if gen_s > 0.0 && output_tokens > 0 {
+                        p.tps_time_s += gen_s;
+                        p.tps_tokens += output_tokens as u64;
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn snapshot(&self) -> SelfPerfSnapshot {
+        let p = self.perf.lock();
+        SelfPerfSnapshot {
+            ttft_sum_s: p.ttft_sum_s,
+            ttft_count: p.ttft_count,
+            tps_tokens: p.tps_tokens,
+            tps_time_s: p.tps_time_s,
+            gen_tokens_total: p.gen_tokens_total,
+            prompt_tokens_total: p.prompt_tokens_total,
+            cache_hit_tokens: p.cache_hit_tokens,
+            cache_miss_tokens: p.cache_miss_tokens,
+        }
+    }
+}
+
+/// Monitor 状态——持有 session 起始时间 + app 侧自测指标累加器，sample 全部按需。
 #[derive(Debug, Clone, Default)]
 pub struct MonitorState {
     started_at: Option<Instant>,
+    self_metrics: Arc<SelfMetrics>,
 }
 
 impl MonitorState {
     pub fn new() -> Self {
         Self {
             started_at: Some(Instant::now()),
+            self_metrics: Arc::new(SelfMetrics::default()),
         }
     }
 
     pub fn session_uptime_secs(&self) -> u64 {
         self.started_at.map(|t| t.elapsed().as_secs()).unwrap_or(0)
+    }
+
+    /// forwarder 拿这个 Arc 往里写自测指标（`app.state::<MonitorState>().self_metrics()`）。
+    pub fn self_metrics(&self) -> Arc<SelfMetrics> {
+        self.self_metrics.clone()
     }
 }
 
@@ -126,6 +276,7 @@ pub async fn sample_all(state: &MonitorState, vllm_upstream: &str, configured_mo
         gpu: gpu_snapshot(),
         ram: ram_snapshot(),
         vllm: vllm_snapshot(vllm_upstream, configured_model).await,
+        self_perf: state.self_metrics.snapshot(),
         app: AppSnapshot {
             pinvou3_version: env!("CARGO_PKG_VERSION"),
             deepseek_tui_version: env!("CARGO_PKG_VERSION"), // TODO: 从 deepseek-tui crate 取
@@ -500,6 +651,93 @@ pub fn vllm_configured_model() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn self_metrics_first_turn_per_session_skips_ttft_tps() {
+        // 每 session 首轮 = 冷/warmup 轮:跳 TTFT/TPS,tokens/cache 照记(A)。
+        let m = SelfMetrics::default();
+        m.on_turn_started("s1");
+        m.on_first_delta("s1");
+        m.on_first_delta("s1"); // 幂等
+        m.on_turn_complete("s1", 100, 50, Some(90), Some(10));
+        let s = m.snapshot();
+        assert_eq!(s.ttft_count, 0); // 首轮跳过 TTFT
+        assert_eq!(s.tps_tokens, 0); // 首轮跳过 TPS
+        assert_eq!(s.gen_tokens_total, 50); // tokens 照记
+        assert_eq!(s.prompt_tokens_total, 100);
+        assert_eq!(s.cache_hit_tokens, 90); // cache 照记
+        assert_eq!(s.cache_miss_tokens, 10);
+    }
+
+    #[test]
+    fn self_metrics_second_pure_turn_records_ttft_tps() {
+        let m = SelfMetrics::default();
+        // 首轮(冷)跳
+        m.on_turn_started("s1");
+        m.on_first_delta("s1");
+        m.on_turn_complete("s1", 10, 5, None, None);
+        // 二轮(暖)记
+        m.on_turn_started("s1");
+        m.on_first_delta("s1");
+        m.on_turn_complete("s1", 100, 50, None, None);
+        let s = m.snapshot();
+        assert_eq!(s.ttft_count, 1); // 仅二轮
+        assert_eq!(s.tps_tokens, 50);
+        assert!(s.tps_time_s > 0.0);
+        assert_eq!(s.gen_tokens_total, 55); // 两轮 tokens 都在
+    }
+
+    #[test]
+    fn self_metrics_tool_turn_skips_ttft_tps_but_keeps_tokens() {
+        let m = SelfMetrics::default();
+        // 先暖首轮 + 一轮纯文本(计 1 次 TTFT)
+        m.on_turn_started("s1");
+        m.on_first_delta("s1");
+        m.on_turn_complete("s1", 1, 1, None, None);
+        m.on_turn_started("s1");
+        m.on_first_delta("s1");
+        m.on_turn_complete("s1", 1, 1, None, None);
+        // 工具轮:tokens 记,TTFT/TPS 跳(D2)
+        m.on_turn_started("s1");
+        m.on_tool("s1");
+        m.on_first_delta("s1");
+        m.on_turn_complete("s1", 200, 80, None, None);
+        let s = m.snapshot();
+        assert_eq!(s.ttft_count, 1); // 工具轮没加,仍是第二轮那 1 次
+        assert_eq!(s.gen_tokens_total, 82); // 1+1+80 全记
+    }
+
+    #[test]
+    fn self_metrics_delta_without_start_still_counts_tokens() {
+        // forwarder 中途起来、没接到 TurnStarted 的轮:TTFT 记不了,但 tokens 不丢。
+        let m = SelfMetrics::default();
+        m.on_first_delta("s1"); // 无 inflight,no-op
+        m.on_turn_complete("s1", 10, 5, None, None);
+        let s = m.snapshot();
+        assert_eq!(s.gen_tokens_total, 5);
+        assert_eq!(s.ttft_count, 0);
+    }
+
+    #[test]
+    fn self_metrics_first_turn_tracked_per_session() {
+        // 各 session 首轮独立跳过,不串台。
+        let m = SelfMetrics::default();
+        m.on_turn_started("a");
+        m.on_turn_started("b");
+        m.on_first_delta("a");
+        m.on_first_delta("b");
+        m.on_turn_complete("a", 1, 1, None, None); // a 首轮跳
+        m.on_turn_complete("b", 1, 1, None, None); // b 首轮跳
+        let s1 = m.snapshot();
+        assert_eq!(s1.ttft_count, 0);
+        assert_eq!(s1.gen_tokens_total, 2);
+        // a 二轮记,b 仍只跑过首轮
+        m.on_turn_started("a");
+        m.on_first_delta("a");
+        m.on_turn_complete("a", 1, 1, None, None);
+        let s2 = m.snapshot();
+        assert_eq!(s2.ttft_count, 1); // 仅 a 的二轮
+    }
 
     #[test]
     fn prom_metric_extracts_value_with_labels() {

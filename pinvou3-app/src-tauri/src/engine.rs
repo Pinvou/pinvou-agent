@@ -23,7 +23,7 @@ use deepseek_tui::tools::user_input::UserInputResponse;
 use deepseek_tui::tui::app::AppMode;
 use parking_lot::Mutex;
 use serde_json::json;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::bridge::mode_state::SerializableMode;
 use crate::bridge::sessions::SessionStore;
@@ -438,10 +438,24 @@ fn spawn_event_forwarder(
         let mut agent_roles: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
         let mut token_ledger = TokenLedger::default();
+        // app 侧自测推理指标累加器(TTFT/生成速度/累计tokens/KV)。try_state:headless
+        // harness / 测试可能没 manage MonitorState,拿不到就整块跳过,不 panic。
+        let self_metrics = app
+            .try_state::<crate::monitor::MonitorState>()
+            .map(|s| s.self_metrics());
         let mut rx = handle.rx_event.write().await;
         while let Some(event) = rx.recv().await {
             match event {
+                Event::TurnStarted { .. } => {
+                    // 本轮起始打点(TTFT 起点)。底座已发此事件,原先落 `_` 被忽略。
+                    if let Some(m) = &self_metrics {
+                        m.on_turn_started(&session_id);
+                    }
+                }
                 Event::MessageDelta { content, .. } => {
+                    if let Some(m) = &self_metrics {
+                        m.on_first_delta(&session_id); // 首个才记 TTFT,幂等
+                    }
                     let _ = app.emit(
                         "chat:delta",
                         json!({ "session_id": session_id, "text": content }),
@@ -451,6 +465,9 @@ fn spawn_event_forwarder(
                     // Qwen3 已用 reasoning_effort=off 关 thinking，丢这段
                 }
                 Event::ToolCallStarted { id, name, input } => {
+                    if let Some(m) = &self_metrics {
+                        m.on_tool(&session_id); // 本轮有工具 → 收尾跳过 TTFT/TPS(D2)
+                    }
                     let _ = app.emit(
                         "chat:tool_start",
                         json!({ "session_id": session_id, "id": id, "name": name, "args": input }),
@@ -825,6 +842,19 @@ fn spawn_event_forwarder(
                             "output_tokens": usage.output_tokens,
                         }),
                     );
+                    // app 侧自测:用精确 usage 收尾本轮(过滤 output==0 的非 LLM/错误/取消轮,
+                    // 见 Usage::default() 内联 shell 轮 / zero_usage 错误路径)。KV 白捡 D3。
+                    if let Some(m) = &self_metrics {
+                        if usage.output_tokens > 0 {
+                            m.on_turn_complete(
+                                &session_id,
+                                usage.input_tokens,
+                                usage.output_tokens,
+                                usage.prompt_cache_hit_tokens,
+                                usage.prompt_cache_miss_tokens,
+                            );
+                        }
+                    }
                     // turn end:取出 tracker 快照,然后重置(下个 turn 重新累积)。
                     // 用独立 block 把 parking_lot guard 的生命周期限死在这里:下方
                     // H1 harness 段有 .await(spawn_blocking),guard 是 !Send,若跨
@@ -997,5 +1027,114 @@ mod token_ledger_tests {
         assert_eq!(l.add("pm", 50, 10), (150, 30, 2));
         assert_eq!(l.add("writer", 7, 3), (7, 3, 1));
         assert_eq!(l.add("pm", 0, 0), (150, 30, 3));
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+    use crate::bridge::mode_state::SerializableMode;
+    use crate::monitor::SelfMetrics;
+
+    /// 真机集成(#[ignore]):打真 vLLM 跑一轮,drain rx_event 时**照 forwarder 四臂
+    /// 原样喂 SelfMetrics**,证明真实事件流(TurnStarted→MessageDelta→TurnComplete+真
+    /// usage)累加出合理指标 + 事件顺序符合预期(TurnStarted 在首 MessageDelta 前)。
+    ///
+    ///   DEEPSEEK_ALLOW_INSECURE_HTTP=1 DEEPSEEK_FORCE_HTTP1=1 \
+    ///   cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml \
+    ///     --lib engine::live_tests::self_metrics_populates_from_real_turn \
+    ///     -- --ignored --nocapture
+    #[ignore]
+    #[tokio::test]
+    async fn self_metrics_populates_from_real_turn() {
+        std::env::set_var("DEEPSEEK_ALLOW_INSECURE_HTTP", "1");
+        std::env::set_var("DEEPSEEK_FORCE_HTTP1", "1");
+        std::env::set_var("PINVOU3_SKIP_WARMUP", "1");
+
+        let bridge = Pinvou3Bridge::boot().expect("boot bridge");
+        let engine = AppEngine::spawn_headless(bridge).await.expect("spawn engine");
+
+        let m = SelfMetrics::default();
+        let sid = "live-test";
+        let prompts = ["用一句话介绍你自己。", "再用一句话讲个冷笑话。"];
+
+        // 跑两轮:首轮 = 冷/warmup(A 跳过 TTFT/TPS),二轮 = 暖(记)。
+        engine
+            .send_user_message(prompts[0].to_string(), SerializableMode::Yolo.to_app_mode(), None, false)
+            .await
+            .expect("send_user_message #1");
+
+        let mut rx = engine.handle.rx_event.write().await;
+        let mut turns_done = 0usize;
+        let mut seq: Vec<String> = Vec::new();
+        let mut tool_in_turn2 = false;
+        loop {
+            let ev = tokio::time::timeout(std::time::Duration::from_secs(90), rx.recv())
+                .await
+                .expect("timeout waiting for event");
+            let Some(ev) = ev else { break };
+            let turn = turns_done + 1;
+            match ev {
+                Event::TurnStarted { .. } => {
+                    seq.push(format!("t{turn}:TurnStarted"));
+                    m.on_turn_started(sid);
+                }
+                Event::MessageDelta { .. } => {
+                    m.on_first_delta(sid);
+                }
+                Event::ToolCallStarted { .. } => {
+                    seq.push(format!("t{turn}:ToolCallStarted"));
+                    m.on_tool(sid);
+                    if turns_done == 1 {
+                        tool_in_turn2 = true;
+                    }
+                }
+                Event::TurnComplete { usage, .. } => {
+                    seq.push(format!("t{turn}:TurnComplete(out={})", usage.output_tokens));
+                    if usage.output_tokens > 0 {
+                        m.on_turn_complete(
+                            sid,
+                            usage.input_tokens,
+                            usage.output_tokens,
+                            usage.prompt_cache_hit_tokens,
+                            usage.prompt_cache_miss_tokens,
+                        );
+                    }
+                    turns_done += 1;
+                    if turns_done == 1 {
+                        engine
+                            .send_user_message(prompts[1].to_string(), SerializableMode::Yolo.to_app_mode(), None, false)
+                            .await
+                            .expect("send_user_message #2");
+                    } else {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let s = m.snapshot();
+        eprintln!("[live] event seq: {seq:?}");
+        eprintln!(
+            "[live] snapshot: ttft_count={} ttft_sum_s={:.4} tps_tokens={} tps_time_s={:.4} gen={} prompt={} cache_hit={} cache_miss={}",
+            s.ttft_count, s.ttft_sum_s, s.tps_tokens, s.tps_time_s,
+            s.gen_tokens_total, s.prompt_tokens_total, s.cache_hit_tokens, s.cache_miss_tokens
+        );
+        if s.ttft_count > 0 {
+            eprintln!(
+                "[live] → 稳态 TTFT={:.3}s  TPS={:.1} tok/s (已排除首轮冷启)",
+                s.ttft_sum_s / s.ttft_count as f64,
+                if s.tps_time_s > 0.0 { s.tps_tokens as f64 / s.tps_time_s } else { 0.0 }
+            );
+        }
+
+        assert_eq!(turns_done, 2, "未跑满两轮 seq={seq:?}");
+        assert!(s.gen_tokens_total > 0, "无 output token 累加(usage 空?) seq={seq:?}");
+        // 二轮纯文本(无工具)才断言:首轮已被 A 跳过,TTFT 应只来自二轮。
+        if !tool_in_turn2 {
+            assert_eq!(s.ttft_count, 1, "二轮应恰好记 1 次 TTFT(首轮跳过) seq={seq:?}");
+            assert!(s.tps_time_s > 0.0, "TPS 时长未记 seq={seq:?}");
+        }
     }
 }
