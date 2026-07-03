@@ -78,7 +78,8 @@ impl EnginePool {
         // 免去写死 qwen36_35b_256k 与 --served-model-name 不一致的 model_not_found。
         // 探测失败(vLLM 没起)保持配置值;云端 provider 不探测。
         if b.provider() == "vllm" {
-            if let Some(served) = crate::monitor::probe_vllm_served_model(&b.base_url()).await {
+            let (served, max_len) = crate::monitor::probe_vllm_model_info(&b.base_url()).await;
+            if let Some(served) = served {
                 if let Some(mut m) = b.effective_model_owned() {
                     if m.model != served {
                         m.model = served;
@@ -86,6 +87,9 @@ impl EnginePool {
                     }
                 }
             }
+            // 窗口探测:填给 bridge,build_engine_config 据此填 active_route_limits.context_tokens
+            // + 按真实窗口推导压缩阈值。探测失败保持 None → 名字 hint 老路。
+            b.probed_context_tokens = max_len;
         }
         b
     }
@@ -148,6 +152,14 @@ impl EnginePool {
                 eprintln!("[engine_pool] shutdown {session_id} failed: {e:?}");
             }
             entry.forwarder.abort();
+        }
+    }
+
+    /// 回收当前 active session 的 engine。用于全局能力开关/连接器状态变化后,
+    /// 让下一轮按最新 Skill catalogue 重建 system prompt。
+    pub async fn evict_active(&self) {
+        if let Some(session_id) = self.store.active_id() {
+            self.evict(&session_id).await;
         }
     }
 

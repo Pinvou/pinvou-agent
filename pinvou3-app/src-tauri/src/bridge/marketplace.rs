@@ -239,16 +239,87 @@ pub fn save_disabled_connectors(ids: &[String]) {
     }
 }
 
+/// 内置共享 key 的编译期注入值:仅当 release 构建 export 了对应 env 才有值。
+/// key 因此不落盘明文、不进 git、不进源码 —— 发布构建在 release-deb.sh 里 export
+/// 真 key(见步8 轮换);开发构建不设则为 None(开发自行配 key 或不用这三个内置工具)。
+fn builtin_shared_secret_value(key: &str) -> Option<&'static str> {
+    let v = match key {
+        "AMAP_KEY" => option_env!("PINVOU3_BUILTIN_AMAP_KEY"),
+        "IWENCAI_API_KEY" => option_env!("PINVOU3_BUILTIN_IWENCAI_KEY"),
+        "QCC_API_KEY" => option_env!("PINVOU3_BUILTIN_QCC_KEY"),
+        _ => None,
+    }?;
+    let v = v.trim();
+    if v.is_empty() {
+        None
+    } else {
+        Some(v)
+    }
+}
+
+/// 仅**内置三件套**(精确匹配 tool_id + target + key)才返回共享 key ——
+/// 防自定义/上传工具声明同名 key(AMAP_KEY 等)、用户留空时蹭内置额度。
+fn builtin_shared_secret_value_for(tool_id: &str, target: &str, key: &str) -> Option<&'static str> {
+    let is_builtin = builtin_mcp_secret_specs()
+        .iter()
+        .any(|s| s.tool_id == tool_id && s.target == target && s.key == key);
+    if is_builtin {
+        builtin_shared_secret_value(key)
+    } else {
+        None
+    }
+}
+
+/// 从 manifest 提取所有 secret 的 (keyring target, key):
+/// `secret_env`→("env",key)、`secret_headers`→("header",source_key)、
+/// `config_fields`(secret=true)→(env 或 header, key)。同一 (target,key) 去重一次。
+/// 与 install 时 `resolve_secret_placeholder` 用的 target 对齐(config_fields 的
+/// "bearer" 在 install 里落成 reference target "header")。
+fn manifest_secret_targets(manifest: &ToolManifest) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut push = |target: &str, key: &str| {
+        let pair = (target.to_string(), key.to_string());
+        if !out.contains(&pair) {
+            out.push(pair);
+        }
+    };
+    for s in &manifest.secret_env {
+        push("env", &s.key);
+    }
+    for s in &manifest.secret_headers {
+        push("header", &s.source_key);
+    }
+    for f in &manifest.config_fields {
+        if f.secret {
+            let target = if f.target == "bearer" {
+                "header"
+            } else {
+                f.target.as_str()
+            };
+            push(target, &f.key);
+        }
+    }
+    out
+}
+
+/// 重启后把**所有已安装工具**的 secret 从 keyring 重灌进进程 env(MCP 子进程 expand
+/// `${...}` 占位符用)。不再硬编码内置 3 个 —— 自定义/上传的带 secret 工具重启后同样生效。
 pub fn sync_mcp_secret_env_vars() -> Result<(), String> {
     let store = SystemCredentialStore::new();
-    for spec in builtin_mcp_secret_specs() {
-        let reference = mcp_secret_reference(spec.tool_id, spec.target, spec.key);
-        match store.get(&reference) {
-            Ok(Some(value)) if !value.trim().is_empty() => {
-                std::env::set_var(mcp_secret_env_var(spec.key), value);
+    let mgr = MarketplaceManager::new();
+    for tool_id in mgr.installed_ids() {
+        let Some(manifest) = mgr.load_manifest(&tool_id) else {
+            continue;
+        };
+        for (target, key) in manifest_secret_targets(&manifest) {
+            let reference = mcp_secret_reference(&tool_id, &target, &key);
+            match store.get(&reference) {
+                Ok(Some(value)) if !value.trim().is_empty() => {
+                    std::env::set_var(mcp_secret_env_var(&key), value);
+                }
+                Ok(_) => {}
+                Err(e) => return Err(mcp_secret_store_error(&tool_id, &key, e)),
             }
-            Ok(_) => {}
-            Err(e) => return Err(mcp_secret_store_error(spec.tool_id, spec.key, e)),
         }
     }
     Ok(())
@@ -356,15 +427,15 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // 先装 Python 依赖（跨平台 pip）；失败就不注册，让用户可重试。零依赖工具会直接跳过。
         self.pip_install_deps(&manifest)?;
 
-        // 更新 installed.json
+        // 先写 mcp.json(含 resolve_secret_placeholder,缺密钥会失败);成功后才落
+        // installed.json —— 避免「installed 已写、mcp 没注册」的半安装状态。
+        self.add_to_mcp_json(&manifest, user_config)?;
+
         let mut installed = self.installed_ids();
         if !installed.contains(&tool_id.to_string()) {
             installed.push(tool_id.to_string());
         }
         self.save_installed(&installed)?;
-
-        // 更新 mcp.json
-        self.add_to_mcp_json(&manifest, user_config)?;
 
         Ok(())
     }
@@ -481,6 +552,15 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                         .set(&reference, value)
                         .map_err(|e| mcp_secret_store_error(tool_id, key, e))?;
                     std::env::set_var(mcp_secret_env_var(key), value);
+                    Ok(mcp_secret_placeholder(key))
+                } else if let Some(shared) = builtin_shared_secret_value_for(tool_id, target, key) {
+                    // 内置三件套共享 key 兜底:用户留空即用注入的共享额度(开箱即用)。
+                    // 精确匹配 tool_id+target+key → 自定义工具声明同名 key 不会误拿内置额度。
+                    // 注入时机在此(install/启用),不在启动全量 → 卸载删 secret 后不会被注回。
+                    self.credential_store
+                        .set(&reference, shared)
+                        .map_err(|e| mcp_secret_store_error(tool_id, key, e))?;
+                    std::env::set_var(mcp_secret_env_var(key), shared);
                     Ok(mcp_secret_placeholder(key))
                 } else {
                     Err(mcp_secret_missing_error(tool_id, key))
@@ -627,6 +707,14 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 
     /// 卸载工具：从 installed.json + mcp.json 中移除
     pub fn uninstall(&self, tool_id: &str) -> Result<(), String> {
+        // 删该工具在 keyring 的 secret(防孤儿;此时 manifest 未删、仍可读声明)。
+        // 删不掉不阻断卸载;内置工具重装时 inject_builtin_shared_secrets 会重新注入。
+        if let Some(manifest) = self.load_manifest(tool_id) {
+            for (target, key) in manifest_secret_targets(&manifest) {
+                let reference = mcp_secret_reference(tool_id, &target, &key);
+                let _ = self.credential_store.delete(&reference);
+            }
+        }
         // 更新 installed.json
         let mut installed = self.installed_ids();
         installed.retain(|id| id != tool_id);
@@ -944,6 +1032,29 @@ mod tests {
     use crate::bridge::paths::tests::ENV_LOCK;
     use crate::credential_store::{CredentialStore, MemoryCredentialStore};
 
+    #[test]
+    fn manifest_secret_targets_dedups_and_maps_bearer_to_header() {
+        // 同一 key 在 secret_env/secret_headers 与 config_fields 重复声明 → 去重一次;
+        // config_fields 的 "bearer" 落成 keyring target "header"(与 install 对齐)。
+        let manifest: ToolManifest = serde_json::from_str(
+            r#"{
+            "id":"t","name":"T","description":"","version":"1","icon":"","category":"",
+            "mcp_tools":[],"command":"","args":[],
+            "secret_env":[{"key":"AMAP_KEY","provider":"amap","required":true}],
+            "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"QCC_API_KEY","provider":"qcc","required":true}],
+            "config_fields":[
+                {"key":"AMAP_KEY","label":"","required":false,"target":"env","secret":true},
+                {"key":"QCC_API_KEY","label":"","required":false,"target":"bearer","secret":true}
+            ]
+        }"#,
+        )
+        .unwrap();
+        let targets = manifest_secret_targets(&manifest);
+        assert_eq!(targets.len(), 2, "AMAP/QCC 各去重一次");
+        assert!(targets.contains(&("env".to_string(), "AMAP_KEY".to_string())));
+        assert!(targets.contains(&("header".to_string(), "QCC_API_KEY".to_string())));
+    }
+
     /// 把 PINVOU3_HOME 指到一个干净临时目录跑闭包,跑完恢复并清理。
     /// 借 paths 的 ENV_LOCK 跟其它 mutate PINVOU3_HOME 的测试串行,避免互相覆盖。
     fn with_temp_home<F: FnOnce()>(f: F) {
@@ -1067,6 +1178,34 @@ mod tests {
         });
     }
 
+    /// 连接器禁用联动技能:禁用声明了 companion_skills 的连接器 → 该技能进底座停用集;
+    /// 开回来 → 移出。守"公文 MCP 关掉 → government-writing 从 ## Skills 隐藏"这条链路。
+    #[test]
+    fn disabling_connector_hides_companion_skill() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "gongwen",
+                r#"{"id":"gongwen","name":"公文写作","description":"d","version":"1.0.0","icon":"file-text","category":"办公","mcp_tools":["mcp_gongwen_make_gongwen"],"command":"python","args":["server.py"],"companion_skills":["government-writing"]}"#,
+            );
+
+            // 禁用公文 MCP → 联动刷新 → 关联技能进底座停用集
+            save_disabled_connectors(&["gongwen".to_string()]);
+            crate::bridge::skill_marketplace::refresh_disabled_skills();
+            assert!(
+                deepseek_tui::skills::is_skill_disabled("government-writing"),
+                "禁用公文 MCP 后关联技能应被停用"
+            );
+
+            // 开回来 → 移出停用集
+            save_disabled_connectors(&[]);
+            crate::bridge::skill_marketplace::refresh_disabled_skills();
+            assert!(
+                !deepseek_tui::skills::is_skill_disabled("government-writing"),
+                "启用公文 MCP 后关联技能应恢复"
+            );
+        });
+    }
+
     #[test]
     fn secret_manifest_parses_declarations_without_plain_secret_values() {
         let weather: ToolManifest = serde_json::from_str(
@@ -1151,6 +1290,52 @@ mod tests {
             assert_eq!(authorization, "Bearer ${PINVOU3_MCP_SECRET_QCC_API_KEY}");
             assert!(!mcp.to_string().contains(&secret));
         });
+    }
+
+    #[test]
+    fn install_failure_does_not_leave_half_installed_state() {
+        // #2 半安装回归:缺密钥导致 add_to_mcp_json 失败时,installed.json 不该记录该工具
+        // (顺序修复=先写 mcp 成功、再 save_installed)。
+        with_temp_home(|| {
+            write_tool_manifest(
+                "weather",
+                r#"{
+                    "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
+                    "secret_env":[{"key":"AMAP_KEY","provider":"amap","required":true}]
+                }"#,
+            );
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            // 不提供 key + keyring 空 + 无内置共享 key(测试 option_env=None)→ install 必失败
+            assert!(
+                mgr.install("weather", &std::collections::HashMap::new())
+                    .is_err(),
+                "缺密钥应安装失败"
+            );
+            assert!(
+                !mgr.installed_ids().contains(&"weather".to_string()),
+                "失败时 installed.json 不该记录该工具(否则半安装)"
+            );
+        });
+    }
+
+    #[test]
+    fn shared_secret_bounty_only_matches_exact_builtin_spec() {
+        // 兜底范围收窄:自定义/上传工具声明同名 key 不该拿到内置共享额度。
+        // (内置精确匹配的返回值取决于编译期 option_env,单测环境无 env → 也 None,
+        //  故这里只断言「非精确匹配恒 None」这条安全属性。)
+        assert!(
+            builtin_shared_secret_value_for("evil-tool", "env", "AMAP_KEY").is_none(),
+            "非内置 tool_id 声明 AMAP_KEY 不该匹配内置额度"
+        );
+        assert!(
+            builtin_shared_secret_value_for("weather", "header", "AMAP_KEY").is_none(),
+            "target 不符(内置 weather 是 env)不该匹配"
+        );
+        assert!(
+            builtin_shared_secret_value_for("weather", "env", "OTHER_KEY").is_none(),
+            "key 不符不该匹配"
+        );
     }
 
     #[test]

@@ -1,0 +1,2 @@
+# local build artifact — the deployed binary lives in ../bin/zhidao-cli.exe
+/zhidao-cli.exe

@@ -154,6 +154,8 @@
     const Store = (p) => <I {...p}><path d="m2 7 4.41-4.41A2 2 0 0 1 7.83 2h8.34a2 2 0 0 1 1.42.59L22 7"/><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><path d="M15 22v-4a2 2 0 0 0-2-2h-2a2 2 0 0 0-2 2v4"/><path d="M2 7h20"/></I>;
     const Terminal = (p) => <I {...p}><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></I>;
     const ChevronDown = (p) => <I {...p}><path d="m6 9 6 6 6-6"/></I>;
+    const IconGrid = (p) => <I {...p}><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></I>;
+    const IconList = (p) => <I {...p}><line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/></I>;
     const ChevronRight = (p) => <I {...p}><path d="m9 18 6-6-6-6"/></I>;
     const Copy = (p) => <I {...p}><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></I>;
     const CheckCircle2 = (p) => <I {...p}><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></I>;
@@ -161,6 +163,8 @@
     const Menu = (p) => <I {...p}><line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/></I>;
     const Check = (p) => <I {...p}><path d="M20 6 9 17l-5-5"/></I>;
     const Filter = (p) => <I {...p}><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></I>;
+    const Database = (p) => <I {...p}><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></I>;
+    const Download = (p) => <I {...p}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></I>;
     const FolderPlus = (p) => <I {...p}><path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></I>;
     const Award = (p) => <I {...p}><circle cx="12" cy="8" r="6"/><path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11"/></I>;
     const Feather = (p) => <I {...p}><path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"/><line x1="16" x2="2" y1="8" y2="22"/><line x1="17.5" x2="9" y1="15" y2="15"/></I>;
@@ -241,10 +245,16 @@
         kbDeleteColl: '删除知识集', kbRemove: '移除', kbCollEmpty: '还没有文档，点「添加文件」加入。', kbNoCollFiles: '知识库里还没有文件', kbAllColls: '全部', kbDelCollConfirm: '确定删除知识集「{n}」？', kbDelCollWarn: '仅移除该知识集的索引（{c} 个文档的解析数据）；你磁盘上的原文件不会被删除。', kbDelete: '删除', kbRemoveDocConfirm: '从知识库移除「{n}」？', kbRemoveDocWarn: '仅删除该文件在知识库中的索引；磁盘上的原文件不受影响。', kbRemoveQ: '删除?',
         kbRetrPlaceholder: '在这个知识集里检索内容…', kbModeSearch: '检索', kbModeAsk: '问答', kbAskPlaceholder: '问这个知识集…（AI 基于内容回答并标注来源）', kbAskBtn: '提问', kbAsking: '思考中…', kbAnswer: '回答', kbSources: '来源', kbNoContext: '这个知识集还没有可检索的内容，先加文件并等索引完成。', kbAskError: '回答失败，请确认本地模型服务可用。', kbCollNamePh: '知识集名称', kbCollCatPh: '分类（可选）', kbCancel: '取消', kbCreate: '创建',
         kbEmbedOn: '语义检索已启用', kbEmbedOff: '语义检索未配置 · 全文模式',
+        kbModelTitle: '还未安装 Embedding 模型', kbModelDesc: '知识库的向量化与语义检索依赖本地 Embedding 模型。下载部署后即可创建知识库，让 AI 基于你的本地文件作答。',
+        kbModelPkgName: 'PINVOU Embedding 模型', kbModelPkgSub: '多语言语义向量模型 · int8 量化 · 纯 CPU 本地运行',
+        kbModelChipDownload: '约 {n} MB', kbModelChipInstalled: '安装 ~{n} MB', kbModelChipOffline: '完全离线运行', kbModelChipLang: '中英文 / 多语言',
+        kbModelItem1: 'bge-m3 多语言向量模型（int8 量化 ONNX）', kbModelItem2: '分词器与模型配置文件', kbModelItem3: 'CPU 推理，无需联网与显卡',
+        kbModelDownloadBtn: '下载并部署资源包', kbModelFoot: '一次安装，后续离线可用 · 下载期间可继续使用其他功能',
+        kbModelStageDownload: '正在下载资源包…', kbModelStageVerify: '正在校验完整性…', kbModelStageExtract: '正在解压部署…', kbModelStageDone: '部署完成',
         sysStatus: '系统状态', sysDesc: '实时性能与资源指标', gpu: '图形处理器 (GPU)', gpuUnavail: '状态不可用', noSmi: '未检测到 nvidia-smi',
         vram: '显存占用', core: '计算核心', temp: '温度', power: '功耗', unifiedMem: '统一内存架构',
         ram: '系统内存 (RAM)', used: '已用', physical: '物理内存', total: '总计', swap: '交换空间',
-        vllm: 'VLLM 推理引擎', ctx: '上下文长度', queue: '队列情况', kv: 'KV 命中率', ttft: '首字延迟·累积均值', tps: '生成速度·累积均值', tokTotal: '累计 tokens·生成/输入', clearHold: '按住清除', clearHolding: '继续按住…', clearDone: '已清除', clearHint: '按住「清除」直到填满即归零 · 松手取消', statsSince: '统计自 %t 起', statsAge: ' · 已运行 %m 分钟', statsJustReset: ' · 刚刚归零', statsLifetime: '自引擎启动累计', app: '应用服务', appRunning: '核心守护进程运行中',
+        vllm: 'VLLM 推理引擎', ctx: '上下文长度', ctxWarn: '⚠️ 窗口偏小(当前 %s,低于 128k),长对话会频繁压缩、保留历史更少;建议换 ≥128k 窗口的模型或调大 --max-model-len', queue: '队列情况', kv: 'KV 命中率', ttft: '首字延迟·累积均值', tps: '生成速度·累积均值', tokTotal: '累计 tokens·生成/输入', clearHold: '按住清除', clearHolding: '继续按住…', clearDone: '已清除', clearHint: '按住「清除」直到填满即归零 · 松手取消', statsSince: '统计自 %t 起', statsAge: ' · 已运行 %m 分钟', statsJustReset: ' · 刚刚归零', statsLifetime: '自引擎启动累计', app: '应用服务', appRunning: '核心守护进程运行中',
         curVer: '当前版本', uiVer: 'UI 版本', uptime: '运行时长',
         appearance: '外观与语言', lang: '界面语言', langDesc: '切换应用的显示语言', theme: '主题模式', themeDesc: '选择适合你的色彩风格',
         light: '浅色', dark: '深色',
@@ -277,6 +287,7 @@
         customModelName: '模型名称',
         customBaseUrl: 'API 地址',
         customApiKey: 'API Key',
+        credEnvOverride: '环境变量覆盖', credUnavailable: '凭证不可用', credConfigured: '已配置', credNotConfigured: '未配置', credEnterNewKey: '输入新 Key 替换', credKeep: '保留', credReplace: '替换', credDeleteKey: '删除 Key', clearSearch: '清除搜索', clearInput: '清除输入', sendMsg: '发送',
         detectLocalVllm: '检测本机 vLLM',
         detectingLocalVllm: '检测中…',
         useVllmConfig: '使用此配置',
@@ -312,6 +323,16 @@
         depInstalling: '安装中…', depInstallBtn: '一键安装', depInstallNote: '将提权安装缺失依赖（需联网或可用 apt 源）', depInstallNoteWindows: '将通过 winget 提权安装 LibreOffice（需联网）',
         dep_pdf: 'PDF 文本提取', dep_office_modern: 'Office 文档（docx）', dep_office_legacy: '旧版 Office / 演示与表格',
         dep_ocr: '图片 / 扫描件 OCR', dep_archive: '压缩包（zip/rar/7z）', dep_email: '邮件（.eml / .msg）', dep_voice_asr: '本地语音识别',
+        vllmSetupTitle: '启用本地大模型', vllmSetupDesc: '检测到本机已预装本地大模型环境，是否现在启用？将拉起推理引擎并配置为开机自启，随后自动设为默认模型。',
+        vllmSetupEnable: '启用', vllmSetupSkip: '暂不',
+        vllmSetupRunning: '正在拉起推理引擎，首次加载模型较慢（最长约 10 分钟），请保持应用打开…',
+        vllmSetupDone: '本地大模型已就绪，重启应用即可使用。', vllmSetupFailed: '启用失败', vllmSetupRetry: '重试',
+        vllmStepAuth: '授权并启动引擎', vllmStepWait: '等待模型加载就绪', vllmStepReady: '完成',
+        vllmElapsed: '已等待', vllmProbing: (n) => '第 ' + n + ' 次探测',
+        vllmSetupNever: '不再提醒',
+        vllmDeclineTitle: '确认不启用本地大模型？', vllmDeclineDesc: '确认后本提示不再自动弹出。届时需自行配置云端大模型，或日后在「设置 → 模型管理 → 检测本机 vLLM」中启用本地预装大模型。',
+        vllmDeclineConfirm: '确认不启用', vllmDeclineReconsider: '再想想',
+        vllmReentryOffer: '检测到本机预装了本地大模型环境，是否现在启用？',
         feedbackTitle: '帮助与反馈', feedbackDesc: '反馈使用中的问题和建议，可附带截图或短视频。',
         feedbackOpen: '我要反馈', feedbackDialogTitle: '我要反馈', feedbackType: '反馈类型',
         feedbackIssue: '问题', feedbackSuggestion: '建议',
@@ -388,7 +409,7 @@
         composerTools: '工具', composerInstalledTools: '已接入工具', composerNoTools: '暂无已装工具', composerToolOn: '已启用', composerManageTools: '管理工具',
         composerMode: '技能', composerModeTitle: '技能', composerModeNone: '暂无可用技能',
         composerSkillAuto: '内置·自动', composerSkillInUse: '使用中', composerSkillSoon: '待上线',
-        resend: '重新发送', editResend: '编辑并重发', copyMsg: '复制', copied: '已复制',
+        resend: '重新发送', editResend: '编辑并重发', selectAllMsg: '全选', copyMsg: '复制', pasteMsg: '粘贴', copied: '已复制', backToBottom: '回到底部',
         thinkingLabel: '思考中', thinkingCall: (tool, s) => `调用 ${tool}... ${s}s`,
         hintSlow30: '本地模型生成中', hintSlow120: '本地模型在生成长内容,请耐心等',
         artifactLabel: '成品', clickToOpen: '点击打开 →',
@@ -470,10 +491,16 @@
         kbDeleteColl: 'Delete collection', kbRemove: 'Remove', kbCollEmpty: 'No documents yet. Click "Add files".', kbNoCollFiles: 'No files in any knowledge base yet', kbAllColls: 'All', kbDelCollConfirm: 'Delete collection "{n}"?', kbDelCollWarn: 'Only removes the index for its {c} documents. Your original files on disk are NOT deleted.', kbDelete: 'Delete', kbRemoveDocConfirm: 'Remove "{n}" from the knowledge base?', kbRemoveDocWarn: 'Only deletes its index here. Your original file on disk is not affected.', kbRemoveQ: 'Remove?',
         kbRetrPlaceholder: 'Search inside this collection…', kbModeSearch: 'Search', kbModeAsk: 'Ask AI', kbAskPlaceholder: 'Ask this collection… (AI answers from its content, with citations)', kbAskBtn: 'Ask', kbAsking: 'Thinking…', kbAnswer: 'Answer', kbSources: 'Sources', kbNoContext: 'Nothing indexed in this collection yet — add files and wait for indexing.', kbAskError: 'Failed to answer — check the local model service.', kbCollNamePh: 'Collection name', kbCollCatPh: 'Category (optional)', kbCancel: 'Cancel', kbCreate: 'Create',
         kbEmbedOn: 'Semantic search on', kbEmbedOff: 'Semantic off · full-text only',
+        kbModelTitle: 'Embedding model not installed', kbModelDesc: 'Vectorizing and semantic search rely on a local embedding model. Download and deploy it to start building knowledge bases the AI can answer from.',
+        kbModelPkgName: 'PINVOU Embedding Model', kbModelPkgSub: 'Multilingual vector model · int8 quantized · CPU-only, fully local',
+        kbModelChipDownload: '~{n} MB download', kbModelChipInstalled: '~{n} MB installed', kbModelChipOffline: 'Fully offline', kbModelChipLang: 'Chinese / multilingual',
+        kbModelItem1: 'bge-m3 multilingual vector model (int8 ONNX)', kbModelItem2: 'Tokenizer & model config files', kbModelItem3: 'CPU inference, no network or GPU',
+        kbModelDownloadBtn: 'Download & deploy', kbModelFoot: 'Install once, then offline · keep using other features while it downloads',
+        kbModelStageDownload: 'Downloading…', kbModelStageVerify: 'Verifying…', kbModelStageExtract: 'Deploying…', kbModelStageDone: 'Done',
         sysStatus: 'System Status', sysDesc: 'Real-time performance metrics', gpu: 'GPU', gpuUnavail: 'Unavailable', noSmi: 'nvidia-smi not found',
         vram: 'VRAM Usage', core: 'Core Usage', temp: 'Temp', power: 'Power', unifiedMem: 'Unified Memory',
         ram: 'System RAM', used: 'Used', physical: 'Physical RAM', total: 'Total', swap: 'Swap Space',
-        vllm: 'VLLM Engine', ctx: 'Context Length', queue: 'Queue (Run/Wait)', kv: 'KV Hit Rate', ttft: 'TTFT · cum. avg', tps: 'Gen Speed · cum. avg', tokTotal: 'Total Tokens · gen/prompt', clearHold: 'Hold to reset', clearHolding: 'Keep holding…', clearDone: 'Cleared', clearHint: 'Hold "Reset" until full to clear · release to cancel', statsSince: 'Since %t', statsAge: ' · %m min running', statsJustReset: ' · just reset', statsLifetime: 'Lifetime total', app: 'App Service', appRunning: 'Core daemon running',
+        vllm: 'VLLM Engine', ctx: 'Context Length', ctxWarn: '⚠️ Small context window (%s, below 128k). Long chats compact often and keep less history; use a model with ≥128k window or raise --max-model-len', queue: 'Queue (Run/Wait)', kv: 'KV Hit Rate', ttft: 'TTFT · cum. avg', tps: 'Gen Speed · cum. avg', tokTotal: 'Total Tokens · gen/prompt', clearHold: 'Hold to reset', clearHolding: 'Keep holding…', clearDone: 'Cleared', clearHint: 'Hold "Reset" until full to clear · release to cancel', statsSince: 'Since %t', statsAge: ' · %m min running', statsJustReset: ' · just reset', statsLifetime: 'Lifetime total', app: 'App Service', appRunning: 'Core daemon running',
         curVer: 'App Version', uiVer: 'UI Version', uptime: 'Uptime',
         appearance: 'Appearance & Language', lang: 'Language', langDesc: 'Switch application display language', theme: 'Theme', themeDesc: 'Choose your color style',
         light: 'Light', dark: 'Dark',
@@ -506,6 +533,7 @@
         customModelName: 'Model Name',
         customBaseUrl: 'API Base URL',
         customApiKey: 'API Key',
+        credEnvOverride: 'Env override', credUnavailable: 'Credential unavailable', credConfigured: 'Configured', credNotConfigured: 'Not configured', credEnterNewKey: 'Enter new key to replace', credKeep: 'Keep', credReplace: 'Replace', credDeleteKey: 'Delete Key', clearSearch: 'Clear search', clearInput: 'Clear input', sendMsg: 'Send',
         detectLocalVllm: 'Detect local vLLM',
         detectingLocalVllm: 'Detecting…',
         useVllmConfig: 'Use config',
@@ -541,6 +569,16 @@
         depInstalling: 'Installing…', depInstallBtn: 'Install', depInstallNote: 'Installs missing deps via elevated apt (needs network or an apt source)', depInstallNoteWindows: 'Installs LibreOffice through elevated winget (requires network)',
         dep_pdf: 'PDF text extraction', dep_office_modern: 'Office docs (docx)', dep_office_legacy: 'Legacy Office / slides & sheets',
         dep_ocr: 'Image / scanned-PDF OCR', dep_archive: 'Archives (zip/rar/7z)', dep_email: 'Email (.eml / .msg)', dep_voice_asr: 'Local voice recognition',
+        vllmSetupTitle: 'Enable Local Model', vllmSetupDesc: 'A local model environment is pre-installed on this machine. Enable it now? This starts the inference engine, sets it to auto-start on boot, and makes it the default model.',
+        vllmSetupEnable: 'Enable', vllmSetupSkip: 'Not now',
+        vllmSetupRunning: 'Starting the inference engine. The first model load can be slow (up to ~10 min) — keep the app open…',
+        vllmSetupDone: 'Local model is ready. Restart the app to use it.', vllmSetupFailed: 'Enable failed', vllmSetupRetry: 'Retry',
+        vllmStepAuth: 'Authorize & start engine', vllmStepWait: 'Waiting for model to load', vllmStepReady: 'Done',
+        vllmElapsed: 'Elapsed', vllmProbing: (n) => 'probe #' + n,
+        vllmSetupNever: "Don't ask again",
+        vllmDeclineTitle: 'Skip local model setup?', vllmDeclineDesc: "This prompt won't show automatically anymore. You'll need to configure a cloud model yourself, or enable the pre-installed local model later via Settings → Models → Detect local vLLM.",
+        vllmDeclineConfirm: "Don't enable", vllmDeclineReconsider: 'Reconsider',
+        vllmReentryOffer: 'A local model environment is pre-installed on this machine. Enable it now?',
         feedbackTitle: 'Help & Feedback', feedbackDesc: 'Send issues or suggestions with screenshots or short videos.',
         feedbackOpen: 'Send feedback', feedbackDialogTitle: 'Send feedback', feedbackType: 'Type',
         feedbackIssue: 'Issue', feedbackSuggestion: 'Suggestion',
@@ -617,7 +655,7 @@
         composerTools: 'Tools', composerInstalledTools: 'Connected tools', composerNoTools: 'No tools installed', composerToolOn: 'On', composerManageTools: 'Manage tools',
         composerMode: 'Skill', composerModeTitle: 'Skills', composerModeNone: 'No skills available',
         composerSkillAuto: 'Built-in', composerSkillInUse: 'In use', composerSkillSoon: 'Soon',
-        resend: 'Resend', editResend: 'Edit & resend', copyMsg: 'Copy', copied: 'Copied',
+        resend: 'Resend', editResend: 'Edit & resend', selectAllMsg: 'Select all', copyMsg: 'Copy', pasteMsg: 'Paste', copied: 'Copied', backToBottom: 'Back to bottom',
         thinkingLabel: 'Thinking', thinkingCall: (tool, s) => `Calling ${tool}... ${s}s`,
         hintSlow30: 'local model generating', hintSlow120: 'local model is generating long content, hang tight',
         artifactLabel: 'Artifact', clickToOpen: 'Open →',
@@ -692,6 +730,12 @@
         kbRecent: '最近の更新', kbAddToKb: '知識に追加', kbAddFiles: 'ファイル追加', kbIndexing: '解析中',
         kbBrowseByType: 'タイプ別に表示', kbMonitored: 'タイプをクリックして絞り込み', kbItemUnit: ' 件', kbMonitoredDirs: '{n} 個のフォルダを監視中', kbManageFavLink: '管理 →', kbRecentFiles: '最近のファイル', kbAllFiles: 'すべてのファイル', kbSortByModified: '最終更新順', kbColName: 'ファイル名', kbColLoc: '場所', kbColSize: 'サイズ', kbColTime: '更新日時', kbManageFav: '管理 →', kbEnter: '開く', kbCollUnit: 'コレクション', kbColColl: '所属', kbStatus: '状態',
         kbBannerTitle: 'AI 知識ベース · 専用知識ベースを構築', kbNewColl: '新規コレクション', kbEditColl: 'コレクションを編集', kbSave: '保存',
+        kbModelTitle: 'Embedding モデル未インストール', kbModelDesc: 'ベクトル化と意味検索はローカルの Embedding モデルに依存します。ダウンロードして配置すると、AI がローカルファイルから回答できる知識ベースを作成できます。',
+        kbModelPkgName: 'PINVOU Embedding モデル', kbModelPkgSub: '多言語ベクトルモデル · int8 量子化 · CPU のみでローカル動作',
+        kbModelChipDownload: '約 {n} MB', kbModelChipInstalled: 'インストール ~{n} MB', kbModelChipOffline: '完全オフライン', kbModelChipLang: '中英 / 多言語',
+        kbModelItem1: 'bge-m3 多言語ベクトルモデル（int8 ONNX）', kbModelItem2: 'トークナイザーとモデル設定ファイル', kbModelItem3: 'CPU 推論・ネットワークと GPU 不要',
+        kbModelDownloadBtn: 'ダウンロードして配置', kbModelFoot: '一度インストールすればオフラインで利用可 · ダウンロード中も他機能を利用可能',
+        kbModelStageDownload: 'ダウンロード中…', kbModelStageVerify: '検証中…', kbModelStageExtract: '配置中…', kbModelStageDone: '完了',
         kbStep1: 'ローカルファイル選択', kbStep2: 'AI 解析とインデックス', kbStep3: '会話で自動引用',
         kbMyColls: 'マイコレクション', kbNoColls: 'コレクションがありません。「新規コレクション」で開始。', kbNoCollsShort: 'コレクションがありません。まず作成してください。',
         kbDocs: '文書', kbUncat: '未分類', kbCollFiles: '知識内のファイル', kbBlocks: 'ブロック', kbSkipped: 'スキップ',
@@ -701,7 +745,7 @@
         sysStatus: 'システム状態', sysDesc: 'リアルタイムの性能・リソース指標', gpu: 'GPU', gpuUnavail: '状態を取得できません', noSmi: 'nvidia-smi が見つかりません',
         vram: 'VRAM 使用量', core: 'コア使用率', temp: '温度', power: '消費電力', unifiedMem: 'ユニファイドメモリ',
         ram: 'システムメモリ (RAM)', used: '使用中', physical: '物理メモリ', total: '合計', swap: 'スワップ領域',
-        vllm: 'vLLM 推論エンジン', ctx: 'コンテキスト長', queue: 'キュー状況', kv: 'KV ヒット率', ttft: '初回遅延・累積平均', tps: '生成速度・累積平均', tokTotal: '累計トークン・生成/入力', clearHold: '長押しで消去', clearHolding: 'そのまま…', clearDone: '消去完了', clearHint: '「消去」を満たすまで長押しでリセット · 離すと取消', statsSince: '%t から集計', statsAge: ' · %m 分経過', statsJustReset: ' · 今リセット', statsLifetime: 'エンジン起動からの累計', app: 'アプリサービス', appRunning: 'コアデーモン稼働中',
+        vllm: 'vLLM 推論エンジン', ctx: 'コンテキスト長', ctxWarn: '⚠️ コンテキスト窓が小さい(現在 %s、128k 未満)。長い会話は頻繁に圧縮され履歴が減ります。128k 以上のモデルを使うか --max-model-len を上げてください', queue: 'キュー状況', kv: 'KV ヒット率', ttft: '初回遅延・累積平均', tps: '生成速度・累積平均', tokTotal: '累計トークン・生成/入力', clearHold: '長押しで消去', clearHolding: 'そのまま…', clearDone: '消去完了', clearHint: '「消去」を満たすまで長押しでリセット · 離すと取消', statsSince: '%t から集計', statsAge: ' · %m 分経過', statsJustReset: ' · 今リセット', statsLifetime: 'エンジン起動からの累計', app: 'アプリサービス', appRunning: 'コアデーモン稼働中',
         curVer: '現在のバージョン', uiVer: 'UI バージョン', uptime: '稼働時間',
         appearance: '外観と言語', lang: '表示言語', langDesc: 'アプリの表示言語を切り替え', theme: 'テーマ', themeDesc: 'お好みの配色を選択',
         light: 'ライト', dark: 'ダーク',
@@ -734,6 +778,7 @@
         customModelName: 'モデル名',
         customBaseUrl: 'API ベース URL',
         customApiKey: 'API Key',
+        credEnvOverride: '環境変数で上書き', credUnavailable: '資格情報が利用不可', credConfigured: '設定済み', credNotConfigured: '未設定', credEnterNewKey: '置き換える新しいキーを入力', credKeep: '保持', credReplace: '置換', credDeleteKey: 'キー削除', clearSearch: '検索をクリア', clearInput: '入力をクリア', sendMsg: '送信',
         detectLocalVllm: 'ローカル vLLM を検出',
         detectingLocalVllm: '検出中…',
         useVllmConfig: 'この設定を使用',
@@ -769,6 +814,16 @@
         depInstalling: 'インストール中…', depInstallBtn: 'インストール', depInstallNote: '権限昇格して不足依存をインストール（ネットワークまたは apt ソースが必要）', depInstallNoteWindows: 'winget を権限昇格して LibreOffice をインストール（ネットワークが必要）',
         dep_pdf: 'PDF テキスト抽出', dep_office_modern: 'Office 文書（docx）', dep_office_legacy: '旧 Office / スライドと表計算',
         dep_ocr: '画像 / スキャン PDF の OCR', dep_archive: 'アーカイブ（zip/rar/7z）', dep_email: 'メール（.eml / .msg）', dep_voice_asr: 'ローカル音声認識',
+        vllmSetupTitle: 'ローカルモデルを有効化', vllmSetupDesc: 'この端末にローカルモデル環境がプリインストールされています。今すぐ有効化しますか？推論エンジンを起動し、起動時の自動起動を設定して、既定モデルにします。',
+        vllmSetupEnable: '有効化', vllmSetupSkip: '後で',
+        vllmSetupRunning: '推論エンジンを起動中。初回のモデル読み込みは遅い場合があります（最大約10分）。アプリを開いたままにしてください…',
+        vllmSetupDone: 'ローカルモデルの準備ができました。アプリを再起動してご利用ください。', vllmSetupFailed: '有効化に失敗しました', vllmSetupRetry: '再試行',
+        vllmStepAuth: 'エンジンを認可・起動', vllmStepWait: 'モデルの読み込みを待機', vllmStepReady: '完了',
+        vllmElapsed: '経過', vllmProbing: (n) => 'プローブ #' + n,
+        vllmSetupNever: '今後表示しない',
+        vllmDeclineTitle: 'ローカルモデルを有効化しませんか？', vllmDeclineDesc: 'この案内は今後自動表示されません。利用するにはクラウドモデルを自分で設定するか、後で「設定 → モデル管理 → 本機 vLLM を検出」からプリインストール済みローカルモデルを有効化してください。',
+        vllmDeclineConfirm: '有効化しない', vllmDeclineReconsider: 'やめておく',
+        vllmReentryOffer: 'この端末にローカルモデル環境がプリインストールされています。今すぐ有効化しますか？',
         feedbackTitle: 'ヘルプとフィードバック', feedbackDesc: '問題や提案をスクリーンショットや短い動画付きで送信できます。',
         feedbackOpen: 'フィードバック', feedbackDialogTitle: 'フィードバック', feedbackType: '種類',
         feedbackIssue: '問題', feedbackSuggestion: '提案',
@@ -845,7 +900,7 @@
         composerTools: 'ツール', composerInstalledTools: '接続済みツール', composerNoTools: 'ツールなし', composerToolOn: '有効', composerManageTools: 'ツール管理',
         composerMode: 'スキル', composerModeTitle: 'スキル', composerModeNone: '利用可能なスキルなし',
         composerSkillAuto: '内蔵', composerSkillInUse: '使用中', composerSkillSoon: '近日',
-        resend: '再送信', editResend: '編集して再送信', copyMsg: 'コピー', copied: 'コピー済み',
+        resend: '再送信', editResend: '編集して再送信', selectAllMsg: 'すべて選択', copyMsg: 'コピー', pasteMsg: '貼り付け', copied: 'コピー済み', backToBottom: '一番下へ',
         thinkingLabel: '思考中', thinkingCall: (tool, s) => `${tool} を実行中... ${s}s`,
         hintSlow30: 'ローカルモデルが生成中', hintSlow120: 'ローカルモデルが長い内容を生成中です。しばらくお待ちください',
         artifactLabel: '成果物', clickToOpen: 'クリックで開く →',
@@ -906,6 +961,7 @@
     // 这里 / dict / Rust prefs.rs Language 枚举
     const LANG_TO_TAG = { zh: 'zh-Hans', en: 'en', ja: 'ja' };
     const TAG_TO_LANG = { 'zh-Hans': 'zh', 'en': 'en', 'ja': 'ja' };
+    const SEARCH_KEY_PROVIDERS = ['metaso', 'bocha', 'baidu', 'tavily'];
 
     /* ==========================================
        TauriBridge hook
@@ -956,6 +1012,53 @@
     };
 
     /* ==========================================
+       MegaCube 本地大模型引导:进行中步骤指示 + 自跑计时
+       (后端 vllm-setup:phase 事件给 phase/attempt;秒数本组件自跑,pkexec 阻塞期也在涨)
+       ========================================== */
+    const VllmSetupProgress = ({ phase, attempt, isDark, t }) => {
+      const [secs, setSecs] = useState(0);
+      useEffect(() => { const id = setInterval(() => setSecs(s => s + 1), 1000); return () => clearInterval(id); }, []);
+      const steps = [
+        { key: 'authorizing', label: t.vllmStepAuth },
+        { key: 'waiting', label: t.vllmStepWait },
+        { key: 'ready', label: t.vllmStepReady },
+      ];
+      const order = { authorizing: 0, waiting: 1, ready: 2 };
+      const cur = order[phase] != null ? order[phase] : 0;
+      const mmss = Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
+      const accent = isDark ? '#0A84FF' : '#007AFF';
+      const muted = isDark ? '#8E8E8E' : '#757575';
+      const bodyClr = isDark ? '#E3E3E3' : '#1F1F1F';
+      return (
+        <div className="py-1">
+          <div className="space-y-2.5 mb-3">
+            {steps.map((s, i) => {
+              const done = i < cur, active = i === cur;
+              return (
+                <div key={s.key} className="flex items-center gap-2.5">
+                  {done ? (
+                    <span className="w-5 h-5 shrink-0 rounded-full flex items-center justify-center text-white text-[11px]" style={{ background: accent }}>✓</span>
+                  ) : active ? (
+                    <span className={`w-5 h-5 shrink-0 rounded-full border-[2.5px] border-t-transparent ${isDark ? 'border-[#0A84FF]' : 'border-[#007AFF]'}`}
+                      style={{ animation: 'tsSpinner .8s linear infinite' }} />
+                  ) : (
+                    <span className="w-5 h-5 shrink-0 rounded-full border-2" style={{ borderColor: muted, opacity: .35 }} />
+                  )}
+                  <span className="text-[14px]" style={{ color: active ? bodyClr : muted, fontWeight: active ? 600 : 400, opacity: done ? .7 : 1 }}>{s.label}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex items-center gap-2 text-[12.5px]" style={{ color: muted }}>
+            <span className="tabular-nums">{t.vllmElapsed} {mmss}</span>
+            {phase === 'waiting' && attempt > 0 && <span style={{ opacity: .7 }}>· {t.vllmProbing(attempt)}</span>}
+          </div>
+          <div className="text-[12px] mt-1.5" style={{ color: muted, opacity: .7 }}>{t.vllmSetupRunning}</div>
+        </div>
+      );
+    };
+
+    /* ==========================================
        App — 1:1 matching 前端.html structure
        ========================================== */
     const App = () => {
@@ -965,12 +1068,17 @@
       const [activeTheme, setActiveTheme] = useState('dark');
       // 工具商店/卡片用 Tailwind dark: 变体(darkMode:'class'),全局挂 <html>.dark 让其随 app 主题切换
       useEffect(() => { document.documentElement.classList.toggle('dark', activeTheme === 'dark'); }, [activeTheme]);
+      // MegaCube(GB10) 首屏检测:仅启动一次,检测「预装但未启用」本地大模型环境(后端短路保证普通机零开销)。
+      useEffect(() => { if (bridge.available) bridge.detectLocalVllmSetup(); }, []);
+      const [vllmDeclineConfirm, setVllmDeclineConfirm] = useState(false); // 引导框「不再提醒」二次确认子态
       const [language, setLanguage] = useState('zh');
       const [superPerm, setSuperPerm] = useState(false);
       // search 后端配置:provider 默认 bing(对齐 bridge prefs::SearchProvider::default());
       // bs.settings 加载后 useEffect 同步进来。
       const [searchProvider, setSearchProvider] = useState('bing');
       const [searchApiKey, setSearchApiKey] = useState('');
+      const [searchKeyDrafts, setSearchKeyDrafts] = useState({});
+      const [searchKeyActions, setSearchKeyActions] = useState({});
       // 模型配置（动态适配）——草稿模式，确认后才保存
       const [modelPreset, setModelPreset] = useState('local_vllm');
       const [customModelName, setCustomModelName] = useState('');
@@ -1108,12 +1216,26 @@
         // 搜索配置：只在第一次从后端加载初始值，后续走草稿模式（确认后才保存并重启）。
         if (!searchConfigInitRef.current && bs.settings) {
           const search = bs.settings.search || {};
+          const credentials = search.credentials || {};
           const saved = {
             provider: search.provider || 'bing',
             apiKey: search.api_key || '',
+            credentials: credentials,
           };
+          const drafts = {};
+          const actions = {};
+          SEARCH_KEY_PROVIDERS.forEach(p => {
+            drafts[p] = '';
+            actions[p] = 'keep_existing';
+          });
+          if (saved.apiKey && saved.provider !== 'bing') {
+            drafts[saved.provider] = saved.apiKey;
+            actions[saved.provider] = 'replace';
+          }
           setSearchProvider(saved.provider);
-          setSearchApiKey(saved.apiKey);
+          setSearchApiKey(drafts[saved.provider] || '');
+          setSearchKeyDrafts(drafts);
+          setSearchKeyActions(actions);
           savedSearchConfigRef.current = saved;
           searchConfigInitRef.current = true;
         }
@@ -1155,11 +1277,50 @@
         const trimmed = (value || '').trim();
         return trimmed ? trimmed : null;
       }
+      function searchCredentialForProvider(provider) {
+        const saved = savedSearchConfigRef.current;
+        return (saved && saved.credentials && saved.credentials[provider]) || {};
+      }
+      function searchHasSavedKey(provider) {
+        const credential = searchCredentialForProvider(provider);
+        const state = credential.credential_state || (credential.has_secret ? 'configured' : 'missing');
+        return !!credential.has_secret || state === 'configured' || state === 'env_override';
+      }
+      function searchProviderKeyAction(provider) {
+        return searchKeyActions[provider] || 'keep_existing';
+      }
+      function searchProviderCredentialDirty(provider) {
+        const action = searchProviderKeyAction(provider);
+        const draft = searchKeyDrafts[provider] || '';
+        return action === 'delete' || (action === 'replace' && !!draft.trim());
+      }
+      function buildSearchSettingsPayload() {
+        const baseSearch = (bs && bs.settings && bs.settings.search) || {};
+        const credentials = { ...(baseSearch.credentials || {}) };
+        SEARCH_KEY_PROVIDERS.forEach(provider => {
+          const action = searchProviderKeyAction(provider);
+          const draft = searchKeyDrafts[provider] || '';
+          if (action === 'delete' || (action === 'replace' && draft.trim())) {
+            credentials[provider] = {
+              ...(credentials[provider] || {}),
+              api_key: action === 'replace' ? draft.trim() : '',
+              credential_action: action,
+            };
+          }
+        });
+        return {
+          ...baseSearch,
+          provider: searchProvider,
+          api_key: null,
+          credentials,
+        };
+      }
       // 搜索配置也影响 EngineConfig,需保存后重启进程才生效。
       const savedSearch = savedSearchConfigRef.current;
+      const searchCredentialDirty = SEARCH_KEY_PROVIDERS.some(searchProviderCredentialDirty);
       const searchNeedsRestart = !!savedSearch && (
         searchProvider !== savedSearch.provider ||
-        normalizedSearchApiKeyValue(searchApiKey) !== normalizedSearchApiKeyValue(savedSearch.apiKey)
+        searchCredentialDirty
       );
       // 语言已即时写盘+切 UI,但 LLM 的 locale_tag 要重启 engine 才生效 → 偏离启动语言就提示。
       const languageNeedsRestart = !!bootedLanguageRef.current && language !== bootedLanguageRef.current;
@@ -1226,15 +1387,13 @@
         const topOverrides = { ...(overrides || {}) };
         delete topOverrides.advanced;
         delete topOverrides.search;
+        const baseSearch = base.search || { provider: 'bing', api_key: null, credentials: {} };
         return {
           ...base,
           ...topOverrides,
           theme: topOverrides.theme !== undefined ? topOverrides.theme : (activeTheme === 'dark' ? 'genesis' : 'liquid-light'),
           language: topOverrides.language !== undefined ? topOverrides.language : (LANG_TO_TAG[language] || 'zh-Hans'),
-          search: searchOverrides || {
-            provider: searchProvider,
-            api_key: normalizedSearchApiKeyValue(searchApiKey),
-          },
+          search: searchOverrides ? { ...baseSearch, ...searchOverrides } : baseSearch,
           advanced: buildAdvancedOverrides(advancedOverrides),
         };
       }
@@ -1247,17 +1406,37 @@
       }
 
       function handleSetSearchProvider(p) {
+        if (p === searchProvider) return;
         setSearchProvider(p);
+        setSearchApiKey(searchKeyDrafts[p] || '');
       }
 
       function handleSetSearchApiKey(k) {
         setSearchApiKey(k);
+        setSearchKeyDrafts(prev => ({ ...prev, [searchProvider]: k }));
+        setSearchKeyActions(prev => ({ ...prev, [searchProvider]: k.trim() ? 'replace' : 'keep_existing' }));
+      }
+
+      function handleKeepSearchApiKey() {
+        setSearchApiKey('');
+        setSearchKeyDrafts(prev => ({ ...prev, [searchProvider]: '' }));
+        setSearchKeyActions(prev => ({ ...prev, [searchProvider]: 'keep_existing' }));
+      }
+
+      function handleReplaceSearchApiKey() {
+        setSearchKeyActions(prev => ({ ...prev, [searchProvider]: 'replace' }));
+      }
+
+      function handleDeleteSearchApiKey() {
+        setSearchApiKey('');
+        setSearchKeyDrafts(prev => ({ ...prev, [searchProvider]: '' }));
+        setSearchKeyActions(prev => ({ ...prev, [searchProvider]: 'delete' }));
       }
 
       function handleConfirmSearchConfig() {
         if (bridge.available) {
           bridge.saveSettingsAndRestart(buildFullSettings({
-            search: { provider: searchProvider, api_key: normalizedSearchApiKeyValue(searchApiKey) },
+            search: buildSearchSettingsPayload(),
           }));
         }
       }
@@ -1524,6 +1703,12 @@
                 superPerm={superPerm} setSuperPerm={handleToggleSuperPerm}
                 searchProvider={searchProvider} setSearchProvider={handleSetSearchProvider}
                 searchApiKey={searchApiKey} setSearchApiKey={handleSetSearchApiKey}
+                searchCredential={searchCredentialForProvider(searchProvider)}
+                searchKeyAction={searchProviderKeyAction(searchProvider)}
+                searchHasSavedKey={searchHasSavedKey(searchProvider)}
+                onKeepSearchApiKey={handleKeepSearchApiKey}
+                onReplaceSearchApiKey={handleReplaceSearchApiKey}
+                onDeleteSearchApiKey={handleDeleteSearchApiKey}
                 savedModels={(bs && bs.savedModels) || []}
                 activeModelId={bs && bs.activeModelId}
                 onSaveModel={(m) => bridge.available && bridge.saveModel(m)}
@@ -1572,6 +1757,66 @@
                     <div style={{ width:'0.5px', background: activeTheme === 'dark' ? 'rgba(84,84,88,.65)' : 'rgba(60,60,67,.29)' }} />
                     <button onClick={() => { setPoolMyOnly(true); setSavedConfirm(null); setCurrentView('cardpool'); }} className="flex-1 h-11 text-[17px] font-semibold" style={{ color: activeTheme === 'dark' ? '#0A84FF' : '#007AFF' }}>{t.cpSavedView}</button>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* MegaCube(GB10) 本地大模型一键引导 —— 全局首屏弹窗;引导中禁止背景关窗 */}
+            {bs && bs.vllmSetup && bs.vllmSetup.eligible && !bs.vllmSetupDismissed && (
+              <div className="fixed inset-0 z-[56] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }}
+                   onClick={() => { if (!bs.vllmBootstrapping) bridge.dismissVllmSetup(); }}>
+                <div className="w-full max-w-[440px] rounded-2xl p-6 ts-modal-in" onClick={(e) => e.stopPropagation()}
+                     style={{ background: activeTheme === 'dark' ? '#1E1F20' : '#FFFFFF', color: activeTheme === 'dark' ? '#E3E3E3' : '#1F1F1F', boxShadow: '0 12px 48px rgba(0,0,0,.35)' }}>
+                  <div className="flex items-center gap-2 mb-3">
+                    <img src="brand-blue.png" width={22} height={22} alt="" className="select-none" />
+                    <div className="text-[17px] font-semibold">{vllmDeclineConfirm && !bs.vllmBootstrapping && !bs.vllmBootstrapDone && !bs.vllmBootstrapError ? t.vllmDeclineTitle : t.vllmSetupTitle}</div>
+                  </div>
+                  {bs.vllmBootstrapping ? (
+                    <VllmSetupProgress phase={bs.vllmSetupPhase} attempt={bs.vllmSetupAttempt} isDark={activeTheme === 'dark'} t={t} />
+                  ) : bs.vllmBootstrapDone ? (
+                    <div>
+                      <div className="text-[14px] leading-relaxed mb-4">{t.vllmSetupDone}</div>
+                      <div className="flex justify-end">
+                        <button onClick={() => bridge.available && bridge.restartApp()}
+                          className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.restartNow}</button>
+                      </div>
+                    </div>
+                  ) : bs.vllmBootstrapError ? (
+                    <div>
+                      <div className="text-[14px] font-medium mb-1" style={{ color: '#E5484D' }}>{t.vllmSetupFailed}</div>
+                      <div className="text-[13px] leading-relaxed mb-4 break-words" style={{ opacity: .75 }}>{bs.vllmBootstrapError}</div>
+                      <div className="flex justify-end gap-2">
+                        <button onClick={() => bridge.dismissVllmSetup()}
+                          className="h-9 px-4 rounded-lg text-[14px]" style={{ background: activeTheme === 'dark' ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.06)' }}>{t.vllmSetupSkip}</button>
+                        <button onClick={() => bridge.bootstrapLocalVllm()}
+                          className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.vllmSetupRetry}</button>
+                      </div>
+                    </div>
+                  ) : vllmDeclineConfirm ? (
+                    <div>
+                      <div className="text-[14px] leading-relaxed mb-4" style={{ opacity: .85 }}>{t.vllmDeclineDesc}</div>
+                      <div className="flex justify-end gap-2">
+                        <button onClick={() => setVllmDeclineConfirm(false)}
+                          className="h-9 px-4 rounded-lg text-[14px]" style={{ background: activeTheme === 'dark' ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.06)' }}>{t.vllmDeclineReconsider}</button>
+                        <button onClick={() => { setVllmDeclineConfirm(false); bridge.declineVllmSetup(); }}
+                          className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#E5484D' }}>{t.vllmDeclineConfirm}</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="text-[14px] leading-relaxed mb-4" style={{ opacity: .85 }}>{t.vllmSetupDesc}</div>
+                      <div className="flex items-center justify-between gap-2">
+                        <button onClick={() => setVllmDeclineConfirm(true)}
+                          className="h-9 px-3 rounded-lg text-[13px] hover:underline" style={{ color: activeTheme === 'dark' ? '#8E8E8E' : '#757575' }}>{t.vllmSetupNever}</button>
+                        <div className="flex gap-2">
+                          <button onClick={() => bridge.dismissVllmSetup()}
+                            className="h-9 px-4 rounded-lg text-[14px]" style={{ background: activeTheme === 'dark' ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.06)' }}>{t.vllmSetupSkip}</button>
+                          <button onClick={() => bridge.bootstrapLocalVllm()}
+                            className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.vllmSetupEnable}</button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1664,8 +1909,8 @@
                 {query ? (
                   <button
                     type="button"
-                    aria-label="Clear search"
-                    title="Clear search"
+                    aria-label={t.clearSearch}
+                    title={t.clearSearch}
                     onClick={() => { setQuery(''); inputRef.current && inputRef.current.focus(); }}
                     className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#DDE3EA]'}`}
                   >
@@ -1710,10 +1955,11 @@
     // KnowledgeView 用 currentView 条件渲染:切 tab 会卸载、丢 state,回来重新加载 → 每次闪
     // 一下"还没建立索引"空状态再加载。模块级缓存上次拉到的 L0/L1 数据:remount 时初始 state
     // 直接用缓存(切回秒显),后台 refresh 更新。loaded=false 时显示加载中而非误判空状态。
-    let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], allDocs: [], embedInfo: null };
+    let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], allDocs: [], embedInfo: null, model: null };
 
     const KnowledgeView = ({ theme, t }) => {
       const isDark = theme === 'dark';
+      const bs = useBridge(); // 取 kbModelSetup 的实时下载进度
       const inv = (cmd, args) =>
         (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke)
           ? window.__TAURI__.core.invoke(cmd, args)
@@ -1853,6 +2099,7 @@
       const [delColl, setDelColl] = useState(null); // 待删除知识集(二次确认),null=无
       const [confirmDoc, setConfirmDoc] = useState(null); // 行内二次确认中的文档 id,null=无
       const [embedInfo, setEmbedInfo] = useState(kbCache.embedInfo);
+      const [kbModel, setKbModel] = useState(kbCache.model); // embedding 模型部署状态(null=未知)
       const [kbCat, setKbCat] = useState('all'); // 知识库分类筛选 tab
 
       const loadDocs = async (cid) => { try { setDocs(await inv('kb_documents', { collectionId: cid, limit: 0 }) || []); } catch (e) {} };
@@ -1860,9 +2107,38 @@
         try { const c = await inv('kb_collection_list') || []; setColls(c); kbCache.colls = c; } catch (e) {}
         try { const d = await inv('kb_documents', { collectionId: 0, limit: 0 }) || []; setAllDocs(d); kbCache.allDocs = d; } catch (e) {}
         try { const ei = await inv('kb_embed_info'); setEmbedInfo(ei); kbCache.embedInfo = ei; } catch (e) {}
+        try { const m = await inv('kb_model_status'); setKbModel(m); kbCache.model = m; } catch (e) {}
       }, []);
       useEffect(() => { loadColls(); }, []); // 挂载即加载,文件管理「加入知识库」浮层也要用
       useEffect(() => { if (sub === 'kb') loadColls(); }, [sub]);
+
+      // ── embedding 模型 gate(未装则知识库页显下载引导,装好热加载免重启)──
+      const modelInstalled = kbModel == null ? true : !!kbModel.installed; // 未知时不闪 gate(mock/旧后端)
+      const kbm = (bs && bs.kbModelSetup) || {};
+      const dlProg = kbm.progress || null;
+      const downloading = !!kbm.downloading;
+      const mb = (n) => Math.round((n || 0) / 1048576);
+      // 进度百分比:download 阶段用真实 downloaded/total(占 0~95%),校验/解压/完成递进到 100。
+      const dlPct = (() => {
+        if (!dlProg) return 0;
+        if (dlProg.stage === 'download') return dlProg.total > 0 ? Math.min(95, Math.floor(dlProg.downloaded / dlProg.total * 95)) : 0;
+        if (dlProg.stage === 'verify') return 96;
+        if (dlProg.stage === 'extract') return 98;
+        if (dlProg.stage === 'done') return 100;
+        return 0;
+      })();
+      const dlStageLabel = !dlProg ? t.kbModelStageDownload
+        : dlProg.stage === 'verify' ? t.kbModelStageVerify
+        : dlProg.stage === 'extract' ? t.kbModelStageExtract
+        : dlProg.stage === 'done' ? t.kbModelStageDone
+        : t.kbModelStageDownload;
+      const startModelDownload = async () => {
+        try {
+          const st = await bridge.downloadKbModel();
+          if (st) { setKbModel(st); kbCache.model = st; }
+          loadColls(); // 模型就绪后刷新语义徽标/列表
+        } catch (e) {}
+      };
 
       const indexing = !!(idx && idx.running);
       useEffect(() => {
@@ -1935,7 +2211,7 @@
           {/* Sub-tabs */}
           <div className="px-16 flex items-center gap-7 border-b border-gray-400/15">
             <SubTab k="files" label={t.kbSubFiles} count={total ? total.toLocaleString() : null} />
-            <SubTab k="kb" label={t.kbSubKb} count={colls.length || null} />
+            <SubTab k="kb" label={t.kbSubKb} count={modelInstalled ? (colls.length || null) : null} />
           </div>
 
           <div className="flex-1 overflow-y-auto custom-scrollbar px-16 py-6">
@@ -2082,8 +2358,75 @@
               </div>
             )}
 
-            {/* ============ 知识库 列表 ============ */}
-            {sub === 'kb' && (
+            {/* ============ 知识库 · 未装 embedding 模型 → gate ============ */}
+            {sub === 'kb' && !modelInstalled && (
+              <div className="max-w-[560px] mx-auto text-center pt-8 pb-2">
+                <div className="w-[84px] h-[84px] mx-auto rounded-[24px] grid place-items-center relative"
+                  style={{ background: isDark ? 'linear-gradient(135deg,#2A2440,#1E2438)' : 'linear-gradient(135deg,#efeafe,#e3ecfb)' }}>
+                  <Database size={40} className="text-[#6f5cf0]" />
+                  <span className="absolute -right-1.5 -bottom-1.5 w-[30px] h-[30px] rounded-full grid place-items-center"
+                    style={{ background: 'linear-gradient(135deg,#6f5cf0,#5b6cf2)', border: `3px solid ${isDark ? '#131314' : '#fff'}`, boxShadow: '0 4px 10px rgba(108,92,231,.35)' }}>
+                    <Download size={14} className="text-white" />
+                  </span>
+                </div>
+                <h2 className={`mt-5 text-[20px] font-extrabold ${ink}`}>{t.kbModelTitle}</h2>
+                <p className={`mt-2.5 mx-auto max-w-[450px] text-[13.5px] leading-relaxed ${muted}`}>{t.kbModelDesc}</p>
+
+                <div className={`mt-5 mx-auto max-w-[480px] text-left rounded-2xl p-[18px] ${panel}`} style={panelShadow}>
+                  <div className="flex items-center gap-3">
+                    <div className="w-[46px] h-[46px] rounded-xl grid place-items-center shrink-0"
+                      style={{ background: isDark ? '#2A2440' : '#f0eefb', color: '#6f5cf0' }}><Package size={23} /></div>
+                    <div className="flex-1 min-w-0">
+                      <div className={`text-[14.5px] font-extrabold ${ink}`}>{t.kbModelPkgName}</div>
+                      <div className={`text-[12px] mt-0.5 ${muted}`}>{t.kbModelPkgSub}</div>
+                    </div>
+                    <span className="text-[11.5px] font-bold px-2.5 py-1 rounded-lg shrink-0"
+                      style={{ color: '#6f5cf0', background: isDark ? '#2A2440' : '#efeafe' }}>{(kbModel && kbModel.version) || 'bge-m3'}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-2 mt-3.5">
+                    {[
+                      t.kbModelChipDownload.replace('{n}', mb(kbModel && kbModel.sizeBytes) || 545),
+                      t.kbModelChipInstalled.replace('{n}', mb(kbModel && kbModel.installedBytes) || 560),
+                      t.kbModelChipOffline, t.kbModelChipLang,
+                    ].map((c, i) => (
+                      <span key={i} className={`text-[11.5px] px-2.5 py-1 rounded-lg ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-[#f4f5f8] text-[#5a5a66]'}`}>{c}</span>
+                    ))}
+                  </div>
+                  <div className="mt-3.5 pt-3.5 border-t border-gray-400/15 flex flex-col gap-2.5">
+                    {[t.kbModelItem1, t.kbModelItem2, t.kbModelItem3].map((it, i) => (
+                      <div key={i} className={`flex items-center gap-2.5 text-[12.5px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#56565f]'}`}>
+                        <Check size={15} className="text-[#18a957] shrink-0" />{it}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {!downloading ? (
+                  <div className="mt-5">
+                    <button onClick={startModelDownload}
+                      className="px-5 py-2.5 rounded-xl text-[14px] font-bold text-white"
+                      style={{ background: 'linear-gradient(135deg,#6f5cf0,#5b6cf2)', boxShadow: '0 6px 16px rgba(108,92,231,.32)' }}>
+                      {t.kbModelDownloadBtn} →
+                    </button>
+                    <div className={`mt-3 text-[12px] ${muted}`}>{t.kbModelFoot}</div>
+                    {kbm.error && <div className="mt-2 text-[12px] text-[#d63a3a]">{kbm.error}</div>}
+                  </div>
+                ) : (
+                  <div className="mt-5 max-w-[480px] mx-auto">
+                    <div className={`h-2 rounded-full overflow-hidden ${isDark ? 'bg-white/10' : 'bg-[#edf0fa]'}`}>
+                      <div className="h-full rounded-full transition-all" style={{ width: dlPct + '%', background: 'linear-gradient(90deg,#5b6cf2,#2f8bff)' }} />
+                    </div>
+                    <div className="flex justify-between mt-2.5 text-[12.5px]">
+                      <span className={`font-semibold ${isDark ? 'text-[#A8C7FA]' : 'text-[#2f6beb]'}`}>{dlStageLabel}</span>
+                      <span className="font-bold text-[#2f6beb]">{dlPct}%</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ============ 知识库 列表（模型已就绪）============ */}
+            {sub === 'kb' && modelInstalled && (
               <div className="max-w-[1100px]">
                 <div className={`rounded-3xl p-7 mb-6 flex items-center gap-6 ${isDark ? 'bg-gradient-to-br from-[#2A2440] to-[#1E2438]' : 'bg-gradient-to-br from-[#ece8fc] to-[#dcebfb]'}`}>
                   <div className="flex-1 min-w-0">
@@ -2421,6 +2764,7 @@
       const vllmDiagnostic = fmt ? fmt.vllmDiagnostic : null;
       const vllmMetricDiagnostic = fmt ? fmt.vllmMetricDiagnostic : null;
       const vllmMaxLen = fmt ? fmt.vllmMaxLen : '—';
+      const vllmCtxWarn = fmt ? fmt.vllmCtxWarn : null;
       const vllmQueue = fmt ? fmt.vllmQueue : '— / —';
       const vllmKv = fmt ? fmt.vllmKv : '—';
       const vllmTtft = fmt ? fmt.vllmTtft : '—';
@@ -2566,6 +2910,12 @@
                 </div>
                 <div className={`rounded-[16px] p-2 mt-auto ${isDark ? 'bg-[#131314]' : 'bg-[#F8F9FA]'}`}>
                   <ListRow label={t.ctx} value={String(vllmMaxLen)} theme={theme} />
+                  {vllmCtxWarn && (
+                    <div className={`flex items-start gap-1 px-1 pt-1 pb-1 text-[10px] leading-snug ${isDark ? 'text-amber-400' : 'text-amber-600'}`}>
+                      <AlertTriangle size={11} className="shrink-0 mt-[1px]" />
+                      <span>{t.ctxWarn.replace('%s', Math.round(vllmCtxWarn / 1024) + 'k')}</span>
+                    </div>
+                  )}
                   <ListRow label={t.queue} value={vllmQueue} theme={theme} />
                   <ListRow label={t.kv} value={clearOverride ? clearOverride.kv : vllmKv} theme={theme} />
                   <ListRow label={t.ttft} value={clearOverride ? clearOverride.ttft : vllmTtft} theme={theme} />
@@ -2854,12 +3204,11 @@
     };
 
     // 输入框「技能」入口：⚡ 药丸 + popover。视觉设计=内置自动技能（只读，模型 load_skill 时显"使用中"
-    // 并高亮药丸）；头脑风暴=待上线占位（灰禁用）。activeSkill 由 bridge 检测 load_skill 设，纯只读指示。
+    // 并高亮药丸）。activeSkill 由 bridge 检测 load_skill 设，纯只读指示。
     const ComposerModeMenu = ({ t, bs, compact }) => {
       const [open, setOpen] = useState(false);
       const SKILLS = [
         { id: 'visual-design', name: '视觉设计', desc: '设计系统直出网页/banner/海报/简历…', kind: 'auto' },
-        { id: 'brainstorm', name: '头脑风暴', desc: '帮你发散点子、理清思路', kind: 'soon' },
       ];
       const activeId = bs && bs.activeSkill;
       const cur = SKILLS.find(s => s.id === activeId && s.kind === 'auto');
@@ -2908,6 +3257,8 @@
       const [disabled, setDisabled] = useState(() => new Set()); // 被关掉的连接器 id(全局持久)
       const [feishuOn, setFeishuOn] = useState(false); // 飞书是否已连接(CLI 路线)
       const [feishuEnabled, setFeishuEnabled] = useState(true); // 飞书技能是否启用(未手动停用)
+      const [wecomOn, setWecomOn] = useState(false); // 企微是否已连接(CLI 路线)
+      const [wecomEnabled, setWecomEnabled] = useState(true); // 企微技能是否启用(未手动停用)
       // 启动时加载已装工具 + 全局持久的禁用列表(持久语义:新窗口/新对话都继承)
       useEffect(() => {
         let alive = true;
@@ -2923,6 +3274,10 @@
           try {
             const fs = await window.__TAURI__.core.invoke('feishu_skills_state');
             if (alive) { setFeishuOn(!!(fs && fs.connected)); setFeishuEnabled(!fs || fs.enabled !== false); }
+          } catch (e) { /* 忽略 */ }
+          try {
+            const ws = await window.__TAURI__.core.invoke('wecom_skills_state');
+            if (alive) { setWecomOn(!!(ws && ws.connected)); setWecomEnabled(!ws || ws.enabled !== false); }
           } catch (e) { /* 忽略 */ }
         })();
         return () => { alive = false; };
@@ -2944,9 +3299,9 @@
             className={`relative shrink-0 flex items-center justify-center bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 transition-colors border border-black/[0.04] dark:border-white/5 ${compact ? 'w-9 h-9 rounded-full' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold whitespace-nowrap'}`}>
             <Wrench size={compact ? 18 : 14} className="opacity-80" />
             {!compact && t.composerTools}
-            {(tools.length > 0 || feishuOn) && (compact
-              ? <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 text-[10px] leading-4 text-center font-bold bg-[#007AFF] text-white rounded-full">{enabledCount + (feishuOn ? 1 : 0)}</span>
-              : <span className="text-[11px] bg-[#007AFF] text-white px-1.5 py-0.5 rounded-full leading-none font-bold shrink-0">{enabledCount + (feishuOn ? 1 : 0)}</span>)}
+            {(tools.length > 0 || feishuOn || wecomOn) && (compact
+              ? <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 text-[10px] leading-4 text-center font-bold bg-[#007AFF] text-white rounded-full">{enabledCount + (feishuOn ? 1 : 0) + (wecomOn ? 1 : 0)}</span>
+              : <span className="text-[11px] bg-[#007AFF] text-white px-1.5 py-0.5 rounded-full leading-none font-bold shrink-0">{enabledCount + (feishuOn ? 1 : 0) + (wecomOn ? 1 : 0)}</span>)}
             {!compact && <ChevronDown size={14} className="opacity-50 shrink-0" />}
           </button>
           {open && (
@@ -2960,7 +3315,13 @@
                     <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold text-[#34C759] bg-[#34C759]/10 px-2 py-0.5 rounded-full leading-none"><span className="w-1.5 h-1.5 rounded-full bg-[#34C759]" />已连接</span>
                   </div>
                 )}
-                {tools.length === 0 && !feishuOn ? (
+                {wecomOn && (
+                  <div className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
+                    <span className="text-[13px] text-gray-700 dark:text-gray-200 truncate">企业微信</span>
+                    <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold text-[#34C759] bg-[#34C759]/10 px-2 py-0.5 rounded-full leading-none"><span className="w-1.5 h-1.5 rounded-full bg-[#34C759]" />已连接</span>
+                  </div>
+                )}
+                {tools.length === 0 && !feishuOn && !wecomOn ? (
                   <div className="px-3 py-2 text-[13px] text-gray-400 dark:text-gray-500">{t.composerNoTools}</div>
                 ) : tools.map(tl => {
                   const on = !disabled.has(tl.id);
@@ -2988,7 +3349,7 @@
     };
 
     // 添加/编辑模型模态弹窗。
-    const ModelFormModal = ({ isDark, t, initial, onCancel, onSave }) => {
+    const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs }) => {
       const [name, setName] = useState(initial.name || '');
       const [preset, setPreset] = useState(initial.preset || 'local_vllm');
       const [model, setModel] = useState(initial.model || '');
@@ -3000,6 +3361,9 @@
       const [testResult, setTestResult] = useState(null);
       const [detecting, setDetecting] = useState(false);
       const [detectResult, setDetectResult] = useState(null); // { candidates } | { error } | null
+      // 本机预装大模型「再入口」:检测无运行实例但有预装时,提示启用;走同一 bootstrap。
+      const [offerSetup, setOfferSetup] = useState(false);   // 检测到预装,显示启用提示
+      const [bootstrapHere, setBootstrapHere] = useState(false); // 从本页发起了 bootstrap(隔离全局态,避免开机引导的成功态串到这里)
       function applyPreset(p) {
         setPreset(p);
         const defs = MODEL_PRESET_DEFS[p] || MODEL_PRESET_DEFS.local_vllm;
@@ -3023,7 +3387,7 @@
       }
       async function handleDetect() {
         if (!bridge.available || detecting) return;
-        setDetecting(true); setDetectResult(null); setTestResult(null);
+        setDetecting(true); setDetectResult(null); setTestResult(null); setOfferSetup(false); setBootstrapHere(false);
         try {
           const result = await bridge.discoverLocalVllm({
             currentBaseUrl: baseUrl.trim() || null,
@@ -3032,6 +3396,11 @@
           const online = ((result && result.candidates) || []).filter(c => c.status !== 'offline');
           setDetectResult({ candidates: online });
           if (online.length === 1) applyCandidate(online[0]); // 唯一可用实例直接填充
+          else if (online.length === 0) {
+            // 没探到运行中的实例:看本机是否有预装大模型,有则提示一键启用(走同一 bootstrap)。
+            const setup = await bridge.detectLocalVllmSetup();
+            if (setup && setup.has_packages && !setup.vllm_online) setOfferSetup(true);
+          }
         } catch (e) {
           setDetectResult({ error: String(e) });
         } finally {
@@ -3052,10 +3421,10 @@
       }
       const credentialState = initial.credential_state || (initial.has_secret ? 'configured' : 'missing');
       const hasSavedKey = !!initial.has_secret || credentialState === 'configured' || credentialState === 'env_override';
-      const keyStatusText = credentialState === 'env_override' ? '由环境变量覆盖'
-        : credentialState === 'unavailable' ? '凭据不可用，请重新配置'
-        : hasSavedKey ? '已配置'
-        : '未配置';
+      const keyStatusText = credentialState === 'env_override' ? t.credEnvOverride
+        : credentialState === 'unavailable' ? t.credUnavailable
+        : hasSavedKey ? t.credConfigured
+        : t.credNotConfigured;
       return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150" onClick={onCancel}>
           <div onClick={e => e.stopPropagation()}
@@ -3080,21 +3449,21 @@
                 <div className={`mb-2 text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{keyStatusText}</div>
                 <div className="relative">
                   <input type={showKey ? 'text' : 'password'} value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
-                    placeholder={hasSavedKey ? '输入新 Key 以替换' : (preset === 'local_vllm' ? 'local-no-auth' : 'sk-...')}
+                    placeholder={hasSavedKey ? t.credEnterNewKey : (preset === 'local_vllm' ? 'local-no-auth' : 'sk-...')}
                     className={`w-full px-4 py-2 pr-10 rounded-lg text-[14px] outline-none ${isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746] focus:border-[#A8C7FA]' : 'bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0]'}`} />
                   <button onClick={() => setShowKey(s => !s)} className="absolute right-2 top-1/2 -translate-y-1/2 text-[14px] opacity-70 px-1">{showKey ? '🙈' : '👁'}</button>
                 </div>
+              </div>
                 {hasSavedKey && (
                   <div className="mt-2 flex items-center gap-2 flex-wrap">
                     <button onClick={() => { setKeyAction('keep_existing'); setApiKey(''); }}
-                      className={`text-[12px] px-3 py-1.5 rounded-full ${keyAction === 'keep_existing' ? (isDark ? 'bg-[#174EA6] text-white' : 'bg-[#D2E3FC] text-[#174EA6]') : (isDark ? 'bg-[#2B2C2F] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]')}`}>保留现有</button>
+                      className={`text-[12px] px-3 py-1.5 rounded-full ${keyAction === 'keep_existing' ? (isDark ? 'bg-[#174EA6] text-white' : 'bg-[#D2E3FC] text-[#174EA6]') : (isDark ? 'bg-[#2B2C2F] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]')}`}>{t.credKeep}</button>
                     <button onClick={() => setKeyAction('replace')}
-                      className={`text-[12px] px-3 py-1.5 rounded-full ${keyAction === 'replace' ? (isDark ? 'bg-[#174EA6] text-white' : 'bg-[#D2E3FC] text-[#174EA6]') : (isDark ? 'bg-[#2B2C2F] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]')}`}>替换</button>
+                      className={`text-[12px] px-3 py-1.5 rounded-full ${keyAction === 'replace' ? (isDark ? 'bg-[#174EA6] text-white' : 'bg-[#D2E3FC] text-[#174EA6]') : (isDark ? 'bg-[#2B2C2F] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]')}`}>{t.credReplace}</button>
                     <button onClick={() => { setKeyAction('delete'); setApiKey(''); }}
-                      className={`text-[12px] px-3 py-1.5 rounded-full ${keyAction === 'delete' ? (isDark ? 'bg-[#5F2120] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]') : (isDark ? 'bg-[#2B2C2F] text-[#F28B82]' : 'bg-[#F0F4F9] text-[#C5221F]')}`}>删除 Key</button>
+                      className={`text-[12px] px-3 py-1.5 rounded-full ${keyAction === 'delete' ? (isDark ? 'bg-[#5F2120] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]') : (isDark ? 'bg-[#2B2C2F] text-[#F28B82]' : 'bg-[#F0F4F9] text-[#C5221F]')}`}>{t.credDeleteKey}</button>
                   </div>
                 )}
-              </div>
               <div className="flex items-center gap-3 flex-wrap">
                 <button onClick={handleTest} disabled={testing || !baseUrl.trim()}
                   className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors disabled:opacity-50 ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#F0F4F9] text-[#1F1F1F] hover:bg-[#E8EAED]'}`}>
@@ -3135,6 +3504,44 @@
                   <span className={`text-[11px] block ${isDark ? 'text-[#5F6368]' : 'text-[#9AA0A6]'}`}>{t.vllmDetectHint}</span>
                 </div>
               )}
+              {preset === 'local_vllm' && (offerSetup || bootstrapHere) && (
+                <div className={`rounded-xl border p-3 ${isDark ? 'border-[#333537] bg-[#131314]' : 'border-[#E0E3E7] bg-[#F8F9FB]'}`}>
+                  {bootstrapHere ? (
+                    bs && bs.vllmBootstrapDone ? (
+                      <div>
+                        <div className="text-[13px] leading-relaxed mb-3">{t.vllmSetupDone}</div>
+                        <div className="flex justify-end">
+                          <button onClick={() => bridge.available && bridge.restartApp()}
+                            className="h-8 px-4 rounded-lg text-[13px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.restartNow}</button>
+                        </div>
+                      </div>
+                    ) : bs && bs.vllmBootstrapError ? (
+                      <div>
+                        <div className="text-[12px] font-medium mb-1" style={{ color: '#E5484D' }}>{t.vllmSetupFailed}</div>
+                        <div className="text-[12px] leading-relaxed mb-3 break-words" style={{ opacity: .75 }}>{bs.vllmBootstrapError}</div>
+                        <div className="flex justify-end gap-2">
+                          <button onClick={() => { setBootstrapHere(false); setOfferSetup(false); }}
+                            className={`h-8 px-4 rounded-lg text-[13px] ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`}>{t.cpCancel}</button>
+                          <button onClick={() => bridge.bootstrapLocalVllm()}
+                            className="h-8 px-4 rounded-lg text-[13px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.vllmSetupRetry}</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <VllmSetupProgress phase={bs && bs.vllmSetupPhase} attempt={(bs && bs.vllmSetupAttempt) || 0} isDark={isDark} t={t} />
+                    )
+                  ) : (
+                    <div>
+                      <div className="text-[13px] leading-relaxed mb-3">{t.vllmReentryOffer}</div>
+                      <div className="flex justify-end gap-2">
+                        <button onClick={() => setOfferSetup(false)}
+                          className={`h-8 px-4 rounded-lg text-[13px] ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`}>{t.cpCancel}</button>
+                        <button onClick={() => { setBootstrapHere(true); bridge.bootstrapLocalVllm(); }}
+                          className="h-8 px-4 rounded-lg text-[13px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.vllmSetupEnable}</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
             <div className="flex justify-end gap-2 mt-6">
               <button onClick={onCancel} className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>{t.cpCancel}</button>
@@ -3146,7 +3553,7 @@
       );
     };
 
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onConfirmSearchConfig, searchNeedsRestart, languageNeedsRestart, bs, t }) => {
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, searchCredential, searchKeyAction, searchHasSavedKey, onKeepSearchApiKey, onReplaceSearchApiKey, onDeleteSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onConfirmSearchConfig, searchNeedsRestart, languageNeedsRestart, bs, t }) => {
       const isDark = activeTheme === 'dark';
       const isWindows = /Windows/i.test(navigator.userAgent || '');
       const [editingModel, setEditingModel] = useState(null);
@@ -3154,6 +3561,11 @@
       const [feedbackOpen, setFeedbackOpen] = useState(false);
       const [feedbackDraft, setFeedbackDraft] = useState({ type: 'issue', title: '', description: '', attachments: [] });
       const [feedbackStatus, setFeedbackStatus] = useState({ state: 'idle', message: '', receipt: null });
+      const searchCredentialState = (searchCredential && searchCredential.credential_state) || (searchHasSavedKey ? 'configured' : 'missing');
+      const searchKeyStatusText = searchCredentialState === 'env_override' ? t.credEnvOverride
+        : searchCredentialState === 'unavailable' ? t.credUnavailable
+        : searchHasSavedKey ? t.credConfigured
+        : t.credNotConfigured;
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
       const feedbackTypes = [
         { key: 'issue', label: t.feedbackIssue },
@@ -3330,7 +3742,7 @@
                 </div>
               </SCard>
               {editingModel && (
-                <ModelFormModal isDark={isDark} t={t} initial={editingModel}
+                <ModelFormModal isDark={isDark} t={t} initial={editingModel} bs={bs}
                   onCancel={() => setEditingModel(null)}
                   onSave={m => { onSaveModel(m); setEditingModel(null); }} />
               )}
@@ -3347,9 +3759,20 @@
                     </span>
                   ) : (
                     <div>
+                      <div className={`mb-2 text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{searchKeyStatusText}</div>
                       <SField isDark={isDark} label={t.searchKey} type="password"
                         value={searchApiKey} onChange={e => setSearchApiKey(e.target.value)}
-                        placeholder={t.searchKeyPlaceholder} />
+                        placeholder={searchHasSavedKey ? t.credEnterNewKey : t.searchKeyPlaceholder} />
+                      {searchHasSavedKey && (
+                        <div className="mt-2 flex items-center gap-2 flex-wrap">
+                          <button onClick={onKeepSearchApiKey}
+                            className={`text-[12px] px-3 py-1.5 rounded-full ${searchKeyAction === 'keep_existing' ? (isDark ? 'bg-[#174EA6] text-white' : 'bg-[#D2E3FC] text-[#174EA6]') : (isDark ? 'bg-[#2B2C2F] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]')}`}>{t.credKeep}</button>
+                          <button onClick={onReplaceSearchApiKey}
+                            className={`text-[12px] px-3 py-1.5 rounded-full ${searchKeyAction === 'replace' ? (isDark ? 'bg-[#174EA6] text-white' : 'bg-[#D2E3FC] text-[#174EA6]') : (isDark ? 'bg-[#2B2C2F] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]')}`}>{t.credReplace}</button>
+                          <button onClick={onDeleteSearchApiKey}
+                            className={`text-[12px] px-3 py-1.5 rounded-full ${searchKeyAction === 'delete' ? (isDark ? 'bg-[#5F2120] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]') : (isDark ? 'bg-[#2B2C2F] text-[#F28B82]' : 'bg-[#F0F4F9] text-[#C5221F]')}`}>{t.credDeleteKey}</button>
+                        </div>
+                      )}
                       <span className={`text-[12px] mt-2 block ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
                         {searchProvider === 'metaso' ? t.searchKeyHintMetaso : searchProvider === 'baidu' ? t.searchKeyHintBaidu : searchProvider === 'tavily' ? t.searchKeyHintTavily : t.searchKeyHintBocha}
                       </span>
@@ -3911,6 +4334,7 @@
       };
       const scrollRef = useRef(null);
       const autoScrollRef = useRef(true);
+      const [showScrollBottom, setShowScrollBottom] = useState(false);
       const chatRootRef = useRef(null);
       const composerRef = useRef(null);
       const floatingVoiceRef = useRef(null);
@@ -3972,21 +4396,38 @@
       useEffect(() => {
         const el = scrollRef.current;
         if (!el) return;
-        const onScroll = () => { autoScrollRef.current = isNearChatBottom(el); };
+        const onScroll = () => {
+          const near = isNearChatBottom(el);
+          const shouldShow = !near && el.scrollHeight > el.clientHeight + 4;
+          autoScrollRef.current = near;
+          setShowScrollBottom(v => v === shouldShow ? v : shouldShow);
+        };
         onScroll();
         el.addEventListener('scroll', onScroll, { passive: true });
         return () => el.removeEventListener('scroll', onScroll);
       }, []);
+
+      function scrollChatToBottom() {
+        const el = scrollRef.current;
+        if (!el) return;
+        autoScrollRef.current = true;
+        setShowScrollBottom(false);
+        el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+      }
 
       // Auto-scroll：只在原本贴底时滚内部容器到底（绝不动外层窗口，避免浏览历史时被拉回底部）
       useEffect(() => {
         const el = scrollRef.current;
         if (!el) return;
         const lastItem = chatItems[chatItems.length - 1];
-        if (!lastItem) { autoScrollRef.current = true; return; }
+        if (!lastItem) { autoScrollRef.current = true; setShowScrollBottom(false); return; }
         if (autoScrollRef.current || lastItem.type === 'user') {
           el.scrollTop = el.scrollHeight;
           autoScrollRef.current = true;
+          setShowScrollBottom(false);
+        } else {
+          const shouldShow = !isNearChatBottom(el) && el.scrollHeight > el.clientHeight + 4;
+          setShowScrollBottom(v => v === shouldShow ? v : shouldShow);
         }
       }, [chatItems.length, chatItems[chatItems.length - 1]?.html, composerH]);
 
@@ -4280,6 +4721,21 @@
           {/* 底部渐变蒙层:内容滚到底时在输入框上方柔和淡出(pointer-events-none 不挡滑动/点击;高度跟随输入框 auto-grow)。 */}
           <div className={`pointer-events-none absolute bottom-0 inset-x-0 z-[15] bg-gradient-to-t to-transparent from-30% via-70% ${isDark ? 'from-[#131314] via-[#131314]/95' : 'from-white via-white/95'}`}
             style={{ height: (composerH ? composerH + 96 : 220) + 'px' }} />
+          {hasMessages && showScrollBottom && (
+            <div className="pointer-events-none absolute inset-x-0 z-[25] flex justify-center"
+              style={{ bottom: (composerH ? composerH + 54 : 172) + 'px' }}>
+              <button
+                type="button"
+                onClick={scrollChatToBottom}
+                aria-label={t.backToBottom}
+                title={t.backToBottom}
+                className={`pointer-events-auto w-9 h-9 rounded-full flex items-center justify-center shadow-lg backdrop-blur transition-all hover:-translate-y-0.5 active:translate-y-0 ${
+                  isDark ? 'bg-[#2B2C2F]/95 text-[#E3E3E3] border border-white/10 hover:bg-[#34363A]' : 'bg-white/95 text-[#1F1F1F] border border-black/10 hover:bg-[#F8FAFF]'
+                }`}>
+                <ChevronDown size={15} />
+              </button>
+            </div>
+          )}
           {tabletVoiceMode && (
             <div ref={floatingVoiceRef} style={floatingVoiceStyle} className="absolute z-30 flex items-center gap-2">
               <button
@@ -4303,7 +4759,7 @@
                 {voiceRecording ? <StopCircle size={26} /> : <Mic size={26} />}
               </button>
               {hasDraftText && (
-                <button onClick={handleClearInput} disabled={!canClearInput} aria-label="Clear input" title="Clear input"
+                <button onClick={handleClearInput} disabled={!canClearInput} aria-label={t.clearInput} title={t.clearInput}
                   className={`w-12 h-12 rounded-full flex items-center justify-center border shadow-lg backdrop-blur-2xl transition-all ${
                     canClearInput
                       ? (isDark ? 'bg-[#161618]/90 border-white/10 text-[#C4C7C5] hover:bg-[#252629]' : 'bg-white/90 border-black/[0.06] text-[#5F6368] hover:bg-[#F1F3F4]')
@@ -4313,7 +4769,7 @@
                 </button>
               )}
               {(hasDraftText || hasReadyAttachment) && (
-                <button onClick={handleSend} disabled={!canFloatingSend} aria-label="Send" title="Send"
+                <button onClick={handleSend} disabled={!canFloatingSend} aria-label={t.sendMsg} title={t.sendMsg}
                   className={`w-12 h-12 rounded-full flex items-center justify-center shadow-lg transition-all ${
                     canFloatingSend
                       ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white hover:-translate-y-0.5 active:translate-y-0'
@@ -4439,6 +4895,7 @@
                 rows={1}
                 className="w-full bg-transparent resize-none outline-none text-gray-800 dark:text-gray-100 text-[16px] leading-relaxed min-h-[48px] overflow-y-auto hide-scrollbar placeholder:text-gray-400 dark:placeholder:text-gray-500"
               />
+              <TextareaContextMenu inputRef={composerRef} setValue={setInputText} theme={theme} t={t} />
               <div className="flex items-center justify-between mt-1.5 gap-2">
                 <div className="flex items-center gap-1.5 min-w-0 flex-1">
                   <button onClick={() => bridge.available && bridge.pickAndAttach()} title={t.attachAdd}
@@ -4462,7 +4919,7 @@
                   <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
                 </div>
                 {!tabletVoiceMode && hasDraftText && (
-                  <button onClick={handleClearInput} disabled={!canClearInput} aria-label="Clear input" title="Clear input"
+                  <button onClick={handleClearInput} disabled={!canClearInput} aria-label={t.clearInput} title={t.clearInput}
                     className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${
                       canClearInput
                         ? (isDark ? 'text-[#C4C7C5] hover:bg-white/10' : 'text-[#5F6368] hover:bg-black/5')
@@ -4479,7 +4936,7 @@
                 ) : (() => {
                   const ready = canSend;
                   return (
-                    <button onClick={handleSend} disabled={!ready} aria-label="Send" title="Send"
+                    <button onClick={handleSend} disabled={!ready} aria-label={t.sendMsg} title={t.sendMsg}
                       className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0' : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
                       <Send size={17} className="translate-x-[1px]" />
                     </button>
@@ -4519,6 +4976,278 @@
     // ==========================================
     // Chat Bubble (message rendering)
     // ==========================================
+    function fallbackCopyText(tx) {
+      return new Promise(function (resolve) {
+        var ta = null;
+        try {
+          ta = document.createElement('textarea');
+          ta.value = String(tx || '');
+          ta.setAttribute('readonly', '');
+          ta.style.position = 'fixed';
+          ta.style.left = '-9999px';
+          ta.style.top = '-9999px';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.focus();
+          ta.select();
+          ta.setSelectionRange(0, ta.value.length);
+          resolve(!!document.execCommand('copy'));
+        } catch (e) {
+          resolve(false);
+        } finally {
+          if (ta && ta.parentNode) ta.parentNode.removeChild(ta);
+        }
+      });
+    }
+
+    function copyClipboardText(tx) {
+      tx = String(tx || '');
+      if (!tx) return Promise.resolve(false);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(tx).then(function () { return true; }).catch(function () {
+          return fallbackCopyText(tx);
+        });
+      }
+      return fallbackCopyText(tx);
+    }
+
+    function readClipboardText() {
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        return navigator.clipboard.readText().catch(function () { return ''; });
+      }
+      return Promise.resolve('');
+    }
+
+    const SelectionCopyButton = ({ hostRef, targetRef, theme, t }) => {
+      const isDark = theme === 'dark';
+      const [selCopy, setSelCopy] = useState({ visible: false, copied: false, text: '', x: 0, y: 0 });
+      const hideTimerRef = useRef(null);
+
+      const hideSelectionCopy = useCallback(() => {
+        if (hideTimerRef.current) {
+          clearTimeout(hideTimerRef.current);
+          hideTimerRef.current = null;
+        }
+        setSelCopy(s => s.visible ? { ...s, visible: false, copied: false } : s);
+      }, []);
+
+      const openSelectionCopyMenu = useCallback((event) => {
+        const target = targetRef.current;
+        const host = hostRef.current;
+        if (!target || !host || !window.getSelection) return false;
+        const selection = window.getSelection();
+        if (!selection || selection.rangeCount === 0) { hideSelectionCopy(); return false; }
+        const text = selection.toString();
+        if (!text || !text.trim()) { hideSelectionCopy(); return false; }
+        if (!selection.anchorNode || !selection.focusNode) { hideSelectionCopy(); return false; }
+        if (!target.contains(selection.anchorNode) || !target.contains(selection.focusNode)) {
+          hideSelectionCopy();
+          return false;
+        }
+        const hostRect = host.getBoundingClientRect();
+        if (!hostRect) { hideSelectionCopy(); return false; }
+        const minX = 4;
+        const maxX = Math.max(minX, hostRect.width - 100);
+        const x = Math.max(minX, Math.min(event.clientX - hostRect.left, maxX));
+        const y = Math.max(4, event.clientY - hostRect.top + 8);
+        setSelCopy({ visible: true, copied: false, text: text, x: x, y: y });
+        return true;
+      }, [hideSelectionCopy, hostRef, targetRef]);
+
+      useEffect(() => {
+        return () => {
+          if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+        };
+      }, []);
+
+      useEffect(() => {
+        const target = targetRef.current;
+        if (!target) return;
+        const onContextMenu = (e) => {
+          if (openSelectionCopyMenu(e)) {
+            e.preventDefault();
+            e.stopPropagation();
+          } else {
+            hideSelectionCopy();
+          }
+        };
+        target.addEventListener('contextmenu', onContextMenu);
+        return () => {
+          target.removeEventListener('contextmenu', onContextMenu);
+        };
+      }, [hideSelectionCopy, openSelectionCopyMenu, targetRef]);
+
+      useEffect(() => {
+        if (!selCopy.visible) return;
+        const onDown = (e) => {
+          if (e.target && e.target.closest && e.target.closest('[data-selection-copy-button]')) return;
+          hideSelectionCopy();
+        };
+        const onKey = (e) => { if (e.key === 'Escape') hideSelectionCopy(); };
+        document.addEventListener('mousedown', onDown, true);
+        document.addEventListener('keydown', onKey, true);
+        return () => {
+          document.removeEventListener('mousedown', onDown, true);
+          document.removeEventListener('keydown', onKey, true);
+        };
+      }, [hideSelectionCopy, selCopy.visible]);
+
+      const onCopy = () => {
+        copyClipboardText(selCopy.text).then(function (ok) {
+          if (!ok) return;
+          setSelCopy(s => ({ ...s, copied: true }));
+          if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+          hideTimerRef.current = setTimeout(function () {
+            hideTimerRef.current = null;
+            hideSelectionCopy();
+          }, 900);
+        });
+      };
+
+      if (!selCopy.visible) return null;
+      return (
+        <button
+          type="button"
+          data-selection-copy-button="true"
+          title={selCopy.copied ? t.copied : t.copyMsg}
+          onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onCopy(); }}
+          className={`absolute z-30 h-9 min-w-[92px] px-3 rounded-[10px] flex items-center justify-start gap-2 text-[13px] font-medium shadow-lg backdrop-blur transition-colors ${
+            isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#34363A] border border-white/10' : 'bg-white text-[#1F1F1F] hover:bg-[#F8FAFF] border border-black/10'
+          }`}
+          style={{ left: selCopy.x + 'px', top: selCopy.y + 'px' }}
+        >
+          {selCopy.copied ? <Check size={13} className="text-[#34C759]" /> : <Copy size={13} />}
+          <span>{selCopy.copied ? t.copied : t.copyMsg}</span>
+        </button>
+      );
+    };
+
+    const TextareaContextMenu = ({ inputRef, setValue, theme, t }) => {
+      const isDark = theme === 'dark';
+      const [menu, setMenu] = useState({ visible: false, x: 0, y: 0, canCopy: false });
+
+      const closeMenu = useCallback(() => {
+        setMenu(m => m.visible ? { ...m, visible: false } : m);
+      }, []);
+
+      const selectedText = useCallback(() => {
+        const el = inputRef.current;
+        if (!el) return '';
+        const start = typeof el.selectionStart === 'number' ? el.selectionStart : 0;
+        const end = typeof el.selectionEnd === 'number' ? el.selectionEnd : start;
+        return start === end ? '' : String(el.value || '').slice(start, end);
+      }, [inputRef]);
+
+      const replaceSelection = useCallback((text) => {
+        const el = inputRef.current;
+        if (!el || !text) return;
+        const raw = String(el.value || '');
+        const start = typeof el.selectionStart === 'number' ? el.selectionStart : raw.length;
+        const end = typeof el.selectionEnd === 'number' ? el.selectionEnd : start;
+        const next = raw.slice(0, start) + text + raw.slice(end);
+        const cursor = start + text.length;
+        setValue(next);
+        requestAnimationFrame(function () {
+          el.focus();
+          try { el.setSelectionRange(cursor, cursor); } catch (e) {}
+        });
+      }, [inputRef, setValue]);
+
+      useEffect(() => {
+        const el = inputRef.current;
+        if (!el) return;
+        const openMenu = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const start = typeof el.selectionStart === 'number' ? el.selectionStart : 0;
+          const end = typeof el.selectionEnd === 'number' ? el.selectionEnd : start;
+          const menuW = 136;
+          const menuH = 116;
+          const x = Math.max(6, Math.min(e.clientX, window.innerWidth - menuW - 6));
+          const y = Math.max(6, Math.min(e.clientY, window.innerHeight - menuH - 6));
+          setMenu({ visible: true, x: x, y: y, canCopy: start !== end });
+        };
+        const onContextMenu = (e) => openMenu(e);
+        const onMouseDown = (e) => { if (e.button === 2) openMenu(e); };
+        el.addEventListener('contextmenu', onContextMenu, true);
+        el.addEventListener('mousedown', onMouseDown, true);
+        return () => {
+          el.removeEventListener('contextmenu', onContextMenu, true);
+          el.removeEventListener('mousedown', onMouseDown, true);
+        };
+      }, [inputRef]);
+
+      useEffect(() => {
+        if (!menu.visible) return;
+        const onDown = (e) => {
+          if (e.target && e.target.closest && e.target.closest('[data-textarea-context-menu]')) return;
+          closeMenu();
+        };
+        const onKey = (e) => { if (e.key === 'Escape') closeMenu(); };
+        const onScrollOrResize = () => closeMenu();
+        document.addEventListener('mousedown', onDown, true);
+        document.addEventListener('keydown', onKey, true);
+        window.addEventListener('resize', onScrollOrResize);
+        window.addEventListener('scroll', onScrollOrResize, true);
+        return () => {
+          document.removeEventListener('mousedown', onDown, true);
+          document.removeEventListener('keydown', onKey, true);
+          window.removeEventListener('resize', onScrollOrResize);
+          window.removeEventListener('scroll', onScrollOrResize, true);
+        };
+      }, [closeMenu, menu.visible]);
+
+      const menuItemCls = (disabled) => `w-full h-9 px-3 flex items-center gap-2 text-left text-[13px] transition-colors ${
+        disabled
+          ? (isDark ? 'text-white/30 cursor-not-allowed' : 'text-black/30 cursor-not-allowed')
+          : (isDark ? 'text-[#E3E3E3] hover:bg-white/10' : 'text-[#1F1F1F] hover:bg-black/[0.06]')
+      }`;
+
+      const selectAll = () => {
+        const el = inputRef.current;
+        if (!el) return;
+        el.focus();
+        el.select();
+        closeMenu();
+      };
+
+      const copySelected = () => {
+        const tx = selectedText();
+        if (!tx) return;
+        copyClipboardText(tx).then(function () { closeMenu(); });
+      };
+
+      const pasteText = () => {
+        readClipboardText().then(function (tx) {
+          replaceSelection(tx);
+          closeMenu();
+        });
+      };
+
+      if (!menu.visible) return null;
+      return ReactDOM.createPortal((
+        <div
+          data-textarea-context-menu="true"
+          className={`w-[136px] overflow-hidden rounded-[12px] py-1 shadow-xl backdrop-blur border ${
+            isDark ? 'bg-[#2B2C2F] border-white/10' : 'bg-white border-black/10'
+          }`}
+          style={{ position: 'fixed', zIndex: 9999, left: menu.x + 'px', top: menu.y + 'px' }}
+          onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+        >
+          <button type="button" className={menuItemCls(false)} onClick={selectAll}>
+            <span className="w-4 text-center text-[12px]">A</span><span>{t.selectAllMsg || 'Select all'}</span>
+          </button>
+          <button type="button" disabled={!menu.canCopy} className={menuItemCls(!menu.canCopy)} onClick={copySelected}>
+            <Copy size={14} /><span>{t.copyMsg}</span>
+          </button>
+          <button type="button" className={menuItemCls(false)} onClick={pasteText}>
+            <ClipboardList size={14} /><span>{t.pasteMsg || 'Paste'}</span>
+          </button>
+        </div>
+      ), document.body);
+    };
+
     const UserBubble = ({ item, theme, editable, t }) => {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
@@ -4527,9 +5256,11 @@
       function commit() { const tx = val.trim(); setEditing(false); if (tx && bridge.available) bridge.editLastTurn(tx); }
       function copyText() {
         const tx = item.text || '';
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(tx).then(function () { setCopied(true); setTimeout(function () { setCopied(false); }, 1200); }).catch(function () {});
-        }
+        copyClipboardText(tx).then(function (ok) {
+          if (!ok) return;
+          setCopied(true);
+          setTimeout(function () { setCopied(false); }, 1200);
+        });
       }
       if (editing) {
         return (
@@ -4713,6 +5444,8 @@
 
     const ChatBubble = ({ item, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact }) => {
       const isDark = theme === 'dark';
+      const assistantSelectionHostRef = useRef(null);
+      const assistantSelectionTargetRef = useRef(null);
 
       if (item.type === 'artifact_card') return <ArtifactCard item={item} theme={theme} t={t} isLatest={isLatestArtifact} />;
       if (item.type === 'plan_card') return <PlanCard item={item} theme={theme} t={t} onPrefill={onPrefill} />;
@@ -4739,8 +5472,9 @@
           && bridge.getPersonas().some(function(c){ return c && c.source === 'user' && c.name === pd.draft.name; });
         return (
           <div className="flex justify-start">
-            <div className={`${cq.q ? 'w-full' : 'max-w-[95%]'} ${isDark ? 'dark-code' : 'light-code'}`}>
+            <div ref={assistantSelectionHostRef} className={`relative ${cq.q ? 'w-full' : 'max-w-[95%]'} ${isDark ? 'dark-code' : 'light-code'}`}>
               <div
+                ref={assistantSelectionTargetRef}
                 className={`msg-md text-[15px] leading-relaxed ${item.streaming ? 'streaming-cursor' : ''} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}
                 onClick={(e) => {
                   // 聊天里的链接(如飞书授权 URL)点击 → 走系统浏览器,别导航主窗口/不可点。
@@ -4754,6 +5488,7 @@
                 }}
                 dangerouslySetInnerHTML={{ __html: cq.html || '' }}
               />
+              <SelectionCopyButton hostRef={assistantSelectionHostRef} targetRef={assistantSelectionTargetRef} theme={theme} t={t} />
               {cq.q ? (
                 <div className="mt-2 w-full" style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
                   <div className="text-[14px] font-medium mb-2" style={{ color: isDark ? '#fff' : '#000' }}>{cq.q.question}</div>
@@ -5141,7 +5876,7 @@
     };
     // 输出渲染分发：失败→红字；大输出→receipt；高频工具→定制视图；其余→纯文本
     const tsToolsData = [
-      { id: 1, backendId: 'weather', title: '天气查询 MCP', subtitle: '高德地图实时天气与多日预报', category: 'mcp', type: 'MCP Server', version: 'v1.0.0', latency: '<50ms', desc: '通过高德地图 API 查询全国城市实时天气与未来多日预报。支持大模型自然语言调用，自动解析城市名，返回结构化天气数据并渲染可视化卡片。', icon: CloudSun, color: 'bg-gradient-to-b from-sky-400 to-blue-500', installed: false, authRequired: false, welcomeQueries: ['杭州今天天气', '北京这周会下雨吗', '上海明天穿什么'] },
+      { id: 1, backendId: 'weather', title: '高德天气', subtitle: '高德地图实时天气与多日预报', category: 'mcp', type: 'MCP Server', version: 'v1.0.0', latency: '<50ms', desc: '通过高德地图 API 查询全国城市实时天气与未来多日预报。支持大模型自然语言调用，自动解析城市名，返回结构化天气数据并渲染可视化卡片。', icon: CloudSun, color: 'bg-gradient-to-b from-sky-400 to-blue-500', installed: false, authRequired: false, welcomeQueries: ['杭州今天天气', '北京这周会下雨吗', '上海明天穿什么'] },
       { id: 2, backendId: 'iwencai', title: '同花顺问财', subtitle: 'A股行情、财务、选股、宏观、新闻', category: 'finance', type: 'MCP Server', version: 'v1.0.0', latency: '<500ms', desc: '基于同花顺问财官方 API，提供 12 个金融查询工具：实时行情、财务数据、多条件选股、宏观经济、指数行情、行业数据、公告搜索等。自然语言查询，无需记股票代码。', icon: LineChart, color: 'bg-gradient-to-b from-red-400 to-red-600', installed: false, authRequired: false, welcomeQueries: ['茅台最新股价', '今天大盘怎么样', '市盈率低于10的银行股', '最近降息新闻'] },
       { id: 3, backendId: null, title: 'QQ邮箱 API', subtitle: '智能邮件收发与线程提炼', category: 'comm', type: 'REST API', version: 'v1.4.2', latency: '<120ms', desc: '提供标准的邮件收发、搜索和整理接口。结合大模型可实现自然语言读取邮件内容、汇总长线程对话、自动归档管理文件夹。', icon: Mail, color: 'bg-gradient-to-b from-amber-400 to-orange-500', installed: false, authRequired: true },
       { id: 4, backendId: null, title: 'ima 知识库', subtitle: '腾讯云端 AI 知识库（接入中）', category: 'kb', type: 'Cloud RAG', version: '—', latency: '云端', desc: '腾讯 ima 云端知识库，提供海量文档检索与带溯源的问答能力。云端服务，数据在腾讯云。官方开放 API 尚未发布，待其正式开放后提供登录授权集成（当前为占位，暂不可安装）。', icon: BookOpen, color: 'bg-gradient-to-b from-slate-100 to-slate-300 dark:from-slate-700 dark:to-slate-800 text-slate-800 dark:text-white border border-slate-200 dark:border-slate-600', installed: false, authRequired: false },
@@ -5150,6 +5885,9 @@
       { id: 7, backendId: null, title: '腾讯会议助手', subtitle: '云视频会议自动化管控', category: 'comm', type: 'Action Skill', version: 'v2.2.1', latency: '<100ms', desc: '赋予 AI 调度会议室的能力。通过指令自动预定、查询和管理腾讯会议。支持一键发起会议、分发会议纪要、智能管理参会人员。', icon: Video, color: 'bg-gradient-to-b from-sky-400 to-blue-500', installed: false, authRequired: true },
       { id: 8, backendId: null, title: '企微 Bot Hook', subtitle: '连接企业内部与外部生态', category: 'comm', type: 'Webhook', version: 'v4.0', latency: '<40ms', desc: '深度对接企业微信。支持机器人主动推送图文消息、查询通讯录架构、联动审批流与日程管理。', icon: MessageCircle, color: 'bg-gradient-to-b from-cyan-400 to-blue-500', installed: false, authRequired: false },
       { id: 9, backendId: 'feishu', feishuCli: true, title: '飞书（Lark）', subtitle: '以你本人身份操作飞书文档/日历/表格/消息', category: 'comm', type: 'CLI + 官方技能', version: 'v1.0.56', latency: '云端', desc: '接入飞书官方 CLI + 官方域技能（MIT）：让 AI 以你本人身份读写云文档、查改日历、操作多维表格（Base）、收发消息、管理知识库与任务。点「连接飞书」浏览器一键授权，全程不填 key。数据经飞书云 OpenAPI（可选联网功能，opt-in）。', icon: Send, color: 'bg-gradient-to-b from-teal-400 to-emerald-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['读飞书文档帮我做一份 PPT', '把飞书文档整理成摘要', '查我今天的飞书日历', '看看我飞书里的待办任务'] },
+      { id: 17, backendId: 'eip', eipCli: true, internal: 'H3C', title: 'H3C 员工门户（EIP）', subtitle: '以你本人 SSO 身份查考勤/假期/加班/待办/找人/资讯/消费', category: 'comm', type: 'CLI + 官方技能', version: 'v1.0.0', latency: '内网', desc: '接入 H3C EIP 员工门户：以你本人 SSO 身份查考勤打卡、假期余额、加班时数、待办审批、搜同事、看集团新闻公告、查食堂消费与报销等。点「连接」浏览器 SSO 一键登录，全程不填 key。需公司内网。', icon: Briefcase, color: 'bg-gradient-to-b from-indigo-400 to-blue-600', installed: false, authRequired: true, configFields: [], welcomeQueries: ['我这个月考勤有没有异常', '我还有几天年假', '有没有待办审批', '帮我查同事的联系方式'] },
+      { id: 18, backendId: 'zhidao', zhidaoCli: true, internal: 'H3C', title: 'H3C 知道 · 内部知识库', subtitle: '以你本人 SSO 身份检索 H3C 内部知识与资料', category: 'kb', type: 'CLI + 官方技能', version: 'v1.0.0', latency: '内网', desc: '接入 H3C「知道」内部知识库：以你本人 SSO 身份搜索知识条目、资料库和文档内容，支持基于企业内部知识进行问答与资料定位。点「连接」扫码或浏览器 SSO 登录，全程不填 key。需公司内网。', icon: BookOpen, color: 'bg-gradient-to-b from-emerald-400 to-teal-600', installed: false, authRequired: true, configFields: [], welcomeQueries: ['在知道里搜一下交换机配置规范', '帮我查内部资料库里的安全方案', '知道里有没有这类故障处理文档', '帮我找这个产品的内部知识'] },
+      { id: 99, backendId: 'wecom', wecomCli: true, title: '企业微信', subtitle: '以你本人身份操作企微消息/文档/会议/日程', category: 'comm', type: 'CLI + 官方技能', version: 'v0.1.9', latency: '云端', desc: '接入企业微信官方 CLI（@wecom/cli，MIT）+ 官方域技能：让 AI 以你本人身份收发消息、读写文档与智能表格、创建/查询会议与日程、管理待办、查询通讯录。点「连接」用企业微信 App 扫码授权，全程不填 key。数据经企业微信云（可选联网功能，opt-in）。', icon: MessageCircle, color: 'bg-gradient-to-b from-cyan-400 to-blue-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['把这段内容写成企微智能文档', '读一下我企微某篇文档的内容', '在企微智能表格里新建一张子表', '查一下企微智能表格里的数据'] },
       { id: 10, backendId: null, title: '钉钉开放 API', subtitle: '企业级智能移动办公底座', category: 'comm', type: 'REST API', version: 'v3.1.2', latency: '<80ms', desc: '提供钉钉全产品能力的接口映射。包含 AI 表格、考勤打卡、群聊机器人对话流及通讯录同步管控。', icon: Navigation, color: 'bg-gradient-to-b from-blue-400 to-indigo-500', installed: false, authRequired: true },
       { id: 11, backendId: null, title: 'TAPD 敏捷研发', subtitle: '缺陷与迭代的自动化追踪', category: 'dev', type: 'Action Skill', version: 'v2.8.0', latency: '<60ms', desc: '研发管理核心工具。允许 AI 查询项目迭代进度、自动拆分需求条目、更新缺陷状态，实现从需求到发布的研发全生命周期数字化。', icon: Layout, color: 'bg-gradient-to-b from-violet-500 to-fuchsia-600', installed: false, authRequired: true },
       { id: 12, backendId: null, title: 'CNB 云原生管线', subtitle: '代码仓库与 CI/CD 调度', category: 'dev', type: 'MCP Server', version: 'v1.0.0', latency: '<40ms', desc: '将云原生开发能力赋予大模型。支持通过自然语言进行代码仓库检索、提交 Issue、审查 PR、触发并监控流水线部署等极客操作。', icon: Code, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: true },
@@ -5289,34 +6027,39 @@
     // 技能市场预置卡(backendId 必须匹配 Rust SkillManifest.id)。技能=SKILL.md 目录,
     // 装到 bundle/skills/ 进 system prompt;与上方 MCP 工具(tsToolsData)并列两个子页。
     const tsSkillsData = [
-      { id: 's1', backendId: 'pua', title: 'PUA 高绩效教练', subtitle: '用大厂 leader 口吻催 agent 闭环、要证据', category: 'skill', type: 'Skill', version: '—', latency: '本地', desc: '来自 tanweai/pua(MIT)的中文 skill：当你说「再试试 / 别摆烂 / 换个方法 / 证据呢」时，用阿里味、华为味等高绩效文化口吻督促 agent 拿结果闭环、跑测试再说完成。', icon: MessageCircle, color: 'bg-gradient-to-b from-rose-400 to-red-600', installed: false, authRequired: false },
-      { id: 's2', backendId: 'nuwa', title: '女娲 · Skill 造人术', subtitle: '输入人名/主题，蒸馏可运行的人物思维 skill', category: 'skill', type: 'Skill', version: '—', latency: '本地', desc: '来自 alchaincyf/nuwa-skill(MIT，花叔)的中文主 skill：深度调研 → 思维框架提炼 → 生成可运行的人物视角 skill。输入人名直接蒸馏，模糊需求先诊断推荐。', icon: Sparkles, color: 'bg-gradient-to-b from-violet-500 to-purple-700', installed: false, authRequired: false },
-      { id: 's3', backendId: 'brainstorming', title: '头脑风暴 · 想法变设计', subtitle: '动手前先理清需求，产出设计与实现计划文档', category: 'skill', type: 'Skill', version: '—', latency: '本地', desc: '改自 obra/superpowers(MIT)的 brainstorming：通过一次一个问题的对话探明意图 → 出设计 → 产出实现计划，全程落两份 md 文档再实现。已去 skill 串联 + 中文化，自包含，适配本地小模型。', icon: Lightbulb, color: 'bg-gradient-to-b from-amber-400 to-orange-500', installed: false, authRequired: false },
-      { id: 's4', backendId: 'government-writing', title: '党政机关公文写作', subtitle: '通知/意见等法定文种，套话术、层级序号、自检', category: 'skill', type: 'Skill', version: '—', latency: '本地', desc: '撰写规范的党政机关公文（通知、意见…）：内置文种结构骨架、固定话术库、层级序号体系与立账核账自检，产出结构化公文内容。配合工具商店的「公文写作」工具即可直出 GB/T 9704 合规 .docx。', icon: FileText, color: 'bg-gradient-to-b from-red-500 to-rose-700', installed: false, authRequired: false },
+      { id: 's4', backendId: 'government-writing', title: '党政机关公文写作', subtitle: '通知/意见等法定文种，套话术、层级序号、自检', category: 'skill', type: 'Skill', version: '—', latency: '本地', desc: '撰写规范的党政机关公文（通知、意见…）：内置文种结构骨架、固定话术库、层级序号体系与立账核账自检，产出结构化公文内容。配合工具商店的「公文写作」工具即可直出 GB/T 9704 合规 .docx。', icon: FileText, color: 'bg-gradient-to-b from-red-500 to-rose-700', installed: false, authRequired: false, todayImg: 'assets/skill-doc.jpg', todayLabel: '编辑之选 · 专业辅助', todayTitle: '规范公文\n一键起草', todayVariant: 'photo', cardW: 'flex-[1.4]' },
+      { id: 's6', backendId: 'pptx', title: 'PPT 生成', subtitle: '本地直出可编辑 PowerPoint，套主题模板、真图表、带封面', category: 'skill', type: 'Skill', version: '—', latency: '本地', desc: '本地直出可编辑 PowerPoint:套主题模板、真图表、带封面,输入主题即可快速生成结构化演示文稿。', icon: Presentation, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: false, todayImg: 'assets/skill-ppt.jpg', todayLabel: '演示利器', todayTitle: '一句话\n做完\nPPT', todayVariant: 'drama', cardW: 'flex-1' },
+      { id: 's5', title: '视觉设计', subtitle: '设计系统直出网页 / banner / 海报 / 简历', category: 'skill', type: 'Skill', version: '内置', latency: '本地', desc: '内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', icon: Palette, color: 'bg-gradient-to-b from-pink-400 to-fuchsia-600', installed: true, authRequired: false, builtin: true, todayImg: 'assets/skill-visual.jpg', todayLabel: '创意探索', todayTitle: '视觉设计\n信手拈来', todayVariant: 'appimg', cardW: 'flex-1' },
     ];
 
     const tsCategories = [
-      { id: 'all', label: '全部工具' },
-      { id: 'mcp', label: 'MCP 核心' },
-      { id: 'comm', label: '协作办公' },
-      { id: 'office', label: '办公' },
-      { id: 'dev', label: '研发治理' },
+      { id: 'all', label: '全部' },
+      { id: 'h3c', label: 'H3C 内部' },
+      { id: 'collab', label: '沟通协作' },
+      { id: 'docs', label: '文档知识' },
+      { id: 'dev', label: '研发' },
       { id: 'finance', label: '金融数据' },
-      { id: 'kb', label: '知识库' },
+      { id: 'life', label: '生活实用' },
+      { id: 'skill', label: '技能' },
     ];
 
     const tsFeaturedCollections = [
-      { id: 'f6', label: '即装即用', title: '实时天气随口问', subtitle: '接入高德天气 API，自然语言查全国城市实时天气与多日预报，零配置一键安装。', bg: 'bg-gradient-to-br from-sky-500 via-blue-500 to-indigo-600', featuredToolId: 1 },
-      { id: 'f4', label: '数据引擎', title: '打造智能投研助理', subtitle: '集成同花顺问财 12 项金融工具，利用大模型快速输出深度个股诊断报告。', bg: 'bg-gradient-to-br from-red-600 via-rose-700 to-orange-600', featuredToolId: 2 },
-      { id: 'f7', label: '企业数据', title: '一键查透企业全貌', subtitle: '接入企查查 182 个工具，工商/风控/知产/经营数据信手拈来，免配置即装即用。', bg: 'bg-gradient-to-br from-blue-700 via-cyan-600 to-teal-500', featuredToolId: 13 },
-      { id: 'f1', label: '场景套件', title: '构建 AI 研发中枢', subtitle: '串联 TAPD 与 CNB，让 AI 帮你审查 PR、追踪缺陷并自动部署流水线。', bg: 'bg-gradient-to-br from-indigo-800 via-violet-700 to-fuchsia-600', featuredToolId: 12 },
-      { id: 'f2', label: '核心 MCP', title: '激活企业沉淀知识', subtitle: '挂载 ima 知识库底层能力，解锁毫秒级的海量文档精准召回与分析。', bg: 'bg-gradient-to-br from-blue-700 via-indigo-600 to-cyan-600', featuredToolId: 4 },
-      { id: 'f3', label: '效率编排', title: '跨平台消息中转', subtitle: '无缝打通企微、飞书与钉钉，实现重要告警与工作流消息的自动化流转。', bg: 'bg-gradient-to-br from-emerald-600 via-teal-700 to-cyan-800', featuredToolId: 9 },
-      { id: 'f5', label: '通信治理', title: '下一代智能云会议', subtitle: '调用腾讯会议高级能力，实现自动发起、录制总结与待办任务自动分配。', bg: 'bg-gradient-to-br from-sky-600 via-blue-600 to-indigo-700', featuredToolId: 7 },
+      { id: 'f6', label: '即装即用', title: '实时天气随口问', subtitle: '接入高德天气 API，自然语言查全国城市实时天气与多日预报，零配置一键安装。', img: 'assets/banner-weather.jpg', bg: 'bg-gradient-to-br from-sky-500 via-blue-500 to-indigo-600', featuredToolId: 1 },
+      { id: 'f4', label: '数据引擎', title: '打造智能投研助理', subtitle: '集成同花顺问财 12 项金融工具，利用大模型快速输出深度个股诊断报告。', img: 'assets/banner-invest.jpg', bg: 'bg-gradient-to-br from-red-600 via-rose-700 to-orange-600', featuredToolId: 2 },
+      { id: 'f7', label: '企业数据', title: '一键查透企业全貌', subtitle: '接入企查查 182 个工具，工商/风控/知产/经营数据信手拈来，免配置即装即用。', img: 'assets/banner-company.jpg', bg: 'bg-gradient-to-br from-blue-700 via-cyan-600 to-teal-500', featuredToolId: 13 },
+      { id: 'f1', label: '即时沟通', title: '打通企业微信', subtitle: '以你本人身份操作企微消息、文档、会议与日程，扫码授权、全程不填 key。', img: 'assets/banner-wecom.jpg', bg: 'bg-gradient-to-br from-green-600 via-emerald-600 to-teal-600', featuredToolId: 99 },
+      { id: 'f2', label: '个人知识', title: '激活你的本地笔记', subtitle: '接入本机 Obsidian 笔记库，全文检索、读写与维护双链，让 AI 基于你的知识作答。', img: 'assets/banner-obsidian.jpg', bg: 'bg-gradient-to-br from-violet-700 via-purple-600 to-fuchsia-600', featuredToolId: 14 },
+      { id: 'f3', label: '效率编排', title: '跨平台消息中转', subtitle: '无缝打通企微、飞书与钉钉，实现重要告警与工作流消息的自动化流转。', img: 'assets/banner-message.jpg', bg: 'bg-gradient-to-br from-emerald-600 via-teal-700 to-cyan-800', featuredToolId: 9 },
+      { id: 'f5', label: '通信治理', title: '下一代智能云会议', subtitle: '调用腾讯会议高级能力，实现自动发起、录制总结与待办任务自动分配。', img: 'assets/banner-meeting.jpg', bg: 'bg-gradient-to-br from-sky-600 via-blue-600 to-indigo-700', featuredToolId: 7 },
     ];
 
     const TsActionBtn = ({ tool, busy, onAction, size = 'sm' }) => {
       const isLg = size === 'lg';
+      if (tool.builtin) {
+        return (
+          <span className={`${isLg ? 'px-6 py-2.5 text-[15px]' : 'px-4 py-1.5 text-[13px]'} rounded-full font-bold bg-slate-100 dark:bg-[#2C2C2E] text-slate-500 dark:text-slate-400 whitespace-nowrap`}>内置 · 已启用</span>
+        );
+      }
       if (!tool.backendId) {
         return (
           <button disabled className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold bg-slate-100 dark:bg-[#1C1C1E] border border-slate-200 dark:border-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed`}>
@@ -5337,7 +6080,7 @@
             onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, true); }}
             className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-slate-100 dark:bg-[#2C2C2E] border border-slate-200 dark:border-slate-700 text-[#FF3B30] dark:text-[#FF453A] hover:bg-slate-200 dark:hover:bg-[#3A3A3C]`}
           >
-            {tool.feishuCli ? '断开' : '卸载'}
+            {(tool.feishuCli || tool.wecomCli || tool.eipCli || tool.zhidaoCli) ? '断开' : '卸载'}
           </button>
         );
       }
@@ -5347,10 +6090,226 @@
           onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, false); }}
           className={`${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`}
         >
-          {tool.feishuCli ? '连接' : (hasConfig ? '配置' : '安装')}
+          {(tool.feishuCli || tool.wecomCli || tool.eipCli || tool.zhidaoCli) ? '连接' : (hasConfig ? '配置' : '安装')}
         </button>
       );
     };
+
+    // ── 飞书连接流程卡（内联、非阻塞；取代旧的阻塞式扫码浮层）──
+    const FEISHU_STEPS = [
+      { key: 'runtime', label: '准备运行时', sub: '解压 Node 到 ~/.pinvou3' },
+      { key: 'cli', label: '安装连接组件', sub: 'lark-cli · 首次约 40 秒' },
+      { key: 'connect', label: '连接并授权', sub: '创建应用身份' },
+      { key: 'qr', label: '扫码登录', sub: '飞书 App 扫一扫' },
+    ];
+    // 企业微信:纯扫码单段,无「创建应用身份」步骤(复用 runtime/cli/qr 的进度条逻辑)
+    const WECOM_STEPS = [
+      { key: 'runtime', label: '准备运行时', sub: '解压 Node 到 ~/.pinvou3' },
+      { key: 'cli', label: '安装连接组件', sub: 'wecom-cli · 首次约 40 秒' },
+      { key: 'qr', label: '扫码登录', sub: '企业微信 App 扫一扫' },
+    ];
+    const FeishuStepIcon = ({ st }) => {
+      if (st === 'done') return <span className="w-5 h-5 rounded-full bg-emerald-500 grid place-items-center text-white text-[11px]">✓</span>;
+      if (st === 'active') return <span className="w-5 h-5 rounded-full bg-blue-600 grid place-items-center text-white text-[10px] animate-pulse">●</span>;
+      if (st === 'error') return <span className="w-5 h-5 rounded-full bg-rose-500 grid place-items-center text-white text-[11px]">✕</span>;
+      return <span className="w-5 h-5 rounded-full border-2 border-slate-300 dark:border-white/20 inline-block" />;
+    };
+    const FeishuBar = ({ pct, creep }) => (
+      <div className="mt-1.5 h-1.5 w-full rounded-full bg-slate-200 dark:bg-white/10 overflow-hidden">
+        <div className={`h-full rounded-full transition-all ${creep ? 'bg-blue-500' : 'bg-emerald-500'}`} style={{ width: (pct || 0) + '%' }} />
+      </div>
+    );
+    const FeishuFlowCard = ({ flow, onRetry, onCancel, name = '飞书', twoStep = true, browserAuth = false, steps = FEISHU_STEPS }) => {
+      if (!flow) return null;
+      const isErr = flow.phase === 'error';
+      return (
+        <div className="mb-8 rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5 overflow-hidden">
+          <div className="flex items-center gap-3 px-5 pt-4 pb-2">
+            <span className={`w-2 h-2 rounded-full ${isErr ? 'bg-rose-500' : 'bg-blue-500 animate-pulse'}`} />
+            <span className="font-semibold text-[14px]">{isErr ? `${name}接入未完成` : (flow.phase === 'done' ? `已连接${name}` : `正在接入${name}`)}</span>
+            <span className="flex-1" />
+            {(flow.phase === 'running' || flow.phase === 'qr') && <button onClick={onCancel} className="text-[12px] text-slate-400 hover:text-slate-600">取消</button>}
+          </div>
+          <div className="px-5 pb-4 space-y-1">
+            {steps.map(s => {
+              const st = (flow.steps && flow.steps[s.key]) || 'wait';
+              const active = st === 'active';
+              return (
+                <div key={s.key} className={`flex gap-3 py-1.5 ${st === 'wait' ? 'opacity-45' : ''}`}>
+                  <div className="pt-0.5"><FeishuStepIcon st={st} /></div>
+                  <div className="flex-1 min-w-0">
+                    <div className={`text-[13.5px] font-medium ${st === 'done' ? 'text-slate-400 line-through decoration-slate-300' : ''}`}>{s.label}</div>
+                    {active && s.key === 'runtime' && (<><FeishuBar pct={flow.pct} /><div className="text-[11px] text-slate-400 mt-1">解压中 {Math.round(flow.pct || 0)}%</div></>)}
+                    {active && s.key === 'cli' && (<><FeishuBar pct={flow.pct} creep /><div className="flex items-center justify-between mt-1"><div className="text-[11px] text-slate-400 truncate max-w-[260px] font-mono">{flow.log || 'npm: starting…'}</div><div className="text-[11px] text-slate-400 tabular-nums">已 {flow.sec || 0}s</div></div></>)}
+                    {!active && <div className="text-[11.5px] text-slate-400">{s.sub}</div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {flow.phase === 'qr' && (flow.qr || browserAuth) && (
+            <div className="px-5 pb-5">
+              <div className="flex items-center gap-5 p-4 rounded-xl bg-white dark:bg-black/30 border border-slate-200 dark:border-white/10">
+                {browserAuth
+                  ? <div className="w-36 h-36 rounded-xl bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30 grid place-items-center text-blue-500 shrink-0 text-center text-[12px] px-3 leading-relaxed">已在浏览器<br/>打开登录页</div>
+                  : <img src={flow.qr} alt={`${name}二维码`} className="w-36 h-36 rounded-xl border border-slate-200 bg-white shrink-0" />}
+                <div>
+                  {browserAuth ? (
+                    <>
+                      <div className="font-medium text-[14px] mb-1">在浏览器里扫码登录{name}</div>
+                      <div className="text-[12px] text-slate-500 dark:text-slate-400 mb-3">已自动打开{name}登录页 → 用手机{name} 扫<b>页面上的</b>二维码确认。没弹出就点下面重开。</div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="font-medium text-[14px] mb-1">{twoStep ? (flow.qrPhase === 'authorize' ? '第 2 步 / 共 2 步：扫码授权' : '第 1 步 / 共 2 步：扫码注册应用') : `扫码登录${name}`}</div>
+                      <div className="text-[12px] text-slate-500 dark:text-slate-400 mb-3">用{name} App 扫一扫 → 确认</div>
+                    </>
+                  )}
+                  {flow.qrUrl && <button onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: flow.qrUrl })} className="text-[13px] text-blue-600 dark:text-blue-400 hover:underline">{browserAuth ? '重新打开登录页 ↗' : '在浏览器打开 ↗'}</button>}
+                </div>
+              </div>
+            </div>
+          )}
+          {isErr && (
+            <div className="px-5 pb-5">
+              <div className="rounded-xl border border-rose-200 dark:border-rose-500/30 bg-rose-50 dark:bg-rose-500/10 p-3">
+                <div className="text-[13px] font-medium text-rose-700 dark:text-rose-300 mb-1.5">连接未完成</div>
+                <pre className="text-[11.5px] leading-relaxed text-rose-800/80 dark:text-rose-200/70 whitespace-pre-wrap max-h-28 overflow-auto font-mono">{flow.err}</pre>
+                <div className="flex gap-2 mt-3 justify-end">
+                  <button onClick={onCancel} className="px-3 py-1.5 rounded-lg bg-slate-200 dark:bg-white/10 text-[13px]">关闭</button>
+                  <button onClick={onRetry} className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-[13px]">重试</button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    };
+    // 商店列表行内的迷你进度（详情弹窗关掉后，后台仍在跑）
+    const FeishuMini = ({ flow, onClick }) => {
+      const label = flow.phase === 'qr' ? '待扫码'
+        : (flow.active === 'cli' ? `装 ${Math.round(flow.pct || 0)}%`
+        : (flow.active === 'runtime' ? `解压 ${Math.round(flow.pct || 0)}%` : '接入中'));
+      return (
+        <button onClick={(e) => { e.stopPropagation(); onClick(); }} title="点开查看进度" className="shrink-0 flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-full bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30 text-blue-600 dark:text-blue-300 text-[12px] font-medium">
+          <span className="w-3 h-3 rounded-full border-2 border-blue-500 border-t-transparent animate-spin inline-block shrink-0" />
+          <span className="tabular-nums whitespace-nowrap">{label}</span>
+        </button>
+      );
+    };
+
+    // ── 飞书连接流程 · 跨视图持久 store ──
+    // ToolStoreView 随左栏切换会卸载；连接是长流程（装 CLI ~40s + 扫码），进度/监听/秒表
+    // 若放组件 useState，一离开工具商店就全丢 → 回来按钮又变“连接”。故挂在模块级单例，
+    // 活在组件生命周期之外；组件只订阅它做镜像渲染。
+    const feishuConn = {
+      flow: null,
+      tick: null,
+      listenersReady: false,
+      subs: new Set(),
+      subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
+      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch (_) {} }); },
+      startTick() {
+        this.stopTick();
+        this.tick = setInterval(() => this.setFlow(f => {
+          if (!f || f.phase !== 'running') return f;
+          const nf = { ...f, sec: (f.sec || 0) + 1 };
+          if (f.active === 'cli') nf.pct = Math.min(90, (f.pct || 0) + (90 - (f.pct || 0)) * 0.06 + 1);
+          return nf;
+        }), 1000);
+      },
+      stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
+    };
+    // 后端连接事件只注册一次（幂等，跨 ToolStoreView 多次挂载不重复注册）。
+    function ensureFeishuListeners() {
+      if (feishuConn.listenersReady) return;
+      const ev = window.__TAURI__ && window.__TAURI__.event;
+      if (!ev) return;
+      feishuConn.listenersReady = true;
+      ev.listen('feishu:progress', (e) => {
+        const p = e.payload || {};
+        feishuConn.setFlow(f => {
+          const nf = f ? { ...f, steps: { ...(f.steps || {}) } } : { phase: 'running', steps: {}, active: null, pct: 0, sec: 0, log: '' };
+          if (p.step) { nf.active = p.step; nf.steps[p.step] = p.status === 'done' ? 'done' : 'active'; }
+          if (typeof p.pct === 'number') nf.pct = p.pct;
+          if (p.log) nf.log = p.log;
+          if (nf.phase !== 'error') nf.phase = 'running';
+          return nf;
+        });
+      });
+      ev.listen('feishu:qr', (e) => {
+        const p = e.payload || {};
+        feishuConn.stopTick();
+        feishuConn.setFlow(f => {
+          const prev = (f && f.steps) || {};
+          return {
+            ...(f || {}), phase: 'qr', active: 'qr',
+            steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), connect: 'done', qr: 'active' },
+            qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase,
+          };
+        });
+      });
+      ev.listen('feishu:connected', () => {
+        feishuConn.stopTick();
+        feishuConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
+        // 连上 → 按规则写技能（默认启用）+ 广播刷新；跟视图无关，放全局做。
+        window.__TAURI__.core.invoke('feishu_apply_skills').catch(() => {});
+        // 稍后自动收起流程卡（详情里的“已连接”态改由 feishuConnected 驱动）
+        setTimeout(() => feishuConn.setFlow(null), 1800);
+      });
+      ev.listen('feishu:error', (e) => {
+        const p = e.payload || {};
+        feishuConn.stopTick();
+        feishuConn.setFlow(f => {
+          const step = (f && f.active) || 'cli';
+          return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || '连接失败'), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } };
+        });
+      });
+    }
+
+    // ── 企业微信连接流程 · 跨视图持久 store(镜像 feishuConn;企微纯扫码单段）──
+    const wecomConn = {
+      flow: null, tick: null, listenersReady: false, subs: new Set(),
+      subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
+      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch (_) {} }); },
+      startTick() {
+        this.stopTick();
+        this.tick = setInterval(() => this.setFlow(f => {
+          if (!f || f.phase !== 'running') return f;
+          const nf = { ...f, sec: (f.sec || 0) + 1 };
+          if (f.active === 'cli') nf.pct = Math.min(90, (f.pct || 0) + (90 - (f.pct || 0)) * 0.06 + 1);
+          return nf;
+        }), 1000);
+      },
+      stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
+    };
+    function ensureWecomListeners() {
+      if (wecomConn.listenersReady) return;
+      const ev = window.__TAURI__ && window.__TAURI__.event;
+      if (!ev) return;
+      wecomConn.listenersReady = true;
+      ev.listen('wecom:qr', (e) => {
+        const p = e.payload || {};
+        wecomConn.stopTick();
+        wecomConn.setFlow(f => {
+          const prev = (f && f.steps) || {};
+          return { ...(f || {}), phase: 'qr', active: 'qr',
+            steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), qr: 'active' },
+            qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase };
+        });
+      });
+      ev.listen('wecom:connected', () => {
+        wecomConn.stopTick();
+        wecomConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
+        window.__TAURI__.core.invoke('wecom_apply_skills').catch(() => {});
+        setTimeout(() => wecomConn.setFlow(null), 1800);
+      });
+      ev.listen('wecom:error', (e) => {
+        const p = e.payload || {};
+        wecomConn.stopTick();
+        wecomConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || '连接失败'), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } }; });
+      });
+    }
 
     // iOS 风格弹窗（安装/卸载后提示需新建会话生效）
     const TsAlert = ({ alert, theme, onDismiss, onNewChat }) => {
@@ -5426,7 +6385,8 @@
       if (!config) return null;
       const [values, setValues] = useState({});
       const fields = config.fields || [];
-      const canSubmit = fields.length > 0 && fields.every(f => (values[f.key] || '').trim().length > 0);
+      // required:false 的字段可留空(留空→用内置共享 key);只有 required:true 字段强制填。
+      const canSubmit = fields.every(f => f.required === false || (values[f.key] || '').trim().length > 0);
       return (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
           <div
@@ -5533,6 +6493,7 @@
       const [searchQuery, setSearchQuery] = useState('');
       const [activeCategory, setActiveCategory] = useState('all');
       const [selectedTool, setSelectedTool] = useState(null);
+      const [showH3cModal, setShowH3cModal] = useState(false); // H3C 集团内部工具合集详情
       const featuredScrollRef = useRef(null);
       const [isFeaturedHovered, setIsFeaturedHovered] = useState(false);
       const [toolStates, setToolStates] = useState({});
@@ -5540,13 +6501,18 @@
       const [alert, setAlert] = useState({ visible: false, loading: false, title: '', subtitle: '', isInstall: false, isError: false });
       const [configDialog, setConfigDialog] = useState(null); // { backendId, name, fields }
       const [obsidianGuide, setObsidianGuide] = useState(null); // {backendId,name,state,vault_path} 未安装/没库引导
-      const [tab, setTab] = useState('connector'); // 'connector'(MCP 工具) | 'skill'(SKILL.md 技能)
+      const [viewMode, setViewMode] = useState('card'); // 'card'(卡片视图) | 'list'(列表视图)
+      const [installedOnly, setInstalledOnly] = useState(false); // 头像入口:只看已安装
       const [skillBackend, setSkillBackend] = useState([]); // list_marketplace_skills 原始返回
-      const [disabledSkills, setDisabledSkills] = useState([]); // 被停用技能 id(全局持久,从 ## Skills 隐藏但不卸载)
-      const isSkillTab = tab === 'skill';
+      const isCard = viewMode === 'card';
+      const isSkillTab = isCard; // 兼容:卡片视图 = 渲染本地技能 Today 卡
+      // 连接器 tab 只显示"需连外部数据"的工具,排除本地生成类(PPT / 公文)
+      const LOCAL_TOOLS = ['pptx', 'gongwen'];
       // 飞书(CLI 路线)连接态:不走 marketplace,由 lark-cli auth status 判定
       const [feishuConnected, setFeishuConnected] = useState(false);
-      const [feishuQr, setFeishuQr] = useState(null); // { qr: dataUrl, url } 扫码弹窗
+      // 飞书连接流程状态机（取代旧阻塞式扫码浮层）：null=idle
+      // { phase:'running'|'qr'|'error'|'done', steps:{runtime,cli,connect,qr}, active, pct, sec, log, err, qr, qrUrl, qrPhase }
+      const [feishuFlow, setFeishuFlow] = useState(feishuConn.flow); // 从跨视图 store 水合：切走再回来不丢进度
       const refreshFeishu = async () => {
         try {
           const s = await window.__TAURI__.core.invoke('feishu_status');
@@ -5555,39 +6521,153 @@
       };
       useEffect(() => { refreshFeishu(); }, []);
 
-      // 飞书连接编排事件(config init --new 两段扫码):后端推进度,前端驱动 UI。
+      // 企业微信(CLI 路线)连接态:同飞书,由 wecom-cli auth show 判定
+      const [wecomConnected, setWecomConnected] = useState(false);
+      const [wecomQr, setWecomQr] = useState(null); // { qr: dataUrl, url } 扫码弹窗(单段)
+      const [wecomFlow, setWecomFlow] = useState(wecomConn.flow); // 企微连接流程卡(跨视图水合)
+      const refreshWecom = async () => {
+        try {
+          const s = await window.__TAURI__.core.invoke('wecom_status');
+          setWecomConnected(!!(s && s.connected));
+        } catch (e) { console.error('wecom_status failed:', e); }
+      };
+      useEffect(() => { refreshWecom(); }, []);
+
+      // 订阅跨视图 store：把 store 状态镜像进本组件渲染，并在完成/失败时做组件级收尾
+      //（弹窗、刷新连接态）。真正的事件监听/秒表在模块级 feishuConn 里，切视图不丢。
+      useEffect(() => {
+        ensureFeishuListeners();
+        let prevPhase = feishuConn.flow && feishuConn.flow.phase;
+        const unsub = feishuConn.subscribe((flow) => {
+          setFeishuFlow(flow);
+          const ph = flow && flow.phase;
+          if (ph !== prevPhase) {
+            if (ph === 'done') {
+              setFeishuConnected(true); setBusyId(null);
+              setAlert({ visible: true, loading: false, title: '已连接飞书', subtitle: '官方技能已启用，可新建对话直接用', isInstall: true, isError: false, toolId: 'feishu' });
+            } else if (ph === 'error') {
+              setBusyId(null);
+            }
+            prevPhase = ph;
+          }
+        });
+        setFeishuFlow(feishuConn.flow); // (重)挂载即水合当前进度
+        return unsub;
+      }, []);
+
+      // 订阅企业微信 store(镜像飞书):镜像进渲染 + 完成/失败收尾
+      useEffect(() => {
+        ensureWecomListeners();
+        let prevPhase = wecomConn.flow && wecomConn.flow.phase;
+        const unsub = wecomConn.subscribe((flow) => {
+          setWecomFlow(flow);
+          const ph = flow && flow.phase;
+          if (ph !== prevPhase) {
+            if (ph === 'done') {
+              setWecomConnected(true); setBusyId(null);
+              setAlert({ visible: true, loading: false, title: '已连接企业微信', subtitle: '官方技能已启用，可新建对话直接用', isInstall: true, isError: false, toolId: 'wecom' });
+            } else if (ph === 'error') {
+              setBusyId(null);
+            }
+            prevPhase = ph;
+          }
+        });
+        setWecomFlow(wecomConn.flow);
+        return unsub;
+      }, []);
+
+      // EIP(CLI 路线)连接态:由 eip-cli auth status 判定(同飞书)。
+      const [eipConnected, setEipConnected] = useState(false);
+      const [eipSso, setEipSso] = useState(null); // { url, qr } SSO 登录引导弹窗
+      const [zhidaoConnected, setZhidaoConnected] = useState(false);
+      const [zhidaoSso, setZhidaoSso] = useState(null); // { url, qr } SSO 登录引导弹窗
+      const refreshEip = async () => {
+        try {
+          const s = await window.__TAURI__.core.invoke('eip_status');
+          setEipConnected(!!(s && s.connected));
+        } catch (e) { console.error('eip_status failed:', e); }
+      };
+      const refreshZhidao = async () => {
+        try {
+          const s = await window.__TAURI__.core.invoke('zhidao_status');
+          setZhidaoConnected(!!(s && s.connected));
+        } catch (e) { console.error('zhidao_status failed:', e); }
+      };
+      useEffect(() => { refreshEip(); refreshZhidao(); }, []);
+
+      // 企微/EIP/知道 连接编排事件:后端推进度,前端驱动 UI。
       useEffect(() => {
         const ev = window.__TAURI__ && window.__TAURI__.event;
         if (!ev) return;
         const unlisten = [];
-        ev.listen('feishu:qr', (e) => {
+        ev.listen('wecom:qr', (e) => {
           const p = e.payload || {};
-          setFeishuQr({ qr: p.qr_data_url, url: p.url, phase: p.phase });
+          // 二维码到了 → 清掉一直显示的"正在生成…"loading,再弹出二维码弹窗。
+          setAlert(a => ({ ...a, visible: false, loading: false }));
+          setWecomQr({ qr: p.qr_data_url, url: p.url, phase: p.phase });
         }).then(u => unlisten.push(u));
-        ev.listen('feishu:connected', () => {
-          setFeishuQr(null); setFeishuConnected(true); setBusyId(null);
-          // 连上 → 按规则写技能(默认启用)+ 广播刷新,飞书技能即刻对模型可见。
-          window.__TAURI__.core.invoke('feishu_apply_skills').catch(() => {});
-          setAlert({ visible: true, loading: false, title: '已连接飞书', subtitle: '', isInstall: true, isError: false, toolId: 'feishu' });
+        ev.listen('wecom:connected', () => {
+          setWecomQr(null); setWecomConnected(true); setBusyId(null);
+          // 连上 → 按规则写技能(默认启用),企微技能即刻对模型可见。
+          window.__TAURI__.core.invoke('wecom_apply_skills').catch(() => {});
+          setAlert({ visible: true, loading: false, title: '已连接企业微信', subtitle: '', isInstall: true, isError: false, toolId: 'wecom' });
         }).then(u => unlisten.push(u));
-        ev.listen('feishu:error', (e) => {
+        ev.listen('wecom:error', (e) => {
           const p = e.payload || {};
-          setFeishuQr(null); setBusyId(null);
-          setAlert({ visible: true, loading: false, title: '飞书连接失败', subtitle: String(p.message || '').slice(0, 240), isError: true });
+          setWecomQr(null); setBusyId(null);
+          setAlert({ visible: true, loading: false, title: '企业微信连接失败', subtitle: String(p.message || '').slice(0, 240), isError: true });
+        }).then(u => unlisten.push(u));
+        ev.listen('eip:sso', (e) => {
+          const p = e.payload || {};
+          setEipSso({ url: p.url, qr: p.qr_data_url });
+        }).then(u => unlisten.push(u));
+        ev.listen('eip:connected', () => {
+          setEipSso(null); setEipConnected(true); setBusyId(null);
+          setAlert({ visible: true, loading: false, title: '已连接员工门户（EIP）', subtitle: '', isInstall: true, isError: false, toolId: 'eip' });
+        }).then(u => unlisten.push(u));
+        ev.listen('eip:error', (e) => {
+          const p = e.payload || {};
+          setEipSso(null); setBusyId(null);
+          setAlert({ visible: true, loading: false, title: 'EIP 连接失败', subtitle: String(p.message || '').slice(0, 240), isError: true });
+        }).then(u => unlisten.push(u));
+        ev.listen('zhidao:sso', (e) => {
+          const p = e.payload || {};
+          setZhidaoSso({ url: p.url, qr: p.qr_data_url });
+        }).then(u => unlisten.push(u));
+        ev.listen('zhidao:connected', () => {
+          setZhidaoSso(null); setZhidaoConnected(true); setBusyId(null);
+          setAlert({ visible: true, loading: false, title: '已连接知道知识库', subtitle: '', isInstall: true, isError: false, toolId: 'zhidao' });
+        }).then(u => unlisten.push(u));
+        ev.listen('zhidao:error', (e) => {
+          const p = e.payload || {};
+          setZhidaoSso(null); setBusyId(null);
+          setAlert({ visible: true, loading: false, title: '知道连接失败', subtitle: String(p.message || '').slice(0, 240), isError: true });
         }).then(u => unlisten.push(u));
         return () => { unlisten.forEach(u => { try { u(); } catch (_) {} }); };
       }, []);
 
-      // 合并后端安装状态到 mock 数据(飞书的 installed = 已连接)
+      // 合并后端安装状态到 mock 数据(飞书/企微/EIP/知道 的 installed = 已连接)
+      // 新分类映射(按工具 id):沟通协作 / 文档知识 / 研发 / 金融数据 / 生活实用 / H3C 内部
+      const CAT_BY_ID = { 1: 'life', 2: 'finance', 3: 'collab', 4: 'docs', 5: 'docs', 6: 'docs', 7: 'collab', 8: 'collab', 9: 'collab', 10: 'collab', 11: 'dev', 12: 'dev', 13: 'finance', 14: 'docs', 17: 'h3c', 18: 'h3c', 99: 'collab' };
       const tools = tsToolsData.map(t => ({
         ...t,
+        category: CAT_BY_ID[t.id] || t.category,
         installed: t.feishuCli
           ? feishuConnected
+          : t.wecomCli
+          ? wecomConnected
+          : t.eipCli
+          ? eipConnected
+          : t.zhidaoCli
+          ? zhidaoConnected
           : (t.backendId ? (toolStates[t.backendId] || false) : false),
       }));
 
       // 技能卡 = 预置(合并安装状态) + 用户上传(后端动态返回,默认图标)
       const presetSkills = tsSkillsData.map(s => {
+        if (s.builtin) return { ...s, installed: true };
+        // 工具型技能(如 PPT=pptx)按 marketplace 工具安装态;真技能按 skill 后端
+        if (tsToolsData.some(t => t.backendId === s.backendId)) return { ...s, installed: !!toolStates[s.backendId] };
         const be = skillBackend.find(x => x.id === s.backendId);
         return { ...s, installed: be ? be.installed : false };
       });
@@ -5598,15 +6678,25 @@
       }));
       const skillCards = [...presetSkills, ...uploadedSkills];
 
-      const sourceItems = isSkillTab ? skillCards : tools;
+      const connectorTools = tools.filter(t => !LOCAL_TOOLS.includes(t.backendId));
+      const listItems = [...connectorTools, ...skillCards]; // 列表视图:连接器 + 技能全放一起
+      // 独家技能:公文写作 / PPT 生成 / 视觉设计(按此序;视觉无 backendId,PIN 后自然排末)
+      const FEATURED_SKILL = s => ['government-writing', 'pptx'].includes(s.backendId) || s.id === 's5';
+      // 搜索全局:有搜索词时跨「连接器 + 全部技能」检索,不受卡片视图/分类限制(「我的工具」内搜索仍限已安装)
+      const searching = searchQuery.trim() !== '';
+      const sourceItems = (searching && !installedOnly) ? listItems : (isCard ? skillCards.filter(FEATURED_SKILL) : listItems);
+      const PIN = ['government-writing', 'pptx'];
       const filteredTools = sourceItems.filter(tool => {
         const q = searchQuery.toLowerCase();
         const matchesSearch = tool.title.toLowerCase().includes(q) || (tool.desc || '').toLowerCase().includes(q);
-        const matchesCategory = isSkillTab || activeCategory === 'all' || tool.category === activeCategory;
+        if (installedOnly && !isCard) return matchesSearch && tool.installed;
+        const matchesCategory = searching || isCard || activeCategory === 'all' || (activeCategory === 'h3c' ? (tool.category === 'h3c' || !!tool.internal) : tool.category === activeCategory);
         return matchesSearch && matchesCategory;
       }).sort((a, b) => {
-        if (a.backendId && !b.backendId) return -1;
-        if (!a.backendId && b.backendId) return 1;
+        if (isCard && !searching) { const r = x => { const i = PIN.indexOf(x.backendId); return i === -1 ? 99 : i; }; if (r(a) !== r(b)) return r(a) - r(b); }
+        // 已上线(有 backendId 或内置)排在未上线(即将上线)之前
+        const onA = !!a.backendId || !!a.builtin, onB = !!b.backendId || !!b.builtin;
+        if (onA !== onB) return onA ? -1 : 1;
         if (a.installed && !b.installed) return -1;
         if (!a.installed && b.installed) return 1;
         return 0;
@@ -5627,12 +6717,6 @@
           setSkillBackend(Array.isArray(skills) ? skills : []);
         } catch (e) {
           console.error('list_marketplace_skills failed:', e);
-        }
-        try {
-          const ds = await window.__TAURI__.core.invoke('get_disabled_skills');
-          setDisabledSkills(Array.isArray(ds) ? ds : []);
-        } catch (e) {
-          console.error('get_disabled_skills failed:', e);
         }
       };
 
@@ -5687,21 +6771,6 @@
         }
       };
 
-      // 技能启用/停用(全局持久):停用 = 从 ## Skills prompt catalogue 隐藏,但不卸载。
-      // backendId = 市场技能 id;后端映射成落盘 skill 名推给底座过滤器,下轮对话即生效。
-      const handleSkillToggle = async (backendId) => {
-        const next = disabledSkills.includes(backendId)
-          ? disabledSkills.filter(x => x !== backendId)
-          : [...disabledSkills, backendId];
-        setDisabledSkills(next); // 乐观更新
-        try {
-          await window.__TAURI__.core.invoke('set_disabled_skills', { skillIds: next });
-        } catch (e) {
-          console.error('set_disabled_skills failed:', e);
-          setDisabledSkills(disabledSkills); // 回滚
-        }
-      };
-
       // 上传 zip 技能包(Rust 端弹 dialog 选文件)
       const handleUploadSkill = async () => {
         setBusyId('__upload__');
@@ -5727,19 +6796,36 @@
       //(监听见下方 useEffect);这里只 ensure cli + 触发 begin。busyId 在事件里清。
       const connectFeishu = async () => {
         setBusyId('feishu');
-        setAlert({ loading: true, visible: false, title: '正在准备飞书连接…', subtitle: '首次需安装 lark-cli（联网，稍候）', isInstall: true, isError: false });
+        ensureFeishuListeners();
+        // 开流程卡（无阻塞弹窗）：先起“准备运行时”步。写进跨视图 store，切走不丢。
+        feishuConn.setFlow({ phase: 'running', steps: { runtime: 'active' }, active: 'runtime', pct: 0, sec: 0, log: '' });
+        // 客户端秒表 + 爬行条：后端 feishu:progress 有真实 pct 时会覆盖；没有也不至于像卡死。
+        feishuConn.startTick();
         try {
+          // ① 确保 CLI（B 方案下可能联网安装 ~40s，会 emit feishu:progress step=cli）
+          feishuConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: 'npm: starting…', steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
           await window.__TAURI__.core.invoke('feishu_ensure_cli');
-          setAlert({ visible: false, loading: false, title: '', subtitle: '', isInstall: false, isError: false });
+          feishuConn.setFlow(f => ({ ...(f || {}), active: 'connect', pct: 100, steps: { ...((f && f.steps) || {}), cli: 'done', connect: 'active' } }));
+          // ② 连接编排（后端 emit feishu:qr / connected / error）
           await window.__TAURI__.core.invoke('feishu_connect_begin');
-          // 后续:feishu:qr 出二维码 → 用户扫码 → feishu:connected 收尾。
         } catch (e) {
           console.error('feishu connect failed:', e);
-          setFeishuQr(null);
+          feishuConn.stopTick();
           setBusyId(null);
-          setAlert({ visible: true, loading: false, title: '飞书连接失败', subtitle: String(e).slice(0, 240), isError: true });
+          feishuConn.setFlow(f => {
+            const step = (f && f.active) || 'cli';
+            return { ...(f || { steps: {} }), phase: 'error', err: String(e).slice(0, 300), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } };
+          });
         }
       };
+      // 取消/关闭流程卡：置取消 + kill 子进程 + 清状态。
+      const feishuResetFlow = () => {
+        feishuConn.stopTick();
+        window.__TAURI__.core.invoke('feishu_cancel').catch(() => {});
+        feishuConn.setFlow(null); setBusyId(null);
+      };
+      // 重试：ensure_cli 幂等，直接重跑整个连接流程。
+      const feishuRetry = () => { connectFeishu(); };
       const disconnectFeishu = async () => {
         setBusyId('feishu');
         try {
@@ -5756,14 +6842,132 @@
         }
       };
 
+      // 连接企业微信(单段扫码):流程卡驱动(镜像飞书),进度走 wecom:* 事件。
+      const connectWecom = async () => {
+        setBusyId('wecom');
+        ensureWecomListeners();
+        // 开流程卡(无阻塞弹窗):先起"准备运行时"步,写进跨视图 store,切走不丢。
+        wecomConn.setFlow({ phase: 'running', steps: { runtime: 'active' }, active: 'runtime', pct: 0, sec: 0, log: '' });
+        wecomConn.startTick();
+        try {
+          // ① 确保 CLI(首次联网装 wecom-cli ~40s)
+          wecomConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: 'npm: starting…', steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
+          await window.__TAURI__.core.invoke('wecom_ensure_cli');
+          wecomConn.setFlow(f => ({ ...(f || {}), pct: 100, steps: { ...((f && f.steps) || {}), cli: 'done' } }));
+          // ② 连接编排(后端 emit wecom:qr / connected / error)
+          await window.__TAURI__.core.invoke('wecom_connect_begin');
+        } catch (e) {
+          console.error('wecom connect failed:', e);
+          wecomConn.stopTick();
+          setBusyId(null);
+          wecomConn.setFlow(f => {
+            const step = (f && f.active) || 'cli';
+            return { ...(f || { steps: {} }), phase: 'error', err: String(e).slice(0, 300), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } };
+          });
+        }
+      };
+      const wecomResetFlow = () => {
+        wecomConn.stopTick();
+        window.__TAURI__.core.invoke('wecom_cancel').catch(() => {});
+        wecomConn.setFlow(null); setBusyId(null);
+      };
+      const wecomRetry = () => { connectWecom(); };
+      const disconnectWecom = async () => {
+        setBusyId('wecom');
+        try {
+          await window.__TAURI__.core.invoke('wecom_logout');
+          // 断开 → 撤掉技能(should_show 变 false)。
+          await window.__TAURI__.core.invoke('wecom_apply_skills').catch(() => {});
+          setWecomConnected(false);
+          setAlert({ visible: true, loading: false, title: '已断开企业微信', isInstall: false, isError: false });
+        } catch (e) {
+          console.error('wecom logout failed:', e);
+          setAlert({ visible: true, loading: false, title: '操作失败，请重试', isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+
+      // 连接 EIP(SSO 轮询自动收):事件驱动。二进制内置,无需 ensure_cli/扫码。
+      const connectEip = async () => {
+        setBusyId('eip');
+        try {
+          await window.__TAURI__.core.invoke('eip_connect_begin');
+          // 后续:eip:sso 出登录地址 → 用户浏览器 SSO 登录 → eip:connected 收尾。
+        } catch (e) {
+          console.error('eip connect failed:', e);
+          setEipSso(null); setBusyId(null);
+          setAlert({ visible: true, loading: false, title: 'EIP 连接失败', subtitle: String(e).slice(0, 240), isError: true });
+        }
+      };
+      const disconnectEip = async () => {
+        setBusyId('eip');
+        try {
+          await window.__TAURI__.core.invoke('eip_logout');
+          setEipConnected(false);
+          setAlert({ visible: true, loading: false, title: '已断开员工门户（EIP）', isInstall: false, isError: false });
+        } catch (e) {
+          console.error('eip logout failed:', e);
+          setAlert({ visible: true, loading: false, title: '操作失败，请重试', isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+
+      // 连接知道知识库(SSO 轮询自动收):事件驱动。二进制内置,无需手工粘贴 token。
+      const connectZhidao = async () => {
+        setBusyId('zhidao');
+        try {
+          await window.__TAURI__.core.invoke('zhidao_connect_begin');
+        } catch (e) {
+          console.error('zhidao connect failed:', e);
+          setZhidaoSso(null); setBusyId(null);
+          setAlert({ visible: true, loading: false, title: '知道连接失败', subtitle: String(e).slice(0, 240), isError: true });
+        }
+      };
+      const disconnectZhidao = async () => {
+        setBusyId('zhidao');
+        try {
+          await window.__TAURI__.core.invoke('zhidao_logout');
+          setZhidaoConnected(false);
+          setAlert({ visible: true, loading: false, title: '已断开知道知识库', isInstall: false, isError: false });
+        } catch (e) {
+          console.error('zhidao logout failed:', e);
+          setAlert({ visible: true, loading: false, title: '操作失败，请重试', isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+
       // 安装/卸载入口
       const handleAction = async (backendId, isInstalled) => {
-        if (isSkillTab) return handleSkillAction(backendId, isInstalled);
+        // 技能 tab 里的"工具型"条目(如 PPT=pptx)走正常工具安装,不误走 handleSkillAction
+        if (tsSkillsData.some(s => s.backendId === backendId) && !tsToolsData.some(t => t.backendId === backendId)) return handleSkillAction(backendId, isInstalled);
         // 飞书走 CLI 连接流程,不走 marketplace install
         if (backendId === 'feishu') {
           if (isInstalled) return disconnectFeishu();
-          // 未连接 → 直接触发 config init --new(浏览器自动建 app + 两段扫码,不收表单)
+          // 未连接 → 弹详情弹窗（里面有进度卡）+ 触发 config init --new(浏览器自动建 app + 两段扫码,不收表单)
+          const ft = tools.find(x => x.feishuCli) || tsToolsData.find(x => x.backendId === 'feishu');
+          if (ft) setSelectedTool(ft);
           return connectFeishu();
+        }
+        // 企微同走 CLI 连接流程(单段扫码)
+        if (backendId === 'wecom') {
+          if (isInstalled) return disconnectWecom();
+          // 打开详情弹窗(里面有流程卡)+ 触发连接
+          const wt = tools.find(x => x.wecomCli) || tsToolsData.find(x => x.backendId === 'wecom');
+          if (wt) setSelectedTool(wt);
+          return connectWecom();
+        }
+        // EIP 走 CLI 连接流程(浏览器 SSO 一键登录),不走 marketplace install
+        if (backendId === 'eip') {
+          if (isInstalled) return disconnectEip();
+          return connectEip();
+        }
+        // 知道知识库走 CLI + SSO 自动轮询流程,不走 marketplace install
+        if (backendId === 'zhidao') {
+          if (isInstalled) return disconnectZhidao();
+          return connectZhidao();
         }
         const t = tsToolsData.find(x => x.backendId === backendId);
         const name = t ? t.title : backendId;
@@ -5852,51 +7056,82 @@
               else setObsidianGuide(g => g ? { ...g, ...(st || {}) } : g);
             }}
           />, document.body)}
-          {feishuQr && (() => {
-            const isAuth = feishuQr.phase === 'authorize';
-            const cancel = () => { window.__TAURI__.core.invoke('feishu_cancel').catch(() => {}); setFeishuQr(null); setBusyId(null); };
+          {/* 飞书扫码二维码已内联进 FeishuFlowCard（详情弹窗内），不再单独浮层 */}
+          {wecomQr && (() => {
+            const cancel = () => { window.__TAURI__.core.invoke('wecom_cancel').catch(() => {}); setWecomQr(null); setBusyId(null); };
             return ReactDOM.createPortal((
             <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
-              <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-7 w-full max-w-[360px] flex flex-col items-center text-center shadow-2xl" onClick={e => e.stopPropagation()}>
-                <div className="text-[12px] font-bold text-teal-600 dark:text-teal-400 mb-1 tracking-wide">{isAuth ? '第 2 步 / 共 2 步' : '第 1 步 / 共 2 步'}</div>
-                <h3 className="text-[19px] font-bold text-slate-900 dark:text-white mb-1">{isAuth ? '扫码授权' : '扫码注册飞书应用'}</h3>
-                <p className="text-[13px] text-slate-500 dark:text-slate-400 mb-4">{isAuth ? '用飞书 App 扫一扫，授权以你的身份操作飞书' : '用飞书 App 扫一扫，确认创建应用'}</p>
-                {feishuQr.qr
-                  ? <img src={feishuQr.qr} alt="飞书二维码" className="w-52 h-52 rounded-2xl border border-slate-200 dark:border-white/10 bg-white" />
-                  : <div className="w-52 h-52 rounded-2xl border border-dashed border-slate-300 dark:border-white/10 flex items-center justify-center text-[12px] text-slate-400 px-4">二维码生成失败，请用下方浏览器授权</div>}
+              <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-7 w-full max-w-[440px] flex flex-col items-center text-center shadow-2xl" onClick={e => e.stopPropagation()}>
+                <h3 className="text-[19px] font-bold text-slate-900 dark:text-white mb-4">连接企业微信</h3>
+                {/* 文案精简(方案A):扫码指引交给内嵌页自己说，这里不重复。直接内嵌企微登录页
+                    （其 JS 动态渲染真正的登录码）——避免把 gen 网页地址编码成二维码导致的二次扫码。 */}
+                {wecomQr.url
+                  ? <iframe src={wecomQr.url} title="企业微信登录" className="w-full h-[440px] rounded-2xl border border-slate-200 dark:border-white/10 bg-white" scrolling="no" />
+                  : <div className="w-52 h-52 rounded-2xl border border-dashed border-slate-300 dark:border-white/10 flex items-center justify-center text-[12px] text-slate-400 px-4">登录页加载失败，请用下方浏览器授权</div>}
                 <div className="flex items-center gap-1.5 mt-4 text-[13px] text-slate-500 dark:text-slate-400">
-                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> {isAuth ? '等待授权中…' : '等待注册中…'}
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> 等待授权中…
                 </div>
-                <button onClick={() => { if (feishuQr.url) window.__TAURI__.core.invoke('open_external_url', { url: feishuQr.url }); }} className="mt-4 text-[13px] text-blue-600 dark:text-blue-400 hover:underline">在浏览器打开</button>
+                <button onClick={() => { if (wecomQr.url) window.__TAURI__.core.invoke('open_external_url', { url: wecomQr.url }); }} className="mt-4 text-[13px] text-blue-600 dark:text-blue-400 hover:underline">在浏览器打开</button>
                 <button onClick={cancel} className="mt-3 px-6 py-2 rounded-full text-[14px] font-semibold bg-slate-100 dark:bg-[#2C2C2E] text-slate-600 dark:text-slate-300">取消</button>
               </div>
             </div>
             ), document.body);
           })()}
-          <div className="flex-1 flex flex-col bg-white dark:bg-black text-slate-900 dark:text-white transition-colors duration-300 font-sans overflow-hidden">
+          {eipSso && (() => {
+            const cancel = () => { window.__TAURI__.core.invoke('eip_cancel').catch(() => {}); setEipSso(null); setBusyId(null); };
+            return ReactDOM.createPortal((
+            <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
+              <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-7 w-full max-w-[360px] flex flex-col items-center text-center shadow-2xl" onClick={e => e.stopPropagation()}>
+                <h3 className="text-[19px] font-bold text-slate-900 dark:text-white mb-1">登录员工门户（EIP）</h3>
+                <p className="text-[13px] text-slate-500 dark:text-slate-400 mb-5">扫码或在浏览器完成 SSO 登录，登录后会自动连接（需公司内网）</p>
+                {eipSso.qr
+                  ? <img src={eipSso.qr} alt="EIP 登录二维码" className="w-52 h-52 rounded-2xl border border-slate-200 dark:border-white/10 bg-white" />
+                  : <div className="w-52 h-52 rounded-2xl border border-dashed border-slate-300 dark:border-white/10 flex items-center justify-center text-[13px] text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-white/5">二维码生成中…</div>}
+                <button onClick={() => { if (eipSso.url) window.__TAURI__.core.invoke('open_external_url', { url: eipSso.url }); }} className="mt-4 px-6 py-2.5 rounded-full text-[14px] font-semibold bg-blue-600 hover:bg-blue-700 text-white">在浏览器打开登录</button>
+                <div className="flex items-center gap-1.5 mt-5 text-[13px] text-slate-500 dark:text-slate-400">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> 等待登录中…
+                </div>
+                <button onClick={cancel} className="mt-3 px-6 py-2 rounded-full text-[14px] font-semibold bg-slate-100 dark:bg-[#2C2C2E] text-slate-600 dark:text-slate-300">取消</button>
+              </div>
+            </div>
+            ), document.body);
+          })()}
+          {zhidaoSso && (() => {
+            const cancel = () => { window.__TAURI__.core.invoke('zhidao_cancel').catch(() => {}); setZhidaoSso(null); setBusyId(null); };
+            return ReactDOM.createPortal((
+            <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
+              <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-7 w-full max-w-[360px] flex flex-col items-center text-center shadow-2xl" onClick={e => e.stopPropagation()}>
+                <h3 className="text-[19px] font-bold text-slate-900 dark:text-white mb-1">登录知道知识库</h3>
+                <p className="text-[13px] text-slate-500 dark:text-slate-400 mb-5">扫码或在浏览器完成 SSO 登录，登录后会自动连接（需公司内网）</p>
+                {zhidaoSso.qr
+                  ? <img src={zhidaoSso.qr} alt="知道登录二维码" className="w-52 h-52 rounded-2xl border border-slate-200 dark:border-white/10 bg-white" />
+                  : <div className="w-52 h-52 rounded-2xl border border-dashed border-slate-300 dark:border-white/10 flex items-center justify-center text-[13px] text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-white/5">二维码生成中…</div>}
+                <button onClick={() => { if (zhidaoSso.url) window.__TAURI__.core.invoke('open_external_url', { url: zhidaoSso.url }); }} className="mt-4 px-6 py-2.5 rounded-full text-[14px] font-semibold bg-blue-600 hover:bg-blue-700 text-white">在浏览器打开登录</button>
+                <div className="flex items-center gap-1.5 mt-5 text-[13px] text-slate-500 dark:text-slate-400">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> 等待登录中…
+                </div>
+                <button onClick={cancel} className="mt-3 px-6 py-2 rounded-full text-[14px] font-semibold bg-slate-100 dark:bg-[#2C2C2E] text-slate-600 dark:text-slate-300">取消</button>
+              </div>
+            </div>
+            ), document.body);
+          })()}
+          <div className="flex-1 flex flex-col bg-white dark:bg-[#131314] text-slate-900 dark:text-white transition-colors duration-300 font-sans overflow-y-auto custom-scrollbar">
 
             {/* Header */}
-            <header className="shrink-0 bg-white/80 dark:bg-black/80 backdrop-blur-2xl border-b border-slate-200/50 dark:border-white/10 pt-6 pb-4 px-6 md:px-10 transition-colors">
-              <div className="max-w-7xl mx-auto flex flex-col gap-5">
-                <div className="flex items-center gap-4 flex-wrap">
+            <header className="sticky top-0 z-30 bg-white/80 dark:bg-black/80 backdrop-blur-2xl border-b border-slate-200/50 dark:border-white/10 pt-6 pb-4 transition-colors">
+              <div className="max-w-7xl mx-auto px-6 md:px-10 flex flex-col gap-5">
+                <div className="flex items-center justify-between gap-4">
                   <h1 className="text-[32px] font-normal tracking-tight">工具商店</h1>
-                  <div className="flex p-1 bg-slate-100 dark:bg-[#1C1C1E] rounded-xl border border-slate-200/50 dark:border-white/5">
-                    {[{ key: 'connector', label: '连接器' }, { key: 'skill', label: '技能' }].map(seg => (
-                      <button
-                        key={seg.key}
-                        onClick={() => { setTab(seg.key); setSearchQuery(''); setActiveCategory('all'); }}
-                        className={`px-5 py-1.5 rounded-lg text-[14px] font-semibold whitespace-nowrap transition-all duration-300 ${
-                          tab === seg.key
-                            ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm ring-1 ring-black/5 dark:ring-white/10'
-                            : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
-                        }`}
-                      >
-                        {seg.label}
-                      </button>
-                    ))}
+                  <div className={`flex items-center gap-3 ${installedOnly ? 'hidden' : ''}`}>
+                    {/* 已安装入口(App Store 风:头像 + 文字);进「我的工具」后隐藏 */}
+                    <button onClick={() => { setViewMode('list'); setInstalledOnly(true); setSearchQuery(''); }} title="我的工具 · 已安装"
+                      className="flex items-center gap-2 pl-1 pr-3.5 py-1 rounded-full bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 transition-colors">
+                      <span className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-400 to-indigo-500 flex items-center justify-center text-white shrink-0"><User size={15} /></span>
+                      <span className="text-[14px] font-semibold">我的工具</span>
+                    </button>
                   </div>
                 </div>
-                <div className="relative group">
+                <div className={`relative group ${installedOnly ? 'hidden' : ''}`}>
                   <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-500 transition-colors" size={20} />
                   <input
                     type="text"
@@ -5910,18 +7145,34 @@
             </header>
 
             {/* Main scrollable area */}
-            <main className="flex-1 overflow-y-auto custom-scrollbar">
+            <main className="flex-1">
               <div className="max-w-7xl mx-auto px-6 md:px-10 py-8 space-y-12">
 
+                {/* 视图切换:卡片 / 列表(内容区顶部右对齐;进「我的工具」时隐藏)*/}
+                <div className={`flex justify-end ${installedOnly ? 'hidden' : ''}`}>
+                  <div className="flex p-1 bg-slate-100 dark:bg-[#1C1C1E] rounded-xl border border-slate-200/50 dark:border-white/5">
+                    {[{ key: 'card', label: '卡片', Icon: IconGrid }, { key: 'list', label: '列表', Icon: IconList }].map(seg => (
+                      <button key={seg.key} onClick={() => { setViewMode(seg.key); setInstalledOnly(false); setSearchQuery(''); setActiveCategory('all'); }}
+                        className={`px-4 py-1.5 rounded-lg text-[14px] font-semibold whitespace-nowrap transition-all duration-300 flex items-center gap-1.5 ${
+                          viewMode === seg.key
+                            ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm ring-1 ring-black/5 dark:ring-white/10'
+                            : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                        }`}>
+                        <seg.Icon size={15} /> {seg.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 {/* Featured carousel */}
-                {!isSkillTab && searchQuery === '' && activeCategory === 'all' && (
+                {isCard && searchQuery === '' && activeCategory === 'all' && (
                   <section
                     className="relative group/featured"
                     onMouseEnter={() => setIsFeaturedHovered(true)}
                     onMouseLeave={() => setIsFeaturedHovered(false)}
                   >
                     <div className="flex items-end justify-between mb-5">
-                      <h2 className="text-2xl font-bold tracking-tight">精选能力推荐</h2>
+                      <h2 className="text-2xl font-bold tracking-tight">精选连接器</h2>
                     </div>
 
                     <button
@@ -5940,17 +7191,49 @@
                     <div
                       ref={featuredScrollRef}
                       className="flex gap-6 overflow-x-auto snap-x snap-mandatory pb-6 no-scrollbar relative"
-                      style={{ scrollbarWidth: 'none' }}
+                      style={{ scrollbarWidth: 'none', maskImage: 'linear-gradient(to right,#000 0,#000 92%,transparent 100%)', WebkitMaskImage: 'linear-gradient(to right,#000 0,#000 92%,transparent 100%)' }}
                     >
+                      {/* H3C 集团内部工具合集 —— 精选第一张，点击展开详情 */}
+                      <div
+                        onClick={() => setShowH3cModal(true)}
+                        className="relative min-w-[320px] md:min-w-[400px] h-[440px] rounded-[32px] snap-start shrink-0 overflow-hidden cursor-pointer group shadow-sm hover:shadow-xl transition-all duration-500"
+                      >
+                        <img src="assets/h3c-banner.jpg" alt="" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
+                        <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/15 to-black/70" />
+                        <div className="relative p-8 text-white">
+                          <div className="flex items-center justify-between mb-4">
+                            <span className="text-[11px] font-bold text-white/85 uppercase tracking-[0.15em] bg-white/15 backdrop-blur px-2.5 py-1 rounded-full">集团内部 · 员工专属</span>
+                            <span className="text-[12px] font-black text-white border border-white/45 rounded-md px-1.5 py-0.5">H3C</span>
+                          </div>
+                          <h3 className="text-[30px] font-bold tracking-tight leading-tight drop-shadow-sm">H3C 办公生态<br/>一键接入</h3>
+                          <p className="text-white/85 text-[15px] font-medium mt-3 max-w-[88%]">以你本人 SSO 身份直连集团内部系统，全程不填 key</p>
+                        </div>
+                        <div className="absolute bottom-6 left-6 right-6">
+                          <div className="bg-white/20 dark:bg-black/40 backdrop-blur-3xl border border-white/20 dark:border-white/10 rounded-2xl p-4 flex items-center justify-between shadow-lg transition-transform group-hover:-translate-y-1">
+                            <div className="flex items-center gap-3">
+                              <div className="w-12 h-12 rounded-[13px] flex items-center justify-center text-white shadow-inner" style={{ background: 'linear-gradient(135deg,#ff2a43,#a30010)' }}>
+                                <Briefcase size={22} strokeWidth={1.6} />
+                              </div>
+                              <div>
+                                <h4 className="text-[14px] font-bold text-white drop-shadow-sm">H3C 集团内部工具</h4>
+                                <p className="text-[12px] text-white/70 mt-0.5">2 个工具 · 需内网</p>
+                              </div>
+                            </div>
+                            <span className="text-white font-bold text-[14px] drop-shadow-sm">查看</span>
+                          </div>
+                        </div>
+                      </div>
                       {tsFeaturedCollections.map((collection) => {
                         const featTool = tools.find(a => a.id === collection.featuredToolId);
                         return (
                           <div
                             key={collection.id}
                             onClick={() => setSelectedTool(featTool)}
-                            className="relative min-w-[320px] md:min-w-[400px] h-[440px] rounded-[32px] snap-center shrink-0 overflow-hidden cursor-pointer group shadow-sm hover:shadow-xl dark:shadow-none border border-slate-200/50 dark:border-white/10 transition-all duration-500"
+                            className="relative min-w-[320px] md:min-w-[400px] h-[440px] rounded-[32px] snap-start shrink-0 overflow-hidden cursor-pointer group shadow-sm hover:shadow-xl dark:shadow-none border border-slate-200/50 dark:border-white/10 transition-all duration-500"
                           >
-                            <div className={`absolute inset-0 ${collection.bg} transition-transform duration-700 group-hover:scale-105`} />
+                            {collection.img
+                              ? <img src={collection.img} alt="" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
+                              : <div className={`absolute inset-0 ${collection.bg} transition-transform duration-700 group-hover:scale-105`} />}
                             <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-transparent to-black/60" />
 
                             <div className="absolute top-0 left-0 w-full p-8 text-white z-10">
@@ -5984,30 +7267,30 @@
 
                 {/* Category filter + tool list */}
                 <section>
-                  <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6 border-b border-slate-200 dark:border-white/10 pb-5">
-                    <h2 className="text-2xl font-bold tracking-tight">
-                      {isSkillTab ? (searchQuery ? '检索结果' : '技能库') : (searchQuery ? '检索结果' : '热门协议与接口')}
-                    </h2>
-                    {isSkillTab ? (
-                      <button
-                        onClick={handleUploadSkill}
-                        disabled={busyId === '__upload__'}
-                        className="flex items-center gap-2 px-4 py-2 rounded-xl text-[14px] font-semibold bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white shadow-md shadow-blue-500/20 transition-all active:scale-95 whitespace-nowrap"
-                      >
-                        <Upload size={16} /> {busyId === '__upload__' ? '导入中…' : '上传技能包'}
-                      </button>
-                    ) : (
-                      <div className="flex p-1 bg-slate-100 dark:bg-[#1C1C1E] rounded-xl overflow-x-auto no-scrollbar border border-slate-200/50 dark:border-white/5">
+                  <div className={`flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6 ${isCard ? '' : 'border-b border-slate-200 dark:border-white/10 pb-5'}`}>
+                    <div className="flex items-center gap-3">
+                      {installedOnly && (
+                        <button onClick={() => { setInstalledOnly(false); setViewMode('card'); }} title="返回商店"
+                          className="w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 flex items-center justify-center text-slate-600 dark:text-slate-300 transition-colors shrink-0">
+                          <ChevronLeft size={20} />
+                        </button>
+                      )}
+                      <h2 className="text-2xl font-bold tracking-tight">
+                        {isCard ? (searchQuery ? '检索结果' : '独家技能') : (installedOnly ? '我的工具' : (searchQuery ? '检索结果' : '全部工具'))}
+                      </h2>
+                    </div>
+                    {!isCard && !installedOnly && (
+                      <div className="flex flex-wrap gap-2 overflow-x-auto no-scrollbar">
                         {tsCategories.map((cat) => {
                           const isActive = activeCategory === cat.id;
                           return (
                             <button
                               key={cat.id}
-                              onClick={() => setActiveCategory(cat.id)}
-                              className={`px-5 py-1.5 rounded-lg text-[14px] font-semibold whitespace-nowrap transition-all duration-300 ${
+                              onClick={() => { setActiveCategory(cat.id); setInstalledOnly(false); }}
+                              className={`shrink-0 px-4 py-1.5 rounded-full text-[13px] font-semibold whitespace-nowrap transition-colors ${
                                 isActive
-                                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm ring-1 ring-black/5 dark:ring-white/10'
-                                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                                  ? 'bg-blue-600 text-white'
+                                  : 'text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-500'
                               }`}
                             >
                               {cat.label}
@@ -6019,6 +7302,73 @@
                   </div>
 
                   {filteredTools.length > 0 ? (
+                    (isSkillTab && !searching) ? (
+                    <div className="flex flex-col md:flex-row gap-6">
+                      {filteredTools.map((tool) => {
+                        const v = tool.todayVariant || 'fallback';
+                        const bar = (
+                          <div className="absolute bottom-4 left-4 right-4 bg-white/92 dark:bg-[#1c1c1e]/92 backdrop-blur-xl rounded-2xl p-3 flex items-center gap-3 shadow-lg">
+                            <div className={`w-12 h-12 rounded-[13px] ${tool.color} flex items-center justify-center text-white shadow-inner shrink-0`}><tool.icon size={22} strokeWidth={1.6} /></div>
+                            <div className="flex-1 min-w-0"><h4 className="text-[15px] font-bold truncate text-slate-900 dark:text-white">{tool.title}</h4><p className="text-[12px] text-slate-500 dark:text-slate-400 truncate">{tool.subtitle}</p></div>
+                            <TsActionBtn tool={tool} busy={busyId === tool.backendId} onAction={handleAction} />
+                          </div>
+                        );
+                        return (
+                          <div key={tool.id} onClick={() => setSelectedTool(tool)} className={`today-card group relative ${tool.cardW || 'flex-1'} min-w-0 h-[440px] rounded-[22px] overflow-hidden cursor-pointer shadow-[0_12px_36px_-14px_rgba(0,0,0,0.3)] transition-all duration-500 hover:shadow-[0_24px_54px_-14px_rgba(0,0,0,0.5)] hover:-translate-y-1`}>
+                            {v === 'light' ? (
+                              <>
+                                <div className="p-6"><p className="text-slate-500 dark:text-slate-400 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-[30px] font-bold leading-[1.1] tracking-tight whitespace-pre-line text-slate-900 dark:text-white">{tool.todayTitle}</h2></div>
+                                {tool.todayImg && <img src={tool.todayImg} className="absolute bottom-0 left-0 w-full h-[62%] object-cover" />}
+                                {bar}
+                              </>
+                            ) : v === 'drama' ? (
+                              <>
+                                {tool.todayImg && <img src={tool.todayImg} className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
+                                <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/25 to-black/40" />
+                                <div className="absolute top-0 left-0 p-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em]">{tool.todayLabel}</p></div>
+                                <div className="absolute bottom-0 left-0 p-6"><h2 className="text-white text-[32px] font-bold leading-[1.05] tracking-tight drop-shadow mb-2 whitespace-pre-line">{tool.todayTitle}</h2><p className="text-white/85 text-[14px] font-medium">{tool.subtitle}</p></div>
+                              </>
+                            ) : v === 'appbar' ? (
+                              <>
+                                {tool.todayImg && <img src={tool.todayImg} className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
+                                <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-black/10 to-black/35" />
+                                <div className="absolute top-0 left-0 p-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-white text-[30px] font-bold leading-[1.1] tracking-tight drop-shadow whitespace-pre-line">{tool.todayTitle}</h2></div>
+                                {bar}
+                              </>
+                            ) : v === 'appimg' ? (
+                              <>
+                                {tool.todayImg && <img src={tool.todayImg} className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
+                                <div className="absolute inset-0 bg-gradient-to-b from-black/50 via-black/5 to-black/80" />
+                                <div className="absolute top-0 left-0 p-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-white text-[30px] font-bold leading-[1.1] tracking-tight drop-shadow whitespace-pre-line">{tool.todayTitle}</h2></div>
+                                <div className="absolute bottom-0 left-0 right-0 p-6 flex items-center gap-3">
+                                  <div className={`w-12 h-12 rounded-[13px] ${tool.color} flex items-center justify-center text-white text-xl shadow-lg shrink-0`}><tool.icon size={22} strokeWidth={1.6} /></div>
+                                  <div className="flex-1 min-w-0"><h4 className="text-white text-[15px] font-bold truncate drop-shadow">{tool.title}</h4><p className="text-white/80 text-[12px] truncate drop-shadow">{tool.subtitle}</p></div>
+                                  {tool.builtin
+                                    ? <span className="text-white text-[12px] font-bold bg-white/20 backdrop-blur px-3 py-1 rounded-full shrink-0">内置</span>
+                                    : <TsActionBtn tool={tool} busy={busyId === tool.backendId} onAction={handleAction} />}
+                                </div>
+                              </>
+                            ) : v === 'fallback' ? (
+                              <>
+                                <div className={`absolute inset-0 ${tool.color}`} />
+                                <div className="absolute inset-0 bg-gradient-to-b from-black/25 via-transparent to-black/55" />
+                                <div className="absolute top-6 left-6 right-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">技能</p><h2 className="text-white text-[28px] font-bold leading-[1.1] tracking-tight drop-shadow">{tool.title}</h2></div>
+                                <tool.icon size={120} strokeWidth={1} className="absolute -bottom-3 -right-1 text-white/15" />
+                                {bar}
+                              </>
+                            ) : (
+                              <>
+                                {tool.todayImg && <img src={tool.todayImg} className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
+                                <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-transparent to-black/70" />
+                                <div className="absolute top-0 left-0 p-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-white text-[30px] font-bold leading-[1.1] tracking-tight drop-shadow whitespace-pre-line">{tool.todayTitle}</h2></div>
+                                <p className="absolute bottom-5 left-6 right-6 text-white/90 text-[14px] font-medium leading-snug">{tool.subtitle}</p>
+                              </>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    ) : (
                     <div className="grid gap-x-10 gap-y-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
                       {filteredTools.map((tool) => (
                         <div
@@ -6026,15 +7376,20 @@
                           onClick={() => setSelectedTool(tool)}
                           className="group flex items-center gap-4 py-3 cursor-pointer hover:bg-slate-50 dark:hover:bg-[#1C1C1E]/50 rounded-2xl px-3 -mx-3 transition-colors border-b border-slate-100 dark:border-white/5 last:border-0"
                         >
-                          <div className={`w-16 h-16 rounded-[16px] flex items-center justify-center flex-shrink-0 ${tool.color} text-white shadow-sm group-hover:shadow transition-shadow border border-black/5 dark:border-white/5`}>
+                          <div className={`relative w-16 h-16 rounded-[16px] flex items-center justify-center flex-shrink-0 ${tool.color} text-white shadow-sm group-hover:shadow transition-shadow border border-black/5 dark:border-white/5`}>
                             <tool.icon size={30} strokeWidth={1.5} />
+                            {tool.internal && (
+                              <span className="absolute -bottom-1.5 -right-1.5 text-[8px] leading-none font-black tracking-tight px-1 py-0.5 rounded-md bg-white text-[#E60012] ring-1 ring-black/5 shadow-sm">H3C</span>
+                            )}
                           </div>
                           <div className="flex-1 min-w-0 flex flex-col justify-center py-1">
                             <h3 className="text-[17px] font-semibold text-slate-900 dark:text-white truncate tracking-tight">{tool.title}</h3>
                             <p className="text-[13px] text-slate-500 dark:text-slate-400 truncate mt-0.5 font-medium">{tool.subtitle}</p>
                             <div className="flex items-center gap-2 mt-1.5">
                               <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded uppercase tracking-wide">{tool.type}</span>
-                              {tool.authRequired && (
+                              {tool.internal ? (
+                                <span className="text-[10px] font-semibold text-sky-700 dark:text-sky-300 bg-sky-100 dark:bg-sky-500/15 px-1.5 py-0.5 rounded-full">内网直连</span>
+                              ) : tool.authRequired && (
                                 <span className="text-[10px] text-amber-500/80 dark:text-amber-400/80 flex items-center gap-0.5">
                                   <Zap size={10} /> 需密钥
                                 </span>
@@ -6042,27 +7397,24 @@
                             </div>
                           </div>
                           <div className="flex flex-col items-center justify-center gap-1 pl-2">
-                            <TsActionBtn tool={tool} busy={busyId === tool.backendId} onAction={handleAction} />
-                            {isSkillTab && tool.installed && tool.backendId && (
-                              <button
-                                onClick={(e) => { e.stopPropagation(); handleSkillToggle(tool.backendId); }}
-                                aria-label={'toggle ' + tool.backendId}
-                                title={disabledSkills.includes(tool.backendId) ? '已停用·点击启用' : '已启用·点击停用'}
-                                className={`relative inline-flex h-5 w-[34px] shrink-0 items-center rounded-full transition-colors ${!disabledSkills.includes(tool.backendId) ? 'bg-[#34C759]' : 'bg-[#E5E5EA] dark:bg-[#39393D]'}`}>
-                                <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${!disabledSkills.includes(tool.backendId) ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
-                              </button>
-                            )}
+                            {(() => {
+                              const cf = tool.feishuCli ? feishuFlow : tool.wecomCli ? wecomFlow : null;
+                              return (cf && (cf.phase === 'running' || cf.phase === 'qr'))
+                                ? <FeishuMini flow={cf} onClick={() => setSelectedTool(tool)} />
+                                : <TsActionBtn tool={tool} busy={busyId === tool.backendId} onAction={handleAction} />;
+                            })()}
                           </div>
                         </div>
                       ))}
                     </div>
+                    )
                   ) : (
                     <div className="py-24 text-center flex flex-col items-center">
                       <div className="w-16 h-16 mb-4 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400">
                         {isSkillTab ? <Package size={28} /> : <Server size={28} />}
                       </div>
-                      <h3 className="text-xl font-semibold text-slate-800 dark:text-slate-200 mb-2">{isSkillTab ? '没有技能' : '未检索到工具'}</h3>
-                      <p className="text-slate-500 dark:text-slate-400">{isSkillTab ? '点右上「上传技能包」导入 zip，或换个搜索词。' : '请尝试修改搜索词或查阅 API 开发文档。'}</p>
+                      <h3 className="text-xl font-semibold text-slate-800 dark:text-slate-200 mb-2">{searching ? '未找到匹配的工具' : (installedOnly ? '还没有已安装的工具' : (isSkillTab ? '没有技能' : '未检索到工具'))}</h3>
+                      <p className="text-slate-500 dark:text-slate-400">{searching ? '换个关键词试试，或检查一下拼写。' : (installedOnly ? '去商店安装连接器或技能后，会出现在这里。' : (isSkillTab ? '点右上「上传技能包」导入 zip。' : '请尝试修改搜索词或查阅 API 开发文档。'))}</p>
                     </div>
                   )}
                 </section>
@@ -6071,10 +7423,57 @@
             </main>
           </div>
 
-          {/* Detail modal */}
-          {selectedTool && (
+          {/* H3C 合集详情 — 同 selectedTool,portal 到 body 避开 backdrop-blur 包含块 */}
+          {showH3cModal && ReactDOM.createPortal((
             <div
-              className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-900/40 dark:bg-black/60 backdrop-blur-md transition-all duration-300"
+              className="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-6 bg-slate-900/50 dark:bg-black/60 backdrop-blur-md"
+              onClick={() => setShowH3cModal(false)}
+            >
+              <div
+                className="ts-modal-in relative w-full max-w-[560px] max-h-[90vh] overflow-y-auto no-scrollbar bg-white dark:bg-[#1C1C1E] rounded-[32px] shadow-2xl border border-slate-200/50 dark:border-white/10"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="relative h-[200px] shrink-0">
+                  <img src="assets/h3c-banner.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" />
+                  <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-black/15 to-black/60" />
+                  <button onClick={() => setShowH3cModal(false)} className="absolute top-4 right-4 w-9 h-9 rounded-full bg-black/30 backdrop-blur text-white flex items-center justify-center z-10 text-[18px] leading-none">✕</button>
+                  <div className="absolute bottom-0 p-7 text-white">
+                    <span className="text-[11px] font-bold text-white/85 uppercase tracking-[0.15em] bg-white/15 backdrop-blur px-2.5 py-1 rounded-full">集团内部 · 员工专属</span>
+                    <h2 className="text-[28px] font-bold tracking-tight drop-shadow mt-2.5">H3C 办公生态 一键接入</h2>
+                  </div>
+                </div>
+                <div className="px-6 py-6">
+                  <p className="text-[14px] text-slate-600 dark:text-slate-300 leading-relaxed mb-6">以你<b>本人 SSO 身份</b>直连 H3C 集团内部系统，浏览器 / 扫码登录、<b>全程不填 key</b>；数据经公司内网、不出集团。<span className="text-slate-400">需连接公司内网使用。</span></p>
+                  <h3 className="text-[16px] font-bold mb-4">包含的工具 (2)</h3>
+                  <div className="space-y-4">
+                    {tools.filter(t => t.internal).map(t => (
+                      <div key={t.id} className="flex items-start gap-4">
+                        <div className={`relative w-[56px] h-[56px] rounded-[14px] flex items-center justify-center flex-shrink-0 ${t.color} text-white shadow-sm`}>
+                          <t.icon size={26} strokeWidth={1.5} />
+                          <span className="absolute -bottom-1.5 -right-1.5 text-[8px] leading-none font-black tracking-tight px-1 py-0.5 rounded-md bg-white text-[#E60012] ring-1 ring-black/5 shadow-sm">H3C</span>
+                        </div>
+                        <div className="flex-1 min-w-0 border-b border-slate-100 dark:border-white/5 pb-4">
+                          <div className="flex justify-between items-center gap-2 mb-1">
+                            <h4 className="text-[15px] font-bold truncate">{t.title}</h4>
+                            <TsActionBtn tool={t} busy={busyId === t.backendId} onAction={handleAction} />
+                          </div>
+                          <p className="text-[12px] text-slate-500 dark:text-slate-400 leading-relaxed">{t.subtitle}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-6 pt-4 border-t border-slate-100 dark:border-white/10 text-center">
+                    <p className="text-[11px] text-slate-400">需连接公司内网 · 首次点「连接」浏览器 / 扫码 SSO 登录，不填 key</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ), document.body)}
+          {/* Detail modal — portal 到 body：否则被主内容区 backdrop-blur 祖先造的包含块困住，
+              fixed inset-0 只盖住右侧内容区、盖不到左侧栏。portal 后蒙层铺满整个视口。 */}
+          {selectedTool && ReactDOM.createPortal((
+            <div
+              className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-6 bg-slate-900/40 dark:bg-black/60 backdrop-blur-md transition-all duration-300"
               onClick={() => setSelectedTool(null)}
             >
               <div
@@ -6099,21 +7498,9 @@
                       <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white mb-2 tracking-tight">{selectedTool.title}</h2>
                       <p className="text-[17px] text-slate-500 dark:text-slate-400 mb-5 font-medium">{selectedTool.subtitle}</p>
                       <div className="flex items-center gap-4">
-                        <TsActionBtn tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} size="lg" />
-                        {isSkillTab && selectedTool.installed && selectedTool.backendId && (
-                          <div className="flex items-center gap-2.5">
-                            <span className="text-[14px] font-semibold text-slate-600 dark:text-slate-300">
-                              {disabledSkills.includes(selectedTool.backendId) ? '已停用' : '已启用'}
-                            </span>
-                            <button
-                              onClick={() => handleSkillToggle(selectedTool.backendId)}
-                              aria-label={'toggle ' + selectedTool.backendId}
-                              title="停用 = 从对话的 ## Skills 列表隐藏，但不卸载文件"
-                              className={`relative inline-flex h-6 w-[44px] shrink-0 items-center rounded-full transition-colors ${!disabledSkills.includes(selectedTool.backendId) ? 'bg-[#34C759]' : 'bg-[#E5E5EA] dark:bg-[#39393D]'}`}>
-                              <span className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${!disabledSkills.includes(selectedTool.backendId) ? 'translate-x-[20px]' : 'translate-x-[2px]'}`} />
-                            </button>
-                          </div>
-                        )}
+                        {(() => { const sf = selectedTool.feishuCli ? feishuFlow : selectedTool.wecomCli ? wecomFlow : null; return (sf && (sf.phase === 'running' || sf.phase === 'qr'))
+                          ? <FeishuMini flow={sf} onClick={() => {}} />
+                          : <TsActionBtn tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} size="lg" />; })()}
                       </div>
                     </div>
                   </div>
@@ -6138,6 +7525,25 @@
                     </div>
                   </div>
 
+                  {selectedTool.feishuCli && feishuFlow && (
+                    <FeishuFlowCard flow={feishuFlow} onRetry={feishuRetry} onCancel={feishuResetFlow} />
+                  )}
+                  {selectedTool.wecomCli && wecomFlow && (
+                    <FeishuFlowCard flow={wecomFlow} steps={WECOM_STEPS} name="企业微信" twoStep={false} onRetry={wecomRetry} onCancel={wecomResetFlow} />
+                  )}
+                  {selectedTool.feishuCli && feishuConnected && !feishuFlow && (
+                    <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
+                      <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
+                      <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">已连接飞书 · 官方技能已启用，可直接对它下指令</span>
+                    </div>
+                  )}
+                  {selectedTool.wecomCli && wecomConnected && !wecomFlow && (
+                    <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
+                      <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
+                      <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">已连接企业微信 · 官方技能已启用，可直接对它下指令</span>
+                    </div>
+                  )}
+
                   <div>
                     <h3 className="text-[19px] font-bold text-slate-900 dark:text-white mb-4">关于此能力</h3>
                     <div className="text-slate-600 dark:text-slate-300 leading-relaxed text-[15px] space-y-4 font-medium">
@@ -6147,7 +7553,7 @@
                 </div>
               </div>
             </div>
-          )}
+          ), document.body)}
         </div>
       );
     };
@@ -7305,7 +8711,7 @@
 
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden animate-in fade-in duration-300"
-          style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif', background: isDark ? '#000' : '#fff' }}>
+          style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif', background: isDark ? '#131314' : '#fff' }}>
           <div className="relative z-10 flex-1 min-h-0 overflow-y-auto custom-scrollbar">
             <div className="max-w-[1400px] mx-auto">
 

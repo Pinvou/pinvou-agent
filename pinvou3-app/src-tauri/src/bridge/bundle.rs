@@ -20,11 +20,37 @@ static SANSHENG_LIUBU_DIR: Dir<'_> =
 static LARK_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/skills");
 
+/// H3C EIP 员工门户技能(SKILL.md + bin/ 包装脚本与二进制)。独立于 lark skills 的
+/// include_dir(故放在 `bundle/eip/` 而非 `bundle/skills/`,避免被 LARK_SKILLS_DIR
+/// 卷入、跟飞书门控耦合)。启动解包到 `skills_dir/eip`,见 `write_eip_skill`。
+/// 注:`bin/eip-cli`/`eip-cli.exe` 是 IT 内部二进制,本地 gitignore、不进 git;
+/// 但编译期 include_dir 仍会嵌进 app(发布形态 A/C 待与 IT 定,见接入方案)。
+static EIP_SKILL_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/eip");
+
+/// H3C 知道知识库技能(SKILL.md + zhidao CLI)。与 EIP 同属 IT 内部 CLI 连接器,
+/// 独立内嵌并解包到 `skills_dir/zhidao`,用连接标记门控 SKILL.md 可见性。
+static ZHIDAO_SKILL_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/zhidao");
+
 /// 9 个 lark 域技能目录名(门控写/删共用)。skills_dir 下这些目录在不在
 /// = 飞书技能对模型可见与否(引擎 `SkillRegistry` 扫目录)。
 const LARK_SKILL_DIRS: [&str; 9] = [
     "lark-shared", "lark-calendar", "lark-doc", "lark-drive",
     "lark-sheets", "lark-im", "lark-task", "lark-wiki", "lark-base",
+];
+
+/// 企微官方域技能(wecomcli-*,MIT,来自 github.com/WecomTeam/wecom-cli `skills/`):
+/// 编译期内嵌整个 wecom-skills 目录树。**单独放 `wecom-skills/`**(不进 `skills/`)——
+/// `skills/` 整目录被 `LARK_SKILLS_DIR` 内嵌、随飞书门控解包,企微若混进去会被飞书
+/// 连带控制,故隔离成独立 include_dir + 独立门控。
+static WECOM_SKILLS_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/wecom-skills");
+
+/// 7 个企微域技能目录名(门控写 / 删共用)。
+const WECOM_SKILL_DIRS: [&str; 7] = [
+    "wecomcli-msg", "wecomcli-doc", "wecomcli-meeting", "wecomcli-schedule",
+    "wecomcli-todo", "wecomcli-contact", "wecomcli-smartsheet",
 ];
 
 /// Bundle 版本号：手动 base + 自动 instructions.md 内容 hash（build.rs 注入）。
@@ -42,8 +68,10 @@ const LARK_SKILL_DIRS: [&str; 9] = [
 /// 0.10: 接入飞书官方域技能(lark-shared + calendar/doc/drive/sheets/im/task/wiki/base):
 ///       include_dir 内嵌 + 启动解包到 bundle_skills_dir,供 SkillRegistry 发现
 /// 0.11: Windows 敏感路径硬拦截新增 PowerShell hook,并补充 Credential Manager 相关拦截规则
+/// 0.12: 接入 H3C 知道知识库技能(zhidao CLI + SKILL.md),与 EIP 并列门控
+/// 0.13: 接入企微官方域技能(wecomcli-*,MIT):独立 wecom-skills/ 内嵌 + 独立门控
 pub const BUNDLE_VERSION: &str = concat!(
-    "0.11-",
+    "0.13-",
     env!("BUNDLE_INSTRUCTIONS_HASH"),
     "-",
     env!("BUNDLE_WORKFLOW_HASH_SANSHENG"),
@@ -241,6 +269,9 @@ impl Pinvou3Bundle {
         // 已下线 skills 每次启动都清理(防御性):既有装机的残留目录若不清,
         // SkillRegistry 仍会从 disk 发现它们、重新触发对应协议 prompt。
         self.cleanup_retired_skills()?;
+        // 已从技能市场下架的预置技能(pua/女娲/头脑风暴):它们曾走 marketplace 装、带
+        // `pinvou3-marketplace:` 标记,故按标记内容精确删,只跳过用户上传的同名目录。
+        self.cleanup_removed_marketplace_skills()?;
         // 工作流目录同 skills:immutable bundle 资源,每次启动防御性重写
         // (防 "VERSION 对得上但目录缺失"),无副作用。
         self.write_workflows()?;
@@ -260,6 +291,32 @@ impl Pinvou3Bundle {
         self.write_builtin_skills()?;
         // Feishu official domain skills are shown only when the gate says so.
         self.apply_feishu_skills(crate::feishu::feishu_skills_should_show())?;
+        // 企微官方域技能:同飞书,按门控(已连接 && 未停用)决定解包还是删除。
+        self.apply_wecom_skills(crate::wecom::wecom_skills_should_show())?;
+        // EIP 技能:二进制 ~23MB,不像小文本那样每启动防御性重写——仅在二进制缺失时
+        // 解包(自愈),避免每次启动写 23MB。改 SKILL.md/包装脚本后想刷新:删 skills_dir/eip。
+        let eip_bin_name = if cfg!(windows) { "eip-cli.exe" } else { "eip-cli" };
+        if !self.skills_dir.join("eip").join("bin").join(eip_bin_name).is_file() {
+            self.write_eip_skill()?;
+        }
+        // EIP 技能门控:仅"已连接"用户(本机有连接标记)才放 SKILL.md(模型可见);
+        // 未连接 / 非 EIP 用户删 SKILL.md(留 bin/ 供连接用),不背 EIP prompt
+        //(§八.4 装了才启用,同飞书 apply_feishu_skills)。
+        self.apply_eip_skill_visibility(crate::eip::eip_skills_should_show())?;
+        // 自愈按**当前平台实际要跑的**二进制判缺失(同上方 EIP):Windows 跑 zhidao-cli.exe
+        // (Rust 直调 + 模型 shell 经 zhidao.cmd),Unix 跑 zhidao 包装脚本 exec zhidao-cli。
+        // 旧实现在所有平台只查 Linux 的 zhidao/zhidao-cli,Windows 下若 zhidao-cli.exe 被
+        // 杀软隔离/删除(未签名 Go exe 常见),这俩 Linux 文件仍在→自愈不触发→知道永久不可用。
+        let zhidao_bin = self.skills_dir.join("zhidao").join("bin");
+        let zhidao_healthy = if cfg!(windows) {
+            zhidao_bin.join("zhidao-cli.exe").is_file()
+        } else {
+            zhidao_bin.join("zhidao").is_file() && zhidao_bin.join("zhidao-cli").is_file()
+        };
+        if !zhidao_healthy {
+            self.write_zhidao_skill()?;
+        }
+        self.apply_zhidao_skill_visibility(crate::zhidao::zhidao_skills_should_show())?;
         // MCP server scripts are immutable as well, but wait for secret migration to avoid
         // deleting legacy plaintext before it has been copied into the credential store.
         if mcp_secret_migration_ok {
@@ -331,6 +388,34 @@ impl Pinvou3Bundle {
         Ok(())
     }
 
+    /// 清理已从技能市场移除的预置技能残留(dir 名 → 原市场 id)。
+    ///
+    /// 与 [`Self::cleanup_retired_skills`] 相反:这些**曾是** marketplace 技能、装时写了
+    /// `pinvou3-marketplace:<id>` 标记,所以不能沿用"带标记即跳过"的保护——否则永远删不掉。
+    /// 改为**按标记内容精确匹配**:只删标记恰为本技能市场安装(或无标记的裸残留),
+    /// 显式跳过 `upload:` 开头的用户上传目录,避免误删用户自己传的同名技能。
+    fn cleanup_removed_marketplace_skills(&self) -> std::io::Result<()> {
+        for (dir_name, market_id) in [
+            ("pua", "pua"),
+            ("huashu-nuwa", "nuwa"),
+            ("brainstorming", "brainstorming"),
+        ] {
+            let dir = self.skills_dir.join(dir_name);
+            if !dir.exists() {
+                continue;
+            }
+            let marker = std::fs::read_to_string(dir.join(".installed-from")).unwrap_or_default();
+            let marker = marker.trim();
+            if marker.starts_with("upload:") {
+                continue; // 用户上传的同名技能,保护不删
+            }
+            if marker.is_empty() || marker == format!("pinvou3-marketplace:{market_id}") {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
+        Ok(())
+    }
+
     /// 解包内嵌的内置 skills。**落位到 `~/.agents/skills/`**——引擎 fork patch #41 让
     /// `load_skill` 工具只扫这个目录(`agents_global_skills_dir`);bundle/skills 只进
     /// system-prompt catalogue 的 union、`load_skill` 不认。落错目录会"列得出、load 不到"。
@@ -370,6 +455,100 @@ impl Pinvou3Bundle {
                 let _ = std::fs::remove_dir_all(self.skills_dir.join(d));
             }
             let _ = std::fs::remove_file(self.skills_dir.join("NOTICE.md"));
+        }
+        Ok(())
+    }
+
+    /// 企微域技能门控:`show` → 解包 7 个 wecomcli 技能到 `skills_dir`;否则**删掉**它们。
+    /// 幂等。与飞书门控正交(各自的连接 / 停用状态独立)。
+    /// 注:`WECOM_SKILLS_DIR` 根 = `wecom-skills/`,内含 `wecomcli-<域>/SKILL.md`(+ NOTICE.md);
+    /// 直接铺到 `skills_dir`,引擎 `SkillRegistry` 扫每个含 `SKILL.md` 的子目录。
+    /// 出处声明用 `NOTICE-wecom.md`(避开飞书的 `NOTICE.md`,两者解包到同一 skills_dir
+    /// 不会互相覆盖)。隐藏时一并删掉。
+    pub fn apply_wecom_skills(&self, show: bool) -> std::io::Result<()> {
+        if show {
+            Self::extract_dir(&WECOM_SKILLS_DIR, &self.skills_dir)?;
+        } else {
+            for d in WECOM_SKILL_DIRS {
+                let _ = std::fs::remove_dir_all(self.skills_dir.join(d));
+            }
+            let _ = std::fs::remove_file(self.skills_dir.join("NOTICE-wecom.md"));
+        }
+        Ok(())
+    }
+
+    /// 解包内嵌的 EIP 员工门户技能到 `skills_dir/eip`(SKILL.md + bin/ 包装脚本&二进制)。
+    /// Linux 下给包装脚本 `eip` 和二进制 `eip-cli` 补执行位(include_dir 不保留权限,
+    /// 缺执行位则模型 shell 跑 `eip` / 包装内 exec `eip-cli` 都会 Permission denied)。
+    fn write_eip_skill(&self) -> std::io::Result<()> {
+        let dest = self.skills_dir.join("eip");
+        Self::extract_dir(&EIP_SKILL_DIR, &dest)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for rel in ["bin/eip", "bin/eip-cli"] {
+                let p = dest.join(rel);
+                if p.is_file() {
+                    let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 解包内嵌的 H3C 知道技能到 `skills_dir/zhidao`。Linux 下给 CLI 补执行位。
+    fn write_zhidao_skill(&self) -> std::io::Result<()> {
+        let dest = self.skills_dir.join("zhidao");
+        Self::extract_dir(&ZHIDAO_SKILL_DIR, &dest)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for name in ["zhidao", "zhidao-cli"] {
+                let p = dest.join("bin").join(name);
+                if p.is_file() {
+                    let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// EIP 技能门控:`show` → 确保 `eip/SKILL.md` 在位(已连接,模型可见);否则**删
+    /// SKILL.md**——保留 `bin/`(连接 / 查状态仍需二进制),仅令 `SkillRegistry` 扫不到
+    /// 该目录(无 SKILL.md 的目录不注册),非 EIP / 未连接用户即不背 EIP prompt。
+    /// 由 `eip.rs` 在 **连接成功 / 登出 / 启动**(按连接标记)调用。幂等;可见性 =
+    /// SKILL.md 在不在,引擎重扫 `skills_dir` 即生效。删后可从内嵌 `EIP_SKILL_DIR` 复原。
+    pub fn apply_eip_skill_visibility(&self, show: bool) -> std::io::Result<()> {
+        let skill_md = self.skills_dir.join("eip").join("SKILL.md");
+        if show {
+            if !skill_md.is_file() {
+                if let Some(f) = EIP_SKILL_DIR.get_file("SKILL.md") {
+                    if let Some(parent) = skill_md.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&skill_md, f.contents())?;
+                }
+            }
+        } else {
+            let _ = std::fs::remove_file(&skill_md);
+        }
+        Ok(())
+    }
+
+    /// 知道技能门控:连接成功后放出 SKILL.md,未连接/登出时只保留 bin/。
+    pub fn apply_zhidao_skill_visibility(&self, show: bool) -> std::io::Result<()> {
+        let skill_md = self.skills_dir.join("zhidao").join("SKILL.md");
+        if show {
+            if !skill_md.is_file() {
+                if let Some(f) = ZHIDAO_SKILL_DIR.get_file("SKILL.md") {
+                    if let Some(parent) = skill_md.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&skill_md, f.contents())?;
+                }
+            }
+        } else {
+            let _ = std::fs::remove_file(&skill_md);
         }
         Ok(())
     }
@@ -612,6 +791,36 @@ mod tests {
             content, "USER TOUCHED",
             "VERSION 匹配时不应覆写已存在的 bundle 文件"
         );
+
+        cleanup(&tmp);
+    }
+
+    /// 已下架预置技能的清理:市场标记的删、无标记裸残留的删、用户上传(upload:)的保。
+    #[test]
+    fn cleanup_removed_marketplace_skills_respects_upload_marker() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = Pinvou3Bundle::paths();
+        std::fs::create_dir_all(&bundle.skills_dir).unwrap();
+
+        // pua:本市场装的(标记匹配)→ 应删
+        let pua = bundle.skills_dir.join("pua");
+        std::fs::create_dir_all(&pua).unwrap();
+        std::fs::write(pua.join(".installed-from"), "pinvou3-marketplace:pua").unwrap();
+        // huashu-nuwa:无标记裸残留 → 应删
+        let nuwa = bundle.skills_dir.join("huashu-nuwa");
+        std::fs::create_dir_all(&nuwa).unwrap();
+        // brainstorming:用户上传的同名 → 应保
+        let brainstorm = bundle.skills_dir.join("brainstorming");
+        std::fs::create_dir_all(&brainstorm).unwrap();
+        std::fs::write(brainstorm.join(".installed-from"), "upload:my.zip").unwrap();
+
+        bundle.cleanup_removed_marketplace_skills().unwrap();
+
+        assert!(!pua.exists(), "市场标记的 pua 应被删");
+        assert!(!nuwa.exists(), "无标记的 huashu-nuwa 残留应被删");
+        assert!(brainstorm.exists(), "用户上传(upload:)的同名目录应保留");
 
         cleanup(&tmp);
     }

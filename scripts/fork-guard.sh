@@ -72,6 +72,11 @@ fingerprints=(
   "C8  |SetDisallowedTools 写 disallowed |DeepSeek-TUI/crates/tui/src/core/engine.rs|Op::SetDisallowedTools { tools }"
   # —— C9(2026-06-30,fork #5):disallowed_tools 规则支持 `*` 后缀前缀通配,禁掉远程 MCP 动态工具 ——
   "C9  |command_denies_tool 前缀通配    |DeepSeek-TUI/crates/tui/src/core/engine/turn_loop.rs|rule.strip_suffix('*')"
+  # —— C10(2026-06-30,fork #6):MCP env placeholder + Windows 子进程后台控制台抑制 ——
+  "C10 |MCP env placeholder 解析        |DeepSeek-TUI/crates/tui/src/mcp.rs|fn expand_env_placeholders(value: &str) -> Result<String>"
+  "C10 |MCP env placeholder 回归        |DeepSeek-TUI/crates/tui/src/mcp/tests.rs|PINVOU3_MCP_SECRET_QCC_API_KEY"
+  "C10 |Windows 子进程无控制台 helper   |DeepSeek-TUI/crates/tui/src/utils.rs|pub(crate) fn suppress_tokio_console_window"
+  "C10 |MCP 启动应用无控制台 helper     |DeepSeek-TUI/crates/tui/src/mcp.rs|suppress_tokio_console_window(&mut cmd)"
   # —— 工作流 fork 基座层(三省六部;feat/sansheng-workflow 随附,2026-06-12 补)——
   # 行为层已有 engine_config_locks_critical_fields(W10 reasoning_effort);其余 W* 暂只 L1。
   "W1  |SpawnSubAgent 扩展字段          |DeepSeek-TUI/crates/tui/src/core/ops.rs|expects_file_output: bool"

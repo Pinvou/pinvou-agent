@@ -1,13 +1,13 @@
 [package]
 name = "pinvou3-tauri"
-version = "0.5.4"
-description = "pinvou3 ???? Tauri ????? DeepSeek-TUI EngineHandle?"
+version = "0.5.5"
+description = "pinvou3 智能助手 Tauri 后端（包装 DeepSeek-TUI EngineHandle）"
 authors = ["pinvou"]
 license = ""
 edition = "2021"
 rust-version = "1.88"
-# ? binary ? Tauri app(src/main.rs);src/bin/dump_system_prompt.rs ? dev ??,
-# ????? `cargo run`(?? --bin)???? app,????? bin ???
+# 主 binary 是 Tauri app(src/main.rs);src/bin/dump_system_prompt.rs 是 dev 工具,
+# 加这个键让 `cargo run`(不带 --bin)默认跑主 app,不再因为多 bin 报错。
 default-run = "pinvou3-tauri"
 autobins = false
 
@@ -32,7 +32,7 @@ dev-tools = []
 tauri-build = { version = "2.6.1", features = [] }
 
 [dependencies]
-# workflow ?????(????),include_str ???
+# workflow 整目录内嵌(含二进制),include_str 撑不住
 include_dir = "0.7"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
@@ -42,66 +42,78 @@ tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2.4.2"
 
-# ?? / ??
+# 异步 / 错误
 anyhow = "1.0"
-async-trait = "0.1" # impl ?? ToolSpec(kb_search Agentic ??)
+async-trait = "0.1" # impl 底座 ToolSpec(kb_search Agentic 工具)
 tokio = { version = "1.49", features = ["full"] }
 
-# ?? Agent ?? DeepSeek-TUI ?? LLM ?? + ???? + ?????
-# ?? v0.8.45 ? rebrand?? crate ?? codewhale-tui?? Cargo ? `package`
-# ????????? deepseek-tui??? `use deepseek_tui::*` ????
-# ???????? deepseek-tui bin shim ? back-compat???????
+# 底层 Agent —— DeepSeek-TUI 提供 LLM 调用 + 工具循环 + 流式事件。
+# 上游 v0.8.45 起 rebrand：库 crate 改名 codewhale-tui。用 Cargo 的 `package`
+# 重命名保留本地别名 deepseek-tui，全部 `use deepseek_tui::*` 无需改动
+# （上游自己也保留 deepseek-tui bin shim 做 back-compat，做法一致）。
 deepseek-tui = { path = "../../DeepSeek-TUI/crates/tui", package = "codewhale-tui" }
 
-# Monitor ??vLLM HTTP probe?/v1/models + Prometheus /metrics?
+# 凭证存储复用底座 codewhale-secrets(DefaultKeyringStore + FileKeyringStore 文件回退),
+# 不再在 app 层自建 keyring 封装;headless/无 D-Bus 服务器也能存凭证。
+codewhale-secrets = { path = "../../DeepSeek-TUI/crates/secrets" }
+
+# 复用底座 codewhale-config 的 RouteLimits 类型(填 active_route_limits.context_tokens,
+# 把 vLLM 探测的窗口喂给底座压缩阈值推导)。facade(deepseek-tui)不 re-export 该类型,
+# 直接引 crate;它已在依赖图内,Cargo.lock 几乎不动。
+codewhale-config = { path = "../../DeepSeek-TUI/crates/config" }
+
+# Monitor 用：vLLM HTTP probe（/v1/models + Prometheus /metrics）
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
-# Updater ???? deb ? sha256 ???Windows OTA ??? zip + MD5?
-# ???????? .pptx(zip)?? docProps/thumbnail.jpeg?
+# Updater 用：下载 deb 的 sha256 校验；Windows OTA 包使用 zip + MD5；
+# 产物卡封面也会读 .pptx(zip)里的 docProps/thumbnail.jpeg。
 sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 md5 = "0.7"
 flate2 = "1"
 tar = "0.4"
 
-# Session store ????? RwLock?sync ??? .await ?????
+# Session store 用：阻塞式 RwLock（sync 不需要 .await 拿读写锁）
 parking_lot = "0.12"
 
-# ????SessionMetadata.updated_at ? chrono::Utc::now()????? schema
+# 时间戳：SessionMetadata.updated_at 用 chrono::Utc::now()，对齐上游 schema
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 
-# File watcher??? ~/.pinvou3/sessions/*/workspace/ ??????
-# ??? session.artifacts (?? write_file ?????? exec_shell pandoc ??? docx)
+# File watcher：监听 ~/.pinvou3/sessions/*/workspace/ 新文件产出，
+# 自动入 session.artifacts (覆盖 write_file 之外的工具如 exec_shell pandoc 产出的 docx)
 notify = "6"
 msg_parser = "0.3.0"
 
-# ?????? L0????????? + ?? + ???docs/??????-???????.md?
-# rusqlite bundled ?? ?? SQLite + FTS5??/??????????? libsqlite?
-# ? .deb ???????? file_ingest ?????? recommends ???????
+# 本地知识底座 L0：全系统元数据索引 + 秒搜 + 去重（docs/本地知识底座-产品形态与架构.md）
+# rusqlite bundled —— 自带 SQLite + FTS5（名/路径秒搜），不依赖系统 libsqlite，
+# 对 .deb 离线分发友好（与 file_ingest 二进制依赖降 recommends 的思路一致）。
 rusqlite = { version = "0.31", features = ["bundled"] }
-# ???????(??????)?? symlink ??L0 ?????
+# 全盘遍历：容错(权限不足跳过)、防 symlink 环。L0 扫描器用。
 walkdir = "2"
 
-# ?? embedding?L1 ??????fastembed-rs ??? ONNX ???CPU EP??**??? vLLM**?
-# ??(bge-m3 ONNX)???????UserDefinedEmbeddingModel ???????? HF ?????
+# 本地 embedding（L1 语义检索）：fastembed-rs 进程内 ONNX 推理（CPU EP），**不依赖 vLLM**。
+# 模型(bge-m3 ONNX)用户本地下载，UserDefinedEmbeddingModel 从目录加载，不走 HF 自动下载。
 fastembed = "4"
 
-# ???????file_ingest ???? Rust ? xlsx/xls/ods ?**?????**?
-# ???? LibreOffice CSV ??????????? sheet ???? 90% ???????
-# ?? 4 sheet ????? 418 ???calamine ??? reader ?????? sheet ????
+# 电子表格解析（file_ingest 用）：纯 Rust 读 xlsx/xls/ods 的**全部工作表**。
+# 旧实现走 LibreOffice CSV 只导「活动工作表」，多 sheet 文件会丢 90% 内容（实测散热
+# 报告 4 sheet 只抽到首页 418 字）；calamine 直接按 reader 嗅探格式、逐 sheet 逐行读。
 calamine = "0.26"
 
-# ?????(Phase 2):???? X11 ??????+????,????????+?????
-# ?? src/detach.rs begin_detach_drag;spike example ????Wayland ???? ? ??(Task 8)?
+# CLI 连接器(飞书/企微)扫码授权:把授权 URL 渲染成二维码(SVG data URL,前端 <img> 直显)。
+# 纯 Rust,不依赖各 CLI 自带的 qrcode 子命令(wecom-cli 就没有)。关默认的 image 渲染器
+# (省掉 image crate 依赖),只用 svg 渲染器。
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+
+# 多窗口撕离(Phase 2):运行期读 X11 全局鼠标坐标+左键状态,驱动鬼影跨屏跟随+松手落位。
+# 详见 src/detach.rs begin_detach_drag;spike example 也复用。Wayland 下不可用 → 降级(Task 8)。
 device_query = "2"
 
+# keyring 不再直接依赖 —— 凭证走底座 codewhale-secrets(它内部按平台引 keyring)。
 [target.'cfg(windows)'.dependencies]
-keyring = { version = "3", features = ["windows-native"] }
 windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-keyring = { version = "3", features = ["apple-native"] }
-
-[target.'cfg(all(target_os = "linux", not(target_env = "ohos"), not(target_env = "musl")))'.dependencies]
-keyring = { version = "3", features = ["linux-native-sync-persistent", "crypto-rust"] }
+# Linux webview(webkit2gtk)默认拒绝 getUserMedia → 语音输入点麦克风被拒。
+# 连 permission-request 信号放行 UserMedia(麦克风)请求。版本对齐 wry 0.55 用的 2.0.x。
+[target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = "2.0"

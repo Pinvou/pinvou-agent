@@ -19,13 +19,18 @@ pub mod feedback;
 // L1 harness 的附件 e2e 要走「真实 ingest → 注入分流 → 真 vLLM」全链路:
 // 暴露注入收口函数 + file_ingest。
 pub use commands::build_message_with_attachments;
+// CLI 连接器公共管道(飞书 / 企微共享:起进程 / 扫码 / 事件 / 取消)。
+mod connector_cli;
 pub mod engine;
 pub mod engine_pool;
+mod eip;
 mod feishu;
+mod wecom;
 pub mod file_ingest;
 mod file_watcher;
 mod harness;
 mod knowledge;
+mod local_vllm_setup;
 mod monitor;
 mod os;
 pub mod personas;
@@ -37,6 +42,7 @@ mod voice_asr;
 mod workflow_migrate;
 pub mod workflow_registry;
 mod workflow_runs;
+mod zhidao;
 
 use tauri::Manager;
 
@@ -147,6 +153,25 @@ fn ensure_release_env() {
             env::set_var(k, v);
         }
     }
+
+    // IT 内部 CLI 业务调用走 bin 里的包装脚本(`eip`/`zhidao` 等,内部注入 AGENT_*)——因为模型
+    // shell 工具的环境是白名单消毒过的,AGENT_DEVICE_ID/CREDENTIALS_DIR/NON_INTERACTIVE
+    // 直接继承会被过滤掉(见 eip.rs 顶注 + EIP 接入方案 §2.5)。PATH 在白名单内可继承,
+    // 故把 `~/.pinvou3/bundle/skills/{eip,zhidao}/bin` 前插进程 PATH,模型即可像 lark-cli 一样
+    // 直接调用。目录此刻可能尚未解包,但 PATH 含不存在目录无害。
+    {
+        let skills_dir = crate::bridge::paths::bundle_skills_dir();
+        if let Some(old) = env::var_os("PATH") {
+            let mut dirs = vec![
+                skills_dir.join("eip").join("bin"),
+                skills_dir.join("zhidao").join("bin"),
+            ];
+            dirs.extend(env::split_paths(&old));
+            if let Ok(joined) = env::join_paths(dirs) {
+                env::set_var("PATH", joined);
+            }
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -237,8 +262,8 @@ pub fn run() {
                 }
             }
 
-            // 技能停用开关:启动时把 disabled_skills.json 推给底座进程级过滤器,
-            // 让被停用的技能从首轮 prompt 起就不出现在 ## Skills catalogue。
+            // 技能停用联动:启动时按当前被禁用连接器的 companion_skills 推给底座进程级
+            // 过滤器,让(如公文 MCP 关掉时的)关联技能从首轮 prompt 起就不出现在 ## Skills。
             crate::bridge::skill_marketplace::refresh_disabled_skills();
 
             // Monitor 按需采样：state 只持有 session_uptime，sample 由前端调
@@ -246,8 +271,15 @@ pub fn run() {
             let monitor_state = MonitorState::new();
             app.handle().manage(monitor_state);
 
-            // 飞书连接编排状态(长驻子进程 PID + 取消标志),供 feishu_connect_begin/cancel 用。
-            app.handle().manage(feishu::FeishuConn::default());
+            // CLI 连接器连接编排状态(按连接器 id 存长驻子进程 PID + 取消标志),
+            // 飞书 / 企微共用,供 *_connect_begin / *_cancel 用。
+            app.handle().manage(connector_cli::ConnectorConn::default());
+
+            // EIP 连接编排状态(SSO 登录轮询取消标志),供 eip_connect_begin/cancel 用。
+            app.handle().manage(eip::EipConn::default());
+
+            // 知道连接编排状态(SSO 登录取消标志),供 zhidao_connect_begin/cancel 用。
+            app.handle().manage(zhidao::ZhidaoConn::default());
 
             // 工作流 Phase 可视化:skill 绑定挂在 SessionStore.mode_state 上,
             // per-session 隔离(start_skill_session 命令负责新建 session + bind)。
@@ -259,13 +291,12 @@ pub fn run() {
             // 本地知识底座 L0:全系统元数据索引(秒搜+去重)。这里只 manage,**不自动扫**——
             // 扫描改懒触发:由前端进入文件管理页时增量扫(不进页=零扫描),不常驻 watcher/周期
             // 重扫。文件管理是低频功能,不该长期占资源。
-            // embedding 模型目录:dev 走 env(run-dev.sh);生产=随 deb 打包到资源目录(tauri.conf
-            // bundle.resources)。容错 tauri 资源落点的几种布局,取含 model.onnx 的那个。
-            let kb_model_dir = app.path().resource_dir().ok().and_then(|res| {
-                [res.join("bge-m3"), res.join("resources/bge-m3"), res.join("resources").join("bge-m3")]
-                    .into_iter()
-                    .find(|d| d.join("model.onnx").exists() || d.join("onnx").join("model.onnx").exists())
-            });
+            // embedding 模型**不再随 deb 打包**(deb 瘦 ~559MB):改按需下载到
+            // ~/.pinvou3/knowledge/models/bge-m3(knowledge::model_dir)。这里把下载落点作 fallback
+            // 传给服务;dev 的 env(PINVOU3_KB_EMBED_MODEL_DIR,run-dev.sh 设)优先逻辑仍由
+            // embed::from_env_or_dir 内部保留。模型没装 → 加载失败 → embedder=None → 知识库走
+            // 完全门控(前端 gate),不阻断启动;用户在知识库页下载后 reload_embedder 热加载。
+            let kb_model_dir = knowledge::model_dir();
             // 语音识别引擎 sense-voice-main 随 deb 打包,容错同 bge-m3 的资源布局,
             // 注入给 voice_asr 作为 ~/.pinvou3/asr/ 之外的回退查找目录。
             if let Some(asr_res) = app.path().resource_dir().ok().and_then(|res| {
@@ -276,7 +307,7 @@ pub fn run() {
                 voice_asr::set_bundled_engine_dir(asr_res);
             }
 
-            match knowledge::KnowledgeService::new(&knowledge::default_db_path(), kb_model_dir.as_deref()) {
+            match knowledge::KnowledgeService::new(&knowledge::default_db_path(), Some(&kb_model_dir)) {
                 Ok(svc) => {
                     app.handle().manage(svc);
                     eprintln!("[pinvou3-app] knowledge service ready");
@@ -318,6 +349,22 @@ pub fn run() {
             feishu::feishu_apply_skills,
             feishu::set_feishu_enabled,
             feishu::feishu_skills_state,
+            wecom::wecom_ensure_cli,
+            wecom::wecom_status,
+            wecom::wecom_connect_begin,
+            wecom::wecom_cancel,
+            wecom::wecom_logout,
+            wecom::wecom_apply_skills,
+            wecom::set_wecom_enabled,
+            wecom::wecom_skills_state,
+            eip::eip_status,
+            eip::eip_connect_begin,
+            eip::eip_cancel,
+            eip::eip_logout,
+            zhidao::zhidao_status,
+            zhidao::zhidao_connect_begin,
+            zhidao::zhidao_cancel,
+            zhidao::zhidao_logout,
             commands::get_settings,
             commands::submit_feedback,
             commands::get_effective_model_config,
@@ -327,6 +374,9 @@ pub fn run() {
             commands::get_monitor_snapshot,
             commands::get_backend_status,
             commands::discover_local_vllm,
+            local_vllm_setup::detect_local_vllm_setup,
+            local_vllm_setup::bootstrap_local_vllm,
+            local_vllm_setup::decline_local_vllm_setup,
             commands::list_models,
             commands::save_model,
             commands::delete_model,
@@ -349,8 +399,6 @@ pub fn run() {
             commands::cancel_generation,
             commands::set_disabled_connectors,
             commands::get_disabled_connectors,
-            commands::set_disabled_skills,
-            commands::get_disabled_skills,
             commands::edit_last_turn,
             commands::read_artifact_text,
             commands::list_deliverables,
@@ -443,6 +491,9 @@ pub fn run() {
             knowledge::kb_documents,
             knowledge::kb_remove_document,
             knowledge::kb_embed_info,
+            knowledge::model_download::kb_model_status,
+            knowledge::model_download::kb_model_download,
+            knowledge::model_download::kb_model_cancel,
             commands::session_mount_collection,
             commands::session_unmount_collection,
             commands::session_mounted_collection,

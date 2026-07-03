@@ -5,3 +5,8 @@
 
 # SenseVoice 引擎运行副产物(已钉死写入 ~/.pinvou3/asr,此处兜底)
 fbank_lfr_cmvn_feature.json
+
+# EIP CLI 二进制(IT 内部产物)。Linux ELF 仍不进 git;
+# Windows 版 eip-cli.exe 已提交(让公司 Windows 电脑一次 git pull 即可跑,免手动补)。
+# 发布形态 A 提交 / C 下载 待与 IT 定,见《EIP员工门户接入-开发方案》。合规事后补。
+/resources/bundle/eip/bin/eip-cli

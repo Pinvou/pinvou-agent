@@ -5480,23 +5480,25 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pinvou3-tauri"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "anyhow",
  "async-trait",
  "calamine",
  "chrono",
+ "codewhale-config",
+ "codewhale-secrets",
  "codewhale-tui",
  "device_query",
  "fastembed",
  "flate2",
  "include_dir",
- "keyring",
  "log",
  "md5",
  "msg_parser",
  "notify",
  "parking_lot",
+ "qrcode",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",

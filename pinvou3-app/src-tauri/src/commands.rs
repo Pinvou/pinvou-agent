@@ -350,7 +350,7 @@ fn sanitize_command_error(context: &str, err: impl std::fmt::Display) -> String 
 fn prepare_prefs_for_save(mut prefs: UserPrefs) -> Result<UserPrefs, String> {
     let store = SystemCredentialStore::new();
     let migration = prefs.migrate_plaintext_api_keys_with_store(&store);
-    if !migration.failed_model_ids.is_empty() {
+    if !migration.failed_model_ids.is_empty() || !migration.failed_search_providers.is_empty() {
         return Err("credential store unavailable; please reconfigure API Key".to_string());
     }
     prefs.sanitize_plaintext_api_keys();
@@ -1260,16 +1260,17 @@ pub async fn cancel_generation(
 /// 计算当前应「对模型隐藏」的工具全名**完整列表**(小写)。
 ///
 /// 因 `EnginePool::set_disallowed_all` 是**全量替换** `config.disallowed_tools`,任何调用方
-/// 都必须传完整列表,不能传增量。组成 = 市场连接器开关禁用的工具名 +(知识库为空时)`kb_search`。
-/// 知识库删光文件后 kb_search 进列表 → 模型目录里看不到 → AI 不再宣称能本地检索。
-/// KnowledgeService state 取不到时保守按「无内容」(隐藏 kb_search,宁可少功能不误宣传)。
+/// 都必须传完整列表,不能传增量。组成 = 市场连接器开关禁用的工具名 +(知识库不可用时)`kb_search`。
+/// 知识库"可用" = 有已入库内容 **且** embedding 模型已就绪(semantic_ready)。embedding 模型按需
+/// 下载,没装时知识库走完全门控 → kb_search 进列表 → 模型目录里看不到 → AI 不再宣称能本地检索;
+/// 库删光文件后同理。KnowledgeService state 取不到时保守隐藏(宁可少功能不误宣传)。
 pub fn compute_disallowed_tools(app: &AppHandle) -> Vec<String> {
     let mut tools = crate::bridge::marketplace::disabled_tool_names();
-    let has_content = app
+    let kb_usable = app
         .try_state::<KnowledgeService>()
-        .map(|s| s.has_indexed_content())
+        .map(|s| s.has_indexed_content() && s.semantic_ready())
         .unwrap_or(false);
-    if !has_content {
+    if !kb_usable {
         tools.push("kb_search".to_string());
     }
     tools
@@ -1289,6 +1290,9 @@ pub async fn set_disabled_connectors(
     let app2 = app.clone();
     let tools = tokio::task::spawn_blocking(move || {
         crate::bridge::marketplace::save_disabled_connectors(&connector_ids);
+        // 联动:被禁用连接器的 companion 技能一并从 ## Skills 隐藏(如公文 MCP 关掉 →
+        // government-writing 隐藏)。开回来时同理恢复。
+        crate::bridge::skill_marketplace::refresh_disabled_skills();
         compute_disallowed_tools(&app2)
     })
     .await
@@ -1303,26 +1307,6 @@ pub async fn get_disabled_connectors() -> Result<Vec<String>, String> {
     Ok(crate::bridge::marketplace::load_disabled_connectors())
 }
 
-/// pinvou3 技能开关(全局持久):设置当前被停用的技能(skill_ids = 市场技能 id)。
-/// 落盘 → 映射成落盘 skill 名 → 推给底座进程级过滤器,从 ## Skills catalogue 隐藏。
-/// 空 = 全开。持久:关一次所有新对话/新窗口都继承,直到手动开回。skill 无 per-session
-/// catalog,底座侧是 render 收口过滤器,故无需 pool 广播——一次 set 全 session 下轮生效。
-#[tauri::command]
-pub async fn set_disabled_skills(skill_ids: Vec<String>) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        crate::bridge::skill_marketplace::save_disabled_skills(&skill_ids);
-        crate::bridge::skill_marketplace::refresh_disabled_skills();
-    })
-    .await
-    .map_err(|e| format!("set disabled skills: {e}"))?;
-    Ok(())
-}
-
-/// pinvou3 技能开关:读全局被停用的技能 id 列表(前端启动时加载,初始化开关状态)。
-#[tauri::command]
-pub async fn get_disabled_skills() -> Result<Vec<String>, String> {
-    Ok(crate::bridge::skill_marketplace::load_disabled_skills())
-}
 
 /// 编辑/重发最后一轮 user 消息。
 /// engine 砍掉 session 末尾最近的 user+assistant 后，用 new_message 重发。
@@ -1952,6 +1936,12 @@ fn strip_verbatim(p: &std::path::Path) -> String {
     s.to_string()
 }
 
+fn file_url_from_path(p: &std::path::Path) -> Result<tauri::Url, String> {
+    let normal_path = std::path::PathBuf::from(strip_verbatim(p));
+    tauri::Url::from_file_path(&normal_path)
+        .map_err(|_| format!("convert file url: {}", p.display()))
+}
+
 /// 外部链接白名单：前端 webview 万一被 XSS 时的最后一道防线。
 /// **扩这个列表必须同步加测试**（见 `external_allowlist_*` 单测）。
 const EXTERNAL_URL_ALLOWLIST: &[&str] = &[
@@ -2143,10 +2133,7 @@ pub async fn open_artifact_window(
         return Ok(());
     }
 
-    let url_str = format!("file://{}", p.display());
-    let url = url_str
-        .parse()
-        .map_err(|e| format!("parse file url: {e}"))?;
+    let url = file_url_from_path(&p)?;
     let title = p
         .file_name()
         .and_then(|s| s.to_str())
@@ -2156,6 +2143,7 @@ pub async fn open_artifact_window(
     WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(url))
         .title(title)
         .inner_size(1024.0, 768.0)
+        .center()
         .resizable(true)
         .build()
         .map_err(|e| format!("build artifact window: {e}"))?;
@@ -3983,6 +3971,29 @@ pub async fn list_session_skill_bindings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_url_from_path_encodes_local_artifact_paths() {
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3 file-url test {}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let path = tmp.join("中文 page.html");
+        std::fs::write(&path, "<!doctype html>").unwrap();
+
+        let canon = std::fs::canonicalize(&path).unwrap();
+        let url = file_url_from_path(&canon).unwrap();
+        let text = url.as_str();
+
+        assert_eq!(url.scheme(), "file");
+        assert!(text.starts_with("file://"), "unexpected file URL: {text}");
+        assert!(!text.contains('\\'), "file URL must not contain backslashes: {text}");
+        assert!(!text.contains(r"\\?\"), "file URL must not contain verbatim prefix: {text}");
+        assert!(text.contains("%20"), "spaces should be percent-encoded: {text}");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     /// accept_plan 切 Yolo 后注入的执行指令必须裹住方案全文 + 带"立即执行"信号——
     /// 否则切了模式但 AI 收到一句空指令,不知道要执行什么(切了白切)。

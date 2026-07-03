@@ -222,6 +222,10 @@ pub fn archive_dependency_packages() -> &'static str {
     "p7zip-full"
 }
 
+pub fn asr_bundled_runtime_status() -> Option<bool> {
+    None
+}
+
 pub fn pandoc_missing_message() -> &'static str {
     "文档解析需要 pandoc，请运行: sudo apt install pandoc"
 }

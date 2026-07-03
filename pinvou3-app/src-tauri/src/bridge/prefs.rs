@@ -5,6 +5,7 @@
 //! `settings.json` 或对应的 `PINVOU3_*` 环境变量调整。
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::credential_store::{
     CredentialEditAction, CredentialMigrationResult, CredentialReference, CredentialState,
@@ -177,7 +178,7 @@ impl ModelPreset {
 /// - `Tavily`: 海外 agent 搜索 API(<https://app.tavily.com/> 拿 `tvly-` key,API 实际打
 ///   `api.tavily.com`)。结果是干净抽取的 content 而非 HTML scrape,质量好;但要稳定外网 +
 ///   自带额度,key 必填(留空底座直接报 "requires API key")。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchProvider {
     Bing,
@@ -192,13 +193,86 @@ impl Default for SearchProvider {
     }
 }
 
+impl SearchProvider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SearchProvider::Bing => "bing",
+            SearchProvider::Metaso => "metaso",
+            SearchProvider::Bocha => "bocha",
+            SearchProvider::Baidu => "baidu",
+            SearchProvider::Tavily => "tavily",
+        }
+    }
+
+    pub fn supports_api_key(self) -> bool {
+        !matches!(self, SearchProvider::Bing)
+    }
+
+    pub fn env_key_names(self) -> &'static [&'static str] {
+        match self {
+            SearchProvider::Metaso => &["METASO_API_KEY"],
+            SearchProvider::Baidu => &["BAIDU_SEARCH_API_KEY"],
+            SearchProvider::Bing | SearchProvider::Bocha | SearchProvider::Tavily => &[],
+        }
+    }
+
+    pub fn credential_reference(self) -> CredentialReference {
+        CredentialReference::for_search_provider(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SearchCredential {
+    #[serde(default, skip_serializing)]
+    pub api_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_ref: Option<CredentialReference>,
+    #[serde(default)]
+    pub credential_state: CredentialState,
+    #[serde(default)]
+    pub has_secret: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_action: Option<CredentialEditAction>,
+}
+
+impl SearchCredential {
+    pub fn clear_plaintext_key(&mut self) {
+        self.api_key.clear();
+        self.credential_action = None;
+    }
+
+    pub fn mark_configured(&mut self, reference: CredentialReference) {
+        self.credential_ref = Some(reference);
+        self.credential_state = CredentialState::Configured;
+        self.has_secret = true;
+        self.clear_plaintext_key();
+    }
+
+    pub fn mark_missing(&mut self) {
+        self.credential_ref = None;
+        self.credential_state = CredentialState::Missing;
+        self.has_secret = false;
+        self.clear_plaintext_key();
+    }
+
+    pub fn mark_unavailable(&mut self) {
+        self.credential_state = CredentialState::Unavailable;
+        self.has_secret = self.credential_ref.is_some();
+        self.clear_plaintext_key();
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct SearchPrefs {
     pub provider: SearchProvider,
     /// 当 `provider = Metaso` 时:None 走底座内置共享 key。
     /// 当 `provider = Bocha`/`Baidu` 时:None 会让 web_search 直接报错(必填)。
+    #[serde(default, skip_serializing)]
     pub api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub credentials: BTreeMap<SearchProvider, SearchCredential>,
 }
 
 impl SearchPrefs {
@@ -215,7 +289,12 @@ impl SearchPrefs {
     }
 
     pub fn normalize(&mut self) {
-        self.api_key = self.normalized_api_key();
+        self.api_key = None;
+        self.credentials
+            .retain(|_, credential| credential.has_secret || credential.credential_ref.is_some());
+        for credential in self.credentials.values_mut() {
+            credential.clear_plaintext_key();
+        }
     }
 }
 
@@ -299,6 +378,14 @@ pub struct AdvancedPrefs {
     /// 全局默认/当前激活模型 id(新建会话继承它)。None = 回退列表首条。
     #[serde(default)]
     pub active_model_id: Option<String>,
+    /// MegaCube(GB10) 本地大模型一键引导是否成功跑过一次。
+    /// 置真后首屏引导框永不再弹(见 `local_vllm_setup::detect`)。引导失败/被跳过不置真。
+    #[serde(default)]
+    pub local_vllm_bootstrapped: bool,
+    /// 用户点「不再提醒 → 确认」婉拒预装本地大模型:置真后开机引导框不再自动弹。
+    /// 与 bootstrapped 区别:婉拒是"我先不要",仍可在设置→模型管理「检测本机 vLLM」里手动启用。
+    #[serde(default)]
+    pub local_vllm_setup_declined: bool,
 }
 
 /// 用户偏好。`settings.json` 顶层结构。
@@ -467,14 +554,109 @@ impl UserPrefs {
             self.advanced.custom_api_key = None;
         }
 
+        if let Some(key) = self.search.normalized_api_key() {
+            if self.search.provider.supports_api_key() {
+                let credential = self
+                    .search
+                    .credentials
+                    .entry(self.search.provider)
+                    .or_default();
+                credential.api_key = key;
+                credential.credential_action = Some(CredentialEditAction::Replace);
+            }
+            self.search.api_key = None;
+            result.settings_sanitized = true;
+        }
+
+        for (provider, credential) in &mut self.search.credentials {
+            let action = credential.credential_action.unwrap_or_else(|| {
+                if credential.api_key.trim().is_empty() {
+                    CredentialEditAction::KeepExisting
+                } else {
+                    CredentialEditAction::Replace
+                }
+            });
+            match action {
+                CredentialEditAction::KeepExisting => {
+                    if credential.credential_ref.is_some() {
+                        credential.has_secret = true;
+                        if credential.credential_state == CredentialState::Missing {
+                            credential.credential_state = CredentialState::Configured;
+                        }
+                    }
+                    credential.clear_plaintext_key();
+                }
+                CredentialEditAction::Replace => {
+                    let key = credential.api_key.trim().to_string();
+                    if key.is_empty() {
+                        credential.mark_missing();
+                        result.settings_sanitized = true;
+                    } else {
+                        let reference = provider.credential_reference();
+                        match store.set(&reference, &key) {
+                            Ok(()) => {
+                                credential.mark_configured(reference);
+                                result.migrated_count += 1;
+                                result.settings_sanitized = true;
+                            }
+                            Err(err) => {
+                                eprintln!(
+                                    "[pinvou3-app] search credential migration failed for {}: {}",
+                                    provider.as_str(),
+                                    err.user_message()
+                                );
+                                credential.mark_unavailable();
+                                result
+                                    .failed_search_providers
+                                    .push(provider.as_str().to_string());
+                            }
+                        }
+                    }
+                }
+                CredentialEditAction::Delete => {
+                    if let Some(reference) = credential.credential_ref.clone().or_else(|| {
+                        provider
+                            .supports_api_key()
+                            .then(|| provider.credential_reference())
+                    }) {
+                        if let Err(err) = store.delete(&reference) {
+                            eprintln!(
+                                "[pinvou3-app] search credential delete failed for {}: {}",
+                                provider.as_str(),
+                                err.user_message()
+                            );
+                            credential.mark_unavailable();
+                            result
+                                .failed_search_providers
+                                .push(provider.as_str().to_string());
+                            continue;
+                        }
+                    }
+                    credential.mark_missing();
+                    result.settings_sanitized = true;
+                }
+            }
+        }
+
         result
     }
 
     pub fn sanitize_plaintext_api_keys(&mut self) {
+        self.search.api_key = None;
+        for credential in self.search.credentials.values_mut() {
+            credential.clear_plaintext_key();
+            if credential.credential_ref.is_some()
+                && credential.credential_state == CredentialState::Missing
+            {
+                credential.credential_state = CredentialState::Configured;
+                credential.has_secret = true;
+            }
+        }
         self.advanced.custom_api_key = None;
         for model in &mut self.advanced.saved_models {
             model.clear_plaintext_key();
-            if model.credential_ref.is_some() && model.credential_state == CredentialState::Missing {
+            if model.credential_ref.is_some() && model.credential_state == CredentialState::Missing
+            {
                 model.credential_state = CredentialState::Configured;
                 model.has_secret = true;
             }
@@ -500,6 +682,30 @@ impl UserPrefs {
                 Ok(Some(value)) if !value.trim().is_empty() => model.mark_configured(reference),
                 Ok(_) => model.mark_missing(),
                 Err(_) => model.mark_unavailable(),
+            }
+        }
+
+        for (provider, credential) in &mut self.search.credentials {
+            if provider.env_key_names().iter().any(|name| {
+                std::env::var(name)
+                    .map(|v| !v.trim().is_empty())
+                    .unwrap_or(false)
+            }) {
+                credential.credential_state = CredentialState::EnvOverride;
+                credential.has_secret = credential.credential_ref.is_some();
+                credential.clear_plaintext_key();
+                continue;
+            }
+            let Some(reference) = credential.credential_ref.clone() else {
+                credential.mark_missing();
+                continue;
+            };
+            match store.get(&reference) {
+                Ok(Some(value)) if !value.trim().is_empty() => {
+                    credential.mark_configured(reference)
+                }
+                Ok(_) => credential.mark_missing(),
+                Err(_) => credential.mark_unavailable(),
             }
         }
     }
@@ -743,13 +949,15 @@ mod tests {
             search: SearchPrefs {
                 provider: SearchProvider::Metaso,
                 api_key: Some("mk-user-own-key".to_string()),
+                ..Default::default()
             },
             ..Default::default()
         };
         let json = serde_json::to_string(&prefs).unwrap();
         let parsed: UserPrefs = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.search.provider, SearchProvider::Metaso);
-        assert_eq!(parsed.search.api_key.as_deref(), Some("mk-user-own-key"));
+        assert!(parsed.search.api_key.is_none());
+        assert!(!json.contains("mk-user-own-key"));
     }
 
     #[test]
@@ -758,6 +966,7 @@ mod tests {
             let prefs = SearchPrefs {
                 provider: SearchProvider::Metaso,
                 api_key: raw,
+                ..Default::default()
             };
             assert!(prefs.normalized_api_key().is_none());
         }
@@ -765,6 +974,7 @@ mod tests {
         let prefs = SearchPrefs {
             provider: SearchProvider::Metaso,
             api_key: Some("  mk-user-key  ".to_string()),
+            ..Default::default()
         };
         assert_eq!(prefs.normalized_api_key().as_deref(), Some("mk-user-key"));
     }
@@ -782,6 +992,7 @@ mod tests {
             search: SearchPrefs {
                 provider: SearchProvider::Metaso,
                 api_key: Some(" \n\t ".to_string()),
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -798,6 +1009,41 @@ mod tests {
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
+    }
+
+    #[test]
+    fn migrate_search_plaintext_key_to_provider_credential() {
+        let store = MemoryCredentialStore::default();
+        let mut prefs = UserPrefs {
+            search: SearchPrefs {
+                provider: SearchProvider::Metaso,
+                api_key: Some("mk-search-secret-1234567890".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let result = prefs.migrate_plaintext_api_keys_with_store(&store);
+
+        assert_eq!(result.migrated_count, 1);
+        assert!(result.settings_sanitized);
+        assert!(prefs.search.api_key.is_none());
+        let credential = prefs
+            .search
+            .credentials
+            .get(&SearchProvider::Metaso)
+            .expect("metaso credential");
+        let reference = credential
+            .credential_ref
+            .clone()
+            .expect("credential reference");
+        assert_eq!(credential.credential_state, CredentialState::Configured);
+        assert!(credential.has_secret);
+        assert!(credential.api_key.is_empty());
+        assert_eq!(
+            store.get(&reference).unwrap().as_deref(),
+            Some("mk-search-secret-1234567890")
+        );
     }
 
     #[test]
