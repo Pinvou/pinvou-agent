@@ -1,0 +1,20 @@
+#!/usr/bin/env sh
+set -eu
+
+repo_root="$(git rev-parse --show-toplevel)"
+validator="$repo_root/scripts/validate-commit-msg.py"
+
+if command -v python3 >/dev/null 2>&1; then
+  exec python3 "$validator" "$1"
+fi
+
+if command -v python >/dev/null 2>&1; then
+  exec python "$validator" "$1"
+fi
+
+if command -v py >/dev/null 2>&1; then
+  exec py -3 "$validator" "$1"
+fi
+
+echo "Python is required to validate commit messages. See docs/Git Commit 信息规范文档.md" >&2
+exit 1

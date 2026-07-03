@@ -38,9 +38,23 @@ fork patch 指纹**随 patch 同 PR**——新增 / 改 fork patch 必须**同�
 
 **不拆事后 catch-up PR**(出现 catch-up PR = 原始 PR 漏了指纹)。submodule gitlink 要焊到 fork 跟踪分支(`pinvou3-clean`)上、不是游离的 PR 分支 commit。细节见 `CLAUDE.md` 约束 1 + `docs/fork-policy.md`。
 
-## commit message
+## commit message（强制）
 
-Conventional Commits:`feat:` / `fix:` / `chore:` / `docs:` / `test:` / `ci:`,**聚焦 why、1–2 句**,不罗列文件。
+本项目强制遵守 [`docs/Git Commit 信息规范文档.md`](docs/Git%20Commit%20信息规范文档.md)。任何方式发起的 commit 都必须使用规范格式：
+
+```text
+<type>[可选作用域]: <中文简短描述>
+```
+
+允许的 `type` 仅包括：`feat` / `fix` / `refactor` / `perf` / `docs` / `style` / `test` / `build` / `ci` / `chore` / `revert`。
+
+本仓库提供 `.githooks/commit-msg` 强制校验本地提交，并由 CI 校验 PR/push 提交信息。首次克隆后执行一次：
+
+```bash
+git config core.hooksPath .githooks
+```
+
+> 注：本地 `git commit --no-verify` 可绕过客户端 hook，但 PR/主分支 CI 仍会拦截不合规提交；需要绝对强制时，应配合远端分支保护把该 CI 设为 required check。
 
 ## (可选)本地 pre-push hook
 

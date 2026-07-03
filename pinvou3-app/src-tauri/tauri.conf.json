@@ -1,7 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "pinvou3",
-  "version": "0.5.5",
+  "mainBinaryName": "pinvou3-tauri",
+  "version": "0.5.6",
   "identifier": "com.pinvou.pinvou3",
   "build": {
     "frontendDist": "../src"
@@ -61,6 +62,15 @@
           "TesseractPathEnvironment",
           "SevenZipPathEnvironment"
         ]
+      },
+      "nsis": {
+        "installMode": "perMachine",
+        "installerHooks": "resources/windows/nsis/installer-hooks.nsh",
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
+        "compression": "lzma"
       }
     },
     "linux": {

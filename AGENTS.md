@@ -36,6 +36,7 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 - `docs/验证报告-qwen3.6-deepseek-tui.md` — 阶段 A 实证报告
 - `process.md` — 跨阶段待办 / 长期搁置项
 - git log + commit message — 决策记录与已知坑修复
+- `docs/Git Commit 信息规范文档.md` — **强制** Git commit 信息规范。任何方式发起的 commit 都必须符合该规范；本仓库通过 `.githooks/commit-msg` 与 CI 校验执行。
 
 <!-- SPECKIT START -->
 如需了解当前 Spec Kit feature 使用的技术、项目结构、shell 命令和其他重要信息，请阅读

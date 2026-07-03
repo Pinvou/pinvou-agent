@@ -1,12 +1,13 @@
 {
   "name": "pinvou3-app",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "description": "pinvou3 智能助手桌面应用（Tauri 2.0 + DeepSeek-TUI + Qwen3.6）",
   "private": true,
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
-    "build": "tauri build"
+    "build": "tauri build",
+    "build:nsis": "tauri build --features dev-tools --bundles nsis"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0"
