@@ -4436,6 +4436,17 @@
         }
       }, [chatItems.length, chatItems[chatItems.length - 1]?.html, composerH]);
 
+      // 切换/加载会话:无条件把新会话滚到最底部(最新消息)并复位 autoScrollRef。
+      // 上面的流式 auto-scroll 复用了跨会话持久的 autoScrollRef + 不 remount 的滚动容器,
+      // 若切走前在旧会话翻过历史(autoScrollRef=false),切来的新会话会命中 else 分支、停在
+      // 残留 scrollTop 半空处。按 activeSessionId 单独滚底,且在流式 effect 之后声明→后跑覆盖它。
+      useEffect(() => {
+        const el = scrollRef.current;
+        autoScrollRef.current = true;
+        setShowScrollBottom(false);
+        if (el) el.scrollTop = el.scrollHeight;
+      }, [bs && bs.activeSessionId]);
+
       // 安装工具后新建会话 → 本地显示欢迎卡片（不发 LLM query，不浪费 token）。
       // welcomeToolId 是一次性引导态,必须跟随会话身份:只有"装完工具"(justInstalledTool 非
       // null)才显示;其余任何新建对话/切换会话(activeSessionId 变)都清掉,否则残留的工具卡会
