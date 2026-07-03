@@ -164,7 +164,10 @@ mod tests {
 
     #[test]
     fn nvidia_smi_candidates_starts_with_generic_command() {
-        assert_eq!(nvidia_smi_candidates().first().copied(), Some("nvidia-smi"));
+        let candidates = nvidia_smi_candidates();
+        if !candidates.is_empty() {
+            assert_eq!(candidates.first().copied(), Some("nvidia-smi"));
+        }
     }
 
     #[test]

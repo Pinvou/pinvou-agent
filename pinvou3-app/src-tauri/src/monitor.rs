@@ -285,28 +285,17 @@ pub async fn sample_all(state: &MonitorState, vllm_upstream: &str, configured_mo
     }
 }
 
-/// 调 `nvidia-smi` 查 GPU。本机没 GPU/没装 nvidia-smi → None。
-/// 桌面环境启动时 PATH 可能不含 nvidia-smi，加常见绝对路径 fallback。
+/// Return GPU telemetry when the current platform provides NVIDIA probe candidates.
 fn gpu_snapshot() -> Option<GpuSnapshot> {
     let args = [
         "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw",
         "--format=csv,noheader,nounits",
     ];
-    // 先试 PATH 查找，再试常见绝对路径
-    let out = std::process::Command::new("nvidia-smi")
-        .args(args)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .or_else(|| {
-            std::process::Command::new("/usr/bin/nvidia-smi")
-                .args(args)
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-        })
-        .or_else(|| {
-            std::process::Command::new("/usr/local/bin/nvidia-smi")
+    // Try platform-provided probe candidates in order.
+    let out = crate::os::nvidia_smi_candidates()
+        .into_iter()
+        .find_map(|candidate| {
+            crate::process::HiddenCommand::new(candidate)
                 .args(args)
                 .output()
                 .ok()
