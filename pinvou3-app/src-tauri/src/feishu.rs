@@ -77,7 +77,18 @@ pub async fn feishu_ensure_cli() -> Result<Value, String> {
         // 未装才装,带 180s 超时防卡死(网络 / 代理)。
         let mut c = FEISHU_CTX.base_cmd("npx");
         c.args(["-y", "@larksuite/cli@latest", "install"]);
-        let ok = cc::run_with_timeout(c, 180)?;
+        let mut ok = cc::run_with_timeout(c, 180)?;
+        if ok && !lark_cli_present() {
+            // `lark-cli install` can report success when the npm package exists
+            // but the global bin shim is missing. A direct global install repairs
+            // the shim that later `config init --new` needs to spawn.
+            let mut fallback = FEISHU_CTX.base_cmd("npm");
+            fallback.args(["install", "-g", "@larksuite/cli"]);
+            ok = cc::run_with_timeout(fallback, 180)?;
+        }
+        if ok && !lark_cli_present() {
+            ok = false;
+        }
         Ok::<Value, String>(json!({ "ok": ok, "already": false }))
     })
     .await
