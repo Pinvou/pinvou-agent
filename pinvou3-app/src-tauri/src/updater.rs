@@ -1,6 +1,6 @@
 //! 应用内升级：
 //! - Linux：检查 latest.json → 下载 deb（sha256 校验）→ pkexec apt 安装 → 重启。
-//! - Windows：查询 H3C OTA → 下载 zip（MD5 校验）→ 解析 FullPack/OtaInfo → 启动 MSI → 下次启动反馈。
+//! - Windows：查询 H3C OTA → 下载 zip（MD5 校验）→ 解析 FullPack/OtaInfo → 启动 MSI/NSIS 安装器 → 下次启动反馈。
 //!
 //! 设计要点：
 //! - **更新源是静态 HTTP**：服务器只托管 `latest.json` + deb 文件，零服务端逻辑。
@@ -95,7 +95,7 @@ pub async fn check_for_update() -> Result<UpdateInfo, String> {
 
 /// 下载更新包到 `~/.pinvou3/updates/`，流式写盘 + 校验，进度走
 /// `update:progress` 事件。Linux 返回 deb 路径字符串；Windows 返回
-/// 已解析出的 zip/MSI 信息对象。
+/// 已解析出的 zip/Windows 安装器信息对象。
 #[tauri::command]
 pub async fn download_update(
     info: UpdateInfo,
@@ -104,7 +104,7 @@ pub async fn download_update(
     crate::os::download_update_package(&info, app, &DOWNLOAD_CANCEL, DOWNLOAD_STALL_TIMEOUT).await
 }
 
-/// 安装下载好的更新包。Linux 走 pkexec apt；Windows 启动 MSI，成功启动后退出进程。
+/// 安装下载好的更新包。Linux 走 pkexec apt；Windows 启动 MSI/NSIS 安装器，成功启动后退出进程。
 #[tauri::command]
 pub async fn install_update(
     deb_path: Option<String>,

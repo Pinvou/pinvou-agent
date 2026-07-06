@@ -14,6 +14,12 @@ use zip::ZipArchive;
 use super::windows_domain_bootstrap;
 use crate::bridge::paths;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowsInstallerKind {
+    Msi,
+    NsisExe,
+}
+
 const DEFAULT_SOFTWARE_ID: &str = "Pinvou3_Win";
 const DEFAULT_SOFTWARE_TYPE: &str = "Pinvou3";
 const OTA_SOFTWARE_ID_ENV: &str = "PINVOU3_OTA_SOFTWARE_ID";
@@ -426,7 +432,8 @@ pub fn write_install_started_record(
     installer_path: &Path,
 ) -> Result<(), String> {
     let updates_dir = ensure_updates_dir()?;
-    let installer = canonical_inside(installer_path, &updates_dir, "MSI 安装文件")?;
+    let installer = canonical_inside(installer_path, &updates_dir, "Windows 安装文件")?;
+    installer_kind(&installer)?;
     let record = UpdateFeedbackRecord {
         software_identification: context.software_id.clone(),
         sn: context.sn.clone(),
@@ -452,17 +459,11 @@ pub fn write_install_started_record(
 
 pub fn install_update_package(path: &Path) -> Result<(), String> {
     let updates_dir = ensure_updates_dir()?;
-    let canon = canonical_inside(path, &updates_dir, "MSI 安装文件")?;
-    if canon
-        .extension()
-        .is_none_or(|x| !x.eq_ignore_ascii_case("msi"))
-    {
-        return Err("非法路径：只接受 .msi 文件".to_string());
-    }
+    let canon = canonical_inside(path, &updates_dir, "Windows 安装文件")?;
+    let kind = installer_kind(&canon)?;
     let installer_arg = windows_tool_path(&canon);
-    let args = msi_install_args(&installer_arg);
     crate::process::HiddenCommand::new("powershell.exe")
-        .args(update_installer_launcher_args(&args))
+        .args(update_installer_launcher_args(kind, &installer_arg))
         .spawn()
         .map_err(|e| format!("Windows 安装器提权启动失败: {e}"))?;
     Ok(())
@@ -483,8 +484,7 @@ pub fn install_downloaded_update(
     installer_path: Option<String>,
     info: Option<crate::updater::UpdateInfo>,
 ) -> Result<bool, String> {
-    let installer_path =
-        installer_path.ok_or_else(|| "缺少 Windows MSI 安装文件路径".to_string())?;
+    let installer_path = installer_path.ok_or_else(|| "缺少 Windows 安装文件路径".to_string())?;
     let info = info.ok_or_else(|| "缺少 Windows 更新信息，无法写入反馈记录".to_string())?;
     install_prepared_update(&installer_path, &info)?;
     Ok(true)
@@ -881,14 +881,51 @@ fn msi_install_args(installer: &Path) -> Vec<OsString> {
     ]
 }
 
-fn update_installer_launcher_args(msi_args: &[OsString]) -> Vec<OsString> {
-    let argument_list = msi_args
+fn nsis_install_args(_installer: &Path) -> Vec<OsString> {
+    vec![OsString::from("/S")]
+}
+
+fn installer_kind(installer: &Path) -> Result<WindowsInstallerKind, String> {
+    match installer
+        .extension()
+        .and_then(|x| x.to_str())
+        .map(|x| x.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("msi") => Ok(WindowsInstallerKind::Msi),
+        Some("exe") => Ok(WindowsInstallerKind::NsisExe),
+        _ => Err("非法路径：只接受 .msi 或 .exe Windows 安装文件".to_string()),
+    }
+}
+
+fn installer_label(kind: WindowsInstallerKind) -> &'static str {
+    match kind {
+        WindowsInstallerKind::Msi => "MSI 安装文件",
+        WindowsInstallerKind::NsisExe => "NSIS 安装文件",
+    }
+}
+
+fn is_supported_installer_name(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.ends_with(".msi") || lower.ends_with(".exe")
+}
+
+fn update_installer_launcher_args(kind: WindowsInstallerKind, installer: &Path) -> Vec<OsString> {
+    let (file_path, install_args) = match kind {
+        WindowsInstallerKind::Msi => (OsString::from("msiexec.exe"), msi_install_args(installer)),
+        WindowsInstallerKind::NsisExe => (
+            installer.as_os_str().to_os_string(),
+            nsis_install_args(installer),
+        ),
+    };
+    let file_path = powershell_single_quoted(&file_path.to_string_lossy());
+    let argument_list = install_args
         .iter()
         .map(|arg| powershell_single_quoted(&arg.to_string_lossy()))
         .collect::<Vec<_>>()
         .join(", ");
     let mut script = format!(
-        "$ErrorActionPreference = 'Stop'; $p = Start-Process -FilePath 'msiexec.exe' -ArgumentList @({argument_list}) -Verb RunAs -Wait -PassThru; "
+        "$ErrorActionPreference = 'Stop'; $p = Start-Process -FilePath {file_path} -ArgumentList @({argument_list}) -Verb RunAs -Wait -PassThru; "
     );
     script.push_str("$code = $p.ExitCode; if ($code -eq 0 -or $code -eq 3010) { ");
     script.push_str("$installDir = $null; ");
@@ -941,25 +978,28 @@ fn locate_installer(
     let meta = software
         .file_meta_infos
         .iter()
-        .find(|m| {
-            m.file_path.to_ascii_lowercase().ends_with(".msi")
-                || m.file_name.to_ascii_lowercase().ends_with(".msi")
+        .find(|m| is_supported_installer_name(&m.file_path))
+        .or_else(|| {
+            software
+                .file_meta_infos
+                .iter()
+                .find(|m| is_supported_installer_name(&m.file_name))
         })
         .cloned()
         .or_else(|| {
-            attach_data_msi(software).map(|name| FileMetaInfo {
+            attach_data_installer(software).map(|name| FileMetaInfo {
                 file_name: name.clone(),
                 file_path: name,
                 hash: String::new(),
                 ignore_hash: true,
             })
         })
-        .ok_or_else(|| "OtaInfo.json 未声明 MSI 安装文件".to_string())?;
+        .ok_or_else(|| "OtaInfo.json 未声明 Windows 安装文件（.msi 或 .exe）".to_string())?;
 
     if !software.software_version.is_empty() && software.software_version != context.update_version
     {
         return Err(format!(
-            "MSI 软件版本不匹配：期望 {} 实际 {}",
+            "Windows 安装包软件版本不匹配：期望 {} 实际 {}",
             context.update_version, software.software_version
         ));
     }
@@ -982,27 +1022,23 @@ fn locate_installer(
     let installer = candidates
         .iter()
         .find(|p| p.exists())
-        .ok_or_else(|| "清单指向的 MSI 文件不存在".to_string())?;
-    let installer = canonical_inside(installer, full_dir, "MSI 安装文件")?;
-    if installer
-        .extension()
-        .is_none_or(|x| !x.eq_ignore_ascii_case("msi"))
-    {
-        return Err("清单指向的安装文件不是 .msi".to_string());
-    }
+        .ok_or_else(|| "清单指向的 Windows 安装文件不存在".to_string())?;
+    let installer = canonical_inside(installer, full_dir, "Windows 安装文件")?;
+    let kind = installer_kind(&installer)
+        .map_err(|_| "清单指向的安装文件不是 .msi 或 .exe".to_string())?;
     if !meta.ignore_hash && !meta.hash.trim().is_empty() {
-        verify_md5(&installer, &meta.hash, "MSI 安装文件")?;
+        verify_md5(&installer, &meta.hash, installer_label(kind))?;
     }
     Ok(installer)
 }
 
-fn attach_data_msi(software: &PackageSoftwareInfo) -> Option<String> {
+fn attach_data_installer(software: &PackageSoftwareInfo) -> Option<String> {
     let raw = software.attach_data.as_ref()?.trim();
     if raw.is_empty() {
         return None;
     }
     let parsed: AttachData = serde_json::from_str(raw).ok()?;
-    if parsed.exe_name.to_ascii_lowercase().ends_with(".msi") {
+    if is_supported_installer_name(&parsed.exe_name) {
         Some(parsed.exe_name)
     } else {
         None
@@ -1173,6 +1209,36 @@ mod tests {
     }
 
     #[test]
+    fn locate_nsis_exe_from_software_id_and_file_meta() {
+        let root = temp_root("locate-nsis");
+        let exe_dir = root.join("Files/Pinvou3");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        let exe = exe_dir.join("pinvou3_0.4.4_x64-setup.exe");
+        std::fs::write(&exe, b"fake-nsis").unwrap();
+        let hash = file_md5(&exe).unwrap();
+        let ota = OtaPackageInfo {
+            software_infos: vec![PackageSoftwareInfo {
+                software_id: DEFAULT_SOFTWARE_ID.to_string(),
+                software_version: "0.4.4.0".to_string(),
+                software_type: DEFAULT_SOFTWARE_TYPE.to_string(),
+                source_dir: "Pinvou3".to_string(),
+                file_meta_infos: vec![FileMetaInfo {
+                    file_name: "pinvou3_0.4.4_x64-setup.exe".to_string(),
+                    file_path: "pinvou3_0.4.4_x64-setup.exe".to_string(),
+                    hash,
+                    ignore_hash: false,
+                }],
+                attach_data: None,
+            }],
+        };
+        assert_eq!(
+            locate_installer(&ota, &root, &context()).unwrap(),
+            exe.canonicalize().unwrap()
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn locate_msi_rejects_traversal_and_wrong_extension() {
         let root = temp_root("reject-msi");
         let ota = OtaPackageInfo {
@@ -1287,12 +1353,20 @@ mod tests {
     }
 
     #[test]
+    fn nsis_install_args_use_silent_mode() {
+        let args: Vec<String> = nsis_install_args(Path::new(r"C:\pinvou3-setup.exe"))
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, vec!["/S"]);
+    }
+
+    #[test]
     fn update_installer_launcher_uses_runas_wait_and_quotes_args() {
-        let launcher_args = update_installer_launcher_args(&[
-            OsString::from("/i"),
-            OsString::from(r"C:\updates\pinvou3's.msi"),
-            OsString::from("/passive"),
-        ]);
+        let launcher_args = update_installer_launcher_args(
+            WindowsInstallerKind::Msi,
+            Path::new(r"C:\updates\pinvou3's.msi"),
+        );
         let rendered = launcher_args
             .into_iter()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -1301,10 +1375,31 @@ mod tests {
         assert!(rendered.contains("-WindowStyle Hidden"));
         assert!(rendered.contains("-Verb RunAs"));
         assert!(rendered.contains("-Wait"));
+        assert!(rendered.contains("msiexec.exe"));
         assert!(rendered.contains("'C:\\updates\\pinvou3''s.msi'"));
         assert!(!rendered.contains("'REINSTALL=ALL'"));
         assert!(rendered.contains("'/passive'"));
         assert!(rendered.contains("HKCU:\\Software\\pinvou\\pinvou3"));
+        assert!(rendered.contains("pinvou3-tauri.exe"));
+    }
+
+    #[test]
+    fn update_installer_launcher_supports_nsis_exe() {
+        let launcher_args = update_installer_launcher_args(
+            WindowsInstallerKind::NsisExe,
+            Path::new(r"C:\updates\pinvou3's-setup.exe"),
+        );
+        let rendered = launcher_args
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(rendered.contains("-WindowStyle Hidden"));
+        assert!(rendered.contains("-Verb RunAs"));
+        assert!(rendered.contains("-Wait"));
+        assert!(rendered.contains("Start-Process -FilePath 'C:\\updates\\pinvou3''s-setup.exe'"));
+        assert!(rendered.contains("'/S'"));
+        assert!(!rendered.contains("msiexec.exe"));
         assert!(rendered.contains("pinvou3-tauri.exe"));
     }
 
@@ -1349,6 +1444,55 @@ mod tests {
 
         let prepared = prepare_update_package(&package, &context()).unwrap();
         assert!(prepared.installer_path.ends_with(msi_name));
+
+        let _ = std::fs::remove_dir_all(&root);
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+    }
+
+    #[test]
+    fn prepare_update_package_accepts_nsis_full_pack_zip() {
+        let _g = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let root = temp_root("nsis-full-pack");
+        std::env::set_var("PINVOU3_HOME", &root);
+        let updates = paths::updates_dir();
+        std::fs::create_dir_all(&updates).unwrap();
+
+        let exe_name = "pinvou3_0.4.4_x64-setup.exe";
+        let exe_bytes = b"fake-nsis";
+        let exe_hash = format!("{:x}", md5::compute(exe_bytes));
+        let ota = format!(
+            r#"{{
+                "softwareInfos": [{{
+                    "softwareId": "Pinvou3_Win",
+                    "softwareVersion": "0.4.4.0",
+                    "softwareType": "Pinvou3",
+                    "sourceDir": "Pinvou3",
+                    "fileMetaInfos": [{{
+                        "fileName": "{exe_name}",
+                        "filePath": "{exe_name}",
+                        "hash": "{exe_hash}",
+                        "ignoreHash": false
+                    }}]
+                }}]
+            }}"#
+        );
+        let package = updates.join("pinvou3_0.4.4.0_windows_nsis.zip");
+        write_zip(
+            &package,
+            &[
+                ("OtaInfo.json", ota.as_bytes()),
+                (&format!("Files/Pinvou3/{exe_name}"), exe_bytes),
+            ],
+        );
+
+        let prepared = prepare_update_package(&package, &context()).unwrap();
+        assert!(prepared.installer_path.ends_with(exe_name));
 
         let _ = std::fs::remove_dir_all(&root);
         match prev {
