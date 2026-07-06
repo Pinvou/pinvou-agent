@@ -6342,6 +6342,9 @@
       const featuredScrollRef = useRef(null);
       const [isFeaturedHovered, setIsFeaturedHovered] = useState(false);
       const [toolStates, setToolStates] = useState({});
+      // 配套技能 id → 所属 MCP id(由 list_marketplace_tools 的 companion_skills 反建,manifest 单一真源)。
+      // 有配套 MCP 的技能卡据此把状态/装卸联动到该 MCP,避免命名不一致(government-writing↔gongwen)时状态分叉。
+      const [skillToMcp, setSkillToMcp] = useState({});
       const [busyId, setBusyId] = useState(null);
       const [alert, setAlert] = useState({ visible: false, loading: false, title: '', subtitle: '', isInstall: false, isError: false });
       const [configDialog, setConfigDialog] = useState(null); // { backendId, name, fields }
@@ -6511,8 +6514,11 @@
       // 技能卡 = 预置(合并安装状态) + 用户上传(后端动态返回,默认图标)
       const presetSkills = tsSkillsData.map(s => {
         if (s.builtin) return { ...s, installed: true };
-        // 工具型技能(如 PPT=pptx)按 marketplace 工具安装态;真技能按 skill 后端
-        if (tsToolsData.some(t => t.backendId === s.backendId)) return { ...s, installed: !!toolStates[s.backendId] };
+        // 有配套 MCP 的技能(公文=gongwen,manifest companion_skills 声明)→ 跟随该 MCP 工具态;
+        // 同名工具的展示别名(PPT=pptx)同样跟工具态;都不命中才读独立 skill 后端(纯技能/上传)。
+        const mcpId = skillToMcp[s.backendId]
+          || (tsToolsData.some(t => t.backendId === s.backendId) ? s.backendId : null);
+        if (mcpId) return { ...s, installed: !!toolStates[mcpId] };
         const be = skillBackend.find(x => x.id === s.backendId);
         return { ...s, installed: be ? be.installed : false };
       });
@@ -6552,8 +6558,13 @@
         try {
           const list = await window.__TAURI__.core.invoke('list_marketplace_tools');
           const states = {};
-          list.forEach(t => { states[t.id] = t.installed; });
+          const s2m = {}; // 配套技能 → 所属 MCP(manifest companion_skills 反建,单一真源)
+          list.forEach(t => {
+            states[t.id] = t.installed;
+            (t.companion_skills || []).forEach(sid => { s2m[sid] = t.id; });
+          });
           setToolStates(states);
+          setSkillToMcp(s2m);
         } catch (e) {
           console.error('list_marketplace_tools failed:', e);
         }
@@ -6786,8 +6797,10 @@
 
       // 安装/卸载入口
       const handleAction = async (backendId, isInstalled) => {
-        // 技能 tab 里的"工具型"条目(如 PPT=pptx)走正常工具安装,不误走 handleSkillAction
-        if (tsSkillsData.some(s => s.backendId === backendId) && !tsToolsData.some(t => t.backendId === backendId)) return handleSkillAction(backendId, isInstalled);
+        // 有配套 MCP 的技能(公文=gongwen)→ 改走该 MCP 装卸,skill 作为 companion 随 MCP 联动(两卡同步);
+        // 纯技能(无配套 MCP、无同名工具:如上传技能)才走 handleSkillAction。PPT=pptx 有同名工具,落下方正常工具流。
+        if (skillToMcp[backendId]) backendId = skillToMcp[backendId];
+        else if (tsSkillsData.some(s => s.backendId === backendId) && !tsToolsData.some(t => t.backendId === backendId)) return handleSkillAction(backendId, isInstalled);
         // 飞书走 CLI 连接流程,不走 marketplace install
         if (backendId === 'feishu') {
           if (isInstalled) return disconnectFeishu();
