@@ -47,6 +47,19 @@ pub fn bundle_mcp_json() -> PathBuf {
 pub fn bundle_mcp_servers_dir() -> PathBuf {
     bundle_root().join("mcp-servers")
 }
+pub fn bundle_connectors_dir() -> PathBuf {
+    bundle_root().join("connectors")
+}
+pub fn bundle_connector_bin_dir() -> Option<PathBuf> {
+    bundle_connector_bin_dir_for(std::env::consts::OS, std::env::consts::ARCH)
+}
+pub fn bundle_connector_bin_dir_for(os: &str, arch: &str) -> Option<PathBuf> {
+    if os == "linux" && arch == "aarch64" {
+        Some(bundle_connectors_dir().join("linux-arm64").join("bin"))
+    } else {
+        None
+    }
+}
 /// present_artifact MCP server 脚本绝对路径(mcp.json 的 args 指向它)。
 pub fn bundle_present_artifact_server() -> PathBuf {
     bundle_mcp_servers_dir().join("present_artifact_server.py")
@@ -391,6 +404,29 @@ pub(crate) mod tests {
             workflows_index_path(),
             root.join("workflows").join("index.json")
         );
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+    }
+
+    #[test]
+    fn connector_bin_dir_is_linux_arm64_only() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-connector-path-test");
+        let root = crate::os::platform_compat_path("/tmp/pinvou3-connector-path-test");
+        assert_eq!(
+            bundle_connector_bin_dir_for("linux", "aarch64"),
+            Some(
+                root.join("bundle")
+                    .join("connectors")
+                    .join("linux-arm64")
+                    .join("bin")
+            )
+        );
+        assert_eq!(bundle_connector_bin_dir_for("windows", "x86_64"), None);
+        assert_eq!(bundle_connector_bin_dir_for("linux", "x86_64"), None);
         match prev {
             Some(v) => std::env::set_var("PINVOU3_HOME", v),
             None => std::env::remove_var("PINVOU3_HOME"),

@@ -70,8 +70,12 @@ pub async fn wecom_ensure_cli() -> Result<Value, String> {
             return Ok::<Value, String>(json!({ "ok": true, "already": true }));
         }
         let mut c = WECOM_CTX.base_cmd("npm");
+        cc::apply_user_npm_prefix(&mut c);
         c.args(["install", "-g", "@wecom/cli"]);
-        let ok = cc::run_with_timeout(c, 180)?;
+        let mut ok = cc::run_with_timeout(c, 180)?;
+        if ok && !wecom_cli_present() {
+            ok = false;
+        }
         Ok::<Value, String>(json!({ "ok": ok, "already": false }))
     })
     .await
@@ -122,7 +126,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         .stderr(Stdio::piped());
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("wecom-cli init 启动失败: {e}(需要 Node + wecom-cli)"))?;
+        .map_err(|e| format!("wecom-cli init 启动失败: {e}(需要 wecom-cli；Linux ARM64 会优先使用内置 CLI)"))?;
     let conn = app.state::<ConnectorConn>();
     conn.set_pid(ID, Some(child.id()));
 

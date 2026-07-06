@@ -76,6 +76,7 @@ pub async fn feishu_ensure_cli() -> Result<Value, String> {
         }
         // 未装才装,带 180s 超时防卡死(网络 / 代理)。
         let mut c = FEISHU_CTX.base_cmd("npx");
+        cc::apply_user_npm_prefix(&mut c);
         c.args(["-y", "@larksuite/cli@latest", "install"]);
         let mut ok = cc::run_with_timeout(c, 180)?;
         if ok && !lark_cli_present() {
@@ -83,6 +84,7 @@ pub async fn feishu_ensure_cli() -> Result<Value, String> {
             // but the global bin shim is missing. A direct global install repairs
             // the shim that later `config init --new` needs to spawn.
             let mut fallback = FEISHU_CTX.base_cmd("npm");
+            cc::apply_user_npm_prefix(&mut fallback);
             fallback.args(["install", "-g", "@larksuite/cli"]);
             ok = cc::run_with_timeout(fallback, 180)?;
         }
@@ -164,7 +166,7 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
         .stderr(Stdio::piped());
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("config init --new 启动失败: {e}(需要 Node + lark-cli)"))?;
+        .map_err(|e| format!("config init --new 启动失败: {e}(需要 lark-cli；Linux ARM64 会优先使用内置 CLI)"))?;
     let conn = app.state::<ConnectorConn>();
     conn.set_pid(ID, Some(child.id()));
 
@@ -356,4 +358,3 @@ pub async fn feishu_skills_state() -> Result<Value, String> {
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))?
 }
-
