@@ -60,3 +60,11 @@ vc_redist_present:
   Delete "$INSTDIR\llama-funasr-sensevoice.exe"
   Delete "$INSTDIR\fsmn-vad.gguf"
 !macroend
+
+!macro NSIS_HOOK_POSTUNINSTALL
+  ${If} $DeleteAppDataCheckboxState = 1
+  ${AndIf} $UpdateMode <> 1
+    SetShellVarContext current
+    RmDir /r "$PROFILE\.pinvou3"
+  ${EndIf}
+!macroend
