@@ -693,6 +693,15 @@ fn local_asr_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
+fn apply_local_asr_model_env(
+    command: &mut std::process::Command,
+    model_path: Option<std::path::PathBuf>,
+) {
+    if let Some(path) = model_path.filter(|path| path.is_file()) {
+        command.env("PINVOU3_SENSEVOICE_MODEL", path);
+    }
+}
+
 fn voice_temp_wav_path() -> std::path::PathBuf {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -807,6 +816,7 @@ fn run_local_asr_cli(wav_path: &std::path::Path) -> Result<LocalAsrOutput, Voice
     let timeout = local_asr_timeout();
 
     let mut command = std::process::Command::new(&executable);
+    apply_local_asr_model_env(&mut command, Some(crate::voice_asr::model_path()));
     command
         .arg("asr")
         .arg("--model")
@@ -4049,6 +4059,27 @@ mod tests {
         let text = parse_local_asr_text("[INFO] loading\n['hello from voice']\n", "")
             .expect("list output");
         assert_eq!(text, "hello from voice");
+    }
+
+    #[test]
+    fn local_asr_env_points_wrapper_to_resolved_model_path() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3 local asr env {}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let model = root.join("sensevoice-small-q8.gguf");
+        std::fs::write(&model, b"model").unwrap();
+
+        let mut command = std::process::Command::new("pinvou-asr");
+        apply_local_asr_model_env(&mut command, Some(model.clone()));
+        let configured = command
+            .get_envs()
+            .find(|(key, _)| *key == std::ffi::OsStr::new("PINVOU3_SENSEVOICE_MODEL"))
+            .and_then(|(_, value)| value);
+
+        assert_eq!(configured, Some(model.as_os_str()));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// present_artifact 漂工具名失败时,成品卡兜底用 write_file 的相对 path

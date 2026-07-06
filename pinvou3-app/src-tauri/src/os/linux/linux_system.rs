@@ -1,5 +1,4 @@
 use std::ffi::OsStr;
-use std::io::Write;
 use std::process::Command;
 
 use tauri::Emitter;
@@ -8,7 +7,10 @@ use super::linux_path;
 
 const ASR_MODEL_URL: &str =
     "https://www.modelscope.cn/models/lovemefan/SenseVoiceGGUF/resolve/master/sense-voice-small-q4_k.gguf";
+const ASR_MODEL_MIRROR_URL: &str =
+    "https://huggingface.co/lovemefan/sense-voice-gguf/resolve/main/sense-voice-small-q4_k.gguf";
 const ASR_MODEL_SIZE: u64 = 182_278_688;
+const ASR_MODEL_SHA256: &str = "c8e7bf77acd860c5b83d2106da44aa7b985026ef4e7dbf5236c7f0f4001d9e9b";
 
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     Command::new("xdg-open")
@@ -65,6 +67,25 @@ pub fn asr_model_filename() -> &'static str {
     "sense-voice-small-q4_k.gguf"
 }
 
+pub fn asr_model_spec() -> crate::voice_asr::AsrModelSpec {
+    crate::voice_asr::AsrModelSpec {
+        id: "sensevoice-q4-k",
+        filename: asr_model_filename(),
+        expected_size: ASR_MODEL_SIZE,
+        sha256: ASR_MODEL_SHA256,
+        primary_url: ASR_MODEL_URL,
+        mirror_url: ASR_MODEL_MIRROR_URL,
+    }
+}
+
+pub fn asr_model_path() -> std::path::PathBuf {
+    crate::voice_asr::model_download_path()
+}
+
+pub fn asr_model_exists() -> bool {
+    crate::voice_asr::model_available()
+}
+
 pub fn archive_tool_path() -> std::path::PathBuf {
     std::path::PathBuf::from("7z")
 }
@@ -118,67 +139,17 @@ pub async fn install_asr_runtime(app: tauri::AppHandle) -> Result<(), String> {
             "voice_asr:progress",
             serde_json::json!({ "stage": "ffmpeg", "downloaded": 0, "total": 0 }),
         );
-        tokio::task::spawn_blocking(|| super::linux_dependency::install_dependencies(vec!["ffmpeg".to_string()]))
-            .await
-            .map_err(|e| format!("ffmpeg install task failed: {e}"))??;
-    }
-
-    if !crate::voice_asr::model_path().is_file() {
-        download_asr_model(&app).await?;
-    }
-
-    Ok(())
-}
-
-async fn download_asr_model(app: &tauri::AppHandle) -> Result<(), String> {
-    let dir = crate::voice_asr::asr_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("创建 ASR 目录失败: {e}"))?;
-    let dest = crate::voice_asr::model_path();
-    if dest
-        .metadata()
-        .map(|m| m.len() == ASR_MODEL_SIZE)
-        .unwrap_or(false)
-    {
-        return Ok(());
-    }
-
-    let url = std::env::var("PINVOU3_ASR_MODEL_URL").unwrap_or_else(|_| ASR_MODEL_URL.to_string());
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .user_agent("pinvou3-asr/1.0")
-        .build()
-        .map_err(|e| format!("构建 ASR 模型下载客户端失败: {e}"))?;
-    let mut resp = client
-        .get(&url)
-        .send()
+        tokio::task::spawn_blocking(|| {
+            super::linux_dependency::install_dependencies(vec!["ffmpeg".to_string()])
+        })
         .await
-        .map_err(|e| format!("连接 ASR 模型源失败: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("ASR 模型源响应异常: {e}"))?;
-
-    let total = resp.content_length().unwrap_or(ASR_MODEL_SIZE);
-    let tmp = dir.join(format!("{}.part", asr_model_filename()));
-    let mut file = std::fs::File::create(&tmp).map_err(|e| format!("创建 ASR 模型文件失败: {e}"))?;
-    let mut downloaded: u64 = 0;
-    let mut last_emit: u64 = 0;
-    while let Some(chunk) = resp
-        .chunk()
-        .await
-        .map_err(|e| format!("ASR 模型下载中断: {e}"))?
-    {
-        file.write_all(&chunk)
-            .map_err(|e| format!("写入 ASR 模型失败: {e}"))?;
-        downloaded += chunk.len() as u64;
-        if downloaded - last_emit >= 1_048_576 || downloaded == total {
-            last_emit = downloaded;
-            let _ = app.emit(
-                "voice_asr:progress",
-                serde_json::json!({ "stage": "model", "downloaded": downloaded, "total": total }),
-            );
-        }
+        .map_err(|e| format!("ffmpeg install task failed: {e}"))??;
     }
-    drop(file);
-    std::fs::rename(&tmp, &dest).map_err(|e| format!("保存 ASR 模型失败: {e}"))?;
+
+    if !crate::voice_asr::model_available() {
+        crate::voice_asr::download_current_model(&app).await?;
+    }
+
     Ok(())
 }
 
@@ -220,10 +191,6 @@ pub fn asr_dependency_packages() -> &'static str {
 
 pub fn archive_dependency_packages() -> &'static str {
     "p7zip-full"
-}
-
-pub fn asr_bundled_runtime_status() -> Option<bool> {
-    None
 }
 
 pub fn pandoc_missing_message() -> &'static str {

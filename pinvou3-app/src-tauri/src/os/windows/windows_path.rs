@@ -203,6 +203,34 @@ pub fn bundled_asr_model_path() -> Option<PathBuf> {
         .and_then(|exe| bundled_asr_model_path_for_exe(&exe))
 }
 
+pub fn user_asr_model_path() -> PathBuf {
+    crate::bridge::paths::pinvou3_home()
+        .join("asr")
+        .join(asr_q8_model_filename())
+}
+
+pub fn asr_model_path() -> PathBuf {
+    if let Ok(path) = std::env::var("PINVOU3_SENSEVOICE_MODEL") {
+        if !path.trim().is_empty() {
+            return PathBuf::from(path.trim());
+        }
+    }
+    std::env::current_exe()
+        .ok()
+        .map(|exe| {
+            asr_model_path_for_exe_and_user_home(&exe, &crate::bridge::paths::pinvou3_home())
+        })
+        .unwrap_or_else(user_asr_model_path)
+}
+
+pub fn asr_model_path_for_exe_and_user_home(exe_path: &Path, pinvou_home: &Path) -> PathBuf {
+    let user_model = pinvou_home.join("asr").join(asr_q8_model_filename());
+    if user_model.is_file() {
+        return user_model;
+    }
+    bundled_asr_model_path_for_exe(exe_path).unwrap_or(user_model)
+}
+
 pub fn bundled_tesseract_tool_path() -> Option<PathBuf> {
     std::env::current_exe()
         .ok()
@@ -242,7 +270,9 @@ pub fn bundled_asr_backend_path_for_exe(exe_path: &Path) -> Option<PathBuf> {
     [
         dir.join("llama-funasr-sensevoice.exe"),
         dir.join("runtime").join("llama-funasr-sensevoice.exe"),
-        dir.join("runtime").join("bin").join("llama-funasr-sensevoice.exe"),
+        dir.join("runtime")
+            .join("bin")
+            .join("llama-funasr-sensevoice.exe"),
         dir.join("bin").join("llama-funasr-sensevoice.exe"),
     ]
     .into_iter()
@@ -254,8 +284,12 @@ pub fn bundled_asr_model_path_for_exe(exe_path: &Path) -> Option<PathBuf> {
     [
         dir.join("models").join(asr_q8_model_filename()),
         dir.join("gguf").join(asr_q8_model_filename()),
-        dir.join("runtime").join("models").join(asr_q8_model_filename()),
-        dir.join("runtime").join("gguf").join(asr_q8_model_filename()),
+        dir.join("runtime")
+            .join("models")
+            .join(asr_q8_model_filename()),
+        dir.join("runtime")
+            .join("gguf")
+            .join(asr_q8_model_filename()),
         dir.join(asr_q8_model_filename()),
     ]
     .into_iter()
@@ -437,8 +471,10 @@ mod tests {
 
     #[test]
     fn bundled_tesseract_tool_and_tessdata_paths_prefer_bundled_runtime() {
-        let root =
-            std::env::temp_dir().join(format!("pinvou3 tesseract path test {}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3 tesseract path test {}",
+            std::process::id()
+        ));
         let tesseract = root.join("tesseract");
         let tessdata = tesseract.join("tessdata");
         std::fs::create_dir_all(&tessdata).unwrap();
@@ -458,8 +494,9 @@ mod tests {
     }
 
     #[test]
-    fn bundled_asr_paths_require_wrapper_backend_and_q8_model() {
-        let root = std::env::temp_dir().join(format!("pinvou3 asr path test {}", std::process::id()));
+    fn bundled_asr_paths_allow_runtime_without_q8_model() {
+        let root =
+            std::env::temp_dir().join(format!("pinvou3 asr path test {}", std::process::id()));
         let asr = root.join("asr");
         let models = asr.join("models");
         std::fs::create_dir_all(&models).unwrap();
@@ -474,6 +511,55 @@ mod tests {
         assert_eq!(bundled_asr_tool_path_for_exe(&exe), Some(wrapper));
         assert_eq!(bundled_asr_backend_path_for_exe(&exe), Some(backend));
         assert_eq!(bundled_asr_model_path_for_exe(&exe), Some(model));
+
+        std::fs::remove_file(models.join("sensevoice-small-q8.gguf")).unwrap();
+        assert!(bundled_asr_tool_path_for_exe(&exe).is_some());
+        assert!(bundled_asr_backend_path_for_exe(&exe).is_some());
+        assert_eq!(bundled_asr_model_path_for_exe(&exe), None);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn asr_model_path_prefers_user_model_over_bundled_model() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3 asr user model path {}",
+            std::process::id()
+        ));
+        let install_asr = root.join("install").join("asr").join("models");
+        let user_asr = root.join("home").join("asr");
+        std::fs::create_dir_all(&install_asr).unwrap();
+        std::fs::create_dir_all(&user_asr).unwrap();
+        let bundled = install_asr.join("sensevoice-small-q8.gguf");
+        let user = user_asr.join("sensevoice-small-q8.gguf");
+        std::fs::write(&bundled, b"bundled").unwrap();
+        std::fs::write(&user, b"user").unwrap();
+        let exe = root.join("install").join("pinvou3.exe");
+
+        assert_eq!(
+            asr_model_path_for_exe_and_user_home(&exe, &root.join("home")),
+            user
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn asr_model_path_falls_back_to_bundled_model_for_legacy_install() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3 asr bundled model path {}",
+            std::process::id()
+        ));
+        let install_asr = root.join("install").join("asr").join("models");
+        std::fs::create_dir_all(&install_asr).unwrap();
+        let bundled = install_asr.join("sensevoice-small-q8.gguf");
+        std::fs::write(&bundled, b"bundled").unwrap();
+        let exe = root.join("install").join("pinvou3.exe");
+
+        assert_eq!(
+            asr_model_path_for_exe_and_user_home(&exe, &root.join("home")),
+            bundled
+        );
 
         std::fs::remove_dir_all(&root).ok();
     }

@@ -388,6 +388,7 @@ pub fn run() {
             commands::transcribe_voice_audio,
             voice_asr::voice_asr_status,
             voice_asr::install_voice_asr,
+            voice_asr::cancel_voice_asr,
             commands::list_sessions,
             commands::create_session,
             commands::load_session,

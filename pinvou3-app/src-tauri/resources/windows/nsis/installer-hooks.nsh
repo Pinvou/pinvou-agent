@@ -56,4 +56,7 @@ vc_redist_present:
 
 !macro NSIS_HOOK_POSTINSTALL
   Delete "$INSTDIR\dump_system_prompt.exe"
+  Delete "$INSTDIR\pinvou-asr.exe"
+  Delete "$INSTDIR\llama-funasr-sensevoice.exe"
+  Delete "$INSTDIR\fsmn-vad.gguf"
 !macroend

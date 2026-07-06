@@ -39,6 +39,28 @@ pub fn asr_model_filename() -> &'static str {
     "sense-voice-small-q4_k.gguf"
 }
 
+pub fn asr_model_spec() -> crate::voice_asr::AsrModelSpec {
+    crate::voice_asr::AsrModelSpec {
+        id: "unsupported",
+        filename: asr_model_filename(),
+        expected_size: 0,
+        sha256: "",
+        primary_url: "",
+        mirror_url: "",
+    }
+}
+
+pub fn asr_model_path() -> PathBuf {
+    user_home_dir()
+        .join(".pinvou3")
+        .join("asr")
+        .join(asr_model_filename())
+}
+
+pub fn asr_model_exists() -> bool {
+    false
+}
+
 pub fn archive_tool_path() -> PathBuf {
     PathBuf::from("7z")
 }

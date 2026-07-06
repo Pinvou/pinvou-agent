@@ -1,5 +1,8 @@
 //! Stable CLI entrypoint for pinvou's optional offline ASR runtime.
 //!
+//! This source is kept outside `src/bin` so Tauri bundlers do not treat it as
+//! an app sidecar target during installer generation.
+//!
 //! The executable is intentionally a small wrapper around a bundled ASR
 //! runtime. This keeps the main app independent from backend/runtime layout
 //! details while preserving a fixed command contract:

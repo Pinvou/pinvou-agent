@@ -44,7 +44,10 @@
       "resources/windows/poppler/": "poppler",
       "resources/windows/pandoc/": "pandoc",
       "resources/windows/tesseract/": "tesseract",
-      "resources/windows/asr/": "asr",
+      "resources/windows/asr/README.md": "asr/README.md",
+      "resources/windows/asr/pinvou-asr.exe": "asr/pinvou-asr.exe",
+      "resources/windows/asr/llama-funasr-sensevoice.exe": "asr/llama-funasr-sensevoice.exe",
+      "resources/windows/asr/models/fsmn-vad.gguf": "asr/models/fsmn-vad.gguf",
       "resources/windows/7zip/": "7zip"
     },
     "windows": {

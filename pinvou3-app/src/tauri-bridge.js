@@ -2889,12 +2889,21 @@
       state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, patch);
       notify();
     } catch (e) {
-      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { installing: false, error: String(e) });
+      var message = String(e && e.message ? e.message : e);
+      var cancelled = message.indexOf("已取消") >= 0 || message.toLowerCase().indexOf("cancel") >= 0;
+      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, {
+        installing: false,
+        progress: cancelled ? { stage: "cancelled" } : { stage: "failed" },
+        error: cancelled ? null : message
+      });
       notify();
     }
   }
 
   function closeVoiceAsrSetup() {
+    if (state.voiceAsrSetup.installing) {
+      invoke("cancel_voice_asr").catch(function () { });
+    }
     state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { open: false });
     notify();
   }
@@ -2934,7 +2943,7 @@
     // 首次/缺组件：先检测本地语音识别依赖，缺则弹安装框、不进录音。
     try {
       var asrStatus = await invoke("voice_asr_status");
-      if (asrStatus && !asrStatus.ready && asrStatus.installable) {
+      if (asrStatus && !asrStatus.ready) {
         state.voiceAsrSetup = { open: true, status: asrStatus, installing: false, progress: null, error: null };
         notify();
         return;
