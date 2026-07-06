@@ -271,6 +271,29 @@ func cmdSave(flags map[string]string) int {
 	return 0
 }
 
+// authExpired 判定响应是否为 token 失效/未授权，需刷新后重试。
+// EIP 业务接口对过期 token 返回 HTTP 200 + {"Code":51,"Msg":"Token已失效"}；
+// 个别接口走 HTTP 401 或以文案表达，一并兜底。
+func authExpired(raw []byte, err error) bool {
+	if err != nil {
+		return strings.Contains(err.Error(), "HTTP 401")
+	}
+	var probe struct {
+		Code json.Number `json:"Code"`
+		Msg  string      `json:"Msg"`
+	}
+	if json.Unmarshal(raw, &probe) == nil {
+		if probe.Code.String() == "51" {
+			return true
+		}
+		return strings.Contains(probe.Msg, "失效") ||
+			strings.Contains(probe.Msg, "未登录") ||
+			strings.Contains(probe.Msg, "登录已过期")
+	}
+	return strings.Contains(string(raw), "Token已失效") ||
+		strings.Contains(string(raw), "登录已过期")
+}
+
 func runBusiness(args []string) int {
 	key := args[0]
 	rest := args[1:]
@@ -300,6 +323,14 @@ func runBusiness(args []string) int {
 		path = fmt.Sprintf(path, url.PathEscape(fill))
 	}
 	raw, err := callEIP(r.method, path, body, token)
+	// token 过期(服务端 Code 51 / "失效"，个别接口 HTTP 401）→ 清 AT、用 AIT 刷新、重试一次。
+	// 对齐真 eip-cli 的自动刷新:此前 ensureToken 只在 AT 为空时才刷新，存量 AT 过期会被原样发出去遭拒。
+	if authExpired(raw, err) {
+		_ = os.Remove(atFile())
+		if nt := ensureToken(); nt != "" && nt != token {
+			raw, err = callEIP(r.method, path, body, nt)
+		}
+	}
 	if err != nil {
 		emitJSON(map[string]any{"error": err.Error()})
 		return 1
