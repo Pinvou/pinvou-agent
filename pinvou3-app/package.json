@@ -7,7 +7,7 @@
     "tauri": "tauri",
     "dev": "tauri dev",
     "build": "tauri build",
-    "prebuild:nsis": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/clean-nsis-staging.ps1",
+    "prebuild:nsis": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-windows-runtimes.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/clean-nsis-staging.ps1",
     "build:nsis": "tauri build --features dev-tools --bundles nsis"
   },
   "devDependencies": {

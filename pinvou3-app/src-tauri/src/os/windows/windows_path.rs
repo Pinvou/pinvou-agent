@@ -72,6 +72,113 @@ pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
     component.to_string_lossy().eq_ignore_ascii_case(expected)
 }
 
+pub fn python_command() -> String {
+    if let Ok(p) = std::env::var("PINVOU3_PYTHON") {
+        if !p.is_empty() && is_valid_python_candidate(Path::new(&p)) {
+            return p;
+        }
+    }
+
+    if let Some(bundled) = bundled_python_path() {
+        return bundled.to_string_lossy().into_owned();
+    }
+
+    resolve_system_python().unwrap_or_else(|| "pythonw".to_string())
+}
+
+pub fn bundled_python_path() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| bundled_python_path_for_exe(&exe))
+}
+
+pub fn bundled_python_path_for_exe(exe_path: &Path) -> Option<PathBuf> {
+    let dir = exe_path.parent()?;
+    let bundled = dir.join("python").join("pythonw.exe");
+    is_valid_python_candidate(&bundled).then_some(bundled)
+}
+
+fn resolve_system_python() -> Option<String> {
+    if let Ok(path_var) = std::env::var("PATH") {
+        for name in ["pythonw.exe", "python.exe"] {
+            for dir in std::env::split_paths(&path_var) {
+                let cand = dir.join(name);
+                if is_valid_python_candidate(&cand) {
+                    return Some(cand.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Ok(la) = std::env::var("LOCALAPPDATA") {
+        roots.push(PathBuf::from(la).join("Programs").join("Python"));
+    }
+    if let Ok(pf) = std::env::var("ProgramFiles") {
+        roots.push(PathBuf::from(pf));
+    }
+    for root in roots {
+        if let Ok(rd) = std::fs::read_dir(&root) {
+            let mut vers: Vec<PathBuf> = rd
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.is_dir()
+                        && p.file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|n| n.starts_with("Python3"))
+                            .unwrap_or(false)
+                })
+                .collect();
+            vers.sort();
+            for d in vers.iter().rev() {
+                for name in ["pythonw.exe", "python.exe"] {
+                    let cand = d.join(name);
+                    if is_valid_python_candidate(&cand) {
+                        return Some(cand.to_string_lossy().into_owned());
+                    }
+                }
+            }
+        }
+    }
+
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let cand = dir.join("py.exe");
+            if cand.is_file() {
+                return Some(cand.to_string_lossy().into_owned());
+            }
+        }
+    }
+    let winpy = PathBuf::from(r"C:\Windows\py.exe");
+    if winpy.is_file() {
+        return Some(winpy.to_string_lossy().into_owned());
+    }
+    None
+}
+
+fn is_valid_python_candidate(path: &Path) -> bool {
+    path.is_file() && !is_windowsapps_python_alias(path)
+}
+
+fn is_windowsapps_python_alias(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    if !matches!(
+        name.to_ascii_lowercase().as_str(),
+        "python.exe" | "pythonw.exe" | "python3.exe" | "python3w.exe"
+    ) {
+        return false;
+    }
+    path.components().any(|component| {
+        component
+            .as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case("WindowsApps")
+    })
+}
+
 fn windows_sensitive_roots() -> Vec<(&'static str, PathBuf)> {
     [
         ("WINDIR", "WINDIR"),
@@ -373,6 +480,19 @@ fn archive_tool_filename() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn test_temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-windows-path-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     #[test]
     fn unix_tmp_path_maps_to_temp_dir() {
@@ -398,6 +518,53 @@ mod tests {
             bundled_pandoc_dir_for_exe(exe),
             PathBuf::from(r"C:\Program Files\品眸 pinvou").join("pandoc")
         );
+    }
+
+    #[test]
+    fn python_command_respects_valid_pinvou3_python() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = test_temp_dir("pinvou3-python-env");
+        let python = dir.join("pythonw.exe");
+        std::fs::write(&python, b"").unwrap();
+        let prev = std::env::var("PINVOU3_PYTHON").ok();
+
+        std::env::set_var("PINVOU3_PYTHON", &python);
+        assert_eq!(python_command(), python.to_string_lossy());
+
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_PYTHON", v),
+            None => std::env::remove_var("PINVOU3_PYTHON"),
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn bundled_python_uses_python_dir_next_to_exe() {
+        let dir = test_temp_dir("bundled-python");
+        let exe = dir.join("pinvou3-tauri.exe");
+        let python_dir = dir.join("python");
+        std::fs::create_dir_all(&python_dir).unwrap();
+        let python = python_dir.join("pythonw.exe");
+        std::fs::write(&exe, b"").unwrap();
+        std::fs::write(&python, b"").unwrap();
+
+        assert_eq!(bundled_python_path_for_exe(&exe), Some(python));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn windowsapps_python_alias_is_not_valid_candidate() {
+        let dir = test_temp_dir("windowsapps-alias");
+        let alias_dir = dir.join("Microsoft").join("WindowsApps");
+        std::fs::create_dir_all(&alias_dir).unwrap();
+        let alias = alias_dir.join("python.exe");
+        std::fs::write(&alias, b"").unwrap();
+
+        assert!(is_windowsapps_python_alias(&alias));
+        assert!(!is_valid_python_candidate(&alias));
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

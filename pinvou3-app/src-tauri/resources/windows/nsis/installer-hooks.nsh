@@ -54,14 +54,33 @@ vc_redist_present:
   DetailPrint "Microsoft Visual C++ Redistributable 2015-2022 (x64) is ready."
 !macroend
 
+!macro PINVOU_RUN_RUNTIME_ENV MODE REQUIRED
+  InitPluginsDir
+  SetOutPath "$PLUGINSDIR"
+  File "/oname=$PLUGINSDIR\pinvou-runtime-env.ps1" "${__FILEDIR__}\..\..\..\..\resources\windows\nsis\runtime-env.ps1"
+  nsExec::ExecToStack 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\pinvou-runtime-env.ps1" -Mode "${MODE}" -InstallDir "$INSTDIR"'
+  Pop $0
+  Pop $1
+  ${If} $0 != 0
+    DetailPrint "Pinvou runtime environment update failed: $1"
+    ${If} "${REQUIRED}" == "true"
+      MessageBox MB_ICONSTOP|MB_OK "Failed to configure bundled Python/Node environment. Please run the installer as administrator."
+      Abort
+    ${EndIf}
+  ${EndIf}
+!macroend
+
 !macro NSIS_HOOK_POSTINSTALL
   Delete "$INSTDIR\dump_system_prompt.exe"
   Delete "$INSTDIR\pinvou-asr.exe"
   Delete "$INSTDIR\llama-funasr-sensevoice.exe"
   Delete "$INSTDIR\fsmn-vad.gguf"
+  !insertmacro PINVOU_RUN_RUNTIME_ENV "Install" "true"
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
+  !insertmacro PINVOU_RUN_RUNTIME_ENV "Uninstall" "false"
+
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1
     SetShellVarContext current

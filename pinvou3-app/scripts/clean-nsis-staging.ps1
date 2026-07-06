@@ -16,7 +16,9 @@ $paths = @(
   "dump_system_prompt.exe",
   "dump_system_prompt.pdb",
   "dump_system_prompt.d",
-  "asr"
+  "asr",
+  "python",
+  "node"
 )
 
 foreach ($relative in $paths) {

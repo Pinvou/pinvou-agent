@@ -27,6 +27,27 @@ pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
     component == OsStr::new(expected)
 }
 
+pub fn python_command() -> String {
+    if which_in_path("python3") {
+        return "python3".to_string();
+    }
+    if which_in_path("python") {
+        return "python".to_string();
+    }
+    "python3".to_string()
+}
+
+fn which_in_path(cmd: &str) -> bool {
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            if dir.join(cmd).is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub fn pdf_tool_path(command: &str) -> PathBuf {
     PathBuf::from(command)
 }

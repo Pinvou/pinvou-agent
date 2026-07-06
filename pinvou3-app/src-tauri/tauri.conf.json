@@ -44,6 +44,8 @@
       "resources/windows/poppler/": "poppler",
       "resources/windows/pandoc/": "pandoc",
       "resources/windows/tesseract/": "tesseract",
+      "resources/windows/python/": "python",
+      "resources/windows/node/": "node",
       "resources/windows/asr/README.md": "asr/README.md",
       "resources/windows/asr/pinvou-asr.exe": "asr/pinvou-asr.exe",
       "resources/windows/asr/llama-funasr-sensevoice.exe": "asr/llama-funasr-sensevoice.exe",
@@ -57,13 +59,15 @@
           "resources/windows/poppler-path.wxs",
           "resources/windows/pandoc-path.wxs",
           "resources/windows/tesseract-path.wxs",
-          "resources/windows/7zip-path.wxs"
+          "resources/windows/7zip-path.wxs",
+          "resources/windows/python-node-path.wxs"
         ],
         "componentRefs": [
           "PopplerPathEnvironment",
           "PandocPathEnvironment",
           "TesseractPathEnvironment",
-          "SevenZipPathEnvironment"
+          "SevenZipPathEnvironment",
+          "PythonNodeRuntimeEnvironment"
         ]
       },
       "nsis": {

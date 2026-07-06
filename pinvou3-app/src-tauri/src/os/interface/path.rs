@@ -17,6 +17,10 @@ pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
     super::super::platform::path_component_eq(component, expected)
 }
 
+pub fn python_command() -> String {
+    super::super::platform::python_command()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
