@@ -1340,8 +1340,6 @@
       const [justInstalledTool, setJustInstalledTool] = useState(null);
 
       function handleNewChat(installedToolId) {
-        if (bridge.available) bridge.createNewSession();
-        setCurrentView('chat');
         // 类型守卫:installedToolId 必须是字符串 toolId。侧边栏按钮 onClick={() => handleNewChat()}
         // 本不传参,但若哪天有调用点写成 onClick={handleNewChat},React 会把事件对象当首参塞进来——
         // 那是 truthy 的 SyntheticEvent,会被当成 toolId 置进 welcomeToolId → ToolWelcomeCard 查不到
@@ -1349,6 +1347,8 @@
         if (typeof installedToolId === 'string' && installedToolId) {
           setJustInstalledTool(installedToolId);
         }
+        if (bridge.available) bridge.createNewSession();
+        setCurrentView('chat');
       }
 
       // AI 造卡:新对话 + 加持「卡牌制造专家」+ 一条 iOS 引导卡 → 用户在空输入框描述需求,复用 persona-card 草稿流程入库
@@ -3256,6 +3256,10 @@
       );
     };
 
+    const notifyComposerToolsChanged = () => {
+      try { window.dispatchEvent(new CustomEvent('pinvou:tools-changed')); } catch (_) {}
+    };
+
     const ComposerToolMenu = ({ t, onGotoTools, compact }) => {
       const [open, setOpen] = useState(false);
       const [tools, setTools] = useState([]);
@@ -3264,28 +3268,42 @@
       const [feishuEnabled, setFeishuEnabled] = useState(true); // 飞书技能是否启用(未手动停用)
       const [wecomOn, setWecomOn] = useState(false); // 企微是否已连接(CLI 路线)
       const [wecomEnabled, setWecomEnabled] = useState(true); // 企微技能是否启用(未手动停用)
+      const [eipOn, setEipOn] = useState(false); // EIP 是否已连接(SSO 路线)
+      const [zhidaoOn, setZhidaoOn] = useState(false); // 知道是否已连接(SSO 路线)
       // 启动时加载已装工具 + 全局持久的禁用列表(持久语义:新窗口/新对话都继承)
+      async function refreshToolsMenu(isAlive) {
+        try {
+          const list = await window.__TAURI__.core.invoke('list_marketplace_tools');
+          if (isAlive()) setTools((list || []).filter(x => x.installed));
+        } catch (e) { /* ignore */ }
+        try {
+          const dis = await window.__TAURI__.core.invoke('get_disabled_connectors');
+          if (isAlive()) setDisabled(new Set(dis || []));
+        } catch (e) { /* ignore */ }
+        try {
+          const fs = await window.__TAURI__.core.invoke('feishu_skills_state');
+          if (isAlive()) { setFeishuOn(!!(fs && fs.connected)); setFeishuEnabled(!fs || fs.enabled !== false); }
+        } catch (e) { /* ignore */ }
+        try {
+          const ws = await window.__TAURI__.core.invoke('wecom_skills_state');
+          if (isAlive()) { setWecomOn(!!(ws && ws.connected)); setWecomEnabled(!ws || ws.enabled !== false); }
+        } catch (e) { /* ignore */ }
+        try {
+          const es = await window.__TAURI__.core.invoke('eip_status');
+          if (isAlive()) setEipOn(!!(es && es.connected));
+        } catch (e) { /* ignore */ }
+        try {
+          const zs = await window.__TAURI__.core.invoke('zhidao_status');
+          if (isAlive()) setZhidaoOn(!!(zs && zs.connected));
+        } catch (e) { /* ignore */ }
+      }
       useEffect(() => {
         let alive = true;
-        (async () => {
-          try {
-            const list = await window.__TAURI__.core.invoke('list_marketplace_tools');
-            if (alive) setTools((list || []).filter(x => x.installed));
-          } catch (e) { /* 忽略 */ }
-          try {
-            const dis = await window.__TAURI__.core.invoke('get_disabled_connectors');
-            if (alive) setDisabled(new Set(dis || []));
-          } catch (e) { /* 忽略 */ }
-          try {
-            const fs = await window.__TAURI__.core.invoke('feishu_skills_state');
-            if (alive) { setFeishuOn(!!(fs && fs.connected)); setFeishuEnabled(!fs || fs.enabled !== false); }
-          } catch (e) { /* 忽略 */ }
-          try {
-            const ws = await window.__TAURI__.core.invoke('wecom_skills_state');
-            if (alive) { setWecomOn(!!(ws && ws.connected)); setWecomEnabled(!ws || ws.enabled !== false); }
-          } catch (e) { /* 忽略 */ }
-        })();
-        return () => { alive = false; };
+        const isAlive = () => alive;
+        const onChanged = () => refreshToolsMenu(isAlive);
+        refreshToolsMenu(isAlive);
+        window.addEventListener('pinvou:tools-changed', onChanged);
+        return () => { alive = false; window.removeEventListener('pinvou:tools-changed', onChanged); };
       }, []);
       function toggleTool(id) {
         const next = new Set(disabled);
@@ -3304,9 +3322,9 @@
             className={`relative shrink-0 flex items-center justify-center bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 transition-colors border border-black/[0.04] dark:border-white/5 ${compact ? 'w-9 h-9 rounded-full' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold whitespace-nowrap'}`}>
             <Wrench size={compact ? 18 : 14} className="opacity-80" />
             {!compact && t.composerTools}
-            {(tools.length > 0 || feishuOn || wecomOn) && (compact
-              ? <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 text-[10px] leading-4 text-center font-bold bg-[#007AFF] text-white rounded-full">{enabledCount + (feishuOn ? 1 : 0) + (wecomOn ? 1 : 0)}</span>
-              : <span className="text-[11px] bg-[#007AFF] text-white px-1.5 py-0.5 rounded-full leading-none font-bold shrink-0">{enabledCount + (feishuOn ? 1 : 0) + (wecomOn ? 1 : 0)}</span>)}
+            {(tools.length > 0 || feishuOn || wecomOn || eipOn || zhidaoOn) && (compact
+              ? <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 text-[10px] leading-4 text-center font-bold bg-[#007AFF] text-white rounded-full">{enabledCount + (feishuOn ? 1 : 0) + (wecomOn ? 1 : 0) + (eipOn ? 1 : 0) + (zhidaoOn ? 1 : 0)}</span>
+              : <span className="text-[11px] bg-[#007AFF] text-white px-1.5 py-0.5 rounded-full leading-none font-bold shrink-0">{enabledCount + (feishuOn ? 1 : 0) + (wecomOn ? 1 : 0) + (eipOn ? 1 : 0) + (zhidaoOn ? 1 : 0)}</span>)}
             {!compact && <ChevronDown size={14} className="opacity-50 shrink-0" />}
           </button>
           {open && (
@@ -3326,7 +3344,19 @@
                     <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold text-[#34C759] bg-[#34C759]/10 px-2 py-0.5 rounded-full leading-none"><span className="w-1.5 h-1.5 rounded-full bg-[#34C759]" />已连接</span>
                   </div>
                 )}
-                {tools.length === 0 && !feishuOn && !wecomOn ? (
+                {eipOn && (
+                  <div className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
+                    <span className="text-[13px] text-gray-700 dark:text-gray-200 truncate">H3C 员工门户（EIP）</span>
+                    <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold text-[#34C759] bg-[#34C759]/10 px-2 py-0.5 rounded-full leading-none"><span className="w-1.5 h-1.5 rounded-full bg-[#34C759]" />已连接</span>
+                  </div>
+                )}
+                {zhidaoOn && (
+                  <div className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
+                    <span className="text-[13px] text-gray-700 dark:text-gray-200 truncate">H3C 知道</span>
+                    <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold text-[#34C759] bg-[#34C759]/10 px-2 py-0.5 rounded-full leading-none"><span className="w-1.5 h-1.5 rounded-full bg-[#34C759]" />已连接</span>
+                  </div>
+                )}
+                {tools.length === 0 && !feishuOn && !wecomOn && !eipOn && !zhidaoOn ? (
                   <div className="px-3 py-2 text-[13px] text-gray-400 dark:text-gray-500">{t.composerNoTools}</div>
                 ) : tools.map(tl => {
                   const on = !disabled.has(tl.id);
@@ -4453,6 +4483,7 @@
       // 顶掉「你好」欢迎语(该 tool 无 welcomeQueries 时 ToolWelcomeCard 渲染 null → 整块空白)。
       // 设置与清空收进同一 effect,按 justInstalledTool 优先,避免多 effect 同帧竞态。
       const [welcomeToolId, setWelcomeToolId] = useState(null);
+      const welcomeSessionKeyRef = useRef(null);
       const activeSessionId = bs ? bs.activeSessionId : null;
       const draftEpoch = bs ? bs.draftEpoch : 0;
       const voiceInput = (bs && bs.voiceInput) || { status: 'idle' };
@@ -4465,17 +4496,20 @@
       const canClearInput = hasDraftText && !voiceActive;
       const voiceAsrSetup = (bs && bs.voiceAsrSetup) || { open: false };
       useEffect(() => {
+        const sessionKey = `${activeSessionId || 'draft'}:${draftEpoch}`;
         if (justInstalledTool) {
           setWelcomeToolId(justInstalledTool);
+          welcomeSessionKeyRef.current = sessionKey;
           if (setJustInstalledTool) setJustInstalledTool(null);
-        } else {
+        } else if (welcomeSessionKeyRef.current && welcomeSessionKeyRef.current !== sessionKey) {
           setWelcomeToolId(null);
+          welcomeSessionKeyRef.current = null;
         }
         // justInstalledTool 故意不放进依赖:否则上面 setJustInstalledTool(null) 清掉它会二次触发
         // 本 effect → 这次走 else 把刚显示的欢迎卡又清空(表现为"装完工具欢迎卡一闪即消失")。
         // 依赖 activeSessionId(切会话)+ draftEpoch(每次点「新建对话」自增):后者保证即便已在草稿态
         // 再点「新建对话」(activeSessionId 不变 null→null)也能重新求值,否则残留工具卡顶掉「你好」。
-      }, [activeSessionId, draftEpoch]);
+      }, [justInstalledTool, activeSessionId, draftEpoch]);
 
       // chip 显示当前会话绑定的模型:切会话/草稿时刷新 currentSessionModelId
       useEffect(() => {
@@ -5971,9 +6005,9 @@
         <div className="mb-8 rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5 overflow-hidden">
           <div className="flex items-center gap-3 px-5 pt-4 pb-2">
             <span className={`w-2 h-2 rounded-full ${isErr ? 'bg-rose-500' : 'bg-blue-500 animate-pulse'}`} />
-            <span className="font-semibold text-[14px]">{isErr ? `${name}接入未完成` : (flow.phase === 'done' ? `已连接${name}` : `正在接入${name}`)}</span>
+            <span className="font-semibold text-[14px] text-slate-900 dark:text-slate-100">{isErr ? `${name}接入未完成` : (flow.phase === 'done' ? `已连接${name}` : `正在接入${name}`)}</span>
             <span className="flex-1" />
-            {(flow.phase === 'running' || flow.phase === 'qr') && <button onClick={onCancel} className="text-[12px] text-slate-400 hover:text-slate-600">取消</button>}
+            {(flow.phase === 'running' || flow.phase === 'qr') && <button onClick={onCancel} className="text-[12px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">取消</button>}
           </div>
           <div className="px-5 pb-4 space-y-1">
             {steps.map(s => {
@@ -5983,7 +6017,7 @@
                 <div key={s.key} className={`flex gap-3 py-1.5 ${st === 'wait' ? 'opacity-45' : ''}`}>
                   <div className="pt-0.5"><FeishuStepIcon st={st} /></div>
                   <div className="flex-1 min-w-0">
-                    <div className={`text-[13.5px] font-medium ${st === 'done' ? 'text-slate-400 line-through decoration-slate-300' : ''}`}>{s.label}</div>
+                    <div className={`text-[13.5px] font-medium ${st === 'done' ? 'text-slate-400 line-through decoration-slate-300' : 'text-slate-900 dark:text-slate-100'}`}>{s.label}</div>
                     {active && s.key === 'runtime' && (<><FeishuBar pct={flow.pct} /><div className="text-[11px] text-slate-400 mt-1">解压中 {Math.round(flow.pct || 0)}%</div></>)}
                     {active && s.key === 'cli' && (<><FeishuBar pct={flow.pct} creep /><div className="flex items-center justify-between mt-1"><div className="text-[11px] text-slate-400 truncate max-w-[260px] font-mono">{flow.log || 'npm: starting…'}</div><div className="text-[11px] text-slate-400 tabular-nums">已 {flow.sec || 0}s</div></div></>)}
                     {!active && <div className="text-[11.5px] text-slate-400">{s.sub}</div>}
@@ -6001,12 +6035,12 @@
                 <div>
                   {browserAuth ? (
                     <>
-                      <div className="font-medium text-[14px] mb-1">在浏览器里扫码登录{name}</div>
+                      <div className="font-medium text-[14px] mb-1 text-slate-900 dark:text-slate-100">在浏览器里扫码登录{name}</div>
                       <div className="text-[12px] text-slate-500 dark:text-slate-400 mb-3">已自动打开{name}登录页 → 用手机{name} 扫<b>页面上的</b>二维码确认。没弹出就点下面重开。</div>
                     </>
                   ) : (
                     <>
-                      <div className="font-medium text-[14px] mb-1">{twoStep ? (flow.qrPhase === 'authorize' ? '第 2 步 / 共 2 步：扫码授权' : '第 1 步 / 共 2 步：扫码注册应用') : `扫码登录${name}`}</div>
+                      <div className="font-medium text-[14px] mb-1 text-slate-900 dark:text-slate-100">{twoStep ? (flow.qrPhase === 'authorize' ? '第 2 步 / 共 2 步：扫码授权' : '第 1 步 / 共 2 步：扫码注册应用') : `扫码登录${name}`}</div>
                       <div className="text-[12px] text-slate-500 dark:text-slate-400 mb-3">用{name} App 扫一扫 → 确认</div>
                     </>
                   )}
@@ -6021,7 +6055,7 @@
                 <div className="text-[13px] font-medium text-rose-700 dark:text-rose-300 mb-1.5">连接未完成</div>
                 <pre className="text-[11.5px] leading-relaxed text-rose-800/80 dark:text-rose-200/70 whitespace-pre-wrap max-h-28 overflow-auto font-mono">{flow.err}</pre>
                 <div className="flex gap-2 mt-3 justify-end">
-                  <button onClick={onCancel} className="px-3 py-1.5 rounded-lg bg-slate-200 dark:bg-white/10 text-[13px]">关闭</button>
+                  <button onClick={onCancel} className="px-3 py-1.5 rounded-lg bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-100 text-[13px]">关闭</button>
                   <button onClick={onRetry} className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-[13px]">重试</button>
                 </div>
               </div>
@@ -6393,6 +6427,7 @@
             if (ph === 'done') {
               setFeishuConnected(true); setBusyId(null);
               setAlert({ visible: true, loading: false, title: '已连接飞书', subtitle: '官方技能已启用，可新建对话直接用', isInstall: true, isError: false, toolId: 'feishu' });
+              notifyComposerToolsChanged();
             } else if (ph === 'error') {
               setBusyId(null);
             }
@@ -6414,6 +6449,7 @@
             if (ph === 'done') {
               setWecomConnected(true); setBusyId(null);
               setAlert({ visible: true, loading: false, title: '已连接企业微信', subtitle: '官方技能已启用，可新建对话直接用', isInstall: true, isError: false, toolId: 'wecom' });
+              notifyComposerToolsChanged();
             } else if (ph === 'error') {
               setBusyId(null);
             }
@@ -6459,6 +6495,7 @@
           // 连上 → 按规则写技能(默认启用),企微技能即刻对模型可见。
           window.__TAURI__.core.invoke('wecom_apply_skills').catch(() => {});
           setAlert({ visible: true, loading: false, title: '已连接企业微信', subtitle: '', isInstall: true, isError: false, toolId: 'wecom' });
+          notifyComposerToolsChanged();
         }).then(u => unlisten.push(u));
         ev.listen('wecom:error', (e) => {
           const p = e.payload || {};
@@ -6472,6 +6509,7 @@
         ev.listen('eip:connected', () => {
           setEipSso(null); setEipConnected(true); setBusyId(null);
           setAlert({ visible: true, loading: false, title: '已连接员工门户（EIP）', subtitle: '', isInstall: true, isError: false, toolId: 'eip' });
+          notifyComposerToolsChanged();
         }).then(u => unlisten.push(u));
         ev.listen('eip:error', (e) => {
           const p = e.payload || {};
@@ -6485,6 +6523,7 @@
         ev.listen('zhidao:connected', () => {
           setZhidaoSso(null); setZhidaoConnected(true); setBusyId(null);
           setAlert({ visible: true, loading: false, title: '已连接知道知识库', subtitle: '', isInstall: true, isError: false, toolId: 'zhidao' });
+          notifyComposerToolsChanged();
         }).then(u => unlisten.push(u));
         ev.listen('zhidao:error', (e) => {
           const p = e.payload || {};
@@ -6598,6 +6637,7 @@
           if (selectedTool && selectedTool.backendId === backendId) {
             setSelectedTool(prev => ({ ...prev, installed: true }));
           }
+          notifyComposerToolsChanged();
         } catch (e) {
           console.error('install failed:', e);
           setAlert({ visible: true, loading: false, title: '操作失败，请重试', isInstall: false, isError: true });
@@ -6619,6 +6659,7 @@
           if (selectedTool && selectedTool.backendId === backendId) {
             setSelectedTool(prev => ({ ...prev, installed: !isInstalled }));
           }
+          notifyComposerToolsChanged();
         } catch (e) {
           console.error('skill action failed:', e);
           setAlert({ visible: true, loading: false, title: '操作失败：' + e, isInstall: false, isError: true });
@@ -6690,6 +6731,7 @@
           await window.__TAURI__.core.invoke('feishu_apply_skills').catch(() => {});
           setFeishuConnected(false);
           setAlert({ visible: true, loading: false, title: '已断开飞书', isInstall: false, isError: false });
+          notifyComposerToolsChanged();
         } catch (e) {
           console.error('feishu logout failed:', e);
           setAlert({ visible: true, loading: false, title: '操作失败，请重试', isError: true });
@@ -6736,6 +6778,7 @@
           await window.__TAURI__.core.invoke('wecom_apply_skills').catch(() => {});
           setWecomConnected(false);
           setAlert({ visible: true, loading: false, title: '已断开企业微信', isInstall: false, isError: false });
+          notifyComposerToolsChanged();
         } catch (e) {
           console.error('wecom logout failed:', e);
           setAlert({ visible: true, loading: false, title: '操作失败，请重试', isError: true });
@@ -6762,6 +6805,7 @@
           await window.__TAURI__.core.invoke('eip_logout');
           setEipConnected(false);
           setAlert({ visible: true, loading: false, title: '已断开员工门户（EIP）', isInstall: false, isError: false });
+          notifyComposerToolsChanged();
         } catch (e) {
           console.error('eip logout failed:', e);
           setAlert({ visible: true, loading: false, title: '操作失败，请重试', isError: true });
@@ -6787,6 +6831,7 @@
           await window.__TAURI__.core.invoke('zhidao_logout');
           setZhidaoConnected(false);
           setAlert({ visible: true, loading: false, title: '已断开知道知识库', isInstall: false, isError: false });
+          notifyComposerToolsChanged();
         } catch (e) {
           console.error('zhidao logout failed:', e);
           setAlert({ visible: true, loading: false, title: '操作失败，请重试', isError: true });
@@ -6855,6 +6900,7 @@
           if (selectedTool && selectedTool.backendId === backendId) {
             setSelectedTool(prev => ({ ...prev, installed: false }));
           }
+          notifyComposerToolsChanged();
         } catch (e) {
           console.error('uninstall failed:', e);
           setAlert({ visible: true, loading: false, title: '操作失败，请重试', isInstall: false, isError: true });
