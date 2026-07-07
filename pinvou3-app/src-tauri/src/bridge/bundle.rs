@@ -47,6 +47,7 @@ const LARK_SKILL_DIRS: [&str; 9] = [
 static WECOM_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/wecom-skills");
 
+#[cfg(not(windows))]
 static CONNECTOR_CLI_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/connectors");
 
@@ -458,13 +459,13 @@ impl Pinvou3Bundle {
     }
 
     fn write_connector_clis(&self, force: bool) -> std::io::Result<()> {
-        let root = paths::bundle_connectors_dir();
-        let bin = root.join("linux-arm64").join("bin");
-        if force || !bin.join("lark-cli").is_file() || !bin.join("wecom-cli").is_file() {
-            Self::extract_dir(&CONNECTOR_CLI_DIR, &root)?;
-        }
-        #[cfg(unix)]
+        #[cfg(not(windows))]
         {
+            let root = paths::bundle_connectors_dir();
+            let bin = root.join("linux-arm64").join("bin");
+            if force || !bin.join("lark-cli").is_file() || !bin.join("wecom-cli").is_file() {
+                Self::extract_dir(&CONNECTOR_CLI_DIR, &root)?;
+            }
             use std::os::unix::fs::PermissionsExt;
             for rel in ["linux-arm64/bin/lark-cli", "linux-arm64/bin/wecom-cli"] {
                 let p = root.join(rel);
@@ -473,6 +474,8 @@ impl Pinvou3Bundle {
                 }
             }
         }
+        #[cfg(windows)]
+        let _ = force;
         Ok(())
     }
 
