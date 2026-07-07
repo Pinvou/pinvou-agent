@@ -218,6 +218,7 @@
       planHistorical: "📜 Past plan", planSuperseded: "📜 Superseded by a newer plan",
       attachStillParsing: "⚠️ Attachment still parsing, try again shortly",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactAuto: " (auto)",
+      compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
       gpuUnavailable: "GPU info unavailable",
       superOn: "⚠️ Super permission enabled", superOff: "Super permission disabled",
       approved: "✅ Approved", echoGo: "✅ Do it",
@@ -234,6 +235,7 @@
       planHistorical: "📜 過去のプラン", planSuperseded: "📜 新しいプランで上書きされました",
       attachStillParsing: "⚠️ 添付ファイルを解析中です。少し待ってから送信してください",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactAuto: "（自動）",
+      compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
       gpuUnavailable: "GPU 情報を取得できません",
       superOn: "⚠️ スーパー権限が有効になりました", superOff: "スーパー権限が無効になりました",
       approved: "✅ 承認済み", echoGo: "✅ これでいく",
@@ -250,6 +252,7 @@
       planHistorical: "📜 历史方案", planSuperseded: "📜 已被新方案覆盖",
       attachStillParsing: "⚠️ 附件还在解析,请稍后再发",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactAuto: "（自动）",
+      compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
       gpuUnavailable: "GPU 信息不可用",
       superOn: "⚠️ 超级权限已开启", superOff: "超级权限已关闭",
       approved: "✅ 已批准", echoGo: "✅ 就这么干",
@@ -439,8 +442,45 @@
     }
     return false;
   }
-  function addSystemItem(text) {
-    addChatItem({ type: "system", text: text, time: timeStr() });
+  function addSystemItem(text, meta) {
+    var item = { type: "system", text: text, time: timeStr() };
+    if (meta) {
+      for (var k in meta) item[k] = meta[k];
+    }
+    addChatItem(item);
+    notify();
+  }
+  function compactPruneRollupText(count) {
+    return bt("compactDone") + bt("compactAuto") + " " +
+      bt("compactPruneMerged") + " ×" + count;
+  }
+  function removeCompactionStartItem(compactId) {
+    if (!compactId) return;
+    for (var i = state.chatItems.length - 1; i >= 0; i--) {
+      var it = state.chatItems[i];
+      if (it.type === "system" && it.compactId === compactId && it.compactPhase === "start") {
+        state.chatItems.splice(i, 1);
+        return;
+      }
+    }
+  }
+  function addOrMergePruneCompaction(compactId) {
+    removeCompactionStartItem(compactId);
+    var last = state.chatItems[state.chatItems.length - 1];
+    if (last && last.type === "system" && last.compactPruneRollup) {
+      last.compactPruneCount = (last.compactPruneCount || 1) + 1;
+      last.text = compactPruneRollupText(last.compactPruneCount);
+      last.time = timeStr();
+      notify();
+      return;
+    }
+    addChatItem({
+      type: "system",
+      text: compactPruneRollupText(1),
+      time: timeStr(),
+      compactPruneRollup: true,
+      compactPruneCount: 1,
+    });
     notify();
   }
   function timeStr() {
@@ -1522,7 +1562,19 @@
     var phase = e.payload && e.payload.phase;
     var msg = e.payload && e.payload.message || "";
     var auto = e.payload && e.payload.auto ? bt("compactAuto") : "";
-    if (phase === "start") addSystemItem(bt("compactStart") + auto + " " + msg);
+    var compactId = e.payload && e.payload.id;
+    var before = Number(e.payload && e.payload.messages_before);
+    var after = Number(e.payload && e.payload.messages_after);
+    var looksLikePruneOnly = /0 removed|messages unchanged|tool results pruned/i.test(msg);
+    var pruneOnlyAuto = !!(e.payload && e.payload.auto) &&
+      phase === "done" &&
+      Number.isFinite(before) &&
+      Number.isFinite(after) &&
+      before === after &&
+      looksLikePruneOnly &&
+      msg.indexOf("Emergency compaction") !== 0;
+    if (phase === "start") addSystemItem(bt("compactStart") + auto + " " + msg, { compactId: compactId, compactPhase: "start" });
+    else if (phase === "done" && pruneOnlyAuto) addOrMergePruneCompaction(compactId);
     else if (phase === "done") addSystemItem(bt("compactDone") + auto + " " + msg);
     else if (phase === "fail") addSystemItem(bt("compactFail") + auto + ": " + msg);
   }); });

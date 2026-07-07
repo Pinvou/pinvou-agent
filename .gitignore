@@ -44,6 +44,7 @@ scripts/.builtin-secrets.env
 # Local tool state
 .claude/
 .superpowers/
+.codex-memory.md
 
 # 临时 PR worktree(submodule 的 git worktree,勿提交)
 /DeepSeek-TUI-*-env/

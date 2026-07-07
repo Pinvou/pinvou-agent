@@ -1184,6 +1184,12 @@ mod tests {
     /// 走 output 预留分档(底座 TURN_MAX_OUTPUT=262144),锁住 2026-07-02 修的大窗口倒置。
     #[test]
     fn compaction_cloud_large_window_models() {
+        let _env = EnvGuard::new(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
         // T(raw 子集尺)换算回 emergency 的 conservative 全量尺(同 forkguard 常数)
         const K_NUM: usize = 3;
         const K_DEN: usize = 2;
