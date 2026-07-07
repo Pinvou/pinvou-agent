@@ -1,6 +1,7 @@
 param(
-  [string]$NodeZip = "C:\Users\z27014\Downloads\node-v24.18.0-win-x64.zip",
-  [string]$PythonZip = "C:\Users\z27014\Downloads\python-3.13.14-embed-amd64.zip"
+  [string]$NodeZip = "",
+  [string]$PythonZip = "",
+  [string]$PandocZip = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,8 +10,23 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $appRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $resourcesRoot = Join-Path $appRoot "src-tauri\resources\windows"
+$defaultNodeZip = Join-Path $resourcesRoot "node-v24.18.0-win-x64.zip"
+$defaultPythonZip = Join-Path $resourcesRoot "python-3.13.14-embed-amd64.zip"
+$defaultPandocZip = Join-Path $resourcesRoot "pandoc-3.10-windows-x86_64.zip"
+$sevenZipExe = Join-Path $resourcesRoot "7zip\7z.exe"
 $pythonTarget = Join-Path $resourcesRoot "python"
 $nodeTarget = Join-Path $resourcesRoot "node"
+$pandocTarget = Join-Path $resourcesRoot "pandoc"
+
+if ([string]::IsNullOrWhiteSpace($NodeZip)) {
+  $NodeZip = $defaultNodeZip
+}
+if ([string]::IsNullOrWhiteSpace($PythonZip)) {
+  $PythonZip = $defaultPythonZip
+}
+if ([string]::IsNullOrWhiteSpace($PandocZip)) {
+  $PandocZip = $defaultPandocZip
+}
 
 function Assert-ReadableZip {
   param(
@@ -61,6 +77,15 @@ function Expand-Zip {
     Remove-Item -LiteralPath $Destination -Recurse -Force
   }
   New-Item -ItemType Directory -Path $Destination | Out-Null
+
+  if (Test-Path -LiteralPath $sevenZipExe -PathType Leaf) {
+    & $sevenZipExe x $ZipPath "-o$Destination" -y | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      throw "Failed to extract zip with bundled 7z.exe. Exit code: $LASTEXITCODE. Archive: $ZipPath"
+    }
+    return
+  }
+
   [System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $Destination)
 }
 
@@ -75,49 +100,53 @@ function Copy-DirectoryContents {
   }
 }
 
+function Prepare-RuntimeFromZip {
+  param(
+    [string]$ZipPath,
+    [string]$TempDirectory,
+    [string]$TargetDirectory,
+    [string]$RequiredFileName,
+    [string]$Label
+  )
+
+  Expand-Zip -ZipPath $ZipPath -Destination $TempDirectory
+
+  # Archives differ by layout: Python files are at zip root, while Node/Pandoc
+  # use a versioned top-level directory. Find the required executable first,
+  # then copy its parent directory contents so the final target path is stable.
+  $requiredFile = Get-ChildItem -LiteralPath $TempDirectory -Recurse -File -Filter $RequiredFileName |
+    Select-Object -First 1
+  if ($null -eq $requiredFile) {
+    throw "$Label runtime archive does not contain ${RequiredFileName}: $ZipPath"
+  }
+
+  Reset-Directory -Path $TargetDirectory
+  Copy-DirectoryContents -Source $requiredFile.DirectoryName -Destination $TargetDirectory
+
+  $targetFile = Join-Path $TargetDirectory $RequiredFileName
+  if (-not (Test-Path -LiteralPath $targetFile -PathType Leaf)) {
+    throw "Prepared $Label runtime is missing $RequiredFileName at $TargetDirectory"
+  }
+
+  return (Get-ChildItem -LiteralPath $TargetDirectory -Recurse -File | Measure-Object Length -Sum).Sum
+}
+
 Assert-ReadableZip -Path $PythonZip -Label "Python"
 Assert-ReadableZip -Path $NodeZip -Label "Node"
+Assert-ReadableZip -Path $PandocZip -Label "Pandoc"
 
 $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("pinvou3-runtimes-" + [System.Guid]::NewGuid().ToString("N"))
 $pythonTmp = Join-Path $tmpRoot "python"
 $nodeTmp = Join-Path $tmpRoot "node"
+$pandocTmp = Join-Path $tmpRoot "pandoc"
 
 try {
-  Expand-Zip -ZipPath $PythonZip -Destination $pythonTmp
-  Expand-Zip -ZipPath $NodeZip -Destination $nodeTmp
-
-  $pythonw = Get-ChildItem -LiteralPath $pythonTmp -Recurse -File -Filter "pythonw.exe" | Select-Object -First 1
-  if ($null -eq $pythonw) {
-    throw "Python runtime archive does not contain pythonw.exe: $PythonZip"
-  }
-
-  $nodeExe = Get-ChildItem -LiteralPath $nodeTmp -Recurse -File -Filter "node.exe" | Select-Object -First 1
-  if ($null -eq $nodeExe) {
-    throw "Node runtime archive does not contain node.exe: $NodeZip"
-  }
-
-  Reset-Directory -Path $pythonTarget
-  Reset-Directory -Path $nodeTarget
-
-  # Python embeddable zip stores files at archive root. Copy the directory that
-  # owns pythonw.exe so the final path is resources/windows/python/pythonw.exe.
-  Copy-DirectoryContents -Source $pythonw.DirectoryName -Destination $pythonTarget
-
-  # Official Node zip has a versioned top-level directory. Copy the node.exe
-  # parent contents so the final path is resources/windows/node/node.exe.
-  Copy-DirectoryContents -Source $nodeExe.DirectoryName -Destination $nodeTarget
-
-  if (-not (Test-Path -LiteralPath (Join-Path $pythonTarget "pythonw.exe") -PathType Leaf)) {
-    throw "Prepared Python runtime is missing pythonw.exe at $pythonTarget"
-  }
-  if (-not (Test-Path -LiteralPath (Join-Path $nodeTarget "node.exe") -PathType Leaf)) {
-    throw "Prepared Node runtime is missing node.exe at $nodeTarget"
-  }
-
-  $pythonBytes = (Get-ChildItem -LiteralPath $pythonTarget -Recurse -File | Measure-Object Length -Sum).Sum
-  $nodeBytes = (Get-ChildItem -LiteralPath $nodeTarget -Recurse -File | Measure-Object Length -Sum).Sum
+  $pythonBytes = Prepare-RuntimeFromZip -ZipPath $PythonZip -TempDirectory $pythonTmp -TargetDirectory $pythonTarget -RequiredFileName "pythonw.exe" -Label "Python"
+  $nodeBytes = Prepare-RuntimeFromZip -ZipPath $NodeZip -TempDirectory $nodeTmp -TargetDirectory $nodeTarget -RequiredFileName "node.exe" -Label "Node"
+  $pandocBytes = Prepare-RuntimeFromZip -ZipPath $PandocZip -TempDirectory $pandocTmp -TargetDirectory $pandocTarget -RequiredFileName "pandoc.exe" -Label "Pandoc"
   Write-Host ("Prepared Python runtime: {0} ({1:N2} MiB)" -f $pythonTarget, ($pythonBytes / 1MB))
   Write-Host ("Prepared Node runtime: {0} ({1:N2} MiB)" -f $nodeTarget, ($nodeBytes / 1MB))
+  Write-Host ("Prepared Pandoc runtime: {0} ({1:N2} MiB)" -f $pandocTarget, ($pandocBytes / 1MB))
 } finally {
   Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

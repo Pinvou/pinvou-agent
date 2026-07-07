@@ -71,3 +71,4 @@ pinvou3-app/src-tauri/resources/bge-m3/
 # Windows runtime bundles generated from local release archives during packaging
 pinvou3-app/src-tauri/resources/windows/python/
 pinvou3-app/src-tauri/resources/windows/node/
+pinvou3-app/src-tauri/resources/windows/pandoc/
