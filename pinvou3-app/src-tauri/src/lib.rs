@@ -418,6 +418,7 @@ pub fn run() {
             commands::edit_last_turn,
             commands::read_artifact_text,
             commands::list_deliverables,
+            commands::list_deliverable_index,
             commands::artifact_info,
             commands::render_artifact_visual,
             commands::read_artifact_image_b64,

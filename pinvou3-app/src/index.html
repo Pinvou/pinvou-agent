@@ -239,7 +239,18 @@
         kbDupNote: '内容完全相同的文件（删除动作将在后续版本支持）', kbNoDups: '没有发现重复文件', kbDupCopies: '份',
         kbOpen: '打开', kbOpenFolder: '所在文件夹',
         kbPageTitle: '本地文件与知识库', kbFilesSub: '检索、分类本地文件，并把它们沉淀为 AI 可引用的专属知识库。', kbKbSub: '把本地文件沉淀为 AI 可引用的专属知识库，问答时自动标注出处。',
-        kbSubFiles: '本地文件管理', kbSubKb: '知识库',
+        kbSubFiles: '本地文件管理', kbSubKb: '知识库', kbSubOutput: '产出物',
+        kbOutSub: '你和 PINVOU 一起做出来的东西，都在这里。',
+        kbOutSearch: '搜索产出物', kbOutSearchList: '按名称 / 来源会话搜索',
+        kbOutCatAll: '全部', kbOutCatWeb: '网页', kbOutCatDoc: '文档', kbOutCatImg: '海报', kbOutCatPpt: 'PPT',
+        kbOutCount: (n) => `共 ${n} 项`, kbOutSort: '最近修改',
+        kbOutGroupToday: '今天', kbOutGroupWeek: '本周', kbOutGroupEarlier: '更早', kbOutGroupCount: (n) => `${n} 个产出`,
+        kbOutMonthLabel: (y, m) => `${y}年${String(m).padStart(2, '0')}月`, kbOutGroupUnknown: '时间未知',
+        kbOutColName: '名称', kbOutColType: '类型', kbOutColSource: '来源会话', kbOutColTime: '修改时间', kbOutColActions: '操作',
+        kbOutTodayPrefix: '今天', kbOutWeekdays: ['周日','周一','周二','周三','周四','周五','周六'],
+        kbOutPreview: '预览', kbOutOpenChat: '在对话打开', kbOutContinue: '续写', kbOutNewProject: '新项目', kbOutGallery: '平铺式', kbOutList: '列表式', kbOutOpenExt: '在系统中打开', kbOutOpenFolder: '打开所在文件夹',
+        kbOutEmpty: '还没有产出物', kbOutEmptyHint: '和 PINVOU 聊聊，一起做出来的东西会出现在这里。',
+        kbOutContinuePrefill: (name) => `继续完善「${name}」`, kbOutRequirementLabel: '我的要求：', kbOutFileCount: (n) => `${n} 个文件`,
         kbCatAll: '全部', kbCatDoc: '文档', kbCatSheet: '表格', kbCatPpt: '演示', kbCatPdf: 'PDF', kbCatImg: '图片', kbCatZip: '压缩包',
         kbRecent: '最近修改', kbAddToKb: '加入知识库', kbAddFiles: '添加文件', kbIndexing: '解析中',
         kbBrowseByType: '按类型浏览', kbMonitored: '点击类型可筛选下方文件', kbItemUnit: ' 个', kbMonitoredDirs: '已监控 {n} 个文件夹', kbManageFavLink: '管理常用 →', kbRecentFiles: '最近文件', kbAllFiles: '全部文件', kbSortByModified: '按最近修改排序', kbColName: '文件名', kbColLoc: '位置', kbColSize: '大小', kbColTime: '修改时间', kbManageFav: '管理常用 →', kbEnter: '进入', kbCollUnit: '个知识库', kbColColl: '所属知识库', kbStatus: '索引状态',
@@ -489,7 +500,18 @@
         kbDupNote: 'Files with identical content (delete action coming in a later version)', kbNoDups: 'No duplicates found', kbDupCopies: 'copies',
         kbOpen: 'Open', kbOpenFolder: 'Open folder',
         kbPageTitle: 'Local Files & Knowledge', kbFilesSub: 'Search and browse local files, and turn them into an AI-citable knowledge base.', kbKbSub: 'Turn local files into AI-citable knowledge; answers cite their sources.',
-        kbSubFiles: 'File Manager', kbSubKb: 'Knowledge',
+        kbSubFiles: 'File Manager', kbSubKb: 'Knowledge', kbSubOutput: 'Outputs',
+        kbOutSub: 'Everything you and PINVOU have made, all in one place.',
+        kbOutSearch: 'Search outputs', kbOutSearchList: 'Search by name / source chat',
+        kbOutCatAll: 'All', kbOutCatWeb: 'Web', kbOutCatDoc: 'Docs', kbOutCatImg: 'Poster', kbOutCatPpt: 'PPT',
+        kbOutCount: (n) => `${n} items`, kbOutSort: 'Recently modified',
+        kbOutGroupToday: 'Today', kbOutGroupWeek: 'This week', kbOutGroupEarlier: 'Earlier', kbOutGroupCount: (n) => `${n} outputs`,
+        kbOutMonthLabel: (y, m) => `${y}-${String(m).padStart(2, '0')}`, kbOutGroupUnknown: 'Unknown time',
+        kbOutColName: 'Name', kbOutColType: 'Type', kbOutColSource: 'Source chat', kbOutColTime: 'Modified', kbOutColActions: 'Actions',
+        kbOutTodayPrefix: 'Today', kbOutWeekdays: ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'],
+        kbOutPreview: 'Preview', kbOutOpenChat: 'Open in chat', kbOutContinue: 'Continue', kbOutNewProject: 'New project', kbOutGallery: 'Gallery', kbOutList: 'List', kbOutOpenExt: 'Open in system', kbOutOpenFolder: 'Open folder',
+        kbOutEmpty: 'No outputs yet', kbOutEmptyHint: 'Chat with PINVOU — things you make together will appear here.',
+        kbOutContinuePrefill: (name) => `Continue refining "${name}"`, kbOutRequirementLabel: 'My request:', kbOutFileCount: (n) => `${n} files`,
         kbCatAll: 'All', kbCatDoc: 'Docs', kbCatSheet: 'Sheets', kbCatPpt: 'Slides', kbCatPdf: 'PDF', kbCatImg: 'Images', kbCatZip: 'Archives',
         kbRecent: 'Recently modified', kbAddToKb: 'Add to knowledge', kbAddFiles: 'Add files', kbIndexing: 'Parsing',
         kbBrowseByType: 'Browse by type', kbMonitored: 'Click a type to filter below', kbItemUnit: '', kbMonitoredDirs: 'Watching {n} folders', kbManageFavLink: 'Manage →', kbRecentFiles: 'Recent files', kbAllFiles: 'All files', kbSortByModified: 'Sorted by last modified', kbColName: 'Name', kbColLoc: 'Location', kbColSize: 'Size', kbColTime: 'Modified', kbManageFav: 'Manage →', kbEnter: 'Enter', kbCollUnit: 'collections', kbColColl: 'Knowledge', kbStatus: 'Status',
@@ -739,7 +761,18 @@
         kbDupNote: '内容が完全に同じファイル（削除操作は今後のバージョンで対応）', kbNoDups: '重複は見つかりませんでした', kbDupCopies: '個',
         kbOpen: '開く', kbOpenFolder: 'フォルダを開く',
         kbPageTitle: 'ローカルファイルと知識', kbFilesSub: 'ローカルファイルを検索・分類し、AI が引用できる専用知識ベースにします。', kbKbSub: 'ローカルファイルを AI 引用可能な知識に。回答時に出典を明記。',
-        kbSubFiles: 'ファイル管理', kbSubKb: '知識ベース',
+        kbSubFiles: 'ファイル管理', kbSubKb: '知識ベース', kbSubOutput: '成果物',
+        kbOutSub: 'PINVOU と一緒に作ったものをここにまとめます。',
+        kbOutSearch: '成果物を検索', kbOutSearchList: '名前 / 元チャットで検索',
+        kbOutCatAll: 'すべて', kbOutCatWeb: 'Web', kbOutCatDoc: '文書', kbOutCatImg: 'ポスター', kbOutCatPpt: 'PPT',
+        kbOutCount: (n) => `${n} 件`, kbOutSort: '最近更新',
+        kbOutGroupToday: '今日', kbOutGroupWeek: '今週', kbOutGroupEarlier: '以前', kbOutGroupCount: (n) => `${n} 件`,
+        kbOutMonthLabel: (y, m) => `${y}年${String(m).padStart(2, '0')}月`, kbOutGroupUnknown: '日時不明',
+        kbOutColName: '名前', kbOutColType: '種類', kbOutColSource: '元チャット', kbOutColTime: '更新', kbOutColActions: '操作',
+        kbOutTodayPrefix: '今日', kbOutWeekdays: ['日','月','火','水','木','金','土'],
+        kbOutPreview: 'プレビュー', kbOutOpenChat: 'チャットで開く', kbOutContinue: '続きを作る', kbOutNewProject: '新規プロジェクト', kbOutGallery: 'ギャラリー', kbOutList: 'リスト', kbOutOpenExt: 'システムで開く', kbOutOpenFolder: 'フォルダを開く',
+        kbOutEmpty: '成果物はまだありません', kbOutEmptyHint: 'PINVOU とチャットして作ったものがここに表示されます。',
+        kbOutContinuePrefill: (name) => `「${name}」を続けて改善`, kbOutRequirementLabel: '依頼内容：', kbOutFileCount: (n) => `${n} ファイル`,
         kbCatAll: 'すべて', kbCatDoc: '文書', kbCatSheet: '表', kbCatPpt: 'スライド', kbCatPdf: 'PDF', kbCatImg: '画像', kbCatZip: '圧縮',
         kbRecent: '最近の更新', kbAddToKb: '知識に追加', kbAddFiles: 'ファイル追加', kbIndexing: '解析中',
         kbBrowseByType: 'タイプ別に表示', kbMonitored: 'タイプをクリックして絞り込み', kbItemUnit: ' 件', kbMonitoredDirs: '{n} 個のフォルダを監視中', kbManageFavLink: '管理 →', kbRecentFiles: '最近のファイル', kbAllFiles: 'すべてのファイル', kbSortByModified: '最終更新順', kbColName: 'ファイル名', kbColLoc: '場所', kbColSize: 'サイズ', kbColTime: '更新日時', kbManageFav: '管理 →', kbEnter: '開く', kbCollUnit: 'コレクション', kbColColl: '所属', kbStatus: '状態',
@@ -1150,6 +1183,7 @@
       }
       const [isSidebarOpen, setIsSidebarOpen] = useState(false);
       const [chatPrefill, setChatPrefill] = useState('');
+      const composerPrefillSeenRef = useRef(0);
       const [personaEditor, setPersonaEditor] = useState(null); // 聊天里"存入卡牌池"草稿 → App 级编辑器
       const [savedConfirm, setSavedConfirm] = useState(null); // 存入成功 → iOS 确认窗 {name}
       const [poolMyOnly, setPoolMyOnly] = useState(false); // 跳卡池时是否直接落「我的卡牌」筛选(从确认窗"去查看"进来=true)
@@ -1216,6 +1250,11 @@
           }
         }
         if (bs.superPermEnabled !== superPerm) setSuperPerm(bs.superPermEnabled);
+        if (bs.composerPrefill && bs.composerPrefill.id && bs.composerPrefill.id !== composerPrefillSeenRef.current) {
+          composerPrefillSeenRef.current = bs.composerPrefill.id;
+          setChatPrefill(bs.composerPrefill.text || '');
+          setCurrentView('chat');
+        }
         // UI 语言/主题:启动时从落盘 settings 恢复一次(此前只写不读,重启即回中文+深色)
         if (!uiPrefsInitRef.current && bs.settings) {
           const lang = TAG_TO_LANG[bs.settings.language];
@@ -2077,7 +2116,7 @@
     // KnowledgeView 用 currentView 条件渲染:切 tab 会卸载、丢 state,回来重新加载 → 每次闪
     // 一下"还没建立索引"空状态再加载。模块级缓存上次拉到的 L0/L1 数据:remount 时初始 state
     // 直接用缓存(切回秒显),后台 refresh 更新。loaded=false 时显示加载中而非误判空状态。
-    let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], allDocs: [], embedInfo: null, model: null };
+    let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], allDocs: [], embedInfo: null, model: null, outputs: [], outputsLoaded: false };
 
     const KnowledgeView = ({ theme, t }) => {
       const isDark = theme === 'dark';
@@ -2087,7 +2126,7 @@
           ? window.__TAURI__.core.invoke(cmd, args)
           : Promise.reject('no-tauri');
 
-      const [sub, setSub] = useState('files'); // 'files' | 'kb'
+      const [sub, setSub] = useState('output'); // 'output' | 'files' | 'kb'
 
       // ---------- 共用 ----------
       const openFile = (p) => inv('open_in_system', { path: p }).catch(() => {});
@@ -2102,6 +2141,15 @@
       const fmtDate = (s) => {
         if (!s) return '';
         const d = new Date(s * 1000), p = (n) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+      };
+      const fmtOutputDate = (s) => {
+        if (!s) return '';
+        const d = new Date(s * 1000), now = new Date(), p = (n) => String(n).padStart(2, '0');
+        const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+        if (sameDay) return `${t.kbOutTodayPrefix} ${p(d.getHours())}:${p(d.getMinutes())}`;
+        const age = now.getTime() - d.getTime();
+        if (age >= 0 && age < 7 * 86400000) return `${t.kbOutWeekdays[d.getDay()]} ${p(d.getHours())}:${p(d.getMinutes())}`;
         return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
       };
       const muted = isDark ? 'text-[#C4C7C5]' : 'text-[#444746]';
@@ -2130,6 +2178,365 @@
       // 知识库 → 按分类/名稳定配色(对齐设计稿彩色卡片图标)
       const COLL_PALETTE = ['#3f7bf0','#7b5fe6','#1aa07a','#d6873e','#d6589a','#4b7bd6','#e0903a','#2b9d7a','#7d6ae6'];
       const collColor = (c) => COLL_PALETTE[Math.abs(String((c && (c.category || c.name)) || '').split('').reduce((a, ch) => a + ch.charCodeAt(0), 0)) % COLL_PALETTE.length];
+
+      // ================= 产出物 =================
+      const [outputs, setOutputs] = useState(kbCache.outputs);
+      const [outputsLoaded, setOutputsLoaded] = useState(kbCache.outputsLoaded);
+      const [outCat, setOutCat] = useState('all');
+      const [outQuery, setOutQuery] = useState('');
+      const [outView, setOutView] = useState('grid');
+      const [outputPreviewPath, setOutputPreviewPath] = useState(null);
+      const outPreviewCache = useRef({});
+      const outPreviewQueue = useRef({ active: 0, jobs: [] });
+      const runQueuedPreview = useCallback((job) => new Promise((resolve, reject) => {
+        const q = outPreviewQueue.current;
+        const pump = () => {
+          while (q.active < 2 && q.jobs.length > 0) {
+            const item = q.jobs.shift();
+            q.active += 1;
+            Promise.resolve()
+              .then(item.job)
+              .then(item.resolve, item.reject)
+              .finally(() => {
+                q.active -= 1;
+                setTimeout(pump, 60);
+              });
+          }
+        };
+        q.jobs.push({ job, resolve, reject });
+        pump();
+      }), []);
+      const outputListSig = (list) => (list || []).map((o) => `${o.path || ''}|${o.mtime || 0}|${o.size || 0}|${o.sessionId || ''}|${o.source || ''}|${o.name || ''}`).join('\n');
+      const outputsSigRef = useRef(outputListSig(kbCache.outputs));
+      const OUTPUT_CATS = [
+        { key: 'all', label: t.kbOutCatAll, color: '#6a6a78', icon: GridIcon },
+        { key: 'web', label: t.kbOutCatWeb, color: '#2f6beb', icon: AppWindow },
+        { key: 'doc', label: t.kbOutCatDoc, color: '#2b9d7a', icon: FileText },
+        { key: 'img', label: t.kbOutCatImg, color: '#d6589a', icon: ImageIcon },
+        { key: 'ppt', label: t.kbOutCatPpt, color: '#e0773a', icon: PresentationIcon },
+      ];
+      const outCatMeta = (k) => OUTPUT_CATS.find((c) => c.key === k) || OUTPUT_CATS[0];
+      const refreshOutputs = useCallback(async () => {
+        const list = bridge && bridge.listDeliverableIndex
+          ? await bridge.listDeliverableIndex().catch(() => [])
+          : await inv('list_deliverable_index').catch(() => []);
+        const nextList = list || [];
+        const nextSig = outputListSig(nextList);
+        if (nextSig !== outputsSigRef.current) {
+          outputsSigRef.current = nextSig;
+          setOutputs(nextList);
+          kbCache.outputs = nextList;
+        }
+        setOutputsLoaded(true);
+        kbCache.outputsLoaded = true;
+      }, []);
+      useEffect(() => { if (sub === 'output') refreshOutputs(); }, [sub, refreshOutputs]);
+      useEffect(() => {
+        if (sub !== 'output') return;
+        const onFocus = () => refreshOutputs();
+        window.addEventListener('focus', onFocus);
+        return () => window.removeEventListener('focus', onFocus);
+      }, [sub, refreshOutputs]);
+      const outputArtifactKey = ((bs && bs.artifacts) || []).map((a) => `${a.path || ''}:${a.basename || ''}`).join('|');
+      useEffect(() => {
+        if (sub === 'output') refreshOutputs();
+      }, [sub, outputArtifactKey, refreshOutputs]);
+      const filteredOutputs = React.useMemo(() => {
+        const q = outQuery.trim().toLowerCase();
+        return outputs.filter((o) => {
+          const catOk = outCat === 'all' || o.category === outCat;
+          const qOk = !q || String(o.name || '').toLowerCase().includes(q) || String(o.source || '').toLowerCase().includes(q);
+          return catOk && qOk;
+        });
+      }, [outputs, outCat, outQuery]);
+      const queryOutputs = React.useMemo(() => {
+        const q = outQuery.trim().toLowerCase();
+        return outputs.filter((o) => !q || String(o.name || '').toLowerCase().includes(q) || String(o.source || '').toLowerCase().includes(q));
+      }, [outputs, outQuery]);
+      const outputCount = (k) => k === 'all' ? outputs.length : outputs.filter((o) => o.category === k).length;
+      const outputDesc = (o) => `${fmtSize(o.size)} · ${o.source || t.kbSubOutput}`;
+      const groupOutputs = (list) => {
+        const now = new Date();
+        const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000;
+        const startWeek = startToday - ((now.getDay() + 6) % 7) * 86400;
+        const groups = [
+          { key: 'today', label: t.kbOutGroupToday, ts: startToday, rows: [] },
+          { key: 'week', label: t.kbOutGroupWeek, ts: startWeek, rows: [] },
+        ];
+        const byMonth = new Map();
+        list.forEach((o) => {
+          const mtime = o.mtime || 0;
+          if (mtime >= startToday) { groups[0].rows.push(o); return; }
+          if (mtime >= startWeek) { groups[1].rows.push(o); return; }
+          const d = o.mtime ? new Date(o.mtime * 1000) : null;
+          const key = d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` : 'unknown';
+          if (!byMonth.has(key)) {
+            byMonth.set(key, {
+              key,
+              label: d ? t.kbOutMonthLabel(d.getFullYear(), d.getMonth() + 1) : t.kbOutGroupUnknown,
+              ts: d ? new Date(d.getFullYear(), d.getMonth(), 1).getTime() : 0,
+              rows: [],
+            });
+          }
+          byMonth.get(key).rows.push(o);
+        });
+        byMonth.forEach((g) => groups.push(g));
+        return groups.filter((g) => g.rows.length > 0);
+      };
+      const openOutputChat = async (o) => {
+        if (bridge && bridge.switchToSession && o.sessionId) {
+          await bridge.switchToSession(o.sessionId);
+        }
+      };
+      const continueOutput = async (o) => {
+        await openOutputChat(o);
+        if (bridge && bridge.prefillComposer) {
+          bridge.prefillComposer(`${t.kbOutContinuePrefill(o.name)}\n\n文件路径：${o.path}\n\n${t.kbOutRequirementLabel}`);
+        }
+      };
+      const newOutputProject = async (o) => {
+        if (bridge && bridge.createNewSession) await bridge.createNewSession();
+        if (bridge && bridge.prefillComposer) {
+          bridge.prefillComposer(`${t.kbOutContinuePrefill(o.name)}\n\n文件路径：${o.path}\n\n${t.kbOutRequirementLabel}`);
+        }
+      };
+      const OutputLivePreview = ({ o, onOpen }) => {
+        const ext = String(o.ext || '').toLowerCase();
+        const cacheKey = `${o.path}|${o.mtime || 0}`;
+        const boxRef = useRef(null);
+        const [visible, setVisible] = useState(false);
+        const [pv, setPv] = useState(() => outPreviewCache.current[cacheKey] || { idle: true });
+        const title = o.name.replace(/\.[^.]+$/, '');
+        const [frameReady, setFrameReady] = useState(false);
+        useEffect(() => {
+          const node = boxRef.current;
+          if (!node) return;
+          if (!('IntersectionObserver' in window)) { setVisible(true); return; }
+          const io = new IntersectionObserver((entries) => {
+            if (entries.some((e) => e.isIntersecting)) {
+              setVisible(true);
+              io.disconnect();
+            }
+          }, { rootMargin: '0px', threshold: 0.08 });
+          io.observe(node);
+          return () => io.disconnect();
+        }, [cacheKey]);
+        useEffect(() => {
+          let alive = true;
+          const hit = outPreviewCache.current[cacheKey];
+          if (hit) { setPv(hit); return () => { alive = false; }; }
+          if (!visible) { setPv({ idle: true }); return () => { alive = false; }; }
+          setPv({ loading: true });
+          setFrameReady(false);
+          const timer = setTimeout(() => {
+          runQueuedPreview(async () => {
+            const freshHit = outPreviewCache.current[cacheKey];
+            if (freshHit) return freshHit;
+            try {
+              let next = null;
+              if (o.category === 'img' && bridge.readArtifactImageB64) {
+                next = { kind: 'image', url: await bridge.readArtifactImageB64(o.path) };
+              } else if (ext === 'pptx' && bridge.readArtifactThumbnail) {
+                const thumb = await bridge.readArtifactThumbnail(o.path);
+                next = thumb ? { kind: 'image', url: thumb } : null;
+              }
+              if (!next && (o.category === 'web' || ext === 'html' || ext === 'htm') && bridge.readArtifactText) {
+                next = { kind: 'html', html: await bridge.readArtifactText(o.path) };
+              }
+              if (!next && ['docx', 'doc', 'odt', 'rtf'].includes(ext) && bridge.renderArtifactVisual) {
+                const visual = await bridge.renderArtifactVisual(o.path);
+                if (visual && visual.mode === 'html' && visual.html) {
+                  next = { kind: 'officeHtml', html: visual.html + OFFICE_HTML_STYLE };
+                }
+              }
+              if (!next && ['md', 'markdown', 'txt', 'csv', 'json', 'log'].includes(ext) && bridge.readArtifactText) {
+                const text = await bridge.readArtifactText(o.path);
+                next = { kind: 'text', text: text.slice(0, 1600) };
+              }
+              if (!next) next = { kind: 'fallback' };
+              outPreviewCache.current[cacheKey] = next;
+              return next;
+            } catch (e) {
+              const next = { kind: 'fallback', error: String(e) };
+              outPreviewCache.current[cacheKey] = next;
+              return next;
+            }
+          }).then((next) => { if (alive) setPv(next); });
+          }, 80);
+          return () => { alive = false; clearTimeout(timer); };
+        }, [cacheKey, visible, o.path, o.category, ext, runQueuedPreview]);
+
+        const htmlPreviewDoc = (html) => '<style>*{animation-duration:.001s!important;}</style>' + (html || '');
+        const officePreviewDoc = (html) => '<style>html,body{background:#fff!important;margin:0;color:#111!important;}*{animation-duration:.001s!important;}</style>' + (html || '');
+        const shell = (children) => (
+          <div ref={boxRef} onClick={onOpen} role={onOpen ? 'button' : undefined} tabIndex={onOpen ? 0 : undefined}
+            onKeyDown={(e) => { if (onOpen && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpen(); } }}
+            className={`h-[164px] m-2.5 rounded-[13px] overflow-hidden relative border border-white/[0.06] bg-[#15171a] ${onOpen ? 'cursor-pointer' : ''}`}>
+            {children}
+          </div>
+        );
+        if (pv.idle || pv.loading) return shell(
+          <div className="absolute inset-0 p-6">
+            <div className="h-[13px] w-[68%] rounded-full bg-white/15 animate-pulse mb-4"></div>
+            <div className="h-2 w-[88%] rounded-full bg-white/10 animate-pulse mb-2.5"></div>
+            <div className="h-2 w-[76%] rounded-full bg-white/10 animate-pulse mb-2.5"></div>
+            <div className="h-2 w-[54%] rounded-full bg-white/10 animate-pulse"></div>
+          </div>
+        );
+        if (pv.kind === 'image') return shell(<img src={pv.url} alt="" className="w-full h-full object-cover" />);
+        if (pv.kind === 'html') return shell(
+          <>
+            {!frameReady && <div className="absolute inset-0 bg-[#15171a]"></div>}
+            <iframe title={o.name} sandbox="allow-same-origin" srcDoc={htmlPreviewDoc(pv.html)} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
+              className={`absolute inset-0 w-[200%] h-[200%] origin-top-left scale-50 bg-[#15171a] pointer-events-none border-0 transition-opacity duration-300 ${frameReady ? 'opacity-100' : 'opacity-0'}`}
+              style={{ colorScheme: 'dark' }} />
+          </>
+        );
+        if (pv.kind === 'officeHtml') return shell(
+          <>
+            {!frameReady && <div className="absolute inset-0 bg-white"></div>}
+            <iframe title={o.name} sandbox="allow-same-origin" srcDoc={officePreviewDoc(pv.html)} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
+              className={`absolute inset-0 w-[200%] h-[200%] origin-top-left scale-50 bg-white pointer-events-none border-0 transition-opacity duration-300 ${frameReady ? 'opacity-100' : 'opacity-0'}`}
+              style={{ colorScheme: 'light' }} />
+          </>
+        );
+        if (pv.kind === 'text') {
+          const lines = String(pv.text || '').split(/\r?\n/).filter(Boolean).slice(0, 8);
+          return shell(
+            <div className="absolute inset-0 p-5 font-mono text-[11px] leading-relaxed text-[#9aa2ad] overflow-hidden">
+              <b className="block text-[#e7eaf0] text-[14px] mb-3 truncate"># {title}</b>
+              {lines.map((line, i) => <p key={i} className={`m-0 mb-1.5 truncate ${i % 2 ? 'text-[#6e747e]' : ''}`}>{line}</p>)}
+            </div>
+          );
+        }
+        const meta = outCatMeta(o.category);
+        const Icon = meta.icon || FileText;
+        return shell(
+          <div className="absolute inset-0 grid place-items-center" style={{ color: meta.color }}>
+            <div className="w-16 h-16 rounded-2xl grid place-items-center" style={{ background: meta.color + '24' }}><Icon size={30} /></div>
+          </div>
+        );
+      };
+
+      const LocalFilePreview = ({ f, onOpen }) => {
+        const ext = extOf(f);
+        const cacheKey = `local|${f.path}|${f.mtime || 0}|${f.size || 0}`;
+        const boxRef = useRef(null);
+        const [visible, setVisible] = useState(false);
+        const [pv, setPv] = useState(() => outPreviewCache.current[cacheKey] || { idle: true });
+        const [frameReady, setFrameReady] = useState(false);
+        useEffect(() => {
+          const node = boxRef.current;
+          if (!node) return;
+          if (!('IntersectionObserver' in window)) { setVisible(true); return; }
+          const io = new IntersectionObserver((entries) => {
+            if (entries.some((e) => e.isIntersecting)) {
+              setVisible(true);
+              io.disconnect();
+            }
+          }, { rootMargin: '0px', threshold: 0.08 });
+          io.observe(node);
+          return () => io.disconnect();
+        }, [cacheKey]);
+        useEffect(() => {
+          let alive = true;
+          const hit = outPreviewCache.current[cacheKey];
+          if (hit) { setPv(hit); return () => { alive = false; }; }
+          if (!visible) { setPv({ idle: true }); return () => { alive = false; }; }
+          setPv({ loading: true });
+          setFrameReady(false);
+          const timer = setTimeout(() => {
+            runQueuedPreview(async () => {
+              const freshHit = outPreviewCache.current[cacheKey];
+              if (freshHit) return freshHit;
+              try {
+                let next = null;
+                if (['png','jpg','jpeg','gif','webp','bmp','svg'].includes(ext) && bridge.readArtifactImageB64) {
+                  next = { kind: 'image', url: await bridge.readArtifactImageB64(f.path) };
+                }
+                if (!next && ['html','htm'].includes(ext) && bridge.readArtifactText) {
+                  const html = await bridge.readArtifactText(f.path);
+                  let bodyText = '';
+                  try {
+                    const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
+                    doc.querySelectorAll('script,style,noscript').forEach((n) => n.remove());
+                    bodyText = ((doc.body && doc.body.innerText) || '').trim();
+                  } catch (_) {}
+                  next = (bodyText.length < 24 && /<script[\s>]/i.test(html))
+                    ? { kind: 'text', text: html.slice(0, 1200) }
+                    : { kind: 'html', html };
+                }
+                if (!next && ['docx','doc','odt','rtf','xlsx','xls','pptx','ppt','pdf'].includes(ext) && bridge.renderArtifactVisual) {
+                  const visual = await bridge.renderArtifactVisual(f.path);
+                  if (visual && visual.mode === 'html' && visual.html) next = { kind: 'officeHtml', html: visual.html + OFFICE_HTML_STYLE };
+                  else if (visual && visual.mode === 'images' && visual.images && visual.images.length) next = { kind: 'image', url: visual.images[0] };
+                }
+                if (!next && ['md','markdown','txt','csv','json','log'].includes(ext) && bridge.readArtifactText) {
+                  const text = await bridge.readArtifactText(f.path);
+                  next = { kind: 'text', text: text.slice(0, 1200) };
+                }
+                if (!next) next = { kind: 'fallback' };
+                outPreviewCache.current[cacheKey] = next;
+                return next;
+              } catch (e) {
+                const next = { kind: 'fallback', error: String(e) };
+                outPreviewCache.current[cacheKey] = next;
+                return next;
+              }
+            }).then((next) => { if (alive) setPv(next); });
+          }, 80);
+          return () => { alive = false; clearTimeout(timer); };
+        }, [cacheKey, visible, f.path, ext, runQueuedPreview]);
+
+        const col = extColor(ext);
+        const htmlPreviewDoc = (html) => '<style>*{animation-duration:.001s!important;}</style>' + (html || '');
+        const officePreviewDoc = (html) => '<style>html,body{background:#fff!important;margin:0;color:#111!important;}*{animation-duration:.001s!important;}</style>' + (html || '');
+        const shell = (children) => (
+          <div ref={boxRef} onClick={onOpen} role="button" tabIndex={0}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } }}
+            className="h-[126px] rounded-[14px] overflow-hidden relative border border-white/[0.06] bg-[#15171a] cursor-pointer mb-3">
+            {children}
+          </div>
+        );
+        if (pv.idle || pv.loading) return shell(
+          <div className="absolute inset-0 p-5">
+            <div className="h-[12px] w-[70%] rounded-full bg-white/15 animate-pulse mb-3"></div>
+            <div className="h-2 w-[88%] rounded-full bg-white/10 animate-pulse mb-2"></div>
+            <div className="h-2 w-[62%] rounded-full bg-white/10 animate-pulse"></div>
+          </div>
+        );
+        if (pv.kind === 'image') return shell(<img src={pv.url} alt="" className="w-full h-full object-cover" />);
+        if (pv.kind === 'html') return shell(
+          <>
+            {!frameReady && <div className="absolute inset-0 bg-[#15171a]"></div>}
+            <iframe title={f.name} sandbox="allow-same-origin" srcDoc={htmlPreviewDoc(pv.html)} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
+              className={`absolute inset-0 w-[200%] h-[200%] origin-top-left scale-50 bg-[#15171a] pointer-events-none border-0 transition-opacity duration-300 ${frameReady ? 'opacity-100' : 'opacity-0'}`}
+              style={{ colorScheme: 'dark' }} />
+          </>
+        );
+        if (pv.kind === 'officeHtml') return shell(
+          <>
+            {!frameReady && <div className="absolute inset-0 bg-white"></div>}
+            <iframe title={f.name} sandbox="allow-same-origin" srcDoc={officePreviewDoc(pv.html)} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
+              className={`absolute inset-0 w-[200%] h-[200%] origin-top-left scale-50 bg-white pointer-events-none border-0 transition-opacity duration-300 ${frameReady ? 'opacity-100' : 'opacity-0'}`}
+              style={{ colorScheme: 'light' }} />
+          </>
+        );
+        if (pv.kind === 'text') {
+          const lines = String(pv.text || '').split(/\r?\n/).filter(Boolean).slice(0, 7);
+          return shell(
+            <div className="absolute inset-0 p-4 font-mono text-[10px] leading-relaxed text-[#9aa2ad] overflow-hidden">
+              <b className="block text-[#e7eaf0] text-[12px] mb-2 truncate"># {f.name}</b>
+              {lines.map((line, i) => <p key={i} className={`m-0 mb-1 truncate ${i % 2 ? 'text-[#6e747e]' : ''}`}>{line}</p>)}
+            </div>
+          );
+        }
+        return shell(
+          <div className="absolute inset-0 grid place-items-center" style={{ color: col }}>
+            <div className="w-14 h-14 rounded-2xl grid place-items-center text-[12px] font-black" style={{ background: col + '24' }}>{extLabel(ext)}</div>
+          </div>
+        );
+      };
 
       // ================= 文件管理 (L0) =================
       const [scan, setScan] = useState(kbCache.scan);
@@ -2328,10 +2735,11 @@
           {/* Header */}
           <div className="w-full max-w-7xl mx-auto px-6 md:px-10 pt-12 pb-3">
             <h1 className="text-[32px] font-normal tracking-tight mb-1.5">{t.kbPageTitle}</h1>
-            <p className={`text-[14px] ${muted}`}>{sub === 'files' ? t.kbFilesSub : t.kbKbSub}</p>
+            <p className={`text-[14px] ${muted}`}>{sub === 'files' ? t.kbFilesSub : sub === 'kb' ? t.kbKbSub : t.kbOutSub}</p>
           </div>
           {/* Sub-tabs */}
           <div className="w-full max-w-7xl mx-auto px-6 md:px-10 flex items-center gap-7 border-b border-gray-400/15">
+            <SubTab k="output" label={t.kbSubOutput} count={outputs.length || null} />
             <SubTab k="files" label={t.kbSubFiles} count={total ? total.toLocaleString() : null} />
             <SubTab k="kb" label={t.kbSubKb} count={modelInstalled ? (colls.length || null) : null} />
           </div>
@@ -2426,8 +2834,8 @@
                             <div className={`text-[15px] font-bold mb-3 ${ink}`}>{t.kbRecentFiles}</div>
                             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                               {results.slice(0, 4).map((f) => { const e = extOf(f); const col = extColor(e); return (
-                                <div key={f.path} className={`p-4 rounded-2xl ${panel} ${panelHover} transition-all`} style={panelShadow}>
-                                  <div className="w-10 h-10 rounded-xl grid place-items-center text-[10px] font-extrabold text-white mb-3" style={{ background: col }}>{extLabel(e)}</div>
+                                <div key={f.path} className={`p-3 rounded-2xl ${panel} ${panelHover} transition-all`} style={panelShadow}>
+                                  <LocalFilePreview f={f} onOpen={() => setOutputPreviewPath(f.path)} />
                                   <div className={`text-[13px] font-bold truncate ${ink}`} title={f.name}>{f.name}</div>
                                   <div className={`text-[11px] truncate mt-1 ${muted}`}>{f.path}</div>
                                   <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-400/10">
@@ -2479,6 +2887,155 @@
                 )}
               </div>
             )}
+
+            {/* ============ 产出物 ============ */}
+            {sub === 'output' && (
+              <div className="max-w-7xl mx-auto px-6 md:px-10">
+                <div className="flex flex-col lg:flex-row lg:items-center gap-3 mb-5">
+                  <div className={`flex-1 flex items-center gap-3 px-5 py-3 rounded-[16px] ${isDark ? 'bg-[#1f2124] border border-white/[0.06]' : 'bg-white border border-[#ececf1]'}`} style={panelShadow}>
+                    <Search size={18} className={muted} />
+                    <input type="text" value={outQuery} placeholder={t.kbOutSearchList}
+                      onChange={(e) => setOutQuery(e.target.value)}
+                      className={`flex-1 bg-transparent border-none outline-none text-[15px] ${isDark ? 'placeholder:text-[#C4C7C5]' : 'placeholder:text-[#444746]'}`} />
+                  </div>
+                  <div className={`h-[52px] inline-flex items-center gap-1 p-1 rounded-[16px] border ${isDark ? 'bg-[#1f2124] border-white/[0.06]' : 'bg-white border-[#ececf1]'}`} style={panelShadow}>
+                    <button title={t.kbOutGallery} onClick={() => setOutView('grid')}
+                      className={`w-10 h-10 rounded-xl grid place-items-center transition-colors ${outView === 'grid' ? (isDark ? 'bg-[#2a3952] text-[#79aaff]' : 'bg-[#e9f1ff] text-[#2f6beb]') : muted}`}>
+                      <GridIcon size={18} />
+                    </button>
+                    <button title={t.kbOutList} onClick={() => setOutView('list')}
+                      className={`w-10 h-10 rounded-xl grid place-items-center transition-colors ${outView === 'list' ? (isDark ? 'bg-[#2a3952] text-[#79aaff]' : 'bg-[#e9f1ff] text-[#2f6beb]') : muted}`}>
+                      <IconList size={18} />
+                    </button>
+                  </div>
+                </div>
+
+                {!outputsLoaded ? (
+                  <div className={`rounded-2xl overflow-hidden ${panel}`} style={panelShadow}>
+                    {Array.from({ length: 6 }).map((_, i) => (
+                      <div key={i} className="flex items-center gap-3 px-5 py-3 border-b border-gray-400/10 last:border-0">
+                        <div className={`w-8 h-8 rounded-lg shrink-0 animate-pulse ${isDark ? 'bg-white/10' : 'bg-black/[0.07]'}`} />
+                        <div className={`flex-1 h-3 rounded animate-pulse ${isDark ? 'bg-white/10' : 'bg-black/[0.07]'}`} style={{ maxWidth: `${70 - i * 7}%` }} />
+                      </div>
+                    ))}
+                  </div>
+                ) : outputs.length === 0 ? (
+                  <div className={`text-center py-20 ${muted}`}>
+                    <div className={`w-14 h-14 mx-auto rounded-2xl grid place-items-center mb-4 ${card}`}><Archive size={24} /></div>
+                    <p className={`text-[15px] font-bold mb-1 ${ink}`}>{t.kbOutEmpty}</p>
+                    <p className="text-[13px]">{t.kbOutEmptyHint}</p>
+                  </div>
+                ) : (() => {
+                  const activeOutputs = outView === 'list' ? filteredOutputs : queryOutputs;
+                  if (outView === 'grid' && activeOutputs.length === 0) return (
+                    <div className={`text-center py-20 ${muted}`}>
+                      <div className={`w-14 h-14 mx-auto rounded-2xl grid place-items-center mb-4 ${card}`}><Archive size={24} /></div>
+                      <p className={`text-[15px] font-bold mb-1 ${ink}`}>{t.kbOutEmpty}</p>
+                      <p className="text-[13px]">{t.kbOutEmptyHint}</p>
+                    </div>
+                  );
+                  const sections = groupOutputs(activeOutputs).filter((x) => x.rows.length > 0);
+                  const OutputActions = ({ o, compact }) => (
+                    <div className={`flex items-center gap-2 ${compact ? 'justify-end' : 'mt-4'}`}>
+                      <button onClick={() => continueOutput(o)} className={`h-8 px-3 rounded-full text-[12.5px] font-bold ${isDark ? 'bg-[#283650] text-[#8db7ff]' : 'bg-[#e9f1ff] text-[#2f6beb]'}`}>{t.kbOutContinue}</button>
+                      <button onClick={() => newOutputProject(o)} className={`h-8 px-3 rounded-full text-[12.5px] font-bold ${isDark ? 'bg-white/[0.075] text-[#dfe3e9]' : 'bg-[#f2f4f8] text-[#444746]'}`}>{t.kbOutNewProject}</button>
+                      <button title={t.kbOutOpenFolder} onClick={() => openFolder(o.path)} className={`w-8 h-8 rounded-lg grid place-items-center ${iconHover}`}><FolderOpen size={16} /></button>
+                    </div>
+                  );
+                  return (
+                    <div>
+                      <div className="flex items-baseline justify-between mb-3">
+                        <div className={`text-[15px] font-bold ${ink}`}>{outView === 'grid' ? t.kbOutSort : t.kbOutCount(activeOutputs.length)} · {t.kbOutCount(activeOutputs.length)}</div>
+                        <div className={`text-[12px] ${muted}`}>{t.kbOutSort}</div>
+                      </div>
+
+                      {outView === 'list' && (
+                        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3 mb-5">
+                          {OUTPUT_CATS.map((c) => {
+                            const on = outCat === c.key;
+                            const CIcon = c.icon || FileText;
+                            return (
+                              <button key={c.key} onClick={() => setOutCat(c.key)}
+                                className={`relative h-[72px] flex items-center gap-3 rounded-[14px] px-4 text-left border overflow-hidden transition-all ${isDark ? 'bg-[#1f2124] border-white/[0.09] hover:border-white/[0.16]' : 'bg-white border-[#ececf1] hover:border-[#dfe4f5]'}`}
+                                style={on ? { borderColor: c.color + 'aa', boxShadow: `0 0 0 2px ${c.color}22` } : panelShadow}>
+                                <span className="w-[38px] h-[38px] rounded-[13px] grid place-items-center shrink-0" style={{ color: c.color, background: c.color + (isDark ? '2b' : '1a') }}><CIcon size={18} /></span>
+                                <span className="min-w-0">
+                                  <b className={`block text-[14px] font-extrabold truncate ${ink}`}>{c.label}</b>
+                                  <em className={`not-italic block text-[12px] font-semibold mt-1 ${muted}`}>{outputCount(c.key)} 个</em>
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {outView === 'grid' ? (
+                        <div className="space-y-8">
+                          {sections.map(({ key, label, rows }) => (
+                            <div key={key}>
+                              <div className="flex items-center gap-3 mb-3">
+                                <span className={`text-[20px] font-extrabold ${ink}`}>{label}</span>
+                                <small className={`text-[13px] font-semibold ${muted}`}>{t.kbOutGroupCount(rows.length)}</small>
+                                <span className="h-px flex-1 bg-gradient-to-r from-gray-400/20 to-transparent" />
+                              </div>
+                              <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-[18px]">
+                                {rows.map((o) => {
+                                  const meta = outCatMeta(o.category);
+                                  return (
+                                    <article key={o.path} className={`min-h-[288px] rounded-[18px] overflow-hidden border transition-all ${isDark ? 'bg-[linear-gradient(180deg,rgba(36,38,42,.92),rgba(28,30,33,.92))] border-white/[0.08] hover:border-[#79aaff]/30' : 'bg-white border-[#ececf1] hover:border-[#b9cdf6]'}`} style={panelShadow}>
+                                      <OutputLivePreview o={o} onOpen={() => setOutputPreviewPath(o.path)} />
+                                      <div className="px-5 pb-[18px]">
+                                        <div className="flex items-start gap-2 mt-1">
+                                          <div className={`text-[17px] leading-snug font-extrabold flex-1 min-w-0 truncate ${ink}`} title={o.name}>{o.name}</div>
+                                          <span className="h-6 px-2.5 rounded-full inline-flex items-center text-[11.5px] font-extrabold" style={{ color: meta.color, background: meta.color + (isDark ? '22' : '16') }}>{String(o.ext || '').toUpperCase().slice(0, 4)}</span>
+                                        </div>
+                                        <div className={`flex items-center gap-2 text-[13px] mt-2 ${muted}`}><span>{fmtOutputDate(o.mtime)}</span><i className="w-1 h-1 rounded-full bg-current opacity-40"></i><span className="truncate">{o.source || t.kbSubOutput}</span></div>
+                                        <OutputActions o={o} />
+                                      </div>
+                                    </article>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className={`rounded-[18px] overflow-hidden border ${isDark ? 'bg-[#1d1f22]/80 border-white/[0.075]' : 'bg-white border-[#ececf1]'}`} style={panelShadow}>
+                          <div className={`hidden lg:grid grid-cols-[minmax(0,1.9fr)_150px_150px_260px] gap-4 px-5 h-12 items-center text-[12px] font-extrabold ${muted} border-b border-gray-400/15 ${isDark ? 'bg-white/[0.015]' : 'bg-[#fbfbfd]'}`}>
+                            <span>{t.kbOutColName}</span><span>{t.kbOutColTime}</span><span>{t.kbOutColSource}</span><span className="text-right">{t.kbOutColActions}</span>
+                          </div>
+                          {activeOutputs.length === 0 && (
+                            <div className={`text-center py-14 ${muted}`}>
+                              <div className={`w-12 h-12 mx-auto rounded-2xl grid place-items-center mb-3 ${card}`}><Archive size={20} /></div>
+                              <p className={`text-[14px] font-bold mb-3 ${ink}`}>{t.kbNoResults || t.kbOutEmpty}</p>
+                              <button onClick={() => { setOutCat('all'); setOutQuery(''); }} className={`px-4 py-2 rounded-full text-[13px] font-bold ${soft}`}>{t.kbOutCatAll}</button>
+                            </div>
+                          )}
+                          {activeOutputs.map((o) => {
+                            const meta = outCatMeta(o.category);
+                            return (
+                              <div key={o.path} className={`grid grid-cols-1 lg:grid-cols-[minmax(0,1.9fr)_150px_150px_260px] gap-3 lg:gap-4 px-5 py-4 lg:min-h-[76px] items-center border-b border-gray-400/10 last:border-0 ${cardHover}`}>
+                                <div className="flex items-center gap-3 min-w-0">
+                                  <span className="w-10 h-10 rounded-[13px] grid place-items-center shrink-0 text-[10.5px] font-black border border-white/[0.06]" style={{ color: meta.color, background: meta.color + (isDark ? '24' : '16') }}>{String(o.ext || '').toUpperCase().slice(0, 4) || meta.label}</span>
+                                  <div className="min-w-0">
+                                    <strong className={`block text-[15px] truncate ${ink}`} title={o.name}>{o.name}</strong>
+                                    <span className={`block text-[12px] truncate mt-1 ${muted}`} title={o.path}>{outputDesc(o)}</span>
+                                  </div>
+                                </div>
+                                <span className={`text-[12.5px] ${muted}`}>{fmtOutputDate(o.mtime)}</span>
+                                <span className={`text-[12.5px] truncate ${muted}`} title={o.source || ''}>{o.source || '—'}</span>
+                                <OutputActions o={o} compact />
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+            {outputPreviewPath && <FilePreviewModal path={outputPreviewPath} theme={theme} onClose={() => setOutputPreviewPath(null)} />}
 
             {/* ============ 知识库 · 未装 embedding 模型 → gate ============ */}
             {sub === 'kb' && !modelInstalled && (
@@ -3292,6 +3849,7 @@
       const wrapRef = useRef(null);
       const frameRef = useRef(null);
       const [box, setBox] = useState(null); // { w, h, scale }
+      const [ready, setReady] = useState(false);
       const measure = () => {
         try {
           const fr = frameRef.current, wrap = wrapRef.current;
@@ -3305,6 +3863,7 @@
           setBox({ w, h, scale });
         } catch (e) { /* 未就绪/跨域，忽略 */ }
       };
+      useEffect(() => { setReady(false); setBox(null); }, [html]);
       useEffect(() => {
         if (!wrapRef.current || typeof ResizeObserver === 'undefined') return;
         const ro = new ResizeObserver(() => measure());
@@ -3313,19 +3872,20 @@
       }, []);
       const scaled = box && box.scale < 1;
       return (
-        <div ref={wrapRef} className="w-full" style={scaled ? { height: Math.ceil(box.h * box.scale) } : { minHeight: 480, height: '100%' }}>
-          <iframe ref={frameRef} sandbox="allow-same-origin allow-scripts" onLoad={measure}
-            className="border-0 block bg-white"
+        <div ref={wrapRef} className="relative w-full bg-[#15171a]" style={scaled ? { height: Math.ceil(box.h * box.scale) } : { minHeight: 480, height: '100%' }}>
+          {!ready && <div className="h-[480px] bg-[#15171a]"></div>}
+          <iframe ref={frameRef} sandbox="allow-same-origin allow-scripts" onLoad={() => { measure(); setTimeout(() => setReady(true), 80); }}
+            className={`border-0 block bg-[#15171a] transition-opacity duration-300 ${ready ? 'opacity-100' : 'opacity-0 absolute pointer-events-none'}`}
             style={scaled
-              ? { width: box.w + 'px', height: box.h + 'px', transform: 'scale(' + box.scale + ')', transformOrigin: 'top left' }
-              : { width: '100%', height: '100%', minHeight: '480px' }}
+              ? { width: box.w + 'px', height: box.h + 'px', transform: 'scale(' + box.scale + ')', transformOrigin: 'top left', colorScheme: 'dark' }
+              : { width: '100%', height: '100%', minHeight: '480px', colorScheme: 'dark' }}
             srcDoc={"<script>"
               + "document.addEventListener('contextmenu',function(e){e.preventDefault();});"
               // 预览内拦截 <a> 导航：srcDoc 的 base 是父文档(app)，放任会把 iframe 跳成 app 首页。
               // 阻止默认导航；页内 #锚点 改为在预览内滚动；外链/# 不跳走。<button> 的 onclick 不受影响。
               + "document.addEventListener('click',function(e){var a=e.target&&e.target.closest?e.target.closest('a'):null;if(!a)return;e.preventDefault();var h=a.getAttribute('href')||'';if(h.charAt(0)==='#'&&h.length>1){var el=document.getElementById(h.slice(1));if(el)el.scrollIntoView({behavior:'smooth'});}},true);"
               + "document.addEventListener('submit',function(e){e.preventDefault();},true);"
-              + "<\/script>" + (html || '')} />
+              + "<\/script><style>html,body{background:#15171a;margin:0;}</style>" + (html || '')} />
         </div>
       );
     };
@@ -4587,7 +5147,16 @@
 
       // 工作流启用时预填输入框
       useEffect(() => {
-        if (prefill) { setInputText(prefill); if (onPrefillConsumed) onPrefillConsumed(); }
+        if (prefill) {
+          setInputText(prefill);
+          setTimeout(() => {
+            if (composerRef.current) {
+              composerRef.current.focus();
+              composerRef.current.setSelectionRange(prefill.length, prefill.length);
+            }
+          }, 80);
+          if (onPrefillConsumed) onPrefillConsumed();
+        }
       }, [prefill]);
 
       // Auto-scroll：直接滚内部容器到底（绝不动外层窗口，避免内容被顶到看不见/拉不动）
@@ -9654,7 +10223,11 @@
             } else if (info.kind === 'image') {
               try { const dataUrl = await bridge.readArtifactImageB64(path); if (alive) setPv({ kind: 'image', dataUrl: dataUrl }); }
               catch (e2) { if (alive) setPv({ kind: 'image', imgErr: String(e2) }); }
-            } else { setPv({ kind: info.kind || 'other' }); }
+            } else {
+              const visual = bridge.renderArtifactVisual ? await bridge.renderArtifactVisual(path) : null;
+              if (!alive) return;
+              setPv({ kind: info.kind || 'other', visual });
+            }
           } catch (e) { if (alive) setPv({ error: String(e) }); }
         })();
         return () => { alive = false; };
@@ -9677,9 +10250,11 @@
                 : pv.missing ? <div className={`text-[13px] ${dim}`}>文件不存在或已被删除</div>
                 : pv.error ? <div className="text-[13px] text-[#F28B82]">读取失败: {pv.error}</div>
                 : pv.kind === 'md' ? <div className={`msg-md text-[14px] leading-relaxed ${isDark ? 'dark-code text-[#E3E3E3]' : 'light-code text-[#1F1F1F]'}`} dangerouslySetInnerHTML={{ __html: bridge.renderMarkdown(pv.text || '') }} />
-                : pv.kind === 'html' ? <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}><p className="mb-3">HTML 幻灯片依赖整套 deck 资源(样式 base.css、配图),孤立内联预览加载不了相对路径、只剩裸文字。请用应用窗口打开看完整效果:</p><button onClick={() => bridge.openArtifactExternal(path)} className={`px-3 py-1.5 rounded-full text-[13px] ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>↗ 用应用窗口打开</button></div>
+                : pv.kind === 'html' ? <ScaledHtmlPreview html={pv.text || ''} />
                 : (pv.kind === 'json' || pv.kind === 'text') ? <pre className={`text-[12px] whitespace-pre-wrap break-words font-mono leading-relaxed ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{pv.text}</pre>
                 : pv.kind === 'image' ? (pv.imgErr ? <div className="text-[13px] text-[#F28B82]">图片读取失败: {pv.imgErr}</div> : <img className="max-w-full max-h-[70vh] object-contain mx-auto rounded-lg" src={pv.dataUrl} alt={base} />)
+                : pv.visual && pv.visual.mode === 'html' ? <iframe sandbox="allow-same-origin" className="w-full min-h-[68vh] border-0 block bg-[#15171a]" style={{ colorScheme: 'dark' }} srcDoc={(pv.visual.html || '') + OFFICE_HTML_STYLE} />
+                : pv.visual && pv.visual.mode === 'images' ? <div className="flex flex-col items-center gap-3">{(pv.visual.images || []).map((src, i) => <img key={i} src={src} className="max-w-full h-auto rounded-lg shadow-sm" alt={`page-${i + 1}`} />)}</div>
                 : <div><p className={`text-[13px] mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>此类型暂不支持预览</p><button onClick={() => bridge.openArtifactExternal(path)} className={`px-3 py-1.5 rounded-full text-[13px] ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>↗ 外部打开</button></div>}
             </div>
           </div>

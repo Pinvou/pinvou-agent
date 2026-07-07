@@ -61,6 +61,9 @@
     // 复位 effect 挂它 → 即便 activeSessionId 没变(draft→draft)也能重新求值,否则残留的工具欢迎卡
     // 会一直顶掉「你好」欢迎语(该 tool 无 welcomeQueries 时整块空白)。
     draftEpoch: 0,
+    // 跨页面预填输入框请求。比如本地知识 → 产出物点击「续写/新项目」：
+    // 只把草稿放进 composer，不自动发送给模型。
+    composerPrefill: { id: 0, text: "" },
     messages: [],      // Anthropic Messages schema
     chatItems: [],     // display items for React
     // 卡牌加持/卸下事件时间线(sidecar, 不进 messages/LLM)。每项 {kind,pos,...}。
@@ -1143,6 +1146,10 @@
     }
 
     await doSendFor(state.activeSessionId, text, displayText, attachmentsPayload, meta);
+  }
+  function prefillComposer(text) {
+    state.composerPrefill = { id: (state.composerPrefill.id || 0) + 1, text: String(text || "") };
+    notify();
   }
   // 撤销一条待发消息(点 chip 的 ✕)。
   function removeQueued(id) {
@@ -2427,6 +2434,66 @@
   function listDeliverables(projectDir) {
     return invoke("list_deliverables", { projectDir: projectDir }).catch(function () { return []; });
   }
+  function deliverableCategory(path) {
+    var ext = (String(path || "").split(".").pop() || "").toLowerCase();
+    if (ext === "html" || ext === "htm" || ext === "mhtml" || ext === "mht") return "web";
+    if (ext === "ppt" || ext === "pptx" || ext === "odp" || ext === "dps") return "ppt";
+    if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "heic"].indexOf(ext) >= 0) return "img";
+    return "doc";
+  }
+  function sessionTitleById(sid) {
+    var m = state.sessions.find(function (s) { return s.id === sid; });
+    return (m && m.title) || "";
+  }
+  function currentMemoryArtifacts() {
+    var rows = [];
+    function addFrom(sid, arts) {
+      (arts || []).forEach(function (a) {
+        var path = a && a.path;
+        if (!path || !isDeliverable(path)) return;
+        rows.push({ path: path, sessionId: sid || state.activeSessionId, source: sessionTitleById(sid || state.activeSessionId), name: basename(path) });
+      });
+    }
+    addFrom(state.activeSessionId, state.artifacts);
+    Object.keys(sessionStates).forEach(function (sid) { addFrom(sid, sessionStates[sid] && sessionStates[sid].artifacts); });
+    return rows;
+  }
+  // 跨会话产出物索引:磁盘 session JSON 为主,再合并当前内存工作集。
+  // 新产物在 chat:done/save_session_artifacts 前也能立刻出现在「本地知识 → 产出物」。
+  async function listDeliverableIndex() {
+    var disk = await invoke("list_deliverable_index").catch(function () { return []; });
+    var byPath = {};
+    (disk || []).forEach(function (x) { if (x && x.path) byPath[x.path] = x; });
+    var mem = currentMemoryArtifacts().filter(function (x) { return x.path && !byPath[x.path]; });
+    var hydrated = await Promise.all(mem.map(async function (x) {
+      var path = x.path;
+      if (!isAbsPath(path) && x.sessionId) {
+        try {
+          var ws = await invoke("list_workspace_files", { sessionId: x.sessionId });
+          var bn = basename(path);
+          var resolved = (ws || []).find(function (p) { return basename(p) === bn; });
+          if (resolved) path = resolved;
+        } catch (_) {}
+      }
+      var info = null;
+      try { info = await artifactInfo(path); } catch (_) {}
+      var ext = (String(path).split(".").pop() || "").toLowerCase();
+      return {
+        name: x.name || basename(path),
+        path: path,
+        ext: ext,
+        category: deliverableCategory(path),
+        sessionId: x.sessionId || "",
+        source: x.source || sessionTitleById(x.sessionId) || "",
+        mtime: info && info.modified ? info.modified : 0,
+        size: info && info.size ? info.size : 0,
+      };
+    }));
+    hydrated.forEach(function (x) { if (x && x.path) byPath[x.path] = x; });
+    return Object.keys(byPath).map(function (p) { return byPath[p]; }).sort(function (a, b) {
+      return (b.mtime || 0) - (a.mtime || 0) || String(a.name || "").localeCompare(String(b.name || ""));
+    });
+  }
   // 外部打开产物：HTML 走 Tauri 独立窗口（绕沙箱），其他走系统应用。
   // sessionId = 卡片携带的产物所属 session。后端 resolve_artifact_path 用它(而非全局
   // active_id)解析相对路径 —— 切回「有 buffer」的会话后端 active 不更新,只有卡片自带
@@ -3355,6 +3422,7 @@
     getState: function () { return snapshotState(); },
     init: init,
     sendMessage: sendMessage,
+    prefillComposer: prefillComposer,
     removeQueued: removeQueued,
     startVoiceInput: startVoiceInput,
     installVoiceAsr: installVoiceAsr,
@@ -3421,6 +3489,7 @@
     openInSystem: openInSystem,
     openArtifactExternal: openArtifactExternal,
     listDeliverables: listDeliverables,
+    listDeliverableIndex: listDeliverableIndex,
     openExternalUrl: openExternalUrl,
     // 附件
     addAttachmentByPath: addAttachmentByPath,
