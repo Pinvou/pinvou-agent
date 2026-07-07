@@ -244,6 +244,8 @@ pub fn run() {
                 Ok(store) => {
                     store.load_skill_bindings();
                     store.load_session_models();
+                    store.load_pinned_sessions();
+                    store.load_hidden_sessions();
                     eprintln!("[pinvou3-app] session store ready");
                     Some(store)
                 }
@@ -407,6 +409,9 @@ pub fn run() {
             commands::load_session,
             commands::delete_session,
             commands::rename_session,
+            commands::set_session_pinned,
+            commands::list_archived_sessions,
+            commands::set_session_archived,
             commands::get_active_session,
             commands::save_session_messages,
             commands::save_session_artifacts,
@@ -417,6 +422,7 @@ pub fn run() {
             commands::edit_last_turn,
             commands::read_artifact_text,
             commands::list_deliverables,
+            commands::list_deliverable_index,
             commands::artifact_info,
             commands::render_artifact_visual,
             commands::read_artifact_image_b64,

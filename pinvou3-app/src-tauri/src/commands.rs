@@ -29,6 +29,23 @@ use crate::engine_pool::EnginePool;
 use crate::knowledge::KnowledgeService;
 use crate::monitor::{MonitorSnapshot, MonitorState, VllmStatus};
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionListItem {
+    #[serde(flatten)]
+    pub metadata: SessionMetadata,
+    pub pinned: bool,
+    pub pinned_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HiddenSessionListItem {
+    #[serde(flatten)]
+    pub metadata: SessionMetadata,
+    pub hidden_at: Option<String>,
+    #[serde(rename = "archived_at")]
+    pub archived_at: Option<String>,
+}
+
 /// 接收用户消息并转发给 Engine。
 /// 立即返回，LLM 流式输出通过 Tauri Event 异步推给前端。
 ///
@@ -1133,14 +1150,47 @@ pub async fn get_backend_status(_monitor: State<'_, MonitorState>) -> Result<Bac
 /// [2026-06-04 白浪:chat 与工作流彻底分开] 过滤工作流宿主 session(绑定带 project_dir
 /// 即是,bindings 开机回灌持久化)——它们仅作 SubAgent 运行时,不进 chat 侧栏。
 #[tauri::command]
-pub async fn list_sessions(store: State<'_, SessionStore>) -> Result<Vec<SessionMetadata>, String> {
+pub async fn list_sessions(store: State<'_, SessionStore>) -> Result<Vec<SessionListItem>, String> {
     let mut metas = store.list().map_err(|e| format!("list_sessions: {e:?}"))?;
     metas.retain(|m| {
-        store
+        !store.is_hidden(&m.id)
+            && store
             .active_skill(&m.id)
             .map_or(true, |b| b.project_dir.is_none())
     });
-    Ok(metas)
+    Ok(metas
+        .into_iter()
+        .map(|metadata| SessionListItem {
+            pinned: store.is_pinned(&metadata.id),
+            pinned_at: store.pinned_at(&metadata.id),
+            metadata,
+        })
+        .collect())
+}
+
+/// 列出已从左侧任务列表收起的 session。前端设置页渲染用。
+#[tauri::command]
+pub async fn list_archived_sessions(
+    store: State<'_, SessionStore>,
+) -> Result<Vec<HiddenSessionListItem>, String> {
+    let mut metas = store.list().map_err(|e| format!("list_archived_sessions: {e:?}"))?;
+    metas.retain(|m| {
+        store.is_hidden(&m.id)
+            && store
+                .active_skill(&m.id)
+                .map_or(true, |b| b.project_dir.is_none())
+    });
+    Ok(metas
+        .into_iter()
+        .map(|metadata| {
+            let hidden_at = store.hidden_at(&metadata.id);
+            HiddenSessionListItem {
+                archived_at: hidden_at.clone(),
+                hidden_at,
+                metadata,
+            }
+        })
+        .collect())
 }
 
 /// 新建空 session 并设为 active。返回创建的 SessionMetadata。
@@ -1203,6 +1253,36 @@ pub async fn rename_session(
     store
         .set_title(&id, title)
         .map_err(|e| format!("rename_session({id}): {e:?}"))
+}
+
+/// 设置历史对话置顶状态。
+#[tauri::command]
+pub async fn set_session_pinned(
+    id: String,
+    pinned: bool,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    // 先 load 一次确认 session 存在,避免置顶表残留无效 id。
+    store
+        .load(&id)
+        .map_err(|e| format!("set_session_pinned({id}): {e:?}"))?;
+    store.set_pinned(&id, pinned);
+    Ok(())
+}
+
+/// 设置 session 是否从左侧任务列表收起。
+#[tauri::command]
+pub async fn set_session_archived(
+    id: String,
+    archived: bool,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    // 先 load 一次确认 session 存在,避免收起表残留无效 id。
+    store
+        .load(&id)
+        .map_err(|e| format!("set_session_archived({id}): {e:?}"))?;
+    store.set_hidden(&id, archived);
+    Ok(())
 }
 
 /// 取当前 active session id（前端启动时高亮历史面板用）。
@@ -1513,6 +1593,135 @@ fn md_display_title(bytes: &[u8]) -> Option<String> {
             .or_else(|| t.strip_prefix("# "))
             .map(|h| h.trim().chars().take(60).collect::<String>())
     })
+}
+
+/// 「产出物」跨会话索引:遍历 `~/.pinvou3/sessions/*.json`,把每个会话跟踪的
+/// artifacts 汇成一张扁平表(供本地知识 → 产出物 tab 用)。只走磁盘真相:
+/// 文件已被删则跳过;mtime/size 现取 fs。
+#[derive(Debug, Deserialize)]
+struct DvSessionView {
+    metadata: DvMeta,
+    #[serde(default)]
+    artifacts: Vec<DvArtifact>,
+}
+#[derive(Debug, Deserialize)]
+struct DvMeta {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    title: String,
+}
+#[derive(Debug, Deserialize)]
+struct DvArtifact {
+    storage_path: std::path::PathBuf,
+    #[serde(default)]
+    byte_size: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeliverableItem {
+    name: String,
+    path: String,
+    ext: String,
+    category: String,
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    source: String,
+    mtime: i64,
+    size: u64,
+}
+
+const DELIVERABLE_EXTS: &[&str] = &[
+    "pptx", "ppt", "docx", "doc", "pdf", "html", "htm", "xlsx", "xls", "md", "csv", "png",
+    "jpg", "jpeg", "svg", "gif", "webp", "zip",
+];
+
+fn deliverable_category(ext: &str) -> &'static str {
+    match ext {
+        "html" | "htm" | "mhtml" | "mht" => "web",
+        "ppt" | "pptx" | "odp" | "dps" => "ppt",
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "heic" => "img",
+        _ => "doc",
+    }
+}
+
+#[tauri::command]
+pub async fn list_deliverable_index() -> Result<Vec<DeliverableItem>, String> {
+    let sessions_dir = crate::bridge::paths::sessions_root();
+    let entries = match std::fs::read_dir(&sessions_dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let mut by_path: std::collections::HashMap<String, DeliverableItem> =
+        std::collections::HashMap::new();
+
+    for entry in entries.flatten() {
+        let file = entry.path();
+        if !file.is_file() || file.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let Ok(view) = serde_json::from_str::<DvSessionView>(&raw) else {
+            continue;
+        };
+
+        for art in view.artifacts {
+            let p = &art.storage_path;
+            let Ok(meta) = std::fs::metadata(p) else {
+                continue;
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            let name = p
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let ext = p
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if !DELIVERABLE_EXTS.contains(&ext.as_str()) {
+                continue;
+            }
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let path = p.to_string_lossy().to_string();
+            let item = DeliverableItem {
+                name,
+                path: path.clone(),
+                ext: ext.clone(),
+                category: deliverable_category(&ext).to_string(),
+                session_id: view.metadata.id.clone(),
+                source: view.metadata.title.clone(),
+                mtime,
+                size: if meta.len() > 0 { meta.len() } else { art.byte_size },
+            };
+            by_path
+                .entry(path)
+                .and_modify(|cur| {
+                    if item.mtime >= cur.mtime {
+                        *cur = item.clone();
+                    }
+                })
+                .or_insert(item);
+        }
+    }
+
+    let mut out: Vec<DeliverableItem> = by_path.into_values().collect();
+    out.sort_by(|a, b| b.mtime.cmp(&a.mtime).then_with(|| a.name.cmp(&b.name)));
+    Ok(out)
 }
 
 /// 奏折「成品箱」:**宝箱内容 = 奏折申报的成品**(白浪定的原则,后端不猜)。
@@ -4119,6 +4328,7 @@ mod tests {
         );
 
         // 绝对路径原样返回,无视 session(present_artifact 成功 / 产物面板给的已是绝对)
+        #[cfg(unix)]
         assert_eq!(
             resolve_artifact_path(
                 "/home/u/.pinvou3/sessions/x/workspace/a.html",
@@ -4267,6 +4477,7 @@ mod tests {
 
     /// L2-3: 系统级敏感前缀拦截 — /etc/shadow 等被列在 BLOCKED_PREFIXES。
     #[test]
+    #[cfg(unix)]
     fn validate_user_path_blocks_etc_shadow() {
         let result = validate_user_path("/etc/shadow");
         assert!(result.is_err(), "/etc/shadow 必须拒绝, got {result:?}");
