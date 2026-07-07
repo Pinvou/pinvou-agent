@@ -1402,22 +1402,22 @@ mod tests {
         // (顺序修复=先写 mcp 成功、再 save_installed)。
         with_temp_home(|| {
             write_tool_manifest(
-                "weather",
+                "weather-custom",
                 r#"{
-                    "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
+                    "id":"weather-custom","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
                     "mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
-                    "secret_env":[{"key":"AMAP_KEY","provider":"amap","required":true}]
+                    "secret_env":[{"key":"WEATHER_TEST_KEY","provider":"weather-test","required":true}]
                 }"#,
             );
             let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
             // 不提供 key + keyring 空 + 无内置共享 key(测试 option_env=None)→ install 必失败
             assert!(
-                mgr.install("weather", &std::collections::HashMap::new())
+                mgr.install("weather-custom", &std::collections::HashMap::new())
                     .is_err(),
                 "缺密钥应安装失败"
             );
             assert!(
-                !mgr.installed_ids().contains(&"weather".to_string()),
+                !mgr.installed_ids().contains(&"weather-custom".to_string()),
                 "失败时 installed.json 不该记录该工具(否则半安装)"
             );
         });
@@ -1561,21 +1561,20 @@ mod tests {
     fn install_missing_required_secret_returns_recoverable_redacted_error() {
         with_temp_home(|| {
             write_tool_manifest(
-                "iwencai",
+                "iwencai-custom",
                 r#"{
-                    "id":"iwencai","name":"Iwencai","description":"d","version":"1","icon":"x","category":"c",
+                    "id":"iwencai-custom","name":"Iwencai","description":"d","version":"1","icon":"x","category":"c",
                     "mcp_tools":["mcp_iwencai_query"],"command":"python","args":["server.py"],
-                    "secret_env":[{"key":"IWENCAI_API_KEY","provider":"iwencai","required":true}]
+                    "secret_env":[{"key":"IWENCAI_TEST_KEY","provider":"iwencai-test","required":true}]
                 }"#,
             );
             let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
 
             let err = mgr
-                .install("iwencai", &std::collections::HashMap::new())
+                .install("iwencai-custom", &std::collections::HashMap::new())
                 .unwrap_err();
 
-            assert!(err.contains("iwencai"));
-            assert!(err.contains("IWENCAI_API_KEY"));
+            assert!(err.contains("IWENCAI_TEST_KEY"));
             assert!(!err.contains("test-secret"));
         });
     }

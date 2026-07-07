@@ -781,6 +781,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn ram_snapshot_succeeds_on_linux() {
         // 跑测试的环境（GB10/笔记本都是 Linux）一定有 /proc/meminfo
         let s = ram_snapshot().expect("/proc/meminfo should be readable");

@@ -658,6 +658,7 @@ mod tests {
     // 宿主文件成无主孤儿。失败必须返回 Err、不写 marker、保留 .pending_hosts.json；
     // 清掉障碍重跑 → 从 pending 文件续跑步骤 5，成功后写 marker + 删 pending。
     #[test]
+    #[cfg(unix)]
     fn host_archive_failure_returns_err_and_resumes_from_pending_file() {
         let _g = crate::bridge::paths::tests::ENV_LOCK
             .lock()

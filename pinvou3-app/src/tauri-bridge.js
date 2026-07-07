@@ -52,6 +52,7 @@
   // ── State ────────────────────────────────────────────────────────
   var state = {
     sessions: [],
+    archivedSessions: [],
     activeSessionId: null,
     // 模型 load_skill 触发的当前技能 id（如 'visual-design'）→ 点亮 composer 技能标；null=无。
     // 内置自动技能（视觉设计）的"正在使用"指示：新一轮用户消息时清、相关时再点亮。
@@ -475,6 +476,11 @@
       console.warn("list_sessions failed", e);
       state.sessions = [];
     }
+    try {
+      state.archivedSessions = await invoke("list_archived_sessions");
+    } catch (e) {
+      state.archivedSessions = state.archivedSessions || [];
+    }
     notify();
   }
 
@@ -559,6 +565,7 @@
       delete sessionStates[id]; // 丢掉该 session 的工作集缓冲(后端已 evict 其 engine)
       delete turnUsageDirty[id];
       state.sessions = state.sessions.filter(function (s) { return s.id !== id; });
+      state.archivedSessions = (state.archivedSessions || []).filter(function (s) { return s.id !== id; });
       if (state.activeSessionId === id) {
         // 删当前会话 → 落空白草稿页(不自动切上一条/不建空 session)。被删 session 的 buffer
         // 上面已 delete,这里不 saveWorkingSetTo(否则 getBuffer 会把它复活),直接清空工作集。
@@ -580,6 +587,76 @@
       notify();
     } catch (e) {
       console.warn("rename failed", e);
+    }
+  }
+
+  async function toggleSessionPinned(id, pinned) {
+    var s = state.sessions.find(function (s) { return s.id === id; });
+    var prev = s ? !!s.pinned : false;
+    var prevPinnedAt = s ? s.pinned_at : null;
+    if (s) {
+      s.pinned = !!pinned;
+      s.pinned_at = pinned ? new Date().toISOString() : null;
+    }
+    notify();
+    try {
+      await invoke("set_session_pinned", { id: id, pinned: !!pinned });
+      await refreshHistoryList();
+    } catch (e) {
+      if (s) {
+        s.pinned = prev;
+        s.pinned_at = prevPinnedAt;
+      }
+      console.warn("set_session_pinned failed", e);
+      await refreshHistoryList();
+    }
+  }
+
+  async function archiveSession(id) {
+    var idx = state.sessions.findIndex(function (s) { return s.id === id; });
+    if (idx < 0) return;
+    var s = state.sessions[idx];
+    var archived = Object.assign({}, s, { archived: true, archived_at: new Date().toISOString(), pinned: false, pinned_at: null });
+    var wasActive = state.activeSessionId === id;
+    if (wasActive) saveWorkingSetTo(getBuffer(id));
+    state.sessions.splice(idx, 1);
+    state.archivedSessions = [archived].concat((state.archivedSessions || []).filter(function (x) { return x.id !== id; }));
+    if (wasActive) {
+      state.activeSessionId = null;
+      loadWorkingSetFrom(freshBuffer());
+    }
+    notify();
+    try {
+      await invoke("set_session_archived", { id: id, archived: true });
+      await refreshHistoryList();
+    } catch (e) {
+      state.sessions.splice(idx, 0, s);
+      state.archivedSessions = (state.archivedSessions || []).filter(function (x) { return x.id !== id; });
+      if (wasActive) {
+        state.activeSessionId = id;
+        loadWorkingSetFrom(getBuffer(id));
+      }
+      console.warn("set_session_archived failed", e);
+      notify();
+    }
+  }
+
+  async function restoreArchivedSession(id) {
+    var idx = (state.archivedSessions || []).findIndex(function (s) { return s.id === id; });
+    if (idx < 0) return;
+    var s = state.archivedSessions[idx];
+    var restored = Object.assign({}, s, { archived: false, archived_at: null });
+    state.archivedSessions.splice(idx, 1);
+    state.sessions = [restored].concat(state.sessions || []);
+    notify();
+    try {
+      await invoke("set_session_archived", { id: id, archived: false });
+      await refreshHistoryList();
+    } catch (e) {
+      state.archivedSessions.splice(idx, 0, s);
+      state.sessions = (state.sessions || []).filter(function (x) { return x.id !== id; });
+      console.warn("restore archived session failed", e);
+      notify();
     }
   }
 
@@ -3241,6 +3318,9 @@
     switchToSession: switchToSession,
     deleteSession: deleteSession,
     renameSession: renameSession,
+    toggleSessionPinned: toggleSessionPinned,
+    archiveSession: archiveSession,
+    restoreArchivedSession: restoreArchivedSession,
     startMonitorPolling: startMonitorPolling,
     stopMonitorPolling: stopMonitorPolling,
     clearMonitorStats: clearMonitorStats,

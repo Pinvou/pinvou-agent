@@ -210,6 +210,8 @@
     const PresentationIcon = (p) => <I {...p}><rect x="3" y="4" width="18" height="12" rx="2"/><line x1="12" y1="16" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></I>;
     const ImageIcon = (p) => <I {...p}><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/></I>;
     const Archive = (p) => <I {...p}><rect x="2" y="4" width="20" height="5" rx="1"/><path d="M4 9v10a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9"/><path d="M10 13h4"/></I>;
+    const PinIcon = (p) => <I {...p}><path d="M12 17v5"/><path d="M5 17h14"/><path d="M8 3h8"/><path d="M9 3l1 9-3 5h10l-3-5 1-9"/></I>;
+    const PinOffIcon = (p) => <I {...p}><path d="M12 17v5"/><path d="M5 17h12"/><path d="M8 3h8"/><path d="M9 3l1 9-2 3"/><path d="M14 12l1-9"/><path d="M3 3l18 18"/></I>;
 
     /* ==========================================
        i18n dictionary — 1:1 from 前端.html
@@ -218,7 +220,11 @@
     const dict = {
       zh: {
         langTag: 'zh',
-        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', toolStore: '工具商店', cardPool: '专家卡牌池', recent: '历史对话', settings: '设置', localEnv: '本地环境', megacubeSite: '打开 MegaCube 官网', tearoffTitle: '撕离窗口', tearoffHint: '弹出为独立窗口',
+        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', toolStore: '工具商店', cardPool: '专家卡牌池', recent: '历史对话', pinnedTasks: '置顶任务', regularTasks: '任务', settings: '设置', localEnv: '本地环境', megacubeSite: '打开 MegaCube 官网', tearoffTitle: '撕离窗口', tearoffHint: '弹出为独立窗口',
+        archiveSession: '收纳', archiveConfirmTitle: '确认收纳任务', archiveConfirmMessage: '将该任务移出任务列表，存入【设置-任务收纳】，需要时可找回。', archiveConfirmDetail: '', archiveConfirmAction: '确认收纳',
+        archiveSuccess: '已收纳到【设置-任务收纳】', archiveSuccessView: '前往查看',
+        archivedTasks: '任务收纳', archivedTasksDesc: '', archivedEmpty: '暂无收纳任务', restoreArchived: '恢复到任务列表',
+        archivedDeleteTitle: '删除收纳任务？', archivedDeleteMessage: '此操作会永久删除该任务及其内容，无法撤销。', archivedDeleteAction: '删除',
         knowledge: '本地知识',
         kbMount: '知识库', kbMountTitle: '挂载知识集到本对话', kbMountPick: '选择知识集', kbMountNone: '还没有知识集，去「本地知识」创建', kbMountRemove: '取消挂载', kbMountedTag: '已挂载', kbMountNoModel: '需先安装 Embedding 模型：去「本地知识 → 知识库」下载后即可挂载',
         modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: '切换工作模式', modeYoloDesc: '直接动手执行', modePlanDesc: '先出方案，确认后执行',
@@ -396,7 +402,7 @@
         cpDescLabel: '简介',
         cpEquipBubbleNote: '完整能力档案已注入,AI 将以该专家的方法论承接后续任务。',
         cpTargetMarkTitle: '加持目标 · 在卡牌池选的专家会注入到这个对话',
-        riGenerating: '正在生成中', riDelQ: '删除?', riDelConfirm: '确认删除', riRename: '重命名',
+        riGenerating: '正在生成中', riDelQ: '删除?', riDelConfirm: '确认删除', riRename: '重命名', riPin: '置顶', riUnpin: '取消置顶',
         // —— 聊天链路/全局 chrome ——
         appTitle: 'PINVOU 智能助手', winMin: '最小化', winMax: '最大化', winClose: '关闭',
         sidebarCollapse: '收起侧边栏', sidebarExpand: '展开侧边栏',
@@ -464,7 +470,11 @@
       },
       en: {
         langTag: 'en',
-        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'History', settings: 'Settings', localEnv: 'Local Env', megacubeSite: 'Open MegaCube site', tearoffTitle: 'Detached', tearoffHint: 'Pop out to its own window',
+        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'History', pinnedTasks: 'Pinned tasks', regularTasks: 'Tasks', settings: 'Settings', localEnv: 'Local Env', megacubeSite: 'Open MegaCube site', tearoffTitle: 'Detached', tearoffHint: 'Pop out to its own window',
+        archiveSession: 'Hide in Settings', archiveConfirmTitle: 'Hide in Settings?', archiveConfirmMessage: 'This task will leave the sidebar.', archiveConfirmDetail: 'The conversation and artifacts stay saved, and can be restored in Settings.', archiveConfirmAction: 'Hide',
+        archiveSuccess: 'Hidden in Settings', archiveSuccessView: 'View',
+        archivedTasks: 'Tasks hidden in Settings', archivedTasksDesc: '', archivedEmpty: 'No hidden tasks yet', restoreArchived: 'Restore to list',
+        archivedDeleteTitle: 'Delete hidden task?', archivedDeleteMessage: 'This permanently deletes the task and its contents. This cannot be undone.', archivedDeleteAction: 'Delete',
         knowledge: 'Local Knowledge',
         kbMount: 'Knowledge', kbMountTitle: 'Attach a collection to this chat', kbMountPick: 'Pick a collection', kbMountNone: 'No collections yet — create one in Local Knowledge', kbMountRemove: 'Unmount', kbMountedTag: 'Mounted', kbMountNoModel: 'Install the embedding model first (Local Knowledge → Knowledge) to attach a collection',
         modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: 'Switch mode', modeYoloDesc: 'Act directly', modePlanDesc: 'Plan first, then execute',
@@ -642,7 +652,7 @@
         cpDescLabel: 'Description',
         cpEquipBubbleNote: "Full capability profile injected — the AI will handle following tasks with this expert's methodology.",
         cpTargetMarkTitle: 'Equip target · experts picked in the card pool are injected into this chat',
-        riGenerating: 'Generating…', riDelQ: 'Delete?', riDelConfirm: 'Confirm delete', riRename: 'Rename',
+        riGenerating: 'Generating…', riDelQ: 'Delete?', riDelConfirm: 'Confirm delete', riRename: 'Rename', riPin: 'Pin', riUnpin: 'Unpin',
         // —— Chat & global chrome ——
         appTitle: 'PINVOU AI Assistant', winMin: 'Minimize', winMax: 'Maximize', winClose: 'Close',
         sidebarCollapse: 'Collapse sidebar', sidebarExpand: 'Expand sidebar',
@@ -710,7 +720,11 @@
       },
       ja: {
         langTag: 'ja',
-        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', monitor: 'システムモニター', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '履歴', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く', tearoffTitle: '切り離し', tearoffHint: '別ウィンドウに切り離す',
+        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', monitor: 'システムモニター', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '履歴', pinnedTasks: '固定タスク', regularTasks: 'タスク', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く', tearoffTitle: '切り離し', tearoffHint: '別ウィンドウに切り離す',
+        archiveSession: '設定に隠す', archiveConfirmTitle: '設定に隠しますか？', archiveConfirmMessage: 'このタスクはサイドバーから外れます。', archiveConfirmDetail: '会話と成果物は削除されず、設定から戻せます。', archiveConfirmAction: '隠す',
+        archiveSuccess: '設定に隠しました', archiveSuccessView: '表示',
+        archivedTasks: '設定に隠したタスク', archivedTasksDesc: '', archivedEmpty: '隠したタスクはありません', restoreArchived: '一覧に戻す',
+        archivedDeleteTitle: '隠したタスクを削除しますか？', archivedDeleteMessage: 'このタスクと内容は完全に削除され、元に戻せません。', archivedDeleteAction: '削除',
         knowledge: 'ローカル知識',
         kbMount: 'ナレッジ', kbMountTitle: 'このチャットにコレクションをリンク', kbMountPick: 'コレクションを選択', kbMountNone: 'コレクションがありません — 「ローカル知識」で作成', kbMountRemove: 'リンク解除', kbMountedTag: 'リンク中', kbMountNoModel: 'まず Embedding モデルをインストール（ローカル知識 → ナレッジ）するとリンクできます',
         modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: 'モード切替', modeYoloDesc: 'すぐ実行', modePlanDesc: '計画してから実行',
@@ -887,7 +901,7 @@
         cpDescLabel: '説明',
         cpEquipBubbleNote: '能力プロファイルを注入しました。AI はこのエキスパートの方法論でタスクを担当します。',
         cpTargetMarkTitle: '装備先 · カードプールで選んだエキスパートがこの会話に注入されます',
-        riGenerating: '生成中…', riDelQ: '削除?', riDelConfirm: '削除を確認', riRename: '名前を変更',
+        riGenerating: '生成中…', riDelQ: '削除?', riDelConfirm: '削除を確認', riRename: '名前を変更', riPin: 'ピン留め', riUnpin: 'ピン留め解除',
         // —— チャット/グローバル chrome ——
         appTitle: 'PINVOU アシスタント', winMin: '最小化', winMax: '最大化', winClose: '閉じる',
         sidebarCollapse: 'サイドバーを折りたたむ', sidebarExpand: 'サイドバーを展開',
@@ -1333,11 +1347,23 @@
         // 后端默认标题是字面 "新对话"/"New chat"(bridge 以此判断是否自动改名)——显示层映射成当前语言
         title: (!s.title || s.title === '新对话' || s.title === 'New chat') ? t.newChat : s.title,
         date: formatSessionDate(s.updated_at || s.created_at, language),
+        updatedAt: s.updated_at || s.created_at || '',
+        pinned: !!s.pinned,
+        pinnedAt: s.pinned_at || '',
         skill: skillBindings[s.id] || null,
         working: !!sessionBusy[s.id], // 多 session 并发:该 session 是否正在后台生成
       })) : [];
+      const pinnedHistory = chatHistory
+        .filter(chat => chat.pinned)
+        .sort((a, b) => String(b.pinnedAt || b.updatedAt).localeCompare(String(a.pinnedAt || a.updatedAt)));
+      const regularHistory = chatHistory
+        .filter(chat => !chat.pinned)
+        .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 
       const [justInstalledTool, setJustInstalledTool] = useState(null);
+      const [historyOpen, setHistoryOpen] = useState({ pinned: true, regular: true });
+      const [archiveConfirm, setArchiveConfirm] = useState(null);
+      const [archiveToast, setArchiveToast] = useState(false);
 
       function handleNewChat(installedToolId) {
         // 类型守卫:installedToolId 必须是字符串 toolId。侧边栏按钮 onClick={() => handleNewChat()}
@@ -1372,6 +1398,34 @@
       function handleRenameSession(id, title) {
         if (bridge.available) bridge.renameSession(id, title);
       }
+
+      function handleToggleSessionPinned(id, pinned) {
+        if (bridge.available) bridge.toggleSessionPinned(id, pinned);
+      }
+
+      function handleArchiveSession(id) {
+        const chat = chatHistory.find(c => c.id === id);
+        setArchiveConfirm(chat || { id, title: t.newChat });
+      }
+
+      function confirmArchiveSession() {
+        const id = archiveConfirm && archiveConfirm.id;
+        setArchiveConfirm(null);
+        if (id && bridge.available) {
+          bridge.archiveSession(id);
+          setArchiveToast(true);
+        }
+      }
+
+      function handleRestoreArchivedSession(id) {
+        if (bridge.available) bridge.restoreArchivedSession(id);
+      }
+
+      useEffect(() => {
+        if (!archiveToast) return;
+        const timer = setTimeout(() => setArchiveToast(false), 3500);
+        return () => clearTimeout(timer);
+      }, [archiveToast]);
 
       function handleToggleSuperPerm() {
         if (bridge.available) bridge.toggleSuperPerm();
@@ -1526,6 +1580,29 @@
             </div>
           )}
 
+          {archiveConfirm && ReactDOM.createPortal(
+            <ArchiveConfirmDialog
+              theme={activeTheme}
+              t={t}
+              onCancel={() => setArchiveConfirm(null)}
+              onConfirm={confirmArchiveSession}
+            />,
+            document.body
+          )}
+
+          {archiveToast && ReactDOM.createPortal(
+            <ArchiveToast
+              theme={activeTheme}
+              t={t}
+              onClose={() => setArchiveToast(false)}
+              onView={() => {
+                setArchiveToast(false);
+                setCurrentView('settings');
+              }}
+            />,
+            document.body
+          )}
+
           <TitleBar theme={activeTheme} t={t} />
 
           <div className="flex flex-1 min-h-0">
@@ -1622,28 +1699,71 @@
                 遮住下滑的列表项,避免首项与上方 nav 贴死("重合")。 */}
             {isSidebarOpen && (
               <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-3 flex flex-col">
-                <div
-                  className="text-[13px] font-medium px-4 pt-6 pb-2 whitespace-nowrap shrink-0 sticky top-0 z-10"
-                  style={{ color: activeTheme === 'dark' ? '#80868B' : '#5F6368', letterSpacing: '0.06em', background: activeTheme === 'dark' ? '#1E1F20' : '#F0F4F9' }}
-                >
-                  {t.recent}
-                </div>
-                <div className="space-y-px">
-                  {chatHistory.map((chat) => (
-                    <RecentItem
-                      key={chat.id}
-                      chat={chat}
-                      theme={activeTheme}
-                      t={t}
-                      active={activeChat === chat.id && currentView === 'chat'}
-                      personaTarget={activeChat === chat.id && currentView === 'cardpool'}
-                      onSelect={handleSwitchSession}
-                      onRename={handleRenameSession}
-                      onDelete={handleDeleteSession}
-                      dragging={!!dragAvatar && dragAvatar.key === 'session:' + chat.id}
-                      onPickUp={(geom) => beginTearOff('session', chat.id, chat.title, geom)}
-                    />
-                  ))}
+                <div className="pt-5 pb-2 space-y-4">
+                  {pinnedHistory.length > 0 && (
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => setHistoryOpen(prev => ({ ...prev, pinned: !prev.pinned }))}
+                        className={`w-full h-8 px-4 flex items-center justify-between rounded-full text-[13px] font-semibold transition-colors ${activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
+                      >
+                        <span className="truncate">{t.pinnedTasks} ({pinnedHistory.length})</span>
+                        <ChevronDown size={16} className={`shrink-0 transition-transform ${historyOpen.pinned ? '' : '-rotate-90'}`} />
+                      </button>
+                      {historyOpen.pinned && (
+                        <div className="mt-1 space-y-px">
+                          {pinnedHistory.map((chat) => (
+                            <RecentItem
+                              key={chat.id}
+                              chat={chat}
+                              theme={activeTheme}
+                              t={t}
+                              active={activeChat === chat.id && currentView === 'chat'}
+                              personaTarget={activeChat === chat.id && currentView === 'cardpool'}
+                              onSelect={handleSwitchSession}
+                              onRename={handleRenameSession}
+                              onDelete={handleDeleteSession}
+                              onTogglePinned={handleToggleSessionPinned}
+                              onArchive={handleArchiveSession}
+                              dragging={!!dragAvatar && dragAvatar.key === 'session:' + chat.id}
+                              onPickUp={(geom) => beginTearOff('session', chat.id, chat.title, geom)}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setHistoryOpen(prev => ({ ...prev, regular: !prev.regular }))}
+                      className={`w-full h-8 px-4 flex items-center justify-between rounded-full text-[13px] font-semibold transition-colors ${activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
+                    >
+                      <span className="truncate">{t.regularTasks} ({regularHistory.length})</span>
+                      <ChevronDown size={16} className={`shrink-0 transition-transform ${historyOpen.regular ? '' : '-rotate-90'}`} />
+                    </button>
+                    {historyOpen.regular && (
+                      <div className="mt-1 space-y-px">
+                        {regularHistory.map((chat) => (
+                          <RecentItem
+                            key={chat.id}
+                            chat={chat}
+                            theme={activeTheme}
+                            t={t}
+                            active={activeChat === chat.id && currentView === 'chat'}
+                            personaTarget={activeChat === chat.id && currentView === 'cardpool'}
+                            onSelect={handleSwitchSession}
+                            onRename={handleRenameSession}
+                            onDelete={handleDeleteSession}
+                            onTogglePinned={handleToggleSessionPinned}
+                            onArchive={handleArchiveSession}
+                            dragging={!!dragAvatar && dragAvatar.key === 'session:' + chat.id}
+                            onPickUp={(geom) => beginTearOff('session', chat.id, chat.title, geom)}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
@@ -1719,6 +1839,8 @@
                 languageNeedsRestart={languageNeedsRestart}
                 bs={bs}
                 t={t}
+                onRestoreArchived={handleRestoreArchivedSession}
+                onDeleteArchived={handleDeleteSession}
               />
             )}
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}
@@ -3588,19 +3710,21 @@
       );
     };
 
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, searchCredential, searchKeyAction, searchHasSavedKey, onKeepSearchApiKey, onReplaceSearchApiKey, onDeleteSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onConfirmSearchConfig, searchNeedsRestart, languageNeedsRestart, bs, t }) => {
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, searchCredential, searchKeyAction, searchHasSavedKey, onKeepSearchApiKey, onReplaceSearchApiKey, onDeleteSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onConfirmSearchConfig, searchNeedsRestart, languageNeedsRestart, bs, t, onRestoreArchived, onDeleteArchived }) => {
       const isDark = activeTheme === 'dark';
       const [editingModel, setEditingModel] = useState(null);
       const modelEnvLocked = (bs && bs.effectiveModelConfig && bs.effectiveModelConfig.env_overrides) || [];
       const [feedbackOpen, setFeedbackOpen] = useState(false);
       const [feedbackDraft, setFeedbackDraft] = useState({ type: 'issue', title: '', description: '', attachments: [] });
       const [feedbackStatus, setFeedbackStatus] = useState({ state: 'idle', message: '', receipt: null });
+      const [archivedDeleteConfirm, setArchivedDeleteConfirm] = useState(null);
       const searchCredentialState = (searchCredential && searchCredential.credential_state) || (searchHasSavedKey ? 'configured' : 'missing');
       const searchKeyStatusText = searchCredentialState === 'env_override' ? t.credEnvOverride
         : searchCredentialState === 'unavailable' ? t.credUnavailable
         : searchHasSavedKey ? t.credConfigured
         : t.credNotConfigured;
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
+      const archivedSessions = (bs && bs.archivedSessions) || [];
       const feedbackTypes = [
         { key: 'issue', label: t.feedbackIssue },
         { key: 'suggestion', label: t.feedbackSuggestion },
@@ -3685,6 +3809,11 @@
           setFeedbackStatus({ state: 'failed_validation', message: String(e), receipt: null });
         }
       };
+      const confirmArchivedDelete = () => {
+        const id = archivedDeleteConfirm && archivedDeleteConfirm.id;
+        setArchivedDeleteConfirm(null);
+        if (id && onDeleteArchived) onDeleteArchived(id);
+      };
       // 进设置页自动体检一次可选依赖装齐没; 之后用户可手动「重新检测」
       useEffect(() => {
         if (!bridge.available || (bs && (bs.deps || bs.depsChecking))) return;
@@ -3722,6 +3851,41 @@
             <div className="max-w-[800px]">
               <h1 className="text-[32px] font-normal tracking-tight pt-12 pb-8">{t.settings}</h1>
               <div className="space-y-8">
+
+              <SCard isDark={isDark} title={t.archivedTasks}>
+                <div className="space-y-3">
+                  {t.archivedTasksDesc && <p className={`text-[14px] leading-relaxed ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.archivedTasksDesc}</p>}
+                  {archivedSessions.length === 0 ? (
+                    <div className={`rounded-xl px-4 py-3 text-[13px] ${isDark ? 'bg-[#131314] text-[#9AA0A6]' : 'bg-white text-[#5F6368]'}`}>{t.archivedEmpty}</div>
+                  ) : (
+                    <div className="max-h-[360px] overflow-y-auto custom-scrollbar pr-1 -mr-1 space-y-2">
+                      {archivedSessions.map(s => (
+                        <div key={s.id} className={`flex items-center gap-3 rounded-xl border px-4 py-3 ${isDark ? 'border-[#333537] bg-[#131314]' : 'border-[#E0E3E7] bg-white'}`}>
+                          <Archive size={16} className={`shrink-0 ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`} />
+                          <div className="flex-1 min-w-0">
+                            <div className={`text-[14px] font-medium truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{s.title || t.newChat}</div>
+                            <div className={`text-[12px] truncate ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>收纳于 {formatSessionDate(s.archived_at || s.updated_at || s.created_at, language)}</div>
+                          </div>
+                          <button onClick={() => onRestoreArchived && onRestoreArchived(s.id)}
+                            className={`shrink-0 text-[12px] px-3 py-1.5 rounded-full transition-colors ${isDark ? 'text-[#A8C7FA] hover:bg-[#333537]' : 'text-[#0B57D0] hover:bg-[#F0F4F9]'}`}>{t.restoreArchived}</button>
+                          <button onClick={() => setArchivedDeleteConfirm(s)}
+                            className={`shrink-0 text-[12px] px-3 py-1.5 rounded-full transition-colors ${isDark ? 'text-[#F28B82] hover:bg-[#333537]' : 'text-[#C5221F] hover:bg-[#FCE8E6]'}`}>{t.cpDelete}</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </SCard>
+
+              {archivedDeleteConfirm && ReactDOM.createPortal(
+                <ArchivedDeleteConfirmDialog
+                  theme={activeTheme}
+                  t={t}
+                  onCancel={() => setArchivedDeleteConfirm(null)}
+                  onConfirm={confirmArchivedDelete}
+                />,
+                document.body
+              )}
 
               <SCard isDark={isDark} title={t.feedbackTitle}>
                 <div className="flex items-start justify-between gap-4">
@@ -8810,8 +8974,177 @@
       );
     };
 
+    const ArchiveConfirmDialog = ({ theme, t, onCancel, onConfirm }) => {
+      const isDark = theme === 'dark';
+      useEffect(() => {
+        const onKey = (e) => {
+          if (e.key === 'Escape') onCancel();
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+      }, [onCancel]);
+      return (
+        <div
+          role="presentation"
+          className="fixed inset-0 z-[200] flex items-center justify-center p-4"
+          style={{
+            background: 'rgba(0,0,0,.34)',
+            backdropFilter: 'blur(14px) saturate(140%)',
+            WebkitBackdropFilter: 'blur(14px) saturate(140%)',
+            fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif'
+          }}
+          onClick={onCancel}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="archive-confirm-title"
+            className="w-[320px] max-w-[calc(100vw-48px)] overflow-hidden rounded-[16px] shadow-2xl"
+            style={{
+              background: isDark ? 'rgba(44,44,46,.96)' : 'rgba(250,250,250,.96)',
+              color: isDark ? '#F2F2F7' : '#000',
+              boxShadow: isDark ? '0 24px 60px rgba(0,0,0,.55)' : '0 24px 60px rgba(0,0,0,.22)'
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="px-6 pt-6 pb-5 text-center">
+              <div id="archive-confirm-title" className="text-[20px] font-semibold leading-[26px]">{t.archiveConfirmTitle}</div>
+              <div className="mt-2.5 text-[15px] leading-[22px]" style={{ color: isDark ? 'rgba(235,235,245,.72)' : 'rgba(60,60,67,.72)' }}>
+                <div>{t.archiveConfirmMessage}</div>
+                {t.archiveConfirmDetail && <div className="mt-1">{t.archiveConfirmDetail}</div>}
+              </div>
+            </div>
+            <div className="h-px" style={{ background: isDark ? 'rgba(84,84,88,.65)' : 'rgba(60,60,67,.24)' }} />
+            <div className="grid grid-cols-2">
+              <button
+                type="button"
+                onClick={onCancel}
+                className="h-[50px] text-[17px] active:opacity-70"
+                style={{ color: isDark ? '#0A84FF' : '#007AFF' }}
+              >
+                {t.cpCancel}
+              </button>
+              <button
+                type="button"
+                onClick={onConfirm}
+                className="h-[50px] text-[17px] font-semibold active:opacity-70"
+                style={{
+                  color: isDark ? '#0A84FF' : '#007AFF',
+                  borderLeft: `1px solid ${isDark ? 'rgba(84,84,88,.65)' : 'rgba(60,60,67,.24)'}`
+                }}
+              >
+                {t.archiveConfirmAction}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const ArchivedDeleteConfirmDialog = ({ theme, t, onCancel, onConfirm }) => {
+      const isDark = theme === 'dark';
+      useEffect(() => {
+        const onKey = (e) => {
+          if (e.key === 'Escape') onCancel();
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+      }, [onCancel]);
+      return (
+        <div
+          role="presentation"
+          className="fixed inset-0 z-[200] flex items-center justify-center p-4"
+          style={{
+            background: 'rgba(0,0,0,.34)',
+            backdropFilter: 'blur(14px) saturate(140%)',
+            WebkitBackdropFilter: 'blur(14px) saturate(140%)',
+            fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif'
+          }}
+          onClick={onCancel}
+        >
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="archived-delete-confirm-title"
+            className="w-[320px] max-w-[calc(100vw-48px)] overflow-hidden rounded-[16px] shadow-2xl"
+            style={{
+              background: isDark ? 'rgba(44,44,46,.96)' : 'rgba(250,250,250,.96)',
+              color: isDark ? '#F2F2F7' : '#000',
+              boxShadow: isDark ? '0 24px 60px rgba(0,0,0,.55)' : '0 24px 60px rgba(0,0,0,.22)'
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="px-6 pt-6 pb-5 text-center">
+              <div id="archived-delete-confirm-title" className="text-[20px] font-semibold leading-[26px]">{t.archivedDeleteTitle}</div>
+              <div className="mt-2.5 text-[15px] leading-[22px]" style={{ color: isDark ? 'rgba(235,235,245,.72)' : 'rgba(60,60,67,.72)' }}>
+                {t.archivedDeleteMessage}
+              </div>
+            </div>
+            <div className="h-px" style={{ background: isDark ? 'rgba(84,84,88,.65)' : 'rgba(60,60,67,.24)' }} />
+            <div className="grid grid-cols-2">
+              <button
+                type="button"
+                onClick={onCancel}
+                className="h-[50px] text-[17px] active:opacity-70"
+                style={{ color: isDark ? '#0A84FF' : '#007AFF' }}
+              >
+                {t.cpCancel}
+              </button>
+              <button
+                type="button"
+                onClick={onConfirm}
+                className="h-[50px] text-[17px] font-semibold active:opacity-70"
+                style={{
+                  color: '#FF3B30',
+                  borderLeft: `1px solid ${isDark ? 'rgba(84,84,88,.65)' : 'rgba(60,60,67,.24)'}`
+                }}
+              >
+                {t.archivedDeleteAction}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const ArchiveToast = ({ theme, t, onClose, onView }) => {
+      const isDark = theme === 'dark';
+      return (
+        <div
+          className="fixed left-1/2 top-6 z-[210] -translate-x-1/2 px-2 py-2 rounded-[18px] flex items-center gap-1 shadow-2xl"
+          style={{
+            background: isDark ? 'rgba(44,44,46,.94)' : 'rgba(250,250,250,.94)',
+            color: isDark ? '#F2F2F7' : '#1C1C1E',
+            border: `1px solid ${isDark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.08)'}`,
+            backdropFilter: 'blur(18px) saturate(150%)',
+            WebkitBackdropFilter: 'blur(18px) saturate(150%)',
+            fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif'
+          }}
+        >
+          <div className="pl-3 pr-2 text-[14px] leading-5 whitespace-nowrap">{t.archiveSuccess}</div>
+          <button
+            type="button"
+            onClick={onView}
+            className="h-8 px-3 rounded-[12px] text-[14px] font-semibold active:opacity-70"
+            style={{ color: isDark ? '#0A84FF' : '#007AFF', background: isDark ? 'rgba(10,132,255,.12)' : 'rgba(0,122,255,.10)' }}
+          >
+            {t.archiveSuccessView}
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-8 h-8 rounded-full text-[18px] leading-none active:opacity-70"
+            style={{ color: isDark ? 'rgba(235,235,245,.62)' : 'rgba(60,60,67,.62)' }}
+            aria-label={t.cpCancel}
+          >
+            ×
+          </button>
+        </div>
+      );
+    };
+
     // 近期会话项：支持重命名(内联编辑) + 删除(内联二次确认)
-    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, dragging, onPickUp }) => {
+    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onArchive, dragging, onPickUp }) => {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
@@ -8860,8 +9193,14 @@
                 </span>
               )}
               <div className="hidden group-hover:flex items-center gap-0.5 shrink-0">
+                <button title={chat.pinned ? t.riUnpin : t.riPin} onClick={(e) => { e.stopPropagation(); onTogglePinned && onTogglePinned(chat.id, !chat.pinned); }}
+                  className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#444746]' : 'text-[#5F6368] hover:bg-[#D3D7DB]'}`}>
+                  {chat.pinned ? <PinOffIcon size={13} /> : <PinIcon size={13} />}
+                </button>
                 <button title={t.riRename} onClick={(e) => { e.stopPropagation(); setVal(chat.title); setEditing(true); }}
                   className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:bg-[#444746]' : 'text-[#5F6368] hover:bg-[#D3D7DB]'}`}><Edit2 size={13} /></button>
+                <button title={t.archiveSession} onClick={(e) => { e.stopPropagation(); onArchive && onArchive(chat.id); }}
+                  className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:bg-[#444746]' : 'text-[#5F6368] hover:bg-[#D3D7DB]'}`}><Archive size={13} /></button>
                 <button title={t.cpDelete} onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
                   className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#5F6368] hover:text-[#C5221F] hover:bg-[#FAD2CF]'}`}><Trash2 size={13} /></button>
               </div>

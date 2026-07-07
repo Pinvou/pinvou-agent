@@ -29,6 +29,23 @@ use crate::engine_pool::EnginePool;
 use crate::knowledge::KnowledgeService;
 use crate::monitor::{MonitorSnapshot, MonitorState, VllmStatus};
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionListItem {
+    #[serde(flatten)]
+    pub metadata: SessionMetadata,
+    pub pinned: bool,
+    pub pinned_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HiddenSessionListItem {
+    #[serde(flatten)]
+    pub metadata: SessionMetadata,
+    pub hidden_at: Option<String>,
+    #[serde(rename = "archived_at")]
+    pub archived_at: Option<String>,
+}
+
 /// 接收用户消息并转发给 Engine。
 /// 立即返回，LLM 流式输出通过 Tauri Event 异步推给前端。
 ///
@@ -1123,14 +1140,47 @@ pub async fn get_backend_status(_monitor: State<'_, MonitorState>) -> Result<Bac
 /// [2026-06-04 白浪:chat 与工作流彻底分开] 过滤工作流宿主 session(绑定带 project_dir
 /// 即是,bindings 开机回灌持久化)——它们仅作 SubAgent 运行时,不进 chat 侧栏。
 #[tauri::command]
-pub async fn list_sessions(store: State<'_, SessionStore>) -> Result<Vec<SessionMetadata>, String> {
+pub async fn list_sessions(store: State<'_, SessionStore>) -> Result<Vec<SessionListItem>, String> {
     let mut metas = store.list().map_err(|e| format!("list_sessions: {e:?}"))?;
     metas.retain(|m| {
-        store
+        !store.is_hidden(&m.id)
+            && store
             .active_skill(&m.id)
             .map_or(true, |b| b.project_dir.is_none())
     });
-    Ok(metas)
+    Ok(metas
+        .into_iter()
+        .map(|metadata| SessionListItem {
+            pinned: store.is_pinned(&metadata.id),
+            pinned_at: store.pinned_at(&metadata.id),
+            metadata,
+        })
+        .collect())
+}
+
+/// 列出已从左侧任务列表收起的 session。前端设置页渲染用。
+#[tauri::command]
+pub async fn list_archived_sessions(
+    store: State<'_, SessionStore>,
+) -> Result<Vec<HiddenSessionListItem>, String> {
+    let mut metas = store.list().map_err(|e| format!("list_archived_sessions: {e:?}"))?;
+    metas.retain(|m| {
+        store.is_hidden(&m.id)
+            && store
+                .active_skill(&m.id)
+                .map_or(true, |b| b.project_dir.is_none())
+    });
+    Ok(metas
+        .into_iter()
+        .map(|metadata| {
+            let hidden_at = store.hidden_at(&metadata.id);
+            HiddenSessionListItem {
+                archived_at: hidden_at.clone(),
+                hidden_at,
+                metadata,
+            }
+        })
+        .collect())
 }
 
 /// 新建空 session 并设为 active。返回创建的 SessionMetadata。
@@ -1193,6 +1243,36 @@ pub async fn rename_session(
     store
         .set_title(&id, title)
         .map_err(|e| format!("rename_session({id}): {e:?}"))
+}
+
+/// 设置历史对话置顶状态。
+#[tauri::command]
+pub async fn set_session_pinned(
+    id: String,
+    pinned: bool,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    // 先 load 一次确认 session 存在,避免置顶表残留无效 id。
+    store
+        .load(&id)
+        .map_err(|e| format!("set_session_pinned({id}): {e:?}"))?;
+    store.set_pinned(&id, pinned);
+    Ok(())
+}
+
+/// 设置 session 是否从左侧任务列表收起。
+#[tauri::command]
+pub async fn set_session_archived(
+    id: String,
+    archived: bool,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    // 先 load 一次确认 session 存在,避免收起表残留无效 id。
+    store
+        .load(&id)
+        .map_err(|e| format!("set_session_archived({id}): {e:?}"))?;
+    store.set_hidden(&id, archived);
+    Ok(())
 }
 
 /// 取当前 active session id（前端启动时高亮历史面板用）。
@@ -4088,6 +4168,7 @@ mod tests {
         );
 
         // 绝对路径原样返回,无视 session(present_artifact 成功 / 产物面板给的已是绝对)
+        #[cfg(unix)]
         assert_eq!(
             resolve_artifact_path(
                 "/home/u/.pinvou3/sessions/x/workspace/a.html",
@@ -4236,6 +4317,7 @@ mod tests {
 
     /// L2-3: 系统级敏感前缀拦截 — /etc/shadow 等被列在 BLOCKED_PREFIXES。
     #[test]
+    #[cfg(unix)]
     fn validate_user_path_blocks_etc_shadow() {
         let result = validate_user_path("/etc/shadow");
         assert!(result.is_err(), "/etc/shadow 必须拒绝, got {result:?}");

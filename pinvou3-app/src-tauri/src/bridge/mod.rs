@@ -1056,14 +1056,20 @@ fn reminder_for(mode: AppMode) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    static ENV_GUARD_LOCK: Mutex<()> = Mutex::new(());
 
     struct EnvGuard {
+        _lock: MutexGuard<'static, ()>,
         vars: Vec<(&'static str, Option<String>)>,
     }
 
     impl EnvGuard {
         fn new(vars: &[&'static str]) -> Self {
+            let lock = ENV_GUARD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
             Self {
+                _lock: lock,
                 vars: vars
                     .iter()
                     .map(|&name| (name, std::env::var(name).ok()))
@@ -1777,6 +1783,12 @@ mod tests {
     /// `UserPrefs::load()` 都跑)物化成 active SavedModel 才生效——测试显式调一次模拟之。
     #[test]
     fn openai_compatible_uses_user_provided_name() {
+        let _env = EnvGuard::new(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -1792,6 +1804,12 @@ mod tests {
     /// OpenaiCompatible preset 必须透传任意模型名（如 gpt-4o）。
     #[test]
     fn openai_compatible_passthrough_model_name() {
+        let _env = EnvGuard::new(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -1831,6 +1849,12 @@ mod tests {
     /// DtConfig 在 OpenaiCompatible 模式下不应强制 reasoning_effort=off。
     #[test]
     fn remote_provider_keeps_default_reasoning_effort() {
+        let _env = EnvGuard::new(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -1846,6 +1870,12 @@ mod tests {
     /// Deepseek preset 应返回正确的默认 URL 和模型。
     #[test]
     fn deepseek_preset_defaults() {
+        let _env = EnvGuard::new(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
         let mut bridge = fixture_bridge();
         bridge.prefs.advanced.model_preset = Some(ModelPreset::Deepseek);
         assert_eq!(bridge.provider(), "deepseek");
@@ -1858,6 +1888,12 @@ mod tests {
     /// sglang 形状把 deepseek-v4-flash 改写成 deepseek-ai/DeepSeek-V4-Flash。
     #[test]
     fn official_deepseek_base_url_forces_deepseek_provider() {
+        let _env = EnvGuard::new(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -1917,6 +1953,12 @@ mod tests {
     /// Qwen preset 应返回正确的默认 URL 和模型。
     #[test]
     fn qwen_preset_defaults() {
+        let _env = EnvGuard::new(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -1933,6 +1975,12 @@ mod tests {
     /// DtConfig 在 LocalVllm 模式下必须保持 reasoning_effort=off（防 SSE timeout）。
     #[test]
     fn local_vllm_forces_reasoning_effort_off() {
+        let _env = EnvGuard::new(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
         let bridge = fixture_bridge();
         let cfg = bridge.build_dt_config();
         assert_eq!(cfg.reasoning_effort.as_deref(), Some("off"));
