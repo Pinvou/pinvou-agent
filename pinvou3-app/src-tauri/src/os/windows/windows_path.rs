@@ -372,38 +372,10 @@ fn normalized_path_key(path: &Path) -> String {
         .to_ascii_lowercase()
 }
 
-pub fn bundled_poppler_dir() -> Option<PathBuf> {
-    std::env::current_exe()
-        .ok()
-        .map(|exe| bundled_poppler_dir_for_exe(&exe))
-        .filter(|path| path.is_dir())
-}
-
-pub fn bundled_pandoc_dir() -> Option<PathBuf> {
-    std::env::current_exe()
-        .ok()
-        .map(|exe| bundled_pandoc_dir_for_exe(&exe))
-        .filter(|path| path.is_dir())
-}
-
-pub fn bundled_asr_dir() -> Option<PathBuf> {
-    std::env::current_exe()
-        .ok()
-        .map(|exe| bundled_asr_dir_for_exe(&exe))
-        .filter(|path| path.is_dir())
-}
-
 pub fn bundled_tesseract_dir() -> Option<PathBuf> {
     std::env::current_exe()
         .ok()
         .map(|exe| bundled_tesseract_dir_for_exe(&exe))
-        .filter(|path| path.is_dir())
-}
-
-pub fn bundled_archive_dir() -> Option<PathBuf> {
-    std::env::current_exe()
-        .ok()
-        .map(|exe| bundled_archive_dir_for_exe(&exe))
         .filter(|path| path.is_dir())
 }
 

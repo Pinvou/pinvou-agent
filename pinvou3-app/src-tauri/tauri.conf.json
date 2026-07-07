@@ -56,17 +56,9 @@
       "wix": {
         "template": "resources/windows/main.wxs",
         "fragmentPaths": [
-          "resources/windows/poppler-path.wxs",
-          "resources/windows/pandoc-path.wxs",
-          "resources/windows/tesseract-path.wxs",
-          "resources/windows/7zip-path.wxs",
           "resources/windows/python-node-path.wxs"
         ],
         "componentRefs": [
-          "PopplerPathEnvironment",
-          "PandocPathEnvironment",
-          "TesseractPathEnvironment",
-          "SevenZipPathEnvironment",
           "PythonNodeRuntimeEnvironment"
         ]
       },

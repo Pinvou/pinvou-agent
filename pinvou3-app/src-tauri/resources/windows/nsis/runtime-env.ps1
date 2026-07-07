@@ -11,7 +11,21 @@ $ErrorActionPreference = "Stop"
 
 $pythonDir = Join-Path $InstallDir "python"
 $nodeDir = Join-Path $InstallDir "node"
+$sevenZipDir = Join-Path $InstallDir "7zip"
+$asrDir = Join-Path $InstallDir "asr"
+$pandocDir = Join-Path $InstallDir "pandoc"
+$popplerDir = Join-Path $InstallDir "poppler"
+$tesseractDir = Join-Path $InstallDir "tesseract"
 $pythonExe = Join-Path $pythonDir "pythonw.exe"
+$privateRuntimeDirs = @(
+    $pythonDir,
+    $nodeDir,
+    $sevenZipDir,
+    $asrDir,
+    $pandocDir,
+    $popplerDir,
+    $tesseractDir
+)
 
 function Normalize-PathEntry {
     param([string]$Value)
@@ -91,7 +105,7 @@ if ($Mode -eq "Install") {
     }
 
     [Environment]::SetEnvironmentVariable("PINVOU3_PYTHON", $pythonExe, "Machine")
-    Remove-MachinePathEntries -RemovedEntries @($pythonDir, $nodeDir)
+    Remove-MachinePathEntries -RemovedEntries $privateRuntimeDirs
     Publish-EnvironmentChange
     Write-Output "Configured PINVOU3_PYTHON and removed private runtime entries from machine PATH."
 } else {
@@ -100,7 +114,7 @@ if ($Mode -eq "Install") {
         [Environment]::SetEnvironmentVariable("PINVOU3_PYTHON", $null, "Machine")
     }
 
-    Remove-MachinePathEntries -RemovedEntries @($pythonDir, $nodeDir)
+    Remove-MachinePathEntries -RemovedEntries $privateRuntimeDirs
     Publish-EnvironmentChange
     Write-Output "Removed Pinvou runtime entries from machine environment."
 }

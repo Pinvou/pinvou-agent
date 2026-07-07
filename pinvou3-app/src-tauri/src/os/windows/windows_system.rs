@@ -65,12 +65,10 @@ pub fn command_exists(command: &str) -> bool {
 }
 
 pub fn pdf_tool_path(command: &str) -> std::path::PathBuf {
-    ensure_bundled_poppler_on_process_path();
     windows_path::pdf_tool_path(command)
 }
 
 pub fn pandoc_tool_path() -> std::path::PathBuf {
-    ensure_bundled_pandoc_on_process_path();
     windows_path::pandoc_tool_path()
 }
 
@@ -90,7 +88,6 @@ pub fn libreoffice_tool_path() -> PathBuf {
 }
 
 pub fn ocr_tool_path() -> PathBuf {
-    ensure_bundled_tesseract_on_process_path();
     windows_path::tesseract_tool_path()
 }
 
@@ -114,7 +111,6 @@ pub fn asr_tool_path() -> std::path::PathBuf {
             return std::path::PathBuf::from(path);
         }
     }
-    ensure_bundled_asr_on_process_path();
     if let Some(path) = windows_path::bundled_asr_tool_path() {
         return path;
     }
@@ -145,22 +141,18 @@ pub fn asr_model_exists() -> bool {
 }
 
 pub fn archive_tool_path() -> PathBuf {
-    ensure_bundled_archive_on_process_path();
     windows_path::archive_tool_path()
 }
 
 pub fn pdf_tool_exists(command: &str) -> bool {
-    ensure_bundled_poppler_on_process_path();
     windows_path::bundled_pdf_tool_path(command).is_some() || command_exists(command)
 }
 
 pub fn pandoc_tool_exists() -> bool {
-    ensure_bundled_pandoc_on_process_path();
     windows_path::bundled_pandoc_tool_path().is_some() || command_exists("pandoc")
 }
 
 pub fn ocr_tool_exists() -> bool {
-    ensure_bundled_tesseract_on_process_path();
     if windows_path::bundled_tesseract_dir().is_some() {
         return windows_path::bundled_tesseract_tool_path().is_some()
             && windows_path::bundled_tessdata_has_required_languages();
@@ -184,7 +176,6 @@ pub fn asr_tool_exists() -> bool {
             return command_exists(&path);
         }
     }
-    ensure_bundled_asr_on_process_path();
     windows_path::bundled_asr_tool_path().is_some()
         && windows_path::bundled_asr_backend_path().is_some()
 }
@@ -212,7 +203,6 @@ pub async fn install_asr_runtime(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 pub fn archive_tool_exists() -> bool {
-    ensure_bundled_archive_on_process_path();
     windows_path::bundled_archive_tool_path().is_some() || command_exists("7z")
 }
 
@@ -290,41 +280,6 @@ pub fn pdf_ocr_missing_message() -> &'static str {
 
 pub fn presentation_pdf_missing_message() -> &'static str {
     "演示文稿解析需要 LibreOffice；PDF 文本组件由内置 Poppler 提供，如缺失请修复或重新安装 pinvou。"
-}
-
-fn ensure_bundled_poppler_on_process_path() {
-    let Some(dir) = windows_path::bundled_poppler_dir() else {
-        return;
-    };
-    ensure_dir_on_process_path(dir);
-}
-
-fn ensure_bundled_pandoc_on_process_path() {
-    let Some(dir) = windows_path::bundled_pandoc_dir() else {
-        return;
-    };
-    ensure_dir_on_process_path(dir);
-}
-
-fn ensure_bundled_asr_on_process_path() {
-    let Some(dir) = windows_path::bundled_asr_dir() else {
-        return;
-    };
-    ensure_dir_on_process_path(dir);
-}
-
-fn ensure_bundled_tesseract_on_process_path() {
-    let Some(dir) = windows_path::bundled_tesseract_dir() else {
-        return;
-    };
-    ensure_dir_on_process_path(dir);
-}
-
-fn ensure_bundled_archive_on_process_path() {
-    let Some(dir) = windows_path::bundled_archive_dir() else {
-        return;
-    };
-    ensure_dir_on_process_path(dir);
 }
 
 fn ensure_dir_on_process_path(dir: std::path::PathBuf) {
