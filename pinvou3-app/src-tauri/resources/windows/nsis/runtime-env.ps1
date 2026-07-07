@@ -28,43 +28,6 @@ function Normalize-PathEntry {
     }
 }
 
-function Path-ContainsEntry {
-    param(
-        [string[]]$Entries,
-        [string]$Candidate
-    )
-
-    $candidateNormalized = Normalize-PathEntry $Candidate
-    foreach ($entry in $Entries) {
-        if ([string]::Equals((Normalize-PathEntry $entry), $candidateNormalized, [StringComparison]::OrdinalIgnoreCase)) {
-            return $true
-        }
-    }
-    return $false
-}
-
-function Add-MachinePathEntries {
-    param([string[]]$RequiredEntries)
-
-    $current = [Environment]::GetEnvironmentVariable("Path", "Machine")
-    $entries = @()
-    if (-not [string]::IsNullOrEmpty($current)) {
-        $entries = @($current -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    }
-
-    $changed = $false
-    foreach ($required in $RequiredEntries) {
-        if (-not (Path-ContainsEntry -Entries $entries -Candidate $required)) {
-            $entries += $required
-            $changed = $true
-        }
-    }
-
-    if ($changed) {
-        [Environment]::SetEnvironmentVariable("Path", ($entries -join ';'), "Machine")
-    }
-}
-
 function Remove-MachinePathEntries {
     param([string[]]$RemovedEntries)
 
@@ -128,9 +91,9 @@ if ($Mode -eq "Install") {
     }
 
     [Environment]::SetEnvironmentVariable("PINVOU3_PYTHON", $pythonExe, "Machine")
-    Add-MachinePathEntries -RequiredEntries @($pythonDir, $nodeDir)
+    Remove-MachinePathEntries -RemovedEntries @($pythonDir, $nodeDir)
     Publish-EnvironmentChange
-    Write-Output "Configured PINVOU3_PYTHON and machine PATH for Pinvou runtimes."
+    Write-Output "Configured PINVOU3_PYTHON and removed private runtime entries from machine PATH."
 } else {
     $currentPython = [Environment]::GetEnvironmentVariable("PINVOU3_PYTHON", "Machine")
     if ([string]::Equals((Normalize-PathEntry $currentPython), (Normalize-PathEntry $pythonExe), [StringComparison]::OrdinalIgnoreCase)) {

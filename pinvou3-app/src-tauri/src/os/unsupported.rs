@@ -1,5 +1,6 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
@@ -224,6 +225,18 @@ pub fn python_command() -> String {
         return "python".to_string();
     }
     "python3".to_string()
+}
+
+pub fn connector_cli_command(_cli_bin: &str, program: &str) -> Command {
+    Command::new(program)
+}
+
+pub fn apply_user_npm_prefix(_cmd: &mut Command) {}
+
+pub fn kill_pid_tree(pid: u32) {
+    let _ = Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .output();
 }
 
 fn which_in_path(cmd: &str) -> bool {

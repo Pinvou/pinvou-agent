@@ -16,20 +16,6 @@
                      Part="all"
                      System="yes"
                      Permanent="no" />
-        <Environment Id="PinvouPythonPath"
-                     Name="PATH"
-                     Value="[INSTALLDIR]python"
-                     Action="set"
-                     Part="last"
-                     System="yes"
-                     Permanent="no" />
-        <Environment Id="PinvouNodePath"
-                     Name="PATH"
-                     Value="[INSTALLDIR]node"
-                     Action="set"
-                     Part="last"
-                     System="yes"
-                     Permanent="no" />
       </Component>
     </DirectoryRef>
   </Fragment>

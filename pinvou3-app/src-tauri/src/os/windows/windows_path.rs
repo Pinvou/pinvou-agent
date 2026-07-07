@@ -1,5 +1,6 @@
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf, MAIN_SEPARATOR};
+use std::process::Command;
 
 const PDF_TOOLS: &[&str] = &["pdftotext", "pdftoppm"];
 const PANDOC_TOOL: &str = "pandoc";
@@ -84,6 +85,167 @@ pub fn python_command() -> String {
     }
 
     resolve_system_python().unwrap_or_else(|| "pythonw".to_string())
+}
+
+pub fn connector_cli_command(cli_bin: &str, program: &str) -> Command {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let mut cmd = Command::new(connector_cli_program(cli_bin, program));
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    apply_windows_connector_path(&mut cmd);
+    cmd
+}
+
+fn connector_cli_program(cli_bin: &str, program: &str) -> OsString {
+    if matches!(program, "npm" | "npx") {
+        if let Some(path) = bundled_node_command(program) {
+            return path.into_os_string();
+        }
+        return windows_npm_shim(program);
+    }
+
+    if !cli_bin.is_empty() && program == cli_bin {
+        return windows_npm_shim(program);
+    }
+
+    program.into()
+}
+
+fn windows_npm_shim(program: &str) -> OsString {
+    let shim = format!("{program}.cmd");
+    for prefix in windows_npm_prefix_candidates() {
+        let path = prefix.join(&shim);
+        if path.is_file() {
+            return path.into_os_string();
+        }
+    }
+    shim.into()
+}
+
+pub fn apply_user_npm_prefix(cmd: &mut Command) {
+    let prefix_from_env = windows_npm_prefix_from_env();
+    let prefix = prefix_from_env
+        .clone()
+        .or_else(default_windows_npm_prefix);
+
+    if let Some(prefix) = prefix {
+        let _ = std::fs::create_dir_all(&prefix);
+        if prefix_from_env.is_none() {
+            cmd.env("NPM_CONFIG_PREFIX", &prefix)
+                .env("npm_config_prefix", &prefix);
+        }
+
+        let mut path_entries = vec![prefix];
+        if let Some(node_dir) = bundled_node_dir() {
+            path_entries.push(node_dir);
+        }
+        prepend_connector_path_entries(cmd, path_entries);
+    } else if let Some(node_dir) = bundled_node_dir() {
+        prepend_connector_path_entries(cmd, [node_dir]);
+    }
+
+    if std::env::var_os("NPM_CONFIG_CACHE").is_none()
+        && std::env::var_os("npm_config_cache").is_none()
+    {
+        let cache = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join("pinvou3")
+            .join("npm-cache");
+        let _ = std::fs::create_dir_all(&cache);
+        cmd.env("NPM_CONFIG_CACHE", &cache)
+            .env("npm_config_cache", &cache);
+    }
+}
+
+pub fn kill_pid_tree(pid: u32) {
+    let _ = connector_cli_command("", "taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .output();
+}
+
+fn apply_windows_connector_path(cmd: &mut Command) {
+    let mut entries = windows_npm_prefix_candidates();
+    if let Some(node_dir) = bundled_node_dir() {
+        entries.push(node_dir);
+    }
+    prepend_connector_path_entries(cmd, entries);
+}
+
+fn windows_npm_prefix_from_env() -> Option<PathBuf> {
+    ["NPM_CONFIG_PREFIX", "npm_config_prefix"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .find(|path| !path.as_os_str().is_empty())
+}
+
+fn default_windows_npm_prefix() -> Option<PathBuf> {
+    std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .map(|path| path.join("npm"))
+}
+
+fn windows_npm_prefix_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(prefix) = windows_npm_prefix_from_env() {
+        candidates.push(prefix);
+    }
+    if let Some(prefix) = default_windows_npm_prefix() {
+        if !candidates.iter().any(|existing| same_path(existing, &prefix)) {
+            candidates.push(prefix);
+        }
+    }
+    candidates
+}
+
+fn bundled_node_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("node")))
+        .filter(|path| path.is_dir())
+}
+
+fn bundled_node_command(program: &str) -> Option<PathBuf> {
+    let filename = match program {
+        "npm" => "npm.cmd",
+        "npx" => "npx.cmd",
+        _ => return None,
+    };
+    bundled_node_dir()
+        .map(|dir| dir.join(filename))
+        .filter(|path| path.is_file())
+}
+
+fn prepend_connector_path_entries(cmd: &mut Command, dirs: impl IntoIterator<Item = PathBuf>) {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for dir in dirs {
+        if dir.as_os_str().is_empty() || paths.iter().any(|existing| same_path(existing, &dir)) {
+            continue;
+        }
+        paths.push(dir);
+    }
+
+    if let Some(current) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&current) {
+            if paths.iter().any(|existing| same_path(existing, &dir)) {
+                continue;
+            }
+            paths.push(dir);
+        }
+    }
+
+    if let Ok(joined) = std::env::join_paths(paths) {
+        cmd.env("PATH", joined);
+    }
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    left.to_string_lossy()
+        .trim_end_matches(['\\', '/'])
+        .eq_ignore_ascii_case(right.to_string_lossy().trim_end_matches(['\\', '/']))
 }
 
 pub fn bundled_python_path() -> Option<PathBuf> {

@@ -22,7 +22,7 @@ use tauri::{AppHandle, Emitter};
 #[derive(Clone, Copy)]
 pub struct CliCtx {
     /// 逻辑 CLI 名,如 `"lark-cli"` / `"wecom-cli"`。
-    /// Windows 下解析到 `%APPDATA%\npm\<bin>.cmd`(npm 全局 shim)。
+    /// 平台层负责解析到实际可执行文件或 npm 全局 shim。
     pub cli_bin: &'static str,
     /// 进程环境(代理绕行等):飞书 `LARK_CLI_NO_PROXY=1`。
     pub envs: &'static [(&'static str, &'static str)],
@@ -31,10 +31,10 @@ pub struct CliCtx {
 }
 
 impl CliCtx {
-    /// 构造子进程命令:Windows 抑黑窗(`CREATE_NO_WINDOW`)+ 解析 npm shim + 注入 envs。
+    /// 构造子进程命令:平台层负责可执行文件解析和运行时 PATH,连接器层只注入 envs。
     /// `program` 可以是 `cli_bin` 本身,也可以是 `"npm"` / `"npx"` 等。
     pub fn base_cmd(&self, program: &str) -> Command {
-        let mut c = make_base_cmd(self.cli_bin, program);
+        let mut c = connector_cli_command(self.cli_bin, program);
         for (k, v) in self.envs {
             c.env(k, v);
         }
@@ -63,106 +63,15 @@ impl CliCtx {
     }
 }
 
-// ─────────────────────────── 子进程构造(平台相关) ───────────────────────────
+// ─────────────────────────── 子进程构造 ───────────────────────────
 
-/// Windows 下把逻辑名解析成 npm 全局 shim 的 `.cmd`。
-/// **关键**:直接调 `.cmd`(不经 `cmd /C`)——Rust 1.77+ 会对 `.cmd` 参数做正确转义,
-/// 否则授权 URL 里的 `&` 会被 `cmd /C` 当成命令分隔符,扫码命令直接裂开。
-#[cfg(windows)]
-fn win_shim(cli_bin: &str, program: &str) -> std::ffi::OsString {
-    let shim_name = if program == cli_bin {
-        format!("{cli_bin}.cmd")
-    } else if program == "npx" || program == "npm" {
-        format!("{program}.cmd")
-    } else {
-        return program.into();
-    };
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let p = std::path::Path::new(&appdata).join("npm").join(&shim_name);
-        if p.is_file() {
-            return p.into_os_string();
-        }
-    }
-    shim_name.into() // 回退:靠 PATH 找
+fn connector_cli_command(cli_bin: &str, program: &str) -> Command {
+    crate::os::connector_cli_command(cli_bin, program)
 }
 
-#[cfg(windows)]
-fn make_base_cmd(cli_bin: &str, program: &str) -> Command {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let mut c = Command::new(win_shim(cli_bin, program));
-    c.creation_flags(CREATE_NO_WINDOW);
-    c
-}
-
-#[cfg(not(windows))]
-fn make_base_cmd(cli_bin: &str, program: &str) -> Command {
-    Command::new(unix_program(cli_bin, program))
-}
-
-#[cfg(not(windows))]
-fn unix_program(cli_bin: &str, program: &str) -> std::ffi::OsString {
-    if program == cli_bin {
-        if let Some(bin_dir) = crate::bridge::paths::bundle_connector_bin_dir() {
-            let bundled = bin_dir.join(cli_bin);
-            if bundled.is_file() {
-                return bundled.into_os_string();
-            }
-        }
-    }
-    if program == cli_bin {
-        let mut candidates = Vec::new();
-        if let Ok(prefix) = std::env::var("NPM_CONFIG_PREFIX") {
-            candidates.push(std::path::Path::new(&prefix).join("bin").join(program));
-        }
-        if let Ok(home) = std::env::var("HOME") {
-            let home = std::path::Path::new(&home);
-            candidates.push(home.join(".npm-global").join("bin").join(program));
-            candidates.push(home.join(".local").join("bin").join(program));
-        }
-        for p in candidates {
-            if p.is_file() {
-                return p.into_os_string();
-            }
-        }
-    }
-    program.into()
-}
-
-#[cfg(not(windows))]
-fn prepend_path(cmd: &mut Command, dir: &std::path::Path) {
-    let mut paths = vec![dir.to_path_buf()];
-    if let Some(old) = std::env::var_os("PATH") {
-        paths.extend(std::env::split_paths(&old));
-    }
-    if let Ok(joined) = std::env::join_paths(paths) {
-        cmd.env("PATH", joined);
-    }
-}
-
-/// On Linux/macOS, npm's default global prefix can be `/usr/local`, which fails
-/// for normal GUI users without sudo. Use a user-writable prefix unless the
-/// caller/environment already chose one.
-#[cfg(not(windows))]
 pub fn apply_user_npm_prefix(cmd: &mut Command) {
-    if std::env::var_os("NPM_CONFIG_PREFIX").is_some()
-        || std::env::var_os("npm_config_prefix").is_some()
-    {
-        return;
-    }
-    let Some(home) = std::env::var_os("HOME") else {
-        return;
-    };
-    let prefix = std::path::Path::new(&home).join(".npm-global");
-    let bin = prefix.join("bin");
-    let _ = std::fs::create_dir_all(&bin);
-    cmd.env("NPM_CONFIG_PREFIX", &prefix)
-        .env("npm_config_prefix", &prefix);
-    prepend_path(cmd, &bin);
+    crate::os::apply_user_npm_prefix(cmd);
 }
-
-#[cfg(windows)]
-pub fn apply_user_npm_prefix(_cmd: &mut Command) {}
 
 // ─────────────────────────────── 公共执行件 ───────────────────────────────
 
@@ -279,17 +188,7 @@ pub fn drain_for_url<R: std::io::Read + Send + 'static>(
 
 /// tree-kill 一个 PID,连其子进程(.cmd 拉起的 node)一起。
 pub fn kill_pid_tree(pid: u32) {
-    let pid_s = pid.to_string();
-    #[cfg(windows)]
-    {
-        let _ = make_base_cmd("", "taskkill")
-            .args(["/F", "/T", "/PID", &pid_s])
-            .output();
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = make_base_cmd("", "kill").args(["-9", &pid_s]).output();
-    }
+    crate::os::kill_pid_tree(pid);
 }
 
 /// 给前端发连接编排事件(`<id>:qr` / `<id>:phase` / `<id>:connected` / `<id>:error`)。

@@ -8,8 +8,8 @@ mod update;
 pub use dependency::install_dependencies;
 pub use memory::ram_snapshot;
 pub use path::{
-    path_component_eq, platform_compat_path, python_command, user_home_dir,
-    validate_upload_location,
+    apply_user_npm_prefix, connector_cli_command, kill_pid_tree, path_component_eq,
+    platform_compat_path, python_command, user_home_dir, validate_upload_location,
 };
 pub use permission::{
     disable_super_permission, enable_super_permission, super_permission_is_enabled,
