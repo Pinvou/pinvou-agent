@@ -30,8 +30,16 @@ pub fn asr_tool_path() -> PathBuf {
     super::super::platform::asr_tool_path()
 }
 
-pub fn asr_model_filename() -> &'static str {
-    super::super::platform::asr_model_filename()
+pub fn asr_model_spec() -> crate::voice_asr::AsrModelSpec {
+    super::super::platform::asr_model_spec()
+}
+
+pub fn asr_model_path() -> PathBuf {
+    super::super::platform::asr_model_path()
+}
+
+pub fn asr_model_exists() -> bool {
+    super::super::platform::asr_model_exists()
 }
 
 pub fn archive_tool_path() -> PathBuf {

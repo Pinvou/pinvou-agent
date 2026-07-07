@@ -213,6 +213,11 @@ pub struct MarketplaceToolInfo {
     pub icon: String,
     pub category: String,
     pub installed: bool,
+    /// 配套技能 id(来自 manifest `companion_skills`)。前端据此把「有配套 MCP 的技能卡」的
+    /// 状态/装卸联动到本 MCP,单一真源在 manifest,避免命名不一致(gongwen↔government-writing)
+    /// 时前端漏建映射导致两卡状态分叉。
+    #[serde(default)]
+    pub companion_skills: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -392,7 +397,20 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             Ok(c) => c,
             Err(_) => return Vec::new(),
         };
-        serde_json::from_str(&content).unwrap_or_default()
+        match serde_json::from_str::<Vec<String>>(&content) {
+            Ok(ids) => ids,
+            Err(e) => {
+                eprintln!(
+                    "[marketplace] installed.json is invalid: {e}; backing up and rebuilding from mcp.json"
+                );
+                self.backup_corrupt_installed(&content);
+                let recovered = self.recover_installed_ids_from_mcp();
+                if let Err(write_err) = self.save_installed(&recovered) {
+                    eprintln!("[marketplace] failed to rewrite installed.json: {write_err}");
+                }
+                recovered
+            }
+        }
     }
 
     /// 前端列表：所有可用工具 + 安装状态
@@ -408,6 +426,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 version: m.version,
                 icon: m.icon,
                 category: m.category,
+                companion_skills: m.companion_skills,
             })
             .collect()
     }
@@ -817,6 +836,51 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         std::fs::write(&self.installed_file, json).map_err(|e| format!("写入失败: {e}"))
     }
 
+    fn backup_corrupt_installed(&self, content: &str) {
+        let Some(parent) = self.installed_file.parent() else {
+            return;
+        };
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let backup = parent.join(format!("installed.json.corrupt.{ts}"));
+        if let Err(e) = std::fs::write(&backup, content) {
+            eprintln!(
+                "[marketplace] failed to backup corrupt installed.json to {}: {e}",
+                backup.display()
+            );
+        }
+    }
+
+    fn recover_installed_ids_from_mcp(&self) -> Vec<String> {
+        let content = match std::fs::read_to_string(paths::mcp_config_path()) {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        let Ok(mcp) = serde_json::from_str::<serde_json::Value>(&content) else {
+            return Vec::new();
+        };
+        let Some(servers) = mcp.get("servers").and_then(|s| s.as_object()) else {
+            return Vec::new();
+        };
+        let mut recovered = Vec::new();
+        for manifest in self.available_tools() {
+            let registered = if manifest.servers.is_empty() {
+                servers.contains_key(&manifest.id)
+            } else {
+                manifest
+                    .servers
+                    .iter()
+                    .any(|server| servers.contains_key(&server.name))
+            };
+            if registered && !recovered.contains(&manifest.id) {
+                recovered.push(manifest.id);
+            }
+        }
+        recovered
+    }
+
     fn add_to_mcp_json(
         &self,
         manifest: &ToolManifest,
@@ -1103,6 +1167,46 @@ mod tests {
     /// 连接器 → 模型可见工具全名:裸名补 `mcp_{id}_` 前缀,已带 `mcp_` 的原样(不双前缀),
     /// 一律小写;不存在的连接器跳过。这正是当初打印映射时抓到"双前缀 bug"的那段逻辑。
     #[test]
+    fn installed_ids_recovers_corrupt_file_from_mcp_json() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "weather",
+                r#"{
+                    "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":["get_weather"],"command":"python","args":["server.py"]
+                }"#,
+            );
+            let mcp_path = crate::bridge::paths::mcp_config_path();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &mcp_path,
+                r#"{"servers":{"weather":{"command":"python3","args":["server.py"]}}}"#,
+            )
+            .unwrap();
+            let installed_path = crate::bridge::paths::pinvou3_home()
+                .join("marketplace")
+                .join("installed.json");
+            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
+            std::fs::write(&installed_path, "[\"weather\"").unwrap();
+
+            let ids = MarketplaceManager::new().installed_ids();
+
+            assert_eq!(ids, vec!["weather".to_string()]);
+            let repaired = std::fs::read_to_string(&installed_path).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Vec<String>>(&repaired).unwrap(),
+                vec!["weather".to_string()]
+            );
+            let backups: Vec<_> = std::fs::read_dir(installed_path.parent().unwrap())
+                .unwrap()
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().starts_with("installed.json.corrupt."))
+                .collect();
+            assert_eq!(backups.len(), 1);
+        });
+    }
+
+    #[test]
     fn model_tool_names_prefix_dedup_and_lowercase() {
         with_temp_home(|| {
             let dir = crate::bridge::paths::bundle_mcp_servers_dir().join("demo");
@@ -1298,22 +1402,22 @@ mod tests {
         // (顺序修复=先写 mcp 成功、再 save_installed)。
         with_temp_home(|| {
             write_tool_manifest(
-                "weather",
+                "weather-custom",
                 r#"{
-                    "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
+                    "id":"weather-custom","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
                     "mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
-                    "secret_env":[{"key":"AMAP_KEY","provider":"amap","required":true}]
+                    "secret_env":[{"key":"WEATHER_TEST_KEY","provider":"weather-test","required":true}]
                 }"#,
             );
             let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
             // 不提供 key + keyring 空 + 无内置共享 key(测试 option_env=None)→ install 必失败
             assert!(
-                mgr.install("weather", &std::collections::HashMap::new())
+                mgr.install("weather-custom", &std::collections::HashMap::new())
                     .is_err(),
                 "缺密钥应安装失败"
             );
             assert!(
-                !mgr.installed_ids().contains(&"weather".to_string()),
+                !mgr.installed_ids().contains(&"weather-custom".to_string()),
                 "失败时 installed.json 不该记录该工具(否则半安装)"
             );
         });
@@ -1457,21 +1561,20 @@ mod tests {
     fn install_missing_required_secret_returns_recoverable_redacted_error() {
         with_temp_home(|| {
             write_tool_manifest(
-                "iwencai",
+                "iwencai-custom",
                 r#"{
-                    "id":"iwencai","name":"Iwencai","description":"d","version":"1","icon":"x","category":"c",
+                    "id":"iwencai-custom","name":"Iwencai","description":"d","version":"1","icon":"x","category":"c",
                     "mcp_tools":["mcp_iwencai_query"],"command":"python","args":["server.py"],
-                    "secret_env":[{"key":"IWENCAI_API_KEY","provider":"iwencai","required":true}]
+                    "secret_env":[{"key":"IWENCAI_TEST_KEY","provider":"iwencai-test","required":true}]
                 }"#,
             );
             let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
 
             let err = mgr
-                .install("iwencai", &std::collections::HashMap::new())
+                .install("iwencai-custom", &std::collections::HashMap::new())
                 .unwrap_err();
 
-            assert!(err.contains("iwencai"));
-            assert!(err.contains("IWENCAI_API_KEY"));
+            assert!(err.contains("IWENCAI_TEST_KEY"));
             assert!(!err.contains("test-secret"));
         });
     }

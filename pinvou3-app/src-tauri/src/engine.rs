@@ -939,13 +939,16 @@ fn spawn_event_forwarder(
                         json!({ "session_id": session_id, "status": format!("{status:?}"), "error": error }),
                     );
                 }
-                Event::CompactionStarted { message, auto, .. } => {
+                Event::CompactionStarted {
+                    id, message, auto, ..
+                } => {
                     let _ = app.emit(
                         "chat:compaction",
-                        json!({ "session_id": session_id, "phase": "start", "auto": auto, "message": message }),
+                        json!({ "session_id": session_id, "phase": "start", "id": id, "auto": auto, "message": message }),
                     );
                 }
                 Event::CompactionCompleted {
+                    id,
                     message,
                     auto,
                     messages_before,
@@ -957,6 +960,7 @@ fn spawn_event_forwarder(
                         json!({
                             "session_id": session_id,
                             "phase": "done",
+                            "id": id,
                             "auto": auto,
                             "message": message,
                             "messages_before": messages_before,

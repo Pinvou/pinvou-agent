@@ -748,6 +748,7 @@ impl UserPrefs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bridge::paths::tests::ENV_LOCK;
     use crate::credential_store::MemoryCredentialStore;
 
     #[test]
@@ -981,6 +982,7 @@ mod tests {
 
     #[test]
     fn prefs_save_normalizes_blank_search_api_key_on_disk() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let old_home = std::env::var_os("PINVOU3_HOME");
         let tmp = std::env::temp_dir().join(format!(
             "pinvou3-prefs-save-normalize-{}",

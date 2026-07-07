@@ -3,19 +3,29 @@
 pinvou3 resolves the optional offline voice recognition runtime from:
 
 ```text
-{install_dir}/asr/pinvou-asr.exe
+{install_dir}/runtime/asr/pinvou-asr.exe
 ```
 
 This directory contains the Windows offline ASR runtime used by the MSI build:
 
 ```text
-asr/
+runtime/asr/
   pinvou-asr.exe
   llama-funasr-sensevoice.exe
   models/
-    sensevoice-small-q8.gguf
     fsmn-vad.gguf
 ```
+
+The main installer intentionally does not include the large
+`sensevoice-small-q8.gguf` recognition model. The app downloads that model on
+first voice use to:
+
+```text
+~/.pinvou3/asr/sensevoice-small-q8.gguf
+```
+
+The small `fsmn-vad.gguf` VAD model remains bundled with the runtime because it
+is tiny and improves voice activity detection.
 
 `llama-funasr-sensevoice.exe` is built from the FunASR llama.cpp runtime with
 portable x64 CPU flags for the project test machine. The upstream prebuilt
@@ -31,17 +41,21 @@ pinvou-asr.exe asr --model sensevoice-q8 --lang zh --input <wav>
 It should print the recognized text to stdout.
 
 This repository provides the `pinvou-asr` wrapper source at
-`src/bin/pinvou-asr.rs`.
+`src/asr/pinvou_asr.rs`. It is kept outside `src/bin` so installer bundlers do
+not treat it as an application sidecar target.
 
 Alternative model locations accepted by `pinvou-asr.exe`:
 
 ```text
-asr/
+~/.pinvou3/asr/
+  sensevoice-small-q8.gguf
+
+runtime/asr/
   gguf/
     sensevoice-small-q8.gguf
     fsmn-vad.gguf
 
-asr/
+runtime/asr/
   runtime/
     llama-funasr-sensevoice.exe
     models/

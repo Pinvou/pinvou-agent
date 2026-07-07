@@ -22,7 +22,7 @@ use tauri::{AppHandle, Emitter};
 #[derive(Clone, Copy)]
 pub struct CliCtx {
     /// 逻辑 CLI 名,如 `"lark-cli"` / `"wecom-cli"`。
-    /// Windows 下解析到 `%APPDATA%\npm\<bin>.cmd`(npm 全局 shim)。
+    /// 平台层负责解析到实际可执行文件或 npm 全局 shim。
     pub cli_bin: &'static str,
     /// 进程环境(代理绕行等):飞书 `LARK_CLI_NO_PROXY=1`。
     pub envs: &'static [(&'static str, &'static str)],
@@ -31,10 +31,10 @@ pub struct CliCtx {
 }
 
 impl CliCtx {
-    /// 构造子进程命令:Windows 抑黑窗(`CREATE_NO_WINDOW`)+ 解析 npm shim + 注入 envs。
+    /// 构造子进程命令:平台层负责可执行文件解析和运行时 PATH,连接器层只注入 envs。
     /// `program` 可以是 `cli_bin` 本身,也可以是 `"npm"` / `"npx"` 等。
     pub fn base_cmd(&self, program: &str) -> Command {
-        let mut c = make_base_cmd(self.cli_bin, program);
+        let mut c = connector_cli_command(self.cli_bin, program);
         for (k, v) in self.envs {
             c.env(k, v);
         }
@@ -63,41 +63,14 @@ impl CliCtx {
     }
 }
 
-// ─────────────────────────── 子进程构造(平台相关) ───────────────────────────
+// ─────────────────────────── 子进程构造 ───────────────────────────
 
-/// Windows 下把逻辑名解析成 npm 全局 shim 的 `.cmd`。
-/// **关键**:直接调 `.cmd`(不经 `cmd /C`)——Rust 1.77+ 会对 `.cmd` 参数做正确转义,
-/// 否则授权 URL 里的 `&` 会被 `cmd /C` 当成命令分隔符,扫码命令直接裂开。
-#[cfg(windows)]
-fn win_shim(cli_bin: &str, program: &str) -> std::ffi::OsString {
-    let shim_name = if program == cli_bin {
-        format!("{cli_bin}.cmd")
-    } else if program == "npx" || program == "npm" {
-        format!("{program}.cmd")
-    } else {
-        return program.into();
-    };
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let p = std::path::Path::new(&appdata).join("npm").join(&shim_name);
-        if p.is_file() {
-            return p.into_os_string();
-        }
-    }
-    shim_name.into() // 回退:靠 PATH 找
+fn connector_cli_command(cli_bin: &str, program: &str) -> Command {
+    crate::os::connector_cli_command(cli_bin, program)
 }
 
-#[cfg(windows)]
-fn make_base_cmd(cli_bin: &str, program: &str) -> Command {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let mut c = Command::new(win_shim(cli_bin, program));
-    c.creation_flags(CREATE_NO_WINDOW);
-    c
-}
-
-#[cfg(not(windows))]
-fn make_base_cmd(_cli_bin: &str, program: &str) -> Command {
-    Command::new(program)
+pub fn apply_user_npm_prefix(cmd: &mut Command) {
+    crate::os::apply_user_npm_prefix(cmd);
 }
 
 // ─────────────────────────────── 公共执行件 ───────────────────────────────
@@ -106,7 +79,7 @@ fn make_base_cmd(_cli_bin: &str, program: &str) -> Command {
 pub fn run(mut cmd: Command) -> Result<(bool, String, String), String> {
     let out = cmd
         .output()
-        .map_err(|e| format!("启动失败: {e}(需要 Node + 对应 CLI)"))?;
+        .map_err(|e| format!("启动失败: {e}(需要对应 CLI；Linux ARM64 会优先使用内置 CLI)"))?;
     Ok((
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -137,7 +110,7 @@ pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
     cmd.stdin(Stdio::null()).stdout(out).stderr(err);
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("启动失败: {e}(需要 Node)"))?;
+        .map_err(|e| format!("启动失败: {e}(需要 npm/Node 才能执行动态安装兜底)"))?;
     let start = Instant::now();
     loop {
         match child.try_wait().map_err(|e| format!("wait: {e}"))? {
@@ -215,17 +188,7 @@ pub fn drain_for_url<R: std::io::Read + Send + 'static>(
 
 /// tree-kill 一个 PID,连其子进程(.cmd 拉起的 node)一起。
 pub fn kill_pid_tree(pid: u32) {
-    let pid_s = pid.to_string();
-    #[cfg(windows)]
-    {
-        let _ = make_base_cmd("", "taskkill")
-            .args(["/F", "/T", "/PID", &pid_s])
-            .output();
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = make_base_cmd("", "kill").args(["-9", &pid_s]).output();
-    }
+    crate::os::kill_pid_tree(pid);
 }
 
 /// 给前端发连接编排事件(`<id>:qr` / `<id>:phase` / `<id>:connected` / `<id>:error`)。

@@ -52,6 +52,7 @@
   // ── State ────────────────────────────────────────────────────────
   var state = {
     sessions: [],
+    archivedSessions: [],
     activeSessionId: null,
     // 模型 load_skill 触发的当前技能 id（如 'visual-design'）→ 点亮 composer 技能标；null=无。
     // 内置自动技能（视觉设计）的"正在使用"指示：新一轮用户消息时清、相关时再点亮。
@@ -60,6 +61,9 @@
     // 复位 effect 挂它 → 即便 activeSessionId 没变(draft→draft)也能重新求值,否则残留的工具欢迎卡
     // 会一直顶掉「你好」欢迎语(该 tool 无 welcomeQueries 时整块空白)。
     draftEpoch: 0,
+    // 跨页面预填输入框请求。比如本地知识 → 产出物点击「续写/新项目」：
+    // 只把草稿放进 composer，不自动发送给模型。
+    composerPrefill: { id: 0, text: "" },
     messages: [],      // Anthropic Messages schema
     chatItems: [],     // display items for React
     // 卡牌加持/卸下事件时间线(sidecar, 不进 messages/LLM)。每项 {kind,pos,...}。
@@ -217,6 +221,7 @@
       planHistorical: "📜 Past plan", planSuperseded: "📜 Superseded by a newer plan",
       attachStillParsing: "⚠️ Attachment still parsing, try again shortly",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactAuto: " (auto)",
+      compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
       gpuUnavailable: "GPU info unavailable",
       superOn: "⚠️ Super permission enabled", superOff: "Super permission disabled",
       approved: "✅ Approved", echoGo: "✅ Do it",
@@ -233,6 +238,7 @@
       planHistorical: "📜 過去のプラン", planSuperseded: "📜 新しいプランで上書きされました",
       attachStillParsing: "⚠️ 添付ファイルを解析中です。少し待ってから送信してください",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactAuto: "（自動）",
+      compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
       gpuUnavailable: "GPU 情報を取得できません",
       superOn: "⚠️ スーパー権限が有効になりました", superOff: "スーパー権限が無効になりました",
       approved: "✅ 承認済み", echoGo: "✅ これでいく",
@@ -249,6 +255,7 @@
       planHistorical: "📜 历史方案", planSuperseded: "📜 已被新方案覆盖",
       attachStillParsing: "⚠️ 附件还在解析,请稍后再发",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactAuto: "（自动）",
+      compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
       gpuUnavailable: "GPU 信息不可用",
       superOn: "⚠️ 超级权限已开启", superOff: "超级权限已关闭",
       approved: "✅ 已批准", echoGo: "✅ 就这么干",
@@ -438,8 +445,45 @@
     }
     return false;
   }
-  function addSystemItem(text) {
-    addChatItem({ type: "system", text: text, time: timeStr() });
+  function addSystemItem(text, meta) {
+    var item = { type: "system", text: text, time: timeStr() };
+    if (meta) {
+      for (var k in meta) item[k] = meta[k];
+    }
+    addChatItem(item);
+    notify();
+  }
+  function compactPruneRollupText(count) {
+    return bt("compactDone") + bt("compactAuto") + " " +
+      bt("compactPruneMerged") + " ×" + count;
+  }
+  function removeCompactionStartItem(compactId) {
+    if (!compactId) return;
+    for (var i = state.chatItems.length - 1; i >= 0; i--) {
+      var it = state.chatItems[i];
+      if (it.type === "system" && it.compactId === compactId && it.compactPhase === "start") {
+        state.chatItems.splice(i, 1);
+        return;
+      }
+    }
+  }
+  function addOrMergePruneCompaction(compactId) {
+    removeCompactionStartItem(compactId);
+    var last = state.chatItems[state.chatItems.length - 1];
+    if (last && last.type === "system" && last.compactPruneRollup) {
+      last.compactPruneCount = (last.compactPruneCount || 1) + 1;
+      last.text = compactPruneRollupText(last.compactPruneCount);
+      last.time = timeStr();
+      notify();
+      return;
+    }
+    addChatItem({
+      type: "system",
+      text: compactPruneRollupText(1),
+      time: timeStr(),
+      compactPruneRollup: true,
+      compactPruneCount: 1,
+    });
     notify();
   }
   function timeStr() {
@@ -474,6 +518,11 @@
     } catch (e) {
       console.warn("list_sessions failed", e);
       state.sessions = [];
+    }
+    try {
+      state.archivedSessions = await invoke("list_archived_sessions");
+    } catch (e) {
+      state.archivedSessions = state.archivedSessions || [];
     }
     notify();
   }
@@ -559,6 +608,7 @@
       delete sessionStates[id]; // 丢掉该 session 的工作集缓冲(后端已 evict 其 engine)
       delete turnUsageDirty[id];
       state.sessions = state.sessions.filter(function (s) { return s.id !== id; });
+      state.archivedSessions = (state.archivedSessions || []).filter(function (s) { return s.id !== id; });
       if (state.activeSessionId === id) {
         // 删当前会话 → 落空白草稿页(不自动切上一条/不建空 session)。被删 session 的 buffer
         // 上面已 delete,这里不 saveWorkingSetTo(否则 getBuffer 会把它复活),直接清空工作集。
@@ -580,6 +630,76 @@
       notify();
     } catch (e) {
       console.warn("rename failed", e);
+    }
+  }
+
+  async function toggleSessionPinned(id, pinned) {
+    var s = state.sessions.find(function (s) { return s.id === id; });
+    var prev = s ? !!s.pinned : false;
+    var prevPinnedAt = s ? s.pinned_at : null;
+    if (s) {
+      s.pinned = !!pinned;
+      s.pinned_at = pinned ? new Date().toISOString() : null;
+    }
+    notify();
+    try {
+      await invoke("set_session_pinned", { id: id, pinned: !!pinned });
+      await refreshHistoryList();
+    } catch (e) {
+      if (s) {
+        s.pinned = prev;
+        s.pinned_at = prevPinnedAt;
+      }
+      console.warn("set_session_pinned failed", e);
+      await refreshHistoryList();
+    }
+  }
+
+  async function archiveSession(id) {
+    var idx = state.sessions.findIndex(function (s) { return s.id === id; });
+    if (idx < 0) return;
+    var s = state.sessions[idx];
+    var archived = Object.assign({}, s, { archived: true, archived_at: new Date().toISOString(), pinned: false, pinned_at: null });
+    var wasActive = state.activeSessionId === id;
+    if (wasActive) saveWorkingSetTo(getBuffer(id));
+    state.sessions.splice(idx, 1);
+    state.archivedSessions = [archived].concat((state.archivedSessions || []).filter(function (x) { return x.id !== id; }));
+    if (wasActive) {
+      state.activeSessionId = null;
+      loadWorkingSetFrom(freshBuffer());
+    }
+    notify();
+    try {
+      await invoke("set_session_archived", { id: id, archived: true });
+      await refreshHistoryList();
+    } catch (e) {
+      state.sessions.splice(idx, 0, s);
+      state.archivedSessions = (state.archivedSessions || []).filter(function (x) { return x.id !== id; });
+      if (wasActive) {
+        state.activeSessionId = id;
+        loadWorkingSetFrom(getBuffer(id));
+      }
+      console.warn("set_session_archived failed", e);
+      notify();
+    }
+  }
+
+  async function restoreArchivedSession(id) {
+    var idx = (state.archivedSessions || []).findIndex(function (s) { return s.id === id; });
+    if (idx < 0) return;
+    var s = state.archivedSessions[idx];
+    var restored = Object.assign({}, s, { archived: false, archived_at: null });
+    state.archivedSessions.splice(idx, 1);
+    state.sessions = [restored].concat(state.sessions || []);
+    notify();
+    try {
+      await invoke("set_session_archived", { id: id, archived: false });
+      await refreshHistoryList();
+    } catch (e) {
+      state.archivedSessions.splice(idx, 0, s);
+      state.sessions = (state.sessions || []).filter(function (x) { return x.id !== id; });
+      console.warn("restore archived session failed", e);
+      notify();
     }
   }
 
@@ -1027,6 +1147,10 @@
 
     await doSendFor(state.activeSessionId, text, displayText, attachmentsPayload, meta);
   }
+  function prefillComposer(text) {
+    state.composerPrefill = { id: (state.composerPrefill.id || 0) + 1, text: String(text || "") };
+    notify();
+  }
   // 撤销一条待发消息(点 chip 的 ✕)。
   function removeQueued(id) {
     state.queued = state.queued.filter(function (q) { return q.id !== id; });
@@ -1445,7 +1569,19 @@
     var phase = e.payload && e.payload.phase;
     var msg = e.payload && e.payload.message || "";
     var auto = e.payload && e.payload.auto ? bt("compactAuto") : "";
-    if (phase === "start") addSystemItem(bt("compactStart") + auto + " " + msg);
+    var compactId = e.payload && e.payload.id;
+    var before = Number(e.payload && e.payload.messages_before);
+    var after = Number(e.payload && e.payload.messages_after);
+    var looksLikePruneOnly = /0 removed|messages unchanged|tool results pruned/i.test(msg);
+    var pruneOnlyAuto = !!(e.payload && e.payload.auto) &&
+      phase === "done" &&
+      Number.isFinite(before) &&
+      Number.isFinite(after) &&
+      before === after &&
+      looksLikePruneOnly &&
+      msg.indexOf("Emergency compaction") !== 0;
+    if (phase === "start") addSystemItem(bt("compactStart") + auto + " " + msg, { compactId: compactId, compactPhase: "start" });
+    else if (phase === "done" && pruneOnlyAuto) addOrMergePruneCompaction(compactId);
     else if (phase === "done") addSystemItem(bt("compactDone") + auto + " " + msg);
     else if (phase === "fail") addSystemItem(bt("compactFail") + auto + ": " + msg);
   }); });
@@ -1508,9 +1644,6 @@
     state.kbModelSetup = Object.assign({}, state.kbModelSetup, { progress: p });
     notify();
   });
-
-  // Dock/侧边栏"新建窗口"——单实例插件回调 emit,复用新建会话逻辑
-  listen("dock:new_instance", function (_e) { createNewSession(); });
 
   // chat:plan_snapshot —— update_plan/checklist_write 后实时更新进度，与 plan_ready 解耦
   listen("chat:plan_snapshot", function (e) { onSessionEvent(e, function () {
@@ -2301,6 +2434,66 @@
   function listDeliverables(projectDir) {
     return invoke("list_deliverables", { projectDir: projectDir }).catch(function () { return []; });
   }
+  function deliverableCategory(path) {
+    var ext = (String(path || "").split(".").pop() || "").toLowerCase();
+    if (ext === "html" || ext === "htm" || ext === "mhtml" || ext === "mht") return "web";
+    if (ext === "ppt" || ext === "pptx" || ext === "odp" || ext === "dps") return "ppt";
+    if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "heic"].indexOf(ext) >= 0) return "img";
+    return "doc";
+  }
+  function sessionTitleById(sid) {
+    var m = state.sessions.find(function (s) { return s.id === sid; });
+    return (m && m.title) || "";
+  }
+  function currentMemoryArtifacts() {
+    var rows = [];
+    function addFrom(sid, arts) {
+      (arts || []).forEach(function (a) {
+        var path = a && a.path;
+        if (!path || !isDeliverable(path)) return;
+        rows.push({ path: path, sessionId: sid || state.activeSessionId, source: sessionTitleById(sid || state.activeSessionId), name: basename(path) });
+      });
+    }
+    addFrom(state.activeSessionId, state.artifacts);
+    Object.keys(sessionStates).forEach(function (sid) { addFrom(sid, sessionStates[sid] && sessionStates[sid].artifacts); });
+    return rows;
+  }
+  // 跨会话产出物索引:磁盘 session JSON 为主,再合并当前内存工作集。
+  // 新产物在 chat:done/save_session_artifacts 前也能立刻出现在「本地知识 → 产出物」。
+  async function listDeliverableIndex() {
+    var disk = await invoke("list_deliverable_index").catch(function () { return []; });
+    var byPath = {};
+    (disk || []).forEach(function (x) { if (x && x.path) byPath[x.path] = x; });
+    var mem = currentMemoryArtifacts().filter(function (x) { return x.path && !byPath[x.path]; });
+    var hydrated = await Promise.all(mem.map(async function (x) {
+      var path = x.path;
+      if (!isAbsPath(path) && x.sessionId) {
+        try {
+          var ws = await invoke("list_workspace_files", { sessionId: x.sessionId });
+          var bn = basename(path);
+          var resolved = (ws || []).find(function (p) { return basename(p) === bn; });
+          if (resolved) path = resolved;
+        } catch (_) {}
+      }
+      var info = null;
+      try { info = await artifactInfo(path); } catch (_) {}
+      var ext = (String(path).split(".").pop() || "").toLowerCase();
+      return {
+        name: x.name || basename(path),
+        path: path,
+        ext: ext,
+        category: deliverableCategory(path),
+        sessionId: x.sessionId || "",
+        source: x.source || sessionTitleById(x.sessionId) || "",
+        mtime: info && info.modified ? info.modified : 0,
+        size: info && info.size ? info.size : 0,
+      };
+    }));
+    hydrated.forEach(function (x) { if (x && x.path) byPath[x.path] = x; });
+    return Object.keys(byPath).map(function (p) { return byPath[p]; }).sort(function (a, b) {
+      return (b.mtime || 0) - (a.mtime || 0) || String(a.name || "").localeCompare(String(b.name || ""));
+    });
+  }
   // 外部打开产物：HTML 走 Tauri 独立窗口（绕沙箱），其他走系统应用。
   // sessionId = 卡片携带的产物所属 session。后端 resolve_artifact_path 用它(而非全局
   // active_id)解析相对路径 —— 切回「有 buffer」的会话后端 active 不更新,只有卡片自带
@@ -2889,12 +3082,21 @@
       state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, patch);
       notify();
     } catch (e) {
-      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { installing: false, error: String(e) });
+      var message = String(e && e.message ? e.message : e);
+      var cancelled = message.indexOf("已取消") >= 0 || message.toLowerCase().indexOf("cancel") >= 0;
+      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, {
+        installing: false,
+        progress: cancelled ? { stage: "cancelled" } : { stage: "failed" },
+        error: cancelled ? null : message
+      });
       notify();
     }
   }
 
   function closeVoiceAsrSetup() {
+    if (state.voiceAsrSetup.installing) {
+      invoke("cancel_voice_asr").catch(function () { });
+    }
     state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { open: false });
     notify();
   }
@@ -2934,7 +3136,7 @@
     // 首次/缺组件：先检测本地语音识别依赖，缺则弹安装框、不进录音。
     try {
       var asrStatus = await invoke("voice_asr_status");
-      if (asrStatus && !asrStatus.ready && asrStatus.installable) {
+      if (asrStatus && !asrStatus.ready) {
         state.voiceAsrSetup = { open: true, status: asrStatus, installing: false, progress: null, error: null };
         notify();
         return;
@@ -3236,6 +3438,7 @@
     getState: function () { return snapshotState(); },
     init: init,
     sendMessage: sendMessage,
+    prefillComposer: prefillComposer,
     removeQueued: removeQueued,
     startVoiceInput: startVoiceInput,
     installVoiceAsr: installVoiceAsr,
@@ -3251,6 +3454,9 @@
     switchToSession: switchToSession,
     deleteSession: deleteSession,
     renameSession: renameSession,
+    toggleSessionPinned: toggleSessionPinned,
+    archiveSession: archiveSession,
+    restoreArchivedSession: restoreArchivedSession,
     startMonitorPolling: startMonitorPolling,
     stopMonitorPolling: stopMonitorPolling,
     clearMonitorStats: clearMonitorStats,
@@ -3299,6 +3505,7 @@
     openInSystem: openInSystem,
     openArtifactExternal: openArtifactExternal,
     listDeliverables: listDeliverables,
+    listDeliverableIndex: listDeliverableIndex,
     openExternalUrl: openExternalUrl,
     // 附件
     addAttachmentByPath: addAttachmentByPath,

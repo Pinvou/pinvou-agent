@@ -1,5 +1,6 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
@@ -37,6 +38,28 @@ pub fn asr_tool_path() -> PathBuf {
 
 pub fn asr_model_filename() -> &'static str {
     "sense-voice-small-q4_k.gguf"
+}
+
+pub fn asr_model_spec() -> crate::voice_asr::AsrModelSpec {
+    crate::voice_asr::AsrModelSpec {
+        id: "unsupported",
+        filename: asr_model_filename(),
+        expected_size: 0,
+        sha256: "",
+        primary_url: "",
+        mirror_url: "",
+    }
+}
+
+pub fn asr_model_path() -> PathBuf {
+    user_home_dir()
+        .join(".pinvou3")
+        .join("asr")
+        .join(asr_model_filename())
+}
+
+pub fn asr_model_exists() -> bool {
+    false
 }
 
 pub fn archive_tool_path() -> PathBuf {
@@ -192,6 +215,39 @@ pub fn validate_upload_location(canon: &Path) -> Result<(), String> {
 
 pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
     component == OsStr::new(expected)
+}
+
+pub fn python_command() -> String {
+    if which_in_path("python3") {
+        return "python3".to_string();
+    }
+    if which_in_path("python") {
+        return "python".to_string();
+    }
+    "python3".to_string()
+}
+
+pub fn connector_cli_command(_cli_bin: &str, program: &str) -> Command {
+    Command::new(program)
+}
+
+pub fn apply_user_npm_prefix(_cmd: &mut Command) {}
+
+pub fn kill_pid_tree(pid: u32) {
+    let _ = Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .output();
+}
+
+fn which_in_path(cmd: &str) -> bool {
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            if dir.join(cmd).is_file() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 pub fn super_permission_is_enabled() -> bool {

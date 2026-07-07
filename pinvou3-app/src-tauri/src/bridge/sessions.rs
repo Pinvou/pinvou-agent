@@ -48,6 +48,12 @@ pub struct SessionStore {
     /// 才有条目;没选的回退全局 active_model_id。落盘到 `_session_models.json`
     /// (仿 skill_bindings),底座 SavedSession 不能加字段故独立存。
     session_models: Arc<RwLock<HashMap<String, String>>>,
+    /// 历史对话置顶表:session_id -> pinned_at。独立落盘到 `_pinned_sessions.json`,
+    /// 不改 SavedSession 结构。
+    pinned_sessions: Arc<RwLock<HashMap<String, String>>>,
+    /// 从左侧任务列表收起的会话:session_id -> hidden_at。独立落盘到
+    /// `_hidden_sessions.json`,不改 SavedSession 结构。
+    hidden_sessions: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl SessionStore {
@@ -61,6 +67,8 @@ impl SessionStore {
             active: Arc::new(RwLock::new(None)),
             mode_states: Arc::new(RwLock::new(HashMap::new())),
             session_models: Arc::new(RwLock::new(HashMap::new())),
+            pinned_sessions: Arc::new(RwLock::new(HashMap::new())),
+            hidden_sessions: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -111,8 +119,26 @@ impl SessionStore {
         }
         drop(active);
         self.mode_states.write().remove(id);
-        if self.session_models.write().remove(id).is_some() {
+        let removed_session_model = {
+            let mut session_models = self.session_models.write();
+            session_models.remove(id).is_some()
+        };
+        if removed_session_model {
             self.save_session_models();
+        }
+        let removed_pin = {
+            let mut pinned_sessions = self.pinned_sessions.write();
+            pinned_sessions.remove(id).is_some()
+        };
+        if removed_pin {
+            self.save_pinned_sessions();
+        }
+        let removed_hidden = {
+            let mut hidden_sessions = self.hidden_sessions.write();
+            hidden_sessions.remove(id).is_some()
+        };
+        if removed_hidden {
+            self.save_hidden_sessions();
         }
         Ok(())
     }
@@ -394,6 +420,179 @@ impl SessionStore {
         }
     }
 
+    // ===================== 历史对话置顶 =====================
+
+    pub fn is_pinned(&self, id: &str) -> bool {
+        self.pinned_sessions.read().contains_key(id)
+    }
+
+    pub fn pinned_at(&self, id: &str) -> Option<String> {
+        self.pinned_sessions.read().get(id).cloned()
+    }
+
+    pub fn set_pinned(&self, id: &str, pinned: bool) {
+        {
+            let mut pins = self.pinned_sessions.write();
+            if pinned {
+                pins.insert(id.to_string(), Utc::now().to_rfc3339());
+            } else {
+                pins.remove(id);
+            }
+        }
+        self.save_pinned_sessions();
+    }
+
+    pub fn save_pinned_sessions(&self) {
+        let file = super::paths::sessions_root().join("_pinned_sessions.json");
+        let pins = self.pinned_sessions.read();
+        if pins.is_empty() {
+            let _ = std::fs::remove_file(&file);
+            return;
+        }
+        let mut out: Vec<_> = pins
+            .iter()
+            .map(|(id, pinned_at)| {
+                serde_json::json!({
+                    "id": id,
+                    "pinned_at": pinned_at,
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            a.get("id")
+                .and_then(|v| v.as_str())
+                .cmp(&b.get("id").and_then(|v| v.as_str()))
+        });
+        if let Ok(json) = serde_json::to_string_pretty(&out) {
+            let _ = std::fs::write(file, json);
+        }
+    }
+
+    pub fn load_pinned_sessions(&self) {
+        let file = super::paths::sessions_root().join("_pinned_sessions.json");
+        if !file.exists() {
+            return;
+        }
+        let content = match std::fs::read_to_string(&file) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(serde_json::Value::Array(items)) => {
+                let mut pins = HashMap::new();
+                for item in items {
+                    match item {
+                        serde_json::Value::String(id) => {
+                            pins.insert(id, Utc::now().to_rfc3339());
+                        }
+                        serde_json::Value::Object(mut obj) => {
+                            let id = obj.remove("id").and_then(|v| v.as_str().map(str::to_string));
+                            let pinned_at = obj
+                                .remove("pinned_at")
+                                .and_then(|v| v.as_str().map(str::to_string))
+                                .unwrap_or_else(|| Utc::now().to_rfc3339());
+                            if let Some(id) = id {
+                                pins.insert(id, pinned_at);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                *self.pinned_sessions.write() = pins;
+            }
+            Ok(_) => eprintln!("[sessions] load_pinned_sessions failed: invalid shape"),
+            Err(e) => eprintln!("[sessions] load_pinned_sessions failed: {e}"),
+        }
+    }
+
+    // ===================== 收起任务列表 =====================
+
+    pub fn is_hidden(&self, id: &str) -> bool {
+        self.hidden_sessions.read().contains_key(id)
+    }
+
+    pub fn hidden_at(&self, id: &str) -> Option<String> {
+        self.hidden_sessions.read().get(id).cloned()
+    }
+
+    pub fn set_hidden(&self, id: &str, hidden: bool) {
+        {
+            let mut hidden_sessions = self.hidden_sessions.write();
+            if hidden {
+                hidden_sessions.insert(id.to_string(), Utc::now().to_rfc3339());
+            } else {
+                hidden_sessions.remove(id);
+            }
+        }
+        if hidden {
+            self.set_pinned(id, false);
+        }
+        self.save_hidden_sessions();
+    }
+
+    pub fn save_hidden_sessions(&self) {
+        let file = super::paths::sessions_root().join("_hidden_sessions.json");
+        let hidden_sessions = self.hidden_sessions.read();
+        if hidden_sessions.is_empty() {
+            let _ = std::fs::remove_file(&file);
+            return;
+        }
+        let mut out: Vec<_> = hidden_sessions
+            .iter()
+            .map(|(id, hidden_at)| {
+                serde_json::json!({
+                    "id": id,
+                    "hidden_at": hidden_at,
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            a.get("id")
+                .and_then(|v| v.as_str())
+                .cmp(&b.get("id").and_then(|v| v.as_str()))
+        });
+        if let Ok(json) = serde_json::to_string_pretty(&out) {
+            let _ = std::fs::write(file, json);
+        }
+    }
+
+    pub fn load_hidden_sessions(&self) {
+        let file = super::paths::sessions_root().join("_hidden_sessions.json");
+        if !file.exists() {
+            return;
+        }
+        let content = match std::fs::read_to_string(&file) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(serde_json::Value::Array(items)) => {
+                let mut hidden_sessions = HashMap::new();
+                for item in items {
+                    match item {
+                        serde_json::Value::String(id) => {
+                            hidden_sessions.insert(id, Utc::now().to_rfc3339());
+                        }
+                        serde_json::Value::Object(mut obj) => {
+                            let id = obj.remove("id").and_then(|v| v.as_str().map(str::to_string));
+                            let hidden_at = obj
+                                .remove("hidden_at")
+                                .and_then(|v| v.as_str().map(str::to_string))
+                                .unwrap_or_else(|| Utc::now().to_rfc3339());
+                            if let Some(id) = id {
+                                hidden_sessions.insert(id, hidden_at);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                *self.hidden_sessions.write() = hidden_sessions;
+            }
+            Ok(_) => eprintln!("[sessions] load_hidden_sessions failed: invalid shape"),
+            Err(e) => eprintln!("[sessions] load_hidden_sessions failed: {e}"),
+        }
+    }
+
 }
 
 /// 生成 URL-safe session id（短 8 字节 timestamp + nanos hash）。
@@ -504,6 +703,119 @@ mod tests {
         store.delete(&s.metadata.id).expect("delete missing file");
 
         assert!(!session_dir.exists(), "stale session dir removed");
+    }
+
+    #[test]
+    fn pinned_sessions_persist_and_delete_cleans() {
+        let (store, _g) = isolated_store();
+        let s = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+
+        store.set_pinned(&s.metadata.id, true);
+        assert!(store.is_pinned(&s.metadata.id));
+        assert!(
+            store.pinned_at(&s.metadata.id).is_some(),
+            "pinning records pinned_at"
+        );
+
+        let reloaded = SessionStore::boot().expect("reboot");
+        reloaded.load_pinned_sessions();
+        assert!(reloaded.is_pinned(&s.metadata.id));
+        assert!(
+            reloaded.pinned_at(&s.metadata.id).is_some(),
+            "pinned_at survives reload"
+        );
+
+        reloaded.delete(&s.metadata.id).expect("delete");
+        assert!(!reloaded.is_pinned(&s.metadata.id));
+        assert!(reloaded.pinned_at(&s.metadata.id).is_none());
+    }
+
+    #[test]
+    fn pinned_sessions_loads_legacy_id_array() {
+        let (_store, _g) = isolated_store();
+        let file = super::paths::sessions_root().join("_pinned_sessions.json");
+        std::fs::create_dir_all(super::paths::sessions_root()).expect("mkdir");
+        std::fs::write(&file, r#"["legacy-session"]"#).expect("write legacy pins");
+
+        let reloaded = SessionStore::boot().expect("reboot");
+        reloaded.load_pinned_sessions();
+        assert!(reloaded.is_pinned("legacy-session"));
+        assert!(
+            reloaded.pinned_at("legacy-session").is_some(),
+            "legacy pins receive a migration timestamp"
+        );
+    }
+
+    #[test]
+    fn hidden_sessions_persist_restore_and_delete_cleans() {
+        let (store, _g) = isolated_store();
+        let s = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+
+        store.set_hidden(&s.metadata.id, true);
+        assert!(store.is_hidden(&s.metadata.id));
+        assert!(
+            store.hidden_at(&s.metadata.id).is_some(),
+            "hiding records hidden_at"
+        );
+
+        let reloaded = SessionStore::boot().expect("reboot");
+        reloaded.load_hidden_sessions();
+        assert!(reloaded.is_hidden(&s.metadata.id));
+        assert!(
+            reloaded.hidden_at(&s.metadata.id).is_some(),
+            "hidden_at survives reload"
+        );
+
+        reloaded.set_hidden(&s.metadata.id, false);
+        assert!(!reloaded.is_hidden(&s.metadata.id));
+        assert!(reloaded.hidden_at(&s.metadata.id).is_none());
+
+        reloaded.set_hidden(&s.metadata.id, true);
+        reloaded.delete(&s.metadata.id).expect("delete");
+        assert!(!reloaded.is_hidden(&s.metadata.id));
+        assert!(reloaded.hidden_at(&s.metadata.id).is_none());
+    }
+
+    #[test]
+    fn hidden_sessions_loads_legacy_id_array() {
+        let (_store, _g) = isolated_store();
+        let file = super::paths::sessions_root().join("_hidden_sessions.json");
+        std::fs::create_dir_all(super::paths::sessions_root()).expect("mkdir");
+        std::fs::write(&file, r#"["legacy-hidden-session"]"#).expect("write legacy hidden");
+
+        let reloaded = SessionStore::boot().expect("reboot");
+        reloaded.load_hidden_sessions();
+        assert!(reloaded.is_hidden("legacy-hidden-session"));
+        assert!(
+            reloaded.hidden_at("legacy-hidden-session").is_some(),
+            "legacy hidden sessions receive a migration timestamp"
+        );
+    }
+
+    #[test]
+    fn hiding_session_clears_pinned_state() {
+        let (store, _g) = isolated_store();
+        let s = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+
+        store.set_pinned(&s.metadata.id, true);
+        assert!(store.is_pinned(&s.metadata.id));
+
+        store.set_hidden(&s.metadata.id, true);
+        assert!(store.is_hidden(&s.metadata.id));
+        assert!(!store.is_pinned(&s.metadata.id));
+        assert!(store.pinned_at(&s.metadata.id).is_none());
+
+        let reloaded = SessionStore::boot().expect("reboot");
+        reloaded.load_pinned_sessions();
+        reloaded.load_hidden_sessions();
+        assert!(reloaded.is_hidden(&s.metadata.id));
+        assert!(!reloaded.is_pinned(&s.metadata.id));
     }
 
     #[test]

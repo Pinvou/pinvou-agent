@@ -47,6 +47,19 @@ pub fn bundle_mcp_json() -> PathBuf {
 pub fn bundle_mcp_servers_dir() -> PathBuf {
     bundle_root().join("mcp-servers")
 }
+pub fn bundle_connectors_dir() -> PathBuf {
+    bundle_root().join("connectors")
+}
+pub fn bundle_connector_bin_dir() -> Option<PathBuf> {
+    bundle_connector_bin_dir_for(std::env::consts::OS, std::env::consts::ARCH)
+}
+pub fn bundle_connector_bin_dir_for(os: &str, arch: &str) -> Option<PathBuf> {
+    if os == "linux" && arch == "aarch64" {
+        Some(bundle_connectors_dir().join("linux-arm64").join("bin"))
+    } else {
+        None
+    }
+}
 /// present_artifact MCP server 脚本绝对路径(mcp.json 的 args 指向它)。
 pub fn bundle_present_artifact_server() -> PathBuf {
     bundle_mcp_servers_dir().join("present_artifact_server.py")
@@ -65,128 +78,13 @@ pub fn web_template_dir() -> PathBuf {
 
 /// 拉起 python MCP server(present_artifact / pptx 等)用的解释器命令。
 ///
-/// - **Windows**:优先用**随安装包内置**的 python(`python-win/pythonw.exe`,
-///   自带 python-pptx、且 `pythonw` 无控制台窗口 → 启动不弹黑框、不依赖用户机器上的
-///   python)。解析顺序:`PINVOU3_PYTHON` 环境变量(开发/测试覆盖)→ 与 exe 同级的
-///   `python-win/pythonw.exe`(prod 安装目录)→ 回退 PATH 上的 `pythonw`。
+/// - **Windows**:优先用安装器写入的 `PINVOU3_PYTHON`,其次用随安装包内置的
+///   `python/pythonw.exe`(无控制台窗口,不依赖用户机器上的 python),再回退真实系统
+///   Python。Microsoft Store `WindowsApps\python.exe` 占位符会被跳过。
 /// - **其他平台**(Linux/macOS):用系统 `python3`(Linux 几乎自带;GUI 子进程不弹窗;
 ///   依赖由 marketplace 的自动 pip 安装)。
 pub fn python_command() -> String {
-    #[cfg(target_os = "windows")]
-    {
-        // 1. 显式覆盖(PINVOU3_PYTHON 指向 python(w).exe)
-        if let Ok(p) = std::env::var("PINVOU3_PYTHON") {
-            if !p.is_empty() && std::path::Path::new(&p).exists() {
-                return p;
-            }
-        }
-        // 2. 随 app 打包的内置 python(发布版)
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
-                let bundled = dir.join("python-win").join("pythonw.exe");
-                if bundled.is_file() {
-                    return bundled.to_string_lossy().into_owned();
-                }
-            }
-        }
-        // 3. 探测系统已装 python(dev 构建 / 未内置 python 时的兜底)。
-        //    缺这层会兜底成裸 "pythonw" → 没把 python 加进 PATH 的机器上,
-        //    python MCP server(如高德天气)起不来、工具注册不上。
-        if let Some(p) = resolve_system_python_windows() {
-            return p;
-        }
-        // 4. 最后兜底,保持原行为
-        "pythonw".to_string()
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        // Linux/mac:优先 python3;只装了 python 的老环境退而求其次。
-        if which_in_path("python3") {
-            return "python3".to_string();
-        }
-        if which_in_path("python") {
-            return "python".to_string();
-        }
-        "python3".to_string()
-    }
-}
-
-/// Windows:在 PATH、常见安装目录(`%LOCALAPPDATA%\Programs\Python\Python3x`、
-/// `%ProgramFiles%\Python3x`)、py 启动器里找一个真实可用的解释器,优先 `pythonw.exe`(无窗口)。
-/// 返回绝对路径;都找不到返回 None。
-#[cfg(target_os = "windows")]
-fn resolve_system_python_windows() -> Option<String> {
-    use std::path::PathBuf;
-    // a) PATH 上的 pythonw.exe / python.exe
-    if let Ok(path_var) = std::env::var("PATH") {
-        for name in ["pythonw.exe", "python.exe"] {
-            for dir in std::env::split_paths(&path_var) {
-                let cand = dir.join(name);
-                if cand.is_file() {
-                    return Some(cand.to_string_lossy().into_owned());
-                }
-            }
-        }
-    }
-    // b) 常见安装目录,Python3xx 取较高版本
-    let mut roots: Vec<PathBuf> = Vec::new();
-    if let Ok(la) = std::env::var("LOCALAPPDATA") {
-        roots.push(PathBuf::from(la).join("Programs").join("Python"));
-    }
-    if let Ok(pf) = std::env::var("ProgramFiles") {
-        roots.push(PathBuf::from(pf));
-    }
-    for root in roots {
-        if let Ok(rd) = std::fs::read_dir(&root) {
-            let mut vers: Vec<PathBuf> = rd
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.is_dir()
-                        && p.file_name()
-                            .and_then(|n| n.to_str())
-                            .map(|n| n.starts_with("Python3"))
-                            .unwrap_or(false)
-                })
-                .collect();
-            vers.sort();
-            for d in vers.iter().rev() {
-                for name in ["pythonw.exe", "python.exe"] {
-                    let cand = d.join(name);
-                    if cand.is_file() {
-                        return Some(cand.to_string_lossy().into_owned());
-                    }
-                }
-            }
-        }
-    }
-    // c) py 启动器(PATH 或 C:\Windows\py.exe)
-    if let Ok(path_var) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path_var) {
-            let cand = dir.join("py.exe");
-            if cand.is_file() {
-                return Some(cand.to_string_lossy().into_owned());
-            }
-        }
-    }
-    let winpy = PathBuf::from(r"C:\Windows\py.exe");
-    if winpy.is_file() {
-        return Some(winpy.to_string_lossy().into_owned());
-    }
-    None
-}
-
-/// 非 Windows:命令是否在 PATH 上存在(简单存在性检查,够用于 python3/python 兜底)。
-#[cfg(not(target_os = "windows"))]
-fn which_in_path(cmd: &str) -> bool {
-    if let Ok(path_var) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path_var) {
-            if dir.join(cmd).is_file() {
-                return true;
-            }
-        }
-    }
-    false
+    crate::os::python_command()
 }
 
 pub fn user_root() -> PathBuf {
@@ -391,6 +289,29 @@ pub(crate) mod tests {
             workflows_index_path(),
             root.join("workflows").join("index.json")
         );
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+    }
+
+    #[test]
+    fn connector_bin_dir_is_linux_arm64_only() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-connector-path-test");
+        let root = crate::os::platform_compat_path("/tmp/pinvou3-connector-path-test");
+        assert_eq!(
+            bundle_connector_bin_dir_for("linux", "aarch64"),
+            Some(
+                root.join("bundle")
+                    .join("connectors")
+                    .join("linux-arm64")
+                    .join("bin")
+            )
+        );
+        assert_eq!(bundle_connector_bin_dir_for("windows", "x86_64"), None);
+        assert_eq!(bundle_connector_bin_dir_for("linux", "x86_64"), None);
         match prev {
             Some(v) => std::env::set_var("PINVOU3_HOME", v),
             None => std::env::remove_var("PINVOU3_HOME"),

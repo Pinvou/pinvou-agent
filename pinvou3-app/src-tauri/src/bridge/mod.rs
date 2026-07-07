@@ -507,29 +507,38 @@ impl Pinvou3Bridge {
     /// 写死单值对任一窗口非倒置即过保守,故按窗口推导(实证:262K→~133K / 131K→~46K)。
     fn derive_compaction_threshold(&self) -> usize {
         let window = self.effective_context_window() as usize;
-        // ⚠️ output 预留必须与底座 route_output_reservation_for_window 完全一致,否则我算的
-        // E 与底座算的 E 不一致 → 倒置。底座分档:
-        //   大窗口(≥500K,如云端 deepseek-v4-pro / gpt-5.5 1M)留 TURN_MAX_OUTPUT_TOKENS=262144;
-        //   小窗口(本地 vLLM 256K/128K)留 effective_max_output = DEEPSEEK_MAX_OUTPUT_TOKENS env
-        //   = max_output_tokens()(24576)。
-        // 只用 24576 会让大窗口云端模型 E 偏大 → T 偏大 → 倒置(改动前写死 190K 反而安全)。
-        const BASE_LARGE_WINDOW: usize = 500_000; // 底座 INTERNAL_BUDGET_LARGE_WINDOW_THRESHOLD
-        const BASE_TURN_MAX_OUTPUT: usize = 262_144; // 底座 TURN_MAX_OUTPUT_TOKENS
-        let output = if window >= BASE_LARGE_WINDOW {
-            BASE_TURN_MAX_OUTPUT
-        } else {
-            self.max_output_tokens() as usize
-        };
-        let emergency = window.saturating_sub(output).saturating_sub(1_024);
+        // [pinvou3-fork 根治 2026-07-03] 直接问底座要 emergency input budget E,**不再镜像**
+        // 500K/262144/output 预留/`E=W−O−1024` 公式。那些常数一旦上游 sync 改动,pinvou3 编译
+        // 不报错却静默算出不一致的 E → 倒置(与 tool_search 折叠单名同类:依赖上游不变的假设,
+        // 间接检查抓不到)。底座 `context_input_budget_for_route` 已封装窗口分档(≥500K→262144 /
+        // 否则 effective_max_output)+ headroom;传 input_tokens=0 取总 budget E。上游改这些
+        // pinvou3 自动跟随、永不倒置。route_limits 与 build_engine_config.active_route_limits 同源。
+        let route_limits = self.probed_context_tokens.map(|w| {
+            codewhale_config::route::RouteLimits {
+                context_tokens: Some(u64::from(w)),
+                ..Default::default()
+            }
+        });
+        let emergency = deepseek_tui::core::engine::context_input_budget_for_route(
+            ApiProvider::Deepseek,
+            &self.model(),
+            route_limits,
+            0,
+        )
+        .unwrap_or_else(|| {
+            // 底座返 None(未知 model + 无探测 route_limits):与底座禁用 preflight 时同路,保守兜底。
+            window
+                .saturating_sub(self.max_output_tokens() as usize)
+                .saturating_sub(1_024)
+        });
+        // 以下 S/FIXED/÷1.5/clamp 是 pinvou3 自己的 T 推导(同尺换算 + 守护余量),**非镜像底座**。
         const S: usize = 4_000;
         const FIXED: usize = 22_000;
-        // ÷1.5 == ×2/3
+        // ÷1.5 == ×2/3:把 conservative 全量尺换算回 should_compact 的 raw 子集尺。
         let raw_equiv = emergency.saturating_sub(S).saturating_mul(2) / 3;
         let threshold = raw_equiv.saturating_sub(FIXED);
-        // ⚠️ 上界 `.max(4_096)`:探测到病态小窗口(W<5461 → W*3/4<4096)时,裸 clamp 的
-        // min(4096)>max 会触发 `Ord::clamp` 的 `assert!(min<=max)` panic → build_engine_config
-        // 崩,该 session engine 起不来。此类窗口(如 LM Studio 默认 4096、小窗口 vLLM)
-        // T 本就该贴 floor;抬高上界到 ≥floor 使 clamp 合法,结果恒 =4096(配 UI 小窗口告警)。
+        // ⚠️ 上界 `.max(4_096)`:病态小窗口(W<5461 → W*3/4<4096)时裸 clamp 的 min>max 会触发
+        // `Ord::clamp` 的 `assert!(min<=max)` panic → build_engine_config 崩。抬高上界使合法。
         threshold.clamp(4_096, (window * 3 / 4).max(4_096))
     }
 
@@ -1064,14 +1073,20 @@ fn reminder_for(mode: AppMode) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    static ENV_GUARD_LOCK: Mutex<()> = Mutex::new(());
 
     struct EnvGuard {
+        _lock: MutexGuard<'static, ()>,
         vars: Vec<(&'static str, Option<String>)>,
     }
 
     impl EnvGuard {
         fn new(vars: &[&'static str]) -> Self {
+            let lock = ENV_GUARD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
             Self {
+                _lock: lock,
                 vars: vars
                     .iter()
                     .map(|&name| (name, std::env::var(name).ok()))
@@ -1173,6 +1188,11 @@ mod tests {
     ///     抖动(190K > 128K 窗口的 E,必倒置——正是客户机每 1-2 工具调用一次 Emergency 的根因)。
     #[test]
     fn compaction_128k_scenarios() {
+        // [根治后] derive_compaction_threshold 经底座 context_input_budget_for_route 读
+        // DEEPSEEK_MAX_OUTPUT_TOKENS 算 output 预留(不再镜像 24576)。测试须钉死生产 env 值,
+        // 否则底座默认 API_MAX_OUTPUT_TOKENS=65536 → E 偏小 → T 偏小(fixture 的 wire 用 is_none
+        // 检查,env 被其它测试污染时不覆盖)。生产由 Bridge::boot → wire_max_output_tokens_env 保证。
+        std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576");
         // A. 真实 128K 部署:探测拿到 131072
         let mut a = fixture_bridge();
         a.probed_context_tokens = Some(131_072);
@@ -1223,6 +1243,12 @@ mod tests {
     /// 走 output 预留分档(底座 TURN_MAX_OUTPUT=262144),锁住 2026-07-02 修的大窗口倒置。
     #[test]
     fn compaction_cloud_large_window_models() {
+        let _env = EnvGuard::new(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
         // T(raw 子集尺)换算回 emergency 的 conservative 全量尺(同 forkguard 常数)
         const K_NUM: usize = 3;
         const K_DEN: usize = 2;
@@ -1437,18 +1463,29 @@ mod tests {
         const S: usize = 4_000; // system 保守估算
         const FRAMING: usize = 2_500; // messages.len()×12+48,长会话量级
 
-        // 正常窗口:同尺不变式必须成立(nice 先于 emergency)
+        // 正常窗口:同尺不变式必须成立(nice 先于 emergency)。emergency **直接对拍底座**
+        // context_input_budget_for_route(与 derive 同源)——不再镜像 `window-output-1024`。上游改
+        // output 预留/公式,本测试自动跟随、始终验**真跨仓一致**(根治的守护核心;不依赖 env 值)。
         for window in [262_144u32, 131_072, 65_536] {
             let mut bridge = fixture_bridge();
             bridge.probed_context_tokens = Some(window);
-            let output = bridge.max_output_tokens() as usize;
-            let emergency = (window as usize) - output - 1_024;
+            let route_limits = Some(codewhale_config::route::RouteLimits {
+                context_tokens: Some(u64::from(window)),
+                ..Default::default()
+            });
+            let emergency = deepseek_tui::core::engine::context_input_budget_for_route(
+                ApiProvider::Deepseek,
+                &bridge.model(),
+                route_limits,
+                0,
+            )
+            .expect("探测窗口 → 底座必给出 budget");
             let t = bridge.build_engine_config().compaction.token_threshold;
             // T(raw 子集)换算回 conservative 全量:≈ k·(T + R) + S + framing
             let conservative_equiv = (t + R) * K_NUM / K_DEN + S + FRAMING;
             assert!(
                 conservative_equiv <= emergency,
-                "W={window}: T={t} 换算 conservative={conservative_equiv} 必须 ≤ emergency E={emergency},\
+                "W={window}: T={t} 换算 conservative={conservative_equiv} 必须 ≤ 底座 emergency E={emergency},\
                  否则倒置(nice 死)。"
             );
         }
@@ -1811,6 +1848,12 @@ mod tests {
     /// `UserPrefs::load()` 都跑)物化成 active SavedModel 才生效——测试显式调一次模拟之。
     #[test]
     fn openai_compatible_uses_user_provided_name() {
+        let _env = EnvGuard::new(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -1826,6 +1869,12 @@ mod tests {
     /// OpenaiCompatible preset 必须透传任意模型名（如 gpt-4o）。
     #[test]
     fn openai_compatible_passthrough_model_name() {
+        let _env = EnvGuard::new(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -1865,6 +1914,12 @@ mod tests {
     /// DtConfig 在 OpenaiCompatible 模式下不应强制 reasoning_effort=off。
     #[test]
     fn remote_provider_keeps_default_reasoning_effort() {
+        let _env = EnvGuard::new(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -1880,6 +1935,12 @@ mod tests {
     /// Deepseek preset 应返回正确的默认 URL 和模型。
     #[test]
     fn deepseek_preset_defaults() {
+        let _env = EnvGuard::new(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
         let mut bridge = fixture_bridge();
         bridge.prefs.advanced.model_preset = Some(ModelPreset::Deepseek);
         assert_eq!(bridge.provider(), "deepseek");
@@ -1892,6 +1953,12 @@ mod tests {
     /// sglang 形状把 deepseek-v4-flash 改写成 deepseek-ai/DeepSeek-V4-Flash。
     #[test]
     fn official_deepseek_base_url_forces_deepseek_provider() {
+        let _env = EnvGuard::new(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -1951,6 +2018,12 @@ mod tests {
     /// Qwen preset 应返回正确的默认 URL 和模型。
     #[test]
     fn qwen_preset_defaults() {
+        let _env = EnvGuard::new(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -1967,6 +2040,12 @@ mod tests {
     /// DtConfig 在 LocalVllm 模式下必须保持 reasoning_effort=off（防 SSE timeout）。
     #[test]
     fn local_vllm_forces_reasoning_effort_off() {
+        let _env = EnvGuard::new(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
         let bridge = fixture_bridge();
         let cfg = bridge.build_dt_config();
         assert_eq!(cfg.reasoning_effort.as_deref(), Some("off"));

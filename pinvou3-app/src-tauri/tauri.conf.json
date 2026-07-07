@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "pinvou3",
   "mainBinaryName": "pinvou3-tauri",
-  "version": "0.5.6",
+  "version": "0.5.8",
   "identifier": "com.pinvou.pinvou3",
   "build": {
     "frontendDist": "../src"
@@ -40,31 +40,30 @@
     ],
     "resources": {
       "resources/web-template/": "web-template",
-      "resources/asr/": "asr",
-      "resources/windows/poppler/": "poppler",
-      "resources/windows/pandoc/": "pandoc",
-      "resources/windows/tesseract/": "tesseract",
-      "resources/windows/asr/": "asr",
-      "resources/windows/7zip/": "7zip"
+      "resources/windows/poppler/": "runtime/poppler",
+      "resources/windows/pandoc/": "runtime/pandoc",
+      "resources/windows/tesseract/": "runtime/tesseract",
+      "resources/windows/python/": "runtime/python",
+      "resources/windows/node/": "runtime/node",
+      "resources/windows/asr/README.md": "runtime/asr/README.md",
+      "resources/windows/asr/pinvou-asr.exe": "runtime/asr/pinvou-asr.exe",
+      "resources/windows/asr/llama-funasr-sensevoice.exe": "runtime/asr/llama-funasr-sensevoice.exe",
+      "resources/windows/asr/models/fsmn-vad.gguf": "runtime/asr/models/fsmn-vad.gguf",
+      "resources/windows/7zip/": "runtime/7zip"
     },
     "windows": {
       "wix": {
         "template": "resources/windows/main.wxs",
         "fragmentPaths": [
-          "resources/windows/poppler-path.wxs",
-          "resources/windows/pandoc-path.wxs",
-          "resources/windows/tesseract-path.wxs",
-          "resources/windows/7zip-path.wxs"
+          "resources/windows/python-node-path.wxs"
         ],
         "componentRefs": [
-          "PopplerPathEnvironment",
-          "PandocPathEnvironment",
-          "TesseractPathEnvironment",
-          "SevenZipPathEnvironment"
+          "PythonNodeRuntimeEnvironment"
         ]
       },
       "nsis": {
         "installMode": "perMachine",
+        "template": "resources/windows/nsis/installer-template.nsi",
         "installerHooks": "resources/windows/nsis/installer-hooks.nsh",
         "languages": [
           "SimpChinese",

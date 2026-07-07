@@ -4,6 +4,13 @@ use std::path::{Path, PathBuf};
 
 use super::windows_path;
 
+const ASR_MODEL_URL: &str =
+    "https://www.modelscope.cn/models/FunAudioLLM/SenseVoiceSmall-GGUF/resolve/master/sensevoice-small-q8.gguf";
+const ASR_MODEL_MIRROR_URL: &str =
+    "https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF/resolve/main/sensevoice-small-q8.gguf";
+const ASR_MODEL_SIZE: u64 = 254_208_320;
+const ASR_MODEL_SHA256: &str = "4ae45c94422de949b387e2e0fb10d7e14e4c42c69db30c3444ecc7d4b844b7c5";
+
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     HiddenCommand::new("cmd")
         .args(["/C", "start", ""])
@@ -58,12 +65,10 @@ pub fn command_exists(command: &str) -> bool {
 }
 
 pub fn pdf_tool_path(command: &str) -> std::path::PathBuf {
-    ensure_bundled_poppler_on_process_path();
     windows_path::pdf_tool_path(command)
 }
 
 pub fn pandoc_tool_path() -> std::path::PathBuf {
-    ensure_bundled_pandoc_on_process_path();
     windows_path::pandoc_tool_path()
 }
 
@@ -83,7 +88,6 @@ pub fn libreoffice_tool_path() -> PathBuf {
 }
 
 pub fn ocr_tool_path() -> PathBuf {
-    ensure_bundled_tesseract_on_process_path();
     windows_path::tesseract_tool_path()
 }
 
@@ -107,7 +111,6 @@ pub fn asr_tool_path() -> std::path::PathBuf {
             return std::path::PathBuf::from(path);
         }
     }
-    ensure_bundled_asr_on_process_path();
     if let Some(path) = windows_path::bundled_asr_tool_path() {
         return path;
     }
@@ -118,23 +121,38 @@ pub fn asr_model_filename() -> &'static str {
     "sensevoice-small-q8.gguf"
 }
 
+pub fn asr_model_spec() -> crate::voice_asr::AsrModelSpec {
+    crate::voice_asr::AsrModelSpec {
+        id: "sensevoice-q8",
+        filename: asr_model_filename(),
+        expected_size: ASR_MODEL_SIZE,
+        sha256: ASR_MODEL_SHA256,
+        primary_url: ASR_MODEL_URL,
+        mirror_url: ASR_MODEL_MIRROR_URL,
+    }
+}
+
+pub fn asr_model_path() -> PathBuf {
+    windows_path::asr_model_path()
+}
+
+pub fn asr_model_exists() -> bool {
+    crate::voice_asr::model_available()
+}
+
 pub fn archive_tool_path() -> PathBuf {
-    ensure_bundled_archive_on_process_path();
     windows_path::archive_tool_path()
 }
 
 pub fn pdf_tool_exists(command: &str) -> bool {
-    ensure_bundled_poppler_on_process_path();
     windows_path::bundled_pdf_tool_path(command).is_some() || command_exists(command)
 }
 
 pub fn pandoc_tool_exists() -> bool {
-    ensure_bundled_pandoc_on_process_path();
     windows_path::bundled_pandoc_tool_path().is_some() || command_exists("pandoc")
 }
 
 pub fn ocr_tool_exists() -> bool {
-    ensure_bundled_tesseract_on_process_path();
     if windows_path::bundled_tesseract_dir().is_some() {
         return windows_path::bundled_tesseract_tool_path().is_some()
             && windows_path::bundled_tessdata_has_required_languages();
@@ -158,10 +176,8 @@ pub fn asr_tool_exists() -> bool {
             return command_exists(&path);
         }
     }
-    ensure_bundled_asr_on_process_path();
     windows_path::bundled_asr_tool_path().is_some()
         && windows_path::bundled_asr_backend_path().is_some()
-        && windows_path::bundled_asr_model_path().is_some()
 }
 
 pub fn asr_bundled_runtime_status() -> Option<bool> {
@@ -169,19 +185,24 @@ pub fn asr_bundled_runtime_status() -> Option<bool> {
 }
 
 pub fn asr_dependency_installable() -> bool {
-    false
+    asr_tool_exists()
 }
 
 pub fn asr_install_unavailable_message() -> &'static str {
-    "ASR runtime is bundled on Windows; please repair or reinstall Pinvou."
+    "本地语音识别运行时缺失，请修复或重新安装 pinvou。"
 }
 
-pub async fn install_asr_runtime(_app: tauri::AppHandle) -> Result<(), String> {
-    Err(asr_install_unavailable_message().to_string())
+pub async fn install_asr_runtime(app: tauri::AppHandle) -> Result<(), String> {
+    if !asr_tool_exists() {
+        return Err(asr_install_unavailable_message().to_string());
+    }
+    if !crate::voice_asr::model_available() {
+        crate::voice_asr::download_current_model(&app).await?;
+    }
+    Ok(())
 }
 
 pub fn archive_tool_exists() -> bool {
-    ensure_bundled_archive_on_process_path();
     windows_path::bundled_archive_tool_path().is_some() || command_exists("7z")
 }
 
@@ -222,7 +243,7 @@ pub fn pandoc_dependency_packages() -> &'static str {
 }
 
 pub fn asr_dependency_packages() -> &'static str {
-    "安装 pinvou3-asr-windows-x64 离线语音包到安装目录 asr 文件夹"
+    "下载 SenseVoice q8 ASR 模型到用户目录"
 }
 
 pub fn archive_dependency_packages() -> &'static str {
@@ -238,7 +259,7 @@ pub fn ocr_dependency_packages() -> &'static str {
 }
 
 pub fn asr_missing_message() -> &'static str {
-    "本地语音识别组件缺失或不可用：请安装 pinvou3-asr-windows-x64 SenseVoice 离线语音包到安装目录 asr 文件夹，或通过 PINVOU3_ASR_CMD 指向 pinvou-asr.exe。"
+    "本地语音识别组件缺失或不可用：运行时缺失时请修复或重新安装 pinvou；仅缺 ASR 模型时可在应用内下载。"
 }
 
 pub fn pandoc_missing_message() -> &'static str {
@@ -259,41 +280,6 @@ pub fn pdf_ocr_missing_message() -> &'static str {
 
 pub fn presentation_pdf_missing_message() -> &'static str {
     "演示文稿解析需要 LibreOffice；PDF 文本组件由内置 Poppler 提供，如缺失请修复或重新安装 pinvou。"
-}
-
-fn ensure_bundled_poppler_on_process_path() {
-    let Some(dir) = windows_path::bundled_poppler_dir() else {
-        return;
-    };
-    ensure_dir_on_process_path(dir);
-}
-
-fn ensure_bundled_pandoc_on_process_path() {
-    let Some(dir) = windows_path::bundled_pandoc_dir() else {
-        return;
-    };
-    ensure_dir_on_process_path(dir);
-}
-
-fn ensure_bundled_asr_on_process_path() {
-    let Some(dir) = windows_path::bundled_asr_dir() else {
-        return;
-    };
-    ensure_dir_on_process_path(dir);
-}
-
-fn ensure_bundled_tesseract_on_process_path() {
-    let Some(dir) = windows_path::bundled_tesseract_dir() else {
-        return;
-    };
-    ensure_dir_on_process_path(dir);
-}
-
-fn ensure_bundled_archive_on_process_path() {
-    let Some(dir) = windows_path::bundled_archive_dir() else {
-        return;
-    };
-    ensure_dir_on_process_path(dir);
 }
 
 fn ensure_dir_on_process_path(dir: std::path::PathBuf) {

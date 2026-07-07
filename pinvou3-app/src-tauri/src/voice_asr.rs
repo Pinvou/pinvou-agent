@@ -3,16 +3,37 @@
 //! Runtime layout, dependency installation, and model download policy are owned by `crate::os`.
 //! This module keeps platform-neutral status, transcription, and Tauri command glue.
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
+use tauri::Emitter;
 
 use crate::bridge::paths;
+
+static ASR_INSTALLING: AtomicBool = AtomicBool::new(false);
+static ASR_CANCEL: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug, Clone, Copy)]
+pub struct AsrModelSpec {
+    pub id: &'static str,
+    pub filename: &'static str,
+    pub expected_size: u64,
+    pub sha256: &'static str,
+    pub primary_url: &'static str,
+    pub mirror_url: &'static str,
+}
 
 /// `~/.pinvou3/asr/` —— 引擎、模型、下载缓存的落地目录。
 pub fn asr_dir() -> PathBuf {
     paths::pinvou3_home().join("asr")
+}
+
+pub fn current_model_spec() -> AsrModelSpec {
+    crate::os::asr_model_spec()
 }
 
 /// 引擎可执行：优先 `~/.pinvou3/asr/`（按需/手动装的），回退打包资源目录。
@@ -31,8 +52,18 @@ pub fn engine_path() -> PathBuf {
     local
 }
 
+/// 当前可用模型路径：Windows 优先用户目录，兼容旧内置模型；Linux 为用户目录。
 pub fn model_path() -> PathBuf {
-    asr_dir().join(crate::os::asr_model_filename())
+    crate::os::asr_model_path()
+}
+
+/// 按需下载的目标路径，始终落在用户目录，避免写安装目录。
+pub fn model_download_path() -> PathBuf {
+    asr_dir().join(current_model_spec().filename)
+}
+
+pub fn model_available() -> bool {
+    model_file_verified(&model_path(), &current_model_spec())
 }
 
 // 打包引擎目录：启动时从 resource_dir 解析后存这里，供 engine_path 回退使用。
@@ -71,24 +102,27 @@ pub struct VoiceAsrStatus {
 }
 
 pub fn status() -> VoiceAsrStatus {
+    let model = crate::os::asr_model_exists();
     if let Some(runtime) = crate::os::asr_bundled_runtime_status() {
-        return VoiceAsrStatus {
-            engine: runtime,
-            ffmpeg: true,
-            model: runtime,
-            ready: runtime,
-            installable: crate::os::asr_dependency_installable(),
-            missing: if runtime {
-                Vec::new()
-            } else {
-                vec!["runtime".to_string()]
-            },
-        };
+        return compose_status(
+            runtime,
+            true,
+            model,
+            crate::os::asr_dependency_installable(),
+        );
     }
 
     let engine = engine_path().is_file();
     let ffmpeg = ffmpeg_available();
-    let model = model_path().is_file();
+    compose_status(
+        engine,
+        ffmpeg,
+        model,
+        crate::os::asr_dependency_installable(),
+    )
+}
+
+fn compose_status(engine: bool, ffmpeg: bool, model: bool, installable: bool) -> VoiceAsrStatus {
     let mut missing = Vec::new();
     if !model {
         missing.push("model".to_string());
@@ -104,9 +138,179 @@ pub fn status() -> VoiceAsrStatus {
         ffmpeg,
         model,
         ready: engine && ffmpeg && model,
-        installable: crate::os::asr_dependency_installable(),
+        installable,
         missing,
     }
+}
+
+pub async fn download_current_model(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    download_asr_model(app, current_model_spec()).await
+}
+
+pub async fn download_asr_model(
+    app: &tauri::AppHandle,
+    spec: AsrModelSpec,
+) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(asr_dir()).map_err(|e| format!("创建 ASR 目录失败: {e}"))?;
+    let dest = model_download_path();
+    debug_assert_eq!(
+        dest.file_name().and_then(|name| name.to_str()),
+        Some(spec.filename)
+    );
+    if model_file_verified(&dest, &spec) {
+        return Ok(dest);
+    }
+
+    let tmp = temp_model_path(&dest);
+    let _ = std::fs::remove_file(&tmp);
+    let mut last_err = None;
+    for url in model_download_urls(&spec) {
+        match download_model_from_url(app, &url, &tmp, &spec).await {
+            Ok(()) => {
+                let _ = app.emit(
+                    "voice_asr:progress",
+                    serde_json::json!({ "stage": "verify" }),
+                );
+                return verify_and_promote_model(&tmp, &dest, &spec).map(|()| dest);
+            }
+            Err(err) => {
+                let _ = std::fs::remove_file(&tmp);
+                if ASR_CANCEL.load(Ordering::Relaxed) {
+                    let _ = app.emit(
+                        "voice_asr:progress",
+                        serde_json::json!({ "stage": "cancelled" }),
+                    );
+                    return Err("已取消".to_string());
+                }
+                last_err = Some(err);
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| "ASR 模型下载失败".to_string()))
+}
+
+fn model_download_urls(spec: &AsrModelSpec) -> Vec<String> {
+    if let Ok(url) = std::env::var("PINVOU3_ASR_MODEL_URL") {
+        if !url.trim().is_empty() {
+            return vec![url];
+        }
+    }
+    let mut urls = vec![spec.primary_url.to_string()];
+    if !spec.mirror_url.is_empty() {
+        urls.push(spec.mirror_url.to_string());
+    }
+    urls
+}
+
+async fn download_model_from_url(
+    app: &tauri::AppHandle,
+    url: &str,
+    tmp: &Path,
+    spec: &AsrModelSpec,
+) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .user_agent("pinvou3-asr/1.0")
+        .build()
+        .map_err(|e| format!("构建 ASR 模型下载客户端失败: {e}"))?;
+    let mut resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("连接 ASR 模型源失败: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("ASR 模型源响应异常: {e}"))?;
+    let total = resp
+        .content_length()
+        .filter(|n| *n > 0)
+        .unwrap_or(spec.expected_size);
+    let mut file = std::fs::File::create(tmp).map_err(|e| format!("创建 ASR 模型文件失败: {e}"))?;
+    let mut downloaded: u64 = 0;
+    let mut last_emit: u64 = 0;
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("ASR 模型下载中断: {e}"))?
+    {
+        if ASR_CANCEL.load(Ordering::Relaxed) {
+            drop(file);
+            let _ = std::fs::remove_file(tmp);
+            return Err("已取消".to_string());
+        }
+        file.write_all(&chunk)
+            .map_err(|e| format!("写入 ASR 模型失败: {e}"))?;
+        downloaded += chunk.len() as u64;
+        if downloaded - last_emit >= 1_048_576 || downloaded >= total {
+            last_emit = downloaded;
+            let _ = app.emit(
+                "voice_asr:progress",
+                serde_json::json!({ "stage": "model", "modelId": spec.id, "filename": spec.filename, "downloaded": downloaded, "total": total }),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn temp_model_path(dest: &Path) -> PathBuf {
+    let filename = dest
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("asr-model.gguf");
+    dest.with_file_name(format!("{filename}.part"))
+}
+
+fn verify_and_promote_model(tmp: &Path, dest: &Path, spec: &AsrModelSpec) -> Result<(), String> {
+    if !model_file_verified(tmp, spec) {
+        let _ = std::fs::remove_file(tmp);
+        return Err("ASR 模型校验失败，请重试下载。".to_string());
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建 ASR 目录失败: {e}"))?;
+    }
+    if dest.exists() {
+        let _ = std::fs::remove_file(dest);
+    }
+    std::fs::rename(tmp, dest).map_err(|e| format!("保存 ASR 模型失败: {e}"))
+}
+
+pub fn model_file_verified(path: &Path, spec: &AsrModelSpec) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    if path
+        .metadata()
+        .map(|m| m.len() != spec.expected_size)
+        .unwrap_or(true)
+    {
+        return false;
+    }
+    if spec.sha256.trim().is_empty() {
+        return true;
+    }
+    sha256_file(path)
+        .map(|got| got.eq_ignore_ascii_case(spec.sha256))
+        .unwrap_or(false)
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = std::fs::File::open(path).map_err(|e| format!("打开校验文件失败: {e}"))?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 1024 * 1024];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| format!("读取校验文件失败: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(digest.len() * 2);
+    for b in digest {
+        out.push_str(&format!("{b:02x}"));
+    }
+    Ok(out)
 }
 
 /// 转码到 16k 单声道 → 调 sense-voice-main → 清洗输出。供 transcribe_voice_audio 调用。
@@ -116,7 +320,7 @@ pub fn transcribe(wav: &Path) -> Result<String, String> {
         return Err("本地语音识别引擎未安装".to_string());
     }
     let model = model_path();
-    if !model.is_file() {
+    if !model_file_verified(&model, &current_model_spec()) {
         return Err("本地语音识别模型未下载".to_string());
     }
 
@@ -130,7 +334,9 @@ pub fn transcribe(wav: &Path) -> Result<String, String> {
             .arg(&norm)
             .output();
         match ff {
-            Ok(o) if o.status.success() && norm.metadata().map(|m| m.len() > 44).unwrap_or(false) => {
+            Ok(o)
+                if o.status.success() && norm.metadata().map(|m| m.len() > 44).unwrap_or(false) =>
+            {
                 norm.clone()
             }
             _ => wav.to_path_buf(),
@@ -193,7 +399,7 @@ fn strip_control_markers(s: &str) -> String {
     while let Some(c) = chars.next() {
         if c == '<' && chars.peek() == Some(&'|') {
             chars.next(); // 吃掉 '|'
-            // 跳到 "|>"
+                          // 跳到 "|>"
             while let Some(n) = chars.next() {
                 if n == '|' && chars.peek() == Some(&'>') {
                     chars.next();
@@ -222,7 +428,15 @@ pub async fn install_voice_asr(app: tauri::AppHandle) -> Result<VoiceAsrStatus, 
         return Err(crate::os::asr_install_unavailable_message().to_string());
     }
 
-    use tauri::Emitter;
+    if ASR_INSTALLING.swap(true, Ordering::SeqCst) {
+        return Err("ASR 模型正在下载或安装中".to_string());
+    }
+    ASR_CANCEL.store(false, Ordering::Relaxed);
+    let _guard = InstallGuard;
+    let _ = app.emit(
+        "voice_asr:progress",
+        serde_json::json!({ "stage": "start" }),
+    );
     crate::os::install_asr_runtime(app.clone()).await?;
 
     let st = status();
@@ -231,4 +445,103 @@ pub async fn install_voice_asr(app: tauri::AppHandle) -> Result<VoiceAsrStatus, 
         serde_json::json!({ "stage": "done", "ready": st.ready }),
     );
     Ok(st)
+}
+
+#[tauri::command]
+pub fn cancel_voice_asr() {
+    ASR_CANCEL.store(true, Ordering::Relaxed);
+}
+
+struct InstallGuard;
+
+impl Drop for InstallGuard {
+    fn drop(&mut self) {
+        ASR_INSTALLING.store(false, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_spec(expected_size: u64, sha256: &'static str) -> AsrModelSpec {
+        AsrModelSpec {
+            id: "test",
+            filename: "test.gguf",
+            expected_size,
+            sha256,
+            primary_url: "",
+            mirror_url: "",
+        }
+    }
+
+    #[test]
+    fn sha256_helper_matches_known_content() {
+        let root = std::env::temp_dir().join(format!("pinvou3-asr-sha-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        let file = root.join("model.gguf");
+        std::fs::write(&file, b"abc").unwrap();
+
+        assert_eq!(
+            sha256_file(&file).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn model_verification_checks_size_and_sha256() {
+        let root = std::env::temp_dir().join(format!("pinvou3-asr-verify-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        let file = root.join("model.gguf");
+        std::fs::write(&file, b"abc").unwrap();
+
+        assert!(model_file_verified(
+            &file,
+            &test_spec(
+                3,
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            )
+        ));
+        assert!(!model_file_verified(
+            &file,
+            &test_spec(
+                4,
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            )
+        ));
+        assert!(!model_file_verified(&file, &test_spec(3, "bad")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn failed_verification_removes_part_file() {
+        let root = std::env::temp_dir().join(format!("pinvou3-asr-promote-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        let part = root.join("model.gguf.part");
+        let dest = root.join("model.gguf");
+        std::fs::write(&part, b"abc").unwrap();
+
+        let result = verify_and_promote_model(&part, &dest, &test_spec(3, "bad"));
+
+        assert!(result.is_err());
+        assert!(!part.exists());
+        assert!(!dest.exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn status_can_report_runtime_ready_but_model_missing() {
+        let st = compose_status(true, true, false, true);
+
+        assert!(st.engine);
+        assert!(st.ffmpeg);
+        assert!(!st.model);
+        assert!(!st.ready);
+        assert!(st.installable);
+        assert_eq!(st.missing, vec!["model".to_string()]);
+    }
 }

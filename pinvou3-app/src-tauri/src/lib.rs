@@ -44,7 +44,7 @@ pub mod workflow_registry;
 mod workflow_runs;
 mod zhidao;
 
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 use crate::bridge::sessions::SessionStore;
 use crate::engine_pool::EnginePool;
@@ -166,6 +166,17 @@ fn ensure_release_env() {
                 skills_dir.join("eip").join("bin"),
                 skills_dir.join("zhidao").join("bin"),
             ];
+            if let Some(connector_bin) = crate::bridge::paths::bundle_connector_bin_dir() {
+                dirs.push(connector_bin);
+            }
+            if let Ok(prefix) = env::var("NPM_CONFIG_PREFIX") {
+                dirs.push(std::path::Path::new(&prefix).join("bin"));
+            }
+            if let Some(home) = env::var_os("HOME") {
+                let home = std::path::Path::new(&home);
+                dirs.push(home.join(".npm-global").join("bin"));
+                dirs.push(home.join(".local").join("bin"));
+            }
             dirs.extend(env::split_paths(&old));
             if let Ok(joined) = env::join_paths(dirs) {
                 env::set_var("PATH", joined);
@@ -183,7 +194,6 @@ pub fn run() {
                 let _ = window.show();
                 let _ = window.unminimize();
                 let _ = window.set_focus();
-                let _ = app.emit("dock:new_instance", ());
             }
         }))
         .plugin(tauri_plugin_dialog::init())
@@ -234,6 +244,8 @@ pub fn run() {
                 Ok(store) => {
                     store.load_skill_bindings();
                     store.load_session_models();
+                    store.load_pinned_sessions();
+                    store.load_hidden_sessions();
                     eprintln!("[pinvou3-app] session store ready");
                     Some(store)
                 }
@@ -301,7 +313,10 @@ pub fn run() {
             // 语音识别引擎 sense-voice-main 随 deb 打包,容错同 bge-m3 的资源布局,
             // 注入给 voice_asr 作为 ~/.pinvou3/asr/ 之外的回退查找目录。
             if let Some(asr_res) = app.path().resource_dir().ok().and_then(|res| {
-                [res.join("asr"), res.join("resources/asr"), res.join("resources").join("asr")]
+                [
+                    res.join("runtime").join("asr"),
+                    res.join("resources").join("runtime").join("asr"),
+                ]
                     .into_iter()
                     .find(|d| d.join("sense-voice-main").exists())
             }) {
@@ -388,11 +403,15 @@ pub fn run() {
             commands::transcribe_voice_audio,
             voice_asr::voice_asr_status,
             voice_asr::install_voice_asr,
+            voice_asr::cancel_voice_asr,
             commands::list_sessions,
             commands::create_session,
             commands::load_session,
             commands::delete_session,
             commands::rename_session,
+            commands::set_session_pinned,
+            commands::list_archived_sessions,
+            commands::set_session_archived,
             commands::get_active_session,
             commands::save_session_messages,
             commands::save_session_artifacts,
@@ -403,6 +422,7 @@ pub fn run() {
             commands::edit_last_turn,
             commands::read_artifact_text,
             commands::list_deliverables,
+            commands::list_deliverable_index,
             commands::artifact_info,
             commands::render_artifact_visual,
             commands::read_artifact_image_b64,
