@@ -63,6 +63,7 @@
       },
       "nsis": {
         "installMode": "perMachine",
+        "template": "resources/windows/nsis/installer-template.nsi",
         "installerHooks": "resources/windows/nsis/installer-hooks.nsh",
         "languages": [
           "SimpChinese",
