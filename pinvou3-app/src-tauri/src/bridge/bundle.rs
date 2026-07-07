@@ -23,7 +23,7 @@ static LARK_SKILLS_DIR: Dir<'_> =
 /// H3C EIP 员工门户技能(SKILL.md + bin/ 包装脚本与二进制)。独立于 lark skills 的
 /// include_dir(故放在 `bundle/eip/` 而非 `bundle/skills/`,避免被 LARK_SKILLS_DIR
 /// 卷入、跟飞书门控耦合)。启动解包到 `skills_dir/eip`,见 `write_eip_skill`。
-/// 注:`bin/eip-cli`/`eip-cli.exe` 是 IT 内部二进制,本地 gitignore、不进 git;
+/// 注:`bin/eip-cli`/`bin/eip-cli-aarch64`/`eip-cli.exe` 是 IT 内部二进制,本地 gitignore、不进 git;
 /// 但编译期 include_dir 仍会嵌进 app(发布形态 A/C 待与 IT 定,见接入方案)。
 static EIP_SKILL_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/eip");
@@ -46,6 +46,9 @@ const LARK_SKILL_DIRS: [&str; 9] = [
 /// 连带控制,故隔离成独立 include_dir + 独立门控。
 static WECOM_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/wecom-skills");
+
+static CONNECTOR_CLI_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/connectors");
 
 /// 7 个企微域技能目录名(门控写 / 删共用)。
 const WECOM_SKILL_DIRS: [&str; 7] = [
@@ -75,6 +78,10 @@ pub const BUNDLE_VERSION: &str = concat!(
     env!("BUNDLE_INSTRUCTIONS_HASH"),
     "-",
     env!("BUNDLE_WORKFLOW_HASH_SANSHENG"),
+    "-",
+    env!("BUNDLE_CONNECTOR_CLI_HASH"),
+    "-",
+    env!("BUNDLE_H3C_CLI_HASH"),
 );
 
 /// pinvou3 内置的 instructions.md（Qwen3.6 适配 prompt），编译时内嵌。
@@ -275,6 +282,7 @@ impl Pinvou3Bundle {
         // 工作流目录同 skills:immutable bundle 资源,每次启动防御性重写
         // (防 "VERSION 对得上但目录缺失"),无副作用。
         self.write_workflows()?;
+        self.write_connector_clis(current.trim() != BUNDLE_VERSION)?;
         // Migrate plaintext MCP secrets before bundled manifests are rewritten. If migration
         // fails, keep the old files as a recoverable source instead of overwriting the only
         // remaining plaintext copy.
@@ -295,8 +303,15 @@ impl Pinvou3Bundle {
         self.apply_wecom_skills(crate::wecom::wecom_skills_should_show())?;
         // EIP 技能:二进制 ~23MB,不像小文本那样每启动防御性重写——仅在二进制缺失时
         // 解包(自愈),避免每次启动写 23MB。改 SKILL.md/包装脚本后想刷新:删 skills_dir/eip。
-        let eip_bin_name = if cfg!(windows) { "eip-cli.exe" } else { "eip-cli" };
-        if !self.skills_dir.join("eip").join("bin").join(eip_bin_name).is_file() {
+        let eip_bin = self.skills_dir.join("eip").join("bin");
+        let eip_healthy = if cfg!(windows) {
+            eip_bin.join("eip-cli.exe").is_file()
+        } else if std::env::consts::ARCH == "aarch64" {
+            eip_bin.join("eip").is_file() && eip_bin.join("eip-cli-aarch64").is_file()
+        } else {
+            eip_bin.join("eip").is_file() && eip_bin.join("eip-cli").is_file()
+        };
+        if !eip_healthy {
             self.write_eip_skill()?;
         }
         // EIP 技能门控:仅"已连接"用户(本机有连接标记)才放 SKILL.md(模型可见);
@@ -304,12 +319,14 @@ impl Pinvou3Bundle {
         //(§八.4 装了才启用,同飞书 apply_feishu_skills)。
         self.apply_eip_skill_visibility(crate::eip::eip_skills_should_show())?;
         // 自愈按**当前平台实际要跑的**二进制判缺失(同上方 EIP):Windows 跑 zhidao-cli.exe
-        // (Rust 直调 + 模型 shell 经 zhidao.cmd),Unix 跑 zhidao 包装脚本 exec zhidao-cli。
+        // (Rust 直调 + 模型 shell 经 zhidao.cmd),Unix 跑 zhidao 包装脚本 exec 对应架构的 zhidao-cli。
         // 旧实现在所有平台只查 Linux 的 zhidao/zhidao-cli,Windows 下若 zhidao-cli.exe 被
         // 杀软隔离/删除(未签名 Go exe 常见),这俩 Linux 文件仍在→自愈不触发→知道永久不可用。
         let zhidao_bin = self.skills_dir.join("zhidao").join("bin");
         let zhidao_healthy = if cfg!(windows) {
             zhidao_bin.join("zhidao-cli.exe").is_file()
+        } else if std::env::consts::ARCH == "aarch64" {
+            zhidao_bin.join("zhidao").is_file() && zhidao_bin.join("zhidao-cli-aarch64").is_file()
         } else {
             zhidao_bin.join("zhidao").is_file() && zhidao_bin.join("zhidao-cli").is_file()
         };
@@ -440,6 +457,25 @@ impl Pinvou3Bundle {
         Ok(())
     }
 
+    fn write_connector_clis(&self, force: bool) -> std::io::Result<()> {
+        let root = paths::bundle_connectors_dir();
+        let bin = root.join("linux-arm64").join("bin");
+        if force || !bin.join("lark-cli").is_file() || !bin.join("wecom-cli").is_file() {
+            Self::extract_dir(&CONNECTOR_CLI_DIR, &root)?;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for rel in ["linux-arm64/bin/lark-cli", "linux-arm64/bin/wecom-cli"] {
+                let p = root.join(rel);
+                if p.is_file() {
+                    let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// 解包内嵌的飞书官方域技能(lark-*)到 `~/.pinvou3/bundle/skills/`。
     /// 每次启动防御性重写（immutable bundle 资源）。`LARK_SKILLS_DIR` 的根对应
     /// `bundle/skills/`,内含 `lark-<域>/SKILL.md` + `references/`,直接铺到
@@ -478,15 +514,15 @@ impl Pinvou3Bundle {
     }
 
     /// 解包内嵌的 EIP 员工门户技能到 `skills_dir/eip`(SKILL.md + bin/ 包装脚本&二进制)。
-    /// Linux 下给包装脚本 `eip` 和二进制 `eip-cli` 补执行位(include_dir 不保留权限,
-    /// 缺执行位则模型 shell 跑 `eip` / 包装内 exec `eip-cli` 都会 Permission denied)。
+    /// Linux 下给包装脚本 `eip` 和二进制 `eip-cli*` 补执行位(include_dir 不保留权限,
+    /// 缺执行位则模型 shell 跑 `eip` / 包装内 exec CLI 都会 Permission denied)。
     fn write_eip_skill(&self) -> std::io::Result<()> {
         let dest = self.skills_dir.join("eip");
         Self::extract_dir(&EIP_SKILL_DIR, &dest)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            for rel in ["bin/eip", "bin/eip-cli"] {
+            for rel in ["bin/eip", "bin/eip-cli", "bin/eip-cli-aarch64"] {
                 let p = dest.join(rel);
                 if p.is_file() {
                     let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
@@ -503,7 +539,7 @@ impl Pinvou3Bundle {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            for name in ["zhidao", "zhidao-cli"] {
+            for name in ["zhidao", "zhidao-cli", "zhidao-cli-aarch64"] {
                 let p = dest.join("bin").join(name);
                 if p.is_file() {
                     let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));

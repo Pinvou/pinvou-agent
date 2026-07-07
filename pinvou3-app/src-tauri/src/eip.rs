@@ -1,8 +1,8 @@
 //! H3C EIP 员工门户接入 —— 连接生命周期 + 鉴权编排。
 //!
-//! 路线:A(CLI 连接器)。复用 iClaw 的 `eip-cli` 预编译二进制(双平台:
-//! `eip-cli` / `eip-cli.exe`),内置打包到 `~/.pinvou3/bundle/skills/eip/bin/`。
-//! 业务命令(考勤/假期/待办…)由模型经 shell 跑 `eip-cli <域> ...`,技能文档教用法
+//! 路线:A(CLI 连接器)。复用 iClaw 的 `eip-cli` 预编译二进制(多平台:
+//! `eip-cli` / `eip-cli-aarch64` / `eip-cli.exe`),内置打包到 `~/.pinvou3/bundle/skills/eip/bin/`。
+//! 业务命令(考勤/假期/待办…)由模型经 shell 跑 `eip <域> ...`,技能文档教用法
 //! (同飞书 lark-cli)。本模块只负责**连接态**:状态查询、SSO 登录(轮询自动收)、
 //! 取消、登出。
 //!
@@ -100,12 +100,44 @@ fn device_id() -> String {
 
 /// 定位 EIP CLI 二进制(按平台选 `.exe` / ELF)。Linux 下确保有执行权限。
 fn eip_bin_path() -> Result<PathBuf, String> {
-    let name = if cfg!(windows) { "eip-cli.exe" } else { "eip-cli" };
+    let name = if cfg!(windows) {
+        "eip-cli.exe"
+    } else if std::env::consts::ARCH == "aarch64" {
+        "eip-cli-aarch64"
+    } else {
+        "eip-cli"
+    };
     let p = crate::bridge::paths::bundle_skills_dir()
         .join("eip")
         .join("bin")
         .join(name);
     if !p.is_file() {
+        #[cfg(unix)]
+        if std::env::consts::ARCH == "aarch64"
+            && crate::bridge::paths::bundle_skills_dir()
+                .join("eip")
+                .join("bin")
+                .join("eip-cli")
+                .is_file()
+        {
+            return Err(format!(
+                "eip-cli Linux ARM64 binary missing: expected {}. Bundle contains eip-cli, but this Linux device is aarch64; please package a matching aarch64 binary as eip-cli-aarch64.",
+                p.display()
+            ));
+        }
+        #[cfg(unix)]
+        if crate::bridge::paths::bundle_skills_dir()
+            .join("eip")
+            .join("bin")
+            .join("eip-cli.exe")
+            .is_file()
+        {
+            return Err(format!(
+                "eip-cli Linux binary missing: expected {} for {}. Bundle only contains the Windows .exe; H3C EIP is unavailable on this Linux device until a matching Linux binary is packaged.",
+                p.display(),
+                std::env::consts::ARCH
+            ));
+        }
         return Err(format!(
             "eip-cli 未找到: {}(需先把 EIP 技能二进制打包进 bundle)",
             p.display()
@@ -114,6 +146,7 @@ fn eip_bin_path() -> Result<PathBuf, String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        validate_linux_cli_arch(&p, "eip-cli")?;
         if let Ok(meta) = std::fs::metadata(&p) {
             let mode = meta.permissions().mode();
             if mode & 0o111 == 0 {
@@ -122,6 +155,37 @@ fn eip_bin_path() -> Result<PathBuf, String> {
         }
     }
     Ok(p)
+}
+
+#[cfg(unix)]
+fn validate_linux_cli_arch(path: &std::path::Path, label: &str) -> Result<(), String> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return Ok(());
+    };
+    if bytes.len() < 20 || &bytes[0..4] != b"\x7FELF" || bytes[5] != 1 {
+        return Ok(());
+    }
+    let machine = u16::from_le_bytes([bytes[18], bytes[19]]);
+    let actual = match machine {
+        62 => "x86_64",
+        183 => "aarch64",
+        3 => "x86",
+        40 => "arm",
+        _ => "unknown",
+    };
+    let expected = std::env::consts::ARCH;
+    let compatible = matches!(
+        (expected, actual),
+        ("x86_64", "x86_64") | ("aarch64", "aarch64") | ("arm", "arm") | ("x86", "x86")
+    );
+    if compatible {
+        Ok(())
+    } else {
+        Err(format!(
+            "{label} architecture mismatch: packaged binary is {actual}, but this Linux device is {expected}. Please package a matching {expected} Linux binary at {}.",
+            path.display()
+        ))
+    }
 }
 
 // ──────────────────────────── 子进程封装 ────────────────────────────

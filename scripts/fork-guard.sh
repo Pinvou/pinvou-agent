@@ -43,6 +43,13 @@ fingerprints=(
   # blocklist 含**裸单名**。原指纹查废弃双旧名 tool_search_tool_regex(空防、恒在),bug 时照样命中→
   # 没抓住漏注入。改查裸单名;真正行为守护靠 forkguard_tool_search_not_injected 测试(已修断言)。
   "    |tool_search 裸单名进 blocklist   |DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs|\"tool_search\","
+  # 2026-07-03 工具表 golden 守护(结果式,堵 sync 改名/新增/折叠漂移;验收清单 3.2/3.4)
+  "    |golden:blocklist 精确名单        |DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs|fn forkguard_blocklist_golden"
+  "    |golden:注入层 active snapshot    |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_yolo_no_deferred_activator_first_class"
+  # 2026-07-03 auto-compact 根治:pinvou3 直接调底座 budget(不再镜像 500K/262144/公式→静默倒置)
+  "    |compact:底座 budget 函数 depub   |DeepSeek-TUI/crates/tui/src/core/engine.rs|pub use context::context_input_budget_for_route"
+  "    |compact:derive 调底座 budget     |pinvou3-app/src-tauri/src/bridge/mod.rs|context_input_budget_for_route("
+  "    |compact:跨仓不倒置守护测试       |pinvou3-app/src-tauri/src/bridge/mod.rs|fn forkguard_compaction_threshold_below_emergency_all_windows"
   # C4-a「多行逐行取最严」指纹于 v0.8.57 撤除:上游 18df8db0 extract neutral command support
   # 自带 split_command_segments+analyze_destructive_patterns,已取代,fork 块已删。
   "    |careful shell YOLO 也 BLOCK     |DeepSeek-TUI/crates/tui/src/tools/shell.rs|Dangerous commands are BLOCKED in ALL modes"

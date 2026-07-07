@@ -96,9 +96,73 @@ fn make_base_cmd(cli_bin: &str, program: &str) -> Command {
 }
 
 #[cfg(not(windows))]
-fn make_base_cmd(_cli_bin: &str, program: &str) -> Command {
-    Command::new(program)
+fn make_base_cmd(cli_bin: &str, program: &str) -> Command {
+    Command::new(unix_program(cli_bin, program))
 }
+
+#[cfg(not(windows))]
+fn unix_program(cli_bin: &str, program: &str) -> std::ffi::OsString {
+    if program == cli_bin {
+        if let Some(bin_dir) = crate::bridge::paths::bundle_connector_bin_dir() {
+            let bundled = bin_dir.join(cli_bin);
+            if bundled.is_file() {
+                return bundled.into_os_string();
+            }
+        }
+    }
+    if program == cli_bin {
+        let mut candidates = Vec::new();
+        if let Ok(prefix) = std::env::var("NPM_CONFIG_PREFIX") {
+            candidates.push(std::path::Path::new(&prefix).join("bin").join(program));
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            let home = std::path::Path::new(&home);
+            candidates.push(home.join(".npm-global").join("bin").join(program));
+            candidates.push(home.join(".local").join("bin").join(program));
+        }
+        for p in candidates {
+            if p.is_file() {
+                return p.into_os_string();
+            }
+        }
+    }
+    program.into()
+}
+
+#[cfg(not(windows))]
+fn prepend_path(cmd: &mut Command, dir: &std::path::Path) {
+    let mut paths = vec![dir.to_path_buf()];
+    if let Some(old) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&old));
+    }
+    if let Ok(joined) = std::env::join_paths(paths) {
+        cmd.env("PATH", joined);
+    }
+}
+
+/// On Linux/macOS, npm's default global prefix can be `/usr/local`, which fails
+/// for normal GUI users without sudo. Use a user-writable prefix unless the
+/// caller/environment already chose one.
+#[cfg(not(windows))]
+pub fn apply_user_npm_prefix(cmd: &mut Command) {
+    if std::env::var_os("NPM_CONFIG_PREFIX").is_some()
+        || std::env::var_os("npm_config_prefix").is_some()
+    {
+        return;
+    }
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
+    let prefix = std::path::Path::new(&home).join(".npm-global");
+    let bin = prefix.join("bin");
+    let _ = std::fs::create_dir_all(&bin);
+    cmd.env("NPM_CONFIG_PREFIX", &prefix)
+        .env("npm_config_prefix", &prefix);
+    prepend_path(cmd, &bin);
+}
+
+#[cfg(windows)]
+pub fn apply_user_npm_prefix(_cmd: &mut Command) {}
 
 // ─────────────────────────────── 公共执行件 ───────────────────────────────
 
@@ -106,7 +170,7 @@ fn make_base_cmd(_cli_bin: &str, program: &str) -> Command {
 pub fn run(mut cmd: Command) -> Result<(bool, String, String), String> {
     let out = cmd
         .output()
-        .map_err(|e| format!("启动失败: {e}(需要 Node + 对应 CLI)"))?;
+        .map_err(|e| format!("启动失败: {e}(需要对应 CLI；Linux ARM64 会优先使用内置 CLI)"))?;
     Ok((
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -137,7 +201,7 @@ pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
     cmd.stdin(Stdio::null()).stdout(out).stderr(err);
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("启动失败: {e}(需要 Node)"))?;
+        .map_err(|e| format!("启动失败: {e}(需要 npm/Node 才能执行动态安装兜底)"))?;
     let start = Instant::now();
     loop {
         match child.try_wait().map_err(|e| format!("wait: {e}"))? {

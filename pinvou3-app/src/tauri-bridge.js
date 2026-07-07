@@ -1509,9 +1509,6 @@
     notify();
   });
 
-  // Dock/侧边栏"新建窗口"——单实例插件回调 emit,复用新建会话逻辑
-  listen("dock:new_instance", function (_e) { createNewSession(); });
-
   // chat:plan_snapshot —— update_plan/checklist_write 后实时更新进度，与 plan_ready 解耦
   listen("chat:plan_snapshot", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};

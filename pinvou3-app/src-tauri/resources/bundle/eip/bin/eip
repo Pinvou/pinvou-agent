@@ -10,4 +10,13 @@ if [ -f "$d/device_id" ]; then
 fi
 export AGENT_CREDENTIALS_DIR="$d/credentials"
 export AGENT_NON_INTERACTIVE=1
-exec "$(dirname "$0")/eip-cli" "$@"
+bin_dir="$(dirname "$0")"
+cli="$bin_dir/eip-cli"
+case "$(uname -m 2>/dev/null)" in
+  aarch64|arm64)
+    if [ -f "$bin_dir/eip-cli-aarch64" ]; then
+      cli="$bin_dir/eip-cli-aarch64"
+    fi
+    ;;
+esac
+exec "$cli" "$@"

@@ -44,7 +44,7 @@ pub mod workflow_registry;
 mod workflow_runs;
 mod zhidao;
 
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 use crate::bridge::sessions::SessionStore;
 use crate::engine_pool::EnginePool;
@@ -166,6 +166,17 @@ fn ensure_release_env() {
                 skills_dir.join("eip").join("bin"),
                 skills_dir.join("zhidao").join("bin"),
             ];
+            if let Some(connector_bin) = crate::bridge::paths::bundle_connector_bin_dir() {
+                dirs.push(connector_bin);
+            }
+            if let Ok(prefix) = env::var("NPM_CONFIG_PREFIX") {
+                dirs.push(std::path::Path::new(&prefix).join("bin"));
+            }
+            if let Some(home) = env::var_os("HOME") {
+                let home = std::path::Path::new(&home);
+                dirs.push(home.join(".npm-global").join("bin"));
+                dirs.push(home.join(".local").join("bin"));
+            }
             dirs.extend(env::split_paths(&old));
             if let Ok(joined) = env::join_paths(dirs) {
                 env::set_var("PATH", joined);
@@ -183,7 +194,6 @@ pub fn run() {
                 let _ = window.show();
                 let _ = window.unminimize();
                 let _ = window.set_focus();
-                let _ = app.emit("dock:new_instance", ());
             }
         }))
         .plugin(tauri_plugin_dialog::init())
