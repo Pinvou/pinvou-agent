@@ -6,7 +6,7 @@
 - Runtime version: `tesseract v5.5.0.20241111`
 - Leptonica version reported by runtime: `1.85.0`
 
-This directory is the controlled Windows OCR runtime bundled with pinvou. It is installed to `{install_dir}/tesseract` by the Windows MSI.
+This directory is the controlled Windows OCR runtime bundled with pinvou. It is installed to `{install_dir}/runtime/tesseract` by the Windows MSI.
 
 ## Included Files
 
@@ -27,7 +27,7 @@ The original installation contains training, diagnostics, documentation and extr
 - Extra language data such as `chi_sim_vert.traineddata` and `osd.traineddata`
 - Java ScrollView jars and helper assets
 
-pinvou only uses `tesseract.exe <image> - -l chi_sim+eng --tessdata-dir <install_dir>/tesseract/tessdata` for scanned PDF fallback OCR.
+pinvou only uses `tesseract.exe <image> - -l chi_sim+eng --tessdata-dir <install_dir>/runtime/tesseract/tessdata` for scanned PDF fallback OCR.
 
 ## License
 

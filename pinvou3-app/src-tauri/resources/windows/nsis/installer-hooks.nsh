@@ -75,6 +75,13 @@ vc_redist_present:
   Delete "$INSTDIR\pinvou-asr.exe"
   Delete "$INSTDIR\llama-funasr-sensevoice.exe"
   Delete "$INSTDIR\fsmn-vad.gguf"
+  RmDir /r "$INSTDIR\7zip"
+  RmDir /r "$INSTDIR\asr"
+  RmDir /r "$INSTDIR\node"
+  RmDir /r "$INSTDIR\pandoc"
+  RmDir /r "$INSTDIR\poppler"
+  RmDir /r "$INSTDIR\python"
+  RmDir /r "$INSTDIR\tesseract"
   !insertmacro PINVOU_RUN_RUNTIME_ENV "Install" "true"
 !macroend
 

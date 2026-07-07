@@ -126,9 +126,7 @@ fn windows_npm_shim(program: &str) -> OsString {
 
 pub fn apply_user_npm_prefix(cmd: &mut Command) {
     let prefix_from_env = windows_npm_prefix_from_env();
-    let prefix = prefix_from_env
-        .clone()
-        .or_else(default_windows_npm_prefix);
+    let prefix = prefix_from_env.clone().or_else(default_windows_npm_prefix);
 
     if let Some(prefix) = prefix {
         let _ = std::fs::create_dir_all(&prefix);
@@ -194,7 +192,10 @@ fn windows_npm_prefix_candidates() -> Vec<PathBuf> {
         candidates.push(prefix);
     }
     if let Some(prefix) = default_windows_npm_prefix() {
-        if !candidates.iter().any(|existing| same_path(existing, &prefix)) {
+        if !candidates
+            .iter()
+            .any(|existing| same_path(existing, &prefix))
+        {
             candidates.push(prefix);
         }
     }
@@ -204,7 +205,7 @@ fn windows_npm_prefix_candidates() -> Vec<PathBuf> {
 fn bundled_node_dir() -> Option<PathBuf> {
     std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("node")))
+        .map(|exe| bundled_runtime_dir_for_exe(&exe, "node"))
         .filter(|path| path.is_dir())
 }
 
@@ -255,9 +256,8 @@ pub fn bundled_python_path() -> Option<PathBuf> {
 }
 
 pub fn bundled_python_path_for_exe(exe_path: &Path) -> Option<PathBuf> {
-    let dir = exe_path.parent()?;
-    let bundled = dir.join("python").join("pythonw.exe");
-    is_valid_python_candidate(&bundled).then_some(bundled)
+    let path = bundled_runtime_dir_for_exe(exe_path, "python").join("pythonw.exe");
+    is_valid_python_candidate(&path).then_some(path)
 }
 
 fn resolve_system_python() -> Option<String> {
@@ -375,43 +375,28 @@ fn normalized_path_key(path: &Path) -> String {
 pub fn bundled_tesseract_dir() -> Option<PathBuf> {
     std::env::current_exe()
         .ok()
-        .map(|exe| bundled_tesseract_dir_for_exe(&exe))
+        .map(|exe| bundled_runtime_dir_for_exe(&exe, "tesseract"))
         .filter(|path| path.is_dir())
 }
 
-pub fn bundled_poppler_dir_for_exe(exe_path: &Path) -> PathBuf {
-    exe_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("poppler")
+#[cfg(test)]
+fn bundled_poppler_dir_for_exe(exe_path: &Path) -> PathBuf {
+    bundled_runtime_dir_for_exe(exe_path, "poppler")
 }
 
-pub fn bundled_pandoc_dir_for_exe(exe_path: &Path) -> PathBuf {
-    exe_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("pandoc")
+#[cfg(test)]
+fn bundled_pandoc_dir_for_exe(exe_path: &Path) -> PathBuf {
+    bundled_runtime_dir_for_exe(exe_path, "pandoc")
 }
 
-pub fn bundled_asr_dir_for_exe(exe_path: &Path) -> PathBuf {
-    exe_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("asr")
+#[cfg(test)]
+fn bundled_tesseract_dir_for_exe(exe_path: &Path) -> PathBuf {
+    bundled_runtime_dir_for_exe(exe_path, "tesseract")
 }
 
-pub fn bundled_tesseract_dir_for_exe(exe_path: &Path) -> PathBuf {
-    exe_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("tesseract")
-}
-
-pub fn bundled_archive_dir_for_exe(exe_path: &Path) -> PathBuf {
-    exe_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("7zip")
+#[cfg(test)]
+fn bundled_archive_dir_for_exe(exe_path: &Path) -> PathBuf {
+    bundled_runtime_dir_for_exe(exe_path, "7zip")
 }
 
 pub fn bundled_pdf_tool_path(command: &str) -> Option<PathBuf> {
@@ -492,45 +477,31 @@ pub fn bundled_tessdata_dir() -> Option<PathBuf> {
 
 pub fn bundled_pdf_tool_path_for_exe(exe_path: &Path, command: &str) -> Option<PathBuf> {
     let filename = pdf_tool_filename(command)?;
-    let path = bundled_poppler_dir_for_exe(exe_path).join(filename);
+    let path = bundled_runtime_dir_for_exe(exe_path, "poppler").join(filename);
     path.is_file().then_some(path)
 }
 
 pub fn bundled_pandoc_tool_path_for_exe(exe_path: &Path) -> Option<PathBuf> {
-    let path = bundled_pandoc_dir_for_exe(exe_path).join(pandoc_tool_filename());
+    let path = bundled_runtime_dir_for_exe(exe_path, "pandoc").join(pandoc_tool_filename());
     path.is_file().then_some(path)
 }
 
 pub fn bundled_asr_tool_path_for_exe(exe_path: &Path) -> Option<PathBuf> {
-    let path = bundled_asr_dir_for_exe(exe_path).join(asr_tool_filename());
+    let path = bundled_runtime_dir_for_exe(exe_path, "asr").join(asr_tool_filename());
     path.is_file().then_some(path)
 }
 
 pub fn bundled_asr_backend_path_for_exe(exe_path: &Path) -> Option<PathBuf> {
-    let dir = bundled_asr_dir_for_exe(exe_path);
-    [
-        dir.join("llama-funasr-sensevoice.exe"),
-        dir.join("runtime").join("llama-funasr-sensevoice.exe"),
-        dir.join("runtime")
-            .join("bin")
-            .join("llama-funasr-sensevoice.exe"),
-        dir.join("bin").join("llama-funasr-sensevoice.exe"),
-    ]
-    .into_iter()
-    .find(|path| path.is_file())
+    let path =
+        bundled_runtime_dir_for_exe(exe_path, "asr").join("llama-funasr-sensevoice.exe");
+    path.is_file().then_some(path)
 }
 
 pub fn bundled_asr_model_path_for_exe(exe_path: &Path) -> Option<PathBuf> {
-    let dir = bundled_asr_dir_for_exe(exe_path);
+    let dir = bundled_runtime_dir_for_exe(exe_path, "asr");
     [
         dir.join("models").join(asr_q8_model_filename()),
         dir.join("gguf").join(asr_q8_model_filename()),
-        dir.join("runtime")
-            .join("models")
-            .join(asr_q8_model_filename()),
-        dir.join("runtime")
-            .join("gguf")
-            .join(asr_q8_model_filename()),
         dir.join(asr_q8_model_filename()),
     ]
     .into_iter()
@@ -538,17 +509,17 @@ pub fn bundled_asr_model_path_for_exe(exe_path: &Path) -> Option<PathBuf> {
 }
 
 pub fn bundled_tesseract_tool_path_for_exe(exe_path: &Path) -> Option<PathBuf> {
-    let path = bundled_tesseract_dir_for_exe(exe_path).join(tesseract_tool_filename());
+    let path = bundled_runtime_dir_for_exe(exe_path, "tesseract").join(tesseract_tool_filename());
     path.is_file().then_some(path)
 }
 
 pub fn bundled_archive_tool_path_for_exe(exe_path: &Path) -> Option<PathBuf> {
-    let path = bundled_archive_dir_for_exe(exe_path).join(archive_tool_filename());
+    let path = bundled_runtime_dir_for_exe(exe_path, "7zip").join(archive_tool_filename());
     path.is_file().then_some(path)
 }
 
 pub fn bundled_tessdata_dir_for_exe(exe_path: &Path) -> Option<PathBuf> {
-    let path = bundled_tesseract_dir_for_exe(exe_path).join("tessdata");
+    let path = bundled_runtime_dir_for_exe(exe_path, "tesseract").join("tessdata");
     path.is_dir().then_some(path)
 }
 
@@ -576,8 +547,18 @@ pub fn bundled_tessdata_has_required_languages() -> bool {
 }
 
 pub fn bundled_tessdata_has_required_languages_for_exe(exe_path: &Path) -> bool {
-    let dir = bundled_tesseract_dir_for_exe(exe_path).join("tessdata");
+    let Some(dir) = bundled_tessdata_dir_for_exe(exe_path) else {
+        return false;
+    };
     dir.join("chi_sim.traineddata").is_file() && dir.join("eng.traineddata").is_file()
+}
+
+fn bundled_runtime_dir_for_exe(exe_path: &Path, name: &str) -> PathBuf {
+    install_dir_for_exe(exe_path).join("runtime").join(name)
+}
+
+fn install_dir_for_exe(exe_path: &Path) -> &Path {
+    exe_path.parent().unwrap_or_else(|| Path::new("."))
 }
 
 fn pdf_tool_filename(command: &str) -> Option<String> {
@@ -641,7 +622,9 @@ mod tests {
         let exe = Path::new(r"C:\Program Files\品眸 pinvou\pinvou3.exe");
         assert_eq!(
             bundled_poppler_dir_for_exe(exe),
-            PathBuf::from(r"C:\Program Files\品眸 pinvou").join("poppler")
+            PathBuf::from(r"C:\Program Files\品眸 pinvou")
+                .join("runtime")
+                .join("poppler")
         );
     }
 
@@ -650,7 +633,9 @@ mod tests {
         let exe = Path::new(r"C:\Program Files\品眸 pinvou\pinvou3.exe");
         assert_eq!(
             bundled_pandoc_dir_for_exe(exe),
-            PathBuf::from(r"C:\Program Files\品眸 pinvou").join("pandoc")
+            PathBuf::from(r"C:\Program Files\品眸 pinvou")
+                .join("runtime")
+                .join("pandoc")
         );
     }
 
@@ -673,10 +658,10 @@ mod tests {
     }
 
     #[test]
-    fn bundled_python_uses_python_dir_next_to_exe() {
+    fn bundled_python_uses_runtime_python_dir() {
         let dir = test_temp_dir("bundled-python");
         let exe = dir.join("pinvou3-tauri.exe");
-        let python_dir = dir.join("python");
+        let python_dir = dir.join("runtime").join("python");
         std::fs::create_dir_all(&python_dir).unwrap();
         let python = python_dir.join("pythonw.exe");
         std::fs::write(&exe, b"").unwrap();
@@ -735,7 +720,7 @@ mod tests {
     fn bundled_pdf_tool_path_prefers_bundled_exe() {
         let root =
             std::env::temp_dir().join(format!("pinvou3 poppler 路径测试 {}", std::process::id()));
-        let poppler = root.join("poppler");
+        let poppler = root.join("runtime").join("poppler");
         std::fs::create_dir_all(&poppler).unwrap();
         let tool = poppler.join("pdftotext.exe");
         std::fs::write(&tool, b"fake exe").unwrap();
@@ -750,7 +735,7 @@ mod tests {
     fn bundled_pandoc_tool_path_prefers_bundled_exe() {
         let root =
             std::env::temp_dir().join(format!("pinvou3 pandoc 路径测试 {}", std::process::id()));
-        let pandoc = root.join("pandoc");
+        let pandoc = root.join("runtime").join("pandoc");
         std::fs::create_dir_all(&pandoc).unwrap();
         let tool = pandoc.join("pandoc.exe");
         std::fs::write(&tool, b"fake exe").unwrap();
@@ -766,7 +751,9 @@ mod tests {
         let exe = Path::new(r"C:\Program Files\pinvou app\pinvou3.exe");
         assert_eq!(
             bundled_tesseract_dir_for_exe(exe),
-            PathBuf::from(r"C:\Program Files\pinvou app").join("tesseract")
+            PathBuf::from(r"C:\Program Files\pinvou app")
+                .join("runtime")
+                .join("tesseract")
         );
     }
 
@@ -776,7 +763,7 @@ mod tests {
             "pinvou3 tesseract path test {}",
             std::process::id()
         ));
-        let tesseract = root.join("tesseract");
+        let tesseract = root.join("runtime").join("tesseract");
         let tessdata = tesseract.join("tessdata");
         std::fs::create_dir_all(&tessdata).unwrap();
         let tool = tesseract.join("tesseract.exe");
@@ -798,7 +785,7 @@ mod tests {
     fn bundled_asr_paths_allow_runtime_without_q8_model() {
         let root =
             std::env::temp_dir().join(format!("pinvou3 asr path test {}", std::process::id()));
-        let asr = root.join("asr");
+        let asr = root.join("runtime").join("asr");
         let models = asr.join("models");
         std::fs::create_dir_all(&models).unwrap();
         let wrapper = asr.join("pinvou-asr.exe");
@@ -827,7 +814,11 @@ mod tests {
             "pinvou3 asr user model path {}",
             std::process::id()
         ));
-        let install_asr = root.join("install").join("asr").join("models");
+        let install_asr = root
+            .join("install")
+            .join("runtime")
+            .join("asr")
+            .join("models");
         let user_asr = root.join("home").join("asr");
         std::fs::create_dir_all(&install_asr).unwrap();
         std::fs::create_dir_all(&user_asr).unwrap();
@@ -846,12 +837,16 @@ mod tests {
     }
 
     #[test]
-    fn asr_model_path_falls_back_to_bundled_model_for_legacy_install() {
+    fn asr_model_path_falls_back_to_bundled_runtime_model() {
         let root = std::env::temp_dir().join(format!(
             "pinvou3 asr bundled model path {}",
             std::process::id()
         ));
-        let install_asr = root.join("install").join("asr").join("models");
+        let install_asr = root
+            .join("install")
+            .join("runtime")
+            .join("asr")
+            .join("models");
         std::fs::create_dir_all(&install_asr).unwrap();
         let bundled = install_asr.join("sensevoice-small-q8.gguf");
         std::fs::write(&bundled, b"bundled").unwrap();
@@ -869,7 +864,7 @@ mod tests {
     fn bundled_archive_tool_path_prefers_bundled_7z() {
         let root =
             std::env::temp_dir().join(format!("pinvou3 7zip path test {}", std::process::id()));
-        let archive = root.join("7zip");
+        let archive = root.join("runtime").join("7zip");
         std::fs::create_dir_all(&archive).unwrap();
         let tool = archive.join("7z.exe");
         std::fs::write(&tool, b"fake exe").unwrap();

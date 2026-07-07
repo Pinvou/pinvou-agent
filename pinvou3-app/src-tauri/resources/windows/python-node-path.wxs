@@ -11,7 +11,7 @@
                        KeyPath="yes" />
         <Environment Id="PinvouPythonExecutable"
                      Name="PINVOU3_PYTHON"
-                     Value="[INSTALLDIR]python\pythonw.exe"
+                     Value="[INSTALLDIR]runtime\python\pythonw.exe"
                      Action="set"
                      Part="all"
                      System="yes"

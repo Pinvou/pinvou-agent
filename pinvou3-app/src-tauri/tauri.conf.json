@@ -40,17 +40,16 @@
     ],
     "resources": {
       "resources/web-template/": "web-template",
-      "resources/asr/": "asr",
-      "resources/windows/poppler/": "poppler",
-      "resources/windows/pandoc/": "pandoc",
-      "resources/windows/tesseract/": "tesseract",
-      "resources/windows/python/": "python",
-      "resources/windows/node/": "node",
-      "resources/windows/asr/README.md": "asr/README.md",
-      "resources/windows/asr/pinvou-asr.exe": "asr/pinvou-asr.exe",
-      "resources/windows/asr/llama-funasr-sensevoice.exe": "asr/llama-funasr-sensevoice.exe",
-      "resources/windows/asr/models/fsmn-vad.gguf": "asr/models/fsmn-vad.gguf",
-      "resources/windows/7zip/": "7zip"
+      "resources/windows/poppler/": "runtime/poppler",
+      "resources/windows/pandoc/": "runtime/pandoc",
+      "resources/windows/tesseract/": "runtime/tesseract",
+      "resources/windows/python/": "runtime/python",
+      "resources/windows/node/": "runtime/node",
+      "resources/windows/asr/README.md": "runtime/asr/README.md",
+      "resources/windows/asr/pinvou-asr.exe": "runtime/asr/pinvou-asr.exe",
+      "resources/windows/asr/llama-funasr-sensevoice.exe": "runtime/asr/llama-funasr-sensevoice.exe",
+      "resources/windows/asr/models/fsmn-vad.gguf": "runtime/asr/models/fsmn-vad.gguf",
+      "resources/windows/7zip/": "runtime/7zip"
     },
     "windows": {
       "wix": {

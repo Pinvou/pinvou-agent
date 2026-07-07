@@ -3,13 +3,13 @@
 pinvou3 resolves the optional offline voice recognition runtime from:
 
 ```text
-{install_dir}/asr/pinvou-asr.exe
+{install_dir}/runtime/asr/pinvou-asr.exe
 ```
 
 This directory contains the Windows offline ASR runtime used by the MSI build:
 
 ```text
-asr/
+runtime/asr/
   pinvou-asr.exe
   llama-funasr-sensevoice.exe
   models/
@@ -50,12 +50,12 @@ Alternative model locations accepted by `pinvou-asr.exe`:
 ~/.pinvou3/asr/
   sensevoice-small-q8.gguf
 
-asr/
+runtime/asr/
   gguf/
     sensevoice-small-q8.gguf
     fsmn-vad.gguf
 
-asr/
+runtime/asr/
   runtime/
     llama-funasr-sensevoice.exe
     models/

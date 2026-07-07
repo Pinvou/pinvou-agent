@@ -9,13 +9,21 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$pythonDir = Join-Path $InstallDir "python"
-$nodeDir = Join-Path $InstallDir "node"
-$sevenZipDir = Join-Path $InstallDir "7zip"
-$asrDir = Join-Path $InstallDir "asr"
-$pandocDir = Join-Path $InstallDir "pandoc"
-$popplerDir = Join-Path $InstallDir "poppler"
-$tesseractDir = Join-Path $InstallDir "tesseract"
+$runtimeDir = Join-Path $InstallDir "runtime"
+$pythonDir = Join-Path $runtimeDir "python"
+$nodeDir = Join-Path $runtimeDir "node"
+$sevenZipDir = Join-Path $runtimeDir "7zip"
+$asrDir = Join-Path $runtimeDir "asr"
+$pandocDir = Join-Path $runtimeDir "pandoc"
+$popplerDir = Join-Path $runtimeDir "poppler"
+$tesseractDir = Join-Path $runtimeDir "tesseract"
+$legacyPythonDir = Join-Path $InstallDir "python"
+$legacyNodeDir = Join-Path $InstallDir "node"
+$legacySevenZipDir = Join-Path $InstallDir "7zip"
+$legacyAsrDir = Join-Path $InstallDir "asr"
+$legacyPandocDir = Join-Path $InstallDir "pandoc"
+$legacyPopplerDir = Join-Path $InstallDir "poppler"
+$legacyTesseractDir = Join-Path $InstallDir "tesseract"
 $pythonExe = Join-Path $pythonDir "pythonw.exe"
 $privateRuntimeDirs = @(
     $pythonDir,
@@ -24,7 +32,14 @@ $privateRuntimeDirs = @(
     $asrDir,
     $pandocDir,
     $popplerDir,
-    $tesseractDir
+    $tesseractDir,
+    $legacyPythonDir,
+    $legacyNodeDir,
+    $legacySevenZipDir,
+    $legacyAsrDir,
+    $legacyPandocDir,
+    $legacyPopplerDir,
+    $legacyTesseractDir
 )
 
 function Normalize-PathEntry {
