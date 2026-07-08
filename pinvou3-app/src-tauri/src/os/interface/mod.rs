@@ -1,3 +1,4 @@
+mod cpu;
 mod dependency;
 mod memory;
 mod path;
@@ -5,6 +6,7 @@ mod permission;
 mod system;
 mod update;
 
+pub use cpu::cpu_snapshot;
 pub use dependency::install_dependencies;
 pub use memory::ram_snapshot;
 pub use path::{

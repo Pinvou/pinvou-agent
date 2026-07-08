@@ -20,6 +20,8 @@ use serde::Serialize;
 pub struct MonitorSnapshot {
     pub generated_at_ms: u64, // unix epoch ms
     pub gpu: Option<GpuSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<CpuSnapshot>,
     pub ram: Option<RamSnapshot>,
     pub vllm: Option<VllmSnapshot>,
     /// app 侧自测推理指标(TTFT / 生成速度 / 累计 tokens / KV)。与 vLLM `/metrics`
@@ -38,6 +40,14 @@ pub struct GpuSnapshot {
     /// GB10 等 unified-memory 设备 VRAM 字段是 [N/A]，UI 切到温度+功耗显示。
     pub temperature_c: Option<u32>,
     pub power_w: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CpuSnapshot {
+    pub name: String,
+    pub total_usage_pct: Option<f64>,
+    pub process_usage_pct: Option<f64>,
+    pub logical_processors: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -266,7 +276,26 @@ impl MonitorState {
     }
 }
 
-pub async fn sample_all(state: &MonitorState, vllm_upstream: &str, configured_model: Option<String>) -> MonitorSnapshot {
+pub async fn sample_all(
+    state: &MonitorState,
+    vllm_upstream: &str,
+    configured_model: Option<String>,
+) -> MonitorSnapshot {
+    sample_all_with_cpu(
+        state,
+        vllm_upstream,
+        configured_model,
+        crate::os::cpu_snapshot(),
+    )
+    .await
+}
+
+async fn sample_all_with_cpu(
+    state: &MonitorState,
+    vllm_upstream: &str,
+    configured_model: Option<String>,
+    cpu: Option<CpuSnapshot>,
+) -> MonitorSnapshot {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -274,6 +303,7 @@ pub async fn sample_all(state: &MonitorState, vllm_upstream: &str, configured_mo
     MonitorSnapshot {
         generated_at_ms: now_ms,
         gpu: gpu_snapshot(),
+        cpu,
         ram: crate::os::ram_snapshot(),
         vllm: vllm_snapshot(vllm_upstream, configured_model).await,
         self_perf: state.self_metrics.snapshot(),
@@ -321,7 +351,10 @@ fn gpu_snapshot() -> Option<GpuSnapshot> {
 
 /// 健康探测 + Prometheus metrics 解析。
 /// `/v1/models` 返不到 200 → OFFLINE；返 200 但 metrics 拿不到 → READY 无指标。
-pub async fn vllm_snapshot(upstream: &str, configured_model: Option<String>) -> Option<VllmSnapshot> {
+pub async fn vllm_snapshot(
+    upstream: &str,
+    configured_model: Option<String>,
+) -> Option<VllmSnapshot> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
@@ -511,7 +544,10 @@ fn vllm_target_kind(upstream: &str) -> &'static str {
     if s.is_empty() {
         return "invalid";
     }
-    let Some(rest) = s.strip_prefix("http://").or_else(|| s.strip_prefix("https://")) else {
+    let Some(rest) = s
+        .strip_prefix("http://")
+        .or_else(|| s.strip_prefix("https://"))
+    else {
         return "invalid";
     };
     let Some(host_port) = rest.split('/').next() else {
@@ -745,6 +781,16 @@ mod tests {
         assert!(s.total_kib > 0);
     }
 
+    #[tokio::test]
+    async fn sample_all_keeps_other_fields_when_cpu_snapshot_is_none() {
+        let state = MonitorState::new();
+        let snapshot = sample_all_with_cpu(&state, "not-a-url", None, None).await;
+        assert!(snapshot.generated_at_ms > 0);
+        assert!(snapshot.cpu.is_none());
+        assert_eq!(snapshot.self_perf.gen_tokens_total, 0);
+        assert_eq!(snapshot.app.pinvou3_version, env!("CARGO_PKG_VERSION"));
+    }
+
     #[test]
     fn vllm_target_kind_classifies_by_host() {
         // 本地推理引擎:环回 + 私有 IP 段(含用户的 10.214.74.113 局域网自托管 vLLM)
@@ -757,7 +803,7 @@ mod tests {
         assert_eq!(vllm_target_kind("https://api.deepseek.com/v1"), "remote");
         assert_eq!(vllm_target_kind("http://8.8.8.8:8000/v1"), "remote");
         assert_eq!(vllm_target_kind("http://172.32.0.1:8000/v1"), "remote"); // 172.32 不在私有段
-        // 配置异常:空 / 非 URL
+                                                                             // 配置异常:空 / 非 URL
         assert_eq!(vllm_target_kind(""), "invalid");
         assert_eq!(vllm_target_kind("not-a-url"), "invalid");
     }
@@ -794,7 +840,9 @@ mod tests {
         // 端到端佐证:探测窗口喂进 derive 公式应得按窗口缩放的 T(非写死 190K)。
         // 复算 derive_compaction_threshold(bridge 私有,此处内联同公式):
         //   E = W − O − 1024;T = (E−S)/1.5 − 22000, clamp[4096, 0.75W]。O=24576(默认预留)。
-        let e = (window as usize).saturating_sub(24_576).saturating_sub(1_024);
+        let e = (window as usize)
+            .saturating_sub(24_576)
+            .saturating_sub(1_024);
         let t = (e.saturating_sub(4_000).saturating_mul(2) / 3)
             .saturating_sub(22_000)
             .clamp(4_096, window as usize * 3 / 4);

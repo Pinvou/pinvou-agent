@@ -223,6 +223,7 @@
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactAuto: " (auto)",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
       gpuUnavailable: "GPU info unavailable",
+      cpuUnavailable: "CPU info unavailable",
       superOn: "⚠️ Super permission enabled", superOff: "Super permission disabled",
       approved: "✅ Approved", echoGo: "✅ Do it",
       acceptPlanFailed: "⚠️ accept_plan failed: ",
@@ -240,6 +241,7 @@
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactAuto: "（自動）",
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
       gpuUnavailable: "GPU 情報を取得できません",
+      cpuUnavailable: "CPU 情報を取得できません",
       superOn: "⚠️ スーパー権限が有効になりました", superOff: "スーパー権限が無効になりました",
       approved: "✅ 承認済み", echoGo: "✅ これでいく",
       acceptPlanFailed: "⚠️ accept_plan に失敗: ",
@@ -257,6 +259,7 @@
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactAuto: "（自动）",
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
       gpuUnavailable: "GPU 信息不可用",
+      cpuUnavailable: "CPU 信息不可用",
       superOn: "⚠️ 超级权限已开启", superOff: "超级权限已关闭",
       approved: "✅ 已批准", echoGo: "✅ 就这么干",
       acceptPlanFailed: "⚠️ accept_plan 失败: ",
@@ -1996,6 +1999,12 @@
       var targetKind = vllm && vllm.target_kind ? vllm.target_kind : "invalid";
       var targetKindLabel = targetKind === "remote" ? "远端模型" : (targetKind === "local" ? "本地模型" : "配置异常");
       var vllmDisplayModel = vllm ? (vllm.model || vllm.configured_model || "—") : "—";
+      var cpu = snap.cpu || null;
+      var showCpuCard = Object.prototype.hasOwnProperty.call(snap, "cpu");
+      var cpuTotalPct = cpu && typeof cpu.total_usage_pct === "number" && isFinite(cpu.total_usage_pct)
+        ? Math.round(cpu.total_usage_pct) : 0;
+      var cpuProcessPct = cpu && typeof cpu.process_usage_pct === "number" && isFinite(cpu.process_usage_pct)
+        ? Math.round(cpu.process_usage_pct) : 0;
       snap._fmt = {
         gpuName: snap.gpu ? snap.gpu.name : bt("gpuUnavailable"),
         gpuVram: snap.gpu && snap.gpu.vram_total_mib > 0
@@ -2008,6 +2017,16 @@
         gpuPower: snap.gpu && snap.gpu.power_w != null ? snap.gpu.power_w.toFixed(1) + " W" : null,
         gpuAvailable: !!snap.gpu,
         gpuHasVram: !!(snap.gpu && snap.gpu.vram_total_mib > 0),
+        showCpuCard: showCpuCard,
+        cpuName: cpu && cpu.name ? cpu.name : bt("cpuUnavailable"),
+        cpuTotal: cpu && typeof cpu.total_usage_pct === "number" && isFinite(cpu.total_usage_pct)
+          ? cpuTotalPct + "%" : "—",
+        cpuTotalPct: cpuTotalPct,
+        cpuProcess: cpu && typeof cpu.process_usage_pct === "number" && isFinite(cpu.process_usage_pct)
+          ? cpuProcessPct + "%" : "—",
+        cpuProcessPct: cpuProcessPct,
+        cpuLogicalProcessors: cpu && typeof cpu.logical_processors === "number" ? cpu.logical_processors : 0,
+        cpuAvailable: !!cpu,
         ramUsed: snap.ram ? fmtKiB(snap.ram.used_kib) : "—",
         ramTotal: snap.ram ? fmtKiB(snap.ram.total_kib) : "—",
         ramPct: snap.ram && snap.ram.total_kib > 0 ? Math.round(snap.ram.used_kib / snap.ram.total_kib * 100) : 0,
