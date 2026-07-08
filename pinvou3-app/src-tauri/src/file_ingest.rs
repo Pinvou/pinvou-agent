@@ -501,7 +501,7 @@ fn libreoffice_convert_text(
     out_ext: &str,
 ) -> Result<String, String> {
     if !system_tools().libreoffice {
-        return Err("需要 LibreOffice，请运行: sudo apt install libreoffice".into());
+        return Err(crate::os::libreoffice_missing_message().into());
     }
     // 临时目录：每次唯一，避免并发文件名冲突。
     let ts = std::time::SystemTime::now()
@@ -637,7 +637,7 @@ fn inline_html_images(html: &str, dir: &Path) -> String {
 /// 独立 UserInstallation profile + 临时目录约定。
 pub fn libreoffice_to_inline_html(path: &Path) -> Result<String, String> {
     if !system_tools().libreoffice {
-        return Err("需要 LibreOffice，请运行: sudo apt install libreoffice".into());
+        return Err(crate::os::libreoffice_missing_message().into());
     }
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -699,7 +699,7 @@ pub fn libreoffice_to_inline_html(path: &Path) -> Result<String, String> {
 pub fn office_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<String>, bool), String> {
     let tools = system_tools();
     if !tools.libreoffice {
-        return Err("需要 LibreOffice，请运行: sudo apt install libreoffice".into());
+        return Err(crate::os::libreoffice_missing_message().into());
     }
     if !tools.pdftoppm {
         return Err(crate::os::pdf_render_missing_message().into());

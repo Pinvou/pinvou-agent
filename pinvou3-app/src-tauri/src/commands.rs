@@ -2160,6 +2160,21 @@ fn shell_open(arg: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 系统没有演示文稿默认打开方式时，使用 LibreOffice 作为显式兜底。
+fn open_with_libreoffice(path: &std::path::Path) -> Result<(), String> {
+    let program = crate::os::libreoffice_tool_path();
+    let program_text = program.to_string_lossy().to_string();
+    if !crate::os::command_exists(&program_text) {
+        return Err(crate::os::libreoffice_missing_message().into());
+    }
+
+    std::process::Command::new(&program)
+        .arg(strip_verbatim(path))
+        .spawn()
+        .map_err(|e| format!("LibreOffice 打开失败: {e}"))?;
+    Ok(())
+}
+
 /// 去掉 Windows `canonicalize` 产出的 `\\?\` verbatim 前缀（含 UNC 形式）。
 /// start/explorer 不识别该前缀，不剥会"打不开"。非 Windows 原样返回。
 fn strip_verbatim(p: &std::path::Path) -> String {
@@ -2328,6 +2343,9 @@ pub async fn open_in_system(
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
     let p = validate_user_path(&resolve_artifact_path(&path, session_id.as_deref(), &store))?;
+    if crate::os::libreoffice_open_fallback_needed(&p) {
+        return open_with_libreoffice(&p);
+    }
     shell_open(&strip_verbatim(&p))
 }
 
@@ -2360,6 +2378,12 @@ pub async fn open_artifact_window(
     let p = validate_user_path(&resolve_artifact_path(&path, session_id.as_deref(), &store))?;
     if !p.is_file() {
         return Err(format!("not a file: {}", p.display()));
+    }
+    if crate::os::system_default_open_supported(&p) {
+        return shell_open(&strip_verbatim(&p));
+    }
+    if crate::os::libreoffice_open_fallback_needed(&p) {
+        return open_with_libreoffice(&p);
     }
     // 用文件 inode 做稳定 label,防同一文件多次打开建多窗口。Tauri label 只允许 a-zA-Z0-9-_。
     use std::collections::hash_map::DefaultHasher;

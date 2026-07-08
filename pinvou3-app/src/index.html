@@ -338,7 +338,7 @@
         updateCheckFailed: '检查失败',
         depCheckTitle: '依赖体检', depChecking: '检测中…', depRecheck: '重新检测',
         depAllOk: '所有依赖项已就绪', depMissingSuffix: ' 项依赖缺失（对应能力将不可用）',
-        depInstalling: '安装中…', depInstallBtn: '一键安装', depInstallNote: '将提权安装缺失依赖（需联网或可用 apt 源）', depInstallNoteWindows: '将通过 winget 提权安装 LibreOffice（需联网）',
+        depInstalling: '安装中…', depInstallBtn: '一键安装', depGoInstall: '去安装', depInstallNote: '将提权安装缺失依赖（需联网或可用 apt 源）', depInstallNoteWindows: '将通过 winget 提权安装 LibreOffice（需联网）',
         dep_pdf: 'PDF 文本提取', dep_office_modern: 'Office 文档（docx）', dep_office_legacy: '旧版 Office / 演示与表格',
         dep_ocr: '图片 / 扫描件 OCR', dep_archive: '压缩包（zip/rar/7z）', dep_email: '邮件（.eml / .msg）', dep_voice_asr: '本地语音识别',
         vllmSetupTitle: '启用本地大模型', vllmSetupDesc: '检测到本机已预装本地大模型环境，是否现在启用？将拉起推理引擎并配置为开机自启，随后自动设为默认模型。',
@@ -600,7 +600,7 @@
         updateCheckFailed: 'Check failed',
         depCheckTitle: 'Dependency Check', depChecking: 'Checking…', depRecheck: 'Re-check',
         depAllOk: 'All dependencies ready', depMissingSuffix: ' dependency group(s) missing (those features unavailable)',
-        depInstalling: 'Installing…', depInstallBtn: 'Install', depInstallNote: 'Installs missing deps via elevated apt (needs network or an apt source)', depInstallNoteWindows: 'Installs LibreOffice through elevated winget (requires network)',
+        depInstalling: 'Installing…', depInstallBtn: 'Install', depGoInstall: 'Install', depInstallNote: 'Installs missing deps via elevated apt (needs network or an apt source)', depInstallNoteWindows: 'Installs LibreOffice through elevated winget (requires network)',
         dep_pdf: 'PDF text extraction', dep_office_modern: 'Office docs (docx)', dep_office_legacy: 'Legacy Office / slides & sheets',
         dep_ocr: 'Image / scanned-PDF OCR', dep_archive: 'Archives (zip/rar/7z)', dep_email: 'Email (.eml / .msg)', dep_voice_asr: 'Local voice recognition',
         vllmSetupTitle: 'Enable Local Model', vllmSetupDesc: 'A local model environment is pre-installed on this machine. Enable it now? This starts the inference engine, sets it to auto-start on boot, and makes it the default model.',
@@ -861,7 +861,7 @@
         updateCheckFailed: '確認に失敗しました',
         depCheckTitle: '依存関係チェック', depChecking: '確認中…', depRecheck: '再チェック',
         depAllOk: 'すべての依存関係が準備済み', depMissingSuffix: ' 件の依存が不足（該当機能は利用不可）',
-        depInstalling: 'インストール中…', depInstallBtn: 'インストール', depInstallNote: '権限昇格して不足依存をインストール（ネットワークまたは apt ソースが必要）', depInstallNoteWindows: 'winget を権限昇格して LibreOffice をインストール（ネットワークが必要）',
+        depInstalling: 'インストール中…', depInstallBtn: 'インストール', depGoInstall: 'インストール', depInstallNote: '権限昇格して不足依存をインストール（ネットワークまたは apt ソースが必要）', depInstallNoteWindows: 'winget を権限昇格して LibreOffice をインストール（ネットワークが必要）',
         dep_pdf: 'PDF テキスト抽出', dep_office_modern: 'Office 文書（docx）', dep_office_legacy: '旧 Office / スライドと表計算',
         dep_ocr: '画像 / スキャン PDF の OCR', dep_archive: 'アーカイブ（zip/rar/7z）', dep_email: 'メール（.eml / .msg）', dep_voice_asr: 'ローカル音声認識',
         vllmSetupTitle: 'ローカルモデルを有効化', vllmSetupDesc: 'この端末にローカルモデル環境がプリインストールされています。今すぐ有効化しますか？推論エンジンを起動し、起動時の自動起動を設定して、既定モデルにします。',
@@ -1888,7 +1888,7 @@
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
-            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => setCurrentView('settings')} onGotoTools={() => setCurrentView('toolStore')} />}
+            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => { setCurrentView('settings'); setTimeout(() => document.getElementById('settings-dependencies')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80); }} onGotoTools={() => setCurrentView('toolStore')} />}
             {/* 草稿态(无 session)也渲染挂件,但强制空态——让欢迎页保留「＋加持卡牌」入口。
                 点它跳卡牌池,选卡时 equipPersona 会先物化 session(lazy session)。 */}
             {currentView === 'chat' && bs && (
@@ -4732,6 +4732,7 @@
               </SCard>
 
               {/* 依赖体检: 进页自动检测,只报缺失项 + 一键(pkexec apt)安装,成功/失败提示 */}
+              <div id="settings-dependencies">
               <SCard isDark={isDark} title={t.depCheckTitle}>
                 {(() => {
                   const deps = (bs && bs.deps) || [];
@@ -4786,6 +4787,7 @@
                   );
                 })()}
               </SCard>
+              </div>
 
               </div>
             </div>
@@ -5799,11 +5801,11 @@
               <div onMouseDown={startArtifactDrag} onDoubleClick={resetArtifactW} role="separator" aria-orientation="vertical"
                 className={`shrink-0 w-1.5 h-full cursor-col-resize transition-colors ${isDark ? 'bg-white/10 hover:bg-[#A8C7FA]/60' : 'bg-black/10 hover:bg-[#0B57D0]/50'}`} />
               <div ref={artColRef} className="shrink-0 h-full relative" style={{ width: artifactW + 'px' }}>
-                <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} isWide={true} />
+                <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} isWide={true} onGotoSettings={onGotoSettings} />
               </div>
             </>
           )}
-          {artifactsOpen && !isWide && <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} isWide={false} />}
+          {artifactsOpen && !isWide && <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} isWide={false} onGotoSettings={onGotoSettings} />}
         </div>
       );
     };
@@ -9046,7 +9048,7 @@
       + 'img{max-width:100%;height:auto;}'
       + '</style>';
 
-    const ArtifactsPanel = ({ bs, theme, t, onClose, isWide }) => {
+    const ArtifactsPanel = ({ bs, theme, t, onClose, isWide, onGotoSettings }) => {
       const isDark = theme === 'dark';
       const artifacts = (bs && bs.artifacts) || [];
       const [tab, setTab] = useState('list');     // 'list' | 'preview'
@@ -9098,6 +9100,12 @@
       }
 
       const muted = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
+      const needsDependencyCheck = (message) => /LibreOffice/i.test(String(message || ''));
+      const dependencyCheckButton = (message) => (
+        needsDependencyCheck(message) && onGotoSettings
+          ? <button onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium ${isDark ? 'bg-white/10 hover:bg-white/20 text-[#E3E3E3]' : 'bg-black/5 hover:bg-black/10 text-[#1F1F1F]'}`}>{t.depGoInstall || t.depInstallBtn}</button>
+          : null
+      );
       const tabBtn = (key, label) => {
         const active = tab === key;
         const disabled = key === 'preview' && !sel;
@@ -9134,7 +9142,7 @@
         if (vis && vis.mode === 'html') {
           return (
             <div className="flex flex-col gap-2 h-full">
-              {vis.warning && <div className={`text-[12px] ${isDark ? 'text-[#FDD663]' : 'text-[#E37400]'}`}>⚠️ {vis.warning}</div>}
+              {vis.warning && <div className={`flex items-center gap-2 text-[12px] ${isDark ? 'text-[#FDD663]' : 'text-[#E37400]'}`}><span>⚠️ {vis.warning}</span>{dependencyCheckButton(vis.warning)}</div>}
               <iframe sandbox="allow-same-origin" className="w-full flex-1 min-h-[480px] border-0 block bg-white"
                 srcDoc={(vis.html || '') + OFFICE_HTML_STYLE} />
             </div>
@@ -9143,7 +9151,7 @@
         if (vis && vis.mode === 'images') {
           return (
             <div className="flex flex-col items-center gap-3">
-              {vis.warning && <div className={`self-start text-[12px] ${isDark ? 'text-[#FDD663]' : 'text-[#E37400]'}`}>⚠️ {vis.warning}</div>}
+              {vis.warning && <div className={`self-start flex items-center gap-2 text-[12px] ${isDark ? 'text-[#FDD663]' : 'text-[#E37400]'}`}><span>⚠️ {vis.warning}</span>{dependencyCheckButton(vis.warning)}</div>}
               {(vis.images || []).map((src, i) => (
                 <img key={i} src={src} className="max-w-full h-auto rounded-lg shadow-sm" alt={`page-${i + 1}`} />
               ))}
@@ -9156,6 +9164,7 @@
             {sel ? <ArtifactTileIcon name={sel.basename} tileCls="w-14 h-14 rounded-[16px]" glyphCls="w-7 h-7" /> : <span className="text-[44px]">📎</span>}
             <span className={`text-[14px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{sel && sel.basename}</span>
             <p className="text-[13px] max-w-[360px]">{(vis && vis.warning) || t.apUnsupported}</p>
+            {vis && dependencyCheckButton(vis.warning)}
             <button onClick={() => sel && bridge.openArtifactExternal(sel.path)} className={cardBtnCls(isDark, 'primary')}>
               {t.apBtnOpen}
             </button>
