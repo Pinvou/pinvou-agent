@@ -331,8 +331,9 @@ pub fn session_pinvou_reviews(session_id: &str) -> PathBuf {
     sessions_root().join(session_id).join("pinvou_reviews.json")
 }
 
-/// 阶段 C 没多 session 时的 fallback artifacts dir（session_id="default"）。
-/// Step 4 完成后这个会被切换 session 时动态计算的值替换。
+/// `~/.pinvou3/sessions/default/artifacts/` —— PPT / 公文等 MCP stdio server
+/// 的公共产物落点。stdio server 不能可靠感知当前 GUI session，具体归属由
+/// 带 `session_id` 的工具事件归档到具体会话。
 pub fn default_session_artifacts_dir() -> PathBuf {
     session_artifacts_dir("default")
 }

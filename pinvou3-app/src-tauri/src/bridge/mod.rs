@@ -99,9 +99,10 @@ impl Pinvou3Bridge {
     /// 找到用户在桌面/文档/下载里的真实文件。配套敏感目录禁令在
     /// `bundle/instructions.md` 里引导，硬拦截后续走 deepseek-tui hook 注册。
     ///
-    /// **$PINVOU3_SESSION_ARTIFACTS** 环境变量在这里 set：让 LLM 通过
-    /// `write_file` 写"产出"时落到 `~/.pinvou3/sessions/<id>/artifacts/`，
-    /// 不污染用户家目录。多 session 切换时调用方应重新 set。
+    /// **$PINVOU3_SESSION_ARTIFACTS** 环境变量在这里 set 到公共 MCP 产物目录。
+    /// PPT / 公文等 MCP server 是 stdio 子进程，不能可靠感知当前 GUI session；
+    /// 因此二进制办公产物固定落到 `sessions/default/artifacts/`，具体归属由带
+    /// `session_id` 的工具事件和前端持久化决定。
     pub fn boot() -> Result<Self> {
         // ⓪ 注入 pinvou3 版 prompt 文案到底座 prompt 合成层(base/locale/authority)。
         // 幂等(底座 OnceLock 首次生效、后续 Err 被忽略),必须早于任何 engine spawn。
@@ -1781,6 +1782,41 @@ mod tests {
         // (见 build_session_system_prompt 注释:per-session 变动进 cache 前缀会
         // 触发 vLLM prefix-cache MISS → 工具调用漂移)。故 content 不再含 session_id,
         // 隔离已由上面"workspace 目录不同 + inline name 含 session_id"覆盖。
+    }
+
+    #[test]
+    fn engine_config_for_session_keeps_mcp_artifacts_public() {
+        let _g = paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _env = EnvGuard::new(&["PINVOU3_HOME", "PINVOU3_SESSION_ARTIFACTS"]);
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-mcp-artifacts-public-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::env::set_var("PINVOU3_HOME", &root);
+
+        let public_artifacts = paths::default_session_artifacts_dir();
+        std::env::set_var("PINVOU3_SESSION_ARTIFACTS", &public_artifacts);
+
+        let bridge = fixture_bridge();
+        let a = "sess-artifacts-a";
+        let b = "sess-artifacts-b";
+        let _cfg_a = bridge.build_engine_config_for_session(a);
+        let _cfg_b = bridge.build_engine_config_for_session(b);
+
+        let actual = std::env::var("PINVOU3_SESSION_ARTIFACTS")
+            .expect("PINVOU3_SESSION_ARTIFACTS should remain set");
+        assert_eq!(
+            actual,
+            public_artifacts.to_string_lossy(),
+            "MCP stdio server 共享进程不能拿 session 专属 artifacts；env 必须保持公共落点"
+        );
+        assert_ne!(public_artifacts, paths::session_artifacts_dir(a));
+        assert_ne!(public_artifacts, paths::session_artifacts_dir(b));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
 

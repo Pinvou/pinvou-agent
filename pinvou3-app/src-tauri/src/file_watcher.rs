@@ -5,8 +5,13 @@
 //! 走 exec_shell + pandoc，args 是命令字符串没有结构化 path,前端识别不到。
 //! 用 OS file watcher 兜底:任何方式落到 session workspace 的文件都能被发现。
 //!
-//! 路径推断：`~/.pinvou3/sessions/<id>/workspace/<file>` → session_id = <id>。
-//! 不在 workspace 子目录下的事件(如 sessions/<id>.json session 元数据本身)忽略。
+//! 路径推断：
+//! - `~/.pinvou3/sessions/<id>/workspace/<file>` → `session_id = <id>`
+//! - `~/.pinvou3/sessions/<id>/artifacts/<file>` → `session_id = <id>`
+//!
+//! 其中 `sessions/default/artifacts/` 是 MCP 办公产物的公共落点；文件系统
+//! watcher 不能据此判断真实对话归属，真实归属以带 `session_id` 的工具事件为准。
+//! 不在 workspace/artifacts 子目录下的事件(如 sessions/<id>.json session 元数据本身)忽略。
 //!
 //! Debouncing：notify 后端(inotify)对单个文件写入可能 fire 多次事件
 //! (Create + 多次 Modify(Data) + 最后 Modify(Metadata))。watcher 端不 debounce,
@@ -77,14 +82,12 @@ fn handle_event(app: &AppHandle, ev: &Event, root: &Path) {
         };
         // 两类要关心的产物:
         // ① `sessions/<id>/workspace/` 下的(write_file 等的常规产出)。
-        // ② `sessions/default/artifacts/` 下的——MCP 文件类工具(如 pptx)的固定落点
-        //    (env PINVOU3_SESSION_ARTIFACTS,写死 default),不在任何 workspace 下。
-        //    它归到「活跃会话」显示(session_id 留空 → 前端 onSessionEvent 回退 activeSessionId),
-        //    免得 pptx 落在 default/artifacts → 任何会话面板都看不到。
+        // ② `sessions/<id>/artifacts/` 下的 session 专属产物。
+        // `sessions/default/artifacts/` 是 MCP 办公产物公共落点，前端会跳过它的
+        // watcher 事件，真实归属以 chat:tool_end 的 session_id 为准。
         let in_workspace = rel.starts_with("workspace/") || rel.starts_with("workspace\\");
-        let in_default_artifacts = session_id == "default"
-            && (rel.starts_with("artifacts/") || rel.starts_with("artifacts\\"));
-        if !in_workspace && !in_default_artifacts {
+        let in_artifacts = rel.starts_with("artifacts/") || rel.starts_with("artifacts\\");
+        if !in_workspace && !in_artifacts {
             continue;
         }
         // 跳过 LibreOffice/Word/编辑器临时文件 (.~lock / ~$ / .swp 等)
@@ -107,12 +110,6 @@ fn handle_event(app: &AppHandle, ev: &Event, root: &Path) {
         if path.is_dir() {
             continue; // 目录本身不是产物(removed 时路径已不存在 → 放行让前端兜底 untrack)
         }
-        // default/artifacts 的成品归到活跃会话(留空 → 前端回退 active);workspace 的照旧。
-        let emit_session_id = if in_default_artifacts {
-            String::new()
-        } else {
-            session_id
-        };
         // 按 path 当前存在性判定事件类型 ——
         // - Nautilus 删除 = mv to trash → Modify(Name) + 文件不存在 → removed
         // - LLM 写完 = Create / Modify(Data) → 文件存在 → upsert
@@ -120,7 +117,7 @@ fn handle_event(app: &AppHandle, ev: &Event, root: &Path) {
         let _ = app.emit(
             "artifact:disk",
             json!({
-                "session_id": emit_session_id,
+                "session_id": session_id,
                 "path": path.to_string_lossy(),
                 "event": event_type,
             }),

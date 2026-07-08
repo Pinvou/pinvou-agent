@@ -379,7 +379,9 @@
     if (!sid) return;
     var buf = sid === state.activeSessionId ? null : sessionStates[sid];
     var msgs = buf ? buf.messages : state.messages;
-    var arts = buf ? buf.artifacts : state.artifacts;
+    var arts = filterSessionArtifacts(buf ? buf.artifacts : state.artifacts, sid);
+    if (buf) buf.artifacts = arts;
+    else state.artifacts = arts;
     try {
       await invoke("save_session_messages", { id: sid, messages: msgs });
       try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch (_) {}
@@ -591,6 +593,7 @@
         var p = typeof a === "string" ? a : (a.storage_path || a.path || "");
         return { path: p, basename: basename(p) };
       }) : [];
+      state.artifacts = filterSessionArtifacts(state.artifacts, state.activeSessionId);
       rerenderFromMessages();
       await syncModeState();
       await syncActivePersona();
@@ -782,6 +785,7 @@
     var lastDirtyArtifactId = {};
     var writtenArtifacts = {}; // write/append 写过的 path=产物;没 present 时兜底补首卡
     var presentedArtifacts = {}; // 整篇 present_artifact 过的 path → 别再兜底补首卡(present 会出卡,否则重复)
+    var presentedArtifactNames = {}; // path 可能一边相对一边绝对,basename 去重防重复卡
     for (var di = 0; di < state.messages.length; di++) {
       var dc = state.messages[di].content;
       if (!Array.isArray(dc)) continue;
@@ -795,7 +799,21 @@
           }
         } else if (db.type === "tool_use" && isPresentArtifactTool(db.name)) {
           var pap = extractArtifactPath(db.input);
-          if (pap) presentedArtifacts[pap] = true;
+          var pres = resultById[db.id];
+          var pp = presentArtifactAbsPath(pres && pres.content, pap);
+          if (pp) {
+            presentedArtifacts[pp] = true;
+            presentedArtifactNames[basename(pp)] = true;
+          }
+        } else if (db.type === "tool_use") {
+          var gres = resultById[db.id];
+          if (!(gres && gres.is_error)) {
+            var gp = artifactPathFromToolOutput(gres && gres.content);
+            if (gp && isDeliverable(gp)) {
+              lastDirtyArtifactId[gp] = db.id;
+              writtenArtifacts[gp] = true;
+            }
+          }
         }
       }
     }
@@ -888,6 +906,19 @@
             continue;
           }
           addChatItem({ type: "tool", toolId: b.id, name: b.name, args: b.input, output: null, success: null, state: "pending" });
+          var gres2 = resultById[b.id];
+          var gap = artifactPathFromToolOutput(gres2 && gres2.content);
+          if (!(gres2 && gres2.is_error) && gap && isDeliverable(gap) && lastDirtyArtifactId[gap] === b.id && !presentedArtifacts[gap] && !presentedArtifactNames[basename(gap)]) {
+            var gprev = findPresentedArtifact(gap);
+            if (gprev) {
+              addChatItem({
+                type: "artifact_card", path: gprev.path, title: gprev.title,
+                description: gprev.description, time: "", sessionId: state.activeSessionId,
+              });
+            } else if (writtenArtifacts[gap]) {
+              addChatItem({ type: "artifact_card", path: gap, title: basename(gap), description: "", time: "", sessionId: state.activeSessionId });
+            }
+          }
           // 还原"自动续卡":write_file/append_file 改的文件之前 present 过 → 续一张
           // 成品卡(与实时 tool_end 的自动续逻辑对齐,切会话不丢)。present 的卡按
           // 顺序在前(必须先 present 才进集合),此处 findPresentedArtifact 能命中。
@@ -902,7 +933,7 @@
                   type: "artifact_card", path: wprev.path, title: wprev.title,
                   description: wprev.description, time: "", sessionId: state.activeSessionId,
                 });
-              } else if (writtenArtifacts[wap] && !presentedArtifacts[wap]) {
+              } else if (writtenArtifacts[wap] && !presentedArtifacts[wap] && !presentedArtifactNames[basename(wap)]) {
                 // AI 写了产物但全程没 present_artifact → 兜底补首卡(与实时 chat:done 对齐)
                 addChatItem({ type: "artifact_card", path: wap, title: basename(wap), description: "", time: "", sessionId: state.activeSessionId });
               }
@@ -961,6 +992,28 @@
   function isAbsPath(p) {
     return typeof p === "string" && (p.charAt(0) === "/" || /^[A-Za-z]:[\\/]/.test(p));
   }
+  function normalizedPath(p) {
+    return String(p || "").replace(/\\/g, "/");
+  }
+  function isSharedMcpArtifactPath(path) {
+    return normalizedPath(path).indexOf("/sessions/default/artifacts/") >= 0;
+  }
+  function artifactBelongsToSession(path, sid) {
+    if (!path || !sid) return false;
+    if (!isAbsPath(path)) return true;
+    if (isSharedMcpArtifactPath(path)) return true;
+    var normalized = normalizedPath(path);
+    if (normalized.indexOf("/sessions/") >= 0) {
+      return normalized.indexOf("/sessions/" + sid + "/workspace/") >= 0 ||
+        normalized.indexOf("/sessions/" + sid + "/artifacts/") >= 0;
+    }
+    return true;
+  }
+  function filterSessionArtifacts(artifacts, sid) {
+    return (Array.isArray(artifacts) ? artifacts : []).filter(function (a) {
+      return artifactBelongsToSession(a && a.path, sid);
+    });
+  }
   // 「成品型」扩展名:write_file 写出这类文件即自动当成品进面板(模型常忘 present_artifact)。
   // 办公文档 + markdown 报告 + 数据表 + 图片 + 打包件都算成品(覆盖 AI 常见产出格式)。
   // 中间/草稿(.txt/.json/.xml 等)刻意不在此列 → 不进面板,避免一堆过程文件污染产物列表;
@@ -975,6 +1028,7 @@
   }
   function trackArtifact(path) {
     if (!path) return;
+    if (state.activeSessionId && !artifactBelongsToSession(path, state.activeSessionId)) return;
     var bn = basename(path);
     for (var i = 0; i < state.artifacts.length; i++) {
       if (basename(state.artifacts[i].path) === bn) {
@@ -989,6 +1043,12 @@
     }
     state.artifacts.push({ path: path, basename: bn });
     notify();
+  }
+  function markTurnDirtyArtifact(path) {
+    var bn = basename(path);
+    if (!bn) return;
+    if ((state.turnDirtyArtifacts || []).some(function (p) { return basename(p) === bn; })) return;
+    state.turnDirtyArtifacts.push(path);
   }
   function untrackArtifact(path) {
     var before = state.artifacts.length;
@@ -1340,17 +1400,31 @@
   // 模型常给相对路径,直接拿 args.path 渲染会让卡片 path 是相对,点 Open 报「path must be
   // absolute」,且模型可能重试再 present 一次出双卡。取不到 abs_path 才回退原始 path。
   // 兼容两种结果格式:直接 payload {abs_path} / MCP content 数组 {content:[{text}]} 包一层。
-  function presentArtifactAbsPath(toolResultContent, fallbackPath) {
-    fallbackPath = fallbackPath || "";
+  function parseToolResultPayload(toolResultContent) {
     try {
       var raw = typeof toolResultContent === "string" ? toolResultContent : JSON.stringify(toolResultContent || {});
       var obj = JSON.parse(raw);
-      if (obj && typeof obj.abs_path === "string" && obj.abs_path) return obj.abs_path;
       if (obj && obj.content && obj.content[0] && typeof obj.content[0].text === "string") {
-        var inner = JSON.parse(obj.content[0].text);
-        if (inner && typeof inner.abs_path === "string" && inner.abs_path) return inner.abs_path;
+        try {
+          var inner = JSON.parse(obj.content[0].text);
+          if (inner && typeof inner === "object") return inner;
+        } catch (_) {}
       }
-    } catch (_) {}
+      return obj;
+    } catch (_) {
+      return null;
+    }
+  }
+  function artifactPathFromToolOutput(toolResultContent) {
+    var obj = parseToolResultPayload(toolResultContent);
+    if (!obj || typeof obj !== "object") return null;
+    var p = obj.abs_path || obj.path || obj.file_path || obj.local_path;
+    return typeof p === "string" && p ? p : null;
+  }
+  function presentArtifactAbsPath(toolResultContent, fallbackPath) {
+    fallbackPath = fallbackPath || "";
+    var parsed = artifactPathFromToolOutput(toolResultContent);
+    if (parsed) return parsed;
     return fallbackPath;
   }
 
@@ -1456,6 +1530,17 @@
       return;
     }
 
+    // 通用工具产物兜底：PPT / 公文等 MCP 工具会先返回 {path: "..."}，
+    // 随后模型按约定再调 present_artifact。若模型漏调，仍把该成品归到当前
+    // tool_end 所属 session，并在 chat:done 统一补一张成品卡。
+    if (p.success && meta && !isPresentArtifactTool(meta.name)) {
+      var producedPath = artifactPathFromToolOutput(p.output);
+      if (producedPath && isDeliverable(producedPath)) {
+        trackArtifact(producedPath);
+        markTurnDirtyArtifact(producedPath);
+      }
+    }
+
     // load_skill：卡照出，但不把返回的 SKILL.md 全文写进卡，展开只见占位（防设计系统泄露）。
     var outForCard = (meta && meta.name === "load_skill") ? "（技能已加载，内容不展示）" : p.output;
     updateToolItem(p.id, outForCard, p.success);
@@ -1482,9 +1567,7 @@
         // turnDirty 收不到 → 实时不补成品卡(只能靠重启 rerender 才出)。basename 比对消除该竞态。
         var _apbn = basename(ap);
         var isArtifact = !!findPresentedArtifact(ap) || state.artifacts.some(function (a) { return basename(a.path) === _apbn; });
-        if (isArtifact && state.turnDirtyArtifacts.indexOf(ap) < 0) {
-          state.turnDirtyArtifacts.push(ap);
-        }
+        if (isArtifact) markTurnDirtyArtifact(ap);
       }
     }
 
@@ -1612,6 +1695,9 @@
   listen("artifact:disk", function (e) {
     var p = e.payload || {};
     if (!p.path) return;
+    // 公共 MCP 产物目录没有真实 session 归属；归属由对应 chat:tool_end
+    // 的 session_id 决定。这里跳过，避免文件系统事件把 PPT/公文错塞到 default/当前会话。
+    if ((p.session_id === "default" || !p.session_id) && isSharedMcpArtifactPath(p.path)) return;
     onSessionEvent(e, function () {
       if (p.event === "removed") { untrackArtifact(p.path); return; }
       // 面板只收成品:成品型扩展名 或 present_artifact 过的;中间 / infra / 目录不进面板
