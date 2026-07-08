@@ -425,6 +425,7 @@ pub fn run() {
             commands::read_artifact_thumbnail,
             commands::open_in_system,
             commands::open_containing_folder,
+            commands::reveal_session_folder,
             commands::open_artifact_window,
             detach::open_detached_window,
             detach::begin_detach_drag,

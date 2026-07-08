@@ -2150,6 +2150,65 @@ fn shell_open(arg: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn valid_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+#[cfg(target_os = "windows")]
+fn reveal_path_in_file_manager(target: &std::path::Path) -> Result<(), String> {
+    let target = strip_verbatim(target);
+    std::process::Command::new("explorer")
+        .arg(format!("/select,{target}"))
+        .spawn()
+        .map_err(|e| format!("explorer select failed: {e}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn reveal_path_in_file_manager(target: &std::path::Path) -> Result<(), String> {
+    let target = strip_verbatim(target);
+    std::process::Command::new("open")
+        .args(["-R", &target])
+        .spawn()
+        .map_err(|e| format!("open -R failed: {e}"))?;
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn reveal_path_in_file_manager(target: &std::path::Path) -> Result<(), String> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| format!("no parent dir for {}", target.display()))?;
+
+    if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some() {
+        if let Ok(url) = tauri::Url::from_directory_path(target) {
+            let uri = url.to_string();
+            let items_arg = format!("array:string:{uri}");
+            if let Ok(output) = std::process::Command::new("dbus-send")
+                .args([
+                    "--session",
+                    "--dest=org.freedesktop.FileManager1",
+                    "--type=method_call",
+                    "/org/freedesktop/FileManager1",
+                    "org.freedesktop.FileManager1.ShowItems",
+                    &items_arg,
+                    "string:",
+                ])
+                .output()
+            {
+                if output.status.success() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    shell_open(&strip_verbatim(parent))
+}
+
 /// 去掉 Windows `canonicalize` 产出的 `\\?\` verbatim 前缀（含 UNC 形式）。
 /// start/explorer 不识别该前缀，不剥会"打不开"。非 Windows 原样返回。
 fn strip_verbatim(p: &std::path::Path) -> String {
@@ -2334,6 +2393,26 @@ pub async fn open_containing_folder(
         .parent()
         .ok_or_else(|| format!("no parent dir for {}", p.display()))?;
     shell_open(&strip_verbatim(dir))
+}
+
+/// 在文件管理器里定位 session 文件夹。对标 WorkBuddy:打开所有任务文件夹的上级目录,
+/// 并尽可能选中当前任务文件夹；Linux 文件管理器不支持选中时退回打开 sessions 根目录。
+#[tauri::command]
+pub async fn reveal_session_folder(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    if !valid_session_id(&session_id) {
+        return Err("invalid session id".into());
+    }
+    store
+        .load(&session_id)
+        .map_err(|e| format!("load_session({session_id}): {e:?}"))?;
+    let dir = crate::bridge::paths::sessions_root().join(&session_id);
+    if !dir.is_dir() {
+        return Err(format!("session folder not found: {}", dir.display()));
+    }
+    reveal_path_in_file_manager(&dir)
 }
 
 /// 在 Tauri 新窗口里加载 HTML 产物。绕过 snap 浏览器对 `~/.xxx/` 隐藏目录的沙箱限制。
