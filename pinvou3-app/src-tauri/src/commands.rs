@@ -77,6 +77,7 @@ pub async fn chat(
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
+    let raw_message = message.clone();
     crate::timing::start_turn(&sid);
     let mut full = build_message_with_attachments(
         message,
@@ -102,6 +103,25 @@ pub async fn chat(
     if let Some(body) = store.take_pending_persona_body(&sid) {
         full = format!("{body}\n\n---\n\n{full}");
     }
+    let memory_enabled = crate::memory::memory_enabled();
+    if memory_enabled {
+        crate::memory::record_turn_user(&sid, &raw_message);
+    }
+    match crate::memory::runtime_snapshot(&sid) {
+        Ok(snapshot) => {
+            let _ = app.emit(
+                "chat:memory",
+                serde_json::json!({
+                    "session_id": sid.clone(),
+                    "items": snapshot.items,
+                    "runtime_path": snapshot.runtime_path,
+                }),
+            );
+        }
+        Err(err) => {
+            eprintln!("[pinvou3-app] refresh memory runtime failed for session {sid}: {err}");
+        }
+    }
     // Agentic RAG:该 session 挂了知识集 → 每 turn prepend Self-RAG 自检引导,让模型自己
     // 调 kb_search 工具(engine 已注入)检索、严格基于结果作答、无依据就说不知道。不再自动
     // 注入片段(注入式已废弃)。collection_name 是单行查询,直接调即可(非大查询不必 spawn)。
@@ -112,13 +132,18 @@ pub async fn chat(
     // 状态当普通文本复述给用户。
     if let Some(cid) = store.mounted_collection(&sid) {
         let disallowed = compute_disallowed_tools(&app);
-        let kb_search_hidden = disallowed.iter().any(|t| t.eq_ignore_ascii_case("kb_search"));
+        let kb_search_hidden = disallowed
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case("kb_search"));
         pool.set_disallowed_all(disallowed).await;
         if !kb_search_hidden {
             let coll_name = app
                 .try_state::<KnowledgeService>()
                 .and_then(|kb| kb.l1().collection_name(cid).ok().flatten());
-            full = format!("{}\n\n---\n\n{full}", build_kb_agentic_guide(coll_name.as_deref()));
+            full = format!(
+                "{}\n\n---\n\n{full}",
+                build_kb_agentic_guide(coll_name.as_deref())
+            );
         }
     }
     // 取该 session 的 mode。
@@ -172,14 +197,21 @@ pub fn session_unmount_collection(session_id: String, store: State<'_, SessionSt
 
 /// 读会话当前挂载的知识集 id(前端切会话时重读,恢复挂载条显示)。
 #[tauri::command]
-pub fn session_mounted_collection(session_id: String, store: State<'_, SessionStore>) -> Option<i64> {
+pub fn session_mounted_collection(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Option<i64> {
     store.mounted_collection(&session_id)
 }
 
 /// 把图片附件拷进 session workspace 的 `attachments/` 子目录,返回供 `image_analyze`
 /// 使用的 **workspace 相对路径**(image_analyze 只接受不逃逸 workspace 的相对路径)。
 /// 失败返回 None,上层降级为提示无法读图。
-fn stage_image_in_workspace(src: &str, basename: &str, workspace: &std::path::Path) -> Option<String> {
+fn stage_image_in_workspace(
+    src: &str,
+    basename: &str,
+    workspace: &std::path::Path,
+) -> Option<String> {
     let dir = workspace.join("attachments");
     std::fs::create_dir_all(&dir).ok()?;
     // 防重名:已存在则 name-1.ext / name-2.ext 递增。
@@ -406,7 +438,10 @@ fn refresh_safe_prefs(mut prefs: UserPrefs) -> UserPrefs {
     prefs
 }
 
-fn apply_model_credential(mut model: SavedModel, old: Option<&SavedModel>) -> Result<SavedModel, String> {
+fn apply_model_credential(
+    mut model: SavedModel,
+    old: Option<&SavedModel>,
+) -> Result<SavedModel, String> {
     let store = SystemCredentialStore::new();
     let action = model.credential_action.unwrap_or_else(|| {
         if model.api_key.trim().is_empty() {
@@ -438,9 +473,7 @@ fn apply_model_credential(mut model: SavedModel, old: Option<&SavedModel>) -> Re
                 model.mark_missing();
             } else {
                 let reference = model.credential_reference();
-                store
-                    .set(&reference, &key)
-                    .map_err(|e| e.user_message())?;
+                store.set(&reference, &key).map_err(|e| e.user_message())?;
                 model.mark_configured(reference);
             }
         }
@@ -450,9 +483,7 @@ fn apply_model_credential(mut model: SavedModel, old: Option<&SavedModel>) -> Re
                 .clone()
                 .or_else(|| old.and_then(|m| m.credential_ref.clone()))
                 .unwrap_or_else(|| model.credential_reference());
-            store
-                .delete(&reference)
-                .map_err(|e| e.user_message())?;
+            store.delete(&reference).map_err(|e| e.user_message())?;
             model.mark_missing();
         }
     }
@@ -581,7 +612,10 @@ pub async fn delete_model(id: String) -> Result<(), String> {
     if prefs.advanced.saved_models.len() <= 1 {
         return Err("至少保留一个模型".to_string());
     }
-    if let Some(reference) = prefs.model_by_id(&id).and_then(|m| m.credential_ref.clone()) {
+    if let Some(reference) = prefs
+        .model_by_id(&id)
+        .and_then(|m| m.credential_ref.clone())
+    {
         SystemCredentialStore::new()
             .delete(&reference)
             .map_err(|e| sanitize_command_error("delete_model", e.user_message()))?;
@@ -720,10 +754,7 @@ fn voice_temp_wav_path() -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    std::env::temp_dir().join(format!(
-        "pinvou3-voice-{}-{stamp}.wav",
-        std::process::id()
-    ))
+    std::env::temp_dir().join(format!("pinvou3-voice-{}-{stamp}.wav", std::process::id()))
 }
 
 #[cfg(windows)]
@@ -949,7 +980,8 @@ pub async fn transcribe_voice_audio(
             && crate::voice_asr::engine_path().is_file()
             && crate::voice_asr::model_path().is_file()
         {
-            crate::voice_asr::transcribe(&wav_path).map(|text| LocalAsrOutput { text })
+            crate::voice_asr::transcribe(&wav_path)
+                .map(|text| LocalAsrOutput { text })
                 .map_err(|e| VoiceCommandError::new("recognition_failed", "transcribing", e))
         } else {
             run_local_asr_cli(&wav_path)
@@ -988,7 +1020,10 @@ pub async fn update_settings(prefs: UserPrefs) -> Result<(), String> {
 
 /// 保存设置后立即重启应用（模型/后端切换后需要重启才能生效）。
 #[tauri::command]
-pub async fn save_settings_and_restart(prefs: UserPrefs, app: tauri::AppHandle) -> Result<(), String> {
+pub async fn save_settings_and_restart(
+    prefs: UserPrefs,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     prepare_prefs_for_save(prefs)?
         .save()
         .map_err(|e| format!("save settings failed: {e:?}"))?;
@@ -1115,7 +1150,9 @@ pub struct BackendStatus {
 }
 
 #[tauri::command]
-pub async fn get_backend_status(_monitor: State<'_, MonitorState>) -> Result<BackendStatus, String> {
+pub async fn get_backend_status(
+    _monitor: State<'_, MonitorState>,
+) -> Result<BackendStatus, String> {
     // Lightweight: 只 probe vLLM,不跑 nvidia-smi / RAM 采样
     let vllm = crate::monitor::vllm_snapshot(
         &crate::monitor::vllm_base_url(),
@@ -1150,8 +1187,8 @@ pub async fn list_sessions(store: State<'_, SessionStore>) -> Result<Vec<Session
     metas.retain(|m| {
         !store.is_hidden(&m.id)
             && store
-            .active_skill(&m.id)
-            .map_or(true, |b| b.project_dir.is_none())
+                .active_skill(&m.id)
+                .map_or(true, |b| b.project_dir.is_none())
     });
     Ok(metas
         .into_iter()
@@ -1168,7 +1205,9 @@ pub async fn list_sessions(store: State<'_, SessionStore>) -> Result<Vec<Session
 pub async fn list_archived_sessions(
     store: State<'_, SessionStore>,
 ) -> Result<Vec<HiddenSessionListItem>, String> {
-    let mut metas = store.list().map_err(|e| format!("list_archived_sessions: {e:?}"))?;
+    let mut metas = store
+        .list()
+        .map_err(|e| format!("list_archived_sessions: {e:?}"))?;
     metas.retain(|m| {
         store.is_hidden(&m.id)
             && store
@@ -1318,27 +1357,31 @@ pub async fn save_session_artifacts(
 /// app 中途重启(内存跟踪丢失)影响。过滤规则与 file_watcher::should_skip 对齐。
 #[tauri::command]
 pub async fn list_workspace_files(session_id: String) -> Result<Vec<String>, String> {
-    let dir = crate::bridge::paths::session_workspace_dir(&session_id);
     let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
+    for dir in [
+        crate::bridge::paths::session_workspace_dir(&session_id),
+        crate::bridge::paths::session_artifacts_dir(&session_id),
+    ] {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                if name.is_empty()
+                    || name.starts_with('.')
+                    || name.starts_with("~$")
+                    || name.ends_with('~')
+                    || name.ends_with(".swp")
+                    || name.ends_with(".swo")
+                    || name.ends_with(".tmp")
+                    || name.ends_with(".bak")
+                {
+                    continue;
+                }
+                out.push(path.to_string_lossy().to_string());
             }
-            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            if name.is_empty()
-                || name.starts_with('.')
-                || name.starts_with("~$")
-                || name.ends_with('~')
-                || name.ends_with(".swp")
-                || name.ends_with(".swo")
-                || name.ends_with(".tmp")
-                || name.ends_with(".bak")
-            {
-                continue;
-            }
-            out.push(path.to_string_lossy().to_string());
         }
     }
     out.sort();
@@ -1413,6 +1456,529 @@ pub async fn get_disabled_connectors() -> Result<Vec<String>, String> {
     Ok(crate::bridge::marketplace::load_disabled_connectors())
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryProfileState {
+    pub profile: crate::memory::MemoryProfile,
+    pub runtime: Option<crate::memory::RuntimeMemorySnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryWriteState<T> {
+    pub value: T,
+    pub runtime: Option<crate::memory::RuntimeMemorySnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryOverviewState {
+    pub profile: crate::memory::MemoryProfile,
+    pub preferences: Vec<crate::memory::PreferenceFile>,
+    pub work_context: Vec<crate::memory::WorkContextFile>,
+    pub current_focus: Vec<crate::memory::TimedMemoryItem>,
+    pub recent_activity: Vec<crate::memory::TimedMemoryItem>,
+    pub recent_work: Vec<crate::memory::RecentWorkItem>,
+    pub pending: Vec<crate::memory::PendingMemoryItem>,
+    pub never: Vec<crate::memory::NeverMemoryItem>,
+    pub runtime: Option<crate::memory::RuntimeMemorySnapshot>,
+    pub snapshot_path: String,
+}
+
+fn resolve_memory_session_id(session_id: Option<String>, store: &SessionStore) -> Option<String> {
+    session_id.or_else(|| store.active_id())
+}
+
+fn emit_memory_write_events(
+    app: &AppHandle,
+    session_id: &str,
+    events: &[crate::memory::MemoryWriteEvent],
+) {
+    if events.is_empty() {
+        return;
+    }
+    let _ = app.emit(
+        "chat:memory_write",
+        serde_json::json!({
+            "session_id": session_id,
+            "events": events,
+        }),
+    );
+}
+
+fn emit_memory_snapshot(
+    app: &AppHandle,
+    session_id: &str,
+    snapshot: &crate::memory::RuntimeMemorySnapshot,
+) {
+    let _ = app.emit(
+        "chat:memory",
+        serde_json::json!({
+            "session_id": session_id,
+            "items": &snapshot.items,
+            "runtime_path": &snapshot.runtime_path,
+        }),
+    );
+}
+
+fn refresh_memory_runtime_for_command(
+    session_id: Option<String>,
+    store: &SessionStore,
+    app: &AppHandle,
+) -> Result<Option<crate::memory::RuntimeMemorySnapshot>, String> {
+    match resolve_memory_session_id(session_id, store) {
+        Some(sid) => {
+            let snapshot = crate::memory::runtime_snapshot(&sid)
+                .map_err(|e| format!("render runtime memory: {e}"))?;
+            emit_memory_snapshot(app, &sid, &snapshot);
+            Ok(Some(snapshot))
+        }
+        None => Ok(None),
+    }
+}
+
+#[tauri::command]
+pub async fn get_memory_profile(
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+) -> Result<MemoryProfileState, String> {
+    let profile = crate::memory::load_profile().map_err(|e| format!("load profile: {e}"))?;
+    let runtime = match resolve_memory_session_id(session_id, &store) {
+        Some(sid) => Some(
+            crate::memory::runtime_snapshot(&sid)
+                .map_err(|e| format!("render runtime memory: {e}"))?,
+        ),
+        None => None,
+    };
+    Ok(MemoryProfileState { profile, runtime })
+}
+
+#[tauri::command]
+pub async fn update_memory_profile(
+    patch: crate::memory::ProfilePatch,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryProfileState, String> {
+    let profile =
+        crate::memory::update_profile(patch).map_err(|e| format!("update profile: {e}"))?;
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryProfileState { profile, runtime })
+}
+
+#[tauri::command]
+pub async fn clear_memory_profile(
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryProfileState, String> {
+    let profile = crate::memory::clear_profile().map_err(|e| format!("clear profile: {e}"))?;
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryProfileState { profile, runtime })
+}
+
+#[tauri::command]
+pub async fn get_memory_overview(
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+) -> Result<MemoryOverviewState, String> {
+    let profile = crate::memory::load_profile().map_err(|e| format!("load profile: {e}"))?;
+    let preferences =
+        crate::memory::list_preferences().map_err(|e| format!("load preferences: {e}"))?;
+    let work_context =
+        crate::memory::load_work_context().map_err(|e| format!("load work context: {e}"))?;
+    let current_focus =
+        crate::memory::load_current_focus().map_err(|e| format!("load current focus: {e}"))?;
+    let recent_activity =
+        crate::memory::load_recent_activity().map_err(|e| format!("load recent activity: {e}"))?;
+    let recent_work =
+        crate::memory::load_recent_work().map_err(|e| format!("load recent work: {e}"))?;
+    let pending =
+        crate::memory::load_pending_memory().map_err(|e| format!("load pending memory: {e}"))?;
+    let never =
+        crate::memory::load_never_memory().map_err(|e| format!("load never memory: {e}"))?;
+    let runtime = match resolve_memory_session_id(session_id, &store) {
+        Some(sid) => Some(
+            crate::memory::runtime_snapshot(&sid)
+                .map_err(|e| format!("render runtime memory: {e}"))?,
+        ),
+        None => None,
+    };
+    let snapshot_path = crate::memory::write_memory_snapshot_document(
+        &profile,
+        &preferences,
+        &work_context,
+        &current_focus,
+        &recent_activity,
+        &recent_work,
+        &pending,
+        &never,
+        runtime.as_ref(),
+    )
+    .map_err(|e| format!("write memory snapshot: {e}"))?
+    .display()
+    .to_string();
+    Ok(MemoryOverviewState {
+        profile,
+        preferences,
+        work_context,
+        current_focus,
+        recent_activity,
+        recent_work,
+        pending,
+        never,
+        runtime,
+        snapshot_path,
+    })
+}
+
+#[tauri::command]
+pub async fn list_pending_memory() -> Result<Vec<crate::memory::PendingMemoryItem>, String> {
+    crate::memory::load_pending_memory().map_err(|e| format!("load pending memory: {e}"))
+}
+
+#[tauri::command]
+pub async fn suggest_memory(
+    suggestion: crate::memory::MemorySuggestion,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<crate::memory::PendingMemoryItem>, String> {
+    let item = crate::memory::enqueue_memory_candidate(suggestion)
+        .map_err(|e| format!("suggest memory: {e}"))?;
+    if let Some(sid) = resolve_memory_session_id(session_id.clone(), &store) {
+        emit_memory_write_events(
+            &app,
+            &sid,
+            &[crate::memory::MemoryWriteEvent {
+                kind: item.kind.clone(),
+                action: "pending".to_string(),
+                id: item.id.clone(),
+                text: item.content.clone(),
+            }],
+        );
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: item,
+        runtime,
+    })
+}
+
+#[tauri::command]
+pub async fn confirm_pending_memory(
+    id: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<Option<crate::memory::MemoryWriteEvent>>, String> {
+    let event = crate::memory::confirm_pending_memory(&id)
+        .map_err(|e| format!("confirm pending memory: {e}"))?;
+    if let (Some(sid), Some(event)) = (
+        resolve_memory_session_id(session_id.clone(), &store),
+        event.as_ref(),
+    ) {
+        emit_memory_write_events(&app, &sid, std::slice::from_ref(event));
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: event,
+        runtime,
+    })
+}
+
+#[tauri::command]
+pub async fn ignore_pending_memory(
+    id: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<Option<crate::memory::MemoryWriteEvent>>, String> {
+    let event = crate::memory::ignore_pending_memory(&id)
+        .map_err(|e| format!("ignore pending memory: {e}"))?;
+    if let (Some(sid), Some(event)) = (
+        resolve_memory_session_id(session_id.clone(), &store),
+        event.as_ref(),
+    ) {
+        emit_memory_write_events(&app, &sid, std::slice::from_ref(event));
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: event,
+        runtime,
+    })
+}
+
+#[tauri::command]
+pub async fn never_pending_memory(
+    id: String,
+    reason: Option<String>,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<Option<crate::memory::MemoryWriteEvent>>, String> {
+    let event = crate::memory::never_pending_memory(&id, reason)
+        .map_err(|e| format!("never pending memory: {e}"))?;
+    if let (Some(sid), Some(event)) = (
+        resolve_memory_session_id(session_id.clone(), &store),
+        event.as_ref(),
+    ) {
+        emit_memory_write_events(&app, &sid, std::slice::from_ref(event));
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: event,
+        runtime,
+    })
+}
+
+#[tauri::command]
+pub async fn list_recent_work_memory() -> Result<Vec<crate::memory::RecentWorkItem>, String> {
+    crate::memory::load_recent_work().map_err(|e| format!("load recent work memory: {e}"))
+}
+
+#[tauri::command]
+pub async fn upsert_recent_work_memory(
+    patch: crate::memory::RecentWorkPatch,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<crate::memory::RecentWorkItem>, String> {
+    let item =
+        crate::memory::upsert_recent_work(patch).map_err(|e| format!("upsert recent work: {e}"))?;
+    if let Some(sid) = resolve_memory_session_id(session_id.clone(), &store) {
+        emit_memory_write_events(
+            &app,
+            &sid,
+            &[crate::memory::MemoryWriteEvent {
+                kind: "recent_work".to_string(),
+                action: "remembered".to_string(),
+                id: item.id.clone(),
+                text: item.title.clone(),
+            }],
+        );
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: item,
+        runtime,
+    })
+}
+
+#[tauri::command]
+pub async fn archive_recent_work_memory(
+    id: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<bool>, String> {
+    let changed =
+        crate::memory::archive_recent_work(&id).map_err(|e| format!("archive recent work: {e}"))?;
+    if changed {
+        if let Some(sid) = resolve_memory_session_id(session_id.clone(), &store) {
+            emit_memory_write_events(
+                &app,
+                &sid,
+                &[crate::memory::MemoryWriteEvent {
+                    kind: "recent_work".to_string(),
+                    action: "archived".to_string(),
+                    id,
+                    text: "近期工作已归档".to_string(),
+                }],
+            );
+        }
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: changed,
+        runtime,
+    })
+}
+
+#[tauri::command]
+pub async fn delete_memory_preference(
+    id: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<bool>, String> {
+    let changed =
+        crate::memory::delete_preference(&id).map_err(|e| format!("delete preference: {e}"))?;
+    if changed {
+        if let Some(sid) = resolve_memory_session_id(session_id.clone(), &store) {
+            emit_memory_write_events(
+                &app,
+                &sid,
+                &[crate::memory::MemoryWriteEvent {
+                    kind: "preference".to_string(),
+                    action: "deleted".to_string(),
+                    id,
+                    text: "偏好已删除".to_string(),
+                }],
+            );
+        }
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: changed,
+        runtime,
+    })
+}
+
+#[tauri::command]
+pub async fn update_memory_preference(
+    id: String,
+    patch: crate::memory::MemoryTextPatch,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<Option<crate::memory::PreferenceFile>>, String> {
+    let item = crate::memory::update_preference(&id, patch)
+        .map_err(|e| format!("update preference: {e}"))?;
+    if let (Some(sid), Some(item)) = (
+        resolve_memory_session_id(session_id.clone(), &store),
+        item.as_ref(),
+    ) {
+        emit_memory_write_events(
+            &app,
+            &sid,
+            &[crate::memory::MemoryWriteEvent {
+                kind: "preference".to_string(),
+                action: "remembered".to_string(),
+                id: item.id.clone(),
+                text: item.text.clone(),
+            }],
+        );
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: item,
+        runtime,
+    })
+}
+
+#[tauri::command]
+pub async fn update_work_context_memory(
+    id: String,
+    patch: crate::memory::MemoryTextPatch,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<Option<crate::memory::WorkContextFile>>, String> {
+    let item = crate::memory::update_work_context(&id, patch)
+        .map_err(|e| format!("update work context: {e}"))?;
+    if let (Some(sid), Some(item)) = (
+        resolve_memory_session_id(session_id.clone(), &store),
+        item.as_ref(),
+    ) {
+        emit_memory_write_events(
+            &app,
+            &sid,
+            &[crate::memory::MemoryWriteEvent {
+                kind: "work_context".to_string(),
+                action: "remembered".to_string(),
+                id: item.id.clone(),
+                text: item.text.clone(),
+            }],
+        );
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: item,
+        runtime,
+    })
+}
+
+#[tauri::command]
+pub async fn delete_work_context_memory(
+    id: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<bool>, String> {
+    let changed =
+        crate::memory::delete_work_context(&id).map_err(|e| format!("delete work context: {e}"))?;
+    if changed {
+        if let Some(sid) = resolve_memory_session_id(session_id.clone(), &store) {
+            emit_memory_write_events(
+                &app,
+                &sid,
+                &[crate::memory::MemoryWriteEvent {
+                    kind: "work_context".to_string(),
+                    action: "deleted".to_string(),
+                    id,
+                    text: "工作背景已删除".to_string(),
+                }],
+            );
+        }
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: changed,
+        runtime,
+    })
+}
+
+#[tauri::command]
+pub async fn update_timed_memory(
+    kind: String,
+    id: String,
+    patch: crate::memory::MemoryTextPatch,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<Option<crate::memory::TimedMemoryItem>>, String> {
+    let item = crate::memory::update_timed_memory(&kind, &id, patch)
+        .map_err(|e| format!("update timed memory: {e}"))?;
+    if let (Some(sid), Some(item)) = (
+        resolve_memory_session_id(session_id.clone(), &store),
+        item.as_ref(),
+    ) {
+        emit_memory_write_events(
+            &app,
+            &sid,
+            &[crate::memory::MemoryWriteEvent {
+                kind: item.kind.clone(),
+                action: "remembered".to_string(),
+                id: item.id.clone(),
+                text: item.text.clone(),
+            }],
+        );
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: item,
+        runtime,
+    })
+}
+
+#[tauri::command]
+pub async fn delete_timed_memory(
+    kind: String,
+    id: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<bool>, String> {
+    let changed = crate::memory::delete_timed_memory(&kind, &id)
+        .map_err(|e| format!("delete timed memory: {e}"))?;
+    if changed {
+        if let Some(sid) = resolve_memory_session_id(session_id.clone(), &store) {
+            emit_memory_write_events(
+                &app,
+                &sid,
+                &[crate::memory::MemoryWriteEvent {
+                    kind,
+                    action: "deleted".to_string(),
+                    id,
+                    text: "记忆已删除".to_string(),
+                }],
+            );
+        }
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: changed,
+        runtime,
+    })
+}
 
 /// 编辑/重发最后一轮 user 消息。
 /// engine 砍掉 session 末尾最近的 user+assistant 后，用 new_message 重发。
@@ -1466,7 +2032,12 @@ pub(crate) fn read_artifact_text_impl(path: &str) -> Result<String, String> {
 fn sanitize_title_filename(title: &str, fallback: &str) -> String {
     let cleaned: String = title
         .chars()
-        .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r' | '\0'))
+        .filter(|c| {
+            !matches!(
+                c,
+                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r' | '\0'
+            )
+        })
         .collect::<String>()
         .trim()
         .chars()
@@ -1521,11 +2092,21 @@ fn parse_product_manifest(report_text: &str) -> Vec<String> {
 /// 返回 (bu_id, 得分);得分 <8(单一信号)不可信,调用方回退。
 fn infer_product_bu(report: &str) -> Option<(String, i32)> {
     const BU: &[(&str, &str)] = &[
-        ("兵部", "bingbu"), ("户部", "hubu"), ("礼部", "libu"),
-        ("刑部", "xingbu"), ("工部", "gongbu"), ("吏部", "libu_renshi"),
+        ("兵部", "bingbu"),
+        ("户部", "hubu"),
+        ("礼部", "libu"),
+        ("刑部", "xingbu"),
+        ("工部", "gongbu"),
+        ("吏部", "libu_renshi"),
     ];
     const QA_WORDS: &[&str] = &["审核", "校验", "验收", "质检"];
-    const PRODUCT_WORDS: &[(&str, i32)] = &[("整合", 3), ("最终", 3), ("成品", 4), ("完整", 2), ("汇总", 2)];
+    const PRODUCT_WORDS: &[(&str, i32)] = &[
+        ("整合", 3),
+        ("最终", 3),
+        ("成品", 4),
+        ("完整", 2),
+        ("汇总", 2),
+    ];
     let mut scores: std::collections::HashMap<&str, i32> = Default::default();
     // 按 markdown 标题分节
     let mut sections: Vec<String> = Vec::new();
@@ -1560,7 +2141,11 @@ fn infer_product_bu(report: &str) -> Option<(String, i32)> {
             })
         };
         if let Some((_, en)) = BU.iter().rev().find(|(_, en)| names_bu(head, en)) {
-            let pts: i32 = PRODUCT_WORDS.iter().filter(|(k, _)| sec.contains(k)).map(|(_, w)| w).sum();
+            let pts: i32 = PRODUCT_WORDS
+                .iter()
+                .filter(|(k, _)| sec.contains(k))
+                .map(|(_, w)| w)
+                .sum();
             *scores.entry(en).or_default() += pts;
         }
     }
@@ -1627,8 +2212,8 @@ pub struct DeliverableItem {
 }
 
 const DELIVERABLE_EXTS: &[&str] = &[
-    "pptx", "ppt", "docx", "doc", "pdf", "html", "htm", "xlsx", "xls", "md", "csv", "png",
-    "jpg", "jpeg", "svg", "gif", "webp", "zip",
+    "pptx", "ppt", "docx", "doc", "pdf", "html", "htm", "xlsx", "xls", "md", "csv", "png", "jpg",
+    "jpeg", "svg", "gif", "webp", "zip",
 ];
 
 fn deliverable_category(ext: &str) -> &'static str {
@@ -1701,7 +2286,11 @@ pub async fn list_deliverable_index() -> Result<Vec<DeliverableItem>, String> {
                 session_id: view.metadata.id.clone(),
                 source: view.metadata.title.clone(),
                 mtime,
-                size: if meta.len() > 0 { meta.len() } else { art.byte_size },
+                size: if meta.len() > 0 {
+                    meta.len()
+                } else {
+                    art.byte_size
+                },
             };
             by_path
                 .entry(path)
@@ -1747,7 +2336,9 @@ pub async fn list_deliverables(project_dir: String) -> Result<serde_json::Value,
         let mut md_idx = 0usize;
         for rel in &declared {
             let cand = p.join(rel);
-            let Ok(canon) = std::fs::canonicalize(&cand) else { continue };
+            let Ok(canon) = std::fs::canonicalize(&cand) else {
+                continue;
+            };
             if !canon.starts_with(&canon_root) || !canon.is_file() {
                 continue;
             }
@@ -1776,7 +2367,10 @@ pub async fn list_deliverables(project_dir: String) -> Result<serde_json::Value,
                     "name": fname, "title": title, "path": dst.to_string_lossy(), "size": bytes.len(),
                 }));
             } else {
-                let stem = orig_name.rsplit_once('.').map(|(a, _)| a).unwrap_or(&orig_name);
+                let stem = orig_name
+                    .rsplit_once('.')
+                    .map(|(a, _)| a)
+                    .unwrap_or(&orig_name);
                 products.push(serde_json::json!({
                     "name": orig_name, "title": stem, "path": canon.to_string_lossy(), "size": bytes.len(),
                 }));
@@ -1856,7 +2450,11 @@ pub async fn list_deliverables(project_dir: String) -> Result<serde_json::Value,
                 .and_then(|s| s.to_str())
                 .unwrap_or("")
                 .to_string();
-            if name.is_empty() || name.starts_with('.') || name.ends_with(".tmp") || name.ends_with('~') {
+            if name.is_empty()
+                || name.starts_with('.')
+                || name.ends_with(".tmp")
+                || name.ends_with('~')
+            {
                 continue;
             }
             let canon = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
@@ -1871,7 +2469,10 @@ pub async fn list_deliverables(project_dir: String) -> Result<serde_json::Value,
                 None
             }
             .unwrap_or_else(|| {
-                name.rsplit_once('.').map(|(a, _)| a).unwrap_or(&name).to_string()
+                name.rsplit_once('.')
+                    .map(|(a, _)| a)
+                    .unwrap_or(&name)
+                    .to_string()
             });
             let item = serde_json::json!({
                 "name": name, "title": title, "path": path.to_string_lossy(), "size": size,
@@ -1904,7 +2505,11 @@ pub async fn read_artifact_image_b64(path: String) -> Result<String, String> {
     if bytes.len() > 25_000_000 {
         return Err("图片过大(>25MB),请用外部打开".into());
     }
-    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("png").to_ascii_lowercase();
+    let ext = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("png")
+        .to_ascii_lowercase();
     let mime = match ext.as_str() {
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
@@ -1934,7 +2539,11 @@ pub async fn read_artifact_thumbnail(path: String) -> Result<Option<String>, Str
         Err(_) => return Ok(None), // 非 zip / 损坏：前端走紧凑态
     };
     // OOXML 缩略图固定路径；兜底几种扩展名（Office 默认写 .jpeg）。
-    for name in ["docProps/thumbnail.jpeg", "docProps/thumbnail.jpg", "docProps/thumbnail.png"] {
+    for name in [
+        "docProps/thumbnail.jpeg",
+        "docProps/thumbnail.jpg",
+        "docProps/thumbnail.png",
+    ] {
         let mut entry = match archive.by_name(name) {
             Ok(e) => e,
             Err(_) => continue,
@@ -1946,7 +2555,11 @@ pub async fn read_artifact_thumbnail(path: String) -> Result<Option<String>, Str
         if entry.read_to_end(&mut buf).is_err() || buf.is_empty() {
             continue;
         }
-        let mime = if name.ends_with(".png") { "image/png" } else { "image/jpeg" };
+        let mime = if name.ends_with(".png") {
+            "image/png"
+        } else {
+            "image/jpeg"
+        };
         let b64 = crate::file_ingest::base64_encode(&buf);
         return Ok(Some(format!("data:{mime};base64,{b64}")));
     }
@@ -1990,13 +2603,11 @@ pub(crate) fn artifact_info_impl(path: &str) -> Result<ArtifactInfo, String> {
         "docx" | "pptx" | "odt" => "docx",
         "xlsx" | "ods" => "xlsx",
         "doc" | "ppt" | "xls" | "rtf" => "legacy_office",
-        "txt" | "log" | "csv" | "json" | "yaml" | "yml" | "toml" | "xml"
-        | "rs" | "py" | "js" | "ts" | "go" | "c" | "cpp" | "h" | "hpp" | "sh"
-        | "bash" | "zsh" | "fish" | "bat" | "cmd" | "ps1"
-        | "pl" | "pm" | "lua" | "swift" | "kt" | "kts" | "scala" | "groovy" | "dart"
-        | "r" | "m" | "jl" | "erl" | "hrl"
-        | "css" | "scss" | "sass" | "less" | "vue" | "svelte" | "mdx"
-        | "sql" | "ini" | "conf" | "cfg" | "env" | "properties" | "reg"
+        "txt" | "log" | "csv" | "json" | "yaml" | "yml" | "toml" | "xml" | "rs" | "py" | "js"
+        | "ts" | "go" | "c" | "cpp" | "h" | "hpp" | "sh" | "bash" | "zsh" | "fish" | "bat"
+        | "cmd" | "ps1" | "pl" | "pm" | "lua" | "swift" | "kt" | "kts" | "scala" | "groovy"
+        | "dart" | "r" | "m" | "jl" | "erl" | "hrl" | "css" | "scss" | "sass" | "less" | "vue"
+        | "svelte" | "mdx" | "sql" | "ini" | "conf" | "cfg" | "env" | "properties" | "reg"
         | "diff" | "patch" | "lock" | "proto" | "graphql" | "gql" | "prisma" => "text",
         _ => "binary",
     };
@@ -2032,7 +2643,12 @@ pub struct VisualResult {
 
 impl VisualResult {
     fn unsupported(warning: Option<String>) -> Self {
-        VisualResult { mode: "unsupported".into(), html: None, images: vec![], warning }
+        VisualResult {
+            mode: "unsupported".into(),
+            html: None,
+            images: vec![],
+            warning,
+        }
     }
 }
 
@@ -2151,7 +2767,8 @@ fn shell_open(arg: &str) -> Result<(), String> {
         c.arg(arg);
         c
     };
-    cmd.spawn().map_err(|e| format!("open({arg}) failed: {e}"))?;
+    cmd.spawn()
+        .map_err(|e| format!("open({arg}) failed: {e}"))?;
     Ok(())
 }
 
@@ -2285,14 +2902,16 @@ pub struct ObsidianStatus {
 fn obsidian_config_path() -> Option<std::path::PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        std::env::var_os("APPDATA")
-            .map(|p| std::path::Path::new(&p).join("obsidian").join("obsidian.json"))
+        std::env::var_os("APPDATA").map(|p| {
+            std::path::Path::new(&p)
+                .join("obsidian")
+                .join("obsidian.json")
+        })
     }
     #[cfg(target_os = "macos")]
     {
         std::env::var_os("HOME").map(|p| {
-            std::path::Path::new(&p)
-                .join("Library/Application Support/obsidian/obsidian.json")
+            std::path::Path::new(&p).join("Library/Application Support/obsidian/obsidian.json")
         })
     }
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -2326,7 +2945,10 @@ fn pick_vault_path(text: &str) -> Option<String> {
 /// 没装就引导下载,没库就引导建库,而不是默默装上一个用不了的连接器。
 #[tauri::command]
 pub fn detect_obsidian() -> ObsidianStatus {
-    let not_installed = || ObsidianStatus { state: "not_installed".into(), vault_path: None };
+    let not_installed = || ObsidianStatus {
+        state: "not_installed".into(),
+        vault_path: None,
+    };
     let cfg = match obsidian_config_path() {
         Some(p) if p.is_file() => p,
         _ => return not_installed(),
@@ -2336,11 +2958,18 @@ pub fn detect_obsidian() -> ObsidianStatus {
         Err(_) => return not_installed(),
     };
     match pick_vault_path(&text) {
-        None => ObsidianStatus { state: "no_vault".into(), vault_path: None },
-        Some(p) if std::path::Path::new(&p).is_dir() => {
-            ObsidianStatus { state: "ok".into(), vault_path: Some(p) }
-        }
-        Some(p) => ObsidianStatus { state: "vault_missing".into(), vault_path: Some(p) },
+        None => ObsidianStatus {
+            state: "no_vault".into(),
+            vault_path: None,
+        },
+        Some(p) if std::path::Path::new(&p).is_dir() => ObsidianStatus {
+            state: "ok".into(),
+            vault_path: Some(p),
+        },
+        Some(p) => ObsidianStatus {
+            state: "vault_missing".into(),
+            vault_path: Some(p),
+        },
     }
 }
 
@@ -2544,10 +3173,13 @@ pub async fn equip_persona(
     persona_id: String,
     store: State<'_, SessionStore>,
 ) -> Result<crate::personas::PersonaSummary, String> {
-    let card = crate::personas::get(&persona_id)
-        .ok_or_else(|| format!("未知专家面具: {persona_id}"))?;
+    let card =
+        crate::personas::get(&persona_id).ok_or_else(|| format!("未知专家面具: {persona_id}"))?;
     let summary = card.summary();
-    store.set_pending_persona_body(&session_id, Some(crate::personas::equip_body_injection(&card)));
+    store.set_pending_persona_body(
+        &session_id,
+        Some(crate::personas::equip_body_injection(&card)),
+    );
     store.set_active_persona(&session_id, Some(persona_id));
     Ok(summary)
 }
@@ -2576,8 +3208,16 @@ impl PersonaInput {
             dept: self.dept,
             name: self.name,
             description: self.description,
-            emoji: if self.emoji.is_empty() { "🃏".into() } else { self.emoji },
-            color: if self.color.is_empty() { "#7C3AED".into() } else { self.color },
+            emoji: if self.emoji.is_empty() {
+                "🃏".into()
+            } else {
+                self.emoji
+            },
+            color: if self.color.is_empty() {
+                "#7C3AED".into()
+            } else {
+                self.color
+            },
             body: self.body,
             source: "user".into(),
             // 用户自创卡都是干活的领域卡,照常带全量工具;元卡标记只属内置卡。
@@ -2828,12 +3468,17 @@ pub async fn set_super_permission(
 #[tauri::command]
 pub async fn read_skill_body(name: String) -> Result<String, String> {
     use crate::bridge::paths;
-    let safe_name: String = name.chars().filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_').collect();
+    let safe_name: String = name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
     if safe_name != name || safe_name.is_empty() {
         return Err(format!("invalid skill name: {name}"));
     }
     // h3c-ppt 在 workflow/,review 等 skill 在 skills/;先查 workflow 再 fallback skills。
-    let wf_path = paths::bundle_workflow_dir().join(&safe_name).join("SKILL.md");
+    let wf_path = paths::bundle_workflow_dir()
+        .join(&safe_name)
+        .join("SKILL.md");
     let path = if wf_path.is_file() {
         wf_path
     } else {
@@ -3130,7 +3775,12 @@ pub async fn list_skills_v2() -> Result<Vec<SkillSummary>, String> {
         })
         .collect();
     // 有 phases 的排前面
-    out.sort_by(|a, b| b.phases.len().cmp(&a.phases.len()).then(a.name.cmp(&b.name)));
+    out.sort_by(|a, b| {
+        b.phases
+            .len()
+            .cmp(&a.phases.len())
+            .then(a.name.cmp(&b.name))
+    });
     Ok(out)
 }
 
@@ -3192,9 +3842,7 @@ pub async fn start_skill_session(
     use deepseek_tui::skills::SkillRegistry;
 
     if WORKFLOW_HIDDEN_SKILLS.contains(&name.as_str()) {
-        return Err(format!(
-            "{name} 是系统基础能力,不能直接启用为工作流"
-        ));
+        return Err(format!("{name} 是系统基础能力,不能直接启用为工作流"));
     }
 
     // 1) 只在 bundle/skills 里找 — 跟 list_skills_v2 source of truth 保持一致
@@ -3219,7 +3867,8 @@ pub async fn start_skill_session(
         // 多 session 并发:不显式 sync engine,EnginePool 下次 chat 时
         // get_or_spawn 为该 session rehydrate 专属 engine。
         store.set_active(Some(sid.clone()));
-        let session_data = store.load(&sid)
+        let session_data = store
+            .load(&sid)
             .map_err(|e| format!("load existing session: {e:?}"))?;
 
         return Ok(StartSkillSessionResult {
@@ -3300,10 +3949,14 @@ pub async fn start_workflow(
 
     // 0. 按 scenario 解析所属工作流(WorkflowRegistry 扫 bundle/workflow/*/workflow.json)。
     //    enabled=false 只挡新建,历史项目不受影响(resolver 侧不过滤)。
-    let wf = crate::workflow_registry::by_scenario(&scenario)
-        .ok_or_else(|| format!("scenario `{scenario}` 没有对应的工作流(bundle/workflow/*/workflow.json)"))?;
+    let wf = crate::workflow_registry::by_scenario(&scenario).ok_or_else(|| {
+        format!("scenario `{scenario}` 没有对应的工作流(bundle/workflow/*/workflow.json)")
+    })?;
     if !wf.enabled {
-        return Err(format!("工作流 `{}` 已禁用(workflow.json enabled=false)", wf.id));
+        return Err(format!(
+            "工作流 `{}` 已禁用(workflow.json enabled=false)",
+            wf.id
+        ));
     }
 
     let brief = brief_init.unwrap_or_else(|| serde_json::json!({}));
@@ -3417,7 +4070,6 @@ pub async fn kick_workflow(
     pool: State<'_, EnginePool>,
     app: AppHandle,
 ) -> Result<String, String> {
-
     // 取本次工作流对应的 session(前端显式传;回退 active)。每个工作流 = 一个 session,
     // 绝不能匹配错——harness_phase / 项目目录全都按这个 sid 走。
     let sid = session_id
@@ -3469,7 +4121,11 @@ pub async fn kick_workflow(
             Ok(format!("spawning {role_name}"))
         }
         // [per_page] 纵向 fan-out：并发派 N 个 per-page SubAgent。
-        crate::harness::HarnessAction::SpawnAgentBatch { base_role, role_name, tasks } => {
+        crate::harness::HarnessAction::SpawnAgentBatch {
+            base_role,
+            role_name,
+            tasks,
+        } => {
             let engine = pool
                 .get_or_spawn(&sid)
                 .await
@@ -3493,7 +4149,11 @@ pub async fn kick_workflow(
                     output_schema: t.output_schema,
                     expects_file_output: t.expects_file_output,
                 };
-                engine.handle.send(op).await.map_err(|e| format!("fan-out spawn: {e:?}"))?;
+                engine
+                    .handle
+                    .send(op)
+                    .await
+                    .map_err(|e| format!("fan-out spawn: {e:?}"))?;
             }
             crate::engine::emit_fanout(&app, &sid, &base_role); // 初始 fan-out 状态 → 前端
             Ok(format!("spawning {role_name} ({n} pages, 在飞={k})"))
@@ -3517,7 +4177,6 @@ pub async fn retry_workflow_role(
     pool: State<'_, EnginePool>,
     app: AppHandle,
 ) -> Result<String, String> {
-
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
@@ -3566,7 +4225,11 @@ pub async fn retry_workflow_role(
             Ok(format!("retry → spawning {role_name}"))
         }
         // [per_page] retry 重派整批（fan-out）。
-        crate::harness::HarnessAction::SpawnAgentBatch { base_role, role_name, tasks } => {
+        crate::harness::HarnessAction::SpawnAgentBatch {
+            base_role,
+            role_name,
+            tasks,
+        } => {
             let engine = pool
                 .get_or_spawn(&sid)
                 .await
@@ -3590,10 +4253,16 @@ pub async fn retry_workflow_role(
                     output_schema: t.output_schema,
                     expects_file_output: t.expects_file_output,
                 };
-                engine.handle.send(op).await.map_err(|e| format!("fan-out spawn: {e:?}"))?;
+                engine
+                    .handle
+                    .send(op)
+                    .await
+                    .map_err(|e| format!("fan-out spawn: {e:?}"))?;
             }
             crate::engine::emit_fanout(&app, &sid, &base_role); // 初始 fan-out 状态 → 前端
-            Ok(format!("retry → spawning {role_name} ({n} pages, 在飞={k})"))
+            Ok(format!(
+                "retry → spawning {role_name} ({n} pages, 在飞={k})"
+            ))
         }
         crate::harness::HarnessAction::Blocked { message } => {
             Err(format!("retry blocked: {message}"))
@@ -3744,7 +4413,9 @@ pub async fn get_role_outputs(
     // 非差事节点照旧用所属部的 registry outputs glob。
     let (bu, seq) = split_task_node(&role_id);
     let outputs: Vec<serde_json::Value> = if let Some(seq) = seq {
-        vec![serde_json::Value::String(format!("deliverables/{bu}_{seq}.md"))]
+        vec![serde_json::Value::String(format!(
+            "deliverables/{bu}_{seq}.md"
+        ))]
     } else {
         registry
             .get("agents")
@@ -3784,7 +4455,10 @@ pub async fn get_role_outputs(
                 if !p.is_file() {
                     continue;
                 }
-                let name = p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                let name = p
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
                 if !simple_glob_match(&file_name_pat, &name) {
                     continue;
                 }
@@ -3806,7 +4480,9 @@ fn simple_glob_match(pattern: &str, name: &str) -> bool {
     if let Some(idx) = pattern.find('*') {
         let prefix = &pattern[..idx];
         let suffix = &pattern[idx + 1..];
-        name.starts_with(prefix) && name.ends_with(suffix) && name.len() >= prefix.len() + suffix.len()
+        name.starts_with(prefix)
+            && name.ends_with(suffix)
+            && name.len() >= prefix.len() + suffix.len()
     } else {
         pattern == name
     }
@@ -3856,8 +4532,7 @@ pub async fn get_role_logs(
     if !log_path.exists() {
         return Ok(Vec::new());
     }
-    let content =
-        std::fs::read_to_string(&log_path).map_err(|e| format!("read log: {e}"))?;
+    let content = std::fs::read_to_string(&log_path).map_err(|e| format!("read log: {e}"))?;
     let limit = tail.unwrap_or(200);
     let mut out: Vec<serde_json::Value> = Vec::new();
     for line in content.lines() {
@@ -3923,8 +4598,8 @@ pub async fn get_gate_report(
     let Some((_, path)) = latest else {
         return Ok(None);
     };
-    let content =
-        std::fs::read_to_string(&path).map_err(|e| format!("read gate report {}: {e}", path.display()))?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("read gate report {}: {e}", path.display()))?;
     let mut v: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| format!("parse gate report: {e}"))?;
     // 附 _report_path 给前端调试
@@ -3991,9 +4666,7 @@ pub async fn save_agent_overrides(
     let obj = all
         .as_object_mut()
         .ok_or_else(|| "agent_overrides.json must be JSON object".to_string())?;
-    let role_entry = obj
-        .entry(role_id.clone())
-        .or_insert(serde_json::json!({}));
+    let role_entry = obj.entry(role_id.clone()).or_insert(serde_json::json!({}));
     if let (Some(role_obj), Some(patch_obj)) = (role_entry.as_object_mut(), patch.as_object()) {
         for (k, v) in patch_obj {
             role_obj.insert(k.clone(), v.clone());
@@ -4030,17 +4703,17 @@ pub async fn cancel_workflow_role(
             None => return Err("no project found".to_string()),
         };
         // 读 scenario
-        let scenario_content = std::fs::read_to_string(
-            project.join("_state").join("workflow_progress.json"),
-        )
-        .unwrap_or_default();
+        let scenario_content =
+            std::fs::read_to_string(project.join("_state").join("workflow_progress.json"))
+                .unwrap_or_default();
         let scenario = serde_json::from_str::<serde_json::Value>(&scenario_content)
             .ok()
             .and_then(|v| v.get("scenario").and_then(|s| s.as_str()).map(String::from))
             .unwrap_or_else(|| "solution_deck".to_string());
         // 走 scheduler 通用入口（用 std::process::Command 直接调）
-        let scheduler =
-            crate::harness::scheduler_path_for(&crate::harness::workflow_name_for_scenario(&scenario));
+        let scheduler = crate::harness::scheduler_path_for(
+            &crate::harness::workflow_name_for_scenario(&scenario),
+        );
         let output = std::process::Command::new("python3")
             .args([
                 scheduler.to_string_lossy().as_ref(),
@@ -4084,9 +4757,10 @@ pub async fn approve_workflow_gate(
         .await
         .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
     let rid = role_id.clone();
-    let action = tokio::task::spawn_blocking(move || {
-        crate::harness::approve_gate(&workspace, &rid)
-    }).await.map_err(|e| format!("spawn_blocking: {e}"))?;
+    let action =
+        tokio::task::spawn_blocking(move || crate::harness::approve_gate(&workspace, &rid))
+            .await
+            .map_err(|e| format!("spawn_blocking: {e}"))?;
     // approve 后 step_fresh 推进到下一角色：SpawnAgent（直派）/ AllDone / WaitForHuman。
     // 用 apply_harness_action 统一处理（set phase / emit / 派发），其值化结果回前端。
     let next_label = match &action {
@@ -4096,14 +4770,9 @@ pub async fn approve_workflow_gate(
         crate::harness::HarnessAction::Blocked { .. } => "blocked",
         _ => "noop",
     };
-    let handled = crate::engine::apply_harness_action(
-        action,
-        &app,
-        &engine.bridge,
-        &engine.handle,
-        &sid,
-    )
-    .await;
+    let handled =
+        crate::engine::apply_harness_action(action, &app, &engine.bridge, &engine.handle, &sid)
+            .await;
     Ok(serde_json::json!({"ok": handled, "next": next_label}))
 }
 
@@ -4127,23 +4796,19 @@ pub async fn reject_workflow_gate(
         .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
     let rid = role_id.clone();
     let r = reason.clone();
-    let action = tokio::task::spawn_blocking(move || {
-        crate::harness::reject_gate(&workspace, &rid, &r)
-    }).await.map_err(|e| format!("spawn_blocking: {e}"))?;
+    let action =
+        tokio::task::spawn_blocking(move || crate::harness::reject_gate(&workspace, &rid, &r))
+            .await
+            .map_err(|e| format!("spawn_blocking: {e}"))?;
     // reject 后 reject_gate 返回 SpawnAgent（重新派发同角色 SubAgent，附拒绝原因）。
     let next_label = match &action {
         crate::harness::HarnessAction::SpawnAgent { .. } => "redo",
         crate::harness::HarnessAction::Blocked { .. } => "blocked",
         _ => "noop",
     };
-    let handled = crate::engine::apply_harness_action(
-        action,
-        &app,
-        &engine.bridge,
-        &engine.handle,
-        &sid,
-    )
-    .await;
+    let handled =
+        crate::engine::apply_harness_action(action, &app, &engine.bridge, &engine.handle, &sid)
+            .await;
     Ok(serde_json::json!({"ok": handled, "next": next_label}))
 }
 
@@ -4161,9 +4826,10 @@ pub async fn get_workflow_state(
         .ok_or_else(|| "no active session".to_string())?;
     let workspace = pool.bridge.session_workspace(&sid);
     tokio::task::spawn_blocking(move || {
-        crate::harness::read_full_agent_state(&workspace)
-            .unwrap_or(serde_json::json!(null))
-    }).await.map_err(|e| format!("spawn_blocking: {e}"))
+        crate::harness::read_full_agent_state(&workspace).unwrap_or(serde_json::json!(null))
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {e}"))
 }
 
 /// [2026-06-06] 找最近一个「进行中」的工作流 run，供 app 启动后前端自动恢复看板。
@@ -4171,30 +4837,41 @@ pub async fn get_workflow_state(
 /// 里存在未完成角色的，按 progress 文件 mtime 取最近一个。
 /// 返回 {session_id, project_dir, scenario}，无则返回 null。
 #[tauri::command]
-pub async fn find_resumable_run(store: State<'_, SessionStore>) -> Result<serde_json::Value, String> {
+pub async fn find_resumable_run(
+    store: State<'_, SessionStore>,
+) -> Result<serde_json::Value, String> {
     let metas = store.list().map_err(|e| format!("list: {e:?}"))?;
     let mut best: Option<(std::time::SystemTime, String, String, String)> = None;
     for m in metas {
-        let Some(binding) = store.active_skill(&m.id) else { continue };
-        let Some(pd) = binding.project_dir else { continue };
-        let progress = std::path::Path::new(&pd).join("_state").join("workflow_progress.json");
-        let Ok(content) = std::fs::read_to_string(&progress) else { continue };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else { continue };
+        let Some(binding) = store.active_skill(&m.id) else {
+            continue;
+        };
+        let Some(pd) = binding.project_dir else {
+            continue;
+        };
+        let progress = std::path::Path::new(&pd)
+            .join("_state")
+            .join("workflow_progress.json");
+        let Ok(content) = std::fs::read_to_string(&progress) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
         // 未全完成 = roles 非空且存在 status != completed 的角色
-        let unfinished = v.get("roles").and_then(|r| r.as_object()).is_some_and(|rs| {
-            !rs.is_empty()
-                && rs
-                    .values()
-                    .any(|r| r.get("status").and_then(|s| s.as_str()) != Some("completed"))
-        });
+        let unfinished = v
+            .get("roles")
+            .and_then(|r| r.as_object())
+            .is_some_and(|rs| {
+                !rs.is_empty()
+                    && rs
+                        .values()
+                        .any(|r| r.get("status").and_then(|s| s.as_str()) != Some("completed"))
+            });
         if !unfinished {
             continue;
         }
-        let Some(scenario) = v
-            .get("scenario")
-            .and_then(|s| s.as_str())
-            .map(String::from)
-        else {
+        let Some(scenario) = v.get("scenario").and_then(|s| s.as_str()).map(String::from) else {
             continue;
         };
         // scenario 已没有对应工作流(如已下线存档的 h3c-ppt 项目)→ 跳过。
@@ -4255,7 +4932,11 @@ pub async fn get_session_active_skill(
         // [2026-06-04 白浪:chat 与工作流不混淆] workflow 绑定(带 project_dir)不回传
         // phases——兜住磁盘上历史持久化的旧绑定(带 SKILL.md 化石 phases),否则旧工作流
         // session 切回来 chat 顶部仍渲染节点条。skill 会话(无 project_dir)不受影响。
-        let phases = if b.project_dir.is_some() { Vec::new() } else { b.phases };
+        let phases = if b.project_dir.is_some() {
+            Vec::new()
+        } else {
+            b.phases
+        };
         let first: Option<String> = None;
         let _ = &phases;
         ActiveSkillState {
@@ -4283,17 +4964,14 @@ pub async fn list_session_skill_bindings(
     Ok(out)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn file_url_from_path_encodes_local_artifact_paths() {
-        let tmp = std::env::temp_dir().join(format!(
-            "pinvou3 file-url test {}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("pinvou3 file-url test {}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         let path = tmp.join("中文 page.html");
         std::fs::write(&path, "<!doctype html>").unwrap();
@@ -4304,9 +4982,18 @@ mod tests {
 
         assert_eq!(url.scheme(), "file");
         assert!(text.starts_with("file://"), "unexpected file URL: {text}");
-        assert!(!text.contains('\\'), "file URL must not contain backslashes: {text}");
-        assert!(!text.contains(r"\\?\"), "file URL must not contain verbatim prefix: {text}");
-        assert!(text.contains("%20"), "spaces should be percent-encoded: {text}");
+        assert!(
+            !text.contains('\\'),
+            "file URL must not contain backslashes: {text}"
+        );
+        assert!(
+            !text.contains(r"\\?\"),
+            "file URL must not contain verbatim prefix: {text}"
+        );
+        assert!(
+            text.contains("%20"),
+            "spaces should be percent-encoded: {text}"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -4421,9 +5108,13 @@ mod tests {
     #[test]
     fn merge_covers_recommendations_field() {
         let old = serde_json::json!([{"pos":1,"review":{"issues":[],"recommendations":[{"topic":"t","resolution":"modify"}]}}]);
-        let new = serde_json::json!([{"pos":1,"review":{"issues":[],"recommendations":[{"topic":"t"}]}}]);
+        let new =
+            serde_json::json!([{"pos":1,"review":{"issues":[],"recommendations":[{"topic":"t"}]}}]);
         let merged = merge_resolutions(old, new);
-        assert_eq!(merged[0]["review"]["recommendations"][0]["resolution"], "modify");
+        assert_eq!(
+            merged[0]["review"]["recommendations"][0]["resolution"],
+            "modify"
+        );
     }
 
     /// `open_external_url` 必须只放 metaso.cn / open.bochaai.com / console.bce.baidu.com /
@@ -4432,17 +5123,17 @@ mod tests {
     #[tokio::test]
     async fn open_external_url_rejects_off_allowlist_targets() {
         let rejected = [
-            "http://metaso.cn/",              // 非 https
-            "https://evil.example.com/",      // host 不在白名单
-            "https://metaso.cn.evil.com/",    // 子域钓鱼
+            "http://metaso.cn/",                       // 非 https
+            "https://evil.example.com/",               // host 不在白名单
+            "https://metaso.cn.evil.com/",             // 子域钓鱼
             "https://console.bce.baidu.com.evil.com/", // 百度子域钓鱼
-            "https://app.tavily.com.evil.com/", // tavily 子域钓鱼
-            "https://bce.baidu.com/",         // 非 console 子域,不放行
-            "javascript:alert(1)",            // js scheme
-            "file:///etc/passwd",             // file scheme
-            "https://google.com/",            // 任何第三方域
-            "",                               // 空串
-            "metaso.cn/",                     // 缺 scheme
+            "https://app.tavily.com.evil.com/",        // tavily 子域钓鱼
+            "https://bce.baidu.com/",                  // 非 console 子域,不放行
+            "javascript:alert(1)",                     // js scheme
+            "file:///etc/passwd",                      // file scheme
+            "https://google.com/",                     // 任何第三方域
+            "",                                        // 空串
+            "metaso.cn/",                              // 缺 scheme
         ];
         for url in rejected {
             let err = open_external_url(url.to_string()).await.err();
@@ -4550,14 +5241,16 @@ mod tests {
 
         let r = crate::file_ingest::ingest(&src);
         assert_eq!(r.kind, "image", "应识别为 image");
-        assert!(r.markdown.is_none(), "图片不再预解析出 markdown(OCR 已移除)");
-
-        let prompt = build_message_with_attachments(
-            "这张图里画了什么？".to_string(),
-            vec![r],
-            &ws,
+        assert!(
+            r.markdown.is_none(),
+            "图片不再预解析出 markdown(OCR 已移除)"
         );
-        assert!(prompt.contains("image_analyze"), "prompt 应引导调 image_analyze");
+
+        let prompt = build_message_with_attachments("这张图里画了什么？".to_string(), vec![r], &ws);
+        assert!(
+            prompt.contains("image_analyze"),
+            "prompt 应引导调 image_analyze"
+        );
         assert!(
             prompt.contains("attachments/shot.png"),
             "prompt 应给出 workspace 相对路径"
@@ -4572,7 +5265,12 @@ mod tests {
     }
 
     /// 造一个指定 kind / token 估算的 IngestResult,markdown 是 `rows` 行可定位文本。
-    fn mk_attachment(kind: &str, basename: &str, rows: usize, tokens: u32) -> crate::file_ingest::IngestResult {
+    fn mk_attachment(
+        kind: &str,
+        basename: &str,
+        rows: usize,
+        tokens: u32,
+    ) -> crate::file_ingest::IngestResult {
         let md: String = (1..=rows).map(|i| format!("row-{i},value-{i}\n")).collect();
         crate::file_ingest::IngestResult {
             kind: kind.into(),
@@ -4586,7 +5284,8 @@ mod tests {
     }
 
     fn mk_test_ws(tag: &str) -> std::path::PathBuf {
-        let ws = std::env::temp_dir().join(format!("pinvou3-attach-test-{tag}-{}", std::process::id()));
+        let ws =
+            std::env::temp_dir().join(format!("pinvou3-attach-test-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&ws);
         std::fs::create_dir_all(&ws).expect("建 workspace");
         ws
@@ -4602,7 +5301,10 @@ mod tests {
             &ws,
         );
         assert!(prompt.contains("row-10,value-10"), "小附件应全量内联");
-        assert!(prompt.contains("不需要再调 read_file"), "内联段应声明无需 read_file");
+        assert!(
+            prompt.contains("不需要再调 read_file"),
+            "内联段应声明无需 read_file"
+        );
         assert!(!ws.join("attachments").exists(), "小附件不应落盘");
         let _ = std::fs::remove_dir_all(&ws);
     }
@@ -4615,10 +5317,19 @@ mod tests {
         let full_md = a.markdown.clone().unwrap();
         let prompt = build_message_with_attachments("分析一下".into(), vec![a], &ws);
 
-        assert!(!prompt.contains("row-5000,value-5000"), "完整内容不应进 prompt");
+        assert!(
+            !prompt.contains("row-5000,value-5000"),
+            "完整内容不应进 prompt"
+        );
         assert!(prompt.contains("row-1,value-1"), "应有开头预览");
-        assert!(prompt.contains("attachments/data.csv"), "应给出落盘 CSV 相对路径");
-        assert!(prompt.contains("read_file") && prompt.contains("exec_shell"), "应引导工具消化");
+        assert!(
+            prompt.contains("attachments/data.csv"),
+            "应给出落盘 CSV 相对路径"
+        );
+        assert!(
+            prompt.contains("read_file") && prompt.contains("exec_shell"),
+            "应引导工具消化"
+        );
         assert!(prompt.contains("没有**嵌入"), "应声明未嵌入完整内容");
         let staged = std::fs::read_to_string(ws.join("attachments/data.csv")).expect("CSV 应落盘");
         assert_eq!(staged, full_md, "落盘内容应与转换产物一致");
@@ -4636,7 +5347,10 @@ mod tests {
 
         assert!(prompt.contains("/tmp/fake/big.log"), "应引用原始路径");
         assert!(!ws.join("attachments").exists(), "text 类不应落盘副本");
-        assert!(!prompt.contains("row-9000,value-9000"), "完整内容不应进 prompt");
+        assert!(
+            !prompt.contains("row-9000,value-9000"),
+            "完整内容不应进 prompt"
+        );
         let _ = std::fs::remove_dir_all(&ws);
     }
 
@@ -4654,8 +5368,14 @@ mod tests {
             &ws,
         );
         assert!(prompt.contains("row-50,value-50"), "a 应内联");
-        assert!(prompt.contains("row-60,value-60"), "b 应内联(累计 14K ≤ 16K)");
-        assert!(!prompt.contains("row-70,value-70"), "c 应转路径模式(累计 21K > 16K)");
+        assert!(
+            prompt.contains("row-60,value-60"),
+            "b 应内联(累计 14K ≤ 16K)"
+        );
+        assert!(
+            !prompt.contains("row-70,value-70"),
+            "c 应转路径模式(累计 21K > 16K)"
+        );
         assert!(ws.join("attachments/c.md").exists(), "c 的产物应落盘为 md");
         let _ = std::fs::remove_dir_all(&ws);
     }
@@ -4671,12 +5391,36 @@ mod tests {
             return;
         }
         let cases = [
-            ("sample.png", "这张图里的项目编号是多少？只回答编号。", "/tmp/llm_png.txt"),
-            ("scan.pdf", "这份文件的文号是多少？只回答文号。", "/tmp/llm_scan.txt"),
-            ("sample.xlsx", "表格里李四的金额是多少？只回答数字。", "/tmp/llm_xlsx.txt"),
-            ("sample.pptx", "演示文稿第一章讲什么？提到的编号是？", "/tmp/llm_pptx.txt"),
-            ("mail.eml", "这封邮件的主题是什么？正文里的编号是多少？", "/tmp/llm_eml.txt"),
-            ("bundle.zip", "这个压缩包里图片上的项目编号是多少？", "/tmp/llm_zip.txt"),
+            (
+                "sample.png",
+                "这张图里的项目编号是多少？只回答编号。",
+                "/tmp/llm_png.txt",
+            ),
+            (
+                "scan.pdf",
+                "这份文件的文号是多少？只回答文号。",
+                "/tmp/llm_scan.txt",
+            ),
+            (
+                "sample.xlsx",
+                "表格里李四的金额是多少？只回答数字。",
+                "/tmp/llm_xlsx.txt",
+            ),
+            (
+                "sample.pptx",
+                "演示文稿第一章讲什么？提到的编号是？",
+                "/tmp/llm_pptx.txt",
+            ),
+            (
+                "mail.eml",
+                "这封邮件的主题是什么？正文里的编号是多少？",
+                "/tmp/llm_eml.txt",
+            ),
+            (
+                "bundle.zip",
+                "这个压缩包里图片上的项目编号是多少？",
+                "/tmp/llm_zip.txt",
+            ),
         ];
         for (f, q, out) in cases {
             let p = dir.join(f);
@@ -4697,7 +5441,8 @@ mod tests {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn list_marketplace_tools() -> Result<Vec<crate::bridge::marketplace::MarketplaceToolInfo>, String> {
+pub fn list_marketplace_tools(
+) -> Result<Vec<crate::bridge::marketplace::MarketplaceToolInfo>, String> {
     let mgr = crate::bridge::marketplace::MarketplaceManager::new();
     let tools = mgr.list_tools();
     Ok(tools)

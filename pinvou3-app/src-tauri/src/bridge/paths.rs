@@ -236,6 +236,42 @@ pub fn notes_path() -> PathBuf {
 pub fn memory_path() -> PathBuf {
     pinvou3_home().join("memory.md")
 }
+pub fn user_memory_dir() -> PathBuf {
+    user_root().join("memory")
+}
+pub fn user_memory_profile() -> PathBuf {
+    user_memory_dir().join("profile.json")
+}
+pub fn user_memory_preferences_dir() -> PathBuf {
+    user_memory_dir().join("preferences")
+}
+pub fn user_memory_work_context_dir() -> PathBuf {
+    user_memory_dir().join("work_context")
+}
+pub fn user_memory_pending() -> PathBuf {
+    user_memory_dir().join("_pending.jsonl")
+}
+pub fn user_memory_never() -> PathBuf {
+    user_memory_dir().join("_never.jsonl")
+}
+pub fn user_memory_recent_work() -> PathBuf {
+    user_memory_dir().join("recent_work.jsonl")
+}
+pub fn user_memory_current_focus() -> PathBuf {
+    user_memory_dir().join("current_focus.jsonl")
+}
+pub fn user_memory_recent_activity() -> PathBuf {
+    user_memory_dir().join("recent_activity.jsonl")
+}
+pub fn user_memory_runtime_dir() -> PathBuf {
+    user_memory_dir().join("runtime")
+}
+pub fn user_memory_snapshot() -> PathBuf {
+    user_memory_dir().join("snapshot.md")
+}
+pub fn user_memory_runtime_prompt(session_id: &str) -> PathBuf {
+    user_memory_runtime_dir().join(format!("{}.md", sanitize_memory_runtime_id(session_id)))
+}
 pub fn mcp_config_path() -> PathBuf {
     bundle_mcp_json()
 }
@@ -243,6 +279,24 @@ pub fn mcp_config_path() -> PathBuf {
 /// `~/.pinvou3/sessions/` —— 所有对话历史落盘的根目录。
 pub fn sessions_root() -> PathBuf {
     pinvou3_home().join("sessions")
+}
+
+fn sanitize_memory_runtime_id(raw: &str) -> String {
+    let sanitized: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() {
+        "unknown".to_string()
+    } else {
+        sanitized
+    }
 }
 
 /// `~/.pinvou3/workflows/` —— 工作流 run 第一公民的根目录（独立于 sessions/）。

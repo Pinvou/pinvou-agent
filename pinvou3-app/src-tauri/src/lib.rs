@@ -21,16 +21,16 @@ pub mod feedback;
 pub use commands::build_message_with_attachments;
 // CLI 连接器公共管道(飞书 / 企微共享:起进程 / 扫码 / 事件 / 取消)。
 mod connector_cli;
+mod eip;
 pub mod engine;
 pub mod engine_pool;
-mod eip;
 mod feishu;
-mod wecom;
 pub mod file_ingest;
 mod file_watcher;
 mod harness;
 mod knowledge;
 mod local_vllm_setup;
+pub mod memory;
 mod monitor;
 mod os;
 pub mod personas;
@@ -40,6 +40,7 @@ pub mod super_permission;
 mod timing;
 mod updater;
 mod voice_asr;
+mod wecom;
 mod workflow_migrate;
 pub mod workflow_registry;
 mod workflow_runs;
@@ -314,14 +315,21 @@ pub fn run() {
             // 语音识别引擎 sense-voice-main 随 deb 打包,容错同 bge-m3 的资源布局,
             // 注入给 voice_asr 作为 ~/.pinvou3/asr/ 之外的回退查找目录。
             if let Some(asr_res) = app.path().resource_dir().ok().and_then(|res| {
-                [res.join("asr"), res.join("resources/asr"), res.join("resources").join("asr")]
-                    .into_iter()
-                    .find(|d| d.join("sense-voice-main").exists())
+                [
+                    res.join("asr"),
+                    res.join("resources/asr"),
+                    res.join("resources").join("asr"),
+                ]
+                .into_iter()
+                .find(|d| d.join("sense-voice-main").exists())
             }) {
                 voice_asr::set_bundled_engine_dir(asr_res);
             }
 
-            match knowledge::KnowledgeService::new(&knowledge::default_db_path(), Some(&kb_model_dir)) {
+            match knowledge::KnowledgeService::new(
+                &knowledge::default_db_path(),
+                Some(&kb_model_dir),
+            ) {
                 Ok(svc) => {
                     app.handle().manage(svc);
                     eprintln!("[pinvou3-app] knowledge service ready");
@@ -416,6 +424,24 @@ pub fn run() {
             commands::cancel_generation,
             commands::set_disabled_connectors,
             commands::get_disabled_connectors,
+            commands::get_memory_profile,
+            commands::update_memory_profile,
+            commands::clear_memory_profile,
+            commands::get_memory_overview,
+            commands::list_pending_memory,
+            commands::suggest_memory,
+            commands::confirm_pending_memory,
+            commands::ignore_pending_memory,
+            commands::never_pending_memory,
+            commands::list_recent_work_memory,
+            commands::upsert_recent_work_memory,
+            commands::archive_recent_work_memory,
+            commands::delete_memory_preference,
+            commands::update_memory_preference,
+            commands::update_work_context_memory,
+            commands::delete_work_context_memory,
+            commands::update_timed_memory,
+            commands::delete_timed_memory,
             commands::edit_last_turn,
             commands::read_artifact_text,
             commands::list_deliverables,
@@ -617,13 +643,20 @@ mod web_template_seed {
         assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"hello");
         assert_eq!(fs::read(dst.join("sub/b.txt")).unwrap(), b"world");
         let meta = fs::symlink_metadata(dst.join("link")).unwrap();
-        assert!(meta.file_type().is_symlink(), "symlink 必须保留为 symlink,不能解引用");
+        assert!(
+            meta.file_type().is_symlink(),
+            "symlink 必须保留为 symlink,不能解引用"
+        );
         assert_eq!(
             fs::read_link(dst.join("link")).unwrap(),
             PathBuf::from("sub/b.txt"),
             "symlink target 不变"
         );
-        assert_eq!(fs::read(dst.join("link")).unwrap(), b"world", "跟随 symlink 仍读到内容");
+        assert_eq!(
+            fs::read(dst.join("link")).unwrap(),
+            b"world",
+            "跟随 symlink 仍读到内容"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
