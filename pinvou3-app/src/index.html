@@ -1033,9 +1033,10 @@
     const TitleBar = ({ theme, t }) => {
       const isDark = theme === 'dark';
       const hoverBg = isDark ? 'hover:bg-white/10' : 'hover:bg-black/10';
+      const chromeBg = isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]';
       return (
         <div data-tauri-drag-region
-          className={`h-9 shrink-0 flex items-center justify-between select-none ${isDark ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`}>
+          className={`h-9 shrink-0 flex items-center justify-between select-none ${chromeBg} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
           <div data-tauri-drag-region className="flex items-center gap-2 px-3 text-[13px] font-medium pointer-events-none">
             <img src="brand-blue.png" width={18} height={18} alt="" className="select-none" />
             {t.appTitle}
@@ -1644,10 +1645,10 @@
 
           <TitleBar theme={activeTheme} t={t} />
 
-          <div className="flex flex-1 min-h-0">
+          <div className={`flex flex-1 min-h-0 ${activeTheme === 'dark' ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
 
           {/* ================= Sidebar (Gemini Style) ================= */}
-          <div className={`${isSidebarOpen ? 'w-[280px] bg-[#1E1F20]' : 'w-[68px] bg-[#131314]'} shrink-0 flex flex-col z-40 transition-all duration-300 ${activeTheme === 'light' ? 'bg-[#F0F4F9]' : ''}`}>
+          <div className={`${isSidebarOpen ? 'w-[280px]' : 'w-[68px]'} shrink-0 flex flex-col z-40 transition-all duration-300 ${activeTheme === 'dark' ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
 
             {/* Header / Logo */}
             <div className={`px-4 py-4 flex items-center ${isSidebarOpen ? 'gap-3' : 'justify-center'} overflow-hidden`}>
@@ -1843,7 +1844,7 @@
           </div>
 
           {/* ================= Main Content ================= */}
-          <div className="flex-1 flex flex-col relative min-w-0 overflow-hidden">
+          <div className={`flex-1 flex flex-col relative min-w-0 overflow-hidden rounded-tl-[24px] ${activeTheme === 'dark' ? 'bg-[#131314]' : 'bg-white'}`}>
 
             {/* Gemini Style Background Glow */}
             {currentView === 'chat' && (
@@ -9157,6 +9158,7 @@
       const [body, setBody] = useState(init.body || '');
       const [saving, setSaving] = useState(false);
       const [err, setErr] = useState('');
+      const [deptPickerOpen, setDeptPickerOpen] = useState(false);
       // 编辑已有卡时, summary 不含 body, 拉一次完整正文
       useEffect(() => {
         if (isEdit && !init.body && bridge.available && bridge.readPersonaBody) {
@@ -9177,14 +9179,23 @@
           onClose();
         } catch (e) { setErr(t.cpErrSave(e)); setSaving(false); }
       }
-      const ph = isDark ? '#48484A' : '#C7C7CC';
+      const ph = isDark ? '#636366' : '#C7C7CC';
+      const modalBg = isDark ? '#1C1C1E' : '#F2F2F7';
+      const groupedCellBg = isDark ? '#2C2C2E' : '#fff';
+      const separatorColor = isDark ? 'rgba(84,84,88,.65)' : 'rgba(198,198,200,.5)';
+      const primaryText = isDark ? '#F2F2F7' : '#000';
+      const secondaryText = isDark ? '#8E8E93' : '#8E8E93';
       return (
         <div className="fixed inset-0 z-[60] flex items-end md:items-center justify-center md:p-4"
-          style={{ background:'rgba(0,0,0,.6)', backdropFilter:'blur(2px)', WebkitBackdropFilter:'blur(2px)', fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }} onClick={onClose}>
-          <div onClick={(e)=>e.stopPropagation()} className="w-full h-[90vh] md:h-auto md:max-h-[85vh] md:max-w-md flex flex-col rounded-t-[14px] md:rounded-[14px] overflow-hidden"
-            style={{ background: isDark ? '#1C1C1E' : '#F2F2F7', color: isDark ? '#fff' : '#000' }}>
+          style={{ background:'rgba(0,0,0,.48)', backdropFilter:'blur(8px)', WebkitBackdropFilter:'blur(8px)', fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }} onClick={onClose}>
+          <style>{`
+            .persona-ios-input::placeholder,
+            .persona-ios-textarea::placeholder { color: ${ph}; opacity: 1; }
+          `}</style>
+          <div onClick={(e)=>e.stopPropagation()} className="w-full h-[90vh] md:h-auto md:max-h-[85vh] md:max-w-md flex flex-col rounded-t-[20px] md:rounded-[20px] overflow-hidden"
+            style={{ background: modalBg, color: primaryText }}>
             {/* 导航栏 */}
-            <div className="flex justify-between items-center px-4 h-14 shrink-0 border-b" style={{ borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.5)' }}>
+            <div className="flex justify-between items-center px-4 h-14 shrink-0 border-b" style={{ borderColor: separatorColor }}>
               <button onClick={onClose} className="text-[17px]" style={{ color: isDark ? '#0A84FF' : '#007AFF' }}>{t.cpCancel}</button>
               <span className="text-[17px] font-semibold">{isEdit ? t.cpEditCard : t.cpNewCard}</span>
               <button onClick={save} disabled={saving} className="text-[17px] font-semibold" style={{ color: saving ? '#8E8E93' : (isDark ? '#0A84FF' : '#007AFF') }}>{saving ? t.cpSaving : (isEdit ? t.cpSaveEdit : t.cpCreate)}</button>
@@ -9193,42 +9204,74 @@
             <div className="flex-1 overflow-y-auto p-4 space-y-6">
               {err ? <div className="text-[13px] px-2" style={{ color:'#FF3B30' }}>{err}</div> : null}
               {/* 名称 + 部门 */}
-              <div className="rounded-[10px] overflow-hidden" style={{ background: isDark ? '#000' : '#fff' }}>
-                <div className="flex items-center px-4 py-3 border-b" style={{ borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.5)' }}>
+              <div className="rounded-[12px] overflow-hidden" style={{ background: groupedCellBg }}>
+                <div className="flex items-center px-4 min-h-[48px] border-b" style={{ borderColor: separatorColor }}>
                   <span className="w-20 text-[17px] shrink-0">{t.cpFieldName}</span>
-                  <input value={name} onChange={e=>setName(e.target.value)} placeholder={t.cpReqPh} className="flex-1 text-[17px] bg-transparent outline-none" style={{ color: isDark?'#fff':'#000', '::placeholder': ph }} />
+                  <input value={name} onChange={e=>setName(e.target.value)} placeholder={t.cpReqPh} className="persona-ios-input flex-1 text-[17px] bg-transparent outline-none" style={{ color: primaryText }} />
                 </div>
-                <div className="flex items-center px-4 py-3">
+                <div className="flex items-center px-4 min-h-[48px]">
                   <span className="w-20 text-[17px] shrink-0">{t.cpDept}</span>
-                  <select value={dept} onChange={e=>setDept(e.target.value)} className="flex-1 text-[17px] bg-transparent outline-none" style={{ color: isDark?'#fff':'#000' }}>
-                    {DEPT_OPTIONS.map(function(d){ return <option key={d} value={d} style={{ color:'#000' }}>{deptLabelFor(t, d)}</option>; })}
-                  </select>
+                  <button type="button" onClick={() => setDeptPickerOpen(true)}
+                    className="flex-1 min-w-0 flex items-center justify-end gap-2 text-[17px] text-right outline-none"
+                    style={{ color: secondaryText }}>
+                    <span className="truncate">{deptLabelFor(t, dept)}</span>
+                    <ChevronRight size={18} className="shrink-0" style={{ color: secondaryText }} />
+                  </button>
                 </div>
               </div>
               {/* 描述 */}
-              <div className="rounded-[10px] overflow-hidden" style={{ background: isDark ? '#000' : '#fff' }}>
+              <div className="rounded-[12px] overflow-hidden" style={{ background: groupedCellBg }}>
                 <div className="px-4 py-3">
-                  <textarea rows={3} value={description} onChange={e=>setDescription(e.target.value)} placeholder={t.cpFieldDescPh} className="w-full text-[17px] bg-transparent outline-none resize-none" style={{ color: isDark?'#fff':'#000' }} />
+                  <textarea rows={3} value={description} onChange={e=>setDescription(e.target.value)} placeholder={t.cpFieldDescPh} className="persona-ios-textarea w-full text-[17px] bg-transparent outline-none resize-none leading-snug" style={{ color: primaryText }} />
                 </div>
               </div>
               {/* 系统人设 (必填) */}
               <div>
-                <p className="text-[13px] ml-4 mb-1.5 uppercase" style={{ color:'#8E8E93' }}>{t.cpFieldBody} *  ·  {t.cpMarkdownHint}</p>
-                <div className="rounded-[10px] overflow-hidden" style={{ background: isDark ? '#000' : '#fff' }}>
+                <p className="text-[13px] ml-4 mb-1.5 uppercase" style={{ color: secondaryText }}>{t.cpFieldBody} *  ·  {t.cpMarkdownHint}</p>
+                <div className="rounded-[12px] overflow-hidden" style={{ background: groupedCellBg }}>
                   <div className="px-4 py-3">
-                    <textarea rows={7} value={body} onChange={e=>setBody(e.target.value)} placeholder={t.cpBodyPh} className="w-full text-[15px] font-mono leading-relaxed bg-transparent outline-none resize-none custom-scrollbar" style={{ color: isDark?'#fff':'#000', maxHeight:'40vh' }} />
+                    <textarea rows={7} value={body} onChange={e=>setBody(e.target.value)} placeholder={t.cpBodyPh} className="persona-ios-textarea w-full text-[16px] leading-relaxed bg-transparent outline-none resize-none custom-scrollbar" style={{ color: primaryText, maxHeight:'40vh' }} />
                   </div>
                 </div>
               </div>
               {/* 删除(编辑态) */}
               {isEdit ? (
                 <button onClick={()=>{ if(confirmDel){ bridge.deletePersona(init.id).then(()=>{ if(onDeleted) onDeleted(init); onClose(); }); } else setConfirmDel(true); }}
-                  className="w-full rounded-[10px] py-3 text-[17px] transition-colors" style={{ background: isDark?'#000':'#fff', color:'#FF3B30' }}>
+                  className="w-full rounded-[12px] py-3 text-[17px] transition-colors" style={{ background: groupedCellBg, color:'#FF3B30' }}>
                   {confirmDel ? t.cpDelThisConfirm : t.cpDeleteThis}
                 </button>
               ) : null}
             </div>
           </div>
+          {deptPickerOpen && (
+            <div className="fixed inset-0 z-[70] flex items-end md:items-center justify-center md:p-4"
+              style={{ background:'rgba(0,0,0,.35)' }}
+              onClick={(e) => { e.stopPropagation(); setDeptPickerOpen(false); }}>
+              <div onClick={e => e.stopPropagation()}
+                className="w-full md:max-w-sm max-h-[72vh] rounded-t-[20px] md:rounded-[20px] overflow-hidden shadow-2xl"
+                style={{ background: modalBg, color: primaryText }}>
+                <div className="h-12 flex items-center justify-between px-4 border-b" style={{ borderColor: separatorColor }}>
+                  <button type="button" className="text-[17px]" style={{ color: isDark ? '#0A84FF' : '#007AFF' }} onClick={() => setDeptPickerOpen(false)}>{t.cpCancel}</button>
+                  <div className="text-[17px] font-semibold">{t.cpDept}</div>
+                  <div className="w-[34px]" />
+                </div>
+                <div className="max-h-[calc(72vh-48px)] overflow-y-auto custom-scrollbar p-2">
+                  {DEPT_OPTIONS.map(function(d){
+                    const active = d === dept;
+                    return (
+                      <button key={d} type="button"
+                        onClick={() => { setDept(d); setDeptPickerOpen(false); }}
+                        className="w-full min-h-[44px] px-3 rounded-[10px] flex items-center justify-between text-left text-[17px]"
+                        style={{ background: active ? groupedCellBg : 'transparent', color: active ? (isDark ? '#0A84FF' : '#007AFF') : primaryText }}>
+                        <span>{deptLabelFor(t, d)}</span>
+                        {active ? <Check size={18} className="shrink-0" /> : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       );
     };
