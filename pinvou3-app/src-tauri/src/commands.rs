@@ -2915,9 +2915,10 @@ pub async fn summon_pinvou(
     let session = store
         .load(&sid)
         .map_err(|e| format!("summon_pinvou load({sid}): {e:?}"))?;
-    let workspace = pool.bridge.session_workspace(&sid);
+    let bridge = pool.fresh_bridge_for(&sid).await;
+    let workspace = bridge.session_workspace(&sid);
     crate::pinvou_review::summon(
-        &pool.bridge,
+        &bridge,
         &session.messages,
         &workspace,
         &sid,
