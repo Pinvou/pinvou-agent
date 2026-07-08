@@ -37,6 +37,7 @@ pub mod personas;
 mod pinvou_review;
 mod process;
 pub mod super_permission;
+mod timing;
 mod updater;
 mod voice_asr;
 mod workflow_migrate;

@@ -934,9 +934,11 @@ fn spawn_event_forwarder(
                         // 这条链已可靠,漏的少数"光说不出卡"由 composer chip 手切 + plan_stuck
                         // 卡兜底,不值得用噪音判据再造一层。
                     }
+                    let status_text = format!("{status:?}");
+                    crate::timing::finish_turn(&session_id, &status_text, error.as_deref());
                     let _ = app.emit(
                         "chat:done",
-                        json!({ "session_id": session_id, "status": format!("{status:?}"), "error": error }),
+                        json!({ "session_id": session_id, "status": status_text, "error": error }),
                     );
                 }
                 Event::CompactionStarted {
@@ -986,6 +988,11 @@ fn spawn_event_forwarder(
                             json!({ "session_id": session_id, "error": envelope.message }),
                         );
                     } else {
+                        crate::timing::finish_turn(
+                            &session_id,
+                            "error",
+                            Some(&envelope.message),
+                        );
                         let _ = app.emit(
                             "chat:done",
                             json!({ "session_id": session_id, "status": "error", "error": envelope.message }),

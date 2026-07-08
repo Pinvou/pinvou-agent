@@ -77,6 +77,7 @@ pub async fn chat(
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
+    crate::timing::start_turn(&sid);
     let mut full = build_message_with_attachments(
         message,
         attachments.unwrap_or_default(),
@@ -122,9 +123,13 @@ pub async fn chat(
     }
     // 取该 session 的 mode。
     let mode = store.mode_state(&sid).mode;
-    pool.send_user_message(&sid, full, mode.to_app_mode())
-        .await
-        .map_err(|e| format!("send_user_message failed: {e:?}"))
+    match pool.send_user_message(&sid, full, mode.to_app_mode()).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            crate::timing::finish_turn(&sid, "send_error", Some(&format!("{e:?}")));
+            Err(format!("send_user_message failed: {e:?}"))
+        }
+    }
 }
 
 /// Agentic RAG 的 Self-RAG 自检引导:挂了知识集时每 turn prepend(动态状态走 per-turn

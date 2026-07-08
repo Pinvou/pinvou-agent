@@ -331,6 +331,12 @@ pub fn session_pinvou_reviews(session_id: &str) -> PathBuf {
     sessions_root().join(session_id).join("pinvou_reviews.json")
 }
 
+/// `~/.pinvou3/sessions/<session_id>/timing_events.jsonl` —— 每轮对话端到端耗时
+/// 事件(sidecar)。刻意独立于 messages/session schema, 避免影响上下文和产物逻辑。
+pub fn session_timing_events(session_id: &str) -> PathBuf {
+    sessions_root().join(session_id).join("timing_events.jsonl")
+}
+
 /// `~/.pinvou3/sessions/default/artifacts/` —— PPT / 公文等 MCP stdio server
 /// 的公共产物落点。stdio server 不能可靠感知当前 GUI session，具体归属由
 /// 带 `session_id` 的工具事件归档到具体会话。
