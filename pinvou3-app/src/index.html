@@ -269,6 +269,7 @@
         kbModelDownloadBtn: '下载并部署资源包', kbModelFoot: '一次安装，后续离线可用 · 下载期间可继续使用其他功能',
         kbModelStageDownload: '正在下载资源包…', kbModelStageVerify: '正在校验完整性…', kbModelStageExtract: '正在解压部署…', kbModelStageDone: '部署完成',
         sysStatus: '系统状态', sysDesc: '实时性能与资源指标', gpu: '图形处理器 (GPU)', gpuUnavail: '状态不可用', noSmi: '未检测到 nvidia-smi',
+        cpu: '处理器 (CPU)', cpuUnavail: 'CPU 信息不可用', cpuTotal: '总体使用率', cpuProcess: '应用占用', cpuLogical: '逻辑处理器',
         vram: '显存占用', core: '计算核心', temp: '温度', power: '功耗', unifiedMem: '统一内存架构',
         ram: '系统内存 (RAM)', used: '已用', physical: '物理内存', total: '总计', swap: '交换空间',
         vllm: '推理引擎', ctx: '上下文长度', ctxWarn: '⚠️ 窗口偏小(当前 %s,低于 128k),长对话会频繁压缩、保留历史更少;建议换 ≥128k 窗口的模型或调大 --max-model-len', queue: '队列情况', kv: 'KV 命中率', ttft: '首字延迟·累积均值', tps: '生成速度·累积均值', tokTotal: '累计 tokens·生成/输入', clearHold: '按住清除', clearHolding: '继续按住…', clearDone: '已清除', clearHint: '按住「清除」直到填满即归零 · 松手取消', statsSince: '统计自 %t 起', statsAge: ' · 已运行 %m 分钟', statsJustReset: ' · 刚刚归零', statsLifetime: '自引擎启动累计', app: '应用服务', appRunning: '核心守护进程运行中',
@@ -530,6 +531,7 @@
         kbModelDownloadBtn: 'Download & deploy', kbModelFoot: 'Install once, then offline · keep using other features while it downloads',
         kbModelStageDownload: 'Downloading…', kbModelStageVerify: 'Verifying…', kbModelStageExtract: 'Deploying…', kbModelStageDone: 'Done',
         sysStatus: 'System Status', sysDesc: 'Real-time performance metrics', gpu: 'GPU', gpuUnavail: 'Unavailable', noSmi: 'nvidia-smi not found',
+        cpu: 'CPU', cpuUnavail: 'CPU info unavailable', cpuTotal: 'Total Usage', cpuProcess: 'App Usage', cpuLogical: 'logical processors',
         vram: 'VRAM Usage', core: 'Core Usage', temp: 'Temp', power: 'Power', unifiedMem: 'Unified Memory',
         ram: 'System RAM', used: 'Used', physical: 'Physical RAM', total: 'Total', swap: 'Swap Space',
         vllm: 'Inference Engine', ctx: 'Context Length', ctxWarn: '⚠️ Small context window (%s, below 128k). Long chats compact often and keep less history; use a model with ≥128k window or raise --max-model-len', queue: 'Queue (Run/Wait)', kv: 'KV Hit Rate', ttft: 'TTFT · cum. avg', tps: 'Gen Speed · cum. avg', tokTotal: 'Total Tokens · gen/prompt', clearHold: 'Hold to reset', clearHolding: 'Keep holding…', clearDone: 'Cleared', clearHint: 'Hold "Reset" until full to clear · release to cancel', statsSince: 'Since %t', statsAge: ' · %m min running', statsJustReset: ' · just reset', statsLifetime: 'Lifetime total', app: 'App Service', appRunning: 'Core daemon running',
@@ -790,6 +792,7 @@
         kbDeleteColl: 'コレクション削除', kbRemove: '削除', kbCollEmpty: '文書がありません。「ファイル追加」で追加。', kbNoCollFiles: 'ナレッジにファイルがありません', kbAllColls: 'すべて', kbDelCollConfirm: 'コレクション「{n}」を削除しますか？', kbDelCollWarn: 'このコレクションの索引（{c} 件の文書）のみ削除します。ディスク上の元ファイルは削除されません。', kbDelete: '削除', kbRemoveDocConfirm: 'ナレッジから「{n}」を削除しますか？', kbRemoveDocWarn: 'ナレッジ内の索引のみ削除します。ディスク上の元ファイルは影響を受けません。', kbRemoveQ: '削除?',
         kbRetrPlaceholder: 'このコレクション内を検索…', kbModeSearch: '検索', kbModeAsk: 'AI 質問', kbAskPlaceholder: 'このコレクションに質問…（AI が内容に基づき出典付きで回答）', kbAskBtn: '質問', kbAsking: '考え中…', kbAnswer: '回答', kbSources: '出典', kbNoContext: 'このコレクションにはまだ索引済みの内容がありません。ファイルを追加してください。', kbAskError: '回答に失敗しました。ローカルモデルサービスを確認してください。', kbCollNamePh: 'コレクション名', kbCollCatPh: 'カテゴリ（任意）', kbCancel: 'キャンセル', kbCreate: '作成',
         sysStatus: 'システム状態', sysDesc: 'リアルタイムの性能・リソース指標', gpu: 'GPU', gpuUnavail: '状態を取得できません', noSmi: 'nvidia-smi が見つかりません',
+        cpu: 'CPU', cpuUnavail: 'CPU 情報を取得できません', cpuTotal: '全体使用率', cpuProcess: 'アプリ使用率', cpuLogical: '論理プロセッサ',
         vram: 'VRAM 使用量', core: 'コア使用率', temp: '温度', power: '消費電力', unifiedMem: 'ユニファイドメモリ',
         ram: 'システムメモリ (RAM)', used: '使用中', physical: '物理メモリ', total: '合計', swap: 'スワップ領域',
         vllm: '推論エンジン', ctx: 'コンテキスト長', ctxWarn: '⚠️ コンテキスト窓が小さい(現在 %s、128k 未満)。長い会話は頻繁に圧縮され履歴が減ります。128k 以上のモデルを使うか --max-model-len を上げてください', queue: 'キュー状況', kv: 'KV ヒット率', ttft: '初回遅延・累積平均', tps: '生成速度・累積平均', tokTotal: '累計トークン・生成/入力', clearHold: '長押しで消去', clearHolding: 'そのまま…', clearDone: '消去完了', clearHint: '「消去」を満たすまで長押しでリセット · 離すと取消', statsSince: '%t から集計', statsAge: ' · %m 分経過', statsJustReset: ' · 今リセット', statsLifetime: 'エンジン起動からの累計', app: 'アプリサービス', appRunning: 'コアデーモン稼働中',
@@ -3428,6 +3431,14 @@
       const gpuUtilPct = fmt ? fmt.gpuUtilPct : 0;
       const gpuTemp = fmt ? fmt.gpuTemp : null;
       const gpuPower = fmt ? fmt.gpuPower : null;
+      const showCpuCard = fmt ? fmt.showCpuCard : false;
+      const cpuName = fmt ? fmt.cpuName : t.cpuUnavail;
+      const cpuAvailable = fmt ? fmt.cpuAvailable : false;
+      const cpuTotal = fmt ? fmt.cpuTotal : '—';
+      const cpuTotalPct = fmt ? fmt.cpuTotalPct : 0;
+      const cpuProcess = fmt ? fmt.cpuProcess : '—';
+      const cpuProcessPct = fmt ? fmt.cpuProcessPct : 0;
+      const cpuLogicalProcessors = fmt ? fmt.cpuLogicalProcessors : 0;
       const ramUsedGiB = fmt ? fmt.ramUsedGiB : '—';
       const ramPct = fmt ? fmt.ramPct : 0;
       const ramTotal = fmt ? fmt.ramTotal : '—';
@@ -3523,29 +3534,46 @@
           <div className="flex-1 overflow-y-auto py-8 custom-scrollbar">
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 max-w-7xl mx-auto px-6 md:px-10">
 
-              <WidgetCard title={t.gpu} theme={theme}>
-                <div className="mb-10">
-                  <h3 className="text-[28px] font-medium">{gpuAvailable ? gpuName : t.gpuUnavail}</h3>
-                  <p className={`text-[14px] mt-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{gpuAvailable ? (gpuHasVram ? '' : t.unifiedMem) : t.noSmi}</p>
-                </div>
-                <div className="space-y-6 mt-auto">
-                  {gpuHasVram ? (
-                    <ProgressBar label={t.vram} value={gpuVram} percentage={gpuVramPct} theme={theme} />
-                  ) : gpuAvailable ? (
-                    <div className={`flex justify-between items-center py-2.5 px-3 rounded-[16px] ${isDark ? 'bg-[#131314]' : 'bg-[#F8F9FA]'}`}>
-                      <div className="flex items-center gap-2">
-                        <span className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.temp}</span>
-                        <span className={`text-[13px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{gpuTemp || '—'}</span>
-                      </div>
-                      <div className="w-px h-4 bg-gray-400/30"></div>
-                      <div className="flex items-center gap-2">
-                        <span className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.power}</span>
-                        <span className={`text-[13px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{gpuPower || '—'}</span>
-                      </div>
+              <WidgetCard title={showCpuCard ? t.cpu : t.gpu} theme={theme}>
+                {showCpuCard ? (
+                  <>
+                    <div className="mb-10">
+                      <h3 className="text-[20px] font-medium leading-snug break-words">{cpuAvailable ? cpuName : t.cpuUnavail}</h3>
+                      <p className={`text-[14px] mt-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
+                        {cpuLogicalProcessors > 0 ? `${cpuLogicalProcessors} ${t.cpuLogical}` : t.cpuUnavail}
+                      </p>
                     </div>
-                  ) : null}
-                  <ProgressBar label={t.core} value={gpuAvailable ? gpuUtil : '—'} percentage={gpuAvailable ? gpuUtilPct : 0} theme={theme} />
-                </div>
+                    <div className="space-y-6 mt-auto">
+                      <ProgressBar label={t.cpuTotal} value={cpuTotal} percentage={cpuTotalPct} theme={theme} />
+                      <ProgressBar label={t.cpuProcess} value={cpuProcess} percentage={cpuProcessPct} theme={theme} color="#188038" />
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="mb-10">
+                      <h3 className="text-[28px] font-medium">{gpuAvailable ? gpuName : t.gpuUnavail}</h3>
+                      <p className={`text-[14px] mt-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{gpuAvailable ? (gpuHasVram ? '' : t.unifiedMem) : t.noSmi}</p>
+                    </div>
+                    <div className="space-y-6 mt-auto">
+                      {gpuHasVram ? (
+                        <ProgressBar label={t.vram} value={gpuVram} percentage={gpuVramPct} theme={theme} />
+                      ) : gpuAvailable ? (
+                        <div className={`flex justify-between items-center py-2.5 px-3 rounded-[16px] ${isDark ? 'bg-[#131314]' : 'bg-[#F8F9FA]'}`}>
+                          <div className="flex items-center gap-2">
+                            <span className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.temp}</span>
+                            <span className={`text-[13px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{gpuTemp || '—'}</span>
+                          </div>
+                          <div className="w-px h-4 bg-gray-400/30"></div>
+                          <div className="flex items-center gap-2">
+                            <span className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.power}</span>
+                            <span className={`text-[13px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{gpuPower || '—'}</span>
+                          </div>
+                        </div>
+                      ) : null}
+                      <ProgressBar label={t.core} value={gpuAvailable ? gpuUtil : '—'} percentage={gpuAvailable ? gpuUtilPct : 0} theme={theme} />
+                    </div>
+                  </>
+                )}
               </WidgetCard>
 
               <WidgetCard title={t.ram} theme={theme}>

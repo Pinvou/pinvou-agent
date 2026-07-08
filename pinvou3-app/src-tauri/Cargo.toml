@@ -1,6 +1,6 @@
 [package]
 name = "pinvou3-tauri"
-version = "0.5.8"
+version = "0.5.9"
 description = "pinvou3 智能助手 Tauri 后端（包装 DeepSeek-TUI EngineHandle）"
 authors = ["pinvou"]
 license = ""
@@ -111,7 +111,7 @@ device_query = "2"
 
 # keyring 不再直接依赖 —— 凭证走底座 codewhale-secrets(它内部按平台引 keyring)。
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Performance", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 
 # Linux webview(webkit2gtk)默认拒绝 getUserMedia → 语音输入点麦克风被拒。
 # 连 permission-request 信号放行 UserMedia(麦克风)请求。版本对齐 wry 0.55 用的 2.0.x。

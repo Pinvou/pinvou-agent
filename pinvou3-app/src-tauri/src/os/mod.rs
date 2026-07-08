@@ -20,7 +20,7 @@ pub use interface::{
     asr_bundled_runtime_status, asr_dependency_installable, asr_dependency_packages,
     asr_install_unavailable_message, asr_missing_message, asr_model_exists, asr_model_path,
     asr_model_spec, asr_tool_exists, asr_tool_path, check_for_update_info, command_exists,
-    apply_user_npm_prefix, connector_cli_command, disable_super_permission,
+    apply_user_npm_prefix, connector_cli_command, cpu_snapshot, disable_super_permission,
     download_update_package, email_dependency_packages, email_tool_exists, enable_super_permission,
     install_asr_runtime, install_dependencies, install_downloaded_update, kill_pid_tree,
     libreoffice_tool_path, msg_converter_required, msg_native_supported, nvidia_smi_candidates,

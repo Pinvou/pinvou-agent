@@ -5,6 +5,10 @@ mod linux_permission;
 mod linux_system;
 mod linux_update;
 
+pub fn cpu_snapshot() -> Option<crate::monitor::CpuSnapshot> {
+    None
+}
+
 pub use linux_dependency::install_dependencies;
 pub use linux_memory::ram_snapshot;
 pub use linux_path::{

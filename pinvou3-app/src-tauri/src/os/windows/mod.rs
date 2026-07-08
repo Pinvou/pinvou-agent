@@ -1,3 +1,4 @@
+mod windows_cpu;
 mod windows_dependency;
 mod windows_domain_bootstrap;
 mod windows_memory;
@@ -6,6 +7,7 @@ mod windows_permission;
 mod windows_system;
 mod windows_update;
 
+pub use windows_cpu::cpu_snapshot;
 pub use windows_dependency::install_dependencies;
 pub use windows_memory::ram_snapshot;
 pub use windows_path::{
