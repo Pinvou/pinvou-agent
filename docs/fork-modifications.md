@@ -14,7 +14,7 @@
 |---|---|
 | submodule 分支 | **`pinvou3-clean`**(`.gitmodules` 追踪);HEAD `945cdf44`;备份 `backup/v0.8.65-merge-result`(merge 树)、`backup/pre-reclean-trial-tip`(旧 fork tip `6b3059da`)、`backup/pre-v0.8.65-sync`(旧远程 pinvou3-clean `4518f845`) |
 | fork drift | **+6734 / −4917 行,49 文件**(`git -C DeepSeek-TUI diff v0.8.65..HEAD --shortstat`)。比 v0.8.60(43 文件)涨,因 v0.8.65 改动多 subagent/manager/route/config API,fork 跟改面大;主体仍是工作流层 W——属"接受重 fork"(fork-policy §0);app 层 prompt 走 override 注入,不计入 |
-| 历史 | v0.8.65 + 9 主题 commit:C1 lib · C2 blocklist · C3 append_file · C4 safety · **C5+C7 prompt-composer(含 Q 首请求 warmup)** · C6 chore · **W 工作流层(含 C8 会话工具开关 op + R extra_tools 注入口)** · test(适配 + 三省六部 mock-LLM e2e ×2) · **C5/skills 市场(bundle/skills + disabled 开关)** |
+| 历史 | v0.8.65 + 9 主题 commit:C1 lib · C2 blocklist · C3 append_file · C4 safety · **C5+C7 prompt-composer** · C6 chore · **W 工作流层(含 C8 会话工具开关 op + R extra_tools 注入口)** · test(适配 + 三省六部 mock-LLM e2e ×2) · **C5/skills 市场(bundle/skills + disabled 开关)** |
 | LLM 暴露 native 工具 | **20 个**(全量注册 − 黑名单;原 23,2026-07-03 纯办公定位再砍 git_status/git_diff/diagnostics)。**tool_search 已禁用**(⚠️2026-07-03 修:v0.8.65 折叠单名后门控名与双旧名对不上一度漏注入,已补裸名,详见 C2)。MCP `mcp_pinvou_present_artifact` 另接,共 21 入口 |
 | fork-guard | 指纹 + 回归测试(`scripts/fork-guard.sh`;**v0.8.65 撤 P pwd-move 2 条**=上游已 harvest;+MKT skill 停用 3 条);底座 lib **5149 pass**(+55 ignored fork 基底行为 +1 已知 flake:verifier 后台 shell 并行误报)+ 工作流 e2e ×2 |
 | system prompt | dump 逐字节稳定;per-turn `<runtime_prompt>` tag + goal continuation 均已 gate |
@@ -84,14 +84,13 @@
 - 上游 PR:[#2786](https://github.com/Hmbown/CodeWhale/pull/2786) CLOSED(上游窄版,语义不同);pinvou3 宽版保 fork
 
 ### ~~P `prefix-cache` pwd/workspace 移出静态 system~~ → **v0.8.65 已被上游 harvest**(撤指纹,见 §2.2)
-> pwd/workspace 从静态 `## Environment` 移出 → per-turn `<turn_meta>`,让 static system 跨 session 字节静态、命中 vLLM prefix-cache。**上游 v0.8.65 已自带同优化**(render_environment_block 不再输出 pwd;turn_meta 带 workspace),不再 fork-distinct。真正修首轮漂移的是 **Q 节**(session 启动 cache warmup),pwd-move 本身与漂移无关。
+> pwd/workspace 从静态 `## Environment` 移出 → per-turn `<turn_meta>`,让 static system 跨 session 字节静态、命中 vLLM prefix-cache。**上游 v0.8.65 已自带同优化**(render_environment_block 不再输出 pwd;turn_meta 带 workspace),不再 fork-distinct。2026-07-07 复核后,Q 自动 warmup 也已撤除;历史首轮漂移不再归因为单纯冷 prefill。
 
-### Q `prefix-cache` session 启动自动 cache warmup(2026-06-18)
-- **文件**:`core/session.rs`(`Session.cache_warmup_done` 运行时标志)、`core/engine/turn_loop.rs`(首请求前置 warmup)
-- **改动**:本 session **第一次发请求前**,用**完整本请求前缀(system+tools+当前轮 user 消息及其 `<turn_meta>`)** clone 一个 `max_tokens=1`/`tool_choice=none`/`stream=none`/响应丢弃的预热请求 `await` 发出,把整段冷前缀喂进 vLLM prefix-cache;一次性(flag)、不进 context、30s 超时兜底
-- **根因/理由**:vLLM(NVFP4)+ mtp 投机解码在新 session **首请求冷 prefill** 上把生成采歪——首个 `tool_call`/`<turn_meta>` 标签/系统指令被吐成裸文本(实测两 session:首轮漂、用户**问一句即自愈**——本质就是手动 warmup)。⚠️ **必须预热到 turn_meta**:模型恰在 `<turn_meta>` 处复读采歪(msg1 实锤 `...qwen36_35b_35b_256k...` 重复),v1 用 `build_cache_warmup_request`(剥掉当前轮 user 消息)漏热 turn_meta → 仍漂;v2 热完整首请求才根治。**漂移与工具表/subagent 放通无关**(兜大圈验证后定论:是首轮冷启动,非 schema)
-- **测试**:`forkguard` `session warmup flag` + `首请求 warmup 注入` 指纹;行为待补 L1(新 session 首轮 tool_call 不漂)
-- 上游 PR:❌ **暂不提**(2026-06-30 复核):上游 turn_loop/session 确实零 warmup(engine 级自动首请求预热 novel,上游只有 TUI 层 `/cache warmup` 手动命令),但 fork 是 **always-on**——对不吃 prefix-cache 的 provider(Anthropic native 等)白加一次往返,不合上游多 provider 设计。要提需先改成 **opt-in config 开关**(默认关),属小重设计;留 fork,需要时再做 opt-in 版
+### ~~Q `prefix-cache` session 启动自动 cache warmup(2026-06-18)~~ → **已撤除(2026-07-07)**
+- **原文件**:`core/session.rs`(`Session.cache_warmup_done` 运行时标志)、`core/engine/turn_loop.rs`(首请求前置 warmup)
+- **原改动**:本 session第一次发请求前,clone 完整本请求前缀发一次 `max_tokens=1`/`tool_choice=none`/响应丢弃的预热请求,试图给 vLLM prefix-cache 预热。
+- **撤除理由**:GUI 复核中关闭自动 warmup 后仍无法复现历史工具协议漂移;证据不再支持“自动 warmup 是根因修复”。继续 always-on 会给每个新 session 多发一次完整 prefill,放大首轮延迟、GPU 压力和排查噪声,且可能掩盖 schema / MCP adapter / tool_search 注入等真实问题。
+- **当前状态**:删除 `Session.cache_warmup_done` 和 turn_loop 首请求预热路径;恢复此前因额外请求计数而 ignore 的 wiremock 测试。手动 `/cache warmup` 仍保留为上游 TUI 调试命令。
 
 ### C8 `ops` 会话工具开关(SetDisallowedTools)
 - **文件**:`core/ops.rs`(新增 `Op::SetDisallowedTools { tools: Vec<String> }`)、`core/engine.rs`(handler 写入 `config.disallowed_tools`)
@@ -182,7 +181,7 @@
 ./scripts/fork-guard.sh --fast   # 仅指纹层,秒级(merge 后第一道快筛)
 ```
 
-两层:**指纹层** grep 每个 fork 标记是否还在(抓「merge 静默丢整段 patch」);**行为层** `cargo test` 跑回归测试(抓「值/逻辑被改回上游」)。**43 指纹**(submodule C1-C7+W+P / app),完整清单见 `fork-guard.sh` `fingerprints=` 数组——新增 fork patch 必同步加指纹(见 fork-policy §3)。
+两层:**指纹层** grep 每个 fork 标记是否还在(抓「merge 静默丢整段 patch」);**行为层** `cargo test` 跑回归测试(抓「值/逻辑被改回上游」)。完整清单见 `fork-guard.sh` `fingerprints=` 数组——新增 fork patch 必同步加指纹(见 fork-policy §3)。
 
 ### ⚠️ sync 后必做验证 checklist(fork-guard **不够**,每条都踩过坑)
 1. **全量 lib 测试** `cargo test -p codewhale-tui --lib`——抓非 `forkguard_` 前缀的上游测试因 fork fail(v0.8.51 append_file 静默丢失靠此抓)

@@ -152,7 +152,7 @@ grep -rn "messages.push\|runtime_prompt" DeepSeek-TUI/crates/tui/src/core/engine
 
 > 提交纪律:三 PR 均从 `origin/main`(= 上游,386 commit ahead of v0.8.65)切净分支手动应用 + 泛化(去 Pinvou/qcc/gongwen/PINVOU3_* 测试 fixture)+ `cargo test`/`cargo fmt --check` 验证;commit/PR body 无 Claude 署名、无品牌泄漏。#3825 首推曾因 rustfmt 单行超宽 Lint fail,`cargo fmt` 修后 amend 重推即过。
 > **下次 sync 待办**:这三块(C9 / C10-env / C10-win)上游已 harvest,sync 时按文件级 diff 确认后**撤 fork-guard 指纹 + fork-modifications §1 对应小节标 harvested**(C10-env 的 header 展开部分仍 fork 保留)。
-> **2026-06-30 评估后不提**:R(extra_tools)= 上游无 lib target / app-server 不构造 EngineConfig,无 in-tree 消费者会被关;Q(自动 warmup)= novel 但 always-on 不合上游多 provider,需先改 opt-in config。详见 fork-modifications §R/§Q。
+> **2026-06-30 评估后不提**:R(extra_tools)= 上游无 lib target / app-server 不构造 EngineConfig,无 in-tree 消费者会被关。**Q(自动 warmup)已于 2026-07-07 撤除**:关闭后未复现历史漂移,不再保留 always-on 机制。详见 fork-modifications §R/§Q。
 
 **⏹️ CLOSED —— 上游独立实现或不跟进**(fork 侧已取上游版 / 保 fork patch)
 
