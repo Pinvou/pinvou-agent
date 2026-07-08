@@ -6,7 +6,9 @@
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
-    "build": "tauri build"
+    "build": "tauri build",
+    "test:update-notice": "node tests/update_notice_logic.test.js",
+    "test": "npm run test:update-notice"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0"
