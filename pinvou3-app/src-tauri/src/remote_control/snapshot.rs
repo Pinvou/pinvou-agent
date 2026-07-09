@@ -50,6 +50,7 @@ fn project_message(idx: usize, msg: &deepseek_tui::models::Message) -> Option<Va
     let blocks = serde_json::to_value(&msg.content).ok()?;
     let mut text = String::new();
     let mut tools = Vec::new();
+    let mut has_tool_result = false;
     if let Some(arr) = blocks.as_array() {
         for block in arr {
             let typ = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -66,11 +67,14 @@ fn project_message(idx: usize, msg: &deepseek_tui::models::Message) -> Option<Va
                         "args": block.get("input").cloned().unwrap_or(Value::Null),
                     }));
                 }
+                "tool_result" => {
+                    has_tool_result = true;
+                }
                 _ => {}
             }
         }
     }
-    if text.trim().is_empty() && tools.is_empty() {
+    if text.trim().is_empty() && tools.is_empty() && !has_tool_result {
         return None;
     }
     Some(json!({
@@ -78,6 +82,7 @@ fn project_message(idx: usize, msg: &deepseek_tui::models::Message) -> Option<Va
         "role": role,
         "content": text,
         "tools": tools,
+        "blocks": blocks,
         "created_at": null,
     }))
 }

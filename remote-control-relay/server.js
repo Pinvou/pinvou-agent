@@ -7,6 +7,7 @@ import { WebSocketServer } from "ws";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8787);
+const ROOM_TTL_MS = 10 * 60 * 1000;
 const rooms = new Map();
 
 function send(ws, value) {
@@ -82,10 +83,13 @@ wss.on("connection", (ws) => {
     }
 
     if (msg.type === "desktop_register") {
-      const expiresAt = Date.parse(msg.expires_at || "");
+      let expiresAt = Date.parse(msg.expires_at || "");
       if (!msg.room_id || !msg.session_id || !msg.pairing_token || !expiresAt) {
         send(ws, { type: "error", message: "bad desktop_register" });
         return;
+      }
+      if (expiresAt <= Date.now()) {
+        expiresAt = Date.now() + ROOM_TTL_MS;
       }
       const old = rooms.get(msg.room_id);
       const existingMobile =

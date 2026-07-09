@@ -381,6 +381,25 @@ impl RemoteControlManager {
                 }
             }
             "request_chips" => self.send_chips_snapshot(store, &active_session_id),
+            "accept_plan" => {
+                let plan_markdown = action
+                    .payload
+                    .get("plan_markdown")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                store.set_mode(&active_session_id, SerializableMode::Yolo);
+                let instruction = format!("用户已批准方案,立即开始执行。方案:\n\n{plan_markdown}");
+                pool.send_user_message(
+                    &active_session_id,
+                    instruction,
+                    SerializableMode::Yolo.to_app_mode(),
+                )
+                .await
+                .map_err(|e| format!("accept_plan send_user_message: {e:?}"))
+                .and_then(|_| self.send_chips_snapshot(store, &active_session_id))
+            }
+            "discard_plan" => self.send_chips_snapshot(store, &active_session_id),
             "set_mode" => {
                 let mode = match action.payload.get("mode").and_then(|v| v.as_str()) {
                     Some(mode) => mode,

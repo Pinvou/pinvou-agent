@@ -7,21 +7,27 @@
   <style>
     * { box-sizing: border-box; }
     body { margin: 0; min-height: 100vh; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif; background: #101214; color: #f2f3f5; }
+    body.light { background: #f6f7f9; color: #151719; }
     .app { min-height: 100vh; display: flex; flex-direction: column; }
-    header { position: sticky; top: 0; z-index: 2; padding: max(12px, env(safe-area-inset-top)) 12px 10px; background: rgba(16,18,20,.92); backdrop-filter: blur(18px); border-bottom: 1px solid rgba(255,255,255,.08); }
-    .title { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; }
-    .session-title { min-width: 0; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 14px; background: rgba(255,255,255,.05); color: #f2f3f5; text-align: left; }
+    header { position: sticky; top: 0; z-index: 2; padding: max(8px, env(safe-area-inset-top)) 10px 7px; background: rgba(16,18,20,.92); backdrop-filter: blur(18px); border-bottom: 1px solid rgba(255,255,255,.08); }
+    .title { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+    .session-title { min-width: 0; display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 14px; background: rgba(255,255,255,.05); color: #f2f3f5; text-align: left; }
     .session-title h1 { margin: 0; font-size: 16px; font-weight: 650; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .chevron { flex: 0 0 auto; color: #8d949c; font-size: 13px; }
-    .header-actions { display: flex; align-items: center; gap: 8px; }
+    .header-actions { display: flex; align-items: center; gap: 6px; }
     .status { flex: 0 0 auto; font-size: 12px; color: #9fb8ff; }
-    .artifact-top { min-width: 74px; height: 38px; padding: 0 12px; border-radius: 999px; background: rgba(255,255,255,.08); color: #f2f3f5; font-size: 13px; }
-    .timer { margin-top: 7px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-    main { flex: 1; overflow-y: auto; padding: 18px 14px 128px; }
+    .artifact-top { min-width: 68px; height: 34px; padding: 0 11px; border-radius: 999px; background: rgba(255,255,255,.08); color: #f2f3f5; font-size: 13px; }
+    .icon-button { width: 34px; height: 34px; padding: 0; border-radius: 999px; background: rgba(255,255,255,.08); color: #f2f3f5; font-size: 16px; }
+    .timer { margin-top: 5px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    main { flex: 1; overflow-y: auto; padding: 14px 14px 104px; }
     .empty { margin: 20vh auto 0; max-width: 280px; color: #9aa0a6; text-align: center; line-height: 1.6; }
     .msg { width: 100%; margin: 14px 0; padding: 0 2px; line-height: 1.72; font-size: 15px; white-space: pre-wrap; overflow-wrap: anywhere; color: #e9edf2; }
-    .msg.user { color: #f4f7fb; font-weight: 500; }
-    .msg.assistant { color: #dfe4ea; }
+    .msg.user { display: flex; justify-content: flex-end; padding-left: 48px; color: #f4f7fb; font-weight: 500; }
+    .msg.assistant { color: #dfe4ea; padding-right: 28px; }
+    .bubble { display: inline-block; max-width: min(82vw, 520px); padding: 10px 13px; border-radius: 18px; background: #0a84ff; color: #fff; text-align: left; }
+    .run-status { margin: 8px 0 2px; display: flex; justify-content: flex-start; }
+    .run-status-inner { display: inline-flex; align-items: center; gap: 7px; min-height: 30px; padding: 6px 10px; border-radius: 999px; background: rgba(255,255,255,.06); color: #9fb8ff; font: 13px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .run-spinner { display: inline-block; width: 14px; text-align: center; color: #9fb8ff; }
     .system { margin: 10px 0; width: 100%; font-size: 12px; color: #aeb4bc; padding: 8px 10px; border-radius: 12px; background: rgba(255,255,255,.04); }
     .tool-card { margin: 12px 0; width: 100%; min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 1px solid rgba(255,255,255,.08); border-radius: 14px; background: #1d1f22; color: #d7dce2; }
     .tool-left { display: flex; align-items: center; gap: 9px; min-width: 0; }
@@ -31,6 +37,15 @@
     .tool-status { flex: 0 0 auto; font-size: 12px; color: #93d5a6; }
     .card { margin: 12px 0; padding: 12px; border: 1px solid rgba(255,255,255,.12); border-radius: 14px; background: rgba(255,255,255,.05); }
     .card h3 { margin: 0 0 8px; font-size: 14px; }
+    .plan-card, .pinvou-card { margin: 14px 0; padding: 14px; border: 1px solid rgba(255,255,255,.12); border-radius: 16px; background: rgba(255,255,255,.055); color: #e9edf2; }
+    .plan-card h3, .pinvou-card h3 { margin: 0 0 8px; font-size: 15px; }
+    .plan-explain, .pinvou-trace { margin: 6px 0 10px; color: #d7dce2; line-height: 1.55; }
+    .plan-list { margin: 10px 0 0; padding: 0; list-style: none; display: grid; gap: 7px; }
+    .plan-list li { display: flex; gap: 8px; color: #dfe4ea; font-size: 13px; line-height: 1.45; }
+    .plan-status { flex: 0 0 auto; color: #9fb8ff; }
+    .pinvou-section { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,.08); }
+    .pinvou-section-title { margin-bottom: 6px; color: #aeb4bc; font-size: 12px; }
+    .pinvou-row { margin: 6px 0; color: #dfe4ea; font-size: 13px; line-height: 1.5; }
     .artifact { margin: 16px 0; padding: 16px; border: 1px solid rgba(255,255,255,.10); border-radius: 18px; background: #1d1d1f; box-shadow: 0 14px 36px rgba(0,0,0,.22); }
     .artifact-head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
     .artifact-icon { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; background: #28b8d4; color: #fff; font-weight: 700; font-size: 13px; }
@@ -38,27 +53,45 @@
     .artifact .name { font-size: 18px; font-weight: 700; margin-bottom: 14px; color: #f4f7fb; }
     .artifact-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
     .artifact-pill { height: 42px; border-radius: 10px; background: rgba(255,255,255,.06); display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 13px; color: #d7dce2; }
+    button.artifact-pill { width: 100%; }
     .artifact .path { padding-top: 10px; border-top: 1px solid rgba(255,255,255,.08); font-size: 12px; color: #8d949c; overflow-wrap: anywhere; }
     .question { font-size: 13px; color: #d7dce2; margin: 8px 0; }
+    .question-block { margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,.08); }
+    .question-block:first-of-type { border-top: 0; padding-top: 0; }
+    .choice { width: 100%; min-height: 40px; border-radius: 12px; padding: 9px 11px; text-align: left; background: rgba(255,255,255,.055); color: #dfe4ea; border: 1px solid rgba(255,255,255,.08); }
+    .choice.selected { background: #0a84ff; border-color: #0a84ff; color: #fff; }
+    .choice-label { display: block; font-weight: 620; }
+    .choice-desc { display: block; margin-top: 3px; font-size: 12px; color: rgba(255,255,255,.66); line-height: 1.35; }
+    .choice:not(.selected) .choice-desc { color: #9aa0a6; }
+    .other-field { display: none; width: 100%; margin-top: 8px; min-height: 38px; border: 1px solid rgba(255,255,255,.12); border-radius: 12px; padding: 8px 10px; background: rgba(255,255,255,.055); color: #fff; font: inherit; }
+    .other-field.visible { display: block; }
+    .card.submitted .choice { pointer-events: none; }
+    .card.submitted .choice:not(.selected) { opacity: .58; }
+    .card.submitted .other-field { pointer-events: none; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
     button { appearance: none; border: 0; border-radius: 999px; padding: 10px 14px; font-size: 14px; color: #fff; background: #2c3136; }
     button.primary { background: #0a84ff; }
+    button:disabled, button.disabled { opacity: .42; }
     button.danger { background: #c5221f; }
     button.ghost { background: rgba(255,255,255,.07); color: #d7dce2; }
-    footer { position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 12px max(12px, env(safe-area-inset-bottom)); background: rgba(16,18,20,.94); backdrop-filter: blur(18px); border-top: 1px solid rgba(255,255,255,.08); }
-    .chipbar { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 8px; scrollbar-width: none; }
+    footer { position: fixed; left: 0; right: 0; bottom: 0; padding: 8px 10px max(8px, env(safe-area-inset-bottom)); background: rgba(16,18,20,.94); backdrop-filter: blur(18px); border-top: 1px solid rgba(255,255,255,.08); }
+    .chipbar { display: flex; gap: 7px; overflow-x: auto; padding-bottom: 6px; scrollbar-width: none; }
     .chipbar::-webkit-scrollbar { display: none; }
-    .chip { flex: 0 0 auto; min-height: 34px; padding: 7px 11px; border-radius: 999px; border: 1px solid rgba(255,255,255,.10); background: rgba(255,255,255,.06); color: #dfe4ea; font-size: 12px; white-space: nowrap; }
+    .chip { flex: 0 0 auto; min-height: 30px; padding: 6px 10px; border-radius: 999px; border: 1px solid rgba(255,255,255,.10); background: rgba(255,255,255,.06); color: #dfe4ea; font-size: 12px; white-space: nowrap; }
     .chip strong { font-weight: 650; color: #f5f7fa; }
     .chip.readonly { color: #9aa0a6; }
+    .chip.control { max-width: 56vw; overflow: hidden; text-overflow: ellipsis; }
     .composer { display: flex; align-items: flex-end; gap: 8px; }
-    textarea { flex: 1; min-height: 44px; max-height: 130px; resize: none; border: 1px solid rgba(255,255,255,.12); border-radius: 18px; padding: 11px 12px; outline: none; background: #1b1e21; color: #fff; font: inherit; }
+    textarea { flex: 1; min-height: 42px; max-height: 118px; resize: none; border: 1px solid rgba(255,255,255,.12); border-radius: 18px; padding: 10px 12px; outline: none; background: #1b1e21; color: #fff; font: inherit; }
     .composer button { width: 58px; min-height: 44px; padding: 0 12px; }
-    .row { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-top: 8px; }
+    .row { display: none; gap: 8px; align-items: center; justify-content: space-between; margin-top: 8px; }
     .small { font-size: 12px; color: #8d949c; }
     .overlay { position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,.52); display: flex; align-items: flex-end; }
     .overlay.hidden { display: none; }
     .sheet, .preview { width: 100%; max-height: 78vh; background: #171a1d; border: 1px solid rgba(255,255,255,.10); border-radius: 22px 22px 0 0; overflow: hidden; box-shadow: 0 -24px 60px rgba(0,0,0,.36); }
+    .preview { height: 78vh; display: flex; flex-direction: column; }
+    #previewOverlay { align-items: center; padding: 8px 0; }
+    #previewOverlay .preview { height: min(88vh, calc(100vh - 16px)); max-height: none; border-radius: 18px; }
     .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,.08); }
     .sheet-head h2 { margin: 0; font-size: 16px; }
     .sheet-body { max-height: calc(78vh - 58px); overflow: auto; padding: 8px; }
@@ -68,11 +101,38 @@
     .sheet-title { font-size: 14px; font-weight: 620; color: #eef2f6; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .sheet-sub { margin-top: 4px; font-size: 12px; color: #8d949c; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .sheet-mark { flex: 0 0 auto; font-size: 12px; color: #9fb8ff; }
-    .preview-body { max-height: calc(78vh - 58px); overflow: auto; padding: 12px; }
-    .preview pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #dfe4ea; }
+    .preview-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 12px; }
+    .preview-body.html-preview { padding: 0; overflow: auto; background: #fff; touch-action: pan-y; }
+    .preview pre { margin: 0; min-height: 100%; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #dfe4ea; }
     .preview iframe { width: 100%; height: 62vh; border: 0; border-radius: 12px; background: #fff; }
+    .preview-body.html-preview iframe { display: block; width: 100%; min-height: 100%; border-radius: 0; overflow: hidden; pointer-events: none; }
+    .html-frame-wrap { width: 100%; min-height: 100%; background: #fff; }
     .preview img { display: block; max-width: 100%; height: auto; border-radius: 12px; margin: 0 auto; background: #fff; }
     .empty-panel { padding: 28px 14px; color: #8d949c; text-align: center; line-height: 1.6; }
+    body.light header, body.light footer { background: rgba(246,247,249,.92); border-color: rgba(0,0,0,.08); }
+    body.light .session-title, body.light .artifact-top, body.light .icon-button, body.light .chip, body.light button.ghost { background: rgba(0,0,0,.055); color: #151719; border-color: rgba(0,0,0,.08); }
+    body.light .sheet, body.light .preview { background: #fff; border-color: rgba(0,0,0,.10); color: #151719; }
+    body.light .sheet-head { border-color: rgba(0,0,0,.08); }
+    body.light .sheet-title, body.light .sheet-head h2 { color: #151719; }
+    body.light .sheet-item { color: #151719; }
+    body.light .sheet-item.active, body.light .sheet-item:active { background: #eef2f6; }
+    body.light .msg, body.light .msg.assistant, body.light .plan-list li, body.light .pinvou-row { color: #25282c; }
+    body.light .card, body.light .plan-card, body.light .pinvou-card, body.light .artifact, body.light .tool-card, body.light .system { background: rgba(255,255,255,.86); border-color: rgba(0,0,0,.10); color: #25282c; }
+    body.light .plan-explain, body.light .pinvou-trace, body.light .artifact .name, body.light .tool-name { color: #151719; }
+    body.light .artifact-pill { background: rgba(0,0,0,.055); color: #25282c; }
+    body.light .question { color: #25282c; }
+    body.light .question-block { border-color: rgba(0,0,0,.08); }
+    body.light .choice { background: #f5f7fa; border-color: rgba(0,0,0,.10); color: #151719; }
+    body.light .choice.selected { background: #0a84ff; border-color: #0a84ff; color: #fff; }
+    body.light .choice:not(.selected) .choice-desc { color: #68707a; }
+    body.light .other-field { background: #fff; color: #151719; border-color: rgba(0,0,0,.12); }
+    body.light textarea { background: #fff; color: #151719; border-color: rgba(0,0,0,.12); }
+    body.light .preview-body { background: #fff; color: #151719; }
+    body.light .preview pre { color: #151719; }
+    body.light .empty-panel { color: #5f6872; }
+    body.light .chip strong { color: #151719; }
+    body.light .chip.readonly { color: #5f6872; }
+    body.light .small, body.light .sheet-sub, body.light .sheet-mark, body.light .tool-path, body.light .artifact .path, body.light .artifact-kind, body.light .pinvou-section-title { color: #68707a; }
   </style>
 </head>
 <body>
@@ -84,6 +144,7 @@
           <span class="chevron">⌄</span>
         </button>
         <div class="header-actions">
+          <button class="icon-button" id="themeChip" aria-label="切换亮色暗色">◐</button>
           <button class="artifact-top" id="artifactChip">产物</button>
         </div>
       </div>
@@ -140,6 +201,7 @@
       chipbar: document.getElementById('chipbar'),
       sessionChip: document.getElementById('sessionChip'),
       artifactChip: document.getElementById('artifactChip'),
+      themeChip: document.getElementById('themeChip'),
       modeChip: document.getElementById('modeChip'),
       modelChip: document.getElementById('modelChip'),
       sheetOverlay: document.getElementById('sheetOverlay'),
@@ -155,19 +217,30 @@
     let joined = false;
     let sessionId = '';
     let streamNode = null;
+    let runStatusNode = null;
     let reconnectTimer = null;
     let joinTimer = null;
+    let thinkingFrame = 0;
+    let previewFrameId = '';
+    let pinvouNode = null;
+    const BRAILLE = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     const state = {
       sessions: [],
       sessionsLoaded: false,
       artifacts: [],
       chips: {},
+      theme: localStorage.getItem('pinvou_remote_theme') || 'dark',
+      planSnapshot: { plan: null, todos: null },
       sheet: '',
       turn: {
         active: false,
         phase: 'idle',
+        toolName: '',
         startedAt: 0,
       },
+      artifactHistory: [],
+      turnDirtyArtifacts: [],
+      turnPresentedArtifacts: [],
       replaced: false,
     };
     const sentClientIds = new Set();
@@ -177,6 +250,16 @@
     function clientId() { return `cm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`; }
     function scrollBottom() { requestAnimationFrame(() => { el.messages.scrollTop = el.messages.scrollHeight; }); }
     function clearEmpty() { const empty = el.messages.querySelector('.empty'); if (empty) empty.remove(); }
+    function appendToMessages(node) {
+      clearEmpty();
+      if (runStatusNode && runStatusNode.parentNode === el.messages) {
+        el.messages.insertBefore(node, runStatusNode);
+      } else {
+        el.messages.appendChild(node);
+      }
+      scrollBottom();
+      return node;
+    }
     function shortId(id) { return id ? String(id).slice(0, 12) : ''; }
     function formatSize(bytes) {
       const n = Number(bytes || 0);
@@ -186,51 +269,74 @@
       return `${(n / 1024 / 1024).toFixed(1)} MB`;
     }
     function modeLabel(mode) { return mode === 'plan' ? 'Plan' : 'YOLO'; }
-    function elapsedText(ms) {
-      const total = Math.max(0, Math.floor(ms / 1000));
-      const mm = String(Math.floor(total / 60)).padStart(2, '0');
-      const ss = String(total % 60).padStart(2, '0');
-      return `${mm}:${ss}`;
+    function applyTheme() {
+      const prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+      const light = state.theme === 'light' || (state.theme === 'system' && prefersLight);
+      document.body.classList.toggle('light', light);
+      el.themeChip.textContent = light ? '☀' : '☾';
     }
-    function phaseText(phase) {
-      if (phase === 'waiting') return '等待';
-      if (phase === 'responding') return '生成';
-      if (phase === 'tool') return '工具';
-      if (phase === 'stopping') return '停止中';
-      return '空闲';
+    function elapsedSeconds(ms) {
+      return Math.max(0, Math.floor(ms / 1000));
+    }
+    function thinkingText() {
+      const elapsed = elapsedSeconds(Date.now() - state.turn.startedAt);
+      if (state.turn.phase === 'tool' && state.turn.toolName) return `调用 ${state.turn.toolName}... ${elapsed}s`;
+      if (state.turn.phase === 'stopping') return `停止中... ${elapsed}s`;
+      const suffix = elapsed >= 120 ? ' · 本地模型在生成长内容,请耐心等' : elapsed >= 30 ? ' · 本地模型生成中' : '';
+      return `思考中... ${elapsed}s${suffix}`;
     }
     function setTurnActive(active, phase = active ? 'waiting' : 'idle') {
       state.turn.active = active;
       state.turn.phase = phase;
+      if (!active) state.turn.toolName = '';
       state.turn.startedAt = active ? (state.turn.startedAt || Date.now()) : 0;
       renderRunState();
     }
-    function setTurnPhase(phase) {
+    function setTurnPhase(phase, toolName = '') {
       if (!state.turn.active) {
         state.turn.startedAt = Date.now();
         state.turn.active = true;
       }
       state.turn.phase = phase;
+      state.turn.toolName = phase === 'tool' ? toolName : '';
       renderRunState();
     }
     function renderRunState() {
       if (state.turn.active) {
+        clearEmpty();
         el.actionButton.textContent = '停止';
         el.actionButton.className = 'danger';
-        el.hint.textContent = `${phaseText(state.turn.phase)} ${elapsedText(Date.now() - state.turn.startedAt)} · 云端仅中继`;
-        setStatus(`${phaseText(state.turn.phase)} ${elapsedText(Date.now() - state.turn.startedAt)}`);
+        thinkingFrame = (thinkingFrame + 1) % BRAILLE.length;
+        const text = thinkingText();
+        el.hint.textContent = '云端仅中继，不保存消息全文';
+        setStatus(text);
+        if (!runStatusNode) {
+          runStatusNode = document.createElement('div');
+          runStatusNode.className = 'run-status';
+          runStatusNode.innerHTML = '<div class="run-status-inner"><span class="run-spinner"></span><span></span></div>';
+        }
+        runStatusNode.querySelector('.run-spinner').textContent = BRAILLE[thinkingFrame];
+        runStatusNode.querySelector('.run-status-inner span:last-child').textContent = text;
+        el.messages.appendChild(runStatusNode);
+        scrollBottom();
       } else {
         el.actionButton.textContent = '发送';
         el.actionButton.className = 'primary';
         el.hint.textContent = '云端仅中继，不保存消息全文';
+        if (runStatusNode) {
+          runStatusNode.remove();
+          runStatusNode = null;
+        }
       }
     }
     function renderChips() {
       const activeSession = state.sessions.find(s => s.active || s.id === sessionId);
       el.title.textContent = activeSession ? activeSession.title || shortId(activeSession.id) : shortId(sessionId) || 'PINVOU Remote';
       el.artifactChip.textContent = `产物 ${state.artifacts.length}`;
-      el.modeChip.innerHTML = `<strong>Mode</strong> ${modeLabel(state.chips.mode)}`;
-      el.modelChip.innerHTML = `<strong>Model</strong> ${state.chips.effective_model_name || '默认'}`;
+      el.modeChip.classList.add('control');
+      el.modelChip.classList.add('control');
+      el.modeChip.innerHTML = `${state.chips.mode === 'plan' ? '◇' : '⚡'} <strong>${modeLabel(state.chips.mode)}</strong>`;
+      el.modelChip.innerHTML = `▣ ${state.chips.effective_model_name || '默认模型'}`;
       [...el.chipbar.querySelectorAll('.chip.readonly')].forEach(node => node.remove());
       if (state.chips.skill && state.chips.skill.name) addReadonlyChip(`Skill ${state.chips.skill.name}`);
       if (state.chips.persona_id) addReadonlyChip(`Persona ${state.chips.persona_id}`);
@@ -259,7 +365,7 @@
     }
     setInterval(() => {
       if (state.turn.active) renderRunState();
-    }, 500);
+    }, 100);
     function addReadonlyChip(text) {
       const chip = document.createElement('span');
       chip.className = 'chip readonly';
@@ -288,6 +394,7 @@
       if (state.sheet === 'artifacts') return renderArtifactSheet();
       if (state.sheet === 'mode') return renderModeSheet();
       if (state.sheet === 'models') return renderModelSheet();
+      if (state.sheet === 'theme') return renderThemeSheet();
     }
     function sheetItem({ title, sub, mark, active, onClick }) {
       const btn = document.createElement('button');
@@ -401,26 +508,206 @@
         }));
       });
     }
+    function renderThemeSheet() {
+      el.sheetTitle.textContent = '界面风格';
+      el.sheetBody.innerHTML = '';
+      [
+        { id: 'dark', title: '暗色', sub: '适合夜间和微信内置浏览器' },
+        { id: 'light', title: '亮色', sub: '白底高对比，适合看文档' },
+        { id: 'system', title: '跟随系统', sub: '按手机系统外观自动切换' },
+      ].forEach(item => {
+        el.sheetBody.appendChild(sheetItem({
+          title: item.title,
+          sub: item.sub,
+          mark: state.theme === item.id ? '当前' : '',
+          active: state.theme === item.id,
+          onClick: () => {
+            state.theme = item.id;
+            localStorage.setItem('pinvou_remote_theme', item.id);
+            applyTheme();
+            closeSheet();
+          },
+        }));
+      });
+    }
     function addMessage(role, text) {
-      clearEmpty();
       const div = document.createElement('div');
       div.className = `msg ${role}`;
-      div.textContent = text || '';
-      el.messages.appendChild(div);
-      scrollBottom();
-      return div;
+      if (role === 'user') {
+        const bubble = document.createElement('span');
+        bubble.className = 'bubble';
+        bubble.textContent = text || '';
+        div.appendChild(bubble);
+      } else {
+        div.textContent = text || '';
+      }
+      if (role === 'user') state.artifactHistory.push({ type: 'user' });
+      return appendToMessages(div);
     }
     function addSystem(text) {
-      clearEmpty();
       const div = document.createElement('div');
       div.className = 'system';
       div.textContent = text;
-      el.messages.appendChild(div);
-      scrollBottom();
+      appendToMessages(div);
+    }
+    function normalizePlanSnapshot(raw) {
+      if (!raw || typeof raw !== 'object') return null;
+      if (Array.isArray(raw.items)) return raw;
+      if (Array.isArray(raw.plan)) {
+        return {
+          explanation: raw.explanation || '',
+          items: raw.plan.map(item => ({
+            step: item.step || item.description || item.content || '',
+            status: item.status || 'pending',
+          })).filter(item => item.step),
+        };
+      }
+      return null;
+    }
+    function composePlanMarkdown(snapshots) {
+      const lines = [];
+      const plan = normalizePlanSnapshot(snapshots && snapshots.plan);
+      const todos = snapshots && snapshots.todos;
+      const sym = status => status === 'completed' ? '●' : status === 'in_progress' ? '◎' : '○';
+      if (plan && Array.isArray(plan.items)) {
+        if (plan.explanation) lines.push('**方案：**', plan.explanation, '');
+        lines.push('**步骤：**');
+        plan.items.forEach((item, i) => lines.push(`${i + 1}. ${sym(item.status)} ${item.step}`));
+        lines.push('');
+      }
+      if (todos && Array.isArray(todos.items)) {
+        lines.push('**细分待办：**');
+        todos.items.forEach((item, i) => lines.push(`${i + 1}. ${sym(item.status)} ${item.content || item.step || ''}`));
+      }
+      return lines.length ? lines.join('\n') : '（plan 为空）';
+    }
+    function addPlanCard(payload, fromHistory = false) {
+      const plan = normalizePlanSnapshot(payload && (payload.plan_snapshot || payload.plan || payload));
+      const todos = payload && (payload.todos_snapshot || payload.todos);
+      if (!plan && !todos) return;
+      [...el.messages.querySelectorAll('.plan-card[data-active="true"]')].forEach(node => {
+        node.dataset.active = 'false';
+        const status = node.querySelector('.plan-card-status');
+        if (status) status.textContent = '已被新方案替换';
+        const actions = node.querySelector('.actions');
+        if (actions) actions.remove();
+      });
+      const card = document.createElement('div');
+      card.className = 'plan-card';
+      card.dataset.active = fromHistory ? 'false' : 'true';
+      const title = document.createElement('h3');
+      title.textContent = '方案确认';
+      card.appendChild(title);
+      if (plan && plan.explanation) {
+        const explain = document.createElement('div');
+        explain.className = 'plan-explain';
+        explain.textContent = plan.explanation;
+        card.appendChild(explain);
+      }
+      const items = (plan && Array.isArray(plan.items) ? plan.items : []).slice(0, 8);
+      if (items.length) {
+        const list = document.createElement('ul');
+        list.className = 'plan-list';
+        items.forEach(item => {
+          const li = document.createElement('li');
+          const st = document.createElement('span');
+          st.className = 'plan-status';
+          st.textContent = item.status === 'completed' ? '●' : item.status === 'in_progress' ? '◎' : '○';
+          const tx = document.createElement('span');
+          tx.textContent = item.step || item.description || item.content || '';
+          li.appendChild(st);
+          li.appendChild(tx);
+          list.appendChild(li);
+        });
+        card.appendChild(list);
+      }
+      const status = document.createElement('div');
+      status.className = 'small plan-card-status';
+      status.textContent = fromHistory ? '历史方案' : '';
+      card.appendChild(status);
+      if (!fromHistory) {
+        const actions = document.createElement('div');
+        actions.className = 'actions';
+        const go = document.createElement('button');
+        go.className = 'primary';
+        go.textContent = '就这么干';
+        go.onclick = () => {
+          const planMarkdown = composePlanMarkdown({ plan, todos });
+          sendAction('accept_plan', { plan_markdown: planMarkdown });
+          card.dataset.active = 'false';
+          status.textContent = '已批准';
+          actions.remove();
+          addMessage('user', '✅ 就这么干');
+          setTurnActive(true, 'waiting');
+        };
+        const drop = document.createElement('button');
+        drop.className = 'ghost';
+        drop.textContent = '算了';
+        drop.onclick = () => {
+          sendAction('discard_plan', {});
+          card.dataset.active = 'false';
+          status.textContent = '已放弃';
+          actions.remove();
+        };
+        actions.appendChild(go);
+        actions.appendChild(drop);
+        card.appendChild(actions);
+      }
+      appendToMessages(card);
     }
     function toolPath(args) {
       args = args && typeof args === 'object' ? args : {};
       return args.path || args.file_path || args.filename || '';
+    }
+    function isPresentArtifactTool(name) {
+      return name === 'present_artifact' || (typeof name === 'string' && name.endsWith('present_artifact'));
+    }
+    function isWriteTool(name) {
+      return name === 'write_file' || name === 'append_file' || name === 'edit_file';
+    }
+    function isDeliverable(path) {
+      const ext = String(path || '').split('.').pop().toLowerCase();
+      return ['html', 'htm', 'md', 'markdown', 'pdf', 'docx', 'pptx', 'xlsx', 'csv', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'].includes(ext);
+    }
+    function sameArtifact(a, b) {
+      const ab = basename(a);
+      const bb = basename(b);
+      return !!ab && !!bb && ab === bb;
+    }
+    function trackArtifact(path, patch = {}) {
+      if (!path) return null;
+      const bn = patch.basename || basename(path);
+      const cleanPatch = { ...patch };
+      if (!cleanPatch.id) delete cleanPatch.id;
+      let found = null;
+      state.artifacts = state.artifacts.map(a => {
+        if (sameArtifact(a.path_tail || a.path || a.basename, path)) {
+          found = { ...a, ...cleanPatch, basename: a.basename || bn, path_tail: a.path_tail || path };
+          return found;
+        }
+        return a;
+      });
+      if (!found) {
+        found = { id: patch.id || '', basename: bn, path_tail: path, kind: patch.kind || '', byte_size: patch.byte_size || 0 };
+        state.artifacts.push(found);
+      }
+      renderChips();
+      if (state.sheet === 'artifacts') renderArtifactSheet();
+      return found;
+    }
+    function findTrackedArtifact(path) {
+      return state.artifacts.find(a => sameArtifact(a.path_tail || a.path || a.basename, path));
+    }
+    function isDuplicateArtifactCard(path) {
+      const bn = basename(path);
+      if (!bn) return false;
+      for (let i = state.artifactHistory.length - 1; i >= 0; i--) {
+        const item = state.artifactHistory[i];
+        if (item.type === 'user') return false;
+        if (item.type === 'dirty' && sameArtifact(item.path, path)) return false;
+        if (item.type === 'artifact' && sameArtifact(item.path, path)) return true;
+      }
+      return false;
     }
     function addToolCard(tool) {
       clearEmpty();
@@ -448,9 +735,9 @@
       status.textContent = tool.status || '运行中';
       div.appendChild(left);
       div.appendChild(status);
-      el.messages.appendChild(div);
+      appendToMessages(div);
       toolNodes.set(id, { root: div, status, args, name: tool.name || 'tool' });
-      scrollBottom();
+      state.artifactHistory.push({ type: 'tool', name: tool.name || 'tool', path: toolPath(args) });
       return div;
     }
     function finishToolCard(payload) {
@@ -476,73 +763,143 @@
       if (typeof value !== 'string') return null;
       try { return JSON.parse(value); } catch { return null; }
     }
+    function parseToolResultPayload(value) {
+      const obj = parseMaybeJson(value);
+      if (obj && obj.content && obj.content[0] && typeof obj.content[0].text === 'string') {
+        return parseMaybeJson(obj.content[0].text) || obj;
+      }
+      return obj;
+    }
+    function artifactPathFromOutput(value) {
+      const obj = parseToolResultPayload(value);
+      if (!obj || typeof obj !== 'object') return '';
+      return obj.abs_path || obj.path || obj.file_path || obj.local_path || '';
+    }
     function artifactFromPayload(payload) {
-      const output = parseMaybeJson(payload && payload.output);
+      const outputPath = artifactPathFromOutput(payload && payload.output);
       const args = payload && payload.args || {};
-      const raw = (output && (output.abs_path || output.path || output.file_path || output.local_path)) ||
+      const raw = outputPath ||
         (args && (args.path || args.file_path || args.filename)) ||
         (payload && (payload.path_tail || payload.path));
       if (!raw) return null;
+      const tracked = findTrackedArtifact(raw);
       return {
+        id: payload.artifact_id || (tracked && tracked.id) || '',
         name: payload.basename || basename(raw),
         path: payload.path_tail || raw,
+        kind: payload.kind || (tracked && tracked.kind) || '',
+        byte_size: payload.byte_size || (tracked && tracked.byte_size) || 0,
       };
     }
-    function addArtifactCard(artifact) {
+    function addArtifactCard(artifact, options = {}) {
       if (!artifact || !artifact.path) return;
+      const tracked = trackArtifact(artifact.path, artifact);
+      const cardPath = artifact.path || (tracked && (tracked.path_tail || tracked.path));
+      if (!options.force && isDuplicateArtifactCard(cardPath)) return;
       clearEmpty();
       const div = document.createElement('div');
       div.className = 'artifact';
-      if (artifact.id) {
-        div.onclick = () => sendAction('request_artifact_preview', { artifact_id: artifact.id });
+      div.dataset.artifactPath = cardPath;
+      const artifactId = artifact.id || (tracked && tracked.id);
+      if (artifactId) {
+        div.onclick = () => sendAction('request_artifact_preview', { artifact_id: artifactId });
       }
       const head = document.createElement('div');
       head.className = 'artifact-head';
       const icon = document.createElement('div');
       icon.className = 'artifact-icon';
-      icon.textContent = artifact.kind || 'HTML';
+      icon.textContent = artifact.kind || (tracked && tracked.kind) || 'HTML';
       const kind = document.createElement('div');
       kind.className = 'artifact-kind';
-      kind.textContent = artifact.kind || 'HTML';
+      kind.textContent = artifact.kind || (tracked && tracked.kind) || 'HTML';
       head.appendChild(icon);
       head.appendChild(kind);
       const name = document.createElement('div');
       name.className = 'name';
-      name.textContent = artifact.name || basename(artifact.path) || '成品';
-      const actions = document.createElement('div');
-      actions.className = 'artifact-actions';
-      const pin = document.createElement('div');
-      pin.className = 'artifact-pill';
-      pin.textContent = '品 · 智能找错';
-      const wu = document.createElement('div');
-      wu.className = 'artifact-pill';
-      wu.textContent = '悟 · 深度查漏';
-      actions.appendChild(pin);
-      actions.appendChild(wu);
+      name.textContent = artifact.name || artifact.basename || basename(cardPath) || '成品';
       const path = document.createElement('div');
       path.className = 'path';
-      path.textContent = artifact.path;
+      path.textContent = cardPath;
       div.appendChild(head);
       div.appendChild(name);
-      div.appendChild(actions);
       div.appendChild(path);
-      el.messages.appendChild(div);
-      scrollBottom();
+      appendToMessages(div);
+      state.artifactHistory.push({ type: 'artifact', path: cardPath });
+    }
+    function renderPinvouList(section, title, rows, mapRow) {
+      if (!Array.isArray(rows) || !rows.length) return;
+      const box = document.createElement('div');
+      box.className = 'pinvou-section';
+      const h = document.createElement('div');
+      h.className = 'pinvou-section-title';
+      h.textContent = title;
+      box.appendChild(h);
+      rows.slice(0, 6).forEach(row => {
+        const item = document.createElement('div');
+        item.className = 'pinvou-row';
+        item.textContent = mapRow(row);
+        box.appendChild(item);
+      });
+      section.appendChild(box);
+    }
+    function addPinvouLoading(payload) {
+      if (pinvouNode) pinvouNode.remove();
+      const card = document.createElement('div');
+      card.className = 'pinvou-card';
+      const isWu = payload && payload.mode === 'coverage';
+      card.innerHTML = `<h3>Pinvou ${isWu ? '悟' : '品'}</h3><div class="pinvou-trace">${isWu ? '正在深度查漏...' : '正在智能找错...'}</div>`;
+      pinvouNode = appendToMessages(card);
+    }
+    function showPinvouReview(payload) {
+      if (pinvouNode) {
+        pinvouNode.remove();
+        pinvouNode = null;
+      }
+      const review = payload && payload.review || {};
+      const isWu = payload && payload.mode === 'coverage';
+      const card = document.createElement('div');
+      card.className = 'pinvou-card';
+      const title = document.createElement('h3');
+      title.textContent = `Pinvou ${isWu ? '悟' : '品'}`;
+      card.appendChild(title);
+      const trace = document.createElement('div');
+      trace.className = 'pinvou-trace';
+      trace.textContent = review.trace || (isWu ? '已完成覆盖度检查。' : '已完成产物检阅。');
+      card.appendChild(trace);
+      renderPinvouList(card, '问题', review.issues, row => `${row.severity || 'medium'} · ${row.text || ''}${row.suggestion ? `；建议：${row.suggestion}` : ''}`);
+      renderPinvouList(card, '建议', review.recommendations, row => `${row.topic || '建议'}：${row.pick || ''}${row.why ? `，${row.why}` : ''}`);
+      renderPinvouList(card, '缺口', review.coverage, row => `${row.dimension || '维度'}：${row.text || ''}${row.suggestion ? `；建议：${row.suggestion}` : ''}`);
+      if (!review.issues?.length && !review.recommendations?.length && !review.coverage?.length) {
+        const ok = document.createElement('div');
+        ok.className = 'pinvou-row';
+        ok.textContent = review.verdict === 'pass' ? '已通过，可继续交付。' : '没有发现需要处理的明显问题。';
+        card.appendChild(ok);
+      }
+      appendToMessages(card);
     }
     function showPreview(payload) {
       const preview = payload.preview || {};
       el.previewTitle.textContent = payload.basename || basename(payload.path_tail) || '预览';
       el.previewBody.innerHTML = '';
+      el.previewBody.classList.remove('html-preview');
       if (preview.type === 'image' && preview.data_url) {
         const img = document.createElement('img');
         img.alt = payload.basename || 'artifact preview';
         img.src = preview.data_url;
         el.previewBody.appendChild(img);
       } else if (preview.type === 'html') {
+        el.previewBody.classList.add('html-preview');
+        previewFrameId = `pv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const wrap = document.createElement('div');
+        wrap.className = 'html-frame-wrap';
+        wrap.dataset.previewFrameId = previewFrameId;
         const iframe = document.createElement('iframe');
-        iframe.setAttribute('sandbox', '');
-        iframe.srcdoc = preview.content || '';
-        el.previewBody.appendChild(iframe);
+        iframe.setAttribute('sandbox', 'allow-scripts allow-forms allow-pointer-lock');
+        iframe.setAttribute('scrolling', 'no');
+        iframe.dataset.previewFrameId = previewFrameId;
+        iframe.srcdoc = htmlPreviewSrcdoc(preview.content, previewFrameId);
+        wrap.appendChild(iframe);
+        el.previewBody.appendChild(wrap);
       } else if (preview.type === 'text' || preview.type === 'markdown') {
         const pre = document.createElement('pre');
         pre.textContent = preview.content || '';
@@ -561,8 +918,29 @@
       }
       el.previewOverlay.classList.remove('hidden');
     }
+    function htmlPreviewSrcdoc(content, id) {
+      const script = `<script data-pinvou-remote-preview>(function(id){function measure(){var de=document.documentElement,b=document.body;if(!de||!b)return;var h=Math.max(de.scrollHeight||0,b.scrollHeight||0,de.offsetHeight||0,b.offsetHeight||0,window.innerHeight||0);parent.postMessage({type:"pinvou_html_preview_size",id:id,height:Math.ceil(h)},"*")}function schedule(){measure();setTimeout(measure,80);setTimeout(measure,300);setTimeout(measure,800)}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",schedule);else schedule();window.addEventListener("load",schedule);window.addEventListener("resize",schedule);try{new MutationObserver(schedule).observe(document.documentElement,{childList:true,subtree:true,attributes:true,characterData:true})}catch(e){}})(${JSON.stringify(id)});<\/script>`;
+      const html = String(content || '');
+      if (/<\/body>/i.test(html)) return html.replace(/<\/body>/i, `${script}</body>`);
+      return `${html}${script}`;
+    }
+    window.addEventListener('message', ev => {
+      const data = ev.data || {};
+      if (!data || data.type !== 'pinvou_html_preview_size' || data.id !== previewFrameId) return;
+      const wrap = el.previewBody.querySelector(`.html-frame-wrap[data-preview-frame-id="${data.id}"]`);
+      const iframe = el.previewBody.querySelector(`iframe[data-preview-frame-id="${data.id}"]`);
+      if (!wrap || !iframe) return;
+      const height = Math.max(el.previewBody.clientHeight || 1, Number(data.height) || 1);
+      wrap.style.height = `${height}px`;
+      iframe.style.height = `${height}px`;
+    });
     function updateArtifacts(artifacts) {
-      state.artifacts = Array.isArray(artifacts) ? artifacts : [];
+      const byName = new Map();
+      (Array.isArray(artifacts) ? artifacts : []).forEach(a => {
+        const key = basename((a && (a.path_tail || a.path || a.basename)) || '');
+        if (key) byName.set(key, a);
+      });
+      state.artifacts = [...byName.values()];
       renderChips();
       if (state.sheet === 'artifacts') renderArtifactSheet();
     }
@@ -572,8 +950,165 @@
       ws.send(JSON.stringify({ type: 'mobile_action', payload: action }));
       return true;
     }
+    function blockText(blocks) {
+      return (Array.isArray(blocks) ? blocks : [])
+        .filter(b => b && b.type === 'text')
+        .map(b => b.text || '')
+        .join('');
+    }
+    function toolResultText(content) {
+      if (typeof content === 'string') return content;
+      try { return JSON.stringify(content); } catch { return ''; }
+    }
+    function resultSuccess(result) {
+      return !result || !result.is_error;
+    }
+    function isUserInputTool(name) {
+      return name === 'request_user_input' || (typeof name === 'string' && name.endsWith('request_user_input'));
+    }
+    function parseUserInputAnswers(content) {
+      const obj = parseToolResultPayload(content);
+      if (obj && Array.isArray(obj.answers)) return obj.answers;
+      if (Array.isArray(obj)) return obj;
+      return [];
+    }
+    function buildResultById(messages) {
+      const resultById = {};
+      messages.forEach(m => {
+        (Array.isArray(m.blocks) ? m.blocks : []).forEach(b => {
+          if (b && b.type === 'tool_result' && b.tool_use_id) {
+            resultById[b.tool_use_id] = { content: b.content, is_error: !!b.is_error };
+          }
+        });
+      });
+      return resultById;
+    }
+    function buildToolUseById(messages) {
+      const toolUseById = {};
+      messages.forEach(m => {
+        (Array.isArray(m.blocks) ? m.blocks : []).forEach(b => {
+          if (b && b.type === 'tool_use' && b.id) {
+            toolUseById[b.id] = { name: b.name, input: b.input || {} };
+          }
+        });
+      });
+      return toolUseById;
+    }
+    function rebuildFromBlocks(messages) {
+      const resultById = buildResultById(messages);
+      const toolUseById = buildToolUseById(messages);
+      const lastDirtyByName = {};
+      const writtenNames = {};
+      const presentedNames = {};
+      messages.forEach(m => {
+        (Array.isArray(m.blocks) ? m.blocks : []).forEach(b => {
+          if (!b || b.type !== 'tool_use') return;
+          const args = b.input || {};
+          if (b.name === 'update_plan') {
+            addPlanCard({ plan_snapshot: normalizePlanSnapshot(args) }, true);
+            return;
+          }
+          if (isPresentArtifactTool(b.name)) {
+            const res = resultById[b.id];
+            const pp = artifactPathFromOutput(res && res.content) || toolPath(args);
+            if (pp) presentedNames[basename(pp)] = true;
+            return;
+          }
+          const res = resultById[b.id];
+          const produced = artifactPathFromOutput(res && res.content);
+          const written = toolPath(args);
+          if (!isWriteTool(b.name) && produced && isDeliverable(produced) && resultSuccess(res)) {
+            lastDirtyByName[basename(produced)] = { id: b.id, path: produced };
+            writtenNames[basename(produced)] = true;
+          }
+          if (isWriteTool(b.name) && written && resultSuccess(res)) {
+            lastDirtyByName[basename(written)] = { id: b.id, path: written };
+            if (b.name !== 'edit_file') writtenNames[basename(written)] = true;
+          }
+        });
+      });
+
+      messages.forEach(m => {
+        const blocks = Array.isArray(m.blocks) ? m.blocks : [];
+        if (m.role === 'user') {
+          const text = blockText(blocks);
+          if (text) addMessage('user', text);
+          blocks.forEach(b => {
+            if (b && b.type === 'tool_result') {
+              const toolUse = toolUseById[b.tool_use_id] || {};
+              if (isUserInputTool(toolUse.name)) return;
+              finishToolCard({ id: b.tool_use_id, success: !b.is_error, output: b.content });
+            }
+          });
+          return;
+        }
+        if (m.role !== 'assistant') return;
+        let textBuf = '';
+        blocks.forEach(b => {
+          if (!b) return;
+          if (b.type === 'text') {
+            textBuf += b.text || '';
+            return;
+          }
+          if (b.type !== 'tool_use') return;
+          if (textBuf) {
+            addMessage('assistant', textBuf);
+            textBuf = '';
+          }
+          const args = b.input || {};
+          const res = resultById[b.id];
+          if (isUserInputTool(b.name)) {
+            const answers = parseUserInputAnswers(res && res.content);
+            if (answers.length) renderSubmittedUserInput({ questions: args.questions || [] }, answers);
+            return;
+          }
+          if (isPresentArtifactTool(b.name)) {
+            if (resultSuccess(res)) {
+              const path = artifactPathFromOutput(res && res.content) || toolPath(args);
+              if (path) {
+                addArtifactCard({
+                  name: args.title || basename(path),
+                  path,
+                  kind: args.kind,
+                });
+              }
+            }
+            return;
+          }
+          addToolCard({ id: b.id, name: b.name, args, status: resultSuccess(res) ? '完成' : '失败' });
+          finishToolCard({ id: b.id, success: resultSuccess(res), output: res && res.content });
+
+          const produced = artifactPathFromOutput(res && res.content);
+          if (!isWriteTool(b.name) && produced && isDeliverable(produced) && resultSuccess(res)) {
+            const bn = basename(produced);
+            trackArtifact(produced);
+            state.artifactHistory.push({ type: 'dirty', path: produced });
+            if (lastDirtyByName[bn] && lastDirtyByName[bn].id === b.id && !presentedNames[bn]) {
+              addArtifactCard({ name: basename(produced), path: produced });
+            }
+          }
+          if (isWriteTool(b.name) && resultSuccess(res)) {
+            const path = toolPath(args);
+            const bn = basename(path);
+            if (path && (isDeliverable(path) || findTrackedArtifact(path))) {
+              trackArtifact(path);
+              state.artifactHistory.push({ type: 'dirty', path });
+              if (lastDirtyByName[bn] && lastDirtyByName[bn].id === b.id && !presentedNames[bn] && writtenNames[bn]) {
+                addArtifactCard({ name: basename(path), path });
+              }
+            }
+          }
+        });
+        if (textBuf) addMessage('assistant', textBuf);
+      });
+    }
     function renderSnapshot(snapshot) {
       streamNode = null;
+      runStatusNode = null;
+      toolNodes.clear();
+      state.artifactHistory = [];
+      state.turnDirtyArtifacts = [];
+      state.turnPresentedArtifacts = [];
       el.messages.innerHTML = '';
       const session = snapshot.session || {};
       sessionId = session.id || sessionId;
@@ -585,18 +1120,16 @@
       if (!messages.length) {
         el.messages.innerHTML = '<div class="empty">当前 session 暂无历史消息。你可以直接发送第一条远程消息。</div>';
       }
-      messages.forEach(m => {
-        if (m.content) addMessage(m.role === 'user' ? 'user' : 'assistant', m.content);
-        if (Array.isArray(m.tools) && m.tools.length) {
-          m.tools.forEach(t => addToolCard({ id: t.id, name: t.name, args: t.args, status: '完成' }));
-        }
-      });
-      state.artifacts.forEach(a => addArtifactCard({
-        id: a.id,
-        name: a.basename || basename(a.path_tail),
-        path: a.path_tail || a.path || '',
-        kind: a.kind,
-      }));
+      if (messages.some(m => Array.isArray(m.blocks))) {
+        rebuildFromBlocks(messages);
+      } else {
+        messages.forEach(m => {
+          if (m.content) addMessage(m.role === 'user' ? 'user' : 'assistant', m.content);
+          if (Array.isArray(m.tools) && m.tools.length) {
+            m.tools.forEach(t => addToolCard({ id: t.id, name: t.name, args: t.args, status: '完成' }));
+          }
+        });
+      }
       renderChips();
     }
     function renderUserInput(payload) {
@@ -607,36 +1140,195 @@
       title.textContent = '需要确认';
       card.appendChild(title);
       const questions = Array.isArray(payload.questions) ? payload.questions : [];
-      const answers = [];
-      questions.forEach(q => {
+      if (!questions.length) {
+        const text = document.createElement('div');
+        text.className = 'question';
+        text.textContent = payload.prompt || payload.message || '需要你确认后继续。';
+        card.appendChild(text);
+        const actions = document.createElement('div');
+        actions.className = 'actions';
+        const ok = document.createElement('button');
+        ok.className = 'primary';
+        ok.textContent = '就这么干';
+        ok.onclick = () => {
+          const submitted = [{ id: 'confirm', label: '就这么干', value: 'approved' }];
+          sendAction('submit_user_input', {
+            tool_call_id: payload.id,
+            answers: submitted,
+          });
+          card.classList.add('submitted');
+          actions.remove();
+          const status = document.createElement('div');
+          status.className = 'small';
+          status.textContent = '✓ 已提交';
+          card.appendChild(status);
+        };
+        actions.appendChild(ok);
+        card.appendChild(actions);
+      }
+      const answers = questions.map(() => null);
+      const submit = document.createElement('button');
+      function updateSubmitState() {
+        submit.disabled = !!questions.length && !answers.every(Boolean);
+        submit.classList.toggle('disabled', submit.disabled);
+      }
+      questions.forEach((q, qi) => {
+        const questionId = q.id || `q_${qi + 1}`;
+        const block = document.createElement('div');
+        block.className = 'question-block';
         const qn = document.createElement('div');
         qn.className = 'question';
         qn.textContent = q.question || q.header || '请选择';
-        card.appendChild(qn);
+        block.appendChild(qn);
         const actions = document.createElement('div');
         actions.className = 'actions';
+        const optionButtons = [];
+        const otherInput = document.createElement('input');
+        otherInput.className = 'other-field';
+        otherInput.placeholder = '输入其他答案';
+        function markSelected(btn) {
+          optionButtons.forEach(node => node.classList.toggle('selected', node === btn));
+        }
         (q.options || []).forEach(opt => {
           const btn = document.createElement('button');
-          btn.textContent = opt.label || opt.value || '选择';
+          btn.className = 'choice';
+          const label = document.createElement('span');
+          label.className = 'choice-label';
+          label.textContent = opt.label || opt.value || '选择';
+          btn.appendChild(label);
+          if (opt.description) {
+            const desc = document.createElement('span');
+            desc.className = 'choice-desc';
+            desc.textContent = opt.description;
+            btn.appendChild(desc);
+          }
           btn.onclick = () => {
-            answers.push({ id: q.id, label: opt.label, value: opt.value || opt.label });
-            sendAction('submit_user_input', { tool_call_id: payload.id, answers });
-            card.remove();
+            answers[qi] = { id: questionId, label: opt.label || opt.value || '选择', value: opt.value || opt.label };
+            otherInput.classList.remove('visible');
+            otherInput.value = '';
+            markSelected(btn);
+            updateSubmitState();
           };
+          optionButtons.push(btn);
           actions.appendChild(btn);
         });
-        card.appendChild(actions);
+        const other = document.createElement('button');
+        other.className = 'choice';
+        const otherLabel = document.createElement('span');
+        otherLabel.className = 'choice-label';
+        otherLabel.textContent = '其他';
+        other.appendChild(otherLabel);
+        other.onclick = () => {
+          otherInput.classList.add('visible');
+          markSelected(other);
+          const val = otherInput.value.trim();
+          answers[qi] = val ? { id: questionId, label: '其他', value: val } : null;
+          otherInput.focus();
+          updateSubmitState();
+        };
+        optionButtons.push(other);
+        actions.appendChild(other);
+        otherInput.oninput = () => {
+          const val = otherInput.value.trim();
+          answers[qi] = val ? { id: questionId, label: '其他', value: val } : null;
+          markSelected(other);
+          updateSubmitState();
+        };
+        if (!Array.isArray(q.options) || !q.options.length) {
+          otherInput.classList.add('visible');
+        }
+        block.appendChild(actions);
+        block.appendChild(otherInput);
+        card.appendChild(block);
       });
       const row = document.createElement('div');
       row.className = 'actions';
+      if (questions.length) {
+        submit.className = 'primary';
+        submit.textContent = '提交选择';
+        submit.onclick = () => {
+          if (submit.disabled) return;
+          sendAction('submit_user_input', { tool_call_id: payload.id, answers });
+          card.classList.add('submitted');
+          row.remove();
+          const status = document.createElement('div');
+          status.className = 'small';
+          status.textContent = '✓ 已提交';
+          card.appendChild(status);
+        };
+        row.appendChild(submit);
+        updateSubmitState();
+      }
       const cancel = document.createElement('button');
       cancel.className = 'danger';
       cancel.textContent = '取消';
       cancel.onclick = () => { sendAction('cancel_user_input', { tool_call_id: payload.id }); card.remove(); };
       row.appendChild(cancel);
       card.appendChild(row);
-      el.messages.appendChild(card);
-      scrollBottom();
+      appendToMessages(card);
+    }
+    function renderSubmittedUserInput(payload, answers) {
+      clearEmpty();
+      const card = document.createElement('div');
+      card.className = 'card submitted';
+      const title = document.createElement('h3');
+      title.textContent = '需要确认';
+      card.appendChild(title);
+      const questions = Array.isArray(payload && payload.questions) ? payload.questions : [];
+      questions.forEach((q, qi) => {
+        const answer = (Array.isArray(answers) ? answers : [])[qi] || {};
+        const block = document.createElement('div');
+        block.className = 'question-block';
+        const qn = document.createElement('div');
+        qn.className = 'question';
+        qn.textContent = q.question || q.header || '请选择';
+        block.appendChild(qn);
+        const actions = document.createElement('div');
+        actions.className = 'actions';
+        let matched = false;
+        (q.options || []).forEach(opt => {
+          const labelText = opt.label || opt.value || '选择';
+          const btn = document.createElement('button');
+          btn.className = 'choice';
+          if (!matched && (answer.label === labelText || answer.value === opt.value || answer.value === opt.label)) {
+            btn.classList.add('selected');
+            matched = true;
+          }
+          const label = document.createElement('span');
+          label.className = 'choice-label';
+          label.textContent = labelText;
+          btn.appendChild(label);
+          if (opt.description) {
+            const desc = document.createElement('span');
+            desc.className = 'choice-desc';
+            desc.textContent = opt.description;
+            btn.appendChild(desc);
+          }
+          actions.appendChild(btn);
+        });
+        if (answer.label === '其他' || (!matched && answer.value)) {
+          const other = document.createElement('button');
+          other.className = 'choice selected';
+          const otherLabel = document.createElement('span');
+          otherLabel.className = 'choice-label';
+          otherLabel.textContent = '其他';
+          other.appendChild(otherLabel);
+          actions.appendChild(other);
+          const otherInput = document.createElement('input');
+          otherInput.className = 'other-field visible';
+          otherInput.value = answer.value || '';
+          block.appendChild(actions);
+          block.appendChild(otherInput);
+        } else {
+          block.appendChild(actions);
+        }
+        card.appendChild(block);
+      });
+      const status = document.createElement('div');
+      status.className = 'small';
+      status.textContent = '✓ 已提交';
+      card.appendChild(status);
+      appendToMessages(card);
     }
     function handleDesktopEvent(msg) {
       switch (msg.type) {
@@ -672,6 +1364,27 @@
           if (state.sheet === 'mode') renderModeSheet();
           if (state.sheet === 'models') renderModelSheet();
           break;
+        case 'plan_snapshot':
+          {
+            const p = msg.payload || {};
+            if (p.plan_snapshot) state.planSnapshot.plan = p.plan_snapshot;
+            if (p.todos_snapshot) state.planSnapshot.todos = p.todos_snapshot;
+          }
+          break;
+        case 'plan_ready':
+          {
+            const p = msg.payload || {};
+            state.planSnapshot = { plan: p.plan_snapshot || null, todos: p.todos_snapshot || null };
+            addPlanCard(p);
+            setTurnActive(false);
+          }
+          break;
+        case 'pinvou_review_started':
+          addPinvouLoading(msg.payload || {});
+          break;
+        case 'pinvou_review':
+          showPinvouReview(msg.payload || {});
+          break;
         case 'message_append': {
           const p = msg.payload || {};
           if (p.client_message_id && sentClientIds.has(p.client_message_id)) return;
@@ -687,15 +1400,43 @@
           scrollBottom();
           break;
         case 'tool_call_start':
-          setTurnPhase('tool');
+          setTurnPhase('tool', msg.payload && msg.payload.name);
+          if (isUserInputTool(msg.payload && msg.payload.name)) break;
+          if (isPresentArtifactTool(msg.payload && msg.payload.name)) break;
           addToolCard({ id: msg.payload && msg.payload.id, name: msg.payload && msg.payload.name, args: msg.payload && msg.payload.args, status: '运行中' });
           break;
-        case 'tool_call_end':
-          finishToolCard(msg.payload || {});
-          addArtifactCard(artifactFromPayload(msg.payload || {}));
+        case 'tool_call_end': {
+          const p = msg.payload || {};
+          if (isUserInputTool(p.name)) break;
+          const art = artifactFromPayload(p);
+          if (isPresentArtifactTool(p.name)) {
+            if (p.success !== false && art && art.path) {
+              addArtifactCard(art);
+              state.turnPresentedArtifacts.push(art.path);
+            }
+            break;
+          }
+          finishToolCard(p);
+          if (p.success !== false && art && art.path && isDeliverable(art.path)) {
+            trackArtifact(art.path, art);
+            state.turnDirtyArtifacts.push(art.path);
+            state.artifactHistory.push({ type: 'dirty', path: art.path });
+          }
+          if (p.success !== false && isWriteTool(p.name)) {
+            const path = toolPath(p.args || {});
+            if (path && (isDeliverable(path) || findTrackedArtifact(path))) {
+              trackArtifact(path);
+              state.turnDirtyArtifacts.push(path);
+              state.artifactHistory.push({ type: 'dirty', path });
+            }
+          }
           break;
+        }
         case 'artifact_summary':
-          addArtifactCard(artifactFromPayload(msg.payload || {}));
+          {
+            const art = artifactFromPayload(msg.payload || {});
+            if (art && art.path) trackArtifact(art.path, art);
+          }
           break;
         case 'user_input_required':
           setTurnActive(false);
@@ -703,6 +1444,21 @@
           break;
         case 'session_status':
           streamNode = null;
+          [...new Set(state.turnDirtyArtifacts.map(p => basename(p)).filter(Boolean))].forEach(bn => {
+            const path = [...state.turnDirtyArtifacts].reverse().find(p => basename(p) === bn);
+            if (!path) return;
+            if (state.turnPresentedArtifacts.some(p => sameArtifact(p, path))) return;
+            const tracked = findTrackedArtifact(path);
+            addArtifactCard({
+              id: tracked && tracked.id,
+              name: (tracked && tracked.basename) || basename(path),
+              path: (tracked && (tracked.path_tail || tracked.path)) || path,
+              kind: tracked && tracked.kind,
+              byte_size: tracked && tracked.byte_size,
+            });
+          });
+          state.turnDirtyArtifacts = [];
+          state.turnPresentedArtifacts = [];
           setTurnActive(false);
           setStatus((msg.payload && msg.payload.status) || '空闲');
           break;
@@ -800,6 +1556,7 @@
     el.actionButton.onclick = submitComposer;
     el.sessionChip.onclick = () => openSheet('sessions');
     el.artifactChip.onclick = () => openSheet('artifacts');
+    el.themeChip.onclick = () => openSheet('theme');
     el.modeChip.onclick = () => openSheet('mode');
     el.modelChip.onclick = () => openSheet('models');
     el.sheetClose.onclick = closeSheet;
@@ -812,6 +1569,7 @@
         submitComposer();
       }
     });
+    applyTheme();
     renderChips();
     renderRunState();
     connect();
