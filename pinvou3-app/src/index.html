@@ -121,6 +121,7 @@
   <script src="tauri-bridge.js"></script>
   <!-- 内置卡牌名称/简介 en/ja 翻译 overlay(window.PERSONA_I18N),数据与代码分离 -->
   <script src="personas-i18n.js"></script>
+  <script src="update-notice-logic.js"></script>
 
   <script type="text/babel">
     const { useState, useEffect, useRef, useCallback } = React;
@@ -336,6 +337,7 @@
         checkUpdate: '检查更新', checking: '检查中…', upToDate: '已是最新版本',
         newVersionFound: '发现新版本', updateNotes: '更新说明',
         downloadInstall: '下载并安装', downloading: '下载中…', installing: '安装中…',
+        downloadInstallRestart: '升级并重启',
         cancel: '取消', cancelling: '取消中…',
         updateComplete: '升级完成，重启后生效', restartNow: '立即重启',
         updateInstallerStarted: '安装器已启动，应用将自动退出',
@@ -602,6 +604,7 @@
         checkUpdate: 'Check for Updates', checking: 'Checking…', upToDate: 'Up to date',
         newVersionFound: 'New version available', updateNotes: 'Release Notes',
         downloadInstall: 'Download & Install', downloading: 'Downloading…', installing: 'Installing…',
+        downloadInstallRestart: 'Update & Restart',
         cancel: 'Cancel', cancelling: 'Cancelling…',
         updateComplete: 'Update complete, restart to apply', restartNow: 'Restart Now',
         updateInstallerStarted: 'Installer started, the app will close automatically',
@@ -867,6 +870,7 @@
         checkUpdate: '更新を確認', checking: '確認中…', upToDate: '最新バージョンです',
         newVersionFound: '新しいバージョンがあります', updateNotes: '更新内容',
         downloadInstall: 'ダウンロードしてインストール', downloading: 'ダウンロード中…', installing: 'インストール中…',
+        downloadInstallRestart: '更新して再起動',
         cancel: 'キャンセル', cancelling: 'キャンセル中…',
         updateComplete: '更新が完了しました。再起動後に有効になります', restartNow: '今すぐ再起動',
         updateInstallerStarted: 'インストーラーを起動しました。アプリは自動終了します',
@@ -1396,6 +1400,7 @@
       const [personaEditor, setPersonaEditor] = useState(null); // 聊天里"存入卡牌池"草稿 → App 级编辑器
       const [savedConfirm, setSavedConfirm] = useState(null); // 存入成功 → iOS 确认窗 {name}
       const [poolMyOnly, setPoolMyOnly] = useState(false); // 跳卡池时是否直接落「我的卡牌」筛选(从确认窗"去查看"进来=true)
+      const [settingsUpdateFocusTick, setSettingsUpdateFocusTick] = useState(0);
 
       // ── 多窗口(撕离/tear-off):长按标签 → 浮起跟手 → 拖到目标屏 → 松手 → 该屏最大化打开 ──
       // dragAvatar = 被拎起的标签副本(跟随光标的 DOM 元素);null=没在拖。原生只判落点,视觉全在这。
@@ -2187,6 +2192,7 @@
                 t={t}
                 onRestoreArchived={handleRestoreArchivedSession}
                 onDeleteArchived={handleDeleteSession}
+                updateFocusTick={settingsUpdateFocusTick}
               />
             )}
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}
@@ -2313,6 +2319,118 @@
             )}
 
           </div>
+          </div>
+
+          <UpdateNoticeButton
+            theme={activeTheme}
+            bs={bs}
+            t={t}
+            onShowChangelog={() => {
+              setCurrentView('settings');
+              setSettingsUpdateFocusTick(v => v + 1);
+            }}
+          />
+        </div>
+      );
+    };
+
+    const UpdateNoticeButton = ({ theme, bs, t, onShowChangelog }) => {
+      const isDark = theme === 'dark';
+      const logic = window.UpdateNoticeLogic;
+      const isPreview = !bridge.available && logic.previewEnabled(window.location);
+      const updateInfo = logic.updateInfoFor(bs, { preview: isPreview });
+      const [closed, setClosed] = useState(false);
+
+      useEffect(() => { setClosed(false); }, [logic.versionKey(updateInfo)]);
+
+      if (!updateInfo || closed) return null;
+
+      const vm = logic.viewModel(bs, updateInfo, bs && bs.appVersion, {
+        downloadInstall: t.downloadInstall,
+        downloadInstallRestart: t.downloadInstallRestart,
+        downloading: t.downloading,
+        installing: t.installing,
+        restartNow: t.restartNow,
+        updateInstallerStarted: t.updateInstallerStarted,
+      });
+
+      const handleUpgrade = () => {
+        if (isPreview) {
+          return;
+        }
+        if (!bridge.available) return;
+        if (vm.action === 'restart') bridge.restartApp();
+        else if (vm.action === 'download') bridge.downloadAndInstallUpdate();
+      };
+
+      const handleShowChangelog = () => {
+        if (onShowChangelog) onShowChangelog();
+      };
+
+      return (
+        <div data-update-notice-card="true" className={`fixed left-4 bottom-4 z-[70] w-[260px] p-3.5 backdrop-blur-xl rounded-2xl border shadow-xl shrink-0 transition-all duration-300 ${
+          isDark
+            ? 'bg-[#1c1c21]/85 border-white/[0.06] text-gray-200 shadow-2xl'
+            : 'bg-white/85 border-gray-200/60 text-gray-800'
+        }`}>
+          <div className="flex items-center gap-3 mb-3">
+            <div className={`w-10 h-10 rounded-[10px] border shadow-inner flex items-center justify-center shrink-0 overflow-hidden relative transition-colors duration-300 ${
+              isDark
+                ? 'bg-gradient-to-br from-[#2c2c35] to-[#1a1a20] border-white/[0.08]'
+                : 'bg-gradient-to-br from-gray-100 to-gray-50 border-gray-200/80'
+            }`}>
+              <img src="brand-blue.png" alt="" className="w-6 h-6 object-contain" />
+            </div>
+
+            <div className="flex flex-col justify-center flex-1 min-w-0">
+              <div className="flex items-center justify-between">
+                <span className={`text-[13px] font-semibold tracking-wide transition-colors duration-300 ${
+                  isDark ? 'text-gray-100' : 'text-gray-900'
+                }`}>{t.newVersionFound}</span>
+                <button
+                  type="button"
+                  onClick={() => setClosed(true)}
+                  className={`p-1 -mr-1 rounded-full transition-colors focus:outline-none ${
+                    isDark
+                      ? 'text-gray-500 hover:text-gray-300 hover:bg-white/[0.08]'
+                      : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
+                  }`}
+                  title={t.winClose}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+              <span className={`text-[11px] font-mono px-1.5 py-0.5 rounded w-fit mt-0.5 transition-colors duration-300 ${
+                isDark ? 'text-gray-400 bg-black/20' : 'text-gray-500 bg-gray-100'
+              }`}>PINVOU v{vm.version}</span>
+            </div>
+          </div>
+
+          {vm.error && (
+            <div className="mb-3 text-[11px] leading-relaxed text-[#EA4335] break-words">{vm.error}</div>
+          )}
+
+          <div className="flex gap-2 text-xs font-medium">
+            <button
+              type="button"
+              onClick={handleShowChangelog}
+              className={`flex-1 py-2 rounded-xl transition-all active:scale-[0.96] ${
+                isDark
+                  ? 'bg-white/[0.06] hover:bg-white/[0.1] text-gray-200'
+                  : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+              }`}
+            >
+              {t.updateNotes}
+            </button>
+            <button
+              type="button"
+              onClick={handleUpgrade}
+              disabled={vm.disabled}
+              className="flex-1 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl transition-all active:scale-[0.96] flex justify-center items-center gap-1.5 shadow-sm shadow-blue-900/20 disabled:opacity-80 disabled:cursor-not-allowed"
+            >
+              {vm.downloading ? <span className="w-3.5 h-3.5 rounded-full border-2 border-white/70 border-t-transparent animate-spin" /> : <RefreshCw size={14} />}
+              <span>{vm.label}</span>
+            </button>
           </div>
         </div>
       );
@@ -4398,15 +4516,15 @@
     // Settings View (Material 3 Style)
     // ==========================================
     // 统一排版原语：卡片 / 行(label 左 + 控件右) / 纵向输入字段 / 分段选择 / 改动操作条
-    const SCard = ({ isDark, title, titleAdornment, children }) => (
-      <section className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
+    const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, style }, ref) => (
+      <section ref={ref} id={id} style={style} className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
         <h2 className="text-[18px] font-medium mb-6 flex items-center gap-2">
           <span>{title}</span>
           {titleAdornment}
         </h2>
         {children}
       </section>
-    );
+    ));
 
     const SRow = ({ isDark, label, desc, children }) => (
       <div className="flex items-center justify-between gap-8">
@@ -5050,7 +5168,7 @@
       );
     };
 
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, searchCredential, searchKeyAction, searchHasSavedKey, onKeepSearchApiKey, onReplaceSearchApiKey, onDeleteSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onConfirmSearchConfig, onMemoryEnabledChange, searchNeedsRestart, languageNeedsRestart, bs, t, onRestoreArchived, onDeleteArchived }) => {
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, searchCredential, searchKeyAction, searchHasSavedKey, onKeepSearchApiKey, onReplaceSearchApiKey, onDeleteSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onConfirmSearchConfig, onMemoryEnabledChange, searchNeedsRestart, languageNeedsRestart, bs, t, onRestoreArchived, onDeleteArchived, updateFocusTick }) => {
       const isDark = activeTheme === 'dark';
       const isWindows = /Windows/i.test(navigator.userAgent || '');
       const [editingModel, setEditingModel] = useState(null);
@@ -5064,6 +5182,7 @@
       const builtinAvailableModels = llmApiModels.available_models || [];
       const builtinDefaultModel = llmApiModels.default_model || (((bs && bs.settings && bs.settings.advanced && bs.settings.advanced.builtin_llmapi_default_model) || '') || '');
       const visibleModels = visibleSortedModels(savedModels, bs);
+      const versionUpdateRef = useRef(null);
       const searchCredentialState = (searchCredential && searchCredential.credential_state) || (searchHasSavedKey ? 'configured' : 'missing');
       const searchKeyStatusText = searchCredentialState === 'env_override' ? t.credEnvOverride
         : searchCredentialState === 'unavailable' ? t.credUnavailable
@@ -5083,6 +5202,12 @@
         const idx = name.lastIndexOf('.');
         return idx >= 0 ? name.slice(idx + 1).toLowerCase() : '';
       };
+      useEffect(() => {
+        if (!updateFocusTick || !versionUpdateRef.current) return;
+        requestAnimationFrame(() => {
+          versionUpdateRef.current && versionUpdateRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+      }, [updateFocusTick]);
       const resetFeedback = () => {
         setFeedbackDraft({ type: 'issue', title: '', description: '', attachments: [] });
         setFeedbackStatus({ state: 'idle', message: '', receipt: null });
@@ -5432,6 +5557,9 @@
 
               {/* 版本与更新: Linux 检查→下载 deb→安装→重启;Windows 检查→下载 zip→启动 MSI→退出 */}
               <SCard
+                ref={versionUpdateRef}
+                id="settings-version-update"
+                style={{ scrollMarginTop: '24px', scrollMarginBottom: '24px' }}
                 isDark={isDark}
                 title={t.versionUpdate}
                 titleAdornment={hasUpdate ? <span className="w-2 h-2 rounded-full bg-[#EA4335]" /> : null}
@@ -5522,7 +5650,7 @@
                                 isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]'
                                        : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'
                               }`}
-                            >{t.downloadInstall} (v{upd.latest_version})</button>
+                            >{(isWindowsUpdate ? t.downloadInstall : t.downloadInstallRestart)} (v{upd.latest_version})</button>
                           )}
 
                           {bs && bs.updateError && (

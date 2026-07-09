@@ -3119,10 +3119,12 @@
     }
     state.updateChecking = false; notify();
   }
-  // 下载+安装一条龙: Linux 下载 deb 后 pkexec apt;Windows 下载 zip 后解析 MSI,
-  // 安装器启动成功后后端退出当前进程。
+  // 下载+安装一条龙: Linux 下载 deb 后 pkexec apt 并自动重启;Windows 下载 zip 后解析 MSI,
+  // 安装器启动成功后后端退出当前进程。返回 true 表示安装链路已成功走完。
   async function downloadAndInstallUpdate() {
-    if (!state.updateInfo || !state.updateInfo.available || state.updateDownloading) return;
+    if (!state.updateInfo || !state.updateInfo.available || state.updateDownloading) return false;
+    var shouldRestartAfterInstall = state.updateInfo.platform === "linux";
+    var installed = false;
     state.updateDownloading = true; state.updateCancelling = false;
     state.updateProgress = 0; state.updateError = null; notify();
     try {
@@ -3134,12 +3136,15 @@
         await invoke("install_update", { debPath: downloadResult });
       }
       state.updateReady = true;
+      installed = true;
     } catch (e) {
       // 用户主动取消下载时后端返回「已取消下载」,当正常处理不弹错误
       if (state.updateCancelling) state.updateProgress = 0;
       else state.updateError = String(e);
     }
     state.updateDownloading = false; state.updateCancelling = false; notify();
+    if (installed && shouldRestartAfterInstall) restartApp();
+    return installed;
   }
   // 取消进行中的下载: 置前端标志 + 通知后端中断下载循环。仅下载阶段有效;
   // 已进入 install(pkexec/apt)则无效(系统接管,装一半不能停)。
