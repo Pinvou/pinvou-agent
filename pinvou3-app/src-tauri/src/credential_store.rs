@@ -2,10 +2,15 @@ use codewhale_secrets::{DefaultKeyringStore, Secrets, SecretsError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 const MODEL_API_KEY_SERVICE: &str = "pinvou3-model-api-key";
 const SEARCH_API_KEY_SERVICE: &str = "pinvou3-search-api-key";
 const MCP_SECRET_SERVICE: &str = "pinvou3-mcp-secret";
+const LLMAPI_TOKEN_SERVICE: &str = "pinvou3-llmapi-token";
+const LLMAPI_ADMIN_SERVICE: &str = "pinvou3-llmapi-admin";
+const LLMAPI_USER_SESSION_SERVICE: &str = "pinvou3-llmapi-user-session";
+const LLMAPI_USER_PASSWORD_SERVICE: &str = "pinvou3-llmapi-user-password";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CredentialReference {
@@ -35,6 +40,38 @@ impl CredentialReference {
         Self {
             service: MCP_SECRET_SERVICE.to_string(),
             account: format!("mcp:{tool_id}:{target}:{secret_name}"),
+            version: 1,
+        }
+    }
+
+    pub fn for_llmapi_token(pinvou_user_id: &str, device_binding_id: &str) -> Self {
+        Self {
+            service: LLMAPI_TOKEN_SERVICE.to_string(),
+            account: format!("llmapi:{pinvou_user_id}:{device_binding_id}"),
+            version: 1,
+        }
+    }
+
+    pub fn for_llmapi_admin() -> Self {
+        Self {
+            service: LLMAPI_ADMIN_SERVICE.to_string(),
+            account: "newapi-admin".to_string(),
+            version: 1,
+        }
+    }
+
+    pub fn for_llmapi_user_session(pinvou_user_id: &str, device_binding_id: &str) -> Self {
+        Self {
+            service: LLMAPI_USER_SESSION_SERVICE.to_string(),
+            account: format!("llmapi-session:{pinvou_user_id}:{device_binding_id}"),
+            version: 1,
+        }
+    }
+
+    pub fn for_llmapi_user_password(pinvou_user_id: &str, device_binding_id: &str) -> Self {
+        Self {
+            service: LLMAPI_USER_PASSWORD_SERVICE.to_string(),
+            account: format!("llmapi-password:{pinvou_user_id}:{device_binding_id}"),
             version: 1,
         }
     }
@@ -127,20 +164,52 @@ impl SystemCredentialStore {
 
     /// 取(或惰性构造 + 缓存)某 keyring service 对应的 Secrets 后端。
     fn secrets_for(&self, service: &str) -> Arc<Secrets> {
+        let started_at = Instant::now();
+        log::info!("[credential_store] secrets_for lock wait start service={}", service);
         let mut cache = self.cache.lock().expect("credential store cache lock");
+        log::info!(
+            "[credential_store] secrets_for lock acquired service={} elapsed_ms={}",
+            service,
+            started_at.elapsed().as_millis()
+        );
         if let Some(existing) = cache.get(service) {
+            log::info!(
+                "[credential_store] secrets_for cache hit service={} elapsed_ms={}",
+                service,
+                started_at.elapsed().as_millis()
+            );
             return existing.clone();
         }
+        log::info!("[credential_store] secrets_for cache miss service={}", service);
         let store = DefaultKeyringStore::new(service);
+        log::info!("[credential_store] keyring probe start service={}", service);
         let secrets = match store.probe() {
-            Ok(()) => Secrets::new(Arc::new(store)),
+            Ok(()) => {
+                log::info!(
+                    "[credential_store] keyring probe ok service={} elapsed_ms={}",
+                    service,
+                    started_at.elapsed().as_millis()
+                );
+                Secrets::new(Arc::new(store))
+            }
             Err(err) => {
+                log::warn!(
+                    "[credential_store] keyring probe failed service={} elapsed_ms={} error={}",
+                    service,
+                    started_at.elapsed().as_millis(),
+                    err
+                );
                 log::warn!("OS keyring 不可用({err}),改用文件回退凭证存储");
                 Secrets::file_backed()
             }
         };
         let arc = Arc::new(secrets);
         cache.insert(service.to_string(), arc.clone());
+        log::info!(
+            "[credential_store] secrets_for cached service={} elapsed_ms={}",
+            service,
+            started_at.elapsed().as_millis()
+        );
         arc
     }
 }
@@ -153,21 +222,72 @@ impl std::fmt::Debug for SystemCredentialStore {
 
 impl CredentialStore for SystemCredentialStore {
     fn get(&self, reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
-        self.secrets_for(&reference.service)
-            .get(&reference.account)
-            .map_err(secrets_error)
+        let started_at = Instant::now();
+        log::info!(
+            "[credential_store] get start service={} account={}",
+            reference.service,
+            reference.account
+        );
+        let secrets = self.secrets_for(&reference.service);
+        log::info!(
+            "[credential_store] get backend ready service={} account={} elapsed_ms={}",
+            reference.service,
+            reference.account,
+            started_at.elapsed().as_millis()
+        );
+        let result = secrets.get(&reference.account).map_err(secrets_error);
+        log::info!(
+            "[credential_store] get returned service={} account={} ok={} elapsed_ms={}",
+            reference.service,
+            reference.account,
+            result.is_ok(),
+            started_at.elapsed().as_millis()
+        );
+        result
     }
 
     fn set(&self, reference: &CredentialReference, value: &str) -> Result<(), CredentialError> {
-        self.secrets_for(&reference.service)
-            .set(&reference.account, value)
-            .map_err(secrets_error)
+        let started_at = Instant::now();
+        log::info!(
+            "[credential_store] set start service={} account={}",
+            reference.service,
+            reference.account
+        );
+        let secrets = self.secrets_for(&reference.service);
+        log::info!(
+            "[credential_store] set backend ready service={} account={} elapsed_ms={}",
+            reference.service,
+            reference.account,
+            started_at.elapsed().as_millis()
+        );
+        let result = secrets.set(&reference.account, value).map_err(secrets_error);
+        log::info!(
+            "[credential_store] set returned service={} account={} ok={} elapsed_ms={}",
+            reference.service,
+            reference.account,
+            result.is_ok(),
+            started_at.elapsed().as_millis()
+        );
+        result
     }
 
     fn delete(&self, reference: &CredentialReference) -> Result<(), CredentialError> {
-        self.secrets_for(&reference.service)
-            .delete(&reference.account)
-            .map_err(secrets_error)
+        let started_at = Instant::now();
+        log::info!(
+            "[credential_store] delete start service={} account={}",
+            reference.service,
+            reference.account
+        );
+        let secrets = self.secrets_for(&reference.service);
+        let result = secrets.delete(&reference.account).map_err(secrets_error);
+        log::info!(
+            "[credential_store] delete returned service={} account={} ok={} elapsed_ms={}",
+            reference.service,
+            reference.account,
+            result.is_ok(),
+            started_at.elapsed().as_millis()
+        );
+        result
     }
 }
 
@@ -309,6 +429,24 @@ mod tests {
         assert_eq!(reference.service, "pinvou3-search-api-key");
         assert_eq!(reference.account, "search:metaso");
         assert_eq!(reference.version, 1);
+    }
+
+    #[test]
+    fn llmapi_references_use_dedicated_services() {
+        let token = CredentialReference::for_llmapi_token("u_1", "dev_abc");
+        assert_eq!(token.service, "pinvou3-llmapi-token");
+        assert_eq!(token.account, "llmapi:u_1:dev_abc");
+        assert_eq!(token.version, 1);
+
+        let admin = CredentialReference::for_llmapi_admin();
+        assert_eq!(admin.service, "pinvou3-llmapi-admin");
+        assert_eq!(admin.account, "newapi-admin");
+        assert_eq!(admin.version, 1);
+
+        let password = CredentialReference::for_llmapi_user_password("u_1", "dev_abc");
+        assert_eq!(password.service, "pinvou3-llmapi-user-password");
+        assert_eq!(password.account, "llmapi-password:u_1:dev_abc");
+        assert_eq!(password.version, 1);
     }
 
     #[test]

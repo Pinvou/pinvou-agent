@@ -30,6 +30,7 @@ pub mod file_ingest;
 mod file_watcher;
 mod harness;
 mod knowledge;
+pub mod llmapi_hub;
 mod local_vllm_setup;
 mod monitor;
 mod os;
@@ -389,6 +390,15 @@ pub fn run() {
             commands::clear_session,
             commands::get_monitor_snapshot,
             commands::get_backend_status,
+            commands::ensure_llmapi_binding,
+            commands::login_llmapi_user,
+            commands::save_llmapi_user_session,
+            commands::get_llmapi_status,
+            commands::get_llmapi_models,
+            commands::set_llmapi_default_model,
+            commands::retry_llmapi_provisioning,
+            commands::set_llmapi_user_enabled,
+            commands::get_llmapi_admin_overview,
             commands::discover_local_vllm,
             local_vllm_setup::detect_local_vllm_setup,
             local_vllm_setup::bootstrap_local_vllm,

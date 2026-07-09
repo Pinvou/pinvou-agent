@@ -20,6 +20,10 @@ pub fn pandoc_tool_path() -> PathBuf {
     PathBuf::from("pandoc")
 }
 
+pub fn bundled_onnxruntime_dylib_path() -> Option<PathBuf> {
+    None
+}
+
 pub fn libreoffice_tool_path() -> PathBuf {
     PathBuf::from("soffice")
 }
@@ -138,6 +142,10 @@ pub fn pandoc_missing_message() -> &'static str {
     "当前平台缺少可用的文档解析组件。"
 }
 
+pub fn libreoffice_missing_message() -> &'static str {
+    "当前平台缺少可用的 Office 文档预览组件。"
+}
+
 pub fn asr_missing_message() -> &'static str {
     "当前平台缺少可用的本地语音识别组件。"
 }
@@ -180,6 +188,14 @@ pub fn pdf_ocr_missing_message() -> &'static str {
 
 pub fn presentation_pdf_missing_message() -> &'static str {
     "当前平台缺少可用的演示文稿 PDF 文本解析组件。"
+}
+
+pub fn system_default_open_supported(_path: &Path) -> bool {
+    false
+}
+
+pub fn libreoffice_open_fallback_needed(_path: &Path) -> bool {
+    false
 }
 
 pub fn nvidia_smi_candidates() -> Vec<&'static str> {
@@ -238,9 +254,7 @@ pub fn connector_cli_command(_cli_bin: &str, program: &str) -> Command {
 pub fn apply_user_npm_prefix(_cmd: &mut Command) {}
 
 pub fn kill_pid_tree(pid: u32) {
-    let _ = Command::new("kill")
-        .args(["-9", &pid.to_string()])
-        .output();
+    let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
 }
 
 fn which_in_path(cmd: &str) -> bool {

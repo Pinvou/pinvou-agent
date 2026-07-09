@@ -1,8 +1,14 @@
 use crate::process::HiddenCommand;
 use std::ffi::OsStr;
+use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use super::windows_path;
+use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+use windows_sys::Win32::System::Registry::{
+    RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER,
+    KEY_READ, REG_EXPAND_SZ, REG_SZ,
+};
 
 const ASR_MODEL_URL: &str =
     "https://www.modelscope.cn/models/FunAudioLLM/SenseVoiceSmall-GGUF/resolve/master/sensevoice-small-q8.gguf";
@@ -62,6 +68,14 @@ pub fn command_exists(command: &str) -> bool {
         return true;
     }
     false
+}
+
+pub fn bios_serial_number() -> Result<String, String> {
+    [read_bios_serial_from_powershell(), read_bios_serial_from_wmic()]
+    .into_iter()
+    .flatten()
+    .find_map(|value| normalize_bios_serial_for_binding(&value))
+    .ok_or_else(|| "Unable to read a valid Windows BIOS serial number".to_string())
 }
 
 pub fn pdf_tool_path(command: &str) -> std::path::PathBuf {
@@ -266,6 +280,10 @@ pub fn pandoc_missing_message() -> &'static str {
     "文档解析组件缺失或不可用：内置 Pandoc 未在安装目录 pandoc 下找到，请修复或重新安装 pinvou。"
 }
 
+pub fn libreoffice_missing_message() -> &'static str {
+    "Office 文档预览需要 LibreOffice，可前往设置 - 依赖体检安装。"
+}
+
 pub fn pdf_text_missing_message() -> &'static str {
     "PDF 解析组件缺失或不可用：内置 Poppler 未在安装目录 poppler 下找到，请修复或重新安装 pinvou。"
 }
@@ -280,6 +298,170 @@ pub fn pdf_ocr_missing_message() -> &'static str {
 
 pub fn presentation_pdf_missing_message() -> &'static str {
     "演示文稿解析需要 LibreOffice；PDF 文本组件由内置 Poppler 提供，如缺失请修复或重新安装 pinvou。"
+}
+
+pub fn system_default_open_supported(path: &Path) -> bool {
+    let Some(ext) = normalized_presentation_extension(path) else {
+        return false;
+    };
+    windows_open_command_for_extension(&ext).is_some()
+}
+
+pub fn libreoffice_open_fallback_needed(path: &Path) -> bool {
+    normalized_presentation_extension(path).is_some() && !system_default_open_supported(path)
+}
+
+fn normalized_presentation_extension(path: &Path) -> Option<String> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "pptx" | "ppt" | "odp" | "dps" => Some(format!(".{ext}")),
+        _ => None,
+    }
+}
+
+fn windows_open_command_for_extension(ext: &str) -> Option<String> {
+    let user_choice_key =
+        format!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\{ext}\UserChoice");
+    if let Some(prog_id) = read_registry_string(HKEY_CURRENT_USER, &user_choice_key, Some("ProgId"))
+    {
+        if let Some(command) = open_command_for_prog_id(&prog_id) {
+            return Some(command);
+        }
+    }
+
+    let prog_id = read_registry_string(HKEY_CLASSES_ROOT, ext, None)?;
+    open_command_for_prog_id(&prog_id)
+}
+
+fn open_command_for_prog_id(prog_id: &str) -> Option<String> {
+    let command_key = format!(r"{prog_id}\shell\open\command");
+    read_registry_string(HKEY_CLASSES_ROOT, &command_key, None)
+}
+
+fn read_registry_string(root: HKEY, key_path: &str, value_name: Option<&str>) -> Option<String> {
+    let key_path = wide_null(key_path);
+    let value_name = value_name.map(wide_null);
+    let value_name_ptr = value_name
+        .as_ref()
+        .map(|value| value.as_ptr())
+        .unwrap_or(std::ptr::null());
+
+    let mut key: HKEY = std::ptr::null_mut();
+    let opened = unsafe { RegOpenKeyExW(root, key_path.as_ptr(), 0, KEY_READ, &mut key) };
+    if opened != ERROR_SUCCESS {
+        return None;
+    }
+
+    let mut value_type = 0;
+    let mut byte_len = 0;
+    let queried = unsafe {
+        RegQueryValueExW(
+            key,
+            value_name_ptr,
+            std::ptr::null_mut(),
+            &mut value_type,
+            std::ptr::null_mut(),
+            &mut byte_len,
+        )
+    };
+    if queried != ERROR_SUCCESS || byte_len < 2 || !matches!(value_type, REG_SZ | REG_EXPAND_SZ) {
+        unsafe {
+            RegCloseKey(key);
+        }
+        return None;
+    }
+
+    let mut data = vec![0u16; (byte_len as usize + 1) / 2];
+    let queried = unsafe {
+        RegQueryValueExW(
+            key,
+            value_name_ptr,
+            std::ptr::null_mut(),
+            &mut value_type,
+            data.as_mut_ptr().cast::<u8>(),
+            &mut byte_len,
+        )
+    };
+    unsafe {
+        RegCloseKey(key);
+    }
+
+    if queried != ERROR_SUCCESS || !matches!(value_type, REG_SZ | REG_EXPAND_SZ) {
+        return None;
+    }
+
+    let len = data.iter().position(|&ch| ch == 0).unwrap_or(data.len());
+    let value = String::from_utf16_lossy(&data[..len]).trim().to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn read_bios_serial_from_powershell() -> Option<String> {
+    let output = HiddenCommand::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "try { (Get-CimInstance -ClassName Win32_BIOS -ErrorAction Stop).SerialNumber } catch { '' }",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    non_empty_stdout(output.stdout)
+}
+
+fn read_bios_serial_from_wmic() -> Option<String> {
+    let output = HiddenCommand::new("wmic")
+        .args(["bios", "get", "serialnumber", "/value"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("SerialNumber="))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn non_empty_stdout(stdout: Vec<u8>) -> Option<String> {
+    let value = String::from_utf8_lossy(&stdout).trim().to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn normalize_bios_serial_for_binding(input: &str) -> Option<String> {
+    let normalized = input
+        .trim()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_uppercase();
+    if normalized.is_empty()
+        || matches!(
+            normalized.as_str(),
+            "DEFAULTSTRING" | "TOBEFILLEDBYO.E.M." | "SYSTEMSERIALNUMBER" | "NONE" | "UNKNOWN"
+        )
+    {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn wide_null(value: &str) -> Vec<u16> {
+    OsStr::new(value).encode_wide().chain(Some(0)).collect()
 }
 
 fn ensure_dir_on_process_path(dir: std::path::PathBuf) {
@@ -360,5 +542,26 @@ mod tests {
     #[test]
     fn libreoffice_tool_path_returns_program() {
         assert!(!libreoffice_tool_path().as_os_str().is_empty());
+    }
+
+    #[test]
+    fn libreoffice_missing_message_is_windows_specific() {
+        let message = libreoffice_missing_message();
+        assert!(message.contains("可前往设置 - 依赖体检"));
+        assert!(!message.contains("Office/WPS"));
+        assert!(!message.contains("sudo apt"));
+    }
+
+    #[test]
+    fn system_default_open_check_is_limited_to_presentations() {
+        assert_eq!(
+            normalized_presentation_extension(Path::new("slides.pptx")).as_deref(),
+            Some(".pptx")
+        );
+        assert_eq!(
+            normalized_presentation_extension(Path::new("slides.PPT")).as_deref(),
+            Some(".ppt")
+        );
+        assert!(normalized_presentation_extension(Path::new("notes.txt")).is_none());
     }
 }

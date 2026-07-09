@@ -1,6 +1,6 @@
 ﻿use std::ffi::OsStr;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     super::super::platform::open_target(target, label)
@@ -10,12 +10,21 @@ pub fn command_exists(command: &str) -> bool {
     super::super::platform::command_exists(command)
 }
 
+#[cfg(target_os = "windows")]
+pub fn bios_serial_number() -> Result<String, String> {
+    super::super::platform::bios_serial_number()
+}
+
 pub fn pandoc_tool_path() -> PathBuf {
     super::super::platform::pandoc_tool_path()
 }
 
 pub fn libreoffice_tool_path() -> PathBuf {
     super::super::platform::libreoffice_tool_path()
+}
+
+pub fn libreoffice_missing_message() -> &'static str {
+    super::super::platform::libreoffice_missing_message()
 }
 
 pub fn ocr_tool_path() -> PathBuf {
@@ -160,6 +169,14 @@ pub fn pdf_ocr_missing_message() -> &'static str {
 
 pub fn presentation_pdf_missing_message() -> &'static str {
     super::super::platform::presentation_pdf_missing_message()
+}
+
+pub fn system_default_open_supported(path: &Path) -> bool {
+    super::super::platform::system_default_open_supported(path)
+}
+
+pub fn libreoffice_open_fallback_needed(path: &Path) -> bool {
+    super::super::platform::libreoffice_open_fallback_needed(path)
 }
 
 pub fn nvidia_smi_candidates() -> Vec<&'static str> {

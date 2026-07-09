@@ -68,17 +68,71 @@ impl EnginePool {
     /// active)。绑定指向已删模型时 `model_by_id` 返回 None,自然回退 active。
     /// 这是「热切换不重启」的落点:改模型只写 disk + evict,下次 spawn 经此读到新配置。
     pub(crate) async fn fresh_bridge_for(&self, session_id: &str) -> Pinvou3Bridge {
+        let started_at = std::time::Instant::now();
+        log::info!("[engine_pool] fresh_bridge_for start sid={}", session_id);
         let mut b = self.bridge.clone();
+        log::info!("[engine_pool] fresh_bridge_for bridge cloned sid={}", session_id);
         b.prefs = UserPrefs::load();
+        log::info!("[engine_pool] fresh_bridge_for prefs loaded sid={}", session_id);
         b.session_model = self
             .store
             .session_model_id(session_id)
             .and_then(|mid| b.prefs.model_by_id(&mid).cloned());
+        log::info!(
+            "[engine_pool] fresh_bridge_for session model resolved sid={} has_model={}",
+            session_id,
+            b.session_model.is_some()
+        );
+        let use_builtin_llmapi = b
+            .effective_model_owned()
+            .as_ref()
+            .is_some_and(|model| model.is_builtin_llmapi());
+        log::info!(
+            "[engine_pool] fresh_bridge_for effective model checked sid={} use_builtin_llmapi={}",
+            session_id,
+            use_builtin_llmapi
+        );
+        if use_builtin_llmapi {
+            log::info!(
+                "[engine_pool] fresh_bridge_for ready_saved_model_local start sid={}",
+                session_id
+            );
+            match crate::llmapi_hub::provisioning::ready_saved_model_from_local_binding_system() {
+                Ok(model) => {
+                    log::info!(
+                        "[engine_pool] fresh_bridge_for ready_saved_model_local ok sid={} elapsed_ms={}",
+                        session_id,
+                        started_at.elapsed().as_millis()
+                    );
+                    b.session_model = Some(model);
+                }
+                Err(err) => {
+                    log::warn!(
+                        "[engine_pool] fresh_bridge_for ready_saved_model_local failed sid={} code={:?} elapsed_ms={} message={}",
+                        session_id,
+                        err.code,
+                        started_at.elapsed().as_millis(),
+                        err.message
+                    );
+                    eprintln!(
+                        "[pinvou3-app] LLM API Hub model injection skipped: {}",
+                        err.to_tauri_error()
+                    );
+                }
+            }
+        }
         // 本地 vLLM:发请求的 model 名以 vLLM 实际 served name 为准(探测 /v1/models),
         // 免去写死 qwen36_35b_256k 与 --served-model-name 不一致的 model_not_found。
         // 探测失败(vLLM 没起)保持配置值;云端 provider 不探测。
         if b.provider() == "vllm" {
+            log::info!("[engine_pool] fresh_bridge_for vllm probe start sid={}", session_id);
             let (served, max_len) = crate::monitor::probe_vllm_model_info(&b.base_url()).await;
+            log::info!(
+                "[engine_pool] fresh_bridge_for vllm probe done sid={} served={:?} max_len={:?}",
+                session_id,
+                served,
+                max_len
+            );
             if let Some(served) = served {
                 if let Some(mut m) = b.effective_model_owned() {
                     if m.model != served {
@@ -91,6 +145,11 @@ impl EnginePool {
             // + 按真实窗口推导压缩阈值。探测失败保持 None → 名字 hint 老路。
             b.probed_context_tokens = max_len;
         }
+        log::info!(
+            "[engine_pool] fresh_bridge_for done sid={} elapsed_ms={}",
+            session_id,
+            started_at.elapsed().as_millis()
+        );
         b
     }
 
@@ -98,29 +157,69 @@ impl EnginePool {
     /// 则一次性 `SyncSession` 把历史 messages 注水进新 engine(冷启动 / app 重启后
     /// 打开旧会话再发消息的场景)。
     pub async fn get_or_spawn(&self, session_id: &str) -> Result<AppEngine> {
+        let started_at = std::time::Instant::now();
+        log::info!("[engine_pool] get_or_spawn start sid={}", session_id);
+        log::info!("[engine_pool] get_or_spawn lock wait start sid={}", session_id);
         let mut entries = self.entries.lock().await;
+        log::info!(
+            "[engine_pool] get_or_spawn lock acquired sid={} elapsed_ms={}",
+            session_id,
+            started_at.elapsed().as_millis()
+        );
         if let Some(entry) = entries.get(session_id) {
+            log::info!(
+                "[engine_pool] get_or_spawn reuse existing engine sid={} elapsed_ms={}",
+                session_id,
+                started_at.elapsed().as_millis()
+            );
             return Ok(entry.engine.clone());
         }
 
+        log::info!("[engine_pool] get_or_spawn spawn bridge start sid={}", session_id);
+        let bridge = self.fresh_bridge_for(session_id).await;
+        log::info!(
+            "[engine_pool] get_or_spawn spawn_for_session start sid={} elapsed_ms={}",
+            session_id,
+            started_at.elapsed().as_millis()
+        );
         let (engine, forwarder) = AppEngine::spawn_for_session(
             self.app.clone(),
             self.store.clone(),
-            self.fresh_bridge_for(session_id).await,
+            bridge,
             session_id,
         )
         .await?;
+        log::info!(
+            "[engine_pool] get_or_spawn spawn_for_session ok sid={} elapsed_ms={}",
+            session_id,
+            started_at.elapsed().as_millis()
+        );
 
         // 注水历史:仅当磁盘上该 session 已有 messages(新建空 session 跳过)。
+        log::info!("[engine_pool] get_or_spawn load history start sid={}", session_id);
         if let Ok(saved) = self.store.load(session_id) {
+            log::info!(
+                "[engine_pool] get_or_spawn load history ok sid={} messages={}",
+                session_id,
+                saved.messages.len()
+            );
             if !saved.messages.is_empty() {
+                log::info!("[engine_pool] get_or_spawn sync history start sid={}", session_id);
                 if let Err(e) = engine
                     .sync_session(session_id.to_string(), saved.messages)
                     .await
                 {
                     eprintln!("[engine_pool] sync history for {session_id} failed: {e:?}");
+                    log::warn!(
+                        "[engine_pool] get_or_spawn sync history failed sid={} error={:?}",
+                        session_id,
+                        e
+                    );
                 }
+                log::info!("[engine_pool] get_or_spawn sync history done sid={}", session_id);
             }
+        } else {
+            log::warn!("[engine_pool] get_or_spawn load history failed sid={}", session_id);
         }
 
         entries.insert(
@@ -129,6 +228,11 @@ impl EnginePool {
                 engine: engine.clone(),
                 forwarder,
             },
+        );
+        log::info!(
+            "[engine_pool] get_or_spawn inserted engine sid={} elapsed_ms={}",
+            session_id,
+            started_at.elapsed().as_millis()
         );
         Ok(engine)
     }
@@ -215,7 +319,13 @@ impl EnginePool {
     /// 取消指定 session 正在生成的回复。engine 没起则 no-op。
     pub async fn cancel(&self, session_id: &str) {
         if let Some(engine) = self.handle_for(session_id).await {
+            log::info!("[engine_pool] cancel hit running engine sid={}", session_id);
             engine.cancel_current();
+        } else {
+            log::warn!(
+                "[engine_pool] cancel no-op because engine is not spawned sid={}",
+                session_id
+            );
         }
     }
 

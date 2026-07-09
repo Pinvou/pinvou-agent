@@ -255,6 +255,13 @@ pub fn bundled_python_path() -> Option<PathBuf> {
         .and_then(|exe| bundled_python_path_for_exe(&exe))
 }
 
+pub fn bundled_onnxruntime_dylib_path() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .map(|exe| bundled_runtime_dir_for_exe(&exe, "onnxruntime").join("onnxruntime.dll"))
+        .filter(|path| path.is_file())
+}
+
 pub fn bundled_python_path_for_exe(exe_path: &Path) -> Option<PathBuf> {
     let path = bundled_runtime_dir_for_exe(exe_path, "python").join("pythonw.exe");
     is_valid_python_candidate(&path).then_some(path)
@@ -668,6 +675,22 @@ mod tests {
         std::fs::write(&python, b"").unwrap();
 
         assert_eq!(bundled_python_path_for_exe(&exe), Some(python));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn bundled_onnxruntime_uses_runtime_onnxruntime_dir() {
+        let dir = test_temp_dir("bundled-onnxruntime");
+        let exe = dir.join("pinvou3-tauri.exe");
+        let ort_dir = dir.join("runtime").join("onnxruntime");
+        std::fs::create_dir_all(&ort_dir).unwrap();
+        let ort = ort_dir.join("onnxruntime.dll");
+        std::fs::write(&exe, b"").unwrap();
+        std::fs::write(&ort, b"").unwrap();
+
+        let resolved = bundled_runtime_dir_for_exe(&exe, "onnxruntime").join("onnxruntime.dll");
+        assert_eq!(resolved, ort);
 
         let _ = std::fs::remove_dir_all(dir);
     }

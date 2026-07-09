@@ -1,4 +1,5 @@
 use std::ffi::OsStr;
+use std::path::Path;
 use std::process::Command;
 
 use tauri::Emitter;
@@ -197,6 +198,10 @@ pub fn pandoc_missing_message() -> &'static str {
     "文档解析需要 pandoc，请运行: sudo apt install pandoc"
 }
 
+pub fn libreoffice_missing_message() -> &'static str {
+    "Office 文档预览需要 LibreOffice，请运行: sudo apt install libreoffice"
+}
+
 pub fn email_dependency_packages() -> &'static str {
     "python3 libemail-outlook-message-perl"
 }
@@ -277,6 +282,14 @@ pub fn pdf_ocr_missing_message() -> &'static str {
 
 pub fn presentation_pdf_missing_message() -> &'static str {
     "演示文稿解析需要 LibreOffice + poppler-utils: sudo apt install libreoffice poppler-utils"
+}
+
+pub fn system_default_open_supported(_path: &Path) -> bool {
+    false
+}
+
+pub fn libreoffice_open_fallback_needed(_path: &Path) -> bool {
+    false
 }
 
 pub fn nvidia_smi_candidates() -> Vec<&'static str> {
