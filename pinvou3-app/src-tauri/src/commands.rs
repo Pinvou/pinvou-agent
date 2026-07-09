@@ -68,6 +68,9 @@ pub async fn chat(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<(), String> {
+    let chat_started_at = std::time::Instant::now();
+    let message_len = message.len();
+    let attachment_count = attachments.as_ref().map_or(0, Vec::len);
     let trimmed = message.trim();
     if trimmed.is_empty() && attachments.as_ref().map_or(true, |a| a.is_empty()) {
         return Err("empty message".to_string());
@@ -77,6 +80,12 @@ pub async fn chat(
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
+    log::info!(
+        "[pinvou3][chat] request start sid={} message_len={} attachments={}",
+        sid,
+        message_len,
+        attachment_count
+    );
     let mut full = build_message_with_attachments(
         message,
         attachments.unwrap_or_default(),
@@ -111,25 +120,223 @@ pub async fn chat(
     // 状态当普通文本复述给用户。
     if let Some(cid) = store.mounted_collection(&sid) {
         let disallowed = compute_disallowed_tools(&app);
-        let kb_search_hidden = disallowed.iter().any(|t| t.eq_ignore_ascii_case("kb_search"));
+        let kb_search_hidden = disallowed
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case("kb_search"));
         pool.set_disallowed_all(disallowed).await;
         if !kb_search_hidden {
             let coll_name = app
                 .try_state::<KnowledgeService>()
                 .and_then(|kb| kb.l1().collection_name(cid).ok().flatten());
-            full = format!("{}\n\n---\n\n{full}", build_kb_agentic_guide(coll_name.as_deref()));
+            full = format!(
+                "{}\n\n---\n\n{full}",
+                build_kb_agentic_guide(coll_name.as_deref())
+            );
         }
     }
     // 取该 session 的 mode。
     let mode = store.mode_state(&sid).mode;
-    pool.send_user_message(&sid, full, mode.to_app_mode())
-        .await
-        .map_err(|e| format!("send_user_message failed: {e:?}"))
+    if session_uses_builtin_llmapi(&store, &sid) {
+        let provision_started_at = std::time::Instant::now();
+        log::info!("[pinvou3][chat] builtin provisioning start sid={}", sid);
+        let provision_result = tokio::time::timeout(
+            std::time::Duration::from_secs(25),
+            tokio::task::spawn_blocking(
+                crate::llmapi_hub::provisioning::ensure_binding_for_current_user,
+            ),
+        )
+        .await;
+        match provision_result {
+            Ok(Ok(Ok(response))) => {
+                log::info!(
+                    "[pinvou3][chat] builtin provisioning ok sid={} status={:?} elapsed_ms={}",
+                    sid,
+                    response.status,
+                    provision_started_at.elapsed().as_millis()
+                );
+            }
+            Ok(Ok(Err(err))) => {
+                log::warn!(
+                    "[pinvou3][chat] builtin provisioning failed sid={} code={:?} retryable={} elapsed_ms={} message={}",
+                    sid,
+                    err.code,
+                    err.retryable,
+                    provision_started_at.elapsed().as_millis(),
+                    err.message
+                );
+                return Err(err.to_tauri_error());
+            }
+            Ok(Err(err)) => {
+                log::error!(
+                    "[pinvou3][chat] builtin provisioning task join failed sid={} elapsed_ms={} error={}",
+                    sid,
+                    provision_started_at.elapsed().as_millis(),
+                    err
+                );
+                return Err(format!("内置模型开通任务失败: {err}"));
+            }
+            Err(_) => {
+                log::warn!(
+                    "[pinvou3][chat] builtin provisioning timeout sid={} elapsed_ms={}",
+                    sid,
+                    provision_started_at.elapsed().as_millis()
+                );
+                return Err("内置模型开通超时，请稍后重试".to_string());
+            }
+        }
+    }
+    let send_started_at = std::time::Instant::now();
+    log::info!(
+        "[pinvou3][chat] engine send start sid={} mode={:?} content_len={}",
+        sid,
+        mode,
+        full.len()
+    );
+    match pool.send_user_message(&sid, full, mode.to_app_mode()).await {
+        Ok(()) => {
+            log::info!(
+                "[pinvou3][chat] engine send ok sid={} send_elapsed_ms={} total_elapsed_ms={}",
+                sid,
+                send_started_at.elapsed().as_millis(),
+                chat_started_at.elapsed().as_millis()
+            );
+            Ok(())
+        }
+        Err(e) => {
+            log::error!(
+                "[pinvou3][chat] engine send failed sid={} send_elapsed_ms={} total_elapsed_ms={} error={:?}",
+                sid,
+                send_started_at.elapsed().as_millis(),
+                chat_started_at.elapsed().as_millis(),
+                e
+            );
+            Err(format!("send_user_message failed: {e:?}"))
+        }
+    }
+}
+
+fn session_uses_builtin_llmapi(store: &SessionStore, session_id: &str) -> bool {
+    let prefs = UserPrefs::load();
+    let model = store
+        .session_model_id(session_id)
+        .and_then(|model_id| prefs.model_by_id(&model_id))
+        .or_else(|| prefs.active_model());
+    model.is_some_and(|model| model.is_builtin_llmapi())
 }
 
 /// Agentic RAG 的 Self-RAG 自检引导:挂了知识集时每 turn prepend(动态状态走 per-turn
 /// 注入)。引导模型自调 `kb_search`、严格基于检索结果作答、无依据就说不知道——治本地小
 /// 模型"该查不查 → 凭记忆幻觉"(去掉注入式兜底后这是关键防线)。
+#[tauri::command]
+pub async fn ensure_llmapi_binding(
+) -> Result<crate::llmapi_hub::models::EnsureLlmApiBindingResponse, String> {
+    crate::llmapi_hub::provisioning::ensure_binding_for_current_user()
+        .map_err(|err| err.to_tauri_error())
+}
+
+#[tauri::command]
+pub async fn login_llmapi_user(
+    username: String,
+    password: String,
+) -> Result<crate::llmapi_hub::models::EnsureLlmApiBindingResponse, String> {
+    crate::llmapi_hub::provisioning::login_user_session_system(username, password)
+        .map_err(|err| err.to_tauri_error())
+}
+
+#[tauri::command]
+pub async fn save_llmapi_user_session(
+    user_id: String,
+    access_token: String,
+) -> Result<crate::llmapi_hub::models::EnsureLlmApiBindingResponse, String> {
+    crate::llmapi_hub::provisioning::save_user_session_system(user_id, access_token)
+        .map_err(|err| err.to_tauri_error())
+}
+
+#[tauri::command]
+pub async fn get_llmapi_status() -> Result<crate::llmapi_hub::models::LlmApiStatusResponse, String>
+{
+    crate::llmapi_hub::provisioning::status_for_current_user_system()
+        .map_err(|err| err.to_tauri_error())
+}
+
+#[tauri::command]
+pub async fn get_llmapi_models(
+) -> Result<crate::llmapi_hub::models::BuiltinLlmApiModelsResponse, String> {
+    crate::llmapi_hub::provisioning::available_models_system()
+        .map_err(|err| err.to_tauri_error())
+}
+
+#[tauri::command]
+pub async fn set_llmapi_default_model(
+    model: String,
+) -> Result<crate::llmapi_hub::models::BuiltinLlmApiModelsResponse, String> {
+    crate::llmapi_hub::provisioning::set_default_model_system(&model)
+        .map_err(|err| err.to_tauri_error())
+}
+
+#[tauri::command]
+pub async fn retry_llmapi_provisioning(
+    pinvou_user_id: String,
+    device_binding_id: String,
+) -> Result<crate::llmapi_hub::models::EnsureLlmApiBindingResponse, String> {
+    crate::llmapi_hub::provisioning::retry_binding_system(pinvou_user_id, device_binding_id)
+        .map_err(|err| err.to_tauri_error())
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SetLlmApiUserEnabledResponse {
+    pub pinvou_user_id: String,
+    pub enabled: bool,
+}
+
+#[tauri::command]
+pub async fn set_llmapi_user_enabled(
+    pinvou_user_id: String,
+    enabled: bool,
+) -> Result<SetLlmApiUserEnabledResponse, String> {
+    let binding =
+        crate::llmapi_hub::provisioning::set_user_enabled_system(&pinvou_user_id, enabled)
+            .map_err(|err| err.to_tauri_error())?;
+    Ok(SetLlmApiUserEnabledResponse {
+        pinvou_user_id: binding.pinvou_user_id,
+        enabled: binding.enabled,
+    })
+}
+
+#[tauri::command]
+pub async fn get_llmapi_admin_overview(
+    query: Option<String>,
+    status: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<crate::llmapi_hub::models::LlmApiAdminOverviewResponse, String> {
+    let status = status
+        .as_deref()
+        .map(parse_llmapi_provisioning_status)
+        .transpose()?;
+    crate::llmapi_hub::provisioning::admin_overview_system(query, status, limit, offset)
+        .map_err(|err| err.to_tauri_error())
+}
+
+fn parse_llmapi_provisioning_status(
+    value: &str,
+) -> Result<crate::llmapi_hub::models::ProvisioningStatus, String> {
+    match value {
+        "not_started" => Ok(crate::llmapi_hub::models::ProvisioningStatus::NotStarted),
+        "querying_user" | "creating_user" => {
+            Ok(crate::llmapi_hub::models::ProvisioningStatus::QueryingUser)
+        }
+        "creating_token" => Ok(crate::llmapi_hub::models::ProvisioningStatus::CreatingToken),
+        "configuring_policy" => {
+            Ok(crate::llmapi_hub::models::ProvisioningStatus::ConfiguringPolicy)
+        }
+        "ready" => Ok(crate::llmapi_hub::models::ProvisioningStatus::Ready),
+        "failed" => Ok(crate::llmapi_hub::models::ProvisioningStatus::Failed),
+        "disabled" => Ok(crate::llmapi_hub::models::ProvisioningStatus::Disabled),
+        _ => Err(format!("invalid LLM API Hub provisioning status: {value}")),
+    }
+}
+
 fn build_kb_agentic_guide(collection_name: Option<&str>) -> String {
     let title = collection_name.unwrap_or("本地知识集");
     format!(
@@ -167,14 +374,21 @@ pub fn session_unmount_collection(session_id: String, store: State<'_, SessionSt
 
 /// 读会话当前挂载的知识集 id(前端切会话时重读,恢复挂载条显示)。
 #[tauri::command]
-pub fn session_mounted_collection(session_id: String, store: State<'_, SessionStore>) -> Option<i64> {
+pub fn session_mounted_collection(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Option<i64> {
     store.mounted_collection(&session_id)
 }
 
 /// 把图片附件拷进 session workspace 的 `attachments/` 子目录,返回供 `image_analyze`
 /// 使用的 **workspace 相对路径**(image_analyze 只接受不逃逸 workspace 的相对路径)。
 /// 失败返回 None,上层降级为提示无法读图。
-fn stage_image_in_workspace(src: &str, basename: &str, workspace: &std::path::Path) -> Option<String> {
+fn stage_image_in_workspace(
+    src: &str,
+    basename: &str,
+    workspace: &std::path::Path,
+) -> Option<String> {
     let dir = workspace.join("attachments");
     std::fs::create_dir_all(&dir).ok()?;
     // 防重名:已存在则 name-1.ext / name-2.ext 递增。
@@ -387,6 +601,7 @@ fn sanitize_command_error(context: &str, err: impl std::fmt::Display) -> String 
 
 fn prepare_prefs_for_save(mut prefs: UserPrefs) -> Result<UserPrefs, String> {
     let store = SystemCredentialStore::new();
+    prefs.ensure_builtin_llmapi_model();
     let migration = prefs.migrate_plaintext_api_keys_with_store(&store);
     if !migration.failed_model_ids.is_empty() || !migration.failed_search_providers.is_empty() {
         return Err("credential store unavailable; please reconfigure API Key".to_string());
@@ -401,7 +616,10 @@ fn refresh_safe_prefs(mut prefs: UserPrefs) -> UserPrefs {
     prefs
 }
 
-fn apply_model_credential(mut model: SavedModel, old: Option<&SavedModel>) -> Result<SavedModel, String> {
+fn apply_model_credential(
+    mut model: SavedModel,
+    old: Option<&SavedModel>,
+) -> Result<SavedModel, String> {
     let store = SystemCredentialStore::new();
     let action = model.credential_action.unwrap_or_else(|| {
         if model.api_key.trim().is_empty() {
@@ -433,9 +651,7 @@ fn apply_model_credential(mut model: SavedModel, old: Option<&SavedModel>) -> Re
                 model.mark_missing();
             } else {
                 let reference = model.credential_reference();
-                store
-                    .set(&reference, &key)
-                    .map_err(|e| e.user_message())?;
+                store.set(&reference, &key).map_err(|e| e.user_message())?;
                 model.mark_configured(reference);
             }
         }
@@ -445,9 +661,7 @@ fn apply_model_credential(mut model: SavedModel, old: Option<&SavedModel>) -> Re
                 .clone()
                 .or_else(|| old.and_then(|m| m.credential_ref.clone()))
                 .unwrap_or_else(|| model.credential_reference());
-            store
-                .delete(&reference)
-                .map_err(|e| e.user_message())?;
+            store.delete(&reference).map_err(|e| e.user_message())?;
             model.mark_missing();
         }
     }
@@ -544,8 +758,30 @@ pub async fn get_effective_model_config(
 
 /// 「添加模型」方案:列出已保存模型 + 当前全局默认 id(前端高亮)。
 #[derive(Debug, Clone, Serialize)]
+pub struct ModelListItem {
+    #[serde(flatten)]
+    pub model: SavedModel,
+    pub readonly: bool,
+    pub system: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+impl From<SavedModel> for ModelListItem {
+    fn from(model: SavedModel) -> Self {
+        let builtin_llmapi = model.is_builtin_llmapi();
+        Self {
+            model,
+            readonly: builtin_llmapi,
+            system: builtin_llmapi,
+            kind: builtin_llmapi.then(|| "builtin_llmapi".to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ModelsView {
-    pub models: Vec<SavedModel>,
+    pub models: Vec<ModelListItem>,
     pub active_model_id: Option<String>,
 }
 
@@ -553,7 +789,13 @@ pub struct ModelsView {
 pub async fn list_models() -> Result<ModelsView, String> {
     let prefs = refresh_safe_prefs(UserPrefs::load());
     Ok(ModelsView {
-        models: prefs.advanced.saved_models.clone(),
+        models: prefs
+            .advanced
+            .saved_models
+            .clone()
+            .into_iter()
+            .map(ModelListItem::from)
+            .collect(),
         active_model_id: prefs.advanced.active_model_id.clone(),
     })
 }
@@ -561,6 +803,9 @@ pub async fn list_models() -> Result<ModelsView, String> {
 /// 增或改一条模型(按 id)。前端负责生成稳定 id。
 #[tauri::command]
 pub async fn save_model(model: SavedModel) -> Result<(), String> {
+    if model.is_builtin_llmapi() {
+        return Err("内置模型不可编辑".to_string());
+    }
     let mut prefs = UserPrefs::load();
     let old = prefs.model_by_id(&model.id).cloned();
     let model = apply_model_credential(model, old.as_ref())
@@ -573,10 +818,19 @@ pub async fn save_model(model: SavedModel) -> Result<(), String> {
 #[tauri::command]
 pub async fn delete_model(id: String) -> Result<(), String> {
     let mut prefs = UserPrefs::load();
+    if prefs
+        .model_by_id(&id)
+        .is_some_and(|model| model.is_builtin_llmapi())
+    {
+        return Err("内置模型不可删除".to_string());
+    }
     if prefs.advanced.saved_models.len() <= 1 {
         return Err("至少保留一个模型".to_string());
     }
-    if let Some(reference) = prefs.model_by_id(&id).and_then(|m| m.credential_ref.clone()) {
+    if let Some(reference) = prefs
+        .model_by_id(&id)
+        .and_then(|m| m.credential_ref.clone())
+    {
         SystemCredentialStore::new()
             .delete(&reference)
             .map_err(|e| sanitize_command_error("delete_model", e.user_message()))?;
@@ -724,10 +978,7 @@ fn voice_temp_wav_path() -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    std::env::temp_dir().join(format!(
-        "pinvou3-voice-{}-{stamp}.wav",
-        std::process::id()
-    ))
+    std::env::temp_dir().join(format!("pinvou3-voice-{}-{stamp}.wav", std::process::id()))
 }
 
 #[cfg(windows)]
@@ -954,7 +1205,8 @@ pub async fn transcribe_voice_audio(
             && crate::voice_asr::engine_path().is_file()
             && crate::voice_asr::model_path().is_file()
         {
-            crate::voice_asr::transcribe(&wav_path).map(|text| LocalAsrOutput { text })
+            crate::voice_asr::transcribe(&wav_path)
+                .map(|text| LocalAsrOutput { text })
                 .map_err(|e| VoiceCommandError::new("recognition_failed", "transcribing", e))
         } else {
             run_local_asr_cli(&wav_path)
@@ -993,7 +1245,10 @@ pub async fn update_settings(prefs: UserPrefs) -> Result<(), String> {
 
 /// 保存设置后立即重启应用（模型/后端切换后需要重启才能生效）。
 #[tauri::command]
-pub async fn save_settings_and_restart(prefs: UserPrefs, app: tauri::AppHandle) -> Result<(), String> {
+pub async fn save_settings_and_restart(
+    prefs: UserPrefs,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     prepare_prefs_for_save(prefs)?
         .save()
         .map_err(|e| format!("save settings failed: {e:?}"))?;
@@ -1120,7 +1375,9 @@ pub struct BackendStatus {
 }
 
 #[tauri::command]
-pub async fn get_backend_status(_monitor: State<'_, MonitorState>) -> Result<BackendStatus, String> {
+pub async fn get_backend_status(
+    _monitor: State<'_, MonitorState>,
+) -> Result<BackendStatus, String> {
     // Lightweight: 只 probe vLLM,不跑 nvidia-smi / RAM 采样
     let vllm = crate::monitor::vllm_snapshot(
         &crate::monitor::vllm_base_url(),
@@ -1155,8 +1412,8 @@ pub async fn list_sessions(store: State<'_, SessionStore>) -> Result<Vec<Session
     metas.retain(|m| {
         !store.is_hidden(&m.id)
             && store
-            .active_skill(&m.id)
-            .map_or(true, |b| b.project_dir.is_none())
+                .active_skill(&m.id)
+                .map_or(true, |b| b.project_dir.is_none())
     });
     Ok(metas
         .into_iter()
@@ -1173,7 +1430,9 @@ pub async fn list_sessions(store: State<'_, SessionStore>) -> Result<Vec<Session
 pub async fn list_archived_sessions(
     store: State<'_, SessionStore>,
 ) -> Result<Vec<HiddenSessionListItem>, String> {
-    let mut metas = store.list().map_err(|e| format!("list_archived_sessions: {e:?}"))?;
+    let mut metas = store
+        .list()
+        .map_err(|e| format!("list_archived_sessions: {e:?}"))?;
     metas.retain(|m| {
         store.is_hidden(&m.id)
             && store
@@ -1363,7 +1622,11 @@ pub async fn cancel_generation(
 ) -> Result<(), String> {
     // 多 session:取消指定 session(前端传 session_id);兼容旧前端回退 active。
     if let Some(sid) = session_id.or_else(|| store.active_id()) {
+        log::info!("[pinvou3][chat] cancel requested sid={}", sid);
         pool.cancel(&sid).await;
+        log::info!("[pinvou3][chat] cancel command completed sid={}", sid);
+    } else {
+        log::warn!("[pinvou3][chat] cancel requested but no session id is available");
     }
     Ok(())
 }
@@ -1418,7 +1681,6 @@ pub async fn get_disabled_connectors() -> Result<Vec<String>, String> {
     Ok(crate::bridge::marketplace::load_disabled_connectors())
 }
 
-
 /// 编辑/重发最后一轮 user 消息。
 /// engine 砍掉 session 末尾最近的 user+assistant 后，用 new_message 重发。
 /// 前端在调这个命令之前必须自己更新 state.messages（删最后一对，加新 user）。
@@ -1471,7 +1733,12 @@ pub(crate) fn read_artifact_text_impl(path: &str) -> Result<String, String> {
 fn sanitize_title_filename(title: &str, fallback: &str) -> String {
     let cleaned: String = title
         .chars()
-        .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r' | '\0'))
+        .filter(|c| {
+            !matches!(
+                c,
+                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r' | '\0'
+            )
+        })
         .collect::<String>()
         .trim()
         .chars()
@@ -1526,11 +1793,21 @@ fn parse_product_manifest(report_text: &str) -> Vec<String> {
 /// 返回 (bu_id, 得分);得分 <8(单一信号)不可信,调用方回退。
 fn infer_product_bu(report: &str) -> Option<(String, i32)> {
     const BU: &[(&str, &str)] = &[
-        ("兵部", "bingbu"), ("户部", "hubu"), ("礼部", "libu"),
-        ("刑部", "xingbu"), ("工部", "gongbu"), ("吏部", "libu_renshi"),
+        ("兵部", "bingbu"),
+        ("户部", "hubu"),
+        ("礼部", "libu"),
+        ("刑部", "xingbu"),
+        ("工部", "gongbu"),
+        ("吏部", "libu_renshi"),
     ];
     const QA_WORDS: &[&str] = &["审核", "校验", "验收", "质检"];
-    const PRODUCT_WORDS: &[(&str, i32)] = &[("整合", 3), ("最终", 3), ("成品", 4), ("完整", 2), ("汇总", 2)];
+    const PRODUCT_WORDS: &[(&str, i32)] = &[
+        ("整合", 3),
+        ("最终", 3),
+        ("成品", 4),
+        ("完整", 2),
+        ("汇总", 2),
+    ];
     let mut scores: std::collections::HashMap<&str, i32> = Default::default();
     // 按 markdown 标题分节
     let mut sections: Vec<String> = Vec::new();
@@ -1565,7 +1842,11 @@ fn infer_product_bu(report: &str) -> Option<(String, i32)> {
             })
         };
         if let Some((_, en)) = BU.iter().rev().find(|(_, en)| names_bu(head, en)) {
-            let pts: i32 = PRODUCT_WORDS.iter().filter(|(k, _)| sec.contains(k)).map(|(_, w)| w).sum();
+            let pts: i32 = PRODUCT_WORDS
+                .iter()
+                .filter(|(k, _)| sec.contains(k))
+                .map(|(_, w)| w)
+                .sum();
             *scores.entry(en).or_default() += pts;
         }
     }
@@ -1632,8 +1913,8 @@ pub struct DeliverableItem {
 }
 
 const DELIVERABLE_EXTS: &[&str] = &[
-    "pptx", "ppt", "docx", "doc", "pdf", "html", "htm", "xlsx", "xls", "md", "csv", "png",
-    "jpg", "jpeg", "svg", "gif", "webp", "zip",
+    "pptx", "ppt", "docx", "doc", "pdf", "html", "htm", "xlsx", "xls", "md", "csv", "png", "jpg",
+    "jpeg", "svg", "gif", "webp", "zip",
 ];
 
 fn deliverable_category(ext: &str) -> &'static str {
@@ -1706,7 +1987,11 @@ pub async fn list_deliverable_index() -> Result<Vec<DeliverableItem>, String> {
                 session_id: view.metadata.id.clone(),
                 source: view.metadata.title.clone(),
                 mtime,
-                size: if meta.len() > 0 { meta.len() } else { art.byte_size },
+                size: if meta.len() > 0 {
+                    meta.len()
+                } else {
+                    art.byte_size
+                },
             };
             by_path
                 .entry(path)
@@ -1752,7 +2037,9 @@ pub async fn list_deliverables(project_dir: String) -> Result<serde_json::Value,
         let mut md_idx = 0usize;
         for rel in &declared {
             let cand = p.join(rel);
-            let Ok(canon) = std::fs::canonicalize(&cand) else { continue };
+            let Ok(canon) = std::fs::canonicalize(&cand) else {
+                continue;
+            };
             if !canon.starts_with(&canon_root) || !canon.is_file() {
                 continue;
             }
@@ -1781,7 +2068,10 @@ pub async fn list_deliverables(project_dir: String) -> Result<serde_json::Value,
                     "name": fname, "title": title, "path": dst.to_string_lossy(), "size": bytes.len(),
                 }));
             } else {
-                let stem = orig_name.rsplit_once('.').map(|(a, _)| a).unwrap_or(&orig_name);
+                let stem = orig_name
+                    .rsplit_once('.')
+                    .map(|(a, _)| a)
+                    .unwrap_or(&orig_name);
                 products.push(serde_json::json!({
                     "name": orig_name, "title": stem, "path": canon.to_string_lossy(), "size": bytes.len(),
                 }));
@@ -1861,7 +2151,11 @@ pub async fn list_deliverables(project_dir: String) -> Result<serde_json::Value,
                 .and_then(|s| s.to_str())
                 .unwrap_or("")
                 .to_string();
-            if name.is_empty() || name.starts_with('.') || name.ends_with(".tmp") || name.ends_with('~') {
+            if name.is_empty()
+                || name.starts_with('.')
+                || name.ends_with(".tmp")
+                || name.ends_with('~')
+            {
                 continue;
             }
             let canon = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
@@ -1876,7 +2170,10 @@ pub async fn list_deliverables(project_dir: String) -> Result<serde_json::Value,
                 None
             }
             .unwrap_or_else(|| {
-                name.rsplit_once('.').map(|(a, _)| a).unwrap_or(&name).to_string()
+                name.rsplit_once('.')
+                    .map(|(a, _)| a)
+                    .unwrap_or(&name)
+                    .to_string()
             });
             let item = serde_json::json!({
                 "name": name, "title": title, "path": path.to_string_lossy(), "size": size,
@@ -1909,7 +2206,11 @@ pub async fn read_artifact_image_b64(path: String) -> Result<String, String> {
     if bytes.len() > 25_000_000 {
         return Err("图片过大(>25MB),请用外部打开".into());
     }
-    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("png").to_ascii_lowercase();
+    let ext = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("png")
+        .to_ascii_lowercase();
     let mime = match ext.as_str() {
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
@@ -1939,7 +2240,11 @@ pub async fn read_artifact_thumbnail(path: String) -> Result<Option<String>, Str
         Err(_) => return Ok(None), // 非 zip / 损坏：前端走紧凑态
     };
     // OOXML 缩略图固定路径；兜底几种扩展名（Office 默认写 .jpeg）。
-    for name in ["docProps/thumbnail.jpeg", "docProps/thumbnail.jpg", "docProps/thumbnail.png"] {
+    for name in [
+        "docProps/thumbnail.jpeg",
+        "docProps/thumbnail.jpg",
+        "docProps/thumbnail.png",
+    ] {
         let mut entry = match archive.by_name(name) {
             Ok(e) => e,
             Err(_) => continue,
@@ -1951,7 +2256,11 @@ pub async fn read_artifact_thumbnail(path: String) -> Result<Option<String>, Str
         if entry.read_to_end(&mut buf).is_err() || buf.is_empty() {
             continue;
         }
-        let mime = if name.ends_with(".png") { "image/png" } else { "image/jpeg" };
+        let mime = if name.ends_with(".png") {
+            "image/png"
+        } else {
+            "image/jpeg"
+        };
         let b64 = crate::file_ingest::base64_encode(&buf);
         return Ok(Some(format!("data:{mime};base64,{b64}")));
     }
@@ -1995,13 +2304,11 @@ pub(crate) fn artifact_info_impl(path: &str) -> Result<ArtifactInfo, String> {
         "docx" | "pptx" | "odt" => "docx",
         "xlsx" | "ods" => "xlsx",
         "doc" | "ppt" | "xls" | "rtf" => "legacy_office",
-        "txt" | "log" | "csv" | "json" | "yaml" | "yml" | "toml" | "xml"
-        | "rs" | "py" | "js" | "ts" | "go" | "c" | "cpp" | "h" | "hpp" | "sh"
-        | "bash" | "zsh" | "fish" | "bat" | "cmd" | "ps1"
-        | "pl" | "pm" | "lua" | "swift" | "kt" | "kts" | "scala" | "groovy" | "dart"
-        | "r" | "m" | "jl" | "erl" | "hrl"
-        | "css" | "scss" | "sass" | "less" | "vue" | "svelte" | "mdx"
-        | "sql" | "ini" | "conf" | "cfg" | "env" | "properties" | "reg"
+        "txt" | "log" | "csv" | "json" | "yaml" | "yml" | "toml" | "xml" | "rs" | "py" | "js"
+        | "ts" | "go" | "c" | "cpp" | "h" | "hpp" | "sh" | "bash" | "zsh" | "fish" | "bat"
+        | "cmd" | "ps1" | "pl" | "pm" | "lua" | "swift" | "kt" | "kts" | "scala" | "groovy"
+        | "dart" | "r" | "m" | "jl" | "erl" | "hrl" | "css" | "scss" | "sass" | "less" | "vue"
+        | "svelte" | "mdx" | "sql" | "ini" | "conf" | "cfg" | "env" | "properties" | "reg"
         | "diff" | "patch" | "lock" | "proto" | "graphql" | "gql" | "prisma" => "text",
         _ => "binary",
     };
@@ -2037,7 +2344,12 @@ pub struct VisualResult {
 
 impl VisualResult {
     fn unsupported(warning: Option<String>) -> Self {
-        VisualResult { mode: "unsupported".into(), html: None, images: vec![], warning }
+        VisualResult {
+            mode: "unsupported".into(),
+            html: None,
+            images: vec![],
+            warning,
+        }
     }
 }
 
@@ -2156,7 +2468,8 @@ fn shell_open(arg: &str) -> Result<(), String> {
         c.arg(arg);
         c
     };
-    cmd.spawn().map_err(|e| format!("open({arg}) failed: {e}"))?;
+    cmd.spawn()
+        .map_err(|e| format!("open({arg}) failed: {e}"))?;
     Ok(())
 }
 
@@ -2246,14 +2559,16 @@ pub struct ObsidianStatus {
 fn obsidian_config_path() -> Option<std::path::PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        std::env::var_os("APPDATA")
-            .map(|p| std::path::Path::new(&p).join("obsidian").join("obsidian.json"))
+        std::env::var_os("APPDATA").map(|p| {
+            std::path::Path::new(&p)
+                .join("obsidian")
+                .join("obsidian.json")
+        })
     }
     #[cfg(target_os = "macos")]
     {
         std::env::var_os("HOME").map(|p| {
-            std::path::Path::new(&p)
-                .join("Library/Application Support/obsidian/obsidian.json")
+            std::path::Path::new(&p).join("Library/Application Support/obsidian/obsidian.json")
         })
     }
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -2287,7 +2602,10 @@ fn pick_vault_path(text: &str) -> Option<String> {
 /// 没装就引导下载,没库就引导建库,而不是默默装上一个用不了的连接器。
 #[tauri::command]
 pub fn detect_obsidian() -> ObsidianStatus {
-    let not_installed = || ObsidianStatus { state: "not_installed".into(), vault_path: None };
+    let not_installed = || ObsidianStatus {
+        state: "not_installed".into(),
+        vault_path: None,
+    };
     let cfg = match obsidian_config_path() {
         Some(p) if p.is_file() => p,
         _ => return not_installed(),
@@ -2297,11 +2615,18 @@ pub fn detect_obsidian() -> ObsidianStatus {
         Err(_) => return not_installed(),
     };
     match pick_vault_path(&text) {
-        None => ObsidianStatus { state: "no_vault".into(), vault_path: None },
-        Some(p) if std::path::Path::new(&p).is_dir() => {
-            ObsidianStatus { state: "ok".into(), vault_path: Some(p) }
-        }
-        Some(p) => ObsidianStatus { state: "vault_missing".into(), vault_path: Some(p) },
+        None => ObsidianStatus {
+            state: "no_vault".into(),
+            vault_path: None,
+        },
+        Some(p) if std::path::Path::new(&p).is_dir() => ObsidianStatus {
+            state: "ok".into(),
+            vault_path: Some(p),
+        },
+        Some(p) => ObsidianStatus {
+            state: "vault_missing".into(),
+            vault_path: Some(p),
+        },
     }
 }
 
@@ -2494,10 +2819,13 @@ pub async fn equip_persona(
     persona_id: String,
     store: State<'_, SessionStore>,
 ) -> Result<crate::personas::PersonaSummary, String> {
-    let card = crate::personas::get(&persona_id)
-        .ok_or_else(|| format!("未知专家面具: {persona_id}"))?;
+    let card =
+        crate::personas::get(&persona_id).ok_or_else(|| format!("未知专家面具: {persona_id}"))?;
     let summary = card.summary();
-    store.set_pending_persona_body(&session_id, Some(crate::personas::equip_body_injection(&card)));
+    store.set_pending_persona_body(
+        &session_id,
+        Some(crate::personas::equip_body_injection(&card)),
+    );
     store.set_active_persona(&session_id, Some(persona_id));
     Ok(summary)
 }
@@ -2526,8 +2854,16 @@ impl PersonaInput {
             dept: self.dept,
             name: self.name,
             description: self.description,
-            emoji: if self.emoji.is_empty() { "🃏".into() } else { self.emoji },
-            color: if self.color.is_empty() { "#7C3AED".into() } else { self.color },
+            emoji: if self.emoji.is_empty() {
+                "🃏".into()
+            } else {
+                self.emoji
+            },
+            color: if self.color.is_empty() {
+                "#7C3AED".into()
+            } else {
+                self.color
+            },
             body: self.body,
             source: "user".into(),
             // 用户自创卡都是干活的领域卡,照常带全量工具;元卡标记只属内置卡。
@@ -2778,12 +3114,17 @@ pub async fn set_super_permission(
 #[tauri::command]
 pub async fn read_skill_body(name: String) -> Result<String, String> {
     use crate::bridge::paths;
-    let safe_name: String = name.chars().filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_').collect();
+    let safe_name: String = name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
     if safe_name != name || safe_name.is_empty() {
         return Err(format!("invalid skill name: {name}"));
     }
     // h3c-ppt 在 workflow/,review 等 skill 在 skills/;先查 workflow 再 fallback skills。
-    let wf_path = paths::bundle_workflow_dir().join(&safe_name).join("SKILL.md");
+    let wf_path = paths::bundle_workflow_dir()
+        .join(&safe_name)
+        .join("SKILL.md");
     let path = if wf_path.is_file() {
         wf_path
     } else {
@@ -3080,7 +3421,12 @@ pub async fn list_skills_v2() -> Result<Vec<SkillSummary>, String> {
         })
         .collect();
     // 有 phases 的排前面
-    out.sort_by(|a, b| b.phases.len().cmp(&a.phases.len()).then(a.name.cmp(&b.name)));
+    out.sort_by(|a, b| {
+        b.phases
+            .len()
+            .cmp(&a.phases.len())
+            .then(a.name.cmp(&b.name))
+    });
     Ok(out)
 }
 
@@ -3142,9 +3488,7 @@ pub async fn start_skill_session(
     use deepseek_tui::skills::SkillRegistry;
 
     if WORKFLOW_HIDDEN_SKILLS.contains(&name.as_str()) {
-        return Err(format!(
-            "{name} 是系统基础能力,不能直接启用为工作流"
-        ));
+        return Err(format!("{name} 是系统基础能力,不能直接启用为工作流"));
     }
 
     // 1) 只在 bundle/skills 里找 — 跟 list_skills_v2 source of truth 保持一致
@@ -3169,7 +3513,8 @@ pub async fn start_skill_session(
         // 多 session 并发:不显式 sync engine,EnginePool 下次 chat 时
         // get_or_spawn 为该 session rehydrate 专属 engine。
         store.set_active(Some(sid.clone()));
-        let session_data = store.load(&sid)
+        let session_data = store
+            .load(&sid)
             .map_err(|e| format!("load existing session: {e:?}"))?;
 
         return Ok(StartSkillSessionResult {
@@ -3250,10 +3595,14 @@ pub async fn start_workflow(
 
     // 0. 按 scenario 解析所属工作流(WorkflowRegistry 扫 bundle/workflow/*/workflow.json)。
     //    enabled=false 只挡新建,历史项目不受影响(resolver 侧不过滤)。
-    let wf = crate::workflow_registry::by_scenario(&scenario)
-        .ok_or_else(|| format!("scenario `{scenario}` 没有对应的工作流(bundle/workflow/*/workflow.json)"))?;
+    let wf = crate::workflow_registry::by_scenario(&scenario).ok_or_else(|| {
+        format!("scenario `{scenario}` 没有对应的工作流(bundle/workflow/*/workflow.json)")
+    })?;
     if !wf.enabled {
-        return Err(format!("工作流 `{}` 已禁用(workflow.json enabled=false)", wf.id));
+        return Err(format!(
+            "工作流 `{}` 已禁用(workflow.json enabled=false)",
+            wf.id
+        ));
     }
 
     let brief = brief_init.unwrap_or_else(|| serde_json::json!({}));
@@ -3367,7 +3716,6 @@ pub async fn kick_workflow(
     pool: State<'_, EnginePool>,
     app: AppHandle,
 ) -> Result<String, String> {
-
     // 取本次工作流对应的 session(前端显式传;回退 active)。每个工作流 = 一个 session,
     // 绝不能匹配错——harness_phase / 项目目录全都按这个 sid 走。
     let sid = session_id
@@ -3419,7 +3767,11 @@ pub async fn kick_workflow(
             Ok(format!("spawning {role_name}"))
         }
         // [per_page] 纵向 fan-out：并发派 N 个 per-page SubAgent。
-        crate::harness::HarnessAction::SpawnAgentBatch { base_role, role_name, tasks } => {
+        crate::harness::HarnessAction::SpawnAgentBatch {
+            base_role,
+            role_name,
+            tasks,
+        } => {
             let engine = pool
                 .get_or_spawn(&sid)
                 .await
@@ -3443,7 +3795,11 @@ pub async fn kick_workflow(
                     output_schema: t.output_schema,
                     expects_file_output: t.expects_file_output,
                 };
-                engine.handle.send(op).await.map_err(|e| format!("fan-out spawn: {e:?}"))?;
+                engine
+                    .handle
+                    .send(op)
+                    .await
+                    .map_err(|e| format!("fan-out spawn: {e:?}"))?;
             }
             crate::engine::emit_fanout(&app, &sid, &base_role); // 初始 fan-out 状态 → 前端
             Ok(format!("spawning {role_name} ({n} pages, 在飞={k})"))
@@ -3467,7 +3823,6 @@ pub async fn retry_workflow_role(
     pool: State<'_, EnginePool>,
     app: AppHandle,
 ) -> Result<String, String> {
-
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
@@ -3516,7 +3871,11 @@ pub async fn retry_workflow_role(
             Ok(format!("retry → spawning {role_name}"))
         }
         // [per_page] retry 重派整批（fan-out）。
-        crate::harness::HarnessAction::SpawnAgentBatch { base_role, role_name, tasks } => {
+        crate::harness::HarnessAction::SpawnAgentBatch {
+            base_role,
+            role_name,
+            tasks,
+        } => {
             let engine = pool
                 .get_or_spawn(&sid)
                 .await
@@ -3540,10 +3899,16 @@ pub async fn retry_workflow_role(
                     output_schema: t.output_schema,
                     expects_file_output: t.expects_file_output,
                 };
-                engine.handle.send(op).await.map_err(|e| format!("fan-out spawn: {e:?}"))?;
+                engine
+                    .handle
+                    .send(op)
+                    .await
+                    .map_err(|e| format!("fan-out spawn: {e:?}"))?;
             }
             crate::engine::emit_fanout(&app, &sid, &base_role); // 初始 fan-out 状态 → 前端
-            Ok(format!("retry → spawning {role_name} ({n} pages, 在飞={k})"))
+            Ok(format!(
+                "retry → spawning {role_name} ({n} pages, 在飞={k})"
+            ))
         }
         crate::harness::HarnessAction::Blocked { message } => {
             Err(format!("retry blocked: {message}"))
@@ -3694,7 +4059,9 @@ pub async fn get_role_outputs(
     // 非差事节点照旧用所属部的 registry outputs glob。
     let (bu, seq) = split_task_node(&role_id);
     let outputs: Vec<serde_json::Value> = if let Some(seq) = seq {
-        vec![serde_json::Value::String(format!("deliverables/{bu}_{seq}.md"))]
+        vec![serde_json::Value::String(format!(
+            "deliverables/{bu}_{seq}.md"
+        ))]
     } else {
         registry
             .get("agents")
@@ -3734,7 +4101,10 @@ pub async fn get_role_outputs(
                 if !p.is_file() {
                     continue;
                 }
-                let name = p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                let name = p
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
                 if !simple_glob_match(&file_name_pat, &name) {
                     continue;
                 }
@@ -3756,7 +4126,9 @@ fn simple_glob_match(pattern: &str, name: &str) -> bool {
     if let Some(idx) = pattern.find('*') {
         let prefix = &pattern[..idx];
         let suffix = &pattern[idx + 1..];
-        name.starts_with(prefix) && name.ends_with(suffix) && name.len() >= prefix.len() + suffix.len()
+        name.starts_with(prefix)
+            && name.ends_with(suffix)
+            && name.len() >= prefix.len() + suffix.len()
     } else {
         pattern == name
     }
@@ -3806,8 +4178,7 @@ pub async fn get_role_logs(
     if !log_path.exists() {
         return Ok(Vec::new());
     }
-    let content =
-        std::fs::read_to_string(&log_path).map_err(|e| format!("read log: {e}"))?;
+    let content = std::fs::read_to_string(&log_path).map_err(|e| format!("read log: {e}"))?;
     let limit = tail.unwrap_or(200);
     let mut out: Vec<serde_json::Value> = Vec::new();
     for line in content.lines() {
@@ -3873,8 +4244,8 @@ pub async fn get_gate_report(
     let Some((_, path)) = latest else {
         return Ok(None);
     };
-    let content =
-        std::fs::read_to_string(&path).map_err(|e| format!("read gate report {}: {e}", path.display()))?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("read gate report {}: {e}", path.display()))?;
     let mut v: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| format!("parse gate report: {e}"))?;
     // 附 _report_path 给前端调试
@@ -3941,9 +4312,7 @@ pub async fn save_agent_overrides(
     let obj = all
         .as_object_mut()
         .ok_or_else(|| "agent_overrides.json must be JSON object".to_string())?;
-    let role_entry = obj
-        .entry(role_id.clone())
-        .or_insert(serde_json::json!({}));
+    let role_entry = obj.entry(role_id.clone()).or_insert(serde_json::json!({}));
     if let (Some(role_obj), Some(patch_obj)) = (role_entry.as_object_mut(), patch.as_object()) {
         for (k, v) in patch_obj {
             role_obj.insert(k.clone(), v.clone());
@@ -3980,17 +4349,17 @@ pub async fn cancel_workflow_role(
             None => return Err("no project found".to_string()),
         };
         // 读 scenario
-        let scenario_content = std::fs::read_to_string(
-            project.join("_state").join("workflow_progress.json"),
-        )
-        .unwrap_or_default();
+        let scenario_content =
+            std::fs::read_to_string(project.join("_state").join("workflow_progress.json"))
+                .unwrap_or_default();
         let scenario = serde_json::from_str::<serde_json::Value>(&scenario_content)
             .ok()
             .and_then(|v| v.get("scenario").and_then(|s| s.as_str()).map(String::from))
             .unwrap_or_else(|| "solution_deck".to_string());
         // 走 scheduler 通用入口（用 std::process::Command 直接调）
-        let scheduler =
-            crate::harness::scheduler_path_for(&crate::harness::workflow_name_for_scenario(&scenario));
+        let scheduler = crate::harness::scheduler_path_for(
+            &crate::harness::workflow_name_for_scenario(&scenario),
+        );
         let output = std::process::Command::new("python3")
             .args([
                 scheduler.to_string_lossy().as_ref(),
@@ -4034,9 +4403,10 @@ pub async fn approve_workflow_gate(
         .await
         .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
     let rid = role_id.clone();
-    let action = tokio::task::spawn_blocking(move || {
-        crate::harness::approve_gate(&workspace, &rid)
-    }).await.map_err(|e| format!("spawn_blocking: {e}"))?;
+    let action =
+        tokio::task::spawn_blocking(move || crate::harness::approve_gate(&workspace, &rid))
+            .await
+            .map_err(|e| format!("spawn_blocking: {e}"))?;
     // approve 后 step_fresh 推进到下一角色：SpawnAgent（直派）/ AllDone / WaitForHuman。
     // 用 apply_harness_action 统一处理（set phase / emit / 派发），其值化结果回前端。
     let next_label = match &action {
@@ -4046,14 +4416,9 @@ pub async fn approve_workflow_gate(
         crate::harness::HarnessAction::Blocked { .. } => "blocked",
         _ => "noop",
     };
-    let handled = crate::engine::apply_harness_action(
-        action,
-        &app,
-        &engine.bridge,
-        &engine.handle,
-        &sid,
-    )
-    .await;
+    let handled =
+        crate::engine::apply_harness_action(action, &app, &engine.bridge, &engine.handle, &sid)
+            .await;
     Ok(serde_json::json!({"ok": handled, "next": next_label}))
 }
 
@@ -4077,23 +4442,19 @@ pub async fn reject_workflow_gate(
         .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
     let rid = role_id.clone();
     let r = reason.clone();
-    let action = tokio::task::spawn_blocking(move || {
-        crate::harness::reject_gate(&workspace, &rid, &r)
-    }).await.map_err(|e| format!("spawn_blocking: {e}"))?;
+    let action =
+        tokio::task::spawn_blocking(move || crate::harness::reject_gate(&workspace, &rid, &r))
+            .await
+            .map_err(|e| format!("spawn_blocking: {e}"))?;
     // reject 后 reject_gate 返回 SpawnAgent（重新派发同角色 SubAgent，附拒绝原因）。
     let next_label = match &action {
         crate::harness::HarnessAction::SpawnAgent { .. } => "redo",
         crate::harness::HarnessAction::Blocked { .. } => "blocked",
         _ => "noop",
     };
-    let handled = crate::engine::apply_harness_action(
-        action,
-        &app,
-        &engine.bridge,
-        &engine.handle,
-        &sid,
-    )
-    .await;
+    let handled =
+        crate::engine::apply_harness_action(action, &app, &engine.bridge, &engine.handle, &sid)
+            .await;
     Ok(serde_json::json!({"ok": handled, "next": next_label}))
 }
 
@@ -4111,9 +4472,10 @@ pub async fn get_workflow_state(
         .ok_or_else(|| "no active session".to_string())?;
     let workspace = pool.bridge.session_workspace(&sid);
     tokio::task::spawn_blocking(move || {
-        crate::harness::read_full_agent_state(&workspace)
-            .unwrap_or(serde_json::json!(null))
-    }).await.map_err(|e| format!("spawn_blocking: {e}"))
+        crate::harness::read_full_agent_state(&workspace).unwrap_or(serde_json::json!(null))
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {e}"))
 }
 
 /// [2026-06-06] 找最近一个「进行中」的工作流 run，供 app 启动后前端自动恢复看板。
@@ -4121,30 +4483,41 @@ pub async fn get_workflow_state(
 /// 里存在未完成角色的，按 progress 文件 mtime 取最近一个。
 /// 返回 {session_id, project_dir, scenario}，无则返回 null。
 #[tauri::command]
-pub async fn find_resumable_run(store: State<'_, SessionStore>) -> Result<serde_json::Value, String> {
+pub async fn find_resumable_run(
+    store: State<'_, SessionStore>,
+) -> Result<serde_json::Value, String> {
     let metas = store.list().map_err(|e| format!("list: {e:?}"))?;
     let mut best: Option<(std::time::SystemTime, String, String, String)> = None;
     for m in metas {
-        let Some(binding) = store.active_skill(&m.id) else { continue };
-        let Some(pd) = binding.project_dir else { continue };
-        let progress = std::path::Path::new(&pd).join("_state").join("workflow_progress.json");
-        let Ok(content) = std::fs::read_to_string(&progress) else { continue };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else { continue };
+        let Some(binding) = store.active_skill(&m.id) else {
+            continue;
+        };
+        let Some(pd) = binding.project_dir else {
+            continue;
+        };
+        let progress = std::path::Path::new(&pd)
+            .join("_state")
+            .join("workflow_progress.json");
+        let Ok(content) = std::fs::read_to_string(&progress) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
         // 未全完成 = roles 非空且存在 status != completed 的角色
-        let unfinished = v.get("roles").and_then(|r| r.as_object()).is_some_and(|rs| {
-            !rs.is_empty()
-                && rs
-                    .values()
-                    .any(|r| r.get("status").and_then(|s| s.as_str()) != Some("completed"))
-        });
+        let unfinished = v
+            .get("roles")
+            .and_then(|r| r.as_object())
+            .is_some_and(|rs| {
+                !rs.is_empty()
+                    && rs
+                        .values()
+                        .any(|r| r.get("status").and_then(|s| s.as_str()) != Some("completed"))
+            });
         if !unfinished {
             continue;
         }
-        let Some(scenario) = v
-            .get("scenario")
-            .and_then(|s| s.as_str())
-            .map(String::from)
-        else {
+        let Some(scenario) = v.get("scenario").and_then(|s| s.as_str()).map(String::from) else {
             continue;
         };
         // scenario 已没有对应工作流(如已下线存档的 h3c-ppt 项目)→ 跳过。
@@ -4205,7 +4578,11 @@ pub async fn get_session_active_skill(
         // [2026-06-04 白浪:chat 与工作流不混淆] workflow 绑定(带 project_dir)不回传
         // phases——兜住磁盘上历史持久化的旧绑定(带 SKILL.md 化石 phases),否则旧工作流
         // session 切回来 chat 顶部仍渲染节点条。skill 会话(无 project_dir)不受影响。
-        let phases = if b.project_dir.is_some() { Vec::new() } else { b.phases };
+        let phases = if b.project_dir.is_some() {
+            Vec::new()
+        } else {
+            b.phases
+        };
         let first: Option<String> = None;
         let _ = &phases;
         ActiveSkillState {
@@ -4233,17 +4610,14 @@ pub async fn list_session_skill_bindings(
     Ok(out)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn file_url_from_path_encodes_local_artifact_paths() {
-        let tmp = std::env::temp_dir().join(format!(
-            "pinvou3 file-url test {}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("pinvou3 file-url test {}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         let path = tmp.join("中文 page.html");
         std::fs::write(&path, "<!doctype html>").unwrap();
@@ -4254,9 +4628,18 @@ mod tests {
 
         assert_eq!(url.scheme(), "file");
         assert!(text.starts_with("file://"), "unexpected file URL: {text}");
-        assert!(!text.contains('\\'), "file URL must not contain backslashes: {text}");
-        assert!(!text.contains(r"\\?\"), "file URL must not contain verbatim prefix: {text}");
-        assert!(text.contains("%20"), "spaces should be percent-encoded: {text}");
+        assert!(
+            !text.contains('\\'),
+            "file URL must not contain backslashes: {text}"
+        );
+        assert!(
+            !text.contains(r"\\?\"),
+            "file URL must not contain verbatim prefix: {text}"
+        );
+        assert!(
+            text.contains("%20"),
+            "spaces should be percent-encoded: {text}"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -4296,10 +4679,8 @@ mod tests {
 
     #[test]
     fn local_asr_env_points_wrapper_to_resolved_model_path() {
-        let root = std::env::temp_dir().join(format!(
-            "pinvou3 local asr env {}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("pinvou3 local asr env {}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let model = root.join("sensevoice-small-q8.gguf");
         std::fs::write(&model, b"model").unwrap();
@@ -4392,9 +4773,13 @@ mod tests {
     #[test]
     fn merge_covers_recommendations_field() {
         let old = serde_json::json!([{"pos":1,"review":{"issues":[],"recommendations":[{"topic":"t","resolution":"modify"}]}}]);
-        let new = serde_json::json!([{"pos":1,"review":{"issues":[],"recommendations":[{"topic":"t"}]}}]);
+        let new =
+            serde_json::json!([{"pos":1,"review":{"issues":[],"recommendations":[{"topic":"t"}]}}]);
         let merged = merge_resolutions(old, new);
-        assert_eq!(merged[0]["review"]["recommendations"][0]["resolution"], "modify");
+        assert_eq!(
+            merged[0]["review"]["recommendations"][0]["resolution"],
+            "modify"
+        );
     }
 
     /// `open_external_url` 必须只放 metaso.cn / open.bochaai.com / console.bce.baidu.com /
@@ -4403,17 +4788,17 @@ mod tests {
     #[tokio::test]
     async fn open_external_url_rejects_off_allowlist_targets() {
         let rejected = [
-            "http://metaso.cn/",              // 非 https
-            "https://evil.example.com/",      // host 不在白名单
-            "https://metaso.cn.evil.com/",    // 子域钓鱼
+            "http://metaso.cn/",                       // 非 https
+            "https://evil.example.com/",               // host 不在白名单
+            "https://metaso.cn.evil.com/",             // 子域钓鱼
             "https://console.bce.baidu.com.evil.com/", // 百度子域钓鱼
-            "https://app.tavily.com.evil.com/", // tavily 子域钓鱼
-            "https://bce.baidu.com/",         // 非 console 子域,不放行
-            "javascript:alert(1)",            // js scheme
-            "file:///etc/passwd",             // file scheme
-            "https://google.com/",            // 任何第三方域
-            "",                               // 空串
-            "metaso.cn/",                     // 缺 scheme
+            "https://app.tavily.com.evil.com/",        // tavily 子域钓鱼
+            "https://bce.baidu.com/",                  // 非 console 子域,不放行
+            "javascript:alert(1)",                     // js scheme
+            "file:///etc/passwd",                      // file scheme
+            "https://google.com/",                     // 任何第三方域
+            "",                                        // 空串
+            "metaso.cn/",                              // 缺 scheme
         ];
         for url in rejected {
             let err = open_external_url(url.to_string()).await.err();
@@ -4521,14 +4906,16 @@ mod tests {
 
         let r = crate::file_ingest::ingest(&src);
         assert_eq!(r.kind, "image", "应识别为 image");
-        assert!(r.markdown.is_none(), "图片不再预解析出 markdown(OCR 已移除)");
-
-        let prompt = build_message_with_attachments(
-            "这张图里画了什么？".to_string(),
-            vec![r],
-            &ws,
+        assert!(
+            r.markdown.is_none(),
+            "图片不再预解析出 markdown(OCR 已移除)"
         );
-        assert!(prompt.contains("image_analyze"), "prompt 应引导调 image_analyze");
+
+        let prompt = build_message_with_attachments("这张图里画了什么？".to_string(), vec![r], &ws);
+        assert!(
+            prompt.contains("image_analyze"),
+            "prompt 应引导调 image_analyze"
+        );
         assert!(
             prompt.contains("attachments/shot.png"),
             "prompt 应给出 workspace 相对路径"
@@ -4543,7 +4930,12 @@ mod tests {
     }
 
     /// 造一个指定 kind / token 估算的 IngestResult,markdown 是 `rows` 行可定位文本。
-    fn mk_attachment(kind: &str, basename: &str, rows: usize, tokens: u32) -> crate::file_ingest::IngestResult {
+    fn mk_attachment(
+        kind: &str,
+        basename: &str,
+        rows: usize,
+        tokens: u32,
+    ) -> crate::file_ingest::IngestResult {
         let md: String = (1..=rows).map(|i| format!("row-{i},value-{i}\n")).collect();
         crate::file_ingest::IngestResult {
             kind: kind.into(),
@@ -4557,7 +4949,8 @@ mod tests {
     }
 
     fn mk_test_ws(tag: &str) -> std::path::PathBuf {
-        let ws = std::env::temp_dir().join(format!("pinvou3-attach-test-{tag}-{}", std::process::id()));
+        let ws =
+            std::env::temp_dir().join(format!("pinvou3-attach-test-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&ws);
         std::fs::create_dir_all(&ws).expect("建 workspace");
         ws
@@ -4573,7 +4966,10 @@ mod tests {
             &ws,
         );
         assert!(prompt.contains("row-10,value-10"), "小附件应全量内联");
-        assert!(prompt.contains("不需要再调 read_file"), "内联段应声明无需 read_file");
+        assert!(
+            prompt.contains("不需要再调 read_file"),
+            "内联段应声明无需 read_file"
+        );
         assert!(!ws.join("attachments").exists(), "小附件不应落盘");
         let _ = std::fs::remove_dir_all(&ws);
     }
@@ -4586,10 +4982,19 @@ mod tests {
         let full_md = a.markdown.clone().unwrap();
         let prompt = build_message_with_attachments("分析一下".into(), vec![a], &ws);
 
-        assert!(!prompt.contains("row-5000,value-5000"), "完整内容不应进 prompt");
+        assert!(
+            !prompt.contains("row-5000,value-5000"),
+            "完整内容不应进 prompt"
+        );
         assert!(prompt.contains("row-1,value-1"), "应有开头预览");
-        assert!(prompt.contains("attachments/data.csv"), "应给出落盘 CSV 相对路径");
-        assert!(prompt.contains("read_file") && prompt.contains("exec_shell"), "应引导工具消化");
+        assert!(
+            prompt.contains("attachments/data.csv"),
+            "应给出落盘 CSV 相对路径"
+        );
+        assert!(
+            prompt.contains("read_file") && prompt.contains("exec_shell"),
+            "应引导工具消化"
+        );
         assert!(prompt.contains("没有**嵌入"), "应声明未嵌入完整内容");
         let staged = std::fs::read_to_string(ws.join("attachments/data.csv")).expect("CSV 应落盘");
         assert_eq!(staged, full_md, "落盘内容应与转换产物一致");
@@ -4607,7 +5012,10 @@ mod tests {
 
         assert!(prompt.contains("/tmp/fake/big.log"), "应引用原始路径");
         assert!(!ws.join("attachments").exists(), "text 类不应落盘副本");
-        assert!(!prompt.contains("row-9000,value-9000"), "完整内容不应进 prompt");
+        assert!(
+            !prompt.contains("row-9000,value-9000"),
+            "完整内容不应进 prompt"
+        );
         let _ = std::fs::remove_dir_all(&ws);
     }
 
@@ -4625,8 +5033,14 @@ mod tests {
             &ws,
         );
         assert!(prompt.contains("row-50,value-50"), "a 应内联");
-        assert!(prompt.contains("row-60,value-60"), "b 应内联(累计 14K ≤ 16K)");
-        assert!(!prompt.contains("row-70,value-70"), "c 应转路径模式(累计 21K > 16K)");
+        assert!(
+            prompt.contains("row-60,value-60"),
+            "b 应内联(累计 14K ≤ 16K)"
+        );
+        assert!(
+            !prompt.contains("row-70,value-70"),
+            "c 应转路径模式(累计 21K > 16K)"
+        );
         assert!(ws.join("attachments/c.md").exists(), "c 的产物应落盘为 md");
         let _ = std::fs::remove_dir_all(&ws);
     }
@@ -4642,12 +5056,36 @@ mod tests {
             return;
         }
         let cases = [
-            ("sample.png", "这张图里的项目编号是多少？只回答编号。", "/tmp/llm_png.txt"),
-            ("scan.pdf", "这份文件的文号是多少？只回答文号。", "/tmp/llm_scan.txt"),
-            ("sample.xlsx", "表格里李四的金额是多少？只回答数字。", "/tmp/llm_xlsx.txt"),
-            ("sample.pptx", "演示文稿第一章讲什么？提到的编号是？", "/tmp/llm_pptx.txt"),
-            ("mail.eml", "这封邮件的主题是什么？正文里的编号是多少？", "/tmp/llm_eml.txt"),
-            ("bundle.zip", "这个压缩包里图片上的项目编号是多少？", "/tmp/llm_zip.txt"),
+            (
+                "sample.png",
+                "这张图里的项目编号是多少？只回答编号。",
+                "/tmp/llm_png.txt",
+            ),
+            (
+                "scan.pdf",
+                "这份文件的文号是多少？只回答文号。",
+                "/tmp/llm_scan.txt",
+            ),
+            (
+                "sample.xlsx",
+                "表格里李四的金额是多少？只回答数字。",
+                "/tmp/llm_xlsx.txt",
+            ),
+            (
+                "sample.pptx",
+                "演示文稿第一章讲什么？提到的编号是？",
+                "/tmp/llm_pptx.txt",
+            ),
+            (
+                "mail.eml",
+                "这封邮件的主题是什么？正文里的编号是多少？",
+                "/tmp/llm_eml.txt",
+            ),
+            (
+                "bundle.zip",
+                "这个压缩包里图片上的项目编号是多少？",
+                "/tmp/llm_zip.txt",
+            ),
         ];
         for (f, q, out) in cases {
             let p = dir.join(f);
@@ -4668,7 +5106,8 @@ mod tests {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn list_marketplace_tools() -> Result<Vec<crate::bridge::marketplace::MarketplaceToolInfo>, String> {
+pub fn list_marketplace_tools(
+) -> Result<Vec<crate::bridge::marketplace::MarketplaceToolInfo>, String> {
     let mgr = crate::bridge::marketplace::MarketplaceManager::new();
     let tools = mgr.list_tools();
     Ok(tools)

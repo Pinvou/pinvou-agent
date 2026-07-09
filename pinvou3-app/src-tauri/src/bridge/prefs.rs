@@ -118,6 +118,9 @@ pub enum ModelPreset {
     /// 小米 MiMo
     Mimo,
 }
+
+pub const BUILTIN_LLMAPI_MODEL_ID: &str = "builtin_llmapi";
+pub const BUILTIN_LLMAPI_MODEL_NAME: &str = "内置模型";
 impl Default for ModelPreset {
     fn default() -> Self {
         ModelPreset::LocalVllm
@@ -322,6 +325,25 @@ pub struct SavedModel {
 }
 
 impl SavedModel {
+    pub fn builtin_llmapi() -> Self {
+        Self {
+            id: BUILTIN_LLMAPI_MODEL_ID.to_string(),
+            name: BUILTIN_LLMAPI_MODEL_NAME.to_string(),
+            preset: ModelPreset::OpenaiCompatible,
+            model: crate::llmapi_hub::DEFAULT_MODEL.to_string(),
+            base_url: crate::llmapi_hub::DEFAULT_CHAT_BASE_URL.to_string(),
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        }
+    }
+
+    pub fn is_builtin_llmapi(&self) -> bool {
+        self.id == BUILTIN_LLMAPI_MODEL_ID
+    }
+
     pub fn credential_reference(&self) -> CredentialReference {
         self.credential_ref
             .clone()
@@ -378,6 +400,10 @@ pub struct AdvancedPrefs {
     /// 全局默认/当前激活模型 id(新建会话继承它)。None = 回退列表首条。
     #[serde(default)]
     pub active_model_id: Option<String>,
+    #[serde(default)]
+    pub builtin_llmapi_available_models: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builtin_llmapi_default_model: Option<String>,
     /// MegaCube(GB10) 本地大模型一键引导是否成功跑过一次。
     /// 置真后首屏引导框永不再弹(见 `local_vllm_setup::detect`)。引导失败/被跳过不置真。
     #[serde(default)]
@@ -411,6 +437,7 @@ impl UserPrefs {
             Err(_) => Self::default(),
         };
         prefs.migrate_models();
+        prefs.ensure_builtin_llmapi_model();
         let migration = prefs.migrate_plaintext_api_keys_with_store(&SystemCredentialStore::new());
         if migration.settings_sanitized {
             if let Err(e) = prefs.save() {
@@ -474,6 +501,30 @@ impl UserPrefs {
         }
     }
 
+    pub(crate) fn ensure_builtin_llmapi_model(&mut self) {
+        let builtin_model = crate::llmapi_hub::select_model(
+            &self.advanced.builtin_llmapi_available_models,
+            self.advanced.builtin_llmapi_default_model.as_deref(),
+        );
+        if let Some(model) = self
+            .advanced
+            .saved_models
+            .iter_mut()
+            .find(|m| m.id == BUILTIN_LLMAPI_MODEL_ID)
+        {
+            model.name = BUILTIN_LLMAPI_MODEL_NAME.to_string();
+            model.preset = ModelPreset::OpenaiCompatible;
+            model.model = builtin_model;
+            model.base_url = crate::llmapi_hub::DEFAULT_CHAT_BASE_URL.to_string();
+            model.api_key.clear();
+            model.credential_action = None;
+            return;
+        }
+        let mut model = SavedModel::builtin_llmapi();
+        model.model = builtin_model;
+        self.advanced.saved_models.push(model);
+    }
+
     pub fn migrate_plaintext_api_keys_with_store<S: CredentialStore>(
         &mut self,
         store: &S,
@@ -481,6 +532,13 @@ impl UserPrefs {
         let mut result = CredentialMigrationResult::default();
 
         for model in &mut self.advanced.saved_models {
+            if model.is_builtin_llmapi() {
+                model.credential_ref = None;
+                model.credential_state = CredentialState::Missing;
+                model.has_secret = false;
+                model.clear_plaintext_key();
+                continue;
+            }
             let key = model.api_key.trim().to_string();
             if key.is_empty() {
                 if model.credential_ref.is_some() {
@@ -654,6 +712,13 @@ impl UserPrefs {
         }
         self.advanced.custom_api_key = None;
         for model in &mut self.advanced.saved_models {
+            if model.is_builtin_llmapi() {
+                model.credential_ref = None;
+                model.credential_state = CredentialState::Missing;
+                model.has_secret = false;
+                model.clear_plaintext_key();
+                continue;
+            }
             model.clear_plaintext_key();
             if model.credential_ref.is_some() && model.credential_state == CredentialState::Missing
             {
@@ -668,6 +733,13 @@ impl UserPrefs {
             .map(|v| !v.trim().is_empty())
             .unwrap_or(false);
         for model in &mut self.advanced.saved_models {
+            if model.is_builtin_llmapi() {
+                model.credential_ref = None;
+                model.credential_state = CredentialState::Missing;
+                model.has_secret = false;
+                model.clear_plaintext_key();
+                continue;
+            }
             if env_override {
                 model.credential_state = CredentialState::EnvOverride;
                 model.has_secret = model.credential_ref.is_some();
@@ -779,6 +851,51 @@ mod tests {
         // 再次迁移幂等
         prefs.migrate_models();
         assert_eq!(prefs.advanced.saved_models, snapshot);
+    }
+
+    #[test]
+    fn ensure_builtin_llmapi_model_adds_fixed_option() {
+        let mut prefs = UserPrefs::default();
+        prefs.migrate_models();
+
+        prefs.ensure_builtin_llmapi_model();
+
+        let model = prefs
+            .model_by_id(BUILTIN_LLMAPI_MODEL_ID)
+            .expect("built-in model");
+        assert_eq!(model.name, BUILTIN_LLMAPI_MODEL_NAME);
+        assert_eq!(model.preset, ModelPreset::OpenaiCompatible);
+        assert_eq!(model.model, crate::llmapi_hub::DEFAULT_MODEL);
+        assert_eq!(model.base_url, crate::llmapi_hub::DEFAULT_CHAT_BASE_URL);
+        assert!(model.credential_ref.is_none());
+    }
+
+    #[test]
+    fn builtin_llmapi_model_is_not_treated_as_editable_secret_model() {
+        let store = MemoryCredentialStore::default();
+        let mut prefs = UserPrefs::default();
+        prefs.migrate_models();
+        prefs.ensure_builtin_llmapi_model();
+        let builtin = prefs
+            .model_by_id(BUILTIN_LLMAPI_MODEL_ID)
+            .cloned()
+            .expect("built-in model");
+        prefs.upsert_model(SavedModel {
+            api_key: "sk-should-not-be-stored".into(),
+            credential_ref: Some(CredentialReference::for_model("bad")),
+            credential_state: CredentialState::Configured,
+            has_secret: true,
+            ..builtin
+        });
+
+        let result = prefs.migrate_plaintext_api_keys_with_store(&store);
+
+        assert_eq!(result.migrated_count, 0);
+        let model = prefs.model_by_id(BUILTIN_LLMAPI_MODEL_ID).unwrap();
+        assert!(model.api_key.is_empty());
+        assert!(model.credential_ref.is_none());
+        assert_eq!(model.credential_state, CredentialState::Missing);
+        assert!(!model.has_secret);
     }
 
     #[test]

@@ -82,6 +82,8 @@
     monitor: null,
     backendOnline: null, // null=checking, true, false
     settings: null,
+    llmApiStatus: null,
+    llmApiModels: null,
     // 「添加模型」方案:已保存模型列表 + 全局默认 id + 当前会话绑定的模型 id
     savedModels: [],
     activeModelId: null,
@@ -1075,6 +1077,11 @@
   // 真正发送:在 sid 的工作集上加 user 气泡 + 流式占位 + busy,然后 invoke chat。
   // active/后台通用(后台走 runSyncOnSession 临时切工作集)。
   function doSendFor(sid, text, displayText, attachmentsPayload, meta) {
+    console.info("[pinvou3][chat-ui] send start", {
+      sid: sid,
+      textLen: (text || "").length,
+      attachments: attachmentsPayload ? attachmentsPayload.length : 0,
+    });
     turnUsageDirty[sid] = false; // 新一轮开始，重置口径保护
     runSyncOnSession(sid, function () {
       var uitem = { type: "user", text: displayText, time: timeStr() };
@@ -1090,6 +1097,10 @@
     notify();
     return invoke("chat", { message: text, attachments: attachmentsPayload, sessionId: sid })
       .catch(function (err) {
+        console.warn("[pinvou3][chat-ui] send failed", {
+          sid: sid,
+          error: err && err.toString ? err.toString() : err,
+        });
         runSyncOnSession(sid, function () {
           addSystemItem("⚠️ " + (err && err.toString ? err.toString() : err));
           state.busy = false;
@@ -1272,10 +1283,20 @@
   }
 
   async function cancelGeneration() {
+    console.info("[pinvou3][chat-ui] cancel clicked", {
+      sid: state.activeSessionId,
+      busy: state.busy,
+    });
     if (!state.busy) return;
     try {
+      console.info("[pinvou3][chat-ui] cancel invoke start", { sid: state.activeSessionId });
       await invoke("cancel_generation", { sessionId: state.activeSessionId });
+      console.info("[pinvou3][chat-ui] cancel invoke ok", { sid: state.activeSessionId });
     } catch (e) {
+      console.warn("[pinvou3][chat-ui] cancel invoke failed", {
+        sid: state.activeSessionId,
+        error: e && e.toString ? e.toString() : e,
+      });
       console.warn("cancel failed", e);
     }
   }
@@ -1512,6 +1533,10 @@
   // 不依赖工作集 —— 这样后台 session 跑完也能正确落盘。
   listen("chat:done", function (e) {
     var sid = (e.payload && e.payload.session_id) || state.activeSessionId;
+    console.info("[pinvou3][chat-ui] chat done event", {
+      sid: sid,
+      error: e.payload && e.payload.error || null,
+    });
     runSyncOnSession(sid, function () {
       var error = e.payload && e.payload.error;
       if (error) addSystemItem("⚠️ " + error);
@@ -2126,6 +2151,72 @@
   }
 
   // ── Settings ─────────────────────────────────────────────────────
+  async function getLlmApiStatus() {
+    var status = await invoke("get_llmapi_status");
+    state.llmApiStatus = status || null;
+    notify();
+    return status;
+  }
+
+  async function getLlmApiModels() {
+    var models = await invoke("get_llmapi_models");
+    state.llmApiModels = models || null;
+    notify();
+    return models;
+  }
+
+  async function setLlmApiDefaultModel(model) {
+    var models = await invoke("set_llmapi_default_model", {
+      model: model || "",
+    });
+    state.llmApiModels = models || null;
+    await loadSettings();
+    await loadModels();
+    notify();
+    return models;
+  }
+
+  function ensureLlmApiBinding() {
+    return invoke("ensure_llmapi_binding");
+  }
+
+  function loginLlmApiUser(username, password) {
+    return invoke("login_llmapi_user", {
+      username: username || "",
+      password: password || "",
+    });
+  }
+
+  function saveLlmApiUserSession(userId, accessToken) {
+    return invoke("save_llmapi_user_session", {
+      userId: userId || "",
+      accessToken: accessToken || "",
+    });
+  }
+
+  function retryLlmApiProvisioning(pinvouUserId, deviceBindingId) {
+    return invoke("retry_llmapi_provisioning", {
+      pinvouUserId: pinvouUserId,
+      deviceBindingId: deviceBindingId,
+    });
+  }
+
+  function setLlmApiUserEnabled(pinvouUserId, enabled) {
+    return invoke("set_llmapi_user_enabled", {
+      pinvouUserId: pinvouUserId,
+      enabled: !!enabled,
+    });
+  }
+
+  function getLlmApiAdminOverview(query, status, limit, offset) {
+    return invoke("get_llmapi_admin_overview", {
+      query: query || null,
+      status: status || null,
+      limit: limit == null ? null : limit,
+      offset: offset == null ? null : offset,
+    });
+  }
+
   async function loadSettings() {
     try {
       state.settings = await invoke("get_settings");
@@ -3438,6 +3529,7 @@
     await loadEffectiveModelConfig();
     await loadAppVersion();
     await loadModels();
+    getLlmApiModels().then(loadModels).catch(function (e) { console.warn("load llmapi models failed", e); });
     await refreshHistoryList();
     enterDraft(); // 启动落空白草稿页(lazy session:不自动选/建会话)
     await refreshSuperPerm();
@@ -3483,6 +3575,15 @@
     saveSettingsAndRestart: saveSettingsAndRestart,
     submitFeedback: submitFeedback,
     discoverLocalVllm: discoverLocalVllm,
+    getLlmApiStatus: getLlmApiStatus,
+    getLlmApiModels: getLlmApiModels,
+    setLlmApiDefaultModel: setLlmApiDefaultModel,
+    ensureLlmApiBinding: ensureLlmApiBinding,
+    loginLlmApiUser: loginLlmApiUser,
+    saveLlmApiUserSession: saveLlmApiUserSession,
+    retryLlmApiProvisioning: retryLlmApiProvisioning,
+    setLlmApiUserEnabled: setLlmApiUserEnabled,
+    getLlmApiAdminOverview: getLlmApiAdminOverview,
     detectLocalVllmSetup: detectLocalVllmSetup,
     bootstrapLocalVllm: bootstrapLocalVllm,
     dismissVllmSetup: dismissVllmSetup,

@@ -321,6 +321,7 @@
         vllmDetectHint: '仅检测本机 127.0.0.1 / localhost 的 8000-8002 端口；选用候选后记得保存。',
         confirmAndRestart: '保存并重启',
         addModel: '＋ 添加模型', editModel: '编辑', deleteModelBtn: '删除', setActiveModel: '设为默认', modelActiveTag: '默认',
+        builtinModelSelect: '后台模型', builtinModelRefresh: '刷新', builtinModelLoading: '同步中…', builtinModelEmpty: '暂无后台模型',
         modelFormAddTitle: '添加模型', modelFormEditTitle: '编辑模型', modelDisplayName: '显示名',
         testConnection: '测试连接', testingConn: '测试中…', modelSaveBtn: '保存', manageModels: '管理模型…',
         switchModelTitle: '切换模型', modelSwitchBusy: '生成中，无法切换', modelNonePick: '选择模型', modelDeleteMin: '至少保留一个模型',
@@ -583,6 +584,7 @@
         vllmDetectHint: 'Checks only 127.0.0.1 / localhost ports 8000-8002. Remember to save after picking a candidate.',
         confirmAndRestart: 'Save & Restart',
         addModel: '＋ Add Model', editModel: 'Edit', deleteModelBtn: 'Delete', setActiveModel: 'Set Default', modelActiveTag: 'Default',
+        builtinModelSelect: 'Backend model', builtinModelRefresh: 'Refresh', builtinModelLoading: 'Syncing…', builtinModelEmpty: 'No backend models',
         modelFormAddTitle: 'Add Model', modelFormEditTitle: 'Edit Model', modelDisplayName: 'Display Name',
         testConnection: 'Test Connection', testingConn: 'Testing…', modelSaveBtn: 'Save', manageModels: 'Manage models…',
         switchModelTitle: 'Switch model', modelSwitchBusy: 'Busy generating, cannot switch', modelNonePick: 'Select model', modelDeleteMin: 'Keep at least one model',
@@ -844,6 +846,7 @@
         vllmDetectHint: '127.0.0.1 / localhost の 8000-8002 ポートのみ検出します。候補を選んだら保存してください。',
         confirmAndRestart: '保存して再起動',
         addModel: '＋ モデルを追加', editModel: '編集', deleteModelBtn: '削除', setActiveModel: 'デフォルトに設定', modelActiveTag: 'デフォルト',
+        builtinModelSelect: 'バックエンドモデル', builtinModelRefresh: '更新', builtinModelLoading: '同期中…', builtinModelEmpty: '利用可能なモデルなし',
         modelFormAddTitle: 'モデルを追加', modelFormEditTitle: 'モデルを編集', modelDisplayName: '表示名',
         testConnection: '接続テスト', testingConn: 'テスト中…', modelSaveBtn: '保存', manageModels: 'モデルを管理…',
         switchModelTitle: 'モデルを切り替え', modelSwitchBusy: '生成中のため切り替え不可', modelNonePick: 'モデルを選択', modelDeleteMin: 'モデルは最低 1 つ必要です',
@@ -1061,6 +1064,184 @@
       );
     };
 
+    const formatQuotaTokens = (value) => {
+      if (value == null || !Number.isFinite(Number(value))) return '—';
+      const n = Number(value);
+      if (n >= 100000000) return (n / 100000000).toFixed(2).replace(/\.?0+$/, '') + '亿 tokens';
+      if (n >= 10000) return (n / 10000).toFixed(1).replace(/\.?0+$/, '') + '万 tokens';
+      return n.toLocaleString('zh-CN') + ' tokens';
+    };
+
+    const llmStatusText = (status, error) => {
+      if (error) return '暂不可用';
+      switch (status) {
+        case 'ready': return '已开通';
+        case 'not_started': return '未开通';
+        case 'querying_user': return '查询账户中';
+        case 'creating_token': return '开通中';
+        case 'configuring_policy': return '配置中';
+        case 'disabled': return '已停用';
+        case 'failed': return '开通失败';
+        default: return '同步中';
+      }
+    };
+
+    const AccountPopover = ({ open, theme, llmApiStatus, loading, error, onClose, onRefresh, onLogin, collapsed }) => {
+      const ref = useRef(null);
+      const [loginUsername, setLoginUsername] = useState('');
+      const [loginPassword, setLoginPassword] = useState('');
+      const [loginError, setLoginError] = useState(null);
+      const [loggingIn, setLoggingIn] = useState(false);
+      const isDark = theme === 'dark';
+      useEffect(() => {
+        if (!open) return;
+        const onMouseDown = (e) => {
+          if (ref.current && !ref.current.contains(e.target)) onClose && onClose();
+        };
+        const onKey = (e) => { if (e.key === 'Escape') onClose && onClose(); };
+        window.addEventListener('mousedown', onMouseDown);
+        window.addEventListener('keydown', onKey);
+        return () => {
+          window.removeEventListener('mousedown', onMouseDown);
+          window.removeEventListener('keydown', onKey);
+        };
+      }, [open, onClose]);
+      if (!open) return null;
+
+      const quota = llmApiStatus && llmApiStatus.quota;
+      const status = llmApiStatus && llmApiStatus.provisioning_status;
+      const remaining = quota ? quota.remaining_tokens : null;
+      const limit = quota ? quota.limit_tokens : null;
+      const used = quota ? quota.used_tokens : null;
+      const pct = limit ? Math.max(0, Math.min(100, Math.round((Number(remaining || 0) / Number(limit)) * 100))) : 0;
+      const displayId = (llmApiStatus && llmApiStatus.pinvou_user_id)
+        ? String(llmApiStatus.pinvou_user_id).replace(/^(.{8}).*(.{4})$/, '$1…$2')
+        : '本机账户';
+      const panelPos = collapsed ? 'left-full bottom-0 ml-3' : 'left-0 bottom-full mb-2';
+      const needsLogin = !quota && !!onLogin;
+      const submitLogin = async (e) => {
+        e.preventDefault();
+        if (!onLogin || loggingIn) return;
+        setLoginError(null);
+        setLoggingIn(true);
+        try {
+          await onLogin(loginUsername, loginPassword);
+          setLoginPassword('');
+        } catch (err) {
+          setLoginError(err && err.message ? err.message : String(err || '登录失败'));
+        } finally {
+          setLoggingIn(false);
+        }
+      };
+
+      return (
+        <div
+          ref={ref}
+          className={`absolute ${panelPos} w-[268px] rounded-[22px] p-3 shadow-2xl z-[80] border backdrop-blur-xl ${
+            isDark ? 'bg-[#202124]/95 border-white/10 text-[#E3E3E3]' : 'bg-white/95 border-black/10 text-[#1F1F1F]'
+          }`}
+        >
+          <div className="flex items-center gap-3 px-1.5 pb-3">
+            <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-[#19D3A2] to-[#0B57D0] flex items-center justify-center text-white shadow-lg shadow-emerald-500/20">
+              <User size={20} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-[15px] font-semibold truncate">品悟用户</div>
+              <div className={`text-[12px] truncate ${isDark ? 'text-[#9AA0A6]' : 'text-[#6F7378]'}`}>{displayId}</div>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}
+              title="关闭"
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          <div className={`rounded-2xl border p-3 ${isDark ? 'bg-[#131314] border-white/10' : 'bg-[#F8FAFD] border-black/5'}`}>
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 min-w-0">
+                <Sparkles size={17} className="text-[#10B981] shrink-0" />
+                <span className="text-[14px] font-medium truncate">可用额度</span>
+              </div>
+              <button
+                type="button"
+                onClick={onRefresh}
+                disabled={loading}
+                className={`w-7 h-7 rounded-full flex items-center justify-center transition-colors ${isDark ? 'hover:bg-white/10 disabled:text-[#5F6368]' : 'hover:bg-black/5 disabled:text-[#C4C7C5]'}`}
+                title="刷新额度"
+              >
+                <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+              </button>
+            </div>
+            {quota ? (
+              <div className="mt-3 space-y-1.5 text-[13px]">
+                {[
+                  ['本月额度：', formatQuotaTokens(limit)],
+                  ['已使用：', formatQuotaTokens(used)],
+                  ['剩余：', formatQuotaTokens(remaining)],
+                ].map(([label, value]) => (
+                  <div key={label} className="flex items-center justify-between gap-3">
+                    <span className={isDark ? 'text-[#9AA0A6]' : 'text-[#6F7378]'}>{label}</span>
+                    <span className="font-medium tabular-nums text-right">{value}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className={`mt-3 text-[13px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#6F7378]'}`}>
+                {loading ? '同步中…' : llmStatusText(status, error)}
+              </div>
+            )}
+            {needsLogin && (
+              <form className="mt-3 space-y-2" onSubmit={submitLogin}>
+                <input
+                  value={loginUsername}
+                  onChange={(e) => setLoginUsername(e.target.value)}
+                  disabled={loading || loggingIn}
+                  placeholder="New API 用户名"
+                  autoComplete="username"
+                  className={`w-full h-9 rounded-xl px-3 text-[13px] outline-none border ${
+                    isDark ? 'bg-[#202124] border-white/10 text-[#E3E3E3] placeholder:text-[#6F7378]' : 'bg-white border-black/10 text-[#1F1F1F] placeholder:text-[#9AA0A6]'
+                  }`}
+                />
+                <input
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  disabled={loading || loggingIn}
+                  placeholder="New API 密码"
+                  type="password"
+                  autoComplete="current-password"
+                  className={`w-full h-9 rounded-xl px-3 text-[13px] outline-none border ${
+                    isDark ? 'bg-[#202124] border-white/10 text-[#E3E3E3] placeholder:text-[#6F7378]' : 'bg-white border-black/10 text-[#1F1F1F] placeholder:text-[#9AA0A6]'
+                  }`}
+                />
+                {(error || loginError) && (
+                  <div className="text-[12px] leading-snug text-[#EA4335] break-words">
+                    {loginError || error}
+                  </div>
+                )}
+                <button
+                  type="submit"
+                  disabled={loading || loggingIn || !loginUsername.trim() || !loginPassword}
+                  className={`w-full h-9 rounded-xl text-[13px] font-semibold transition-colors ${
+                    isDark ? 'bg-[#10B981] text-white disabled:bg-white/10 disabled:text-[#6F7378]' : 'bg-[#10B981] text-white disabled:bg-black/5 disabled:text-[#9AA0A6]'
+                  }`}
+                >
+                  {loggingIn ? '登录中…' : '登录并同步额度'}
+                </button>
+              </form>
+            )}
+            {quota && (
+              <div className={`mt-3 h-2 rounded-full overflow-hidden ${isDark ? 'bg-white/10' : 'bg-black/10'}`}>
+                <div className="h-full rounded-full bg-[#10B981]" style={{ width: pct + '%' }} />
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    };
+
     /* ==========================================
        MegaCube 本地大模型引导:进行中步骤指示 + 自跑计时
        (后端 vllm-setup:phase 事件给 phase/attempt;秒数本组件自跑,pkexec 阻塞期也在涨)
@@ -1116,6 +1297,11 @@
       const [activeChat, setActiveChat] = useState(null);
       const [currentView, setCurrentView] = useState('chat');
       const [activeTheme, setActiveTheme] = useState('dark');
+      const [accountPopoverOpen, setAccountPopoverOpen] = useState(false);
+      const [llmApiLoading, setLlmApiLoading] = useState(false);
+      const [llmApiError, setLlmApiError] = useState(null);
+      const navInfo = typeof navigator === 'undefined' ? '' : ((navigator.userAgent || '') + ' ' + (navigator.platform || ''));
+      const isWindows = /Windows|Win32|Win64/i.test(navInfo);
       // 工具商店/卡片用 Tailwind dark: 变体(darkMode:'class'),全局挂 <html>.dark 让其随 app 主题切换
       useEffect(() => { document.documentElement.classList.toggle('dark', activeTheme === 'dark'); }, [activeTheme]);
       // MegaCube(GB10) 首屏检测:仅启动一次,检测「预装但未启用」本地大模型环境(后端短路保证普通机零开销)。
@@ -1234,6 +1420,37 @@
       const t = dict[language];
       // 有可用新版 → 侧边栏设置图标亮红点（不弹窗不打断）
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
+      const refreshLlmApiStatus = useCallback(async () => {
+        if (!bridge.available || !bridge.getLlmApiStatus) return;
+        setLlmApiLoading(true);
+        setLlmApiError(null);
+        try {
+          await bridge.getLlmApiStatus();
+        } catch (e) {
+          setLlmApiError(e && e.message ? e.message : String(e || '额度同步失败'));
+        } finally {
+          setLlmApiLoading(false);
+        }
+      }, []);
+      const loginLlmApiUser = useCallback(async (username, password) => {
+        if (!bridge.available || !bridge.loginLlmApiUser) throw new Error('内置模型登录不可用');
+        setLlmApiLoading(true);
+        setLlmApiError(null);
+        try {
+          await bridge.loginLlmApiUser(username, password);
+          if (bridge.getLlmApiStatus) await bridge.getLlmApiStatus();
+        } catch (e) {
+          const message = e && e.message ? e.message : String(e || '内置模型登录失败');
+          setLlmApiError(message);
+          throw new Error(message);
+        } finally {
+          setLlmApiLoading(false);
+        }
+      }, []);
+
+      useEffect(() => {
+        if (accountPopoverOpen) refreshLlmApiStatus();
+      }, [accountPopoverOpen, refreshLlmApiStatus]);
 
       function handleActivateSkill(name) {
         setChatPrefill(t.skillPrefill(name));
@@ -1811,37 +2028,72 @@
             )}
 
             {/* Footer Profile */}
-            <div className={`p-3 mt-auto flex ${isSidebarOpen ? 'flex-row items-center justify-between' : 'flex-col items-center gap-3 pb-6'}`}>
-              {!isSidebarOpen && (
+            <div className={`p-3 mt-auto ${isSidebarOpen ? 'space-y-2' : 'flex flex-col items-center gap-3 pb-6'}`}>
+              <div className={`relative ${isSidebarOpen ? 'w-full' : ''}`}>
                 <button
-                  onClick={() => setCurrentView('settings')}
-                  title={t.settings}
-                  className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
+                  type="button"
+                  onClick={() => setAccountPopoverOpen(v => !v)}
+                  title="品悟用户"
+                  className={`flex items-center rounded-xl transition-colors ${isSidebarOpen ? 'w-full px-2 py-1.5 gap-3 text-left' : 'justify-center w-10 h-10'} ${activeTheme === 'dark' ? 'hover:bg-[#333537] active:bg-[#3A3C3E]' : 'hover:bg-[#E1E5EA] active:bg-[#D8DCE1]'}`}
                 >
-                  <Settings size={18} />
-                  {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
+                  <span className="w-8 h-8 shrink-0 rounded-lg bg-gradient-to-br from-[#19D3A2] to-[#0B57D0] flex items-center justify-center text-white">
+                    <User size={17} />
+                  </span>
+                  {isSidebarOpen && (
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[14px] font-medium leading-none truncate">品悟用户</span>
+                      <span className={`block text-[11px] mt-1 truncate ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#6F7378]'}`}>查看可用额度</span>
+                    </span>
+                  )}
+                  {isSidebarOpen && <ChevronRight size={16} className="shrink-0 opacity-60" />}
                 </button>
-              )}
-              <button
-                onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: 'https://www.h3c.com/cn/pub/minisite/202606/MegaCube/megacube/index.html' })}
-                title={t.megacubeSite}
-                className={`flex items-center rounded-xl transition-colors ${isSidebarOpen ? 'flex-1 min-w-0 px-2 py-1.5 gap-3' : 'justify-center w-10 h-10'} ${activeTheme === 'dark' ? 'hover:bg-[#333537] active:bg-[#3A3C3E]' : 'hover:bg-[#E1E5EA] active:bg-[#D8DCE1]'}`}
-              >
-                <img src="assets/megacube-icon.png" alt="MegaCube" className="w-8 h-8 shrink-0 rounded-lg object-contain" />
-                {isSidebarOpen && (
-                  <span className="text-[14px] font-medium leading-none whitespace-nowrap text-left">MegaCube</span>
+                <AccountPopover
+                  open={accountPopoverOpen}
+                  theme={activeTheme}
+                  llmApiStatus={bs && bs.llmApiStatus}
+                  loading={llmApiLoading}
+                  error={llmApiError}
+                  collapsed={!isSidebarOpen}
+                  onClose={() => setAccountPopoverOpen(false)}
+                  onRefresh={refreshLlmApiStatus}
+                  onLogin={loginLlmApiUser}
+                />
+              </div>
+
+              <div className={`${isSidebarOpen ? 'flex items-center justify-between gap-2' : 'flex flex-col items-center gap-3'}`}>
+                {!isSidebarOpen && (
+                  <button
+                    onClick={() => setCurrentView('settings')}
+                    title={t.settings}
+                    className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
+                  >
+                    <Settings size={18} />
+                    {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
+                  </button>
                 )}
-              </button>
-              {isSidebarOpen && (
-                <button
-                  onClick={() => setCurrentView('settings')}
-                  title={t.settings}
-                  className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
-                >
-                  <Settings size={18} />
-                  {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
-                </button>
-              )}
+                {!isWindows && (
+                  <button
+                    onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: 'https://www.h3c.com/cn/pub/minisite/202606/MegaCube/megacube/index.html' })}
+                    title={t.megacubeSite}
+                    className={`flex items-center rounded-xl transition-colors ${isSidebarOpen ? 'flex-1 min-w-0 px-2 py-1.5 gap-3' : 'justify-center w-10 h-10'} ${activeTheme === 'dark' ? 'hover:bg-[#333537] active:bg-[#3A3C3E]' : 'hover:bg-[#E1E5EA] active:bg-[#D8DCE1]'}`}
+                  >
+                    <img src="assets/megacube-icon.png" alt="MegaCube" className="w-8 h-8 shrink-0 rounded-lg object-contain" />
+                    {isSidebarOpen && (
+                      <span className="text-[14px] font-medium leading-none whitespace-nowrap text-left">MegaCube</span>
+                    )}
+                  </button>
+                )}
+                {isSidebarOpen && (
+                  <button
+                    onClick={() => setCurrentView('settings')}
+                    title={t.settings}
+                    className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
+                  >
+                    <Settings size={18} />
+                    {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
@@ -3741,6 +3993,9 @@
       glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-4-plus' },
       mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2-flash' },
     };
+    function isReadonlyModel(model) {
+      return !!(model && (model.readonly || model.system));
+    }
     function presetOptionsI18n(t) {
       return [
         { key: 'local_vllm', label: t.modelPresetLocalVllm },
@@ -4307,6 +4562,10 @@
       const [feedbackDraft, setFeedbackDraft] = useState({ type: 'issue', title: '', description: '', attachments: [] });
       const [feedbackStatus, setFeedbackStatus] = useState({ state: 'idle', message: '', receipt: null });
       const [archivedDeleteConfirm, setArchivedDeleteConfirm] = useState(null);
+      const [llmApiModelBusy, setLlmApiModelBusy] = useState(false);
+      const llmApiModels = (bs && bs.llmApiModels) || {};
+      const builtinAvailableModels = llmApiModels.available_models || [];
+      const builtinDefaultModel = llmApiModels.default_model || (((bs && bs.settings && bs.settings.advanced && bs.settings.advanced.builtin_llmapi_default_model) || '') || '');
       const searchCredentialState = (searchCredential && searchCredential.credential_state) || (searchHasSavedKey ? 'configured' : 'missing');
       const searchKeyStatusText = searchCredentialState === 'env_override' ? t.credEnvOverride
         : searchCredentialState === 'unavailable' ? t.credUnavailable
@@ -4402,6 +4661,16 @@
         const id = archivedDeleteConfirm && archivedDeleteConfirm.id;
         setArchivedDeleteConfirm(null);
         if (id && onDeleteArchived) onDeleteArchived(id);
+      };
+      const refreshBuiltinModels = async () => {
+        if (!bridge.available || !bridge.getLlmApiModels) return;
+        setLlmApiModelBusy(true);
+        try { await bridge.getLlmApiModels(); } finally { setLlmApiModelBusy(false); }
+      };
+      const setBuiltinDefaultModel = async (model) => {
+        if (!bridge.available || !bridge.setLlmApiDefaultModel || !model) return;
+        setLlmApiModelBusy(true);
+        try { await bridge.setLlmApiDefaultModel(model); } finally { setLlmApiModelBusy(false); }
       };
       // 进设置页自动体检一次可选依赖装齐没; 之后用户可手动「重新检测」
       useEffect(() => {
@@ -4501,6 +4770,7 @@
                   <div className="space-y-2">
                     {savedModels.map(m => {
                       const isActive = m.id === activeModelId;
+                      const isReadonly = isReadonlyModel(m);
                       return (
                         <div key={m.id} className={`flex items-center gap-3 rounded-xl border px-4 py-3 ${isDark ? 'border-[#333537] bg-[#131314]' : 'border-[#E0E3E7] bg-white'}`}>
                           <button onClick={() => { if (!isActive) onSetActiveModel(m.id); }} title={t.setActiveModel} className="shrink-0">
@@ -4515,9 +4785,33 @@
                               {isActive && <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${isDark ? 'bg-[#1A3A1F] text-[#93D5A6]' : 'bg-[#E6F4EA] text-[#137333]'}`}>{t.modelActiveTag}</span>}
                             </div>
                             <div className={`text-[12px] truncate ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{m.model} · {m.base_url}</div>
+                            {m.kind === 'builtin_llmapi' && (
+                              <div className="mt-2 flex items-center gap-2 flex-wrap">
+                                <span className={`text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{t.builtinModelSelect}</span>
+                                <select
+                                  value={builtinDefaultModel || m.model || ''}
+                                  disabled={llmApiModelBusy || builtinAvailableModels.length === 0}
+                                  onChange={e => setBuiltinDefaultModel(e.target.value)}
+                                  className={`min-w-[220px] max-w-full rounded-lg border px-3 py-1.5 text-[12px] outline-none ${isDark ? 'bg-[#1E1F20] border-[#333537] text-[#E3E3E3]' : 'bg-white border-[#DADCE0] text-[#1F1F1F]'}`}
+                                >
+                                  {builtinAvailableModels.length === 0 ? (
+                                    <option value={m.model || ''}>{t.builtinModelEmpty}</option>
+                                  ) : builtinAvailableModels.map(model => (
+                                    <option key={model} value={model}>{model}</option>
+                                  ))}
+                                </select>
+                                <button
+                                  onClick={refreshBuiltinModels}
+                                  disabled={llmApiModelBusy}
+                                  className={`text-[12px] px-3 py-1.5 rounded-full transition-colors disabled:opacity-50 ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#F0F4F9] text-[#1F1F1F] hover:bg-[#E8EAED]'}`}
+                                >
+                                  {llmApiModelBusy ? t.builtinModelLoading : t.builtinModelRefresh}
+                                </button>
+                              </div>
+                            )}
                           </div>
-                          <button onClick={() => setEditingModel(m)} title={t.editModel} className={`shrink-0 text-[12px] px-3 py-1.5 rounded-full transition-colors ${isDark ? 'text-[#A8C7FA] hover:bg-[#333537]' : 'text-[#0B57D0] hover:bg-[#F0F4F9]'}`}>{t.editModel}</button>
-                          {savedModels.length > 1 && (
+                          {!isReadonly && <button onClick={() => setEditingModel(m)} title={t.editModel} className={`shrink-0 text-[12px] px-3 py-1.5 rounded-full transition-colors ${isDark ? 'text-[#A8C7FA] hover:bg-[#333537]' : 'text-[#0B57D0] hover:bg-[#F0F4F9]'}`}>{t.editModel}</button>}
+                          {!isReadonly && savedModels.length > 1 && (
                             <button onClick={() => onDeleteModel(m)} title={t.deleteModelBtn} className={`shrink-0 text-[12px] px-3 py-1.5 rounded-full transition-colors ${isDark ? 'text-[#F28B82] hover:bg-[#333537]' : 'text-[#C5221F] hover:bg-[#FCE8E6]'}`}>{t.deleteModelBtn}</button>
                           )}
                         </div>

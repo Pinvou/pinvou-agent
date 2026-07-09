@@ -35,3 +35,6 @@ pub use interface::{
     super_permission_turn_reminder, system_default_open_supported, user_home_dir,
     validate_upload_location,
 };
+
+#[cfg(target_os = "windows")]
+pub use interface::bios_serial_number;

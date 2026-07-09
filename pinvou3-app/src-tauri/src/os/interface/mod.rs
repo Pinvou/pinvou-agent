@@ -32,6 +32,8 @@ pub use system::{
     show_ocr_dependency_check, show_pandoc_dependency_check, show_pdf_dependency_check,
     system_default_open_supported,
 };
+#[cfg(target_os = "windows")]
+pub use system::bios_serial_number;
 pub use update::{
     check_for_update_info, download_update_package, install_downloaded_update,
     report_pending_update_result_info,

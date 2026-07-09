@@ -70,6 +70,14 @@ pub fn command_exists(command: &str) -> bool {
     false
 }
 
+pub fn bios_serial_number() -> Result<String, String> {
+    [read_bios_serial_from_powershell(), read_bios_serial_from_wmic()]
+    .into_iter()
+    .flatten()
+    .find_map(|value| normalize_bios_serial_for_binding(&value))
+    .ok_or_else(|| "Unable to read a valid Windows BIOS serial number".to_string())
+}
+
 pub fn pdf_tool_path(command: &str) -> std::path::PathBuf {
     windows_path::pdf_tool_path(command)
 }
@@ -388,6 +396,67 @@ fn read_registry_string(root: HKEY, key_path: &str, value_name: Option<&str>) ->
         None
     } else {
         Some(value)
+    }
+}
+
+fn read_bios_serial_from_powershell() -> Option<String> {
+    let output = HiddenCommand::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "try { (Get-CimInstance -ClassName Win32_BIOS -ErrorAction Stop).SerialNumber } catch { '' }",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    non_empty_stdout(output.stdout)
+}
+
+fn read_bios_serial_from_wmic() -> Option<String> {
+    let output = HiddenCommand::new("wmic")
+        .args(["bios", "get", "serialnumber", "/value"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("SerialNumber="))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn non_empty_stdout(stdout: Vec<u8>) -> Option<String> {
+    let value = String::from_utf8_lossy(&stdout).trim().to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn normalize_bios_serial_for_binding(input: &str) -> Option<String> {
+    let normalized = input
+        .trim()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_uppercase();
+    if normalized.is_empty()
+        || matches!(
+            normalized.as_str(),
+            "DEFAULTSTRING" | "TOBEFILLEDBYO.E.M." | "SYSTEMSERIALNUMBER" | "NONE" | "UNKNOWN"
+        )
+    {
+        None
+    } else {
+        Some(normalized)
     }
 }
 

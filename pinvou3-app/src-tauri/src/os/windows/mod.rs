@@ -19,7 +19,7 @@ pub use windows_permission::{
     super_permission_turn_reminder,
 };
 pub use windows_system::{
-    archive_dependency_packages, archive_tool_exists, archive_tool_path,
+    archive_dependency_packages, archive_tool_exists, archive_tool_path, bios_serial_number,
     asr_bundled_runtime_status, asr_dependency_installable, asr_dependency_packages,
     asr_install_unavailable_message, asr_missing_message, asr_model_exists, asr_model_path,
     asr_model_spec, asr_tool_exists, asr_tool_path, command_exists, email_dependency_packages,
