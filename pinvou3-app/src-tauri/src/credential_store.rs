@@ -10,6 +10,7 @@ const MCP_SECRET_SERVICE: &str = "pinvou3-mcp-secret";
 const LLMAPI_TOKEN_SERVICE: &str = "pinvou3-llmapi-token";
 const LLMAPI_ADMIN_SERVICE: &str = "pinvou3-llmapi-admin";
 const LLMAPI_USER_SESSION_SERVICE: &str = "pinvou3-llmapi-user-session";
+const LLMAPI_USER_PASSWORD_SERVICE: &str = "pinvou3-llmapi-user-password";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CredentialReference {
@@ -63,6 +64,14 @@ impl CredentialReference {
         Self {
             service: LLMAPI_USER_SESSION_SERVICE.to_string(),
             account: format!("llmapi-session:{pinvou_user_id}:{device_binding_id}"),
+            version: 1,
+        }
+    }
+
+    pub fn for_llmapi_user_password(pinvou_user_id: &str, device_binding_id: &str) -> Self {
+        Self {
+            service: LLMAPI_USER_PASSWORD_SERVICE.to_string(),
+            account: format!("llmapi-password:{pinvou_user_id}:{device_binding_id}"),
             version: 1,
         }
     }
@@ -433,6 +442,11 @@ mod tests {
         assert_eq!(admin.service, "pinvou3-llmapi-admin");
         assert_eq!(admin.account, "newapi-admin");
         assert_eq!(admin.version, 1);
+
+        let password = CredentialReference::for_llmapi_user_password("u_1", "dev_abc");
+        assert_eq!(password.service, "pinvou3-llmapi-user-password");
+        assert_eq!(password.account, "llmapi-password:u_1:dev_abc");
+        assert_eq!(password.version, 1);
     }
 
     #[test]

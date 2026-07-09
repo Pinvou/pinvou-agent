@@ -2161,6 +2161,11 @@
   async function getLlmApiModels() {
     var models = await invoke("get_llmapi_models");
     state.llmApiModels = models || null;
+    try {
+      state.llmApiStatus = (await invoke("get_llmapi_status")) || state.llmApiStatus || null;
+    } catch (e) {
+      console.warn("refresh llmapi status after models failed", e);
+    }
     notify();
     return models;
   }
@@ -2180,11 +2185,14 @@
     return invoke("ensure_llmapi_binding");
   }
 
-  function loginLlmApiUser(username, password) {
-    return invoke("login_llmapi_user", {
+  async function loginLlmApiUser(username, password) {
+    var result = await invoke("login_llmapi_user", {
       username: username || "",
       password: password || "",
     });
+    await getLlmApiStatus();
+    try { await getLlmApiModels(); } catch (e) { console.warn("refresh llmapi models after login failed", e); }
+    return result;
   }
 
   function saveLlmApiUserSession(userId, accessToken) {
@@ -3529,7 +3537,10 @@
     await loadEffectiveModelConfig();
     await loadAppVersion();
     await loadModels();
-    getLlmApiModels().then(loadModels).catch(function (e) { console.warn("load llmapi models failed", e); });
+    getLlmApiStatus()
+      .then(function () { return getLlmApiModels(); })
+      .then(loadModels)
+      .catch(function (e) { console.warn("load llmapi account/models failed", e); });
     await refreshHistoryList();
     enterDraft(); // 启动落空白草稿页(lazy session:不自动选/建会话)
     await refreshSuperPerm();

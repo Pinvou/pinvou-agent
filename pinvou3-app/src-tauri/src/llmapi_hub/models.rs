@@ -173,6 +173,10 @@ pub struct LlmApiBinding {
     pub pinvou_user_id: String,
     pub device_binding_id: String,
     pub newapi_user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newapi_username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newapi_display_name: Option<String>,
     pub newapi_token_id: Option<String>,
     pub token_credential_ref: Option<CredentialReference>,
     pub policy: LlmApiPolicy,
@@ -192,6 +196,8 @@ impl LlmApiBinding {
             pinvou_user_id: identity.pinvou_user_id.clone(),
             device_binding_id: identity.device_binding_id.clone(),
             newapi_user_id: None,
+            newapi_username: None,
+            newapi_display_name: None,
             newapi_token_id: None,
             token_credential_ref: None,
             usage: LlmUsageSnapshot::new(current_period(), policy.quota_limit_tokens),
@@ -254,6 +260,10 @@ impl From<&LlmUsageSnapshot> for QuotaStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LlmApiStatusResponse {
     pub pinvou_user_id: Option<String>,
+    pub backend_user_exists: bool,
+    pub backend_username: Option<String>,
+    pub backend_display_name: Option<String>,
+    pub auto_login_failed: bool,
     pub device_binding_status: DeviceBindingStatus,
     pub enabled: bool,
     pub provisioning_status: ProvisioningStatus,

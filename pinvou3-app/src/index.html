@@ -1072,6 +1072,12 @@
       return n.toLocaleString('zh-CN') + ' tokens';
     };
 
+    const shortBackendUsername = (value) => {
+      const name = String(value || '').trim();
+      if (!name) return '后台用户';
+      return name;
+    };
+
     const llmStatusText = (status, error) => {
       if (error) return '暂不可用';
       switch (status) {
@@ -1093,6 +1099,10 @@
       const [loginError, setLoginError] = useState(null);
       const [loggingIn, setLoggingIn] = useState(false);
       const isDark = theme === 'dark';
+      const backendUsername = (llmApiStatus && llmApiStatus.backend_username) || '';
+      const backendDisplayName = (llmApiStatus && llmApiStatus.backend_display_name) || '';
+      const displayName = shortBackendUsername(backendDisplayName || backendUsername);
+      const displayId = backendUsername || '后台账户';
       useEffect(() => {
         if (!open) return;
         const onMouseDown = (e) => {
@@ -1106,6 +1116,9 @@
           window.removeEventListener('keydown', onKey);
         };
       }, [open, onClose]);
+      useEffect(() => {
+        if (open && backendUsername) setLoginUsername(prev => prev || backendUsername);
+      }, [open, backendUsername]);
       if (!open) return null;
 
       const quota = llmApiStatus && llmApiStatus.quota;
@@ -1114,11 +1127,8 @@
       const limit = quota ? quota.limit_tokens : null;
       const used = quota ? quota.used_tokens : null;
       const pct = limit ? Math.max(0, Math.min(100, Math.round((Number(remaining || 0) / Number(limit)) * 100))) : 0;
-      const displayId = (llmApiStatus && llmApiStatus.pinvou_user_id)
-        ? String(llmApiStatus.pinvou_user_id).replace(/^(.{8}).*(.{4})$/, '$1…$2')
-        : '本机账户';
       const panelPos = collapsed ? 'left-full bottom-0 ml-3' : 'left-0 bottom-full mb-2';
-      const needsLogin = !quota && !!onLogin;
+      const needsLogin = !!(llmApiStatus && llmApiStatus.auto_login_failed && !quota && onLogin);
       const submitLogin = async (e) => {
         e.preventDefault();
         if (!onLogin || loggingIn) return;
@@ -1146,7 +1156,7 @@
               <User size={20} />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="text-[15px] font-semibold truncate">品悟用户</div>
+              <div className="text-[15px] font-semibold truncate">{displayName}</div>
               <div className={`text-[12px] truncate ${isDark ? 'text-[#9AA0A6]' : 'text-[#6F7378]'}`}>{displayId}</div>
             </div>
             <button
@@ -1420,6 +1430,11 @@
       const t = dict[language];
       // 有可用新版 → 侧边栏设置图标亮红点（不弹窗不打断）
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
+      const llmAccountStatus = bs && bs.llmApiStatus;
+      const llmAccountVisible = !!(llmAccountStatus && llmAccountStatus.backend_user_exists);
+      const llmAccountUsername = llmAccountStatus && llmAccountStatus.backend_username;
+      const llmAccountDisplayName = llmAccountStatus && llmAccountStatus.backend_display_name;
+      const llmAccountName = shortBackendUsername(llmAccountDisplayName || llmAccountUsername);
       const refreshLlmApiStatus = useCallback(async () => {
         if (!bridge.available || !bridge.getLlmApiStatus) return;
         setLlmApiLoading(true);
@@ -1451,6 +1466,10 @@
       useEffect(() => {
         if (accountPopoverOpen) refreshLlmApiStatus();
       }, [accountPopoverOpen, refreshLlmApiStatus]);
+
+      useEffect(() => {
+        if (accountPopoverOpen && !llmAccountVisible) setAccountPopoverOpen(false);
+      }, [accountPopoverOpen, llmAccountVisible]);
 
       function handleActivateSkill(name) {
         setChatPrefill(t.skillPrefill(name));
@@ -2029,11 +2048,12 @@
 
             {/* Footer Profile */}
             <div className={`p-3 mt-auto ${isSidebarOpen ? 'space-y-2' : 'flex flex-col items-center gap-3 pb-6'}`}>
+              {llmAccountVisible && (
               <div className={`relative ${isSidebarOpen ? 'w-full' : ''}`}>
                 <button
                   type="button"
                   onClick={() => setAccountPopoverOpen(v => !v)}
-                  title="品悟用户"
+                  title={llmAccountUsername || llmAccountName}
                   className={`flex items-center rounded-xl transition-colors ${isSidebarOpen ? 'w-full px-2 py-1.5 gap-3 text-left' : 'justify-center w-10 h-10'} ${activeTheme === 'dark' ? 'hover:bg-[#333537] active:bg-[#3A3C3E]' : 'hover:bg-[#E1E5EA] active:bg-[#D8DCE1]'}`}
                 >
                   <span className="w-8 h-8 shrink-0 rounded-lg bg-gradient-to-br from-[#19D3A2] to-[#0B57D0] flex items-center justify-center text-white">
@@ -2041,7 +2061,7 @@
                   </span>
                   {isSidebarOpen && (
                     <span className="min-w-0 flex-1">
-                      <span className="block text-[14px] font-medium leading-none truncate">品悟用户</span>
+                      <span className="block text-[14px] font-medium leading-none truncate">{llmAccountName}</span>
                       <span className={`block text-[11px] mt-1 truncate ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#6F7378]'}`}>查看可用额度</span>
                     </span>
                   )}
@@ -2059,6 +2079,7 @@
                   onLogin={loginLlmApiUser}
                 />
               </div>
+              )}
 
               <div className={`${isSidebarOpen ? 'flex items-center justify-between gap-2' : 'flex flex-col items-center gap-3'}`}>
                 {!isSidebarOpen && (
@@ -3996,6 +4017,24 @@
     function isReadonlyModel(model) {
       return !!(model && (model.readonly || model.system));
     }
+    function isBuiltinLlmApiModel(model) {
+      return !!(model && (model.kind === 'builtin_llmapi' || model.id === 'builtin_llmapi'));
+    }
+    function hasLlmApiBackendUser(bs) {
+      return !!(bs && bs.llmApiStatus && bs.llmApiStatus.backend_user_exists);
+    }
+    function visibleSortedModels(models, bs) {
+      const allowBuiltin = hasLlmApiBackendUser(bs);
+      return ((models || [])
+        .filter(m => !isBuiltinLlmApiModel(m) || allowBuiltin)
+        .slice()
+        .sort((a, b) => {
+          const aBuiltin = isBuiltinLlmApiModel(a);
+          const bBuiltin = isBuiltinLlmApiModel(b);
+          if (aBuiltin === bBuiltin) return 0;
+          return aBuiltin ? -1 : 1;
+        }));
+    }
     function presetOptionsI18n(t) {
       return [
         { key: 'local_vllm', label: t.modelPresetLocalVllm },
@@ -4018,7 +4057,7 @@
     // 聊天输入框上方:当前会话模型 chip + 下拉热切。
     const ModelChip = ({ isDark, t, bs, onGotoSettings }) => {
       const [open, setOpen] = useState(false);
-      const savedModels = (bs && bs.savedModels) || [];
+      const savedModels = visibleSortedModels((bs && bs.savedModels) || [], bs);
       const activeSessionId = bs ? bs.activeSessionId : null;
       const activeModelId = bs && bs.activeModelId;
       const currentSessionModelId = bs && bs.currentSessionModelId;
@@ -4071,7 +4110,7 @@
     // 输入框底栏:模型选择器(iOS 化,复用 ModelChip 的 switchModel 逻辑;darkMode:'class' 故用 dark: 变体)。
     const ComposerModelSelector = ({ t, bs, onGotoSettings, compact }) => {
       const [open, setOpen] = useState(false);
-      const savedModels = (bs && bs.savedModels) || [];
+      const savedModels = visibleSortedModels((bs && bs.savedModels) || [], bs);
       const activeSessionId = bs ? bs.activeSessionId : null;
       const activeModelId = bs && bs.activeModelId;
       const currentSessionModelId = bs && bs.currentSessionModelId;
@@ -4566,6 +4605,7 @@
       const llmApiModels = (bs && bs.llmApiModels) || {};
       const builtinAvailableModels = llmApiModels.available_models || [];
       const builtinDefaultModel = llmApiModels.default_model || (((bs && bs.settings && bs.settings.advanced && bs.settings.advanced.builtin_llmapi_default_model) || '') || '');
+      const visibleModels = visibleSortedModels(savedModels, bs);
       const searchCredentialState = (searchCredential && searchCredential.credential_state) || (searchHasSavedKey ? 'configured' : 'missing');
       const searchKeyStatusText = searchCredentialState === 'env_override' ? t.credEnvOverride
         : searchCredentialState === 'unavailable' ? t.credUnavailable
@@ -4768,7 +4808,7 @@
                     </div>
                   )}
                   <div className="space-y-2">
-                    {savedModels.map(m => {
+                    {visibleModels.map(m => {
                       const isActive = m.id === activeModelId;
                       const isReadonly = isReadonlyModel(m);
                       return (
@@ -4785,7 +4825,7 @@
                               {isActive && <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${isDark ? 'bg-[#1A3A1F] text-[#93D5A6]' : 'bg-[#E6F4EA] text-[#137333]'}`}>{t.modelActiveTag}</span>}
                             </div>
                             <div className={`text-[12px] truncate ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{m.model} · {m.base_url}</div>
-                            {m.kind === 'builtin_llmapi' && (
+                            {isBuiltinLlmApiModel(m) && (
                               <div className="mt-2 flex items-center gap-2 flex-wrap">
                                 <span className={`text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{t.builtinModelSelect}</span>
                                 <select
@@ -4811,7 +4851,7 @@
                             )}
                           </div>
                           {!isReadonly && <button onClick={() => setEditingModel(m)} title={t.editModel} className={`shrink-0 text-[12px] px-3 py-1.5 rounded-full transition-colors ${isDark ? 'text-[#A8C7FA] hover:bg-[#333537]' : 'text-[#0B57D0] hover:bg-[#F0F4F9]'}`}>{t.editModel}</button>}
-                          {!isReadonly && savedModels.length > 1 && (
+                          {!isReadonly && visibleModels.length > 1 && (
                             <button onClick={() => onDeleteModel(m)} title={t.deleteModelBtn} className={`shrink-0 text-[12px] px-3 py-1.5 rounded-full transition-colors ${isDark ? 'text-[#F28B82] hover:bg-[#333537]' : 'text-[#C5221F] hover:bg-[#FCE8E6]'}`}>{t.deleteModelBtn}</button>
                           )}
                         </div>

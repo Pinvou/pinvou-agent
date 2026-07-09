@@ -67,6 +67,8 @@ where
         }
     };
     binding.newapi_user_id = Some(user.id.clone());
+    binding.newapi_username = Some(user.username.clone());
+    binding.newapi_display_name = user.display_name.clone();
     binding.mark_status(ProvisioningStatus::CreatingToken);
     store.upsert_binding(binding.clone())?;
 
@@ -129,7 +131,27 @@ pub fn ensure_binding_for_current_user() -> Result<EnsureLlmApiBindingResponse, 
         );
         if binding.enabled && binding.provisioning_status == ProvisioningStatus::Ready {
             let mut binding = binding;
-            ensure_binding_api_key(&store, &credentials, &resolved, &mut binding)?;
+            if let Err(err) = ensure_binding_api_key(&store, &credentials, &resolved, &mut binding)
+            {
+                log::warn!(
+                    "[llmapi_hub][provisioning] existing binding api key ensure failed user_id={} code={:?} retryable={} message={}",
+                    resolved.pinvou_user_id,
+                    err.code,
+                    err.retryable,
+                    err.message
+                );
+                if let Some(response) =
+                    ensure_binding_from_saved_password(&store, &credentials, &resolved)?
+                {
+                    log::info!(
+                        "[llmapi_hub][provisioning] ensure ready from saved password after ready binding failure user_id={} elapsed_ms={}",
+                        resolved.pinvou_user_id,
+                        started_at.elapsed().as_millis()
+                    );
+                    return Ok(response);
+                }
+                return Err(err);
+            }
             log::info!(
                 "[llmapi_hub][provisioning] ensure ready from existing binding user_id={} elapsed_ms={}",
                 resolved.pinvou_user_id,
@@ -156,9 +178,40 @@ pub fn ensure_binding_for_current_user() -> Result<EnsureLlmApiBindingResponse, 
         );
         return Ok(response);
     }
-    if let Some(response) = ensure_binding_from_user_session(&store, &credentials, &resolved)? {
+    match ensure_binding_from_user_session(&store, &credentials, &resolved) {
+        Ok(Some(response)) => {
+            log::info!(
+                "[llmapi_hub][provisioning] ensure ready from user session user_id={} elapsed_ms={}",
+                resolved.pinvou_user_id,
+                started_at.elapsed().as_millis()
+            );
+            return Ok(response);
+        }
+        Ok(None) => {}
+        Err(err) => {
+            log::warn!(
+                "[llmapi_hub][provisioning] ensure from user session failed user_id={} code={:?} retryable={} message={}",
+                resolved.pinvou_user_id,
+                err.code,
+                err.retryable,
+                err.message
+            );
+            if let Some(response) =
+                ensure_binding_from_saved_password(&store, &credentials, &resolved)?
+            {
+                log::info!(
+                    "[llmapi_hub][provisioning] ensure ready from saved password after session failure user_id={} elapsed_ms={}",
+                    resolved.pinvou_user_id,
+                    started_at.elapsed().as_millis()
+                );
+                return Ok(response);
+            }
+            return Err(err);
+        }
+    }
+    if let Some(response) = ensure_binding_from_saved_password(&store, &credentials, &resolved)? {
         log::info!(
-            "[llmapi_hub][provisioning] ensure ready from user session user_id={} elapsed_ms={}",
+            "[llmapi_hub][provisioning] ensure ready from saved password user_id={} elapsed_ms={}",
             resolved.pinvou_user_id,
             started_at.elapsed().as_millis()
         );
@@ -186,16 +239,18 @@ pub fn login_user_session_system(
     let identity = SystemIdentityResolver.resolve_identity()?;
     let adapter = HttpLlmApiHubAdapter::for_token_usage();
     let session = adapter.login_user_session(&username, &password)?;
-    let reference = CredentialReference::for_llmapi_user_session(
-        &identity.pinvou_user_id,
-        &identity.device_binding_id,
-    );
-    let payload = serde_json::json!({
-        "user_id": session.user_id,
-        "access_token": session.access_token,
-    });
-    credentials.set(&reference, &payload.to_string())?;
+    store_user_session(&credentials, &identity, &session)?;
+    store_user_password(&credentials, &identity, &password)?;
     if let Some(response) = ensure_binding_from_user_session(&store, &credentials, &identity)? {
+        let username = username.trim();
+        if !username.is_empty() {
+            if let Some(mut binding) =
+                store.get_binding(&identity.pinvou_user_id, &identity.device_binding_id)?
+            {
+                binding.newapi_username = Some(username.to_string());
+                store.upsert_binding(binding)?;
+            }
+        }
         return Ok(response);
     }
     Err(LlmApiError::new(
@@ -238,6 +293,105 @@ pub fn save_user_session_system(
         "New API user session was saved but default API key provisioning did not start",
         true,
     ))
+}
+
+fn store_user_session<C>(
+    credentials: &C,
+    identity: &LlmApiIdentity,
+    session: &super::adapter::NewApiUserSession,
+) -> Result<(), LlmApiError>
+where
+    C: CredentialStore,
+{
+    let reference = CredentialReference::for_llmapi_user_session(
+        &identity.pinvou_user_id,
+        &identity.device_binding_id,
+    );
+    let payload = serde_json::json!({
+        "user_id": session.user_id,
+        "access_token": session.access_token,
+    });
+    credentials.set(&reference, &payload.to_string())?;
+    Ok(())
+}
+
+fn store_user_password<C>(
+    credentials: &C,
+    identity: &LlmApiIdentity,
+    password: &str,
+) -> Result<(), LlmApiError>
+where
+    C: CredentialStore,
+{
+    let password = password.trim();
+    if password.is_empty() {
+        return Ok(());
+    }
+    let reference = CredentialReference::for_llmapi_user_password(
+        &identity.pinvou_user_id,
+        &identity.device_binding_id,
+    );
+    credentials.set(&reference, password)?;
+    Ok(())
+}
+
+fn refresh_user_session_from_saved_password<C>(
+    adapter: &HttpLlmApiHubAdapter,
+    credentials: &C,
+    identity: &LlmApiIdentity,
+) -> Result<Option<super::adapter::NewApiUserSession>, LlmApiError>
+where
+    C: CredentialStore,
+{
+    let started_at = Instant::now();
+    let reference = CredentialReference::for_llmapi_user_password(
+        &identity.pinvou_user_id,
+        &identity.device_binding_id,
+    );
+    let saved_password = credentials
+        .get(&reference)?
+        .map(|password| password.trim().to_string())
+        .filter(|password| !password.is_empty());
+    let (password, password_source) = match saved_password {
+        Some(password) => (password, "saved password"),
+        None => {
+            log::warn!(
+                "[llmapi_hub][provisioning] user session refresh saved password missing, fallback to generated device password user_id={}",
+                identity.pinvou_user_id
+            );
+            (generated_device_password(identity)?, "generated device password")
+        }
+    };
+
+    log::info!(
+        "[llmapi_hub][provisioning] user session refresh start user_id={} source={}",
+        identity.pinvou_user_id,
+        password_source
+    );
+    let session = adapter
+        .login_user_session(&identity.pinvou_user_id, &password)
+        .map_err(|err| {
+            log::warn!(
+                "[llmapi_hub][provisioning] user session refresh failed user_id={} source={} code={:?} retryable={} elapsed_ms={} message={}",
+                identity.pinvou_user_id,
+                password_source,
+                err.code,
+                err.retryable,
+                started_at.elapsed().as_millis(),
+                err.message
+            );
+            err
+        })?;
+    store_user_session(credentials, identity, &session)?;
+    store_user_password(credentials, identity, &password)?;
+    log::info!(
+        "[llmapi_hub][provisioning] user session refresh ok user_id={} source={} newapi_user_id={} elapsed_ms={}",
+        identity.pinvou_user_id,
+        password_source,
+        session.user_id,
+        started_at.elapsed().as_millis()
+    );
+    Ok(Some(session))
 }
 
 fn ensure_binding_from_local_api_key<C>(
@@ -294,6 +448,7 @@ where
     }
 
     binding.policy = policy;
+    binding.newapi_username = Some(identity.pinvou_user_id.clone());
     binding.token_credential_ref = Some(reference);
     binding.mark_status(ProvisioningStatus::Ready);
     apply_token_usage(&mut binding, usage);
@@ -357,7 +512,8 @@ where
 
     let created = binding.newapi_user_id.is_none() && binding.newapi_token_id.is_none();
     binding.policy = policy;
-    binding.newapi_user_id = Some(session.user_id);
+    let adapter = HttpLlmApiHubAdapter::for_token_usage();
+    sync_current_user_profile(&adapter, credentials, &session, identity, &mut binding);
     binding.mark_status(ProvisioningStatus::Ready);
     binding.clear_error();
 
@@ -386,6 +542,66 @@ where
         retryable: false,
         message: "AI 服务已开通".to_string(),
     }))
+}
+
+fn ensure_binding_from_saved_password<C>(
+    store: &FileLlmApiBindingStore,
+    credentials: &C,
+    identity: &LlmApiIdentity,
+) -> Result<Option<EnsureLlmApiBindingResponse>, LlmApiError>
+where
+    C: CredentialStore,
+{
+    let started_at = Instant::now();
+    log::info!(
+        "[llmapi_hub][provisioning] saved password check start user_id={}",
+        identity.pinvou_user_id
+    );
+    let reference = CredentialReference::for_llmapi_user_password(
+        &identity.pinvou_user_id,
+        &identity.device_binding_id,
+    );
+    let saved_password = credentials
+        .get(&reference)?
+        .map(|password| password.trim().to_string())
+        .filter(|password| !password.is_empty());
+    let (password, password_source) = match saved_password {
+        Some(password) => (password, "saved password"),
+        None => {
+            log::info!(
+                "[llmapi_hub][provisioning] saved password missing, fallback to generated device password user_id={} elapsed_ms={}",
+                identity.pinvou_user_id,
+                started_at.elapsed().as_millis()
+            );
+            (generated_device_password(identity)?, "generated device password")
+        }
+    };
+
+    let adapter = HttpLlmApiHubAdapter::for_token_usage();
+    let session = adapter
+        .login_user_session(&identity.pinvou_user_id, &password)
+        .map_err(|err| {
+            log::warn!(
+                "[llmapi_hub][provisioning] password login failed user_id={} source={} code={:?} retryable={} elapsed_ms={} message={}",
+                identity.pinvou_user_id,
+                password_source,
+                err.code,
+                err.retryable,
+                started_at.elapsed().as_millis(),
+                err.message
+            );
+            err
+        })?;
+    store_user_session(credentials, identity, &session)?;
+    store_user_password(credentials, identity, &password)?;
+    log::info!(
+        "[llmapi_hub][provisioning] password login ok user_id={} source={} newapi_user_id={} elapsed_ms={}",
+        identity.pinvou_user_id,
+        password_source,
+        session.user_id,
+        started_at.elapsed().as_millis()
+    );
+    ensure_binding_from_user_session(store, credentials, identity)
 }
 
 fn ensure_binding_from_generated_device_login<C>(
@@ -431,17 +647,10 @@ where
         session.user_id,
         started_at.elapsed().as_millis()
     );
-    let reference = CredentialReference::for_llmapi_user_session(
-        &identity.pinvou_user_id,
-        &identity.device_binding_id,
-    );
-    let payload = serde_json::json!({
-        "user_id": session.user_id,
-        "access_token": session.access_token,
-    });
-    credentials.set(&reference, &payload.to_string())?;
+    store_user_session(credentials, identity, &session)?;
+    store_user_password(credentials, identity, &password)?;
     log::info!(
-        "[llmapi_hub][provisioning] generated device session stored user_id={}",
+        "[llmapi_hub][provisioning] generated device session and password stored user_id={}",
         identity.pinvou_user_id
     );
     ensure_binding_from_user_session(store, credentials, identity)?.ok_or_else(|| {
@@ -484,45 +693,106 @@ where
     let binding = store.get_binding(&identity.pinvou_user_id, &identity.device_binding_id)?;
     Ok(match binding {
         Some(binding) => status_from_binding(&binding),
-        None => LlmApiStatusResponse {
-            pinvou_user_id: Some(identity.pinvou_user_id),
-            device_binding_status: DeviceBindingStatus::Bound,
-            enabled: true,
-            provisioning_status: ProvisioningStatus::NotStarted,
-            quota: None,
-            last_call_status: None,
-            last_error_code: None,
-            last_error_message: None,
-        },
+        None => status_without_binding(&identity),
     })
 }
 
 pub fn status_for_current_user_system() -> Result<LlmApiStatusResponse, LlmApiError> {
+    let started_at = Instant::now();
+    log::info!("[llmapi_hub][provisioning] status start");
     let store = FileLlmApiBindingStore::default();
     let identity = SystemIdentityResolver.resolve_identity()?;
-    let Some(mut binding) =
-        store.get_binding(&identity.pinvou_user_id, &identity.device_binding_id)?
-    else {
-        return Ok(LlmApiStatusResponse {
-            pinvou_user_id: Some(identity.pinvou_user_id),
-            device_binding_status: DeviceBindingStatus::Bound,
-            enabled: true,
-            provisioning_status: ProvisioningStatus::NotStarted,
-            quota: None,
-            last_call_status: None,
-            last_error_code: None,
-            last_error_message: None,
-        });
+    log::info!(
+        "[llmapi_hub][provisioning] status identity resolved user_id={} device_id={} elapsed_ms={}",
+        identity.pinvou_user_id,
+        identity.device_binding_id,
+        started_at.elapsed().as_millis()
+    );
+    let ensure_result = ensure_binding_for_current_user();
+    log::info!(
+        "[llmapi_hub][provisioning] status ensure returned user_id={} ok={} elapsed_ms={}",
+        identity.pinvou_user_id,
+        ensure_result.is_ok(),
+        started_at.elapsed().as_millis()
+    );
+    let status = match store.get_binding(&identity.pinvou_user_id, &identity.device_binding_id)? {
+        Some(binding) => {
+            log::info!(
+                "[llmapi_hub][provisioning] status binding loaded user_id={} newapi_user_id={} token_id={} binding_status={:?} stored_username={} stored_display_name={} limit={} used={} remaining={}",
+                identity.pinvou_user_id,
+                binding.newapi_user_id.as_deref().unwrap_or(""),
+                binding.newapi_token_id.as_deref().unwrap_or(""),
+                binding.provisioning_status,
+                binding.newapi_username.as_deref().unwrap_or(""),
+                binding.newapi_display_name.as_deref().unwrap_or(""),
+                binding.usage.limit_tokens,
+                binding.usage.used_tokens,
+                binding.usage.remaining_tokens
+            );
+            let mut status = status_from_binding(&binding);
+            if let Err(err) = ensure_result {
+                status.auto_login_failed = true;
+                status.last_error_code = Some(err.code);
+                status.last_error_message = Some(err.message);
+            }
+            status
+        }
+        None => {
+            let mut status = status_without_binding(&identity);
+            if let Err(err) = ensure_result {
+                status.last_error_code = Some(err.code);
+                status.last_error_message = Some(err.message);
+            }
+            status
+        }
     };
+    log::info!(
+        "[llmapi_hub][provisioning] status ok user_id={} backend_user_exists={} status={:?} backend_username={} backend_display_name={} limit={} used={} remaining={} elapsed_ms={}",
+        identity.pinvou_user_id,
+        status.backend_user_exists,
+        status.provisioning_status,
+        status.backend_username.as_deref().unwrap_or(""),
+        status.backend_display_name.as_deref().unwrap_or(""),
+        status.quota.as_ref().map(|q| q.limit_tokens).unwrap_or(0),
+        status.quota.as_ref().map(|q| q.used_tokens).unwrap_or(0),
+        status.quota.as_ref().map(|q| q.remaining_tokens).unwrap_or(0),
+        started_at.elapsed().as_millis()
+    );
+    Ok(status)
+}
 
-    let credentials = crate::credential_store::SystemCredentialStore::new();
-    refresh_binding_quota_from_newapi(&store, &credentials, &identity, &mut binding)?;
-    Ok(status_from_binding(&binding))
+pub fn local_status_for_current_user_system() -> Result<LlmApiStatusResponse, LlmApiError> {
+    let store = FileLlmApiBindingStore::default();
+    let identity = SystemIdentityResolver.resolve_identity()?;
+    match store.get_binding(&identity.pinvou_user_id, &identity.device_binding_id)? {
+        Some(binding) => Ok(status_from_binding(&binding)),
+        None => Ok(status_without_binding(&identity)),
+    }
+}
+
+pub fn unavailable_status_for_current_user_system(
+    code: Option<LlmApiErrorCode>,
+    message: Option<String>,
+) -> Result<LlmApiStatusResponse, LlmApiError> {
+    let identity = SystemIdentityResolver.resolve_identity()?;
+    let mut status = status_without_binding(&identity);
+    status.last_error_code = code;
+    status.last_error_message = message;
+    Ok(status)
 }
 
 pub fn available_models_system() -> Result<BuiltinLlmApiModelsResponse, LlmApiError> {
+    let started_at = Instant::now();
+    log::info!("[llmapi_hub][provisioning] available models system start");
     ensure_binding_for_current_user()?;
-    Ok(local_builtin_models_response())
+    let response = local_builtin_models_response();
+    log::info!(
+        "[llmapi_hub][provisioning] available models system ok elapsed_ms={} count={} default_model={}",
+        started_at.elapsed().as_millis(),
+        response.available_models.len(),
+        response.default_model
+    );
+    Ok(response)
 }
 
 pub fn set_default_model_system(model: &str) -> Result<BuiltinLlmApiModelsResponse, LlmApiError> {
@@ -571,38 +841,20 @@ pub fn set_default_model_system(model: &str) -> Result<BuiltinLlmApiModelsRespon
     Ok(local_builtin_models_response())
 }
 
-fn refresh_binding_quota_from_newapi<C>(
-    store: &FileLlmApiBindingStore,
-    credentials: &C,
-    identity: &LlmApiIdentity,
-    binding: &mut LlmApiBinding,
-) -> Result<(), LlmApiError>
-where
-    C: CredentialStore,
-{
-    log::info!(
-        "[llmapi_hub][provisioning] api key ensure start user_id={} status={:?} enabled={}",
-        identity.pinvou_user_id,
-        binding.provisioning_status,
-        binding.enabled
-    );
-    if !binding.enabled || binding.provisioning_status != ProvisioningStatus::Ready {
-        log::info!(
-            "[llmapi_hub][provisioning] api key ensure skipped user_id={} status={:?} enabled={}",
-            identity.pinvou_user_id,
-            binding.provisioning_status,
-            binding.enabled
-        );
-        return Ok(());
-    }
-    ensure_binding_api_key(store, credentials, identity, binding)
-}
-
 fn apply_token_usage(binding: &mut LlmApiBinding, usage: NewApiTokenUsage) {
     binding.usage.period = super::models::current_period();
     binding.usage.limit_tokens = usage.total_granted;
     binding.usage.used_tokens = usage.total_used;
     binding.usage.remaining_tokens = usage.total_available;
+    binding.usage.last_synced_at = Some(Utc::now());
+    binding.updated_at = Utc::now();
+}
+
+fn apply_user_self_quota(binding: &mut LlmApiBinding, remaining_quota: u64, used_quota: u64) {
+    binding.usage.period = super::models::current_period();
+    binding.usage.limit_tokens = remaining_quota.saturating_add(used_quota);
+    binding.usage.used_tokens = used_quota;
+    binding.usage.remaining_tokens = remaining_quota;
     binding.usage.last_synced_at = Some(Utc::now());
     binding.updated_at = Utc::now();
 }
@@ -692,6 +944,113 @@ fn sync_available_models(
     }
 }
 
+fn apply_current_user_profile(
+    user: super::adapter::NewApiUser,
+    identity: &LlmApiIdentity,
+    binding: &mut LlmApiBinding,
+) {
+    let incoming_user_id = user.id;
+    let incoming_username = user.username;
+    let incoming_display_name = user
+        .display_name
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let incoming_quota = user.quota;
+    let incoming_used_quota = user.used_quota;
+    log::info!(
+        "[llmapi_hub][provisioning] current user profile received pinvou_user_id={} newapi_user_id={} username={} display_name={} quota={:?} used_quota={:?}",
+        identity.pinvou_user_id,
+        incoming_user_id,
+        incoming_username,
+        incoming_display_name.as_deref().unwrap_or(""),
+        incoming_quota,
+        incoming_used_quota
+    );
+    binding.newapi_user_id = Some(incoming_user_id);
+    binding.newapi_username = Some(incoming_username);
+    binding.newapi_display_name = incoming_display_name;
+    if let (Some(remaining_quota), Some(used_quota)) = (incoming_quota, incoming_used_quota) {
+        apply_user_self_quota(binding, remaining_quota, used_quota);
+    }
+    binding.updated_at = Utc::now();
+    log::info!(
+        "[llmapi_hub][provisioning] current user profile synced user_id={} stored_username={} stored_display_name={} has_quota={} limit={} used={} remaining={}",
+        identity.pinvou_user_id,
+        binding.newapi_username.as_deref().unwrap_or(""),
+        binding.newapi_display_name.as_deref().unwrap_or(""),
+        incoming_quota.is_some() && incoming_used_quota.is_some(),
+        binding.usage.limit_tokens,
+        binding.usage.used_tokens,
+        binding.usage.remaining_tokens
+    );
+}
+
+fn sync_current_user_profile<C>(
+    adapter: &HttpLlmApiHubAdapter,
+    credentials: &C,
+    session: &super::adapter::NewApiUserSession,
+    identity: &LlmApiIdentity,
+    binding: &mut LlmApiBinding,
+) where
+    C: CredentialStore,
+{
+    match adapter.current_user(session) {
+        Ok(user) => apply_current_user_profile(user, identity, binding),
+        Err(err) => {
+            log::warn!(
+                "[llmapi_hub][provisioning] current user profile sync failed user_id={} code={:?} retryable={} message={}",
+                identity.pinvou_user_id,
+                err.code,
+                err.retryable,
+                err.message
+            );
+            if err.code == LlmApiErrorCode::PermissionDenied {
+                match refresh_user_session_from_saved_password(adapter, credentials, identity) {
+                    Ok(Some(refreshed_session)) => match adapter.current_user(&refreshed_session) {
+                        Ok(user) => {
+                            log::info!(
+                                "[llmapi_hub][provisioning] current user profile retry after session refresh ok user_id={}",
+                                identity.pinvou_user_id
+                            );
+                            apply_current_user_profile(user, identity, binding);
+                            return;
+                        }
+                        Err(retry_err) => {
+                            log::warn!(
+                                "[llmapi_hub][provisioning] current user profile retry after session refresh failed user_id={} code={:?} retryable={} message={}",
+                                identity.pinvou_user_id,
+                                retry_err.code,
+                                retry_err.retryable,
+                                retry_err.message
+                            );
+                        }
+                    },
+                    Ok(None) => {}
+                    Err(refresh_err) => {
+                        log::warn!(
+                            "[llmapi_hub][provisioning] current user profile session refresh failed user_id={} code={:?} retryable={} message={}",
+                            identity.pinvou_user_id,
+                            refresh_err.code,
+                            refresh_err.retryable,
+                            refresh_err.message
+                        );
+                    }
+                }
+            }
+            if binding.newapi_user_id.is_none() {
+                binding.newapi_user_id = Some(session.user_id.clone());
+            }
+            if binding.newapi_username.is_none() {
+                binding.newapi_username = Some(identity.pinvou_user_id.clone());
+            }
+        }
+    }
+}
+
+fn should_refresh_api_key_after_usage_error(err: &LlmApiError) -> bool {
+    matches!(err.code, LlmApiErrorCode::PermissionDenied)
+}
+
 fn ensure_binding_api_key<C>(
     store: &FileLlmApiBindingStore,
     credentials: &C,
@@ -755,6 +1114,24 @@ where
             "[llmapi_hub][provisioning] api key found locally user_id={}",
             identity.pinvou_user_id
         );
+        if let Some(session) =
+            HttpLlmApiHubAdapter::user_session_from_credentials(credentials, identity)?
+        {
+            binding.token_credential_ref = Some(reference);
+            sync_current_user_profile(&adapter, credentials, &session, identity, binding);
+            sync_available_models(&adapter, &token, identity, binding);
+            binding.clear_error();
+            store.upsert_binding(binding.clone())?;
+            log::info!(
+                "[llmapi_hub][provisioning] api key ensured from current user profile user_id={} model={} used={} remaining={} elapsed_ms={}",
+                identity.pinvou_user_id,
+                binding.policy.allowed_models.first().map(String::as_str).unwrap_or(""),
+                binding.usage.used_tokens,
+                binding.usage.remaining_tokens,
+                started_at.elapsed().as_millis()
+            );
+            return Ok(());
+        }
         match adapter.token_usage(&token) {
             Ok(usage) => {
                 binding.token_credential_ref = Some(reference);
@@ -781,6 +1158,18 @@ where
                     started_at.elapsed().as_millis(),
                     err.message
                 );
+                if !should_refresh_api_key_after_usage_error(&err) {
+                    binding.token_credential_ref = Some(reference);
+                    binding.updated_at = Utc::now();
+                    store.upsert_binding(binding.clone())?;
+                    log::warn!(
+                        "[llmapi_hub][provisioning] keep local api key after usage failure user_id={} code={:?} elapsed_ms={}",
+                        identity.pinvou_user_id,
+                        err.code,
+                        started_at.elapsed().as_millis()
+                    );
+                    return Ok(());
+                }
                 log::info!(
                     "[llmapi_hub][provisioning] user session lookup after api key failure start user_id={}",
                     identity.pinvou_user_id
@@ -849,7 +1238,7 @@ where
     );
     let usage = adapter.token_usage(&refreshed.token)?;
 
-    binding.newapi_user_id = Some(session.user_id);
+    sync_current_user_profile(&adapter, credentials, &session, identity, binding);
     binding.newapi_token_id = Some(refreshed.id.clone());
     binding.token_credential_ref = Some(reference);
     apply_token_usage(binding, usage);
@@ -1182,9 +1571,46 @@ pub fn retry_binding_system(
     ensure_binding(&store, &credentials, &adapter, &identity)
 }
 
+fn status_without_binding(identity: &LlmApiIdentity) -> LlmApiStatusResponse {
+    LlmApiStatusResponse {
+        pinvou_user_id: Some(identity.pinvou_user_id.clone()),
+        backend_user_exists: false,
+        backend_username: None,
+        backend_display_name: None,
+        auto_login_failed: false,
+        device_binding_status: DeviceBindingStatus::Bound,
+        enabled: true,
+        provisioning_status: ProvisioningStatus::NotStarted,
+        quota: None,
+        last_call_status: None,
+        last_error_code: None,
+        last_error_message: None,
+    }
+}
+
 fn status_from_binding(binding: &LlmApiBinding) -> LlmApiStatusResponse {
+    let backend_username = binding
+        .newapi_username
+        .clone()
+        .or_else(|| Some(binding.pinvou_user_id.clone()));
+    let backend_display_name = binding.newapi_display_name.clone();
+    log::info!(
+        "[llmapi_hub][provisioning] status_from_binding user_id={} backend_username={} backend_display_name={} binding_display_name={} limit={} used={} remaining={}",
+        binding.pinvou_user_id,
+        backend_username.as_deref().unwrap_or(""),
+        backend_display_name.as_deref().unwrap_or(""),
+        binding.newapi_display_name.as_deref().unwrap_or(""),
+        binding.usage.limit_tokens,
+        binding.usage.used_tokens,
+        binding.usage.remaining_tokens
+    );
     LlmApiStatusResponse {
         pinvou_user_id: Some(binding.pinvou_user_id.clone()),
+        backend_user_exists: binding.newapi_user_id.is_some()
+            || binding.provisioning_status == ProvisioningStatus::Ready,
+        backend_username,
+        backend_display_name,
+        auto_login_failed: false,
         device_binding_status: DeviceBindingStatus::Bound,
         enabled: binding.enabled,
         provisioning_status: binding.provisioning_status,

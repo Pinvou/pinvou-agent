@@ -255,15 +255,99 @@ pub async fn save_llmapi_user_session(
 #[tauri::command]
 pub async fn get_llmapi_status() -> Result<crate::llmapi_hub::models::LlmApiStatusResponse, String>
 {
-    crate::llmapi_hub::provisioning::status_for_current_user_system()
-        .map_err(|err| err.to_tauri_error())
+    let started_at = std::time::Instant::now();
+    log::info!("[llmapi_hub][commands] get_llmapi_status start");
+    let remote = tokio::time::timeout(
+        std::time::Duration::from_secs(6),
+        tokio::task::spawn_blocking(crate::llmapi_hub::provisioning::status_for_current_user_system),
+    )
+    .await;
+
+    match remote {
+        Ok(Ok(Ok(status))) => {
+            log::info!(
+                "[llmapi_hub][commands] get_llmapi_status ok elapsed_ms={} backend_user_exists={} status={:?} backend_username={} backend_display_name={} limit={} used={} remaining={}",
+                started_at.elapsed().as_millis(),
+                status.backend_user_exists,
+                status.provisioning_status,
+                status.backend_username.as_deref().unwrap_or(""),
+                status.backend_display_name.as_deref().unwrap_or(""),
+                status.quota.as_ref().map(|q| q.limit_tokens).unwrap_or(0),
+                status.quota.as_ref().map(|q| q.used_tokens).unwrap_or(0),
+                status.quota.as_ref().map(|q| q.remaining_tokens).unwrap_or(0)
+            );
+            Ok(status)
+        }
+        Ok(Ok(Err(err))) => {
+            log::warn!(
+                "[llmapi_hub][commands] get_llmapi_status backend failed elapsed_ms={} code={:?} retryable={} message={}",
+                started_at.elapsed().as_millis(),
+                err.code,
+                err.retryable,
+                err.message
+            );
+            crate::llmapi_hub::provisioning::unavailable_status_for_current_user_system(
+                Some(err.code),
+                Some(err.message),
+            )
+            .map_err(|err| err.to_tauri_error())
+        }
+        Ok(Err(err)) => {
+            log::warn!(
+                "[llmapi_hub][commands] get_llmapi_status task join failed elapsed_ms={} error={err}",
+                started_at.elapsed().as_millis()
+            );
+            crate::llmapi_hub::provisioning::unavailable_status_for_current_user_system(
+                Some(crate::llmapi_hub::models::LlmApiErrorCode::Unavailable),
+                Some(format!("后台状态查询任务失败: {err}")),
+            )
+                .map_err(|err| err.to_tauri_error())
+        }
+        Err(_) => {
+            log::warn!(
+                "[llmapi_hub][commands] get_llmapi_status backend refresh timed out elapsed_ms={}; returning unavailable status",
+                started_at.elapsed().as_millis()
+            );
+            crate::llmapi_hub::provisioning::unavailable_status_for_current_user_system(
+                Some(crate::llmapi_hub::models::LlmApiErrorCode::ServiceUnreachable),
+                Some("后台状态查询超时".to_string()),
+            )
+                .map_err(|err| err.to_tauri_error())
+        }
+    }
 }
 
 #[tauri::command]
 pub async fn get_llmapi_models(
 ) -> Result<crate::llmapi_hub::models::BuiltinLlmApiModelsResponse, String> {
-    crate::llmapi_hub::provisioning::available_models_system()
-        .map_err(|err| err.to_tauri_error())
+    let started_at = std::time::Instant::now();
+    log::info!("[llmapi_hub][commands] get_llmapi_models start");
+    let result = tokio::task::spawn_blocking(
+        crate::llmapi_hub::provisioning::available_models_system,
+    )
+    .await
+    .map_err(|err| format!("get_llmapi_models task join failed: {err}"))?;
+    match result {
+        Ok(models) => {
+            log::info!(
+                "[llmapi_hub][commands] get_llmapi_models ok elapsed_ms={} count={} default_model={}",
+                started_at.elapsed().as_millis(),
+                models.available_models.len(),
+                models.default_model
+            );
+            Ok(models)
+        }
+        Err(err) => {
+            log::warn!(
+                "[llmapi_hub][commands] get_llmapi_models failed elapsed_ms={} code={:?} retryable={} message={}",
+                started_at.elapsed().as_millis(),
+                err.code,
+                err.retryable,
+                err.message
+            );
+            Err(err.to_tauri_error())
+        }
+    }
 }
 
 #[tauri::command]

@@ -17,6 +17,7 @@ const DEFAULT_TOKEN_SEARCH_PATH: &str = "/api/token/search";
 const DEFAULT_TOKEN_PATH: &str = "/api/token/";
 const DEFAULT_USER_LOGIN_PATH: &str = "/api/user/login";
 const DEFAULT_USER_ACCESS_TOKEN_PATH: &str = "/api/user/token";
+const DEFAULT_USER_SELF_PATH: &str = "/api/user/self";
 const DEFAULT_OPENAI_MODELS_PATH: &str = "/v1/models";
 const DEFAULT_TOKEN_NAME: &str = "default";
 const HTTP_CONNECT_TIMEOUT_SECS: u64 = 5;
@@ -44,6 +45,10 @@ pub trait LlmApiHubAdapter {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NewApiUser {
     pub id: String,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub quota: Option<u64>,
+    pub used_quota: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -108,6 +113,12 @@ struct NewApiPage<T> {
 struct NewApiUserRecord {
     id: serde_json::Value,
     username: String,
+    #[serde(default, alias = "displayName", alias = "name", alias = "nickname")]
+    display_name: Option<String>,
+    #[serde(default)]
+    quota: Option<u64>,
+    #[serde(default)]
+    used_quota: Option<u64>,
     status: Option<i32>,
 }
 
@@ -339,12 +350,14 @@ impl HttpLlmApiHubAdapter {
                 false,
             ));
         }
+        let endpoint = self.endpoint(None, DEFAULT_TOKEN_USAGE_PATH);
+        log::info!(
+            "[llmapi_hub][adapter] token usage request prepared endpoint={} token_len={}",
+            endpoint,
+            token.len()
+        );
         let usage: NewApiTokenUsage = self.send_json(
-            self.token_request(
-                self.client
-                    .get(self.endpoint(None, DEFAULT_TOKEN_USAGE_PATH)),
-                token,
-            ),
+            self.token_request(self.client.get(endpoint), token),
             "query token usage",
         )?;
         log::info!(
@@ -368,16 +381,19 @@ impl HttpLlmApiHubAdapter {
                 false,
             ));
         }
+        let endpoint = self.endpoint(None, DEFAULT_OPENAI_MODELS_PATH);
+        log::info!(
+            "[llmapi_hub][adapter] available models request prepared endpoint={} token_len={}",
+            endpoint,
+            token.len()
+        );
         let response = self
-            .token_request(
-                self.client
-                    .get(self.endpoint(None, DEFAULT_OPENAI_MODELS_PATH)),
-                token,
-            )
+            .token_request(self.client.get(endpoint.clone()), token)
             .send()
             .map_err(|err| {
                 log::warn!(
-                    "[llmapi_hub][adapter] available models request send failed elapsed_ms={} error={}",
+                    "[llmapi_hub][adapter] available models request send failed endpoint={} elapsed_ms={} error={}",
+                    endpoint,
                     started_at.elapsed().as_millis(),
                     err
                 );
@@ -402,7 +418,8 @@ impl HttpLlmApiHubAdapter {
             )
         })?;
         log::info!(
-            "[llmapi_hub][adapter] available models response received status={} body_len={} elapsed_ms={}",
+            "[llmapi_hub][adapter] available models response received endpoint={} status={} body_len={} elapsed_ms={}",
+            endpoint,
             status.as_u16(),
             body.len(),
             started_at.elapsed().as_millis()
@@ -411,6 +428,13 @@ impl HttpLlmApiHubAdapter {
             return Err(http_error("available models", status.as_u16(), &body));
         }
         let parsed: OpenAiModelsResponse = serde_json::from_str(&body).map_err(|err| {
+            log::warn!(
+                "[llmapi_hub][adapter] available models parse failed endpoint={} status={} body_snippet={} error={}",
+                endpoint,
+                status.as_u16(),
+                compact_body(&body),
+                err
+            );
             LlmApiError::new(
                 LlmApiErrorCode::ProvisioningFailed,
                 format!("New API available models response format is invalid: {err}"),
@@ -503,6 +527,40 @@ impl HttpLlmApiHubAdapter {
             id: token_id,
             token,
         })
+    }
+
+    pub fn current_user(&self, session: &NewApiUserSession) -> Result<NewApiUser, LlmApiError> {
+        let started_at = Instant::now();
+        log::info!(
+            "[llmapi_hub][adapter] current user start newapi_user_id={}",
+            session.user_id
+        );
+        let user: NewApiUserRecord = self.send_json(
+            self.user_request(self.client.get(self.endpoint(None, DEFAULT_USER_SELF_PATH)), session),
+            "query current user",
+        )?;
+        if user.status.is_some_and(|status| status != 1) {
+            return Err(LlmApiError::new(
+                LlmApiErrorCode::ServiceDisabled,
+                "New API current user is disabled",
+                false,
+            ));
+        }
+        let user = NewApiUser {
+            id: json_value_to_string(&user.id),
+            username: user.username,
+            display_name: user.display_name,
+            quota: user.quota,
+            used_quota: user.used_quota,
+        };
+        log::info!(
+            "[llmapi_hub][adapter] current user ok newapi_user_id={} username={} has_display_name={} elapsed_ms={}",
+            user.id,
+            user.username,
+            user.display_name.as_ref().is_some_and(|v| !v.trim().is_empty()),
+            started_at.elapsed().as_millis()
+        );
+        Ok(user)
     }
 
     pub fn login_user_session(
@@ -766,18 +824,20 @@ impl HttpLlmApiHubAdapter {
         );
         if !status.is_success() {
             log::warn!(
-                "[llmapi_hub][adapter] {} http error status={} body_len={} elapsed_ms={}",
+                "[llmapi_hub][adapter] {} http error status={} body_len={} body_snippet={} elapsed_ms={}",
                 operation,
                 status.as_u16(),
                 body.len(),
+                compact_body(&body),
                 started_at.elapsed().as_millis()
             );
             return Err(http_error(operation, status.as_u16(), &body));
         }
         let envelope: NewApiEnvelope<T> = serde_json::from_str(&body).map_err(|err| {
             log::warn!(
-                "[llmapi_hub][adapter] {} response json invalid elapsed_ms={} error={}",
+                "[llmapi_hub][adapter] {} response json invalid body_snippet={} elapsed_ms={} error={}",
                 operation,
+                compact_body(&body),
                 started_at.elapsed().as_millis(),
                 err
             );
@@ -860,10 +920,11 @@ impl HttpLlmApiHubAdapter {
         );
         if !status.is_success() {
             log::warn!(
-                "[llmapi_hub][adapter] {} http error status={} body_len={} elapsed_ms={}",
+                "[llmapi_hub][adapter] {} http error status={} body_len={} body_snippet={} elapsed_ms={}",
                 operation,
                 status.as_u16(),
                 body.len(),
+                compact_body(&body),
                 started_at.elapsed().as_millis()
             );
             return Err(http_error(operation, status.as_u16(), &body));
@@ -871,8 +932,9 @@ impl HttpLlmApiHubAdapter {
         let envelope: NewApiEnvelope<serde_json::Value> =
             serde_json::from_str(&body).map_err(|err| {
                 log::warn!(
-                    "[llmapi_hub][adapter] {} response json invalid elapsed_ms={} error={}",
+                    "[llmapi_hub][adapter] {} response json invalid body_snippet={} elapsed_ms={} error={}",
                     operation,
+                    compact_body(&body),
                     started_at.elapsed().as_millis(),
                     err
                 );
@@ -931,6 +993,10 @@ impl LlmApiHubAdapter for HttpLlmApiHubAdapter {
         }
         Ok(NewApiUser {
             id: json_value_to_string(&user.id),
+            username: user.username,
+            display_name: user.display_name,
+            quota: user.quota,
+            used_quota: user.used_quota,
         })
     }
 
@@ -1150,6 +1216,15 @@ fn cookie_header_from_response(response: &reqwest::blocking::Response) -> String
         .join("; ")
 }
 
+fn compact_body(body: &str) -> String {
+    let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut snippet = compact.chars().take(500).collect::<String>();
+    if compact.chars().count() > 500 {
+        snippet.push_str("...");
+    }
+    crate::credential_store::redact_secret(&snippet)
+}
+
 fn http_error(operation: &str, status: u16, body: &str) -> LlmApiError {
     let code = match status {
         401 | 403 => LlmApiErrorCode::PermissionDenied,
@@ -1199,6 +1274,10 @@ pub mod tests {
             }
             Ok(NewApiUser {
                 id: "newapi-user-1".to_string(),
+                username: "u_1".to_string(),
+                display_name: Some("User One".to_string()),
+                quota: Some(750),
+                used_quota: Some(250),
             })
         }
 
