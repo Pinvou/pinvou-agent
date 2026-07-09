@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use deepseek_tui::core::engine::{spawn_engine, EngineHandle};
-use deepseek_tui::core::events::Event;
+use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
 use deepseek_tui::core::ops::Op;
 use deepseek_tui::models::Message;
 use deepseek_tui::tools::user_input::UserInputResponse;
@@ -479,10 +479,12 @@ fn spawn_event_forwarder(
         let self_metrics = app
             .try_state::<crate::monitor::MonitorState>()
             .map(|s| s.self_metrics());
+        let mut current_turn_id: Option<String> = None;
         let mut rx = handle.rx_event.write().await;
         while let Some(event) = rx.recv().await {
             match event {
-                Event::TurnStarted { .. } => {
+                Event::TurnStarted { turn_id } => {
+                    current_turn_id = Some(turn_id);
                     // 本轮起始打点(TTFT 起点)。底座已发此事件,原先落 `_` 被忽略。
                     if let Some(m) = &self_metrics {
                         m.on_turn_started(&session_id);
@@ -1087,6 +1089,14 @@ fn spawn_event_forwarder(
                             });
                         }
                     }
+                    maybe_notify_task_completed(
+                        &app,
+                        &store,
+                        &session_id,
+                        current_turn_id.take(),
+                        status,
+                        error.as_deref(),
+                    );
                     let _ = app.emit(
                         "chat:done",
                         json!({ "session_id": session_id, "status": status_text, "error": error }),
@@ -1167,6 +1177,34 @@ fn spawn_event_forwarder(
             "[pinvou3-app] event forwarder stopped for session {session_id} (engine shut down?)"
         );
     })
+}
+
+fn maybe_notify_task_completed(
+    app: &AppHandle,
+    store: &SessionStore,
+    session_id: &str,
+    turn_id: Option<String>,
+    status: TurnOutcomeStatus,
+    error: Option<&str>,
+) {
+    if status != TurnOutcomeStatus::Completed || error.is_some() {
+        return;
+    }
+    if store.mode_state(session_id).active_skill.is_some() {
+        return;
+    }
+    if !crate::notifications::task_completion_enabled() {
+        return;
+    }
+    let key = turn_id.unwrap_or_else(|| chrono::Utc::now().timestamp_millis().to_string());
+    let notify_key = format!("{session_id}:{key}");
+    if app
+        .try_state::<crate::notifications::NotificationState>()
+        .map(|state| state.should_notify(notify_key))
+        .unwrap_or(true)
+    {
+        crate::notifications::notify_task_completed(app);
+    }
 }
 
 /// 让 main.rs 编译时知道这个模块（供 docs/CI 用）。

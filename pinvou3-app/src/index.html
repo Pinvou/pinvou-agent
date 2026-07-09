@@ -276,6 +276,9 @@
         curVer: '当前版本', uiVer: 'UI 版本', uptime: '运行时长',
         appearance: '外观与语言', lang: '界面语言', langDesc: '切换应用的显示语言', theme: '主题模式', themeDesc: '选择适合你的色彩风格',
         light: '浅色', dark: '深色',
+        notifications: '通知',
+        taskCompletedNotif: '任务完成提醒',
+        taskCompletedNotifDesc: '任务完成后发送系统通知',
         searchBackend: '联网搜索', searchSource: '搜索源', searchBackendDesc: 'LLM 调用 web_search 工具时使用的源',
         searchKey: 'API Key',
         searchKeyHintBing: 'Bing 不需要 API key，但中文搜索结果不理想',
@@ -539,6 +542,9 @@
         curVer: 'App Version', uiVer: 'UI Version', uptime: 'Uptime',
         appearance: 'Appearance & Language', lang: 'Language', langDesc: 'Switch application display language', theme: 'Theme', themeDesc: 'Choose your color style',
         light: 'Light', dark: 'Dark',
+        notifications: 'Notifications',
+        taskCompletedNotif: 'Task completion alert',
+        taskCompletedNotifDesc: 'Send a system notification when a task finishes',
         searchBackend: 'Web Search', searchSource: 'Search Source', searchBackendDesc: 'Source used by the LLM when invoking the web_search tool',
         searchKey: 'API Key',
         searchKeyHintBing: 'Bing needs no API key, but Chinese search results are poor',
@@ -801,6 +807,9 @@
         curVer: '現在のバージョン', uiVer: 'UI バージョン', uptime: '稼働時間',
         appearance: '外観と言語', lang: '表示言語', langDesc: 'アプリの表示言語を切り替え', theme: 'テーマ', themeDesc: 'お好みの配色を選択',
         light: 'ライト', dark: 'ダーク',
+        notifications: '通知',
+        taskCompletedNotif: 'タスク完了通知',
+        taskCompletedNotifDesc: 'タスク完了時にシステム通知を送信',
         searchBackend: 'ウェブ検索', searchSource: '検索ソース', searchBackendDesc: 'LLM が web_search ツールで使用する検索ソース',
         searchKey: 'API Key',
         searchKeyHintBing: 'Bing は API key 不要ですが、中国語の検索結果は良くありません',
@@ -1319,6 +1328,7 @@
       const [vllmDeclineConfirm, setVllmDeclineConfirm] = useState(false); // 引导框「不再提醒」二次确认子态
       const [language, setLanguage] = useState('zh');
       const [superPerm, setSuperPerm] = useState(false);
+      const [taskCompletedNotif, setTaskCompletedNotif] = useState(true);
       // search 后端配置:provider 默认 bing(对齐 bridge prefs::SearchProvider::default());
       // bs.settings 加载后 useEffect 同步进来。
       const [searchProvider, setSearchProvider] = useState('bing');
@@ -1503,6 +1513,8 @@
           // 后端 Theme 枚举(prefs.rs)只认 genesis/liquid-light/liquid-dark;深色=genesis,浅色=liquid-light
           const th = bs.settings.theme === 'liquid-light' ? 'light' : 'dark';
           if (th !== activeTheme) setActiveTheme(th);
+          const notifications = bs.settings.notifications || {};
+          setTaskCompletedNotif(notifications.task_completed !== false && notifications.enabled !== false);
           uiPrefsInitRef.current = true;
         }
         // 搜索配置：只在第一次从后端加载初始值，后续走草稿模式（确认后才保存并重启）。
@@ -1719,13 +1731,17 @@
         const topOverrides = { ...(overrides || {}) };
         delete topOverrides.advanced;
         delete topOverrides.search;
+        delete topOverrides.notifications;
         const baseSearch = base.search || { provider: 'bing', api_key: null, credentials: {} };
+        const baseNotifications = base.notifications || { enabled: true, task_completed: true };
+        const notificationOverrides = (overrides && overrides.notifications) ? overrides.notifications : null;
         return {
           ...base,
           ...topOverrides,
           theme: topOverrides.theme !== undefined ? topOverrides.theme : (activeTheme === 'dark' ? 'genesis' : 'liquid-light'),
           language: topOverrides.language !== undefined ? topOverrides.language : (LANG_TO_TAG[language] || 'zh-Hans'),
           search: searchOverrides ? { ...baseSearch, ...searchOverrides } : baseSearch,
+          notifications: notificationOverrides ? { ...baseNotifications, ...notificationOverrides } : baseNotifications,
           advanced: buildAdvancedOverrides(advancedOverrides),
         };
       }
@@ -1777,6 +1793,20 @@
         setLanguage(lang);
         if (bridge.available) {
           bridge.saveSettings(buildFullSettings({ language: LANG_TO_TAG[lang] || 'zh-Hans' }));
+        }
+      }
+
+      async function handleSetTaskCompletedNotif(enabled) {
+        const nextEnabled = !!enabled;
+        const previousEnabled = taskCompletedNotif;
+        setTaskCompletedNotif(nextEnabled);
+        if (bridge.available) {
+          const saved = await bridge.saveSettings(buildFullSettings({
+            notifications: { enabled: nextEnabled, task_completed: nextEnabled },
+          }));
+          if (saved === false) {
+            setTaskCompletedNotif(previousEnabled);
+          }
         }
       }
 
@@ -2136,6 +2166,7 @@
                 activeTheme={activeTheme} setActiveTheme={handleSetTheme}
                 language={language} setLanguage={handleSetLanguage}
                 superPerm={superPerm} setSuperPerm={handleToggleSuperPerm}
+                taskCompletedNotif={taskCompletedNotif} setTaskCompletedNotif={handleSetTaskCompletedNotif}
                 searchProvider={searchProvider} setSearchProvider={handleSetSearchProvider}
                 searchApiKey={searchApiKey} setSearchApiKey={handleSetSearchApiKey}
                 searchCredential={searchCredentialForProvider(searchProvider)}
@@ -5019,7 +5050,7 @@
       );
     };
 
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, searchCredential, searchKeyAction, searchHasSavedKey, onKeepSearchApiKey, onReplaceSearchApiKey, onDeleteSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onConfirmSearchConfig, searchNeedsRestart, languageNeedsRestart, bs, t, onRestoreArchived, onDeleteArchived }) => {
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, searchCredential, searchKeyAction, searchHasSavedKey, onKeepSearchApiKey, onReplaceSearchApiKey, onDeleteSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onConfirmSearchConfig, onMemoryEnabledChange, searchNeedsRestart, languageNeedsRestart, bs, t, onRestoreArchived, onDeleteArchived }) => {
       const isDark = activeTheme === 'dark';
       const isWindows = /Windows/i.test(navigator.userAgent || '');
       const [editingModel, setEditingModel] = useState(null);
@@ -5369,6 +5400,18 @@
                 </SRow>
               </SCard>
               )}
+
+              <SCard isDark={isDark} title={t.notifications}>
+                <SRow isDark={isDark} label={t.taskCompletedNotif} desc={t.taskCompletedNotifDesc}>
+                  <button
+                    onClick={() => setTaskCompletedNotif(!taskCompletedNotif)}
+                    className={`w-[52px] h-[32px] rounded-full p-[2px] transition-colors duration-300 relative ${taskCompletedNotif ? (isDark ? 'bg-[#A8C7FA]' : 'bg-[#0B57D0]') : (isDark ? 'bg-[#444746]' : 'bg-[#747775]')}`}
+                    aria-pressed={taskCompletedNotif}
+                  >
+                    <div className={`w-[28px] h-[28px] rounded-full shadow-sm transform transition-transform duration-300 ${taskCompletedNotif ? (isDark ? 'bg-[#041E49]' : 'bg-white') : (isDark ? 'bg-[#C4C7C5]' : 'bg-white')} ${taskCompletedNotif ? 'translate-x-[20px]' : 'translate-x-0'}`} />
+                  </button>
+                </SRow>
+              </SCard>
 
               <SCard isDark={isDark} title={t.appearance}>
                 <div className="space-y-8">

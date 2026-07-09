@@ -2186,13 +2186,18 @@
     notify();
   }
   async function saveSettings(prefs) {
-    state.settings = prefs;
+    const previous = state.settings;
     try {
       await invoke("update_settings", { prefs: prefs });
+      state.settings = prefs;
+      notify();
+      return true;
     } catch (e) {
       console.warn("save settings failed", e);
+      state.settings = previous;
+      notify();
+      return false;
     }
-    notify();
   }
   async function saveSettingsAndRestart(prefs) {
     state.settings = prefs;
