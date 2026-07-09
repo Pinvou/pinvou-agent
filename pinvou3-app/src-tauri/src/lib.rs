@@ -36,6 +36,7 @@ mod os;
 pub mod personas;
 mod pinvou_review;
 mod process;
+mod remote_control;
 pub mod super_permission;
 mod timing;
 mod updater;
@@ -51,6 +52,7 @@ use tauri::Manager;
 use crate::bridge::sessions::SessionStore;
 use crate::engine_pool::EnginePool;
 use crate::monitor::MonitorState;
+use crate::remote_control::RemoteControlManager;
 
 /// 把三省六部「网页类」预置模板 seed 到 `~/.pinvou3/web-template`（工部提示词硬编码此路径,
 /// 要在副本里 `npm run build` 写盘,而随 deb 的 resource_dir 是只读安装目录,故首次启动复制一份)。
@@ -259,6 +261,8 @@ pub fn run() {
             if let Some(store) = session_store.clone() {
                 app.handle().manage(store);
             }
+            app.handle()
+                .manage(RemoteControlManager::new(app.handle().clone()));
             // 多 session 并发:存 EnginePool(lazy spawn,首条消息才为该 session 起 engine)。
             // boot bridge 在 pool::new 里做一次(写盘 / 设 env 只能一次)。
             let handle = app.handle().clone();
@@ -422,6 +426,11 @@ pub fn run() {
             commands::save_session_artifacts,
             commands::list_workspace_files,
             commands::cancel_generation,
+            remote_control::remote_control_start,
+            remote_control::remote_control_stop,
+            remote_control::remote_control_status,
+            remote_control::remote_control_refresh_qr,
+            remote_control::remote_control_publish_user_message,
             commands::set_disabled_connectors,
             commands::get_disabled_connectors,
             commands::get_memory_profile,

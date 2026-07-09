@@ -1,0 +1,820 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>PINVOU Remote</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif; background: #101214; color: #f2f3f5; }
+    .app { min-height: 100vh; display: flex; flex-direction: column; }
+    header { position: sticky; top: 0; z-index: 2; padding: max(12px, env(safe-area-inset-top)) 12px 10px; background: rgba(16,18,20,.92); backdrop-filter: blur(18px); border-bottom: 1px solid rgba(255,255,255,.08); }
+    .title { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+    .session-title { min-width: 0; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 14px; background: rgba(255,255,255,.05); color: #f2f3f5; text-align: left; }
+    .session-title h1 { margin: 0; font-size: 16px; font-weight: 650; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .chevron { flex: 0 0 auto; color: #8d949c; font-size: 13px; }
+    .header-actions { display: flex; align-items: center; gap: 8px; }
+    .status { flex: 0 0 auto; font-size: 12px; color: #9fb8ff; }
+    .artifact-top { min-width: 74px; height: 38px; padding: 0 12px; border-radius: 999px; background: rgba(255,255,255,.08); color: #f2f3f5; font-size: 13px; }
+    .timer { margin-top: 7px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    main { flex: 1; overflow-y: auto; padding: 18px 14px 128px; }
+    .empty { margin: 20vh auto 0; max-width: 280px; color: #9aa0a6; text-align: center; line-height: 1.6; }
+    .msg { width: 100%; margin: 14px 0; padding: 0 2px; line-height: 1.72; font-size: 15px; white-space: pre-wrap; overflow-wrap: anywhere; color: #e9edf2; }
+    .msg.user { color: #f4f7fb; font-weight: 500; }
+    .msg.assistant { color: #dfe4ea; }
+    .system { margin: 10px 0; width: 100%; font-size: 12px; color: #aeb4bc; padding: 8px 10px; border-radius: 12px; background: rgba(255,255,255,.04); }
+    .tool-card { margin: 12px 0; width: 100%; min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 1px solid rgba(255,255,255,.08); border-radius: 14px; background: #1d1f22; color: #d7dce2; }
+    .tool-left { display: flex; align-items: center; gap: 9px; min-width: 0; }
+    .tool-icon { width: 18px; height: 18px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; color: #84d39a; font-size: 13px; }
+    .tool-name { font-size: 14px; font-weight: 560; white-space: nowrap; }
+    .tool-path { font-size: 12px; color: #8d949c; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tool-status { flex: 0 0 auto; font-size: 12px; color: #93d5a6; }
+    .card { margin: 12px 0; padding: 12px; border: 1px solid rgba(255,255,255,.12); border-radius: 14px; background: rgba(255,255,255,.05); }
+    .card h3 { margin: 0 0 8px; font-size: 14px; }
+    .artifact { margin: 16px 0; padding: 16px; border: 1px solid rgba(255,255,255,.10); border-radius: 18px; background: #1d1d1f; box-shadow: 0 14px 36px rgba(0,0,0,.22); }
+    .artifact-head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+    .artifact-icon { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; background: #28b8d4; color: #fff; font-weight: 700; font-size: 13px; }
+    .artifact-kind { font-size: 12px; letter-spacing: .08em; color: #aeb4bc; text-transform: uppercase; }
+    .artifact .name { font-size: 18px; font-weight: 700; margin-bottom: 14px; color: #f4f7fb; }
+    .artifact-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+    .artifact-pill { height: 42px; border-radius: 10px; background: rgba(255,255,255,.06); display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 13px; color: #d7dce2; }
+    .artifact .path { padding-top: 10px; border-top: 1px solid rgba(255,255,255,.08); font-size: 12px; color: #8d949c; overflow-wrap: anywhere; }
+    .question { font-size: 13px; color: #d7dce2; margin: 8px 0; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    button { appearance: none; border: 0; border-radius: 999px; padding: 10px 14px; font-size: 14px; color: #fff; background: #2c3136; }
+    button.primary { background: #0a84ff; }
+    button.danger { background: #c5221f; }
+    button.ghost { background: rgba(255,255,255,.07); color: #d7dce2; }
+    footer { position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 12px max(12px, env(safe-area-inset-bottom)); background: rgba(16,18,20,.94); backdrop-filter: blur(18px); border-top: 1px solid rgba(255,255,255,.08); }
+    .chipbar { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 8px; scrollbar-width: none; }
+    .chipbar::-webkit-scrollbar { display: none; }
+    .chip { flex: 0 0 auto; min-height: 34px; padding: 7px 11px; border-radius: 999px; border: 1px solid rgba(255,255,255,.10); background: rgba(255,255,255,.06); color: #dfe4ea; font-size: 12px; white-space: nowrap; }
+    .chip strong { font-weight: 650; color: #f5f7fa; }
+    .chip.readonly { color: #9aa0a6; }
+    .composer { display: flex; align-items: flex-end; gap: 8px; }
+    textarea { flex: 1; min-height: 44px; max-height: 130px; resize: none; border: 1px solid rgba(255,255,255,.12); border-radius: 18px; padding: 11px 12px; outline: none; background: #1b1e21; color: #fff; font: inherit; }
+    .composer button { width: 58px; min-height: 44px; padding: 0 12px; }
+    .row { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-top: 8px; }
+    .small { font-size: 12px; color: #8d949c; }
+    .overlay { position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,.52); display: flex; align-items: flex-end; }
+    .overlay.hidden { display: none; }
+    .sheet, .preview { width: 100%; max-height: 78vh; background: #171a1d; border: 1px solid rgba(255,255,255,.10); border-radius: 22px 22px 0 0; overflow: hidden; box-shadow: 0 -24px 60px rgba(0,0,0,.36); }
+    .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,.08); }
+    .sheet-head h2 { margin: 0; font-size: 16px; }
+    .sheet-body { max-height: calc(78vh - 58px); overflow: auto; padding: 8px; }
+    .sheet-item { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border-radius: 14px; border: 0; background: transparent; text-align: left; }
+    .sheet-item.active, .sheet-item:active { background: rgba(255,255,255,.07); }
+    .sheet-main { min-width: 0; }
+    .sheet-title { font-size: 14px; font-weight: 620; color: #eef2f6; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .sheet-sub { margin-top: 4px; font-size: 12px; color: #8d949c; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .sheet-mark { flex: 0 0 auto; font-size: 12px; color: #9fb8ff; }
+    .preview-body { max-height: calc(78vh - 58px); overflow: auto; padding: 12px; }
+    .preview pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #dfe4ea; }
+    .preview iframe { width: 100%; height: 62vh; border: 0; border-radius: 12px; background: #fff; }
+    .preview img { display: block; max-width: 100%; height: auto; border-radius: 12px; margin: 0 auto; background: #fff; }
+    .empty-panel { padding: 28px 14px; color: #8d949c; text-align: center; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="title">
+        <button class="session-title" id="sessionChip">
+          <h1 id="title">PINVOU Remote</h1>
+          <span class="chevron">⌄</span>
+        </button>
+        <div class="header-actions">
+          <button class="artifact-top" id="artifactChip">产物</button>
+        </div>
+      </div>
+      <div class="timer">
+        <span class="small" id="subtitle">当前 session</span>
+        <span class="status" id="status">连接中</span>
+      </div>
+    </header>
+    <main id="messages"><div class="empty">正在连接桌面端。连接成功后会同步当前会话。</div></main>
+    <footer>
+      <div class="chipbar" id="chipbar">
+        <button class="chip" id="modeChip">Mode</button>
+        <button class="chip" id="modelChip">Model</button>
+      </div>
+      <div class="composer">
+        <textarea id="input" rows="1" placeholder="发送消息到桌面端当前 session"></textarea>
+        <button class="primary" id="actionButton">发送</button>
+      </div>
+      <div class="row">
+        <span class="small" id="hint">云端仅中继，不保存消息全文</span>
+      </div>
+    </footer>
+    <div class="overlay hidden" id="sheetOverlay">
+      <section class="sheet">
+        <div class="sheet-head">
+          <h2 id="sheetTitle">面板</h2>
+          <button class="ghost" id="sheetClose">关闭</button>
+        </div>
+        <div class="sheet-body" id="sheetBody"></div>
+      </section>
+    </div>
+    <div class="overlay hidden" id="previewOverlay">
+      <section class="preview">
+        <div class="sheet-head">
+          <h2 id="previewTitle">预览</h2>
+          <button class="ghost" id="previewClose">关闭</button>
+        </div>
+        <div class="preview-body" id="previewBody"></div>
+      </section>
+    </div>
+  </div>
+  <script>
+    const roomId = location.pathname.split('/').filter(Boolean).pop();
+    const token = new URLSearchParams(location.search).get('token') || '';
+    const wsUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
+    const el = {
+      title: document.getElementById('title'),
+      subtitle: document.getElementById('subtitle'),
+      status: document.getElementById('status'),
+      messages: document.getElementById('messages'),
+      input: document.getElementById('input'),
+      hint: document.getElementById('hint'),
+      actionButton: document.getElementById('actionButton'),
+      chipbar: document.getElementById('chipbar'),
+      sessionChip: document.getElementById('sessionChip'),
+      artifactChip: document.getElementById('artifactChip'),
+      modeChip: document.getElementById('modeChip'),
+      modelChip: document.getElementById('modelChip'),
+      sheetOverlay: document.getElementById('sheetOverlay'),
+      sheetTitle: document.getElementById('sheetTitle'),
+      sheetBody: document.getElementById('sheetBody'),
+      sheetClose: document.getElementById('sheetClose'),
+      previewOverlay: document.getElementById('previewOverlay'),
+      previewTitle: document.getElementById('previewTitle'),
+      previewBody: document.getElementById('previewBody'),
+      previewClose: document.getElementById('previewClose'),
+    };
+    let ws = null;
+    let joined = false;
+    let sessionId = '';
+    let streamNode = null;
+    let reconnectTimer = null;
+    let joinTimer = null;
+    const state = {
+      sessions: [],
+      sessionsLoaded: false,
+      artifacts: [],
+      chips: {},
+      sheet: '',
+      turn: {
+        active: false,
+        phase: 'idle',
+        startedAt: 0,
+      },
+      replaced: false,
+    };
+    const sentClientIds = new Set();
+    const toolNodes = new Map();
+
+    function setStatus(text) { el.status.textContent = text; }
+    function clientId() { return `cm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`; }
+    function scrollBottom() { requestAnimationFrame(() => { el.messages.scrollTop = el.messages.scrollHeight; }); }
+    function clearEmpty() { const empty = el.messages.querySelector('.empty'); if (empty) empty.remove(); }
+    function shortId(id) { return id ? String(id).slice(0, 12) : ''; }
+    function formatSize(bytes) {
+      const n = Number(bytes || 0);
+      if (!n) return '0 B';
+      if (n < 1024) return `${n} B`;
+      if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+      return `${(n / 1024 / 1024).toFixed(1)} MB`;
+    }
+    function modeLabel(mode) { return mode === 'plan' ? 'Plan' : 'YOLO'; }
+    function elapsedText(ms) {
+      const total = Math.max(0, Math.floor(ms / 1000));
+      const mm = String(Math.floor(total / 60)).padStart(2, '0');
+      const ss = String(total % 60).padStart(2, '0');
+      return `${mm}:${ss}`;
+    }
+    function phaseText(phase) {
+      if (phase === 'waiting') return '等待';
+      if (phase === 'responding') return '生成';
+      if (phase === 'tool') return '工具';
+      if (phase === 'stopping') return '停止中';
+      return '空闲';
+    }
+    function setTurnActive(active, phase = active ? 'waiting' : 'idle') {
+      state.turn.active = active;
+      state.turn.phase = phase;
+      state.turn.startedAt = active ? (state.turn.startedAt || Date.now()) : 0;
+      renderRunState();
+    }
+    function setTurnPhase(phase) {
+      if (!state.turn.active) {
+        state.turn.startedAt = Date.now();
+        state.turn.active = true;
+      }
+      state.turn.phase = phase;
+      renderRunState();
+    }
+    function renderRunState() {
+      if (state.turn.active) {
+        el.actionButton.textContent = '停止';
+        el.actionButton.className = 'danger';
+        el.hint.textContent = `${phaseText(state.turn.phase)} ${elapsedText(Date.now() - state.turn.startedAt)} · 云端仅中继`;
+        setStatus(`${phaseText(state.turn.phase)} ${elapsedText(Date.now() - state.turn.startedAt)}`);
+      } else {
+        el.actionButton.textContent = '发送';
+        el.actionButton.className = 'primary';
+        el.hint.textContent = '云端仅中继，不保存消息全文';
+      }
+    }
+    function renderChips() {
+      const activeSession = state.sessions.find(s => s.active || s.id === sessionId);
+      el.title.textContent = activeSession ? activeSession.title || shortId(activeSession.id) : shortId(sessionId) || 'PINVOU Remote';
+      el.artifactChip.textContent = `产物 ${state.artifacts.length}`;
+      el.modeChip.innerHTML = `<strong>Mode</strong> ${modeLabel(state.chips.mode)}`;
+      el.modelChip.innerHTML = `<strong>Model</strong> ${state.chips.effective_model_name || '默认'}`;
+      [...el.chipbar.querySelectorAll('.chip.readonly')].forEach(node => node.remove());
+      if (state.chips.skill && state.chips.skill.name) addReadonlyChip(`Skill ${state.chips.skill.name}`);
+      if (state.chips.persona_id) addReadonlyChip(`Persona ${state.chips.persona_id}`);
+      if (state.chips.mounted_collection) addReadonlyChip(`知识库 #${state.chips.mounted_collection}`);
+      if (state.chips.pinvou_review_enabled) addReadonlyChip('品悟开启');
+    }
+    function rememberSnapshotSession(session) {
+      if (!session || !session.id) return;
+      const item = {
+        id: session.id,
+        title: session.title || shortId(session.id),
+        updated_at: session.updated_at || '',
+        message_count: session.message_count || 0,
+        active: true,
+      };
+      let seen = false;
+      state.sessions = state.sessions.map(s => {
+        if (s.id === session.id) {
+          seen = true;
+          return { ...s, ...item };
+        }
+        return { ...s, active: false };
+      });
+      if (!seen) state.sessions.unshift(item);
+      state.sessionsLoaded = true;
+    }
+    setInterval(() => {
+      if (state.turn.active) renderRunState();
+    }, 500);
+    function addReadonlyChip(text) {
+      const chip = document.createElement('span');
+      chip.className = 'chip readonly';
+      chip.textContent = text;
+      el.chipbar.appendChild(chip);
+    }
+    function openSheet(kind) {
+      state.sheet = kind;
+      if (kind === 'sessions') {
+        if (joined) {
+          state.sessionsLoaded = false;
+          sendAction('request_session_list', {});
+        }
+      }
+      if (kind === 'artifacts') sendAction('request_artifacts', {});
+      if (kind === 'models') sendAction('request_chips', {});
+      renderSheet();
+      el.sheetOverlay.classList.remove('hidden');
+    }
+    function closeSheet() {
+      state.sheet = '';
+      el.sheetOverlay.classList.add('hidden');
+    }
+    function renderSheet() {
+      if (state.sheet === 'sessions') return renderSessionSheet();
+      if (state.sheet === 'artifacts') return renderArtifactSheet();
+      if (state.sheet === 'mode') return renderModeSheet();
+      if (state.sheet === 'models') return renderModelSheet();
+    }
+    function sheetItem({ title, sub, mark, active, onClick }) {
+      const btn = document.createElement('button');
+      btn.className = `sheet-item${active ? ' active' : ''}`;
+      const main = document.createElement('div');
+      main.className = 'sheet-main';
+      const t = document.createElement('div');
+      t.className = 'sheet-title';
+      t.textContent = title || '';
+      const s = document.createElement('div');
+      s.className = 'sheet-sub';
+      s.textContent = sub || '';
+      main.appendChild(t);
+      if (sub) main.appendChild(s);
+      const m = document.createElement('div');
+      m.className = 'sheet-mark';
+      m.textContent = mark || '';
+      btn.appendChild(main);
+      if (mark) btn.appendChild(m);
+      btn.onclick = onClick;
+      return btn;
+    }
+    function renderSessionSheet() {
+      el.sheetTitle.textContent = '选择 Session';
+      el.sheetBody.innerHTML = '';
+      if (!joined) {
+        el.sheetBody.innerHTML = '<div class="empty-panel">正在连接桌面端。连接成功后会加载 session 列表。</div>';
+        return;
+      }
+      if (!state.sessionsLoaded) {
+        el.sheetBody.innerHTML = '<div class="empty-panel">正在加载 session 列表。</div>';
+        return;
+      }
+      if (!state.sessions.length) {
+        el.sheetBody.innerHTML = '<div class="empty-panel">暂无 session 列表。</div>';
+        return;
+      }
+      state.sessions.forEach(s => {
+        el.sheetBody.appendChild(sheetItem({
+          title: s.title || shortId(s.id),
+          sub: `${shortId(s.id)} · ${s.message_count || 0} 条消息`,
+          mark: s.active || s.id === sessionId ? '当前' : '',
+          active: s.active || s.id === sessionId,
+          onClick: () => {
+            if (s.id && s.id !== sessionId) sendAction('switch_remote_session', { session_id: s.id });
+            closeSheet();
+          },
+        }));
+      });
+    }
+    function renderArtifactSheet() {
+      el.sheetTitle.textContent = '产物';
+      el.sheetBody.innerHTML = '';
+      if (!state.artifacts.length) {
+        el.sheetBody.innerHTML = '<div class="empty-panel">当前 session 暂无产物。</div>';
+        return;
+      }
+      state.artifacts.forEach(a => {
+        el.sheetBody.appendChild(sheetItem({
+          title: a.basename || basename(a.path_tail) || '成品',
+          sub: `${a.path_tail || ''} · ${formatSize(a.byte_size)}`,
+          mark: '预览',
+          onClick: () => {
+            if (a.id) sendAction('request_artifact_preview', { artifact_id: a.id });
+          },
+        }));
+      });
+    }
+    function renderModeSheet() {
+      el.sheetTitle.textContent = '切换 Mode';
+      el.sheetBody.innerHTML = '';
+      [
+        { id: 'yolo', title: 'YOLO', sub: '直接执行当前请求' },
+        { id: 'plan', title: 'Plan', sub: '先规划，再执行' },
+      ].forEach(item => {
+        el.sheetBody.appendChild(sheetItem({
+          title: item.title,
+          sub: item.sub,
+          mark: state.chips.mode === item.id ? '当前' : '',
+          active: state.chips.mode === item.id,
+          onClick: () => {
+            sendAction('set_mode', { mode: item.id });
+            closeSheet();
+          },
+        }));
+      });
+    }
+    function renderModelSheet() {
+      el.sheetTitle.textContent = '切换 Model';
+      el.sheetBody.innerHTML = '';
+      el.sheetBody.appendChild(sheetItem({
+        title: '跟随全局默认',
+        sub: state.chips.global_model_id ? `默认 ${state.chips.global_model_id}` : '使用桌面端当前默认模型',
+        mark: state.chips.model_id ? '' : '当前',
+        active: !state.chips.model_id,
+        onClick: () => {
+          sendAction('set_model', { model_id: null });
+          closeSheet();
+        },
+      }));
+      (state.chips.models || []).forEach(m => {
+        el.sheetBody.appendChild(sheetItem({
+          title: m.name || m.model || m.id,
+          sub: m.model || m.id,
+          mark: state.chips.effective_model_id === m.id ? '当前' : '',
+          active: state.chips.effective_model_id === m.id,
+          onClick: () => {
+            sendAction('set_model', { model_id: m.id });
+            closeSheet();
+          },
+        }));
+      });
+    }
+    function addMessage(role, text) {
+      clearEmpty();
+      const div = document.createElement('div');
+      div.className = `msg ${role}`;
+      div.textContent = text || '';
+      el.messages.appendChild(div);
+      scrollBottom();
+      return div;
+    }
+    function addSystem(text) {
+      clearEmpty();
+      const div = document.createElement('div');
+      div.className = 'system';
+      div.textContent = text;
+      el.messages.appendChild(div);
+      scrollBottom();
+    }
+    function toolPath(args) {
+      args = args && typeof args === 'object' ? args : {};
+      return args.path || args.file_path || args.filename || '';
+    }
+    function addToolCard(tool) {
+      clearEmpty();
+      const id = tool.id || `tool_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const args = tool.args && typeof tool.args === 'object' ? tool.args : {};
+      const div = document.createElement('div');
+      div.className = 'tool-card';
+      div.dataset.toolId = id;
+      const left = document.createElement('div');
+      left.className = 'tool-left';
+      const icon = document.createElement('div');
+      icon.className = 'tool-icon';
+      icon.textContent = '⌁';
+      const name = document.createElement('div');
+      name.className = 'tool-name';
+      name.textContent = tool.name || 'tool';
+      const path = document.createElement('div');
+      path.className = 'tool-path';
+      path.textContent = toolPath(args);
+      left.appendChild(icon);
+      left.appendChild(name);
+      if (path.textContent) left.appendChild(path);
+      const status = document.createElement('div');
+      status.className = 'tool-status';
+      status.textContent = tool.status || '运行中';
+      div.appendChild(left);
+      div.appendChild(status);
+      el.messages.appendChild(div);
+      toolNodes.set(id, { root: div, status, args, name: tool.name || 'tool' });
+      scrollBottom();
+      return div;
+    }
+    function finishToolCard(payload) {
+      const id = payload && payload.id;
+      let rec = id ? toolNodes.get(id) : null;
+      if (!rec) {
+        addToolCard({
+          id,
+          name: payload && payload.name,
+          args: payload && payload.args,
+          status: payload && payload.success === false ? '失败' : '完成',
+        });
+        return;
+      }
+      rec.status.textContent = payload && payload.success === false ? '失败' : '完成';
+      rec.status.style.color = payload && payload.success === false ? '#f28b82' : '#93d5a6';
+    }
+    function basename(path) {
+      return String(path || '').split(/[\\/]/).filter(Boolean).pop() || '';
+    }
+    function parseMaybeJson(value) {
+      if (value && typeof value === 'object') return value;
+      if (typeof value !== 'string') return null;
+      try { return JSON.parse(value); } catch { return null; }
+    }
+    function artifactFromPayload(payload) {
+      const output = parseMaybeJson(payload && payload.output);
+      const args = payload && payload.args || {};
+      const raw = (output && (output.abs_path || output.path || output.file_path || output.local_path)) ||
+        (args && (args.path || args.file_path || args.filename)) ||
+        (payload && (payload.path_tail || payload.path));
+      if (!raw) return null;
+      return {
+        name: payload.basename || basename(raw),
+        path: payload.path_tail || raw,
+      };
+    }
+    function addArtifactCard(artifact) {
+      if (!artifact || !artifact.path) return;
+      clearEmpty();
+      const div = document.createElement('div');
+      div.className = 'artifact';
+      if (artifact.id) {
+        div.onclick = () => sendAction('request_artifact_preview', { artifact_id: artifact.id });
+      }
+      const head = document.createElement('div');
+      head.className = 'artifact-head';
+      const icon = document.createElement('div');
+      icon.className = 'artifact-icon';
+      icon.textContent = artifact.kind || 'HTML';
+      const kind = document.createElement('div');
+      kind.className = 'artifact-kind';
+      kind.textContent = artifact.kind || 'HTML';
+      head.appendChild(icon);
+      head.appendChild(kind);
+      const name = document.createElement('div');
+      name.className = 'name';
+      name.textContent = artifact.name || basename(artifact.path) || '成品';
+      const actions = document.createElement('div');
+      actions.className = 'artifact-actions';
+      const pin = document.createElement('div');
+      pin.className = 'artifact-pill';
+      pin.textContent = '品 · 智能找错';
+      const wu = document.createElement('div');
+      wu.className = 'artifact-pill';
+      wu.textContent = '悟 · 深度查漏';
+      actions.appendChild(pin);
+      actions.appendChild(wu);
+      const path = document.createElement('div');
+      path.className = 'path';
+      path.textContent = artifact.path;
+      div.appendChild(head);
+      div.appendChild(name);
+      div.appendChild(actions);
+      div.appendChild(path);
+      el.messages.appendChild(div);
+      scrollBottom();
+    }
+    function showPreview(payload) {
+      const preview = payload.preview || {};
+      el.previewTitle.textContent = payload.basename || basename(payload.path_tail) || '预览';
+      el.previewBody.innerHTML = '';
+      if (preview.type === 'image' && preview.data_url) {
+        const img = document.createElement('img');
+        img.alt = payload.basename || 'artifact preview';
+        img.src = preview.data_url;
+        el.previewBody.appendChild(img);
+      } else if (preview.type === 'html') {
+        const iframe = document.createElement('iframe');
+        iframe.setAttribute('sandbox', '');
+        iframe.srcdoc = preview.content || '';
+        el.previewBody.appendChild(iframe);
+      } else if (preview.type === 'text' || preview.type === 'markdown') {
+        const pre = document.createElement('pre');
+        pre.textContent = preview.content || '';
+        el.previewBody.appendChild(pre);
+      } else {
+        const empty = document.createElement('div');
+        empty.className = 'empty-panel';
+        empty.textContent = preview.reason || '这个产物暂不支持手机端预览。';
+        el.previewBody.appendChild(empty);
+      }
+      if (preview.truncated) {
+        const note = document.createElement('div');
+        note.className = 'system';
+        note.textContent = '预览内容已截断，仅显示前 256 KB。';
+        el.previewBody.appendChild(note);
+      }
+      el.previewOverlay.classList.remove('hidden');
+    }
+    function updateArtifacts(artifacts) {
+      state.artifacts = Array.isArray(artifacts) ? artifacts : [];
+      renderChips();
+      if (state.sheet === 'artifacts') renderArtifactSheet();
+    }
+    function sendAction(type, payload = {}, explicitClientId = null) {
+      if (!ws || ws.readyState !== WebSocket.OPEN || !joined) return false;
+      const action = { type, client_message_id: explicitClientId || clientId(), payload };
+      ws.send(JSON.stringify({ type: 'mobile_action', payload: action }));
+      return true;
+    }
+    function renderSnapshot(snapshot) {
+      streamNode = null;
+      el.messages.innerHTML = '';
+      const session = snapshot.session || {};
+      sessionId = session.id || sessionId;
+      rememberSnapshotSession(session);
+      el.title.textContent = session.title || 'PINVOU Remote';
+      el.subtitle.textContent = session.id ? `session ${session.id}` : '当前 session';
+      updateArtifacts(Array.isArray(snapshot.artifacts) ? snapshot.artifacts : []);
+      const messages = Array.isArray(snapshot.messages) ? snapshot.messages : [];
+      if (!messages.length) {
+        el.messages.innerHTML = '<div class="empty">当前 session 暂无历史消息。你可以直接发送第一条远程消息。</div>';
+      }
+      messages.forEach(m => {
+        if (m.content) addMessage(m.role === 'user' ? 'user' : 'assistant', m.content);
+        if (Array.isArray(m.tools) && m.tools.length) {
+          m.tools.forEach(t => addToolCard({ id: t.id, name: t.name, args: t.args, status: '完成' }));
+        }
+      });
+      state.artifacts.forEach(a => addArtifactCard({
+        id: a.id,
+        name: a.basename || basename(a.path_tail),
+        path: a.path_tail || a.path || '',
+        kind: a.kind,
+      }));
+      renderChips();
+    }
+    function renderUserInput(payload) {
+      clearEmpty();
+      const card = document.createElement('div');
+      card.className = 'card';
+      const title = document.createElement('h3');
+      title.textContent = '需要确认';
+      card.appendChild(title);
+      const questions = Array.isArray(payload.questions) ? payload.questions : [];
+      const answers = [];
+      questions.forEach(q => {
+        const qn = document.createElement('div');
+        qn.className = 'question';
+        qn.textContent = q.question || q.header || '请选择';
+        card.appendChild(qn);
+        const actions = document.createElement('div');
+        actions.className = 'actions';
+        (q.options || []).forEach(opt => {
+          const btn = document.createElement('button');
+          btn.textContent = opt.label || opt.value || '选择';
+          btn.onclick = () => {
+            answers.push({ id: q.id, label: opt.label, value: opt.value || opt.label });
+            sendAction('submit_user_input', { tool_call_id: payload.id, answers });
+            card.remove();
+          };
+          actions.appendChild(btn);
+        });
+        card.appendChild(actions);
+      });
+      const row = document.createElement('div');
+      row.className = 'actions';
+      const cancel = document.createElement('button');
+      cancel.className = 'danger';
+      cancel.textContent = '取消';
+      cancel.onclick = () => { sendAction('cancel_user_input', { tool_call_id: payload.id }); card.remove(); };
+      row.appendChild(cancel);
+      card.appendChild(row);
+      el.messages.appendChild(card);
+      scrollBottom();
+    }
+    function handleDesktopEvent(msg) {
+      switch (msg.type) {
+        case 'session_snapshot':
+          renderSnapshot(msg.payload || {});
+          setStatus('已同步');
+          break;
+        case 'session_list':
+          state.sessions = Array.isArray(msg.payload && msg.payload.sessions) ? msg.payload.sessions : [];
+          state.sessionsLoaded = true;
+          sessionId = (msg.payload && msg.payload.active_session_id) || sessionId;
+          renderChips();
+          if (state.sheet === 'sessions') renderSessionSheet();
+          break;
+        case 'remote_session_switched': {
+          const s = msg.payload && msg.payload.session || {};
+          sessionId = s.id || sessionId;
+          el.title.textContent = s.title || 'PINVOU Remote';
+          el.subtitle.textContent = sessionId ? `session ${sessionId}` : '当前 session';
+          setTurnActive(false);
+          setStatus('已切换');
+          break;
+        }
+        case 'artifact_list':
+          updateArtifacts(msg.payload && msg.payload.artifacts);
+          break;
+        case 'artifact_preview':
+          showPreview(msg.payload || {});
+          break;
+        case 'chips_snapshot':
+          state.chips = msg.payload || {};
+          renderChips();
+          if (state.sheet === 'mode') renderModeSheet();
+          if (state.sheet === 'models') renderModelSheet();
+          break;
+        case 'message_append': {
+          const p = msg.payload || {};
+          if (p.client_message_id && sentClientIds.has(p.client_message_id)) return;
+          addMessage(p.role === 'user' ? 'user' : 'assistant', p.content || '');
+          if (p.role === 'user') setTurnActive(true, 'waiting');
+          if (p.role === 'assistant') setTurnPhase('responding');
+          break;
+        }
+        case 'assistant_delta':
+          setTurnPhase('responding');
+          if (!streamNode) streamNode = addMessage('assistant', '');
+          streamNode.textContent += (msg.payload && msg.payload.text) || '';
+          scrollBottom();
+          break;
+        case 'tool_call_start':
+          setTurnPhase('tool');
+          addToolCard({ id: msg.payload && msg.payload.id, name: msg.payload && msg.payload.name, args: msg.payload && msg.payload.args, status: '运行中' });
+          break;
+        case 'tool_call_end':
+          finishToolCard(msg.payload || {});
+          addArtifactCard(artifactFromPayload(msg.payload || {}));
+          break;
+        case 'artifact_summary':
+          addArtifactCard(artifactFromPayload(msg.payload || {}));
+          break;
+        case 'user_input_required':
+          setTurnActive(false);
+          renderUserInput(msg.payload || {});
+          break;
+        case 'session_status':
+          streamNode = null;
+          setTurnActive(false);
+          setStatus((msg.payload && msg.payload.status) || '空闲');
+          break;
+        case 'error':
+          setStatus('连接异常');
+          if (state.sheet === 'sessions') {
+            el.sheetBody.innerHTML = `<div class="empty-panel">${(msg.payload && msg.payload.message) || msg.message || '连接异常'}</div>`;
+          }
+          addSystem(`错误: ${(msg.payload && msg.payload.message) || msg.message || 'unknown'}`);
+          break;
+        case 'room_replaced':
+          state.replaced = true;
+          addSystem('这个手机连接已被新页面替换');
+          setStatus('已替换');
+          break;
+        case 'room_closed':
+          addSystem('桌面端已停止远程控制');
+          setTurnActive(false);
+          setStatus('已停止');
+          break;
+      }
+    }
+    function handleRelayMessage(msg) {
+      if (msg.type === 'mobile_joined') {
+        joined = true;
+        clearTimeout(joinTimer);
+        sessionId = msg.session_id || '';
+        setStatus('已连接');
+        if (state.sheet === 'sessions') renderSessionSheet();
+        sendAction('request_session_list', {});
+        sendAction('request_chips', {});
+        sendAction('request_artifacts', {});
+        return;
+      }
+      handleDesktopEvent(msg);
+    }
+    function connect() {
+      clearTimeout(reconnectTimer);
+      clearTimeout(joinTimer);
+      setStatus('连接中');
+      ws = new WebSocket(wsUrl);
+      function joinRoom() {
+        if (!ws || ws.readyState !== WebSocket.OPEN || joined) return;
+        ws.send(JSON.stringify({ type: 'mobile_join', room_id: roomId, token }));
+      }
+      ws.onopen = () => {
+        joinRoom();
+        joinTimer = setTimeout(() => {
+          if (!joined) {
+            joinRoom();
+            setStatus('配对中');
+            if (!el.messages.querySelector('.system')) {
+              addSystem('已连到中继，正在等待桌面端确认配对。');
+            }
+          }
+        }, 5000);
+      };
+      ws.onmessage = ev => {
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch { return; }
+        handleRelayMessage(msg);
+      };
+      ws.onclose = () => {
+        joined = false;
+        clearTimeout(joinTimer);
+        if (state.replaced) return;
+        setStatus('重连中');
+        reconnectTimer = setTimeout(connect, 1600);
+      };
+      ws.onerror = () => setStatus('连接异常');
+    }
+    function submitComposer() {
+      if (state.turn.active) {
+        setTurnPhase('stopping');
+        sendAction('cancel_generation', {});
+        return;
+      }
+      if (!joined) {
+        setStatus('连接中');
+        addSystem('还没有连接到桌面端，连接成功后再发送。');
+        return;
+      }
+      const text = el.input.value.trim();
+      if (!text) return;
+      const id = clientId();
+      sentClientIds.add(id);
+      addMessage('user', text);
+      el.input.value = '';
+      setTurnActive(true, 'waiting');
+      if (!sendAction('user_message', { content: text }, id)) {
+        setTurnActive(false);
+        addSystem('发送失败：远控连接尚未就绪。');
+      }
+    }
+    el.actionButton.onclick = submitComposer;
+    el.sessionChip.onclick = () => openSheet('sessions');
+    el.artifactChip.onclick = () => openSheet('artifacts');
+    el.modeChip.onclick = () => openSheet('mode');
+    el.modelChip.onclick = () => openSheet('models');
+    el.sheetClose.onclick = closeSheet;
+    el.sheetOverlay.onclick = e => { if (e.target === el.sheetOverlay) closeSheet(); };
+    el.previewClose.onclick = () => el.previewOverlay.classList.add('hidden');
+    el.previewOverlay.onclick = e => { if (e.target === el.previewOverlay) el.previewOverlay.classList.add('hidden'); };
+    el.input.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        submitComposer();
+      }
+    });
+    renderChips();
+    renderRunState();
+    connect();
+  </script>
+</body>
+</html>

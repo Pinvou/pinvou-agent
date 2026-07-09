@@ -149,6 +149,18 @@
     // 应用内升级: updateInfo = check_for_update 返回值(available=true 才有意义)
     appVersion: null,
     updateInfo: null,
+    remoteControl: {
+      active: false,
+      room_id: null,
+      session_id: null,
+      url: null,
+      expires_at: null,
+      status: "idle",
+      relay_url: "",
+      last_error: null,
+      pairing: null,
+      starting: false,
+    },
     updateChecking: false,
     updateCheckError: null,   // 手动检查的错误/「已是最新」提示文案
     updateDownloading: false,
@@ -1161,6 +1173,7 @@
       state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
     });
     notify();
+    publishRemoteUserMessage(sid, displayText, meta && meta.remoteClientMessageId);
     return invoke("chat", { message: text, attachments: attachmentsPayload, sessionId: sid })
       .catch(function (err) {
         runSyncOnSession(sid, function () {
@@ -1170,6 +1183,14 @@
         });
         notify();
       });
+  }
+  function publishRemoteUserMessage(sid, content, clientMessageId) {
+    if (!sid || !content) return;
+    invoke("remote_control_publish_user_message", {
+      sessionId: sid,
+      content: content,
+      clientMessageId: clientMessageId || null,
+    }).catch(function () { /* 没开远控时静默跳过 */ });
   }
   // 本轮跑完(或被停止)后,若该 session 不忙且有排队消息 → 把【整个队列】合并成一条
   // 一次性发出(Claude 式:排队的全部一起扔进下一轮,而不是一条条串行)。
@@ -1724,6 +1745,27 @@
       // (file_watcher 递归会推 tmp/ _state/ 等子目录与 infra 文件 → 此处兜住)。
       if (isDeliverable(p.path) || findPresentedArtifact(p.path)) trackArtifact(p.path);
     });
+  });
+
+  listen("remote_control:mobile_user_message", function (e) {
+    var p = e.payload || {};
+    var sid = p.session_id;
+    var content = (p.content || "").trim();
+    if (!sid || !content) return;
+    if (isBusyFor(sid)) {
+      runSyncOnSession(sid, function () {
+        state.queued.push({
+          id: ++itemIdSeq,
+          text: content,
+          displayText: content,
+          attachments: [],
+          meta: { remoteClientMessageId: p.client_message_id || null },
+        });
+      });
+      notify();
+      return;
+    }
+    doSendFor(sid, content, content, [], { remoteClientMessageId: p.client_message_id || null });
   });
 
   // 本地语音识别依赖安装进度（模型下载 / ffmpeg 安装）
@@ -3131,6 +3173,10 @@
     state.updateProgress = p.total ? Math.round((p.downloaded / p.total) * 100) : 0;
     notify();
   });
+  listen("remote_control:status", function (e) {
+    state.remoteControl = Object.assign({}, state.remoteControl, e.payload || {});
+    notify();
+  });
   async function loadAppVersion() {
     try {
       state.appVersion = await invoke("get_app_version");
@@ -3192,6 +3238,48 @@
   }
   function reportPendingUpdateResult() {
     invoke("report_pending_update_result").catch(function () { /* 静默重试,不阻塞启动 */ });
+  }
+
+  // ── Remote Control: 当前 session 手机远控 ───────────────────────
+  async function refreshRemoteControlStatus() {
+    try {
+      var status = await invoke("remote_control_status");
+      state.remoteControl = Object.assign({}, state.remoteControl, status || {});
+    } catch (e) {
+      state.remoteControl = Object.assign({}, state.remoteControl, { last_error: String(e) });
+    }
+    notify();
+  }
+  async function startRemoteControl(sessionId) {
+    state.remoteControl = Object.assign({}, state.remoteControl, { starting: true, last_error: null });
+    notify();
+    try {
+      var info = await invoke("remote_control_start", { sessionId: sessionId || state.activeSessionId || null });
+      state.remoteControl = Object.assign({}, state.remoteControl, info || {}, { active: true, pairing: info, starting: false, last_error: null });
+      await refreshRemoteControlStatus();
+      return info;
+    } catch (e) {
+      state.remoteControl = Object.assign({}, state.remoteControl, { starting: false, last_error: String(e) });
+      notify();
+      throw e;
+    }
+  }
+  async function stopRemoteControl() {
+    try { await invoke("remote_control_stop"); } catch (e) { state.remoteControl.last_error = String(e); }
+    state.remoteControl = Object.assign({}, state.remoteControl, { active: false, pairing: null, status: "stopped" });
+    notify();
+  }
+  async function refreshRemoteControlQr(sessionId) {
+    try {
+      var info = await invoke("remote_control_refresh_qr", { sessionId: sessionId || state.activeSessionId || null });
+      state.remoteControl = Object.assign({}, state.remoteControl, info || {}, { active: true, pairing: info, last_error: null });
+      await refreshRemoteControlStatus();
+      return info;
+    } catch (e) {
+      state.remoteControl = Object.assign({}, state.remoteControl, { last_error: String(e) });
+      notify();
+      throw e;
+    }
   }
 
   // ── 依赖体检 ─────────────────────────────────────────────────────
@@ -3784,6 +3872,7 @@
     setInterval(pollBackendStatus, 10000);
     reportPendingUpdateResult(); // Windows OTA 升级后反馈,失败保留记录下次再试
     checkForUpdateSilently(); // fire-and-forget,不阻塞启动
+    refreshRemoteControlStatus(); // fire-and-forget
     await resumeWorkflowOnBoot(); // [2026-06-06] 有进行中的工作流 run 就自动挂回看板
     notify();
   }
@@ -3835,6 +3924,10 @@
     testModelConnection: testModelConnection,
     toggleSuperPerm: toggleSuperPerm,
     renderMarkdown: renderMarkdown,
+    startRemoteControl: startRemoteControl,
+    stopRemoteControl: stopRemoteControl,
+    refreshRemoteControlQr: refreshRemoteControlQr,
+    refreshRemoteControlStatus: refreshRemoteControlStatus,
     // Plan/YOLO
     acceptPlan: acceptPlan,
     discardPlan: discardPlan,
