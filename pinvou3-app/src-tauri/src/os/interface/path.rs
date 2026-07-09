@@ -22,6 +22,10 @@ pub fn python_command() -> String {
     super::super::platform::python_command()
 }
 
+pub fn bundled_onnxruntime_dylib_path() -> Option<PathBuf> {
+    super::super::platform::bundled_onnxruntime_dylib_path()
+}
+
 pub fn connector_cli_command(cli_bin: &str, program: &str) -> Command {
     super::super::platform::connector_cli_command(cli_bin, program)
 }

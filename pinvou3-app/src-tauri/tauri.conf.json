@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "pinvou3",
   "mainBinaryName": "pinvou3-tauri",
-  "version": "0.5.9",
+  "version": "0.5.10",
   "identifier": "com.pinvou.pinvou3",
   "build": {
     "frontendDist": "../src"
@@ -45,6 +45,7 @@
       "resources/windows/tesseract/": "runtime/tesseract",
       "resources/windows/python/": "runtime/python",
       "resources/windows/node/": "runtime/node",
+      "resources/windows/onnxruntime/": "runtime/onnxruntime",
       "resources/windows/asr/README.md": "runtime/asr/README.md",
       "resources/windows/asr/pinvou-asr.exe": "runtime/asr/pinvou-asr.exe",
       "resources/windows/asr/llama-funasr-sensevoice.exe": "runtime/asr/llama-funasr-sensevoice.exe",

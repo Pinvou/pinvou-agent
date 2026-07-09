@@ -37,6 +37,7 @@ impl Embedder {
         // bge-m3 dense 用 CLS pooling；输出再手动归一化(便于点积即余弦)。
         let udm =
             UserDefinedEmbeddingModel::new(onnx, tokenizer_files).with_pooling(Pooling::Cls);
+        configure_onnxruntime_dylib()?;
         let model = TextEmbedding::try_new_from_user_defined(udm, InitOptionsUserDefined::default())
             .map_err(|e| e.to_string())?;
         Ok(Self {
@@ -119,6 +120,33 @@ pub fn blob_to_vec(b: &[u8]) -> Vec<f32> {
 }
 
 /// 余弦相似度（两个已归一化向量 → 点积）。
+#[cfg(target_os = "windows")]
+fn configure_onnxruntime_dylib() -> Result<(), String> {
+    if std::env::var("ORT_DYLIB_PATH")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    let path = crate::os::bundled_onnxruntime_dylib_path().ok_or_else(|| {
+        "Windows ONNX Runtime CPU runtime is missing: runtime/onnxruntime/onnxruntime.dll"
+            .to_string()
+    })?;
+    std::env::set_var("ORT_DYLIB_PATH", &path);
+    eprintln!(
+        "[knowledge] ONNX Runtime dynamic library pinned: {}",
+        path.display()
+    );
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn configure_onnxruntime_dylib() -> Result<(), String> {
+    Ok(())
+}
+
 pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return -1.0;

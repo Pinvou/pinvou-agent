@@ -73,3 +73,4 @@ pinvou3-app/src-tauri/resources/bge-m3/
 pinvou3-app/src-tauri/resources/windows/python/
 pinvou3-app/src-tauri/resources/windows/node/
 pinvou3-app/src-tauri/resources/windows/pandoc/
+pinvou3-app/src-tauri/resources/windows/onnxruntime/

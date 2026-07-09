@@ -20,6 +20,10 @@ pub fn pandoc_tool_path() -> PathBuf {
     PathBuf::from("pandoc")
 }
 
+pub fn bundled_onnxruntime_dylib_path() -> Option<PathBuf> {
+    None
+}
+
 pub fn libreoffice_tool_path() -> PathBuf {
     PathBuf::from("soffice")
 }

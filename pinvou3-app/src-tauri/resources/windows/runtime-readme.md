@@ -1,10 +1,12 @@
 # Windows runtime resources
 
-`python/` and `node/` are generated during Windows packaging from local runtime
-archives, then installed under `runtime/python` and `runtime/node`:
+`python/`, `node/`, `pandoc/`, and `onnxruntime/` are generated during Windows
+packaging from local runtime archives, then installed under `runtime/`:
 
-- `C:\Users\z27014\Downloads\python-3.13.14-embed-amd64.zip`
-- `C:\Users\z27014\Downloads\node-v24.18.0-win-x64.zip`
+- `src-tauri/resources/windows/python-3.13.14-embed-amd64.zip`
+- `src-tauri/resources/windows/node-v24.18.0-win-x64.zip`
+- `src-tauri/resources/windows/pandoc-3.10-windows-x86_64.zip`
+- `src-tauri/resources/windows/onnxruntime-win-x64-1.20.0-runtime.zip`
 
 Run this before packaging, or use `npm run build:nsis` which runs it
 automatically:
@@ -18,6 +20,8 @@ Expected generated layout:
 ```text
 src-tauri/resources/windows/python/pythonw.exe
 src-tauri/resources/windows/node/node.exe
+src-tauri/resources/windows/pandoc/pandoc.exe
+src-tauri/resources/windows/onnxruntime/onnxruntime.dll
 ```
 
 Expected installed layout:
@@ -25,6 +29,8 @@ Expected installed layout:
 ```text
 {install_dir}/runtime/python/pythonw.exe
 {install_dir}/runtime/node/node.exe
+{install_dir}/runtime/pandoc/pandoc.exe
+{install_dir}/runtime/onnxruntime/onnxruntime.dll
 ```
 
 The generated runtime directories are intentionally ignored by git because they

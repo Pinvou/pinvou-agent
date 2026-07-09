@@ -38,6 +38,10 @@ pub fn python_command() -> String {
     "python3".to_string()
 }
 
+pub fn bundled_onnxruntime_dylib_path() -> Option<PathBuf> {
+    None
+}
+
 pub fn connector_cli_command(cli_bin: &str, program: &str) -> Command {
     Command::new(connector_cli_program(cli_bin, program))
 }
