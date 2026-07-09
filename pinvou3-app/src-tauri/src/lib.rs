@@ -32,6 +32,7 @@ mod knowledge;
 mod local_vllm_setup;
 pub mod memory;
 mod monitor;
+mod notifications;
 mod os;
 pub mod personas;
 mod pinvou_review;
@@ -198,6 +199,7 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -285,6 +287,8 @@ pub fn run() {
             // get_monitor_snapshot 时触发（监控页面 1s interval，离开页面停）。
             let monitor_state = MonitorState::new();
             app.handle().manage(monitor_state);
+            app.handle()
+                .manage(notifications::NotificationState::default());
 
             // CLI 连接器连接编排状态(按连接器 id 存长驻子进程 PID + 取消标志),
             // 飞书 / 企微共用,供 *_connect_begin / *_cancel 用。
