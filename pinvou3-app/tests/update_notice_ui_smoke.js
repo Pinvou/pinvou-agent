@@ -50,7 +50,7 @@ async function main() {
 
   const cardText = await page.$eval('[data-update-notice-card="true"]', el => el.innerText);
   if (!cardText.includes('PINVOU v1.2.0')) throw new Error('未显示 mock 更新版本');
-  if (!cardText.includes('重启升级')) throw new Error('未显示升级按钮');
+  if (!cardText.includes('升级并重启')) throw new Error('未显示升级按钮');
 
   await page.click('[data-update-notice-card="true"] button[title="关闭"]');
   await page.waitForFunction(() => !document.querySelector('[data-update-notice-card="true"]'), { timeout: 5000 });

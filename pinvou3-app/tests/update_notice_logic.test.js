@@ -39,13 +39,29 @@ assert.strictEqual(logic.viewModel(null, null).visible, false);
 
 let vmIdle = logic.viewModel(
   { appVersion: '1.1.0' },
-  { available: true, latest_version: '1.2.0' }
+  { available: true, latest_version: '1.2.0', platform: 'linux' }
 );
 assert.strictEqual(vmIdle.visible, true);
 assert.strictEqual(vmIdle.version, '1.2.0');
-assert.strictEqual(vmIdle.label, '重启升级');
+assert.strictEqual(vmIdle.label, '升级并重启');
 assert.strictEqual(vmIdle.action, 'download');
 assert.strictEqual(vmIdle.disabled, false);
+assert.strictEqual(vmIdle.restartAfterInstall, true);
+
+let vmWindowsIdle = logic.viewModel(
+  { appVersion: '1.1.0' },
+  { available: true, latest_version: '1.2.0', platform: 'windows' }
+);
+assert.strictEqual(vmWindowsIdle.label, '下载并安装');
+assert.strictEqual(vmWindowsIdle.restartAfterInstall, false);
+
+let vmCustomLabels = logic.viewModel(
+  { appVersion: '1.1.0' },
+  { available: true, latest_version: '1.2.0', platform: 'linux' },
+  null,
+  { downloadInstallRestart: 'Update & Restart' }
+);
+assert.strictEqual(vmCustomLabels.label, 'Update & Restart');
 
 let vmDownloading = logic.viewModel(
   { updateDownloading: true, updateProgress: 42 },

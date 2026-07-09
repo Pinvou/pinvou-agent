@@ -333,6 +333,7 @@
         checkUpdate: '检查更新', checking: '检查中…', upToDate: '已是最新版本',
         newVersionFound: '发现新版本', updateNotes: '更新说明',
         downloadInstall: '下载并安装', downloading: '下载中…', installing: '安装中…',
+        downloadInstallRestart: '升级并重启',
         cancel: '取消', cancelling: '取消中…',
         updateComplete: '升级完成，重启后生效', restartNow: '立即重启',
         updateInstallerStarted: '安装器已启动，应用将自动退出',
@@ -594,6 +595,7 @@
         checkUpdate: 'Check for Updates', checking: 'Checking…', upToDate: 'Up to date',
         newVersionFound: 'New version available', updateNotes: 'Release Notes',
         downloadInstall: 'Download & Install', downloading: 'Downloading…', installing: 'Installing…',
+        downloadInstallRestart: 'Update & Restart',
         cancel: 'Cancel', cancelling: 'Cancelling…',
         updateComplete: 'Update complete, restart to apply', restartNow: 'Restart Now',
         updateInstallerStarted: 'Installer started, the app will close automatically',
@@ -854,6 +856,7 @@
         checkUpdate: '更新を確認', checking: '確認中…', upToDate: '最新バージョンです',
         newVersionFound: '新しいバージョンがあります', updateNotes: '更新内容',
         downloadInstall: 'ダウンロードしてインストール', downloading: 'ダウンロード中…', installing: 'インストール中…',
+        downloadInstallRestart: '更新して再起動',
         cancel: 'キャンセル', cancelling: 'キャンセル中…',
         updateComplete: '更新が完了しました。再起動後に有効になります', restartNow: '今すぐ再起動',
         updateInstallerStarted: 'インストーラーを起動しました。アプリは自動終了します',
@@ -2059,6 +2062,7 @@
           <UpdateNoticeButton
             theme={activeTheme}
             bs={bs}
+            t={t}
             onShowChangelog={() => {
               setCurrentView('settings');
               setSettingsUpdateFocusTick(v => v + 1);
@@ -2068,7 +2072,7 @@
       );
     };
 
-    const UpdateNoticeButton = ({ theme, bs, onShowChangelog }) => {
+    const UpdateNoticeButton = ({ theme, bs, t, onShowChangelog }) => {
       const isDark = theme === 'dark';
       const logic = window.UpdateNoticeLogic;
       const isPreview = !bridge.available && logic.previewEnabled(window.location);
@@ -2079,7 +2083,14 @@
 
       if (!updateInfo || closed) return null;
 
-      const vm = logic.viewModel(bs, updateInfo, bs && bs.appVersion);
+      const vm = logic.viewModel(bs, updateInfo, bs && bs.appVersion, {
+        downloadInstall: t.downloadInstall,
+        downloadInstallRestart: t.downloadInstallRestart,
+        downloading: t.downloading,
+        installing: t.installing,
+        restartNow: t.restartNow,
+        updateInstallerStarted: t.updateInstallerStarted,
+      });
 
       const handleUpgrade = () => {
         if (isPreview) {
@@ -2113,7 +2124,7 @@
               <div className="flex items-center justify-between">
                 <span className={`text-[13px] font-semibold tracking-wide transition-colors duration-300 ${
                   isDark ? 'text-gray-100' : 'text-gray-900'
-                }`}>发现新版本</span>
+                }`}>{t.newVersionFound}</span>
                 <button
                   type="button"
                   onClick={() => setClosed(true)}
@@ -2122,7 +2133,7 @@
                       ? 'text-gray-500 hover:text-gray-300 hover:bg-white/[0.08]'
                       : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
                   }`}
-                  title="关闭"
+                  title={t.winClose}
                 >
                   <X size={14} />
                 </button>
@@ -2147,7 +2158,7 @@
                   : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
               }`}
             >
-              更新日志
+              {t.updateNotes}
             </button>
             <button
               type="button"
@@ -5194,7 +5205,7 @@
                                 isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]'
                                        : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'
                               }`}
-                            >{t.downloadInstall} (v{upd.latest_version})</button>
+                            >{(isWindowsUpdate ? t.downloadInstall : t.downloadInstallRestart)} (v{upd.latest_version})</button>
                           )}
 
                           {bs && bs.updateError && (
