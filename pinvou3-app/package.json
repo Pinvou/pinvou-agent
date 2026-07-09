@@ -6,6 +6,8 @@
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
+    "dev:ui": "tauri dev",
+    "serve:src": "node src-tauri/scripts/serve-src.mjs",
     "build": "tauri build"
   },
   "devDependencies": {
