@@ -100,9 +100,10 @@ impl Pinvou3Bridge {
     /// 找到用户在桌面/文档/下载里的真实文件。配套敏感目录禁令在
     /// `bundle/instructions.md` 里引导，硬拦截后续走 deepseek-tui hook 注册。
     ///
-    /// **$PINVOU3_SESSION_ARTIFACTS** 环境变量在这里 set：让 LLM 通过
-    /// `write_file` 写"产出"时落到 `~/.pinvou3/sessions/<id>/artifacts/`，
-    /// 不污染用户家目录。多 session 切换时调用方应重新 set。
+    /// **$PINVOU3_SESSION_ARTIFACTS** 环境变量在这里 set 到公共 MCP 产物目录。
+    /// PPT / 公文等 MCP server 是 stdio 子进程，不能可靠感知当前 GUI session；
+    /// 因此二进制办公产物固定落到 `sessions/default/artifacts/`，具体归属由带
+    /// `session_id` 的工具事件和前端持久化决定。
     pub fn boot() -> Result<Self> {
         // ⓪ 注入 pinvou3 版 prompt 文案到底座 prompt 合成层(base/locale/authority)。
         // 幂等(底座 OnceLock 首次生效、后续 Err 被忽略),必须早于任何 engine spawn。
@@ -168,9 +169,7 @@ impl Pinvou3Bridge {
                 let head: String = existing.chars().take(200).collect();
                 let is_auto_gen = head.contains("Project Structure (Auto-generated)");
                 let is_pinvou3_managed = head.contains("pinvou3 workspace context");
-                if (is_auto_gen || is_pinvou3_managed)
-                    && std::fs::remove_file(&legacy).is_ok()
-                {
+                if (is_auto_gen || is_pinvou3_managed) && std::fs::remove_file(&legacy).is_ok() {
                     removed += 1;
                 }
             }
@@ -277,6 +276,12 @@ impl Pinvou3Bridge {
         let user = paths::user_instructions();
         if user.is_file() {
             out.push(InstructionSource::File(user));
+        }
+        match crate::memory::ensure_runtime_prompt(session_id) {
+            Ok(path) => out.push(InstructionSource::File(path)),
+            Err(err) => eprintln!(
+                "[pinvou3-app] memory runtime prompt unavailable for session {session_id}: {err}"
+            ),
         }
         out
     }
@@ -513,12 +518,12 @@ impl Pinvou3Bridge {
         // 间接检查抓不到)。底座 `context_input_budget_for_route` 已封装窗口分档(≥500K→262144 /
         // 否则 effective_max_output)+ headroom;传 input_tokens=0 取总 budget E。上游改这些
         // pinvou3 自动跟随、永不倒置。route_limits 与 build_engine_config.active_route_limits 同源。
-        let route_limits = self.probed_context_tokens.map(|w| {
-            codewhale_config::route::RouteLimits {
-                context_tokens: Some(u64::from(w)),
-                ..Default::default()
-            }
-        });
+        let route_limits =
+            self.probed_context_tokens
+                .map(|w| codewhale_config::route::RouteLimits {
+                    context_tokens: Some(u64::from(w)),
+                    ..Default::default()
+                });
         let emergency = deepseek_tui::core::engine::context_input_budget_for_route(
             ApiProvider::Deepseek,
             &self.model(),
@@ -815,7 +820,11 @@ impl Pinvou3Bridge {
             // 让新对话/新窗口的引擎都继承用户的开关状态(持久语义)。
             disallowed_tools: {
                 let n = crate::bridge::marketplace::disabled_tool_names();
-                if n.is_empty() { None } else { Some(n) }
+                if n.is_empty() {
+                    None
+                } else {
+                    Some(n)
+                }
             },
             // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
             // —— v0.8.65 上游新增字段,透传 default ——
@@ -858,7 +867,6 @@ impl Pinvou3Bridge {
         cfg.instructions = self.session_instructions(session_id);
         cfg
     }
-
 
     /// 构造 deepseek-tui 顶层 [`DtConfig`]：按 `ModelPreset` 动态路由 provider /
     /// model / base_url / api_key，注入敏感目录拦截 hook。
@@ -908,7 +916,6 @@ impl Pinvou3Bridge {
         }
         cfg
     }
-
 
     /// 注入硬拦截 hook：ToolCallBefore 时 spawn 一个 shell 脚本检查 tool args
     /// 是否触碰敏感目录（~/.ssh / ~/.gnupg / ~/.aws / 等），命中 exit 1
@@ -998,9 +1005,8 @@ impl Pinvou3Bridge {
         if let Some(persona) = persona_reminder {
             reminder_body = format!("{reminder_body}\n\n{persona}");
         }
-        let full_content = format!(
-            "<system-reminder>\n{reminder_body}\n</system-reminder>\n\n{content}"
-        );
+        let full_content =
+            format!("<system-reminder>\n{reminder_body}\n</system-reminder>\n\n{content}");
         Op::SendMessage {
             content: full_content,
             mode,
@@ -1033,7 +1039,11 @@ impl Pinvou3Bridge {
             // 写文件路径、产出无法收藏的产物卡(不靠模型自觉遵守 prompt 硬规则)。None = 不
             // 限制,沿用 engine 全量工具表。判定源 = 每 turn 实时 active_persona(engine_pool
             // 解析后经 restrict_tools 传入),戴上即限 / 卸下即恢复,无持久状态。
-            allowed_tools: if restrict_tools { Some(Vec::new()) } else { None },
+            allowed_tools: if restrict_tools {
+                Some(Vec::new())
+            } else {
+                None
+            },
             // v0.8.51 上游新增;None = 不挂 per-message hook executor,沿用 engine 级默认。
             hook_executor: None,
             // v0.8.59 上游新增 concise verbosity 模式;pinvou3 GUI 走默认详尽,取 None。
@@ -1208,12 +1218,21 @@ mod tests {
             Some(131_072),
             "探测成功必须填 route_limits.context_tokens"
         );
-        assert!((40_000..=55_000).contains(&t_a), "128K 窗口 T 应 ~46K,实得 {t_a}");
+        assert!(
+            (40_000..=55_000).contains(&t_a),
+            "128K 窗口 T 应 ~46K,实得 {t_a}"
+        );
         assert!(t_a < e_a, "T 必须低于 E(nice 先于 emergency)");
 
         // B. 客户 bug 兜底:名字无 _Nk 后缀 + 探测失败(vLLM 没起)
         let mut b = fixture_bridge();
-        set_active_model(&mut b, ModelPreset::LocalVllm, "qwen3.6-35b", "http://x/v1", "");
+        set_active_model(
+            &mut b,
+            ModelPreset::LocalVllm,
+            "qwen3.6-35b",
+            "http://x/v1",
+            "",
+        );
         b.probed_context_tokens = None;
         let win_b = b.effective_context_window();
         let cfg_b = b.build_engine_config();
@@ -1231,7 +1250,10 @@ mod tests {
             cfg_b.active_route_limits.is_none(),
             "探测失败 → route_limits None(走底座名字 hint 老路)"
         );
-        assert!((38_000..=50_000).contains(&t_b), "128000 兜底 T 应 ~44K,实得 {t_b}");
+        assert!(
+            (38_000..=50_000).contains(&t_b),
+            "128000 兜底 T 应 ~44K,实得 {t_b}"
+        );
         assert!(
             t_b < e_b,
             "T({t_b}) 必须低于紧急线 E({e_b})——nice 先于 emergency(不倒置)"
@@ -1266,7 +1288,10 @@ mod tests {
             set_active_model(&mut b, ModelPreset::Deepseek, model, "https://x/v1", "");
             b.probed_context_tokens = None; // 云端不探测
             let win = b.effective_context_window() as usize;
-            assert_eq!(win, want_window, "{model} 窗口应 {want_window}(catalog/hint),实得 {win}");
+            assert_eq!(
+                win, want_window,
+                "{model} 窗口应 {want_window}(catalog/hint),实得 {win}"
+            );
             let t = b.build_engine_config().compaction.token_threshold;
             let e = win - output - 1_024;
             let conservative = (t + R) * K_NUM / K_DEN + S + FRAMING;
@@ -1306,10 +1331,12 @@ mod tests {
     #[test]
     fn build_send_message_op_injects_sudo_for_yolo_not_plan() {
         let bridge = fixture_bridge();
-        let content_of = |mode| match bridge.build_send_message_op("用户消息".to_string(), mode, None, false) {
-            Op::SendMessage { content, .. } => content,
-            other => panic!("期望 SendMessage,得到 {other:?}"),
-        };
+        let content_of =
+            |mode| match bridge.build_send_message_op("用户消息".to_string(), mode, None, false)
+            {
+                Op::SendMessage { content, .. } => content,
+                other => panic!("期望 SendMessage,得到 {other:?}"),
+            };
         let yolo = content_of(AppMode::Yolo);
         assert!(
             yolo.contains("<system-reminder>") && yolo.contains("超级权限"),
@@ -1343,8 +1370,7 @@ mod tests {
             "加持后 op 必须在 system-reminder 内注入 persona 人设,得到:\n{content}"
         );
         // None 时不应出现该文案
-        let op_none =
-            bridge.build_send_message_op("hi".to_string(), AppMode::Yolo, None, false);
+        let op_none = bridge.build_send_message_op("hi".to_string(), AppMode::Yolo, None, false);
         if let Op::SendMessage { content, .. } = op_none {
             assert!(!content.contains("数据库架构师"), "未加持不应注入 persona");
         }
@@ -1370,7 +1396,11 @@ mod tests {
             Some(Vec::new()),
             "纯对话元卡本轮必须零工具(空白名单),把 write_file/present_artifact 挡在模型视野外"
         );
-        assert_eq!(allowed(false), None, "普通卡 / 未加持不限制工具,沿用 engine 全量工具表");
+        assert_eq!(
+            allowed(false),
+            None,
+            "普通卡 / 未加持不限制工具,沿用 engine 全量工具表"
+        );
     }
 
     /// `wire_max_output_tokens_env` 必须把 self.max_output_tokens() 设给底座
@@ -1438,7 +1468,8 @@ mod tests {
              真并发 4+ 在弱模型下仍有 timeout 风险，走 SubAgentManager fallback 不 hard crash"
         );
         assert_eq!(
-            cfg.subagent_api_timeout.as_secs(), 300,
+            cfg.subagent_api_timeout.as_secs(),
+            300,
             "subagent_api_timeout 必须 300s。上游默认 120s 是为 DeepSeek 云端 API 设计, \
              本地 Qwen3.6 vLLM 慢推理下单 step 30-90s 很常见,120s 频繁误杀子 agent。 \
              300s 与 elapsed cap 对齐,给复杂研究类任务留出完整单步窗口。"
@@ -1543,7 +1574,10 @@ mod tests {
     fn forkguard_search_provider_translates_from_prefs() {
         // 默认 prefs → Bing
         let cfg = fixture_bridge().build_engine_config();
-        assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Bing);
+        assert_eq!(
+            cfg.search_provider,
+            deepseek_tui::config::SearchProvider::Bing
+        );
         assert!(cfg.search_api_key.is_none());
 
         // 切 Metaso + 自定义 key
@@ -1554,7 +1588,10 @@ mod tests {
             ..Default::default()
         };
         let cfg = bridge.build_engine_config();
-        assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Metaso);
+        assert_eq!(
+            cfg.search_provider,
+            deepseek_tui::config::SearchProvider::Metaso
+        );
         assert_eq!(cfg.search_api_key.as_deref(), Some("mk-user-key"));
 
         // 切 Metaso + 空白 key: bridge 层必须归一化成 None,让底座回退内置共享 key。
@@ -1567,7 +1604,10 @@ mod tests {
             ..Default::default()
         };
         let cfg = bridge.build_engine_config();
-        assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Metaso);
+        assert_eq!(
+            cfg.search_provider,
+            deepseek_tui::config::SearchProvider::Metaso
+        );
         assert!(cfg.search_api_key.is_none());
 
         // 切 Bocha + 留空 key (UX 上前端应阻止,但 bridge 层透传 None)
@@ -1578,7 +1618,10 @@ mod tests {
             ..Default::default()
         };
         let cfg = bridge.build_engine_config();
-        assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Bocha);
+        assert_eq!(
+            cfg.search_provider,
+            deepseek_tui::config::SearchProvider::Bocha
+        );
         assert!(cfg.search_api_key.is_none());
 
         // 切 Baidu + key (千帆 AI Search,key 必填)
@@ -1589,7 +1632,10 @@ mod tests {
             ..Default::default()
         };
         let cfg = bridge.build_engine_config();
-        assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Baidu);
+        assert_eq!(
+            cfg.search_provider,
+            deepseek_tui::config::SearchProvider::Baidu
+        );
         assert_eq!(cfg.search_api_key.as_deref(), Some("bce-v3-user-key"));
 
         // 切 Baidu + 空白 key 同样归一化为 None,由底座报明确缺 key 错误。
@@ -1600,7 +1646,10 @@ mod tests {
             ..Default::default()
         };
         let cfg = bridge.build_engine_config();
-        assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Baidu);
+        assert_eq!(
+            cfg.search_provider,
+            deepseek_tui::config::SearchProvider::Baidu
+        );
         assert!(cfg.search_api_key.is_none());
 
         // 切 Tavily + key (海外 agent 搜索 API,tvly- key 必填)
@@ -1611,7 +1660,10 @@ mod tests {
             ..Default::default()
         };
         let cfg = bridge.build_engine_config();
-        assert_eq!(cfg.search_provider, deepseek_tui::config::SearchProvider::Tavily);
+        assert_eq!(
+            cfg.search_provider,
+            deepseek_tui::config::SearchProvider::Tavily
+        );
         assert_eq!(cfg.search_api_key.as_deref(), Some("tvly-user-key"));
     }
 
@@ -1742,8 +1794,7 @@ mod tests {
     #[test]
     fn bridge_plan_mode_trust_mode_true_after_p1() {
         let bridge = fixture_bridge();
-        let op =
-            bridge.build_send_message_op("list dir".into(), AppMode::Plan, None, false);
+        let op = bridge.build_send_message_op("list dir".into(), AppMode::Plan, None, false);
         let (_allow_shell, trust_mode) = extract_shell_trust(op);
         assert!(
             trust_mode,
@@ -1842,6 +1893,40 @@ mod tests {
         // 隔离已由上面"workspace 目录不同 + inline name 含 session_id"覆盖。
     }
 
+    #[test]
+    fn engine_config_for_session_keeps_mcp_artifacts_public() {
+        let _g = paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _env = EnvGuard::new(&["PINVOU3_HOME", "PINVOU3_SESSION_ARTIFACTS"]);
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-mcp-artifacts-public-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::env::set_var("PINVOU3_HOME", &root);
+
+        let public_artifacts = paths::default_session_artifacts_dir();
+        std::env::set_var("PINVOU3_SESSION_ARTIFACTS", &public_artifacts);
+
+        let bridge = fixture_bridge();
+        let a = "sess-artifacts-a";
+        let b = "sess-artifacts-b";
+        let _cfg_a = bridge.build_engine_config_for_session(a);
+        let _cfg_b = bridge.build_engine_config_for_session(b);
+
+        let actual = std::env::var("PINVOU3_SESSION_ARTIFACTS")
+            .expect("PINVOU3_SESSION_ARTIFACTS should remain set");
+        assert_eq!(
+            actual,
+            public_artifacts.to_string_lossy(),
+            "MCP stdio server 共享进程不能拿 session 专属 artifacts；env 必须保持公共落点"
+        );
+        assert_ne!(public_artifacts, paths::session_artifacts_dir(a));
+        assert_ne!(public_artifacts, paths::session_artifacts_dir(b));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     /// OpenaiCompatible preset 必须让用户提供的模型名生效，而不是回退到默认。
     /// 9e296c4 模型列表化后,legacy preset+custom_* 经 `migrate_models()`(每次
@@ -1971,7 +2056,10 @@ mod tests {
         assert_eq!(bridge.provider(), "deepseek");
         assert_eq!(bridge.api_key(), "sk-test");
         let cfg = bridge.build_dt_config();
-        assert_eq!(cfg.api_provider(), deepseek_tui::config::ApiProvider::Deepseek);
+        assert_eq!(
+            cfg.api_provider(),
+            deepseek_tui::config::ApiProvider::Deepseek
+        );
         assert_eq!(cfg.deepseek_base_url(), "https://api.deepseek.com");
         assert_eq!(cfg.default_model(), "deepseek-v4-pro");
         assert_eq!(cfg.reasoning_effort, None);
@@ -2006,7 +2094,10 @@ mod tests {
         assert_eq!(bridge.provider(), "deepseek");
         assert_eq!(bridge.model(), "deepseek-v4-pro");
         let cfg = bridge.build_dt_config();
-        assert_eq!(cfg.api_provider(), deepseek_tui::config::ApiProvider::Deepseek);
+        assert_eq!(
+            cfg.api_provider(),
+            deepseek_tui::config::ApiProvider::Deepseek
+        );
         assert_eq!(cfg.default_model(), "deepseek-v4-pro");
         assert_eq!(cfg.reasoning_effort, None);
         assert_eq!(
@@ -2034,7 +2125,10 @@ mod tests {
         );
         assert_eq!(bridge.provider(), "openai");
         assert_eq!(bridge.model(), "qwen-max");
-        assert_eq!(bridge.base_url(), "https://dashscope.aliyuncs.com/compatible-mode/v1");
+        assert_eq!(
+            bridge.base_url(),
+            "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        );
     }
 
     /// DtConfig 在 LocalVllm 模式下必须保持 reasoning_effort=off（防 SSE timeout）。
@@ -2050,5 +2144,4 @@ mod tests {
         let cfg = bridge.build_dt_config();
         assert_eq!(cfg.reasoning_effort.as_deref(), Some("off"));
     }
-
 }

@@ -191,6 +191,10 @@ impl SelfMetrics {
         }
     }
 
+    pub fn on_message_delta(&self, session_id: &str, _char_count: usize) {
+        self.on_first_delta(session_id);
+    }
+
     /// 本轮出现过工具调用 → 标记。收尾时据此跳过 TTFT/TPS（D2）。
     pub fn on_tool(&self, session_id: &str) {
         if let Some(t) = self.inflight.lock().get_mut(session_id) {
