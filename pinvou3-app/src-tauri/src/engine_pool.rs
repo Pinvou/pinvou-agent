@@ -67,7 +67,7 @@ impl EnginePool {
     /// GUI 改过),再按该 session 的显式 model_id 注入 session_model(没绑定则回退全局
     /// active)。绑定指向已删模型时 `model_by_id` 返回 None,自然回退 active。
     /// 这是「热切换不重启」的落点:改模型只写 disk + evict,下次 spawn 经此读到新配置。
-    async fn fresh_bridge_for(&self, session_id: &str) -> Pinvou3Bridge {
+    pub(crate) async fn fresh_bridge_for(&self, session_id: &str) -> Pinvou3Bridge {
         let started_at = std::time::Instant::now();
         log::info!("[engine_pool] fresh_bridge_for start sid={}", session_id);
         let mut b = self.bridge.clone();
