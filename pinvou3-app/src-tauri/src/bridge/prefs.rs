@@ -392,6 +392,22 @@ pub struct AdvancedPrefs {
     pub local_vllm_setup_declined: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotificationPrefs {
+    pub enabled: bool,
+    pub task_completed: bool,
+}
+
+impl Default for NotificationPrefs {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            task_completed: true,
+        }
+    }
+}
+
 /// 用户偏好。`settings.json` 顶层结构。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -401,6 +417,7 @@ pub struct UserPrefs {
     pub language: Language,
     pub memory_enabled: bool,
     pub search: SearchPrefs,
+    pub notifications: NotificationPrefs,
     pub advanced: AdvancedPrefs,
 }
 
@@ -904,6 +921,7 @@ mod tests {
             language: Language::En,
             memory_enabled: false,
             search: SearchPrefs::default(),
+            notifications: NotificationPrefs::default(),
             advanced: AdvancedPrefs {
                 allow_shell: Some(false),
                 max_output_tokens: Some(8192),
@@ -927,7 +945,21 @@ mod tests {
         assert_eq!(prefs.theme, Theme::Genesis);
         assert_eq!(prefs.color_scheme, ColorScheme::System);
         assert_eq!(prefs.language, Language::ZhHans);
+        assert!(prefs.notifications.enabled);
+        assert!(prefs.notifications.task_completed);
         assert!(prefs.advanced.allow_shell.is_none());
+    }
+
+    #[test]
+    fn notification_prefs_default_enabled() {
+        let prefs = UserPrefs::default();
+        assert!(prefs.notifications.enabled);
+        assert!(prefs.notifications.task_completed);
+
+        let json = r#"{"notifications":{"task_completed":false}}"#;
+        let parsed: UserPrefs = serde_json::from_str(json).unwrap();
+        assert!(parsed.notifications.enabled);
+        assert!(!parsed.notifications.task_completed);
     }
 
     #[test]
