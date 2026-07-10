@@ -1186,7 +1186,8 @@
       const [vllmDeclineConfirm, setVllmDeclineConfirm] = useState(false); // 引导框「不再提醒」二次确认子态
       const [language, setLanguage] = useState('zh');
       const [superPerm, setSuperPerm] = useState(false);
-      const [taskCompletedNotif, setTaskCompletedNotif] = useState(true);
+      const defaultTaskCompletedNotif = !/linux/i.test(`${navigator.platform || ""} ${navigator.userAgent || ""}`);
+      const [taskCompletedNotif, setTaskCompletedNotif] = useState(defaultTaskCompletedNotif);
       // search 后端配置:provider 默认 bing(对齐 bridge prefs::SearchProvider::default());
       // bs.settings 加载后 useEffect 同步进来。
       const [searchProvider, setSearchProvider] = useState('bing');
@@ -1557,7 +1558,7 @@
         const nextMemoryEnabled = memoryAvailable
           ? (topOverrides.memory_enabled !== undefined ? !!topOverrides.memory_enabled : !!base.memory_enabled)
           : false;
-        const baseNotifications = base.notifications || { enabled: true, task_completed: true };
+        const baseNotifications = base.notifications || { enabled: defaultTaskCompletedNotif, task_completed: defaultTaskCompletedNotif };
         const notificationOverrides = (overrides && overrides.notifications) ? overrides.notifications : null;
         return {
           ...base,
@@ -3998,6 +3999,7 @@
       const gpuSharedMemory = fmt && fmt.gpuSharedMemory ? fmt.gpuSharedMemory : loadingValue;
       const isLocalProcessor = /intel/i.test(gpuName) || processorUtilPct > 0;
       const isUnifiedGpu = gpuAvailable && !gpuHasVram && !isLocalProcessor;
+      const unifiedMemoryPct = isUnifiedGpu ? ramPct : gpuVramPct;
       const computeDeviceName = isLocalProcessor ? monitorShortProcessorName(gpuName) : gpuName;
       const processorIcon = monitorProcessorIcon(gpuName);
       const modelIcon = monitorModelIcon(vllmModel);
@@ -4064,7 +4066,7 @@
                   <div className="flex-1 flex flex-col justify-end mt-4">
                     <div className="flex items-center justify-center gap-10 mb-7">
                       <MonitorRing label={isLocalProcessor ? t.processorLoad : t.core} percent={isLocalProcessor ? processorUtilPct : gpuUtilPct} color={monitorColors.blue} />
-                      <MonitorRing label={isLocalProcessor ? t.graphicsLoad : (isUnifiedGpu ? t.unifiedMem : t.vram)} percent={isLocalProcessor || isUnifiedGpu ? gpuUtilPct : gpuVramPct} color={monitorColors.orange} />
+                      <MonitorRing label={isLocalProcessor ? t.graphicsLoad : (isUnifiedGpu ? t.unifiedMem : t.vram)} percent={isLocalProcessor ? gpuUtilPct : unifiedMemoryPct} color={monitorColors.orange} />
                     </div>
                     <div className="pt-4 border-t border-black/5 dark:border-white/5 space-y-3 text-[12px] font-semibold">
                       <div className="flex justify-between items-center text-black/40 dark:text-white/40">
