@@ -46,21 +46,26 @@ function tokenHash(token) {
   return crypto.createHash("sha256").update(String(token || "")).digest("hex");
 }
 
+function tokenHashMatches(token, expectedHash) {
+  if (!expectedHash) return false;
+  const actual = Buffer.from(tokenHash(token), "hex");
+  const expected = Buffer.from(expectedHash, "hex");
+  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+}
+
 function loadMobilePage() {
   return readFile(join(__dirname, "web", "index.html"), "utf8");
 }
 
 
-function roomSummary(room) {
+function healthSummary() {
+  const values = [...rooms.values()];
   return {
-    room_id: room.room_id,
-    session_id: room.session_id,
-    paired: room.paired,
-    closed: room.closed,
-    desktop_open: !!room.desktop && room.desktop.readyState === room.desktop.OPEN,
-    mobile_open: !!room.mobile && room.mobile.readyState === room.mobile.OPEN,
-    expires_at: new Date(room.expires_at).toISOString(),
-    audit: room.audit,
+    ok: true,
+    room_count: values.length,
+    paired_count: values.filter((room) => room.paired).length,
+    desktop_open_count: values.filter((room) => room.desktop && room.desktop.readyState === room.desktop.OPEN).length,
+    mobile_open_count: values.filter((room) => room.mobile && room.mobile.readyState === room.mobile.OPEN).length,
   };
 }
 
@@ -69,7 +74,7 @@ const server = http.createServer(async (req, res) => {
   const routePath = stripPublicBasePath(url.pathname);
   if (routePath === "/healthz") {
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true, rooms: [...rooms.values()].map(roomSummary) }));
+    res.end(JSON.stringify(healthSummary()));
     return;
   }
   if (routePath.startsWith("/r/")) {
@@ -116,7 +121,7 @@ wss.on("connection", (ws) => {
 
     if (msg.type === "desktop_register") {
       let expiresAt = Date.parse(msg.expires_at || "");
-      if (!msg.room_id || typeof msg.session_id !== "string" || !msg.pairing_token || !expiresAt) {
+      if (!msg.room_id || typeof msg.session_id !== "string" || !msg.pairing_token || !msg.desktop_secret || !expiresAt) {
         send(ws, { type: "error", message: "bad desktop_register" });
         return;
       }
@@ -128,6 +133,12 @@ wss.on("connection", (ws) => {
         old && old.mobile && old.mobile.readyState === old.mobile.OPEN ? old.mobile : null;
       const wasPaired = Boolean(old?.paired && existingMobile);
       if (old) {
+        if (!tokenHashMatches(msg.desktop_secret, old.desktop_secret_hash)) {
+          audit(old, "desktop_register_rejected", { reason: "invalid_desktop_secret" });
+          send(ws, { type: "error", message: "invalid desktop secret" });
+          try { ws.close(); } catch {}
+          return;
+        }
         try { old.desktop?.close(); } catch {}
       }
       const room = {

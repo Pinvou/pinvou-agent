@@ -172,6 +172,7 @@ disconnect
 - 转发 desktop/mobile 双向事件。
 - 记录最小审计：连接时间、断开时间、设备类型、错误码、事件计数。
 - 托管手机 Web 页面。
+- 公开健康检查只返回聚合状态，不暴露 `room_id`、`session_id` 或审计明细。
 
 云端不做：
 
@@ -180,6 +181,7 @@ disconnect
 - 不保存用户本地文件内容。
 - 不直接访问用户本机端口。
 - 不执行模型调用或工具调用。
+- 不通过未鉴权接口暴露可用于接管房间的标识。
 
 ### Room 状态
 
@@ -213,12 +215,14 @@ desktop <-> relay <-> mobile: live events
 
 一期可以先默认扫码即连接，不加二次桌面确认；但桌面必须显示“手机已连接”，并提供停止按钮。更严格的“手机请求连接，桌面点允许”可作为安全增强项。
 
+同一个 `room_id` 已存在时，desktop 重新注册只允许来自同一个桌面端：relay 必须校验 `desktop_secret`，校验失败时不得关闭旧 desktop、不得继承已连接 mobile，也不得向新连接透露房间状态。这个约束用于支持桌面端断线重连，同时挡住公网 relay 上的 room 抢占。
+
 ### Token 策略
 
 - `pairing_token` 有效期 5-10 分钟。
-- token 只允许首次配对使用。
-- 手机连接成功后升级为 `mobile_session_token`，用于断线重连。
-- `mobile_session_token` 只绑定当前 `room_id + session_id + client_id`。
+- 当前一期实现里，`pairing_token` 在 TTL 内仍承担扫码进入、刷新和接管当前 mobile 连接的职责；严格“一次性 token”暂不在本 PR 内完成。
+- 后续修复项：token 首次配对后升级为 `mobile_session_token`，用于断线重连。
+- 后续修复项：`mobile_session_token` 只绑定当前 `room_id + session_id + client_id`。
 - 桌面停止远控后，room 立即失效。
 
 ## 协议设计
@@ -360,12 +364,14 @@ disconnect
 
 - token 短有效期。
 - room 单 session 绑定。
+- 已存在 room 的 desktop 重新注册必须校验 `desktop_secret`，防止未知桌面端抢占。
+- 公开 `/healthz` 不暴露 room/session 明细，只返回聚合计数。
 - mobile action allowlist。
 - 桌面端停止远控后立即吊销 room。
 - 云端不落全文消息和文件内容。
 - 手机端不能调用任意 Tauri command。
-- 手机端不能切 session。
-- 手机端不能浏览本地路径。
+- 手机端可以列出、新建、切换 pinvou3 session；扫码者应被视为临时拥有当前远控入口下的会话操作权。
+- 手机端可以预览当前 session workspace/artifacts 内的受限文件；relay 不读取本地文件，预览内容由桌面端按 session 根目录校验后发送。
 - 所有 mobile action 带 `client_message_id`，本地去重，避免断线重发造成重复消息。
 
 一期暂不解决：
@@ -383,7 +389,7 @@ disconnect
 ### 断线重连
 
 - 手机 WebSocket 断开后自动重连。
-- 重连时带 `mobile_session_token`。
+- 当前一期重连仍使用短 TTL 的 `pairing_token`；`mobile_session_token` 是后续修复项。
 - relay 校验 room 未关闭且桌面仍在线。
 - 手机发送 `request_snapshot`。
 - 本地返回最新 `session_snapshot`，手机用 snapshot 覆盖本地临时状态。
