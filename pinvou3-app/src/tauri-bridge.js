@@ -206,6 +206,7 @@
       error: null,
     },
   };
+  var initPromise = null;
   // 卡片池 1078 张卡的前端缓存。只读,通过 getPersonas() 取引用,不走 notify 快照。
   var personaPoolCache = [];
 
@@ -221,6 +222,7 @@
   // 工具调用/重试/压缩（= 多请求），就跳过这次 tokens 更新，保留上一个准确值。
   var turnUsageDirty = {};  // session_id → bool
   var monitorIntervalId = null;
+  var monitorPollInFlight = false;
   var gpuUtilHistory = [];
   var maxModelLen = 32768;
   // 监控页「清除统计」基准点：vLLM 的几个累计 counter（TTFT/TPOT/tokens/prefix
@@ -2133,13 +2135,13 @@
   // ── Monitor ──────────────────────────────────────────────────────
   function fmtMiB(mib) {
     if (mib == null) return "—";
-    return mib >= 1024 ? (mib / 1024).toFixed(1) + " GiB" : mib + " MiB";
+    return mib >= 1024 ? (mib / 1024).toFixed(1) + " GB" : mib + " MB";
   }
   function fmtKiB(kib) {
     if (kib == null) return "—";
-    if (kib >= 1024 * 1024) return (kib / 1024 / 1024).toFixed(1) + " GiB";
-    if (kib >= 1024) return (kib / 1024).toFixed(0) + " MiB";
-    return kib + " KiB";
+    if (kib >= 1024 * 1024) return (kib / 1024 / 1024).toFixed(1) + " GB";
+    if (kib >= 1024) return (kib / 1024).toFixed(0) + " MB";
+    return kib + " KB";
   }
   function fmtDuration(secs) {
     if (secs == null || secs < 0) return "—";
@@ -2234,9 +2236,28 @@
     return true;
   }
 
+  function appQueueSnapshot() {
+    var running = 0;
+    var waiting = state.queued ? state.queued.length : 0;
+    var busyMap = {};
+    for (var id in sessionStates) {
+      if (!Object.prototype.hasOwnProperty.call(sessionStates, id)) continue;
+      if (id === state.activeSessionId) continue;
+      var buf = sessionStates[id] || {};
+      if (buf.busy) busyMap[id] = true;
+      if (Array.isArray(buf.queued)) waiting += buf.queued.length;
+    }
+    if (state.activeSessionId && state.busy) busyMap[state.activeSessionId] = true;
+    running = Object.keys(busyMap).length;
+    return { running: running, waiting: waiting };
+  }
+
   async function pollMonitor() {
+    if (monitorPollInFlight) return;
+    monitorPollInFlight = true;
     try {
       var snap = await invoke("get_monitor_snapshot");
+      state.monitorError = null;
       // GPU util sliding window
       if (snap.gpu) {
         gpuUtilHistory.push(snap.gpu.utilization_pct);
@@ -2254,12 +2275,15 @@
       var vllm = snap.vllm || null;
       var metricsApplicable = vllm ? vllm.metrics_applicable !== false : false;
       var metricNotApplicableText = "不适用";
+      var metricUnavailableText = "未提供";
       var diagnostic = vllm && vllm.diagnostic ? vllm.diagnostic : null;
       var metricDiagnostic = vllm && vllm.metric_diagnostics && vllm.metric_diagnostics.length
         ? vllm.metric_diagnostics[0] : null;
       var targetKind = vllm && vllm.target_kind ? vllm.target_kind : "invalid";
       var targetKindLabel = targetKind === "remote" ? "远端模型" : (targetKind === "local" ? "本地模型" : "配置异常");
       var vllmDisplayModel = vllm ? (vllm.model || vllm.configured_model || "—") : "—";
+      var healthStatus = vllm && vllm.health_status ? vllm.health_status : (vllm ? "verified" : "offline");
+      var appQueue = appQueueSnapshot();
       snap._fmt = {
         gpuName: snap.gpu ? snap.gpu.name : bt("gpuUnavailable"),
         gpuVram: snap.gpu && snap.gpu.vram_total_mib > 0
@@ -2268,6 +2292,9 @@
           ? Math.round(snap.gpu.vram_used_mib / snap.gpu.vram_total_mib * 100) : 0,
         gpuUtil: snap.gpu ? (snap.gpu._utilMax + "%") : "—",
         gpuUtilPct: snap.gpu ? snap.gpu._utilMax : 0,
+        processorUtil: snap.gpu && snap.gpu.processor_utilization_pct != null ? snap.gpu.processor_utilization_pct + "%" : "—",
+        processorUtilPct: snap.gpu && snap.gpu.processor_utilization_pct != null ? snap.gpu.processor_utilization_pct : 0,
+        gpuSharedMemory: snap.gpu && snap.gpu.shared_memory_used_mib != null ? fmtMiB(snap.gpu.shared_memory_used_mib) : "—",
         gpuTemp: snap.gpu && snap.gpu.temperature_c != null ? snap.gpu.temperature_c + "°C" : null,
         gpuPower: snap.gpu && snap.gpu.power_w != null ? snap.gpu.power_w.toFixed(1) + " W" : null,
         gpuAvailable: !!snap.gpu,
@@ -2284,7 +2311,8 @@
         vllmModelMismatch: vllm && vllm.configured_model && vllm.model
           ? vllm.configured_model !== vllm.model : false,
         vllmStatus: vllm ? vllm.status.toUpperCase() : "OFFLINE",
-        vllmOnline: vllm ? (vllm.status === "ready" || vllm.status === "busy") : false,
+        vllmHealthStatus: healthStatus,
+        vllmOnline: vllm ? (healthStatus === "verified" && (vllm.status === "ready" || vllm.status === "busy")) : false,
         vllmUpstream: vllm ? (vllm.upstream || "—") : "—",
         vllmTargetKind: targetKindLabel,
         // 云端(remote)不做健康探测(无 auth 的 /v1/models 必 401)→ 不显示 OFFLINE。
@@ -2294,25 +2322,22 @@
         vllmDiagnosticCode: diagnostic ? diagnostic.code : null,
         vllmMetricsApplicable: metricsApplicable,
         vllmMetricDiagnostic: metricDiagnostic ? metricDiagnostic.message : null,
-        vllmMaxLen: vllm ? (metricsApplicable ? (vllm.max_model_len || "—") : metricNotApplicableText) : "—",
+        vllmMaxLen: vllm ? (metricsApplicable ? (vllm.max_model_len || "—") : (vllm.max_model_len || metricUnavailableText)) : "—",
         // 本地推理引擎(target_kind=local)且探测窗口 < 128k(131072):监控卡给告警。
         // 云端(remote)/v1/models 不返回 max_model_len,自然不触发。传原始值供前端拼文案。
         vllmCtxWarn: (vllm && targetKind === "local" && vllm.max_model_len && vllm.max_model_len < 131072)
           ? vllm.max_model_len : null,
-        vllmQueue: vllm
-          ? (metricsApplicable
-            ? (vllm.num_requests_running != null ? vllm.num_requests_running : "—") + " / " +
-              (vllm.num_requests_waiting != null ? vllm.num_requests_waiting : "—")
-            : metricNotApplicableText)
-          : "— / —",
+        vllmQueue: appQueue.running + " / " + appQueue.waiting,
+        vllmQueueSource: "app",
         // TTFT/TPS/tokens 一律用 app 侧自测——任何后端(vLLM/LM Studio/Ollama/云端)都有值,
         // 不再受 metricsApplicable 门控。KV 见 kvShown(本地 prefix_cache / 云端 usage 口径),
         // 拿不到则 "—"。队列仍归 vLLM(见 vllmQueue)。
-        vllmKv: kvShown != null ? kvShown.toFixed(1) + "%" : "—",
+        vllmKv: kvShown != null ? kvShown.toFixed(1) + "%" : "0%",
+        vllmKvHasData: kvShown != null,
         vllmTtft: sadj && sadj.ttft_count > 0
-          ? (sadj.ttft_sum_s / sadj.ttft_count).toFixed(2) + " s" : "—",
+          ? (sadj.ttft_sum_s / sadj.ttft_count).toFixed(2) + " s" : "0 s",
         vllmTps: sadj && sadj.tps_time_s > 0
-          ? (sadj.tps_tokens / sadj.tps_time_s).toFixed(1) + " tok/s" : "—",
+          ? (sadj.tps_tokens / sadj.tps_time_s).toFixed(1) + " tok/s" : "0 tok/s",
         vllmTokTotal: sadj
           ? fmtTok(sadj.gen) + " / " + fmtTok(sadj.prompt) : "—",
         vllmStatsCleared: !!(sadj && sadj.cleared),
@@ -2337,7 +2362,11 @@
       state.monitor = snap;
       notify();
     } catch (e) {
+      state.monitorError = e && e.message ? e.message : String(e || "monitor poll failed");
       console.warn("monitor poll failed", e);
+      notify();
+    } finally {
+      monitorPollInFlight = false;
     }
   }
 
@@ -2388,13 +2417,18 @@
     notify();
   }
   async function saveSettings(prefs) {
-    state.settings = prefs;
+    const previous = state.settings;
     try {
       await invoke("update_settings", { prefs: prefs });
+      state.settings = prefs;
+      notify();
+      return true;
     } catch (e) {
       console.warn("save settings failed", e);
+      state.settings = previous;
+      notify();
+      return false;
     }
-    notify();
   }
   async function saveSettingsAndRestart(prefs) {
     state.settings = prefs;
@@ -3341,10 +3375,12 @@
     }
     state.updateChecking = false; notify();
   }
-  // 下载+安装一条龙: Linux 下载 deb 后 pkexec apt;Windows 下载 zip 后解析 MSI,
-  // 安装器启动成功后后端退出当前进程。
+  // 下载+安装一条龙: Linux 下载 deb 后 pkexec apt 并自动重启;Windows 下载 zip 后解析 MSI,
+  // 安装器启动成功后后端退出当前进程。返回 true 表示安装链路已成功走完。
   async function downloadAndInstallUpdate() {
-    if (!state.updateInfo || !state.updateInfo.available || state.updateDownloading) return;
+    if (!state.updateInfo || !state.updateInfo.available || state.updateDownloading) return false;
+    var shouldRestartAfterInstall = state.updateInfo.platform === "linux";
+    var installed = false;
     state.updateDownloading = true; state.updateCancelling = false;
     state.updateProgress = 0; state.updateError = null; notify();
     try {
@@ -3356,12 +3392,15 @@
         await invoke("install_update", { debPath: downloadResult });
       }
       state.updateReady = true;
+      installed = true;
     } catch (e) {
       // 用户主动取消下载时后端返回「已取消下载」,当正常处理不弹错误
       if (state.updateCancelling) state.updateProgress = 0;
       else state.updateError = String(e);
     }
     state.updateDownloading = false; state.updateCancelling = false; notify();
+    if (installed && shouldRestartAfterInstall) restartApp();
+    return installed;
   }
   // 取消进行中的下载: 置前端标志 + 通知后端中断下载循环。仅下载阶段有效;
   // 已进入 install(pkexec/apt)则无效(系统接管,装一半不能停)。
@@ -3997,6 +4036,8 @@
 
   // ── Init ─────────────────────────────────────────────────────────
   async function init() {
+    if (initPromise) return initPromise;
+    initPromise = (async function () {
     await loadSettings();
     await loadEffectiveModelConfig();
     await loadAppVersion();
@@ -4012,6 +4053,8 @@
     refreshRemoteControlStatus(); // fire-and-forget
     await resumeWorkflowOnBoot(); // [2026-06-06] 有进行中的工作流 run 就自动挂回看板
     notify();
+    })();
+    return initPromise;
   }
 
   // ── Expose API ───────────────────────────────────────────────────

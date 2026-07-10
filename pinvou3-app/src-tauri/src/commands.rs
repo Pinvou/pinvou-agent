@@ -1153,16 +1153,11 @@ pub struct BackendStatus {
 pub async fn get_backend_status(
     _monitor: State<'_, MonitorState>,
 ) -> Result<BackendStatus, String> {
-    // Lightweight: 只 probe vLLM,不跑 nvidia-smi / RAM 采样
-    let vllm = crate::monitor::vllm_snapshot(
-        &crate::monitor::vllm_base_url(),
-        crate::monitor::vllm_configured_model(),
-    )
-    .await;
-    let vllm_online = matches!(
-        vllm.as_ref().map(|v| v.status),
-        Some(VllmStatus::Ready) | Some(VllmStatus::Busy)
-    );
+    // Lightweight: 只 probe 当前 active model,不跑 nvidia-smi / RAM 采样。
+    let vllm = crate::monitor::active_model_snapshot().await;
+    let vllm_online = vllm.as_ref().is_some_and(|v| {
+        v.health_status == "verified" && matches!(v.status, VllmStatus::Ready | VllmStatus::Busy)
+    });
     let max_model_len = vllm.as_ref().and_then(|v| v.max_model_len);
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

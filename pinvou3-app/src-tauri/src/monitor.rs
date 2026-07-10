@@ -9,11 +9,15 @@
 //! 而不是 panic 或让上层崩。pinvou3 用户可能没装 nvidia-smi，可能没启 vLLM。
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::process::{Command, Output, Stdio};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 use serde::Serialize;
+
+use crate::bridge::prefs::{ModelPreset, SavedModel, UserPrefs};
+use crate::credential_store::{CredentialStore, SystemCredentialStore};
 
 /// 单次完整采样结果。所有字段 `Option`——采集失败就为 None。
 #[derive(Debug, Clone, Default, Serialize)]
@@ -26,6 +30,7 @@ pub struct MonitorSnapshot {
     /// 无关,任何后端(本地 vLLM / LM Studio / Ollama / 云端 API)都有值——因为是在
     /// 流式转发通路上就地测的。前端一律用这块显示这四项(vllm 块只剩队列/窗口/健康)。
     pub self_perf: SelfPerfSnapshot,
+    pub self_perf_debug: SelfMetricsDebugSnapshot,
     pub app: AppSnapshot,
 }
 
@@ -35,6 +40,10 @@ pub struct GpuSnapshot {
     pub vram_used_mib: u64,
     pub vram_total_mib: u64,
     pub utilization_pct: u32,
+    /// Windows / Intel fallback: CPU package load, used by the UI's "local processor" variant.
+    pub processor_utilization_pct: Option<u32>,
+    /// Windows / Intel fallback: shared GPU memory usage, in MiB.
+    pub shared_memory_used_mib: Option<u64>,
     /// GB10 等 unified-memory 设备 VRAM 字段是 [N/A]，UI 切到温度+功耗显示。
     pub temperature_c: Option<u32>,
     pub power_w: Option<f32>,
@@ -48,10 +57,19 @@ pub struct RamSnapshot {
     pub swap_used_kib: u64,
 }
 
-/// vLLM 健康 + 队列指标。`status` 永远有值（OFFLINE / READY / BUSY）。
+#[derive(Debug, Clone, Serialize)]
+pub struct MonitorDiagnostic {
+    pub code: String,
+    pub message: String,
+}
+
+/// 当前模型运行态 + 本地 vLLM 队列指标。字段名暂保留 vllm 兼容前端。
 #[derive(Debug, Clone, Serialize)]
 pub struct VllmSnapshot {
     pub status: VllmStatus,
+    /// 当前 active model id / preset，用于诊断热切换是否跟随用户选择。
+    pub model_id: Option<String>,
+    pub provider: String,
     /// vLLM `/v1/models` 返回的真实模型名。
     pub model: Option<String>,
     /// 用户 settings 中配置的模型名（与 `model` 可能不同）。
@@ -63,6 +81,10 @@ pub struct VllmSnapshot {
     pub target_kind: String,
     /// vLLM Prometheus 指标是否适用(= `target_kind == "local"`);云端 API 无 /metrics。
     pub metrics_applicable: bool,
+    /// `verified` / `unverified` / `missing_api_key` / `auth_failed` / `offline` / `mismatch`。
+    pub health_status: String,
+    pub diagnostic: Option<MonitorDiagnostic>,
+    pub metric_diagnostics: Vec<MonitorDiagnostic>,
     pub max_model_len: Option<u32>,
     pub num_requests_running: Option<f64>,
     pub num_requests_waiting: Option<f64>,
@@ -125,6 +147,13 @@ pub struct SelfPerfSnapshot {
     pub cache_miss_tokens: u64,
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SelfMetricsDebugSnapshot {
+    pub inflight_count: usize,
+    pub warmed_sessions_count: usize,
+    pub last_event: Option<String>,
+}
+
 #[derive(Debug, Default)]
 struct SelfPerfInner {
     ttft_sum_s: f64,
@@ -143,6 +172,7 @@ struct TurnTiming {
     start: Instant,
     first: Option<Instant>,
     had_tool: bool,
+    output_chars: u64,
 }
 
 /// app 侧自测推理指标累加器。流式转发通路（engine.rs forwarder）在
@@ -157,6 +187,7 @@ pub struct SelfMetrics {
     /// (warmup 同步跑完整段冷 prefill,TurnStarted→首token 窗口吃满冷启),TTFT/TPS 不代表
     /// 稳态,故跳过(tokens 照记)。warmup 恰好只在 session 首轮跑,此集合精确识别那一轮。
     warmed_sessions: Mutex<HashSet<String>>,
+    last_event: Mutex<Option<String>>,
 }
 
 impl SelfMetrics {
@@ -168,16 +199,25 @@ impl SelfMetrics {
                 start: Instant::now(),
                 first: None,
                 had_tool: false,
+                output_chars: 0,
             },
         );
+        self.set_last_event(format!("turn_started session={session_id}"));
     }
 
     /// 首个 MessageDelta：记首 token 时点（仅首次）。TTFT 的停表点 + 生成时长起点。
+    #[cfg(test)]
     pub fn on_first_delta(&self, session_id: &str) {
+        self.on_message_delta(session_id, 0);
+    }
+
+    pub fn on_message_delta(&self, session_id: &str, char_count: usize) {
         if let Some(t) = self.inflight.lock().get_mut(session_id) {
             if t.first.is_none() {
                 t.first = Some(Instant::now());
+                self.set_last_event(format!("first_delta session={session_id}"));
             }
+            t.output_chars = t.output_chars.saturating_add(char_count as u64);
         }
     }
 
@@ -185,12 +225,12 @@ impl SelfMetrics {
     pub fn on_tool(&self, session_id: &str) {
         if let Some(t) = self.inflight.lock().get_mut(session_id) {
             t.had_tool = true;
+            self.set_last_event(format!("tool session={session_id}"));
         }
     }
 
-    /// TurnComplete：用精确 usage 累加。tokens/KV 永远记；TTFT/TPS 仅**纯文本 & 非首轮**记
-    /// (工具轮墙钟含工具耗时 → D2 跳过；每 session 首轮含 cache warmup 冷启 → A 跳过)。
-    /// 调用方已过滤 `output_tokens == 0` 的非 LLM/错误轮。
+    /// TurnComplete：用精确 usage 累加。tokens/KV 永远记；TTFT/TPS 仅跳过工具轮。
+    /// 部分远端模型会省略 output_tokens，TPS 会回落到流式文本字符数估算。
     pub fn on_turn_complete(
         &self,
         session_id: &str,
@@ -200,7 +240,6 @@ impl SelfMetrics {
         cache_miss: Option<u32>,
     ) {
         let timing = self.inflight.lock().remove(session_id);
-        // HashSet::insert 返回 true = 之前不在集合里 = 这是该 session 首个完成轮(冷/warmup)。
         let is_first_turn = self.warmed_sessions.lock().insert(session_id.to_string());
         let mut p = self.perf.lock();
         p.gen_tokens_total += output_tokens as u64;
@@ -211,19 +250,33 @@ impl SelfMetrics {
         if let Some(m) = cache_miss {
             p.cache_miss_tokens += m as u64;
         }
+        let mut recorded_perf = false;
+        let had_timing = timing.is_some();
         if let Some(t) = timing {
-            if !t.had_tool && !is_first_turn {
+            if !t.had_tool {
                 if let Some(first) = t.first {
                     p.ttft_sum_s += first.duration_since(t.start).as_secs_f64();
                     p.ttft_count += 1;
                     let gen_s = first.elapsed().as_secs_f64();
-                    if gen_s > 0.0 && output_tokens > 0 {
+                    let tps_units = if output_tokens > 0 {
+                        output_tokens as u64
+                    } else {
+                        // Some remote providers stream text but omit final token usage.
+                        // Use a conservative character-based fallback so speed still
+                        // reflects completed pure text turns instead of staying blank.
+                        (t.output_chars / 2).max(1)
+                    };
+                    if gen_s > 0.0 && tps_units > 0 {
                         p.tps_time_s += gen_s;
-                        p.tps_tokens += output_tokens as u64;
+                        p.tps_tokens += tps_units;
+                        recorded_perf = true;
                     }
                 }
             }
         }
+        self.set_last_event(format!(
+            "turn_complete session={session_id} input={input_tokens} output={output_tokens} first_turn={is_first_turn} had_timing={had_timing} recorded_perf={recorded_perf}"
+        ));
     }
 
     pub fn snapshot(&self) -> SelfPerfSnapshot {
@@ -238,6 +291,18 @@ impl SelfMetrics {
             cache_hit_tokens: p.cache_hit_tokens,
             cache_miss_tokens: p.cache_miss_tokens,
         }
+    }
+
+    pub fn debug_snapshot(&self) -> SelfMetricsDebugSnapshot {
+        SelfMetricsDebugSnapshot {
+            inflight_count: self.inflight.lock().len(),
+            warmed_sessions_count: self.warmed_sessions.lock().len(),
+            last_event: self.last_event.lock().clone(),
+        }
+    }
+
+    fn set_last_event(&self, value: String) {
+        *self.last_event.lock() = Some(value);
     }
 }
 
@@ -266,7 +331,11 @@ impl MonitorState {
     }
 }
 
-pub async fn sample_all(state: &MonitorState, vllm_upstream: &str, configured_model: Option<String>) -> MonitorSnapshot {
+pub async fn sample_all(
+    state: &MonitorState,
+    _vllm_upstream: &str,
+    _configured_model: Option<String>,
+) -> MonitorSnapshot {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -275,8 +344,9 @@ pub async fn sample_all(state: &MonitorState, vllm_upstream: &str, configured_mo
         generated_at_ms: now_ms,
         gpu: gpu_snapshot(),
         ram: ram_snapshot(),
-        vllm: vllm_snapshot(vllm_upstream, configured_model).await,
+        vllm: active_model_snapshot().await,
         self_perf: state.self_metrics.snapshot(),
+        self_perf_debug: state.self_metrics.debug_snapshot(),
         app: AppSnapshot {
             pinvou3_version: env!("CARGO_PKG_VERSION"),
             deepseek_tui_version: env!("CARGO_PKG_VERSION"), // TODO: 从 deepseek-tui crate 取
@@ -288,6 +358,37 @@ pub async fn sample_all(state: &MonitorState, vllm_upstream: &str, configured_mo
 /// 调 `nvidia-smi` 查 GPU。本机没 GPU/没装 nvidia-smi → None。
 /// 桌面环境启动时 PATH 可能不含 nvidia-smi，加常见绝对路径 fallback。
 fn gpu_snapshot() -> Option<GpuSnapshot> {
+    static GPU_CACHE: OnceLock<Mutex<GpuSnapshotCache>> = OnceLock::new();
+    let cache = GPU_CACHE.get_or_init(|| Mutex::new(GpuSnapshotCache::default()));
+    let mut guard = cache.lock();
+    if guard
+        .sampled_at
+        .is_some_and(|sampled_at| sampled_at.elapsed() < Duration::from_secs(3))
+    {
+        return guard.value.clone();
+    }
+    let value = nvidia_gpu_snapshot().or_else(platform_gpu_snapshot);
+    guard.sampled_at = Some(Instant::now());
+    if let Some(snapshot) = value {
+        guard.value = Some(snapshot.clone());
+        Some(snapshot)
+    } else {
+        // Windows performance counters occasionally time out or return no samples.
+        // Keep the last good local compute snapshot so the UI does not flicker
+        // between valid data and "unavailable" during normal polling.
+        guard.value.clone()
+    }
+}
+
+#[derive(Default)]
+struct GpuSnapshotCache {
+    sampled_at: Option<Instant>,
+    value: Option<GpuSnapshot>,
+}
+
+/// 调 `nvidia-smi` 查 GPU。本机没 NVIDIA/没装 nvidia-smi → None。
+/// 桌面环境启动时 PATH 可能不含 nvidia-smi，加常见绝对路径 fallback。
+fn nvidia_gpu_snapshot() -> Option<GpuSnapshot> {
     let args = [
         "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw",
         "--format=csv,noheader,nounits",
@@ -325,13 +426,109 @@ fn gpu_snapshot() -> Option<GpuSnapshot> {
         vram_used_mib: parts[1].parse().unwrap_or(0),
         vram_total_mib: parts[2].parse().unwrap_or(0),
         utilization_pct: parts[3].parse().unwrap_or(0),
+        processor_utilization_pct: None,
+        shared_memory_used_mib: None,
         temperature_c: parts[4].parse().ok(),
         power_w: parts[5].parse().ok(),
     })
 }
 
-/// 读 `/proc/meminfo`。Linux 专有，其他 OS → None。
+#[cfg(target_os = "windows")]
+fn platform_gpu_snapshot() -> Option<GpuSnapshot> {
+    use serde_json::Value;
+
+    let script = r#"
+$cpuName = (Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)
+$gpuName = (Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'Intel|Arc|Graphics|GPU' } | Select-Object -First 1 -ExpandProperty Name)
+$cpu = $null
+try { $cpu = (Get-Counter '\Processor Information(_Total)\% Processor Utility').CounterSamples[0].CookedValue } catch {}
+$gpu = $null
+try { $gpu = ((Get-Counter '\GPU Engine(*)\Utilization Percentage').CounterSamples | Measure-Object CookedValue -Sum).Sum } catch {}
+$shared = $null
+try { $shared = ((Get-Counter '\GPU Adapter Memory(*)\Shared Usage').CounterSamples | Measure-Object CookedValue -Sum).Sum } catch {}
+$temp = $null
+try {
+  $tz = Get-CimInstance -Namespace root\wmi -ClassName MSAcpi_ThermalZoneTemperature | Select-Object -First 1
+  if ($tz) { $temp = [math]::Round(($tz.CurrentTemperature / 10) - 273.15, 0) }
+} catch {}
+[pscustomobject]@{
+  cpuName = $cpuName
+  gpuName = $gpuName
+  cpuPct = $cpu
+  gpuPct = $gpu
+  sharedBytes = $shared
+  tempC = $temp
+} | ConvertTo-Json -Compress
+"#;
+    let mut command = crate::process::HiddenCommand::new("powershell");
+    command.args([
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        script,
+    ]);
+    let out = command_output_with_timeout(command, Duration::from_secs(15))
+        .filter(|o| o.status.success())?;
+    let text = std::str::from_utf8(&out.stdout).ok()?.trim();
+    let v: Value = serde_json::from_str(text).ok()?;
+    let cpu_name = v
+        .get("cpuName")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    let gpu_name = v
+        .get("gpuName")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if cpu_name.is_empty() && gpu_name.is_empty() {
+        return None;
+    }
+    let cpu_pct = v
+        .get("cpuPct")
+        .and_then(Value::as_f64)
+        .map(|n| n.round().clamp(0.0, 100.0) as u32);
+    let gpu_pct = v
+        .get("gpuPct")
+        .and_then(Value::as_f64)
+        .map(|n| n.round().clamp(0.0, 100.0) as u32)
+        .unwrap_or(0);
+    let shared_mib = v
+        .get("sharedBytes")
+        .and_then(Value::as_f64)
+        .map(|n| (n / 1024.0 / 1024.0).round().max(0.0) as u64);
+    let temp_c = v
+        .get("tempC")
+        .and_then(Value::as_f64)
+        .map(|n| n.round().clamp(0.0, 120.0) as u32);
+    Some(GpuSnapshot {
+        name: if cpu_name.is_empty() {
+            gpu_name.to_string()
+        } else {
+            cpu_name.to_string()
+        },
+        vram_used_mib: 0,
+        vram_total_mib: 0,
+        utilization_pct: gpu_pct,
+        processor_utilization_pct: cpu_pct,
+        shared_memory_used_mib: shared_mib,
+        temperature_c: temp_c,
+        power_w: None,
+    })
+}
+
+#[cfg(not(target_os = "windows"))]
+fn platform_gpu_snapshot() -> Option<GpuSnapshot> {
+    None
+}
+
 fn ram_snapshot() -> Option<RamSnapshot> {
+    linux_ram_snapshot().or_else(platform_ram_snapshot)
+}
+
+/// 读 `/proc/meminfo`。Linux 专有，其他 OS → None。
+fn linux_ram_snapshot() -> Option<RamSnapshot> {
     let text = std::fs::read_to_string("/proc/meminfo").ok()?;
     let mut total = None;
     let mut available = None;
@@ -360,14 +557,127 @@ fn ram_snapshot() -> Option<RamSnapshot> {
     })
 }
 
-/// 健康探测 + Prometheus metrics 解析。
-/// `/v1/models` 返不到 200 → OFFLINE；返 200 但 metrics 拿不到 → READY 无指标。
-pub async fn vllm_snapshot(upstream: &str, configured_model: Option<String>) -> Option<VllmSnapshot> {
+#[cfg(target_os = "windows")]
+fn platform_ram_snapshot() -> Option<RamSnapshot> {
+    crate::os::platform::ram_snapshot()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn platform_ram_snapshot() -> Option<RamSnapshot> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn command_output_with_timeout(mut command: Command, timeout: Duration) -> Option<Output> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().ok()?;
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(None) if start.elapsed() < timeout => std::thread::sleep(Duration::from_millis(25)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Err(_) => {
+                let _ = child.kill();
+                return None;
+            }
+        }
+    }
+}
+
+pub async fn active_model_snapshot() -> Option<VllmSnapshot> {
+    let prefs = UserPrefs::load();
+    let model = prefs.active_model().cloned();
+    let env_base = std::env::var("DEEPSEEK_BASE_URL").ok();
+    let env_model = std::env::var("DEEPSEEK_MODEL").ok();
+    let upstream = env_base
+        .or_else(|| model.as_ref().map(|m| m.base_url.clone()))
+        .unwrap_or_else(|| "http://127.0.0.1:8000/v1".to_string());
+    let preset = model
+        .as_ref()
+        .map(|m| m.preset)
+        .unwrap_or(ModelPreset::LocalVllm);
+    let configured_model = env_model.or_else(|| {
+        model
+            .as_ref()
+            .and_then(|m| (m.preset != ModelPreset::LocalVllm).then(|| m.model.clone()))
+    });
+    let api_key = model.as_ref().and_then(model_api_key);
+    let model_id = model.as_ref().map(|m| m.id.clone());
+    let provider = preset.as_str().to_string();
+    snapshot_for_model_config(
+        &upstream,
+        configured_model,
+        preset,
+        model_id,
+        provider,
+        api_key.as_deref(),
+    )
+    .await
+}
+
+/// 兼容旧调用。优先用于本地 vLLM 探测；active-model 面板走 `active_model_snapshot()`。
+pub async fn vllm_snapshot(
+    upstream: &str,
+    configured_model: Option<String>,
+) -> Option<VllmSnapshot> {
+    snapshot_for_model_config(
+        upstream,
+        configured_model,
+        ModelPreset::LocalVllm,
+        None,
+        "local_vllm".to_string(),
+        None,
+    )
+    .await
+}
+
+fn model_api_key(model: &SavedModel) -> Option<String> {
+    if let Ok(v) = std::env::var("DEEPSEEK_API_KEY") {
+        let trimmed = v.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    if let Some(reference) = &model.credential_ref {
+        let store = SystemCredentialStore::new();
+        match store.get(reference) {
+            Ok(Some(key)) if !key.trim().is_empty() => return Some(key),
+            Ok(_) => {}
+            Err(err) => eprintln!(
+                "[monitor] credential read failed for model {}: {}",
+                model.id,
+                err.user_message()
+            ),
+        }
+    }
+    let trimmed = model.api_key.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// 当前模型健康探测 + 本地 vLLM Prometheus metrics 解析。
+async fn snapshot_for_model_config(
+    upstream: &str,
+    configured_model: Option<String>,
+    preset: ModelPreset,
+    model_id: Option<String>,
+    provider: String,
+    api_key: Option<&str>,
+) -> Option<VllmSnapshot> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
         .ok()?;
-    let target_kind = vllm_target_kind(upstream);
+    let target_kind = if preset == ModelPreset::LocalVllm {
+        "local"
+    } else {
+        vllm_target_kind(upstream)
+    };
+    let metrics_applicable = target_kind == "local";
 
     // 1) /v1/models 健康
     // upstream 通常已带 `/v1` 后缀（DEEPSEEK_BASE_URL=http://...:8000/v1），
@@ -377,17 +687,92 @@ pub async fn vllm_snapshot(upstream: &str, configured_model: Option<String>) -> 
     } else {
         format!("{}/v1/models", upstream.trim_end_matches('/'))
     };
-    let models_resp = client.get(models_url).send().await;
+    let mut request = client.get(models_url);
+    if let Some(key) = api_key.map(str::trim).filter(|key| !key.is_empty()) {
+        request = request.bearer_auth(key);
+    }
+    let should_probe_models =
+        target_kind == "local" || api_key.map(str::trim).is_some_and(|key| !key.is_empty());
+    let models_resp = if should_probe_models {
+        Some(request.send().await)
+    } else {
+        None
+    };
     let models_resp = match models_resp {
-        Ok(r) if r.status().is_success() => r,
-        _ => {
+        Some(Ok(r)) if r.status().is_success() => Some(r),
+        Some(Ok(r))
+            if r.status() == reqwest::StatusCode::UNAUTHORIZED
+                || r.status() == reqwest::StatusCode::FORBIDDEN =>
+        {
+            return Some(base_model_snapshot(
+                VllmStatus::Offline,
+                model_id,
+                provider,
+                configured_model,
+                upstream,
+                target_kind,
+                metrics_applicable,
+                "auth_failed",
+                Some(MonitorDiagnostic {
+                    code: "auth_failed".to_string(),
+                    message: format!("模型接口鉴权失败 (HTTP {})", r.status().as_u16()),
+                }),
+            ));
+        }
+        Some(Ok(r)) => {
+            if target_kind == "local" {
+                return Some(base_model_snapshot(
+                    VllmStatus::Offline,
+                    model_id,
+                    provider,
+                    configured_model,
+                    upstream,
+                    target_kind,
+                    metrics_applicable,
+                    "offline",
+                    Some(MonitorDiagnostic {
+                        code: "models_http_error".to_string(),
+                        message: format!("/v1/models 返回 HTTP {}", r.status().as_u16()),
+                    }),
+                ));
+            }
+            None
+        }
+        Some(Err(err)) => {
+            if target_kind == "local" {
+                return Some(base_model_snapshot(
+                    VllmStatus::Offline,
+                    model_id,
+                    provider,
+                    configured_model,
+                    upstream,
+                    target_kind,
+                    metrics_applicable,
+                    "offline",
+                    Some(MonitorDiagnostic {
+                        code: "models_unreachable".to_string(),
+                        message: format!("/v1/models 不可达: {err}"),
+                    }),
+                ));
+            }
+            None
+        }
+        None if target_kind == "local" => {
             return Some(VllmSnapshot {
                 status: VllmStatus::Offline,
+                model_id,
+                provider,
                 model: None,
                 configured_model,
                 upstream: upstream.to_string(),
                 target_kind: target_kind.to_string(),
-                metrics_applicable: target_kind == "local",
+                metrics_applicable,
+                health_status: "offline".to_string(),
+                diagnostic: Some(MonitorDiagnostic {
+                    code: "models_unverified".to_string(),
+                    message: "未探测 /v1/models".to_string(),
+                }),
+                metric_diagnostics: Vec::new(),
                 max_model_len: None,
                 num_requests_running: None,
                 num_requests_waiting: None,
@@ -402,23 +787,50 @@ pub async fn vllm_snapshot(upstream: &str, configured_model: Option<String>) -> 
                 prompt_tokens_total: None,
             });
         }
+        None => None,
     };
 
-    let (model_id, max_model_len) = match models_resp.json::<serde_json::Value>().await.ok() {
-        Some(v) => parse_models_response(v).unwrap_or((None, None)),
+    let (served_model, max_model_len) = match models_resp {
+        Some(r) => match r.json::<serde_json::Value>().await.ok() {
+            Some(v) => parse_models_response(v).unwrap_or((None, None)),
+            None => (None, None),
+        },
         None => (None, None),
     };
 
     // 2) /metrics（用 host 根目录，不带 /v1）
-    let metrics_url = strip_v1_suffix(upstream).map(|h| format!("{h}/metrics"));
-    let metrics_text = match metrics_url {
+    let metrics_url = metrics_applicable
+        .then(|| strip_v1_suffix(upstream).map(|h| format!("{h}/metrics")))
+        .flatten();
+    let metrics_resp = match metrics_url {
         Some(u) => client.get(&u).send().await.ok(),
         None => None,
     };
-    let metrics_text = match metrics_text {
+    let metrics_text = match metrics_resp {
         Some(r) if r.status().is_success() => r.text().await.ok(),
         _ => None,
     };
+    let mut metric_diagnostics = if metrics_applicable && metrics_text.is_none() {
+        vec![MonitorDiagnostic {
+            code: "metrics_unavailable".to_string(),
+            message: "本地 /metrics 不可用或未返回 Prometheus 指标".to_string(),
+        }]
+    } else {
+        Vec::new()
+    };
+    let max_model_len = max_model_len.or_else(|| {
+        let inferred = infer_context_window(
+            preset,
+            configured_model.as_deref().or(served_model.as_deref()),
+        );
+        if inferred.is_some() {
+            metric_diagnostics.push(MonitorDiagnostic {
+                code: "context_window_inferred".to_string(),
+                message: "上下文长度由模型名/供应商预设推断，远端模型接口未直接提供".to_string(),
+            });
+        }
+        inferred
+    });
 
     let running = metrics_text
         .as_deref()
@@ -452,21 +864,61 @@ pub async fn vllm_snapshot(upstream: &str, configured_model: Option<String>) -> 
     };
     // 如果用户配置了模型名，但和 vLLM 实际返回的不一致，降级为 Mismatch。
     // 这样监控台不会显示绿色 READY，聊天 live dot 也会变红。
-    if let Some(ref cfg) = configured_model {
-        if let Some(ref actual) = model_id {
-            if cfg.trim() != actual.trim() {
-                status = VllmStatus::Mismatch;
+    if metrics_applicable {
+        if let Some(ref cfg) = configured_model {
+            if let Some(ref actual) = served_model {
+                if cfg.trim() != actual.trim() {
+                    status = VllmStatus::Mismatch;
+                }
             }
         }
     }
+    let health_status = match status {
+        VllmStatus::Mismatch => "mismatch",
+        VllmStatus::Offline => "offline",
+        _ if target_kind == "remote"
+            && api_key
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+                .is_none() =>
+        {
+            "missing_api_key"
+        }
+        _ if target_kind == "remote" && served_model.is_none() => "unverified",
+        _ => "verified",
+    };
+    let diagnostic = match health_status {
+        "missing_api_key" => Some(MonitorDiagnostic {
+            code: "missing_api_key".to_string(),
+            message: "远端模型未配置 API Key，跳过在线探测".to_string(),
+        }),
+        "unverified" => Some(MonitorDiagnostic {
+            code: "remote_unverified".to_string(),
+            message: "远端模型未返回可用模型列表，保留当前配置展示".to_string(),
+        }),
+        "mismatch" => Some(MonitorDiagnostic {
+            code: "model_mismatch".to_string(),
+            message: "配置模型名与本地服务返回模型名不一致".to_string(),
+        }),
+        _ => None,
+    };
 
     Some(VllmSnapshot {
         status,
-        model: model_id,
+        model_id,
+        provider,
+        model: if target_kind == "remote" {
+            configured_model.clone().or(served_model)
+        } else {
+            served_model
+        },
         configured_model,
         upstream: upstream.to_string(),
         target_kind: target_kind.to_string(),
-        metrics_applicable: target_kind == "local",
+        metrics_applicable,
+        health_status: health_status.to_string(),
+        diagnostic,
+        metric_diagnostics,
         max_model_len,
         num_requests_running: running,
         num_requests_waiting: waiting,
@@ -482,6 +934,44 @@ pub async fn vllm_snapshot(upstream: &str, configured_model: Option<String>) -> 
     })
 }
 
+fn base_model_snapshot(
+    status: VllmStatus,
+    model_id: Option<String>,
+    provider: String,
+    configured_model: Option<String>,
+    upstream: &str,
+    target_kind: &str,
+    metrics_applicable: bool,
+    health_status: &str,
+    diagnostic: Option<MonitorDiagnostic>,
+) -> VllmSnapshot {
+    VllmSnapshot {
+        status,
+        model_id,
+        provider,
+        model: configured_model.clone(),
+        configured_model,
+        upstream: upstream.to_string(),
+        target_kind: target_kind.to_string(),
+        metrics_applicable,
+        health_status: health_status.to_string(),
+        diagnostic,
+        metric_diagnostics: Vec::new(),
+        max_model_len: None,
+        num_requests_running: None,
+        num_requests_waiting: None,
+        prefix_cache_hit_pct: None,
+        prefix_cache_hits: None,
+        prefix_cache_queries: None,
+        ttft_sum_s: None,
+        ttft_count: None,
+        tpot_sum_s: None,
+        tpot_count: None,
+        generation_tokens_total: None,
+        prompt_tokens_total: None,
+    }
+}
+
 fn parse_models_response(v: serde_json::Value) -> Option<(Option<String>, Option<u32>)> {
     let first = v.get("data")?.as_array()?.first()?;
     let id = first
@@ -493,6 +983,38 @@ fn parse_models_response(v: serde_json::Value) -> Option<(Option<String>, Option
         .and_then(|v| v.as_u64())
         .map(|n| n as u32);
     Some((id, max))
+}
+
+fn infer_context_window(preset: ModelPreset, model: Option<&str>) -> Option<u32> {
+    let lower = model.unwrap_or("").to_ascii_lowercase();
+    let explicit = [
+        ("1m", 1_048_576),
+        ("1000k", 1_024_000),
+        ("512k", 524_288),
+        ("256k", 262_144),
+        ("200k", 204_800),
+        ("128k", 131_072),
+        ("64k", 65_536),
+        ("32k", 32_768),
+        ("16k", 16_384),
+        ("8k", 8_192),
+    ]
+    .into_iter()
+    .find_map(|(needle, value)| lower.contains(needle).then_some(value));
+    if explicit.is_some() {
+        return explicit;
+    }
+    match preset {
+        ModelPreset::LocalVllm => Some(262_144),
+        ModelPreset::Deepseek => Some(131_072),
+        ModelPreset::Kimi => Some(262_144),
+        ModelPreset::OpenaiCompatible => Some(131_072),
+        ModelPreset::Qwen => Some(131_072),
+        ModelPreset::Doubao => Some(262_144),
+        ModelPreset::Minimax => Some(245_760),
+        ModelPreset::Glm => Some(131_072),
+        ModelPreset::Mimo => Some(128_000),
+    }
 }
 
 /// 推理性能相关的 6 个累计指标，统一解析、统一缺省 None。
@@ -552,7 +1074,10 @@ fn vllm_target_kind(upstream: &str) -> &'static str {
     if s.is_empty() {
         return "invalid";
     }
-    let Some(rest) = s.strip_prefix("http://").or_else(|| s.strip_prefix("https://")) else {
+    let Some(rest) = s
+        .strip_prefix("http://")
+        .or_else(|| s.strip_prefix("https://"))
+    else {
         return "invalid";
     };
     let Some(host_port) = rest.split('/').next() else {
@@ -653,16 +1178,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn self_metrics_first_turn_per_session_skips_ttft_tps() {
-        // 每 session 首轮 = 冷/warmup 轮:跳 TTFT/TPS,tokens/cache 照记(A)。
+    fn self_metrics_first_turn_per_session_records_ttft_tps() {
+        // 监控面板需要首轮纯文本恢复后立刻显示 TTFT/TPS；仅工具轮跳过。
         let m = SelfMetrics::default();
         m.on_turn_started("s1");
         m.on_first_delta("s1");
         m.on_first_delta("s1"); // 幂等
         m.on_turn_complete("s1", 100, 50, Some(90), Some(10));
         let s = m.snapshot();
-        assert_eq!(s.ttft_count, 0); // 首轮跳过 TTFT
-        assert_eq!(s.tps_tokens, 0); // 首轮跳过 TPS
+        assert_eq!(s.ttft_count, 1);
+        assert_eq!(s.tps_tokens, 50);
         assert_eq!(s.gen_tokens_total, 50); // tokens 照记
         assert_eq!(s.prompt_tokens_total, 100);
         assert_eq!(s.cache_hit_tokens, 90); // cache 照记
@@ -672,17 +1197,17 @@ mod tests {
     #[test]
     fn self_metrics_second_pure_turn_records_ttft_tps() {
         let m = SelfMetrics::default();
-        // 首轮(冷)跳
+        // 首轮也记
         m.on_turn_started("s1");
         m.on_first_delta("s1");
         m.on_turn_complete("s1", 10, 5, None, None);
-        // 二轮(暖)记
+        // 二轮继续记
         m.on_turn_started("s1");
         m.on_first_delta("s1");
         m.on_turn_complete("s1", 100, 50, None, None);
         let s = m.snapshot();
-        assert_eq!(s.ttft_count, 1); // 仅二轮
-        assert_eq!(s.tps_tokens, 50);
+        assert_eq!(s.ttft_count, 2);
+        assert_eq!(s.tps_tokens, 55);
         assert!(s.tps_time_s > 0.0);
         assert_eq!(s.gen_tokens_total, 55); // 两轮 tokens 都在
     }
@@ -690,7 +1215,7 @@ mod tests {
     #[test]
     fn self_metrics_tool_turn_skips_ttft_tps_but_keeps_tokens() {
         let m = SelfMetrics::default();
-        // 先暖首轮 + 一轮纯文本(计 1 次 TTFT)
+        // 先跑两轮纯文本(都计 TTFT)
         m.on_turn_started("s1");
         m.on_first_delta("s1");
         m.on_turn_complete("s1", 1, 1, None, None);
@@ -703,7 +1228,7 @@ mod tests {
         m.on_first_delta("s1");
         m.on_turn_complete("s1", 200, 80, None, None);
         let s = m.snapshot();
-        assert_eq!(s.ttft_count, 1); // 工具轮没加,仍是第二轮那 1 次
+        assert_eq!(s.ttft_count, 2); // 工具轮没加,仍是前两轮
         assert_eq!(s.gen_tokens_total, 82); // 1+1+80 全记
     }
 
@@ -720,23 +1245,23 @@ mod tests {
 
     #[test]
     fn self_metrics_first_turn_tracked_per_session() {
-        // 各 session 首轮独立跳过,不串台。
+        // 各 session 独立记录,不串台。
         let m = SelfMetrics::default();
         m.on_turn_started("a");
         m.on_turn_started("b");
         m.on_first_delta("a");
         m.on_first_delta("b");
-        m.on_turn_complete("a", 1, 1, None, None); // a 首轮跳
-        m.on_turn_complete("b", 1, 1, None, None); // b 首轮跳
+        m.on_turn_complete("a", 1, 1, None, None);
+        m.on_turn_complete("b", 1, 1, None, None);
         let s1 = m.snapshot();
-        assert_eq!(s1.ttft_count, 0);
+        assert_eq!(s1.ttft_count, 2);
         assert_eq!(s1.gen_tokens_total, 2);
-        // a 二轮记,b 仍只跑过首轮
+        // a 二轮继续记,b 仍只跑过首轮
         m.on_turn_started("a");
         m.on_first_delta("a");
         m.on_turn_complete("a", 1, 1, None, None);
         let s2 = m.snapshot();
-        assert_eq!(s2.ttft_count, 1); // 仅 a 的二轮
+        assert_eq!(s2.ttft_count, 3);
     }
 
     #[test]
@@ -800,7 +1325,7 @@ mod tests {
         assert_eq!(vllm_target_kind("https://api.deepseek.com/v1"), "remote");
         assert_eq!(vllm_target_kind("http://8.8.8.8:8000/v1"), "remote");
         assert_eq!(vllm_target_kind("http://172.32.0.1:8000/v1"), "remote"); // 172.32 不在私有段
-        // 配置异常:空 / 非 URL
+                                                                             // 配置异常:空 / 非 URL
         assert_eq!(vllm_target_kind(""), "invalid");
         assert_eq!(vllm_target_kind("not-a-url"), "invalid");
     }
@@ -837,7 +1362,9 @@ mod tests {
         // 端到端佐证:探测窗口喂进 derive 公式应得按窗口缩放的 T(非写死 190K)。
         // 复算 derive_compaction_threshold(bridge 私有,此处内联同公式):
         //   E = W − O − 1024;T = (E−S)/1.5 − 22000, clamp[4096, 0.75W]。O=24576(默认预留)。
-        let e = (window as usize).saturating_sub(24_576).saturating_sub(1_024);
+        let e = (window as usize)
+            .saturating_sub(24_576)
+            .saturating_sub(1_024);
         let t = (e.saturating_sub(4_000).saturating_mul(2) / 3)
             .saturating_sub(22_000)
             .clamp(4_096, window as usize * 3 / 4);

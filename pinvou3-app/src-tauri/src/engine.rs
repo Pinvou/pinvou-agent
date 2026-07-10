@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use deepseek_tui::core::engine::{spawn_engine, EngineHandle};
-use deepseek_tui::core::events::Event;
+use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
 use deepseek_tui::core::ops::Op;
 use deepseek_tui::models::Message;
 use deepseek_tui::tools::user_input::UserInputResponse;
@@ -479,10 +479,12 @@ fn spawn_event_forwarder(
         let self_metrics = app
             .try_state::<crate::monitor::MonitorState>()
             .map(|s| s.self_metrics());
+        let mut current_turn_id: Option<String> = None;
         let mut rx = handle.rx_event.write().await;
         while let Some(event) = rx.recv().await {
             match event {
-                Event::TurnStarted { .. } => {
+                Event::TurnStarted { turn_id } => {
+                    current_turn_id = Some(turn_id);
                     // 本轮起始打点(TTFT 起点)。底座已发此事件,原先落 `_` 被忽略。
                     if let Some(m) = &self_metrics {
                         m.on_turn_started(&session_id);
@@ -490,7 +492,7 @@ fn spawn_event_forwarder(
                 }
                 Event::MessageDelta { content, .. } => {
                     if let Some(m) = &self_metrics {
-                        m.on_first_delta(&session_id); // 首个才记 TTFT,幂等
+                        m.on_message_delta(&session_id, content.chars().count());
                     }
                     crate::memory::append_turn_assistant(&session_id, &content);
                     let payload = json!({ "session_id": session_id, "text": content });
@@ -935,18 +937,16 @@ fn spawn_event_forwarder(
                     });
                     let _ = app.emit("chat:usage", payload.clone());
                     crate::remote_control::forward_app_event(&app, "chat:usage", payload);
-                    // app 侧自测:用精确 usage 收尾本轮(过滤 output==0 的非 LLM/错误/取消轮,
-                    // 见 Usage::default() 内联 shell 轮 / zero_usage 错误路径)。KV 白捡 D3。
+                    // app 侧自测:用精确 usage 收尾本轮。部分远端模型会流式返回文本,
+                    // 但最终 usage.output_tokens 为 0,因此不能用 output_tokens 门控收尾。
                     if let Some(m) = &self_metrics {
-                        if usage.output_tokens > 0 {
-                            m.on_turn_complete(
-                                &session_id,
-                                usage.input_tokens,
-                                usage.output_tokens,
-                                usage.prompt_cache_hit_tokens,
-                                usage.prompt_cache_miss_tokens,
-                            );
-                        }
+                        m.on_turn_complete(
+                            &session_id,
+                            usage.input_tokens,
+                            usage.output_tokens,
+                            usage.prompt_cache_hit_tokens,
+                            usage.prompt_cache_miss_tokens,
+                        );
                     }
                     // turn end:取出 tracker 快照,然后重置(下个 turn 重新累积)。
                     // 用独立 block 把 parking_lot guard 的生命周期限死在这里:下方
@@ -1095,6 +1095,14 @@ fn spawn_event_forwarder(
                             });
                         }
                     }
+                    maybe_notify_task_completed(
+                        &app,
+                        &store,
+                        &session_id,
+                        current_turn_id.take(),
+                        status,
+                        error.as_deref(),
+                    );
                     let payload =
                         json!({ "session_id": session_id, "status": status_text, "error": error });
                     let _ = app.emit("chat:done", payload.clone());
@@ -1177,6 +1185,34 @@ fn spawn_event_forwarder(
     })
 }
 
+fn maybe_notify_task_completed(
+    app: &AppHandle,
+    store: &SessionStore,
+    session_id: &str,
+    turn_id: Option<String>,
+    status: TurnOutcomeStatus,
+    error: Option<&str>,
+) {
+    if status != TurnOutcomeStatus::Completed || error.is_some() {
+        return;
+    }
+    if store.mode_state(session_id).active_skill.is_some() {
+        return;
+    }
+    if !crate::notifications::task_completion_enabled() {
+        return;
+    }
+    let key = turn_id.unwrap_or_else(|| chrono::Utc::now().timestamp_millis().to_string());
+    let notify_key = format!("{session_id}:{key}");
+    if app
+        .try_state::<crate::notifications::NotificationState>()
+        .map(|state| state.should_notify(notify_key))
+        .unwrap_or(true)
+    {
+        crate::notifications::notify_task_completed(app);
+    }
+}
+
 /// 让 main.rs 编译时知道这个模块（供 docs/CI 用）。
 pub fn _force_link() -> Arc<()> {
     Arc::new(())
@@ -1252,8 +1288,8 @@ mod live_tests {
                     seq.push(format!("t{turn}:TurnStarted"));
                     m.on_turn_started(sid);
                 }
-                Event::MessageDelta { .. } => {
-                    m.on_first_delta(sid);
+                Event::MessageDelta { content, .. } => {
+                    m.on_message_delta(sid, content.chars().count());
                 }
                 Event::ToolCallStarted { .. } => {
                     seq.push(format!("t{turn}:ToolCallStarted"));
@@ -1264,15 +1300,13 @@ mod live_tests {
                 }
                 Event::TurnComplete { usage, .. } => {
                     seq.push(format!("t{turn}:TurnComplete(out={})", usage.output_tokens));
-                    if usage.output_tokens > 0 {
-                        m.on_turn_complete(
-                            sid,
-                            usage.input_tokens,
-                            usage.output_tokens,
-                            usage.prompt_cache_hit_tokens,
-                            usage.prompt_cache_miss_tokens,
-                        );
-                    }
+                    m.on_turn_complete(
+                        sid,
+                        usage.input_tokens,
+                        usage.output_tokens,
+                        usage.prompt_cache_hit_tokens,
+                        usage.prompt_cache_miss_tokens,
+                    );
                     turns_done += 1;
                     if turns_done == 1 {
                         engine
