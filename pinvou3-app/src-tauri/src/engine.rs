@@ -492,7 +492,7 @@ fn spawn_event_forwarder(
                 }
                 Event::MessageDelta { content, .. } => {
                     if let Some(m) = &self_metrics {
-                        m.on_first_delta(&session_id); // 首个才记 TTFT,幂等
+                        m.on_message_delta(&session_id, content.chars().count());
                     }
                     crate::memory::append_turn_assistant(&session_id, &content);
                     let _ = app.emit(
@@ -934,18 +934,16 @@ fn spawn_event_forwarder(
                             "output_tokens": usage.output_tokens,
                         }),
                     );
-                    // app 侧自测:用精确 usage 收尾本轮(过滤 output==0 的非 LLM/错误/取消轮,
-                    // 见 Usage::default() 内联 shell 轮 / zero_usage 错误路径)。KV 白捡 D3。
+                    // app 侧自测:用精确 usage 收尾本轮。部分远端模型会流式返回文本,
+                    // 但最终 usage.output_tokens 为 0,因此不能用 output_tokens 门控收尾。
                     if let Some(m) = &self_metrics {
-                        if usage.output_tokens > 0 {
-                            m.on_turn_complete(
-                                &session_id,
-                                usage.input_tokens,
-                                usage.output_tokens,
-                                usage.prompt_cache_hit_tokens,
-                                usage.prompt_cache_miss_tokens,
-                            );
-                        }
+                        m.on_turn_complete(
+                            &session_id,
+                            usage.input_tokens,
+                            usage.output_tokens,
+                            usage.prompt_cache_hit_tokens,
+                            usage.prompt_cache_miss_tokens,
+                        );
                     }
                     // turn end:取出 tracker 快照,然后重置(下个 turn 重新累积)。
                     // 用独立 block 把 parking_lot guard 的生命周期限死在这里:下方
@@ -1284,8 +1282,8 @@ mod live_tests {
                     seq.push(format!("t{turn}:TurnStarted"));
                     m.on_turn_started(sid);
                 }
-                Event::MessageDelta { .. } => {
-                    m.on_first_delta(sid);
+                Event::MessageDelta { content, .. } => {
+                    m.on_message_delta(sid, content.chars().count());
                 }
                 Event::ToolCallStarted { .. } => {
                     seq.push(format!("t{turn}:ToolCallStarted"));
@@ -1296,15 +1294,13 @@ mod live_tests {
                 }
                 Event::TurnComplete { usage, .. } => {
                     seq.push(format!("t{turn}:TurnComplete(out={})", usage.output_tokens));
-                    if usage.output_tokens > 0 {
-                        m.on_turn_complete(
-                            sid,
-                            usage.input_tokens,
-                            usage.output_tokens,
-                            usage.prompt_cache_hit_tokens,
-                            usage.prompt_cache_miss_tokens,
-                        );
-                    }
+                    m.on_turn_complete(
+                        sid,
+                        usage.input_tokens,
+                        usage.output_tokens,
+                        usage.prompt_cache_hit_tokens,
+                        usage.prompt_cache_miss_tokens,
+                    );
                     turns_done += 1;
                     if turns_done == 1 {
                         engine

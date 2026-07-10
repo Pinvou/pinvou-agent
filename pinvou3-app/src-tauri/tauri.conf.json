@@ -4,6 +4,8 @@
   "version": "0.5.8",
   "identifier": "com.pinvou.pinvou3",
   "build": {
+    "beforeDevCommand": "node src-tauri/scripts/serve-src.mjs",
+    "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../src"
   },
   "app": {
