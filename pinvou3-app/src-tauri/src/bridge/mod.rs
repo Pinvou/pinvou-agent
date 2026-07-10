@@ -109,14 +109,29 @@ impl Pinvou3Bridge {
         // 幂等(底座 OnceLock 首次生效、后续 Err 被忽略),必须早于任何 engine spawn。
         // 编译期内嵌常量,不依赖 bundle 解包。dump_system_prompt bin 也经此 boot,故
         // dump 同样生效。见 docs/base-prompt-override-阶段2.md。
+        crate::startup::mark("bridge_boot:prompt_overrides:start");
         bundle::install_prompt_overrides();
+        crate::startup::mark("bridge_boot:prompt_overrides:done");
+        crate::startup::mark("bridge_boot:ensure_dirs:start");
         paths::ensure_dirs()?;
+        crate::startup::mark("bridge_boot:ensure_dirs:done");
         let bundle = Pinvou3Bundle::paths();
+        crate::startup::mark("bridge_boot:bundle_extract:start");
         bundle.ensure_extracted()?;
+        crate::startup::mark("bridge_boot:bundle_extract:done");
+        crate::startup::mark("bridge_boot:mcp_secret_sync:start");
         if let Err(err) = marketplace::sync_mcp_secret_env_vars() {
             eprintln!("[pinvou3-app] MCP secret env sync skipped: {err}");
+            crate::startup::mark_with_detail(
+                "rust",
+                "bridge_boot:mcp_secret_sync:error",
+                &err,
+            );
         }
+        crate::startup::mark("bridge_boot:mcp_secret_sync:done");
+        crate::startup::mark("bridge_boot:prefs_load:start");
         let prefs = UserPrefs::load();
+        crate::startup::mark("bridge_boot:prefs_load:done");
         if !paths::settings_path().exists() {
             prefs.save().ok();
         }
@@ -135,7 +150,9 @@ impl Pinvou3Bridge {
         //   • `~/.pinvou3/workspace_context.md`(workspace context 已合并进 INSTRUCTIONS_MD §0)
         //   • `~/.codewhale/instructions.md` / `~/.deepseek/instructions.md`(早期 P-brand 路径)
         // 不再生成任何 pinvou3-managed disk 文件 — 所有 prompt 内容走 Inline。
+        crate::startup::mark("bridge_boot:legacy_cleanup:start");
         this.cleanup_legacy_pinvou3_disk_files();
+        crate::startup::mark("bridge_boot:legacy_cleanup:done");
         Ok(this)
     }
 
@@ -1487,6 +1504,11 @@ mod tests {
     /// 谁改 derive_compaction_threshold 或 max_output_tokens 导致倒置都会被这条挡下。
     #[test]
     fn forkguard_compaction_threshold_below_emergency_all_windows() {
+        // 生产由 Bridge::boot → wire_max_output_tokens_env 固定为 24576；本测试会被
+        // fork-guard 单独筛选运行，不能依赖其他测试先执行后遗留的 process-global env。
+        let previous_output_cap = std::env::var_os("DEEPSEEK_MAX_OUTPUT_TOKENS");
+        std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576");
+
         // 把 T 从 should_compact 的 raw 子集尺 → emergency 的 conservative 全量尺
         const K_NUM: usize = 3; // ÷ K_DEN == ×1.5
         const K_DEN: usize = 2;
@@ -1539,6 +1561,11 @@ mod tests {
             b.probed_context_tokens = Some(w);
             let t = b.build_engine_config().compaction.token_threshold; // 不得 panic
             assert_eq!(t, 4_096, "极端小窗口 W={w} 应 clamp 到 floor 4096,实得 {t}");
+        }
+
+        match previous_output_cap {
+            Some(value) => std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", value),
+            None => std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS"),
         }
     }
 

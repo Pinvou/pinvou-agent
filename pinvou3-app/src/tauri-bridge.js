@@ -17,6 +17,32 @@
   const { invoke } = TAURI.core;
   const { listen } = TAURI.event;
   const dialogOpen = TAURI.dialog?.open;
+  function startupMark(stage, detail) {
+    if (window.__PINVOU_STARTUP__) window.__PINVOU_STARTUP__.mark(stage, detail);
+  }
+  async function startupAwait(stage, action) {
+    var started = performance.now();
+    startupMark(stage + ":start");
+    try {
+      var result = await action();
+      startupMark(stage + ":done", "duration_ms=" + (performance.now() - started).toFixed(1));
+      return result;
+    } catch (error) {
+      startupMark(stage + ":error", "duration_ms=" + (performance.now() - started).toFixed(1) + " error=" + String(error));
+      throw error;
+    }
+  }
+  async function refreshConnectorAuthGates() {
+    startupMark("bridge:connector_auth_refresh:start");
+    try {
+      var result = await invoke("refresh_connector_auth_gates");
+      startupMark("bridge:connector_auth_refresh:done", "elapsed_ms=" + result.elapsed_ms);
+      return result;
+    } catch (error) {
+      startupMark("bridge:connector_auth_refresh:error", String(error));
+      throw error;
+    }
+  }
 
   // ── Markdown rendering (vendor scripts loaded in index.html) ─────
   // 抹平裸 <script>/<style>/<iframe> 等危险标签:它们一旦被 marked 透传成真 HTML,
@@ -138,6 +164,18 @@
     // 应用内升级: updateInfo = check_for_update 返回值(available=true 才有意义)
     appVersion: null,
     updateInfo: null,
+    remoteControl: {
+      active: false,
+      room_id: null,
+      session_id: null,
+      url: null,
+      expires_at: null,
+      status: "idle",
+      relay_url: "",
+      last_error: null,
+      pairing: null,
+      starting: false,
+    },
     updateChecking: false,
     updateCheckError: null,   // 手动检查的错误/「已是最新」提示文案
     updateDownloading: false,
@@ -294,6 +332,7 @@
   function freshBuffer() {
     return {
       messages: [], chatItems: [], personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
+      loadedFromDisk: false,
       planSnapshot: { plan: null, todos: null },
       modeState: { mode: "yolo" },
       thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
@@ -344,6 +383,42 @@
     pendingAssistantText = s.pendingAssistantText || ""; pendingAssistantBlocks = s.pendingAssistantBlocks || [];
     itemIdSeq = s.itemIdSeq || 0; toolMeta = s.toolMeta || {};
   }
+  function hydrateWorkingSetFromSaved(buf, saved) {
+    if (!buf || !saved) return;
+    buf.messages = Array.isArray(saved.messages) ? saved.messages : [];
+    buf.chatItems = [];
+    buf.artifacts = Array.isArray(saved.artifacts) ? saved.artifacts.map(function (a) {
+      var p = typeof a === "string" ? a : (a.storage_path || a.path || "");
+      return { path: p, basename: basename(p) };
+    }) : [];
+    buf.artifacts = filterSessionArtifacts(buf.artifacts, saved.metadata && saved.metadata.id);
+    buf.personaEvents = [];
+    buf.pinvouReviews = [];
+    buf.stream = {
+      currentStreamText: "", currentStreamId: 0, pendingAssistantText: "",
+      pendingAssistantBlocks: [], itemIdSeq: 0, toolMeta: {},
+    };
+  }
+  async function ensureSessionBufferLoaded(sid) {
+    if (!sid) return;
+    if (sid === state.activeSessionId) return;
+    var buf = getBuffer(sid);
+    var meta = state.sessions.find(function (s) { return s.id === sid; }) || {};
+    var knownCount = Number(meta.message_count || 0);
+    if (buf.busy) return;
+    if (buf.loadedFromDisk && (!knownCount || buf.messages.length >= knownCount)) return;
+    if (!buf.loadedFromDisk && (buf.messages.length || buf.chatItems.length) && (!knownCount || buf.messages.length >= knownCount)) return;
+    var saved = await invoke("load_session", { id: sid, setActive: false });
+    var savedCount = saved && saved.metadata ? Number(saved.metadata.message_count || 0) : 0;
+    if ((buf.messages.length || buf.chatItems.length) && savedCount <= buf.messages.length) {
+      buf.loadedFromDisk = true;
+      return;
+    }
+    hydrateWorkingSetFromSaved(buf, saved);
+    try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch (e) { buf.personaEvents = []; }
+    try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch (e) { buf.pinvouReviews = []; }
+    buf.loadedFromDisk = true;
+  }
   // 把 active 工作集存好后切到 id 的 buffer(opts.fresh=新建空 buffer)。
   function switchActiveTo(id, opts) {
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
@@ -356,7 +431,7 @@
   // 否则临时切到该 buffer 跑完再切回(期间不 notify)。
   function runSyncOnSession(sid, fn) {
     if (!sid || sid === state.activeSessionId) { fn(); return; }
-    var bg = sessionStates[sid]; if (!bg) return;
+    var bg = getBuffer(sid);
     var realId = state.activeSessionId;
     saveWorkingSetTo(getBuffer(realId));
     loadWorkingSetFrom(bg);
@@ -391,13 +466,13 @@
       await invoke("save_session_messages", { id: sid, messages: msgs });
       try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch (_) {}
       var meta = state.sessions.find(function (s) { return s.id === sid; });
-      if (meta && (meta.title === "新对话" || meta.title === "New chat" || personaPlaceholderTitles[sid])) {
+      if (!meta || meta.title === "新对话" || meta.title === "New chat" || personaPlaceholderTitles[sid]) {
         var firstUser = msgs.find(function (m) { return m.role === "user"; });
         var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
         if (text && text.text) {
           var newTitle = text.text.slice(0, 20);
           await invoke("rename_session", { id: sid, title: newTitle });
-          meta.title = newTitle;
+          if (meta) meta.title = newTitle;
           delete personaPlaceholderTitles[sid]; // 已被对话内容命名,卸下占位标记
         }
       }
@@ -411,6 +486,78 @@
       try { return structuredClone(state); } catch (_) {}
     }
     return JSON.parse(JSON.stringify(state));
+  }
+  function cloneJson(value, fallback) {
+    try { return JSON.parse(JSON.stringify(value == null ? fallback : value)); }
+    catch (_) { return fallback; }
+  }
+  function remoteWorkingSetFor(sid) {
+    if (!sid) return null;
+    if (sid === state.activeSessionId) {
+      saveWorkingSetTo(getBuffer(sid));
+      return {
+        messages: state.messages, chatItems: state.chatItems, artifacts: state.artifacts,
+        busy: state.busy, thinking: state.thinking, planSnapshot: state.planSnapshot,
+      };
+    }
+    return sessionStates[sid] || null;
+  }
+  function remoteArtifactSnapshot(artifacts) {
+    return (Array.isArray(artifacts) ? artifacts : []).map(function (a) {
+      var p = a && (a.path || a.path_tail || a.storage_path || "");
+      return {
+        id: (a && a.id) || "",
+        basename: (a && a.basename) || basename(p),
+        path: p,
+        path_tail: p,
+        kind: (a && a.kind) || "",
+        byte_size: (a && a.byte_size) || 0,
+        created_at: (a && a.created_at) || "",
+      };
+    }).filter(function (a) { return !!(a.path || a.basename); });
+  }
+  function buildRemoteLiveSnapshot(sid) {
+    var ws = remoteWorkingSetFor(sid);
+    if (!ws) return null;
+    var meta = state.sessions.find(function (s) { return s.id === sid; }) || {};
+    var msgs = cloneJson(ws.messages, []);
+    var chatItems = cloneJson(ws.chatItems, []);
+    return {
+      snapshot_source: "live",
+      session: {
+        id: sid,
+        title: meta.title || "新对话",
+        status: ws.busy ? "running" : "idle",
+        updated_at: meta.updated_at || "",
+        message_count: meta.message_count || msgs.length || chatItems.length || 0,
+      },
+      messages: msgs.map(function (m, idx) {
+        var blocks = Array.isArray(m.content) ? m.content : [];
+        return {
+          index: idx,
+          role: m.role,
+          content: blocks.filter(function (b) { return b && b.type === "text"; }).map(function (b) { return b.text || ""; }).join(""),
+          blocks: blocks,
+        };
+      }),
+      chat_items: chatItems,
+      artifacts: remoteArtifactSnapshot(filterSessionArtifacts(ws.artifacts, sid)),
+      busy: !!ws.busy,
+      thinking: cloneJson(ws.thinking, null),
+      plan_snapshot: cloneJson(ws.planSnapshot, null),
+    };
+  }
+  async function publishRemoteLiveSnapshot(sid) {
+    try { await ensureSessionBufferLoaded(sid); }
+    catch (err) { console.warn("remote snapshot hydrate failed", err); }
+    var snapshot = buildRemoteLiveSnapshot(sid);
+    if (!snapshot) return false;
+    await invoke("remote_control_publish_event", {
+      sessionId: sid,
+      kind: "session_snapshot",
+      payload: snapshot,
+    });
+    return true;
   }
   function notify() {
     if (suppressNotify) return;
@@ -590,6 +737,7 @@
       state.activeSessionId = saved.metadata.id;
       loadWorkingSetFrom(sessionStates[id] = freshBuffer());
       state.messages = Array.isArray(saved.messages) ? saved.messages : [];
+      sessionStates[id].loadedFromDisk = true;
       try { state.personaEvents = await invoke("get_session_persona_events", { sessionId: id }) || []; } catch (e) { state.personaEvents = []; }
       try { state.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: id }) || []; } catch (e) { state.pinvouReviews = []; }
       resetPendingAssistant();
@@ -789,6 +937,7 @@
     var lastDirtyArtifactId = {};
     var writtenArtifacts = {}; // write/append 写过的 path=产物;没 present 时兜底补首卡
     var presentedArtifacts = {}; // 整篇 present_artifact 过的 path → 别再兜底补首卡(present 会出卡,否则重复)
+    var presentedArtifactNames = {}; // path 可能一边相对一边绝对,basename 去重防重复卡
     for (var di = 0; di < state.messages.length; di++) {
       var dc = state.messages[di].content;
       if (!Array.isArray(dc)) continue;
@@ -802,7 +951,21 @@
           }
         } else if (db.type === "tool_use" && isPresentArtifactTool(db.name)) {
           var pap = extractArtifactPath(db.input);
-          if (pap) presentedArtifacts[pap] = true;
+          var pres = resultById[db.id];
+          var pp = presentArtifactAbsPath(pres && pres.content, pap);
+          if (pp) {
+            presentedArtifacts[pp] = true;
+            presentedArtifactNames[basename(pp)] = true;
+          }
+        } else if (db.type === "tool_use") {
+          var gres = resultById[db.id];
+          if (!(gres && gres.is_error)) {
+            var gp = artifactPathFromToolOutput(gres && gres.content);
+            if (gp && isDeliverable(gp)) {
+              lastDirtyArtifactId[gp] = db.id;
+              writtenArtifacts[gp] = true;
+            }
+          }
         }
       }
     }
@@ -895,6 +1058,19 @@
             continue;
           }
           addChatItem({ type: "tool", toolId: b.id, name: b.name, args: b.input, output: null, success: null, state: "pending" });
+          var gres2 = resultById[b.id];
+          var gap = artifactPathFromToolOutput(gres2 && gres2.content);
+          if (!(gres2 && gres2.is_error) && gap && isDeliverable(gap) && lastDirtyArtifactId[gap] === b.id && !presentedArtifacts[gap] && !presentedArtifactNames[basename(gap)]) {
+            var gprev = findPresentedArtifact(gap);
+            if (gprev) {
+              addChatItem({
+                type: "artifact_card", path: gprev.path, title: gprev.title,
+                description: gprev.description, time: "", sessionId: state.activeSessionId,
+              });
+            } else if (writtenArtifacts[gap]) {
+              addChatItem({ type: "artifact_card", path: gap, title: basename(gap), description: "", time: "", sessionId: state.activeSessionId });
+            }
+          }
           // 还原"自动续卡":write_file/append_file 改的文件之前 present 过 → 续一张
           // 成品卡(与实时 tool_end 的自动续逻辑对齐,切会话不丢)。present 的卡按
           // 顺序在前(必须先 present 才进集合),此处 findPresentedArtifact 能命中。
@@ -909,7 +1085,7 @@
                   type: "artifact_card", path: wprev.path, title: wprev.title,
                   description: wprev.description, time: "", sessionId: state.activeSessionId,
                 });
-              } else if (writtenArtifacts[wap] && !presentedArtifacts[wap]) {
+              } else if (writtenArtifacts[wap] && !presentedArtifacts[wap] && !presentedArtifactNames[basename(wap)]) {
                 // AI 写了产物但全程没 present_artifact → 兜底补首卡(与实时 chat:done 对齐)
                 addChatItem({ type: "artifact_card", path: wap, title: basename(wap), description: "", time: "", sessionId: state.activeSessionId });
               }
@@ -968,6 +1144,28 @@
   function isAbsPath(p) {
     return typeof p === "string" && (p.charAt(0) === "/" || /^[A-Za-z]:[\\/]/.test(p));
   }
+  function normalizedPath(p) {
+    return String(p || "").replace(/\\/g, "/");
+  }
+  function isSharedMcpArtifactPath(path) {
+    return normalizedPath(path).indexOf("/sessions/default/artifacts/") >= 0;
+  }
+  function artifactBelongsToSession(path, sid) {
+    if (!path || !sid) return false;
+    if (!isAbsPath(path)) return true;
+    if (isSharedMcpArtifactPath(path)) return true;
+    var normalized = normalizedPath(path);
+    if (normalized.indexOf("/sessions/") >= 0) {
+      return normalized.indexOf("/sessions/" + sid + "/workspace/") >= 0 ||
+        normalized.indexOf("/sessions/" + sid + "/artifacts/") >= 0;
+    }
+    return true;
+  }
+  function filterSessionArtifacts(artifacts, sid) {
+    return (Array.isArray(artifacts) ? artifacts : []).filter(function (a) {
+      return artifactBelongsToSession(a && a.path, sid);
+    });
+  }
   // 「成品型」扩展名:write_file 写出这类文件即自动当成品进面板(模型常忘 present_artifact)。
   // 办公文档 + markdown 报告 + 数据表 + 图片 + 打包件都算成品(覆盖 AI 常见产出格式)。
   // 中间/草稿(.txt/.json/.xml 等)刻意不在此列 → 不进面板,避免一堆过程文件污染产物列表;
@@ -996,6 +1194,12 @@
     }
     state.artifacts.push({ path: path, basename: bn });
     notify();
+  }
+  function markTurnDirtyArtifact(path) {
+    var bn = basename(path);
+    if (!bn) return;
+    if ((state.turnDirtyArtifacts || []).some(function (p) { return basename(p) === bn; })) return;
+    state.turnDirtyArtifacts.push(path);
   }
   function untrackArtifact(path) {
     var before = state.artifacts.length;
@@ -1097,6 +1301,7 @@
       state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
     });
     notify();
+    publishRemoteUserMessage(sid, displayText, meta && meta.remoteClientMessageId);
     return invoke("chat", { message: text, attachments: attachmentsPayload, sessionId: sid })
       .catch(function (err) {
         console.warn("[pinvou3][chat-ui] send failed", {
@@ -1110,6 +1315,14 @@
         });
         notify();
       });
+  }
+  function publishRemoteUserMessage(sid, content, clientMessageId) {
+    if (!sid || !content) return;
+    invoke("remote_control_publish_user_message", {
+      sessionId: sid,
+      content: content,
+      clientMessageId: clientMessageId || null,
+    }).catch(function () { /* 没开远控时静默跳过 */ });
   }
   // 本轮跑完(或被停止)后,若该 session 不忙且有排队消息 → 把【整个队列】合并成一条
   // 一次性发出(Claude 式:排队的全部一起扔进下一轮,而不是一条条串行)。
@@ -1355,6 +1568,10 @@
     notify();
   }); });
 
+  listen("chat:memory_write", function (e) {
+    handleMemoryWrite(e && e.payload);
+  });
+
   // present_artifact MCP 工具名匹配:兼容底座 MCP adapter 可能加的 server 前缀
   // (实测透传名若带前缀仍命中)。命中则渲染成品卡而非灰色工具卡。
   function isPresentArtifactTool(name) {
@@ -1366,17 +1583,31 @@
   // 模型常给相对路径,直接拿 args.path 渲染会让卡片 path 是相对,点 Open 报「path must be
   // absolute」,且模型可能重试再 present 一次出双卡。取不到 abs_path 才回退原始 path。
   // 兼容两种结果格式:直接 payload {abs_path} / MCP content 数组 {content:[{text}]} 包一层。
-  function presentArtifactAbsPath(toolResultContent, fallbackPath) {
-    fallbackPath = fallbackPath || "";
+  function parseToolResultPayload(toolResultContent) {
     try {
       var raw = typeof toolResultContent === "string" ? toolResultContent : JSON.stringify(toolResultContent || {});
       var obj = JSON.parse(raw);
-      if (obj && typeof obj.abs_path === "string" && obj.abs_path) return obj.abs_path;
       if (obj && obj.content && obj.content[0] && typeof obj.content[0].text === "string") {
-        var inner = JSON.parse(obj.content[0].text);
-        if (inner && typeof inner.abs_path === "string" && inner.abs_path) return inner.abs_path;
+        try {
+          var inner = JSON.parse(obj.content[0].text);
+          if (inner && typeof inner === "object") return inner;
+        } catch (_) {}
       }
-    } catch (_) {}
+      return obj;
+    } catch (_) {
+      return null;
+    }
+  }
+  function artifactPathFromToolOutput(toolResultContent) {
+    var obj = parseToolResultPayload(toolResultContent);
+    if (!obj || typeof obj !== "object") return null;
+    var p = obj.abs_path || obj.path || obj.file_path || obj.local_path;
+    return typeof p === "string" && p ? p : null;
+  }
+  function presentArtifactAbsPath(toolResultContent, fallbackPath) {
+    fallbackPath = fallbackPath || "";
+    var parsed = artifactPathFromToolOutput(toolResultContent);
+    if (parsed) return parsed;
     return fallbackPath;
   }
 
@@ -1482,6 +1713,17 @@
       return;
     }
 
+    // 通用工具产物兜底：PPT / 公文等 MCP 工具会先返回 {path: "..."}，
+    // 随后模型按约定再调 present_artifact。若模型漏调，仍把该成品归到当前
+    // tool_end 所属 session，并在 chat:done 统一补一张成品卡。
+    if (p.success && meta && !isPresentArtifactTool(meta.name)) {
+      var producedPath = artifactPathFromToolOutput(p.output);
+      if (producedPath && isDeliverable(producedPath)) {
+        trackArtifact(producedPath);
+        markTurnDirtyArtifact(producedPath);
+      }
+    }
+
     // load_skill：卡照出，但不把返回的 SKILL.md 全文写进卡，展开只见占位（防设计系统泄露）。
     var outForCard = (meta && meta.name === "load_skill") ? "（技能已加载，内容不展示）" : p.output;
     updateToolItem(p.id, outForCard, p.success);
@@ -1508,9 +1750,7 @@
         // turnDirty 收不到 → 实时不补成品卡(只能靠重启 rerender 才出)。basename 比对消除该竞态。
         var _apbn = basename(ap);
         var isArtifact = !!findPresentedArtifact(ap) || state.artifacts.some(function (a) { return basename(a.path) === _apbn; });
-        if (isArtifact && state.turnDirtyArtifacts.indexOf(ap) < 0) {
-          state.turnDirtyArtifacts.push(ap);
-        }
+        if (isArtifact) markTurnDirtyArtifact(ap);
       }
     }
 
@@ -1579,6 +1819,7 @@
       await persistMessagesFor(sid);
       await refreshHistoryList();
       notify();
+      publishRemoteLiveSnapshot(sid).catch(function () {});
       // 排队式:本轮跑完,若该 session 不忙且有待发消息 → 自动发下一条
       flushQueued(sid);
     })();
@@ -1648,6 +1889,32 @@
       // (file_watcher 递归会推 tmp/ _state/ 等子目录与 infra 文件 → 此处兜住)。
       if (isDeliverable(p.path) || findPresentedArtifact(p.path)) trackArtifact(p.path);
     });
+  });
+
+  listen("remote_control:mobile_user_message", async function (e) {
+    var p = e.payload || {};
+    var sid = p.session_id;
+    var content = (p.content || "").trim();
+    if (!sid || !content) return;
+    try { await ensureSessionBufferLoaded(sid); }
+    catch (err) {
+      console.warn("remote session hydrate failed", err);
+      return;
+    }
+    if (isBusyFor(sid)) {
+      runSyncOnSession(sid, function () {
+        state.queued.push({
+          id: ++itemIdSeq,
+          text: content,
+          displayText: content,
+          attachments: [],
+          meta: { remoteClientMessageId: p.client_message_id || null },
+        });
+      });
+      notify();
+      return;
+    }
+    doSendFor(sid, content, content, [], { remoteClientMessageId: p.client_message_id || null });
   });
 
   // 本地语音识别依赖安装进度（模型下载 / ffmpeg 安装）
@@ -2065,8 +2332,12 @@
           ? Math.round(snap.gpu.vram_used_mib / snap.gpu.vram_total_mib * 100) : 0,
         gpuUtil: snap.gpu ? (snap.gpu._utilMax + "%") : "—",
         gpuUtilPct: snap.gpu ? snap.gpu._utilMax : 0,
-        processorUtil: cpuUsage != null ? cpuUsage + "%" : "—",
-        processorUtilPct: cpuUsage != null ? cpuUsage : 0,
+        processorUtil: cpuUsage != null
+          ? cpuUsage + "%"
+          : (snap.gpu && snap.gpu.processor_utilization_pct != null ? snap.gpu.processor_utilization_pct + "%" : "—"),
+        processorUtilPct: cpuUsage != null
+          ? cpuUsage
+          : (snap.gpu && snap.gpu.processor_utilization_pct != null ? snap.gpu.processor_utilization_pct : 0),
         gpuSharedMemory: snap.gpu && snap.gpu.shared_memory_used_mib != null ? fmtMiB(snap.gpu.shared_memory_used_mib) : "—",
         gpuTemp: snap.gpu && snap.gpu.temperature_c != null ? snap.gpu.temperature_c + "°C" : null,
         gpuPower: snap.gpu && snap.gpu.power_w != null ? snap.gpu.power_w.toFixed(1) + " W" : null,
@@ -3190,6 +3461,31 @@
     state.updateProgress = p.total ? Math.round((p.downloaded / p.total) * 100) : 0;
     notify();
   });
+  listen("remote_control:status", function (e) {
+    state.remoteControl = Object.assign({}, state.remoteControl, e.payload || {});
+    notify();
+  });
+  listen("remote_control:snapshot_requested", function (e) {
+    var sid = e && e.payload && e.payload.session_id;
+    if (!sid) return;
+    publishRemoteLiveSnapshot(sid).catch(function () {});
+  });
+  listen("remote_control:session_created", function (e) {
+    var s = e && e.payload && e.payload.session;
+    if (s && s.id) {
+      getBuffer(s.id);
+      if (!state.sessions.some(function (item) { return item.id === s.id; })) {
+        state.sessions.unshift({
+          id: s.id,
+          title: s.title || "新对话",
+          updated_at: s.updated_at || "",
+          message_count: s.message_count || 0,
+        });
+      }
+      notify();
+    }
+    refreshHistoryList().then(function () { notify(); }).catch(function () {});
+  });
   async function loadAppVersion() {
     try {
       state.appVersion = await invoke("get_app_version");
@@ -3256,6 +3552,48 @@
   }
   function reportPendingUpdateResult() {
     invoke("report_pending_update_result").catch(function () { /* 静默重试,不阻塞启动 */ });
+  }
+
+  // ── Remote Control: 当前 session 手机远控 ───────────────────────
+  async function refreshRemoteControlStatus() {
+    try {
+      var status = await invoke("remote_control_status");
+      state.remoteControl = Object.assign({}, state.remoteControl, status || {});
+    } catch (e) {
+      state.remoteControl = Object.assign({}, state.remoteControl, { last_error: String(e) });
+    }
+    notify();
+  }
+  async function startRemoteControl(sessionId) {
+    state.remoteControl = Object.assign({}, state.remoteControl, { starting: true, last_error: null });
+    notify();
+    try {
+      var info = await invoke("remote_control_start", { sessionId: sessionId || null });
+      state.remoteControl = Object.assign({}, state.remoteControl, info || {}, { active: true, pairing: info, starting: false, last_error: null });
+      await refreshRemoteControlStatus();
+      return info;
+    } catch (e) {
+      state.remoteControl = Object.assign({}, state.remoteControl, { starting: false, last_error: String(e) });
+      notify();
+      throw e;
+    }
+  }
+  async function stopRemoteControl() {
+    try { await invoke("remote_control_stop"); } catch (e) { state.remoteControl.last_error = String(e); }
+    state.remoteControl = Object.assign({}, state.remoteControl, { active: false, pairing: null, status: "stopped" });
+    notify();
+  }
+  async function refreshRemoteControlQr(sessionId) {
+    try {
+      var info = await invoke("remote_control_refresh_qr", { sessionId: sessionId || null });
+      state.remoteControl = Object.assign({}, state.remoteControl, info || {}, { active: true, pairing: info, last_error: null });
+      await refreshRemoteControlStatus();
+      return info;
+    } catch (e) {
+      state.remoteControl = Object.assign({}, state.remoteControl, { last_error: String(e) });
+      notify();
+      throw e;
+    }
   }
 
   // ── 依赖体检 ─────────────────────────────────────────────────────
@@ -3838,25 +4176,33 @@
   async function init() {
     if (initPromise) return initPromise;
     initPromise = (async function () {
-    startMonitorPolling(); // 先预热运行状态数据，不被设置/历史加载阻塞。
-    await loadSettings();
-    await loadEffectiveModelConfig();
-    await loadAppVersion();
-    await loadModels();
+    startupMark("bridge:init_start");
+    startupMark("bridge:monitor_polling_deferred", "starts when monitor view becomes active");
+    await startupAwait("bridge:load_settings", loadSettings);
+    await startupAwait("bridge:load_effective_model", loadEffectiveModelConfig);
+    await startupAwait("bridge:load_app_version", loadAppVersion);
+    await startupAwait("bridge:load_models", loadModels);
     getLlmApiStatus()
       .then(function (status) { return status && status.backend_user_exists ? getLlmApiModels() : null; })
       .then(loadModels)
       .catch(function (e) { console.warn("load llmapi account/models failed", e); });
-    await refreshHistoryList();
+    startupMark("bridge:llmapi_refresh_started");
+    await startupAwait("bridge:refresh_history", refreshHistoryList);
     enterDraft(); // 启动落空白草稿页(lazy session:不自动选/建会话)
-    await refreshSuperPerm();
+    startupMark("bridge:draft_entered");
+    await startupAwait("bridge:refresh_super_permission", refreshSuperPerm);
     loadPersonas(); // 预载卡池(让聊天里草稿"已存入"判定能查到同名自制卡), fire-and-forget
+    startupMark("bridge:personas_load_started");
     pollBackendStatus();
     setInterval(pollBackendStatus, 10000);
     reportPendingUpdateResult(); // Windows OTA 升级后反馈,失败保留记录下次再试
     checkForUpdateSilently(); // fire-and-forget,不阻塞启动
-    await resumeWorkflowOnBoot(); // [2026-06-06] 有进行中的工作流 run 就自动挂回看板
+    startupMark("bridge:background_checks_started");
+    refreshRemoteControlStatus(); // fire-and-forget
+    await startupAwait("bridge:resume_workflow", resumeWorkflowOnBoot); // [2026-06-06] 有进行中的工作流 run 就自动挂回看板
     notify();
+    startupMark("bridge:init_done");
+    if (window.__PINVOU_STARTUP__) window.__PINVOU_STARTUP__.flush();
     })();
     return initPromise;
   }
@@ -3867,6 +4213,7 @@
     subscribe: subscribe,
     getState: function () { return snapshotState(); },
     init: init,
+    refreshConnectorAuthGates: refreshConnectorAuthGates,
     sendMessage: sendMessage,
     prefillComposer: prefillComposer,
     removeQueued: removeQueued,
@@ -3917,6 +4264,10 @@
     testModelConnection: testModelConnection,
     toggleSuperPerm: toggleSuperPerm,
     renderMarkdown: renderMarkdown,
+    startRemoteControl: startRemoteControl,
+    stopRemoteControl: stopRemoteControl,
+    refreshRemoteControlQr: refreshRemoteControlQr,
+    refreshRemoteControlStatus: refreshRemoteControlStatus,
     // Plan/YOLO
     acceptPlan: acceptPlan,
     discardPlan: discardPlan,
@@ -3941,6 +4292,7 @@
     readArtifactThumbnail: readArtifactThumbnail,
     renderArtifactVisual: renderArtifactVisual,
     openContainingFolder: openContainingFolder,
+    revealSessionFolder: revealSessionFolder,
     openInSystem: openInSystem,
     openArtifactExternal: openArtifactExternal,
     listDeliverables: listDeliverables,
@@ -3991,6 +4343,15 @@
     unmountCollection: unmountCollection,
     listCollections: function () { return invoke("kb_collection_list"); }, // 挂载选择器用
     kbModelStatus: function () { return invoke("kb_model_status"); }, // 挂载选择器门控:模型未装则不可选
+    loadMemoryOverview: loadMemoryOverview,
+    saveMemoryProfilePatch: saveMemoryProfilePatch,
+    deleteMemoryPreference: deleteMemoryPreference,
+    updateMemoryItem: updateMemoryItem,
+    deleteMemoryItem: deleteMemoryItem,
+    archiveRecentWorkMemory: archiveRecentWorkMemory,
+    confirmMemoryCandidate: confirmMemoryCandidate,
+    ignoreMemoryCandidate: ignoreMemoryCandidate,
+    neverMemoryCandidate: neverMemoryCandidate,
     // AI 造卡开场引导卡:落一条展示气泡 + 记一条 persona 事件(随会话持久化)。
     // 走 personaEvents 时间线,冷重载时 rerenderFromMessages 按 pos 还原 → 切会话/重启不丢。
     postCardCreatorIntro: function () { addChatItem({ type: "card_creator_intro", time: "" }); recordPersonaEvent({ kind: "card_creator_intro" }); notify(); },

@@ -39,7 +39,9 @@ mod os;
 pub mod personas;
 mod pinvou_review;
 mod process;
+mod remote_control;
 pub mod super_permission;
+mod startup;
 mod timing;
 mod updater;
 mod voice_asr;
@@ -53,6 +55,7 @@ use tauri::Manager;
 use crate::bridge::sessions::SessionStore;
 use crate::engine_pool::EnginePool;
 use crate::monitor::MonitorState;
+use crate::remote_control::RemoteControlManager;
 
 /// 把三省六部「网页类」预置模板 seed 到 `~/.pinvou3/web-template`（工部提示词硬编码此路径,
 /// 要在副本里 `npm run build` 写盘,而随 deb 的 resource_dir 是只读安装目录,故首次启动复制一份)。
@@ -192,6 +195,8 @@ fn ensure_release_env() {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     ensure_release_env();
+    startup::init();
+    startup::mark("environment:ready");
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
@@ -202,7 +207,15 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        .on_page_load(|webview, payload| {
+            startup::mark_with_detail(
+                "rust",
+                "webview:page_load",
+                &format!("label={} event={:?}", webview.label(), payload.event()),
+            );
+        })
         .setup(|app| {
+            startup::mark("setup:start");
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -210,6 +223,7 @@ pub fn run() {
                         .build(),
                 )?;
             }
+            startup::mark("setup:plugins_ready");
 
             // Linux webview(webkit2gtk)默认拒绝 getUserMedia,语音输入点麦克风会被拒。
             // 给 main 窗口 webview 挂 permission-request:只放行 UserMedia(麦克风/摄像头)
@@ -238,13 +252,17 @@ pub fn run() {
             // run 实体化一次性迁移：必须在 SessionStore boot **之前**跑
             // （迁移会动 _skill_bindings.json 和 sessions/ 目录，boot 之后再动
             // 会跟内存态打架）。失败只警告不 panic——app 仍可用，下次 boot 续跑。
+            startup::mark("workflow_migrate:start");
             if let Err(e) = crate::workflow_migrate::migrate_if_needed() {
                 eprintln!("[pinvou3-app] workflow migrate failed (will retry next boot): {e}");
+                startup::mark_with_detail("rust", "workflow_migrate:error", &e.to_string());
             }
+            startup::mark("workflow_migrate:done");
 
             // 多对话历史 store：用 ~/.pinvou3/sessions/ 隔离 deepseek-tui 全局目录。
             // 必须先 boot 这个，engine forwarder 需要它跟踪 active session 的 mode_state
             // 以便 TurnComplete 时判定是否 emit chat:plan_ready。
+            startup::mark("session_store:start");
             let session_store = match SessionStore::boot() {
                 Ok(store) => {
                     store.load_skill_bindings();
@@ -259,9 +277,12 @@ pub fn run() {
                     None
                 }
             };
+            startup::mark("session_store:done");
             if let Some(store) = session_store.clone() {
                 app.handle().manage(store);
             }
+            app.handle()
+                .manage(RemoteControlManager::new(app.handle().clone()));
             // 多 session 并发:存 EnginePool(lazy spawn,首条消息才为该 session 起 engine)。
             // boot bridge 在 pool::new 里做一次(写盘 / 设 env 只能一次)。
             let handle = app.handle().clone();
@@ -270,6 +291,7 @@ pub fn run() {
                 // 实际使用 session 相关命令会失败,但聊天能跑
                 SessionStore::boot().expect("session store boot fallback")
             });
+            startup::mark("engine_pool:start");
             match EnginePool::new(handle.clone(), store_for_engine.clone()) {
                 Ok(pool) => {
                     handle.manage(pool);
@@ -279,10 +301,13 @@ pub fn run() {
                     eprintln!("[pinvou3-app] failed to init engine pool: {e:?}");
                 }
             }
+            startup::mark("engine_pool:done");
 
             // 技能停用联动:启动时按当前被禁用连接器的 companion_skills 推给底座进程级
             // 过滤器,让(如公文 MCP 关掉时的)关联技能从首轮 prompt 起就不出现在 ## Skills。
+            startup::mark("disabled_skills:start");
             crate::bridge::skill_marketplace::refresh_disabled_skills();
+            startup::mark("disabled_skills:done");
 
             // Monitor 按需采样：state 只持有 session_uptime，sample 由前端调
             // get_monitor_snapshot 时触发（监控页面 1s interval，离开页面停）。
@@ -307,6 +332,7 @@ pub fn run() {
 
             // File watcher: 监听 ~/.pinvou3/sessions/ 树,新文件 emit artifact:disk
             file_watcher::spawn(app.handle().clone(), bridge::paths::sessions_root());
+            startup::mark("file_watcher:spawned");
 
             // 本地知识底座 L0:全系统元数据索引(秒搜+去重)。这里只 manage,**不自动扫**——
             // 扫描改懒触发:由前端进入文件管理页时增量扫(不进页=零扫描),不常驻 watcher/周期
@@ -330,6 +356,7 @@ pub fn run() {
                 voice_asr::set_bundled_engine_dir(asr_res);
             }
 
+            startup::mark("knowledge_service:start");
             match knowledge::KnowledgeService::new(&knowledge::default_db_path(), Some(&kb_model_dir)) {
                 Ok(svc) => {
                     app.handle().manage(svc);
@@ -337,6 +364,7 @@ pub fn run() {
                 }
                 Err(e) => eprintln!("[pinvou3-app] knowledge service init failed: {e:?}"),
             }
+            startup::mark("knowledge_service:done");
 
             // 三省六部「网页类」预置模板 seed(工部 `cp -r ~/.pinvou3/web-template ...` 的母版)。
             // dev 走 env PINVOU3_WEB_TEMPLATE_DIR(run-dev.sh 注入 ~/models/web-template);prod 从
@@ -357,13 +385,20 @@ pub fn run() {
                             .find(|d| d.join("package.json").exists())
                         })
                     });
-                std::thread::spawn(move || seed_web_template(web_tpl_src));
+                std::thread::spawn(move || {
+                    startup::mark("web_template_seed:start");
+                    seed_web_template(web_tpl_src);
+                    startup::mark("web_template_seed:done");
+                });
             }
 
+            startup::mark("setup:done");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::chat,
+            startup::report_frontend_startup,
+            connector_cli::refresh_connector_auth_gates,
             feishu::feishu_ensure_cli,
             feishu::feishu_status,
             feishu::feishu_connect_begin,
@@ -433,8 +468,32 @@ pub fn run() {
             commands::save_session_artifacts,
             commands::list_workspace_files,
             commands::cancel_generation,
+            remote_control::remote_control_start,
+            remote_control::remote_control_stop,
+            remote_control::remote_control_status,
+            remote_control::remote_control_refresh_qr,
+            remote_control::remote_control_publish_user_message,
+            remote_control::remote_control_publish_event,
             commands::set_disabled_connectors,
             commands::get_disabled_connectors,
+            commands::get_memory_profile,
+            commands::update_memory_profile,
+            commands::clear_memory_profile,
+            commands::get_memory_overview,
+            commands::list_pending_memory,
+            commands::suggest_memory,
+            commands::confirm_pending_memory,
+            commands::ignore_pending_memory,
+            commands::never_pending_memory,
+            commands::list_recent_work_memory,
+            commands::upsert_recent_work_memory,
+            commands::archive_recent_work_memory,
+            commands::delete_memory_preference,
+            commands::update_memory_preference,
+            commands::update_work_context_memory,
+            commands::delete_work_context_memory,
+            commands::update_timed_memory,
+            commands::delete_timed_memory,
             commands::edit_last_turn,
             commands::read_artifact_text,
             commands::list_deliverables,
@@ -445,6 +504,7 @@ pub fn run() {
             commands::read_artifact_thumbnail,
             commands::open_in_system,
             commands::open_containing_folder,
+            commands::reveal_session_folder,
             commands::open_artifact_window,
             detach::open_detached_window,
             detach::begin_detach_drag,
@@ -539,7 +599,10 @@ pub fn run() {
             commands::import_skill_package,
             commands::uninstall_marketplace_skill,
         ])
-        .run(tauri::generate_context!())
+        .run({
+            startup::mark("tauri:run_enter");
+            tauri::generate_context!()
+        })
         .expect("error while running tauri application");
 }
 

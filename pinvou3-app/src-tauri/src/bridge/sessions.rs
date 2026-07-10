@@ -184,6 +184,13 @@ impl SessionStore {
     /// total_tokens 暂时不维护（前端没拿到 usage 数据），保持原值。
     pub fn update_messages(&self, id: &str, messages: Vec<Message>) -> Result<()> {
         let mut session = self.load(id)?;
+        if looks_like_truncating_overwrite(&session.messages, &messages) {
+            anyhow::bail!(
+                "refusing to overwrite {} existing messages with {} unrelated messages",
+                session.messages.len(),
+                messages.len()
+            );
+        }
         session.metadata.message_count = messages.len();
         session.metadata.updated_at = Utc::now();
         session.messages = messages;
@@ -613,10 +620,27 @@ fn generate_session_id() -> String {
     buf
 }
 
+fn looks_like_truncating_overwrite(existing: &[Message], incoming: &[Message]) -> bool {
+    if incoming.len() >= existing.len() || existing.len() <= 2 {
+        return false;
+    }
+    let check = incoming.len().min(2);
+    if check == 0 {
+        return true;
+    }
+    for idx in 0..check {
+        if existing[idx] != incoming[idx] {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::bridge::paths::tests::ENV_LOCK;
+    use deepseek_tui::models::ContentBlock;
 
     /// 借用 paths 模块的进程级 env 锁——避免与其他 mutate PINVOU3_HOME
     /// 的测试并行 race。返回带 guard 的 store；guard drop 后才解锁。
@@ -633,6 +657,26 @@ mod tests {
         let store = SessionStore::boot().expect("boot");
         // 注意：不 remove_var——锁还没 drop，下面的断言需要 PINVOU3_HOME 仍是这个值。
         (store, guard)
+    }
+
+    fn user_text(text: &str) -> Message {
+        Message {
+            role: "user".into(),
+            content: vec![ContentBlock::Text {
+                text: text.into(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    fn assistant_text(text: &str) -> Message {
+        Message {
+            role: "assistant".into(),
+            content: vec![ContentBlock::Text {
+                text: text.into(),
+                cache_control: None,
+            }],
+        }
     }
 
     #[test]
@@ -656,6 +700,29 @@ mod tests {
             .expect("rename");
         let loaded = store.load(&s.metadata.id).expect("load");
         assert_eq!(loaded.metadata.title, "改个名字");
+    }
+
+    #[test]
+    fn update_messages_rejects_unrelated_short_overwrite() {
+        let (store, _g) = isolated_store();
+        let s = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        store
+            .update_messages(
+                &s.metadata.id,
+                vec![user_text("old 1"), assistant_text("old 2"), user_text("old 3")],
+            )
+            .expect("seed messages");
+
+        let result = store.update_messages(
+            &s.metadata.id,
+            vec![user_text("new unrelated"), assistant_text("new answer")],
+        );
+
+        assert!(result.is_err(), "short unrelated overwrite is rejected");
+        let loaded = store.load(&s.metadata.id).expect("load");
+        assert_eq!(loaded.messages.len(), 3);
     }
 
     #[test]

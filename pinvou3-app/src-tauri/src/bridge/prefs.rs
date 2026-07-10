@@ -427,9 +427,13 @@ pub struct NotificationPrefs {
 
 impl Default for NotificationPrefs {
     fn default() -> Self {
+        // Linux desktop notification portals vary widely by distro/session.
+        // Keep task completion notifications opt-in there, while preserving
+        // the previous default on Windows/macOS.
+        let enabled = !cfg!(target_os = "linux");
         Self {
-            enabled: true,
-            task_completed: true,
+            enabled,
+            task_completed: enabled,
         }
     }
 }
@@ -1062,20 +1066,31 @@ mod tests {
         assert_eq!(prefs.theme, Theme::Genesis);
         assert_eq!(prefs.color_scheme, ColorScheme::System);
         assert_eq!(prefs.language, Language::ZhHans);
-        assert!(prefs.notifications.enabled);
-        assert!(prefs.notifications.task_completed);
+        #[cfg(target_os = "linux")]
+        {
+            assert!(!prefs.notifications.enabled);
+            assert!(!prefs.notifications.task_completed);
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            assert!(prefs.notifications.enabled);
+            assert!(prefs.notifications.task_completed);
+        }
         assert!(prefs.advanced.allow_shell.is_none());
     }
 
     #[test]
-    fn notification_prefs_default_enabled() {
+    fn notification_prefs_default_matches_platform() {
         let prefs = UserPrefs::default();
-        assert!(prefs.notifications.enabled);
-        assert!(prefs.notifications.task_completed);
+        assert_eq!(prefs.notifications.enabled, !cfg!(target_os = "linux"));
+        assert_eq!(
+            prefs.notifications.task_completed,
+            !cfg!(target_os = "linux")
+        );
 
         let json = r#"{"notifications":{"task_completed":false}}"#;
         let parsed: UserPrefs = serde_json::from_str(json).unwrap();
-        assert!(parsed.notifications.enabled);
+        assert_eq!(parsed.notifications.enabled, !cfg!(target_os = "linux"));
         assert!(!parsed.notifications.task_completed);
     }
 

@@ -4,16 +4,86 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PINVOU 智能助手（内测版）</title>
+  <script>
+    // Startup marks are deliberately plain JavaScript and run before every
+    // vendor asset. They are batched to Rust so Windows release builds retain
+    // the timeline in ~/.pinvou3/logs/startup.log even without a console.
+    (function () {
+      var entries = [];
+      var sent = 0;
+      var flushInFlight = false;
+      var flushTimer = null;
+      var longTaskCount = 0;
+
+      function mark(stage, detail) {
+        var entry = {
+          stage: String(stage),
+          detail: detail == null ? "" : String(detail),
+          since_navigation_ms: performance.now(),
+        };
+        entries.push(entry);
+        console.info("[startup] +" + entry.since_navigation_ms.toFixed(3) + "ms " + entry.stage, entry.detail);
+        scheduleFlush(0);
+      }
+
+      function scheduleFlush(delay) {
+        if (flushTimer != null) return;
+        flushTimer = setTimeout(function () {
+          flushTimer = null;
+          flush();
+        }, delay || 0);
+      }
+
+      function flush() {
+        var invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+        if (!invoke || flushInFlight || sent >= entries.length) return;
+        var batch = entries.slice(sent);
+        flushInFlight = true;
+        invoke("report_frontend_startup", { entries: batch }).then(function () {
+          sent += batch.length;
+          flushInFlight = false;
+          if (sent < entries.length) scheduleFlush(0);
+        }).catch(function () {
+          flushInFlight = false;
+          scheduleFlush(250);
+        });
+      }
+
+      window.__PINVOU_STARTUP__ = { mark: mark, flush: flush, entries: entries };
+      mark("html:head_start");
+      document.addEventListener("DOMContentLoaded", function () {
+        mark("dom:content_loaded_listener_begin", "listener registered before Babel");
+      });
+      window.addEventListener("load", function () { mark("window:load"); });
+      window.addEventListener("error", function (event) {
+        mark("window:error", event && event.message ? event.message : "unknown error");
+      });
+      window.addEventListener("unhandledrejection", function (event) {
+        mark("window:unhandled_rejection", String(event && event.reason || "unknown rejection"));
+      });
+      if (window.PerformanceObserver) {
+        try {
+          new PerformanceObserver(function (list) {
+            list.getEntries().forEach(function (entry) {
+              if (longTaskCount++ < 20) {
+                mark("browser:long_task", "start_ms=" + entry.startTime.toFixed(1) + " duration_ms=" + entry.duration.toFixed(1));
+              }
+            });
+          }).observe({ type: "longtask", buffered: true });
+        } catch (_) {}
+      }
+    })();
+  </script>
   <!-- 本地 vendor（离线/内网可用，不依赖 CDN）。见 vendor/README.md -->
-  <script src="vendor/tailwind.js"></script>
+  <script src="vendor/tailwind.js" onload="__PINVOU_STARTUP__.mark('vendor:tailwind_loaded')"></script>
   <!-- 工具商店/卡片用 Tailwind dark: 变体(class 策略);app 主题切换时由 App 在 <html> 挂 .dark -->
   <script>tailwind.config = { darkMode: 'class' };</script>
-  <script src="vendor/react.development.js"></script>
-  <script src="vendor/react-dom.development.js"></script>
-  <script src="vendor/babel.min.js"></script>
+  <script src="vendor/react.development.js" onload="__PINVOU_STARTUP__.mark('vendor:react_dev_loaded')"></script>
+  <script src="vendor/react-dom.development.js" onload="__PINVOU_STARTUP__.mark('vendor:react_dom_dev_loaded')"></script>
+  <script src="vendor/babel.min.js" onload="__PINVOU_STARTUP__.mark('vendor:babel_loaded')"></script>
   <!-- Markdown rendering -->
-  <script src="vendor/marked.min.js"></script>
-  <script src="vendor/purify.min.js"></script>
+  <script src="vendor/marked.min.js" onload="__PINVOU_STARTUP__.mark('vendor:marked_loaded')"></script>
+  <script src="vendor/purify.min.js" onload="__PINVOU_STARTUP__.mark('vendor:purify_loaded')"></script>
   <style>
     .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
     .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
@@ -118,12 +188,13 @@
   <script>document.addEventListener('contextmenu', function (e) { e.preventDefault(); });</script>
 
   <!-- TauriBridge must load before React -->
-  <script src="tauri-bridge.js"></script>
+  <script src="tauri-bridge.js" onload="__PINVOU_STARTUP__.mark('app:tauri_bridge_loaded')"></script>
   <!-- 内置卡牌名称/简介 en/ja 翻译 overlay(window.PERSONA_I18N),数据与代码分离 -->
-  <script src="personas-i18n.js"></script>
-  <script src="update-notice-logic.js"></script>
+  <script src="personas-i18n.js" onload="__PINVOU_STARTUP__.mark('app:personas_i18n_loaded')"></script>
+  <script src="update-notice-logic.js" onload="__PINVOU_STARTUP__.mark('app:update_notice_logic_loaded')"></script>
 
   <script type="text/babel">
+    window.__PINVOU_STARTUP__.mark('babel:compiled_script_execute');
     const { useState, useEffect, useRef, useCallback } = React;
 
     /* ==========================================
@@ -141,11 +212,15 @@
     const BarChart2 = (p) => <I {...p}><line x1="18" x2="18" y1="20" y2="10"/><line x1="12" x2="12" y1="20" y2="4"/><line x1="6" x2="6" y1="20" y2="14"/></I>;
     const Settings = (p) => <I {...p}><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></I>;
     const Monitor = (p) => <I {...p}><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></I>;
+    const Smartphone = (p) => <I {...p}><rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/></I>;
     const Brain = (p) => <I {...p}><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/></I>;
+    const BrainCircuit = Brain;
+    const Clock = (p) => <I {...p}><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></I>;
+    const Sun = (p) => <I {...p}><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></I>;
+    const Moon = (p) => <I {...p}><path d="M12 3a6 6 0 0 0 9 7.5A9 9 0 1 1 12 3Z"/></I>;
     const Zap = (p) => <I {...p}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></I>;
     const Package = (p) => <I {...p}><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></I>;
     const RefreshCw = (p) => <I {...p}><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></I>;
-    const Clock = (p) => <I {...p}><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></I>;
     const RotateCcw = (p) => <I {...p}><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></I>;
     const Search = (p) => <I {...p}><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></I>;
     const Upload = (p) => <I {...p}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/></I>;
@@ -163,6 +238,7 @@
     const CheckCircle2 = (p) => <I {...p}><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></I>;
     const AlertTriangle = (p) => <I {...p}><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12.01" y1="17" y2="17"/></I>;
     const Menu = (p) => <I {...p}><line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/></I>;
+    const MoreHorizontal = (p) => <I {...p}><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></I>;
     const Check = (p) => <I {...p}><path d="M20 6 9 17l-5-5"/></I>;
     const Filter = (p) => <I {...p}><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></I>;
     const Database = (p) => <I {...p}><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></I>;
@@ -222,7 +298,7 @@
     const dict = {
       zh: {
         langTag: 'zh',
-        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '系统监控', workflow: '工作流', toolStore: '工具商店', cardPool: '专家卡牌池', recent: '历史对话', pinnedTasks: '置顶任务', regularTasks: '任务', settings: '设置', localEnv: '本地环境', megacubeSite: '打开 MegaCube 官网', tearoffTitle: '撕离窗口', tearoffHint: '弹出为独立窗口',
+        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', monitor: '运行状态', workflow: '工作流', toolStore: '工具商店', cardPool: '专家卡牌池', recent: '历史对话', pinnedTasks: '置顶任务', regularTasks: '任务', settings: '设置', localEnv: '本地环境', megacubeSite: '打开 MegaCube 官网', tearoffTitle: '撕离窗口', tearoffHint: '弹出为独立窗口',
         archiveSession: '收纳', archiveConfirmTitle: '确认收纳任务', archiveConfirmMessage: '将该任务移出任务列表，存入【设置-任务收纳】，需要时可找回。', archiveConfirmDetail: '', archiveConfirmAction: '确认收纳',
         archiveSuccess: '已收纳到【设置-任务收纳】', archiveSuccessView: '前往查看',
         archivedTasks: '任务收纳', archivedTasksDesc: '', archivedEmpty: '暂无收纳任务', restoreArchived: '恢复到任务列表',
@@ -274,8 +350,8 @@
         cpu: '处理器 (CPU)', cpuUnavail: 'CPU 信息不可用', cpuTotal: '总体使用率', cpuProcess: '应用占用', cpuLogical: '逻辑处理器',
         vram: '显存占用', core: '计算核心', temp: '温度', power: '功耗', unifiedMem: '统一内存架构',
         ram: '系统内存 (RAM)', used: '已用', physical: '物理内存', total: '总计', swap: '交换空间',
-        vllm: '推理引擎', ctx: '上下文长度', ctxWarn: '⚠️ 窗口偏小(当前 %s,低于 128k),长对话会频繁压缩、保留历史更少;建议换 ≥128k 窗口的模型或调大 --max-model-len', queue: '队列情况', kv: 'KV 命中率', ttft: '首字延迟·累积均值', tps: '生成速度·累积均值', tokTotal: '累计 tokens·生成/输入', clearHold: '按住清除', clearHolding: '继续按住…', clearDone: '已清除', clearHint: '按住「清除」直到填满即归零 · 松手取消', statsSince: '统计自 %t 起', statsAge: ' · 已运行 %m 分钟', statsJustReset: ' · 刚刚归零', statsLifetime: '自引擎启动累计', app: '应用服务', appRunning: '核心守护进程运行中',
-        curVer: '当前版本', uiVer: 'UI 版本', uptime: '运行时长',
+        vllm: '推理引擎', ctx: '上下文长度', ctxWarn: '⚠️ 窗口偏小(当前 %s,低于 128k),长对话会频繁压缩、保留历史更少;建议换 ≥128k 窗口的模型或调大 --max-model-len', queue: '任务排队', kv: 'KV 命中率', ttft: 'TTFT（首字延迟）', tps: 'TPS（生成速度）', tokTotal: '累计 tokens·生成/输入', clearHold: '按住清除', clearHolding: '继续按住…', clearDone: '已清除', clearHint: '按住「清除」直到填满即归零 · 松手取消', statsSince: '统计自 %t 起', statsAge: ' · 已运行 %m 分钟', statsJustReset: ' · 刚刚归零', statsLifetime: '自引擎启动累计', app: '应用服务', appRunning: '核心守护进程运行中',
+        curVer: '当前版本', uiVer: 'UI 版本', uptime: '运行时长', runningMemory: '运行内存', temporaryMemory: '临时内存', memoryPressure: '内存压力', normal: '正常', localProcessor: '本机算力', processorLoad: '处理器负载', graphicsLoad: '图形负载', sharedMemory: '共享内存', deviceTemp: '设备温度', currentModel: '当前模型', localRunning: '本地运行', remoteService: '远程服务', available: '可用', unavailable: '不可用', historyReuse: '历史复用率', modelTextVolume: '模型处理文本量', modelReadAmount: '模型阅读量', modelOutputAmount: '模型输出量', modelReadHint: '参考内容越多，响应越慢、消耗越高', modelOutputHint: '生成内容越多，回复越长、消耗越高', resetCount: '重新计数', contextHint: '可保留的对话范围', queueHint: '处理中 / 等待中', ttftHint: '开始回复前的等待', tpsHint: '回复输出速度', reuseHint: '越高越快，也更省 Token', totalMemory: '总内存',
         appearance: '外观与语言', lang: '界面语言', langDesc: '切换应用的显示语言', theme: '主题模式', themeDesc: '选择适合你的色彩风格',
         light: '浅色', dark: '深色',
         notifications: '通知',
@@ -489,7 +565,7 @@
       },
       en: {
         langTag: 'en',
-        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', monitor: 'Monitor', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'History', pinnedTasks: 'Pinned tasks', regularTasks: 'Tasks', settings: 'Settings', localEnv: 'Local Env', megacubeSite: 'Open MegaCube site', tearoffTitle: 'Detached', tearoffHint: 'Pop out to its own window',
+        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', monitor: 'Runtime', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'History', pinnedTasks: 'Pinned tasks', regularTasks: 'Tasks', settings: 'Settings', localEnv: 'Local Env', megacubeSite: 'Open MegaCube site', tearoffTitle: 'Detached', tearoffHint: 'Pop out to its own window',
         archiveSession: 'Hide in Settings', archiveConfirmTitle: 'Hide in Settings?', archiveConfirmMessage: 'This task will leave the sidebar.', archiveConfirmDetail: 'The conversation and artifacts stay saved, and can be restored in Settings.', archiveConfirmAction: 'Hide',
         archiveSuccess: 'Hidden in Settings', archiveSuccessView: 'View',
         archivedTasks: 'Tasks hidden in Settings', archivedTasksDesc: '', archivedEmpty: 'No hidden tasks yet', restoreArchived: 'Restore to list',
@@ -541,8 +617,8 @@
         cpu: 'CPU', cpuUnavail: 'CPU info unavailable', cpuTotal: 'Total Usage', cpuProcess: 'App Usage', cpuLogical: 'logical processors',
         vram: 'VRAM Usage', core: 'Core Usage', temp: 'Temp', power: 'Power', unifiedMem: 'Unified Memory',
         ram: 'System RAM', used: 'Used', physical: 'Physical RAM', total: 'Total', swap: 'Swap Space',
-        vllm: 'Inference Engine', ctx: 'Context Length', ctxWarn: '⚠️ Small context window (%s, below 128k). Long chats compact often and keep less history; use a model with ≥128k window or raise --max-model-len', queue: 'Queue (Run/Wait)', kv: 'KV Hit Rate', ttft: 'TTFT · cum. avg', tps: 'Gen Speed · cum. avg', tokTotal: 'Total Tokens · gen/prompt', clearHold: 'Hold to reset', clearHolding: 'Keep holding…', clearDone: 'Cleared', clearHint: 'Hold "Reset" until full to clear · release to cancel', statsSince: 'Since %t', statsAge: ' · %m min running', statsJustReset: ' · just reset', statsLifetime: 'Lifetime total', app: 'App Service', appRunning: 'Core daemon running',
-        curVer: 'App Version', uiVer: 'UI Version', uptime: 'Uptime',
+        vllm: 'Inference Engine', ctx: 'Context Length', ctxWarn: '⚠️ Small context window (%s, below 128k). Long chats compact often and keep less history; use a model with ≥128k window or raise --max-model-len', queue: 'Task Queue', kv: 'KV Hit Rate', ttft: 'TTFT', tps: 'TPS (Generation Speed)', tokTotal: 'Total Tokens · gen/prompt', clearHold: 'Hold to reset', clearHolding: 'Keep holding…', clearDone: 'Cleared', clearHint: 'Hold "Reset" until full to clear · release to cancel', statsSince: 'Since %t', statsAge: ' · %m min running', statsJustReset: ' · just reset', statsLifetime: 'Lifetime total', app: 'App Service', appRunning: 'Core daemon running',
+        curVer: 'App Version', uiVer: 'UI Version', uptime: 'Uptime', runningMemory: 'Active Memory', temporaryMemory: 'Temporary Memory', memoryPressure: 'Memory Pressure', normal: 'Normal', localProcessor: 'Local Compute', processorLoad: 'Processor Load', graphicsLoad: 'Graphics Load', sharedMemory: 'Shared Memory', deviceTemp: 'Device Temp', currentModel: 'Current Model', localRunning: 'Local', remoteService: 'Remote', available: 'Available', unavailable: 'Unavailable', historyReuse: 'Reuse Rate', modelTextVolume: 'Model Text Volume', modelReadAmount: 'Model Reads', modelOutputAmount: 'Model Outputs', modelReadHint: 'More input means slower responses and higher usage', modelOutputHint: 'More output means longer replies and higher usage', resetCount: 'Reset Count', contextHint: 'Conversation range kept in memory', queueHint: 'Running / waiting', ttftHint: 'Wait before the first word', tpsHint: 'Reply output speed', reuseHint: 'Higher is faster and saves tokens', totalMemory: 'Total Memory',
         appearance: 'Appearance & Language', lang: 'Language', langDesc: 'Switch application display language', theme: 'Theme', themeDesc: 'Choose your color style',
         light: 'Light', dark: 'Dark',
         notifications: 'Notifications',
@@ -756,7 +832,7 @@
       },
       ja: {
         langTag: 'ja',
-        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', monitor: 'システムモニター', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '履歴', pinnedTasks: '固定タスク', regularTasks: 'タスク', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く', tearoffTitle: '切り離し', tearoffHint: '別ウィンドウに切り離す',
+        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', monitor: '稼働状態', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '履歴', pinnedTasks: '固定タスク', regularTasks: 'タスク', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く', tearoffTitle: '切り離し', tearoffHint: '別ウィンドウに切り離す',
         archiveSession: '設定に隠す', archiveConfirmTitle: '設定に隠しますか？', archiveConfirmMessage: 'このタスクはサイドバーから外れます。', archiveConfirmDetail: '会話と成果物は削除されず、設定から戻せます。', archiveConfirmAction: '隠す',
         archiveSuccess: '設定に隠しました', archiveSuccessView: '表示',
         archivedTasks: '設定に隠したタスク', archivedTasksDesc: '', archivedEmpty: '隠したタスクはありません', restoreArchived: '一覧に戻す',
@@ -807,8 +883,8 @@
         cpu: 'CPU', cpuUnavail: 'CPU 情報を取得できません', cpuTotal: '全体使用率', cpuProcess: 'アプリ使用率', cpuLogical: '論理プロセッサ',
         vram: 'VRAM 使用量', core: 'コア使用率', temp: '温度', power: '消費電力', unifiedMem: 'ユニファイドメモリ',
         ram: 'システムメモリ (RAM)', used: '使用中', physical: '物理メモリ', total: '合計', swap: 'スワップ領域',
-        vllm: '推論エンジン', ctx: 'コンテキスト長', ctxWarn: '⚠️ コンテキスト窓が小さい(現在 %s、128k 未満)。長い会話は頻繁に圧縮され履歴が減ります。128k 以上のモデルを使うか --max-model-len を上げてください', queue: 'キュー状況', kv: 'KV ヒット率', ttft: '初回遅延・累積平均', tps: '生成速度・累積平均', tokTotal: '累計トークン・生成/入力', clearHold: '長押しで消去', clearHolding: 'そのまま…', clearDone: '消去完了', clearHint: '「消去」を満たすまで長押しでリセット · 離すと取消', statsSince: '%t から集計', statsAge: ' · %m 分経過', statsJustReset: ' · 今リセット', statsLifetime: 'エンジン起動からの累計', app: 'アプリサービス', appRunning: 'コアデーモン稼働中',
-        curVer: '現在のバージョン', uiVer: 'UI バージョン', uptime: '稼働時間',
+        vllm: '推論エンジン', ctx: 'コンテキスト長', ctxWarn: '⚠️ コンテキスト窓が小さい(現在 %s、128k 未満)。長い会話は頻繁に圧縮され履歴が減ります。128k 以上のモデルを使うか --max-model-len を上げてください', queue: 'タスク待ち', kv: 'KV ヒット率', ttft: 'TTFT', tps: 'TPS（生成速度）', tokTotal: '累計トークン・生成/入力', clearHold: '長押しで消去', clearHolding: 'そのまま…', clearDone: '消去完了', clearHint: '「消去」を満たすまで長押しでリセット · 離すと取消', statsSince: '%t から集計', statsAge: ' · %m 分経過', statsJustReset: ' · 今リセット', statsLifetime: 'エンジン起動からの累計', app: 'アプリサービス', appRunning: 'コアデーモン稼働中',
+        curVer: '現在のバージョン', uiVer: 'UI バージョン', uptime: '稼働時間', runningMemory: '実行メモリ', temporaryMemory: '一時メモリ', memoryPressure: 'メモリ負荷', normal: '正常', localProcessor: 'ローカル演算', processorLoad: 'プロセッサ負荷', graphicsLoad: 'グラフィック負荷', sharedMemory: '共有メモリ', deviceTemp: 'デバイス温度', currentModel: '現在のモデル', localRunning: 'ローカル実行', remoteService: 'リモート', available: '利用可能', unavailable: '利用不可', historyReuse: '履歴再利用率', modelTextVolume: 'モデル処理テキスト量', modelReadAmount: 'モデル読込量', modelOutputAmount: 'モデル出力量', modelReadHint: '入力が多いほど応答は遅く、消費も増えます', modelOutputHint: '出力が多いほど返信は長く、消費も増えます', resetCount: '再計測', contextHint: '保持できる会話範囲', queueHint: '処理中 / 待機中', ttftHint: '返信開始までの待ち時間', tpsHint: '返信の出力速度', reuseHint: '高いほど速く、Token も節約', totalMemory: '総メモリ',
         appearance: '外観と言語', lang: '表示言語', langDesc: 'アプリの表示言語を切り替え', theme: 'テーマ', themeDesc: 'お好みの配色を選択',
         light: 'ライト', dark: 'ダーク',
         notifications: '通知',
@@ -1039,6 +1115,7 @@
       const [bs, setBs] = useState(() => bridge.available ? bridge.getState() : null);
       useEffect(() => {
         if (!bridge.available) return;
+        if (typeof bridge.init === 'function') bridge.init().catch(e => console.warn('[TauriBridge] init failed', e));
         return bridge.subscribe(setBs);
       }, []);
       return bs;
@@ -1316,8 +1393,50 @@
     /* ==========================================
        App — 1:1 matching 前端.html structure
        ========================================== */
+    class SettingsErrorBoundary extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { error: null };
+      }
+
+      static getDerivedStateFromError(error) {
+        return { error };
+      }
+
+      render() {
+        if (this.state.error) {
+          const isDark = this.props.theme === 'dark';
+          return (
+            <div className="flex-1 flex flex-col w-full h-full relative z-10 px-16 py-12">
+              <div className={`max-w-[800px] rounded-2xl border p-5 ${isDark ? 'bg-[#1F2023] border-[#333537] text-[#E8EAED]' : 'bg-white border-[#DDE3EA] text-[#1F1F1F]'}`}>
+                <div className="text-[18px] font-semibold mb-2">设置页加载失败</div>
+                <div className={`text-[13px] leading-relaxed ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
+                  {String((this.state.error && this.state.error.message) || this.state.error)}
+                </div>
+              </div>
+            </div>
+          );
+        }
+        return this.props.children;
+      }
+    }
+
     const App = () => {
       const bs = useBridge();
+      useEffect(() => {
+        window.__PINVOU_STARTUP__.mark('react:first_commit');
+        window.__PINVOU_STARTUP__.flush();
+        // 让首帧先交给 WebView 绘制，再异步校验飞书/企微实时鉴权状态。
+        // 后端并行跑两个 CLI；结果只刷新技能目录，不阻塞主界面。
+        const timer = window.setTimeout(() => {
+          if (bridge.available && bridge.refreshConnectorAuthGates) {
+            bridge.refreshConnectorAuthGates().catch(error => {
+              console.warn('[startup] connector auth refresh failed', error);
+            });
+          }
+        }, 0);
+        return () => window.clearTimeout(timer);
+      }, []);
       const [activeChat, setActiveChat] = useState(null);
       const [currentView, setCurrentView] = useState('chat');
       const [activeTheme, setActiveTheme] = useState('dark');
@@ -1333,7 +1452,8 @@
       const [vllmDeclineConfirm, setVllmDeclineConfirm] = useState(false); // 引导框「不再提醒」二次确认子态
       const [language, setLanguage] = useState('zh');
       const [superPerm, setSuperPerm] = useState(false);
-      const [taskCompletedNotif, setTaskCompletedNotif] = useState(true);
+      const defaultTaskCompletedNotif = !/linux/i.test(`${navigator.platform || ""} ${navigator.userAgent || ""}`);
+      const [taskCompletedNotif, setTaskCompletedNotif] = useState(defaultTaskCompletedNotif);
       // search 后端配置:provider 默认 bing(对齐 bridge prefs::SearchProvider::default());
       // bs.settings 加载后 useEffect 同步进来。
       const [searchProvider, setSearchProvider] = useState('bing');
@@ -1401,6 +1521,7 @@
       const [personaEditor, setPersonaEditor] = useState(null); // 聊天里"存入卡牌池"草稿 → App 级编辑器
       const [savedConfirm, setSavedConfirm] = useState(null); // 存入成功 → iOS 确认窗 {name}
       const [poolMyOnly, setPoolMyOnly] = useState(false); // 跳卡池时是否直接落「我的卡牌」筛选(从确认窗"去查看"进来=true)
+      const [remoteOpen, setRemoteOpen] = useState(false);
       const [settingsUpdateFocusTick, setSettingsUpdateFocusTick] = useState(0);
 
       // ── 多窗口(撕离/tear-off):长按标签 → 浮起跟手 → 拖到目标屏 → 松手 → 该屏最大化打开 ──
@@ -1486,6 +1607,10 @@
       useEffect(() => {
         if (accountPopoverOpen && !llmAccountVisible) setAccountPopoverOpen(false);
       }, [accountPopoverOpen, llmAccountVisible]);
+
+      function handleOpenRemoteControl() {
+        setRemoteOpen(true);
+      }
 
       function handleActivateSkill(name) {
         setChatPrefill(t.skillPrefill(name));
@@ -1739,7 +1864,12 @@
         delete topOverrides.search;
         delete topOverrides.notifications;
         const baseSearch = base.search || { provider: 'bing', api_key: null, credentials: {} };
-        const baseNotifications = base.notifications || { enabled: true, task_completed: true };
+        const nextLanguage = topOverrides.language !== undefined ? topOverrides.language : (LANG_TO_TAG[language] || 'zh-Hans');
+        const memoryAvailable = nextLanguage === 'zh-Hans';
+        const nextMemoryEnabled = memoryAvailable
+          ? (topOverrides.memory_enabled !== undefined ? !!topOverrides.memory_enabled : !!base.memory_enabled)
+          : false;
+        const baseNotifications = base.notifications || { enabled: defaultTaskCompletedNotif, task_completed: defaultTaskCompletedNotif };
         const notificationOverrides = (overrides && overrides.notifications) ? overrides.notifications : null;
         return {
           ...base,
@@ -1799,6 +1929,13 @@
         setLanguage(lang);
         if (bridge.available) {
           bridge.saveSettings(buildFullSettings({ language: LANG_TO_TAG[lang] || 'zh-Hans' }));
+        }
+      }
+
+      function handleSetMemoryEnabled(enabled) {
+        if (bridge.available) {
+          const memoryAvailable = (LANG_TO_TAG[language] || 'zh-Hans') === 'zh-Hans';
+          bridge.saveSettings(buildFullSettings({ memory_enabled: memoryAvailable && !!enabled }));
         }
       }
 
@@ -2038,6 +2175,7 @@
                               onRename={handleRenameSession}
                               onDelete={handleDeleteSession}
                               onTogglePinned={handleToggleSessionPinned}
+                              onOpenFolder={(id) => bridge.revealSessionFolder && bridge.revealSessionFolder(id)}
                               onArchive={handleArchiveSession}
                               dragging={!!dragAvatar && dragAvatar.key === 'session:' + chat.id}
                               onPickUp={(geom) => beginTearOff('session', chat.id, chat.title, geom)}
@@ -2070,6 +2208,7 @@
                             onRename={handleRenameSession}
                             onDelete={handleDeleteSession}
                             onTogglePinned={handleToggleSessionPinned}
+                            onOpenFolder={(id) => bridge.revealSessionFolder && bridge.revealSessionFolder(id)}
                             onArchive={handleArchiveSession}
                             dragging={!!dragAvatar && dragAvatar.key === 'session:' + chat.id}
                             onPickUp={(geom) => beginTearOff('session', chat.id, chat.title, geom)}
@@ -2120,6 +2259,16 @@
               <div className={`${isSidebarOpen ? 'flex items-center justify-between gap-2' : 'flex flex-col items-center gap-3'}`}>
                 {!isSidebarOpen && (
                   <button
+                    onClick={handleOpenRemoteControl}
+                    title="手机扫码连接"
+                    className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
+                  >
+                    <Smartphone size={18} />
+                    {bs && bs.remoteControl && bs.remoteControl.active && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
+                  </button>
+                )}
+                {!isSidebarOpen && (
+                  <button
                     onClick={() => setCurrentView('settings')}
                     title={t.settings}
                     className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
@@ -2141,14 +2290,24 @@
                   </button>
                 )}
                 {isSidebarOpen && (
-                  <button
-                    onClick={() => setCurrentView('settings')}
-                    title={t.settings}
-                    className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
-                  >
-                    <Settings size={18} />
-                    {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={handleOpenRemoteControl}
+                      title="手机扫码连接"
+                      className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
+                    >
+                      <Smartphone size={18} />
+                      {bs && bs.remoteControl && bs.remoteControl.active && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
+                    </button>
+                    <button
+                      onClick={() => setCurrentView('settings')}
+                      title={t.settings}
+                      className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
+                    >
+                      <Settings size={18} />
+                      {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
+                    </button>
+                  </div>
                 )}
               </div>
             </div>
@@ -2168,33 +2327,36 @@
 
             {currentView === 'monitor' && <MonitorView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'settings' && (
-              <SettingsView
-                activeTheme={activeTheme} setActiveTheme={handleSetTheme}
-                language={language} setLanguage={handleSetLanguage}
-                superPerm={superPerm} setSuperPerm={handleToggleSuperPerm}
-                taskCompletedNotif={taskCompletedNotif} setTaskCompletedNotif={handleSetTaskCompletedNotif}
-                searchProvider={searchProvider} setSearchProvider={handleSetSearchProvider}
-                searchApiKey={searchApiKey} setSearchApiKey={handleSetSearchApiKey}
-                searchCredential={searchCredentialForProvider(searchProvider)}
-                searchKeyAction={searchProviderKeyAction(searchProvider)}
-                searchHasSavedKey={searchHasSavedKey(searchProvider)}
-                onKeepSearchApiKey={handleKeepSearchApiKey}
-                onReplaceSearchApiKey={handleReplaceSearchApiKey}
-                onDeleteSearchApiKey={handleDeleteSearchApiKey}
-                savedModels={(bs && bs.savedModels) || []}
-                activeModelId={bs && bs.activeModelId}
-                onSaveModel={(m) => bridge.available && bridge.saveModel(m)}
-                onDeleteModel={(m) => { if (bridge.available && (typeof confirm !== 'function' || confirm(t.deleteModelConfirm(m.name)))) bridge.deleteModel(m.id); }}
-                onSetActiveModel={(id) => bridge.available && bridge.setActiveModel(id)}
-                onConfirmSearchConfig={handleConfirmSearchConfig}
-                searchNeedsRestart={searchNeedsRestart}
-                languageNeedsRestart={languageNeedsRestart}
-                bs={bs}
-                t={t}
-                onRestoreArchived={handleRestoreArchivedSession}
-                onDeleteArchived={handleDeleteSession}
-                updateFocusTick={settingsUpdateFocusTick}
-              />
+              <SettingsErrorBoundary theme={activeTheme}>
+                <SettingsView
+                  activeTheme={activeTheme} setActiveTheme={handleSetTheme}
+                  language={language} setLanguage={handleSetLanguage}
+                  superPerm={superPerm} setSuperPerm={handleToggleSuperPerm}
+                  taskCompletedNotif={taskCompletedNotif} setTaskCompletedNotif={handleSetTaskCompletedNotif}
+                  searchProvider={searchProvider} setSearchProvider={handleSetSearchProvider}
+                  searchApiKey={searchApiKey} setSearchApiKey={handleSetSearchApiKey}
+                  searchCredential={searchCredentialForProvider(searchProvider)}
+                  searchKeyAction={searchProviderKeyAction(searchProvider)}
+                  searchHasSavedKey={searchHasSavedKey(searchProvider)}
+                  onKeepSearchApiKey={handleKeepSearchApiKey}
+                  onReplaceSearchApiKey={handleReplaceSearchApiKey}
+                  onDeleteSearchApiKey={handleDeleteSearchApiKey}
+                  savedModels={(bs && bs.savedModels) || []}
+                  activeModelId={bs && bs.activeModelId}
+                  onSaveModel={(m) => bridge.available && bridge.saveModel(m)}
+                  onDeleteModel={(m) => { if (bridge.available && (typeof confirm !== 'function' || confirm(t.deleteModelConfirm(m.name)))) bridge.deleteModel(m.id); }}
+                  onSetActiveModel={(id) => bridge.available && bridge.setActiveModel(id)}
+                  onConfirmSearchConfig={handleConfirmSearchConfig}
+                  onMemoryEnabledChange={handleSetMemoryEnabled}
+                  searchNeedsRestart={searchNeedsRestart}
+                  languageNeedsRestart={languageNeedsRestart}
+                  bs={bs}
+                  t={t}
+                  onRestoreArchived={handleRestoreArchivedSession}
+                  onDeleteArchived={handleDeleteSession}
+                  updateFocusTick={settingsUpdateFocusTick}
+                />
+              </SettingsErrorBoundary>
             )}
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} onNewChat={handleNewChat} />}
@@ -2209,6 +2371,10 @@
             )}
             {currentView === 'search' && <SearchView theme={activeTheme} history={chatHistory} t={t} onSelect={handleSwitchSession} />}
             {currentView === 'knowledge' && <KnowledgeView theme={activeTheme} t={t} />}
+
+            {remoteOpen && (
+              <RemoteControlModal theme={activeTheme} bs={bs} onClose={() => setRemoteOpen(false)} />
+            )}
 
             {/* App 级自创卡编辑器: 聊天里「存入卡牌池」草稿走这条 */}
             {personaEditor && (
@@ -4201,6 +4367,7 @@
       const gpuSharedMemory = fmt && fmt.gpuSharedMemory ? fmt.gpuSharedMemory : loadingValue;
       const isLocalProcessor = !gpuAvailable && cpuAvailable;
       const isUnifiedGpu = gpuAvailable && !gpuHasVram && !isLocalProcessor;
+      const unifiedMemoryPct = isUnifiedGpu ? ramPct : gpuVramPct;
       const computeDeviceName = isLocalProcessor ? monitorShortProcessorName((fmt && (fmt.computeName || fmt.cpuName)) || gpuName) : ((fmt && fmt.computeName) || gpuName);
       const processorIcon = monitorProcessorIcon(computeDeviceName);
       const modelIcon = monitorModelIcon(vllmModel);
@@ -4267,7 +4434,7 @@
                   <div className="flex-1 flex flex-col justify-end mt-4">
                     <div className="flex items-center justify-center gap-10 mb-7">
                       <MonitorRing label={isLocalProcessor ? t.processorLoad : t.core} percent={isLocalProcessor ? processorUtilPct : gpuUtilPct} color={monitorColors.blue} />
-                      <MonitorRing label={isLocalProcessor ? t.graphicsLoad : (isUnifiedGpu ? t.unifiedMem : t.vram)} percent={isLocalProcessor || isUnifiedGpu ? gpuUtilPct : gpuVramPct} color={monitorColors.orange} />
+                      <MonitorRing label={isLocalProcessor ? t.graphicsLoad : (isUnifiedGpu ? t.unifiedMem : t.vram)} percent={isLocalProcessor ? gpuUtilPct : unifiedMemoryPct} color={monitorColors.orange} />
                     </div>
                     <div className="pt-4 border-t border-black/5 dark:border-white/5 space-y-3 text-[12px] font-semibold">
                       <div className="flex justify-between items-center text-black/40 dark:text-white/40">
@@ -4605,6 +4772,75 @@
               </div>
             </>
           )}
+        </div>
+      );
+    };
+
+    const RemoteControlModal = ({ theme, bs, onClose }) => {
+      const isDark = theme === 'dark';
+      const remoteControl = (bs && bs.remoteControl) || {};
+      const remotePairing = remoteControl.pairing || remoteControl;
+      const remoteActive = !!remoteControl.active;
+      const remoteStatusText = {
+        idle: '未开启',
+        connecting_relay: '连接 relay',
+        waiting_mobile: '等待手机扫码',
+        mobile_connected: '手机已连接',
+        mobile_disconnected: '手机已断开',
+        expired: '已过期',
+        stopped: '已停止',
+        error: '连接异常',
+      }[remoteControl.status || 'idle'] || (remoteControl.status || '未开启');
+
+      useEffect(() => {
+        if (!remoteActive && bridge.available) {
+          bridge.startRemoteControl(null).catch(() => {});
+        }
+      }, []);
+
+      async function handleRefreshRemoteControl() {
+        if (!bridge.available) return;
+        try { await bridge.refreshRemoteControlQr(null); } catch (_) {}
+      }
+
+      async function handleStopRemoteControl() {
+        if (!bridge.available) return;
+        await bridge.stopRemoteControl();
+      }
+
+      return (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/45" onClick={onClose}>
+          <div onClick={e => e.stopPropagation()} className={`w-full max-w-[420px] rounded-[22px] shadow-2xl p-5 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div>
+                <div className="text-[17px] font-semibold">移动端远程控制</div>
+                <div className={`text-[12px] mt-1 ${isDark ? 'text-[#AEB4BC]' : 'text-[#5F6368]'}`}>{remoteStatusText}</div>
+              </div>
+              <button onClick={onClose} className={`w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}><X size={17} /></button>
+            </div>
+            {remotePairing && remotePairing.qr_data_url ? (
+              <div className="flex flex-col items-center">
+                <div className="p-3 rounded-[16px] bg-white">
+                  <img src={remotePairing.qr_data_url} alt="Remote control QR" className="w-[220px] h-[220px]" />
+                </div>
+                <div className={`mt-3 w-full text-[12px] leading-relaxed break-all px-3 py-2 rounded-xl ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-[#F1F3F4] text-[#3C4043]'}`}>{remotePairing.url || remoteControl.url}</div>
+              </div>
+            ) : (
+              <div className={`text-[13px] px-3 py-4 rounded-xl ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-[#F1F3F4] text-[#3C4043]'}`}>
+                {remoteControl.starting ? '正在生成二维码...' : '当前会话还未开启远程控制。'}
+              </div>
+            )}
+            {remoteControl.last_error && <div className="mt-3 text-[12px] text-[#EA4335] break-all">{remoteControl.last_error}</div>}
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button onClick={() => navigator.clipboard && navigator.clipboard.writeText(remotePairing.url || remoteControl.url || '')}
+                disabled={!(remotePairing.url || remoteControl.url)}
+                className={`px-3.5 py-2 rounded-full text-[13px] ${isDark ? 'bg-white/10 hover:bg-white/15 disabled:opacity-40' : 'bg-black/5 hover:bg-black/10 disabled:opacity-40'}`}>复制链接</button>
+              <button onClick={handleRefreshRemoteControl}
+                className={`px-3.5 py-2 rounded-full text-[13px] ${isDark ? 'bg-white/10 hover:bg-white/15' : 'bg-black/5 hover:bg-black/10'}`}>刷新二维码</button>
+              <button onClick={handleStopRemoteControl}
+                className="px-3.5 py-2 rounded-full text-[13px] bg-[#C5221F] text-white hover:bg-[#A50E0E]">停止</button>
+            </div>
+          </div>
         </div>
       );
     };
@@ -5037,6 +5273,343 @@
       );
     };
 
+    const MemorySettingsCard = ({ isDark, bs, memoryEnabled, onMemoryEnabledChange }) => {
+      const memory = (bs && bs.memory) || {};
+      const profile = memory.profile || {};
+      const identity = profile.identity || {};
+      const preferences = memory.preferences || [];
+      const workContext = memory.work_context || [];
+      const currentFocus = (memory.current_focus || []).filter(item => item.status === 'active');
+      const recentActivity = (memory.recent_activity || []).filter(item => item.status === 'active');
+      const [open, setOpen] = useState(false);
+      const [tab, setTab] = useState('long_term');
+      const [query, setQuery] = useState('');
+      const [menuFor, setMenuFor] = useState(null);
+      const [draft, setDraft] = useState({
+        call_name: identity.call_name || '',
+        assistant_alias: identity.assistant_alias || '',
+      });
+      const [editing, setEditing] = useState(null);
+      const [saving, setSaving] = useState(false);
+      const subText = isDark ? 'text-[#C4C7C5]' : 'text-[#444746]';
+      const faintText = isDark ? 'text-[#8F969E]' : 'text-[#6B7280]';
+      const border = isDark ? 'border-[#333537]' : 'border-[#DDE3EA]';
+      const itemBg = isDark ? 'bg-[#131314]' : 'bg-white';
+      const cardBg = isDark ? 'bg-[#17191D] border-white/[0.08]' : 'bg-white border-[#DDE3EA]';
+      const panelBg = isDark ? 'bg-[#1F2023] text-[#E8EAED]' : 'bg-[#F8FAFD] text-[#1F1F1F]';
+      const inputBg = isDark ? 'bg-[#131314] border-[#3C4043] text-[#E8EAED] placeholder:text-[#777D86]' : 'bg-white border-[#DDE3EA] text-[#1F1F1F] placeholder:text-[#8A9099]';
+      const ghostBtn = isDark ? 'bg-white/[0.07] text-[#E3E3E3] hover:bg-white/[0.11]' : 'bg-[#E1E5EA] text-[#1F1F1F] hover:bg-[#D3D9E0]';
+      const dangerBtn = isDark ? 'text-[#F28B82] hover:bg-[#3A2425]' : 'text-[#C5221F] hover:bg-[#FCE8E6]';
+      const primaryBtn = isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]';
+      const selectedTab = isDark
+        ? 'bg-[rgba(43,119,255,0.16)] border-[rgba(70,145,255,0.35)] text-[#D8E8FF]'
+        : 'bg-[#E8F0FE] border-[#B8D1FF] text-[#0B57D0]';
+      const profileCount = (identity.call_name ? 1 : 0) + (identity.assistant_alias ? 1 : 0);
+      const profileSummary = [
+        identity.call_name ? `称呼：${identity.call_name}` : '',
+        identity.assistant_alias ? `助手昵称：${identity.assistant_alias}` : '',
+      ].filter(Boolean).join(' · ');
+      const total = preferences.length + workContext.length + currentFocus.length + recentActivity.length;
+      const longTermItems = [
+        ...preferences.map(item => ({ ...item, kind: 'preference' })),
+        ...workContext.map(item => ({ ...item, kind: 'work_context' })),
+      ];
+      const recentItems = [
+        ...currentFocus.map(item => ({ ...item, kind: 'current_focus' })),
+        ...recentActivity.map(item => ({ ...item, kind: 'recent_activity' })),
+      ];
+      const longTermCount = profileCount + longTermItems.length;
+      const recentCount = recentItems.length;
+      const tabs = [
+        { key: 'long_term', label: '长期记忆', count: longTermCount, icon: Database },
+        { key: 'recent', label: '近期记忆', count: recentCount, icon: RefreshCw },
+      ];
+      const tabMeta = tabs.find(x => x.key === tab) || tabs[0];
+      const memoryTypeLabel = kind => kind === 'current_focus' ? '当前关注'
+        : kind === 'recent_activity' ? '近期动态'
+        : kind === 'work_context' ? '工作背景'
+        : '长期偏好';
+      const memoryTypeIcon = kind => kind === 'current_focus' ? Lightbulb
+        : kind === 'recent_activity' ? RefreshCw
+        : kind === 'work_context' ? Briefcase
+        : kind === 'profile' ? User
+        : Sparkles;
+      const memoryTypeTone = kind => kind === 'work_context' ? 'text-[#8AB4F8] bg-[#1A73E8]/[0.13]'
+        : kind === 'current_focus' ? 'text-[#FDD663] bg-[#FDD663]/[0.12]'
+        : kind === 'recent_activity' ? 'text-[#81C995] bg-[#34A853]/[0.12]'
+        : kind === 'profile' ? 'text-[#C58AF9] bg-[#A142F4]/[0.12]'
+        : 'text-[#A8C7FA] bg-[#A8C7FA]/[0.12]';
+      const normalizedQuery = query.trim().toLowerCase();
+      const searchMatch = text => !normalizedQuery || String(text || '').toLowerCase().includes(normalizedQuery);
+
+      useEffect(() => {
+        if (!bridge.available || !bridge.loadMemoryOverview) return;
+        bridge.loadMemoryOverview();
+      }, [bs && bs.activeSessionId]);
+      useEffect(() => {
+        setDraft({
+          call_name: identity.call_name || '',
+          assistant_alias: identity.assistant_alias || '',
+        });
+      }, [identity.call_name, identity.assistant_alias]);
+      useEffect(() => {
+        setMenuFor(null);
+        setQuery('');
+      }, [tab, open]);
+
+      const reload = () => bridge.available && bridge.loadMemoryOverview && bridge.loadMemoryOverview();
+      const saveProfile = async () => {
+        if (!bridge.available || !bridge.saveMemoryProfilePatch) return;
+        setSaving(true);
+        try {
+          await bridge.saveMemoryProfilePatch({
+            call_name: draft.call_name,
+            assistant_alias: draft.assistant_alias,
+          });
+        } finally {
+          setSaving(false);
+        }
+      };
+      const startEdit = item => {
+        setMenuFor(null);
+        setEditing({
+          kind: item.kind,
+          id: item.id,
+          text: item.text || item.content || '',
+        });
+      };
+      const saveEdit = async () => {
+        if (!editing || !bridge.updateMemoryItem) return;
+        setSaving(true);
+        try {
+          await bridge.updateMemoryItem(editing.kind, editing.id, {
+            text: editing.text,
+          });
+          setEditing(null);
+        } finally {
+          setSaving(false);
+        }
+      };
+      const deleteItem = async item => {
+        setMenuFor(null);
+        if (!item || !bridge.deleteMemoryItem) return;
+        if (!window.confirm('删除后这条记忆不会再被使用，确定删除吗？')) return;
+        await bridge.deleteMemoryItem(item.kind, item.id);
+      };
+      const archiveItem = async item => {
+        setMenuFor(null);
+        if (!item || !bridge.archiveRecentWorkMemory) return;
+        await bridge.archiveRecentWorkMemory(item.id);
+      };
+      const activeList = tab === 'recent' ? recentItems : longTermItems;
+      const filteredList = activeList.filter(item => searchMatch(item.text || item.content));
+
+      const formatMemoryTime = item => {
+        const raw = item.updated_at || item.created_at || item.last_seen_at || item.last_used_at;
+        if (!raw) return '已记住';
+        const date = new Date(raw);
+        if (Number.isNaN(date.getTime())) return '已记住';
+        const diff = Date.now() - date.getTime();
+        const day = 24 * 60 * 60 * 1000;
+        if (diff >= 0 && diff < day) return '今天更新';
+        if (diff >= day && diff < 7 * day) return `${Math.floor(diff / day)} 天前更新`;
+        return `${date.getMonth() + 1}月${date.getDate()}日更新`;
+      };
+      const confidenceText = item => {
+        const n = Number(item.confidence);
+        if (!Number.isFinite(n)) return '自动整理';
+        if (n >= 0.85) return '置信度高';
+        if (n >= 0.65) return '置信度中';
+        return '置信度低';
+      };
+
+      const MemoryRow = ({ item }) => {
+        const Icon = memoryTypeIcon(item.kind);
+        const rowKey = `${item.kind}:${item.id}`;
+        return (
+          <div className={`group relative rounded-2xl border px-4 py-4 ${cardBg} shadow-[0_12px_34px_rgba(0,0,0,0.16)]`}>
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className={`w-7 h-7 rounded-full flex items-center justify-center ${memoryTypeTone(item.kind)}`}><Icon size={14} /></span>
+                  <span className="text-[13px] font-medium">{memoryTypeLabel(item.kind)}</span>
+                  <span className={`ml-auto text-[11px] ${faintText}`}>{formatMemoryTime(item)}</span>
+                </div>
+                <div className="text-[14px] leading-relaxed break-words">{item.text}</div>
+                <div className={`mt-3 text-[12px] ${faintText}`}>
+                  来源：对话识别 · {confidenceText(item)}
+                </div>
+              </div>
+              <button
+                title="更多操作"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuFor(menuFor === rowKey ? null : rowKey);
+                }}
+                className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#AEB4BC] hover:bg-white/[0.08] hover:text-[#F2F3F5]' : 'text-[#5F6368] hover:bg-black/[0.06]'}`}
+              >
+                <MoreHorizontal size={17} />
+              </button>
+            </div>
+            {menuFor === rowKey && (
+              <div onClick={(e) => e.stopPropagation()} className={`absolute right-4 top-12 z-10 min-w-[118px] rounded-xl border ${border} ${isDark ? 'bg-[#24262B] text-[#E8EAED]' : 'bg-white text-[#1F1F1F]'} shadow-2xl overflow-hidden`}>
+                <button onClick={() => startEdit(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${isDark ? 'hover:bg-white/[0.07]' : 'hover:bg-black/[0.04]'}`}><Edit2 size={14} />编辑</button>
+                {(item.kind === 'current_focus' || item.kind === 'recent_activity') && (
+                  <button onClick={() => archiveItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${isDark ? 'hover:bg-white/[0.07]' : 'hover:bg-black/[0.04]'}`}><Archive size={14} />归档</button>
+                )}
+                <button onClick={() => deleteItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${dangerBtn}`}><Trash2 size={14} />删除</button>
+              </div>
+            )}
+          </div>
+        );
+      };
+
+      return (
+        <>
+          <SCard isDark={isDark} title="记忆">
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <div className={`text-[14px] font-medium ${isDark ? 'text-[#E8EAED]' : 'text-[#1F1F1F]'}`}>
+                  {memoryEnabled ? '已启用' : '已关闭'}
+                </div>
+                <div className={`mt-1 text-[13px] leading-relaxed ${subText}`}>
+                  {memoryEnabled
+                    ? (memory.loading ? '正在读取记忆' : (profileSummary ? `${profileSummary} · ${total} 条有效记忆。` : `PINVOU 会记住你的偏好、工作背景和近期事项，让后续对话更容易接上上下文。已记录 ${total} 条有效记忆。`))
+                    : '开启后，PINVOU 可以记住你的称呼、稳定偏好、工作背景和近期事项，减少重复说明。'}
+                </div>
+                {memory.error && <div className="mt-2 text-[13px] text-[#EA4335]">{memory.error}</div>}
+              </div>
+              <div className="shrink-0 flex items-center gap-2">
+                <button
+                  onClick={() => onMemoryEnabledChange && onMemoryEnabledChange(!memoryEnabled)}
+                  role="switch"
+                  aria-checked={!!memoryEnabled}
+                  title={memoryEnabled ? '关闭记忆' : '开启记忆'}
+                  className={`w-12 h-7 rounded-full p-1 flex items-center transition-colors ${memoryEnabled ? 'justify-end bg-[#0B57D0]' : `justify-start ${isDark ? 'bg-[#3C4043]' : 'bg-[#DADCE0]'}`}`}
+                >
+                  <span className="block w-5 h-5 rounded-full bg-white shadow" />
+                </button>
+                {memoryEnabled && (
+                  <button onClick={() => { setOpen(true); reload(); }} className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${primaryBtn}`}>
+                    查看和管理
+                  </button>
+                )}
+              </div>
+            </div>
+          </SCard>
+
+          {open && (
+            <div className="fixed inset-0 z-[80] flex items-center justify-center px-4 py-6">
+              <div className="absolute inset-0 bg-black/55" onClick={() => setOpen(false)} />
+              <div className={`relative w-full max-w-[980px] max-h-[88vh] overflow-hidden rounded-[22px] border ${border} ${panelBg} shadow-2xl`}>
+                <div className={`flex items-center justify-between gap-4 px-6 py-4 border-b ${border}`}>
+                  <div>
+                    <div className="text-[19px] font-semibold">记忆中心</div>
+                    <div className={`text-[12px] mt-1 ${subText}`}>记忆由 AI 自动整理，非必要无需手动管理。</div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button onClick={reload} disabled={!!memory.loading} className={`inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-full ${ghostBtn}`}><RefreshCw size={13} className={memory.loading ? 'animate-spin' : ''} />{memory.loading ? '同步中' : '同步记忆'}</button>
+                    <button onClick={() => setOpen(false)} className={`w-8 h-8 rounded-full flex items-center justify-center ${ghostBtn}`}><X size={15} /></button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-[190px_1fr] min-h-[420px] max-h-[calc(88vh-73px)]">
+                  <div className={`border-b md:border-b-0 md:border-r ${border} p-3 overflow-auto`}>
+                    <div className="space-y-1">
+                      {tabs.map(({ key, label, count, icon: TabIcon }) => (
+                        <button
+                          key={key}
+                          onClick={() => setTab(key)}
+                          className={`w-full flex items-center gap-2 text-left px-3 py-2 rounded-full border text-[13px] transition-colors ${tab === key ? selectedTab : `border-transparent ${isDark ? 'hover:bg-white/[0.06]' : 'hover:bg-black/[0.04]'}`}`}
+                        >
+                          <TabIcon size={15} className="shrink-0" />
+                          <span className="min-w-0 flex-1 truncate">{label}</span>
+                          <span className="text-[11px] opacity-75">{count}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="p-5 overflow-auto" onClick={() => setMenuFor(null)}>
+                    {!memoryEnabled && (
+                      <div className={`mb-4 rounded-2xl border px-4 py-3 ${isDark ? 'bg-white/[0.04] border-white/[0.08]' : 'bg-white border-[#DDE3EA]'}`}>
+                        <div className={`text-[13px] leading-relaxed ${subText}`}>开启记忆后，PINVOU 会在对话中使用这些信息，并自动整理新的长期记忆与近期记忆。</div>
+                      </div>
+                    )}
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-5">
+                      <div>
+                        <div className="text-[16px] font-semibold">{tabMeta.label}</div>
+                        <div className={`text-[12px] mt-1 ${faintText}`}>{tab === 'long_term' ? '称呼、长期偏好与工作背景' : '当前关注与近期动态'} · {tabMeta.count} 条</div>
+                      </div>
+                      <div className={`h-10 min-w-0 md:w-[260px] flex items-center gap-2 rounded-full border px-3 ${inputBg}`}>
+                        <Search size={15} className={faintText} />
+                        <input value={query} onChange={e => setQuery(e.target.value)} onClick={e => e.stopPropagation()} placeholder="搜索记忆" className="w-full bg-transparent outline-none text-[13px]" />
+                      </div>
+                    </div>
+
+                    {tab === 'long_term' ? (
+                      <div className="space-y-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <SField isDark={isDark} label="助手称呼我" value={draft.call_name} onChange={e => setDraft({ ...draft, call_name: e.target.value })} placeholder="例如：欣哥" />
+                          <SField isDark={isDark} label="我称呼助手" value={draft.assistant_alias} onChange={e => setDraft({ ...draft, assistant_alias: e.target.value })} placeholder="例如：小猪" />
+                        </div>
+                        <div className="flex justify-end">
+                          <button onClick={saveProfile} disabled={saving} className={`text-[12px] font-medium px-4 py-2 rounded-full ${primaryBtn} ${saving ? 'opacity-50' : ''}`}>{saving ? '保存中' : '保存'}</button>
+                        </div>
+                        {filteredList.length === 0 ? (
+                          <div className={`text-[13px] ${subText}`}>{query.trim() ? '没有匹配的长期记忆。' : '暂无长期偏好或工作背景。'}</div>
+                        ) : (
+                          <div className="space-y-3">{filteredList.map(item => <MemoryRow key={`${item.kind}:${item.id}`} item={item} />)}</div>
+                        )}
+                        <div className={`rounded-2xl border px-4 py-3 ${isDark ? 'bg-white/[0.03] border-white/[0.06]' : 'bg-white/70 border-[#DDE3EA]'}`}>
+                          <div className={`text-[12px] leading-relaxed ${faintText}`}>长期记忆会长期保留，用来理解你的稳定偏好、工作背景和称呼习惯。它不会自动过期，你可以随时编辑或删除。</div>
+                        </div>
+                      </div>
+                    ) : filteredList.length === 0 ? (
+                      <div className={`text-[13px] ${subText}`}>{query.trim() ? '没有匹配的近期记忆。' : '暂无当前关注或近期动态。'}</div>
+                    ) : (
+                      <div className="space-y-3">
+                        {filteredList.map(item => <MemoryRow key={`${item.kind}:${item.id}`} item={item} />)}
+                        <div className={`rounded-2xl border px-4 py-3 ${isDark ? 'bg-white/[0.03] border-white/[0.06]' : 'bg-white/70 border-[#DDE3EA]'}`}>
+                          <div className={`text-[12px] leading-relaxed ${faintText}`}>近期记忆会记录最近正在推进和刚完成的事情，用来帮助 PINVOU 接上上下文。它会随时间自动淡出，你也可以手动归档或删除。</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {editing && (
+            <div className="fixed inset-0 z-[90] flex items-center justify-center px-4">
+              <div className="absolute inset-0 bg-black/60" onClick={() => setEditing(null)} />
+              <div className={`relative w-full max-w-[560px] rounded-[18px] border ${border} ${panelBg} p-5 shadow-2xl`}>
+                <div className="flex items-center justify-between gap-3 mb-4">
+                  <div>
+                    <div className="text-[16px] font-semibold">编辑{memoryTypeLabel(editing.kind)}</div>
+                    <div className={`text-[12px] mt-1 ${subText}`}>修改后会立即影响后续记忆注入。</div>
+                  </div>
+                  <button onClick={() => setEditing(null)} className={`w-8 h-8 rounded-full flex items-center justify-center ${ghostBtn}`}><X size={15} /></button>
+                </div>
+                <div className="space-y-3">
+                  <label className="block">
+                    <span className={`block text-[12px] mb-1.5 ${subText}`}>内容</span>
+                    <textarea value={editing.text} onChange={e => setEditing({ ...editing, text: e.target.value })} rows={5} className={`w-full rounded-xl border px-3 py-2 text-[14px] outline-none resize-none ${inputBg}`} />
+                  </label>
+                </div>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button onClick={() => setEditing(null)} className={`text-[13px] px-4 py-2 rounded-full ${ghostBtn}`}>取消</button>
+                  <button onClick={saveEdit} disabled={saving || !editing.text.trim()} className={`text-[13px] font-medium px-4 py-2 rounded-full ${primaryBtn} ${(saving || !editing.text.trim()) ? 'opacity-50' : ''}`}>{saving ? '保存中' : '保存'}</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+        </>
+      );
+    };
+
+    // ── 「添加模型」方案:模型快切 chip + 添加/编辑弹窗 ─────────────────
+    // 各预设默认 baseUrl/model 模板(与 bridge/prefs.rs 对齐),添加模型时自动填充。
     const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, searchCredential, searchKeyAction, searchHasSavedKey, onKeepSearchApiKey, onReplaceSearchApiKey, onDeleteSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onConfirmSearchConfig, onMemoryEnabledChange, searchNeedsRestart, languageNeedsRestart, bs, t, onRestoreArchived, onDeleteArchived, updateFocusTick }) => {
       const isDark = activeTheme === 'dark';
       const isWindows = /Windows/i.test(navigator.userAgent || '');
@@ -5059,6 +5632,7 @@
         : t.credNotConfigured;
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
       const archivedSessions = (bs && bs.archivedSessions) || [];
+      const memorySettingsVisible = language === 'zh';
       const feedbackTypes = [
         { key: 'issue', label: t.feedbackIssue },
         { key: 'suggestion', label: t.feedbackSuggestion },
@@ -5251,6 +5825,15 @@
                 </div>
               </SCard>
 
+              {memorySettingsVisible && (
+                <MemorySettingsCard
+                  isDark={isDark}
+                  bs={bs}
+                  memoryEnabled={!!(bs && bs.settings && bs.settings.memory_enabled)}
+                  onMemoryEnabledChange={onMemoryEnabledChange}
+                />
+              )}
+
               <SCard isDark={isDark} title={t.modelBackend}>
                 <div className="space-y-4">
                   <p className={`text-[13px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{t.modelBackendDesc}</p>
@@ -5394,6 +5977,18 @@
                 </SRow>
               </SCard>
               )}
+
+              <SCard isDark={isDark} title={t.notifications}>
+                <SRow isDark={isDark} label={t.taskCompletedNotif} desc={t.taskCompletedNotifDesc}>
+                  <button
+                    onClick={() => setTaskCompletedNotif(!taskCompletedNotif)}
+                    className={`w-[52px] h-[32px] rounded-full p-[2px] transition-colors duration-300 relative ${taskCompletedNotif ? (isDark ? 'bg-[#A8C7FA]' : 'bg-[#0B57D0]') : (isDark ? 'bg-[#444746]' : 'bg-[#747775]')}`}
+                    aria-pressed={taskCompletedNotif}
+                  >
+                    <div className={`w-[28px] h-[28px] rounded-full shadow-sm transform transition-transform duration-300 ${taskCompletedNotif ? (isDark ? 'bg-[#041E49]' : 'bg-white') : (isDark ? 'bg-[#C4C7C5]' : 'bg-white')} ${taskCompletedNotif ? 'translate-x-[20px]' : 'translate-x-0'}`} />
+                  </button>
+                </SRow>
+              </SCard>
 
               <SCard isDark={isDark} title={t.notifications}>
                 <SRow isDark={isDark} label={t.taskCompletedNotif} desc={t.taskCompletedNotifDesc}>
@@ -6293,13 +6888,15 @@
 
           {/* Top Header (浮动) */}
           <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-20 pointer-events-none">
-            <div className="flex items-center gap-2"></div>
-            <button
-              onClick={() => setArtifactsOpen(true)}
-              className={`pointer-events-auto px-4 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm'}`}>
-              <Package size={16} /> {t.artifacts}
-              {artifactCount > 0 && <span className={`text-[11px] px-1.5 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>{artifactCount}</span>}
-            </button>
+            <div className="flex items-center gap-2" />
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setArtifactsOpen(true)}
+                className={`pointer-events-auto px-4 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm'}`}>
+                <Package size={16} /> {t.artifacts}
+                {artifactCount > 0 && <span className={`text-[11px] px-1.5 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>{artifactCount}</span>}
+              </button>
+            </div>
           </div>
 
 
@@ -6337,7 +6934,9 @@
                   const latestArtIdByPath = {};
                   chatItems.forEach((it) => { if (it.type === 'artifact_card' && it.path) latestArtIdByPath[it.path] = it.id; });
                   const latestArtIds = new Set(Object.values(latestArtIdByPath));
-                  return chatItems.map((item) => (
+                  return chatItems
+                    .filter((item) => !(item.type === 'memory_candidate' && !item.resolved))
+                    .map((item) => (
                     <ChatBubble key={item.id} item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={(txt) => { if (bridge.available) bridge.sendMessage(txt); }} editable={!busy && item.id === lastUserId} onOpenEditor={onOpenEditor} isLatestArtifact={latestArtIds.has(item.id)} />
                   ));
                 })()}
@@ -6363,6 +6962,21 @@
                 }`}>
                 <ChevronDown size={15} />
               </button>
+            </div>
+          )}
+          {hasMessages && chatItems.some((item) => item.type === 'memory_candidate' && !item.resolved) && (
+            <div className={`pointer-events-none absolute inset-x-0 z-[24] ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'}`}
+              style={{ bottom: (composerH ? composerH + 28 : 148) + 'px' }}>
+              <div className="max-w-[800px] w-full mx-auto flex flex-col items-end gap-3">
+                {chatItems
+                  .filter((item) => item.type === 'memory_candidate' && !item.resolved)
+                  .slice(-2)
+                  .map((item) => (
+                    <div key={item.id} className="pointer-events-auto w-full flex justify-end">
+                      <ChatBubble item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={(txt) => { if (bridge.available) bridge.sendMessage(txt); }} editable={false} onOpenEditor={onOpenEditor} isLatestArtifact={false} />
+                    </div>
+                  ))}
+              </div>
             </div>
           )}
           {tabletVoiceMode && (
@@ -7206,6 +7820,132 @@
           <div className="flex justify-center">
             <div className={`text-[13px] px-4 py-1.5 rounded-full ${isDark ? 'bg-[#1E1F20] text-[#8E8E8E]' : 'bg-[#F0F4F9] text-[#757575]'}`}>
               {item.text}
+            </div>
+          </div>
+        );
+      }
+      if (item.type === 'memory_notice') {
+        const text = item.text || '';
+        const quietNotice = item.kind === 'recent_activity' || item.kind === 'recent_work';
+        const meta = item.kind === 'current_focus'
+          ? { label: '当前关注', hint: '后续对话会参考这个近期事项。' }
+          : item.kind === 'recent_activity' || item.kind === 'recent_work'
+            ? { label: '近期动态', hint: '后续对话会参考这次完成的事情。' }
+          : item.kind === 'work_context'
+            ? { label: '工作背景', hint: '后续对话会参考这条长期背景。' }
+          : item.kind === 'profile'
+            ? { label: '称呼', hint: '后续对话会按这个称呼交流。' }
+            : { label: '长期偏好', hint: '后续对话会参考这条偏好。' };
+        if (quietNotice) {
+          return (
+            <div className="flex justify-center">
+              <div
+                className="inline-flex items-center gap-1.5 max-w-[360px] px-3 py-1.5 rounded-full text-[12px] text-[#AEB4BC]"
+                title={text}
+                style={{ background: 'rgba(32, 34, 38, 0.54)', border: '1px solid rgba(255,255,255,0.06)' }}
+              >
+                <Check size={12} className="shrink-0 text-[#30D158]" />
+                <span className="font-medium text-[#D5D9DE]">已记录近期动态</span>
+                <span className="truncate">可在记忆中心查看</span>
+              </div>
+            </div>
+          );
+        }
+        return (
+          <div className="flex justify-end">
+            <div
+              className="max-w-[420px] w-full rounded-[16px] px-4 py-3 text-[#F2F3F5]"
+              style={{
+                background: 'rgba(32, 34, 38, 0.86)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                boxShadow: '0 14px 36px rgba(0,0,0,0.34)',
+                backdropFilter: 'blur(16px)',
+                WebkitBackdropFilter: 'blur(16px)',
+              }}
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-[#34C759]/[0.15] text-[#30D158]">
+                  <Check size={15} />
+                </span>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-[13px] font-semibold leading-tight">{item.statusLabel || '记忆已更新'}</span>
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/[0.07] text-[#AEB4BC]">{meta.label}</span>
+                  </div>
+                  <div className="mt-1 text-[12px] leading-relaxed text-[#AEB4BC]">{meta.hint}</div>
+                </div>
+              </div>
+              {text && (
+                <div className="mt-3 ml-9 border-l-2 border-[#0A84FF]/70 pl-3 py-1 text-[13px] leading-relaxed break-words text-[#E8EAED]">
+                  “{text}”
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      }
+      if (item.type === 'memory_candidate') {
+        const resolved = !!item.resolved;
+        if (resolved && (item.statusLabel === '已忽略' || item.statusLabel === '不再提示')) return null;
+        const text = item.text || '';
+        const preferenceDetail = /回答|回复|简洁|详细|风格|语气|口吻/.test(text) ? '回答风格'
+          : /代码|测试|开发|实现|文档/.test(text) ? '工作方式'
+          : '';
+        const meta = item.kind === 'current_focus'
+          ? { label: '当前关注', prompt: '我可以记住这个当前关注', hint: '以后我会用它理解你最近正在推进的工作。' }
+          : item.kind === 'recent_activity' || item.kind === 'recent_work'
+            ? { label: '近期动态', prompt: '我可以记住这个近期动态', hint: '以后我会用它理解你刚完成的工作。' }
+          : item.kind === 'work_context'
+            ? { label: '工作背景', prompt: '我可以记住这条工作背景', hint: '以后我会用它理解你的长期工作上下文。' }
+          : item.kind === 'profile'
+            ? { label: '称呼', prompt: '我可以记住这个称呼', hint: '以后我会按这个称呼和你交流。' }
+            : { label: '偏好' + (preferenceDetail ? ' · ' + preferenceDetail : ''), prompt: '我可以记住这条偏好', hint: '以后我会按这个偏好调整回复方式。' };
+        return (
+          <div className="flex justify-end">
+            <div
+              className={`max-w-[480px] w-full rounded-[18px] px-4 py-3.5 ${isDark ? 'text-[#F2F3F5]' : 'text-[#F8FAFC]'}`}
+              style={{
+                background: 'rgba(32, 34, 38, 0.92)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                boxShadow: '0 18px 50px rgba(0,0,0,0.45)',
+                backdropFilter: 'blur(18px)',
+                WebkitBackdropFilter: 'blur(18px)',
+              }}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${resolved ? 'bg-[#34C759]/[0.15] text-[#30D158]' : 'bg-[#0A84FF]/[0.16] text-[#7DBDFF]'}`}>
+                    {resolved ? <Check size={15} /> : <Brain size={15} />}
+                  </span>
+                  <div className="min-w-0">
+                    <div className="text-[13px] font-semibold leading-tight">{resolved ? (item.statusLabel || '已处理') : '记忆候选'}</div>
+                    {!resolved && <div className="text-[12px] leading-tight mt-1 text-[#AEB4BC]">{meta.prompt}</div>}
+                  </div>
+                </div>
+                <div className="shrink-0 flex items-center gap-2">
+                  <span className="text-[11px] px-2 py-1 rounded-full bg-white/[0.07] text-[#AEB4BC]">{meta.label}</span>
+                  {!resolved && (
+                    <button
+                      className="w-6 h-6 rounded-full flex items-center justify-center text-[#8E8E93] hover:text-[#F2F3F5] hover:bg-white/[0.08] transition-colors"
+                      title="这次忽略"
+                      onClick={() => bridge.available && bridge.ignoreMemoryCandidate && bridge.ignoreMemoryCandidate(item.memoryId, item.id)}
+                    >
+                      <X size={13} />
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="mt-3 ml-9 border-l-2 border-[#0A84FF]/70 pl-3 py-1 text-[14px] leading-relaxed break-words text-[#F2F3F5]">
+                “{text}”
+              </div>
+              {!resolved && <div className="mt-2 ml-9 text-[12px] leading-relaxed text-[#AEB4BC]">{meta.hint}</div>}
+              {!resolved && (
+                <div className="mt-3 ml-9 flex flex-wrap items-center gap-2">
+                  <button className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3.5 py-1.5 rounded-full bg-[#0A84FF] text-white hover:bg-[#1677D2] transition-colors" onClick={() => bridge.available && bridge.confirmMemoryCandidate && bridge.confirmMemoryCandidate(item.memoryId, item.id)}><Check size={14} />记住</button>
+                  <button className="inline-flex items-center gap-1.5 text-[13px] px-3.5 py-1.5 rounded-full bg-white/[0.08] text-[#E8EAED] hover:bg-white/[0.12] transition-colors" onClick={() => bridge.available && bridge.ignoreMemoryCandidate && bridge.ignoreMemoryCandidate(item.memoryId, item.id)}><X size={14} />这次忽略</button>
+                  <button className="text-[13px] px-2 py-1.5 rounded-full text-[#AEB4BC] hover:text-[#F2F3F5] hover:bg-white/[0.08] transition-colors" onClick={() => bridge.available && bridge.neverMemoryCandidate && bridge.neverMemoryCandidate(item.memoryId, item.id)}>不再提示</button>
+                </div>
+              )}
             </div>
           </div>
         );
@@ -10758,13 +11498,22 @@
     };
 
     // 近期会话项：支持重命名(内联编辑) + 删除(内联二次确认)
-    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onArchive, dragging, onPickUp }) => {
+    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, dragging, onPickUp }) => {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
+      const [menuOpen, setMenuOpen] = useState(false);
+      const [menuUp, setMenuUp] = useState(false);
       const [val, setVal] = useState(chat.title);
       const drag = useLongPressDrag('session', onPickUp);
       function save() { const tx = val.trim(); setEditing(false); if (tx && tx !== chat.title) onRename(chat.id, tx); }
+      const toggleMenu = (e) => {
+        e.stopPropagation();
+        const rect = e.currentTarget.getBoundingClientRect();
+        setMenuUp(window.innerHeight - rect.bottom < 80);
+        setMenuOpen(v => !v);
+      };
+      const menuItemCls = `w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] whitespace-nowrap transition-colors ${isDark ? 'text-[#E3E3E3] hover:bg-[#303134]' : 'text-[#1F1F1F] hover:bg-[#F1F3F4]'}`;
       if (editing) {
         return (
           <div className="px-1.5 py-0.5">
@@ -10817,6 +11566,19 @@
                   className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:bg-[#444746]' : 'text-[#5F6368] hover:bg-[#D3D7DB]'}`}><Archive size={13} /></button>
                 <button title={t.cpDelete} onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
                   className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#5F6368] hover:text-[#C5221F] hover:bg-[#FAD2CF]'}`}><Trash2 size={13} /></button>
+                <div className="relative">
+                  <button title={t.riMore} onClick={toggleMenu}
+                    className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:bg-[#444746]' : 'text-[#5F6368] hover:bg-[#D3D7DB]'}`}><MoreHorizontal size={14} /></button>
+                  {menuOpen && (
+                    <div onClick={e => e.stopPropagation()}
+                      className={`absolute right-0 ${menuUp ? 'bottom-7' : 'top-7'} z-50 w-40 overflow-hidden rounded-xl py-1 shadow-xl ring-1 ${isDark ? 'bg-[#202124] ring-white/10' : 'bg-white ring-black/10'}`}>
+                      <button className={menuItemCls} onClick={() => { setMenuOpen(false); onOpenFolder && onOpenFolder(chat.id); }}>
+                        <FolderOpen size={15} />
+                        <span>{t.riOpenFolder}</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             </>
           )}
@@ -12124,6 +12886,11 @@
       useEffect(() => {
         if (kind === 'session' && id && bridge.available && bridge.switchToSession) bridge.switchToSession(id);
       }, [kind, id]);
+      useEffect(() => {
+        if (kind !== 'monitor' || !bridge.available) return;
+        bridge.startMonitorPolling();
+        return () => { if (bridge.stopMonitorPolling) bridge.stopMonitorPolling(); };
+      }, [kind]);
       // 关闭时通知主窗口回坞(去角标)。
       useEffect(() => {
         const key = kind + ':' + (id || '');
@@ -12199,14 +12966,17 @@
     // ==========================================
     // Render
     // ==========================================
+    window.__PINVOU_STARTUP__.mark('react:create_root');
     const root = ReactDOM.createRoot(document.getElementById('root'));
     const __q = new URLSearchParams(window.location.search);
     if (__q.get('detached') === '1') {
       window.__PINVOU_DETACHED__ = true;
       root.render(<DetachedShell kind={__q.get('kind') || 'monitor'} id={__q.get('id') || ''} />);
     } else {
+      window.__PINVOU_STARTUP__.mark('react:render_call');
       root.render(<App />);
     }
+    window.__PINVOU_STARTUP__.mark('react:render_scheduled');
   </script>
 </body>
 </html>

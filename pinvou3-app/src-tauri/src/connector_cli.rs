@@ -14,6 +14,7 @@ use std::sync::mpsc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter};
 
@@ -241,6 +242,55 @@ impl ConnectorConn {
             m.entry(id).or_default().pid = pid;
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConnectorAuthGateRefresh {
+    feishu_visible: bool,
+    wecom_visible: bool,
+    elapsed_ms: u64,
+}
+
+/// 首屏提交后刷新飞书 / 企微鉴权门控。两个外部 CLI 在 blocking 线程池并行执行，
+/// 不占 Tauri setup 主线程；各自只修改互不重叠的技能目录。
+#[tauri::command]
+pub async fn refresh_connector_auth_gates() -> Result<ConnectorAuthGateRefresh, String> {
+    let started = Instant::now();
+    crate::startup::mark("connector_auth_refresh:start");
+
+    let feishu = tokio::task::spawn_blocking(|| {
+        let show = crate::feishu::feishu_skills_should_show();
+        crate::bridge::bundle::Pinvou3Bundle::paths()
+            .apply_feishu_skills(show)
+            .map_err(|e| format!("刷新飞书技能门控失败: {e}"))?;
+        Ok::<bool, String>(show)
+    });
+    let wecom = tokio::task::spawn_blocking(|| {
+        let show = crate::wecom::wecom_skills_should_show();
+        crate::bridge::bundle::Pinvou3Bundle::paths()
+            .apply_wecom_skills(show)
+            .map_err(|e| format!("刷新企微技能门控失败: {e}"))?;
+        Ok::<bool, String>(show)
+    });
+
+    let (feishu_result, wecom_result) = tokio::join!(feishu, wecom);
+    let feishu_visible = feishu_result
+        .map_err(|e| format!("飞书鉴权探测任务失败: {e}"))??;
+    let wecom_visible = wecom_result
+        .map_err(|e| format!("企微鉴权探测任务失败: {e}"))??;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    crate::startup::mark_with_detail(
+        "rust",
+        "connector_auth_refresh:done",
+        &format!(
+            "elapsed_ms={elapsed_ms} feishu_visible={feishu_visible} wecom_visible={wecom_visible}"
+        ),
+    );
+    Ok(ConnectorAuthGateRefresh {
+        feishu_visible,
+        wecom_visible,
+        elapsed_ms,
+    })
 }
 
 #[cfg(test)]

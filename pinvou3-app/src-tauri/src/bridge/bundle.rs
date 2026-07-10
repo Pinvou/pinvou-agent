@@ -273,20 +273,28 @@ impl Pinvou3Bundle {
         paths::ensure_dirs()?;
         let version_file = paths::bundle_version_file();
         let current = std::fs::read_to_string(&version_file).unwrap_or_default();
+        let bundle_changed = current.trim() != BUNDLE_VERSION;
 
         // 已下线 skills 每次启动都清理(防御性):既有装机的残留目录若不清,
         // SkillRegistry 仍会从 disk 发现它们、重新触发对应协议 prompt。
+        crate::startup::mark("bundle_extract:cleanup_retired:start");
         self.cleanup_retired_skills()?;
         // 已从技能市场下架的预置技能(pua/女娲/头脑风暴):它们曾走 marketplace 装、带
         // `pinvou3-marketplace:` 标记,故按标记内容精确删,只跳过用户上传的同名目录。
         self.cleanup_removed_marketplace_skills()?;
+        crate::startup::mark("bundle_extract:cleanup_retired:done");
         // 工作流目录同 skills:immutable bundle 资源,每次启动防御性重写
         // (防 "VERSION 对得上但目录缺失"),无副作用。
+        crate::startup::mark("bundle_extract:write_workflows:start");
         self.write_workflows()?;
-        self.write_connector_clis(current.trim() != BUNDLE_VERSION)?;
+        crate::startup::mark("bundle_extract:write_workflows:done");
+        crate::startup::mark("bundle_extract:write_connector_clis:start");
+        self.write_connector_clis(bundle_changed)?;
+        crate::startup::mark("bundle_extract:write_connector_clis:done");
         // Migrate plaintext MCP secrets before bundled manifests are rewritten. If migration
         // fails, keep the old files as a recoverable source instead of overwriting the only
         // remaining plaintext copy.
+        crate::startup::mark("bundle_extract:migrate_mcp_secrets:start");
         let mcp_secret_migration_ok = match crate::bridge::marketplace::MarketplaceManager::new()
             .migrate_mcp_plaintext_secrets()
         {
@@ -296,12 +304,34 @@ impl Pinvou3Bundle {
                 false
             }
         };
+        crate::startup::mark("bundle_extract:migrate_mcp_secrets:done");
         // Built-in skills and workflow resources are immutable bundle assets.
+        crate::startup::mark("bundle_extract:write_builtin_skills:start");
         self.write_builtin_skills()?;
-        // Feishu official domain skills are shown only when the gate says so.
-        self.apply_feishu_skills(crate::feishu::feishu_skills_should_show())?;
-        // 企微官方域技能:同飞书,按门控(已连接 && 未停用)决定解包还是删除。
-        self.apply_wecom_skills(crate::wecom::wecom_skills_should_show())?;
+        crate::startup::mark("bundle_extract:write_builtin_skills:done");
+        // 飞书 / 企微鉴权 CLI 不得阻塞 Tauri setup。启动阶段只沿用上次落盘的完整
+        // 技能目录作为缓存；React 首屏提交后调用 refresh_connector_auth_gates 并行
+        // 实时探测，再按真实状态修正目录。bundle 升级时仅刷新当前可见的缓存目录。
+        crate::startup::mark("bundle_extract:apply_skill_gates:start");
+        let feishu_show = self.cached_feishu_skills_visible();
+        crate::startup::mark_with_detail(
+            "rust",
+            "bundle_extract:feishu_cached_gate",
+            &format!("show={feishu_show}"),
+        );
+        if bundle_changed || !feishu_show {
+            self.apply_feishu_skills(feishu_show)?;
+        }
+        let wecom_show = self.cached_wecom_skills_visible();
+        crate::startup::mark_with_detail(
+            "rust",
+            "bundle_extract:wecom_cached_gate",
+            &format!("show={wecom_show}"),
+        );
+        if bundle_changed || !wecom_show {
+            self.apply_wecom_skills(wecom_show)?;
+        }
+        crate::startup::mark("bundle_extract:apply_skill_gates:done");
         // EIP 技能:二进制 ~23MB,不像小文本那样每启动防御性重写——仅在二进制缺失时
         // 解包(自愈),避免每次启动写 23MB。改 SKILL.md/包装脚本后想刷新:删 skills_dir/eip。
         let eip_bin = self.skills_dir.join("eip").join("bin");
@@ -335,8 +365,10 @@ impl Pinvou3Bundle {
             self.write_zhidao_skill()?;
         }
         self.apply_zhidao_skill_visibility(crate::zhidao::zhidao_skills_should_show())?;
+        crate::startup::mark("bundle_extract:internal_skills_ready");
         // MCP server scripts are immutable as well, but wait for secret migration to avoid
         // deleting legacy plaintext before it has been copied into the credential store.
+        crate::startup::mark("bundle_extract:write_mcp_servers:start");
         if mcp_secret_migration_ok {
             self.write_mcp_servers()?;
         }
@@ -346,8 +378,9 @@ impl Pinvou3Bundle {
         // 启动自愈:刷新 mcp.json 里陈旧的本地 python server command(安装时写死的裸
         // "python" → 重解析成可用路径)。必须在引擎 spawn 前跑(引擎从 mcp.json 拉起 server)。
         self.refresh_mcp_python_commands()?;
+        crate::startup::mark("bundle_extract:write_mcp_servers:done");
 
-        if current.trim() == BUNDLE_VERSION {
+        if !bundle_changed {
             return Ok(());
         }
         std::fs::create_dir_all(&self.root)?;
@@ -498,6 +531,15 @@ impl Pinvou3Bundle {
         Ok(())
     }
 
+    /// 启动缓存只在 9 个飞书域技能全部完整落盘时判 visible，避免上次异常中断留下
+    /// 半套目录却被 SkillRegistry 当成已连接。实时真相在首屏后的 CLI 探测中刷新。
+    fn cached_feishu_skills_visible(&self) -> bool {
+        !crate::feishu::is_feishu_disabled()
+            && LARK_SKILL_DIRS
+                .iter()
+                .all(|dir| self.skills_dir.join(dir).join("SKILL.md").is_file())
+    }
+
     /// 企微域技能门控:`show` → 解包 7 个 wecomcli 技能到 `skills_dir`;否则**删掉**它们。
     /// 幂等。与飞书门控正交(各自的连接 / 停用状态独立)。
     /// 注:`WECOM_SKILLS_DIR` 根 = `wecom-skills/`,内含 `wecomcli-<域>/SKILL.md`(+ NOTICE.md);
@@ -514,6 +556,14 @@ impl Pinvou3Bundle {
             let _ = std::fs::remove_file(self.skills_dir.join("NOTICE-wecom.md"));
         }
         Ok(())
+    }
+
+    /// 同 [`cached_feishu_skills_visible`]，以完整的企微技能目录作为启动缓存。
+    fn cached_wecom_skills_visible(&self) -> bool {
+        !crate::wecom::is_wecom_disabled()
+            && WECOM_SKILL_DIRS
+                .iter()
+                .all(|dir| self.skills_dir.join(dir).join("SKILL.md").is_file())
     }
 
     /// 解包内嵌的 EIP 员工门户技能到 `skills_dir/eip`(SKILL.md + bin/ 包装脚本&二进制)。
@@ -830,6 +880,57 @@ mod tests {
             content, "USER TOUCHED",
             "VERSION 匹配时不应覆写已存在的 bundle 文件"
         );
+
+        cleanup(&tmp);
+    }
+
+    #[test]
+    fn connector_skill_cache_requires_complete_domain_sets() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = Pinvou3Bundle::paths();
+        std::fs::create_dir_all(&bundle.skills_dir).unwrap();
+
+        assert!(!bundle.cached_feishu_skills_visible());
+        assert!(!bundle.cached_wecom_skills_visible());
+
+        for dir in LARK_SKILL_DIRS {
+            let path = bundle.skills_dir.join(dir);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("SKILL.md"), "test").unwrap();
+        }
+        for dir in WECOM_SKILL_DIRS {
+            let path = bundle.skills_dir.join(dir);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("SKILL.md"), "test").unwrap();
+        }
+        assert!(bundle.cached_feishu_skills_visible());
+        assert!(bundle.cached_wecom_skills_visible());
+
+        std::fs::write(paths::pinvou3_home().join("feishu_disabled"), "1").unwrap();
+        std::fs::write(paths::pinvou3_home().join("wecom_disabled"), "1").unwrap();
+        assert!(!bundle.cached_feishu_skills_visible());
+        assert!(!bundle.cached_wecom_skills_visible());
+        std::fs::remove_file(paths::pinvou3_home().join("feishu_disabled")).unwrap();
+        std::fs::remove_file(paths::pinvou3_home().join("wecom_disabled")).unwrap();
+
+        std::fs::remove_file(
+            bundle
+                .skills_dir
+                .join(LARK_SKILL_DIRS[0])
+                .join("SKILL.md"),
+        )
+        .unwrap();
+        std::fs::remove_file(
+            bundle
+                .skills_dir
+                .join(WECOM_SKILL_DIRS[0])
+                .join("SKILL.md"),
+        )
+        .unwrap();
+        assert!(!bundle.cached_feishu_skills_visible());
+        assert!(!bundle.cached_wecom_skills_visible());
 
         cleanup(&tmp);
     }
