@@ -32,14 +32,10 @@ export PINVOU3_KB_EMBED_MODEL_DIR="${PINVOU3_KB_EMBED_MODEL_DIR:-$HOME/models/bg
 export PINVOU3_WEB_TEMPLATE_DIR="${PINVOU3_WEB_TEMPLATE_DIR:-$HOME/models/web-template}"
 
 # ── 手机远控一期 relay ───────────────────────────────────────────
-# 手机扫码必须拿到手机可访问的桌面地址，不能是 127.0.0.1。未显式配置时，
-# 用 hostname -I 的第一个非 Docker / 非 Mihomo TUN 地址作为 dev 默认值。
-if [ -z "${PINVOU_REMOTE_PUBLIC_URL:-}" ]; then
-  LAN_IP="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^10\.|^192\.168\.|^172\.(1[6-9]|2[0-9]|3[0-1])\.' | grep -vE '^172\.(17|18)\.' | head -n1 || true)"
-  if [ -n "$LAN_IP" ]; then
-    export PINVOU_REMOTE_PUBLIC_URL="http://$LAN_IP:8787"
-  fi
-fi
-export PINVOU_REMOTE_RELAY_WS_URL="${PINVOU_REMOTE_RELAY_WS_URL:-ws://127.0.0.1:8787/ws}"
+# dev 默认走公网中继，手机无需和桌面在同一局域网。仍可在外部 export 覆盖：
+#   PINVOU_REMOTE_PUBLIC_URL=http://10.x.x.x:8787
+#   PINVOU_REMOTE_RELAY_WS_URL=ws://10.x.x.x:8787/ws
+export PINVOU_REMOTE_PUBLIC_URL="${PINVOU_REMOTE_PUBLIC_URL:-http://47.120.8.237:8787}"
+export PINVOU_REMOTE_RELAY_WS_URL="${PINVOU_REMOTE_RELAY_WS_URL:-ws://47.120.8.237:8787/ws}"
 
 exec npx tauri dev "$@"

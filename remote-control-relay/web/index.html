@@ -111,6 +111,31 @@
     .html-frame-wrap { width: 100%; min-height: 100%; background: #fff; }
     .preview img { display: block; max-width: 100%; height: auto; border-radius: 12px; margin: 0 auto; background: #fff; }
     .empty-panel { padding: 28px 14px; color: #8d949c; text-align: center; line-height: 1.6; }
+    .takeover { position: fixed; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center; padding: 18px 14px calc(18px + env(safe-area-inset-bottom)); background: radial-gradient(circle at 50% -10%, rgba(36,136,255,.08), transparent 28%), #0d1013; color: #f4f6f8; }
+    .takeover.hidden { display: none; }
+    .takeover-card { width: min(100%, 432px); border: 1px solid rgba(255,255,255,.08); border-radius: 24px; background: linear-gradient(180deg, #171b20, #14181d); box-shadow: 0 24px 70px rgba(0,0,0,.42); padding: 22px; }
+    .takeover-hero { display: flex; gap: 16px; align-items: flex-start; }
+    .takeover-warn { width: 50px; height: 50px; border-radius: 16px; display: grid; place-items: center; flex: 0 0 auto; background: rgba(228,164,84,.12); border: 1px solid rgba(228,164,84,.22); color: #e4a454; }
+    .takeover-warn svg, .takeover-device-icon svg { width: 24px; height: 24px; stroke: currentColor; }
+    .takeover-eyebrow { display: inline-flex; align-items: center; margin-bottom: 10px; padding: 6px 10px; border-radius: 999px; background: rgba(228,164,84,.10); border: 1px solid rgba(228,164,84,.18); color: #f0bb77; font-size: 12px; font-weight: 700; }
+    .takeover h2 { margin: 0; font-size: 22px; line-height: 1.25; letter-spacing: 0; }
+    .takeover-intro { margin: 10px 0 0; color: #98a0a9; font-size: 14px; line-height: 1.7; }
+    .takeover-divider { height: 1px; background: rgba(255,255,255,.08); margin: 20px 0; }
+    .takeover-section-title { margin-bottom: 10px; color: #98a0a9; font-size: 13px; font-weight: 700; }
+    .takeover-device { display: flex; align-items: center; gap: 12px; padding: 14px; border: 1px solid rgba(255,255,255,.08); border-radius: 17px; background: #1b2026; }
+    .takeover-device-icon { width: 42px; height: 42px; border-radius: 13px; display: grid; place-items: center; flex: 0 0 auto; background: #222830; color: #b9c1ca; }
+    .takeover-device-main { min-width: 0; flex: 1; }
+    .takeover-device-name { font-size: 15px; font-weight: 700; }
+    .takeover-device-meta { margin-top: 4px; color: #98a0a9; font-size: 12px; }
+    .takeover-pill { flex: 0 0 auto; padding: 6px 8px; border-radius: 999px; border: 1px solid rgba(228,164,84,.16); background: rgba(228,164,84,.10); color: #f0bb77; font-size: 11px; font-weight: 700; }
+    .takeover-steps { display: grid; gap: 10px; }
+    .takeover-step { display: flex; align-items: flex-start; gap: 12px; color: #d9dde2; font-size: 14px; line-height: 1.6; }
+    .takeover-step-num { width: 24px; height: 24px; border-radius: 9px; display: grid; place-items: center; flex: 0 0 auto; margin-top: 1px; background: #222830; color: #98a0a9; font-size: 12px; font-weight: 800; }
+    .takeover-actions { display: grid; gap: 10px; margin-top: 20px; }
+    .takeover-primary, .takeover-secondary { width: 100%; min-height: 48px; border-radius: 15px; font-weight: 800; }
+    .takeover-primary { background: linear-gradient(180deg, #2488ff, #1677e8); box-shadow: 0 12px 28px rgba(36,136,255,.20); }
+    .takeover-secondary { border: 1px solid rgba(255,255,255,.08); background: #1b2026; color: #dce1e6; }
+    .takeover-hint { margin-top: 12px; color: #6f7780; text-align: center; font-size: 12px; line-height: 1.5; }
     body.light header, body.light footer { background: rgba(246,247,249,.92); border-color: rgba(0,0,0,.08); }
     body.light .session-title, body.light .artifact-top, body.light .icon-button, body.light .chip, body.light button.ghost { background: rgba(0,0,0,.055); color: #151719; border-color: rgba(0,0,0,.08); }
     body.light .sheet, body.light .preview { background: #fff; border-color: rgba(0,0,0,.10); color: #151719; }
@@ -133,6 +158,13 @@
     body.light .preview-body { background: #fff; color: #151719; }
     body.light .preview pre { color: #151719; }
     body.light .empty-panel { color: #5f6872; }
+    body.light .takeover { background: #f6f7f9; color: #151719; }
+    body.light .takeover-card { background: #fff; border-color: rgba(0,0,0,.10); box-shadow: 0 20px 50px rgba(0,0,0,.12); }
+    body.light .takeover-intro, body.light .takeover-section-title, body.light .takeover-device-meta { color: #68707a; }
+    body.light .takeover-device, body.light .takeover-secondary { background: #f5f7fa; border-color: rgba(0,0,0,.10); color: #151719; }
+    body.light .takeover-device-icon, body.light .takeover-step-num { background: #eef2f6; color: #68707a; }
+    body.light .takeover-step { color: #25282c; }
+    body.light .takeover-divider { background: rgba(0,0,0,.08); }
     body.light .chip strong { color: #151719; }
     body.light .chip.readonly { color: #5f6872; }
     body.light .small, body.light .sheet-sub, body.light .sheet-mark, body.light .tool-path, body.light .artifact .path, body.light .artifact-kind, body.light .pinvou-section-title { color: #68707a; }
@@ -188,6 +220,56 @@
         <div class="preview-body" id="previewBody"></div>
       </section>
     </div>
+    <section class="takeover hidden" id="takeoverScreen" role="alertdialog" aria-modal="true" aria-labelledby="takeoverTitle">
+      <article class="takeover-card">
+        <div class="takeover-hero">
+          <div class="takeover-warn" aria-hidden="true">
+            <svg fill="none" viewBox="0 0 24 24" stroke-width="1.9">
+              <path d="M12 8v5"></path>
+              <path d="M12 17h.01"></path>
+              <path d="M10.3 3.8 2.9 17a2 2 0 0 0 1.8 3h14.6a2 2 0 0 0 1.8-3L13.7 3.8a2 2 0 0 0-3.4 0Z"></path>
+            </svg>
+          </div>
+          <div>
+            <div class="takeover-eyebrow">远程会话被占用</div>
+            <h2 id="takeoverTitle">当前会话已在其他设备打开</h2>
+            <p class="takeover-intro">为避免操作冲突，同一时间只能保留一个手机控制端。你可以继续使用新设备，或重新连接本设备切换回来。</p>
+          </div>
+        </div>
+        <div class="takeover-divider"></div>
+        <div class="takeover-section-title">当前接管设备</div>
+        <div class="takeover-device">
+          <div class="takeover-device-icon" aria-hidden="true">
+            <svg fill="none" viewBox="0 0 24 24" stroke-width="1.8">
+              <rect x="7" y="2.5" width="10" height="19" rx="2.5"></rect>
+              <path d="M10 18.2h4"></path>
+            </svg>
+          </div>
+          <div class="takeover-device-main">
+            <div class="takeover-device-name">另一台移动设备</div>
+            <div class="takeover-device-meta">刚刚接入 · Relay 已切换</div>
+          </div>
+          <div class="takeover-pill">已接管</div>
+        </div>
+        <div class="takeover-divider"></div>
+        <div class="takeover-section-title">接下来怎么做</div>
+        <div class="takeover-steps">
+          <div class="takeover-step">
+            <div class="takeover-step-num">1</div>
+            <div>继续使用新接入的设备，无需额外操作。</div>
+          </div>
+          <div class="takeover-step">
+            <div class="takeover-step-num">2</div>
+            <div>需要切回本设备时，点击重新连接；当前正在控制的设备会被断开。</div>
+          </div>
+        </div>
+        <div class="takeover-actions">
+          <button class="takeover-primary" id="takeoverReconnect">重新连接本设备</button>
+          <button class="takeover-secondary" id="takeoverClose">关闭页面</button>
+        </div>
+        <div class="takeover-hint" id="takeoverHint">重新连接后，当前正在控制的设备会被断开。</div>
+      </article>
+    </section>
   </div>
   <script>
     const roomId = location.pathname.split('/').filter(Boolean).pop();
@@ -215,6 +297,10 @@
       previewTitle: document.getElementById('previewTitle'),
       previewBody: document.getElementById('previewBody'),
       previewClose: document.getElementById('previewClose'),
+      takeoverScreen: document.getElementById('takeoverScreen'),
+      takeoverReconnect: document.getElementById('takeoverReconnect'),
+      takeoverClose: document.getElementById('takeoverClose'),
+      takeoverHint: document.getElementById('takeoverHint'),
     };
     let ws = null;
     let joined = false;
@@ -254,6 +340,51 @@
     const sentClientIds = new Set();
     const toolNodes = new Map();
 
+    function setControlsDisabled(disabled) {
+      [
+        el.input,
+        el.actionButton,
+        el.sessionChip,
+        el.artifactChip,
+        el.themeChip,
+        el.modeChip,
+        el.modelChip,
+      ].forEach(node => {
+        if (node) node.disabled = disabled;
+      });
+    }
+    function showTakeoverScreen() {
+      state.replaced = true;
+      joined = false;
+      clearTimeout(joinTimer);
+      clearTimeout(reconnectTimer);
+      setTurnActive(false);
+      setStatus('已被占用');
+      setControlsDisabled(true);
+      el.sheetOverlay.classList.add('hidden');
+      el.previewOverlay.classList.add('hidden');
+      state.sheet = '';
+      el.takeoverReconnect.disabled = false;
+      el.takeoverReconnect.textContent = '重新连接本设备';
+      el.takeoverHint.textContent = '重新连接后，当前正在控制的设备会被断开。';
+      el.takeoverScreen.classList.remove('hidden');
+    }
+    function hideTakeoverScreen() {
+      state.replaced = false;
+      setControlsDisabled(false);
+      el.takeoverScreen.classList.add('hidden');
+    }
+    function detachCurrentSocket() {
+      if (!ws) return;
+      try {
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
+        ws.close();
+      } catch {}
+      ws = null;
+    }
     function setStatus(text) { el.status.textContent = text; }
     function clientId() { return `cm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`; }
     function scrollBottom() { requestAnimationFrame(() => { el.messages.scrollTop = el.messages.scrollHeight; }); }
@@ -1015,7 +1146,7 @@
       if (state.sheet === 'artifacts') renderArtifactSheet();
     }
     function sendAction(type, payload = {}, explicitClientId = null) {
-      if (!ws || ws.readyState !== WebSocket.OPEN || !joined) return false;
+      if (state.replaced || !ws || ws.readyState !== WebSocket.OPEN || !joined) return false;
       const action = { type, client_message_id: explicitClientId || clientId(), payload };
       ws.send(JSON.stringify({ type: 'mobile_action', payload: action }));
       return true;
@@ -1656,9 +1787,7 @@
           addSystem(`错误: ${(msg.payload && msg.payload.message) || msg.message || 'unknown'}`);
           break;
         case 'room_replaced':
-          state.replaced = true;
-          addSystem('这个手机连接已被新页面替换');
-          setStatus('已替换');
+          showTakeoverScreen();
           break;
         case 'room_closed':
           addSystem('桌面端已停止远程控制');
@@ -1672,6 +1801,7 @@
         joined = true;
         clearTimeout(joinTimer);
         sessionId = msg.session_id || '';
+        hideTakeoverScreen();
         setStatus('已连接');
         state.sessionChoiceRequired = true;
         el.messages.innerHTML = '<div class="empty">请选择一个 session 进入。</div>';
@@ -1716,6 +1846,10 @@
       ws.onerror = () => setStatus('连接异常');
     }
     function submitComposer() {
+      if (state.replaced) {
+        setStatus('已被占用');
+        return;
+      }
       if (state.turn.active) {
         setTurnPhase('stopping');
         sendAction('cancel_generation', {});
@@ -1738,6 +1872,29 @@
         addSystem('发送失败：远控连接尚未就绪。');
       }
     }
+    function reconnectThisDevice() {
+      el.takeoverReconnect.disabled = true;
+      el.takeoverReconnect.textContent = '正在重新连接...';
+      el.takeoverHint.textContent = '正在重新接管当前远程会话。';
+      detachCurrentSocket();
+      joined = false;
+      state.replaced = false;
+      connect();
+    }
+    function closeRemotePage() {
+      el.takeoverClose.disabled = true;
+      el.takeoverClose.textContent = '正在关闭...';
+      try { window.close(); } catch {}
+      setTimeout(() => {
+        if (document.hidden) return;
+        if (history.length > 1) {
+          history.back();
+          return;
+        }
+        el.takeoverClose.textContent = '可直接关闭页面';
+        el.takeoverHint.textContent = '浏览器未允许自动关闭，请直接关闭这个页面。';
+      }, 180);
+    }
     el.actionButton.onclick = submitComposer;
     el.sessionChip.onclick = () => openSheet('sessions');
     el.artifactChip.onclick = () => openSheet('artifacts');
@@ -1748,6 +1905,8 @@
     el.sheetOverlay.onclick = e => { if (e.target === el.sheetOverlay) closeSheet(); };
     el.previewClose.onclick = () => el.previewOverlay.classList.add('hidden');
     el.previewOverlay.onclick = e => { if (e.target === el.previewOverlay) el.previewOverlay.classList.add('hidden'); };
+    el.takeoverReconnect.onclick = reconnectThisDevice;
+    el.takeoverClose.onclick = closeRemotePage;
     el.input.addEventListener('keydown', e => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
