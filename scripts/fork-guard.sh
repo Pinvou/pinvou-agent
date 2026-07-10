@@ -72,10 +72,6 @@ fingerprints=(
   # —— P(pwd/workspace 移出静态 system → per-turn turn_meta)指纹已撤(2026-06-29 v0.8.65)——
   #    上游 v0.8.65 已 harvest 该优化(render_environment_block 不再输出 pwd + turn_meta 带
   #    workspace),不再 fork-distinct;详见 fork-modifications §2.2。
-  # —— session 启动 cache warmup(2026-06-18):根治新 session 首请求冷 prefill × mtp 漂移 ——
-  # 首请求前预热完整前缀(含 turn_meta);只热 system+tools 不够(模型恰在 turn_meta 处复读采歪)。
-  "    |session warmup flag             |DeepSeek-TUI/crates/tui/src/core/session.rs|cache_warmup_done"
-  "    |首请求 warmup 注入              |DeepSeek-TUI/crates/tui/src/core/engine/turn_loop.rs|cache_warmup_done"
   # —— 会话工具开关(2026-06-23):pinvou3 connector 开关广播 disallowed_tools 给引擎(fork #4)——
   # 引擎加 Op::SetDisallowedTools → 写 config.disallowed_tools → 下一轮 filter_tool_catalog_for_gates 隐藏。
   "C8  |SetDisallowedTools op 定义       |DeepSeek-TUI/crates/tui/src/core/ops.rs|SetDisallowedTools { tools: Vec<String> }"

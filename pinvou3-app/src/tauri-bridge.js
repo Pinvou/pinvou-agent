@@ -1,4 +1,4 @@
-/**
+﻿/**
  * tauri-bridge.js — Tauri 后端通信桥
  *
  * 封装所有 invoke/listen，维护前端状态，通过 pub/sub 推给 React。
@@ -183,6 +183,7 @@
       error: null,
     },
   };
+  var initPromise = null;
   // 卡片池 1078 张卡的前端缓存。只读,通过 getPersonas() 取引用,不走 notify 快照。
   var personaPoolCache = [];
 
@@ -198,6 +199,7 @@
   // 工具调用/重试/压缩（= 多请求），就跳过这次 tokens 更新，保留上一个准确值。
   var turnUsageDirty = {};  // session_id → bool
   var monitorIntervalId = null;
+  var monitorPollInFlight = false;
   var gpuUtilHistory = [];
   var maxModelLen = 32768;
   // 监控页「清除统计」基准点：vLLM 的几个累计 counter（TTFT/TPOT/tokens/prefix
@@ -1897,13 +1899,13 @@
   // ── Monitor ──────────────────────────────────────────────────────
   function fmtMiB(mib) {
     if (mib == null) return "—";
-    return mib >= 1024 ? (mib / 1024).toFixed(1) + " GiB" : mib + " MiB";
+    return mib >= 1024 ? (mib / 1024).toFixed(1) + " GB" : mib + " MB";
   }
   function fmtKiB(kib) {
     if (kib == null) return "—";
-    if (kib >= 1024 * 1024) return (kib / 1024 / 1024).toFixed(1) + " GiB";
-    if (kib >= 1024) return (kib / 1024).toFixed(0) + " MiB";
-    return kib + " KiB";
+    if (kib >= 1024 * 1024) return (kib / 1024 / 1024).toFixed(1) + " GB";
+    if (kib >= 1024) return (kib / 1024).toFixed(0) + " MB";
+    return kib + " KB";
   }
   function fmtDuration(secs) {
     if (secs == null || secs < 0) return "—";
@@ -1998,9 +2000,28 @@
     return true;
   }
 
+  function appQueueSnapshot() {
+    var running = 0;
+    var waiting = state.queued ? state.queued.length : 0;
+    var busyMap = {};
+    for (var id in sessionStates) {
+      if (!Object.prototype.hasOwnProperty.call(sessionStates, id)) continue;
+      if (id === state.activeSessionId) continue;
+      var buf = sessionStates[id] || {};
+      if (buf.busy) busyMap[id] = true;
+      if (Array.isArray(buf.queued)) waiting += buf.queued.length;
+    }
+    if (state.activeSessionId && state.busy) busyMap[state.activeSessionId] = true;
+    running = Object.keys(busyMap).length;
+    return { running: running, waiting: waiting };
+  }
+
   async function pollMonitor() {
+    if (monitorPollInFlight) return;
+    monitorPollInFlight = true;
     try {
       var snap = await invoke("get_monitor_snapshot");
+      state.monitorError = null;
       // GPU util sliding window
       if (snap.gpu) {
         gpuUtilHistory.push(snap.gpu.utilization_pct);
@@ -2018,40 +2039,39 @@
       var vllm = snap.vllm || null;
       var metricsApplicable = vllm ? vllm.metrics_applicable !== false : false;
       var metricNotApplicableText = "不适用";
+      var metricUnavailableText = "未提供";
       var diagnostic = vllm && vllm.diagnostic ? vllm.diagnostic : null;
       var metricDiagnostic = vllm && vllm.metric_diagnostics && vllm.metric_diagnostics.length
         ? vllm.metric_diagnostics[0] : null;
       var targetKind = vllm && vllm.target_kind ? vllm.target_kind : "invalid";
       var targetKindLabel = targetKind === "remote" ? "远端模型" : (targetKind === "local" ? "本地模型" : "配置异常");
       var vllmDisplayModel = vllm ? (vllm.model || vllm.configured_model || "—") : "—";
+      var healthStatus = vllm && vllm.health_status ? vllm.health_status : (vllm ? "verified" : "offline");
+      var appQueue = appQueueSnapshot();
       var cpu = snap.cpu || null;
-      var showCpuCard = Object.prototype.hasOwnProperty.call(snap, "cpu");
-      var cpuTotalPct = cpu && typeof cpu.total_usage_pct === "number" && isFinite(cpu.total_usage_pct)
-        ? Math.round(cpu.total_usage_pct) : 0;
-      var cpuProcessPct = cpu && typeof cpu.process_usage_pct === "number" && isFinite(cpu.process_usage_pct)
-        ? Math.round(cpu.process_usage_pct) : 0;
+      var cpuUsage = cpu && typeof cpu.total_usage_pct === "number" && isFinite(cpu.total_usage_pct)
+        ? Math.round(Math.max(0, Math.min(100, cpu.total_usage_pct)))
+        : null;
+      var computeName = snap.gpu ? snap.gpu.name : (cpu && cpu.name ? cpu.name : bt("gpuUnavailable"));
       snap._fmt = {
-        gpuName: snap.gpu ? snap.gpu.name : bt("gpuUnavailable"),
+        gpuName: computeName,
+        cpuName: cpu && cpu.name ? cpu.name : "",
+        cpuAvailable: !!cpu,
+        computeAvailable: !!(snap.gpu || cpu),
+        computeName: computeName,
         gpuVram: snap.gpu && snap.gpu.vram_total_mib > 0
           ? fmtMiB(snap.gpu.vram_used_mib) + " / " + fmtMiB(snap.gpu.vram_total_mib) : "—",
         gpuVramPct: snap.gpu && snap.gpu.vram_total_mib > 0
           ? Math.round(snap.gpu.vram_used_mib / snap.gpu.vram_total_mib * 100) : 0,
         gpuUtil: snap.gpu ? (snap.gpu._utilMax + "%") : "—",
         gpuUtilPct: snap.gpu ? snap.gpu._utilMax : 0,
+        processorUtil: cpuUsage != null ? cpuUsage + "%" : "—",
+        processorUtilPct: cpuUsage != null ? cpuUsage : 0,
+        gpuSharedMemory: snap.gpu && snap.gpu.shared_memory_used_mib != null ? fmtMiB(snap.gpu.shared_memory_used_mib) : "—",
         gpuTemp: snap.gpu && snap.gpu.temperature_c != null ? snap.gpu.temperature_c + "°C" : null,
         gpuPower: snap.gpu && snap.gpu.power_w != null ? snap.gpu.power_w.toFixed(1) + " W" : null,
         gpuAvailable: !!snap.gpu,
         gpuHasVram: !!(snap.gpu && snap.gpu.vram_total_mib > 0),
-        showCpuCard: showCpuCard,
-        cpuName: cpu && cpu.name ? cpu.name : bt("cpuUnavailable"),
-        cpuTotal: cpu && typeof cpu.total_usage_pct === "number" && isFinite(cpu.total_usage_pct)
-          ? cpuTotalPct + "%" : "—",
-        cpuTotalPct: cpuTotalPct,
-        cpuProcess: cpu && typeof cpu.process_usage_pct === "number" && isFinite(cpu.process_usage_pct)
-          ? cpuProcessPct + "%" : "—",
-        cpuProcessPct: cpuProcessPct,
-        cpuLogicalProcessors: cpu && typeof cpu.logical_processors === "number" ? cpu.logical_processors : 0,
-        cpuAvailable: !!cpu,
         ramUsed: snap.ram ? fmtKiB(snap.ram.used_kib) : "—",
         ramTotal: snap.ram ? fmtKiB(snap.ram.total_kib) : "—",
         ramPct: snap.ram && snap.ram.total_kib > 0 ? Math.round(snap.ram.used_kib / snap.ram.total_kib * 100) : 0,
@@ -2064,7 +2084,8 @@
         vllmModelMismatch: vllm && vllm.configured_model && vllm.model
           ? vllm.configured_model !== vllm.model : false,
         vllmStatus: vllm ? vllm.status.toUpperCase() : "OFFLINE",
-        vllmOnline: vllm ? (vllm.status === "ready" || vllm.status === "busy") : false,
+        vllmHealthStatus: healthStatus,
+        vllmOnline: vllm ? (healthStatus === "verified" && (vllm.status === "ready" || vllm.status === "busy")) : false,
         vllmUpstream: vllm ? (vllm.upstream || "—") : "—",
         vllmTargetKind: targetKindLabel,
         // 云端(remote)不做健康探测(无 auth 的 /v1/models 必 401)→ 不显示 OFFLINE。
@@ -2074,25 +2095,22 @@
         vllmDiagnosticCode: diagnostic ? diagnostic.code : null,
         vllmMetricsApplicable: metricsApplicable,
         vllmMetricDiagnostic: metricDiagnostic ? metricDiagnostic.message : null,
-        vllmMaxLen: vllm ? (metricsApplicable ? (vllm.max_model_len || "—") : metricNotApplicableText) : "—",
+        vllmMaxLen: vllm ? (metricsApplicable ? (vllm.max_model_len || "—") : (vllm.max_model_len || metricUnavailableText)) : "—",
         // 本地推理引擎(target_kind=local)且探测窗口 < 128k(131072):监控卡给告警。
         // 云端(remote)/v1/models 不返回 max_model_len,自然不触发。传原始值供前端拼文案。
         vllmCtxWarn: (vllm && targetKind === "local" && vllm.max_model_len && vllm.max_model_len < 131072)
           ? vllm.max_model_len : null,
-        vllmQueue: vllm
-          ? (metricsApplicable
-            ? (vllm.num_requests_running != null ? vllm.num_requests_running : "—") + " / " +
-              (vllm.num_requests_waiting != null ? vllm.num_requests_waiting : "—")
-            : metricNotApplicableText)
-          : "— / —",
+        vllmQueue: appQueue.running + " / " + appQueue.waiting,
+        vllmQueueSource: "app",
         // TTFT/TPS/tokens 一律用 app 侧自测——任何后端(vLLM/LM Studio/Ollama/云端)都有值,
         // 不再受 metricsApplicable 门控。KV 见 kvShown(本地 prefix_cache / 云端 usage 口径),
         // 拿不到则 "—"。队列仍归 vLLM(见 vllmQueue)。
-        vllmKv: kvShown != null ? kvShown.toFixed(1) + "%" : "—",
+        vllmKv: kvShown != null ? kvShown.toFixed(1) + "%" : "0%",
+        vllmKvHasData: kvShown != null,
         vllmTtft: sadj && sadj.ttft_count > 0
-          ? (sadj.ttft_sum_s / sadj.ttft_count).toFixed(2) + " s" : "—",
+          ? (sadj.ttft_sum_s / sadj.ttft_count).toFixed(2) + " s" : "0 s",
         vllmTps: sadj && sadj.tps_time_s > 0
-          ? (sadj.tps_tokens / sadj.tps_time_s).toFixed(1) + " tok/s" : "—",
+          ? (sadj.tps_tokens / sadj.tps_time_s).toFixed(1) + " tok/s" : "0 tok/s",
         vllmTokTotal: sadj
           ? fmtTok(sadj.gen) + " / " + fmtTok(sadj.prompt) : "—",
         vllmStatsCleared: !!(sadj && sadj.cleared),
@@ -2117,7 +2135,11 @@
       state.monitor = snap;
       notify();
     } catch (e) {
+      state.monitorError = e && e.message ? e.message : String(e || "monitor poll failed");
       console.warn("monitor poll failed", e);
+      notify();
+    } finally {
+      monitorPollInFlight = false;
     }
   }
 
@@ -2151,80 +2173,6 @@
   }
 
   // ── Settings ─────────────────────────────────────────────────────
-  async function getLlmApiStatus() {
-    var status = await invoke("get_llmapi_status");
-    state.llmApiStatus = status || null;
-    notify();
-    return status;
-  }
-
-  async function getLlmApiModels() {
-    var models = await invoke("get_llmapi_models");
-    state.llmApiModels = models || null;
-    try {
-      state.llmApiStatus = (await invoke("get_llmapi_status")) || state.llmApiStatus || null;
-    } catch (e) {
-      console.warn("refresh llmapi status after models failed", e);
-    }
-    notify();
-    return models;
-  }
-
-  async function setLlmApiDefaultModel(model) {
-    var models = await invoke("set_llmapi_default_model", {
-      model: model || "",
-    });
-    state.llmApiModels = models || null;
-    await loadSettings();
-    await loadModels();
-    notify();
-    return models;
-  }
-
-  function ensureLlmApiBinding() {
-    return invoke("ensure_llmapi_binding");
-  }
-
-  async function loginLlmApiUser(username, password) {
-    var result = await invoke("login_llmapi_user", {
-      username: username || "",
-      password: password || "",
-    });
-    await getLlmApiStatus();
-    try { await getLlmApiModels(); } catch (e) { console.warn("refresh llmapi models after login failed", e); }
-    return result;
-  }
-
-  function saveLlmApiUserSession(userId, accessToken) {
-    return invoke("save_llmapi_user_session", {
-      userId: userId || "",
-      accessToken: accessToken || "",
-    });
-  }
-
-  function retryLlmApiProvisioning(pinvouUserId, deviceBindingId) {
-    return invoke("retry_llmapi_provisioning", {
-      pinvouUserId: pinvouUserId,
-      deviceBindingId: deviceBindingId,
-    });
-  }
-
-  function setLlmApiUserEnabled(pinvouUserId, enabled) {
-    return invoke("set_llmapi_user_enabled", {
-      pinvouUserId: pinvouUserId,
-      enabled: !!enabled,
-    });
-  }
-
-  function getLlmApiAdminOverview(query, status, limit, offset) {
-    return invoke("get_llmapi_admin_overview", {
-      query: query || null,
-      status: status || null,
-      limit: limit == null ? null : limit,
-      offset: offset == null ? null : offset,
-    });
-  }
-
   async function loadSettings() {
     try {
       state.settings = await invoke("get_settings");
@@ -2242,13 +2190,18 @@
     notify();
   }
   async function saveSettings(prefs) {
-    state.settings = prefs;
+    const previous = state.settings;
     try {
       await invoke("update_settings", { prefs: prefs });
+      state.settings = prefs;
+      notify();
+      return true;
     } catch (e) {
       console.warn("save settings failed", e);
+      state.settings = previous;
+      notify();
+      return false;
     }
-    notify();
   }
   async function saveSettingsAndRestart(prefs) {
     state.settings = prefs;
@@ -2258,6 +2211,100 @@
       console.warn("save settings and restart failed", e);
     }
   }
+
+  async function refreshLlmApiState(options) {
+    options = options || {};
+    var refreshModels = options.refreshModels !== false;
+    var refreshSavedModels = !!options.refreshSavedModels;
+    var status = null;
+    var models = null;
+    try {
+      status = await invoke("get_llmapi_status");
+      state.llmApiStatus = status;
+    } catch (e) {
+      console.warn("get llmapi status failed", e);
+      state.llmApiStatus = null;
+      notify();
+      throw e;
+    }
+    if (refreshModels && status && status.backend_user_exists) {
+      try {
+        models = await invoke("get_llmapi_models");
+        state.llmApiModels = models;
+      } catch (e) {
+        console.warn("get llmapi models failed", e);
+        state.llmApiModels = null;
+        notify();
+        throw e;
+      }
+    } else if (!status || !status.backend_user_exists) {
+      state.llmApiModels = null;
+    }
+    if (refreshSavedModels) await loadModels();
+    notify();
+    return { status: status, models: models };
+  }
+
+  async function getLlmApiStatus() {
+    var result = await refreshLlmApiState({ refreshModels: false });
+    return result.status;
+  }
+
+  async function getLlmApiModels() {
+    var models = await invoke("get_llmapi_models");
+    state.llmApiModels = models;
+    notify();
+    return models;
+  }
+
+  async function setLlmApiDefaultModel(model) {
+    var models = await invoke("set_llmapi_default_model", { model: model });
+    state.llmApiModels = models;
+    await loadSettings();
+    await loadModels();
+    notify();
+    return models;
+  }
+
+  async function ensureLlmApiBinding() {
+    var result = await invoke("ensure_llmapi_binding");
+    await refreshLlmApiState({ refreshSavedModels: true });
+    return result;
+  }
+
+  async function loginLlmApiUser(username, password) {
+    var result = await invoke("login_llmapi_user", { username: username, password: password });
+    await refreshLlmApiState({ refreshSavedModels: true });
+    return result;
+  }
+
+  async function saveLlmApiUserSession(userId, accessToken) {
+    var result = await invoke("save_llmapi_user_session", { userId: userId, accessToken: accessToken });
+    await refreshLlmApiState({ refreshSavedModels: true });
+    return result;
+  }
+
+  async function retryLlmApiProvisioning(pinvouUserId, deviceBindingId) {
+    var result = await invoke("retry_llmapi_provisioning", { pinvouUserId: pinvouUserId, deviceBindingId: deviceBindingId });
+    await refreshLlmApiState({ refreshSavedModels: true });
+    return result;
+  }
+
+  async function setLlmApiUserEnabled(pinvouUserId, enabled) {
+    var result = await invoke("set_llmapi_user_enabled", { pinvouUserId: pinvouUserId, enabled: enabled });
+    await refreshLlmApiState({ refreshSavedModels: true });
+    return result;
+  }
+
+  async function getLlmApiAdminOverview(query, status, limit, offset) {
+    return await invoke("get_llmapi_admin_overview", {
+      query: query || null,
+      status: status || null,
+      limit: limit == null ? null : limit,
+      offset: offset == null ? null : offset,
+    });
+  }
+
   async function submitFeedback(request) {
     return await invoke("submit_feedback", { request: request });
   }
@@ -2412,6 +2459,272 @@
   function runOnSession(sid, fn) { runSyncOnSession(sid || state.activeSessionId, fn); }
   function addSystemItemFor(sid, text) { runOnSession(sid, function () { addSystemItem(text); }); }
   function patchItemByIdFor(sid, id, patch) { runOnSession(sid, function () { patchItemById(id, patch); }); }
+
+  function memoryWriteLabel(event) {
+    var text = event && event.text || "";
+    if (!text) return "记忆已更新";
+    return text;
+  }
+  function memoryWriteStatusLabel(event) {
+    var action = event && event.action || "";
+    if (action === "confirmed" || action === "remembered") return "记忆已更新";
+    if (action === "archived") return "记忆已归档";
+    if (action === "deleted") return "记忆已删除";
+    return "记忆已更新";
+  }
+  function normalizeMemoryCandidateText(text) {
+    return String(text || "").replace(/\s+/g, " ").trim().toLowerCase();
+  }
+  function handleMemoryWrite(payload) {
+    var sid = payload && payload.session_id || state.activeSessionId;
+    var events = payload && Array.isArray(payload.events) ? payload.events : [];
+    if (!sid || !events.length) return;
+    runOnSession(sid, function () {
+      events.forEach(function (event) {
+        if (!event) return;
+        if (event.action === "pending") {
+          var label = memoryWriteLabel(event);
+          var labelKey = normalizeMemoryCandidateText(label);
+          var existing = state.chatItems.find(function (it) {
+            return it.type === "memory_candidate" && !it.resolved && (
+              (event.id && it.memoryId === event.id) ||
+              (labelKey && normalizeMemoryCandidateText(it.text) === labelKey)
+            );
+          });
+          if (existing) {
+            existing.memoryId = event.id || existing.memoryId;
+            existing.kind = event.kind || existing.kind || "preference";
+            existing.text = label;
+            existing.time = timeStr();
+            return;
+          }
+          addChatItem({
+            type: "memory_candidate",
+            memoryId: event.id,
+            kind: event.kind || "preference",
+            text: label,
+            time: timeStr(),
+            resolved: false,
+          });
+          return;
+        }
+        var label = memoryWriteLabel(event);
+        var labelKey = normalizeMemoryCandidateText(label);
+        var existing = state.chatItems.find(function (it) {
+          return it.type === "memory_candidate" && (
+            (event.id && it.memoryId === event.id) ||
+            (labelKey && normalizeMemoryCandidateText(it.text) === labelKey)
+          );
+        });
+        if (existing) {
+          if (event.action === "ignored" || event.action === "never") {
+            state.chatItems = state.chatItems.filter(function (it) { return it !== existing; });
+            return;
+          }
+          existing.resolved = true;
+          existing.statusLabel = event.action === "ignored" ? "已忽略"
+            : event.action === "never" ? "不再提示"
+            : event.action === "archived" ? "已归档"
+            : event.action === "deleted" ? "已删除"
+            : "已记住";
+          existing.kind = event.kind || existing.kind || "preference";
+          existing.text = label;
+          existing.time = timeStr();
+          return;
+        }
+        if (event.action === "ignored" || event.action === "never") {
+          return;
+        }
+        addChatItem({
+          type: "memory_notice",
+          memoryId: event.id,
+          kind: event.kind || "preference",
+          text: label,
+          statusLabel: memoryWriteStatusLabel(event),
+          time: timeStr(),
+        });
+      });
+      notify();
+    });
+    if (invoke) {
+      setTimeout(function () {
+        loadMemoryOverview({ rehydratePending: true });
+      }, 0);
+    }
+  }
+
+  function applyMemoryOverview(overview) {
+    state.memory = {
+      loading: false,
+      error: null,
+      profile: overview && overview.profile || null,
+      preferences: overview && Array.isArray(overview.preferences) ? overview.preferences : [],
+      work_context: overview && Array.isArray(overview.work_context) ? overview.work_context : [],
+      current_focus: overview && Array.isArray(overview.current_focus) ? overview.current_focus : [],
+      recent_activity: overview && Array.isArray(overview.recent_activity) ? overview.recent_activity : [],
+      recent_work: overview && Array.isArray(overview.recent_work) ? overview.recent_work : [],
+      pending: overview && Array.isArray(overview.pending) ? overview.pending : [],
+      never: overview && Array.isArray(overview.never) ? overview.never : [],
+      runtime: overview && overview.runtime || null,
+      snapshot_path: overview && overview.snapshot_path || "",
+    };
+  }
+  function upsertPendingMemoryCandidate(item) {
+    if (!item || item.status !== "pending_confirm") return;
+    var label = item.content || item.text || "";
+    if (!label) return;
+    var labelKey = normalizeMemoryCandidateText(label);
+    var existing = state.chatItems.find(function (it) {
+      return it.type === "memory_candidate" && !it.resolved && (
+        (item.id && it.memoryId === item.id) ||
+        (labelKey && normalizeMemoryCandidateText(it.text) === labelKey)
+      );
+    });
+    if (existing) {
+      existing.memoryId = item.id || existing.memoryId;
+      existing.kind = item.kind || existing.kind || "preference";
+      existing.text = label;
+      return;
+    }
+    addChatItem({
+      type: "memory_candidate",
+      memoryId: item.id,
+      kind: item.kind || "preference",
+      text: label,
+      time: timeStr(),
+      resolved: false,
+    });
+  }
+  function rehydratePendingMemoryCandidates(overview) {
+    var pending = overview && Array.isArray(overview.pending) ? overview.pending : [];
+    pending.forEach(upsertPendingMemoryCandidate);
+  }
+  async function loadMemoryOverview(options) {
+    if (!invoke) return null;
+    options = options || {};
+    state.memory = Object.assign({}, state.memory, { loading: true, error: null });
+    notify();
+    try {
+      var overview = await invoke("get_memory_overview", { sessionId: state.activeSessionId });
+      applyMemoryOverview(overview);
+      if (options.rehydratePending) rehydratePendingMemoryCandidates(overview);
+      notify();
+      return overview;
+    } catch (e) {
+      state.memory = Object.assign({}, state.memory, { loading: false, error: String(e) });
+      notify();
+      return null;
+    }
+  }
+  async function saveMemoryProfilePatch(patch) {
+    if (!invoke) return null;
+    try {
+      await invoke("update_memory_profile", { patch: patch || {}, sessionId: state.activeSessionId });
+      return await loadMemoryOverview();
+    } catch (e) {
+      state.memory = Object.assign({}, state.memory, { error: String(e) });
+      notify();
+      throw e;
+    }
+  }
+  async function deleteMemoryPreference(id) {
+    if (!id || !invoke) return false;
+    try {
+      var res = await invoke("delete_memory_preference", { id: id, sessionId: state.activeSessionId });
+      await loadMemoryOverview();
+      return !!(res && res.value);
+    } catch (e) {
+      state.memory = Object.assign({}, state.memory, { error: String(e) });
+      notify();
+      throw e;
+    }
+  }
+  async function updateMemoryItem(kind, id, patch) {
+    if (!id || !invoke) return null;
+    try {
+      var command = kind === "preference" ? "update_memory_preference"
+        : kind === "work_context" ? "update_work_context_memory"
+        : (kind === "current_focus" || kind === "recent_activity") ? "update_timed_memory"
+        : null;
+      if (!command) return null;
+      var args = { id: id, patch: patch || {}, sessionId: state.activeSessionId };
+      if (command === "update_timed_memory") args.kind = kind;
+      var res = await invoke(command, args);
+      await loadMemoryOverview();
+      return res && res.value;
+    } catch (e) {
+      state.memory = Object.assign({}, state.memory, { error: String(e) });
+      notify();
+      throw e;
+    }
+  }
+  async function deleteMemoryItem(kind, id) {
+    if (!id || !invoke) return false;
+    try {
+      var command = kind === "preference" ? "delete_memory_preference"
+        : kind === "work_context" ? "delete_work_context_memory"
+        : (kind === "current_focus" || kind === "recent_activity") ? "delete_timed_memory"
+        : null;
+      if (!command) return false;
+      var args = { id: id, sessionId: state.activeSessionId };
+      if (command === "delete_timed_memory") args.kind = kind;
+      var res = await invoke(command, args);
+      await loadMemoryOverview();
+      return !!(res && res.value);
+    } catch (e) {
+      state.memory = Object.assign({}, state.memory, { error: String(e) });
+      notify();
+      throw e;
+    }
+  }
+  async function archiveRecentWorkMemory(id) {
+    if (!id || !invoke) return false;
+    try {
+      var res = await invoke("archive_recent_work_memory", { id: id, sessionId: state.activeSessionId });
+      await loadMemoryOverview();
+      return !!(res && res.value);
+    } catch (e) {
+      state.memory = Object.assign({}, state.memory, { error: String(e) });
+      notify();
+      throw e;
+    }
+  }
+  async function confirmMemoryCandidate(memoryId, chatItemId) {
+    if (!memoryId) return;
+    var sid = state.activeSessionId;
+    try {
+      await invoke("confirm_pending_memory", { id: memoryId, sessionId: sid });
+      if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: "已记住" });
+      await loadMemoryOverview();
+      notify();
+    } catch (e) {
+      addSystemItem("记忆写入失败：" + e);
+    }
+  }
+  async function ignoreMemoryCandidate(memoryId, chatItemId) {
+    if (!memoryId) return;
+    var sid = state.activeSessionId;
+    try {
+      await invoke("ignore_pending_memory", { id: memoryId, sessionId: sid });
+      if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: "已忽略" });
+      await loadMemoryOverview();
+      notify();
+    } catch (e) {
+      addSystemItem("忽略记忆失败：" + e);
+    }
+  }
+  async function neverMemoryCandidate(memoryId, chatItemId) {
+    if (!memoryId) return;
+    var sid = state.activeSessionId;
+    try {
+      await invoke("never_pending_memory", { id: memoryId, reason: "user_selected", sessionId: sid });
+      if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: "不再提示" });
+      await loadMemoryOverview();
+      notify();
+    } catch (e) {
+      addSystemItem("设置不再提示失败：" + e);
+    }
+  }
   // ── 思考指示器状态（每次阶段切换重置计时）──────────────────────
   function startThinking() { state.thinking = { active: true, phase: "thinking", toolName: "", startedAt: Date.now() }; }
   function thinkingTool(name) { state.thinking = { active: true, phase: "tool", toolName: name || "", startedAt: Date.now() }; }
@@ -2545,6 +2858,7 @@
   function readArtifactThumbnail(path) { return invoke("read_artifact_thumbnail", { path: path }).catch(function () { return null; }); }
   function renderArtifactVisual(path) { return invoke("render_artifact_visual", { path: path }); }
   function openContainingFolder(path) { return invoke("open_containing_folder", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
+  function revealSessionFolder(sessionId) { return invoke("reveal_session_folder", { sessionId: sessionId }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   function openInSystem(path) { return invoke("open_in_system", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   // 仅放白名单 URL (metaso.cn / open.bochaai.com),后端 open_external_url 强制校验。
   function openExternalUrl(url) { return invoke("open_external_url", { url: url }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
@@ -2891,15 +3205,6 @@
     } catch (e) { /* 静默 */ }
   }
   // 设置页手动检查: 错误和「已是最新」都要反馈。
-  function formatUpdateCheckError(error) {
-    var message = String(error || '').trim();
-    var match = message.match(/^(.*?)(?:[:：]\s*)?code=\d+\s+msg=(.*)$/i);
-    if (!match) return message;
-    var prefix = String(match[1] || '').trim().replace(/[:：]\s*$/, '');
-    var detail = String(match[2] || '').trim();
-    if (prefix && detail) return prefix + '\uFF0C' + detail;
-    return detail || prefix || message;
-  }
   async function checkForUpdate() {
     state.updateChecking = true; state.updateCheckError = null; notify();
     try {
@@ -2908,14 +3213,16 @@
       state.updateInfo = info;
       if (!info.available) state.updateCheckError = "latest"; // 前端按 i18n 显示「已是最新」
     } catch (e) {
-      state.updateCheckError = formatUpdateCheckError(e);
+      state.updateCheckError = String(e);
     }
     state.updateChecking = false; notify();
   }
-  // 下载+安装一条龙: Linux 下载 deb 后 pkexec apt;Windows 下载 zip 后解析 MSI,
-  // 安装器启动成功后后端退出当前进程。
+  // 下载+安装一条龙: Linux 下载 deb 后 pkexec apt 并自动重启;Windows 下载 zip 后解析 MSI,
+  // 安装器启动成功后后端退出当前进程。返回 true 表示安装链路已成功走完。
   async function downloadAndInstallUpdate() {
-    if (!state.updateInfo || !state.updateInfo.available || state.updateDownloading) return;
+    if (!state.updateInfo || !state.updateInfo.available || state.updateDownloading) return false;
+    var shouldRestartAfterInstall = state.updateInfo.platform === "linux";
+    var installed = false;
     state.updateDownloading = true; state.updateCancelling = false;
     state.updateProgress = 0; state.updateError = null; notify();
     try {
@@ -2927,12 +3234,15 @@
         await invoke("install_update", { debPath: downloadResult });
       }
       state.updateReady = true;
+      installed = true;
     } catch (e) {
       // 用户主动取消下载时后端返回「已取消下载」,当正常处理不弹错误
       if (state.updateCancelling) state.updateProgress = 0;
       else state.updateError = String(e);
     }
     state.updateDownloading = false; state.updateCancelling = false; notify();
+    if (installed && shouldRestartAfterInstall) restartApp();
+    return installed;
   }
   // 取消进行中的下载: 置前端标志 + 通知后端中断下载循环。仅下载阶段有效;
   // 已进入 install(pkexec/apt)则无效(系统接管,装一半不能停)。
@@ -3200,21 +3510,12 @@
       state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, patch);
       notify();
     } catch (e) {
-      var message = String(e && e.message ? e.message : e);
-      var cancelled = message.indexOf("已取消") >= 0 || message.toLowerCase().indexOf("cancel") >= 0;
-      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, {
-        installing: false,
-        progress: cancelled ? { stage: "cancelled" } : { stage: "failed" },
-        error: cancelled ? null : message
-      });
+      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { installing: false, error: String(e) });
       notify();
     }
   }
 
   function closeVoiceAsrSetup() {
-    if (state.voiceAsrSetup.installing) {
-      invoke("cancel_voice_asr").catch(function () { });
-    }
     state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { open: false });
     notify();
   }
@@ -3254,6 +3555,8 @@
     // 首次/缺组件：先检测本地语音识别依赖，缺则弹安装框、不进录音。
     try {
       var asrStatus = await invoke("voice_asr_status");
+      // VoiceAsrStatus 只有 engine/ffmpeg/model/ready/missing,无 installable 字段。
+      // 未装好即弹安装引导;平台 gating 若要做,需先给后端补 installable(当前无此需求)。
       if (asrStatus && !asrStatus.ready) {
         state.voiceAsrSetup = { open: true, status: asrStatus, installing: false, progress: null, error: null };
         notify();
@@ -3533,12 +3836,15 @@
 
   // ── Init ─────────────────────────────────────────────────────────
   async function init() {
+    if (initPromise) return initPromise;
+    initPromise = (async function () {
+    startMonitorPolling(); // 先预热运行状态数据，不被设置/历史加载阻塞。
     await loadSettings();
     await loadEffectiveModelConfig();
     await loadAppVersion();
     await loadModels();
     getLlmApiStatus()
-      .then(function () { return getLlmApiModels(); })
+      .then(function (status) { return status && status.backend_user_exists ? getLlmApiModels() : null; })
       .then(loadModels)
       .catch(function (e) { console.warn("load llmapi account/models failed", e); });
     await refreshHistoryList();
@@ -3551,6 +3857,8 @@
     checkForUpdateSilently(); // fire-and-forget,不阻塞启动
     await resumeWorkflowOnBoot(); // [2026-06-06] 有进行中的工作流 run 就自动挂回看板
     notify();
+    })();
+    return initPromise;
   }
 
   // ── Expose API ───────────────────────────────────────────────────

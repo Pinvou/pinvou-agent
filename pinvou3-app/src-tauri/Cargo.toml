@@ -41,6 +41,7 @@ tauri = { version = "2.11.1", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2.4.2"
+tauri-plugin-notification = "2"
 
 # 异步 / 错误
 anyhow = "1.0"

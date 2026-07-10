@@ -63,6 +63,10 @@ impl Language {
         }
     }
 
+    pub fn supports_memory(self) -> bool {
+        matches!(self, Language::ZhHans)
+    }
+
     /// present_artifact 的 `title` 该用什么语言(instructions.md 的 {{PINVOU3_TITLE_LANG}})。
     /// 原文写死"中文 title",英文 UI 下模型走到调 present_artifact 就生成中文标题、并把后续
     /// 描述/总结也带回中文(tool-call 现场的具体指令压过通用语言规则)→ 改成跟 locale。
@@ -414,6 +418,22 @@ pub struct AdvancedPrefs {
     pub local_vllm_setup_declined: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotificationPrefs {
+    pub enabled: bool,
+    pub task_completed: bool,
+}
+
+impl Default for NotificationPrefs {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            task_completed: true,
+        }
+    }
+}
+
 /// 用户偏好。`settings.json` 顶层结构。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -421,7 +441,9 @@ pub struct UserPrefs {
     pub theme: Theme,
     pub color_scheme: ColorScheme,
     pub language: Language,
+    pub memory_enabled: bool,
     pub search: SearchPrefs,
+    pub notifications: NotificationPrefs,
     pub advanced: AdvancedPrefs,
 }
 
@@ -439,9 +461,10 @@ impl UserPrefs {
         prefs.migrate_models();
         prefs.ensure_builtin_llmapi_model();
         let migration = prefs.migrate_plaintext_api_keys_with_store(&SystemCredentialStore::new());
-        if migration.settings_sanitized {
+        let memory_policy_changed = prefs.enforce_memory_locale_policy();
+        if migration.settings_sanitized || memory_policy_changed {
             if let Err(e) = prefs.save() {
-                eprintln!("[pinvou3-app] settings credential migration save failed: {e:?}");
+                eprintln!("[pinvou3-app] settings normalization save failed: {e:?}");
             }
         }
         prefs.sanitize_plaintext_api_keys();
@@ -455,9 +478,19 @@ impl UserPrefs {
         }
         let mut normalized = self.clone();
         normalized.search.normalize();
+        normalized.enforce_memory_locale_policy();
         normalized.sanitize_plaintext_api_keys();
         let s = serde_json::to_string_pretty(&normalized).expect("UserPrefs serialize");
         std::fs::write(path, s)
+    }
+
+    fn enforce_memory_locale_policy(&mut self) -> bool {
+        if !self.language.supports_memory() && self.memory_enabled {
+            self.memory_enabled = false;
+            true
+        } else {
+            false
+        }
     }
 
     /// 迁移:旧版只有 `model_preset`+`custom_*` 单组配置 → 合成一条 `SavedModel`
@@ -1003,7 +1036,9 @@ mod tests {
             theme: Theme::LiquidDark,
             color_scheme: ColorScheme::Dark,
             language: Language::En,
+            memory_enabled: false,
             search: SearchPrefs::default(),
+            notifications: NotificationPrefs::default(),
             advanced: AdvancedPrefs {
                 allow_shell: Some(false),
                 max_output_tokens: Some(8192),
@@ -1027,7 +1062,21 @@ mod tests {
         assert_eq!(prefs.theme, Theme::Genesis);
         assert_eq!(prefs.color_scheme, ColorScheme::System);
         assert_eq!(prefs.language, Language::ZhHans);
+        assert!(prefs.notifications.enabled);
+        assert!(prefs.notifications.task_completed);
         assert!(prefs.advanced.allow_shell.is_none());
+    }
+
+    #[test]
+    fn notification_prefs_default_enabled() {
+        let prefs = UserPrefs::default();
+        assert!(prefs.notifications.enabled);
+        assert!(prefs.notifications.task_completed);
+
+        let json = r#"{"notifications":{"task_completed":false}}"#;
+        let parsed: UserPrefs = serde_json::from_str(json).unwrap();
+        assert!(parsed.notifications.enabled);
+        assert!(!parsed.notifications.task_completed);
     }
 
     #[test]
@@ -1045,6 +1094,37 @@ mod tests {
         assert_eq!(Language::ZhHans.locale_tag(), "zh-Hans");
         assert_eq!(Language::En.locale_tag(), "en");
         assert_eq!(Language::Ja.locale_tag(), "ja");
+    }
+
+    #[test]
+    fn memory_is_only_available_for_zh_hans() {
+        assert!(Language::ZhHans.supports_memory());
+        assert!(!Language::En.supports_memory());
+        assert!(!Language::Ja.supports_memory());
+
+        let mut english = UserPrefs {
+            language: Language::En,
+            memory_enabled: true,
+            ..Default::default()
+        };
+        assert!(english.enforce_memory_locale_policy());
+        assert!(!english.memory_enabled);
+
+        let mut japanese = UserPrefs {
+            language: Language::Ja,
+            memory_enabled: true,
+            ..Default::default()
+        };
+        assert!(japanese.enforce_memory_locale_policy());
+        assert!(!japanese.memory_enabled);
+
+        let mut chinese = UserPrefs {
+            language: Language::ZhHans,
+            memory_enabled: true,
+            ..Default::default()
+        };
+        assert!(!chinese.enforce_memory_locale_policy());
+        assert!(chinese.memory_enabled);
     }
 
     #[test]

@@ -6,9 +6,13 @@
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
+    "dev:ui": "tauri dev",
+    "serve:src": "node src-tauri/scripts/serve-src.mjs",
     "build": "tauri build",
     "prebuild:nsis": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-windows-runtimes.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/clean-nsis-staging.ps1",
-    "build:nsis": "tauri build --features dev-tools --bundles nsis"
+    "build:nsis": "tauri build --features dev-tools --bundles nsis",
+    "test:update-notice": "node tests/update_notice_logic.test.js",
+    "test": "npm run test:update-notice"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0"
