@@ -1462,16 +1462,11 @@ pub struct BackendStatus {
 pub async fn get_backend_status(
     _monitor: State<'_, MonitorState>,
 ) -> Result<BackendStatus, String> {
-    // Lightweight: 只 probe vLLM,不跑 nvidia-smi / RAM 采样
-    let vllm = crate::monitor::vllm_snapshot(
-        &crate::monitor::vllm_base_url(),
-        crate::monitor::vllm_configured_model(),
-    )
-    .await;
-    let vllm_online = matches!(
-        vllm.as_ref().map(|v| v.status),
-        Some(VllmStatus::Ready) | Some(VllmStatus::Busy)
-    );
+    // Lightweight: 只 probe 当前 active model,不跑 nvidia-smi / RAM 采样。
+    let vllm = crate::monitor::active_model_snapshot().await;
+    let vllm_online = vllm.as_ref().is_some_and(|v| {
+        v.health_status == "verified" && matches!(v.status, VllmStatus::Ready | VllmStatus::Busy)
+    });
     let max_model_len = vllm.as_ref().and_then(|v| v.max_model_len);
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1559,12 +1554,15 @@ pub async fn create_session(
 #[tauri::command]
 pub async fn load_session(
     id: String,
+    set_active: Option<bool>,
     store: State<'_, SessionStore>,
 ) -> Result<SavedSession, String> {
     let session = store
         .load(&id)
         .map_err(|e| format!("load_session({id}): {e:?}"))?;
-    store.set_active(Some(id.clone()));
+    if set_active.unwrap_or(true) {
+        store.set_active(Some(id.clone()));
+    }
     // 多 session 并发:切换不再 SyncSession 替换全局引擎(那是旧单引擎模型)。该 session
     // 有自己独立的 engine(已起则持有自己的上下文、还在跑就继续跑;未起则下次 chat 时
     // lazy spawn 并注水这里返回的 messages)。本命令只切 active 指针 + 返回 messages 给前端渲染。
@@ -1763,6 +1761,530 @@ pub async fn set_disabled_connectors(
 #[tauri::command]
 pub async fn get_disabled_connectors() -> Result<Vec<String>, String> {
     Ok(crate::bridge::marketplace::load_disabled_connectors())
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryProfileState {
+    pub profile: crate::memory::MemoryProfile,
+    pub runtime: Option<crate::memory::RuntimeMemorySnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryWriteState<T> {
+    pub value: T,
+    pub runtime: Option<crate::memory::RuntimeMemorySnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryOverviewState {
+    pub profile: crate::memory::MemoryProfile,
+    pub preferences: Vec<crate::memory::PreferenceFile>,
+    pub work_context: Vec<crate::memory::WorkContextFile>,
+    pub current_focus: Vec<crate::memory::TimedMemoryItem>,
+    pub recent_activity: Vec<crate::memory::TimedMemoryItem>,
+    pub recent_work: Vec<crate::memory::RecentWorkItem>,
+    pub pending: Vec<crate::memory::PendingMemoryItem>,
+    pub never: Vec<crate::memory::NeverMemoryItem>,
+    pub runtime: Option<crate::memory::RuntimeMemorySnapshot>,
+    pub snapshot_path: String,
+}
+
+fn resolve_memory_session_id(session_id: Option<String>, store: &SessionStore) -> Option<String> {
+    session_id.or_else(|| store.active_id())
+}
+
+fn emit_memory_write_events(
+    app: &AppHandle,
+    session_id: &str,
+    events: &[crate::memory::MemoryWriteEvent],
+) {
+    if events.is_empty() {
+        return;
+    }
+    let _ = app.emit(
+        "chat:memory_write",
+        serde_json::json!({
+            "session_id": session_id,
+            "events": events,
+        }),
+    );
+}
+
+fn emit_memory_snapshot(
+    app: &AppHandle,
+    session_id: &str,
+    snapshot: &crate::memory::RuntimeMemorySnapshot,
+) {
+    let _ = app.emit(
+        "chat:memory",
+        serde_json::json!({
+            "session_id": session_id,
+            "items": &snapshot.items,
+            "runtime_path": &snapshot.runtime_path,
+        }),
+    );
+}
+
+fn refresh_memory_runtime_for_command(
+    session_id: Option<String>,
+    store: &SessionStore,
+    app: &AppHandle,
+) -> Result<Option<crate::memory::RuntimeMemorySnapshot>, String> {
+    match resolve_memory_session_id(session_id, store) {
+        Some(sid) => {
+            let snapshot = crate::memory::runtime_snapshot(&sid)
+                .map_err(|e| format!("render runtime memory: {e}"))?;
+            emit_memory_snapshot(app, &sid, &snapshot);
+            Ok(Some(snapshot))
+        }
+        None => Ok(None),
+    }
+}
+
+#[tauri::command]
+pub async fn get_memory_profile(
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+) -> Result<MemoryProfileState, String> {
+    let profile = crate::memory::load_profile().map_err(|e| format!("load profile: {e}"))?;
+    let runtime = match resolve_memory_session_id(session_id, &store) {
+        Some(sid) => Some(
+            crate::memory::runtime_snapshot(&sid)
+                .map_err(|e| format!("render runtime memory: {e}"))?,
+        ),
+        None => None,
+    };
+    Ok(MemoryProfileState { profile, runtime })
+}
+
+#[tauri::command]
+pub async fn update_memory_profile(
+    patch: crate::memory::ProfilePatch,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryProfileState, String> {
+    let profile =
+        crate::memory::update_profile(patch).map_err(|e| format!("update profile: {e}"))?;
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryProfileState { profile, runtime })
+}
+
+#[tauri::command]
+pub async fn clear_memory_profile(
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryProfileState, String> {
+    let profile = crate::memory::clear_profile().map_err(|e| format!("clear profile: {e}"))?;
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryProfileState { profile, runtime })
+}
+
+#[tauri::command]
+pub async fn get_memory_overview(
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+) -> Result<MemoryOverviewState, String> {
+    let profile = crate::memory::load_profile().map_err(|e| format!("load profile: {e}"))?;
+    let preferences =
+        crate::memory::list_preferences().map_err(|e| format!("load preferences: {e}"))?;
+    let work_context =
+        crate::memory::load_work_context().map_err(|e| format!("load work context: {e}"))?;
+    let current_focus =
+        crate::memory::load_current_focus().map_err(|e| format!("load current focus: {e}"))?;
+    let recent_activity =
+        crate::memory::load_recent_activity().map_err(|e| format!("load recent activity: {e}"))?;
+    let recent_work =
+        crate::memory::load_recent_work().map_err(|e| format!("load recent work: {e}"))?;
+    let pending =
+        crate::memory::load_pending_memory().map_err(|e| format!("load pending memory: {e}"))?;
+    let never =
+        crate::memory::load_never_memory().map_err(|e| format!("load never memory: {e}"))?;
+    let runtime = match resolve_memory_session_id(session_id, &store) {
+        Some(sid) => Some(
+            crate::memory::runtime_snapshot(&sid)
+                .map_err(|e| format!("render runtime memory: {e}"))?,
+        ),
+        None => None,
+    };
+    let snapshot_path = crate::memory::write_memory_snapshot_document(
+        &profile,
+        &preferences,
+        &work_context,
+        &current_focus,
+        &recent_activity,
+        &recent_work,
+        &pending,
+        &never,
+        runtime.as_ref(),
+    )
+    .map_err(|e| format!("write memory snapshot: {e}"))?
+    .display()
+    .to_string();
+    Ok(MemoryOverviewState {
+        profile,
+        preferences,
+        work_context,
+        current_focus,
+        recent_activity,
+        recent_work,
+        pending,
+        never,
+        runtime,
+        snapshot_path,
+    })
+}
+
+#[tauri::command]
+pub async fn list_pending_memory() -> Result<Vec<crate::memory::PendingMemoryItem>, String> {
+    crate::memory::load_pending_memory().map_err(|e| format!("load pending memory: {e}"))
+}
+
+#[tauri::command]
+pub async fn suggest_memory(
+    suggestion: crate::memory::MemorySuggestion,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<crate::memory::PendingMemoryItem>, String> {
+    let item = crate::memory::enqueue_memory_candidate(suggestion)
+        .map_err(|e| format!("suggest memory: {e}"))?;
+    if let Some(sid) = resolve_memory_session_id(session_id.clone(), &store) {
+        emit_memory_write_events(
+            &app,
+            &sid,
+            &[crate::memory::MemoryWriteEvent {
+                kind: item.kind.clone(),
+                action: "pending".to_string(),
+                id: item.id.clone(),
+                text: item.content.clone(),
+            }],
+        );
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: item,
+        runtime,
+    })
+}
+
+#[tauri::command]
+pub async fn confirm_pending_memory(
+    id: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<Option<crate::memory::MemoryWriteEvent>>, String> {
+    let event = crate::memory::confirm_pending_memory(&id)
+        .map_err(|e| format!("confirm pending memory: {e}"))?;
+    if let (Some(sid), Some(event)) = (
+        resolve_memory_session_id(session_id.clone(), &store),
+        event.as_ref(),
+    ) {
+        emit_memory_write_events(&app, &sid, std::slice::from_ref(event));
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: event,
+        runtime,
+    })
+}
+
+#[tauri::command]
+pub async fn ignore_pending_memory(
+    id: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<Option<crate::memory::MemoryWriteEvent>>, String> {
+    let event = crate::memory::ignore_pending_memory(&id)
+        .map_err(|e| format!("ignore pending memory: {e}"))?;
+    if let (Some(sid), Some(event)) = (
+        resolve_memory_session_id(session_id.clone(), &store),
+        event.as_ref(),
+    ) {
+        emit_memory_write_events(&app, &sid, std::slice::from_ref(event));
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: event,
+        runtime,
+    })
+}
+
+#[tauri::command]
+pub async fn never_pending_memory(
+    id: String,
+    reason: Option<String>,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<Option<crate::memory::MemoryWriteEvent>>, String> {
+    let event = crate::memory::never_pending_memory(&id, reason)
+        .map_err(|e| format!("never pending memory: {e}"))?;
+    if let (Some(sid), Some(event)) = (
+        resolve_memory_session_id(session_id.clone(), &store),
+        event.as_ref(),
+    ) {
+        emit_memory_write_events(&app, &sid, std::slice::from_ref(event));
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: event,
+        runtime,
+    })
+}
+
+#[tauri::command]
+pub async fn list_recent_work_memory() -> Result<Vec<crate::memory::RecentWorkItem>, String> {
+    crate::memory::load_recent_work().map_err(|e| format!("load recent work memory: {e}"))
+}
+
+#[tauri::command]
+pub async fn upsert_recent_work_memory(
+    patch: crate::memory::RecentWorkPatch,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<crate::memory::RecentWorkItem>, String> {
+    let item =
+        crate::memory::upsert_recent_work(patch).map_err(|e| format!("upsert recent work: {e}"))?;
+    if let Some(sid) = resolve_memory_session_id(session_id.clone(), &store) {
+        emit_memory_write_events(
+            &app,
+            &sid,
+            &[crate::memory::MemoryWriteEvent {
+                kind: "recent_work".to_string(),
+                action: "remembered".to_string(),
+                id: item.id.clone(),
+                text: item.title.clone(),
+            }],
+        );
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: item,
+        runtime,
+    })
+}
+
+#[tauri::command]
+pub async fn archive_recent_work_memory(
+    id: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<bool>, String> {
+    let changed =
+        crate::memory::archive_recent_work(&id).map_err(|e| format!("archive recent work: {e}"))?;
+    if changed {
+        if let Some(sid) = resolve_memory_session_id(session_id.clone(), &store) {
+            emit_memory_write_events(
+                &app,
+                &sid,
+                &[crate::memory::MemoryWriteEvent {
+                    kind: "recent_work".to_string(),
+                    action: "archived".to_string(),
+                    id,
+                    text: "近期工作已归档".to_string(),
+                }],
+            );
+        }
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: changed,
+        runtime,
+    })
+}
+
+#[tauri::command]
+pub async fn delete_memory_preference(
+    id: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<bool>, String> {
+    let changed =
+        crate::memory::delete_preference(&id).map_err(|e| format!("delete preference: {e}"))?;
+    if changed {
+        if let Some(sid) = resolve_memory_session_id(session_id.clone(), &store) {
+            emit_memory_write_events(
+                &app,
+                &sid,
+                &[crate::memory::MemoryWriteEvent {
+                    kind: "preference".to_string(),
+                    action: "deleted".to_string(),
+                    id,
+                    text: "偏好已删除".to_string(),
+                }],
+            );
+        }
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: changed,
+        runtime,
+    })
+}
+
+#[tauri::command]
+pub async fn update_memory_preference(
+    id: String,
+    patch: crate::memory::MemoryTextPatch,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<Option<crate::memory::PreferenceFile>>, String> {
+    let item = crate::memory::update_preference(&id, patch)
+        .map_err(|e| format!("update preference: {e}"))?;
+    if let (Some(sid), Some(item)) = (
+        resolve_memory_session_id(session_id.clone(), &store),
+        item.as_ref(),
+    ) {
+        emit_memory_write_events(
+            &app,
+            &sid,
+            &[crate::memory::MemoryWriteEvent {
+                kind: "preference".to_string(),
+                action: "remembered".to_string(),
+                id: item.id.clone(),
+                text: item.text.clone(),
+            }],
+        );
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: item,
+        runtime,
+    })
+}
+
+#[tauri::command]
+pub async fn update_work_context_memory(
+    id: String,
+    patch: crate::memory::MemoryTextPatch,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<Option<crate::memory::WorkContextFile>>, String> {
+    let item = crate::memory::update_work_context(&id, patch)
+        .map_err(|e| format!("update work context: {e}"))?;
+    if let (Some(sid), Some(item)) = (
+        resolve_memory_session_id(session_id.clone(), &store),
+        item.as_ref(),
+    ) {
+        emit_memory_write_events(
+            &app,
+            &sid,
+            &[crate::memory::MemoryWriteEvent {
+                kind: "work_context".to_string(),
+                action: "remembered".to_string(),
+                id: item.id.clone(),
+                text: item.text.clone(),
+            }],
+        );
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: item,
+        runtime,
+    })
+}
+
+#[tauri::command]
+pub async fn delete_work_context_memory(
+    id: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<bool>, String> {
+    let changed =
+        crate::memory::delete_work_context(&id).map_err(|e| format!("delete work context: {e}"))?;
+    if changed {
+        if let Some(sid) = resolve_memory_session_id(session_id.clone(), &store) {
+            emit_memory_write_events(
+                &app,
+                &sid,
+                &[crate::memory::MemoryWriteEvent {
+                    kind: "work_context".to_string(),
+                    action: "deleted".to_string(),
+                    id,
+                    text: "工作背景已删除".to_string(),
+                }],
+            );
+        }
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: changed,
+        runtime,
+    })
+}
+
+#[tauri::command]
+pub async fn update_timed_memory(
+    kind: String,
+    id: String,
+    patch: crate::memory::MemoryTextPatch,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<Option<crate::memory::TimedMemoryItem>>, String> {
+    let item = crate::memory::update_timed_memory(&kind, &id, patch)
+        .map_err(|e| format!("update timed memory: {e}"))?;
+    if let (Some(sid), Some(item)) = (
+        resolve_memory_session_id(session_id.clone(), &store),
+        item.as_ref(),
+    ) {
+        emit_memory_write_events(
+            &app,
+            &sid,
+            &[crate::memory::MemoryWriteEvent {
+                kind: item.kind.clone(),
+                action: "remembered".to_string(),
+                id: item.id.clone(),
+                text: item.text.clone(),
+            }],
+        );
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: item,
+        runtime,
+    })
+}
+
+#[tauri::command]
+pub async fn delete_timed_memory(
+    kind: String,
+    id: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<MemoryWriteState<bool>, String> {
+    let changed = crate::memory::delete_timed_memory(&kind, &id)
+        .map_err(|e| format!("delete timed memory: {e}"))?;
+    if changed {
+        if let Some(sid) = resolve_memory_session_id(session_id.clone(), &store) {
+            emit_memory_write_events(
+                &app,
+                &sid,
+                &[crate::memory::MemoryWriteEvent {
+                    kind,
+                    action: "deleted".to_string(),
+                    id,
+                    text: "记忆已删除".to_string(),
+                }],
+            );
+        }
+    }
+    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    Ok(MemoryWriteState {
+        value: changed,
+        runtime,
+    })
 }
 
 /// 编辑/重发最后一轮 user 消息。
@@ -2558,6 +3080,65 @@ fn shell_open(arg: &str) -> Result<(), String> {
 }
 
 /// 系统没有演示文稿默认打开方式时，使用 LibreOffice 作为显式兜底。
+fn valid_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+#[cfg(target_os = "windows")]
+fn reveal_path_in_file_manager(target: &std::path::Path) -> Result<(), String> {
+    let target = strip_verbatim(target);
+    std::process::Command::new("explorer")
+        .arg(format!("/select,{target}"))
+        .spawn()
+        .map_err(|e| format!("explorer select failed: {e}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn reveal_path_in_file_manager(target: &std::path::Path) -> Result<(), String> {
+    let target = strip_verbatim(target);
+    std::process::Command::new("open")
+        .args(["-R", &target])
+        .spawn()
+        .map_err(|e| format!("open -R failed: {e}"))?;
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn reveal_path_in_file_manager(target: &std::path::Path) -> Result<(), String> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| format!("no parent dir for {}", target.display()))?;
+
+    if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some() {
+        if let Ok(url) = tauri::Url::from_directory_path(target) {
+            let uri = url.to_string();
+            let items_arg = format!("array:string:{uri}");
+            if let Ok(output) = std::process::Command::new("dbus-send")
+                .args([
+                    "--session",
+                    "--dest=org.freedesktop.FileManager1",
+                    "--type=method_call",
+                    "/org/freedesktop/FileManager1",
+                    "org.freedesktop.FileManager1.ShowItems",
+                    &items_arg,
+                    "string:",
+                ])
+                .output()
+            {
+                if output.status.success() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    shell_open(&strip_verbatim(parent))
+}
+
 fn open_with_libreoffice(path: &std::path::Path) -> Result<(), String> {
     let program = crate::os::libreoffice_tool_path();
     let program_text = program.to_string_lossy().to_string();
@@ -2771,6 +3352,26 @@ pub async fn open_containing_folder(
         .parent()
         .ok_or_else(|| format!("no parent dir for {}", p.display()))?;
     shell_open(&strip_verbatim(dir))
+}
+
+/// 在文件管理器里定位 session 文件夹。对标 WorkBuddy:打开所有任务文件夹的上级目录,
+/// 并尽可能选中当前任务文件夹；Linux 文件管理器不支持选中时退回打开 sessions 根目录。
+#[tauri::command]
+pub async fn reveal_session_folder(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    if !valid_session_id(&session_id) {
+        return Err("invalid session id".into());
+    }
+    store
+        .load(&session_id)
+        .map_err(|e| format!("load_session({session_id}): {e:?}"))?;
+    let dir = crate::bridge::paths::sessions_root().join(&session_id);
+    if !dir.is_dir() {
+        return Err(format!("session folder not found: {}", dir.display()));
+    }
+    reveal_path_in_file_manager(&dir)
 }
 
 /// 在 Tauri 新窗口里加载 HTML 产物。绕过 snap 浏览器对 `~/.xxx/` 隐藏目录的沙箱限制。

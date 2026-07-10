@@ -495,10 +495,9 @@ fn spawn_event_forwarder(
                         m.on_message_delta(&session_id, content.chars().count());
                     }
                     crate::memory::append_turn_assistant(&session_id, &content);
-                    let _ = app.emit(
-                        "chat:delta",
-                        json!({ "session_id": session_id, "text": content }),
-                    );
+                    let payload = json!({ "session_id": session_id, "text": content });
+                    let _ = app.emit("chat:delta", payload.clone());
+                    crate::remote_control::forward_app_event(&app, "chat:delta", payload);
                 }
                 Event::ThinkingDelta { .. } => {
                     // Qwen3 已用 reasoning_effort=off 关 thinking，丢这段
@@ -508,10 +507,10 @@ fn spawn_event_forwarder(
                         m.on_tool(&session_id); // 本轮有工具 → 收尾跳过 TTFT/TPS(D2)
                     }
                     crate::memory::record_turn_tool_start(&session_id, &name, &input);
-                    let _ = app.emit(
-                        "chat:tool_start",
-                        json!({ "session_id": session_id, "id": id, "name": name, "args": input }),
-                    );
+                    let payload =
+                        json!({ "session_id": session_id, "id": id, "name": name, "args": input });
+                    let _ = app.emit("chat:tool_start", payload.clone());
+                    crate::remote_control::forward_app_event(&app, "chat:tool_start", payload);
                 }
                 Event::ToolCallComplete { id, name, result } => {
                     // 携带 metadata 让前端识别 careful hook 拦截 (safety_level=="dangerous")
@@ -548,38 +547,43 @@ fn spawn_event_forwarder(
                             (None, tracker.last_todos_snapshot.clone())
                         };
                         drop(tracker);
-                        let _ = app.emit(
+                        let payload = json!({
+                            "session_id": session_id,
+                            "plan_snapshot": plan_emit,
+                            "todos_snapshot": todos_emit,
+                        });
+                        let _ = app.emit("chat:plan_snapshot", payload.clone());
+                        crate::remote_control::forward_app_event(
+                            &app,
                             "chat:plan_snapshot",
-                            json!({
-                                "session_id": session_id,
-                                "plan_snapshot": plan_emit,
-                                "todos_snapshot": todos_emit,
-                            }),
+                            payload,
                         );
                     }
-                    let _ = app.emit(
-                        "chat:tool_end",
-                        json!({
-                            "session_id": session_id,
-                            "id": id,
-                            "name": name,
-                            "output": output,
-                            "success": success,
-                            "metadata": metadata,
-                        }),
-                    );
+                    let payload = json!({
+                        "session_id": session_id,
+                        "id": id,
+                        "name": name,
+                        "output": output,
+                        "success": success,
+                        "metadata": metadata,
+                    });
+                    let _ = app.emit("chat:tool_end", payload.clone());
+                    crate::remote_control::forward_app_event(&app, "chat:tool_end", payload);
                 }
                 Event::UserInputRequired { id, request } => {
                     // 底座 emit 这个事件后会 block 在 await_user_input，等 submit_user_input
                     // 或 cancel_user_input。前端渲染选择气泡 → 用户点选 →
                     // invoke('submit_user_input', toolCallId, answers) 解锁。
-                    let _ = app.emit(
+                    let payload = json!({
+                        "session_id": session_id,
+                        "id": id,
+                        "questions": request.questions,
+                    });
+                    let _ = app.emit("chat:user_input_required", payload.clone());
+                    crate::remote_control::forward_app_event(
+                        &app,
                         "chat:user_input_required",
-                        json!({
-                            "session_id": session_id,
-                            "id": id,
-                            "questions": request.questions,
-                        }),
+                        payload,
                     );
                 }
                 Event::ApprovalRequired { id, tool_name, .. } => {
@@ -926,14 +930,13 @@ fn spawn_event_forwarder(
                     ..
                 } => {
                     // 单独发 usage 给前端 token 进度条
-                    let _ = app.emit(
-                        "chat:usage",
-                        json!({
-                            "session_id": session_id,
-                            "input_tokens": usage.input_tokens,
-                            "output_tokens": usage.output_tokens,
-                        }),
-                    );
+                    let payload = json!({
+                        "session_id": session_id,
+                        "input_tokens": usage.input_tokens,
+                        "output_tokens": usage.output_tokens,
+                    });
+                    let _ = app.emit("chat:usage", payload.clone());
+                    crate::remote_control::forward_app_event(&app, "chat:usage", payload);
                     // app 侧自测:用精确 usage 收尾本轮。部分远端模型会流式返回文本,
                     // 但最终 usage.output_tokens 为 0,因此不能用 output_tokens 门控收尾。
                     if let Some(m) = &self_metrics {
@@ -968,13 +971,16 @@ fn spawn_event_forwarder(
                         // (已砍 PlanPhase),mode 留 Plan 直到用户 accept/discard 切 Yolo。
                         // 修订(还在 Plan 时再调 update_plan)天然幂等:再弹一张新卡。
                         if plan_used && state.mode == SerializableMode::Plan {
-                            let _ = app.emit(
+                            let payload = json!({
+                                "session_id": active_id.clone(),
+                                "plan_snapshot": plan_snapshot.clone(),
+                                "todos_snapshot": todos_snapshot.clone(),
+                            });
+                            let _ = app.emit("chat:plan_ready", payload.clone());
+                            crate::remote_control::forward_app_event(
+                                &app,
                                 "chat:plan_ready",
-                                json!({
-                                    "session_id": active_id.clone(),
-                                    "plan_snapshot": plan_snapshot.clone(),
-                                    "todos_snapshot": todos_snapshot.clone(),
-                                }),
+                                payload,
                             );
                         }
 
@@ -1097,18 +1103,17 @@ fn spawn_event_forwarder(
                         status,
                         error.as_deref(),
                     );
-                    let _ = app.emit(
-                        "chat:done",
-                        json!({ "session_id": session_id, "status": status_text, "error": error }),
-                    );
+                    let payload =
+                        json!({ "session_id": session_id, "status": status_text, "error": error });
+                    let _ = app.emit("chat:done", payload.clone());
+                    crate::remote_control::forward_app_event(&app, "chat:done", payload);
                 }
                 Event::CompactionStarted {
                     id, message, auto, ..
                 } => {
-                    let _ = app.emit(
-                        "chat:compaction",
-                        json!({ "session_id": session_id, "phase": "start", "id": id, "auto": auto, "message": message }),
-                    );
+                    let payload = json!({ "session_id": session_id, "phase": "start", "id": id, "auto": auto, "message": message });
+                    let _ = app.emit("chat:compaction", payload.clone());
+                    crate::remote_control::forward_app_event(&app, "chat:compaction", payload);
                 }
                 Event::CompactionCompleted {
                     id,
@@ -1118,24 +1123,22 @@ fn spawn_event_forwarder(
                     messages_after,
                     ..
                 } => {
-                    let _ = app.emit(
-                        "chat:compaction",
-                        json!({
-                            "session_id": session_id,
-                            "phase": "done",
-                            "id": id,
-                            "auto": auto,
-                            "message": message,
-                            "messages_before": messages_before,
-                            "messages_after": messages_after,
-                        }),
-                    );
+                    let payload = json!({
+                        "session_id": session_id,
+                        "phase": "done",
+                        "id": id,
+                        "auto": auto,
+                        "message": message,
+                        "messages_before": messages_before,
+                        "messages_after": messages_after,
+                    });
+                    let _ = app.emit("chat:compaction", payload.clone());
+                    crate::remote_control::forward_app_event(&app, "chat:compaction", payload);
                 }
                 Event::CompactionFailed { message, auto, .. } => {
-                    let _ = app.emit(
-                        "chat:compaction",
-                        json!({ "session_id": session_id, "phase": "fail", "auto": auto, "message": message }),
-                    );
+                    let payload = json!({ "session_id": session_id, "phase": "fail", "auto": auto, "message": message });
+                    let _ = app.emit("chat:compaction", payload.clone());
+                    crate::remote_control::forward_app_event(&app, "chat:compaction", payload);
                 }
                 Event::Error { envelope, .. } => {
                     // 可恢复错误(如 SSE idle timeout、瞬态工具失败)turn 不会结束——
@@ -1144,16 +1147,19 @@ fn spawn_event_forwarder(
                     // (且会误触发 flush/closeBubble/plan_phase 收尾)。只飘个 advisory。
                     // 仅 recoverable==false(致命)才是真结束 → chat:done。
                     if envelope.recoverable {
-                        let _ = app.emit(
+                        let payload =
+                            json!({ "session_id": session_id, "error": envelope.message });
+                        let _ = app.emit("chat:transient_error", payload.clone());
+                        crate::remote_control::forward_app_event(
+                            &app,
                             "chat:transient_error",
-                            json!({ "session_id": session_id, "error": envelope.message }),
+                            payload,
                         );
                     } else {
                         crate::timing::finish_turn(&session_id, "error", Some(&envelope.message));
-                        let _ = app.emit(
-                            "chat:done",
-                            json!({ "session_id": session_id, "status": "error", "error": envelope.message }),
-                        );
+                        let payload = json!({ "session_id": session_id, "status": "error", "error": envelope.message });
+                        let _ = app.emit("chat:done", payload.clone());
+                        crate::remote_control::forward_app_event(&app, "chat:done", payload);
                         // [C2] harness_phase 已删。工作流绑定(active_skill)的 session 遇
                         // 致命错误(SubAgent 派发失败 / 内部 fatal)→ 可能收不到 AgentComplete
                         // = 死锁。兜底:emit blocked 通知前端,让用户看到中断可重开(宁可多

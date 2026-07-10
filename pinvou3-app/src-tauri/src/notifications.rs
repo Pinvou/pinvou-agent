@@ -104,7 +104,7 @@ mod tests {
         with_temp_pinvou3_home("settings-switch", |root| {
             let settings = root.join("settings.json");
 
-            assert!(task_completion_enabled());
+            assert_eq!(task_completion_enabled(), !cfg!(target_os = "linux"));
 
             std::fs::write(
                 &settings,

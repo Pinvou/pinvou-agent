@@ -1504,6 +1504,11 @@ mod tests {
     /// 谁改 derive_compaction_threshold 或 max_output_tokens 导致倒置都会被这条挡下。
     #[test]
     fn forkguard_compaction_threshold_below_emergency_all_windows() {
+        // 生产由 Bridge::boot → wire_max_output_tokens_env 固定为 24576；本测试会被
+        // fork-guard 单独筛选运行，不能依赖其他测试先执行后遗留的 process-global env。
+        let previous_output_cap = std::env::var_os("DEEPSEEK_MAX_OUTPUT_TOKENS");
+        std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576");
+
         // 把 T 从 should_compact 的 raw 子集尺 → emergency 的 conservative 全量尺
         const K_NUM: usize = 3; // ÷ K_DEN == ×1.5
         const K_DEN: usize = 2;
@@ -1556,6 +1561,11 @@ mod tests {
             b.probed_context_tokens = Some(w);
             let t = b.build_engine_config().compaction.token_threshold; // 不得 panic
             assert_eq!(t, 4_096, "极端小窗口 W={w} 应 clamp 到 floor 4096,实得 {t}");
+        }
+
+        match previous_output_cap {
+            Some(value) => std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", value),
+            None => std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS"),
         }
     }
 
