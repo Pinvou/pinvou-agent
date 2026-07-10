@@ -1,5 +1,5 @@
 use std::collections::{HashSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -15,12 +15,14 @@ use super::relay_client::{self, RelayInbound, RelayOutbound, RelaySender};
 use super::snapshot;
 use crate::bridge::mode_state::SerializableMode;
 use crate::bridge::prefs::{SavedModel, UserPrefs};
-use crate::bridge::sessions::SessionStore;
+use crate::bridge::{paths, sessions::SessionStore};
 use crate::connector_cli;
 use crate::engine_pool::EnginePool;
 
 const DEFAULT_TTL_SECS: i64 = 600;
 const PREVIEW_LIMIT_BYTES: usize = 256 * 1024;
+const DEFAULT_PUBLIC_BASE_URL: &str = "https://www.ma-xiao.com/pinvou3/remote";
+const DEFAULT_RELAY_WS_URL: &str = "wss://www.ma-xiao.com/pinvou3/remote/ws";
 
 #[derive(Clone)]
 pub struct RemoteControlManager {
@@ -96,10 +98,8 @@ impl RemoteControlManager {
         pool: EnginePool,
     ) -> Result<RemotePairingInfo, String> {
         self.stop_current();
-        let relay_ws_url = std::env::var("PINVOU_REMOTE_RELAY_WS_URL")
-            .unwrap_or_else(|_| "ws://127.0.0.1:8787/ws".to_string());
-        let public_base = std::env::var("PINVOU_REMOTE_PUBLIC_URL")
-            .unwrap_or_else(|_| "http://127.0.0.1:8787".to_string());
+        let relay_ws_url = remote_relay_ws_url();
+        let public_base = remote_public_base_url();
         let room_id = format!("rc_{}", crate::remote_control::short_token(18));
         let pairing_token = crate::remote_control::short_token(32);
         let desktop_secret = crate::remote_control::short_token(32);
@@ -190,7 +190,11 @@ impl RemoteControlManager {
             RemoteControlStatus {
                 active: true,
                 room_id: Some(room.room_id.clone()),
-                session_id: Some(room.session_id.clone()),
+                session_id: if room.session_id.is_empty() {
+                    None
+                } else {
+                    Some(room.session_id.clone())
+                },
                 url: Some(room.url.clone()),
                 expires_at: Some(room.expires_at.clone()),
                 status: room.status,
@@ -205,8 +209,7 @@ impl RemoteControlManager {
                 url: None,
                 expires_at: None,
                 status: RemoteControlStatusKind::Idle,
-                relay_url: std::env::var("PINVOU_REMOTE_RELAY_WS_URL")
-                    .unwrap_or_else(|_| "ws://127.0.0.1:8787/ws".to_string()),
+                relay_url: remote_relay_ws_url(),
                 last_error: None,
             }
         }
@@ -298,6 +301,20 @@ impl RemoteControlManager {
                 return;
             }
         }
+        if active_session_id.is_empty()
+            && !matches!(
+                action.kind.as_str(),
+                "ping"
+                    | "request_snapshot"
+                    | "request_session_list"
+                    | "create_remote_session"
+                    | "switch_remote_session"
+                    | "disconnect"
+            )
+        {
+            self.send_error("session_required", "please select a session first");
+            return;
+        }
 
         let result = match action.kind.as_str() {
             "user_message" => {
@@ -365,7 +382,12 @@ impl RemoteControlManager {
                     Err(e) => Err(e),
                 }
             }
-            "request_snapshot" | "ping" => self.send_snapshot_with_live_request(store, &active_session_id),
+            "request_snapshot" | "ping" if active_session_id.is_empty() => {
+                self.send_session_list(store, "")
+            }
+            "request_snapshot" | "ping" => {
+                self.send_snapshot_with_live_request(store, &active_session_id)
+            }
             "request_session_list" => self.send_session_list(store, &active_session_id),
             "create_remote_session" => self.create_remote_session(store, pool),
             "switch_remote_session" => {
@@ -376,9 +398,14 @@ impl RemoteControlManager {
             }
             "request_artifacts" => self.send_artifact_list(store, &active_session_id),
             "request_artifact_preview" => {
-                match action.payload.get("artifact_id").and_then(|v| v.as_str()) {
-                    Some(id) => self.send_artifact_preview(store, &active_session_id, id),
-                    None => Err("missing artifact_id".to_string()),
+                if let Some(id) = action.payload.get("artifact_id").and_then(|v| v.as_str()) {
+                    self.send_artifact_preview(store, &active_session_id, id)
+                } else if let Some(path) =
+                    action.payload.get("artifact_path").and_then(|v| v.as_str())
+                {
+                    self.send_artifact_preview_by_path(&active_session_id, path)
+                } else {
+                    Err("missing artifact_id".to_string())
                 }
             }
             "request_chips" => self.send_chips_snapshot(store, &active_session_id),
@@ -509,7 +536,11 @@ impl RemoteControlManager {
                 })
             })
             .collect::<Vec<_>>();
-        let sessions = ensure_active_session_in_list(store, sessions, active_session_id);
+        let sessions = if active_session_id.is_empty() {
+            sessions
+        } else {
+            ensure_active_session_in_list(store, sessions, active_session_id)
+        };
         room.sender
             .send(RelayOutbound::Envelope(envelope(
                 &room.room_id,
@@ -686,6 +717,42 @@ impl RemoteControlManager {
             .map_err(|e| format!("send artifact preview: {e}"))
     }
 
+    pub fn send_artifact_preview_by_path(
+        &self,
+        session_id: &str,
+        artifact_path: &str,
+    ) -> Result<(), String> {
+        let room = {
+            let inner = self.inner.lock();
+            inner
+                .room
+                .as_ref()
+                .filter(|room| room.session_id == session_id)
+                .cloned()
+        }
+        .ok_or_else(|| "remote control not active".to_string())?;
+        let path = resolve_session_preview_path(session_id, artifact_path)?;
+        let metadata =
+            std::fs::metadata(&path).map_err(|e| format!("read artifact metadata: {e}"))?;
+        let preview = build_artifact_preview(&path)?;
+        room.sender
+            .send(RelayOutbound::Envelope(envelope(
+                &room.room_id,
+                &room.session_id,
+                "artifact_preview",
+                json!({
+                    "session_id": session_id,
+                    "artifact_id": Value::Null,
+                    "basename": path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
+                    "path_tail": tail_path(&path.to_string_lossy()),
+                    "kind": display_kind_for_path(&path),
+                    "byte_size": metadata.len(),
+                    "preview": preview,
+                }),
+            )))
+            .map_err(|e| format!("send artifact preview: {e}"))
+    }
+
     pub fn send_chips_snapshot(
         &self,
         store: &SessionStore,
@@ -820,6 +887,7 @@ impl RemoteControlManager {
                 return;
             };
             room.status = match status {
+                "connecting_relay" => RemoteControlStatusKind::ConnectingRelay,
                 "room_registered" => RemoteControlStatusKind::WaitingMobile,
                 "mobile_connected" => RemoteControlStatusKind::MobileConnected,
                 "mobile_disconnected" => RemoteControlStatusKind::MobileDisconnected,
@@ -870,6 +938,15 @@ fn model_chip(model: &SavedModel) -> Value {
     })
 }
 
+fn remote_public_base_url() -> String {
+    std::env::var("PINVOU_REMOTE_PUBLIC_URL")
+        .unwrap_or_else(|_| DEFAULT_PUBLIC_BASE_URL.to_string())
+}
+
+fn remote_relay_ws_url() -> String {
+    std::env::var("PINVOU_REMOTE_RELAY_WS_URL").unwrap_or_else(|_| DEFAULT_RELAY_WS_URL.to_string())
+}
+
 fn ensure_active_session_in_list(
     store: &SessionStore,
     mut sessions: Vec<Value>,
@@ -894,6 +971,84 @@ fn ensure_active_session_in_list(
         );
     }
     sessions
+}
+
+fn resolve_session_preview_path(session_id: &str, requested: &str) -> Result<PathBuf, String> {
+    let requested = requested.trim();
+    if requested.is_empty() {
+        return Err("missing artifact_path".to_string());
+    }
+    let workspace = paths::session_workspace_dir(session_id);
+    let artifacts = paths::session_artifacts_dir(session_id);
+    let workspace_root = workspace
+        .canonicalize()
+        .map_err(|e| format!("resolve session workspace: {e}"))?;
+    let artifacts_root = artifacts.canonicalize().ok();
+    let mut candidates = Vec::new();
+    let requested_path = Path::new(requested);
+    if requested_path.is_absolute() {
+        candidates.push(requested_path.to_path_buf());
+    } else {
+        candidates.push(workspace.join(requested));
+        candidates.push(artifacts.join(requested));
+        if let Some(tail) = path_after_segment(requested, "workspace") {
+            candidates.push(workspace.join(tail));
+        }
+        if let Some(tail) = path_after_segment(requested, "artifacts") {
+            candidates.push(artifacts.join(tail));
+        }
+    }
+    for candidate in candidates {
+        let Ok(canonical) = candidate.canonicalize() else {
+            continue;
+        };
+        if !canonical.is_file() {
+            continue;
+        }
+        if canonical.starts_with(&workspace_root)
+            || artifacts_root
+                .as_ref()
+                .is_some_and(|root| canonical.starts_with(root))
+        {
+            return Ok(canonical);
+        }
+    }
+    Err(format!(
+        "artifact path not found in current session: {requested}"
+    ))
+}
+
+fn path_after_segment(path: &str, segment: &str) -> Option<PathBuf> {
+    let normalized = path.replace('\\', "/");
+    let mut parts = normalized.split('/').filter(|part| !part.is_empty());
+    while let Some(part) = parts.next() {
+        if part == segment {
+            let tail = parts.collect::<Vec<_>>().join("/");
+            if !tail.is_empty() {
+                return Some(PathBuf::from(tail));
+            }
+            return None;
+        }
+    }
+    None
+}
+
+fn display_kind_for_path(path: &Path) -> String {
+    match path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "md" | "markdown" => "MD".to_string(),
+        "html" | "htm" => "HTML".to_string(),
+        "png" | "jpg" | "jpeg" | "webp" | "gif" | "svg" => "IMAGE".to_string(),
+        "csv" => "CSV".to_string(),
+        "json" => "JSON".to_string(),
+        other if !other.is_empty() => other.to_ascii_uppercase(),
+        _ => "FILE".to_string(),
+    }
 }
 
 fn build_artifact_preview(path: &Path) -> Result<Value, String> {

@@ -1214,6 +1214,7 @@
       const [personaEditor, setPersonaEditor] = useState(null); // 聊天里"存入卡牌池"草稿 → App 级编辑器
       const [savedConfirm, setSavedConfirm] = useState(null); // 存入成功 → iOS 确认窗 {name}
       const [poolMyOnly, setPoolMyOnly] = useState(false); // 跳卡池时是否直接落「我的卡牌」筛选(从确认窗"去查看"进来=true)
+      const [remoteOpen, setRemoteOpen] = useState(false);
 
       // ── 多窗口(撕离/tear-off):长按标签 → 浮起跟手 → 拖到目标屏 → 松手 → 该屏最大化打开 ──
       // dragAvatar = 被拎起的标签副本(跟随光标的 DOM 元素);null=没在拖。原生只判落点,视觉全在这。
@@ -1258,6 +1259,10 @@
       const t = dict[language];
       // 有可用新版 → 侧边栏设置图标亮红点（不弹窗不打断）
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
+
+      function handleOpenRemoteControl() {
+        setRemoteOpen(true);
+      }
 
       function handleActivateSkill(name) {
         setChatPrefill(t.skillPrefill(name));
@@ -1853,14 +1858,24 @@
             {/* Footer Profile */}
             <div className={`p-3 mt-auto flex ${isSidebarOpen ? 'flex-row items-center justify-between' : 'flex-col items-center gap-3 pb-6'}`}>
               {!isSidebarOpen && (
-                <button
-                  onClick={() => setCurrentView('settings')}
-                  title={t.settings}
-                  className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
-                >
-                  <Settings size={18} />
-                  {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
-                </button>
+                <>
+                  <button
+                    onClick={handleOpenRemoteControl}
+                    title="手机扫码连接"
+                    className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
+                  >
+                    <Smartphone size={18} />
+                    {bs && bs.remoteControl && bs.remoteControl.active && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
+                  </button>
+                  <button
+                    onClick={() => setCurrentView('settings')}
+                    title={t.settings}
+                    className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
+                  >
+                    <Settings size={18} />
+                    {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
+                  </button>
+                </>
               )}
               <button
                 onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: 'https://www.h3c.com/cn/pub/minisite/202606/MegaCube/megacube/index.html' })}
@@ -1873,14 +1888,24 @@
                 )}
               </button>
               {isSidebarOpen && (
-                <button
-                  onClick={() => setCurrentView('settings')}
-                  title={t.settings}
-                  className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
-                >
-                  <Settings size={18} />
-                  {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
-                </button>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={handleOpenRemoteControl}
+                    title="手机扫码连接"
+                    className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
+                  >
+                    <Smartphone size={18} />
+                    {bs && bs.remoteControl && bs.remoteControl.active && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
+                  </button>
+                  <button
+                    onClick={() => setCurrentView('settings')}
+                    title={t.settings}
+                    className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
+                  >
+                    <Settings size={18} />
+                    {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
+                  </button>
+                </div>
               )}
             </div>
           </div>
@@ -1941,6 +1966,10 @@
             )}
             {currentView === 'search' && <SearchView theme={activeTheme} history={chatHistory} t={t} onSelect={handleSwitchSession} />}
             {currentView === 'knowledge' && <KnowledgeView theme={activeTheme} t={t} />}
+
+            {remoteOpen && (
+              <RemoteControlModal theme={activeTheme} bs={bs} onClose={() => setRemoteOpen(false)} />
+            )}
 
             {/* App 级自创卡编辑器: 聊天里「存入卡牌池」草稿走这条 */}
             {personaEditor && (
@@ -4223,6 +4252,75 @@
       );
     };
 
+    const RemoteControlModal = ({ theme, bs, onClose }) => {
+      const isDark = theme === 'dark';
+      const remoteControl = (bs && bs.remoteControl) || {};
+      const remotePairing = remoteControl.pairing || remoteControl;
+      const remoteActive = !!remoteControl.active;
+      const remoteStatusText = {
+        idle: '未开启',
+        connecting_relay: '连接 relay',
+        waiting_mobile: '等待手机扫码',
+        mobile_connected: '手机已连接',
+        mobile_disconnected: '手机已断开',
+        expired: '已过期',
+        stopped: '已停止',
+        error: '连接异常',
+      }[remoteControl.status || 'idle'] || (remoteControl.status || '未开启');
+
+      useEffect(() => {
+        if (!remoteActive && bridge.available) {
+          bridge.startRemoteControl(null).catch(() => {});
+        }
+      }, []);
+
+      async function handleRefreshRemoteControl() {
+        if (!bridge.available) return;
+        try { await bridge.refreshRemoteControlQr(null); } catch (_) {}
+      }
+
+      async function handleStopRemoteControl() {
+        if (!bridge.available) return;
+        await bridge.stopRemoteControl();
+      }
+
+      return (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/45" onClick={onClose}>
+          <div onClick={e => e.stopPropagation()} className={`w-full max-w-[420px] rounded-[22px] shadow-2xl p-5 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div>
+                <div className="text-[17px] font-semibold">移动端远程控制</div>
+                <div className={`text-[12px] mt-1 ${isDark ? 'text-[#AEB4BC]' : 'text-[#5F6368]'}`}>{remoteStatusText}</div>
+              </div>
+              <button onClick={onClose} className={`w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}><X size={17} /></button>
+            </div>
+            {remotePairing && remotePairing.qr_data_url ? (
+              <div className="flex flex-col items-center">
+                <div className="p-3 rounded-[16px] bg-white">
+                  <img src={remotePairing.qr_data_url} alt="Remote control QR" className="w-[220px] h-[220px]" />
+                </div>
+                <div className={`mt-3 w-full text-[12px] leading-relaxed break-all px-3 py-2 rounded-xl ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-[#F1F3F4] text-[#3C4043]'}`}>{remotePairing.url || remoteControl.url}</div>
+              </div>
+            ) : (
+              <div className={`text-[13px] px-3 py-4 rounded-xl ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-[#F1F3F4] text-[#3C4043]'}`}>
+                {remoteControl.starting ? '正在生成二维码...' : '当前会话还未开启远程控制。'}
+              </div>
+            )}
+            {remoteControl.last_error && <div className="mt-3 text-[12px] text-[#EA4335] break-all">{remoteControl.last_error}</div>}
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button onClick={() => navigator.clipboard && navigator.clipboard.writeText(remotePairing.url || remoteControl.url || '')}
+                disabled={!(remotePairing.url || remoteControl.url)}
+                className={`px-3.5 py-2 rounded-full text-[13px] ${isDark ? 'bg-white/10 hover:bg-white/15 disabled:opacity-40' : 'bg-black/5 hover:bg-black/10 disabled:opacity-40'}`}>复制链接</button>
+              <button onClick={handleRefreshRemoteControl}
+                className={`px-3.5 py-2 rounded-full text-[13px] ${isDark ? 'bg-white/10 hover:bg-white/15' : 'bg-black/5 hover:bg-black/10'}`}>刷新二维码</button>
+              <button onClick={handleStopRemoteControl}
+                className="px-3.5 py-2 rounded-full text-[13px] bg-[#C5221F] text-white hover:bg-[#A50E0E]">停止</button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
     // 输入框底栏:工具菜单(只展示已装工具 + 跳工具商店;无会话级开关——后端无此概念)。
     // 产物 HTML 预览：测内容自然尺寸，比面板宽就整体等比缩小铺满（只缩不放）。
     // 治"固定尺寸 banner 在窄预览面板里溢出、出滚动条、只露一角"。响应式整页缩放比≈1、不受影响。
@@ -5442,7 +5540,6 @@
       const isDark = theme === 'dark';
       const [inputText, setInputText] = useState('');
       const [artifactsOpen, setArtifactsOpen] = useState(false);
-      const [remoteOpen, setRemoteOpen] = useState(false);
       // ── 产物分栏:宽屏(≥900)并排可拖、窄屏回退覆盖抽屉 ──
       const ART_MIN = 360, ART_MAX_RATIO = 0.65, ART_DEFAULT_RATIO = 0.45, ART_NARROW = 900;
       const rootRef = useRef(null);
@@ -5620,19 +5717,6 @@
       const canSend = hasDraftText || hasReadyAttachment;
       const canClearInput = hasDraftText && !voiceActive;
       const voiceAsrSetup = (bs && bs.voiceAsrSetup) || { open: false };
-      const remoteControl = (bs && bs.remoteControl) || {};
-      const remotePairing = remoteControl.pairing || remoteControl;
-      const remoteActive = !!remoteControl.active;
-      const remoteStatusText = {
-        idle: '未开启',
-        connecting_relay: '连接 relay',
-        waiting_mobile: '等待手机扫码',
-        mobile_connected: '手机已连接',
-        mobile_disconnected: '手机已断开',
-        expired: '已过期',
-        stopped: '已停止',
-        error: '连接异常',
-      }[remoteControl.status || 'idle'] || (remoteControl.status || '未开启');
       useEffect(() => {
         const sessionKey = `${activeSessionId || 'draft'}:${draftEpoch}`;
         if (justInstalledTool) {
@@ -5686,23 +5770,6 @@
         setInputText('');
       }
 
-      async function handleOpenRemoteControl() {
-        setRemoteOpen(true);
-        if (!remoteActive && bridge.available) {
-          try { await bridge.startRemoteControl(bs && bs.activeSessionId); } catch (_) {}
-        }
-      }
-
-      async function handleRefreshRemoteControl() {
-        if (!bridge.available) return;
-        try { await bridge.refreshRemoteControlQr(remoteControl.session_id || (bs && bs.activeSessionId)); } catch (_) {}
-      }
-
-      async function handleStopRemoteControl() {
-        if (!bridge.available) return;
-        await bridge.stopRemoteControl();
-      }
-
       function handleVoiceCancel() {
         if (bridge.available) bridge.cancelVoiceInput();
       }
@@ -5738,17 +5805,6 @@
             <div className="flex items-center gap-2" />
             <div className="flex items-center gap-2">
               <button
-                onClick={handleOpenRemoteControl}
-                disabled={!bs || (!remoteActive && !bs.activeSessionId) || remoteControl.starting}
-                title={remoteActive ? `手机远控：${remoteStatusText}` : '手机扫码连接'}
-                className={`pointer-events-auto w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
-                  remoteActive
-                    ? (isDark ? 'bg-[#173B2F] text-[#A8F0C6] hover:bg-[#1F4A3B]' : 'bg-[#E6F4EA] text-[#137333] hover:bg-[#D7ECD8]')
-                    : (isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537] disabled:opacity-50' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm disabled:opacity-50')
-                }`}>
-                <Smartphone size={18} />
-              </button>
-              <button
                 onClick={() => setArtifactsOpen(true)}
                 className={`pointer-events-auto px-4 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm'}`}>
                 <Package size={16} /> {t.artifacts}
@@ -5756,42 +5812,6 @@
               </button>
             </div>
           </div>
-
-          {remoteOpen && (
-            <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/45" onClick={() => setRemoteOpen(false)}>
-              <div onClick={e => e.stopPropagation()} className={`w-full max-w-[420px] rounded-[22px] shadow-2xl p-5 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
-                <div className="flex items-start justify-between gap-3 mb-4">
-                  <div>
-                    <div className="text-[17px] font-semibold">移动端远程控制</div>
-                    <div className={`text-[12px] mt-1 ${isDark ? 'text-[#AEB4BC]' : 'text-[#5F6368]'}`}>{remoteStatusText}</div>
-                  </div>
-                  <button onClick={() => setRemoteOpen(false)} className={`w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}><X size={17} /></button>
-                </div>
-                {remotePairing && remotePairing.qr_data_url ? (
-                  <div className="flex flex-col items-center">
-                    <div className="p-3 rounded-[16px] bg-white">
-                      <img src={remotePairing.qr_data_url} alt="Remote control QR" className="w-[220px] h-[220px]" />
-                    </div>
-                    <div className={`mt-3 w-full text-[12px] leading-relaxed break-all px-3 py-2 rounded-xl ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-[#F1F3F4] text-[#3C4043]'}`}>{remotePairing.url || remoteControl.url}</div>
-                  </div>
-                ) : (
-                  <div className={`text-[13px] px-3 py-4 rounded-xl ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-[#F1F3F4] text-[#3C4043]'}`}>
-                    {remoteControl.starting ? '正在生成二维码…' : '当前会话还未开启远程控制。'}
-                  </div>
-                )}
-                {remoteControl.last_error && <div className="mt-3 text-[12px] text-[#EA4335] break-all">{remoteControl.last_error}</div>}
-                <div className="mt-4 flex items-center justify-end gap-2">
-                  <button onClick={() => navigator.clipboard && navigator.clipboard.writeText(remotePairing.url || remoteControl.url || '')}
-                    disabled={!(remotePairing.url || remoteControl.url)}
-                    className={`px-3.5 py-2 rounded-full text-[13px] ${isDark ? 'bg-white/10 hover:bg-white/15 disabled:opacity-40' : 'bg-black/5 hover:bg-black/10 disabled:opacity-40'}`}>复制链接</button>
-                  <button onClick={handleRefreshRemoteControl}
-                    className={`px-3.5 py-2 rounded-full text-[13px] ${isDark ? 'bg-white/10 hover:bg-white/15' : 'bg-black/5 hover:bg-black/10'}`}>刷新二维码</button>
-                  <button onClick={handleStopRemoteControl}
-                    className="px-3.5 py-2 rounded-full text-[13px] bg-[#C5221F] text-white hover:bg-[#A50E0E]">停止</button>
-                </div>
-              </div>
-            </div>
-          )}
 
 
           {/* Main Chat Area */}

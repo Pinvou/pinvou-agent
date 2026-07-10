@@ -19,9 +19,10 @@
       --green: #66c58c;
       --danger: #ff6f6f;
       --shadow: 0 8px 22px rgba(0,0,0,.20);
+      --app-height: 100vh;
     }
     * { box-sizing: border-box; }
-    html, body { margin: 0; min-height: 100%; font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); }
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); }
     body { display: flex; justify-content: center; background: radial-gradient(circle at 50% -10%, rgba(36,136,255,.10), transparent 32%), var(--bg); }
     body.light {
       --bg: #f3f5f7;
@@ -35,9 +36,9 @@
       background: #f3f5f7;
       color: var(--text);
     }
-    .app { width: min(100%, 460px); min-height: 100dvh; position: relative; display: flex; flex-direction: column; overflow: hidden; background: rgba(12,15,18,.95); border-left: 1px solid rgba(255,255,255,.03); border-right: 1px solid rgba(255,255,255,.03); }
+    .app { width: min(100%, 460px); height: var(--app-height); min-height: 0; position: relative; display: flex; flex-direction: column; overflow: hidden; background: rgba(12,15,18,.95); border-left: 1px solid rgba(255,255,255,.03); border-right: 1px solid rgba(255,255,255,.03); }
     body.light .app { background: #f3f5f7; border-color: rgba(22,30,38,.06); }
-    header { position: sticky; top: 0; z-index: 20; padding: max(8px, env(safe-area-inset-top)) 12px 7px; background: linear-gradient(to bottom, rgba(12,15,18,.98), rgba(12,15,18,.92)); backdrop-filter: blur(18px); border-bottom: 1px solid var(--line); }
+    header { position: relative; flex: 0 0 auto; z-index: 20; padding: max(8px, env(safe-area-inset-top)) 12px 7px; background: linear-gradient(to bottom, rgba(12,15,18,.98), rgba(12,15,18,.92)); backdrop-filter: blur(18px); border-bottom: 1px solid var(--line); }
     .title { display: flex; align-items: center; gap: 8px; }
     .session-title { flex: 1; min-width: 0; height: 40px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 12px; border: 1px solid var(--line); border-radius: 15px; background: var(--panel); color: var(--text); text-align: left; box-shadow: inset 0 1px 0 rgba(255,255,255,.02); }
     .session-title h1 { margin: 0; font-size: 15px; font-weight: 700; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; letter-spacing: 0; }
@@ -55,7 +56,7 @@
     .menu button { width: 100%; padding: 11px 12px; border-radius: 10px; background: transparent; color: var(--text); text-align: left; font-size: 14px; display: flex; align-items: center; gap: 9px; }
     .menu button svg { width: 16px; height: 16px; stroke: currentColor; }
     .menu button:active { background: rgba(255,255,255,.05); }
-    main { flex: 1; overflow-y: auto; padding: 18px 16px 132px; scroll-behavior: smooth; }
+    main { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 18px 16px 132px; scroll-behavior: smooth; }
     .empty { margin: 20vh auto 0; max-width: 280px; color: var(--muted); text-align: center; line-height: 1.6; }
     .msg { width: 100%; margin: 0 0 18px; padding: 0 2px; line-height: 1.68; font-size: 16px; white-space: normal; overflow-wrap: anywhere; color: #edf0f3; }
     .msg.user { display: flex; justify-content: flex-end; padding-left: 48px; color: #fff; font-weight: 500; }
@@ -111,6 +112,9 @@
     button.danger { background: #c5221f; }
     button.ghost { background: var(--panel-2); color: var(--text); }
     footer { position: fixed; left: 50%; right: auto; bottom: 0; width: min(100%, 460px); transform: translateX(-50%); padding: 8px 12px calc(9px + env(safe-area-inset-bottom)); background: linear-gradient(to top, rgba(12,15,18,1) 75%, rgba(12,15,18,.88)); backdrop-filter: blur(18px); border-top: 1px solid var(--line); z-index: 15; }
+    .jump-bottom { position: fixed; left: calc(50% + min(50vw, 230px) - 62px); bottom: calc(104px + env(safe-area-inset-bottom)); z-index: 18; width: 42px; height: 42px; padding: 0; border-radius: 999px; display: grid; place-items: center; background: var(--panel); color: var(--text); border: 1px solid var(--line); box-shadow: 0 10px 26px rgba(0,0,0,.28); opacity: 1; transform: translateY(0) scale(1); transition: opacity .16s ease, transform .16s ease; }
+    .jump-bottom.hidden { opacity: 0; pointer-events: none; transform: translateY(8px) scale(.96); }
+    .jump-bottom svg { width: 18px; height: 18px; stroke: currentColor; }
     .chipbar { display: flex; gap: 7px; overflow-x: auto; padding-bottom: 7px; scrollbar-width: none; }
     .chipbar::-webkit-scrollbar { display: none; }
     .chip { flex: 0 0 auto; min-height: 30px; padding: 6px 10px; border-radius: 11px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font-size: 12px; white-space: nowrap; display: inline-flex; align-items: center; gap: 7px; }
@@ -145,15 +149,42 @@
     .sheet-mark { flex: 0 0 auto; font-size: 11px; color: #a7c4ff; background: rgba(92,132,255,.12); padding: 6px 8px; border-radius: 999px; }
     .preview-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 12px; }
     .preview-body.html-preview { padding: 0; overflow: hidden; background: #fff; touch-action: auto; }
+    .preview-body.markdown-preview { padding: 18px 18px 24px; background: #12161a; color: #e6ebf1; }
     .preview pre { margin: 0; min-height: 100%; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #dfe4ea; }
+    .md-doc { font-size: 15px; line-height: 1.72; color: inherit; overflow-wrap: anywhere; }
+    .md-doc h1, .md-doc h2, .md-doc h3, .md-doc h4, .md-doc h5, .md-doc h6 { margin: 1.1em 0 .55em; color: #f5f7fa; line-height: 1.28; letter-spacing: 0; }
+    .md-doc h1:first-child, .md-doc h2:first-child, .md-doc h3:first-child { margin-top: 0; }
+    .md-doc h1 { font-size: 23px; }
+    .md-doc h2 { font-size: 20px; }
+    .md-doc h3 { font-size: 18px; }
+    .md-doc h4 { font-size: 16px; }
+    .md-doc p { margin: .7em 0; }
+    .md-doc ul, .md-doc ol { margin: .65em 0 .9em; padding-left: 1.25em; }
+    .md-doc li { margin: .35em 0; padding-left: .1em; }
+    .md-doc strong { color: #fff; font-weight: 800; }
+    .md-doc code { padding: .1em .35em; border-radius: 6px; background: rgba(255,255,255,.08); color: #d9e6ff; font: .92em/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .md-doc pre { margin: .9em 0; padding: 12px; border-radius: 12px; background: rgba(0,0,0,.24); overflow: auto; white-space: pre; }
+    .md-doc pre code { padding: 0; background: transparent; color: #dfe7ef; }
+    .md-doc blockquote { margin: .9em 0; padding: 2px 0 2px 12px; border-left: 3px solid rgba(36,136,255,.7); color: #b9c1ca; }
+    .md-doc hr { border: 0; border-top: 1px solid rgba(255,255,255,.10); margin: 1.1em 0; }
+    .md-doc table { width: max-content; min-width: 100%; border-collapse: collapse; margin: .9em 0; font-size: 13px; display: block; overflow-x: auto; }
+    .md-doc th, .md-doc td { border: 1px solid rgba(255,255,255,.10); padding: 8px 10px; text-align: left; vertical-align: top; }
+    .md-doc th { background: rgba(255,255,255,.07); color: #fff; font-weight: 800; }
+    .msg.assistant .md-doc { font-size: inherit; line-height: inherit; }
+    .msg.assistant .md-doc h1, .msg.assistant .md-doc h2, .msg.assistant .md-doc h3, .msg.assistant .md-doc h4 { margin: .9em 0 .35em; font-size: 1.08em; }
+    .msg.assistant .md-doc p { margin: .45em 0; }
+    .msg.assistant .md-doc p:first-child, .msg.assistant .md-doc h1:first-child, .msg.assistant .md-doc h2:first-child, .msg.assistant .md-doc h3:first-child { margin-top: 0; }
+    .msg.assistant .md-doc p:last-child, .msg.assistant .md-doc ul:last-child, .msg.assistant .md-doc ol:last-child { margin-bottom: 0; }
+    .msg.assistant .md-doc ul, .msg.assistant .md-doc ol { margin: .45em 0 .7em; padding-left: 1.35em; }
+    .msg.assistant .md-doc li { margin: .16em 0; }
     .preview iframe { width: 100%; height: 62vh; border: 0; border-radius: 12px; background: #fff; }
     .preview-body.html-preview iframe { display: block; width: 100%; height: 100%; min-height: 0; border-radius: 0; overflow: auto; pointer-events: auto; transform-origin: top left; }
     .html-frame-wrap { width: 100%; height: 100%; min-height: 0; background: #fff; overflow: hidden; }
     .preview img { display: block; max-width: 100%; height: auto; border-radius: 12px; margin: 0 auto; background: #fff; }
     .empty-panel { padding: 28px 14px; color: #8d949c; text-align: center; line-height: 1.6; }
-    .takeover { position: fixed; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center; padding: 18px 14px calc(18px + env(safe-area-inset-bottom)); background: radial-gradient(circle at 50% -10%, rgba(36,136,255,.08), transparent 28%), #0d1013; color: #f4f6f8; }
+    .takeover { position: fixed; inset: 0; height: var(--app-height); z-index: 80; display: flex; align-items: center; justify-content: center; padding: 12px 14px calc(12px + env(safe-area-inset-bottom)); overflow: hidden; background: radial-gradient(circle at 50% -10%, rgba(36,136,255,.08), transparent 28%), #0d1013; color: #f4f6f8; }
     .takeover.hidden { display: none; }
-    .takeover-card { width: min(100%, 432px); border: 1px solid rgba(255,255,255,.08); border-radius: 24px; background: linear-gradient(180deg, #171b20, #14181d); box-shadow: 0 24px 70px rgba(0,0,0,.42); padding: 22px; }
+    .takeover-card { width: min(100%, 432px); max-height: calc(var(--app-height) - 24px - env(safe-area-inset-bottom)); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; border: 1px solid rgba(255,255,255,.08); border-radius: 24px; background: linear-gradient(180deg, #171b20, #14181d); box-shadow: 0 24px 70px rgba(0,0,0,.42); padding: 18px; }
     .takeover-hero { display: flex; gap: 16px; align-items: flex-start; }
     .takeover-warn { width: 50px; height: 50px; border-radius: 16px; display: grid; place-items: center; flex: 0 0 auto; background: rgba(228,164,84,.12); border: 1px solid rgba(228,164,84,.22); color: #e4a454; }
     .takeover-warn svg, .takeover-device-icon svg { width: 24px; height: 24px; stroke: currentColor; }
@@ -198,7 +229,14 @@
     body.light .other-field { background: #fff; color: #151719; border-color: rgba(0,0,0,.12); }
     body.light textarea { background: #fff; color: #151719; border-color: rgba(0,0,0,.12); }
     body.light .preview-body { background: #fff; color: #151719; }
+    body.light .preview-body.markdown-preview { background: #fff; color: #24282d; }
     body.light .preview pre { color: #151719; }
+    body.light .md-doc h1, body.light .md-doc h2, body.light .md-doc h3, body.light .md-doc h4, body.light .md-doc h5, body.light .md-doc h6, body.light .md-doc strong { color: #111418; }
+    body.light .md-doc code { background: rgba(0,0,0,.06); color: #1d4f8f; }
+    body.light .md-doc pre { background: #f3f5f7; }
+    body.light .md-doc blockquote { color: #5f6872; }
+    body.light .md-doc hr, body.light .md-doc th, body.light .md-doc td { border-color: rgba(0,0,0,.10); }
+    body.light .md-doc th { background: #f3f5f7; color: #111418; }
     body.light .empty-panel { color: #5f6872; }
     body.light .takeover { background: #f6f7f9; color: #151719; }
     body.light .takeover-card { background: #fff; border-color: rgba(0,0,0,.10); box-shadow: 0 20px 50px rgba(0,0,0,.12); }
@@ -252,6 +290,12 @@
       </button>
     </div>
     <main id="messages"><div class="empty">正在连接桌面端。连接成功后会同步当前会话。</div></main>
+    <button class="jump-bottom hidden" id="jumpBottom" aria-label="回到底部">
+      <svg fill="none" viewBox="0 0 24 24" stroke-width="2" aria-hidden="true">
+        <path d="M12 5v14"></path>
+        <path d="m6 13 6 6 6-6"></path>
+      </svg>
+    </button>
     <footer>
       <div class="chipbar" id="chipbar">
         <button class="chip" id="modeChip">Mode</button>
@@ -335,9 +379,25 @@
     </section>
   </div>
   <script>
+    function syncViewportHeight() {
+      const viewport = window.visualViewport;
+      const height = Math.round((viewport && viewport.height) || window.innerHeight || document.documentElement.clientHeight || 0);
+      if (height > 0) document.documentElement.style.setProperty('--app-height', `${height}px`);
+    }
+    syncViewportHeight();
+    window.addEventListener('resize', syncViewportHeight, { passive: true });
+    window.addEventListener('orientationchange', () => setTimeout(syncViewportHeight, 80), { passive: true });
+    if (window.visualViewport) window.visualViewport.addEventListener('resize', syncViewportHeight, { passive: true });
+    function remoteBasePath() {
+      const parts = location.pathname.split('/').filter(Boolean);
+      const routeIndex = parts.lastIndexOf('r');
+      if (routeIndex <= 0) return '';
+      return `/${parts.slice(0, routeIndex).join('/')}`;
+    }
+
     const roomId = location.pathname.split('/').filter(Boolean).pop();
     const token = new URLSearchParams(location.search).get('token') || '';
-    const wsUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
+    const wsUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}${remoteBasePath()}/ws`;
     const el = {
       title: document.getElementById('title'),
       subtitle: document.getElementById('subtitle'),
@@ -347,6 +407,7 @@
       hint: document.getElementById('hint'),
       actionButton: document.getElementById('actionButton'),
       chipbar: document.getElementById('chipbar'),
+      jumpBottom: document.getElementById('jumpBottom'),
       sessionChip: document.getElementById('sessionChip'),
       artifactChip: document.getElementById('artifactChip'),
       artifactTextChip: document.getElementById('artifactTextChip'),
@@ -402,6 +463,7 @@
       pendingStoreSnapshotTimer: null,
       lastLiveSnapshotAtBySession: {},
       replaced: false,
+      terminal: false,
     };
     const sentClientIds = new Set();
     const toolNodes = new Map();
@@ -422,6 +484,7 @@
       });
     }
     function showTakeoverScreen() {
+      syncViewportHeight();
       state.replaced = true;
       joined = false;
       clearTimeout(joinTimer);
@@ -436,11 +499,26 @@
       el.takeoverReconnect.textContent = '重新连接本设备';
       el.takeoverHint.textContent = '重新连接后，当前正在控制的设备会被断开。';
       el.takeoverScreen.classList.remove('hidden');
+      el.takeoverScreen.scrollTop = 0;
     }
     function hideTakeoverScreen() {
       state.replaced = false;
       setControlsDisabled(false);
       el.takeoverScreen.classList.add('hidden');
+    }
+    function enterTerminalState(status, message) {
+      state.terminal = true;
+      joined = false;
+      clearTimeout(joinTimer);
+      clearTimeout(reconnectTimer);
+      setTurnActive(false);
+      setStatus(status);
+      setControlsDisabled(true);
+      state.sheet = '';
+      el.sheetOverlay.classList.add('hidden');
+      el.previewOverlay.classList.add('hidden');
+      addSystem(message);
+      detachCurrentSocket();
     }
     function detachCurrentSocket() {
       if (!ws) return;
@@ -461,7 +539,18 @@
     }
     function setStatus(text) { el.status.textContent = text; }
     function clientId() { return `cm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`; }
-    function scrollBottom() { requestAnimationFrame(() => { el.messages.scrollTop = el.messages.scrollHeight; }); }
+    function isNearBottom() {
+      return el.messages.scrollHeight - el.messages.scrollTop - el.messages.clientHeight < 96;
+    }
+    function updateJumpBottom() {
+      el.jumpBottom.classList.toggle('hidden', isNearBottom());
+    }
+    function scrollBottom() {
+      requestAnimationFrame(() => {
+        el.messages.scrollTop = el.messages.scrollHeight;
+        updateJumpBottom();
+      });
+    }
     function clearEmpty() { const empty = el.messages.querySelector('.empty'); if (empty) empty.remove(); }
     function appendToMessages(node) {
       clearEmpty();
@@ -565,15 +654,39 @@
         active: true,
       };
       let seen = false;
-      state.sessions = state.sessions.map(s => {
+      state.sessions = normalizeSessions(state.sessions.map(s => {
         if (s.id === session.id) {
           seen = true;
           return { ...s, ...item };
         }
         return { ...s, active: false };
-      });
+      }));
       if (!seen) state.sessions.unshift(item);
+      state.sessions = normalizeSessions(state.sessions);
       state.sessionsLoaded = true;
+    }
+    function normalizeSessions(sessions) {
+      const byId = new Map();
+      (Array.isArray(sessions) ? sessions : []).forEach(session => {
+        if (!session || !session.id) return;
+        const prev = byId.get(session.id);
+        if (!prev) {
+          byId.set(session.id, { ...session });
+          return;
+        }
+        const prevCount = Number(prev.message_count || 0);
+        const nextCount = Number(session.message_count || 0);
+        const prevTime = Date.parse(prev.updated_at || '') || 0;
+        const nextTime = Date.parse(session.updated_at || '') || 0;
+        const active = !!(prev.active || session.active);
+        const keepNext = nextCount > prevCount || (nextCount === prevCount && nextTime > prevTime);
+        if (keepNext) byId.set(session.id, { ...prev, ...session, active });
+        else byId.set(session.id, { ...session, ...prev, active });
+      });
+      return [...byId.values()].map(session => ({
+        ...session,
+        active: session.id === sessionId || !!session.active,
+      }));
     }
     function messageSessionId(msg) {
       const p = msg && msg.payload || {};
@@ -593,6 +706,21 @@
         clearTimeout(state.pendingStoreSnapshotTimer);
         state.pendingStoreSnapshotTimer = null;
       }
+    }
+    function snapshotMessageCount(snapshot) {
+      const messages = snapshot && Array.isArray(snapshot.messages) ? snapshot.messages : [];
+      return messages.length;
+    }
+    function snapshotDisplayCount(snapshot) {
+      const messageCount = snapshotMessageCount(snapshot);
+      const chatItems = snapshot && Array.isArray(snapshot.chat_items) ? snapshot.chat_items : [];
+      return messageCount || chatItems.length;
+    }
+    function knownSessionMessageCount(sid, snapshot) {
+      const fromList = sid ? state.sessions.find(s => s && s.id === sid) : null;
+      const listCount = fromList ? Number(fromList.message_count || 0) : 0;
+      const sessionCount = snapshot && snapshot.session ? Number(snapshot.session.message_count || 0) : 0;
+      return Math.max(listCount, sessionCount, 0);
     }
     setInterval(() => {
       if (state.turn.active) renderRunState();
@@ -685,6 +813,7 @@
     function renderSessionSheet() {
       el.sheetTitle.textContent = '选择 Session';
       el.sheetBody.innerHTML = '';
+      state.sessions = normalizeSessions(state.sessions);
       if (!joined) {
         el.sheetBody.innerHTML = '<div class="empty-panel">正在连接桌面端。连接成功后会加载 session 列表。</div>';
         return;
@@ -726,9 +855,7 @@
           title: a.basename || basename(a.path_tail) || '成品',
           sub: `${a.path_tail || ''} · ${formatSize(a.byte_size)}`,
           mark: '预览',
-          onClick: () => {
-            if (a.id) sendAction('request_artifact_preview', { artifact_id: a.id });
-          },
+          onClick: () => requestArtifactPreview(a),
         }));
       });
     }
@@ -808,10 +935,17 @@
         bubble.textContent = text || '';
         div.appendChild(bubble);
       } else {
-        div.textContent = text || '';
+        setAssistantMessageMarkdown(div, text || '');
       }
       if (role === 'user') state.artifactHistory.push({ type: 'user' });
       return appendToMessages(div);
+    }
+    function setAssistantMessageMarkdown(node, text) {
+      node.dataset.rawMarkdown = text || '';
+      const doc = document.createElement('div');
+      doc.className = 'md-doc';
+      doc.innerHTML = renderMarkdown(text || '');
+      node.replaceChildren(doc);
     }
     function addAssistantHtml(html) {
       const div = document.createElement('div');
@@ -1076,17 +1210,16 @@
       div.className = 'artifact';
       div.dataset.artifactPath = cardPath;
       const artifactId = artifact.id || (tracked && tracked.id);
-      if (artifactId) {
-        div.onclick = () => sendAction('request_artifact_preview', { artifact_id: artifactId });
-      }
+      div.onclick = () => requestArtifactPreview({ ...tracked, ...artifact, id: artifactId, path: cardPath });
       const head = document.createElement('div');
       head.className = 'artifact-head';
+      const displayKind = artifactKind(artifact.kind || (tracked && tracked.kind), cardPath);
       const icon = document.createElement('div');
       icon.className = 'artifact-icon';
-      icon.textContent = artifact.kind || (tracked && tracked.kind) || 'HTML';
+      icon.textContent = displayKind;
       const kind = document.createElement('div');
       kind.className = 'artifact-kind';
-      kind.textContent = artifact.kind || (tracked && tracked.kind) || 'HTML';
+      kind.textContent = displayKind;
       head.appendChild(icon);
       head.appendChild(kind);
       const name = document.createElement('div');
@@ -1100,6 +1233,27 @@
       div.appendChild(path);
       appendToMessages(div);
       state.artifactHistory.push({ type: 'artifact', path: cardPath });
+    }
+    function requestArtifactPreview(artifact) {
+      if (!artifact) return false;
+      const artifactId = artifact.id || artifact.artifact_id || '';
+      const path = artifact.path || artifact.path_tail || artifact.storage_path || artifact.basename || '';
+      if (artifactId) return sendAction('request_artifact_preview', { artifact_id: artifactId });
+      if (path) return sendAction('request_artifact_preview', { artifact_path: path });
+      return false;
+    }
+    function artifactKind(kind, path) {
+      const normalized = String(kind || '').trim();
+      const lowerKind = normalized.toLowerCase();
+      const ext = (String(path || '').split('.').pop() || '').toLowerCase();
+      if (ext === 'md' || ext === 'markdown') return 'MD';
+      if (ext === 'html' || ext === 'htm') return 'HTML';
+      if (ext === 'png' || ext === 'jpg' || ext === 'jpeg' || ext === 'webp' || ext === 'gif' || ext === 'svg') return ext.toUpperCase();
+      if (lowerKind === 'markdown') return 'MD';
+      if (lowerKind === 'html') return 'HTML';
+      if (normalized && lowerKind !== 'text') return normalized.toUpperCase();
+      if (ext) return ext.toUpperCase();
+      return normalized || 'FILE';
     }
     function renderPinvouList(section, title, rows, mapRow) {
       if (!Array.isArray(rows) || !rows.length) return;
@@ -1154,9 +1308,11 @@
     }
     function showPreview(payload) {
       const preview = payload.preview || {};
-      el.previewTitle.textContent = payload.basename || basename(payload.path_tail) || '预览';
+      const previewName = payload.basename || basename(payload.path_tail) || '预览';
+      const markdownByName = /\.(md|markdown)$/i.test(previewName);
+      el.previewTitle.textContent = previewName;
       el.previewBody.innerHTML = '';
-      el.previewBody.classList.remove('html-preview');
+      el.previewBody.classList.remove('html-preview', 'markdown-preview');
       if (preview.type === 'image' && preview.data_url) {
         const img = document.createElement('img');
         img.alt = payload.basename || 'artifact preview';
@@ -1175,7 +1331,13 @@
         iframe.srcdoc = htmlPreviewSrcdoc(preview.content, previewFrameId);
         wrap.appendChild(iframe);
         el.previewBody.appendChild(wrap);
-      } else if (preview.type === 'text' || preview.type === 'markdown') {
+      } else if (preview.type === 'markdown' || (preview.type === 'text' && markdownByName)) {
+        el.previewBody.classList.add('markdown-preview');
+        const doc = document.createElement('div');
+        doc.className = 'md-doc';
+        doc.innerHTML = renderMarkdown(preview.content || '');
+        el.previewBody.appendChild(doc);
+      } else if (preview.type === 'text') {
         const pre = document.createElement('pre');
         pre.textContent = preview.content || '';
         el.previewBody.appendChild(pre);
@@ -1192,6 +1354,140 @@
         el.previewBody.appendChild(note);
       }
       el.previewOverlay.classList.remove('hidden');
+    }
+    function escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+    function renderInlineMarkdown(value) {
+      const code = [];
+      let html = escapeHtml(value).replace(/`([^`]+)`/g, (_, inner) => {
+        const token = `\u0000CODE${code.length}\u0000`;
+        code.push(`<code>${inner}</code>`);
+        return token;
+      });
+      html = html
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+      code.forEach((item, index) => {
+        html = html.replace(`\u0000CODE${index}\u0000`, item);
+      });
+      return html;
+    }
+    function markdownCells(line) {
+      return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell => cell.trim());
+    }
+    function isTableDivider(line) {
+      return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line || '');
+    }
+    function renderMarkdown(markdown) {
+      const lines = String(markdown || '').replace(/\r\n?/g, '\n').split('\n');
+      const out = [];
+      let i = 0;
+      const closeList = () => {
+        if (out._list) {
+          out.push(`</${out._list}>`);
+          out._list = '';
+        }
+      };
+      while (i < lines.length) {
+        const line = lines[i];
+        if (!line.trim()) {
+          closeList();
+          i += 1;
+          continue;
+        }
+        const fence = line.match(/^\s*```/);
+        if (fence) {
+          closeList();
+          const buf = [];
+          i += 1;
+          while (i < lines.length && !/^\s*```/.test(lines[i])) {
+            buf.push(lines[i]);
+            i += 1;
+          }
+          if (i < lines.length) i += 1;
+          out.push(`<pre><code>${escapeHtml(buf.join('\n'))}</code></pre>`);
+          continue;
+        }
+        if (i + 1 < lines.length && line.includes('|') && isTableDivider(lines[i + 1])) {
+          closeList();
+          const heads = markdownCells(line);
+          i += 2;
+          const rows = [];
+          while (i < lines.length && lines[i].includes('|') && lines[i].trim()) {
+            rows.push(markdownCells(lines[i]));
+            i += 1;
+          }
+          out.push('<table><thead><tr>');
+          heads.forEach(cell => out.push(`<th>${renderInlineMarkdown(cell)}</th>`));
+          out.push('</tr></thead><tbody>');
+          rows.forEach(row => {
+            out.push('<tr>');
+            heads.forEach((_, idx) => out.push(`<td>${renderInlineMarkdown(row[idx] || '')}</td>`));
+            out.push('</tr>');
+          });
+          out.push('</tbody></table>');
+          continue;
+        }
+        const heading = line.match(/^(#{1,6})\s+(.+)$/);
+        if (heading) {
+          closeList();
+          const level = heading[1].length;
+          out.push(`<h${level}>${renderInlineMarkdown(heading[2].trim())}</h${level}>`);
+          i += 1;
+          continue;
+        }
+        if (/^\s*---+\s*$/.test(line)) {
+          closeList();
+          out.push('<hr>');
+          i += 1;
+          continue;
+        }
+        const quote = line.match(/^\s*>\s?(.*)$/);
+        if (quote) {
+          closeList();
+          const buf = [quote[1]];
+          i += 1;
+          while (i < lines.length) {
+            const next = lines[i].match(/^\s*>\s?(.*)$/);
+            if (!next) break;
+            buf.push(next[1]);
+            i += 1;
+          }
+          out.push(`<blockquote>${buf.map(renderInlineMarkdown).join('<br>')}</blockquote>`);
+          continue;
+        }
+        const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+        const ordered = line.match(/^\s*\d+\.\s+(.+)$/);
+        if (bullet || ordered) {
+          const kind = bullet ? 'ul' : 'ol';
+          if (out._list && out._list !== kind) closeList();
+          if (!out._list) {
+            out.push(`<${kind}>`);
+            out._list = kind;
+          }
+          out.push(`<li>${renderInlineMarkdown((bullet || ordered)[1])}</li>`);
+          i += 1;
+          continue;
+        }
+        closeList();
+        const paragraph = [line.trim()];
+        i += 1;
+        while (i < lines.length && lines[i].trim() && !/^(#{1,6})\s+/.test(lines[i]) && !/^\s*([-*]|\d+\.)\s+/.test(lines[i]) && !/^\s*```/.test(lines[i]) && !/^\s*---+\s*$/.test(lines[i])) {
+          if (i + 1 < lines.length && lines[i].includes('|') && isTableDivider(lines[i + 1])) break;
+          paragraph.push(lines[i].trim());
+          i += 1;
+        }
+        out.push(`<p>${renderInlineMarkdown(paragraph.join(' '))}</p>`);
+      }
+      closeList();
+      return out.join('');
     }
     function htmlPreviewSrcdoc(content, id) {
       const style = `<meta name="viewport" content="width=device-width, initial-scale=1"><style data-pinvou-remote-preview-style>*,*::before,*::after{box-sizing:border-box}html,body{max-width:100%;overflow-x:hidden}body{min-width:0!important}img,svg,video,canvas{max-width:100%!important;height:auto}table{max-width:100%;display:block;overflow-x:auto}pre,code{white-space:pre-wrap;overflow-wrap:anywhere}</style>`;
@@ -1385,10 +1681,11 @@
       updateArtifacts(Array.isArray(snapshot.artifacts) ? snapshot.artifacts : []);
       const messages = Array.isArray(snapshot.messages) ? snapshot.messages : [];
       const chatItems = Array.isArray(snapshot.chat_items) ? snapshot.chat_items : [];
+      const useChatItems = chatItems.length > 0 && (!messages.length || chatItems.length >= messages.length);
       if (!messages.length && !chatItems.length) {
         el.messages.innerHTML = '<div class="empty">当前 session 暂无历史消息。你可以直接发送第一条远程消息。</div>';
       }
-      if (chatItems.length) {
+      if (useChatItems) {
         renderChatItemSnapshot(chatItems);
       } else if (messages.some(m => Array.isArray(m.blocks))) {
         rebuildFromBlocks(messages);
@@ -1400,22 +1697,28 @@
           }
         });
       }
-      const waitingForUserInput = chatItems.some(item =>
+      const waitingForUserInput = useChatItems && chatItems.some(item =>
         item && item.type === 'user_input' && !item.resolved && item.cardState !== 'submitted' && item.cardState !== 'cancelled'
       );
       setTurnActive(!!snapshot.busy && !waitingForUserInput, snapshot.busy ? 'waiting' : 'idle');
       renderChips();
+      scrollBottom();
     }
     function applySessionSnapshot(msg) {
       const snapshot = msg.payload || {};
       const sid = messageSessionId(msg) || (snapshot.session && snapshot.session.id) || sessionId;
       const chatItems = Array.isArray(snapshot.chat_items) ? snapshot.chat_items : [];
+      const messageCount = snapshotMessageCount(snapshot);
+      const snapshotCount = snapshotDisplayCount(snapshot);
+      const syncedText = snapshotCount ? `已同步 ${snapshotCount} 条` : '已同步';
       const isLive = snapshot.snapshot_source === 'live' || chatItems.length > 0;
       if (isLive) {
+        const knownCount = knownSessionMessageCount(sid, snapshot);
+        if (knownCount > 0 && messageCount > 0 && messageCount < knownCount) return;
         clearPendingStoreSnapshot();
         if (sid) state.lastLiveSnapshotAtBySession[sid] = Date.now();
         renderSnapshot(snapshot);
-        setStatus('已同步');
+        setStatus(syncedText);
         return;
       }
       const lastLiveAt = sid ? (state.lastLiveSnapshotAtBySession[sid] || 0) : 0;
@@ -1428,7 +1731,7 @@
         const latestLiveAt = sid ? (state.lastLiveSnapshotAtBySession[sid] || 0) : 0;
         if (latestLiveAt && Date.now() - latestLiveAt < 1500) return;
         renderSnapshot(snapshot);
-        setStatus('已同步');
+        setStatus(syncedText);
       }, 300);
     }
     function renderUserInput(payload) {
@@ -1710,9 +2013,10 @@
           applySessionSnapshot(msg);
           break;
         case 'session_list':
-          state.sessions = Array.isArray(msg.payload && msg.payload.sessions) ? msg.payload.sessions : [];
+          state.sessions = normalizeSessions(Array.isArray(msg.payload && msg.payload.sessions) ? msg.payload.sessions : []);
           state.sessionsLoaded = true;
           sessionId = (msg.payload && msg.payload.active_session_id) || sessionId;
+          state.sessions = normalizeSessions(state.sessions);
           renderChips();
           if (state.sheet === 'sessions') renderSessionSheet();
           break;
@@ -1773,7 +2077,7 @@
         case 'assistant_delta':
           setTurnPhase('responding');
           if (!streamNode) streamNode = addMessage('assistant', '');
-          streamNode.textContent += (msg.payload && msg.payload.text) || '';
+          setAssistantMessageMarkdown(streamNode, `${streamNode.dataset.rawMarkdown || ''}${(msg.payload && msg.payload.text) || ''}`);
           scrollBottom();
           break;
         case 'tool_call_start':
@@ -1841,6 +2145,13 @@
           break;
         case 'error':
           state.creatingSession = false;
+          {
+            const message = (msg.payload && msg.payload.message) || msg.message || 'unknown';
+            if (/room expired|not found|invalid token/i.test(message)) {
+              enterTerminalState('二维码已失效', '二维码已失效，请回到桌面端刷新二维码后重新扫码。');
+              break;
+            }
+          }
           setStatus('连接异常');
           if (state.sheet === 'sessions') {
             renderSessionSheet();
@@ -1855,9 +2166,7 @@
           showTakeoverScreen();
           break;
         case 'room_closed':
-          addSystem('桌面端已停止远程控制');
-          setTurnActive(false);
-          setStatus('已停止');
+          enterTerminalState('已停止', '桌面端已停止远程控制，请重新扫码连接。');
           break;
       }
     }
@@ -1878,6 +2187,7 @@
     function connect() {
       clearTimeout(reconnectTimer);
       clearTimeout(joinTimer);
+      if (state.terminal) return;
       setStatus('连接中');
       ws = new WebSocket(wsUrl);
       function joinRoom() {
@@ -1904,7 +2214,7 @@
       ws.onclose = () => {
         joined = false;
         clearTimeout(joinTimer);
-        if (state.replaced) return;
+        if (state.replaced || state.terminal) return;
         setStatus('重连中');
         reconnectTimer = setTimeout(connect, 1600);
       };
@@ -1938,6 +2248,7 @@
       }
     }
     function reconnectThisDevice() {
+      syncViewportHeight();
       el.takeoverReconnect.disabled = true;
       el.takeoverReconnect.textContent = '正在重新连接...';
       el.takeoverHint.textContent = '正在重新接管当前远程会话。';
@@ -1964,6 +2275,7 @@
     el.sessionChip.onclick = () => openSheet('sessions');
     el.artifactChip.onclick = () => openSheet('artifacts');
     el.artifactTextChip.onclick = () => openSheet('artifacts');
+    el.jumpBottom.onclick = scrollBottom;
     el.themeChip.onclick = () => openSheet('theme');
     el.moreChip.onclick = e => {
       e.stopPropagation();
@@ -1986,8 +2298,10 @@
         submitComposer();
       }
     });
+    el.messages.addEventListener('scroll', updateJumpBottom, { passive: true });
     applyTheme();
     renderChips();
+    updateJumpBottom();
     renderRunState();
     connect();
   </script>

@@ -32,10 +32,10 @@ export PINVOU3_KB_EMBED_MODEL_DIR="${PINVOU3_KB_EMBED_MODEL_DIR:-$HOME/models/bg
 export PINVOU3_WEB_TEMPLATE_DIR="${PINVOU3_WEB_TEMPLATE_DIR:-$HOME/models/web-template}"
 
 # ── 手机远控一期 relay ───────────────────────────────────────────
-# dev 默认走公网中继，手机无需和桌面在同一局域网。仍可在外部 export 覆盖：
+# dev 默认走公网域名中继，手机无需和桌面在同一局域网。仍可在外部 export 覆盖：
 #   PINVOU_REMOTE_PUBLIC_URL=http://10.x.x.x:8787
 #   PINVOU_REMOTE_RELAY_WS_URL=ws://10.x.x.x:8787/ws
-export PINVOU_REMOTE_PUBLIC_URL="${PINVOU_REMOTE_PUBLIC_URL:-http://47.120.8.237:8787}"
-export PINVOU_REMOTE_RELAY_WS_URL="${PINVOU_REMOTE_RELAY_WS_URL:-ws://47.120.8.237:8787/ws}"
+export PINVOU_REMOTE_PUBLIC_URL="${PINVOU_REMOTE_PUBLIC_URL:-https://www.ma-xiao.com/pinvou3/remote}"
+export PINVOU_REMOTE_RELAY_WS_URL="${PINVOU_REMOTE_RELAY_WS_URL:-wss://www.ma-xiao.com/pinvou3/remote/ws}"
 
 exec npx tauri dev "$@"

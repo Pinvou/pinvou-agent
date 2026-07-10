@@ -8,12 +8,32 @@ import { WebSocketServer } from "ws";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8787);
 const ROOM_TTL_MS = 10 * 60 * 1000;
+const PUBLIC_BASE_PATH = normalizeBasePath(process.env.PINVOU_REMOTE_PUBLIC_BASE_PATH || "/pinvou3/remote");
 const rooms = new Map();
 
 function send(ws, value) {
   if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(value));
 }
 
+function normalizeBasePath(value) {
+  let raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    if (/^https?:\/\//i.test(raw)) raw = new URL(raw).pathname;
+  } catch {}
+  raw = raw.replace(/\/+$/, "");
+  if (!raw || raw === "/") return "";
+  return raw.startsWith("/") ? raw : `/${raw}`;
+}
+
+function stripPublicBasePath(pathname) {
+  if (!PUBLIC_BASE_PATH) return pathname;
+  if (pathname === PUBLIC_BASE_PATH) return "/";
+  if (pathname.startsWith(`${PUBLIC_BASE_PATH}/`)) {
+    return pathname.slice(PUBLIC_BASE_PATH.length) || "/";
+  }
+  return pathname;
+}
 
 function audit(room, event, patch = {}) {
   room.audit.event_count += 1;
@@ -46,13 +66,14 @@ function roomSummary(room) {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
-  if (url.pathname === "/healthz") {
+  const routePath = stripPublicBasePath(url.pathname);
+  if (routePath === "/healthz") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ ok: true, rooms: [...rooms.values()].map(roomSummary) }));
     return;
   }
-  if (url.pathname.startsWith("/r/")) {
-    const roomId = url.pathname.split("/").filter(Boolean).pop();
+  if (routePath.startsWith("/r/")) {
+    const roomId = routePath.split("/").filter(Boolean).pop();
     const room = rooms.get(roomId);
     if (room) audit(room, "mobile_page");
     const html = await loadMobilePage();
@@ -67,7 +88,18 @@ const server = http.createServer(async (req, res) => {
   res.end("not found");
 });
 
-const wss = new WebSocketServer({ server, path: "/ws" });
+const wss = new WebSocketServer({ noServer: true });
+
+server.on("upgrade", (req, socket, head) => {
+  const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+  if (stripPublicBasePath(url.pathname) !== "/ws") {
+    socket.destroy();
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit("connection", ws, req);
+  });
+});
 
 wss.on("connection", (ws) => {
   ws.role = "unknown";
@@ -84,7 +116,7 @@ wss.on("connection", (ws) => {
 
     if (msg.type === "desktop_register") {
       let expiresAt = Date.parse(msg.expires_at || "");
-      if (!msg.room_id || !msg.session_id || !msg.pairing_token || !expiresAt) {
+      if (!msg.room_id || typeof msg.session_id !== "string" || !msg.pairing_token || !expiresAt) {
         send(ws, { type: "error", message: "bad desktop_register" });
         return;
       }
@@ -126,7 +158,7 @@ wss.on("connection", (ws) => {
           type: "mobile_action",
           room_id: room.room_id,
           session_id: room.session_id,
-          payload: { type: "request_snapshot", payload: {} },
+          payload: { type: room.session_id ? "request_snapshot" : "request_session_list", payload: {} },
         });
       }
       return;
@@ -160,7 +192,7 @@ wss.on("connection", (ws) => {
         type: "mobile_action",
         room_id: room.room_id,
         session_id: room.session_id,
-        payload: { type: "request_snapshot", payload: {} },
+        payload: { type: room.session_id ? "request_snapshot" : "request_session_list", payload: {} },
       });
       return;
     }

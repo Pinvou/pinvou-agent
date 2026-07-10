@@ -37,6 +37,7 @@ pub fn build_session_snapshot(store: &SessionStore, session_id: &str) -> Result<
             "mode": mode,
             "status": "idle",
             "updated_at": saved.metadata.updated_at,
+            "message_count": saved.metadata.message_count,
         },
         "messages": messages,
         "pending_user_inputs": [],

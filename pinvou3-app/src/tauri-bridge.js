@@ -312,6 +312,7 @@
   function freshBuffer() {
     return {
       messages: [], chatItems: [], personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
+      loadedFromDisk: false,
       planSnapshot: { plan: null, todos: null },
       modeState: { mode: "yolo" },
       thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
@@ -361,6 +362,42 @@
     currentStreamText = s.currentStreamText || ""; currentStreamId = s.currentStreamId || 0;
     pendingAssistantText = s.pendingAssistantText || ""; pendingAssistantBlocks = s.pendingAssistantBlocks || [];
     itemIdSeq = s.itemIdSeq || 0; toolMeta = s.toolMeta || {};
+  }
+  function hydrateWorkingSetFromSaved(buf, saved) {
+    if (!buf || !saved) return;
+    buf.messages = Array.isArray(saved.messages) ? saved.messages : [];
+    buf.chatItems = [];
+    buf.artifacts = Array.isArray(saved.artifacts) ? saved.artifacts.map(function (a) {
+      var p = typeof a === "string" ? a : (a.storage_path || a.path || "");
+      return { path: p, basename: basename(p) };
+    }) : [];
+    buf.artifacts = filterSessionArtifacts(buf.artifacts, saved.metadata && saved.metadata.id);
+    buf.personaEvents = [];
+    buf.pinvouReviews = [];
+    buf.stream = {
+      currentStreamText: "", currentStreamId: 0, pendingAssistantText: "",
+      pendingAssistantBlocks: [], itemIdSeq: 0, toolMeta: {},
+    };
+  }
+  async function ensureSessionBufferLoaded(sid) {
+    if (!sid) return;
+    if (sid === state.activeSessionId) return;
+    var buf = getBuffer(sid);
+    var meta = state.sessions.find(function (s) { return s.id === sid; }) || {};
+    var knownCount = Number(meta.message_count || 0);
+    if (buf.busy) return;
+    if (buf.loadedFromDisk && (!knownCount || buf.messages.length >= knownCount)) return;
+    if (!buf.loadedFromDisk && (buf.messages.length || buf.chatItems.length) && (!knownCount || buf.messages.length >= knownCount)) return;
+    var saved = await invoke("load_session", { id: sid, setActive: false });
+    var savedCount = saved && saved.metadata ? Number(saved.metadata.message_count || 0) : 0;
+    if ((buf.messages.length || buf.chatItems.length) && savedCount <= buf.messages.length) {
+      buf.loadedFromDisk = true;
+      return;
+    }
+    hydrateWorkingSetFromSaved(buf, saved);
+    try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch (e) { buf.personaEvents = []; }
+    try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch (e) { buf.pinvouReviews = []; }
+    buf.loadedFromDisk = true;
   }
   // 把 active 工作集存好后切到 id 的 buffer(opts.fresh=新建空 buffer)。
   function switchActiveTo(id, opts) {
@@ -494,6 +531,8 @@
     };
   }
   async function publishRemoteLiveSnapshot(sid) {
+    try { await ensureSessionBufferLoaded(sid); }
+    catch (err) { console.warn("remote snapshot hydrate failed", err); }
     var snapshot = buildRemoteLiveSnapshot(sid);
     if (!snapshot) return false;
     await invoke("remote_control_publish_event", {
@@ -682,6 +721,7 @@
       state.activeSessionId = saved.metadata.id;
       loadWorkingSetFrom(sessionStates[id] = freshBuffer());
       state.messages = Array.isArray(saved.messages) ? saved.messages : [];
+      sessionStates[id].loadedFromDisk = true;
       try { state.personaEvents = await invoke("get_session_persona_events", { sessionId: id }) || []; } catch (e) { state.personaEvents = []; }
       try { state.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: id }) || []; } catch (e) { state.pinvouReviews = []; }
       resetPendingAssistant();
@@ -1818,11 +1858,16 @@
     });
   });
 
-  listen("remote_control:mobile_user_message", function (e) {
+  listen("remote_control:mobile_user_message", async function (e) {
     var p = e.payload || {};
     var sid = p.session_id;
     var content = (p.content || "").trim();
     if (!sid || !content) return;
+    try { await ensureSessionBufferLoaded(sid); }
+    catch (err) {
+      console.warn("remote session hydrate failed", err);
+      return;
+    }
     if (isBusyFor(sid)) {
       runSyncOnSession(sid, function () {
         state.queued.push({
@@ -3346,7 +3391,7 @@
     state.remoteControl = Object.assign({}, state.remoteControl, { starting: true, last_error: null });
     notify();
     try {
-      var info = await invoke("remote_control_start", { sessionId: sessionId || state.activeSessionId || null });
+      var info = await invoke("remote_control_start", { sessionId: sessionId || null });
       state.remoteControl = Object.assign({}, state.remoteControl, info || {}, { active: true, pairing: info, starting: false, last_error: null });
       await refreshRemoteControlStatus();
       return info;
@@ -3363,7 +3408,7 @@
   }
   async function refreshRemoteControlQr(sessionId) {
     try {
-      var info = await invoke("remote_control_refresh_qr", { sessionId: sessionId || state.activeSessionId || null });
+      var info = await invoke("remote_control_refresh_qr", { sessionId: sessionId || null });
       state.remoteControl = Object.assign({}, state.remoteControl, info || {}, { active: true, pairing: info, last_error: null });
       await refreshRemoteControlStatus();
       return info;

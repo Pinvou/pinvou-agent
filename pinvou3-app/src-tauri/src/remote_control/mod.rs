@@ -35,11 +35,13 @@ pub fn remote_control_start(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<RemotePairingInfo, String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = session_id.unwrap_or_default();
     let info = manager.start(sid.clone(), store.inner().clone(), pool.inner().clone())?;
-    let _ = manager.send_snapshot_with_live_request(&store, &sid);
+    if sid.is_empty() {
+        let _ = manager.send_session_list(&store, "");
+    } else {
+        let _ = manager.send_snapshot_with_live_request(&store, &sid);
+    }
     Ok(info)
 }
 

@@ -75,6 +75,11 @@ async fn run_loop(
             Ok(pair) => pair,
             Err(e) => {
                 eprintln!("[remote-control] connect relay {relay_ws_url} failed: {e}");
+                let _ = tx_in.send(RelayInbound::Status {
+                    room_id: register.room_id.clone(),
+                    status: "connecting_relay".to_string(),
+                    message: Some(format!("connect relay failed: {e}")),
+                });
                 tokio::time::sleep(Duration::from_millis(900)).await;
                 continue;
             }
@@ -153,6 +158,11 @@ async fn run_loop(
                 }
             }
         }
+        let _ = tx_in.send(RelayInbound::Status {
+            room_id: register.room_id.clone(),
+            status: "connecting_relay".to_string(),
+            message: Some("relay connection lost, reconnecting".to_string()),
+        });
         tokio::time::sleep(Duration::from_millis(900)).await;
     }
 }
