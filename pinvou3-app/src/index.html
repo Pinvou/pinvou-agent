@@ -140,6 +140,7 @@
     const BarChart2 = (p) => <I {...p}><line x1="18" x2="18" y1="20" y2="10"/><line x1="12" x2="12" y1="20" y2="4"/><line x1="6" x2="6" y1="20" y2="14"/></I>;
     const Settings = (p) => <I {...p}><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></I>;
     const Monitor = (p) => <I {...p}><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></I>;
+    const Smartphone = (p) => <I {...p}><rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/></I>;
     const Brain = (p) => <I {...p}><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/></I>;
     const Zap = (p) => <I {...p}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></I>;
     const Package = (p) => <I {...p}><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></I>;
@@ -5621,7 +5622,7 @@
       const voiceAsrSetup = (bs && bs.voiceAsrSetup) || { open: false };
       const remoteControl = (bs && bs.remoteControl) || {};
       const remotePairing = remoteControl.pairing || remoteControl;
-      const remoteActiveForSession = !!(bs && bs.activeSessionId && remoteControl.active && remoteControl.session_id === bs.activeSessionId);
+      const remoteActive = !!remoteControl.active;
       const remoteStatusText = {
         idle: '未开启',
         connecting_relay: '连接 relay',
@@ -5687,14 +5688,14 @@
 
       async function handleOpenRemoteControl() {
         setRemoteOpen(true);
-        if (!remoteActiveForSession && bridge.available) {
+        if (!remoteActive && bridge.available) {
           try { await bridge.startRemoteControl(bs && bs.activeSessionId); } catch (_) {}
         }
       }
 
       async function handleRefreshRemoteControl() {
         if (!bridge.available) return;
-        try { await bridge.refreshRemoteControlQr(bs && bs.activeSessionId); } catch (_) {}
+        try { await bridge.refreshRemoteControlQr(remoteControl.session_id || (bs && bs.activeSessionId)); } catch (_) {}
       }
 
       async function handleStopRemoteControl() {
@@ -5734,25 +5735,26 @@
 
           {/* Top Header (浮动) */}
           <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-20 pointer-events-none">
+            <div className="flex items-center gap-2" />
             <div className="flex items-center gap-2">
               <button
                 onClick={handleOpenRemoteControl}
-                disabled={!bs || !bs.activeSessionId || remoteControl.starting}
-                title="移动端远程控制"
-                className={`pointer-events-auto px-4 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 transition-colors ${
-                  remoteActiveForSession
+                disabled={!bs || (!remoteActive && !bs.activeSessionId) || remoteControl.starting}
+                title={remoteActive ? `手机远控：${remoteStatusText}` : '手机扫码连接'}
+                className={`pointer-events-auto w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
+                  remoteActive
                     ? (isDark ? 'bg-[#173B2F] text-[#A8F0C6] hover:bg-[#1F4A3B]' : 'bg-[#E6F4EA] text-[#137333] hover:bg-[#D7ECD8]')
                     : (isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537] disabled:opacity-50' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm disabled:opacity-50')
                 }`}>
-                <Radio size={16} /> {remoteActiveForSession ? remoteStatusText : '手机远控'}
+                <Smartphone size={18} />
+              </button>
+              <button
+                onClick={() => setArtifactsOpen(true)}
+                className={`pointer-events-auto px-4 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm'}`}>
+                <Package size={16} /> {t.artifacts}
+                {artifactCount > 0 && <span className={`text-[11px] px-1.5 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>{artifactCount}</span>}
               </button>
             </div>
-            <button
-              onClick={() => setArtifactsOpen(true)}
-              className={`pointer-events-auto px-4 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm'}`}>
-              <Package size={16} /> {t.artifacts}
-              {artifactCount > 0 && <span className={`text-[11px] px-1.5 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>{artifactCount}</span>}
-            </button>
           </div>
 
           {remoteOpen && (

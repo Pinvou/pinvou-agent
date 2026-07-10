@@ -95,6 +95,8 @@
     .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,.08); }
     .sheet-head h2 { margin: 0; font-size: 16px; }
     .sheet-body { max-height: calc(78vh - 58px); overflow: auto; padding: 8px; }
+    .sheet-toolbar { padding: 8px 8px 4px; }
+    .sheet-create { width: 100%; min-height: 42px; border-radius: 14px; background: #0a84ff; color: #fff; font-weight: 650; }
     .sheet-item { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border-radius: 14px; border: 0; background: transparent; text-align: left; }
     .sheet-item.active, .sheet-item:active { background: rgba(255,255,255,.07); }
     .sheet-main { min-width: 0; }
@@ -114,6 +116,7 @@
     body.light .sheet, body.light .preview { background: #fff; border-color: rgba(0,0,0,.10); color: #151719; }
     body.light .sheet-head { border-color: rgba(0,0,0,.08); }
     body.light .sheet-title, body.light .sheet-head h2 { color: #151719; }
+    body.light .sheet-create { background: #0a84ff; color: #fff; }
     body.light .sheet-item { color: #151719; }
     body.light .sheet-item.active, body.light .sheet-item:active { background: #eef2f6; }
     body.light .msg, body.light .msg.assistant, body.light .plan-list li, body.light .pinvou-row { color: #25282c; }
@@ -227,6 +230,9 @@
     const state = {
       sessions: [],
       sessionsLoaded: false,
+      sessionChoiceRequired: true,
+      pendingSessionId: '',
+      creatingSession: false,
       artifacts: [],
       chips: {},
       theme: localStorage.getItem('pinvou_remote_theme') || 'dark',
@@ -241,6 +247,8 @@
       artifactHistory: [],
       turnDirtyArtifacts: [],
       turnPresentedArtifacts: [],
+      pendingStoreSnapshotTimer: null,
+      lastLiveSnapshotAtBySession: {},
       replaced: false,
     };
     const sentClientIds = new Set();
@@ -363,6 +371,25 @@
       if (!seen) state.sessions.unshift(item);
       state.sessionsLoaded = true;
     }
+    function messageSessionId(msg) {
+      const p = msg && msg.payload || {};
+      const s = p.session || {};
+      return s.id || p.session_id || msg.session_id || '';
+    }
+    function targetSessionId() {
+      return state.pendingSessionId || sessionId || '';
+    }
+    function isCurrentSessionMessage(msg) {
+      const sid = messageSessionId(msg);
+      const target = targetSessionId();
+      return !sid || !target || sid === target;
+    }
+    function clearPendingStoreSnapshot() {
+      if (state.pendingStoreSnapshotTimer) {
+        clearTimeout(state.pendingStoreSnapshotTimer);
+        state.pendingStoreSnapshotTimer = null;
+      }
+    }
     setInterval(() => {
       if (state.turn.active) renderRunState();
     }, 100);
@@ -386,6 +413,7 @@
       el.sheetOverlay.classList.remove('hidden');
     }
     function closeSheet() {
+      if (state.sessionChoiceRequired && state.sheet === 'sessions') return;
       state.sheet = '';
       el.sheetOverlay.classList.add('hidden');
     }
@@ -417,6 +445,38 @@
       btn.onclick = onClick;
       return btn;
     }
+    function enterRemoteSession(id) {
+      if (!id) return;
+      state.pendingSessionId = id;
+      state.sessionChoiceRequired = false;
+      closeSheet();
+      if (id === sessionId) {
+        sendAction('request_snapshot', {});
+        sendAction('request_chips', {});
+        sendAction('request_artifacts', {});
+        return;
+      }
+      sendAction('switch_remote_session', { session_id: id });
+    }
+    function renderCreateSessionButton() {
+      const bar = document.createElement('div');
+      bar.className = 'sheet-toolbar';
+      const btn = document.createElement('button');
+      btn.className = 'sheet-create';
+      btn.disabled = state.creatingSession || !joined;
+      btn.textContent = state.creatingSession ? '正在新建...' : '+ 新建 Session';
+      btn.onclick = () => {
+        if (state.creatingSession) return;
+        state.creatingSession = true;
+        renderSessionSheet();
+        if (!sendAction('create_remote_session', {})) {
+          state.creatingSession = false;
+          renderSessionSheet();
+        }
+      };
+      bar.appendChild(btn);
+      el.sheetBody.appendChild(bar);
+    }
     function renderSessionSheet() {
       el.sheetTitle.textContent = '选择 Session';
       el.sheetBody.innerHTML = '';
@@ -424,12 +484,19 @@
         el.sheetBody.innerHTML = '<div class="empty-panel">正在连接桌面端。连接成功后会加载 session 列表。</div>';
         return;
       }
+      renderCreateSessionButton();
       if (!state.sessionsLoaded) {
-        el.sheetBody.innerHTML = '<div class="empty-panel">正在加载 session 列表。</div>';
+        const empty = document.createElement('div');
+        empty.className = 'empty-panel';
+        empty.textContent = '正在加载 session 列表。';
+        el.sheetBody.appendChild(empty);
         return;
       }
       if (!state.sessions.length) {
-        el.sheetBody.innerHTML = '<div class="empty-panel">暂无 session 列表。</div>';
+        const empty = document.createElement('div');
+        empty.className = 'empty-panel';
+        empty.textContent = '暂无 session 列表，可以新建一个。';
+        el.sheetBody.appendChild(empty);
         return;
       }
       state.sessions.forEach(s => {
@@ -438,10 +505,7 @@
           sub: `${shortId(s.id)} · ${s.message_count || 0} 条消息`,
           mark: s.active || s.id === sessionId ? '当前' : '',
           active: s.active || s.id === sessionId,
-          onClick: () => {
-            if (s.id && s.id !== sessionId) sendAction('switch_remote_session', { session_id: s.id });
-            closeSheet();
-          },
+          onClick: () => enterRemoteSession(s.id),
         }));
       });
     }
@@ -542,6 +606,12 @@
         div.textContent = text || '';
       }
       if (role === 'user') state.artifactHistory.push({ type: 'user' });
+      return appendToMessages(div);
+    }
+    function addAssistantHtml(html) {
+      const div = document.createElement('div');
+      div.className = 'msg assistant';
+      div.innerHTML = html || '';
       return appendToMessages(div);
     }
     function addSystem(text) {
@@ -1112,15 +1182,19 @@
       el.messages.innerHTML = '';
       const session = snapshot.session || {};
       sessionId = session.id || sessionId;
+      if (!state.pendingSessionId || state.pendingSessionId === sessionId) state.pendingSessionId = '';
       rememberSnapshotSession(session);
       el.title.textContent = session.title || 'PINVOU Remote';
       el.subtitle.textContent = session.id ? `session ${session.id}` : '当前 session';
       updateArtifacts(Array.isArray(snapshot.artifacts) ? snapshot.artifacts : []);
       const messages = Array.isArray(snapshot.messages) ? snapshot.messages : [];
-      if (!messages.length) {
+      const chatItems = Array.isArray(snapshot.chat_items) ? snapshot.chat_items : [];
+      if (!messages.length && !chatItems.length) {
         el.messages.innerHTML = '<div class="empty">当前 session 暂无历史消息。你可以直接发送第一条远程消息。</div>';
       }
-      if (messages.some(m => Array.isArray(m.blocks))) {
+      if (chatItems.length) {
+        renderChatItemSnapshot(chatItems);
+      } else if (messages.some(m => Array.isArray(m.blocks))) {
         rebuildFromBlocks(messages);
       } else {
         messages.forEach(m => {
@@ -1130,7 +1204,36 @@
           }
         });
       }
+      const waitingForUserInput = chatItems.some(item =>
+        item && item.type === 'user_input' && !item.resolved && item.cardState !== 'submitted' && item.cardState !== 'cancelled'
+      );
+      setTurnActive(!!snapshot.busy && !waitingForUserInput, snapshot.busy ? 'waiting' : 'idle');
       renderChips();
+    }
+    function applySessionSnapshot(msg) {
+      const snapshot = msg.payload || {};
+      const sid = messageSessionId(msg) || (snapshot.session && snapshot.session.id) || sessionId;
+      const chatItems = Array.isArray(snapshot.chat_items) ? snapshot.chat_items : [];
+      const isLive = snapshot.snapshot_source === 'live' || chatItems.length > 0;
+      if (isLive) {
+        clearPendingStoreSnapshot();
+        if (sid) state.lastLiveSnapshotAtBySession[sid] = Date.now();
+        renderSnapshot(snapshot);
+        setStatus('已同步');
+        return;
+      }
+      const lastLiveAt = sid ? (state.lastLiveSnapshotAtBySession[sid] || 0) : 0;
+      if (lastLiveAt && Date.now() - lastLiveAt < 1500) return;
+      clearPendingStoreSnapshot();
+      state.pendingStoreSnapshotTimer = setTimeout(() => {
+        state.pendingStoreSnapshotTimer = null;
+        const currentTarget = targetSessionId();
+        if (sid && currentTarget && sid !== currentTarget) return;
+        const latestLiveAt = sid ? (state.lastLiveSnapshotAtBySession[sid] || 0) : 0;
+        if (latestLiveAt && Date.now() - latestLiveAt < 1500) return;
+        renderSnapshot(snapshot);
+        setStatus('已同步');
+      }, 300);
     }
     function renderUserInput(payload) {
       clearEmpty();
@@ -1330,11 +1433,85 @@
       card.appendChild(status);
       appendToMessages(card);
     }
+    function renderChatItemSnapshot(items) {
+      const list = Array.isArray(items) ? items : [];
+      list.forEach(item => {
+        if (!item || typeof item !== 'object') return;
+        if (item.type === 'user') {
+          addMessage('user', item.text || '');
+          return;
+        }
+        if (item.type === 'assistant') {
+          if (item.html) addAssistantHtml(item.html);
+          else addMessage('assistant', item.text || '');
+          return;
+        }
+        if (item.type === 'system') {
+          addSystem(item.text || '');
+          return;
+        }
+        if (item.type === 'tool') {
+          addToolCard({
+            id: item.toolId,
+            name: item.name,
+            args: item.args,
+            status: item.state === 'failed' ? '失败' : item.state === 'done' ? '完成' : '运行中',
+          });
+          if (item.state === 'done' || item.state === 'failed' || item.success != null) {
+            finishToolCard({
+              id: item.toolId,
+              name: item.name,
+              args: item.args,
+              success: item.success !== false,
+              output: item.output,
+            });
+          }
+          return;
+        }
+        if (item.type === 'artifact_card') {
+          addArtifactCard({
+            name: item.title || basename(item.path),
+            basename: item.title || basename(item.path),
+            path: item.path,
+            kind: item.kind || '',
+          }, { force: true });
+          return;
+        }
+        if (item.type === 'user_input') {
+          const payload = { id: item.toolCallId, questions: item.questions || [] };
+          if (item.resolved || item.cardState === 'submitted' || item.cardState === 'cancelled') {
+            renderSubmittedUserInput(payload, item.restoredAnswers || []);
+          } else {
+            renderUserInput(payload);
+          }
+          return;
+        }
+        if (item.type === 'plan_card') {
+          const active = item.cardState === 'active' && !item.resolved;
+          addPlanCard({
+            plan_snapshot: item.plan,
+            todos_snapshot: item.todos,
+          }, !active);
+          return;
+        }
+        if (item.type === 'careful_blocked') {
+          addSystem('已拦截一个高风险操作。');
+          return;
+        }
+        if (item.type === 'persona_equip') {
+          const name = item.card && (item.card.title || item.card.name);
+          addSystem(name ? `已加持 ${name}` : '已加持专家卡。');
+          return;
+        }
+      });
+    }
     function handleDesktopEvent(msg) {
+      const unscoped = ['session_list', 'remote_session_switched', 'error', 'room_replaced', 'room_closed'];
+      if (!unscoped.includes(msg.type) && !isCurrentSessionMessage(msg)) return;
       switch (msg.type) {
         case 'session_snapshot':
-          renderSnapshot(msg.payload || {});
-          setStatus('已同步');
+          if (state.sessionChoiceRequired) break;
+          applySessionSnapshot(msg);
           break;
         case 'session_list':
           state.sessions = Array.isArray(msg.payload && msg.payload.sessions) ? msg.payload.sessions : [];
@@ -1345,7 +1522,11 @@
           break;
         case 'remote_session_switched': {
           const s = msg.payload && msg.payload.session || {};
+          if (state.pendingSessionId && s.id && s.id !== state.pendingSessionId) break;
+          state.sessionChoiceRequired = false;
+          state.creatingSession = false;
           sessionId = s.id || sessionId;
+          state.pendingSessionId = '';
           el.title.textContent = s.title || 'PINVOU Remote';
           el.subtitle.textContent = sessionId ? `session ${sessionId}` : '当前 session';
           setTurnActive(false);
@@ -1463,9 +1644,14 @@
           setStatus((msg.payload && msg.payload.status) || '空闲');
           break;
         case 'error':
+          state.creatingSession = false;
           setStatus('连接异常');
           if (state.sheet === 'sessions') {
-            el.sheetBody.innerHTML = `<div class="empty-panel">${(msg.payload && msg.payload.message) || msg.message || '连接异常'}</div>`;
+            renderSessionSheet();
+            const empty = document.createElement('div');
+            empty.className = 'empty-panel';
+            empty.textContent = (msg.payload && msg.payload.message) || msg.message || '连接异常';
+            el.sheetBody.appendChild(empty);
           }
           addSystem(`错误: ${(msg.payload && msg.payload.message) || msg.message || 'unknown'}`);
           break;
@@ -1487,10 +1673,9 @@
         clearTimeout(joinTimer);
         sessionId = msg.session_id || '';
         setStatus('已连接');
-        if (state.sheet === 'sessions') renderSessionSheet();
-        sendAction('request_session_list', {});
-        sendAction('request_chips', {});
-        sendAction('request_artifacts', {});
+        state.sessionChoiceRequired = true;
+        el.messages.innerHTML = '<div class="empty">请选择一个 session 进入。</div>';
+        openSheet('sessions');
         return;
       }
       handleDesktopEvent(msg);

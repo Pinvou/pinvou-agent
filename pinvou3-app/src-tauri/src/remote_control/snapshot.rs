@@ -30,6 +30,7 @@ pub fn build_session_snapshot(store: &SessionStore, session_id: &str) -> Result<
         .collect::<Vec<_>>();
 
     Ok(json!({
+        "snapshot_source": "store",
         "session": {
             "id": saved.metadata.id,
             "title": saved.metadata.title,

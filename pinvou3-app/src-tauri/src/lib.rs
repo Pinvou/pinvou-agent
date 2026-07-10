@@ -431,6 +431,7 @@ pub fn run() {
             remote_control::remote_control_status,
             remote_control::remote_control_refresh_qr,
             remote_control::remote_control_publish_user_message,
+            remote_control::remote_control_publish_event,
             commands::set_disabled_connectors,
             commands::get_disabled_connectors,
             commands::get_memory_profile,

@@ -39,7 +39,7 @@ pub fn remote_control_start(
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
     let info = manager.start(sid.clone(), store.inner().clone(), pool.inner().clone())?;
-    let _ = manager.send_snapshot(&store, &sid);
+    let _ = manager.send_snapshot_with_live_request(&store, &sid);
     Ok(info)
 }
 
@@ -74,4 +74,14 @@ pub fn remote_control_publish_user_message(
     manager: State<'_, RemoteControlManager>,
 ) -> Result<(), String> {
     manager.publish_user_message(&session_id, content, client_message_id)
+}
+
+#[tauri::command]
+pub fn remote_control_publish_event(
+    session_id: String,
+    kind: String,
+    payload: Value,
+    manager: State<'_, RemoteControlManager>,
+) -> Result<(), String> {
+    manager.publish_desktop_event(&session_id, &kind, payload)
 }

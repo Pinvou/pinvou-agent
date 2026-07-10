@@ -178,6 +178,9 @@ wss.on("connection", (ws) => {
         rooms.delete(room.room_id);
         return;
       }
+      if (typeof msg.session_id === "string" && msg.session_id) {
+        room.session_id = msg.session_id;
+      }
       audit(room, `desktop:${msg.type || "event"}`);
       send(room.mobile, msg);
       return;

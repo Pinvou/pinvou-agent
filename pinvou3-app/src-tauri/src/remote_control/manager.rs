@@ -365,8 +365,9 @@ impl RemoteControlManager {
                     Err(e) => Err(e),
                 }
             }
-            "request_snapshot" | "ping" => self.send_snapshot(store, &active_session_id),
+            "request_snapshot" | "ping" => self.send_snapshot_with_live_request(store, &active_session_id),
             "request_session_list" => self.send_session_list(store, &active_session_id),
+            "create_remote_session" => self.create_remote_session(store, pool),
             "switch_remote_session" => {
                 match action.payload.get("session_id").and_then(|v| v.as_str()) {
                     Some(id) => self.switch_remote_session(store, id),
@@ -471,6 +472,19 @@ impl RemoteControlManager {
         self.send_artifact_list(store, session_id)
     }
 
+    pub fn send_snapshot_with_live_request(
+        &self,
+        store: &SessionStore,
+        session_id: &str,
+    ) -> Result<(), String> {
+        let result = self.send_snapshot(store, session_id);
+        let _ = self.app.emit(
+            "remote_control:snapshot_requested",
+            json!({ "session_id": session_id }),
+        );
+        result
+    }
+
     pub fn send_session_list(
         &self,
         store: &SessionStore,
@@ -543,7 +557,50 @@ impl RemoteControlManager {
             )))
             .map_err(|e| format!("send remote session switched: {e}"))?;
         self.send_session_list(store, target_session_id)?;
-        self.send_snapshot(store, target_session_id)
+        self.send_snapshot_with_live_request(store, target_session_id)
+    }
+
+    pub fn create_remote_session(
+        &self,
+        store: &SessionStore,
+        pool: &EnginePool,
+    ) -> Result<(), String> {
+        let (model, model_id) = pool.default_model_for_new_session();
+        let workspace = pool.bridge.workspace.clone();
+        let saved = store
+            .create_new(model, model_id, workspace)
+            .map_err(|e| format!("create remote session: {e:?}"))?;
+        let target_session_id = saved.metadata.id.clone();
+        let room = {
+            let mut inner = self.inner.lock();
+            let room = inner
+                .room
+                .as_mut()
+                .ok_or_else(|| "remote control not active".to_string())?;
+            room.session_id = target_session_id.clone();
+            room.clone()
+        };
+        let session_payload = json!({
+            "id": saved.metadata.id,
+            "title": saved.metadata.title,
+            "updated_at": saved.metadata.updated_at,
+            "message_count": saved.metadata.message_count,
+        });
+        let _ = self.app.emit(
+            "remote_control:session_created",
+            json!({ "session": session_payload.clone() }),
+        );
+        self.emit_status();
+        room.sender
+            .send(RelayOutbound::Envelope(envelope(
+                &room.room_id,
+                &room.session_id,
+                "remote_session_switched",
+                json!({ "session": session_payload }),
+            )))
+            .map_err(|e| format!("send remote session created: {e}"))?;
+        self.send_session_list(store, &target_session_id)?;
+        self.send_snapshot_with_live_request(store, &target_session_id)
     }
 
     pub fn send_artifact_list(&self, store: &SessionStore, session_id: &str) -> Result<(), String> {
@@ -711,6 +768,31 @@ impl RemoteControlManager {
                 }),
             )))
             .map_err(|e| format!("publish user message: {e}"))
+    }
+
+    pub fn publish_desktop_event(
+        &self,
+        session_id: &str,
+        kind: &str,
+        payload: Value,
+    ) -> Result<(), String> {
+        let room = {
+            let inner = self.inner.lock();
+            inner
+                .room
+                .as_ref()
+                .filter(|room| room.session_id == session_id)
+                .cloned()
+        }
+        .ok_or_else(|| "remote control not active".to_string())?;
+        room.sender
+            .send(RelayOutbound::Envelope(envelope(
+                &room.room_id,
+                &room.session_id,
+                kind,
+                payload,
+            )))
+            .map_err(|e| format!("publish desktop event: {e}"))
     }
 
     fn active_room(&self) -> Option<ActiveRoom> {

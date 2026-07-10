@@ -375,7 +375,7 @@
   // 否则临时切到该 buffer 跑完再切回(期间不 notify)。
   function runSyncOnSession(sid, fn) {
     if (!sid || sid === state.activeSessionId) { fn(); return; }
-    var bg = sessionStates[sid]; if (!bg) return;
+    var bg = getBuffer(sid);
     var realId = state.activeSessionId;
     saveWorkingSetTo(getBuffer(realId));
     loadWorkingSetFrom(bg);
@@ -412,13 +412,13 @@
       await invoke("save_session_messages", { id: sid, messages: msgs });
       try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch (_) {}
       var meta = state.sessions.find(function (s) { return s.id === sid; });
-      if (meta && (meta.title === "新对话" || meta.title === "New chat" || personaPlaceholderTitles[sid])) {
+      if (!meta || meta.title === "新对话" || meta.title === "New chat" || personaPlaceholderTitles[sid]) {
         var firstUser = msgs.find(function (m) { return m.role === "user"; });
         var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
         if (text && text.text) {
           var newTitle = text.text.slice(0, 20);
           await invoke("rename_session", { id: sid, title: newTitle });
-          meta.title = newTitle;
+          if (meta) meta.title = newTitle;
           delete personaPlaceholderTitles[sid]; // 已被对话内容命名,卸下占位标记
         }
       }
@@ -432,6 +432,76 @@
       try { return structuredClone(state); } catch (_) {}
     }
     return JSON.parse(JSON.stringify(state));
+  }
+  function cloneJson(value, fallback) {
+    try { return JSON.parse(JSON.stringify(value == null ? fallback : value)); }
+    catch (_) { return fallback; }
+  }
+  function remoteWorkingSetFor(sid) {
+    if (!sid) return null;
+    if (sid === state.activeSessionId) {
+      saveWorkingSetTo(getBuffer(sid));
+      return {
+        messages: state.messages, chatItems: state.chatItems, artifacts: state.artifacts,
+        busy: state.busy, thinking: state.thinking, planSnapshot: state.planSnapshot,
+      };
+    }
+    return sessionStates[sid] || null;
+  }
+  function remoteArtifactSnapshot(artifacts) {
+    return (Array.isArray(artifacts) ? artifacts : []).map(function (a) {
+      var p = a && (a.path || a.path_tail || a.storage_path || "");
+      return {
+        id: (a && a.id) || "",
+        basename: (a && a.basename) || basename(p),
+        path: p,
+        path_tail: p,
+        kind: (a && a.kind) || "",
+        byte_size: (a && a.byte_size) || 0,
+        created_at: (a && a.created_at) || "",
+      };
+    }).filter(function (a) { return !!(a.path || a.basename); });
+  }
+  function buildRemoteLiveSnapshot(sid) {
+    var ws = remoteWorkingSetFor(sid);
+    if (!ws) return null;
+    var meta = state.sessions.find(function (s) { return s.id === sid; }) || {};
+    var msgs = cloneJson(ws.messages, []);
+    var chatItems = cloneJson(ws.chatItems, []);
+    return {
+      snapshot_source: "live",
+      session: {
+        id: sid,
+        title: meta.title || "新对话",
+        status: ws.busy ? "running" : "idle",
+        updated_at: meta.updated_at || "",
+        message_count: meta.message_count || msgs.length || chatItems.length || 0,
+      },
+      messages: msgs.map(function (m, idx) {
+        var blocks = Array.isArray(m.content) ? m.content : [];
+        return {
+          index: idx,
+          role: m.role,
+          content: blocks.filter(function (b) { return b && b.type === "text"; }).map(function (b) { return b.text || ""; }).join(""),
+          blocks: blocks,
+        };
+      }),
+      chat_items: chatItems,
+      artifacts: remoteArtifactSnapshot(filterSessionArtifacts(ws.artifacts, sid)),
+      busy: !!ws.busy,
+      thinking: cloneJson(ws.thinking, null),
+      plan_snapshot: cloneJson(ws.planSnapshot, null),
+    };
+  }
+  async function publishRemoteLiveSnapshot(sid) {
+    var snapshot = buildRemoteLiveSnapshot(sid);
+    if (!snapshot) return false;
+    await invoke("remote_control_publish_event", {
+      sessionId: sid,
+      kind: "session_snapshot",
+      payload: snapshot,
+    });
+    return true;
   }
   function notify() {
     if (suppressNotify) return;
@@ -1673,6 +1743,7 @@
       await persistMessagesFor(sid);
       await refreshHistoryList();
       notify();
+      publishRemoteLiveSnapshot(sid).catch(function () {});
       // 排队式:本轮跑完,若该 session 不忙且有待发消息 → 自动发下一条
       flushQueued(sid);
     })();
@@ -3176,6 +3247,27 @@
   listen("remote_control:status", function (e) {
     state.remoteControl = Object.assign({}, state.remoteControl, e.payload || {});
     notify();
+  });
+  listen("remote_control:snapshot_requested", function (e) {
+    var sid = e && e.payload && e.payload.session_id;
+    if (!sid) return;
+    publishRemoteLiveSnapshot(sid).catch(function () {});
+  });
+  listen("remote_control:session_created", function (e) {
+    var s = e && e.payload && e.payload.session;
+    if (s && s.id) {
+      getBuffer(s.id);
+      if (!state.sessions.some(function (item) { return item.id === s.id; })) {
+        state.sessions.unshift({
+          id: s.id,
+          title: s.title || "新对话",
+          updated_at: s.updated_at || "",
+          message_count: s.message_count || 0,
+        });
+      }
+      notify();
+    }
+    refreshHistoryList().then(function () { notify(); }).catch(function () {});
   });
   async function loadAppVersion() {
     try {
