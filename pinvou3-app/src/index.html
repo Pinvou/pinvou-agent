@@ -4,16 +4,86 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PINVOU 智能助手（内测版）</title>
+  <script>
+    // Startup marks are deliberately plain JavaScript and run before every
+    // vendor asset. They are batched to Rust so Windows release builds retain
+    // the timeline in ~/.pinvou3/logs/startup.log even without a console.
+    (function () {
+      var entries = [];
+      var sent = 0;
+      var flushInFlight = false;
+      var flushTimer = null;
+      var longTaskCount = 0;
+
+      function mark(stage, detail) {
+        var entry = {
+          stage: String(stage),
+          detail: detail == null ? "" : String(detail),
+          since_navigation_ms: performance.now(),
+        };
+        entries.push(entry);
+        console.info("[startup] +" + entry.since_navigation_ms.toFixed(3) + "ms " + entry.stage, entry.detail);
+        scheduleFlush(0);
+      }
+
+      function scheduleFlush(delay) {
+        if (flushTimer != null) return;
+        flushTimer = setTimeout(function () {
+          flushTimer = null;
+          flush();
+        }, delay || 0);
+      }
+
+      function flush() {
+        var invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+        if (!invoke || flushInFlight || sent >= entries.length) return;
+        var batch = entries.slice(sent);
+        flushInFlight = true;
+        invoke("report_frontend_startup", { entries: batch }).then(function () {
+          sent += batch.length;
+          flushInFlight = false;
+          if (sent < entries.length) scheduleFlush(0);
+        }).catch(function () {
+          flushInFlight = false;
+          scheduleFlush(250);
+        });
+      }
+
+      window.__PINVOU_STARTUP__ = { mark: mark, flush: flush, entries: entries };
+      mark("html:head_start");
+      document.addEventListener("DOMContentLoaded", function () {
+        mark("dom:content_loaded_listener_begin", "listener registered before Babel");
+      });
+      window.addEventListener("load", function () { mark("window:load"); });
+      window.addEventListener("error", function (event) {
+        mark("window:error", event && event.message ? event.message : "unknown error");
+      });
+      window.addEventListener("unhandledrejection", function (event) {
+        mark("window:unhandled_rejection", String(event && event.reason || "unknown rejection"));
+      });
+      if (window.PerformanceObserver) {
+        try {
+          new PerformanceObserver(function (list) {
+            list.getEntries().forEach(function (entry) {
+              if (longTaskCount++ < 20) {
+                mark("browser:long_task", "start_ms=" + entry.startTime.toFixed(1) + " duration_ms=" + entry.duration.toFixed(1));
+              }
+            });
+          }).observe({ type: "longtask", buffered: true });
+        } catch (_) {}
+      }
+    })();
+  </script>
   <!-- 本地 vendor（离线/内网可用，不依赖 CDN）。见 vendor/README.md -->
-  <script src="vendor/tailwind.js"></script>
+  <script src="vendor/tailwind.js" onload="__PINVOU_STARTUP__.mark('vendor:tailwind_loaded')"></script>
   <!-- 工具商店/卡片用 Tailwind dark: 变体(class 策略);app 主题切换时由 App 在 <html> 挂 .dark -->
   <script>tailwind.config = { darkMode: 'class' };</script>
-  <script src="vendor/react.development.js"></script>
-  <script src="vendor/react-dom.development.js"></script>
-  <script src="vendor/babel.min.js"></script>
+  <script src="vendor/react.development.js" onload="__PINVOU_STARTUP__.mark('vendor:react_dev_loaded')"></script>
+  <script src="vendor/react-dom.development.js" onload="__PINVOU_STARTUP__.mark('vendor:react_dom_dev_loaded')"></script>
+  <script src="vendor/babel.min.js" onload="__PINVOU_STARTUP__.mark('vendor:babel_loaded')"></script>
   <!-- Markdown rendering -->
-  <script src="vendor/marked.min.js"></script>
-  <script src="vendor/purify.min.js"></script>
+  <script src="vendor/marked.min.js" onload="__PINVOU_STARTUP__.mark('vendor:marked_loaded')"></script>
+  <script src="vendor/purify.min.js" onload="__PINVOU_STARTUP__.mark('vendor:purify_loaded')"></script>
   <style>
     .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
     .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
@@ -118,12 +188,13 @@
   <script>document.addEventListener('contextmenu', function (e) { e.preventDefault(); });</script>
 
   <!-- TauriBridge must load before React -->
-  <script src="tauri-bridge.js"></script>
+  <script src="tauri-bridge.js" onload="__PINVOU_STARTUP__.mark('app:tauri_bridge_loaded')"></script>
   <!-- 内置卡牌名称/简介 en/ja 翻译 overlay(window.PERSONA_I18N),数据与代码分离 -->
-  <script src="personas-i18n.js"></script>
-  <script src="update-notice-logic.js"></script>
+  <script src="personas-i18n.js" onload="__PINVOU_STARTUP__.mark('app:personas_i18n_loaded')"></script>
+  <script src="update-notice-logic.js" onload="__PINVOU_STARTUP__.mark('app:update_notice_logic_loaded')"></script>
 
   <script type="text/babel">
+    window.__PINVOU_STARTUP__.mark('babel:compiled_script_execute');
     const { useState, useEffect, useRef, useCallback } = React;
 
     /* ==========================================
@@ -1318,6 +1389,10 @@
        ========================================== */
     const App = () => {
       const bs = useBridge();
+      useEffect(() => {
+        window.__PINVOU_STARTUP__.mark('react:first_commit');
+        window.__PINVOU_STARTUP__.flush();
+      }, []);
       const [activeChat, setActiveChat] = useState(null);
       const [currentView, setCurrentView] = useState('chat');
       const [activeTheme, setActiveTheme] = useState('dark');
@@ -12199,14 +12274,17 @@
     // ==========================================
     // Render
     // ==========================================
+    window.__PINVOU_STARTUP__.mark('react:create_root');
     const root = ReactDOM.createRoot(document.getElementById('root'));
     const __q = new URLSearchParams(window.location.search);
     if (__q.get('detached') === '1') {
       window.__PINVOU_DETACHED__ = true;
       root.render(<DetachedShell kind={__q.get('kind') || 'monitor'} id={__q.get('id') || ''} />);
     } else {
+      window.__PINVOU_STARTUP__.mark('react:render_call');
       root.render(<App />);
     }
+    window.__PINVOU_STARTUP__.mark('react:render_scheduled');
   </script>
 </body>
 </html>

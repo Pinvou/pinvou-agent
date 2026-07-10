@@ -17,6 +17,21 @@
   const { invoke } = TAURI.core;
   const { listen } = TAURI.event;
   const dialogOpen = TAURI.dialog?.open;
+  function startupMark(stage, detail) {
+    if (window.__PINVOU_STARTUP__) window.__PINVOU_STARTUP__.mark(stage, detail);
+  }
+  async function startupAwait(stage, action) {
+    var started = performance.now();
+    startupMark(stage + ":start");
+    try {
+      var result = await action();
+      startupMark(stage + ":done", "duration_ms=" + (performance.now() - started).toFixed(1));
+      return result;
+    } catch (error) {
+      startupMark(stage + ":error", "duration_ms=" + (performance.now() - started).toFixed(1) + " error=" + String(error));
+      throw error;
+    }
+  }
 
   // ── Markdown rendering (vendor scripts loaded in index.html) ─────
   // 抹平裸 <script>/<style>/<iframe> 等危险标签:它们一旦被 marked 透传成真 HTML,
@@ -3838,25 +3853,33 @@
   async function init() {
     if (initPromise) return initPromise;
     initPromise = (async function () {
+    startupMark("bridge:init_start");
     startMonitorPolling(); // 先预热运行状态数据，不被设置/历史加载阻塞。
-    await loadSettings();
-    await loadEffectiveModelConfig();
-    await loadAppVersion();
-    await loadModels();
+    startupMark("bridge:monitor_polling_started");
+    await startupAwait("bridge:load_settings", loadSettings);
+    await startupAwait("bridge:load_effective_model", loadEffectiveModelConfig);
+    await startupAwait("bridge:load_app_version", loadAppVersion);
+    await startupAwait("bridge:load_models", loadModels);
     getLlmApiStatus()
       .then(function (status) { return status && status.backend_user_exists ? getLlmApiModels() : null; })
       .then(loadModels)
       .catch(function (e) { console.warn("load llmapi account/models failed", e); });
-    await refreshHistoryList();
+    startupMark("bridge:llmapi_refresh_started");
+    await startupAwait("bridge:refresh_history", refreshHistoryList);
     enterDraft(); // 启动落空白草稿页(lazy session:不自动选/建会话)
-    await refreshSuperPerm();
+    startupMark("bridge:draft_entered");
+    await startupAwait("bridge:refresh_super_permission", refreshSuperPerm);
     loadPersonas(); // 预载卡池(让聊天里草稿"已存入"判定能查到同名自制卡), fire-and-forget
+    startupMark("bridge:personas_load_started");
     pollBackendStatus();
     setInterval(pollBackendStatus, 10000);
     reportPendingUpdateResult(); // Windows OTA 升级后反馈,失败保留记录下次再试
     checkForUpdateSilently(); // fire-and-forget,不阻塞启动
-    await resumeWorkflowOnBoot(); // [2026-06-06] 有进行中的工作流 run 就自动挂回看板
+    startupMark("bridge:background_checks_started");
+    await startupAwait("bridge:resume_workflow", resumeWorkflowOnBoot); // [2026-06-06] 有进行中的工作流 run 就自动挂回看板
     notify();
+    startupMark("bridge:init_done");
+    if (window.__PINVOU_STARTUP__) window.__PINVOU_STARTUP__.flush();
     })();
     return initPromise;
   }

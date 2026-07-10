@@ -276,17 +276,24 @@ impl Pinvou3Bundle {
 
         // 已下线 skills 每次启动都清理(防御性):既有装机的残留目录若不清,
         // SkillRegistry 仍会从 disk 发现它们、重新触发对应协议 prompt。
+        crate::startup::mark("bundle_extract:cleanup_retired:start");
         self.cleanup_retired_skills()?;
         // 已从技能市场下架的预置技能(pua/女娲/头脑风暴):它们曾走 marketplace 装、带
         // `pinvou3-marketplace:` 标记,故按标记内容精确删,只跳过用户上传的同名目录。
         self.cleanup_removed_marketplace_skills()?;
+        crate::startup::mark("bundle_extract:cleanup_retired:done");
         // 工作流目录同 skills:immutable bundle 资源,每次启动防御性重写
         // (防 "VERSION 对得上但目录缺失"),无副作用。
+        crate::startup::mark("bundle_extract:write_workflows:start");
         self.write_workflows()?;
+        crate::startup::mark("bundle_extract:write_workflows:done");
+        crate::startup::mark("bundle_extract:write_connector_clis:start");
         self.write_connector_clis(current.trim() != BUNDLE_VERSION)?;
+        crate::startup::mark("bundle_extract:write_connector_clis:done");
         // Migrate plaintext MCP secrets before bundled manifests are rewritten. If migration
         // fails, keep the old files as a recoverable source instead of overwriting the only
         // remaining plaintext copy.
+        crate::startup::mark("bundle_extract:migrate_mcp_secrets:start");
         let mcp_secret_migration_ok = match crate::bridge::marketplace::MarketplaceManager::new()
             .migrate_mcp_plaintext_secrets()
         {
@@ -296,12 +303,31 @@ impl Pinvou3Bundle {
                 false
             }
         };
+        crate::startup::mark("bundle_extract:migrate_mcp_secrets:done");
         // Built-in skills and workflow resources are immutable bundle assets.
+        crate::startup::mark("bundle_extract:write_builtin_skills:start");
         self.write_builtin_skills()?;
+        crate::startup::mark("bundle_extract:write_builtin_skills:done");
         // Feishu official domain skills are shown only when the gate says so.
-        self.apply_feishu_skills(crate::feishu::feishu_skills_should_show())?;
+        crate::startup::mark("bundle_extract:apply_skill_gates:start");
+        crate::startup::mark("bundle_extract:feishu_auth_probe:start");
+        let feishu_show = crate::feishu::feishu_skills_should_show();
+        crate::startup::mark_with_detail(
+            "rust",
+            "bundle_extract:feishu_auth_probe:done",
+            &format!("show={feishu_show}"),
+        );
+        self.apply_feishu_skills(feishu_show)?;
         // 企微官方域技能:同飞书,按门控(已连接 && 未停用)决定解包还是删除。
-        self.apply_wecom_skills(crate::wecom::wecom_skills_should_show())?;
+        crate::startup::mark("bundle_extract:wecom_auth_probe:start");
+        let wecom_show = crate::wecom::wecom_skills_should_show();
+        crate::startup::mark_with_detail(
+            "rust",
+            "bundle_extract:wecom_auth_probe:done",
+            &format!("show={wecom_show}"),
+        );
+        self.apply_wecom_skills(wecom_show)?;
+        crate::startup::mark("bundle_extract:apply_skill_gates:done");
         // EIP 技能:二进制 ~23MB,不像小文本那样每启动防御性重写——仅在二进制缺失时
         // 解包(自愈),避免每次启动写 23MB。改 SKILL.md/包装脚本后想刷新:删 skills_dir/eip。
         let eip_bin = self.skills_dir.join("eip").join("bin");
@@ -335,8 +361,10 @@ impl Pinvou3Bundle {
             self.write_zhidao_skill()?;
         }
         self.apply_zhidao_skill_visibility(crate::zhidao::zhidao_skills_should_show())?;
+        crate::startup::mark("bundle_extract:internal_skills_ready");
         // MCP server scripts are immutable as well, but wait for secret migration to avoid
         // deleting legacy plaintext before it has been copied into the credential store.
+        crate::startup::mark("bundle_extract:write_mcp_servers:start");
         if mcp_secret_migration_ok {
             self.write_mcp_servers()?;
         }
@@ -346,6 +374,7 @@ impl Pinvou3Bundle {
         // 启动自愈:刷新 mcp.json 里陈旧的本地 python server command(安装时写死的裸
         // "python" → 重解析成可用路径)。必须在引擎 spawn 前跑(引擎从 mcp.json 拉起 server)。
         self.refresh_mcp_python_commands()?;
+        crate::startup::mark("bundle_extract:write_mcp_servers:done");
 
         if current.trim() == BUNDLE_VERSION {
             return Ok(());
