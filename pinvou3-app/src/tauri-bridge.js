@@ -32,6 +32,17 @@
       throw error;
     }
   }
+  async function refreshConnectorAuthGates() {
+    startupMark("bridge:connector_auth_refresh:start");
+    try {
+      var result = await invoke("refresh_connector_auth_gates");
+      startupMark("bridge:connector_auth_refresh:done", "elapsed_ms=" + result.elapsed_ms);
+      return result;
+    } catch (error) {
+      startupMark("bridge:connector_auth_refresh:error", String(error));
+      throw error;
+    }
+  }
 
   // ── Markdown rendering (vendor scripts loaded in index.html) ─────
   // 抹平裸 <script>/<style>/<iframe> 等危险标签:它们一旦被 marked 透传成真 HTML,
@@ -3890,6 +3901,7 @@
     subscribe: subscribe,
     getState: function () { return snapshotState(); },
     init: init,
+    refreshConnectorAuthGates: refreshConnectorAuthGates,
     sendMessage: sendMessage,
     prefillComposer: prefillComposer,
     removeQueued: removeQueued,

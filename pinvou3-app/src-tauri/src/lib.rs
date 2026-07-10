@@ -394,6 +394,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::chat,
             startup::report_frontend_startup,
+            connector_cli::refresh_connector_auth_gates,
             feishu::feishu_ensure_cli,
             feishu::feishu_status,
             feishu::feishu_connect_begin,
