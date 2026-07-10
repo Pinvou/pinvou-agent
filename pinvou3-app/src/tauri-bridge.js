@@ -2055,14 +2055,18 @@
       var computeName = snap.gpu ? snap.gpu.name : (cpu && cpu.name ? cpu.name : bt("gpuUnavailable"));
       snap._fmt = {
         gpuName: computeName,
+        cpuName: cpu && cpu.name ? cpu.name : "",
+        cpuAvailable: !!cpu,
+        computeAvailable: !!(snap.gpu || cpu),
+        computeName: computeName,
         gpuVram: snap.gpu && snap.gpu.vram_total_mib > 0
           ? fmtMiB(snap.gpu.vram_used_mib) + " / " + fmtMiB(snap.gpu.vram_total_mib) : "—",
         gpuVramPct: snap.gpu && snap.gpu.vram_total_mib > 0
           ? Math.round(snap.gpu.vram_used_mib / snap.gpu.vram_total_mib * 100) : 0,
         gpuUtil: snap.gpu ? (snap.gpu._utilMax + "%") : "—",
         gpuUtilPct: snap.gpu ? snap.gpu._utilMax : 0,
-        processorUtil: snap.gpu && snap.gpu.processor_utilization_pct != null ? snap.gpu.processor_utilization_pct + "%" : (cpuUsage != null ? cpuUsage + "%" : "—"),
-        processorUtilPct: snap.gpu && snap.gpu.processor_utilization_pct != null ? snap.gpu.processor_utilization_pct : (cpuUsage != null ? cpuUsage : 0),
+        processorUtil: cpuUsage != null ? cpuUsage + "%" : "—",
+        processorUtilPct: cpuUsage != null ? cpuUsage : 0,
         gpuSharedMemory: snap.gpu && snap.gpu.shared_memory_used_mib != null ? fmtMiB(snap.gpu.shared_memory_used_mib) : "—",
         gpuTemp: snap.gpu && snap.gpu.temperature_c != null ? snap.gpu.temperature_c + "°C" : null,
         gpuPower: snap.gpu && snap.gpu.power_w != null ? snap.gpu.power_w.toFixed(1) + " W" : null,
@@ -2207,6 +2211,100 @@
       console.warn("save settings and restart failed", e);
     }
   }
+
+  async function refreshLlmApiState(options) {
+    options = options || {};
+    var refreshModels = options.refreshModels !== false;
+    var refreshSavedModels = !!options.refreshSavedModels;
+    var status = null;
+    var models = null;
+    try {
+      status = await invoke("get_llmapi_status");
+      state.llmApiStatus = status;
+    } catch (e) {
+      console.warn("get llmapi status failed", e);
+      state.llmApiStatus = null;
+      notify();
+      throw e;
+    }
+    if (refreshModels && status && status.backend_user_exists) {
+      try {
+        models = await invoke("get_llmapi_models");
+        state.llmApiModels = models;
+      } catch (e) {
+        console.warn("get llmapi models failed", e);
+        state.llmApiModels = null;
+        notify();
+        throw e;
+      }
+    } else if (!status || !status.backend_user_exists) {
+      state.llmApiModels = null;
+    }
+    if (refreshSavedModels) await loadModels();
+    notify();
+    return { status: status, models: models };
+  }
+
+  async function getLlmApiStatus() {
+    var result = await refreshLlmApiState({ refreshModels: false });
+    return result.status;
+  }
+
+  async function getLlmApiModels() {
+    var models = await invoke("get_llmapi_models");
+    state.llmApiModels = models;
+    notify();
+    return models;
+  }
+
+  async function setLlmApiDefaultModel(model) {
+    var models = await invoke("set_llmapi_default_model", { model: model });
+    state.llmApiModels = models;
+    await loadSettings();
+    await loadModels();
+    notify();
+    return models;
+  }
+
+  async function ensureLlmApiBinding() {
+    var result = await invoke("ensure_llmapi_binding");
+    await refreshLlmApiState({ refreshSavedModels: true });
+    return result;
+  }
+
+  async function loginLlmApiUser(username, password) {
+    var result = await invoke("login_llmapi_user", { username: username, password: password });
+    await refreshLlmApiState({ refreshSavedModels: true });
+    return result;
+  }
+
+  async function saveLlmApiUserSession(userId, accessToken) {
+    var result = await invoke("save_llmapi_user_session", { userId: userId, accessToken: accessToken });
+    await refreshLlmApiState({ refreshSavedModels: true });
+    return result;
+  }
+
+  async function retryLlmApiProvisioning(pinvouUserId, deviceBindingId) {
+    var result = await invoke("retry_llmapi_provisioning", { pinvouUserId: pinvouUserId, deviceBindingId: deviceBindingId });
+    await refreshLlmApiState({ refreshSavedModels: true });
+    return result;
+  }
+
+  async function setLlmApiUserEnabled(pinvouUserId, enabled) {
+    var result = await invoke("set_llmapi_user_enabled", { pinvouUserId: pinvouUserId, enabled: enabled });
+    await refreshLlmApiState({ refreshSavedModels: true });
+    return result;
+  }
+
+  async function getLlmApiAdminOverview(query, status, limit, offset) {
+    return await invoke("get_llmapi_admin_overview", {
+      query: query || null,
+      status: status || null,
+      limit: limit == null ? null : limit,
+      offset: offset == null ? null : offset,
+    });
+  }
+
   async function submitFeedback(request) {
     return await invoke("submit_feedback", { request: request });
   }
@@ -3746,7 +3844,7 @@
     await loadAppVersion();
     await loadModels();
     getLlmApiStatus()
-      .then(function () { return getLlmApiModels(); })
+      .then(function (status) { return status && status.backend_user_exists ? getLlmApiModels() : null; })
       .then(loadModels)
       .catch(function (e) { console.warn("load llmapi account/models failed", e); });
     await refreshHistoryList();
