@@ -114,14 +114,13 @@ fn handle_event(app: &AppHandle, ev: &Event, root: &Path) {
         // - Nautilus 删除 = mv to trash → Modify(Name) + 文件不存在 → removed
         // - LLM 写完 = Create / Modify(Data) → 文件存在 → upsert
         let event_type = if path.exists() { "upsert" } else { "removed" };
-        let _ = app.emit(
-            "artifact:disk",
-            json!({
-                "session_id": session_id,
-                "path": path.to_string_lossy(),
-                "event": event_type,
-            }),
-        );
+        let payload = json!({
+            "session_id": session_id,
+            "path": path.to_string_lossy(),
+            "event": event_type,
+        });
+        let _ = app.emit("artifact:disk", payload.clone());
+        crate::remote_control::forward_app_event(&app, "artifact:disk", payload);
     }
 }
 

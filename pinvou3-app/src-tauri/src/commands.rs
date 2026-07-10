@@ -1245,12 +1245,15 @@ pub async fn create_session(
 #[tauri::command]
 pub async fn load_session(
     id: String,
+    set_active: Option<bool>,
     store: State<'_, SessionStore>,
 ) -> Result<SavedSession, String> {
     let session = store
         .load(&id)
         .map_err(|e| format!("load_session({id}): {e:?}"))?;
-    store.set_active(Some(id.clone()));
+    if set_active.unwrap_or(true) {
+        store.set_active(Some(id.clone()));
+    }
     // 多 session 并发:切换不再 SyncSession 替换全局引擎(那是旧单引擎模型)。该 session
     // 有自己独立的 engine(已起则持有自己的上下文、还在跑就继续跑;未起则下次 chat 时
     // lazy spawn 并注水这里返回的 messages)。本命令只切 active 指针 + 返回 messages 给前端渲染。

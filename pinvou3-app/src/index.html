@@ -155,6 +155,7 @@
     const BarChart2 = (p) => <I {...p}><line x1="18" x2="18" y1="20" y2="10"/><line x1="12" x2="12" y1="20" y2="4"/><line x1="6" x2="6" y1="20" y2="14"/></I>;
     const Settings = (p) => <I {...p}><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></I>;
     const Monitor = (p) => <I {...p}><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></I>;
+    const Smartphone = (p) => <I {...p}><rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/></I>;
     const Brain = (p) => <I {...p}><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/></I>;
     const BrainCircuit = Brain;
     const Clock = (p) => <I {...p}><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></I>;
@@ -1255,6 +1256,7 @@
       const [personaEditor, setPersonaEditor] = useState(null); // 聊天里"存入卡牌池"草稿 → App 级编辑器
       const [savedConfirm, setSavedConfirm] = useState(null); // 存入成功 → iOS 确认窗 {name}
       const [poolMyOnly, setPoolMyOnly] = useState(false); // 跳卡池时是否直接落「我的卡牌」筛选(从确认窗"去查看"进来=true)
+      const [remoteOpen, setRemoteOpen] = useState(false);
       const [settingsUpdateFocusTick, setSettingsUpdateFocusTick] = useState(0);
 
       // ── 多窗口(撕离/tear-off):长按标签 → 浮起跟手 → 拖到目标屏 → 松手 → 该屏最大化打开 ──
@@ -1300,6 +1302,10 @@
       const t = dict[language];
       // 有可用新版 → 侧边栏设置图标亮红点（不弹窗不打断）
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
+
+      function handleOpenRemoteControl() {
+        setRemoteOpen(true);
+      }
 
       function handleActivateSkill(name) {
         setChatPrefill(t.skillPrefill(name));
@@ -1919,14 +1925,24 @@
             {/* Footer Profile */}
             <div className={`p-3 mt-auto flex ${isSidebarOpen ? 'flex-row items-center justify-between' : 'flex-col items-center gap-3 pb-6'}`}>
               {!isSidebarOpen && (
-                <button
-                  onClick={() => setCurrentView('settings')}
-                  title={t.settings}
-                  className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
-                >
-                  <Settings size={18} />
-                  {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
-                </button>
+                <>
+                  <button
+                    onClick={handleOpenRemoteControl}
+                    title="手机扫码连接"
+                    className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
+                  >
+                    <Smartphone size={18} />
+                    {bs && bs.remoteControl && bs.remoteControl.active && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
+                  </button>
+                  <button
+                    onClick={() => setCurrentView('settings')}
+                    title={t.settings}
+                    className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
+                  >
+                    <Settings size={18} />
+                    {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
+                  </button>
+                </>
               )}
               <button
                 onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: 'https://www.h3c.com/cn/pub/minisite/202606/MegaCube/megacube/index.html' })}
@@ -1939,14 +1955,24 @@
                 )}
               </button>
               {isSidebarOpen && (
-                <button
-                  onClick={() => setCurrentView('settings')}
-                  title={t.settings}
-                  className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
-                >
-                  <Settings size={18} />
-                  {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
-                </button>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={handleOpenRemoteControl}
+                    title="手机扫码连接"
+                    className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
+                  >
+                    <Smartphone size={18} />
+                    {bs && bs.remoteControl && bs.remoteControl.active && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
+                  </button>
+                  <button
+                    onClick={() => setCurrentView('settings')}
+                    title={t.settings}
+                    className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
+                  >
+                    <Settings size={18} />
+                    {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
+                  </button>
+                </div>
               )}
             </div>
           </div>
@@ -2009,6 +2035,10 @@
             )}
             {currentView === 'search' && <SearchView theme={activeTheme} history={chatHistory} t={t} onSelect={handleSwitchSession} />}
             {currentView === 'knowledge' && <KnowledgeView theme={activeTheme} t={t} />}
+
+            {remoteOpen && (
+              <RemoteControlModal theme={activeTheme} bs={bs} onClose={() => setRemoteOpen(false)} />
+            )}
 
             {/* App 级自创卡编辑器: 聊天里「存入卡牌池」草稿走这条 */}
             {personaEditor && (
@@ -4856,6 +4886,75 @@
       );
     };
 
+    const RemoteControlModal = ({ theme, bs, onClose }) => {
+      const isDark = theme === 'dark';
+      const remoteControl = (bs && bs.remoteControl) || {};
+      const remotePairing = remoteControl.pairing || remoteControl;
+      const remoteActive = !!remoteControl.active;
+      const remoteStatusText = {
+        idle: '未开启',
+        connecting_relay: '连接 relay',
+        waiting_mobile: '等待手机扫码',
+        mobile_connected: '手机已连接',
+        mobile_disconnected: '手机已断开',
+        expired: '已过期',
+        stopped: '已停止',
+        error: '连接异常',
+      }[remoteControl.status || 'idle'] || (remoteControl.status || '未开启');
+
+      useEffect(() => {
+        if (!remoteActive && bridge.available) {
+          bridge.startRemoteControl(null).catch(() => {});
+        }
+      }, []);
+
+      async function handleRefreshRemoteControl() {
+        if (!bridge.available) return;
+        try { await bridge.refreshRemoteControlQr(null); } catch (_) {}
+      }
+
+      async function handleStopRemoteControl() {
+        if (!bridge.available) return;
+        await bridge.stopRemoteControl();
+      }
+
+      return (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/45" onClick={onClose}>
+          <div onClick={e => e.stopPropagation()} className={`w-full max-w-[420px] rounded-[22px] shadow-2xl p-5 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div>
+                <div className="text-[17px] font-semibold">移动端远程控制</div>
+                <div className={`text-[12px] mt-1 ${isDark ? 'text-[#AEB4BC]' : 'text-[#5F6368]'}`}>{remoteStatusText}</div>
+              </div>
+              <button onClick={onClose} className={`w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}><X size={17} /></button>
+            </div>
+            {remotePairing && remotePairing.qr_data_url ? (
+              <div className="flex flex-col items-center">
+                <div className="p-3 rounded-[16px] bg-white">
+                  <img src={remotePairing.qr_data_url} alt="Remote control QR" className="w-[220px] h-[220px]" />
+                </div>
+                <div className={`mt-3 w-full text-[12px] leading-relaxed break-all px-3 py-2 rounded-xl ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-[#F1F3F4] text-[#3C4043]'}`}>{remotePairing.url || remoteControl.url}</div>
+              </div>
+            ) : (
+              <div className={`text-[13px] px-3 py-4 rounded-xl ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-[#F1F3F4] text-[#3C4043]'}`}>
+                {remoteControl.starting ? '正在生成二维码...' : '当前会话还未开启远程控制。'}
+              </div>
+            )}
+            {remoteControl.last_error && <div className="mt-3 text-[12px] text-[#EA4335] break-all">{remoteControl.last_error}</div>}
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button onClick={() => navigator.clipboard && navigator.clipboard.writeText(remotePairing.url || remoteControl.url || '')}
+                disabled={!(remotePairing.url || remoteControl.url)}
+                className={`px-3.5 py-2 rounded-full text-[13px] ${isDark ? 'bg-white/10 hover:bg-white/15 disabled:opacity-40' : 'bg-black/5 hover:bg-black/10 disabled:opacity-40'}`}>复制链接</button>
+              <button onClick={handleRefreshRemoteControl}
+                className={`px-3.5 py-2 rounded-full text-[13px] ${isDark ? 'bg-white/10 hover:bg-white/15' : 'bg-black/5 hover:bg-black/10'}`}>刷新二维码</button>
+              <button onClick={handleStopRemoteControl}
+                className="px-3.5 py-2 rounded-full text-[13px] bg-[#C5221F] text-white hover:bg-[#A50E0E]">停止</button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
     // 输入框底栏:工具菜单(只展示已装工具 + 跳工具商店;无会话级开关——后端无此概念)。
     // 产物 HTML 预览：测内容自然尺寸，比面板宽就整体等比缩小铺满（只缩不放）。
     // 治"固定尺寸 banner 在窄预览面板里溢出、出滚动条、只露一角"。响应式整页缩放比≈1、不受影响。
@@ -6359,13 +6458,15 @@
 
           {/* Top Header (浮动) */}
           <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-20 pointer-events-none">
-            <div className="flex items-center gap-2"></div>
-            <button
-              onClick={() => setArtifactsOpen(true)}
-              className={`pointer-events-auto px-4 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm'}`}>
-              <Package size={16} /> {t.artifacts}
-              {artifactCount > 0 && <span className={`text-[11px] px-1.5 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>{artifactCount}</span>}
-            </button>
+            <div className="flex items-center gap-2" />
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setArtifactsOpen(true)}
+                className={`pointer-events-auto px-4 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm'}`}>
+                <Package size={16} /> {t.artifacts}
+                {artifactCount > 0 && <span className={`text-[11px] px-1.5 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>{artifactCount}</span>}
+              </button>
+            </div>
           </div>
 
 

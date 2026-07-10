@@ -149,6 +149,18 @@
     // 应用内升级: updateInfo = check_for_update 返回值(available=true 才有意义)
     appVersion: null,
     updateInfo: null,
+    remoteControl: {
+      active: false,
+      room_id: null,
+      session_id: null,
+      url: null,
+      expires_at: null,
+      status: "idle",
+      relay_url: "",
+      last_error: null,
+      pairing: null,
+      starting: false,
+    },
     updateChecking: false,
     updateCheckError: null,   // 手动检查的错误/「已是最新」提示文案
     updateDownloading: false,
@@ -302,6 +314,7 @@
   function freshBuffer() {
     return {
       messages: [], chatItems: [], personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
+      loadedFromDisk: false,
       planSnapshot: { plan: null, todos: null },
       modeState: { mode: "yolo" },
       thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
@@ -352,6 +365,42 @@
     pendingAssistantText = s.pendingAssistantText || ""; pendingAssistantBlocks = s.pendingAssistantBlocks || [];
     itemIdSeq = s.itemIdSeq || 0; toolMeta = s.toolMeta || {};
   }
+  function hydrateWorkingSetFromSaved(buf, saved) {
+    if (!buf || !saved) return;
+    buf.messages = Array.isArray(saved.messages) ? saved.messages : [];
+    buf.chatItems = [];
+    buf.artifacts = Array.isArray(saved.artifacts) ? saved.artifacts.map(function (a) {
+      var p = typeof a === "string" ? a : (a.storage_path || a.path || "");
+      return { path: p, basename: basename(p) };
+    }) : [];
+    buf.artifacts = filterSessionArtifacts(buf.artifacts, saved.metadata && saved.metadata.id);
+    buf.personaEvents = [];
+    buf.pinvouReviews = [];
+    buf.stream = {
+      currentStreamText: "", currentStreamId: 0, pendingAssistantText: "",
+      pendingAssistantBlocks: [], itemIdSeq: 0, toolMeta: {},
+    };
+  }
+  async function ensureSessionBufferLoaded(sid) {
+    if (!sid) return;
+    if (sid === state.activeSessionId) return;
+    var buf = getBuffer(sid);
+    var meta = state.sessions.find(function (s) { return s.id === sid; }) || {};
+    var knownCount = Number(meta.message_count || 0);
+    if (buf.busy) return;
+    if (buf.loadedFromDisk && (!knownCount || buf.messages.length >= knownCount)) return;
+    if (!buf.loadedFromDisk && (buf.messages.length || buf.chatItems.length) && (!knownCount || buf.messages.length >= knownCount)) return;
+    var saved = await invoke("load_session", { id: sid, setActive: false });
+    var savedCount = saved && saved.metadata ? Number(saved.metadata.message_count || 0) : 0;
+    if ((buf.messages.length || buf.chatItems.length) && savedCount <= buf.messages.length) {
+      buf.loadedFromDisk = true;
+      return;
+    }
+    hydrateWorkingSetFromSaved(buf, saved);
+    try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch (e) { buf.personaEvents = []; }
+    try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch (e) { buf.pinvouReviews = []; }
+    buf.loadedFromDisk = true;
+  }
   // 把 active 工作集存好后切到 id 的 buffer(opts.fresh=新建空 buffer)。
   function switchActiveTo(id, opts) {
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
@@ -365,7 +414,7 @@
   // 否则临时切到该 buffer 跑完再切回(期间不 notify)。
   function runSyncOnSession(sid, fn) {
     if (!sid || sid === state.activeSessionId) { fn(); return; }
-    var bg = sessionStates[sid]; if (!bg) return;
+    var bg = getBuffer(sid);
     var realId = state.activeSessionId;
     saveWorkingSetTo(getBuffer(realId));
     loadWorkingSetFrom(bg);
@@ -402,13 +451,13 @@
       await invoke("save_session_messages", { id: sid, messages: msgs });
       try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch (_) {}
       var meta = state.sessions.find(function (s) { return s.id === sid; });
-      if (meta && (meta.title === "新对话" || meta.title === "New chat" || personaPlaceholderTitles[sid])) {
+      if (!meta || meta.title === "新对话" || meta.title === "New chat" || personaPlaceholderTitles[sid]) {
         var firstUser = msgs.find(function (m) { return m.role === "user"; });
         var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
         if (text && text.text) {
           var newTitle = text.text.slice(0, 20);
           await invoke("rename_session", { id: sid, title: newTitle });
-          meta.title = newTitle;
+          if (meta) meta.title = newTitle;
           delete personaPlaceholderTitles[sid]; // 已被对话内容命名,卸下占位标记
         }
       }
@@ -422,6 +471,78 @@
       try { return structuredClone(state); } catch (_) {}
     }
     return JSON.parse(JSON.stringify(state));
+  }
+  function cloneJson(value, fallback) {
+    try { return JSON.parse(JSON.stringify(value == null ? fallback : value)); }
+    catch (_) { return fallback; }
+  }
+  function remoteWorkingSetFor(sid) {
+    if (!sid) return null;
+    if (sid === state.activeSessionId) {
+      saveWorkingSetTo(getBuffer(sid));
+      return {
+        messages: state.messages, chatItems: state.chatItems, artifacts: state.artifacts,
+        busy: state.busy, thinking: state.thinking, planSnapshot: state.planSnapshot,
+      };
+    }
+    return sessionStates[sid] || null;
+  }
+  function remoteArtifactSnapshot(artifacts) {
+    return (Array.isArray(artifacts) ? artifacts : []).map(function (a) {
+      var p = a && (a.path || a.path_tail || a.storage_path || "");
+      return {
+        id: (a && a.id) || "",
+        basename: (a && a.basename) || basename(p),
+        path: p,
+        path_tail: p,
+        kind: (a && a.kind) || "",
+        byte_size: (a && a.byte_size) || 0,
+        created_at: (a && a.created_at) || "",
+      };
+    }).filter(function (a) { return !!(a.path || a.basename); });
+  }
+  function buildRemoteLiveSnapshot(sid) {
+    var ws = remoteWorkingSetFor(sid);
+    if (!ws) return null;
+    var meta = state.sessions.find(function (s) { return s.id === sid; }) || {};
+    var msgs = cloneJson(ws.messages, []);
+    var chatItems = cloneJson(ws.chatItems, []);
+    return {
+      snapshot_source: "live",
+      session: {
+        id: sid,
+        title: meta.title || "新对话",
+        status: ws.busy ? "running" : "idle",
+        updated_at: meta.updated_at || "",
+        message_count: meta.message_count || msgs.length || chatItems.length || 0,
+      },
+      messages: msgs.map(function (m, idx) {
+        var blocks = Array.isArray(m.content) ? m.content : [];
+        return {
+          index: idx,
+          role: m.role,
+          content: blocks.filter(function (b) { return b && b.type === "text"; }).map(function (b) { return b.text || ""; }).join(""),
+          blocks: blocks,
+        };
+      }),
+      chat_items: chatItems,
+      artifacts: remoteArtifactSnapshot(filterSessionArtifacts(ws.artifacts, sid)),
+      busy: !!ws.busy,
+      thinking: cloneJson(ws.thinking, null),
+      plan_snapshot: cloneJson(ws.planSnapshot, null),
+    };
+  }
+  async function publishRemoteLiveSnapshot(sid) {
+    try { await ensureSessionBufferLoaded(sid); }
+    catch (err) { console.warn("remote snapshot hydrate failed", err); }
+    var snapshot = buildRemoteLiveSnapshot(sid);
+    if (!snapshot) return false;
+    await invoke("remote_control_publish_event", {
+      sessionId: sid,
+      kind: "session_snapshot",
+      payload: snapshot,
+    });
+    return true;
   }
   function notify() {
     if (suppressNotify) return;
@@ -602,6 +723,7 @@
       state.activeSessionId = saved.metadata.id;
       loadWorkingSetFrom(sessionStates[id] = freshBuffer());
       state.messages = Array.isArray(saved.messages) ? saved.messages : [];
+      sessionStates[id].loadedFromDisk = true;
       try { state.personaEvents = await invoke("get_session_persona_events", { sessionId: id }) || []; } catch (e) { state.personaEvents = []; }
       try { state.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: id }) || []; } catch (e) { state.pinvouReviews = []; }
       resetPendingAssistant();
@@ -1163,6 +1285,7 @@
       state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
     });
     notify();
+    publishRemoteUserMessage(sid, displayText, meta && meta.remoteClientMessageId);
     return invoke("chat", { message: text, attachments: attachmentsPayload, sessionId: sid })
       .catch(function (err) {
         runSyncOnSession(sid, function () {
@@ -1172,6 +1295,14 @@
         });
         notify();
       });
+  }
+  function publishRemoteUserMessage(sid, content, clientMessageId) {
+    if (!sid || !content) return;
+    invoke("remote_control_publish_user_message", {
+      sessionId: sid,
+      content: content,
+      clientMessageId: clientMessageId || null,
+    }).catch(function () { /* 没开远控时静默跳过 */ });
   }
   // 本轮跑完(或被停止)后,若该 session 不忙且有排队消息 → 把【整个队列】合并成一条
   // 一次性发出(Claude 式:排队的全部一起扔进下一轮,而不是一条条串行)。
@@ -1654,6 +1785,7 @@
       await persistMessagesFor(sid);
       await refreshHistoryList();
       notify();
+      publishRemoteLiveSnapshot(sid).catch(function () {});
       // 排队式:本轮跑完,若该 session 不忙且有待发消息 → 自动发下一条
       flushQueued(sid);
     })();
@@ -1726,6 +1858,32 @@
       // (file_watcher 递归会推 tmp/ _state/ 等子目录与 infra 文件 → 此处兜住)。
       if (isDeliverable(p.path) || findPresentedArtifact(p.path)) trackArtifact(p.path);
     });
+  });
+
+  listen("remote_control:mobile_user_message", async function (e) {
+    var p = e.payload || {};
+    var sid = p.session_id;
+    var content = (p.content || "").trim();
+    if (!sid || !content) return;
+    try { await ensureSessionBufferLoaded(sid); }
+    catch (err) {
+      console.warn("remote session hydrate failed", err);
+      return;
+    }
+    if (isBusyFor(sid)) {
+      runSyncOnSession(sid, function () {
+        state.queued.push({
+          id: ++itemIdSeq,
+          text: content,
+          displayText: content,
+          attachments: [],
+          meta: { remoteClientMessageId: p.client_message_id || null },
+        });
+      });
+      notify();
+      return;
+    }
+    doSendFor(sid, content, content, [], { remoteClientMessageId: p.client_message_id || null });
   });
 
   // 本地语音识别依赖安装进度（模型下载 / ffmpeg 安装）
@@ -3165,6 +3323,31 @@
     state.updateProgress = p.total ? Math.round((p.downloaded / p.total) * 100) : 0;
     notify();
   });
+  listen("remote_control:status", function (e) {
+    state.remoteControl = Object.assign({}, state.remoteControl, e.payload || {});
+    notify();
+  });
+  listen("remote_control:snapshot_requested", function (e) {
+    var sid = e && e.payload && e.payload.session_id;
+    if (!sid) return;
+    publishRemoteLiveSnapshot(sid).catch(function () {});
+  });
+  listen("remote_control:session_created", function (e) {
+    var s = e && e.payload && e.payload.session;
+    if (s && s.id) {
+      getBuffer(s.id);
+      if (!state.sessions.some(function (item) { return item.id === s.id; })) {
+        state.sessions.unshift({
+          id: s.id,
+          title: s.title || "新对话",
+          updated_at: s.updated_at || "",
+          message_count: s.message_count || 0,
+        });
+      }
+      notify();
+    }
+    refreshHistoryList().then(function () { notify(); }).catch(function () {});
+  });
   async function loadAppVersion() {
     try {
       state.appVersion = await invoke("get_app_version");
@@ -3231,6 +3414,48 @@
   }
   function reportPendingUpdateResult() {
     invoke("report_pending_update_result").catch(function () { /* 静默重试,不阻塞启动 */ });
+  }
+
+  // ── Remote Control: 当前 session 手机远控 ───────────────────────
+  async function refreshRemoteControlStatus() {
+    try {
+      var status = await invoke("remote_control_status");
+      state.remoteControl = Object.assign({}, state.remoteControl, status || {});
+    } catch (e) {
+      state.remoteControl = Object.assign({}, state.remoteControl, { last_error: String(e) });
+    }
+    notify();
+  }
+  async function startRemoteControl(sessionId) {
+    state.remoteControl = Object.assign({}, state.remoteControl, { starting: true, last_error: null });
+    notify();
+    try {
+      var info = await invoke("remote_control_start", { sessionId: sessionId || null });
+      state.remoteControl = Object.assign({}, state.remoteControl, info || {}, { active: true, pairing: info, starting: false, last_error: null });
+      await refreshRemoteControlStatus();
+      return info;
+    } catch (e) {
+      state.remoteControl = Object.assign({}, state.remoteControl, { starting: false, last_error: String(e) });
+      notify();
+      throw e;
+    }
+  }
+  async function stopRemoteControl() {
+    try { await invoke("remote_control_stop"); } catch (e) { state.remoteControl.last_error = String(e); }
+    state.remoteControl = Object.assign({}, state.remoteControl, { active: false, pairing: null, status: "stopped" });
+    notify();
+  }
+  async function refreshRemoteControlQr(sessionId) {
+    try {
+      var info = await invoke("remote_control_refresh_qr", { sessionId: sessionId || null });
+      state.remoteControl = Object.assign({}, state.remoteControl, info || {}, { active: true, pairing: info, last_error: null });
+      await refreshRemoteControlStatus();
+      return info;
+    } catch (e) {
+      state.remoteControl = Object.assign({}, state.remoteControl, { last_error: String(e) });
+      notify();
+      throw e;
+    }
   }
 
   // ── 依赖体检 ─────────────────────────────────────────────────────
@@ -3825,6 +4050,7 @@
     setInterval(pollBackendStatus, 10000);
     reportPendingUpdateResult(); // Windows OTA 升级后反馈,失败保留记录下次再试
     checkForUpdateSilently(); // fire-and-forget,不阻塞启动
+    refreshRemoteControlStatus(); // fire-and-forget
     await resumeWorkflowOnBoot(); // [2026-06-06] 有进行中的工作流 run 就自动挂回看板
     notify();
     })();
@@ -3878,6 +4104,10 @@
     testModelConnection: testModelConnection,
     toggleSuperPerm: toggleSuperPerm,
     renderMarkdown: renderMarkdown,
+    startRemoteControl: startRemoteControl,
+    stopRemoteControl: stopRemoteControl,
+    refreshRemoteControlQr: refreshRemoteControlQr,
+    refreshRemoteControlStatus: refreshRemoteControlStatus,
     // Plan/YOLO
     acceptPlan: acceptPlan,
     discardPlan: discardPlan,

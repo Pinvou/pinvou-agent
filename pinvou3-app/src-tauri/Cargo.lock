@@ -5496,6 +5496,7 @@ version = "0.5.8"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "calamine",
  "chrono",
  "codewhale-config",
@@ -5504,12 +5505,14 @@ dependencies = [
  "device_query",
  "fastembed",
  "flate2",
+ "futures-util",
  "include_dir",
  "log",
  "md5",
  "notify",
  "parking_lot",
  "qrcode",
+ "rand 0.9.4",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",
@@ -5523,6 +5526,7 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-single-instance",
  "tokio",
+ "tokio-tungstenite",
  "walkdir",
  "webkit2gtk",
  "windows-sys 0.61.2",
@@ -8363,6 +8367,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-tungstenite"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edc5f74e248dc973e0dbb7b74c7e0d6fcc301c694ff50049504004ef4d0cdcd9"
+dependencies = [
+ "futures-util",
+ "log",
+ "rustls",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls",
+ "tungstenite",
+ "webpki-roots 0.26.11",
+]
+
+[[package]]
 name = "tokio-util"
 version = "0.7.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8654,6 +8674,26 @@ name = "ttf-parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
+
+[[package]]
+name = "tungstenite"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18e5b8366ee7a95b16d32197d0b2604b43a0be89dc5fac9f8e96ccafbaedda8a"
+dependencies = [
+ "byteorder",
+ "bytes",
+ "data-encoding",
+ "http",
+ "httparse",
+ "log",
+ "rand 0.8.6",
+ "rustls",
+ "rustls-pki-types",
+ "sha1",
+ "thiserror 1.0.69",
+ "utf-8",
+]
 
 [[package]]
 name = "type1-encoding-parser"
