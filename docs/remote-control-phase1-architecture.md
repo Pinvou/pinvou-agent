@@ -408,8 +408,11 @@ Mobile -> Desktop 的 action 必须带 `client_message_id`。本地 `RemoteContr
 
 - Relay 默认最多保留 2000 个 room；已有 room 的桌面重连不受容量上限影响。
 - 同一客户端默认每分钟最多新建 20 个 room；反向代理来源只在其 IP 被显式信任时读取 `X-Forwarded-For`，并采用代理追加的最后一个地址，避免客户端伪造首段地址绕过限流。
+- Relay 默认最多同时保留 5000 条 WebSocket 连接，同一客户端默认每分钟最多发起 120 次 WebSocket 建连；达到容量时在 Upgrade 阶段拒绝新连接，避免未认证连接绕过 room 上限持续消耗资源。
+- WebSocket 建立后必须在 10 秒内完成 `desktop_register` 或 `mobile_join`，否则 Relay 主动关闭；已认证连接不受该超时影响，仍按正常心跳和重连规则运行。
 - 生产环境通过 `PINVOU_REMOTE_ALLOWED_PROXY_IPS` 只允许本机健康检查和指定反向代理访问 Relay，公网客户端统一走 `https/wss://www.ma-xiao.com`。
 - WebSocket 单条消息默认上限为 4 MiB，可通过 `MAX_PAYLOAD_BYTES` 调整，服务端硬限制不超过 16 MiB。
+- `/healthz` 额外返回 WebSocket 总连接数和未认证连接数，仍只提供聚合计数，不暴露 room、session 或客户端明细。
 
 ## 实施拆分
 
@@ -453,7 +456,7 @@ Mobile -> Desktop 的 action 必须带 `client_message_id`。本地 `RemoteContr
 - 云端日志脱敏。
 - 桌面连接状态提示。
 
-线上 relay 使用 `scripts/deploy-remote-relay.sh` 部署：脚本会先运行自动化测试，再备份、原子替换、重启 systemd，并验证公网健康检查和手机页面；失败时自动恢复最近备份。
+线上 relay 使用 `scripts/deploy-remote-relay.sh` 部署：脚本先确认现有公网基线正常，再运行自动化测试、备份、原子替换并重启 systemd。部署后会验证公网健康检查、新版手机页面标识和直连端口隔离；任何一项失败都会恢复本次部署前的备份，并再次执行本机和公网复检。
 
 ## 验收标准
 

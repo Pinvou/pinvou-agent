@@ -15,12 +15,22 @@ const MAX_PAYLOAD_BYTES = boundedInteger(process.env.MAX_PAYLOAD_BYTES, 4 * MIB,
 const MAX_ROOMS = boundedInteger(process.env.MAX_ROOMS, 2000, 1, 100_000);
 const ROOM_CREATE_LIMIT = boundedInteger(process.env.ROOM_CREATE_LIMIT, 20, 1, 10_000);
 const ROOM_CREATE_WINDOW_MS = boundedInteger(process.env.ROOM_CREATE_WINDOW_MS, 60_000, 1000, 60 * 60_000);
+const MAX_WS_CONNECTIONS = boundedInteger(
+  process.env.MAX_WS_CONNECTIONS,
+  MAX_ROOMS * 2 + 1000,
+  2,
+  250_000,
+);
+const WS_CONNECT_LIMIT = boundedInteger(process.env.WS_CONNECT_LIMIT, 120, 1, 100_000);
+const WS_CONNECT_WINDOW_MS = boundedInteger(process.env.WS_CONNECT_WINDOW_MS, 60_000, 1000, 60 * 60_000);
+const WS_AUTH_TIMEOUT_MS = boundedInteger(process.env.WS_AUTH_TIMEOUT_MS, 10_000, 1000, 60_000);
 const ALLOWED_PROXY_IPS = parseIpSet(process.env.PINVOU_REMOTE_ALLOWED_PROXY_IPS);
 const TRUSTED_PROXY_IPS = parseIpSet(
   process.env.PINVOU_REMOTE_TRUSTED_PROXY_IPS || process.env.PINVOU_REMOTE_ALLOWED_PROXY_IPS,
 );
 const rooms = new Map();
 const roomCreationBuckets = new Map();
+const wsConnectionBuckets = new Map();
 
 function send(ws, value) {
   if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(value));
@@ -68,20 +78,60 @@ function clientIp(req) {
   return forwarded.at(-1) || normalizeIp(req.headers["x-real-ip"]) || peer || "unknown";
 }
 
-function consumeRoomCreation(ip, now = Date.now()) {
-  const bucket = roomCreationBuckets.get(ip);
-  if (!bucket || now - bucket.started_at >= ROOM_CREATE_WINDOW_MS) {
-    roomCreationBuckets.set(ip, { started_at: now, count: 1 });
+function consumeRateLimit(buckets, ip, limit, windowMs, now = Date.now()) {
+  const bucket = buckets.get(ip);
+  if (!bucket || now - bucket.started_at >= windowMs) {
+    buckets.set(ip, { started_at: now, count: 1 });
     return true;
   }
-  if (bucket.count >= ROOM_CREATE_LIMIT) return false;
+  if (bucket.count >= limit) return false;
   bucket.count += 1;
   return true;
+}
+
+function consumeRoomCreation(ip, now = Date.now()) {
+  return consumeRateLimit(
+    roomCreationBuckets,
+    ip,
+    ROOM_CREATE_LIMIT,
+    ROOM_CREATE_WINDOW_MS,
+    now,
+  );
+}
+
+function consumeWsConnection(ip, now = Date.now()) {
+  return consumeRateLimit(
+    wsConnectionBuckets,
+    ip,
+    WS_CONNECT_LIMIT,
+    WS_CONNECT_WINDOW_MS,
+    now,
+  );
 }
 
 function rejectSocket(ws, code, message) {
   send(ws, { type: "error", code, message });
   try { ws.close(1008, message); } catch {}
+}
+
+function rejectUpgrade(socket, status, message) {
+  const body = `${message}\n`;
+  socket.write(
+    `HTTP/1.1 ${status}\r\n`
+    + "Connection: close\r\n"
+    + "Content-Type: text/plain; charset=utf-8\r\n"
+    + `Content-Length: ${Buffer.byteLength(body)}\r\n`
+    + "\r\n"
+    + body,
+  );
+  socket.destroy();
+}
+
+function authenticateSocket(ws, role, roomId) {
+  clearTimeout(ws.authTimer);
+  ws.authTimer = null;
+  ws.role = role;
+  ws.roomId = roomId;
 }
 
 function normalizeBasePath(value) {
@@ -169,6 +219,8 @@ function healthSummary() {
     paired_count: values.filter((room) => room.paired).length,
     desktop_open_count: values.filter((room) => room.desktop && room.desktop.readyState === room.desktop.OPEN).length,
     mobile_open_count: values.filter((room) => room.mobile && room.mobile.readyState === room.mobile.OPEN).length,
+    ws_connection_count: wss.clients.size,
+    unauthenticated_connection_count: [...wss.clients].filter((ws) => ws.role === "unknown").length,
   };
 }
 
@@ -214,6 +266,14 @@ server.on("upgrade", (req, socket, head) => {
     socket.destroy();
     return;
   }
+  if (wss.clients.size >= MAX_WS_CONNECTIONS) {
+    rejectUpgrade(socket, "503 Service Unavailable", "websocket capacity reached");
+    return;
+  }
+  if (!consumeWsConnection(clientIp(req))) {
+    rejectUpgrade(socket, "429 Too Many Requests", "websocket connection rate limited");
+    return;
+  }
   wss.handleUpgrade(req, socket, head, (ws) => {
     wss.emit("connection", ws, req);
   });
@@ -224,6 +284,12 @@ wss.on("connection", (ws, req) => {
   ws.roomId = null;
   ws.clientIp = clientIp(req);
   ws.isAlive = true;
+  ws.authTimer = setTimeout(() => {
+    if (ws.role === "unknown") {
+      rejectSocket(ws, "authentication_timeout", "websocket authentication timeout");
+    }
+  }, WS_AUTH_TIMEOUT_MS);
+  ws.authTimer.unref?.();
   ws.on("pong", () => { ws.isAlive = true; });
 
   ws.on("message", (raw) => {
@@ -280,8 +346,7 @@ wss.on("connection", (ws, req) => {
         },
       };
       rooms.set(room.room_id, room);
-      ws.role = "desktop";
-      ws.roomId = room.room_id;
+      authenticateSocket(ws, "desktop", room.room_id);
       audit(room, "desktop_register");
       send(ws, { type: "room_registered", room_id: room.room_id });
       if (existingMobile) {
@@ -315,8 +380,7 @@ wss.on("connection", (ws, req) => {
       }
       room.paired = true;
       room.mobile = ws;
-      ws.role = "mobile";
-      ws.roomId = room.room_id;
+      authenticateSocket(ws, "mobile", room.room_id);
       audit(room, "mobile_connected", { connected_at: new Date().toISOString() });
       console.log("[relay] mobile_connected", room.room_id);
       send(ws, { type: "mobile_joined", room_id: room.room_id, session_id: room.session_id });
@@ -368,6 +432,8 @@ wss.on("connection", (ws, req) => {
   });
 
   ws.on("close", () => {
+    clearTimeout(ws.authTimer);
+    ws.authTimer = null;
     const room = rooms.get(ws.roomId);
     if (!room) return;
     if (ws.role === "mobile" && room.mobile === ws) {
@@ -387,6 +453,10 @@ const heartbeatTimer = setInterval(() => {
   for (const [ip, bucket] of roomCreationBuckets) {
     if (bucket.started_at <= bucketExpiry) roomCreationBuckets.delete(ip);
   }
+  const wsBucketExpiry = Date.now() - WS_CONNECT_WINDOW_MS;
+  for (const [ip, bucket] of wsConnectionBuckets) {
+    if (bucket.started_at <= wsBucketExpiry) wsConnectionBuckets.delete(ip);
+  }
   for (const ws of wss.clients) {
     if (ws.isAlive === false) {
       ws.terminate();
@@ -401,6 +471,10 @@ heartbeatTimer.unref();
 server.listen(PORT, "0.0.0.0", () => {
   console.log(
     `pinvou remote relay listening on http://127.0.0.1:${PORT}`
-    + ` (max_rooms=${MAX_ROOMS}, room_create_limit=${ROOM_CREATE_LIMIT}/${ROOM_CREATE_WINDOW_MS}ms, max_payload=${MAX_PAYLOAD_BYTES})`,
+    + ` (max_rooms=${MAX_ROOMS}, max_ws_connections=${MAX_WS_CONNECTIONS}`
+    + `, ws_connect_limit=${WS_CONNECT_LIMIT}/${WS_CONNECT_WINDOW_MS}ms`
+    + `, ws_auth_timeout=${WS_AUTH_TIMEOUT_MS}ms`
+    + `, room_create_limit=${ROOM_CREATE_LIMIT}/${ROOM_CREATE_WINDOW_MS}ms`
+    + `, max_payload=${MAX_PAYLOAD_BYTES})`,
   );
 });

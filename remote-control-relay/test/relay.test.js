@@ -118,6 +118,8 @@ test("healthz only exposes aggregate counters", async () => {
     "ok",
     "paired_count",
     "room_count",
+    "unauthenticated_connection_count",
+    "ws_connection_count",
   ]);
 });
 
@@ -130,6 +132,72 @@ test("mobile HTML preview ships best-effort fit and zoom controls", async () => 
   assert.match(html, /id="previewZoomIn"/);
   assert.match(html, /pinvou-remote-preview-frame/);
   assert.match(html, /html,body\{overflow:auto!important\}/);
+  assert.match(html, /<meta name="pinvou-remote-client" content="1" \/>/);
+});
+
+test("relay closes a websocket that does not authenticate in time", async () => {
+  const authPort = port + 4;
+  const authLimited = spawn(process.execPath, [join(relayDir, "server.js")], {
+    cwd: relayDir,
+    env: {
+      ...process.env,
+      PORT: String(authPort),
+      WS_AUTH_TIMEOUT_MS: "1000",
+      WS_CONNECT_LIMIT: "100",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  await waitForOutput(authLimited, /pinvou remote relay listening/);
+  const idle = await openSocketAt(`ws://127.0.0.1:${authPort}/pinvou3/remote/ws`);
+  const error = await nextMessage(idle, "error", 3000);
+  assert.equal(error.code, "authentication_timeout");
+  closeSocket(idle);
+  authLimited.kill("SIGTERM");
+});
+
+test("relay rejects websocket upgrades above total capacity", async () => {
+  const capacityPort = port + 5;
+  const capacityLimited = spawn(process.execPath, [join(relayDir, "server.js")], {
+    cwd: relayDir,
+    env: {
+      ...process.env,
+      PORT: String(capacityPort),
+      MAX_WS_CONNECTIONS: "2",
+      WS_AUTH_TIMEOUT_MS: "5000",
+      WS_CONNECT_LIMIT: "100",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  await waitForOutput(capacityLimited, /pinvou remote relay listening/);
+  const url = `ws://127.0.0.1:${capacityPort}/pinvou3/remote/ws`;
+  const first = await openSocketAt(url);
+  const second = await openSocketAt(url);
+  await assert.rejects(openSocketAt(url), /Unexpected server response: 503/);
+  closeSocket(first);
+  closeSocket(second);
+  capacityLimited.kill("SIGTERM");
+});
+
+test("relay rate limits websocket upgrades per client", async () => {
+  const ratePort = port + 6;
+  const rateLimited = spawn(process.execPath, [join(relayDir, "server.js")], {
+    cwd: relayDir,
+    env: {
+      ...process.env,
+      PORT: String(ratePort),
+      MAX_WS_CONNECTIONS: "10",
+      WS_AUTH_TIMEOUT_MS: "5000",
+      WS_CONNECT_LIMIT: "1",
+      WS_CONNECT_WINDOW_MS: "60000",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  await waitForOutput(rateLimited, /pinvou remote relay listening/);
+  const url = `ws://127.0.0.1:${ratePort}/pinvou3/remote/ws`;
+  const first = await openSocketAt(url);
+  await assert.rejects(openSocketAt(url), /Unexpected server response: 429/);
+  closeSocket(first);
+  rateLimited.kill("SIGTERM");
 });
 
 test("later mobile takes over and explicit close preserves reason", async () => {
