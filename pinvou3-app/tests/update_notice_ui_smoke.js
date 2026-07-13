@@ -2,6 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { startUiTestServer } = require('./ui_test_server');
 
 function loadPuppeteer() {
   try { return require('puppeteer-core'); } catch (_) {}
@@ -31,9 +32,9 @@ if (!CHROME) {
   process.exit(2);
 }
 
-const INDEX = 'file://' + path.join(__dirname, '..', 'src', 'index.html').replace(/\\/g, '/') + '?mockUpdate=1';
-
 async function main() {
+  const { url } = await startUiTestServer();
+  const INDEX = url + '?mockUpdate=1';
   const browser = await puppeteer.launch({
     executablePath: CHROME,
     headless: 'new',
@@ -57,12 +58,7 @@ async function main() {
 
   await page.goto(INDEX, { waitUntil: 'networkidle0' });
   await page.waitForSelector('[data-update-notice-card="true"]', { timeout: 10000 });
-  await page.evaluate(() => {
-    const buttons = [...document.querySelectorAll('button')];
-    const changelog = buttons.find(b => b.innerText.trim() === '更新日志');
-    if (!changelog) throw new Error('未找到更新日志按钮');
-    changelog.click();
-  });
+  await page.click('[data-update-notes-button="true"]');
   await page.waitForSelector('#settings-version-update', { timeout: 10000 });
   await page.waitForFunction(() => {
     const el = document.querySelector('#settings-version-update');

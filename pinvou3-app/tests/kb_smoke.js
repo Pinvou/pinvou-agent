@@ -6,6 +6,7 @@
  * 用法: node pinvou3-app/tests/kb_smoke.js  (全 PASS→0 / FAIL→1 / 缺依赖→2)
  */
 const fs = require('fs'), path = require('path'), os = require('os');
+const { startUiTestServer } = require('./ui_test_server');
 function loadPuppeteer() {
   try { return require('puppeteer-core'); } catch (e) {}
   const npx = path.join(os.homedir(), '.npm', '_npx');
@@ -16,7 +17,6 @@ function loadPuppeteer() {
   console.error('SKIP: 找不到 puppeteer-core'); process.exit(2);
 }
 const puppeteer = loadPuppeteer();
-const INDEX = 'file://' + path.join(__dirname, '..', 'src', 'index.html');
 const CHROME = process.env.CHROME || ['/snap/bin/chromium','/usr/bin/chromium','/usr/bin/chromium-browser','/usr/bin/google-chrome','/usr/bin/google-chrome-stable'].find(p => fs.existsSync(p));
 if (!CHROME) { console.error('SKIP: 未找到 chromium'); process.exit(2); }
 const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-kb-'));
@@ -85,6 +85,7 @@ async function clickContains(page, sel, text) {
 }
 
 (async () => {
+  const { url: INDEX } = await startUiTestServer();
   const results = [];
   const rec = (name, pass, detail) => { results.push({ name, pass }); console.log(`${pass ? '✅' : '❌'} ${name}${detail ? '  ' + detail : ''}`); };
   const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new', args: ['--no-sandbox','--disable-gpu','--no-first-run','--no-default-browser-check'], userDataDir: PROFILE });

@@ -9,6 +9,7 @@
  * 用法:node pinvou3-app/tests/ui_smoke.js   (全 PASS → exit 0,任一 FAIL → exit 1,缺依赖 → exit 2)
  */
 const fs = require('fs'), path = require('path'), os = require('os');
+const { startUiTestServer } = require('./ui_test_server');
 
 function loadPuppeteer() {
   try { return require('puppeteer-core'); } catch (e) { /* fall through */ }
@@ -23,7 +24,6 @@ function loadPuppeteer() {
   process.exit(2);
 }
 const puppeteer = loadPuppeteer();
-const INDEX = 'file://' + path.join(__dirname, '..', 'src', 'index.html');
 const CHROME = process.env.CHROME ||
   ['/snap/bin/chromium', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable'].find(p => fs.existsSync(p));
 if (!CHROME) { console.error('SKIP: 未找到 chromium/chrome,可用 env CHROME=/path/to/chromium 指定'); process.exit(2); }
@@ -96,6 +96,7 @@ async function clickText(page, t) {
 async function expand(page) { return page.evaluate(() => { const b = document.querySelector('[title*="侧边栏"],[title*="展开"]'); if (b) { b.click(); return true; } return false; }); }
 
 (async () => {
+  const { url: INDEX } = await startUiTestServer();
   const results = [];
   const rec = (name, pass, detail) => { results.push({ name, pass }); console.log(`${pass ? '✅' : '❌'} ${name}${detail ? '  ' + detail : ''}`); };
 
