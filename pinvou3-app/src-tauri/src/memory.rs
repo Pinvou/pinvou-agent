@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
-use std::io;
+use std::io::{self, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration as StdDuration;
@@ -39,6 +39,7 @@ const TIMED_MEMORY_ARCHIVED_MAX_STORED: usize = 40;
 const PENDING_MEMORY_ACTIVE_MAX_STORED: usize = 20;
 const PENDING_MEMORY_RESOLVED_MAX_STORED: usize = 80;
 const NEVER_MEMORY_MAX_STORED: usize = 200;
+const MEMORY_REVIEW_LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
 const PENDING_STATUS_OBSERVED: &str = "observed";
 const PENDING_STATUS_PENDING: &str = "pending_confirm";
 const PENDING_STATUS_CONFIRMED: &str = "confirmed";
@@ -390,6 +391,68 @@ pub struct TurnMemoryCapture {
 fn turn_capture_store() -> &'static Mutex<BTreeMap<String, TurnCapture>> {
     static STORE: OnceLock<Mutex<BTreeMap<String, TurnCapture>>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn memory_review_log_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// 写入不含对话原文的记忆复盘诊断信息。日志达到 2 MiB 后从空文件重新开始，
+/// 避免后台复盘长期运行无限占用磁盘。
+pub(crate) fn append_memory_review_diagnostic(session_id: &str, stage: &str, detail: Value) {
+    let _guard = memory_review_log_lock().lock();
+    let path = paths::memory_review_log();
+    if let Err(err) = append_memory_review_diagnostic_to(&path, session_id, stage, detail) {
+        eprintln!(
+            "[pinvou3-app] append memory review diagnostic failed ({}): {err}",
+            path.display()
+        );
+    }
+}
+
+fn append_memory_review_diagnostic_to(
+    path: &Path,
+    session_id: &str,
+    stage: &str,
+    detail: Value,
+) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if fs::metadata(path)
+        .map(|metadata| metadata.len() >= MEMORY_REVIEW_LOG_MAX_BYTES)
+        .unwrap_or(false)
+    {
+        fs::remove_file(path)?;
+    }
+    let mut line = json!({
+        "ts": Utc::now().to_rfc3339(),
+        "session_id": clean_id(session_id),
+        "stage": clean_text(stage, 48),
+        "detail": detail,
+    })
+    .to_string();
+    line.push('\n');
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?
+        .write_all(line.as_bytes())
+}
+
+fn memory_review_error_stage(error: &anyhow::Error) -> &'static str {
+    let message = format!("{error:#}").to_ascii_lowercase();
+    if message.contains("parse memory review") || message.contains("memory review response json") {
+        "parse_failed"
+    } else if message.contains("chat/completions")
+        || message.contains("memory review client")
+        || message.contains("error sending request")
+    {
+        "request_failed"
+    } else {
+        "apply_failed"
+    }
 }
 
 fn default_profile_version() -> u32 {
@@ -1839,6 +1902,7 @@ pub fn review_turn_candidates(user: &str, _assistant: &str) -> io::Result<Vec<Pe
 pub async fn review_turn_candidates_with_llm(
     bridge: &Pinvou3Bridge,
     capture: &TurnMemoryCapture,
+    session_id: &str,
 ) -> Result<MemoryReviewOutcome> {
     let user = clean_text(&capture.user, 4000);
     let assistant = clean_text(&capture.assistant, 4000);
@@ -1851,7 +1915,26 @@ pub async fn review_turn_candidates_with_llm(
     let explicit_signal = has_memory_review_signal(&user);
     let delivery_complete =
         capture.delivery_complete || assistant_suggests_delivery_complete(&user, &assistant);
-    if user.is_empty() || looks_sensitive(&user) || (!explicit_signal && !delivery_complete) {
+    let skip_reason = if user.is_empty() {
+        Some("empty_user_message")
+    } else if looks_sensitive(&user) {
+        Some("sensitive_content")
+    } else if !explicit_signal && !delivery_complete {
+        Some("no_review_signal")
+    } else {
+        None
+    };
+    if let Some(reason) = skip_reason {
+        append_memory_review_diagnostic(
+            session_id,
+            "skipped",
+            json!({
+                "reason": reason,
+                "user_chars": user.chars().count(),
+                "assistant_chars": assistant.chars().count(),
+                "tool_summary_count": delivery_summary.len(),
+            }),
+        );
         return Ok(MemoryReviewOutcome::default());
     }
 
@@ -1860,9 +1943,73 @@ pub async fn review_turn_candidates_with_llm(
     } else {
         "explicit_user_signal"
     };
-    let review =
-        request_llm_memory_review(bridge, &user, &assistant, trigger, &delivery_summary).await?;
-    apply_llm_memory_review(review)
+    append_memory_review_diagnostic(
+        session_id,
+        "triggered",
+        json!({
+            "trigger": trigger,
+            "provider": bridge.provider(),
+            "model": bridge.model(),
+            "user_chars": user.chars().count(),
+            "assistant_chars": assistant.chars().count(),
+            "tool_summary_count": delivery_summary.len(),
+        }),
+    );
+    let review = match request_llm_memory_review(
+        bridge,
+        &user,
+        &assistant,
+        trigger,
+        &delivery_summary,
+    )
+    .await
+    {
+        Ok(review) => review,
+        Err(error) => {
+            append_memory_review_diagnostic(
+                session_id,
+                memory_review_error_stage(&error),
+                json!({ "error": clean_text(&format!("{error:#}"), 500) }),
+            );
+            return Err(error);
+        }
+    };
+    let received_items = review.items.len();
+    let mut action_counts = BTreeMap::<String, usize>::new();
+    for item in &review.items {
+        *action_counts
+            .entry(clean_text(&item.action, 24))
+            .or_default() += 1;
+    }
+    let outcome = match apply_llm_memory_review(review) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            append_memory_review_diagnostic(
+                session_id,
+                memory_review_error_stage(&error),
+                json!({ "error": clean_text(&format!("{error:#}"), 500) }),
+            );
+            return Err(error);
+        }
+    };
+    append_memory_review_diagnostic(
+        session_id,
+        "completed",
+        json!({
+            "received_items": received_items,
+            "model_action_counts": action_counts,
+            "auto_event_count": outcome.events.len(),
+            "pending_candidate_count": outcome.pending.len(),
+            "result": if outcome.pending.is_empty() && outcome.events.is_empty() {
+                "no_memory_change"
+            } else if outcome.pending.is_empty() {
+                "auto_written"
+            } else {
+                "candidate_created"
+            },
+        }),
+    );
+    Ok(outcome)
 }
 
 fn has_memory_review_signal(user: &str) -> bool {
@@ -3808,6 +3955,52 @@ mod tests {
                 _guard: guard,
             }
         }
+    }
+
+    #[test]
+    fn memory_review_diagnostic_rotates_and_avoids_conversation_content() {
+        let root =
+            std::env::temp_dir().join(format!("pinvou3-memory-review-log-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("memory-review.log");
+        fs::write(&path, vec![b'x'; MEMORY_REVIEW_LOG_MAX_BYTES as usize]).unwrap();
+
+        append_memory_review_diagnostic_to(
+            &path,
+            "session/unsafe",
+            "completed",
+            json!({
+                "result": "candidate_created",
+                "pending_candidate_count": 1,
+            }),
+        )
+        .unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(content.lines().count(), 1);
+        assert!(content.contains("session_unsafe"));
+        assert!(content.contains("candidate_created"));
+        assert!(!content.contains("current_user_message"));
+        assert!(!content.contains("assistant_response"));
+        assert!(fs::metadata(&path).unwrap().len() < MEMORY_REVIEW_LOG_MAX_BYTES);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn memory_review_diagnostic_classifies_request_parse_and_apply_failures() {
+        assert_eq!(
+            memory_review_error_stage(&anyhow::anyhow!("post memory review chat/completions")),
+            "request_failed"
+        );
+        assert_eq!(
+            memory_review_error_stage(&anyhow::anyhow!("parse memory review json")),
+            "parse_failed"
+        );
+        assert_eq!(
+            memory_review_error_stage(&anyhow::anyhow!("auto write work context")),
+            "apply_failed"
+        );
     }
 
     impl Drop for IsolatedPinvouHome {

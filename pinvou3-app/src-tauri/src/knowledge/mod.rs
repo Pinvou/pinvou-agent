@@ -82,16 +82,11 @@ pub struct KnowledgeService {
 }
 
 impl KnowledgeService {
-    /// 用磁盘库初始化（`~/.pinvou3/knowledge/index.db`）。`model_dir`=embedding 模型目录的
-    /// fallback（生产=随 deb 打包的资源目录;dev 走 env 优先,见 embed::from_env_or_dir）。
-    pub fn new(db_path: &Path, model_dir: Option<&Path>) -> rusqlite::Result<Self> {
+    /// 只用磁盘库初始化（`~/.pinvou3/knowledge/index.db`）。embedding 模型必须在首帧后
+    /// 通过后台 blocking 线程加载，避免读取/构建大型 ONNX 模型阻塞 Tauri setup 和首屏。
+    pub fn new(db_path: &Path) -> rusqlite::Result<Self> {
         let store = Store::open(db_path)?;
-        // env(dev) 优先,否则用打包资源目录(prod);都无/加载失败则知识库走纯全文(降级)。
-        let embedder = embed::Embedder::from_env_or_dir(model_dir).map(Arc::new);
-        if let Some(e) = &embedder {
-            eprintln!("[knowledge] L1 embedding 已启用: {} ({})", e.model(), e.source());
-        }
-        let l1 = l1::L1Store::new(store.conn_arc(), embedder);
+        let l1 = l1::L1Store::new(store.conn_arc(), None);
         Ok(Self {
             store,
             l1,
@@ -118,16 +113,27 @@ impl KnowledgeService {
         self.l1.has_embedder()
     }
 
+    /// 构建 embedding 模型。调用方必须把它放进 `spawn_blocking`，该过程会同步读取约
+    /// 558 MiB 的 ONNX/Tokenizer 文件并创建推理会话。
+    fn load_embedder(model_dir: Option<&Path>) -> Option<Arc<embed::Embedder>> {
+        embed::Embedder::from_env_or_dir(model_dir).map(Arc::new)
+    }
+
+    /// 将后台构建完成的模型原子换入共享槽；所有 L1Store clone 立即可见。
+    fn install_embedder(&self, embedder: Option<Arc<embed::Embedder>>) -> bool {
+        let ready = embedder.is_some();
+        if let Some(e) = &embedder {
+            eprintln!("[knowledge] L1 embedding 已启用: {} ({})", e.model(), e.source());
+        }
+        self.l1.set_embedder(embedder);
+        ready
+    }
+
     /// 热加载 embedding 模型（按需下载完成后调）：按 dev-env 优先 / 下载落点兜底重新定位并加载，
     /// 换进所有在跑会话/后台线程共享的 embedder 槽，**免重启**。返回是否就绪。
     pub fn reload_embedder(&self) -> bool {
-        let emb = embed::Embedder::from_env_or_dir(Some(&model_dir())).map(Arc::new);
-        let ready = emb.is_some();
-        if let Some(e) = &emb {
-            eprintln!("[knowledge] L1 embedding 已热加载: {} ({})", e.model(), e.source());
-        }
-        self.l1.set_embedder(emb);
-        ready
+        let embedder = Self::load_embedder(Some(&model_dir()));
+        self.install_embedder(embedder)
     }
 
     /// 知识库是否有任何已入库内容（任一知识集存在文档）。门控 kb_search 工具的对外可见性：

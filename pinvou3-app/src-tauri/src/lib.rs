@@ -40,6 +40,8 @@ pub mod personas;
 mod pinvou_review;
 mod process;
 mod remote_control;
+mod scheduled_executor;
+mod scheduled_tasks;
 pub mod super_permission;
 mod startup;
 mod timing;
@@ -294,6 +296,22 @@ pub fn run() {
             startup::mark("engine_pool:start");
             match EnginePool::new(handle.clone(), store_for_engine.clone()) {
                 Ok(pool) => {
+                    let scheduled_state = tauri::async_runtime::block_on(
+                        scheduled_tasks::ScheduledTaskState::boot_runtime(
+                            &pool.bridge,
+                            pool.clone(),
+                            store_for_engine.clone(),
+                        ),
+                    );
+                    match scheduled_state {
+                        Ok(state) => {
+                            handle.manage(state);
+                            eprintln!("[pinvou3-app] scheduled tasks runtime ready");
+                        }
+                        Err(e) => {
+                            eprintln!("[pinvou3-app] scheduled tasks runtime init failed: {e:?}");
+                        }
+                    }
                     handle.manage(pool);
                     eprintln!("[pinvou3-app] engine pool ready (lazy spawn per session)");
                 }
@@ -338,11 +356,9 @@ pub fn run() {
             // 扫描改懒触发:由前端进入文件管理页时增量扫(不进页=零扫描),不常驻 watcher/周期
             // 重扫。文件管理是低频功能,不该长期占资源。
             // embedding 模型**不再随 deb 打包**(deb 瘦 ~559MB):改按需下载到
-            // ~/.pinvou3/knowledge/models/bge-m3(knowledge::model_dir)。这里把下载落点作 fallback
-            // 传给服务;dev 的 env(PINVOU3_KB_EMBED_MODEL_DIR,run-dev.sh 设)优先逻辑仍由
-            // embed::from_env_or_dir 内部保留。模型没装 → 加载失败 → embedder=None → 知识库走
-            // 完全门控(前端 gate),不阻断启动;用户在知识库页下载后 reload_embedder 热加载。
-            let kb_model_dir = knowledge::model_dir();
+            // ~/.pinvou3/knowledge/models/bge-m3。setup 只打开数据库并以 embedder=None 注册服务；
+            // React 首帧后再调用 kb_model_load_after_first_frame，通过 spawn_blocking 后台加载。
+            // 模型没装/加载失败时维持完全门控，不阻断启动；下载完成仍可热加载。
             // 语音识别引擎 sense-voice-main 随 deb 打包,容错同 bge-m3 的资源布局,
             // 注入给 voice_asr 作为 ~/.pinvou3/asr/ 之外的回退查找目录。
             if let Some(asr_res) = app.path().resource_dir().ok().and_then(|res| {
@@ -357,7 +373,7 @@ pub fn run() {
             }
 
             startup::mark("knowledge_service:start");
-            match knowledge::KnowledgeService::new(&knowledge::default_db_path(), Some(&kb_model_dir)) {
+            match knowledge::KnowledgeService::new(&knowledge::default_db_path()) {
                 Ok(svc) => {
                     app.handle().manage(svc);
                     eprintln!("[pinvou3-app] knowledge service ready");
@@ -463,6 +479,17 @@ pub fn run() {
             commands::set_session_pinned,
             commands::list_archived_sessions,
             commands::set_session_archived,
+            scheduled_tasks::list_scheduled_tasks,
+            scheduled_tasks::read_scheduled_task,
+            scheduled_tasks::list_scheduled_task_runs,
+            scheduled_tasks::create_scheduled_task,
+            scheduled_tasks::update_scheduled_task,
+            scheduled_tasks::pause_scheduled_task,
+            scheduled_tasks::resume_scheduled_task,
+            scheduled_tasks::delete_scheduled_task,
+            scheduled_tasks::run_scheduled_task_now,
+            scheduled_tasks::mark_scheduled_run_viewed,
+            scheduled_tasks::scheduled_task_chat_prompt,
             commands::get_active_session,
             commands::save_session_messages,
             commands::save_session_artifacts,
@@ -589,6 +616,7 @@ pub fn run() {
             knowledge::kb_remove_document,
             knowledge::kb_embed_info,
             knowledge::model_download::kb_model_status,
+            knowledge::model_download::kb_model_load_after_first_frame,
             knowledge::model_download::kb_model_download,
             knowledge::model_download::kb_model_cancel,
             commands::session_mount_collection,
@@ -604,6 +632,7 @@ pub fn run() {
             tauri::generate_context!()
         })
         .expect("error while running tauri application");
+    startup::mark("process:exit");
 }
 
 #[cfg(test)]

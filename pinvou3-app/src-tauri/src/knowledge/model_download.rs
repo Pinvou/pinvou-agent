@@ -31,6 +31,8 @@ pub const MODEL_VERSION: &str = "bge-m3";
 
 static DOWNLOADING: AtomicBool = AtomicBool::new(false);
 static CANCEL: AtomicBool = AtomicBool::new(false);
+/// 防止前端重复首帧 effect 同时构建多份 558 MiB 模型。
+static STARTUP_LOADING: AtomicBool = AtomicBool::new(false);
 
 /// 模型是否已部署：落点目录下 `model.onnx`（或 `onnx/model.onnx`）+ `tokenizer.json` 都在。
 fn installed() -> bool {
@@ -73,6 +75,44 @@ pub fn kb_model_status() -> KbModelStatus {
 #[tauri::command]
 pub fn kb_model_cancel() {
     CANCEL.store(true, Ordering::Relaxed);
+}
+
+/// React 首帧提交后调用：在 blocking 线程池读取并构建 embedding 模型，完成后原子换入
+/// KnowledgeService。模型未安装/加载失败时保持纯全文降级，不影响主界面。
+#[tauri::command]
+pub async fn kb_model_load_after_first_frame(
+    app: tauri::AppHandle,
+    service: tauri::State<'_, KnowledgeService>,
+    pool: tauri::State<'_, crate::engine_pool::EnginePool>,
+) -> Result<bool, String> {
+    if service.semantic_ready() {
+        return Ok(true);
+    }
+    if STARTUP_LOADING.swap(true, Ordering::SeqCst) {
+        return Ok(false);
+    }
+    let _guard = StartupLoadGuard;
+
+    crate::startup::mark("knowledge_embedder_async:start");
+    let dir = super::model_dir();
+    let embedder = tokio::task::spawn_blocking(move || KnowledgeService::load_embedder(Some(&dir)))
+        .await
+        .map_err(|e| format!("embedding 后台加载任务失败: {e}"))?;
+
+    // 若另一路热加载已抢先完成，不用较旧的构建结果覆盖它。
+    if !service.semantic_ready() {
+        service.install_embedder(embedder);
+    }
+    let ready = service.semantic_ready();
+    if ready {
+        super::refresh_kb_tool_gate(&app, &pool).await;
+    }
+    crate::startup::mark_with_detail(
+        "rust",
+        "knowledge_embedder_async:done",
+        &format!("ready={ready}"),
+    );
+    Ok(ready)
 }
 
 /// 按需下载 + 校验 + 解压部署 embedding 模型，完成后热加载并刷新工具门控（免重启）。
@@ -183,6 +223,13 @@ struct DownloadGuard;
 impl Drop for DownloadGuard {
     fn drop(&mut self) {
         DOWNLOADING.store(false, Ordering::SeqCst);
+    }
+}
+
+struct StartupLoadGuard;
+impl Drop for StartupLoadGuard {
+    fn drop(&mut self) {
+        STARTUP_LOADING.store(false, Ordering::SeqCst);
     }
 }
 

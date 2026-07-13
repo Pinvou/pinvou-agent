@@ -5,10 +5,12 @@
  *   ① resumeWorkflowOnBoot:有僵尸 run 时启动仍落草稿页(activeSessionId=null)+ 只挂看板,不劫持聊天会话。
  *   ② 工具商店渲染出 Obsidian 知识库卡。
  *   ③ 聊天流产物卡(artifact_card)挂出「品/悟」召唤 pinvou 按钮。
+ *   ④ 记忆候选事件渲染卡片，且确认/忽略/不再提示分别调用正确后端命令。
  * 依赖:puppeteer-core(自动从 node_modules / ~/.npm/_npx 发现)+ 系统 chromium(或 env CHROME 指定)。
  * 用法:node pinvou3-app/tests/ui_smoke.js   (全 PASS → exit 0,任一 FAIL → exit 1,缺依赖 → exit 2)
  */
 const fs = require('fs'), path = require('path'), os = require('os');
+const { startUiTestServer } = require('./ui_test_server');
 
 function loadPuppeteer() {
   try { return require('puppeteer-core'); } catch (e) { /* fall through */ }
@@ -23,7 +25,6 @@ function loadPuppeteer() {
   process.exit(2);
 }
 const puppeteer = loadPuppeteer();
-const INDEX = 'file://' + path.join(__dirname, '..', 'src', 'index.html');
 const CHROME = process.env.CHROME ||
   ['/snap/bin/chromium', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable'].find(p => fs.existsSync(p));
 if (!CHROME) { console.error('SKIP: 未找到 chromium/chrome,可用 env CHROME=/path/to/chromium 指定'); process.exit(2); }
@@ -32,6 +33,8 @@ const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-smoke-'));
 // mock TauriBridge:find_resumable_run 返回僵尸 run;一个会话含 write_file → 触发 artifact_card 气泡。
 function injectSource() {
   return `(function(){
+    window.__TAURI_EVENT_HANDLERS__={};
+    window.__TAURI_INVOKES__=[];
     const ZOMBIE={session_id:'s-zombie',project_dir:'/x/wf',scenario:'sansheng_liubu'};
     const WF_STATE={project_dir:'/x/wf',scenario:'sansheng_liubu',all_completed:false,roles:{taizi:{name:'太子',status:'running'},zhongshu:{name:'中书',status:'pending'}}};
     const SESSIONS=[{id:'s1',title:'第三季度财报分析',created_at:1,updated_at:9}];
@@ -40,6 +43,7 @@ function injectSource() {
       {role:'assistant',content:[{type:'text',text:'已生成会议纪要。'},{type:'tool_use',id:'t1',name:'write_file',input:{path:'/home/x/会议纪要.md',content:'# 会议纪要'}}]},
       {role:'user',content:[{type:'tool_result',tool_use_id:'t1',content:'written'}]}]}};
     function invoke(cmd,args){
+      window.__TAURI_INVOKES__.push({cmd:cmd,args:args||{}});
       switch(cmd){
         case 'get_settings': return Promise.resolve({theme:'liquid-light',language:'zh-Hans'});
         case 'get_effective_model_config': return Promise.resolve({model:'qwen36_35b_256k',base_url:'http://127.0.0.1:8000/v1',api_key_set:false});
@@ -47,6 +51,10 @@ function injectSource() {
         case 'get_super_permission_status': return Promise.resolve(false);
         case 'list_personas': return Promise.resolve([]);
         case 'get_backend_status': return Promise.resolve({online:true,ok:true,status:'online',model:'qwen36_35b_256k'});
+        case 'get_memory_overview': return Promise.resolve({profile:null,preferences:[],work_context:[],current_focus:[],recent_activity:[],recent_work:[],pending:[],never:[],runtime:null,snapshot_path:''});
+        case 'confirm_pending_memory': return Promise.resolve({value:true});
+        case 'ignore_pending_memory': return Promise.resolve({value:true});
+        case 'never_pending_memory': return Promise.resolve({value:true});
         case 'check_for_update': return Promise.resolve({available:false});
         case 'find_resumable_run': return Promise.resolve(ZOMBIE);
         case 'get_workflow_state': return Promise.resolve(WF_STATE);
@@ -73,7 +81,11 @@ function injectSource() {
         default: return Promise.resolve(null);
       }
     }
-    window.__TAURI__={core:{invoke:invoke},event:{listen:function(){return Promise.resolve(function(){});}},
+    window.__TAURI__={core:{invoke:invoke},event:{listen:function(name,handler){
+      const handlers=window.__TAURI_EVENT_HANDLERS__[name]||(window.__TAURI_EVENT_HANDLERS__[name]=[]);
+      handlers.push(handler);
+      return Promise.resolve(function(){const i=handlers.indexOf(handler);if(i>=0)handlers.splice(i,1);});
+    }},
       window:{getCurrentWindow:function(){return {minimize(){},maximize(){},close(){},toggleMaximize(){},isMaximized(){return Promise.resolve(false);},onResized(){return Promise.resolve(function(){});},startDragging(){}};}},
       dialog:{open:function(){return Promise.resolve(null);}}};
   })();`;
@@ -91,6 +103,7 @@ async function clickText(page, t) {
 async function expand(page) { return page.evaluate(() => { const b = document.querySelector('[title*="侧边栏"],[title*="展开"]'); if (b) { b.click(); return true; } return false; }); }
 
 (async () => {
+  const { url: INDEX } = await startUiTestServer();
   const results = [];
   const rec = (name, pass, detail) => { results.push({ name, pass }); console.log(`${pass ? '✅' : '❌'} ${name}${detail ? '  ' + detail : ''}`); };
 
@@ -111,6 +124,15 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
   });
   rec('① 僵尸run不劫持启动(落草稿页+挂看板)', (st.activeSessionId == null) && st.wfActive === true && st.wfSid === 's-zombie', JSON.stringify(st));
 
+  // 手机先向尚未在桌面打开的后台 session 发消息：hydration 必须先把磁盘 messages
+  // 重建成 chatItems；否则桌面随后切入时只剩这条手机消息，历史和产物卡都像“丢了”。
+  await page.evaluate(async () => {
+    const handlers = window.__TAURI_EVENT_HANDLERS__['remote_control:mobile_user_message'] || [];
+    for (const handler of handlers) {
+      await handler({ payload: { session_id: 's1', content: '手机补充消息', client_message_id: 'cm-regression' } });
+    }
+  });
+
   // ② 工具商店 Obsidian 卡
   await expand(page); await sleep(500);
   await clickText(page, '工具商店');
@@ -124,18 +146,60 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
   const hit = await page.evaluate(() => [...document.querySelectorAll('button')]
     .map(b => ({ t: b.getAttribute('title') || '', x: (b.textContent || '').trim() }))
     .filter(o => o.t.includes('查错') || o.t.includes('发散') || /品|悟/.test(o.x)).length);
-  rec('③ 产物卡挂出 品/悟 召唤pinvou按钮', hit >= 2, `命中${hit}个`);
+  const restored = await page.evaluate(() => {
+    const text = document.body.innerText;
+    return { history: text.includes('整理纪要'), mobile: text.includes('手机补充消息') };
+  });
+  rec('③ 后台session经手机唤醒后仍恢复历史+新消息+产物卡', hit >= 2 && restored.history && restored.mobile, JSON.stringify({ hit, ...restored }));
 
-  // ④ 品悟检阅 modal 本地化渲染:threading t 不报错 + 裁决标签/trace 出现(i18n 回归)
+  // ④ 后端 pending 事件必须直达 React 候选卡；三个决策按钮必须调用各自命令。
+  async function emitMemoryCandidate(id, text) {
+    await page.evaluate(async ({ id, text }) => {
+      const handlers = window.__TAURI_EVENT_HANDLERS__['chat:memory_write'] || [];
+      for (const handler of handlers) {
+        await handler({ payload: { session_id: 's1', events: [{ action: 'pending', kind: 'preference', id, text }] } });
+      }
+    }, { id, text });
+    await sleep(250);
+  }
+  async function clickMemoryAction(id, testId) {
+    return page.evaluate(({ id, testId }) => {
+      const card = document.querySelector(`[data-testid="memory-candidate-card"][data-memory-id="${id}"]`);
+      const button = card && card.querySelector(`[data-testid="${testId}"]`);
+      if (!button) return false;
+      button.click();
+      return true;
+    }, { id, testId });
+  }
+  await emitMemoryCandidate('mem-confirm', '回答默认先给结论');
+  const candidateVisible = await page.evaluate(() => {
+    const card = document.querySelector('[data-testid="memory-candidate-card"][data-memory-id="mem-confirm"]');
+    return !!card && card.textContent.includes('记忆候选') && card.textContent.includes('回答默认先给结论');
+  });
+  const confirmClicked = await clickMemoryAction('mem-confirm', 'memory-candidate-confirm');
+  await emitMemoryCandidate('mem-ignore', '回答尽量简洁');
+  const ignoreClicked = await clickMemoryAction('mem-ignore', 'memory-candidate-ignore');
+  await emitMemoryCandidate('mem-never', '不要使用过多术语');
+  const neverClicked = await clickMemoryAction('mem-never', 'memory-candidate-never');
+  await sleep(350);
+  const memoryCommands = await page.evaluate(() => window.__TAURI_INVOKES__
+    .filter(call => ['confirm_pending_memory', 'ignore_pending_memory', 'never_pending_memory'].includes(call.cmd))
+    .map(call => `${call.cmd}:${call.args.id}`));
+  rec('④ 记忆候选卡渲染+三个决策动作贯通', candidateVisible && confirmClicked && ignoreClicked && neverClicked &&
+    memoryCommands.includes('confirm_pending_memory:mem-confirm') &&
+    memoryCommands.includes('ignore_pending_memory:mem-ignore') &&
+    memoryCommands.includes('never_pending_memory:mem-never'), JSON.stringify(memoryCommands));
+
+  // ⑤ 品悟检阅 modal 本地化渲染:threading t 不报错 + 裁决标签/trace 出现(i18n 回归)
   await page.evaluate(() => window.TauriBridge.summonPinvou('/home/x/会议纪要.md'));
   await sleep(900);
   const modal = await page.evaluate(() => {
     const txt = document.body.innerText;
     return { trace: txt.includes('有几点确认'), adopt: txt.includes('采纳建议'), skip: txt.includes('跳过'), persona: txt.includes('旅行规划') };
   });
-  rec('④ 品悟检阅卡本地化渲染(t 线程通)', modal.trace && modal.adopt && modal.skip, JSON.stringify(modal));
+  rec('⑤ 品悟检阅卡本地化渲染(t 线程通)', modal.trace && modal.adopt && modal.skip, JSON.stringify(modal));
 
-  // ⑤ composer 模式 chip:渲染 + 默认 YOLO + 下拉两项 + 点 Plan 真切到 Plan(防 setPlanModeNext 草稿态静默 return 回归)
+  // ⑥ composer 模式 chip:渲染 + 默认 YOLO + 下拉两项 + 点 Plan 真切到 Plan(防 setPlanModeNext 草稿态静默 return 回归)
   const chip = await page.evaluate(() => {
     // title 前缀匹配:compact 下 chip 收成图标(无可见文字),且 title 现含当前模式名 → 用 title 判模式
     const b = document.querySelector('[title^="切换工作模式"]');
@@ -155,9 +219,9 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     const b = document.querySelector('[title^="切换工作模式"]');
     return b ? (b.getAttribute('title') || '').trim() : '';
   });
-  rec('⑤ chip 渲染+下拉两项+点Plan切到Plan', chip.found && /YOLO/.test(chip.label || '') && chipMenu.yoloDesc && chipMenu.planDesc && /Plan/.test(afterLabel), JSON.stringify({ ...chip, ...chipMenu, afterLabel }));
+  rec('⑥ chip 渲染+下拉两项+点Plan切到Plan', chip.found && /YOLO/.test(chip.label || '') && chipMenu.yoloDesc && chipMenu.planDesc && /Plan/.test(afterLabel), JSON.stringify({ ...chip, ...chipMenu, afterLabel }));
 
-  // ⑥ MegaCube(GB10) 本地大模型引导框:eligible 时渲染标题+启用/暂不/不再提醒(默认 mock 返 eligible:false 不弹,这里末尾翻 __VLLM_ELIGIBLE__ 再手动触发 detect,不污染 ①–⑤)
+  // ⑦ MegaCube(GB10) 本地大模型引导框:eligible 时渲染标题+启用/暂不/不再提醒(默认 mock 返 eligible:false 不弹,这里末尾翻 __VLLM_ELIGIBLE__ 再手动触发 detect,不污染前序测试)
   await page.evaluate(() => { window.__VLLM_ELIGIBLE__ = true; });
   await page.evaluate(() => window.TauriBridge.detectLocalVllmSetup());
   await sleep(500);
@@ -165,9 +229,9 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     const btns = [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim());
     return { title: document.body.innerText.includes('启用本地大模型'), enable: btns.includes('启用'), skip: btns.includes('暂不'), never: btns.includes('不再提醒') };
   });
-  rec('⑥ MegaCube 引导框 eligible 渲染(标题+启用/暂不/不再提醒)', setup.title && setup.enable && setup.skip && setup.never, JSON.stringify(setup));
+  rec('⑦ MegaCube 引导框 eligible 渲染(标题+启用/暂不/不再提醒)', setup.title && setup.enable && setup.skip && setup.never, JSON.stringify(setup));
 
-  // ⑦ 点「不再提醒」→ 二次确认子态(警示文案 + 确认不启用/再想想);点「再想想」回到初始态
+  // ⑧ 点「不再提醒」→ 二次确认子态(警示文案 + 确认不启用/再想想);点「再想想」回到初始态
   await clickText(page, '不再提醒');
   await sleep(300);
   const decline = await page.evaluate(() => {
@@ -176,16 +240,16 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
   });
   await clickText(page, '再想想');
   await sleep(200);
-  rec('⑦ 不再提醒→二次确认渲染(警示+确认/再想想)', decline.warn && decline.confirm && decline.reconsider, JSON.stringify(decline));
+  rec('⑧ 不再提醒→二次确认渲染(警示+确认/再想想)', decline.warn && decline.confirm && decline.reconsider, JSON.stringify(decline));
 
-  // ⑧ 点「启用」→ 进行中步骤指示渲染(授权/等待步骤 + 计时;mock bootstrap 永不 resolve 停在进行中)
+  // ⑨ 点「启用」→ 进行中步骤指示渲染(授权/等待步骤 + 计时;mock bootstrap 永不 resolve 停在进行中)
   await clickText(page, '启用');
   await sleep(700);
   const prog = await page.evaluate(() => {
     const txt = document.body.innerText;
     return { auth: txt.includes('授权并启动引擎'), wait: txt.includes('等待模型加载就绪'), elapsed: txt.includes('已等待') };
   });
-  rec('⑧ 引导进行中步骤指示+计时渲染', prog.auth && prog.wait && prog.elapsed, JSON.stringify(prog));
+  rec('⑨ 引导进行中步骤指示+计时渲染', prog.auth && prog.wait && prog.elapsed, JSON.stringify(prog));
 
   if (errs.length) console.log('⚠️ PAGEERRORS:', errs.slice(0, 3).join(' | '));
   await browser.close();

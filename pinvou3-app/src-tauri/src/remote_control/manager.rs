@@ -19,7 +19,6 @@ use crate::bridge::{paths, sessions::SessionStore};
 use crate::connector_cli;
 use crate::engine_pool::EnginePool;
 
-const DEFAULT_TTL_SECS: i64 = 600;
 const PREVIEW_LIMIT_BYTES: usize = 256 * 1024;
 const DEFAULT_PUBLIC_BASE_URL: &str = "https://www.ma-xiao.com/pinvou3/remote";
 const DEFAULT_RELAY_WS_URL: &str = "wss://www.ma-xiao.com/pinvou3/remote/ws";
@@ -42,7 +41,6 @@ struct ActiveRoom {
     session_id: String,
     url: String,
     relay_ws_url: String,
-    expires_at: String,
     status: RemoteControlStatusKind,
     last_error: Option<String>,
     sender: RelaySender,
@@ -97,16 +95,15 @@ impl RemoteControlManager {
         store: SessionStore,
         pool: EnginePool,
     ) -> Result<RemotePairingInfo, String> {
-        self.stop_current();
+        self.close_current("qr_refreshed");
         let relay_ws_url = remote_relay_ws_url();
         let public_base = remote_public_base_url();
         let room_id = format!("rc_{}", crate::remote_control::short_token(18));
         let pairing_token = crate::remote_control::short_token(32);
         let desktop_secret = crate::remote_control::short_token(32);
-        let expires_at =
-            (chrono::Utc::now() + chrono::Duration::seconds(DEFAULT_TTL_SECS)).to_rfc3339();
+        // 二维码与当前 room 同寿命：只有刷新二维码、停止远控或关闭桌面端才失效。
         let url = format!(
-            "{}/r/{}?token={}",
+            "{}/r/{}#token={}",
             public_base.trim_end_matches('/'),
             room_id,
             pairing_token
@@ -118,7 +115,6 @@ impl RemoteControlManager {
             session_id.clone(),
             pairing_token,
             desktop_secret,
-            expires_at.clone(),
         );
 
         {
@@ -129,7 +125,6 @@ impl RemoteControlManager {
                 session_id: session_id.clone(),
                 url: url.clone(),
                 relay_ws_url: relay_ws_url.clone(),
-                expires_at: expires_at.clone(),
                 status: RemoteControlStatusKind::ConnectingRelay,
                 last_error: None,
                 sender: sender.clone(),
@@ -165,12 +160,15 @@ impl RemoteControlManager {
             session_id,
             url,
             qr_data_url,
-            expires_at,
             status: RemoteControlStatusKind::WaitingMobile,
         })
     }
 
     pub fn stop_current(&self) {
+        self.close_current("stopped");
+    }
+
+    fn close_current(&self, reason: &str) {
         let old = {
             let mut inner = self.inner.lock();
             inner.room.take()
@@ -179,6 +177,7 @@ impl RemoteControlManager {
             let _ = room.sender.send(RelayOutbound::Close {
                 room_id: room.room_id,
                 session_id: room.session_id,
+                reason: reason.to_string(),
             });
             self.emit_status();
         }
@@ -196,7 +195,6 @@ impl RemoteControlManager {
                     Some(room.session_id.clone())
                 },
                 url: Some(room.url.clone()),
-                expires_at: Some(room.expires_at.clone()),
                 status: room.status,
                 relay_url: room.relay_ws_url.clone(),
                 last_error: room.last_error.clone(),
@@ -207,7 +205,6 @@ impl RemoteControlManager {
                 room_id: None,
                 session_id: None,
                 url: None,
-                expires_at: None,
                 status: RemoteControlStatusKind::Idle,
                 relay_url: remote_relay_ws_url(),
                 last_error: None,
@@ -416,16 +413,22 @@ impl RemoteControlManager {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                store.set_mode(&active_session_id, SerializableMode::Yolo);
-                let instruction = format!("用户已批准方案,立即开始执行。方案:\n\n{plan_markdown}");
-                pool.send_user_message(
-                    &active_session_id,
-                    instruction,
-                    SerializableMode::Yolo.to_app_mode(),
-                )
-                .await
-                .map_err(|e| format!("accept_plan send_user_message: {e:?}"))
-                .and_then(|_| self.send_chips_snapshot(store, &active_session_id))
+                match store.set_mode(&active_session_id, SerializableMode::Yolo) {
+                    Ok(()) => {
+                        let instruction =
+                            format!("用户已批准方案,立即开始执行。方案:\n\n{plan_markdown}");
+                        pool.send_user_message(
+                            &active_session_id,
+                            instruction,
+                            SerializableMode::Yolo.to_app_mode(),
+                            false,
+                        )
+                        .await
+                        .map_err(|e| format!("accept_plan send_user_message: {e:?}"))
+                        .and_then(|_| self.send_chips_snapshot(store, &active_session_id))
+                    }
+                    Err(error) => Err(format!("accept_plan set_mode: {error:#}")),
+                }
             }
             "discard_plan" => self.send_chips_snapshot(store, &active_session_id),
             "set_mode" => {
@@ -441,8 +444,10 @@ impl RemoteControlManager {
                             .send_error("mobile_action_failed", &format!("invalid mode: {other}"))
                     }
                 };
-                store.set_mode(&active_session_id, mode);
-                self.send_chips_snapshot(store, &active_session_id)
+                store
+                    .set_mode(&active_session_id, mode)
+                    .map_err(|error| format!("set_mode: {error:#}"))
+                    .and_then(|_| self.send_chips_snapshot(store, &active_session_id))
             }
             "set_model" => {
                 let model_id = action.payload.get("model_id").and_then(|v| {
@@ -460,9 +465,13 @@ impl RemoteControlManager {
                         );
                     }
                 }
-                pool.switch_session_model(&active_session_id, model_id)
-                    .await;
-                self.send_chips_snapshot(store, &active_session_id)
+                match pool
+                    .switch_session_model(&active_session_id, model_id)
+                    .await
+                {
+                    Ok(()) => self.send_chips_snapshot(store, &active_session_id),
+                    Err(error) => Err(format!("set_model: {error:#}")),
+                }
             }
             "disconnect" => {
                 self.stop_current();

@@ -2,12 +2,13 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "pinvou3",
   "mainBinaryName": "pinvou3-tauri",
-  "version": "0.5.11",
+  "version": "0.5.12",
   "identifier": "com.pinvou.pinvou3",
   "build": {
-    "beforeDevCommand": "node src-tauri/scripts/serve-src.mjs",
+    "beforeDevCommand": "vite",
+    "beforeBuildCommand": "vite build",
     "devUrl": "http://127.0.0.1:1420",
-    "frontendDist": "../src"
+    "frontendDist": "../dist"
   },
   "app": {
     "withGlobalTauri": true,

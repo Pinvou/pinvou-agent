@@ -3,7 +3,8 @@ name: PR Check
 # Jobs:
 # - commit-message:强制校验 PR/push 的 Git commit 信息规范。
 # - fast-gate(秒级,每 PR 都跑):fork-guard 指纹 + fork 合规联动 + Python MCP 测试。
-# - changes:检测本 PR 有没有 Rust/依赖改动,给 rust-test 做 paths filter。
+# - changes:检测本 PR 有没有 Rust/依赖或前端改动,给编译/前端 job 做 paths filter。
+# - frontend-test:前端相关 PR 跑 npm lockfile 安装、lint、Vite build、逻辑测试和浏览器 smoke。
 # - rust-test(编译类):**仅当改了 Rust/Cargo/submodule 才跑**(非 Rust PR 直接 skip,不耗
 #   编译时间)。占位 bge-m3 → cargo test --lib(~240 单测;真 bge-m3/vLLM 测试已 #[ignore])。
 # 未上:clippy/fmt(现有代码各 75/329 处不符合,要先清理才能加 -D gate)。
@@ -59,6 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
+      frontend: ${{ steps.filter.outputs.frontend }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -69,7 +71,17 @@ jobs:
               - '**/*.rs'
               - '**/Cargo.toml'
               - '**/Cargo.lock'
+              - '**/tauri.conf.json'
               - 'DeepSeek-TUI'
+              - '.github/workflows/pr-check.yml'
+            frontend:
+              - 'pinvou3-app/src/**'
+              - 'pinvou3-app/tests/**'
+              - 'pinvou3-app/package.json'
+              - 'pinvou3-app/package-lock.json'
+              - 'pinvou3-app/vite.config.js'
+              - 'pinvou3-app/eslint.config.mjs'
+              - 'pinvou3-app/src-tauri/tauri.conf.json'
               - '.github/workflows/pr-check.yml'
 
   fast-gate:
@@ -105,6 +117,47 @@ jobs:
             ( cd "$(dirname "$t")" && python3 "$(basename "$t")" ) || fail=1
           done
           [ "$fail" -eq 0 ]
+
+  frontend-test:
+    name: frontend-test
+    needs: changes
+    # PR:只在前端相关文件变化时跑;push main:恒跑,保证合入后的构建链也有验证。
+    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.frontend == 'true') }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pinvou3-app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: pinvou3-app/package-lock.json
+
+      - name: 安装前端依赖
+        run: npm ci --prefer-offline --no-audit
+
+      - name: ESLint
+        run: npm run lint:ui
+
+      - name: Vite build
+        run: npm run build:ui
+
+      - name: 前端逻辑测试
+        run: npm test
+
+      - name: 浏览器 smoke
+        run: |
+          export CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          node tests/ui_smoke.js
+          node tests/detached_boot_smoke.js
+          node tests/drag_gesture_smoke.js
+          node tests/update_notice_ui_smoke.js
+          node tests/scheduled_tasks_smoke.js
 
   rust-test:
     name: rust-test
@@ -161,3 +214,11 @@ jobs:
       # --test-threads=1:bridge 测试读/写全局 env,并行会竞争(qwen_preset/vllm 等 flaky)。
       - name: cargo test --lib (真 bge-m3/vLLM 测试已 #[ignore])
         run: cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
+
+      - name: DeepSeek-TUI 定时任务运行时回归
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/pinvou3-app/src-tauri/target
+        run: |
+          cargo test --manifest-path DeepSeek-TUI/Cargo.toml -p codewhale-tui --lib automation_manager -- --test-threads=1
+          cargo test --manifest-path DeepSeek-TUI/Cargo.toml -p codewhale-tui --lib task_manager -- --test-threads=1
+          cargo test --manifest-path DeepSeek-TUI/Cargo.toml -p codewhale-tui --test task_executor_contract -- --test-threads=1

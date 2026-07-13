@@ -1,15 +1,15 @@
 # pinvou3 对 DeepSeek-TUI 底座的 fork 维护策略
 
-> 创建 2026-05-28 · 最后更新 2026-06-15(v0.8.60 sync)
+> 创建 2026-05-28 · 最后更新 2026-07-13(`pinvou3-clean` 指针对齐)
 > 适用:每次新增 fork patch + 每次跟进上游 sync
 > 配套:`scripts/fork-guard.sh`、`bin/dump_system_prompt.rs`、`docs/fork-modifications.md`(现状清单 + 验证 checklist)
 
 ## 0. 现状
 
-- DeepSeek-TUI 是 `h3c-hexin/DeepSeek-TUI` fork(submodule,**`pinvou3-clean` 分支** ← upstream **v0.8.65**;HEAD `6445fc4c` = v0.8.65 + 8 主题 commit(2026-06-29 第 3 次 clean re-fork);`.gitmodules` 追踪;备份 `backup/v0.8.65-merge-result` + `backup/pre-reclean-trial-tip`)
-- fork drift **+2335 / −360 行,43 文件**(vs v0.8.60;主体是工作流层 W1–W12,**已超 1500 软上限**——撤回评估见 fork-modifications §4;app 层 prompt override 不计入)
-- fork 结构 = **C1–C7 + W 逻辑主题**(W = 三省六部工作流层),详见 `docs/fork-modifications.md` §1
-- 路线:接受"重 fork",靠工程化(指纹 + 测试 + dump diff + 文档)控制维护成本。当前 drift 2335 已超软上限,2026-06-15 评估=主体必需、保留(见 fork-modifications §4)
+- DeepSeek-TUI 是 `h3c-hexin/DeepSeek-TUI` fork(submodule,**`pinvou3-clean` 分支** ← upstream **v0.8.65**;HEAD `5f5a58db` = 2026-07-13 合入 durable scheduled runtime 后的远程分支头;`.gitmodules` 追踪;备份 `backup/v0.8.65-merge-result` + `backup/pre-reclean-trial-tip`)
+- fork drift **+13744 / −5646 行,59 文件**(vs v0.8.65;主体是工作流层 W1–W12 + scheduler AUTO,**已超 1500 软上限**——撤回评估见 fork-modifications §4;app 层 prompt override 不计入)
+- fork 结构 = **C1–C11 + AUTO + R + W 逻辑主题**(AUTO = durable scheduler/runtime,W = 三省六部工作流层),详见 `docs/fork-modifications.md` §1
+- 路线:接受"重 fork",靠工程化(指纹 + 测试 + dump diff + 文档)控制维护成本。当前 drift 已超软上限,最近一次撤回评估结论仍是主体必需、保留(见 fork-modifications §4)
 
 ## 1. 总则
 
