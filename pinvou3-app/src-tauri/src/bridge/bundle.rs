@@ -274,6 +274,9 @@ impl Pinvou3Bundle {
         // 已从技能市场下架的预置技能(pua/女娲/头脑风暴):它们曾走 marketplace 装、带
         // `pinvou3-marketplace:` 标记,故按标记内容精确删,只跳过用户上传的同名目录。
         self.cleanup_removed_marketplace_skills()?;
+        // 已从工具市场下架的预置 MCP 工具也要清理运行态残留;否则旧 manifest 仍会被
+        // MarketplaceManager 扫到,在 composer「已接入工具」里继续出现。
+        self.cleanup_removed_marketplace_tools()?;
         // 工作流目录同 skills:immutable bundle 资源,每次启动防御性重写
         // (防 "VERSION 对得上但目录缺失"),无副作用。
         self.write_workflows()?;
@@ -423,6 +426,26 @@ impl Pinvou3Bundle {
             if marker.is_empty() || marker == format!("pinvou3-marketplace:{market_id}") {
                 let _ = std::fs::remove_dir_all(&dir);
             }
+        }
+        Ok(())
+    }
+
+    /// 清理已从工具市场移除的预置 MCP 工具残留。
+    ///
+    /// 不能删除所有未知目录:未来/本地可能有自定义 MCP 工具。这里只精确处理曾经内置、
+    /// 现在源码资源已经移除的 marketplace 工具。
+    fn cleanup_removed_marketplace_tools(&self) -> std::io::Result<()> {
+        for tool_id in ["data_analysis"] {
+            let _ = crate::bridge::marketplace::MarketplaceManager::new().uninstall(tool_id);
+
+            let mut disabled = crate::bridge::marketplace::load_disabled_connectors();
+            let before = disabled.len();
+            disabled.retain(|id| id != tool_id);
+            if disabled.len() != before {
+                crate::bridge::marketplace::save_disabled_connectors(&disabled);
+            }
+
+            let _ = std::fs::remove_dir_all(paths::bundle_mcp_servers_dir().join(tool_id));
         }
         Ok(())
     }
@@ -849,6 +872,69 @@ mod tests {
         assert!(!pua.exists(), "市场标记的 pua 应被删");
         assert!(!nuwa.exists(), "无标记的 huashu-nuwa 残留应被删");
         assert!(brainstorm.exists(), "用户上传(upload:)的同名目录应保留");
+
+        cleanup(&tmp);
+    }
+
+    /// 已下架预置 MCP 工具的清理:目录、installed.json、mcp.json、禁用列表都不应残留。
+    #[test]
+    fn cleanup_removed_marketplace_tools_removes_data_analysis() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = Pinvou3Bundle::paths();
+        let data_dir = paths::bundle_mcp_servers_dir().join("data_analysis");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(
+            data_dir.join("manifest.json"),
+            r#"{
+                "id":"data_analysis",
+                "name":"数据分析与可视化",
+                "description":"removed",
+                "version":"1",
+                "icon":"bar-chart-3",
+                "category":"办公",
+                "mcp_tools":["mcp_data_analysis_build_dashboard"],
+                "command":"python",
+                "args":["server.py"]
+            }"#,
+        )
+        .unwrap();
+        let marketplace_dir = paths::pinvou3_home().join("marketplace");
+        std::fs::create_dir_all(&marketplace_dir).unwrap();
+        std::fs::write(
+            marketplace_dir.join("installed.json"),
+            r#"["weather","data_analysis"]"#,
+        )
+        .unwrap();
+        std::fs::write(
+            paths::mcp_config_path(),
+            r#"{"servers":{"data_analysis":{"command":"python","args":["server.py"]},"weather":{"command":"python","args":["server.py"]}}}"#,
+        )
+        .unwrap();
+        crate::bridge::marketplace::save_disabled_connectors(&[
+            "data_analysis".to_string(),
+            "weather".to_string(),
+        ]);
+
+        bundle.cleanup_removed_marketplace_tools().unwrap();
+
+        assert!(!data_dir.exists(), "data_analysis 运行目录应被删");
+        let installed = std::fs::read_to_string(marketplace_dir.join("installed.json")).unwrap();
+        assert!(
+            !installed.contains("data_analysis"),
+            "installed.json 不应残留 data_analysis"
+        );
+        let mcp = std::fs::read_to_string(paths::mcp_config_path()).unwrap();
+        assert!(
+            !mcp.contains("data_analysis"),
+            "mcp.json 不应残留 data_analysis server"
+        );
+        let disabled = crate::bridge::marketplace::load_disabled_connectors();
+        assert!(
+            !disabled.contains(&"data_analysis".to_string()),
+            "disabled_connectors 不应残留 data_analysis"
+        );
 
         cleanup(&tmp);
     }
