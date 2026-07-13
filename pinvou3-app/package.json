@@ -12,7 +12,8 @@
     "lint:ui": "eslint src/main.jsx src/components src/features src/hooks src/shared",
     "build": "tauri build",
     "test:update-notice": "node tests/update_notice_logic.test.js",
-    "test": "npm run test:update-notice"
+    "test:scheduled": "node tests/scheduled_tasks_unit.js",
+    "test": "npm run test:update-notice && npm run test:scheduled"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",

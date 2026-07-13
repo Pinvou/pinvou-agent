@@ -413,16 +413,22 @@ impl RemoteControlManager {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                store.set_mode(&active_session_id, SerializableMode::Yolo);
-                let instruction = format!("用户已批准方案,立即开始执行。方案:\n\n{plan_markdown}");
-                pool.send_user_message(
-                    &active_session_id,
-                    instruction,
-                    SerializableMode::Yolo.to_app_mode(),
-                )
-                .await
-                .map_err(|e| format!("accept_plan send_user_message: {e:?}"))
-                .and_then(|_| self.send_chips_snapshot(store, &active_session_id))
+                match store.set_mode(&active_session_id, SerializableMode::Yolo) {
+                    Ok(()) => {
+                        let instruction =
+                            format!("用户已批准方案,立即开始执行。方案:\n\n{plan_markdown}");
+                        pool.send_user_message(
+                            &active_session_id,
+                            instruction,
+                            SerializableMode::Yolo.to_app_mode(),
+                            false,
+                        )
+                        .await
+                        .map_err(|e| format!("accept_plan send_user_message: {e:?}"))
+                        .and_then(|_| self.send_chips_snapshot(store, &active_session_id))
+                    }
+                    Err(error) => Err(format!("accept_plan set_mode: {error:#}")),
+                }
             }
             "discard_plan" => self.send_chips_snapshot(store, &active_session_id),
             "set_mode" => {
@@ -438,8 +444,10 @@ impl RemoteControlManager {
                             .send_error("mobile_action_failed", &format!("invalid mode: {other}"))
                     }
                 };
-                store.set_mode(&active_session_id, mode);
-                self.send_chips_snapshot(store, &active_session_id)
+                store
+                    .set_mode(&active_session_id, mode)
+                    .map_err(|error| format!("set_mode: {error:#}"))
+                    .and_then(|_| self.send_chips_snapshot(store, &active_session_id))
             }
             "set_model" => {
                 let model_id = action.payload.get("model_id").and_then(|v| {
@@ -457,9 +465,13 @@ impl RemoteControlManager {
                         );
                     }
                 }
-                pool.switch_session_model(&active_session_id, model_id)
-                    .await;
-                self.send_chips_snapshot(store, &active_session_id)
+                match pool
+                    .switch_session_model(&active_session_id, model_id)
+                    .await
+                {
+                    Ok(()) => self.send_chips_snapshot(store, &active_session_id),
+                    Err(error) => Err(format!("set_model: {error:#}")),
+                }
             }
             "disconnect" => {
                 self.stop_current();

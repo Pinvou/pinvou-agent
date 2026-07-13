@@ -5527,6 +5527,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tokio",
  "tokio-tungstenite",
+ "tokio-util",
  "walkdir",
  "webkit2gtk",
  "windows-sys 0.61.2",

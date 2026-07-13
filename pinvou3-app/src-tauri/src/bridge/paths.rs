@@ -281,6 +281,26 @@ pub fn sessions_root() -> PathBuf {
     pinvou3_home().join("sessions")
 }
 
+/// Scheduled-run data is separated from ordinary chat history.
+pub fn scheduled_runs_root() -> PathBuf {
+    pinvou3_home().join("scheduled-runs")
+}
+
+/// SavedSession JSON files for scheduled runs, managed by a second SessionManager.
+pub fn scheduled_run_sessions_root() -> PathBuf {
+    scheduled_runs_root().join("sessions")
+}
+
+/// App-owned classification and immutable runtime settings for scheduled sessions.
+pub fn scheduled_run_profiles_path() -> PathBuf {
+    scheduled_runs_root().join("session-profiles.json")
+}
+
+/// App-owned viewed state for independent scheduled-run conversations.
+pub fn scheduled_run_read_state_path() -> PathBuf {
+    scheduled_runs_root().join("read-state.json")
+}
+
 fn sanitize_memory_runtime_id(raw: &str) -> String {
     let sanitized: String = raw
         .chars()
@@ -434,6 +454,38 @@ pub(crate) mod tests {
         match prev {
             Some(v) => std::env::set_var("PINVOU3_HOME", v),
             None => std::env::remove_var("PINVOU3_HOME"),
+        }
+    }
+
+    #[test]
+    fn scheduled_run_paths_are_isolated_from_chat_sessions() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-scheduled-paths");
+
+        assert_eq!(scheduled_runs_root(), pinvou3_home().join("scheduled-runs"));
+        assert_eq!(
+            scheduled_run_sessions_root(),
+            pinvou3_home().join("scheduled-runs").join("sessions")
+        );
+        assert_eq!(
+            scheduled_run_profiles_path(),
+            pinvou3_home()
+                .join("scheduled-runs")
+                .join("session-profiles.json")
+        );
+        assert_eq!(
+            scheduled_run_read_state_path(),
+            pinvou3_home()
+                .join("scheduled-runs")
+                .join("read-state.json")
+        );
+        assert_ne!(scheduled_run_sessions_root(), sessions_root());
+
+        if let Some(value) = previous {
+            std::env::set_var("PINVOU3_HOME", value);
+        } else {
+            std::env::remove_var("PINVOU3_HOME");
         }
     }
 

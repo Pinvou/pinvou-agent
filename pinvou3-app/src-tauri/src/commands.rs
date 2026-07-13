@@ -21,7 +21,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::bridge::mode_state::{SerializableMode, SessionModeState};
 use crate::bridge::prefs::{SavedModel, UserPrefs};
-use crate::bridge::sessions::SessionStore;
+use crate::bridge::sessions::{SessionKind, SessionStore};
 use crate::credential_store::{
     CredentialEditAction, CredentialState, CredentialStore, SystemCredentialStore,
 };
@@ -46,6 +46,18 @@ pub struct HiddenSessionListItem {
     pub archived_at: Option<String>,
 }
 
+fn ensure_chat_session(store: &SessionStore, id: &str, action: &str) -> Result<(), String> {
+    match store
+        .session_kind(id)
+        .map_err(|error| format!("{action}({id}): {error:?}"))?
+    {
+        SessionKind::Chat => Ok(()),
+        SessionKind::ScheduledRun => Err(format!(
+            "{action}({id}): scheduled-run sessions are managed from Scheduled"
+        )),
+    }
+}
+
 /// 接收用户消息并转发给 Engine。
 /// 立即返回，LLM 流式输出通过 Tauri Event 异步推给前端。
 ///
@@ -64,6 +76,7 @@ pub async fn chat(
     message: String,
     attachments: Option<Vec<crate::file_ingest::IngestResult>>,
     session_id: Option<String>,
+    restrict_tools: Option<bool>,
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
     app: AppHandle,
@@ -77,12 +90,35 @@ pub async fn chat(
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
+    let execution_workspace = store
+        .execution_workspace(&sid)
+        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
+    let is_scheduled = store.scheduled_profile(&sid).is_some();
+    if is_scheduled {
+        for attachment in attachments.as_deref().unwrap_or_default() {
+            validate_staged_attachment_basename(&attachment.basename).map_err(|error| {
+                format!(
+                    "invalid scheduled attachment basename {:?}: {error}",
+                    attachment.basename
+                )
+            })?;
+        }
+    }
+    let attachment_dir = if is_scheduled {
+        // The scheduled engine runs in the configured project workspace, so
+        // staged paths must remain relative to that same root. Isolate every
+        // run under an app-named hidden directory to avoid cross-run clashes.
+        format!(".pinvou3/scheduled-attachments/{sid}/attachments")
+    } else {
+        "attachments".to_string()
+    };
     let raw_message = message.clone();
     crate::timing::start_turn(&sid);
-    let mut full = build_message_with_attachments(
+    let mut full = build_message_with_attachments_in_dir(
         message,
         attachments.unwrap_or_default(),
-        &crate::bridge::paths::session_workspace_dir(&sid),
+        &execution_workspace,
+        &attachment_dir,
     );
     // 工作流 Phase 可视化:用户在工作流页"启用"卡片 = start_skill_session
     // 新建一个绑定了 skill 的 session。该 session 第一条 chat 消息时,
@@ -148,7 +184,15 @@ pub async fn chat(
     }
     // 取该 session 的 mode。
     let mode = store.mode_state(&sid).mode;
-    match pool.send_user_message(&sid, full, mode.to_app_mode()).await {
+    match pool
+        .send_user_message(
+            &sid,
+            full,
+            mode.to_app_mode(),
+            restrict_tools.unwrap_or(false),
+        )
+        .await
+    {
         Ok(()) => Ok(()),
         Err(e) => {
             crate::timing::finish_turn(&sid, "send_error", Some(&format!("{e:?}")));
@@ -207,26 +251,170 @@ pub fn session_mounted_collection(
 /// 把图片附件拷进 session workspace 的 `attachments/` 子目录,返回供 `image_analyze`
 /// 使用的 **workspace 相对路径**(image_analyze 只接受不逃逸 workspace 的相对路径)。
 /// 失败返回 None,上层降级为提示无法读图。
+fn validate_staged_attachment_basename(basename: &str) -> Result<(), String> {
+    if basename.is_empty() {
+        return Err("basename is empty".to_string());
+    }
+    if basename.contains('/') || basename.contains('\\') {
+        return Err("basename must not contain path separators".to_string());
+    }
+    let bytes = basename.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return Err("basename must not contain a drive prefix".to_string());
+    }
+
+    let mut components = std::path::Path::new(basename).components();
+    match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(_)), None) => Ok(()),
+        _ => Err("basename must be exactly one normal path component".to_string()),
+    }
+}
+
+// Staging security boundary:
+// - basename validation blocks traversal, absolute paths, drive prefixes, and separators;
+// - canonical parent walking rejects pre-existing symlink/junction escapes;
+// - create_new prevents overwriting an existing file or following a pre-existing target link;
+// - exclusive reservation gives benign concurrent writers distinct names.
+//
+// This does not claim to defeat a malicious process that already has write access to the same
+// workspace and actively swaps a parent between validation and open. Such a process already has
+// equivalent write authority; closing that residual race requires platform-specific handle-relative
+// APIs (for example openat-style directory handles), deliberately outside this local staging helper.
+fn prepare_staging_directory(
+    workspace: &std::path::Path,
+    attachment_dir: &str,
+) -> Option<(String, std::path::PathBuf, std::path::PathBuf)> {
+    let attachment_dir = attachment_dir.trim_end_matches('/');
+    let relative = std::path::Path::new(attachment_dir);
+    if relative.as_os_str().is_empty() || relative.is_absolute() {
+        return None;
+    }
+    let components = relative
+        .components()
+        .map(|component| match component {
+            std::path::Component::Normal(name) => Some(name.to_os_string()),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+
+    std::fs::create_dir_all(workspace).ok()?;
+    let canonical_workspace = std::fs::canonicalize(workspace).ok()?;
+    let mut canonical_parent = canonical_workspace.clone();
+    for component in components {
+        canonical_parent.push(component);
+        match std::fs::create_dir(&canonical_parent) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => return None,
+        }
+        let metadata = std::fs::symlink_metadata(&canonical_parent).ok()?;
+        if !metadata.is_dir() {
+            return None;
+        }
+        let resolved = std::fs::canonicalize(&canonical_parent).ok()?;
+        if !resolved.starts_with(&canonical_workspace) {
+            return None;
+        }
+        // Continue from the resolved parent rather than the user-visible path.
+        // A pre-existing link can therefore never redirect creation of the
+        // next component outside the canonical execution workspace.
+        canonical_parent = resolved;
+    }
+
+    Some((
+        attachment_dir.to_string(),
+        canonical_workspace,
+        canonical_parent,
+    ))
+}
+
+fn reserve_unique_staged_file(
+    directory: &std::path::Path,
+    initial_name: String,
+    stem: &str,
+    suffix: &str,
+) -> Option<(std::fs::File, std::path::PathBuf, String)> {
+    const MAX_CANDIDATES: usize = 10_000;
+    for attempt in 0..MAX_CANDIDATES {
+        let candidate = if attempt == 0 {
+            initial_name.clone()
+        } else {
+            format!("{stem}-{attempt}{suffix}")
+        };
+        let path = directory.join(&candidate);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Some((file, path, candidate)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+#[cfg(unix)]
+fn staged_reserved_target_is_unchanged(file: &std::fs::File, path: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    let (Ok(opened), Ok(named)) = (file.metadata(), std::fs::symlink_metadata(path)) else {
+        return false;
+    };
+    named.file_type().is_file() && opened.dev() == named.dev() && opened.ino() == named.ino()
+}
+
+#[cfg(windows)]
+fn staged_reserved_target_is_unchanged(_file: &std::fs::File, path: &std::path::Path) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    let Ok(named) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    named.file_type().is_file() && named.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
+}
+
+#[cfg(not(any(unix, windows)))]
+fn staged_reserved_target_is_unchanged(_file: &std::fs::File, path: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
+}
+
+fn staged_target_is_safe(
+    file: &std::fs::File,
+    path: &std::path::Path,
+    canonical_workspace: &std::path::Path,
+) -> bool {
+    staged_reserved_target_is_unchanged(file, path)
+        && std::fs::canonicalize(path)
+            .is_ok_and(|resolved| resolved.starts_with(canonical_workspace))
+}
+
 fn stage_image_in_workspace(
     src: &str,
     basename: &str,
     workspace: &std::path::Path,
+    attachment_dir: &str,
 ) -> Option<String> {
-    let dir = workspace.join("attachments");
-    std::fs::create_dir_all(&dir).ok()?;
-    // 防重名:已存在则 name-1.ext / name-2.ext 递增。
-    let (stem, ext) = match basename.rsplit_once('.') {
+    validate_staged_attachment_basename(basename).ok()?;
+    let (attachment_dir, canonical_workspace, directory) =
+        prepare_staging_directory(workspace, attachment_dir)?;
+    let mut source = std::fs::File::open(src).ok()?;
+    let (stem, suffix) = match basename.rsplit_once('.') {
         Some((s, e)) => (s.to_string(), format!(".{e}")),
         None => (basename.to_string(), String::new()),
     };
-    let mut candidate = basename.to_string();
-    let mut n = 1;
-    while dir.join(&candidate).exists() {
-        candidate = format!("{stem}-{n}{ext}");
-        n += 1;
+    let (mut destination, path, candidate) =
+        reserve_unique_staged_file(&directory, basename.to_string(), &stem, &suffix)?;
+    if !staged_target_is_safe(&destination, &path, &canonical_workspace) {
+        return None;
     }
-    std::fs::copy(src, dir.join(&candidate)).ok()?;
-    Some(format!("attachments/{candidate}"))
+    if std::io::copy(&mut source, &mut destination).is_err() {
+        return None;
+    }
+    if !staged_target_is_safe(&destination, &path, &canonical_workspace) {
+        return None;
+    }
+    Some(format!("{attachment_dir}/{candidate}"))
 }
 
 /// 附件内联预算(token 估算)。单文件超过 INLINE_MAX、或多附件累计超过 TOTAL_BUDGET
@@ -240,25 +428,56 @@ const ATTACH_TOTAL_BUDGET_TOKENS: u32 = 16_000;
 const ATTACH_PREVIEW_LINES: usize = 20;
 const ATTACH_PREVIEW_MAX_CHARS: usize = 1_500;
 
-/// 把超限附件的转换产物写进 workspace 的 `attachments/`(防重名递增),返回
-/// workspace 相对路径。text 类附件不走这里——原文件本身就是 read_file 可读的。
+/// 把超限附件的转换产物写进指定的 workspace 相对目录(防重名递增),返回
+/// workspace 相对路径。普通对话的 text 仍直接使用原路径；scheduled 对话会复制
+/// 到 run 专属目录，避免无人值守引擎依赖 workspace 外路径。
 fn stage_text_in_workspace(
     content: &str,
     basename: &str,
     ext: &str,
     workspace: &std::path::Path,
+    attachment_dir: &str,
 ) -> Option<String> {
-    let dir = workspace.join("attachments");
-    std::fs::create_dir_all(&dir).ok()?;
+    use std::io::Write as _;
+    stage_text_in_workspace_with_writer(
+        basename,
+        ext,
+        workspace,
+        attachment_dir,
+        |destination, _path| destination.write_all(content.as_bytes()),
+    )
+}
+
+fn stage_text_in_workspace_with_writer<F>(
+    basename: &str,
+    ext: &str,
+    workspace: &std::path::Path,
+    attachment_dir: &str,
+    writer: F,
+) -> Option<String>
+where
+    F: FnOnce(&mut std::fs::File, &std::path::Path) -> std::io::Result<()>,
+{
+    validate_staged_attachment_basename(basename).ok()?;
+    let (attachment_dir, canonical_workspace, directory) =
+        prepare_staging_directory(workspace, attachment_dir)?;
     let stem = basename.rsplit_once('.').map_or(basename, |(s, _)| s);
-    let mut candidate = format!("{stem}.{ext}");
-    let mut n = 1;
-    while dir.join(&candidate).exists() {
-        candidate = format!("{stem}-{n}.{ext}");
-        n += 1;
+    let suffix = format!(".{ext}");
+    let (mut destination, path, candidate) =
+        reserve_unique_staged_file(&directory, format!("{stem}{suffix}"), stem, &suffix)?;
+    if !staged_target_is_safe(&destination, &path, &canonical_workspace) {
+        return None;
     }
-    std::fs::write(dir.join(&candidate), content).ok()?;
-    Some(format!("attachments/{candidate}"))
+    if writer(&mut destination, &path).is_err() {
+        // Deliberately leave the app-named orphan in place. Unlinking by path after a failed
+        // post-check would introduce another check-then-unlink race and could delete a replacement
+        // installed by a concurrent writer.
+        return None;
+    }
+    if !staged_target_is_safe(&destination, &path, &canonical_workspace) {
+        return None;
+    }
+    Some(format!("{attachment_dir}/{candidate}"))
 }
 
 /// 转换产物落盘时的扩展名:表格是 CSV(awk/python 可直接吃),pandoc 产物是
@@ -294,11 +513,19 @@ fn push_large_attachment_section(
     a: &crate::file_ingest::IngestResult,
     md: &str,
     workspace: &std::path::Path,
+    attachment_dir: &str,
+    stage_original_text: bool,
 ) {
-    let read_path = if a.kind == "text" {
+    let read_path = if a.kind == "text" && !stage_original_text {
         a.path.clone()
     } else {
-        match stage_text_in_workspace(md, &a.basename, converted_ext(&a.kind), workspace) {
+        match stage_text_in_workspace(
+            md,
+            &a.basename,
+            converted_ext(&a.kind),
+            workspace,
+            attachment_dir,
+        ) {
             Some(rel) => rel,
             None => {
                 out.push_str(
@@ -322,14 +549,14 @@ fn push_large_attachment_section(
     ));
 }
 
-/// 拼接 user 文本 + 附件 markdown。
+/// 按指定 workspace 相对目录拼接 user 文本 + 附件 markdown。
 /// 图片拷进 workspace 后引导 LLM 调 image_analyze 读图(Qwen3.6 有视觉能力);
 /// 文本类附件按 token 预算分流:小→全量内联,大→落盘+路径+预览(见常量注释)。
-/// pub 仅为 L1 dialog harness 复用(lib.rs re-export),不是对外 API。
-pub fn build_message_with_attachments(
+fn build_message_with_attachments_in_dir(
     text: String,
     attachments: Vec<crate::file_ingest::IngestResult>,
     workspace: &std::path::Path,
+    attachment_dir: &str,
 ) -> String {
     if attachments.is_empty() {
         return text;
@@ -359,7 +586,7 @@ pub fn build_message_with_attachments(
             // (实测同一张图,不调工具时编造内容,调工具才得真相)。改成"你现在
             // 一无所知,调用前绝不描述",把模糊建议变成具体硬规则(Qwen3.6 对具体
             // 硬规则遵循好、对抽象意图无效)。
-            match stage_image_in_workspace(&a.path, &a.basename, workspace) {
+            match stage_image_in_workspace(&a.path, &a.basename, workspace, attachment_dir) {
                 Some(rel) => {
                     out.push_str(&format!(
                         "🖼 用户附了一张图片,存在 workspace 的 `{rel}`。\n\
@@ -396,7 +623,14 @@ pub fn build_message_with_attachments(
                 }
                 out.push_str("```\n");
             } else {
-                push_large_attachment_section(&mut out, a, md, workspace);
+                push_large_attachment_section(
+                    &mut out,
+                    a,
+                    md,
+                    workspace,
+                    attachment_dir,
+                    attachment_dir != "attachments",
+                );
             }
         } else if let Some(warning) = &a.warning {
             out.push_str(&format!("⚠️ {warning}\n"));
@@ -405,6 +639,16 @@ pub fn build_message_with_attachments(
     }
     out.push_str("---\n");
     out
+}
+
+/// 普通对话附件入口。pub 仅为 L1 dialog harness 复用(lib.rs re-export)，
+/// 不是对外 API；scheduled chat 走上面的 run 专属目录入口。
+pub fn build_message_with_attachments(
+    text: String,
+    attachments: Vec<crate::file_ingest::IngestResult>,
+    workspace: &std::path::Path,
+) -> String {
+    build_message_with_attachments_in_dir(text, attachments, workspace, "attachments")
 }
 
 /// 从 disk 读最新 UserPrefs。
@@ -650,11 +894,13 @@ pub async fn set_session_model(
             return Err(format!("model not found: {mid}"));
         }
     }
-    pool.switch_session_model(&session_id, model_id).await;
-    Ok(())
+    pool.switch_session_model(&session_id, model_id)
+        .await
+        .map_err(|error| format!("set_session_model({session_id}): {error:#}"))
 }
 
-/// 读某会话显式绑定的模型 id(没绑定返回 None = 跟随全局默认)。聊天 chip 显示用。
+/// 读取聊天 chip 应显示的模型 id。定时会话尚未手动切换时显示任务初始模型，
+/// 手动切换后与普通会话一样显示交互选择。
 #[tauri::command]
 pub async fn get_session_model_id(
     session_id: String,
@@ -1180,7 +1426,8 @@ pub async fn get_backend_status(
 pub async fn list_sessions(store: State<'_, SessionStore>) -> Result<Vec<SessionListItem>, String> {
     let mut metas = store.list().map_err(|e| format!("list_sessions: {e:?}"))?;
     metas.retain(|m| {
-        !store.is_hidden(&m.id)
+        matches!(store.session_kind(&m.id), Ok(SessionKind::Chat))
+            && !store.is_hidden(&m.id)
             && store
                 .active_skill(&m.id)
                 .map_or(true, |b| b.project_dir.is_none())
@@ -1204,7 +1451,8 @@ pub async fn list_archived_sessions(
         .list()
         .map_err(|e| format!("list_archived_sessions: {e:?}"))?;
     metas.retain(|m| {
-        store.is_hidden(&m.id)
+        matches!(store.session_kind(&m.id), Ok(SessionKind::Chat))
+            && store.is_hidden(&m.id)
             && store
                 .active_skill(&m.id)
                 .map_or(true, |b| b.project_dir.is_none())
@@ -1267,6 +1515,7 @@ pub async fn delete_session(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
+    ensure_chat_session(&store, &id, "delete_session")?;
     // 先回收该 session 的 engine(cancel 在跑的 turn + shutdown + abort forwarder),
     // 再删盘上数据,避免僵尸 engine 继续往已删 session 写产物。
     pool.evict(&id).await;
@@ -1282,6 +1531,7 @@ pub async fn rename_session(
     title: String,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
+    ensure_chat_session(&store, &id, "rename_session")?;
     store
         .set_title(&id, title)
         .map_err(|e| format!("rename_session({id}): {e:?}"))
@@ -1294,6 +1544,7 @@ pub async fn set_session_pinned(
     pinned: bool,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
+    ensure_chat_session(&store, &id, "set_session_pinned")?;
     // 先 load 一次确认 session 存在,避免置顶表残留无效 id。
     store
         .load(&id)
@@ -1309,6 +1560,7 @@ pub async fn set_session_archived(
     archived: bool,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
+    ensure_chat_session(&store, &id, "set_session_archived")?;
     // 先 load 一次确认 session 存在,避免收起表残留无效 id。
     store
         .load(&id)
@@ -1323,14 +1575,15 @@ pub async fn get_active_session(store: State<'_, SessionStore>) -> Result<Option
     Ok(store.active_id())
 }
 
-/// 落盘 session 的 messages 数组。前端每轮 TurnComplete 后调用,
-/// 把累积的对话历史同步到后端。前端是 messages 的 source of truth。
+/// 落盘普通 chat session 的 messages 数组。前端是普通 chat 的 source of truth；
+/// scheduled-run transcript 由 Engine `SessionUpdated` 独占持久化，拒绝 UI 覆盖。
 #[tauri::command]
 pub async fn save_session_messages(
     id: String,
     messages: Vec<Message>,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
+    ensure_chat_session(&store, &id, "save_session_messages")?;
     store
         .update_messages(&id, messages)
         .map_err(|e| format!("save_session_messages({id}): {e:?}"))
@@ -1345,6 +1598,7 @@ pub async fn save_session_artifacts(
     paths: Vec<String>,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
+    ensure_chat_session(&store, &id, "save_session_artifacts")?;
     store
         .update_artifacts(&id, paths)
         .map_err(|e| format!("save_session_artifacts({id}): {e:?}"))
@@ -1354,11 +1608,24 @@ pub async fn save_session_artifacts(
 /// 前端切换 session 时用它对账 —— 让产物面板以**磁盘真相**为准,不受跟踪遗漏 /
 /// app 中途重启(内存跟踪丢失)影响。过滤规则与 file_watcher::should_skip 对齐。
 #[tauri::command]
-pub async fn list_workspace_files(session_id: String) -> Result<Vec<String>, String> {
+pub async fn list_workspace_files(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<Vec<String>, String> {
+    list_workspace_files_for_session(&session_id, &store)
+}
+
+fn list_workspace_files_for_session(
+    session_id: &str,
+    store: &SessionStore,
+) -> Result<Vec<String>, String> {
+    let execution_workspace = store
+        .execution_workspace(session_id)
+        .map_err(|error| format!("resolve execution workspace for {session_id}: {error:#}"))?;
     let mut out = Vec::new();
     for dir in [
-        crate::bridge::paths::session_workspace_dir(&session_id),
-        crate::bridge::paths::session_artifacts_dir(&session_id),
+        execution_workspace,
+        crate::bridge::paths::session_artifacts_dir(session_id),
     ] {
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
@@ -1994,6 +2261,7 @@ pub async fn edit_last_turn(
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
+    ensure_chat_session(&store, &sid, "edit_last_turn")?;
     pool.edit_last_turn(&sid, new_message)
         .await
         .map_err(|e| format!("edit_last_turn: {e:?}"))
@@ -2984,19 +3252,31 @@ pub fn detect_obsidian() -> ObsidianStatus {
 /// 后端 active_id 不更新 → 仍指向切走时去的那个 session → 相对路径被拼到错的
 /// workspace(报「not a file」)。卡片自带 session 才能跨会话切换稳定解析。
 /// None 时(老卡无此字段 / 绝对路径)回退 active_id,行为同旧版。
-fn resolve_artifact_path(raw: &str, session_id: Option<&str>, store: &SessionStore) -> String {
+fn resolve_artifact_path(
+    raw: &str,
+    session_id: Option<&str>,
+    store: &SessionStore,
+) -> Result<String, String> {
     if std::path::Path::new(raw).is_absolute() {
-        return raw.to_string();
+        return Ok(raw.to_string());
     }
     let sid = session_id
         .map(|s| s.to_string())
         .or_else(|| store.active_id());
     match sid {
-        Some(sid) => crate::bridge::paths::session_workspace_dir(&sid)
-            .join(raw)
-            .to_string_lossy()
-            .into_owned(),
-        None => raw.to_string(),
+        Some(sid) => store
+            .execution_workspace(&sid)
+            .map(|workspace| resolve_artifact_path_in_workspace(raw, &workspace))
+            .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}")),
+        None => Ok(raw.to_string()),
+    }
+}
+
+pub(crate) fn resolve_artifact_path_in_workspace(raw: &str, workspace: &std::path::Path) -> String {
+    if std::path::Path::new(raw).is_absolute() {
+        raw.to_string()
+    } else {
+        workspace.join(raw).to_string_lossy().into_owned()
     }
 }
 
@@ -3008,7 +3288,8 @@ pub async fn open_in_system(
     session_id: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    let p = validate_user_path(&resolve_artifact_path(&path, session_id.as_deref(), &store))?;
+    let resolved = resolve_artifact_path(&path, session_id.as_deref(), &store)?;
+    let p = validate_user_path(&resolved)?;
     shell_open(&strip_verbatim(&p))
 }
 
@@ -3020,7 +3301,8 @@ pub async fn open_containing_folder(
     session_id: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    let p = validate_user_path(&resolve_artifact_path(&path, session_id.as_deref(), &store))?;
+    let resolved = resolve_artifact_path(&path, session_id.as_deref(), &store)?;
+    let p = validate_user_path(&resolved)?;
     let dir = p
         .parent()
         .ok_or_else(|| format!("no parent dir for {}", p.display()))?;
@@ -3058,7 +3340,8 @@ pub async fn open_artifact_window(
 ) -> Result<(), String> {
     use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
-    let p = validate_user_path(&resolve_artifact_path(&path, session_id.as_deref(), &store))?;
+    let resolved = resolve_artifact_path(&path, session_id.as_deref(), &store)?;
+    let p = validate_user_path(&resolved)?;
     if !p.is_file() {
         return Err(format!("not a file: {}", p.display()));
     }
@@ -3387,7 +3670,9 @@ pub async fn set_plan_mode_next(
     session_id: String,
     store: State<'_, SessionStore>,
 ) -> Result<SessionModeState, String> {
-    store.set_mode(&session_id, SerializableMode::Plan);
+    store
+        .set_mode(&session_id, SerializableMode::Plan)
+        .map_err(|error| format!("set_plan_mode_next({session_id}): {error:#}"))?;
     Ok(store.mode_state(&session_id))
 }
 
@@ -3398,7 +3683,9 @@ pub async fn exit_plan_to_yolo(
     session_id: String,
     store: State<'_, SessionStore>,
 ) -> Result<SessionModeState, String> {
-    store.set_mode(&session_id, SerializableMode::Yolo);
+    store
+        .set_mode(&session_id, SerializableMode::Yolo)
+        .map_err(|error| format!("exit_plan_to_yolo({session_id}): {error:#}"))?;
     Ok(store.mode_state(&session_id))
 }
 
@@ -3420,12 +3707,15 @@ pub async fn accept_plan(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<SessionModeState, String> {
-    store.set_mode(&session_id, SerializableMode::Yolo);
+    store
+        .set_mode(&session_id, SerializableMode::Yolo)
+        .map_err(|error| format!("accept_plan({session_id}): {error:#}"))?;
     let instruction = accept_plan_instruction(&plan_markdown);
     pool.send_user_message(
         &session_id,
         instruction,
         SerializableMode::Yolo.to_app_mode(),
+        false,
     )
     .await
     .map_err(|e| format!("accept_plan send_user_message: {e:?}"))?;
@@ -5042,7 +5332,7 @@ mod tests {
 
         // 无 active session 且无显式 session → 相对路径原样返回(行为同旧版)
         assert_eq!(
-            resolve_artifact_path("snake-game.html", None, &store),
+            resolve_artifact_path("snake-game.html", None, &store).expect("no active workspace"),
             "snake-game.html"
         );
 
@@ -5052,7 +5342,10 @@ mod tests {
             .join("snake-game.html")
             .to_string_lossy()
             .into_owned();
-        assert_eq!(resolve_artifact_path("snake-game.html", None, &store), want);
+        assert_eq!(
+            resolve_artifact_path("snake-game.html", None, &store).expect("active workspace"),
+            want
+        );
 
         // 显式 session **优先**于 active:卡片自带 session 才能跨会话切换稳定解析
         // (active 停在切走时去的会话也不影响)。这是本次跨 session「打不开」的修复点。
@@ -5061,7 +5354,8 @@ mod tests {
             .to_string_lossy()
             .into_owned();
         assert_eq!(
-            resolve_artifact_path("snake-game.html", Some("sess-owner"), &store),
+            resolve_artifact_path("snake-game.html", Some("sess-owner"), &store)
+                .expect("explicit workspace"),
             want_explicit
         );
 
@@ -5072,9 +5366,136 @@ mod tests {
                 "/home/u/.pinvou3/sessions/x/workspace/a.html",
                 Some("sess-owner"),
                 &store
-            ),
+            )
+            .expect("absolute artifact"),
             "/home/u/.pinvou3/sessions/x/workspace/a.html"
         );
+    }
+
+    #[test]
+    fn scheduled_attachment_staging_and_artifact_resolution_share_locked_workspace() {
+        use crate::bridge::sessions::{ScheduledRunMode, ScheduledRunProfile};
+
+        let _g = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-scheduled-workspace-test-{}",
+            std::process::id()
+        ));
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        let _ = std::fs::remove_dir_all(&root);
+        std::env::set_var("PINVOU3_HOME", &root);
+        let workspace = root.join("user-project");
+        std::fs::create_dir_all(&workspace).expect("scheduled workspace");
+        let source = root.join("source.png");
+        std::fs::write(&source, b"\x89PNG\r\n\x1a\nfake-bytes").expect("image source");
+        let store = SessionStore::boot().expect("session store");
+        let scheduled = store
+            .create_scheduled_run(ScheduledRunProfile {
+                task_id: "workspace-task".to_string(),
+                model: "scheduled-model".to_string(),
+                model_id: None,
+                workspace: workspace.clone(),
+                mode: ScheduledRunMode::Agent,
+                allow_shell: false,
+                trust_mode: false,
+                auto_approve: false,
+            })
+            .expect("scheduled session");
+        let edit_error = ensure_chat_session(&store, &scheduled.metadata.id, "edit_last_turn")
+            .expect_err("scheduled runs must reject ordinary edit-and-resend");
+        assert!(edit_error.contains("scheduled-run sessions are managed from Scheduled"));
+        let locked = store
+            .execution_workspace(&scheduled.metadata.id)
+            .expect("locked scheduled workspace");
+        let staged_dir = format!(
+            ".pinvou3/scheduled-attachments/{}/attachments",
+            scheduled.metadata.id
+        );
+        let prompt = build_message_with_attachments_in_dir(
+            "inspect".to_string(),
+            vec![crate::file_ingest::ingest(&source)],
+            &locked,
+            &staged_dir,
+        );
+
+        let staged_relative = format!("{staged_dir}/source.png");
+        let large_text_relative = format!("{staged_dir}/big.txt");
+        let large_text_prompt = build_message_with_attachments_in_dir(
+            "inspect all".to_string(),
+            vec![mk_attachment("text", "big.log", 9_000, 50_000)],
+            &locked,
+            &staged_dir,
+        );
+        let report = workspace.join("report.md");
+        std::fs::write(&report, "scheduled result").expect("scheduled workspace artifact");
+
+        assert_eq!(locked, workspace);
+        assert!(workspace.join(&staged_relative).exists());
+        assert!(prompt.contains(&staged_relative));
+        assert!(workspace.join(&large_text_relative).exists());
+        assert!(large_text_prompt.contains(&large_text_relative));
+        assert!(
+            list_workspace_files_for_session(&scheduled.metadata.id, &store)
+                .expect("scan scheduled workspace")
+                .contains(&report.to_string_lossy().into_owned()),
+            "workspace reconciliation must scan the configured execution workspace"
+        );
+        assert_eq!(
+            resolve_artifact_path("report.md", Some(&scheduled.metadata.id), &store)
+                .expect("scheduled artifact workspace"),
+            workspace.join("report.md").to_string_lossy().into_owned()
+        );
+
+        drop(store);
+        match previous {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ordinary_execution_workspace_behavior_is_unchanged() {
+        let _g = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-chat-workspace-test-{}",
+            std::process::id()
+        ));
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        let _ = std::fs::remove_dir_all(&root);
+        std::env::set_var("PINVOU3_HOME", &root);
+        let store = SessionStore::boot().expect("session store");
+        let chat = store
+            .create_new(
+                "chat-model".to_string(),
+                None,
+                root.join("legacy-metadata-workspace"),
+            )
+            .expect("ordinary chat");
+        let expected = crate::bridge::paths::session_workspace_dir(&chat.metadata.id);
+
+        assert_eq!(
+            store
+                .execution_workspace(&chat.metadata.id)
+                .expect("ordinary execution workspace"),
+            expected
+        );
+        assert_eq!(
+            resolve_artifact_path("report.md", Some(&chat.metadata.id), &store)
+                .expect("ordinary artifact workspace"),
+            expected.join("report.md").to_string_lossy().into_owned()
+        );
+
+        drop(store);
+        match previous {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// merge_resolutions 锁住实测 bug:勾选写进 sidecar 的 resolution 不能被后续不含
@@ -5287,6 +5708,283 @@ mod tests {
         let _ = std::fs::remove_dir_all(&ws);
         std::fs::create_dir_all(&ws).expect("建 workspace");
         ws
+    }
+
+    #[test]
+    fn staged_attachment_basename_rejects_path_traversal_and_drive_prefixes() {
+        for invalid in ["", ".", "..", "../x", "..\\x", "/x", "C:\\x"] {
+            assert!(
+                validate_staged_attachment_basename(invalid).is_err(),
+                "staged basename must reject {invalid:?}"
+            );
+        }
+
+        for valid in ["x", "report.txt", "报告 2026.xlsx"] {
+            assert!(
+                validate_staged_attachment_basename(valid).is_ok(),
+                "ordinary basename must remain valid: {valid:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    fn try_link_file(target: &std::path::Path, link: &std::path::Path) -> bool {
+        std::os::unix::fs::symlink(target, link).is_ok()
+    }
+
+    #[cfg(windows)]
+    fn try_link_file(target: &std::path::Path, link: &std::path::Path) -> bool {
+        std::os::windows::fs::symlink_file(target, link).is_ok()
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn try_link_file(_target: &std::path::Path, _link: &std::path::Path) -> bool {
+        false
+    }
+
+    #[cfg(unix)]
+    fn try_link_dir(target: &std::path::Path, link: &std::path::Path) -> bool {
+        std::os::unix::fs::symlink(target, link).is_ok()
+    }
+
+    #[cfg(windows)]
+    fn try_link_dir(target: &std::path::Path, link: &std::path::Path) -> bool {
+        if std::os::windows::fs::symlink_dir(target, link).is_ok() {
+            return true;
+        }
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(link)
+            .arg(target)
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn try_link_dir(_target: &std::path::Path, _link: &std::path::Path) -> bool {
+        false
+    }
+
+    #[test]
+    fn staged_targets_never_follow_preexisting_dangling_symlinks() {
+        let root = mk_test_ws("target-symlink");
+        let workspace = root.join("workspace");
+        let outside = root.join("outside");
+        let attachments = workspace.join("attachments");
+        std::fs::create_dir_all(&attachments).expect("attachments");
+        std::fs::create_dir_all(&outside).expect("outside");
+        let source = root.join("source.png");
+        std::fs::write(&source, b"safe image bytes").expect("source image");
+        let escaped_image = outside.join("escaped.png");
+        let image_link = attachments.join("source.png");
+        if !try_link_file(&escaped_image, &image_link) {
+            eprintln!("symlink creation unavailable; skipping platform-specific assertion");
+            let _ = std::fs::remove_dir_all(root);
+            return;
+        }
+
+        let escaped_text = outside.join("escaped.txt");
+        let text_link = attachments.join("report.txt");
+        if !try_link_file(&escaped_text, &text_link) {
+            let _ = std::fs::remove_file(&image_link);
+            let _ = std::fs::remove_dir_all(root);
+            return;
+        }
+
+        let staged_image = stage_image_in_workspace(
+            source.to_string_lossy().as_ref(),
+            "source.png",
+            &workspace,
+            "attachments",
+        )
+        .expect("safe image fallback name");
+        let staged_text =
+            stage_text_in_workspace("safe text", "report.md", "txt", &workspace, "attachments")
+                .expect("safe text fallback name");
+
+        assert_eq!(staged_image, "attachments/source-1.png");
+        assert_eq!(staged_text, "attachments/report-1.txt");
+        assert!(!escaped_image.exists(), "image staging escaped workspace");
+        assert!(!escaped_text.exists(), "text staging escaped workspace");
+        assert_eq!(
+            std::fs::read(workspace.join(&staged_image)).expect("staged image"),
+            b"safe image bytes"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join(&staged_text)).expect("staged text"),
+            "safe text"
+        );
+
+        let _ = std::fs::remove_file(image_link);
+        let _ = std::fs::remove_file(text_link);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn staged_parent_chain_rejects_symlink_escape_without_touching_external_tree() {
+        let root = mk_test_ws("parent-symlink");
+        let workspace = root.join("workspace");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        std::fs::create_dir_all(&outside).expect("outside");
+        let sentinel = outside.join("sentinel.txt");
+        std::fs::write(&sentinel, "unchanged").expect("sentinel");
+        let linked_parent = workspace.join("linked");
+        if !try_link_dir(&outside, &linked_parent) {
+            eprintln!(
+                "directory symlink creation unavailable; skipping platform-specific assertion"
+            );
+            let _ = std::fs::remove_dir_all(root);
+            return;
+        }
+
+        assert!(
+            stage_text_in_workspace(
+                "must stay inside",
+                "report.md",
+                "txt",
+                &workspace,
+                "linked/attachments",
+            )
+            .is_none(),
+            "an escaping parent link must reject the stage"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&sentinel).expect("sentinel remains"),
+            "unchanged"
+        );
+        assert!(
+            !outside.join("attachments").exists(),
+            "validation must happen before creating children through the link"
+        );
+
+        #[cfg(windows)]
+        let _ = std::fs::remove_dir(&linked_parent);
+        #[cfg(not(windows))]
+        let _ = std::fs::remove_file(&linked_parent);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn concurrent_staging_reserves_distinct_targets_atomically() {
+        let workspace = mk_test_ws("concurrent-create-new");
+        let workers = 32;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(workers));
+        let mut joins = Vec::new();
+        for index in 0..workers {
+            let barrier = barrier.clone();
+            let workspace = workspace.clone();
+            joins.push(std::thread::spawn(move || {
+                let content = format!("worker-{index}-{}", "x".repeat(256 * 1024));
+                barrier.wait();
+                stage_text_in_workspace(&content, "report.md", "txt", &workspace, "attachments")
+                    .expect("concurrent stage")
+            }));
+        }
+        let paths = joins
+            .into_iter()
+            .map(|join| join.join().expect("worker joins"))
+            .collect::<Vec<_>>();
+        let unique = paths.iter().collect::<std::collections::HashSet<_>>();
+        assert_eq!(
+            unique.len(),
+            workers,
+            "every writer needs an exclusive path"
+        );
+        assert!(
+            paths.iter().all(|path| workspace.join(path).exists()),
+            "every reserved target must contain its writer's output"
+        );
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn atomic_staging_keeps_legal_image_and_text_behavior() {
+        let workspace = mk_test_ws("legal-atomic-staging");
+        let source = workspace.join("source.png");
+        std::fs::write(&source, b"image bytes").expect("source");
+
+        let image = stage_image_in_workspace(
+            source.to_string_lossy().as_ref(),
+            "safe.png",
+            &workspace,
+            "attachments",
+        )
+        .expect("image stage");
+        let text =
+            stage_text_in_workspace("text bytes", "safe.md", "txt", &workspace, "attachments")
+                .expect("text stage");
+
+        assert_eq!(
+            std::fs::read(workspace.join(image)).unwrap(),
+            b"image bytes"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join(text)).unwrap(),
+            "text bytes"
+        );
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn post_reservation_failure_never_unlinks_the_current_path() {
+        let workspace = mk_test_ws("post-reserve-failure");
+        let reserved = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let observed = reserved.clone();
+        let result = stage_text_in_workspace_with_writer(
+            "report.md",
+            "txt",
+            &workspace,
+            "attachments",
+            move |_destination, path| {
+                *observed.lock().expect("capture path") = Some(path.to_path_buf());
+                Err(std::io::Error::other("injected post-reservation failure"))
+            },
+        );
+        assert!(result.is_none());
+        let reserved_path = reserved
+            .lock()
+            .expect("reserved path")
+            .clone()
+            .expect("writer observed reserved path");
+        assert!(
+            reserved_path.exists(),
+            "failure must leave the exclusively-created orphan instead of unlinking by path"
+        );
+
+        let replacement_workspace = mk_test_ws("post-reserve-replacement");
+        let replacement_survived = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let replacement_flag = replacement_survived.clone();
+        let result = stage_text_in_workspace_with_writer(
+            "report.md",
+            "txt",
+            &replacement_workspace,
+            "attachments",
+            move |_destination, path| {
+                let orphan = path.with_extension("reserved-orphan");
+                if std::fs::rename(path, &orphan).is_ok() {
+                    std::fs::write(path, "replacement").expect("install replacement");
+                    replacement_flag.store(true, std::sync::atomic::Ordering::Release);
+                }
+                Err(std::io::Error::other("injected after path replacement"))
+            },
+        );
+        assert!(result.is_none());
+        if replacement_survived.load(std::sync::atomic::Ordering::Acquire) {
+            assert_eq!(
+                std::fs::read_to_string(replacement_workspace.join("attachments/report.txt"))
+                    .expect("replacement remains"),
+                "replacement"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(workspace);
+        let _ = std::fs::remove_dir_all(replacement_workspace);
     }
 
     /// 小附件维持全量内联:内容在代码块里,且明确告知无需 read_file。

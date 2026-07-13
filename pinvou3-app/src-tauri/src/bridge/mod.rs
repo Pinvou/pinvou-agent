@@ -1139,6 +1139,7 @@ mod tests {
     ///     抖动(190K > 128K 窗口的 E,必倒置——正是客户机每 1-2 工具调用一次 Emergency 的根因)。
     #[test]
     fn compaction_128k_scenarios() {
+        let _env = EnvGuard::new(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
         // [根治后] derive_compaction_threshold 经底座 context_input_budget_for_route 读
         // DEEPSEEK_MAX_OUTPUT_TOKENS 算 output 预留(不再镜像 24576)。测试须钉死生产 env 值,
         // 否则底座默认 API_MAX_OUTPUT_TOKENS=65536 → E 偏小 → T 偏小(fixture 的 wire 用 is_none
@@ -1355,6 +1356,7 @@ mod tests {
     /// 后续多测试可以拿 DEEPSEEK_MAX_OUTPUT_TOKENS 专属锁,但目前只此一处)。
     #[test]
     fn wire_max_output_tokens_env_sets_default_then_respects_existing() {
+        let _env = EnvGuard::new(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
         // clean env 路径:helper 应 set 默认 24576
         std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
         std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
@@ -1428,6 +1430,9 @@ mod tests {
     /// 谁改 derive_compaction_threshold 或 max_output_tokens 导致倒置都会被这条挡下。
     #[test]
     fn forkguard_compaction_threshold_below_emergency_all_windows() {
+        let _env = EnvGuard::new(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
+        std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576");
+        std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
         // 把 T 从 should_compact 的 raw 子集尺 → emergency 的 conservative 全量尺
         const K_NUM: usize = 3; // ÷ K_DEN == ×1.5
         const K_DEN: usize = 2;

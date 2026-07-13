@@ -88,6 +88,27 @@ fingerprints=(
   # —— P1(2026-07-03):list_mcp_resources/templates 按对应集合非空 gate(上游原为 servers 非空即注入)——
   # pinvou3 MCP server 全 tools-only,原条件下这两个元工具永久空转;改按 resources/templates 非空注入。可上游。
   "P1  |list_mcp_resources 按 resources 非空 gate|DeepSeek-TUI/crates/tui/src/mcp.rs|if !self.all_resource_templates().is_empty()"
+  # AUTO(2026-07-09):automation MINUTELY RRULE support for PINVOU scheduled tasks.
+  "AUTO|automation MINUTELY schedule variant |DeepSeek-TUI/crates/tui/src/automation_manager.rs|Minutely {"
+  "AUTO|automation MINUTELY forkguard test  |DeepSeek-TUI/crates/tui/src/automation_manager.rs|fn forkguard_parses_minutely_rrule"
+  "AUTO|automation tool advertises MINUTELY |DeepSeek-TUI/crates/tui/src/tools/automation.rs|FREQ=MINUTELY;INTERVAL=N"
+  "AUTO|host executor immutable task getters |DeepSeek-TUI/crates/tui/src/task_manager.rs|pub fn workspace(&self) -> &Path"
+  "AUTO|host executor pre-turn thread link   |DeepSeek-TUI/crates/tui/src/task_manager.rs|ThreadCreated {"
+  "AUTO|automation propagates selected model |DeepSeek-TUI/crates/tui/src/automation_manager.rs|model: automation.model.clone()"
+  "AUTO|automation skips stale slot backlog  |DeepSeek-TUI/crates/tui/src/automation_manager.rs|latest_due_at_or_before"
+  "AUTO|MINUTELY normalizes legacy cursor     |DeepSeek-TUI/crates/tui/src/automation_manager.rs|fn normalize_due_cursor"
+  "AUTO|task prune protects run/pending owners|DeepSeek-TUI/crates/tui/src/automation_manager.rs|pub fn protected_task_ids"
+  "AUTO|running run link triggers persistence|DeepSeek-TUI/crates/tui/src/automation_manager.rs|run.thread_id != task.thread_id"
+  "AUTO|run index avoids retained-history scan|DeepSeek-TUI/crates/tui/src/automation_manager.rs|fn retention_guard_does_not_parse_retained_history_on_nonterminal_save"
+  "AUTO|retention reads only prune candidates |DeepSeek-TUI/crates/tui/src/automation_manager.rs|fn terminal_retention_reads_only_prune_candidates"
+  "AUTO|journaled enqueue recovery failpoint  |DeepSeek-TUI/crates/tui/src/automation_manager.rs|fn manual_run_recovers_journaled_enqueue"
+  "AUTO|Running state durable before execute  |DeepSeek-TUI/crates/tui/src/task_manager.rs|fn executor_never_starts_before_running_record_is_durable"
+  "AUTO|terminal artifact retry is durable    |DeepSeek-TUI/crates/tui/src/task_manager.rs|fn terminal_artifact_write_failure_retries_without_publishing_terminal_state"
+  "AUTO|report failure cancels executor token |DeepSeek-TUI/crates/tui/src/task_manager.rs|fn reporter_failure_cancels_token"
+  "AUTO|bad persisted mode isolated           |DeepSeek-TUI/crates/tui/src/task_manager.rs|fn invalid_mode_isolated_retaining_idempotency"
+  "AUTO|terminal task prune is crash durable  |DeepSeek-TUI/crates/tui/src/task_manager.rs|pub async fn prune_terminal_tasks"
+  "AUTO|persisted task id matches safe stem   |DeepSeek-TUI/crates/tui/src/task_manager.rs|fn load_state_rejects_unsafe_mismatched_and_duplicate_task_ids"
+  "AUTO|non-bypassable approval carries force |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn yolo_hook_ask_emits_non_bypassable_force_prompt"
   # —— 工作流 fork 基座层(三省六部;feat/sansheng-workflow 随附,2026-06-12 补)——
   # 行为层已有 engine_config_locks_critical_fields(W10 reasoning_effort);其余 W* 暂只 L1。
   "W1  |SpawnSubAgent 扩展字段          |DeepSeek-TUI/crates/tui/src/core/ops.rs|expects_file_output: bool"
@@ -151,7 +172,20 @@ bold "── 第 2 层:fork 回归测试 (codewhale-tui) ──"
     truncated_args_hint_skips_other_tools_and_other_errors \
     test_write_file_rejects_oversized_content \
     test_append_file_rejects_oversized_content \
-    disallowed_tools_gate_blocks_prefix_wildcard ) || fail=1
+    disallowed_tools_gate_blocks_prefix_wildcard \
+    retention_guard_does_not_parse_retained_history_on_nonterminal_save \
+    terminal_retention_reads_only_prune_candidates \
+    manual_run_recovers_journaled_enqueue \
+    minutely_fast_forward_normalizes_legacy_cursor_at_end_of_minute \
+    invalid_pending_journal_blocks_all_task_pruning \
+    prune_terminal_tasks_preserves_protected_and_active_tasks \
+    startup_finishes_journaled_task_prune \
+    load_state_rejects_unsafe_mismatched_and_duplicate_task_ids \
+    executor_never_starts_before_running_record_is_durable \
+    terminal_artifact_write_failure_retries_without_publishing_terminal_state \
+    reporter_failure_cancels_token \
+    invalid_mode_isolated_retaining_idempotency \
+    yolo_hook_ask_emits_non_bypassable_force_prompt ) || fail=1
 
 echo
 bold "── 第 2 层:fork 回归测试 (pinvou3-tauri / bridge) ──"

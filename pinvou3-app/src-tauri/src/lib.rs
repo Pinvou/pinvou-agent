@@ -38,6 +38,8 @@ pub mod personas;
 mod pinvou_review;
 mod process;
 mod remote_control;
+mod scheduled_executor;
+mod scheduled_tasks;
 pub mod super_permission;
 mod timing;
 mod updater;
@@ -275,6 +277,22 @@ pub fn run() {
             });
             match EnginePool::new(handle.clone(), store_for_engine.clone()) {
                 Ok(pool) => {
+                    let scheduled_state = tauri::async_runtime::block_on(
+                        scheduled_tasks::ScheduledTaskState::boot_runtime(
+                            &pool.bridge,
+                            pool.clone(),
+                            store_for_engine.clone(),
+                        ),
+                    );
+                    match scheduled_state {
+                        Ok(state) => {
+                            handle.manage(state);
+                            eprintln!("[pinvou3-app] scheduled tasks runtime ready");
+                        }
+                        Err(e) => {
+                            eprintln!("[pinvou3-app] scheduled tasks runtime init failed: {e:?}");
+                        }
+                    }
                     handle.manage(pool);
                     eprintln!("[pinvou3-app] engine pool ready (lazy spawn per session)");
                 }
@@ -425,6 +443,17 @@ pub fn run() {
             commands::set_session_pinned,
             commands::list_archived_sessions,
             commands::set_session_archived,
+            scheduled_tasks::list_scheduled_tasks,
+            scheduled_tasks::read_scheduled_task,
+            scheduled_tasks::list_scheduled_task_runs,
+            scheduled_tasks::create_scheduled_task,
+            scheduled_tasks::update_scheduled_task,
+            scheduled_tasks::pause_scheduled_task,
+            scheduled_tasks::resume_scheduled_task,
+            scheduled_tasks::delete_scheduled_task,
+            scheduled_tasks::run_scheduled_task_now,
+            scheduled_tasks::mark_scheduled_run_viewed,
+            scheduled_tasks::scheduled_task_chat_prompt,
             commands::get_active_session,
             commands::save_session_messages,
             commands::save_session_artifacts,

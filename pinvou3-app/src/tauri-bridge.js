@@ -10,7 +10,10 @@
   const TAURI = window.__TAURI__;
   if (!TAURI) {
     console.warn("[TauriBridge] Tauri not available — browser preview mode");
-    window.TauriBridge = { available: false };
+    window.TauriBridge = {
+      available: false,
+      getState: function () { return {}; },
+    };
     return;
   }
 
@@ -204,10 +207,27 @@
       progress: null,     // kb_model:progress 事件 { stage:'download'|'verify'|'extract'|'done', downloaded, total, ready }
       error: null,
     },
+    scheduledTasks: [],
+    selectedScheduledTaskId: null,
+    scheduledTaskSelectionGeneration: 0,
+    scheduledTaskDetail: null,
+    scheduledTaskRuns: [],
+    scheduledTaskLoading: false,
+    scheduledTaskBusyAction: null,
+    scheduledTaskError: null,
+    scheduledTaskErrorKind: null,
+    scheduledTaskDraft: null,
+    scheduledTaskCreationSessionId: null,
+    scheduledTaskAutoOpenId: null,
+    scheduledRunContext: null,
+    // 「通过聊天创建」的引导词:只随该会话首条消息发给模型,永不显示在气泡里。
+    scheduledTaskPendingGuide: null,
   };
   var initPromise = null;
   // 卡片池 1078 张卡的前端缓存。只读,通过 getPersonas() 取引用,不走 notify 快照。
   var personaPoolCache = [];
+  var SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY = "pinvou3-scheduled-task-template-sources-v1";
+  var scheduledTaskTemplateSources = loadScheduledTaskTemplateSources();
 
   // internal streaming state
   var currentStreamText = "";
@@ -236,6 +256,12 @@
     if (_mb) monitorBaseline = JSON.parse(_mb);
   } catch (e) { monitorBaseline = null; }
   var attachIdSeq = 0;
+  var scheduledTaskSelectionGeneration = 0;
+  var scheduledTaskRequestTokens = { tasks: 0, detail: 0, runs: 0 };
+  var scheduledTaskRefreshInFlight = null;
+  var scheduledTaskPendingLoads = Object.create(null);
+  var scheduledTaskAutoCreateInFlight = Object.create(null);
+  var sessionSwitchRequestToken = 0;
 
   // ── bridge 层 UI 文案（系统消息/状态标签）──────────────────────
   // bridge 在事件回调里生成文案,拿不到 React 的 t;按 state.settings.language 取词,中文兜底。
@@ -305,6 +331,12 @@
   // buffer 跑同步逻辑再切回(saveWorkingSetTo/loadWorkingSetFrom),期间 suppressNotify
   // 避免把后台渲染成 active。异步收尾(落盘)按显式 session_id 路由,不依赖工作集。
   var sessionStates = {};
+  var scheduledRunSessionOwners = Object.create(null);
+  var scheduledRunOpenInFlight = Object.create(null);
+  var MAX_SCHEDULED_SESSION_BUFFERS = 64;
+  var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
+  var sessionBufferTouchClock = 0;
+  var scheduledRunOwnerTouchClock = 0;
   var suppressNotify = false;
   // sessionId → true:标题当前是「卡牌占位名」(加卡时自动取的),可被首条用户消息覆盖。
   // 卡牌名只在「加了卡但还没开口」时当临时标题;一旦开始对话,对话内容更能区分同卡会话。
@@ -320,6 +352,10 @@
       tokens: { input: 0, max: maxModelLen },
       activePersona: null, // 卡片池: 该 session 加持的专家面具(挂件用)
       mountedCollection: null, // 知识库: 该 session 挂载的知识集 id 或 null
+      scheduledTaskDraft: null,
+      scheduledRunSession: false,
+      scheduledInitialTurnPhase: null,
+      lastTouched: 0,
 
       stream: {
         currentStreamText: "", currentStreamId: 0, pendingAssistantText: "",
@@ -330,17 +366,197 @@
   function getBuffer(id) {
     if (!id) return null;
     if (!sessionStates[id]) sessionStates[id] = freshBuffer();
-    return sessionStates[id];
+    return touchSessionBuffer(id, sessionStates[id], id.indexOf("sched-") === 0);
+  }
+  function isProtectedScheduledBuffer(id, buf) {
+    return id === state.activeSessionId ||
+      !!buf.busy ||
+      buf.scheduledInitialTurnPhase === "active" ||
+      !!(buf.queued && buf.queued.length) ||
+      !!(state.scheduledRunContext && state.scheduledRunContext.sessionId === id) ||
+      state.scheduledTaskCreationSessionId === id;
+  }
+  function pruneScheduledSessionBuffers(keepId) {
+    var scheduledIds = Object.keys(sessionStates).filter(function (id) {
+      return !!sessionStates[id].scheduledRunSession;
+    });
+    var overflow = scheduledIds.length - MAX_SCHEDULED_SESSION_BUFFERS;
+    if (overflow <= 0) return;
+    scheduledIds.sort(function (left, right) {
+      var delta = (sessionStates[left].lastTouched || 0) - (sessionStates[right].lastTouched || 0);
+      return delta || left.localeCompare(right);
+    });
+    for (var i = 0; i < scheduledIds.length && overflow > 0; i++) {
+      var id = scheduledIds[i];
+      var buf = sessionStates[id];
+      if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
+      delete sessionStates[id];
+      delete turnUsageDirty[id];
+      pruneScheduledRunSessionOwner(id);
+      overflow -= 1;
+    }
+  }
+  function touchSessionBuffer(id, buf, scheduled) {
+    if (!buf) return null;
+    if (scheduled) buf.scheduledRunSession = true;
+    buf.lastTouched = ++sessionBufferTouchClock;
+    if (buf.scheduledRunSession) pruneScheduledSessionBuffers(id);
+    return buf;
+  }
+  function purgeSessionBuffer(id) {
+    if (typeof id !== "string" || !id) return;
+    delete sessionStates[id];
+    delete turnUsageDirty[id];
+    delete personaPlaceholderTitles[id];
+    delete scheduledRunSessionOwners[id];
+    if (state.scheduledRunContext && state.scheduledRunContext.sessionId === id) {
+      state.scheduledRunContext = null;
+    }
+    if (state.scheduledTaskCreationSessionId === id) {
+      state.scheduledTaskCreationSessionId = null;
+    }
+    if (state.activeSessionId === id) {
+      state.activeSessionId = null;
+      loadWorkingSetFrom(freshBuffer());
+    }
+  }
+  function registerScheduledRunOwner(id, phase) {
+    if (typeof id !== "string" || !id) return null;
+    var owner = scheduledRunSessionOwners[id];
+    if (!owner) owner = scheduledRunSessionOwners[id] = { phase: null, lastTouched: 0 };
+    if (owner.phase !== "terminal" && phase) owner.phase = phase;
+    owner.lastTouched = ++scheduledRunOwnerTouchClock;
+    pruneScheduledRunSessionOwners();
+    return owner;
+  }
+  function scheduledRunOwnerVisibleRank(id) {
+    var runs = state.scheduledTaskRuns || [];
+    for (var i = 0; i < runs.length; i++) {
+      if (runs[i] && runs[i].sessionId === id) return i;
+    }
+    return -1;
+  }
+  function scheduledRunOwnerPriority(id) {
+    if (id === state.activeSessionId ||
+        (state.scheduledRunContext && state.scheduledRunContext.sessionId === id)) return 3;
+    if (scheduledRunOwnerVisibleRank(id) >= 0) return 2;
+    return 1;
+  }
+  function isProtectedScheduledRunOwner(id) {
+    return scheduledRunOwnerPriority(id) > 1;
+  }
+  function pruneScheduledRunSessionOwner(id) {
+    if (!scheduledRunSessionOwners[id] || isProtectedScheduledRunOwner(id, null)) return;
+    delete scheduledRunSessionOwners[id];
+  }
+  function pruneScheduledRunSessionOwners() {
+    var ids = Object.keys(scheduledRunSessionOwners);
+    if (ids.length <= MAX_SCHEDULED_RUN_SESSION_OWNERS) return;
+    ids.sort(function (left, right) {
+      var priorityDelta = scheduledRunOwnerPriority(right) - scheduledRunOwnerPriority(left);
+      if (priorityDelta) return priorityDelta;
+      var leftVisibleRank = scheduledRunOwnerVisibleRank(left);
+      var rightVisibleRank = scheduledRunOwnerVisibleRank(right);
+      if (leftVisibleRank >= 0 || rightVisibleRank >= 0) {
+        if (leftVisibleRank < 0) return 1;
+        if (rightVisibleRank < 0) return -1;
+        if (leftVisibleRank !== rightVisibleRank) return leftVisibleRank - rightVisibleRank;
+      }
+      var touchDelta = (scheduledRunSessionOwners[right].lastTouched || 0) -
+        (scheduledRunSessionOwners[left].lastTouched || 0);
+      return touchDelta || left.localeCompare(right);
+    });
+    for (var i = MAX_SCHEDULED_RUN_SESSION_OWNERS; i < ids.length; i++) {
+      delete scheduledRunSessionOwners[ids[i]];
+    }
+  }
+  function rememberScheduledRunOwner(run) {
+    if (!run) return;
+    var id = typeof run.sessionId === "string" ? run.sessionId.trim() : "";
+    if (!id) return;
+    var status = String(run.status || "").toLowerCase();
+    var phase = status === "completed" || status === "failed" || status === "canceled"
+      ? "terminal"
+      : (status === "queued" || status === "running" ? "active" : null);
+    registerScheduledRunOwner(id, phase);
+  }
+  function scheduledRunBuffer(id) {
+    var buf = getBuffer(id);
+    if (!buf) return null;
+    registerScheduledRunOwner(id, null);
+    return touchSessionBuffer(id, buf, true);
+  }
+  function markScheduledInitialTurnActive(id) {
+    var buf = scheduledRunBuffer(id);
+    var owner = registerScheduledRunOwner(id, "active");
+    if (!buf) return buf;
+    if (buf.scheduledInitialTurnPhase === "terminal" || (owner && owner.phase === "terminal")) {
+      buf.scheduledInitialTurnPhase = "terminal";
+      buf.busy = false;
+      if (state.activeSessionId === id) state.busy = false;
+      return buf;
+    }
+    buf.scheduledInitialTurnPhase = "active";
+    buf.busy = true;
+    if (state.activeSessionId === id) state.busy = true;
+    return buf;
+  }
+  function markScheduledInitialTurnTerminal(id) {
+    var buf = scheduledRunBuffer(id);
+    registerScheduledRunOwner(id, "terminal");
+    if (!buf || buf.scheduledInitialTurnPhase === "terminal") return buf;
+    if (buf.scheduledInitialTurnPhase !== "active") {
+      buf.scheduledInitialTurnPhase = "active";
+    }
+    buf.scheduledInitialTurnPhase = "terminal";
+    return buf;
+  }
+  function beginScheduledOpenActivation(id) {
+    var previous = sessionStates[id] || null;
+    var snapshot = {
+      id: id,
+      existed: !!previous,
+      previousPhase: previous && previous.scheduledInitialTurnPhase,
+      previousBusy: previous ? !!previous.busy : false,
+      previousStateBusy: state.activeSessionId === id ? !!state.busy : null,
+    };
+    var buf = markScheduledInitialTurnActive(id);
+    snapshot.buffer = buf;
+    snapshot.activationTouch = buf && buf.lastTouched;
+    snapshot.changed = !!buf && (
+      !snapshot.existed ||
+      snapshot.previousPhase !== buf.scheduledInitialTurnPhase ||
+      snapshot.previousBusy !== !!buf.busy
+    );
+    return snapshot;
+  }
+  function rollbackScheduledOpenActivation(snapshot) {
+    if (!snapshot || !snapshot.changed) return;
+    var current = sessionStates[snapshot.id];
+    if (!current || current !== snapshot.buffer) return;
+    if (current.scheduledInitialTurnPhase === "terminal") return;
+    if (current.lastTouched !== snapshot.activationTouch) return;
+    if (!snapshot.existed) {
+      delete sessionStates[snapshot.id];
+    } else {
+      current.scheduledInitialTurnPhase = snapshot.previousPhase;
+      current.busy = snapshot.previousBusy;
+    }
+    if (state.activeSessionId === snapshot.id && snapshot.previousStateBusy !== null) {
+      state.busy = snapshot.previousStateBusy;
+    }
   }
   function saveWorkingSetTo(buf) {
     if (!buf) return;
     buf.messages = state.messages; buf.chatItems = state.chatItems; buf.artifacts = state.artifacts;
     buf.personaEvents = state.personaEvents;
     buf.pinvouReviews = state.pinvouReviews;
-    buf.busy = state.busy; buf.planSnapshot = state.planSnapshot; buf.modeState = state.modeState;
+    buf.busy = buf.scheduledInitialTurnPhase === "active" ? true : state.busy;
+    buf.planSnapshot = state.planSnapshot; buf.modeState = state.modeState;
     buf.thinking = state.thinking; buf.tokens = state.tokens; buf.queued = state.queued;
     buf.activePersona = state.activePersona;
     buf.mountedCollection = state.mountedCollection;
+    buf.scheduledTaskDraft = state.scheduledTaskDraft;
     buf.stream = {
       currentStreamText: currentStreamText, currentStreamId: currentStreamId,
       pendingAssistantText: pendingAssistantText, pendingAssistantBlocks: pendingAssistantBlocks,
@@ -355,10 +571,12 @@
     state.pinvouModal = null; // 切 session 关掉检阅弹窗
     state.turnDirtyArtifacts = []; // turn 临时态,切 session 清空,别串到新 session
     state.turnPresentedArtifacts = [];
-    state.busy = buf.busy; state.planSnapshot = buf.planSnapshot; state.modeState = buf.modeState;
+    state.busy = buf.scheduledInitialTurnPhase === "active" ? true : buf.busy;
+    state.planSnapshot = buf.planSnapshot; state.modeState = buf.modeState;
     state.thinking = buf.thinking; state.tokens = buf.tokens; state.queued = buf.queued || [];
     state.activePersona = buf.activePersona || null;
     state.mountedCollection = buf.mountedCollection || null;
+    state.scheduledTaskDraft = buf.scheduledTaskDraft || null;
     var s = buf.stream || {};
     currentStreamText = s.currentStreamText || ""; currentStreamId = s.currentStreamId || 0;
     pendingAssistantText = s.pendingAssistantText || ""; pendingAssistantBlocks = s.pendingAssistantBlocks || [];
@@ -415,6 +633,7 @@
     state.activeSessionId = id;
     var buf = sessionStates[id];
     if (!buf || (opts && opts.fresh)) buf = sessionStates[id] = freshBuffer();
+    touchSessionBuffer(id, buf, id.indexOf("sched-") === 0);
     loadWorkingSetFrom(buf);
     state.artifacts = filterSessionArtifacts(state.artifacts, id);
   }
@@ -422,7 +641,8 @@
   // 否则临时切到该 buffer 跑完再切回(期间不 notify)。
   function runSyncOnSession(sid, fn) {
     if (!sid || sid === state.activeSessionId) { fn(); return; }
-    var bg = getBuffer(sid);
+    var bg = sessionStates[sid]; if (!bg) return;
+    touchSessionBuffer(sid, bg, isScheduledRunSession(sid));
     var realId = state.activeSessionId;
     saveWorkingSetTo(getBuffer(realId));
     loadWorkingSetFrom(bg);
@@ -442,24 +662,37 @@
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
   function onSessionEvent(e, fn) {
     var sid = (e && e.payload && e.payload.session_id) || state.activeSessionId;
-    if (sid && sid !== state.activeSessionId && !sessionStates[sid]) sessionStates[sid] = freshBuffer();
+    if (sid && sid !== state.activeSessionId) getBuffer(sid);
     var isBg = sid && sid !== state.activeSessionId;
     runSyncOnSession(sid, fn);
     if (isBg) notify();
   }
+  function isScheduledRunSession(sid) {
+    return !!sid && (
+      sid.indexOf("sched-") === 0 ||
+      !!scheduledRunSessionOwners[sid] ||
+      !!(sessionStates[sid] && sessionStates[sid].scheduledRunSession) ||
+      !!(state.scheduledRunContext && state.scheduledRunContext.sessionId === sid)
+    );
+  }
+
   // 落盘指定 session 的 messages + artifacts(active 用工作集,后台用其 buffer)。
   async function persistMessagesFor(sid) {
     if (!sid) return;
+    if (isScheduledRunSession(sid)) return;
     var buf = sid === state.activeSessionId ? null : sessionStates[sid];
     var msgs = buf ? buf.messages : state.messages;
     var arts = filterSessionArtifacts(buf ? buf.artifacts : state.artifacts, sid);
     if (buf) buf.artifacts = arts;
     else state.artifacts = arts;
+    var backendOwnsTranscript = isScheduledRunSession(sid);
     try {
-      await invoke("save_session_messages", { id: sid, messages: msgs });
+      if (!backendOwnsTranscript) {
+        await invoke("save_session_messages", { id: sid, messages: msgs });
+      }
       try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch (_) {}
       var meta = state.sessions.find(function (s) { return s.id === sid; });
-      if (!meta || meta.title === "新对话" || meta.title === "New chat" || personaPlaceholderTitles[sid]) {
+      if (!backendOwnsTranscript && (!meta || meta.title === "新对话" || meta.title === "New chat" || personaPlaceholderTitles[sid])) {
         var firstUser = msgs.find(function (m) { return m.role === "user"; });
         var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
         if (text && text.text) {
@@ -568,6 +801,575 @@
     };
   }
 
+  function loadScheduledTaskTemplateSources() {
+    try {
+      var parsed = JSON.parse(window.localStorage.getItem(SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY) || "{}");
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return Object.create(null);
+      return Object.keys(parsed).reduce(function (result, taskId) {
+        if (typeof parsed[taskId] === "string" && parsed[taskId].trim()) {
+          result[taskId] = parsed[taskId].trim();
+        }
+        return result;
+      }, Object.create(null));
+    } catch (_) {
+      return Object.create(null);
+    }
+  }
+
+  function persistScheduledTaskTemplateSources() {
+    try {
+      window.localStorage.setItem(
+        SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY,
+        JSON.stringify(scheduledTaskTemplateSources)
+      );
+    } catch (_) {}
+  }
+
+  function rememberScheduledTaskTemplateSource(taskId, templateId) {
+    if (!taskId || !templateId) return;
+    scheduledTaskTemplateSources[taskId] = templateId;
+    persistScheduledTaskTemplateSources();
+  }
+
+  function forgetScheduledTaskTemplateSource(taskId) {
+    if (!taskId || !Object.prototype.hasOwnProperty.call(scheduledTaskTemplateSources, taskId)) return;
+    delete scheduledTaskTemplateSources[taskId];
+    persistScheduledTaskTemplateSources();
+  }
+
+  function attachScheduledTaskTemplateSource(task) {
+    if (!task || !task.id) return task;
+    var templateId = task.templateId || scheduledTaskTemplateSources[task.id] || null;
+    if (templateId) {
+      task.templateId = templateId;
+      if (scheduledTaskTemplateSources[task.id] !== templateId) {
+        rememberScheduledTaskTemplateSource(task.id, templateId);
+      }
+    }
+    return task;
+  }
+
+  function attachAndPruneScheduledTaskTemplateSources(tasks) {
+    var activeIds = Object.create(null);
+    (tasks || []).forEach(function (task) {
+      if (!task || !task.id) return;
+      activeIds[task.id] = true;
+      attachScheduledTaskTemplateSource(task);
+    });
+    var changed = false;
+    Object.keys(scheduledTaskTemplateSources).forEach(function (taskId) {
+      if (activeIds[taskId]) return;
+      delete scheduledTaskTemplateSources[taskId];
+      changed = true;
+    });
+    if (changed) persistScheduledTaskTemplateSources();
+    return tasks;
+  }
+
+  function upsertScheduledTask(task) {
+    if (!task || !task.id) return;
+    attachScheduledTaskTemplateSource(task);
+    var found = false;
+    state.scheduledTasks = (state.scheduledTasks || []).map(function (item) {
+      if (item.id !== task.id) return item;
+      found = true;
+      return task;
+    });
+    if (!found) state.scheduledTasks = [task].concat(state.scheduledTasks || []);
+  }
+
+  function applyScheduledRunViewed(automationId, runId, receipt) {
+    state.scheduledTaskRuns = (state.scheduledTaskRuns || []).map(function (item) {
+      var itemAutomationId = item.automationId || state.selectedScheduledTaskId;
+      if (itemAutomationId !== automationId || item.id !== runId) return item;
+      return Object.assign({}, item, { unread: false });
+    });
+    var hasUnreadRuns = receipt && typeof receipt.hasUnreadRuns === "boolean"
+      ? receipt.hasUnreadRuns
+      : (state.scheduledTaskRuns || []).some(function (item) {
+          return (item.automationId || state.selectedScheduledTaskId) === automationId && !!item.unread;
+        });
+    state.scheduledTasks = (state.scheduledTasks || []).map(function (task) {
+      return task.id === automationId
+        ? Object.assign({}, task, { hasUnreadRuns: hasUnreadRuns })
+        : task;
+    });
+    if (state.scheduledTaskDetail && state.scheduledTaskDetail.id === automationId) {
+      state.scheduledTaskDetail = Object.assign({}, state.scheduledTaskDetail, {
+        hasUnreadRuns: hasUnreadRuns,
+      });
+    }
+  }
+
+  function invalidateScheduledTaskReads(automationId) {
+    scheduledTaskRequestTokens.tasks += 1;
+    if (state.selectedScheduledTaskId === automationId) {
+      scheduledTaskRequestTokens.detail += 1;
+      scheduledTaskRequestTokens.runs += 1;
+    }
+    scheduledTaskRefreshInFlight = null;
+  }
+
+  function scheduledTaskErrorText(error) {
+    return String(error && error.message ? error.message : error);
+  }
+
+  function setScheduledTaskError(error, kind) {
+    state.scheduledTaskError = error ? scheduledTaskErrorText(error) : null;
+    state.scheduledTaskErrorKind = error ? (kind || "load") : null;
+  }
+
+  function clearScheduledTaskLoadError() {
+    if (state.scheduledTaskErrorKind === "load") setScheduledTaskError(null);
+  }
+
+  function beginScheduledTaskLoad(stamp) {
+    var generation = stamp.generation;
+    scheduledTaskPendingLoads[generation] = (scheduledTaskPendingLoads[generation] || 0) + 1;
+    if (generation === scheduledTaskSelectionGeneration) {
+      state.scheduledTaskLoading = true;
+      clearScheduledTaskLoadError();
+      notify();
+    }
+  }
+
+  function endScheduledTaskLoad(stamp) {
+    var generation = stamp.generation;
+    scheduledTaskPendingLoads[generation] = Math.max(0, (scheduledTaskPendingLoads[generation] || 0) - 1);
+    if (!scheduledTaskPendingLoads[generation]) delete scheduledTaskPendingLoads[generation];
+    if (generation === scheduledTaskSelectionGeneration) {
+      state.scheduledTaskLoading = !!scheduledTaskPendingLoads[generation];
+      notify();
+    }
+  }
+
+  function scheduledTaskRequestStamp(kind, id) {
+    scheduledTaskRequestTokens[kind] += 1;
+    return {
+      kind: kind,
+      token: scheduledTaskRequestTokens[kind],
+      generation: scheduledTaskSelectionGeneration,
+      id: id || null,
+    };
+  }
+
+  function isCurrentScheduledTaskRequest(stamp) {
+    if (!stamp || stamp.generation !== scheduledTaskSelectionGeneration) return false;
+    if (scheduledTaskRequestTokens[stamp.kind] !== stamp.token) return false;
+    if (stamp.kind !== "tasks" && state.selectedScheduledTaskId !== stamp.id) return false;
+    return true;
+  }
+
+  function selectScheduledTask(id) {
+    var nextId = typeof id === "string" && id.trim() ? id.trim() : null;
+    if (state.selectedScheduledTaskId === nextId) return nextId;
+    scheduledTaskSelectionGeneration += 1;
+    state.scheduledTaskSelectionGeneration = scheduledTaskSelectionGeneration;
+    state.selectedScheduledTaskId = nextId;
+    state.scheduledTaskDetail = null;
+    state.scheduledTaskRuns = [];
+    state.scheduledTaskLoading = !!scheduledTaskPendingLoads[scheduledTaskSelectionGeneration];
+    setScheduledTaskError(null);
+    notify();
+    return nextId;
+  }
+
+  function clearScheduledTaskSelection() {
+    selectScheduledTask(null);
+  }
+
+  function extractBalancedJsonObject(text) {
+    var start = String(text || "").indexOf("{");
+    if (start < 0) return null;
+    var depth = 0;
+    var inString = false;
+    var escaping = false;
+    for (var i = start; i < text.length; i++) {
+      var ch = text.charAt(i);
+      if (inString) {
+        if (escaping) escaping = false;
+        else if (ch === "\\") escaping = true;
+        else if (ch === "\"") inString = false;
+        continue;
+      }
+      if (ch === "\"") { inString = true; continue; }
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) return text.slice(start, i + 1);
+      }
+    }
+    return null;
+  }
+
+  function parseLooseJsonObject(text) {
+    try { return JSON.parse(text); } catch (_) {}
+    try { return JSON.parse(String(text || "").replace(/,(\s*[}\]])/g, "$1")); } catch (_) {}
+    var balanced = extractBalancedJsonObject(String(text || ""));
+    if (!balanced) return null;
+    try { return JSON.parse(balanced); } catch (_) {}
+    try { return JSON.parse(balanced.replace(/,(\s*[}\]])/g, "$1")); } catch (_) {}
+    return null;
+  }
+
+  function normalizeScheduledTaskDraft(value) {
+    if (!value || typeof value !== "object") return null;
+    if (!value.name || !value.prompt || !value.rrule) return null;
+    var cwds = Array.isArray(value.cwds)
+      ? value.cwds.filter(function (item) { return typeof item === "string"; })
+      : [];
+    return {
+      name: String(value.name),
+      prompt: String(value.prompt),
+      rrule: String(value.rrule),
+      cwds: cwds,
+      model: value.model ? String(value.model) : null,
+      mode: "yolo",
+      allowShell: !!value.allowShell,
+      trustMode: !!value.trustMode,
+      autoApprove: !!value.autoApprove,
+      paused: !!value.paused,
+    };
+  }
+
+  function activeScheduledTaskModel() {
+    return ((state.savedModels || []).find(function (model) {
+      return model && model.id === state.activeModelId;
+    }) || {}).model || null;
+  }
+
+  function lockScheduledTaskDraftModel(draft) {
+    if (!draft) return null;
+    draft.model = draft.model || activeScheduledTaskModel();
+    return draft;
+  }
+
+  function parseScheduledTaskDraftFromText(text) {
+    if (!text || text.indexOf("{") < 0) return null;
+    var preferred = null;
+    var fallback = null;
+    var re = /```([^\n`]*)\n([\s\S]*?)```/g;
+    var match;
+    while ((match = re.exec(text))) {
+      var label = String(match[1] || "").trim().toLowerCase();
+      var raw = String(match[2] || "").trim();
+      if (!raw || raw.charAt(0) !== "{") continue;
+      var candidate = normalizeScheduledTaskDraft(parseLooseJsonObject(raw));
+      if (!candidate) continue;
+      if (label === "scheduled-task-draft") return candidate;
+      if ((label === "json" || !label) && !fallback) fallback = candidate;
+      if (!preferred) preferred = candidate;
+    }
+    return fallback || preferred;
+  }
+
+  function clearScheduledTaskDraft() {
+    state.scheduledTaskDraft = null;
+    if (state.activeSessionId === state.scheduledTaskCreationSessionId) {
+      state.scheduledTaskCreationSessionId = null;
+    }
+    notify();
+  }
+
+  async function confirmScheduledTaskDraft(editedDraft) {
+    if (!state.scheduledTaskDraft || state.activeSessionId !== state.scheduledTaskCreationSessionId) return null;
+    var lockedModel = state.scheduledTaskDraft.model || activeScheduledTaskModel();
+    var draft = normalizeScheduledTaskDraft(Object.assign({}, state.scheduledTaskDraft, editedDraft || {}, {
+      model: lockedModel,
+    }));
+    if (!draft) {
+      var invalidDraftError = new Error("定时任务草稿缺少名称、任务说明或时间规则");
+      setScheduledTaskError(invalidDraftError, "action");
+      notify();
+      throw invalidDraftError;
+    }
+    var created = await createScheduledTask({
+      name: draft.name,
+      prompt: draft.prompt,
+      rrule: draft.rrule,
+      cwds: draft.cwds || [],
+      model: lockedModel,
+      mode: "yolo",
+      allowShell: draft.allowShell,
+      trustMode: draft.trustMode,
+      autoApprove: draft.autoApprove,
+      paused: draft.paused,
+    });
+    state.scheduledTaskDraft = null;
+    state.scheduledTaskCreationSessionId = null;
+    notify();
+    return created;
+  }
+
+  function scheduledTaskInputFromDraft(draft) {
+    return {
+      name: draft.name,
+      prompt: draft.prompt,
+      rrule: draft.rrule,
+      cwds: draft.cwds || [],
+      model: draft.model || null,
+      mode: "yolo",
+      allowShell: draft.allowShell,
+      trustMode: draft.trustMode,
+      autoApprove: draft.autoApprove,
+      paused: draft.paused,
+    };
+  }
+
+  // 聊天创建拿到合法参数后立即落成任务。草稿不会进入可渲染 state，避免再出现一层确认卡。
+  function autoCreateScheduledTaskDraft(draft, creationSessionId) {
+    if (!draft || !creationSessionId || scheduledTaskAutoCreateInFlight[creationSessionId]) return;
+    var lockedDraft = lockScheduledTaskDraftModel(draft);
+    state.scheduledTaskDraft = null;
+    var creation = Promise.resolve()
+      .then(function () {
+        return createScheduledTask(scheduledTaskInputFromDraft(lockedDraft));
+      })
+      .then(function (created) {
+        if (state.scheduledTaskCreationSessionId === creationSessionId) {
+          state.scheduledTaskCreationSessionId = null;
+        }
+        var creationBuffer = sessionStates[creationSessionId];
+        if (creationBuffer) creationBuffer.scheduledTaskDraft = null;
+        if (created && created.id) state.scheduledTaskAutoOpenId = created.id;
+        notify();
+        return created;
+      })
+      .catch(function (error) {
+        // createScheduledTask 通常已记录错误；忙锁在进入 action 前抛出时在这里补记，且不产生未处理 Promise。
+        if (!state.scheduledTaskError) setScheduledTaskError(error, "action");
+        runSyncOnSession(creationSessionId, function () {
+          addSystemItem("定时任务创建失败：" + scheduledTaskErrorText(error), {
+            scheduledTaskCreationError: true,
+          });
+        });
+        notify();
+        return null;
+      })
+      .finally(function () {
+        if (scheduledTaskAutoCreateInFlight[creationSessionId] === creation) {
+          delete scheduledTaskAutoCreateInFlight[creationSessionId];
+        }
+      });
+    scheduledTaskAutoCreateInFlight[creationSessionId] = creation;
+  }
+
+  async function loadScheduledTasks() {
+    var stamp = scheduledTaskRequestStamp("tasks", null);
+    beginScheduledTaskLoad(stamp);
+    try {
+      var tasks = await invoke("list_scheduled_tasks");
+      if (!isCurrentScheduledTaskRequest(stamp)) return state.scheduledTasks;
+      state.scheduledTasks = attachAndPruneScheduledTaskTemplateSources(
+        Array.isArray(tasks) ? tasks : []
+      );
+      if (
+        state.selectedScheduledTaskId &&
+        !(state.scheduledTasks || []).some(function (task) { return task.id === state.selectedScheduledTaskId; })
+      ) {
+        selectScheduledTask(null);
+      }
+    } catch (e) {
+      if (isCurrentScheduledTaskRequest(stamp)) setScheduledTaskError(e, "load");
+    } finally {
+      endScheduledTaskLoad(stamp);
+    }
+    return state.scheduledTasks;
+  }
+
+  async function readScheduledTask(id) {
+    if (!id) {
+      clearScheduledTaskSelection();
+      return null;
+    }
+    if (state.selectedScheduledTaskId !== id) selectScheduledTask(id);
+    var stamp = scheduledTaskRequestStamp("detail", id);
+    beginScheduledTaskLoad(stamp);
+    try {
+      var detail = await invoke("read_scheduled_task", { id: id });
+      if (!isCurrentScheduledTaskRequest(stamp)) return state.scheduledTaskDetail;
+      state.scheduledTaskDetail = attachScheduledTaskTemplateSource(detail) || null;
+      upsertScheduledTask(detail);
+    } catch (e) {
+      if (isCurrentScheduledTaskRequest(stamp)) setScheduledTaskError(e, "load");
+    } finally {
+      endScheduledTaskLoad(stamp);
+    }
+    return state.scheduledTaskDetail;
+  }
+
+  async function loadScheduledTaskRuns(id, limit) {
+    if (!id) {
+      clearScheduledTaskSelection();
+      return [];
+    }
+    if (state.selectedScheduledTaskId !== id) selectScheduledTask(id);
+    var stamp = scheduledTaskRequestStamp("runs", id);
+    beginScheduledTaskLoad(stamp);
+    try {
+      var runs = await invoke("list_scheduled_task_runs", { id: id, limit: limit });
+      if (!isCurrentScheduledTaskRequest(stamp)) return state.scheduledTaskRuns;
+      state.scheduledTaskRuns = Array.isArray(runs) ? runs : [];
+      state.scheduledTaskRuns.forEach(rememberScheduledRunOwner);
+    } catch (e) {
+      if (isCurrentScheduledTaskRequest(stamp)) setScheduledTaskError(e, "load");
+    } finally {
+      endScheduledTaskLoad(stamp);
+    }
+    return state.scheduledTaskRuns;
+  }
+
+  function refreshScheduledTaskData(limit) {
+    var generation = scheduledTaskSelectionGeneration;
+    if (scheduledTaskRefreshInFlight && scheduledTaskRefreshInFlight.generation === generation) {
+      return scheduledTaskRefreshInFlight.promise;
+    }
+    var selectedId = state.selectedScheduledTaskId;
+    var requests = [loadScheduledTasks()];
+    if (selectedId) {
+      requests.push(readScheduledTask(selectedId));
+      requests.push(loadScheduledTaskRuns(selectedId, limit || 20));
+    }
+    var promise = Promise.all(requests).finally(function () {
+      if (scheduledTaskRefreshInFlight && scheduledTaskRefreshInFlight.promise === promise) {
+        scheduledTaskRefreshInFlight = null;
+      }
+    });
+    scheduledTaskRefreshInFlight = { generation: generation, promise: promise };
+    return promise;
+  }
+
+  function upsertScheduledTaskRun(run) {
+    if (!run || !run.id) return;
+    rememberScheduledRunOwner(run);
+    if (state.selectedScheduledTaskId && run.automationId && state.selectedScheduledTaskId !== run.automationId) return;
+    var found = false;
+    state.scheduledTaskRuns = (state.scheduledTaskRuns || []).map(function (item) {
+      if (item.id === run.id) {
+        found = true;
+        return run;
+      }
+      return item;
+    });
+    if (!found) state.scheduledTaskRuns = [run].concat(state.scheduledTaskRuns || []);
+  }
+
+  async function runScheduledTaskAction(action, operation) {
+    if (state.scheduledTaskBusyAction) {
+      throw new Error("另一个定时任务操作仍在进行中");
+    }
+    state.scheduledTaskBusyAction = action;
+    setScheduledTaskError(null);
+    notify();
+    try {
+      return await operation();
+    } catch (e) {
+      setScheduledTaskError(e, "action");
+      throw e;
+    } finally {
+      state.scheduledTaskBusyAction = null;
+      notify();
+    }
+  }
+
+  async function createScheduledTask(input) {
+    return runScheduledTaskAction("create", async function () {
+      var templateId = input && typeof input.templateId === "string" ? input.templateId.trim() : "";
+      var backendInput = Object.assign({}, input || {});
+      delete backendInput.templateId;
+      backendInput.mode = "yolo";
+      var created = await invoke("create_scheduled_task", { input: backendInput });
+      if (created && created.id && templateId) {
+        rememberScheduledTaskTemplateSource(created.id, templateId);
+      }
+      attachScheduledTaskTemplateSource(created);
+      if (created && created.id) selectScheduledTask(created.id);
+      upsertScheduledTask(created);
+      state.scheduledTaskDetail = created;
+      notify();
+      return created;
+    });
+  }
+
+  async function updateScheduledTask(id, input) {
+    return runScheduledTaskAction("update", async function () {
+      var backendInput = Object.assign({}, input || {}, { mode: "yolo" });
+      var updated = await invoke("update_scheduled_task", { id: id, input: backendInput });
+      upsertScheduledTask(updated);
+      if (state.selectedScheduledTaskId === id) state.scheduledTaskDetail = updated;
+      notify();
+      return updated;
+    });
+  }
+
+  async function pauseScheduledTask(id) {
+    return runScheduledTaskAction("pause", async function () {
+      var updated = await invoke("pause_scheduled_task", { id: id });
+      upsertScheduledTask(updated);
+      if (state.selectedScheduledTaskId === id) state.scheduledTaskDetail = updated;
+      notify();
+      return updated;
+    });
+  }
+
+  async function resumeScheduledTask(id) {
+    return runScheduledTaskAction("resume", async function () {
+      var updated = await invoke("resume_scheduled_task", { id: id });
+      upsertScheduledTask(updated);
+      if (state.selectedScheduledTaskId === id) state.scheduledTaskDetail = updated;
+      notify();
+      return updated;
+    });
+  }
+
+  async function deleteScheduledTask(id) {
+    return runScheduledTaskAction("delete", async function () {
+      var deleted = await invoke("delete_scheduled_task", { id: id });
+      if (deleted && Array.isArray(deleted.deletedSessionIds)) {
+        deleted.deletedSessionIds.forEach(purgeSessionBuffer);
+      }
+      forgetScheduledTaskTemplateSource(id);
+      state.scheduledTasks = (state.scheduledTasks || []).filter(function (task) { return task.id !== id; });
+      if (state.selectedScheduledTaskId === id) selectScheduledTask(null);
+      notify();
+      return deleted;
+    });
+  }
+
+  async function runScheduledTaskNow(id) {
+    return runScheduledTaskAction("run-now", async function () {
+      var run = await invoke("run_scheduled_task_now", { id: id });
+      invalidateScheduledTaskReads(id);
+      upsertScheduledTaskRun(run);
+      var runStatus = String(run && run.status || "").toLowerCase();
+      if (runStatus === "queued" || runStatus === "running") {
+        state.scheduledTasks = (state.scheduledTasks || []).map(function (task) {
+          return task.id === id ? Object.assign({}, task, { isRunning: true }) : task;
+        });
+        if (state.scheduledTaskDetail && state.scheduledTaskDetail.id === id) {
+          state.scheduledTaskDetail = Object.assign({}, state.scheduledTaskDetail, { isRunning: true });
+        }
+      }
+      notify();
+      return run;
+    });
+  }
+
+  // 不直接替用户发消息:引导词存为 pending,预填一句短话进输入框,由用户编辑后自己发送。
+  async function startScheduledTaskChat() {
+    return runScheduledTaskAction("chat-create", async function () {
+      var prompt = await invoke("scheduled_task_chat_prompt");
+      state.scheduledTaskDraft = null;
+      state.scheduledTaskCreationSessionId = null;
+      state.scheduledTaskAutoOpenId = null;
+      await createNewSession();
+      state.scheduledTaskPendingGuide = prompt;
+      prefillComposer("我想创建一个定时任务：");
+      notify();
+      return prompt;
+    });
+  }
+
   // ── Chat Items (display format for React) ────────────────────────
   function addChatItem(item) {
     item.id = ++itemIdSeq;
@@ -647,6 +1449,16 @@
   function flushAssistantMessageToHistory() {
     flushPendingTextBlock();
     if (pendingAssistantBlocks.length) {
+      var assistantText = pendingAssistantBlocks
+        .filter(function (block) { return block && block.type === "text" && block.text; })
+        .map(function (block) { return block.text; })
+        .join("\n\n");
+      if (state.activeSessionId && state.activeSessionId === state.scheduledTaskCreationSessionId) {
+        var scheduledTaskDraft = parseScheduledTaskDraftFromText(assistantText);
+        if (scheduledTaskDraft) {
+          autoCreateScheduledTaskDraft(scheduledTaskDraft, state.activeSessionId);
+        }
+      }
       state.messages.push({ role: "assistant", content: pendingAssistantBlocks });
       pendingAssistantBlocks = [];
     }
@@ -678,7 +1490,11 @@
   // session 在首次有实质内容(发消息 / 加卡牌,见 ensureSession)时才物化——这样会话列表里
   // 永远不会堆积没用过的空「新对话」(ChatGPT/Claude 式 lazy session)。
   function enterDraft() {
+    sessionSwitchRequestToken += 1; // 新建/返回草稿会话使任何仍在等待的 load_session 结果失效
+    state.scheduledRunContext = null;
     state.draftEpoch++; // 每次点击都自增——含下面提前返回的「已在草稿态」分支,让前端能重置 welcomeToolId
+    state.scheduledTaskPendingGuide = null; // 换了对话,未发送的定时任务引导词作废
+
     // 已在干净草稿态 → 只 notify(epoch 已自增)。注意要连 chatItems 一起判空:messages 与 chatItems
     // 会背离(persona 气泡 / ensureSession 失败的 system 报错卡只进 chatItems),否则残留卡顶掉「你好」。
     if (!state.activeSessionId && state.messages.length === 0 && state.chatItems.length === 0) { notify(); return; }
@@ -710,47 +1526,282 @@
     }
   }
 
-  async function switchToSession(id) {
-    if (id === state.activeSessionId) return;
+  function reportSessionSwitchFailure(error, errorScope) {
+    if (errorScope === "scheduled") {
+      setScheduledTaskError(error, "navigation");
+      notify();
+      return;
+    }
+    addSystemItem(bt("loadChatFailed") + error);
+  }
+
+  function mergeHydratedMessages(durableMessages, liveMessages) {
+    var durable = Array.isArray(durableMessages) ? durableMessages.slice() : [];
+    var counts = Object.create(null);
+    durable.forEach(function (message) {
+      var key;
+      try { key = JSON.stringify(message); } catch (_) { key = String(message); }
+      counts[key] = (counts[key] || 0) + 1;
+    });
+    (Array.isArray(liveMessages) ? liveMessages : []).forEach(function (message) {
+      var key;
+      try { key = JSON.stringify(message); } catch (_) { key = String(message); }
+      if (counts[key]) {
+        counts[key] -= 1;
+      } else {
+        durable.push(message);
+      }
+    });
+    return durable;
+  }
+
+  function mergeHydratedArtifacts(durableArtifacts, liveArtifacts) {
+    var merged = [];
+    var seen = Object.create(null);
+    (durableArtifacts || []).concat(liveArtifacts || []).forEach(function (artifact) {
+      var path = typeof artifact === "string" ? artifact : (artifact && (artifact.path || artifact.storage_path)) || "";
+      if (!path || seen[path]) return;
+      seen[path] = true;
+      merged.push({ path: path, basename: basename(path) });
+    });
+    return merged;
+  }
+
+  function hydratedChatItemKey(item) {
+    if (!item || !item.type) return "";
+    if (item.type === "assistant") return "assistant:" + String(item.html || item.text || "");
+    if (item.type === "tool" && item.toolId) return "tool:" + item.toolId;
+    if (item.type === "artifact_card") return "artifact:" + String(item.path || "");
+    if (item.type === "user") return "user:" + String(item.text || item.html || "");
+    if (item.type === "system") return "system:" + String(item.text || "");
+    var stable = Object.assign({}, item);
+    delete stable.id;
+    delete stable.time;
+    delete stable.streaming;
+    try { return item.type + ":" + JSON.stringify(stable); } catch (_) { return item.type + ":" + String(stable); }
+  }
+
+  function mergeHydratedChatItems(liveChatItems, liveCurrentStreamId) {
+    var remappedCurrentStreamId = 0;
+    (liveChatItems || []).forEach(function (item) {
+      var key = hydratedChatItemKey(item);
+      var existingIndex = -1;
+      if (key) {
+        for (var i = state.chatItems.length - 1; i >= 0; i--) {
+          if (hydratedChatItemKey(state.chatItems[i]) === key) {
+            existingIndex = i;
+            break;
+          }
+        }
+      }
+      if (existingIndex >= 0) {
+        var existingId = state.chatItems[existingIndex].id;
+        state.chatItems[existingIndex] = Object.assign({}, state.chatItems[existingIndex], item, {
+          id: existingId,
+        });
+        if (item && item.id === liveCurrentStreamId) remappedCurrentStreamId = existingId;
+        return;
+      }
+      var clone = Object.assign({}, item, { id: ++itemIdSeq });
+      if (item && item.id === liveCurrentStreamId) remappedCurrentStreamId = clone.id;
+      state.chatItems.push(clone);
+    });
+    return remappedCurrentStreamId;
+  }
+
+  async function switchToSessionInternal(id, preserveScheduledRunContext, errorScope, options) {
+    var requestToken = ++sessionSwitchRequestToken;
+    var forceDurableLoad = !!(options && options.forceDurableLoad);
+    var hydrateLiveSession = !!(options && options.hydrateLiveSession);
+    if (!id) {
+      reportSessionSwitchFailure(new Error("该运行记录没有可打开的会话"), errorScope);
+      return false;
+    }
+    if (hydrateLiveSession && !sessionStates[id]) sessionStates[id] = freshBuffer();
+    if (id === state.activeSessionId && !forceDurableLoad && !hydrateLiveSession) {
+      if (!preserveScheduledRunContext) state.scheduledRunContext = null;
+      state.scheduledTaskPendingGuide = null;
+      notify();
+      return true;
+    }
     // 多 session 并发:切换【不再 cancel】旧 session —— 它在自己的 engine 上继续跑,
     // 工作集存进 sessionStates 后台累积。切回来能看到完整(含切走期间产生的)内容。
     // 已有 buffer(切过/在跑)→ 直接换工作集;没有 → load_session 建 buffer + 重渲染。
-    if (sessionStates[id]) {
+    if (sessionStates[id] && !forceDurableLoad && !hydrateLiveSession) {
+      if (!preserveScheduledRunContext) state.scheduledRunContext = null;
+      state.scheduledTaskPendingGuide = null; // 仅在目标会话已确认可用后提交导航状态
       switchActiveTo(id, null);
       await syncModeState();
       await syncActivePersona();
       await syncMountedCollection();
       await loadMemoryOverview({ rehydratePending: true });
+      if (requestToken !== sessionSwitchRequestToken || state.activeSessionId !== id) return false;
       notify();
       reconcileArtifacts(id); // 对账磁盘产物(fire-and-forget)
-      return;
+      return true;
     }
+    var saved;
     try {
-      if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
-      var saved = await invoke("load_session", { id: id });
-      state.activeSessionId = saved.metadata.id;
+      saved = await invoke("load_session", { id: id });
+    } catch (e) {
+      if (requestToken === sessionSwitchRequestToken) reportSessionSwitchFailure(e, errorScope);
+      return false;
+    }
+    if (requestToken !== sessionSwitchRequestToken) return false;
+    if (!saved || !saved.metadata || !saved.metadata.id) {
+      reportSessionSwitchFailure(new Error("会话数据无效"), errorScope);
+      return false;
+    }
+
+    var personaEvents = [];
+    var pinvouReviews = [];
+    try { personaEvents = await invoke("get_session_persona_events", { sessionId: id }) || []; } catch (_) {}
+    try { pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: id }) || []; } catch (_) {}
+    if (requestToken !== sessionSwitchRequestToken) return false;
+
+    // load_session 与必要的直接会话数据均成功后，才一次性提交 active/context。
+    if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
+    if (!preserveScheduledRunContext) state.scheduledRunContext = null;
+    state.scheduledTaskPendingGuide = null;
+    state.activeSessionId = saved.metadata.id;
+    if (hydrateLiveSession) {
+      var liveBuffer = sessionStates[id] || freshBuffer();
+      loadWorkingSetFrom(liveBuffer);
+      var liveMessages = Array.isArray(state.messages) ? state.messages.slice() : [];
+      var liveChatItems = Array.isArray(state.chatItems) ? state.chatItems.slice() : [];
+      var liveArtifacts = Array.isArray(state.artifacts) ? state.artifacts.slice() : [];
+      var liveCurrentStreamId = currentStreamId;
+      var hasLivePresentation = !!state.busy || !!currentStreamText || !!pendingAssistantText ||
+        (Array.isArray(pendingAssistantBlocks) && pendingAssistantBlocks.length > 0);
+      state.messages = mergeHydratedMessages(saved.messages, liveMessages);
+      state.personaEvents = personaEvents.length ? personaEvents : (liveBuffer.personaEvents || []);
+      state.pinvouReviews = pinvouReviews.length ? pinvouReviews : (liveBuffer.pinvouReviews || []);
+      state.artifacts = filterSessionArtifacts(
+        mergeHydratedArtifacts(saved.artifacts, liveArtifacts),
+        state.activeSessionId
+      );
+      rerenderFromMessages();
+      if (hasLivePresentation) {
+        currentStreamId = mergeHydratedChatItems(liveChatItems, liveCurrentStreamId);
+      } else {
+        resetPendingAssistant();
+      }
+      saveWorkingSetTo(liveBuffer);
+    } else {
       loadWorkingSetFrom(sessionStates[id] = freshBuffer());
       state.messages = Array.isArray(saved.messages) ? saved.messages : [];
       sessionStates[id].loadedFromDisk = true;
-      try { state.personaEvents = await invoke("get_session_persona_events", { sessionId: id }) || []; } catch (e) { state.personaEvents = []; }
-      try { state.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: id }) || []; } catch (e) { state.pinvouReviews = []; }
+      state.personaEvents = personaEvents;
+      state.pinvouReviews = pinvouReviews;
       resetPendingAssistant();
       state.chatItems = [];
-      state.artifacts = Array.isArray(saved.artifacts) ? saved.artifacts.map(function (a) {
-        var p = typeof a === "string" ? a : (a.storage_path || a.path || "");
-        return { path: p, basename: basename(p) };
-      }) : [];
+      state.artifacts = mergeHydratedArtifacts(saved.artifacts, []);
       state.artifacts = filterSessionArtifacts(state.artifacts, state.activeSessionId);
       rerenderFromMessages();
-      await syncModeState();
-      await syncActivePersona();
-      await syncMountedCollection();
-      await loadMemoryOverview({ rehydratePending: true });
-      notify();
-      reconcileArtifacts(id); // 对账磁盘产物(修重启/跟踪遗漏导致的面板缺文件)
-    } catch (e) {
-      addSystemItem(bt("loadChatFailed") + e);
     }
+    await syncModeState();
+    await syncActivePersona();
+    await syncMountedCollection();
+    await loadMemoryOverview({ rehydratePending: true });
+    if (requestToken !== sessionSwitchRequestToken || state.activeSessionId !== saved.metadata.id) return false;
+    notify();
+    reconcileArtifacts(id); // 对账磁盘产物(修重启/跟踪遗漏导致的面板缺文件)
+    return true;
+  }
+
+  async function switchToSession(id) {
+    return switchToSessionInternal(id, false, "chat");
+  }
+
+  async function openScheduledRunChatOnce(run, task) {
+    var sessionId = run && typeof run.sessionId === "string" ? run.sessionId.trim() : "";
+    if (!sessionId) {
+      reportSessionSwitchFailure(new Error("该运行记录没有可打开的会话"), "scheduled");
+      return false;
+    }
+    rememberScheduledRunOwner(run);
+    var runStatus = String(run && run.status || "").toLowerCase();
+    var openActivation = null;
+    if (runStatus === "queued" || runStatus === "running") {
+      openActivation = beginScheduledOpenActivation(sessionId);
+    } else {
+      scheduledRunBuffer(sessionId);
+    }
+    setScheduledTaskError(null);
+    notify();
+    var returnSessionId = state.scheduledRunContext
+      ? state.scheduledRunContext.returnSessionId
+      : state.activeSessionId;
+    var forceDurableLoad = runStatus === "completed" || runStatus === "failed" || runStatus === "canceled";
+    var switched = await switchToSessionInternal(sessionId, true, "scheduled", {
+      forceDurableLoad: forceDurableLoad,
+      hydrateLiveSession: !forceDurableLoad,
+    });
+    if (!switched) {
+      rollbackScheduledOpenActivation(openActivation);
+      notify();
+      return false;
+    }
+    if (forceDurableLoad) markScheduledInitialTurnTerminal(sessionId);
+    else scheduledRunBuffer(sessionId);
+    var automationId = (run && run.automationId) || (task && task.id) || null;
+    var runId = (run && (run.runId || run.id)) || null;
+    state.scheduledRunContext = {
+      sessionId: sessionId,
+      returnSessionId: returnSessionId,
+      automationId: automationId,
+      runId: runId,
+      taskName: (task && task.name) || (run && (run.taskName || run.name)) || "",
+      model: (task && task.model) || null,
+      mode: "yolo",
+    };
+    // 先发布完整会话视图；只有已完成的运行才持久化为已查看。
+    notify();
+    if (automationId && runId && runStatus === "completed") {
+      try {
+        var receipt = await invoke("mark_scheduled_run_viewed", {
+          automationId: automationId,
+          runId: runId,
+        });
+        invalidateScheduledTaskReads(automationId);
+        applyScheduledRunViewed(automationId, runId, receipt);
+      } catch (e) {
+        setScheduledTaskError(e, "action");
+      }
+    }
+    notify();
+    return true;
+  }
+
+  function openScheduledRunChat(run, task) {
+    var sessionId = run && typeof run.sessionId === "string" ? run.sessionId.trim() : "";
+    if (!sessionId) return openScheduledRunChatOnce(run, task);
+    if (scheduledRunOpenInFlight[sessionId]) return scheduledRunOpenInFlight[sessionId];
+    var opening = openScheduledRunChatOnce(run, task);
+    scheduledRunOpenInFlight[sessionId] = opening;
+    function clearOpening() {
+      if (scheduledRunOpenInFlight[sessionId] === opening) {
+        delete scheduledRunOpenInFlight[sessionId];
+      }
+    }
+    opening.then(clearOpening, clearOpening);
+    return opening;
+  }
+
+  async function exitScheduledRunChat() {
+    var context = state.scheduledRunContext;
+    if (!context) return false;
+    if (context.returnSessionId && context.returnSessionId !== context.sessionId) {
+      var restored = await switchToSessionInternal(context.returnSessionId, true, "scheduled");
+      if (restored) {
+        state.scheduledRunContext = null;
+        notify();
+        return true;
+      }
+      return false;
+    }
+    enterDraft();
+    return true;
   }
 
   async function deleteSession(id) {
@@ -773,6 +1824,7 @@
   }
 
   async function renameSession(id, title) {
+    if (isScheduledRunSession(id)) return;
     try {
       await invoke("rename_session", { id: id, title: title });
       var s = state.sessions.find(function (s) { return s.id === id; });
@@ -1221,6 +2273,7 @@
   // 修「文件已生成在盘上、却因 app 中途重启/跟踪遗漏而不在产物面板」(以磁盘为准)。
   async function reconcileArtifacts(sid) {
     if (!sid) return;
+    if (isScheduledRunSession(sid)) return;
     try {
       var files = await invoke("list_workspace_files", { sessionId: sid });
       if (sid !== state.activeSessionId) return; // 已切走,放弃(避免写错 session)
@@ -1279,7 +2332,7 @@
   }
   // 真正发送:在 sid 的工作集上加 user 气泡 + 流式占位 + busy,然后 invoke chat。
   // active/后台通用(后台走 runSyncOnSession 临时切工作集)。
-  function doSendFor(sid, text, displayText, attachmentsPayload, meta) {
+  function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools) {
     turnUsageDirty[sid] = false; // 新一轮开始，重置口径保护
     runSyncOnSession(sid, function () {
       var uitem = { type: "user", text: displayText, time: timeStr() };
@@ -1294,7 +2347,7 @@
     });
     notify();
     publishRemoteUserMessage(sid, displayText, meta && meta.remoteClientMessageId);
-    return invoke("chat", { message: text, attachments: attachmentsPayload, sessionId: sid })
+    return invoke("chat", { message: text, attachments: attachmentsPayload, sessionId: sid, restrictTools: !!restrictTools })
       .catch(function (err) {
         runSyncOnSession(sid, function () {
           addSystemItem("⚠️ " + (err && err.toString ? err.toString() : err));
@@ -1302,6 +2355,7 @@
           state.chatItems = state.chatItems.filter(function (item) { return item.id !== currentStreamId || item.html; });
         });
         notify();
+        flushQueued(sid);
       });
   }
   function publishRemoteUserMessage(sid, content, clientMessageId) {
@@ -1318,15 +2372,16 @@
     if (isBusyFor(sid)) return;            // doFinal 等又起了新 turn → 留给那轮的 done 再 flush
     var q = sid === state.activeSessionId ? state.queued : (sessionStates[sid] && sessionStates[sid].queued);
     if (!q || q.length === 0) return;
-    var items = q.splice(0, q.length);     // 排空队列
+    var items = q.splice(0, q.length);
     // 发给模型用 \n\n 分隔(让它清楚是几条独立消息);气泡显示用单换行 \n(紧凑,不空行)
     var text = items.map(function (i) { return i.text; }).filter(Boolean).join("\n\n");
     var displayText = items.map(function (i) { return i.displayText; }).filter(Boolean).join("\n");
     var attachments = [];
     items.forEach(function (i) { if (i.attachments && i.attachments.length) attachments = attachments.concat(i.attachments); });
     var meta = items.length === 1 ? items[0].meta : null; // 单条(如转交)保留 meta;合并多条不标
+    var restrictTools = items.some(function (i) { return !!i.restrictTools; });
     notify();
-    doSendFor(sid, text, displayText, attachments, meta);
+    doSendFor(sid, text, displayText, attachments, meta, restrictTools);
   }
 
   async function sendMessage(text, meta) {
@@ -1343,6 +2398,17 @@
       await ensureSession(); // 草稿态首条消息 → 物化 session(命名靠下方 persistSession auto-title)
       if (!state.activeSessionId) return;
     }
+    // 定时任务引导:引导词只拼进发给模型的 payload,气泡/历史仍只显示用户输入。
+    var payloadText = text;
+    var restrictTools = false;
+    if (state.scheduledTaskPendingGuide) {
+      payloadText = state.scheduledTaskPendingGuide + "\n\n" + text;
+      restrictTools = true;
+      state.scheduledTaskPendingGuide = null;
+      state.scheduledTaskCreationSessionId = state.activeSessionId;
+      state.scheduledTaskDraft = null;
+      notify();
+    }
 
     // 新一轮用户消息 → 先熄灭技能标；本轮若模型再 load_skill 会重新点亮（sticky-ish 生命周期）。
     state.activeSkill = null;
@@ -1357,12 +2423,12 @@
     // 排队式:当前 session 正在生成 → 这句进队列(不打断当前轮),本轮 chat:done 后自动发。
     // 输入框上方显示待发 chip(可✕撤销)。停止按钮仍只硬打断当前轮。
     if (state.busy) {
-      state.queued.push({ id: ++itemIdSeq, text: text, displayText: displayText, attachments: attachmentsPayload, meta: meta || null });
+      state.queued.push({ id: ++itemIdSeq, text: payloadText, displayText: displayText, attachments: attachmentsPayload, meta: meta || null, restrictTools: restrictTools });
       notify();
       return;
     }
 
-    await doSendFor(state.activeSessionId, text, displayText, attachmentsPayload, meta);
+    await doSendFor(state.activeSessionId, payloadText, displayText, attachmentsPayload, meta, restrictTools);
   }
   function prefillComposer(text) {
     state.composerPrefill = { id: (state.composerPrefill.id || 0) + 1, text: String(text || "") };
@@ -1497,6 +2563,7 @@
   // ── Persist messages ─────────────────────────────────────────────
   async function persistMessages() {
     if (!state.activeSessionId) return;
+    if (isScheduledRunSession(state.activeSessionId)) return;
     try {
       await invoke("save_session_messages", { id: state.activeSessionId, messages: state.messages });
       // artifacts 一起落盘，重启/切换 session 后能恢复
@@ -1545,6 +2612,21 @@
     }
     notify();
   }); });
+
+  listen("scheduled_task:run_updated", function (e) {
+    var payload = e && e.payload || {};
+    var run = payload.run || payload;
+    var automationId = payload.automationId || payload.automation_id ||
+      (run && (run.automationId || run.automation_id));
+    if (!automationId) return;
+    // The sidebar unread indicator is global, so task summaries must refresh even
+    // while the Scheduled page (or another automation) is not selected.
+    if (state.selectedScheduledTaskId === automationId) {
+      refreshScheduledTaskData(20).catch(function () {});
+    } else {
+      loadScheduledTasks().catch(function () {});
+    }
+  });
 
   listen("chat:memory_write", function (e) {
     handleMemoryWrite(e && e.payload);
@@ -1753,7 +2835,9 @@
   // 不依赖工作集 —— 这样后台 session 跑完也能正确落盘。
   listen("chat:done", function (e) {
     var sid = (e.payload && e.payload.session_id) || state.activeSessionId;
+    if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
     runSyncOnSession(sid, function () {
+      if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
       var error = e.payload && e.payload.error;
       if (error) addSystemItem("⚠️ " + error);
       flushAssistantMessageToHistory();
@@ -4004,6 +5088,16 @@
     if (!selected) return [];
     return Array.isArray(selected) ? selected : [selected];
   }
+  async function pickFolder() {
+    if (!dialogOpen) throw new Error("当前环境无法打开文件夹选择器");
+    var selected = await dialogOpen({
+      directory: true,
+      multiple: false,
+      title: "选择工作目录",
+    });
+    if (!selected) return null;
+    return Array.isArray(selected) ? (selected[0] || null) : selected;
+  }
   async function pickFeedbackFiles() {
     if (!dialogOpen) return [];
     var selected = await dialogOpen({
@@ -4057,6 +5151,9 @@
     await loadAppVersion();
     await loadModels();
     await refreshHistoryList();
+    // Populate the global Scheduled unread summary without requiring the user
+    // to visit the Scheduled page first.
+    loadScheduledTasks().catch(function () {});
     enterDraft(); // 启动落空白草稿页(lazy session:不自动选/建会话)
     await refreshSuperPerm();
     loadPersonas(); // 预载卡池(让聊天里草稿"已存入"判定能查到同名自制卡), fire-and-forget
@@ -4089,9 +5186,27 @@
     clearVoiceInput: clearVoiceInput,
     appendVoiceText: appendVoiceText,
     runVoiceInputDebugAssertions: runVoiceInputDebugAssertions,
+    loadScheduledTasks: loadScheduledTasks,
+    readScheduledTask: readScheduledTask,
+    loadScheduledTaskRuns: loadScheduledTaskRuns,
+    selectScheduledTask: selectScheduledTask,
+    refreshScheduledTaskData: refreshScheduledTaskData,
+    clearScheduledTaskSelection: clearScheduledTaskSelection,
+    createScheduledTask: createScheduledTask,
+    updateScheduledTask: updateScheduledTask,
+    pauseScheduledTask: pauseScheduledTask,
+    resumeScheduledTask: resumeScheduledTask,
+    deleteScheduledTask: deleteScheduledTask,
+    runScheduledTaskNow: runScheduledTaskNow,
+    pickFolder: pickFolder,
+    startScheduledTaskChat: startScheduledTaskChat,
+    confirmScheduledTaskDraft: confirmScheduledTaskDraft,
+    clearScheduledTaskDraft: clearScheduledTaskDraft,
     cancelGeneration: cancelGeneration,
     createNewSession: createNewSession,
     switchToSession: switchToSession,
+    openScheduledRunChat: openScheduledRunChat,
+    exitScheduledRunChat: exitScheduledRunChat,
     deleteSession: deleteSession,
     renameSession: renameSession,
     toggleSessionPinned: toggleSessionPinned,

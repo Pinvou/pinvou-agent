@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Archive, Check, Edit2, FolderOpen, MoreHorizontal, PinIcon, PinOffIcon, Sparkles, Trash2, X } from '../icons.jsx';
 import { useLongPressDrag } from '../../hooks/useLongPressDrag.js';
 
-const NavItem = ({ icon, label, active, theme, isSidebarOpen = true, onClick, dragKind, dragging, onPickUp }) => {
+const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = true, onClick, dragKind, dragging, onPickUp }) => {
       const isDark = theme === 'dark';
       const drag = useLongPressDrag(dragKind, onPickUp);
       const dragProps = dragKind ? drag.handlers : {};
@@ -20,8 +20,13 @@ const NavItem = ({ icon, label, active, theme, isSidebarOpen = true, onClick, dr
             ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-[#D3E3FD] text-[#041E49]')
             : (isDark ? 'text-[#E3E3E3] hover:bg-[#282A2C]' : 'text-[#1F1F1F] hover:bg-[#E1E5EA]')}`}
         >
-          <div className={`${isSidebarOpen ? 'mr-4' : ''} shrink-0 ${active ? (isDark ? 'text-[#041E49]' : 'text-[#0B57D0]') : ''}`}>
+          <div className={`relative ${isSidebarOpen ? 'mr-4' : ''} shrink-0 ${active ? (isDark ? 'text-[#041E49]' : 'text-[#0B57D0]') : ''}`}>
             {icon}
+            {unread && (
+              <span data-testid="scheduled-nav-unread" aria-label="定时任务有未查看的运行对话"
+                className="absolute -right-1.5 -top-1 w-2.5 h-2.5 rounded-full border-2"
+                style={{ background: '#0B57D0', borderColor: active ? (isDark ? '#A8C7FA' : '#D3E3FD') : (isDark ? '#1E1F20' : '#F0F4F9') }} />
+            )}
           </div>
           {isSidebarOpen && <span className="whitespace-nowrap">{label}</span>}
         </div>

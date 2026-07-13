@@ -16,20 +16,143 @@
 //! 廉价 Clone 进 Tauri State + 多个 task 共享。
 
 use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use deepseek_tui::artifacts::{ArtifactKind, ArtifactRecord};
-use deepseek_tui::models::Message;
+use deepseek_tui::models::{Message, SystemPrompt};
 use deepseek_tui::session_manager::{
     create_saved_session_with_id_and_mode, SavedSession, SessionManager, SessionMetadata,
 };
-use parking_lot::RwLock;
+use deepseek_tui::tui::app::AppMode;
+use parking_lot::{Mutex, RwLock};
+use serde::{Deserialize, Serialize};
 
 use super::mode_state::{ActiveSkillBinding, SerializableMode, SessionModeState};
 use super::paths;
+
+const SCHEDULED_PROFILE_SCHEMA_VERSION: u32 = 1;
+
+const fn scheduled_profile_schema_version() -> u32 {
+    SCHEDULED_PROFILE_SCHEMA_VERSION
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionKind {
+    Chat,
+    ScheduledRun,
+}
+
+/// Execution mode captured by an immutable scheduled-run profile.
+///
+/// Unlike the legacy two-state frontend mode, scheduled execution must retain
+/// `agent` as a distinct value across restarts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduledRunMode {
+    Agent,
+    Plan,
+    Yolo,
+}
+
+impl ScheduledRunMode {
+    pub(crate) const fn for_scheduled_auto_approve(auto_approve: bool) -> Self {
+        if auto_approve {
+            Self::Yolo
+        } else {
+            Self::Agent
+        }
+    }
+
+    pub const fn as_label(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Plan => "plan",
+            Self::Yolo => "yolo",
+        }
+    }
+
+    pub const fn to_app_mode(self) -> AppMode {
+        match self {
+            Self::Agent => AppMode::Agent,
+            Self::Plan => AppMode::Plan,
+            Self::Yolo => AppMode::Yolo,
+        }
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduledRunProfile {
+    pub task_id: String,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    pub workspace: PathBuf,
+    pub mode: ScheduledRunMode,
+    pub allow_shell: bool,
+    pub trust_mode: bool,
+    pub auto_approve: bool,
+}
+
+impl ScheduledRunProfile {
+    /// Scheduled execution has no interactive mode selector. Approval policy is
+    /// the authority: runs that may auto-approve use Yolo, while every other run
+    /// stays in Agent so the engine cannot bypass the persisted approval gate.
+    pub(crate) const fn execution_mode(&self) -> ScheduledRunMode {
+        ScheduledRunMode::for_scheduled_auto_approve(self.auto_approve)
+    }
+}
+
+/// How an engine-owned scheduled session update changes the durable token total.
+///
+/// `SessionUpdated` does not carry usage, so callers must preserve the last durable
+/// total. A final engine snapshot reports usage accumulated since that engine was
+/// spawned; combining it with the spawn-time base produces an absolute lifetime
+/// total without double-counting later turns from the same engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScheduledTokenAccounting {
+    PreservePersisted,
+    EngineCumulative {
+        base_total_tokens: u64,
+        engine_total_tokens: u64,
+    },
+}
+
+/// Authoritative engine state to persist for one scheduled-run session.
+///
+/// This mirrors the durable fields available from `Event::SessionUpdated` plus a
+/// final `SessionSnapshot`. Identity, title, creation time, artifacts, and the
+/// immutable scheduled profile remain owned by the existing saved session/store.
+#[derive(Debug, Clone)]
+pub struct ScheduledEngineState {
+    pub messages: Vec<Message>,
+    pub system_prompt: Option<SystemPrompt>,
+    pub model: String,
+    pub workspace: PathBuf,
+    pub mode: ScheduledRunMode,
+    pub token_accounting: ScheduledTokenAccounting,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ScheduledProfileRegistry {
+    #[serde(default = "scheduled_profile_schema_version")]
+    schema_version: u32,
+    #[serde(default)]
+    sessions: HashMap<String, ScheduledRunProfile>,
+}
+
+impl Default for ScheduledProfileRegistry {
+    fn default() -> Self {
+        Self {
+            schema_version: SCHEDULED_PROFILE_SCHEMA_VERSION,
+            sessions: HashMap::new(),
+        }
+    }
+}
 
 /// pinvou3 session 存储：包 SessionManager + active id 跟踪 + per-session mode 状态。
 ///
@@ -42,6 +165,10 @@ use super::paths;
 #[derive(Clone)]
 pub struct SessionStore {
     manager: Arc<SessionManager>,
+    scheduled_manager: Arc<SessionManager>,
+    scheduled_profiles: Arc<RwLock<HashMap<String, ScheduledRunProfile>>>,
+    scheduled_profiles_path: Arc<PathBuf>,
+    scheduled_mutation: Arc<Mutex<()>>,
     active: Arc<RwLock<Option<String>>>,
     mode_states: Arc<RwLock<HashMap<String, SessionModeState>>>,
     /// per-session 模型绑定:session_id → SavedModel.id。某 session 显式选过模型
@@ -59,17 +186,56 @@ pub struct SessionStore {
 impl SessionStore {
     /// 用 `~/.pinvou3/sessions/` 初始化。如果目录不存在会自动创建。
     pub fn boot() -> Result<Self> {
-        let dir = paths::sessions_root();
-        let manager = SessionManager::new(dir.clone())
-            .with_context(|| format!("SessionManager::new({}) failed", dir.display()))?;
-        Ok(Self {
+        let store = Self::from_paths(
+            paths::sessions_root(),
+            paths::scheduled_run_sessions_root(),
+            paths::scheduled_run_profiles_path(),
+        )?;
+        // Sidecars historically load later in the Tauri setup hook. Loading
+        // them here too lets reconciliation discard scheduled-only runtime
+        // state immediately instead of resurrecting it after stale profiles
+        // have already been removed.
+        store.load_skill_bindings();
+        store.load_session_models();
+        store.load_pinned_sessions();
+        store.load_hidden_sessions();
+        store.purge_all_scheduled_side_maps();
+        Ok(store)
+    }
+
+    fn from_paths(
+        chat_sessions_dir: PathBuf,
+        scheduled_sessions_dir: PathBuf,
+        scheduled_profiles_path: PathBuf,
+    ) -> Result<Self> {
+        let manager = SessionManager::new(chat_sessions_dir.clone()).with_context(|| {
+            format!(
+                "SessionManager::new({}) failed",
+                chat_sessions_dir.display()
+            )
+        })?;
+        let scheduled_manager =
+            SessionManager::new(scheduled_sessions_dir.clone()).with_context(|| {
+                format!(
+                    "SessionManager::new({}) failed",
+                    scheduled_sessions_dir.display()
+                )
+            })?;
+        let store = Self {
             manager: Arc::new(manager),
+            scheduled_manager: Arc::new(scheduled_manager),
+            scheduled_profiles: Arc::new(RwLock::new(HashMap::new())),
+            scheduled_profiles_path: Arc::new(scheduled_profiles_path),
+            scheduled_mutation: Arc::new(Mutex::new(())),
             active: Arc::new(RwLock::new(None)),
             mode_states: Arc::new(RwLock::new(HashMap::new())),
             session_models: Arc::new(RwLock::new(HashMap::new())),
             pinned_sessions: Arc::new(RwLock::new(HashMap::new())),
             hidden_sessions: Arc::new(RwLock::new(HashMap::new())),
-        })
+        };
+        store.load_scheduled_profiles()?;
+        store.reconcile_scheduled_profiles()?;
+        Ok(store)
     }
 
     /// 列出所有 session 元数据，按 updated_at 倒序（最新在前）。
@@ -84,13 +250,38 @@ impl SessionStore {
 
     /// 加载完整 session（包含所有 messages）。
     pub fn load(&self, id: &str) -> Result<SavedSession> {
-        self.manager
-            .load_session(id)
-            .with_context(|| format!("load_session({id})"))
+        if self.is_scheduled_session(id)? {
+            return self
+                .scheduled_manager
+                .load_session(id)
+                .with_context(|| format!("load_scheduled_session({id})"));
+        }
+
+        match self.manager.load_session(id) {
+            Ok(session) => Ok(session),
+            Err(err) if err.kind() == ErrorKind::NotFound => self
+                .scheduled_manager
+                .load_session(id)
+                .with_context(|| format!("load_session({id})")),
+            Err(err) => Err(err).with_context(|| format!("load_session({id})")),
+        }
     }
 
     /// 落盘整个 session（atomic write 由上游处理）。
     pub fn save(&self, session: &SavedSession) -> Result<PathBuf> {
+        if self.is_scheduled_session(&session.metadata.id)? {
+            let _mutation = self.scheduled_mutation.lock();
+            let path = self
+                .scheduled_manager
+                .save_session(session)
+                .context("save_scheduled_session failed")?;
+            if let Err(error) = self.reconcile_scheduled_profiles_locked() {
+                eprintln!(
+                    "[sessions] scheduled retention reconciliation failed after committed save: {error:#}"
+                );
+            }
+            return Ok(path);
+        }
         self.manager
             .save_session(session)
             .context("save_session failed")
@@ -98,6 +289,9 @@ impl SessionStore {
 
     /// 删除 session（含 artifacts 子目录）。
     pub fn delete(&self, id: &str) -> Result<()> {
+        if self.is_scheduled_session(id)? {
+            bail!("Scheduled-run sessions are deleted through their automation");
+        }
         self.manager
             .delete_session(id)
             .with_context(|| format!("delete_session({id})"))?;
@@ -128,6 +322,447 @@ impl SessionStore {
         };
         if removed_hidden {
             self.save_hidden_sessions();
+        }
+        Ok(())
+    }
+
+    pub fn session_kind(&self, id: &str) -> Result<SessionKind> {
+        if self.is_scheduled_session(id)? {
+            Ok(SessionKind::ScheduledRun)
+        } else {
+            Ok(SessionKind::Chat)
+        }
+    }
+
+    pub fn scheduled_profile(&self, id: &str) -> Option<ScheduledRunProfile> {
+        self.scheduled_profiles.read().get(id).cloned()
+    }
+
+    /// Workspace used by the engine and by every path-producing command for a
+    /// session. Scheduled profiles lock this to the task's configured external
+    /// workspace; ordinary chats retain their existing app-owned workspace.
+    pub fn execution_workspace(&self, id: &str) -> Result<PathBuf> {
+        if let Some(profile) = self.scheduled_profile(id) {
+            return Ok(profile.workspace);
+        }
+        if self.is_scheduled_session(id)? {
+            bail!("Scheduled-run session '{id}' has no persisted execution profile");
+        }
+        Ok(paths::session_workspace_dir(id))
+    }
+
+    pub fn scheduled_session_ids_for_task(&self, task_id: &str) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .scheduled_profiles
+            .read()
+            .iter()
+            .filter(|(_, profile)| profile.task_id == task_id)
+            .map(|(session_id, _)| session_id.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    pub fn scheduled_session_exists(&self, id: &str) -> bool {
+        self.scheduled_profile(id).is_some() && self.scheduled_manager.load_session(id).is_ok()
+    }
+
+    /// Persist authoritative engine state for an existing scheduled-run session.
+    ///
+    /// The scheduled mutation lock makes the read/modify/atomic-save operation
+    /// exclusive with scheduled creation, deletion, and retention reconciliation.
+    /// Ordinary chat sessions are deliberately rejected by this specialized entry.
+    /// `SessionUpdated` callers should use `PreservePersisted`; terminal usage can
+    /// then be committed independently with [`Self::persist_scheduled_token_total`].
+    pub fn persist_scheduled_engine_state(
+        &self,
+        id: &str,
+        state: ScheduledEngineState,
+    ) -> Result<SavedSession> {
+        let _mutation = self.scheduled_mutation.lock();
+        if !self.scheduled_profiles.read().contains_key(id) {
+            bail!("Session '{id}' is not a scheduled-run session");
+        }
+        validate_scheduled_session_id(id)?;
+
+        let mut session = self
+            .scheduled_manager
+            .load_session(id)
+            .with_context(|| format!("load scheduled session {id} for engine persistence"))?;
+        let total_tokens = match state.token_accounting {
+            ScheduledTokenAccounting::PreservePersisted => session.metadata.total_tokens,
+            ScheduledTokenAccounting::EngineCumulative {
+                base_total_tokens,
+                engine_total_tokens,
+            } => base_total_tokens.saturating_add(engine_total_tokens),
+        };
+        let mode_label = state.mode.as_label();
+
+        session.metadata.updated_at = Utc::now();
+        session.metadata.message_count = state.messages.len();
+        session.metadata.total_tokens = total_tokens;
+        session.metadata.model = state.model;
+        session.metadata.workspace = state.workspace;
+        session.metadata.mode = Some(mode_label.to_string());
+        session.messages = state.messages;
+        session.system_prompt = persisted_system_prompt(state.system_prompt.as_ref());
+
+        self.scheduled_manager
+            .save_session(&session)
+            .with_context(|| format!("persist scheduled engine state for {id}"))?;
+        if let Err(error) = self.reconcile_scheduled_profiles_locked() {
+            eprintln!(
+                "[sessions] scheduled retention reconciliation failed after committed engine state save: {error:#}"
+            );
+        }
+        Ok(session)
+    }
+
+    /// Persist a terminal engine's absolute lifetime token total without replacing
+    /// the last `SessionUpdated` transcript or any other engine-owned state.
+    ///
+    /// `engine_total_tokens` is cumulative for the current engine instance and
+    /// `base_total_tokens` is the durable total captured when that engine spawned.
+    pub fn persist_scheduled_token_total(
+        &self,
+        id: &str,
+        base_total_tokens: u64,
+        engine_total_tokens: u64,
+    ) -> Result<SavedSession> {
+        let _mutation = self.scheduled_mutation.lock();
+        if !self.scheduled_profiles.read().contains_key(id) {
+            bail!("Session '{id}' is not a scheduled-run session");
+        }
+        validate_scheduled_session_id(id)?;
+
+        let mut session = self
+            .scheduled_manager
+            .load_session(id)
+            .with_context(|| format!("load scheduled session {id} for token persistence"))?;
+        session.metadata.updated_at = Utc::now();
+        session.metadata.total_tokens = base_total_tokens.saturating_add(engine_total_tokens);
+
+        self.scheduled_manager
+            .save_session(&session)
+            .with_context(|| format!("persist scheduled token total for {id}"))?;
+        if let Err(error) = self.reconcile_scheduled_profiles_locked() {
+            eprintln!(
+                "[sessions] scheduled retention reconciliation failed after committed token save: {error:#}"
+            );
+        }
+        Ok(session)
+    }
+
+    pub fn create_scheduled_run(&self, profile: ScheduledRunProfile) -> Result<SavedSession> {
+        if profile.task_id.trim().is_empty() {
+            bail!("Scheduled run task id is required");
+        }
+        if profile.model.trim().is_empty() {
+            bail!("Scheduled run model is required");
+        }
+
+        let _mutation = self.scheduled_mutation.lock();
+        let id = format!("sched-{}", generate_session_id());
+        let mode = profile.mode.as_label();
+        let mut session = create_saved_session_with_id_and_mode(
+            id.clone(),
+            &[],
+            &profile.model,
+            &profile.workspace,
+            0,
+            None,
+            Some(mode),
+        );
+        session.metadata.title = "Scheduled run".to_string();
+        self.scheduled_manager
+            .save_session(&session)
+            .context("save new scheduled session")?;
+
+        self.scheduled_profiles
+            .write()
+            .insert(id.clone(), profile.clone());
+        if let Err(err) = self.save_scheduled_profiles() {
+            self.scheduled_profiles.write().remove(&id);
+            if let Err(rollback_error) = self.scheduled_manager.delete_session(&id) {
+                return Err(anyhow::anyhow!(
+                    "save scheduled session profile: {err:#}; rollback scheduled session {id} also failed: {rollback_error}"
+                ));
+            }
+            return Err(err).context("save scheduled session profile");
+        }
+        if let Err(error) = self.reconcile_scheduled_profiles_locked() {
+            eprintln!(
+                "[sessions] scheduled retention reconciliation failed after committed create: {error:#}"
+            );
+        }
+        Ok(session)
+    }
+
+    pub fn delete_scheduled_run(&self, id: &str, expected_task_id: &str) -> Result<()> {
+        let _mutation = self.scheduled_mutation.lock();
+        let Some(profile) = self.scheduled_profile(id) else {
+            return Ok(());
+        };
+        if profile.task_id != expected_task_id {
+            bail!(
+                "Scheduled session task ownership mismatch: expected {expected_task_id}, found {}",
+                profile.task_id
+            );
+        }
+
+        match self.scheduled_manager.delete_session(id) {
+            Ok(()) => {}
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => return Err(err).with_context(|| format!("delete scheduled session {id}")),
+        }
+        self.remove_scheduled_runtime_dir(id)?;
+
+        self.scheduled_profiles.write().remove(id);
+        self.purge_scheduled_side_maps(&[id.to_string()]);
+        self.save_scheduled_profiles()?;
+        Ok(())
+    }
+
+    pub fn reconcile_scheduled_profiles(&self) -> Result<()> {
+        let _mutation = self.scheduled_mutation.lock();
+        self.reconcile_scheduled_profiles_locked()
+    }
+
+    fn reconcile_scheduled_profiles_locked(&self) -> Result<()> {
+        let stale_ids: Vec<String> = self
+            .scheduled_profiles
+            .read()
+            .keys()
+            .filter(|id| {
+                scheduled_session_file(&self.scheduled_manager, id).is_ok_and(|path| !path.exists())
+            })
+            .cloned()
+            .collect();
+
+        let mut orphan_ids = Vec::new();
+        for entry in
+            std::fs::read_dir(self.scheduled_manager.sessions_dir()).with_context(|| {
+                format!(
+                    "read scheduled sessions {}",
+                    self.scheduled_manager.sessions_dir().display()
+                )
+            })?
+        {
+            let path = entry?.path();
+            if path.extension().is_none_or(|extension| extension != "json") {
+                continue;
+            }
+            let Some(id) = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .map(ToString::to_string)
+            else {
+                continue;
+            };
+            validate_scheduled_session_id(&id)?;
+            if !self.scheduled_profiles.read().contains_key(&id) {
+                orphan_ids.push(id);
+            }
+        }
+
+        let mut removed = Vec::new();
+        for id in stale_ids {
+            self.remove_scheduled_runtime_dir(&id)?;
+            removed.push(id);
+        }
+        let mut purged_ids = removed.clone();
+        for id in orphan_ids {
+            match self.scheduled_manager.delete_session(&id) {
+                Ok(()) => {}
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("delete orphan scheduled session {id}"));
+                }
+            }
+            self.remove_scheduled_runtime_dir(&id)?;
+            purged_ids.push(id);
+        }
+        {
+            let mut profiles = self.scheduled_profiles.write();
+            for id in &removed {
+                profiles.remove(id);
+            }
+        }
+        if !removed.is_empty() {
+            self.save_scheduled_profiles()?;
+        }
+        self.purge_scheduled_side_maps(&purged_ids);
+        Ok(())
+    }
+
+    fn purge_scheduled_side_maps(&self, ids: &[String]) {
+        if ids.is_empty() {
+            return;
+        }
+        let contains = |candidate: &str| ids.iter().any(|id| id == candidate);
+
+        let removed_modes = {
+            let mut modes = self.mode_states.write();
+            let before = modes.len();
+            modes.retain(|id, _| !contains(id.as_str()));
+            modes.len() != before
+        };
+        if removed_modes {
+            self.save_skill_bindings();
+        }
+
+        let removed_models = {
+            let mut models = self.session_models.write();
+            let before = models.len();
+            models.retain(|id, _| !contains(id.as_str()));
+            models.len() != before
+        };
+        if removed_models {
+            self.save_session_models();
+        }
+
+        {
+            let mut active = self.active.write();
+            if active.as_deref().is_some_and(contains) {
+                *active = None;
+            }
+        }
+
+        let removed_pins = {
+            let mut pins = self.pinned_sessions.write();
+            let before = pins.len();
+            pins.retain(|id, _| !contains(id.as_str()));
+            pins.len() != before
+        };
+        if removed_pins {
+            self.save_pinned_sessions();
+        }
+
+        let removed_hidden = {
+            let mut hidden = self.hidden_sessions.write();
+            let before = hidden.len();
+            hidden.retain(|id, _| !contains(id.as_str()));
+            hidden.len() != before
+        };
+        if removed_hidden {
+            self.save_hidden_sessions();
+        }
+    }
+
+    fn purge_all_scheduled_side_maps(&self) {
+        let live_ids = self
+            .scheduled_profiles
+            .read()
+            .keys()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        let is_stale_scheduled_id =
+            |id: &&String| id.starts_with("sched-") && !live_ids.contains(id.as_str());
+        let mut ids = Vec::new();
+        ids.extend(
+            self.mode_states
+                .read()
+                .keys()
+                .filter(is_stale_scheduled_id)
+                .cloned(),
+        );
+        ids.extend(
+            self.session_models
+                .read()
+                .keys()
+                .filter(is_stale_scheduled_id)
+                .cloned(),
+        );
+        ids.extend(
+            self.pinned_sessions
+                .read()
+                .keys()
+                .filter(is_stale_scheduled_id)
+                .cloned(),
+        );
+        ids.extend(
+            self.hidden_sessions
+                .read()
+                .keys()
+                .filter(is_stale_scheduled_id)
+                .cloned(),
+        );
+        ids.sort();
+        ids.dedup();
+        self.purge_scheduled_side_maps(&ids);
+    }
+
+    fn is_scheduled_session(&self, id: &str) -> Result<bool> {
+        if self.scheduled_profiles.read().contains_key(id) {
+            return Ok(true);
+        }
+        if !id.starts_with("sched-") {
+            return Ok(false);
+        }
+        Ok(scheduled_session_file(&self.scheduled_manager, id)?.exists())
+    }
+
+    fn load_scheduled_profiles(&self) -> Result<()> {
+        if !self.scheduled_profiles_path.exists() {
+            return Ok(());
+        }
+        let raw =
+            std::fs::read_to_string(self.scheduled_profiles_path.as_ref()).with_context(|| {
+                format!(
+                    "read scheduled profiles {}",
+                    self.scheduled_profiles_path.display()
+                )
+            })?;
+        let registry: ScheduledProfileRegistry =
+            serde_json::from_str(&raw).context("parse scheduled session profiles")?;
+        if registry.schema_version > SCHEDULED_PROFILE_SCHEMA_VERSION {
+            bail!(
+                "Scheduled profile schema v{} is newer than supported v{}",
+                registry.schema_version,
+                SCHEDULED_PROFILE_SCHEMA_VERSION
+            );
+        }
+        for id in registry.sessions.keys() {
+            validate_scheduled_session_id(id)?;
+            if chat_session_file(&self.manager, id)?.exists() {
+                bail!("Scheduled profile id '{id}' conflicts with an ordinary chat session");
+            }
+        }
+        *self.scheduled_profiles.write() = registry.sessions;
+        Ok(())
+    }
+
+    fn save_scheduled_profiles(&self) -> Result<()> {
+        if let Some(parent) = self.scheduled_profiles_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create scheduled profile dir {}", parent.display()))?;
+        }
+        let registry = ScheduledProfileRegistry {
+            schema_version: SCHEDULED_PROFILE_SCHEMA_VERSION,
+            sessions: self.scheduled_profiles.read().clone(),
+        };
+        let payload =
+            serde_json::to_vec_pretty(&registry).context("serialize scheduled profiles")?;
+        deepseek_tui::utils::write_atomic(self.scheduled_profiles_path.as_ref(), &payload)
+            .with_context(|| {
+                format!(
+                    "write scheduled profiles {}",
+                    self.scheduled_profiles_path.display()
+                )
+            })
+    }
+
+    fn remove_scheduled_runtime_dir(&self, id: &str) -> Result<()> {
+        validate_scheduled_session_id(id)?;
+        if chat_session_file(&self.manager, id)?.exists() {
+            bail!("Refusing to remove runtime data for ordinary chat session '{id}'");
+        }
+        let runtime_dir = paths::sessions_root().join(id);
+        if runtime_dir.exists() {
+            std::fs::remove_dir_all(&runtime_dir).with_context(|| {
+                format!("remove scheduled runtime dir {}", runtime_dir.display())
+            })?;
         }
         Ok(())
     }
@@ -163,7 +798,7 @@ impl SessionStore {
         self.save(&session)?;
         // per-session 模型:新建会话继承全局默认(active)模型 id,落盘记住。
         if let Some(mid) = model_id {
-            self.set_session_model_id(&id, Some(mid));
+            self.set_session_model_id(&id, Some(mid))?;
         }
         Ok(session)
     }
@@ -191,6 +826,9 @@ impl SessionStore {
     /// 每轮 TurnComplete 一起落盘。重启 / 切换 session 后能从 SavedSession.artifacts
     /// 恢复列表(让用户感知产物跟 session 是一对一的)。
     pub fn update_artifacts(&self, id: &str, paths: Vec<String>) -> Result<()> {
+        if self.is_scheduled_session(id)? {
+            bail!("Cannot replace artifacts for scheduled-run session '{id}'");
+        }
         let mut session = self.load(id)?;
         let session_id = session.metadata.id.clone();
         let now = Utc::now();
@@ -218,6 +856,54 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Merge one backend-observed artifact into the durable session record.
+    /// This is used by headless scheduled runs where no WebView is present to
+    /// call `save_session_artifacts` after `chat:tool_end`.
+    pub(crate) fn append_scheduled_artifact_path(&self, id: &str, path: PathBuf) -> Result<()> {
+        let _mutation = self.scheduled_mutation.lock();
+        if !self.scheduled_profiles.read().contains_key(id) {
+            bail!("Session '{id}' is not a scheduled-run session");
+        }
+        validate_scheduled_session_id(id)?;
+        let mut session = self
+            .scheduled_manager
+            .load_session(id)
+            .with_context(|| format!("load scheduled session {id} for artifact append"))?;
+        if session
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.storage_path == path)
+        {
+            return Ok(());
+        }
+        let now = Utc::now();
+        let index = session.artifacts.len();
+        let byte_size = std::fs::metadata(&path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        session.artifacts.push(ArtifactRecord {
+            id: format!("p3art_{id}_{index}"),
+            kind: ArtifactKind::ToolOutput,
+            session_id: id.to_string(),
+            tool_call_id: format!("p3_{index}"),
+            tool_name: "write_file".to_string(),
+            created_at: now,
+            byte_size,
+            preview: String::new(),
+            storage_path: path,
+        });
+        session.metadata.updated_at = now;
+        self.scheduled_manager
+            .save_session(&session)
+            .with_context(|| format!("persist scheduled artifact for {id}"))?;
+        if let Err(error) = self.reconcile_scheduled_profiles_locked() {
+            eprintln!(
+                "[sessions] scheduled retention reconciliation failed after committed artifact append: {error:#}"
+            );
+        }
+        Ok(())
+    }
+
     pub fn active_id(&self) -> Option<String> {
         self.active.read().clone()
     }
@@ -235,10 +921,11 @@ impl SessionStore {
 
     /// 设置 mode。砍 PlanPhase 后是 Plan/Yolo 唯一 setter(流转命令都调它),
     /// 只改 mode,保留 pinvou_review_enabled 等其他字段。
-    pub fn set_mode(&self, id: &str, mode: SerializableMode) {
+    pub fn set_mode(&self, id: &str, mode: SerializableMode) -> Result<()> {
         let mut m = self.mode_states.write();
         let entry = m.entry(id.to_string()).or_default();
         entry.mode = mode;
+        Ok(())
     }
 
     /// 设置品悟 review 开关（用户在 UI 顶部 toggle 切换）。
@@ -284,21 +971,37 @@ impl SessionStore {
     /// 不删 session 本身,只清掉绑定 — chips strip 在前端会因此隐藏。
     // ── Side B 卡片池(persona,远端体系) ──
     pub fn set_active_persona(&self, id: &str, persona_id: Option<String>) {
-        self.mode_states.write().entry(id.to_string()).or_default().active_persona = persona_id;
+        self.mode_states
+            .write()
+            .entry(id.to_string())
+            .or_default()
+            .active_persona = persona_id;
     }
     pub fn active_persona_id(&self, id: &str) -> Option<String> {
         self.mode_states.read().get(id)?.active_persona.clone()
     }
     pub fn set_pending_persona_body(&self, id: &str, body: Option<String>) {
-        self.mode_states.write().entry(id.to_string()).or_default().pending_persona_body = body;
+        self.mode_states
+            .write()
+            .entry(id.to_string())
+            .or_default()
+            .pending_persona_body = body;
     }
     pub fn take_pending_persona_body(&self, id: &str) -> Option<String> {
-        self.mode_states.write().get_mut(id)?.pending_persona_body.take()
+        self.mode_states
+            .write()
+            .get_mut(id)?
+            .pending_persona_body
+            .take()
     }
 
     // ── 知识库挂载(会话级粘连,仿 persona,仅驻内存) ──
     pub fn set_mounted_collection(&self, id: &str, collection_id: Option<i64>) {
-        self.mode_states.write().entry(id.to_string()).or_default().mounted_collection = collection_id;
+        self.mode_states
+            .write()
+            .entry(id.to_string())
+            .or_default()
+            .mounted_collection = collection_id;
     }
     pub fn mounted_collection(&self, id: &str) -> Option<i64> {
         self.mode_states.read().get(id)?.mounted_collection
@@ -313,7 +1016,8 @@ impl SessionStore {
 
     /// 查找已有绑定指定 skill 的 session ID（用于恢复工作流）。
     pub fn find_session_with_skill(&self, skill_name: &str) -> Option<String> {
-        self.mode_states.read()
+        self.mode_states
+            .read()
             .iter()
             .find(|(_, state)| {
                 state.active_skill.as_ref().map(|s| s.name.as_str()) == Some(skill_name)
@@ -325,10 +1029,9 @@ impl SessionStore {
     pub fn save_skill_bindings(&self) {
         let bindings_file = super::paths::sessions_root().join("_skill_bindings.json");
         let m = self.mode_states.read();
-        let bindings: std::collections::HashMap<String, &super::mode_state::ActiveSkillBinding> = m.iter()
-            .filter_map(|(id, state)| {
-                state.active_skill.as_ref().map(|s| (id.clone(), s))
-            })
+        let bindings: std::collections::HashMap<String, &super::mode_state::ActiveSkillBinding> = m
+            .iter()
+            .filter_map(|(id, state)| state.active_skill.as_ref().map(|s| (id.clone(), s)))
             .collect();
         if bindings.is_empty() {
             let _ = std::fs::remove_file(&bindings_file);
@@ -342,7 +1045,9 @@ impl SessionStore {
     /// 从磁盘恢复 skill bindings（启动时调用）。
     pub fn load_skill_bindings(&self) {
         let bindings_file = super::paths::sessions_root().join("_skill_bindings.json");
-        if !bindings_file.exists() { return; }
+        if !bindings_file.exists() {
+            return;
+        }
         let content = match std::fs::read_to_string(&bindings_file) {
             Ok(c) => c,
             Err(_) => return,
@@ -364,13 +1069,22 @@ impl SessionStore {
 
     // ===================== per-session 模型绑定 =====================
 
-    /// 取该 session 显式选定的模型 id(没选过返回 None,调用方回退全局 active)。
+    /// 取该 session 在输入栏应显示的模型 id。普通会话无绑定时返回 None；
+    /// 定时会话首次打开时回退创建任务时的模型，用户手动切换后返回交互覆盖值。
     pub fn session_model_id(&self, id: &str) -> Option<String> {
+        self.session_model_override(id).or_else(|| {
+            self.scheduled_profile(id)
+                .and_then(|profile| profile.model_id)
+        })
+    }
+
+    /// 只读取用户在对话输入栏里选择的模型，不包含定时运行创建时的模型回退。
+    pub fn session_model_override(&self, id: &str) -> Option<String> {
         self.session_models.read().get(id).cloned()
     }
 
     /// 设/清该 session 的模型 id 并落盘。`None` = 清除(回退全局默认)。
-    pub fn set_session_model_id(&self, id: &str, model_id: Option<String>) {
+    pub fn set_session_model_id(&self, id: &str, model_id: Option<String>) -> Result<()> {
         {
             let mut m = self.session_models.write();
             match model_id {
@@ -383,6 +1097,7 @@ impl SessionStore {
             }
         }
         self.save_session_models();
+        Ok(())
     }
 
     /// 持久化 per-session 模型绑定到 `~/.pinvou3/sessions/_session_models.json`。
@@ -482,7 +1197,9 @@ impl SessionStore {
                             pins.insert(id, Utc::now().to_rfc3339());
                         }
                         serde_json::Value::Object(mut obj) => {
-                            let id = obj.remove("id").and_then(|v| v.as_str().map(str::to_string));
+                            let id = obj
+                                .remove("id")
+                                .and_then(|v| v.as_str().map(str::to_string));
                             let pinned_at = obj
                                 .remove("pinned_at")
                                 .and_then(|v| v.as_str().map(str::to_string))
@@ -570,7 +1287,9 @@ impl SessionStore {
                             hidden_sessions.insert(id, Utc::now().to_rfc3339());
                         }
                         serde_json::Value::Object(mut obj) => {
-                            let id = obj.remove("id").and_then(|v| v.as_str().map(str::to_string));
+                            let id = obj
+                                .remove("id")
+                                .and_then(|v| v.as_str().map(str::to_string));
                             let hidden_at = obj
                                 .remove("hidden_at")
                                 .and_then(|v| v.as_str().map(str::to_string))
@@ -588,11 +1307,53 @@ impl SessionStore {
             Err(e) => eprintln!("[sessions] load_hidden_sessions failed: {e}"),
         }
     }
-
 }
 
 /// 生成 URL-safe session id（短 8 字节 timestamp + nanos hash）。
 /// 上游 `validated_session_path` 只允许 `[A-Za-z0-9_-]`，所以走 base32-like 字符集。
+fn validate_session_id(id: &str) -> Result<()> {
+    if id.trim().is_empty()
+        || !id.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        })
+    {
+        bail!("Invalid session id '{id}'");
+    }
+    Ok(())
+}
+
+fn validate_scheduled_session_id(id: &str) -> Result<()> {
+    validate_session_id(id)?;
+    if !id.starts_with("sched-") {
+        bail!("Scheduled session id must start with 'sched-': {id}");
+    }
+    Ok(())
+}
+
+fn persisted_system_prompt(system_prompt: Option<&SystemPrompt>) -> Option<String> {
+    match system_prompt {
+        Some(SystemPrompt::Text(text)) => Some(text.clone()),
+        Some(SystemPrompt::Blocks(blocks)) => Some(
+            blocks
+                .iter()
+                .map(|block| block.text.clone())
+                .collect::<Vec<_>>()
+                .join("\n\n---\n\n"),
+        ),
+        None => None,
+    }
+}
+
+fn chat_session_file(manager: &SessionManager, id: &str) -> Result<PathBuf> {
+    validate_session_id(id)?;
+    Ok(manager.sessions_dir().join(format!("{id}.json")))
+}
+
+fn scheduled_session_file(manager: &SessionManager, id: &str) -> Result<PathBuf> {
+    validate_scheduled_session_id(id)?;
+    Ok(manager.sessions_dir().join(format!("{id}.json")))
+}
+
 fn generate_session_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
@@ -629,7 +1390,7 @@ fn looks_like_truncating_overwrite(existing: &[Message], incoming: &[Message]) -
 mod tests {
     use super::*;
     use crate::bridge::paths::tests::ENV_LOCK;
-    use deepseek_tui::models::ContentBlock;
+    use deepseek_tui::models::{ContentBlock, SystemPrompt};
 
     /// 借用 paths 模块的进程级 env 锁——避免与其他 mutate PINVOU3_HOME
     /// 的测试并行 race。返回带 guard 的 store；guard drop 后才解锁。
@@ -668,6 +1429,17 @@ mod tests {
         }
     }
 
+    /// Reopen the same on-disk stores without consulting the process-global
+    /// PINVOU3_HOME again. Other legacy tests still mutate that environment
+    /// variable, so restart assertions must retain the paths captured at boot.
+    fn reopen_store(store: &SessionStore) -> Result<SessionStore> {
+        SessionStore::from_paths(
+            store.manager.sessions_dir().to_path_buf(),
+            store.scheduled_manager.sessions_dir().to_path_buf(),
+            store.scheduled_profiles_path.as_ref().clone(),
+        )
+    }
+
     #[test]
     fn create_new_persists_and_lists() {
         let (store, _g) = isolated_store();
@@ -676,6 +1448,859 @@ mod tests {
             .expect("create");
         let list = store.list().expect("list");
         assert!(list.iter().any(|m| m.id == s.metadata.id));
+    }
+
+    fn scheduled_profile(task_id: &str) -> ScheduledRunProfile {
+        ScheduledRunProfile {
+            task_id: task_id.to_string(),
+            model: "/scheduled-model".to_string(),
+            model_id: Some("scheduled-model-id".to_string()),
+            workspace: std::env::temp_dir().join("scheduled-workspace"),
+            mode: ScheduledRunMode::Plan,
+            allow_shell: true,
+            trust_mode: false,
+            auto_approve: false,
+        }
+    }
+
+    fn text_message(role: &str, text: &str) -> Message {
+        Message {
+            role: role.to_string(),
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    fn scheduled_engine_state(
+        messages: Vec<Message>,
+        mode: ScheduledRunMode,
+        token_accounting: ScheduledTokenAccounting,
+    ) -> ScheduledEngineState {
+        ScheduledEngineState {
+            messages,
+            system_prompt: Some(SystemPrompt::Text("scheduled system prompt".to_string())),
+            model: "/engine-model".to_string(),
+            workspace: std::env::temp_dir().join("scheduled-engine-workspace"),
+            mode,
+            token_accounting,
+        }
+    }
+
+    #[test]
+    fn scheduled_session_is_isolated_but_directly_loadable() {
+        let (store, _g) = isolated_store();
+        let chat = store
+            .create_new("/chat-model".into(), None, std::env::temp_dir())
+            .expect("create chat");
+        let scheduled = store
+            .create_scheduled_run(scheduled_profile("task-isolated"))
+            .expect("create scheduled run");
+
+        let listed = store.list().expect("list chats");
+        assert!(listed.iter().any(|item| item.id == chat.metadata.id));
+        assert!(!listed.iter().any(|item| item.id == scheduled.metadata.id));
+        assert!(paths::scheduled_run_sessions_root()
+            .join(format!("{}.json", scheduled.metadata.id))
+            .exists());
+        assert!(!paths::sessions_root()
+            .join(format!("{}.json", scheduled.metadata.id))
+            .exists());
+        assert_eq!(
+            store
+                .load(&scheduled.metadata.id)
+                .expect("direct load")
+                .metadata
+                .id,
+            scheduled.metadata.id
+        );
+    }
+
+    #[test]
+    fn scheduled_profile_survives_restart_and_routes_message_updates() {
+        let (store, _g) = isolated_store();
+        let scheduled = store
+            .create_scheduled_run(scheduled_profile("task-restart"))
+            .expect("create scheduled run");
+        let id = scheduled.metadata.id.clone();
+
+        let reloaded = reopen_store(&store).expect("reboot");
+        assert_eq!(
+            reloaded
+                .scheduled_profile(&id)
+                .expect("profile after restart")
+                .task_id,
+            "task-restart"
+        );
+        reloaded
+            .update_messages(&id, Vec::new())
+            .expect("route scheduled update");
+        assert!(reloaded
+            .scheduled_manager
+            .sessions_dir()
+            .join(format!("{id}.json"))
+            .exists());
+        assert!(!reloaded
+            .manager
+            .sessions_dir()
+            .join(format!("{id}.json"))
+            .exists());
+    }
+
+    #[test]
+    fn scheduled_conversation_accepts_interactive_mode_and_model_overrides() {
+        let (store, _g) = isolated_store();
+        let profile = scheduled_profile("task-interactive-profile");
+        let scheduled = store
+            .create_scheduled_run(profile.clone())
+            .expect("create scheduled run");
+        let id = scheduled.metadata.id;
+
+        store
+            .set_mode(&id, SerializableMode::Plan)
+            .expect("scheduled conversation mode override");
+        store
+            .set_session_model_id(&id, Some("override-model".to_string()))
+            .expect("scheduled conversation model override");
+        assert_eq!(store.scheduled_profile(&id), Some(profile.clone()));
+        assert_eq!(store.mode_state(&id).mode, SerializableMode::Plan);
+        assert_eq!(
+            store.session_model_id(&id).as_deref(),
+            Some("override-model")
+        );
+        assert_eq!(
+            store.session_model_override(&id).as_deref(),
+            Some("override-model")
+        );
+    }
+
+    #[test]
+    fn scheduled_conversation_model_override_precedes_profile_fallback() {
+        let (store, _g) = isolated_store();
+        let mut profile = scheduled_profile("task-model-authority");
+        profile.model_id = None;
+        let scheduled = store
+            .create_scheduled_run(profile)
+            .expect("create scheduled run");
+        let id = scheduled.metadata.id;
+        store
+            .session_models
+            .write()
+            .insert(id.clone(), "legacy-model-id".to_string());
+
+        assert_eq!(
+            store.session_model_id(&id).as_deref(),
+            Some("legacy-model-id"),
+            "an explicit interactive model choice must win after opening the run as a chat"
+        );
+    }
+
+    #[test]
+    fn scheduled_mode_override_preserves_live_auxiliary_session_state() {
+        let (store, _g) = isolated_store();
+        let scheduled = store
+            .create_scheduled_run(scheduled_profile("task-live-aux-state"))
+            .expect("create scheduled run");
+        let id = scheduled.metadata.id;
+        store.set_active_persona(&id, Some("scheduled-persona".to_string()));
+        store.bind_skill(
+            &id,
+            ActiveSkillBinding {
+                name: "scheduled-skill".to_string(),
+                pending_instruction: None,
+                phases: Vec::new(),
+                project_dir: None,
+            },
+        );
+        store.set_mounted_collection(&id, Some(42));
+        store
+            .mode_states
+            .write()
+            .entry(id.clone())
+            .or_default()
+            .mode = SerializableMode::Plan;
+
+        let state = store.mode_state(&id);
+        assert_eq!(state.mode, SerializableMode::Plan);
+        assert_eq!(state.active_persona.as_deref(), Some("scheduled-persona"));
+        assert_eq!(
+            state.active_skill.as_ref().map(|skill| skill.name.as_str()),
+            Some("scheduled-skill")
+        );
+        assert_eq!(state.mounted_collection, Some(42));
+    }
+
+    #[test]
+    fn scheduled_engine_state_persists_full_snapshot_and_preserves_identity_and_profile() {
+        let (store, _g) = isolated_store();
+        let profile = scheduled_profile("task-engine-state");
+        let scheduled = store
+            .create_scheduled_run(profile.clone())
+            .expect("create scheduled run");
+        let id = scheduled.metadata.id.clone();
+        store
+            .set_title(&id, "Kept scheduled title".to_string())
+            .expect("set scheduled title");
+        let before = store.load(&id).expect("load before engine state");
+        let messages = vec![
+            text_message("user", "run the scheduled task"),
+            text_message("assistant", "scheduled result"),
+        ];
+
+        let persisted = store
+            .persist_scheduled_engine_state(
+                &id,
+                scheduled_engine_state(
+                    messages.clone(),
+                    ScheduledRunMode::Yolo,
+                    ScheduledTokenAccounting::EngineCumulative {
+                        base_total_tokens: 40,
+                        engine_total_tokens: 12,
+                    },
+                ),
+            )
+            .expect("persist scheduled engine state");
+
+        assert_eq!(persisted.metadata.id, before.metadata.id);
+        assert_eq!(persisted.metadata.title, before.metadata.title);
+        assert_eq!(persisted.metadata.created_at, before.metadata.created_at);
+        assert_eq!(persisted.metadata.message_count, messages.len());
+        assert_eq!(persisted.metadata.total_tokens, 52);
+        assert_eq!(persisted.metadata.model, "/engine-model");
+        assert_eq!(
+            persisted.metadata.workspace,
+            std::env::temp_dir().join("scheduled-engine-workspace")
+        );
+        assert_eq!(persisted.metadata.mode.as_deref(), Some("yolo"));
+        assert_eq!(persisted.messages, messages);
+        assert_eq!(
+            persisted.system_prompt.as_deref(),
+            Some("scheduled system prompt")
+        );
+        assert_eq!(store.scheduled_profile(&id), Some(profile.clone()));
+
+        let reloaded = reopen_store(&store).expect("reboot");
+        assert_eq!(reloaded.scheduled_profile(&id), Some(profile));
+        let from_disk = reloaded.load(&id).expect("load persisted engine state");
+        assert_eq!(from_disk.metadata.total_tokens, 52);
+        assert_eq!(from_disk.messages, persisted.messages);
+        assert_eq!(from_disk.system_prompt, persisted.system_prompt);
+    }
+
+    #[test]
+    fn scheduled_engine_token_accounting_preserves_updates_and_accumulates_across_restarts() {
+        let (store, _g) = isolated_store();
+        let scheduled = store
+            .create_scheduled_run(scheduled_profile("task-token-accounting"))
+            .expect("create scheduled run");
+        let id = scheduled.metadata.id.clone();
+
+        store
+            .persist_scheduled_engine_state(
+                &id,
+                scheduled_engine_state(
+                    vec![text_message("user", "first turn")],
+                    ScheduledRunMode::Plan,
+                    ScheduledTokenAccounting::EngineCumulative {
+                        base_total_tokens: 0,
+                        engine_total_tokens: 100,
+                    },
+                ),
+            )
+            .expect("persist first engine snapshot");
+        store
+            .persist_scheduled_engine_state(
+                &id,
+                scheduled_engine_state(
+                    vec![
+                        text_message("user", "first turn"),
+                        text_message("assistant", "incremental update"),
+                    ],
+                    ScheduledRunMode::Plan,
+                    ScheduledTokenAccounting::PreservePersisted,
+                ),
+            )
+            .expect("persist SessionUpdated-equivalent state");
+        assert_eq!(
+            store
+                .load(&id)
+                .expect("load after update")
+                .metadata
+                .total_tokens,
+            100
+        );
+
+        let reloaded = reopen_store(&store).expect("restart before later turn");
+        reloaded
+            .persist_scheduled_engine_state(
+                &id,
+                scheduled_engine_state(
+                    vec![text_message("assistant", "later turn")],
+                    ScheduledRunMode::Yolo,
+                    ScheduledTokenAccounting::EngineCumulative {
+                        base_total_tokens: 100,
+                        engine_total_tokens: 25,
+                    },
+                ),
+            )
+            .expect("persist later engine snapshot");
+        reloaded
+            .persist_scheduled_engine_state(
+                &id,
+                scheduled_engine_state(
+                    vec![text_message("assistant", "same engine next turn")],
+                    ScheduledRunMode::Yolo,
+                    ScheduledTokenAccounting::EngineCumulative {
+                        base_total_tokens: 100,
+                        engine_total_tokens: 40,
+                    },
+                ),
+            )
+            .expect("persist cumulative same-engine snapshot");
+
+        assert_eq!(
+            reloaded
+                .load(&id)
+                .expect("load accumulated total")
+                .metadata
+                .total_tokens,
+            140,
+            "same-engine cumulative usage must not be added twice"
+        );
+    }
+
+    #[test]
+    fn scheduled_engine_state_entry_rejects_normal_chat_without_mutation() {
+        let (store, _g) = isolated_store();
+        let chat = store
+            .create_new(
+                "/chat-model".to_string(),
+                None,
+                std::env::temp_dir().join("chat-workspace"),
+            )
+            .expect("create chat");
+
+        let error = store
+            .persist_scheduled_engine_state(
+                &chat.metadata.id,
+                scheduled_engine_state(
+                    vec![text_message("user", "must not persist")],
+                    ScheduledRunMode::Plan,
+                    ScheduledTokenAccounting::EngineCumulative {
+                        base_total_tokens: 0,
+                        engine_total_tokens: 99,
+                    },
+                ),
+            )
+            .expect_err("normal chat must not use scheduled persistence");
+
+        assert!(error.to_string().contains("not a scheduled-run session"));
+        let token_error = store
+            .persist_scheduled_token_total(&chat.metadata.id, 0, 99)
+            .expect_err("normal chat must not use scheduled token persistence");
+        assert!(token_error
+            .to_string()
+            .contains("not a scheduled-run session"));
+        let unchanged = store.load(&chat.metadata.id).expect("load unchanged chat");
+        assert_eq!(unchanged.metadata.title, chat.metadata.title);
+        assert_eq!(unchanged.metadata.model, chat.metadata.model);
+        assert_eq!(unchanged.metadata.workspace, chat.metadata.workspace);
+        assert_eq!(unchanged.metadata.total_tokens, 0);
+        assert!(unchanged.messages.is_empty());
+        assert!(unchanged.system_prompt.is_none());
+    }
+
+    #[test]
+    fn public_artifact_replace_rejects_scheduled_without_mutation() {
+        let (store, _g) = isolated_store();
+        let scheduled = store
+            .create_scheduled_run(scheduled_profile("task-artifact-owner"))
+            .expect("create scheduled run");
+        let id = scheduled.metadata.id;
+        let original = std::env::temp_dir().join("scheduled-original-artifact.md");
+        store
+            .append_scheduled_artifact_path(&id, original.clone())
+            .expect("backend artifact append");
+        let before = store.load(&id).expect("load before replacement");
+
+        let error = store
+            .update_artifacts(
+                &id,
+                vec![std::env::temp_dir()
+                    .join("ui-replacement.md")
+                    .to_string_lossy()
+                    .into_owned()],
+            )
+            .expect_err("public replacement must reject scheduled sessions");
+
+        assert!(error.to_string().contains("scheduled-run"));
+        let after = store.load(&id).expect("load after rejection");
+        assert_eq!(after.artifacts.len(), before.artifacts.len());
+        assert_eq!(
+            after
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.storage_path.clone())
+                .collect::<Vec<_>>(),
+            before
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.storage_path.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(after.metadata.updated_at, before.metadata.updated_at);
+        assert_eq!(before.artifacts[0].storage_path, original);
+    }
+
+    #[test]
+    fn ordinary_artifact_replace_behavior_is_unchanged() {
+        let (store, _g) = isolated_store();
+        let chat = store
+            .create_new("/chat-model".into(), None, std::env::temp_dir())
+            .expect("create chat");
+        let artifact = std::env::temp_dir().join("ordinary-artifact.md");
+
+        store
+            .update_artifacts(
+                &chat.metadata.id,
+                vec![artifact.to_string_lossy().into_owned()],
+            )
+            .expect("ordinary replacement remains supported");
+
+        assert_eq!(
+            store.load(&chat.metadata.id).expect("load chat").artifacts[0].storage_path,
+            artifact
+        );
+    }
+
+    #[test]
+    fn scheduled_agent_mode_round_trips_without_collapsing_profile_or_metadata() {
+        let (store, _g) = isolated_store();
+        let mut profile = scheduled_profile("task-agent-mode");
+        profile.mode = ScheduledRunMode::Agent;
+        let scheduled = store
+            .create_scheduled_run(profile.clone())
+            .expect("create agent scheduled run");
+        let id = scheduled.metadata.id.clone();
+
+        assert_eq!(scheduled.metadata.mode.as_deref(), Some("agent"));
+        assert_eq!(
+            profile.mode.to_app_mode(),
+            deepseek_tui::tui::app::AppMode::Agent
+        );
+        let persisted = store
+            .persist_scheduled_engine_state(
+                &id,
+                ScheduledEngineState {
+                    messages: vec![text_message("assistant", "agent result")],
+                    system_prompt: Some(SystemPrompt::Text("agent prompt".to_string())),
+                    model: "/agent-model".to_string(),
+                    workspace: std::env::temp_dir().join("agent-workspace"),
+                    mode: ScheduledRunMode::Agent,
+                    token_accounting: ScheduledTokenAccounting::PreservePersisted,
+                },
+            )
+            .expect("persist agent engine state");
+
+        assert_eq!(persisted.metadata.mode.as_deref(), Some("agent"));
+        assert_eq!(
+            store.scheduled_profile(&id).expect("agent profile").mode,
+            ScheduledRunMode::Agent
+        );
+        assert_eq!(store.mode_state(&id).mode, SerializableMode::Yolo);
+
+        let reloaded = reopen_store(&store).expect("restart after agent persistence");
+        assert_eq!(
+            reloaded
+                .scheduled_profile(&id)
+                .expect("agent profile after restart")
+                .mode,
+            ScheduledRunMode::Agent
+        );
+        assert_eq!(reloaded.mode_state(&id).mode, SerializableMode::Yolo);
+        assert_eq!(
+            reloaded
+                .load(&id)
+                .expect("agent session after restart")
+                .metadata
+                .mode
+                .as_deref(),
+            Some("agent")
+        );
+    }
+
+    #[test]
+    fn scheduled_terminal_token_persistence_does_not_replace_engine_state() {
+        let (store, _g) = isolated_store();
+        let profile = scheduled_profile("task-terminal-token");
+        let scheduled = store
+            .create_scheduled_run(profile.clone())
+            .expect("create scheduled run");
+        let id = scheduled.metadata.id.clone();
+        store
+            .persist_scheduled_engine_state(
+                &id,
+                scheduled_engine_state(
+                    vec![
+                        text_message("user", "retain this request"),
+                        text_message("assistant", "retain this response"),
+                    ],
+                    ScheduledRunMode::Plan,
+                    ScheduledTokenAccounting::PreservePersisted,
+                ),
+            )
+            .expect("persist cached SessionUpdated state");
+        let before = store.load(&id).expect("load before terminal usage");
+
+        let after = store
+            .persist_scheduled_token_total(&id, 40, 9)
+            .expect("persist terminal token total");
+
+        assert_eq!(after.metadata.total_tokens, 49);
+        assert_eq!(after.metadata.id, before.metadata.id);
+        assert_eq!(after.metadata.title, before.metadata.title);
+        assert_eq!(after.metadata.created_at, before.metadata.created_at);
+        assert_eq!(after.metadata.message_count, before.metadata.message_count);
+        assert_eq!(after.metadata.model, before.metadata.model);
+        assert_eq!(after.metadata.workspace, before.metadata.workspace);
+        assert_eq!(after.metadata.mode, before.metadata.mode);
+        assert_eq!(after.messages, before.messages);
+        assert_eq!(after.system_prompt, before.system_prompt);
+        assert_eq!(after.artifacts, before.artifacts);
+        assert_eq!(store.scheduled_profile(&id), Some(profile));
+
+        let reloaded = reopen_store(&store).expect("restart after terminal usage");
+        let from_disk = reloaded
+            .load(&id)
+            .expect("load terminal usage after restart");
+        assert_eq!(from_disk.metadata.total_tokens, 49);
+        assert_eq!(from_disk.messages, before.messages);
+        assert_eq!(from_disk.system_prompt, before.system_prompt);
+
+        let later = reloaded
+            .persist_scheduled_token_total(&id, 49, 11)
+            .expect("persist later engine token total");
+        assert_eq!(later.metadata.total_tokens, 60);
+        assert_eq!(later.messages, before.messages);
+        assert_eq!(later.system_prompt, before.system_prompt);
+    }
+
+    #[test]
+    fn checked_scheduled_delete_removes_profile_json_and_runtime_directory() {
+        let (store, _g) = isolated_store();
+        let scheduled = store
+            .create_scheduled_run(scheduled_profile("task-delete"))
+            .expect("create scheduled run");
+        let id = scheduled.metadata.id.clone();
+        let runtime_dir = paths::sessions_root().join(&id);
+        std::fs::create_dir_all(runtime_dir.join("artifacts")).expect("runtime dir");
+        store.set_active(Some(id.clone()));
+        store
+            .set_session_model_id(&id, Some("override-model".to_string()))
+            .expect("scheduled conversation model override");
+        store.set_hidden(&id, true);
+        store.set_pinned(&id, true);
+
+        let err = store
+            .delete(&id)
+            .expect_err("ordinary chat deletion must reject scheduled runs");
+        assert!(err.to_string().contains("through their automation"));
+
+        let err = store
+            .delete_scheduled_run(&id, "another-task")
+            .expect_err("wrong owner must fail");
+        assert!(err.to_string().contains("task ownership"));
+        assert!(runtime_dir.exists());
+
+        store
+            .delete_scheduled_run(&id, "task-delete")
+            .expect("delete scheduled run");
+        assert!(store.scheduled_profile(&id).is_none());
+        assert!(store.active_id().is_none());
+        assert!(store.session_model_id(&id).is_none());
+        assert!(!store.is_hidden(&id));
+        assert!(!store.is_pinned(&id));
+        assert!(!runtime_dir.exists());
+        assert!(!paths::scheduled_run_sessions_root()
+            .join(format!("{id}.json"))
+            .exists());
+    }
+
+    #[test]
+    fn scheduled_creation_rolls_back_when_profile_write_fails() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-scheduled-rollback-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
+        let profile_path = root.join("profiles.json");
+        let store = SessionStore::from_paths(
+            root.join("chat"),
+            root.join("scheduled"),
+            profile_path.clone(),
+        )
+        .expect("store");
+        std::fs::create_dir_all(&profile_path).expect("make profile path a directory");
+
+        let err = store
+            .create_scheduled_run(scheduled_profile("task-rollback"))
+            .expect_err("profile write must fail");
+
+        assert!(err.to_string().contains("save scheduled session profile"));
+        assert!(
+            store
+                .scheduled_manager
+                .list_sessions()
+                .expect("scheduled list")
+                .is_empty(),
+            "the SavedSession must be removed when profile persistence fails"
+        );
+        assert!(store.scheduled_profiles.read().is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scheduled_retention_does_not_evict_chat_and_reconciles_profiles() {
+        let (store, _g) = isolated_store();
+        let chat = store
+            .create_new("/chat-model".into(), None, std::env::temp_dir())
+            .expect("create chat");
+        let mut scheduled_ids = Vec::new();
+
+        for index in 0..51 {
+            let scheduled = store
+                .create_scheduled_run(scheduled_profile(&format!("task-{index}")))
+                .expect("create scheduled run");
+            std::fs::create_dir_all(paths::sessions_root().join(&scheduled.metadata.id))
+                .expect("runtime dir");
+            store
+                .mode_states
+                .write()
+                .insert(scheduled.metadata.id.clone(), SessionModeState::default());
+            store
+                .session_models
+                .write()
+                .insert(scheduled.metadata.id.clone(), "stale-model".to_string());
+            store
+                .pinned_sessions
+                .write()
+                .insert(scheduled.metadata.id.clone(), "stale-pin".to_string());
+            store
+                .hidden_sessions
+                .write()
+                .insert(scheduled.metadata.id.clone(), "stale-hidden".to_string());
+            scheduled_ids.push(scheduled.metadata.id);
+        }
+
+        assert_eq!(
+            store
+                .scheduled_manager
+                .list_sessions()
+                .expect("scheduled list")
+                .len(),
+            50
+        );
+        assert_eq!(store.scheduled_profiles.read().len(), 50);
+        assert_eq!(
+            store
+                .load(&chat.metadata.id)
+                .expect("chat retained")
+                .metadata
+                .id,
+            chat.metadata.id
+        );
+
+        let evicted: Vec<_> = scheduled_ids
+            .iter()
+            .filter(|id| store.scheduled_profile(id).is_none())
+            .collect();
+        assert_eq!(evicted.len(), 1);
+        assert!(
+            !store.mode_states.read().contains_key(evicted[0]),
+            "retention must prune stale scheduled mode state"
+        );
+        assert!(
+            !store.session_models.read().contains_key(evicted[0]),
+            "retention must prune stale scheduled model state"
+        );
+        assert!(!store.pinned_sessions.read().contains_key(evicted[0]));
+        assert!(!store.hidden_sessions.read().contains_key(evicted[0]));
+        assert!(!paths::sessions_root().join(evicted[0]).exists());
+    }
+
+    #[test]
+    fn boot_prunes_only_stale_scheduled_runtime_sidecars() {
+        let (store, _g) = isolated_store();
+        let live = store
+            .create_scheduled_run(scheduled_profile("task-live-sidecars"))
+            .expect("create live scheduled run")
+            .metadata
+            .id;
+        let stale = store
+            .create_scheduled_run(scheduled_profile("task-stale-sidecars"))
+            .expect("create stale scheduled run")
+            .metadata
+            .id;
+        for (id, suffix) in [(&live, "live"), (&stale, "stale")] {
+            store.bind_skill(
+                id,
+                ActiveSkillBinding {
+                    name: format!("{suffix}-scheduled-skill"),
+                    pending_instruction: None,
+                    phases: Vec::new(),
+                    project_dir: None,
+                },
+            );
+            store
+                .session_models
+                .write()
+                .insert(id.clone(), format!("{suffix}-model"));
+            store
+                .pinned_sessions
+                .write()
+                .insert(id.clone(), format!("{suffix}-pin"));
+            store
+                .hidden_sessions
+                .write()
+                .insert(id.clone(), format!("{suffix}-hidden"));
+        }
+        store.save_skill_bindings();
+        store.save_session_models();
+        store.save_pinned_sessions();
+        store.save_hidden_sessions();
+        std::fs::remove_file(
+            store
+                .scheduled_manager
+                .sessions_dir()
+                .join(format!("{stale}.json")),
+        )
+        .expect("simulate stale profile after session loss");
+        drop(store);
+
+        let reloaded = SessionStore::boot().expect("reboot and prune sidecars");
+
+        assert!(reloaded.mode_states.read().contains_key(&live));
+        assert!(reloaded.session_models.read().contains_key(&live));
+        assert!(reloaded.pinned_sessions.read().contains_key(&live));
+        assert!(reloaded.hidden_sessions.read().contains_key(&live));
+        assert!(!reloaded.mode_states.read().contains_key(&stale));
+        assert!(!reloaded.session_models.read().contains_key(&stale));
+        assert!(!reloaded.pinned_sessions.read().contains_key(&stale));
+        assert!(!reloaded.hidden_sessions.read().contains_key(&stale));
+        for sidecar in [
+            "_skill_bindings.json",
+            "_session_models.json",
+            "_pinned_sessions.json",
+            "_hidden_sessions.json",
+        ] {
+            let path = paths::sessions_root().join(sidecar);
+            if let Ok(contents) = std::fs::read_to_string(path) {
+                assert!(contents.contains(&live));
+                assert!(!contents.contains(&stale));
+            }
+        }
+    }
+
+    #[test]
+    fn boot_rejects_profile_that_conflicts_with_an_ordinary_chat() {
+        let (store, _g) = isolated_store();
+        let id = "sched-chat-conflict";
+        let mut chat = create_saved_session_with_id_and_mode(
+            id.to_string(),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        chat.metadata.title = "ordinary chat".to_string();
+        store.manager.save_session(&chat).expect("save chat");
+        let runtime_dir = paths::sessions_root().join(id);
+        std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
+
+        let mut sessions = HashMap::new();
+        sessions.insert(id.to_string(), scheduled_profile("task-conflict"));
+        let registry = ScheduledProfileRegistry {
+            schema_version: SCHEDULED_PROFILE_SCHEMA_VERSION,
+            sessions,
+        };
+        std::fs::create_dir_all(paths::scheduled_runs_root()).expect("scheduled root");
+        std::fs::write(
+            paths::scheduled_run_profiles_path(),
+            serde_json::to_vec_pretty(&registry).expect("registry json"),
+        )
+        .expect("write registry");
+
+        let error = match reopen_store(&store) {
+            Ok(_) => panic!("conflicting profile must fail boot"),
+            Err(error) => error,
+        };
+        assert!(error
+            .to_string()
+            .contains("conflicts with an ordinary chat"));
+        assert!(paths::sessions_root().join(format!("{id}.json")).exists());
+        assert!(runtime_dir.exists());
+    }
+
+    #[test]
+    fn boot_reconciles_secondary_session_left_before_profile_commit() {
+        let (store, _g) = isolated_store();
+        let id = "sched-orphan-before-profile";
+        let orphan = create_saved_session_with_id_and_mode(
+            id.to_string(),
+            &[],
+            "/scheduled-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            Some("yolo"),
+        );
+        store
+            .scheduled_manager
+            .save_session(&orphan)
+            .expect("save orphan");
+        let runtime_dir = paths::sessions_root().join(id);
+        std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
+
+        let reloaded = reopen_store(&store).expect("reboot and reconcile");
+        assert!(!reloaded.scheduled_session_exists(id));
+        assert!(!paths::scheduled_run_sessions_root()
+            .join(format!("{id}.json"))
+            .exists());
+        assert!(!runtime_dir.exists());
+    }
+
+    #[test]
+    fn concurrent_scheduled_creates_do_not_lose_registry_entries() {
+        let (store, _g) = isolated_store();
+        let handles: Vec<_> = (0..12)
+            .map(|index| {
+                let cloned = store.clone();
+                std::thread::spawn(move || {
+                    cloned
+                        .create_scheduled_run(scheduled_profile(&format!(
+                            "task-concurrent-{index}"
+                        )))
+                        .expect("concurrent create")
+                        .metadata
+                        .id
+                })
+            })
+            .collect();
+        let ids: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("thread"))
+            .collect();
+
+        let reloaded = reopen_store(&store).expect("reboot");
+        assert_eq!(ids.len(), 12);
+        assert!(ids
+            .iter()
+            .all(|id| reloaded.scheduled_profile(id).is_some()));
     }
 
     #[test]
@@ -886,7 +2511,9 @@ mod tests {
         // 关键不变量:切 mode(set_mode)不能覆盖品悟开关。
         let (store, _g) = isolated_store();
         store.set_pinvou_review("s1", true);
-        store.set_mode("s1", super::super::mode_state::SerializableMode::Yolo);
+        store
+            .set_mode("s1", super::super::mode_state::SerializableMode::Yolo)
+            .expect("set chat mode");
         let state = store.mode_state("s1");
         assert!(state.pinvou_review_enabled);
         assert!(matches!(
@@ -924,9 +2551,13 @@ mod tests {
 
         // 闭环往返两轮:Yolo →(set_plan_mode_next)→ Plan →(accept/exit)→ Yolo
         for _ in 0..2 {
-            store.set_mode(sid, SerializableMode::Plan);
+            store
+                .set_mode(sid, SerializableMode::Plan)
+                .expect("set chat plan mode");
             assert_eq!(store.mode_state(sid).mode, SerializableMode::Plan);
-            store.set_mode(sid, SerializableMode::Yolo);
+            store
+                .set_mode(sid, SerializableMode::Yolo)
+                .expect("set chat yolo mode");
             assert_eq!(store.mode_state(sid).mode, SerializableMode::Yolo);
         }
 
@@ -995,7 +2626,9 @@ mod tests {
         // 绑定/解绑 skill 不能动 mode / pinvou_review_enabled。
         let (store, _g) = isolated_store();
         store.set_pinvou_review("s1", true);
-        store.set_mode("s1", super::super::mode_state::SerializableMode::Plan);
+        store
+            .set_mode("s1", super::super::mode_state::SerializableMode::Plan)
+            .expect("set chat plan mode");
         store.bind_skill(
             "s1",
             ActiveSkillBinding {
