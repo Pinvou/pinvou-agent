@@ -154,7 +154,6 @@
       room_id: null,
       session_id: null,
       url: null,
-      expires_at: null,
       status: "idle",
       relay_url: "",
       last_error: null,

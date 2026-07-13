@@ -41,7 +41,6 @@ struct ActiveRoom {
     session_id: String,
     url: String,
     relay_ws_url: String,
-    expires_at: Option<String>,
     status: RemoteControlStatusKind,
     last_error: Option<String>,
     sender: RelaySender,
@@ -103,14 +102,10 @@ impl RemoteControlManager {
         let pairing_token = crate::remote_control::short_token(32);
         let desktop_secret = crate::remote_control::short_token(32);
         // 二维码与当前 room 同寿命：只有刷新二维码、停止远控或关闭桌面端才失效。
-        let expires_at = None;
         let url = format!(
-            // 滚动升级兼容：线上旧手机页只读 query，新页面优先读 fragment。
-            // relay 页面全部升级后可移除 query，仅保留 fragment，避免 token 进入访问日志。
-            "{}/r/{}?token={}#token={}",
+            "{}/r/{}#token={}",
             public_base.trim_end_matches('/'),
             room_id,
-            pairing_token,
             pairing_token
         );
         let qr_data_url = connector_cli::make_qr(&url);
@@ -120,7 +115,6 @@ impl RemoteControlManager {
             session_id.clone(),
             pairing_token,
             desktop_secret,
-            expires_at.clone(),
         );
 
         {
@@ -131,7 +125,6 @@ impl RemoteControlManager {
                 session_id: session_id.clone(),
                 url: url.clone(),
                 relay_ws_url: relay_ws_url.clone(),
-                expires_at: expires_at.clone(),
                 status: RemoteControlStatusKind::ConnectingRelay,
                 last_error: None,
                 sender: sender.clone(),
@@ -167,7 +160,6 @@ impl RemoteControlManager {
             session_id,
             url,
             qr_data_url,
-            expires_at,
             status: RemoteControlStatusKind::WaitingMobile,
         })
     }
@@ -203,7 +195,6 @@ impl RemoteControlManager {
                     Some(room.session_id.clone())
                 },
                 url: Some(room.url.clone()),
-                expires_at: room.expires_at.clone(),
                 status: room.status,
                 relay_url: room.relay_ws_url.clone(),
                 last_error: room.last_error.clone(),
@@ -214,7 +205,6 @@ impl RemoteControlManager {
                 room_id: None,
                 session_id: None,
                 url: None,
-                expires_at: None,
                 status: RemoteControlStatusKind::Idle,
                 relay_url: remote_relay_ws_url(),
                 last_error: None,

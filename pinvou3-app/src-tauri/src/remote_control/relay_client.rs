@@ -6,10 +6,6 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::protocol::{envelope, now_ts, RelayEnvelope};
 
-// 旧版公网 relay 要求 desktop_register.expires_at 是可解析时间，并据此拒绝过期 room。
-// 新版 relay 已改为 room 生命周期语义、忽略该字段；保留远期时间只为滚动升级兼容。
-const LEGACY_RELAY_COMPAT_EXPIRES_AT: &str = "9999-12-31T23:59:59Z";
-
 #[derive(Debug)]
 pub enum RelayOutbound {
     Envelope(RelayEnvelope),
@@ -44,7 +40,6 @@ struct RegisterInfo {
     session_id: String,
     pairing_token: String,
     desktop_secret: String,
-    expires_at: Option<String>,
 }
 
 pub fn spawn(
@@ -53,7 +48,6 @@ pub fn spawn(
     session_id: String,
     pairing_token: String,
     desktop_secret: String,
-    expires_at: Option<String>,
 ) -> (RelaySender, RelayReceiver) {
     let (tx_out, mut rx_out) = mpsc::unbounded_channel::<RelayOutbound>();
     let (tx_in, rx_in) = mpsc::unbounded_channel::<RelayInbound>();
@@ -62,7 +56,6 @@ pub fn spawn(
         session_id,
         pairing_token,
         desktop_secret,
-        expires_at,
     };
     tauri::async_runtime::spawn(async move {
         if let Err(e) = run_loop(relay_ws_url, tx_in.clone(), &mut rx_out, register).await {
@@ -100,7 +93,6 @@ async fn run_loop(
             "session_id": &register.session_id,
             "pairing_token": &register.pairing_token,
             "desktop_secret": &register.desktop_secret,
-            "expires_at": register.expires_at.as_deref().unwrap_or(LEGACY_RELAY_COMPAT_EXPIRES_AT),
         });
         if let Err(e) = write.send(Message::Text(register_value.to_string())).await {
             eprintln!("[remote-control] relay register failed: {e}");

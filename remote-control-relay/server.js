@@ -8,6 +8,8 @@ import { WebSocketServer } from "ws";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8787);
 const PUBLIC_BASE_PATH = normalizeBasePath(process.env.PINVOU_REMOTE_PUBLIC_BASE_PATH || "/pinvou3/remote");
+const DESKTOP_RECONNECT_GRACE_MS = Math.max(1000, Number(process.env.DESKTOP_RECONNECT_GRACE_MS || 15_000));
+const HEARTBEAT_INTERVAL_MS = Math.max(5000, Number(process.env.HEARTBEAT_INTERVAL_MS || 15_000));
 const rooms = new Map();
 
 function send(ws, value) {
@@ -56,6 +58,40 @@ function loadMobilePage() {
   return readFile(join(__dirname, "web", "index.html"), "utf8");
 }
 
+function clearDesktopReconnectTimer(room) {
+  if (!room?.desktop_reconnect_timer) return;
+  clearTimeout(room.desktop_reconnect_timer);
+  room.desktop_reconnect_timer = null;
+}
+
+function closeRoom(room, reason) {
+  if (!room || room.closed || rooms.get(room.room_id) !== room) return;
+  clearDesktopReconnectTimer(room);
+  room.closed = true;
+  audit(room, "room_closed", { reason });
+  send(room.mobile, { type: "room_closed", reason });
+  try { room.mobile?.close(); } catch {}
+  try { room.desktop?.close(); } catch {}
+  rooms.delete(room.room_id);
+}
+
+function waitForDesktopReconnect(room) {
+  clearDesktopReconnectTimer(room);
+  room.desktop = null;
+  audit(room, "desktop_reconnecting", { grace_ms: DESKTOP_RECONNECT_GRACE_MS });
+  send(room.mobile, {
+    type: "desktop_connection_state",
+    status: "reconnecting",
+    grace_ms: DESKTOP_RECONNECT_GRACE_MS,
+  });
+  room.desktop_reconnect_timer = setTimeout(() => {
+    if (rooms.get(room.room_id) === room && !room.desktop) {
+      closeRoom(room, "desktop_disconnected");
+    }
+  }, DESKTOP_RECONNECT_GRACE_MS);
+  room.desktop_reconnect_timer.unref?.();
+}
+
 
 function healthSummary() {
   const values = [...rooms.values()];
@@ -92,7 +128,7 @@ const server = http.createServer(async (req, res) => {
   res.end("not found");
 });
 
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
 
 server.on("upgrade", (req, socket, head) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
@@ -108,6 +144,8 @@ server.on("upgrade", (req, socket, head) => {
 wss.on("connection", (ws) => {
   ws.role = "unknown";
   ws.roomId = null;
+  ws.isAlive = true;
+  ws.on("pong", () => { ws.isAlive = true; });
 
   ws.on("message", (raw) => {
     let msg;
@@ -134,6 +172,7 @@ wss.on("connection", (ws) => {
           try { ws.close(); } catch {}
           return;
         }
+        clearDesktopReconnectTimer(old);
         try { old.desktop?.close(); } catch {}
       }
       const room = {
@@ -145,6 +184,7 @@ wss.on("connection", (ws) => {
         desktop_secret_hash: tokenHash(msg.desktop_secret),
         paired: wasPaired,
         closed: false,
+        desktop_reconnect_timer: null,
         audit: old?.audit || {
           created_at: new Date().toISOString(),
           connected_at: null,
@@ -158,6 +198,7 @@ wss.on("connection", (ws) => {
       audit(room, "desktop_register");
       send(ws, { type: "room_registered", room_id: room.room_id });
       if (existingMobile) {
+        send(existingMobile, { type: "desktop_connection_state", status: "connected" });
         send(ws, { type: "mobile_connected", room_id: room.room_id });
         send(ws, {
           type: "mobile_action",
@@ -192,6 +233,13 @@ wss.on("connection", (ws) => {
       audit(room, "mobile_connected", { connected_at: new Date().toISOString() });
       console.log("[relay] mobile_connected", room.room_id);
       send(ws, { type: "mobile_joined", room_id: room.room_id, session_id: room.session_id });
+      if (!room.desktop) {
+        send(ws, {
+          type: "desktop_connection_state",
+          status: "reconnecting",
+          grace_ms: DESKTOP_RECONNECT_GRACE_MS,
+        });
+      }
       send(room.desktop, { type: "mobile_connected", room_id: room.room_id });
       send(room.desktop, {
         type: "mobile_action",
@@ -208,12 +256,8 @@ wss.on("connection", (ws) => {
     if (ws.role === "desktop") {
       if (msg.type === "desktop_disconnect") {
         const reason = msg.payload?.reason || "stopped";
-        room.closed = true;
         audit(room, "desktop_disconnect", { reason });
-        send(room.mobile, { type: "room_closed", reason });
-        try { room.mobile?.close(); } catch {}
-        try { room.desktop?.close(); } catch {}
-        rooms.delete(room.room_id);
+        closeRoom(room, reason);
         return;
       }
       if (typeof msg.session_id === "string" && msg.session_id) {
@@ -245,14 +289,23 @@ wss.on("connection", (ws) => {
       send(room.desktop, { type: "mobile_disconnected", room_id: room.room_id });
     }
     if (ws.role === "desktop" && room.desktop === ws) {
-      room.closed = true;
       audit(room, "desktop_disconnected");
-      send(room.mobile, { type: "room_closed", reason: "desktop_disconnected" });
-      try { room.mobile?.close(); } catch {}
-      rooms.delete(room.room_id);
+      waitForDesktopReconnect(room);
     }
   });
 });
+
+const heartbeatTimer = setInterval(() => {
+  for (const ws of wss.clients) {
+    if (ws.isAlive === false) {
+      ws.terminate();
+      continue;
+    }
+    ws.isAlive = false;
+    try { ws.ping(); } catch { ws.terminate(); }
+  }
+}, HEARTBEAT_INTERVAL_MS);
+heartbeatTimer.unref();
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`pinvou remote relay listening on http://127.0.0.1:${PORT}`);

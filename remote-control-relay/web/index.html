@@ -516,6 +516,7 @@
       lastLiveSnapshotAtBySession: {},
       replaced: false,
       terminal: false,
+      desktopReconnecting: false,
     };
     const sentClientIds = new Set();
     const toolNodes = new Map();
@@ -539,6 +540,7 @@
       syncViewportHeight();
       state.replaced = true;
       state.terminal = false;
+      state.desktopReconnecting = false;
       joined = false;
       clearTimeout(joinTimer);
       clearTimeout(reconnectTimer);
@@ -570,6 +572,7 @@
     function enterTerminalState(status, title, message, hint, variant) {
       state.terminal = true;
       state.replaced = false;
+      state.desktopReconnecting = false;
       joined = false;
       clearTimeout(joinTimer);
       clearTimeout(reconnectTimer);
@@ -2081,7 +2084,7 @@
       });
     }
     function handleDesktopEvent(msg) {
-      const unscoped = ['session_list', 'remote_session_switched', 'error', 'room_replaced', 'room_closed'];
+      const unscoped = ['session_list', 'remote_session_switched', 'desktop_connection_state', 'error', 'room_replaced', 'room_closed'];
       if (!unscoped.includes(msg.type) && !isCurrentSessionMessage(msg)) return;
       switch (msg.type) {
         case 'session_snapshot':
@@ -2219,6 +2222,20 @@
           setTurnActive(false);
           setStatus((msg.payload && msg.payload.status) || '空闲');
           break;
+        case 'desktop_connection_state':
+          if (msg.status === 'reconnecting') {
+            if (!state.desktopReconnecting) addSystem('桌面连接暂时中断，正在自动恢复。');
+            state.desktopReconnecting = true;
+            setControlsDisabled(true);
+            setStatus('桌面重连中');
+          } else if (msg.status === 'connected') {
+            const wasReconnecting = state.desktopReconnecting;
+            state.desktopReconnecting = false;
+            if (!state.replaced && !state.terminal) setControlsDisabled(false);
+            setStatus('已连接');
+            if (wasReconnecting) addSystem('桌面端已恢复连接。');
+          }
+          break;
         case 'error':
           state.creatingSession = false;
           {
@@ -2305,6 +2322,11 @@
     function submitComposer() {
       if (state.replaced) {
         setStatus('已被占用');
+        return;
+      }
+      if (state.desktopReconnecting) {
+        setStatus('桌面重连中');
+        addSystem('桌面端正在恢复连接，请稍候。');
         return;
       }
       if (state.turn.active) {
