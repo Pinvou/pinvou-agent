@@ -1,6 +1,6 @@
 <!--
 Sync Impact Report
-Version change: template -> 1.0.0
+Version change: 1.0.0 -> 1.1.0
 Modified principles:
 - template principle 1 -> I. 中文文档优先
 - template principle 2 -> II. DeepSeek-TUI 底座优先
@@ -8,19 +8,21 @@ Modified principles:
 - template principle 4 -> IV. 小步高质量变更
 - template principle 5 -> V. 可测试性与可验证交付
 - Added: VI. 可维护性与长期演进
+Added principles:
+- VII. 合并保全与用户裁决
 Added sections:
-- 技术边界
-- 开发流程与质量门禁
+- None
 Removed sections:
-- Placeholder-only template sections
+- None
 Templates requiring updates:
 - ✅ .specify/templates/constitution-template.md
 - ✅ .specify/templates/plan-template.md
-- ✅ .specify/templates/spec-template.md
 - ✅ .specify/templates/tasks-template.md
-- ⚪ .specify/templates/commands/*.md (not present in this repository)
+- ✅ .specify/templates/spec-template.md (reviewed; no structural change required)
+- ✅ .specify/templates/checklist-template.md (reviewed; no structural change required)
+- ✅ .specify/extensions/git/commands/*.md (reviewed; no change required)
 Runtime guidance:
-- ✅ AGENTS.md reviewed; existing project rules already align
+- ✅ AGENTS.md updated with merge-conflict preservation rules
 - ✅ README.md reviewed; no constitution reference update required
 Follow-up TODOs:
 - None
@@ -75,6 +77,21 @@ DeepSeek-TUI 是 pinvou3 的 agent 底座。pinvou3 MUST NOT 重新实现 DeepSe
 
 **Rationale**: 项目的复杂度主要来自多层集成和长期演进。可维护性要求决策可追溯、边界可解释、风险可验证。
 
+### VII. 合并保全与用户裁决
+
+执行 merge、rebase、cherry-pick、跨仓迁移或手工移植时，当前仓库已有功能、用户改动和本地配置 MUST
+视为受保护基线。冲突解决者 MUST 先识别双方的功能增量；能够共存的实现 MUST 合并保留，不得仅因解决
+文本冲突而整文件选择一侧，或用来源分支覆盖本地行为。生成文件（如 lockfile）MUST 从已确认保留的
+源配置重新生成或验证，不得用较旧快照降级依赖、版本或平台能力。
+
+只有不改变行为的机械性冲突、明确的重复实现、可由测试或历史证明等价的修改，才 MAY 独立决定。
+若冲突涉及互斥方案、产品行为、安全与兼容性取舍、无法证明等价的同功能实现，或任何可能丢失一侧
+功能的选择，解决者 MUST 保持该事项未决，向用户列出选项、影响和建议，获得明确决策后方可继续；
+MUST NOT 猜测用户偏好或静默选择一侧。
+
+**Rationale**: 多分支长期并行使文本层的“ours/theirs”无法代表功能层的正确答案。先保全、后裁决能防止
+合并成功但功能倒退，并让不可逆的产品取舍由实际负责人决定。
+
 ## 技术边界
 
 - `pinvou3-app/` 是 Tauri 2.0 + EngineHandle wrapper 主线，负责 UI、设置、桥接、session/workflow 编排和底座配置。
@@ -91,6 +108,7 @@ DeepSeek-TUI 是 pinvou3 的 agent 底座。pinvou3 MUST NOT 重新实现 DeepSe
 4. 实现阶段 MUST 优先遵循现有代码模式；新增依赖、跨平台分支、fork 改动和外部工具调用必须说明必要性。
 5. 验证阶段 MUST 报告实际执行的检查和未执行原因。高风险改动不得只以“未运行测试”收尾，必须给出补验路径。
 6. 文档阶段 MUST 使用中文更新相关说明；英文外部术语可保留，但核心解释必须中文可读。
+7. 合并阶段 MUST 建立双方功能差异清单，优先合并保留；不可机械判定的取舍必须暂停并请求用户决策。
 
 ## Governance
 
@@ -109,5 +127,6 @@ DeepSeek-TUI 是 pinvou3 的 agent 底座。pinvou3 MUST NOT 重新实现 DeepSe
 - `/speckit-plan` MUST 在 Constitution Check 中评估中文文档、底座边界、本地算力、质量、测试和维护性。
 - `/speckit-tasks` MUST 生成能验证的任务，而不是仅描述意图。
 - 代码评审 MUST 优先检查边界破坏、测试缺口、fork drift、文档漂移和跨平台风险。
+- 合并评审 MUST 检查本地功能是否被来源分支覆盖，以及所有非机械取舍是否有用户决策记录。
 
-**Version**: 1.0.0 | **Ratified**: 2026-06-15 | **Last Amended**: 2026-06-15
+**Version**: 1.1.0 | **Ratified**: 2026-06-15 | **Last Amended**: 2026-07-13

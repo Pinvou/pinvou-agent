@@ -33,6 +33,13 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 
 - git log 提交日志标题需要注明类型，例如 `fix` / `feat` / `doc`。
 
+### 4. 合并冲突保全
+
+- merge、rebase、cherry-pick、跨仓迁移或手工移植时，必须把当前仓库已有功能和用户改动视为受保护基线。
+- 能够共存的双方功能必须合并保留，不得为了消除文本冲突而整文件选择一侧或用来源分支覆盖本地行为。
+- 只有不改变行为的机械性冲突、明确重复或可证明等价的实现可以独立处理。
+- 遇到互斥方案、产品行为、安全/兼容性取舍或无法证明等价的实现时，必须保持未决，向用户说明选项和影响并等待明确决策，不得猜测。
+
 ## 主体
 
 - `pinvou3-app/` — 🟢 Tauri 2.0 + EngineHandle wrapper（主线）

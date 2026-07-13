@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Archive, Briefcase, Check, ChevronDown, Cpu, Database, Edit2, FileText, Lightbulb, MessageSquare, MoreHorizontal, Paperclip, Plus, RefreshCw, Search, Sparkles, Store, Trash2, User, Video, Wrench, X, Zap } from '../../components/icons.jsx';
+import { Archive, Briefcase, Check, ChevronDown, Cpu, Database, Edit2, FileText, Lightbulb, MessageSquare, MoreHorizontal, Paperclip, Plus, RefreshCw, Search, Smartphone, Sparkles, Store, Trash2, User, Video, Wrench, X, Zap } from '../../components/icons.jsx';
 import { ArchivedDeleteConfirmDialog } from '../../components/layout/NavigationComponents.jsx';
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import { bridge } from '../../hooks/useBridge.js';
@@ -232,19 +232,23 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
 
     const RemoteControlModal = ({ theme, bs, onClose }) => {
       const isDark = theme === 'dark';
+      const [refreshConfirmOpen, setRefreshConfirmOpen] = useState(false);
+      const [actionBusy, setActionBusy] = useState(false);
       const remoteControl = (bs && bs.remoteControl) || {};
       const remotePairing = remoteControl.pairing || remoteControl;
       const remoteActive = !!remoteControl.active;
-      const remoteStatusText = {
-        idle: '未开启',
-        connecting_relay: '连接 relay',
-        waiting_mobile: '等待手机扫码',
-        mobile_connected: '手机已连接',
-        mobile_disconnected: '手机已断开',
-        expired: '已过期',
-        stopped: '已停止',
-        error: '连接异常',
-      }[remoteControl.status || 'idle'] || (remoteControl.status || '未开启');
+      const statusKey = remoteControl.starting ? 'starting' : (remoteControl.status || 'idle');
+      const statusMeta = {
+        idle: { label: '未开启', detail: '点击手机控制图标后才会开启远程控制。', color: '#8A9097' },
+        starting: { label: '正在开启', detail: '正在创建远程控制连接和二维码。', color: '#F9AB00' },
+        connecting_relay: { label: '正在连接', detail: '正在连接云端中继，请稍候。', color: '#F9AB00' },
+        waiting_mobile: { label: '等待手机连接', detail: '用手机扫码，或在手机上打开链接。', color: '#F9AB00' },
+        mobile_connected: { label: '手机已连接', detail: '当前手机可以查看和控制远程会话。', color: '#34A853' },
+        mobile_disconnected: { label: '手机已断开', detail: '原二维码仍然有效，手机可随时重新连接。', color: '#F9AB00' },
+        expired: { label: '连接已失效', detail: '请刷新二维码后重新连接。', color: '#EA4335' },
+        stopped: { label: '已停止', detail: '再次点击手机控制图标可重新开启。', color: '#8A9097' },
+        error: { label: '连接异常', detail: remoteControl.last_error || '远程控制暂时不可用，请重试。', color: '#EA4335' },
+      }[statusKey] || { label: String(statusKey), detail: '远程控制状态已更新。', color: '#8A9097' };
 
       useEffect(() => {
         if (!remoteActive && bridge.available) {
@@ -254,23 +258,62 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
 
       async function handleRefreshRemoteControl() {
         if (!bridge.available) return;
-        try { await bridge.refreshRemoteControlQr(null); } catch (_) {}
+        setActionBusy(true);
+        try {
+          await bridge.refreshRemoteControlQr(null);
+          setRefreshConfirmOpen(false);
+        } catch (_) {
+        } finally {
+          setActionBusy(false);
+        }
       }
 
       async function handleStopRemoteControl() {
         if (!bridge.available) return;
-        await bridge.stopRemoteControl();
+        setActionBusy(true);
+        try {
+          await bridge.stopRemoteControl();
+          onClose();
+        } finally {
+          setActionBusy(false);
+        }
+      }
+
+      async function handleRetryRemoteControl() {
+        if (!bridge.available) return;
+        setActionBusy(true);
+        try { await bridge.startRemoteControl(null); }
+        catch (_) {}
+        finally { setActionBusy(false); }
       }
 
       return (
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/45" onClick={onClose}>
-          <div onClick={e => e.stopPropagation()} className={`w-full max-w-[420px] rounded-[22px] shadow-2xl p-5 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
+          <div onClick={e => e.stopPropagation()} className={`relative w-full max-w-[420px] rounded-[22px] shadow-2xl p-5 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
             <div className="flex items-start justify-between gap-3 mb-4">
               <div>
                 <div className="text-[17px] font-semibold">移动端远程控制</div>
-                <div className={`text-[12px] mt-1 ${isDark ? 'text-[#AEB4BC]' : 'text-[#5F6368]'}`}>{remoteStatusText}</div>
+                <div className={`text-[12px] mt-1 ${isDark ? 'text-[#AEB4BC]' : 'text-[#5F6368]'}`}>扫码或在手机上打开链接，即可远程控制当前工作区。</div>
               </div>
               <button onClick={onClose} className={`w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}><X size={17} /></button>
+            </div>
+            <div className={`rounded-[16px] border p-3 mb-4 ${isDark ? 'border-white/10 bg-white/[0.035]' : 'border-black/10 bg-[#F8F9FA]'}`}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex items-start gap-3">
+                  <div className={`mt-0.5 w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-white text-[#5F6368]'}`}><Smartphone size={17} /></div>
+                  <div className="min-w-0">
+                    <div className="text-[14px] font-medium">手机扫码连接</div>
+                    <div className={`text-[12px] mt-1 leading-relaxed ${isDark ? 'text-[#9AA0A6]' : 'text-[#6F7378]'}`}>{statusMeta.detail}</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-white text-[#5F6368]'}`}>
+                    <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusMeta.color }}></span>{statusMeta.label}
+                  </span>
+                  {remoteActive && <button disabled={actionBusy} onClick={handleStopRemoteControl}
+                    className={`px-3 py-1.5 rounded-lg text-[12px] disabled:opacity-50 ${isDark ? 'border border-white/10 hover:bg-white/10' : 'border border-black/10 hover:bg-black/5'}`}>停止</button>}
+                </div>
+              </div>
             </div>
             {remotePairing && remotePairing.qr_data_url ? (
               <div className="flex flex-col items-center">
@@ -281,7 +324,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               </div>
             ) : (
               <div className={`text-[13px] px-3 py-4 rounded-xl ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-[#F1F3F4] text-[#3C4043]'}`}>
-                {remoteControl.starting ? '正在生成二维码...' : '当前会话还未开启远程控制。'}
+                {remoteControl.starting ? '正在生成二维码...' : (remoteControl.last_error || '当前会话还未开启远程控制。')}
               </div>
             )}
             {remoteControl.last_error && <div className="mt-3 text-[12px] text-[#EA4335] break-all">{remoteControl.last_error}</div>}
@@ -289,11 +332,23 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               <button onClick={() => navigator.clipboard && navigator.clipboard.writeText(remotePairing.url || remoteControl.url || '')}
                 disabled={!(remotePairing.url || remoteControl.url)}
                 className={`px-3.5 py-2 rounded-full text-[13px] ${isDark ? 'bg-white/10 hover:bg-white/15 disabled:opacity-40' : 'bg-black/5 hover:bg-black/10 disabled:opacity-40'}`}>复制链接</button>
-              <button onClick={handleRefreshRemoteControl}
-                className={`px-3.5 py-2 rounded-full text-[13px] ${isDark ? 'bg-white/10 hover:bg-white/15' : 'bg-black/5 hover:bg-black/10'}`}>刷新二维码</button>
-              <button onClick={handleStopRemoteControl}
-                className="px-3.5 py-2 rounded-full text-[13px] bg-[#C5221F] text-white hover:bg-[#A50E0E]">停止</button>
+              {remoteActive ? <button disabled={actionBusy} onClick={() => setRefreshConfirmOpen(true)}
+                className={`px-3.5 py-2 rounded-full text-[13px] disabled:opacity-50 ${isDark ? 'bg-white/10 hover:bg-white/15' : 'bg-black/5 hover:bg-black/10'}`}>刷新二维码</button>
+                : <button disabled={actionBusy} onClick={handleRetryRemoteControl}
+                  className="px-3.5 py-2 rounded-full text-[13px] bg-[#0B57D0] text-white hover:bg-[#0842A0] disabled:opacity-50">重新开启</button>}
             </div>
+            {refreshConfirmOpen && (
+              <div className="absolute inset-0 z-10 flex items-center justify-center p-4 rounded-[22px] bg-black/55" onClick={() => !actionBusy && setRefreshConfirmOpen(false)}>
+                <div onClick={e => e.stopPropagation()} className={`w-full max-w-[330px] rounded-[18px] p-5 shadow-2xl ${isDark ? 'bg-[#2A2B2D]' : 'bg-white'}`}>
+                  <div className="text-[16px] font-semibold">刷新二维码？</div>
+                  <div className={`text-[13px] leading-relaxed mt-2 ${isDark ? 'text-[#B7BBC0]' : 'text-[#5F6368]'}`}>刷新后，之前复制或扫码得到的远程控制链接将失效，已连接的手机需要重新扫码。</div>
+                  <div className="mt-5 flex justify-end gap-2">
+                    <button disabled={actionBusy} onClick={() => setRefreshConfirmOpen(false)} className={`px-4 py-2 rounded-lg text-[13px] ${isDark ? 'bg-white/5 hover:bg-white/10' : 'bg-black/5 hover:bg-black/10'}`}>取消</button>
+                    <button disabled={actionBusy} onClick={handleRefreshRemoteControl} className="px-4 py-2 rounded-lg text-[13px] font-medium bg-white text-[#202124] hover:bg-[#F1F3F4] disabled:opacity-60">{actionBusy ? '正在刷新…' : '刷新二维码'}</button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       );

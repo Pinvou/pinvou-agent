@@ -9,7 +9,11 @@ use super::protocol::{envelope, now_ts, RelayEnvelope};
 #[derive(Debug)]
 pub enum RelayOutbound {
     Envelope(RelayEnvelope),
-    Close { room_id: String, session_id: String },
+    Close {
+        room_id: String,
+        session_id: String,
+        reason: String,
+    },
 }
 
 #[derive(Debug)]
@@ -36,7 +40,6 @@ struct RegisterInfo {
     session_id: String,
     pairing_token: String,
     desktop_secret: String,
-    expires_at: String,
 }
 
 pub fn spawn(
@@ -45,7 +48,6 @@ pub fn spawn(
     session_id: String,
     pairing_token: String,
     desktop_secret: String,
-    expires_at: String,
 ) -> (RelaySender, RelayReceiver) {
     let (tx_out, mut rx_out) = mpsc::unbounded_channel::<RelayOutbound>();
     let (tx_in, rx_in) = mpsc::unbounded_channel::<RelayInbound>();
@@ -54,7 +56,6 @@ pub fn spawn(
         session_id,
         pairing_token,
         desktop_secret,
-        expires_at,
     };
     tauri::async_runtime::spawn(async move {
         if let Err(e) = run_loop(relay_ws_url, tx_in.clone(), &mut rx_out, register).await {
@@ -92,7 +93,6 @@ async fn run_loop(
             "session_id": &register.session_id,
             "pairing_token": &register.pairing_token,
             "desktop_secret": &register.desktop_secret,
-            "expires_at": &register.expires_at,
         });
         if let Err(e) = write.send(Message::Text(register_value.to_string())).await {
             eprintln!("[remote-control] relay register failed: {e}");
@@ -112,8 +112,8 @@ async fn run_loop(
                                 break;
                             }
                         }
-                        RelayOutbound::Close { room_id, session_id } => {
-                            let value = serde_json::to_value(envelope(&room_id, &session_id, "desktop_disconnect", json!({ "ts": now_ts() }))).map_err(|e| e.to_string())?;
+                        RelayOutbound::Close { room_id, session_id, reason } => {
+                            let value = serde_json::to_value(envelope(&room_id, &session_id, "desktop_disconnect", json!({ "ts": now_ts(), "reason": reason }))).map_err(|e| e.to_string())?;
                             let _ = write.send(Message::Text(value.to_string())).await;
                             return Ok(());
                         }
@@ -152,6 +152,14 @@ async fn run_loop(
                                 status: value.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                                 message: value.get("message").and_then(|v| v.as_str()).map(ToString::to_string),
                             });
+                        }
+                        "error" => {
+                            let message = value
+                                .get("message")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("relay error")
+                                .to_string();
+                            let _ = tx_in.send(RelayInbound::Error(message));
                         }
                         _ => {}
                     }
