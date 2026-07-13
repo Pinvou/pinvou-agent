@@ -83,6 +83,8 @@ fingerprints=(
   "C10 |MCP env placeholder 回归        |DeepSeek-TUI/crates/tui/src/mcp/tests.rs|PINVOU3_MCP_SECRET_QCC_API_KEY"
   "C10 |Windows 子进程无控制台 helper   |DeepSeek-TUI/crates/tui/src/utils.rs|pub(crate) fn suppress_tokio_console_window"
   "C10 |MCP 启动应用无控制台 helper     |DeepSeek-TUI/crates/tui/src/mcp.rs|suppress_tokio_console_window(&mut cmd)"
+  # —— C11(2026-07-07,fork #7):Windows killed background shell 不 join 可能阻塞的 reader ——
+  "C11 |Windows killed shell reader 不阻塞|DeepSeek-TUI/crates/tui/src/tools/shell.rs|if matches!(self.status, ShellStatus::Killed)"
   # —— P1(2026-07-03):list_mcp_resources/templates 按对应集合非空 gate(上游原为 servers 非空即注入)——
   # pinvou3 MCP server 全 tools-only,原条件下这两个元工具永久空转;改按 resources/templates 非空注入。可上游。
   "P1  |list_mcp_resources 按 resources 非空 gate|DeepSeek-TUI/crates/tui/src/mcp.rs|if !self.all_resource_templates().is_empty()"

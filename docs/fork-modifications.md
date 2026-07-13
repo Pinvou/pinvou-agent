@@ -4,17 +4,17 @@
 > 用途:① sync 后查 patch 存活 ② 交接 / onboarding ③ 上游 PR 定位改动点。
 > 配套:`scripts/fork-guard.sh`(指纹 + 回归测试守卫)、`docs/fork-policy.md`(维护策略 + sync 流程 + PR 状态)。
 >
-> **当前基线**:submodule 分支 `pinvou3-clean` ← upstream **v0.8.65**;HEAD `945cdf44` = v0.8.65 + 9 主题 commit(2026-06-29 第 3 次 clean re-fork,线性历史)。
+> **当前基线**:submodule 分支 `pinvou3-clean` ← upstream **v0.8.65**;HEAD `8073aa9b`(2026-07-13,已合入自动 warmup 撤除与 Windows killed-shell 收尾修复)。
 
 ---
 
-## 0. 当前状态速览(2026-06-29 · v0.8.65)
+## 0. 当前状态速览(2026-07-13 · v0.8.65)
 
 | 项 | 值 |
 |---|---|
-| submodule 分支 | **`pinvou3-clean`**(`.gitmodules` 追踪);HEAD `945cdf44`;备份 `backup/v0.8.65-merge-result`(merge 树)、`backup/pre-reclean-trial-tip`(旧 fork tip `6b3059da`)、`backup/pre-v0.8.65-sync`(旧远程 pinvou3-clean `4518f845`) |
-| fork drift | **+6734 / −4917 行,49 文件**(`git -C DeepSeek-TUI diff v0.8.65..HEAD --shortstat`)。比 v0.8.60(43 文件)涨,因 v0.8.65 改动多 subagent/manager/route/config API,fork 跟改面大;主体仍是工作流层 W——属"接受重 fork"(fork-policy §0);app 层 prompt 走 override 注入,不计入 |
-| 历史 | v0.8.65 + 9 主题 commit:C1 lib · C2 blocklist · C3 append_file · C4 safety · **C5+C7 prompt-composer** · C6 chore · **W 工作流层(含 C8 会话工具开关 op + R extra_tools 注入口)** · test(适配 + 三省六部 mock-LLM e2e ×2) · **C5/skills 市场(bundle/skills + disabled 开关)** |
+| submodule 分支 | **`pinvou3-clean`**(`.gitmodules` 追踪);HEAD `8073aa9b`;备份 `backup/v0.8.65-merge-result`(merge 树)、`backup/pre-reclean-trial-tip`(旧 fork tip `6b3059da`)、`backup/pre-v0.8.65-sync`(旧远程 pinvou3-clean `4518f845`) |
+| fork drift | **+7070 / −4930 行,54 文件**(`git -C DeepSeek-TUI diff v0.8.65..HEAD --shortstat`)。主体仍是工作流层 W——属"接受重 fork"(fork-policy §0);app 层 prompt 走 override 注入,不计入 |
+| 历史 | v0.8.65 clean re-fork 的 C1–C10 + R + W 主题,以及后续 blocklist/compact/cancellation 修复;2026-07-13 通过 fork PR #9 将自动 warmup 撤除提交重新合入 `pinvou3-clean` |
 | LLM 暴露 native 工具 | **20 个**(全量注册 − 黑名单;原 23,2026-07-03 纯办公定位再砍 git_status/git_diff/diagnostics)。**tool_search 已禁用**(⚠️2026-07-03 修:v0.8.65 折叠单名后门控名与双旧名对不上一度漏注入,已补裸名,详见 C2)。MCP `mcp_pinvou_present_artifact` 另接,共 21 入口 |
 | fork-guard | 指纹 + 回归测试(`scripts/fork-guard.sh`;**v0.8.65 撤 P pwd-move 2 条**=上游已 harvest;+MKT skill 停用 3 条);底座 lib **5149 pass**(+55 ignored fork 基底行为 +1 已知 flake:verifier 后台 shell 并行误报)+ 工作流 e2e ×2 |
 | system prompt | dump 逐字节稳定;per-turn `<runtime_prompt>` tag + goal continuation 均已 gate |
@@ -22,7 +22,7 @@
 
 ---
 
-## 1. fork 结构(C1–C8 + R + W 逻辑主题)
+## 1. fork 结构(C1–C11 + R + W 逻辑主题)
 
 > 逻辑分组,对应主题 commit。看某文件 fork-distinct 改动:`git -C DeepSeek-TUI diff v0.8.60..HEAD -- <file>`。
 > 冲突易出血优先级(sync review 顺序):**prompts.rs(C5+C7) > turn_loop.rs(C7) > subagent/mod.rs(W) > tool_catalog.rs(C2) > project_context.rs(C5)**。
@@ -90,7 +90,7 @@
 - **原文件**:`core/session.rs`(`Session.cache_warmup_done` 运行时标志)、`core/engine/turn_loop.rs`(首请求前置 warmup)
 - **原改动**:本 session第一次发请求前,clone 完整本请求前缀发一次 `max_tokens=1`/`tool_choice=none`/响应丢弃的预热请求,试图给 vLLM prefix-cache 预热。
 - **撤除理由**:GUI 复核中关闭自动 warmup 后仍无法复现历史工具协议漂移;证据不再支持“自动 warmup 是根因修复”。继续 always-on 会给每个新 session 多发一次完整 prefill,放大首轮延迟、GPU 压力和排查噪声,且可能掩盖 schema / MCP adapter / tool_search 注入等真实问题。
-- **当前状态**:删除 `Session.cache_warmup_done` 和 turn_loop 首请求预热路径;恢复此前因额外请求计数而 ignore 的 wiremock 测试。手动 `/cache warmup` 仍保留为上游 TUI 调试命令。
+- **当前状态**:删除 `Session.cache_warmup_done` 和 turn_loop 首请求预热路径;恢复此前因额外请求计数而 ignore 的 wiremock 测试。手动 `/cache warmup` 仍保留为上游 TUI 调试命令。撤除提交经 fork PR [#9](https://github.com/h3c-hexin/DeepSeek-TUI/pull/9) 合入 `pinvou3-clean`,merge commit `8073aa9b`。
 
 ### C8 `ops` 会话工具开关(SetDisallowedTools)
 - **文件**:`core/ops.rs`(新增 `Op::SetDisallowedTools { tools: Vec<String> }`)、`core/engine.rs`(handler 写入 `config.disallowed_tools`)
@@ -122,6 +122,14 @@
   - **Windows child console** → 🟢 [#3823](https://github.com/Hmbown/CodeWhale/pull/3823) **MERGED**(merge `d87dabcd0cba`)。`CREATE_NO_WINDOW` 抹子进程闪窗,`#[cfg(windows)]` no-op off-Windows;上游已把 stdio spawn 重构进 `mcp/stdio.rs`,suppress 落新 spawn 点。
   - **header 展开未提**(冗余):底座原生 `bearer_token_env_var`/`env_headers`(`McpHttpAuth::resolved_headers`)已覆盖 header secret,故上游 PR 剥掉 header 展开只留 stdio env;app 层 qcc 宜改用底座原生(follow-up,仍 fork)。
   - **下次 sync harvest**:上游已合 stdio env 展开 + Windows 抑窗两块,sync 后撤对应指纹;**C10-env 的 header 展开部分仍 fork 保留**(pinvou3 在用,上游未收)。
+
+### C11 `runtime` Windows killed background shell reader 收尾(2026-07-07)
+- **文件**:`tools/shell.rs`
+- **改动**:Windows 后台 shell 已被 kill 时不再同步 `join` stdout/stderr reader thread,而是释放 join handle;非 Windows 和非 killed 状态保持原 join 行为。
+- **理由**:Windows 子进程 kill 后 reader 线程可能仍阻塞在管道读取,同步 join 会让取消流程卡死;job object 已先关闭,此处应优先保证取消立即返回。
+- **来源**:fork PR [#7](https://github.com/h3c-hexin/DeepSeek-TUI/pull/7),commit `cf2b231f`;其中 warmup cancellation 部分已随 Q 撤除,仅保留本条 shell 修复。
+- **守护**:`fork-guard.sh` C11 指纹钉住 `ShellStatus::Killed` 分支;目标 warmup 回归测试 3 条通过。Windows 行为仍需 Windows CI/真机覆盖。
+- 上游 PR:暂未提;需先补 Windows 稳定复现与平台回归测试。
 
 ### R `agentic-rag` EngineConfig.extra_tools 应用层工具注入口(2026-06-24)
 - **文件**:`core/engine.rs`(`ExtraTools` newtype + `EngineConfig.extra_tools` 字段 + Default)、`core/engine/tool_setup.rs`(`build_turn_tool_registry_builder` 末尾 `with_tool` 循环注册);连带补 3 处 TUI 路径 EngineConfig literal(`runtime_threads.rs`/`tui/ui.rs`/`main.rs`,`extra_tools: Default::default()`)
