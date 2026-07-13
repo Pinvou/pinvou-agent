@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="pinvou-remote-client" content="1" />
   <title>PINVOU Remote</title>
   <style>
     :root {
@@ -138,6 +139,8 @@
     #previewOverlay .preview { height: min(88vh, calc(100vh - 16px)); max-height: none; border-radius: 18px; }
     .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 18px 14px; border-bottom: 1px solid var(--line); }
     .sheet-head h2 { margin: 0; font-size: 20px; font-weight: 800; }
+    #previewTitle { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    #previewClose { flex: 0 0 auto; }
     .sheet-body { max-height: calc(84dvh - 66px); overflow: auto; padding: 14px 16px 24px; }
     .sheet-toolbar { padding: 0 0 12px; }
     .sheet-create { width: 100%; min-height: 46px; border-radius: 14px; background: var(--blue); color: #fff; font-weight: 800; }
@@ -148,8 +151,13 @@
     .sheet-sub { margin-top: 5px; font-size: 12px; color: var(--muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .sheet-mark { flex: 0 0 auto; font-size: 11px; color: #a7c4ff; background: rgba(92,132,255,.12); padding: 6px 8px; border-radius: 999px; }
     .preview-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 12px; }
-    .preview-body.html-preview { padding: 0; overflow: hidden; background: #fff; touch-action: auto; }
+    .preview-body.html-preview { padding: 0; overflow: auto; background: #fff; touch-action: pan-x pan-y pinch-zoom; }
     .preview-body.markdown-preview { padding: 18px 18px 24px; background: #12161a; color: #e6ebf1; }
+    .preview-toolbar { min-height: 44px; padding: 6px 12px; border-bottom: 1px solid var(--line); background: #12161a; display: flex; align-items: center; justify-content: center; gap: 8px; }
+    .preview-toolbar.hidden { display: none; }
+    .preview-zoom-button { width: 34px; height: 32px; min-width: 34px; padding: 0; border-radius: 10px; background: var(--panel-2); color: var(--text); font-size: 20px; line-height: 1; }
+    .preview-fit-button { min-width: 112px; height: 32px; padding: 0 12px; border-radius: 10px; background: var(--panel-2); color: var(--text); font-size: 12px; }
+    .preview-toolbar button:disabled { opacity: .38; }
     .preview pre { margin: 0; min-height: 100%; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #dfe4ea; }
     .md-doc { font-size: 15px; line-height: 1.72; color: inherit; overflow-wrap: anywhere; }
     .md-doc h1, .md-doc h2, .md-doc h3, .md-doc h4, .md-doc h5, .md-doc h6 { margin: 1.1em 0 .55em; color: #f5f7fa; line-height: 1.28; letter-spacing: 0; }
@@ -179,18 +187,19 @@
     .msg.assistant .md-doc li { margin: .16em 0; }
     .preview iframe { width: 100%; height: 62vh; border: 0; border-radius: 12px; background: #fff; }
     .preview-body.html-preview iframe { display: block; width: 100%; height: 100%; min-height: 0; border-radius: 0; overflow: auto; pointer-events: auto; transform-origin: top left; }
-    .html-frame-wrap { width: 100%; height: 100%; min-height: 0; background: #fff; overflow: hidden; }
+    .html-frame-wrap { width: 100%; height: 100%; min-height: 0; background: #fff; overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
     .preview img { display: block; max-width: 100%; height: auto; border-radius: 12px; margin: 0 auto; background: #fff; }
     .empty-panel { padding: 28px 14px; color: #8d949c; text-align: center; line-height: 1.6; }
     .takeover { position: fixed; inset: 0; height: var(--app-height); z-index: 80; display: flex; align-items: center; justify-content: center; padding: 12px 14px calc(12px + env(safe-area-inset-bottom)); overflow: hidden; background: radial-gradient(circle at 50% -10%, rgba(36,136,255,.08), transparent 28%), #0d1013; color: #f4f6f8; }
     .takeover.hidden { display: none; }
+    .takeover .hidden { display: none; }
     .takeover-card { width: min(100%, 432px); max-height: calc(var(--app-height) - 24px - env(safe-area-inset-bottom)); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; border: 1px solid rgba(255,255,255,.08); border-radius: 24px; background: linear-gradient(180deg, #171b20, #14181d); box-shadow: 0 24px 70px rgba(0,0,0,.42); padding: 18px; }
     .takeover-hero { display: flex; gap: 16px; align-items: flex-start; }
     .takeover-warn { width: 50px; height: 50px; border-radius: 16px; display: grid; place-items: center; flex: 0 0 auto; background: rgba(228,164,84,.12); border: 1px solid rgba(228,164,84,.22); color: #e4a454; }
     .takeover-warn svg, .takeover-device-icon svg { width: 24px; height: 24px; stroke: currentColor; }
     .takeover-eyebrow { display: inline-flex; align-items: center; margin-bottom: 10px; padding: 6px 10px; border-radius: 999px; background: rgba(228,164,84,.10); border: 1px solid rgba(228,164,84,.18); color: #f0bb77; font-size: 12px; font-weight: 700; }
     .takeover h2 { margin: 0; font-size: 22px; line-height: 1.25; letter-spacing: 0; }
-    .takeover-intro { margin: 10px 0 0; color: #98a0a9; font-size: 14px; line-height: 1.7; }
+    .takeover-intro { margin: 10px 0 0; color: #98a0a9; font-size: 14px; line-height: 1.7; white-space: pre-line; }
     .takeover-divider { height: 1px; background: rgba(255,255,255,.08); margin: 20px 0; }
     .takeover-section-title { margin-bottom: 10px; color: #98a0a9; font-size: 13px; font-weight: 700; }
     .takeover-device { display: flex; align-items: center; gap: 12px; padding: 14px; border: 1px solid rgba(255,255,255,.08); border-radius: 17px; background: #1b2026; }
@@ -207,6 +216,16 @@
     .takeover-primary { background: linear-gradient(180deg, #2488ff, #1677e8); box-shadow: 0 12px 28px rgba(36,136,255,.20); }
     .takeover-secondary { border: 1px solid rgba(255,255,255,.08); background: #1b2026; color: #dce1e6; }
     .takeover-hint { margin-top: 12px; color: #6f7780; text-align: center; font-size: 12px; line-height: 1.5; }
+    .expired-section-title { font-size: 13px; color: #98a0a9; margin-bottom: 11px; font-weight: 700; }
+    .expired-qr-card { border: 1px solid rgba(255,255,255,.08); border-radius: 18px; background: #1b2026; padding: 15px; display: flex; align-items: center; gap: 14px; }
+    .expired-qr { width: 58px; height: 58px; border-radius: 14px; background: #eef2f5; display: grid; place-items: center; position: relative; overflow: hidden; flex: 0 0 auto; }
+    .expired-qr svg { width: 42px; height: 42px; color: #1b2026; }
+    .expired-qr::after { content: ""; position: absolute; left: 8px; right: 8px; top: 28px; height: 2px; background: #d56565; transform: rotate(-38deg); box-shadow: 0 0 0 2px rgba(255,255,255,.8); }
+    .expired-qr-main { flex: 1; min-width: 0; }
+    .expired-qr-title { font-size: 15px; font-weight: 750; }
+    .expired-qr-meta { font-size: 12px; color: #98a0a9; margin-top: 5px; line-height: 1.5; }
+    .expired-badge { font-size: 11px; font-weight: 700; color: #f0bb77; background: rgba(228,164,84,.10); border: 1px solid rgba(228,164,84,.16); padding: 6px 8px; border-radius: 999px; }
+    .expired-tip { margin-top: 17px; padding: 13px 14px; border-radius: 15px; background: #11151a; border: 1px solid rgba(255,255,255,.08); color: #98a0a9; font-size: 12px; line-height: 1.6; }
     body.light header { background: linear-gradient(to bottom, rgba(243,245,247,.98), rgba(243,245,247,.92)); border-color: rgba(0,0,0,.08); }
     body.light footer { background: linear-gradient(to top, rgba(243,245,247,1) 75%, rgba(243,245,247,.88)); border-color: rgba(0,0,0,.08); }
     body.light .session-title, body.light .artifact-top, body.light .icon-button, body.light .chip, body.light .composer, body.light .menu, body.light button.ghost { background: #fff; color: #151719; border-color: rgba(0,0,0,.08); }
@@ -230,6 +249,8 @@
     body.light textarea { background: #fff; color: #151719; border-color: rgba(0,0,0,.12); }
     body.light .preview-body { background: #fff; color: #151719; }
     body.light .preview-body.markdown-preview { background: #fff; color: #24282d; }
+    body.light .preview-toolbar { background: #fff; border-color: rgba(0,0,0,.08); }
+    body.light .preview-zoom-button, body.light .preview-fit-button { background: #eef1f4; color: #151719; }
     body.light .preview pre { color: #151719; }
     body.light .md-doc h1, body.light .md-doc h2, body.light .md-doc h3, body.light .md-doc h4, body.light .md-doc h5, body.light .md-doc h6, body.light .md-doc strong { color: #111418; }
     body.light .md-doc code { background: rgba(0,0,0,.06); color: #1d4f8f; }
@@ -324,13 +345,18 @@
           <h2 id="previewTitle">预览</h2>
           <button class="ghost" id="previewClose">关闭</button>
         </div>
+        <div class="preview-toolbar hidden" id="previewToolbar" aria-label="HTML 预览缩放">
+          <button class="preview-zoom-button" id="previewZoomOut" aria-label="缩小预览">−</button>
+          <button class="preview-fit-button" id="previewZoomFit">适应屏幕</button>
+          <button class="preview-zoom-button" id="previewZoomIn" aria-label="放大预览">＋</button>
+        </div>
         <div class="preview-body" id="previewBody"></div>
       </section>
     </div>
     <section class="takeover hidden" id="takeoverScreen" role="alertdialog" aria-modal="true" aria-labelledby="takeoverTitle">
       <article class="takeover-card">
         <div class="takeover-hero">
-          <div class="takeover-warn" aria-hidden="true">
+          <div class="takeover-warn" id="takeoverWarn" aria-hidden="true">
             <svg fill="none" viewBox="0 0 24 24" stroke-width="1.9">
               <path d="M12 8v5"></path>
               <path d="M12 17h.01"></path>
@@ -338,11 +364,12 @@
             </svg>
           </div>
           <div>
-            <div class="takeover-eyebrow">远程会话被占用</div>
+            <div class="takeover-eyebrow" id="takeoverEyebrow">远程会话被占用</div>
             <h2 id="takeoverTitle">当前会话已在其他设备打开</h2>
-            <p class="takeover-intro">为避免操作冲突，同一时间只能保留一个手机控制端。你可以继续使用新设备，或重新连接本设备切换回来。</p>
+            <p class="takeover-intro" id="takeoverIntro">为避免操作冲突，同一时间只能保留一个手机控制端。你可以继续使用新设备，或重新连接本设备切换回来。</p>
           </div>
         </div>
+        <div id="takeoverDetails">
         <div class="takeover-divider"></div>
         <div class="takeover-section-title">当前接管设备</div>
         <div class="takeover-device">
@@ -370,6 +397,37 @@
             <div>需要切回本设备时，点击重新连接；当前正在控制的设备会被断开。</div>
           </div>
         </div>
+        </div>
+        <div class="hidden" id="expiredDetails">
+          <div class="takeover-divider"></div>
+          <div class="expired-section-title">连接状态</div>
+          <div class="expired-qr-card">
+            <div class="expired-qr" aria-hidden="true">
+              <svg viewBox="0 0 48 48" fill="currentColor">
+                <rect x="3" y="3" width="14" height="14"></rect><rect x="7" y="7" width="6" height="6" fill="#eef2f5"></rect>
+                <rect x="31" y="3" width="14" height="14"></rect><rect x="35" y="7" width="6" height="6" fill="#eef2f5"></rect>
+                <rect x="3" y="31" width="14" height="14"></rect><rect x="7" y="35" width="6" height="6" fill="#eef2f5"></rect>
+                <rect x="22" y="4" width="5" height="5"></rect><rect x="21" y="13" width="7" height="5"></rect>
+                <rect x="21" y="22" width="5" height="5"></rect><rect x="30" y="22" width="5" height="5"></rect>
+                <rect x="39" y="22" width="5" height="5"></rect><rect x="21" y="31" width="5" height="5"></rect>
+                <rect x="29" y="30" width="7" height="7"></rect><rect x="39" y="31" width="5" height="5"></rect>
+                <rect x="22" y="40" width="5" height="5"></rect><rect x="31" y="40" width="5" height="5"></rect><rect x="40" y="40" width="5" height="5"></rect>
+              </svg>
+            </div>
+            <div class="expired-qr-main">
+              <div class="expired-qr-title">远程连接</div>
+              <div class="expired-qr-meta">当前连接已失效</div>
+            </div>
+            <div class="expired-badge">已结束</div>
+          </div>
+          <div class="takeover-divider"></div>
+          <div class="expired-section-title">下一步</div>
+          <div class="takeover-steps">
+            <div class="takeover-step"><div class="takeover-step-num">1</div><div>关闭当前页面。</div></div>
+            <div class="takeover-step"><div class="takeover-step-num">2</div><div>使用手机扫描桌面端最新显示的二维码，重新建立连接。</div></div>
+          </div>
+          <div class="expired-tip">桌面端生成新二维码后，之前打开的二维码会立即失效。</div>
+        </div>
         <div class="takeover-actions">
           <button class="takeover-primary" id="takeoverReconnect">重新连接本设备</button>
           <button class="takeover-secondary" id="takeoverClose">关闭页面</button>
@@ -396,7 +454,10 @@
     }
 
     const roomId = location.pathname.split('/').filter(Boolean).pop();
-    const token = new URLSearchParams(location.search).get('token') || '';
+    // 新二维码把凭证放在 fragment，避免进入 HTTP/反向代理日志；保留 query 兼容旧链接。
+    const token = new URLSearchParams(location.hash.replace(/^#/, '')).get('token')
+      || new URLSearchParams(location.search).get('token')
+      || '';
     const wsUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}${remoteBasePath()}/ws`;
     const el = {
       title: document.getElementById('title'),
@@ -424,7 +485,17 @@
       previewTitle: document.getElementById('previewTitle'),
       previewBody: document.getElementById('previewBody'),
       previewClose: document.getElementById('previewClose'),
+      previewToolbar: document.getElementById('previewToolbar'),
+      previewZoomOut: document.getElementById('previewZoomOut'),
+      previewZoomFit: document.getElementById('previewZoomFit'),
+      previewZoomIn: document.getElementById('previewZoomIn'),
       takeoverScreen: document.getElementById('takeoverScreen'),
+      takeoverWarn: document.getElementById('takeoverWarn'),
+      takeoverEyebrow: document.getElementById('takeoverEyebrow'),
+      takeoverTitle: document.getElementById('takeoverTitle'),
+      takeoverIntro: document.getElementById('takeoverIntro'),
+      takeoverDetails: document.getElementById('takeoverDetails'),
+      expiredDetails: document.getElementById('expiredDetails'),
       takeoverReconnect: document.getElementById('takeoverReconnect'),
       takeoverClose: document.getElementById('takeoverClose'),
       takeoverHint: document.getElementById('takeoverHint'),
@@ -438,6 +509,7 @@
     let joinTimer = null;
     let thinkingFrame = 0;
     let previewFrameId = '';
+    let previewZoom = { ready: false, fit: 1, current: 1, overflow: false };
     let pinvouNode = null;
     const BRAILLE = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     const state = {
@@ -464,6 +536,7 @@
       lastLiveSnapshotAtBySession: {},
       replaced: false,
       terminal: false,
+      desktopReconnecting: false,
     };
     const sentClientIds = new Set();
     const toolNodes = new Map();
@@ -486,6 +559,8 @@
     function showTakeoverScreen() {
       syncViewportHeight();
       state.replaced = true;
+      state.terminal = false;
+      state.desktopReconnecting = false;
       joined = false;
       clearTimeout(joinTimer);
       clearTimeout(reconnectTimer);
@@ -495,6 +570,14 @@
       el.sheetOverlay.classList.add('hidden');
       el.previewOverlay.classList.add('hidden');
       state.sheet = '';
+      el.takeoverWarn.innerHTML = '<svg fill="none" viewBox="0 0 24 24" stroke-width="1.9"><path d="M12 8v5"></path><path d="M12 17h.01"></path><path d="M10.3 3.8 2.9 17a2 2 0 0 0 1.8 3h14.6a2 2 0 0 0 1.8-3L13.7 3.8a2 2 0 0 0-3.4 0Z"></path></svg>';
+      el.takeoverEyebrow.textContent = '远程会话被占用';
+      el.takeoverTitle.textContent = '当前会话已在其他设备打开';
+      el.takeoverIntro.textContent = '为避免操作冲突，同一时间只能保留一个手机控制端。你可以继续使用新设备，或重新连接本设备切换回来。';
+      el.takeoverDetails.classList.remove('hidden');
+      el.expiredDetails.classList.add('hidden');
+      el.takeoverReconnect.classList.remove('hidden');
+      el.takeoverClose.className = 'takeover-secondary';
       el.takeoverReconnect.disabled = false;
       el.takeoverReconnect.textContent = '重新连接本设备';
       el.takeoverHint.textContent = '重新连接后，当前正在控制的设备会被断开。';
@@ -506,8 +589,10 @@
       setControlsDisabled(false);
       el.takeoverScreen.classList.add('hidden');
     }
-    function enterTerminalState(status, message) {
+    function enterTerminalState(status, title, message, hint, variant) {
       state.terminal = true;
+      state.replaced = false;
+      state.desktopReconnecting = false;
       joined = false;
       clearTimeout(joinTimer);
       clearTimeout(reconnectTimer);
@@ -517,8 +602,22 @@
       state.sheet = '';
       el.sheetOverlay.classList.add('hidden');
       el.previewOverlay.classList.add('hidden');
-      addSystem(message);
       detachCurrentSocket();
+      el.takeoverEyebrow.textContent = status;
+      el.takeoverTitle.textContent = title;
+      el.takeoverIntro.textContent = message;
+      el.takeoverDetails.classList.add('hidden');
+      el.expiredDetails.classList.toggle('hidden', variant !== 'ended');
+      el.takeoverReconnect.classList.add('hidden');
+      el.takeoverClose.className = variant === 'ended' ? 'takeover-primary' : 'takeover-secondary';
+      el.takeoverWarn.innerHTML = variant === 'ended'
+        ? '<svg fill="none" viewBox="0 0 24 24" stroke-width="1.9"><path d="M12 6v6l3 2"></path><circle cx="12" cy="12" r="9"></circle></svg>'
+        : '<svg fill="none" viewBox="0 0 24 24" stroke-width="1.9"><path d="M12 8v5"></path><path d="M12 17h.01"></path><path d="M10.3 3.8 2.9 17a2 2 0 0 0 1.8 3h14.6a2 2 0 0 0 1.8-3L13.7 3.8a2 2 0 0 0-3.4 0Z"></path></svg>';
+      el.takeoverHint.textContent = hint || '请返回桌面端重新开启远程控制。';
+      el.takeoverClose.disabled = false;
+      el.takeoverClose.textContent = '关闭页面';
+      el.takeoverScreen.classList.remove('hidden');
+      el.takeoverScreen.scrollTop = 0;
     }
     function detachCurrentSocket() {
       if (!ws) return;
@@ -1306,13 +1405,62 @@
       }
       appendToMessages(card);
     }
+    function previewIframe() {
+      return el.previewBody.querySelector(`iframe[data-preview-frame-id="${previewFrameId}"]`);
+    }
+    function updatePreviewZoomToolbar() {
+      const percent = Math.round((previewZoom.current || 1) * 100);
+      el.previewZoomFit.textContent = previewZoom.ready
+        ? `${previewZoom.overflow ? '适应' : '原始'} · ${percent}%`
+        : '正在适配…';
+      el.previewZoomOut.disabled = !previewZoom.ready || previewZoom.current <= 0.25;
+      el.previewZoomIn.disabled = !previewZoom.ready || previewZoom.current >= 2;
+      el.previewZoomFit.disabled = !previewZoom.ready;
+    }
+    function setPreviewZoom(scale, fit = false) {
+      if (!previewZoom.ready) return;
+      const next = fit
+        ? previewZoom.fit
+        : Math.max(0.25, Math.min(2, Math.round(Number(scale) * 100) / 100));
+      const iframe = previewIframe();
+      if (!iframe || !iframe.contentWindow) return;
+      previewZoom.current = next;
+      updatePreviewZoomToolbar();
+      iframe.contentWindow.postMessage({
+        source: 'pinvou-remote-preview-host',
+        type: fit ? 'fit' : 'set_zoom',
+        frame_id: previewFrameId,
+        scale: next,
+      }, '*');
+    }
+    window.addEventListener('message', event => {
+      const data = event.data || {};
+      if (data.source !== 'pinvou-remote-preview-frame' || data.type !== 'metrics') return;
+      if (!previewFrameId || data.frame_id !== previewFrameId) return;
+      const iframe = previewIframe();
+      if (!iframe || event.source !== iframe.contentWindow) return;
+      const fit = Number(data.fit_scale);
+      const current = Number(data.scale);
+      if (!Number.isFinite(fit) || !Number.isFinite(current)) return;
+      previewZoom = {
+        ready: true,
+        fit: Math.max(0.25, Math.min(1, fit)),
+        current: Math.max(0.25, Math.min(2, current)),
+        overflow: Boolean(data.overflow),
+      };
+      updatePreviewZoomToolbar();
+    });
     function showPreview(payload) {
       const preview = payload.preview || {};
       const previewName = payload.basename || basename(payload.path_tail) || '预览';
       const markdownByName = /\.(md|markdown)$/i.test(previewName);
       el.previewTitle.textContent = previewName;
+      el.previewTitle.title = previewName;
       el.previewBody.innerHTML = '';
       el.previewBody.classList.remove('html-preview', 'markdown-preview');
+      el.previewToolbar.classList.add('hidden');
+      previewFrameId = '';
+      previewZoom = { ready: false, fit: 1, current: 1, overflow: false };
       if (preview.type === 'image' && preview.data_url) {
         const img = document.createElement('img');
         img.alt = payload.basename || 'artifact preview';
@@ -1320,6 +1468,8 @@
         el.previewBody.appendChild(img);
       } else if (preview.type === 'html') {
         el.previewBody.classList.add('html-preview');
+        el.previewToolbar.classList.remove('hidden');
+        updatePreviewZoomToolbar();
         previewFrameId = `pv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         const wrap = document.createElement('div');
         wrap.className = 'html-frame-wrap';
@@ -1490,10 +1640,96 @@
       return out.join('');
     }
     function htmlPreviewSrcdoc(content, id) {
-      const style = `<meta name="viewport" content="width=device-width, initial-scale=1"><style data-pinvou-remote-preview-style>*,*::before,*::after{box-sizing:border-box}html,body{max-width:100%;overflow-x:hidden}body{min-width:0!important}img,svg,video,canvas{max-width:100%!important;height:auto}table{max-width:100%;display:block;overflow-x:auto}pre,code{white-space:pre-wrap;overflow-wrap:anywhere}</style>`;
+      const frameId = JSON.stringify(String(id || ''));
+      const style = `<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=yes"><style data-pinvou-remote-preview-style>*,*::before,*::after{box-sizing:border-box}html,body{overflow:auto!important}body{min-width:0!important}</style>`;
+      const bridge = `<script>(function(){
+        const FRAME_ID=${frameId};
+        const root=document.documentElement;
+        let naturalWidth=0;
+        let fitScale=1;
+        let currentScale=1;
+        let manualZoom=false;
+        let measureTimer=0;
+        const body=document.body;
+        const originalStyle={
+          rootWidth:[root.style.getPropertyValue('width'),root.style.getPropertyPriority('width')],
+          rootMinHeight:[root.style.getPropertyValue('min-height'),root.style.getPropertyPriority('min-height')],
+          rootZoom:[root.style.getPropertyValue('zoom'),root.style.getPropertyPriority('zoom')],
+          bodyMinHeight:body?[body.style.getPropertyValue('min-height'),body.style.getPropertyPriority('min-height')]:['','']
+        };
+        const clamp=(value,min,max)=>Math.max(min,Math.min(max,value));
+        function viewportWidth(){return Math.max(1,window.innerWidth||root.clientWidth||1)}
+        function viewportHeight(){return Math.max(1,window.innerHeight||root.clientHeight||1)}
+        function restoreProperty(node,name,saved){
+          if(!node)return;
+          if(saved[0])node.style.setProperty(name,saved[0],saved[1]);
+          else node.style.removeProperty(name);
+        }
+        function restorePreviewLayout(){
+          restoreProperty(root,'width',originalStyle.rootWidth);
+          restoreProperty(root,'min-height',originalStyle.rootMinHeight);
+          restoreProperty(root,'zoom',originalStyle.rootZoom);
+          restoreProperty(body,'min-height',originalStyle.bodyMinHeight);
+        }
+        function measureNaturalWidth(){
+          restorePreviewLayout();
+          const viewport=viewportWidth();
+          let minLeft=0;
+          let maxRight=viewport;
+          const nodes=body?[body].concat(Array.from(body.querySelectorAll('*')).slice(0,2000)):[];
+          for(const node of nodes){
+            const position=getComputedStyle(node).position;
+            if(position==='absolute'||position==='fixed')continue;
+            const rect=node.getBoundingClientRect();
+            if(!Number.isFinite(rect.left)||!Number.isFinite(rect.right)||rect.width<=0)continue;
+            minLeft=Math.min(minLeft,rect.left);
+            maxRight=Math.max(maxRight,rect.right);
+          }
+          return clamp(Math.ceil(maxRight-Math.min(0,minLeft)),viewport,100000);
+        }
+        function report(){
+          parent.postMessage({
+            source:'pinvou-remote-preview-frame',type:'metrics',frame_id:FRAME_ID,
+            natural_width:naturalWidth,viewport_width:viewportWidth(),fit_scale:fitScale,
+            scale:currentScale,overflow:naturalWidth>viewportWidth()+1
+          },'*');
+        }
+        function apply(scale){
+          if(!naturalWidth)naturalWidth=measureNaturalWidth();
+          currentScale=clamp(Number(scale)||1,.25,2);
+          const layoutWidth=Math.max(naturalWidth,viewportWidth()/currentScale);
+          const layoutMinHeight=viewportHeight()/currentScale;
+          root.style.setProperty('width',layoutWidth+'px','important');
+          root.style.setProperty('min-height',layoutMinHeight+'px','important');
+          if(body)body.style.setProperty('min-height',layoutMinHeight+'px','important');
+          root.style.setProperty('zoom',String(currentScale),'important');
+          requestAnimationFrame(report);
+        }
+        function measure(){
+          naturalWidth=measureNaturalWidth();
+          fitScale=clamp(viewportWidth()/naturalWidth,.25,1);
+          apply(manualZoom?currentScale:fitScale);
+        }
+        function scheduleMeasure(){clearTimeout(measureTimer);measureTimer=setTimeout(measure,80)}
+        addEventListener('message',event=>{
+          const data=event.data||{};
+          if(event.source!==parent||data.source!=='pinvou-remote-preview-host'||data.frame_id!==FRAME_ID)return;
+          if(data.type==='fit'){manualZoom=false;apply(fitScale)}
+          else if(data.type==='set_zoom'){manualZoom=true;apply(data.scale)}
+        });
+        addEventListener('resize',scheduleMeasure,{passive:true});
+        if(document.body)new MutationObserver(scheduleMeasure).observe(document.body,{childList:true,subtree:true});
+        if(document.fonts&&document.fonts.ready)document.fonts.ready.then(scheduleMeasure).catch(()=>{});
+        if(document.readyState==='loading')addEventListener('DOMContentLoaded',scheduleMeasure,{once:true});
+        else scheduleMeasure();
+        addEventListener('load',scheduleMeasure,{once:true});
+        setTimeout(scheduleMeasure,500);
+      })();<\/script>`;
       let html = String(content || '');
       if (/<\/head>/i.test(html)) html = html.replace(/<\/head>/i, `${style}</head>`);
       else html = `${style}${html}`;
+      if (/<\/body>/i.test(html)) html = html.replace(/<\/body>/i, `${bridge}</body>`);
+      else html += bridge;
       return html;
     }
     function updateArtifacts(artifacts) {
@@ -2005,7 +2241,7 @@
       });
     }
     function handleDesktopEvent(msg) {
-      const unscoped = ['session_list', 'remote_session_switched', 'error', 'room_replaced', 'room_closed'];
+      const unscoped = ['session_list', 'remote_session_switched', 'desktop_connection_state', 'error', 'room_replaced', 'room_closed'];
       if (!unscoped.includes(msg.type) && !isCurrentSessionMessage(msg)) return;
       switch (msg.type) {
         case 'session_snapshot':
@@ -2143,12 +2379,26 @@
           setTurnActive(false);
           setStatus((msg.payload && msg.payload.status) || '空闲');
           break;
+        case 'desktop_connection_state':
+          if (msg.status === 'reconnecting') {
+            if (!state.desktopReconnecting) addSystem('桌面连接暂时中断，正在自动恢复。');
+            state.desktopReconnecting = true;
+            setControlsDisabled(true);
+            setStatus('桌面重连中');
+          } else if (msg.status === 'connected') {
+            const wasReconnecting = state.desktopReconnecting;
+            state.desktopReconnecting = false;
+            if (!state.replaced && !state.terminal) setControlsDisabled(false);
+            setStatus('已连接');
+            if (wasReconnecting) addSystem('桌面端已恢复连接。');
+          }
+          break;
         case 'error':
           state.creatingSession = false;
           {
             const message = (msg.payload && msg.payload.message) || msg.message || 'unknown';
             if (/room expired|not found|invalid token/i.test(message)) {
-              enterTerminalState('二维码已失效', '二维码已失效，请回到桌面端刷新二维码后重新扫码。');
+              enterTerminalState('连接已结束', '远程连接已结束', '当前远程连接已结束。可能是桌面端停止了远程控制，或已经更新了连接二维码。\n\n请返回桌面端确认状态，并扫描当前显示的二维码重新连接。', '请扫描桌面端显示的二维码重新连接。', 'ended');
               break;
             }
           }
@@ -2166,7 +2416,13 @@
           showTakeoverScreen();
           break;
         case 'room_closed':
-          enterTerminalState('已停止', '桌面端已停止远程控制，请重新扫码连接。');
+          if (msg.reason === 'qr_refreshed') {
+            enterTerminalState('连接已结束', '远程连接已结束', '当前远程连接已结束。可能是桌面端停止了远程控制，或已经更新了连接二维码。\n\n请返回桌面端确认状态，并扫描当前显示的二维码重新连接。', '请扫描桌面端显示的二维码重新连接。', 'ended');
+          } else if (msg.reason === 'desktop_disconnected') {
+            enterTerminalState('连接异常', '桌面端连接已断开', '桌面端或中继连接发生异常，当前远程控制已经中止。', '请确认桌面端在线后刷新本页面或重新扫码。');
+          } else {
+            enterTerminalState('连接已结束', '远程连接已结束', '当前远程连接已结束。可能是桌面端停止了远程控制，或已经更新了连接二维码。\n\n请返回桌面端确认状态，并扫描当前显示的二维码重新连接。', '请扫描桌面端显示的二维码重新连接。', 'ended');
+          }
           break;
       }
     }
@@ -2223,6 +2479,11 @@
     function submitComposer() {
       if (state.replaced) {
         setStatus('已被占用');
+        return;
+      }
+      if (state.desktopReconnecting) {
+        setStatus('桌面重连中');
+        addSystem('桌面端正在恢复连接，请稍候。');
         return;
       }
       if (state.turn.active) {
@@ -2287,6 +2548,9 @@
     el.sheetOverlay.onclick = e => { if (e.target === el.sheetOverlay) closeSheet(); };
     el.previewClose.onclick = () => el.previewOverlay.classList.add('hidden');
     el.previewOverlay.onclick = e => { if (e.target === el.previewOverlay) el.previewOverlay.classList.add('hidden'); };
+    el.previewZoomOut.onclick = () => setPreviewZoom(previewZoom.current - 0.1);
+    el.previewZoomFit.onclick = () => setPreviewZoom(previewZoom.fit, true);
+    el.previewZoomIn.onclick = () => setPreviewZoom(previewZoom.current + 0.1);
     el.takeoverReconnect.onclick = reconnectThisDevice;
     el.takeoverClose.onclick = closeRemotePage;
     document.addEventListener('click', e => {

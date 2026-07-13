@@ -154,7 +154,6 @@
       room_id: null,
       session_id: null,
       url: null,
-      expires_at: null,
       status: "idle",
       relay_url: "",
       last_error: null,
@@ -399,6 +398,15 @@
     hydrateWorkingSetFromSaved(buf, saved);
     try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch (e) { buf.personaEvents = []; }
     try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch (e) { buf.pinvouReviews = []; }
+    // 手机可能在桌面仍停留草稿页/其他 session 时先唤醒这个后台 session。
+    // 仅 hydrate messages 而把 chatItems 留空，会让后续 switchToSession 命中缓存快路径，
+    // 不再 rerenderFromMessages，桌面便只看得到手机唤醒后的新内容，历史像是“丢了”。
+    // 在首次磁盘 hydration 后先完整重建展示层，再由 mobile_user_message 追加当前轮；
+    // buf.busy 时上方已提前返回，不会覆盖正在流式生成的实时 chatItems。
+    runSyncOnSession(sid, function () {
+      resetPendingAssistant();
+      rerenderFromMessages();
+    });
     buf.loadedFromDisk = true;
   }
   // 把 active 工作集存好后切到 id 的 buffer(opts.fresh=新建空 buffer)。
@@ -3435,13 +3443,19 @@
       await refreshRemoteControlStatus();
       return info;
     } catch (e) {
-      state.remoteControl = Object.assign({}, state.remoteControl, { starting: false, last_error: String(e) });
+      state.remoteControl = Object.assign({}, state.remoteControl, { active: false, starting: false, status: "error", last_error: String(e) });
       notify();
       throw e;
     }
   }
   async function stopRemoteControl() {
-    try { await invoke("remote_control_stop"); } catch (e) { state.remoteControl.last_error = String(e); }
+    try {
+      await invoke("remote_control_stop");
+    } catch (e) {
+      state.remoteControl = Object.assign({}, state.remoteControl, { status: "error", last_error: String(e) });
+      notify();
+      throw e;
+    }
     state.remoteControl = Object.assign({}, state.remoteControl, { active: false, pairing: null, status: "stopped" });
     notify();
   }
@@ -3452,7 +3466,7 @@
       await refreshRemoteControlStatus();
       return info;
     } catch (e) {
-      state.remoteControl = Object.assign({}, state.remoteControl, { last_error: String(e) });
+      state.remoteControl = Object.assign({}, state.remoteControl, { status: "error", last_error: String(e) });
       notify();
       throw e;
     }

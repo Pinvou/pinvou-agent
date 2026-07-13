@@ -4,7 +4,7 @@
 
 ## 目标
 
-一期只解决一个问题：手机扫码接入桌面端当前 session，能够远程查看会话、发送消息、处理基础确认，并与桌面端实时同步。
+一期只解决一个问题：手机扫码接入桌面端当前远控 room，能够选择或创建 session、远程查看会话、发送消息、处理基础确认，并与桌面端实时同步。
 
 它不是底座远程控制，也不是飞书 / 微信 Bot Channel。一期的对象是 `session`，不是 `device`、`knowledge base` 或全局任务中心。
 
@@ -13,7 +13,7 @@
 - 本地执行权不外移：DeepSeek-TUI Engine、本地模型、文件系统和工具执行仍在本地 pinvou3 主机。
 - 云端只做 relay：云端负责配对、鉴权、WebSocket 中继和连接状态，不默认保存用户消息全文、工具参数、文件内容。
 - 不重复造底座：复用现有 `EnginePool`、`SessionStore`、`chat:*` Tauri 事件、`chat` / `submit_user_input` / `cancel_user_input` 命令。
-- 一期只绑定当前 session：扫码链接只能进入桌面端当前 session，不能列出历史 session、切换工作区、浏览文件或访问知识库。
+- 一期只绑定当前远控 room：扫码链接不提供设备级能力；room 内可以列出、新建和切换 pinvou3 session，但不能切换桌面工作区、任意浏览文件或访问知识库。
 - 断线可恢复：手机断线重连后，从本地重新取 session snapshot，而不是依赖云端缓存还原状态。
 
 ## 当前可复用基础
@@ -111,7 +111,6 @@ remote_control_refresh_qr(room_id: string) -> RemotePairingInfo
   "session_id": "p3_...",
   "url": "https://remote.pinvou.ai/r/...",
   "qr_data_url": "data:image/svg+xml;base64,...",
-  "expires_at": "2026-07-09T10:10:00Z",
   "status": "waiting_mobile"
 }
 ```
@@ -136,7 +135,7 @@ chat:compaction
 artifact:disk
 ```
 
-一期可以先不转发完整 artifact 内容，只转发 artifact card 的摘要字段和路径尾部；打开原文件、下载文件、远程文件浏览放到二期。
+实时事件只转发 artifact card 摘要字段和路径尾部；手机可按需请求当前 session workspace/artifacts 内经过 canonical path 校验的受限预览，文件下载和任意文件浏览放到二期。
 
 ### 手机指令路由
 
@@ -192,7 +191,6 @@ disconnect
   "desktop_connected": true,
   "mobile_connected": false,
   "created_at": "...",
-  "expires_at": "...",
   "paired_at": null,
   "closed_at": null,
   "status": "waiting_mobile"
@@ -202,7 +200,7 @@ disconnect
 ### 配对时序
 
 ```text
-desktop -> relay: create_room(desktop_secret, session_id_hash, expires_at)
+desktop -> relay: create_room(desktop_secret, session_id_hash)
 relay -> desktop: room_created(room_id, pairing_url)
 desktop: show QR
 mobile -> relay: open pairing_url(pairing_token)
@@ -219,11 +217,12 @@ desktop <-> relay <-> mobile: live events
 
 ### Token 策略
 
-- `pairing_token` 有效期 5-10 分钟。
-- 当前一期实现里，`pairing_token` 在 TTL 内仍承担扫码进入、刷新和接管当前 mobile 连接的职责；严格“一次性 token”暂不在本 PR 内完成。
-- 后续修复项：token 首次配对后升级为 `mobile_session_token`，用于断线重连。
-- 后续修复项：`mobile_session_token` 只绑定当前 `room_id + session_id + client_id`。
-- 桌面停止远控后，room 立即失效。
+- `pairing_token` 是当前 room 的能力凭证，与 room 同寿命，不使用固定 5-10 分钟 TTL。
+- 持有二维码或完整链接即拥有连接权；同一 room 只保留一个 mobile，后来扫码或打开链接的设备接管控制，旧设备进入“已被占用”状态页。
+- 手机刷新页面、重扫二维码或重新打开链接，均可使用同一个 `pairing_token` 恢复连接。
+- “刷新二维码”会关闭旧 room、吊销旧 token 和旧手机连接，再创建全新的 room/token。
+- “刷新二维码”、停止远控、旧 room/token 不可用统一进入手机端“远程连接已结束”页面；页面不猜测具体关闭原因，引导用户返回桌面确认并扫描当前二维码。
+- 新二维码只在 URL fragment（`#token=...`）携带 token，避免进入 HTTP 和反向代理访问日志；手机页保留读取 query 的兼容逻辑，供旧 App 生成的链接继续使用；relay 只保存 token hash。
 
 ## 协议设计
 
@@ -330,19 +329,20 @@ disconnect
 
 ## 手机 Web UI 一期范围
 
-一期页面只做一个 session 会话页：
+一期页面以单个 session 会话页为主，并提供轻量 session 选择面板：
 
 - 顶部显示 session 标题、连接状态、桌面在线状态。
 - 中间渲染消息流、工具执行状态、等待确认卡。
 - 底部输入框支持发送文字和停止生成。
 - `request_user_input` 渲染为确认卡，支持提交/取消。
 - 断线时显示重连状态，重连成功后拉取 snapshot。
+- 支持列出、新建和切换 pinvou3 session。
+- 支持当前 session 受限 artifact 预览。
 
 不做：
 
 - 文件树。
 - 知识库搜索。
-- 历史 session 列表。
 - 设备列表。
 - 设置页。
 - 附件上传。
@@ -362,7 +362,7 @@ disconnect
 
 一期必须实现：
 
-- token 短有效期。
+- 高熵 room token，仅通过 HTTPS/WSS 传输，relay 只保存 hash。
 - room 单 session 绑定。
 - 已存在 room 的 desktop 重新注册必须校验 `desktop_secret`，防止未知桌面端抢占。
 - 公开 `/healthz` 不暴露 room/session 明细，只返回聚合计数。
@@ -379,7 +379,7 @@ disconnect
 - 多设备长期绑定。
 - 账号体系下的设备管理。
 - 远程知识库搜索。
-- 文件远程预览和下载。
+- 文件下载和任意文件浏览。
 - Bot Channel 审批。
 
 这些全部进入二期/三期。
@@ -389,10 +389,12 @@ disconnect
 ### 断线重连
 
 - 手机 WebSocket 断开后自动重连。
-- 当前一期重连仍使用短 TTL 的 `pairing_token`；`mobile_session_token` 是后续修复项。
+- 手机重连继续使用与 room 同寿命的 `pairing_token`。
 - relay 校验 room 未关闭且桌面仍在线。
 - 手机发送 `request_snapshot`。
 - 本地返回最新 `session_snapshot`，手机用 snapshot 覆盖本地临时状态。
+- 桌面 WebSocket 意外断开时，relay 保留 room 和 mobile 15 秒；手机显示“桌面重连中”并暂停操作。同一 `desktop_secret` 在宽限期内恢复则继续原 room 并重拉 snapshot，超时才关闭 room。
+- relay 每 15 秒发送 WebSocket ping；无 pong 的半开连接会被终止并进入对应重连流程。
 
 ### 消息去重
 
@@ -401,6 +403,16 @@ Mobile -> Desktop 的 action 必须带 `client_message_id`。本地 `RemoteContr
 ### 背压
 
 `assistant_delta` 可能高频。relay 可以不持久化 delta，但本地发送前应允许做 50-100ms 小窗口合并，减少手机端渲染压力。桌面本地 UI 仍走原始 `chat:delta`，不受影响。
+
+### Relay 容量与入口保护
+
+- Relay 默认最多保留 2000 个 room；已有 room 的桌面重连不受容量上限影响。
+- 同一客户端默认每分钟最多新建 20 个 room；反向代理来源只在其 IP 被显式信任时读取 `X-Forwarded-For`，并采用代理追加的最后一个地址，避免客户端伪造首段地址绕过限流。
+- Relay 默认最多同时保留 5000 条 WebSocket 连接，同一客户端默认每分钟最多发起 120 次 WebSocket 建连；达到容量时在 Upgrade 阶段拒绝新连接，避免未认证连接绕过 room 上限持续消耗资源。
+- WebSocket 建立后必须在 10 秒内完成 `desktop_register` 或 `mobile_join`，否则 Relay 主动关闭；已认证连接不受该超时影响，仍按正常心跳和重连规则运行。
+- 生产环境通过 `PINVOU_REMOTE_ALLOWED_PROXY_IPS` 只允许本机健康检查和指定反向代理访问 Relay，公网客户端统一走 `https/wss://www.ma-xiao.com`。
+- WebSocket 单条消息默认上限为 4 MiB，可通过 `MAX_PAYLOAD_BYTES` 调整，服务端硬限制不超过 16 MiB。
+- `/healthz` 额外返回 WebSocket 总连接数和未认证连接数，仍只提供聚合计数，不暴露 room、session 或客户端明细。
 
 ## 实施拆分
 
@@ -444,6 +456,8 @@ Mobile -> Desktop 的 action 必须带 `client_message_id`。本地 `RemoteContr
 - 云端日志脱敏。
 - 桌面连接状态提示。
 
+线上 relay 使用 `scripts/deploy-remote-relay.sh` 部署：脚本先确认现有公网基线正常，再运行自动化测试、备份、原子替换并重启 systemd。部署后会验证公网健康检查、新版手机页面标识和直连端口隔离；任何一项失败都会恢复本次部署前的备份，并再次执行本机和公网复检。
+
 ## 验收标准
 
 一期完成必须满足：
@@ -456,12 +470,12 @@ Mobile -> Desktop 的 action 必须带 `client_message_id`。本地 `RemoteContr
 6. 手机能取消当前生成。
 7. `request_user_input` 出现时，手机能提交选择并解锁本地 engine。
 8. 手机断线重连后能恢复最新 session snapshot。
-9. 二维码过期后不可连接。
+9. 二维码在 room 存续期间持续有效；刷新二维码后旧链接不可连接。
 10. 停止远控后，手机端不能继续发送 action。
 
 ## 与二期的接口预留
 
-一期协议里保留 `device_id` 字段，但不开放设备列表。
+一期协议不预留无实际语义的 `device_id` 字段；二期升级 device room 时再随协议版本新增。
 
 一期 relay room 是 `session` 级；二期升级为：
 

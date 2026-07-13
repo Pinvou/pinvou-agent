@@ -32,6 +32,7 @@ const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-smoke-'));
 // mock TauriBridge:find_resumable_run 返回僵尸 run;一个会话含 write_file → 触发 artifact_card 气泡。
 function injectSource() {
   return `(function(){
+    window.__TAURI_EVENT_HANDLERS__={};
     const ZOMBIE={session_id:'s-zombie',project_dir:'/x/wf',scenario:'sansheng_liubu'};
     const WF_STATE={project_dir:'/x/wf',scenario:'sansheng_liubu',all_completed:false,roles:{taizi:{name:'太子',status:'running'},zhongshu:{name:'中书',status:'pending'}}};
     const SESSIONS=[{id:'s1',title:'第三季度财报分析',created_at:1,updated_at:9}];
@@ -73,7 +74,11 @@ function injectSource() {
         default: return Promise.resolve(null);
       }
     }
-    window.__TAURI__={core:{invoke:invoke},event:{listen:function(){return Promise.resolve(function(){});}},
+    window.__TAURI__={core:{invoke:invoke},event:{listen:function(name,handler){
+      const handlers=window.__TAURI_EVENT_HANDLERS__[name]||(window.__TAURI_EVENT_HANDLERS__[name]=[]);
+      handlers.push(handler);
+      return Promise.resolve(function(){const i=handlers.indexOf(handler);if(i>=0)handlers.splice(i,1);});
+    }},
       window:{getCurrentWindow:function(){return {minimize(){},maximize(){},close(){},toggleMaximize(){},isMaximized(){return Promise.resolve(false);},onResized(){return Promise.resolve(function(){});},startDragging(){}};}},
       dialog:{open:function(){return Promise.resolve(null);}}};
   })();`;
@@ -111,6 +116,15 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
   });
   rec('① 僵尸run不劫持启动(落草稿页+挂看板)', (st.activeSessionId == null) && st.wfActive === true && st.wfSid === 's-zombie', JSON.stringify(st));
 
+  // 手机先向尚未在桌面打开的后台 session 发消息：hydration 必须先把磁盘 messages
+  // 重建成 chatItems；否则桌面随后切入时只剩这条手机消息，历史和产物卡都像“丢了”。
+  await page.evaluate(async () => {
+    const handlers = window.__TAURI_EVENT_HANDLERS__['remote_control:mobile_user_message'] || [];
+    for (const handler of handlers) {
+      await handler({ payload: { session_id: 's1', content: '手机补充消息', client_message_id: 'cm-regression' } });
+    }
+  });
+
   // ② 工具商店 Obsidian 卡
   await expand(page); await sleep(500);
   await clickText(page, '工具商店');
@@ -124,7 +138,11 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
   const hit = await page.evaluate(() => [...document.querySelectorAll('button')]
     .map(b => ({ t: b.getAttribute('title') || '', x: (b.textContent || '').trim() }))
     .filter(o => o.t.includes('查错') || o.t.includes('发散') || /品|悟/.test(o.x)).length);
-  rec('③ 产物卡挂出 品/悟 召唤pinvou按钮', hit >= 2, `命中${hit}个`);
+  const restored = await page.evaluate(() => {
+    const text = document.body.innerText;
+    return { history: text.includes('整理纪要'), mobile: text.includes('手机补充消息') };
+  });
+  rec('③ 后台session经手机唤醒后仍恢复历史+新消息+产物卡', hit >= 2 && restored.history && restored.mobile, JSON.stringify({ hit, ...restored }));
 
   // ④ 品悟检阅 modal 本地化渲染:threading t 不报错 + 裁决标签/trace 出现(i18n 回归)
   await page.evaluate(() => window.TauriBridge.summonPinvou('/home/x/会议纪要.md'));
