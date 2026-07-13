@@ -556,6 +556,10 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
           loadColls(); // 模型就绪后刷新语义徽标/列表
         } catch (e) {}
       };
+      // 用户恰好在首帧后台加载期间进入知识库时，模型就绪后刷新语义状态徽标。
+      useEffect(() => {
+        if (kbm.startupReady) loadColls();
+      }, [kbm.startupReady, loadColls]);
 
       const indexing = !!(idx && idx.running);
       useEffect(() => {

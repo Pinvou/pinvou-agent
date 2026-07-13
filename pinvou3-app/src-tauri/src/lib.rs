@@ -338,11 +338,9 @@ pub fn run() {
             // 扫描改懒触发:由前端进入文件管理页时增量扫(不进页=零扫描),不常驻 watcher/周期
             // 重扫。文件管理是低频功能,不该长期占资源。
             // embedding 模型**不再随 deb 打包**(deb 瘦 ~559MB):改按需下载到
-            // ~/.pinvou3/knowledge/models/bge-m3(knowledge::model_dir)。这里把下载落点作 fallback
-            // 传给服务;dev 的 env(PINVOU3_KB_EMBED_MODEL_DIR,run-dev.sh 设)优先逻辑仍由
-            // embed::from_env_or_dir 内部保留。模型没装 → 加载失败 → embedder=None → 知识库走
-            // 完全门控(前端 gate),不阻断启动;用户在知识库页下载后 reload_embedder 热加载。
-            let kb_model_dir = knowledge::model_dir();
+            // ~/.pinvou3/knowledge/models/bge-m3。setup 只打开数据库并以 embedder=None 注册服务；
+            // React 首帧后再调用 kb_model_load_after_first_frame，通过 spawn_blocking 后台加载。
+            // 模型没装/加载失败时维持完全门控，不阻断启动；下载完成仍可热加载。
             // 语音识别引擎 sense-voice-main 随 deb 打包,容错同 bge-m3 的资源布局,
             // 注入给 voice_asr 作为 ~/.pinvou3/asr/ 之外的回退查找目录。
             if let Some(asr_res) = app.path().resource_dir().ok().and_then(|res| {
@@ -357,7 +355,7 @@ pub fn run() {
             }
 
             startup::mark("knowledge_service:start");
-            match knowledge::KnowledgeService::new(&knowledge::default_db_path(), Some(&kb_model_dir)) {
+            match knowledge::KnowledgeService::new(&knowledge::default_db_path()) {
                 Ok(svc) => {
                     app.handle().manage(svc);
                     eprintln!("[pinvou3-app] knowledge service ready");
@@ -589,6 +587,7 @@ pub fn run() {
             knowledge::kb_remove_document,
             knowledge::kb_embed_info,
             knowledge::model_download::kb_model_status,
+            knowledge::model_download::kb_model_load_after_first_frame,
             knowledge::model_download::kb_model_download,
             knowledge::model_download::kb_model_cancel,
             commands::session_mount_collection,

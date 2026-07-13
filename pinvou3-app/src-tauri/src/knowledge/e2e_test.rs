@@ -28,6 +28,22 @@ fn wait_idle(svc: &KnowledgeService, what: &str) {
 }
 
 #[test]
+fn service_starts_without_embedder() {
+    let root = std::env::temp_dir().join(format!(
+        "pinvou3_kb_startup_without_embedder_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+
+    let svc = KnowledgeService::new(&root.join("index.db")).expect("KnowledgeService::new");
+    assert!(!svc.semantic_ready(), "同步服务初始化不得加载 embedding 模型");
+
+    drop(svc);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 #[ignore]
 fn full_l0_l1_e2e() {
     // L1 语义检索真实跑：指向本地 bge-m3。
@@ -48,7 +64,8 @@ fn full_l0_l1_e2e() {
     fs::write(root.join("App.class"), b"\xca\xfe\xba\xbe").unwrap();
 
     let db = root.join("index.db");
-    let svc = KnowledgeService::new(&db, None).expect("KnowledgeService::new");
+    let svc = KnowledgeService::new(&db).expect("KnowledgeService::new");
+    assert!(svc.reload_embedder(), "测试 embedding 模型应能后台热加载");
 
     // ───── L0：扫描 ─────
     svc.start_scan(vec![root.clone()]);

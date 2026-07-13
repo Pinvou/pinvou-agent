@@ -277,16 +277,30 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       useEffect(() => {
         window.__PINVOU_STARTUP__.mark('react:first_commit');
         window.__PINVOU_STARTUP__.flush();
+        // 连续两个 rAF：第二个回调发生在首次提交已经交给 WebView 绘制之后。此时再启动
+        // 558 MiB embedding 模型的 blocking 后台加载，避免模型 IO/ONNX 初始化阻塞白屏。
+        let secondFrame = 0;
+        const firstFrame = window.requestAnimationFrame(() => {
+          secondFrame = window.requestAnimationFrame(() => {
+            if (bridge.available && bridge.loadKnowledgeEmbedderAfterFirstFrame) {
+              bridge.loadKnowledgeEmbedderAfterFirstFrame();
+            }
+          });
+        });
         // 让首帧先交给 WebView 绘制，再异步校验飞书/企微实时鉴权状态。
         // 后端并行跑两个 CLI；结果只刷新技能目录，不阻塞主界面。
-        const timer = window.setTimeout(() => {
+        const authTimer = window.setTimeout(() => {
           if (bridge.available && bridge.refreshConnectorAuthGates) {
             bridge.refreshConnectorAuthGates().catch(error => {
               console.warn('[startup] connector auth refresh failed', error);
             });
           }
         }, 0);
-        return () => window.clearTimeout(timer);
+        return () => {
+          window.cancelAnimationFrame(firstFrame);
+          if (secondFrame) window.cancelAnimationFrame(secondFrame);
+          window.clearTimeout(authTimer);
+        };
       }, []);
       const [activeChat, setActiveChat] = useState(null);
       const [currentView, setCurrentView] = useState('chat');

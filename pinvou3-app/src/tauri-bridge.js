@@ -44,6 +44,23 @@
     }
   }
 
+  async function loadKnowledgeEmbedderAfterFirstFrame() {
+    startupMark("bridge:knowledge_embedder_async:start");
+    try {
+      var ready = await invoke("kb_model_load_after_first_frame");
+      state.kbModelSetup = Object.assign({}, state.kbModelSetup, { startupReady: !!ready });
+      notify();
+      startupMark("bridge:knowledge_embedder_async:done", "ready=" + !!ready);
+      if (window.__PINVOU_STARTUP__) window.__PINVOU_STARTUP__.flush();
+      return !!ready;
+    } catch (error) {
+      startupMark("bridge:knowledge_embedder_async:error", String(error));
+      if (window.__PINVOU_STARTUP__) window.__PINVOU_STARTUP__.flush();
+      console.warn("[knowledge] embedding 后台加载失败", error);
+      return false;
+    }
+  }
+
   // ── Markdown rendering (vendor scripts loaded in index.html) ─────
   // 抹平裸 <script>/<style>/<iframe> 等危险标签:它们一旦被 marked 透传成真 HTML,
   // 浏览器按 HTML 解析时 script 元素会"吞掉"后续兄弟节点直到 </script>(或文档末尾),
@@ -4228,6 +4245,7 @@
     getState: function () { return snapshotState(); },
     init: init,
     refreshConnectorAuthGates: refreshConnectorAuthGates,
+    loadKnowledgeEmbedderAfterFirstFrame: loadKnowledgeEmbedderAfterFirstFrame,
     sendMessage: sendMessage,
     prefillComposer: prefillComposer,
     removeQueued: removeQueued,
