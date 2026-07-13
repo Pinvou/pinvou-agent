@@ -1649,16 +1649,36 @@
         let currentScale=1;
         let manualZoom=false;
         let measureTimer=0;
+        const body=document.body;
+        const originalStyle={
+          rootWidth:[root.style.getPropertyValue('width'),root.style.getPropertyPriority('width')],
+          rootMinHeight:[root.style.getPropertyValue('min-height'),root.style.getPropertyPriority('min-height')],
+          rootZoom:[root.style.getPropertyValue('zoom'),root.style.getPropertyPriority('zoom')],
+          bodyMinHeight:body?[body.style.getPropertyValue('min-height'),body.style.getPropertyPriority('min-height')]:['','']
+        };
         const clamp=(value,min,max)=>Math.max(min,Math.min(max,value));
         function viewportWidth(){return Math.max(1,window.innerWidth||root.clientWidth||1)}
+        function viewportHeight(){return Math.max(1,window.innerHeight||root.clientHeight||1)}
+        function restoreProperty(node,name,saved){
+          if(!node)return;
+          if(saved[0])node.style.setProperty(name,saved[0],saved[1]);
+          else node.style.removeProperty(name);
+        }
+        function restorePreviewLayout(){
+          restoreProperty(root,'width',originalStyle.rootWidth);
+          restoreProperty(root,'min-height',originalStyle.rootMinHeight);
+          restoreProperty(root,'zoom',originalStyle.rootZoom);
+          restoreProperty(body,'min-height',originalStyle.bodyMinHeight);
+        }
         function measureNaturalWidth(){
-          root.style.removeProperty('zoom');
-          root.style.removeProperty('width');
+          restorePreviewLayout();
           const viewport=viewportWidth();
           let minLeft=0;
-          let maxRight=Math.max(viewport,root.scrollWidth,document.body?document.body.scrollWidth:0);
-          const nodes=document.body?[document.body].concat(Array.from(document.body.querySelectorAll('*')).slice(0,2000)):[];
+          let maxRight=viewport;
+          const nodes=body?[body].concat(Array.from(body.querySelectorAll('*')).slice(0,2000)):[];
           for(const node of nodes){
+            const position=getComputedStyle(node).position;
+            if(position==='absolute'||position==='fixed')continue;
             const rect=node.getBoundingClientRect();
             if(!Number.isFinite(rect.left)||!Number.isFinite(rect.right)||rect.width<=0)continue;
             minLeft=Math.min(minLeft,rect.left);
@@ -1676,7 +1696,11 @@
         function apply(scale){
           if(!naturalWidth)naturalWidth=measureNaturalWidth();
           currentScale=clamp(Number(scale)||1,.25,2);
-          root.style.setProperty('width',naturalWidth+'px','important');
+          const layoutWidth=Math.max(naturalWidth,viewportWidth()/currentScale);
+          const layoutMinHeight=viewportHeight()/currentScale;
+          root.style.setProperty('width',layoutWidth+'px','important');
+          root.style.setProperty('min-height',layoutMinHeight+'px','important');
+          if(body)body.style.setProperty('min-height',layoutMinHeight+'px','important');
           root.style.setProperty('zoom',String(currentScale),'important');
           requestAnimationFrame(report);
         }
