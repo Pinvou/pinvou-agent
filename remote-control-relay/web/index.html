@@ -138,6 +138,8 @@
     #previewOverlay .preview { height: min(88vh, calc(100vh - 16px)); max-height: none; border-radius: 18px; }
     .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 18px 14px; border-bottom: 1px solid var(--line); }
     .sheet-head h2 { margin: 0; font-size: 20px; font-weight: 800; }
+    #previewTitle { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    #previewClose { flex: 0 0 auto; }
     .sheet-body { max-height: calc(84dvh - 66px); overflow: auto; padding: 14px 16px 24px; }
     .sheet-toolbar { padding: 0 0 12px; }
     .sheet-create { width: 100%; min-height: 46px; border-radius: 14px; background: var(--blue); color: #fff; font-weight: 800; }
@@ -1390,6 +1392,7 @@
       const previewName = payload.basename || basename(payload.path_tail) || '预览';
       const markdownByName = /\.(md|markdown)$/i.test(previewName);
       el.previewTitle.textContent = previewName;
+      el.previewTitle.title = previewName;
       el.previewBody.innerHTML = '';
       el.previewBody.classList.remove('html-preview', 'markdown-preview');
       if (preview.type === 'image' && preview.data_url) {
