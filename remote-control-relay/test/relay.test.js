@@ -121,6 +121,17 @@ test("healthz only exposes aggregate counters", async () => {
   ]);
 });
 
+test("mobile HTML preview ships best-effort fit and zoom controls", async () => {
+  const response = await fetch(`${httpUrl}/pinvou3/remote/r/preview-fit-test`);
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /id="previewZoomOut"/);
+  assert.match(html, /id="previewZoomFit"/);
+  assert.match(html, /id="previewZoomIn"/);
+  assert.match(html, /pinvou-remote-preview-frame/);
+  assert.match(html, /html,body\{overflow:auto!important\}/);
+});
+
 test("later mobile takes over and explicit close preserves reason", async () => {
   const room = `rc_takeover_${Date.now()}`;
   const token = `token_${Date.now()}`;

@@ -150,8 +150,13 @@
     .sheet-sub { margin-top: 5px; font-size: 12px; color: var(--muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .sheet-mark { flex: 0 0 auto; font-size: 11px; color: #a7c4ff; background: rgba(92,132,255,.12); padding: 6px 8px; border-radius: 999px; }
     .preview-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 12px; }
-    .preview-body.html-preview { padding: 0; overflow: hidden; background: #fff; touch-action: auto; }
+    .preview-body.html-preview { padding: 0; overflow: auto; background: #fff; touch-action: pan-x pan-y pinch-zoom; }
     .preview-body.markdown-preview { padding: 18px 18px 24px; background: #12161a; color: #e6ebf1; }
+    .preview-toolbar { min-height: 44px; padding: 6px 12px; border-bottom: 1px solid var(--line); background: #12161a; display: flex; align-items: center; justify-content: center; gap: 8px; }
+    .preview-toolbar.hidden { display: none; }
+    .preview-zoom-button { width: 34px; height: 32px; min-width: 34px; padding: 0; border-radius: 10px; background: var(--panel-2); color: var(--text); font-size: 20px; line-height: 1; }
+    .preview-fit-button { min-width: 112px; height: 32px; padding: 0 12px; border-radius: 10px; background: var(--panel-2); color: var(--text); font-size: 12px; }
+    .preview-toolbar button:disabled { opacity: .38; }
     .preview pre { margin: 0; min-height: 100%; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #dfe4ea; }
     .md-doc { font-size: 15px; line-height: 1.72; color: inherit; overflow-wrap: anywhere; }
     .md-doc h1, .md-doc h2, .md-doc h3, .md-doc h4, .md-doc h5, .md-doc h6 { margin: 1.1em 0 .55em; color: #f5f7fa; line-height: 1.28; letter-spacing: 0; }
@@ -181,7 +186,7 @@
     .msg.assistant .md-doc li { margin: .16em 0; }
     .preview iframe { width: 100%; height: 62vh; border: 0; border-radius: 12px; background: #fff; }
     .preview-body.html-preview iframe { display: block; width: 100%; height: 100%; min-height: 0; border-radius: 0; overflow: auto; pointer-events: auto; transform-origin: top left; }
-    .html-frame-wrap { width: 100%; height: 100%; min-height: 0; background: #fff; overflow: hidden; }
+    .html-frame-wrap { width: 100%; height: 100%; min-height: 0; background: #fff; overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
     .preview img { display: block; max-width: 100%; height: auto; border-radius: 12px; margin: 0 auto; background: #fff; }
     .empty-panel { padding: 28px 14px; color: #8d949c; text-align: center; line-height: 1.6; }
     .takeover { position: fixed; inset: 0; height: var(--app-height); z-index: 80; display: flex; align-items: center; justify-content: center; padding: 12px 14px calc(12px + env(safe-area-inset-bottom)); overflow: hidden; background: radial-gradient(circle at 50% -10%, rgba(36,136,255,.08), transparent 28%), #0d1013; color: #f4f6f8; }
@@ -243,6 +248,8 @@
     body.light textarea { background: #fff; color: #151719; border-color: rgba(0,0,0,.12); }
     body.light .preview-body { background: #fff; color: #151719; }
     body.light .preview-body.markdown-preview { background: #fff; color: #24282d; }
+    body.light .preview-toolbar { background: #fff; border-color: rgba(0,0,0,.08); }
+    body.light .preview-zoom-button, body.light .preview-fit-button { background: #eef1f4; color: #151719; }
     body.light .preview pre { color: #151719; }
     body.light .md-doc h1, body.light .md-doc h2, body.light .md-doc h3, body.light .md-doc h4, body.light .md-doc h5, body.light .md-doc h6, body.light .md-doc strong { color: #111418; }
     body.light .md-doc code { background: rgba(0,0,0,.06); color: #1d4f8f; }
@@ -336,6 +343,11 @@
         <div class="sheet-head">
           <h2 id="previewTitle">预览</h2>
           <button class="ghost" id="previewClose">关闭</button>
+        </div>
+        <div class="preview-toolbar hidden" id="previewToolbar" aria-label="HTML 预览缩放">
+          <button class="preview-zoom-button" id="previewZoomOut" aria-label="缩小预览">−</button>
+          <button class="preview-fit-button" id="previewZoomFit">适应屏幕</button>
+          <button class="preview-zoom-button" id="previewZoomIn" aria-label="放大预览">＋</button>
         </div>
         <div class="preview-body" id="previewBody"></div>
       </section>
@@ -472,6 +484,10 @@
       previewTitle: document.getElementById('previewTitle'),
       previewBody: document.getElementById('previewBody'),
       previewClose: document.getElementById('previewClose'),
+      previewToolbar: document.getElementById('previewToolbar'),
+      previewZoomOut: document.getElementById('previewZoomOut'),
+      previewZoomFit: document.getElementById('previewZoomFit'),
+      previewZoomIn: document.getElementById('previewZoomIn'),
       takeoverScreen: document.getElementById('takeoverScreen'),
       takeoverWarn: document.getElementById('takeoverWarn'),
       takeoverEyebrow: document.getElementById('takeoverEyebrow'),
@@ -492,6 +508,7 @@
     let joinTimer = null;
     let thinkingFrame = 0;
     let previewFrameId = '';
+    let previewZoom = { ready: false, fit: 1, current: 1, overflow: false };
     let pinvouNode = null;
     const BRAILLE = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     const state = {
@@ -1387,6 +1404,51 @@
       }
       appendToMessages(card);
     }
+    function previewIframe() {
+      return el.previewBody.querySelector(`iframe[data-preview-frame-id="${previewFrameId}"]`);
+    }
+    function updatePreviewZoomToolbar() {
+      const percent = Math.round((previewZoom.current || 1) * 100);
+      el.previewZoomFit.textContent = previewZoom.ready
+        ? `${previewZoom.overflow ? '适应' : '原始'} · ${percent}%`
+        : '正在适配…';
+      el.previewZoomOut.disabled = !previewZoom.ready || previewZoom.current <= 0.25;
+      el.previewZoomIn.disabled = !previewZoom.ready || previewZoom.current >= 2;
+      el.previewZoomFit.disabled = !previewZoom.ready;
+    }
+    function setPreviewZoom(scale, fit = false) {
+      if (!previewZoom.ready) return;
+      const next = fit
+        ? previewZoom.fit
+        : Math.max(0.25, Math.min(2, Math.round(Number(scale) * 100) / 100));
+      const iframe = previewIframe();
+      if (!iframe || !iframe.contentWindow) return;
+      previewZoom.current = next;
+      updatePreviewZoomToolbar();
+      iframe.contentWindow.postMessage({
+        source: 'pinvou-remote-preview-host',
+        type: fit ? 'fit' : 'set_zoom',
+        frame_id: previewFrameId,
+        scale: next,
+      }, '*');
+    }
+    window.addEventListener('message', event => {
+      const data = event.data || {};
+      if (data.source !== 'pinvou-remote-preview-frame' || data.type !== 'metrics') return;
+      if (!previewFrameId || data.frame_id !== previewFrameId) return;
+      const iframe = previewIframe();
+      if (!iframe || event.source !== iframe.contentWindow) return;
+      const fit = Number(data.fit_scale);
+      const current = Number(data.scale);
+      if (!Number.isFinite(fit) || !Number.isFinite(current)) return;
+      previewZoom = {
+        ready: true,
+        fit: Math.max(0.25, Math.min(1, fit)),
+        current: Math.max(0.25, Math.min(2, current)),
+        overflow: Boolean(data.overflow),
+      };
+      updatePreviewZoomToolbar();
+    });
     function showPreview(payload) {
       const preview = payload.preview || {};
       const previewName = payload.basename || basename(payload.path_tail) || '预览';
@@ -1395,6 +1457,9 @@
       el.previewTitle.title = previewName;
       el.previewBody.innerHTML = '';
       el.previewBody.classList.remove('html-preview', 'markdown-preview');
+      el.previewToolbar.classList.add('hidden');
+      previewFrameId = '';
+      previewZoom = { ready: false, fit: 1, current: 1, overflow: false };
       if (preview.type === 'image' && preview.data_url) {
         const img = document.createElement('img');
         img.alt = payload.basename || 'artifact preview';
@@ -1402,6 +1467,8 @@
         el.previewBody.appendChild(img);
       } else if (preview.type === 'html') {
         el.previewBody.classList.add('html-preview');
+        el.previewToolbar.classList.remove('hidden');
+        updatePreviewZoomToolbar();
         previewFrameId = `pv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         const wrap = document.createElement('div');
         wrap.className = 'html-frame-wrap';
@@ -1572,10 +1639,72 @@
       return out.join('');
     }
     function htmlPreviewSrcdoc(content, id) {
-      const style = `<meta name="viewport" content="width=device-width, initial-scale=1"><style data-pinvou-remote-preview-style>*,*::before,*::after{box-sizing:border-box}html,body{max-width:100%;overflow-x:hidden}body{min-width:0!important}img,svg,video,canvas{max-width:100%!important;height:auto}table{max-width:100%;display:block;overflow-x:auto}pre,code{white-space:pre-wrap;overflow-wrap:anywhere}</style>`;
+      const frameId = JSON.stringify(String(id || ''));
+      const style = `<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=yes"><style data-pinvou-remote-preview-style>*,*::before,*::after{box-sizing:border-box}html,body{overflow:auto!important}body{min-width:0!important}</style>`;
+      const bridge = `<script>(function(){
+        const FRAME_ID=${frameId};
+        const root=document.documentElement;
+        let naturalWidth=0;
+        let fitScale=1;
+        let currentScale=1;
+        let manualZoom=false;
+        let measureTimer=0;
+        const clamp=(value,min,max)=>Math.max(min,Math.min(max,value));
+        function viewportWidth(){return Math.max(1,window.innerWidth||root.clientWidth||1)}
+        function measureNaturalWidth(){
+          root.style.removeProperty('zoom');
+          root.style.removeProperty('width');
+          const viewport=viewportWidth();
+          let minLeft=0;
+          let maxRight=Math.max(viewport,root.scrollWidth,document.body?document.body.scrollWidth:0);
+          const nodes=document.body?[document.body].concat(Array.from(document.body.querySelectorAll('*')).slice(0,2000)):[];
+          for(const node of nodes){
+            const rect=node.getBoundingClientRect();
+            if(!Number.isFinite(rect.left)||!Number.isFinite(rect.right)||rect.width<=0)continue;
+            minLeft=Math.min(minLeft,rect.left);
+            maxRight=Math.max(maxRight,rect.right);
+          }
+          return clamp(Math.ceil(maxRight-Math.min(0,minLeft)),viewport,100000);
+        }
+        function report(){
+          parent.postMessage({
+            source:'pinvou-remote-preview-frame',type:'metrics',frame_id:FRAME_ID,
+            natural_width:naturalWidth,viewport_width:viewportWidth(),fit_scale:fitScale,
+            scale:currentScale,overflow:naturalWidth>viewportWidth()+1
+          },'*');
+        }
+        function apply(scale){
+          if(!naturalWidth)naturalWidth=measureNaturalWidth();
+          currentScale=clamp(Number(scale)||1,.25,2);
+          root.style.setProperty('width',naturalWidth+'px','important');
+          root.style.setProperty('zoom',String(currentScale),'important');
+          requestAnimationFrame(report);
+        }
+        function measure(){
+          naturalWidth=measureNaturalWidth();
+          fitScale=clamp(viewportWidth()/naturalWidth,.25,1);
+          apply(manualZoom?currentScale:fitScale);
+        }
+        function scheduleMeasure(){clearTimeout(measureTimer);measureTimer=setTimeout(measure,80)}
+        addEventListener('message',event=>{
+          const data=event.data||{};
+          if(event.source!==parent||data.source!=='pinvou-remote-preview-host'||data.frame_id!==FRAME_ID)return;
+          if(data.type==='fit'){manualZoom=false;apply(fitScale)}
+          else if(data.type==='set_zoom'){manualZoom=true;apply(data.scale)}
+        });
+        addEventListener('resize',scheduleMeasure,{passive:true});
+        if(document.body)new MutationObserver(scheduleMeasure).observe(document.body,{childList:true,subtree:true});
+        if(document.fonts&&document.fonts.ready)document.fonts.ready.then(scheduleMeasure).catch(()=>{});
+        if(document.readyState==='loading')addEventListener('DOMContentLoaded',scheduleMeasure,{once:true});
+        else scheduleMeasure();
+        addEventListener('load',scheduleMeasure,{once:true});
+        setTimeout(scheduleMeasure,500);
+      })();<\/script>`;
       let html = String(content || '');
       if (/<\/head>/i.test(html)) html = html.replace(/<\/head>/i, `${style}</head>`);
       else html = `${style}${html}`;
+      if (/<\/body>/i.test(html)) html = html.replace(/<\/body>/i, `${bridge}</body>`);
+      else html += bridge;
       return html;
     }
     function updateArtifacts(artifacts) {
@@ -2394,6 +2523,9 @@
     el.sheetOverlay.onclick = e => { if (e.target === el.sheetOverlay) closeSheet(); };
     el.previewClose.onclick = () => el.previewOverlay.classList.add('hidden');
     el.previewOverlay.onclick = e => { if (e.target === el.previewOverlay) el.previewOverlay.classList.add('hidden'); };
+    el.previewZoomOut.onclick = () => setPreviewZoom(previewZoom.current - 0.1);
+    el.previewZoomFit.onclick = () => setPreviewZoom(previewZoom.fit, true);
+    el.previewZoomIn.onclick = () => setPreviewZoom(previewZoom.current + 0.1);
     el.takeoverReconnect.onclick = reconnectThisDevice;
     el.takeoverClose.onclick = closeRemotePage;
     document.addEventListener('click', e => {
