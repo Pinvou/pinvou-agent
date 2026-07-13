@@ -282,6 +282,8 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         let secondFrame = 0;
         const firstFrame = window.requestAnimationFrame(() => {
           secondFrame = window.requestAnimationFrame(() => {
+            window.__PINVOU_STARTUP__.mark('react:first_frame_presented');
+            window.__PINVOU_STARTUP__.flush();
             if (bridge.available && bridge.loadKnowledgeEmbedderAfterFirstFrame) {
               bridge.loadKnowledgeEmbedderAfterFirstFrame();
             }

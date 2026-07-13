@@ -13,16 +13,21 @@
       var flushInFlight = false;
       var flushTimer = null;
       var longTaskCount = 0;
+      var windowShownMarked = false;
 
-      function mark(stage, detail) {
+      function markAt(stage, sinceNavigationMs, detail) {
         var entry = {
           stage: String(stage),
           detail: detail == null ? "" : String(detail),
-          since_navigation_ms: performance.now(),
+          since_navigation_ms: Math.max(0, Number(sinceNavigationMs) || 0),
         };
         entries.push(entry);
         console.info("[startup] +" + entry.since_navigation_ms.toFixed(3) + "ms " + entry.stage, entry.detail);
         scheduleFlush(0);
+      }
+
+      function mark(stage, detail) {
+        markAt(stage, performance.now(), detail);
       }
 
       function scheduleFlush(delay) {
@@ -48,12 +53,33 @@
         });
       }
 
-      window.__PINVOU_STARTUP__ = { mark: mark, flush: flush, entries: entries };
+      function markWindowShown() {
+        if (windowShownMarked || document.visibilityState !== "visible") return;
+        windowShownMarked = true;
+        mark("window_shown", "signal=first_visible_animation_frame visibility=" + document.visibilityState + " focused=" + document.hasFocus());
+      }
+
+      window.__PINVOU_STARTUP__ = { mark: mark, markAt: markAt, flush: flush, entries: entries };
       mark("html:head_start");
+      requestAnimationFrame(markWindowShown);
+      document.addEventListener("visibilitychange", function () {
+        mark("document:visibility_changed", "state=" + document.visibilityState);
+        if (document.visibilityState === "visible") requestAnimationFrame(markWindowShown);
+      });
       document.addEventListener("DOMContentLoaded", function () {
         mark("dom:content_loaded_listener_begin", "listener registered before application modules");
       });
-      window.addEventListener("load", function () { mark("window:load"); });
+      window.addEventListener("load", function () {
+        mark("window:load");
+        setTimeout(function () {
+          var nav = performance.getEntriesByType && performance.getEntriesByType("navigation")[0];
+          if (!nav) return;
+          markAt("navigation:response_start", nav.responseStart, "protocol=" + (nav.nextHopProtocol || "unknown"));
+          markAt("navigation:dom_interactive", nav.domInteractive);
+          markAt("navigation:dom_content_loaded", nav.domContentLoadedEventEnd);
+          markAt("navigation:load_event_end", nav.loadEventEnd || performance.now());
+        }, 0);
+      });
       window.addEventListener("error", function (event) {
         mark("window:error", event && event.message ? event.message : "unknown error");
       });
@@ -61,6 +87,17 @@
         mark("window:unhandled_rejection", String(event && event.reason || "unknown rejection"));
       });
       if (window.PerformanceObserver) {
+        try {
+          new PerformanceObserver(function (list) {
+            list.getEntries().forEach(function (entry) {
+              if (entry.name === "first-paint") {
+                markAt("first_paint", entry.startTime, "source=paint_timing");
+              } else if (entry.name === "first-contentful-paint") {
+                markAt("first_contentful_paint", entry.startTime, "source=paint_timing");
+              }
+            });
+          }).observe({ type: "paint", buffered: true });
+        } catch (_) {}
         try {
           new PerformanceObserver(function (list) {
             list.getEntries().forEach(function (entry) {

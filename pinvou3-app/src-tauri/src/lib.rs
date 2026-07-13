@@ -603,6 +603,7 @@ pub fn run() {
             tauri::generate_context!()
         })
         .expect("error while running tauri application");
+    startup::mark("process:exit");
 }
 
 #[cfg(test)]
