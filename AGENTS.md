@@ -49,6 +49,15 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 - 贡献者必须根据实际代码变更和版本历史确认，并把账号映射为真实姓名：`hexin` → `贺欣`、`zhuowp` → `卓文培`、`cacdcaecawae` → `刘洋`、`xuyajing620-max` → `徐雅婧`、`Biilow-Bailang` → `白浪`。
 - 两份内容都必须面向全量用户进行脱敏和发布适配，避免披露账号、密码、密钥、内部地址、私人数据、安全敏感信息及仅供研发理解的内部细节；不适宜展示给用户的内容应省略，第二份执行更严格的精简与脱敏标准。
 
+### 6. Windows OTA 包构造
+
+- 用户提供 Windows EXE 安装程序并要求构造 OTA 包时，直接运行 `powershell -ExecutionPolicy Bypass -File .\scripts\build-windows-ota.ps1 -SourceExe "<安装程序路径>"`，不再要求用户提供历史 OTA 模板。
+- 脚本从安装程序文件名或版本信息识别版本，三段版本自动补为四段版本（例如 `0.5.12` → `0.5.12.0`），默认在源文件目录生成 `Pinvou3_<四段版本>.zip`。
+- OTA 固定为双层 ZIP：外层只包含 `FullPack.zip` 和 `UpdatePackInfo.json`；内层只包含 `Files\Pinvou3\<安装程序文件名>` 和 `OtaInfo.json`。
+- `OtaInfo.json` 中安装程序 `hash` 使用 EXE 的 MD5，`UpdatePackInfo.json` 中 `fullPack.hash` 使用 `FullPack.zip` 的 MD5；两份 JSON 必须使用 UTF-8 **无 BOM** 编码，禁止使用 UTF-8 BOM。
+- 生成后必须验证内外层条目、四段版本、两级 MD5、JSON 可解析性和无 BOM 编码，并向用户报告输出路径、文件大小及最终 OTA 包 MD5。
+- 只有在 OTA 协议发生变化或用户明确要求重新取样时才需要读取模板；日常构包以脚本中固化的协议为准。
+
 ## 主体
 
 - `pinvou3-app/` — 🟢 Tauri 2.0 + EngineHandle wrapper（主线）
