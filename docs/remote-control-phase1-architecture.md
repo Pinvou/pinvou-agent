@@ -404,6 +404,13 @@ Mobile -> Desktop 的 action 必须带 `client_message_id`。本地 `RemoteContr
 
 `assistant_delta` 可能高频。relay 可以不持久化 delta，但本地发送前应允许做 50-100ms 小窗口合并，减少手机端渲染压力。桌面本地 UI 仍走原始 `chat:delta`，不受影响。
 
+### Relay 容量与入口保护
+
+- Relay 默认最多保留 2000 个 room；已有 room 的桌面重连不受容量上限影响。
+- 同一客户端默认每分钟最多新建 20 个 room；反向代理来源只在其 IP 被显式信任时读取 `X-Forwarded-For`，并采用代理追加的最后一个地址，避免客户端伪造首段地址绕过限流。
+- 生产环境通过 `PINVOU_REMOTE_ALLOWED_PROXY_IPS` 只允许本机健康检查和指定反向代理访问 Relay，公网客户端统一走 `https/wss://www.ma-xiao.com`。
+- WebSocket 单条消息默认上限为 4 MiB，可通过 `MAX_PAYLOAD_BYTES` 调整，服务端硬限制不超过 16 MiB。
+
 ## 实施拆分
 
 ### M1：本地配对入口

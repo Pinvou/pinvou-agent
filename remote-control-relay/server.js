@@ -6,14 +6,82 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const MIB = 1024 * 1024;
 const PORT = Number(process.env.PORT || 8787);
 const PUBLIC_BASE_PATH = normalizeBasePath(process.env.PINVOU_REMOTE_PUBLIC_BASE_PATH || "/pinvou3/remote");
 const DESKTOP_RECONNECT_GRACE_MS = Math.max(1000, Number(process.env.DESKTOP_RECONNECT_GRACE_MS || 15_000));
 const HEARTBEAT_INTERVAL_MS = Math.max(5000, Number(process.env.HEARTBEAT_INTERVAL_MS || 15_000));
+const MAX_PAYLOAD_BYTES = boundedInteger(process.env.MAX_PAYLOAD_BYTES, 4 * MIB, MIB, 16 * MIB);
+const MAX_ROOMS = boundedInteger(process.env.MAX_ROOMS, 2000, 1, 100_000);
+const ROOM_CREATE_LIMIT = boundedInteger(process.env.ROOM_CREATE_LIMIT, 20, 1, 10_000);
+const ROOM_CREATE_WINDOW_MS = boundedInteger(process.env.ROOM_CREATE_WINDOW_MS, 60_000, 1000, 60 * 60_000);
+const ALLOWED_PROXY_IPS = parseIpSet(process.env.PINVOU_REMOTE_ALLOWED_PROXY_IPS);
+const TRUSTED_PROXY_IPS = parseIpSet(
+  process.env.PINVOU_REMOTE_TRUSTED_PROXY_IPS || process.env.PINVOU_REMOTE_ALLOWED_PROXY_IPS,
+);
 const rooms = new Map();
+const roomCreationBuckets = new Map();
 
 function send(ws, value) {
   if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(value));
+}
+
+function boundedInteger(raw, fallback, min, max) {
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+function normalizeIp(value) {
+  const ip = String(value || "").trim();
+  return ip.startsWith("::ffff:") ? ip.slice(7) : ip;
+}
+
+function parseIpSet(value) {
+  return new Set(String(value || "")
+    .split(",")
+    .map(normalizeIp)
+    .filter(Boolean));
+}
+
+function isLoopback(ip) {
+  return ip === "127.0.0.1" || ip === "::1";
+}
+
+function peerIp(req) {
+  return normalizeIp(req.socket?.remoteAddress);
+}
+
+function sourceAllowed(req) {
+  if (ALLOWED_PROXY_IPS.size === 0) return true;
+  const peer = peerIp(req);
+  return isLoopback(peer) || ALLOWED_PROXY_IPS.has(peer);
+}
+
+function clientIp(req) {
+  const peer = peerIp(req);
+  if (!TRUSTED_PROXY_IPS.has(peer)) return peer || "unknown";
+  const forwarded = String(req.headers["x-forwarded-for"] || "")
+    .split(",")
+    .map(normalizeIp)
+    .filter(Boolean);
+  return forwarded.at(-1) || normalizeIp(req.headers["x-real-ip"]) || peer || "unknown";
+}
+
+function consumeRoomCreation(ip, now = Date.now()) {
+  const bucket = roomCreationBuckets.get(ip);
+  if (!bucket || now - bucket.started_at >= ROOM_CREATE_WINDOW_MS) {
+    roomCreationBuckets.set(ip, { started_at: now, count: 1 });
+    return true;
+  }
+  if (bucket.count >= ROOM_CREATE_LIMIT) return false;
+  bucket.count += 1;
+  return true;
+}
+
+function rejectSocket(ws, code, message) {
+  send(ws, { type: "error", code, message });
+  try { ws.close(1008, message); } catch {}
 }
 
 function normalizeBasePath(value) {
@@ -105,6 +173,11 @@ function healthSummary() {
 }
 
 const server = http.createServer(async (req, res) => {
+  if (!sourceAllowed(req)) {
+    res.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
+    res.end("forbidden");
+    return;
+  }
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
   const routePath = stripPublicBasePath(url.pathname);
   if (routePath === "/healthz") {
@@ -128,9 +201,14 @@ const server = http.createServer(async (req, res) => {
   res.end("not found");
 });
 
-const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
+const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD_BYTES });
 
 server.on("upgrade", (req, socket, head) => {
+  if (!sourceAllowed(req)) {
+    socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+    socket.destroy();
+    return;
+  }
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
   if (stripPublicBasePath(url.pathname) !== "/ws") {
     socket.destroy();
@@ -141,9 +219,10 @@ server.on("upgrade", (req, socket, head) => {
   });
 });
 
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
   ws.role = "unknown";
   ws.roomId = null;
+  ws.clientIp = clientIp(req);
   ws.isAlive = true;
   ws.on("pong", () => { ws.isAlive = true; });
 
@@ -162,6 +241,14 @@ wss.on("connection", (ws) => {
         return;
       }
       const old = rooms.get(msg.room_id);
+      if (!old && rooms.size >= MAX_ROOMS) {
+        rejectSocket(ws, "room_capacity_reached", "room capacity reached");
+        return;
+      }
+      if (!old && !consumeRoomCreation(ws.clientIp)) {
+        rejectSocket(ws, "room_creation_rate_limited", "room creation rate limited");
+        return;
+      }
       const existingMobile =
         old && old.mobile && old.mobile.readyState === old.mobile.OPEN ? old.mobile : null;
       const wasPaired = Boolean(old?.paired && existingMobile);
@@ -296,6 +383,10 @@ wss.on("connection", (ws) => {
 });
 
 const heartbeatTimer = setInterval(() => {
+  const bucketExpiry = Date.now() - ROOM_CREATE_WINDOW_MS;
+  for (const [ip, bucket] of roomCreationBuckets) {
+    if (bucket.started_at <= bucketExpiry) roomCreationBuckets.delete(ip);
+  }
   for (const ws of wss.clients) {
     if (ws.isAlive === false) {
       ws.terminate();
@@ -308,5 +399,8 @@ const heartbeatTimer = setInterval(() => {
 heartbeatTimer.unref();
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`pinvou remote relay listening on http://127.0.0.1:${PORT}`);
+  console.log(
+    `pinvou remote relay listening on http://127.0.0.1:${PORT}`
+    + ` (max_rooms=${MAX_ROOMS}, room_create_limit=${ROOM_CREATE_LIMIT}/${ROOM_CREATE_WINDOW_MS}ms, max_payload=${MAX_PAYLOAD_BYTES})`,
+  );
 });

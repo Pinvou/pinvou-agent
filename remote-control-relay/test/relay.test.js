@@ -37,6 +37,14 @@ function openSocket() {
   });
 }
 
+function openSocketAt(url) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url);
+    ws.once("open", () => resolve(ws));
+    ws.once("error", reject);
+  });
+}
+
 function nextMessage(ws, type, timeoutMs = 3000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -192,4 +200,133 @@ test("desktop reconnect timeout closes the room", async () => {
   assert.equal((await reconnecting).status, "reconnecting");
   assert.equal((await closed).reason, "desktop_disconnected");
   closeSocket(mobile);
+});
+
+test("relay accepts a payload larger than the previous 1 MiB limit", async () => {
+  const room = `rc_payload_${Date.now()}`;
+  const token = `token_${Date.now()}`;
+  const secret = `secret_${Date.now()}`;
+  const desktop = await registerDesktop(room, token, secret);
+  const mobile = await joinMobile(room, token);
+  const forwarded = nextMessage(mobile, "large_snapshot", 5000);
+  desktop.send(JSON.stringify({
+    type: "large_snapshot",
+    room_id: room,
+    session_id: "session-test",
+    payload: { content: "x".repeat(1024 * 1024 + 64 * 1024) },
+  }));
+  assert.equal((await forwarded).payload.content.length, 1024 * 1024 + 64 * 1024);
+  desktop.send(JSON.stringify({ type: "desktop_disconnect", payload: { reason: "stopped" } }));
+  closeSocket(mobile);
+  closeSocket(desktop);
+});
+
+test("relay caps new rooms while allowing existing room reconnect", async () => {
+  const limitedPort = port + 1;
+  const limited = spawn(process.execPath, [join(relayDir, "server.js")], {
+    cwd: relayDir,
+    env: {
+      ...process.env,
+      PORT: String(limitedPort),
+      MAX_ROOMS: "1",
+      ROOM_CREATE_LIMIT: "100",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  await waitForOutput(limited, /pinvou remote relay listening/);
+  const limitedWsUrl = `ws://127.0.0.1:${limitedPort}/pinvou3/remote/ws`;
+  const first = await openSocketAt(limitedWsUrl);
+  const firstRegistered = nextMessage(first, "room_registered");
+  first.send(JSON.stringify({
+    type: "desktop_register",
+    room_id: "capacity-first",
+    session_id: "session-first",
+    pairing_token: "token-first",
+    desktop_secret: "secret-first",
+  }));
+  await firstRegistered;
+
+  const rejected = await openSocketAt(limitedWsUrl);
+  const capacityError = nextMessage(rejected, "error");
+  rejected.send(JSON.stringify({
+    type: "desktop_register",
+    room_id: "capacity-second",
+    session_id: "session-second",
+    pairing_token: "token-second",
+    desktop_secret: "secret-second",
+  }));
+  assert.equal((await capacityError).code, "room_capacity_reached");
+
+  const reconnected = await openSocketAt(limitedWsUrl);
+  const reconnectedMessage = nextMessage(reconnected, "room_registered");
+  reconnected.send(JSON.stringify({
+    type: "desktop_register",
+    room_id: "capacity-first",
+    session_id: "session-first",
+    pairing_token: "token-first",
+    desktop_secret: "secret-first",
+  }));
+  await reconnectedMessage;
+  closeSocket(first);
+  closeSocket(rejected);
+  closeSocket(reconnected);
+  limited.kill("SIGTERM");
+});
+
+test("relay rate limits new room creation per client", async () => {
+  const limitedPort = port + 2;
+  const limited = spawn(process.execPath, [join(relayDir, "server.js")], {
+    cwd: relayDir,
+    env: {
+      ...process.env,
+      PORT: String(limitedPort),
+      MAX_ROOMS: "10",
+      ROOM_CREATE_LIMIT: "1",
+      ROOM_CREATE_WINDOW_MS: "60000",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  await waitForOutput(limited, /pinvou remote relay listening/);
+  const limitedWsUrl = `ws://127.0.0.1:${limitedPort}/pinvou3/remote/ws`;
+  const first = await openSocketAt(limitedWsUrl);
+  const firstRegistered = nextMessage(first, "room_registered");
+  first.send(JSON.stringify({
+    type: "desktop_register",
+    room_id: "rate-first",
+    session_id: "session-first",
+    pairing_token: "token-first",
+    desktop_secret: "secret-first",
+  }));
+  await firstRegistered;
+
+  const rejected = await openSocketAt(limitedWsUrl);
+  const rateError = nextMessage(rejected, "error");
+  rejected.send(JSON.stringify({
+    type: "desktop_register",
+    room_id: "rate-second",
+    session_id: "session-second",
+    pairing_token: "token-second",
+    desktop_secret: "secret-second",
+  }));
+  assert.equal((await rateError).code, "room_creation_rate_limited");
+  closeSocket(first);
+  closeSocket(rejected);
+  limited.kill("SIGTERM");
+});
+
+test("proxy allowlist keeps local health checks available", async () => {
+  const restrictedPort = port + 3;
+  const restricted = spawn(process.execPath, [join(relayDir, "server.js")], {
+    cwd: relayDir,
+    env: {
+      ...process.env,
+      PORT: String(restrictedPort),
+      PINVOU_REMOTE_ALLOWED_PROXY_IPS: "192.0.2.10",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  await waitForOutput(restricted, /pinvou remote relay listening/);
+  const response = await fetch(`http://127.0.0.1:${restrictedPort}/pinvou3/remote/healthz`);
+  assert.equal(response.status, 200, "loopback health checks must remain available");
+  restricted.kill("SIGTERM");
 });
