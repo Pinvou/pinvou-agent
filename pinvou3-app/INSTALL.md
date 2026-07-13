@@ -104,8 +104,8 @@ Windows 版应用内更新默认使用 H3C OTA 服务 `https://api.intcloud.h3c.
 
 1. 查询更新：`POST /ota/pkg/package/upgrade/check`
 2. 下载更新包：HTTP 下载 zip 到 `~/.pinvou3/updates/`
-3. 解析安装包：解压下载 zip，读取 `OtaInfo.json` 并定位 `.msi`
-4. 启动安装：调用系统 `msiexec /i <msi>`，安装器启动后当前 pinvou3 进程退出
+3. 解析安装包：解压下载 zip，读取 `OtaInfo.json` 并定位 `.msi` 或 NSIS `.exe`
+4. 启动安装：MSI 使用系统被动安装；NSIS EXE 使用 `/P /UPDATE` 显示安装进度并自动开始，无需手动点击按钮。安装器启动后当前 pinvou3 进程退出
 5. 反馈结果：下次启动读取 `~/.pinvou3/updates/update-feedback.json` 并调用 `/ota/pkg/package/updateLog`
 
 可选环境变量：

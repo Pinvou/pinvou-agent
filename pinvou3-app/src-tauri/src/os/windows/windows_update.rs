@@ -882,7 +882,10 @@ fn msi_install_args(installer: &Path) -> Vec<OsString> {
 }
 
 fn nsis_install_args(_installer: &Path) -> Vec<OsString> {
-    vec![OsString::from("/S")]
+    // `/P` 是项目 NSIS 模板提供的被动安装模式：保留可见的安装进度页，
+    // 但跳过欢迎、目录、确认和完成页，自动开始并在结束后关闭。
+    // `/UPDATE` 让安装器按升级语义处理已有安装和快捷方式。
+    vec![OsString::from("/P"), OsString::from("/UPDATE")]
 }
 
 fn installer_kind(installer: &Path) -> Result<WindowsInstallerKind, String> {
@@ -1353,12 +1356,21 @@ mod tests {
     }
 
     #[test]
-    fn nsis_install_args_use_silent_mode() {
+    fn nsis_install_args_use_visible_passive_update_mode() {
         let args: Vec<String> = nsis_install_args(Path::new(r"C:\pinvou3-setup.exe"))
             .into_iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
-        assert_eq!(args, vec!["/S"]);
+        assert_eq!(args, vec!["/P", "/UPDATE"]);
+        assert!(!args.contains(&"/S".to_string()));
+    }
+
+    #[test]
+    fn nsis_template_keeps_visible_passive_mode_contract() {
+        let template = include_str!("../../../resources/windows/nsis/installer-template.nsi");
+        assert!(template.contains("${GetOptions} $CMDLINE \"/P\" $PassiveMode"));
+        assert!(template.contains("!insertmacro MUI_PAGE_INSTFILES"));
+        assert!(template.contains("SetAutoClose true"));
     }
 
     #[test]
@@ -1398,7 +1410,9 @@ mod tests {
         assert!(rendered.contains("-Verb RunAs"));
         assert!(rendered.contains("-Wait"));
         assert!(rendered.contains("Start-Process -FilePath 'C:\\updates\\pinvou3''s-setup.exe'"));
-        assert!(rendered.contains("'/S'"));
+        assert!(rendered.contains("'/P'"));
+        assert!(rendered.contains("'/UPDATE'"));
+        assert!(!rendered.contains("'/S'"));
         assert!(!rendered.contains("msiexec.exe"));
         assert!(rendered.contains("pinvou3-tauri.exe"));
     }
