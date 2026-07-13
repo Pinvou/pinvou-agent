@@ -19,7 +19,6 @@ use crate::bridge::{paths, sessions::SessionStore};
 use crate::connector_cli;
 use crate::engine_pool::EnginePool;
 
-const DEFAULT_TTL_SECS: i64 = 600;
 const PREVIEW_LIMIT_BYTES: usize = 256 * 1024;
 const DEFAULT_PUBLIC_BASE_URL: &str = "https://www.ma-xiao.com/pinvou3/remote";
 const DEFAULT_RELAY_WS_URL: &str = "wss://www.ma-xiao.com/pinvou3/remote/ws";
@@ -42,7 +41,7 @@ struct ActiveRoom {
     session_id: String,
     url: String,
     relay_ws_url: String,
-    expires_at: String,
+    expires_at: Option<String>,
     status: RemoteControlStatusKind,
     last_error: Option<String>,
     sender: RelaySender,
@@ -97,18 +96,21 @@ impl RemoteControlManager {
         store: SessionStore,
         pool: EnginePool,
     ) -> Result<RemotePairingInfo, String> {
-        self.stop_current();
+        self.close_current("qr_refreshed");
         let relay_ws_url = remote_relay_ws_url();
         let public_base = remote_public_base_url();
         let room_id = format!("rc_{}", crate::remote_control::short_token(18));
         let pairing_token = crate::remote_control::short_token(32);
         let desktop_secret = crate::remote_control::short_token(32);
-        let expires_at =
-            (chrono::Utc::now() + chrono::Duration::seconds(DEFAULT_TTL_SECS)).to_rfc3339();
+        // 二维码与当前 room 同寿命：只有刷新二维码、停止远控或关闭桌面端才失效。
+        let expires_at = None;
         let url = format!(
-            "{}/r/{}?token={}",
+            // 滚动升级兼容：线上旧手机页只读 query，新页面优先读 fragment。
+            // relay 页面全部升级后可移除 query，仅保留 fragment，避免 token 进入访问日志。
+            "{}/r/{}?token={}#token={}",
             public_base.trim_end_matches('/'),
             room_id,
+            pairing_token,
             pairing_token
         );
         let qr_data_url = connector_cli::make_qr(&url);
@@ -171,6 +173,10 @@ impl RemoteControlManager {
     }
 
     pub fn stop_current(&self) {
+        self.close_current("stopped");
+    }
+
+    fn close_current(&self, reason: &str) {
         let old = {
             let mut inner = self.inner.lock();
             inner.room.take()
@@ -179,6 +185,7 @@ impl RemoteControlManager {
             let _ = room.sender.send(RelayOutbound::Close {
                 room_id: room.room_id,
                 session_id: room.session_id,
+                reason: reason.to_string(),
             });
             self.emit_status();
         }
@@ -196,7 +203,7 @@ impl RemoteControlManager {
                     Some(room.session_id.clone())
                 },
                 url: Some(room.url.clone()),
-                expires_at: Some(room.expires_at.clone()),
+                expires_at: room.expires_at.clone(),
                 status: room.status,
                 relay_url: room.relay_ws_url.clone(),
                 last_error: room.last_error.clone(),

@@ -6,10 +6,18 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::protocol::{envelope, now_ts, RelayEnvelope};
 
+// 旧版公网 relay 要求 desktop_register.expires_at 是可解析时间，并据此拒绝过期 room。
+// 新版 relay 已改为 room 生命周期语义、忽略该字段；保留远期时间只为滚动升级兼容。
+const LEGACY_RELAY_COMPAT_EXPIRES_AT: &str = "9999-12-31T23:59:59Z";
+
 #[derive(Debug)]
 pub enum RelayOutbound {
     Envelope(RelayEnvelope),
-    Close { room_id: String, session_id: String },
+    Close {
+        room_id: String,
+        session_id: String,
+        reason: String,
+    },
 }
 
 #[derive(Debug)]
@@ -36,7 +44,7 @@ struct RegisterInfo {
     session_id: String,
     pairing_token: String,
     desktop_secret: String,
-    expires_at: String,
+    expires_at: Option<String>,
 }
 
 pub fn spawn(
@@ -45,7 +53,7 @@ pub fn spawn(
     session_id: String,
     pairing_token: String,
     desktop_secret: String,
-    expires_at: String,
+    expires_at: Option<String>,
 ) -> (RelaySender, RelayReceiver) {
     let (tx_out, mut rx_out) = mpsc::unbounded_channel::<RelayOutbound>();
     let (tx_in, rx_in) = mpsc::unbounded_channel::<RelayInbound>();
@@ -92,7 +100,7 @@ async fn run_loop(
             "session_id": &register.session_id,
             "pairing_token": &register.pairing_token,
             "desktop_secret": &register.desktop_secret,
-            "expires_at": &register.expires_at,
+            "expires_at": register.expires_at.as_deref().unwrap_or(LEGACY_RELAY_COMPAT_EXPIRES_AT),
         });
         if let Err(e) = write.send(Message::Text(register_value.to_string())).await {
             eprintln!("[remote-control] relay register failed: {e}");
@@ -112,8 +120,8 @@ async fn run_loop(
                                 break;
                             }
                         }
-                        RelayOutbound::Close { room_id, session_id } => {
-                            let value = serde_json::to_value(envelope(&room_id, &session_id, "desktop_disconnect", json!({ "ts": now_ts() }))).map_err(|e| e.to_string())?;
+                        RelayOutbound::Close { room_id, session_id, reason } => {
+                            let value = serde_json::to_value(envelope(&room_id, &session_id, "desktop_disconnect", json!({ "ts": now_ts(), "reason": reason }))).map_err(|e| e.to_string())?;
                             let _ = write.send(Message::Text(value.to_string())).await;
                             return Ok(());
                         }
@@ -152,6 +160,14 @@ async fn run_loop(
                                 status: value.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                                 message: value.get("message").and_then(|v| v.as_str()).map(ToString::to_string),
                             });
+                        }
+                        "error" => {
+                            let message = value
+                                .get("message")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("relay error")
+                                .to_string();
+                            let _ = tx_in.send(RelayInbound::Error(message));
                         }
                         _ => {}
                     }

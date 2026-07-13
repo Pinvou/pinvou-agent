@@ -111,7 +111,7 @@ remote_control_refresh_qr(room_id: string) -> RemotePairingInfo
   "session_id": "p3_...",
   "url": "https://remote.pinvou.ai/r/...",
   "qr_data_url": "data:image/svg+xml;base64,...",
-  "expires_at": "2026-07-09T10:10:00Z",
+  "expires_at": null,
   "status": "waiting_mobile"
 }
 ```
@@ -192,7 +192,7 @@ disconnect
   "desktop_connected": true,
   "mobile_connected": false,
   "created_at": "...",
-  "expires_at": "...",
+  "expires_at": null,
   "paired_at": null,
   "closed_at": null,
   "status": "waiting_mobile"
@@ -202,7 +202,7 @@ disconnect
 ### 配对时序
 
 ```text
-desktop -> relay: create_room(desktop_secret, session_id_hash, expires_at)
+desktop -> relay: create_room(desktop_secret, session_id_hash)
 relay -> desktop: room_created(room_id, pairing_url)
 desktop: show QR
 mobile -> relay: open pairing_url(pairing_token)
@@ -219,11 +219,13 @@ desktop <-> relay <-> mobile: live events
 
 ### Token 策略
 
-- `pairing_token` 有效期 5-10 分钟。
-- 当前一期实现里，`pairing_token` 在 TTL 内仍承担扫码进入、刷新和接管当前 mobile 连接的职责；严格“一次性 token”暂不在本 PR 内完成。
-- 后续修复项：token 首次配对后升级为 `mobile_session_token`，用于断线重连。
-- 后续修复项：`mobile_session_token` 只绑定当前 `room_id + session_id + client_id`。
-- 桌面停止远控后，room 立即失效。
+- `pairing_token` 是当前 room 的能力凭证，与 room 同寿命，不使用固定 5-10 分钟 TTL。
+- 持有二维码或完整链接即拥有连接权；同一 room 只保留一个 mobile，后来扫码或打开链接的设备接管控制，旧设备进入“已被占用”状态页。
+- 手机刷新页面、重扫二维码或重新打开链接，均可使用同一个 `pairing_token` 恢复连接。
+- “刷新二维码”会关闭旧 room、吊销旧 token 和旧手机连接，再创建全新的 room/token。
+- “刷新二维码”、停止远控、旧 room/token 不可用统一进入手机端“远程连接已结束”页面；页面不猜测具体关闭原因，引导用户返回桌面确认并扫描当前二维码。
+- 新手机页优先从 URL fragment（`#token=...`）读取 token，避免进入 HTTP 和反向代理访问日志；滚动升级期间二维码同时携带 query 兼容仍只读取 `?token` 的旧手机页，线上页面全部升级后移除 query；relay 只保存 token hash。
+- 滚动升级期间，desktop 注册仍向旧 relay 发送远期 `expires_at` 兼容值；新版 relay 忽略该字段，产品语义仍以 room 生命周期为准。
 
 ## 协议设计
 
@@ -362,7 +364,7 @@ disconnect
 
 一期必须实现：
 
-- token 短有效期。
+- 高熵 room token，仅通过 HTTPS/WSS 传输，relay 只保存 hash。
 - room 单 session 绑定。
 - 已存在 room 的 desktop 重新注册必须校验 `desktop_secret`，防止未知桌面端抢占。
 - 公开 `/healthz` 不暴露 room/session 明细，只返回聚合计数。
@@ -389,7 +391,7 @@ disconnect
 ### 断线重连
 
 - 手机 WebSocket 断开后自动重连。
-- 当前一期重连仍使用短 TTL 的 `pairing_token`；`mobile_session_token` 是后续修复项。
+- 手机重连继续使用与 room 同寿命的 `pairing_token`。
 - relay 校验 room 未关闭且桌面仍在线。
 - 手机发送 `request_snapshot`。
 - 本地返回最新 `session_snapshot`，手机用 snapshot 覆盖本地临时状态。
@@ -456,7 +458,7 @@ Mobile -> Desktop 的 action 必须带 `client_message_id`。本地 `RemoteContr
 6. 手机能取消当前生成。
 7. `request_user_input` 出现时，手机能提交选择并解锁本地 engine。
 8. 手机断线重连后能恢复最新 session snapshot。
-9. 二维码过期后不可连接。
+9. 二维码在 room 存续期间持续有效；刷新二维码后旧链接不可连接。
 10. 停止远控后，手机端不能继续发送 action。
 
 ## 与二期的接口预留

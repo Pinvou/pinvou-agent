@@ -7,7 +7,6 @@ import { WebSocketServer } from "ws";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8787);
-const ROOM_TTL_MS = 10 * 60 * 1000;
 const PUBLIC_BASE_PATH = normalizeBasePath(process.env.PINVOU_REMOTE_PUBLIC_BASE_PATH || "/pinvou3/remote");
 const rooms = new Map();
 
@@ -120,13 +119,9 @@ wss.on("connection", (ws) => {
     }
 
     if (msg.type === "desktop_register") {
-      let expiresAt = Date.parse(msg.expires_at || "");
-      if (!msg.room_id || typeof msg.session_id !== "string" || !msg.pairing_token || !msg.desktop_secret || !expiresAt) {
+      if (!msg.room_id || typeof msg.session_id !== "string" || !msg.pairing_token || !msg.desktop_secret) {
         send(ws, { type: "error", message: "bad desktop_register" });
         return;
-      }
-      if (expiresAt <= Date.now()) {
-        expiresAt = Date.now() + ROOM_TTL_MS;
       }
       const old = rooms.get(msg.room_id);
       const existingMobile =
@@ -148,7 +143,6 @@ wss.on("connection", (ws) => {
         mobile: existingMobile,
         pairing_token_hash: tokenHash(msg.pairing_token),
         desktop_secret_hash: tokenHash(msg.desktop_secret),
-        expires_at: expiresAt,
         paired: wasPaired,
         closed: false,
         audit: old?.audit || {
@@ -177,12 +171,12 @@ wss.on("connection", (ws) => {
 
     if (msg.type === "mobile_join") {
       const room = rooms.get(msg.room_id);
-      if (!room || room.closed || Date.now() > room.expires_at) {
-        console.log("[relay] mobile_join rejected", msg.room_id, "room expired or not found");
-        send(ws, { type: "error", message: "room expired or not found" });
+      if (!room || room.closed) {
+        console.log("[relay] mobile_join rejected", msg.room_id, "room not found");
+        send(ws, { type: "error", message: "room not found" });
         return;
       }
-      if (tokenHash(msg.token) !== room.pairing_token_hash) {
+      if (!tokenHashMatches(msg.token, room.pairing_token_hash)) {
         console.log("[relay] mobile_join rejected", msg.room_id, "invalid token");
         send(ws, { type: "error", message: "invalid token" });
         return;
@@ -213,9 +207,10 @@ wss.on("connection", (ws) => {
 
     if (ws.role === "desktop") {
       if (msg.type === "desktop_disconnect") {
+        const reason = msg.payload?.reason || "stopped";
         room.closed = true;
-        audit(room, "desktop_disconnect");
-        send(room.mobile, { type: "room_closed" });
+        audit(room, "desktop_disconnect", { reason });
+        send(room.mobile, { type: "room_closed", reason });
         try { room.mobile?.close(); } catch {}
         try { room.desktop?.close(); } catch {}
         rooms.delete(room.room_id);
@@ -252,24 +247,12 @@ wss.on("connection", (ws) => {
     if (ws.role === "desktop" && room.desktop === ws) {
       room.closed = true;
       audit(room, "desktop_disconnected");
-      send(room.mobile, { type: "room_closed" });
+      send(room.mobile, { type: "room_closed", reason: "desktop_disconnected" });
       try { room.mobile?.close(); } catch {}
       rooms.delete(room.room_id);
     }
   });
 });
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, room] of rooms) {
-    if (!room.closed && !room.paired && now > room.expires_at) {
-      room.closed = true;
-      send(room.desktop, { type: "error", message: "room expired", room_id: id });
-      try { room.desktop?.close(); } catch {}
-      rooms.delete(id);
-    }
-  }
-}, 30_000).unref();
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`pinvou remote relay listening on http://127.0.0.1:${PORT}`);

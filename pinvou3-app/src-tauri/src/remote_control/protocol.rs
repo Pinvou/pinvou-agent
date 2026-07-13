@@ -23,7 +23,7 @@ pub struct RemotePairingInfo {
     pub session_id: String,
     pub url: String,
     pub qr_data_url: Option<String>,
-    pub expires_at: String,
+    pub expires_at: Option<String>,
     pub status: RemoteControlStatusKind,
 }
 

@@ -3435,13 +3435,19 @@
       await refreshRemoteControlStatus();
       return info;
     } catch (e) {
-      state.remoteControl = Object.assign({}, state.remoteControl, { starting: false, last_error: String(e) });
+      state.remoteControl = Object.assign({}, state.remoteControl, { active: false, starting: false, status: "error", last_error: String(e) });
       notify();
       throw e;
     }
   }
   async function stopRemoteControl() {
-    try { await invoke("remote_control_stop"); } catch (e) { state.remoteControl.last_error = String(e); }
+    try {
+      await invoke("remote_control_stop");
+    } catch (e) {
+      state.remoteControl = Object.assign({}, state.remoteControl, { status: "error", last_error: String(e) });
+      notify();
+      throw e;
+    }
     state.remoteControl = Object.assign({}, state.remoteControl, { active: false, pairing: null, status: "stopped" });
     notify();
   }
@@ -3452,7 +3458,7 @@
       await refreshRemoteControlStatus();
       return info;
     } catch (e) {
-      state.remoteControl = Object.assign({}, state.remoteControl, { last_error: String(e) });
+      state.remoteControl = Object.assign({}, state.remoteControl, { status: "error", last_error: String(e) });
       notify();
       throw e;
     }

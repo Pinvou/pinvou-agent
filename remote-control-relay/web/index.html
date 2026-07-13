@@ -184,13 +184,14 @@
     .empty-panel { padding: 28px 14px; color: #8d949c; text-align: center; line-height: 1.6; }
     .takeover { position: fixed; inset: 0; height: var(--app-height); z-index: 80; display: flex; align-items: center; justify-content: center; padding: 12px 14px calc(12px + env(safe-area-inset-bottom)); overflow: hidden; background: radial-gradient(circle at 50% -10%, rgba(36,136,255,.08), transparent 28%), #0d1013; color: #f4f6f8; }
     .takeover.hidden { display: none; }
+    .takeover .hidden { display: none; }
     .takeover-card { width: min(100%, 432px); max-height: calc(var(--app-height) - 24px - env(safe-area-inset-bottom)); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; border: 1px solid rgba(255,255,255,.08); border-radius: 24px; background: linear-gradient(180deg, #171b20, #14181d); box-shadow: 0 24px 70px rgba(0,0,0,.42); padding: 18px; }
     .takeover-hero { display: flex; gap: 16px; align-items: flex-start; }
     .takeover-warn { width: 50px; height: 50px; border-radius: 16px; display: grid; place-items: center; flex: 0 0 auto; background: rgba(228,164,84,.12); border: 1px solid rgba(228,164,84,.22); color: #e4a454; }
     .takeover-warn svg, .takeover-device-icon svg { width: 24px; height: 24px; stroke: currentColor; }
     .takeover-eyebrow { display: inline-flex; align-items: center; margin-bottom: 10px; padding: 6px 10px; border-radius: 999px; background: rgba(228,164,84,.10); border: 1px solid rgba(228,164,84,.18); color: #f0bb77; font-size: 12px; font-weight: 700; }
     .takeover h2 { margin: 0; font-size: 22px; line-height: 1.25; letter-spacing: 0; }
-    .takeover-intro { margin: 10px 0 0; color: #98a0a9; font-size: 14px; line-height: 1.7; }
+    .takeover-intro { margin: 10px 0 0; color: #98a0a9; font-size: 14px; line-height: 1.7; white-space: pre-line; }
     .takeover-divider { height: 1px; background: rgba(255,255,255,.08); margin: 20px 0; }
     .takeover-section-title { margin-bottom: 10px; color: #98a0a9; font-size: 13px; font-weight: 700; }
     .takeover-device { display: flex; align-items: center; gap: 12px; padding: 14px; border: 1px solid rgba(255,255,255,.08); border-radius: 17px; background: #1b2026; }
@@ -207,6 +208,16 @@
     .takeover-primary { background: linear-gradient(180deg, #2488ff, #1677e8); box-shadow: 0 12px 28px rgba(36,136,255,.20); }
     .takeover-secondary { border: 1px solid rgba(255,255,255,.08); background: #1b2026; color: #dce1e6; }
     .takeover-hint { margin-top: 12px; color: #6f7780; text-align: center; font-size: 12px; line-height: 1.5; }
+    .expired-section-title { font-size: 13px; color: #98a0a9; margin-bottom: 11px; font-weight: 700; }
+    .expired-qr-card { border: 1px solid rgba(255,255,255,.08); border-radius: 18px; background: #1b2026; padding: 15px; display: flex; align-items: center; gap: 14px; }
+    .expired-qr { width: 58px; height: 58px; border-radius: 14px; background: #eef2f5; display: grid; place-items: center; position: relative; overflow: hidden; flex: 0 0 auto; }
+    .expired-qr svg { width: 42px; height: 42px; color: #1b2026; }
+    .expired-qr::after { content: ""; position: absolute; left: 8px; right: 8px; top: 28px; height: 2px; background: #d56565; transform: rotate(-38deg); box-shadow: 0 0 0 2px rgba(255,255,255,.8); }
+    .expired-qr-main { flex: 1; min-width: 0; }
+    .expired-qr-title { font-size: 15px; font-weight: 750; }
+    .expired-qr-meta { font-size: 12px; color: #98a0a9; margin-top: 5px; line-height: 1.5; }
+    .expired-badge { font-size: 11px; font-weight: 700; color: #f0bb77; background: rgba(228,164,84,.10); border: 1px solid rgba(228,164,84,.16); padding: 6px 8px; border-radius: 999px; }
+    .expired-tip { margin-top: 17px; padding: 13px 14px; border-radius: 15px; background: #11151a; border: 1px solid rgba(255,255,255,.08); color: #98a0a9; font-size: 12px; line-height: 1.6; }
     body.light header { background: linear-gradient(to bottom, rgba(243,245,247,.98), rgba(243,245,247,.92)); border-color: rgba(0,0,0,.08); }
     body.light footer { background: linear-gradient(to top, rgba(243,245,247,1) 75%, rgba(243,245,247,.88)); border-color: rgba(0,0,0,.08); }
     body.light .session-title, body.light .artifact-top, body.light .icon-button, body.light .chip, body.light .composer, body.light .menu, body.light button.ghost { background: #fff; color: #151719; border-color: rgba(0,0,0,.08); }
@@ -330,7 +341,7 @@
     <section class="takeover hidden" id="takeoverScreen" role="alertdialog" aria-modal="true" aria-labelledby="takeoverTitle">
       <article class="takeover-card">
         <div class="takeover-hero">
-          <div class="takeover-warn" aria-hidden="true">
+          <div class="takeover-warn" id="takeoverWarn" aria-hidden="true">
             <svg fill="none" viewBox="0 0 24 24" stroke-width="1.9">
               <path d="M12 8v5"></path>
               <path d="M12 17h.01"></path>
@@ -338,11 +349,12 @@
             </svg>
           </div>
           <div>
-            <div class="takeover-eyebrow">远程会话被占用</div>
+            <div class="takeover-eyebrow" id="takeoverEyebrow">远程会话被占用</div>
             <h2 id="takeoverTitle">当前会话已在其他设备打开</h2>
-            <p class="takeover-intro">为避免操作冲突，同一时间只能保留一个手机控制端。你可以继续使用新设备，或重新连接本设备切换回来。</p>
+            <p class="takeover-intro" id="takeoverIntro">为避免操作冲突，同一时间只能保留一个手机控制端。你可以继续使用新设备，或重新连接本设备切换回来。</p>
           </div>
         </div>
+        <div id="takeoverDetails">
         <div class="takeover-divider"></div>
         <div class="takeover-section-title">当前接管设备</div>
         <div class="takeover-device">
@@ -370,6 +382,37 @@
             <div>需要切回本设备时，点击重新连接；当前正在控制的设备会被断开。</div>
           </div>
         </div>
+        </div>
+        <div class="hidden" id="expiredDetails">
+          <div class="takeover-divider"></div>
+          <div class="expired-section-title">连接状态</div>
+          <div class="expired-qr-card">
+            <div class="expired-qr" aria-hidden="true">
+              <svg viewBox="0 0 48 48" fill="currentColor">
+                <rect x="3" y="3" width="14" height="14"></rect><rect x="7" y="7" width="6" height="6" fill="#eef2f5"></rect>
+                <rect x="31" y="3" width="14" height="14"></rect><rect x="35" y="7" width="6" height="6" fill="#eef2f5"></rect>
+                <rect x="3" y="31" width="14" height="14"></rect><rect x="7" y="35" width="6" height="6" fill="#eef2f5"></rect>
+                <rect x="22" y="4" width="5" height="5"></rect><rect x="21" y="13" width="7" height="5"></rect>
+                <rect x="21" y="22" width="5" height="5"></rect><rect x="30" y="22" width="5" height="5"></rect>
+                <rect x="39" y="22" width="5" height="5"></rect><rect x="21" y="31" width="5" height="5"></rect>
+                <rect x="29" y="30" width="7" height="7"></rect><rect x="39" y="31" width="5" height="5"></rect>
+                <rect x="22" y="40" width="5" height="5"></rect><rect x="31" y="40" width="5" height="5"></rect><rect x="40" y="40" width="5" height="5"></rect>
+              </svg>
+            </div>
+            <div class="expired-qr-main">
+              <div class="expired-qr-title">远程连接</div>
+              <div class="expired-qr-meta">当前连接已失效</div>
+            </div>
+            <div class="expired-badge">已结束</div>
+          </div>
+          <div class="takeover-divider"></div>
+          <div class="expired-section-title">下一步</div>
+          <div class="takeover-steps">
+            <div class="takeover-step"><div class="takeover-step-num">1</div><div>关闭当前页面。</div></div>
+            <div class="takeover-step"><div class="takeover-step-num">2</div><div>使用手机扫描桌面端最新显示的二维码，重新建立连接。</div></div>
+          </div>
+          <div class="expired-tip">桌面端生成新二维码后，之前打开的二维码会立即失效。</div>
+        </div>
         <div class="takeover-actions">
           <button class="takeover-primary" id="takeoverReconnect">重新连接本设备</button>
           <button class="takeover-secondary" id="takeoverClose">关闭页面</button>
@@ -396,7 +439,10 @@
     }
 
     const roomId = location.pathname.split('/').filter(Boolean).pop();
-    const token = new URLSearchParams(location.search).get('token') || '';
+    // 新二维码把凭证放在 fragment，避免进入 HTTP/反向代理日志；保留 query 兼容旧链接。
+    const token = new URLSearchParams(location.hash.replace(/^#/, '')).get('token')
+      || new URLSearchParams(location.search).get('token')
+      || '';
     const wsUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}${remoteBasePath()}/ws`;
     const el = {
       title: document.getElementById('title'),
@@ -425,6 +471,12 @@
       previewBody: document.getElementById('previewBody'),
       previewClose: document.getElementById('previewClose'),
       takeoverScreen: document.getElementById('takeoverScreen'),
+      takeoverWarn: document.getElementById('takeoverWarn'),
+      takeoverEyebrow: document.getElementById('takeoverEyebrow'),
+      takeoverTitle: document.getElementById('takeoverTitle'),
+      takeoverIntro: document.getElementById('takeoverIntro'),
+      takeoverDetails: document.getElementById('takeoverDetails'),
+      expiredDetails: document.getElementById('expiredDetails'),
       takeoverReconnect: document.getElementById('takeoverReconnect'),
       takeoverClose: document.getElementById('takeoverClose'),
       takeoverHint: document.getElementById('takeoverHint'),
@@ -486,6 +538,7 @@
     function showTakeoverScreen() {
       syncViewportHeight();
       state.replaced = true;
+      state.terminal = false;
       joined = false;
       clearTimeout(joinTimer);
       clearTimeout(reconnectTimer);
@@ -495,6 +548,14 @@
       el.sheetOverlay.classList.add('hidden');
       el.previewOverlay.classList.add('hidden');
       state.sheet = '';
+      el.takeoverWarn.innerHTML = '<svg fill="none" viewBox="0 0 24 24" stroke-width="1.9"><path d="M12 8v5"></path><path d="M12 17h.01"></path><path d="M10.3 3.8 2.9 17a2 2 0 0 0 1.8 3h14.6a2 2 0 0 0 1.8-3L13.7 3.8a2 2 0 0 0-3.4 0Z"></path></svg>';
+      el.takeoverEyebrow.textContent = '远程会话被占用';
+      el.takeoverTitle.textContent = '当前会话已在其他设备打开';
+      el.takeoverIntro.textContent = '为避免操作冲突，同一时间只能保留一个手机控制端。你可以继续使用新设备，或重新连接本设备切换回来。';
+      el.takeoverDetails.classList.remove('hidden');
+      el.expiredDetails.classList.add('hidden');
+      el.takeoverReconnect.classList.remove('hidden');
+      el.takeoverClose.className = 'takeover-secondary';
       el.takeoverReconnect.disabled = false;
       el.takeoverReconnect.textContent = '重新连接本设备';
       el.takeoverHint.textContent = '重新连接后，当前正在控制的设备会被断开。';
@@ -506,8 +567,9 @@
       setControlsDisabled(false);
       el.takeoverScreen.classList.add('hidden');
     }
-    function enterTerminalState(status, message) {
+    function enterTerminalState(status, title, message, hint, variant) {
       state.terminal = true;
+      state.replaced = false;
       joined = false;
       clearTimeout(joinTimer);
       clearTimeout(reconnectTimer);
@@ -517,8 +579,22 @@
       state.sheet = '';
       el.sheetOverlay.classList.add('hidden');
       el.previewOverlay.classList.add('hidden');
-      addSystem(message);
       detachCurrentSocket();
+      el.takeoverEyebrow.textContent = status;
+      el.takeoverTitle.textContent = title;
+      el.takeoverIntro.textContent = message;
+      el.takeoverDetails.classList.add('hidden');
+      el.expiredDetails.classList.toggle('hidden', variant !== 'ended');
+      el.takeoverReconnect.classList.add('hidden');
+      el.takeoverClose.className = variant === 'ended' ? 'takeover-primary' : 'takeover-secondary';
+      el.takeoverWarn.innerHTML = variant === 'ended'
+        ? '<svg fill="none" viewBox="0 0 24 24" stroke-width="1.9"><path d="M12 6v6l3 2"></path><circle cx="12" cy="12" r="9"></circle></svg>'
+        : '<svg fill="none" viewBox="0 0 24 24" stroke-width="1.9"><path d="M12 8v5"></path><path d="M12 17h.01"></path><path d="M10.3 3.8 2.9 17a2 2 0 0 0 1.8 3h14.6a2 2 0 0 0 1.8-3L13.7 3.8a2 2 0 0 0-3.4 0Z"></path></svg>';
+      el.takeoverHint.textContent = hint || '请返回桌面端重新开启远程控制。';
+      el.takeoverClose.disabled = false;
+      el.takeoverClose.textContent = '关闭页面';
+      el.takeoverScreen.classList.remove('hidden');
+      el.takeoverScreen.scrollTop = 0;
     }
     function detachCurrentSocket() {
       if (!ws) return;
@@ -2148,7 +2224,7 @@
           {
             const message = (msg.payload && msg.payload.message) || msg.message || 'unknown';
             if (/room expired|not found|invalid token/i.test(message)) {
-              enterTerminalState('二维码已失效', '二维码已失效，请回到桌面端刷新二维码后重新扫码。');
+              enterTerminalState('连接已结束', '远程连接已结束', '当前远程连接已结束。可能是桌面端停止了远程控制，或已经更新了连接二维码。\n\n请返回桌面端确认状态，并扫描当前显示的二维码重新连接。', '请扫描桌面端显示的二维码重新连接。', 'ended');
               break;
             }
           }
@@ -2166,7 +2242,13 @@
           showTakeoverScreen();
           break;
         case 'room_closed':
-          enterTerminalState('已停止', '桌面端已停止远程控制，请重新扫码连接。');
+          if (msg.reason === 'qr_refreshed') {
+            enterTerminalState('连接已结束', '远程连接已结束', '当前远程连接已结束。可能是桌面端停止了远程控制，或已经更新了连接二维码。\n\n请返回桌面端确认状态，并扫描当前显示的二维码重新连接。', '请扫描桌面端显示的二维码重新连接。', 'ended');
+          } else if (msg.reason === 'desktop_disconnected') {
+            enterTerminalState('连接异常', '桌面端连接已断开', '桌面端或中继连接发生异常，当前远程控制已经中止。', '请确认桌面端在线后刷新本页面或重新扫码。');
+          } else {
+            enterTerminalState('连接已结束', '远程连接已结束', '当前远程连接已结束。可能是桌面端停止了远程控制，或已经更新了连接二维码。\n\n请返回桌面端确认状态，并扫描当前显示的二维码重新连接。', '请扫描桌面端显示的二维码重新连接。', 'ended');
+          }
           break;
       }
     }
