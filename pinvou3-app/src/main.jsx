@@ -12,6 +12,7 @@ import { KnowledgeView } from './features/knowledge/KnowledgeView.jsx';
 import { MonitorView } from './features/monitor/MonitorView.jsx';
 import { RemoteControlModal, SettingsView } from './features/settings/SettingsView.jsx';
 import { ChatView } from './features/chat/ChatView.jsx';
+import { ScheduledTasksView } from './features/scheduled/ScheduledTasksView.jsx';
 import { ToolStoreView } from './features/tools/ToolStoreView.jsx';
 import { PinvouSummonCard } from './features/tools/tool-renderers.jsx';
 import { CardPoolView, Lanyard, PersonaEditorModal } from './features/personas/Personas.jsx';
@@ -385,6 +386,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       const [isSidebarOpen, setIsSidebarOpen] = useState(false);
       const [chatPrefill, setChatPrefill] = useState('');
       const composerPrefillSeenRef = useRef(0);
+      const scheduledTaskAutoOpenSeenRef = useRef(null);
       const [personaEditor, setPersonaEditor] = useState(null); // 聊天里"存入卡牌池"草稿 → App 级编辑器
       const [savedConfirm, setSavedConfirm] = useState(null); // 存入成功 → iOS 确认窗 {name}
       const [poolMyOnly, setPoolMyOnly] = useState(false); // 跳卡池时是否直接落「我的卡牌」筛选(从确认窗"去查看"进来=true)
@@ -492,7 +494,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         // monitor/settings 拽走。
         if (bs.activeSessionId !== activeChat) {
           setActiveChat(bs.activeSessionId);
-          if (bs.activeSessionId && currentView !== 'monitor' && currentView !== 'settings' && currentView !== 'search') {
+          if (bs.activeSessionId && currentView !== 'monitor' && currentView !== 'settings' && currentView !== 'search' && currentView !== 'scheduled') {
             setCurrentView('chat');
           }
         }
@@ -501,6 +503,10 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
           composerPrefillSeenRef.current = bs.composerPrefill.id;
           setChatPrefill(bs.composerPrefill.text || '');
           setCurrentView('chat');
+        }
+        if (bs.scheduledTaskAutoOpenId && bs.scheduledTaskAutoOpenId !== scheduledTaskAutoOpenSeenRef.current) {
+          scheduledTaskAutoOpenSeenRef.current = bs.scheduledTaskAutoOpenId;
+          setCurrentView('scheduled');
         }
         // UI 语言/主题:启动时从落盘 settings 恢复一次(此前只写不读,重启即回中文+深色)
         if (!uiPrefsInitRef.current && bs.settings) {
@@ -653,6 +659,16 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       const [archiveConfirm, setArchiveConfirm] = useState(null);
       const [archiveToast, setArchiveToast] = useState(false);
 
+      async function navigateFromScheduledRun(nextView, beforeNavigate) {
+        if (bs && bs.scheduledRunContext && bridge.available && bridge.exitScheduledRunChat) {
+          const exited = await bridge.exitScheduledRunChat();
+          if (!exited) return false;
+        }
+        if (beforeNavigate) beforeNavigate();
+        setCurrentView(nextView);
+        return true;
+      }
+
       function handleNewChat(installedToolId) {
         // 类型守卫:installedToolId 必须是字符串 toolId。侧边栏按钮 onClick={() => handleNewChat()}
         // 本不传参,但若哪天有调用点写成 onClick={handleNewChat},React 会把事件对象当首参塞进来——
@@ -673,8 +689,10 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         bridge.postCardCreatorIntro();                              // 再排在加持气泡之后(持久化,切会话/重启不丢)
       }
 
-      function handleSwitchSession(id) {
-        if (bridge.available) bridge.switchToSession(id);
+      async function handleSwitchSession(id) {
+        if (!bridge.available) return;
+        const switched = await bridge.switchToSession(id);
+        if (!switched) return;
         setActiveChat(id);
         setCurrentView('chat');
       }
@@ -885,7 +903,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       }
 
       return (
-        <div className={`flex flex-col h-screen font-sans overflow-hidden antialiased transition-colors duration-300 ${activeTheme === 'dark' ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
+        <div data-testid="app-root" data-current-view={currentView} className={`flex flex-col h-screen font-sans overflow-hidden antialiased transition-colors duration-300 ${activeTheme === 'dark' ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
 
           {/* 撕离拖拽 avatar:被拎起的标签,跟随光标(DOM 实现,丝滑跟手、不选中文字) */}
           {dragAvatar && (
@@ -956,14 +974,27 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                 active={currentView === 'search'}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onClick={() => setCurrentView('search')}
+                onClick={() => navigateFromScheduledRun('search')}
+              />
+              <NavItem
+                icon={<Clock size={18} />} label={t.scheduledPlans}
+                active={currentView === 'scheduled'}
+                unread={!!(bs && (bs.scheduledTasks || []).some(task => task.hasUnreadRuns))}
+                theme={activeTheme}
+                isSidebarOpen={isSidebarOpen}
+                onClick={() => navigateFromScheduledRun('scheduled')}
               />
               <NavItem
                 icon={<BarChart2 size={18} />} label={t.monitor}
                 active={currentView === 'monitor'}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onClick={() => setCurrentView('monitor')}
+                onClick={() => {
+                  navigateFromScheduledRun('monitor', () => {
+                    const liveBridge = window.TauriBridge || bridge;
+                    if (liveBridge && typeof liveBridge.startMonitorPolling === 'function') liveBridge.startMonitorPolling();
+                  });
+                }}
                 dragKind="monitor" dragging={!!dragAvatar && dragAvatar.key === 'monitor:'} onPickUp={(geom) => beginTearOff('monitor', undefined, t.monitor, geom)}
               />
               <NavItem
@@ -971,7 +1002,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                 active={currentView === 'cardpool'}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onClick={() => { setPoolMyOnly(false); setCurrentView('cardpool'); }}
+                onClick={() => navigateFromScheduledRun('cardpool', () => setPoolMyOnly(false))}
                 dragKind="cardpool" dragging={!!dragAvatar && dragAvatar.key === 'cardpool:'} onPickUp={(geom) => beginTearOff('cardpool', undefined, t.cardPool, geom)}
               />
               <NavItem
@@ -979,7 +1010,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                 active={currentView === 'workflow'}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onClick={() => setCurrentView('workflow')}
+                onClick={() => navigateFromScheduledRun('workflow')}
                 dragKind="workflow" dragging={!!dragAvatar && dragAvatar.key === 'workflow:'} onPickUp={(geom) => beginTearOff('workflow', undefined, t.workflow, geom)}
               />
               <NavItem
@@ -987,7 +1018,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                 active={currentView === 'toolStore'}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onClick={() => setCurrentView('toolStore')}
+                onClick={() => navigateFromScheduledRun('toolStore')}
                 dragKind="toolstore" dragging={!!dragAvatar && dragAvatar.key === 'toolstore:'} onPickUp={(geom) => beginTearOff('toolstore', undefined, t.toolStore, geom)}
               />
               <NavItem
@@ -995,7 +1026,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                 active={currentView === 'knowledge'}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onClick={() => setCurrentView('knowledge')}
+                onClick={() => navigateFromScheduledRun('knowledge')}
                 dragKind="knowledge" dragging={!!dragAvatar && dragAvatar.key === 'knowledge:'} onPickUp={(geom) => beginTearOff('knowledge', undefined, t.knowledge, geom)}
               />
               {/* 收起态专属:展开态近期列表的高亮项就是回会话入口,不重复渲染 */}
@@ -1005,7 +1036,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                   active={currentView === 'chat'}
                   theme={activeTheme}
                   isSidebarOpen={isSidebarOpen}
-                  onClick={() => setCurrentView('chat')}
+                  onClick={() => navigateFromScheduledRun('chat')}
                 />
               )}
             </div>
@@ -1136,7 +1167,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                 )}
                 {!isSidebarOpen && (
                   <button
-                    onClick={() => setCurrentView('settings')}
+                    onClick={() => navigateFromScheduledRun('settings')}
                     title={t.settings}
                     className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
                   >
@@ -1167,7 +1198,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                       {bs && bs.remoteControl && bs.remoteControl.active && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
                     </button>
                     <button
-                      onClick={() => setCurrentView('settings')}
+                      onClick={() => navigateFromScheduledRun('settings')}
                       title={t.settings}
                       className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
                     >
@@ -1184,7 +1215,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
           <div className="flex-1 flex flex-col relative min-w-0 overflow-hidden">
 
             {/* Gemini Style Background Glow */}
-            {currentView === 'chat' && (
+            {(currentView === 'chat' || (currentView === 'scheduled' && bs && bs.scheduledRunContext)) && (
               activeTheme === 'light' ? (
                 <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[1200px] h-[800px] bg-[radial-gradient(ellipse_at_center,_rgba(232,240,254,0.8)_0%,_transparent_60%)] pointer-events-none z-0"></div>
               ) : (
@@ -1228,13 +1259,20 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
-            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => { setCurrentView('settings'); setTimeout(() => document.getElementById('settings-dependencies')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80); }} onGotoTools={() => setCurrentView('toolStore')} />}
+            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => navigateFromScheduledRun('settings', () => setTimeout(() => document.getElementById('settings-dependencies')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80))} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />}
+            {currentView === 'scheduled' && (
+              bs && bs.scheduledRunContext ? (
+                <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => navigateFromScheduledRun('settings', () => setTimeout(() => document.getElementById('settings-dependencies')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80))} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />
+              ) : (
+                <ScheduledTasksView theme={activeTheme} t={t} onOpenChat={() => setCurrentView('chat')} />
+              )
+            )}
             {/* 草稿态(无 session)也渲染挂件,但强制空态——让欢迎页保留「＋加持卡牌」入口。
                 点它跳卡牌池,选卡时 equipPersona 会先物化 session(lazy session)。 */}
-            {currentView === 'chat' && bs && (
+            {(currentView === 'chat' || (currentView === 'scheduled' && bs && bs.scheduledRunContext)) && bs && (
               <Lanyard persona={bs.activeSessionId ? (bs.activePersona || null) : null} isDark={activeTheme === 'dark'} t={t}
                 onRemove={() => bridge.available && bridge.unequipPersona()}
-                onOpenPicker={() => { setPoolMyOnly(false); setCurrentView('cardpool'); }} />
+                onOpenPicker={() => navigateFromScheduledRun('cardpool', () => setPoolMyOnly(false))} />
             )}
             {currentView === 'search' && <SearchView theme={activeTheme} history={chatHistory} t={t} onSelect={handleSwitchSession} />}
             {currentView === 'knowledge' && <KnowledgeView theme={activeTheme} t={t} />}

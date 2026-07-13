@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, Mic, Package, Paperclip, Send, Sparkles, StopCircle, Trash2, X, Zap } from '../../components/icons.jsx';
+import { ArrowLeft, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, Mic, Package, Paperclip, Send, Sparkles, StopCircle, Trash2, X, Zap } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { ArtifactsPanel } from '../artifacts/ArtifactsPanel.jsx';
 import { AppIcon, DEPT_ORDER, deptColor, deptLabelFor, personaText } from '../personas/Personas.jsx';
@@ -219,7 +219,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       );
     };
 
-    const ChatView = ({ theme, t, bs, prefill, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoTools }) => {
+    const ChatView = ({ theme, t, bs, prefill, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoTools, onBackScheduledRun }) => {
       const isDark = theme === 'dark';
       const [inputText, setInputText] = useState('');
       const [artifactsOpen, setArtifactsOpen] = useState(false);
@@ -325,6 +325,10 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       const fmtCtxTok = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
       const artifactCount = (bs && bs.artifacts) ? bs.artifacts.length : 0;
       const hasSkill = !!(bs && bs.workflow && bs.workflow.activeSkillName);
+      const isScheduledTaskCreationChat = !!(bs && bs.scheduledTaskCreationSessionId && bs.activeSessionId === bs.scheduledTaskCreationSessionId);
+      const scheduledRunContext = bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === bs.activeSessionId
+        ? bs.scheduledRunContext
+        : null;
       let lastUserId = null;
       for (let i = chatItems.length - 1; i >= 0; i--) { if (chatItems[i].type === 'user') { lastUserId = chatItems[i].id; break; } }
 
@@ -631,7 +635,19 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
 
           {/* Top Header (浮动) */}
           <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-20 pointer-events-none">
-            <div className="flex items-center gap-2" />
+            <div className="flex items-center gap-2 min-w-0">
+              {scheduledRunContext && (
+                <button type="button" onClick={onBackScheduledRun}
+                  data-testid="scheduled-run-back"
+                  aria-label="返回定时任务运行历史"
+                  title="返回定时任务运行历史"
+                  className={`pointer-events-auto h-10 max-w-[520px] px-3 rounded-full flex items-center gap-2 border text-[14px] font-medium transition-colors ${isDark ? 'bg-[#1E1F20] border-[#333537] text-[#E3E3E3] hover:bg-[#2B2C2F]' : 'bg-white border-[#E3E5E8] text-[#1F1F1F] hover:bg-[#F5F5F6] shadow-sm'}`}>
+                  <ArrowLeft size={16} className="shrink-0" />
+                  <span className="truncate">{scheduledRunContext.taskName || '定时任务运行'}</span>
+                  <span className={`shrink-0 text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#85888D]'}`}>运行记录</span>
+                </button>
+              )}
+            </div>
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setArtifactsOpen(true)}
@@ -680,7 +696,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                   return chatItems
                     .filter((item) => !(item.type === 'memory_candidate' && !item.resolved))
                     .map((item) => (
-                    <ChatBubble key={item.id} item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={(txt) => { if (bridge.available) bridge.sendMessage(txt); }} editable={!busy && item.id === lastUserId} onOpenEditor={onOpenEditor} isLatestArtifact={latestArtIds.has(item.id)} />
+                    <ChatBubble key={item.id} item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={(txt) => { if (bridge.available) bridge.sendMessage(txt); }} editable={!busy && item.id === lastUserId} onOpenEditor={onOpenEditor} isLatestArtifact={latestArtIds.has(item.id)} allowScheduledTaskDraft={isScheduledTaskCreationChat} />
                   ));
                 })()}
                 {busy && <ThinkingBubble thinking={bs && bs.thinking} theme={theme} t={t} />}
@@ -1355,6 +1371,20 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       var dept = (d.dept && DEPT_ORDER.indexOf(d.dept) >= 0) ? d.dept : 'specialized';
       return { name: d.name, dept: dept, emoji: d.emoji || '🃏', color: d.color || '', description: d.description || '', body: d.body };
     }
+    function asScheduledTaskDraft(d) {
+      if (!d || typeof d !== 'object' || !d.name || !d.prompt || !d.rrule) return null;
+      return {
+        name: String(d.name),
+        prompt: String(d.prompt),
+        rrule: String(d.rrule),
+        cwds: Array.isArray(d.cwds) ? d.cwds.filter((item) => typeof item === 'string') : [],
+        mode: d.mode ? String(d.mode) : 'yolo',
+        allowShell: !!d.allowShell,
+        trustMode: !!d.trustMode,
+        autoApprove: !!d.autoApprove,
+        paused: !!d.paused,
+      };
+    }
     // 模型偶尔给 JSON 末尾多带一个逗号(trailing comma)等小瑕疵 → 严格 JSON.parse 会整段拒掉,
     // 导致草稿卡解析失败、不出「存入卡牌池」按钮。宽松解析:先严格,失败再去掉对象/数组结尾多余
     // 逗号重试(去尾逗号对合法 JSON 无副作用)。失败返回 null(不抛)。
@@ -1418,6 +1448,20 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       if (!chosenDraft) return { draft: null, html: html };
       return { draft: chosenDraft, html: html.replace(chosen, '') };
     }
+    function parseScheduledTaskDraft(html) {
+      if (!html || html.indexOf('{') < 0) return { draft: null, html: html };
+      var re = /<pre[^>]*>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g, m, chosen = null, chosenDraft = null;
+      while ((m = re.exec(html))) {
+        var raw = htmlUnescape(m[2]).trim();
+        if (raw.charAt(0) !== '{') continue;
+        var draft = asScheduledTaskDraft(parseLooseJson(raw));
+        if (!draft) continue;
+        if (/scheduled-task-draft/.test(m[1])) { chosen = m[0]; chosenDraft = draft; break; }
+        if (!chosenDraft) { chosen = m[0]; chosenDraft = draft; }
+      }
+      if (!chosenDraft) return { draft: null, html: html };
+      return { draft: chosenDraft, html: html.replace(chosen, '') };
+    }
     // 卡牌制造专家追问时,若问题有可选项,会输出一个 ```card-question 块 {question, options[]}。
     // 抠出来 → 渲染成可点击的 iOS 选项卡;点选项即把它作为回答发送。返回 { q, html(抹掉块) }。
     function parseCardQuestion(html) {
@@ -1443,13 +1487,13 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
     // 流式中: JSON 还没闭合无法解析,把正在生成的卡牌/选项代码块折叠成占位,避免原始 JSON 一直刷屏。
     function hideStreamingDraft(html, label) {
       if (!html) return html;
-      var m = /<pre[^>]*>\s*<code[^>]*(?:persona-card|card-question)[\s\S]*$/i.exec(html); // persona-card / card-question 标签块(到末尾)
-      if (!m) m = /<pre[^>]*>\s*<code[^>]*>\s*\{[\s\S]*?(?:name|&quot;name)[\s\S]*$/i.exec(html); // 兜底: 以 { 开头且含 name 的块
+      var m = /<pre[^>]*>\s*<code[^>]*(?:persona-card|card-question|scheduled-task-draft)[\s\S]*$/i.exec(html); // persona-card / card-question / scheduled-task-draft 标签块(到末尾)
+      if (!m) m = /<pre[^>]*>\s*<code[^>]*>\s*\{[\s\S]*?(?:name|&quot;name|rrule|&quot;rrule)[\s\S]*$/i.exec(html); // 兜底: 以 { 开头且含 name / rrule 的块
       if (!m) return html;
       return html.slice(0, m.index) + '<div style="margin-top:.5em;opacity:.7;font-size:13px">' + (label || '🃏 正在设计卡牌…') + '</div>';
     }
 
-    const ChatBubble = ({ item, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact }) => {
+    const ChatBubble = ({ item, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft }) => {
       const isDark = theme === 'dark';
       const assistantSelectionHostRef = useRef(null);
       const assistantSelectionTargetRef = useRef(null);
@@ -1472,8 +1516,10 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       if (item.type === 'assistant') {
         if (item.streaming && !item.html) return null; // 空流式气泡交给 ThinkingBubble 表示
         const html = item.html || '';
-        const pd = item.streaming ? { draft: null, html: hideStreamingDraft(html, t && t.cpDesigning) } : parsePersonaDraft(html);
-        const cq = item.streaming ? { q: null, html: pd.html } : parseCardQuestion(pd.html);
+        const streamingDraftLabel = /scheduled-task-draft/.test(html) ? '⏰ 正在整理定时任务草稿…' : (t && t.cpDesigning);
+        const pd = item.streaming ? { draft: null, html: hideStreamingDraft(html, streamingDraftLabel) } : parsePersonaDraft(html);
+        const sd = (item.streaming || !allowScheduledTaskDraft) ? { draft: null, html: pd.html } : parseScheduledTaskDraft(pd.html);
+        const cq = item.streaming ? { q: null, html: sd.html } : parseCardQuestion(sd.html);
         // 草稿是否已存入(按名字在已加载的卡池里找同名自制卡 → 派生"已存入",免单独持久化)
         const draftSaved = pd.draft && bridge.available && bridge.getPersonas
           && bridge.getPersonas().some(function(c){ return c && c.source === 'user' && c.name === pd.draft.name; });
@@ -1646,6 +1692,8 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         return (
           <div className="flex justify-end">
             <div
+              data-testid="memory-candidate-card"
+              data-memory-id={item.memoryId || ''}
               className={`max-w-[480px] w-full rounded-[18px] px-4 py-3.5 ${isDark ? 'text-[#F2F3F5]' : 'text-[#F8FAFC]'}`}
               style={{
                 background: 'rgba(32, 34, 38, 0.92)',
@@ -1671,6 +1719,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                     <button
                       className="w-6 h-6 rounded-full flex items-center justify-center text-[#8E8E93] hover:text-[#F2F3F5] hover:bg-white/[0.08] transition-colors"
                       title="这次忽略"
+                      data-testid="memory-candidate-dismiss"
                       onClick={() => bridge.available && bridge.ignoreMemoryCandidate && bridge.ignoreMemoryCandidate(item.memoryId, item.id)}
                     >
                       <X size={13} />
@@ -1684,9 +1733,9 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               {!resolved && <div className="mt-2 ml-9 text-[12px] leading-relaxed text-[#AEB4BC]">{meta.hint}</div>}
               {!resolved && (
                 <div className="mt-3 ml-9 flex flex-wrap items-center gap-2">
-                  <button className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3.5 py-1.5 rounded-full bg-[#0A84FF] text-white hover:bg-[#1677D2] transition-colors" onClick={() => bridge.available && bridge.confirmMemoryCandidate && bridge.confirmMemoryCandidate(item.memoryId, item.id)}><Check size={14} />记住</button>
-                  <button className="inline-flex items-center gap-1.5 text-[13px] px-3.5 py-1.5 rounded-full bg-white/[0.08] text-[#E8EAED] hover:bg-white/[0.12] transition-colors" onClick={() => bridge.available && bridge.ignoreMemoryCandidate && bridge.ignoreMemoryCandidate(item.memoryId, item.id)}><X size={14} />这次忽略</button>
-                  <button className="text-[13px] px-2 py-1.5 rounded-full text-[#AEB4BC] hover:text-[#F2F3F5] hover:bg-white/[0.08] transition-colors" onClick={() => bridge.available && bridge.neverMemoryCandidate && bridge.neverMemoryCandidate(item.memoryId, item.id)}>不再提示</button>
+                  <button data-testid="memory-candidate-confirm" className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3.5 py-1.5 rounded-full bg-[#0A84FF] text-white hover:bg-[#1677D2] transition-colors" onClick={() => bridge.available && bridge.confirmMemoryCandidate && bridge.confirmMemoryCandidate(item.memoryId, item.id)}><Check size={14} />记住</button>
+                  <button data-testid="memory-candidate-ignore" className="inline-flex items-center gap-1.5 text-[13px] px-3.5 py-1.5 rounded-full bg-white/[0.08] text-[#E8EAED] hover:bg-white/[0.12] transition-colors" onClick={() => bridge.available && bridge.ignoreMemoryCandidate && bridge.ignoreMemoryCandidate(item.memoryId, item.id)}><X size={14} />这次忽略</button>
+                  <button data-testid="memory-candidate-never" className="text-[13px] px-2 py-1.5 rounded-full text-[#AEB4BC] hover:text-[#F2F3F5] hover:bg-white/[0.08] transition-colors" onClick={() => bridge.available && bridge.neverMemoryCandidate && bridge.neverMemoryCandidate(item.memoryId, item.id)}>不再提示</button>
                 </div>
               )}
             </div>
@@ -1703,4 +1752,4 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
     // 产物类型 → { 角标/标签文字, tile 配色, lucide 内联 SVG 路径 }（零下载；仅无封面紧凑态显图标）。
     // 配色/字形照搬 产物卡图标预览.html（唯一权威）。
 
-export { ToolWelcomeCard, ComposerKbSelector, ComposerModeChip, ChatView, fallbackCopyText, copyClipboardText, readClipboardText, SelectionCopyButton, TextareaContextMenu, UserBubble, BRAILLE, ThinkingBubble, htmlUnescape, asDraft, extractBalancedJson, parseJsonChain, parseLooseJson, parsePersonaDraft, parseCardQuestion, optionAnswer, hideStreamingDraft, ChatBubble };
+export { ToolWelcomeCard, ComposerKbSelector, ComposerModeChip, ChatView, fallbackCopyText, copyClipboardText, readClipboardText, SelectionCopyButton, TextareaContextMenu, UserBubble, BRAILLE, ThinkingBubble, htmlUnescape, asDraft, asScheduledTaskDraft, extractBalancedJson, parseJsonChain, parseLooseJson, parsePersonaDraft, parseScheduledTaskDraft, parseCardQuestion, optionAnswer, hideStreamingDraft, ChatBubble };

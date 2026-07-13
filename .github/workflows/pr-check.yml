@@ -157,6 +157,7 @@ jobs:
           node tests/detached_boot_smoke.js
           node tests/drag_gesture_smoke.js
           node tests/update_notice_ui_smoke.js
+          node tests/scheduled_tasks_smoke.js
 
   rust-test:
     name: rust-test
@@ -213,3 +214,11 @@ jobs:
       # --test-threads=1:bridge 测试读/写全局 env,并行会竞争(qwen_preset/vllm 等 flaky)。
       - name: cargo test --lib (真 bge-m3/vLLM 测试已 #[ignore])
         run: cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
+
+      - name: DeepSeek-TUI 定时任务运行时回归
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/pinvou3-app/src-tauri/target
+        run: |
+          cargo test --manifest-path DeepSeek-TUI/Cargo.toml -p codewhale-tui --lib automation_manager -- --test-threads=1
+          cargo test --manifest-path DeepSeek-TUI/Cargo.toml -p codewhale-tui --lib task_manager -- --test-threads=1
+          cargo test --manifest-path DeepSeek-TUI/Cargo.toml -p codewhale-tui --test task_executor_contract -- --test-threads=1

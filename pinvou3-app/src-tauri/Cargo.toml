@@ -47,6 +47,7 @@ tauri-plugin-notification = "2"
 anyhow = "1.0"
 async-trait = "0.1" # impl 底座 ToolSpec(kb_search Agentic 工具)
 tokio = { version = "1.49", features = ["full"] }
+tokio-util = "0.7.16"
 
 # 底层 Agent —— DeepSeek-TUI 提供 LLM 调用 + 工具循环 + 流式事件。
 # 上游 v0.8.45 起 rebrand：库 crate 改名 codewhale-tui。用 Cargo 的 `package`

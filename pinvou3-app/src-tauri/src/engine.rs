@@ -12,21 +12,27 @@
 //! 这一层只做 "boot engine + 转发事件"。Engine 自管 session 状态，多轮对话
 //! 在同一个 EngineHandle 内自然累积。
 
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
 use deepseek_tui::core::engine::{spawn_engine, EngineHandle};
 use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
-use deepseek_tui::core::ops::Op;
+use deepseek_tui::core::ops::{Op, UserInputProvenance};
 use deepseek_tui::models::Message;
 use deepseek_tui::tools::user_input::UserInputResponse;
 use deepseek_tui::tui::app::AppMode;
+use deepseek_tui::tui::approval::ApprovalMode;
 use parking_lot::Mutex;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
+use tokio::sync::broadcast;
 
 use crate::bridge::mode_state::SerializableMode;
-use crate::bridge::sessions::SessionStore;
+use crate::bridge::sessions::{
+    ScheduledEngineState, ScheduledRunProfile, ScheduledTokenAccounting, SessionStore,
+};
 use crate::bridge::Pinvou3Bridge;
 
 /// 单个 session 的 engine wrapper(handle + 该 session 绑定的 bridge)。
@@ -39,6 +45,10 @@ use crate::bridge::Pinvou3Bridge;
 pub struct AppEngine {
     pub handle: EngineHandle,
     pub bridge: Pinvou3Bridge,
+    pub(crate) workspace: PathBuf,
+    pub(crate) turn_events: broadcast::Sender<EngineTurnSignal>,
+    pub(crate) scheduled_unattended: Arc<AtomicBool>,
+    scheduled_disallowed_tools: Vec<String>,
 }
 
 impl AppEngine {
@@ -61,7 +71,16 @@ impl AppEngine {
         // C 方案(P-no-disk): instructions 走 Inline,不再写 disk(远端)。
         // 工作流会话不再施加监工白名单(对话型监工已废弃);SubAgent 角色的工具
         // 由 agent_registry.json 各自约束,与此处无关。
+        let scheduled_profile = store.scheduled_profile(session_id);
+        let scheduled_base_total_tokens = if scheduled_profile.is_some() {
+            Some(store.load(session_id)?.metadata.total_tokens)
+        } else {
+            None
+        };
         let mut engine_config = bridge.build_engine_config_for_session(session_id);
+        if let Some(profile) = &scheduled_profile {
+            engine_config.workspace = profile.workspace.clone();
+        }
         // Agentic RAG:给该 session 的 engine 注入 kb_search 工具(持 session_id,execute 时
         // 查该会话挂载的知识集)。工具常驻所有会话,挂没挂集由其运行时判断。
         engine_config
@@ -75,6 +94,19 @@ impl AppEngine {
         // (已含连接器禁用),直接覆盖 build_engine_config 设的「连接器-only」初值,让新会话天生正确
         // ——空知识库就看不到 kb_search,不会宣称能本地检索。
         let disallowed = crate::commands::compute_disallowed_tools(&app);
+        let mut scheduled_disallowed_tools = disallowed.clone();
+        // One automation run owns exactly one engine turn. Goal tools can
+        // enqueue autonomous continuation turns after TurnComplete. Apply this
+        // list only to the unattended turn; a later interactive continuation
+        // gets a fresh engine with the ordinary catalog.
+        for tool in ["create_goal", "update_goal"] {
+            if !scheduled_disallowed_tools
+                .iter()
+                .any(|blocked| blocked == tool)
+            {
+                scheduled_disallowed_tools.push(tool.to_string());
+            }
+        }
         engine_config.disallowed_tools = if disallowed.is_empty() {
             None
         } else {
@@ -90,16 +122,33 @@ impl AppEngine {
             format_instructions(&engine_config.instructions),
         );
 
+        let workspace = engine_config.workspace.clone();
         let handle = spawn_engine(engine_config, &dt_config);
+        let (turn_events, _) = broadcast::channel(32);
+        let scheduled_unattended = Arc::new(AtomicBool::new(false));
         let forwarder = spawn_event_forwarder(
             app,
             handle.clone(),
             store,
             bridge.clone(),
             session_id.to_string(),
+            turn_events.clone(),
+            scheduled_profile,
+            scheduled_base_total_tokens,
+            scheduled_unattended.clone(),
         );
 
-        Ok((Self { handle, bridge }, forwarder))
+        Ok((
+            Self {
+                handle,
+                bridge,
+                workspace,
+                turn_events,
+                scheduled_unattended,
+                scheduled_disallowed_tools,
+            },
+            forwarder,
+        ))
     }
 
     /// 测试入口(L1 harness 用):用预先 boot 好的 bridge spawn 一个 engine,
@@ -112,9 +161,19 @@ impl AppEngine {
     #[allow(dead_code)] // L1 runner 接入前临时 unused
     pub async fn spawn_headless(bridge: Pinvou3Bridge) -> Result<Self> {
         let engine_config = bridge.build_engine_config();
+        let scheduled_disallowed_tools = engine_config.disallowed_tools.clone().unwrap_or_default();
+        let workspace = engine_config.workspace.clone();
         let dt_config = bridge.build_dt_config();
         let handle = spawn_engine(engine_config, &dt_config);
-        Ok(Self { handle, bridge })
+        let (turn_events, _) = broadcast::channel(1);
+        Ok(Self {
+            handle,
+            bridge,
+            workspace,
+            turn_events,
+            scheduled_unattended: Arc::new(AtomicBool::new(false)),
+            scheduled_disallowed_tools,
+        })
     }
 
     /// 发用户消息给 Engine。Engine 内部自管 session，多轮自然累积。
@@ -134,6 +193,38 @@ impl AppEngine {
             .build_send_message_op(content, mode, persona_reminder, restrict_tools);
         self.handle.send(op).await?;
         Ok(())
+    }
+
+    /// Submit the initial prompt for one scheduled run using the immutable
+    /// policy captured when its hidden session was created.
+    pub(crate) async fn send_scheduled_message(
+        &self,
+        content: String,
+        profile: &ScheduledRunProfile,
+    ) -> Result<()> {
+        let op = self.profiled_send_op(content, profile)?;
+        self.handle
+            .send(Op::SetDisallowedTools {
+                tools: self.scheduled_disallowed_tools.clone(),
+            })
+            .await?;
+        self.handle.send(op).await?;
+        Ok(())
+    }
+
+    fn profiled_send_op(&self, content: String, profile: &ScheduledRunProfile) -> Result<Op> {
+        let mut op = self.bridge.build_send_message_op(
+            content,
+            profile.execution_mode().to_app_mode(),
+            None,
+            false,
+        );
+        apply_scheduled_turn_policy(&mut op, profile)?;
+        Ok(op)
+    }
+
+    pub(crate) fn subscribe_turns(&self) -> broadcast::Receiver<EngineTurnSignal> {
+        self.turn_events.subscribe()
     }
 
     /// 取消当前正在生成的回复（点⏹️停止按钮）。
@@ -185,7 +276,6 @@ impl AppEngine {
     /// `{{PINVOU3_WORKSPACE}}` 占位符。原先 sync 时重写 disk + 传 SystemPrompt::Text
     /// 都是 disk-API-限制的副作用,现在彻底走掉。
     pub async fn sync_session(&self, session_id: String, messages: Vec<Message>) -> Result<()> {
-        let workspace = self.bridge.session_workspace(&session_id);
         self.handle
             .send(Op::SyncSession {
                 session_id: Some(session_id),
@@ -193,7 +283,7 @@ impl AppEngine {
                 system_prompt: None,
                 system_prompt_override: false,
                 model: self.bridge.model(),
-                workspace,
+                workspace: self.workspace.clone(),
             })
             .await?;
         Ok(())
@@ -457,6 +547,10 @@ fn spawn_event_forwarder(
     store: SessionStore,
     bridge: Pinvou3Bridge,
     session_id: String,
+    turn_events: broadcast::Sender<EngineTurnSignal>,
+    scheduled_profile: Option<ScheduledRunProfile>,
+    scheduled_base_total_tokens: Option<u64>,
+    scheduled_unattended: Arc<AtomicBool>,
 ) -> tauri::async_runtime::JoinHandle<()> {
     let approve_handle = handle.clone();
     let plan_tracker: Arc<Mutex<TurnPlanTracker>> =
@@ -473,7 +567,12 @@ fn spawn_event_forwarder(
         // 跟 seen_completions 同模式 —— 别加"AgentComplete 时清理",会破坏 dedup 语义。
         let mut agent_roles: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
+        let mut tool_inputs: std::collections::HashMap<String, (String, serde_json::Value)> =
+            std::collections::HashMap::new();
         let mut token_ledger = TokenLedger::default();
+        let mut turn_tracker = TurnCompletionTracker::default();
+        let mut scheduled_engine_total_tokens = 0_u64;
+        let mut scheduled_persistence_error: Option<String> = None;
         // app 侧自测推理指标累加器(TTFT/生成速度/累计tokens/KV)。try_state:headless
         // harness / 测试可能没 manage MonitorState,拿不到就整块跳过,不 panic。
         let self_metrics = app
@@ -484,7 +583,8 @@ fn spawn_event_forwarder(
         while let Some(event) = rx.recv().await {
             match event {
                 Event::TurnStarted { turn_id } => {
-                    current_turn_id = Some(turn_id);
+                    current_turn_id = Some(turn_id.clone());
+                    let _ = turn_events.send(turn_tracker.on_started(turn_id));
                     // 本轮起始打点(TTFT 起点)。底座已发此事件,原先落 `_` 被忽略。
                     if let Some(m) = &self_metrics {
                         m.on_turn_started(&session_id);
@@ -507,6 +607,7 @@ fn spawn_event_forwarder(
                         m.on_tool(&session_id); // 本轮有工具 → 收尾跳过 TTFT/TPS(D2)
                     }
                     crate::memory::record_turn_tool_start(&session_id, &name, &input);
+                    tool_inputs.insert(id.clone(), (name.clone(), input.clone()));
                     let payload =
                         json!({ "session_id": session_id, "id": id, "name": name, "args": input });
                     let _ = app.emit("chat:tool_start", payload.clone());
@@ -518,6 +619,39 @@ fn spawn_event_forwarder(
                         Ok(r) => (r.content, true, r.metadata),
                         Err(e) => (format!("{e:?}"), false, None),
                     };
+                    let tracked_input = tool_inputs
+                        .remove(&id)
+                        .map(|(_, input)| input)
+                        .unwrap_or(serde_json::Value::Null);
+                    if success {
+                        if let Some(profile) = scheduled_profile.as_ref() {
+                            let artifact_store = store.clone();
+                            let artifact_session_id = session_id.clone();
+                            let artifact_workspace = profile.workspace.clone();
+                            let artifact_name = name.clone();
+                            let artifact_output = output.clone();
+                            match tokio::task::spawn_blocking(move || {
+                                persist_successful_tool_artifact(
+                                    &artifact_store,
+                                    &artifact_session_id,
+                                    &artifact_workspace,
+                                    &artifact_name,
+                                    &tracked_input,
+                                    &artifact_output,
+                                )
+                            })
+                            .await
+                            {
+                                Ok(Ok(_)) => {}
+                                Ok(Err(error)) => eprintln!(
+                                    "[pinvou3-app] scheduled artifact persistence skipped: {error:#}"
+                                ),
+                                Err(error) => eprintln!(
+                                    "[pinvou3-app] scheduled artifact persistence task failed: {error}"
+                                ),
+                            }
+                        }
+                    }
                     crate::memory::record_turn_tool_complete(&session_id, &name, success);
                     // Plan 类工具结果：标记 + 缓存 snapshot（两层）+ 实时 emit 给前端 chip 进度区
                     if success
@@ -571,29 +705,110 @@ fn spawn_event_forwarder(
                     crate::remote_control::forward_app_event(&app, "chat:tool_end", payload);
                 }
                 Event::UserInputRequired { id, request } => {
-                    // 底座 emit 这个事件后会 block 在 await_user_input，等 submit_user_input
-                    // 或 cancel_user_input。前端渲染选择气泡 → 用户点选 →
-                    // invoke('submit_user_input', toolCallId, answers) 解锁。
-                    let payload = json!({
-                        "session_id": session_id,
-                        "id": id,
-                        "questions": request.questions,
-                    });
-                    let _ = app.emit("chat:user_input_required", payload.clone());
-                    crate::remote_control::forward_app_event(
-                        &app,
-                        "chat:user_input_required",
-                        payload,
-                    );
+                    if scheduled_profile.is_some() && scheduled_unattended.load(Ordering::Acquire) {
+                        // 定时任务没有前台操作者；不能把底座卡在等待输入的超时上。
+                        let h = approve_handle.clone();
+                        tokio::spawn(async move {
+                            if let Err(error) = h.cancel_user_input(id).await {
+                                eprintln!(
+                                    "[pinvou3-app] cancel scheduled user input failed: {error:?}"
+                                );
+                            }
+                        });
+                    } else {
+                        // 普通对话继续交给前端或远程控制端处理。
+                        let payload = json!({
+                            "session_id": session_id,
+                            "id": id,
+                            "questions": request.questions,
+                        });
+                        let _ = app.emit("chat:user_input_required", payload.clone());
+                        crate::remote_control::forward_app_event(
+                            &app,
+                            "chat:user_input_required",
+                            payload,
+                        );
+                    }
                 }
-                Event::ApprovalRequired { id, tool_name, .. } => {
-                    // pinvou3 yolo 助手：主动 approve（上游 bug 旁路，见上方注释）
-                    eprintln!("[pinvou3-app] auto-approving tool {} id={}", tool_name, id);
+                Event::SessionUpdated {
+                    session_id: event_session_id,
+                    messages,
+                    system_prompt,
+                    model,
+                    workspace,
+                } => {
+                    if let Some(profile) = scheduled_profile.as_ref() {
+                        if event_session_id != session_id {
+                            scheduled_persistence_error = Some(format!(
+                                "Engine session id mismatch: expected {session_id}, got {event_session_id}"
+                            ));
+                            continue;
+                        }
+                        let state = ScheduledEngineState {
+                            messages,
+                            system_prompt,
+                            model,
+                            workspace,
+                            mode: profile.execution_mode(),
+                            token_accounting: ScheduledTokenAccounting::PreservePersisted,
+                        };
+                        let store_for_save = store.clone();
+                        let session_for_save = session_id.clone();
+                        match tokio::task::spawn_blocking(move || {
+                            store_for_save.persist_scheduled_engine_state(&session_for_save, state)
+                        })
+                        .await
+                        {
+                            Ok(Ok(_)) => scheduled_persistence_error = None,
+                            Ok(Err(error)) => {
+                                scheduled_persistence_error = Some(format!("{error:#}"));
+                            }
+                            Err(error) => {
+                                scheduled_persistence_error = Some(format!(
+                                    "scheduled transcript persistence task failed: {error}"
+                                ));
+                            }
+                        }
+                    }
+                }
+                Event::ApprovalRequired {
+                    id,
+                    tool_name,
+                    approval_force_prompt,
+                    ..
+                } => {
+                    // 只有无人值守的初始定时执行使用任务保存的批准策略；用户从
+                    // 运行历史进入后继续对话，行为与普通对话一致。
+                    let should_approve = if scheduled_profile.is_some()
+                        && scheduled_unattended.load(Ordering::Acquire)
+                    {
+                        scheduled_tool_should_auto_approve(
+                            scheduled_profile.as_ref(),
+                            approval_force_prompt,
+                        )
+                    } else {
+                        true
+                    };
+                    eprintln!(
+                        "[pinvou3-app] {} tool {} id={}",
+                        if should_approve {
+                            "auto-approving"
+                        } else {
+                            "denying"
+                        },
+                        tool_name,
+                        id
+                    );
                     let h = approve_handle.clone();
                     let id_clone = id.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = h.approve_tool_call(id_clone).await {
-                            eprintln!("[pinvou3-app] approve_tool_call failed: {e:?}");
+                        let result = if should_approve {
+                            h.approve_tool_call(id_clone).await
+                        } else {
+                            h.deny_tool_call(id_clone).await
+                        };
+                        if let Err(e) = result {
+                            eprintln!("[pinvou3-app] scheduled approval decision failed: {e:?}");
                         }
                     });
                     // 不重复 emit chat:tool_start —— 上游 ToolCallStarted（带完整 input）
@@ -929,6 +1144,45 @@ fn spawn_event_forwarder(
                     // v0.8.49 上游新增 tool_catalog / base_url(调试/审计用),pinvou3 不消费
                     ..
                 } => {
+                    let mut terminal_status = status;
+                    let mut terminal_error = error;
+                    if let Some(base_total_tokens) = scheduled_base_total_tokens {
+                        scheduled_engine_total_tokens = scheduled_engine_total_tokens
+                            .saturating_add(u64::from(usage.input_tokens))
+                            .saturating_add(u64::from(usage.output_tokens));
+                        let store_for_save = store.clone();
+                        let session_for_save = session_id.clone();
+                        match tokio::task::spawn_blocking(move || {
+                            store_for_save.persist_scheduled_token_total(
+                                &session_for_save,
+                                base_total_tokens,
+                                scheduled_engine_total_tokens,
+                            )
+                        })
+                        .await
+                        {
+                            Ok(Ok(_)) => {}
+                            Ok(Err(save_error)) => {
+                                scheduled_persistence_error = Some(format!("{save_error:#}"));
+                            }
+                            Err(join_error) => {
+                                scheduled_persistence_error = Some(format!(
+                                    "scheduled token persistence task failed: {join_error}"
+                                ));
+                            }
+                        }
+                        if let Some(save_error) = scheduled_persistence_error.take() {
+                            terminal_status = TurnOutcomeStatus::Failed;
+                            terminal_error = Some(match terminal_error {
+                                Some(engine_error) => format!(
+                                    "{engine_error}; scheduled conversation persistence failed: {save_error}"
+                                ),
+                                None => format!(
+                                    "Scheduled conversation persistence failed: {save_error}"
+                                ),
+                            });
+                        }
+                    }
                     // 单独发 usage 给前端 token 进度条
                     let payload = json!({
                         "session_id": session_id,
@@ -1033,8 +1287,12 @@ fn spawn_event_forwarder(
                         // 这条链已可靠,漏的少数"光说不出卡"由 composer chip 手切 + plan_stuck
                         // 卡兜底,不值得用噪音判据再造一层。
                     }
-                    let status_text = format!("{status:?}");
-                    crate::timing::finish_turn(&session_id, &status_text, error.as_deref());
+                    let status_text = format!("{terminal_status:?}");
+                    crate::timing::finish_turn(
+                        &session_id,
+                        &status_text,
+                        terminal_error.as_deref(),
+                    );
                     if crate::memory::memory_enabled() {
                         if let Some(capture) = crate::memory::take_turn_capture(&session_id) {
                             let app_clone = app.clone();
@@ -1044,6 +1302,7 @@ fn spawn_event_forwarder(
                                 match crate::memory::review_turn_candidates_with_llm(
                                     &bridge_clone,
                                     &capture,
+                                    &sid_clone,
                                 )
                                 .await
                                 {
@@ -1062,51 +1321,94 @@ fn spawn_event_forwarder(
                                             },
                                         ));
                                         if !events.is_empty() {
-                                            let _ = app_clone.emit(
+                                            let event_count = events.len();
+                                            let emit_result = app_clone.emit(
                                                 "chat:memory_write",
                                                 json!({
                                                     "session_id": sid_clone,
                                                     "events": events,
                                                 }),
                                             );
-                                            match crate::memory::runtime_snapshot(&sid_clone) {
-                                            Ok(snapshot) => {
-                                                let _ = app_clone.emit(
-                                                    "chat:memory",
-                                                    json!({
-                                                        "session_id": sid_clone,
-                                                        "items": snapshot.items,
-                                                        "runtime_path": snapshot.runtime_path,
-                                                    }),
-                                                );
+                                            match emit_result {
+                                                Ok(()) => {
+                                                    crate::memory::append_memory_review_diagnostic(
+                                                        &sid_clone,
+                                                        "event_emitted",
+                                                        json!({ "event_count": event_count }),
+                                                    )
+                                                }
+                                                Err(err) => {
+                                                    crate::memory::append_memory_review_diagnostic(
+                                                        &sid_clone,
+                                                        "event_emit_failed",
+                                                        json!({ "error": err.to_string() }),
+                                                    )
+                                                }
                                             }
-                                            Err(err) => eprintln!(
-                                                "[pinvou3-app] refresh memory runtime after review failed for session {sid_clone}: {err}"
-                                            ),
-                                        }
+                                            match crate::memory::runtime_snapshot(&sid_clone) {
+                                                Ok(snapshot) => {
+                                                    let _ = app_clone.emit(
+                                                        "chat:memory",
+                                                        json!({
+                                                            "session_id": sid_clone,
+                                                            "items": snapshot.items,
+                                                            "runtime_path": snapshot.runtime_path,
+                                                        }),
+                                                    );
+                                                }
+                                                Err(err) => {
+                                                    crate::memory::append_memory_review_diagnostic(
+                                                        &sid_clone,
+                                                        "runtime_refresh_failed",
+                                                        json!({ "error": err.to_string() }),
+                                                    );
+                                                    eprintln!(
+                                                        "[pinvou3-app] refresh memory runtime after review failed for session {sid_clone}: {err}"
+                                                    );
+                                                }
+                                            }
                                         }
                                     }
                                     Err(err) => {
                                         eprintln!(
-                                        "[pinvou3-app] memory llm review failed for session {sid_clone}: {err:#}"
-                                    );
+                                            "[pinvou3-app] memory llm review failed for session {sid_clone}: {err:#}"
+                                        );
                                     }
                                 }
                             });
+                        } else {
+                            crate::memory::append_memory_review_diagnostic(
+                                &session_id,
+                                "skipped",
+                                json!({ "reason": "turn_capture_missing" }),
+                            );
                         }
+                    } else {
+                        crate::memory::append_memory_review_diagnostic(
+                            &session_id,
+                            "skipped",
+                            json!({ "reason": "memory_disabled" }),
+                        );
                     }
                     maybe_notify_task_completed(
                         &app,
                         &store,
                         &session_id,
                         current_turn_id.take(),
-                        status,
-                        error.as_deref(),
+                        terminal_status,
+                        terminal_error.as_deref(),
                     );
-                    let payload =
-                        json!({ "session_id": session_id, "status": status_text, "error": error });
+                    let payload = json!({
+                        "session_id": session_id,
+                        "status": status_text,
+                        "error": terminal_error.clone(),
+                    });
                     let _ = app.emit("chat:done", payload.clone());
                     crate::remote_control::forward_app_event(&app, "chat:done", payload);
+                    if let Some(signal) = turn_tracker.on_terminal(terminal_status, terminal_error)
+                    {
+                        let _ = turn_events.send(signal);
+                    }
                 }
                 Event::CompactionStarted {
                     id, message, auto, ..
@@ -1156,10 +1458,8 @@ fn spawn_event_forwarder(
                             payload,
                         );
                     } else {
-                        crate::timing::finish_turn(&session_id, "error", Some(&envelope.message));
-                        let payload = json!({ "session_id": session_id, "status": "error", "error": envelope.message });
-                        let _ = app.emit("chat:done", payload.clone());
-                        crate::remote_control::forward_app_event(&app, "chat:done", payload);
+                        // 底座在致命 Error 后仍会发权威 TurnComplete(Failed)。这里只缓存
+                        // 文本；完成、持久化和 chat:done 全部由 TurnComplete 单点处理。
                         // [C2] harness_phase 已删。工作流绑定(active_skill)的 session 遇
                         // 致命错误(SubAgent 派发失败 / 内部 fatal)→ 可能收不到 AgentComplete
                         // = 死锁。兜底:emit blocked 通知前端,让用户看到中断可重开(宁可多
@@ -1174,11 +1474,15 @@ fn spawn_event_forwarder(
                                 }),
                             );
                         }
+                        turn_tracker.on_fatal_error(envelope.message);
                     }
                 }
                 _ => {}
             }
         }
+        let _ = turn_events.send(EngineTurnSignal::ForwarderStopped {
+            error: "Engine event stream stopped before a terminal event".to_string(),
+        });
         eprintln!(
             "[pinvou3-app] event forwarder stopped for session {session_id} (engine shut down?)"
         );
@@ -1218,6 +1522,64 @@ pub fn _force_link() -> Arc<()> {
     Arc::new(())
 }
 
+fn persist_successful_tool_artifact(
+    store: &SessionStore,
+    session_id: &str,
+    workspace: &std::path::Path,
+    tool_name: &str,
+    tool_input: &serde_json::Value,
+    output: &str,
+) -> Result<Option<PathBuf>> {
+    if store.scheduled_profile(session_id).is_none() {
+        return Ok(None);
+    }
+    let output_path = artifact_path_from_tool_output(output);
+    let input_path = if is_file_artifact_tool(tool_name) {
+        artifact_path_from_value(tool_input)
+    } else {
+        None
+    };
+    let Some(raw_path) = output_path.or(input_path) else {
+        return Ok(None);
+    };
+    let resolved = crate::commands::resolve_artifact_path_in_workspace(&raw_path, workspace);
+    let path =
+        crate::commands::validate_user_path(&resolved).map_err(|error| anyhow::anyhow!(error))?;
+    if !path.is_file() {
+        anyhow::bail!("tool artifact is not an existing file: {}", path.display());
+    }
+    store.append_scheduled_artifact_path(session_id, path.clone())?;
+    Ok(Some(path))
+}
+
+fn is_file_artifact_tool(name: &str) -> bool {
+    ["write_file", "append_file", "edit_file"]
+        .iter()
+        .any(|tool| name == *tool || name.ends_with(&format!("_{tool}")))
+}
+
+fn artifact_path_from_tool_output(output: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(output).ok()?;
+    let payload = value
+        .get("content")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|content| content.first())
+        .and_then(|item| item.get("text"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+        .unwrap_or(value);
+    artifact_path_from_value(&payload)
+}
+
+fn artifact_path_from_value(value: &serde_json::Value) -> Option<String> {
+    ["abs_path", "path", "file_path", "local_path", "filename"]
+        .iter()
+        .find_map(|key| value.get(key).and_then(serde_json::Value::as_str))
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+}
+
 #[cfg(test)]
 mod token_ledger_tests {
     use super::TokenLedger;
@@ -1229,6 +1591,317 @@ mod token_ledger_tests {
         assert_eq!(l.add("pm", 50, 10), (150, 30, 2));
         assert_eq!(l.add("writer", 7, 3), (7, 3, 1));
         assert_eq!(l.add("pm", 0, 0), (150, 30, 3));
+    }
+}
+
+/// Lifecycle signal emitted by the single authoritative engine event consumer.
+/// Scheduled-task execution subscribes to this channel instead of competing for
+/// `EngineHandle::rx_event` with the UI forwarder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum EngineTurnSignal {
+    Started {
+        turn_id: String,
+    },
+    Terminal {
+        turn_id: String,
+        status: TurnOutcomeStatus,
+        error: Option<String>,
+    },
+    ForwarderStopped {
+        error: String,
+    },
+}
+
+/// Correlates terminal events with the currently running turn. A fatal
+/// `Event::Error` is advisory until the engine emits its authoritative
+/// `Event::TurnComplete`; the cached error fills a missing terminal error.
+#[derive(Debug, Default)]
+struct TurnCompletionTracker {
+    active_turn_id: Option<String>,
+    pending_fatal_error: Option<String>,
+}
+
+impl TurnCompletionTracker {
+    fn on_started(&mut self, turn_id: String) -> EngineTurnSignal {
+        self.active_turn_id = Some(turn_id.clone());
+        self.pending_fatal_error = None;
+        EngineTurnSignal::Started { turn_id }
+    }
+
+    fn on_fatal_error(&mut self, error: String) {
+        self.pending_fatal_error = Some(error);
+    }
+
+    fn on_terminal(
+        &mut self,
+        status: TurnOutcomeStatus,
+        error: Option<String>,
+    ) -> Option<EngineTurnSignal> {
+        let error = error.or_else(|| self.pending_fatal_error.take());
+        self.active_turn_id
+            .take()
+            .map(|turn_id| EngineTurnSignal::Terminal {
+                turn_id,
+                status,
+                error,
+            })
+    }
+}
+
+/// Apply the persisted automation policy to the normal bridge-built operation.
+/// The bridge remains the source of hooks, tool restrictions, and provider
+/// details; scheduled execution only overrides fields explicitly owned by the
+/// automation record.
+fn apply_scheduled_turn_policy(op: &mut Op, profile: &ScheduledRunProfile) -> Result<()> {
+    let Op::SendMessage {
+        mode,
+        model,
+        auto_model,
+        allow_shell,
+        trust_mode,
+        auto_approve,
+        approval_mode,
+        provenance,
+        ..
+    } = op
+    else {
+        anyhow::bail!("scheduled turn requires a SendMessage operation");
+    };
+
+    *mode = profile.execution_mode().to_app_mode();
+    *model = profile.model.clone();
+    *auto_model = false;
+    *allow_shell = profile.allow_shell;
+    *trust_mode = profile.trust_mode;
+    *auto_approve = profile.auto_approve;
+    *approval_mode = if profile.auto_approve {
+        ApprovalMode::Auto
+    } else {
+        ApprovalMode::Never
+    };
+    *provenance = UserInputProvenance::ExternalUser;
+    Ok(())
+}
+
+fn scheduled_tool_should_auto_approve(
+    profile: Option<&ScheduledRunProfile>,
+    approval_force_prompt: bool,
+) -> bool {
+    profile.map_or(true, |profile| {
+        profile.auto_approve && !approval_force_prompt
+    })
+}
+
+#[cfg(test)]
+mod scheduled_turn_tests {
+    use super::{
+        apply_scheduled_turn_policy, persist_successful_tool_artifact,
+        scheduled_tool_should_auto_approve, EngineTurnSignal, TurnCompletionTracker,
+    };
+    use crate::bridge::sessions::{ScheduledRunMode, ScheduledRunProfile};
+    use deepseek_tui::config::ApiProvider;
+    use deepseek_tui::core::events::TurnOutcomeStatus;
+    use deepseek_tui::core::ops::{Op, UserInputProvenance};
+    use deepseek_tui::tools::goal::GoalStatus;
+    use deepseek_tui::tui::app::AppMode;
+    use deepseek_tui::tui::approval::ApprovalMode;
+    use std::path::PathBuf;
+
+    fn base_op() -> Op {
+        Op::SendMessage {
+            content: "scheduled prompt".to_string(),
+            mode: AppMode::Yolo,
+            provider: Some(ApiProvider::Openai),
+            model: "fallback-model".to_string(),
+            goal_objective: None,
+            goal_token_budget: None,
+            goal_status: GoalStatus::Complete,
+            reasoning_effort: None,
+            reasoning_effort_auto: false,
+            auto_model: true,
+            allow_shell: false,
+            trust_mode: false,
+            auto_approve: true,
+            approval_mode: ApprovalMode::Auto,
+            translation_enabled: false,
+            show_thinking: false,
+            allowed_tools: None,
+            dynamic_tools: Vec::new(),
+            hook_executor: None,
+            verbosity: None,
+            provenance: UserInputProvenance::Runtime,
+        }
+    }
+
+    fn profile(auto_approve: bool) -> ScheduledRunProfile {
+        ScheduledRunProfile {
+            task_id: "task-1".to_string(),
+            model: "scheduled-model".to_string(),
+            model_id: Some("scheduled-model-id".to_string()),
+            workspace: PathBuf::from("D:/scheduled-workspace"),
+            mode: ScheduledRunMode::Plan,
+            allow_shell: true,
+            trust_mode: true,
+            auto_approve,
+        }
+    }
+
+    #[test]
+    fn scheduled_policy_is_exact_and_preserves_external_user_authority() {
+        let mut op = base_op();
+        apply_scheduled_turn_policy(&mut op, &profile(false)).expect("send-message op");
+
+        match op {
+            Op::SendMessage {
+                mode,
+                model,
+                auto_model,
+                allow_shell,
+                trust_mode,
+                auto_approve,
+                approval_mode,
+                provenance,
+                ..
+            } => {
+                assert_eq!(
+                    mode,
+                    AppMode::Agent,
+                    "a legacy persisted mode must not bypass autoApprove=false"
+                );
+                assert_eq!(model, "scheduled-model");
+                assert!(!auto_model);
+                assert!(allow_shell);
+                assert!(trust_mode);
+                assert!(!auto_approve);
+                assert_eq!(approval_mode, ApprovalMode::Never);
+                assert_eq!(provenance, UserInputProvenance::ExternalUser);
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scheduled_unattended_turn_cannot_bypass_persisted_policy() {
+        let mut legacy_yolo = profile(false);
+        legacy_yolo.mode = ScheduledRunMode::Yolo;
+        let mut op = base_op();
+
+        apply_scheduled_turn_policy(&mut op, &legacy_yolo).expect("scheduled unattended op");
+
+        match op {
+            Op::SendMessage {
+                mode,
+                auto_approve,
+                approval_mode,
+                ..
+            } => {
+                assert_eq!(mode, AppMode::Agent);
+                assert!(!auto_approve);
+                assert_eq!(approval_mode, ApprovalMode::Never);
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+        assert!(!scheduled_tool_should_auto_approve(
+            Some(&legacy_yolo),
+            false
+        ));
+    }
+
+    #[test]
+    fn scheduled_force_prompt_never_auto_approves() {
+        let auto = profile(true);
+        assert!(scheduled_tool_should_auto_approve(Some(&auto), false));
+        assert!(!scheduled_tool_should_auto_approve(Some(&auto), true));
+        assert!(scheduled_tool_should_auto_approve(None, true));
+    }
+
+    #[test]
+    fn lifecycle_waits_for_authoritative_terminal_and_deduplicates_it() {
+        let mut tracker = TurnCompletionTracker::default();
+        assert_eq!(
+            tracker.on_started("turn-1".to_string()),
+            EngineTurnSignal::Started {
+                turn_id: "turn-1".to_string()
+            }
+        );
+        tracker.on_fatal_error("fatal".to_string());
+        assert_eq!(
+            tracker.on_terminal(TurnOutcomeStatus::Failed, None),
+            Some(EngineTurnSignal::Terminal {
+                turn_id: "turn-1".to_string(),
+                status: TurnOutcomeStatus::Failed,
+                error: Some("fatal".to_string()),
+            })
+        );
+        assert_eq!(
+            tracker.on_terminal(TurnOutcomeStatus::Failed, Some("duplicate".to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn scheduled_tool_artifacts_persist_without_a_webview_listener_and_reopen() {
+        let _guard = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-scheduled-artifact-forwarder-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", &root);
+        let workspace = root.join("external-workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let report = workspace.join("report.md");
+        std::fs::write(&report, "durable report").expect("artifact file");
+        let store = crate::bridge::sessions::SessionStore::boot().expect("session store");
+        let scheduled = store
+            .create_scheduled_run(ScheduledRunProfile {
+                task_id: "artifact-task".to_string(),
+                model: "scheduled-model".to_string(),
+                model_id: None,
+                workspace: workspace.clone(),
+                mode: ScheduledRunMode::Agent,
+                allow_shell: false,
+                trust_mode: false,
+                auto_approve: false,
+            })
+            .expect("scheduled session");
+
+        let persisted = persist_successful_tool_artifact(
+            &store,
+            &scheduled.metadata.id,
+            &workspace,
+            "write_file",
+            &serde_json::json!({"path": "report.md", "content": "durable report"}),
+            "Created report.md",
+        )
+        .expect("persist tool artifact")
+        .expect("artifact candidate");
+        assert_eq!(
+            persisted,
+            std::fs::canonicalize(&report).expect("canonical report")
+        );
+
+        drop(store);
+        let reopened = crate::bridge::sessions::SessionStore::boot().expect("reopen store");
+        let paths: Vec<_> = reopened
+            .load(&scheduled.metadata.id)
+            .expect("reopen scheduled session")
+            .artifacts
+            .into_iter()
+            .map(|artifact| artifact.storage_path)
+            .collect();
+        assert_eq!(paths, vec![persisted]);
+
+        match previous {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 }
 
