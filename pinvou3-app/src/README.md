@@ -11,11 +11,13 @@
 - `shared/`：无 UI 的常量和纯函数。
 - `styles/`：全局样式；功能专属样式优先放回对应 feature。
 
-依赖方向为 `main → features → components/hooks/shared`。功能之间确需复用时，优先把稳定的公共部分下沉，不要从 feature 反向引用 `main.jsx`。
+主依赖方向为 `main → features → components/hooks/shared`，任何模块都不得反向引用 `main.jsx`。
+迁移期允许 feature 之间复用已有组件，但必须保持单向、无环；被多个 feature 稳定复用后，应下沉到 `components/`、`hooks/` 或 `shared/`，不要继续扩大跨 feature 耦合。
 
 ## 修改与验证
 
 ```bash
+npm ci
 npm run lint:ui
 npm run build:ui
 npm test
