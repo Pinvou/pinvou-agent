@@ -29,7 +29,8 @@ const CHROME = process.env.CHROME ||
 if (!CHROME) { console.error('SKIP: 未找到 chromium/chrome,可用 env CHROME=/path/to/chromium 指定'); process.exit(2); }
 const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-smoke-'));
 
-// mock TauriBridge:find_resumable_run 返回僵尸 run;一个会话含 write_file → 触发 artifact_card 气泡。
+// mock TauriBridge:find_resumable_run 返回僵尸 run;会话同时覆盖 write_file、
+// MCP producer 和含 path 的 exec_shell 诊断结果，验证只有真实 producer 触发 artifact。
 function injectSource() {
   return `(function(){
     window.__TAURI_EVENT_HANDLERS__={};
@@ -39,7 +40,11 @@ function injectSource() {
     const CONV={s1:{metadata:{id:'s1'},artifacts:['/home/x/会议纪要.md'],messages:[
       {role:'user',content:[{type:'text',text:'整理纪要'}]},
       {role:'assistant',content:[{type:'text',text:'已生成会议纪要。'},{type:'tool_use',id:'t1',name:'write_file',input:{path:'/home/x/会议纪要.md',content:'# 会议纪要'}}]},
-      {role:'user',content:[{type:'tool_result',tool_use_id:'t1',content:'written'}]}]}};
+      {role:'user',content:[{type:'tool_result',tool_use_id:'t1',content:'written'}]},
+      {role:'assistant',content:[{type:'tool_use',id:'t-shell',name:'exec_shell',input:{command:'python validator.py --json'}}]},
+      {role:'user',content:[{type:'tool_result',tool_use_id:'t-shell',content:'{"ok":true,"path":"/home/x/validator-fake.html"}'}]},
+      {role:'assistant',content:[{type:'tool_use',id:'t-mcp',name:'mcp_pptx_make_pptx',input:{title:'季度报告'}}]},
+      {role:'user',content:[{type:'tool_result',tool_use_id:'t-mcp',content:'{"path":"/home/x/季度报告.pptx"}'}]}]}};
     function invoke(cmd,args){
       switch(cmd){
         case 'get_settings': return Promise.resolve({theme:'liquid-light',language:'zh-Hans'});
@@ -141,9 +146,32 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     .filter(o => o.t.includes('查错') || o.t.includes('发散') || /品|悟/.test(o.x)).length);
   const restored = await page.evaluate(() => {
     const text = document.body.innerText;
-    return { history: text.includes('整理纪要'), mobile: text.includes('手机补充消息') };
+    const artifactPaths = window.TauriBridge.getState().chatItems
+      .filter(item => item.type === 'artifact_card')
+      .map(item => item.path);
+    return {
+      history: text.includes('整理纪要'),
+      mobile: text.includes('手机补充消息'),
+      mcpArtifact: artifactPaths.some(path => String(path).includes('季度报告.pptx')),
+      shellFakeArtifact: artifactPaths.some(path => String(path).includes('validator-fake.html')),
+    };
   });
-  rec('③ 后台session经手机唤醒后仍恢复历史+新消息+产物卡', hit >= 2 && restored.history && restored.mobile, JSON.stringify({ hit, ...restored }));
+  rec('③ 后台session恢复时仅 MCP producer 结果生成产物卡', hit >= 2 && restored.history && restored.mobile && restored.mcpArtifact && !restored.shellFakeArtifact, JSON.stringify({ hit, ...restored }));
+
+  // 实时事件也必须使用同一 producer 判定：validator 的 shell JSON 不能进产物面板，
+  // 真 MCP producer 返回路径仍要被跟踪。
+  await page.evaluate(async () => {
+    async function emit(name, payload) {
+      const handlers = window.__TAURI_EVENT_HANDLERS__[name] || [];
+      for (const handler of handlers) await handler({ payload });
+    }
+    await emit('chat:tool_start', { session_id:'s1', id:'live-shell', name:'exec_shell', args:{ command:'validator --json' } });
+    await emit('chat:tool_end', { session_id:'s1', id:'live-shell', success:true, output:'{"ok":true,"path":"live-validator-fake.html"}' });
+    await emit('chat:tool_start', { session_id:'s1', id:'live-mcp', name:'mcp_gongwen_make_gongwen', args:{} });
+    await emit('chat:tool_end', { session_id:'s1', id:'live-mcp', success:true, output:'{"path":"live-report.docx"}' });
+  });
+  const liveArtifacts = await page.evaluate(() => window.TauriBridge.getState().artifacts.map(item => item.path));
+  rec('③b 实时 tool_end 不跟踪 shell path、保留 MCP 产物', liveArtifacts.includes('live-report.docx') && !liveArtifacts.includes('live-validator-fake.html'), JSON.stringify(liveArtifacts));
 
   // ④ 品悟检阅 modal 本地化渲染:threading t 不报错 + 裁决标签/trace 出现(i18n 回归)
   await page.evaluate(() => window.TauriBridge.summonPinvou('/home/x/会议纪要.md'));
