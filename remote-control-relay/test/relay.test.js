@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { spawn } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 
@@ -10,6 +12,9 @@ const port = 20_000 + Math.floor(Math.random() * 10_000);
 const httpUrl = `http://127.0.0.1:${port}`;
 const wsUrl = `ws://127.0.0.1:${port}/pinvou3/remote/ws`;
 let relay;
+let telemetryDir;
+const enrollmentToken = "test-enrollment-token-at-least-24";
+const adminPassword = "test-admin-password";
 
 function waitForOutput(child, pattern, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
@@ -90,6 +95,7 @@ function closeSocket(ws) {
 }
 
 before(async () => {
+  telemetryDir = await mkdtemp(join(tmpdir(), "pinvou-telemetry-test-"));
   relay = spawn(process.execPath, [join(relayDir, "server.js")], {
     cwd: relayDir,
     env: {
@@ -98,14 +104,20 @@ before(async () => {
       PINVOU_REMOTE_PUBLIC_BASE_PATH: "/pinvou3/remote",
       DESKTOP_RECONNECT_GRACE_MS: "1000",
       HEARTBEAT_INTERVAL_MS: "5000",
+      PINVOU_TELEMETRY_DATA_DIR: telemetryDir,
+      PINVOU_TELEMETRY_ENROLLMENT_TOKEN: enrollmentToken,
+      PINVOU_TELEMETRY_DEVICE_PEPPER: "test-device-pepper-at-least-24-chars",
+      PINVOU_STATS_ADMIN_PASSWORD: adminPassword,
+      PINVOU_REMOTE_TRUSTED_PROXY_IPS: "127.0.0.1",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
   await waitForOutput(relay, /pinvou remote relay listening/);
 });
 
-after(() => {
+after(async () => {
   relay?.kill("SIGTERM");
+  await rm(telemetryDir, { recursive: true, force: true });
 });
 
 test("healthz only exposes aggregate counters", async () => {
@@ -133,6 +145,87 @@ test("mobile HTML preview ships best-effort fit and zoom controls", async () => 
   assert.match(html, /pinvou-remote-preview-frame/);
   assert.match(html, /html,body\{overflow:auto!important\}/);
   assert.match(html, /<meta name="pinvou-remote-client" content="1" \/>/);
+});
+
+test("stats and telemetry use dedicated top-level paths", async () => {
+  const stats = await fetch(`${httpUrl}/pinvou3/stats`);
+  assert.equal(stats.status, 200);
+  assert.match(await stats.text(), /PINVOU · 设备运营中心/);
+
+  const health = await fetch(`${httpUrl}/pinvou3/telemetry/healthz`);
+  assert.equal(health.status, 200);
+  assert.deepEqual(await health.json(), { ok: true });
+});
+
+test("telemetry deduplicates a device and usage event", async () => {
+  const registration = {
+    enrollment_token: enrollmentToken,
+    hardware_claim: "test-hardware-claim-001",
+    hardware_source: "test",
+    identity_quality: "hardware_serial",
+    app_version: "0.5.10",
+    platform: "linux",
+    arch: "aarch64",
+  };
+  const firstResponse = await fetch(`${httpUrl}/pinvou3/telemetry/v1/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-forwarded-for": "113.118.113.77" },
+    body: JSON.stringify(registration),
+  });
+  assert.equal(firstResponse.status, 200);
+  const first = await firstResponse.json();
+  const secondResponse = await fetch(`${httpUrl}/pinvou3/telemetry/v1/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-forwarded-for": "113.118.113.77" },
+    body: JSON.stringify(registration),
+  });
+  const second = await secondResponse.json();
+  assert.equal(second.device_id, first.device_id);
+
+  const event = {
+    event_id: "evt_test_000000000001",
+    occurred_at: Date.now(),
+    input_tokens: 120,
+    output_tokens: 30,
+    success: true,
+  };
+  for (let i = 0; i < 2; i += 1) {
+    const response = await fetch(`${httpUrl}/pinvou3/telemetry/v1/events`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${first.device_token}`,
+      },
+      body: JSON.stringify({ device_id: first.device_id, events: [event] }),
+    });
+    assert.equal(response.status, 200);
+  }
+
+  const login = await fetch(`${httpUrl}/pinvou3/stats/api/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ password: adminPassword }),
+  });
+  assert.equal(login.status, 200);
+  const cookie = login.headers.get("set-cookie").split(";", 1)[0];
+  const overview = await fetch(`${httpUrl}/pinvou3/stats/api/overview`, { headers: { cookie } });
+  assert.equal(overview.status, 200);
+  const data = await overview.json();
+  assert.equal(data.counts.online, 1);
+  assert.equal(data.counts.active_today, 1);
+  assert.equal(data.counts.active_7d, 1);
+  assert.deepEqual(data.active_versions, [{ version: "0.5.10", count: 1 }]);
+  assert.equal(data.usage_trend.length, 30);
+  assert.equal(data.usage_trend.at(-1).active_devices, 1);
+  assert.equal(data.usage_trend.at(-1).turns, 1);
+
+  const devices = await fetch(`${httpUrl}/pinvou3/stats/api/devices`, { headers: { cookie } });
+  assert.equal(devices.status, 200);
+  const list = await devices.json();
+  assert.equal(list.devices[0].turns_7d, 1);
+  assert.equal(list.devices[0].region, "未知");
+  assert.equal("failure_rate_7d" in list.devices[0], false);
+  assert.doesNotMatch(await readFile(join(telemetryDir, "devices.json"), "utf8"), /113\.118\.113\.77/);
 });
 
 test("relay closes a websocket that does not authenticate in time", async () => {
