@@ -5255,6 +5255,253 @@ pub async fn list_session_skill_bindings(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn marketplace_auth_status_only_oauth_is_connected_for_oauth_tools() {
+        use deepseek_tui::mcp::oauth::McpAuthStatus;
+
+        let (status, _, token_present) =
+            marketplace_auth_status_fields(true, true, true, Some(McpAuthStatus::OAuth));
+        assert_eq!(status, "connected");
+        assert!(token_present);
+
+        for auth_status in [
+            McpAuthStatus::NotLoggedIn,
+            McpAuthStatus::Unsupported,
+            McpAuthStatus::BearerToken,
+        ] {
+            let (status, _, token_present) =
+                marketplace_auth_status_fields(true, true, true, Some(auth_status));
+            assert_eq!(status, "config_installed_auth_pending");
+            assert!(!token_present);
+        }
+    }
+
+    #[test]
+    fn marketplace_auth_status_preserves_non_oauth_installed_semantics() {
+        let (status, _, token_present) = marketplace_auth_status_fields(true, false, false, None);
+        assert_eq!(status, "connected");
+        assert!(!token_present);
+
+        let (status, _, token_present) = marketplace_auth_status_fields(false, false, false, None);
+        assert_eq!(status, "not_installed");
+        assert!(!token_present);
+    }
+
+    #[test]
+    fn marketplace_auth_status_requires_mcp_config_for_oauth_connected() {
+        use deepseek_tui::mcp::oauth::McpAuthStatus;
+
+        let (status, _, token_present) =
+            marketplace_auth_status_fields(true, true, false, Some(McpAuthStatus::OAuth));
+        assert_eq!(status, "auth_pending");
+        assert!(!token_present);
+    }
+
+    struct TempPinvou3Home {
+        root: PathBuf,
+        previous: Option<String>,
+    }
+
+    impl TempPinvou3Home {
+        fn new(tag: &str) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "pinvou3-{tag}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let previous = std::env::var("PINVOU3_HOME").ok();
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            std::env::set_var("PINVOU3_HOME", &root);
+            Self { root, previous }
+        }
+    }
+
+    impl Drop for TempPinvou3Home {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var("PINVOU3_HOME", value),
+                None => std::env::remove_var("PINVOU3_HOME"),
+            }
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn write_json(path: &Path, value: serde_json::Value) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+    }
+
+    fn write_test_oauth_marketplace_files(server_name: &str, mcp_server: serde_json::Value) {
+        let manifest = serde_json::json!({
+            "id": "yuandian-mcp",
+            "name": "华宇元典法律数据",
+            "description": "test",
+            "version": "1.0.0",
+            "icon": "BookOpen",
+            "category": "kb",
+            "mcp_tools": [],
+            "command": "",
+            "args": [],
+            "servers": [{
+                "name": server_name,
+                "url": mcp_server.get("url").and_then(|v| v.as_str()).unwrap_or("not-a-url"),
+                "scopes": ["legal"],
+                "oauth": { "client_id": "test-client" }
+            }]
+        });
+        write_json(
+            &crate::bridge::paths::bundle_mcp_servers_dir()
+                .join("yuandian-mcp")
+                .join("manifest.json"),
+            manifest,
+        );
+        write_json(
+            &crate::bridge::paths::pinvou3_home()
+                .join("marketplace")
+                .join("installed.json"),
+            serde_json::json!(["yuandian-mcp"]),
+        );
+        write_json(
+            &crate::bridge::paths::mcp_config_path(),
+            serde_json::json!({ "servers": { server_name: mcp_server } }),
+        );
+    }
+
+    fn test_oauth_store_key(server_name: &str, url: &str) -> String {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        use sha2::{Digest, Sha256};
+
+        let mut payload = Vec::with_capacity(server_name.len() + url.len() + 1);
+        payload.extend_from_slice(server_name.as_bytes());
+        payload.push(0);
+        payload.extend_from_slice(url.as_bytes());
+        let digest = Sha256::digest(&payload);
+        format!("mcp_oauth_{}", URL_SAFE_NO_PAD.encode(digest))
+    }
+
+    fn set_test_oauth_token(server_name: &str, url: &str, value: &str) -> String {
+        let key = test_oauth_store_key(server_name, url);
+        codewhale_secrets::Secrets::auto_detect()
+            .set(&key, value)
+            .unwrap();
+        key
+    }
+
+    fn delete_test_oauth_token_key(key: &str) {
+        let _ = codewhale_secrets::Secrets::auto_detect().delete(key);
+    }
+
+    fn test_oauth_token_exists(key: &str) -> bool {
+        codewhale_secrets::Secrets::auto_detect()
+            .get(key)
+            .unwrap()
+            .is_some()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn marketplace_auth_status_does_not_treat_missing_or_corrupt_token_as_connected() {
+        let _g = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _home = TempPinvou3Home::new("oauth-status");
+        let server_name = "yuandian-mcp-status-test";
+        let url = "not-a-url";
+        write_test_oauth_marketplace_files(
+            server_name,
+            serde_json::json!({
+                "url": url,
+                "scopes": ["legal"],
+                "oauth": { "client_id": "test-client" }
+            }),
+        );
+
+        let missing = get_marketplace_tool_auth_status("yuandian-mcp".to_string())
+            .await
+            .unwrap();
+        assert!(missing.installed);
+        assert!(missing.oauth_required);
+        assert!(missing.mcp_configured);
+        assert!(!missing.oauth_token_present);
+        assert_eq!(missing.status, "config_installed_auth_pending");
+
+        let key = set_test_oauth_token(server_name, url, "not-json");
+        let corrupt = get_marketplace_tool_auth_status("yuandian-mcp".to_string())
+            .await
+            .unwrap();
+        assert!(corrupt.installed);
+        assert!(corrupt.oauth_required);
+        assert!(corrupt.mcp_configured);
+        assert!(!corrupt.oauth_token_present);
+        assert_eq!(corrupt.status, "config_installed_auth_pending");
+        delete_test_oauth_token_key(&key);
+    }
+
+    #[test]
+    fn uninstall_marketplace_tool_deletes_oauth_token_before_mcp_config() {
+        let _g = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _home = TempPinvou3Home::new("oauth-uninstall");
+        let server_name = "yuandian-mcp-uninstall-test";
+        let url = "not-a-url";
+        write_test_oauth_marketplace_files(
+            server_name,
+            serde_json::json!({
+                "url": url,
+                "scopes": ["legal"],
+                "oauth": { "client_id": "test-client" }
+            }),
+        );
+        let key = set_test_oauth_token(server_name, url, "not-json");
+        assert!(test_oauth_token_exists(&key));
+
+        uninstall_marketplace_tool("yuandian-mcp".to_string()).unwrap();
+
+        assert!(!test_oauth_token_exists(&key));
+        assert!(
+            !crate::bridge::marketplace::MarketplaceManager::new()
+                .installed_ids()
+                .contains(&"yuandian-mcp".to_string())
+        );
+        let mcp_content = std::fs::read_to_string(crate::bridge::paths::mcp_config_path()).unwrap();
+        let mcp: serde_json::Value = serde_json::from_str(&mcp_content).unwrap();
+        assert!(mcp["servers"].get(server_name).is_none());
+    }
+
+    #[test]
+    fn uninstall_marketplace_tool_aborts_if_oauth_token_delete_fails() {
+        let _g = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _home = TempPinvou3Home::new("oauth-uninstall-error");
+        let server_name = "yuandian-mcp-uninstall-error-test";
+        write_test_oauth_marketplace_files(
+            server_name,
+            serde_json::json!({
+                "scopes": ["legal"],
+                "oauth": { "client_id": "test-client" }
+            }),
+        );
+
+        let err = uninstall_marketplace_tool("yuandian-mcp".to_string()).unwrap_err();
+        assert!(err.contains("删除 MCP OAuth token 失败"));
+        assert!(
+            crate::bridge::marketplace::MarketplaceManager::new()
+                .installed_ids()
+                .contains(&"yuandian-mcp".to_string())
+        );
+        let mcp_content = std::fs::read_to_string(crate::bridge::paths::mcp_config_path()).unwrap();
+        let mcp: serde_json::Value = serde_json::from_str(&mcp_content).unwrap();
+        assert!(mcp["servers"].get(server_name).is_some());
+    }
 
     #[test]
     fn direct_skill_reinstall_reapplies_persisted_disable() {
@@ -5610,6 +5857,12 @@ mod tests {
     fn external_allowlist_allows_obsidian_rejects_lookalikes() {
         assert!(url_in_external_allowlist("https://obsidian.md/download"));
         assert!(url_in_external_allowlist("https://metaso.cn/"));
+        assert!(!url_in_external_allowlist(
+            "https://open.chineselaw.com/oauth/authorize"
+        ));
+        assert!(!url_in_external_allowlist(
+            "https://passport.legalmind.cn/ssologin?appId=apiplatform"
+        ));
         assert!(!url_in_external_allowlist("https://obsidian.md.evil.com/"));
         assert!(!url_in_external_allowlist("http://obsidian.md/"));
         assert!(!url_in_external_allowlist("https://evil.example.com/"));
@@ -6185,6 +6438,24 @@ pub fn list_marketplace_tools(
     Ok(tools)
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct MarketplaceOAuthLoginResult {
+    pub status: String,
+    pub message: String,
+    pub server_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MarketplaceAuthStatus {
+    pub installed: bool,
+    pub mcp_configured: bool,
+    pub oauth_required: bool,
+    pub oauth_token_present: bool,
+    pub status: String,
+    pub server_name: Option<String>,
+    pub message: String,
+}
+
 #[tauri::command]
 pub async fn install_marketplace_tool(
     tool_id: String,
@@ -6209,10 +6480,190 @@ pub async fn install_marketplace_tool(
     .map_err(|e| format!("任务执行失败: {e}"))?
 }
 
+fn marketplace_oauth_error_result(
+    server_name: String,
+    error: anyhow::Error,
+) -> MarketplaceOAuthLoginResult {
+    let detail = format!("{error:#}");
+    let lower = detail.to_ascii_lowercase();
+    let (status, message) = if lower.contains("timed out waiting for oauth callback") {
+        (
+            "timeout",
+            "授权超时，未收到浏览器回调。若浏览器停在 open.chineselaw.com/service-error，说明元典授权服务返回失败，请关闭页面后重试。",
+        )
+    } else if lower.contains("service-error") || lower.contains("status code 404") {
+        (
+            "service_error",
+            "元典授权服务返回错误或 404，当前未完成授权。请稍后重试，或联系元典开放平台确认该账号/应用权限。",
+        )
+    } else if lower.contains("oauth provider") || lower.contains("authorization") {
+        (
+            "provider_error",
+            "元典 OAuth 授权服务拒绝了本次授权，当前未完成连接。请确认账号权限后重试。",
+        )
+    } else {
+        (
+            "failed",
+            "元典授权失败，当前未完成连接。请重试；如仍失败，请保留浏览器错误页和日志。",
+        )
+    };
+
+    eprintln!("[marketplace] MCP OAuth login for '{server_name}' failed: {detail}");
+    MarketplaceOAuthLoginResult {
+        status: status.to_string(),
+        message: message.to_string(),
+        server_name,
+    }
+}
+
+fn marketplace_oauth_server_from_mcp_config(
+    server_name: &str,
+) -> Result<Option<deepseek_tui::mcp::McpServerConfig>, String> {
+    let mcp_path = crate::bridge::paths::mcp_config_path();
+    if !mcp_path.is_file() {
+        return Ok(None);
+    }
+    let content =
+        std::fs::read_to_string(&mcp_path).map_err(|e| format!("读取 mcp.json 失败: {e}"))?;
+    let config: deepseek_tui::mcp::McpConfig =
+        serde_json::from_str(&content).map_err(|e| format!("解析 mcp.json 失败: {e}"))?;
+    Ok(config.servers.get(server_name).cloned())
+}
+
+fn marketplace_auth_status_fields(
+    installed: bool,
+    oauth_required: bool,
+    mcp_configured: bool,
+    auth_status: Option<deepseek_tui::mcp::oauth::McpAuthStatus>,
+) -> (&'static str, &'static str, bool) {
+    if oauth_required
+        && mcp_configured
+        && matches!(
+            auth_status,
+            Some(deepseek_tui::mcp::oauth::McpAuthStatus::OAuth)
+        )
+    {
+        (
+            "connected",
+            "已完成元典 OAuth 授权，可以在新会话中使用华宇元典法律数据。",
+            true,
+        )
+    } else if oauth_required && mcp_configured {
+        (
+            "config_installed_auth_pending",
+            "已写入 MCP 配置，但尚未完成元典 OAuth 授权。",
+            false,
+        )
+    } else if oauth_required && installed {
+        (
+            "auth_pending",
+            "工具已安装，但 MCP 配置或授权状态不完整，请重新连接。",
+            false,
+        )
+    } else if oauth_required {
+        ("not_installed", "尚未连接华宇元典法律数据。", false)
+    } else if installed {
+        ("connected", "工具已安装。", false)
+    } else {
+        ("not_installed", "工具尚未安装。", false)
+    }
+}
+
+#[tauri::command]
+pub async fn get_marketplace_tool_auth_status(
+    tool_id: String,
+) -> Result<MarketplaceAuthStatus, String> {
+    let mgr = crate::bridge::marketplace::MarketplaceManager::new();
+    let installed = mgr.installed_ids().iter().any(|id| id == &tool_id);
+    let server_name = mgr.oauth_remote_server_name(&tool_id);
+    let oauth_required = server_name.is_some();
+    let mut mcp_configured = false;
+    let mut auth_status = None;
+
+    if let Some(name) = server_name.as_deref() {
+        match marketplace_oauth_server_from_mcp_config(name) {
+            Ok(Some(server)) => {
+                mcp_configured = true;
+                auth_status =
+                    Some(deepseek_tui::mcp::oauth::auth_status_for_server(name, &server).await);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!(
+                    "[marketplace] failed to read OAuth status for '{name}' from mcp.json: {error}"
+                );
+            }
+        }
+    }
+
+    let (status, message, oauth_token_present) =
+        marketplace_auth_status_fields(installed, oauth_required, mcp_configured, auth_status);
+
+    Ok(MarketplaceAuthStatus {
+        installed,
+        mcp_configured,
+        oauth_required,
+        oauth_token_present,
+        status: status.to_string(),
+        server_name,
+        message: message.to_string(),
+    })
+}
+
+#[tauri::command]
+pub async fn start_marketplace_tool_oauth_login(
+    tool_id: String,
+) -> Result<MarketplaceOAuthLoginResult, String> {
+    let mgr = crate::bridge::marketplace::MarketplaceManager::new();
+    let server_name = mgr
+        .oauth_remote_server_name(&tool_id)
+        .ok_or_else(|| format!("工具 '{tool_id}' 未声明远程 MCP OAuth 登录"))?;
+    let mcp_path = crate::bridge::paths::mcp_config_path();
+    let content =
+        std::fs::read_to_string(&mcp_path).map_err(|e| format!("读取 mcp.json 失败: {e}"))?;
+    let config: deepseek_tui::mcp::McpConfig =
+        serde_json::from_str(&content).map_err(|e| format!("解析 mcp.json 失败: {e}"))?;
+    let server = config
+        .servers
+        .get(&server_name)
+        .cloned()
+        .ok_or_else(|| format!("mcp.json 未找到服务 '{server_name}'"))?;
+
+    match deepseek_tui::mcp::oauth::perform_oauth_login_for_server(
+        &server_name,
+        &server,
+        None,
+        None,
+        None,
+    )
+    .await
+    {
+        Ok(()) => Ok(MarketplaceOAuthLoginResult {
+            status: "connected".to_string(),
+            message: "元典 OAuth 授权已完成。".to_string(),
+            server_name,
+        }),
+        Err(e) => Ok(marketplace_oauth_error_result(server_name, e)),
+    }
+}
+
 #[tauri::command]
 pub fn uninstall_marketplace_tool(tool_id: String) -> Result<(), String> {
     let mgr = crate::bridge::marketplace::MarketplaceManager::new();
     let companions = mgr.companion_skills(&tool_id); // 卸前先取(manifest 不删,卸后也能读,保险先读)
+    if let Some(server_name) = mgr.oauth_remote_server_name(&tool_id) {
+        match marketplace_oauth_server_from_mcp_config(&server_name)? {
+            Some(server) => {
+                deepseek_tui::mcp::oauth::delete_oauth_tokens_for_server(&server_name, &server)
+                    .map_err(|e| format!("删除 MCP OAuth token 失败: {e:#}"))?;
+            }
+            None => {
+                eprintln!(
+                    "[marketplace] OAuth server '{server_name}' not found in mcp.json while uninstalling '{tool_id}'"
+                );
+            }
+        }
+    }
     mgr.uninstall(&tool_id)?;
     // 联动:删配套技能(best-effort,删不掉不影响 MCP 卸载)。
     for sid in companions {

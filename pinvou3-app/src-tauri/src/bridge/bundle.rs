@@ -17,27 +17,31 @@ static SANSHENG_LIUBU_DIR: Dir<'_> =
 /// 飞书官方域技能（lark-*，MIT，sync 自 github.com/larksuite/cli `skills/`）：
 /// 编译期内嵌整个 skills 目录树（各域 SKILL.md + references/*.md + NOTICE.md）。
 /// 启动解包到 `bundle_skills_dir`，供引擎 `SkillRegistry` 发现、`load_skill` 渐进披露。
-static LARK_SKILLS_DIR: Dir<'_> =
-    include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/skills");
+static LARK_SKILLS_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/skills");
 
 /// H3C EIP 员工门户技能(SKILL.md + bin/ 包装脚本与二进制)。独立于 lark skills 的
 /// include_dir(故放在 `bundle/eip/` 而非 `bundle/skills/`,避免被 LARK_SKILLS_DIR
 /// 卷入、跟飞书门控耦合)。启动解包到 `skills_dir/eip`,见 `write_eip_skill`。
 /// 注:`bin/eip-cli`/`bin/eip-cli-aarch64`/`eip-cli.exe` 是 IT 内部二进制,本地 gitignore、不进 git;
 /// 但编译期 include_dir 仍会嵌进 app(发布形态 A/C 待与 IT 定,见接入方案)。
-static EIP_SKILL_DIR: Dir<'_> =
-    include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/eip");
+static EIP_SKILL_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/eip");
 
 /// H3C 知道知识库技能(SKILL.md + zhidao CLI)。与 EIP 同属 IT 内部 CLI 连接器,
 /// 独立内嵌并解包到 `skills_dir/zhidao`,用连接标记门控 SKILL.md 可见性。
-static ZHIDAO_SKILL_DIR: Dir<'_> =
-    include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/zhidao");
+static ZHIDAO_SKILL_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/zhidao");
 
 /// 9 个 lark 域技能目录名(门控写/删共用)。skills_dir 下这些目录在不在
 /// = 飞书技能对模型可见与否(引擎 `SkillRegistry` 扫目录)。
 const LARK_SKILL_DIRS: [&str; 9] = [
-    "lark-shared", "lark-calendar", "lark-doc", "lark-drive",
-    "lark-sheets", "lark-im", "lark-task", "lark-wiki", "lark-base",
+    "lark-shared",
+    "lark-calendar",
+    "lark-doc",
+    "lark-drive",
+    "lark-sheets",
+    "lark-im",
+    "lark-task",
+    "lark-wiki",
+    "lark-base",
 ];
 
 /// 企微官方域技能(wecomcli-*,MIT,来自 github.com/WecomTeam/wecom-cli `skills/`):
@@ -52,13 +56,17 @@ static WECOM_SKILLS_DIR: Dir<'_> =
 static DINGTALK_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/dingtalk-skills");
 
-static CONNECTOR_CLI_DIR: Dir<'_> =
-    include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/connectors");
+static CONNECTOR_CLI_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/connectors");
 
 /// 7 个企微域技能目录名(门控写 / 删共用)。
 const WECOM_SKILL_DIRS: [&str; 7] = [
-    "wecomcli-msg", "wecomcli-doc", "wecomcli-meeting", "wecomcli-schedule",
-    "wecomcli-todo", "wecomcli-contact", "wecomcli-smartsheet",
+    "wecomcli-msg",
+    "wecomcli-doc",
+    "wecomcli-meeting",
+    "wecomcli-schedule",
+    "wecomcli-todo",
+    "wecomcli-contact",
+    "wecomcli-smartsheet",
 ];
 
 const DINGTALK_SKILL_DIRS: [&str; 1] = ["dws"];
@@ -179,10 +187,12 @@ pub const AUTHORITY_RECAP: &str = "";
 /// 上游 v0.8.49 起 `set_*_override` 返回 `Result<(), String>`(首次 Ok,重复 Err)。
 pub fn install_prompt_overrides() {
     let _ = deepseek_tui::prompts::set_base_prompt_override(BASE_PROMPT_MD.to_string());
-    let _ =
-        deepseek_tui::prompts::set_locale_preamble_zh_hans_override(LOCALE_PREAMBLE_ZH_HANS.to_string());
-    let _ =
-        deepseek_tui::prompts::set_locale_closer_zh_hans_override(LOCALE_CLOSER_ZH_HANS.to_string());
+    let _ = deepseek_tui::prompts::set_locale_preamble_zh_hans_override(
+        LOCALE_PREAMBLE_ZH_HANS.to_string(),
+    );
+    let _ = deepseek_tui::prompts::set_locale_closer_zh_hans_override(
+        LOCALE_CLOSER_ZH_HANS.to_string(),
+    );
     let _ = deepseek_tui::prompts::set_locale_preamble_ja_override(LOCALE_PREAMBLE_JA.to_string());
     let _ = deepseek_tui::prompts::set_locale_closer_ja_override(LOCALE_CLOSER_JA.to_string());
     let _ = deepseek_tui::prompts::set_authority_recap_override(AUTHORITY_RECAP.to_string());
@@ -190,9 +200,9 @@ pub fn install_prompt_overrides() {
     // 设置后底座的 Personality/Mode/Approval/ContextMgmt/COMPACT_TEMPLATE/
     // taxonomy 常量全部不进 prompt,由 compose_static_layers 输出替代;
     // base override 仍保留——composer 的 ctx.default_layers 引用它。
-    let _ = deepseek_tui::prompts::set_static_prompt_composer_override(Box::new(
-        |ctx| compose_static_layers(ctx),
-    ));
+    let _ = deepseek_tui::prompts::set_static_prompt_composer_override(Box::new(|ctx| {
+        compose_static_layers(ctx)
+    }));
 }
 
 /// 内置 MCP 默认配置:注册 present_artifact server(成品卡)。`{{PINVOU3_PRESENT_SERVER}}`
@@ -213,26 +223,21 @@ pub const PRESENT_ARTIFACT_SERVER_PY: &str =
     include_str!("../../resources/bundle/mcp-servers/present_artifact_server.py");
 
 // --- 工具市场：内置 MCP server 资源(编译期内嵌) ---
-const WEATHER_SERVER_PY: &str =
-    include_str!("../../../resources/mcp-servers/weather/server.py");
+const WEATHER_SERVER_PY: &str = include_str!("../../../resources/mcp-servers/weather/server.py");
 const WEATHER_MANIFEST_JSON: &str =
     include_str!("../../../resources/mcp-servers/weather/manifest.json");
-const IWENCAI_SERVER_PY: &str =
-    include_str!("../../../resources/mcp-servers/iwencai/server.py");
+const IWENCAI_SERVER_PY: &str = include_str!("../../../resources/mcp-servers/iwencai/server.py");
 const IWENCAI_MANIFEST_JSON: &str =
     include_str!("../../../resources/mcp-servers/iwencai/manifest.json");
-const QCC_MANIFEST_JSON: &str =
-    include_str!("../../../resources/mcp-servers/qcc/manifest.json");
-const OBSIDIAN_SERVER_PY: &str =
-    include_str!("../../../resources/mcp-servers/obsidian/server.py");
+const QCC_MANIFEST_JSON: &str = include_str!("../../../resources/mcp-servers/qcc/manifest.json");
+const YUANDIAN_MANIFEST_JSON: &str =
+    include_str!("../../../resources/mcp-servers/yuandian-mcp/manifest.json");
+const OBSIDIAN_SERVER_PY: &str = include_str!("../../../resources/mcp-servers/obsidian/server.py");
 const OBSIDIAN_MANIFEST_JSON: &str =
     include_str!("../../../resources/mcp-servers/obsidian/manifest.json");
-const PPTX_SERVER_PY: &str =
-    include_str!("../../../resources/mcp-servers/pptx/server.py");
-const PPTX_MANIFEST_JSON: &str =
-    include_str!("../../../resources/mcp-servers/pptx/manifest.json");
-const GONGWEN_SERVER_PY: &str =
-    include_str!("../../../resources/mcp-servers/gongwen/server.py");
+const PPTX_SERVER_PY: &str = include_str!("../../../resources/mcp-servers/pptx/server.py");
+const PPTX_MANIFEST_JSON: &str = include_str!("../../../resources/mcp-servers/pptx/manifest.json");
+const GONGWEN_SERVER_PY: &str = include_str!("../../../resources/mcp-servers/gongwen/server.py");
 const GONGWEN_MANIFEST_JSON: &str =
     include_str!("../../../resources/mcp-servers/gongwen/manifest.json");
 const GONGWEN_STYLES_PY: &str =
@@ -487,13 +492,21 @@ impl Pinvou3Bundle {
     fn write_connector_clis(&self, force: bool) -> std::io::Result<()> {
         let root = paths::bundle_connectors_dir();
         let bin = root.join("linux-arm64").join("bin");
-        if force || !bin.join("lark-cli").is_file() || !bin.join("wecom-cli").is_file() || !bin.join("dws").is_file() {
+        if force
+            || !bin.join("lark-cli").is_file()
+            || !bin.join("wecom-cli").is_file()
+            || !bin.join("dws").is_file()
+        {
             Self::extract_dir(&CONNECTOR_CLI_DIR, &root)?;
         }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            for rel in ["linux-arm64/bin/lark-cli", "linux-arm64/bin/wecom-cli", "linux-arm64/bin/dws"] {
+            for rel in [
+                "linux-arm64/bin/lark-cli",
+                "linux-arm64/bin/wecom-cli",
+                "linux-arm64/bin/dws",
+            ] {
                 let p = root.join(rel);
                 if p.is_file() {
                     let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
@@ -653,10 +666,9 @@ impl Pinvou3Bundle {
     fn ensure_builtin_mcp_servers(&self) -> std::io::Result<()> {
         let present_server = paths::bundle_present_artifact_server();
         let mut mcp: serde_json::Value = if self.mcp_json.is_file() {
-            let existing = std::fs::read_to_string(&self.mcp_json)
-                .unwrap_or_else(|_| "{}".to_string());
-            serde_json::from_str(&existing)
-                .unwrap_or_else(|_| serde_json::json!({"servers": {}}))
+            let existing =
+                std::fs::read_to_string(&self.mcp_json).unwrap_or_else(|_| "{}".to_string());
+            serde_json::from_str(&existing).unwrap_or_else(|_| serde_json::json!({"servers": {}}))
         } else {
             serde_json::json!({"servers": {}})
         };
@@ -770,6 +782,10 @@ impl Pinvou3Bundle {
         let qcc_dir = dir.join("qcc");
         std::fs::create_dir_all(&qcc_dir)?;
         std::fs::write(qcc_dir.join("manifest.json"), QCC_MANIFEST_JSON)?;
+        // 工具市场：华宇元典（远程 MCP + OAuth，只有 manifest.json，无 server.py）
+        let yuandian_dir = dir.join("yuandian-mcp");
+        std::fs::create_dir_all(&yuandian_dir)?;
+        std::fs::write(yuandian_dir.join("manifest.json"), YUANDIAN_MANIFEST_JSON)?;
         // 工具市场：Obsidian 知识库 MCP server（本地 stdio，检索本机 vault）
         let obsidian_dir = dir.join("obsidian");
         std::fs::create_dir_all(&obsidian_dir)?;
@@ -1034,7 +1050,7 @@ mod tests {
             "Compaction Relay Template",
             "Sub-agents",
             "Thinking budget",
-            "Tier ", // 九层已删,不许残留悬空 tier 引用
+            "Tier ",                       // 九层已删,不许残留悬空 tier 引用
             "## Runtime Policy Reference", // v0.8.57 上游新增全模式块,composer gate 抑制
         ] {
             assert!(!yolo.contains(gone), "底座静态块应被 composer 干掉: {gone}");
@@ -1138,8 +1154,6 @@ mod tests {
 
         cleanup(&tmp);
     }
-
-
 
     fn tempdir() -> String {
         let id = std::time::SystemTime::now()

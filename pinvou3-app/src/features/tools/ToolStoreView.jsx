@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Briefcase, ChevronLeft, ChevronRight, Cpu, Globe, IconGrid, IconList, Package, Search, Server, User, XIcon, Zap } from '../../components/icons.jsx';
 import { notifyComposerToolsChanged } from '../settings/SettingsView.jsx';
+import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { TsActionBtn, tsCategories, tsFeaturedCollections, tsSkillsData, tsToolsData } from './tool-common.jsx';
 
 const FEISHU_STEPS = [
@@ -311,7 +312,11 @@ const FEISHU_STEPS = [
                   <div className={`text-[17px] font-semibold mb-1.5 ${isDark ? 'text-white' : 'text-slate-900'}`}>
                     {alert.title}
                   </div>
-                  {!alert.isError && (
+                  {alert.subtitle ? (
+                    <div className={`text-[13px] leading-relaxed ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                      {alert.subtitle}
+                    </div>
+                  ) : !alert.isError && (
                     <div className={`text-[13px] leading-relaxed ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
                       {alert.isInstall ? '新工具需要在新会话中生效' : '已移除，新会话将不再加载该工具'}
                     </div>
@@ -464,6 +469,7 @@ const FEISHU_STEPS = [
       const featuredScrollRef = useRef(null);
       const [isFeaturedHovered, setIsFeaturedHovered] = useState(false);
       const [toolStates, setToolStates] = useState({});
+      const [toolAuthStates, setToolAuthStates] = useState({});
       // 配套技能 id → 所属 MCP id(由 list_marketplace_tools 的 companion_skills 反建,manifest 单一真源)。
       // 有配套 MCP 的技能卡据此把状态/装卸联动到该 MCP,避免命名不一致(government-writing↔gongwen)时状态分叉。
       const [skillToMcp, setSkillToMcp] = useState({});
@@ -657,21 +663,30 @@ const FEISHU_STEPS = [
       // 合并后端安装状态到 mock 数据(飞书/企微/EIP/知道 的 installed = 已连接)
       // 新分类映射(按工具 id):沟通协作 / 文档知识 / 研发 / 金融数据 / 生活实用 / H3C 内部
       const CAT_BY_ID = { 1: 'life', 2: 'finance', 3: 'collab', 4: 'docs', 5: 'docs', 6: 'docs', 7: 'collab', 8: 'collab', 9: 'collab', 10: 'collab', 11: 'dev', 12: 'dev', 13: 'finance', 14: 'docs', 17: 'h3c', 18: 'h3c', 99: 'collab' };
-      const tools = tsToolsData.map(t => ({
-        ...t,
-        category: CAT_BY_ID[t.id] || t.category,
-        installed: t.feishuCli
-          ? feishuConnected
-          : t.wecomCli
-          ? wecomConnected
-          : t.dingtalkCli
-          ? dingtalkConnected
-          : t.eipCli
-          ? eipConnected
-          : t.zhidaoCli
-          ? zhidaoConnected
-          : (t.backendId ? (toolStates[t.backendId] || false) : false),
-      }));
+      const tools = tsToolsData.map(t => {
+        const authState = t.oauthMcp && t.backendId ? toolAuthStates[t.backendId] : null;
+        return {
+          ...t,
+          category: CAT_BY_ID[t.id] || t.category,
+          installed: t.feishuCli
+            ? feishuConnected
+            : t.wecomCli
+            ? wecomConnected
+            : t.dingtalkCli
+            ? dingtalkConnected
+            : t.eipCli
+            ? eipConnected
+            : t.zhidaoCli
+            ? zhidaoConnected
+            : t.oauthMcp
+            ? authState?.status === 'connected'
+            : (t.backendId ? (toolStates[t.backendId] || false) : false),
+          authStatus: authState?.status || 'not_installed',
+          authMessage: authState?.message || '',
+          mcpConfigured: !!authState?.mcp_configured,
+          oauthTokenPresent: !!authState?.oauth_token_present,
+        };
+      });
 
       // 技能卡 = 预置(合并安装状态) + 用户上传(后端动态返回,默认图标)
       const presetSkills = tsSkillsData.map(s => {
@@ -727,6 +742,22 @@ const FEISHU_STEPS = [
           });
           setToolStates(states);
           setSkillToMcp(s2m);
+          const authEntries = await Promise.all(tsToolsData
+            .filter(tool => tool.oauthMcp && tool.backendId)
+            .map(async (tool) => {
+              try {
+                const status = await window.__TAURI__.core.invoke('get_marketplace_tool_auth_status', { toolId: tool.backendId });
+                return [tool.backendId, status];
+              } catch (err) {
+                console.error('get_marketplace_tool_auth_status failed:', tool.backendId, err);
+                return null;
+              }
+            }));
+          setToolAuthStates(prev => {
+            const next = { ...prev };
+            authEntries.filter(Boolean).forEach(([id, status]) => { next[id] = status; });
+            return next;
+          });
         } catch (e) {
           console.error('list_marketplace_tools failed:', e);
         }
@@ -746,7 +777,9 @@ const FEISHU_STEPS = [
         const name = t ? t.title : backendId;
         const hasPipDeps = !t?.configFields || t.configFields.length === 0; // 无 config 的本地工具可能有 pip deps
         setBusyId(backendId);
-        if (hasPipDeps) {
+        if (t?.oauthMcp) {
+          setAlert({ loading: true, visible: false, title: `正在连接「${name}」`, subtitle: '正在写入 MCP 配置并打开授权页…', isInstall: true, isError: false });
+        } else if (hasPipDeps) {
           setAlert({ loading: true, visible: false, title: `正在安装「${name}」`, subtitle: '首次安装需下载依赖，请耐心等待…', isInstall: true, isError: false });
         }
         try {
@@ -755,15 +788,61 @@ const FEISHU_STEPS = [
             args.config = userConfig;
           }
           await window.__TAURI__.core.invoke('install_marketplace_tool', args);
+          if (t?.oauthMcp) {
+            setToolAuthStates(prev => ({
+              ...prev,
+              [backendId]: {
+                installed: true,
+                mcp_configured: true,
+                oauth_required: true,
+                oauth_token_present: false,
+                status: 'auth_in_progress',
+                message: '正在等待浏览器授权完成。',
+              },
+            }));
+            const loginResult = await window.__TAURI__.core.invoke('start_marketplace_tool_oauth_login', { toolId: backendId });
+            const authStatus = await window.__TAURI__.core
+              .invoke('get_marketplace_tool_auth_status', { toolId: backendId })
+              .catch((err) => {
+                console.error('get_marketplace_tool_auth_status after oauth failed:', err);
+                return null;
+              });
+            await loadBackendState();
+
+            const outcome = resolveOAuthInstallOutcome(name, loginResult, authStatus);
+            if (!outcome.connected) {
+              setToolAuthStates(prev => ({ ...prev, [backendId]: outcome.authState }));
+              setAlert(outcome.alert);
+              if (selectedTool && selectedTool.backendId === backendId) {
+                setSelectedTool(prev => ({ ...prev, ...outcome.selectedToolPatch }));
+              }
+              return;
+            }
+
+            setToolAuthStates(prev => ({ ...prev, [backendId]: outcome.authState }));
+            setAlert({ ...outcome.alert, toolId: backendId });
+            if (selectedTool && selectedTool.backendId === backendId) {
+              setSelectedTool(prev => ({ ...prev, ...outcome.selectedToolPatch }));
+            }
+            notifyComposerToolsChanged();
+            return;
+          }
           await loadBackendState();
-          setAlert({ visible: true, loading: false, title: `已安装「${name}」`, isInstall: true, isError: false, toolId: backendId });
+          setAlert({
+            visible: true,
+            loading: false,
+            title: `已安装「${name}」`,
+            isInstall: true,
+            isError: false,
+            toolId: backendId,
+          });
           if (selectedTool && selectedTool.backendId === backendId) {
             setSelectedTool(prev => ({ ...prev, installed: true }));
           }
           notifyComposerToolsChanged();
         } catch (e) {
           console.error('install failed:', e);
-          setAlert({ visible: true, loading: false, title: '操作失败，请重试', isInstall: false, isError: true });
+          setAlert({ visible: true, loading: false, title: '操作失败，请重试', subtitle: String(e).slice(0, 240), isInstall: false, isError: true });
         } finally {
           setBusyId(null);
         }
@@ -1069,9 +1148,22 @@ const FEISHU_STEPS = [
         try {
           await window.__TAURI__.core.invoke('uninstall_marketplace_tool', { toolId: backendId });
           await loadBackendState();
+          if (t?.oauthMcp) {
+            setToolAuthStates(prev => ({
+              ...prev,
+              [backendId]: {
+                installed: false,
+                mcp_configured: false,
+                oauth_required: true,
+                oauth_token_present: false,
+                status: 'not_installed',
+                message: '尚未连接华宇元典法律数据。',
+              },
+            }));
+          }
           setAlert({ visible: true, loading: false, title: `已卸载「${name}」`, isInstall: false, isError: false });
           if (selectedTool && selectedTool.backendId === backendId) {
-            setSelectedTool(prev => ({ ...prev, installed: false }));
+            setSelectedTool(prev => ({ ...prev, installed: false, authStatus: 'not_installed', authMessage: '' }));
           }
           notifyComposerToolsChanged();
         } catch (e) {
