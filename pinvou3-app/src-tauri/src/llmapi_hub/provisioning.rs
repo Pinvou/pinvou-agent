@@ -6,9 +6,10 @@ use crate::credential_store::{CredentialReference, CredentialStore};
 use super::adapter::{HttpLlmApiHubAdapter, LlmApiHubAdapter, NewApiTokenUsage};
 use super::identity::{IdentityResolver, SystemIdentityResolver};
 use super::models::{
-    BuiltinLlmApiModelsResponse, DeviceBindingStatus, EnsureLlmApiBindingResponse,
-    LlmApiAdminOverviewResponse, LlmApiBinding, LlmApiError, LlmApiErrorCode, LlmApiIdentity,
-    LlmApiPolicy, LlmApiStatusResponse, ProvisioningStatus, QuotaStatus,
+    BackendUserState, BuiltinLlmApiModelsResponse, DeviceBindingStatus,
+    EnsureLlmApiBindingResponse, LlmApiAdminOverviewResponse, LlmApiBinding, LlmApiError,
+    LlmApiErrorCode, LlmApiIdentity, LlmApiPolicy, LlmApiStatusResponse, ProvisioningStatus,
+    QuotaStatus,
 };
 use super::store::{admin_overview_items, FileLlmApiBindingStore, LlmApiBindingStore};
 
@@ -140,6 +141,16 @@ pub fn ensure_binding_for_current_user() -> Result<EnsureLlmApiBindingResponse, 
                     err.retryable,
                     err.message
                 );
+                if err.code == LlmApiErrorCode::UserNotFound {
+                    invalidate_deleted_backend_user(
+                        &store,
+                        &credentials,
+                        &resolved,
+                        &mut binding,
+                        &err,
+                    );
+                    return Err(err);
+                }
                 if let Some(response) =
                     ensure_binding_from_saved_password(&store, &credentials, &resolved)?
                 {
@@ -170,13 +181,20 @@ pub fn ensure_binding_for_current_user() -> Result<EnsureLlmApiBindingResponse, 
             resolved.pinvou_user_id
         );
     }
-    if let Some(response) = ensure_binding_from_local_api_key(&store, &credentials, &resolved)? {
-        log::info!(
-            "[llmapi_hub][provisioning] ensure ready from local api key user_id={} elapsed_ms={}",
-            resolved.pinvou_user_id,
-            started_at.elapsed().as_millis()
-        );
-        return Ok(response);
+    match ensure_binding_from_local_api_key(&store, &credentials, &resolved) {
+        Ok(Some(response)) => {
+            log::info!(
+                "[llmapi_hub][provisioning] ensure ready from local api key user_id={} elapsed_ms={}",
+                resolved.pinvou_user_id,
+                started_at.elapsed().as_millis()
+            );
+            return Ok(response);
+        }
+        Ok(None) => {}
+        Err(err) => {
+            invalidate_current_binding_if_deleted(&store, &credentials, &resolved, &err);
+            return Err(err);
+        }
     }
     match ensure_binding_from_user_session(&store, &credentials, &resolved) {
         Ok(Some(response)) => {
@@ -196,6 +214,10 @@ pub fn ensure_binding_for_current_user() -> Result<EnsureLlmApiBindingResponse, 
                 err.retryable,
                 err.message
             );
+            if err.code == LlmApiErrorCode::UserNotFound {
+                invalidate_current_binding_if_deleted(&store, &credentials, &resolved, &err);
+                return Err(err);
+            }
             if let Some(response) =
                 ensure_binding_from_saved_password(&store, &credentials, &resolved)?
             {
@@ -359,7 +381,10 @@ where
                 "[llmapi_hub][provisioning] user session refresh saved password missing, fallback to generated device password user_id={}",
                 identity.pinvou_user_id
             );
-            (generated_device_password(identity)?, "generated device password")
+            (
+                generated_device_password(identity)?,
+                "generated device password",
+            )
         }
     };
 
@@ -431,6 +456,9 @@ where
                 started_at.elapsed().as_millis(),
                 err.message
             );
+            if err.code == LlmApiErrorCode::UserNotFound {
+                return Err(err);
+            }
             return Ok(None);
         }
     };
@@ -513,7 +541,13 @@ where
     let created = binding.newapi_user_id.is_none() && binding.newapi_token_id.is_none();
     binding.policy = policy;
     let adapter = HttpLlmApiHubAdapter::for_token_usage();
-    sync_current_user_profile(&adapter, credentials, &session, identity, &mut binding);
+    if let Err(err) =
+        sync_current_user_profile(&adapter, credentials, &session, identity, &mut binding)
+    {
+        binding.mark_error(&err);
+        store.upsert_binding(binding)?;
+        return Err(err);
+    }
     binding.mark_status(ProvisioningStatus::Ready);
     binding.clear_error();
 
@@ -573,7 +607,10 @@ where
                 identity.pinvou_user_id,
                 started_at.elapsed().as_millis()
             );
-            (generated_device_password(identity)?, "generated device password")
+            (
+                generated_device_password(identity)?,
+                "generated device password",
+            )
         }
     };
 
@@ -732,16 +769,14 @@ pub fn status_for_current_user_system() -> Result<LlmApiStatusResponse, LlmApiEr
             let mut status = status_from_binding(&binding);
             if let Err(err) = ensure_result {
                 status.auto_login_failed = true;
-                status.last_error_code = Some(err.code);
-                status.last_error_message = Some(err.message);
+                status = status_after_refresh_failure(status, Some(err.code), Some(err.message));
             }
             status
         }
         None => {
             let mut status = status_without_binding(&identity);
             if let Err(err) = ensure_result {
-                status.last_error_code = Some(err.code);
-                status.last_error_message = Some(err.message);
+                status = status_after_refresh_failure(status, Some(err.code), Some(err.message));
             }
             status
         }
@@ -770,21 +805,153 @@ pub fn local_status_for_current_user_system() -> Result<LlmApiStatusResponse, Ll
     }
 }
 
+fn invalidate_current_binding_if_deleted<C>(
+    store: &FileLlmApiBindingStore,
+    credentials: &C,
+    identity: &LlmApiIdentity,
+    err: &LlmApiError,
+) where
+    C: CredentialStore,
+{
+    if err.code != LlmApiErrorCode::UserNotFound {
+        return;
+    }
+    match store.get_binding(&identity.pinvou_user_id, &identity.device_binding_id) {
+        Ok(Some(mut binding)) => {
+            invalidate_deleted_backend_user(store, credentials, identity, &mut binding, err)
+        }
+        Ok(None) => clear_deleted_backend_user_artifacts(credentials, identity, None),
+        Err(store_err) => log::warn!(
+            "[llmapi_hub][provisioning] deleted backend user binding lookup failed user_id={} code={:?} message={}",
+            identity.pinvou_user_id,
+            store_err.code,
+            store_err.message
+        ),
+    }
+}
+
+fn invalidate_deleted_backend_user<C>(
+    store: &FileLlmApiBindingStore,
+    credentials: &C,
+    identity: &LlmApiIdentity,
+    binding: &mut LlmApiBinding,
+    err: &LlmApiError,
+) where
+    C: CredentialStore,
+{
+    let token_reference = reset_binding_for_deleted_backend_user(binding, err);
+
+    if let Err(store_err) = store.upsert_binding(binding.clone()) {
+        log::warn!(
+            "[llmapi_hub][provisioning] deleted backend user binding reset failed user_id={} code={:?} message={}",
+            identity.pinvou_user_id,
+            store_err.code,
+            store_err.message
+        );
+    }
+    clear_deleted_backend_user_artifacts(credentials, identity, token_reference);
+}
+
+fn reset_binding_for_deleted_backend_user(
+    binding: &mut LlmApiBinding,
+    err: &LlmApiError,
+) -> Option<CredentialReference> {
+    let token_reference = binding.token_credential_ref.clone();
+    binding.newapi_user_id = None;
+    binding.newapi_username = None;
+    binding.newapi_display_name = None;
+    binding.newapi_token_id = None;
+    binding.token_credential_ref = None;
+    binding.policy.allowed_models.clear();
+    binding.usage = super::models::LlmUsageSnapshot::new(
+        super::models::current_period(),
+        binding.policy.quota_limit_tokens,
+    );
+    binding.provisioning_status = ProvisioningStatus::NotStarted;
+    binding.last_error_code = Some(LlmApiErrorCode::UserNotFound);
+    binding.last_error_message = Some(err.message.clone());
+    binding.updated_at = Utc::now();
+    token_reference
+}
+
+fn clear_deleted_backend_user_artifacts<C>(
+    credentials: &C,
+    identity: &LlmApiIdentity,
+    token_reference: Option<CredentialReference>,
+) where
+    C: CredentialStore,
+{
+    let canonical_token = CredentialReference::for_llmapi_token(
+        &identity.pinvou_user_id,
+        &identity.device_binding_id,
+    );
+    let mut references = vec![
+        canonical_token,
+        CredentialReference::for_llmapi_user_session(
+            &identity.pinvou_user_id,
+            &identity.device_binding_id,
+        ),
+        CredentialReference::for_llmapi_user_password(
+            &identity.pinvou_user_id,
+            &identity.device_binding_id,
+        ),
+    ];
+    if let Some(reference) = token_reference {
+        if !references.contains(&reference) {
+            references.push(reference);
+        }
+    }
+    for reference in references {
+        if let Err(credential_err) = credentials.delete(&reference) {
+            log::warn!(
+                "[llmapi_hub][provisioning] deleted backend user credential cleanup failed user_id={} service={} account={} message={}",
+                identity.pinvou_user_id,
+                reference.service,
+                reference.account,
+                credential_err.user_message()
+            );
+        }
+    }
+
+    let mut prefs = crate::bridge::prefs::UserPrefs::load();
+    prefs.advanced.builtin_llmapi_available_models.clear();
+    prefs.advanced.builtin_llmapi_default_model = None;
+    prefs.ensure_builtin_llmapi_model();
+    if let Err(save_err) = prefs.save() {
+        log::warn!(
+            "[llmapi_hub][provisioning] deleted backend user model cache cleanup failed user_id={} message={}",
+            identity.pinvou_user_id,
+            save_err
+        );
+    }
+}
+
 pub fn unavailable_status_for_current_user_system(
     code: Option<LlmApiErrorCode>,
     message: Option<String>,
 ) -> Result<LlmApiStatusResponse, LlmApiError> {
-    let identity = SystemIdentityResolver.resolve_identity()?;
-    let mut status = status_without_binding(&identity);
-    status.last_error_code = code;
-    status.last_error_message = message;
-    Ok(status)
+    let status = local_status_for_current_user_system()?;
+    Ok(status_after_refresh_failure(status, code, message))
 }
 
 pub fn available_models_system() -> Result<BuiltinLlmApiModelsResponse, LlmApiError> {
     let started_at = Instant::now();
     log::info!("[llmapi_hub][provisioning] available models system start");
-    ensure_binding_for_current_user()?;
+    let cached = local_builtin_models_response();
+    if let Err(err) = ensure_binding_for_current_user() {
+        if err.code != LlmApiErrorCode::UserNotFound && !cached.available_models.is_empty() {
+            log::warn!(
+                "[llmapi_hub][provisioning] available models refresh failed; using cached models elapsed_ms={} count={} code={:?} retryable={} message={}",
+                started_at.elapsed().as_millis(),
+                cached.available_models.len(),
+                err.code,
+                err.retryable,
+                err.message
+            );
+            return Ok(cached);
+        }
+        return Err(err);
+    }
     let response = local_builtin_models_response();
     log::info!(
         "[llmapi_hub][provisioning] available models system ok elapsed_ms={} count={} default_model={}",
@@ -991,11 +1158,15 @@ fn sync_current_user_profile<C>(
     session: &super::adapter::NewApiUserSession,
     identity: &LlmApiIdentity,
     binding: &mut LlmApiBinding,
-) where
+) -> Result<(), LlmApiError>
+where
     C: CredentialStore,
 {
     match adapter.current_user(session) {
-        Ok(user) => apply_current_user_profile(user, identity, binding),
+        Ok(user) => {
+            apply_current_user_profile(user, identity, binding);
+            Ok(())
+        }
         Err(err) => {
             log::warn!(
                 "[llmapi_hub][provisioning] current user profile sync failed user_id={} code={:?} retryable={} message={}",
@@ -1013,7 +1184,7 @@ fn sync_current_user_profile<C>(
                                 identity.pinvou_user_id
                             );
                             apply_current_user_profile(user, identity, binding);
-                            return;
+                            return Ok(());
                         }
                         Err(retry_err) => {
                             log::warn!(
@@ -1023,10 +1194,16 @@ fn sync_current_user_profile<C>(
                                 retry_err.retryable,
                                 retry_err.message
                             );
+                            return Err(retry_err);
                         }
                     },
                     Ok(None) => {}
                     Err(refresh_err) => {
+                        let refresh_err = classify_managed_device_account_login_error(
+                            refresh_err,
+                            identity,
+                            binding,
+                        );
                         log::warn!(
                             "[llmapi_hub][provisioning] current user profile session refresh failed user_id={} code={:?} retryable={} message={}",
                             identity.pinvou_user_id,
@@ -1034,17 +1211,35 @@ fn sync_current_user_profile<C>(
                             refresh_err.retryable,
                             refresh_err.message
                         );
+                        return Err(refresh_err);
                     }
                 }
             }
-            if binding.newapi_user_id.is_none() {
-                binding.newapi_user_id = Some(session.user_id.clone());
-            }
-            if binding.newapi_username.is_none() {
-                binding.newapi_username = Some(identity.pinvou_user_id.clone());
-            }
+            Err(err)
         }
     }
+}
+
+fn classify_managed_device_account_login_error(
+    err: LlmApiError,
+    identity: &LlmApiIdentity,
+    binding: &LlmApiBinding,
+) -> LlmApiError {
+    let is_managed_device_account =
+        binding.newapi_username.as_deref() == Some(identity.pinvou_user_id.as_str());
+    let message = err.message.to_ascii_lowercase();
+    let login_says_account_unavailable = message.contains("password is incorrect")
+        || message.contains("user has been banned")
+        || message.contains("用户名或密码错误")
+        || message.contains("用户已被封禁");
+    if is_managed_device_account && login_says_account_unavailable {
+        return LlmApiError::new(
+            LlmApiErrorCode::UserNotFound,
+            "Backend-managed device account no longer accepts its fixed credentials",
+            false,
+        );
+    }
+    err
 }
 
 fn should_refresh_api_key_after_usage_error(err: &LlmApiError) -> bool {
@@ -1118,7 +1313,7 @@ where
             HttpLlmApiHubAdapter::user_session_from_credentials(credentials, identity)?
         {
             binding.token_credential_ref = Some(reference);
-            sync_current_user_profile(&adapter, credentials, &session, identity, binding);
+            sync_current_user_profile(&adapter, credentials, &session, identity, binding)?;
             sync_available_models(&adapter, &token, identity, binding);
             binding.clear_error();
             store.upsert_binding(binding.clone())?;
@@ -1158,6 +1353,9 @@ where
                     started_at.elapsed().as_millis(),
                     err.message
                 );
+                if err.code == LlmApiErrorCode::UserNotFound {
+                    return Err(err);
+                }
                 if !should_refresh_api_key_after_usage_error(&err) {
                     binding.token_credential_ref = Some(reference);
                     binding.updated_at = Utc::now();
@@ -1238,7 +1436,7 @@ where
     );
     let usage = adapter.token_usage(&refreshed.token)?;
 
-    sync_current_user_profile(&adapter, credentials, &session, identity, binding);
+    sync_current_user_profile(&adapter, credentials, &session, identity, binding)?;
     binding.newapi_token_id = Some(refreshed.id.clone());
     binding.token_credential_ref = Some(reference);
     apply_token_usage(binding, usage);
@@ -1575,6 +1773,8 @@ fn status_without_binding(identity: &LlmApiIdentity) -> LlmApiStatusResponse {
     LlmApiStatusResponse {
         pinvou_user_id: Some(identity.pinvou_user_id.clone()),
         backend_user_exists: false,
+        backend_user_state: BackendUserState::NotExists,
+        stale: false,
         backend_username: None,
         backend_display_name: None,
         auto_login_failed: false,
@@ -1589,11 +1789,17 @@ fn status_without_binding(identity: &LlmApiIdentity) -> LlmApiStatusResponse {
 }
 
 fn status_from_binding(binding: &LlmApiBinding) -> LlmApiStatusResponse {
-    let backend_username = binding
-        .newapi_username
-        .clone()
-        .or_else(|| Some(binding.pinvou_user_id.clone()));
-    let backend_display_name = binding.newapi_display_name.clone();
+    let backend_user_exists = binding.newapi_user_id.is_some()
+        || binding.provisioning_status == ProvisioningStatus::Ready;
+    let backend_username = backend_user_exists.then(|| {
+        binding
+            .newapi_username
+            .clone()
+            .unwrap_or_else(|| binding.pinvou_user_id.clone())
+    });
+    let backend_display_name = backend_user_exists
+        .then(|| binding.newapi_display_name.clone())
+        .flatten();
     log::info!(
         "[llmapi_hub][provisioning] status_from_binding user_id={} backend_username={} backend_display_name={} binding_display_name={} limit={} used={} remaining={}",
         binding.pinvou_user_id,
@@ -1604,21 +1810,52 @@ fn status_from_binding(binding: &LlmApiBinding) -> LlmApiStatusResponse {
         binding.usage.used_tokens,
         binding.usage.remaining_tokens
     );
+    let backend_user_state = if backend_user_exists {
+        BackendUserState::Exists
+    } else if binding.last_error_code == Some(LlmApiErrorCode::UserNotFound) {
+        BackendUserState::NotExists
+    } else {
+        BackendUserState::Unknown
+    };
     LlmApiStatusResponse {
         pinvou_user_id: Some(binding.pinvou_user_id.clone()),
-        backend_user_exists: binding.newapi_user_id.is_some()
-            || binding.provisioning_status == ProvisioningStatus::Ready,
+        backend_user_exists,
+        backend_user_state,
+        stale: false,
         backend_username,
         backend_display_name,
         auto_login_failed: false,
         device_binding_status: DeviceBindingStatus::Bound,
         enabled: binding.enabled,
         provisioning_status: binding.provisioning_status,
-        quota: Some(QuotaStatus::from(&binding.usage)),
+        quota: backend_user_exists.then(|| QuotaStatus::from(&binding.usage)),
         last_call_status: None,
         last_error_code: binding.last_error_code,
         last_error_message: binding.last_error_message.clone(),
     }
+}
+
+fn status_after_refresh_failure(
+    mut status: LlmApiStatusResponse,
+    code: Option<LlmApiErrorCode>,
+    message: Option<String>,
+) -> LlmApiStatusResponse {
+    let authoritative_not_found = code == Some(LlmApiErrorCode::UserNotFound);
+    status.backend_user_state = if authoritative_not_found {
+        status.backend_user_exists = false;
+        status.backend_username = None;
+        status.backend_display_name = None;
+        status.quota = None;
+        BackendUserState::NotExists
+    } else if status.backend_user_exists {
+        BackendUserState::Exists
+    } else {
+        BackendUserState::Unknown
+    };
+    status.stale = !authoritative_not_found;
+    status.last_error_code = code;
+    status.last_error_message = message;
+    status
 }
 
 #[derive(Debug, Clone)]
@@ -1716,6 +1953,126 @@ mod tests {
         assert!(binding.newapi_user_id.is_none());
         assert!(binding.newapi_token_id.is_none());
         assert!(binding.token_credential_ref.is_none());
+    }
+
+    #[test]
+    fn transient_status_failure_preserves_known_existing_account() {
+        let mut binding = LlmApiBinding::new(&identity().0, LlmApiPolicy::default());
+        binding.newapi_user_id = Some("newapi-user-1".to_string());
+        binding.provisioning_status = ProvisioningStatus::Ready;
+
+        let status = status_after_refresh_failure(
+            status_from_binding(&binding),
+            Some(LlmApiErrorCode::ServiceUnreachable),
+            Some("service down".to_string()),
+        );
+
+        assert!(status.backend_user_exists);
+        assert_eq!(status.backend_user_state, BackendUserState::Exists);
+        assert!(status.stale);
+        assert_eq!(
+            status.last_error_code,
+            Some(LlmApiErrorCode::ServiceUnreachable)
+        );
+    }
+
+    #[test]
+    fn transient_status_failure_is_unknown_not_missing_without_cache() {
+        let status = status_after_refresh_failure(
+            status_without_binding(&identity().0),
+            Some(LlmApiErrorCode::ServiceUnreachable),
+            Some("timeout".to_string()),
+        );
+
+        assert!(!status.backend_user_exists);
+        assert_eq!(status.backend_user_state, BackendUserState::Unknown);
+        assert!(status.stale);
+    }
+
+    #[test]
+    fn authoritative_user_not_found_remains_not_exists() {
+        let mut binding = LlmApiBinding::new(&identity().0, LlmApiPolicy::default());
+        binding.newapi_user_id = Some("newapi-user-1".to_string());
+        binding.newapi_username = Some("u_1".to_string());
+        binding.newapi_display_name = Some("User One".to_string());
+        binding.provisioning_status = ProvisioningStatus::Ready;
+
+        let status = status_after_refresh_failure(
+            status_from_binding(&binding),
+            Some(LlmApiErrorCode::UserNotFound),
+            Some("not found".to_string()),
+        );
+
+        assert!(!status.backend_user_exists);
+        assert_eq!(status.backend_user_state, BackendUserState::NotExists);
+        assert!(!status.stale);
+        assert!(status.backend_username.is_none());
+        assert!(status.backend_display_name.is_none());
+        assert!(status.quota.is_none());
+    }
+
+    #[test]
+    fn deleted_backend_user_clears_binding_identity_token_and_quota() {
+        let identity = identity().0;
+        let mut binding = LlmApiBinding::new(&identity, LlmApiPolicy::default());
+        let token_reference = CredentialReference::for_llmapi_token(
+            &identity.pinvou_user_id,
+            &identity.device_binding_id,
+        );
+        binding.newapi_user_id = Some("newapi-user-1".to_string());
+        binding.newapi_username = Some("u_1".to_string());
+        binding.newapi_display_name = Some("User One".to_string());
+        binding.newapi_token_id = Some("token-1".to_string());
+        binding.token_credential_ref = Some(token_reference.clone());
+        binding.policy.allowed_models = vec!["deepseek-v4-flash".to_string()];
+        binding.usage.used_tokens = 400;
+        binding.usage.remaining_tokens = 600;
+        binding.usage.last_synced_at = Some(Utc::now());
+        binding.provisioning_status = ProvisioningStatus::Ready;
+        let err = LlmApiError::new(LlmApiErrorCode::UserNotFound, "backend user deleted", false);
+
+        let removed_reference = reset_binding_for_deleted_backend_user(&mut binding, &err);
+
+        assert_eq!(removed_reference, Some(token_reference));
+        assert!(binding.newapi_user_id.is_none());
+        assert!(binding.newapi_username.is_none());
+        assert!(binding.newapi_display_name.is_none());
+        assert!(binding.newapi_token_id.is_none());
+        assert!(binding.token_credential_ref.is_none());
+        assert!(binding.policy.allowed_models.is_empty());
+        assert_eq!(binding.provisioning_status, ProvisioningStatus::NotStarted);
+        assert_eq!(binding.usage.used_tokens, 0);
+        assert_eq!(binding.usage.last_synced_at, None);
+        assert_eq!(binding.last_error_code, Some(LlmApiErrorCode::UserNotFound));
+
+        let status = status_from_binding(&binding);
+        assert_eq!(status.backend_user_state, BackendUserState::NotExists);
+        assert!(!status.backend_user_exists);
+        assert!(status.quota.is_none());
+    }
+
+    #[test]
+    fn managed_device_login_rejection_is_authoritative_but_manual_account_is_not() {
+        let identity = identity().0;
+        let mut managed_binding = LlmApiBinding::new(&identity, LlmApiPolicy::default());
+        managed_binding.newapi_username = Some(identity.pinvou_user_id.clone());
+        let login_error = || {
+            LlmApiError::new(
+                LlmApiErrorCode::ProvisioningFailed,
+                "Username or password is incorrect, or user has been banned",
+                true,
+            )
+        };
+
+        let classified =
+            classify_managed_device_account_login_error(login_error(), &identity, &managed_binding);
+        assert_eq!(classified.code, LlmApiErrorCode::UserNotFound);
+
+        let mut manual_binding = managed_binding;
+        manual_binding.newapi_username = Some("manual-user".to_string());
+        let unchanged =
+            classify_managed_device_account_login_error(login_error(), &identity, &manual_binding);
+        assert_eq!(unchanged.code, LlmApiErrorCode::ProvisioningFailed);
     }
 
     #[test]

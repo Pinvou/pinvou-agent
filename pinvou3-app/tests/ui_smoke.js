@@ -52,6 +52,12 @@ function injectSource() {
       switch(cmd){
         case 'get_settings': return Promise.resolve({theme:'liquid-light',language:'zh-Hans'});
         case 'get_effective_model_config': return Promise.resolve({model:'qwen36_35b_256k',base_url:'http://127.0.0.1:8000/v1',api_key_set:false});
+        case 'get_llmapi_status': return window.__LLMAPI_STATUS_ERROR__
+          ? Promise.reject(new Error('temporary llmapi status failure'))
+          : Promise.resolve(window.__LLMAPI_STATUS__ || null);
+        case 'get_llmapi_models': return window.__LLMAPI_MODELS_ERROR__
+          ? Promise.reject(new Error('temporary llmapi models failure'))
+          : Promise.resolve(window.__LLMAPI_MODELS__ || {available_models:[],default_model:''});
         case 'list_sessions': return Promise.resolve(SESSIONS);
         case 'get_super_permission_status': return Promise.resolve(false);
         case 'list_personas': return Promise.resolve([]);
@@ -128,6 +134,43 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     return { activeSessionId: s.activeSessionId, wfActive: !!(s.workflow && s.workflow.run && s.workflow.run.active), wfSid: s.workflow && s.workflow.run && s.workflow.run.sessionId };
   });
   rec('① 僵尸run不劫持启动(落草稿页+挂看板)', (st.activeSessionId == null) && st.wfActive === true && st.wfSid === 's-zombie', JSON.stringify(st));
+
+  const llmApiCacheFallback = await page.evaluate(async () => {
+    window.__LLMAPI_STATUS__ = {
+      backend_user_exists: true,
+      backend_user_state: 'exists',
+      stale: false,
+      provisioning_status: 'ready',
+    };
+    window.__LLMAPI_MODELS__ = {
+      available_models: ['deepseek-v4-flash'],
+      default_model: 'deepseek-v4-flash',
+    };
+    await window.TauriBridge.getLlmApiStatus();
+    await window.TauriBridge.getLlmApiModels();
+
+    window.__LLMAPI_STATUS_ERROR__ = true;
+    window.__LLMAPI_MODELS_ERROR__ = true;
+    await window.TauriBridge.getLlmApiStatus().catch(() => {});
+    await window.TauriBridge.getLlmApiModels().catch(() => {});
+    const retained = window.TauriBridge.getState();
+    const keptExisting = retained.llmApiStatus && retained.llmApiStatus.backend_user_exists === true;
+    const keptModels = retained.llmApiModels && retained.llmApiModels.default_model === 'deepseek-v4-flash';
+
+    window.__LLMAPI_STATUS_ERROR__ = false;
+    window.__LLMAPI_STATUS__ = {
+      backend_user_exists: false,
+      backend_user_state: 'not_exists',
+      stale: false,
+      provisioning_status: 'not_started',
+    };
+    await window.TauriBridge.getLlmApiStatus();
+    const clearedWhenAuthoritative = window.TauriBridge.getState().llmApiModels === null;
+    return { keptExisting, keptModels, clearedWhenAuthoritative };
+  });
+  rec('LLM API 暂时失败保留账户和模型缓存，仅明确不存在时清理',
+    llmApiCacheFallback.keptExisting && llmApiCacheFallback.keptModels && llmApiCacheFallback.clearedWhenAuthoritative,
+    JSON.stringify(llmApiCacheFallback));
 
   // 手机先向尚未在桌面打开的后台 session 发消息：hydration 必须先把磁盘 messages
   // 重建成 chatItems；否则桌面随后切入时只剩这条手机消息，历史和产物卡都像“丢了”。

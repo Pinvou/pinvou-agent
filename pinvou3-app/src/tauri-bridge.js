@@ -3630,6 +3630,18 @@
     }
   }
 
+  function llmApiBackendUserState(status) {
+    if (!status) return "unknown";
+    if (status.backend_user_state === "exists" || status.backend_user_state === "not_exists" || status.backend_user_state === "unknown") {
+      return status.backend_user_state;
+    }
+    return status.backend_user_exists ? "exists" : "not_exists";
+  }
+
+  function llmApiAccountKnownExists(status) {
+    return llmApiBackendUserState(status) === "exists";
+  }
+
   async function refreshLlmApiState(options) {
     options = options || {};
     var refreshModels = options.refreshModels !== false;
@@ -3641,21 +3653,22 @@
       state.llmApiStatus = status;
     } catch (e) {
       console.warn("get llmapi status failed", e);
-      state.llmApiStatus = null;
+      // Keep the last known account state. A transport failure is not proof
+      // that the backend account disappeared.
       notify();
       throw e;
     }
-    if (refreshModels && status && status.backend_user_exists) {
+    if (refreshModels && llmApiAccountKnownExists(status)) {
       try {
         models = await invoke("get_llmapi_models");
         state.llmApiModels = models;
       } catch (e) {
         console.warn("get llmapi models failed", e);
-        state.llmApiModels = null;
+        // Preserve the last successfully synchronized model list.
         notify();
         throw e;
       }
-    } else if (!status || !status.backend_user_exists) {
+    } else if (llmApiBackendUserState(status) === "not_exists") {
       state.llmApiModels = null;
     }
     if (refreshSavedModels) await loadModels();
@@ -5349,7 +5362,7 @@
     await startupAwait("bridge:load_app_version", loadAppVersion);
     await startupAwait("bridge:load_models", loadModels);
     getLlmApiStatus()
-      .then(function (status) { return status && status.backend_user_exists ? getLlmApiModels() : null; })
+      .then(function (status) { return llmApiAccountKnownExists(status) ? getLlmApiModels() : null; })
       .then(loadModels)
       .catch(function (e) { console.warn("load llmapi account/models failed", e); });
     startupMark("bridge:llmapi_refresh_started");

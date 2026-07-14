@@ -87,7 +87,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       return !!(model && (model.kind === 'builtin_llmapi' || model.id === 'builtin_llmapi'));
     }
     function hasLlmApiBackendUser(bs) {
-      return !!(bs && bs.llmApiStatus && bs.llmApiStatus.backend_user_exists);
+      const status = bs && bs.llmApiStatus;
+      if (!status) return false;
+      if (status.backend_user_state === 'not_exists') return false;
+      return status.backend_user_state === 'exists' || !!status.backend_user_exists;
     }
     function visibleSortedModels(models, bs) {
       const allowBuiltin = hasLlmApiBackendUser(bs);
