@@ -194,6 +194,8 @@ jobs:
         run: cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
 
       - name: DeepSeek-TUI 定时任务运行时回归
+        # 暂时关闭；底座对应运行时已回退，父仓后续另行收敛代码与 gitlink。
+        if: ${{ false }}
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/pinvou3-app/src-tauri/target
         run: |
