@@ -1,10 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ExternalLink, FolderOpen, XCircle } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
 import { ScaledHtmlPreview } from '../settings/SettingsView.jsx';
 import { AcFmtIcon } from '../tools/tool-common.jsx';
 import { cardBtnCls } from '../tools/tool-renderers.jsx';
+import { EditableMarkdownPreview } from './EditableMarkdownPreview.jsx';
 
 const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls = 'w-5 h-5' }) => {
       const kind = _artifactKind(name);
@@ -35,6 +36,16 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       const ext = ((name || '').split('.').pop() || '').toUpperCase();
       return ext || (kind || 'FILE');
     };
+    const normalizeArtifactPath = (path) => String(path || '').replace(/\\/g, '/').toLowerCase();
+    const sameArtifactPath = (left, right) => {
+      const a = normalizeArtifactPath(left);
+      const b = normalizeArtifactPath(right);
+      return !!a && !!b && a === b;
+    };
+    const changeMatchesSession = (change, bs) => {
+      if (!change || !change.sessionId || !bs?.activeSessionId) return true;
+      return change.sessionId === bs.activeSessionId;
+    };
     // 注入到 office→HTML 预览 iframe 末尾:LibreOffice 导出的表格 border=0、字号 x-small,
     // 这里补网格线/字号/单元格换行,让 xlsx 读起来像表格。放在文档后 → 同特异性下后定义胜出。
     const OFFICE_HTML_STYLE = '<style>'
@@ -52,6 +63,17 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       const [sel, setSel] = useState(null);        // 选中的 artifact { path, basename }
       const [pv, setPv] = useState({});            // 预览态
       const [infos, setInfos] = useState({});      // path → { size, kind, modified }(列表行元信息)
+      const [externalUpdateBlocked, setExternalUpdateBlocked] = useState(false);
+      const mdPreviewRef = useRef(null);
+
+      async function flushMarkdownPreview() {
+        if (tab !== 'preview' || pv.kind !== 'md' || !mdPreviewRef.current) return true;
+        return await mdPreviewRef.current.flush();
+      }
+
+      function hasDirtyMarkdownPreview() {
+        return tab === 'preview' && pv.kind === 'md' && !!mdPreviewRef.current?.hasDirty();
+      }
 
       // 进面板 / artifacts 变化 → 批量拉元信息(给列表行的「最后修改」+ 类型)
       const pathsKey = artifacts.map((a) => a.path).join('|');
@@ -74,14 +96,39 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       // 路径含 session id,故「不在列表」可靠区分换 session vs 同 session 内新增文件。
       useEffect(() => {
         if (sel && !artifacts.some((a) => a.path === sel.path)) {
-          setSel(null); setPv({}); setTab('list');
+          const change = bs && bs.artifactChange;
+          if (
+            changeMatchesSession(change, bs) &&
+            change?.event === 'removed' &&
+            sameArtifactPath(change.path, sel.path)
+          ) {
+            if (hasDirtyMarkdownPreview()) {
+              setExternalUpdateBlocked('removed');
+              setTab('preview');
+              return;
+            }
+            setPv({ missing: true, info: null });
+            setTab('preview');
+            setExternalUpdateBlocked(false);
+            return;
+          }
+          let cancelled = false;
+          (async () => {
+            const ok = await flushMarkdownPreview();
+            if (cancelled || !ok) return;
+            setSel(null); setPv({}); setTab('list');
+          })();
+          return () => { cancelled = true; };
         }
       }, [pathsKey]);
 
       async function preview(a) {
+        const ok = await flushMarkdownPreview();
+        if (!ok) return;
         setSel(a);
         setTab('preview');
         setPv({ loading: true });
+        setExternalUpdateBlocked(false);
         try {
           const info = await bridge.artifactInfo(a.path);
           if (!info || !info.exists) { setPv({ missing: true, info }); return; }
@@ -96,13 +143,59 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         } catch (e) { setPv({ error: String(e) }); }
       }
 
+      async function handleTabSelect(key) {
+        if (key === tab) return;
+        const ok = await flushMarkdownPreview();
+        if (!ok) return;
+        setTab(key);
+      }
+
+      async function handleClose() {
+        const ok = await flushMarkdownPreview();
+        if (ok) onClose?.();
+      }
+
+      function updateMarkdownPreview(text, info) {
+        setPv((prev) => ({ ...prev, text, info: info || prev.info }));
+        setExternalUpdateBlocked(false);
+        if (sel?.path && info) {
+          setInfos((prev) => ({ ...prev, [sel.path]: info }));
+        }
+      }
+
+      useEffect(() => {
+        const change = bs && bs.artifactChange;
+        if (!change?.seq || !sel || tab !== 'preview') return;
+        if (!changeMatchesSession(change, bs)) return;
+        if (!sameArtifactPath(change.path, sel.path)) return;
+        if (change.event === 'removed') {
+          if (hasDirtyMarkdownPreview()) {
+            setExternalUpdateBlocked('removed');
+            return;
+          }
+          setPv({ missing: true, info: null });
+          setExternalUpdateBlocked(false);
+          return;
+        }
+        let cancelled = false;
+        (async () => {
+          if (pv.kind === 'md' && mdPreviewRef.current) {
+            const ok = await mdPreviewRef.current.reloadFromDisk({ force: false });
+            if (!cancelled) setExternalUpdateBlocked(ok ? false : 'modified');
+            return;
+          }
+          if (sel) await preview(sel);
+        })();
+        return () => { cancelled = true; };
+      }, [bs?.artifactChange?.seq]);
+
       const muted = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
       const tabBtn = (key, label) => {
         const active = tab === key;
         const disabled = key === 'preview' && !sel;
         return (
           <button key={key} disabled={disabled}
-            onClick={() => !disabled && setTab(key)}
+            onClick={() => !disabled && handleTabSelect(key)}
             className={`px-4 py-1.5 rounded-full text-[13px] font-medium transition-colors
               ${active ? (isDark ? 'bg-[#333537] text-[#E3E3E3]' : 'bg-[#E8EDF2] text-[#1F1F1F]')
                 : disabled ? (isDark ? 'text-[#5F6368]' : 'text-[#BDC1C6]') + ' cursor-not-allowed'
@@ -118,7 +211,27 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (pv.missing) return <div className={`text-[13px] ${muted}`}>{t.apMissing}</div>;
         if (pv.error) return <div className={`text-[13px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{t.apReadFail(pv.error)}</div>;
         if (pv.kind === 'md') {
-          return <div className={`msg-md text-[14px] leading-relaxed ${isDark ? 'dark-code text-[#E3E3E3]' : 'light-code text-[#1F1F1F]'}`} dangerouslySetInnerHTML={{ __html: bridge.renderMarkdown(pv.text || '') }} />;
+          return (
+            <div className="flex flex-col gap-2">
+              {externalUpdateBlocked && (
+                <div className={`rounded-lg px-3 py-2 text-[12px] ${isDark ? 'bg-[#3A2F16] text-[#FDD663]' : 'bg-[#FFF7E0] text-[#8A5A00]'}`}>
+                  {externalUpdateBlocked === 'removed'
+                    ? (t.apMdExternalRemovalBlocked || '文件已在外部删除。未保存编辑已保留在当前编辑器中，请先复制内容或恢复原文件。')
+                    : (t.apMdExternalUpdateBlocked || '文件已在外部更新。当前有未保存编辑，已暂不自动覆盖。')}
+                </div>
+              )}
+              <EditableMarkdownPreview
+                ref={mdPreviewRef}
+                artifact={sel}
+                initialText={pv.text || ''}
+                initialInfo={pv.info}
+                isDark={isDark}
+                t={t}
+                onSaved={updateMarkdownPreview}
+                onReloaded={updateMarkdownPreview}
+              />
+            </div>
+          );
         }
         if (pv.kind === 'html') {
           // 方角 + 不裁剪:WebKitGTK 对「会内部滚动的 iframe」做任何 border-radius 裁剪
@@ -164,7 +277,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
 
       return (
         <div className={isWide ? "relative w-full h-full" : "absolute inset-0 z-30 flex justify-end pointer-events-auto"}>
-          {!isWide && <div className="absolute inset-0 bg-black/40" onClick={onClose}></div>}
+          {!isWide && <div className="absolute inset-0 bg-black/40" onClick={handleClose}></div>}
           <div className={`relative h-full flex flex-col ${isDark ? 'bg-[#1E1F20]' : 'bg-white'} ${isWide ? 'w-full border-l ' + (isDark ? 'border-white/10' : 'border-black/10') : 'w-[680px] max-w-[88vw] shadow-2xl animate-in slide-in-from-right duration-200'}`}>
             {/* header + tabs */}
             <div className={`flex items-center justify-between px-3 py-2.5 border-b ${isDark ? 'border-white/10' : 'border-black/10'}`}>
@@ -172,7 +285,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                 {tabBtn('list', t.apTabList)}
                 {tabBtn('preview', t.apTabPreview)}
               </div>
-              <button onClick={onClose} className={`w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537] text-[#C4C7C5]' : 'hover:bg-[#F0F4F9] text-[#444746]'}`}><XCircle size={18} /></button>
+              <button onClick={handleClose} className={`w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537] text-[#C4C7C5]' : 'hover:bg-[#F0F4F9] text-[#444746]'}`}><XCircle size={18} /></button>
             </div>
 
             {/* body */}

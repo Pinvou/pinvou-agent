@@ -2294,6 +2294,136 @@ pub(crate) fn read_artifact_text_impl(path: &str) -> Result<String, String> {
     std::fs::read_to_string(&p).map_err(|e| format!("read_artifact_text({}): {e}", p.display()))
 }
 
+const MAX_EDITABLE_MARKDOWN_BYTES: usize = 10 * 1024 * 1024;
+
+/// 写回 Markdown artifact。只允许覆盖已存在的 .md/.markdown 文件。
+#[tauri::command]
+pub async fn write_artifact_text(path: String, content: String) -> Result<(), String> {
+    write_artifact_text_impl(&path, &content)
+}
+
+pub(crate) fn write_artifact_text_impl(path: &str, content: &str) -> Result<(), String> {
+    let p = validate_user_path(path)?;
+    if !p.is_file() {
+        return Err(format!("not a file: {}", p.display()));
+    }
+    ensure_editable_artifact_path(&p)?;
+
+    let ext = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if ext != "md" && ext != "markdown" {
+        return Err("only markdown artifacts can be edited".into());
+    }
+
+    if content.len() > MAX_EDITABLE_MARKDOWN_BYTES {
+        return Err("markdown artifact is too large to save".into());
+    }
+
+    atomic_write_utf8(&p, content).map_err(|e| format!("write_artifact_text({}): {e}", p.display()))
+}
+
+fn ensure_editable_artifact_path(path: &std::path::Path) -> Result<(), String> {
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|e| format!("resolve artifact path({}): {e}", path.display()))?;
+    let sessions_root = crate::bridge::paths::sessions_root();
+    let sessions_root = std::fs::canonicalize(&sessions_root).map_err(|e| {
+        format!(
+            "markdown artifact is outside session storage: cannot resolve sessions root({}): {e}",
+            sessions_root.display()
+        )
+    })?;
+    let rel = canonical
+        .strip_prefix(&sessions_root)
+        .map_err(|_| "markdown artifact is outside session storage".to_string())?;
+    let mut components = rel.components();
+    let session = components
+        .next()
+        .and_then(|c| match c {
+            std::path::Component::Normal(s) => s.to_str(),
+            _ => None,
+        })
+        .ok_or_else(|| "markdown artifact is outside a session".to_string())?;
+    if session.is_empty() || session.starts_with('_') {
+        return Err("markdown artifact is outside an editable session".to_string());
+    }
+    let area = components
+        .next()
+        .and_then(|c| match c {
+            std::path::Component::Normal(s) => s.to_str(),
+            _ => None,
+        })
+        .ok_or_else(|| "markdown artifact is outside session artifacts".to_string())?;
+    if area != "artifacts" && area != "workspace" {
+        return Err("markdown artifact is outside session artifacts".to_string());
+    }
+    Ok(())
+}
+
+fn atomic_write_utf8(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("artifact.md");
+    let tmp = parent.join(format!(
+        ".{file_name}.tmp-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let backup = parent.join(format!(
+        ".{file_name}.bak-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+
+    let write_result = (|| -> std::io::Result<()> {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        f.write_all(content.as_bytes())?;
+        f.sync_all()?;
+        drop(f);
+
+        #[cfg(windows)]
+        {
+            std::fs::rename(path, &backup)?;
+            if let Err(e) = std::fs::rename(&tmp, path) {
+                let _ = std::fs::rename(&backup, path);
+                return Err(e);
+            }
+            let _ = std::fs::remove_file(&backup);
+        }
+
+        #[cfg(not(windows))]
+        {
+            std::fs::rename(&tmp, path)?;
+        }
+
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+        Ok(())
+    })();
+
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(&backup);
+    }
+    write_result
+}
+
 /// 题目转安全文件名:去掉路径分隔/非法字符,截长,空了给兜底。
 fn sanitize_title_filename(title: &str, fallback: &str) -> String {
     let cleaned: String = title
@@ -5503,6 +5633,44 @@ mod tests {
         assert!(mcp["servers"].get(server_name).is_some());
     }
 
+    struct TestPinvouHome {
+        root: std::path::PathBuf,
+        previous: Option<String>,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for TestPinvouHome {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var("PINVOU3_HOME", value),
+                None => std::env::remove_var("PINVOU3_HOME"),
+            }
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn test_pinvou_home(tag: &str) -> TestPinvouHome {
+        let guard = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let root = std::env::temp_dir().join(format!("{tag}-{}", std::process::id()));
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::env::set_var("PINVOU3_HOME", &root);
+        TestPinvouHome {
+            root,
+            previous,
+            _guard: guard,
+        }
+    }
+
+    fn session_artifact_path(session_id: &str, name: &str) -> std::path::PathBuf {
+        let dir = crate::bridge::paths::session_artifacts_dir(session_id);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join(name)
+    }
+
     #[test]
     fn direct_skill_reinstall_reapplies_persisted_disable() {
         let _g = crate::bridge::paths::tests::ENV_LOCK
@@ -5571,6 +5739,175 @@ mod tests {
             "spaces should be percent-encoded: {text}"
         );
 
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn write_artifact_text_allows_markdown() {
+        let _home = test_pinvou_home("pinvou3-md-write-test");
+        let md = session_artifact_path("s1", "note.md");
+        std::fs::write(&md, "# Old\n").unwrap();
+
+        write_artifact_text_impl(md.to_str().unwrap(), "# New\n\nBody").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&md).unwrap(), "# New\n\nBody");
+    }
+
+    #[test]
+    fn write_artifact_text_allows_markdown_extension() {
+        let _home = test_pinvou_home("pinvou3-markdown-write-test");
+        let md = session_artifact_path("s1", "note.markdown");
+        std::fs::write(&md, "old").unwrap();
+
+        write_artifact_text_impl(md.to_str().unwrap(), "new").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&md).unwrap(), "new");
+    }
+
+    #[test]
+    fn write_artifact_text_blocks_non_markdown() {
+        let _home = test_pinvou_home("pinvou3-non-md-write-test");
+        let txt = session_artifact_path("s1", "note.txt");
+        std::fs::write(&txt, "old").unwrap();
+
+        let err = write_artifact_text_impl(txt.to_str().unwrap(), "new").unwrap_err();
+
+        assert!(err.contains("only markdown artifacts"));
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "old");
+    }
+
+    #[test]
+    fn write_artifact_text_blocks_markdown_outside_session_storage() {
+        let _home = test_pinvou_home("pinvou3-md-outside-session-test");
+        let outside =
+            std::env::temp_dir().join(format!("pinvou3-md-outside-session-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).unwrap();
+        let md = outside.join("note.md");
+        std::fs::write(&md, "old").unwrap();
+
+        let err = write_artifact_text_impl(md.to_str().unwrap(), "new").unwrap_err();
+
+        assert!(err.contains("outside session storage"));
+        assert_eq!(std::fs::read_to_string(&md).unwrap(), "old");
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn write_artifact_text_blocks_sensitive_path() {
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-sensitive-md-write-test-{}",
+            std::process::id()
+        ));
+        let sensitive_dir = tmp.join(".ssh");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&sensitive_dir).unwrap();
+        let md = sensitive_dir.join("note.md");
+        std::fs::write(&md, "old").unwrap();
+
+        let err = write_artifact_text_impl(md.to_str().unwrap(), "new").unwrap_err();
+
+        assert!(err.contains("sensitive component"));
+        assert_eq!(std::fs::read_to_string(&md).unwrap(), "old");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn write_artifact_text_requires_existing_file() {
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-missing-md-write-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let md = tmp.join("missing.md");
+
+        let err = write_artifact_text_impl(md.to_str().unwrap(), "new").unwrap_err();
+
+        assert!(err.contains("not a file"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn write_artifact_text_blocks_directory_target() {
+        let _home = test_pinvou_home("pinvou3-md-dir-write-test");
+        let md_dir = session_artifact_path("s1", "note.md");
+        std::fs::create_dir_all(&md_dir).unwrap();
+
+        let err = write_artifact_text_impl(md_dir.to_str().unwrap(), "new").unwrap_err();
+
+        assert!(err.contains("not a file"));
+        assert!(md_dir.is_dir());
+    }
+
+    #[test]
+    fn write_artifact_text_blocks_oversized_content() {
+        let _home = test_pinvou_home("pinvou3-md-large-write-test");
+        let md = session_artifact_path("s1", "note.md");
+        std::fs::write(&md, "old").unwrap();
+        let content = "x".repeat(MAX_EDITABLE_MARKDOWN_BYTES + 1);
+
+        let err = write_artifact_text_impl(md.to_str().unwrap(), &content).unwrap_err();
+
+        assert!(err.contains("too large"));
+        assert_eq!(std::fs::read_to_string(&md).unwrap(), "old");
+    }
+
+    #[test]
+    fn write_artifact_text_preserves_utf8_content() {
+        let _home = test_pinvou_home("pinvou3-md-utf8-write-test");
+        let md = session_artifact_path("s1", "note.md");
+        std::fs::write(&md, "old").unwrap();
+        let content = "# 标题\n\n| 名称 | 状态 |\n| --- | --- |\n| Alpha | 进行中 |\n\n```text\n保留中文\n```";
+
+        write_artifact_text_impl(md.to_str().unwrap(), content).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&md).unwrap(), content);
+    }
+
+    #[test]
+    fn write_artifact_text_cleans_backup_file_after_success() {
+        let _home = test_pinvou_home("pinvou3-md-backup-clean-test");
+        let md = session_artifact_path("s1", "note.md");
+        std::fs::write(&md, "old").unwrap();
+
+        write_artifact_text_impl(md.to_str().unwrap(), "new").unwrap();
+
+        let leftovers: Vec<_> = std::fs::read_dir(md.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().contains(".bak-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "backup files left behind: {leftovers:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&md).unwrap(), "new");
+    }
+
+    #[test]
+    fn write_artifact_text_cleans_temp_file_on_error() {
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-temp-clean-write-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let md = tmp.join("note.md");
+        std::fs::create_dir_all(&md).unwrap();
+
+        let err = atomic_write_utf8(&md, "new").unwrap_err();
+
+        assert!(!err.to_string().is_empty());
+        let leftovers: Vec<_> = std::fs::read_dir(&tmp)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

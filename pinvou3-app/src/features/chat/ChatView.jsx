@@ -224,19 +224,25 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       const [inputText, setInputText] = useState('');
       const [artifactsOpen, setArtifactsOpen] = useState(false);
       // ── 产物分栏:宽屏(≥900)并排可拖、窄屏回退覆盖抽屉 ──
-      const ART_MIN = 360, ART_MAX_RATIO = 0.65, ART_DEFAULT_RATIO = 0.45, ART_NARROW = 900;
+      const ART_MIN = 360, CHAT_MIN = 360, ART_MAX_RATIO = 0.65, ART_DEFAULT_RATIO = 0.45, ART_NARROW = 900;
+      const clampArtifactWidth = (w, rootW) => {
+        const max = Math.max(ART_MIN, Math.min(Math.round(rootW * ART_MAX_RATIO), rootW - CHAT_MIN));
+        return Math.max(ART_MIN, Math.min(Math.round(w), max));
+      };
       const rootRef = useRef(null);
       const artColRef = useRef(null);
       const [isWide, setIsWide] = useState(() => (typeof window !== 'undefined' ? window.innerWidth : 1200) >= ART_NARROW);
       const [artifactW, setArtifactW] = useState(() => {
         const s = parseInt(localStorage.getItem('pinvou_artifactW') || '', 10);
         const w = (typeof window !== 'undefined' ? window.innerWidth : 1200);
-        return Number.isFinite(s) && s >= ART_MIN ? s : Math.round(w * ART_DEFAULT_RATIO);
+        const next = Number.isFinite(s) && s >= ART_MIN ? s : Math.round(w * ART_DEFAULT_RATIO);
+        return clampArtifactWidth(next, w);
       });
       useEffect(() => {
         const onResize = () => {
+          const rootW = rootRef.current ? rootRef.current.getBoundingClientRect().width : window.innerWidth;
           setIsWide(window.innerWidth >= ART_NARROW);
-          setArtifactW(w => Math.max(ART_MIN, Math.min(w, Math.round(window.innerWidth * ART_MAX_RATIO))));
+          setArtifactW(w => clampArtifactWidth(w, rootW));
         };
         onResize();                 // 挂载即测一次(maximized 启动时 init 可能读到小值,这里校正)
         const t = setTimeout(onResize, 300);  // 再补一发,防 webview 首帧尺寸未定
@@ -246,7 +252,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       const startArtifactDrag = (e) => {
         e.preventDefault();
         const rect = rootRef.current ? rootRef.current.getBoundingClientRect() : { right: window.innerWidth, width: window.innerWidth };
-        const max = Math.min(rect.width * ART_MAX_RATIO, rect.width - ART_MIN);
+        const max = Math.max(ART_MIN, Math.min(Math.round(rect.width * ART_MAX_RATIO), rect.width - CHAT_MIN));
         const col = artColRef.current;
         let last = artifactW, raf = 0;
         if (col) col.style.pointerEvents = 'none';   // 拖动时让产物 iframe 不吃 mousemove(否则往右拖发涩)
@@ -272,7 +278,8 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';
       };
       const resetArtifactW = () => {
-        const w = Math.round((rootRef.current ? rootRef.current.getBoundingClientRect().width : window.innerWidth) * ART_DEFAULT_RATIO);
+        const rootW = rootRef.current ? rootRef.current.getBoundingClientRect().width : window.innerWidth;
+        const w = clampArtifactWidth(Math.round(rootW * ART_DEFAULT_RATIO), rootW);
         setArtifactW(w); localStorage.setItem('pinvou_artifactW', String(w));
       };
       const scrollRef = useRef(null);
@@ -514,7 +521,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
 
 
           {/* Main Chat Area */}
-          <div ref={scrollRef} style={{ paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }} className={`flex-1 min-h-0 overflow-y-auto ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'} custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
+          <div ref={scrollRef} style={{ paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }} className={`flex-1 min-h-0 min-w-0 overflow-y-auto ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'} custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
 
             {!hasMessages && !welcomeToolId && (
               /* Gemini Style Centered Empty State */
@@ -539,7 +546,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
             )}
 
             {hasMessages && (
-              <div className="max-w-[800px] w-full mx-auto space-y-4">
+              <div className="max-w-[800px] w-full min-w-0 mx-auto space-y-4">
                 {(() => {
                   // 每个产物 path 只在它最新的那张卡上挂品悟入口:不同文件各自最新卡都给入口
                   // (一轮多产物都能审);同文件的旧卡不挂,避免"点老卡却审到磁盘最新态"的错位
@@ -1071,12 +1078,12 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       }
       if (editing) {
         return (
-          <div className="flex justify-end">
-            <div className="max-w-[85%] w-full">
+          <div className="flex justify-end min-w-0 max-w-full">
+            <div className="max-w-[85%] w-full min-w-0">
               <textarea autoFocus value={val} onChange={e => setVal(e.target.value)}
                 rows={Math.min(6, Math.max(1, val.split('\n').length))}
                 onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit(); } else if (e.key === 'Escape') { setEditing(false); setVal(item.text); } }}
-                className={`w-full rounded-[16px] px-4 py-2 text-[15px] outline-none ${isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]'}`} />
+                className={`w-full min-w-0 max-w-full break-words [overflow-wrap:anywhere] rounded-[16px] px-4 py-2 text-[15px] outline-none ${isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]'}`} />
               <div className="flex gap-2 justify-end mt-1">
                 <button className={cardBtnCls(isDark)} onClick={() => { setEditing(false); setVal(item.text); }}>{t.cpCancel}</button>
                 <button className={cardBtnCls(isDark, 'primary')} onClick={commit}>{t.resend}</button>
@@ -1090,12 +1097,12 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         const tint = isWu ? (isDark ? '#8AB4F8' : '#1967D2') : (isDark ? '#D0BCFF' : '#7C3AED');
         const tintBg = isWu ? (isDark ? 'bg-[#1A73E8]/10' : 'bg-[#1A73E8]/[0.06]') : (isDark ? 'bg-[#D0BCFF]/10' : 'bg-[#7C3AED]/[0.07]');
         return (
-          <div className="flex justify-end">
-            <div className="max-w-[85%]">
+          <div className="flex justify-end min-w-0 max-w-full">
+            <div className="max-w-[85%] min-w-0">
               <div className="flex items-center justify-end gap-1 mb-1 text-[11px] font-medium" style={{ color: tint }}>
                 <span>{isWu ? '✨' : '📋'}</span><span>{'Pinvou · ' + item.pinvouTransfer + ' · 转交修订'}</span>
               </div>
-              <div className={`px-5 py-3 rounded-[20px] text-[15px] leading-relaxed whitespace-pre-wrap ${tintBg} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{item.text}</div>
+              <div className={`min-w-0 max-w-full break-words [overflow-wrap:anywhere] px-5 py-3 rounded-[20px] text-[15px] leading-relaxed whitespace-pre-wrap ${tintBg} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{item.text}</div>
             </div>
           </div>
         );
@@ -1104,9 +1111,9 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         ? 'text-[#8E8E8E] hover:text-[#E3E3E3] hover:bg-white/10'
         : 'text-[#9AA0A6] hover:text-[#444746] hover:bg-black/[0.06]';
       return (
-        <div className="flex justify-end group">
-          <div className="flex flex-col items-end max-w-[85%]">
-            <div className={`px-5 py-3 rounded-[20px] text-[15px] leading-relaxed whitespace-pre-wrap ${isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]'}`}>{item.text}</div>
+        <div className="flex justify-end group min-w-0 max-w-full">
+          <div className="flex flex-col items-end max-w-[85%] min-w-0 max-w-full">
+            <div className={`min-w-0 max-w-full break-words [overflow-wrap:anywhere] px-5 py-3 rounded-[20px] text-[15px] leading-relaxed whitespace-pre-wrap ${isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]'}`}>{item.text}</div>
             {/* iOS 风操作条：hover 气泡时下方浮现。复制=所有 query；编辑重发=仅最新(editable)。 */}
             <div className="flex items-center gap-0.5 mt-1 pr-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
               <button title={copied ? t.copied : t.copyMsg} onClick={copyText}

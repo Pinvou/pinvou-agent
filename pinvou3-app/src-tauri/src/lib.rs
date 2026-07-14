@@ -527,6 +527,7 @@ pub fn run() {
             commands::delete_timed_memory,
             commands::edit_last_turn,
             commands::read_artifact_text,
+            commands::write_artifact_text,
             commands::list_deliverables,
             commands::list_deliverable_index,
             commands::artifact_info,

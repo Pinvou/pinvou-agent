@@ -264,6 +264,12 @@ const dict = {
         apBtnOpen: '打开', apBtnLocate: '所在位置', apLocLabel: '文件位置', apMtimeLabel: '修改时间', apLastMod: '最后修改',
         apConverting: '正在生成预览…', apConvertFail: '预览生成失败', apUnsupported: '此类型暂不支持内嵌预览，可用下方「打开」查看',
         apKinds: { md:'Markdown', html:'HTML 文档', image:'图片', pdf:'PDF 文档', docx:'Office 文档', xlsx:'电子表格', legacy_office:'Office 文档', text:'文本文件', binary:'文件' },
+        apMdSaved: '已保存', apMdSaving: '正在保存...', apMdDirty: '未保存', apMdSaveFailed: '保存失败',
+        apMdExternalUpdateBlocked: '文件已在外部更新。当前有未保存编辑，已暂不自动覆盖。',
+        apMdExternalRemovalBlocked: '文件已在外部删除。未保存编辑已保留在当前编辑器中，请先复制内容或恢复原文件。',
+        apMdAiEdit: 'AI 编辑', apMdAiInstructionPlaceholder: '说说你想怎么修改',
+        apMdComposerReplaceConfirm: '将把 AI 编辑指令填入聊天输入框；如果当前已有草稿会被替换。继续吗？',
+        apMdAiPrompt: ({ path, selectedText, instruction, fence = '```' }) => `请根据要求修改下面这段 Markdown 产物内容。\n\n文件路径：${path}\n\n选中文本：\n${fence}markdown\n${selectedText}\n${fence}\n\n修改要求：\n${instruction}`,
         depts: { academic:'学术', design:'设计', engineering:'工程', finance:'金融', 'game-development':'游戏', hr:'人力', legal:'法务', marketing:'营销', 'paid-media':'投放', product:'产品', 'project-management':'项管', sales:'销售', 'spatial-computing':'空间计算', specialized:'专项', 'supply-chain':'供应链', support:'客服', testing:'测试', tool:'工具' }
       },
       en: {
@@ -529,6 +535,12 @@ const dict = {
         apBtnOpen: 'Open', apBtnLocate: 'Show in folder', apLocLabel: 'Location', apMtimeLabel: 'Modified', apLastMod: 'Modified',
         apConverting: 'Generating preview…', apConvertFail: 'Preview failed', apUnsupported: 'Inline preview not available for this type; use Open below',
         apKinds: { md:'Markdown', html:'HTML document', image:'Image', pdf:'PDF document', docx:'Office document', xlsx:'Spreadsheet', legacy_office:'Office document', text:'Text file', binary:'File' },
+        apMdSaved: 'Saved', apMdSaving: 'Saving...', apMdDirty: 'Unsaved', apMdSaveFailed: 'Save failed',
+        apMdExternalUpdateBlocked: 'The file changed externally. Your unsaved edits were kept and not overwritten.',
+        apMdExternalRemovalBlocked: 'The file was deleted externally. Your unsaved edits remain in this editor; copy them or restore the original file before leaving.',
+        apMdAiEdit: 'AI edit', apMdAiInstructionPlaceholder: 'How should AI edit this?',
+        apMdComposerReplaceConfirm: 'This will fill the chat input with the AI edit instruction. Any existing draft may be replaced. Continue?',
+        apMdAiPrompt: ({ path, selectedText, instruction, fence = '```' }) => `Please edit the selected content in this Markdown artifact.\n\nFile path: ${path}\n\nSelected content:\n${fence}markdown\n${selectedText}\n${fence}\n\nEdit request:\n${instruction}`,
         depts: { academic:'Academic', design:'Design', engineering:'Engineering', finance:'Finance', 'game-development':'Game Dev', hr:'HR', legal:'Legal', marketing:'Marketing', 'paid-media':'Paid Media', product:'Product', 'project-management':'Project Mgmt', sales:'Sales', 'spatial-computing':'Spatial Computing', specialized:'Specialized', 'supply-chain':'Supply Chain', support:'Support', testing:'Testing', tool:'Tools' }
       },
       ja: {
@@ -793,6 +805,12 @@ const dict = {
         apBtnOpen: '開く', apBtnLocate: '場所を開く', apLocLabel: '場所', apMtimeLabel: '更新日時', apLastMod: '更新',
         apConverting: 'プレビューを生成中…', apConvertFail: 'プレビュー生成に失敗', apUnsupported: 'この形式は埋め込みプレビュー非対応。下の「開く」をご利用ください',
         apKinds: { md:'Markdown', html:'HTML 文書', image:'画像', pdf:'PDF 文書', docx:'Office 文書', xlsx:'スプレッドシート', legacy_office:'Office 文書', text:'テキスト', binary:'ファイル' },
+        apMdSaved: '保存済み', apMdSaving: '保存中...', apMdDirty: '未保存', apMdSaveFailed: '保存に失敗',
+        apMdExternalUpdateBlocked: 'ファイルは外部で更新されました。未保存の編集があるため自動上書きしませんでした。',
+        apMdExternalRemovalBlocked: 'ファイルは外部で削除されました。未保存の編集はこのエディターに保持されています。内容をコピーするか、元のファイルを復元してください。',
+        apMdAiEdit: 'AI 編集', apMdAiInstructionPlaceholder: 'どう編集しますか？',
+        apMdComposerReplaceConfirm: 'AI 編集指示をチャット入力欄に入れます。既存の下書きは置き換わる可能性があります。続行しますか？',
+        apMdAiPrompt: ({ path, selectedText, instruction, fence = '```' }) => `この Markdown 成果物の選択範囲を編集してください。\n\nファイルパス：${path}\n\n選択内容：\n${fence}markdown\n${selectedText}\n${fence}\n\n編集指示：\n${instruction}`,
         depts: { academic:'学術', design:'デザイン', engineering:'エンジニアリング', finance:'金融', 'game-development':'ゲーム開発', hr:'人事', legal:'法務', marketing:'マーケティング', 'paid-media':'広告運用', product:'プロダクト', 'project-management':'プロジェクト管理', sales:'営業', 'spatial-computing':'空間コンピューティング', specialized:'専門', 'supply-chain':'サプライチェーン', support:'サポート', testing:'テスト', tool:'ツール' }
       }
     };

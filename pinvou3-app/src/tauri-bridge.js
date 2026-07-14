@@ -108,6 +108,8 @@
     planSnapshot: { plan: null, todos: null },
     // 当前 session 产物列表 [{ path, basename }]
     artifacts: [],
+    // 最近一次磁盘产物变更。用于刷新已打开的预览；列表是否变化不能作为唯一信号。
+    artifactChange: { seq: 0, path: "", event: "", sessionId: "", at: 0 },
     // 多 session 并发:每个 session 是否正在生成 { session_id: bool }，会话列表显示「工作中」转圈
     sessionBusy: {},
     // 排队式输入:当前 session 生成中时积压的待发消息 [{ id, text, displayText, attachments }]
@@ -2197,6 +2199,17 @@
   function normalizedPath(p) {
     return String(p || "").replace(/\\/g, "/");
   }
+  function noteArtifactChange(path, event, sessionId) {
+    if (!path) return;
+    state.artifactChange = {
+      seq: (state.artifactChange && state.artifactChange.seq || 0) + 1,
+      path: path,
+      event: event || "modified",
+      sessionId: sessionId || "",
+      at: Date.now(),
+    };
+    notify();
+  }
   function isSharedMcpArtifactPath(path) {
     return normalizedPath(path).indexOf("/sessions/default/artifacts/") >= 0;
   }
@@ -2954,6 +2967,7 @@
     // 的 session_id 决定。这里跳过，避免文件系统事件把 PPT/公文错塞到 default/当前会话。
     if ((p.session_id === "default" || !p.session_id) && isSharedMcpArtifactPath(p.path)) return;
     onSessionEvent(e, function () {
+      noteArtifactChange(p.path, p.event || "modified", p.session_id || state.activeSessionId || "");
       if (p.event === "removed") { untrackArtifact(p.path); return; }
       // 面板只收成品:成品型扩展名 或 present_artifact 过的;中间 / infra / 目录不进面板
       // (file_watcher 递归会推 tmp/ _state/ 等子目录与 infra 文件 → 此处兜住)。
@@ -4087,6 +4101,7 @@
   // ── 产物面板 ─────────────────────────────────────────────────────
   function artifactInfo(path) { return invoke("artifact_info", { path: path }); }
   function readArtifactText(path) { return invoke("read_artifact_text", { path: path }); }
+  function writeArtifactText(path, content) { return invoke("write_artifact_text", { path: path, content: content }); }
   function readArtifactImageB64(path) { return invoke("read_artifact_image_b64", { path: path }); }
   // pptx 封面缩略图：读 docProps/thumbnail.jpeg → data URL（无则 null）。本地数据、无外链。
   function readArtifactThumbnail(path) { return invoke("read_artifact_thumbnail", { path: path }).catch(function () { return null; }); }
@@ -5266,6 +5281,7 @@
     // 产物
     artifactInfo: artifactInfo,
     readArtifactText: readArtifactText,
+    writeArtifactText: writeArtifactText,
     readArtifactImageB64: readArtifactImageB64,
     readArtifactThumbnail: readArtifactThumbnail,
     renderArtifactVisual: renderArtifactVisual,
