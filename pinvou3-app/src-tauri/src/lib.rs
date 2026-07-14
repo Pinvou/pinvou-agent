@@ -199,7 +199,45 @@ pub fn run() {
     ensure_release_env();
     startup::init();
     startup::mark("environment:ready");
-    tauri::Builder::default()
+    let initial_navigation_reported =
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let builder = tauri::Builder::default()
+        // These no-op probe plugins bracket Tauri's own plugin initialization.
+        // The main window is created by Tauri before the application setup hook,
+        // so their lifecycle hooks expose time that was previously one opaque gap.
+        .plugin({
+            let initial_navigation_reported = initial_navigation_reported.clone();
+            tauri::plugin::Builder::<_, ()>::new("startup-probe-runtime")
+                .setup(|_app, _api| {
+                    startup::mark("tauri:runtime_created");
+                    Ok(())
+                })
+                .on_window_ready(|window| {
+                    if window.label() == "main" {
+                        startup::mark("tauri:main_window_ready");
+                    }
+                })
+                .on_webview_ready(|webview| {
+                    if webview.label() == "main" {
+                        startup::mark("tauri:main_webview_ready");
+                    }
+                })
+                .on_navigation(move |webview, url| {
+                    use std::sync::atomic::Ordering;
+
+                    if webview.label() == "main"
+                        && !initial_navigation_reported.swap(true, Ordering::Relaxed)
+                    {
+                        startup::mark_with_detail(
+                            "rust",
+                            "tauri:main_navigation",
+                            &format!("scheme={}", url.scheme()),
+                        );
+                    }
+                    true
+                })
+                .build()
+        })
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -207,8 +245,32 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(
+            tauri::plugin::Builder::<_, ()>::new("startup-probe-single-instance")
+                .setup(|_app, _api| {
+                    startup::mark("tauri:plugin_single_instance_ready");
+                    Ok(())
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_notification::init())
+        .plugin(
+            tauri::plugin::Builder::<_, ()>::new("startup-probe-notification")
+                .setup(|_app, _api| {
+                    startup::mark("tauri:plugin_notification_ready");
+                    Ok(())
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_dialog::init())
+        .plugin(
+            tauri::plugin::Builder::<_, ()>::new("startup-probe-dialog")
+                .setup(|_app, _api| {
+                    startup::mark("tauri:plugin_dialog_ready");
+                    Ok(())
+                })
+                .build(),
+        )
         .on_page_load(|webview, payload| {
             startup::mark_with_detail(
                 "rust",
@@ -626,12 +688,29 @@ pub fn run() {
             commands::install_marketplace_skill,
             commands::import_skill_package,
             commands::uninstall_marketplace_skill,
-        ])
-        .run({
-            startup::mark("tauri:run_enter");
-            tauri::generate_context!()
-        })
-        .expect("error while running tauri application");
+        ]);
+
+    startup::mark("tauri:builder_configured");
+    startup::mark("tauri:context:start");
+    let context = tauri::generate_context!();
+    startup::mark("tauri:context:done");
+    // Keep the historical marker so old and new startup runs remain comparable.
+    startup::mark("tauri:run_enter");
+    startup::mark("tauri:build:start");
+    let app = builder
+        .build(context)
+        .expect("error while building tauri application");
+    startup::mark("tauri:build:done");
+    startup::mark("tauri:event_loop:run_enter");
+    let mut resumed_reported = false;
+    app.run(move |_app, event| match event {
+        tauri::RunEvent::Ready => startup::mark("tauri:event_loop:ready"),
+        tauri::RunEvent::Resumed if !resumed_reported => {
+            resumed_reported = true;
+            startup::mark("tauri:event_loop:first_resumed");
+        }
+        _ => {}
+    });
     startup::mark("process:exit");
 }
 
