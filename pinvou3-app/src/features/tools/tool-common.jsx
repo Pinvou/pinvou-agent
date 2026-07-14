@@ -301,7 +301,7 @@ const AcFmtIcon = ({ kind, className }) => (
       { id: 17, backendId: 'eip', eipCli: true, internal: 'H3C', title: 'H3C 员工门户（EIP）', subtitle: '以你本人 SSO 身份查考勤/假期/加班/待办/找人/资讯/消费', category: 'comm', type: 'CLI + 官方技能', version: 'v1.0.0', latency: '内网', desc: '接入 H3C EIP 员工门户：以你本人 SSO 身份查考勤打卡、假期余额、加班时数、待办审批、搜同事、看集团新闻公告、查食堂消费与报销等。点「连接」浏览器 SSO 一键登录，全程不填 key。需公司内网。', icon: Briefcase, color: 'bg-gradient-to-b from-indigo-400 to-blue-600', installed: false, authRequired: true, configFields: [], welcomeQueries: ['我这个月考勤有没有异常', '我还有几天年假', '有没有待办审批', '帮我查同事的联系方式'] },
       { id: 18, backendId: 'zhidao', zhidaoCli: true, internal: 'H3C', title: 'H3C 知道 · 内部知识库', subtitle: '以你本人 SSO 身份检索 H3C 内部知识与资料', category: 'kb', type: 'CLI + 官方技能', version: 'v1.0.0', latency: '内网', desc: '接入 H3C「知道」内部知识库：以你本人 SSO 身份搜索知识条目、资料库和文档内容，支持基于企业内部知识进行问答与资料定位。点「连接」扫码或浏览器 SSO 登录，全程不填 key。需公司内网。', icon: BookOpen, color: 'bg-gradient-to-b from-emerald-400 to-teal-600', installed: false, authRequired: true, configFields: [], welcomeQueries: ['在知道里搜一下交换机配置规范', '帮我查内部资料库里的安全方案', '知道里有没有这类故障处理文档', '帮我找这个产品的内部知识'] },
       { id: 99, backendId: 'wecom', wecomCli: true, title: '企业微信', subtitle: '以你本人身份操作企微消息/文档/会议/日程', category: 'comm', type: 'CLI + 官方技能', version: 'v0.1.9', latency: '云端', desc: '接入企业微信官方 CLI（@wecom/cli，MIT）+ 官方域技能：让 AI 以你本人身份收发消息、读写文档与智能表格、创建/查询会议与日程、管理待办、查询通讯录。点「连接」用企业微信 App 扫码授权，全程不填 key。数据经企业微信云（可选联网功能，opt-in）。', icon: MessageCircle, color: 'bg-gradient-to-b from-cyan-400 to-blue-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['把这段内容写成企微智能文档', '读一下我企微某篇文档的内容', '在企微智能表格里新建一张子表', '查一下企微智能表格里的数据'] },
-      { id: 10, backendId: null, title: '钉钉开放 API', subtitle: '企业级智能移动办公底座', category: 'comm', type: 'REST API', version: 'v3.1.2', latency: '<80ms', desc: '提供钉钉全产品能力的接口映射。包含 AI 表格、考勤打卡、群聊机器人对话流及通讯录同步管控。', icon: Navigation, color: 'bg-gradient-to-b from-blue-400 to-indigo-500', installed: false, authRequired: true },
+      { id: 10, backendId: 'dingtalk', dingtalkCli: true, title: '钉钉', subtitle: '以你本人身份操作钉钉文档/日历/表格/消息', category: 'comm', type: 'CLI + 官方技能', version: 'v1.0.51', latency: '云端', desc: '接入钉钉官方 DingTalk Workspace CLI（dws，Apache-2.0）+ 官方技能：让 AI 以你本人身份读写钉钉文档、查改日历、操作 AI 表格/在线表格、收发群聊消息、处理待办/审批/日志/邮箱等。点「连接」用钉钉 App 扫码授权，全程不填 key。', icon: Navigation, color: 'bg-gradient-to-b from-blue-400 to-indigo-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['读一下我的钉钉文档', '查我今天的钉钉日程', '在钉钉 AI 表格里查数据', '看看我的钉钉待办'] },
       { id: 11, backendId: null, title: 'TAPD 敏捷研发', subtitle: '缺陷与迭代的自动化追踪', category: 'dev', type: 'Action Skill', version: 'v2.8.0', latency: '<60ms', desc: '研发管理核心工具。允许 AI 查询项目迭代进度、自动拆分需求条目、更新缺陷状态，实现从需求到发布的研发全生命周期数字化。', icon: Layout, color: 'bg-gradient-to-b from-violet-500 to-fuchsia-600', installed: false, authRequired: true },
       { id: 12, backendId: null, title: 'CNB 云原生管线', subtitle: '代码仓库与 CI/CD 调度', category: 'dev', type: 'MCP Server', version: 'v1.0.0', latency: '<40ms', desc: '将云原生开发能力赋予大模型。支持通过自然语言进行代码仓库检索、提交 Issue、审查 PR、触发并监控流水线部署等极客操作。', icon: Code, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: true },
       { id: 13, backendId: 'qcc', title: '企查查', subtitle: '企业工商、风控、知产、经营数据查询', category: 'finance', type: 'MCP Server', version: 'v1.0.0', latency: '<500ms', desc: '接入企查查智能体数据平台，提供182个企业数据查询工具，覆盖工商登记、股东结构、风险预警、知识产权、招投标等六大模块。', icon: Building2, color: 'bg-gradient-to-br from-blue-600 to-cyan-500', installed: false, authRequired: false, welcomeQueries: ['查一下华为的工商信息', '腾讯有哪些风险预警', '比亚迪的专利有多少', '阿里巴巴的招投标记录'] },
@@ -494,7 +494,7 @@ const AcFmtIcon = ({ kind, className }) => (
             onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, true); }}
             className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-slate-100 dark:bg-[#2C2C2E] border border-slate-200 dark:border-slate-700 text-[#FF3B30] dark:text-[#FF453A] hover:bg-slate-200 dark:hover:bg-[#3A3A3C]`}
           >
-            {(tool.feishuCli || tool.wecomCli || tool.eipCli || tool.zhidaoCli) ? '断开' : '卸载'}
+            {(tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.eipCli || tool.zhidaoCli) ? '断开' : '卸载'}
           </button>
         );
       }
@@ -504,7 +504,7 @@ const AcFmtIcon = ({ kind, className }) => (
           onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, false); }}
           className={`${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`}
         >
-          {(tool.feishuCli || tool.wecomCli || tool.eipCli || tool.zhidaoCli) ? '连接' : (hasConfig ? '配置' : '安装')}
+          {(tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.eipCli || tool.zhidaoCli) ? '连接' : (hasConfig ? '配置' : '安装')}
         </button>
       );
     };

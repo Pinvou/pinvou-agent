@@ -21,6 +21,7 @@ pub mod feedback;
 pub use commands::build_message_with_attachments;
 // CLI 连接器公共管道(飞书 / 企微共享:起进程 / 扫码 / 事件 / 取消)。
 mod connector_cli;
+mod dingtalk;
 mod eip;
 pub mod engine;
 pub mod engine_pool;
@@ -405,6 +406,14 @@ pub fn run() {
             wecom::wecom_apply_skills,
             wecom::set_wecom_enabled,
             wecom::wecom_skills_state,
+            dingtalk::dingtalk_ensure_cli,
+            dingtalk::dingtalk_status,
+            dingtalk::dingtalk_connect_begin,
+            dingtalk::dingtalk_cancel,
+            dingtalk::dingtalk_logout,
+            dingtalk::dingtalk_apply_skills,
+            dingtalk::set_dingtalk_enabled,
+            dingtalk::dingtalk_skills_state,
             eip::eip_status,
             eip::eip_connect_begin,
             eip::eip_cancel,
