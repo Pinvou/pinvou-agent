@@ -1310,6 +1310,65 @@ mod tests {
         });
     }
 
+    /// 独立安装的 marketplace skill 没有 companion MCP,但 composer 工具菜单也允许
+    /// 直接开关它;禁用列表里的 skill id 必须能直接进入底座停用集。
+    #[test]
+    fn disabling_direct_skill_id_hides_skill() {
+        with_temp_home(|| {
+            crate::bridge::skill_marketplace::SkillMarketplaceManager::new()
+                .install("visualizer")
+                .unwrap();
+
+            save_disabled_connectors(&["skill:visualizer".to_string()]);
+            crate::bridge::skill_marketplace::refresh_disabled_skills();
+            assert!(
+                deepseek_tui::skills::is_skill_disabled("visualizer"),
+                "禁用独立 namespaced skill id 后该 skill 应被停用"
+            );
+
+            save_disabled_connectors(&[]);
+            crate::bridge::skill_marketplace::refresh_disabled_skills();
+            assert!(
+                !deepseek_tui::skills::is_skill_disabled("visualizer"),
+                "启用独立 skill id 后该 skill 应恢复"
+            );
+        });
+    }
+
+    /// connector id 和用户上传 skill id 同名时,关闭 connector 不应误停用该 skill;
+    /// 独立 skill 必须通过 `skill:<id>` 命名空间禁用。
+    #[test]
+    fn disabling_connector_id_does_not_hide_same_named_user_skill() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "weather",
+                r#"{"id":"weather","name":"天气","description":"d","version":"1.0.0","icon":"cloud","category":"查询","mcp_tools":["mcp_weather_query"],"command":"python","args":["server.py"]}"#,
+            );
+            let skill_dir = crate::bridge::paths::bundle_skills_dir().join("weather");
+            std::fs::create_dir_all(&skill_dir).unwrap();
+            std::fs::write(
+                skill_dir.join("SKILL.md"),
+                "---\nname: weather\ndescription: user weather skill\n---\n# Weather\n",
+            )
+            .unwrap();
+            std::fs::write(skill_dir.join(".installed-from"), "upload:weather.zip").unwrap();
+
+            save_disabled_connectors(&["weather".to_string()]);
+            crate::bridge::skill_marketplace::refresh_disabled_skills();
+            assert!(
+                !deepseek_tui::skills::is_skill_disabled("weather"),
+                "禁用同名 connector 不应误停用用户上传 skill"
+            );
+
+            save_disabled_connectors(&["skill:weather".to_string()]);
+            crate::bridge::skill_marketplace::refresh_disabled_skills();
+            assert!(
+                deepseek_tui::skills::is_skill_disabled("weather"),
+                "禁用 namespaced skill id 才应停用用户上传 skill"
+            );
+        });
+    }
+
     #[test]
     fn secret_manifest_parses_declarations_without_plain_secret_values() {
         let weather: ToolManifest = serde_json::from_str(
