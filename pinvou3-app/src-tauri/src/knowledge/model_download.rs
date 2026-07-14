@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use super::KnowledgeService;
 
 /// 默认下载源（对接 OTA 源，见 `scripts/release-kb-model.sh`）；env `PINVOU3_KB_MODEL_URL` 覆盖（本地测试用）。
-const MODEL_URL: &str = "https://www.ma-xiao.com/pinvou3/kb-model/bge-m3.tar.gz";
+const MODEL_URL: &str = "https://pinvou.com/pinvou3/kb-model/bge-m3.tar.gz";
 /// tar.gz 的 sha256（release-kb-model.sh 发布后回填，服务端 sha256sum 已核验；空=跳过校验）。
 /// env `PINVOU3_KB_MODEL_SHA256` 覆盖。重发模型务必同步更新此值。
 const MODEL_SHA256: &str = "86438791d1ee7c9989c75878d3623ab28a7e4cd57aa3a7816480043d1de62efe";

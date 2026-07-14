@@ -18,7 +18,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const DEFAULT_BASE_URL: &str = "https://www.ma-xiao.com/pinvou3/telemetry";
+const DEFAULT_BASE_URL: &str = "https://pinvou.com/pinvou3/telemetry";
 // 协议版本门槛，不是客户端身份凭证；真实性和资源边界由服务端另行保护。
 const ENROLLMENT_TOKEN: &str = "pinvou_tel_enroll_v1_7Jk9pQ3mZ8xW2sN6cR4tY5uH";
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2 * 60);
