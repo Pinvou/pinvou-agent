@@ -2,19 +2,20 @@
 
 > 复盘日期：2026-07-14
 > 环境：GB10 / 113，Qwen3.6-35B-A3B-FP8，vLLM OpenAI-compatible server
-> 状态：生产配置已保留 prefix caching、关闭 MTP；针对性回归通过，全量 L1 因 113
-> 整机失联只完成 21/27，待设备恢复后补齐
+> 状态：生产配置已保留 prefix caching、关闭 MTP；工具调用针对性回归通过；严格 L1
+> 跨运行已验证 26/27，唯一未通过的 RAG 并发场景两次触发 113 整机 hang，归类为设备 bug
 
 ## 1. 结论先行
 
 本次问题不是 skill、单个工具实现、QCC 或天气 Schema 的确定性 bug，也不是客户端把
 正确的 tool call 解析丢了。
 
-当前证据支持的高置信结论是：
+当前证据支持的工程判断是（不等同于已定位 vLLM 内部根因）：
 
-> 113 当前 Qwen3.6 / vLLM 构建中，MTP-2 与实验性的 Mamba/GDN prefix cache `align`
-> 路径发生交互，产生了与 cache namespace 相关的异常生成状态；在
-> `tool_choice=auto` 没有 JSON grammar 约束时，异常最终表现为工具调用格式漂移。
+> 113 当前 Qwen3.6 / vLLM 构建中，工具调用漂移与 MTP-2、实验性的 Mamba/GDN
+> prefix cache `align` 路径及 cache namespace 强相关；关闭 MTP 后现有复现样本消失。
+> 具体是哪一层状态损坏仍未定位，`tool_choice=auto` 没有 JSON grammar 约束会让异常
+> 最终表现为工具调用格式漂移。
 
 典型表现是模型明明应该调用 `write_file`，却输出普通文本、裸 JSON 或伪
 `write_file(...)` 文本。parser 收到的本来就是非协议内容，无法还原成标准
@@ -115,7 +116,9 @@ Engine 事件处理和客户端 SSE parser。
 | 此前 10/10 失败的 41 工具请求 | 10/10 标准 `write_file` |
 | 真实 L1，QCC 临时禁用 | `write_file` 1 次，文件落盘，约 5.7s |
 | 真实 L1，QCC 恢复启用 | `write_file` 1 次，文件落盘，13.6s，1 passed |
-| 全量 L1，QCC 启用 | 前 21/27 场景通过；RAG 子代理场景末尾流读取断开，随后 113 的 SSH/HTTP 同时超时，后 6 条被 harness 跳过，不能记为全量通过 |
+| 首次全量 L1，QCC 启用 | 20 个场景通过；RAG 子代理场景发生流读取断开，随后 113 整机不可达；后 6 条被旧 harness 跳过 |
+| 设备恢复后严格补跑 | 此前跳过的 6 个场景全部通过；大 HTML 生成 486 行，143.5s 完成 |
+| RAG 子代理严格重跑 | 135.8s 再现 response body decode error，随后 113 的 HTTP/SSH/ICMP 同时不可达 |
 
 最后一条回归 transcript：
 
@@ -124,16 +127,37 @@ Engine 事件处理和客户端 SSE parser。
 该文件位于 ignored build artifact 中，不作为长期证据提交；长期证据以本文实验数据和可重复
 运行的 L1 scenario 为准。
 
-2026-07-14 的全量运行 transcript 位于
-`pinvou3-app/src-tauri/target/l1-runs/1784004245/`。其中前 21 个场景没有断言失败；
+2026-07-14 的首次全量运行 transcript 位于
+`pinvou3-app/src-tauri/target/l1-runs/1784004245/`。其中 20 个场景完整通过；第 21 个
 `subagent_research_topic` 在 99.9 秒处收到已产生部分输出后的 stream decode error，随后
-113 的 22/8000 端口和 ICMP 均不可达。`require_vllm()` 会把端点不可达后的 scenario
+113 的 22/8000 端口和 ICMP 均不可达。`require_vllm()` 当时会把端点不可达后的 scenario
 作为 `SKIP ... ok` 返回，所以最终 `test result: 27 passed` **不等于 27 个场景都实际跑过**。
-本次只能记录为 21/27，设备恢复后需补跑剩余 6 条并检查重启/掉线原因。
 
 该次运行后已加固 harness：`PINVOU3_L1_REQUIRE_VLLM=1` 不仅让 pre-flight 不可达
 直接失败，还会把 turn 内 `Event::Error` 收集进 `TurnSummary` 并断言为空；对应纯函数回归
 进入 Rust CI。以后同类 stream decode error 不会再被 Cargo 计成通过。
+
+### 4.4 设备恢复后的严格补跑与整机 hang 复现
+
+113 在 14:36:53 整机重启后恢复。上一个 boot 的 journal 在 12:55:01 突然终止，没有
+正常关机序列，也没有持久化 OOM、kernel panic、GPU Xid 或 thermal 记录；因此只能确认
+整机异常中断，无法从现有日志定位具体硬件/驱动模块。
+
+严格模式补跑此前未执行的 6 个场景，最终全部通过。其中 `yolo_large_html` 首次被 L1
+harness 遗留的 90 秒 SSE idle timeout 误杀；正式 App 当时为 240 秒、DeepSeek-TUI 默认
+为 300 秒。对齐正式配置后该场景 143.5 秒完成，调用 `load_skill`、`write_file`、
+`exec_shell`、`present_artifact`，生成 486 行 `landing.html`。随后正式 App、L1 harness 和
+memory 真模型 E2E 统一使用底座默认的 300 秒。
+
+`subagent_research_topic` 在最终 300 秒配置下单独重跑，135.8 秒再次出现 response body
+decode error。该轮一次启动 4 个子代理，`agent_eval` 回灌内容从约 14KB 增长到 58KB；
+错误发生后 113 的 vLLM HTTP、SSH 和 ICMP 同时不可达，而测试机到同网段网关 0% 丢包。
+这与第一次运行后的现象一致，按设备 bug 归类：并发长上下文负载触发设备整机 hang。
+MTP 在两次严格复现时均已关闭，因此 MTP 不是该整机 hang 的根因。设备挂死后无法落盘
+最后时刻的内核/GPU 日志，精确硬件或驱动原因仍待设备侧诊断。
+
+跨首次运行与严格补跑，当前可确认 26/27 个 L1 场景通过；唯一未通过项是上述设备 bug，
+不作为本自动化测试 PR 的代码回归阻塞项。
 
 ## 5. 因果链与置信边界
 
@@ -165,6 +189,8 @@ Engine 事件处理和客户端 SSE parser。
   不重启模型”的直接验证；
 - 没有执行“恢复 MTP、只关闭 prefix caching”的完整自动化 A/B，因为 pinvou3 是长输入、
   短输出负载，关闭 prefix 的性能损失明显大于先关闭 MTP。
+- RAG 并发负载触发的整机 hang 尚未拿到 hang 瞬间的内核/GPU 持久化诊断，无法细分为
+  固件、驱动、硬件或 vLLM 压力触发路径。
 
 所以本文把“具体底层缓存对象如何损坏”标为机制推断，但把“当前环境中关闭 MTP 能消除
 该问题”视为已验证的工程结论。
