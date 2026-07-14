@@ -47,6 +47,11 @@ const LARK_SKILL_DIRS: [&str; 9] = [
 static WECOM_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/wecom-skills");
 
+/// 钉钉官方 mono skill(dws,Apache-2.0,来自 dingtalk-workspace-cli `dws-skills.zip`)。
+/// 独立放 `dingtalk-skills/`，按钉钉连接 / 停用状态单独门控。
+static DINGTALK_SKILLS_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/dingtalk-skills");
+
 #[cfg(not(windows))]
 static CONNECTOR_CLI_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/connectors");
@@ -56,6 +61,8 @@ const WECOM_SKILL_DIRS: [&str; 7] = [
     "wecomcli-msg", "wecomcli-doc", "wecomcli-meeting", "wecomcli-schedule",
     "wecomcli-todo", "wecomcli-contact", "wecomcli-smartsheet",
 ];
+
+const DINGTALK_SKILL_DIRS: [&str; 1] = ["dws"];
 
 /// Bundle 版本号：手动 base + 自动 instructions.md 内容 hash（build.rs 注入）。
 /// 改 INSTRUCTIONS_MD 时不需要 bump base —— hash 自动变，ensure_extracted 自动覆写。
@@ -74,8 +81,9 @@ const WECOM_SKILL_DIRS: [&str; 7] = [
 /// 0.11: Windows 敏感路径硬拦截新增 PowerShell hook,并补充 Credential Manager 相关拦截规则
 /// 0.12: 接入 H3C 知道知识库技能(zhidao CLI + SKILL.md),与 EIP 并列门控
 /// 0.13: 接入企微官方域技能(wecomcli-*,MIT):独立 wecom-skills/ 内嵌 + 独立门控
+/// 0.14: 接入钉钉官方 dws skill + Linux ARM64 内置 dws CLI
 pub const BUNDLE_VERSION: &str = concat!(
-    "0.13-",
+    "0.14-",
     env!("BUNDLE_INSTRUCTIONS_HASH"),
     "-",
     env!("BUNDLE_WORKFLOW_HASH_SANSHENG"),
@@ -282,6 +290,9 @@ impl Pinvou3Bundle {
         // 已从技能市场下架的预置技能(pua/女娲/头脑风暴):它们曾走 marketplace 装、带
         // `pinvou3-marketplace:` 标记,故按标记内容精确删,只跳过用户上传的同名目录。
         self.cleanup_removed_marketplace_skills()?;
+        // 已从工具市场下架的预置 MCP 工具也要清理运行态残留;否则旧 manifest 仍会被
+        // MarketplaceManager 扫到,在 composer「已接入工具」里继续出现。
+        self.cleanup_removed_marketplace_tools()?;
         crate::startup::mark("bundle_extract:cleanup_retired:done");
         // 工作流目录同 skills:immutable bundle 资源,每次启动防御性重写
         // (防 "VERSION 对得上但目录缺失"),无副作用。
@@ -309,7 +320,7 @@ impl Pinvou3Bundle {
         crate::startup::mark("bundle_extract:write_builtin_skills:start");
         self.write_builtin_skills()?;
         crate::startup::mark("bundle_extract:write_builtin_skills:done");
-        // 飞书 / 企微鉴权 CLI 不得阻塞 Tauri setup。启动阶段只沿用上次落盘的完整
+        // 飞书 / 企微 / 钉钉鉴权 CLI 不得阻塞 Tauri setup。启动阶段只沿用上次落盘的完整
         // 技能目录作为缓存；React 首屏提交后调用 refresh_connector_auth_gates 并行
         // 实时探测，再按真实状态修正目录。bundle 升级时仅刷新当前可见的缓存目录。
         crate::startup::mark("bundle_extract:apply_skill_gates:start");
@@ -330,6 +341,15 @@ impl Pinvou3Bundle {
         );
         if bundle_changed || !wecom_show {
             self.apply_wecom_skills(wecom_show)?;
+        }
+        let dingtalk_show = self.cached_dingtalk_skills_visible();
+        crate::startup::mark_with_detail(
+            "rust",
+            "bundle_extract:dingtalk_cached_gate",
+            &format!("show={dingtalk_show}"),
+        );
+        if bundle_changed || !dingtalk_show {
+            self.apply_dingtalk_skills(dingtalk_show)?;
         }
         crate::startup::mark("bundle_extract:apply_skill_gates:done");
         // EIP 技能:二进制 ~23MB,不像小文本那样每启动防御性重写——仅在二进制缺失时
@@ -467,6 +487,26 @@ impl Pinvou3Bundle {
         Ok(())
     }
 
+    /// 清理已从工具市场移除的预置 MCP 工具残留。
+    ///
+    /// 不能删除所有未知目录:未来/本地可能有自定义 MCP 工具。这里只精确处理曾经内置、
+    /// 现在源码资源已经移除的 marketplace 工具。
+    fn cleanup_removed_marketplace_tools(&self) -> std::io::Result<()> {
+        for tool_id in ["data_analysis"] {
+            let _ = crate::bridge::marketplace::MarketplaceManager::new().uninstall(tool_id);
+
+            let mut disabled = crate::bridge::marketplace::load_disabled_connectors();
+            let before = disabled.len();
+            disabled.retain(|id| id != tool_id);
+            if disabled.len() != before {
+                crate::bridge::marketplace::save_disabled_connectors(&disabled);
+            }
+
+            let _ = std::fs::remove_dir_all(paths::bundle_mcp_servers_dir().join(tool_id));
+        }
+        Ok(())
+    }
+
     /// 解包内嵌的内置 skills。**落位到 `~/.agents/skills/`**——引擎 fork patch #41 让
     /// `load_skill` 工具只扫这个目录(`agents_global_skills_dir`);bundle/skills 只进
     /// system-prompt catalogue 的 union、`load_skill` 不认。落错目录会"列得出、load 不到"。
@@ -492,15 +532,19 @@ impl Pinvou3Bundle {
     }
 
     fn write_connector_clis(&self, force: bool) -> std::io::Result<()> {
-        #[cfg(not(windows))]
+        #[cfg(unix)]
         {
             let root = paths::bundle_connectors_dir();
             let bin = root.join("linux-arm64").join("bin");
-            if force || !bin.join("lark-cli").is_file() || !bin.join("wecom-cli").is_file() {
+            if force
+                || !bin.join("lark-cli").is_file()
+                || !bin.join("wecom-cli").is_file()
+                || !bin.join("dws").is_file()
+            {
                 Self::extract_dir(&CONNECTOR_CLI_DIR, &root)?;
             }
             use std::os::unix::fs::PermissionsExt;
-            for rel in ["linux-arm64/bin/lark-cli", "linux-arm64/bin/wecom-cli"] {
+            for rel in ["linux-arm64/bin/lark-cli", "linux-arm64/bin/wecom-cli", "linux-arm64/bin/dws"] {
                 let p = root.join(rel);
                 if p.is_file() {
                     let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
@@ -562,6 +606,28 @@ impl Pinvou3Bundle {
     fn cached_wecom_skills_visible(&self) -> bool {
         !crate::wecom::is_wecom_disabled()
             && WECOM_SKILL_DIRS
+                .iter()
+                .all(|dir| self.skills_dir.join(dir).join("SKILL.md").is_file())
+    }
+
+    /// 钉钉 mono skill 门控:`show` → 解包 `dws` 到 `skills_dir`;否则删除。
+    /// 出处声明用 `NOTICE-dingtalk.md`,避免覆盖飞书 / 企微的 NOTICE。
+    pub fn apply_dingtalk_skills(&self, show: bool) -> std::io::Result<()> {
+        if show {
+            Self::extract_dir(&DINGTALK_SKILLS_DIR, &self.skills_dir)?;
+        } else {
+            for d in DINGTALK_SKILL_DIRS {
+                let _ = std::fs::remove_dir_all(self.skills_dir.join(d));
+            }
+            let _ = std::fs::remove_file(self.skills_dir.join("NOTICE-dingtalk.md"));
+        }
+        Ok(())
+    }
+
+    /// 同 [`cached_feishu_skills_visible`]，以完整的钉钉技能目录作为启动缓存。
+    fn cached_dingtalk_skills_visible(&self) -> bool {
+        !crate::dingtalk::is_dingtalk_disabled()
+            && DINGTALK_SKILL_DIRS
                 .iter()
                 .all(|dir| self.skills_dir.join(dir).join("SKILL.md").is_file())
     }
@@ -894,6 +960,7 @@ mod tests {
 
         assert!(!bundle.cached_feishu_skills_visible());
         assert!(!bundle.cached_wecom_skills_visible());
+        assert!(!bundle.cached_dingtalk_skills_visible());
 
         for dir in LARK_SKILL_DIRS {
             let path = bundle.skills_dir.join(dir);
@@ -905,15 +972,24 @@ mod tests {
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("SKILL.md"), "test").unwrap();
         }
+        for dir in DINGTALK_SKILL_DIRS {
+            let path = bundle.skills_dir.join(dir);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("SKILL.md"), "test").unwrap();
+        }
         assert!(bundle.cached_feishu_skills_visible());
         assert!(bundle.cached_wecom_skills_visible());
+        assert!(bundle.cached_dingtalk_skills_visible());
 
         std::fs::write(paths::pinvou3_home().join("feishu_disabled"), "1").unwrap();
         std::fs::write(paths::pinvou3_home().join("wecom_disabled"), "1").unwrap();
+        std::fs::write(paths::pinvou3_home().join("dingtalk_disabled"), "1").unwrap();
         assert!(!bundle.cached_feishu_skills_visible());
         assert!(!bundle.cached_wecom_skills_visible());
+        assert!(!bundle.cached_dingtalk_skills_visible());
         std::fs::remove_file(paths::pinvou3_home().join("feishu_disabled")).unwrap();
         std::fs::remove_file(paths::pinvou3_home().join("wecom_disabled")).unwrap();
+        std::fs::remove_file(paths::pinvou3_home().join("dingtalk_disabled")).unwrap();
 
         std::fs::remove_file(
             bundle
@@ -929,8 +1005,16 @@ mod tests {
                 .join("SKILL.md"),
         )
         .unwrap();
+        std::fs::remove_file(
+            bundle
+                .skills_dir
+                .join(DINGTALK_SKILL_DIRS[0])
+                .join("SKILL.md"),
+        )
+        .unwrap();
         assert!(!bundle.cached_feishu_skills_visible());
         assert!(!bundle.cached_wecom_skills_visible());
+        assert!(!bundle.cached_dingtalk_skills_visible());
 
         cleanup(&tmp);
     }
@@ -961,6 +1045,69 @@ mod tests {
         assert!(!pua.exists(), "市场标记的 pua 应被删");
         assert!(!nuwa.exists(), "无标记的 huashu-nuwa 残留应被删");
         assert!(brainstorm.exists(), "用户上传(upload:)的同名目录应保留");
+
+        cleanup(&tmp);
+    }
+
+    /// 已下架预置 MCP 工具的清理:目录、installed.json、mcp.json、禁用列表都不应残留。
+    #[test]
+    fn cleanup_removed_marketplace_tools_removes_data_analysis() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = Pinvou3Bundle::paths();
+        let data_dir = paths::bundle_mcp_servers_dir().join("data_analysis");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(
+            data_dir.join("manifest.json"),
+            r#"{
+                "id":"data_analysis",
+                "name":"数据分析与可视化",
+                "description":"removed",
+                "version":"1",
+                "icon":"bar-chart-3",
+                "category":"办公",
+                "mcp_tools":["mcp_data_analysis_build_dashboard"],
+                "command":"python",
+                "args":["server.py"]
+            }"#,
+        )
+        .unwrap();
+        let marketplace_dir = paths::pinvou3_home().join("marketplace");
+        std::fs::create_dir_all(&marketplace_dir).unwrap();
+        std::fs::write(
+            marketplace_dir.join("installed.json"),
+            r#"["weather","data_analysis"]"#,
+        )
+        .unwrap();
+        std::fs::write(
+            paths::mcp_config_path(),
+            r#"{"servers":{"data_analysis":{"command":"python","args":["server.py"]},"weather":{"command":"python","args":["server.py"]}}}"#,
+        )
+        .unwrap();
+        crate::bridge::marketplace::save_disabled_connectors(&[
+            "data_analysis".to_string(),
+            "weather".to_string(),
+        ]);
+
+        bundle.cleanup_removed_marketplace_tools().unwrap();
+
+        assert!(!data_dir.exists(), "data_analysis 运行目录应被删");
+        let installed = std::fs::read_to_string(marketplace_dir.join("installed.json")).unwrap();
+        assert!(
+            !installed.contains("data_analysis"),
+            "installed.json 不应残留 data_analysis"
+        );
+        let mcp = std::fs::read_to_string(paths::mcp_config_path()).unwrap();
+        assert!(
+            !mcp.contains("data_analysis"),
+            "mcp.json 不应残留 data_analysis server"
+        );
+        let disabled = crate::bridge::marketplace::load_disabled_connectors();
+        assert!(
+            !disabled.contains(&"data_analysis".to_string()),
+            "disabled_connectors 不应残留 data_analysis"
+        );
 
         cleanup(&tmp);
     }
@@ -1116,6 +1263,29 @@ mod tests {
             deepseek_tui::prompts::static_prompt_composer_installed(),
             "composer 安装后 installed() 应为 true → turn_loop 不再注入 <runtime_prompt> tag"
         );
+    }
+
+    #[test]
+    fn dingtalk_skill_gate_extracts_and_removes_official_mono_skill() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = Pinvou3Bundle::paths();
+
+        bundle.apply_dingtalk_skills(true).unwrap();
+        let skill = bundle.skills_dir.join("dws");
+        assert!(skill.join("SKILL.md").is_file());
+        assert!(skill
+            .join("references")
+            .join("global-reference.md")
+            .is_file());
+        assert!(bundle.skills_dir.join("NOTICE-dingtalk.md").is_file());
+
+        bundle.apply_dingtalk_skills(false).unwrap();
+        assert!(!skill.exists());
+        assert!(!bundle.skills_dir.join("NOTICE-dingtalk.md").exists());
+
+        cleanup(&tmp);
     }
 
 

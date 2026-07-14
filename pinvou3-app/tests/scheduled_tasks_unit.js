@@ -47,6 +47,18 @@ assert.ok(
   'left sidebar label should be 定时任务'
 );
 assert.ok(
+  /const SCHEDULED_TASKS_ENTRY_ENABLED = false/.test(indexHtml),
+  'scheduled-task entry should remain disabled until the creation flow is fixed'
+);
+assert.ok(
+  /SCHEDULED_TASKS_ENTRY_ENABLED\s*&&\s*\(\s*<NavItem[\s\S]{0,500}label=\{t\.scheduledPlans\}/.test(indexHtml),
+  'the scheduled-task navigation item must be gated by the temporary feature flag'
+);
+assert.ok(
+  /SCHEDULED_TASKS_ENTRY_ENABLED\s*&&\s*bs\.scheduledTaskAutoOpenId/.test(indexHtml),
+  'automatic scheduled-task navigation must be gated with the visible entry'
+);
+assert.ok(
   /const ScheduledTasksView\s*=/.test(indexHtml),
   'ScheduledTasksView component should exist'
 );

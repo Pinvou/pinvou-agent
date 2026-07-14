@@ -44,6 +44,13 @@ CREATE INDEX IF NOT EXISTS idx_files_ext   ON files(ext);
 CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime);
 CREATE INDEX IF NOT EXISTS idx_files_hash  ON files(hash);
 
+-- 可重建索引的轻量运行元数据。与业务数据分表，后续增加 key 无需 bump schema
+-- 并清空整个大索引库。
+CREATE TABLE IF NOT EXISTS knowledge_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 -- FTS5 只索引文件名（trigram 子串搜索）。**不索引 path 全路径**：
 -- path-trigram 实测占 2/3 库体积、是写入 CPU 大头，而 path 精确匹配已有 UNIQUE 索引、
 -- 路径子串是低频需求（退回 search() 里 1-2 字符那条 LIKE 兜底）。
@@ -249,6 +256,28 @@ impl Store {
     /// 共享底层连接给 L1（同一个 index.db、同一把锁，避免多连接 WAL 复杂度）。
     pub(super) fn conn_arc(&self) -> Arc<Mutex<Connection>> {
         self.conn.clone()
+    }
+
+    /// 最近一次完整扫描完成时间。旧库首次升级还没有 meta 时，回退到文件记录里最新的
+    /// indexed_at，避免 app 每次重启后首次进入知识库都立刻重扫整个 HOME。
+    pub fn last_scan_finished_at(&self) -> rusqlite::Result<i64> {
+        self.read.lock().query_row(
+            "SELECT COALESCE(\
+                (SELECT CAST(value AS INTEGER) FROM knowledge_meta WHERE key='last_scan_finished_at'),\
+                (SELECT MAX(indexed_at) FROM files),\
+                0)",
+            [],
+            |row| row.get(0),
+        )
+    }
+
+    pub fn set_last_scan_finished_at(&self, timestamp: i64) -> rusqlite::Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO knowledge_meta(key, value) VALUES('last_scan_finished_at', ?1) \
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![timestamp.to_string()],
+        )?;
+        Ok(())
     }
 
     /// 批量 upsert（扫描器用，单事务）。size 变化会让旧 hash 失效。
@@ -557,5 +586,17 @@ mod tests {
         let all = s.search(&SearchQuery { limit: 10, ..Default::default() }).unwrap();
         assert!(all.iter().all(|h| !h.is_dir), "search(全量) 不应返回目录");
         assert_eq!(all.len(), 1);
+    }
+
+    #[test]
+    fn scan_timestamp_falls_back_to_index_and_then_persists() {
+        let s = Store::open_in_memory().unwrap();
+        assert_eq!(s.last_scan_finished_at().unwrap(), 0);
+        s.upsert_many(&[rec("/a/notes.md", "notes.md", Some("md"), 10, 1)])
+            .unwrap();
+        assert!(s.last_scan_finished_at().unwrap() > 0);
+
+        s.set_last_scan_finished_at(12345).unwrap();
+        assert_eq!(s.last_scan_finished_at().unwrap(), 12345);
     }
 }

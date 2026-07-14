@@ -5620,6 +5620,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn direct_skill_reinstall_reapplies_persisted_disable() {
+        let _g = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-skill-reinstall-test-{}",
+            std::process::id()
+        ));
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::env::set_var("PINVOU3_HOME", &root);
+
+        crate::bridge::marketplace::save_disabled_connectors(&["skill:visualizer".to_string()]);
+        install_marketplace_skill_sync("visualizer").unwrap();
+        assert!(deepseek_tui::skills::is_skill_disabled("visualizer"));
+
+        uninstall_marketplace_skill_sync("visualizer").unwrap();
+        assert!(
+            !deepseek_tui::skills::is_skill_disabled("visualizer"),
+            "卸载后底座运行态不应保留不存在的 skill"
+        );
+
+        // disabled_connectors.json 仍保留用户的关闭选择。重装命令必须主动刷新，
+        // 不能等用户再切一次 composer 开关。
+        install_marketplace_skill_sync("visualizer").unwrap();
+        assert!(
+            deepseek_tui::skills::is_skill_disabled("visualizer"),
+            "重装后 UI 的关闭状态必须与底座运行态一致"
+        );
+
+        crate::bridge::marketplace::save_disabled_connectors(&[]);
+        crate::bridge::skill_marketplace::refresh_disabled_skills();
+        match previous {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn file_url_from_path_encodes_local_artifact_paths() {
         let tmp =
             std::env::temp_dir().join(format!("pinvou3 file-url test {}", std::process::id()));
@@ -6574,11 +6615,18 @@ pub fn list_marketplace_skills(
 
 #[tauri::command]
 pub async fn install_marketplace_skill(skill_id: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        crate::bridge::skill_marketplace::SkillMarketplaceManager::new().install(&skill_id)
-    })
-    .await
-    .map_err(|e| format!("任务执行失败: {e}"))?
+    tokio::task::spawn_blocking(move || install_marketplace_skill_sync(&skill_id))
+        .await
+        .map_err(|e| format!("任务执行失败: {e}"))?
+}
+
+fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
+    crate::bridge::skill_marketplace::SkillMarketplaceManager::new().install(skill_id)?;
+    // disabled_connectors.json 会保留 `skill:<id>` 的用户选择。技能卸载后启动时，
+    // refresh 会因未安装而从底座运行态过滤掉；重装成功后必须立即再推一次，避免
+    // composer 显示“已关闭”但模型实际仍能 load_skill。
+    crate::bridge::skill_marketplace::refresh_disabled_skills();
+    Ok(())
 }
 
 /// 弹文件选择框选 zip 技能包并导入。前端无法用 plugin-dialog 的 JS API
@@ -6600,10 +6648,17 @@ pub fn import_skill_package(app: tauri::AppHandle) -> Result<bool, String> {
         .map_err(|e| format!("解析文件路径: {e}"))?;
     crate::bridge::skill_marketplace::SkillMarketplaceManager::new()
         .import_package(&path.to_string_lossy())?;
+    crate::bridge::skill_marketplace::refresh_disabled_skills();
     Ok(true)
 }
 
 #[tauri::command]
 pub fn uninstall_marketplace_skill(skill_id: String) -> Result<(), String> {
-    crate::bridge::skill_marketplace::SkillMarketplaceManager::new().uninstall(&skill_id)
+    uninstall_marketplace_skill_sync(&skill_id)
+}
+
+fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
+    crate::bridge::skill_marketplace::SkillMarketplaceManager::new().uninstall(skill_id)?;
+    crate::bridge::skill_marketplace::refresh_disabled_skills();
+    Ok(())
 }

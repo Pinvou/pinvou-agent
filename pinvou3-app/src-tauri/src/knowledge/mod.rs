@@ -86,12 +86,18 @@ impl KnowledgeService {
     /// 通过后台 blocking 线程加载，避免读取/构建大型 ONNX 模型阻塞 Tauri setup 和首屏。
     pub fn new(db_path: &Path) -> rusqlite::Result<Self> {
         let store = Store::open(db_path)?;
+        let last_scan_finished_at = store.last_scan_finished_at().unwrap_or(0);
         let l1 = l1::L1Store::new(store.conn_arc(), None);
         Ok(Self {
             store,
             l1,
             scan_state: Arc::new(Mutex::new(ScanState {
-                phase: "idle".into(),
+                phase: if last_scan_finished_at > 0 {
+                    "done".into()
+                } else {
+                    "idle".into()
+                },
+                finished_at: last_scan_finished_at,
                 ..Default::default()
             })),
             cancel: Arc::new(AtomicBool::new(false)),
@@ -273,10 +279,15 @@ impl KnowledgeService {
             }
 
             // 去重(算 hash)不在扫描里跑——读盘昂贵、百万文件下永远跑不完且拖卡设备。去重功能已下线。
+            let cancelled = cancel.load(Ordering::Relaxed);
+            let finished_at = now();
+            if !cancelled {
+                let _ = store.set_last_scan_finished_at(finished_at);
+            }
             let mut st = scan_state.lock();
             st.running = false;
-            st.finished_at = now();
-            st.phase = if cancel.load(Ordering::Relaxed) {
+            st.finished_at = finished_at;
+            st.phase = if cancelled {
                 "cancelled"
             } else {
                 "done"
@@ -552,4 +563,3 @@ pub async fn kb_stats(state: State<'_, KnowledgeService>) -> Result<Stats, Strin
     let store = state.store.clone();
     spawn_db(move || store.stats().map_err(|e| e.to_string())).await
 }
-

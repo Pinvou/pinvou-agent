@@ -18,10 +18,12 @@ import { PinvouSummonCard } from './features/tools/tool-renderers.jsx';
 import { CardPoolView, Lanyard, PersonaEditorModal } from './features/personas/Personas.jsx';
 import { WorkflowView } from './features/workflow/WorkflowView.jsx';
 
+// 临时止血：定时任务创建流程修复前，不向用户暴露入口或自动跳转。
+// 保留后端、数据与页面实现，修复完成后只需恢复此开关。
+const SCHEDULED_TASKS_ENTRY_ENABLED = false;
+
 window.__PINVOU_STARTUP__.mark('app:main_module_body_enter');
 
-// Temporary product gate: keep scheduled tasks operational while hiding the navigation entry.
-const SHOW_SCHEDULED_TASKS_ENTRY = false;
 let appFirstRenderMarked = false;
 
 
@@ -519,7 +521,7 @@ let appFirstRenderMarked = false;
           setChatPrefill(bs.composerPrefill.text || '');
           setCurrentView('chat');
         }
-        if (bs.scheduledTaskAutoOpenId && bs.scheduledTaskAutoOpenId !== scheduledTaskAutoOpenSeenRef.current) {
+        if (SCHEDULED_TASKS_ENTRY_ENABLED && bs.scheduledTaskAutoOpenId && bs.scheduledTaskAutoOpenId !== scheduledTaskAutoOpenSeenRef.current) {
           scheduledTaskAutoOpenSeenRef.current = bs.scheduledTaskAutoOpenId;
           setCurrentView('scheduled');
         }
@@ -587,6 +589,13 @@ let appFirstRenderMarked = false;
           modelConfigInitRef.current = true;
         }
       }, [bs]);
+
+      // HMR/旧前端状态可能仍停在 scheduled；入口关闭时立即回到普通聊天页。
+      useEffect(() => {
+        if (!SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled') {
+          setCurrentView('chat');
+        }
+      }, [currentView]);
 
       // 草稿 vs 已保存基线 → 模型卡是否显示「保存并重启」操作条
       const savedModel = savedModelConfigRef.current;
@@ -991,7 +1000,7 @@ let appFirstRenderMarked = false;
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('search')}
               />
-              {SHOW_SCHEDULED_TASKS_ENTRY && (
+              {SCHEDULED_TASKS_ENTRY_ENABLED && (
                 <NavItem
                   icon={<Clock size={18} />} label={t.scheduledPlans}
                   active={currentView === 'scheduled'}
@@ -1277,7 +1286,7 @@ let appFirstRenderMarked = false;
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
             {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => navigateFromScheduledRun('settings', () => setTimeout(() => document.getElementById('settings-dependencies')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80))} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />}
-            {currentView === 'scheduled' && (
+            {SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled' && (
               bs && bs.scheduledRunContext ? (
                 <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => navigateFromScheduledRun('settings', () => setTimeout(() => document.getElementById('settings-dependencies')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80))} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />
               ) : (

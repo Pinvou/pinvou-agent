@@ -2064,7 +2064,7 @@
             presentedArtifacts[pp] = true;
             presentedArtifactNames[basename(pp)] = true;
           }
-        } else if (db.type === "tool_use") {
+        } else if (db.type === "tool_use" && shouldUseToolOutputAsArtifact(db.name)) {
           var gres = resultById[db.id];
           if (!(gres && gres.is_error)) {
             var gp = artifactPathFromToolOutput(gres && gres.content);
@@ -2165,17 +2165,19 @@
             continue;
           }
           addChatItem({ type: "tool", toolId: b.id, name: b.name, args: b.input, output: null, success: null, state: "pending" });
-          var gres2 = resultById[b.id];
-          var gap = artifactPathFromToolOutput(gres2 && gres2.content);
-          if (!(gres2 && gres2.is_error) && gap && isDeliverable(gap) && lastDirtyArtifactId[gap] === b.id && !presentedArtifacts[gap] && !presentedArtifactNames[basename(gap)]) {
-            var gprev = findPresentedArtifact(gap);
-            if (gprev) {
-              addChatItem({
-                type: "artifact_card", path: gprev.path, title: gprev.title,
-                description: gprev.description, time: "", sessionId: state.activeSessionId,
-              });
-            } else if (writtenArtifacts[gap]) {
-              addChatItem({ type: "artifact_card", path: gap, title: basename(gap), description: "", time: "", sessionId: state.activeSessionId });
+          if (shouldUseToolOutputAsArtifact(b.name)) {
+            var gres2 = resultById[b.id];
+            var gap = artifactPathFromToolOutput(gres2 && gres2.content);
+            if (!(gres2 && gres2.is_error) && gap && isDeliverable(gap) && lastDirtyArtifactId[gap] === b.id && !presentedArtifacts[gap] && !presentedArtifactNames[basename(gap)]) {
+              var gprev = findPresentedArtifact(gap);
+              if (gprev) {
+                addChatItem({
+                  type: "artifact_card", path: gprev.path, title: gprev.title,
+                  description: gprev.description, time: "", sessionId: state.activeSessionId,
+                });
+              } else if (writtenArtifacts[gap]) {
+                addChatItem({ type: "artifact_card", path: gap, title: basename(gap), description: "", time: "", sessionId: state.activeSessionId });
+              }
             }
           }
           // 还原"自动续卡":write_file/append_file 改的文件之前 present 过 → 续一张
@@ -2741,6 +2743,13 @@
     var p = obj.abs_path || obj.path || obj.file_path || obj.local_path;
     return typeof p === "string" && p ? p : null;
   }
+  function shouldUseToolOutputAsArtifact(name) {
+    if (!name || isPresentArtifactTool(name)) return false;
+    // Only MCP-style producer tools should be parsed from result JSON. Shell/read
+    // tools often return diagnostic JSON with a `path` field, which is not a
+    // newly created artifact.
+    return typeof name === "string" && name.indexOf("mcp_") === 0;
+  }
   function presentArtifactAbsPath(toolResultContent, fallbackPath) {
     fallbackPath = fallbackPath || "";
     var parsed = artifactPathFromToolOutput(toolResultContent);
@@ -2853,7 +2862,7 @@
     // 通用工具产物兜底：PPT / 公文等 MCP 工具会先返回 {path: "..."}，
     // 随后模型按约定再调 present_artifact。若模型漏调，仍把该成品归到当前
     // tool_end 所属 session，并在 chat:done 统一补一张成品卡。
-    if (p.success && meta && !isPresentArtifactTool(meta.name)) {
+    if (p.success && meta && shouldUseToolOutputAsArtifact(meta.name)) {
       var producedPath = artifactPathFromToolOutput(p.output);
       if (producedPath && isDeliverable(producedPath)) {
         trackArtifact(producedPath);

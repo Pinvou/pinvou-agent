@@ -64,6 +64,16 @@ fn preset_manifests() -> &'static [SkillManifest] {
             icon: "FileText",
             color: "bg-gradient-to-b from-red-500 to-rose-700",
         },
+        SkillManifest {
+            id: "visualizer",
+            skill_name: "visualizer",
+            source_dir: "visualizer",
+            title: "数据分析可视化",
+            subtitle: "Chart.js 仪表盘 / 图表分析 / HTML 可视化",
+            description: "将结构化数据、表格汇总和业务指标转成符合 Pinvou 宿主体验的 HTML 可视化仪表盘。默认使用 Chart.js、无障碍 canvas、自定义图例、扁平配色，并通过 .html 产物卡交付。",
+            icon: "LineChart",
+            color: "bg-gradient-to-b from-blue-500 to-cyan-600",
+        },
     ]
 }
 
@@ -97,11 +107,33 @@ pub struct MarketplaceSkillInfo {
 /// (一次 prefix-cache miss 后稳定)。
 pub fn refresh_disabled_skills() {
     let market = crate::bridge::marketplace::MarketplaceManager::new();
-    let companion_ids: Vec<String> = crate::bridge::marketplace::load_disabled_connectors()
+    let disabled_ids = crate::bridge::marketplace::load_disabled_connectors();
+    let mut skill_ids: Vec<String> = disabled_ids
         .iter()
         .flat_map(|cid| market.companion_skills(cid))
         .collect();
-    let names = SkillMarketplaceManager::new().model_skill_names(&companion_ids);
+    let skill_market = SkillMarketplaceManager::new();
+    let installed_skill_ids: std::collections::HashSet<String> = skill_market
+        .list_skills()
+        .into_iter()
+        .filter(|s| s.installed)
+        .map(|s| s.id)
+        .collect();
+    let marketplace_tool_ids: std::collections::HashSet<String> =
+        market.list_tools().into_iter().map(|t| t.id).collect();
+    skill_ids.extend(disabled_ids.iter().filter_map(|id| {
+        if let Some(skill_id) = id.strip_prefix("skill:") {
+            installed_skill_ids
+                .contains(skill_id)
+                .then(|| skill_id.to_string())
+        } else {
+            // Backward compatibility for earlier builds that stored direct skill ids
+            // without a namespace. Do not treat known connector ids as skills.
+            (installed_skill_ids.contains(id) && !marketplace_tool_ids.contains(id))
+                .then(|| id.clone())
+        }
+    }));
+    let names = skill_market.model_skill_names(&skill_ids);
     deepseek_tui::skills::set_disabled_skills(names);
 }
 
@@ -222,10 +254,13 @@ impl SkillMarketplaceManager {
             extract_embedded_subdir(src, m.source_dir, &staged)
                 .map_err(|e| format!("解包嵌入资源: {e}"))?;
             // 校验 SKILL.md 存在 + name 与预期一致
-            let name = read_skill_name(&staged.join("SKILL.md"))
-                .ok_or("解包后 SKILL.md 缺 name 字段")?;
+            let name =
+                read_skill_name(&staged.join("SKILL.md")).ok_or("解包后 SKILL.md 缺 name 字段")?;
             if name != m.skill_name {
-                return Err(format!("SKILL.md name '{name}' 与预期 '{}' 不符", m.skill_name));
+                return Err(format!(
+                    "SKILL.md name '{name}' 与预期 '{}' 不符",
+                    m.skill_name
+                ));
             }
             std::fs::write(
                 staged.join(INSTALLED_FROM_MARKER),
@@ -276,7 +311,9 @@ impl SkillMarketplaceManager {
         let mut best: Option<(usize, String)> = None; // (rank, skill_root)
         let mut total: u64 = 0;
         for i in 0..archive.len() {
-            let entry = archive.by_index(i).map_err(|e| format!("zip 条目 #{i}: {e}"))?;
+            let entry = archive
+                .by_index(i)
+                .map_err(|e| format!("zip 条目 #{i}: {e}"))?;
             // 路径穿越:enclosed_name 为 None 即不安全(.. / 绝对路径)。
             let Some(enclosed) = entry.enclosed_name() else {
                 return Err("zip 含不安全路径(穿越),拒绝".to_string());
@@ -342,7 +379,9 @@ impl SkillMarketplaceManager {
 
         let result = (|| -> Result<(), String> {
             for i in 0..archive.len() {
-                let mut entry = archive.by_index(i).map_err(|e| format!("zip 条目 #{i}: {e}"))?;
+                let mut entry = archive
+                    .by_index(i)
+                    .map_err(|e| format!("zip 条目 #{i}: {e}"))?;
                 if entry.is_dir() {
                     continue;
                 }
@@ -540,7 +579,10 @@ mod tests {
         let skill_dir = tmp.join("government-writing");
         assert!(skill_dir.join("SKILL.md").is_file(), "SKILL.md 应落盘");
         assert!(skill_dir.join(".installed-from").is_file(), "应写安装标记");
-        assert!(skill_dir.join("templates").is_dir(), "templates/ 应一并复制");
+        assert!(
+            skill_dir.join("templates").is_dir(),
+            "templates/ 应一并复制"
+        );
         assert_eq!(
             read_skill_name(&skill_dir.join("SKILL.md")).as_deref(),
             Some("government-writing")
@@ -556,6 +598,82 @@ mod tests {
             .list_skills()
             .iter()
             .any(|s| s.id == "government-writing" && !s.installed));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Visualizer 预置技能带 references/ 子树,安装后必须可被 SkillRegistry 读取。
+    #[test]
+    fn install_visualizer_preset_with_references() {
+        let tmp = fresh_dir("visualizer");
+        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
+
+        mgr.install("visualizer").unwrap();
+        let skill_dir = tmp.join("visualizer");
+        assert!(skill_dir.join("SKILL.md").is_file(), "SKILL.md 应落盘");
+        assert!(
+            skill_dir
+                .join("references")
+                .join("visualizer-design-system.md")
+                .is_file(),
+            "references/ 应一并复制"
+        );
+        assert!(
+            skill_dir
+                .join("scripts")
+                .join("validate_visualizer_html.py")
+                .is_file(),
+            "scripts/ 校验器应一并复制"
+        );
+        assert_eq!(
+            read_skill_name(&skill_dir.join("SKILL.md")).as_deref(),
+            Some("visualizer")
+        );
+        assert_eq!(
+            std::fs::read_to_string(skill_dir.join(".installed-from"))
+                .unwrap()
+                .trim(),
+            "pinvou3-marketplace:visualizer"
+        );
+        let skill_md = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        assert!(
+            skill_md.contains("https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"),
+            "Visualizer 应固定使用 cdnjs Chart.js UMD"
+        );
+        assert!(
+            skill_md.contains("present_artifact(path, title)"),
+            "Visualizer 应要求用 artifact 卡片交付"
+        );
+        assert!(
+            skill_md.contains("role=\"img\""),
+            "Visualizer 应要求 canvas 无障碍属性"
+        );
+        assert!(
+            skill_md.contains("ECharts") && skill_md.contains("Plotly"),
+            "Visualizer 应显式禁止默认回退到其他图库"
+        );
+        assert!(
+            skill_md.contains("失败判定"),
+            "Visualizer 应保留失败判定段，便于生成前自检"
+        );
+        let design_system = std::fs::read_to_string(
+            skill_dir
+                .join("references")
+                .join("visualizer-design-system.md"),
+        )
+        .unwrap();
+        assert!(
+            design_system.contains("Chart.js UMD")
+                && design_system.contains("present_artifact(path, title)")
+                && design_system.contains("role=\"img\""),
+            "Visualizer reference 应包含 Chart.js、artifact 和 canvas 无障碍规则"
+        );
+        assert!(mgr
+            .list_skills()
+            .iter()
+            .any(|s| s.id == "visualizer" && s.installed));
+
+        mgr.uninstall("visualizer").unwrap();
+        assert!(!skill_dir.exists(), "卸载应删目录");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -583,7 +701,8 @@ mod tests {
             let opts = zip::write::SimpleFileOptions::default();
             // 顶层目录包裹(rank 2)：my-skill/ 下含 SKILL.md + 辅助 + 应被跳过的 .git/
             zw.start_file("my-skill/SKILL.md", opts).unwrap();
-            zw.write_all(b"---\nname: my-test-skill\ndescription: t\n---\n# hi").unwrap();
+            zw.write_all(b"---\nname: my-test-skill\ndescription: t\n---\n# hi")
+                .unwrap();
             zw.start_file("my-skill/ref.md", opts).unwrap();
             zw.write_all(b"reference body").unwrap();
             zw.start_file("my-skill/.git/config", opts).unwrap();
@@ -605,5 +724,4 @@ mod tests {
             .any(|s| s.id == "my-test-skill" && s.user_uploaded && s.installed));
         let _ = std::fs::remove_dir_all(&tmp);
     }
-
 }
