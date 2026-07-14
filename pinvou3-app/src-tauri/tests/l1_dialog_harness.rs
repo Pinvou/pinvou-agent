@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use deepseek_tui::core::events::Event;
+use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
 use deepseek_tui::error_taxonomy::ErrorEnvelope;
 use deepseek_tui::tui::app::AppMode;
 use pinvou3_lib::bridge::Pinvou3Bridge;
@@ -124,7 +124,10 @@ async fn collect_turn_events(
                 if matches!(event, Event::Error { .. }) {
                     eprintln!("[harness +{t:.1}s] engine Error event: {:?}", event);
                 }
-                let is_done = matches!(event, Event::TurnComplete { .. } | Event::Error { .. });
+                // Error 是过程事件，权威终态只来自 TurnComplete。底座可能先报告
+                // 可恢复错误、随后继续运行；若在 Error 处提前结束，既会漏收终态，
+                // 也会让 Failed TurnComplete 在严格验收中假绿。
+                let is_done = is_authoritative_turn_complete(&event);
                 timeline.push((t, event));
                 if is_done {
                     break;
@@ -144,6 +147,10 @@ async fn collect_turn_events(
         eprintln!("[harness] rx_event channel closed (engine task exited?)");
     }
     (timeline, start.elapsed(), timed_out)
+}
+
+fn is_authoritative_turn_complete(event: &Event) -> bool {
+    matches!(event, Event::TurnComplete { .. })
 }
 
 fn event_kind(e: &Event) -> &'static str {
@@ -190,6 +197,10 @@ struct TurnSummary {
     tool_call_counts: HashMap<String, usize>,
     /// Engine 在 turn 内发出的错误；严格真模型验收中任意一条都必须失败。
     engine_errors: Vec<String>,
+    /// TurnComplete 报告的权威终态；None 表示未收到完整终态。
+    terminal_status: Option<TurnOutcomeStatus>,
+    /// TurnComplete 携带的终态错误。
+    terminal_error: Option<String>,
     elapsed: Duration,
     timed_out: bool,
 }
@@ -198,6 +209,8 @@ fn summarize(timeline: &[(f64, Event)], elapsed: Duration, timed_out: bool) -> T
     let mut full_text = String::new();
     let mut tool_call_counts: HashMap<String, usize> = HashMap::new();
     let mut engine_errors = Vec::new();
+    let mut terminal_status = None;
+    let mut terminal_error = None;
     for (_t, e) in timeline {
         match e {
             Event::MessageDelta { content, .. } => full_text.push_str(content),
@@ -209,6 +222,10 @@ fn summarize(timeline: &[(f64, Event)], elapsed: Duration, timed_out: bool) -> T
             Event::Error { envelope, .. } => {
                 engine_errors.push(format!("{}: {}", envelope.code, envelope.message));
             }
+            Event::TurnComplete { status, error, .. } => {
+                terminal_status = Some(*status);
+                terminal_error = error.clone();
+            }
             _ => {}
         }
     }
@@ -216,6 +233,8 @@ fn summarize(timeline: &[(f64, Event)], elapsed: Duration, timed_out: bool) -> T
         full_text,
         tool_call_counts,
         engine_errors,
+        terminal_status,
+        terminal_error,
         elapsed,
         timed_out,
     }
@@ -232,6 +251,21 @@ fn validate_engine_errors(engine_errors: &[String], strict: bool) -> Result<(), 
     Ok(())
 }
 
+fn validate_terminal_outcome(summary: &TurnSummary, strict: bool) -> Result<(), String> {
+    if !strict {
+        return Ok(());
+    }
+
+    match summary.terminal_status {
+        Some(TurnOutcomeStatus::Completed) if summary.terminal_error.is_none() => Ok(()),
+        Some(status) => Err(format!(
+            "turn 终态不是无错误的 Completed: status={status:?}, error={:?}",
+            summary.terminal_error
+        )),
+        None => Err("turn 未收到 TurnComplete 权威终态".to_string()),
+    }
+}
+
 /// 验证 Expect。失败 panic 让 #[test] fail。
 /// 行为质量类断言全部委托给 Claude judge 读 transcript 评分,这里只断 judge
 /// 摸不到的硬指标(磁盘 / 数字)。
@@ -243,6 +277,9 @@ fn verify_expect(summary: &TurnSummary, expect: &Expect, scenario: &str) {
     );
 
     if let Err(message) = validate_engine_errors(&summary.engine_errors, strict_l1_enabled()) {
+        panic!("[{scenario}] {message}");
+    }
+    if let Err(message) = validate_terminal_outcome(summary, strict_l1_enabled()) {
         panic!("[{scenario}] {message}");
     }
 
@@ -336,6 +373,14 @@ fn record_transcript(
         summary.engine_errors.len()
     ));
     md.push_str(&format!(
+        "- terminal_status: `{:?}`\n",
+        summary.terminal_status
+    ));
+    md.push_str(&format!(
+        "- terminal_error: `{:?}`\n",
+        summary.terminal_error
+    ));
+    md.push_str(&format!(
         "- tool_call_histogram: `{:?}`\n",
         summary.tool_call_counts
     ));
@@ -389,6 +434,52 @@ fn strict_mode_rejects_runtime_engine_error() {
     assert!(validate_engine_errors(&summary.engine_errors, true).is_err());
     assert!(validate_engine_errors(&summary.engine_errors, false).is_ok());
     assert!(validate_engine_errors(&[], true).is_ok());
+}
+
+#[test]
+fn strict_mode_rejects_failed_turn_without_error_event() {
+    use deepseek_tui::models::Usage;
+
+    let timeline = vec![(
+        0.1,
+        Event::TurnComplete {
+            usage: Usage::default(),
+            status: TurnOutcomeStatus::Failed,
+            error: Some("engine task panicked".to_string()),
+            tool_catalog: None,
+            base_url: None,
+        },
+    )];
+    let summary = summarize(&timeline, Duration::from_millis(100), false);
+
+    assert!(summary.engine_errors.is_empty());
+    assert_eq!(summary.terminal_status, Some(TurnOutcomeStatus::Failed));
+    assert_eq!(
+        summary.terminal_error.as_deref(),
+        Some("engine task panicked")
+    );
+    assert!(validate_terminal_outcome(&summary, true).is_err());
+    assert!(validate_terminal_outcome(&summary, false).is_ok());
+}
+
+#[test]
+fn strict_mode_waits_for_turn_complete_after_error() {
+    use deepseek_tui::models::Usage;
+
+    let error = Event::error(ErrorEnvelope::classify(
+        "temporary stream error".to_string(),
+        true,
+    ));
+    let complete = Event::TurnComplete {
+        usage: Usage::default(),
+        status: TurnOutcomeStatus::Failed,
+        error: Some("stream recovery failed".to_string()),
+        tool_catalog: None,
+        base_url: None,
+    };
+
+    assert!(!is_authoritative_turn_complete(&error));
+    assert!(is_authoritative_turn_complete(&complete));
 }
 
 fn render_timeline(timeline: &[(f64, Event)]) -> String {
