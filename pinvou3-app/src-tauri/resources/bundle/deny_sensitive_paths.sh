@@ -30,6 +30,7 @@ SENSITIVE_DIRS=(
     "/.config/google-chrome/"
     "/.mozilla/firefox/"
     "/.password-store/"
+    "/.dws/"
 )
 
 for pat in "${SENSITIVE_DIRS[@]}"; do

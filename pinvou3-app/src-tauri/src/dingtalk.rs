@@ -18,6 +18,7 @@ use tauri::{AppHandle, Manager};
 use crate::connector_cli::{self as cc, CliCtx, ConnectorConn};
 
 const ID: &str = "dingtalk";
+const DWS_NPM_SPEC: &str = "dingtalk-workspace-cli@1.0.51";
 
 const DINGTALK_CTX: CliCtx = CliCtx {
     cli_bin: "dws",
@@ -77,8 +78,10 @@ fn extract_user_code(line: &str) -> Option<String> {
         .filter(|s| {
             let len = s.len();
             (6..=32).contains(&len)
-                && s.chars().any(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
-                && s.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-')
+                && s.chars()
+                    .any(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+                && s.chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-')
         })
         .last()
         .map(|s| s.to_string())
@@ -108,7 +111,8 @@ fn dingtalk_auth_error_hint(text: &str) -> Option<String> {
         .and_then(|v| v.get("message"))
         .and_then(|v| v.as_str())
         .unwrap_or(text);
-    if msg.contains("CLI data access is not enabled") || text.contains("CLI data access is not enabled")
+    if msg.contains("CLI data access is not enabled")
+        || text.contains("CLI data access is not enabled")
     {
         let admin = text
             .lines()
@@ -190,6 +194,51 @@ fn auth_status_message() -> String {
 
 // ───────────────────────────── Tauri commands ─────────────────────────────
 
+/// 官方 npm 包的 postinstall 除了解压 CLI，还会把 dws skill 写进
+/// `~/.agents/.codex/.claude/...`。安装时给它一个隔离 HOME，避免绕过 Pinvou3 的
+/// “已连接且未停用才展示 skill”门控；CLI 本体仍安装到 npm 的用户级全局 prefix。
+fn isolated_npm_install_command() -> Result<(std::process::Command, std::path::PathBuf), String> {
+    let install_home = crate::bridge::paths::pinvou3_home()
+        .join("tmp")
+        .join("dingtalk-npm-install-home");
+    if install_home.exists() {
+        std::fs::remove_dir_all(&install_home)
+            .map_err(|e| format!("清理钉钉 CLI 安装暂存目录失败: {e}"))?;
+    }
+    std::fs::create_dir_all(&install_home)
+        .map_err(|e| format!("创建钉钉 CLI 安装暂存目录失败: {e}"))?;
+
+    let mut command = DINGTALK_CTX.base_cmd("npm");
+    cc::apply_user_npm_prefix(&mut command);
+    // HOME 隔离后 npm 默认不再读取真实用户的 ~/.npmrc。显式保留 userconfig，
+    // 避免国内镜像 / 企业代理配置被静默丢掉；postinstall 的 os.homedir() 仍指向暂存目录。
+    if std::env::var_os("NPM_CONFIG_USERCONFIG").is_none()
+        && std::env::var_os("npm_config_userconfig").is_none()
+    {
+        let user_config = crate::bridge::paths::user_home_dir().join(".npmrc");
+        if user_config.is_file() {
+            command.env("NPM_CONFIG_USERCONFIG", user_config);
+        }
+    }
+    command
+        .env("HOME", &install_home)
+        .env("USERPROFILE", &install_home)
+        .args(["install", "-g", DWS_NPM_SPEC]);
+    Ok((command, install_home))
+}
+
+fn install_dws_cli() -> Result<bool, String> {
+    let (command, install_home) = isolated_npm_install_command()?;
+    let result = cc::run_with_timeout(command, 180);
+    if let Err(err) = std::fs::remove_dir_all(&install_home) {
+        eprintln!(
+            "[dingtalk] cleanup isolated npm install home failed ({}): {err}",
+            install_home.display()
+        );
+    }
+    result
+}
+
 /// 引导:确保 dws 装好。Linux ARM64 优先使用内置二进制;Windows 走 npm 全局 shim。
 #[tauri::command]
 pub async fn dingtalk_ensure_cli() -> Result<Value, String> {
@@ -197,14 +246,13 @@ pub async fn dingtalk_ensure_cli() -> Result<Value, String> {
         if dws_cli_present() {
             return Ok::<Value, String>(json!({ "ok": true, "already": true }));
         }
-        let mut c = DINGTALK_CTX.base_cmd("npm");
-        cc::apply_user_npm_prefix(&mut c);
-        c.args(["install", "-g", "dingtalk-workspace-cli"]);
-        let mut ok = cc::run_with_timeout(c, 180)?;
-        if ok && !dws_cli_present() {
-            ok = false;
+        if !install_dws_cli()? {
+            return Err("钉钉 CLI 安装失败，请查看 ~/.pinvou3/cli-install.log".to_string());
         }
-        Ok::<Value, String>(json!({ "ok": ok, "already": false }))
+        if !dws_cli_present() {
+            return Err("钉钉 CLI 安装完成但无法执行，请重试或检查 npm 全局目录".to_string());
+        }
+        Ok::<Value, String>(json!({ "ok": true, "already": false }))
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))?
@@ -389,6 +437,9 @@ pub async fn dingtalk_logout() -> Result<Value, String> {
             return Ok::<Value, String>(json!({ "ok": true, "installed": false }));
         }
         let (ok, _, _) = cc::run(dws(&["auth", "logout", "--yes"]))?;
+        if !ok {
+            return Err("钉钉 CLI 退出登录失败，请重试".to_string());
+        }
         Ok::<Value, String>(json!({ "ok": ok, "installed": true }))
     })
     .await
@@ -405,13 +456,14 @@ pub fn is_dingtalk_disabled() -> bool {
     dingtalk_disabled_path().exists()
 }
 
-fn set_dingtalk_disabled_flag(disabled: bool) {
+fn set_dingtalk_disabled_flag(disabled: bool) -> Result<(), String> {
     let p = dingtalk_disabled_path();
     if disabled {
-        let _ = std::fs::write(&p, b"1");
-    } else {
-        let _ = std::fs::remove_file(&p);
+        std::fs::write(&p, b"1").map_err(|e| format!("保存钉钉技能停用状态失败: {e}"))?;
+    } else if p.exists() {
+        std::fs::remove_file(&p).map_err(|e| format!("清除钉钉技能停用状态失败: {e}"))?;
     }
+    Ok(())
 }
 
 pub fn dingtalk_skills_should_show() -> bool {
@@ -420,26 +472,30 @@ pub fn dingtalk_skills_should_show() -> bool {
 
 #[tauri::command]
 pub async fn dingtalk_apply_skills() -> Result<Value, String> {
-    let show = tokio::task::spawn_blocking(|| {
+    let show = tokio::task::spawn_blocking(|| -> Result<bool, String> {
         let show = dingtalk_skills_should_show();
-        let _ = crate::bridge::bundle::Pinvou3Bundle::paths().apply_dingtalk_skills(show);
-        show
+        crate::bridge::bundle::Pinvou3Bundle::paths()
+            .apply_dingtalk_skills(show)
+            .map_err(|e| format!("更新钉钉技能失败: {e}"))?;
+        Ok(show)
     })
     .await
-    .map_err(|e| format!("spawn_blocking: {e}"))?;
+    .map_err(|e| format!("spawn_blocking: {e}"))??;
     Ok(json!({ "visible": show }))
 }
 
 #[tauri::command]
 pub async fn set_dingtalk_enabled(enabled: bool) -> Result<Value, String> {
-    let show = tokio::task::spawn_blocking(move || {
-        set_dingtalk_disabled_flag(!enabled);
+    let show = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+        set_dingtalk_disabled_flag(!enabled)?;
         let show = dingtalk_skills_should_show();
-        let _ = crate::bridge::bundle::Pinvou3Bundle::paths().apply_dingtalk_skills(show);
-        show
+        crate::bridge::bundle::Pinvou3Bundle::paths()
+            .apply_dingtalk_skills(show)
+            .map_err(|e| format!("更新钉钉技能失败: {e}"))?;
+        Ok(show)
     })
     .await
-    .map_err(|e| format!("spawn_blocking: {e}"))?;
+    .map_err(|e| format!("spawn_blocking: {e}"))??;
     Ok(json!({ "ok": true, "visible": show }))
 }
 
@@ -485,7 +541,10 @@ mod tests {
             extract_user_code("请在页面输入验证码：ZXCV1234"),
             Some("ZXCV1234".to_string())
         );
-        assert_eq!(extract_user_code("open https://login.dingtalk.com/foo"), None);
+        assert_eq!(
+            extract_user_code("open https://login.dingtalk.com/foo"),
+            None
+        );
     }
 
     #[test]
@@ -510,17 +569,69 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         );
+        let previous = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", &tmp);
         let _ = std::fs::create_dir_all(crate::bridge::paths::pinvou3_home());
 
-        set_dingtalk_disabled_flag(false);
+        set_dingtalk_disabled_flag(false).unwrap();
         assert!(!is_dingtalk_disabled());
-        set_dingtalk_disabled_flag(true);
+        set_dingtalk_disabled_flag(true).unwrap();
         assert!(is_dingtalk_disabled());
-        set_dingtalk_disabled_flag(false);
+        set_dingtalk_disabled_flag(false).unwrap();
         assert!(!is_dingtalk_disabled());
 
-        std::env::remove_var("PINVOU3_HOME");
+        match previous {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn npm_install_uses_isolated_home_for_official_postinstall() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-dingtalk-npm-home-test-{}",
+            std::process::id()
+        ));
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        let _ = std::fs::remove_dir_all(&root);
+        std::env::set_var("PINVOU3_HOME", &root);
+
+        let (command, install_home) = isolated_npm_install_command().unwrap();
+        let envs = command
+            .get_envs()
+            .filter_map(|(key, value)| value.map(|value| (key.to_owned(), value.to_owned())))
+            .collect::<std::collections::HashMap<_, _>>();
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(args, ["install", "-g", DWS_NPM_SPEC]);
+        assert_eq!(
+            envs.get(std::ffi::OsStr::new("HOME")),
+            Some(&install_home.clone().into_os_string())
+        );
+        assert_eq!(
+            envs.get(std::ffi::OsStr::new("USERPROFILE")),
+            Some(&install_home.clone().into_os_string())
+        );
+        let user_config = crate::bridge::paths::user_home_dir().join(".npmrc");
+        if user_config.is_file()
+            && std::env::var_os("NPM_CONFIG_USERCONFIG").is_none()
+            && std::env::var_os("npm_config_userconfig").is_none()
+        {
+            assert_eq!(
+                envs.get(std::ffi::OsStr::new("NPM_CONFIG_USERCONFIG")),
+                Some(&user_config.into_os_string())
+            );
+        }
+        assert!(install_home.starts_with(&root));
+
+        match previous {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

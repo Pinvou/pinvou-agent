@@ -3,7 +3,7 @@
  * pinvou3 前端 UI 冒烟回归测试 — headless chromium + mock TauriBridge,加载真 src/index.html。
  * 覆盖三条易回归的前端通路:
  *   ① resumeWorkflowOnBoot:有僵尸 run 时启动仍落草稿页(activeSessionId=null)+ 只挂看板,不劫持聊天会话。
- *   ② 工具商店渲染出 Obsidian 知识库卡。
+ *   ② 工具商店渲染出 Obsidian 与钉钉连接器卡。
  *   ③ 聊天流产物卡(artifact_card)挂出「品/悟」召唤 pinvou 按钮。
  * 依赖:puppeteer-core(自动从 node_modules / ~/.npm/_npx 发现)+ 系统 chromium(或 env CHROME 指定)。
  * 用法:node pinvou3-app/tests/ui_smoke.js   (全 PASS → exit 0,任一 FAIL → exit 1,缺依赖 → exit 2)
@@ -131,12 +131,15 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     }
   });
 
-  // ② 工具商店 Obsidian 卡
+  // ② 工具商店关键连接器卡
   await expand(page); await sleep(500);
   await clickText(page, '工具商店');
   await sleep(1500);
-  const obs = await page.evaluate(() => document.body.innerText.includes('Obsidian'));
-  rec('② 工具商店渲染 Obsidian 卡', obs);
+  const connectors = await page.evaluate(() => {
+    const text = document.body.innerText;
+    return { obsidian: text.includes('Obsidian'), dingtalk: text.includes('钉钉') };
+  });
+  rec('② 工具商店渲染 Obsidian 与钉钉卡', connectors.obsidian && connectors.dingtalk, JSON.stringify(connectors));
 
   // ③ 聊天流产物卡 品/悟 召唤按钮
   await clickText(page, '第三季度财报分析');

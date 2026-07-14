@@ -261,11 +261,15 @@ const FEISHU_STEPS = [
             qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase, userCode: p.user_code };
         });
       });
-      ev.listen('dingtalk:connected', () => {
+      ev.listen('dingtalk:connected', async () => {
         dingtalkConn.stopTick();
-        dingtalkConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
-        window.__TAURI__.core.invoke('dingtalk_apply_skills').catch(() => {});
-        setTimeout(() => dingtalkConn.setFlow(null), 1800);
+        try {
+          await window.__TAURI__.core.invoke('dingtalk_apply_skills');
+          dingtalkConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
+          setTimeout(() => dingtalkConn.setFlow(null), 1800);
+        } catch (e) {
+          dingtalkConn.setFlow(f => ({ ...(f || {}), phase: 'error', err: `钉钉已授权，但技能启用失败：${String(e).slice(0, 220)}`, errStep: 'qr', steps: { ...((f && f.steps) || {}), qr: 'error' } }));
+        }
       });
       ev.listen('dingtalk:error', (e) => {
         const p = e.payload || {};

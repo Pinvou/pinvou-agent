@@ -1116,6 +1116,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn dingtalk_skill_gate_extracts_and_removes_official_mono_skill() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = Pinvou3Bundle::paths();
+
+        bundle.apply_dingtalk_skills(true).unwrap();
+        let skill = bundle.skills_dir.join("dws");
+        assert!(skill.join("SKILL.md").is_file());
+        assert!(skill
+            .join("references")
+            .join("global-reference.md")
+            .is_file());
+        assert!(bundle.skills_dir.join("NOTICE-dingtalk.md").is_file());
+
+        bundle.apply_dingtalk_skills(false).unwrap();
+        assert!(!skill.exists());
+        assert!(!bundle.skills_dir.join("NOTICE-dingtalk.md").exists());
+
+        cleanup(&tmp);
+    }
+
 
 
     fn tempdir() -> String {
