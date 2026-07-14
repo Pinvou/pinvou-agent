@@ -53,6 +53,22 @@ pub struct ToolManifest {
 pub struct RemoteServer {
     pub name: String,
     pub url: String,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth: Option<RemoteOAuthConfig>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth_resource: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteOAuthConfig {
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -356,7 +372,9 @@ impl MarketplaceManager<SystemCredentialStore> {
 impl<S: CredentialStore> MarketplaceManager<S> {
     pub fn with_store(credential_store: S) -> Self {
         let servers_dir = paths::bundle_mcp_servers_dir();
-        let installed_file = paths::pinvou3_home().join("marketplace").join("installed.json");
+        let installed_file = paths::pinvou3_home()
+            .join("marketplace")
+            .join("installed.json");
         Self {
             servers_dir,
             installed_file,
@@ -509,7 +527,13 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         //    装进 ~/.local 用户目录、不动系统/发行版包)→ --break-system-packages(某些环境 --user 不可用)。
         let run = |extra: &[&str]| -> std::io::Result<std::process::Output> {
             let mut cmd = std::process::Command::new(python_cmd);
-            cmd.args(["-m", "pip", "install", "--disable-pip-version-check", "--no-input"]);
+            cmd.args([
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "--no-input",
+            ]);
             cmd.args(extra);
             cmd.args(deps);
             cmd.output()
@@ -630,7 +654,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         let mut json: serde_json::Value = serde_json::from_str(&content)
             .map_err(|e| format!("解析 {} 失败: {e}", path.display()))?;
         let mut changed = false;
-        let Some(servers) = json.get_mut("servers").and_then(|servers| servers.as_object_mut())
+        let Some(servers) = json
+            .get_mut("servers")
+            .and_then(|servers| servers.as_object_mut())
         else {
             return Ok(());
         };
@@ -702,12 +728,10 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 existing
             }
             Ok(_) => {
-                self.credential_store
-                    .set(&reference, value)
-                    .map_err(|e| {
-                        result.failed_count += 1;
-                        mcp_secret_store_error(spec.tool_id, spec.key, e)
-                    })?;
+                self.credential_store.set(&reference, value).map_err(|e| {
+                    result.failed_count += 1;
+                    mcp_secret_store_error(spec.tool_id, spec.key, e)
+                })?;
                 result.migrated_count += 1;
                 result.messages.push(format!(
                     "MCP 工具 '{}' 的密钥 {} 已迁移到系统凭据存储",
@@ -751,6 +775,21 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         self.load_manifest(tool_id)
             .map(|m| m.companion_skills)
             .unwrap_or_default()
+    }
+
+    pub fn oauth_remote_server_name(&self, tool_id: &str) -> Option<String> {
+        self.load_manifest(tool_id)?
+            .servers
+            .into_iter()
+            .find(|server| {
+                !server.scopes.is_empty()
+                    || server.oauth.is_some()
+                    || server
+                        .oauth_resource
+                        .as_deref()
+                        .is_some_and(|s| !s.trim().is_empty())
+            })
+            .map(|server| server.name)
     }
 
     /// 根据已安装工具生成 instructions 路由规则段 + 工具表条目
@@ -969,6 +1008,17 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 }
 
                 let mut entry = serde_json::json!({ "url": server.url });
+                if !server.scopes.is_empty() {
+                    entry["scopes"] = serde_json::to_value(&server.scopes).unwrap_or_default();
+                }
+                if let Some(oauth) = &server.oauth {
+                    entry["oauth"] = serde_json::to_value(oauth).unwrap_or_default();
+                }
+                if let Some(resource) = &server.oauth_resource {
+                    if !resource.trim().is_empty() {
+                        entry["oauth_resource"] = serde_json::Value::String(resource.clone());
+                    }
+                }
                 if !headers.is_empty() {
                     entry["headers"] = serde_json::Value::Object(headers);
                 }
@@ -1200,7 +1250,11 @@ mod tests {
             let backups: Vec<_> = std::fs::read_dir(installed_path.parent().unwrap())
                 .unwrap()
                 .flatten()
-                .filter(|e| e.file_name().to_string_lossy().starts_with("installed.json.corrupt."))
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with("installed.json.corrupt.")
+                })
                 .collect();
             assert_eq!(backups.len(), 1);
         });
@@ -1224,7 +1278,7 @@ mod tests {
                 names,
                 vec![
                     "mcp_demo_bare_tool".to_string(),  // 裸名 → 补前缀
-                    "mcp_demo_already".to_string(),    // 已带 mcp_ → 原样,不变成 mcp_demo_mcp_demo_already
+                    "mcp_demo_already".to_string(), // 已带 mcp_ → 原样,不变成 mcp_demo_mcp_demo_already
                     "mcp_demo_upper_tool".to_string(), // 小写化
                 ]
             );
@@ -1263,6 +1317,69 @@ mod tests {
                     "mcp_qcc-ipr_*".to_string(),
                     "mcp_qcc-operation_*".to_string(),
                 ]
+            );
+        });
+    }
+
+    #[test]
+    fn model_tool_names_generates_prefix_rules_for_remote_oauth_server() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "yuandian-mcp",
+                r#"{
+                    "id":"yuandian-mcp","name":"华宇元典","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"","args":[],
+                    "servers":[
+                        {
+                            "name":"yuandian_mcp",
+                            "url":"https://open.chineselaw.com/mcp",
+                            "scopes":["mcp"],
+                            "oauth_resource":"https://open.chineselaw.com/mcp"
+                        }
+                    ]
+                }"#,
+            );
+
+            let mgr = MarketplaceManager::new();
+            assert_eq!(
+                mgr.model_tool_names(&["yuandian-mcp".to_string()]),
+                vec!["mcp_yuandian_mcp_*".to_string()]
+            );
+        });
+    }
+
+    #[test]
+    fn install_remote_oauth_server_writes_deepseek_oauth_config() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "yuandian-mcp",
+                r#"{
+                    "id":"yuandian-mcp","name":"华宇元典","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"","args":[],
+                    "servers":[
+                        {
+                            "name":"yuandian_mcp",
+                            "url":"https://open.chineselaw.com/mcp",
+                            "scopes":["mcp"],
+                            "oauth_resource":"https://open.chineselaw.com/mcp"
+                        }
+                    ]
+                }"#,
+            );
+
+            let mgr = MarketplaceManager::new();
+            mgr.install("yuandian-mcp", &std::collections::HashMap::new())
+                .unwrap();
+
+            let mcp = read_mcp_json();
+            let server = &mcp["servers"]["yuandian_mcp"];
+            assert_eq!(server["url"], "https://open.chineselaw.com/mcp");
+            assert_eq!(server["scopes"], serde_json::json!(["mcp"]));
+            assert_eq!(server["oauth_resource"], "https://open.chineselaw.com/mcp");
+            assert!(server.get("headers").is_none());
+            assert_eq!(
+                mgr.oauth_remote_server_name("yuandian-mcp").as_deref(),
+                Some("yuandian_mcp")
             );
         });
     }
@@ -1440,11 +1557,15 @@ mod tests {
             let store = MemoryCredentialStore::default();
             let secret = secret_value("qcc");
             store
-                .set(&mcp_secret_reference("qcc", "header", "QCC_API_KEY"), &secret)
+                .set(
+                    &mcp_secret_reference("qcc", "header", "QCC_API_KEY"),
+                    &secret,
+                )
                 .unwrap();
             let mgr = MarketplaceManager::with_store(store);
 
-            mgr.install("qcc", &std::collections::HashMap::new()).unwrap();
+            mgr.install("qcc", &std::collections::HashMap::new())
+                .unwrap();
 
             let mcp = read_mcp_json();
             let authorization = mcp["servers"]["qcc-company"]["headers"]["Authorization"]

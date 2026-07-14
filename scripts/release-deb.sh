@@ -12,7 +12,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="$REPO_ROOT/pinvou3-app"
 SERVER="admin@8.218.49.20"
 REMOTE_DIR="/var/www/pinvou3"
-BASE_URL="https://www.ma-xiao.com/pinvou3"
+BASE_URL="https://pinvou.com/pinvou3"
 
 NOTES="${1:-}"
 if [ -z "$NOTES" ]; then

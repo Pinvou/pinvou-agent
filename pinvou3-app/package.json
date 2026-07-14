@@ -16,8 +16,9 @@
     "build:nsis:stage": "npm run prebuild:nsis && tauri build --features dev-tools --no-bundle && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stage-windows-nsis-resources.ps1",
     "bundle:nsis": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stage-windows-nsis-resources.ps1 -ValidateOnly && tauri bundle --features dev-tools --bundles nsis --config src-tauri/target/release/nsis-stage/tauri.nsis-stage.conf.json",
     "test:update-notice": "node tests/update_notice_logic.test.js",
+    "test:marketplace-oauth": "node tests/marketplace_oauth_logic.test.js",
     "test:scheduled": "node tests/scheduled_tasks_unit.js",
-    "test": "npm run test:update-notice && npm run test:scheduled",
+    "test": "npm run test:update-notice && npm run test:marketplace-oauth && npm run test:scheduled",
     "test:ui-smoke": "node tests/ui_smoke.js",
     "test:kb-smoke": "node tests/kb_smoke.js",
     "test:tool-store": "node tests/tool_store_smoke.js",
@@ -36,6 +37,8 @@
     "dompurify": "^3.4.2",
     "marked": "^13.0.3",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "turndown": "^7.2.4",
+    "turndown-plugin-gfm": "^1.0.2"
   }
 }

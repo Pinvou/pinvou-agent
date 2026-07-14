@@ -32,9 +32,10 @@ export DEEPSEEK_ALLOW_INSECURE_HTTP="${DEEPSEEK_ALLOW_INSECURE_HTTP:-1}"
 export DEEPSEEK_FORCE_HTTP1="${DEEPSEEK_FORCE_HTTP1:-1}"
 
 # ── L1 知识库语义检索：本地 embedding 模型目录 ──────────────────────
-# 配了就启用 fastembed 进程内向量化(bge-m3 int8 单文件 onnx/model.onnx),知识库检索
+# 配了就启用 fastembed 进程内向量化(bge-m3 int8 单文件
+# onnx/model_int8.onnx 或 model.onnx),知识库检索
 # 升级为 fts+向量 RRF 混合;不配/加载失败则降级为纯全文 fts。模型目录需含
-# onnx/model.onnx + tokenizer.json/config.json/special_tokens_map.json/tokenizer_config.json。
+# 单文件 ONNX + tokenizer.json/config.json/special_tokens_map.json/tokenizer_config.json。
 # (生产 deb 的模型下载/配置入口=设置页"知识库模型"卡,Phase 3 收尾待做。)
 export PINVOU3_KB_EMBED_MODEL_DIR="${PINVOU3_KB_EMBED_MODEL_DIR:-$HOME/models/bge-m3}"
 
@@ -47,7 +48,7 @@ export PINVOU3_WEB_TEMPLATE_DIR="${PINVOU3_WEB_TEMPLATE_DIR:-$HOME/models/web-te
 # dev 默认走公网域名中继，手机无需和桌面在同一局域网。仍可在外部 export 覆盖：
 #   PINVOU_REMOTE_PUBLIC_URL=http://10.x.x.x:8787
 #   PINVOU_REMOTE_RELAY_WS_URL=ws://10.x.x.x:8787/ws
-export PINVOU_REMOTE_PUBLIC_URL="${PINVOU_REMOTE_PUBLIC_URL:-https://www.ma-xiao.com/pinvou3/remote}"
-export PINVOU_REMOTE_RELAY_WS_URL="${PINVOU_REMOTE_RELAY_WS_URL:-wss://www.ma-xiao.com/pinvou3/remote/ws}"
+export PINVOU_REMOTE_PUBLIC_URL="${PINVOU_REMOTE_PUBLIC_URL:-https://pinvou.com/pinvou3/remote}"
+export PINVOU_REMOTE_RELAY_WS_URL="${PINVOU_REMOTE_RELAY_WS_URL:-wss://pinvou.com/pinvou3/remote/ws}"
 
 exec npx tauri dev "$@"

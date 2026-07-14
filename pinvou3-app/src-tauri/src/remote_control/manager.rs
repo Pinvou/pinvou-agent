@@ -20,8 +20,8 @@ use crate::connector_cli;
 use crate::engine_pool::EnginePool;
 
 const PREVIEW_LIMIT_BYTES: usize = 256 * 1024;
-const DEFAULT_PUBLIC_BASE_URL: &str = "https://www.ma-xiao.com/pinvou3/remote";
-const DEFAULT_RELAY_WS_URL: &str = "wss://www.ma-xiao.com/pinvou3/remote/ws";
+const DEFAULT_PUBLIC_BASE_URL: &str = "https://pinvou.com/pinvou3/remote";
+const DEFAULT_RELAY_WS_URL: &str = "wss://pinvou.com/pinvou3/remote/ws";
 
 #[derive(Clone)]
 pub struct RemoteControlManager {

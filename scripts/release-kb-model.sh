@@ -11,7 +11,7 @@ set -euo pipefail
 
 SERVER="admin@8.218.49.20"
 REMOTE_DIR="/var/www/pinvou3/kb-model"
-BASE_URL="https://www.ma-xiao.com/pinvou3/kb-model"
+BASE_URL="https://pinvou.com/pinvou3/kb-model"
 MODEL_SRC="${PINVOU3_KB_EMBED_MODEL_DIR:-$HOME/models/bge-m3}"
 
 # ── 1. 定位 int8 onnx(容错两种布局)+ 校验 tokenizer 齐全 ──

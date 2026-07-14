@@ -158,8 +158,16 @@ def main():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         assert manifest["id"] == manifest_path.parent.name
         manifests[manifest["id"]] = manifest
-    assert set(manifests) == {"weather", "iwencai", "qcc", "obsidian", "pptx", "gongwen"}
-    print("✅ manifest: 6 个可安装 MCP 清单完整且目录 ID 一致")
+    assert set(manifests) == {
+        "weather",
+        "iwencai",
+        "qcc",
+        "obsidian",
+        "pptx",
+        "gongwen",
+        "yuandian-mcp",
+    }
+    print("✅ manifest: 7 个可安装 MCP 清单完整且目录 ID 一致")
 
     expected = {
         "weather": {"get_weather"},
@@ -234,6 +242,16 @@ def main():
     field = qcc["config_fields"][0]
     assert field == {"key": "QCC_API_KEY", "label": "企查查 API Key（留空用内置共享额度）", "required": False, "target": "bearer", "secret": True}
     print("✅ qcc: 4 个远端 MCP 端点 + bearer secret 清单契约")
+
+    yuandian = manifests["yuandian-mcp"]
+    assert yuandian["mcp_tools"] == [] and not yuandian["command"]
+    assert yuandian["servers"] == [{
+        "name": "yuandian_mcp",
+        "url": "https://open.chineselaw.com/mcp",
+        "scopes": ["mcp"],
+        "oauth_resource": "https://open.chineselaw.com/mcp",
+    }]
+    print("✅ yuandian-mcp: 唯一远程端点 + OAuth scope/resource 清单契约")
 
     print("\n✅ ALL MCP SERVER CONTRACTS PASS")
 

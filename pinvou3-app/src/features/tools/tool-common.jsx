@@ -306,6 +306,7 @@ const AcFmtIcon = ({ kind, className }) => (
       { id: 12, backendId: null, title: 'CNB 云原生管线', subtitle: '代码仓库与 CI/CD 调度', category: 'dev', type: 'MCP Server', version: 'v1.0.0', latency: '<40ms', desc: '将云原生开发能力赋予大模型。支持通过自然语言进行代码仓库检索、提交 Issue、审查 PR、触发并监控流水线部署等极客操作。', icon: Code, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: true },
       { id: 13, backendId: 'qcc', title: '企查查', subtitle: '企业工商、风控、知产、经营数据查询', category: 'finance', type: 'MCP Server', version: 'v1.0.0', latency: '<500ms', desc: '接入企查查智能体数据平台，提供182个企业数据查询工具，覆盖工商登记、股东结构、风险预警、知识产权、招投标等六大模块。', icon: Building2, color: 'bg-gradient-to-br from-blue-600 to-cyan-500', installed: false, authRequired: false, welcomeQueries: ['查一下华为的工商信息', '腾讯有哪些风险预警', '比亚迪的专利有多少', '阿里巴巴的招投标记录'] },
       { id: 14, backendId: 'obsidian', title: 'Obsidian 知识库', subtitle: '检索并管理本机 Obsidian 笔记，读写你的个人知识', category: 'kb', type: 'MCP Server', version: 'v1.1.0', latency: '<30ms', desc: '把你本机的 Obsidian 笔记库（vault）接入大模型。支持全文检索、读取、新建、编辑、改名（自动修双链）与删除——让 AI 基于并维护你自己沉淀的知识。自动识别当前打开的库，无需手动配置；笔记不出本机、模型也在本机，知识与算力全链路不出域。', icon: BookOpen, color: 'bg-gradient-to-b from-violet-500 to-purple-700', installed: false, authRequired: false, welcomeQueries: ['帮我搜一下我的笔记', '帮我新建一篇笔记记录今天的想法', '我的知识库有哪些文档？', '总结一下我的笔记'] },
+      { id: 19, backendId: 'yuandian-mcp', oauthMcp: true, title: '华宇元典法律数据', subtitle: '法律法规、案例文书与企业司法风险查询', category: 'kb', type: 'Remote MCP', version: 'v1.0.0', latency: '云端', desc: '接入华宇元典开放平台远程 MCP。支持法律法规、裁判案例、企业司法风险等法律数据检索；点「连接」后会打开浏览器进行元典账号授权，全程不填写 API Key。', icon: BookOpen, color: 'bg-gradient-to-b from-emerald-500 to-cyan-700', installed: false, authRequired: true, configFields: [], welcomeQueries: ['检索一下劳动合同解除相关案例', '查一下公司股权责任相关法规', '帮我分析企业司法风险', '找一下最近的裁判观点'] },
       { id: 15, backendId: 'pptx', title: 'PPT 生成', subtitle: '本地直出可编辑 PowerPoint，套主题模板、真图表、带封面', category: 'office', type: 'MCP Server', version: 'v1.0.0', latency: '本地', desc: '说“做个 PPT / 汇报”，AI 先列大纲让你确认，再按内容自动选主题（9 套）生成可编辑 .pptx——真·图表、自带封面缩略图，全程本地、数据不出机。首次安装会自动下载 python-pptx 依赖（需联网）。', icon: Presentation, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: false, welcomeQueries: ['做个 Q2 季度汇报 PPT', '帮我做一份产品介绍 PPT', '做个项目方案演示', '做个公司介绍 PPT'] },
       { id: 16, backendId: 'gongwen', title: '公文写作', subtitle: '党政机关公文直出 GB/T 9704 合规 .docx', category: 'office', type: 'MCP Server', version: 'v1.0.0', latency: '本地', desc: '说“写个通知 / 起草意见”，AI 按文种结构与固定话术写好内容，渲染器套党政机关公文国标格式（方正小标宋标题、仿宋_GB2312 正文、国标页边距、红头与红色分隔线）直出 .docx，全程本地、数据不出机。配合「党政机关公文写作」技能效果最佳。首次安装自动下载 python-docx 依赖（需联网）。', icon: FileText, color: 'bg-gradient-to-b from-red-500 to-rose-700', installed: false, authRequired: false, welcomeQueries: ['起草一份关于印发管理办法的通知', '写一份加强某项工作的实施意见', '拟一份会议通知', '写一份情况报告'] },
     ];
@@ -494,7 +495,18 @@ const AcFmtIcon = ({ kind, className }) => (
             onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, true); }}
             className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-slate-100 dark:bg-[#2C2C2E] border border-slate-200 dark:border-slate-700 text-[#FF3B30] dark:text-[#FF453A] hover:bg-slate-200 dark:hover:bg-[#3A3A3C]`}
           >
-            {(tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.eipCli || tool.zhidaoCli) ? '断开' : '卸载'}
+            {(tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.eipCli || tool.zhidaoCli || tool.oauthMcp) ? '断开' : '卸载'}
+          </button>
+        );
+      }
+      if (tool.oauthMcp) {
+        const retry = tool.authStatus && tool.authStatus !== 'not_installed';
+        return (
+          <button
+            onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, false); }}
+            className={`${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`}
+          >
+            {retry ? '重新授权' : '连接'}
           </button>
         );
       }
@@ -504,7 +516,7 @@ const AcFmtIcon = ({ kind, className }) => (
           onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, false); }}
           className={`${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`}
         >
-          {(tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.eipCli || tool.zhidaoCli) ? '连接' : (hasConfig ? '配置' : '安装')}
+          {(tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.eipCli || tool.zhidaoCli || tool.oauthMcp) ? '连接' : (hasConfig ? '配置' : '安装')}
         </button>
       );
     };
