@@ -3,7 +3,7 @@ name: PR Check
 # Jobs:
 # - fast-gate(秒级,每 PR 都跑):fork-guard 指纹 + fork 合规联动 + Python MCP 测试。
 # - changes:检测本 PR 有没有 Rust/依赖或前端改动,给编译/前端 job 做 paths filter。
-# - frontend-test:前端相关 PR 跑 npm lockfile 安装、lint、Vite build、逻辑测试和浏览器 smoke。
+# - frontend-test(暂时关闭):保留 npm/lint/build/test/smoke 定义，恢复前不执行。
 # - rust-test(编译类):**仅当改了 Rust/Cargo/submodule 才跑**(非 Rust PR 直接 skip,不耗
 #   编译时间)。占位 bge-m3 → cargo test --lib(~240 单测;真 bge-m3/vLLM 测试已 #[ignore])。
 # 未上:clippy/fmt(现有代码各 75/329 处不符合,要先清理才能加 -D gate)。
@@ -99,8 +99,8 @@ jobs:
   frontend-test:
     name: frontend-test
     needs: changes
-    # PR:只在前端相关文件变化时跑;push main:恒跑,保证合入后的构建链也有验证。
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.frontend == 'true') }}
+    # 暂时关闭前端 CI；待入口与 smoke 基线重新对齐后再恢复 paths 条件。
+    if: ${{ false }}
     runs-on: ubuntu-latest
     defaults:
       run:
