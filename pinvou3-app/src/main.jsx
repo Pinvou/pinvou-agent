@@ -18,6 +18,9 @@ import { PinvouSummonCard } from './features/tools/tool-renderers.jsx';
 import { CardPoolView, Lanyard, PersonaEditorModal } from './features/personas/Personas.jsx';
 import { WorkflowView } from './features/workflow/WorkflowView.jsx';
 
+// Temporary product gate: keep scheduled tasks operational while hiding the navigation entry.
+const SHOW_SCHEDULED_TASKS_ENTRY = false;
+
 
 /* ==========================================
        Lucide icon replacements (inline SVG)
@@ -976,14 +979,16 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('search')}
               />
-              <NavItem
-                icon={<Clock size={18} />} label={t.scheduledPlans}
-                active={currentView === 'scheduled'}
-                unread={!!(bs && (bs.scheduledTasks || []).some(task => task.hasUnreadRuns))}
-                theme={activeTheme}
-                isSidebarOpen={isSidebarOpen}
-                onClick={() => navigateFromScheduledRun('scheduled')}
-              />
+              {SHOW_SCHEDULED_TASKS_ENTRY && (
+                <NavItem
+                  icon={<Clock size={18} />} label={t.scheduledPlans}
+                  active={currentView === 'scheduled'}
+                  unread={!!(bs && (bs.scheduledTasks || []).some(task => task.hasUnreadRuns))}
+                  theme={activeTheme}
+                  isSidebarOpen={isSidebarOpen}
+                  onClick={() => navigateFromScheduledRun('scheduled')}
+                />
+              )}
               <NavItem
                 icon={<BarChart2 size={18} />} label={t.monitor}
                 active={currentView === 'monitor'}
