@@ -144,7 +144,8 @@ fn ensure_release_env() {
         ("DEEPSEEK_ALLOW_INSECURE_HTTP", "1"),
         ("DEEPSEEK_FORCE_HTTP1", "1"),
         ("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576"),
-        ("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "240"),
+        // 与 DeepSeek-TUI 的 stream_chunk_timeout 默认值保持一致。
+        ("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "300"),
         // SSE 首响应头超时(open timeout):底座只认 env,默认 45s 是为云端调的。
         // 本地 GB10 大上下文 SubAgent 请求首 token TTFT 偶发 >45s → 误杀子 agent
         // (真机实锤:三省六部 libu~1 首发死于 45s,重派才过)。280s 与

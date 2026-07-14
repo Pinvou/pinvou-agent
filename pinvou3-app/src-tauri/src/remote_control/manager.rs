@@ -1159,7 +1159,192 @@ fn mime_for_ext(ext: &str) -> &'static str {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bridge::paths::tests::ENV_LOCK;
+    use std::ffi::OsString;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct PinvouHomeOverride {
+        previous: Option<OsString>,
+        root: PathBuf,
+    }
+
+    impl PinvouHomeOverride {
+        fn new(label: &str) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "pinvou3-remote-{label}-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|duration| duration.as_nanos())
+                    .unwrap_or(0)
+            ));
+            let previous = std::env::var_os("PINVOU3_HOME");
+            std::env::set_var("PINVOU3_HOME", &root);
+            Self { previous, root }
+        }
+    }
+
+    impl Drop for PinvouHomeOverride {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(previous) => std::env::set_var("PINVOU3_HOME", previous),
+                None => std::env::remove_var("PINVOU3_HOME"),
+            }
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn write_file(path: &Path, contents: &[u8]) {
+        std::fs::create_dir_all(path.parent().expect("test file parent")).expect("create parent");
+        std::fs::write(path, contents).expect("write test file");
+    }
+
+    #[test]
+    fn dedup_rejects_duplicates_and_evicts_the_oldest_id() {
+        let mut dedup = Dedup::default();
+        assert!(dedup.remember("same-message"));
+        assert!(!dedup.remember("same-message"));
+
+        let mut capacity = Dedup::default();
+        for index in 0..=200 {
+            assert!(capacity.remember(&format!("message-{index}")));
+        }
+        assert_eq!(capacity.ids.len(), 200);
+        assert!(
+            capacity.remember("message-0"),
+            "oldest id should be evicted"
+        );
+        assert!(!capacity.remember("message-200"), "newest id must remain");
+    }
+
+    #[test]
+    fn dedup_accepts_an_id_again_after_expiry() {
+        let mut dedup = Dedup::default();
+        dedup.ids.insert("expired".to_string());
+        dedup.order.push_back((
+            "expired".to_string(),
+            Instant::now() - Duration::from_secs(601),
+        ));
+
+        assert!(dedup.remember("expired"));
+        assert!(!dedup.remember("expired"));
+    }
+
+    #[test]
+    fn session_preview_path_allows_current_session_and_rejects_escape() {
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = PinvouHomeOverride::new("preview-path");
+        let current_session = "session-current";
+        let other_session = "session-other";
+        let workspace_file = paths::session_workspace_dir(current_session).join("reports/daily.md");
+        let artifact_file = paths::session_artifacts_dir(current_session).join("chart.json");
+        let other_file = paths::session_workspace_dir(other_session).join("secret.md");
+        let outside_file = home.root.join("outside.txt");
+        write_file(&workspace_file, b"workspace report");
+        write_file(&artifact_file, br#"{"ok":true}"#);
+        write_file(&other_file, b"other session secret");
+        write_file(&outside_file, b"outside home");
+
+        assert_eq!(
+            resolve_session_preview_path(current_session, "reports/daily.md").expect("workspace"),
+            workspace_file
+                .canonicalize()
+                .expect("canonical workspace file")
+        );
+        assert_eq!(
+            resolve_session_preview_path(current_session, "artifacts/chart.json")
+                .expect("artifacts path tail"),
+            artifact_file
+                .canonicalize()
+                .expect("canonical artifact file")
+        );
+        assert!(resolve_session_preview_path(
+            current_session,
+            other_file.to_str().expect("utf-8 test path")
+        )
+        .is_err());
+        assert!(resolve_session_preview_path(
+            current_session,
+            "../session-other/workspace/secret.md"
+        )
+        .is_err());
+        assert!(resolve_session_preview_path(
+            current_session,
+            outside_file.to_str().expect("utf-8 test path")
+        )
+        .is_err());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let link = paths::session_workspace_dir(current_session).join("outside-link.txt");
+            symlink(&outside_file, &link).expect("create escape symlink");
+            assert!(resolve_session_preview_path(current_session, "outside-link.txt").is_err());
+        }
+    }
+
+    #[test]
+    fn artifact_preview_reports_kind_and_truncation() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-remote-preview-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
+        let markdown = root.join("result.md");
+        let oversized = root.join("large.txt");
+        let binary = root.join("archive.bin");
+        write_file(&markdown, b"# Remote result\n");
+        write_file(&oversized, &vec![b'x'; PREVIEW_LIMIT_BYTES + 17]);
+        write_file(&binary, &[0, 1, 2, 3]);
+
+        let markdown_preview = build_artifact_preview(&markdown).expect("markdown preview");
+        assert_eq!(markdown_preview["type"], "markdown");
+        assert_eq!(markdown_preview["mime"], "text/markdown");
+        assert_eq!(markdown_preview["truncated"], false);
+
+        let large_preview = build_artifact_preview(&oversized).expect("large text preview");
+        assert_eq!(large_preview["type"], "text");
+        assert_eq!(large_preview["truncated"], true);
+        assert_eq!(
+            large_preview["content"]
+                .as_str()
+                .expect("preview content")
+                .len(),
+            PREVIEW_LIMIT_BYTES
+        );
+
+        let binary_preview = build_artifact_preview(&binary).expect("binary preview");
+        assert_eq!(binary_preview["type"], "unsupported");
+        assert_eq!(binary_preview["truncated"], false);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn path_segment_tail_accepts_slashes_from_both_platforms() {
+        assert_eq!(
+            path_after_segment("sessions/s1/workspace/reports/a.md", "workspace"),
+            Some(PathBuf::from("reports/a.md"))
+        );
+        assert_eq!(
+            path_after_segment(r"sessions\s1\artifacts\chart.json", "artifacts"),
+            Some(PathBuf::from("chart.json"))
+        );
+        assert_eq!(path_after_segment("workspace", "workspace"), None);
+    }
+}
+
 fn tail_path(path: &str) -> String {
-    let parts = path.split('/').rev().take(3).collect::<Vec<_>>();
+    let normalized = path.replace('\\', "/");
+    let parts = normalized.split('/').rev().take(3).collect::<Vec<_>>();
     parts.into_iter().rev().collect::<Vec<_>>().join("/")
 }

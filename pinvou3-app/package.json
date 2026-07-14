@@ -13,7 +13,13 @@
     "build": "tauri build",
     "test:update-notice": "node tests/update_notice_logic.test.js",
     "test:scheduled": "node tests/scheduled_tasks_unit.js",
-    "test": "npm run test:update-notice && npm run test:scheduled"
+    "test": "npm run test:update-notice && npm run test:scheduled",
+    "test:ui-smoke": "node tests/ui_smoke.js",
+    "test:kb-smoke": "node tests/kb_smoke.js",
+    "test:tool-store": "node tests/tool_store_smoke.js",
+    "test:remote-mobile": "node ../remote-control-relay/test/mobile-ui.smoke.cjs",
+    "test:markdown": "node tests/render_markdown_smoke.js",
+    "test:user-journey": "../scripts/run-user-journey-tests.sh"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",

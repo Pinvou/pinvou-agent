@@ -1,7 +1,7 @@
 name: PR Check
 
 # Jobs:
-# - fast-gate(秒级,每 PR 都跑):fork-guard 指纹 + fork 合规联动 + Python MCP 测试。
+# - fast-gate(秒级,每 PR 都跑):fork-guard 指纹 + fork 合规联动 + Python 确定性测试。
 # - changes:检测本 PR 有没有 Rust/依赖或前端改动,给编译/前端 job 做 paths filter。
 # - frontend-test(暂时关闭):保留 npm/lint/build/test/smoke 定义，恢复前不执行。
 # - rust-test(编译类):**仅当改了 Rust/Cargo/submodule 才跑**(非 Rust PR 直接 skip,不耗
@@ -55,6 +55,9 @@ jobs:
             frontend:
               - 'pinvou3-app/src/**'
               - 'pinvou3-app/tests/**'
+              - 'remote-control-relay/**'
+              - 'scripts/run-user-journey-tests.sh'
+              - 'scripts/mcp-server-contract-smoke.py'
               - 'pinvou3-app/package.json'
               - 'pinvou3-app/package-lock.json'
               - 'pinvou3-app/vite.config.js'
@@ -85,9 +88,12 @@ jobs:
         with:
           python-version: "3.x"
 
+      - name: Session replay auditor 测试
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+
       - name: Python MCP server 测试 (mcp-servers/*/test_*.py)
         run: |
-          python3 -m pip install --quiet python-pptx   # pptx test 的唯一第三方依赖
+          python3 -m pip install --quiet python-pptx python-docx
           fail=0
           for t in pinvou3-app/resources/mcp-servers/*/test_*.py; do
             [ -f "$t" ] || continue
@@ -95,6 +101,9 @@ jobs:
             ( cd "$(dirname "$t")" && python3 "$(basename "$t")" ) || fail=1
           done
           [ "$fail" -eq 0 ]
+
+      - name: 内置 MCP 协议与产物契约
+        run: python3 scripts/mcp-server-contract-smoke.py
 
   frontend-test:
     name: frontend-test
@@ -114,10 +123,15 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: pinvou3-app/package-lock.json
+          cache-dependency-path: |
+            pinvou3-app/package-lock.json
+            remote-control-relay/package-lock.json
 
       - name: 安装前端依赖
         run: npm ci --prefer-offline --no-audit
+
+      - name: 安装 Remote relay 依赖
+        run: npm --prefix ../remote-control-relay ci --prefer-offline --no-audit
 
       - name: ESLint
         run: npm run lint:ui
@@ -126,12 +140,18 @@ jobs:
         run: npm run build:ui
 
       - name: 前端逻辑测试
-        run: npm test
+        run: |
+          npm test
+          npm run test:markdown
+          npm --prefix ../remote-control-relay test
 
       - name: 浏览器 smoke
         run: |
           export CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
           node tests/ui_smoke.js
+          node tests/kb_smoke.js
+          node tests/tool_store_smoke.js
+          node ../remote-control-relay/test/mobile-ui.smoke.cjs
           node tests/detached_boot_smoke.js
           node tests/drag_gesture_smoke.js
           node tests/update_notice_ui_smoke.js
@@ -192,6 +212,12 @@ jobs:
       # --test-threads=1:bridge 测试读/写全局 env,并行会竞争(qwen_preset/vllm 等 flaky)。
       - name: cargo test --lib (真 bge-m3/vLLM 测试已 #[ignore])
         run: cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
+
+      - name: L1 harness 严格错误回归（不调用真模型）
+        run: >-
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml
+          --test l1_dialog_harness strict_mode_
+          -- --test-threads=1
 
       - name: DeepSeek-TUI 定时任务运行时回归
         # 暂时关闭；底座对应运行时已回退，父仓后续另行收敛代码与 gitlink。
