@@ -257,6 +257,18 @@ test("telemetry deduplicates a device and usage event", async () => {
   assert.equal(limited.status, 429);
 });
 
+test("mobile composer stays inside the iOS visual viewport", async () => {
+  const response = await fetch(`${httpUrl}/pinvou3/remote/r/composer-viewport-test`);
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /textarea \{[^}]*flex: 1 1 0;[^}]*min-width: 0;[^}]*font-size: 16px;/);
+  assert.match(html, /\.composer button \{[^}]*flex: 0 0 36px;/);
+  assert.match(html, /--visual-viewport-width/);
+  assert.match(html, /viewport\.offsetLeft/);
+  assert.match(html, /visualViewport\.addEventListener\('scroll', syncViewportMetrics/);
+  assert.doesNotMatch(html, /user-scalable\s*=\s*no|maximum-scale\s*=\s*1/);
+});
+
 test("relay closes a websocket that does not authenticate in time", async () => {
   const authPort = port + 4;
   const authLimited = spawn(process.execPath, [join(relayDir, "server.js")], {

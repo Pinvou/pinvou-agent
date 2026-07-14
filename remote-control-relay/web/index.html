@@ -21,6 +21,8 @@
       --danger: #ff6f6f;
       --shadow: 0 8px 22px rgba(0,0,0,.20);
       --app-height: 100vh;
+      --visual-viewport-width: 100vw;
+      --visual-viewport-center-x: 50vw;
     }
     * { box-sizing: border-box; }
     html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); }
@@ -112,7 +114,7 @@
     button:disabled, button.disabled { opacity: .42; }
     button.danger { background: #c5221f; }
     button.ghost { background: var(--panel-2); color: var(--text); }
-    footer { position: fixed; left: 50%; right: auto; bottom: 0; width: min(100%, 460px); transform: translateX(-50%); padding: 8px 12px calc(9px + env(safe-area-inset-bottom)); background: linear-gradient(to top, rgba(12,15,18,1) 75%, rgba(12,15,18,.88)); backdrop-filter: blur(18px); border-top: 1px solid var(--line); z-index: 15; }
+    footer { position: fixed; left: var(--visual-viewport-center-x); right: auto; bottom: 0; width: min(var(--visual-viewport-width), 460px); transform: translateX(-50%); padding: 8px 12px calc(9px + env(safe-area-inset-bottom)); background: linear-gradient(to top, rgba(12,15,18,1) 75%, rgba(12,15,18,.88)); backdrop-filter: blur(18px); border-top: 1px solid var(--line); z-index: 15; }
     .jump-bottom { position: fixed; left: calc(50% + min(50vw, 230px) - 62px); bottom: calc(104px + env(safe-area-inset-bottom)); z-index: 18; width: 42px; height: 42px; padding: 0; border-radius: 999px; display: grid; place-items: center; background: var(--panel); color: var(--text); border: 1px solid var(--line); box-shadow: 0 10px 26px rgba(0,0,0,.28); opacity: 1; transform: translateY(0) scale(1); transition: opacity .16s ease, transform .16s ease; }
     .jump-bottom.hidden { opacity: 0; pointer-events: none; transform: translateY(8px) scale(.96); }
     .jump-bottom svg { width: 18px; height: 18px; stroke: currentColor; }
@@ -122,10 +124,10 @@
     .chip strong { font-weight: 700; color: var(--text); }
     .chip.readonly { color: var(--muted); }
     .chip.control { max-width: 58%; overflow: hidden; text-overflow: ellipsis; }
-    .composer { display: flex; align-items: flex-end; gap: 8px; min-height: 46px; padding: 5px 6px 5px 12px; border-radius: 17px; border: 1px solid var(--line); background: var(--panel); box-shadow: 0 8px 24px rgba(0,0,0,.18); }
-    textarea { flex: 1; min-height: 34px; max-height: 96px; resize: none; border: 0; border-radius: 0; padding: 7px 0; outline: none; background: transparent; color: var(--text); font: inherit; font-size: 15px; line-height: 1.4; }
+    .composer { width: 100%; min-width: 0; display: flex; align-items: flex-end; gap: 8px; min-height: 46px; padding: 5px 6px 5px 12px; border-radius: 17px; border: 1px solid var(--line); background: var(--panel); box-shadow: 0 8px 24px rgba(0,0,0,.18); }
+    textarea { flex: 1 1 0; width: 0; min-width: 0; min-height: 34px; max-height: 96px; resize: none; border: 0; border-radius: 0; padding: 7px 0; outline: none; background: transparent; color: var(--text); font: inherit; font-size: 16px; line-height: 1.4; }
     textarea::placeholder { color: var(--muted-2); }
-    .composer button { width: 36px; min-width: 36px; height: 36px; min-height: 36px; padding: 0; border-radius: 12px; display: grid; place-items: center; }
+    .composer button { flex: 0 0 36px; width: 36px; min-width: 36px; height: 36px; min-height: 36px; padding: 0; border-radius: 12px; display: grid; place-items: center; }
     .composer button.primary { background: var(--blue); box-shadow: 0 6px 14px rgba(36,136,255,.22); }
     .composer button.danger { background: #c5221f; }
     .composer button svg { width: 18px; height: 18px; stroke: currentColor; }
@@ -437,15 +439,23 @@
     </section>
   </div>
   <script>
-    function syncViewportHeight() {
+    function syncViewportMetrics() {
       const viewport = window.visualViewport;
       const height = Math.round((viewport && viewport.height) || window.innerHeight || document.documentElement.clientHeight || 0);
+      const width = Math.round((viewport && viewport.width) || window.innerWidth || document.documentElement.clientWidth || 0);
+      const left = Math.round((viewport && viewport.offsetLeft) || 0);
+      const centerX = left + width / 2;
       if (height > 0) document.documentElement.style.setProperty('--app-height', `${height}px`);
+      if (width > 0) document.documentElement.style.setProperty('--visual-viewport-width', `${width}px`);
+      document.documentElement.style.setProperty('--visual-viewport-center-x', `${centerX}px`);
     }
-    syncViewportHeight();
-    window.addEventListener('resize', syncViewportHeight, { passive: true });
-    window.addEventListener('orientationchange', () => setTimeout(syncViewportHeight, 80), { passive: true });
-    if (window.visualViewport) window.visualViewport.addEventListener('resize', syncViewportHeight, { passive: true });
+    syncViewportMetrics();
+    window.addEventListener('resize', syncViewportMetrics, { passive: true });
+    window.addEventListener('orientationchange', () => setTimeout(syncViewportMetrics, 80), { passive: true });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', syncViewportMetrics, { passive: true });
+      window.visualViewport.addEventListener('scroll', syncViewportMetrics, { passive: true });
+    }
     function remoteBasePath() {
       const parts = location.pathname.split('/').filter(Boolean);
       const routeIndex = parts.lastIndexOf('r');
@@ -557,7 +567,7 @@
       });
     }
     function showTakeoverScreen() {
-      syncViewportHeight();
+      syncViewportMetrics();
       state.replaced = true;
       state.terminal = false;
       state.desktopReconnecting = false;
@@ -2509,7 +2519,7 @@
       }
     }
     function reconnectThisDevice() {
-      syncViewportHeight();
+      syncViewportMetrics();
       el.takeoverReconnect.disabled = true;
       el.takeoverReconnect.textContent = '正在重新连接...';
       el.takeoverHint.textContent = '正在重新接管当前远程会话。';
