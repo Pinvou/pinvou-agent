@@ -782,7 +782,25 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       async function refreshToolsMenu(isAlive) {
         try {
           const list = await window.__TAURI__.core.invoke('list_marketplace_tools');
-          if (isAlive()) setTools((list || []).filter(x => x.installed));
+          const installedTools = (list || []).filter(x => x.installed);
+          const companionSkillIds = new Set(installedTools.flatMap(x => x.companion_skills || []));
+          const skills = await window.__TAURI__.core.invoke('list_marketplace_skills');
+          const installedSkills = (skills || [])
+            .filter(x => x.installed && !companionSkillIds.has(x.id))
+            .map(x => ({
+              id: `skill:${x.id}`,
+              name: x.title || x.id,
+              description: x.description || '',
+              installed: true,
+              kind: 'skill',
+            }));
+          const seen = new Set();
+          const merged = [...installedTools, ...installedSkills].filter(x => {
+            if (seen.has(x.id)) return false;
+            seen.add(x.id);
+            return true;
+          });
+          if (isAlive()) setTools(merged);
         } catch (e) { /* ignore */ }
         try {
           const dis = await window.__TAURI__.core.invoke('get_disabled_connectors');
