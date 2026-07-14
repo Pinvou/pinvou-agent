@@ -28,6 +28,13 @@ const ADMIN_SESSION_MS = 12 * 60 * 60_000;
 const DAY_MS = 24 * 60 * 60_000;
 const REGION_REFRESH_MS = DAY_MS;
 const STATS_TIMEZONE_OFFSET_MS = 8 * 60 * 60_000;
+const DEFAULT_EVENT_RETENTION_MS = 35 * DAY_MS;
+const DEFAULT_MAX_EVENTS = 100_000;
+const DEFAULT_MAX_DEVICES = 10_000;
+const DEFAULT_EVENT_RATE_PER_MINUTE = 2_000;
+const DEFAULT_GLOBAL_EVENT_RATE_PER_MINUTE = 20_000;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const MAX_RATE_LIMIT_BUCKETS = 20_000;
 
 function json(res, status, value, headers = {}) {
   res.writeHead(status, {
@@ -69,6 +76,19 @@ function boundedCount(value) {
   const n = Number(value);
   if (!Number.isFinite(n) || n < 0) return 0;
   return Math.min(Math.floor(n), Number.MAX_SAFE_INTEGER);
+}
+
+function boundedInteger(value, fallback, minimum, maximum) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(maximum, Math.max(minimum, Math.floor(parsed)));
+}
+
+class TelemetryHttpError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
 }
 
 function normalizedState(value) {
@@ -284,28 +304,64 @@ function atomicWriteJson(path, value) {
   renameSync(temporary, path);
 }
 
-class TelemetryStore {
-  constructor(dataDir, pepper) {
+function atomicWriteJsonLines(path, values) {
+  const temporary = `${path}.tmp`;
+  const content = values.length
+    ? `${values.map((value) => JSON.stringify(value)).join("\n")}\n`
+    : "";
+  writeFileSync(temporary, content, { mode: 0o600 });
+  renameSync(temporary, path);
+}
+
+export class TelemetryStore {
+  constructor(dataDir, pepper, options = {}) {
     this.dataDir = dataDir;
     this.pepper = pepper;
     this.devicesPath = join(dataDir, "devices.json");
     this.eventsPath = join(dataDir, "usage-events.jsonl");
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     this.devices = new Map();
+    this.devicesByHardwareHash = new Map();
     this.events = [];
     this.eventIds = new Set();
     this.saveTimer = null;
+    this.lastEventCompactionAt = 0;
+    this.eventRateBuckets = new Map();
+    this.globalEventRateBucket = null;
+    this.maxDevices = boundedInteger(options.maxDevices, DEFAULT_MAX_DEVICES, 1, 1_000_000);
+    this.maxEvents = boundedInteger(options.maxEvents, DEFAULT_MAX_EVENTS, 100, 5_000_000);
+    this.eventCompactionTarget = Math.max(1, Math.floor(this.maxEvents * 0.9));
+    this.eventRetentionMs = boundedInteger(
+      options.eventRetentionMs,
+      DEFAULT_EVENT_RETENTION_MS,
+      30 * DAY_MS,
+      366 * DAY_MS,
+    );
+    this.eventRatePerMinute = boundedInteger(
+      options.eventRatePerMinute,
+      DEFAULT_EVENT_RATE_PER_MINUTE,
+      MAX_EVENTS_PER_BATCH,
+      100_000,
+    );
+    this.globalEventRatePerMinute = boundedInteger(
+      options.globalEventRatePerMinute,
+      DEFAULT_GLOBAL_EVENT_RATE_PER_MINUTE,
+      MAX_EVENTS_PER_BATCH,
+      1_000_000,
+    );
 
     const saved = loadJson(this.devicesPath, { devices: [] });
     for (const device of Array.isArray(saved.devices) ? saved.devices : []) {
       if (!device?.device_id || !device?.hardware_hash || !device?.device_token) continue;
-      this.devices.set(device.device_id, {
+      const normalized = {
         ...device,
         turns: 0,
         input_tokens: 0,
         output_tokens: 0,
         errors: 0,
-      });
+      };
+      this.devices.set(device.device_id, normalized);
+      this.devicesByHardwareHash.set(device.hardware_hash, normalized);
     }
     this.loadEvents();
   }
@@ -313,24 +369,39 @@ class TelemetryStore {
   loadEvents() {
     if (!existsSync(this.eventsPath)) return;
     const lines = readFileSync(this.eventsPath, "utf8").split("\n");
+    let rewriteNeeded = false;
     for (const line of lines) {
       if (!line.trim()) continue;
       try {
         const event = JSON.parse(line);
-        if (!event.event_id || this.eventIds.has(event.event_id)) continue;
+        if (!event.event_id || this.eventIds.has(event.event_id)) {
+          rewriteNeeded = true;
+          continue;
+        }
         const device = this.devices.get(event.device_id);
-        if (!device) continue;
+        if (!device) {
+          rewriteNeeded = true;
+          continue;
+        }
         this.eventIds.add(event.event_id);
         this.events.push(event);
-        this.applyUsage(device, event);
       } catch (error) {
+        rewriteNeeded = true;
         console.error("[telemetry] skipped malformed usage event:", error);
       }
     }
+    this.compactEvents(Date.now(), rewriteNeeded);
+    this.rebuildUsageCounters();
   }
 
   hardwareHash(claim) {
     return crypto.createHmac("sha256", this.pepper).update(claim).digest("hex");
+  }
+
+  registrationSecretHash(secret) {
+    return crypto.createHmac("sha256", this.pepper)
+      .update(`registration-secret:${secret}`)
+      .digest("hex");
   }
 
   saveSoon() {
@@ -343,7 +414,7 @@ class TelemetryStore {
   }
 
   saveNow() {
-    atomicWriteJson(this.devicesPath, { version: 1, devices: [...this.devices.values()] });
+    atomicWriteJson(this.devicesPath, { version: 2, devices: [...this.devices.values()] });
   }
 
   updateRegion(device, region, now = Date.now()) {
@@ -360,14 +431,21 @@ class TelemetryStore {
   register(input, region) {
     const claim = boundedText(input.hardware_claim, 512);
     if (claim.length < 8) throw new Error("invalid_hardware_claim");
+    const registrationSecret = boundedText(input.registration_secret, 256);
+    if (registrationSecret.length < 32) throw new Error("invalid_registration_secret");
     const hardwareHash = this.hardwareHash(claim);
-    let device = [...this.devices.values()].find((item) => item.hardware_hash === hardwareHash);
+    const registrationSecretHash = this.registrationSecretHash(registrationSecret);
+    let device = this.devicesByHardwareHash.get(hardwareHash);
     const now = Date.now();
     if (!device) {
+      if (this.devices.size >= this.maxDevices) {
+        throw new TelemetryHttpError(503, "device_capacity_reached");
+      }
       device = {
         device_id: randomId("dev_", 15),
         device_token: randomId("dt_", 24),
         hardware_hash: hardwareHash,
+        registration_secret_hash: registrationSecretHash,
         identity_quality: boundedText(input.identity_quality, 32) || "installation_only",
         hardware_source: boundedText(input.hardware_source, 48) || "unknown",
         first_seen_at: now,
@@ -385,8 +463,13 @@ class TelemetryStore {
         errors: 0,
       };
       this.devices.set(device.device_id, device);
+      this.devicesByHardwareHash.set(device.hardware_hash, device);
       this.saveNow();
     } else {
+      if (!device.registration_secret_hash
+        || !safeEqual(registrationSecretHash, device.registration_secret_hash)) {
+        throw new TelemetryHttpError(409, "device_already_registered");
+      }
       device.last_seen_at = now;
       device.app_version = boundedText(input.app_version, 32) || device.app_version;
       device.platform = boundedText(input.platform, 32) || device.platform;
@@ -415,7 +498,15 @@ class TelemetryStore {
       device.last_active_at = Math.max(Number(device.last_active_at || 0), activity);
     }
     this.updateRegion(device, region, now);
+    this.bindRegistrationSecret(device, input.registration_secret);
     this.saveSoon();
+  }
+
+  bindRegistrationSecret(device, secret) {
+    if (device.registration_secret_hash) return;
+    const registrationSecret = boundedText(secret, 256);
+    if (registrationSecret.length < 32) return;
+    device.registration_secret_hash = this.registrationSecretHash(registrationSecret);
   }
 
   applyUsage(device, event) {
@@ -426,17 +517,73 @@ class TelemetryStore {
     device.last_active_at = Math.max(Number(device.last_active_at || 0), event.occurred_at);
   }
 
+  rebuildUsageCounters() {
+    for (const device of this.devices.values()) {
+      device.turns = 0;
+      device.input_tokens = 0;
+      device.output_tokens = 0;
+      device.errors = 0;
+    }
+    for (const event of this.events) {
+      const device = this.devices.get(event.device_id);
+      if (device) this.applyUsage(device, event);
+    }
+  }
+
+  compactEvents(now = Date.now(), force = false) {
+    const cutoff = now - this.eventRetentionMs;
+    let retained = this.events.filter((event) => Number(event.received_at || event.occurred_at) >= cutoff);
+    if (retained.length > this.maxEvents) retained = retained.slice(-this.eventCompactionTarget);
+    const changed = force || retained.length !== this.events.length;
+    this.events = retained;
+    this.eventIds = new Set(retained.map((event) => event.event_id));
+    this.lastEventCompactionAt = now;
+    if (changed) atomicWriteJsonLines(this.eventsPath, retained);
+    return changed;
+  }
+
+  compactExpiredEventsIfDue(now = Date.now()) {
+    if (now - this.lastEventCompactionAt < 60 * 60_000) return false;
+    return this.compactEvents(now);
+  }
+
+  eventRateLimited(deviceId, count, now = Date.now()) {
+    const bucket = this.eventRateBuckets.get(deviceId);
+    let deviceLimited;
+    if (!bucket || now - bucket.started_at >= RATE_LIMIT_WINDOW_MS) {
+      this.eventRateBuckets.set(deviceId, { started_at: now, count });
+      deviceLimited = count > this.eventRatePerMinute;
+    } else {
+      bucket.count += count;
+      deviceLimited = bucket.count > this.eventRatePerMinute;
+    }
+    if (deviceLimited) return true;
+    if (!this.globalEventRateBucket
+      || now - this.globalEventRateBucket.started_at >= RATE_LIMIT_WINDOW_MS) {
+      this.globalEventRateBucket = { started_at: now, count };
+    } else {
+      this.globalEventRateBucket.count += count;
+    }
+    return this.globalEventRateBucket.count > this.globalEventRatePerMinute;
+  }
+
   appendEvents(device, inputEvents) {
     const accepted = [];
     const duplicates = [];
     const now = Date.now();
+    if (this.compactExpiredEventsIfDue(now)) this.rebuildUsageCounters();
+    if (this.eventRateLimited(device.device_id, inputEvents.length, now)) {
+      throw new TelemetryHttpError(429, "event_rate_limited");
+    }
+    const batchEventIds = new Set();
     for (const raw of inputEvents.slice(0, MAX_EVENTS_PER_BATCH)) {
       const eventId = boundedText(raw?.event_id, 96);
       if (eventId.length < 12) continue;
-      if (this.eventIds.has(eventId)) {
+      if (this.eventIds.has(eventId) || batchEventIds.has(eventId)) {
         duplicates.push(eventId);
         continue;
       }
+      batchEventIds.add(eventId);
       let occurredAt = Number(raw.occurred_at);
       if (!Number.isFinite(occurredAt) || occurredAt <= 0 || occurredAt > now + 60_000) occurredAt = now;
       const event = {
@@ -457,6 +604,10 @@ class TelemetryStore {
         this.events.push(event);
         this.applyUsage(device, event);
       }
+      if (this.events.length > this.maxEvents) {
+        this.compactEvents(now, true);
+        this.rebuildUsageCounters();
+      }
       device.last_seen_at = now;
       this.saveSoon();
     }
@@ -464,10 +615,12 @@ class TelemetryStore {
   }
 
   overview() {
+    if (this.compactExpiredEventsIfDue()) this.rebuildUsageCounters();
     return buildStatsOverview([...this.devices.values()], this.events);
   }
 
   deviceList() {
+    if (this.compactExpiredEventsIfDue()) this.rebuildUsageCounters();
     return buildDeviceList([...this.devices.values()], this.events);
   }
 }
@@ -478,14 +631,37 @@ export function createTelemetryService(options = {}) {
   const adminPassword = String(process.env.PINVOU_STATS_ADMIN_PASSWORD || "");
   const dataDir = process.env.PINVOU_TELEMETRY_DATA_DIR || "/var/lib/pinvou-telemetry";
   const enabled = enrollmentToken.length >= 24 && devicePepper.length >= 24 && adminPassword.length >= 12;
-  const store = enabled ? new TelemetryStore(dataDir, devicePepper) : null;
+  const store = enabled ? new TelemetryStore(dataDir, devicePepper, {
+    maxDevices: options.maxDevices ?? process.env.PINVOU_TELEMETRY_MAX_DEVICES,
+    maxEvents: options.maxEvents ?? process.env.PINVOU_TELEMETRY_MAX_EVENTS,
+    eventRetentionMs: options.eventRetentionMs
+      ?? (Number(process.env.PINVOU_TELEMETRY_EVENT_RETENTION_DAYS) * DAY_MS || undefined),
+    eventRatePerMinute: options.eventRatePerMinute
+      ?? process.env.PINVOU_TELEMETRY_EVENT_RATE_PER_MINUTE,
+    globalEventRatePerMinute: options.globalEventRatePerMinute
+      ?? process.env.PINVOU_TELEMETRY_EVENT_RATE_GLOBAL_PER_MINUTE,
+  }) : null;
   const regionResolver = options.regionResolver || createIpRegionResolver({
     ipv4Path: process.env.PINVOU_TELEMETRY_IP_DB_V4 || join(dataDir, "ip2region_v4.xdb"),
     ipv6Path: process.env.PINVOU_TELEMETRY_IP_DB_V6 || join(dataDir, "ip2region_v6.xdb"),
   });
   const statsPage = options.statsPage || join(__dirname, "web", "stats.html");
   const adminSessions = new Map();
-  const authAttempts = new Map();
+  const loginAttempts = new Map();
+  const registrationAttempts = new Map();
+  const globalRegistrationAttempts = new Map();
+  const registrationRatePerIp = boundedInteger(
+    options.registrationRatePerIp ?? process.env.PINVOU_TELEMETRY_REGISTER_RATE_PER_IP,
+    10,
+    1,
+    1_000,
+  );
+  const registrationRateGlobal = boundedInteger(
+    options.registrationRateGlobal ?? process.env.PINVOU_TELEMETRY_REGISTER_RATE_GLOBAL,
+    100,
+    1,
+    100_000,
+  );
 
   function bearer(req) {
     const value = String(req.headers.authorization || "");
@@ -502,15 +678,23 @@ export function createTelemetryService(options = {}) {
     return true;
   }
 
-  function rateLimited(ip) {
+  function rateLimited(buckets, key, limit) {
     const now = Date.now();
-    const bucket = authAttempts.get(ip);
+    const bucket = buckets.get(key);
     if (!bucket || now - bucket.started_at >= 60_000) {
-      authAttempts.set(ip, { started_at: now, count: 1 });
+      if (!bucket && buckets.size >= MAX_RATE_LIMIT_BUCKETS) {
+        for (const [bucketKey, value] of buckets) {
+          if (now - value.started_at >= RATE_LIMIT_WINDOW_MS) buckets.delete(bucketKey);
+        }
+        while (buckets.size >= MAX_RATE_LIMIT_BUCKETS) {
+          buckets.delete(buckets.keys().next().value);
+        }
+      }
+      buckets.set(key, { started_at: now, count: 1 });
       return false;
     }
     bucket.count += 1;
-    return bucket.count > 30;
+    return bucket.count > limit;
   }
 
   async function handleHttp(req, res, routePath, context = {}) {
@@ -529,7 +713,8 @@ export function createTelemetryService(options = {}) {
         return true;
       }
       if (req.method === "POST" && routePath === `${TELEMETRY_PREFIX}/v1/register`) {
-        if (rateLimited(requestIp)) {
+        if (rateLimited(registrationAttempts, requestIp, registrationRatePerIp)
+          || rateLimited(globalRegistrationAttempts, "global", registrationRateGlobal)) {
           json(res, 429, { error: "rate_limited" });
           return true;
         }
@@ -576,7 +761,7 @@ export function createTelemetryService(options = {}) {
         return true;
       }
       if (req.method === "POST" && routePath === `${STATS_PREFIX}/api/login`) {
-        if (rateLimited(requestIp)) {
+        if (rateLimited(loginAttempts, requestIp, 30)) {
           json(res, 429, { error: "rate_limited" });
           return true;
         }
@@ -615,8 +800,11 @@ export function createTelemetryService(options = {}) {
       json(res, 404, { error: "not_found" });
       return true;
     } catch (error) {
-      const code = error?.message === "payload_too_large" ? 413 : 400;
-      console.error("[telemetry] request failed:", error);
+      const code = Number(error?.status)
+        || (error?.message === "payload_too_large" ? 413 : 400);
+      if (!(error instanceof TelemetryHttpError)) {
+        console.error("[telemetry] request failed:", error);
+      }
       json(res, code, { error: error?.message || "bad_request" });
       return true;
     }

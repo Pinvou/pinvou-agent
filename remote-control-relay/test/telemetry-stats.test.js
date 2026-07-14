@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
+  TelemetryStore,
   buildDeviceList,
   buildStatsOverview,
   formatDeviceRegion,
@@ -95,4 +99,111 @@ test("offline IP region data keeps only coarse location fields", () => {
   assert.equal(formatDeviceRegion(region), "广东省 / 深圳市");
   assert.equal(formatDeviceRegion(parseIp2Region("Singapore|0|Singapore|0|SG")), "Singapore");
   assert.equal(parseIp2Region(""), null);
+});
+
+test("registration requires the installation secret and enforces device capacity", () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pinvou-telemetry-store-"));
+  try {
+    const store = new TelemetryStore(dataDir, "test-device-pepper-at-least-24-chars", {
+      maxDevices: 2,
+    });
+    const registration = {
+      hardware_claim: "hardware-claim-0001",
+      registration_secret: "registration-secret-000000000000000001",
+      hardware_source: "test",
+      identity_quality: "hardware_serial",
+      app_version: "0.5.10",
+      platform: "linux",
+      arch: "aarch64",
+    };
+    const first = store.register(registration, null);
+    assert.deepEqual(store.register(registration, null), first);
+    assert.throws(
+      () => store.register({
+        ...registration,
+        registration_secret: "different-secret-0000000000000000001",
+      }, null),
+      (error) => error.status === 409 && error.message === "device_already_registered",
+    );
+
+    const legacyDevice = store.authenticate(first.device_id, first.device_token);
+    delete legacyDevice.registration_secret_hash;
+    assert.throws(
+      () => store.register(registration, null),
+      (error) => error.status === 409 && error.message === "device_already_registered",
+    );
+    store.heartbeat(legacyDevice, {
+      registration_secret: registration.registration_secret,
+      state: "online",
+    });
+    assert.deepEqual(store.register(registration, null), first);
+
+    store.register({
+      ...registration,
+      hardware_claim: "hardware-claim-0002",
+      registration_secret: "registration-secret-000000000000000002",
+    }, null);
+    assert.throws(
+      () => store.register({
+        ...registration,
+        hardware_claim: "hardware-claim-0003",
+        registration_secret: "registration-secret-000000000000000003",
+      }, null),
+      (error) => error.status === 503 && error.message === "device_capacity_reached",
+    );
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("event store keeps a bounded recent window on disk and after restart", () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pinvou-telemetry-events-"));
+  try {
+    const options = {
+      maxEvents: 100,
+      eventRatePerMinute: 1_000,
+      globalEventRatePerMinute: 200,
+    };
+    const store = new TelemetryStore(
+      dataDir,
+      "test-device-pepper-at-least-24-chars",
+      options,
+    );
+    const registration = {
+      hardware_claim: "bounded-events-hardware",
+      registration_secret: "registration-secret-bounded-events-00001",
+      hardware_source: "test",
+      identity_quality: "hardware_serial",
+      app_version: "0.5.10",
+      platform: "linux",
+      arch: "aarch64",
+    };
+    const credential = store.register(registration, null);
+    const device = store.authenticate(credential.device_id, credential.device_token);
+    const now = Date.now();
+    const events = Array.from({ length: 120 }, (_, index) => ({
+      event_id: `evt_bounded_${String(index).padStart(6, "0")}`,
+      occurred_at: now + index,
+      input_tokens: 1,
+      output_tokens: 1,
+      success: true,
+    }));
+    assert.equal(store.appendEvents(device, events).accepted.length, 120);
+    assert.equal(store.events.length, 90);
+    assert.equal(readFileSync(join(dataDir, "usage-events.jsonl"), "utf8").trim().split("\n").length, 90);
+    assert.throws(
+      () => store.appendEvents(device, events.slice(0, 100)),
+      (error) => error.status === 429 && error.message === "event_rate_limited",
+    );
+
+    const restarted = new TelemetryStore(
+      dataDir,
+      "test-device-pepper-at-least-24-chars",
+      options,
+    );
+    assert.equal(restarted.events.length, 90);
+    assert.equal(restarted.eventIds.size, 90);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
 });

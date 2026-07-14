@@ -19,15 +19,19 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const DEFAULT_BASE_URL: &str = "https://www.ma-xiao.com/pinvou3/telemetry";
-// 初版注册门槛，只用于挡住无意/批量污染，不是不可提取的客户端秘密。
+// 协议版本门槛，不是客户端身份凭证；真实性和资源边界由服务端另行保护。
 const ENROLLMENT_TOKEN: &str = "pinvou_tel_enroll_v1_7Jk9pQ3mZ8xW2sN6cR4tY5uH";
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2 * 60);
+const OUTBOX_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+const OUTBOX_MAX_EVENTS: usize = 5_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct IdentityFile {
     version: u8,
     fallback_claim: String,
     claim_digest: String,
+    #[serde(default)]
+    registration_secret: String,
     device_id: Option<String>,
     device_token: Option<String>,
 }
@@ -52,6 +56,7 @@ struct UsageEvent {
 #[derive(Debug, Serialize)]
 struct RegisterRequest<'a> {
     enrollment_token: &'static str,
+    registration_secret: &'a str,
     hardware_claim: &'a str,
     hardware_source: &'a str,
     identity_quality: &'a str,
@@ -69,6 +74,7 @@ struct RegisterResponse {
 #[derive(Debug, Serialize)]
 struct HeartbeatRequest<'a> {
     device_id: &'a str,
+    registration_secret: &'a str,
     app_version: &'a str,
     platform: &'static str,
     arch: &'static str,
@@ -126,24 +132,16 @@ impl TelemetryState {
             // 硬件身份发生变化（例如克隆了 ~/.pinvou3）：旧凭证不能跟到另一台设备。
             identity.device_id = None;
             identity.device_token = None;
+            identity.registration_secret = random_id("rs_", 32);
         }
+        identity.version = 2;
         identity.claim_digest = hardware.digest.clone();
         save_identity(&identity_path, &identity)?;
 
         let outbox_path = root.join("outbox.sqlite3");
-        let connection = Connection::open(&outbox_path)
+        let mut connection = Connection::open(&outbox_path)
             .with_context(|| format!("open telemetry outbox {}", outbox_path.display()))?;
-        connection.execute_batch(
-            "PRAGMA journal_mode=WAL;
-             PRAGMA synchronous=FULL;
-             CREATE TABLE IF NOT EXISTS usage_events (
-               event_id TEXT PRIMARY KEY,
-               occurred_at INTEGER NOT NULL,
-               input_tokens INTEGER NOT NULL,
-               output_tokens INTEGER NOT NULL,
-               success INTEGER NOT NULL
-             );",
-        )?;
+        initialize_outbox(&mut connection, now_ms())?;
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(12))
@@ -211,8 +209,9 @@ impl TelemetryState {
     }
 
     fn insert_event(&self, event: &UsageEvent) -> Result<()> {
-        let connection = self.inner.outbox.lock();
-        connection.execute(
+        let mut connection = self.inner.outbox.lock();
+        let transaction = connection.transaction()?;
+        transaction.execute(
             "INSERT OR IGNORE INTO usage_events
              (event_id, occurred_at, input_tokens, output_tokens, success)
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -224,6 +223,8 @@ impl TelemetryState {
                 event.success as u8,
             ],
         )?;
+        prune_outbox_transaction(&transaction, event.occurred_at)?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -236,6 +237,7 @@ impl TelemetryState {
             "online"
         };
         let last_activity = self.inner.last_activity_at.load(Ordering::Relaxed);
+        let registration_secret = self.inner.identity.lock().registration_secret.clone();
         let response = self
             .inner
             .client
@@ -243,6 +245,7 @@ impl TelemetryState {
             .bearer_auth(&device_token)
             .json(&HeartbeatRequest {
                 device_id: &device_id,
+                registration_secret: &registration_secret,
                 app_version: self.inner.app_version,
                 platform: std::env::consts::OS,
                 arch: std::env::consts::ARCH,
@@ -268,12 +271,14 @@ impl TelemetryState {
                 return Ok((device_id, device_token));
             }
         }
+        let registration_secret = self.inner.identity.lock().registration_secret.clone();
         let response = self
             .inner
             .client
             .post(format!("{}/v1/register", self.inner.base_url))
             .json(&RegisterRequest {
                 enrollment_token: ENROLLMENT_TOKEN,
+                registration_secret: &registration_secret,
                 hardware_claim: &self.inner.hardware.claim,
                 hardware_source: &self.inner.hardware.source,
                 identity_quality: &self.inner.hardware.quality,
@@ -341,7 +346,7 @@ impl TelemetryState {
                 success: row.get::<_, u8>(4)? != 0,
             })
         })?;
-        Ok(rows.filter_map(Result::ok).collect())
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     fn delete_events(&self, ids: &[String]) -> Result<()> {
@@ -384,21 +389,62 @@ impl TelemetryState {
 
 fn load_or_create_identity(path: &Path) -> Result<IdentityFile> {
     if let Ok(text) = fs::read_to_string(path) {
-        if let Ok(identity) = serde_json::from_str::<IdentityFile>(&text) {
+        if let Ok(mut identity) = serde_json::from_str::<IdentityFile>(&text) {
             if !identity.fallback_claim.is_empty() {
+                if identity.registration_secret.is_empty() {
+                    identity.registration_secret = random_id("rs_", 32);
+                }
                 return Ok(identity);
             }
         }
     }
     let identity = IdentityFile {
-        version: 1,
+        version: 2,
         fallback_claim: random_id("fallback_", 24),
         claim_digest: String::new(),
+        registration_secret: random_id("rs_", 32),
         device_id: None,
         device_token: None,
     };
     save_identity(path, &identity)?;
     Ok(identity)
+}
+
+fn prune_outbox(connection: &mut Connection, now: u64) -> Result<()> {
+    let transaction = connection.transaction()?;
+    prune_outbox_transaction(&transaction, now)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn initialize_outbox(connection: &mut Connection, now: u64) -> Result<()> {
+    connection.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=FULL;
+         CREATE TABLE IF NOT EXISTS usage_events (
+           event_id TEXT PRIMARY KEY,
+           occurred_at INTEGER NOT NULL,
+           input_tokens INTEGER NOT NULL,
+           output_tokens INTEGER NOT NULL,
+           success INTEGER NOT NULL
+         );",
+    )?;
+    prune_outbox(connection, now)
+}
+
+fn prune_outbox_transaction(transaction: &rusqlite::Transaction<'_>, now: u64) -> Result<()> {
+    let cutoff = now.saturating_sub(OUTBOX_RETENTION.as_millis() as u64);
+    transaction.execute("DELETE FROM usage_events WHERE occurred_at < ?1", [cutoff])?;
+    transaction.execute(
+        "DELETE FROM usage_events
+         WHERE event_id IN (
+           SELECT event_id FROM usage_events
+           ORDER BY occurred_at DESC, event_id DESC
+           LIMIT -1 OFFSET ?1
+         )",
+        [OUTBOX_MAX_EVENTS as u64],
+    )?;
+    Ok(())
 }
 
 fn save_identity(path: &Path, identity: &IdentityFile) -> Result<()> {
@@ -534,5 +580,60 @@ mod tests {
     #[test]
     fn heartbeat_interval_is_two_minutes() {
         assert_eq!(HEARTBEAT_INTERVAL, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn legacy_identity_gets_registration_secret() {
+        let path = std::env::temp_dir().join(format!(
+            "pinvou-telemetry-identity-{}-{}.json",
+            std::process::id(),
+            random_id("test_", 8)
+        ));
+        fs::write(
+            &path,
+            r#"{"version":1,"fallback_claim":"fallback_existing","claim_digest":"digest","device_id":"dev_existing","device_token":"token_existing"}"#,
+        )
+        .unwrap();
+        let identity = load_or_create_identity(&path).unwrap();
+        assert!(identity.registration_secret.starts_with("rs_"));
+        assert_eq!(identity.device_id.as_deref(), Some("dev_existing"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn outbox_prunes_expired_and_excess_events() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        let now = OUTBOX_RETENTION.as_millis() as u64 + 10_000;
+        initialize_outbox(&mut connection, now).unwrap();
+        let transaction = connection.transaction().unwrap();
+        transaction
+            .execute(
+                "INSERT INTO usage_events VALUES ('evt_expired_0001', 1, 1, 1, 1)",
+                [],
+            )
+            .unwrap();
+        for index in 0..OUTBOX_MAX_EVENTS + 5 {
+            transaction
+                .execute(
+                    "INSERT INTO usage_events VALUES (?1, ?2, 1, 1, 1)",
+                    params![format!("evt_recent_{index:08}"), now + index as u64],
+                )
+                .unwrap();
+        }
+        transaction.commit().unwrap();
+
+        prune_outbox(&mut connection, now + OUTBOX_MAX_EVENTS as u64).unwrap();
+        let count: usize = connection
+            .query_row("SELECT COUNT(*) FROM usage_events", [], |row| row.get(0))
+            .unwrap();
+        let expired: usize = connection
+            .query_row(
+                "SELECT COUNT(*) FROM usage_events WHERE event_id = 'evt_expired_0001'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, OUTBOX_MAX_EVENTS);
+        assert_eq!(expired, 0);
     }
 }

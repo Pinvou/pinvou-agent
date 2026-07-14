@@ -160,6 +160,7 @@ test("stats and telemetry use dedicated top-level paths", async () => {
 test("telemetry deduplicates a device and usage event", async () => {
   const registration = {
     enrollment_token: enrollmentToken,
+    registration_secret: "test-registration-secret-000000000001",
     hardware_claim: "test-hardware-claim-001",
     hardware_source: "test",
     identity_quality: "hardware_serial",
@@ -179,8 +180,21 @@ test("telemetry deduplicates a device and usage event", async () => {
     headers: { "content-type": "application/json", "x-forwarded-for": "113.118.113.77" },
     body: JSON.stringify(registration),
   });
+  assert.equal(secondResponse.status, 200);
   const second = await secondResponse.json();
   assert.equal(second.device_id, first.device_id);
+  assert.equal(second.device_token, first.device_token);
+
+  const stolenResponse = await fetch(`${httpUrl}/pinvou3/telemetry/v1/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-forwarded-for": "113.118.113.77" },
+    body: JSON.stringify({
+      ...registration,
+      registration_secret: "different-registration-secret-000000001",
+    }),
+  });
+  assert.equal(stolenResponse.status, 409);
+  assert.deepEqual(await stolenResponse.json(), { error: "device_already_registered" });
 
   const event = {
     event_id: "evt_test_000000000001",
@@ -226,6 +240,21 @@ test("telemetry deduplicates a device and usage event", async () => {
   assert.equal(list.devices[0].region, "未知");
   assert.equal("failure_rate_7d" in list.devices[0], false);
   assert.doesNotMatch(await readFile(join(telemetryDir, "devices.json"), "utf8"), /113\.118\.113\.77/);
+
+  for (let index = 0; index < 7; index += 1) {
+    const rejected = await fetch(`${httpUrl}/pinvou3/telemetry/v1/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": "113.118.113.77" },
+      body: JSON.stringify({ ...registration, enrollment_token: `invalid-${index}` }),
+    });
+    assert.equal(rejected.status, 401);
+  }
+  const limited = await fetch(`${httpUrl}/pinvou3/telemetry/v1/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-forwarded-for": "113.118.113.77" },
+    body: JSON.stringify(registration),
+  });
+  assert.equal(limited.status, 429);
 });
 
 test("relay closes a websocket that does not authenticate in time", async () => {
