@@ -2,7 +2,7 @@
 /**
  * 本地文件与知识库（KnowledgeView）e2e 渲染 probe — headless chromium + mock 全部 kb_* 命令。
  * 切到「本地知识」视图，逐项验证：文件管理 subtab(分类卡/文件行/加入知识库浮层)、
- * 知识库 subtab(banner/知识集卡片/详情检索框)。重点抓运行时 ReferenceError(babel 抓不到)。
+ * 知识库 subtab(banner/知识集卡片/聚焦知识集/添加文件)。重点抓运行时 ReferenceError。
  * 用法: node pinvou3-app/tests/kb_smoke.js  (全 PASS→0 / FAIL→1 / 缺依赖→2)
  */
 const fs = require('fs'), path = require('path'), os = require('os');
@@ -23,6 +23,7 @@ const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-kb-'));
 
 function injectSource() {
   return `(function(){
+    window.__KB_CALLS__=[];
     const COLLS=[
       {id:1,name:'产品资料库',category:'产品',description:'PRD 与版本规划',createdAt:1,updatedAt:9,status:'ready',docCount:3,chunkCount:12,totalBytes:126000000},
       {id:2,name:'市场调研',category:'调研',description:'竞品与访谈',createdAt:1,updatedAt:8,status:'indexing',docCount:1,chunkCount:4,totalBytes:88000000}
@@ -37,6 +38,7 @@ function injectSource() {
       {path:'/home/x/访谈纪要.md',name:'访谈纪要.md',ext:'md',size:48000,mtime:1700000000,isDir:false}
     ];
     function invoke(cmd,args){
+      window.__KB_CALLS__.push({cmd:cmd,args:args||null});
       switch(cmd){
         case 'get_settings': return Promise.resolve({theme:'liquid-light',language:'zh-Hans'});
         case 'get_effective_model_config': return Promise.resolve({model:'qwen36_35b_256k',base_url:'http://127.0.0.1:8000/v1',api_key_set:false});
@@ -103,6 +105,8 @@ async function clickContains(page, sel, text) {
   await page.evaluate(() => { const b = document.querySelector('[title*="侧边栏"],[title*="展开"]'); if (b) b.click(); });
   await sleep(400);
   const entered = await clickContains(page, 'button,div,span,a', '本地知识');
+  await sleep(700);
+  await clickContains(page, 'button', '本地文件管理');
   await sleep(1500);
 
   const filesView = await page.evaluate(() => {
@@ -130,38 +134,37 @@ async function clickContains(page, sel, text) {
   });
   rec('③ 知识库 subtab(banner/知识集卡片/状态)', kbView.banner && kbView.card && kbView.status, JSON.stringify(kbView));
 
-  // 进入知识集详情(精确点知识集卡片，避开「知识库内文件」表里的同名行)
+  // 聚焦知识集(精确点知识集卡片，避开「知识库内文件」表里的同名行)
   await page.evaluate(() => {
     const cards = [...document.querySelectorAll('div')].filter(d => typeof d.className === 'string' && d.className.includes('cursor-pointer') && (d.textContent || '').includes('产品资料库'));
     if (cards.length) { cards[0].scrollIntoView({ block: 'center' }); cards[0].click(); }
   });
   await sleep(1000);
-  const detail = await page.evaluate(() => {
+  const focused = await page.evaluate(() => {
     const x = document.body.innerText;
-    const input = document.querySelector('input[placeholder*="问"],input[placeholder*="检索"]');
-    return { modes: x.includes('问答') && x.includes('检索'), input: input != null, docList: x.includes('路线图.md'), addBtn: x.includes('添加文件') };
+    const reset = [...document.querySelectorAll('button')].some(b => (b.textContent || '').trim() === '全部'
+      && b.parentElement && (b.parentElement.textContent || '').includes('知识库内文件'));
+    return { scoped: reset, docList: x.includes('路线图.md'), addBtn: x.includes('添加文件') };
   });
-  rec('④ 知识集详情(问答/检索模式切换/输入框/文档列表/添加文件)', (detail.modes && detail.input && detail.docList && detail.addBtn), JSON.stringify(detail));
+  rec('④ 聚焦知识集后显示范围/文档列表/添加文件', focused.scoped && focused.docList && focused.addBtn, JSON.stringify(focused));
 
-  // 默认问答模式：提问 → 35B(mock) 答案 + 可点击来源
+  // 聚焦后添加文件：dialog mock 返回路径，必须透传到当前知识集。
+  await clickContains(page, 'button', '添加文件');
+  await sleep(500);
+  const added = await page.evaluate(() => window.__KB_CALLS__.some(c => c.cmd === 'kb_collection_add_sources'
+    && c.args && c.args.collectionId === 1 && Array.isArray(c.args.paths) && c.args.paths.includes('/home/x/新文档.pdf')));
+  rec('⑤ 添加文件透传当前知识集和所选路径', added);
+
   await page.evaluate(() => {
-    const i = document.querySelector('input[placeholder*="问"]');
-    if (i) { const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set; set.call(i,'报价流程有什么问题'); i.dispatchEvent(new Event('input',{bubbles:true})); i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})); }
+    const reset = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === '全部'
+      && b.parentElement && (b.parentElement.textContent || '').includes('知识库内文件'));
+    if (reset) reset.click();
   });
-  await sleep(900);
-  const asked = await page.evaluate(() => { const x = document.body.innerText; return { answer: x.includes('一键比价'), source: x.includes('访谈纪要.md'), label: x.includes('回答') && x.includes('来源') }; });
-  rec('⑤ 问答返回答案 + 可点击来源溯源', asked.answer && asked.source && asked.label, JSON.stringify(asked));
-
-  // 切「检索」模式 → 返回原文片段 + 溯源
-  await clickContains(page, 'button', '检索');
   await sleep(400);
-  await page.evaluate(() => {
-    const i = document.querySelector('input[placeholder*="检索"]');
-    if (i) { const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set; set.call(i,'交强险'); i.dispatchEvent(new Event('input',{bubbles:true})); i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})); }
-  });
-  await sleep(700);
-  const retrived = await page.evaluate(() => document.body.innerText.includes('交强险') && (document.body.innerText.includes('访谈纪要.md')));
-  rec('⑥ 切检索模式返回片段+溯源', retrived);
+  const unscoped = await page.evaluate(() => document.body.innerText.includes('所属知识库')
+    && ![...document.querySelectorAll('button')].some(b => (b.textContent || '').trim() === '全部'
+      && b.parentElement && (b.parentElement.textContent || '').includes('知识库内文件')));
+  rec('⑥ 返回全部知识集后恢复跨库文件表', unscoped);
 
   rec('⑦ 全程无运行时报错(ReferenceError 等)', errs.length === 0, errs.length ? errs.slice(0,3).join(' | ') : '');
 

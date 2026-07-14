@@ -3,14 +3,14 @@
 //! 直接用 bridge + engine 跑端到端对话，断言 LLM 工具调用 / 落盘文件 / 输出关键词,
 //! 防本轮 INSTRUCTIONS_MD / bridge / blocklist 修改后 quality 静默回归。
 //!
-//! 所有 scenario 标 `#[ignore]`,默认 `cargo test` 不跑 (不阻塞 PR)。跑法:
+//! 真模型 scenario 标 `#[ignore]`，默认 `cargo test` 不跑；少量纯函数回归仍会执行。跑法:
 //!
 //! ```text
 //! cargo test --test l1_dialog_harness -- --ignored --test-threads=1
 //! ```
 //!
-//! pre-flight 健康探针:vLLM `/v1/models` 200 OK 才执行 scenario,
-//! 不在线 → eprintln + return (退出码 0,nightly 不告警)。
+//! pre-flight 健康探针:vLLM `/v1/models` 200 OK 才执行 scenario。普通开发机不在线时
+//! 允许 skip；`PINVOU3_L1_REQUIRE_VLLM=1` 严格验收中，启动前或 turn 中途掉线都失败。
 //!
 //! 设计与决策见 `docs/自动化测试方案.md` §3。
 
@@ -22,11 +22,18 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use deepseek_tui::core::events::Event;
+use deepseek_tui::error_taxonomy::ErrorEnvelope;
 use deepseek_tui::tui::app::AppMode;
 use pinvou3_lib::bridge::Pinvou3Bridge;
 use pinvou3_lib::engine::AppEngine;
 
 const DEFAULT_VLLM_BASE_URL: &str = "http://10.214.74.113:8000/v1";
+
+fn strict_l1_enabled() -> bool {
+    std::env::var("PINVOU3_L1_REQUIRE_VLLM")
+        .map(|value| !matches!(value.trim(), "" | "0" | "false" | "FALSE" | "no" | "NO"))
+        .unwrap_or(false)
+}
 
 /// 健康探针:vLLM `/v1/models` 3s 内 200 OK 才视为在线。
 async fn vllm_alive() -> bool {
@@ -38,12 +45,18 @@ async fn vllm_alive() -> bool {
     }
 }
 
-/// pre-flight 包装:vLLM 不在线时 eprintln + return,scenario 当作 skip 处理。
+/// pre-flight 包装:普通开发机未配置 vLLM 时允许 skip；显式真模型验收通过
+/// `PINVOU3_L1_REQUIRE_VLLM=1` 开启严格模式，端点启动前或中途掉线都直接失败，
+/// 避免 Cargo 把未执行的 scenario 误报成 passed。
 /// 返回 true 表示在线,scenario 应继续。
 async fn require_vllm(scenario_name: &str) -> bool {
     if vllm_alive().await {
         return true;
     }
+    assert!(
+        !strict_l1_enabled(),
+        "[{scenario_name}] vLLM endpoint unreachable in strict L1 run (check DEEPSEEK_BASE_URL or {DEFAULT_VLLM_BASE_URL})"
+    );
     eprintln!(
         "SKIP {scenario_name}: vLLM endpoint unreachable (set DEEPSEEK_BASE_URL or check {DEFAULT_VLLM_BASE_URL})",
     );
@@ -175,6 +188,8 @@ struct TurnSummary {
     full_text: String,
     /// 工具名 → 成功完成的调用次数
     tool_call_counts: HashMap<String, usize>,
+    /// Engine 在 turn 内发出的错误；严格真模型验收中任意一条都必须失败。
+    engine_errors: Vec<String>,
     elapsed: Duration,
     timed_out: bool,
 }
@@ -182,6 +197,7 @@ struct TurnSummary {
 fn summarize(timeline: &[(f64, Event)], elapsed: Duration, timed_out: bool) -> TurnSummary {
     let mut full_text = String::new();
     let mut tool_call_counts: HashMap<String, usize> = HashMap::new();
+    let mut engine_errors = Vec::new();
     for (_t, e) in timeline {
         match e {
             Event::MessageDelta { content, .. } => full_text.push_str(content),
@@ -190,15 +206,30 @@ fn summarize(timeline: &[(f64, Event)], elapsed: Duration, timed_out: bool) -> T
                     *tool_call_counts.entry(name.clone()).or_insert(0) += 1;
                 }
             }
+            Event::Error { envelope, .. } => {
+                engine_errors.push(format!("{}: {}", envelope.code, envelope.message));
+            }
             _ => {}
         }
     }
     TurnSummary {
         full_text,
         tool_call_counts,
+        engine_errors,
         elapsed,
         timed_out,
     }
+}
+
+fn validate_engine_errors(engine_errors: &[String], strict: bool) -> Result<(), String> {
+    if strict && !engine_errors.is_empty() {
+        return Err(format!(
+            "turn 收到 {} 个 Engine Error: {}",
+            engine_errors.len(),
+            engine_errors.join(" | ")
+        ));
+    }
+    Ok(())
 }
 
 /// 验证 Expect。失败 panic 让 #[test] fail。
@@ -210,6 +241,10 @@ fn verify_expect(summary: &TurnSummary, expect: &Expect, scenario: &str) {
         "[{scenario}] turn 超时,可能 vLLM 慢/卡死 (elapsed={:?})",
         summary.elapsed
     );
+
+    if let Err(message) = validate_engine_errors(&summary.engine_errors, strict_l1_enabled()) {
+        panic!("[{scenario}] {message}");
+    }
 
     // files_exist - judge 看不见磁盘
     for p in &expect.files_exist {
@@ -297,6 +332,10 @@ fn record_transcript(
     ));
     md.push_str(&format!("- timed_out: {}\n", summary.timed_out));
     md.push_str(&format!(
+        "- engine_errors: {}\n",
+        summary.engine_errors.len()
+    ));
+    md.push_str(&format!(
         "- tool_call_histogram: `{:?}`\n",
         summary.tool_call_counts
     ));
@@ -332,6 +371,24 @@ fn record_transcript(
 
     std::fs::write(&path, md).expect("write transcript md");
     path
+}
+
+#[test]
+fn strict_mode_rejects_runtime_engine_error() {
+    let timeline = vec![(
+        0.1,
+        Event::error(ErrorEnvelope::classify(
+            "stream read error: response body decode failed".to_string(),
+            true,
+        )),
+    )];
+    let summary = summarize(&timeline, Duration::from_millis(100), false);
+
+    assert_eq!(summary.engine_errors.len(), 1);
+    assert!(summary.engine_errors[0].contains("stream read error"));
+    assert!(validate_engine_errors(&summary.engine_errors, true).is_err());
+    assert!(validate_engine_errors(&summary.engine_errors, false).is_ok());
+    assert!(validate_engine_errors(&[], true).is_ok());
 }
 
 fn render_timeline(timeline: &[(f64, Event)]) -> String {
