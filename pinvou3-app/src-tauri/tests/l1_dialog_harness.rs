@@ -504,7 +504,9 @@ fn ensure_runtime_env() {
     set_var_if_unset("DEEPSEEK_ALLOW_INSECURE_HTTP", "1");
     set_var_if_unset("DEEPSEEK_FORCE_HTTP1", "1");
     set_var_if_unset("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576");
-    set_var_if_unset("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "90");
+    // 与正式 App 和底座默认值保持一致，避免 L1 仍用旧 90s 配置，
+    // 把慢速本地模型的正常长生成误判为运行时回归。
+    set_var_if_unset("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "300");
     // 2026-05-18: subagent 并发 + 256K context + chunked-prefill 配置下,
     // vLLM first-token-latency 可能 >45s (default open_timeout)。调到 180s
     // 容纳多 subagent prefill 排队。client/chat.rs:112 stream_open_timeout()
@@ -736,7 +738,7 @@ async fn plan_mode_write_blocked() {
 }
 
 /// 问题1 实测:大产物分块 reminder 现在还 load-bearing 吗?
-/// P7 当年加"分块写"是为治 SSE idle timeout(当时 90s);timeout 后来提到 240-280s,
+/// P7 当年加"分块写"是为治 SSE idle timeout(当时 90s);timeout 后来统一到 300s,
 /// 重验"一次写大文件"现在撞不撞。让 AI 写 ≥300 行完整 HTML,看:
 ///   - histogram: write_file 一次 vs append_file/edit_file 分块?(AI 遵守 reminder 吗)
 ///   - 文件完整落盘没截断?(行数断言)
