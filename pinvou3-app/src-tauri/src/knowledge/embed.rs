@@ -18,16 +18,19 @@ pub struct Embedder {
 }
 
 impl Embedder {
-    /// 从本地模型目录加载。目录需含：`model.onnx`(或 `onnx/model.onnx`) +
+    /// 从本地模型目录加载。目录需含：`model.onnx`（发布布局）或
+    /// `onnx/model_int8.onnx`（Hugging Face 原始布局）+
     /// `tokenizer.json` / `config.json` / `special_tokens_map.json` / `tokenizer_config.json`。
     pub fn from_dir(dir: &Path, name: &str) -> Result<Self, String> {
         let read = |f: &str| -> Result<Vec<u8>, String> {
             std::fs::read(dir.join(f)).map_err(|e| format!("{f}: {e}"))
         };
-        // onnx 容错两种常见布局
+        // fastembed 通过 commit_from_memory 加载 ONNX，无法解析 split ONNX 的
+        // model.onnx_data；原始模型目录必须优先选自包含的 model_int8.onnx。
         let onnx = std::fs::read(dir.join("model.onnx"))
+            .or_else(|_| std::fs::read(dir.join("onnx").join("model_int8.onnx")))
             .or_else(|_| std::fs::read(dir.join("onnx").join("model.onnx")))
-            .map_err(|e| format!("model.onnx 未找到(根目录或 onnx/ 下): {e}"))?;
+            .map_err(|e| format!("单文件 ONNX 未找到(model.onnx 或 onnx/model_int8.onnx): {e}"))?;
         let tokenizer_files = TokenizerFiles {
             tokenizer_file: read("tokenizer.json")?,
             config_file: read("config.json")?,
