@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
+import { createTelemetryService } from "./telemetry-service.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIB = 1024 * 1024;
@@ -31,6 +32,7 @@ const TRUSTED_PROXY_IPS = parseIpSet(
 const rooms = new Map();
 const roomCreationBuckets = new Map();
 const wsConnectionBuckets = new Map();
+const telemetry = createTelemetryService();
 
 function send(ws, value) {
   if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(value));
@@ -232,6 +234,7 @@ const server = http.createServer(async (req, res) => {
   }
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
   const routePath = stripPublicBasePath(url.pathname);
+  if (await telemetry.handleHttp(req, res, routePath, { clientIp: clientIp(req) })) return;
   if (routePath === "/healthz") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(healthSummary()));

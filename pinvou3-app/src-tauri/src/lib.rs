@@ -42,6 +42,7 @@ mod remote_control;
 mod scheduled_executor;
 mod scheduled_tasks;
 pub mod super_permission;
+mod telemetry;
 mod timing;
 mod updater;
 mod voice_asr;
@@ -268,6 +269,19 @@ pub fn run() {
             }
             app.handle()
                 .manage(RemoteControlManager::new(app.handle().clone()));
+            // 匿名设备遥测：独立于 UI/Engine，失败只写日志；先 manage 再建 EnginePool，
+            // 让每个 session forwarder 都能在 TurnStarted/TurnComplete 取到状态。
+            match telemetry::TelemetryState::boot(env!("CARGO_PKG_VERSION")) {
+                Ok(Some(state)) => {
+                    app.handle().manage(state.clone());
+                    state.spawn();
+                    eprintln!("[pinvou3-app] device telemetry ready");
+                }
+                Ok(None) => eprintln!("[pinvou3-app] device telemetry disabled"),
+                Err(error) => {
+                    eprintln!("[pinvou3-app] device telemetry init failed: {error:#}")
+                }
+            }
             // 多 session 并发:存 EnginePool(lazy spawn,首条消息才为该 session 起 engine)。
             // boot bridge 在 pool::new 里做一次(写盘 / 设 env 只能一次)。
             let handle = app.handle().clone();
