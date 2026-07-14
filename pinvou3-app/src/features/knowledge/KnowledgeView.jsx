@@ -499,7 +499,9 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
 
       // 懒触发增量扫:进入文件管理页时,库非空且距上次扫描超冷却期才扫一次(先用缓存秒显、
       // 扫完刷新)。不进页=零扫描;库空(新用户)走空状态手动首扫,不在这里自动全盘扫。
-      const AUTOSCAN_COOLDOWN = 300; // 秒:5 分钟内反复切回文件页不重复扫,用缓存即可。
+      // 全盘索引可能覆盖数十万文件，5 分钟冷却会让用户频繁切页时反复触发重 I/O。
+      // 自动刷新降为 6 小时一次；需要立即同步时仍可点页面里的手动扫描。
+      const AUTOSCAN_COOLDOWN = 6 * 60 * 60;
       useEffect(() => {
         if (sub !== 'files' || !loaded || scanning || total === 0) return;
         const last = scan && scan.finishedAt ? scan.finishedAt : 0;

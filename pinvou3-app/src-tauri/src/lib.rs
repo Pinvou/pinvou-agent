@@ -118,6 +118,34 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result
     Ok(())
 }
 
+const RELEASE_ENV_DEFAULTS: &[(&str, &str)] = &[
+    // —— vLLM 后端：BASE_URL/MODEL/API_KEY 已在 bridge/mod.rs 有默认常量，
+    // 这里只补 run-dev.sh 额外注入但 Rust 没默认的 ——
+    // ⚠️ 不再注入 DEEPSEEK_PROVIDER：它会被 bridge.provider() 当成 env 覆盖
+    //   （env 优先级高于 preset），在「添加模型」多 provider 方案下钉死路由——
+    //   切到 kimi/openai/qwen 等仍被当 vllm，且设置页误报「环境变量已锁定 provider」。
+    //   provider 现由 active_model.preset 决定（LocalVllm→vllm 默认仍成立）。
+    ("DEEPSEEK_REASONING_EFFORT", "off"),
+    ("DEEPSEEK_ALLOW_INSECURE_HTTP", "1"),
+    ("DEEPSEEK_FORCE_HTTP1", "1"),
+    ("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576"),
+    // 与 DeepSeek-TUI 的 stream_chunk_timeout 默认值保持一致。
+    ("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "300"),
+    // SSE 首响应头超时(open timeout):底座只认 env,默认 45s 是为云端调的。
+    // 本地 GB10 大上下文 SubAgent 请求首 token TTFT 偶发 >45s → 误杀子 agent
+    // (真机实锤:三省六部 libu~1 首发死于 45s,重派才过)。280s 与
+    // ~/.deepseek config 的 subagent api_timeout=300 对齐(步级超时须更大)。
+    ("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS", "280"),
+    // —— webkit2gtk / fcitx 兼容（Wayland 下 IM 协议挂）——
+    // 不得默认设置 WEBKIT_DISABLE_COMPOSITING_MODE：它会关闭 WebKit 硬件合成，
+    // 让全屏页面切换、模糊和动画退回低效路径。极少数兼容异常的机器仍可在外部
+    // 显式设置 WEBKIT_DISABLE_COMPOSITING_MODE=1，var_os 守门会保留该覆盖值。
+    ("GDK_BACKEND", "x11"),
+    ("GTK_IM_MODULE", "fcitx"),
+    ("QT_IM_MODULE", "fcitx"),
+    ("XMODIFIERS", "@im=fcitx"),
+];
+
 /// 为 release 安装包（.deb 双击启动场景）注入 run-dev.sh 里集中处理的运行时 env。
 /// dev 启动走 run-dev.sh 已经 export 过的不会被覆盖（var_os().is_none() 守门）。
 fn ensure_release_env() {
@@ -133,32 +161,7 @@ fn ensure_release_env() {
             env::set_var("HOME", profile);
         }
     }
-    const DEFAULTS: &[(&str, &str)] = &[
-        // —— vLLM 后端：BASE_URL/MODEL/API_KEY 已在 bridge/mod.rs 有默认常量，
-        // 这里只补 run-dev.sh 额外注入但 Rust 没默认的 ——
-        // ⚠️ 不再注入 DEEPSEEK_PROVIDER：它会被 bridge.provider() 当成 env 覆盖
-        //   （env 优先级高于 preset），在「添加模型」多 provider 方案下钉死路由——
-        //   切到 kimi/openai/qwen 等仍被当 vllm，且设置页误报「环境变量已锁定 provider」。
-        //   provider 现由 active_model.preset 决定（LocalVllm→vllm 默认仍成立）。
-        ("DEEPSEEK_REASONING_EFFORT", "off"),
-        ("DEEPSEEK_ALLOW_INSECURE_HTTP", "1"),
-        ("DEEPSEEK_FORCE_HTTP1", "1"),
-        ("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576"),
-        // 与 DeepSeek-TUI 的 stream_chunk_timeout 默认值保持一致。
-        ("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "300"),
-        // SSE 首响应头超时(open timeout):底座只认 env,默认 45s 是为云端调的。
-        // 本地 GB10 大上下文 SubAgent 请求首 token TTFT 偶发 >45s → 误杀子 agent
-        // (真机实锤:三省六部 libu~1 首发死于 45s,重派才过)。280s 与
-        // ~/.deepseek config 的 subagent api_timeout=300 对齐(步级超时须更大)。
-        ("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS", "280"),
-        // —— webkit2gtk / fcitx 兼容（Wayland 下 IM 协议挂、合成模式异常）——
-        ("GDK_BACKEND", "x11"),
-        ("WEBKIT_DISABLE_COMPOSITING_MODE", "1"),
-        ("GTK_IM_MODULE", "fcitx"),
-        ("QT_IM_MODULE", "fcitx"),
-        ("XMODIFIERS", "@im=fcitx"),
-    ];
-    for (k, v) in DEFAULTS {
+    for (k, v) in RELEASE_ENV_DEFAULTS {
         if env::var_os(k).is_none() {
             env::set_var(k, v);
         }
@@ -192,6 +195,19 @@ fn ensure_release_env() {
                 env::set_var("PATH", joined);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod release_env_contract {
+    #[test]
+    fn hardware_compositing_is_not_disabled_by_default() {
+        assert!(
+            !super::RELEASE_ENV_DEFAULTS
+                .iter()
+                .any(|(key, _)| *key == "WEBKIT_DISABLE_COMPOSITING_MODE"),
+            "WebKit 合成模式只能由外部环境变量显式关闭，不能作为全局默认值"
+        );
     }
 }
 
