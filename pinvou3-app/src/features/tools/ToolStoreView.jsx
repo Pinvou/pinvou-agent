@@ -599,12 +599,12 @@ const FEISHU_STEPS = [
 
       const connectorTools = tools.filter(t => !LOCAL_TOOLS.includes(t.backendId));
       const listItems = [...connectorTools, ...skillCards]; // 列表视图:连接器 + 技能全放一起
-      // 独家技能:公文写作 / PPT 生成 / 视觉设计(按此序;视觉无 backendId,PIN 后自然排末)
-      const FEATURED_SKILL = s => ['government-writing', 'pptx'].includes(s.backendId) || s.id === 's5';
+      // 独家技能:公文写作 / PPT 生成 / 数据可视化 / 视觉设计(按此序;视觉无 backendId,PIN 后自然排末)
+      const FEATURED_SKILL = s => ['government-writing', 'pptx', 'visualizer'].includes(s.backendId) || s.id === 's5';
       // 搜索全局:有搜索词时跨「连接器 + 全部技能」检索,不受卡片视图/分类限制(「我的工具」内搜索仍限已安装)
       const searching = searchQuery.trim() !== '';
       const sourceItems = (searching && !installedOnly) ? listItems : (isCard ? skillCards.filter(FEATURED_SKILL) : listItems);
-      const PIN = ['government-writing', 'pptx'];
+      const PIN = ['government-writing', 'pptx', 'visualizer'];
       const filteredTools = sourceItems.filter(tool => {
         const q = searchQuery.toLowerCase();
         const matchesSearch = tool.title.toLowerCase().includes(q) || (tool.desc || '').toLowerCase().includes(q);
@@ -1236,7 +1236,7 @@ const FEISHU_STEPS = [
 
                   {filteredTools.length > 0 ? (
                     (isSkillTab && !searching) ? (
-                    <div className="flex flex-col md:flex-row gap-6">
+                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 pb-7">
                       {filteredTools.map((tool) => {
                         const v = tool.todayVariant || 'fallback';
                         const bar = (
@@ -1247,7 +1247,7 @@ const FEISHU_STEPS = [
                           </div>
                         );
                         return (
-                          <div key={tool.id} onClick={() => setSelectedTool(tool)} className={`today-card group relative ${tool.cardW || 'flex-1'} min-w-0 h-[440px] rounded-[22px] overflow-hidden cursor-pointer shadow-[0_12px_36px_-14px_rgba(0,0,0,0.3)] transition-all duration-500 hover:shadow-[0_24px_54px_-14px_rgba(0,0,0,0.5)] hover:-translate-y-1`}>
+                          <div key={tool.id} onClick={() => setSelectedTool(tool)} className="today-card group relative w-full h-[440px] rounded-[28px] overflow-hidden cursor-pointer shadow-[0_14px_40px_-18px_rgba(15,23,42,0.35)] transition-all duration-500 hover:shadow-[0_28px_64px_-24px_rgba(15,23,42,0.45)] hover:-translate-y-1">
                             {v === 'light' ? (
                               <>
                                 <div className="p-6"><p className="text-slate-500 dark:text-slate-400 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-[30px] font-bold leading-[1.1] tracking-tight whitespace-pre-line text-slate-900 dark:text-white">{tool.todayTitle}</h2></div>
