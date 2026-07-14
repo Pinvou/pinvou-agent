@@ -31,7 +31,7 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 
 ### 3. 提交日志
 
-- git log 提交日志标题需要注明类型，例如 `fix` / `feat` / `doc`。
+- git log 提交日志统一使用中文，并在标题中注明类型前缀，例如 `fix:` / `feat:` / `docs:`；类型前缀后的描述使用中文。
 
 ### 4. GitHub PR 规范
 
