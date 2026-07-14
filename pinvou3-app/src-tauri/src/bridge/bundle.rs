@@ -47,6 +47,11 @@ const LARK_SKILL_DIRS: [&str; 9] = [
 static WECOM_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/wecom-skills");
 
+/// 钉钉官方 mono skill(dws,Apache-2.0,来自 dingtalk-workspace-cli `dws-skills.zip`)。
+/// 独立放 `dingtalk-skills/`，按钉钉连接 / 停用状态单独门控。
+static DINGTALK_SKILLS_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/dingtalk-skills");
+
 static CONNECTOR_CLI_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/bundle/connectors");
 
@@ -55,6 +60,8 @@ const WECOM_SKILL_DIRS: [&str; 7] = [
     "wecomcli-msg", "wecomcli-doc", "wecomcli-meeting", "wecomcli-schedule",
     "wecomcli-todo", "wecomcli-contact", "wecomcli-smartsheet",
 ];
+
+const DINGTALK_SKILL_DIRS: [&str; 1] = ["dws"];
 
 /// Bundle 版本号：手动 base + 自动 instructions.md 内容 hash（build.rs 注入）。
 /// 改 INSTRUCTIONS_MD 时不需要 bump base —— hash 自动变，ensure_extracted 自动覆写。
@@ -72,8 +79,9 @@ const WECOM_SKILL_DIRS: [&str; 7] = [
 ///       include_dir 内嵌 + 启动解包到 bundle_skills_dir,供 SkillRegistry 发现
 /// 0.11: 接入 H3C 知道知识库技能(zhidao CLI + SKILL.md),与 EIP 并列门控
 /// 0.12: 接入企微官方域技能(wecomcli-*,MIT):独立 wecom-skills/ 内嵌 + 独立门控
+/// 0.14: 接入钉钉官方 dws skill + Linux ARM64 内置 dws CLI
 pub const BUNDLE_VERSION: &str = concat!(
-    "0.13-",
+    "0.14-",
     env!("BUNDLE_INSTRUCTIONS_HASH"),
     "-",
     env!("BUNDLE_WORKFLOW_HASH_SANSHENG"),
@@ -296,6 +304,8 @@ impl Pinvou3Bundle {
         self.apply_feishu_skills(crate::feishu::feishu_skills_should_show())?;
         // 企微官方域技能:同飞书,按门控(已连接 && 未停用)决定解包还是删除。
         self.apply_wecom_skills(crate::wecom::wecom_skills_should_show())?;
+        // 钉钉官方 dws skill:同飞书 / 企微,按门控(已连接 && 未停用)决定解包还是删除。
+        self.apply_dingtalk_skills(crate::dingtalk::dingtalk_skills_should_show())?;
         // EIP 技能:二进制 ~23MB,不像小文本那样每启动防御性重写——仅在二进制缺失时
         // 解包(自愈),避免每次启动写 23MB。改 SKILL.md/包装脚本后想刷新:删 skills_dir/eip。
         let eip_bin = self.skills_dir.join("eip").join("bin");
@@ -454,13 +464,13 @@ impl Pinvou3Bundle {
     fn write_connector_clis(&self, force: bool) -> std::io::Result<()> {
         let root = paths::bundle_connectors_dir();
         let bin = root.join("linux-arm64").join("bin");
-        if force || !bin.join("lark-cli").is_file() || !bin.join("wecom-cli").is_file() {
+        if force || !bin.join("lark-cli").is_file() || !bin.join("wecom-cli").is_file() || !bin.join("dws").is_file() {
             Self::extract_dir(&CONNECTOR_CLI_DIR, &root)?;
         }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            for rel in ["linux-arm64/bin/lark-cli", "linux-arm64/bin/wecom-cli"] {
+            for rel in ["linux-arm64/bin/lark-cli", "linux-arm64/bin/wecom-cli", "linux-arm64/bin/dws"] {
                 let p = root.join(rel);
                 if p.is_file() {
                     let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
@@ -503,6 +513,20 @@ impl Pinvou3Bundle {
                 let _ = std::fs::remove_dir_all(self.skills_dir.join(d));
             }
             let _ = std::fs::remove_file(self.skills_dir.join("NOTICE-wecom.md"));
+        }
+        Ok(())
+    }
+
+    /// 钉钉 mono skill 门控:`show` → 解包 `dws` 到 `skills_dir`;否则删除。
+    /// 出处声明用 `NOTICE-dingtalk.md`,避免覆盖飞书 / 企微的 NOTICE。
+    pub fn apply_dingtalk_skills(&self, show: bool) -> std::io::Result<()> {
+        if show {
+            Self::extract_dir(&DINGTALK_SKILLS_DIR, &self.skills_dir)?;
+        } else {
+            for d in DINGTALK_SKILL_DIRS {
+                let _ = std::fs::remove_dir_all(self.skills_dir.join(d));
+            }
+            let _ = std::fs::remove_file(self.skills_dir.join("NOTICE-dingtalk.md"));
         }
         Ok(())
     }
