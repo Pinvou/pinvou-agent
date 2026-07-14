@@ -13,6 +13,8 @@
     "build": "tauri build",
     "prebuild:nsis": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-windows-runtimes.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/clean-nsis-staging.ps1",
     "build:nsis": "tauri build --features dev-tools --bundles nsis",
+    "build:nsis:stage": "npm run prebuild:nsis && tauri build --features dev-tools --no-bundle && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stage-windows-nsis-resources.ps1",
+    "bundle:nsis": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stage-windows-nsis-resources.ps1 -ValidateOnly && tauri bundle --features dev-tools --bundles nsis --config src-tauri/target/release/nsis-stage/tauri.nsis-stage.conf.json",
     "test:update-notice": "node tests/update_notice_logic.test.js",
     "test:scheduled": "node tests/scheduled_tasks_unit.js",
     "test": "npm run test:update-notice && npm run test:scheduled"
