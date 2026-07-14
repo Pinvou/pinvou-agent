@@ -33,6 +33,14 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 
 - git log 提交日志标题需要注明类型，例如 `fix` / `feat` / `doc`。
 
+### 4. GitHub PR 规范
+
+- GitHub PR 的标题和正文统一使用中文（代码标识、命令、路径等保留原文）。
+- PR 正文必须明确说明以下内容：
+  - **改了什么**：概括本次修改的主要内容。
+  - **改动原因**：说明问题背景、修改目的或采用该方案的原因。
+  - **影响面**：列出受影响的功能、模块、平台、兼容性及潜在风险；没有影响也要明确说明。
+
 ## 主体
 
 - `pinvou3-app/` — 🟢 Tauri 2.0 + EngineHandle wrapper（主线）
