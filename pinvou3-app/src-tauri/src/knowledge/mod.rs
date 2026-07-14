@@ -86,6 +86,7 @@ impl KnowledgeService {
     /// fallback（生产=随 deb 打包的资源目录;dev 走 env 优先,见 embed::from_env_or_dir）。
     pub fn new(db_path: &Path, model_dir: Option<&Path>) -> rusqlite::Result<Self> {
         let store = Store::open(db_path)?;
+        let last_scan_finished_at = store.last_scan_finished_at().unwrap_or(0);
         // env(dev) 优先,否则用打包资源目录(prod);都无/加载失败则知识库走纯全文(降级)。
         let embedder = embed::Embedder::from_env_or_dir(model_dir).map(Arc::new);
         if let Some(e) = &embedder {
@@ -96,7 +97,12 @@ impl KnowledgeService {
             store,
             l1,
             scan_state: Arc::new(Mutex::new(ScanState {
-                phase: "idle".into(),
+                phase: if last_scan_finished_at > 0 {
+                    "done".into()
+                } else {
+                    "idle".into()
+                },
+                finished_at: last_scan_finished_at,
                 ..Default::default()
             })),
             cancel: Arc::new(AtomicBool::new(false)),
@@ -267,10 +273,15 @@ impl KnowledgeService {
             }
 
             // 去重(算 hash)不在扫描里跑——读盘昂贵、百万文件下永远跑不完且拖卡设备。去重功能已下线。
+            let cancelled = cancel.load(Ordering::Relaxed);
+            let finished_at = now();
+            if !cancelled {
+                let _ = store.set_last_scan_finished_at(finished_at);
+            }
             let mut st = scan_state.lock();
             st.running = false;
-            st.finished_at = now();
-            st.phase = if cancel.load(Ordering::Relaxed) {
+            st.finished_at = finished_at;
+            st.phase = if cancelled {
                 "cancelled"
             } else {
                 "done"
@@ -546,4 +557,3 @@ pub async fn kb_stats(state: State<'_, KnowledgeService>) -> Result<Stats, Strin
     let store = state.store.clone();
     spawn_db(move || store.stats().map_err(|e| e.to_string())).await
 }
-
