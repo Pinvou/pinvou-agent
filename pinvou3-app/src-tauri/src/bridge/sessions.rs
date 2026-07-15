@@ -292,9 +292,26 @@ impl SessionStore {
         if self.is_scheduled_session(id)? {
             bail!("Scheduled-run sessions are deleted through their automation");
         }
-        self.manager
-            .delete_session(id)
-            .with_context(|| format!("delete_session({id})"))?;
+        match self.manager.delete_session(id) {
+            Ok(()) => {}
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                // The session JSON may already have been removed by an earlier
+                // delete or interrupted cleanup. Treat that as success, but
+                // still remove an orphaned workspace/artifacts directory.
+                validate_session_id(id)?;
+                let session_dir = self.manager.sessions_dir().join(id);
+                match std::fs::remove_dir_all(&session_dir) {
+                    Ok(()) => {}
+                    Err(dir_err) if dir_err.kind() == ErrorKind::NotFound => {}
+                    Err(dir_err) => {
+                        return Err(dir_err).with_context(|| {
+                            format!("remove stale session dir {}", session_dir.display())
+                        });
+                    }
+                }
+            }
+            Err(err) => return Err(err).with_context(|| format!("delete_session({id})")),
+        }
         // 如果删的是 active session，清理 active 标记
         let mut active = self.active.write();
         if active.as_deref() == Some(id) {
@@ -2368,6 +2385,33 @@ mod tests {
         store.set_active(Some(s.metadata.id.clone()));
         store.delete(&s.metadata.id).expect("delete");
         assert!(store.active_id().is_none(), "delete active clears tracker");
+    }
+
+    #[test]
+    fn delete_missing_session_file_is_idempotent() {
+        let (store, _g) = isolated_store();
+        let s = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let session_file = store
+            .manager
+            .sessions_dir()
+            .join(format!("{}.json", s.metadata.id));
+        let session_dir = store.manager.sessions_dir().join(&s.metadata.id);
+        std::fs::create_dir_all(&session_dir).expect("session dir");
+        std::fs::remove_file(&session_file).expect("remove session file");
+        store.set_active(Some(s.metadata.id.clone()));
+        store.set_pinned(&s.metadata.id, true);
+
+        store.delete(&s.metadata.id).expect("delete missing file");
+
+        assert!(!session_dir.exists(), "stale session dir removed");
+        assert!(store.active_id().is_none(), "active tracker cleared");
+        assert!(!store.is_pinned(&s.metadata.id), "pinned state cleared");
+
+        store
+            .delete(&s.metadata.id)
+            .expect("repeated delete remains successful");
     }
 
     #[test]
