@@ -11,7 +11,7 @@ use tokio::time::timeout;
 
 use crate::bridge::paths;
 
-const UPDATE_MANIFEST_URL: &str = "https://www.ma-xiao.com/pinvou3/latest.json";
+const UPDATE_MANIFEST_URL: &str = "https://pinvou.com/pinvou3/latest.json";
 
 fn manifest_url() -> String {
     std::env::var("PINVOU3_UPDATE_URL").unwrap_or_else(|_| UPDATE_MANIFEST_URL.to_string())
@@ -323,7 +323,7 @@ mod tests {
             "version": "0.3.0",
             "notes": "测试",
             "pub_date": "2026-06-10T08:00:00Z",
-            "url": "https://www.ma-xiao.com/pinvou3/pinvou3_0.3.0_amd64.deb",
+            "url": "https://pinvou.com/pinvou3/pinvou3_0.3.0_amd64.deb",
             "sha256": "abc123",
             "size": 1024
         }"#;

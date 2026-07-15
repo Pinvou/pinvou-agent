@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test --test-concurrency=1"
+    "test": "node --test --test-concurrency=1 test/*.test.js"
   },
   "dependencies": {
+    "ip2region.js": "3.1.8",
     "ws": "^8.18.0"
   }
 }

@@ -22,6 +22,7 @@ test("deploy script rolls back when post-deploy public verification fails", asyn
 
   await executable(join(bin, "node"), "#!/usr/bin/env bash\nexit 0\n");
   await executable(join(bin, "npm"), "#!/usr/bin/env bash\nexit 0\n");
+  await executable(join(bin, "sha256sum"), "#!/usr/bin/env bash\nexit 0\n");
   await executable(join(bin, "scp"), `#!/usr/bin/env bash\necho scp >> "${log}"\n`);
   await executable(join(bin, "ssh"), `#!/usr/bin/env bash
 cat >/dev/null
@@ -34,7 +35,17 @@ else
 fi
 `);
   await executable(join(bin, "curl"), `#!/usr/bin/env bash
-for arg in "$@"; do url="$arg"; done
+output=""
+previous=""
+for arg in "$@"; do
+  if [[ "$previous" == "-o" ]]; then output="$arg"; fi
+  previous="$arg"
+  url="$arg"
+done
+if [[ -n "$output" ]]; then
+  : > "$output"
+  exit 0
+fi
 case "$url" in
   http://direct.invalid/*) exit 22 ;;
   */healthz) printf '%s' '{"ok":true,"room_count":0}' ;;
@@ -48,6 +59,7 @@ esac
     env: {
       ...process.env,
       PATH: `${bin}:${process.env.PATH}`,
+      XDG_CACHE_HOME: join(root, "cache"),
       PINVOU_REMOTE_PUBLIC_URL: "https://public.invalid/pinvou3/remote",
       PINVOU_REMOTE_DIRECT_URL: "http://direct.invalid/pinvou3/remote",
     },

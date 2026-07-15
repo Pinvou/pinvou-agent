@@ -536,7 +536,10 @@ impl HttpLlmApiHubAdapter {
             session.user_id
         );
         let user: NewApiUserRecord = self.send_json(
-            self.user_request(self.client.get(self.endpoint(None, DEFAULT_USER_SELF_PATH)), session),
+            self.user_request(
+                self.client.get(self.endpoint(None, DEFAULT_USER_SELF_PATH)),
+                session,
+            ),
             "query current user",
         )?;
         if user.status.is_some_and(|status| status != 1) {
@@ -575,7 +578,9 @@ impl HttpLlmApiHubAdapter {
             username
         );
         if username.is_empty() || password.is_empty() {
-            log::warn!("[llmapi_hub][adapter] user login skipped because username or password is empty");
+            log::warn!(
+                "[llmapi_hub][adapter] user login skipped because username or password is empty"
+            );
             return Err(LlmApiError::new(
                 LlmApiErrorCode::ProvisioningFailed,
                 "New API username or password is empty",
@@ -1227,6 +1232,7 @@ fn compact_body(body: &str) -> String {
 
 fn http_error(operation: &str, status: u16, body: &str) -> LlmApiError {
     let code = match status {
+        404 if operation == "query current user" => LlmApiErrorCode::UserNotFound,
         401 | 403 => LlmApiErrorCode::PermissionDenied,
         429 => LlmApiErrorCode::RateLimited,
         500..=599 => LlmApiErrorCode::ServiceUnreachable,
@@ -1242,14 +1248,14 @@ fn http_error(operation: &str, status: u16, body: &str) -> LlmApiError {
 fn business_error(operation: &str, message: Option<String>) -> LlmApiError {
     let message = message.unwrap_or_else(|| "unknown New API error".to_string());
     let lower = message.to_ascii_lowercase();
-    let code = if lower.contains("not logged in")
+    let code = if lower.contains("not exist") || lower.contains("不存在") {
+        LlmApiErrorCode::UserNotFound
+    } else if lower.contains("not logged in")
         || lower.contains("access token")
         || lower.contains("权限")
         || lower.contains("privilege")
     {
         LlmApiErrorCode::PermissionDenied
-    } else if lower.contains("not exist") || lower.contains("不存在") {
-        LlmApiErrorCode::UserNotFound
     } else {
         LlmApiErrorCode::ProvisioningFailed
     };
@@ -1315,6 +1321,22 @@ pub mod tests {
             parse_admin_credential(r#"{"user_id":1001,"access_token":"abc"}"#).unwrap();
         assert_eq!(user_id.as_deref(), Some("1001"));
         assert_eq!(token, "abc");
+    }
+
+    #[test]
+    fn current_user_not_found_errors_are_authoritative() {
+        assert_eq!(
+            http_error("query current user", 404, "not found").code,
+            LlmApiErrorCode::UserNotFound
+        );
+        assert_eq!(
+            business_error(
+                "query current user",
+                Some("user does not exist or is not logged in".to_string())
+            )
+            .code,
+            LlmApiErrorCode::UserNotFound
+        );
     }
 
     #[test]

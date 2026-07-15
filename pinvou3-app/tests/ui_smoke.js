@@ -3,7 +3,7 @@
  * pinvou3 前端 UI 冒烟回归测试 — headless chromium + mock TauriBridge,加载真 src/index.html。
  * 覆盖三条易回归的前端通路:
  *   ① resumeWorkflowOnBoot:有僵尸 run 时启动仍落草稿页(activeSessionId=null)+ 只挂看板,不劫持聊天会话。
- *   ② 工具商店渲染出 Obsidian 知识库卡。
+ *   ② 工具商店渲染出 Obsidian 与钉钉连接器卡。
  *   ③ 聊天流产物卡(artifact_card)挂出「品/悟」召唤 pinvou 按钮。
  *   ④ 记忆候选事件渲染卡片，且确认/忽略/不再提示分别调用正确后端命令。
  * 依赖:puppeteer-core(自动从 node_modules / ~/.npm/_npx 发现)+ 系统 chromium(或 env CHROME 指定)。
@@ -30,7 +30,8 @@ const CHROME = process.env.CHROME ||
 if (!CHROME) { console.error('SKIP: 未找到 chromium/chrome,可用 env CHROME=/path/to/chromium 指定'); process.exit(2); }
 const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-smoke-'));
 
-// mock TauriBridge:find_resumable_run 返回僵尸 run;一个会话含 write_file → 触发 artifact_card 气泡。
+// mock TauriBridge:find_resumable_run 返回僵尸 run;会话同时覆盖 write_file、
+// MCP producer 和含 path 的 exec_shell 诊断结果，验证只有真实 producer 触发 artifact。
 function injectSource() {
   return `(function(){
     window.__TAURI_EVENT_HANDLERS__={};
@@ -41,12 +42,22 @@ function injectSource() {
     const CONV={s1:{metadata:{id:'s1'},artifacts:['/home/x/会议纪要.md'],messages:[
       {role:'user',content:[{type:'text',text:'整理纪要'}]},
       {role:'assistant',content:[{type:'text',text:'已生成会议纪要。'},{type:'tool_use',id:'t1',name:'write_file',input:{path:'/home/x/会议纪要.md',content:'# 会议纪要'}}]},
-      {role:'user',content:[{type:'tool_result',tool_use_id:'t1',content:'written'}]}]}};
+      {role:'user',content:[{type:'tool_result',tool_use_id:'t1',content:'written'}]},
+      {role:'assistant',content:[{type:'tool_use',id:'t-shell',name:'exec_shell',input:{command:'python validator.py --json'}}]},
+      {role:'user',content:[{type:'tool_result',tool_use_id:'t-shell',content:'{"ok":true,"path":"/home/x/validator-fake.html"}'}]},
+      {role:'assistant',content:[{type:'tool_use',id:'t-mcp',name:'mcp_pptx_make_pptx',input:{title:'季度报告'}}]},
+      {role:'user',content:[{type:'tool_result',tool_use_id:'t-mcp',content:'{"path":"/home/x/季度报告.pptx"}'}]}]}};
     function invoke(cmd,args){
       window.__TAURI_INVOKES__.push({cmd:cmd,args:args||{}});
       switch(cmd){
         case 'get_settings': return Promise.resolve({theme:'liquid-light',language:'zh-Hans'});
         case 'get_effective_model_config': return Promise.resolve({model:'qwen36_35b_256k',base_url:'http://127.0.0.1:8000/v1',api_key_set:false});
+        case 'get_llmapi_status': return window.__LLMAPI_STATUS_ERROR__
+          ? Promise.reject(new Error('temporary llmapi status failure'))
+          : Promise.resolve(window.__LLMAPI_STATUS__ || null);
+        case 'get_llmapi_models': return window.__LLMAPI_MODELS_ERROR__
+          ? Promise.reject(new Error('temporary llmapi models failure'))
+          : Promise.resolve(window.__LLMAPI_MODELS__ || {available_models:[],default_model:''});
         case 'list_sessions': return Promise.resolve(SESSIONS);
         case 'get_super_permission_status': return Promise.resolve(false);
         case 'list_personas': return Promise.resolve([]);
@@ -124,6 +135,43 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
   });
   rec('① 僵尸run不劫持启动(落草稿页+挂看板)', (st.activeSessionId == null) && st.wfActive === true && st.wfSid === 's-zombie', JSON.stringify(st));
 
+  const llmApiCacheFallback = await page.evaluate(async () => {
+    window.__LLMAPI_STATUS__ = {
+      backend_user_exists: true,
+      backend_user_state: 'exists',
+      stale: false,
+      provisioning_status: 'ready',
+    };
+    window.__LLMAPI_MODELS__ = {
+      available_models: ['deepseek-v4-flash'],
+      default_model: 'deepseek-v4-flash',
+    };
+    await window.TauriBridge.getLlmApiStatus();
+    await window.TauriBridge.getLlmApiModels();
+
+    window.__LLMAPI_STATUS_ERROR__ = true;
+    window.__LLMAPI_MODELS_ERROR__ = true;
+    await window.TauriBridge.getLlmApiStatus().catch(() => {});
+    await window.TauriBridge.getLlmApiModels().catch(() => {});
+    const retained = window.TauriBridge.getState();
+    const keptExisting = retained.llmApiStatus && retained.llmApiStatus.backend_user_exists === true;
+    const keptModels = retained.llmApiModels && retained.llmApiModels.default_model === 'deepseek-v4-flash';
+
+    window.__LLMAPI_STATUS_ERROR__ = false;
+    window.__LLMAPI_STATUS__ = {
+      backend_user_exists: false,
+      backend_user_state: 'not_exists',
+      stale: false,
+      provisioning_status: 'not_started',
+    };
+    await window.TauriBridge.getLlmApiStatus();
+    const clearedWhenAuthoritative = window.TauriBridge.getState().llmApiModels === null;
+    return { keptExisting, keptModels, clearedWhenAuthoritative };
+  });
+  rec('LLM API 暂时失败保留账户和模型缓存，仅明确不存在时清理',
+    llmApiCacheFallback.keptExisting && llmApiCacheFallback.keptModels && llmApiCacheFallback.clearedWhenAuthoritative,
+    JSON.stringify(llmApiCacheFallback));
+
   // 手机先向尚未在桌面打开的后台 session 发消息：hydration 必须先把磁盘 messages
   // 重建成 chatItems；否则桌面随后切入时只剩这条手机消息，历史和产物卡都像“丢了”。
   await page.evaluate(async () => {
@@ -133,12 +181,15 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     }
   });
 
-  // ② 工具商店 Obsidian 卡
+  // ② 工具商店关键连接器卡
   await expand(page); await sleep(500);
   await clickText(page, '工具商店');
   await sleep(1500);
-  const obs = await page.evaluate(() => document.body.innerText.includes('Obsidian'));
-  rec('② 工具商店渲染 Obsidian 卡', obs);
+  const connectors = await page.evaluate(() => {
+    const text = document.body.innerText;
+    return { obsidian: text.includes('Obsidian'), dingtalk: text.includes('钉钉') };
+  });
+  rec('② 工具商店渲染 Obsidian 与钉钉卡', connectors.obsidian && connectors.dingtalk, JSON.stringify(connectors));
 
   // ③ 聊天流产物卡 品/悟 召唤按钮
   await clickText(page, '第三季度财报分析');
@@ -148,9 +199,32 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     .filter(o => o.t.includes('查错') || o.t.includes('发散') || /品|悟/.test(o.x)).length);
   const restored = await page.evaluate(() => {
     const text = document.body.innerText;
-    return { history: text.includes('整理纪要'), mobile: text.includes('手机补充消息') };
+    const artifactPaths = window.TauriBridge.getState().chatItems
+      .filter(item => item.type === 'artifact_card')
+      .map(item => item.path);
+    return {
+      history: text.includes('整理纪要'),
+      mobile: text.includes('手机补充消息'),
+      mcpArtifact: artifactPaths.some(path => String(path).includes('季度报告.pptx')),
+      shellFakeArtifact: artifactPaths.some(path => String(path).includes('validator-fake.html')),
+    };
   });
-  rec('③ 后台session经手机唤醒后仍恢复历史+新消息+产物卡', hit >= 2 && restored.history && restored.mobile, JSON.stringify({ hit, ...restored }));
+  rec('③ 后台session恢复时仅 MCP producer 结果生成产物卡', hit >= 2 && restored.history && restored.mobile && restored.mcpArtifact && !restored.shellFakeArtifact, JSON.stringify({ hit, ...restored }));
+
+  // 实时事件也必须使用同一 producer 判定：validator 的 shell JSON 不能进产物面板，
+  // 真 MCP producer 返回路径仍要被跟踪。
+  await page.evaluate(async () => {
+    async function emit(name, payload) {
+      const handlers = window.__TAURI_EVENT_HANDLERS__[name] || [];
+      for (const handler of handlers) await handler({ payload });
+    }
+    await emit('chat:tool_start', { session_id:'s1', id:'live-shell', name:'exec_shell', args:{ command:'validator --json' } });
+    await emit('chat:tool_end', { session_id:'s1', id:'live-shell', success:true, output:'{"ok":true,"path":"live-validator-fake.html"}' });
+    await emit('chat:tool_start', { session_id:'s1', id:'live-mcp', name:'mcp_gongwen_make_gongwen', args:{} });
+    await emit('chat:tool_end', { session_id:'s1', id:'live-mcp', success:true, output:'{"path":"live-report.docx"}' });
+  });
+  const liveArtifacts = await page.evaluate(() => window.TauriBridge.getState().artifacts.map(item => item.path));
+  rec('③b 实时 tool_end 不跟踪 shell path、保留 MCP 产物', liveArtifacts.includes('live-report.docx') && !liveArtifacts.includes('live-validator-fake.html'), JSON.stringify(liveArtifacts));
 
   // ④ 后端 pending 事件必须直达 React 候选卡；三个决策按钮必须调用各自命令。
   async function emitMemoryCandidate(id, text) {

@@ -159,6 +159,8 @@
     planSnapshot: { plan: null, todos: null },
     // 当前 session 产物列表 [{ path, basename }]
     artifacts: [],
+    // 最近一次磁盘产物变更。用于刷新已打开的预览；列表是否变化不能作为唯一信号。
+    artifactChange: { seq: 0, path: "", event: "", sessionId: "", at: 0 },
     // 多 session 并发:每个 session 是否正在生成 { session_id: bool }，会话列表显示「工作中」转圈
     sessionBusy: {},
     // 排队式输入:当前 session 生成中时积压的待发消息 [{ id, text, displayText, attachments }]
@@ -2064,7 +2066,7 @@
             presentedArtifacts[pp] = true;
             presentedArtifactNames[basename(pp)] = true;
           }
-        } else if (db.type === "tool_use") {
+        } else if (db.type === "tool_use" && shouldUseToolOutputAsArtifact(db.name)) {
           var gres = resultById[db.id];
           if (!(gres && gres.is_error)) {
             var gp = artifactPathFromToolOutput(gres && gres.content);
@@ -2165,17 +2167,19 @@
             continue;
           }
           addChatItem({ type: "tool", toolId: b.id, name: b.name, args: b.input, output: null, success: null, state: "pending" });
-          var gres2 = resultById[b.id];
-          var gap = artifactPathFromToolOutput(gres2 && gres2.content);
-          if (!(gres2 && gres2.is_error) && gap && isDeliverable(gap) && lastDirtyArtifactId[gap] === b.id && !presentedArtifacts[gap] && !presentedArtifactNames[basename(gap)]) {
-            var gprev = findPresentedArtifact(gap);
-            if (gprev) {
-              addChatItem({
-                type: "artifact_card", path: gprev.path, title: gprev.title,
-                description: gprev.description, time: "", sessionId: state.activeSessionId,
-              });
-            } else if (writtenArtifacts[gap]) {
-              addChatItem({ type: "artifact_card", path: gap, title: basename(gap), description: "", time: "", sessionId: state.activeSessionId });
+          if (shouldUseToolOutputAsArtifact(b.name)) {
+            var gres2 = resultById[b.id];
+            var gap = artifactPathFromToolOutput(gres2 && gres2.content);
+            if (!(gres2 && gres2.is_error) && gap && isDeliverable(gap) && lastDirtyArtifactId[gap] === b.id && !presentedArtifacts[gap] && !presentedArtifactNames[basename(gap)]) {
+              var gprev = findPresentedArtifact(gap);
+              if (gprev) {
+                addChatItem({
+                  type: "artifact_card", path: gprev.path, title: gprev.title,
+                  description: gprev.description, time: "", sessionId: state.activeSessionId,
+                });
+              } else if (writtenArtifacts[gap]) {
+                addChatItem({ type: "artifact_card", path: gap, title: basename(gap), description: "", time: "", sessionId: state.activeSessionId });
+              }
             }
           }
           // 还原"自动续卡":write_file/append_file 改的文件之前 present 过 → 续一张
@@ -2253,6 +2257,17 @@
   }
   function normalizedPath(p) {
     return String(p || "").replace(/\\/g, "/");
+  }
+  function noteArtifactChange(path, event, sessionId) {
+    if (!path) return;
+    state.artifactChange = {
+      seq: (state.artifactChange && state.artifactChange.seq || 0) + 1,
+      path: path,
+      event: event || "modified",
+      sessionId: sessionId || "",
+      at: Date.now(),
+    };
+    notify();
   }
   function isSharedMcpArtifactPath(path) {
     return normalizedPath(path).indexOf("/sessions/default/artifacts/") >= 0;
@@ -2741,6 +2756,13 @@
     var p = obj.abs_path || obj.path || obj.file_path || obj.local_path;
     return typeof p === "string" && p ? p : null;
   }
+  function shouldUseToolOutputAsArtifact(name) {
+    if (!name || isPresentArtifactTool(name)) return false;
+    // Only MCP-style producer tools should be parsed from result JSON. Shell/read
+    // tools often return diagnostic JSON with a `path` field, which is not a
+    // newly created artifact.
+    return typeof name === "string" && name.indexOf("mcp_") === 0;
+  }
   function presentArtifactAbsPath(toolResultContent, fallbackPath) {
     fallbackPath = fallbackPath || "";
     var parsed = artifactPathFromToolOutput(toolResultContent);
@@ -2853,7 +2875,7 @@
     // 通用工具产物兜底：PPT / 公文等 MCP 工具会先返回 {path: "..."}，
     // 随后模型按约定再调 present_artifact。若模型漏调，仍把该成品归到当前
     // tool_end 所属 session，并在 chat:done 统一补一张成品卡。
-    if (p.success && meta && !isPresentArtifactTool(meta.name)) {
+    if (p.success && meta && shouldUseToolOutputAsArtifact(meta.name)) {
       var producedPath = artifactPathFromToolOutput(p.output);
       if (producedPath && isDeliverable(producedPath)) {
         trackArtifact(producedPath);
@@ -3022,6 +3044,7 @@
     var p = e.payload || {};
     if (!p.path) return;
     onSessionEvent(e, function () {
+      noteArtifactChange(p.path, p.event || "modified", p.session_id || state.activeSessionId || "");
       if (p.event === "removed") { untrackArtifact(p.path); return; }
       // 面板只收成品:成品型扩展名 或 present_artifact 过的;中间 / infra / 目录不进面板
       // (file_watcher 递归会推 tmp/ _state/ 等子目录与 infra 文件 → 此处兜住)。
@@ -3621,6 +3644,18 @@
     }
   }
 
+  function llmApiBackendUserState(status) {
+    if (!status) return "unknown";
+    if (status.backend_user_state === "exists" || status.backend_user_state === "not_exists" || status.backend_user_state === "unknown") {
+      return status.backend_user_state;
+    }
+    return status.backend_user_exists ? "exists" : "not_exists";
+  }
+
+  function llmApiAccountKnownExists(status) {
+    return llmApiBackendUserState(status) === "exists";
+  }
+
   async function refreshLlmApiState(options) {
     options = options || {};
     var refreshModels = options.refreshModels !== false;
@@ -3632,21 +3667,22 @@
       state.llmApiStatus = status;
     } catch (e) {
       console.warn("get llmapi status failed", e);
-      state.llmApiStatus = null;
+      // Keep the last known account state. A transport failure is not proof
+      // that the backend account disappeared.
       notify();
       throw e;
     }
-    if (refreshModels && status && status.backend_user_exists) {
+    if (refreshModels && llmApiAccountKnownExists(status)) {
       try {
         models = await invoke("get_llmapi_models");
         state.llmApiModels = models;
       } catch (e) {
         console.warn("get llmapi models failed", e);
-        state.llmApiModels = null;
+        // Preserve the last successfully synchronized model list.
         notify();
         throw e;
       }
-    } else if (!status || !status.backend_user_exists) {
+    } else if (llmApiBackendUserState(status) === "not_exists") {
       state.llmApiModels = null;
     }
     if (refreshSavedModels) await loadModels();
@@ -4262,6 +4298,7 @@
   // ── 产物面板 ─────────────────────────────────────────────────────
   function artifactInfo(path) { return invoke("artifact_info", { path: path }); }
   function readArtifactText(path) { return invoke("read_artifact_text", { path: path }); }
+  function writeArtifactText(path, content) { return invoke("write_artifact_text", { path: path, content: content }); }
   function readArtifactImageB64(path) { return invoke("read_artifact_image_b64", { path: path }); }
   // pptx 封面缩略图：读 docProps/thumbnail.jpeg → data URL（无则 null）。本地数据、无外链。
   function readArtifactThumbnail(path) { return invoke("read_artifact_thumbnail", { path: path }).catch(function () { return null; }); }
@@ -5340,7 +5377,7 @@
     await startupAwait("bridge:load_app_version", loadAppVersion);
     await startupAwait("bridge:load_models", loadModels);
     getLlmApiStatus()
-      .then(function (status) { return status && status.backend_user_exists ? getLlmApiModels() : null; })
+      .then(function (status) { return llmApiAccountKnownExists(status) ? getLlmApiModels() : null; })
       .then(loadModels)
       .catch(function (e) { console.warn("load llmapi account/models failed", e); });
     startupMark("bridge:llmapi_refresh_started");
@@ -5464,6 +5501,7 @@
     // 产物
     artifactInfo: artifactInfo,
     readArtifactText: readArtifactText,
+    writeArtifactText: writeArtifactText,
     readArtifactImageB64: readArtifactImageB64,
     readArtifactThumbnail: readArtifactThumbnail,
     renderArtifactVisual: renderArtifactVisual,

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Briefcase, ChevronLeft, ChevronRight, Cpu, Globe, IconGrid, IconList, Package, Search, Server, User, XIcon, Zap } from '../../components/icons.jsx';
 import { notifyComposerToolsChanged } from '../settings/SettingsView.jsx';
+import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { TsActionBtn, tsCategories, tsFeaturedCollections, tsSkillsData, tsToolsData } from './tool-common.jsx';
 
 const FEISHU_STEPS = [
@@ -15,6 +16,11 @@ const FEISHU_STEPS = [
       { key: 'runtime', label: '准备运行时', sub: '解压 Node 到 ~/.pinvou3' },
       { key: 'cli', label: '安装连接组件', sub: 'wecom-cli · 首次约 40 秒' },
       { key: 'qr', label: '扫码登录', sub: '企业微信 App 扫一扫' },
+    ];
+    const DINGTALK_STEPS = [
+      { key: 'runtime', label: '准备运行时', sub: '解压 Node 到 ~/.pinvou3' },
+      { key: 'cli', label: '安装连接组件', sub: 'dws · 首次约 40 秒' },
+      { key: 'qr', label: '扫码登录', sub: '钉钉 App 扫一扫' },
     ];
     const FeishuStepIcon = ({ st }) => {
       if (st === 'done') return <span className="w-5 h-5 rounded-full bg-emerald-500 grid place-items-center text-white text-[11px]">✓</span>;
@@ -72,6 +78,12 @@ const FEISHU_STEPS = [
                       <div className="font-medium text-[14px] mb-1 text-slate-900 dark:text-slate-100">{twoStep ? (flow.qrPhase === 'authorize' ? '第 2 步 / 共 2 步：扫码授权' : '第 1 步 / 共 2 步：扫码注册应用') : `扫码登录${name}`}</div>
                       <div className="text-[12px] text-slate-500 dark:text-slate-400 mb-3">用{name} App 扫一扫 → 确认</div>
                     </>
+                  )}
+                  {flow.userCode && (
+                    <div className="mb-3 inline-flex flex-col gap-1 rounded-lg bg-slate-100 dark:bg-white/10 px-3 py-2">
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400">页面验证码</span>
+                      <span className="font-mono text-[18px] font-bold tracking-wider text-slate-900 dark:text-white">{flow.userCode}</span>
+                    </div>
                   )}
                   {flow.qrUrl && <button onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: flow.qrUrl })} className="text-[13px] text-blue-600 dark:text-blue-400 hover:underline">{browserAuth ? '重新打开登录页 ↗' : '在浏览器打开 ↗'}</button>}
                 </div>
@@ -219,6 +231,54 @@ const FEISHU_STEPS = [
       });
     }
 
+    // ── 钉钉连接流程 · 跨视图持久 store(镜像企微;纯扫码单段）──
+    const dingtalkConn = {
+      flow: null, tick: null, listenersReady: false, subs: new Set(),
+      subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
+      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch (_) {} }); },
+      startTick() {
+        this.stopTick();
+        this.tick = setInterval(() => this.setFlow(f => {
+          if (!f || f.phase !== 'running') return f;
+          const nf = { ...f, sec: (f.sec || 0) + 1 };
+          if (f.active === 'cli') nf.pct = Math.min(90, (f.pct || 0) + (90 - (f.pct || 0)) * 0.06 + 1);
+          return nf;
+        }), 1000);
+      },
+      stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
+    };
+    function ensureDingtalkListeners() {
+      if (dingtalkConn.listenersReady) return;
+      const ev = window.__TAURI__ && window.__TAURI__.event;
+      if (!ev) return;
+      dingtalkConn.listenersReady = true;
+      ev.listen('dingtalk:qr', (e) => {
+        const p = e.payload || {};
+        dingtalkConn.stopTick();
+        dingtalkConn.setFlow(f => {
+          const prev = (f && f.steps) || {};
+          return { ...(f || {}), phase: 'qr', active: 'qr',
+            steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), qr: 'active' },
+            qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase, userCode: p.user_code };
+        });
+      });
+      ev.listen('dingtalk:connected', async () => {
+        dingtalkConn.stopTick();
+        try {
+          await window.__TAURI__.core.invoke('dingtalk_apply_skills');
+          dingtalkConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
+          setTimeout(() => dingtalkConn.setFlow(null), 1800);
+        } catch (e) {
+          dingtalkConn.setFlow(f => ({ ...(f || {}), phase: 'error', err: `钉钉已授权，但技能启用失败：${String(e).slice(0, 220)}`, errStep: 'qr', steps: { ...((f && f.steps) || {}), qr: 'error' } }));
+        }
+      });
+      ev.listen('dingtalk:error', (e) => {
+        const p = e.payload || {};
+        dingtalkConn.stopTick();
+        dingtalkConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || '连接失败'), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } }; });
+      });
+    }
+
     // iOS 风格弹窗（安装/卸载后提示需新建会话生效）
     const TsAlert = ({ alert, theme, onDismiss, onNewChat }) => {
       const isDark = theme === 'dark';
@@ -252,7 +312,11 @@ const FEISHU_STEPS = [
                   <div className={`text-[17px] font-semibold mb-1.5 ${isDark ? 'text-white' : 'text-slate-900'}`}>
                     {alert.title}
                   </div>
-                  {!alert.isError && (
+                  {alert.subtitle ? (
+                    <div className={`text-[13px] leading-relaxed ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                      {alert.subtitle}
+                    </div>
+                  ) : !alert.isError && (
                     <div className={`text-[13px] leading-relaxed ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
                       {alert.isInstall ? '新工具需要在新会话中生效' : '已移除，新会话将不再加载该工具'}
                     </div>
@@ -405,6 +469,7 @@ const FEISHU_STEPS = [
       const featuredScrollRef = useRef(null);
       const [isFeaturedHovered, setIsFeaturedHovered] = useState(false);
       const [toolStates, setToolStates] = useState({});
+      const [toolAuthStates, setToolAuthStates] = useState({});
       // 配套技能 id → 所属 MCP id(由 list_marketplace_tools 的 companion_skills 反建,manifest 单一真源)。
       // 有配套 MCP 的技能卡据此把状态/装卸联动到该 MCP,避免命名不一致(government-writing↔gongwen)时状态分叉。
       const [skillToMcp, setSkillToMcp] = useState({});
@@ -443,6 +508,17 @@ const FEISHU_STEPS = [
         } catch (e) { console.error('wecom_status failed:', e); }
       };
       useEffect(() => { refreshWecom(); }, []);
+
+      // 钉钉(CLI 路线)连接态:由 dws auth status 判定
+      const [dingtalkConnected, setDingtalkConnected] = useState(false);
+      const [dingtalkFlow, setDingtalkFlow] = useState(dingtalkConn.flow);
+      const refreshDingtalk = async () => {
+        try {
+          const s = await window.__TAURI__.core.invoke('dingtalk_status');
+          setDingtalkConnected(!!(s && s.connected));
+        } catch (e) { console.error('dingtalk_status failed:', e); }
+      };
+      useEffect(() => { refreshDingtalk(); }, []);
 
       // 订阅跨视图 store：把 store 状态镜像进本组件渲染，并在完成/失败时做组件级收尾
       //（弹窗、刷新连接态）。真正的事件监听/秒表在模块级 feishuConn 里，切视图不丢。
@@ -486,6 +562,28 @@ const FEISHU_STEPS = [
           }
         });
         setWecomFlow(wecomConn.flow);
+        return unsub;
+      }, []);
+
+      // 订阅钉钉 store(镜像企微):镜像进渲染 + 完成/失败收尾
+      useEffect(() => {
+        ensureDingtalkListeners();
+        let prevPhase = dingtalkConn.flow && dingtalkConn.flow.phase;
+        const unsub = dingtalkConn.subscribe((flow) => {
+          setDingtalkFlow(flow);
+          const ph = flow && flow.phase;
+          if (ph !== prevPhase) {
+            if (ph === 'done') {
+              setDingtalkConnected(true); setBusyId(null);
+              setAlert({ visible: true, loading: false, title: '已连接钉钉', subtitle: '官方技能已启用，可新建对话直接用', isInstall: true, isError: false, toolId: 'dingtalk' });
+              notifyComposerToolsChanged();
+            } else if (ph === 'error') {
+              setBusyId(null);
+            }
+            prevPhase = ph;
+          }
+        });
+        setDingtalkFlow(dingtalkConn.flow);
         return unsub;
       }, []);
 
@@ -565,19 +663,30 @@ const FEISHU_STEPS = [
       // 合并后端安装状态到 mock 数据(飞书/企微/EIP/知道 的 installed = 已连接)
       // 新分类映射(按工具 id):沟通协作 / 文档知识 / 研发 / 金融数据 / 生活实用 / H3C 内部
       const CAT_BY_ID = { 1: 'life', 2: 'finance', 3: 'collab', 4: 'docs', 5: 'docs', 6: 'docs', 7: 'collab', 8: 'collab', 9: 'collab', 10: 'collab', 11: 'dev', 12: 'dev', 13: 'finance', 14: 'docs', 17: 'h3c', 18: 'h3c', 99: 'collab' };
-      const tools = tsToolsData.map(t => ({
-        ...t,
-        category: CAT_BY_ID[t.id] || t.category,
-        installed: t.feishuCli
-          ? feishuConnected
-          : t.wecomCli
-          ? wecomConnected
-          : t.eipCli
-          ? eipConnected
-          : t.zhidaoCli
-          ? zhidaoConnected
-          : (t.backendId ? (toolStates[t.backendId] || false) : false),
-      }));
+      const tools = tsToolsData.map(t => {
+        const authState = t.oauthMcp && t.backendId ? toolAuthStates[t.backendId] : null;
+        return {
+          ...t,
+          category: CAT_BY_ID[t.id] || t.category,
+          installed: t.feishuCli
+            ? feishuConnected
+            : t.wecomCli
+            ? wecomConnected
+            : t.dingtalkCli
+            ? dingtalkConnected
+            : t.eipCli
+            ? eipConnected
+            : t.zhidaoCli
+            ? zhidaoConnected
+            : t.oauthMcp
+            ? authState?.status === 'connected'
+            : (t.backendId ? (toolStates[t.backendId] || false) : false),
+          authStatus: authState?.status || 'not_installed',
+          authMessage: authState?.message || '',
+          mcpConfigured: !!authState?.mcp_configured,
+          oauthTokenPresent: !!authState?.oauth_token_present,
+        };
+      });
 
       // 技能卡 = 预置(合并安装状态) + 用户上传(后端动态返回,默认图标)
       const presetSkills = tsSkillsData.map(s => {
@@ -599,12 +708,12 @@ const FEISHU_STEPS = [
 
       const connectorTools = tools.filter(t => !LOCAL_TOOLS.includes(t.backendId));
       const listItems = [...connectorTools, ...skillCards]; // 列表视图:连接器 + 技能全放一起
-      // 独家技能:公文写作 / PPT 生成 / 视觉设计(按此序;视觉无 backendId,PIN 后自然排末)
-      const FEATURED_SKILL = s => ['government-writing', 'pptx'].includes(s.backendId) || s.id === 's5';
+      // 独家技能:公文写作 / PPT 生成 / 数据可视化 / 视觉设计(按此序;视觉无 backendId,PIN 后自然排末)
+      const FEATURED_SKILL = s => ['government-writing', 'pptx', 'visualizer'].includes(s.backendId) || s.id === 's5';
       // 搜索全局:有搜索词时跨「连接器 + 全部技能」检索,不受卡片视图/分类限制(「我的工具」内搜索仍限已安装)
       const searching = searchQuery.trim() !== '';
       const sourceItems = (searching && !installedOnly) ? listItems : (isCard ? skillCards.filter(FEATURED_SKILL) : listItems);
-      const PIN = ['government-writing', 'pptx'];
+      const PIN = ['government-writing', 'pptx', 'visualizer'];
       const filteredTools = sourceItems.filter(tool => {
         const q = searchQuery.toLowerCase();
         const matchesSearch = tool.title.toLowerCase().includes(q) || (tool.desc || '').toLowerCase().includes(q);
@@ -633,6 +742,22 @@ const FEISHU_STEPS = [
           });
           setToolStates(states);
           setSkillToMcp(s2m);
+          const authEntries = await Promise.all(tsToolsData
+            .filter(tool => tool.oauthMcp && tool.backendId)
+            .map(async (tool) => {
+              try {
+                const status = await window.__TAURI__.core.invoke('get_marketplace_tool_auth_status', { toolId: tool.backendId });
+                return [tool.backendId, status];
+              } catch (err) {
+                console.error('get_marketplace_tool_auth_status failed:', tool.backendId, err);
+                return null;
+              }
+            }));
+          setToolAuthStates(prev => {
+            const next = { ...prev };
+            authEntries.filter(Boolean).forEach(([id, status]) => { next[id] = status; });
+            return next;
+          });
         } catch (e) {
           console.error('list_marketplace_tools failed:', e);
         }
@@ -652,7 +777,9 @@ const FEISHU_STEPS = [
         const name = t ? t.title : backendId;
         const hasPipDeps = !t?.configFields || t.configFields.length === 0; // 无 config 的本地工具可能有 pip deps
         setBusyId(backendId);
-        if (hasPipDeps) {
+        if (t?.oauthMcp) {
+          setAlert({ loading: true, visible: false, title: `正在连接「${name}」`, subtitle: '正在写入 MCP 配置并打开授权页…', isInstall: true, isError: false });
+        } else if (hasPipDeps) {
           setAlert({ loading: true, visible: false, title: `正在安装「${name}」`, subtitle: '首次安装需下载依赖，请耐心等待…', isInstall: true, isError: false });
         }
         try {
@@ -661,15 +788,61 @@ const FEISHU_STEPS = [
             args.config = userConfig;
           }
           await window.__TAURI__.core.invoke('install_marketplace_tool', args);
+          if (t?.oauthMcp) {
+            setToolAuthStates(prev => ({
+              ...prev,
+              [backendId]: {
+                installed: true,
+                mcp_configured: true,
+                oauth_required: true,
+                oauth_token_present: false,
+                status: 'auth_in_progress',
+                message: '正在等待浏览器授权完成。',
+              },
+            }));
+            const loginResult = await window.__TAURI__.core.invoke('start_marketplace_tool_oauth_login', { toolId: backendId });
+            const authStatus = await window.__TAURI__.core
+              .invoke('get_marketplace_tool_auth_status', { toolId: backendId })
+              .catch((err) => {
+                console.error('get_marketplace_tool_auth_status after oauth failed:', err);
+                return null;
+              });
+            await loadBackendState();
+
+            const outcome = resolveOAuthInstallOutcome(name, loginResult, authStatus);
+            if (!outcome.connected) {
+              setToolAuthStates(prev => ({ ...prev, [backendId]: outcome.authState }));
+              setAlert(outcome.alert);
+              if (selectedTool && selectedTool.backendId === backendId) {
+                setSelectedTool(prev => ({ ...prev, ...outcome.selectedToolPatch }));
+              }
+              return;
+            }
+
+            setToolAuthStates(prev => ({ ...prev, [backendId]: outcome.authState }));
+            setAlert({ ...outcome.alert, toolId: backendId });
+            if (selectedTool && selectedTool.backendId === backendId) {
+              setSelectedTool(prev => ({ ...prev, ...outcome.selectedToolPatch }));
+            }
+            notifyComposerToolsChanged();
+            return;
+          }
           await loadBackendState();
-          setAlert({ visible: true, loading: false, title: `已安装「${name}」`, isInstall: true, isError: false, toolId: backendId });
+          setAlert({
+            visible: true,
+            loading: false,
+            title: `已安装「${name}」`,
+            isInstall: true,
+            isError: false,
+            toolId: backendId,
+          });
           if (selectedTool && selectedTool.backendId === backendId) {
             setSelectedTool(prev => ({ ...prev, installed: true }));
           }
           notifyComposerToolsChanged();
         } catch (e) {
           console.error('install failed:', e);
-          setAlert({ visible: true, loading: false, title: '操作失败，请重试: ' + String(e && e.message ? e.message : e), isInstall: false, isError: true });
+          setAlert({ visible: true, loading: false, title: '操作失败，请重试', subtitle: String(e && e.message ? e.message : e).slice(0, 240), isInstall: false, isError: true });
         } finally {
           setBusyId(null);
         }
@@ -816,6 +989,49 @@ const FEISHU_STEPS = [
         }
       };
 
+      // 连接钉钉(单段扫码):流程卡驱动(镜像企微),进度走 dingtalk:* 事件。
+      const connectDingtalk = async () => {
+        setBusyId('dingtalk');
+        ensureDingtalkListeners();
+        dingtalkConn.setFlow({ phase: 'running', steps: { runtime: 'active' }, active: 'runtime', pct: 0, sec: 0, log: '' });
+        dingtalkConn.startTick();
+        try {
+          dingtalkConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: 'npm: starting…', steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
+          await window.__TAURI__.core.invoke('dingtalk_ensure_cli');
+          dingtalkConn.setFlow(f => ({ ...(f || {}), pct: 100, steps: { ...((f && f.steps) || {}), cli: 'done' } }));
+          await window.__TAURI__.core.invoke('dingtalk_connect_begin');
+        } catch (e) {
+          console.error('dingtalk connect failed:', e);
+          dingtalkConn.stopTick();
+          setBusyId(null);
+          dingtalkConn.setFlow(f => {
+            const step = (f && f.active) || 'cli';
+            return { ...(f || { steps: {} }), phase: 'error', err: String(e).slice(0, 300), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } };
+          });
+        }
+      };
+      const dingtalkResetFlow = () => {
+        dingtalkConn.stopTick();
+        window.__TAURI__.core.invoke('dingtalk_cancel').catch(() => {});
+        dingtalkConn.setFlow(null); setBusyId(null);
+      };
+      const dingtalkRetry = () => { connectDingtalk(); };
+      const disconnectDingtalk = async () => {
+        setBusyId('dingtalk');
+        try {
+          await window.__TAURI__.core.invoke('dingtalk_logout');
+          await window.__TAURI__.core.invoke('dingtalk_apply_skills').catch(() => {});
+          setDingtalkConnected(false);
+          setAlert({ visible: true, loading: false, title: '已断开钉钉', isInstall: false, isError: false });
+          notifyComposerToolsChanged();
+        } catch (e) {
+          console.error('dingtalk logout failed:', e);
+          setAlert({ visible: true, loading: false, title: '操作失败，请重试', isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+
       // 连接 EIP(SSO 轮询自动收):事件驱动。二进制内置,无需 ensure_cli/扫码。
       const connectEip = async () => {
         setBusyId('eip');
@@ -891,6 +1107,13 @@ const FEISHU_STEPS = [
           if (wt) setSelectedTool(wt);
           return connectWecom();
         }
+        // 钉钉同走 CLI 连接流程(单段扫码)
+        if (backendId === 'dingtalk') {
+          if (isInstalled) return disconnectDingtalk();
+          const dt = tools.find(x => x.dingtalkCli) || tsToolsData.find(x => x.backendId === 'dingtalk');
+          if (dt) setSelectedTool(dt);
+          return connectDingtalk();
+        }
         // EIP 走 CLI 连接流程(浏览器 SSO 一键登录),不走 marketplace install
         if (backendId === 'eip') {
           if (isInstalled) return disconnectEip();
@@ -925,9 +1148,22 @@ const FEISHU_STEPS = [
         try {
           await window.__TAURI__.core.invoke('uninstall_marketplace_tool', { toolId: backendId });
           await loadBackendState();
+          if (t?.oauthMcp) {
+            setToolAuthStates(prev => ({
+              ...prev,
+              [backendId]: {
+                installed: false,
+                mcp_configured: false,
+                oauth_required: true,
+                oauth_token_present: false,
+                status: 'not_installed',
+                message: '尚未连接华宇元典法律数据。',
+              },
+            }));
+          }
           setAlert({ visible: true, loading: false, title: `已卸载「${name}」`, isInstall: false, isError: false });
           if (selectedTool && selectedTool.backendId === backendId) {
-            setSelectedTool(prev => ({ ...prev, installed: false }));
+            setSelectedTool(prev => ({ ...prev, installed: false, authStatus: 'not_installed', authMessage: '' }));
           }
           notifyComposerToolsChanged();
         } catch (e) {
@@ -1236,7 +1472,7 @@ const FEISHU_STEPS = [
 
                   {filteredTools.length > 0 ? (
                     (isSkillTab && !searching) ? (
-                    <div className="flex flex-col md:flex-row gap-6">
+                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 pb-7">
                       {filteredTools.map((tool) => {
                         const v = tool.todayVariant || 'fallback';
                         const bar = (
@@ -1247,7 +1483,7 @@ const FEISHU_STEPS = [
                           </div>
                         );
                         return (
-                          <div key={tool.id} onClick={() => setSelectedTool(tool)} className={`today-card group relative ${tool.cardW || 'flex-1'} min-w-0 h-[440px] rounded-[22px] overflow-hidden cursor-pointer shadow-[0_12px_36px_-14px_rgba(0,0,0,0.3)] transition-all duration-500 hover:shadow-[0_24px_54px_-14px_rgba(0,0,0,0.5)] hover:-translate-y-1`}>
+                          <div key={tool.id} onClick={() => setSelectedTool(tool)} className="today-card group relative w-full h-[440px] rounded-[28px] overflow-hidden cursor-pointer shadow-[0_14px_40px_-18px_rgba(15,23,42,0.35)] transition-all duration-500 hover:shadow-[0_28px_64px_-24px_rgba(15,23,42,0.45)] hover:-translate-y-1">
                             {v === 'light' ? (
                               <>
                                 <div className="p-6"><p className="text-slate-500 dark:text-slate-400 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-[30px] font-bold leading-[1.1] tracking-tight whitespace-pre-line text-slate-900 dark:text-white">{tool.todayTitle}</h2></div>
@@ -1331,7 +1567,7 @@ const FEISHU_STEPS = [
                           </div>
                           <div className="flex flex-col items-center justify-center gap-1 pl-2">
                             {(() => {
-                              const cf = tool.feishuCli ? feishuFlow : tool.wecomCli ? wecomFlow : null;
+                              const cf = tool.feishuCli ? feishuFlow : tool.wecomCli ? wecomFlow : tool.dingtalkCli ? dingtalkFlow : null;
                               return (cf && (cf.phase === 'running' || cf.phase === 'qr'))
                                 ? <FeishuMini flow={cf} onClick={() => setSelectedTool(tool)} />
                                 : <TsActionBtn tool={tool} busy={busyId === tool.backendId} onAction={handleAction} />;
@@ -1431,7 +1667,7 @@ const FEISHU_STEPS = [
                       <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white mb-2 tracking-tight">{selectedTool.title}</h2>
                       <p className="text-[17px] text-slate-500 dark:text-slate-400 mb-5 font-medium">{selectedTool.subtitle}</p>
                       <div className="flex items-center gap-4">
-                        {(() => { const sf = selectedTool.feishuCli ? feishuFlow : selectedTool.wecomCli ? wecomFlow : null; return (sf && (sf.phase === 'running' || sf.phase === 'qr'))
+                        {(() => { const sf = selectedTool.feishuCli ? feishuFlow : selectedTool.wecomCli ? wecomFlow : selectedTool.dingtalkCli ? dingtalkFlow : null; return (sf && (sf.phase === 'running' || sf.phase === 'qr'))
                           ? <FeishuMini flow={sf} onClick={() => {}} />
                           : <TsActionBtn tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} size="lg" />; })()}
                       </div>
@@ -1464,6 +1700,9 @@ const FEISHU_STEPS = [
                   {selectedTool.wecomCli && wecomFlow && (
                     <FeishuFlowCard flow={wecomFlow} steps={WECOM_STEPS} name="企业微信" twoStep={false} onRetry={wecomRetry} onCancel={wecomResetFlow} />
                   )}
+                  {selectedTool.dingtalkCli && dingtalkFlow && (
+                    <FeishuFlowCard flow={dingtalkFlow} steps={DINGTALK_STEPS} name="钉钉" twoStep={false} onRetry={dingtalkRetry} onCancel={dingtalkResetFlow} />
+                  )}
                   {selectedTool.feishuCli && feishuConnected && !feishuFlow && (
                     <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
                       <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
@@ -1474,6 +1713,12 @@ const FEISHU_STEPS = [
                     <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
                       <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
                       <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">已连接企业微信 · 官方技能已启用，可直接对它下指令</span>
+                    </div>
+                  )}
+                  {selectedTool.dingtalkCli && dingtalkConnected && !dingtalkFlow && (
+                    <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
+                      <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
+                      <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">已连接钉钉 · 官方技能已启用，可直接对它下指令</span>
                     </div>
                   )}
 
@@ -1495,4 +1740,4 @@ const FEISHU_STEPS = [
     // Shared Components
     // ==========================================
 
-export { FEISHU_STEPS, WECOM_STEPS, FeishuStepIcon, FeishuBar, FeishuFlowCard, FeishuMini, feishuConn, ensureFeishuListeners, wecomConn, ensureWecomListeners, TsAlert, TsConfigDialog, TsObsidianGuide, ToolStoreView };
+export { FEISHU_STEPS, WECOM_STEPS, DINGTALK_STEPS, FeishuStepIcon, FeishuBar, FeishuFlowCard, FeishuMini, feishuConn, ensureFeishuListeners, wecomConn, ensureWecomListeners, dingtalkConn, ensureDingtalkListeners, TsAlert, TsConfigDialog, TsObsidianGuide, ToolStoreView };

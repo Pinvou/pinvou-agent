@@ -578,6 +578,9 @@ fn spawn_event_forwarder(
         let self_metrics = app
             .try_state::<crate::monitor::MonitorState>()
             .map(|s| s.self_metrics());
+        let telemetry = app
+            .try_state::<crate::telemetry::TelemetryState>()
+            .map(|state| state.inner().clone());
         let mut current_turn_id: Option<String> = None;
         let mut rx = handle.rx_event.write().await;
         while let Some(event) = rx.recv().await {
@@ -588,6 +591,9 @@ fn spawn_event_forwarder(
                     // 本轮起始打点(TTFT 起点)。底座已发此事件,原先落 `_` 被忽略。
                     if let Some(m) = &self_metrics {
                         m.on_turn_started(&session_id);
+                    }
+                    if let Some(state) = &telemetry {
+                        state.on_turn_started();
                     }
                 }
                 Event::MessageDelta { content, .. } => {
@@ -1200,6 +1206,14 @@ fn spawn_event_forwarder(
                             usage.output_tokens,
                             usage.prompt_cache_hit_tokens,
                             usage.prompt_cache_miss_tokens,
+                        );
+                    }
+                    if let Some(state) = &telemetry {
+                        state.record_turn(
+                            usage.input_tokens,
+                            usage.output_tokens,
+                            terminal_status == TurnOutcomeStatus::Completed
+                                && terminal_error.is_none(),
                         );
                     }
                     // turn end:取出 tracker 快照,然后重置(下个 turn 重新累积)。

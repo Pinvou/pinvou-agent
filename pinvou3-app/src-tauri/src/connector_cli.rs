@@ -248,10 +248,11 @@ impl ConnectorConn {
 pub struct ConnectorAuthGateRefresh {
     feishu_visible: bool,
     wecom_visible: bool,
+    dingtalk_visible: bool,
     elapsed_ms: u64,
 }
 
-/// 首屏提交后刷新飞书 / 企微鉴权门控。两个外部 CLI 在 blocking 线程池并行执行，
+/// 首屏提交后刷新飞书 / 企微 / 钉钉鉴权门控。三个外部 CLI 在 blocking 线程池并行执行，
 /// 不占 Tauri setup 主线程；各自只修改互不重叠的技能目录。
 #[tauri::command]
 pub async fn refresh_connector_auth_gates() -> Result<ConnectorAuthGateRefresh, String> {
@@ -272,23 +273,33 @@ pub async fn refresh_connector_auth_gates() -> Result<ConnectorAuthGateRefresh, 
             .map_err(|e| format!("刷新企微技能门控失败: {e}"))?;
         Ok::<bool, String>(show)
     });
+    let dingtalk = tokio::task::spawn_blocking(|| {
+        let show = crate::dingtalk::dingtalk_skills_should_show();
+        crate::bridge::bundle::Pinvou3Bundle::paths()
+            .apply_dingtalk_skills(show)
+            .map_err(|e| format!("刷新钉钉技能门控失败: {e}"))?;
+        Ok::<bool, String>(show)
+    });
 
-    let (feishu_result, wecom_result) = tokio::join!(feishu, wecom);
+    let (feishu_result, wecom_result, dingtalk_result) = tokio::join!(feishu, wecom, dingtalk);
     let feishu_visible = feishu_result
         .map_err(|e| format!("飞书鉴权探测任务失败: {e}"))??;
     let wecom_visible = wecom_result
         .map_err(|e| format!("企微鉴权探测任务失败: {e}"))??;
+    let dingtalk_visible = dingtalk_result
+        .map_err(|e| format!("钉钉鉴权探测任务失败: {e}"))??;
     let elapsed_ms = started.elapsed().as_millis() as u64;
     crate::startup::mark_with_detail(
         "rust",
         "connector_auth_refresh:done",
         &format!(
-            "elapsed_ms={elapsed_ms} feishu_visible={feishu_visible} wecom_visible={wecom_visible}"
+            "elapsed_ms={elapsed_ms} feishu_visible={feishu_visible} wecom_visible={wecom_visible} dingtalk_visible={dingtalk_visible}"
         ),
     );
     Ok(ConnectorAuthGateRefresh {
         feishu_visible,
         wecom_visible,
+        dingtalk_visible,
         elapsed_ms,
     })
 }
