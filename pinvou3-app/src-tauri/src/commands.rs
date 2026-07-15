@@ -1988,7 +1988,8 @@ fn list_workspace_files_for_session(
 
 /// 取消当前生成（生成中按⏹️停止按钮）。
 /// engine 立即 cancel_token.cancel()，turn loop 跳出后会发 TurnComplete 事件，
-/// 前端通过 chat:done 解锁 busy 状态。
+/// 前端通过 chat:done 解锁 busy 状态；若 engine 已不存在，EnginePool 会直接补发
+/// Interrupted 终态，取消仍然成功。
 #[tauri::command]
 pub async fn cancel_generation(
     session_id: Option<String>,
@@ -2004,6 +2005,20 @@ pub async fn cancel_generation(
         log::warn!("[pinvou3][chat] cancel requested but no session id is available");
     }
     Ok(())
+}
+
+/// Cancel one detached shell process by its stable background task id.
+#[tauri::command]
+pub async fn cancel_shell_task(
+    session_id: String,
+    task_id: String,
+    pool: State<'_, EnginePool>,
+) -> Result<serde_json::Value, String> {
+    let result = pool
+        .cancel_shell_task(&session_id, &task_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    serde_json::to_value(result).map_err(|error| error.to_string())
 }
 
 /// 计算当前应「对模型隐藏」的工具全名**完整列表**(小写)。

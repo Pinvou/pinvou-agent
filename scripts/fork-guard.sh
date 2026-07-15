@@ -85,6 +85,14 @@ fingerprints=(
   "C10 |MCP 启动应用无控制台 helper     |DeepSeek-TUI/crates/tui/src/mcp.rs|suppress_tokio_console_window(&mut cmd)"
   # —— C11(2026-07-07,fork #7):Windows killed background shell 不 join 可能阻塞的 reader ——
   "C11 |Windows killed shell reader 不阻塞|DeepSeek-TUI/crates/tui/src/tools/shell.rs|if matches!(self.status, ShellStatus::Killed)"
+  "C12 |shell 实时输出事件定义          |DeepSeek-TUI/crates/tui/src/core/events.rs|ToolCallOutput {"
+  "C12 |shell reader 输出回调           |DeepSeek-TUI/crates/tui/src/tools/spec.rs|pub tool_output_sink: Option<ToolOutputSink>"
+  "C12 |shell 完成前输出行为测试         |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_exec_shell_streams_output_before_completion"
+  "C12 |后台启动返回后输出行为测试       |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_exec_shell_background_streams_after_start_returns"
+  "C12 |后台 wait 完成前输出行为测试     |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_exec_shell_wait_streams_background_output_before_completion"
+  "C12 |Engine 完成前输出事件测试        |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_engine_emits_shell_output_before_tool_completion"
+  "C12 |Engine 后台启动返回后输出测试    |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_engine_keeps_background_shell_output_after_tool_completion"
+  "C12 |Engine 后台 wait 输出事件测试    |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_engine_emits_background_wait_output_before_tool_completion"
   # —— P1(2026-07-03):list_mcp_resources/templates 按对应集合非空 gate(上游原为 servers 非空即注入)——
   # pinvou3 MCP server 全 tools-only,原条件下这两个元工具永久空转;改按 resources/templates 非空注入。可上游。
   "P1  |list_mcp_resources 按 resources 非空 gate|DeepSeek-TUI/crates/tui/src/mcp.rs|if !self.all_resource_templates().is_empty()"

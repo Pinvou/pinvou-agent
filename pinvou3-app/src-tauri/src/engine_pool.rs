@@ -369,7 +369,7 @@ impl EnginePool {
             .lock()
             .await
             .get(session_id)
-            .map(|e| e.engine.clone())
+            .map(|entry| entry.engine.clone())
     }
 
     /// 回收某 session 的 engine:cancel 在跑的 turn → Shutdown engine → abort forwarder。
@@ -401,19 +401,21 @@ impl EnginePool {
 
     async fn evict_locked(&self, session_id: &str) {
         if let Some(entry) = self.entries.lock().await.remove(session_id) {
+            if entry
+                .engine
+                .finish_reclaimed_turn(&self.app, session_id)
+            {
+                log::warn!(
+                    "[engine_pool] emitted interrupted terminal before reclaim sid={}",
+                    session_id
+                );
+                crate::timing::finish_turn(session_id, "Interrupted", None);
+            }
             entry.engine.cancel_current();
             if let Err(e) = entry.engine.handle.send(Op::Shutdown).await {
                 eprintln!("[engine_pool] shutdown {session_id} failed: {e:?}");
             }
             entry.forwarder.abort();
-        }
-    }
-
-    /// 回收当前 active session 的 engine。用于全局能力开关/连接器状态变化后,
-    /// 让下一轮按最新 Skill catalogue 重建 system prompt。
-    pub async fn evict_active(&self) {
-        if let Some(session_id) = self.store.active_id() {
-            self.evict(&session_id).await;
         }
     }
 
@@ -553,17 +555,39 @@ impl EnginePool {
         result
     }
 
-    /// 取消指定 session 正在生成的回复。engine 没起则 no-op。
+    /// 取消指定 session 正在生成的回复。Engine 已不存在时也发送 Interrupted
+    /// 权威终态，使前端可靠退出 busy，而不是把取消静默处理成 no-op。
     pub async fn cancel(&self, session_id: &str) {
         if let Some(engine) = self.handle_for(session_id).await {
-            log::info!("[engine_pool] cancel hit running engine sid={}", session_id);
             engine.cancel_current();
         } else {
             log::warn!(
-                "[engine_pool] cancel no-op because engine is not spawned sid={}",
+                "[engine_pool] cancel resolved as interrupted because engine is missing sid={}",
                 session_id
             );
+            crate::engine::emit_chat_terminal(
+                &self.app,
+                session_id,
+                TurnOutcomeStatus::Interrupted,
+                None,
+            );
+            crate::timing::finish_turn(session_id, "Interrupted", None);
         }
+    }
+
+    /// Cancel a detached shell task directly. This path is independent of the
+    /// model turn cancellation token and therefore remains usable after
+    /// `chat:done` has completed the turn.
+    pub async fn cancel_shell_task(
+        &self,
+        session_id: &str,
+        task_id: &str,
+    ) -> Result<deepseek_tui::tools::shell::ShellResult> {
+        let engine = self
+            .handle_for(session_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Session engine is no longer available"))?;
+        engine.cancel_shell_task(task_id)
     }
 
     /// pinvou3 工具开关(全局持久):把"被禁用的工具全名"(模型可见全名,小写)广播给

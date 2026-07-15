@@ -138,6 +138,13 @@
 - **守护**:`fork-guard.sh` C11 指纹钉住 `ShellStatus::Killed` 分支;目标 warmup 回归测试 3 条通过。Windows 行为仍需 Windows CI/真机覆盖。
 - 上游 PR:暂未提;需先补 Windows 稳定复现与平台回归测试。
 
+### C12 `runtime` shell 执行期间异步输出事件（2026-07-15）
+- **文件**：`core/events.rs`、`core/engine/{tool_execution,turn_loop}.rs`、`tools/{spec,shell}.rs`、`tools/shell/tests.rs`、`tui/ui.rs`
+- **改动**：复用 shell 已有的 stdout/stderr reader thread，通过 `ToolContext` 回调发出带工具调用 ID 和流类型的 `ToolCallOutput`；前台等待和显式后台任务都会绑定发起它们的 `exec_shell` 调用，因此后台启动结果返回后，进程 reader 仍会继续向原工具卡片转发输出。后续 `exec_shell_wait` 或 `task_shell_wait` 设置 `wait=true` 时，也会每 100ms 读取并转发后台缓冲区新增内容。回调使用有界事件通道的非阻塞 `try_send`，任务完成后仍保留原有完整 `ToolCallComplete` 结果；底座 TUI 忽略该嵌入事件，pinvou3-app 将其转为 `chat:tool_delta` 供当前工具卡片实时显示。Windows 下 cmd、PowerShell 和 WinGet 均保持普通 stdout/stderr 管道执行，不自动启用 PTY，也不改变前后台语义。
+- **理由**：Windows 下 cmd/PowerShell 长任务虽然持续写出内容，但原有应用层只在进程退出后收到完整结果，界面会长时间表现为无响应；读取线程也不能因前端变慢而阻塞，否则子进程可能因管道写满而停住。
+- **守护**：`forkguard_exec_shell_streams_output_before_completion` 验证前台 reader 首段 stdout 到达时进程仍在运行，`forkguard_exec_shell_background_streams_after_start_returns` 验证显式后台启动调用返回后 reader 仍持续推送，`forkguard_exec_shell_wait_streams_background_output_before_completion` 验证后台等待过程持续转发新增内容；对应 Engine 测试固定三条事件链。UI smoke 验证后台工具卡跨 `chat:done` 保持运行、终端进度帧归并、按 task ID 取消并接收独立终态。`fork-guard.sh` 固定事件、回调和行为测试指纹。
+- 上游 PR：可提；这是通用的嵌入式 Engine 工具输出事件能力，提交前需确认上游对事件背压和原生 TUI 展示策略的偏好。
+
 ### R `agentic-rag` EngineConfig.extra_tools 应用层工具注入口(2026-06-24)
 - **文件**:`core/engine.rs`(`ExtraTools` newtype + `EngineConfig.extra_tools` 字段 + Default)、`core/engine/tool_setup.rs`(`build_turn_tool_registry_builder` 末尾 `with_tool` 循环注册);连带补 3 处 TUI 路径 EngineConfig literal(`runtime_threads.rs`/`tui/ui.rs`/`main.rs`,`extra_tools: Default::default()`)
 - **改动**:给 `EngineConfig` 加 `pub extra_tools: ExtraTools`(newtype 包 `Vec<Arc<dyn ToolSpec>>`,手写 Debug 输出工具名——`dyn ToolSpec` 非 Debug,否则破 `#[derive(Debug)]`),每 turn build registry 时 append 到 builder。让**嵌入应用**(pinvou3-app)无需 fork 工具表即可注册自定义 `ToolSpec`

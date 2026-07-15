@@ -289,6 +289,7 @@
   var pendingAssistantBlocks = [];
   var itemIdSeq = 0;
   var toolMeta = {};       // id → { name, args }
+  var shellNotifyTimer = null;
   // 上下文行口径保护：TurnComplete 的 usage.input_tokens 是本轮所有请求的累加
   // （计费口径）。只有单请求的"干净轮"该值才等于当前上下文占用；本轮一旦出现
   // 工具调用/重试/压缩（= 多请求），就跳过这次 tokens 更新，保留上一个准确值。
@@ -2230,6 +2231,100 @@
       }
     }
   }
+  function scheduleShellNotify() {
+    if (shellNotifyTimer != null) return;
+    shellNotifyTimer = window.setTimeout(function () {
+      shellNotifyTimer = null;
+      notify();
+    }, 50);
+  }
+
+  function markBackgroundToolItem(toolId, sessionId, taskId, fallbackOutput) {
+    for (var i = 0; i < state.chatItems.length; i++) {
+      var item = state.chatItems[i];
+      if (item.type !== "tool" || item.toolId !== toolId) continue;
+      if (!item.liveOutput && fallbackOutput != null) item.output = fallbackOutput;
+      item.success = null;
+      item.state = "running";
+      item.background = true;
+      item.sessionId = sessionId || state.activeSessionId;
+      item.taskId = taskId;
+      return true;
+    }
+    return false;
+  }
+
+  function finishBackgroundToolItem(toolId, payload) {
+    for (var i = 0; i < state.chatItems.length; i++) {
+      var item = state.chatItems[i];
+      if (item.type !== "tool" || item.toolId !== toolId) continue;
+      var status = payload.status || "Failed";
+      var success = status === "Completed";
+      item.success = success;
+      item.state = success ? "done" : "failed";
+      item.background = false;
+      item.shellStatus = status;
+      item.exitCode = payload.exit_code;
+      if (!item.liveOutput) {
+        var tail = payload.stdout_tail || payload.stderr_tail;
+        if (tail) item.output = tail;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  function stripTerminalSequences(text) {
+    return String(text || "")
+      .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+  }
+
+  // A standalone carriage return resets the current terminal line. WinGet
+  // uses this for progress frames, so keep the newest frame instead of
+  // appending hundreds of nearly identical lines.
+  function mergeTerminalChunk(previous, chunk) {
+    var output = String(previous == null ? "" : previous);
+    var clean = stripTerminalSequences(chunk);
+    for (var i = 0; i < clean.length; i++) {
+      var ch = clean[i];
+      if (ch === "\r") {
+        if (clean[i + 1] === "\n") {
+          output += "\n";
+          i += 1;
+        } else {
+          output = output.slice(0, output.lastIndexOf("\n") + 1);
+        }
+      } else if (ch === "\b") {
+        var lineStart = output.lastIndexOf("\n") + 1;
+        if (output.length > lineStart) output = output.slice(0, -1);
+      } else {
+        output += ch;
+      }
+    }
+    return output;
+  }
+
+  // Live shell output is display-only. The completed tool result remains the
+  // authoritative value written to conversation history/model context.
+  function appendToolItemOutput(toolId, content, stream) {
+    var chunk = typeof content === "string" ? content : String(content == null ? "" : content);
+    if (!chunk) return false;
+    for (var i = 0; i < state.chatItems.length; i++) {
+      var item = state.chatItems[i];
+      if (item.type !== "tool" || item.toolId !== toolId) continue;
+      if (stream === "stderr") chunk = "[STDERR] " + chunk;
+      var output = mergeTerminalChunk(item.output, chunk);
+      // A verbose long-running process must not grow renderer memory without
+      // bound. Completion replaces this tail with the normal full result.
+      var maxLiveChars = 128 * 1024;
+      if (output.length > maxLiveChars) output = "…\n" + output.slice(-maxLiveChars);
+      item.output = output;
+      item.liveOutput = true;
+      return true;
+    }
+    return false;
+  }
 
   // 找最后一条匹配的 chat item（用于卡片状态机更新）
   function patchLastItem(pred, patch) {
@@ -2652,6 +2747,11 @@
     }
   }
 
+  async function cancelShellTask(sessionId, taskId) {
+    if (!sessionId || !taskId) throw new Error("Missing shell task identity");
+    return invoke("cancel_shell_task", { sessionId: sessionId, taskId: taskId });
+  }
+
   // ── Persist messages ─────────────────────────────────────────────
   async function persistMessages() {
     if (!state.activeSessionId) return;
@@ -2807,8 +2907,15 @@
     addChatItem({
       type: "tool", toolId: p.id, name: p.name, args: p.args,
       output: null, success: null, state: "running",
+      sessionId: p.session_id || state.activeSessionId,
     });
     notify();
+  }); });
+
+  listen("chat:tool_delta", function (e) { onSessionEvent(e, function () {
+    var p = e.payload || {};
+    appendToolItemOutput(p.id, p.content, p.stream);
+    scheduleShellNotify();
   }); });
 
   listen("chat:tool_end", function (e) { onSessionEvent(e, function () {
@@ -2820,6 +2927,16 @@
     var trBlock = { type: "tool_result", tool_use_id: p.id, content: resultContent };
     if (!p.success) trBlock.is_error = true;
     state.messages.push({ role: "user", content: [trBlock] });
+
+    var backgroundTaskId = p.metadata && p.metadata.backgrounded === true &&
+      p.metadata.status === "Running" && p.metadata.task_id;
+    if (meta && meta.name === "exec_shell" && backgroundTaskId) {
+      markBackgroundToolItem(p.id, p.session_id, backgroundTaskId, p.output);
+      delete toolMeta[p.id];
+      currentStreamText = ""; currentStreamId = 0;
+      notify();
+      return;
+    }
 
     // request_user_input 结束：把选择卡片标记为已提交/取消，不渲染工具卡
     if (meta && meta.name === "request_user_input") {
@@ -2926,6 +3043,12 @@
     delete toolMeta[p.id];
     currentStreamText = "";
     currentStreamId = 0;
+    notify();
+  }); });
+
+  listen("chat:shell_task_status", function (e) { onSessionEvent(e, function () {
+    var p = e.payload || {};
+    finishBackgroundToolItem(p.tool_id, p);
     notify();
   }); });
 
@@ -5438,6 +5561,7 @@
     confirmScheduledTaskDraft: confirmScheduledTaskDraft,
     clearScheduledTaskDraft: clearScheduledTaskDraft,
     cancelGeneration: cancelGeneration,
+    cancelShellTask: cancelShellTask,
     createNewSession: createNewSession,
     switchToSession: switchToSession,
     openScheduledRunChat: openScheduledRunChat,
