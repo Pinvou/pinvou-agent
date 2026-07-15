@@ -410,7 +410,7 @@ Mobile -> Desktop 的 action 必须带 `client_message_id`。本地 `RemoteContr
 - 同一客户端默认每分钟最多新建 20 个 room；反向代理来源只在其 IP 被显式信任时读取 `X-Forwarded-For`，并采用代理追加的最后一个地址，避免客户端伪造首段地址绕过限流。
 - Relay 默认最多同时保留 5000 条 WebSocket 连接，同一客户端默认每分钟最多发起 120 次 WebSocket 建连；达到容量时在 Upgrade 阶段拒绝新连接，避免未认证连接绕过 room 上限持续消耗资源。
 - WebSocket 建立后必须在 10 秒内完成 `desktop_register` 或 `mobile_join`，否则 Relay 主动关闭；已认证连接不受该超时影响，仍按正常心跳和重连规则运行。
-- 生产环境通过 `PINVOU_REMOTE_ALLOWED_PROXY_IPS` 只允许本机健康检查和指定反向代理访问 Relay，公网客户端统一走 `https/wss://www.ma-xiao.com`。
+- 生产环境通过 `PINVOU_REMOTE_ALLOWED_PROXY_IPS` 只允许本机健康检查和指定反向代理访问 Relay，公网客户端统一走 `https/wss://pinvou.com`。
 - WebSocket 单条消息默认上限为 4 MiB，可通过 `MAX_PAYLOAD_BYTES` 调整，服务端硬限制不超过 16 MiB。
 - `/healthz` 额外返回 WebSocket 总连接数和未认证连接数，仍只提供聚合计数，不暴露 room、session 或客户端明细。
 

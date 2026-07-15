@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import './styles/base.css';
@@ -18,8 +18,13 @@ import { PinvouSummonCard } from './features/tools/tool-renderers.jsx';
 import { CardPoolView, Lanyard, PersonaEditorModal } from './features/personas/Personas.jsx';
 import { WorkflowView } from './features/workflow/WorkflowView.jsx';
 
-// Temporary product gate: keep scheduled tasks operational while hiding the navigation entry.
-const SHOW_SCHEDULED_TASKS_ENTRY = false;
+// 临时止血：定时任务创建流程修复前，不向用户暴露入口或自动跳转。
+// 保留后端、数据与页面实现，修复完成后只需恢复此开关。
+const SCHEDULED_TASKS_ENTRY_ENABLED = false;
+
+window.__PINVOU_STARTUP__.mark('app:main_module_body_enter');
+
+let appFirstRenderMarked = false;
 
 
 /* ==========================================
@@ -277,14 +282,23 @@ const SHOW_SCHEDULED_TASKS_ENTRY = false;
     }
 
     const App = () => {
+      if (!appFirstRenderMarked) {
+        appFirstRenderMarked = true;
+        window.__PINVOU_STARTUP__.mark('react:app_render_start');
+      }
       const bs = useBridge();
-      useEffect(() => {
+      useLayoutEffect(() => {
         window.__PINVOU_STARTUP__.mark('react:first_commit');
+        window.__PINVOU_STARTUP__.flush();
+      }, []);
+      useEffect(() => {
+        window.__PINVOU_STARTUP__.mark('react:first_effect');
         window.__PINVOU_STARTUP__.flush();
         // 连续两个 rAF：第二个回调发生在首次提交已经交给 WebView 绘制之后。此时再启动
         // 558 MiB embedding 模型的 blocking 后台加载，避免模型 IO/ONNX 初始化阻塞白屏。
         let secondFrame = 0;
         const firstFrame = window.requestAnimationFrame(() => {
+          window.__PINVOU_STARTUP__.mark('react:first_animation_frame');
           secondFrame = window.requestAnimationFrame(() => {
             window.__PINVOU_STARTUP__.mark('react:first_frame_presented');
             window.__PINVOU_STARTUP__.flush();
@@ -507,7 +521,7 @@ const SHOW_SCHEDULED_TASKS_ENTRY = false;
           setChatPrefill(bs.composerPrefill.text || '');
           setCurrentView('chat');
         }
-        if (bs.scheduledTaskAutoOpenId && bs.scheduledTaskAutoOpenId !== scheduledTaskAutoOpenSeenRef.current) {
+        if (SCHEDULED_TASKS_ENTRY_ENABLED && bs.scheduledTaskAutoOpenId && bs.scheduledTaskAutoOpenId !== scheduledTaskAutoOpenSeenRef.current) {
           scheduledTaskAutoOpenSeenRef.current = bs.scheduledTaskAutoOpenId;
           setCurrentView('scheduled');
         }
@@ -575,6 +589,13 @@ const SHOW_SCHEDULED_TASKS_ENTRY = false;
           modelConfigInitRef.current = true;
         }
       }, [bs]);
+
+      // HMR/旧前端状态可能仍停在 scheduled；入口关闭时立即回到普通聊天页。
+      useEffect(() => {
+        if (!SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled') {
+          setCurrentView('chat');
+        }
+      }, [currentView]);
 
       // 草稿 vs 已保存基线 → 模型卡是否显示「保存并重启」操作条
       const savedModel = savedModelConfigRef.current;
@@ -979,7 +1000,7 @@ const SHOW_SCHEDULED_TASKS_ENTRY = false;
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('search')}
               />
-              {SHOW_SCHEDULED_TASKS_ENTRY && (
+              {SCHEDULED_TASKS_ENTRY_ENABLED && (
                 <NavItem
                   icon={<Clock size={18} />} label={t.scheduledPlans}
                   active={currentView === 'scheduled'}
@@ -1265,7 +1286,7 @@ const SHOW_SCHEDULED_TASKS_ENTRY = false;
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
             {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => navigateFromScheduledRun('settings', () => setTimeout(() => document.getElementById('settings-dependencies')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80))} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />}
-            {currentView === 'scheduled' && (
+            {SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled' && (
               bs && bs.scheduledRunContext ? (
                 <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => navigateFromScheduledRun('settings', () => setTimeout(() => document.getElementById('settings-dependencies')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80))} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />
               ) : (
@@ -1666,7 +1687,9 @@ const SHOW_SCHEDULED_TASKS_ENTRY = false;
     // 长按撕离:按住 ~350ms 不动 → onPickUp(info)(DOM avatar 浮起跟手 + begin_detach_drag 原生判落点);
     // 长按达成前移动 >10px = 视为滚动/取消;长按达成后吞掉随之而来的 click(避免又切视图);
     // 按在内部按钮/输入框上不起手(让它们自理)。按下即禁选,防止长按选中下方文字。
+    window.__PINVOU_STARTUP__.mark('react:create_root_start');
     const root = createRoot(document.getElementById('root'));
+    window.__PINVOU_STARTUP__.mark('react:create_root_done');
     const __q = new URLSearchParams(window.location.search);
     if (__q.get('detached') === '1') {
       window.__PINVOU_DETACHED__ = true;

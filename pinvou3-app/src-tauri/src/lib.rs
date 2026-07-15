@@ -19,8 +19,9 @@ pub mod feedback;
 // L1 harness 的附件 e2e 要走「真实 ingest → 注入分流 → 真 vLLM」全链路:
 // 暴露注入收口函数 + file_ingest。
 pub use commands::build_message_with_attachments;
-// CLI 连接器公共管道(飞书 / 企微共享:起进程 / 扫码 / 事件 / 取消)。
+// CLI 连接器公共管道(飞书 / 企微 / 钉钉共享:起进程 / 扫码 / 事件 / 取消)。
 mod connector_cli;
+mod dingtalk;
 pub mod engine;
 pub mod engine_pool;
 mod eip;
@@ -44,6 +45,7 @@ mod scheduled_executor;
 mod scheduled_tasks;
 pub mod super_permission;
 mod startup;
+mod telemetry;
 mod timing;
 mod updater;
 mod voice_asr;
@@ -118,6 +120,34 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result
     Ok(())
 }
 
+const RELEASE_ENV_DEFAULTS: &[(&str, &str)] = &[
+    // —— vLLM 后端：BASE_URL/MODEL/API_KEY 已在 bridge/mod.rs 有默认常量，
+    // 这里只补 run-dev.sh 额外注入但 Rust 没默认的 ——
+    // ⚠️ 不再注入 DEEPSEEK_PROVIDER：它会被 bridge.provider() 当成 env 覆盖
+    //   （env 优先级高于 preset），在「添加模型」多 provider 方案下钉死路由——
+    //   切到 kimi/openai/qwen 等仍被当 vllm，且设置页误报「环境变量已锁定 provider」。
+    //   provider 现由 active_model.preset 决定（LocalVllm→vllm 默认仍成立）。
+    ("DEEPSEEK_REASONING_EFFORT", "off"),
+    ("DEEPSEEK_ALLOW_INSECURE_HTTP", "1"),
+    ("DEEPSEEK_FORCE_HTTP1", "1"),
+    ("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576"),
+    // 与 DeepSeek-TUI 的 stream_chunk_timeout 默认值保持一致。
+    ("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "300"),
+    // SSE 首响应头超时(open timeout):底座只认 env,默认 45s 是为云端调的。
+    // 本地 GB10 大上下文 SubAgent 请求首 token TTFT 偶发 >45s → 误杀子 agent
+    // (真机实锤:三省六部 libu~1 首发死于 45s,重派才过)。280s 与
+    // ~/.deepseek config 的 subagent api_timeout=300 对齐(步级超时须更大)。
+    ("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS", "280"),
+    // —— webkit2gtk / fcitx 兼容（Wayland 下 IM 协议挂）——
+    // x86 Intel 与 ARM64 GB10 真机回归均能稳定运行；关闭 compositing mode
+    // 避免 NVIDIA/WebKitGTK DMA-BUF/GBM 组合出现黑白屏或启动异常。
+    ("WEBKIT_DISABLE_COMPOSITING_MODE", "1"),
+    ("GDK_BACKEND", "x11"),
+    ("GTK_IM_MODULE", "fcitx"),
+    ("QT_IM_MODULE", "fcitx"),
+    ("XMODIFIERS", "@im=fcitx"),
+];
+
 /// 为 release 安装包（.deb 双击启动场景）注入 run-dev.sh 里集中处理的运行时 env。
 /// dev 启动走 run-dev.sh 已经 export 过的不会被覆盖（var_os().is_none() 守门）。
 fn ensure_release_env() {
@@ -133,31 +163,7 @@ fn ensure_release_env() {
             env::set_var("HOME", profile);
         }
     }
-    const DEFAULTS: &[(&str, &str)] = &[
-        // —— vLLM 后端：BASE_URL/MODEL/API_KEY 已在 bridge/mod.rs 有默认常量，
-        // 这里只补 run-dev.sh 额外注入但 Rust 没默认的 ——
-        // ⚠️ 不再注入 DEEPSEEK_PROVIDER：它会被 bridge.provider() 当成 env 覆盖
-        //   （env 优先级高于 preset），在「添加模型」多 provider 方案下钉死路由——
-        //   切到 kimi/openai/qwen 等仍被当 vllm，且设置页误报「环境变量已锁定 provider」。
-        //   provider 现由 active_model.preset 决定（LocalVllm→vllm 默认仍成立）。
-        ("DEEPSEEK_REASONING_EFFORT", "off"),
-        ("DEEPSEEK_ALLOW_INSECURE_HTTP", "1"),
-        ("DEEPSEEK_FORCE_HTTP1", "1"),
-        ("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576"),
-        ("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "240"),
-        // SSE 首响应头超时(open timeout):底座只认 env,默认 45s 是为云端调的。
-        // 本地 GB10 大上下文 SubAgent 请求首 token TTFT 偶发 >45s → 误杀子 agent
-        // (真机实锤:三省六部 libu~1 首发死于 45s,重派才过)。280s 与
-        // ~/.deepseek config 的 subagent api_timeout=300 对齐(步级超时须更大)。
-        ("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS", "280"),
-        // —— webkit2gtk / fcitx 兼容（Wayland 下 IM 协议挂、合成模式异常）——
-        ("GDK_BACKEND", "x11"),
-        ("WEBKIT_DISABLE_COMPOSITING_MODE", "1"),
-        ("GTK_IM_MODULE", "fcitx"),
-        ("QT_IM_MODULE", "fcitx"),
-        ("XMODIFIERS", "@im=fcitx"),
-    ];
-    for (k, v) in DEFAULTS {
+    for (k, v) in RELEASE_ENV_DEFAULTS {
         if env::var_os(k).is_none() {
             env::set_var(k, v);
         }
@@ -194,12 +200,63 @@ fn ensure_release_env() {
     }
 }
 
+#[cfg(test)]
+mod release_env_contract {
+    #[test]
+    fn compositing_mode_is_disabled_by_default() {
+        assert!(
+            super::RELEASE_ENV_DEFAULTS
+                .iter()
+                .any(|(key, value)| *key == "WEBKIT_DISABLE_COMPOSITING_MODE" && *value == "1"),
+            "WebKit 合成兼容模式必须作为 release 默认值"
+        );
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     ensure_release_env();
     startup::init();
     startup::mark("environment:ready");
-    tauri::Builder::default()
+    let initial_navigation_reported =
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let builder = tauri::Builder::default()
+        // These no-op probe plugins bracket Tauri's own plugin initialization.
+        // The main window is created by Tauri before the application setup hook,
+        // so their lifecycle hooks expose time that was previously one opaque gap.
+        .plugin({
+            let initial_navigation_reported = initial_navigation_reported.clone();
+            tauri::plugin::Builder::<_, ()>::new("startup-probe-runtime")
+                .setup(|_app, _api| {
+                    startup::mark("tauri:runtime_created");
+                    Ok(())
+                })
+                .on_window_ready(|window| {
+                    if window.label() == "main" {
+                        startup::mark("tauri:main_window_ready");
+                    }
+                })
+                .on_webview_ready(|webview| {
+                    if webview.label() == "main" {
+                        startup::mark("tauri:main_webview_ready");
+                    }
+                })
+                .on_navigation(move |webview, url| {
+                    use std::sync::atomic::Ordering;
+
+                    if webview.label() == "main"
+                        && !initial_navigation_reported.swap(true, Ordering::Relaxed)
+                    {
+                        startup::mark_with_detail(
+                            "rust",
+                            "tauri:main_navigation",
+                            &format!("scheme={}", url.scheme()),
+                        );
+                    }
+                    true
+                })
+                .build()
+        })
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -207,8 +264,32 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(
+            tauri::plugin::Builder::<_, ()>::new("startup-probe-single-instance")
+                .setup(|_app, _api| {
+                    startup::mark("tauri:plugin_single_instance_ready");
+                    Ok(())
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_notification::init())
+        .plugin(
+            tauri::plugin::Builder::<_, ()>::new("startup-probe-notification")
+                .setup(|_app, _api| {
+                    startup::mark("tauri:plugin_notification_ready");
+                    Ok(())
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_dialog::init())
+        .plugin(
+            tauri::plugin::Builder::<_, ()>::new("startup-probe-dialog")
+                .setup(|_app, _api| {
+                    startup::mark("tauri:plugin_dialog_ready");
+                    Ok(())
+                })
+                .build(),
+        )
         .on_page_load(|webview, payload| {
             startup::mark_with_detail(
                 "rust",
@@ -285,6 +366,19 @@ pub fn run() {
             }
             app.handle()
                 .manage(RemoteControlManager::new(app.handle().clone()));
+            // 匿名设备遥测：独立于 UI/Engine，失败只写日志；先 manage 再建 EnginePool，
+            // 让每个 session forwarder 都能在 TurnStarted/TurnComplete 取到状态。
+            match telemetry::TelemetryState::boot(env!("CARGO_PKG_VERSION")) {
+                Ok(Some(state)) => {
+                    app.handle().manage(state.clone());
+                    state.spawn();
+                    eprintln!("[pinvou3-app] device telemetry ready");
+                }
+                Ok(None) => eprintln!("[pinvou3-app] device telemetry disabled"),
+                Err(error) => {
+                    eprintln!("[pinvou3-app] device telemetry init failed: {error:#}")
+                }
+            }
             // 多 session 并发:存 EnginePool(lazy spawn,首条消息才为该 session 起 engine)。
             // boot bridge 在 pool::new 里做一次(写盘 / 设 env 只能一次)。
             let handle = app.handle().clone();
@@ -431,6 +525,14 @@ pub fn run() {
             wecom::wecom_apply_skills,
             wecom::set_wecom_enabled,
             wecom::wecom_skills_state,
+            dingtalk::dingtalk_ensure_cli,
+            dingtalk::dingtalk_status,
+            dingtalk::dingtalk_connect_begin,
+            dingtalk::dingtalk_cancel,
+            dingtalk::dingtalk_logout,
+            dingtalk::dingtalk_apply_skills,
+            dingtalk::set_dingtalk_enabled,
+            dingtalk::dingtalk_skills_state,
             eip::eip_status,
             eip::eip_connect_begin,
             eip::eip_cancel,
@@ -523,6 +625,7 @@ pub fn run() {
             commands::delete_timed_memory,
             commands::edit_last_turn,
             commands::read_artifact_text,
+            commands::write_artifact_text,
             commands::list_deliverables,
             commands::list_deliverable_index,
             commands::artifact_info,
@@ -597,6 +700,8 @@ pub fn run() {
             file_ingest::install_dependencies,
             commands::list_marketplace_tools,
             commands::install_marketplace_tool,
+            commands::get_marketplace_tool_auth_status,
+            commands::start_marketplace_tool_oauth_login,
             commands::uninstall_marketplace_tool,
             commands::detect_obsidian,
             knowledge::kb_start_scan,
@@ -626,12 +731,29 @@ pub fn run() {
             commands::install_marketplace_skill,
             commands::import_skill_package,
             commands::uninstall_marketplace_skill,
-        ])
-        .run({
-            startup::mark("tauri:run_enter");
-            tauri::generate_context!()
-        })
-        .expect("error while running tauri application");
+        ]);
+
+    startup::mark("tauri:builder_configured");
+    startup::mark("tauri:context:start");
+    let context = tauri::generate_context!();
+    startup::mark("tauri:context:done");
+    // Keep the historical marker so old and new startup runs remain comparable.
+    startup::mark("tauri:run_enter");
+    startup::mark("tauri:build:start");
+    let app = builder
+        .build(context)
+        .expect("error while building tauri application");
+    startup::mark("tauri:build:done");
+    startup::mark("tauri:event_loop:run_enter");
+    let mut resumed_reported = false;
+    app.run(move |_app, event| match event {
+        tauri::RunEvent::Ready => startup::mark("tauri:event_loop:ready"),
+        tauri::RunEvent::Resumed if !resumed_reported => {
+            resumed_reported = true;
+            startup::mark("tauri:event_loop:first_resumed");
+        }
+        _ => {}
+    });
     startup::mark("process:exit");
 }
 

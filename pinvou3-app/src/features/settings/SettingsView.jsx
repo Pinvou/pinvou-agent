@@ -87,7 +87,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       return !!(model && (model.kind === 'builtin_llmapi' || model.id === 'builtin_llmapi'));
     }
     function hasLlmApiBackendUser(bs) {
-      return !!(bs && bs.llmApiStatus && bs.llmApiStatus.backend_user_exists);
+      const status = bs && bs.llmApiStatus;
+      if (!status) return false;
+      if (status.backend_user_state === 'not_exists') return false;
+      return status.backend_user_state === 'exists' || !!status.backend_user_exists;
     }
     function visibleSortedModels(models, bs) {
       const allowBuiltin = hasLlmApiBackendUser(bs);
@@ -462,13 +465,33 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const [feishuEnabled, setFeishuEnabled] = useState(true); // 飞书技能是否启用(未手动停用)
       const [wecomOn, setWecomOn] = useState(false); // 企微是否已连接(CLI 路线)
       const [wecomEnabled, setWecomEnabled] = useState(true); // 企微技能是否启用(未手动停用)
+      const [dingtalkOn, setDingtalkOn] = useState(false); // 钉钉是否已连接(CLI 路线)
+      const [dingtalkEnabled, setDingtalkEnabled] = useState(true); // 钉钉技能是否启用(未手动停用)
       const [eipOn, setEipOn] = useState(false); // EIP 是否已连接(SSO 路线)
       const [zhidaoOn, setZhidaoOn] = useState(false); // 知道是否已连接(SSO 路线)
       // 启动时加载已装工具 + 全局持久的禁用列表(持久语义:新窗口/新对话都继承)
       async function refreshToolsMenu(isAlive) {
         try {
           const list = await window.__TAURI__.core.invoke('list_marketplace_tools');
-          if (isAlive()) setTools((list || []).filter(x => x.installed));
+          const installedTools = (list || []).filter(x => x.installed);
+          const companionSkillIds = new Set(installedTools.flatMap(x => x.companion_skills || []));
+          const skills = await window.__TAURI__.core.invoke('list_marketplace_skills');
+          const installedSkills = (skills || [])
+            .filter(x => x.installed && !companionSkillIds.has(x.id))
+            .map(x => ({
+              id: `skill:${x.id}`,
+              name: x.title || x.id,
+              description: x.description || '',
+              installed: true,
+              kind: 'skill',
+            }));
+          const seen = new Set();
+          const merged = [...installedTools, ...installedSkills].filter(x => {
+            if (seen.has(x.id)) return false;
+            seen.add(x.id);
+            return true;
+          });
+          if (isAlive()) setTools(merged);
         } catch (e) { /* ignore */ }
         try {
           const dis = await window.__TAURI__.core.invoke('get_disabled_connectors');
@@ -481,6 +504,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         try {
           const ws = await window.__TAURI__.core.invoke('wecom_skills_state');
           if (isAlive()) { setWecomOn(!!(ws && ws.connected)); setWecomEnabled(!ws || ws.enabled !== false); }
+        } catch (e) { /* ignore */ }
+        try {
+          const ds = await window.__TAURI__.core.invoke('dingtalk_skills_state');
+          if (isAlive()) { setDingtalkOn(!!(ds && ds.connected)); setDingtalkEnabled(!ds || ds.enabled !== false); }
         } catch (e) { /* ignore */ }
         try {
           const es = await window.__TAURI__.core.invoke('eip_status');
@@ -516,9 +543,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             className={`relative shrink-0 flex items-center justify-center bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 transition-colors border border-black/[0.04] dark:border-white/5 ${compact ? 'w-9 h-9 rounded-full' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold whitespace-nowrap'}`}>
             <Wrench size={compact ? 18 : 14} className="opacity-80" />
             {!compact && t.composerTools}
-            {(tools.length > 0 || feishuOn || wecomOn || eipOn || zhidaoOn) && (compact
-              ? <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 text-[10px] leading-4 text-center font-bold bg-[#007AFF] text-white rounded-full">{enabledCount + (feishuOn ? 1 : 0) + (wecomOn ? 1 : 0) + (eipOn ? 1 : 0) + (zhidaoOn ? 1 : 0)}</span>
-              : <span className="text-[11px] bg-[#007AFF] text-white px-1.5 py-0.5 rounded-full leading-none font-bold shrink-0">{enabledCount + (feishuOn ? 1 : 0) + (wecomOn ? 1 : 0) + (eipOn ? 1 : 0) + (zhidaoOn ? 1 : 0)}</span>)}
+            {(tools.length > 0 || feishuOn || wecomOn || dingtalkOn || eipOn || zhidaoOn) && (compact
+              ? <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 text-[10px] leading-4 text-center font-bold bg-[#007AFF] text-white rounded-full">{enabledCount + (feishuOn ? 1 : 0) + (wecomOn ? 1 : 0) + (dingtalkOn ? 1 : 0) + (eipOn ? 1 : 0) + (zhidaoOn ? 1 : 0)}</span>
+              : <span className="text-[11px] bg-[#007AFF] text-white px-1.5 py-0.5 rounded-full leading-none font-bold shrink-0">{enabledCount + (feishuOn ? 1 : 0) + (wecomOn ? 1 : 0) + (dingtalkOn ? 1 : 0) + (eipOn ? 1 : 0) + (zhidaoOn ? 1 : 0)}</span>)}
             {!compact && <ChevronDown size={14} className="opacity-50 shrink-0" />}
           </button>
           {open && (
@@ -538,6 +565,12 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                     <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold text-[#34C759] bg-[#34C759]/10 px-2 py-0.5 rounded-full leading-none"><span className="w-1.5 h-1.5 rounded-full bg-[#34C759]" />已连接</span>
                   </div>
                 )}
+                {dingtalkOn && (
+                  <div className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
+                    <span className="text-[13px] text-gray-700 dark:text-gray-200 truncate">钉钉</span>
+                    <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold text-[#34C759] bg-[#34C759]/10 px-2 py-0.5 rounded-full leading-none"><span className="w-1.5 h-1.5 rounded-full bg-[#34C759]" />已连接</span>
+                  </div>
+                )}
                 {eipOn && (
                   <div className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
                     <span className="text-[13px] text-gray-700 dark:text-gray-200 truncate">H3C 员工门户（EIP）</span>
@@ -550,7 +583,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                     <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold text-[#34C759] bg-[#34C759]/10 px-2 py-0.5 rounded-full leading-none"><span className="w-1.5 h-1.5 rounded-full bg-[#34C759]" />已连接</span>
                   </div>
                 )}
-                {tools.length === 0 && !feishuOn && !wecomOn && !eipOn && !zhidaoOn ? (
+                {tools.length === 0 && !feishuOn && !wecomOn && !dingtalkOn && !eipOn && !zhidaoOn ? (
                   <div className="px-3 py-2 text-[13px] text-gray-400 dark:text-gray-500">{t.composerNoTools}</div>
                 ) : tools.map(tl => {
                   const on = !disabled.has(tl.id);

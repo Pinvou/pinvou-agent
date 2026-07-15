@@ -13,6 +13,8 @@
       var flushInFlight = false;
       var flushTimer = null;
       var longTaskCount = 0;
+      var resourceCount = 0;
+      var resourceObserver = null;
       var windowShownMarked = false;
 
       function markAt(stage, sinceNavigationMs, detail) {
@@ -28,6 +30,15 @@
 
       function mark(stage, detail) {
         markAt(stage, performance.now(), detail);
+      }
+
+      function resourceName(value) {
+        try {
+          var parts = new URL(value, location.href).pathname.split("/").filter(Boolean);
+          return parts.slice(-2).join("/") || "document";
+        } catch (_) {
+          return "unknown";
+        }
       }
 
       function scheduleFlush(delay) {
@@ -94,6 +105,7 @@
                 markAt("first_paint", entry.startTime, "source=paint_timing");
               } else if (entry.name === "first-contentful-paint") {
                 markAt("first_contentful_paint", entry.startTime, "source=paint_timing");
+                if (resourceObserver) resourceObserver.disconnect();
               }
             });
           }).observe({ type: "paint", buffered: true });
@@ -102,24 +114,47 @@
           new PerformanceObserver(function (list) {
             list.getEntries().forEach(function (entry) {
               if (longTaskCount++ < 20) {
-                mark("browser:long_task", "start_ms=" + entry.startTime.toFixed(1) + " duration_ms=" + entry.duration.toFixed(1));
+                markAt("browser:long_task", entry.startTime + entry.duration, "start_ms=" + entry.startTime.toFixed(1) + " duration_ms=" + entry.duration.toFixed(1));
               }
             });
           }).observe({ type: "longtask", buffered: true });
+        } catch (_) {}
+        try {
+          resourceObserver = new PerformanceObserver(function (list) {
+            list.getEntries().forEach(function (entry) {
+              if (entry.initiatorType !== "script" && entry.initiatorType !== "link") return;
+              if (resourceCount++ >= 40) return;
+              markAt(
+                "resource:loaded",
+                entry.responseEnd || (entry.startTime + entry.duration),
+                "name=" + resourceName(entry.name) +
+                  " type=" + (entry.initiatorType || "unknown") +
+                  " start_ms=" + entry.startTime.toFixed(1) +
+                  " duration_ms=" + entry.duration.toFixed(1) +
+                  " transfer_bytes=" + (entry.transferSize || 0) +
+                  " decoded_bytes=" + (entry.decodedBodySize || 0)
+              );
+            });
+          });
+          resourceObserver.observe({ type: "resource", buffered: true });
         } catch (_) {}
       }
     })();
   </script>
   <!-- Tailwind 仍使用本地离线 runtime；后续单独迁移预编译样式。 -->
-  <script src="/vendor/tailwind.js" onload="__PINVOU_STARTUP__.mark('vendor:tailwind_loaded')"></script>
+  <script>__PINVOU_STARTUP__.mark('html:startup_observers_ready');</script>
+  <script src="/vendor/tailwind.js" onload="__PINVOU_STARTUP__.mark('vendor:tailwind_loaded')" onerror="__PINVOU_STARTUP__.mark('vendor:tailwind_error')"></script>
   <script>tailwind.config = { darkMode: 'class' };</script>
-  <script src="/vendor/marked.min.js" onload="__PINVOU_STARTUP__.mark('vendor:marked_loaded')"></script>
-  <script src="/vendor/purify.min.js" onload="__PINVOU_STARTUP__.mark('vendor:purify_loaded')"></script>
+  <script src="/vendor/marked.min.js" onload="__PINVOU_STARTUP__.mark('vendor:marked_loaded')" onerror="__PINVOU_STARTUP__.mark('vendor:marked_error')"></script>
+  <script src="/vendor/purify.min.js" onload="__PINVOU_STARTUP__.mark('vendor:purify_loaded')" onerror="__PINVOU_STARTUP__.mark('vendor:purify_error')"></script>
+  <script>__PINVOU_STARTUP__.mark('html:head_end');</script>
 </head>
 <body class="m-0 p-0">
+  <script>__PINVOU_STARTUP__.mark('html:body_start');</script>
   <div id="root"></div>
+  <script>__PINVOU_STARTUP__.mark('dom:root_created');</script>
   <script>document.addEventListener('contextmenu', function (e) { e.preventDefault(); });</script>
-  <script src="/tauri-bridge.js" onload="__PINVOU_STARTUP__.mark('app:tauri_bridge_loaded')"></script>
+  <script src="/tauri-bridge.js" onload="__PINVOU_STARTUP__.mark('app:tauri_bridge_loaded')" onerror="__PINVOU_STARTUP__.mark('app:tauri_bridge_error')"></script>
   <script>
     window.addEventListener('DOMContentLoaded', function () {
       if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === 'function') {
@@ -134,8 +169,8 @@
       }
     });
   </script>
-  <script src="/personas-i18n.js" onload="__PINVOU_STARTUP__.mark('app:personas_i18n_loaded')"></script>
-  <script src="/update-notice-logic.js" onload="__PINVOU_STARTUP__.mark('app:update_notice_logic_loaded')"></script>
-  <script type="module" src="/main.jsx" onload="__PINVOU_STARTUP__.mark('app:main_module_loaded')"></script>
+  <script src="/personas-i18n.js" onload="__PINVOU_STARTUP__.mark('app:personas_i18n_loaded')" onerror="__PINVOU_STARTUP__.mark('app:personas_i18n_error')"></script>
+  <script src="/update-notice-logic.js" onload="__PINVOU_STARTUP__.mark('app:update_notice_logic_loaded')" onerror="__PINVOU_STARTUP__.mark('app:update_notice_logic_error')"></script>
+  <script type="module" src="/main.jsx" onload="__PINVOU_STARTUP__.mark('app:main_module_loaded'); __PINVOU_STARTUP__.flush()" onerror="__PINVOU_STARTUP__.mark('app:main_module_error'); __PINVOU_STARTUP__.flush()"></script>
 </body>
 </html>

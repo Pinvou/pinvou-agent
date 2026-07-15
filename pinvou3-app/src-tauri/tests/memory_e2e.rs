@@ -1080,7 +1080,8 @@ fn setup_vllm_env(env: &mut EnvGuard) {
     env.set("DEEPSEEK_ALLOW_INSECURE_HTTP", "1");
     env.set("DEEPSEEK_FORCE_HTTP1", "1");
     env.set("DEEPSEEK_MAX_OUTPUT_TOKENS", "2048");
-    env.set("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "90");
+    // 真 vLLM 测试与正式 App、DeepSeek-TUI 默认值保持一致。
+    env.set("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "300");
     env.set("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS", "180");
 }
 

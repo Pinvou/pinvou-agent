@@ -11,8 +11,9 @@
 因为对本地 Qwen3.6 + vLLM 部署，压缩一次的真实代价不是 token，而是：
 
 1. 一次 LLM 摘要请求（本地 vLLM 慢）；
-2. **压完后整个 prefix 变了** → 下一请求冷 prefill → 触发工具调用漂移
-   （冷 prefill × MTP，见 memory `subagent_prefix_cache_miss_root_cause` / vLLM #43559）。
+2. **压完后整个 prefix 变了** → 下一请求冷 prefill；历史上在 MTP 开启时曾伴随工具调用
+   漂移。2026-07-14 的 A/B 已确认优先关闭 MTP、保留 prefix caching，完整证据与置信边界见
+   [`Qwen3.6-vLLM-prefix-cache-MTP-工具调用漂移复盘.md`](Qwen3.6-vLLM-prefix-cache-MTP-工具调用漂移复盘.md)。
 
 云端大窗口用户不在乎这个；pinvou 在乎。**据此，评判任何压缩改动的唯一标准是：
 它让压缩次数变多还是变少。** T 在保证低于 E 的前提下尽量高；评估 seam 等重机制时
