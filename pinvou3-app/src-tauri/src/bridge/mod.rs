@@ -19,7 +19,7 @@ pub mod prefs;
 pub mod sessions;
 pub mod skill_marketplace;
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Result;
 use deepseek_tui::config::{
@@ -27,7 +27,7 @@ use deepseek_tui::config::{
 };
 use deepseek_tui::core::engine::EngineConfig;
 use deepseek_tui::core::ops::Op;
-use deepseek_tui::hooks::{Hook, HookEvent, HooksConfig};
+use deepseek_tui::hooks::{Hook, HookEvent, HookExecutor, HooksConfig};
 use deepseek_tui::prompts::InstructionSource;
 use deepseek_tui::tui::app::AppMode;
 use deepseek_tui::tui::approval::ApprovalMode;
@@ -617,9 +617,9 @@ impl Pinvou3Bridge {
             // —— v0.8.49 上游新增字段,透传 default ——
             allowed_tools,
             tools,
-            // —— v0.8.51 上游新增字段,透传 default(speech 输出目录 / hook executor)——
+            // —— v0.8.51 上游新增字段 ——
             speech_output_dir,
-            hook_executor,
+            hook_executor: _, // pinvou3 注入敏感目录防火墙 + CLI 环境 hook
             // —— v0.8.53 上游新增字段,透传 default(subagent 心跳超时;配 subagent
             //    lifecycle hooks feat)。⚠️ 本地慢 vLLM 下或需像 subagent_api_timeout
             //    一样调大,先透传 default,验证后再评估。——
@@ -656,6 +656,12 @@ impl Pinvou3Bridge {
             exec_policy_engine,
             extra_tools,
         } = EngineConfig::default();
+
+        // hook 有两条消费路径：turn_loop 从 EngineConfig.hook_executor 跑
+        // ToolCallBefore，exec_shell 则从 RuntimeToolServices.hook_executor 收集
+        // shell_env。必须共享同一个实例，不能只填前者。
+        let hook_executor = self.build_hook_executor();
+        runtime_services.hook_executor = Some(hook_executor.clone());
 
         EngineConfig {
             // pinvou3 覆盖
@@ -801,7 +807,7 @@ impl Pinvou3Bridge {
             tools,
             // v0.8.51 上游新增,透传 default
             speech_output_dir,
-            hook_executor,
+            hook_executor: Some(hook_executor),
             // v0.8.53 上游新增,透传 default
             subagent_heartbeat_timeout,
             // v0.8.54-57 上游新增,透传 default(search_base_url=None / stream_chunk_timeout)
@@ -919,20 +925,43 @@ impl Pinvou3Bridge {
     /// `~/.pinvou3/bundle/deny_sensitive_paths.sh`。
     fn build_hooks_config(&self) -> HooksConfig {
         let script = self.bundle.deny_sensitive_sh.to_string_lossy().to_string();
+        let mut hooks = vec![Hook {
+            event: HookEvent::ToolCallBefore,
+            command: format!("bash {script}"),
+            condition: None,
+            timeout_secs: 5,
+            background: false,
+            continue_on_error: false,
+            name: Some("pinvou3-sensitive-firewall".into()),
+        }];
+
+        // Linux/macOS 桌面安装通常不继承用户登录 shell 的 PATH/SDK 环境。
+        // 复用底座现有 shell_env 扩展点，仅给 exec_shell 注入过滤后的终端环境；
+        // MCP、RLM、JS、其他 hooks 仍保持各自原有环境策略，底座无需 fork patch。
+        #[cfg(unix)]
+        hooks.push(Hook {
+            event: HookEvent::ShellEnv,
+            command: format!("bash {}", self.bundle.shell_env_sh.to_string_lossy()),
+            condition: None,
+            timeout_secs: 5,
+            background: false,
+            continue_on_error: false,
+            name: Some("pinvou3-cli-shell-env".into()),
+        });
+
         HooksConfig {
             enabled: true,
-            hooks: vec![Hook {
-                event: HookEvent::ToolCallBefore,
-                command: format!("bash {script}"),
-                condition: None,
-                timeout_secs: 5,
-                background: false,
-                continue_on_error: false,
-                name: Some("pinvou3-sensitive-firewall".into()),
-            }],
+            hooks,
             default_timeout_secs: Some(5),
             working_dir: None,
         }
+    }
+
+    fn build_hook_executor(&self) -> Arc<HookExecutor> {
+        Arc::new(HookExecutor::new(
+            self.build_hooks_config(),
+            self.workspace.clone(),
+        ))
     }
 
     /// 构造发给 engine 的 [`Op::SendMessage`]——按 `mode` 切换 trust/approval/sandbox。
@@ -1027,8 +1056,9 @@ impl Pinvou3Bridge {
             } else {
                 None
             },
-            // v0.8.51 上游新增;None = 不挂 per-message hook executor,沿用 engine 级默认。
-            hook_executor: None,
+            // 底座会用这里的值覆盖 Engine 级 hook_executor；必须每轮显式携带，
+            // 否则 ToolCallBefore 防火墙会在第一条消息时被 None 清掉。
+            hook_executor: Some(self.build_hook_executor()),
             // v0.8.59 上游新增 concise verbosity 模式;pinvou3 GUI 走默认详尽,取 None。
             verbosity: None,
             // —— v0.8.65 上游新增字段 ——
@@ -1681,6 +1711,102 @@ mod tests {
         std::env::set_var("PINVOU3_ALLOW_SHELL", "false");
         assert!(!bridge.allow_shell());
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
+    }
+
+    #[test]
+    fn hooks_include_cli_shell_env_without_replacing_sensitive_firewall() {
+        let bridge = fixture_bridge();
+        let config = bridge.build_engine_config();
+        let engine_executor = config
+            .hook_executor
+            .as_ref()
+            .expect("PINVOU Engine 必须注入 hook executor");
+        let runtime_executor = config
+            .runtime_services
+            .hook_executor
+            .as_ref()
+            .expect("exec_shell runtime 必须注入 hook executor");
+        assert!(
+            Arc::ptr_eq(engine_executor, runtime_executor),
+            "Engine hooks 与 exec_shell shell_env 必须共享同一 executor"
+        );
+        let hooks = engine_executor.config();
+        assert!(
+            hooks.hooks.iter().any(|hook| {
+                hook.event == HookEvent::ToolCallBefore
+                    && hook.name.as_deref() == Some("pinvou3-sensitive-firewall")
+            }),
+            "敏感目录硬拦截 hook 必须保留"
+        );
+        #[cfg(unix)]
+        assert!(
+            hooks.hooks.iter().any(|hook| {
+                hook.event == HookEvent::ShellEnv
+                    && hook.name.as_deref() == Some("pinvou3-cli-shell-env")
+                    && hook.command.contains("shell_env.sh")
+            }),
+            "Unix PINVOU 必须通过底座现有 shell_env hook 注入 CLI 环境"
+        );
+
+        let Op::SendMessage {
+            hook_executor: Some(message_executor),
+            ..
+        } = bridge.build_send_message_op("test".into(), AppMode::Yolo, None, false)
+        else {
+            panic!("每轮 SendMessage 必须显式携带 hook executor");
+        };
+        assert!(
+            message_executor
+                .config()
+                .hooks
+                .iter()
+                .any(|hook| hook.event == HookEvent::ToolCallBefore),
+            "每轮消息不得清掉敏感目录防火墙"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_shell_receives_filtered_shell_env_from_runtime_services() {
+        use deepseek_tui::tools::shell::ExecShellTool;
+        use deepseek_tui::tools::spec::ToolSpec;
+        use deepseek_tui::tools::ToolContext;
+        use serde_json::json;
+
+        let _env = EnvGuard::new(&["SHELL", "XDG_RUNTIME_DIR", "OPENAI_API_KEY"]);
+        std::env::set_var("SHELL", "/bin/bash");
+        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/4242");
+        std::env::set_var("OPENAI_API_KEY", "must-not-leak");
+
+        let workspace =
+            std::env::temp_dir().join(format!("pinvou3-shell-env-runtime-{}", std::process::id()));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let script = workspace.join("shell_env.sh");
+        std::fs::write(&script, bundle::SHELL_ENV_SH).unwrap();
+
+        let mut bridge = fixture_bridge();
+        bridge.workspace.clone_from(&workspace);
+        bridge.bundle.shell_env_sh = script;
+        let config = bridge.build_engine_config();
+        let context = ToolContext::new(&workspace).with_runtime_services(config.runtime_services);
+        let result = ExecShellTool
+            .execute(
+                json!({
+                    "command": "printf '%s|%s' \"${XDG_RUNTIME_DIR-unset}\" \"${OPENAI_API_KEY-unset}\""
+                }),
+                &context,
+            )
+            .await
+            .expect("exec_shell 应执行成功");
+
+        assert!(result.success, "exec_shell failed: {}", result.content);
+        assert!(
+            result.content.contains("/run/user/4242|unset"),
+            "exec_shell 必须收到桌面运行时环境且不能泄露 API key: {}",
+            result.content
+        );
+        assert!(!result.content.contains("must-not-leak"));
+        let _ = std::fs::remove_dir_all(workspace);
     }
 
     /// 路径必须落在 ~/.pinvou3/ 下，绝不能落 ~/.deepseek/。
