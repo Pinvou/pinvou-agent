@@ -25,15 +25,11 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 > **fork 改动是否要 PR**：通用优化 / bug 修复才提；pinvou3 专用留 fork。详见 `docs/fork-policy.md` §2 决策树。
 > **底座上游PR规范**：https://github.com/Hmbown/CodeWhale/blob/main/CONTRIBUTING.md
 
-### 2. 只用本地算力（GB10 + Qwen3.6-35B-A3B-FP8）
-
-- 设计以当前模型能力为基线，未来变强是 bonus
-
-### 3. 提交日志
+### 2. 提交日志
 
 - git log 提交日志统一使用中文，并在标题中注明类型前缀，例如 `fix:` / `feat:` / `docs:`；类型前缀后的描述使用中文。
 
-### 4. GitHub PR 规范
+### 3. GitHub PR 规范
 
 - GitHub PR 的标题和正文统一使用中文（代码标识、命令、路径等保留原文）。
 - PR 正文必须明确说明以下内容：
