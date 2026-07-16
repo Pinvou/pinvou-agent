@@ -109,6 +109,7 @@ fingerprints=(
   "AUTO|v4 task 稳定 conversation key        |DeepSeek-TUI/crates/tui/src/task_manager.rs|pub conversation_key: Option<String>"
   "AUTO|task schema 升级为 v4                |DeepSeek-TUI/crates/tui/src/task_manager.rs|const CURRENT_TASK_SCHEMA_VERSION: u32 = 4;"
   "AUTO|automation 入队携带稳定会话键         |DeepSeek-TUI/crates/tui/src/automation_manager.rs|add_task_with_conversation_key(new_task, Some(automation.id.clone()))"
+  "AUTO|小时调度支持稳定时间锚点              |DeepSeek-TUI/crates/tui/src/automation_manager.rs|fn hourly_rrule_uses_clock_time_as_a_stable_anchor"
   "AUTO|终态运行保留候选不包含活动运行         |DeepSeek-TUI/crates/tui/src/automation_manager.rs|terminal_run_prune_candidates"
   "AUTO|终态底座任务配套删除                  |DeepSeek-TUI/crates/tui/src/task_manager.rs|delete_terminal_task"
   "AUTO|registry 工具强制审批不可绕过        |DeepSeek-TUI/crates/tui/src/core/engine/turn_loop.rs|pub(super) fn registered_tool_approval_force_prompt"

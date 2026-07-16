@@ -1107,7 +1107,7 @@ async function clickExactText(page, text) {
       intervalLabel: document.querySelector('[data-testid="scheduled-live-interval"]')?.textContent.trim(),
       intervalValue: document.querySelector('[data-testid="scheduled-live-interval"]')?.value,
       intervalRowPresent: !!document.querySelector('[data-testid="scheduled-live-interval-row"]'),
-      timeInputAbsent: !document.querySelector('[data-testid="scheduled-live-time"]')
+      timeValue: document.querySelector('[data-testid="scheduled-live-time"]')?.value
     };
   });
   await sleep(1200);
@@ -1122,12 +1122,12 @@ async function clickExactText(page, text) {
   await page.waitForFunction(() => {
     const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
     return invokes.some(x => x.cmd === 'update_scheduled_task' && x.args && x.args.input &&
-      x.args.input.rrule === 'FREQ=HOURLY;INTERVAL=2');
+      x.args.input.rrule === 'FREQ=HOURLY;INTERVAL=2;BYHOUR=8;BYMINUTE=0');
   }, { timeout: 10000 });
   const intervalEditState = await page.evaluate(() => {
     const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
     const update = invokes.filter(x => x.cmd === 'update_scheduled_task' && x.args && x.args.input &&
-      x.args.input.rrule === 'FREQ=HOURLY;INTERVAL=2').pop();
+      x.args.input.rrule === 'FREQ=HOURLY;INTERVAL=2;BYHOUR=8;BYMINUTE=0').pop();
     const interval = document.querySelector('[data-testid="scheduled-live-interval"]');
     return {
       rrule: update && update.args.input.rrule,
@@ -1294,12 +1294,12 @@ async function clickExactText(page, text) {
     intervalDisplayBefore.intervalLabel === '5 小时' &&
     intervalDisplayBefore.intervalValue === '5' &&
     intervalDisplayBefore.intervalRowPresent &&
-    intervalDisplayBefore.timeInputAbsent &&
+    intervalDisplayBefore.timeValue === '08:00' &&
     /每 5 小时 · 下次 .*（(?:4小时\d+分|5小时)后）/.test(intervalDisplayBefore.summary || '') &&
     (intervalDisplayAfter.summary || '').split('（')[0] ===
       (intervalDisplayBefore.summary || '').split('（')[0] &&
     /（(?:4小时\d+分|5小时)后）/.test(intervalDisplayAfter.summary || '') &&
-    intervalEditState.rrule === 'FREQ=HOURLY;INTERVAL=2' &&
+    intervalEditState.rrule === 'FREQ=HOURLY;INTERVAL=2;BYHOUR=8;BYMINUTE=0' &&
     intervalEditState.intervalLabel === '2 小时' &&
     intervalEditState.intervalValue === '2' &&
     errors.length === 0;

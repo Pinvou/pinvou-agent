@@ -781,12 +781,12 @@ const SCHEDULED_TASK_CHAT_PROMPT: &str = r#"我想创建一个 Pinvou 定时任�
 
 请一次只问我一个问题，并依次确认这些信息：
 1. 任务要做什么。
-2. 什么时候运行。支持每 N 小时、每天指定时间、每周指定星期和时间。不支持分钟级规则；如果用户要求“每 5 分钟”等分钟级频率，必须询问用户改成每 N 小时、每天指定时间或每周指定时间，不要输出草稿。
+2. 什么时候运行。支持每 N 小时（可指定起始时间）、每天指定时间、每周指定星期和时间。不支持分钟级规则；如果用户要求“每 5 分钟”等分钟级频率，必须询问用户改成每 N 小时、每天指定时间或每周指定时间，不要输出草稿。
 
 每次运行创建独立对话；同一个定时任务的所有运行对话共享该任务的专属工作间，不同任务互不共享。产物仍归属各次运行对话。不需要询问工作目录或权限设置。
 
 整理草稿时，请把时间转换成 rrule：
-- 每 6 小时一次：FREQ=HOURLY;INTERVAL=6
+- 每 6 小时一次，从 08:30 起算：FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30
 - 每天 08:30：FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30
 - 每周一、三 09:30：FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=9;BYMINUTE=30
 
@@ -1943,12 +1943,22 @@ pub fn humanize_rrule(rrule: &str) -> String {
         Ok(AutomationSchedule::Hourly {
             interval_hours,
             byday,
+            anchor_hour,
+            anchor_minute,
         }) => {
-            let hourly = if interval_hours == 1 {
+            let mut hourly = if interval_hours == 1 {
                 "每小时".to_string()
             } else {
                 format!("每 {interval_hours} 小时")
             };
+            if let Some(hour) = anchor_hour {
+                hourly.push_str(&format!(
+                    " · {hour:02}:{:02} 起",
+                    anchor_minute.unwrap_or(0)
+                ));
+            } else if let Some(minute) = anchor_minute {
+                hourly.push_str(&format!(" · 第 {minute:02} 分"));
+            }
             match byday {
                 Some(days) if !days.is_empty() => {
                     let labels = if is_every_workday(&days) {
@@ -2637,6 +2647,12 @@ mod tests {
     }
 
     #[test]
+    fn humanize_hourly_rrule_with_anchor() {
+        let label = humanize_rrule("FREQ=HOURLY;INTERVAL=2;BYHOUR=8;BYMINUTE=30");
+        assert_eq!(label, "每 2 小时 · 08:30 起");
+    }
+
+    #[test]
     fn humanize_hourly_rrule_with_byday() {
         let label = humanize_rrule("FREQ=HOURLY;INTERVAL=2;BYDAY=MO,TU");
         assert_eq!(label, "周一、周二 每 2 小时");
@@ -2653,16 +2669,16 @@ mod tests {
         let prompt = scheduled_task_chat_prompt().expect("prompt");
         assert!(prompt.contains("请一次只问我一个问题，并依次确认这些信息："));
         assert!(prompt.contains("1. 任务要做什么。"));
-        assert!(
-            prompt.contains("2. 什么时候运行。支持每 N 小时、每天指定时间、每周指定星期和时间。")
-        );
+        assert!(prompt.contains(
+            "2. 什么时候运行。支持每 N 小时（可指定起始时间）、每天指定时间、每周指定星期和时间。"
+        ));
         assert!(!prompt.contains("3."));
         assert!(prompt.contains("不需要询问工作目录或权限设置"));
         assert!(!prompt.contains("allowShell"));
         assert!(!prompt.contains("trustMode"));
         assert!(!prompt.contains("cwds"));
         assert!(prompt.contains("整理草稿时，请把时间转换成 rrule："));
-        assert!(prompt.contains("FREQ=HOURLY;INTERVAL=6"));
+        assert!(prompt.contains("FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30"));
         assert!(prompt.contains("FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=9;BYMINUTE=30"));
         assert!(prompt.contains("create_scheduled_task"));
         assert!(prompt.contains("schtasks"));

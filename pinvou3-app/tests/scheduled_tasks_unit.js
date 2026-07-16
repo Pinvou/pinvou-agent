@@ -254,9 +254,9 @@ assert(
 assert.ok(
   /function scheduleRepeatLabel\(/.test(indexHtml) &&
     /editor\.interval/.test(indexHtml) &&
-    /scheduleEditor\.repeat !== 'hourly'/.test(indexHtml) &&
+    /editor\.repeat === 'hourly' \? '起始时间' : '时间'/.test(indexHtml) &&
     !indexHtml.includes("repeat === 'minutely'"),
-  'detail frequency should use the real interval and omit clock time for interval schedules'
+  'hourly schedules should expose both their interval and start-time anchor'
 );
 assert.ok(
   !/data-testid="scheduled-detail-pick-folder"/.test(indexHtml) &&
@@ -1657,6 +1657,8 @@ async function scheduledMutationErrorBehavior() {
     var state = harness.bridge.getState();
     assert.ok(String(state.scheduledTaskError).includes("visible scheduled failure"), entry[0] + " should expose its error");
     assert.strictEqual(state.scheduledTaskBusyAction, null, entry[0] + " should clear busy after failure");
+    harness.bridge.dismissScheduledTaskError();
+    assert.strictEqual(harness.bridge.getState().scheduledTaskError, null, entry[0] + " errors should be dismissible");
   }
 
   var chatHarness = createBridgeHarness();
