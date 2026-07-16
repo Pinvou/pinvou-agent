@@ -607,6 +607,7 @@ pub fn run() {
             commands::install_marketplace_tool,
             commands::get_marketplace_tool_auth_status,
             commands::start_marketplace_tool_oauth_login,
+            commands::cancel_marketplace_tool_oauth_login,
             commands::uninstall_marketplace_tool,
             commands::detect_obsidian,
             knowledge::kb_start_scan,

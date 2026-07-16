@@ -91,6 +91,11 @@ fingerprints=(
   # —— P1(2026-07-03):list_mcp_resources/templates 按对应集合非空 gate(上游原为 servers 非空即注入)——
   # pinvou3 MCP server 全 tools-only,原条件下这两个元工具永久空转;改按 resources/templates 非空注入。可上游。
   "P1  |list_mcp_resources 按 resources 非空 gate|DeepSeek-TUI/crates/tui/src/mcp.rs|if !self.all_resource_templates().is_empty()"
+  # —— P2(2026-07-16):可取消 OAuth 登录 + 宿主请求编排——
+  # 取消必须先 drop 底座 OAuth future/回调监听再返回;新请求先等旧请求退出,快取消早于注册也不能漏。
+  "P2  |MCP OAuth cancellable API      |DeepSeek-TUI/crates/tui/src/mcp/oauth.rs|pub async fn perform_oauth_login_for_server_with_cancel"
+  "P2  |MCP OAuth cancellation regression|DeepSeek-TUI/crates/tui/src/mcp/oauth.rs|fn forkguard_cancellable_oauth_drops_in_flight_flow_before_returning"
+  "P2  |OAuth host request coordinator |pinvou3-app/src-tauri/src/commands.rs|struct MarketplaceOAuthLoginCoordinator"
   # AUTO-lite(2026-07-13):scheduled-lite 重做——撤 durable scheduler 重 fork(原 fork PR #8,
   # +13744/−5646),回 8073aa9b 基线 + 最小补丁(5 文件)。守护点:host executor
   # 只读 getters / ThreadCreated 会话身份先于 turn 持久化 / automation model 透传 /

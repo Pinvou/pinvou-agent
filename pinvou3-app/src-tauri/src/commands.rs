@@ -5630,6 +5630,103 @@ mod tests {
         delete_test_oauth_token_key(&key);
     }
 
+    #[tokio::test]
+    async fn forkguard_marketplace_oauth_replacement_waits_for_previous_flow() {
+        let coordinator = MarketplaceOAuthLoginCoordinator::default();
+        let first = coordinator.register("yuandian-mcp", "request-1").await;
+        let second = coordinator.register("yuandian-mcp", "request-2").await;
+
+        assert!(
+            first.cancellation_token.is_cancelled(),
+            "registering a replacement must cancel the older OAuth flow"
+        );
+        assert!(
+            coordinator.is_current("yuandian-mcp", "request-2").await,
+            "the replacement must own the tool slot"
+        );
+
+        coordinator
+            .finish("yuandian-mcp", "request-1", first.completion_sender)
+            .await;
+        wait_for_oauth_completion(
+            second
+                .previous_completion
+                .expect("replacement should wait for the previous flow"),
+        )
+        .await;
+
+        assert!(!second.cancellation_token.is_cancelled());
+        coordinator
+            .finish("yuandian-mcp", "request-2", second.completion_sender)
+            .await;
+        assert!(!coordinator.is_current("yuandian-mcp", "request-2").await);
+    }
+
+    #[tokio::test]
+    async fn forkguard_marketplace_oauth_cancel_waits_until_flow_finishes() {
+        let coordinator = std::sync::Arc::new(MarketplaceOAuthLoginCoordinator::default());
+        let registration = coordinator.register("yuandian-mcp", "request-1").await;
+        let cancellation_token = registration.cancellation_token.clone();
+        let cancel_coordinator = std::sync::Arc::clone(&coordinator);
+        let cancel_task = tokio::spawn(async move {
+            cancel_coordinator
+                .cancel("yuandian-mcp", "request-1")
+                .await
+        });
+        tokio::task::yield_now().await;
+
+        assert!(cancellation_token.is_cancelled());
+        assert!(
+            !cancel_task.is_finished(),
+            "cancel must not return before the OAuth future has stopped"
+        );
+
+        coordinator
+            .finish(
+                "yuandian-mcp",
+                "request-1",
+                registration.completion_sender,
+            )
+            .await;
+        assert!(cancel_task.await.unwrap());
+        let newer = coordinator.register("yuandian-mcp", "request-2").await;
+        assert!(
+            !coordinator
+                .cancel("yuandian-mcp", "stale-request")
+                .await,
+            "a stale request id must not cancel a newer flow"
+        );
+        assert!(!newer.cancellation_token.is_cancelled());
+        coordinator
+            .finish("yuandian-mcp", "request-2", newer.completion_sender)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn forkguard_marketplace_oauth_remembers_cancel_before_register() {
+        let coordinator = MarketplaceOAuthLoginCoordinator::default();
+        assert!(
+            coordinator
+                .cancel("yuandian-mcp", "request-before-register")
+                .await
+        );
+
+        let registration = coordinator
+            .register("yuandian-mcp", "request-before-register")
+            .await;
+        assert!(
+            registration.cancellation_token.is_cancelled(),
+            "a fast UI cancel must stop an OAuth command even if it registers later"
+        );
+        coordinator
+            .finish(
+                "yuandian-mcp",
+                "request-before-register",
+                registration.completion_sender,
+            )
+            .await;
+    }
+
     #[test]
     fn uninstall_marketplace_tool_deletes_oauth_token_before_mcp_config() {
         let _g = crate::bridge::paths::tests::ENV_LOCK
@@ -6937,6 +7034,128 @@ pub struct MarketplaceAuthStatus {
     pub message: String,
 }
 
+#[derive(Clone)]
+struct ActiveMarketplaceOAuthLogin {
+    request_id: String,
+    cancellation_token: tokio_util::sync::CancellationToken,
+    completion: tokio::sync::watch::Receiver<bool>,
+}
+
+#[derive(Default)]
+struct MarketplaceOAuthLoginCoordinator {
+    state: tokio::sync::Mutex<MarketplaceOAuthLoginCoordinatorState>,
+}
+
+#[derive(Default)]
+struct MarketplaceOAuthLoginCoordinatorState {
+    active: std::collections::HashMap<String, ActiveMarketplaceOAuthLogin>,
+    pending_cancellations: std::collections::HashMap<String, String>,
+}
+
+struct MarketplaceOAuthLoginRegistration {
+    cancellation_token: tokio_util::sync::CancellationToken,
+    completion_sender: tokio::sync::watch::Sender<bool>,
+    previous_completion: Option<tokio::sync::watch::Receiver<bool>>,
+}
+
+impl MarketplaceOAuthLoginCoordinator {
+    async fn register(
+        &self,
+        tool_id: &str,
+        request_id: &str,
+    ) -> MarketplaceOAuthLoginRegistration {
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        let (completion_sender, completion) = tokio::sync::watch::channel(false);
+        let mut state = self.state.lock().await;
+        let cancelled_before_register = state
+            .pending_cancellations
+            .remove(tool_id)
+            .is_some_and(|pending_request_id| pending_request_id == request_id);
+        let previous = state.active.insert(
+            tool_id.to_string(),
+            ActiveMarketplaceOAuthLogin {
+                request_id: request_id.to_string(),
+                cancellation_token: cancellation_token.clone(),
+                completion,
+            },
+        );
+        if let Some(previous) = previous.as_ref() {
+            previous.cancellation_token.cancel();
+        }
+        if cancelled_before_register {
+            cancellation_token.cancel();
+        }
+        MarketplaceOAuthLoginRegistration {
+            cancellation_token,
+            completion_sender,
+            previous_completion: previous.map(|active| active.completion),
+        }
+    }
+
+    async fn is_current(&self, tool_id: &str, request_id: &str) -> bool {
+        self.state
+            .lock()
+            .await
+            .active
+            .get(tool_id)
+            .is_some_and(|active| active.request_id == request_id)
+    }
+
+    async fn finish(
+        &self,
+        tool_id: &str,
+        request_id: &str,
+        completion_sender: tokio::sync::watch::Sender<bool>,
+    ) {
+        let mut state = self.state.lock().await;
+        if state
+            .active
+            .get(tool_id)
+            .is_some_and(|active| active.request_id == request_id)
+        {
+            state.active.remove(tool_id);
+        }
+        drop(state);
+        let _ = completion_sender.send(true);
+    }
+
+    async fn cancel(&self, tool_id: &str, request_id: &str) -> bool {
+        let completion = {
+            let mut state = self.state.lock().await;
+            let Some(active) = state
+                .active
+                .get(tool_id)
+                .filter(|active| active.request_id == request_id)
+            else {
+                if state.active.contains_key(tool_id) {
+                    return false;
+                }
+                state
+                    .pending_cancellations
+                    .insert(tool_id.to_string(), request_id.to_string());
+                return true;
+            };
+            active.cancellation_token.cancel();
+            active.completion.clone()
+        };
+        wait_for_oauth_completion(completion).await;
+        true
+    }
+}
+
+async fn wait_for_oauth_completion(mut completion: tokio::sync::watch::Receiver<bool>) {
+    if *completion.borrow() {
+        return;
+    }
+    let _ = completion.changed().await;
+}
+
+fn marketplace_oauth_login_coordinator() -> &'static MarketplaceOAuthLoginCoordinator {
+    static COORDINATOR: std::sync::OnceLock<MarketplaceOAuthLoginCoordinator> =
+        std::sync::OnceLock::new();
+    COORDINATOR.get_or_init(MarketplaceOAuthLoginCoordinator::default)
+}
+
 #[tauri::command]
 pub async fn install_marketplace_tool(
     tool_id: String,
@@ -6967,7 +7186,9 @@ fn marketplace_oauth_error_result(
 ) -> MarketplaceOAuthLoginResult {
     let detail = format!("{error:#}");
     let lower = detail.to_ascii_lowercase();
-    let (status, message) = if lower.contains("timed out waiting for oauth callback") {
+    let (status, message) = if lower.contains("oauth login was cancelled") {
+        ("cancelled", "已取消等待浏览器授权，可稍后重新授权。")
+    } else if lower.contains("timed out waiting for oauth callback") {
         (
             "timeout",
             "授权超时，未收到浏览器回调。若浏览器停在 open.chineselaw.com/service-error，说明元典授权服务返回失败，请关闭页面后重试。",
@@ -7094,6 +7315,7 @@ pub async fn get_marketplace_tool_auth_status(
 #[tauri::command]
 pub async fn start_marketplace_tool_oauth_login(
     tool_id: String,
+    request_id: String,
 ) -> Result<MarketplaceOAuthLoginResult, String> {
     let mgr = crate::bridge::marketplace::MarketplaceManager::new();
     let server_name = mgr
@@ -7110,15 +7332,38 @@ pub async fn start_marketplace_tool_oauth_login(
         .cloned()
         .ok_or_else(|| format!("mcp.json 未找到服务 '{server_name}'"))?;
 
-    match deepseek_tui::mcp::oauth::perform_oauth_login_for_server(
+    let coordinator = marketplace_oauth_login_coordinator();
+    let registration = coordinator.register(&tool_id, &request_id).await;
+    if let Some(previous_completion) = registration.previous_completion {
+        wait_for_oauth_completion(previous_completion).await;
+    }
+    if registration.cancellation_token.is_cancelled()
+        || !coordinator.is_current(&tool_id, &request_id).await
+    {
+        coordinator
+            .finish(&tool_id, &request_id, registration.completion_sender)
+            .await;
+        return Ok(MarketplaceOAuthLoginResult {
+            status: "cancelled".to_string(),
+            message: "已取消等待浏览器授权，可稍后重新授权。".to_string(),
+            server_name,
+        });
+    }
+
+    let login_result = deepseek_tui::mcp::oauth::perform_oauth_login_for_server_with_cancel(
         &server_name,
         &server,
         None,
         None,
         None,
+        registration.cancellation_token.clone(),
     )
-    .await
-    {
+    .await;
+    coordinator
+        .finish(&tool_id, &request_id, registration.completion_sender)
+        .await;
+
+    match login_result {
         Ok(()) => Ok(MarketplaceOAuthLoginResult {
             status: "connected".to_string(),
             message: "元典 OAuth 授权已完成。".to_string(),
@@ -7126,6 +7371,16 @@ pub async fn start_marketplace_tool_oauth_login(
         }),
         Err(e) => Ok(marketplace_oauth_error_result(server_name, e)),
     }
+}
+
+#[tauri::command]
+pub async fn cancel_marketplace_tool_oauth_login(
+    tool_id: String,
+    request_id: String,
+) -> Result<bool, String> {
+    Ok(marketplace_oauth_login_coordinator()
+        .cancel(&tool_id, &request_id)
+        .await)
 }
 
 #[tauri::command]
