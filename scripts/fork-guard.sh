@@ -85,30 +85,34 @@ fingerprints=(
   "C10 |MCP 启动应用无控制台 helper     |DeepSeek-TUI/crates/tui/src/mcp.rs|suppress_tokio_console_window(&mut cmd)"
   # —— C11(2026-07-07,fork #7):Windows killed background shell 不 join 可能阻塞的 reader ——
   "C11 |Windows killed shell reader 不阻塞|DeepSeek-TUI/crates/tui/src/tools/shell.rs|if matches!(self.status, ShellStatus::Killed)"
+  # —— C12(2026-07-14):内部 system-reminder 不参与 Working Set 路径提取 ——
+  "C12 |Working Set 剥离内部提醒      |DeepSeek-TUI/crates/tui/src/working_set.rs|fn strip_leading_system_reminder(text: &str) -> &str"
+  "C12 |Working Set 历史重建回归      |DeepSeek-TUI/crates/tui/src/working_set.rs|fn forkguard_working_set_rebuild_ignores_leading_system_reminder_paths"
   # —— P1(2026-07-03):list_mcp_resources/templates 按对应集合非空 gate(上游原为 servers 非空即注入)——
   # pinvou3 MCP server 全 tools-only,原条件下这两个元工具永久空转;改按 resources/templates 非空注入。可上游。
   "P1  |list_mcp_resources 按 resources 非空 gate|DeepSeek-TUI/crates/tui/src/mcp.rs|if !self.all_resource_templates().is_empty()"
-  # AUTO(2026-07-09):automation MINUTELY RRULE support for PINVOU scheduled tasks.
-  "AUTO|automation MINUTELY schedule variant |DeepSeek-TUI/crates/tui/src/automation_manager.rs|Minutely {"
-  "AUTO|automation MINUTELY forkguard test  |DeepSeek-TUI/crates/tui/src/automation_manager.rs|fn forkguard_parses_minutely_rrule"
-  "AUTO|automation tool advertises MINUTELY |DeepSeek-TUI/crates/tui/src/tools/automation.rs|FREQ=MINUTELY;INTERVAL=N"
-  "AUTO|host executor immutable task getters |DeepSeek-TUI/crates/tui/src/task_manager.rs|pub fn workspace(&self) -> &Path"
-  "AUTO|host executor pre-turn thread link   |DeepSeek-TUI/crates/tui/src/task_manager.rs|ThreadCreated {"
+  # AUTO-lite(2026-07-13):scheduled-lite 重做——撤 durable scheduler 重 fork(原 fork PR #8,
+  # +13744/−5646),回 8073aa9b 基线 + 最小补丁(5 文件)。守护点:host executor
+  # 只读 getters / ThreadCreated 会话身份先于 turn 持久化 / automation model 透传 /
+  # automation.id 稳定 conversation key / 强制审批(hook ask + rlm_eval)不可被
+  # auto-approve 绕过 / v4 task schema 向后兼容 v3。
+  # 注:定时任务恒 YOLO 属产品决策,落在 app 层:Shell 每次跟随全局设置,
+  # trust/autoApprove 恒 true;基座默认值保持不动。
+  "AUTO|app 层定时任务恒 YOLO(create 强制)   |pinvou3-app/src-tauri/src/scheduled_tasks.rs|auto_approve: Some(true)"
+  "AUTO|普通聊天与定时任务共用 Shell 推导    |pinvou3-app/src-tauri/src/bridge/mod.rs|pub(crate) fn allow_shell_for_prefs"
+  "AUTO|定时执行每次刷新全局 Shell           |pinvou3-app/src-tauri/src/scheduled_executor.rs|let allow_shell = self.runtime.yolo_allow_shell();"
+  "AUTO|定时执行固定信任并自动批准           |pinvou3-app/src-tauri/src/scheduled_executor.rs|trust_mode: true,"
   "AUTO|automation propagates selected model |DeepSeek-TUI/crates/tui/src/automation_manager.rs|model: automation.model.clone()"
-  "AUTO|automation skips stale slot backlog  |DeepSeek-TUI/crates/tui/src/automation_manager.rs|latest_due_at_or_before"
-  "AUTO|MINUTELY normalizes legacy cursor     |DeepSeek-TUI/crates/tui/src/automation_manager.rs|fn normalize_due_cursor"
-  "AUTO|task prune protects run/pending owners|DeepSeek-TUI/crates/tui/src/automation_manager.rs|pub fn protected_task_ids"
-  "AUTO|running run link triggers persistence|DeepSeek-TUI/crates/tui/src/automation_manager.rs|run.thread_id != task.thread_id"
-  "AUTO|run index avoids retained-history scan|DeepSeek-TUI/crates/tui/src/automation_manager.rs|fn retention_guard_does_not_parse_retained_history_on_nonterminal_save"
-  "AUTO|retention reads only prune candidates |DeepSeek-TUI/crates/tui/src/automation_manager.rs|fn terminal_retention_reads_only_prune_candidates"
-  "AUTO|journaled enqueue recovery failpoint  |DeepSeek-TUI/crates/tui/src/automation_manager.rs|fn manual_run_recovers_journaled_enqueue"
-  "AUTO|Running state durable before execute  |DeepSeek-TUI/crates/tui/src/task_manager.rs|fn executor_never_starts_before_running_record_is_durable"
-  "AUTO|terminal artifact retry is durable    |DeepSeek-TUI/crates/tui/src/task_manager.rs|fn terminal_artifact_write_failure_retries_without_publishing_terminal_state"
-  "AUTO|report failure cancels executor token |DeepSeek-TUI/crates/tui/src/task_manager.rs|fn reporter_failure_cancels_token"
-  "AUTO|bad persisted mode isolated           |DeepSeek-TUI/crates/tui/src/task_manager.rs|fn invalid_mode_isolated_retaining_idempotency"
-  "AUTO|terminal task prune is crash durable  |DeepSeek-TUI/crates/tui/src/task_manager.rs|pub async fn prune_terminal_tasks"
-  "AUTO|persisted task id matches safe stem   |DeepSeek-TUI/crates/tui/src/task_manager.rs|fn load_state_rejects_unsafe_mismatched_and_duplicate_task_ids"
-  "AUTO|non-bypassable approval carries force |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn yolo_hook_ask_emits_non_bypassable_force_prompt"
+  "AUTO|host executor immutable task getters |DeepSeek-TUI/crates/tui/src/task_manager.rs|pub fn workspace(&self) -> &Path"
+  "AUTO|host executor pre-turn thread create  |DeepSeek-TUI/crates/tui/src/task_manager.rs|ThreadCreated {"
+  "AUTO|running run link triggers persistence |DeepSeek-TUI/crates/tui/src/automation_manager.rs|run.thread_id != task.thread_id"
+  "AUTO|v4 task 稳定 conversation key        |DeepSeek-TUI/crates/tui/src/task_manager.rs|pub conversation_key: Option<String>"
+  "AUTO|task schema 升级为 v4                |DeepSeek-TUI/crates/tui/src/task_manager.rs|const CURRENT_TASK_SCHEMA_VERSION: u32 = 4;"
+  "AUTO|automation 入队携带稳定会话键         |DeepSeek-TUI/crates/tui/src/automation_manager.rs|add_task_with_conversation_key(new_task, Some(automation.id.clone()))"
+  "AUTO|终态运行保留候选不包含活动运行         |DeepSeek-TUI/crates/tui/src/automation_manager.rs|terminal_run_prune_candidates"
+  "AUTO|终态底座任务配套删除                  |DeepSeek-TUI/crates/tui/src/task_manager.rs|delete_terminal_task"
+  "AUTO|registry 工具强制审批不可绕过        |DeepSeek-TUI/crates/tui/src/core/engine/turn_loop.rs|pub(super) fn registered_tool_approval_force_prompt"
+  "AUTO|强制审批 force_prompt 回归断言       |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|registered_tool_approval_force_prompt("
   # —— 工作流 fork 基座层(三省六部;feat/sansheng-workflow 随附,2026-06-12 补)——
   # 行为层已有 engine_config_locks_critical_fields(W10 reasoning_effort);其余 W* 暂只 L1。
   "W1  |SpawnSubAgent 扩展字段          |DeepSeek-TUI/crates/tui/src/core/ops.rs|expects_file_output: bool"
@@ -173,19 +177,12 @@ bold "── 第 2 层:fork 回归测试 (codewhale-tui) ──"
     test_write_file_rejects_oversized_content \
     test_append_file_rejects_oversized_content \
     disallowed_tools_gate_blocks_prefix_wildcard \
-    retention_guard_does_not_parse_retained_history_on_nonterminal_save \
-    terminal_retention_reads_only_prune_candidates \
-    manual_run_recovers_journaled_enqueue \
-    minutely_fast_forward_normalizes_legacy_cursor_at_end_of_minute \
-    invalid_pending_journal_blocks_all_task_pruning \
-    prune_terminal_tasks_preserves_protected_and_active_tasks \
-    startup_finishes_journaled_task_prune \
-    load_state_rejects_unsafe_mismatched_and_duplicate_task_ids \
-    executor_never_starts_before_running_record_is_durable \
-    terminal_artifact_write_failure_retries_without_publishing_terminal_state \
-    reporter_failure_cancels_token \
-    invalid_mode_isolated_retaining_idempotency \
-    yolo_hook_ask_emits_non_bypassable_force_prompt ) || fail=1
+    automation_task_settings_default_for_legacy_records \
+    automation_enqueue_uses_default_and_explicit_task_settings \
+    worker_receives_persisted_conversation_key \
+    create_schema_exposes_rrule \
+    rlm_eval_required_approval_ignores_generic_auto_approve \
+    generic_required_tools_keep_auto_approve_behavior ) || fail=1
 
 echo
 bold "── 第 2 层:fork 回归测试 (pinvou3-tauri / bridge) ──"

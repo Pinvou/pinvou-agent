@@ -400,7 +400,7 @@ impl RemoteControlManager {
                 } else if let Some(path) =
                     action.payload.get("artifact_path").and_then(|v| v.as_str())
                 {
-                    self.send_artifact_preview_by_path(&active_session_id, path)
+                    self.send_artifact_preview_by_path(store, &active_session_id, path)
                 } else {
                     Err("missing artifact_id".to_string())
                 }
@@ -728,6 +728,7 @@ impl RemoteControlManager {
 
     pub fn send_artifact_preview_by_path(
         &self,
+        store: &SessionStore,
         session_id: &str,
         artifact_path: &str,
     ) -> Result<(), String> {
@@ -740,7 +741,7 @@ impl RemoteControlManager {
                 .cloned()
         }
         .ok_or_else(|| "remote control not active".to_string())?;
-        let path = resolve_session_preview_path(session_id, artifact_path)?;
+        let path = resolve_session_preview_path(store, session_id, artifact_path)?;
         let metadata =
             std::fs::metadata(&path).map_err(|e| format!("read artifact metadata: {e}"))?;
         let preview = build_artifact_preview(&path)?;
@@ -982,17 +983,40 @@ fn ensure_active_session_in_list(
     sessions
 }
 
-fn resolve_session_preview_path(session_id: &str, requested: &str) -> Result<PathBuf, String> {
+fn resolve_session_preview_path(
+    store: &SessionStore,
+    session_id: &str,
+    requested: &str,
+) -> Result<PathBuf, String> {
     let requested = requested.trim();
     if requested.is_empty() {
         return Err("missing artifact_path".to_string());
     }
-    let workspace = paths::session_workspace_dir(session_id);
+    let workspace = store
+        .execution_workspace(session_id)
+        .map_err(|e| format!("resolve session workspace: {e:#}"))?;
+    let scheduled = store.scheduled_profile(session_id).is_some();
     let artifacts = paths::session_artifacts_dir(session_id);
     let workspace_root = workspace
         .canonicalize()
         .map_err(|e| format!("resolve session workspace: {e}"))?;
     let artifacts_root = artifacts.canonicalize().ok();
+    // A scheduled engine executes in the shared user workspace. Treating that
+    // entire tree as remotely previewable would let a path-shaped mobile
+    // request read unrelated user files. Only paths already recorded as this
+    // conversation's artifacts (plus its private artifacts directory) inherit
+    // preview authority.
+    let scheduled_artifacts = if scheduled {
+        store
+            .load(session_id)
+            .map_err(|e| format!("load scheduled artifacts({session_id}): {e:#}"))?
+            .artifacts
+            .into_iter()
+            .filter_map(|artifact| artifact.storage_path.canonicalize().ok())
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     let mut candidates = Vec::new();
     let requested_path = Path::new(requested);
     if requested_path.is_absolute() {
@@ -1014,11 +1038,15 @@ fn resolve_session_preview_path(session_id: &str, requested: &str) -> Result<Pat
         if !canonical.is_file() {
             continue;
         }
-        if canonical.starts_with(&workspace_root)
-            || artifacts_root
-                .as_ref()
-                .is_some_and(|root| canonical.starts_with(root))
-        {
+        let in_private_artifacts = artifacts_root
+            .as_ref()
+            .is_some_and(|root| canonical.starts_with(root));
+        let authorized = if scheduled {
+            in_private_artifacts || scheduled_artifacts.iter().any(|path| path == &canonical)
+        } else {
+            canonical.starts_with(&workspace_root) || in_private_artifacts
+        };
+        if authorized {
             return Ok(canonical);
         }
     }
@@ -1239,8 +1267,23 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = PinvouHomeOverride::new("preview-path");
-        let current_session = "session-current";
-        let other_session = "session-other";
+        let store = SessionStore::boot().expect("boot session store");
+        let current = store
+            .create_new(
+                "test-model".to_string(),
+                None,
+                home.root.join("ignored-current"),
+            )
+            .expect("create current session");
+        let other = store
+            .create_new(
+                "test-model".to_string(),
+                None,
+                home.root.join("ignored-other"),
+            )
+            .expect("create other session");
+        let current_session = current.metadata.id.as_str();
+        let other_session = other.metadata.id.as_str();
         let workspace_file = paths::session_workspace_dir(current_session).join("reports/daily.md");
         let artifact_file = paths::session_artifacts_dir(current_session).join("chart.json");
         let other_file = paths::session_workspace_dir(other_session).join("secret.md");
@@ -1251,29 +1294,33 @@ mod tests {
         write_file(&outside_file, b"outside home");
 
         assert_eq!(
-            resolve_session_preview_path(current_session, "reports/daily.md").expect("workspace"),
+            resolve_session_preview_path(&store, current_session, "reports/daily.md")
+                .expect("workspace"),
             workspace_file
                 .canonicalize()
                 .expect("canonical workspace file")
         );
         assert_eq!(
-            resolve_session_preview_path(current_session, "artifacts/chart.json")
+            resolve_session_preview_path(&store, current_session, "artifacts/chart.json")
                 .expect("artifacts path tail"),
             artifact_file
                 .canonicalize()
                 .expect("canonical artifact file")
         );
         assert!(resolve_session_preview_path(
+            &store,
             current_session,
             other_file.to_str().expect("utf-8 test path")
         )
         .is_err());
         assert!(resolve_session_preview_path(
+            &store,
             current_session,
             "../session-other/workspace/secret.md"
         )
         .is_err());
         assert!(resolve_session_preview_path(
+            &store,
             current_session,
             outside_file.to_str().expect("utf-8 test path")
         )
@@ -1285,7 +1332,9 @@ mod tests {
 
             let link = paths::session_workspace_dir(current_session).join("outside-link.txt");
             symlink(&outside_file, &link).expect("create escape symlink");
-            assert!(resolve_session_preview_path(current_session, "outside-link.txt").is_err());
+            assert!(
+                resolve_session_preview_path(&store, current_session, "outside-link.txt").is_err()
+            );
         }
     }
 
@@ -1347,4 +1396,102 @@ fn tail_path(path: &str) -> String {
     let normalized = path.replace('\\', "/");
     let parts = normalized.split('/').rev().take(3).collect::<Vec<_>>();
     parts.into_iter().rev().collect::<Vec<_>>().join("/")
+}
+
+#[cfg(test)]
+mod scheduled_tests {
+    use super::*;
+    use crate::bridge::sessions::{ScheduledRunMode, ScheduledRunProfile};
+
+    #[test]
+    fn preview_paths_follow_execution_workspace_without_exposing_shared_home() {
+        let _guard = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-remote-preview-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let state_home = root.join("state");
+        let previous_pinvou3_home = std::env::var_os("PINVOU3_HOME");
+        let previous_user_profile = std::env::var_os("USERPROFILE");
+        let previous_home = std::env::var_os("HOME");
+        std::fs::create_dir_all(&root).expect("create test home");
+        std::env::set_var("PINVOU3_HOME", &state_home);
+        std::env::set_var("USERPROFILE", &root);
+        std::env::set_var("HOME", &root);
+
+        let store = SessionStore::boot().expect("boot session store");
+        let scheduled = store
+            .create_scheduled_run(ScheduledRunProfile {
+                task_id: "remote-preview-task".to_string(),
+                model: "test-model".to_string(),
+                model_id: None,
+                workspace: root.join("ignored-profile-workspace"),
+                mode: ScheduledRunMode::Yolo,
+                allow_shell: true,
+                trust_mode: true,
+                auto_approve: true,
+            })
+            .expect("create scheduled conversation");
+        let recorded = root.join("scheduled-report.md");
+        let unrelated = root.join("unrelated-secret.txt");
+        std::fs::write(&recorded, "report").expect("write recorded artifact");
+        std::fs::write(&unrelated, "secret").expect("write unrelated file");
+        store
+            .append_scheduled_artifact_path(&scheduled.metadata.id, recorded.clone())
+            .expect("record scheduled artifact");
+
+        assert_eq!(
+            resolve_session_preview_path(
+                &store,
+                &scheduled.metadata.id,
+                &recorded.to_string_lossy(),
+            )
+            .expect("resolve recorded scheduled artifact"),
+            recorded
+                .canonicalize()
+                .expect("canonical recorded artifact")
+        );
+        assert!(
+            resolve_session_preview_path(
+                &store,
+                &scheduled.metadata.id,
+                &unrelated.to_string_lossy()
+            )
+            .is_err(),
+            "the shared scheduled workspace must not grant remote preview authority over arbitrary home files"
+        );
+
+        let chat = store
+            .create_new("test-model".to_string(), None, root.join("ignored"))
+            .expect("create ordinary conversation");
+        let chat_workspace = crate::bridge::paths::session_workspace_dir(&chat.metadata.id);
+        std::fs::create_dir_all(&chat_workspace).expect("create chat workspace");
+        let chat_artifact = chat_workspace.join("chat-report.md");
+        std::fs::write(&chat_artifact, "chat report").expect("write chat artifact");
+        assert_eq!(
+            resolve_session_preview_path(&store, &chat.metadata.id, "chat-report.md")
+                .expect("resolve ordinary workspace artifact"),
+            chat_artifact
+                .canonicalize()
+                .expect("canonical ordinary artifact")
+        );
+
+        drop(store);
+        match previous_pinvou3_home {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        match previous_user_profile {
+            Some(value) => std::env::set_var("USERPROFILE", value),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+        match previous_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

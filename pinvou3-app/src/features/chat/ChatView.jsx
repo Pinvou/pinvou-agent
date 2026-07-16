@@ -1180,11 +1180,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         name: String(d.name),
         prompt: String(d.prompt),
         rrule: String(d.rrule),
-        cwds: Array.isArray(d.cwds) ? d.cwds.filter((item) => typeof item === 'string') : [],
-        mode: d.mode ? String(d.mode) : 'yolo',
-        allowShell: !!d.allowShell,
-        trustMode: !!d.trustMode,
-        autoApprove: !!d.autoApprove,
+        mode: 'yolo',
         paused: !!d.paused,
       };
     }

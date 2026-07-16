@@ -1,15 +1,15 @@
 # pinvou3 对 DeepSeek-TUI 底座的 fork 维护策略
 
-> 创建 2026-05-28 · 最后更新 2026-07-13(`pinvou3-clean` 指针对齐)
+> 创建 2026-05-28 · 最后更新 2026-07-14(scheduled-lite 稳定会话键与恒 YOLO 收口,基线仍为 `8073aa9b`)
 > 适用:每次新增 fork patch + 每次跟进上游 sync
 > 配套:`scripts/fork-guard.sh`、`bin/dump_system_prompt.rs`、`docs/fork-modifications.md`(现状清单 + 验证 checklist)
 
 ## 0. 现状
 
-- DeepSeek-TUI 是 `h3c-hexin/DeepSeek-TUI` fork(submodule,**`pinvou3-clean` 分支** ← upstream **v0.8.65**;HEAD `5f5a58db` = 2026-07-13 合入 durable scheduled runtime 后的远程分支头;`.gitmodules` 追踪;备份 `backup/v0.8.65-merge-result` + `backup/pre-reclean-trial-tip`)
-- fork drift **+13744 / −5646 行,59 文件**(vs v0.8.65;主体是工作流层 W1–W12 + scheduler AUTO,**已超 1500 软上限**——撤回评估见 fork-modifications §4;app 层 prompt override 不计入)
-- fork 结构 = **C1–C11 + AUTO + R + W 逻辑主题**(AUTO = durable scheduler/runtime,W = 三省六部工作流层),详见 `docs/fork-modifications.md` §1
-- 路线:接受"重 fork",靠工程化(指纹 + 测试 + dump diff + 文档)控制维护成本。当前 drift 已超软上限,最近一次撤回评估结论仍是主体必需、保留(见 fork-modifications §4)
+- DeepSeek-TUI 是 `h3c-hexin/DeepSeek-TUI` fork(submodule,工作分支 **`codex/scheduled-lite`** ← `8073aa9b` = fork PR #9 tip,upstream **v0.8.65** clean re-fork 系;`.gitmodules` 追踪 `pinvou3-clean`,合流方式随 gitlink PR 定;durable scheduler 旧 tip `5f5a58db` 已撤回,重实现留 `codex/scheduled-tasks` 备查;备份 `backup/v0.8.65-merge-result` + `backup/pre-reclean-trial-tip`)
+- fork drift = `8073aa9b` 基线 **+7070/−4930,54 文件**(vs v0.8.65)+ scheduled-lite/C12 后续 **+605/−12,6 文件**。新增量包含 host executor 契约、稳定 conversation key、强制审批回归、Working Set 提醒剥离、终态保留清理与测试;durable scheduler 的 +13744/−5646 已于 2026-07-13 撤回(见 fork-modifications §4),回到软上限内的轻 fork
+- fork 结构 = **C1–C12 + AUTO-lite + R + W 逻辑主题**(AUTO-lite = host executor 最小契约,W = 三省六部工作流层),详见 `docs/fork-modifications.md` §1
+- 路线:轻 fork 优先——scheduler/持久化用底座原生实现,fork 只补 host 消费接口与安全语义;靠工程化(指纹 + 测试 + dump diff + 文档)控制维护成本
 
 ## 1. 总则
 

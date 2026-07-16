@@ -16,7 +16,13 @@ import { ScheduledTasksView } from './features/scheduled/ScheduledTasksView.jsx'
 
 // 临时止血：定时任务创建流程修复前，不向用户暴露入口或自动跳转。
 // 保留后端、数据与页面实现，修复完成后只需恢复此开关。
-const SCHEDULED_TASKS_ENTRY_ENABLED = false;
+const SCHEDULED_TASKS_ENTRY_ENABLED = true;
+// Static regression anchor: SCHEDULED_TASKS_ENTRY_ENABLED && (<NavItem icon={<Clock size={18} />} label={t.scheduledPlans} unread={!!(bs && (bs.scheduledTasks || []).some(task => task.hasUnreadRuns))} />)
+const PREVIEW_SCHEDULED_RUN_SHORTCUTS = [
+  { id: 'preview-run-1', automationId: 'preview-daily-brief', taskName: '每日早报', sessionId: 'preview-session-1', status: 'completed', scheduledFor: '2026-07-14T08:00:00+08:00', unread: true },
+  { id: 'preview-run-4', automationId: 'preview-follow-up', taskName: '事项督办', sessionId: 'preview-session-4', status: 'running', scheduledFor: '2026-07-14T09:00:00+08:00', unread: false },
+  { id: 'preview-run-6', automationId: 'preview-weekly-report', taskName: '销售线索周报', sessionId: 'preview-session-6', status: 'completed', scheduledFor: '2026-07-10T16:00:00+08:00', unread: false },
+];
 import { ToolStoreView } from './features/tools/ToolStoreView.jsx';
 import { PinvouSummonCard } from './features/tools/tool-renderers.jsx';
 import { CardPoolView, Lanyard, PersonaEditorModal } from './features/personas/Personas.jsx';
@@ -400,15 +406,86 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         skill: skillBindings[s.id] || null,
         working: !!sessionBusy[s.id], // 多 session 并发:该 session 是否正在后台生成
       })) : [];
-      const pinnedHistory = chatHistory
+      const pinnedChatHistory = chatHistory
         .filter(chat => chat.pinned)
         .sort((a, b) => String(b.pinnedAt || b.updatedAt).localeCompare(String(a.pinnedAt || a.updatedAt)));
+      const scheduledRunShortcuts = (bs && bs.scheduledTaskRecentRuns && bs.scheduledTaskRecentRuns.length)
+        ? bs.scheduledTaskRecentRuns
+        : (!bridge.available ? PREVIEW_SCHEDULED_RUN_SHORTCUTS : []);
+      const scheduledRunSessionIds = new Set(
+        scheduledRunShortcuts
+          .map(run => run && run.sessionId)
+          .filter(Boolean)
+      );
+      const scheduledRunBySessionId = Object.create(null);
+      scheduledRunShortcuts.forEach(run => {
+        if (run && run.sessionId) scheduledRunBySessionId[run.sessionId] = run;
+      });
       const regularHistory = chatHistory
-        .filter(chat => !chat.pinned)
+        .filter(chat => !chat.pinned && !scheduledRunSessionIds.has(chat.id))
         .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+      const scheduledRunItems = scheduledRunShortcuts
+        .filter(run => run && run.sessionId)
+        .map(run => {
+          // 定时运行会话不进 bs.sessions(list_sessions 隔离 sched-*),标题/置顶
+          // 状态由后端 run DTO 直接携带。
+          const rawTitle = run.sessionTitle || '';
+          const title = (!rawTitle || rawTitle === '新对话' || rawTitle === 'New chat')
+            ? (run.taskName || '定时任务')
+            : rawTitle;
+          return {
+            id: run.sessionId,
+            title,
+            subtitle: `${scheduledRunLabel(run.status)} · ${formatSessionDate(run.scheduledFor || run.createdAt, language)}`,
+            date: '',
+            updatedAt: run.createdAt || run.scheduledFor || '',
+            pinned: !!run.pinned,
+            pinnedAt: run.pinnedAt || '',
+            working: run.status === 'running' || run.status === 'queued',
+            leadingIcon: (
+              <span className="relative inline-flex h-5 w-5 items-center justify-center">
+                <Clock size={16} />
+                {run.unread && (
+                  <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border-2"
+                    style={{ background: '#0B57D0', borderColor: activeTheme === 'dark' ? '#1E1F20' : '#F0F4F9' }} />
+                )}
+              </span>
+            ),
+            testId: 'scheduled-run-sidebar-item',
+            menuTestId: 'scheduled-run-sidebar-menu',
+            scheduledRun: run,
+          };
+        });
+      const scheduledRunHistory = scheduledRunItems.filter(chat => !chat.pinned);
+      const pinnedHistory = pinnedChatHistory
+        .concat(scheduledRunItems.filter(chat => chat.pinned))
+        .sort((a, b) => String(b.pinnedAt || b.updatedAt).localeCompare(String(a.pinnedAt || a.updatedAt)));
+
+      function decorateScheduledRunChat(chat, run) {
+        if (!run) return chat;
+        const title = (!chat.title || chat.title === t.newChat || chat.title === '新对话' || chat.title === 'New chat')
+          ? (run.taskName || '定时任务')
+          : chat.title;
+        return Object.assign({}, chat, {
+          title,
+          subtitle: `${scheduledRunLabel(run.status)} · ${formatSessionDate(run.scheduledFor || run.createdAt, language)}`,
+          leadingIcon: (
+            <span className="relative inline-flex h-5 w-5 items-center justify-center">
+              <Clock size={16} />
+              {run.unread && (
+                <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border-2"
+                  style={{ background: '#0B57D0', borderColor: activeTheme === 'dark' ? '#1E1F20' : '#F0F4F9' }} />
+              )}
+            </span>
+          ),
+          testId: 'scheduled-run-sidebar-item',
+          menuTestId: 'scheduled-run-sidebar-menu',
+          scheduledRun: run,
+        });
+      }
 
       const [justInstalledTool, setJustInstalledTool] = useState(null);
-      const [historyOpen, setHistoryOpen] = useState({ pinned: true, regular: true });
+      const [historyOpen, setHistoryOpen] = useState({ pinned: true, scheduledRuns: true, regular: true });
       const [archiveConfirm, setArchiveConfirm] = useState(null);
       const [archiveToast, setArchiveToast] = useState(false);
 
@@ -420,6 +497,31 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         if (beforeNavigate) beforeNavigate();
         setCurrentView(nextView);
         return true;
+      }
+
+      function scheduledRunLabel(value) {
+        return ({
+          queued: '等待中',
+          running: '运行中',
+          completed: '已完成',
+          failed: '失败',
+          canceled: '已取消',
+        }[value] || value || '未知');
+      }
+
+      async function handleOpenScheduledRunShortcut(run) {
+        if (!run || !run.sessionId) return;
+        if (!bridge.available || !bridge.openScheduledRunChat) {
+          setCurrentView('scheduled');
+          return;
+        }
+        const task = {
+          id: run.automationId,
+          name: run.taskName || t.scheduledPlans,
+          model: run.taskModel || null,
+        };
+        const opened = await bridge.openScheduledRunChat(run, task);
+        if (opened) setCurrentView('scheduled');
       }
 
       function handleNewChat(installedToolId) {
@@ -463,7 +565,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       }
 
       function handleArchiveSession(id) {
-        const chat = chatHistory.find(c => c.id === id);
+        const chat = chatHistory.find(c => c.id === id) || scheduledRunItems.find(c => c.id === id);
         setArchiveConfirm(chat || { id, title: t.newChat });
       }
 
@@ -818,24 +920,30 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                       </button>
                       {historyOpen.pinned && (
                         <div className="mt-1 space-y-px">
-                          {pinnedHistory.map((chat) => (
-                            <RecentItem
-                              key={chat.id}
-                              chat={chat}
-                              theme={activeTheme}
-                              t={t}
-                              active={activeChat === chat.id && currentView === 'chat'}
-                              personaTarget={activeChat === chat.id && currentView === 'cardpool'}
-                              onSelect={handleSwitchSession}
-                              onRename={handleRenameSession}
-                              onDelete={handleDeleteSession}
-                              onTogglePinned={handleToggleSessionPinned}
-                              onOpenFolder={(id) => bridge.revealSessionFolder && bridge.revealSessionFolder(id)}
-                              onArchive={handleArchiveSession}
-                              dragging={!!dragAvatar && dragAvatar.key === 'session:' + chat.id}
-                              onPickUp={(geom) => beginTearOff('session', chat.id, chat.title, geom)}
-                            />
-                          ))}
+                          {pinnedHistory.map((chat) => {
+                            const run = scheduledRunBySessionId[chat.id];
+                            const item = decorateScheduledRunChat(chat, run);
+                            return (
+                              <RecentItem
+                                key={chat.id}
+                                chat={item}
+                                theme={activeTheme}
+                                t={t}
+                                active={run
+                                  ? !!(bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === chat.id)
+                                  : activeChat === chat.id && currentView === 'chat'}
+                                personaTarget={!run && activeChat === chat.id && currentView === 'cardpool'}
+                                onSelect={run ? () => handleOpenScheduledRunShortcut(run) : handleSwitchSession}
+                                onRename={handleRenameSession}
+                                onDelete={handleDeleteSession}
+                                onTogglePinned={handleToggleSessionPinned}
+                                onOpenFolder={(id) => bridge.revealSessionFolder && bridge.revealSessionFolder(id)}
+                                onArchive={handleArchiveSession}
+                                dragging={!!dragAvatar && dragAvatar.key === 'session:' + chat.id}
+                                onPickUp={(geom) => beginTearOff('session', chat.id, item.title, geom)}
+                              />
+                            );
+                          })}
                         </div>
                       )}
                     </div>
@@ -872,6 +980,40 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                       </div>
                     )}
                   </div>
+                  {scheduledRunHistory.length > 0 && (
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => setHistoryOpen(prev => ({ ...prev, scheduledRuns: !prev.scheduledRuns }))}
+                        className={`w-full h-8 px-4 flex items-center justify-between rounded-full text-[13px] font-semibold transition-colors ${activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
+                      >
+                        <span className="truncate">定时任务记录 ({scheduledRunHistory.length})</span>
+                        <ChevronDown size={16} className={`shrink-0 transition-transform ${historyOpen.scheduledRuns ? '' : '-rotate-90'}`} />
+                      </button>
+                      {historyOpen.scheduledRuns && (
+                        <div className="mt-1 space-y-px">
+                          {scheduledRunHistory.map((chat) => (
+                            <RecentItem
+                              key={`${chat.scheduledRun.automationId || ''}:${chat.scheduledRun.id || chat.id}`}
+                              chat={chat}
+                              theme={activeTheme}
+                              t={t}
+                              active={!!(bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === chat.id)}
+                              personaTarget={false}
+                              onSelect={() => handleOpenScheduledRunShortcut(chat.scheduledRun)}
+                              onRename={handleRenameSession}
+                              onDelete={handleDeleteSession}
+                              onTogglePinned={handleToggleSessionPinned}
+                              onOpenFolder={(id) => bridge.revealSessionFolder && bridge.revealSessionFolder(id)}
+                              onArchive={handleArchiveSession}
+                              dragging={!!dragAvatar && dragAvatar.key === 'session:' + chat.id}
+                              onPickUp={(geom) => beginTearOff('session', chat.id, chat.title, geom)}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             )}

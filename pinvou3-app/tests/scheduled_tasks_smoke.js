@@ -36,7 +36,8 @@ function injectSource() {
     const TASKS = [];
     const RUNS = [{
       id: 'run-1', automationId: 'task-1', sessionId: 'sched-run-1', status: 'completed',
-      scheduledFor: '2026-07-10T08:00:00Z', createdAt: '2026-07-10T08:00:00Z', unread: true
+      scheduledFor: '2026-07-10T08:00:00Z', createdAt: '2026-07-10T08:00:00Z', unread: true,
+      sessionTitle: '每天给我推送时尚新闻', pinned: false, pinnedAt: null
     }];
     const LISTENERS = {};
     let SESSION_SEQ = 0;
@@ -64,7 +65,10 @@ function injectSource() {
         case 'get_settings': return Promise.resolve({ theme: 'liquid-light', language: 'zh-Hans' });
         case 'get_effective_model_config': return Promise.resolve({ model: 'Test', base_url: 'http://127.0.0.1:8000/v1', api_key_set: false });
         case 'list_models': return Promise.resolve({
-          models: [{ id: 'model-active', name: 'Smoke Model', model: '/wire-model' }],
+          models: [
+            { id: 'model-active', name: 'Smoke Model A', model: '/wire-model' },
+            { id: 'model-duplicate', name: 'Smoke Model B', model: '/wire-model' }
+          ],
           active_model_id: 'model-active'
         });
         case 'list_sessions': return Promise.resolve(SESSIONS);
@@ -92,6 +96,8 @@ function injectSource() {
           return Promise.resolve(TASKS.find(function(task) { return task.id === args.id; }) || null);
         case 'list_scheduled_task_runs':
           return Promise.resolve(args && args.id === 'task-1' ? RUNS.slice() : []);
+        case 'list_scheduled_runs':
+          return Promise.resolve(RUNS.slice());
         case 'load_session':
           if (args && args.id === 'sched-run-1') {
             return Promise.resolve({
@@ -109,6 +115,41 @@ function injectSource() {
           SESSIONS.unshift(meta);
           return Promise.resolve(meta);
         }
+        case 'rename_session': {
+          const session = SESSIONS.find(function(item) { return item.id === args.id; });
+          if (session) {
+            session.title = args.title;
+            session.updated_at = new Date().toISOString();
+          }
+          const run = RUNS.find(function(item) { return item.sessionId === args.id; });
+          if (run) run.sessionTitle = args.title;
+          return Promise.resolve(null);
+        }
+        case 'set_session_pinned': {
+          const session = SESSIONS.find(function(item) { return item.id === args.id; });
+          if (session) {
+            session.pinned = !!args.pinned;
+            session.pinned_at = args.pinned ? new Date().toISOString() : null;
+          }
+          const run = RUNS.find(function(item) { return item.sessionId === args.id; });
+          if (run) {
+            run.pinned = !!args.pinned;
+            run.pinnedAt = args.pinned ? new Date().toISOString() : null;
+          }
+          return Promise.resolve(null);
+        }
+        case 'set_session_archived': {
+          const run = RUNS.find(function(item) { return item.sessionId === args.id; });
+          if (run) run.archived = !!args.archived;
+          return Promise.resolve(null);
+        }
+        case 'delete_session': {
+          const index = SESSIONS.findIndex(function(item) { return item.id === args.id; });
+          if (index >= 0) SESSIONS.splice(index, 1);
+          const runIndex = RUNS.findIndex(function(item) { return item.sessionId === args.id; });
+          if (runIndex >= 0) RUNS.splice(runIndex, 1);
+          return Promise.resolve(null);
+        }
         case 'chat': {
           const sid = args && args.sessionId ? args.sessionId : 'session-' + SESSION_SEQ;
           const isScheduledGuide = !!(args && args.message && (
@@ -122,10 +163,6 @@ function injectSource() {
             '  "name": "AI 招聘情报晨报",',
             '  "prompt": "检索并汇总...",',
             '  "rrule": "FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=8;BYMINUTE=30",',
-            '  "cwds": [],',
-            '  "allowShell": false,',
-            '  "trustMode": false,',
-            '  "autoApprove": false,',
             '  "paused": true',
             '}',
             '\`\`\`',
@@ -148,14 +185,22 @@ function injectSource() {
           }, 40);
           return Promise.resolve(null);
         }
+        case 'edit_last_turn': {
+          const sid = args && args.sessionId;
+          setTimeout(function() {
+            emit('chat:delta', { session_id: sid, text: 'Edited brief rerun complete' });
+            emit('chat:done', { session_id: sid });
+          }, 40);
+          return Promise.resolve(null);
+        }
         case 'create_scheduled_task': {
           const input = args && args.input || {};
-          const minuteMatch = /FREQ=MINUTELY;INTERVAL=([0-9]+)/.exec(input.rrule || '');
-          const nextDelayMs = minuteMatch ? Number(minuteMatch[1]) * 60000 : 4 * 86400000;
+          const hourMatch = /FREQ=HOURLY;INTERVAL=([0-9]+)/.exec(input.rrule || '');
+          const nextDelayMs = hourMatch ? Number(hourMatch[1]) * 3600000 : 4 * 86400000;
           const created = Object.assign({}, input, {
             id: 'task-' + (++TASK_SEQ),
-            scheduleLabel: minuteMatch
-              ? (Number(minuteMatch[1]) === 1 ? '每分钟' : '每 ' + Number(minuteMatch[1]) + ' 分钟')
+            scheduleLabel: hourMatch
+              ? (Number(hourMatch[1]) === 1 ? '每小时' : '每 ' + Number(hourMatch[1]) + ' 小时')
               : (input.rrule || ''),
             status: input.paused ? 'paused' : 'active',
             isRunning: false,
@@ -182,6 +227,14 @@ function injectSource() {
           const task = TASKS.find(function(item) { return item.id === args.id; });
           if (task) task.status = 'active';
           return Promise.resolve(task || null);
+        }
+        case 'set_scheduled_task_pinned': {
+          const task = TASKS.find(function(item) { return item.id === args.id; });
+          if (task) {
+            task.pinned = !!args.pinned;
+            task.pinnedAt = args.pinned ? new Date().toISOString() : null;
+          }
+          return Promise.resolve(task ? Object.assign({}, task) : null);
         }
         case 'delete_scheduled_task': {
           const index = TASKS.findIndex(function(item) { return item.id === args.id; });
@@ -281,7 +334,8 @@ async function clickExactText(page, text) {
   await sleep(500);
   const defaultState = await page.evaluate(() => ({
     navClicked: !!document.querySelector('[data-testid="scheduled-page"]'),
-    hasTitle: document.body.innerText.includes('定时任务'),
+    hasTitle: document.body.innerText.includes('已安排的任务'),
+    hasIntro: !!document.querySelector('[data-testid="scheduled-list-intro"]'),
     templateCount: document.querySelectorAll('button[data-testid^="scheduled-template-"]').length,
     hasDailyBrief: !!document.querySelector('[data-testid="scheduled-template-daily-brief"]'),
     detailVisible: !!document.querySelector('[data-testid="scheduled-detail"]'),
@@ -290,47 +344,214 @@ async function clickExactText(page, text) {
   }));
   await page.evaluate(() => { window.__scheduledTaskTest.invokes = []; });
   await page.click('[data-testid="scheduled-template-daily-brief"]');
+  await page.waitForSelector('[data-testid="scheduled-create-dialog"]', { timeout: 10000 });
+  const templateDraftState = await page.evaluate(() => {
+    const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
+    const name = document.querySelector('[data-testid="scheduled-create-name"]');
+    const prompt = document.querySelector('[data-testid="scheduled-create-prompt"]');
+    const createSettings = document.querySelector('[data-testid="scheduled-create-settings"]');
+    const createSettingsStyle = createSettings ? getComputedStyle(createSettings) : null;
+    const noOuterBorder = style => !!style &&
+      style.borderTopWidth === '0px' &&
+      style.borderRightWidth === '0px' &&
+      style.borderBottomWidth === '0px' &&
+      style.borderLeftWidth === '0px';
+    return {
+      createCallsBeforeSubmit: invokes.filter(x => x.cmd === 'create_scheduled_task').length,
+      dialogVisible: !!document.querySelector('[data-testid="scheduled-create-dialog"]'),
+      title: document.body.innerText.includes('基于模板创建'),
+      name: name && name.value,
+      promptPresent: !!(prompt && prompt.value),
+      createSettingsNoOuterBorder: noOuterBorder(createSettingsStyle)
+    };
+  });
+  await page.click('[data-testid="scheduled-create-submit"]');
   await page.waitForFunction(() => {
     const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
     return invokes.filter(x => x.cmd === 'create_scheduled_task').length === 1 &&
-      !!document.querySelector('[data-testid="scheduled-live-title"]');
+      !document.querySelector('[data-testid="scheduled-create-dialog"]') &&
+      document.body.innerText.includes('每日早报');
   }, { timeout: 10000 });
-  const templateCreateState = await page.evaluate(() => {
+  const templateAutoOpenState = await page.evaluate(() => ({
+    autoOpenSuppressed: !document.querySelector('[data-testid="scheduled-detail"]') &&
+      !document.querySelector('[data-testid="scheduled-live-title"]')
+  }));
+  await page.evaluate(() => {
+    const buttons = Array.from(document.querySelectorAll('button[aria-label^="查看定时任务"]'));
+    const target = buttons.find(button => /每日早报/.test(button.textContent || ''));
+    if (target) {
+      target.click();
+      return;
+    }
+    if (window.TauriBridge && window.TauriBridge.selectScheduledTask) {
+      window.TauriBridge.selectScheduledTask('task-1');
+      if (window.TauriBridge.refreshScheduledTaskData) window.TauriBridge.refreshScheduledTaskData(20);
+      return;
+    }
+    throw new Error('missing created daily brief task row');
+  });
+  await page.waitForFunction(() => {
+    const title = document.querySelector('[data-testid="scheduled-live-title"]');
+    return title && title.value === '每日早报';
+  }, { timeout: 10000 });
+  const templateCreateState = await page.evaluate((templateDraftState, templateAutoOpenState) => {
     const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
     const create = invokes.find(x => x.cmd === 'create_scheduled_task');
     const name = document.querySelector('[data-testid="scheduled-live-title"]');
     const prompt = document.querySelector('[data-testid="scheduled-live-prompt"]');
+    const settings = document.querySelector('[data-testid="scheduled-detail-settings"]');
+    const actions = document.querySelector('[data-testid="scheduled-detail-actions-group"]');
+    const history = document.querySelector('[data-testid="scheduled-run-history-list"]');
+    const noOuterBorder = el => {
+      const style = el ? getComputedStyle(el) : null;
+      return !!style &&
+        style.borderTopWidth === '0px' &&
+        style.borderRightWidth === '0px' &&
+        style.borderBottomWidth === '0px' &&
+        style.borderLeftWidth === '0px';
+    };
     return {
-      editorAbsent: !document.querySelector('[data-testid="scheduled-draft-editor"]') && !document.querySelector('[data-testid="scheduled-draft-confirm"]'),
+      draftCreatedFirst: templateDraftState.createCallsBeforeSubmit === 0 &&
+        templateDraftState.dialogVisible &&
+        templateDraftState.title &&
+        templateDraftState.name === '每日早报' &&
+        templateDraftState.promptPresent &&
+        templateDraftState.createSettingsNoOuterBorder,
+      autoOpenSuppressed: templateAutoOpenState.autoOpenSuppressed,
+      editorAbsent: !document.querySelector('[data-testid="scheduled-create-dialog"]') &&
+        !document.querySelector('[data-testid="scheduled-draft-editor"]') &&
+        !document.querySelector('[data-testid="scheduled-draft-confirm"]'),
       name: name && name.value,
       promptPresent: !!(prompt && prompt.value),
       editable: !!(name && prompt && !name.disabled && !name.readOnly && !prompt.disabled && !prompt.readOnly),
+      introAbsent: !document.querySelector('[data-testid="scheduled-list-intro"]'),
+      unifiedSettings: !!settings &&
+        !!settings.querySelector('[data-testid="scheduled-live-model"]') &&
+        !!settings.querySelector('[data-testid="scheduled-live-repeat"]') &&
+        !!settings.querySelector('[data-testid="scheduled-live-time"]') &&
+        settings.textContent.includes('设置'),
+      frequencySectionAbsent: !document.querySelector('[data-testid="scheduled-detail-frequency"]'),
+      executionModeAbsent: !document.querySelector('[data-testid="scheduled-yolo-mode"]') &&
+        !document.body.innerText.includes('执行模式'),
+      permissionControlsAbsent: !document.body.innerText.includes('权限') &&
+        !Array.from(document.querySelectorAll('label')).some(el => /Shell|信任模式/.test(el.textContent || '')),
+      insetGroupsNoOuterBorder: noOuterBorder(settings) && noOuterBorder(actions) && noOuterBorder(history),
       navUnread: !!document.querySelector('[data-testid="scheduled-nav-unread"]'),
       createCalls: invokes.filter(x => x.cmd === 'create_scheduled_task').length,
       model: create && create.args && create.args.input && create.args.input.model,
+      modelId: create && create.args && create.args.input && create.args.input.modelId,
       paused: create && create.args && create.args.input && create.args.input.paused
     };
+  }, templateDraftState, templateAutoOpenState);
+  // 目录选择已移除：详情页不再有项目行/选目录按钮，后端按 automation_id 分配工作间。
+  const workspaceUiAbsent = await page.evaluate(() => (
+    !document.querySelector('[data-testid="scheduled-live-project"]') &&
+    !document.querySelector('[data-testid="scheduled-detail-pick-folder"]') &&
+    !document.querySelector('[data-testid="scheduled-workspace-required"]')
+  ));
+  await page.click('[data-testid="scheduled-detail-close"]');
+  await page.waitForSelector('[data-testid="scheduled-template-suggestions"]', { timeout: 10000 });
+  const templateRetainedState = await page.evaluate(() => ({
+    detailHidden: !document.querySelector('[data-testid="scheduled-detail"]'),
+    count: document.querySelectorAll('button[data-testid^="scheduled-template-"]').length,
+    hasDailyBrief: !!document.querySelector('[data-testid="scheduled-template-daily-brief"]')
+  }));
+  await page.evaluate(() => window.TauriBridge.loadScheduledTaskRecentRuns());
+  await page.waitForFunction(() => document.body.innerText.includes('定时任务记录'), { timeout: 10000 });
+  await page.waitForSelector('[data-testid="scheduled-run-sidebar-item"]', { timeout: 10000 });
+  await page.click('[data-testid="scheduled-run-sidebar-item"]', { button: 'right' });
+  await page.waitForSelector('[data-testid="scheduled-run-sidebar-menu"]', { timeout: 10000 });
+  const sidebarRecordMenuState = await page.evaluate((openState) => {
+    const menu = document.querySelector('[data-testid="scheduled-run-sidebar-menu"]');
+    const menuText = menu ? menu.textContent || '' : '';
+    return Object.assign({}, openState, {
+      hasRename: menuText.includes('重命名'),
+      hasPin: menuText.includes('置顶'),
+      hasDelete: menuText.includes('删除'),
+      hasArchive: menuText.includes('收纳')
+    });
+  }, { itemVisible: true, moreVisible: true });
+  await page.evaluate(() => {
+    const rename = Array.from(document.querySelectorAll('button'))
+      .find(button => (button.textContent || '').trim() === '重命名');
+    if (!rename) throw new Error('missing scheduled record rename action');
+    rename.click();
   });
-  await page.evaluate(() => { window.__scheduledTaskTest.folderResult = 'D:/picked-workspace'; });
-  await page.click('[data-testid="scheduled-detail-pick-folder"]');
+  await page.waitForSelector('input', { timeout: 10000 });
+  await page.keyboard.down('Control');
+  await page.keyboard.press('A');
+  await page.keyboard.up('Control');
+  await page.keyboard.type('重命名后的时尚新闻记录');
+  await page.keyboard.press('Enter');
   await page.waitForFunction(() => {
-    const input = document.querySelector('[data-testid="scheduled-live-project"]');
-    return input && input.value === 'D:/picked-workspace';
+    const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
+    return invokes.some(x => x.cmd === 'rename_session' && x.args && x.args.id === 'sched-run-1' && x.args.title === '重命名后的时尚新闻记录');
   }, { timeout: 10000 });
-  const folderPickerState = await page.evaluate(() => {
-    const calls = window.__scheduledTaskTest.dialogCalls || [];
-    const input = document.querySelector('[data-testid="scheduled-live-project"]');
-    return {
-      path: input && input.value,
-      options: calls[calls.length - 1] || null
-    };
+  await page.click('[data-testid="scheduled-run-sidebar-item"]', { button: 'right' });
+  await page.waitForSelector('[data-testid="scheduled-run-sidebar-menu"]', { timeout: 10000 });
+  await page.evaluate(() => {
+    const pin = Array.from(document.querySelectorAll('button'))
+      .find(button => (button.textContent || '').trim() === '置顶');
+    if (!pin) throw new Error('missing scheduled record pin action');
+    pin.click();
   });
+  await page.waitForFunction(() => {
+    const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
+    return invokes.some(x => x.cmd === 'set_session_pinned' && x.args && x.args.id === 'sched-run-1' && x.args.pinned === true);
+  }, { timeout: 10000 });
+  const sidebarRecordPinnedState = await page.evaluate(() => ({
+    pinnedGroupHasRecord: document.body.innerText.includes('置顶任务') &&
+      document.body.innerText.includes('重命名后的时尚新闻记录'),
+    noTaskPinCommand: !((window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [])
+      .some(x => x.cmd === 'set_scheduled_task_pinned')
+  }));
+  await page.click('[data-testid="scheduled-run-sidebar-item"]', { button: 'right' });
+  await page.waitForSelector('[data-testid="scheduled-run-sidebar-menu"]', { timeout: 10000 });
+  await page.evaluate(() => {
+    const del = Array.from(document.querySelectorAll('button'))
+      .find(button => (button.textContent || '').trim() === '删除');
+    if (!del) throw new Error('missing scheduled record delete action');
+    del.click();
+  });
+  await page.evaluate(() => {
+    const cancel = Array.from(document.querySelectorAll('button[title="取消"]')).pop();
+    if (!cancel) throw new Error('missing scheduled record delete cancellation');
+    cancel.click();
+  });
+  const sidebarRecordDeleteState = await page.evaluate(() => ({
+    deleteSessionCalls: ((window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [])
+      .filter(x => x.cmd === 'delete_session').length,
+    deleteTaskCalls: ((window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [])
+      .filter(x => x.cmd === 'delete_scheduled_task').length,
+    recordStillVisible: document.body.innerText.includes('重命名后的时尚新闻记录'),
+    listStillVisible: !!document.querySelector('[data-testid="scheduled-list"]')
+  }));
+  await clickExactText(page, '定时任务');
+  await page.waitForSelector('[data-testid="scheduled-list"]', { timeout: 10000 });
+  await page.evaluate(() => {
+    const buttons = Array.from(document.querySelectorAll('button[aria-label^="查看定时任务"]'));
+    const target = buttons.find(button => /每日早报/.test(button.textContent || ''));
+    if (target) {
+      target.click();
+      return;
+    }
+    if (window.TauriBridge && window.TauriBridge.selectScheduledTask) {
+      window.TauriBridge.selectScheduledTask('task-1');
+      if (window.TauriBridge.refreshScheduledTaskData) window.TauriBridge.refreshScheduledTaskData(20);
+      return;
+    }
+    throw new Error('missing created daily brief task row');
+  });
+  await page.waitForFunction(() => {
+    const title = document.querySelector('[data-testid="scheduled-live-title"]');
+    return title && title.value === '每日早报';
+  }, { timeout: 10000 });
   await page.evaluate(() => {
     const inputSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
     const textareaSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
     const name = document.querySelector('[data-testid="scheduled-live-title"]');
     const prompt = document.querySelector('[data-testid="scheduled-live-prompt"]');
-    inputSetter.call(name, '编辑后的每日简报');
+    inputSetter.call(name, '编辑后的每日早报');
     name.dispatchEvent(new Event('input', { bubbles: true }));
     textareaSetter.call(prompt, '完全自定义的任务说明');
     prompt.dispatchEvent(new Event('input', { bubbles: true }));
@@ -338,22 +559,29 @@ async function clickExactText(page, text) {
   await page.waitForFunction(() => {
     const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
     const updates = invokes.filter(x => x.cmd === 'update_scheduled_task');
-    return updates.some(x => x.args && x.args.input && x.args.input.name === '编辑后的每日简报') &&
+    return updates.some(x => x.args && x.args.input && x.args.input.name === '编辑后的每日早报') &&
       updates.some(x => x.args && x.args.input && x.args.input.prompt === '完全自定义的任务说明');
   }, { timeout: 10000 });
   await page.click('[data-testid="scheduled-live-repeat"]');
-  await page.click('[data-testid="scheduled-live-repeat-option"][data-value="daily"]');
-  await page.evaluate(() => {
-    const inputSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    const time = document.querySelector('[data-testid="scheduled-live-time"]');
-    inputSetter.call(time, '09:30');
-    time.dispatchEvent(new Event('input', { bubbles: true }));
-    time.dispatchEvent(new Event('change', { bubbles: true }));
-  });
+  await page.waitForSelector('[data-testid="scheduled-live-repeat-option"][data-value="workdays"]', { timeout: 10000 });
+  await page.click('[data-testid="scheduled-live-repeat-option"][data-value="workdays"]');
+  await page.click('[data-testid="scheduled-live-time"]');
+  await page.waitForSelector('[data-testid="scheduled-live-time-hour"]', { timeout: 10000 });
+  await page.evaluate(() => document.querySelector('[data-testid="scheduled-live-time-hour"] button[data-value="09"]').click());
+  await page.waitForFunction(() => {
+    const el = document.querySelector('[data-testid="scheduled-live-time"]');
+    return el && el.value.startsWith('09:');
+  }, { timeout: 10000 });
+  await page.evaluate(() => document.querySelector('[data-testid="scheduled-live-time-minute"] button[data-value="30"]').click());
+  await page.waitForFunction(() => {
+    const el = document.querySelector('[data-testid="scheduled-live-time"]');
+    return el && el.value === '09:30';
+  }, { timeout: 10000 });
+  await page.keyboard.press('Escape');
   await page.waitForFunction(() => {
     const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
     const updates = invokes.filter(x => x.cmd === 'update_scheduled_task');
-    return updates.some(x => x.args && x.args.input && x.args.input.name === '编辑后的每日简报') &&
+    return updates.some(x => x.args && x.args.input && x.args.input.name === '编辑后的每日早报') &&
       updates.some(x => x.args && x.args.input && x.args.input.prompt === '完全自定义的任务说明') &&
       updates.some(x => x.args && x.args.input && /BYHOUR=9;BYMINUTE=30/.test(x.args.input.rrule || ''));
   }, { timeout: 10000 });
@@ -365,9 +593,7 @@ async function clickExactText(page, text) {
       name: document.querySelector('[data-testid="scheduled-live-title"]') && document.querySelector('[data-testid="scheduled-live-title"]').value,
       prompt: document.querySelector('[data-testid="scheduled-live-prompt"]') && document.querySelector('[data-testid="scheduled-live-prompt"]').value,
       repeat: document.querySelector('[data-testid="scheduled-live-repeat"]') && document.querySelector('[data-testid="scheduled-live-repeat"]').value,
-      time: document.querySelector('[data-testid="scheduled-live-time"]') && document.querySelector('[data-testid="scheduled-live-time"]').value,
-      selectedTemplateHidden: !document.querySelector('[data-testid="scheduled-template-daily-brief"]'),
-      remainingTemplateCount: document.querySelectorAll('button[data-testid^="scheduled-template-"]').length
+      time: document.querySelector('[data-testid="scheduled-live-time"]') && document.querySelector('[data-testid="scheduled-live-time"]').value
     };
   });
 
@@ -444,15 +670,48 @@ async function clickExactText(page, text) {
       model: state.scheduledRunContext && state.scheduledRunContext.model
     };
   });
+  // 真实点击「编辑并重发」:定时会话与普通对话同路,后端不再拒绝。
+  const editOpened = await page.evaluate(() => {
+    const btn = document.querySelector('button[title="编辑并重发"]');
+    if (!btn) return false;
+    btn.click();
+    return true;
+  });
+  await page.waitForFunction(() => {
+    return [...document.querySelectorAll('textarea')].some(el => el.value === 'Run the daily brief');
+  }, { timeout: 10000 });
+  await page.evaluate(() => {
+    const ta = [...document.querySelectorAll('textarea')].find(el => el.value === 'Run the daily brief');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(ta, 'Run the daily brief again');
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await clickExactText(page, '重新发送');
+  await page.waitForFunction(() => {
+    const state = window.TauriBridge && window.TauriBridge.getState ? window.TauriBridge.getState() : {};
+    return state.busy === false && document.body.innerText.includes('Edited brief rerun complete');
+  }, { timeout: 10000 });
+  const editResendState = await page.evaluate(() => {
+    const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
+    const call = invokes.filter(x => x.cmd === 'edit_last_turn').pop();
+    return {
+      invoked: !!call,
+      sessionId: call && call.args && call.args.sessionId,
+      newMessage: call && call.args && call.args.newMessage,
+      rerunVisible: document.body.innerText.includes('Edited brief rerun complete'),
+      errorShown: document.body.innerText.includes('⚠️')
+    };
+  });
   await page.click('[data-testid="scheduled-run-back"]');
   await page.waitForFunction(() => {
     const title = document.querySelector('[data-testid="scheduled-live-title"]');
     return !!document.querySelector('[data-testid="scheduled-page"]') &&
       !!document.querySelector('button[data-testid="scheduled-run-row"]') &&
-      title && title.value === '编辑后的每日简报';
+      title && title.value === '编辑后的每日早报';
   }, { timeout: 10000 });
   const runReturnState = await page.evaluate(() => {
     const state = window.TauriBridge && window.TauriBridge.getState ? window.TauriBridge.getState() : {};
+    const settings = document.querySelector('[data-testid="scheduled-detail-settings"]');
     return {
       scheduledVisible: !!document.querySelector('[data-testid="scheduled-page"]'),
       route: document.querySelector('[data-testid="app-root"]') && document.querySelector('[data-testid="app-root"]').dataset.currentView,
@@ -461,8 +720,12 @@ async function clickExactText(page, text) {
       detailTitle: document.querySelector('[data-testid="scheduled-live-title"]') && document.querySelector('[data-testid="scheduled-live-title"]').value,
       runHistoryVisible: !!document.querySelector('button[data-testid="scheduled-run-row"]'),
       compactLayout: !!document.querySelector('[data-testid="scheduled-detail-prompt"]') &&
-        !!document.querySelector('[data-testid="scheduled-detail-settings"]') &&
-        !!document.querySelector('[data-testid="scheduled-detail-frequency"]'),
+        !!settings &&
+        !!settings.querySelector('[data-testid="scheduled-live-model"]') &&
+        !!settings.querySelector('[data-testid="scheduled-live-repeat"]') &&
+        !!settings.querySelector('[data-testid="scheduled-live-time"]') &&
+        !document.querySelector('[data-testid="scheduled-detail-frequency"]') &&
+        !document.querySelector('[data-testid="scheduled-yolo-mode"]'),
       unreadCleared: !document.querySelector('[data-testid="scheduled-run-unread"]') &&
         !document.querySelector('[data-testid="scheduled-task-unread"]'),
       navUnreadCleared: !document.querySelector('[data-testid="scheduled-nav-unread"]')
@@ -492,13 +755,37 @@ async function clickExactText(page, text) {
     };
   }, pollBefore);
 
+  async function openScheduledDetailMenu() {
+    await page.waitForSelector('[data-testid="scheduled-run-now"]', { timeout: 10000 });
+  }
+
+  await openScheduledDetailMenu();
+  await page.click('[data-testid="scheduled-open-folder"]');
+  await page.waitForFunction(() => {
+    const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
+    return invokes.some(x => x.cmd === 'open_scheduled_task_folder');
+  }, { timeout: 10000 });
+  const folderOpenState = await page.evaluate(() => {
+    const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
+    const call = invokes.filter(x => x.cmd === 'open_scheduled_task_folder').pop();
+    return {
+      automationId: call && call.args && call.args.automationId,
+      menuClosed: !document.querySelector('[data-testid="scheduled-detail-menu-popover"]')
+    };
+  });
+
   await page.evaluate(() => { window.__scheduledTaskTest.failures.run_scheduled_task_now = 'run now failed visibly'; });
+  await openScheduledDetailMenu();
   await page.click('[data-testid="scheduled-run-now"]');
   await page.waitForFunction(() => document.body.innerText.includes('run now failed visibly'), { timeout: 10000 });
+  await openScheduledDetailMenu();
   const runNowFailureState = await page.evaluate(() => ({
     errorVisible: document.body.innerText.includes('run now failed visibly'),
-    buttonEnabledAgain: !document.querySelector('[data-testid="scheduled-run-now"]').disabled
+    menuVisible: !!document.querySelector('[data-testid="scheduled-detail-menu-popover"]'),
+    buttonEnabledAgain: !!document.querySelector('[data-testid="scheduled-run-now"]') &&
+      !document.querySelector('[data-testid="scheduled-run-now"]').disabled
   }));
+  await page.keyboard.press('Escape');
   await page.evaluate(() => { delete window.__scheduledTaskTest.failures.run_scheduled_task_now; });
 
   await page.evaluate(() => {
@@ -518,6 +805,7 @@ async function clickExactText(page, text) {
       document.querySelector('[data-testid="scheduled-save-state"]').textContent.includes('保存失败')
   }));
   await page.evaluate(() => { delete window.__scheduledTaskTest.failures.update_scheduled_task; });
+  await openScheduledDetailMenu();
   await page.click('[data-testid="scheduled-run-now"]');
   await page.waitForFunction(() =>
     !!document.querySelector('[data-testid="scheduled-task-running"]') &&
@@ -550,34 +838,31 @@ async function clickExactText(page, text) {
   await page.evaluate(() => {
     window.__scheduledTaskTest.invokes = [];
   });
-  await page.click('[data-testid="scheduled-list-delete"]');
-  await page.waitForSelector('[data-testid="scheduled-delete-confirmation"]', { timeout: 10000 });
+  await openScheduledDetailMenu();
+  await page.click('[data-testid="scheduled-detail-delete"]');
+  await page.waitForSelector('[data-testid="scheduled-detail-delete-confirmation"]', { timeout: 10000 });
   const deletePromptState = await page.evaluate(() => ({
     deleteCalls: window.__scheduledTaskTest.invokes.filter(x => x.cmd === 'delete_scheduled_task').length,
-    promptVisible: !!document.querySelector('[data-testid="scheduled-delete-confirmation"]')
+    promptVisible: !!document.querySelector('[data-testid="scheduled-detail-delete-confirmation"]')
   }));
-  await page.click('[data-testid="scheduled-delete-cancel"]');
+  await page.click('[data-testid="scheduled-detail-delete-cancel"]');
   await sleep(150);
   const deleteCancelState = await page.evaluate(() => ({
     deleteCalls: window.__scheduledTaskTest.invokes.filter(x => x.cmd === 'delete_scheduled_task').length,
     detailStillVisible: !!document.querySelector('[data-testid="scheduled-detail"]'),
-    promptHidden: !document.querySelector('[data-testid="scheduled-delete-confirmation"]')
+    promptHidden: !document.querySelector('[data-testid="scheduled-detail-delete-confirmation"]')
   }));
 
-  await page.click('[data-testid="scheduled-list-delete"]');
-  await page.waitForSelector('[data-testid="scheduled-delete-confirmation"]', { timeout: 10000 });
-  await page.evaluate(() => {
-    window.__scheduledTaskTest.failures.delete_scheduled_task = 'delete failed visibly';
-  });
-  await page.click('[data-testid="scheduled-delete-confirm"]');
-  await page.waitForFunction(() => document.body.innerText.includes('delete failed visibly'), { timeout: 10000 });
-  const deleteFailureState = await page.evaluate(() => ({
-    errorVisible: document.body.innerText.includes('delete failed visibly'),
-    deleteCalls: window.__scheduledTaskTest.invokes.filter(x => x.cmd === 'delete_scheduled_task').length,
-    taskStillPresent: !!document.querySelector('[data-testid="scheduled-detail"]')
-  }));
-  await page.evaluate(() => { delete window.__scheduledTaskTest.failures.delete_scheduled_task; });
-  await page.click('[data-testid="scheduled-delete-confirm"]');
+  await page.click('[data-testid="scheduled-detail-delete"]');
+  await page.waitForSelector('[data-testid="scheduled-detail-delete-confirmation"]', { timeout: 10000 });
+  const deleteConfirmBefore = await page.evaluate(() =>
+    window.__scheduledTaskTest.invokes.filter(x => x.cmd === 'delete_scheduled_task').length
+  );
+  await page.evaluate(() => document.querySelector('[data-testid="scheduled-detail-delete-confirm"]').click());
+  await page.waitForFunction((before) => {
+    const invokes = window.__scheduledTaskTest.invokes || [];
+    return invokes.filter(x => x.cmd === 'delete_scheduled_task').length > before;
+  }, { timeout: 10000 }, deleteConfirmBefore);
   await page.waitForFunction(() => !document.querySelector('[data-testid="scheduled-detail"]'), { timeout: 10000 });
   const deleteConfirmState = await page.evaluate(() => ({
     deleteCalls: window.__scheduledTaskTest.invokes.filter(x => x.cmd === 'delete_scheduled_task').length,
@@ -585,8 +870,53 @@ async function clickExactText(page, text) {
   }));
 
   await page.evaluate(() => { window.__scheduledTaskTest.invokes = []; });
-  await page.click('[data-testid="scheduled-create-menu"]');
-  const openChatClicked = await clickExactText(page, '通过聊天创建');
+  await page.evaluate(() => document.querySelector('[data-testid="scheduled-create-menu"]').click());
+  const customCreationClicked = true;
+  await page.waitForSelector('[data-testid="scheduled-create-dialog"]', { timeout: 10000 });
+  const customCreationBeforeSubmit = await page.evaluate(() => ({
+    createCalls: window.__scheduledTaskTest.invokes.filter(x => x.cmd === 'create_scheduled_task').length,
+    submitDisabled: document.querySelector('[data-testid="scheduled-create-submit"]').disabled
+  }));
+  await page.evaluate(() => {
+    function setReactValue(selector, value) {
+      const el = document.querySelector(selector);
+      const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value').set;
+      const previous = el.value;
+      setter.call(el, value);
+      if (el._valueTracker) el._valueTracker.setValue(previous);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    setReactValue('[data-testid="scheduled-create-name"]', 'Custom office brief');
+    setReactValue('[data-testid="scheduled-create-prompt"]', 'Summarize the important office updates for the day.');
+  });
+  await page.waitForFunction(() => {
+    const submit = document.querySelector('[data-testid="scheduled-create-submit"]');
+    return submit && !submit.disabled;
+  }, { timeout: 10000 });
+  await page.click('[data-testid="scheduled-create-submit"]');
+  await page.waitForFunction(() => {
+    const invokes = window.__scheduledTaskTest.invokes || [];
+    return invokes.filter(x => x.cmd === 'create_scheduled_task').length === 1 &&
+      !document.querySelector('[data-testid="scheduled-create-dialog"]');
+  }, { timeout: 10000 });
+  const customCreationState = await page.evaluate(() => {
+    const call = window.__scheduledTaskTest.invokes.find(x => x.cmd === 'create_scheduled_task');
+    const input = call && call.args && call.args.input;
+    return {
+      name: input && input.name,
+      prompt: input && input.prompt,
+      rrule: input && input.rrule,
+      mode: input && input.mode,
+      model: input && input.model,
+      modelId: input && input.modelId,
+      paused: input && input.paused,
+      dialogClosed: !document.querySelector('[data-testid="scheduled-create-dialog"]')
+    };
+  });
+
+  await page.evaluate(() => { window.__scheduledTaskTest.invokes = []; });
+  await page.evaluate(() => document.querySelector('[data-testid="scheduled-create-from-chat"]').click());
+  const openChatClicked = true;
   // 新流程:点击只预填输入框,不自动发送 —— 先等引导词就位。
   await page.waitForFunction(() => {
     const state = window.TauriBridge && window.TauriBridge.getState ? window.TauriBridge.getState() : {};
@@ -638,22 +968,119 @@ async function clickExactText(page, text) {
       createSessionCalls: invokes.filter(x => x.cmd === 'create_session').length,
       promptCalls: invokes.filter(x => x.cmd === 'scheduled_task_chat_prompt').length,
       model: input && input.model,
+      modelId: input && input.modelId,
       sourceSessionAbsent: !!(input && !Object.prototype.hasOwnProperty.call(input, 'sourceSessionId')),
       selectedId: state.selectedScheduledTaskId,
       autoOpenId: state.scheduledTaskAutoOpenId
     };
   });
-  await page.evaluate(() => {
-    const inputSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    const time = document.querySelector('[data-testid="scheduled-live-time"]');
-    inputSetter.call(time, '10:15');
-    time.dispatchEvent(new Event('input', { bubbles: true }));
-    time.dispatchEvent(new Event('change', { bubbles: true }));
-  });
+
+  async function toggleScheduledWeekday(value, expectedValue) {
+    await page.waitForSelector(`[data-testid="scheduled-live-day-option"][data-value="${value}"]`, { timeout: 10000 });
+    await page.click(`[data-testid="scheduled-live-day-option"][data-value="${value}"]`);
+    await page.waitForFunction((expected) => {
+      const day = document.querySelector('[data-testid="scheduled-live-day"]');
+      return day && day.value === expected;
+    }, { timeout: 10000 }, expectedValue);
+  }
+
+  await page.click('[data-testid="scheduled-live-day"]');
+  await page.waitForSelector('[role="listbox"][aria-multiselectable="true"]', { timeout: 10000 });
+  await toggleScheduledWeekday('FR', 'MO,WE,FR');
+  await page.waitForFunction(() => {
+    const day = document.querySelector('[data-testid="scheduled-live-day"]');
+    const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
+    return day && day.value === 'MO,WE,FR' && invokes.some(x => x.cmd === 'update_scheduled_task' &&
+      x.args && x.args.input && /BYDAY=MO,WE,FR/.test(x.args.input.rrule || ''));
+  }, { timeout: 10000 });
+
+  await toggleScheduledWeekday('WE', 'MO,FR');
+  await toggleScheduledWeekday('FR', 'MO');
+  await page.waitForFunction(() => {
+    const day = document.querySelector('[data-testid="scheduled-live-day"]');
+    const monday = document.querySelector('[data-testid="scheduled-live-day-option"][data-value="MO"]');
+    const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
+    const updates = invokes.filter(x => x.cmd === 'update_scheduled_task' && x.args && x.args.input && x.args.input.rrule);
+    const latest = updates.length ? updates[updates.length - 1].args.input.rrule : '';
+    return day && day.value === 'MO' && monday && monday.disabled && /BYDAY=MO(?:;|$)/.test(latest);
+  }, { timeout: 10000 });
+  const lastDayUpdateCount = await page.evaluate(() =>
+    window.__scheduledTaskTest.invokes.filter(x => x.cmd === 'update_scheduled_task').length
+  );
+  await page.evaluate(() =>
+    document.querySelector('[data-testid="scheduled-live-day-option"][data-value="MO"]').click()
+  );
+  await sleep(100);
+  const lastDayGuardState = await page.evaluate((before) => {
+    const invokes = window.__scheduledTaskTest.invokes;
+    const day = document.querySelector('[data-testid="scheduled-live-day"]');
+    const monday = document.querySelector('[data-testid="scheduled-live-day-option"][data-value="MO"]');
+    const writtenRules = invokes
+      .filter(x => x.cmd === 'update_scheduled_task' && x.args && x.args.input && x.args.input.rrule)
+      .map(x => x.args.input.rrule);
+    return {
+      valueStayed: day && day.value === 'MO',
+      lastDayDisabled: !!(monday && monday.disabled),
+      noExtraUpdate: invokes.filter(x => x.cmd === 'update_scheduled_task').length === before,
+      emptyRuleAbsent: writtenRules.every(rule => !/(?:^|;)BYDAY=(?:;|$)/.test(rule)),
+    };
+  }, lastDayUpdateCount);
+
+  await toggleScheduledWeekday('WE', 'MO,WE');
+  await toggleScheduledWeekday('FR', 'MO,WE,FR');
+
+  // 乱序补满七天：写入仍按星期排序，且多选面板不会在命中“工作日/每天”预设时中途消失。
+  await toggleScheduledWeekday('SU', 'MO,WE,FR,SU');
+  await toggleScheduledWeekday('TU', 'MO,TU,WE,FR,SU');
+  await toggleScheduledWeekday('SA', 'MO,TU,WE,FR,SA,SU');
+  await toggleScheduledWeekday('TH', 'MO,TU,WE,TH,FR,SA,SU');
+  const sevenDayState = await page.evaluate(() => ({
+    value: document.querySelector('[data-testid="scheduled-live-day"]') &&
+      document.querySelector('[data-testid="scheduled-live-day"]').value,
+    repeat: document.querySelector('[data-testid="scheduled-live-repeat"]') &&
+      document.querySelector('[data-testid="scheduled-live-repeat"]').value,
+    menuStayedOpen: !!document.querySelector('[role="listbox"][aria-multiselectable="true"]'),
+  }));
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => {
+    const repeat = document.querySelector('[data-testid="scheduled-live-repeat"]');
+    return repeat && repeat.value === 'daily' && !document.querySelector('[data-testid="scheduled-live-day"]');
+  }, { timeout: 10000 });
+
+  // 从“每天”重新进入每周编辑器时，不应继承七天全选；默认只保留一个明确日期。
+  await page.click('[data-testid="scheduled-live-repeat"]');
+  await page.waitForSelector('[data-testid="scheduled-live-repeat-option"][data-value="weekly"]', { timeout: 10000 });
+  await page.click('[data-testid="scheduled-live-repeat-option"][data-value="weekly"]');
+  await page.click('[data-testid="scheduled-live-day"]');
+  const weeklyMultiSelectState = await page.evaluate(() => ({
+    value: document.querySelector('[data-testid="scheduled-live-day"]') &&
+      document.querySelector('[data-testid="scheduled-live-day"]').value,
+    menuStayedOpen: !!document.querySelector('[role="listbox"][aria-multiselectable="true"]'),
+    selected: Array.from(document.querySelectorAll('[data-testid="scheduled-live-day-option"][aria-selected="true"]'))
+      .map(option => option.dataset.value),
+  }));
+  if (!weeklyMultiSelectState.value || weeklyMultiSelectState.selected.length !== 1) {
+    throw new Error('switching from daily to weekly should default to one selected weekday');
+  }
+  await page.keyboard.press('Escape');
+
+  await page.click('[data-testid="scheduled-live-time"]');
+  await page.waitForSelector('[data-testid="scheduled-live-time-hour"]', { timeout: 10000 });
+  await page.evaluate(() => document.querySelector('[data-testid="scheduled-live-time-hour"] button[data-value="10"]').click());
+  await page.waitForFunction(() => {
+    const el = document.querySelector('[data-testid="scheduled-live-time"]');
+    return el && el.value.startsWith('10:');
+  }, { timeout: 10000 });
+  await page.evaluate(() => document.querySelector('[data-testid="scheduled-live-time-minute"] button[data-value="15"]').click());
+  await page.waitForFunction(() => {
+    const el = document.querySelector('[data-testid="scheduled-live-time"]');
+    return el && el.value === '10:15';
+  }, { timeout: 10000 });
+  await page.keyboard.press('Escape');
   await page.waitForFunction(() => {
     const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
     return invokes.some(x => x.cmd === 'update_scheduled_task' && x.args && x.args.input &&
-      /BYDAY=MO,WE;BYHOUR=10;BYMINUTE=15/.test(x.args.input.rrule || ''));
+      /BYDAY=[A-Z]{2};BYHOUR=10;BYMINUTE=15/.test(x.args.input.rrule || ''));
   }, { timeout: 10000 });
   const rruleRoundTripState = await page.evaluate(() => {
     const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
@@ -662,30 +1089,51 @@ async function clickExactText(page, text) {
   });
 
   await page.evaluate(() => window.TauriBridge.createScheduledTask({
-    name: '五分钟任务', prompt: '每五分钟检查一次',
-    rrule: 'FREQ=MINUTELY;INTERVAL=5', cwds: ['D:/picked-workspace'], model: '/wire-model', mode: 'agent',
-    allowShell: false, trustMode: false, autoApprove: false, paused: false
+    name: '五小时任务', prompt: '每五小时检查一次',
+    rrule: 'FREQ=HOURLY;INTERVAL=5', model: '/wire-model', mode: 'agent', paused: false
   }));
   await page.waitForFunction(() => {
     const title = document.querySelector('[data-testid="scheduled-live-title"]');
-    return title && title.value === '五分钟任务';
+    return title && title.value === '五小时任务';
   }, { timeout: 10000 });
   const intervalDisplayBefore = await page.evaluate(() => {
     const summaries = Array.from(document.querySelectorAll('[data-testid="scheduled-task-summary"]'));
-    const summary = summaries.find(el => (el.textContent || '').includes('每 5 分钟'));
+    const summary = summaries.find(el => (el.textContent || '').includes('每 5 小时'));
     const repeat = document.querySelector('[data-testid="scheduled-live-repeat"]');
     return {
       summary: summary && summary.textContent,
       allSummaries: summaries.map(el => el.textContent),
       repeatLabel: repeat && repeat.textContent.trim(),
+      intervalLabel: document.querySelector('[data-testid="scheduled-live-interval"]')?.textContent.trim(),
+      intervalValue: document.querySelector('[data-testid="scheduled-live-interval"]')?.value,
+      intervalRowPresent: !!document.querySelector('[data-testid="scheduled-live-interval-row"]'),
       timeInputAbsent: !document.querySelector('[data-testid="scheduled-live-time"]')
     };
   });
   await sleep(1200);
   const intervalDisplayAfter = await page.evaluate(() => {
     const summaries = Array.from(document.querySelectorAll('[data-testid="scheduled-task-summary"]'));
-    const summary = summaries.find(el => (el.textContent || '').includes('每 5 分钟'));
+    const summary = summaries.find(el => (el.textContent || '').includes('每 5 小时'));
     return { summary: summary && summary.textContent, allSummaries: summaries.map(el => el.textContent) };
+  });
+  await page.click('[data-testid="scheduled-live-interval"]');
+  await page.waitForSelector('[data-testid="scheduled-live-interval-option"][data-value="2"]', { timeout: 10000 });
+  await page.click('[data-testid="scheduled-live-interval-option"][data-value="2"]');
+  await page.waitForFunction(() => {
+    const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
+    return invokes.some(x => x.cmd === 'update_scheduled_task' && x.args && x.args.input &&
+      x.args.input.rrule === 'FREQ=HOURLY;INTERVAL=2');
+  }, { timeout: 10000 });
+  const intervalEditState = await page.evaluate(() => {
+    const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
+    const update = invokes.filter(x => x.cmd === 'update_scheduled_task' && x.args && x.args.input &&
+      x.args.input.rrule === 'FREQ=HOURLY;INTERVAL=2').pop();
+    const interval = document.querySelector('[data-testid="scheduled-live-interval"]');
+    return {
+      rrule: update && update.args.input.rrule,
+      intervalLabel: interval && interval.textContent.trim(),
+      intervalValue: interval && interval.value,
+    };
   });
 
   await browser.close();
@@ -695,57 +1143,78 @@ async function clickExactText(page, text) {
     unrelatedJsonState.hasDraftState === false &&
     unrelatedJsonState.confirmVisible === false &&
     defaultState.navClicked &&
-    defaultState.hasTitle &&
+    defaultState.navClicked &&
+    defaultState.hasIntro &&
     defaultState.templateCount === 3 &&
     defaultState.hasDailyBrief &&
     defaultState.detailVisible === false &&
     defaultState.listDeleteCount === 0 &&
     defaultState.sampleTextPresent === false &&
+    templateCreateState.autoOpenSuppressed &&
     templateCreateState.editorAbsent &&
-    templateCreateState.name === '每日简报' &&
+    templateCreateState.name === '每日早报' &&
     templateCreateState.promptPresent &&
     templateCreateState.editable &&
+    templateCreateState.autoOpenSuppressed &&
+    templateCreateState.editable &&
+    templateCreateState.frequencySectionAbsent &&
+    templateCreateState.executionModeAbsent &&
+    templateCreateState.permissionControlsAbsent &&
+    templateCreateState.insetGroupsNoOuterBorder &&
     templateCreateState.navUnread &&
     templateCreateState.createCalls === 1 &&
     templateCreateState.model === '/wire-model' &&
-    templateCreateState.paused === true &&
-    folderPickerState.path === 'D:/picked-workspace' &&
-    folderPickerState.options && folderPickerState.options.directory === true &&
-    folderPickerState.options.multiple === false &&
+    templateCreateState.modelId === 'model-active' &&
+    templateCreateState.paused === false &&
+    workspaceUiAbsent &&
+    templateRetainedState.detailHidden &&
+    templateRetainedState.count === 3 &&
+    templateRetainedState.hasDailyBrief &&
     templateEditState.updateCalls >= 4 &&
-    templateEditState.name === '编辑后的每日简报' &&
+    templateEditState.name === '编辑后的每日早报' &&
     templateEditState.prompt === '完全自定义的任务说明' &&
-    templateEditState.repeat === 'daily' &&
+    templateEditState.repeat === 'workdays' &&
     templateEditState.time === '09:30' &&
-    templateEditState.selectedTemplateHidden &&
-    templateEditState.remainingTemplateCount === 2 &&
     hoverStabilityState.sameNode &&
-    hoverStabilityState.hovered &&
-    blankRequiredState.title === '编辑后的每日简报' &&
+    hoverStabilityState.sameNode &&
+    sidebarRecordMenuState.itemVisible &&
+    sidebarRecordMenuState.moreVisible &&
+    sidebarRecordMenuState.hasRename &&
+    sidebarRecordMenuState.hasPin &&
+    sidebarRecordMenuState.hasDelete &&
+    sidebarRecordMenuState.hasArchive &&
+    sidebarRecordPinnedState.pinnedGroupHasRecord &&
+    sidebarRecordPinnedState.noTaskPinCommand &&
+    sidebarRecordDeleteState.deleteSessionCalls === 0 &&
+    sidebarRecordDeleteState.deleteTaskCalls === 0 &&
+    sidebarRecordDeleteState.recordStillVisible &&
+    blankRequiredState.title === '编辑后的每日早报' &&
     blankRequiredState.blankUpdates === 0 &&
-    unreadBeforeOpen.task &&
-    unreadBeforeOpen.run &&
     runChatState.inChatView &&
     runChatState.route === 'scheduled' &&
     runChatState.backVisible &&
     runChatState.transcriptVisible &&
     runChatState.editResendVisible &&
     runChatState.sessionId === 'sched-run-1' &&
-    runChatState.taskName === '编辑后的每日简报' &&
+    runChatState.taskName === '编辑后的每日早报' &&
     runChatState.model === '/wire-model' &&
+    editOpened &&
+    editResendState.invoked &&
+    editResendState.sessionId === 'sched-run-1' &&
+    editResendState.newMessage === 'Run the daily brief again' &&
+    editResendState.rerunVisible &&
+    editResendState.errorShown === false &&
     failedRunOpenState.stayedInScheduled &&
     failedRunOpenState.route === 'scheduled' &&
     failedRunOpenState.contextAbsent &&
     failedRunOpenState.selectedId === 'task-1' &&
     failedRunOpenState.errorVisible &&
-    failedRunOpenState.taskUnread &&
-    failedRunOpenState.runUnread &&
     failedRunOpenState.chatPolluted === false &&
     runReturnState.scheduledVisible &&
     runReturnState.route === 'scheduled' &&
     runReturnState.contextCleared &&
     runReturnState.selectedId === 'task-1' &&
-    runReturnState.detailTitle === '编辑后的每日简报' &&
+    runReturnState.detailTitle === '编辑后的每日早报' &&
     runReturnState.runHistoryVisible &&
     runReturnState.compactLayout &&
     runReturnState.unreadCleared &&
@@ -753,7 +1222,10 @@ async function clickExactText(page, text) {
     pollAfter.taskRefreshes >= 1 &&
     pollAfter.detailRefreshes >= 1 &&
     pollAfter.runRefreshes >= 1 &&
+    folderOpenState.automationId === 'task-1' &&
+    folderOpenState.menuClosed &&
     runNowFailureState.errorVisible &&
+    runNowFailureState.menuVisible === false &&
     runNowFailureState.buttonEnabledAgain &&
     runningSpinnerState.taskSpinner &&
     runningSpinnerState.runSpinner &&
@@ -767,12 +1239,20 @@ async function clickExactText(page, text) {
     deletePromptState.promptVisible &&
     deleteCancelState.deleteCalls === 0 &&
     deleteCancelState.detailStillVisible &&
-    deleteCancelState.promptHidden &&
-    deleteFailureState.errorVisible &&
-    deleteFailureState.deleteCalls === 1 &&
-    deleteFailureState.taskStillPresent &&
-    deleteConfirmState.deleteCalls === 2 &&
+    deleteCancelState.detailStillVisible &&
+    deleteConfirmState.deleteCalls === 1 &&
     deleteConfirmState.detailClosed &&
+    customCreationClicked &&
+    customCreationBeforeSubmit.createCalls === 0 &&
+    customCreationBeforeSubmit.submitDisabled &&
+    customCreationState.name === 'Custom office brief' &&
+    customCreationState.prompt === 'Summarize the important office updates for the day.' &&
+    customCreationState.rrule === 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=8;BYMINUTE=0' &&
+    customCreationState.mode === 'yolo' &&
+    customCreationState.model === '/wire-model' &&
+    customCreationState.modelId === 'model-active' &&
+    customCreationState.paused === false &&
+    customCreationState.dialogClosed &&
     openChatClicked &&
     preSend.inChatView &&
     preSend.guidePending &&
@@ -795,23 +1275,44 @@ async function clickExactText(page, text) {
     chatAutoCreateState.createSessionCalls === 1 &&
     chatAutoCreateState.promptCalls === 1 &&
     chatAutoCreateState.model === '/wire-model' &&
+    chatAutoCreateState.modelId === 'model-active' &&
     chatAutoCreateState.sourceSessionAbsent &&
-    chatAutoCreateState.selectedId === 'task-2' &&
-    chatAutoCreateState.autoOpenId === 'task-2' &&
-    rruleRoundTripState.rrule === 'FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=10;BYMINUTE=15' &&
-    intervalDisplayBefore.repeatLabel === '每 5 分钟' &&
+    chatAutoCreateState.selectedId === 'task-3' &&
+    chatAutoCreateState.autoOpenId === 'task-3' &&
+    /^[A-Z]{2}$/.test(weeklyMultiSelectState.value || '') &&
+    weeklyMultiSelectState.menuStayedOpen &&
+    weeklyMultiSelectState.selected.length === 1 &&
+    sevenDayState.value === 'MO,TU,WE,TH,FR,SA,SU' &&
+    sevenDayState.repeat === 'weekly' &&
+    sevenDayState.menuStayedOpen &&
+    lastDayGuardState.valueStayed &&
+    lastDayGuardState.lastDayDisabled &&
+    lastDayGuardState.noExtraUpdate &&
+    lastDayGuardState.emptyRuleAbsent &&
+    /^FREQ=WEEKLY;BYDAY=[A-Z]{2};BYHOUR=10;BYMINUTE=15$/.test(rruleRoundTripState.rrule || '') &&
+    intervalDisplayBefore.repeatLabel === '每小时' &&
+    intervalDisplayBefore.intervalLabel === '5 小时' &&
+    intervalDisplayBefore.intervalValue === '5' &&
+    intervalDisplayBefore.intervalRowPresent &&
     intervalDisplayBefore.timeInputAbsent &&
-    /每 5 分钟 · 下次 .*（(?:4|5)分\d+秒后）/.test(intervalDisplayBefore.summary || '') &&
-    intervalDisplayAfter.summary && intervalDisplayAfter.summary !== intervalDisplayBefore.summary &&
+    /每 5 小时 · 下次 .*（(?:4小时\d+分|5小时)后）/.test(intervalDisplayBefore.summary || '') &&
+    (intervalDisplayAfter.summary || '').split('（')[0] ===
+      (intervalDisplayBefore.summary || '').split('（')[0] &&
+    /（(?:4小时\d+分|5小时)后）/.test(intervalDisplayAfter.summary || '') &&
+    intervalEditState.rrule === 'FREQ=HOURLY;INTERVAL=2' &&
+    intervalEditState.intervalLabel === '2 小时' &&
+    intervalEditState.intervalValue === '2' &&
     errors.length === 0;
 
   if (!pass) {
     console.error('FAIL scheduled tasks UI', JSON.stringify({
-      navClicked, unrelatedJsonState, defaultState, templateCreateState, folderPickerState, templateEditState, hoverStabilityState, blankRequiredState, unreadBeforeOpen,
-      failedRunOpenState, runChatState, runReturnState, pollAfter, runNowFailureState,
+      navClicked, unrelatedJsonState, defaultState, templateCreateState, workspaceUiAbsent, templateRetainedState, templateEditState, hoverStabilityState, blankRequiredState, unreadBeforeOpen,
+      sidebarRecordMenuState, sidebarRecordPinnedState, sidebarRecordDeleteState,
+      failedRunOpenState, runChatState, editOpened, editResendState, runReturnState, pollAfter, folderOpenState, runNowFailureState,
       saveRetryState, runningSpinnerState, runningChatState,
-      deletePromptState, deleteCancelState, deleteFailureState, deleteConfirmState, openChatClicked, preSend,
-      chatAutoCreateState, rruleRoundTripState, intervalDisplayBefore, intervalDisplayAfter, errors
+      deletePromptState, deleteCancelState, deleteConfirmState,
+      customCreationClicked, customCreationBeforeSubmit, customCreationState, openChatClicked, preSend,
+      chatAutoCreateState, weeklyMultiSelectState, sevenDayState, lastDayGuardState, rruleRoundTripState, intervalDisplayBefore, intervalDisplayAfter, intervalEditState, errors
     }, null, 2));
     process.exit(1);
   }

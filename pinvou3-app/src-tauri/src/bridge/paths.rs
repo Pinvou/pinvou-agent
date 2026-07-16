@@ -286,9 +286,15 @@ pub fn scheduled_runs_root() -> PathBuf {
     pinvou3_home().join("scheduled-runs")
 }
 
-/// SavedSession JSON files for scheduled runs, managed by a second SessionManager.
-pub fn scheduled_run_sessions_root() -> PathBuf {
-    scheduled_runs_root().join("sessions")
+/// `~/.pinvou3/scheduled/` —— 定时任务工作间根目录。
+/// 每个 automation 在 `<automation_id>/workspace/` 下拥有独立工作间；
+/// 该任务的多次运行对话共享它，不同 automation 之间互不共享。
+pub fn scheduled_tasks_root() -> PathBuf {
+    pinvou3_home().join("scheduled")
+}
+
+pub fn scheduled_task_workspace_dir(automation_id: &str) -> PathBuf {
+    scheduled_tasks_root().join(automation_id).join("workspace")
 }
 
 /// App-owned classification and immutable runtime settings for scheduled sessions.
@@ -424,6 +430,7 @@ pub fn ensure_dirs() -> std::io::Result<()> {
     std::fs::create_dir_all(user_skills_dir())?;
     std::fs::create_dir_all(user_personas_dir())?;
     std::fs::create_dir_all(workspace_dir())?;
+    std::fs::create_dir_all(scheduled_tasks_root())?;
     std::fs::create_dir_all(default_session_artifacts_dir())?;
     Ok(())
 }
@@ -458,15 +465,19 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn scheduled_run_paths_are_isolated_from_chat_sessions() {
+    fn scheduled_paths_are_derived_from_pinvou_home() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let previous = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-scheduled-paths");
 
         assert_eq!(scheduled_runs_root(), pinvou3_home().join("scheduled-runs"));
+        assert_eq!(scheduled_tasks_root(), pinvou3_home().join("scheduled"));
         assert_eq!(
-            scheduled_run_sessions_root(),
-            pinvou3_home().join("scheduled-runs").join("sessions")
+            scheduled_task_workspace_dir("automation-1"),
+            pinvou3_home()
+                .join("scheduled")
+                .join("automation-1")
+                .join("workspace")
         );
         assert_eq!(
             scheduled_run_profiles_path(),
@@ -480,8 +491,6 @@ pub(crate) mod tests {
                 .join("scheduled-runs")
                 .join("read-state.json")
         );
-        assert_ne!(scheduled_run_sessions_root(), sessions_root());
-
         if let Some(value) = previous {
             std::env::set_var("PINVOU3_HOME", value);
         } else {

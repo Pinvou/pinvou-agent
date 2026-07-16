@@ -2,27 +2,36 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use deepseek_tui::core::events::TurnOutcomeStatus;
 use deepseek_tui::task_manager::{
-    ExecutionTask, TaskExecutionEvent, TaskExecutionReporter, TaskExecutionResult, TaskExecutor,
-    TaskStatus,
+    ExecutionTask, TaskExecutionEvent, TaskExecutionResult, TaskExecutor, TaskStatus,
 };
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::bridge::prefs::{SavedModel, UserPrefs};
 use crate::bridge::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
+use crate::bridge::Pinvou3Bridge;
 use crate::engine_pool::{EnginePool, ScheduledTurnCompletion};
 
 type StartedCallback =
     Box<dyn FnMut(String) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send>;
+type ModelIdResolver = Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>;
 
 /// The narrow boundary between base-owned task execution and Pinvou's scheduled
 /// conversation storage/engine runtime. Keeping this injectable lets executor
 /// behavior be tested without starting a model or a WebView.
 #[async_trait]
 pub(crate) trait ScheduledConversationRuntime: Send + Sync {
+    /// Resolve the same Shell switch used by an ordinary Yolo conversation.
+    /// This is deliberately evaluated for every run so settings changes do
+    /// not leave long-lived scheduled tasks with stale permissions.
+    fn yolo_allow_shell(&self) -> bool;
+
+    fn model_id_for_automation(&self, automation_id: &str, model: &str) -> Option<String>;
+
     fn create_session(&self, profile: ScheduledRunProfile) -> Result<String>;
 
     async fn run_turn(
@@ -41,19 +50,40 @@ pub(crate) trait ScheduledConversationRuntime: Send + Sync {
 pub(crate) struct EngineScheduledRuntime {
     store: SessionStore,
     pool: EnginePool,
+    model_id_resolver: Option<ModelIdResolver>,
 }
 
 impl EngineScheduledRuntime {
-    pub(crate) fn new(store: SessionStore, pool: EnginePool) -> Self {
-        Self { store, pool }
+    pub(crate) fn new(
+        store: SessionStore,
+        pool: EnginePool,
+        model_id_resolver: Option<ModelIdResolver>,
+    ) -> Self {
+        Self {
+            store,
+            pool,
+            model_id_resolver,
+        }
     }
 }
 
 #[async_trait]
 impl ScheduledConversationRuntime for EngineScheduledRuntime {
+    fn yolo_allow_shell(&self) -> bool {
+        Pinvou3Bridge::allow_shell_for_prefs(&UserPrefs::load())
+    }
+
+    fn model_id_for_automation(&self, automation_id: &str, model: &str) -> Option<String> {
+        self.model_id_resolver
+            .as_ref()
+            .and_then(|resolver| resolver(automation_id, model))
+    }
+
     fn create_session(&self, mut profile: ScheduledRunProfile) -> Result<String> {
         let prefs = UserPrefs::load();
-        bind_profile_model_id(&mut profile, &prefs.advanced.saved_models)?;
+        if profile.model_id.is_none() {
+            bind_profile_model_id(&mut profile, &prefs.advanced.saved_models)?;
+        }
         Ok(self.store.create_scheduled_run(profile)?.metadata.id)
     }
 
@@ -83,8 +113,16 @@ impl ScheduledChatExecutor {
         Self { runtime }
     }
 
-    pub(crate) fn from_services(store: SessionStore, pool: EnginePool) -> Self {
-        Self::new(Arc::new(EngineScheduledRuntime::new(store, pool)))
+    pub(crate) fn from_services(
+        store: SessionStore,
+        pool: EnginePool,
+        model_id_resolver: ModelIdResolver,
+    ) -> Self {
+        Self::new(Arc::new(EngineScheduledRuntime::new(
+            store,
+            pool,
+            Some(model_id_resolver),
+        )))
     }
 }
 
@@ -93,40 +131,45 @@ impl TaskExecutor for ScheduledChatExecutor {
     async fn execute(
         &self,
         task: ExecutionTask,
-        reporter: TaskExecutionReporter,
+        events: mpsc::UnboundedSender<TaskExecutionEvent>,
         cancel: CancellationToken,
     ) -> TaskExecutionResult {
+        let allow_shell = self.runtime.yolo_allow_shell();
+        let automation_id = task.conversation_key().unwrap_or_else(|| task.id()).to_string();
+        let model = task.model().to_string();
+        let model_id = self
+            .runtime
+            .model_id_for_automation(&automation_id, &model);
         let profile = ScheduledRunProfile {
-            task_id: task.id().to_string(),
-            model: task.model().to_string(),
-            model_id: None,
+            // The stable automation id owns the shared task workspace. Each
+            // execution still keeps its own task id for cancellation/status.
+            // Direct executor tests have no AutomationManager and therefore
+            // use the task id as their isolated owner.
+            task_id: automation_id,
+            model,
+            model_id,
             workspace: task.workspace().to_path_buf(),
-            // Scheduled tasks have no interactive mode selector. Yolo is safe
-            // only when the persisted task explicitly enables auto approval.
-            mode: ScheduledRunMode::for_scheduled_auto_approve(task.auto_approve()),
-            allow_shell: task.allow_shell(),
-            trust_mode: task.trust_mode(),
-            auto_approve: task.auto_approve(),
+            // Scheduled execution is the unattended form of an ordinary Yolo
+            // conversation. Never trust task-level permission fields.
+            mode: ScheduledRunMode::Yolo,
+            allow_shell,
+            trust_mode: true,
+            auto_approve: true,
         };
         let session_id = match self.runtime.create_session(profile) {
             Ok(session_id) => session_id,
             Err(error) => return failed(error),
         };
 
-        // The durable conversation identity exists before any engine send. The
-        // base manager consumes this first event before the later turn link.
-        if let Err(error) = reporter
-            .report(TaskExecutionEvent::ThreadCreated {
-                thread_id: session_id.clone(),
-            })
-            .await
-        {
-            return failed(format!(
-                "Failed to persist scheduled conversation identity: {error}"
-            ));
-        }
+        // Report the conversation identity ahead of ThreadLinked so a run
+        // that fails or is interrupted before its first turn still links to
+        // its session. The channel is fire-and-forget: persistence happens
+        // when the manager drains events, with no ack before the send below.
+        let _ = events.send(TaskExecutionEvent::ThreadCreated {
+            thread_id: session_id.clone(),
+        });
 
-        let link_reporter = reporter.clone();
+        let link_events = events.clone();
         let linked_session_id = session_id.clone();
         let result_cancel = cancel.clone();
         let completion = self
@@ -136,13 +179,12 @@ impl TaskExecutor for ScheduledChatExecutor {
                 task.prompt().to_string(),
                 cancel,
                 Box::new(move |turn_id| {
-                    let reporter = link_reporter.clone();
+                    let events = link_events.clone();
                     let thread_id = linked_session_id.clone();
                     Box::pin(async move {
-                        reporter
-                            .report(TaskExecutionEvent::ThreadLinked { thread_id, turn_id })
-                            .await?;
-                        Ok(())
+                        events
+                            .send(TaskExecutionEvent::ThreadLinked { thread_id, turn_id })
+                            .map_err(|_| anyhow!("scheduled task event channel closed"))
                     })
                 }),
             )
@@ -217,13 +259,16 @@ fn canceled() -> TaskExecutionResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::VecDeque;
+    use std::collections::{HashMap, VecDeque};
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     use anyhow::{bail, Result};
     use async_trait::async_trait;
+    use deepseek_tui::automation_manager::{
+        AutomationManager, AutomationStatus, CreateAutomationRequest,
+    };
     use deepseek_tui::core::events::TurnOutcomeStatus;
     use deepseek_tui::task_manager::{
         NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskRecord, TaskStatus,
@@ -255,7 +300,9 @@ mod tests {
         scripts: Mutex<VecDeque<Script>>,
         profiles: Mutex<Vec<(String, ScheduledRunProfile)>>,
         calls: Mutex<Vec<RunCall>>,
+        model_bindings: Mutex<HashMap<(String, String), String>>,
         next_session: AtomicUsize,
+        yolo_allow_shell: AtomicBool,
         started: Notify,
     }
 
@@ -286,9 +333,15 @@ mod tests {
                 scripts: Mutex::new(scripts.into_iter().collect()),
                 profiles: Mutex::new(Vec::new()),
                 calls: Mutex::new(Vec::new()),
+                model_bindings: Mutex::new(HashMap::new()),
                 next_session: AtomicUsize::new(1),
+                yolo_allow_shell: AtomicBool::new(true),
                 started: Notify::new(),
             }
+        }
+
+        fn set_yolo_allow_shell(&self, allow_shell: bool) {
+            self.yolo_allow_shell.store(allow_shell, Ordering::SeqCst);
         }
 
         fn profiles(&self) -> Vec<(String, ScheduledRunProfile)> {
@@ -298,17 +351,34 @@ mod tests {
         fn calls(&self) -> Vec<RunCall> {
             self.calls.lock().unwrap().clone()
         }
+
+        fn bind_model_id(&self, automation_id: &str, model: &str, model_id: &str) {
+            self.model_bindings.lock().unwrap().insert(
+                (automation_id.to_string(), model.to_string()),
+                model_id.to_string(),
+            );
+        }
     }
 
     #[async_trait]
     impl ScheduledConversationRuntime for ScriptedRuntime {
-        fn create_session(&self, profile: ScheduledRunProfile) -> Result<String> {
-            let number = self.next_session.fetch_add(1, Ordering::SeqCst);
-            let session_id = format!("sched-fake-{number}");
-            self.profiles
+        fn yolo_allow_shell(&self) -> bool {
+            self.yolo_allow_shell.load(Ordering::SeqCst)
+        }
+
+        fn model_id_for_automation(&self, automation_id: &str, model: &str) -> Option<String> {
+            self.model_bindings
                 .lock()
                 .unwrap()
-                .push((session_id.clone(), profile));
+                .get(&(automation_id.to_string(), model.to_string()))
+                .cloned()
+        }
+
+        fn create_session(&self, profile: ScheduledRunProfile) -> Result<String> {
+            let mut profiles = self.profiles.lock().unwrap();
+            let number = self.next_session.fetch_add(1, Ordering::SeqCst);
+            let session_id = format!("sched-fake-{number}");
+            profiles.push((session_id.clone(), profile));
             Ok(session_id)
         }
 
@@ -431,8 +501,8 @@ mod tests {
             model: Some("scheduled-model".to_string()),
             workspace: Some(PathBuf::from("D:/scheduled-workspace")),
             mode: Some("plan".to_string()),
-            allow_shell: Some(true),
-            trust_mode: Some(true),
+            allow_shell: Some(false),
+            trust_mode: Some(false),
             auto_approve: Some(false),
         }
     }
@@ -506,18 +576,6 @@ mod tests {
         assert_eq!(ambiguous.model_id, None);
     }
 
-    #[test]
-    fn scheduled_auto_approve_false_never_builds_yolo_context() {
-        assert_eq!(
-            ScheduledRunMode::for_scheduled_auto_approve(false),
-            ScheduledRunMode::Agent
-        );
-        assert_eq!(
-            ScheduledRunMode::for_scheduled_auto_approve(true),
-            ScheduledRunMode::Yolo
-        );
-    }
-
     #[tokio::test]
     async fn success_creates_and_links_a_durable_independent_session_before_completion(
     ) -> Result<()> {
@@ -534,17 +592,12 @@ mod tests {
         assert_eq!(finished.status, TaskStatus::Completed);
         assert_eq!(finished.thread_id.as_deref(), Some("sched-fake-1"));
         assert_eq!(finished.turn_id.as_deref(), Some("real-turn-42"));
-        let created_index = finished
+        let linked = finished
             .timeline
             .iter()
-            .position(|entry| entry.kind == "runtime_thread")
-            .expect("ThreadCreated must be durable");
-        let linked_index = finished
-            .timeline
-            .iter()
-            .position(|entry| entry.kind == "runtime_link")
-            .expect("ThreadLinked must be durable");
-        assert!(created_index < linked_index);
+            .find(|entry| entry.kind == "runtime_link")
+            .expect("ThreadLinked must be recorded");
+        assert!(linked.summary.contains("sched-fake-1"));
 
         let profiles = runtime.profiles();
         assert_eq!(profiles.len(), 1);
@@ -558,12 +611,12 @@ mod tests {
         );
         assert_eq!(
             profiles[0].1.mode,
-            ScheduledRunMode::Agent,
-            "autoApprove=false must never build a Yolo scheduled context"
+            ScheduledRunMode::Yolo,
+            "task-level mode and autoApprove must not weaken scheduled Yolo"
         );
         assert!(profiles[0].1.allow_shell);
         assert!(profiles[0].1.trust_mode);
-        assert!(!profiles[0].1.auto_approve);
+        assert!(profiles[0].1.auto_approve);
         assert_eq!(
             runtime.calls(),
             vec![RunCall {
@@ -571,6 +624,40 @@ mod tests {
                 prompt: "prepare the daily brief".to_string(),
             }]
         );
+        manager.shutdown();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn executor_injects_stable_model_id_from_automation_binding() -> Result<()> {
+        let runtime = Arc::new(ScriptedRuntime::new([Script::Complete {
+            turn_id: "bound-turn".to_string(),
+        }]));
+        let (root, manager) = manager_with_runtime(runtime.clone()).await?;
+        let automation_manager = AutomationManager::open(root.0.join("automations"))?;
+        let automation = automation_manager.create_automation(CreateAutomationRequest {
+            name: "bound automation".to_string(),
+            prompt: "run with bound model".to_string(),
+            rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
+            cwds: Vec::new(),
+            model: Some("scheduled-model".to_string()),
+            mode: Some("yolo".to_string()),
+            allow_shell: Some(false),
+            trust_mode: Some(false),
+            auto_approve: Some(false),
+            status: Some(AutomationStatus::Paused),
+        })?;
+        runtime.bind_model_id(&automation.id, "scheduled-model", "deepseek-b");
+
+        let run = automation_manager.run_now(&automation.id, &manager).await?;
+        let task_id = run.task_id.as_deref().expect("task id");
+        wait_for_terminal_state(&manager, task_id, std::time::Duration::from_secs(5)).await?;
+
+        let profiles = runtime.profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].1.task_id, automation.id);
+        assert_eq!(profiles[0].1.model, "scheduled-model");
+        assert_eq!(profiles[0].1.model_id.as_deref(), Some("deepseek-b"));
         manager.shutdown();
         Ok(())
     }
@@ -597,6 +684,96 @@ mod tests {
 
         assert_ne!(first.thread_id, second.thread_id);
         assert_eq!(runtime.profiles().len(), 2);
+        manager.shutdown();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn two_runs_of_one_automation_get_independent_conversations() -> Result<()> {
+        let runtime = Arc::new(ScriptedRuntime::new([
+            Script::Complete {
+                turn_id: "turn-first-run".to_string(),
+            },
+            Script::Complete {
+                turn_id: "turn-second-run".to_string(),
+            },
+        ]));
+        let (root, task_manager) = manager_with_runtime(runtime.clone()).await?;
+        let automation_manager = AutomationManager::open(root.0.join("automations"))?;
+        let automation = automation_manager.create_automation(CreateAutomationRequest {
+            name: "daily brief".to_string(),
+            prompt: "prepare the brief".to_string(),
+            rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
+            cwds: Vec::new(),
+            model: Some("scheduled-model".to_string()),
+            mode: Some("yolo".to_string()),
+            allow_shell: Some(false),
+            trust_mode: Some(false),
+            auto_approve: Some(false),
+            status: Some(AutomationStatus::Paused),
+        })?;
+
+        let first_run = automation_manager
+            .run_now(&automation.id, &task_manager)
+            .await?;
+        let first_task_id = first_run.task_id.as_deref().expect("first task id");
+        wait_for_terminal_state(
+            &task_manager,
+            first_task_id,
+            std::time::Duration::from_secs(5),
+        )
+        .await?;
+
+        let second_run = automation_manager
+            .run_now(&automation.id, &task_manager)
+            .await?;
+        let second_task_id = second_run.task_id.as_deref().expect("second task id");
+        wait_for_terminal_state(
+            &task_manager,
+            second_task_id,
+            std::time::Duration::from_secs(5),
+        )
+        .await?;
+
+        assert_ne!(first_task_id, second_task_id, "run task ids stay distinct");
+        let profiles = runtime.profiles();
+        assert_eq!(profiles.len(), 2);
+        assert_eq!(profiles[0].1.task_id, automation.id);
+        assert_eq!(profiles[1].1.task_id, automation.id);
+        assert_ne!(
+            profiles[0].0, profiles[1].0,
+            "every scheduled run must create an independent conversation"
+        );
+        task_manager.shutdown();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shell_permission_is_resolved_again_for_each_scheduled_run() -> Result<()> {
+        let runtime = Arc::new(ScriptedRuntime::new([
+            Script::Complete {
+                turn_id: "turn-shell-on".to_string(),
+            },
+            Script::Complete {
+                turn_id: "turn-shell-off".to_string(),
+            },
+        ]));
+        let (_root, manager) = manager_with_runtime(runtime.clone()).await?;
+
+        let first = manager.add_task(request("first")).await?;
+        wait_for_terminal_state(&manager, &first.id, std::time::Duration::from_secs(5)).await?;
+
+        runtime.set_yolo_allow_shell(false);
+        let second = manager.add_task(request("second")).await?;
+        wait_for_terminal_state(&manager, &second.id, std::time::Duration::from_secs(5)).await?;
+
+        let profiles = runtime.profiles();
+        assert_eq!(profiles.len(), 2);
+        assert!(profiles[0].1.allow_shell);
+        assert!(!profiles[1].1.allow_shell);
+        assert!(profiles.iter().all(|(_, profile)| {
+            profile.mode == ScheduledRunMode::Yolo && profile.trust_mode && profile.auto_approve
+        }));
         manager.shutdown();
         Ok(())
     }

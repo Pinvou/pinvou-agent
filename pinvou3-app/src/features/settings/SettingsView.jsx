@@ -5,6 +5,7 @@ import { ArchivedDeleteConfirmDialog } from '../../components/layout/NavigationC
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { formatSessionDate } from '../../shared/date-utils.js';
+import { visibleUserModels } from '../../shared/model-options.js';
 
 const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, style }, ref) => (
       <section ref={ref} id={id} style={style} className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
@@ -437,7 +438,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     // 聊天输入框上方:当前会话模型 chip + 下拉热切。
     const ModelChip = ({ isDark, t, bs, onGotoSettings }) => {
       const [open, setOpen] = useState(false);
-      const savedModels = (bs && bs.savedModels) || [];
+      const savedModels = visibleUserModels((bs && bs.savedModels) || []);
       const activeSessionId = bs ? bs.activeSessionId : null;
       const activeModelId = bs && bs.activeModelId;
       const currentSessionModelId = bs && bs.currentSessionModelId;
@@ -490,7 +491,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     // 输入框底栏:模型选择器(iOS 化,复用 ModelChip 的 switchModel 逻辑;darkMode:'class' 故用 dark: 变体)。
     const ComposerModelSelector = ({ t, bs, onGotoSettings, compact }) => {
       const [open, setOpen] = useState(false);
-      const savedModels = (bs && bs.savedModels) || [];
+      const savedModels = visibleUserModels((bs && bs.savedModels) || []);
       const activeSessionId = bs ? bs.activeSessionId : null;
       const activeModelId = bs && bs.activeModelId;
       const currentSessionModelId = bs && bs.currentSessionModelId;

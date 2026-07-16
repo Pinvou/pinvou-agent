@@ -1,5 +1,6 @@
 //! 文件系统 watcher：监听 `~/.pinvou3/sessions/` 目录树，发现新文件 / 修改时
-//! emit `artifact:disk` 事件到前端，由前端按 session_id 归属到对应产物列表。
+//! emit `artifact:disk` 事件到前端，由前端按 session_id 归属到对应产物列表；
+//! 定时会话 JSON 变化时另发一个轻量事件，让全局运行记录及时刷新。
 //!
 //! 为什么需要：write_file 工具调用前端能捕获，但 AI 产出 docx/xlsx 时
 //! 走 exec_shell + pandoc，args 是命令字符串没有结构化 path,前端识别不到。
@@ -77,6 +78,15 @@ fn handle_event(app: &AppHandle, ev: &Event, root: &Path) {
         return;
     }
     for path in &ev.paths {
+        if let Some(session_id) = scheduled_session_id(path, root) {
+            let payload = json!({
+                "sessionId": session_id,
+                "event": if path.exists() { "upsert" } else { "removed" },
+            });
+            let _ = app.emit("scheduled_task:run_updated", payload.clone());
+            crate::remote_control::forward_app_event(app, "scheduled_task:run_updated", payload);
+            continue;
+        }
         let Some((session_id, rel)) = parse_session_relative(path, root) else {
             continue;
         };
@@ -122,6 +132,19 @@ fn handle_event(app: &AppHandle, ev: &Event, root: &Path) {
         let _ = app.emit("artifact:disk", payload.clone());
         crate::remote_control::forward_app_event(&app, "artifact:disk", payload);
     }
+}
+
+/// Match only the top-level persisted JSON for a scheduled conversation.
+/// Sidecars and workspace files are deliberately excluded.
+fn scheduled_session_id(path: &Path, root: &Path) -> Option<String> {
+    let rel = path.strip_prefix(root).ok()?;
+    if rel.components().count() != 1
+        || path.extension().and_then(|ext| ext.to_str()) != Some("json")
+    {
+        return None;
+    }
+    let id = path.file_stem()?.to_str()?;
+    id.starts_with("sched-").then(|| id.to_string())
 }
 
 /// 跳过隐藏 / 编辑器临时文件 —— LibreOffice `.~lock.xxx#` / MS Word `~$xxx`
@@ -200,5 +223,22 @@ mod tests {
         let root = PathBuf::from("/home/x/.pinvou3/sessions");
         let p = PathBuf::from("/etc/passwd");
         assert!(parse_session_relative(&p, &root).is_none());
+    }
+
+    #[test]
+    fn scheduled_session_event_matches_only_top_level_payload() {
+        let root = PathBuf::from("/home/x/.pinvou3/sessions");
+        let payload = root.join("sched-123.json");
+        assert_eq!(
+            scheduled_session_id(&payload, &root).as_deref(),
+            Some("sched-123")
+        );
+        assert!(scheduled_session_id(&root.join("chat-123.json"), &root).is_none());
+        assert!(scheduled_session_id(&root.join("_hidden_sessions.json"), &root).is_none());
+        assert!(scheduled_session_id(
+            &root.join("sched-123").join("workspace").join("report.md"),
+            &root
+        )
+        .is_none());
     }
 }

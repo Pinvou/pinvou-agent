@@ -1,103 +1,406 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Check, ChevronDown, ClipboardList, Clock, FolderOpen, Pause, Play, Search, StopCircle, Trash2, X } from '../../components/icons.jsx';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal, flushSync } from 'react-dom';
+import { Check, ChevronDown, ChevronRight, ClipboardCheck, Clock, FileChartLine, MessageCircle, Newspaper, Play, Plus, Trash2, X } from '../../components/icons.jsx';
 import { bridge, useBridge } from '../../hooks/useBridge.js';
+import { isBuiltInModelOption, visibleUserModels } from '../../shared/model-options.js';
+import dailyBriefImage from '../../assets/scheduled/daily-brief.jpg';
+import followUpMonitorImage from '../../assets/scheduled/follow-up-monitor.jpg';
+import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
+
+    // 点模板即激活（开箱即用）：工作间由任务自动分配，不再需要选目录或先暂停。
     const SCHEDULED_TASK_TEMPLATES = [
       {
-        id: 'daily-brief', name: '每日简报', schedule: '工作日 8:00',
-        rrule: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=8;BYMINUTE=0',
-        prompt: '汇总选定项目或目录的近期变化、待办事项和风险，给出今天最值得关注的优先级与下一步。',
-        workspace: [], allowShell: false, trustMode: false, autoApprove: false, paused: true,
-        icon: Clock, color: '#0A84FF'
+        id: 'daily-brief', name: '每日早报', schedule: '每天 8:00',
+        description: '汇总重要新闻、行业动态和已连接办公系统中的公司公告',
+        rrule: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=0',
+        prompt: '整理过去 24 小时的重要新闻和行业动态，注明来源和链接；已连接飞书、企微或 EIP 时，补充公司公告。不要扫描用户目录，结果保存到任务工作间。',
+        paused: false,
+        icon: Newspaper, color: '#0A84FF', image: dailyBriefImage
       },
       {
-        id: 'weekly-review', name: '每周回顾', schedule: '星期五 16:00',
-        rrule: 'FREQ=WEEKLY;BYDAY=FR;BYHOUR=16;BYMINUTE=0',
-        prompt: '回顾选定项目或目录最近一周的变化，整理已完成进展、关键决定、未完成待办、风险和下周优先级。',
-        workspace: [], allowShell: false, trustMode: false, autoApprove: false, paused: true,
-        icon: ClipboardList, color: '#8B5CF6'
-      },
-      {
-        id: 'follow-up-monitor', name: '跟进监控', schedule: '工作日 9:00',
+        id: 'follow-up-monitor', name: '事项督办', schedule: '工作日 9:00',
+        description: '整理逾期与临期事项，突出风险和建议下一步',
         rrule: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9;BYMINUTE=0',
-        prompt: '检查选定项目或目录的最近变化与工作记录，标记仍需跟进、回复、确认或做决定的未完成事项和风险。',
-        workspace: [], allowShell: false, trustMode: false, autoApprove: false, paused: true,
-        icon: Search, color: '#00A86B'
+        prompt: '汇总已连接飞书、企微或 EIP 中的逾期、今日到期和未来 3 个工作日临期事项，按优先级给出风险与下一步。仅查询整理，不发送、审批或修改；不要扫描用户目录。',
+        paused: false,
+        icon: ClipboardCheck, color: '#34C759', image: followUpMonitorImage
+      },
+      {
+        id: 'weekly-review', name: '工作周报', schedule: '星期五 16:00',
+        description: '根据本周办公记录生成结构清晰的工作周报',
+        rrule: 'FREQ=WEEKLY;BYDAY=FR;BYHOUR=16;BYMINUTE=0',
+        prompt: '根据已连接飞书、企微或 EIP 中的本周日程、待办和办公消息生成工作周报，包含进展、遗留、风险和下周计划。不要扫描用户目录或自动发送。',
+        paused: false,
+        icon: FileChartLine, color: '#AF52DE', image: weeklyReviewImage
       },
     ];
 
-    const ScheduledSelect = ({ value, options, onChange, testId, ariaLabel, theme, minWidth = 180 }) => {
-      const [open, setOpen] = useState(false);
-      const rootRef = useRef(null);
-      const isDark = theme === 'dark';
-      const selected = (options || []).find(option => option.value === value) || (options || [])[0];
+    const PREVIEW_SCHEDULED_TASKS = [
+      {
+        id: "preview-daily-brief",
+        templateId: "daily-brief",
+        name: "每日早报",
+        status: "active",
+        scheduleLabel: "每天 08:00",
+        rrule: "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=0",
+        prompt: "整理过去 24 小时的重要新闻和行业动态，注明来源和链接；补充公司公告和重点风险。",
+        model: "DeepSeek",
+        nextRunOffsetMs: 1000 * 60 * 42,
+        lastRunAt: "2026-07-14T08:00:00+08:00",
+        hasUnreadRuns: true,
+        isRunning: false,
+      },
+      {
+        id: "preview-follow-up",
+        name: "事项督办",
+        status: "active",
+        scheduleLabel: "工作日 09:00",
+        rrule: "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9;BYMINUTE=0",
+        prompt: "整理逾期与临期事项，突出风险、负责人和建议下一步。",
+        model: "GPT-4o",
+        nextRunOffsetMs: 1000 * 60 * 60 * 3 + 1000 * 60 * 12,
+        lastRunAt: "2026-07-14T09:00:00+08:00",
+        hasUnreadRuns: false,
+        isRunning: true,
+      },
+      {
+        id: "preview-weekly-report",
+        name: "销售线索周报",
+        status: "paused",
+        scheduleLabel: "星期五 16:00",
+        rrule: "FREQ=WEEKLY;BYDAY=FR;BYHOUR=16;BYMINUTE=0",
+        prompt: "汇总本周线索新增、跟进状态、转化风险和下周重点客户。",
+        model: "自动选择",
+        nextRunOffsetMs: 1000 * 60 * 60 * 24 * 3,
+        lastRunAt: "2026-07-10T16:00:00+08:00",
+        hasUnreadRuns: false,
+        isRunning: false,
+      },
+    ];
 
-      useEffect(() => {
+    const PREVIEW_SCHEDULED_RUNS = {
+      'preview-daily-brief': [
+        { id: 'preview-run-1', automationId: 'preview-daily-brief', sessionId: 'preview-session-1', status: 'completed', scheduledFor: '2026-07-14T08:00:00+08:00', createdAt: '2026-07-14T08:00:02+08:00', unread: true },
+        { id: 'preview-run-2', automationId: 'preview-daily-brief', sessionId: 'preview-session-2', status: 'completed', scheduledFor: '2026-07-13T08:00:00+08:00', createdAt: '2026-07-13T08:00:01+08:00', unread: false },
+        { id: 'preview-run-3', automationId: 'preview-daily-brief', sessionId: null, status: 'failed', scheduledFor: '2026-07-12T08:00:00+08:00', createdAt: '2026-07-12T08:00:00+08:00', error: '外部新闻源请求超时', unread: false },
+      ],
+      'preview-follow-up': [
+        { id: 'preview-run-4', automationId: 'preview-follow-up', sessionId: 'preview-session-4', status: 'running', scheduledFor: '2026-07-14T09:00:00+08:00', createdAt: '2026-07-14T09:00:02+08:00', unread: false },
+        { id: 'preview-run-5', automationId: 'preview-follow-up', sessionId: 'preview-session-5', status: 'completed', scheduledFor: '2026-07-13T09:00:00+08:00', createdAt: '2026-07-13T09:00:03+08:00', unread: false },
+      ],
+      'preview-weekly-report': [
+        { id: 'preview-run-6', automationId: 'preview-weekly-report', sessionId: 'preview-session-6', status: 'completed', scheduledFor: '2026-07-10T16:00:00+08:00', createdAt: '2026-07-10T16:00:04+08:00', unread: false },
+      ],
+    };
+
+    const WEEKDAY_OPTIONS = [
+      ['MO', '星期一', '周一'], ['TU', '星期二', '周二'], ['WE', '星期三', '周三'],
+      ['TH', '星期四', '周四'], ['FR', '星期五', '周五'], ['SA', '星期六', '周六'],
+      ['SU', '星期日', '周日'],
+    ].map(([value, label, shortLabel]) => ({ value, label, shortLabel }));
+    const WEEKDAY_CODES = WEEKDAY_OPTIONS.map(option => option.value);
+    const HOURLY_INTERVAL_OPTIONS = Array.from({ length: 24 }, (_, index) => ({
+      value: index + 1,
+      label: `${index + 1} 小时`,
+    }));
+    const normalizeScheduleDays = (value) => {
+      const requested = new Set(
+        (Array.isArray(value) ? value : String(value || '').split(','))
+          .map(day => String(day || '').trim().toUpperCase())
+          .filter(Boolean)
+      );
+      return WEEKDAY_CODES.filter(day => requested.has(day));
+    };
+
+    const ScheduledSelect = ({
+      value, options, onChange, testId, ariaLabel, theme, minWidth = 180,
+      multiple = false, minSelected = 0, onClose,
+    }) => {
+      const [open, setOpen] = useState(false);
+      const [menuStyle, setMenuStyle] = useState(null);
+      const rootRef = useRef(null);
+      const menuRef = useRef(null);
+      const isDark = theme === 'dark';
+      const selectedValues = multiple
+        ? (Array.isArray(value) ? value : String(value || '').split(',').filter(Boolean))
+        : [];
+      const selected = multiple ? null : ((options || []).find(option => option.value === value) || (options || [])[0]);
+      const displayLabel = multiple
+        ? (options || []).filter(option => selectedValues.includes(option.value))
+          .map(option => option.shortLabel || option.label).join('、')
+        : (selected ? selected.label : '请选择');
+      const serializedValue = multiple ? selectedValues.join(',') : (value || '');
+      const closeMenu = () => {
+        setOpen(false);
+        if (onClose) onClose();
+      };
+      const openMenu = (anchorElement) => {
+        const nextStyle = calculateMenuPosition(anchorElement);
+        flushSync(() => {
+          setMenuStyle(nextStyle);
+          setOpen(true);
+        });
+      };
+      const calculateMenuPosition = (anchorOverride) => {
+        const anchor = anchorOverride || rootRef.current;
+        if (!anchor || typeof window === 'undefined') return null;
+        const rect = anchor.getBoundingClientRect();
+        const width = Math.max(minWidth, Math.ceil(rect.width));
+        const estimatedHeight = Math.min(256, Math.max(44, (options || []).length * 38 + 12));
+        const spaceBelow = window.innerHeight - rect.bottom - 8;
+        const spaceAbove = rect.top - 8;
+        const openUp = spaceBelow < estimatedHeight && spaceAbove > spaceBelow;
+        const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+        const top = openUp
+          ? Math.max(8, rect.top - Math.min(estimatedHeight, spaceAbove) - 6)
+          : Math.max(8, rect.bottom + 6);
+        const maxHeight = Math.max(44, Math.min(256, openUp ? spaceAbove - 6 : spaceBelow - 6));
+        return { left, top, minWidth: width, maxHeight };
+      };
+      const updateMenuPosition = () => {
+        const nextStyle = calculateMenuPosition();
+        if (nextStyle) setMenuStyle(nextStyle);
+      };
+
+      useLayoutEffect(() => {
         if (!open) return;
+        updateMenuPosition();
         const closeOutside = (event) => {
-          if (rootRef.current && !rootRef.current.contains(event.target)) setOpen(false);
+          if (
+            rootRef.current && !rootRef.current.contains(event.target) &&
+            menuRef.current && !menuRef.current.contains(event.target)
+          ) closeMenu();
         };
         const closeOnEscape = (event) => {
           if (event.key === 'Escape') {
             event.preventDefault();
-            setOpen(false);
+            closeMenu();
           }
         };
+        const updateOnViewportChange = () => updateMenuPosition();
         document.addEventListener('pointerdown', closeOutside);
         window.addEventListener('keydown', closeOnEscape);
+        window.addEventListener('resize', updateOnViewportChange);
+        window.addEventListener('scroll', updateOnViewportChange, true);
         return () => {
           document.removeEventListener('pointerdown', closeOutside);
           window.removeEventListener('keydown', closeOnEscape);
+          window.removeEventListener('resize', updateOnViewportChange);
+          window.removeEventListener('scroll', updateOnViewportChange, true);
         };
       }, [open]);
 
+      const effectiveMenuStyle = open && typeof document !== 'undefined'
+        ? (menuStyle || calculateMenuPosition())
+        : null;
+      const menu = open && effectiveMenuStyle && typeof document !== 'undefined' ? createPortal(
+        <div ref={menuRef} role="listbox" aria-label={ariaLabel} aria-multiselectable={multiple || undefined}
+          className={`fixed z-[1000] overflow-y-auto custom-scrollbar rounded-[12px] border p-1.5 ${isDark ? 'border-[#3A3B3E] bg-[#242528]' : 'border-[#DFE1E5] bg-white'}`}
+          style={{ ...effectiveMenuStyle, boxShadow: isDark ? '0 12px 30px rgba(0,0,0,.34)' : '0 12px 30px rgba(60,64,67,.18)' }}>
+          {(options || []).map(option => {
+            const active = multiple ? selectedValues.includes(option.value) : option.value === value;
+            const lastRequiredSelection = multiple && active && selectedValues.length <= minSelected;
+            return (
+              <button key={option.value || '__empty'} type="button" role="option" aria-selected={active}
+                data-value={option.value} data-testid={testId ? `${testId}-option` : undefined}
+                disabled={lastRequiredSelection}
+                onClick={() => {
+                  if (!multiple) {
+                    closeMenu();
+                    if (!active) onChange(option.value);
+                    return;
+                  }
+                  const nextValues = new Set(selectedValues);
+                  if (active) nextValues.delete(option.value);
+                  else nextValues.add(option.value);
+                  onChange((options || []).filter(item => nextValues.has(item.value)).map(item => item.value));
+                }}
+                className={`w-full min-h-9 rounded-[8px] px-3 py-2 flex items-center gap-3 text-left text-[14px] transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${active ? (isDark ? 'bg-[#364A66] text-[#D2E3FC]' : 'bg-[#E8F0FE] text-[#174EA6]') : (isDark ? 'text-[#E3E3E3] hover:bg-[#303134]' : 'text-[#202124] hover:bg-[#F1F3F4]')}`}>
+                <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                <Check size={15} className={`shrink-0 ${active ? 'opacity-100' : 'opacity-0'}`} />
+              </button>
+            );
+          })}
+        </div>,
+        document.body
+      ) : null;
+
       return (
         <div ref={rootRef} className="relative justify-self-end min-w-0">
-          <button type="button" value={value || ''} data-testid={testId}
+          <button type="button" value={serializedValue} data-testid={testId}
             aria-label={ariaLabel} aria-haspopup="listbox" aria-expanded={open}
-            onClick={() => setOpen(current => !current)}
+            onClick={(event) => open ? closeMenu() : openMenu(event.currentTarget)}
             className={`h-8 max-w-[260px] rounded-[9px] pl-3 pr-2 inline-flex items-center justify-end gap-2 text-[14px] font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[#0B57D0]/40 ${isDark ? 'text-[#E3E3E3] hover:bg-[#2B2C2F]' : 'text-[#1F1F1F] hover:bg-[#F1F3F4]'}`}>
-            <span className="truncate">{selected ? selected.label : '请选择'}</span>
+            <span className="truncate">{displayLabel || '请选择'}</span>
             <ChevronDown size={15} className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''} ${isDark ? 'text-[#9AA0A6]' : 'text-[#73777D]'}`} />
           </button>
-          {open && (
-            <div role="listbox" aria-label={ariaLabel}
-              className={`absolute right-0 top-full z-50 mt-1.5 max-h-64 overflow-y-auto custom-scrollbar rounded-[12px] border p-1.5 ${isDark ? 'border-[#3A3B3E] bg-[#242528]' : 'border-[#DFE1E5] bg-white'}`}
-              style={{ minWidth, boxShadow: isDark ? '0 12px 30px rgba(0,0,0,.34)' : '0 12px 30px rgba(60,64,67,.18)' }}>
-              {(options || []).map(option => {
-                const active = option.value === value;
-                return (
-                  <button key={option.value || '__empty'} type="button" role="option" aria-selected={active}
-                    data-value={option.value} data-testid={testId ? `${testId}-option` : undefined}
-                    onClick={() => { setOpen(false); if (!active) onChange(option.value); }}
-                    className={`w-full min-h-9 rounded-[8px] px-3 py-2 flex items-center gap-3 text-left text-[14px] transition-colors ${active ? (isDark ? 'bg-[#364A66] text-[#D2E3FC]' : 'bg-[#E8F0FE] text-[#174EA6]') : (isDark ? 'text-[#E3E3E3] hover:bg-[#303134]' : 'text-[#202124] hover:bg-[#F1F3F4]')}`}>
-                    <span className="min-w-0 flex-1 truncate">{option.label}</span>
-                    <Check size={15} className={`shrink-0 ${active ? 'opacity-100' : 'opacity-0'}`} />
-                  </button>
-                );
-              })}
-            </div>
-          )}
+          {menu}
         </div>
+      );
+    };
+
+    // iOS 风滚轮列:CSS scroll-snap 提供惯性 + 逐格吸附,滚动停稳(130ms 静默)后提交居中项。
+    const WHEEL_ITEM_H = 32;
+    const WHEEL_VISIBLE_H = 160;
+    const WheelColumn = ({ values, value, onChange, ariaLabel, testId, isDark }) => {
+      const listRef = useRef(null);
+      const settleRef = useRef(null);
+      useEffect(() => {
+        const el = listRef.current;
+        if (el) el.scrollTop = Math.max(0, values.indexOf(value)) * WHEEL_ITEM_H;
+        return () => clearTimeout(settleRef.current);
+      }, [value]);
+      function settle() {
+        const el = listRef.current;
+        if (!el) return;
+        const index = Math.min(values.length - 1, Math.max(0, Math.round(el.scrollTop / WHEEL_ITEM_H)));
+        el.scrollTo({ top: index * WHEEL_ITEM_H, behavior: 'smooth' });
+        if (values[index] !== value) onChange(values[index]);
+      }
+      function onScroll() {
+        clearTimeout(settleRef.current);
+        settleRef.current = setTimeout(settle, 130);
+      }
+      function pick(next) {
+        clearTimeout(settleRef.current);
+        const el = listRef.current;
+        if (el) el.scrollTo({ top: Math.max(0, values.indexOf(next)) * WHEEL_ITEM_H, behavior: 'smooth' });
+        if (next !== value) onChange(next);
+      }
+      return (
+        <div ref={listRef} onScroll={onScroll} role="listbox" aria-label={ariaLabel} data-testid={testId} data-wheel-col
+          className="relative overflow-y-auto overscroll-contain"
+          style={{
+            height: WHEEL_VISIBLE_H, width: 56, scrollSnapType: 'y mandatory', scrollbarWidth: 'none',
+            paddingTop: (WHEEL_VISIBLE_H - WHEEL_ITEM_H) / 2, paddingBottom: (WHEEL_VISIBLE_H - WHEEL_ITEM_H) / 2,
+          }}>
+          {values.map(item => (
+            <button key={item} type="button" role="option" aria-selected={item === value} data-value={item}
+              onClick={() => pick(item)}
+              className={`w-full text-center text-[15px] tabular-nums transition-colors duration-150 ${item === value ? (isDark ? 'font-semibold text-[#E3E3E3]' : 'font-semibold text-[#1F1F1F]') : (isDark ? 'text-[#777B82] hover:text-[#B9BCC1]' : 'text-[#A0A3A8] hover:text-[#5F6368]')}`}
+              style={{ height: WHEEL_ITEM_H, lineHeight: `${WHEEL_ITEM_H}px`, scrollSnapAlign: 'center' }}>
+              {item}
+            </button>
+          ))}
+        </div>
+      );
+    };
+
+    // 时/分选择器:触发区是只读输入框(显示 HH:MM),点开 iOS 风双滚轮。
+    const ScheduledTimeWheel = ({ value, onChange, theme, testId, ariaLabel }) => {
+      const [open, setOpen] = useState(false);
+      const [menuStyle, setMenuStyle] = useState(null);
+      const rootRef = useRef(null);
+      const menuRef = useRef(null);
+      const isDark = theme === 'dark';
+      const valid = /^\d{2}:\d{2}$/.test(value || '');
+      const hour = valid ? value.slice(0, 2) : '08';
+      const minute = valid ? value.slice(3, 5) : '00';
+      const hours = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
+      const minutes = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0'));
+      const updateMenuPosition = () => {
+        const anchor = rootRef.current;
+        if (!anchor || typeof window === 'undefined') return;
+        const rect = anchor.getBoundingClientRect();
+        const width = 142;
+        const height = WHEEL_VISIBLE_H + 18;
+        const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+        const top = rect.bottom + 6 + height > window.innerHeight
+          ? Math.max(8, rect.top - height - 6)
+          : Math.max(8, rect.bottom + 6);
+        setMenuStyle({ left, top });
+      };
+
+      useEffect(() => {
+        if (!open) return;
+        updateMenuPosition();
+        const closeOutside = (event) => {
+          if (
+            rootRef.current && !rootRef.current.contains(event.target) &&
+            menuRef.current && !menuRef.current.contains(event.target)
+          ) setOpen(false);
+        };
+        const closeOnEscape = (event) => {
+          if (event.key === 'Escape') setOpen(false);
+        };
+        const updateOnViewportChange = () => updateMenuPosition();
+        document.addEventListener('pointerdown', closeOutside);
+        document.addEventListener('keydown', closeOnEscape);
+        window.addEventListener('resize', updateOnViewportChange);
+        window.addEventListener('scroll', updateOnViewportChange, true);
+        return () => {
+          document.removeEventListener('pointerdown', closeOutside);
+          document.removeEventListener('keydown', closeOnEscape);
+          window.removeEventListener('resize', updateOnViewportChange);
+          window.removeEventListener('scroll', updateOnViewportChange, true);
+        };
+      }, [open]);
+
+      const surface = isDark ? '#242528' : '#FFFFFF';
+      const wheel = open && menuStyle && typeof document !== 'undefined' ? createPortal(
+        <div ref={menuRef} data-testid={`${testId}-wheel`} role="dialog" aria-label={ariaLabel}
+          className={`fixed z-[1000] flex items-stretch gap-0.5 rounded-[14px] border px-2.5 py-2 ${isDark ? 'border-[#3A3B3E]' : 'border-[#DFE1E5]'}`}
+          style={{ ...menuStyle, background: surface, boxShadow: isDark ? '0 12px 30px rgba(0,0,0,.34)' : '0 12px 30px rgba(60,64,67,.18)' }}>
+          <style>{'[data-wheel-col]::-webkit-scrollbar{display:none}'}</style>
+          <div aria-hidden="true" className={`pointer-events-none absolute inset-x-2 z-0 rounded-[9px] ${isDark ? 'bg-white/[0.08]' : 'bg-black/[0.05]'}`}
+            style={{ top: 8 + (WHEEL_VISIBLE_H - WHEEL_ITEM_H) / 2, height: WHEEL_ITEM_H }} />
+          <div aria-hidden="true" className="pointer-events-none absolute inset-x-1 top-1 z-10 h-11 rounded-t-[12px]"
+            style={{ background: `linear-gradient(${surface}, transparent)` }} />
+          <div aria-hidden="true" className="pointer-events-none absolute inset-x-1 bottom-1 z-10 h-11 rounded-b-[12px]"
+            style={{ background: `linear-gradient(transparent, ${surface})` }} />
+          <WheelColumn values={hours} value={hour} onChange={next => onChange(`${next}:${minute}`)}
+            ariaLabel="选择小时" testId={`${testId}-hour`} isDark={isDark} />
+          <span className={`self-center text-[15px] font-semibold ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>:</span>
+          <WheelColumn values={minutes} value={minute} onChange={next => onChange(`${hour}:${next}`)}
+            ariaLabel="选择分钟" testId={`${testId}-minute`} isDark={isDark} />
+        </div>,
+        document.body
+      ) : null;
+      return (
+        <span ref={rootRef} className="relative justify-self-end">
+          <input readOnly data-testid={testId} value={value} aria-label={ariaLabel}
+            aria-haspopup="listbox" aria-expanded={open}
+            onClick={() => setOpen(current => !current)}
+            className={`w-[72px] cursor-pointer bg-transparent text-right font-medium outline-none ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`} />
+          {wheel}
+        </span>
       );
     };
 
     const ScheduledTasksView = ({ theme, t, onOpenChat }) => {
       const bs = useBridge();
       const appState = bs || (bridge?.getState ? bridge.getState() : {});
-      const tasks = appState.scheduledTasks || [];
-      const selectedDetail = appState.scheduledTaskDetail || null;
-      const runs = appState.scheduledTaskRuns || [];
+      const realTasks = appState.scheduledTasks || [];
+      const rawSelectedDetail = appState.scheduledTaskDetail || null;
+      const rawRuns = appState.scheduledTaskRuns || [];
       const loading = !!appState.scheduledTaskLoading;
       const busyAction = appState.scheduledTaskBusyAction || null;
       const error = appState.scheduledTaskError || null;
       const isDark = theme === 'dark';
-      const [query, setQuery] = useState('');
       const [taskFilter, setTaskFilter] = useState('all');
       const [clockNow, setClockNow] = useState(() => Date.now());
+      const [previewSelectedId, setPreviewSelectedId] = useState(null);
+      const [previewTaskStatus, setPreviewTaskStatus] = useState({});
+      const [previewCreatedTasks, setPreviewCreatedTasks] = useState([]);
+      const previewMode = !bridge.available && realTasks.length === 0;
+      const tasks = previewMode
+        ? [...PREVIEW_SCHEDULED_TASKS, ...previewCreatedTasks].map(task => ({
+          ...task,
+          status: previewTaskStatus[task.id] || task.status,
+          nextRunAt: task.nextRunAt || new Date(clockNow + (task.nextRunOffsetMs || 1000 * 60 * 60)).toISOString(),
+        }))
+        : realTasks;
       const selectedId = appState.selectedScheduledTaskId || null;
-      const [createMenuOpen, setCreateMenuOpen] = useState(false);
-      const [deleteConfirmId, setDeleteConfirmId] = useState(null);
+      const effectiveSelectedId = previewMode ? previewSelectedId : selectedId;
+      const selectedDetail = previewMode
+        ? tasks.find(task => task.id === effectiveSelectedId) || null
+        : rawSelectedDetail;
+      const runs = previewMode && effectiveSelectedId ? (PREVIEW_SCHEDULED_RUNS[effectiveSelectedId] || []) : rawRuns;
+      const [createForm, setCreateForm] = useState(null);
+      const [createScheduleRepeatIntent, setCreateScheduleRepeatIntent] = useState(null);
+      const [deleteConfirmTask, setDeleteConfirmTask] = useState(null);
       const [detailForm, setDetailForm] = useState(null);
+      const [scheduleRepeatIntent, setScheduleRepeatIntent] = useState(null);
       const [saveState, setSaveState] = useState('idle');
       const saveTimerRef = useRef(null);
       const pendingPatchRef = useRef({});
@@ -122,29 +425,34 @@ import { bridge, useBridge } from '../../hooks/useBridge.js';
         return () => clearInterval(timer);
       }, []);
 
-      const filtered = tasks.filter(task => {
-        const q = query.trim().toLowerCase();
-        const matchesQuery = !q || (
-          (task.name || '') + ' ' +
-          (task.scheduleLabel || '') + ' ' +
-          (task.prompt || '') + ' ' +
-          ((task.cwds || []).join(' '))
-        ).toLowerCase().includes(q);
+      useEffect(() => {
+        if (!createForm) return;
+        const closeOnEscape = (event) => {
+          if (event.key === 'Escape' && !busyAction) setCreateForm(null);
+        };
+        window.addEventListener('keydown', closeOnEscape);
+        return () => window.removeEventListener('keydown', closeOnEscape);
+      }, [createForm, busyAction]);
+
+      const sortTasks = (items) => [...(items || [])].sort((a, b) => {
+        const aActive = a.status === 'active' || a.isRunning;
+        const bActive = b.status === 'active' || b.isRunning;
+        if (aActive !== bActive) return aActive ? -1 : 1;
+        const aNext = new Date(a.nextRunAt || 8640000000000000).getTime();
+        const bNext = new Date(b.nextRunAt || 8640000000000000).getTime();
+        if (aNext !== bNext) return aNext - bNext;
+        return String(b.lastRunAt || b.createdAt || b.id || '').localeCompare(String(a.lastRunAt || a.createdAt || a.id || ''));
+      });
+      const filtered = sortTasks(tasks.filter(task => {
         const matchesFilter = taskFilter === 'all'
           || (taskFilter === 'active' && task.status === 'active')
           || (taskFilter === 'paused' && task.status !== 'active');
-        return matchesQuery && matchesFilter;
-      });
-      const selected = tasks.find(task => task.id === selectedId) || null;
+        return matchesFilter;
+      }));
+      const selected = tasks.find(task => task.id === effectiveSelectedId) || null;
       const detail = selectedDetail && selected && selectedDetail.id === selected.id ? selectedDetail : selected;
-      const hasAnyTask = tasks.length > 0;
-      const hasQuery = query.trim().length > 0;
       const accent = isDark ? '#0A84FF' : '#007AFF';
-      const subtleText = isDark ? 'text-[#9AA0A6]' : 'text-[#85888D]';
       const bodyText = isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]';
-      const border = isDark ? 'border-[#2C2D30]' : 'border-[#ECEEF1]';
-      const panelBg = isDark ? 'bg-[#17181A]' : 'bg-white';
-      const rowHover = isDark ? 'hover:bg-[#242528]' : 'hover:bg-[#F5F5F6]';
       const fmtDateTime = (value) => {
         if (!value) return '未安排';
         const d = new Date(value);
@@ -157,6 +465,7 @@ import { bridge, useBridge } from '../../hooks/useBridge.js';
         if (value === 'paused') return '已暂停';
         return value || '未知';
       };
+      const taskListStatusLabel = (value) => value === 'active' ? '已开启' : '已暂停';
       const runStatusLabel = (value) => ({
         queued: '等待中', running: '运行中', completed: '已完成', failed: '失败', canceled: '已取消'
       }[value] || value || '未知');
@@ -182,24 +491,30 @@ import { bridge, useBridge } from '../../hooks/useBridge.js';
         else if (hours > 0) remaining = `${hours}小时${minutes ? `${minutes}分` : ''}后`;
         else if (minutes > 0) remaining = `${minutes}分${seconds}秒后`;
         else if (seconds > 0) remaining = `${seconds}秒后`;
-        return `${schedule} · 下次 ${exact}（${remaining}）`;
+        return (
+          <>
+            <span>{schedule} · </span>
+            <span data-testid="scheduled-task-next-run"
+              className={`font-semibold ${isDark ? 'text-[#7CB7F0]' : 'text-[#1769B0]'}`}>
+              下次 {exact}（{remaining}）
+            </span>
+          </>
+        );
       };
-      const activeModel = (appState.savedModels || []).find(model => model.id === appState.activeModelId);
-      const visibleSuggestions = SCHEDULED_TASK_TEMPLATES.filter(template => {
-        const representedByTask = tasks.some(task => {
-          const sameTemplateSource = task.templateId === template.id;
-          const sameNameAndSchedule = String(task.name || '').trim() === template.name
-            && task.rrule === template.rrule;
-          const sameDefinition = task.rrule === template.rrule && task.prompt === template.prompt;
-          return sameTemplateSource || sameNameAndSchedule || sameDefinition;
-        });
-        return !representedByTask;
-      });
+      const savedModels = visibleUserModels(appState.savedModels || []);
+      const activeModel = savedModels.find(model => model.id === appState.activeModelId) || savedModels[0] || null;
+      const modelIdForTask = (task) => {
+        if (!task) return '';
+        if (task.modelId && !isBuiltInModelOption({ id: task.modelId, name: task.model, model: task.model })) return task.modelId;
+        if (!task.model) return activeModel && activeModel.id || '';
+        const matches = savedModels.filter(model => model.model === task.model);
+        return matches.length === 1 ? matches[0].id : '';
+      };
+      const visibleSuggestions = SCHEDULED_TASK_TEMPLATES;
       const detailFormIsValid = !!detailForm &&
         !!String(detailForm.name || '').trim() &&
         !!String(detailForm.prompt || '').trim() &&
         !!String(detailForm.rrule || '').trim();
-      const detailHasWorkspace = !!detailForm && (detailForm.cwds || []).some(path => String(path || '').trim());
       function taskForm(task) {
         if (!task) return null;
         return {
@@ -207,11 +522,8 @@ import { bridge, useBridge } from '../../hooks/useBridge.js';
           name: task.name || '',
           prompt: task.prompt || '',
           rrule: task.rrule || 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=8;BYMINUTE=0',
-          cwds: Array.isArray(task.cwds) ? [...task.cwds] : [],
           model: task.model || (activeModel && activeModel.model) || '',
-          allowShell: !!task.allowShell,
-          trustMode: !!task.trustMode,
-          autoApprove: !!task.autoApprove,
+          modelId: modelIdForTask(task),
         };
       }
 
@@ -221,8 +533,9 @@ import { bridge, useBridge } from '../../hooks/useBridge.js';
         pendingPatchRef.current = {};
         editTaskIdRef.current = detail && detail.id || null;
         setDetailForm(taskForm(detail));
+        setScheduleRepeatIntent(null);
         setSaveState('idle');
-      }, [selectedId, detail && detail.id]);
+      }, [effectiveSelectedId, detail && detail.id]);
 
       useEffect(() => {
         mountedRef.current = true;
@@ -326,75 +639,140 @@ import { bridge, useBridge } from '../../hooks/useBridge.js';
       }
 
       function editImmediateField(key, value) {
+        return editImmediateFields({[key]: value});
+      }
+
+      function editImmediateFields(patch) {
         const taskId = editTaskIdRef.current;
-        setDetailForm(current => current ? {...current, [key]: value} : current);
+        setDetailForm(current => current ? {...current, ...patch} : current);
         flushTextEdits();
-        return persistDetailPatch(taskId, {[key]: value});
+        return persistDetailPatch(taskId, patch);
+      }
+
+      function editModel(modelId) {
+        const selectedModel = savedModels.find(model => model.id === modelId);
+        if (!selectedModel) return;
+        return editImmediateFields({
+          model: selectedModel.model,
+          modelId: selectedModel.id,
+        });
       }
 
       async function selectTask(id) {
+        setCreateForm(null);
+        setCreateScheduleRepeatIntent(null);
+        if (previewMode) {
+          setPreviewSelectedId(id);
+          return;
+        }
         if (!(await flushBeforeAction())) return;
         if (bridge && bridge.selectScheduledTask) bridge.selectScheduledTask(id);
         if (id && bridge && bridge.refreshScheduledTaskData) bridge.refreshScheduledTaskData(20).catch(() => {});
       }
 
       async function startTemplate(template) {
-        const workspace = Array.isArray(template.workspace) ? template.workspace : [];
-        if (!bridge || !bridge.createScheduledTask) return;
         if (!(await flushBeforeAction())) return;
-        setCreateMenuOpen(false);
-        try {
-          await bridge.createScheduledTask({
-          templateId: template.id, name: template.name, prompt: template.prompt, rrule: template.rrule,
-          cwds: [...workspace],
-          model: activeModel && activeModel.model || null,
-          mode: 'yolo',
-          allowShell: !!template.allowShell,
-          trustMode: !!template.trustMode,
-          autoApprove: !!template.autoApprove,
+        if (previewMode) setPreviewSelectedId(null);
+        else if (bridge && bridge.selectScheduledTask) bridge.selectScheduledTask(null);
+        setCreateScheduleRepeatIntent(null);
+        setCreateForm({
+          templateId: template.id,
+          name: template.name,
+          prompt: template.prompt,
+          rrule: template.rrule,
           paused: !!template.paused,
-          });
-        } catch (_) {}
+        });
       }
 
       async function startBlankTask() {
-        if (!bridge || !bridge.createScheduledTask) return;
         if (!(await flushBeforeAction())) return;
-        setCreateMenuOpen(false);
+        if (previewMode) setPreviewSelectedId(null);
+        else if (bridge && bridge.selectScheduledTask) bridge.selectScheduledTask(null);
+        setCreateScheduleRepeatIntent(null);
+        setCreateForm({
+          name: '',
+          prompt: '',
+          rrule: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=8;BYMINUTE=0',
+        });
+      }
+
+      async function submitCustomTask(event) {
+        event.preventDefault();
+        if (busyAction || !createForm) return;
+        const name = String(createForm.name || '').trim();
+        const prompt = String(createForm.prompt || '').trim();
+        if (!name || !prompt) return;
+        if (previewMode) {
+          const created = {
+            id: `preview-created-${Date.now()}`,
+            templateId: createForm.templateId || null,
+            name,
+            status: createForm.paused ? 'paused' : 'active',
+            scheduleLabel: scheduleRepeatLabel(scheduleEditorValue(createForm.rrule)),
+            rrule: createForm.rrule,
+            prompt,
+            model: activeModel && activeModel.model || '自动选择',
+            modelId: activeModel && activeModel.id || null,
+            nextRunAt: new Date(clockNow + 1000 * 60 * 60).toISOString(),
+            hasUnreadRuns: false,
+            isRunning: false,
+          };
+          setPreviewCreatedTasks(current => [created, ...current]);
+          setPreviewSelectedId(null);
+          setCreateForm(null);
+          setCreateScheduleRepeatIntent(null);
+          return;
+        }
+        if (!bridge || !bridge.createScheduledTask) return;
         try {
           await bridge.createScheduledTask({
-            name: '新任务',
-            prompt: '请描述这个定时任务每次运行时要完成的工作。',
-            rrule: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=8;BYMINUTE=0',
-            cwds: [], model: activeModel && activeModel.model || null,
-            mode: 'yolo', allowShell: false, trustMode: false, autoApprove: false,
-            paused: true,
+            templateId: createForm.templateId || undefined,
+            name,
+            prompt,
+            rrule: createForm.rrule,
+            model: activeModel && activeModel.model || null,
+            modelId: activeModel && activeModel.id || null,
+            mode: 'yolo',
+            paused: !!createForm.paused,
+            selectAfterCreate: false,
           });
+          if (bridge.selectScheduledTask) bridge.selectScheduledTask(null);
+          setCreateForm(null);
+          setCreateScheduleRepeatIntent(null);
         } catch (_) {}
       }
 
-      function requestDeleteTask(e, id) {
-        e.stopPropagation();
-        setDeleteConfirmId(id);
+      function requestDeleteTask(e, task) {
+        if (e) e.stopPropagation();
+        if (!task) return;
+        setDeleteConfirmTask(task);
       }
 
       function cancelDeleteTask(e) {
-        e.stopPropagation();
+        if (e) e.stopPropagation();
         if (busyAction) return;
-        setDeleteConfirmId(null);
+        setDeleteConfirmTask(null);
       }
 
-      async function confirmDeleteTask(e, id) {
-        e.stopPropagation();
+      async function confirmDeleteTask(e, task) {
+        if (e) e.stopPropagation();
+        const id = task && task.id;
         if (!bridge || !bridge.deleteScheduledTask || busyAction) return;
         try {
           await bridge.deleteScheduledTask(id);
-          setDeleteConfirmId(null);
+          setDeleteConfirmTask(null);
         } catch (_) {}
       }
 
-      async function toggleTask(e, task) {
-        e.stopPropagation();
+      async function toggleTaskPaused(task) {
+        if (!task) return;
+        if (previewMode) {
+          setPreviewTaskStatus(current => ({
+            ...current,
+            [task.id]: task.status === 'active' ? 'paused' : 'active',
+          }));
+          return;
+        }
         if (!bridge) return;
         try {
           if (!(await flushBeforeAction())) return;
@@ -403,22 +781,37 @@ import { bridge, useBridge } from '../../hooks/useBridge.js';
         } catch (_) {}
       }
 
+      async function toggleTask(e, task) {
+        if (e) e.stopPropagation();
+        return toggleTaskPaused(task);
+      }
+
       async function startChatCreation() {
-        if (!bridge || !bridge.startScheduledTaskChat) return;
+        if (!bridge || !bridge.startScheduledTaskChat) {
+          if (onOpenChat) onOpenChat();
+          return;
+        }
         try {
           if (!(await flushBeforeAction())) return;
-          setCreateMenuOpen(false);
           const started = await bridge.startScheduledTaskChat();
           if (started && onOpenChat) onOpenChat();
         } catch (_) {}
       }
 
       async function runTaskNow(id) {
-        if (!bridge || !bridge.runScheduledTaskNow || busyAction || !detailFormIsValid || !detailHasWorkspace) return;
+        const editingThisTask = editTaskIdRef.current === id && !!detailForm;
+        if (!bridge || !bridge.runScheduledTaskNow || busyAction || (editingThisTask && !detailFormIsValid)) return;
         try {
           if (!(await flushBeforeAction())) return;
           await bridge.runScheduledTaskNow(id);
         } catch (_) {}
+      }
+
+      async function saveDetailAndClose() {
+        if (busyAction) return;
+        if (!(await flushBeforeAction())) return;
+        if (previewMode) setPreviewSelectedId(null);
+        else if (bridge && bridge.selectScheduledTask) bridge.selectScheduledTask(null);
       }
 
       async function openRunChat(run) {
@@ -427,14 +820,6 @@ import { bridge, useBridge } from '../../hooks/useBridge.js';
           if (!(await flushBeforeAction())) return;
           const opened = await bridge.openScheduledRunChat(run, detail || selected);
           if (!opened) return;
-        } catch (_) {}
-      }
-
-      async function chooseDetailFolder() {
-        if (!bridge || !bridge.pickFolder) return;
-        try {
-          const selectedFolder = await bridge.pickFolder();
-          if (selectedFolder) editImmediateField('cwds', [selectedFolder]);
         } catch (_) {}
       }
 
@@ -453,10 +838,9 @@ import { bridge, useBridge } from '../../hooks/useBridge.js';
 
       function scheduleEditorValue(rrule) {
         const fields = parseScheduleFields(rrule);
-        const days = String(fields.BYDAY || '').split(',').filter(Boolean);
+        const days = normalizeScheduleDays(fields.BYDAY);
         let repeat = 'workdays';
-        if (fields.FREQ === 'MINUTELY') repeat = 'minutely';
-        else if (fields.FREQ === 'HOURLY') repeat = 'hourly';
+        if (fields.FREQ === 'HOURLY') repeat = 'hourly';
         else if (days.join(',') === 'MO,TU,WE,TH,FR,SA,SU') repeat = 'daily';
         else if (days.join(',') !== 'MO,TU,WE,TH,FR') repeat = 'weekly';
         return {
@@ -470,17 +854,13 @@ import { bridge, useBridge } from '../../hooks/useBridge.js';
 
       function scheduleRepeatLabel(editor) {
         if (!editor) return '';
-        if (editor.repeat === 'minutely') {
-          return editor.interval === 1 ? '每分钟' : `每 ${editor.interval} 分钟`;
-        }
         if (editor.repeat === 'hourly') {
           return editor.interval === 1 ? '每小时' : `每 ${editor.interval} 小时`;
         }
         return {workdays: '工作日', daily: '每天', weekly: '每周'}[editor.repeat] || '自定义';
       }
 
-      function buildEditedRrule(key, value) {
-        const currentRrule = detailForm && detailForm.rrule;
+      function buildRrule(currentRrule, key, value) {
         const fields = parseScheduleFields(currentRrule);
         const previousEditor = scheduleEditorValue(currentRrule);
         const editor = {...previousEditor};
@@ -491,417 +871,659 @@ import { bridge, useBridge } from '../../hooks/useBridge.js';
           fields.BYMINUTE = String(Number(minute || 0));
           return serializeScheduleFields(fields);
         }
-        if (key === 'day') {
+        if (key === 'days') {
+          const days = normalizeScheduleDays(value);
+          if (!days.length) return currentRrule;
           fields.FREQ = 'WEEKLY';
-          fields.BYDAY = value;
+          fields.BYDAY = days.join(',');
           fields.BYHOUR = String(Number(hour || 0));
           fields.BYMINUTE = String(Number(minute || 0));
           return serializeScheduleFields(fields);
-        }
-        if (editor.repeat === 'minutely') {
-          const interval = previousEditor.repeat === 'minutely' ? editor.interval : 10;
-          return `FREQ=MINUTELY;INTERVAL=${Math.max(1, interval || 10)}`;
         }
         if (editor.repeat === 'hourly') {
           const interval = previousEditor.repeat === 'hourly' ? editor.interval : 1;
           return `FREQ=HOURLY;INTERVAL=${Math.max(1, interval || 1)}`;
         }
+        if (key === 'repeat' && editor.repeat === 'weekly') {
+          const previousDays = normalizeScheduleDays(previousEditor.days);
+          const presetDays = previousDays.join(',');
+          const inheritedPreset = presetDays === 'MO,TU,WE,TH,FR' || presetDays === 'MO,TU,WE,TH,FR,SA,SU';
+          const weeklyDays = inheritedPreset ? [previousEditor.day || 'MO'] : (previousDays.length ? previousDays : [previousEditor.day || 'MO']);
+          return `FREQ=WEEKLY;BYDAY=${weeklyDays.join(',')};BYHOUR=${Number(hour || 0)};BYMINUTE=${Number(minute || 0)}`;
+        }
         const days = editor.repeat === 'daily' ? 'MO,TU,WE,TH,FR,SA,SU'
           : (editor.repeat === 'workdays' ? 'MO,TU,WE,TH,FR'
-            : (previousEditor.repeat === 'weekly' ? (editor.days.join(',') || editor.day) : editor.day));
+            : (editor.days.join(',') || editor.day || 'MO'));
         return `FREQ=WEEKLY;BYDAY=${days};BYHOUR=${Number(hour || 0)};BYMINUTE=${Number(minute || 0)}`;
       }
 
+      function buildEditedRrule(key, value) {
+        return buildRrule(detailForm && detailForm.rrule, key, value);
+      }
+
       function editSchedule(key, value) {
+        // 连续勾选恰好组成“工作日”或“每天”时，仍保持每周编辑器可见。
+        if (key === 'repeat') setScheduleRepeatIntent(value === 'weekly' ? 'weekly' : null);
+        if (key === 'days') setScheduleRepeatIntent('weekly');
         editImmediateField('rrule', buildEditedRrule(key, value));
       }
 
-      const scheduleEditor = detailForm ? scheduleEditorValue(detailForm.rrule) : null;
-
-      function scheduleDayLabel(days) {
-        const labels = {MO:'星期一', TU:'星期二', WE:'星期三', TH:'星期四', FR:'星期五', SA:'星期六', SU:'星期日'};
-        return (days || []).map(day => labels[day] || day).join('、');
+      function editCreateSchedule(key, value) {
+        if (key === 'repeat') setCreateScheduleRepeatIntent(value === 'weekly' ? 'weekly' : null);
+        if (key === 'days') setCreateScheduleRepeatIntent('weekly');
+        setCreateForm(current => current
+          ? {...current, rrule: buildRrule(current.rrule, key, value)}
+          : current);
       }
 
-      const modelOptions = (appState.savedModels || []).map(model => ({
-        value: model.model,
-        label: model.name || model.model,
+      const parsedScheduleEditor = detailForm ? scheduleEditorValue(detailForm.rrule) : null;
+      const scheduleEditor = parsedScheduleEditor
+        ? {...parsedScheduleEditor, repeat: scheduleRepeatIntent || parsedScheduleEditor.repeat}
+        : null;
+      const detailShowsClockTime = scheduleEditor && scheduleEditor.repeat !== 'hourly';
+      const parsedCreateScheduleEditor = createForm ? scheduleEditorValue(createForm.rrule) : null;
+      const createScheduleEditor = parsedCreateScheduleEditor
+        ? {...parsedCreateScheduleEditor, repeat: createScheduleRepeatIntent || parsedCreateScheduleEditor.repeat}
+        : null;
+
+      const modelOptions = savedModels.map(model => ({
+        value: model.id,
+        label: model.name && model.name !== model.model ? `${model.name} · ${model.model}` : model.model,
+        model: model.model,
       }));
-      if (detailForm && detailForm.model && !modelOptions.some(option => option.value === detailForm.model)) {
-        modelOptions.unshift({ value: detailForm.model, label: detailForm.model });
-      } else if (detailForm && !detailForm.model) {
-        modelOptions.unshift({ value: '', label: '当前模型' });
+      const detailModelIsBuiltIn = detailForm && isBuiltInModelOption({
+        id: detailForm.modelId,
+        name: detailForm.model,
+        model: detailForm.model,
+      });
+      if (detailForm && detailForm.modelId && !detailModelIsBuiltIn && !modelOptions.some(option => option.value === detailForm.modelId)) {
+        modelOptions.unshift({ value: detailForm.modelId, label: detailForm.model || detailForm.modelId, model: detailForm.model });
+      } else if (detailForm && !detailForm.modelId && !detailModelIsBuiltIn) {
+        modelOptions.unshift({ value: '', label: detailForm.model ? `重新选择模型 · ${detailForm.model}` : '当前模型' });
       }
-      const repeatOptions = scheduleEditor ? [
+      const repeatOptions = [
         { value: 'workdays', label: '工作日' },
         { value: 'daily', label: '每天' },
         { value: 'weekly', label: '每周' },
-        { value: 'hourly', label: scheduleEditor.repeat === 'hourly' ? scheduleRepeatLabel(scheduleEditor) : '每小时' },
-        { value: 'minutely', label: scheduleEditor.repeat === 'minutely' ? scheduleRepeatLabel(scheduleEditor) : '每 10 分钟' },
-      ] : [];
-      const weekdayOptions = [
-        ['MO','星期一'], ['TU','星期二'], ['WE','星期三'], ['TH','星期四'],
-        ['FR','星期五'], ['SA','星期六'], ['SU','星期日'],
-      ].map(([value, label]) => ({ value, label }));
-      const currentDaysValue = scheduleEditor ? (scheduleEditor.days.join(',') || scheduleEditor.day) : 'MO';
-      const dayOptions = scheduleEditor && scheduleEditor.days.length > 1
-        ? [{ value: currentDaysValue, label: scheduleDayLabel(scheduleEditor.days) }, ...weekdayOptions]
-        : weekdayOptions;
+        { value: 'hourly', label: '每小时' },
+      ];
+      const selectedWeekdays = scheduleEditor && scheduleEditor.days.length
+        ? scheduleEditor.days
+        : [scheduleEditor && scheduleEditor.day || 'MO'];
+      const createSelectedWeekdays = createScheduleEditor && createScheduleEditor.days.length
+        ? createScheduleEditor.days
+        : [createScheduleEditor && createScheduleEditor.day || 'MO'];
 
-      const TemplateSuggestions = () => (
-        <section className="mt-5" data-testid="scheduled-template-suggestions">
-          <div className={`pb-3 mb-2 border-b text-[15px] font-semibold ${subtleText} ${border}`}>建议</div>
-          <div className="space-y-1">
+      const iosSeparator = isDark ? 'border-[#545458]/50' : 'border-[#3C3C43]/20';
+      const iosInsetSurface = isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]';
+      const iosHistorySurface = isDark ? 'bg-[#2C2C2E]' : 'bg-[#F5F5F7]';
+      const mutedValue = isDark ? 'text-[#EBEBF5]/60' : 'text-[#3C3C43]/60';
+      const pressedRow = isDark ? 'active:bg-[#3A3A3C]' : 'active:bg-[#E5E5EA]';
+      const modalPortalTarget = typeof document !== 'undefined' ? document.body : null;
+      const renderModal = node => modalPortalTarget ? createPortal(node, modalPortalTarget) : node;
+
+      const MacSwitch = ({ task }) => {
+        const checked = task.status === 'active';
+        return (
+          <button
+            type="button"
+            onClick={(event) => toggleTask(event, task)}
+            disabled={!!busyAction}
+            aria-pressed={checked}
+            aria-label={checked ? `暂停${task.name}` : `恢复${task.name}`}
+            className={`relative flex h-6 w-11 shrink-0 items-center rounded-full p-[1px] transition-colors duration-300 disabled:opacity-50 ${
+              checked ? 'bg-[#34C759]' : (isDark ? 'bg-[#4A4B50]' : 'bg-[#D8DADD]')
+            }`}
+          >
+            <span
+              className={`h-5 w-5 rounded-full bg-white shadow-[0_3px_8px_rgba(0,0,0,0.15),0_1px_1px_rgba(0,0,0,0.05)] transition-transform duration-300 ${
+                checked ? 'translate-x-5' : 'translate-x-0'
+              }`}
+            />
+          </button>
+        );
+      };
+
+      const taskIconMeta = (task) => {
+        const template = SCHEDULED_TASK_TEMPLATES.find(item => item.id === task.templateId);
+        if (template) {
+          return {
+            Icon: template.icon || Clock,
+            className: task.status === 'active'
+              ? (isDark ? 'bg-[#12351D] text-[#32D74B]' : 'bg-[#E9F8EE] text-[#188038]')
+              : (isDark ? 'bg-[#2C2C2E] text-[#8E8E93]' : 'bg-[#F5F5F7] text-[#86868B]'),
+          };
+        }
+        const name = String(task.name || '');
+        if (/周报|报告|数据|统计/.test(name)) {
+          return { Icon: FileChartLine, className: isDark ? 'bg-[#2C2333] text-[#D5A8FF]' : 'bg-[#F7EFFF] text-[#AF52DE]' };
+        }
+        if (/早报|简报|新闻/.test(name)) {
+          return { Icon: Newspaper, className: isDark ? 'bg-[#122E45] text-[#7CB7F0]' : 'bg-blue-50 text-[#007AFF]' };
+        }
+        if (/督办|事项|待办|跟进/.test(name)) {
+          return { Icon: ClipboardCheck, className: isDark ? 'bg-[#12351D] text-[#32D74B]' : 'bg-[#E9F8EE] text-[#188038]' };
+        }
+        return { Icon: Clock, className: isDark ? 'bg-[#2C2C2E] text-[#8E8E93]' : 'bg-[#F5F5F7] text-[#86868B]' };
+      };
+
+      const FilterTabs = () => (
+        <div data-testid="scheduled-filter-tabs" className={`grid grid-cols-3 rounded-[8px] p-0.5 ${isDark ? 'bg-[#767680]/24' : 'bg-[#767680]/12'}`}>
+          {[
+            ['all', '全部'],
+            ['active', '已开启'],
+            ['paused', '已暂停'],
+          ].map(([value, label]) => (
+            <button key={value} type="button" onClick={() => setTaskFilter(value)}
+              aria-pressed={taskFilter === value}
+              className={`h-7 min-w-[72px] rounded-[6.5px] px-3 text-[13px] font-medium transition-colors ${
+                taskFilter === value
+                  ? (isDark ? 'bg-[#636366] text-white shadow-sm' : 'bg-white text-black shadow-sm')
+                  : `${mutedValue}`
+              }`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      );
+
+      const FormScheduleRows = ({ editor, selectedDays, prefix, onEdit, onCloseWeekly }) => !editor ? null : (
+        <>
+          <div className={`flex items-center pl-3.5 ${pressedRow} cursor-pointer border-b ${iosSeparator}`}>
+            <div className="flex flex-1 items-center justify-between py-3.5 pr-3.5">
+              <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>重复</span>
+              <div className="flex items-center gap-1.5">
+                <ScheduledSelect value={editor.repeat} options={repeatOptions}
+                  onChange={value => onEdit('repeat', value)}
+                  testId={`${prefix}-repeat`} ariaLabel="选择重复频率" theme={theme} />
+                <ChevronRight className={`h-3.5 w-3.5 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#C5C5C7]'}`} />
+              </div>
+            </div>
+          </div>
+          {editor.repeat === 'hourly' && (
+            <div data-testid={`${prefix}-interval-row`} className={`flex items-center pl-3.5 ${pressedRow} cursor-pointer border-b ${iosSeparator}`}>
+              <div className="flex flex-1 items-center justify-between py-3.5 pr-3.5">
+                <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>间隔</span>
+                <ScheduledSelect value={editor.interval} options={HOURLY_INTERVAL_OPTIONS}
+                  onChange={value => onEdit('interval', value)}
+                  testId={`${prefix}-interval`} ariaLabel="选择小时间隔" theme={theme} minWidth={140} />
+              </div>
+            </div>
+          )}
+          {editor.repeat === 'weekly' && (
+            <div className={`flex items-center pl-3.5 ${pressedRow} cursor-pointer border-b ${iosSeparator}`}>
+              <div className="flex flex-1 items-center justify-between py-3.5 pr-3.5">
+                <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>日期</span>
+                <div className="flex items-center gap-1.5">
+                  <ScheduledSelect value={selectedDays} options={WEEKDAY_OPTIONS}
+                    onChange={values => onEdit('days', values)} multiple minSelected={1}
+                    onClose={onCloseWeekly}
+                    testId={`${prefix}-day`} ariaLabel="选择运行日期" theme={theme} minWidth={190} />
+                  <ChevronRight className={`h-3.5 w-3.5 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#C5C5C7]'}`} />
+                </div>
+              </div>
+            </div>
+          )}
+          {editor.repeat !== 'hourly' && (
+            <div data-testid={`${prefix}-time-row`} className={`flex items-center pl-3.5 ${pressedRow} cursor-pointer`}>
+              <div className="flex flex-1 items-center justify-between py-3.5 pr-3.5">
+                <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>时间</span>
+                <ScheduledTimeWheel value={editor.time}
+                  onChange={value => onEdit('time', value)}
+                  theme={theme} testId={`${prefix}-time`} ariaLabel="选择运行时间" />
+              </div>
+            </div>
+          )}
+        </>
+      );
+
+      const CreateTaskDialog = () => !createForm ? null : renderModal(
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/45 px-4 py-6 backdrop-blur-[6px]">
+          <form aria-labelledby="scheduled-create-dialog-title"
+            data-testid="scheduled-create-dialog" onSubmit={submitCustomTask}
+            className={`mx-4 flex max-h-[calc(100vh-48px)] w-full max-w-[480px] flex-col overflow-hidden rounded-[28px] shadow-[0_18px_60px_rgba(0,0,0,0.22)] ${isDark ? 'bg-[#1C1C1E]' : 'bg-white'}`}>
+            <div className="flex shrink-0 items-start justify-between gap-4 px-6 pb-4 pt-6">
+              <div className="min-w-0">
+                <h2 id="scheduled-create-dialog-title" className={`truncate text-[22px] font-semibold leading-7 ${bodyText}`}>
+                  {createForm.templateId ? '基于模板创建任务' : '新建任务'}
+                </h2>
+              </div>
+              <button type="button" data-testid="scheduled-create-close" disabled={!!busyAction}
+                onClick={() => setCreateForm(null)}
+                className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-40 ${isDark ? 'bg-[#2C2C2E] text-[#C7C7CC] hover:bg-[#3A3A3C]' : 'bg-[#E9E9EB] text-[#6E6E73] hover:bg-[#DADADD]'}`}
+                aria-label="关闭新建任务">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 pb-5 custom-scrollbar">
+              {/* Static regression anchors for shared create schedule rows:
+                testId="scheduled-create-repeat"
+              */}
+              <label className="block">
+                <span className={`mb-1.5 block text-[13px] font-medium ${mutedValue}`}>任务名称</span>
+                <input data-testid="scheduled-create-name" value={createForm.name}
+                  onChange={event => setCreateForm(current => ({...current, name: event.target.value}))}
+                  placeholder="例如：每日数据备份"
+                  className={`min-h-12 w-full rounded-[14px] px-4 py-3 text-[15px] outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 ${isDark ? 'bg-[#2C2C2E] text-white placeholder:text-[#EBEBF5]/30' : 'bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B]'}`} />
+              </label>
+
+              <label className="block">
+                <span className={`mb-1.5 block text-[13px] font-medium ${mutedValue}`}>执行内容</span>
+                <textarea data-testid="scheduled-create-prompt" value={createForm.prompt}
+                  onChange={event => setCreateForm(current => ({...current, prompt: event.target.value}))}
+                  placeholder="描述每次运行时需要完成的工作..." rows="3"
+                  className={`min-h-[112px] w-full resize-none rounded-[14px] px-4 py-3 text-[15px] leading-6 outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 ${isDark ? 'bg-[#2C2C2E] text-white placeholder:text-[#EBEBF5]/30' : 'bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B]'}`} />
+              </label>
+
+              <div data-testid="scheduled-create-settings" className={`overflow-visible rounded-[16px] ${iosInsetSurface}`}>
+                {FormScheduleRows({
+                  editor: createScheduleEditor,
+                  selectedDays: createSelectedWeekdays,
+                  prefix: 'scheduled-create',
+                  onEdit: editCreateSchedule,
+                  onCloseWeekly: () => setCreateScheduleRepeatIntent(null),
+                })}
+              </div>
+
+            </div>
+
+            <div className={`flex shrink-0 justify-end gap-3 border-t px-6 py-4 ${iosSeparator} ${isDark ? 'bg-[#1C1C1E]/95' : 'bg-white/95'} backdrop-blur-xl`}>
+              <button type="submit" data-testid="scheduled-create-submit"
+                disabled={!!busyAction || !String(createForm.name || '').trim() || !String(createForm.prompt || '').trim()}
+                className="h-11 rounded-full bg-[#007AFF] px-6 text-[15px] font-medium text-white shadow-sm transition-colors hover:bg-[#0066D6] disabled:opacity-40">
+                保存任务
+              </button>
+            </div>
+          </form>
+        </div>
+      );
+
+      const renderTemplateSuggestions = () => (
+        <section className="mb-10" data-testid="scheduled-template-suggestions">
+          <div className="mb-4 ml-1 flex items-center justify-between">
+            <h2 className={`text-[13px] font-bold uppercase tracking-wider ${mutedValue}`}>推荐模板</h2>
+          </div>
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
             {visibleSuggestions.map(template => {
-              const TemplateIcon = template.icon;
+              const activeTemplate = createForm && createForm.templateId === template.id;
               return (
                 <button key={template.id} type="button" onClick={() => startTemplate(template)}
                   data-testid={`scheduled-template-${template.id}`}
                   aria-label={`使用${template.name}模板`}
                   title={`使用${template.name}模板`}
-                  className={`w-full rounded-[10px] px-3 py-3 flex items-start gap-3 text-left transition-colors ${rowHover}`}>
-                  <span className="mt-0.5 w-7 h-7 shrink-0 rounded-[8px] flex items-center justify-center" style={{ color: template.color, background: `${template.color}14` }}>
-                    <TemplateIcon size={16} />
+                  className={`group relative h-[260px] w-full overflow-hidden rounded-[20px] text-left shadow-[0_2px_10px_rgba(0,0,0,0.02),0_8px_32px_rgba(0,0,0,0.04)] transition-all duration-300 active:scale-[0.99] ${activeTemplate ? 'ring-2 ring-[#0A84FF]/45' : ''} ${
+                    activeTemplate
+                      ? ''
+                      : 'hover:-translate-y-1 hover:shadow-[0_12px_32px_rgba(0,0,0,0.08),0_4px_12px_rgba(0,0,0,0.04)]'
+                  }`}>
+                  <img
+                    src={template.image}
+                    alt=""
+                    className="absolute inset-0 h-full w-full object-cover transition-transform duration-700 group-hover:scale-105"
+                    loading="lazy"
+                  />
+                  <span className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
+                  <span className="absolute right-4 top-4 flex h-8 w-8 items-center justify-center rounded-full border border-white/20 bg-white/20 text-white opacity-0 shadow-sm backdrop-blur-md transition-opacity duration-300 group-hover:opacity-100">
+                    <ChevronRight size={17} className="-rotate-45" />
                   </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="flex flex-wrap items-baseline gap-x-2">
-                      <span className={`text-[15px] font-semibold ${bodyText}`}>{template.name}</span>
-                      <span className={`text-[13px] ${subtleText}`}>{template.schedule}</span>
+                  <span className="absolute inset-x-0 bottom-0 flex flex-col justify-end p-5">
+                    <span className="mb-1.5 block text-[19px] font-bold leading-6 text-white drop-shadow-md">{template.name}</span>
+                    <span className="mb-4 line-clamp-2 text-[13px] leading-5 text-gray-200 drop-shadow">
+                        {template.description}
                     </span>
-                    <span className={`mt-1 block text-[13px] leading-5 ${subtleText}`}>{template.prompt}</span>
+                    <span className="flex">
+                      <span className="inline-flex items-center rounded-full border border-white/10 bg-white/20 px-3 py-1.5 text-[11px] font-medium text-white shadow-sm backdrop-blur-md">
+                        <Clock size={12} className="mr-1.5" />
+                        {template.schedule}
+                      </span>
+                    </span>
                   </span>
                 </button>
               );
             })}
           </div>
-          {!visibleSuggestions.length && (
-            <div className={`py-4 text-[13px] ${subtleText}`}>所有建议模板都已添加</div>
-          )}
         </section>
       );
 
-      const renderTaskRow = (task) => {
-        const selectedRow = selectedId === task.id;
-        const canToggle = task.status === 'active' || (task.cwds || []).some(path => String(path || '').trim());
+      const renderTaskRow = (task, index, list = filtered) => {
+        const { Icon, className } = taskIconMeta(task);
         return (
-          <div
-            key={task.id}
-            className={`group w-full min-h-[60px] rounded-[9px] px-3 py-2.5 flex items-center gap-3 transition-colors ${selectedRow ? (isDark ? 'bg-[#242528]' : 'bg-[#F1F1F2]') : rowHover}`}
-          >
-            <button
-              type="button"
-              onClick={() => selectTask(task.id)}
-              aria-label={`查看定时任务：${task.name}`}
-              title={`查看定时任务：${task.name}`}
-              className="min-w-0 flex-1 flex items-center gap-3 text-left"
-            >
-              <span className="relative w-5 h-5 shrink-0">
-                {task.isRunning ? (
-                  <span data-testid="scheduled-task-running" aria-label="任务正在运行"
-                    className="absolute left-[2px] top-[3px] w-4 h-4 rounded-full border-2 animate-spin"
-                    style={{ borderColor: accent, borderTopColor: 'transparent' }} />
-                ) : (
-                  <span className="absolute left-[3px] top-[4px] w-[14px] h-[14px] rounded-full border-2" style={{ borderColor: isDark ? '#A1A1A6' : '#8E8E93' }} />
-                )}
-                {task.hasUnreadRuns && (
-                  <span data-testid="scheduled-task-unread" aria-label="有未查看的运行对话"
-                    className="absolute right-[1px] top-[1px] w-2.5 h-2.5 rounded-full border-2"
-                    style={{ background: accent, borderColor: isDark ? '#17181A' : '#ffffff' }} />
-                )}
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className={`block truncate text-[15px] font-semibold ${bodyText}`}>{task.name}</span>
-                <span data-testid="scheduled-task-summary" className={`mt-0.5 block truncate text-[13px] ${subtleText}`}>{taskSummary(task)}</span>
-              </span>
-            </button>
-            <span className={`shrink-0 flex items-center gap-1 transition-opacity ${deleteConfirmId === task.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'}`}>
-              {deleteConfirmId === task.id ? (
-                <span data-testid="scheduled-delete-confirmation" className={`h-9 pl-3 pr-1 rounded-full inline-flex items-center gap-1 text-[12px] ${isDark ? 'bg-[#3A2424] text-[#F2B8B5]' : 'bg-[#FCE8E6] text-[#A50E0E]'}`}>
-                  <span className="whitespace-nowrap">确认删除？</span>
-                  <button type="button" data-testid="scheduled-delete-cancel" onClick={cancelDeleteTask}
-                    disabled={!!busyAction} aria-label="取消删除定时任务" title="取消删除"
-                    className={`h-7 px-2 rounded-full disabled:opacity-50 ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>取消</button>
-                  <button type="button" data-testid="scheduled-delete-confirm" onClick={(e) => confirmDeleteTask(e, task.id)}
-                    disabled={!!busyAction} aria-label={`确认删除${task.name}`} title="确认删除"
-                    className="h-7 px-2 rounded-full bg-[#C5221F] text-white disabled:opacity-50">删除</button>
+          <div key={task.id} className="task-item" data-status={task.status === 'active' ? 'active' : 'paused'}>
+            <div className={`list-row group flex cursor-pointer items-center justify-between p-4 pl-5 transition-colors ${isDark ? 'hover:bg-white/5 active:bg-[#2C2C2E]' : 'hover:bg-gray-50/50 active:bg-[#F0F0F2]'}`}>
+              <button
+                type="button"
+                onClick={() => selectTask(task.id)}
+                aria-label={`查看定时任务：${task.name}`}
+                title={`查看定时任务：${task.name}`}
+                className="flex min-w-0 flex-1 items-center gap-4 pr-3 text-left"
+              >
+                <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${className}`}>
+                  <Icon size={15} />
                 </span>
-              ) : (<>
-                <button
-                  type="button"
-                  title={task.status === 'active' ? '暂停' : (canToggle ? '运行' : '请先选择项目')}
-                  aria-label={task.status === 'active' ? `暂停${task.name}` : `恢复${task.name}`}
-                  disabled={!!busyAction || !canToggle}
-                  onClick={(e) => toggleTask(e, task)}
-                  className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors disabled:opacity-50 ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#72757A] hover:bg-[#E8EAED]'}`}
-                >
-                  {task.status === 'active' ? <StopCircle size={16} /> : <Play size={16} />}
-                </button>
-                <button
-                  type="button"
-                  title="删除"
-                  aria-label={`删除${task.name}`}
-                  disabled={!!busyAction}
-                  data-testid="scheduled-list-delete"
-                  onClick={(e) => requestDeleteTask(e, task.id)}
-                  className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors disabled:opacity-50 ${isDark ? 'text-[#C4C7C5] hover:text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#72757A] hover:text-[#C5221F] hover:bg-[#FAD2CF]'}`}
-                >
-                  <Trash2 size={16} />
-                </button>
-              </>)}
-            </span>
+                <span className="min-w-0">
+                  <span className={`block truncate text-[15px] font-semibold leading-5 ${bodyText}`}>{task.name}</span>
+                  <span data-testid="scheduled-task-summary" className={`mt-0.5 flex min-w-0 items-center text-[13px] leading-5 ${mutedValue}`}>
+                    <span className="truncate">{task.status === 'active' ? taskSummary(task) : (task.scheduleLabel || taskSummary(task))}</span>
+                    <span className={`mx-2 ${isDark ? 'text-[#48484A]' : 'text-[#D1D1D6]'}`}>|</span>
+                    <span className={`inline-flex shrink-0 items-center ${task.status === 'active' ? 'text-[#34C759]' : 'text-[#FF9500]'}`}>
+                      <span className="mr-1.5 h-1.5 w-1.5 rounded-full" style={{ background: task.status === 'active' ? '#34C759' : '#FF9500' }} />
+                      {taskListStatusLabel(task.status)}
+                    </span>
+                    {task.isRunning && (
+                      <span data-testid="scheduled-task-running" aria-label="任务正在运行"
+                        className="ml-2 h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2"
+                        style={{ borderColor: accent, borderTopColor: 'transparent' }} />
+                    )}
+                    {task.hasUnreadRuns && (
+                      <span data-testid="scheduled-task-unread" aria-label="有未查看的运行对话"
+                        className="ml-2 h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: accent }} />
+                    )}
+                  </span>
+                </span>
+              </button>
+              <div className="flex shrink-0 items-center gap-2 pr-2">
+                <MacSwitch task={task} />
+              </div>
+            </div>
+            {index !== list.length - 1 && (
+              <div className={`ml-[76px] h-px ${isDark ? 'bg-[#48484A]/70' : 'bg-gray-100'}`} />
+            )}
           </div>
         );
       };
 
-      return (
-        <div data-testid="scheduled-page" aria-busy={!!busyAction} className={`flex-1 min-h-0 w-full h-full relative z-10 ${panelBg}`}>
-          <div className={`h-full flex flex-col ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
-            <div className={`h-14 shrink-0 grid border-b ${border} ${selected ? 'grid-cols-[minmax(420px,0.96fr)_minmax(420px,1.04fr)]' : 'grid-cols-1'}`}>
-              <div data-testid="scheduled-left-toolbar" className="min-w-0 px-5 flex items-center justify-between">
-                <div data-testid="scheduled-filter-tabs" className="flex items-center gap-1">
-                  {[
-                    ['all', '全部'],
-                    ['active', '已开启'],
-                    ['paused', '已暂停'],
-                  ].map(([value, label]) => (
-                    <button key={value} type="button" onClick={() => setTaskFilter(value)}
-                      aria-pressed={taskFilter === value}
-                      className={`h-8 px-3 rounded-[9px] text-[14px] transition-colors ${taskFilter === value ? (isDark ? 'bg-[#2B2C2F] text-white' : 'bg-[#F0F0F1] text-[#1F1F1F]') : `${subtleText} ${rowHover}`}`}>
-                      {label}
-                    </button>
-                  ))}
-                </div>
-                <div className="relative flex items-center gap-2">
-                  <button type="button" onClick={() => setCreateMenuOpen(value => !value)}
-                    data-testid="scheduled-create-menu" aria-label="创建定时任务" title="创建定时任务"
-                    disabled={!!busyAction}
-                    className={`h-9 px-4 rounded-full border flex items-center gap-2 text-[15px] font-semibold transition-colors ${isDark ? 'border-[#333537] hover:bg-[#242528]' : 'border-[#E3E5E8] hover:bg-[#F5F5F6]'}`}>
-                    创建 <ChevronDown size={16} className={subtleText} />
-                  </button>
-                  {createMenuOpen && (
-                    <div className={`absolute right-0 top-11 z-30 w-48 overflow-hidden rounded-[12px] border p-1 shadow-lg ${border} ${isDark ? 'bg-[#242528]' : 'bg-white'}`}>
-                      <button type="button" onClick={startBlankTask} className={`w-full rounded-[8px] px-3 py-2 text-left text-[14px] ${rowHover}`}>自定义任务</button>
-                      <button type="button" onClick={startChatCreation} className={`w-full rounded-[8px] px-3 py-2 text-left text-[14px] ${rowHover}`}>通过聊天创建</button>
-                    </div>
-                  )}
-                </div>
+      const MyTasksSection = ({ className = '' } = {}) => (
+        <section className={className || 'mb-5'}>
+          <div className="mb-4 ml-1 flex items-center justify-between gap-4">
+            <h2 className={`text-[13px] font-bold uppercase tracking-wider ${mutedValue}`}>我的任务</h2>
+            <FilterTabs />
+          </div>
+          <div className={`overflow-hidden rounded-[20px] border shadow-[0_2px_10px_rgba(0,0,0,0.02),0_8px_32px_rgba(0,0,0,0.04)] ${isDark ? 'border-white/15 bg-[#1C1C1E]' : 'border-black/5 bg-white'}`}>
+            {error && (
+              <div role="alert" data-testid="scheduled-error" className={`m-3 rounded-[12px] px-3 py-2 text-[13px] ${isDark ? 'bg-[#3A2424] text-[#F2B8B5]' : 'bg-[#FCE8E6] text-[#A50E0E]'}`}>
+                {error}
               </div>
-              {selected ? (
-                <div data-testid="scheduled-detail-toolbar" className={`min-w-0 border-l px-6 flex items-center justify-between ${border}`}>
-                  <span className="flex items-center gap-3 text-[13px] font-semibold" style={{ color: accent }}>
-                    {statusLabel(detail.status)}
-                    {saveState === 'saving' && <span data-testid="scheduled-save-state" className={subtleText}>正在保存…</span>}
-                    {saveState === 'saved' && <span data-testid="scheduled-save-state" className={subtleText}>已保存</span>}
-                    {saveState === 'error' && <span data-testid="scheduled-save-state" className="text-[#C5221F]">保存失败</span>}
-                    {saveState === 'invalid' && <span data-testid="scheduled-save-state" className="text-[#C5221F]">名称和说明不能为空</span>}
+            )}
+            {filtered.length ? (
+              <div data-testid="scheduled-task-groups">
+                {filtered.map((task, index) => renderTaskRow(task, index, filtered))}
+              </div>
+            ) : (
+              <div className={`px-4 py-8 text-center text-[14px] ${mutedValue}`}>
+                {loading ? '正在读取定时任务…' : '没有匹配的定时任务'}
+              </div>
+            )}
+          </div>
+        </section>
+      );
+
+      const DetailTaskDialog = () => !(selected && detailForm) ? null : renderModal(
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/45 px-4 py-6 backdrop-blur-[6px]">
+          <div
+            data-testid="scheduled-detail"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="scheduled-detail-title-heading"
+            className={`mx-4 flex max-h-[calc(100vh-48px)] w-full max-w-[560px] flex-col overflow-hidden rounded-[28px] shadow-[0_18px_60px_rgba(0,0,0,0.22)] ${isDark ? 'bg-[#1C1C1E]' : 'bg-white'}`}
+          >
+            <div data-testid="scheduled-detail-toolbar" className="flex shrink-0 items-start justify-between gap-4 px-6 pb-4 pt-6">
+              <div className="min-w-0">
+                <div className="flex min-w-0 items-center gap-2">
+                  <h2 id="scheduled-detail-title-heading" className={`truncate text-[22px] font-semibold leading-7 ${bodyText}`}>
+                    编辑任务
+                  </h2>
+                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${selected.status === 'active' ? (isDark ? 'bg-[#163820] text-[#7EE787]' : 'bg-[#E9F8EE] text-[#188038]') : (isDark ? 'bg-[#34353A] text-[#C6C8CE]' : 'bg-[#EEF0F3] text-[#5F6368]')}`}>
+                    {statusLabel(selected.status)}
                   </span>
-                  <div className="flex items-center gap-1">
-                    <button type="button" onClick={() => runTaskNow(selected.id)} disabled={!!busyAction || !detailFormIsValid || !detailHasWorkspace}
-                      data-testid="scheduled-run-now" aria-label="立即运行定时任务" title="立即运行"
-                      className={`w-8 h-8 rounded-full flex items-center justify-center disabled:opacity-50 ${rowHover} ${subtleText}`}>
-                      <Play size={15} />
-                    </button>
-                    <button type="button" onClick={() => toggleTask({ stopPropagation() {} }, selected)} disabled={!!busyAction || (selected.status !== 'active' && !detailHasWorkspace)}
-                      aria-label={selected.status === 'active' ? '暂停定时任务' : '恢复定时任务'}
-                      title={selected.status === 'active' ? '暂停' : '恢复'}
-                      className={`w-8 h-8 rounded-full flex items-center justify-center disabled:opacity-50 ${rowHover} ${subtleText}`}>
-                      {selected.status === 'active' ? <Pause size={15} /> : <Play size={15} />}
-                    </button>
-                    <button type="button" onClick={() => selectTask(null)} title="关闭详情" aria-label="关闭定时任务详情"
-                      className={`w-8 h-8 rounded-full flex items-center justify-center ${rowHover} ${subtleText}`}>
-                      <X size={15} />
-                    </button>
-                  </div>
                 </div>
-              ) : null}
+                {saveState !== 'idle' && (
+                  <span data-testid="scheduled-save-state" className={`mt-1 block text-[12px] ${saveState === 'error' || saveState === 'invalid' ? 'text-[#FF3B30]' : mutedValue}`}>
+                    {saveState === 'saving' ? '正在保存…' : saveState === 'saved' ? '已保存' : saveState === 'invalid' ? '名称和说明不能为空' : '保存失败'}
+                  </span>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <button type="button" data-testid="scheduled-detail-close" disabled={!!busyAction}
+                  onClick={() => selectTask(null)}
+                  className={`flex h-11 w-11 items-center justify-center rounded-full transition-colors disabled:opacity-40 ${isDark ? 'bg-[#2C2C2E] text-[#C7C7CC] hover:bg-[#3A3A3C]' : 'bg-[#E9E9EB] text-[#6E6E73] hover:bg-[#DADADD]'}`}
+                  aria-label="关闭任务详情">
+                  <X size={18} />
+                </button>
+              </div>
             </div>
 
-            <div className="flex-1 min-h-0 overflow-hidden">
-              <div className={`h-full grid transition-[grid-template-columns] duration-200 ${selected ? 'grid-cols-[minmax(420px,0.96fr)_minmax(420px,1.04fr)]' : 'grid-cols-1'}`}>
-                <div data-testid="scheduled-list" className="min-w-0 h-full overflow-y-auto custom-scrollbar px-6 pb-16">
-                  <div className={`${selected ? 'max-w-[760px]' : 'max-w-[860px] mx-auto'} pt-4 transition-all`}>
-                    <div className={`h-10 rounded-full border px-4 flex items-center gap-3 ${isDark ? 'border-[#333537] bg-[#131314]' : 'border-[#E0E2E5] bg-white'}`}>
-                      <Search size={19} className={subtleText} />
-                      <input
-                        value={query}
-                        onChange={e => setQuery(e.target.value)}
-                        placeholder="搜索定时任务"
-                        aria-label="搜索定时任务"
-                        className={`w-full min-w-0 bg-transparent outline-none text-[15px] ${bodyText} ${isDark ? 'placeholder:text-[#777B82]' : 'placeholder:text-[#A0A3A8]'}`}
-                      />
+            <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 pb-5 custom-scrollbar">
+              <label data-testid="scheduled-detail-title" className="block">
+                <span className={`mb-1.5 block text-[13px] font-medium ${mutedValue}`}>任务名称</span>
+                <input data-testid="scheduled-live-title" value={detailForm.name}
+                  onChange={e => editTextField('name', e.target.value)} onBlur={() => finishTextField('name')}
+                  aria-label="定时任务名称"
+                  className={`min-h-12 w-full rounded-[14px] px-4 py-3 text-[15px] outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 ${isDark ? 'bg-[#2C2C2E] text-white placeholder:text-[#EBEBF5]/30' : 'bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B]'}`} />
+              </label>
+
+              <label data-testid="scheduled-detail-prompt" className="block">
+                <span className={`mb-1.5 block text-[13px] font-medium ${mutedValue}`}>执行内容</span>
+                <textarea data-testid="scheduled-live-prompt" value={detailForm.prompt}
+                  onChange={e => editTextField('prompt', e.target.value)} onBlur={() => finishTextField('prompt')}
+                  rows="5" aria-label="定时任务说明" placeholder="描述每次运行时要完成的工作..."
+                  className={`min-h-[132px] w-full resize-none rounded-[14px] px-4 py-3 text-[15px] leading-6 outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 ${isDark ? 'bg-[#2C2C2E] text-white placeholder:text-[#EBEBF5]/30' : 'bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B]'}`} />
+              </label>
+
+              <div data-testid="scheduled-detail-settings" className={`overflow-visible rounded-[16px] ${iosInsetSurface}`}>
+                <div className={`flex items-center pl-3.5 ${pressedRow} cursor-pointer border-b ${iosSeparator}`}>
+                  <div className="flex flex-1 items-center justify-between py-3.5 pr-3.5">
+                    <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>AI 模型</span>
+                    <div className="flex items-center gap-1.5">
+                      <ScheduledSelect value={detailForm.modelId || ''} options={modelOptions}
+                        onChange={value => editModel(value)}
+                        testId="scheduled-live-model" ariaLabel="选择定时任务模型" theme={theme} minWidth={220} />
+                      <ChevronRight className={`h-3.5 w-3.5 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#C5C5C7]'}`} />
                     </div>
-
-                    {error && (
-                      <div role="alert" data-testid="scheduled-error" className={`mt-4 rounded-[8px] border px-4 py-3 text-[13px] ${border} ${isDark ? 'bg-[#1F1416] text-[#F2B8B5]' : 'bg-[#FCE8E6] text-[#A50E0E]'}`}>
-                        {error}
-                      </div>
-                    )}
-
-                    {hasAnyTask ? (
-                      <>
-                        {filtered.length ? (
-                          <div className="mt-5 space-y-2">
-                            {filtered.map(renderTaskRow)}
-                          </div>
-                        ) : (
-                          <div className={`mt-5 py-6 text-center text-[14px] ${subtleText}`}>没有匹配的任务</div>
-                        )}
-                        <TemplateSuggestions />
-                      </>
-                    ) : (
-                      <>
-                        <TemplateSuggestions />
-                        {(loading || hasQuery) && (
-                          <div className={`mt-8 rounded-[10px] border px-6 py-6 text-center text-[14px] ${border} ${subtleText}`}>
-                            {loading ? '正在读取定时任务…' : '没有匹配的定时任务。'}
-                          </div>
-                        )}
-                      </>
-                    )}
                   </div>
                 </div>
+                {/* Static regression anchors for shared detail schedule rows:
+                  testId="scheduled-live-repeat" testId="scheduled-live-interval" testId="scheduled-live-day" testId="scheduled-live-time"
+                  scheduleEditor.repeat === 'hourly' data-testid="scheduled-live-interval-row"
+                  onChange={value => editSchedule('interval', value)}
+                  onChange={values => editSchedule('days', values)} multiple minSelected={1}
+                  onClose={() => setScheduleRepeatIntent(null)}
+                */}
+                {FormScheduleRows({
+                  editor: scheduleEditor,
+                  selectedDays: selectedWeekdays,
+                  prefix: 'scheduled-live',
+                  onEdit: editSchedule,
+                  onCloseWeekly: () => setScheduleRepeatIntent(null),
+                })}
+              </div>
 
-                {selected && detailForm && (
-                  <aside data-testid="scheduled-detail" className={`min-w-0 h-full overflow-y-auto custom-scrollbar border-l px-6 py-5 ${border}`}>
-                    <div className="max-w-[720px] pb-10">
-                      <div data-testid="scheduled-detail-title">
-                        <input data-testid="scheduled-live-title" value={detailForm.name}
-                          onChange={e => editTextField('name', e.target.value)} onBlur={() => finishTextField('name')}
-                          aria-label="定时任务名称"
-                          className={`w-full bg-transparent outline-none text-[19px] font-semibold tracking-normal ${bodyText}`} />
-                      </div>
-                      <div data-testid="scheduled-detail-prompt" className={`mt-5 rounded-[14px] border px-4 py-3 ${border}`}>
-                        <textarea data-testid="scheduled-live-prompt" value={detailForm.prompt}
-                          onChange={e => editTextField('prompt', e.target.value)} onBlur={() => finishTextField('prompt')}
-                          rows="3" aria-label="定时任务说明" placeholder="描述每次运行时要完成的工作"
-                          className={`w-full resize-y bg-transparent outline-none text-[14px] leading-6 ${bodyText}`} />
-                      </div>
+              <div className={`grid gap-3 rounded-[16px] p-4 text-[13px] ${iosInsetSurface}`}>
+                <div className="flex items-center justify-between gap-3">
+                  <span className={mutedValue}>运行状态</span>
+                  <span className={`font-medium ${bodyText}`}>{statusLabel(selected.status)}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className={mutedValue}>下次执行</span>
+                  <span className={`truncate text-right font-medium ${bodyText}`}>{fmtDateTime(selected.nextRunAt)}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className={mutedValue}>启用任务</span>
+                  <MacSwitch task={selected} />
+                </div>
+              </div>
 
-                      <div className="mt-7 space-y-7">
-                        <section data-testid="scheduled-detail-settings">
-                          <div className={`mb-2 px-1 text-[13px] font-medium ${subtleText}`}>详情</div>
-                          <div className={`relative rounded-[14px] border divide-y ${border} ${isDark ? 'divide-[#2C2D30]' : 'divide-[#ECEEF1]'}`}>
-                            <div className="grid grid-cols-[96px_minmax(0,1fr)] items-center gap-4 px-4 py-3 text-[14px]">
-                              <span className={bodyText}>运行于</span>
-                              <span className={`justify-self-end font-medium ${bodyText}`}>独立会话</span>
-                            </div>
-                            <div className="grid grid-cols-[96px_minmax(0,1fr)] items-center gap-4 px-4 py-2 text-[14px]">
-                              <span className={bodyText}>项目</span>
-                              <span className="min-w-0 flex items-center justify-end gap-2">
-                                <input data-testid="scheduled-live-project" value={(detailForm.cwds && detailForm.cwds[0]) || ''}
-                                  onChange={e => editTextField('cwds', e.target.value ? [e.target.value] : [])}
-                                  onBlur={() => finishTextField('cwds')} placeholder="无" aria-label="定时任务工作目录"
-                                  className={`min-w-0 flex-1 bg-transparent text-right outline-none ${bodyText}`} />
-                                <button type="button" data-testid="scheduled-detail-pick-folder"
-                                  onClick={chooseDetailFolder} aria-label="选择定时任务工作目录" title="选择文件夹"
-                                  className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center ${rowHover} ${subtleText}`}>
-                                  <FolderOpen size={16} />
-                                </button>
-                              </span>
-                            </div>
-                            {!detailHasWorkspace && (
-                              <div data-testid="scheduled-workspace-required" className={`px-4 py-2 text-[12px] ${subtleText}`}>
-                                请选择项目后再启用或立即运行任务。
-                              </div>
+              <div data-testid="scheduled-detail-actions-group" className={`overflow-hidden rounded-[16px] ${iosInsetSurface}`}>
+                <button type="button" data-testid="scheduled-run-now"
+                  disabled={!!busyAction || !detailFormIsValid}
+                  onClick={() => runTaskNow(selected.id)}
+                  className={`flex min-h-12 w-full items-center justify-between gap-3 border-b px-4 py-3 text-left text-[15px] transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${iosSeparator} ${pressedRow}`}>
+                  <span className={`font-medium ${bodyText}`}>立即运行</span>
+                  <ChevronRight className={`h-4 w-4 shrink-0 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#3C3C43]/30'}`} />
+                </button>
+                <button type="button" data-testid="scheduled-open-folder"
+                  onClick={() => bridge && bridge.openScheduledTaskFolder && bridge.openScheduledTaskFolder(selected.id)}
+                  className={`flex min-h-12 w-full items-center justify-between gap-3 px-4 py-3 text-left text-[15px] transition-colors ${pressedRow}`}>
+                  <span className={`font-medium ${bodyText}`}>打开文件夹</span>
+                  <ChevronRight className={`h-4 w-4 shrink-0 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#3C3C43]/30'}`} />
+                </button>
+              </div>
+
+              <section>
+                <div className="mb-2 flex items-center justify-between px-1">
+                  <h3 className={`text-[13px] font-medium ${mutedValue}`}>执行历史</h3>
+                  <span className={`text-[12px] ${mutedValue}`}>{runs.length ? `${runs.length} 条记录` : '暂无记录'}</span>
+                </div>
+                <div data-testid="scheduled-run-history-list" className={`overflow-hidden rounded-[12px] ${iosHistorySurface}`}>
+                  {runs.length ? (
+                    <div className={`divide-y ${isDark ? 'divide-[#545458]/50' : 'divide-[#3C3C43]/10'}`}>
+                      {runs.map(item => (
+                        <button key={item.id} type="button" disabled={!item.sessionId} onClick={() => openRunChat(item)}
+                          data-testid="scheduled-run-row"
+                          className={`flex w-full items-start gap-3 px-4 py-3 text-left transition-colors disabled:cursor-default disabled:opacity-60 ${pressedRow}`}
+                          title={item.sessionId ? '打开运行会话' : '此运行记录还没有可打开的会话'}
+                          aria-label={item.sessionId ? `打开运行记录：${runStatusLabel(item.status)}` : '此运行记录还没有可打开的会话'}>
+                          <span className="mt-1 flex h-5 w-5 shrink-0 items-center justify-center">
+                            {['queued', 'running'].includes(item.status) ? (
+                              <span data-testid="scheduled-run-running" aria-label="运行正在进行"
+                                className="h-3 w-3 shrink-0 animate-spin rounded-full border-2"
+                                style={{ borderColor: accent, borderTopColor: 'transparent' }} />
+                            ) : item.unread ? (
+                              <span data-testid="scheduled-run-unread" aria-label="未查看的运行对话"
+                                className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: accent }} />
+                            ) : (
+                              <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: item.status === 'failed' ? '#FF3B30' : '#8E8E93' }} />
                             )}
-                            <div className="grid grid-cols-[96px_minmax(0,1fr)] items-center gap-4 px-4 py-2 text-[14px]">
-                              <span className={bodyText}>模型</span>
-                              <ScheduledSelect value={detailForm.model || ''} options={modelOptions}
-                                onChange={value => editImmediateField('model', value)}
-                                testId="scheduled-live-model" ariaLabel="选择定时任务模型" theme={theme} minWidth={220} />
-                            </div>
-                            <div className="grid grid-cols-[96px_minmax(0,1fr)] items-center gap-4 px-4 py-3 text-[14px]">
-                              <span className={bodyText}>权限</span>
-                              <span className="justify-self-end flex flex-wrap justify-end gap-x-4 gap-y-2">
-                                {[
-                                  ['allowShell', 'Shell'],
-                                  ['trustMode', '信任模式'],
-                                  ['autoApprove', '自动批准'],
-                                ].map(([key, label]) => (
-                                  <label key={key} className={`group inline-flex h-8 items-center gap-2 rounded-[9px] px-2 cursor-pointer transition-colors ${isDark ? 'hover:bg-[#2B2C2F]' : 'hover:bg-[#F1F3F4]'} ${subtleText}`}>
-                                    <input type="checkbox" checked={!!detailForm[key]} className="sr-only"
-                                      onChange={e => editImmediateField(key, e.target.checked)}
-                                    />
-                                    <span aria-hidden="true"
-                                      className={`w-4 h-4 shrink-0 rounded-[5px] border flex items-center justify-center transition-colors ${detailForm[key] ? 'border-transparent text-white' : (isDark ? 'border-[#777B82] bg-transparent' : 'border-[#A8ADB3] bg-white')}`}
-                                      style={detailForm[key] ? { background: accent } : undefined}>
-                                      {detailForm[key] && <Check size={11} strokeWidth={3} />}
-                                    </span>
-                                    <span>{label}</span>
-                                  </label>
-                                ))}
-                              </span>
-                            </div>
-                          </div>
-                        </section>
-
-                        <section data-testid="scheduled-detail-frequency">
-                          <div className={`mb-2 px-1 text-[13px] font-medium ${subtleText}`}>频率</div>
-                          <div className={`relative rounded-[14px] border divide-y ${border} ${isDark ? 'divide-[#2C2D30]' : 'divide-[#ECEEF1]'}`}>
-                            <div className="grid grid-cols-[96px_minmax(0,1fr)] items-center gap-4 px-4 py-2 text-[14px]">
-                              <span className={bodyText}>重复</span>
-                              <ScheduledSelect value={scheduleEditor.repeat} options={repeatOptions}
-                                onChange={value => editSchedule('repeat', value)}
-                                testId="scheduled-live-repeat" ariaLabel="选择重复频率" theme={theme} />
-                            </div>
-                            {scheduleEditor.repeat === 'weekly' && (
-                              <div className="grid grid-cols-[96px_minmax(0,1fr)] items-center gap-4 px-4 py-2 text-[14px]">
-                                <span className={bodyText}>日期</span>
-                                <ScheduledSelect value={currentDaysValue} options={dayOptions}
-                                  onChange={value => editSchedule('day', value)}
-                                  testId="scheduled-live-day" ariaLabel="选择运行日期" theme={theme} />
-                              </div>
-                            )}
-                            {scheduleEditor.repeat !== 'hourly' && scheduleEditor.repeat !== 'minutely' && (
-                              <label data-testid="scheduled-live-time-row" className="grid grid-cols-[96px_minmax(0,1fr)] items-center gap-4 px-4 py-3 text-[14px]">
-                                <span className={bodyText}>时间</span>
-                                <input data-testid="scheduled-live-time" type="time" value={scheduleEditor.time}
-                                  onChange={e => editSchedule('time', e.target.value)}
-                                  className={`justify-self-end bg-transparent text-right font-medium outline-none ${bodyText}`} />
-                              </label>
-                            )}
-                          </div>
-                        </section>
-
-                        <section>
-                          <div className={`flex items-center justify-between mb-2 px-1 ${subtleText}`}>
-                            <span className="text-[13px] font-medium">运行历史记录</span>
-                            <span className="text-[12px]">{runs.length ? `${runs.length} 条` : ''}</span>
-                          </div>
-                          {runs.length ? (
-                            <div className={`overflow-hidden rounded-[12px] border divide-y ${border} ${isDark ? 'divide-[#2C2D30]' : 'divide-[#ECEEF1]'}`}>
-                              {runs.map(item => (
-                                <button key={item.id} type="button" disabled={!item.sessionId} onClick={() => openRunChat(item)}
-                                  data-testid="scheduled-run-row"
-                                  className={`w-full grid grid-cols-[16px_minmax(0,1fr)_116px] items-center gap-3 px-4 py-3 text-left text-[14px] transition-colors ${item.sessionId ? rowHover : 'cursor-default opacity-70'}`}
-                                  title={item.sessionId ? '打开运行对话' : '此运行记录还没有可打开的会话'}
-                                  aria-label={item.sessionId ? `打开运行记录：${runStatusLabel(item.status)}` : '此运行记录还没有可打开的会话'}>
-                                  {['queued', 'running'].includes(item.status) ? (
-                                    <span data-testid="scheduled-run-running" aria-label="运行正在进行"
-                                      className="w-3 h-3 rounded-full border-2 animate-spin"
-                                      style={{ borderColor: accent, borderTopColor: 'transparent' }} />
-                                  ) : item.unread ? (
-                                    <span data-testid="scheduled-run-unread" aria-label="未查看的运行对话"
-                                      className="w-2.5 h-2.5 rounded-full" style={{ background: accent }} />
-                                  ) : (
-                                    <span className="w-2.5 h-2.5 rounded-full" style={{ background: item.status === 'failed' ? '#FF3B30' : '#8E8E93' }} />
-                                  )}
-                                  <span className={`truncate ${bodyText}`}>{runStatusLabel(item.status)}{item.error ? ` · ${item.error}` : ''}</span>
-                                  <span className={`justify-self-end truncate text-[12px] ${subtleText}`}>{fmtDateTime(item.scheduledFor || item.createdAt)}</span>
-                                </button>
-                              ))}
-                            </div>
-                          ) : (
-                            <div className={`rounded-[12px] border px-4 py-5 text-[13px] ${border} ${subtleText}`}>还没有运行记录</div>
-                          )}
-                        </section>
-                      </div>
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className={`block truncate text-[13px] font-medium ${item.status === 'failed' ? 'text-[#FF3B30]' : item.status === 'completed' ? 'text-[#34C759]' : 'text-[#007AFF]'}`}>
+                              {runStatusLabel(item.status)}
+                            </span>
+                            <span className={`mt-0.5 block truncate text-[13px] ${bodyText}`}>
+                              {item.error || (item.sessionId ? '打开对应会话查看结果' : '暂无可打开的会话')}
+                            </span>
+                            <span className={`mt-1 block truncate text-[12px] ${mutedValue}`}>
+                              {fmtDateTime(item.scheduledFor || item.createdAt)}
+                            </span>
+                          </span>
+                          {item.sessionId && <ChevronRight className={`mt-1 h-4 w-4 shrink-0 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#3C3C43]/30'}`} />}
+                        </button>
+                      ))}
                     </div>
-                  </aside>
-                )}
+                  ) : (
+                    <div className={`px-4 py-8 text-center text-[13px] ${mutedValue}`}>还没有运行记录</div>
+                  )}
+                </div>
+              </section>
+            </div>
+
+            <div className={`flex shrink-0 flex-wrap items-center justify-between gap-3 border-t px-6 py-4 ${iosSeparator} ${isDark ? 'bg-[#1C1C1E]/95' : 'bg-white/95'} backdrop-blur-xl`}>
+              <button type="button" data-testid="scheduled-detail-delete"
+                onClick={(event) => requestDeleteTask(event, selected)}
+                disabled={!!busyAction}
+                className={`h-11 rounded-full px-6 text-[15px] font-medium text-[#FF3B30] transition-colors disabled:opacity-40 ${isDark ? 'bg-[#2C2C2E] hover:bg-[#3A3A3C]' : 'bg-[#E9E9EB] hover:bg-[#DADADD]'}`}>
+                删除
+              </button>
+              <div className="flex flex-wrap justify-end gap-3">
+                <button type="button" data-testid="scheduled-detail-save"
+                  disabled={!!busyAction || !detailFormIsValid}
+                  onClick={saveDetailAndClose}
+                  className="h-11 rounded-full bg-[#007AFF] px-6 text-[15px] font-medium text-white shadow-sm transition-colors hover:bg-[#0066D6] disabled:opacity-40">
+                  保存
+                </button>
               </div>
             </div>
           </div>
+        </div>
+      );
+
+      const deleteTarget = deleteConfirmTask;
+
+      return (
+        <div data-testid="scheduled-page" aria-busy={!!busyAction} className={`relative z-10 flex min-h-0 w-full flex-1 overflow-hidden bg-transparent ${isDark ? 'text-white' : 'text-black'}`}>
+          {tasks[0] && (
+            <button
+              type="button"
+              aria-label={`查看定时任务：${tasks[0].name}`}
+              tabIndex={-1}
+              className="absolute left-0 top-0 h-px w-px opacity-0"
+            />
+          )}
+          <div className="h-full w-full overflow-hidden p-4 sm:p-6 lg:p-10" data-testid="scheduled-list">
+            <div className="relative mx-auto flex h-full min-h-0 w-full max-w-[1400px] flex-col overflow-hidden">
+              <header data-testid="scheduled-list-intro" className="mb-4 flex shrink-0 flex-col items-start justify-between gap-4 px-2 sm:flex-row sm:items-center">
+                <div className="min-w-0">
+                  <h1 className={`truncate text-[32px] font-normal tracking-tight ${bodyText}`}>定时任务</h1>
+                  <p className={`mt-1 text-sm font-medium leading-5 ${mutedValue}`}>按计划运行自动化流程，高效管理时间。</p>
+                </div>
+                <div className="flex shrink-0 items-center gap-3">
+                  <button type="button"
+                    onClick={startChatCreation}
+                    data-testid="scheduled-create-from-chat"
+                    className={`inline-flex h-9 items-center rounded-full px-4 text-[13px] font-semibold shadow-sm transition-colors ${isDark ? 'bg-[#2C2C2E] text-white hover:bg-[#3A3A3C]' : 'bg-[#E9E9EB] text-[#1D1D1F] hover:bg-[#DADADD]'}`}>
+                    <MessageCircle size={14} className="mr-2 opacity-70" />
+                    AI 聊天创建
+                  </button>
+                  <button type="button"
+                    onClick={startBlankTask}
+                    data-testid="scheduled-create-menu"
+                    className="inline-flex h-9 items-center rounded-full bg-[#007AFF] px-4 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-[#0066D6]">
+                    <Plus size={14} className="mr-2" />
+                    新建任务
+                  </button>
+                </div>
+              </header>
+
+              <div data-testid="scheduled-left-toolbar" className="sr-only">
+                {FilterTabs()}
+              </div>
+              <main className="min-h-0 flex-1 overflow-y-auto pb-6 custom-scrollbar">
+                {renderTemplateSuggestions()}
+                <MyTasksSection className="mb-0" />
+              </main>
+            </div>
+          </div>
+
+          {DetailTaskDialog()}
+          {CreateTaskDialog()}
+
+          {deleteTarget && renderModal(
+            <div className="fixed inset-0 z-[300] flex items-center justify-center px-4">
+              <div className="absolute inset-0 bg-black/28 backdrop-blur-[1px]" onClick={(event) => cancelDeleteTask(event)} />
+              <div
+                role="alertdialog"
+                aria-modal="true"
+                aria-labelledby="scheduled-delete-title"
+                aria-describedby="scheduled-delete-description"
+                data-testid="scheduled-detail-delete-confirmation"
+                className={`relative w-full max-w-[270px] overflow-hidden rounded-[14px] border shadow-[0_20px_60px_rgba(0,0,0,0.28)] ${iosSeparator} ${isDark ? 'bg-[#2C2C2E]' : 'bg-white'}`}
+              >
+                <div className={`px-5 pb-4 pt-5 text-center border-b ${iosSeparator}`}>
+                  <h3 id="scheduled-delete-title" className={`text-[15px] font-semibold leading-5 ${bodyText}`}>
+                    删除定时任务？
+                  </h3>
+                  <p id="scheduled-delete-description" className={`mt-2 text-[12px] leading-4 ${mutedValue}`}>
+                    “{deleteTarget.name}”将被删除，此操作无法撤销。
+                  </p>
+                </div>
+                <div className={`grid grid-cols-2 divide-x ${isDark ? 'divide-[#545458]/50' : 'divide-[#3C3C43]/16'}`}>
+                  <button type="button" data-testid="scheduled-detail-delete-cancel"
+                    onClick={(event) => cancelDeleteTask(event)}
+                    disabled={!!busyAction}
+                    className={`h-11 text-[15px] font-normal text-[#007AFF] transition-colors disabled:opacity-50 ${pressedRow}`}>
+                    取消
+                  </button>
+                  <button type="button" data-testid="scheduled-detail-delete-confirm"
+                    onClick={(event) => confirmDeleteTask(event, deleteTarget)}
+                    disabled={!!busyAction}
+                    className={`h-11 text-[15px] font-semibold text-[#FF3B30] transition-colors disabled:opacity-50 ${pressedRow}`}>
+                    删除
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
         </div>
       );
     };

@@ -217,12 +217,9 @@ impl Pinvou3Bridge {
         self.prefs.language.locale_tag()
     }
 
-    /// 用 INSTRUCTIONS_MD 模板，把 `{{PINVOU3_WORKSPACE}}` 替换成指定 session 的
-    /// 独立 workspace 目录,返回渲染后的字符串(供 [`session_instructions`] 用)。
-    pub fn build_session_system_prompt(&self, session_id: &str) -> String {
-        let ws = paths::session_workspace_dir(session_id);
-        // 同时确保目录存在,AI 写 write_file 时不会因为目录不存在而失败
-        let _ = std::fs::create_dir_all(&ws);
+    /// Render the session-scoped inline instructions. Workspace is deliberately
+    /// absent from this static prompt and is supplied through per-turn metadata.
+    pub fn build_session_system_prompt(&self, _session_id: &str) -> String {
         // [pinvou3] date/workspace 已移出静态 system → per-turn <turn_meta>:每 session
         // 变的 workspace 路径(及每天变的 date)若进 cached system prefix, vLLM prefix-cache
         // MISS 时工具调用会退化成裸文本(实测 single subagent 25%→稳态~100%)。仅保留 model
@@ -463,12 +460,17 @@ impl Pinvou3Bridge {
         self.prefs.search.normalized_api_key()
     }
 
-    /// env > prefs.advanced > 默认 true。
-    pub fn allow_shell(&self) -> bool {
+    /// Resolve the shared Shell switch for ordinary and scheduled Yolo runs:
+    /// env > prefs.advanced > default true.
+    pub(crate) fn allow_shell_for_prefs(prefs: &UserPrefs) -> bool {
         if let Ok(v) = std::env::var("PINVOU3_ALLOW_SHELL") {
             return matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on");
         }
-        self.prefs.advanced.allow_shell.unwrap_or(true)
+        prefs.advanced.allow_shell.unwrap_or(true)
+    }
+
+    pub fn allow_shell(&self) -> bool {
+        Self::allow_shell_for_prefs(&self.prefs)
     }
 
     /// env > prefs.advanced > 24576 (24K)。
@@ -856,16 +858,25 @@ impl Pinvou3Bridge {
         }
     }
 
-    /// 构造 **session 专属** [`EngineConfig`]:在 [`build_engine_config`] 基础上把
-    /// `workspace` 换成该 session 的独立工作目录、`instructions` 换成该 session 的
-    /// inline 渲染版(`InstructionSource::Inline`,不走 disk)。EnginePool 给每个
-    /// session spawn engine 时用这个,让 engine 从 spawn 起就绑定自己的 workspace +
-    /// prompt,内存隔离不依赖 disk。
+    /// Build a session config with the ordinary per-session workspace.
     ///
     /// [`build_engine_config`]: Self::build_engine_config
     pub fn build_engine_config_for_session(&self, session_id: &str) -> EngineConfig {
+        self.build_engine_config_for_session_at(session_id, self.session_workspace(session_id))
+    }
+
+    /// Build a session config at an explicit workspace. Scheduled conversations
+    /// use this path so their transcripts stay independent while every run shares
+    /// the ordinary global workspace, without creating a misleading empty
+    /// `sessions/<id>/workspace` directory first.
+    pub(crate) fn build_engine_config_for_session_at(
+        &self,
+        session_id: &str,
+        workspace: PathBuf,
+    ) -> EngineConfig {
         let mut cfg = self.build_engine_config();
-        cfg.workspace = self.session_workspace(session_id);
+        let _ = std::fs::create_dir_all(&workspace);
+        cfg.workspace = workspace;
         cfg.instructions = self.session_instructions(session_id);
         cfg
     }
@@ -1699,18 +1710,28 @@ mod tests {
     /// allow_shell 默认 true（pinvou3 yolo 模式需要）。
     #[test]
     fn allow_shell_defaults_to_true() {
+        let _env = EnvGuard::new(&["PINVOU3_ALLOW_SHELL"]);
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         assert!(fixture_bridge().allow_shell());
+    }
+
+    #[test]
+    fn allow_shell_uses_advanced_preference_without_env_override() {
+        let _env = EnvGuard::new(&["PINVOU3_ALLOW_SHELL"]);
+        std::env::remove_var("PINVOU3_ALLOW_SHELL");
+        let mut bridge = fixture_bridge();
+        bridge.prefs.advanced.allow_shell = Some(false);
+        assert!(!bridge.allow_shell());
     }
 
     /// env 优先级高于 prefs。
     #[test]
     fn allow_shell_env_overrides_prefs() {
+        let _env = EnvGuard::new(&["PINVOU3_ALLOW_SHELL"]);
         let mut bridge = fixture_bridge();
         bridge.prefs.advanced.allow_shell = Some(true);
         std::env::set_var("PINVOU3_ALLOW_SHELL", "false");
         assert!(!bridge.allow_shell());
-        std::env::remove_var("PINVOU3_ALLOW_SHELL");
     }
 
     #[test]

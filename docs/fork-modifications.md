@@ -4,7 +4,7 @@
 > 用途:① sync 后查 patch 存活 ② 交接 / onboarding ③ 上游 PR 定位改动点。
 > 配套:`scripts/fork-guard.sh`(指纹 + 回归测试守卫)、`docs/fork-policy.md`(维护策略 + sync 流程 + PR 状态)。
 >
-> **当前基线**:submodule 分支 `pinvou3-clean` ← upstream **v0.8.65**;HEAD `5f5a58db`(2026-07-13,已合入 fork PR #8 的 durable scheduled runtime)。
+> **当前基线**:submodule 工作分支 `codex/scheduled-lite` ← `8073aa9b`(fork PR #9 tip,upstream **v0.8.65** clean re-fork 系)+ scheduled-lite/C12 后续补丁(+605/−12,6 文件;2026-07-13 撤回 fork PR #8 durable scheduler 重做,2026-07-14 补稳定 conversation key、Working Set 提醒剥离与终态保留清理,见 §4)。`.gitmodules` 仍追踪 `pinvou3-clean`,合流方式随 gitlink PR 定。
 
 ---
 
@@ -12,17 +12,17 @@
 
 | 项 | 值 |
 |---|---|
-| submodule 分支 | **`pinvou3-clean`**(`.gitmodules` 追踪);HEAD `5f5a58db`;备份 `backup/v0.8.65-merge-result`(merge 树)、`backup/pre-reclean-trial-tip`(旧 fork tip `6b3059da`)、`backup/pre-v0.8.65-sync`(旧远程 pinvou3-clean `4518f845`) |
-| fork drift | **+13744 / −5646 行,59 文件**(`git -C DeepSeek-TUI diff v0.8.65..HEAD --shortstat`)。主体是工作流层 W + durable scheduler AUTO——属"接受重 fork"(fork-policy §0);app 层 prompt 走 override 注入,不计入 |
-| 历史 | v0.8.65 clean re-fork 的 C1–C11 + AUTO + R + W 主题,以及后续 blocklist/compact/cancellation 修复;2026-07-13 fork PR #9 撤自动 warmup,随后 fork PR #8 在该 clean tip 上加入 durable scheduled runtime |
+| submodule 分支 | 工作分支 **`codex/scheduled-lite`**(基于 `8073aa9b` = fork PR #9 tip;`.gitmodules` 追踪 `pinvou3-clean`);durable scheduler 重实现留在 `codex/scheduled-tasks` 备查;备份 `backup/v0.8.65-merge-result`(merge 树)、`backup/pre-reclean-trial-tip`(旧 fork tip `6b3059da`)、`backup/pre-v0.8.65-sync`(旧远程 pinvou3-clean `4518f845`) |
+| fork drift | `8073aa9b` 基线原 drift **+7070/−4930,54 文件**(vs v0.8.65)+ scheduled-lite/C12 后续 **+605/−12,6 文件**。durable scheduler 的 +13744/−5646 已撤回,回到轻 fork(fork-policy §0) |
+| 历史 | v0.8.65 clean re-fork 的 C1–C12 + R + W 主题,以及后续 blocklist/compact/cancellation 修复;2026-07-13 fork PR #9 撤自动 warmup;同日 durable scheduled runtime(原 fork PR #8)以 AUTO-lite 最小补丁重做并撤回重实现(见 §4) |
 | LLM 暴露 native 工具 | **20 个**(全量注册 − 黑名单;原 23,2026-07-03 纯办公定位再砍 git_status/git_diff/diagnostics)。**tool_search 已禁用**(⚠️2026-07-03 修:v0.8.65 折叠单名后门控名与双旧名对不上一度漏注入,已补裸名,详见 C2)。MCP `mcp_pinvou_present_artifact` 另接,共 21 入口 |
-| fork-guard | 指纹 + 回归测试(`scripts/fork-guard.sh`;**v0.8.65 撤 P pwd-move 2 条**=上游已 harvest;+MKT skill 停用 3 条;+AUTO 指纹/定向测试);AUTO 当前定向回归 **53 automation + 44 task-manager + executor contract + approval hook** |
+| fork-guard | 指纹 + 回归测试(`scripts/fork-guard.sh`;**v0.8.65 撤 P pwd-move 2 条**=上游已 harvest;+MKT skill 停用 3 条;**AUTO 重型指纹 18 条撤、AUTO-lite 现为 15 条**);AUTO-lite 定向回归覆盖 automation model/conversation key、schema v4/v3 兼容、运行链接、终态保留、engine force_prompt 与 app scheduled Yolo 链路 |
 | system prompt | dump 逐字节稳定;per-turn `<runtime_prompt>` tag + goal continuation 均已 gate |
 | v0.8.65 决策 | **W 全保 fork**(三省六部 harness 命脉,不换上游单 agent);**P 已被上游 harvest**;**决策③**:token-budget scope-gate **不港**(fork 用步数上限)、`MAX_SPAWN_DEPTH_CEILING` **用上游 8**;**skills 收窄到只 `~/.pinvou3/bundle/skills`**(去 `.agents/skills`) |
 
 ---
 
-## 1. fork 结构(C1–C11 + AUTO + R + W 逻辑主题)
+## 1. fork 结构(C1–C12 + AUTO + R + W 逻辑主题)
 
 > 逻辑分组,对应主题 commit。看某文件 fork-distinct 改动:`git -C DeepSeek-TUI diff v0.8.60..HEAD -- <file>`。
 > 冲突易出血优先级(sync review 顺序):**prompts.rs(C5+C7) > turn_loop.rs(C7) > subagent/mod.rs(W) > tool_catalog.rs(C2) > project_context.rs(C5)**。
@@ -48,12 +48,14 @@
 - **测试**:`mcp::tests` 全过(P1 不破坏);fork-guard 指纹 `P1 list_mcp_resources 按 resources 非空 gate`
 - 上游 PR:✅ **可提**(通用优化:有 server 但零 resources 时不该注入 list 工具)
 
-### AUTO `automation` durable scheduler + host executor contract(2026-07-09—2026-07-11)
-- **文件**:`crates/tui/src/automation_manager.rs`、`crates/tui/src/task_manager.rs`、`crates/tui/src/tools/automation.rs`、`crates/tui/src/runtime_api.rs`、`crates/tui/src/core/engine/turn_loop.rs`、`crates/tui/tests/task_executor_contract.rs`
-- **改动**:给 `AutomationSchedule` 增加原生 `FREQ=MINUTELY;INTERVAL=N` 和过期槽位快进;旧的非整分钟 cursor 会先向上归一化,同一 scheduler tick 与 pending recovery 共用固定 `now`,避免秒边界连续补跑。automation 增加可选 model 并传播到标准 task;manual run/API 增加幂等 invocation key;run history 使用可重建 sidecar index、dirty journal、确定性 slot 直查和默认 1000 条终态保留策略,host guard 可保护仍被会话引用的旧 run。TaskManager 使用完整 UUID、内存幂等索引和逐 task 原子写;Queued→Running、事件、终态、取消与元数据均先持久化再发布内存状态,写失败退避重试且 shutdown 可取消。终态 task 支持由 retained run/pending journal 保护的崩溃安全 prune(marker 先落盘),并校验持久化 task id 是安全单路径且与文件 stem 一致。`ThreadCreated`/`ThreadLinked` 持久化 ack 关闭 session/turn 孤儿窗口;reporter 或 runtime 读取失败会取消并 interrupt 活跃 turn。旧 mode alias 原子规范化,单条坏 mode 隔离而不拖垮全库。真正不可旁路的 hook ask/`rlm_eval` 会设置 `approval_force_prompt`,避免 scheduled auto-approve 绕过强制确认。
-- **理由**:PINVOU 定时任务完整复用底座 `AutomationManager`/`TaskManager`/`spawn_scheduler`,不在 app 层维护第二套 parser、run record 或 task queue。写盘先于可见状态保证崩溃恢复和幂等;有界 run/task 保留策略避免分钟任务让每 3 秒轮询退化为全量扫盘或令启动内存持续增长;host guard 保持历史对话所有权。过期槽位只补最近一次,避免应用重启后回放积压。
-- **测试**:`task_executor_contract`、`executor_never_starts_before_running_record_is_durable`、`terminal_state_is_not_visible_until_terminal_write_succeeds`、`terminal_artifact_write_failure_retries_without_publishing_terminal_state`、`reporter_failure_cancels_token`、`thread_link_rejection_interrupts_once`、`invalid_mode_isolated_retaining_idempotency`、`retention_guard_does_not_parse_retained_history_on_nonterminal_save`、`terminal_retention_reads_only_prune_candidates`、`clean_index_detects_out_of_band_authority_add_and_remove`、`scheduler_fast_forwards_stale_slots_without_replaying_backlog`、`minutely_fast_forward_normalizes_legacy_cursor_at_end_of_minute`、`invalid_pending_journal_blocks_all_task_pruning`、`prune_terminal_tasks_preserves_protected_and_active_tasks`、`startup_finishes_journaled_task_prune`、`load_state_rejects_unsafe_mismatched_and_duplicate_task_ids`、`yolo_hook_ask_emits_non_bypassable_force_prompt`、`forkguard_parses_minutely_rrule`
-- **上游 PR**:能力通用但规模大,需按 scheduler / persistence / host executor contract 拆分提案;上游接受或自带等价支持前保留 fork patch。
+### AUTO-lite `automation` host executor 最小契约(2026-07-14,替代原 durable scheduler)
+- **文件**:`crates/tui/src/automation_manager.rs`、`crates/tui/src/task_manager.rs`、`crates/tui/src/tools/automation.rs`、`crates/tui/src/core/engine/turn_loop.rs`、`crates/tui/src/core/engine/tests.rs`
+- **改动**:① `ExecutionTask` 增加只读 getters(id/conversation_key/prompt/model/workspace/mode_label/allow_shell/trust_mode/auto_approve),host executor 无需 pub 字段即可消费;② `TaskExecutionEvent` 增加 `ThreadCreated { thread_id }` + 处理分支——会话身份先于 `ThreadLinked` 上报,发送失败/中断的 run 也能链上会话(**无 ACK**:事件进 channel 即返回,落盘发生在 manager 消费事件时,不保证先于 engine send);③ `reconcile_run_statuses` 运行中仅链接变化也触发 `save_run`——否则任务运行中历史打不开,要等状态变化才连带保存;④ automation 增加可选 `model`(record/create/update/tool schema 全链路)并传播到标准 task;⑤ registry 工具路径接入基线已有的 `approval_force_prompt` 机制(新增 `registered_tool_approval_force_prompt`):hook ask 与 `rlm_eval` 等不可旁路审批不能被 auto-approve 绕过;⑥ `TaskRecord` 保留 `idempotency_key: Option<String>` 惰性字段,并新增可选的稳定 `conversation_key`;automation 入队时以 `automation.id` 赋值,让每次 execution task id 独立，同时由 app 用 automation id 派生任务工作间。schema 升至 v4,缺少新字段的 v3 task 继续可读;⑦ 为宿主提供轻量终态保留接口：按 automation 选出超过预算的终态 Run，并删除对应终态 Task；queued/running 永不进入候选，不引入归档、索引或 journal。
+- **明确不承诺"不丢、不重"(轻量取舍)**:scheduler_tick 先 `enqueue_run_task`(task 已持久化)后 `save_run`,两步之间崩溃 → 下个 tick 该时槽会再入队,可能**重复执行一次**;`ThreadCreated`/事件链路无持久化 ACK。不做 enqueue journal/执行去重幂等键/reporter ACK——那正是撤回的 durable scheduler 机制。办公场景(晨报/汇总类)重复跑一次可接受;若未来要硬保证,按 `codex/scheduled-tasks` 分支拣回对应主题。
+- **审批产品决策(2026-07-14,恒 YOLO)**:定时任务与交互对话一致,**无人值守默认自动批准**(开箱即用、前端不暴露任何任务级权限设置)。落点在 **app 层**:每次执行都重新读取普通聊天的全局 Shell 配置(默认开启),并固定 `trust_mode=true`、`auto_approve=true`;create 写入同一组值,update 不接受任务级权限字段。基座 `DEFAULT_AUTOMATION_AUTO_APPROVE` 保持基线 `true` 不动。安全兜底 = force_prompt(⑤,rlm_eval/hook ask 无人值守自动**拒绝**而非挂起)+ C4 Dangerous 命令 YOLO 也 BLOCK。
+- **理由**:PINVOU 定时任务复用底座 `AutomationManager`/`TaskManager`/`spawn_scheduler`,fork 只补 host 消费接口与会话身份耐久点。原 durable scheduler(sidecar index/retention guard/prune/journal,+13744/−5646)对办公场景(小时级起步、单机少量任务)过度设计,已整体撤回——run/task 走底座原生持久化。
+- **测试**:`automation_enqueue_uses_default_and_explicit_task_settings`(model + conversation key 透传)、`worker_receives_persisted_conversation_key`、v3 task 兼容、`forkguard_running_run_link_persists_before_terminal_state`(运行中链接落盘,**负向验证过**:还原 bug 即 fail)、`forkguard_retention_keeps_latest_terminal_runs_and_all_active_runs`、`forkguard_deletes_only_terminal_task_records_and_artifacts`、`create_schema_exposes_rrule`(schema 含 model)、`rlm_eval_required_approval_ignores_generic_auto_approve` / `generic_required_tools_keep_auto_approve_behavior`(force_prompt 只对不可旁路工具生效);app 侧覆盖同一 automation 多次运行使用独立对话并共享任务工作间、缺模型失败仍保留预创建会话、全局 Shell 运行时刷新与恒 YOLO;UI 冒烟真实点击「编辑并重发」走通全链路
+- **上游 PR**:✅ force_prompt 属安全修复可提;getters/model 透传/ThreadCreated 通用性中等,可随附。
 
 ### C3 `tools` append_file + 大产物保护
 - **文件**:`tools/file.rs`、`core/engine/dispatch.rs`、`client/chat.rs`、`tools/registry.rs`(`with_file_tools`)、`tui/approval.rs`、`tui/widgets/tool_card.rs`、`tools/approval_cache.rs`
@@ -138,6 +140,13 @@
 - **守护**:`fork-guard.sh` C11 指纹钉住 `ShellStatus::Killed` 分支;目标 warmup 回归测试 3 条通过。Windows 行为仍需 Windows CI/真机覆盖。
 - 上游 PR:暂未提;需先补 Windows 稳定复现与平台回归测试。
 
+### C12 `working-set` 内部提醒不参与路径提取(2026-07-14)
+- **文件**:`crates/tui/src/working_set.rs`
+- **改动**:Working Set 实时观察用户消息及从历史重建时,仅在分析投影中剥离开头完整闭合的 `<system-reminder>...</system-reminder>`;原消息、持久化历史和发给模型的内容保持逐字不变。
+- **理由**:pinvou3 为严格 chat template 把每轮权限提醒放在 user content 前缀;Working Set 若扫描整段会把提醒中的 `sudo/apt/systemctl/pkexec` 误判为 repo path。内部策略不是用户给出的路径信号,不应污染 Active paths。
+- **测试**:`forkguard_working_set_ignores_leading_system_reminder_paths`、`forkguard_working_set_rebuild_ignores_leading_system_reminder_paths`,同时断言真实提示词路径仍被识别且重建不修改历史。
+- 上游 PR:暂不提;`<system-reminder>` 是 pinvou3 的嵌入约定,先留 fork。
+
 ### R `agentic-rag` EngineConfig.extra_tools 应用层工具注入口(2026-06-24)
 - **文件**:`core/engine.rs`(`ExtraTools` newtype + `EngineConfig.extra_tools` 字段 + Default)、`core/engine/tool_setup.rs`(`build_turn_tool_registry_builder` 末尾 `with_tool` 循环注册);连带补 3 处 TUI 路径 EngineConfig literal(`runtime_threads.rs`/`tui/ui.rs`/`main.rs`,`extra_tools: Default::default()`)
 - **改动**:给 `EngineConfig` 加 `pub extra_tools: ExtraTools`(newtype 包 `Vec<Arc<dyn ToolSpec>>`,手写 Debug 输出工具名——`dyn ToolSpec` 非 Debug,否则破 `#[derive(Debug)]`),每 turn build registry 时 append 到 builder。让**嵌入应用**(pinvou3-app)无需 fork 工具表即可注册自定义 `ToolSpec`
@@ -210,7 +219,18 @@
 
 ## 4. Sync 历史
 
-### Durable scheduled runtime(2026-07-13,fork PR #8,HEAD `5f5a58db`)
+### Scheduled-lite 重做:撤回 durable scheduler(2026-07-13,分支 `codex/scheduled-lite`)
+- **动机**:fork PR #8 的 durable scheduler 使 drift 达 +13744/−5646(59 文件),远超 1500 行软上限;复盘认定 sidecar index / retention guard / crash-safe prune / journal 对办公场景(小时级起步、单机少量任务)过度设计。
+- **做法**:submodule 回 `8073aa9b`(fork PR #9 tip)建 `codex/scheduled-lite`,重打 AUTO-lite 最小补丁(+336/−10,5 文件,见 §1 AUTO-lite);父项目 executor 回旧版 `mpsc::UnboundedSender<TaskExecutionEvent>` 事件接口,`scheduled_tasks.rs` 撤二级索引/retention/pruning 适配;前端撤分钟级创建入口(只留小时/每天/工作日/每周),定时任务侧边栏入口恢复。**简化决策:定时任务恒 YOLO**——前端不暴露任务级权限设置,AI 草稿 schema 去权限字段,运行时复用普通聊天 Yolo 权限推导(见 §1 AUTO-lite 审批产品决策)。
+- **保留物**:durable scheduler 重实现留 `codex/scheduled-tasks` 分支备查,后续如需分钟级高频调度可按主题拣回。
+- **验证**:底座覆盖 model/conversation key 透传、schema v4/v3 兼容、强制审批与运行链接持久化;app 覆盖恒 YOLO、独立运行对话、任务级共享工作间与 session retention;另跑父项目 `cargo check --locked`、前端单测+生产构建、UI 冒烟与 fork-guard。AUTO-lite 指纹由 8 条增至 13 条。
+- **2026-07-14 会话模型修正(一次运行一对话)**:底座持久 `conversation_key=automation.id`,每次运行生成独立 execution task id;app 每次运行创建新的 `sched-*` 会话，模型和提示词等 profile 固定在该次运行。同一 automation 的会话彼此独立，继续追问只进入选中的运行会话。UI 时/分采用 iOS 风双滚轮(`ScheduledTimeWheel`)。守护:`scheduled_runs_get_independent_conversations_and_share_the_task_workspace`。
+- **2026-07-14 存储与工作区语义**:定时任务不再有“选目录”;工作间固定为 `~/.pinvou3/scheduled/<automation_id>/workspace/`。同一任务的所有运行对话共享该目录，不同任务互相隔离；定时会话 JSON 与普通会话统一存入 `~/.pinvou3/sessions/`，产物归属仍按每次运行会话的 artifact 记录隔离。软件未发布，不迁移旧 scheduled store/profile/owner/产物；profile schema 和 workspace 必须严格匹配当前规则。普通对话继续沿用底座最新 50 条清理；定时任务按 automation 保留最新 50 条终态记录，超额时配套删除 Session/Run/Task，queued/running 永不删除；无 cwds 任务一等公民、**点模板即激活**。
+- **2026-07-14 列表/详情响应式层级**:未选任务时展示“已安排的任务”标题、产品说明、搜索、筛选和建议模板;选中任务后介绍区自动消失,恢复紧凑双栏(左侧筛选/搜索/任务列表,右侧当前配置)。详情页彻底移除 Shell/信任模式权限行,只显示 `Yolo · 自动执行`;后端每次运行按普通聊天规则读取全局 Shell,并固定信任与自动批准。UI 单测、Vite production build、真实浏览器 smoke 均通过。
+- **2026-07-13 二次复审修复**:① 编辑并重发放开——`commands.rs` 的 `edit_last_turn` 撤 `ensure_chat_session` 门(EnginePool 内部本就按 scheduled_profile 做 turn gate),与继续追问同路;会话管理类命令(删除/改名/归档/save_session_messages)仍拒绝 scheduled 会话;② 运行中链接落盘(AUTO-lite ③);③ `.gitattributes` 强制 `*.sh eol=lf`(autocrlf=true 的 checkout 曾把 fork-guard.sh 转成 CRLF,严格 bash 直接失败);④ fork-policy §0 基线同步 8073-lite。
+- **⚠️ Windows 本机跑 app lib 测试**:`rfd`(tauri-plugin-dialog)静态导入 `TaskDialogIndirect`,cargo test 的裸测试 exe 无 manifest → 解析到 System32 comctl32 v5 → `STATUS_ENTRYPOINT_NOT_FOUND(0xc0000139)` 启动即挂。绕法:在 `target/debug/deps/pinvou3_lib-<hash>.exe.manifest` 放 Common-Controls v6 外置 manifest(声明 `Microsoft.Windows.Common-Controls 6.0.0.0`)后正常运行;根治需在 build script 给 test 目标嵌 manifest(待议)。
+
+### ~~Durable scheduled runtime~~(2026-07-13,fork PR #8,HEAD `5f5a58db`;**同日被 Scheduled-lite 撤回**,见上)
 - **规模触发**:AUTO 使 fork drift 从 `+7070/−4930,54 文件` 增至 `+13744/−5646,59 文件`,显著超过 1500 行软上限,已执行撤回评估。
 - **撤回评估结论**:当前保留。PINVOU 定时任务必须复用底座 `AutomationManager` / `TaskManager` / scheduler / session contract;把 parser、队列、崩溃恢复和持久化在 app 层重写会形成第二套底座,违反项目架构边界。AUTO 的通用部分后续按较小主题拆分上游提案,上游接受等价能力后逐块撤回。
 - **历史清理**:fork PR #8 从 `8073aa9b` 直接重建为单一 feature commit,去掉 gitlink 异常遗留的重复 `c1edbd26` 和旧 merge;最终 rebase merge 为 `5f5a58db`。

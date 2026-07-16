@@ -12,11 +12,14 @@ const vm = require('vm');
 const indexHtml = [
   'main.jsx',
   'shared/i18n.js',
+  'shared/model-options.js',
   'components/layout/NavigationComponents.jsx',
   'features/chat/ChatView.jsx',
   'features/scheduled/ScheduledTasksView.jsx'
 ].map(file => fs.readFileSync(path.join(__dirname, '..', 'src', file), 'utf8')).join('\n');
 const tauriBridge = fs.readFileSync(path.join(__dirname, '..', 'src', 'tauri-bridge.js'), 'utf8');
+const modelOptionsSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'model-options.js'), 'utf8');
+const settingsViewSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'features', 'settings', 'SettingsView.jsx'), 'utf8');
 const scheduledTasksRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'scheduled_tasks.rs'), 'utf8');
 const enginePoolRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'engine_pool.rs'), 'utf8');
 const scheduledTaskPromptRust = scheduledTasksRust.slice(
@@ -26,6 +29,10 @@ const scheduledTaskPromptRust = scheduledTasksRust.slice(
 const scheduledTemplateSource = indexHtml.slice(
   indexHtml.indexOf('const SCHEDULED_TASK_TEMPLATES'),
   indexHtml.indexOf('const ScheduledTasksView')
+);
+const scheduledViewSource = indexHtml.slice(
+  indexHtml.indexOf('const ScheduledTasksView'),
+  indexHtml.indexOf('export { ScheduledTasksView }')
 );
 
 function mustContain(text) {
@@ -47,8 +54,8 @@ assert.ok(
   'left sidebar label should be 定时任务'
 );
 assert.ok(
-  /const SCHEDULED_TASKS_ENTRY_ENABLED = false/.test(indexHtml),
-  'scheduled-task entry should remain disabled until the creation flow is fixed'
+  /const SCHEDULED_TASKS_ENTRY_ENABLED = true/.test(indexHtml),
+  'scheduled-task entry should be enabled after the creation flow is fixed'
 );
 assert.ok(
   /SCHEDULED_TASKS_ENTRY_ENABLED\s*&&\s*\(\s*<NavItem[\s\S]{0,500}label=\{t\.scheduledPlans\}/.test(indexHtml),
@@ -79,8 +86,9 @@ assert.ok(
   'scheduled page should expose a stable smoke-test hook'
 );
 assert.ok(
-  /data-testid="scheduled-list-delete"/.test(indexHtml),
-  'delete action should live in the scheduled task list'
+  !/data-testid="scheduled-list-delete"/.test(indexHtml) &&
+  /data-testid="scheduled-detail-delete"/.test(indexHtml),
+  'delete action should live in task details instead of the scheduled task list'
 );
 assert.ok(
   /data-testid="scheduled-detail"/.test(indexHtml),
@@ -164,9 +172,21 @@ assert.ok(
   'normalized scheduled-task drafts should retain an explicit model wire name'
 );
 assert.ok(
-  /function lockScheduledTaskDraftModel\(draft\)[\s\S]{0,180}draft\.model = draft\.model \|\| activeScheduledTaskModel\(\)/.test(tauriBridge) &&
-    /var lockedModel = state\.scheduledTaskDraft\.model \|\| activeScheduledTaskModel\(\)/.test(tauriBridge),
-  'the final draft should lock the active saved model wire name before display and confirmation'
+  /modelId:\s*value\.modelId\s*\?/.test(tauriBridge) &&
+    /SCHEDULED_TASK_WRITABLE_FIELDS = \["name", "prompt", "rrule", "model", "modelId", "paused"\]/.test(tauriBridge) &&
+    /pub model_id: Option<String>/.test(scheduledTasksRust),
+  'scheduled tasks should carry a stable saved-model id through the frontend bridge and backend DTO'
+);
+assert.ok(
+  /function asScheduledTaskDraft\(d\)[\s\S]{0,320}mode:\s*'yolo'/.test(indexHtml) &&
+    !/function asScheduledTaskDraft\(d\)[\s\S]{0,320}d\.mode/.test(indexHtml),
+  'chat-rendered scheduled drafts should normalize their mode to Yolo immediately'
+);
+assert.ok(
+  /function lockScheduledTaskDraftModel\(draft\)[\s\S]{0,260}draft\.model = draft\.model \|\| \(active && active\.model\)/.test(tauriBridge) &&
+    /draft\.modelId = draft\.modelId \|\| \(active && active\.id\)/.test(tauriBridge) &&
+    /var lockedModelId = state\.scheduledTaskDraft\.modelId \|\| \(active && active\.id\)/.test(tauriBridge),
+  'the final draft should lock the active saved model wire name and stable model id before creation'
 );
 assert.ok(
   /pub struct ScheduledRunDto[\s\S]*?pub session_id: Option<String>/.test(scheduledTasksRust),
@@ -201,9 +221,10 @@ assert.ok(
   'the Scheduled sidebar item should aggregate unread completed runs across tasks'
 );
 assert.ok(
-  /scheduled_task:run_updated[\s\S]{0,520}state\.selectedScheduledTaskId === automationId[\s\S]{0,180}refreshScheduledTaskData\(20\)[\s\S]{0,180}loadScheduledTasks\(\)/.test(tauriBridge) &&
+  /scheduled_task:run_updated[\s\S]{0,180}scheduleScheduledRunRefresh\(\)/.test(tauriBridge) &&
+    /function scheduleScheduledRunRefresh\([\s\S]{0,900}refreshScheduledTaskData\(20\)[\s\S]{0,320}loadScheduledTaskRecentRuns\(\)/.test(tauriBridge) &&
     /async function init\(\)[\s\S]{0,420}loadScheduledTasks\(\)\.catch/.test(tauriBridge),
-  'task summaries should refresh globally on startup and on run updates outside the Scheduled page'
+  'run updates should debounce a global task and run refresh regardless of the current page'
 );
 assert.ok(
   /if \(automationId && runId && runStatus === "completed"\)/.test(tauriBridge) &&
@@ -226,26 +247,55 @@ assert.ok(
     /setInterval\([\s\S]{0,160}1000/.test(indexHtml),
   'active task rows should show the exact next run and a live seconds countdown'
 );
+assert(
+  /scheduled-task-next-run/.test(indexHtml) && /font-semibold/.test(indexHtml) && /text-\[#1769B0\]/.test(indexHtml),
+  'active task rows should visually distinguish the next run from the schedule label'
+);
 assert.ok(
   /function scheduleRepeatLabel\(/.test(indexHtml) &&
     /editor\.interval/.test(indexHtml) &&
-    /scheduleEditor\.repeat !== 'hourly'[\s\S]{0,120}scheduleEditor\.repeat !== 'minutely'/.test(indexHtml),
+    /scheduleEditor\.repeat !== 'hourly'/.test(indexHtml) &&
+    !indexHtml.includes("repeat === 'minutely'"),
   'detail frequency should use the real interval and omit clock time for interval schedules'
 );
 assert.ok(
-  /async function pickFolder\(\)[\s\S]{0,260}directory:\s*true[\s\S]{0,120}multiple:\s*false/.test(tauriBridge) &&
-    /data-testid="scheduled-detail-pick-folder"/.test(indexHtml),
-  'the live scheduled-task editor should offer the native folder picker while retaining path input'
+  !/data-testid="scheduled-detail-pick-folder"/.test(indexHtml) &&
+    !/data-testid="scheduled-live-project"/.test(indexHtml) &&
+    !/scheduled-workspace-required/.test(indexHtml),
+  'the external-directory setting is gone: no folder picker, project field, or workspace-required hint'
 );
 assert.ok(
-  /data-testid="scheduled-filter-tabs"/.test(indexHtml) &&
+    /data-testid="scheduled-filter-tabs"/.test(indexHtml) &&
     /data-testid="scheduled-left-toolbar"/.test(indexHtml) &&
+    /data-testid="scheduled-list-intro"/.test(indexHtml) &&
+    /\{renderTemplateSuggestions\(\)\}[\s\S]{0,120}<MyTasksSection className="mb-0" \/>/.test(indexHtml) &&
+    /const DetailTaskDialog = \(\) => !\(selected && detailForm\) \? null/.test(indexHtml) &&
+    /const renderModal = node => modalPortalTarget \? createPortal\(node, modalPortalTarget\) : node/.test(indexHtml) &&
+    /DetailTaskDialog = \(\) => !\(selected && detailForm\) \? null : renderModal\(/.test(indexHtml) &&
+    /role="dialog"/.test(indexHtml) &&
     /data-testid="scheduled-detail-toolbar"/.test(indexHtml) &&
+    /data-testid="scheduled-detail-close"/.test(indexHtml) &&
+    !/data-testid="scheduled-detail-menu"/.test(indexHtml) &&
+    !/data-testid="scheduled-detail-menu-popover"/.test(indexHtml) &&
+    !/data-testid="scheduled-detail-toggle"/.test(indexHtml) &&
+    /flex shrink-0 flex-wrap items-center justify-between/.test(indexHtml) &&
+    /data-testid="scheduled-run-now"[\s\S]{0,520}立即运行/.test(indexHtml) &&
+    /data-testid="scheduled-open-folder"[\s\S]{0,520}打开文件夹/.test(indexHtml) &&
+    !/data-testid="scheduled-detail-cancel"/.test(indexHtml) &&
+    /data-testid="scheduled-detail-save"[\s\S]{0,320}保存/.test(indexHtml) &&
+    /scheduled-detail-delete[\s\S]{0,1400}scheduled-detail-save/.test(indexHtml) &&
+    /data-testid="scheduled-detail-delete"/.test(indexHtml) &&
     /data-testid="scheduled-detail-prompt"/.test(indexHtml) &&
+    /testId="scheduled-live-model"/.test(indexHtml) &&
     /data-testid="scheduled-detail-settings"/.test(indexHtml) &&
-    /data-testid="scheduled-detail-frequency"/.test(indexHtml) &&
-    !/<h1[^>]*>定时任务<\/h1>/.test(indexHtml),
-  'the configured-task view should use the compact split layout instead of the redundant hero and status blocks'
+    !/data-testid="scheduled-detail-frequency"/.test(indexHtml),
+  'the list home should stay visible while configured-task editing opens in a modal with direct actions'
+);
+assert.ok(
+  !/>权限</.test(indexHtml) &&
+    !indexHtml.includes("['allowShell', 'Shell']") &&
+    !indexHtml.includes("['trustMode', '信任模式']"),
+  'scheduled task details must not expose task-level permission controls'
 );
 assert.ok(
   /async function openRunChat\(run\)[\s\S]*?bridge\.openScheduledRunChat\(run,\s*detail \|\| selected\)/.test(indexHtml),
@@ -254,9 +304,33 @@ assert.ok(
 assert.ok(
   !/data-testid="scheduled-run-mode"/.test(indexHtml) &&
     !/data-testid="scheduled-live-mode"/.test(indexHtml) &&
-    /backendInput\.mode = "yolo"/.test(tauriBridge) &&
-    /Object\.assign\(\{\}, input \|\| \{\}, \{ mode: "yolo" \}\)/.test(tauriBridge),
+    /function scheduledTaskBackendInput\(input\)/.test(tauriBridge) &&
+    /var backendInput = \{ mode: "yolo" \}/.test(tauriBridge) &&
+    (tauriBridge.match(/scheduledTaskBackendInput\(input\)/g) || []).length === 3,
   'scheduled tasks should hide mode controls and force Yolo on every write'
+);
+assert.ok(
+  !/data-testid="scheduled-yolo-mode"/.test(scheduledViewSource) &&
+    !scheduledViewSource.includes('执行模式') &&
+    scheduledViewSource.includes('testId="scheduled-live-model"') &&
+    scheduledViewSource.includes('testId="scheduled-live-repeat"') &&
+    scheduledViewSource.includes('testId="scheduled-live-interval"') &&
+    scheduledViewSource.includes('testId="scheduled-live-time"'),
+  'the detail view should keep model and schedule in one settings card without an execution-mode row'
+);
+assert.ok(
+  /HOURLY_INTERVAL_OPTIONS\s*=\s*Array\.from\(\{ length: 24 \}/.test(indexHtml) &&
+    /scheduleEditor\.repeat === 'hourly'[\s\S]{0,500}data-testid="scheduled-live-interval-row"/.test(scheduledViewSource) &&
+    /onChange=\{value => editSchedule\('interval', value\)\}/.test(scheduledViewSource),
+  'hourly schedules should expose a themed 1-24 hour interval selector'
+);
+assert.ok(
+  /SCHEDULED_TASK_WRITABLE_FIELDS\s*=\s*\["name", "prompt", "rrule", "model", "modelId", "paused"\]/.test(tauriBridge) &&
+    !/SCHEDULED_TASK_WRITABLE_FIELDS[^;]*allowShell/.test(tauriBridge) &&
+    !/SCHEDULED_TASK_WRITABLE_FIELDS[^;]*trustMode/.test(tauriBridge) &&
+    !/SCHEDULED_TASK_WRITABLE_FIELDS[^;]*autoApprove/.test(tauriBridge) &&
+    !/SCHEDULED_TASK_WRITABLE_FIELDS[^;]*cwds/.test(tauriBridge),
+  'the frontend wire boundary should allow-list task fields and reject permission or directory inputs'
 );
 assert.ok(
   !/async function openRunChat\(run\)[\s\S]{0,420}opened && onOpenChat/.test(indexHtml),
@@ -271,10 +345,11 @@ assert.ok(
 assert.ok(
   /data-testid="scheduled-live-title"/.test(indexHtml) &&
     /data-testid="scheduled-live-prompt"/.test(indexHtml) &&
-    /data-testid="scheduled-live-project"/.test(indexHtml) &&
     /testId="scheduled-live-model"/.test(indexHtml) &&
     /testId="scheduled-live-repeat"/.test(indexHtml) &&
-    /data-testid="scheduled-live-time"/.test(indexHtml),
+    /testId="scheduled-live-interval"/.test(indexHtml) &&
+    /testId="scheduled-live-day"/.test(indexHtml) &&
+    /testId="scheduled-live-time"/.test(indexHtml),
   'the selected task detail should be the live editable surface'
 );
 assert.ok(
@@ -284,6 +359,59 @@ assert.ok(
     /event\.key === 'Escape'/.test(indexHtml) &&
     !/<select data-testid="scheduled-live-(?:model|repeat)"/.test(indexHtml),
   'Scheduled model and frequency controls should use the themed keyboard-dismissible popover'
+);
+assert.ok(
+  /const iosInsetSurface =/.test(indexHtml) &&
+    /data-testid="scheduled-create-settings" className=\{`overflow-visible rounded-\[16px\] \$\{iosInsetSurface\}`\}/.test(indexHtml) &&
+    /data-testid="scheduled-detail-settings" className=\{`overflow-visible rounded-\[16px\] \$\{iosInsetSurface\}`\}/.test(indexHtml) &&
+    /data-testid="scheduled-detail-actions-group" className=\{`overflow-hidden rounded-\[16px\] \$\{iosInsetSurface\}`\}/.test(indexHtml) &&
+    /data-testid="scheduled-run-history-list" className=\{`overflow-hidden rounded-\[12px\] \$\{iosHistorySurface\}`\}/.test(indexHtml) &&
+    /fixed z-\[1000\][\s\S]{0,120}rounded-\[12px\] border/.test(indexHtml) &&
+    /fixed z-\[1000\][\s\S]{0,120}rounded-\[14px\] border/.test(indexHtml) &&
+    /data-testid="scheduled-detail-delete-confirmation"[\s\S]{0,260}rounded-\[14px\] border/.test(indexHtml),
+  'embedded scheduled task form groups should not have outer borders, while floating surfaces keep borders'
+);
+assert.ok(
+  /const modelOptions = savedModels\.map\(model => \(\{[\s\S]{0,120}value:\s*model\.id/.test(indexHtml) &&
+    /<ScheduledSelect value=\{detailForm\.modelId \|\| ''\} options=\{modelOptions\}/.test(indexHtml) &&
+    /modelId:\s*activeModel && activeModel\.id/.test(indexHtml),
+  'scheduled model selection should use saved model ids and submit modelId with the wire model'
+);
+assert.ok(
+  /builtin_llmapi/.test(modelOptionsSource) &&
+    /const savedModels = visibleUserModels\(appState\.savedModels \|\| \[\]\)/.test(indexHtml) &&
+    /const savedModels = visibleUserModels\(\(bs && bs\.savedModels\) \|\| \[\]\)/.test(settingsViewSource),
+  'scheduled task and composer model menus should hide the built-in model option'
+);
+assert.ok(
+  !/data-testid="scheduled-task-pin"/.test(indexHtml) &&
+    !/data-testid="scheduled-task-actions"/.test(indexHtml) &&
+    !/data-testid="scheduled-task-action-menu"/.test(indexHtml) &&
+    !/data-testid="scheduled-detail-actions"/.test(indexHtml) &&
+    /scheduledRunHistory\.map/.test(indexHtml) &&
+    /<RecentItem[\s\S]{0,900}chat=\{chat\}[\s\S]{0,900}handleOpenScheduledRunShortcut\(chat\.scheduledRun\)/.test(indexHtml) &&
+    /onContextMenu=\{openContextMenu\}/.test(indexHtml) &&
+    /onTogglePinned && onTogglePinned\(chat\.id, !chat\.pinned\)/.test(indexHtml) &&
+    /setConfirming\(true\)/.test(indexHtml) &&
+    /renameSession\(id, title\)/.test(indexHtml),
+  'scheduled run record operations belong to the sidebar RecentItem, not the scheduled task definition list'
+);
+assert.ok(
+    /multiple = false, minSelected = 0/.test(indexHtml) &&
+    /aria-multiselectable=\{multiple \|\| undefined\}/.test(indexHtml) &&
+    /const lastRequiredSelection = multiple && active && selectedValues\.length <= minSelected/.test(indexHtml) &&
+    /onChange=\{values => editSchedule\('days', values\)\} multiple minSelected=\{1\}/.test(indexHtml) &&
+    /onClose=\{\(\) => setScheduleRepeatIntent\(null\)\}/.test(indexHtml) &&
+    /WEEKDAY_CODES\.filter\(day => requested\.has\(day\)\)/.test(indexHtml),
+  'weekly schedules should support an ordered one-to-seven day multi-select, reject empty selections, and normalize presets after the menu closes'
+);
+assert.ok(
+  /const ScheduledTimeWheel =/.test(indexHtml) &&
+    /scrollSnapType: 'y mandatory'/.test(indexHtml) &&
+    /const WheelColumn = [\s\S]{0,1800}\}, \[value\]\);/.test(indexHtml) &&
+    !/type="time"/.test(indexHtml) &&
+    !indexHtml.includes('独立会话'),
+  'time editing should use the iOS-style wheel picker and the detail panel drops the static session row'
 );
 assert.ok(
   /setSaveState\(Object\.keys\(pendingPatchRef\.current\)\.length \? 'editing' : 'saved'\)/.test(indexHtml) &&
@@ -298,9 +426,30 @@ assert.ok(
   'a scheduled run opened from history should use the ordinary chat editor and composer controls'
 );
 assert.ok(
-  /function startTemplate\(template\)[\s\S]{0,1200}bridge\.createScheduledTask\(/.test(indexHtml) &&
+  /function startTemplate\(template\)[\s\S]{0,900}setCreateForm\(\{[\s\S]{0,260}templateId:\s*template\.id[\s\S]{0,260}name:\s*template\.name[\s\S]{0,260}prompt:\s*template\.prompt[\s\S]{0,260}rrule:\s*template\.rrule/.test(indexHtml) &&
     !/function saveDraft\(/.test(indexHtml),
-  'clicking a template should create and select the task immediately'
+  'clicking a template should open the second-level creation sheet with template fields prefilled'
+);
+assert.ok(
+  /data-testid="scheduled-create-dialog"/.test(indexHtml) &&
+    /data-testid="scheduled-create-close"/.test(indexHtml) &&
+    /data-testid="scheduled-create-name"/.test(indexHtml) &&
+    /data-testid="scheduled-create-prompt"/.test(indexHtml) &&
+    /testId="scheduled-create-repeat"/.test(indexHtml) &&
+    /data-testid="scheduled-create-submit"/.test(indexHtml) &&
+    /<span[^>]*>任务名称<\/span>/.test(indexHtml) &&
+    /disabled=\{!!busyAction \|\| !String\(createForm\.name/.test(indexHtml) &&
+    /async function startBlankTask\(\)[\s\S]{0,1200}setCreateForm\(/.test(indexHtml) &&
+    /selectAfterCreate:\s*false/.test(indexHtml) &&
+    /async function submitCustomTask\(event\)[\s\S]{0,1600}bridge\.createScheduledTask\(/.test(indexHtml),
+  'custom creation should collect a valid task in a dialog before creating it'
+);
+assert.ok(
+  /var selectAfterCreate = !input \|\| input\.selectAfterCreate !== false/.test(tauriBridge) &&
+    /if \(!created \|\| !created\.id\)/.test(tauriBridge) &&
+    /if \(selectAfterCreate\) selectScheduledTask\(created\.id\)/.test(tauriBridge) &&
+    /if \(selectAfterCreate\) state\.scheduledTaskDetail = created/.test(tauriBridge),
+  'scheduled creation dialogs should be able to create without immediately opening the edit sheet'
 );
 assert.ok(
   /fn should_sync_session\([\s\S]{0,120}is_scheduled \|\| has_messages/.test(enginePoolRust) &&
@@ -308,58 +457,95 @@ assert.ok(
   'scheduled sessions must SyncSession even when their durable message list is empty'
 );
 assert.ok(
-  /请一次只问我一个问题[\s\S]*1\.[\s\S]*2\.[\s\S]*3\.[\s\S]*4\.[\s\S]*5\./.test(scheduledTaskPromptRust),
-  'backend prompt should include the guided-chat checklist'
+  /请一次只问我一个问题[\s\S]*1\.[\s\S]*2\./.test(scheduledTaskPromptRust) &&
+    !/\n3\./.test(scheduledTaskPromptRust) &&
+    !scheduledTaskPromptRust.includes('autoApprove') &&
+    scheduledTaskPromptRust.includes('不需要询问工作目录或权限设置') &&
+    !scheduledTaskPromptRust.includes('allowShell') &&
+    !scheduledTaskPromptRust.includes('trustMode') &&
+    !scheduledTaskPromptRust.includes('cwds'),
+  'backend prompt should include the guided-chat checklist without approval or workspace questions'
 );
 assert.ok(
-  scheduledTaskPromptRust.includes("FREQ=MINUTELY;INTERVAL=10") &&
-    scheduledTaskPromptRust.includes("FREQ=HOURLY;INTERVAL=6") &&
+  scheduledTaskPromptRust.includes("FREQ=HOURLY;INTERVAL=6") &&
     scheduledTaskPromptRust.includes("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30") &&
     scheduledTaskPromptRust.includes("FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=9;BYMINUTE=30"),
   'backend prompt should include supported rrule examples'
 );
 assert.ok(
-  !scheduledTaskPromptRust.includes("不支持分钟级"),
-  'backend prompt should not say minute-level schedules are unsupported'
+  scheduledTaskPromptRust.includes("create_scheduled_task") &&
+    scheduledTaskPromptRust.includes("schtasks") &&
+    scheduledTaskPromptRust.includes("Windows Task Scheduler") &&
+    scheduledTaskPromptRust.includes("cron") &&
+    scheduledTaskPromptRust.includes("systemd timer") &&
+    scheduledTaskPromptRust.includes("不支持分钟级") &&
+    !scheduledTaskPromptRust.includes("FREQ=MINUTELY"),
+  'backend prompt should forbid system schedulers and ask before unsupported minute-level schedules'
 );
 mustNotContain("每日项目状态提醒");
 mustNotContain("每周资料整理提醒");
 mustNotContain("Templates");
 mustNotContain("模板库会在后续接入");
 mustNotContain('title="编辑"');
-assert.strictEqual((scheduledTemplateSource.match(/workspace:\s*\[\]/g) || []).length, 3, 'the suggestion area should contain exactly three templates');
+assert.strictEqual((scheduledTemplateSource.match(/rrule:\s*'FREQ=/g) || []).length, 3, 'the suggestion area should contain exactly three templates');
 assert.strictEqual((scheduledTemplateSource.match(/mode:\s*'(?:agent|plan|yolo)'/g) || []).length, 0, 'templates should not expose a selectable execution mode');
-assert.strictEqual((scheduledTemplateSource.match(/allowShell:\s*false/g) || []).length, 3, 'every template should fail closed for shell by default');
-assert.strictEqual((scheduledTemplateSource.match(/trustMode:\s*false/g) || []).length, 3, 'every template should declare its trust default');
-assert.strictEqual((scheduledTemplateSource.match(/autoApprove:\s*false/g) || []).length, 3, 'every template should declare its approval default');
-assert.strictEqual((scheduledTemplateSource.match(/paused:\s*true/g) || []).length, 3, 'templates without a workspace must start paused');
+assert.strictEqual((scheduledTemplateSource.match(/allowShell|trustMode/g) || []).length, 0, 'templates must not expose task-level permission settings');
+assert.strictEqual((scheduledTemplateSource.match(/autoApprove/g) || []).length, 0, 'approval is fixed to YOLO in the backend; the frontend must not expose or send autoApprove');
+assert.strictEqual((scheduledTemplateSource.match(/paused:\s*false/g) || []).length, 3, 'templates activate immediately: no workspace prerequisite remains');
+assert.strictEqual((scheduledTemplateSource.match(/workspace|cwds/g) || []).length, 0, 'templates must not carry a workspace concept');
 assert.ok(
-  scheduledTasksRust.includes('Scheduled task requires a workspace before it can run') &&
-    /active_without_workspace[\s\S]{0,900}AutomationStatus::Paused/.test(scheduledTasksRust),
-  'backend must fail closed for new, legacy, resumed, and manual empty-workspace tasks'
+  /name: '每日早报'/.test(scheduledTemplateSource) &&
+    /name: '事项督办'/.test(scheduledTemplateSource) &&
+    /name: '工作周报'/.test(scheduledTemplateSource),
+  'the suggestion area should use the three office-oriented task names'
+);
+assert.ok(
+  (scheduledTemplateSource.match(/不要扫描用户目录/g) || []).length === 3 &&
+    /仅查询整理，不发送、审批或修改/.test(scheduledTemplateSource) &&
+    /不要扫描用户目录或自动发送/.test(scheduledTemplateSource),
+  'office templates should be source-driven, read-only, and independent of user directories'
+);
+assert.ok(
+  (scheduledTemplateSource.match(/description:\s*'/g) || []).length === 3 &&
+    /\{template\.description\}/.test(indexHtml) &&
+    !/>\{template\.prompt\}<\/span>/.test(indexHtml),
+  'suggestion cards should show concise descriptions instead of full execution prompts'
+);
+assert.ok(
+  /name: '每日早报'[\s\S]{0,500}重要新闻和行业动态[\s\S]{0,180}公司公告/.test(scheduledTemplateSource) &&
+    !/name: '每日早报'[\s\S]{0,500}今日会议|name: '每日早报'[\s\S]{0,500}补充今日[^。']*待办/.test(scheduledTemplateSource),
+  'the daily brief should own information awareness while action items remain in supervision'
+);
+assert.ok(
+  !scheduledTasksRust.includes('requires a workspace') &&
+    !scheduledTasksRust.includes('active_without_workspace'),
+  'the backend workspace gate is gone: the shared workspace is assigned internally'
 );
 assert.ok(
   !scheduledTemplateSource.includes("id: 'project-health'") && !scheduledTemplateSource.includes("id: 'material-digest'"),
   'only the three Codex-style suggested templates should remain'
 );
 assert.ok(
-  /选定[^']*(项目|目录)[^']*(近期|最近)[^']*(变化|改动)/.test(scheduledTemplateSource) &&
+  !/选定[^']*(项目|目录)/.test(scheduledTemplateSource) &&
     /待办|未完成/.test(scheduledTemplateSource) && /风险/.test(scheduledTemplateSource),
-  'template prompts should focus on selected workspace changes, pending work, and risks'
+  'template prompts should not reference a selected project directory'
 );
 assert.ok(
-  /function startTemplate\(template\)[\s\S]{0,700}bridge\.createScheduledTask\([\s\S]{0,220}cwds:\s*\[\.\.\.workspace\][\s\S]{0,260}mode:\s*'yolo'[\s\S]{0,260}allowShell:\s*!!template\.allowShell/.test(indexHtml),
-  'selecting a template should immediately create it with workspace, fixed Yolo mode, and permission defaults'
+  /function startTemplate\(template\)[\s\S]{0,900}setCreateForm\(\{[\s\S]{0,260}templateId:\s*template\.id/.test(indexHtml) &&
+    /async function submitCustomTask\(event\)[\s\S]{0,1800}bridge\.createScheduledTask\([\s\S]{0,420}templateId:\s*createForm\.templateId \|\| undefined[\s\S]{0,420}mode:\s*'yolo'/.test(indexHtml) &&
+    !/scheduled-detail-settings[\s\S]{0,1200}>权限</.test(indexHtml),
+  'selecting a template should confirm through the second-level sheet and create with fixed Yolo mode and no permission UI'
 );
 assert.ok(
-  /const visibleSuggestions\s*=\s*SCHEDULED_TASK_TEMPLATES\.filter/.test(indexHtml) &&
-    /tasks\.some\([\s\S]{0,300}task\.templateId\s*===\s*template\.id/.test(indexHtml) &&
+  /const visibleSuggestions\s*=\s*SCHEDULED_TASK_TEMPLATES;/.test(indexHtml) &&
+    !/const visibleSuggestions\s*=\s*SCHEDULED_TASK_TEMPLATES\.filter/.test(indexHtml) &&
     /visibleSuggestions\.map\(template/.test(indexHtml),
-  'a template already represented by a configured task should disappear from suggestions by durable source id'
+  'suggested templates should remain visible after users create matching scheduled tasks'
 );
 assert.ok(
   /scheduled-task-template-sources-v1/.test(tauriBridge) &&
-    /delete backendInput\.templateId/.test(tauriBridge) &&
+    /var templateId = input && typeof input\.templateId === "string"/.test(tauriBridge) &&
+    !/SCHEDULED_TASK_WRITABLE_FIELDS[^;]*templateId/.test(tauriBridge) &&
     /templateId:\s*template\.id/.test(indexHtml),
   'template source ids should persist in the frontend sidecar without leaking into the base automation request'
 );
@@ -416,7 +602,8 @@ function createBridgeHarness(sharedStorage) {
     }
     if (cmd === "list_sessions" || cmd === "list_archived_sessions" || cmd === "list_personas" ||
         cmd === "get_session_persona_events" || cmd === "get_session_pinvou_reviews" ||
-        cmd === "list_workspace_files" || cmd === "list_scheduled_task_runs") return [];
+        cmd === "list_workspace_files" || cmd === "list_scheduled_task_runs" ||
+        cmd === "list_scheduled_runs") return [];
     if (cmd === "get_mode_state") return { mode: "yolo" };
     if (cmd === "get_memory_overview") return {};
     if (cmd === "session_mounted_collection" || cmd === "get_active_persona" ||
@@ -427,6 +614,9 @@ function createBridgeHarness(sharedStorage) {
     if (cmd === "read_scheduled_task") return { id: args.id, name: args.id };
     if (cmd === "create_scheduled_task") {
       return Object.assign({ id: "automation-created" }, args.input || {});
+    }
+    if (cmd === "set_scheduled_task_pinned") {
+      return { id: args.id, name: args.id, pinned: !!args.pinned, pinnedAt: args.pinned ? "2026-07-15T10:00:00Z" : null };
     }
     return null;
   }
@@ -506,6 +696,9 @@ async function scheduledRunUnreadBehavior() {
   harness.handlers.list_scheduled_task_runs = function () {
     return runs.map(function (run) { return Object.assign({}, run); });
   };
+  harness.handlers.list_scheduled_runs = function () {
+    return runs.map(function (run) { return Object.assign({}, run); });
+  };
   harness.handlers.mark_scheduled_run_viewed = function (args) {
     assert.ok(openedContextPublished, "the full conversation view must be published before its run is marked viewed");
     return {
@@ -520,6 +713,7 @@ async function scheduledRunUnreadBehavior() {
   bridge.selectScheduledTask(task.id);
   await bridge.readScheduledTask(task.id);
   await bridge.loadScheduledTaskRuns(task.id, 20);
+  await bridge.loadScheduledTaskRecentRuns();
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "mark_scheduled_run_viewed"; }).length,
     0,
@@ -534,6 +728,8 @@ async function scheduledRunUnreadBehavior() {
   var afterFirst = bridge.getState();
   assert.strictEqual(afterFirst.scheduledTaskRuns[0].unread, false, "the opened run should become viewed");
   assert.strictEqual(afterFirst.scheduledTaskRuns[1].unread, true, "sibling runs remain independently unread");
+  assert.strictEqual(afterFirst.scheduledTaskRecentRuns[0].unread, false, "the opened sidebar run should lose its dot immediately");
+  assert.strictEqual(afterFirst.scheduledTaskRecentRuns[1].unread, true, "the sibling sidebar run should remain unread");
   assert.strictEqual(afterFirst.scheduledTasks[0].hasUnreadRuns, true, "task dot remains while a child run is unread");
   assert.strictEqual(afterFirst.scheduledTaskDetail.hasUnreadRuns, true);
 
@@ -541,6 +737,7 @@ async function scheduledRunUnreadBehavior() {
   assert.strictEqual(await bridge.openScheduledRunChat(runs[1], task), true);
   var afterSecond = bridge.getState();
   assert.ok(afterSecond.scheduledTaskRuns.every(function (run) { return run.unread === false; }));
+  assert.ok(afterSecond.scheduledTaskRecentRuns.every(function (run) { return run.unread === false; }));
   assert.strictEqual(afterSecond.scheduledTasks[0].hasUnreadRuns, false, "task dot clears only after every child run was opened");
   assert.strictEqual(afterSecond.scheduledTaskDetail.hasUnreadRuns, false);
 
@@ -550,7 +747,10 @@ async function scheduledRunUnreadBehavior() {
     if (args.id === "sched-running") {
       return {
         metadata: { id: "sched-running", title: "Running scheduled conversation" },
-        messages: [{ role: "user", content: [{ type: "text", text: "durable scheduled prompt" }] }],
+        messages: [{ role: "user", content: [
+          { type: "text", text: "<system-reminder>\ninternal policy: sudo/apt/systemctl/pkexec\n</system-reminder>\n\ndurable scheduled prompt" },
+          { type: "text", text: "<turn_meta>\nCurrent workspace: C:\\\\Users\\\\demo\n</turn_meta>" },
+        ] }],
         artifacts: [],
       };
     }
@@ -589,6 +789,15 @@ async function scheduledRunUnreadBehavior() {
   assert.ok(
     JSON.stringify(bridge.getState().chatItems).includes("durable scheduled prompt"),
     "the normal chat transcript should also include the durable user prompt"
+  );
+  var visibleScheduledTranscript = JSON.stringify(bridge.getState().chatItems);
+  assert.ok(!visibleScheduledTranscript.includes("system-reminder"), "scheduled bubbles must hide the internal reminder");
+  assert.ok(!visibleScheduledTranscript.includes("turn_meta"), "scheduled bubbles must hide turn metadata");
+  assert.ok(!visibleScheduledTranscript.includes("sudo/apt/systemctl/pkexec"), "scheduled bubbles must hide internal policy text");
+  assert.ok(!visibleScheduledTranscript.includes("Current workspace"), "scheduled bubbles must hide internal workspace metadata");
+  assert.ok(
+    JSON.stringify(bridge.getState().messages).includes("<system-reminder>"),
+    "the raw scheduled message must remain intact for model context"
   );
   assert.strictEqual(await bridge.exitScheduledRunChat(), true);
   harness.emit("chat:delta", { session_id: "sched-buffered", text: "partial background output" });
@@ -663,13 +872,20 @@ async function scheduledRunningHydrationRaceBehavior() {
   harness.emit("chat:tool_start", {
     session_id: "sched-live-race", id: "tool-hydrate", name: "shell", args: { command: "echo hydrate" },
   });
+  harness.emit("chat:tool_end", {
+    session_id: "sched-live-race", id: "tool-hydrate", success: true, output: "hydrated result",
+  });
   load.resolve({
     metadata: { id: "sched-live-race", title: "Live scheduled run" },
     messages: [
       { role: "user", content: [{ type: "text", text: "persisted scheduled prompt" }] },
       { role: "assistant", content: [
+        { type: "thinking", thinking: "durable-only reasoning metadata" },
         { type: "text", text: "delta received during durable load" },
         { type: "tool_use", id: "tool-hydrate", name: "shell", input: { command: "echo hydrate" } },
+      ] },
+      { role: "user", content: [
+        { type: "tool_result", tool_use_id: "tool-hydrate", content: "hydrated result" },
       ] },
     ],
     artifacts: [],
@@ -1159,6 +1375,10 @@ async function scheduledTemplateSourcePersistenceBehavior() {
     backendInput = args.input;
     return Object.assign({ id: "automation-template" }, args.input);
   };
+  // createScheduledTask 成功后会立即重拉任务列表;真实后端此时必然已包含新任务。
+  first.handlers.list_scheduled_tasks = function () {
+    return backendInput ? [Object.assign({ id: "automation-template" }, backendInput)] : [];
+  };
   var created = await first.bridge.createScheduledTask({
     name: "Completely renamed",
     prompt: "Completely edited prompt",
@@ -1368,6 +1588,7 @@ async function scheduledSelectionGenerationBehavior() {
   assert.strictEqual(state.scheduledTaskLoading, false);
 
   var refreshes = 0;
+  var aggregateRefreshes = 0;
   harness.handlers.list_scheduled_task_runs = function () {
     refreshes += 1;
     return [{ id: "run-b2", automationId: "automation-b" }];
@@ -1379,15 +1600,18 @@ async function scheduledSelectionGenerationBehavior() {
       { id: "automation-b", name: "B", hasUnreadRuns: false },
     ];
   };
+  harness.handlers.list_scheduled_runs = function () {
+    aggregateRefreshes += 1;
+    return [];
+  };
   harness.emit("scheduled_task:run_updated", { automationId: "automation-a" });
-  await tick();
-  assert.strictEqual(listCalls, 3, "unselected automation updates must still refresh global unread task summaries");
-  assert.strictEqual(harness.bridge.getState().scheduledTasks[0].hasUnreadRuns, true, "the unselected task unread summary should enter global state");
-  assert.strictEqual(refreshes, 0, "unselected automation updates must not refresh run history");
   harness.emit("scheduled_task:run_updated", { automationId: "automation-b" });
+  await new Promise(function (resolve) { setTimeout(resolve, 450); });
   await tick();
-  assert.strictEqual(listCalls, 4, "selected automation updates should refresh task summaries with detail and runs");
-  assert.strictEqual(refreshes, 1, "selected automation updates should refresh run history");
+  assert.strictEqual(listCalls, 3, "burst run events should debounce to one global task refresh");
+  assert.strictEqual(harness.bridge.getState().scheduledTasks[0].hasUnreadRuns, true, "the unselected task unread summary should enter global state");
+  assert.strictEqual(refreshes, 1, "the selected task detail should refresh once after the event burst");
+  assert.strictEqual(aggregateRefreshes, 1, "the global scheduled-run sidebar should refresh once after the event burst");
 }
 
 async function scheduledRefreshDoesNotOverlap() {
@@ -1479,6 +1703,18 @@ async function scheduledDeletePurgesOnlyReportedSessionBuffers() {
   );
 
   var noIdsHarness = createBridgeHarness();
+  noIdsHarness.handlers.list_scheduled_tasks = function () {
+    return [{ id: "automation-no-ids", name: "No ids task" }];
+  };
+  noIdsHarness.handlers.list_scheduled_runs = function () {
+    return [{
+      id: "run-delete-no-ids",
+      automationId: "automation-no-ids",
+      sessionId: "sched-delete-no-ids",
+      status: "completed",
+      archived: false,
+    }];
+  };
   noIdsHarness.emit("chat:delta", {
     session_id: "sched-delete-no-ids",
     text: "retain when backend reports no ids",
@@ -1486,7 +1722,14 @@ async function scheduledDeletePurgesOnlyReportedSessionBuffers() {
   noIdsHarness.handlers.delete_scheduled_task = function () {
     return { id: "automation-no-ids" };
   };
+  await noIdsHarness.bridge.loadScheduledTasks();
+  await noIdsHarness.bridge.loadScheduledTaskRecentRuns();
   await noIdsHarness.bridge.deleteScheduledTask("automation-no-ids");
+  assert.strictEqual(
+    noIdsHarness.bridge.getState().scheduledTaskRecentRuns.length,
+    0,
+    "deleting a task must remove its sidebar rows even when the backend reports no session ids"
+  );
   assert.strictEqual(await noIdsHarness.bridge.openScheduledRunChat({
     id: "run-delete-no-ids",
     automationId: "automation-no-ids",
@@ -1497,6 +1740,159 @@ async function scheduledDeletePurgesOnlyReportedSessionBuffers() {
     JSON.stringify(noIdsHarness.bridge.getState().chatItems).includes("retain when backend reports no ids"),
     "a deletion response without deletedSessionIds must not trigger heuristic purging"
   );
+}
+
+async function scheduledRecentRunsIgnoreStaleAggregate() {
+  var harness = createBridgeHarness();
+  var staleRuns = deferred();
+  harness.handlers.list_scheduled_tasks = function () {
+    return [{ id: "automation-stale", name: "Stale task" }];
+  };
+  harness.handlers.list_scheduled_runs = function () { return staleRuns.promise; };
+  harness.handlers.delete_scheduled_task = function () {
+    return { id: "automation-stale", deletedSessionIds: ["sched-stale"] };
+  };
+  await harness.bridge.loadScheduledTasks();
+  var loading = harness.bridge.loadScheduledTaskRecentRuns();
+  await tick();
+  await harness.bridge.deleteScheduledTask("automation-stale");
+  staleRuns.resolve([{
+    id: "run-stale",
+    automationId: "automation-stale",
+    sessionId: "sched-stale",
+    status: "completed",
+    archived: false,
+  }]);
+  await loading;
+  assert.strictEqual(
+    harness.bridge.getState().scheduledTaskRecentRuns.length,
+    0,
+    "an older aggregate response must not resurrect a deleted scheduled run"
+  );
+}
+
+async function scheduledRunRecordSessionActionsBehavior() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var sessionId = "sched-run-record-actions";
+  var sessionTitle = "每天给我推送时尚新闻";
+  var pinned = false;
+  var pinnedAt = null;
+  var task = {
+    id: "automation-record",
+    name: "Fashion brief",
+    prompt: "Run",
+    rrule: "FREQ=HOURLY;INTERVAL=1",
+  };
+  var archivedIds = [];
+  harness.handlers.list_sessions = function () { return []; };
+  harness.handlers.list_archived_sessions = function () {
+    return archivedIds.map(function (id) {
+      return { id: id, title: sessionTitle, hidden_at: "2026-07-15T11:00:00Z", archived_at: "2026-07-15T11:00:00Z" };
+    });
+  };
+  harness.handlers.list_scheduled_tasks = function () { return [Object.assign({}, task)]; };
+  function listRecordRuns() {
+    return [{
+      id: "run-record",
+      automationId: task.id,
+      sessionId: sessionId,
+      sessionTitle: sessionTitle,
+      status: "completed",
+      unread: true,
+      pinned: pinned,
+      pinnedAt: pinnedAt,
+      archived: archivedIds.indexOf(sessionId) >= 0,
+    }];
+  }
+  harness.handlers.list_scheduled_task_runs = listRecordRuns;
+  harness.handlers.list_scheduled_runs = listRecordRuns;
+  // 定时运行会话与普通会话共用同一批 session 命令(后端按 SessionKind 分发)。
+  harness.handlers.rename_session = function (args) {
+    assert.strictEqual(args.id, sessionId);
+    sessionTitle = args.title;
+    return null;
+  };
+  harness.handlers.set_session_pinned = function (args) {
+    assert.strictEqual(args.id, sessionId);
+    pinned = !!args.pinned;
+    pinnedAt = args.pinned ? "2026-07-15T10:00:00Z" : null;
+    return null;
+  };
+  harness.handlers.set_session_archived = function (args) {
+    assert.strictEqual(args.id, sessionId);
+    if (args.archived) archivedIds.push(args.id);
+    else archivedIds = archivedIds.filter(function (id) { return id !== args.id; });
+    return null;
+  };
+  harness.handlers.delete_session = function (args) {
+    assert.strictEqual(args.id, sessionId);
+    return null;
+  };
+
+  await bridge.init();
+  await bridge.loadScheduledTasks();
+  await bridge.loadScheduledTaskRecentRuns();
+
+  assert.strictEqual(bridge.getState().scheduledTaskRecentRuns[0].sessionId, sessionId);
+  await bridge.renameSession(sessionId, "重命名后的定时任务记录");
+  assert.strictEqual(bridge.getState().scheduledTaskRecentRuns[0].sessionTitle, "重命名后的定时任务记录");
+  assert.strictEqual(
+    harness.calls.some(function (call) {
+      return call.cmd === "rename_session" && call.args.id === sessionId;
+    }),
+    true,
+    "renaming a scheduled run record should rename the backing session"
+  );
+
+  await bridge.toggleSessionPinned(sessionId, true);
+  assert.strictEqual(bridge.getState().scheduledTaskRecentRuns[0].pinned, true);
+  assert.strictEqual(
+    harness.calls.some(function (call) {
+      return call.cmd === "set_session_pinned" && call.args.id === sessionId && call.args.pinned === true;
+    }),
+    true,
+    "pinning a scheduled run record should pin the backing session"
+  );
+
+  await bridge.archiveSession(sessionId);
+  assert.strictEqual(
+    bridge.getState().scheduledTaskRecentRuns.some(function (run) { return run.sessionId === sessionId; }),
+    false,
+    "archiving a scheduled run record should remove it from the sidebar shortcut list"
+  );
+  assert.strictEqual(
+    harness.calls.some(function (call) {
+      return call.cmd === "set_session_archived" && call.args.id === sessionId && call.args.archived === true;
+    }),
+    true,
+    "archiving a scheduled run record should archive the backing session"
+  );
+  // 归档后的运行不再回流侧边栏(archived 由后端 run DTO 携带)。
+  await bridge.loadScheduledTaskRecentRuns();
+  assert.strictEqual(
+    bridge.getState().scheduledTaskRecentRuns.some(function (run) { return run.sessionId === sessionId; }),
+    false,
+    "archived scheduled runs must stay out of the sidebar list after a reload"
+  );
+  await bridge.restoreArchivedSession(sessionId);
+
+  await bridge.loadScheduledTaskRecentRuns();
+  assert.strictEqual(bridge.getState().scheduledTaskRecentRuns[0].sessionId, sessionId);
+  await bridge.deleteSession(sessionId);
+  assert.strictEqual(
+    bridge.getState().scheduledTaskRecentRuns.some(function (run) { return run.sessionId === sessionId; }),
+    false,
+    "deleting a scheduled run record should remove it from the sidebar shortcut list"
+  );
+  assert.strictEqual(
+    harness.calls.some(function (call) {
+      return call.cmd === "delete_session" && call.args.id === sessionId;
+    }),
+    true,
+    "deleting a scheduled run record goes through delete_session (backend dispatches by SessionKind)"
+  );
+  assert.strictEqual(harness.calls.some(function (call) { return call.cmd === "delete_scheduled_task"; }), false);
 }
 
 async function scheduledSessionPersistenceBehavior() {
@@ -1510,7 +1906,7 @@ async function scheduledSessionPersistenceBehavior() {
   harness.calls.length = 0;
   assert.strictEqual(await harness.bridge.switchToSession(sessionId), true);
 
-  await harness.bridge.renameSession(sessionId, "frontend must not rename this");
+  await harness.bridge.renameSession(sessionId, "用户重命名的定时任务记录");
   await harness.bridge.cancelGeneration();
   harness.emit("chat:done", { session_id: sessionId });
   await tick();
@@ -1527,8 +1923,8 @@ async function scheduledSessionPersistenceBehavior() {
     "scheduled transcripts are backend-owned"
   );
   assert.ok(
-    !scheduledCalls.some(function (call) { return call.cmd === "rename_session"; }),
-    "scheduled titles are backend-owned"
+    scheduledCalls.some(function (call) { return call.cmd === "rename_session"; }),
+    "scheduled run record titles may be user-renamed through the sidebar session action"
   );
   assert.ok(
     !scheduledCalls.some(function (call) { return call.cmd === "list_workspace_files"; }),
@@ -1584,21 +1980,414 @@ async function scheduledDraftModelBehavior() {
   assert.ok(capturedInput, "valid chat-generated parameters should call create_scheduled_task automatically");
   assert.strictEqual(capturedInput.name, "Edited report");
   assert.strictEqual(capturedInput.prompt, "Run the edited report");
-  assert.strictEqual(JSON.stringify(capturedInput.cwds), JSON.stringify(["D:/workspace"]));
+  assert.ok(!Object.prototype.hasOwnProperty.call(capturedInput, "cwds"), "the draft flow no longer sends a workspace");
   assert.strictEqual(capturedInput.mode, "yolo");
-  assert.strictEqual(capturedInput.allowShell, true);
+  assert.ok(!Object.prototype.hasOwnProperty.call(capturedInput, "allowShell"), "the draft flow no longer sends permission settings");
   assert.strictEqual(capturedInput.model, "/wire-active");
+  assert.strictEqual(capturedInput.modelId, "model-active");
   assert.ok(!Object.prototype.hasOwnProperty.call(capturedInput, "sourceSessionId"));
   assert.strictEqual(harness.bridge.getState().selectedScheduledTaskId, "automation-created");
   assert.strictEqual(harness.bridge.getState().scheduledTaskAutoOpenId, "automation-created");
 }
 
+async function completedRunReopenPreservesStreamingFollowup() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var scheduledSessionLoads = 0;
+  var run = {
+    id: "run-streaming-followup",
+    automationId: "automation-streaming-followup",
+    sessionId: "sched-streaming-followup",
+    status: "completed",
+    unread: false,
+  };
+  harness.handlers.load_session = function (args) {
+    if (args.id === run.sessionId) scheduledSessionLoads += 1;
+    var messages = [
+      { role: "user", content: [{ type: "text", text: "durable scheduled prompt" }] },
+      { role: "assistant", content: [{ type: "text", text: "durable scheduled answer" }] },
+    ];
+    if (args.id === run.sessionId && scheduledSessionLoads > 1) {
+      messages.push({
+        role: "user",
+        content: [
+          { type: "text", text: "<system-reminder>internal scheduled context</system-reminder>\ncontinue this completed run" },
+          { type: "text", text: "<turn_meta>persisted metadata</turn_meta>" },
+        ],
+      });
+    }
+    return {
+      metadata: { id: args.id, title: "Completed scheduled run" },
+      messages: messages,
+      artifacts: [],
+    };
+  };
+
+  await bridge.switchToSession("chat-origin");
+  assert.strictEqual(await bridge.openScheduledRunChat(run, {
+    id: run.automationId,
+    name: "Streaming follow-up task",
+  }), true);
+  await bridge.sendMessage("continue this completed run");
+  harness.emit("chat:delta", {
+    session_id: run.sessionId,
+    text: "partial follow-up output",
+  });
+  assert.strictEqual(bridge.getState().busy, true);
+
+  assert.strictEqual(await bridge.exitScheduledRunChat(), true);
+  assert.strictEqual(await bridge.openScheduledRunChat(run, {
+    id: run.automationId,
+    name: "Streaming follow-up task",
+  }), true);
+  var reopened = bridge.getState();
+  assert.strictEqual(
+    scheduledSessionLoads,
+    1,
+    "reopening an active follow-up should reuse its hydrated live buffer without loading disk again"
+  );
+  assert.strictEqual(reopened.busy, true, "reopening must preserve the live follow-up busy state");
+  assert.ok(
+    JSON.stringify(reopened.chatItems).includes("partial follow-up output"),
+    "reopening must preserve partial output instead of replacing the live buffer"
+  );
+  assert.ok(
+    JSON.stringify(reopened.chatItems).includes("durable scheduled prompt"),
+    "reopening should still hydrate the durable transcript around the live buffer"
+  );
+  assert.strictEqual(
+    reopened.chatItems.filter(function (item) {
+      return item.type === "user" && item.text === "continue this completed run";
+    }).length,
+    1,
+    "reopening must not duplicate a persisted follow-up that is still in the live buffer"
+  );
+}
+
+async function scheduledTaskWriteSanitizationBehavior() {
+  var harness = createBridgeHarness();
+  var createInput = null;
+  var updateInput = null;
+  harness.handlers.create_scheduled_task = function (args) {
+    createInput = args.input;
+    return Object.assign({ id: "automation-sanitized" }, args.input);
+  };
+  harness.handlers.update_scheduled_task = function (args) {
+    updateInput = args.input;
+    return Object.assign({ id: args.id }, args.input);
+  };
+
+  await harness.bridge.createScheduledTask({
+    name: "Sanitized task",
+    prompt: "Run safely",
+    rrule: "FREQ=DAILY",
+    model: "/wire-active",
+    modelId: "model-active",
+    paused: false,
+    mode: "plan",
+    cwds: ["D:/external"],
+    allowShell: false,
+    trustMode: false,
+    autoApprove: false,
+    unexpected: "drop-me",
+  });
+  assert.strictEqual(JSON.stringify(createInput), JSON.stringify({
+    mode: "yolo",
+    name: "Sanitized task",
+    prompt: "Run safely",
+    rrule: "FREQ=DAILY",
+    model: "/wire-active",
+    modelId: "model-active",
+    paused: false,
+  }), "create must strip legacy permission, directory, and unknown fields");
+
+  await harness.bridge.updateScheduledTask("automation-sanitized", {
+    prompt: "Run safely again",
+    model: "/wire-active-2",
+    modelId: "model-second",
+    mode: "agent",
+    cwds: ["D:/external-2"],
+    allowShell: true,
+    trustMode: true,
+    autoApprove: true,
+  });
+  assert.strictEqual(JSON.stringify(updateInput), JSON.stringify({
+    mode: "yolo",
+    prompt: "Run safely again",
+    model: "/wire-active-2",
+    modelId: "model-second",
+  }), "update must force Yolo and strip legacy permission or directory fields");
+}
+
+// 修复1:立即运行返回时 run 还没有 sessionId。bridge 只轮询该任务的运行列表,
+// 匹配到 sessionId 后把记录并入侧边栏并停止轮询。
+async function scheduledRunNowSidebarLinkBehavior() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var task = { id: "automation-poll", name: "Poll task" };
+  var linked = false;
+  harness.handlers.list_scheduled_tasks = function () { return [Object.assign({}, task)]; };
+  harness.handlers.run_scheduled_task_now = function (args) {
+    assert.strictEqual(args.id, task.id);
+    return {
+      id: "run-now-1",
+      automationId: task.id,
+      sessionId: null,
+      status: "queued",
+      scheduledFor: "2026-07-15T08:00:00Z",
+      createdAt: "2026-07-15T08:00:00Z",
+    };
+  };
+  harness.handlers.list_scheduled_task_runs = function (args) {
+    assert.strictEqual(args.id, task.id, "run-now polling must only query the task that was run");
+    return [{
+      id: "run-now-1",
+      automationId: task.id,
+      sessionId: linked ? "sched-run-now-1" : null,
+      status: linked ? "running" : "queued",
+      scheduledFor: "2026-07-15T08:00:00Z",
+      createdAt: "2026-07-15T08:00:00Z",
+    }];
+  };
+  await bridge.loadScheduledTasks();
+  await bridge.runScheduledTaskNow(task.id);
+  await tick();
+  assert.strictEqual(
+    bridge.getState().scheduledTaskRecentRuns.some(function (run) { return run && run.id === "run-now-1"; }),
+    false,
+    "a run without a sessionId must not enter the sidebar list"
+  );
+  linked = true;
+  await new Promise(function (resolve) { setTimeout(resolve, 1300); });
+  assert.strictEqual(
+    bridge.getState().scheduledTaskRecentRuns[0] && bridge.getState().scheduledTaskRecentRuns[0].sessionId,
+    "sched-run-now-1",
+    "once the run links its session it must appear in the sidebar list"
+  );
+  var pollsAfterLink = harness.calls.filter(function (call) { return call.cmd === "list_scheduled_task_runs"; }).length;
+  await new Promise(function (resolve) { setTimeout(resolve, 1300); });
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "list_scheduled_task_runs"; }).length,
+    pollsAfterLink,
+    "polling must stop once the run has a sessionId"
+  );
+}
+
+// 修复2:侧边栏聚合所有任务的所有现存运行(不再有 8 条总量 / 12 任务 / 每任务 3 条截断)。
+async function scheduledRecentRunsShowAllBehavior() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var tasks = [];
+  for (var index = 1; index <= 14; index++) tasks.push({ id: "auto-" + index, name: "任务" + index });
+  harness.handlers.list_scheduled_tasks = function () {
+    return tasks.map(function (task) { return Object.assign({}, task); });
+  };
+  harness.handlers.list_scheduled_runs = function () {
+    var runs = [];
+    tasks.forEach(function (task, taskIndex) {
+      for (var i = 1; i <= 4; i++) {
+        runs.push({
+          id: task.id + "-run-" + i,
+          automationId: task.id,
+          sessionId: "sched-" + task.id + "-" + i,
+          status: "completed",
+          unread: false,
+          archived: false,
+          scheduledFor: "2026-07-" + String(taskIndex + 1).padStart(2, "0") + "T0" + i + ":00:00Z",
+          createdAt: "2026-07-" + String(taskIndex + 1).padStart(2, "0") + "T0" + i + ":00:00Z",
+        });
+      }
+    });
+    return runs;
+  };
+  await bridge.loadScheduledTasks();
+  var rows = await bridge.loadScheduledTaskRecentRuns();
+  assert.strictEqual(rows.length, 14 * 4, "every existing run conversation must be listed");
+  for (var check = 1; check < rows.length; check++) {
+    assert.ok(
+      new Date(rows[check - 1].scheduledFor).getTime() >= new Date(rows[check].scheduledFor).getTime(),
+      "sidebar runs must be sorted by time, newest first"
+    );
+  }
+  assert.ok(
+    rows.some(function (run) { return run.automationId === "auto-14"; }),
+    "tasks beyond the old 12-task window must be included"
+  );
+  assert.ok(
+    rows.filter(function (run) { return run.automationId === "auto-1"; }).length === 4,
+    "runs beyond the old 3-per-task window must be included"
+  );
+}
+
+// 修复4:聊天/页面创建任务必须等 create_scheduled_task 返回真实 ID 才算成功,
+// 且创建成功后立即重拉任务列表,旧的在途 list 响应不能覆盖新任务。
+async function scheduledCreateListRefreshBehavior() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var created = null;
+  var staleResolve = null;
+  var listCalls = 0;
+  harness.handlers.list_scheduled_tasks = function () {
+    listCalls += 1;
+    if (listCalls === 1) return new Promise(function (resolve) { staleResolve = resolve; });
+    return created ? [Object.assign({}, created)] : [];
+  };
+  harness.handlers.create_scheduled_task = function (args) {
+    created = Object.assign({ id: "automation-fresh" }, args.input || {});
+    return Object.assign({}, created);
+  };
+
+  var stale = bridge.loadScheduledTasks();
+  var createdTask = await bridge.createScheduledTask({
+    name: "新任务",
+    prompt: "run",
+    rrule: "FREQ=HOURLY;INTERVAL=1",
+  });
+  assert.strictEqual(createdTask.id, "automation-fresh");
+  assert.ok(listCalls >= 2, "creation must refresh the task list immediately");
+  staleResolve([]);
+  await stale;
+  assert.ok(
+    bridge.getState().scheduledTasks.some(function (task) { return task.id === "automation-fresh"; }),
+    "a stale in-flight task list response must not clobber the newly created task"
+  );
+
+  // 后端没有返回真实 ID 时不能算创建成功。
+  harness.handlers.create_scheduled_task = function () { return null; };
+  var threw = false;
+  try {
+    await bridge.createScheduledTask({ name: "坏任务", prompt: "run", rrule: "FREQ=HOURLY;INTERVAL=1" });
+  } catch (error) {
+    threw = true;
+    assert.ok(String(error && error.message || error).includes("任务 ID"));
+  }
+  assert.strictEqual(threw, true, "a create response without a real id must be treated as a failure");
+  assert.ok(
+    !bridge.getState().scheduledTasks.some(function (task) { return task.id === undefined || task.id === null; }),
+    "failed creations must not leave phantom tasks in the list"
+  );
+}
+
+// 删除/收纳正在查看的那次定时运行,必须退出该会话视图。
+// main.jsx 只按 scheduledRunContext 的真值决定渲染 ChatView 还是 ScheduledTasksView,
+// 而 ChatView 内部还要求 sessionId===activeSessionId 才渲染返回按钮 —— 只清
+// activeSessionId 会卡在「定时路由下的空白页且没有返回按钮」。
+async function scheduledRunViewExitBehavior() {
+  var task = { id: "automation-exit", name: "Exit task" };
+  var run = {
+    id: "run-exit",
+    automationId: task.id,
+    sessionId: "sched-exit-1",
+    sessionTitle: "要被处理掉的运行",
+    status: "completed",
+    unread: false,
+    archived: false,
+  };
+
+  async function openedHarness() {
+    var harness = createBridgeHarness();
+    harness.handlers.list_scheduled_tasks = function () { return [Object.assign({}, task)]; };
+    harness.handlers.list_scheduled_task_runs = function () { return [Object.assign({}, run)]; };
+    harness.handlers.list_scheduled_runs = function () { return [Object.assign({}, run)]; };
+    harness.handlers.list_sessions = function () { return []; };
+    await harness.bridge.loadScheduledTasks();
+    await harness.bridge.loadScheduledTaskRecentRuns();
+    assert.strictEqual(await harness.bridge.openScheduledRunChat(run, task), true);
+    assert.strictEqual(harness.bridge.getState().scheduledRunContext.sessionId, run.sessionId);
+    assert.strictEqual(harness.bridge.getState().activeSessionId, run.sessionId);
+    return harness;
+  }
+
+  var deleting = await openedHarness();
+  await deleting.bridge.deleteSession(run.sessionId);
+  assert.strictEqual(
+    deleting.bridge.getState().scheduledRunContext,
+    null,
+    "删除正在查看的定时运行后必须清掉 scheduledRunContext,否则界面回不到定时任务列表"
+  );
+  assert.strictEqual(deleting.bridge.getState().activeSessionId, null);
+
+  var archiving = await openedHarness();
+  await archiving.bridge.archiveSession(run.sessionId);
+  assert.strictEqual(
+    archiving.bridge.getState().scheduledRunContext,
+    null,
+    "收纳正在查看的定时运行后同样必须退出视图(与普通对话收纳一致)"
+  );
+  assert.strictEqual(archiving.bridge.getState().activeSessionId, null);
+  assert.strictEqual(
+    archiving.bridge.getState().scheduledTaskRecentRuns.some(function (item) {
+      return item && item.sessionId === run.sessionId;
+    }),
+    false,
+    "收纳后记录应离开侧边栏"
+  );
+
+  // 收纳失败要把视图和侧边栏一起回滚,不能留下「active 有值但 context 空」的错位态。
+  var failing = await openedHarness();
+  failing.handlers.set_session_archived = function () { throw new Error("archive failed"); };
+  await failing.bridge.archiveSession(run.sessionId);
+  var rolledBack = failing.bridge.getState();
+  assert.strictEqual(rolledBack.activeSessionId, run.sessionId, "收纳失败必须回到原会话");
+  assert.ok(rolledBack.scheduledRunContext, "收纳失败必须恢复定时运行上下文");
+  assert.strictEqual(rolledBack.scheduledRunContext.sessionId, run.sessionId);
+  assert.strictEqual(
+    rolledBack.scheduledTaskRecentRuns.some(function (item) {
+      return item && item.sessionId === run.sessionId;
+    }),
+    true,
+    "收纳失败必须把记录放回侧边栏"
+  );
+}
+
+// 立即运行后的轮询按 run 自身状态收工,不用固定次数:worker_count=1 时排队几分钟是常态。
+async function scheduledRunNowPollStopsOnTerminalBehavior() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var task = { id: "automation-terminal", name: "Terminal task" };
+  var status = "queued";
+  harness.handlers.list_scheduled_tasks = function () { return [Object.assign({}, task)]; };
+  harness.handlers.run_scheduled_task_now = function () {
+    return { id: "run-terminal", automationId: task.id, sessionId: null, status: "queued" };
+  };
+  harness.handlers.list_scheduled_task_runs = function () {
+    // 会话始终没建起来(例如 create_session 失败),run 最终失败收场。
+    return [{ id: "run-terminal", automationId: task.id, sessionId: null, status: status }];
+  };
+  await bridge.loadScheduledTasks();
+  await bridge.runScheduledTaskNow(task.id);
+  await new Promise(function (resolve) { setTimeout(resolve, 1300); });
+  var pollsWhileQueued = harness.calls.filter(function (c) { return c.cmd === "list_scheduled_task_runs"; }).length;
+  assert.ok(pollsWhileQueued >= 2, "queued 且无会话时应继续轮询");
+
+  status = "failed";
+  await new Promise(function (resolve) { setTimeout(resolve, 1300); });
+  var pollsAtTerminal = harness.calls.filter(function (c) { return c.cmd === "list_scheduled_task_runs"; }).length;
+  await new Promise(function (resolve) { setTimeout(resolve, 1300); });
+  assert.strictEqual(
+    harness.calls.filter(function (c) { return c.cmd === "list_scheduled_task_runs"; }).length,
+    pollsAtTerminal,
+    "run 进入终态且仍无会话时必须停止轮询(再等也不会有会话)"
+  );
+  assert.strictEqual(
+    bridge.getState().scheduledTaskRecentRuns.some(function (item) { return item && item.id === "run-terminal"; }),
+    false,
+    "没有会话的运行不进侧边栏"
+  );
+}
+
 Promise.resolve()
+  .then(scheduledRunViewExitBehavior)
+  .then(scheduledRunNowPollStopsOnTerminalBehavior)
+  .then(scheduledRunNowSidebarLinkBehavior)
+  .then(scheduledRecentRunsShowAllBehavior)
+  .then(scheduledCreateListRefreshBehavior)
   .then(scheduledRunNavigationBehavior)
   .then(scheduledRunUnreadBehavior)
   .then(openingRunningMarksBusyBeforeHydration)
   .then(followupQueuedUntilScheduledInitialTurnTerminal)
   .then(terminalEventWinsStaleRunningOpen)
+  .then(completedRunReopenPreservesStreamingFollowup)
   .then(scheduledDoneBeforeBufferCreatesTerminalTombstone)
   .then(failedRunningOpenRollsBackOnlyItsProvisionalBusy)
   .then(concurrentFailedRunningOpensShareRollback)
@@ -1612,8 +2401,11 @@ Promise.resolve()
   .then(scheduledRefreshDoesNotOverlap)
   .then(scheduledMutationErrorBehavior)
   .then(scheduledDeletePurgesOnlyReportedSessionBuffers)
+  .then(scheduledRecentRunsIgnoreStaleAggregate)
+  .then(scheduledRunRecordSessionActionsBehavior)
   .then(scheduledSessionPersistenceBehavior)
   .then(scheduledDraftModelBehavior)
+  .then(scheduledTaskWriteSanitizationBehavior)
   .then(function () { console.log('PASS scheduled tasks unit'); })
   .catch(function (error) {
     console.error(error && error.stack || error);
