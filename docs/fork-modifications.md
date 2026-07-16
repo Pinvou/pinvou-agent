@@ -14,7 +14,7 @@
 |---|---|
 | submodule 分支 | 当前基线 **`pinvou3-clean@8832469c`**(fork PR #16 merge commit,包含 fork PR #14/#15;`.gitmodules` 追踪 `pinvou3-clean`);durable scheduler 重实现留在 `codex/scheduled-tasks` 备查;备份 `backup/v0.8.65-merge-result`(merge 树)、`backup/pre-reclean-trial-tip`(旧 fork tip `6b3059da`)、`backup/pre-v0.8.65-sync`(旧远程 pinvou3-clean `4518f845`) |
 | fork drift | `8073aa9b` 基线原 drift **+7070/−4930,54 文件**(vs v0.8.65)+ scheduled-lite/C12/P2 后续 **+701/−17,7 文件** + 小时调度锚点 **+109/−10,1 文件** + W13 宿主取消后台 Agent **+75/−0,4 文件**。durable scheduler 的 +13744/−5646 已撤回,仍保持轻 fork(fork-policy §0) |
-| 历史 | v0.8.65 clean re-fork 的 C1–C12 + R + W 主题,以及后续 blocklist/compact/cancellation 修复;2026-07-13 fork PR #9 撤自动 warmup;同日 durable scheduled runtime(原 fork PR #8)以 AUTO-lite 最小补丁重做并撤回重实现(见 §4);2026-07-16 增加 P2 可取消 OAuth 登录、小时调度起点与 W13 宿主批量取消后台 Agent |
+| 历史 | v0.8.65 clean re-fork 的 C1–C12 + R + W 主题,以及后续 blocklist/compact/cancellation 修复;2026-07-13 fork PR #9 撤自动 warmup;同日 durable scheduled runtime(原 fork PR #8)以 AUTO-lite 最小补丁重做并撤回重实现(见 §4);2026-07-16 增加 P2 可取消 OAuth 登录、小时调度起点与 W13 宿主批量取消后台 Agent；同日向 upstream v0.8.68 主线提 [#4379](https://github.com/Hmbown/CodeWhale/pull/4379) / [#4381](https://github.com/Hmbown/CodeWhale/pull/4381) |
 | LLM 暴露 native 工具 | **20 个**(全量注册 − 黑名单;原 23,2026-07-03 纯办公定位再砍 git_status/git_diff/diagnostics)。**tool_search 已禁用**(⚠️2026-07-03 修:v0.8.65 折叠单名后门控名与双旧名对不上一度漏注入,已补裸名,详见 C2)。MCP `mcp_pinvou_present_artifact` 另接,共 21 入口 |
 | fork-guard | 指纹 + 回归测试(`scripts/fork-guard.sh`;**v0.8.65 撤 P pwd-move 2 条**=上游已 harvest;+MKT skill 停用 3 条;**AUTO 重型指纹 18 条撤、AUTO-lite 现为 16 条**);AUTO-lite 定向回归覆盖 automation model/conversation key、小时调度锚点、schema v4/v3 兼容、运行链接、终态保留、engine force_prompt 与 app scheduled Yolo 链路 |
 | system prompt | dump 逐字节稳定;per-turn `<runtime_prompt>` tag + goal continuation 均已 gate |
@@ -46,13 +46,13 @@
 - **文件**:`crates/tui/src/mcp.rs`(`to_api_tools`)
 - **改动**:上游 `list_mcp_resources` / `list_mcp_resource_templates` 注入条件是 `!self.config.servers.is_empty()`——只要注册任何 MCP server 就注入,与是否真暴露 resources 无关。pinvou3 的 MCP server 全 tools-only(present_artifact/gongwen/weather/iwencai 的 `resources/list` 均返回 `-32601`),这两个元工具**永久空转**、纯占工具槽+token、52 session 零调用。改为按 `all_resources()` / `all_resource_templates()` 非空**分别 gate**,与下方 `mcp_read_resource`(`!resources.is_empty()`)一致
 - **测试**:`mcp::tests` 全过(P1 不破坏);fork-guard 指纹 `P1 list_mcp_resources 按 resources 非空 gate`
-- 上游 PR:✅ **可提**(通用优化:有 server 但零 resources 时不该注入 list 工具)
+- 上游 PR:🟢 **已在 upstream v0.8.68 主线等价存在**(2026-07-16 复核):按 `all_resources()` / `all_resource_templates()` 分别 gate，故不重复提 PR；下次 sync 按文件级 diff harvest 后撤 P1 指纹。
 
 ### P2 `mcp/oauth` 可取消的 OAuth 登录(2026-07-16)
 - **文件**:`crates/tui/src/mcp/oauth.rs`;宿主接线在 `pinvou3-app/src-tauri/src/commands.rs` 与工具商店前端
 - **改动**:保留原 `perform_oauth_login_for_server` API,新增接收 `CancellationToken` 的 `perform_oauth_login_for_server_with_cancel`。取消会 drop 正在执行的 OAuth future,从而触发 `CallbackServerGuard::drop` / `Server::unblock`,并在返回前停止旧回调监听。宿主按 `tool_id + request_id` 编排:新授权先取消并等待旧授权退出;显式取消也等待底座 future 退出;取消早于 start 注册的竞态由 pending cancellation 兜住。前端写配置阶段不可取消,进入浏览器授权阶段才开放取消;UI 超时先终止后端再读取真实 token,解决超时/回调同边界的乱序状态。
 - **测试**:`forkguard_cancellable_oauth_drops_in_flight_flow_before_returning`;`forkguard_marketplace_oauth_{replacement_waits_for_previous_flow,cancel_waits_until_flow_finishes,remembers_cancel_before_register}`;工具商店浏览器旅程覆盖安装阶段不可取消、请求 ID 对齐与取消后待授权态
-- 上游 PR:✅ **可提**(底座可取消 API 属通用能力;宿主编排与 UI 留 pinvou3)
+- 上游 PR:🟡 [#4379](https://github.com/Hmbown/CodeWhale/pull/4379) **OPEN**(2026-07-16):仅提底座可取消 API + future drop 回归；宿主按 `tool_id + request_id` 的替换/显式取消编排和 UI 留 pinvou3。关联上游问题 [#4380](https://github.com/Hmbown/CodeWhale/issues/4380)。
 
 ### AUTO-lite `automation` host executor 最小契约(2026-07-14,替代原 durable scheduler)
 - **文件**:`crates/tui/src/automation_manager.rs`、`crates/tui/src/task_manager.rs`、`crates/tui/src/tools/automation.rs`、`crates/tui/src/core/engine/turn_loop.rs`、`crates/tui/src/core/engine/tests.rs`
@@ -61,7 +61,7 @@
 - **审批产品决策(2026-07-14,恒 YOLO)**:定时任务与交互对话一致,**无人值守默认自动批准**(开箱即用、前端不暴露任何任务级权限设置)。落点在 **app 层**:每次执行都重新读取普通聊天的全局 Shell 配置(默认开启),并固定 `trust_mode=true`、`auto_approve=true`;create 写入同一组值,update 不接受任务级权限字段。基座 `DEFAULT_AUTOMATION_AUTO_APPROVE` 保持基线 `true` 不动。安全兜底 = force_prompt(⑤,rlm_eval/hook ask 无人值守自动**拒绝**而非挂起)+ C4 Dangerous 命令 YOLO 也 BLOCK。
 - **理由**:PINVOU 定时任务复用底座 `AutomationManager`/`TaskManager`/`spawn_scheduler`,fork 只补 host 消费接口与会话身份耐久点。原 durable scheduler(sidecar index/retention guard/prune/journal,+13744/−5646)对办公场景(小时级起步、单机少量任务)过度设计,已整体撤回——run/task 走底座原生持久化。
 - **测试**:`automation_enqueue_uses_default_and_explicit_task_settings`(model + conversation key 透传)、`worker_receives_persisted_conversation_key`、v3 task 兼容、`hourly_rrule_uses_clock_time_as_a_stable_anchor` / `hourly_rrule_accepts_minute_only_anchor`、`forkguard_running_run_link_persists_before_terminal_state`(运行中链接落盘,**负向验证过**:还原 bug 即 fail)、`forkguard_retention_keeps_latest_terminal_runs_and_all_active_runs`、`forkguard_deletes_only_terminal_task_records_and_artifacts`、`create_schema_exposes_rrule`(schema 含 model)、`rlm_eval_required_approval_ignores_generic_auto_approve` / `generic_required_tools_keep_auto_approve_behavior`(force_prompt 只对不可旁路工具生效);app 侧覆盖同一 automation 多次运行使用独立对话并共享任务工作间、缺模型失败仍保留预创建会话、全局 Shell 运行时刷新与恒 YOLO;UI 冒烟覆盖小时起点编辑与错误提示关闭
-- **上游 PR**:✅ force_prompt 属安全修复可提;getters/model 透传/ThreadCreated 通用性中等,可随附。
+- **上游 PR**:🟢 `approval_force_prompt` / `rlm_eval` 不可旁路审批已在 upstream v0.8.68 主线等价覆盖，**不重复提**；getters/model 透传/`ThreadCreated` 仍与 pinvou3 宿主会话契约耦合，暂不随附。小时锚点已拆为独立 [#4381](https://github.com/Hmbown/CodeWhale/pull/4381) **OPEN**，避免混入 host executor 改动。
 
 ### C3 `tools` append_file + 大产物保护
 - **文件**:`tools/file.rs`、`core/engine/dispatch.rs`、`client/chat.rs`、`tools/registry.rs`(`with_file_tools`)、`tui/approval.rs`、`tui/widgets/tool_card.rs`、`tools/approval_cache.rs`
@@ -236,7 +236,7 @@
 - **2026-07-14 列表/详情响应式层级**:未选任务时展示“已安排的任务”标题、产品说明、搜索、筛选和建议模板;选中任务后介绍区自动消失,恢复紧凑双栏(左侧筛选/搜索/任务列表,右侧当前配置)。详情页彻底移除 Shell/信任模式权限行,只显示 `Yolo · 自动执行`;后端每次运行按普通聊天规则读取全局 Shell,并固定信任与自动批准。UI 单测、Vite production build、真实浏览器 smoke 均通过。
 - **2026-07-13 二次复审修复**:① 编辑并重发放开——`commands.rs` 的 `edit_last_turn` 撤 `ensure_chat_session` 门(EnginePool 内部本就按 scheduled_profile 做 turn gate),与继续追问同路;会话管理类命令(删除/改名/归档/save_session_messages)仍拒绝 scheduled 会话;② 运行中链接落盘(AUTO-lite ③);③ `.gitattributes` 强制 `*.sh eol=lf`(autocrlf=true 的 checkout 曾把 fork-guard.sh 转成 CRLF,严格 bash 直接失败);④ fork-policy §0 基线同步 8073-lite。
 - **⚠️ Windows 本机跑 app lib 测试**:`rfd`(tauri-plugin-dialog)静态导入 `TaskDialogIndirect`,cargo test 的裸测试 exe 无 manifest → 解析到 System32 comctl32 v5 → `STATUS_ENTRYPOINT_NOT_FOUND(0xc0000139)` 启动即挂。绕法:在 `target/debug/deps/pinvou3_lib-<hash>.exe.manifest` 放 Common-Controls v6 外置 manifest(声明 `Microsoft.Windows.Common-Controls 6.0.0.0`)后正常运行;根治需在 build script 给 test 目标嵌 manifest(待议)。
-- **2026-07-16 小时调度起点**:`HOURLY` 接受可选 `BYHOUR/BYMINUTE` 时间锚点；`next_run_at` 以任务创建时间对应的本地日期为固定参考连续推进，避免恢复、tick 或跨天后相位漂移。父仓创建/编辑表单显示“起始时间”，聊天引导使用同一格式；无锚点旧规则继续按创建/恢复时刻推算。
+- **2026-07-16 小时调度起点**:`HOURLY` 接受可选 `BYHOUR/BYMINUTE` 时间锚点；`next_run_at` 以任务创建时间对应的本地日期为固定参考连续推进，避免恢复、tick 或跨天后相位漂移。父仓创建/编辑表单显示“起始时间”，聊天引导使用同一格式；无锚点旧规则继续按创建/恢复时刻推算。通用 RRULE 语义已拆为 [#4381](https://github.com/Hmbown/CodeWhale/pull/4381) **OPEN**，仅保留 pinvou3 的 UI/会话/工作间契约在 fork。
 
 ### ~~Durable scheduled runtime~~(2026-07-13,fork PR #8,HEAD `5f5a58db`;**同日被 Scheduled-lite 撤回**,见上)
 - **规模触发**:AUTO 使 fork drift 从 `+7070/−4930,54 文件` 增至 `+13744/−5646,59 文件`,显著超过 1500 行软上限,已执行撤回评估。

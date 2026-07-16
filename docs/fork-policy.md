@@ -138,9 +138,18 @@ grep -rn "messages.push\|runtime_prompt" DeepSeek-TUI/crates/tui/src/core/engine
 
 > ⚠️ **PR 被 CLOSED ≠ 功能没进上游**:上游常**独立重实现**(v0.8.49 override hook #2356、v0.8.57 composer #2786 / skills union #2737 均如此)。sync 时按文件级 diff 逐字段比对,别假设。
 
-## 8. 上游 PR 状态(2026-06-15 v0.8.60 sync 核对)
+## 8. 上游 PR 状态(2026-07-16 v0.8.68 主线核对)
 
-> `gh pr list --repo Hmbown/CodeWhale --author h3c-hexin --state all` 核。head 走 `h3c-hexin/DeepSeek-TUI` 跨 fork。v0.8.60 sync 无新提 PR。
+> `gh pr list --repo Hmbown/CodeWhale --author h3c-hexin --state all` 核。head 走 `h3c-hexin/DeepSeek-TUI` 跨 fork；提报前从最新 `upstream/main` 切净分支，逐项自查无 Pinvou / Qwen / vLLM / GB10 品牌或 fixture 泄漏。
+
+**🟡 OPEN**(2026-07-16 基于 upstream v0.8.68 主线提报)
+
+| PR | 内容 | 本地验证 / 后续 |
+|---|---|---|
+| [#4379](https://github.com/Hmbown/CodeWhale/pull/4379) | P2: opt-in cancellable MCP OAuth login API；保留旧 API，取消时先 drop in-flight future，保证回调监听关闭后才返回 | `cargo fmt --check` + `cancellable_oauth_drops_in_flight_flow_before_returning` 通过；关联问题 [#4380](https://github.com/Hmbown/CodeWhale/issues/4380)，仍按普通 PR 等待审阅 |
+| [#4381](https://github.com/Hmbown/CodeWhale/pull/4381) | AUTO-lite: HOURLY 支持 `BYHOUR` / `BYMINUTE` 锚点，按 automation 创建日期保持相位，旧无锚点规则不变 | `cargo fmt --check` + 两条 `hourly_rrule_*` 回归通过；若合入，下次 sync 按文件级 diff harvest |
+
+> **2026-07-16 主线复核**:P1 资源/模板列表按实际暴露集合 gate 已在 upstream v0.8.68 等价存在，**不重复提 PR**；AUTO-lite 的 `approval_force_prompt` / `rlm_eval` 不可旁路审批也已被上游现有实现覆盖。下次 sync 必须按字段核对后再撤对应 fork 指纹，不能只凭同名判断。
 
 **🟢 已 MERGED**(2026-06-30 提交 + 当日合入,head 走 `h3c-hexin/DeepSeek-TUI` 跨 fork。下次 sync 随上游 harvest,撤对应 fork-guard 指纹)
 
