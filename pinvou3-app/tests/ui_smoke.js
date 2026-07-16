@@ -115,6 +115,31 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
   await page.waitForFunction(() => window.TauriBridge && document.body && document.body.innerText.includes('PINVOU'), { timeout: 20000 }).catch(() => {});
   await sleep(2000);
 
+  // 入口能渲染 DOM 不代表样式加载成功：WebKit 若复用旧 index.html、CSS 404，
+  // 所有旧 view 会以裸 DOM 一起铺开。直接检查 Tailwind 的关键计算样式。
+  const visualShell = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="app-root"]');
+    if (!root) return { found: false };
+    const style = getComputedStyle(root);
+    return {
+      found: true,
+      display: style.display,
+      height: Math.round(root.getBoundingClientRect().height),
+      viewportHeight: window.innerHeight,
+      overflow: style.overflow,
+      backgroundColor: style.backgroundColor,
+    };
+  });
+  rec(
+    '⓪ 前端样式完整加载（非裸 HTML）',
+    visualShell.found
+      && visualShell.display === 'flex'
+      && Math.abs(visualShell.height - visualShell.viewportHeight) <= 2
+      && visualShell.overflow === 'hidden'
+      && visualShell.backgroundColor !== 'rgba(0, 0, 0, 0)',
+    JSON.stringify(visualShell),
+  );
+
   // ① 启动落草稿页(僵尸 run 不劫持)
   const st = await page.evaluate(() => {
     const s = window.TauriBridge.getState();

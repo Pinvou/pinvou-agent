@@ -44,6 +44,7 @@ mod scheduled_tasks;
 pub mod super_permission;
 mod telemetry;
 mod timing;
+mod ui_cache;
 mod updater;
 mod voice_asr;
 mod wecom;
@@ -214,6 +215,9 @@ mod release_env_contract {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     ensure_release_env();
+    // 必须早于 Tauri Builder/WebView 创建：避免升级后 WebKit 复用旧 index.html，
+    // 却在新包内找不到旧 CSS，退化成裸 HTML 页面。
+    ui_cache::migrate_before_webview();
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
