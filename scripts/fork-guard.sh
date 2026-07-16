@@ -93,6 +93,7 @@ fingerprints=(
   "C12 |Engine 完成前输出事件测试        |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_engine_emits_shell_output_before_tool_completion"
   "C12 |Engine 后台启动返回后输出测试    |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_engine_keeps_background_shell_output_after_tool_completion"
   "C12 |Engine 后台 wait 输出事件测试    |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_engine_emits_background_wait_output_before_tool_completion"
+  "C12 |Engine 可控实时输出测试工具      |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|struct ControlledStreamingTool"
   # —— P1(2026-07-03):list_mcp_resources/templates 按对应集合非空 gate(上游原为 servers 非空即注入)——
   # pinvou3 MCP server 全 tools-only,原条件下这两个元工具永久空转;改按 resources/templates 非空注入。可上游。
   "P1  |list_mcp_resources 按 resources 非空 gate|DeepSeek-TUI/crates/tui/src/mcp.rs|if !self.all_resource_templates().is_empty()"
