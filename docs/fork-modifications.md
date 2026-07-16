@@ -4,7 +4,7 @@
 > 用途:① sync 后查 patch 存活 ② 交接 / onboarding ③ 上游 PR 定位改动点。
 > 配套:`scripts/fork-guard.sh`(指纹 + 回归测试守卫)、`docs/fork-policy.md`(维护策略 + sync 流程 + PR 状态)。
 >
-> **当前基线**:submodule 工作分支 `fix/workflow-stop-restart@bfc6f879` ← `pinvou3-clean@477e2ba9`(fork PR #14 merge commit,包含 fork PR #15)+ W13 宿主取消后台 Agent(+75/−0,4 文件)。基线包含 scheduled-lite/C12/P2 后续补丁(+701/−17,7 文件)、小时调度时间锚点(+109/−10,1 文件;见 §4)与 W13。`.gitmodules` 追踪 `pinvou3-clean`。
+> **当前基线**:submodule 指向 `pinvou3-clean@8832469c`(fork PR #16 merge commit,包含 fork PR #14/#15)+ W13 宿主取消后台 Agent(+75/−0,4 文件)。基线包含 scheduled-lite/C12/P2 后续补丁(+701/−17,7 文件)、小时调度时间锚点(+109/−10,1 文件;见 §4)与 W13。`.gitmodules` 追踪 `pinvou3-clean`。
 
 ---
 
@@ -12,7 +12,7 @@
 
 | 项 | 值 |
 |---|---|
-| submodule 分支 | 工作分支 **`fix/workflow-stop-restart@bfc6f879`**(从 `pinvou3-clean@477e2ba9` 切出;`.gitmodules` 追踪 `pinvou3-clean`);durable scheduler 重实现留在 `codex/scheduled-tasks` 备查;备份 `backup/v0.8.65-merge-result`(merge 树)、`backup/pre-reclean-trial-tip`(旧 fork tip `6b3059da`)、`backup/pre-v0.8.65-sync`(旧远程 pinvou3-clean `4518f845`) |
+| submodule 分支 | 当前基线 **`pinvou3-clean@8832469c`**(fork PR #16 merge commit,包含 fork PR #14/#15;`.gitmodules` 追踪 `pinvou3-clean`);durable scheduler 重实现留在 `codex/scheduled-tasks` 备查;备份 `backup/v0.8.65-merge-result`(merge 树)、`backup/pre-reclean-trial-tip`(旧 fork tip `6b3059da`)、`backup/pre-v0.8.65-sync`(旧远程 pinvou3-clean `4518f845`) |
 | fork drift | `8073aa9b` 基线原 drift **+7070/−4930,54 文件**(vs v0.8.65)+ scheduled-lite/C12/P2 后续 **+701/−17,7 文件** + 小时调度锚点 **+109/−10,1 文件** + W13 宿主取消后台 Agent **+75/−0,4 文件**。durable scheduler 的 +13744/−5646 已撤回,仍保持轻 fork(fork-policy §0) |
 | 历史 | v0.8.65 clean re-fork 的 C1–C12 + R + W 主题,以及后续 blocklist/compact/cancellation 修复;2026-07-13 fork PR #9 撤自动 warmup;同日 durable scheduled runtime(原 fork PR #8)以 AUTO-lite 最小补丁重做并撤回重实现(见 §4);2026-07-16 增加 P2 可取消 OAuth 登录、小时调度起点与 W13 宿主批量取消后台 Agent |
 | LLM 暴露 native 工具 | **20 个**(全量注册 − 黑名单;原 23,2026-07-03 纯办公定位再砍 git_status/git_diff/diagnostics)。**tool_search 已禁用**(⚠️2026-07-03 修:v0.8.65 折叠单名后门控名与双旧名对不上一度漏注入,已补裸名,详见 C2)。MCP `mcp_pinvou_present_artifact` 另接,共 21 入口 |
