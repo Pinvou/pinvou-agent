@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Briefcase, ChevronLeft, ChevronRight, Cpu, Globe, IconGrid, IconList, Package, Search, Server, User, XIcon, Zap } from '../../components/icons.jsx';
-import { notifyComposerToolsChanged } from '../settings/SettingsView.jsx';
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
+import { notifyComposerToolsChanged } from './tool-events.js';
 import { TsActionBtn, tsCategories, tsFeaturedCollections, tsSkillsData, tsToolsData } from './tool-common.jsx';
 
 const OAUTH_UI_TIMEOUT_MS = 90_000;

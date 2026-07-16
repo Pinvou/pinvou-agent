@@ -6,6 +6,8 @@ import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { formatSessionDate } from '../../shared/date-utils.js';
 import { visibleUserModels } from '../../shared/model-options.js';
+import { buildComposerToolMenuState } from './composer-tool-menu-logic.js';
+import { notifyComposerToolsChanged } from '../tools/tool-events.js';
 
 const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, style }, ref) => (
       <section ref={ref} id={id} style={style} className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
@@ -504,7 +506,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         <div className="relative min-w-0">
           <button onClick={() => { if (!busy) setOpen(o => !o); }} disabled={busy}
             title={(current ? current.name : t.modelNonePick) + (busy ? ' · ' + t.modelSwitchBusy : '')}
-            className={`relative shrink-0 flex items-center justify-center bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 transition-colors border border-black/[0.04] dark:border-white/5 disabled:opacity-50 ${compact ? 'w-9 h-9 rounded-full' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold min-w-0 max-w-full'}`}>
+            className={`relative shrink-0 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-colors border disabled:opacity-50 ${compact ? 'w-9 h-9 rounded-full bg-transparent hover:bg-black/5 dark:hover:bg-white/10 border-transparent' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold min-w-0 max-w-full bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 border-black/[0.04] dark:border-white/5'}`}>
             {compact ? (
               <>
                 <Cpu size={18} className="opacity-80" />
@@ -513,7 +515,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             ) : (
               <>
                 <span className="w-1.5 h-1.5 shrink-0 rounded-full bg-[#34C759]"></span>
-                <span className="max-w-[92px] truncate">{current ? current.name : t.modelNonePick}</span>
+                <span className="max-w-[128px] truncate">{t.composerModelLabel(current ? current.name : t.modelNonePick)}</span>
                 <ChevronDown size={14} className="opacity-50 shrink-0" />
               </>
             )}
@@ -765,13 +767,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       );
     };
 
-    const notifyComposerToolsChanged = () => {
-      try { window.dispatchEvent(new CustomEvent('pinvou:tools-changed')); } catch (_) {}
-    };
-
-    const ComposerToolMenu = ({ t, onGotoTools, compact }) => {
+    const ComposerToolMenu = ({ t, onGotoTools, compact, activeSkill }) => {
       const [open, setOpen] = useState(false);
-      const [tools, setTools] = useState([]);
+      const [marketplaceTools, setMarketplaceTools] = useState([]);
+      const [marketplaceSkills, setMarketplaceSkills] = useState([]);
       const [disabled, setDisabled] = useState(() => new Set()); // 被关掉的连接器 id(全局持久)
       const [feishuOn, setFeishuOn] = useState(false); // 飞书是否已连接(CLI 路线)
       const [feishuEnabled, setFeishuEnabled] = useState(true); // 飞书技能是否启用(未手动停用)
@@ -785,25 +784,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       async function refreshToolsMenu(isAlive) {
         try {
           const list = await window.__TAURI__.core.invoke('list_marketplace_tools');
-          const installedTools = (list || []).filter(x => x.installed);
-          const companionSkillIds = new Set(installedTools.flatMap(x => x.companion_skills || []));
+          if (isAlive()) setMarketplaceTools(Array.isArray(list) ? list : []);
+        } catch (e) { /* ignore */ }
+        try {
           const skills = await window.__TAURI__.core.invoke('list_marketplace_skills');
-          const installedSkills = (skills || [])
-            .filter(x => x.installed && !companionSkillIds.has(x.id))
-            .map(x => ({
-              id: `skill:${x.id}`,
-              name: x.title || x.id,
-              description: x.description || '',
-              installed: true,
-              kind: 'skill',
-            }));
-          const seen = new Set();
-          const merged = [...installedTools, ...installedSkills].filter(x => {
-            if (seen.has(x.id)) return false;
-            seen.add(x.id);
-            return true;
-          });
-          if (isAlive()) setTools(merged);
+          if (isAlive()) setMarketplaceSkills(Array.isArray(skills) ? skills : []);
         } catch (e) { /* ignore */ }
         try {
           const dis = await window.__TAURI__.core.invoke('get_disabled_connectors');
@@ -848,67 +833,67 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             { connectorIds: Array.from(next) }).catch(() => {});
         }
       }
-      const enabledCount = tools.filter(tl => !disabled.has(tl.id)).length;
+      const menuState = buildComposerToolMenuState({
+        marketplaceTools,
+        marketplaceSkills,
+        disabledIds: Array.from(disabled),
+        activeSkill,
+        serviceStates: [
+          { id: 'feishu', title: '飞书（Lark）', connected: feishuOn, enabled: feishuEnabled },
+          { id: 'wecom', title: '企业微信', connected: wecomOn, enabled: wecomEnabled },
+          { id: 'dingtalk', title: '钉钉', connected: dingtalkOn, enabled: dingtalkEnabled },
+          { id: 'eip', title: 'H3C 员工门户（EIP）', connected: eipOn },
+          { id: 'zhidao', title: 'H3C 知道', connected: zhidaoOn },
+        ],
+      });
+      const { connectedServices, toolRows, skillRows, enabledCount } = menuState;
+      const statusBadge = (label, tone = 'green') => {
+        const cls = tone === 'blue'
+          ? 'text-[#007AFF] dark:text-[#5AC8FA] bg-[#007AFF]/10 dark:bg-[#0A84FF]/15'
+          : 'text-[#34C759] bg-[#34C759]/10';
+        return <span className={`shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold ${cls} px-2 py-0.5 rounded-full leading-none`}><span className={`w-1.5 h-1.5 rounded-full ${tone === 'blue' ? 'bg-[#007AFF] dark:bg-[#5AC8FA]' : 'bg-[#34C759]'}`} />{label}</span>;
+      };
+      const switchRow = (row) => (
+        <div key={row.id} className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
+          <span className="min-w-0">
+            <span className="block text-[13px] text-gray-700 dark:text-gray-200 truncate">{row.title}</span>
+          </span>
+          <button onClick={() => toggleTool(row.id)} aria-label={row.id}
+            className={`relative inline-flex h-5 w-[34px] shrink-0 items-center rounded-full transition-colors ${row.enabled ? 'bg-[#34C759]' : 'bg-[#E5E5EA] dark:bg-[#39393D]'}`}>
+            <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${row.enabled ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
+          </button>
+        </div>
+      );
+      const readonlyRow = (row, label, tone = 'green') => (
+        <div key={row.id} className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
+          <span className="min-w-0">
+            <span className="block text-[13px] text-gray-700 dark:text-gray-200 truncate">{row.title}</span>
+          </span>
+          {statusBadge(label, tone)}
+        </div>
+      );
       return (
         <div className="relative shrink-0">
           <button onClick={() => setOpen(o => !o)} title={t.composerTools}
-            className={`relative shrink-0 flex items-center justify-center bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 transition-colors border border-black/[0.04] dark:border-white/5 ${compact ? 'w-9 h-9 rounded-full' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold whitespace-nowrap'}`}>
+            className={`relative shrink-0 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-colors border ${compact ? 'w-9 h-9 rounded-full bg-transparent hover:bg-black/5 dark:hover:bg-white/10 border-transparent' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold whitespace-nowrap bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 border-black/[0.04] dark:border-white/5'}`}>
             <Wrench size={compact ? 18 : 14} className="opacity-80" />
             {!compact && t.composerTools}
-            {(tools.length > 0 || feishuOn || wecomOn || dingtalkOn || eipOn || zhidaoOn) && (compact
-              ? <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 text-[10px] leading-4 text-center font-bold bg-[#007AFF] text-white rounded-full">{enabledCount + (feishuOn ? 1 : 0) + (wecomOn ? 1 : 0) + (dingtalkOn ? 1 : 0) + (eipOn ? 1 : 0) + (zhidaoOn ? 1 : 0)}</span>
-              : <span className="text-[11px] bg-[#007AFF] text-white px-1.5 py-0.5 rounded-full leading-none font-bold shrink-0">{enabledCount + (feishuOn ? 1 : 0) + (wecomOn ? 1 : 0) + (dingtalkOn ? 1 : 0) + (eipOn ? 1 : 0) + (zhidaoOn ? 1 : 0)}</span>)}
+            {enabledCount > 0 && (compact
+              ? <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 text-[10px] leading-4 text-center font-bold bg-[#007AFF] text-white rounded-full">{enabledCount}</span>
+              : <span className="text-[11px] bg-[#007AFF] text-white px-1.5 py-0.5 rounded-full leading-none font-bold shrink-0">{enabledCount}</span>)}
             {!compact && <ChevronDown size={14} className="opacity-50 shrink-0" />}
           </button>
           {open && (
             <>
               <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
-              <div className="absolute bottom-full left-0 mb-2 z-50 w-64 bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
-                <div className="px-3 py-2 text-[11px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider">{t.composerInstalledTools}</div>
-                {feishuOn && (
-                  <div className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
-                    <span className="text-[13px] text-gray-700 dark:text-gray-200 truncate">飞书（Lark）</span>
-                    <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold text-[#34C759] bg-[#34C759]/10 px-2 py-0.5 rounded-full leading-none"><span className="w-1.5 h-1.5 rounded-full bg-[#34C759]" />已连接</span>
-                  </div>
-                )}
-                {wecomOn && (
-                  <div className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
-                    <span className="text-[13px] text-gray-700 dark:text-gray-200 truncate">企业微信</span>
-                    <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold text-[#34C759] bg-[#34C759]/10 px-2 py-0.5 rounded-full leading-none"><span className="w-1.5 h-1.5 rounded-full bg-[#34C759]" />已连接</span>
-                  </div>
-                )}
-                {dingtalkOn && (
-                  <div className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
-                    <span className="text-[13px] text-gray-700 dark:text-gray-200 truncate">钉钉</span>
-                    <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold text-[#34C759] bg-[#34C759]/10 px-2 py-0.5 rounded-full leading-none"><span className="w-1.5 h-1.5 rounded-full bg-[#34C759]" />已连接</span>
-                  </div>
-                )}
-                {eipOn && (
-                  <div className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
-                    <span className="text-[13px] text-gray-700 dark:text-gray-200 truncate">H3C 员工门户（EIP）</span>
-                    <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold text-[#34C759] bg-[#34C759]/10 px-2 py-0.5 rounded-full leading-none"><span className="w-1.5 h-1.5 rounded-full bg-[#34C759]" />已连接</span>
-                  </div>
-                )}
-                {zhidaoOn && (
-                  <div className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
-                    <span className="text-[13px] text-gray-700 dark:text-gray-200 truncate">H3C 知道</span>
-                    <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold text-[#34C759] bg-[#34C759]/10 px-2 py-0.5 rounded-full leading-none"><span className="w-1.5 h-1.5 rounded-full bg-[#34C759]" />已连接</span>
-                  </div>
-                )}
-                {tools.length === 0 && !feishuOn && !wecomOn && !dingtalkOn && !eipOn && !zhidaoOn ? (
-                  <div className="px-3 py-2 text-[13px] text-gray-400 dark:text-gray-500">{t.composerNoTools}</div>
-                ) : tools.map(tl => {
-                  const on = !disabled.has(tl.id);
-                  return (
-                    <div key={tl.id} className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
-                      <span className="text-[13px] text-gray-700 dark:text-gray-200 truncate">{tl.name || tl.title || tl.id}</span>
-                      <button onClick={() => toggleTool(tl.id)} aria-label={tl.id}
-                        className={`relative inline-flex h-5 w-[34px] shrink-0 items-center rounded-full transition-colors ${on ? 'bg-[#34C759]' : 'bg-[#E5E5EA] dark:bg-[#39393D]'}`}>
-                        <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${on ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
-                      </button>
-                    </div>
-                  );
-                })}
+              <div className="absolute bottom-full left-0 mb-2 z-50 w-72 max-h-[420px] overflow-y-auto custom-scrollbar bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+                {connectedServices.map(row => readonlyRow(row, t.composerConnected, 'green'))}
+                {toolRows.map(switchRow)}
+                {skillRows.length === 0 ? (
+                  <div className="px-3 py-2 text-[13px] text-gray-400 dark:text-gray-500">{t.composerModeNone}</div>
+                ) : skillRows.map(row => row.switchable
+                  ? switchRow(row)
+                  : readonlyRow(row, row.active ? t.composerSkillInUse : t.composerBuiltinAuto, row.active ? 'green' : 'blue'))}
                 <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
                 <button onClick={() => { setOpen(false); if (onGotoTools) onGotoTools(); }}
                   className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">

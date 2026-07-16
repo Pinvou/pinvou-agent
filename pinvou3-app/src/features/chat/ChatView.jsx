@@ -4,9 +4,11 @@ import { ArrowLeft, BookOpen, Brain, Check, ChevronDown, ChevronRight, Clipboard
 import { bridge } from '../../hooks/useBridge.js';
 import { ArtifactsPanel } from '../artifacts/ArtifactsPanel.jsx';
 import { AppIcon, DEPT_ORDER, deptColor, deptLabelFor, personaText } from '../personas/Personas.jsx';
-import { ComposerModeMenu, ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsView.jsx';
+import { ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsView.jsx';
 import { ArtifactCard, tsToolsData } from '../tools/tool-common.jsx';
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
+
+const COMPOSER_ICON_BUTTON_CLASS = 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-transparent text-gray-700 hover:text-gray-900 dark:text-gray-200 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition-colors border border-transparent';
 
 const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       const isDark = theme === 'dark';
@@ -117,10 +119,10 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         <div className="relative">
           <button onClick={toggle} title={modelMissing ? t.kbMountNoModel : (active ? mountedName : t.kbMountTitle)}
             className={`relative shrink-0 flex items-center justify-center transition-colors border ${compact ? 'w-9 h-9 rounded-full' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold'} ${active
-              ? 'bg-[#E8F0FE] dark:bg-[#1A3A5C] text-[#1A73E8] dark:text-[#A8C7FA] border-[#1A73E8]/20 dark:border-[#A8C7FA]/25'
+              ? (compact ? 'bg-transparent text-[#1A73E8] dark:text-[#A8C7FA] border-transparent' : 'bg-[#E8F0FE] dark:bg-[#1A3A5C] text-[#1A73E8] dark:text-[#A8C7FA] border-[#1A73E8]/20 dark:border-[#A8C7FA]/25')
               : modelMissing
-                ? 'bg-gray-100 dark:bg-white/5 text-gray-400 dark:text-gray-600 border-black/[0.04] dark:border-white/5 opacity-70'
-                : 'bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-black/[0.04] dark:border-white/5'}`}>
+                ? 'bg-transparent text-gray-400 dark:text-gray-600 border-transparent opacity-70'
+                : (compact ? 'bg-transparent hover:bg-black/5 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-transparent' : 'bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-black/[0.04] dark:border-white/5')}`}>
             <BookOpen size={compact ? 18 : 14} className="opacity-70 shrink-0" />
             {!compact && <span className="max-w-[140px] truncate">{active ? mountedName : t.kbMount}</span>}
             {!compact && <ChevronDown size={14} className="opacity-50 shrink-0" />}
@@ -185,14 +187,10 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       return (
         <div className="relative">
           <button onClick={() => setOpen(!open)} title={t.modeSwitchTitle + ' · ' + (isPlan ? t.modePlan : t.modeYolo)}
-            className={`flex items-center shrink-0 font-semibold transition-colors border ${compact ? 'justify-center w-9 h-9 rounded-full' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px]'} ${isPlan
-              ? 'bg-[#E8F0FE] dark:bg-[#1A3A5C] text-[#1A73E8] dark:text-[#A8C7FA] border-[#1A73E8]/20 dark:border-[#A8C7FA]/25'
-              : 'bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-black/[0.04] dark:border-white/5'}`}>
+            className={`${COMPOSER_ICON_BUTTON_CLASS} font-semibold ${isPlan ? 'text-[#1A73E8] dark:text-[#A8C7FA]' : ''}`}>
             {isPlan
-              ? <ClipboardList size={compact ? 18 : 14} className="opacity-70 shrink-0" />
-              : <Zap size={compact ? 18 : 14} className="opacity-70 shrink-0" />}
-            {!compact && <span>{isPlan ? t.modePlan : t.modeYolo}</span>}
-            {!compact && <ChevronDown size={14} className="opacity-50 shrink-0" />}
+              ? <ClipboardList size={18} className="shrink-0" />
+              : <Zap size={18} className="shrink-0" />}
           </button>
           {open && (
             <>
@@ -713,23 +711,22 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               <div className="flex items-center justify-between mt-1.5 gap-2">
                 <div className="flex items-center gap-1.5 min-w-0 flex-1">
                   <button onClick={() => bridge.available && bridge.pickAndAttach()} title={t.attachAdd}
-                    className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-black/5 dark:hover:bg-white/10 transition-colors">
-                    <Paperclip size={20} />
+                    className={COMPOSER_ICON_BUTTON_CLASS}>
+                    <Paperclip size={18} />
                   </button>
                   <button onClick={handleVoiceClick} title={voiceRecording ? t.voiceStop : t.voiceStart}
-                    className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${
+                    className={`${
                       voiceRecording
-                        ? 'bg-[#C5221F] text-white hover:bg-[#A50E0E]'
+                        ? 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors bg-[#C5221F] text-white hover:bg-[#A50E0E] border border-transparent'
                         : voiceActive
-                          ? (isDark ? 'bg-[#1E2B3A] text-[#A8C7FA] hover:bg-[#24364C]' : 'bg-[#E8F0FE] text-[#174EA6] hover:bg-[#D2E3FC]')
-                          : 'text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-black/5 dark:hover:bg-white/10'
+                          ? `${COMPOSER_ICON_BUTTON_CLASS} text-[#174EA6] dark:text-[#A8C7FA]`
+                          : COMPOSER_ICON_BUTTON_CLASS
                     }`}>
-                    <Mic size={20} />
+                    <Mic size={18} />
                   </button>
                   <ComposerModeChip t={t} bs={bs} compact={composerCompact} />
                   <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoSettings} compact={composerCompact} />
-                  <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} compact={composerCompact} />
-                  <ComposerModeMenu t={t} bs={bs} compact={composerCompact} />
+                  <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} compact={composerCompact} activeSkill={bs && bs.activeSkill} />
                   <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
                 </div>
                 {hasDraftText && (
