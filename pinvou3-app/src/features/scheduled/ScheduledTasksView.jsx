@@ -287,7 +287,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
     };
 
     // 时/分选择器:触发区是只读输入框(显示 HH:MM),点开 iOS 风双滚轮。
-    const ScheduledTimeWheel = ({ value, onChange, theme, testId, ariaLabel }) => {
+    const ScheduledTimeWheel = ({ value, onChange, theme, testId, ariaLabel, placeholder = '' }) => {
       const [open, setOpen] = useState(false);
       const [menuStyle, setMenuStyle] = useState(null);
       const rootRef = useRef(null);
@@ -358,10 +358,13 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       ) : null;
       return (
         <span ref={rootRef} className="relative justify-self-end">
-          <input readOnly data-testid={testId} value={value} aria-label={ariaLabel}
+          <input readOnly data-testid={testId} value={valid ? value : ''} placeholder={placeholder} aria-label={ariaLabel}
             aria-haspopup="listbox" aria-expanded={open}
-            onClick={() => setOpen(current => !current)}
-            className={`w-[72px] cursor-pointer bg-transparent text-right font-medium outline-none ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`} />
+            onClick={() => {
+              if (!valid) onChange('08:00');
+              setOpen(current => !current);
+            }}
+            className={`w-[88px] cursor-pointer bg-transparent text-right font-medium outline-none placeholder:text-gray-400 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`} />
           {wheel}
         </span>
       );
@@ -839,6 +842,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       function scheduleEditorValue(rrule) {
         const fields = parseScheduleFields(rrule);
         const days = normalizeScheduleDays(fields.BYDAY);
+        const hasTimeAnchor = fields.BYHOUR != null || fields.BYMINUTE != null;
         let repeat = 'workdays';
         if (fields.FREQ === 'HOURLY') repeat = 'hourly';
         else if (days.join(',') === 'MO,TU,WE,TH,FR,SA,SU') repeat = 'daily';
@@ -848,14 +852,18 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           days,
           day: days[0] || 'MO',
           interval: Number(fields.INTERVAL || 1),
-          time: `${String(fields.BYHOUR != null ? fields.BYHOUR : 8).padStart(2, '0')}:${String(fields.BYMINUTE != null ? fields.BYMINUTE : 0).padStart(2, '0')}`,
+          time: hasTimeAnchor
+            ? `${String(fields.BYHOUR != null ? fields.BYHOUR : 0).padStart(2, '0')}:${String(fields.BYMINUTE != null ? fields.BYMINUTE : 0).padStart(2, '0')}`
+            : '',
+          hasTimeAnchor,
         };
       }
 
       function scheduleRepeatLabel(editor) {
         if (!editor) return '';
         if (editor.repeat === 'hourly') {
-          return editor.interval === 1 ? '每小时' : `每 ${editor.interval} 小时`;
+          const interval = editor.interval === 1 ? '每小时' : `每 ${editor.interval} 小时`;
+          return editor.hasTimeAnchor ? `${interval} · ${editor.time} 起` : interval;
         }
         return {workdays: '工作日', daily: '每天', weekly: '每周'}[editor.repeat] || '自定义';
       }
@@ -882,7 +890,10 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         }
         if (editor.repeat === 'hourly') {
           const interval = previousEditor.repeat === 'hourly' ? editor.interval : 1;
-          return `FREQ=HOURLY;INTERVAL=${Math.max(1, interval || 1)}`;
+          const anchor = previousEditor.hasTimeAnchor
+            ? `;BYHOUR=${Number(hour || 0)};BYMINUTE=${Number(minute || 0)}`
+            : '';
+          return `FREQ=HOURLY;INTERVAL=${Math.max(1, interval || 1)}${anchor}`;
         }
         if (key === 'repeat' && editor.repeat === 'weekly') {
           const previousDays = normalizeScheduleDays(previousEditor.days);
@@ -920,7 +931,6 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const scheduleEditor = parsedScheduleEditor
         ? {...parsedScheduleEditor, repeat: scheduleRepeatIntent || parsedScheduleEditor.repeat}
         : null;
-      const detailShowsClockTime = scheduleEditor && scheduleEditor.repeat !== 'hourly';
       const parsedCreateScheduleEditor = createForm ? scheduleEditorValue(createForm.rrule) : null;
       const createScheduleEditor = parsedCreateScheduleEditor
         ? {...parsedCreateScheduleEditor, repeat: createScheduleRepeatIntent || parsedCreateScheduleEditor.repeat}
@@ -1064,16 +1074,15 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
               </div>
             </div>
           )}
-          {editor.repeat !== 'hourly' && (
-            <div data-testid={`${prefix}-time-row`} className={`flex items-center pl-3.5 ${pressedRow} cursor-pointer`}>
-              <div className="flex flex-1 items-center justify-between py-3.5 pr-3.5">
-                <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>时间</span>
-                <ScheduledTimeWheel value={editor.time}
-                  onChange={value => onEdit('time', value)}
-                  theme={theme} testId={`${prefix}-time`} ariaLabel="选择运行时间" />
-              </div>
+          <div data-testid={`${prefix}-time-row`} className={`flex items-center pl-3.5 ${pressedRow} cursor-pointer`}>
+            <div className="flex flex-1 items-center justify-between py-3.5 pr-3.5">
+              <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>{editor.repeat === 'hourly' ? '起始时间' : '时间'}</span>
+              <ScheduledTimeWheel value={editor.time}
+                onChange={value => onEdit('time', value)}
+                theme={theme} testId={`${prefix}-time`} ariaLabel={editor.repeat === 'hourly' ? '选择起始时间' : '选择运行时间'}
+                placeholder={editor.repeat === 'hourly' && !editor.hasTimeAnchor ? '设置起点' : ''} />
             </div>
-          )}
+          </div>
         </>
       );
 
@@ -1241,8 +1250,12 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           </div>
           <div className={`overflow-hidden rounded-[20px] border shadow-[0_2px_10px_rgba(0,0,0,0.02),0_8px_32px_rgba(0,0,0,0.04)] ${isDark ? 'border-white/15 bg-[#1C1C1E]' : 'border-black/5 bg-white'}`}>
             {error && (
-              <div role="alert" data-testid="scheduled-error" className={`m-3 rounded-[12px] px-3 py-2 text-[13px] ${isDark ? 'bg-[#3A2424] text-[#F2B8B5]' : 'bg-[#FCE8E6] text-[#A50E0E]'}`}>
-                {error}
+              <div role="alert" data-testid="scheduled-error" className={`m-3 flex items-start gap-2 rounded-[12px] px-3 py-2 text-[13px] ${isDark ? 'bg-[#3A2424] text-[#F2B8B5]' : 'bg-[#FCE8E6] text-[#A50E0E]'}`}>
+                <span className="min-w-0 flex-1">{error}</span>
+                <button type="button" onClick={() => bridge?.dismissScheduledTaskError?.()}
+                  aria-label="关闭错误提示" className="mt-[-2px] rounded-full p-1 opacity-65 transition-opacity hover:opacity-100">
+                  <X className="h-3.5 w-3.5" />
+                </button>
               </div>
             )}
             {filtered.length ? (

@@ -952,6 +952,11 @@
     state.scheduledTaskErrorKind = error ? (kind || "load") : null;
   }
 
+  function dismissScheduledTaskError() {
+    setScheduledTaskError(null);
+    notify();
+  }
+
   function clearScheduledTaskLoadError() {
     if (state.scheduledTaskErrorKind === "load") setScheduledTaskError(null);
   }
@@ -5538,6 +5543,7 @@
     selectScheduledTask: selectScheduledTask,
     refreshScheduledTaskData: refreshScheduledTaskData,
     clearScheduledTaskSelection: clearScheduledTaskSelection,
+    dismissScheduledTaskError: dismissScheduledTaskError,
     createScheduledTask: createScheduledTask,
     updateScheduledTask: updateScheduledTask,
     pauseScheduledTask: pauseScheduledTask,
