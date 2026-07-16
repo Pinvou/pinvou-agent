@@ -89,6 +89,7 @@ fingerprints=(
   "C12 |shell reader 输出回调           |DeepSeek-TUI/crates/tui/src/tools/spec.rs|pub tool_output_sink: Option<ToolOutputSink>"
   "C12 |shell reader 流式 UTF-8 解码    |DeepSeek-TUI/crates/tui/src/tools/shell.rs|struct StreamingUtf8Decoder"
   "C12 |shell 中文跨分片行为测试        |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_shell_live_output_preserves_utf8_across_read_boundaries"
+  "C12 |shell 前台输出可控测试子进程     |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn controlled_streaming_child_command"
   "C12 |shell 完成前输出行为测试         |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_exec_shell_streams_output_before_completion"
   "C12 |后台启动返回后输出行为测试       |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_exec_shell_background_streams_after_start_returns"
   "C12 |后台 wait 完成前输出行为测试     |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_exec_shell_wait_streams_background_output_before_completion"
