@@ -255,8 +255,11 @@ assert.ok(
   /function scheduleRepeatLabel\(/.test(indexHtml) &&
     /editor\.interval/.test(indexHtml) &&
     /editor\.repeat === 'hourly' \? '起始时间' : '时间'/.test(indexHtml) &&
+    /const hasTimeAnchor = fields\.BYHOUR != null \|\| fields\.BYMINUTE != null/.test(indexHtml) &&
+    /previousEditor\.hasTimeAnchor/.test(indexHtml) &&
+    /placeholder=.*设置起点/.test(indexHtml) &&
     !indexHtml.includes("repeat === 'minutely'"),
-  'hourly schedules should expose both their interval and start-time anchor'
+  'hourly schedules should expose an optional start anchor without migrating legacy rules implicitly'
 );
 assert.ok(
   !/data-testid="scheduled-detail-pick-folder"/.test(indexHtml) &&

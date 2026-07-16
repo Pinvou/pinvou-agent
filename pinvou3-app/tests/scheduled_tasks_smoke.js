@@ -1107,7 +1107,8 @@ async function clickExactText(page, text) {
       intervalLabel: document.querySelector('[data-testid="scheduled-live-interval"]')?.textContent.trim(),
       intervalValue: document.querySelector('[data-testid="scheduled-live-interval"]')?.value,
       intervalRowPresent: !!document.querySelector('[data-testid="scheduled-live-interval-row"]'),
-      timeValue: document.querySelector('[data-testid="scheduled-live-time"]')?.value
+      timeValue: document.querySelector('[data-testid="scheduled-live-time"]')?.value,
+      timePlaceholder: document.querySelector('[data-testid="scheduled-live-time"]')?.placeholder
     };
   });
   await sleep(1200);
@@ -1122,12 +1123,12 @@ async function clickExactText(page, text) {
   await page.waitForFunction(() => {
     const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
     return invokes.some(x => x.cmd === 'update_scheduled_task' && x.args && x.args.input &&
-      x.args.input.rrule === 'FREQ=HOURLY;INTERVAL=2;BYHOUR=8;BYMINUTE=0');
+      x.args.input.rrule === 'FREQ=HOURLY;INTERVAL=2');
   }, { timeout: 10000 });
   const intervalEditState = await page.evaluate(() => {
     const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
     const update = invokes.filter(x => x.cmd === 'update_scheduled_task' && x.args && x.args.input &&
-      x.args.input.rrule === 'FREQ=HOURLY;INTERVAL=2;BYHOUR=8;BYMINUTE=0').pop();
+      x.args.input.rrule === 'FREQ=HOURLY;INTERVAL=2').pop();
     const interval = document.querySelector('[data-testid="scheduled-live-interval"]');
     return {
       rrule: update && update.args.input.rrule,
@@ -1135,6 +1136,22 @@ async function clickExactText(page, text) {
       intervalValue: interval && interval.value,
     };
   });
+
+  await page.click('[data-testid="scheduled-live-time"]');
+  await page.waitForSelector('[data-testid="scheduled-live-time-hour"]', { timeout: 10000 });
+  await page.evaluate(() => document.querySelector('[data-testid="scheduled-live-time-hour"] button[data-value="10"]').click());
+  await page.evaluate(() => document.querySelector('[data-testid="scheduled-live-time-minute"] button[data-value="15"]').click());
+  await page.waitForFunction(() => {
+    const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
+    return invokes.some(x => x.cmd === 'update_scheduled_task' && x.args && x.args.input &&
+      x.args.input.rrule === 'FREQ=HOURLY;INTERVAL=2;BYHOUR=10;BYMINUTE=15');
+  }, { timeout: 10000 });
+  const explicitAnchorState = await page.evaluate(() => ({
+    value: document.querySelector('[data-testid="scheduled-live-time"]')?.value,
+    rrules: (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes || [])
+      .filter(x => x.cmd === 'update_scheduled_task' && x.args && x.args.input && x.args.input.rrule)
+      .map(x => x.args.input.rrule),
+  }));
 
   await browser.close();
   server.close();
@@ -1294,14 +1311,17 @@ async function clickExactText(page, text) {
     intervalDisplayBefore.intervalLabel === '5 小时' &&
     intervalDisplayBefore.intervalValue === '5' &&
     intervalDisplayBefore.intervalRowPresent &&
-    intervalDisplayBefore.timeValue === '08:00' &&
+    intervalDisplayBefore.timeValue === '' &&
+    intervalDisplayBefore.timePlaceholder === '设置起点' &&
     /每 5 小时 · 下次 .*（(?:4小时\d+分|5小时)后）/.test(intervalDisplayBefore.summary || '') &&
     (intervalDisplayAfter.summary || '').split('（')[0] ===
       (intervalDisplayBefore.summary || '').split('（')[0] &&
     /（(?:4小时\d+分|5小时)后）/.test(intervalDisplayAfter.summary || '') &&
-    intervalEditState.rrule === 'FREQ=HOURLY;INTERVAL=2;BYHOUR=8;BYMINUTE=0' &&
+    intervalEditState.rrule === 'FREQ=HOURLY;INTERVAL=2' &&
     intervalEditState.intervalLabel === '2 小时' &&
     intervalEditState.intervalValue === '2' &&
+    explicitAnchorState.value === '10:15' &&
+    explicitAnchorState.rrules.includes('FREQ=HOURLY;INTERVAL=2;BYHOUR=10;BYMINUTE=15') &&
     errors.length === 0;
 
   if (!pass) {
@@ -1312,7 +1332,7 @@ async function clickExactText(page, text) {
       saveRetryState, runningSpinnerState, runningChatState,
       deletePromptState, deleteCancelState, deleteConfirmState,
       customCreationClicked, customCreationBeforeSubmit, customCreationState, openChatClicked, preSend,
-      chatAutoCreateState, weeklyMultiSelectState, sevenDayState, lastDayGuardState, rruleRoundTripState, intervalDisplayBefore, intervalDisplayAfter, intervalEditState, errors
+      chatAutoCreateState, weeklyMultiSelectState, sevenDayState, lastDayGuardState, rruleRoundTripState, intervalDisplayBefore, intervalDisplayAfter, intervalEditState, explicitAnchorState, errors
     }, null, 2));
     process.exit(1);
   }
