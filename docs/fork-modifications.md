@@ -14,7 +14,7 @@
 |---|---|
 | submodule 分支 | 当前基线 **`pinvou3-clean@8832469c`**(fork PR #16 merge commit,包含 fork PR #14/#15;`.gitmodules` 追踪 `pinvou3-clean`);durable scheduler 重实现留在 `codex/scheduled-tasks` 备查;备份 `backup/v0.8.65-merge-result`(merge 树)、`backup/pre-reclean-trial-tip`(旧 fork tip `6b3059da`)、`backup/pre-v0.8.65-sync`(旧远程 pinvou3-clean `4518f845`) |
 | fork drift | `8073aa9b` 基线原 drift **+7070/−4930,54 文件**(vs v0.8.65)+ scheduled-lite/C12/P2 后续 **+701/−17,7 文件** + 小时调度锚点 **+109/−10,1 文件** + W13 宿主取消后台 Agent **+75/−0,4 文件**。durable scheduler 的 +13744/−5646 已撤回,仍保持轻 fork(fork-policy §0) |
-| 历史 | v0.8.65 clean re-fork 的 C1–C12 + R + W 主题,以及后续 blocklist/compact/cancellation 修复;2026-07-13 fork PR #9 撤自动 warmup;同日 durable scheduled runtime(原 fork PR #8)以 AUTO-lite 最小补丁重做并撤回重实现(见 §4);2026-07-16 增加 P2 可取消 OAuth 登录、小时调度起点与 W13 宿主批量取消后台 Agent；同日向 upstream v0.8.68 主线提 [#4379](https://github.com/Hmbown/CodeWhale/pull/4379) / [#4381](https://github.com/Hmbown/CodeWhale/pull/4381) |
+| 历史 | v0.8.65 clean re-fork 的 C1–C12 + R + W 主题,以及后续 blocklist/compact/cancellation 修复;2026-07-13 fork PR #9 撤自动 warmup;同日 durable scheduled runtime(原 fork PR #8)以 AUTO-lite 最小补丁重做并撤回重实现(见 §4);2026-07-16 增加 P2 可取消 OAuth 登录、小时调度起点与 W13 宿主批量取消后台 Agent；同日向 upstream v0.8.68 主线提 [#4379](https://github.com/Hmbown/CodeWhale/pull/4379) / [#4381](https://github.com/Hmbown/CodeWhale/pull/4381) / [#4383](https://github.com/Hmbown/CodeWhale/pull/4383) |
 | LLM 暴露 native 工具 | **20 个**(全量注册 − 黑名单;原 23,2026-07-03 纯办公定位再砍 git_status/git_diff/diagnostics)。**tool_search 已禁用**(⚠️2026-07-03 修:v0.8.65 折叠单名后门控名与双旧名对不上一度漏注入,已补裸名,详见 C2)。MCP `mcp_pinvou_present_artifact` 另接,共 21 入口 |
 | fork-guard | 指纹 + 回归测试(`scripts/fork-guard.sh`;**v0.8.65 撤 P pwd-move 2 条**=上游已 harvest;+MKT skill 停用 3 条;**AUTO 重型指纹 18 条撤、AUTO-lite 现为 16 条**);AUTO-lite 定向回归覆盖 automation model/conversation key、小时调度锚点、schema v4/v3 兼容、运行链接、终态保留、engine force_prompt 与 app scheduled Yolo 链路 |
 | system prompt | dump 逐字节稳定;per-turn `<runtime_prompt>` tag + goal continuation 均已 gate |
@@ -144,7 +144,7 @@
 - **理由**:Windows 子进程 kill 后 reader 线程可能仍阻塞在管道读取,同步 join 会让取消流程卡死;job object 已先关闭,此处应优先保证取消立即返回。
 - **来源**:fork PR [#7](https://github.com/h3c-hexin/DeepSeek-TUI/pull/7),commit `cf2b231f`;其中 warmup cancellation 部分已随 Q 撤除,仅保留本条 shell 修复。
 - **守护**:`fork-guard.sh` C11 指纹钉住 `ShellStatus::Killed` 分支;目标 warmup 回归测试 3 条通过。Windows 行为仍需 Windows CI/真机覆盖。
-- 上游 PR:暂未提;需先补 Windows 稳定复现与平台回归测试。
+- 上游 PR:🟡 [#4383](https://github.com/Hmbown/CodeWhale/pull/4383) **OPEN**(2026-07-16):仅在 Windows + `Killed` 时释放 reader handle，其他路径保持 join；新增故意阻塞 reader 的 Windows 专属回归，等待上游 Windows CI 覆盖。
 
 ### C12 `working-set` 内部提醒不参与路径提取(2026-07-14)
 - **文件**:`crates/tui/src/working_set.rs`
@@ -158,7 +158,7 @@
 - **改动**:给 `EngineConfig` 加 `pub extra_tools: ExtraTools`(newtype 包 `Vec<Arc<dyn ToolSpec>>`,手写 Debug 输出工具名——`dyn ToolSpec` 非 Debug,否则破 `#[derive(Debug)]`),每 turn build registry 时 append 到 builder。让**嵌入应用**(pinvou3-app)无需 fork 工具表即可注册自定义 `ToolSpec`
 - **理由/用途**:Agentic RAG——app 层 `KbSearchTool`(`knowledge/kb_tool.rs`,持 `session_id`,execute 查该会话挂载知识集 → `L1Store::retrieve_for_chat`)经此注入,让本地 LLM 自主调 `kb_search` 检索本地知识(替代旧注入式)。`spawn_for_session` 按 session push,工具持 session_id 解决 `ToolContext` 无 session_id 的问题
 - **测试**:`forkguard` `RAG1 extra_tools 字段` + `RAG2 tool_setup 注册` 指纹;app lib `blocklist_contract`(kb_search 可见)+ `kb_tool::tests`;真机测自发调用率/幻觉率
-- 上游 PR:❌ **暂不提**(2026-06-30 复核纠正原"拟提"):上游 codewhale-tui 是纯 binary(**无 lib target**,C1 facade 是 fork 专属),且 `app-server` crate 不依赖 tui / 不构造 EngineConfig——`EngineConfig.extra_tools` 在上游**无任何 in-tree 消费者**,提了大概率被以「加无消费者的 public API」关。留 fork,等上游真出现嵌入/SDK 需求或能附 in-tree 消费者再提
+- 上游 PR:🟢 [#3968](https://github.com/Hmbown/CodeWhale/pull/3968) **MERGED**:与 app bridge 实际复用的 `context_input_budget_for_route` API 已作为独立小改动合入(merge `25cce407`)；下次 sync 按文件级 diff harvest 后撤对应 R 指纹。`EngineConfig.extra_tools` 本体仍因上游无嵌入消费者留 fork。
 
 ### W `workflow` 三省六部工作流底座层
 - **文件**:`tools/subagent/{mod,tests}.rs`、`core/ops.rs`、`core/events.rs`、`core/engine.rs`、`core/engine/{tests,approval,handle}.rs`、`tools/user_input.rs`、`runtime_threads.rs`、`tui/{sidebar,command_palette,ui,views/mod}.rs`、`main.rs`(EngineConfig 字段)

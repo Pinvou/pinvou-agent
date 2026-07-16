@@ -148,6 +148,7 @@ grep -rn "messages.push\|runtime_prompt" DeepSeek-TUI/crates/tui/src/core/engine
 |---|---|---|
 | [#4379](https://github.com/Hmbown/CodeWhale/pull/4379) | P2: opt-in cancellable MCP OAuth login API；保留旧 API，取消时先 drop in-flight future，保证回调监听关闭后才返回 | `cargo fmt --check` + `cancellable_oauth_drops_in_flight_flow_before_returning` 通过；关联问题 [#4380](https://github.com/Hmbown/CodeWhale/issues/4380)，仍按普通 PR 等待审阅 |
 | [#4381](https://github.com/Hmbown/CodeWhale/pull/4381) | AUTO-lite: HOURLY 支持 `BYHOUR` / `BYMINUTE` 锚点，按 automation 创建日期保持相位，旧无锚点规则不变 | `cargo fmt --check` + 两条 `hourly_rrule_*` 回归通过；若合入，下次 sync 按文件级 diff harvest |
+| [#4383](https://github.com/Hmbown/CodeWhale/pull/4383) | C11: Windows killed background shell 不同步 join 被 pipe 阻塞的 reader thread；其他终态与非 Windows 保持 join | `cargo fmt --check` + Linux orphan-pipe 回归通过；新增 Windows 专属 blocked-reader 回归，交由上游 Windows CI 执行 |
 
 > **2026-07-16 主线复核**:P1 资源/模板列表按实际暴露集合 gate 已在 upstream v0.8.68 等价存在，**不重复提 PR**；AUTO-lite 的 `approval_force_prompt` / `rlm_eval` 不可旁路审批也已被上游现有实现覆盖。下次 sync 必须按字段核对后再撤对应 fork 指纹，不能只凭同名判断。
 
