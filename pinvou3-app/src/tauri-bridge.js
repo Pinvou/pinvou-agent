@@ -2227,6 +2227,7 @@
         state.chatItems[i].output = output;
         state.chatItems[i].success = success;
         state.chatItems[i].state = success ? "done" : "failed";
+        delete state.chatItems[i]._terminalParser;
         break;
       }
     }
@@ -2265,6 +2266,7 @@
       item.background = false;
       item.shellStatus = status;
       item.exitCode = payload.exit_code;
+      delete item._terminalParser;
       if (!item.liveOutput) {
         var tail = payload.stdout_tail || payload.stderr_tail;
         if (tail) item.output = tail;
@@ -2274,24 +2276,135 @@
     return false;
   }
 
-  function stripTerminalSequences(text) {
-    return String(text || "")
-      .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
-      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+  var MAX_PENDING_TERMINAL_SEQUENCE_CHARS = 16 * 1024;
+  function rememberPendingTerminalSequence(parserState, input, start) {
+    var pending = input.slice(start);
+    // A malformed unterminated OSC/DCS sequence must not bypass the live
+    // output tail limit and grow renderer memory without bound.
+    parserState.pendingAnsi = pending.length <= MAX_PENDING_TERMINAL_SEQUENCE_CHARS ? pending : "";
+  }
+
+  function stripTerminalSequences(text, parserState) {
+    var input = String((parserState.pendingAnsi || "") + (text || ""));
+    parserState.pendingAnsi = "";
+    var clean = "";
+    for (var i = 0; i < input.length; i++) {
+      if (input[i] !== "\x1b") {
+        clean += input[i];
+        continue;
+      }
+      if (i + 1 >= input.length) {
+        rememberPendingTerminalSequence(parserState, input, i);
+        break;
+      }
+
+      var kind = input[i + 1];
+      if (kind === "[") {
+        var csiEnd = i + 2;
+        var malformedCsi = false;
+        while (csiEnd < input.length) {
+          var csiCode = input.charCodeAt(csiEnd);
+          if (csiCode >= 0x40 && csiCode <= 0x7e) break;
+          if (csiCode < 0x20 || csiCode > 0x3f) {
+            malformedCsi = true;
+            break;
+          }
+          csiEnd += 1;
+        }
+        if (malformedCsi) {
+          i += 1;
+          continue;
+        }
+        if (csiEnd >= input.length) {
+          rememberPendingTerminalSequence(parserState, input, i);
+          break;
+        }
+        i = csiEnd;
+        continue;
+      }
+
+      // OSC/DCS/SOS/PM/APC are terminated by ST (ESC \); OSC also accepts BEL.
+      if (kind === "]" || kind === "P" || kind === "X" || kind === "^" || kind === "_") {
+        var stringEnd = i + 2;
+        var terminated = false;
+        while (stringEnd < input.length) {
+          if (kind === "]" && input[stringEnd] === "\x07") {
+            terminated = true;
+            break;
+          }
+          if (input[stringEnd] === "\x1b" && input[stringEnd + 1] === "\\") {
+            stringEnd += 1;
+            terminated = true;
+            break;
+          }
+          stringEnd += 1;
+        }
+        if (!terminated) {
+          rememberPendingTerminalSequence(parserState, input, i);
+          break;
+        }
+        i = stringEnd;
+        continue;
+      }
+
+      // Generic two-or-more-byte escape sequence: optional intermediate
+      // bytes followed by a final byte.
+      var escapeEnd = i + 1;
+      while (escapeEnd < input.length) {
+        var escapeCode = input.charCodeAt(escapeEnd);
+        if (escapeCode < 0x20 || escapeCode > 0x2f) break;
+        escapeEnd += 1;
+      }
+      if (escapeEnd >= input.length) {
+        rememberPendingTerminalSequence(parserState, input, i);
+        break;
+      }
+      var finalCode = input.charCodeAt(escapeEnd);
+      if (finalCode >= 0x30 && finalCode <= 0x7e) i = escapeEnd;
+    }
+    return clean;
+  }
+
+  function terminalParserState(item, stream) {
+    if (!item._terminalParser) {
+      Object.defineProperty(item, "_terminalParser", {
+        value: {},
+        writable: true,
+        configurable: true,
+      });
+    }
+    var key = stream === "stderr" ? "stderr" : "stdout";
+    if (!item._terminalParser[key]) {
+      item._terminalParser[key] = { pendingCR: false, pendingAnsi: "" };
+    }
+    return item._terminalParser[key];
   }
 
   // A standalone carriage return resets the current terminal line. WinGet
   // uses this for progress frames, so keep the newest frame instead of
   // appending hundreds of nearly identical lines.
-  function mergeTerminalChunk(previous, chunk) {
+  function mergeTerminalChunk(previous, chunk, parserState, prefix) {
     var output = String(previous == null ? "" : previous);
-    var clean = stripTerminalSequences(chunk);
-    for (var i = 0; i < clean.length; i++) {
+    var clean = stripTerminalSequences(chunk, parserState);
+    var i = 0;
+    if (parserState.pendingCR && clean) {
+      if (clean[0] === "\n") {
+        output += "\n";
+        i = 1;
+      } else {
+        output = output.slice(0, output.lastIndexOf("\n") + 1);
+      }
+      parserState.pendingCR = false;
+    }
+    var needsPrefix = !!prefix;
+    for (; i < clean.length; i++) {
       var ch = clean[i];
       if (ch === "\r") {
         if (clean[i + 1] === "\n") {
           output += "\n";
           i += 1;
+        } else if (i + 1 >= clean.length) {
+          parserState.pendingCR = true;
         } else {
           output = output.slice(0, output.lastIndexOf("\n") + 1);
         }
@@ -2299,6 +2412,10 @@
         var lineStart = output.lastIndexOf("\n") + 1;
         if (output.length > lineStart) output = output.slice(0, -1);
       } else {
+        if (needsPrefix) {
+          output += prefix;
+          needsPrefix = false;
+        }
         output += ch;
       }
     }
@@ -2313,8 +2430,13 @@
     for (var i = 0; i < state.chatItems.length; i++) {
       var item = state.chatItems[i];
       if (item.type !== "tool" || item.toolId !== toolId) continue;
-      if (stream === "stderr") chunk = "[STDERR] " + chunk;
-      var output = mergeTerminalChunk(item.output, chunk);
+      var parserState = terminalParserState(item, stream);
+      var output = mergeTerminalChunk(
+        item.output,
+        chunk,
+        parserState,
+        stream === "stderr" ? "[STDERR] " : ""
+      );
       // A verbose long-running process must not grow renderer memory without
       // bound. Completion replaces this tail with the normal full result.
       var maxLiveChars = 128 * 1024;

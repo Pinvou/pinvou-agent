@@ -254,6 +254,43 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
       const handlers = window.__TAURI_EVENT_HANDLERS__[name] || [];
       for (const handler of handlers) await handler({ payload });
     }
+    await emit('chat:tool_start', { session_id:'s1', id:'split-terminal', name:'exec_shell', args:{ command:'split terminal frames' } });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal', stream:'stdout', content:'line one\r' });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal', stream:'stdout', content:'\nDownloading 10%\r' });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal', stream:'stdout', content:'Downloading \u001b[3' });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal', stream:'stdout', content:'2m90%\u001b[0' });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal', stream:'stdout', content:'m' });
+  });
+  await sleep(100);
+  const splitTerminal = await page.evaluate(() => {
+    const item = window.TauriBridge.getState().chatItems.find(item => item.toolId === 'split-terminal');
+    return item && item.output;
+  });
+  rec('terminal parser preserves CRLF and ANSI state across live chunks',
+    splitTerminal === 'line one\nDownloading 90%' && !splitTerminal.includes('\u001b') && !splitTerminal.includes('10%'),
+    JSON.stringify(splitTerminal));
+  await page.evaluate(async () => {
+    async function emit(name, payload) {
+      const handlers = window.__TAURI_EVENT_HANDLERS__[name] || [];
+      for (const handler of handlers) await handler({ payload });
+    }
+    await emit('chat:tool_start', { session_id:'s1', id:'split-terminal-stderr', name:'exec_shell', args:{ command:'split stderr style' } });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal-stderr', stream:'stderr', content:'\u001b[3' });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal-stderr', stream:'stderr', content:'1m错误\u001b[0' });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal-stderr', stream:'stderr', content:'m' });
+  });
+  const splitTerminalStderr = await page.evaluate(() => {
+    const item = window.TauriBridge.getState().chatItems.find(item => item.toolId === 'split-terminal-stderr');
+    return item && item.output;
+  });
+  rec('terminal parser preserves stderr ANSI state across live chunks',
+    splitTerminalStderr === '[STDERR] 错误' && !splitTerminalStderr.includes('\u001b'),
+    JSON.stringify(splitTerminalStderr));
+  await page.evaluate(async () => {
+    async function emit(name, payload) {
+      const handlers = window.__TAURI_EVENT_HANDLERS__[name] || [];
+      for (const handler of handlers) await handler({ payload });
+    }
     await emit('chat:tool_start', { session_id:'s1', id:'background-shell', name:'exec_shell', args:{ command:'winget install WPS' } });
     await emit('chat:tool_delta', { session_id:'s1', id:'background-shell', stream:'stdout', content:'\u001b[32mDownloading 10%\u001b[0m\rDownloading 90%' });
     await emit('chat:tool_end', {
