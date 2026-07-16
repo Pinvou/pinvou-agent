@@ -65,8 +65,13 @@ pub fn create_detached_at(
         return Ok(());
     }
 
-    // index.html?detached=1&kind=<kind>&id=<id>。id 做 URL 编码，空 id 省略。
-    let mut query = format!("detached=1&kind={}", urlencode(kind));
+    // UI schema 版本戳与主窗口一致，避免撕离窗口命中跨版本旧 HTML。
+    // id 做 URL 编码，空 id 省略。
+    let mut query = format!(
+        "ui={}&detached=1&kind={}",
+        crate::ui_cache::UI_CACHE_SCHEMA,
+        urlencode(kind)
+    );
     if let Some(i) = id {
         query.push_str(&format!("&id={}", urlencode(i)));
     }
@@ -211,5 +216,15 @@ mod tests {
         assert!(!point_in_rect(100, 10, 0, 0, 100, 100)); // 右边界开区间
         assert!(!point_in_rect(-1, 10, 0, 0, 100, 100));
         assert!(point_in_rect(2000, 50, 1920, 0, 1920, 1080)); // 第二屏
+    }
+
+    #[test]
+    fn detached_url_contract_uses_ui_cache_schema() {
+        let query = format!(
+            "ui={}&detached=1&kind={}",
+            crate::ui_cache::UI_CACHE_SCHEMA,
+            urlencode("workflow")
+        );
+        assert_eq!(query, "ui=vite-react-1&detached=1&kind=workflow");
     }
 }

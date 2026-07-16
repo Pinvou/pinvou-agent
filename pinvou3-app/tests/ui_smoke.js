@@ -69,6 +69,7 @@ function injectSource() {
         case 'check_for_update': return Promise.resolve({available:false});
         case 'find_resumable_run': return Promise.resolve(ZOMBIE);
         case 'get_workflow_state': return Promise.resolve(WF_STATE);
+        case 'stop_workflow': window.__STOP_WORKFLOW_ARGS__=args; return Promise.resolve({ok:true,session_id:'s-zombie',scenario:'sansheng_liubu',brief:{user_request_raw:'原始三省六部需求'}});
         case 'check_dependencies': return Promise.resolve([]);
         case 'list_marketplace_tools': return Promise.resolve([]);
         case 'create_session': return Promise.resolve({id:'s-new',metadata:{id:'s-new'}});
@@ -128,6 +129,31 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
   await page.waitForFunction(() => window.TauriBridge && document.body && document.body.innerText.includes('PINVOU'), { timeout: 20000 }).catch(() => {});
   await sleep(2000);
 
+  // 入口能渲染 DOM 不代表样式加载成功：WebKit 若复用旧 index.html、CSS 404，
+  // 所有旧 view 会以裸 DOM 一起铺开。直接检查 Tailwind 的关键计算样式。
+  const visualShell = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="app-root"]');
+    if (!root) return { found: false };
+    const style = getComputedStyle(root);
+    return {
+      found: true,
+      display: style.display,
+      height: Math.round(root.getBoundingClientRect().height),
+      viewportHeight: window.innerHeight,
+      overflow: style.overflow,
+      backgroundColor: style.backgroundColor,
+    };
+  });
+  rec(
+    '⓪ 前端样式完整加载（非裸 HTML）',
+    visualShell.found
+      && visualShell.display === 'flex'
+      && Math.abs(visualShell.height - visualShell.viewportHeight) <= 2
+      && visualShell.overflow === 'hidden'
+      && visualShell.backgroundColor !== 'rgba(0, 0, 0, 0)',
+    JSON.stringify(visualShell),
+  );
+
   // ① 启动落草稿页(僵尸 run 不劫持)
   const st = await page.evaluate(() => {
     const s = window.TauriBridge.getState();
@@ -172,6 +198,45 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     llmApiCacheFallback.keptExisting && llmApiCacheFallback.keptModels && llmApiCacheFallback.clearedWhenAuthoritative,
     JSON.stringify(llmApiCacheFallback));
 
+  // ①b 工作流运行中可停止；停止后原需求自动进入新任务编辑框。
+  page.on('dialog', async dialog => { await dialog.accept(); });
+  await expand(page); await sleep(300);
+  await page.evaluate(() => document.querySelector('[data-nav="workflow"]')?.click()); await sleep(700);
+  const stopButton = await page.evaluate(() => {
+    const button = document.querySelector('[data-testid="workflow-stop-restart"]');
+    if (!button) return false;
+    button.click();
+    return true;
+  });
+  await sleep(700);
+  const stopped = await page.evaluate(() => ({
+    status: window.TauriBridge.getState().workflow.run.status,
+    sessionId: window.__STOP_WORKFLOW_ARGS__ && window.__STOP_WORKFLOW_ARGS__.sessionId,
+    brief: (document.querySelector('textarea') || {}).value || '',
+  }));
+  rec('①b 工作流可停止并预填原需求重开', stopButton && stopped.status === 'stopped' && stopped.sessionId === 's-zombie' && stopped.brief === '原始三省六部需求', JSON.stringify(stopped));
+
+  // ①c stop marker 是最终状态：迟到快照即使仍带 running/reviewing，也不能让角色卡回跳。
+  const stoppedAfterLateSnapshot = await page.evaluate(async () => {
+    const handlers = window.__TAURI_EVENT_HANDLERS__['workflow:full_state'] || [];
+    for (const handler of handlers) {
+      await handler({ payload: {
+        session_id: 's-zombie', stopped: true, project_dir: '/x/wf', scenario: 'sansheng_liubu',
+        roles: { taizi: { name: '太子', status: 'running' }, zhongshu: { name: '中书', status: 'reviewing' } },
+      } });
+    }
+    const run = window.TauriBridge.getState().workflow.run;
+    return { status: run.status, taizi: run.agents.taizi.status, zhongshu: run.agents.zhongshu.status };
+  });
+  rec(
+    '①c 已停止工作流不被迟到快照恢复为执行中',
+    stoppedAfterLateSnapshot.status === 'stopped'
+      && stoppedAfterLateSnapshot.taizi === 'stopped'
+      && stoppedAfterLateSnapshot.zhongshu === 'stopped',
+    JSON.stringify(stoppedAfterLateSnapshot),
+  );
+  await clickText(page, '取消'); await sleep(300);
+
   // 手机先向尚未在桌面打开的后台 session 发消息：hydration 必须先把磁盘 messages
   // 重建成 chatItems；否则桌面随后切入时只剩这条手机消息，历史和产物卡都像“丢了”。
   await page.evaluate(async () => {
@@ -182,8 +247,7 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
   });
 
   // ② 工具商店关键连接器卡
-  await expand(page); await sleep(500);
-  await clickText(page, '工具商店');
+  await page.evaluate(() => document.querySelector('[data-nav="toolstore"]')?.click());
   await sleep(1500);
   const connectors = await page.evaluate(() => {
     const text = document.body.innerText;

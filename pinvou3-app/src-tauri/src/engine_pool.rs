@@ -186,6 +186,14 @@ impl EnginePool {
     /// active)。绑定指向已删模型时 `model_by_id` 返回 None,自然回退 active。
     /// 这是「热切换不重启」的落点:改模型只写 disk + evict,下次 spawn 经此读到新配置。
     pub(crate) async fn fresh_bridge_for(&self, session_id: &str) -> Result<Pinvou3Bridge> {
+        self.fresh_bridge_for_policy(session_id, false).await
+    }
+
+    async fn fresh_bridge_for_policy(
+        &self,
+        session_id: &str,
+        scheduled_unattended: bool,
+    ) -> Result<Pinvou3Bridge> {
         let started_at = std::time::Instant::now();
         log::info!("[engine_pool] fresh_bridge_for start sid={}", session_id);
         let mut b = self.bridge.clone();
@@ -194,20 +202,14 @@ impl EnginePool {
         log::info!("[engine_pool] fresh_bridge_for prefs loaded sid={}", session_id);
         let scheduled_profile = self.store.scheduled_profile(session_id);
         let interactive_model_override = self.store.session_model_override(session_id);
-        let pins_scheduled_model =
-            scheduled_profile.is_some() && interactive_model_override.is_none();
-        b.session_model = if let Some(model_id) = interactive_model_override {
-            b.prefs.model_by_id(&model_id).cloned()
-        } else if let Some(profile) = scheduled_profile.as_ref() {
-            Some(resolve_scheduled_model(
-                &b.prefs.advanced.saved_models,
-                profile,
-            )?)
-        } else {
-            self.store
-                .session_model_id(session_id)
-                .and_then(|mid| b.prefs.model_by_id(&mid).cloned())
-        };
+        let pins_scheduled_model = scheduled_profile.is_some()
+            && (scheduled_unattended || interactive_model_override.is_none());
+        b.session_model = resolve_spawn_model(
+            &b.prefs.advanced.saved_models,
+            scheduled_profile.as_ref(),
+            interactive_model_override.as_deref(),
+            scheduled_unattended,
+        )?;
         log::info!(
             "[engine_pool] fresh_bridge_for session model resolved sid={} has_model={}",
             session_id,
@@ -287,6 +289,17 @@ impl EnginePool {
     /// 则一次性 `SyncSession` 把历史 messages 注水进新 engine(冷启动 / app 重启后
     /// 打开旧会话再发消息的场景)。
     pub async fn get_or_spawn(&self, session_id: &str) -> Result<AppEngine> {
+        self.get_or_spawn_with_policy(session_id, false).await
+    }
+
+    /// Spawn policy for an unattended automation turn is deliberately distinct
+    /// from an interactive continuation: the task profile remains authoritative
+    /// even if the user temporarily selected another model while viewing it.
+    async fn get_or_spawn_with_policy(
+        &self,
+        session_id: &str,
+        scheduled_unattended: bool,
+    ) -> Result<AppEngine> {
         let started_at = std::time::Instant::now();
         log::info!("[engine_pool] get_or_spawn start sid={}", session_id);
         log::info!("[engine_pool] get_or_spawn lock wait start sid={}", session_id);
@@ -307,7 +320,9 @@ impl EnginePool {
 
         let is_scheduled = self.store.scheduled_profile(session_id).is_some();
         log::info!("[engine_pool] get_or_spawn spawn bridge start sid={}", session_id);
-        let bridge = self.fresh_bridge_for(session_id).await?;
+        let bridge = self
+            .fresh_bridge_for_policy(session_id, scheduled_unattended)
+            .await?;
         log::info!(
             "[engine_pool] get_or_spawn spawn_for_session start sid={} elapsed_ms={}",
             session_id,
@@ -543,7 +558,11 @@ impl EnginePool {
                 .store
                 .scheduled_profile(session_id)
                 .with_context(|| format!("Scheduled session '{session_id}' has no profile"))?;
-            let engine = match self.get_or_spawn(session_id).await {
+            // A user may have opened this conversation since the previous run.
+            // Scheduled execution must rebuild from the latest task profile and
+            // global model/provider settings instead of reusing that old client.
+            self.evict_locked(session_id).await;
+            let engine = match self.get_or_spawn_with_policy(session_id, true).await {
                 Ok(engine) => engine,
                 Err(engine_error) => {
                     if let Err(seed_error) = persist_scheduled_prompt(
@@ -831,11 +850,11 @@ fn resolve_scheduled_model(
             .iter()
             .find(|model| model.id == model_id)
             .with_context(|| {
-                format!("Scheduled model configuration '{model_id}' is no longer available")
+                format!("此任务绑定的 AI 模型配置已失效，请重新选择 AI 模型并保存任务。缺失配置：{model_id}")
             })?;
         if selected.model != profile.model {
             bail!(
-                "Scheduled model configuration '{model_id}' changed from '{}' to '{}'",
+                "此任务绑定的 AI 模型配置已变更，请重新选择 AI 模型并保存任务。配置 {model_id} 从 '{}' 变为 '{}'",
                 profile.model,
                 selected.model
             );
@@ -846,21 +865,41 @@ fn resolve_scheduled_model(
     let mut matches = models.iter().filter(|model| model.model == profile.model);
     let selected = matches
         .next()
-        .with_context(|| format!("Scheduled model '{}' is no longer available", profile.model))?;
+        .with_context(|| format!("此任务绑定的 AI 模型已不可用，请重新选择 AI 模型并保存任务。模型：{}", profile.model))?;
     if matches.next().is_some() {
         bail!(
-            "Scheduled model '{}' is ambiguous without a stable model id",
+            "此任务绑定的 AI 模型配置不唯一，请重新选择 AI 模型并保存任务。模型：{}",
             profile.model
         );
     }
     Ok(selected.clone())
 }
 
+fn resolve_spawn_model(
+    models: &[SavedModel],
+    scheduled_profile: Option<&ScheduledRunProfile>,
+    interactive_model_override: Option<&str>,
+    scheduled_unattended: bool,
+) -> Result<Option<SavedModel>> {
+    if scheduled_unattended {
+        return scheduled_profile
+            .map(|profile| resolve_scheduled_model(models, profile))
+            .transpose();
+    }
+    if let Some(model_id) = interactive_model_override {
+        return Ok(models.iter().find(|model| model.id == model_id).cloned());
+    }
+    scheduled_profile
+        .map(|profile| resolve_scheduled_model(models, profile))
+        .transpose()
+}
+
 #[cfg(test)]
 mod scheduled_model_tests {
     use super::{
-        delete_scheduled_run_with_gate, resolve_scheduled_model, scheduled_profile_after_turn_gate,
-        should_sync_session, ScheduledUnattendedGuard, SessionTurnLifecycles, SessionTurnLocks,
+        delete_scheduled_run_with_gate, resolve_scheduled_model, resolve_spawn_model,
+        scheduled_profile_after_turn_gate, should_sync_session, ScheduledUnattendedGuard,
+        SessionTurnLifecycles, SessionTurnLocks,
     };
     use crate::bridge::prefs::{ModelPreset, SavedModel};
     use crate::bridge::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
@@ -903,6 +942,26 @@ mod scheduled_model_tests {
         let selected = resolve_scheduled_model(&models, &profile(Some("wanted"), "wire-model"))
             .expect("configured model");
         assert_eq!(selected.id, "wanted");
+    }
+
+    #[test]
+    fn unattended_spawn_uses_task_model_despite_interactive_override() {
+        let models = vec![
+            model("task-model", "task-wire"),
+            model("interactive-model", "interactive-wire"),
+        ];
+        let scheduled = profile(Some("task-model"), "task-wire");
+        let unattended =
+            resolve_spawn_model(&models, Some(&scheduled), Some("interactive-model"), true)
+                .expect("unattended model")
+                .expect("selected unattended model");
+        assert_eq!(unattended.id, "task-model");
+
+        let interactive =
+            resolve_spawn_model(&models, Some(&scheduled), Some("interactive-model"), false)
+                .expect("interactive model")
+                .expect("selected interactive model");
+        assert_eq!(interactive.id, "interactive-model");
     }
 
     #[test]

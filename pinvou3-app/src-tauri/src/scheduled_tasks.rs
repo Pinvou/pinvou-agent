@@ -1,29 +1,31 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use chrono::Weekday;
 use deepseek_tui::automation_manager::{
-    spawn_scheduler, AutomationManager, AutomationManagerOptions, AutomationRecord,
-    AutomationRunRecord, AutomationRunRetentionGuard, AutomationRunStatus, AutomationSchedule,
-    AutomationSchedulerConfig, AutomationStatus, CreateAutomationRequest, SharedAutomationManager,
-    UpdateAutomationRequest,
+    spawn_scheduler, AutomationManager, AutomationRecord, AutomationRunRecord, AutomationRunStatus,
+    AutomationSchedule, AutomationSchedulerConfig, AutomationStatus, CreateAutomationRequest,
+    SharedAutomationManager, UpdateAutomationRequest,
 };
 use deepseek_tui::task_manager::{SharedTaskManager, TaskManager, TaskManagerConfig, TaskStatus};
 use parking_lot::{Mutex as ParkingMutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::bridge::prefs::UserPrefs;
-use crate::bridge::sessions::{SessionKind, SessionStore};
+use crate::bridge::sessions::SessionStore;
 use crate::bridge::Pinvou3Bridge;
 use crate::engine_pool::EnginePool;
 use crate::scheduled_executor::ScheduledChatExecutor;
 
 const DELETE_CANCEL_TIMEOUT: Duration = Duration::from_secs(15);
-const SCHEDULED_TASK_PRUNE_INTERVAL: Duration = Duration::from_secs(60 * 60);
+const SCHEDULED_RETENTION_INTERVAL: Duration = Duration::from_secs(15);
+const MAX_TERMINAL_RUNS_PER_AUTOMATION: usize = 50;
 const SCHEDULED_RUN_READ_STATE_SCHEMA_VERSION: u32 = 2;
+const SCHEDULED_MODEL_BINDING_SCHEMA_VERSION: u32 = 1;
+const SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION: u32 = 1;
 const SCHEDULED_EXECUTION_MODE: &str = "yolo";
 
 fn scheduled_run_read_state_schema_version() -> u32 {
@@ -44,6 +46,399 @@ impl Default for ScheduledRunReadRegistry {
             schema_version: SCHEDULED_RUN_READ_STATE_SCHEMA_VERSION,
             viewed_runs: HashMap::new(),
         }
+    }
+}
+
+fn scheduled_model_binding_schema_version() -> u32 {
+    SCHEDULED_MODEL_BINDING_SCHEMA_VERSION
+}
+
+fn scheduled_task_ui_metadata_schema_version() -> u32 {
+    SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct ScheduledTaskModelBinding {
+    model_id: String,
+    model: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct ScheduledTaskModelBindingRegistry {
+    #[serde(default = "scheduled_model_binding_schema_version")]
+    schema_version: u32,
+    #[serde(default)]
+    tasks: HashMap<String, ScheduledTaskModelBinding>,
+}
+
+impl Default for ScheduledTaskModelBindingRegistry {
+    fn default() -> Self {
+        Self {
+            schema_version: SCHEDULED_MODEL_BINDING_SCHEMA_VERSION,
+            tasks: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct ScheduledTaskUiMetadata {
+    #[serde(default)]
+    pinned: bool,
+    #[serde(default)]
+    pinned_at: Option<String>,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct ScheduledTaskUiMetadataRegistry {
+    #[serde(default = "scheduled_task_ui_metadata_schema_version")]
+    schema_version: u32,
+    #[serde(default)]
+    tasks: HashMap<String, ScheduledTaskUiMetadata>,
+}
+
+impl Default for ScheduledTaskUiMetadataRegistry {
+    fn default() -> Self {
+        Self {
+            schema_version: SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION,
+            tasks: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ScheduledTaskUiMetadataStore {
+    path: Arc<PathBuf>,
+    registry: Arc<RwLock<ScheduledTaskUiMetadataRegistry>>,
+}
+
+impl ScheduledTaskUiMetadataStore {
+    fn open(path: PathBuf) -> Result<Self> {
+        let mut migrated = false;
+        let registry = match std::fs::read_to_string(&path) {
+            Ok(raw) => match serde_json::from_str::<ScheduledTaskUiMetadataRegistry>(&raw) {
+                Ok(registry)
+                    if registry.schema_version == SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION =>
+                {
+                    registry
+                }
+                Ok(registry)
+                    if registry.schema_version < SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION =>
+                {
+                    migrated = true;
+                    ScheduledTaskUiMetadataRegistry {
+                        schema_version: SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION,
+                        tasks: registry.tasks,
+                    }
+                }
+                Ok(registry) => {
+                    log::warn!(
+                        "Ignoring newer scheduled task UI metadata schema v{} at {}",
+                        registry.schema_version,
+                        path.display()
+                    );
+                    ScheduledTaskUiMetadataRegistry::default()
+                }
+                Err(error) => {
+                    log::warn!(
+                        "Ignoring invalid scheduled task UI metadata {}: {error}",
+                        path.display()
+                    );
+                    ScheduledTaskUiMetadataRegistry::default()
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                ScheduledTaskUiMetadataRegistry::default()
+            }
+            Err(error) => {
+                log::warn!(
+                    "Unable to read scheduled task UI metadata {}: {error}",
+                    path.display()
+                );
+                ScheduledTaskUiMetadataRegistry::default()
+            }
+        };
+        let store = Self {
+            path: Arc::new(path),
+            registry: Arc::new(RwLock::new(registry)),
+        };
+        if migrated {
+            if let Err(error) = store.persist(&store.registry.read()) {
+                log::warn!(
+                    "Unable to persist migrated scheduled task UI metadata {}: {error:#}",
+                    store.path.display()
+                );
+            }
+        }
+        Ok(store)
+    }
+
+    fn metadata_for(&self, automation_id: &str) -> (bool, Option<String>) {
+        self.registry
+            .read()
+            .tasks
+            .get(automation_id)
+            .filter(|metadata| metadata.pinned)
+            .map(|metadata| (true, metadata.pinned_at.clone()))
+            .unwrap_or((false, None))
+    }
+
+    fn set_pinned(&self, automation_id: &str, pinned: bool) -> Result<()> {
+        if automation_id.trim().is_empty() {
+            bail!("scheduled automation id cannot be empty");
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut registry = self.registry.write();
+        let previous = registry.tasks.get(automation_id).cloned();
+        if pinned {
+            registry.tasks.insert(
+                automation_id.to_string(),
+                ScheduledTaskUiMetadata {
+                    pinned: true,
+                    pinned_at: Some(now.clone()),
+                    updated_at: now,
+                },
+            );
+        } else {
+            registry.tasks.remove(automation_id);
+        }
+        if let Err(error) = self.persist(&registry) {
+            match previous {
+                Some(metadata) => {
+                    registry.tasks.insert(automation_id.to_string(), metadata);
+                }
+                None => {
+                    registry.tasks.remove(automation_id);
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn remove(&self, automation_id: &str) -> Result<()> {
+        let mut registry = self.registry.write();
+        let Some(previous) = registry.tasks.remove(automation_id) else {
+            return Ok(());
+        };
+        if let Err(error) = self.persist(&registry) {
+            registry.tasks.insert(automation_id.to_string(), previous);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn compact(&self, automation_ids: &HashSet<String>) -> Result<()> {
+        let mut registry = self.registry.write();
+        let before = registry.tasks.clone();
+        registry.tasks.retain(|id, _| automation_ids.contains(id));
+        if registry.tasks == before {
+            return Ok(());
+        }
+        if let Err(error) = self.persist(&registry) {
+            registry.tasks = before;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn persist(&self, registry: &ScheduledTaskUiMetadataRegistry) -> Result<()> {
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("create scheduled task UI metadata dir {}", parent.display())
+            })?;
+        }
+        let payload =
+            serde_json::to_vec_pretty(registry).context("serialize scheduled task UI metadata")?;
+        deepseek_tui::utils::write_atomic(self.path.as_ref(), &payload)
+            .with_context(|| format!("write scheduled task UI metadata {}", self.path.display()))
+    }
+}
+
+#[derive(Clone)]
+struct ScheduledTaskModelBindingStore {
+    path: Arc<PathBuf>,
+    registry: Arc<RwLock<ScheduledTaskModelBindingRegistry>>,
+}
+
+impl ScheduledTaskModelBindingStore {
+    fn open(path: PathBuf) -> Result<Self> {
+        let mut migrated = false;
+        let registry = match std::fs::read_to_string(&path) {
+            Ok(raw) => match serde_json::from_str::<ScheduledTaskModelBindingRegistry>(&raw) {
+                Ok(registry)
+                    if registry.schema_version == SCHEDULED_MODEL_BINDING_SCHEMA_VERSION =>
+                {
+                    registry
+                }
+                Ok(registry)
+                    if registry.schema_version < SCHEDULED_MODEL_BINDING_SCHEMA_VERSION =>
+                {
+                    migrated = true;
+                    ScheduledTaskModelBindingRegistry {
+                        schema_version: SCHEDULED_MODEL_BINDING_SCHEMA_VERSION,
+                        tasks: registry.tasks,
+                    }
+                }
+                Ok(registry) => {
+                    quarantine_invalid_model_binding_state(
+                        &path,
+                        &format!(
+                            "schema v{} is newer than supported v{}",
+                            registry.schema_version, SCHEDULED_MODEL_BINDING_SCHEMA_VERSION
+                        ),
+                    );
+                    ScheduledTaskModelBindingRegistry::default()
+                }
+                Err(error) => {
+                    quarantine_invalid_model_binding_state(
+                        &path,
+                        &format!("invalid JSON: {error}"),
+                    );
+                    ScheduledTaskModelBindingRegistry::default()
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                ScheduledTaskModelBindingRegistry::default()
+            }
+            Err(error) => {
+                log::warn!(
+                    "Unable to read scheduled model binding state {}: {error}; scheduled tasks will fall back to wire model names",
+                    path.display()
+                );
+                ScheduledTaskModelBindingRegistry::default()
+            }
+        };
+        let store = Self {
+            path: Arc::new(path),
+            registry: Arc::new(RwLock::new(registry)),
+        };
+        if migrated {
+            if let Err(error) = store.persist(&store.registry.read()) {
+                log::warn!(
+                    "Unable to persist migrated scheduled model binding state {}: {error:#}",
+                    store.path.display()
+                );
+            }
+        }
+        Ok(store)
+    }
+
+    fn model_id_for(&self, automation_id: &str, model: &str) -> Option<String> {
+        self.registry
+            .read()
+            .tasks
+            .get(automation_id)
+            .filter(|binding| binding.model == model)
+            .map(|binding| binding.model_id.clone())
+    }
+
+    fn set(
+        &self,
+        automation_id: &str,
+        model_id: Option<String>,
+        model: Option<String>,
+    ) -> Result<()> {
+        if automation_id.trim().is_empty() {
+            bail!("scheduled automation id cannot be empty");
+        }
+        let model_id = model_id
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let model = model
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let mut registry = self.registry.write();
+        let previous = registry.tasks.get(automation_id).cloned();
+        match (model_id, model) {
+            (Some(model_id), Some(model)) => {
+                registry.tasks.insert(
+                    automation_id.to_string(),
+                    ScheduledTaskModelBinding {
+                        model_id,
+                        model,
+                        updated_at: chrono::Utc::now().to_rfc3339(),
+                    },
+                );
+            }
+            _ => {
+                registry.tasks.remove(automation_id);
+            }
+        }
+        if let Err(error) = self.persist(&registry) {
+            match previous {
+                Some(binding) => {
+                    registry.tasks.insert(automation_id.to_string(), binding);
+                }
+                None => {
+                    registry.tasks.remove(automation_id);
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn remove(&self, automation_id: &str) -> Result<()> {
+        let mut registry = self.registry.write();
+        let Some(previous) = registry.tasks.remove(automation_id) else {
+            return Ok(());
+        };
+        if let Err(error) = self.persist(&registry) {
+            registry.tasks.insert(automation_id.to_string(), previous);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn compact(&self, automation_ids: &HashSet<String>) -> Result<()> {
+        let mut registry = self.registry.write();
+        let before = registry.tasks.clone();
+        registry.tasks.retain(|id, _| automation_ids.contains(id));
+        if registry.tasks == before {
+            return Ok(());
+        }
+        if let Err(error) = self.persist(&registry) {
+            registry.tasks = before;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn persist(&self, registry: &ScheduledTaskModelBindingRegistry) -> Result<()> {
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("create scheduled model binding dir {}", parent.display())
+            })?;
+        }
+        let payload =
+            serde_json::to_vec_pretty(registry).context("serialize scheduled model bindings")?;
+        deepseek_tui::utils::write_atomic(self.path.as_ref(), &payload)
+            .with_context(|| format!("write scheduled model bindings {}", self.path.display()))
+    }
+}
+
+fn quarantine_invalid_model_binding_state(path: &std::path::Path, reason: &str) {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("model-bindings.json");
+    let quarantine_path = path.with_file_name(format!("{file_name}.invalid-{timestamp}"));
+    match std::fs::rename(path, &quarantine_path) {
+        Ok(()) => log::warn!(
+            "Quarantined scheduled model binding state {} to {} ({reason}); scheduled tasks will fall back to wire model names",
+            path.display(),
+            quarantine_path.display()
+        ),
+        Err(error) => log::warn!(
+            "Invalid scheduled model binding state {} ({reason}) could not be quarantined: {error}; scheduled tasks will fall back to wire model names",
+            path.display()
+        ),
     }
 }
 
@@ -222,20 +617,45 @@ fn quarantine_invalid_read_state(path: &std::path::Path, reason: &str) {
     }
 }
 
+/// 删除一次定时运行对话的那一步。抽成 trait 只为可注入：EnginePool 需要活的
+/// WebView AppHandle，无法在单元测试里构造，而删除级联的正确性必须被测到。
+#[async_trait::async_trait]
+pub(crate) trait ScheduledConversationDeleter: Send + Sync {
+    async fn delete_scheduled_conversation(
+        &self,
+        session_id: &str,
+        expected_task_id: &str,
+    ) -> Result<()>;
+}
+
+#[async_trait::async_trait]
+impl ScheduledConversationDeleter for EnginePool {
+    async fn delete_scheduled_conversation(
+        &self,
+        session_id: &str,
+        expected_task_id: &str,
+    ) -> Result<()> {
+        self.delete_scheduled_run(session_id, expected_task_id)
+            .await
+    }
+}
+
 pub struct ScheduledTaskState {
     automations: SharedAutomationManager,
-    #[allow(dead_code)]
     task_manager: Option<SharedTaskManager>,
     sessions: SessionStore,
     read_state: ScheduledRunReadStore,
+    model_bindings: ScheduledTaskModelBindingStore,
+    ui_metadata: ScheduledTaskUiMetadataStore,
     operation_locks: ParkingMutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
-    last_task_prune: ParkingMutex<Option<Instant>>,
     pool: Option<EnginePool>,
     fallback_model: String,
     #[allow(dead_code)]
     scheduler_cancel: Option<CancellationToken>,
     #[allow(dead_code)]
     scheduler_handle: Option<tokio::task::JoinHandle<()>>,
+    #[allow(dead_code)]
+    retention_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -251,12 +671,15 @@ pub struct ScheduledTaskDto {
     pub last_run_at: Option<String>,
     pub cwds: Vec<String>,
     pub model: Option<String>,
+    pub model_id: Option<String>,
     pub mode: Option<String>,
     pub allow_shell: bool,
     pub trust_mode: bool,
     pub auto_approve: bool,
     pub has_unread_runs: bool,
     pub is_running: bool,
+    pub pinned: bool,
+    pub pinned_at: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -279,6 +702,8 @@ pub struct CreateScheduledTaskInput {
     pub cwds: Vec<String>,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub model_id: Option<String>,
     #[serde(default)]
     pub mode: Option<String>,
     #[serde(default)]
@@ -304,6 +729,8 @@ pub struct UpdateScheduledTaskInput {
     pub cwds: Option<Vec<String>>,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub model_id: Option<String>,
     #[serde(default)]
     pub mode: Option<String>,
     #[serde(default)]
@@ -332,6 +759,10 @@ pub struct ScheduledRunDto {
     pub turn_id: Option<String>,
     pub error: Option<String>,
     pub unread: bool,
+    pub session_title: Option<String>,
+    pub pinned: bool,
+    pub pinned_at: Option<String>,
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -344,18 +775,18 @@ pub struct ScheduledRunViewedDto {
 
 const SCHEDULED_TASK_CHAT_PROMPT: &str = r#"我想创建一个 Pinvou 定时任务。请通过提问帮我确定方案，回复保持简短，不要长篇解释。
 
-这是一个纯对话收集流程。不要调用任何工具，不要写文件，不要读写 ~/.pinvou3，也不要手动创建 automations JSON。信息完整后只输出给前端解析的任务参数，前端会立即创建并打开任务详情，不再要求用户二次确认。
+这是一个纯对话收集流程。不要调用任何工具，不要写文件，不要读写 ~/.pinvou3，也不要手动创建 automations JSON。信息完整后只输出给前端解析的任务参数，前端会通过 create_scheduled_task 创建并打开任务详情，不再要求用户二次确认。
+
+严禁使用 schtasks、Windows Task Scheduler、任务计划程序、cron、crontab、systemd timer 或任何系统级计划任务。错误做法：使用 schtasks 创建 Windows 任务。正确做法：返回 scheduled-task-draft JSON，由 Pinvou 前端调用 create_scheduled_task。
 
 请一次只问我一个问题，并依次确认这些信息：
 1. 任务要做什么。
-2. 什么时候运行。支持每 N 分钟、每 N 小时、每天指定时间、每周指定星期和时间。
-3. 工作目录。没有明确要求时可以留空，但必须把任务设为暂停，等用户选择目录后再启用。
-4. 是否允许 shell 或文件操作。
-5. 权限选项，包括 trustMode 和 autoApprove。
+2. 什么时候运行。支持每 N 小时（可指定起始时间）、每天指定时间、每周指定星期和时间。不支持分钟级规则；如果用户要求“每 5 分钟”等分钟级频率，必须询问用户改成每 N 小时、每天指定时间或每周指定时间，不要输出草稿。
+
+每次运行创建独立对话；同一个定时任务的所有运行对话共享该任务的专属工作间，不同任务互不共享。产物仍归属各次运行对话。不需要询问工作目录或权限设置。
 
 整理草稿时，请把时间转换成 rrule：
-- 每 10 分钟一次：FREQ=MINUTELY;INTERVAL=10
-- 每 6 小时一次：FREQ=HOURLY;INTERVAL=6
+- 每 6 小时一次，从 08:30 起算：FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30
 - 每天 08:30：FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30
 - 每周一、三 09:30：FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=9;BYMINUTE=30
 
@@ -365,11 +796,7 @@ const SCHEDULED_TASK_CHAT_PROMPT: &str = r#"我想创建一个 Pinvou 定时任�
   "name": "AI 招聘情报晨报",
   "prompt": "检索并汇总...",
   "rrule": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30",
-  "cwds": [],
-  "allowShell": false,
-  "trustMode": false,
-  "autoApprove": false,
-  "paused": true
+  "paused": false
 }
 ```
 输出代码块后不要继续提问，也不要假装自己调用了创建命令；前端会负责创建任务。"#;
@@ -378,98 +805,16 @@ pub fn scheduled_automation_root() -> std::path::PathBuf {
     crate::bridge::paths::pinvou3_home().join("automations")
 }
 
-#[derive(Clone)]
-struct ScheduledConversationRetentionGuard {
-    sessions: SessionStore,
+fn scheduled_model_bindings_path() -> std::path::PathBuf {
+    scheduled_automation_root().join("model-bindings.json")
 }
 
-impl ScheduledConversationRetentionGuard {
-    fn ensure_live_owner(&self, session_id: &str, task_id: &str) -> Result<bool> {
-        let Some(profile) = self.sessions.scheduled_profile(session_id) else {
-            return Ok(false);
-        };
-        if profile.task_id != task_id {
-            bail!(
-                "scheduled retention ownership mismatch: session {session_id} belongs to {}, not {task_id}",
-                profile.task_id
-            );
-        }
-        self.sessions
-            .load(session_id)
-            .with_context(|| format!("load retained scheduled session {session_id}"))?;
-        Ok(true)
-    }
+fn scheduled_task_ui_metadata_path() -> std::path::PathBuf {
+    scheduled_automation_root().join("task-ui-metadata.json")
 }
 
-impl AutomationRunRetentionGuard for ScheduledConversationRetentionGuard {
-    fn retain_terminal_run(&self, run: &AutomationRunRecord) -> Result<bool> {
-        if let Some(thread_id) = run.thread_id.as_deref() {
-            if let Some(task_id) = run.task_id.as_deref() {
-                let task_sessions = self.sessions.scheduled_session_ids_for_task(task_id);
-                if task_sessions.len() > 1 {
-                    bail!(
-                        "scheduled retention ownership is ambiguous for task {task_id}: {task_sessions:?}"
-                    );
-                }
-                if let Some(expected_thread_id) = task_sessions.first() {
-                    if expected_thread_id != thread_id {
-                        bail!(
-                            "scheduled retention thread mismatch for task {task_id}: run links {thread_id}, profile links {expected_thread_id}"
-                        );
-                    }
-                }
-                if self.ensure_live_owner(thread_id, task_id)? {
-                    return Ok(true);
-                }
-                if !task_sessions.is_empty() {
-                    bail!(
-                        "scheduled retention profile for task {task_id} disappeared while inspecting {thread_id}"
-                    );
-                }
-            } else if self.sessions.scheduled_profile(thread_id).is_some() {
-                bail!(
-                    "scheduled retention run '{}' links session {thread_id} without a task id",
-                    run.id
-                );
-            }
-
-            return match self.sessions.session_kind(thread_id) {
-                Ok(SessionKind::ScheduledRun) => bail!(
-                    "scheduled retention session {thread_id} has payload ownership but no readable profile"
-                ),
-                Ok(SessionKind::Chat) => Ok(false),
-                Err(error) => Err(error)
-                    .with_context(|| format!("inspect retention thread {thread_id}")),
-            };
-        }
-
-        let Some(task_id) = run.task_id.as_deref() else {
-            return Ok(false);
-        };
-        let task_sessions = self.sessions.scheduled_session_ids_for_task(task_id);
-        match task_sessions.as_slice() {
-            [] => Ok(false),
-            [session_id] => self.ensure_live_owner(session_id, task_id),
-            _ => bail!(
-                "scheduled retention ownership is ambiguous for unlinked task {task_id}: {task_sessions:?}"
-            ),
-        }
-    }
-}
-
-fn open_scheduled_automation_manager(
-    root: PathBuf,
-    sessions: &SessionStore,
-) -> Result<AutomationManager> {
-    AutomationManager::open_with_options(
-        root,
-        AutomationManagerOptions {
-            retention_guard: Some(Arc::new(ScheduledConversationRetentionGuard {
-                sessions: sessions.clone(),
-            })),
-            ..AutomationManagerOptions::default()
-        },
-    )
+fn open_scheduled_automation_manager(root: PathBuf) -> Result<AutomationManager> {
+    AutomationManager::open(root)
 }
 
 #[allow(dead_code)]
@@ -484,20 +829,23 @@ impl ScheduledTaskState {
         sessions.reconcile_scheduled_profiles()?;
         let read_state =
             ScheduledRunReadStore::open(crate::bridge::paths::scheduled_run_read_state_path())?;
-        let manager = open_scheduled_automation_manager(scheduled_automation_root(), &sessions)?;
+        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())?;
+        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())?;
+        let manager = open_scheduled_automation_manager(scheduled_automation_root())?;
         let fallback_model = default_automation_model(None);
-        normalize_legacy_automations(&manager, &fallback_model)?;
         Ok(Self {
             automations: Arc::new(tokio::sync::Mutex::new(manager)),
             task_manager: None,
             sessions,
             read_state,
+            model_bindings,
+            ui_metadata,
             operation_locks: ParkingMutex::new(HashMap::new()),
-            last_task_prune: ParkingMutex::new(None),
             pool: None,
             fallback_model,
             scheduler_cancel: None,
             scheduler_handle: None,
+            retention_handle: None,
         })
     }
 
@@ -509,57 +857,38 @@ impl ScheduledTaskState {
         sessions.reconcile_scheduled_profiles()?;
         let read_state =
             ScheduledRunReadStore::open(crate::bridge::paths::scheduled_run_read_state_path())?;
+        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())?;
+        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())?;
         let fallback_model = default_automation_model(Some(bridge));
-        let manager = open_scheduled_automation_manager(scheduled_automation_root(), &sessions)?;
-        normalize_legacy_automations(&manager, &fallback_model)?;
+        let manager = open_scheduled_automation_manager(scheduled_automation_root())?;
+        let allow_shell = bridge.allow_shell();
         let automations = Arc::new(tokio::sync::Mutex::new(manager));
         let task_cfg = TaskManagerConfig {
             data_dir: scheduled_task_data_root(),
             worker_count: 1,
-            default_workspace: crate::bridge::paths::user_home_dir(),
+            default_workspace: crate::bridge::paths::scheduled_tasks_root(),
             default_model: fallback_model.clone(),
             default_mode: SCHEDULED_EXECUTION_MODE.to_string(),
-            allow_shell: bridge.allow_shell(),
-            trust_mode: false,
+            allow_shell,
+            trust_mode: true,
             max_subagents: 2,
         };
         let executor = Arc::new(ScheduledChatExecutor::from_services(
             sessions.clone(),
             pool.clone(),
+            {
+                let model_bindings = model_bindings.clone();
+                Arc::new(move |automation_id: &str, model: &str| {
+                    model_bindings.model_id_for(automation_id, model)
+                })
+            },
         ));
         let task_manager = TaskManager::start_with_executor(task_cfg, executor).await?;
-        let initial_task_prune = {
+        {
             let manager = automations.lock().await;
+            ensure_all_automation_workspaces(&manager)?;
             manager.reconcile_run_statuses(&task_manager).await?;
-            manager.protected_task_ids()
-        };
-        let initial_task_prune_at = match initial_task_prune {
-            Ok(protected_task_ids) => {
-                match task_manager.prune_terminal_tasks(&protected_task_ids).await {
-                    Ok(pruned) => {
-                        if !pruned.is_empty() {
-                            log::info!(
-                                "Pruned {} unreferenced scheduled task records during startup",
-                                pruned.len()
-                            );
-                        }
-                        Some(Instant::now())
-                    }
-                    Err(error) => {
-                        log::warn!(
-                        "Unable to prune unreferenced scheduled task records during startup: {error:#}"
-                    );
-                        None
-                    }
-                }
-            }
-            Err(error) => {
-                log::warn!(
-                    "Scheduled task pruning skipped during startup because ownership is uncertain: {error:#}"
-                );
-                None
-            }
-        };
+        }
         let cancel = CancellationToken::new();
         let scheduler_handle = spawn_scheduler(
             automations.clone(),
@@ -567,17 +896,26 @@ impl ScheduledTaskState {
             cancel.clone(),
             AutomationSchedulerConfig::default(),
         );
+        let retention_handle = spawn_scheduled_retention(
+            automations.clone(),
+            task_manager.clone(),
+            pool.clone(),
+            read_state.clone(),
+            cancel.clone(),
+        );
         Ok(Self {
             automations,
             task_manager: Some(task_manager),
             sessions,
             read_state,
+            model_bindings,
+            ui_metadata,
             operation_locks: ParkingMutex::new(HashMap::new()),
-            last_task_prune: ParkingMutex::new(initial_task_prune_at),
             pool: Some(pool),
             fallback_model,
             scheduler_cancel: Some(cancel),
             scheduler_handle: Some(scheduler_handle),
+            retention_handle: Some(retention_handle),
         })
     }
 
@@ -606,13 +944,37 @@ impl ScheduledTaskState {
         input: CreateScheduledTaskInput,
     ) -> Result<ScheduledTaskDto, String> {
         let manager = self.automations.lock().await;
+        let requested_model_id = input.model_id.clone();
+        let requires_model_binding = requested_model_id.is_some();
         let created = manager
             .create_automation(build_create_request(
                 input,
                 current_automation_model(&self.fallback_model),
+                current_yolo_allow_shell(),
             )?)
             .map_err(|err| format!("Failed to create scheduled task: {err}"))?;
-        Ok(map_scheduled_task(created))
+        let created = ensure_automation_workspace(&manager, created)
+            .map_err(|err| format!("Failed to create scheduled task workspace: {err:#}"))?;
+        if let Err(error) =
+            self.model_bindings
+                .set(&created.id, requested_model_id, created.model.clone())
+        {
+            if requires_model_binding {
+                let _ = manager.delete_automation(&created.id);
+                return Err(format!(
+                    "Failed to save scheduled task model binding: {error:#}"
+                ));
+            }
+            log::warn!(
+                "Created scheduled task {}, but failed to save its model binding: {error:#}",
+                created.id
+            );
+        }
+        Ok(map_scheduled_task_with_bindings(
+            created,
+            Some(&self.model_bindings),
+            Some(&self.ui_metadata),
+        ))
     }
 
     async fn update_task(
@@ -625,11 +987,39 @@ impl ScheduledTaskState {
         let current = manager
             .get_automation(&id)
             .map_err(|err| format!("Failed to update scheduled task '{id}': {err}"))?;
+        let requested_model_update = input.model.clone();
+        let requested_model_id = input.model_id.clone();
+        let requires_model_binding = requested_model_id.is_some();
         let updated = manager
             .update_automation(&id, build_update_request(input, &current)?)
             .map_err(|err| format!("Failed to update scheduled task '{id}': {err}"))?;
-        map_scheduled_task_from_manager(&manager, updated, &self.sessions, &self.read_state)
-            .map_err(|err| format!("Failed to read scheduled task runs for '{id}': {err}"))
+        let updated = ensure_automation_workspace(&manager, updated)
+            .map_err(|err| format!("Failed to update scheduled task workspace '{id}': {err:#}"))?;
+        if requested_model_update.is_some() || requested_model_id.is_some() {
+            if let Err(error) =
+                self.model_bindings
+                    .set(&id, requested_model_id, updated.model.clone())
+            {
+                if requires_model_binding {
+                    return Err(format!(
+                        "Failed to save scheduled task model binding: {error:#}"
+                    ));
+                }
+                log::warn!(
+                    "Updated scheduled task {id}, but failed to save its model binding: {error:#}"
+                );
+            }
+        }
+        map_scheduled_task_from_manager(
+            &manager,
+            updated,
+            &self.sessions,
+            &self.read_state,
+            &self.model_bindings,
+            &self.ui_metadata,
+            None,
+        )
+        .map_err(|err| format!("Failed to read scheduled task runs for '{id}': {err}"))
     }
 
     async fn pause_task(&self, id: String) -> Result<ScheduledTaskDto, String> {
@@ -638,22 +1028,57 @@ impl ScheduledTaskState {
         let updated = manager
             .pause_automation(&id)
             .map_err(|err| format!("Failed to pause scheduled task '{id}': {err}"))?;
-        map_scheduled_task_from_manager(&manager, updated, &self.sessions, &self.read_state)
-            .map_err(|err| format!("Failed to read scheduled task runs for '{id}': {err}"))
+        map_scheduled_task_from_manager(
+            &manager,
+            updated,
+            &self.sessions,
+            &self.read_state,
+            &self.model_bindings,
+            &self.ui_metadata,
+            None,
+        )
+        .map_err(|err| format!("Failed to read scheduled task runs for '{id}': {err}"))
     }
 
     async fn resume_task(&self, id: String) -> Result<ScheduledTaskDto, String> {
         let _operation = self.lock_operation(&id).await;
         let manager = self.automations.lock().await;
-        let current = manager
-            .get_automation(&id)
-            .map_err(|err| format!("Failed to resume scheduled task '{id}': {err}"))?;
-        require_scheduled_workspace(&current.cwds)?;
         let updated = manager
             .resume_automation(&id)
             .map_err(|err| format!("Failed to resume scheduled task '{id}': {err}"))?;
-        map_scheduled_task_from_manager(&manager, updated, &self.sessions, &self.read_state)
-            .map_err(|err| format!("Failed to read scheduled task runs for '{id}': {err}"))
+        let updated = ensure_automation_workspace(&manager, updated)
+            .map_err(|err| format!("Failed to resume scheduled task workspace '{id}': {err:#}"))?;
+        map_scheduled_task_from_manager(
+            &manager,
+            updated,
+            &self.sessions,
+            &self.read_state,
+            &self.model_bindings,
+            &self.ui_metadata,
+            None,
+        )
+        .map_err(|err| format!("Failed to read scheduled task runs for '{id}': {err}"))
+    }
+
+    async fn set_task_pinned(&self, id: String, pinned: bool) -> Result<ScheduledTaskDto, String> {
+        let _operation = self.lock_operation(&id).await;
+        let manager = self.automations.lock().await;
+        let current = manager
+            .get_automation(&id)
+            .map_err(|_| "定时任务不存在或已被删除".to_string())?;
+        self.ui_metadata
+            .set_pinned(&id, pinned)
+            .map_err(|err| format!("Failed to update scheduled task pin state '{id}': {err:#}"))?;
+        map_scheduled_task_from_manager(
+            &manager,
+            current,
+            &self.sessions,
+            &self.read_state,
+            &self.model_bindings,
+            &self.ui_metadata,
+            None,
+        )
+        .map_err(|err| format!("Failed to read scheduled task runs for '{id}': {err}"))
     }
 
     async fn delete_task(&self, id: String) -> Result<DeletedScheduledTaskDto, String> {
@@ -669,19 +1094,27 @@ impl ScheduledTaskState {
     async fn run_task_now(&self, id: String) -> Result<ScheduledRunDto, String> {
         let _operation = self.lock_operation(&id).await;
         let manager = self.automations.lock().await;
-        let current = manager
-            .get_automation(&id)
-            .map_err(|err| format!("Failed to run scheduled task '{id}': {err}"))?;
-        require_scheduled_workspace(&current.cwds)?;
         let task_manager = self
             .task_manager
             .as_ref()
             .ok_or_else(|| "Scheduled task runtime is unavailable".to_string())?;
+        let current = manager
+            .get_automation(&id)
+            .map_err(|err| format!("Failed to run scheduled task '{id}': {err}"))?;
+        ensure_automation_workspace(&manager, current)
+            .map_err(|err| format!("Failed to prepare scheduled task workspace '{id}': {err:#}"))?;
         let run = manager
             .run_now(&id, task_manager)
             .await
             .map_err(|err| format!("Failed to run scheduled task '{id}': {err}"))?;
-        Ok(map_scheduled_run(run, &self.sessions, &self.read_state))
+        let session_titles = scheduled_session_titles(&self.sessions)
+            .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
+        Ok(map_scheduled_run(
+            run,
+            &self.sessions,
+            &self.read_state,
+            &session_titles,
+        ))
     }
 
     async fn mark_run_viewed(
@@ -713,6 +1146,83 @@ impl ScheduledTaskState {
         })
     }
 
+    /// 删除一条定时运行记录（commands::delete_session 对 ScheduledRun 分发到这里）。
+    /// 联动删除该次 Session、Run 与底座 Task；定时任务定义、共享工作间和其他运行保留。
+    pub(crate) async fn delete_run_for_session(&self, session_id: &str) -> Result<(), String> {
+        let pool = self
+            .pool
+            .as_ref()
+            .ok_or_else(|| "Scheduled task runtime is unavailable".to_string())?;
+        self.delete_run_for_session_with(session_id, pool).await
+    }
+
+    /// 删除级联的本体，会话删除步骤由调用方注入。EnginePool 需要活的 WebView
+    /// AppHandle 才能构造，注入后级联本身（删哪条 run、什么该留下）才能被测试覆盖；
+    /// 真实实现里那一步的 turn 门 + evict 语义由 engine_pool 自己的测试保证。
+    async fn delete_run_for_session_with(
+        &self,
+        session_id: &str,
+        deleter: &dyn ScheduledConversationDeleter,
+    ) -> Result<(), String> {
+        let profile = self
+            .sessions
+            .scheduled_profile(session_id)
+            .ok_or_else(|| format!("Scheduled run session '{session_id}' does not exist"))?;
+        let automation_id = profile.task_id;
+        let _operation = self.lock_operation(&automation_id).await;
+        self.reconcile_runs()
+            .await
+            .map_err(|err| format!("Failed to reconcile scheduled runs: {err:#}"))?;
+
+        // 崩溃可能留下 profile 已存在但 run 尚未 ThreadLinked 的会话，此时仍要能删会话——
+        // 底座对「没有 run」已用 Ok(空) 表达，所以读失败必须上抛：把读失败当成没有 run 会
+        // 删掉 Session 却留下 Run/Task，而 owned_session_id 从此返回 None,残留将不可见。
+        let run = {
+            let manager = self.automations.lock().await;
+            manager
+                .list_runs(&automation_id, None)
+                .map_err(|err| {
+                    format!("Failed to list runs for scheduled task '{automation_id}': {err}")
+                })?
+                .into_iter()
+                .find(|run| run.thread_id.as_deref() == Some(session_id))
+        };
+        if run.as_ref().is_some_and(|run| {
+            matches!(
+                run.status,
+                AutomationRunStatus::Queued | AutomationRunStatus::Running
+            )
+        }) {
+            return Err("正在运行的定时任务记录不能删除".to_string());
+        }
+
+        deleter
+            .delete_scheduled_conversation(session_id, &automation_id)
+            .await
+            .map_err(|err| format!("Failed to delete scheduled conversation: {err:#}"))?;
+
+        if let Some(run) = run {
+            let task_manager = self
+                .task_manager
+                .as_ref()
+                .ok_or_else(|| "Scheduled task runtime is unavailable".to_string())?;
+            let remaining = {
+                let manager = self.automations.lock().await;
+                manager
+                    .delete_terminal_run(&run, task_manager)
+                    .await
+                    .map_err(|err| {
+                        format!("Failed to delete scheduled run '{}': {err:#}", run.id)
+                    })?;
+                manager.list_runs(&automation_id, None).map_err(|err| {
+                    format!("Failed to reload scheduled task runs after deletion: {err}")
+                })?
+            };
+            compact_viewed_runs(&self.read_state, &automation_id, &remaining);
+        }
+        Ok(())
+    }
+
     async fn delete_task_inner(&self, id: &str) -> Result<DeletedScheduledTaskDto> {
         {
             let manager = self.automations.lock().await;
@@ -733,14 +1243,14 @@ impl ScheduledTaskState {
             let manager = self.automations.lock().await;
             manager.list_runs(id, None)?
         };
-        let owned_sessions = owned_scheduled_sessions(&runs, &self.sessions)?;
+        let owned_sessions = owned_scheduled_sessions(id, &runs, &self.sessions)?;
         if !owned_sessions.is_empty() && self.pool.is_none() {
             bail!("engine pool is unavailable while scheduled sessions still exist");
         }
         let mut deleted_session_ids = Vec::with_capacity(owned_sessions.len());
-        for (session_id, task_id) in owned_sessions {
+        for (session_id, owner_id) in owned_sessions {
             if let Some(pool) = &self.pool {
-                pool.delete_scheduled_run(&session_id, &task_id)
+                pool.delete_scheduled_run(&session_id, &owner_id)
                     .await
                     .with_context(|| format!("delete scheduled session {session_id}"))?;
                 deleted_session_ids.push(session_id);
@@ -756,8 +1266,22 @@ impl ScheduledTaskState {
                 "Deleted scheduled task {id}, but failed to remove its viewed-run state: {error:#}"
             );
         }
+        if let Err(error) = self.model_bindings.remove(id) {
+            log::warn!(
+                "Deleted scheduled task {id}, but failed to remove its model binding: {error:#}"
+            );
+        }
+        if let Err(error) = self.ui_metadata.remove(id) {
+            log::warn!(
+                "Deleted scheduled task {id}, but failed to remove its UI metadata: {error:#}"
+            );
+        }
         Ok(DeletedScheduledTaskDto {
-            task: map_scheduled_task(deleted),
+            task: map_scheduled_task_with_bindings(
+                deleted,
+                Some(&self.model_bindings),
+                Some(&self.ui_metadata),
+            ),
             deleted_session_ids,
         })
     }
@@ -770,52 +1294,7 @@ impl ScheduledTaskState {
             let manager = self.automations.lock().await;
             manager.reconcile_run_statuses(task_manager).await?;
         }
-        self.maybe_prune_terminal_tasks().await;
         Ok(())
-    }
-
-    async fn maybe_prune_terminal_tasks(&self) {
-        let Some(task_manager) = &self.task_manager else {
-            return;
-        };
-        let now = Instant::now();
-        {
-            let mut last_prune = self.last_task_prune.lock();
-            if last_prune
-                .as_ref()
-                .is_some_and(|last| now.duration_since(*last) < SCHEDULED_TASK_PRUNE_INTERVAL)
-            {
-                return;
-            }
-            // Claim this maintenance window before doing any disk work. On
-            // failure it is cleared below so the next reconciliation retries.
-            *last_prune = Some(now);
-        }
-
-        let protected_task_ids = {
-            let manager = self.automations.lock().await;
-            manager.protected_task_ids()
-        };
-        let result = match protected_task_ids {
-            Ok(protected_task_ids) => task_manager
-                .prune_terminal_tasks(&protected_task_ids)
-                .await
-                .map(|pruned| {
-                    if !pruned.is_empty() {
-                        log::info!(
-                            "Pruned {} unreferenced scheduled task records",
-                            pruned.len()
-                        );
-                    }
-                }),
-            Err(error) => Err(error),
-        };
-        if let Err(error) = result {
-            *self.last_task_prune.lock() = None;
-            log::warn!(
-                "Scheduled task pruning skipped because retained ownership could not be proven: {error:#}"
-            );
-        }
     }
 
     async fn cancel_active_run_tasks(&self, runs: &[AutomationRunRecord]) -> Result<()> {
@@ -862,52 +1341,30 @@ fn current_automation_model(fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_string())
 }
 
-fn normalize_legacy_automations(manager: &AutomationManager, fallback_model: &str) -> Result<()> {
-    for record in manager.list_automations()? {
-        let missing_model = record
-            .model
-            .as_deref()
-            .is_none_or(|model| model.trim().is_empty());
-        let mode_needs_normalization = record.mode.as_deref() != Some(SCHEDULED_EXECUTION_MODE);
-        let active_without_workspace = matches!(record.status, AutomationStatus::Active)
-            && !has_scheduled_workspace(&record.cwds);
-        let needs_update = missing_model
-            || mode_needs_normalization
-            || record.allow_shell.is_none()
-            || record.trust_mode.is_none()
-            || record.auto_approve.is_none()
-            || active_without_workspace;
-        if !needs_update {
-            continue;
-        }
-        manager
-            .update_automation(
-                &record.id,
-                UpdateAutomationRequest {
-                    name: None,
-                    prompt: None,
-                    rrule: None,
-                    cwds: None,
-                    model: missing_model.then(|| fallback_model.to_string()),
-                    mode: mode_needs_normalization.then(|| SCHEDULED_EXECUTION_MODE.to_string()),
-                    allow_shell: record.allow_shell.is_none().then_some(false),
-                    trust_mode: record.trust_mode.is_none().then_some(false),
-                    auto_approve: record.auto_approve.is_none().then_some(false),
-                    status: active_without_workspace.then_some(AutomationStatus::Paused),
-                },
-            )
-            .with_context(|| format!("normalize legacy automation {}", record.id))?;
-    }
-    Ok(())
+fn current_yolo_allow_shell() -> bool {
+    Pinvou3Bridge::allow_shell_for_prefs(&UserPrefs::load())
 }
 
 fn owned_session_id(record: &AutomationRunRecord, sessions: &SessionStore) -> Option<String> {
-    let task_id = record.task_id.as_deref()?;
     let thread_id = record.thread_id.as_deref()?;
     sessions
         .scheduled_profile(thread_id)
         .filter(|profile| {
-            profile.task_id == task_id && sessions.scheduled_session_exists(thread_id)
+            profile.task_id == record.automation_id && sessions.scheduled_session_exists(thread_id)
+        })
+        .map(|_| thread_id.to_string())
+}
+
+fn owned_session_id_from_snapshot(
+    record: &AutomationRunRecord,
+    sessions: &SessionStore,
+    session_titles: &HashMap<String, String>,
+) -> Option<String> {
+    let thread_id = record.thread_id.as_deref()?;
+    sessions
+        .scheduled_profile(thread_id)
+        .filter(|profile| {
+            profile.task_id == record.automation_id && session_titles.contains_key(thread_id)
         })
         .map(|_| thread_id.to_string())
 }
@@ -939,41 +1396,42 @@ fn ensure_scheduled_run_can_be_marked_viewed(
 }
 
 fn owned_scheduled_sessions(
+    automation_id: &str,
     runs: &[AutomationRunRecord],
     sessions: &SessionStore,
 ) -> Result<Vec<(String, String)>> {
     let mut seen = HashSet::new();
-    let mut task_ids = HashSet::new();
     let mut owned = Vec::new();
     for run in runs {
-        if let Some(task_id) = run.task_id.as_deref() {
-            task_ids.insert(task_id.to_string());
+        if run.automation_id != automation_id {
+            bail!(
+                "scheduled run {} belongs to automation {}, not {automation_id}",
+                run.id,
+                run.automation_id
+            );
         }
-        let (Some(task_id), Some(thread_id)) = (run.task_id.as_deref(), run.thread_id.as_deref())
-        else {
+        let Some(thread_id) = run.thread_id.as_deref() else {
             continue;
         };
         let Some(profile) = sessions.scheduled_profile(thread_id) else {
             continue;
         };
-        if profile.task_id != task_id {
+        if profile.task_id != automation_id {
             bail!(
-                "scheduled session {thread_id} belongs to task {}, not {task_id}",
+                "scheduled session {thread_id} belongs to automation {}, not {automation_id}",
                 profile.task_id
             );
         }
         if seen.insert(thread_id.to_string()) {
-            owned.push((thread_id.to_string(), task_id.to_string()));
+            owned.push((thread_id.to_string(), profile.task_id));
         }
     }
     // A crash can create the scheduled session and persist its profile before
-    // the base run record receives ThreadCreated. Recover those sessions via
-    // the durable execution-task ownership rather than relying only on run links.
-    for task_id in task_ids {
-        for session_id in sessions.scheduled_session_ids_for_task(&task_id) {
-            if seen.insert(session_id.clone()) {
-                owned.push((session_id, task_id.clone()));
-            }
+    // the base run record receives ThreadLinked. Recover those sessions via
+    // stable automation ownership rather than relying only on run links.
+    for session_id in sessions.scheduled_session_ids_for_task(automation_id) {
+        if seen.insert(session_id.clone()) {
+            owned.push((session_id, automation_id.to_string()));
         }
     }
     owned.sort();
@@ -1021,18 +1479,113 @@ impl Drop for ScheduledTaskState {
         if let Some(handle) = self.scheduler_handle.take() {
             handle.abort();
         }
+        if let Some(handle) = self.retention_handle.take() {
+            handle.abort();
+        }
     }
 }
 
+fn spawn_scheduled_retention(
+    automations: SharedAutomationManager,
+    task_manager: SharedTaskManager,
+    pool: EnginePool,
+    read_state: ScheduledRunReadStore,
+    cancel: CancellationToken,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            if cancel.is_cancelled() {
+                break;
+            }
+            if let Err(error) =
+                prune_scheduled_history(&automations, &task_manager, &pool, &read_state).await
+            {
+                log::warn!("Scheduled history retention failed: {error:#}");
+            }
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                _ = tokio::time::sleep(SCHEDULED_RETENTION_INTERVAL) => {}
+            }
+        }
+    })
+}
+
+async fn prune_scheduled_history(
+    automations: &SharedAutomationManager,
+    task_manager: &SharedTaskManager,
+    pool: &EnginePool,
+    read_state: &ScheduledRunReadStore,
+) -> Result<()> {
+    let candidates = {
+        let manager = automations.lock().await;
+        manager.terminal_run_prune_candidates(MAX_TERMINAL_RUNS_PER_AUTOMATION)?
+    };
+
+    let mut changed_automations = HashSet::new();
+    for run in candidates {
+        if let Some(session_id) = run.thread_id.as_deref() {
+            // The pool waits on the same per-session turn gate as interactive
+            // follow-ups, so retention cannot tear down a streaming response.
+            if let Err(error) = pool
+                .delete_scheduled_run(session_id, &run.automation_id)
+                .await
+            {
+                log::warn!(
+                    "Unable to delete retained scheduled session {session_id} for run {}: {error:#}",
+                    run.id
+                );
+                continue;
+            }
+        }
+        let manager = automations.lock().await;
+        match manager.delete_terminal_run(&run, task_manager).await {
+            Ok(true) => {
+                changed_automations.insert(run.automation_id.clone());
+            }
+            Ok(false) => {}
+            Err(error) => log::warn!(
+                "Unable to delete retained scheduled run {}: {error:#}",
+                run.id
+            ),
+        }
+    }
+    for automation_id in changed_automations {
+        let remaining = {
+            let manager = automations.lock().await;
+            manager.list_runs(&automation_id, None)?
+        };
+        compact_viewed_runs(read_state, &automation_id, &remaining);
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
 fn map_scheduled_task(record: AutomationRecord) -> ScheduledTaskDto {
-    map_scheduled_task_with_run_state(record, false, false)
+    map_scheduled_task_with_bindings(record, None, None)
+}
+
+fn map_scheduled_task_with_bindings(
+    record: AutomationRecord,
+    model_bindings: Option<&ScheduledTaskModelBindingStore>,
+    ui_metadata: Option<&ScheduledTaskUiMetadataStore>,
+) -> ScheduledTaskDto {
+    map_scheduled_task_with_run_state(record, false, false, model_bindings, ui_metadata)
 }
 
 fn map_scheduled_task_with_run_state(
     record: AutomationRecord,
     has_unread_runs: bool,
     is_running: bool,
+    model_bindings: Option<&ScheduledTaskModelBindingStore>,
+    ui_metadata: Option<&ScheduledTaskUiMetadataStore>,
 ) -> ScheduledTaskDto {
+    let model_id = record
+        .model
+        .as_deref()
+        .and_then(|model| model_bindings.and_then(|store| store.model_id_for(&record.id, model)));
+    let (pinned, pinned_at) = ui_metadata
+        .map(|store| store.metadata_for(&record.id))
+        .unwrap_or((false, None));
     ScheduledTaskDto {
         id: record.id,
         name: record.name,
@@ -1042,19 +1595,53 @@ fn map_scheduled_task_with_run_state(
         status: automation_status_label(&record.status),
         next_run_at: record.next_run_at.map(|value| value.to_rfc3339()),
         last_run_at: record.last_run_at.map(|value| value.to_rfc3339()),
-        cwds: record
-            .cwds
-            .into_iter()
-            .map(|path| path.to_string_lossy().into_owned())
-            .collect(),
+        // The automation manager still needs a durable execution workspace,
+        // but scheduled-task workspace selection is no longer a user-facing
+        // setting. Keep the DTO contract empty so old UI affordances stay gone.
+        cwds: Vec::new(),
         model: record.model,
+        model_id,
         mode: record.mode,
         allow_shell: record.allow_shell.unwrap_or(false),
         trust_mode: record.trust_mode.unwrap_or(false),
-        auto_approve: record.auto_approve.unwrap_or(false),
+        auto_approve: record.auto_approve.unwrap_or(true),
         has_unread_runs,
         is_running,
+        pinned,
+        pinned_at,
     }
+}
+
+fn scheduled_task_internal_workspace(id: &str) -> PathBuf {
+    crate::bridge::paths::scheduled_task_workspace_dir(id)
+}
+
+fn ensure_automation_workspace(
+    manager: &AutomationManager,
+    record: AutomationRecord,
+) -> Result<AutomationRecord> {
+    let workspace = scheduled_task_internal_workspace(&record.id);
+    std::fs::create_dir_all(&workspace)
+        .with_context(|| format!("create scheduled task workspace {}", workspace.display()))?;
+    if record.cwds.len() == 1 && record.cwds.first() == Some(&workspace) {
+        return Ok(record);
+    }
+    manager
+        .update_automation(
+            &record.id,
+            UpdateAutomationRequest {
+                cwds: Some(vec![workspace]),
+                ..UpdateAutomationRequest::default()
+            },
+        )
+        .with_context(|| format!("persist scheduled task workspace for {}", record.id))
+}
+
+fn ensure_all_automation_workspaces(manager: &AutomationManager) -> Result<()> {
+    for record in manager.list_automations()? {
+        ensure_automation_workspace(manager, record)?;
+    }
+    Ok(())
 }
 
 fn scheduled_run_is_unread(
@@ -1062,8 +1649,11 @@ fn scheduled_run_is_unread(
     sessions: &SessionStore,
     read_state: &ScheduledRunReadStore,
 ) -> bool {
+    let Some(session_id) = owned_session_id(record, sessions) else {
+        return false;
+    };
     matches!(record.status, AutomationRunStatus::Completed)
-        && owned_session_id(record, sessions).is_some()
+        && !sessions.is_hidden(&session_id)
         && !read_state.is_viewed(&record.automation_id, &record.id)
 }
 
@@ -1075,6 +1665,23 @@ fn has_unread_scheduled_runs(
     records
         .iter()
         .any(|record| scheduled_run_is_unread(record, sessions, read_state))
+}
+
+fn has_unread_scheduled_runs_from_snapshot(
+    records: &[AutomationRunRecord],
+    sessions: &SessionStore,
+    read_state: &ScheduledRunReadStore,
+    session_titles: &HashMap<String, String>,
+) -> bool {
+    records.iter().any(|record| {
+        let Some(session_id) = owned_session_id_from_snapshot(record, sessions, session_titles)
+        else {
+            return false;
+        };
+        matches!(record.status, AutomationRunStatus::Completed)
+            && !sessions.is_hidden(&session_id)
+            && !read_state.is_viewed(&record.automation_id, &record.id)
+    })
 }
 
 fn has_running_scheduled_runs(records: &[AutomationRunRecord]) -> bool {
@@ -1107,15 +1714,29 @@ fn map_scheduled_task_from_manager(
     record: AutomationRecord,
     sessions: &SessionStore,
     read_state: &ScheduledRunReadStore,
+    model_bindings: &ScheduledTaskModelBindingStore,
+    ui_metadata: &ScheduledTaskUiMetadataStore,
+    session_titles: Option<&HashMap<String, String>>,
 ) -> Result<ScheduledTaskDto> {
     let runs = manager.list_runs(&record.id, None)?;
     compact_viewed_runs(read_state, &record.id, &runs);
-    let has_unread_runs = has_unread_scheduled_runs(&runs, sessions, read_state);
+    let owned_session_titles;
+    let session_titles = match session_titles {
+        Some(snapshot) => snapshot,
+        None => {
+            owned_session_titles = scheduled_session_titles(sessions)?;
+            &owned_session_titles
+        }
+    };
+    let has_unread_runs =
+        has_unread_scheduled_runs_from_snapshot(&runs, sessions, read_state, session_titles);
     let is_running = has_running_scheduled_runs(&runs);
     Ok(map_scheduled_task_with_run_state(
         record,
         has_unread_runs,
         is_running,
+        Some(model_bindings),
+        Some(ui_metadata),
     ))
 }
 
@@ -1123,10 +1744,23 @@ fn map_scheduled_run(
     record: AutomationRunRecord,
     sessions: &SessionStore,
     read_state: &ScheduledRunReadStore,
+    session_titles: &HashMap<String, String>,
 ) -> ScheduledRunDto {
-    let session_id = owned_session_id(&record, sessions);
+    let session_id = owned_session_id_from_snapshot(&record, sessions, session_titles);
+    let session_title = session_id
+        .as_deref()
+        .and_then(|id| session_titles.get(id).cloned())
+        .filter(|title| title != "Scheduled run");
+    let pinned = session_id
+        .as_deref()
+        .is_some_and(|id| sessions.is_pinned(id));
+    let pinned_at = session_id.as_deref().and_then(|id| sessions.pinned_at(id));
+    let archived = session_id
+        .as_deref()
+        .is_some_and(|id| sessions.is_hidden(id));
     let unread = matches!(record.status, AutomationRunStatus::Completed)
         && session_id.is_some()
+        && !archived
         && !read_state.is_viewed(&record.automation_id, &record.id);
     ScheduledRunDto {
         id: record.id.clone(),
@@ -1142,7 +1776,19 @@ fn map_scheduled_run(
         turn_id: record.turn_id,
         error: record.error,
         unread,
+        session_title,
+        pinned,
+        pinned_at,
+        archived,
     }
+}
+
+fn scheduled_session_titles(sessions: &SessionStore) -> Result<HashMap<String, String>> {
+    Ok(sessions
+        .list_scheduled()?
+        .into_iter()
+        .map(|metadata| (metadata.id, metadata.title))
+        .collect())
 }
 
 fn paused_to_status(paused: bool) -> AutomationStatus {
@@ -1153,85 +1799,68 @@ fn paused_to_status(paused: bool) -> AutomationStatus {
     }
 }
 
-fn normalize_scheduled_workspaces(cwds: Vec<String>) -> Vec<PathBuf> {
-    cwds.into_iter()
-        .filter_map(|value| {
-            let value = value.trim();
-            (!value.is_empty()).then(|| PathBuf::from(value))
-        })
-        .collect()
-}
-
-fn has_scheduled_workspace(cwds: &[PathBuf]) -> bool {
-    cwds.iter().any(|path| !path.as_os_str().is_empty())
-}
-
-fn require_scheduled_workspace(cwds: &[PathBuf]) -> Result<(), String> {
-    if has_scheduled_workspace(cwds) {
-        Ok(())
-    } else {
-        Err("Scheduled task requires a workspace before it can run".to_string())
-    }
-}
-
 fn build_create_request(
     input: CreateScheduledTaskInput,
     default_model: String,
+    allow_shell: bool,
 ) -> Result<CreateAutomationRequest, String> {
+    // Legacy clients may still send these fields. Read and intentionally
+    // discard them so they cannot become task-level execution policy.
+    let _ = (
+        &input.cwds,
+        input.allow_shell,
+        input.trust_mode,
+        input.auto_approve,
+    );
     let model = input
         .model
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(default_model);
     canonical_scheduled_mode(input.mode, None)?;
-    let cwds = normalize_scheduled_workspaces(input.cwds);
-    let requested_status = paused_to_status(input.paused.unwrap_or(false));
-    let status = if matches!(requested_status, AutomationStatus::Active)
-        && !has_scheduled_workspace(&cwds)
-    {
-        AutomationStatus::Paused
-    } else {
-        requested_status
-    };
+    // 工作间由 automation_id 自动分配；客户端不能提供或覆盖路径。
+    let status = paused_to_status(input.paused.unwrap_or(false));
     Ok(CreateAutomationRequest {
         name: input.name,
         prompt: input.prompt,
         rrule: input.rrule,
-        cwds,
+        cwds: Vec::new(),
         model: Some(model),
         mode: Some(SCHEDULED_EXECUTION_MODE.to_string()),
-        allow_shell: Some(input.allow_shell.unwrap_or(false)),
-        trust_mode: Some(input.trust_mode.unwrap_or(false)),
-        auto_approve: Some(input.auto_approve.unwrap_or(false)),
+        // 权限不属于定时任务的用户设置；保留输入字段仅用于旧调用兼容。
+        // 与普通聊天 Yolo 一致：Shell 跟随全局开关，信任和自动批准开启。
+        allow_shell: Some(allow_shell),
+        trust_mode: Some(true),
+        // 不可绕过的审批（rlm_eval/hook ask）仍由 force_prompt 拦截。
+        auto_approve: Some(true),
         status: Some(status),
     })
 }
 
 fn build_update_request(
     input: UpdateScheduledTaskInput,
-    current: &AutomationRecord,
+    _current: &AutomationRecord,
 ) -> Result<UpdateAutomationRequest, String> {
+    let _ = (
+        &input.cwds,
+        input.allow_shell,
+        input.trust_mode,
+        input.auto_approve,
+    );
     canonical_scheduled_mode(input.mode, None)?;
-    let cwds = input.cwds.map(normalize_scheduled_workspaces);
-    let requested_status = input.paused.map(paused_to_status);
-    let effective_cwds = cwds.as_deref().unwrap_or(&current.cwds);
-    let effective_status = requested_status.as_ref().unwrap_or(&current.status);
-    let status = if matches!(effective_status, AutomationStatus::Active)
-        && !has_scheduled_workspace(effective_cwds)
-    {
-        Some(AutomationStatus::Paused)
-    } else {
-        requested_status
-    };
+    let status = input.paused.map(paused_to_status);
     Ok(UpdateAutomationRequest {
         name: input.name,
         prompt: input.prompt,
         rrule: input.rrule,
-        cwds,
+        // 目录概念已移除,cwds 不再接受更新(见 build_create_request)。
+        cwds: None,
         model: input.model,
         mode: Some(SCHEDULED_EXECUTION_MODE.to_string()),
-        allow_shell: input.allow_shell,
-        trust_mode: input.trust_mode,
-        auto_approve: input.auto_approve,
+        // 权限不再接受任务级更新。
+        allow_shell: None,
+        trust_mode: None,
+        // 恒定 YOLO,更新请求不允许改动(见 build_create_request)。
+        auto_approve: None,
         status,
     })
 }
@@ -1286,6 +1915,17 @@ fn is_every_day(days: &[Weekday]) -> bool {
     days.len() == all_days.len() && all_days.iter().all(|day| days.contains(day))
 }
 
+fn is_every_workday(days: &[Weekday]) -> bool {
+    let workdays = [
+        Weekday::Mon,
+        Weekday::Tue,
+        Weekday::Wed,
+        Weekday::Thu,
+        Weekday::Fri,
+    ];
+    days.len() == workdays.len() && workdays.iter().all(|day| days.contains(day))
+}
+
 fn weekday_label(day: Weekday) -> &'static str {
     match day {
         Weekday::Mon => "周一",
@@ -1300,29 +1940,35 @@ fn weekday_label(day: Weekday) -> &'static str {
 
 pub fn humanize_rrule(rrule: &str) -> String {
     match AutomationSchedule::parse_rrule(rrule) {
-        Ok(AutomationSchedule::Minutely { interval_minutes }) => {
-            if interval_minutes == 1 {
-                "每分钟".to_string()
-            } else {
-                format!("每 {interval_minutes} 分钟")
-            }
-        }
         Ok(AutomationSchedule::Hourly {
             interval_hours,
             byday,
+            anchor_hour,
+            anchor_minute,
         }) => {
-            let hourly = if interval_hours == 1 {
+            let mut hourly = if interval_hours == 1 {
                 "每小时".to_string()
             } else {
                 format!("每 {interval_hours} 小时")
             };
+            if let Some(hour) = anchor_hour {
+                hourly.push_str(&format!(
+                    " · {hour:02}:{:02} 起",
+                    anchor_minute.unwrap_or(0)
+                ));
+            } else if let Some(minute) = anchor_minute {
+                hourly.push_str(&format!(" · 第 {minute:02} 分"));
+            }
             match byday {
                 Some(days) if !days.is_empty() => {
-                    let labels = days
-                        .into_iter()
-                        .map(weekday_label)
-                        .collect::<Vec<_>>()
-                        .join("、");
+                    let labels = if is_every_workday(&days) {
+                        "工作日".to_string()
+                    } else {
+                        days.into_iter()
+                            .map(weekday_label)
+                            .collect::<Vec<_>>()
+                            .join("、")
+                    };
                     format!("{labels} {hourly}")
                 }
                 _ => hourly,
@@ -1333,6 +1979,11 @@ pub fn humanize_rrule(rrule: &str) -> String {
             byhour,
             byminute,
         }) if is_every_day(&byday) => format!("每天 {byhour:02}:{byminute:02}"),
+        Ok(AutomationSchedule::Weekly {
+            byday,
+            byhour,
+            byminute,
+        }) if is_every_workday(&byday) => format!("工作日 {byhour:02}:{byminute:02}"),
         Ok(AutomationSchedule::Weekly {
             byday,
             byhour,
@@ -1358,13 +2009,35 @@ pub async fn list_scheduled_tasks(
         .await
         .map_err(|err| format!("Failed to reconcile scheduled task runs: {err}"))?;
     let manager = state.automations.lock().await;
+    ensure_all_automation_workspaces(&manager)
+        .map_err(|err| format!("Failed to prepare scheduled task workspaces: {err:#}"))?;
     let records = manager
         .list_automations()
         .map_err(|err| format!("Failed to list scheduled tasks: {err}"))?;
+    let current_ids = records
+        .iter()
+        .map(|record| record.id.clone())
+        .collect::<HashSet<_>>();
+    if let Err(error) = state.model_bindings.compact(&current_ids) {
+        log::warn!("Unable to compact scheduled model bindings: {error:#}");
+    }
+    if let Err(error) = state.ui_metadata.compact(&current_ids) {
+        log::warn!("Unable to compact scheduled task UI metadata: {error:#}");
+    }
+    let session_titles = scheduled_session_titles(&state.sessions)
+        .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
     records
         .into_iter()
         .map(|record| {
-            map_scheduled_task_from_manager(&manager, record, &state.sessions, &state.read_state)
+            map_scheduled_task_from_manager(
+                &manager,
+                record,
+                &state.sessions,
+                &state.read_state,
+                &state.model_bindings,
+                &state.ui_metadata,
+                Some(&session_titles),
+            )
         })
         .collect::<Result<Vec<_>>>()
         .map_err(|err| format!("Failed to read scheduled task runs: {err}"))
@@ -1379,8 +2052,20 @@ pub async fn read_scheduled_task(
     let record = manager
         .get_automation(&id)
         .map_err(|err| format!("Failed to read scheduled task '{id}': {err}"))?;
-    map_scheduled_task_from_manager(&manager, record, &state.sessions, &state.read_state)
-        .map_err(|err| format!("Failed to read scheduled task runs for '{id}': {err}"))
+    let record = ensure_automation_workspace(&manager, record)
+        .map_err(|err| format!("Failed to prepare scheduled task workspace '{id}': {err:#}"))?;
+    let session_titles = scheduled_session_titles(&state.sessions)
+        .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
+    map_scheduled_task_from_manager(
+        &manager,
+        record,
+        &state.sessions,
+        &state.read_state,
+        &state.model_bindings,
+        &state.ui_metadata,
+        Some(&session_titles),
+    )
+    .map_err(|err| format!("Failed to read scheduled task runs for '{id}': {err}"))
 }
 
 #[tauri::command]
@@ -1394,18 +2079,61 @@ pub async fn list_scheduled_task_runs(
         .await
         .map_err(|err| format!("Failed to reconcile scheduled task runs: {err}"))?;
     let manager = state.automations.lock().await;
-    manager
+    let record = manager
         .get_automation(&id)
         .map_err(|err| format!("Failed to read scheduled task '{id}': {err}"))?;
+    ensure_automation_workspace(&manager, record)
+        .map_err(|err| format!("Failed to prepare scheduled task workspace '{id}': {err:#}"))?;
     let records = manager
         .list_runs(&id, limit)
         .map_err(|err| format!("Failed to list scheduled task runs for '{id}': {err}"))?;
     if limit.is_none() {
         compact_viewed_runs(&state.read_state, &id, &records);
     }
+    let session_titles = scheduled_session_titles(&state.sessions)
+        .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
     Ok(records
         .into_iter()
-        .map(|record| map_scheduled_run(record, &state.sessions, &state.read_state))
+        .map(|record| {
+            map_scheduled_run(record, &state.sessions, &state.read_state, &session_titles)
+        })
+        .collect())
+}
+
+/// Return every retained scheduled run with a single reconciliation and a single
+/// metadata scan. The frontend uses this for the global Scheduled Runs sidebar;
+/// task-detail reads keep using `list_scheduled_task_runs`.
+#[tauri::command]
+pub async fn list_scheduled_runs(
+    state: tauri::State<'_, ScheduledTaskState>,
+) -> Result<Vec<ScheduledRunDto>, String> {
+    state
+        .reconcile_runs()
+        .await
+        .map_err(|err| format!("Failed to reconcile scheduled task runs: {err}"))?;
+    let manager = state.automations.lock().await;
+    let automations = manager
+        .list_automations()
+        .map_err(|err| format!("Failed to list scheduled tasks: {err}"))?;
+    let mut records = Vec::new();
+    for automation in automations {
+        let runs = manager.list_runs(&automation.id, None).map_err(|err| {
+            format!(
+                "Failed to list scheduled task runs for '{}': {err}",
+                automation.id
+            )
+        })?;
+        compact_viewed_runs(&state.read_state, &automation.id, &runs);
+        records.extend(runs);
+    }
+    records.sort_by(|left, right| right.scheduled_for.cmp(&left.scheduled_for));
+    let session_titles = scheduled_session_titles(&state.sessions)
+        .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
+    Ok(records
+        .into_iter()
+        .map(|record| {
+            map_scheduled_run(record, &state.sessions, &state.read_state, &session_titles)
+        })
         .collect())
 }
 
@@ -1440,6 +2168,15 @@ pub async fn resume_scheduled_task(
     state: tauri::State<'_, ScheduledTaskState>,
 ) -> Result<ScheduledTaskDto, String> {
     state.resume_task(id).await
+}
+
+#[tauri::command]
+pub async fn set_scheduled_task_pinned(
+    id: String,
+    pinned: bool,
+    state: tauri::State<'_, ScheduledTaskState>,
+) -> Result<ScheduledTaskDto, String> {
+    state.set_task_pinned(id, pinned).await
 }
 
 #[tauri::command]
@@ -1500,6 +2237,14 @@ mod tests {
             self.resume_task(id).await
         }
 
+        async fn set_pinned_for_test(
+            &self,
+            id: String,
+            pinned: bool,
+        ) -> Result<ScheduledTaskDto, String> {
+            self.set_task_pinned(id, pinned).await
+        }
+
         async fn delete_for_test(&self, id: String) -> Result<DeletedScheduledTaskDto, String> {
             self.delete_task(id).await
         }
@@ -1541,15 +2286,370 @@ mod tests {
     }
 
     #[test]
+    fn humanize_workday_weekly_rrule() {
+        let label = humanize_rrule("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9;BYMINUTE=0");
+        assert_eq!(label, "工作日 09:00");
+    }
+
+    // ── 删除一次定时运行的级联 ────────────────────────────────────────
+    //
+    // 造真实 fixture:automation + 两次 run_now，每次经 executor 建出真实的
+    // sched-* 会话并 ThreadCreated 链上，底座为每次 run 生成真实 Task。
+    // 然后删掉第一条运行的会话，验证「删这一次」和「别的都留着」。
+
+    /// 直接实现底座 TaskExecutor：建一个真实的定时会话并报告 ThreadCreated。
+    /// 不碰 engine，从而不需要 EnginePool。`hold` 置位时会话建好后挂住不返回，
+    /// 用来造出**真的**停在 Running 的运行——手改磁盘上的状态会被
+    /// delete 路径里的 reconcile_runs 按 Task 状态回写掉，测不出拒删。
+    struct SessionCreatingExecutor {
+        sessions: SessionStore,
+        hold: Option<Arc<tokio::sync::Notify>>,
+    }
+
+    #[async_trait::async_trait]
+    impl deepseek_tui::task_manager::TaskExecutor for SessionCreatingExecutor {
+        async fn execute(
+            &self,
+            task: deepseek_tui::task_manager::ExecutionTask,
+            events: tokio::sync::mpsc::UnboundedSender<
+                deepseek_tui::task_manager::TaskExecutionEvent,
+            >,
+            _cancel: CancellationToken,
+        ) -> deepseek_tui::task_manager::TaskExecutionResult {
+            use crate::bridge::sessions::{ScheduledRunMode, ScheduledRunProfile};
+            let automation_id = task
+                .conversation_key()
+                .unwrap_or_else(|| task.id())
+                .to_string();
+            let session = self
+                .sessions
+                .create_scheduled_run(ScheduledRunProfile {
+                    task_id: automation_id,
+                    model: "cascade-model".to_string(),
+                    model_id: None,
+                    workspace: task.workspace().to_path_buf(),
+                    mode: ScheduledRunMode::Yolo,
+                    allow_shell: false,
+                    trust_mode: true,
+                    auto_approve: true,
+                })
+                .expect("create scheduled session");
+            let _ = events.send(
+                deepseek_tui::task_manager::TaskExecutionEvent::ThreadCreated {
+                    thread_id: session.metadata.id.clone(),
+                },
+            );
+            if let Some(hold) = &self.hold {
+                hold.notified().await;
+            }
+            deepseek_tui::task_manager::TaskExecutionResult {
+                status: TaskStatus::Completed,
+                result_text: Some("cascade fixture run".to_string()),
+                error: None,
+            }
+        }
+    }
+
+    /// 注入给 delete_run_for_session_with 的会话删除步骤。生产实现是
+    /// EnginePool（turn 门 + evict + 同一个 store 调用），这里只保留 store 调用。
+    struct StoreConversationDeleter(SessionStore);
+
+    #[async_trait::async_trait]
+    impl ScheduledConversationDeleter for StoreConversationDeleter {
+        async fn delete_scheduled_conversation(
+            &self,
+            session_id: &str,
+            expected_task_id: &str,
+        ) -> Result<()> {
+            self.0.delete_scheduled_run(session_id, expected_task_id)
+        }
+    }
+
+    /// 等到目标 run 既挂上了会话、状态又到位。`want_terminal=false` 用于挂住的
+    /// executor：那时 run 会停在 Running。
+    ///
+    /// 每轮必须先 reconcile：Run 记录的 thread_id / 状态不会自己变，只有
+    /// reconcile_run_statuses 会把它们从底座 Task 同步过来（生产路径上由
+    /// ScheduledTaskState::reconcile_runs 触发）。
+    async fn wait_for_linked_run(
+        automations: &SharedAutomationManager,
+        task_manager: &SharedTaskManager,
+        automation_id: &str,
+        run_id: &str,
+        want_terminal: bool,
+    ) -> AutomationRunRecord {
+        for _ in 0..400 {
+            let run = {
+                let manager = automations.lock().await;
+                manager
+                    .reconcile_run_statuses(task_manager)
+                    .await
+                    .expect("reconcile run statuses");
+                manager
+                    .list_runs(automation_id, None)
+                    .expect("list runs")
+                    .into_iter()
+                    .find(|run| run.id == run_id)
+            };
+            if let Some(run) = run {
+                let status_ready = if want_terminal {
+                    matches!(run.status, AutomationRunStatus::Completed)
+                } else {
+                    matches!(run.status, AutomationRunStatus::Running)
+                };
+                if run.thread_id.is_some() && status_ready {
+                    return run;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("timed out waiting for run {run_id} (want_terminal={want_terminal})");
+    }
+
+    struct CascadeFixture {
+        state: ScheduledTaskState,
+        deleter: StoreConversationDeleter,
+        task_manager: SharedTaskManager,
+        automation_id: String,
+        hold: Option<Arc<tokio::sync::Notify>>,
+    }
+
+    async fn cascade_fixture(hold: Option<Arc<tokio::sync::Notify>>) -> CascadeFixture {
+        let sessions = SessionStore::boot().expect("session store");
+        let read_state =
+            ScheduledRunReadStore::open(crate::bridge::paths::scheduled_run_read_state_path())
+                .expect("read state");
+        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
+            .expect("model bindings");
+        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
+            .expect("ui metadata");
+        let manager =
+            open_scheduled_automation_manager(scheduled_automation_root()).expect("automations");
+        let automations: SharedAutomationManager = Arc::new(tokio::sync::Mutex::new(manager));
+        let task_manager = TaskManager::start_with_executor(
+            TaskManagerConfig {
+                data_dir: scheduled_task_data_root(),
+                worker_count: 1,
+                default_workspace: crate::bridge::paths::scheduled_tasks_root(),
+                default_model: "cascade-model".to_string(),
+                default_mode: SCHEDULED_EXECUTION_MODE.to_string(),
+                allow_shell: false,
+                trust_mode: true,
+                max_subagents: 1,
+            },
+            Arc::new(SessionCreatingExecutor {
+                sessions: sessions.clone(),
+                hold: hold.clone(),
+            }),
+        )
+        .await
+        .expect("task manager");
+
+        let automation = {
+            let manager = automations.lock().await;
+            let created = manager
+                .create_automation(CreateAutomationRequest {
+                    name: "级联删除任务".to_string(),
+                    prompt: "run".to_string(),
+                    rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
+                    cwds: Vec::new(),
+                    model: Some("cascade-model".to_string()),
+                    mode: Some(SCHEDULED_EXECUTION_MODE.to_string()),
+                    allow_shell: Some(false),
+                    trust_mode: Some(true),
+                    auto_approve: Some(true),
+                    status: Some(AutomationStatus::Paused),
+                })
+                .expect("create automation");
+            ensure_automation_workspace(&manager, created).expect("workspace")
+        };
+
+        CascadeFixture {
+            deleter: StoreConversationDeleter(sessions.clone()),
+            state: ScheduledTaskState {
+                automations,
+                task_manager: Some(task_manager.clone()),
+                sessions,
+                read_state,
+                model_bindings,
+                ui_metadata,
+                operation_locks: ParkingMutex::new(HashMap::new()),
+                pool: None,
+                fallback_model: "cascade-model".to_string(),
+                scheduler_cancel: None,
+                scheduler_handle: None,
+                retention_handle: None,
+            },
+            task_manager,
+            automation_id: automation.id,
+            hold,
+        }
+    }
+
+    async fn run_once(fixture: &CascadeFixture) -> AutomationRunRecord {
+        let queued = {
+            let manager = fixture.state.automations.lock().await;
+            manager
+                .run_now(&fixture.automation_id, &fixture.task_manager)
+                .await
+                .expect("run now")
+        };
+        wait_for_linked_run(
+            &fixture.state.automations,
+            &fixture.task_manager,
+            &fixture.automation_id,
+            &queued.id,
+            fixture.hold.is_none(),
+        )
+        .await
+    }
+
+    /// 删一次运行 = 删掉该次 Session + Run + 底座 Task；任务定义、共享工作间
+    /// 和其它运行必须原样保留。这是本次改动里唯一的破坏性路径。
+    #[tokio::test]
+    async fn deleting_one_run_removes_its_session_run_and_task_only() {
+        let _guard = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_home();
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        let fixture = cascade_fixture(None).await;
+        let doomed = run_once(&fixture).await;
+        let survivor = run_once(&fixture).await;
+        let doomed_session = doomed.thread_id.clone().expect("doomed session");
+        let survivor_session = survivor.thread_id.clone().expect("survivor session");
+        assert_ne!(doomed_session, survivor_session, "每次运行是独立对话");
+        let doomed_task = doomed.task_id.clone().expect("doomed task");
+        let survivor_task = survivor.task_id.clone().expect("survivor task");
+        let workspace = crate::bridge::paths::scheduled_task_workspace_dir(&fixture.automation_id);
+        assert!(workspace.is_dir(), "fixture 应已建出共享工作间");
+
+        fixture
+            .state
+            .delete_run_for_session_with(&doomed_session, &fixture.deleter)
+            .await
+            .expect("delete the doomed run");
+
+        // 被删那次:Session / Run / Task 三者都消失。
+        assert!(
+            !fixture
+                .state
+                .sessions
+                .scheduled_session_exists(&doomed_session),
+            "被删运行的会话必须消失"
+        );
+        let remaining = {
+            let manager = fixture.state.automations.lock().await;
+            manager
+                .list_runs(&fixture.automation_id, None)
+                .expect("list runs")
+        };
+        assert!(
+            !remaining.iter().any(|run| run.id == doomed.id),
+            "被删运行的 Run 记录必须消失"
+        );
+        assert!(
+            fixture.task_manager.get_task(&doomed_task).await.is_err(),
+            "被删运行的底座 Task 必须消失"
+        );
+
+        // 任务定义 / 共享工作间 / 另一次运行:全部保留。
+        {
+            let manager = fixture.state.automations.lock().await;
+            manager
+                .get_automation(&fixture.automation_id)
+                .expect("任务定义必须保留");
+        }
+        assert!(workspace.is_dir(), "共享工作间必须保留");
+        assert!(
+            remaining.iter().any(|run| run.id == survivor.id),
+            "其它运行的 Run 记录必须保留"
+        );
+        assert!(
+            fixture
+                .state
+                .sessions
+                .scheduled_session_exists(&survivor_session),
+            "其它运行的会话必须保留"
+        );
+        assert!(
+            fixture.task_manager.get_task(&survivor_task).await.is_ok(),
+            "其它运行的底座 Task 必须保留"
+        );
+
+        fixture.task_manager.shutdown();
+        drop(fixture);
+        match previous {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 正在排队/运行的记录不允许删除——拒绝发生在任何破坏性动作之前。
+    #[tokio::test]
+    async fn deleting_an_active_run_is_refused_before_anything_is_removed() {
+        let _guard = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_home();
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        // executor 挂住 → 这条 run 真的停在 Running，reconcile 也不会把它改成终态。
+        let hold = Arc::new(tokio::sync::Notify::new());
+        let fixture = cascade_fixture(Some(hold.clone())).await;
+        let run = run_once(&fixture).await;
+        let session_id = run.thread_id.clone().expect("session");
+        assert!(matches!(run.status, AutomationRunStatus::Running));
+
+        let error = fixture
+            .state
+            .delete_run_for_session_with(&session_id, &fixture.deleter)
+            .await
+            .expect_err("running 记录不能删");
+        assert!(
+            error.contains("正在运行的定时任务记录不能删除"),
+            "错误应说明原因，实际: {error}"
+        );
+        assert!(
+            fixture.state.sessions.scheduled_session_exists(&session_id),
+            "拒绝删除时会话必须原样保留"
+        );
+        {
+            let manager = fixture.state.automations.lock().await;
+            assert!(
+                manager
+                    .list_runs(&fixture.automation_id, None)
+                    .expect("list runs")
+                    .iter()
+                    .any(|item| item.id == run.id),
+                "拒绝删除时 Run 记录必须原样保留"
+            );
+        }
+
+        hold.notify_waiters();
+        fixture.task_manager.shutdown();
+        drop(fixture);
+        match previous {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn humanize_hourly_rrule() {
         let label = humanize_rrule("FREQ=HOURLY;INTERVAL=6");
         assert_eq!(label, "每 6 小时");
     }
 
     #[test]
-    fn humanize_minutely_rrule() {
-        let label = humanize_rrule("FREQ=MINUTELY;INTERVAL=10");
-        assert_eq!(label, "每 10 分钟");
+    fn humanize_hourly_rrule_with_anchor() {
+        let label = humanize_rrule("FREQ=HOURLY;INTERVAL=2;BYHOUR=8;BYMINUTE=30");
+        assert_eq!(label, "每 2 小时 · 08:30 起");
     }
 
     #[test]
@@ -1559,22 +2659,36 @@ mod tests {
     }
 
     #[test]
+    fn humanize_hourly_rrule_on_workdays() {
+        let label = humanize_rrule("FREQ=HOURLY;INTERVAL=2;BYDAY=MO,TU,WE,TH,FR");
+        assert_eq!(label, "工作日 每 2 小时");
+    }
+
+    #[test]
     fn scheduled_task_chat_prompt_includes_immediate_creation_guidance() {
         let prompt = scheduled_task_chat_prompt().expect("prompt");
         assert!(prompt.contains("请一次只问我一个问题，并依次确认这些信息："));
         assert!(prompt.contains("1. 任务要做什么。"));
         assert!(prompt.contains(
-            "2. 什么时候运行。支持每 N 分钟、每 N 小时、每天指定时间、每周指定星期和时间。"
+            "2. 什么时候运行。支持每 N 小时（可指定起始时间）、每天指定时间、每周指定星期和时间。"
         ));
-        assert!(prompt.contains("5. 权限选项，包括 trustMode 和 autoApprove。"));
-        assert!(prompt.contains("必须把任务设为暂停"));
+        assert!(!prompt.contains("3."));
+        assert!(prompt.contains("不需要询问工作目录或权限设置"));
+        assert!(!prompt.contains("allowShell"));
+        assert!(!prompt.contains("trustMode"));
+        assert!(!prompt.contains("cwds"));
         assert!(prompt.contains("整理草稿时，请把时间转换成 rrule："));
-        assert!(prompt.contains("FREQ=MINUTELY;INTERVAL=10"));
-        assert!(prompt.contains("FREQ=HOURLY;INTERVAL=6"));
+        assert!(prompt.contains("FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30"));
         assert!(prompt.contains("FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=9;BYMINUTE=30"));
-        assert!(!prompt.contains("不支持分钟级"));
+        assert!(prompt.contains("create_scheduled_task"));
+        assert!(prompt.contains("schtasks"));
+        assert!(prompt.contains("Windows Task Scheduler"));
+        assert!(prompt.contains("cron"));
+        assert!(prompt.contains("systemd timer"));
+        assert!(prompt.contains("不支持分钟级"));
         assert!(prompt.contains("```scheduled-task-draft"));
-        assert!(prompt.contains("前端会立即创建并打开任务详情，不再要求用户二次确认"));
+        assert!(prompt
+            .contains("前端会通过 create_scheduled_task 创建并打开任务详情，不再要求用户二次确认"));
         assert!(prompt.contains("前端会负责创建任务"));
         assert!(!prompt.contains("由用户点击确认后系统创建"));
     }
@@ -1595,6 +2709,7 @@ mod tests {
                 rrule: "FREQ=HOURLY;INTERVAL=6".to_string(),
                 cwds: vec![dir.join("workspace").to_string_lossy().into_owned()],
                 model: None,
+                model_id: None,
                 mode: Some("agent".to_string()),
                 allow_shell: Some(false),
                 trust_mode: Some(false),
@@ -1634,7 +2749,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_workspace_tasks_fail_closed_until_a_project_is_selected() {
+    async fn tasks_run_without_a_workspace_like_ordinary_chats() {
+        let _guard = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_home();
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", &dir);
+        let state = ScheduledTaskState::boot_read_only().expect("state");
+
+        // 无 cwds 的任务是一等公民并直接激活；工作间由 automation_id 自动分配。
+        let created = state
+            .create_for_test(CreateScheduledTaskInput {
+                name: "开箱即用".to_string(),
+                prompt: "汇总近期工作".to_string(),
+                rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
+                cwds: vec!["D:/should-be-ignored".to_string()],
+                model: None,
+                model_id: None,
+                mode: Some("yolo".to_string()),
+                allow_shell: Some(false),
+                trust_mode: Some(false),
+                auto_approve: Some(false),
+                paused: Some(false),
+            })
+            .await
+            .expect("create without workspace");
+        assert_eq!(created.status, "active");
+        assert!(created.cwds.is_empty(), "configured cwds must be ignored");
+        let persisted = state
+            .automations
+            .lock()
+            .await
+            .get_automation(&created.id)
+            .expect("persisted automation");
+        assert_eq!(
+            persisted.cwds,
+            vec![crate::bridge::paths::scheduled_task_workspace_dir(
+                &created.id
+            )],
+            "backend must persist the internally assigned task workspace"
+        );
+        assert!(
+            persisted.cwds[0].is_dir(),
+            "internal scheduled task workspace should exist on disk"
+        );
+
+        let paused = state
+            .pause_for_test(created.id.clone())
+            .await
+            .expect("pause");
+        assert_eq!(paused.status, "paused");
+        let resumed = state
+            .resume_for_test(created.id.clone())
+            .await
+            .expect("resume must not require a workspace");
+        assert_eq!(resumed.status, "active");
+
+        match previous {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn create_update_delete_scheduled_task_model_binding() {
         let _guard = crate::bridge::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1645,21 +2825,29 @@ mod tests {
 
         let created = state
             .create_for_test(CreateScheduledTaskInput {
-                name: "待选项目".to_string(),
-                prompt: "检查项目状态".to_string(),
+                name: "模型绑定".to_string(),
+                prompt: "检查模型绑定".to_string(),
                 rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
-                cwds: vec!["   ".to_string()],
-                model: None,
+                cwds: Vec::new(),
+                model: Some("deepseek-v4-flash".to_string()),
+                model_id: Some("deepseek-b".to_string()),
                 mode: Some("yolo".to_string()),
-                allow_shell: Some(false),
-                trust_mode: Some(false),
-                auto_approve: Some(false),
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: None,
                 paused: Some(false),
             })
             .await
-            .expect("empty-workspace task is retained for editing");
-        assert_eq!(created.status, "paused");
-        assert!(created.cwds.is_empty());
+            .expect("create model-bound task");
+        assert_eq!(created.model.as_deref(), Some("deepseek-v4-flash"));
+        assert_eq!(created.model_id.as_deref(), Some("deepseek-b"));
+        assert_eq!(
+            state
+                .model_bindings
+                .model_id_for(&created.id, "deepseek-v4-flash")
+                .as_deref(),
+            Some("deepseek-b")
+        );
 
         let updated = state
             .update_for_test(
@@ -1669,31 +2857,111 @@ mod tests {
                     prompt: None,
                     rrule: None,
                     cwds: None,
-                    model: None,
-                    mode: None,
+                    model: Some("qwen-max".to_string()),
+                    model_id: Some("qwen-prod".to_string()),
+                    mode: Some("yolo".to_string()),
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: None,
-                    paused: Some(false),
+                    paused: None,
                 },
             )
             .await
-            .expect("an activation request without a workspace stays editable");
-        assert_eq!(updated.status, "paused");
-
-        let resume_error = state
-            .resume_for_test(created.id.clone())
-            .await
-            .expect_err("resume must reject an empty workspace");
-        assert!(
-            resume_error.contains("requires a workspace"),
-            "{resume_error}"
+            .expect("update model binding");
+        assert_eq!(updated.model.as_deref(), Some("qwen-max"));
+        assert_eq!(updated.model_id.as_deref(), Some("qwen-prod"));
+        assert!(state
+            .model_bindings
+            .model_id_for(&created.id, "deepseek-v4-flash")
+            .is_none());
+        assert_eq!(
+            state
+                .model_bindings
+                .model_id_for(&created.id, "qwen-max")
+                .as_deref(),
+            Some("qwen-prod")
         );
-        let run_error = state
-            .run_task_now(created.id)
+
+        state
+            .delete_for_test(created.id.clone())
             .await
-            .expect_err("manual run must reject an empty workspace");
-        assert!(run_error.contains("requires a workspace"), "{run_error}");
+            .expect("delete model-bound task");
+        assert!(state
+            .model_bindings
+            .model_id_for(&created.id, "qwen-max")
+            .is_none());
+
+        match previous {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn scheduled_task_ui_metadata_pin_unpin_and_delete_cleanup() {
+        let _guard = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_home();
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", &dir);
+        let state = ScheduledTaskState::boot_read_only().expect("state");
+
+        let created = state
+            .create_for_test(CreateScheduledTaskInput {
+                name: "置顶任务".to_string(),
+                prompt: "检查置顶".to_string(),
+                rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
+                cwds: Vec::new(),
+                model: Some("deepseek-v4-flash".to_string()),
+                model_id: None,
+                mode: Some("yolo".to_string()),
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: None,
+                paused: Some(false),
+            })
+            .await
+            .expect("create task");
+        assert!(!created.pinned);
+        assert!(created.pinned_at.is_none());
+
+        let pinned = state
+            .set_pinned_for_test(created.id.clone(), true)
+            .await
+            .expect("pin task");
+        assert!(pinned.pinned);
+        assert!(pinned.pinned_at.is_some());
+        assert_eq!(
+            state.ui_metadata.metadata_for(&created.id),
+            (true, pinned.pinned_at.clone())
+        );
+
+        let reloaded =
+            ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path()).expect("reload");
+        assert_eq!(
+            reloaded.metadata_for(&created.id),
+            (true, pinned.pinned_at.clone())
+        );
+
+        let unpinned = state
+            .set_pinned_for_test(created.id.clone(), false)
+            .await
+            .expect("unpin task");
+        assert!(!unpinned.pinned);
+        assert!(unpinned.pinned_at.is_none());
+        assert_eq!(state.ui_metadata.metadata_for(&created.id), (false, None));
+
+        state
+            .set_pinned_for_test(created.id.clone(), true)
+            .await
+            .expect("pin before delete");
+        state
+            .delete_for_test(created.id.clone())
+            .await
+            .expect("delete pinned task");
+        assert_eq!(state.ui_metadata.metadata_for(&created.id), (false, None));
 
         match previous {
             Some(value) => std::env::set_var("PINVOU3_HOME", value),
@@ -1758,6 +3026,7 @@ mod tests {
         let previous = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", &dir);
         let state = ScheduledTaskState::boot_read_only().expect("state");
+        let expected_allow_shell = current_yolo_allow_shell();
 
         let created = state
             .create_for_test(CreateScheduledTaskInput {
@@ -1766,6 +3035,7 @@ mod tests {
                 rrule: "FREQ=HOURLY;INTERVAL=2".to_string(),
                 cwds: vec!["/tmp/workspace-a".to_string()],
                 model: None,
+                model_id: None,
                 mode: Some("agent".to_string()),
                 allow_shell: Some(false),
                 trust_mode: Some(false),
@@ -1785,10 +3055,11 @@ mod tests {
                     rrule: Some("FREQ=HOURLY;INTERVAL=4".to_string()),
                     cwds: Some(vec!["/tmp/workspace-b".to_string()]),
                     model: None,
+                    model_id: None,
                     mode: Some("plan".to_string()),
-                    allow_shell: Some(true),
-                    trust_mode: Some(true),
-                    auto_approve: Some(true),
+                    allow_shell: Some(!expected_allow_shell),
+                    trust_mode: Some(false),
+                    auto_approve: Some(false),
                     paused: None,
                 },
             )
@@ -1797,10 +3068,13 @@ mod tests {
         assert_eq!(updated.name, "晚检");
         assert_eq!(updated.prompt, "检查夜间任务");
         assert_eq!(updated.rrule, "FREQ=HOURLY;INTERVAL=4");
-        assert_eq!(updated.cwds, vec!["/tmp/workspace-b".to_string()]);
+        assert!(updated.cwds.is_empty(), "cwds updates must be ignored");
         assert_eq!(updated.mode.as_deref(), Some("yolo"));
-        assert!(updated.allow_shell);
-        assert!(updated.trust_mode);
+        assert_eq!(
+            updated.allow_shell, expected_allow_shell,
+            "Shell must follow the global Yolo setting"
+        );
+        assert!(updated.trust_mode, "scheduled Yolo must stay trusted");
         assert!(updated.auto_approve);
         assert_eq!(updated.status, "paused");
 
@@ -1883,7 +3157,7 @@ mod tests {
     }
 
     #[test]
-    fn create_request_persists_an_explicit_default_model() {
+    fn forkguard_create_request_persists_model_and_global_yolo_permissions() {
         let request = build_create_request(
             CreateScheduledTaskInput {
                 name: "daily brief".to_string(),
@@ -1891,184 +3165,26 @@ mod tests {
                 rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
                 cwds: Vec::new(),
                 model: None,
-                mode: None,
-                allow_shell: None,
-                trust_mode: None,
-                auto_approve: None,
+                model_id: None,
+                mode: Some("plan".to_string()),
+                allow_shell: Some(false),
+                trust_mode: Some(false),
+                auto_approve: Some(false),
                 paused: Some(false),
             },
             "active-user-model".to_string(),
+            true,
         )
         .expect("valid create request");
 
         assert_eq!(request.model.as_deref(), Some("active-user-model"));
         assert_eq!(request.mode.as_deref(), Some("yolo"));
-        assert_eq!(request.allow_shell, Some(false));
-        assert_eq!(request.trust_mode, Some(false));
-        assert_eq!(request.auto_approve, Some(false));
-        assert_eq!(request.status, Some(AutomationStatus::Paused));
-    }
-
-    #[test]
-    fn legacy_automation_defaults_are_persisted_before_runtime_start() {
-        let dir = temp_home();
-        let manager = AutomationManager::open(dir.join("automations")).expect("open manager");
-        let created = manager
-            .create_automation(CreateAutomationRequest {
-                name: "legacy task".to_string(),
-                prompt: "legacy prompt".to_string(),
-                rrule: "FREQ=MINUTELY;INTERVAL=10".to_string(),
-                cwds: Vec::new(),
-                model: None,
-                mode: None,
-                allow_shell: None,
-                trust_mode: None,
-                auto_approve: None,
-                status: Some(AutomationStatus::Paused),
-            })
-            .expect("create legacy automation");
-        let active_without_workspace = manager
-            .create_automation(CreateAutomationRequest {
-                name: "unsafe legacy task".to_string(),
-                prompt: "must be paused during startup".to_string(),
-                rrule: "FREQ=MINUTELY;INTERVAL=10".to_string(),
-                cwds: Vec::new(),
-                model: Some("legacy-model".to_string()),
-                mode: Some("yolo".to_string()),
-                allow_shell: Some(false),
-                trust_mode: Some(false),
-                auto_approve: Some(false),
-                status: Some(AutomationStatus::Active),
-            })
-            .expect("create unsafe legacy automation");
-
-        normalize_legacy_automations(&manager, "fallback-model")
-            .expect("normalize legacy automation");
-        let normalized = manager
-            .get_automation(&created.id)
-            .expect("read normalized automation");
-        assert_eq!(normalized.model.as_deref(), Some("fallback-model"));
-        assert_eq!(normalized.mode.as_deref(), Some("yolo"));
-        assert_eq!(normalized.allow_shell, Some(false));
-        assert_eq!(normalized.trust_mode, Some(false));
-        assert_eq!(normalized.auto_approve, Some(false));
-        assert_eq!(
-            manager
-                .get_automation(&active_without_workspace.id)
-                .expect("read fail-closed legacy automation")
-                .status,
-            AutomationStatus::Paused
-        );
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[tokio::test]
-    async fn boot_read_only_retention_keeps_owned_old_runs_and_prunes_unowned_history() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let dir = temp_home();
-        let previous = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
-        let state = ScheduledTaskState::boot_read_only().expect("read-only scheduled state");
-        let automation = state
-            .automations
-            .lock()
-            .await
-            .create_automation(CreateAutomationRequest {
-                name: "retention owner".to_string(),
-                prompt: "retain linked conversations".to_string(),
-                rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
-                cwds: Vec::new(),
-                model: Some("model-1".to_string()),
-                mode: Some("yolo".to_string()),
-                allow_shell: Some(false),
-                trust_mode: Some(false),
-                auto_approve: Some(false),
-                status: Some(AutomationStatus::Paused),
-            })
-            .expect("automation");
-        let create_session = |task_id: &str| {
-            state
-                .sessions
-                .create_scheduled_run(crate::bridge::sessions::ScheduledRunProfile {
-                    task_id: task_id.to_string(),
-                    model: "model-1".to_string(),
-                    model_id: None,
-                    workspace: dir.join("workspace"),
-                    mode: crate::bridge::sessions::ScheduledRunMode::Agent,
-                    allow_shell: false,
-                    trust_mode: false,
-                    auto_approve: false,
-                })
-                .expect("scheduled session")
-                .metadata
-                .id
-        };
-        let linked_session = create_session("task-linked");
-        let prelink_session = create_session("task-before-link");
-        let run_dir = scheduled_automation_root()
-            .join("runs")
-            .join(&automation.id);
-        std::fs::create_dir_all(&run_dir).expect("run authority directory");
-        let base = chrono::Utc::now() - chrono::Duration::days(2);
-        for index in 0..=1_002 {
-            let (task_id, thread_id) = match index {
-                0 => (
-                    Some("task-linked".to_string()),
-                    Some(linked_session.clone()),
-                ),
-                1 => (Some("task-before-link".to_string()), None),
-                _ => (None, None),
-            };
-            let timestamp = base + chrono::Duration::seconds(index);
-            let run = AutomationRunRecord {
-                schema_version: 1,
-                id: format!("terminal-{index:04}"),
-                automation_id: automation.id.clone(),
-                scheduled_for: timestamp,
-                status: AutomationRunStatus::Completed,
-                created_at: timestamp,
-                started_at: Some(timestamp),
-                ended_at: Some(timestamp),
-                task_id,
-                thread_id,
-                turn_id: Some(format!("turn-{index:04}")),
-                error: None,
-            };
-            std::fs::write(
-                run_dir.join(format!("{}.json", run.id)),
-                serde_json::to_vec_pretty(&run).expect("run json"),
-            )
-            .expect("run authority");
-        }
-
-        let retained = state
-            .automations
-            .lock()
-            .await
-            .list_runs(&automation.id, None)
-            .expect("retained runs");
-
-        assert!(retained.iter().any(|run| run.id == "terminal-0000"));
-        assert!(retained.iter().any(|run| run.id == "terminal-0001"));
-        assert!(
-            !run_dir.join("terminal-0002.json").exists(),
-            "the oldest run without a durable session owner remains prunable"
-        );
-        assert_eq!(
-            state
-                .sessions
-                .scheduled_session_ids_for_task("task-before-link"),
-            vec![prelink_session]
-        );
-
-        drop(state);
-        match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
-        }
-        let _ = std::fs::remove_dir_all(dir);
+        assert_eq!(request.allow_shell, Some(true));
+        assert_eq!(request.trust_mode, Some(true));
+        assert_eq!(request.auto_approve, Some(true));
+        // 目录概念已移除:无 cwds 也直接激活,不再强制暂停。
+        assert_eq!(request.status, Some(AutomationStatus::Active));
+        assert!(request.cwds.is_empty());
     }
 
     #[tokio::test]
@@ -2088,6 +3204,7 @@ mod tests {
                 rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
                 cwds: Vec::new(),
                 model: None,
+                model_id: None,
                 mode: Some("planner".to_string()),
                 allow_shell: None,
                 trust_mode: None,
@@ -2128,6 +3245,7 @@ mod tests {
                 rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
                 cwds: Vec::new(),
                 model: None,
+                model_id: None,
                 mode: Some("agent".to_string()),
                 allow_shell: None,
                 trust_mode: None,
@@ -2146,6 +3264,7 @@ mod tests {
                     rrule: None,
                     cwds: None,
                     model: None,
+                    model_id: None,
                     mode: Some("planner".to_string()),
                     allow_shell: None,
                     trust_mode: None,
@@ -2187,7 +3306,7 @@ mod tests {
         let store = SessionStore::boot().expect("open test sessions");
         let saved = store
             .create_scheduled_run(crate::bridge::sessions::ScheduledRunProfile {
-                task_id: "execution-task-1".to_string(),
+                task_id: "automation-1".to_string(),
                 model: "model-1".to_string(),
                 model_id: None,
                 workspace: dir.join("workspace"),
@@ -2201,6 +3320,7 @@ mod tests {
         let read_state =
             ScheduledRunReadStore::open(crate::bridge::paths::scheduled_run_read_state_path())
                 .expect("open read state");
+        let mut session_titles = scheduled_session_titles(&store).expect("list scheduled titles");
         let owned_run = AutomationRunRecord {
             schema_version: 1,
             id: "run-1".to_string(),
@@ -2216,8 +3336,13 @@ mod tests {
             error: None,
         };
 
-        let owned = serde_json::to_value(map_scheduled_run(owned_run.clone(), &store, &read_state))
-            .expect("serialize owned run");
+        let owned = serde_json::to_value(map_scheduled_run(
+            owned_run.clone(),
+            &store,
+            &read_state,
+            &session_titles,
+        ))
+        .expect("serialize owned run");
         assert_eq!(
             owned.get("sessionId").and_then(serde_json::Value::as_str),
             Some(saved.metadata.id.as_str())
@@ -2228,11 +3353,12 @@ mod tests {
 
         let mismatched = serde_json::to_value(map_scheduled_run(
             AutomationRunRecord {
-                task_id: Some("execution-task-2".to_string()),
+                automation_id: "automation-2".to_string(),
                 ..owned_run.clone()
             },
             &store,
             &read_state,
+            &session_titles,
         ))
         .expect("serialize mismatched run");
         assert!(mismatched
@@ -2243,21 +3369,25 @@ mod tests {
             thread_id: None,
             ..owned_run.clone()
         };
-        let recovered = owned_scheduled_sessions(&[unlinked_run], &store)
+        let recovered = owned_scheduled_sessions("automation-1", &[unlinked_run], &store)
             .expect("recover session from durable task ownership");
         assert_eq!(
             recovered,
-            vec![(saved.metadata.id.clone(), "execution-task-1".to_string())]
+            vec![(saved.metadata.id.clone(), "automation-1".to_string())]
         );
 
         std::fs::remove_file(
-            crate::bridge::paths::scheduled_run_sessions_root()
-                .join(format!("{}.json", saved.metadata.id)),
+            crate::bridge::paths::sessions_root().join(format!("{}.json", saved.metadata.id)),
         )
         .expect("remove scheduled session payload");
-        let missing_payload =
-            serde_json::to_value(map_scheduled_run(owned_run, &store, &read_state))
-                .expect("serialize run with missing session payload");
+        session_titles.remove(&saved.metadata.id);
+        let missing_payload = serde_json::to_value(map_scheduled_run(
+            owned_run,
+            &store,
+            &read_state,
+            &session_titles,
+        ))
+        .expect("serialize run with missing session payload");
         assert!(missing_payload
             .get("sessionId")
             .is_some_and(serde_json::Value::is_null));
@@ -2279,13 +3409,13 @@ mod tests {
         std::env::set_var("PINVOU3_HOME", &dir);
 
         let sessions = SessionStore::boot().expect("open test sessions");
-        let make_session = |task_id: &str| {
+        let make_session = || {
             sessions
                 .create_scheduled_run(crate::bridge::sessions::ScheduledRunProfile {
-                    task_id: task_id.to_string(),
+                    task_id: "automation-1".to_string(),
                     model: "model-1".to_string(),
                     model_id: None,
-                    workspace: dir.join(task_id),
+                    workspace: dir.join("ignored-workspace"),
                     mode: crate::bridge::sessions::ScheduledRunMode::Agent,
                     allow_shell: false,
                     trust_mode: false,
@@ -2295,8 +3425,8 @@ mod tests {
                 .metadata
                 .id
         };
-        let session_1 = make_session("execution-task-1");
-        let session_2 = make_session("execution-task-2");
+        let session_1 = make_session();
+        let session_2 = make_session();
         let now = chrono::Utc::now();
         let make_run = |run_id: &str, task_id: &str, session_id: &str| AutomationRunRecord {
             schema_version: 1,
@@ -2326,6 +3456,17 @@ mod tests {
             &sessions,
             &read_state
         ));
+
+        sessions.set_hidden(&session_1, true);
+        sessions.set_hidden(&session_2, true);
+        assert!(!scheduled_run_is_unread(&run_1, &sessions, &read_state));
+        assert!(!has_unread_scheduled_runs(
+            &[run_1.clone(), run_2.clone()],
+            &sessions,
+            &read_state
+        ));
+        sessions.set_hidden(&session_1, false);
+        sessions.set_hidden(&session_2, false);
 
         read_state
             .mark_viewed("automation-1", "run-1")
@@ -2475,6 +3616,7 @@ mod tests {
                 rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
                 cwds: Vec::new(),
                 model: None,
+                model_id: None,
                 mode: Some("yolo".to_string()),
                 allow_shell: Some(false),
                 trust_mode: Some(false),
@@ -2528,6 +3670,7 @@ mod tests {
                 rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
                 cwds: Vec::new(),
                 model: None,
+                model_id: None,
                 mode: Some("yolo".to_string()),
                 allow_shell: Some(false),
                 trust_mode: Some(false),

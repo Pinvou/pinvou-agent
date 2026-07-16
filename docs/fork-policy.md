@@ -1,15 +1,15 @@
 # pinvou3 对 DeepSeek-TUI 底座的 fork 维护策略
 
-> 创建 2026-05-28 · 最后更新 2026-07-13(`pinvou3-clean` 指针对齐)
+> 创建 2026-05-28 · 最后更新 2026-07-16(C13 Shell 实时输出,基线为 `fix/windows-shell-live-output@e80ecd5d`)
 > 适用:每次新增 fork patch + 每次跟进上游 sync
 > 配套:`scripts/fork-guard.sh`、`bin/dump_system_prompt.rs`、`docs/fork-modifications.md`(现状清单 + 验证 checklist)
 
 ## 0. 现状
 
-- DeepSeek-TUI 是 `h3c-hexin/DeepSeek-TUI` fork(submodule,**`pinvou3-clean` 分支** ← upstream **v0.8.65**;HEAD `5f5a58db` = 2026-07-13 合入 durable scheduled runtime 后的远程分支头;`.gitmodules` 追踪;备份 `backup/v0.8.65-merge-result` + `backup/pre-reclean-trial-tip`)
-- fork drift **+13744 / −5646 行,59 文件**(vs v0.8.65;主体是工作流层 W1–W12 + scheduler AUTO,**已超 1500 软上限**——撤回评估见 fork-modifications §4;app 层 prompt override 不计入)
-- fork 结构 = **C1–C11 + AUTO + R + W 逻辑主题**(AUTO = durable scheduler/runtime,W = 三省六部工作流层),详见 `docs/fork-modifications.md` §1
-- 路线:接受"重 fork",靠工程化(指纹 + 测试 + dump diff + 文档)控制维护成本。当前 drift 已超软上限,最近一次撤回评估结论仍是主体必需、保留(见 fork-modifications §4)
+- DeepSeek-TUI 是 `h3c-hexin/DeepSeek-TUI` fork(submodule,当前基线 **`fix/windows-shell-live-output@e80ecd5d`** = `pinvou3-clean@8832469c` + fork PR #17 C13;upstream **v0.8.65** clean re-fork 系;`.gitmodules` 追踪 `pinvou3-clean`,PR 合入后回归 merge commit;durable scheduler 旧 tip `5f5a58db` 已撤回)
+- fork drift = `8073aa9b` 基线 **+7070/−4930,54 文件**(vs v0.8.65)+ scheduled-lite/C12/P2 后续 **+701/−17,7 文件** + 小时调度锚点 **+109/−10,1 文件** + W13 宿主取消后台 Agent **+75/−0,4 文件** + C13 Shell 实时输出 **+934/−10,9 文件**;durable scheduler 的 +13744/−5646 已于 2026-07-13 撤回
+- fork 结构 = **C1–C14 + P1–P2 + AUTO-lite + R + W 逻辑主题**(AUTO-lite = host executor 最小契约,W = 三省六部工作流层),详见 `docs/fork-modifications.md` §1
+- 路线:轻 fork 优先——scheduler/持久化用底座原生实现,fork 只补 host 消费接口与安全语义;靠工程化(指纹 + 测试 + dump diff + 文档)控制维护成本
 
 ## 1. 总则
 
@@ -124,7 +124,7 @@ grep -rn "messages.push\|runtime_prompt" DeepSeek-TUI/crates/tui/src/core/engine
 
 ## 6. fork patch 组织规则
 
-- fork 按 **C1–C7 + W 逻辑主题**组织(不再用旧 `#1..#42` 全局编号),见 fork-modifications §1。
+- fork 按 **C1–C14 + W 逻辑主题**组织(不再用旧 `#1..#42` 全局编号),见 fork-modifications §1。
 - **新加 patch**:归入对应主题(工具/prompt/safety/lib/workflow/…),按 §3 配套。
 - **删/harvest patch**:撤 fork-guard 指纹 + 在 fork-modifications §2 记一条 + §1 对应小节更新。
 - 历史乱或主题混杂时,做 **clean re-fork**(`git reset --soft <release>` 保树 → 按 file→theme 重组线性主题 commit,验字节等价)—— 2026-06-04 / 06-15 两次范例,详见 fork-modifications §4。
@@ -138,9 +138,19 @@ grep -rn "messages.push\|runtime_prompt" DeepSeek-TUI/crates/tui/src/core/engine
 
 > ⚠️ **PR 被 CLOSED ≠ 功能没进上游**:上游常**独立重实现**(v0.8.49 override hook #2356、v0.8.57 composer #2786 / skills union #2737 均如此)。sync 时按文件级 diff 逐字段比对,别假设。
 
-## 8. 上游 PR 状态(2026-06-15 v0.8.60 sync 核对)
+## 8. 上游 PR 状态(2026-07-16 v0.8.68 主线核对)
 
-> `gh pr list --repo Hmbown/CodeWhale --author h3c-hexin --state all` 核。head 走 `h3c-hexin/DeepSeek-TUI` 跨 fork。v0.8.60 sync 无新提 PR。
+> `gh pr list --repo Hmbown/CodeWhale --author h3c-hexin --state all` 核。head 走 `h3c-hexin/DeepSeek-TUI` 跨 fork；提报前从最新 `upstream/main` 切净分支，逐项自查无 Pinvou / Qwen / vLLM / GB10 品牌或 fixture 泄漏。
+
+**🟡 OPEN**(2026-07-16 基于 upstream v0.8.68 主线提报)
+
+| PR | 内容 | 本地验证 / 后续 |
+|---|---|---|
+| [#4379](https://github.com/Hmbown/CodeWhale/pull/4379) | P2: opt-in cancellable MCP OAuth login API；保留旧 API，取消时先 drop in-flight future，保证回调监听关闭后才返回 | `cargo fmt --check` + `cancellable_oauth_drops_in_flight_flow_before_returning` 通过；关联问题 [#4380](https://github.com/Hmbown/CodeWhale/issues/4380)，仍按普通 PR 等待审阅 |
+| [#4381](https://github.com/Hmbown/CodeWhale/pull/4381) | AUTO-lite: HOURLY 支持 `BYHOUR` / `BYMINUTE` 锚点，按 automation 创建日期保持相位，旧无锚点规则不变 | `cargo fmt --check` + 两条 `hourly_rrule_*` 回归通过；若合入，下次 sync 按文件级 diff harvest |
+| [#4383](https://github.com/Hmbown/CodeWhale/pull/4383) | C11: Windows killed background shell 不同步 join 被 pipe 阻塞的 reader thread；其他终态与非 Windows 保持 join | `cargo fmt --check` + Linux orphan-pipe 回归通过；新增 Windows 专属 blocked-reader 回归，交由上游 Windows CI 执行 |
+
+> **2026-07-16 主线复核**:P1 资源/模板列表按实际暴露集合 gate 已在 upstream v0.8.68 等价存在，**不重复提 PR**；AUTO-lite 的 `approval_force_prompt` / `rlm_eval` 不可旁路审批也已被上游现有实现覆盖。下次 sync 必须按字段核对后再撤对应 fork 指纹，不能只凭同名判断。
 
 **🟢 已 MERGED**(2026-06-30 提交 + 当日合入,head 走 `h3c-hexin/DeepSeek-TUI` 跨 fork。下次 sync 随上游 harvest,撤对应 fork-guard 指纹)
 
@@ -172,7 +182,7 @@ grep -rn "messages.push\|runtime_prompt" DeepSeek-TUI/crates/tui/src/core/engine
 
 ## 9. 相关文档
 - `docs/底座升级验收清单.md` — **每次升级必过的硬 gate**(L0 编译 / L1 自动化测试 / L2 六大功能验收 / L3 回归专项 + 签收表)
-- `docs/fork-modifications.md` — fork 现状清单(§1 C1–C7+W 结构 / §2 移除·harvest / §3 fork-guard + 验证 checklist / §4 sync 历史)
+- `docs/fork-modifications.md` — fork 现状清单(§1 C1–C14+W 结构 / §2 移除·harvest / §3 fork-guard + 验证 checklist / §4 sync 历史)
 - `docs/auto-compact-256K-tuning.md` — 256K 窗口 compact 阈值调参依据
 - `docs/system-prompt-架构.md` — system prompt 全链路梳理
 - `scripts/fork-guard.sh` — 指纹 + 回归测试守卫

@@ -1,5 +1,5 @@
 export function resolveOAuthInstallOutcome(toolName, loginResult, authStatus) {
-  const connected = loginResult?.status === 'connected' && !!authStatus?.oauth_token_present;
+  const connected = !!authStatus?.oauth_token_present;
   if (connected) {
     return {
       connected: true,
@@ -22,6 +22,8 @@ export function resolveOAuthInstallOutcome(toolName, loginResult, authStatus) {
   const status = loginResult?.status === 'connected' ? 'auth_failed' : (loginResult?.status || 'failed');
   const title = status === 'timeout'
     ? `${toolName}授权超时`
+    : status === 'cancelled'
+      ? `${toolName}授权已取消`
     : status === 'service_error'
       ? `${toolName}授权服务错误`
       : `${toolName}授权失败`;

@@ -302,6 +302,15 @@ pub fn read_full_agent_state(workspace: &Path) -> Option<serde_json::Value> {
         {
             obj.insert("ui".into(), wf.ui);
         }
+        if let Some(stop) = stop_info_for_project(&project) {
+            obj.insert("stopped".into(), serde_json::Value::Bool(true));
+            if let Some(value) = stop.get("stopped_at") {
+                obj.insert("stopped_at".into(), value.clone());
+            }
+            if let Some(value) = stop.get("reason") {
+                obj.insert("stop_reason".into(), value.clone());
+            }
+        }
     }
 
     Some(v)
@@ -592,6 +601,82 @@ fn read_scenario(project: &Path) -> Option<String> {
     let content = std::fs::read_to_string(project.join("_state").join("workflow_progress.json")).ok()?;
     let v: serde_json::Value = serde_json::from_str(&content).ok()?;
     v.get("scenario")?.as_str().map(String::from)
+}
+
+const WORKFLOW_STOP_MARKER: &str = "workflow_stopped.json";
+
+fn stop_marker_path(project: &Path) -> PathBuf {
+    project.join("_state").join(WORKFLOW_STOP_MARKER)
+}
+
+fn stop_info_for_project(project: &Path) -> Option<serde_json::Value> {
+    let content = std::fs::read_to_string(stop_marker_path(project)).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+/// Whether the latest workflow project in `workspace` was explicitly stopped
+/// by the user. Late SubAgent completion events consult this boundary before
+/// they are allowed to advance the scheduler.
+pub fn workflow_is_stopped(workspace: &Path) -> bool {
+    find_project_dir(workspace)
+        .as_deref()
+        .is_some_and(|project| stop_marker_path(project).is_file())
+}
+
+/// Persist an irreversible stop marker for the current run and return the
+/// original brief so the UI can prefill “edit and restart”. A stopped run is
+/// never resumed in place; restarting creates a fresh run/session.
+pub fn stop_workflow(
+    workspace: &Path,
+    session_id: &str,
+    reason: &str,
+) -> Result<serde_json::Value, String> {
+    let project = find_project_dir(workspace).ok_or_else(|| "no project found".to_string())?;
+    let marker_path = stop_marker_path(&project);
+    let existing = stop_info_for_project(&project);
+    let stopped_at = existing
+        .as_ref()
+        .and_then(|value| value.get("stopped_at"))
+        .and_then(|value| value.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+    let marker = serde_json::json!({
+        "stopped": true,
+        "stopped_at": stopped_at,
+        "reason": reason,
+        "session_id": session_id,
+    });
+    if existing.is_none() {
+        let tmp_path = marker_path.with_extension("json.tmp");
+        std::fs::write(
+            &tmp_path,
+            serde_json::to_string_pretty(&marker)
+                .map_err(|e| format!("serialize stop marker: {e}"))?,
+        )
+        .map_err(|e| format!("write stop marker: {e}"))?;
+        std::fs::rename(&tmp_path, &marker_path)
+            .map_err(|e| format!("commit stop marker: {e}"))?;
+    }
+    log_flow(
+        &project,
+        "workflow_stopped",
+        &[("reason", reason), ("session_id", session_id)],
+    );
+    batch_clear_session(session_id);
+
+    let brief = std::fs::read_to_string(project.join("_state").join("brief.json"))
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    Ok(serde_json::json!({
+        "ok": true,
+        "session_id": session_id,
+        "project_dir": project.to_string_lossy(),
+        "scenario": read_scenario(&project),
+        "brief": brief,
+        "stopped_at": stopped_at,
+        "reason": reason,
+    }))
 }
 
 fn read_role_gate_type(role_id: &str) -> String {
@@ -929,6 +1014,11 @@ pub fn step_fresh(workspace: &Path) -> HarnessAction {
         Some(p) => p,
         None => return HarnessAction::NotApplicable,
     };
+    if stop_marker_path(&project).is_file() {
+        return HarnessAction::Blocked {
+            message: "工作流已由用户停止，请修改需求后新建任务".to_string(),
+        };
+    }
     // warm-up gating: 判 status == "pass" 而非文件存在
     // 防止 blocked 报告也写盘导致下次启动跳过检查
     //
@@ -977,6 +1067,9 @@ pub fn step_after_role(workspace: &Path, running_role: &str) -> HarnessAction {
         Some(p) => p,
         None => return HarnessAction::NotApplicable,
     };
+    if stop_marker_path(&project).is_file() {
+        return HarnessAction::NotApplicable;
+    }
     let scenario = read_scenario(&project).unwrap_or_else(|| "solution_deck".to_string());
     let gate_type = resolve_gate_type(running_role, &project);
 
@@ -1118,6 +1211,11 @@ pub fn approve_gate(workspace: &Path, role_id: &str) -> HarnessAction {
         Some(p) => p,
         None => return HarnessAction::NotApplicable,
     };
+    if stop_marker_path(&project).is_file() {
+        return HarnessAction::Blocked {
+            message: "工作流已停止，不能继续审批".to_string(),
+        };
+    }
     let scenario = read_scenario(&project).unwrap_or_else(|| "solution_deck".to_string());
 
     let check = run_deliverable_check(&project, role_id);
@@ -1154,6 +1252,9 @@ pub fn agent_failed(workspace: &Path, role_id: &str, error: &str) -> HarnessActi
         Some(p) => p,
         None => return HarnessAction::NotApplicable,
     };
+    if stop_marker_path(&project).is_file() {
+        return HarnessAction::NotApplicable;
+    }
     let scenario = read_scenario(&project).unwrap_or_else(|| "solution_deck".to_string());
     // 失败原因只取首行并截断（中文安全），进 flow_log + scheduler reason + 重派 addendum。
     let first_line = error.lines().next().unwrap_or("");
@@ -1205,6 +1306,11 @@ pub fn reject_gate(workspace: &Path, role_id: &str, reason: &str) -> HarnessActi
         Some(p) => p,
         None => return HarnessAction::NotApplicable,
     };
+    if stop_marker_path(&project).is_file() {
+        return HarnessAction::Blocked {
+            message: "工作流已停止，不能继续打回".to_string(),
+        };
+    }
     let scenario = read_scenario(&project).unwrap_or_else(|| "solution_deck".to_string());
     let _ = run_scheduler(&project, &["--scenario", &scenario, "--fail", role_id, "--reason", reason]);
 
@@ -1648,6 +1754,23 @@ pub fn batch_clear(session_id: &str, base_role: &str) {
     fanout_clear(session_id, base_role);
 }
 
+/// Clear every in-memory per-page queue/ledger belonging to one workflow
+/// session. Stopping a run must not leave queued pages that can be dispatched
+/// by a late completion event.
+pub fn batch_clear_session(session_id: &str) {
+    let prefix = format!("{session_id}|");
+    if let Ok(mut q) = per_page_queue().lock() {
+        q.retain(|key, _| !key.starts_with(&prefix));
+    }
+    if let Ok(mut m) = batch_outputs().lock() {
+        m.retain(|key, _| !key.starts_with(&prefix));
+    }
+    if let Ok(mut m) = per_page_retry().lock() {
+        m.retain(|key, _| !key.starts_with(&prefix));
+    }
+    fanout_lock().retain(|key, _| !key.starts_with(&prefix));
+}
+
 // ── [per_page] 单页产出校验 + 超时自动重试 ──────────────────────────────────
 //
 // 为什么需要：SubAgent SSE 超时/放弃时仍 emit AgentComplete，若无条件 record_page_done，
@@ -1805,6 +1928,11 @@ pub fn retry_role(workspace: &Path, role_id: &str) -> HarnessAction {
         Some(p) => p,
         None => return HarnessAction::NotApplicable,
     };
+    if stop_marker_path(&project).is_file() {
+        return HarnessAction::Blocked {
+            message: "工作流已停止，请修改需求后新建任务".to_string(),
+        };
+    }
     let scenario = read_scenario(&project).unwrap_or_else(|| "solution_deck".to_string());
     // 重置该角色为 pending + 清 retries(scheduler --reset)。失败不阻断,继续 step_fresh
     // (即便 reset 没生效,step_fresh 会照常按当前 State 决策,最坏是原样返回 blocked)。
@@ -2097,6 +2225,41 @@ fn read_role_def(role_id: &str) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workflow_stop_marker_blocks_resume_and_preserves_brief() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-workflow-stop-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let project = root.join("wf-test");
+        let state = project.join("_state");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(
+            state.join("workflow_progress.json"),
+            r#"{"scenario":"solution_deck","roles":{"zhongshu":{"status":"running"}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            state.join("brief.json"),
+            r#"{"scenario":"solution_deck","user_request_raw":"原始需求"}"#,
+        )
+        .unwrap();
+
+        let result = stop_workflow(&root, "session-stop-test", "user_stopped").unwrap();
+        assert!(state.join(WORKFLOW_STOP_MARKER).is_file());
+        assert!(workflow_is_stopped(&root));
+        assert_eq!(result["brief"]["user_request_raw"], "原始需求");
+        let repeated = stop_workflow(&root, "session-stop-test", "repeat").unwrap();
+        assert_eq!(repeated["stopped_at"], result["stopped_at"]);
+        assert!(matches!(
+            step_fresh(&root),
+            HarnessAction::Blocked { message } if message.contains("用户停止")
+        ));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn truncate_never_panics_on_chinese_char_boundary() {

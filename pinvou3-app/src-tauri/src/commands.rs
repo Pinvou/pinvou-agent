@@ -46,6 +46,8 @@ pub struct HiddenSessionListItem {
     pub archived_at: Option<String>,
 }
 
+/// 仅普通 chat 会话可用的命令守卫（transcript/产物由前端覆盖持久化的路径）。
+/// 重命名/置顶/归档/删除等元数据操作按 SessionKind 分发，不走这个守卫。
 fn ensure_chat_session(store: &SessionStore, id: &str, action: &str) -> Result<(), String> {
     match store
         .session_kind(id)
@@ -1773,7 +1775,7 @@ pub async fn list_sessions(store: State<'_, SessionStore>) -> Result<Vec<Session
         .collect())
 }
 
-/// 列出已从左侧任务列表收起的 session。前端设置页渲染用。
+/// 列出已从左侧任务列表收起的 session（含收起的定时运行会话）。前端设置页渲染用。
 #[tauri::command]
 pub async fn list_archived_sessions(
     store: State<'_, SessionStore>,
@@ -1781,13 +1783,18 @@ pub async fn list_archived_sessions(
     let mut metas = store
         .list()
         .map_err(|e| format!("list_archived_sessions: {e:?}"))?;
+    metas.extend(
+        store
+            .list_scheduled()
+            .map_err(|e| format!("list_archived_sessions: {e:?}"))?,
+    );
     metas.retain(|m| {
-        matches!(store.session_kind(&m.id), Ok(SessionKind::Chat))
-            && store.is_hidden(&m.id)
+        store.is_hidden(&m.id)
             && store
                 .active_skill(&m.id)
                 .map_or(true, |b| b.project_dir.is_none())
     });
+    metas.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(metas
         .into_iter()
         .map(|metadata| {
@@ -1839,47 +1846,59 @@ pub async fn load_session(
     Ok(session)
 }
 
-/// 删除 session（含 artifacts 目录）。
+/// 删除 session（含 artifacts 目录）。按 SessionKind 分发：定时运行会话联动
+/// 删除该次 Session、Run 与底座 Task（任务定义、共享工作间和其他运行保留）。
 #[tauri::command]
 pub async fn delete_session(
     id: String,
+    app: AppHandle,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
-    ensure_chat_session(&store, &id, "delete_session")?;
-    // 先回收该 session 的 engine(cancel 在跑的 turn + shutdown + abort forwarder),
-    // 再删盘上数据,避免僵尸 engine 继续往已删 session 写产物。
-    pool.evict(&id).await;
-    let result = store
-        .delete(&id)
-        .map_err(|e| format!("delete_session({id}): {e:?}"));
+    let result = match store
+        .session_kind(&id)
+        .map_err(|e| format!("delete_session({id}): {e:?}"))?
+    {
+        SessionKind::Chat => {
+            // 先回收该 session 的 engine(cancel 在跑的 turn + shutdown + abort forwarder),
+            // 再删盘上数据,避免僵尸 engine 继续往已删 session 写产物。
+            pool.evict(&id).await;
+            store
+                .delete(&id)
+                .map_err(|e| format!("delete_session({id}): {e:?}"))
+        }
+        SessionKind::ScheduledRun => {
+            let scheduled = app
+                .try_state::<crate::scheduled_tasks::ScheduledTaskState>()
+                .ok_or_else(|| "Scheduled task runtime is unavailable".to_string())?;
+            scheduled.delete_run_for_session(&id).await
+        }
+    };
     if result.is_ok() {
         pool.forget_session(&id);
     }
     result
 }
 
-/// 重命名 session 标题。
+/// 重命名 session 标题。普通会话与定时运行会话共用 Session 元数据。
 #[tauri::command]
 pub async fn rename_session(
     id: String,
     title: String,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    ensure_chat_session(&store, &id, "rename_session")?;
     store
         .set_title(&id, title)
         .map_err(|e| format!("rename_session({id}): {e:?}"))
 }
 
-/// 设置历史对话置顶状态。
+/// 设置历史对话置顶状态。普通会话与定时运行会话共用置顶表。
 #[tauri::command]
 pub async fn set_session_pinned(
     id: String,
     pinned: bool,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    ensure_chat_session(&store, &id, "set_session_pinned")?;
     // 先 load 一次确认 session 存在,避免置顶表残留无效 id。
     store
         .load(&id)
@@ -1888,14 +1907,13 @@ pub async fn set_session_pinned(
     Ok(())
 }
 
-/// 设置 session 是否从左侧任务列表收起。
+/// 设置 session 是否从左侧任务列表收起。普通会话与定时运行会话共用收起表。
 #[tauri::command]
 pub async fn set_session_archived(
     id: String,
     archived: bool,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    ensure_chat_session(&store, &id, "set_session_archived")?;
     // 先 load 一次确认 session 存在,避免收起表残留无效 id。
     store
         .load(&id)
@@ -2615,7 +2633,8 @@ pub async fn edit_last_turn(
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
-    ensure_chat_session(&store, &sid, "edit_last_turn")?;
+    // 定时会话不走 ensure_chat_session:编辑重发与继续追问同路,EnginePool 内部
+    // 按 scheduled_profile 做 turn gate;会话管理类命令(删除/改名/归档)仍然拒绝。
     pool.edit_last_turn(&sid, new_message)
         .await
         .map_err(|e| format!("edit_last_turn: {e:?}"))
@@ -3627,6 +3646,8 @@ const EXTERNAL_URL_ALLOWLIST: &[&str] = &[
     "https://app.tavily.com/",
     "https://www.iwencai.com/",
     "https://agent.qcc.com/",
+    // 智慧芽开放平台:智慧芽 MCP API Key 获取说明
+    "https://open.zhihuiya.com/",
     // MegaCube 官网(侧边栏 footer 入口跳转)
     "https://www.h3c.com/",
     // 飞书/Lark OAuth(device flow 授权页 + 账号页);连接飞书走这里开浏览器
@@ -3824,11 +3845,33 @@ pub async fn reveal_session_folder(
     store
         .load(&session_id)
         .map_err(|e| format!("load_session({session_id}): {e:?}"))?;
+    // 定时运行会话没有独立 runtime 目录，打开它所属任务的共享工作间。
+    if store.scheduled_profile(&session_id).is_some() {
+        let dir = store
+            .execution_workspace(&session_id)
+            .map_err(|e| format!("reveal_session_folder({session_id}): {e:#}"))?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("create scheduled task workspace {}: {e}", dir.display()))?;
+        return shell_open(&strip_verbatim(&dir));
+    }
     let dir = crate::bridge::paths::sessions_root().join(&session_id);
     if !dir.is_dir() {
         return Err(format!("session folder not found: {}", dir.display()));
     }
     reveal_path_in_file_manager(&dir)
+}
+
+/// 打开某个定时任务独享的工作间。工作间由 automation id 稳定派生，任务的多次运行
+/// 共享该目录；首次打开早于首次运行时按需创建，不接受前端传入任意文件系统路径。
+#[tauri::command]
+pub async fn open_scheduled_task_folder(automation_id: String) -> Result<(), String> {
+    if !valid_session_id(&automation_id) {
+        return Err("invalid automation id".into());
+    }
+    let dir = crate::bridge::paths::scheduled_task_workspace_dir(&automation_id);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("create scheduled task workspace {}: {e}", dir.display()))?;
+    shell_open(&strip_verbatim(&dir))
 }
 
 /// 在 Tauri 新窗口里加载 HTML 产物。绕过 snap 浏览器对 `~/.xxx/` 隐藏目录的沙箱限制。
@@ -4341,13 +4384,14 @@ pub async fn submit_user_input(
 pub async fn add_run_materials(
     session_id: Option<String>,
     paths: Vec<String>,
-    pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
 ) -> Result<Vec<String>, String> {
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
-    let workspace = pool.bridge.session_workspace(&sid);
+    let workspace = store
+        .execution_workspace(&sid)
+        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
     let project = crate::harness::find_project_dir(&workspace)
         .ok_or_else(|| "当前 session 无工作流项目".to_string())?;
     let dst_dir = project.join("配套材料");
@@ -4434,7 +4478,9 @@ pub async fn summon_pinvou(
         .fresh_bridge_for(&sid)
         .await
         .map_err(|e| format!("summon_pinvou prepare bridge({sid}): {e:#}"))?;
-    let workspace = bridge.session_workspace(&sid);
+    let workspace = store
+        .execution_workspace(&sid)
+        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
     crate::pinvou_review::summon(
         &bridge,
         &session.messages,
@@ -4797,9 +4843,11 @@ pub async fn start_workflow(
         sid
     };
 
-    // 2. 在**该 session 的 workspace**下初始化项目目录。harness forwarder 也按
-    //    bridge.session_workspace(session_id) 找项目,两处路径必须一致,否则推进找不到项目。
-    let workspace = pool.bridge.session_workspace(&sid);
+    // 2. 在 engine 的实际执行工作区下初始化项目目录。普通聊天使用 session 私有目录，
+    //    定时任务使用 automation 私有目录；harness forwarder 必须读取同一路径。
+    let workspace = store
+        .execution_workspace(&sid)
+        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
     let project_dir = tokio::task::spawn_blocking({
         let workspace = workspace.clone();
         let scenario = scenario.clone();
@@ -4875,7 +4923,9 @@ pub async fn kick_workflow(
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
-    let ws = pool.bridge.session_workspace(&sid);
+    let ws = store
+        .execution_workspace(&sid)
+        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
     let action = tokio::task::spawn_blocking(move || crate::harness::step_fresh(&ws))
         .await
         .map_err(|e| format!("spawn_blocking step_fresh: {e}"))?;
@@ -4980,7 +5030,9 @@ pub async fn retry_workflow_role(
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
-    let ws = pool.bridge.session_workspace(&sid);
+    let ws = store
+        .execution_workspace(&sid)
+        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
     let rid = role_id.clone();
     let action = tokio::task::spawn_blocking(move || crate::harness::retry_role(&ws, &rid))
         .await
@@ -5489,12 +5541,13 @@ pub async fn cancel_workflow_role(
     role_id: String,
     session_id: Option<String>,
     store: State<'_, SessionStore>,
-    pool: State<'_, EnginePool>,
 ) -> Result<serde_json::Value, String> {
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
-    let workspace = pool.bridge.session_workspace(&sid);
+    let workspace = store
+        .execution_workspace(&sid)
+        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
     let rid = role_id.clone();
     let result = tokio::task::spawn_blocking(move || {
         // 找到 project_dir
@@ -5538,6 +5591,61 @@ pub async fn cancel_workflow_role(
     result
 }
 
+/// 用户主动停止整个工作流。
+///
+/// 顺序不可交换：先持久化 stop marker（挡住竞态中的迟到 AgentComplete），再通过
+/// 底座显式取消该 session 的全部后台 SubAgent。返回原始 brief，供前端预填“修改需求
+/// 并重新开始”；旧 run 保留现场，不在原状态上复活。
+#[tauri::command]
+pub async fn stop_workflow(
+    session_id: Option<String>,
+    reason: Option<String>,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+    app: AppHandle,
+) -> Result<serde_json::Value, String> {
+    let sid = session_id
+        .or_else(|| store.active_id())
+        .ok_or_else(|| "no active session".to_string())?;
+    let workspace = store
+        .execution_workspace(&sid)
+        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
+    let stop_reason = reason
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "user_stopped".to_string());
+
+    let ws = workspace.clone();
+    let marker_sid = sid.clone();
+    let marker_reason = stop_reason.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::harness::stop_workflow(&ws, &marker_sid, &marker_reason)
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking stop_workflow: {e}"))??;
+
+    if let Some(engine) = pool.handle_for(&sid).await {
+        if let Err(e) = engine
+            .handle
+            .send(deepseek_tui::core::ops::Op::CancelSubAgents)
+            .await
+        {
+            // stop marker 已成功落盘，是不可回滚的调度真相；engine 恰好退出只表示
+            // 没有存活 worker 可取消，不应把 UI 留在“停止失败”。
+            eprintln!("[workflow] stop marker persisted but cancel op failed: {e:?}");
+        }
+    }
+
+    let _ = app.emit(
+        "workflow:stopped",
+        serde_json::json!({
+            "session_id": sid,
+            "reason": stop_reason,
+            "stopped_at": result.get("stopped_at"),
+        }),
+    );
+    Ok(result)
+}
+
 /// 用户审批通过 workflow gate → 标记角色完成 → 继续推进 harness loop。
 /// 前端在审批卡片上点"确认"时调用。
 #[tauri::command]
@@ -5551,7 +5659,9 @@ pub async fn approve_workflow_gate(
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
-    let workspace = pool.bridge.session_workspace(&sid);
+    let workspace = store
+        .execution_workspace(&sid)
+        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
     let engine = pool
         .get_or_spawn(&sid)
         .await
@@ -5571,7 +5681,7 @@ pub async fn approve_workflow_gate(
         _ => "noop",
     };
     let handled =
-        crate::engine::apply_harness_action(action, &app, &engine.bridge, &engine.handle, &sid)
+        crate::engine::apply_harness_action(action, &app, &engine.workspace, &engine.handle, &sid)
             .await;
     Ok(serde_json::json!({"ok": handled, "next": next_label}))
 }
@@ -5589,7 +5699,9 @@ pub async fn reject_workflow_gate(
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
-    let workspace = pool.bridge.session_workspace(&sid);
+    let workspace = store
+        .execution_workspace(&sid)
+        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
     let engine = pool
         .get_or_spawn(&sid)
         .await
@@ -5607,7 +5719,7 @@ pub async fn reject_workflow_gate(
         _ => "noop",
     };
     let handled =
-        crate::engine::apply_harness_action(action, &app, &engine.bridge, &engine.handle, &sid)
+        crate::engine::apply_harness_action(action, &app, &engine.workspace, &engine.handle, &sid)
             .await;
     Ok(serde_json::json!({"ok": handled, "next": next_label}))
 }
@@ -5619,12 +5731,13 @@ pub async fn reject_workflow_gate(
 pub async fn get_workflow_state(
     session_id: Option<String>,
     store: State<'_, SessionStore>,
-    pool: State<'_, EnginePool>,
 ) -> Result<serde_json::Value, String> {
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
-    let workspace = pool.bridge.session_workspace(&sid);
+    let workspace = store
+        .execution_workspace(&sid)
+        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
     tokio::task::spawn_blocking(move || {
         crate::harness::read_full_agent_state(&workspace).unwrap_or(serde_json::json!(null))
     })
@@ -5652,6 +5765,13 @@ pub async fn find_resumable_run(
         let progress = std::path::Path::new(&pd)
             .join("_state")
             .join("workflow_progress.json");
+        if std::path::Path::new(&pd)
+            .join("_state")
+            .join("workflow_stopped.json")
+            .is_file()
+        {
+            continue;
+        }
         let Ok(content) = std::fs::read_to_string(&progress) else {
             continue;
         };
@@ -5954,6 +6074,103 @@ mod tests {
         assert!(!corrupt.oauth_token_present);
         assert_eq!(corrupt.status, "config_installed_auth_pending");
         delete_test_oauth_token_key(&key);
+    }
+
+    #[tokio::test]
+    async fn forkguard_marketplace_oauth_replacement_waits_for_previous_flow() {
+        let coordinator = MarketplaceOAuthLoginCoordinator::default();
+        let first = coordinator.register("yuandian-mcp", "request-1").await;
+        let second = coordinator.register("yuandian-mcp", "request-2").await;
+
+        assert!(
+            first.cancellation_token.is_cancelled(),
+            "registering a replacement must cancel the older OAuth flow"
+        );
+        assert!(
+            coordinator.is_current("yuandian-mcp", "request-2").await,
+            "the replacement must own the tool slot"
+        );
+
+        coordinator
+            .finish("yuandian-mcp", "request-1", first.completion_sender)
+            .await;
+        wait_for_oauth_completion(
+            second
+                .previous_completion
+                .expect("replacement should wait for the previous flow"),
+        )
+        .await;
+
+        assert!(!second.cancellation_token.is_cancelled());
+        coordinator
+            .finish("yuandian-mcp", "request-2", second.completion_sender)
+            .await;
+        assert!(!coordinator.is_current("yuandian-mcp", "request-2").await);
+    }
+
+    #[tokio::test]
+    async fn forkguard_marketplace_oauth_cancel_waits_until_flow_finishes() {
+        let coordinator = std::sync::Arc::new(MarketplaceOAuthLoginCoordinator::default());
+        let registration = coordinator.register("yuandian-mcp", "request-1").await;
+        let cancellation_token = registration.cancellation_token.clone();
+        let cancel_coordinator = std::sync::Arc::clone(&coordinator);
+        let cancel_task = tokio::spawn(async move {
+            cancel_coordinator
+                .cancel("yuandian-mcp", "request-1")
+                .await
+        });
+        tokio::task::yield_now().await;
+
+        assert!(cancellation_token.is_cancelled());
+        assert!(
+            !cancel_task.is_finished(),
+            "cancel must not return before the OAuth future has stopped"
+        );
+
+        coordinator
+            .finish(
+                "yuandian-mcp",
+                "request-1",
+                registration.completion_sender,
+            )
+            .await;
+        assert!(cancel_task.await.unwrap());
+        let newer = coordinator.register("yuandian-mcp", "request-2").await;
+        assert!(
+            !coordinator
+                .cancel("yuandian-mcp", "stale-request")
+                .await,
+            "a stale request id must not cancel a newer flow"
+        );
+        assert!(!newer.cancellation_token.is_cancelled());
+        coordinator
+            .finish("yuandian-mcp", "request-2", newer.completion_sender)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn forkguard_marketplace_oauth_remembers_cancel_before_register() {
+        let coordinator = MarketplaceOAuthLoginCoordinator::default();
+        assert!(
+            coordinator
+                .cancel("yuandian-mcp", "request-before-register")
+                .await
+        );
+
+        let registration = coordinator
+            .register("yuandian-mcp", "request-before-register")
+            .await;
+        assert!(
+            registration.cancellation_token.is_cancelled(),
+            "a fast UI cancel must stop an OAuth command even if it registers later"
+        );
+        coordinator
+            .finish(
+                "yuandian-mcp",
+                "request-before-register",
+                registration.completion_sender,
+            )
+            .await;
     }
 
     #[test]
@@ -6399,7 +6616,7 @@ mod tests {
     }
 
     #[test]
-    fn scheduled_attachment_staging_and_artifact_resolution_share_locked_workspace() {
+    fn scheduled_attachment_staging_and_artifact_resolution_use_task_workspace() {
         use crate::bridge::sessions::{ScheduledRunMode, ScheduledRunProfile};
 
         let _g = crate::bridge::paths::tests::ENV_LOCK
@@ -6412,29 +6629,39 @@ mod tests {
         let previous = std::env::var("PINVOU3_HOME").ok();
         let _ = std::fs::remove_dir_all(&root);
         std::env::set_var("PINVOU3_HOME", &root);
-        let workspace = root.join("user-project");
-        std::fs::create_dir_all(&workspace).expect("scheduled workspace");
+        let scheduled_root = root.join("scheduled");
+        std::fs::create_dir_all(&root).expect("test root");
         let source = root.join("source.png");
         std::fs::write(&source, b"\x89PNG\r\n\x1a\nfake-bytes").expect("image source");
-        let store = SessionStore::boot().expect("session store");
+        let store =
+            SessionStore::boot_with_scheduled_root(scheduled_root.clone()).expect("session store");
         let scheduled = store
             .create_scheduled_run(ScheduledRunProfile {
                 task_id: "workspace-task".to_string(),
                 model: "scheduled-model".to_string(),
                 model_id: None,
-                workspace: workspace.clone(),
+                workspace: root.join("ignored-task-workspace"),
                 mode: ScheduledRunMode::Agent,
                 allow_shell: false,
                 trust_mode: false,
                 auto_approve: false,
             })
             .expect("scheduled session");
-        let edit_error = ensure_chat_session(&store, &scheduled.metadata.id, "edit_last_turn")
-            .expect_err("scheduled runs must reject ordinary edit-and-resend");
-        assert!(edit_error.contains("scheduled-run sessions are managed from Scheduled"));
+        // transcript 覆盖类命令仍拒绝 scheduled 会话(引擎独占持久化)。
+        let manage_error =
+            ensure_chat_session(&store, &scheduled.metadata.id, "save_session_messages")
+                .expect_err("scheduled runs must reject UI transcript overwrites");
+        assert!(manage_error.contains("scheduled-run sessions are managed from Scheduled"));
         let locked = store
             .execution_workspace(&scheduled.metadata.id)
             .expect("locked scheduled workspace");
+        // 每次运行对话独立，同一 automation 共享自己的工作间；输入路径不会生效。
+        assert_eq!(
+            locked,
+            scheduled_root.join("workspace-task").join("workspace")
+        );
+        let workspace = locked.clone();
+        std::fs::create_dir_all(&workspace).expect("session workspace");
         let staged_dir = format!(
             ".pinvou3/scheduled-attachments/{}/attachments",
             scheduled.metadata.id
@@ -6473,6 +6700,84 @@ mod tests {
                 .expect("scheduled artifact workspace"),
             workspace.join("report.md").to_string_lossy().into_owned()
         );
+
+        drop(store);
+        match previous {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 定时运行会话按 SessionKind 分发后，重命名/置顶/归档复用 Session 元数据
+    /// (rename_session / set_session_pinned / set_session_archived 的真实后端路径)，
+    /// 而删除仍然只能走 automation 联动，不允许把 sched-* 当普通会话直删。
+    #[test]
+    fn scheduled_session_metadata_dispatch_supports_rename_pin_archive() {
+        use crate::bridge::sessions::{ScheduledRunMode, ScheduledRunProfile};
+
+        let _g = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-scheduled-metadata-test-{}",
+            std::process::id()
+        ));
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        let _ = std::fs::remove_dir_all(&root);
+        std::env::set_var("PINVOU3_HOME", &root);
+        let store =
+            SessionStore::boot_with_scheduled_root(root.join("scheduled")).expect("session store");
+        let scheduled = store
+            .create_scheduled_run(ScheduledRunProfile {
+                task_id: "metadata-task".to_string(),
+                model: "scheduled-model".to_string(),
+                model_id: None,
+                workspace: root.join("ignored"),
+                mode: ScheduledRunMode::Yolo,
+                allow_shell: false,
+                trust_mode: true,
+                auto_approve: true,
+            })
+            .expect("scheduled session");
+        let id = scheduled.metadata.id.clone();
+        assert!(matches!(
+            store.session_kind(&id),
+            Ok(SessionKind::ScheduledRun)
+        ));
+
+        // rename_session 路径：set_title 对 scheduled 会话生效并落盘。
+        store.set_title(&id, "重命名后的定时运行".to_string()).expect("rename");
+        assert_eq!(
+            store.load(&id).expect("reload").metadata.title,
+            "重命名后的定时运行"
+        );
+
+        // set_session_pinned 路径：共用置顶表。
+        store.set_pinned(&id, true);
+        assert!(store.is_pinned(&id));
+        assert!(store.pinned_at(&id).is_some());
+
+        // set_session_archived 路径：共用收起表,且归档列表能列出 sched-* 会话。
+        store.set_hidden(&id, true);
+        assert!(store.is_hidden(&id));
+        assert!(store
+            .list_scheduled()
+            .expect("list scheduled")
+            .iter()
+            .any(|metadata| metadata.id == id));
+        // 收起会强制取消置顶(与普通会话一致)。
+        assert!(!store.is_pinned(&id));
+        store.set_hidden(&id, false);
+        assert!(!store.is_hidden(&id));
+
+        // 删除不允许绕过 automation 联动直删。
+        let delete_error = store
+            .delete(&id)
+            .expect_err("scheduled sessions must not be deleted as ordinary chats");
+        assert!(delete_error
+            .to_string()
+            .contains("deleted through their automation"));
 
         drop(store);
         match previous {
@@ -6590,9 +6895,9 @@ mod tests {
         }
     }
 
-    /// 扩 EXTERNAL_URL_ALLOWLIST 必须加测试:obsidian.md 放行,仿冒/非 https 拒绝。
+    /// 扩 EXTERNAL_URL_ALLOWLIST 必须加测试:目标域名放行,仿冒/非 https 拒绝。
     #[test]
-    fn external_allowlist_allows_obsidian_rejects_lookalikes() {
+    fn external_allowlist_allows_known_targets_rejects_lookalikes() {
         assert!(url_in_external_allowlist("https://obsidian.md/download"));
         assert!(url_in_external_allowlist("https://metaso.cn/"));
         assert!(!url_in_external_allowlist(
@@ -6601,8 +6906,15 @@ mod tests {
         assert!(!url_in_external_allowlist(
             "https://passport.legalmind.cn/ssologin?appId=apiplatform"
         ));
+        assert!(url_in_external_allowlist(
+            "https://open.zhihuiya.com/dashboard/api-keys"
+        ));
         assert!(!url_in_external_allowlist("https://obsidian.md.evil.com/"));
+        assert!(!url_in_external_allowlist(
+            "https://open.zhihuiya.com.evil.com/dashboard/api-keys"
+        ));
         assert!(!url_in_external_allowlist("http://obsidian.md/"));
+        assert!(!url_in_external_allowlist("http://open.zhihuiya.com/"));
         assert!(!url_in_external_allowlist("https://evil.example.com/"));
     }
 
@@ -7194,15 +7506,164 @@ pub struct MarketplaceAuthStatus {
     pub message: String,
 }
 
+#[derive(Clone)]
+struct ActiveMarketplaceOAuthLogin {
+    request_id: String,
+    cancellation_token: tokio_util::sync::CancellationToken,
+    completion: tokio::sync::watch::Receiver<bool>,
+}
+
+#[derive(Default)]
+struct MarketplaceOAuthLoginCoordinator {
+    state: tokio::sync::Mutex<MarketplaceOAuthLoginCoordinatorState>,
+}
+
+#[derive(Default)]
+struct MarketplaceOAuthLoginCoordinatorState {
+    active: std::collections::HashMap<String, ActiveMarketplaceOAuthLogin>,
+    pending_cancellations: std::collections::HashMap<String, String>,
+}
+
+struct MarketplaceOAuthLoginRegistration {
+    cancellation_token: tokio_util::sync::CancellationToken,
+    completion_sender: tokio::sync::watch::Sender<bool>,
+    previous_completion: Option<tokio::sync::watch::Receiver<bool>>,
+}
+
+impl MarketplaceOAuthLoginCoordinator {
+    async fn register(
+        &self,
+        tool_id: &str,
+        request_id: &str,
+    ) -> MarketplaceOAuthLoginRegistration {
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        let (completion_sender, completion) = tokio::sync::watch::channel(false);
+        let mut state = self.state.lock().await;
+        let cancelled_before_register = state
+            .pending_cancellations
+            .remove(tool_id)
+            .is_some_and(|pending_request_id| pending_request_id == request_id);
+        let previous = state.active.insert(
+            tool_id.to_string(),
+            ActiveMarketplaceOAuthLogin {
+                request_id: request_id.to_string(),
+                cancellation_token: cancellation_token.clone(),
+                completion,
+            },
+        );
+        if let Some(previous) = previous.as_ref() {
+            previous.cancellation_token.cancel();
+        }
+        if cancelled_before_register {
+            cancellation_token.cancel();
+        }
+        MarketplaceOAuthLoginRegistration {
+            cancellation_token,
+            completion_sender,
+            previous_completion: previous.map(|active| active.completion),
+        }
+    }
+
+    async fn is_current(&self, tool_id: &str, request_id: &str) -> bool {
+        self.state
+            .lock()
+            .await
+            .active
+            .get(tool_id)
+            .is_some_and(|active| active.request_id == request_id)
+    }
+
+    async fn finish(
+        &self,
+        tool_id: &str,
+        request_id: &str,
+        completion_sender: tokio::sync::watch::Sender<bool>,
+    ) {
+        let mut state = self.state.lock().await;
+        if state
+            .active
+            .get(tool_id)
+            .is_some_and(|active| active.request_id == request_id)
+        {
+            state.active.remove(tool_id);
+        }
+        drop(state);
+        let _ = completion_sender.send(true);
+    }
+
+    async fn cancel(&self, tool_id: &str, request_id: &str) -> bool {
+        let completion = {
+            let mut state = self.state.lock().await;
+            let Some(active) = state
+                .active
+                .get(tool_id)
+                .filter(|active| active.request_id == request_id)
+            else {
+                if state.active.contains_key(tool_id) {
+                    return false;
+                }
+                state
+                    .pending_cancellations
+                    .insert(tool_id.to_string(), request_id.to_string());
+                return true;
+            };
+            active.cancellation_token.cancel();
+            active.completion.clone()
+        };
+        wait_for_oauth_completion(completion).await;
+        true
+    }
+}
+
+async fn wait_for_oauth_completion(mut completion: tokio::sync::watch::Receiver<bool>) {
+    if *completion.borrow() {
+        return;
+    }
+    let _ = completion.changed().await;
+}
+
+fn marketplace_oauth_login_coordinator() -> &'static MarketplaceOAuthLoginCoordinator {
+    static COORDINATOR: std::sync::OnceLock<MarketplaceOAuthLoginCoordinator> =
+        std::sync::OnceLock::new();
+    COORDINATOR.get_or_init(MarketplaceOAuthLoginCoordinator::default)
+}
+
 #[tauri::command]
 pub async fn install_marketplace_tool(
     tool_id: String,
     config: Option<std::collections::HashMap<String, String>>,
 ) -> Result<(), String> {
     let user_config = config.unwrap_or_default();
+    let install_tool_id = tool_id.clone();
     tokio::task::spawn_blocking(move || {
         let mgr = crate::bridge::marketplace::MarketplaceManager::new();
-        mgr.install(&tool_id, &user_config)?;
+        mgr.install(&install_tool_id, &user_config)
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))??;
+
+    let should_validate = {
+        let mgr = crate::bridge::marketplace::MarketplaceManager::new();
+        mgr.requires_remote_connection_validation(&tool_id)
+    };
+    if should_validate {
+        let validation_result = {
+            let mgr = crate::bridge::marketplace::MarketplaceManager::new();
+            mgr.validate_remote_connection(&tool_id).await
+        };
+        if let Err(err) = validation_result {
+            let rollback_tool_id = tool_id.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                let mgr = crate::bridge::marketplace::MarketplaceManager::new();
+                mgr.uninstall(&rollback_tool_id)
+            })
+            .await;
+            return Err(err);
+        }
+    }
+
+    tokio::task::spawn_blocking(move || {
+        let mgr = crate::bridge::marketplace::MarketplaceManager::new();
         // 联动:装该 MCP 声明的配套技能(引擎+引导整体到位)。
         // skill 是增强,装失败只记日志、不让已成功的 MCP 安装回滚。
         for sid in mgr.companion_skills(&tool_id) {
@@ -7224,7 +7685,9 @@ fn marketplace_oauth_error_result(
 ) -> MarketplaceOAuthLoginResult {
     let detail = format!("{error:#}");
     let lower = detail.to_ascii_lowercase();
-    let (status, message) = if lower.contains("timed out waiting for oauth callback") {
+    let (status, message) = if lower.contains("oauth login was cancelled") {
+        ("cancelled", "已取消等待浏览器授权，可稍后重新授权。")
+    } else if lower.contains("timed out waiting for oauth callback") {
         (
             "timeout",
             "授权超时，未收到浏览器回调。若浏览器停在 open.chineselaw.com/service-error，说明元典授权服务返回失败，请关闭页面后重试。",
@@ -7351,6 +7814,7 @@ pub async fn get_marketplace_tool_auth_status(
 #[tauri::command]
 pub async fn start_marketplace_tool_oauth_login(
     tool_id: String,
+    request_id: String,
 ) -> Result<MarketplaceOAuthLoginResult, String> {
     let mgr = crate::bridge::marketplace::MarketplaceManager::new();
     let server_name = mgr
@@ -7367,15 +7831,38 @@ pub async fn start_marketplace_tool_oauth_login(
         .cloned()
         .ok_or_else(|| format!("mcp.json 未找到服务 '{server_name}'"))?;
 
-    match deepseek_tui::mcp::oauth::perform_oauth_login_for_server(
+    let coordinator = marketplace_oauth_login_coordinator();
+    let registration = coordinator.register(&tool_id, &request_id).await;
+    if let Some(previous_completion) = registration.previous_completion {
+        wait_for_oauth_completion(previous_completion).await;
+    }
+    if registration.cancellation_token.is_cancelled()
+        || !coordinator.is_current(&tool_id, &request_id).await
+    {
+        coordinator
+            .finish(&tool_id, &request_id, registration.completion_sender)
+            .await;
+        return Ok(MarketplaceOAuthLoginResult {
+            status: "cancelled".to_string(),
+            message: "已取消等待浏览器授权，可稍后重新授权。".to_string(),
+            server_name,
+        });
+    }
+
+    let login_result = deepseek_tui::mcp::oauth::perform_oauth_login_for_server_with_cancel(
         &server_name,
         &server,
         None,
         None,
         None,
+        registration.cancellation_token.clone(),
     )
-    .await
-    {
+    .await;
+    coordinator
+        .finish(&tool_id, &request_id, registration.completion_sender)
+        .await;
+
+    match login_result {
         Ok(()) => Ok(MarketplaceOAuthLoginResult {
             status: "connected".to_string(),
             message: "元典 OAuth 授权已完成。".to_string(),
@@ -7383,6 +7870,16 @@ pub async fn start_marketplace_tool_oauth_login(
         }),
         Err(e) => Ok(marketplace_oauth_error_result(server_name, e)),
     }
+}
+
+#[tauri::command]
+pub async fn cancel_marketplace_tool_oauth_login(
+    tool_id: String,
+    request_id: String,
+) -> Result<bool, String> {
+    Ok(marketplace_oauth_login_coordinator()
+        .cancel(&tool_id, &request_id)
+        .await)
 }
 
 #[tauri::command]
