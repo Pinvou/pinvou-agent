@@ -70,6 +70,8 @@
         "installMode": "perMachine",
         "template": "resources/windows/nsis/installer-template.nsi",
         "installerHooks": "resources/windows/nsis/installer-hooks.nsh",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
         "languages": [
           "SimpChinese",
           "English"
