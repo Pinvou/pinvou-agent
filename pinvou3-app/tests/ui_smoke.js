@@ -219,7 +219,132 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
       for (const handler of handlers) await handler({ payload });
     }
     await emit('chat:tool_start', { session_id:'s1', id:'live-shell', name:'exec_shell', args:{ command:'validator --json' } });
+    await emit('chat:tool_delta', { session_id:'s1', id:'live-shell', stream:'stdout', content:'downloaded 42%\n' + Array.from({ length: 80 }, (_, i) => 'progress line ' + i).join('\n') + '\nlive progress tail' });
+  });
+  await sleep(200);
+  const liveShell = await page.evaluate(() => {
+    const item = window.TauriBridge.getState().chatItems.find(item => item.toolId === 'live-shell');
+    return {
+      running: item && item.state === 'running',
+      output: item && item.output,
+      visible: document.body.innerText.includes('downloaded 42%'),
+    };
+  });
+  rec('live exec_shell output is visible before tool_end', liveShell.running && liveShell.output.includes('downloaded 42%') && liveShell.visible, JSON.stringify(liveShell));
+  await page.evaluate(async () => {
+    async function emit(name, payload) {
+      const handlers = window.__TAURI_EVENT_HANDLERS__[name] || [];
+      for (const handler of handlers) await handler({ payload });
+    }
+    await emit('chat:tool_start', { session_id:'s1', id:'live-shell-wait', name:'exec_shell_wait', args:{ task_id:'shell-task-1', wait:true } });
+    await emit('chat:tool_delta', { session_id:'s1', id:'live-shell-wait', stream:'stdout', content:'tick 42\n' });
+  });
+  await sleep(100);
+  const liveShellWait = await page.evaluate(() => {
+    const item = window.TauriBridge.getState().chatItems.find(item => item.toolId === 'live-shell-wait');
+    return {
+      running: item && item.state === 'running',
+      output: item && item.output,
+      visible: document.body.innerText.includes('tick 42'),
+    };
+  });
+  rec('live exec_shell_wait output is visible before tool_end', liveShellWait.running && liveShellWait.output.includes('tick 42') && liveShellWait.visible, JSON.stringify(liveShellWait));
+  await page.evaluate(async () => {
+    async function emit(name, payload) {
+      const handlers = window.__TAURI_EVENT_HANDLERS__[name] || [];
+      for (const handler of handlers) await handler({ payload });
+    }
+    await emit('chat:tool_start', { session_id:'s1', id:'split-terminal', name:'exec_shell', args:{ command:'split terminal frames' } });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal', stream:'stdout', content:'line one\r' });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal', stream:'stdout', content:'\nDownloading 10%\r' });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal', stream:'stdout', content:'Downloading \u001b[3' });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal', stream:'stdout', content:'2m90%\u001b[0' });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal', stream:'stdout', content:'m' });
+  });
+  await sleep(100);
+  const splitTerminal = await page.evaluate(() => {
+    const item = window.TauriBridge.getState().chatItems.find(item => item.toolId === 'split-terminal');
+    return item && item.output;
+  });
+  rec('terminal parser preserves CRLF and ANSI state across live chunks',
+    splitTerminal === 'line one\nDownloading 90%' && !splitTerminal.includes('\u001b') && !splitTerminal.includes('10%'),
+    JSON.stringify(splitTerminal));
+  await page.evaluate(async () => {
+    async function emit(name, payload) {
+      const handlers = window.__TAURI_EVENT_HANDLERS__[name] || [];
+      for (const handler of handlers) await handler({ payload });
+    }
+    await emit('chat:tool_start', { session_id:'s1', id:'split-terminal-stderr', name:'exec_shell', args:{ command:'split stderr style' } });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal-stderr', stream:'stderr', content:'\u001b[3' });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal-stderr', stream:'stderr', content:'1m错误\u001b[0' });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal-stderr', stream:'stderr', content:'m' });
+  });
+  const splitTerminalStderr = await page.evaluate(() => {
+    const item = window.TauriBridge.getState().chatItems.find(item => item.toolId === 'split-terminal-stderr');
+    return item && item.output;
+  });
+  rec('terminal parser preserves stderr ANSI state across live chunks',
+    splitTerminalStderr === '[STDERR] 错误' && !splitTerminalStderr.includes('\u001b'),
+    JSON.stringify(splitTerminalStderr));
+  await page.evaluate(async () => {
+    async function emit(name, payload) {
+      const handlers = window.__TAURI_EVENT_HANDLERS__[name] || [];
+      for (const handler of handlers) await handler({ payload });
+    }
+    await emit('chat:tool_start', { session_id:'s1', id:'background-shell', name:'exec_shell', args:{ command:'winget install WPS' } });
+    await emit('chat:tool_delta', { session_id:'s1', id:'background-shell', stream:'stdout', content:'\u001b[32mDownloading 10%\u001b[0m\rDownloading 90%' });
+    await emit('chat:tool_end', {
+      session_id:'s1', id:'background-shell', success:true, output:'Command started in background',
+      metadata:{ backgrounded:true, status:'Running', task_id:'shell-bg-1' }
+    });
+    await emit('chat:done', { session_id:'s1', status:'Completed' });
+  });
+  await sleep(150);
+  const backgroundShell = await page.evaluate(() => {
+    const item = window.TauriBridge.getState().chatItems.find(item => item.toolId === 'background-shell');
+    const button = document.querySelector('[data-testid="cancel-shell-task"][data-shell-task-id="shell-bg-1"]');
+    if (button) button.click();
+    return {
+      running: item && item.state === 'running' && item.background === true,
+      taskId: item && item.taskId,
+      output: item && item.output,
+      button: !!button,
+    };
+  });
+  await sleep(50);
+  const backgroundCancelInvoke = await page.evaluate(() => window.__TAURI_INVOKES__.some(entry =>
+    entry.cmd === 'cancel_shell_task' && entry.args.sessionId === 's1' && entry.args.taskId === 'shell-bg-1'));
+  rec('background shell survives chat:done, collapses terminal progress, and cancels by task id',
+    backgroundShell.running && backgroundShell.taskId === 'shell-bg-1' &&
+      backgroundShell.output.includes('Downloading 90%') && !backgroundShell.output.includes('10%') &&
+      backgroundShell.button && backgroundCancelInvoke,
+    JSON.stringify({ backgroundShell, backgroundCancelInvoke }));
+  await page.evaluate(async () => {
+    const handlers = window.__TAURI_EVENT_HANDLERS__['chat:shell_task_status'] || [];
+    for (const handler of handlers) await handler({ payload: {
+      session_id:'s1', tool_id:'background-shell', task_id:'shell-bg-1', status:'Killed', exit_code:null,
+      stdout_tail:'Downloading 90%\nDownloaded final tail',
+      stderr_tail:'installer warning from final stderr'
+    }});
+  });
+  const backgroundKilled = await page.evaluate(() => {
+    const item = window.TauriBridge.getState().chatItems.find(item => item.toolId === 'background-shell');
+    return {
+      terminal: item && item.state === 'failed' && item.shellStatus === 'Killed' && item.background === false,
+      output: item && item.output,
+    };
+  });
+  rec('background shell terminal event reconciles final stdout and stderr tails',
+    backgroundKilled.terminal &&
+      backgroundKilled.output === 'Downloading 90%\nDownloaded final tail\n[STDERR] installer warning from final stderr',
+    JSON.stringify(backgroundKilled));
+  await page.evaluate(async () => {
+    async function emit(name, payload) {
+      const handlers = window.__TAURI_EVENT_HANDLERS__[name] || [];
+      for (const handler of handlers) await handler({ payload });
+    }
     await emit('chat:tool_end', { session_id:'s1', id:'live-shell', success:true, output:'{"ok":true,"path":"live-validator-fake.html"}' });
+    await emit('chat:tool_end', { session_id:'s1', id:'live-shell-wait', success:true, output:'tick 42\ntick 100\n' });
     await emit('chat:tool_start', { session_id:'s1', id:'live-mcp', name:'mcp_gongwen_make_gongwen', args:{} });
     await emit('chat:tool_end', { session_id:'s1', id:'live-mcp', success:true, output:'{"path":"live-report.docx"}' });
   });

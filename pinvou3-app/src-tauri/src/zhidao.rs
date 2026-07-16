@@ -12,9 +12,7 @@ use std::time::{Duration, Instant};
 
 use qrcode::{render::svg, QrCode};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Manager, State};
-
-use crate::engine_pool::EnginePool;
+use tauri::{AppHandle, Emitter, Manager};
 
 fn b64(data: &[u8]) -> String {
     const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -219,7 +217,12 @@ pub fn zhidao_skills_should_show() -> bool {
     connected_flag().is_file()
 }
 
-fn set_connected(v: bool) {
+/// 仅在连接可见性真实变化时更新标记与技能文件。在跑 Engine 会在下一轮消息前
+/// 重扫技能目录，因此不需要回收 Engine。
+fn set_connected(v: bool) -> bool {
+    if zhidao_skills_should_show() == v {
+        return false;
+    }
     let p = connected_flag();
     if v {
         let _ = std::fs::create_dir_all(zhidao_home());
@@ -228,6 +231,7 @@ fn set_connected(v: bool) {
         let _ = std::fs::remove_file(&p);
     }
     let _ = crate::bridge::bundle::Pinvou3Bundle::paths().apply_zhidao_skill_visibility(v);
+    true
 }
 
 #[derive(Default)]
@@ -244,43 +248,29 @@ fn is_cancelled(app: &AppHandle) -> bool {
 }
 
 #[tauri::command]
-pub async fn zhidao_status(pool: State<'_, EnginePool>) -> Result<Value, String> {
-    let previous_visible = zhidao_skills_should_show();
-    let value = tokio::task::spawn_blocking(|| {
+pub async fn zhidao_status() -> Result<Value, String> {
+    tokio::task::spawn_blocking(|| {
         let cmd = zhidao(&["load"])?;
         let (ok, _code, so, _se) = run(cmd)?;
         let connected = ok && so.contains("ZHIDAO_TOKEN");
-        set_connected(connected);
         // 只回 connected:load 的 stdout 就是 ZHIDAO_TOKEN 本体,不能进 webview
         Ok::<Value, String>(json!({ "connected": connected }))
     })
     .await
-    .map_err(|e| format!("spawn_blocking: {e}"))??;
-    let connected = value
-        .get("connected")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if connected || previous_visible {
-        pool.evict_active().await;
-    }
-    Ok(value)
+    .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
 #[tauri::command]
-pub async fn zhidao_connect_begin(
-    app: AppHandle,
-    pool: State<'_, EnginePool>,
-) -> Result<Value, String> {
+pub async fn zhidao_connect_begin(app: AppHandle) -> Result<Value, String> {
     app.state::<ZhidaoConn>()
         .cancelled
         .store(false, Ordering::SeqCst);
     let app2 = app.clone();
-    let pool2 = pool.inner().clone();
-    tokio::task::spawn_blocking(move || run_login_flow(&app2, pool2));
+    tokio::task::spawn_blocking(move || run_login_flow(&app2));
     Ok(json!({ "started": true }))
 }
 
-fn run_login_flow(app: &AppHandle, pool: EnginePool) {
+fn run_login_flow(app: &AppHandle) {
     let login = match get_sso_login() {
         Ok(login) => login,
         Err(e) => {
@@ -306,8 +296,9 @@ fn run_login_flow(app: &AppHandle, pool: EnginePool) {
             let _ = run(cmd);
         }
         if is_authed() {
-            set_connected(true);
-            tauri::async_runtime::spawn(async move { pool.evict_active().await; });
+            if set_connected(true) {
+                log::info!("[zhidao] skill visibility changed connected=true; applies next turn");
+            }
             emit(app, "zhidao:connected", json!({ "ok": true }));
             return;
         }
@@ -382,17 +373,17 @@ pub async fn zhidao_cancel(app: AppHandle) -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub async fn zhidao_logout(pool: State<'_, EnginePool>) -> Result<Value, String> {
-    let result = tokio::task::spawn_blocking(|| {
+pub async fn zhidao_logout() -> Result<Value, String> {
+    tokio::task::spawn_blocking(|| {
         let cmd = zhidao(&["clear"])?;
         let (ok, _code, so, se) = run(cmd)?;
-        set_connected(false);
+        if set_connected(false) {
+            log::info!("[zhidao] skill visibility changed connected=false; applies next turn");
+        }
         Ok::<Value, String>(json!({ "ok": ok, "stdout": so, "stderr": se }))
     })
     .await
-    .map_err(|e| format!("spawn_blocking: {e}"))?;
-    pool.evict_active().await;
-    result
+    .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
 #[cfg(test)]

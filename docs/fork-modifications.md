@@ -138,6 +138,19 @@
 - **守护**:`fork-guard.sh` C11 指纹钉住 `ShellStatus::Killed` 分支;目标 warmup 回归测试 3 条通过。Windows 行为仍需 Windows CI/真机覆盖。
 - 上游 PR:暂未提;需先补 Windows 稳定复现与平台回归测试。
 
+### C12 `runtime` shell 执行期间异步输出事件（2026-07-15）
+- **文件**：`core/events.rs`、`core/engine/{tool_execution,turn_loop}.rs`、`tools/{spec,shell}.rs`、`tools/shell/tests.rs`、`tui/ui.rs`
+- **改动**：复用 shell 已有的 stdout/stderr reader thread，通过 `ToolContext` 回调发出带工具调用 ID 和流类型的 `ToolCallOutput`；每个 reader 使用独立流式 UTF-8 解码状态保留跨 read 的未完成字符尾部，避免中文或 emoji 在实时输出中变成替换字符。reader 回调只向进程内无界队列非阻塞入队，异步转发器每 25ms 合并相邻同流块，再对 Engine 有界事件通道执行可等待发送；工具返回前会显式 flush，保证已产生输出排在 `ToolCallComplete` 前，显式后台 reader 则继续复用同一转发器。前端为每个工具卡的 stdout/stderr 保存独立终端解析状态，跨事件识别 `\r\n`、独立 `\r`、CSI/OSC 等 ANSI 序列，并限制未终止序列缓存大小，避免残缺转义字符进入界面或异常输出无限占用内存。后台任务终态无论此前是否收到实时块，都会对 stdout/stderr tail 做终端清洗、重叠去重和补齐，避免失败 stderr 或拥塞期间遗漏的尾部永久缺失。前台等待和显式后台任务都会绑定发起它们的 `exec_shell` 调用，因此后台启动结果返回后，进程 reader 仍会继续向原工具卡片转发输出。后续 `exec_shell_wait` 或 `task_shell_wait` 设置 `wait=true` 时，也会每 100ms 读取并转发后台缓冲区新增内容。任务完成后仍保留原有完整 `ToolCallComplete` 结果；底座 TUI 忽略该嵌入事件，pinvou3-app 将其转为 `chat:tool_delta` 供当前工具卡片实时显示。Windows 下 cmd、PowerShell 和 WinGet 均保持普通 stdout/stderr 管道执行，不自动启用 PTY，也不改变前后台语义。
+- **理由**：Windows 下 cmd/PowerShell 长任务虽然持续写出内容，但原有应用层只在进程退出后收到完整结果，界面会长时间表现为无响应；读取线程也不能因前端变慢而阻塞，否则子进程可能因管道写满而停住。
+- **守护**：`forkguard_shell_live_output_preserves_utf8_across_read_boundaries` 强制把 stdout/stderr 中文与 emoji 拆在不同 read 中并验证实时输出无损；`forkguard_exec_shell_streams_output_before_completion` 启动测试子进程，子进程输出首块后等待父进程释放同步文件，以此验证前台 reader 首段 stdout 到达时进程仍在运行，不再依赖 PowerShell 启动速度或 `Start-Sleep`；`forkguard_exec_shell_background_streams_after_start_returns` 验证显式后台启动调用返回后 reader 仍持续推送，`forkguard_exec_shell_wait_streams_background_output_before_completion` 验证后台等待过程持续转发新增内容；`forkguard_tool_output_forwarder_coalesces_without_dropping_on_backpressure` 使用容量为 1 的已满事件通道验证合并发送遇到背压仍完整交付。对应 Engine 测试使用测试专用 `ControlledStreamingTool` 与 `Notify` 同步信号固定三条事件链。UI smoke 强制把 CRLF、进度覆盖和 stdout/stderr ANSI 序列拆成多个 `chat:tool_delta`，并验证后台工具卡跨 `chat:done` 保持运行、按 task ID 取消、接收独立终态及补齐最终 stdout/stderr tail。`fork-guard.sh` 固定事件、回调和行为测试指纹。
+- 上游 PR：可提；这是通用的嵌入式 Engine 工具输出事件能力，提交前需确认上游对事件背压和原生 TUI 展示策略的偏好。
+
+### C13 `app integration` 会话 Turn 权威终态生命周期（2026-07-16）
+- **文件**：`pinvou3-app/src-tauri/src/{engine,engine_pool,commands}.rs`
+- **改动**：`EnginePool` 按 session 持有独立于 Engine 条目的 `TurnLifecycle`，Engine wrapper 与事件 forwarder 复用同一状态；缺失 Engine 时只为确有活动 turn 的会话补发 `Interrupted`，空闲或未知会话取消保持 no-op。Engine 事件流意外结束时通过同一 `finish_once` 发出 `Failed` 权威终态和调度信号；主动回收先完成终态并中止 forwarder，再关闭底层 Engine，避免旧 forwarder 干扰后续重建。会话删除成功后同步清理生命周期记录。
+- **理由**：Engine 条目可能在 turn 运行期间被回收，若取消逻辑只看 Engine 是否存在，就会在空闲会话伪造终态，或在真实活动 turn 丢失 Engine 时无法可靠解锁前端；事件流异常结束也必须与自然完成、主动回收竞争同一个单次终态。
+- **守护**：`forwarder_stop_and_reclaim_share_one_terminal` 验证异常结束与主动回收只能有一个胜者；`session_turn_lifecycle_survives_engine_entry_removal_without_faking_idle_cancel` 验证池级状态在 Engine 条目移除后仍可完成活动 turn，完成后再次取消保持 no-op。`fork-guard.sh` 固定池级生命周期、活动态取消和异常 forwarder 终态指纹。
+
 ### R `agentic-rag` EngineConfig.extra_tools 应用层工具注入口(2026-06-24)
 - **文件**:`core/engine.rs`(`ExtraTools` newtype + `EngineConfig.extra_tools` 字段 + Default)、`core/engine/tool_setup.rs`(`build_turn_tool_registry_builder` 末尾 `with_tool` 循环注册);连带补 3 处 TUI 路径 EngineConfig literal(`runtime_threads.rs`/`tui/ui.rs`/`main.rs`,`extra_tools: Default::default()`)
 - **改动**:给 `EngineConfig` 加 `pub extra_tools: ExtraTools`(newtype 包 `Vec<Arc<dyn ToolSpec>>`,手写 Debug 输出工具名——`dyn ToolSpec` 非 Debug,否则破 `#[derive(Debug)]`),每 turn build registry 时 append 到 builder。让**嵌入应用**(pinvou3-app)无需 fork 工具表即可注册自定义 `ToolSpec`

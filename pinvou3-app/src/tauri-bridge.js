@@ -289,6 +289,7 @@
   var pendingAssistantBlocks = [];
   var itemIdSeq = 0;
   var toolMeta = {};       // id → { name, args }
+  var shellNotifyTimer = null;
   // 上下文行口径保护：TurnComplete 的 usage.input_tokens 是本轮所有请求的累加
   // （计费口径）。只有单请求的"干净轮"该值才等于当前上下文占用；本轮一旦出现
   // 工具调用/重试/压缩（= 多请求），就跳过这次 tokens 更新，保留上一个准确值。
@@ -2226,9 +2227,255 @@
         state.chatItems[i].output = output;
         state.chatItems[i].success = success;
         state.chatItems[i].state = success ? "done" : "failed";
+        delete state.chatItems[i]._terminalParser;
         break;
       }
     }
+  }
+  function scheduleShellNotify() {
+    if (shellNotifyTimer != null) return;
+    shellNotifyTimer = window.setTimeout(function () {
+      shellNotifyTimer = null;
+      notify();
+    }, 50);
+  }
+
+  function markBackgroundToolItem(toolId, sessionId, taskId, fallbackOutput) {
+    for (var i = 0; i < state.chatItems.length; i++) {
+      var item = state.chatItems[i];
+      if (item.type !== "tool" || item.toolId !== toolId) continue;
+      if (!item.liveOutput && fallbackOutput != null) item.output = fallbackOutput;
+      item.success = null;
+      item.state = "running";
+      item.background = true;
+      item.sessionId = sessionId || state.activeSessionId;
+      item.taskId = taskId;
+      return true;
+    }
+    return false;
+  }
+
+  function finishBackgroundToolItem(toolId, payload) {
+    for (var i = 0; i < state.chatItems.length; i++) {
+      var item = state.chatItems[i];
+      if (item.type !== "tool" || item.toolId !== toolId) continue;
+      var status = payload.status || "Failed";
+      var success = status === "Completed";
+      item.success = success;
+      item.state = success ? "done" : "failed";
+      item.background = false;
+      item.shellStatus = status;
+      item.exitCode = payload.exit_code;
+      item.output = reconcileBackgroundTerminalOutput(item.output, payload);
+      delete item._terminalParser;
+      return true;
+    }
+    return false;
+  }
+
+  var MAX_PENDING_TERMINAL_SEQUENCE_CHARS = 16 * 1024;
+  function rememberPendingTerminalSequence(parserState, input, start) {
+    var pending = input.slice(start);
+    // A malformed unterminated OSC/DCS sequence must not bypass the live
+    // output tail limit and grow renderer memory without bound.
+    parserState.pendingAnsi = pending.length <= MAX_PENDING_TERMINAL_SEQUENCE_CHARS ? pending : "";
+  }
+
+  function stripTerminalSequences(text, parserState) {
+    var input = String((parserState.pendingAnsi || "") + (text || ""));
+    parserState.pendingAnsi = "";
+    var clean = "";
+    for (var i = 0; i < input.length; i++) {
+      if (input[i] !== "\x1b") {
+        clean += input[i];
+        continue;
+      }
+      if (i + 1 >= input.length) {
+        rememberPendingTerminalSequence(parserState, input, i);
+        break;
+      }
+
+      var kind = input[i + 1];
+      if (kind === "[") {
+        var csiEnd = i + 2;
+        var malformedCsi = false;
+        while (csiEnd < input.length) {
+          var csiCode = input.charCodeAt(csiEnd);
+          if (csiCode >= 0x40 && csiCode <= 0x7e) break;
+          if (csiCode < 0x20 || csiCode > 0x3f) {
+            malformedCsi = true;
+            break;
+          }
+          csiEnd += 1;
+        }
+        if (malformedCsi) {
+          i += 1;
+          continue;
+        }
+        if (csiEnd >= input.length) {
+          rememberPendingTerminalSequence(parserState, input, i);
+          break;
+        }
+        i = csiEnd;
+        continue;
+      }
+
+      // OSC/DCS/SOS/PM/APC are terminated by ST (ESC \); OSC also accepts BEL.
+      if (kind === "]" || kind === "P" || kind === "X" || kind === "^" || kind === "_") {
+        var stringEnd = i + 2;
+        var terminated = false;
+        while (stringEnd < input.length) {
+          if (kind === "]" && input[stringEnd] === "\x07") {
+            terminated = true;
+            break;
+          }
+          if (input[stringEnd] === "\x1b" && input[stringEnd + 1] === "\\") {
+            stringEnd += 1;
+            terminated = true;
+            break;
+          }
+          stringEnd += 1;
+        }
+        if (!terminated) {
+          rememberPendingTerminalSequence(parserState, input, i);
+          break;
+        }
+        i = stringEnd;
+        continue;
+      }
+
+      // Generic two-or-more-byte escape sequence: optional intermediate
+      // bytes followed by a final byte.
+      var escapeEnd = i + 1;
+      while (escapeEnd < input.length) {
+        var escapeCode = input.charCodeAt(escapeEnd);
+        if (escapeCode < 0x20 || escapeCode > 0x2f) break;
+        escapeEnd += 1;
+      }
+      if (escapeEnd >= input.length) {
+        rememberPendingTerminalSequence(parserState, input, i);
+        break;
+      }
+      var finalCode = input.charCodeAt(escapeEnd);
+      if (finalCode >= 0x30 && finalCode <= 0x7e) i = escapeEnd;
+    }
+    return clean;
+  }
+
+  function terminalParserState(item, stream) {
+    if (!item._terminalParser) {
+      Object.defineProperty(item, "_terminalParser", {
+        value: {},
+        writable: true,
+        configurable: true,
+      });
+    }
+    var key = stream === "stderr" ? "stderr" : "stdout";
+    if (!item._terminalParser[key]) {
+      item._terminalParser[key] = { pendingCR: false, pendingAnsi: "" };
+    }
+    return item._terminalParser[key];
+  }
+
+  // A standalone carriage return resets the current terminal line. WinGet
+  // uses this for progress frames, so keep the newest frame instead of
+  // appending hundreds of nearly identical lines.
+  function mergeTerminalChunk(previous, chunk, parserState, prefix) {
+    var output = String(previous == null ? "" : previous);
+    var clean = stripTerminalSequences(chunk, parserState);
+    var i = 0;
+    if (parserState.pendingCR && clean) {
+      if (clean[0] === "\n") {
+        output += "\n";
+        i = 1;
+      } else {
+        output = output.slice(0, output.lastIndexOf("\n") + 1);
+      }
+      parserState.pendingCR = false;
+    }
+    var needsPrefix = !!prefix;
+    for (; i < clean.length; i++) {
+      var ch = clean[i];
+      if (ch === "\r") {
+        if (clean[i + 1] === "\n") {
+          output += "\n";
+          i += 1;
+        } else if (i + 1 >= clean.length) {
+          parserState.pendingCR = true;
+        } else {
+          output = output.slice(0, output.lastIndexOf("\n") + 1);
+        }
+      } else if (ch === "\b") {
+        var lineStart = output.lastIndexOf("\n") + 1;
+        if (output.length > lineStart) output = output.slice(0, -1);
+      } else {
+        if (needsPrefix) {
+          output += prefix;
+          needsPrefix = false;
+        }
+        output += ch;
+      }
+    }
+    return output;
+  }
+
+  function mergeTerminalTail(previous, tail) {
+    var output = String(previous == null ? "" : previous);
+    var suffix = String(tail == null ? "" : tail);
+    if (!suffix) return output;
+    if (!output) return suffix;
+    if (output.indexOf(suffix) >= 0) return output;
+
+    var maxOverlap = Math.min(output.length, suffix.length);
+    for (var overlap = maxOverlap; overlap > 0; overlap--) {
+      if (output.slice(-overlap) === suffix.slice(0, overlap)) {
+        return output + suffix.slice(overlap);
+      }
+    }
+    return output + (output.endsWith("\n") || suffix.startsWith("\n") ? "" : "\n") + suffix;
+  }
+
+  function normalizeTerminalTail(tail, prefix) {
+    if (!tail) return "";
+    return mergeTerminalChunk(
+      "",
+      tail,
+      { pendingCR: false, pendingAnsi: "" },
+      prefix || ""
+    );
+  }
+
+  function reconcileBackgroundTerminalOutput(previous, payload) {
+    var output = String(previous == null ? "" : previous);
+    output = mergeTerminalTail(output, normalizeTerminalTail(payload.stdout_tail, ""));
+    output = mergeTerminalTail(output, normalizeTerminalTail(payload.stderr_tail, "[STDERR] "));
+    return output;
+  }
+
+  // Live shell output is display-only. The completed tool result remains the
+  // authoritative value written to conversation history/model context.
+  function appendToolItemOutput(toolId, content, stream) {
+    var chunk = typeof content === "string" ? content : String(content == null ? "" : content);
+    if (!chunk) return false;
+    for (var i = 0; i < state.chatItems.length; i++) {
+      var item = state.chatItems[i];
+      if (item.type !== "tool" || item.toolId !== toolId) continue;
+      var parserState = terminalParserState(item, stream);
+      var output = mergeTerminalChunk(
+        item.output,
+        chunk,
+        parserState,
+        stream === "stderr" ? "[STDERR] " : ""
+      );
+      // A verbose long-running process must not grow renderer memory without
+      // bound. Completion replaces this tail with the normal full result.
+      var maxLiveChars = 128 * 1024;
+      if (output.length > maxLiveChars) output = "…\n" + output.slice(-maxLiveChars);
+      item.output = output;
+      item.liveOutput = true;
+      return true;
+    }
+    return false;
   }
 
   // 找最后一条匹配的 chat item（用于卡片状态机更新）
@@ -2652,6 +2899,11 @@
     }
   }
 
+  async function cancelShellTask(sessionId, taskId) {
+    if (!sessionId || !taskId) throw new Error("Missing shell task identity");
+    return invoke("cancel_shell_task", { sessionId: sessionId, taskId: taskId });
+  }
+
   // ── Persist messages ─────────────────────────────────────────────
   async function persistMessages() {
     if (!state.activeSessionId) return;
@@ -2807,8 +3059,15 @@
     addChatItem({
       type: "tool", toolId: p.id, name: p.name, args: p.args,
       output: null, success: null, state: "running",
+      sessionId: p.session_id || state.activeSessionId,
     });
     notify();
+  }); });
+
+  listen("chat:tool_delta", function (e) { onSessionEvent(e, function () {
+    var p = e.payload || {};
+    appendToolItemOutput(p.id, p.content, p.stream);
+    scheduleShellNotify();
   }); });
 
   listen("chat:tool_end", function (e) { onSessionEvent(e, function () {
@@ -2820,6 +3079,16 @@
     var trBlock = { type: "tool_result", tool_use_id: p.id, content: resultContent };
     if (!p.success) trBlock.is_error = true;
     state.messages.push({ role: "user", content: [trBlock] });
+
+    var backgroundTaskId = p.metadata && p.metadata.backgrounded === true &&
+      p.metadata.status === "Running" && p.metadata.task_id;
+    if (meta && meta.name === "exec_shell" && backgroundTaskId) {
+      markBackgroundToolItem(p.id, p.session_id, backgroundTaskId, p.output);
+      delete toolMeta[p.id];
+      currentStreamText = ""; currentStreamId = 0;
+      notify();
+      return;
+    }
 
     // request_user_input 结束：把选择卡片标记为已提交/取消，不渲染工具卡
     if (meta && meta.name === "request_user_input") {
@@ -2926,6 +3195,12 @@
     delete toolMeta[p.id];
     currentStreamText = "";
     currentStreamId = 0;
+    notify();
+  }); });
+
+  listen("chat:shell_task_status", function (e) { onSessionEvent(e, function () {
+    var p = e.payload || {};
+    finishBackgroundToolItem(p.tool_id, p);
     notify();
   }); });
 
@@ -5438,6 +5713,7 @@
     confirmScheduledTaskDraft: confirmScheduledTaskDraft,
     clearScheduledTaskDraft: clearScheduledTaskDraft,
     cancelGeneration: cancelGeneration,
+    cancelShellTask: cancelShellTask,
     createNewSession: createNewSession,
     switchToSession: switchToSession,
     openScheduledRunChat: openScheduledRunChat,

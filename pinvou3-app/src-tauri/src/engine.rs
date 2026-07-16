@@ -14,13 +14,17 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use anyhow::Result;
 use deepseek_tui::core::engine::{spawn_engine, EngineHandle};
 use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
 use deepseek_tui::core::ops::{Op, UserInputProvenance};
 use deepseek_tui::models::Message;
+use deepseek_tui::tools::shell::{
+    new_shared_shell_manager, SharedShellManager, ShellResult, ShellStatus,
+};
 use deepseek_tui::tools::user_input::UserInputResponse;
 use deepseek_tui::tui::app::AppMode;
 use deepseek_tui::tui::approval::ApprovalMode;
@@ -48,7 +52,97 @@ pub struct AppEngine {
     pub(crate) workspace: PathBuf,
     pub(crate) turn_events: broadcast::Sender<EngineTurnSignal>,
     pub(crate) scheduled_unattended: Arc<AtomicBool>,
+    shell_manager: SharedShellManager,
+    turn_lifecycle: Arc<TurnLifecycle>,
     scheduled_disallowed_tools: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct TurnLifecycleState {
+    active: bool,
+    turn_id: Option<String>,
+    terminal_emitted: bool,
+}
+
+/// Shared by the Engine wrapper and its event forwarder so an explicit Engine
+/// reclaim and a natural `TurnComplete` race to one authoritative terminal
+/// event instead of either dropping it or emitting it twice.
+#[derive(Debug, Default)]
+pub(crate) struct TurnLifecycle {
+    state: Mutex<TurnLifecycleState>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct EmittedTerminal {
+    turn_id: Option<String>,
+}
+
+/// Emit the single frontend/remote-control terminal shape used by both normal
+/// Engine completion and cancellation recovery when no Engine handle remains.
+pub(crate) fn emit_chat_terminal(
+    app: &AppHandle,
+    session_id: &str,
+    status: TurnOutcomeStatus,
+    error: Option<String>,
+) {
+    let payload = json!({
+        "session_id": session_id,
+        "status": format!("{status:?}"),
+        "error": error,
+    });
+    let _ = app.emit("chat:done", payload.clone());
+    crate::remote_control::forward_app_event(app, "chat:done", payload);
+}
+
+impl TurnLifecycle {
+    pub(crate) fn on_submitted(&self) {
+        let mut state = self.state.lock();
+        if !state.active {
+            state.active = true;
+            state.turn_id = None;
+            state.terminal_emitted = false;
+        }
+    }
+
+    fn on_submission_failed(&self) {
+        let mut state = self.state.lock();
+        if state.turn_id.is_none() && !state.terminal_emitted {
+            state.active = false;
+        }
+    }
+
+    fn on_started(&self, turn_id: String) {
+        let mut state = self.state.lock();
+        state.active = true;
+        state.turn_id = Some(turn_id);
+        state.terminal_emitted = false;
+    }
+
+    pub(crate) fn finish_once(&self, emit: impl FnOnce()) -> Option<EmittedTerminal> {
+        let mut state = self.state.lock();
+        if !state.active || state.terminal_emitted {
+            return None;
+        }
+        state.terminal_emitted = true;
+        state.active = false;
+        let emitted = EmittedTerminal {
+            turn_id: state.turn_id.take(),
+        };
+        emit();
+        Some(emitted)
+    }
+
+    pub(crate) fn emit_terminal_once(
+        &self,
+        app: &AppHandle,
+        session_id: &str,
+        status: TurnOutcomeStatus,
+        error: Option<String>,
+    ) -> Option<EmittedTerminal> {
+        self.finish_once(|| {
+            emit_chat_terminal(app, session_id, status, error);
+        })
+    }
 }
 
 impl AppEngine {
@@ -62,11 +156,12 @@ impl AppEngine {
     ///
     /// [`build_engine_config_for_session`]: crate::bridge::Pinvou3Bridge::build_engine_config_for_session
     /// [`EnginePool`]: crate::engine_pool::EnginePool
-    pub async fn spawn_for_session(
+    pub(crate) async fn spawn_for_session(
         app: AppHandle,
         store: SessionStore,
         bridge: Pinvou3Bridge,
         session_id: &str,
+        turn_lifecycle: Arc<TurnLifecycle>,
     ) -> Result<(Self, tauri::async_runtime::JoinHandle<()>)> {
         // C 方案(P-no-disk): instructions 走 Inline,不再写 disk(远端)。
         // 工作流会话不再施加监工白名单(对话型监工已废弃);SubAgent 角色的工具
@@ -81,6 +176,11 @@ impl AppEngine {
         if let Some(profile) = &scheduled_profile {
             engine_config.workspace = profile.workspace.clone();
         }
+        // The app and the Engine must observe the same background process table.
+        // This lets the UI cancel a detached shell directly by task id, without
+        // asking the model to call another tool or keeping the LLM turn busy.
+        let shell_manager = new_shared_shell_manager(engine_config.workspace.clone());
+        engine_config.runtime_services.shell_manager = Some(shell_manager.clone());
         // Agentic RAG:给该 session 的 engine 注入 kb_search 工具(持 session_id,execute 时
         // 查该会话挂载的知识集)。工具常驻所有会话,挂没挂集由其运行时判断。
         engine_config
@@ -136,6 +236,8 @@ impl AppEngine {
             scheduled_profile,
             scheduled_base_total_tokens,
             scheduled_unattended.clone(),
+            turn_lifecycle.clone(),
+            shell_manager.clone(),
         );
 
         Ok((
@@ -145,6 +247,8 @@ impl AppEngine {
                 workspace,
                 turn_events,
                 scheduled_unattended,
+                shell_manager,
+                turn_lifecycle,
                 scheduled_disallowed_tools,
             },
             forwarder,
@@ -160,9 +264,11 @@ impl AppEngine {
     /// 里 `app.emit(...)`),测试场景没有 webview/event 系统跑不起来。
     #[allow(dead_code)] // L1 runner 接入前临时 unused
     pub async fn spawn_headless(bridge: Pinvou3Bridge) -> Result<Self> {
-        let engine_config = bridge.build_engine_config();
+        let mut engine_config = bridge.build_engine_config();
         let scheduled_disallowed_tools = engine_config.disallowed_tools.clone().unwrap_or_default();
         let workspace = engine_config.workspace.clone();
+        let shell_manager = new_shared_shell_manager(workspace.clone());
+        engine_config.runtime_services.shell_manager = Some(shell_manager.clone());
         let dt_config = bridge.build_dt_config();
         let handle = spawn_engine(engine_config, &dt_config);
         let (turn_events, _) = broadcast::channel(1);
@@ -172,6 +278,8 @@ impl AppEngine {
             workspace,
             turn_events,
             scheduled_unattended: Arc::new(AtomicBool::new(false)),
+            shell_manager,
+            turn_lifecycle: Arc::new(TurnLifecycle::default()),
             scheduled_disallowed_tools,
         })
     }
@@ -191,8 +299,7 @@ impl AppEngine {
         let op = self
             .bridge
             .build_send_message_op(content, mode, persona_reminder, restrict_tools);
-        self.handle.send(op).await?;
-        Ok(())
+        self.send_turn_op(op).await
     }
 
     /// Submit the initial prompt for one scheduled run using the immutable
@@ -208,8 +315,7 @@ impl AppEngine {
                 tools: self.scheduled_disallowed_tools.clone(),
             })
             .await?;
-        self.handle.send(op).await?;
-        Ok(())
+        self.send_turn_op(op).await
     }
 
     fn profiled_send_op(&self, content: String, profile: &ScheduledRunProfile) -> Result<Op> {
@@ -233,12 +339,55 @@ impl AppEngine {
         self.handle.cancel();
     }
 
+    /// Cancel one detached shell without requiring an active model turn.
+    pub fn cancel_shell_task(&self, task_id: &str) -> Result<ShellResult> {
+        let mut manager = self
+            .shell_manager
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Shell manager lock poisoned"))?;
+        manager.kill(task_id)
+    }
+
+    async fn send_turn_op(&self, op: Op) -> Result<()> {
+        self.turn_lifecycle.on_submitted();
+        let result = self.handle.send(op).await;
+        if result.is_err() {
+            self.turn_lifecycle.on_submission_failed();
+        }
+        result
+    }
+
+    /// Finish an in-flight turn before an explicit Engine reclaim aborts its
+    /// forwarder. Returns true only when this call emitted the authoritative
+    /// terminal event; a concurrent natural `TurnComplete` wins otherwise.
+    pub(crate) fn finish_reclaimed_turn(&self, app: &AppHandle, session_id: &str) -> bool {
+        let emitted = self.turn_lifecycle.emit_terminal_once(
+            app,
+            session_id,
+            TurnOutcomeStatus::Interrupted,
+            None,
+        );
+        match emitted {
+            Some(EmittedTerminal {
+                turn_id: Some(turn_id),
+            }) => {
+                let _ = self.turn_events.send(EngineTurnSignal::Terminal {
+                    turn_id,
+                    status: TurnOutcomeStatus::Interrupted,
+                    error: None,
+                });
+                true
+            }
+            Some(EmittedTerminal { turn_id: None }) => true,
+            None => false,
+        }
+    }
+
     /// 编辑/重发最后一轮 user 消息（点 ✏️ 编辑或 🔄 重发按钮）。
     /// 上游 [`Op::EditLastTurn`] 行为：砍掉 session 末尾最近的 user 消息及之后
     /// 所有消息，然后用 `new_message` 当成新 user 消息重新发送。
     pub async fn edit_last_turn(&self, new_message: String) -> Result<()> {
-        self.handle.send(Op::EditLastTurn { new_message }).await?;
-        Ok(())
+        self.send_turn_op(Op::EditLastTurn { new_message }).await
     }
 
     /// 手动触发上下文压缩（用户点 token 进度条 → 立即压缩）。
@@ -541,6 +690,103 @@ pub(crate) async fn apply_harness_action(
 /// 判据(plan_ready / M2 / M3)也全部基于本 `session_id`,不再读全局 `store.active_id()`
 /// (并发下 active 会变,读全局会把判据算到错误 session 上)。返回 forwarder 的
 /// `JoinHandle`,EnginePool 回收 session 时 `abort()` 它。
+fn emit_shell_task_status(
+    app: &AppHandle,
+    session_id: &str,
+    tool_id: &str,
+    task_id: &str,
+    status: ShellStatus,
+    exit_code: Option<i32>,
+    stdout_tail: &str,
+    stderr_tail: &str,
+) {
+    let payload = json!({
+        "session_id": session_id,
+        "tool_id": tool_id,
+        "task_id": task_id,
+        "status": format!("{status:?}"),
+        "exit_code": exit_code,
+        "stdout_tail": stdout_tail,
+        "stderr_tail": stderr_tail,
+    });
+    let _ = app.emit("chat:shell_task_status", payload.clone());
+    crate::remote_control::forward_app_event(app, "chat:shell_task_status", payload);
+}
+
+/// Observe a detached process independently from the Engine turn. A weak
+/// manager reference avoids extending a reclaimed session's process lifetime.
+fn watch_background_shell(
+    app: AppHandle,
+    shell_manager: Weak<std::sync::Mutex<deepseek_tui::tools::shell::ShellManager>>,
+    session_id: String,
+    tool_id: String,
+    task_id: String,
+) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let Some(shell_manager) = shell_manager.upgrade() else {
+                emit_shell_task_status(
+                    &app,
+                    &session_id,
+                    &tool_id,
+                    &task_id,
+                    ShellStatus::Killed,
+                    None,
+                    "",
+                    "Shell task owner was reclaimed",
+                );
+                break;
+            };
+            let snapshot = match shell_manager.lock() {
+                Ok(mut manager) => manager
+                    .list_jobs()
+                    .into_iter()
+                    .find(|job| job.id == task_id),
+                Err(_) => {
+                    emit_shell_task_status(
+                        &app,
+                        &session_id,
+                        &tool_id,
+                        &task_id,
+                        ShellStatus::Failed,
+                        None,
+                        "",
+                        "Shell manager lock poisoned",
+                    );
+                    break;
+                }
+            };
+            let Some(snapshot) = snapshot else {
+                emit_shell_task_status(
+                    &app,
+                    &session_id,
+                    &tool_id,
+                    &task_id,
+                    ShellStatus::Failed,
+                    None,
+                    "",
+                    "Shell task disappeared before completion",
+                );
+                break;
+            };
+            if snapshot.status != ShellStatus::Running {
+                emit_shell_task_status(
+                    &app,
+                    &session_id,
+                    &tool_id,
+                    &task_id,
+                    snapshot.status,
+                    snapshot.exit_code,
+                    &snapshot.stdout_tail,
+                    &snapshot.stderr_tail,
+                );
+                break;
+            }
+        }
+    });
+}
+
 fn spawn_event_forwarder(
     app: AppHandle,
     handle: EngineHandle,
@@ -551,6 +797,8 @@ fn spawn_event_forwarder(
     scheduled_profile: Option<ScheduledRunProfile>,
     scheduled_base_total_tokens: Option<u64>,
     scheduled_unattended: Arc<AtomicBool>,
+    turn_lifecycle: Arc<TurnLifecycle>,
+    shell_manager: SharedShellManager,
 ) -> tauri::async_runtime::JoinHandle<()> {
     let approve_handle = handle.clone();
     let plan_tracker: Arc<Mutex<TurnPlanTracker>> =
@@ -587,6 +835,7 @@ fn spawn_event_forwarder(
             match event {
                 Event::TurnStarted { turn_id } => {
                     current_turn_id = Some(turn_id.clone());
+                    turn_lifecycle.on_started(turn_id.clone());
                     let _ = turn_events.send(turn_tracker.on_started(turn_id));
                     // 本轮起始打点(TTFT 起点)。底座已发此事件,原先落 `_` 被忽略。
                     if let Some(m) = &self_metrics {
@@ -619,11 +868,49 @@ fn spawn_event_forwarder(
                     let _ = app.emit("chat:tool_start", payload.clone());
                     crate::remote_control::forward_app_event(&app, "chat:tool_start", payload);
                 }
+                Event::ToolCallOutput {
+                    id,
+                    stream,
+                    content,
+                } => {
+                    let stream = match stream {
+                        deepseek_tui::tools::spec::ToolOutputStream::Stdout => "stdout",
+                        deepseek_tui::tools::spec::ToolOutputStream::Stderr => "stderr",
+                    };
+                    let payload = json!({
+                        "session_id": session_id,
+                        "id": id,
+                        "stream": stream,
+                        "content": content,
+                    });
+                    let _ = app.emit("chat:tool_delta", payload.clone());
+                    crate::remote_control::forward_app_event(&app, "chat:tool_delta", payload);
+                }
                 Event::ToolCallComplete { id, name, result } => {
                     // 携带 metadata 让前端识别 careful hook 拦截 (safety_level=="dangerous")
                     let (output, success, metadata) = match result {
                         Ok(r) => (r.content, true, r.metadata),
                         Err(e) => (format!("{e:?}"), false, None),
+                    };
+                    let background_task_id = if name == "exec_shell"
+                        && metadata
+                            .as_ref()
+                            .and_then(|value| value.get("backgrounded"))
+                            .and_then(serde_json::Value::as_bool)
+                            == Some(true)
+                        && metadata
+                            .as_ref()
+                            .and_then(|value| value.get("status"))
+                            .and_then(serde_json::Value::as_str)
+                            == Some("Running")
+                    {
+                        metadata
+                            .as_ref()
+                            .and_then(|value| value.get("task_id"))
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    } else {
+                        None
                     };
                     let tracked_input = tool_inputs
                         .remove(&id)
@@ -709,6 +996,15 @@ fn spawn_event_forwarder(
                     });
                     let _ = app.emit("chat:tool_end", payload.clone());
                     crate::remote_control::forward_app_event(&app, "chat:tool_end", payload);
+                    if let Some(task_id) = background_task_id {
+                        watch_background_shell(
+                            app.clone(),
+                            Arc::downgrade(&shell_manager),
+                            session_id.clone(),
+                            id,
+                            task_id,
+                        );
+                    }
                 }
                 Event::UserInputRequired { id, request } => {
                     if scheduled_profile.is_some() && scheduled_unattended.load(Ordering::Acquire) {
@@ -1412,16 +1708,20 @@ fn spawn_event_forwarder(
                         terminal_status,
                         terminal_error.as_deref(),
                     );
-                    let payload = json!({
-                        "session_id": session_id,
-                        "status": status_text,
-                        "error": terminal_error.clone(),
-                    });
-                    let _ = app.emit("chat:done", payload.clone());
-                    crate::remote_control::forward_app_event(&app, "chat:done", payload);
-                    if let Some(signal) = turn_tracker.on_terminal(terminal_status, terminal_error)
+                    if turn_lifecycle
+                        .emit_terminal_once(
+                            &app,
+                            &session_id,
+                            terminal_status,
+                            terminal_error.clone(),
+                        )
+                        .is_some()
                     {
-                        let _ = turn_events.send(signal);
+                        if let Some(signal) =
+                            turn_tracker.on_terminal(terminal_status, terminal_error)
+                        {
+                            let _ = turn_events.send(signal);
+                        }
                     }
                 }
                 Event::CompactionStarted {
@@ -1494,12 +1794,26 @@ fn spawn_event_forwarder(
                 _ => {}
             }
         }
+        let error = "Engine event stream stopped before a terminal event".to_string();
+        if let Some(emitted) = turn_lifecycle.emit_terminal_once(
+            &app,
+            &session_id,
+            TurnOutcomeStatus::Failed,
+            Some(error.clone()),
+        ) {
+            crate::timing::finish_turn(&session_id, "Failed", Some(&error));
+            if let Some(turn_id) = emitted.turn_id {
+                let _ = turn_events.send(EngineTurnSignal::Terminal {
+                    turn_id,
+                    status: TurnOutcomeStatus::Failed,
+                    error: Some(error.clone()),
+                });
+            }
+        }
         let _ = turn_events.send(EngineTurnSignal::ForwarderStopped {
-            error: "Engine event stream stopped before a terminal event".to_string(),
+            error: error.clone(),
         });
-        eprintln!(
-            "[pinvou3-app] event forwarder stopped for session {session_id} (engine shut down?)"
-        );
+        eprintln!("[pinvou3-app] event forwarder stopped for session {session_id}: {error}");
     })
 }
 
@@ -1605,6 +1919,68 @@ mod token_ledger_tests {
         assert_eq!(l.add("pm", 50, 10), (150, 30, 2));
         assert_eq!(l.add("writer", 7, 3), (7, 3, 1));
         assert_eq!(l.add("pm", 0, 0), (150, 30, 3));
+    }
+}
+
+#[cfg(test)]
+mod turn_lifecycle_tests {
+    use super::{EmittedTerminal, TurnLifecycle};
+    use std::cell::Cell;
+
+    #[test]
+    fn explicit_reclaim_and_natural_completion_share_one_terminal() {
+        let lifecycle = TurnLifecycle::default();
+        let emitted = Cell::new(0_u8);
+
+        assert_eq!(lifecycle.finish_once(|| emitted.set(1)), None);
+        lifecycle.on_submitted();
+        lifecycle.on_started("turn-1".to_string());
+        assert_eq!(
+            lifecycle.finish_once(|| emitted.set(emitted.get() + 1)),
+            Some(EmittedTerminal {
+                turn_id: Some("turn-1".to_string())
+            })
+        );
+        assert_eq!(lifecycle.finish_once(|| emitted.set(99)), None);
+        assert_eq!(emitted.get(), 1);
+
+        lifecycle.on_submitted();
+        lifecycle.on_started("turn-2".to_string());
+        assert_eq!(
+            lifecycle.finish_once(|| emitted.set(emitted.get() + 1)),
+            Some(EmittedTerminal {
+                turn_id: Some("turn-2".to_string())
+            })
+        );
+        assert_eq!(emitted.get(), 2);
+    }
+
+    #[test]
+    fn failed_submission_does_not_leave_a_fake_active_turn() {
+        let lifecycle = TurnLifecycle::default();
+        lifecycle.on_submitted();
+        lifecycle.on_submission_failed();
+        assert_eq!(lifecycle.finish_once(|| panic!("must stay idle")), None);
+    }
+
+    #[test]
+    fn forwarder_stop_and_reclaim_share_one_terminal() {
+        let lifecycle = TurnLifecycle::default();
+        let emitted = Cell::new(0_u8);
+        lifecycle.on_submitted();
+        lifecycle.on_started("turn-1".to_string());
+
+        assert_eq!(
+            lifecycle.finish_once(|| emitted.set(emitted.get() + 1)),
+            Some(EmittedTerminal {
+                turn_id: Some("turn-1".to_string())
+            })
+        );
+        assert_eq!(
+            lifecycle.finish_once(|| panic!("reclaim must not emit twice")),
+            None
+        );
+        assert_eq!(emitted.get(), 1);
     }
 }
 

@@ -597,6 +597,7 @@ pub fn run() {
             commands::save_session_artifacts,
             commands::list_workspace_files,
             commands::cancel_generation,
+            commands::cancel_shell_task,
             remote_control::remote_control_start,
             remote_control::remote_control_stop,
             remote_control::remote_control_status,

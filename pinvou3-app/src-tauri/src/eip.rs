@@ -20,9 +20,7 @@ use std::time::{Duration, Instant};
 
 use qrcode::{render::svg, QrCode};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Manager, State};
-
-use crate::engine_pool::EnginePool;
+use tauri::{AppHandle, Emitter, Manager};
 
 /// 标准 base64 编码(避免引新依赖)。
 fn b64(data: &[u8]) -> String {
@@ -279,9 +277,13 @@ pub fn eip_skills_should_show() -> bool {
     connected_flag().is_file()
 }
 
-/// 置连接标记并**同步技能可见性**(写 / 删 `eip/SKILL.md`)。连接成功传 `true`、
-/// 登出传 `false`。技能写盘即可——新建对话 spawn 引擎时自然扫到(同飞书 apply_skills)。
-fn set_connected(v: bool) {
+/// 置连接标记并**同步技能可见性**(写 / 删 `eip/SKILL.md`)。仅在可见性真实
+/// 变化时写盘；在跑 Engine 会在下一轮 `SendMessage` 刷新 system prompt 并重扫技能，
+/// 无需回收当前 Engine，也不会打断正在运行的 turn。
+fn set_connected(v: bool) -> bool {
+    if eip_skills_should_show() == v {
+        return false;
+    }
     let p = connected_flag();
     if v {
         let _ = std::fs::create_dir_all(eip_home());
@@ -290,6 +292,7 @@ fn set_connected(v: bool) {
         let _ = std::fs::remove_file(&p);
     }
     let _ = crate::bridge::bundle::Pinvou3Bundle::paths().apply_eip_skill_visibility(v);
+    true
 }
 
 // ──────────────────────────── 连接编排状态 ────────────────────────────
@@ -311,10 +314,10 @@ fn is_cancelled(app: &AppHandle) -> bool {
 // ───────────────────────────── Tauri commands ─────────────────────────────
 
 /// 查询 EIP 连接状态:`auth status --output json`。connected = 有有效 token。
+/// 纯查询：不写连接标记、不改技能目录、不回收 Engine。
 #[tauri::command]
-pub async fn eip_status(pool: State<'_, EnginePool>) -> Result<Value, String> {
-    let previous_visible = eip_skills_should_show();
-    let value = tokio::task::spawn_blocking(|| {
+pub async fn eip_status() -> Result<Value, String> {
+    tokio::task::spawn_blocking(|| {
         let cmd = eip(&["auth", "status", "--output", "json"])?;
         let (_ok, _code, so, se) = run(cmd)?;
         let p = parse_json(&so).or_else(|| parse_json(&se));
@@ -323,20 +326,11 @@ pub async fn eip_status(pool: State<'_, EnginePool>) -> Result<Value, String> {
             .and_then(|v| v.get("hasToken"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        set_connected(connected);
         // 只回 connected:auth status 的 raw/stderr 可能含 token,不进 webview
         Ok::<Value, String>(json!({ "connected": connected }))
     })
     .await
-    .map_err(|e| format!("spawn_blocking: {e}"))??;
-    let connected = value
-        .get("connected")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if connected || previous_visible {
-        pool.evict_active().await;
-    }
-    Ok(value)
+    .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
 /// 开始连接 EIP(SSO 轮询自动收):
@@ -344,15 +338,14 @@ pub async fn eip_status(pool: State<'_, EnginePool>) -> Result<Value, String> {
 /// ② 循环 `auth poll` 直到认证成功 / 超时(5min)/ 取消 → emit `eip:connected` / `eip:error`。
 /// 立即返回 `{started:true}`,前端 listen 事件驱动 UI。
 #[tauri::command]
-pub async fn eip_connect_begin(app: AppHandle, pool: State<'_, EnginePool>) -> Result<Value, String> {
+pub async fn eip_connect_begin(app: AppHandle) -> Result<Value, String> {
     app.state::<EipConn>().cancelled.store(false, Ordering::SeqCst);
     let app2 = app.clone();
-    let pool2 = pool.inner().clone();
-    tokio::task::spawn_blocking(move || run_login_flow(&app2, pool2));
+    tokio::task::spawn_blocking(move || run_login_flow(&app2));
     Ok(json!({ "started": true }))
 }
 
-fn run_login_flow(app: &AppHandle, pool: EnginePool) {
+fn run_login_flow(app: &AppHandle) {
     let url = match get_sso_url() {
         Ok(u) => u,
         Err(e) => {
@@ -378,8 +371,9 @@ fn run_login_flow(app: &AppHandle, pool: EnginePool) {
             let _ = run(cmd);
         }
         if is_authed() {
-            set_connected(true); // 写连接标记 + 放出 EIP 技能(模型即刻可用)
-            tauri::async_runtime::spawn(async move { pool.evict_active().await; });
+            if set_connected(true) {
+                log::info!("[eip] skill visibility changed connected=true; applies next turn");
+            }
             emit(app, "eip:connected", json!({ "ok": true }));
             return;
         }
@@ -414,17 +408,17 @@ pub async fn eip_cancel(app: AppHandle) -> Result<Value, String> {
 
 /// 断开 EIP:`auth logout`(清凭证)。
 #[tauri::command]
-pub async fn eip_logout(pool: State<'_, EnginePool>) -> Result<Value, String> {
-    let result = tokio::task::spawn_blocking(|| {
+pub async fn eip_logout() -> Result<Value, String> {
+    tokio::task::spawn_blocking(|| {
         let cmd = eip(&["auth", "logout"])?;
         let (ok, _code, so, se) = run(cmd)?;
-        set_connected(false); // 清连接标记 + 撤掉 EIP 技能(按用户断开意图,即使 CLI 报错)
+        if set_connected(false) {
+            log::info!("[eip] skill visibility changed connected=false; applies next turn");
+        }
         Ok::<Value, String>(json!({ "ok": ok, "stdout": so, "stderr": se }))
     })
     .await
-    .map_err(|e| format!("spawn_blocking: {e}"))?;
-    pool.evict_active().await;
-    result
+    .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
 #[cfg(test)]
