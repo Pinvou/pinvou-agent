@@ -96,8 +96,12 @@ fingerprints=(
   "C12 |Engine 后台启动返回后输出测试    |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_engine_keeps_background_shell_output_after_tool_completion"
   "C12 |Engine 后台 wait 输出事件测试    |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_engine_emits_background_wait_output_before_tool_completion"
   "C12 |Engine 可控实时输出测试工具      |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|struct ControlledStreamingTool"
+  "C12 |Engine 输出合并异步转发器        |DeepSeek-TUI/crates/tui/src/core/engine/tool_execution.rs|struct ToolOutputEventForwarder"
+  "C12 |Engine 输出拥塞无丢失测试        |DeepSeek-TUI/crates/tui/src/core/engine/tool_execution.rs|fn forkguard_tool_output_forwarder_coalesces_without_dropping_on_backpressure"
   "C12 |前端终端跨分片解析状态           |pinvou3-app/src/tauri-bridge.js|function terminalParserState(item, stream)"
   "C12 |前端终端跨分片 UI 回归           |pinvou3-app/tests/ui_smoke.js|terminal parser preserves CRLF and ANSI state across live chunks"
+  "C12 |后台终态输出 tail 对账           |pinvou3-app/src/tauri-bridge.js|function reconcileBackgroundTerminalOutput(previous, payload)"
+  "C12 |后台终态 stdout/stderr UI 回归   |pinvou3-app/tests/ui_smoke.js|background shell terminal event reconciles final stdout and stderr tails"
   # —— P1(2026-07-03):list_mcp_resources/templates 按对应集合非空 gate(上游原为 servers 非空即注入)——
   # pinvou3 MCP server 全 tools-only,原条件下这两个元工具永久空转;改按 resources/templates 非空注入。可上游。
   "P1  |list_mcp_resources 按 resources 非空 gate|DeepSeek-TUI/crates/tui/src/mcp.rs|if !self.all_resource_templates().is_empty()"

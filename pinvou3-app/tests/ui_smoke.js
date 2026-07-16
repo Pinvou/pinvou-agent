@@ -322,14 +322,22 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
   await page.evaluate(async () => {
     const handlers = window.__TAURI_EVENT_HANDLERS__['chat:shell_task_status'] || [];
     for (const handler of handlers) await handler({ payload: {
-      session_id:'s1', tool_id:'background-shell', task_id:'shell-bg-1', status:'Killed', exit_code:null
+      session_id:'s1', tool_id:'background-shell', task_id:'shell-bg-1', status:'Killed', exit_code:null,
+      stdout_tail:'Downloading 90%\nDownloaded final tail',
+      stderr_tail:'installer warning from final stderr'
     }});
   });
   const backgroundKilled = await page.evaluate(() => {
     const item = window.TauriBridge.getState().chatItems.find(item => item.toolId === 'background-shell');
-    return item && item.state === 'failed' && item.shellStatus === 'Killed' && item.background === false;
+    return {
+      terminal: item && item.state === 'failed' && item.shellStatus === 'Killed' && item.background === false,
+      output: item && item.output,
+    };
   });
-  rec('background shell terminal event closes the independent tool lifecycle', backgroundKilled);
+  rec('background shell terminal event reconciles final stdout and stderr tails',
+    backgroundKilled.terminal &&
+      backgroundKilled.output === 'Downloading 90%\nDownloaded final tail\n[STDERR] installer warning from final stderr',
+    JSON.stringify(backgroundKilled));
   await page.evaluate(async () => {
     async function emit(name, payload) {
       const handlers = window.__TAURI_EVENT_HANDLERS__[name] || [];

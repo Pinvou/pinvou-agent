@@ -2266,11 +2266,8 @@
       item.background = false;
       item.shellStatus = status;
       item.exitCode = payload.exit_code;
+      item.output = reconcileBackgroundTerminalOutput(item.output, payload);
       delete item._terminalParser;
-      if (!item.liveOutput) {
-        var tail = payload.stdout_tail || payload.stderr_tail;
-        if (tail) item.output = tail;
-      }
       return true;
     }
     return false;
@@ -2419,6 +2416,39 @@
         output += ch;
       }
     }
+    return output;
+  }
+
+  function mergeTerminalTail(previous, tail) {
+    var output = String(previous == null ? "" : previous);
+    var suffix = String(tail == null ? "" : tail);
+    if (!suffix) return output;
+    if (!output) return suffix;
+    if (output.indexOf(suffix) >= 0) return output;
+
+    var maxOverlap = Math.min(output.length, suffix.length);
+    for (var overlap = maxOverlap; overlap > 0; overlap--) {
+      if (output.slice(-overlap) === suffix.slice(0, overlap)) {
+        return output + suffix.slice(overlap);
+      }
+    }
+    return output + (output.endsWith("\n") || suffix.startsWith("\n") ? "" : "\n") + suffix;
+  }
+
+  function normalizeTerminalTail(tail, prefix) {
+    if (!tail) return "";
+    return mergeTerminalChunk(
+      "",
+      tail,
+      { pendingCR: false, pendingAnsi: "" },
+      prefix || ""
+    );
+  }
+
+  function reconcileBackgroundTerminalOutput(previous, payload) {
+    var output = String(previous == null ? "" : previous);
+    output = mergeTerminalTail(output, normalizeTerminalTail(payload.stdout_tail, ""));
+    output = mergeTerminalTail(output, normalizeTerminalTail(payload.stderr_tail, "[STDERR] "));
     return output;
   }
 
