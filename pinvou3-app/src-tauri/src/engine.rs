@@ -954,6 +954,13 @@ fn spawn_event_forwarder(
                     role: envelope_role,
                     failed,
                 } => {
+                    // 用户停止整个工作流后，SubAgent 可能在任务 abort 前抢先送达
+                    // 一个完成信封。持久 stop marker 是调度熔断边界：迟到结果可留在
+                    // 项目目录，但绝不能再过 gate、补派下一页或推进下一个角色。
+                    if crate::harness::workflow_is_stopped(&execution_workspace) {
+                        eprintln!("[harness] ignore late AgentComplete after workflow stop: {id}");
+                        continue;
+                    }
                     eprintln!(
                         "[harness] subagent {id} complete ({} chars summary, failed={failed})",
                         result.len()

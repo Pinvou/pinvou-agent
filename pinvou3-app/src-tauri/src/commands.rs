@@ -5209,6 +5209,61 @@ pub async fn cancel_workflow_role(
     result
 }
 
+/// 用户主动停止整个工作流。
+///
+/// 顺序不可交换：先持久化 stop marker（挡住竞态中的迟到 AgentComplete），再通过
+/// 底座显式取消该 session 的全部后台 SubAgent。返回原始 brief，供前端预填“修改需求
+/// 并重新开始”；旧 run 保留现场，不在原状态上复活。
+#[tauri::command]
+pub async fn stop_workflow(
+    session_id: Option<String>,
+    reason: Option<String>,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+    app: AppHandle,
+) -> Result<serde_json::Value, String> {
+    let sid = session_id
+        .or_else(|| store.active_id())
+        .ok_or_else(|| "no active session".to_string())?;
+    let workspace = store
+        .execution_workspace(&sid)
+        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
+    let stop_reason = reason
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "user_stopped".to_string());
+
+    let ws = workspace.clone();
+    let marker_sid = sid.clone();
+    let marker_reason = stop_reason.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::harness::stop_workflow(&ws, &marker_sid, &marker_reason)
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking stop_workflow: {e}"))??;
+
+    if let Some(engine) = pool.handle_for(&sid).await {
+        if let Err(e) = engine
+            .handle
+            .send(deepseek_tui::core::ops::Op::CancelSubAgents)
+            .await
+        {
+            // stop marker 已成功落盘，是不可回滚的调度真相；engine 恰好退出只表示
+            // 没有存活 worker 可取消，不应把 UI 留在“停止失败”。
+            eprintln!("[workflow] stop marker persisted but cancel op failed: {e:?}");
+        }
+    }
+
+    let _ = app.emit(
+        "workflow:stopped",
+        serde_json::json!({
+            "session_id": sid,
+            "reason": stop_reason,
+            "stopped_at": result.get("stopped_at"),
+        }),
+    );
+    Ok(result)
+}
+
 /// 用户审批通过 workflow gate → 标记角色完成 → 继续推进 harness loop。
 /// 前端在审批卡片上点"确认"时调用。
 #[tauri::command]
@@ -5328,6 +5383,13 @@ pub async fn find_resumable_run(
         let progress = std::path::Path::new(&pd)
             .join("_state")
             .join("workflow_progress.json");
+        if std::path::Path::new(&pd)
+            .join("_state")
+            .join("workflow_stopped.json")
+            .is_file()
+        {
+            continue;
+        }
         let Ok(content) = std::fs::read_to_string(&progress) else {
             continue;
         };

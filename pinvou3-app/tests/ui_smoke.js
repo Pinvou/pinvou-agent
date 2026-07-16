@@ -56,6 +56,7 @@ function injectSource() {
         case 'check_for_update': return Promise.resolve({available:false});
         case 'find_resumable_run': return Promise.resolve(ZOMBIE);
         case 'get_workflow_state': return Promise.resolve(WF_STATE);
+        case 'stop_workflow': window.__STOP_WORKFLOW_ARGS__=args; return Promise.resolve({ok:true,session_id:'s-zombie',scenario:'sansheng_liubu',brief:{user_request_raw:'原始三省六部需求'}});
         case 'check_dependencies': return Promise.resolve([]);
         case 'list_marketplace_tools': return Promise.resolve([]);
         case 'create_session': return Promise.resolve({id:'s-new',metadata:{id:'s-new'}});
@@ -147,6 +148,25 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
   });
   rec('① 僵尸run不劫持启动(落草稿页+挂看板)', (st.activeSessionId == null) && st.wfActive === true && st.wfSid === 's-zombie', JSON.stringify(st));
 
+  // ①b 工作流运行中可停止；停止后原需求自动进入新任务编辑框。
+  page.on('dialog', async dialog => { await dialog.accept(); });
+  await expand(page); await sleep(300);
+  await page.evaluate(() => document.querySelector('[data-nav="workflow"]')?.click()); await sleep(700);
+  const stopButton = await page.evaluate(() => {
+    const button = document.querySelector('[data-testid="workflow-stop-restart"]');
+    if (!button) return false;
+    button.click();
+    return true;
+  });
+  await sleep(700);
+  const stopped = await page.evaluate(() => ({
+    status: window.TauriBridge.getState().workflow.run.status,
+    sessionId: window.__STOP_WORKFLOW_ARGS__ && window.__STOP_WORKFLOW_ARGS__.sessionId,
+    brief: (document.querySelector('textarea') || {}).value || '',
+  }));
+  rec('①b 工作流可停止并预填原需求重开', stopButton && stopped.status === 'stopped' && stopped.sessionId === 's-zombie' && stopped.brief === '原始三省六部需求', JSON.stringify(stopped));
+  await clickText(page, '取消'); await sleep(300);
+
   // 手机先向尚未在桌面打开的后台 session 发消息：hydration 必须先把磁盘 messages
   // 重建成 chatItems；否则桌面随后切入时只剩这条手机消息，历史和产物卡都像“丢了”。
   await page.evaluate(async () => {
@@ -157,8 +177,7 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
   });
 
   // ② 工具商店关键连接器卡
-  await expand(page); await sleep(500);
-  await clickText(page, '工具商店');
+  await page.evaluate(() => document.querySelector('[data-nav="toolstore"]')?.click());
   await sleep(1500);
   const connectors = await page.evaluate(() => {
     const text = document.body.innerText;
