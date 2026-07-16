@@ -165,6 +165,26 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     brief: (document.querySelector('textarea') || {}).value || '',
   }));
   rec('①b 工作流可停止并预填原需求重开', stopButton && stopped.status === 'stopped' && stopped.sessionId === 's-zombie' && stopped.brief === '原始三省六部需求', JSON.stringify(stopped));
+
+  // ①c stop marker 是最终状态：迟到快照即使仍带 running/reviewing，也不能让角色卡回跳。
+  const stoppedAfterLateSnapshot = await page.evaluate(async () => {
+    const handlers = window.__TAURI_EVENT_HANDLERS__['workflow:full_state'] || [];
+    for (const handler of handlers) {
+      await handler({ payload: {
+        session_id: 's-zombie', stopped: true, project_dir: '/x/wf', scenario: 'sansheng_liubu',
+        roles: { taizi: { name: '太子', status: 'running' }, zhongshu: { name: '中书', status: 'reviewing' } },
+      } });
+    }
+    const run = window.TauriBridge.getState().workflow.run;
+    return { status: run.status, taizi: run.agents.taizi.status, zhongshu: run.agents.zhongshu.status };
+  });
+  rec(
+    '①c 已停止工作流不被迟到快照恢复为执行中',
+    stoppedAfterLateSnapshot.status === 'stopped'
+      && stoppedAfterLateSnapshot.taizi === 'stopped'
+      && stoppedAfterLateSnapshot.zhongshu === 'stopped',
+    JSON.stringify(stoppedAfterLateSnapshot),
+  );
   await clickText(page, '取消'); await sleep(300);
 
   // 手机先向尚未在桌面打开的后台 session 发消息：hydration 必须先把磁盘 messages

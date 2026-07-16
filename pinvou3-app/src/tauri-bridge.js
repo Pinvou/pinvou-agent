@@ -3406,6 +3406,18 @@
     var agents = state.workflow.run.agents;
     agents[roleId] = Object.assign(agents[roleId] || { id: roleId }, patch);
   }
+  function markWorkflowRunStopped() {
+    state.workflow.run.status = "stopped";
+    Object.keys(state.workflow.run.agents || {}).forEach(function (id) {
+      var agent = state.workflow.run.agents[id];
+      if (agent && (agent.status === "running" || agent.status === "reviewing" || agent.status === "briefing")) {
+        agent.status = "stopped";
+      }
+    });
+    (state.workflow.run.cards || []).forEach(function (card) {
+      if (!card.resolved) { card.resolved = true; card.cardState = "cancelled"; }
+    });
+  }
   function mergeFullState(p) {
     var run = state.workflow.run;
     if (p.project_dir) run.projectDir = p.project_dir;
@@ -3432,7 +3444,9 @@
         wave: r.wave, bu: r.bu,   // [B2 E1] 差事分层 + 取头像/配色
       });
     });
-    if (p.stopped) run.status = "stopped";
+    // stop marker 是最终状态。迟到或手动刷新的 full_state 仍可能携带盘上旧的
+    // running/reviewing 状态，不能让已停止的角色卡回跳成“执行中”。
+    if (p.stopped) markWorkflowRunStopped();
     else if (p.all_completed) run.status = "complete";
   }
   // [2026-06-06] 快照恢复：把前端 run 态挂回一个已存在的工作流 run（app 重启/切会话后）。
@@ -3497,18 +3511,6 @@
   }
 
   // ── 卡片流工作流：事件监听 ───────────────────────────────────────
-  function markWorkflowRunStopped() {
-    state.workflow.run.status = "stopped";
-    Object.keys(state.workflow.run.agents || {}).forEach(function (id) {
-      var agent = state.workflow.run.agents[id];
-      if (agent && (agent.status === "running" || agent.status === "reviewing" || agent.status === "briefing")) {
-        agent.status = "stopped";
-      }
-    });
-    (state.workflow.run.cards || []).forEach(function (card) {
-      if (!card.resolved) { card.resolved = true; card.cardState = "cancelled"; }
-    });
-  }
   listen("workflow:full_state", function (e) {
     var p = e.payload || {}; if (!isRunSession(p)) return;
     mergeFullState(p); notify();
