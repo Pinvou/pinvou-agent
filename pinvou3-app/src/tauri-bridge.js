@@ -187,7 +187,7 @@
         sessionId: null,
         projectDir: null,
         scenario: null,
-        status: "idle",      // idle | running | complete | blocked
+        status: "idle",      // idle | running | complete | blocked | stopped
         agents: {},          // role_id → { id, name, status, last_gate_verdict, outputs_present, last_run_ts, depends_on }
         cards: [],           // 底部交互卡片队列 [{ cardId, kind:'user_input'|'gate'|'system', resolved, ... }]
         selectedRole: null,  // 右抽屉选中的角色
@@ -265,6 +265,7 @@
     scheduledTaskSelectionGeneration: 0,
     scheduledTaskDetail: null,
     scheduledTaskRuns: [],
+    scheduledTaskRecentRuns: [],
     scheduledTaskLoading: false,
     scheduledTaskBusyAction: null,
     scheduledTaskError: null,
@@ -313,6 +314,8 @@
   var scheduledTaskSelectionGeneration = 0;
   var scheduledTaskRequestTokens = { tasks: 0, detail: 0, runs: 0 };
   var scheduledTaskRefreshInFlight = null;
+  var scheduledRecentRunsRequestToken = 0;
+  var scheduledRunEventRefreshTimer = null;
   var scheduledTaskPendingLoads = Object.create(null);
   var scheduledTaskAutoCreateInFlight = Object.create(null);
   var sessionSwitchRequestToken = 0;
@@ -533,12 +536,16 @@
       delete scheduledRunSessionOwners[ids[i]];
     }
   }
+  function isScheduledRunTerminal(status) {
+    var value = String(status || "").toLowerCase();
+    return value === "completed" || value === "failed" || value === "canceled";
+  }
   function rememberScheduledRunOwner(run) {
     if (!run) return;
     var id = typeof run.sessionId === "string" ? run.sessionId.trim() : "";
     if (!id) return;
     var status = String(run.status || "").toLowerCase();
-    var phase = status === "completed" || status === "failed" || status === "canceled"
+    var phase = isScheduledRunTerminal(status)
       ? "terminal"
       : (status === "queued" || status === "running" ? "active" : null);
     registerScheduledRunOwner(id, phase);
@@ -941,11 +948,13 @@
   }
 
   function applyScheduledRunViewed(automationId, runId, receipt) {
-    state.scheduledTaskRuns = (state.scheduledTaskRuns || []).map(function (item) {
+    function markRunViewed(item) {
       var itemAutomationId = item.automationId || state.selectedScheduledTaskId;
       if (itemAutomationId !== automationId || item.id !== runId) return item;
       return Object.assign({}, item, { unread: false });
-    });
+    }
+    state.scheduledTaskRuns = (state.scheduledTaskRuns || []).map(markRunViewed);
+    state.scheduledTaskRecentRuns = (state.scheduledTaskRecentRuns || []).map(markRunViewed);
     var hasUnreadRuns = receipt && typeof receipt.hasUnreadRuns === "boolean"
       ? receipt.hasUnreadRuns
       : (state.scheduledTaskRuns || []).some(function (item) {
@@ -972,6 +981,28 @@
     scheduledTaskRefreshInFlight = null;
   }
 
+  function invalidateScheduledRecentRuns() {
+    scheduledRecentRunsRequestToken += 1;
+  }
+
+  function invalidateScheduledRecentRunsForSession(id) {
+    if (String(id || "").indexOf("sched-") === 0) invalidateScheduledRecentRuns();
+  }
+
+  function scheduleScheduledRunRefresh() {
+    if (scheduledRunEventRefreshTimer) clearTimeout(scheduledRunEventRefreshTimer);
+    scheduledRunEventRefreshTimer = setTimeout(function () {
+      scheduledRunEventRefreshTimer = null;
+      // Refresh task badges/detail first, then replace the global run list from
+      // the same retained backend state. The aggregate request has its own stale
+      // response guard, so a concurrent archive/delete cannot resurrect a row.
+      Promise.resolve(refreshScheduledTaskData(20))
+        .catch(function () {})
+        .then(function () { return loadScheduledTaskRecentRuns(); })
+        .catch(function () {});
+    }, 400);
+  }
+
   function scheduledTaskErrorText(error) {
     return String(error && error.message ? error.message : error);
   }
@@ -979,6 +1010,11 @@
   function setScheduledTaskError(error, kind) {
     state.scheduledTaskError = error ? scheduledTaskErrorText(error) : null;
     state.scheduledTaskErrorKind = error ? (kind || "load") : null;
+  }
+
+  function dismissScheduledTaskError() {
+    setScheduledTaskError(null);
+    notify();
   }
 
   function clearScheduledTaskLoadError() {
@@ -1077,32 +1113,33 @@
   function normalizeScheduledTaskDraft(value) {
     if (!value || typeof value !== "object") return null;
     if (!value.name || !value.prompt || !value.rrule) return null;
-    var cwds = Array.isArray(value.cwds)
-      ? value.cwds.filter(function (item) { return typeof item === "string"; })
-      : [];
     return {
       name: String(value.name),
       prompt: String(value.prompt),
       rrule: String(value.rrule),
-      cwds: cwds,
       model: value.model ? String(value.model) : null,
+      modelId: value.modelId ? String(value.modelId) : (value.model_id ? String(value.model_id) : null),
       mode: "yolo",
-      allowShell: !!value.allowShell,
-      trustMode: !!value.trustMode,
-      autoApprove: !!value.autoApprove,
       paused: !!value.paused,
     };
   }
 
-  function activeScheduledTaskModel() {
-    return ((state.savedModels || []).find(function (model) {
+  function activeScheduledTaskModelConfig() {
+    return (state.savedModels || []).find(function (model) {
       return model && model.id === state.activeModelId;
-    }) || {}).model || null;
+    }) || null;
+  }
+
+  function activeScheduledTaskModel() {
+    var model = activeScheduledTaskModelConfig();
+    return model && model.model || null;
   }
 
   function lockScheduledTaskDraftModel(draft) {
     if (!draft) return null;
-    draft.model = draft.model || activeScheduledTaskModel();
+    var active = activeScheduledTaskModelConfig();
+    draft.model = draft.model || (active && active.model) || null;
+    draft.modelId = draft.modelId || (active && active.id) || null;
     return draft;
   }
 
@@ -1135,9 +1172,12 @@
 
   async function confirmScheduledTaskDraft(editedDraft) {
     if (!state.scheduledTaskDraft || state.activeSessionId !== state.scheduledTaskCreationSessionId) return null;
-    var lockedModel = state.scheduledTaskDraft.model || activeScheduledTaskModel();
+    var active = activeScheduledTaskModelConfig();
+    var lockedModel = state.scheduledTaskDraft.model || (active && active.model) || null;
+    var lockedModelId = state.scheduledTaskDraft.modelId || (active && active.id) || null;
     var draft = normalizeScheduledTaskDraft(Object.assign({}, state.scheduledTaskDraft, editedDraft || {}, {
       model: lockedModel,
+      modelId: lockedModelId,
     }));
     if (!draft) {
       var invalidDraftError = new Error("定时任务草稿缺少名称、任务说明或时间规则");
@@ -1149,12 +1189,9 @@
       name: draft.name,
       prompt: draft.prompt,
       rrule: draft.rrule,
-      cwds: draft.cwds || [],
       model: lockedModel,
+      modelId: lockedModelId,
       mode: "yolo",
-      allowShell: draft.allowShell,
-      trustMode: draft.trustMode,
-      autoApprove: draft.autoApprove,
       paused: draft.paused,
     });
     state.scheduledTaskDraft = null;
@@ -1168,12 +1205,9 @@
       name: draft.name,
       prompt: draft.prompt,
       rrule: draft.rrule,
-      cwds: draft.cwds || [],
       model: draft.model || null,
+      modelId: draft.modelId || null,
       mode: "yolo",
-      allowShell: draft.allowShell,
-      trustMode: draft.trustMode,
-      autoApprove: draft.autoApprove,
       paused: draft.paused,
     };
   }
@@ -1260,6 +1294,34 @@
     return state.scheduledTaskDetail;
   }
 
+  // 按 run.id upsert 单个任务的运行到侧边栏快捷列表。不裁剪条数(侧边栏显示所有
+  // 现存定时运行,后端 retention 已按 automation 限制终态运行上限);传入窗口有限
+  // (如任务详情页只拉了前 N 条)时不会误删其余任务或本任务的更早记录。
+  function mergeScheduledTaskRecentRuns(task, runs) {
+    if (!task || !task.id) return state.scheduledTaskRecentRuns || [];
+    invalidateScheduledRecentRuns();
+    var rows = (state.scheduledTaskRecentRuns || []).slice();
+    (Array.isArray(runs) ? runs : []).forEach(function (run) {
+      if (!run) return;
+      rememberScheduledRunOwner(run);
+      var merged = Object.assign({}, run, {
+        automationId: run.automationId || task.id,
+        taskName: task.name || "定时任务",
+        taskModel: task.model || null,
+      });
+      var index = rows.findIndex(function (row) { return row && row.id === merged.id; });
+      if (index >= 0) rows[index] = merged;
+      else rows.push(merged);
+    });
+    rows = rows.filter(function (run) { return run && run.sessionId && !run.archived; });
+    rows.sort(function (a, b) {
+      return new Date(b.scheduledFor || b.createdAt || 0).getTime() -
+        new Date(a.scheduledFor || a.createdAt || 0).getTime();
+    });
+    state.scheduledTaskRecentRuns = rows;
+    return state.scheduledTaskRecentRuns;
+  }
+
   async function loadScheduledTaskRuns(id, limit) {
     if (!id) {
       clearScheduledTaskSelection();
@@ -1273,12 +1335,66 @@
       if (!isCurrentScheduledTaskRequest(stamp)) return state.scheduledTaskRuns;
       state.scheduledTaskRuns = Array.isArray(runs) ? runs : [];
       state.scheduledTaskRuns.forEach(rememberScheduledRunOwner);
+      mergeScheduledTaskRecentRuns(
+        (state.scheduledTasks || []).find(function (task) { return task && task.id === id; }),
+        state.scheduledTaskRuns
+      );
     } catch (e) {
       if (isCurrentScheduledTaskRequest(stamp)) setScheduledTaskError(e, "load");
     } finally {
       endScheduledTaskLoad(stamp);
     }
     return state.scheduledTaskRuns;
+  }
+
+  // 侧边栏"定时任务记录"一次读取所有保留的运行。后端只做一次 reconcile 和
+  // Session 元数据扫描，避免任务数增长后形成 N 次命令调用与重复完整会话读取。
+  async function loadScheduledTaskRecentRuns() {
+    var requestToken = ++scheduledRecentRunsRequestToken;
+    try {
+      var tasks = state.scheduledTasks && state.scheduledTasks.length
+        ? state.scheduledTasks
+        : await loadScheduledTasks();
+      if (requestToken !== scheduledRecentRunsRequestToken) {
+        return state.scheduledTaskRecentRuns || [];
+      }
+      var runs = await invoke("list_scheduled_runs");
+      if (requestToken !== scheduledRecentRunsRequestToken) {
+        return state.scheduledTaskRecentRuns || [];
+      }
+      var tasksById = Object.create(null);
+      (tasks || []).forEach(function (task) {
+        if (task && task.id) tasksById[task.id] = task;
+      });
+      var rows = (Array.isArray(runs) ? runs : []).map(function (run) {
+        if (!run) return null;
+        rememberScheduledRunOwner(run);
+        var automationId = run.automationId || run.automation_id;
+        var task = tasksById[automationId] || null;
+        return Object.assign({}, run, {
+          automationId: automationId,
+          taskName: task && task.name || "定时任务",
+          taskModel: task && task.model || null,
+        });
+      }).filter(function (run) {
+        return run && run.sessionId && !run.archived;
+      });
+      rows.sort(function (a, b) {
+        return new Date(b.scheduledFor || b.createdAt || 0).getTime() -
+          new Date(a.scheduledFor || a.createdAt || 0).getTime();
+      });
+      state.scheduledTaskRecentRuns = rows;
+      notify();
+      return state.scheduledTaskRecentRuns;
+    } catch (e) {
+      if (requestToken !== scheduledRecentRunsRequestToken) {
+        return state.scheduledTaskRecentRuns || [];
+      }
+      console.warn("loadScheduledTaskRecentRuns failed", e);
+      state.scheduledTaskRecentRuns = state.scheduledTaskRecentRuns || [];
+      notify();
+      return state.scheduledTaskRecentRuns;
+    }
   }
 
   function refreshScheduledTaskData(limit) {
@@ -1299,6 +1415,67 @@
     });
     scheduledTaskRefreshInFlight = { generation: generation, promise: promise };
     return promise;
+  }
+
+  var scheduledRunShortcutRefreshes = Object.create(null);
+  var SCHEDULED_LINK_POLL_FAST_MS = 1000;
+  var SCHEDULED_LINK_POLL_SLOW_MS = 5000;
+  var SCHEDULED_LINK_POLL_FAST_ATTEMPTS = 15;
+  // 兜底上限:只在 run 卡在 queued/running 且永不终态时才会走到,正常路径靠下面
+  // 「拿到 sessionId」或「进入终态」提前收工。
+  var SCHEDULED_LINK_POLL_DEADLINE_MS = 30 * 60 * 1000;
+
+  // Fallback for run-now:正常路径由 sched-* 文件 watcher 推送刷新；但文件事件可能
+  // 早于 ThreadCreated / ThreadLinked 被 run 记录吸收，或 watcher 本身不可用，因此
+  // 仍定向轮询本次 run，直到拿到 sessionId 或进入终态。它独立于页面生命周期，
+  // 用户立即切走也不会让侧边栏永远漏掉这条记录。
+  //
+  // 停止条件按 run 自身状态,不用固定次数:TaskManager 只有 1 个 worker,前一个任务
+  // 正在跑 LLM turn 时,新 run 排队几分钟是常态,固定 20 次(20 秒)会提前放弃,
+  // watcher 是主路径；这里保留较长窗口只为覆盖事件丢失和链接时序空窗。
+  function refreshScheduledRunShortcutUntilLinked(automationId, runId) {
+    if (!automationId || !runId) return;
+    var key = automationId + ":" + runId;
+    if (scheduledRunShortcutRefreshes[key]) return;
+    scheduledRunShortcutRefreshes[key] = true;
+    var deadline = Date.now() + SCHEDULED_LINK_POLL_DEADLINE_MS;
+
+    function stop() {
+      delete scheduledRunShortcutRefreshes[key];
+    }
+    function again(attempt) {
+      if (Date.now() >= deadline) {
+        stop();
+        return;
+      }
+      setTimeout(function () { poll(attempt + 1); }, attempt < SCHEDULED_LINK_POLL_FAST_ATTEMPTS
+        ? SCHEDULED_LINK_POLL_FAST_MS
+        : SCHEDULED_LINK_POLL_SLOW_MS);
+    }
+
+    function poll(attempt) {
+      invoke("list_scheduled_task_runs", { id: automationId }).then(function (runs) {
+        var task = (state.scheduledTasks || []).find(function (item) {
+          return item && item.id === automationId;
+        }) || { id: automationId, name: "定时任务" };
+        mergeScheduledTaskRecentRuns(task, runs);
+        notify();
+        // 必须看原始响应:mergeScheduledTaskRecentRuns 会滤掉尚无 sessionId 的记录,
+        // 从合并结果里读不到目标 run 的状态。
+        var target = (Array.isArray(runs) ? runs : []).find(function (run) {
+          return run && run.id === runId;
+        });
+        // 会话已挂上 → 记录已进侧边栏;run 已终态却仍无会话 → 会话没建起来,再等也不会有;
+        // run 记录消失(被删或被 retention 清掉)→ 没有等待对象。三种情况都收工。
+        if (!target || target.sessionId || isScheduledRunTerminal(target.status)) {
+          stop();
+          return;
+        }
+        again(attempt);
+      }).catch(function () { again(attempt); });
+    }
+
+    poll(0);
   }
 
   function upsertScheduledTaskRun(run) {
@@ -1334,20 +1511,36 @@
     }
   }
 
+  var SCHEDULED_TASK_WRITABLE_FIELDS = ["name", "prompt", "rrule", "model", "modelId", "paused"];
+
+  // Scheduled tasks always run as Yolo. Keep the wire boundary intentionally narrow so
+  // legacy callers cannot reintroduce task-level permissions or external directories.
+  function scheduledTaskBackendInput(input) {
+    var source = input || {};
+    var backendInput = { mode: "yolo" };
+    SCHEDULED_TASK_WRITABLE_FIELDS.forEach(function (field) {
+      if (Object.prototype.hasOwnProperty.call(source, field)) backendInput[field] = source[field];
+    });
+    return backendInput;
+  }
+
   async function createScheduledTask(input) {
     return runScheduledTaskAction("create", async function () {
       var templateId = input && typeof input.templateId === "string" ? input.templateId.trim() : "";
-      var backendInput = Object.assign({}, input || {});
-      delete backendInput.templateId;
-      backendInput.mode = "yolo";
+      var selectAfterCreate = !input || input.selectAfterCreate !== false;
+      var backendInput = scheduledTaskBackendInput(input);
       var created = await invoke("create_scheduled_task", { input: backendInput });
-      if (created && created.id && templateId) {
-        rememberScheduledTaskTemplateSource(created.id, templateId);
+      if (!created || !created.id) {
+        throw new Error("创建定时任务失败：后端未返回任务 ID");
       }
+      if (templateId) rememberScheduledTaskTemplateSource(created.id, templateId);
       attachScheduledTaskTemplateSource(created);
-      if (created && created.id) selectScheduledTask(created.id);
+      // 立即重拉任务列表:新 stamp 会使创建前仍在途的 list_scheduled_tasks 响应失效,
+      // 防止旧结果落地时把刚创建的任务从列表里覆盖掉。
+      await loadScheduledTasks();
       upsertScheduledTask(created);
-      state.scheduledTaskDetail = created;
+      if (selectAfterCreate) selectScheduledTask(created.id);
+      if (selectAfterCreate) state.scheduledTaskDetail = created;
       notify();
       return created;
     });
@@ -1355,7 +1548,7 @@
 
   async function updateScheduledTask(id, input) {
     return runScheduledTaskAction("update", async function () {
-      var backendInput = Object.assign({}, input || {}, { mode: "yolo" });
+      var backendInput = scheduledTaskBackendInput(input);
       var updated = await invoke("update_scheduled_task", { id: id, input: backendInput });
       upsertScheduledTask(updated);
       if (state.selectedScheduledTaskId === id) state.scheduledTaskDetail = updated;
@@ -1384,14 +1577,36 @@
     });
   }
 
+  async function toggleScheduledTaskPinned(id, pinned) {
+    return runScheduledTaskAction(pinned ? "pin" : "unpin", async function () {
+      var updated = await invoke("set_scheduled_task_pinned", { id: id, pinned: !!pinned });
+      upsertScheduledTask(updated);
+      if (state.selectedScheduledTaskId === id) state.scheduledTaskDetail = updated;
+      notify();
+      return updated;
+    });
+  }
+
   async function deleteScheduledTask(id) {
     return runScheduledTaskAction("delete", async function () {
+      invalidateScheduledRecentRuns();
       var deleted = await invoke("delete_scheduled_task", { id: id });
-      if (deleted && Array.isArray(deleted.deletedSessionIds)) {
-        deleted.deletedSessionIds.forEach(purgeSessionBuffer);
-      }
+      var deletedSessionIds = deleted && Array.isArray(deleted.deletedSessionIds)
+        ? deleted.deletedSessionIds
+        : [];
+      var deletedSessionSet = Object.create(null);
+      deletedSessionIds.forEach(function (sessionId) {
+        deletedSessionSet[sessionId] = true;
+        purgeSessionBuffer(sessionId);
+      });
       forgetScheduledTaskTemplateSource(id);
       state.scheduledTasks = (state.scheduledTasks || []).filter(function (task) { return task.id !== id; });
+      state.scheduledTaskRecentRuns = (state.scheduledTaskRecentRuns || []).filter(function (run) {
+        return run && run.automationId !== id && !deletedSessionSet[run.sessionId];
+      });
+      state.scheduledTaskRuns = (state.scheduledTaskRuns || []).filter(function (run) {
+        return run && run.automationId !== id && !deletedSessionSet[run.sessionId];
+      });
       if (state.selectedScheduledTaskId === id) selectScheduledTask(null);
       notify();
       return deleted;
@@ -1413,6 +1628,7 @@
         }
       }
       notify();
+      refreshScheduledRunShortcutUntilLinked(id, run && run.id);
       return run;
     });
   }
@@ -1597,17 +1813,35 @@
     addSystemItem(bt("loadChatFailed") + error);
   }
 
-  function mergeHydratedMessages(durableMessages, liveMessages) {
+  function hydratedMessageKey(message, hideInternalEnvelope) {
+    var blocks = message && Array.isArray(message.content) ? message.content : [];
+    if (message && message.role === "user") {
+      var resultIds = blocks.filter(function (block) {
+        return block && block.type === "tool_result" && block.tool_use_id;
+      }).map(function (block) { return block.tool_use_id; }).sort();
+      if (resultIds.length) return "user:tool_results:" + resultIds.join("|");
+      return "user:text:" + userMessageDisplayText(blocks, hideInternalEnvelope);
+    }
+    if (message && message.role === "assistant") {
+      var toolIds = blocks.filter(function (block) {
+        return block && block.type === "tool_use" && block.id;
+      }).map(function (block) { return block.id; }).sort();
+      if (toolIds.length) return "assistant:tool_uses:" + toolIds.join("|");
+      blocks = blocks.filter(function (block) { return !block || block.type !== "thinking"; });
+      try { return "assistant:" + JSON.stringify(blocks); } catch (_) {}
+    }
+    try { return JSON.stringify(message); } catch (_) { return String(message); }
+  }
+
+  function mergeHydratedMessages(durableMessages, liveMessages, hideInternalEnvelope) {
     var durable = Array.isArray(durableMessages) ? durableMessages.slice() : [];
     var counts = Object.create(null);
     durable.forEach(function (message) {
-      var key;
-      try { key = JSON.stringify(message); } catch (_) { key = String(message); }
+      var key = hydratedMessageKey(message, hideInternalEnvelope);
       counts[key] = (counts[key] || 0) + 1;
     });
     (Array.isArray(liveMessages) ? liveMessages : []).forEach(function (message) {
-      var key;
-      try { key = JSON.stringify(message); } catch (_) { key = String(message); }
+      var key = hydratedMessageKey(message, hideInternalEnvelope);
       if (counts[key]) {
         counts[key] -= 1;
       } else {
@@ -1735,7 +1969,11 @@
       var liveCurrentStreamId = currentStreamId;
       var hasLivePresentation = !!state.busy || !!currentStreamText || !!pendingAssistantText ||
         (Array.isArray(pendingAssistantBlocks) && pendingAssistantBlocks.length > 0);
-      state.messages = mergeHydratedMessages(saved.messages, liveMessages);
+      state.messages = mergeHydratedMessages(
+        saved.messages,
+        liveMessages,
+        isScheduledRunSession(id)
+      );
       state.personaEvents = personaEvents.length ? personaEvents : (liveBuffer.personaEvents || []);
       state.pinvouReviews = pinvouReviews.length ? pinvouReviews : (liveBuffer.pinvouReviews || []);
       state.artifacts = filterSessionArtifacts(
@@ -1794,10 +2032,18 @@
     var returnSessionId = state.scheduledRunContext
       ? state.scheduledRunContext.returnSessionId
       : state.activeSessionId;
-    var forceDurableLoad = runStatus === "completed" || runStatus === "failed" || runStatus === "canceled";
+    var liveBuffer = sessionStates[sessionId];
+    var hasLiveTurn = !!(liveBuffer && (
+      liveBuffer.busy ||
+      liveBuffer.scheduledInitialTurnPhase === "active" ||
+      (liveBuffer.queued && liveBuffer.queued.length) ||
+      (liveBuffer.thinking && liveBuffer.thinking.active)
+    ));
+    var isTerminalRun = runStatus === "completed" || runStatus === "failed" || runStatus === "canceled";
+    var forceDurableLoad = isTerminalRun && !hasLiveTurn;
     var switched = await switchToSessionInternal(sessionId, true, "scheduled", {
       forceDurableLoad: forceDurableLoad,
-      hydrateLiveSession: !forceDurableLoad,
+      hydrateLiveSession: !isTerminalRun,
     });
     if (!switched) {
       rollbackScheduledOpenActivation(openActivation);
@@ -1866,19 +2112,43 @@
     return true;
   }
 
+  function recentScheduledRunForSession(id) {
+    return (state.scheduledTaskRecentRuns || []).find(function (run) {
+      return run && run.sessionId === id;
+    }) || null;
+  }
+
+  // 离开正在查看的会话:清 active + 换空工作集,并清掉指向它的定时运行上下文。
+  // 必须连 scheduledRunContext 一起清 —— main.jsx 只按该字段真值决定渲染
+  // ChatView 还是 ScheduledTasksView,而 ChatView 内部还要求 sessionId===activeSessionId
+  // 才渲染返回按钮;只清 active 会卡在「定时路由下的空白页且没有返回按钮」。
+  // 清掉之后 currentView 仍是 'scheduled',界面自然落回定时任务列表。
+  // 不负责 buffer:删除要丢弃 buffer,收纳要保留 buffer,由调用方各自处理。
+  function leaveSessionView(id) {
+    if (state.scheduledRunContext && state.scheduledRunContext.sessionId === id) {
+      state.scheduledRunContext = null;
+    }
+    if (state.activeSessionId !== id) return;
+    state.activeSessionId = null;
+    loadWorkingSetFrom(freshBuffer());
+  }
+
   async function deleteSession(id) {
+    invalidateScheduledRecentRunsForSession(id);
     try {
+      // 后端按 SessionKind 分发:定时运行会话在 delete_session 里联动删除
+      // 该次 Session、Run 与底座 Task,任务定义与共享工作间保留。
       await invoke("delete_session", { id: id });
-      delete sessionStates[id]; // 丢掉该 session 的工作集缓冲(后端已 evict 其 engine)
-      delete turnUsageDirty[id];
+      // 统一清理工作集、实时状态、定时创建上下文与当前视图，避免手写字段漂移。
+      purgeSessionBuffer(id);
       state.sessions = state.sessions.filter(function (s) { return s.id !== id; });
       state.archivedSessions = (state.archivedSessions || []).filter(function (s) { return s.id !== id; });
-      if (state.activeSessionId === id) {
-        // 删当前会话 → 落空白草稿页(不自动切上一条/不建空 session)。被删 session 的 buffer
-        // 上面已 delete,这里不 saveWorkingSetTo(否则 getBuffer 会把它复活),直接清空工作集。
-        state.activeSessionId = null;
-        loadWorkingSetFrom(freshBuffer());
-      }
+      state.scheduledTaskRecentRuns = (state.scheduledTaskRecentRuns || []).filter(function (run) {
+        return !run || run.sessionId !== id;
+      });
+      state.scheduledTaskRuns = (state.scheduledTaskRuns || []).filter(function (run) {
+        return !run || run.sessionId !== id;
+      });
       notify();
     } catch (e) {
       addSystemItem(bt("deleteFailed") + e);
@@ -1886,11 +2156,14 @@
   }
 
   async function renameSession(id, title) {
-    if (isScheduledRunSession(id)) return;
+    invalidateScheduledRecentRunsForSession(id);
     try {
       await invoke("rename_session", { id: id, title: title });
       var s = state.sessions.find(function (s) { return s.id === id; });
       if (s) s.title = title;
+      state.scheduledTaskRecentRuns = (state.scheduledTaskRecentRuns || []).map(function (run) {
+        return run && run.sessionId === id ? Object.assign({}, run, { sessionTitle: title }) : run;
+      });
       delete personaPlaceholderTitles[id]; // 用户主动命名后不再算卡牌占位,不被对话覆盖
       notify();
     } catch (e) {
@@ -1899,12 +2172,20 @@
   }
 
   async function toggleSessionPinned(id, pinned) {
+    invalidateScheduledRecentRunsForSession(id);
     var s = state.sessions.find(function (s) { return s.id === id; });
+    var scheduledRun = recentScheduledRunForSession(id);
     var prev = s ? !!s.pinned : false;
     var prevPinnedAt = s ? s.pinned_at : null;
+    var previousRunPinned = scheduledRun ? !!scheduledRun.pinned : false;
+    var previousRunPinnedAt = scheduledRun ? scheduledRun.pinnedAt : null;
     if (s) {
       s.pinned = !!pinned;
       s.pinned_at = pinned ? new Date().toISOString() : null;
+    }
+    if (scheduledRun) {
+      scheduledRun.pinned = !!pinned;
+      scheduledRun.pinnedAt = pinned ? new Date().toISOString() : null;
     }
     notify();
     try {
@@ -1915,24 +2196,56 @@
         s.pinned = prev;
         s.pinned_at = prevPinnedAt;
       }
+      if (scheduledRun) {
+        scheduledRun.pinned = previousRunPinned;
+        scheduledRun.pinnedAt = previousRunPinnedAt;
+      }
       console.warn("set_session_pinned failed", e);
       await refreshHistoryList();
     }
   }
 
   async function archiveSession(id) {
+    invalidateScheduledRecentRunsForSession(id);
     var idx = state.sessions.findIndex(function (s) { return s.id === id; });
-    if (idx < 0) return;
+    if (idx < 0) {
+      // 定时运行会话不在 state.sessions;收起 = 从侧边栏记录移除,进设置页归档列表。
+      var scheduledRun = recentScheduledRunForSession(id);
+      if (!scheduledRun) return;
+      var previousRuns = state.scheduledTaskRecentRuns || [];
+      var wasViewingRun = state.activeSessionId === id;
+      var previousContext = state.scheduledRunContext;
+      // 与普通会话收纳同语义:保留 buffer(还能从设置页还原后重开),但要离开当前视图。
+      if (wasViewingRun) saveWorkingSetTo(getBuffer(id));
+      state.scheduledTaskRecentRuns = previousRuns.filter(function (run) {
+        return !run || run.sessionId !== id;
+      });
+      leaveSessionView(id);
+      notify();
+      try {
+        await invoke("set_session_archived", { id: id, archived: true });
+        await refreshHistoryList();
+      } catch (e) {
+        state.scheduledTaskRecentRuns = previousRuns;
+        if (wasViewingRun) {
+          // active 与 scheduledRunContext 必须成对回滚,否则会落到
+          // 「active 有值但 context 空」的错位态(界面回任务列表却仍持有会话)。
+          state.activeSessionId = id;
+          state.scheduledRunContext = previousContext;
+          loadWorkingSetFrom(getBuffer(id));
+        }
+        console.warn("set_session_archived failed", e);
+        notify();
+      }
+      return;
+    }
     var s = state.sessions[idx];
     var archived = Object.assign({}, s, { archived: true, archived_at: new Date().toISOString(), pinned: false, pinned_at: null });
     var wasActive = state.activeSessionId === id;
     if (wasActive) saveWorkingSetTo(getBuffer(id));
     state.sessions.splice(idx, 1);
     state.archivedSessions = [archived].concat((state.archivedSessions || []).filter(function (x) { return x.id !== id; }));
-    if (wasActive) {
-      state.activeSessionId = null;
-      loadWorkingSetFrom(freshBuffer());
-    }
+    leaveSessionView(id);
     notify();
     try {
       await invoke("set_session_archived", { id: id, archived: true });
@@ -1953,6 +2266,7 @@
     var idx = (state.archivedSessions || []).findIndex(function (s) { return s.id === id; });
     if (idx < 0) return;
     var s = state.archivedSessions[idx];
+    invalidateScheduledRecentRunsForSession(id);
     var restored = Object.assign({}, s, { archived: false, archived_at: null });
     state.archivedSessions.splice(idx, 1);
     state.sessions = [restored].concat(state.sessions || []);
@@ -1960,6 +2274,8 @@
     try {
       await invoke("set_session_archived", { id: id, archived: false });
       await refreshHistoryList();
+      // 还原的定时运行会话回侧边栏"定时任务记录"(refreshHistoryList 只管普通会话)。
+      if (String(id).indexOf("sched-") === 0) loadScheduledTaskRecentRuns().catch(function () {});
     } catch (e) {
       state.archivedSessions.splice(idx, 0, s);
       state.sessions = (state.sessions || []).filter(function (x) { return x.id !== id; });
@@ -2013,6 +2329,25 @@
       reasons: rm && rm[1] ? rm[1].split("; ") : [],
       suggestions: sm && sm[1] ? sm[1].split("; ") : [],
     };
+  }
+
+  // 定时会话由 Engine 持久化原始送模消息；展示时只投影真实任务正文。
+  // 原始 blocks 保持不变，供模型续聊；普通会话也不受内部标签过滤影响。
+  function userMessageDisplayText(blocks, hideInternalEnvelope) {
+    var textParts = (Array.isArray(blocks) ? blocks : [])
+      .filter(function (block) { return block && block.type === "text"; })
+      .map(function (block) { return String(block.text || ""); });
+    if (!hideInternalEnvelope) return textParts.join("");
+
+    return textParts.filter(function (text) {
+      var trimmed = text.trim();
+      return !(
+        (trimmed.indexOf("<turn_meta>") === 0 && trimmed.lastIndexOf("</turn_meta>") === trimmed.length - "</turn_meta>".length) ||
+        trimmed === "<turn_meta_unchanged />"
+      );
+    }).map(function (text) {
+      return text.replace(/^\s*<system-reminder>[\s\S]*?<\/system-reminder>\s*/, "");
+    }).join("");
   }
 
   // ── Rerender from messages (session restore) ─────────────────────
@@ -2084,9 +2419,8 @@
       var m = state.messages[mi];
       var blocks = Array.isArray(m.content) ? m.content : [];
       if (m.role === "user") {
-        var textParts = blocks.filter(function (c) { return c.type === "text"; }).map(function (c) { return c.text; });
-        var utext = textParts.join("");
-        if (textParts.length) {
+        var utext = userMessageDisplayText(blocks, isScheduledRunSession(state.activeSessionId));
+        if (utext) {
           // pinvouTransfer 是展示层标记、不在 messages → rerender 从转交固定措辞还原品/悟样式
           var uitem2 = { type: "user", text: utext, time: "" };
           if (utext.indexOf("以下维度产物还缺") >= 0) uitem2.pinvouTransfer = "悟";
@@ -2958,18 +3292,7 @@
   }); });
 
   listen("scheduled_task:run_updated", function (e) {
-    var payload = e && e.payload || {};
-    var run = payload.run || payload;
-    var automationId = payload.automationId || payload.automation_id ||
-      (run && (run.automationId || run.automation_id));
-    if (!automationId) return;
-    // The sidebar unread indicator is global, so task summaries must refresh even
-    // while the Scheduled page (or another automation) is not selected.
-    if (state.selectedScheduledTaskId === automationId) {
-      refreshScheduledTaskData(20).catch(function () {});
-    } else {
-      loadScheduledTasks().catch(function () {});
-    }
+    scheduleScheduledRunRefresh();
   });
 
   listen("chat:memory_write", function (e) {
@@ -3296,6 +3619,8 @@
   // payload: { id: tool_call_id, questions: [{header, id, question, options:[{label, description}]}] }
   listen("chat:user_input_required", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
+    if (state.workflow.run.status === "stopped" &&
+        state.workflow.run.sessionId && p.session_id === state.workflow.run.sessionId) return;
     var questions = p.questions || [];
     if (!Array.isArray(questions) || questions.length === 0) return;
     addChatItem({
@@ -3433,6 +3758,18 @@
     var agents = state.workflow.run.agents;
     agents[roleId] = Object.assign(agents[roleId] || { id: roleId }, patch);
   }
+  function markWorkflowRunStopped() {
+    state.workflow.run.status = "stopped";
+    Object.keys(state.workflow.run.agents || {}).forEach(function (id) {
+      var agent = state.workflow.run.agents[id];
+      if (agent && (agent.status === "running" || agent.status === "reviewing" || agent.status === "briefing")) {
+        agent.status = "stopped";
+      }
+    });
+    (state.workflow.run.cards || []).forEach(function (card) {
+      if (!card.resolved) { card.resolved = true; card.cardState = "cancelled"; }
+    });
+  }
   function mergeFullState(p) {
     var run = state.workflow.run;
     if (p.project_dir) run.projectDir = p.project_dir;
@@ -3459,7 +3796,10 @@
         wave: r.wave, bu: r.bu,   // [B2 E1] 差事分层 + 取头像/配色
       });
     });
-    if (p.all_completed) run.status = "complete";
+    // stop marker 是最终状态。迟到或手动刷新的 full_state 仍可能携带盘上旧的
+    // running/reviewing 状态，不能让已停止的角色卡回跳成“执行中”。
+    if (p.stopped) markWorkflowRunStopped();
+    else if (p.all_completed) run.status = "complete";
   }
   // [2026-06-06] 快照恢复：把前端 run 态挂回一个已存在的工作流 run（app 重启/切会话后）。
   // 拉后端快照(get_workflow_state) → 点亮 run 态(复刻 project_started 结构) → mergeFullState
@@ -3470,7 +3810,8 @@
       if (!snap || !snap.roles || Object.keys(snap.roles).length === 0) return false;
       state.workflow.run = {
         active: true, sessionId: sessionId, projectDir: snap.project_dir || null,
-        scenario: snap.scenario || null, status: snap.all_completed ? "complete" : "running",
+        scenario: snap.scenario || null,
+        status: snap.stopped ? "stopped" : (snap.all_completed ? "complete" : "running"),
         agents: {}, cards: [], selectedRole: null,
       };
       mergeFullState(snap);
@@ -3528,6 +3869,7 @@
   });
   listen("workflow:agent_state_changed", function (e) {
     var p = e.payload || {}; if (!isRunSession(p)) return;
+    if (state.workflow.run.status === "stopped") return;
     applyAgentPatch(p.role_id, { name: p.role_name || p.role_id, status: p.status || "running" });
     notify();
   });
@@ -3535,6 +3877,7 @@
   // payload: { base_role, pages:[{page,status}] }，status ∈ queued|running|done|retrying。
   listen("workflow:fanout", function (e) {
     var p = e.payload || {}; if (!isRunSession(p)) return;
+    if (state.workflow.run.status === "stopped") return;
     if (!state.workflow.run.fanout) state.workflow.run.fanout = {};
     var pages = p.pages || [];
     state.workflow.run.fanout[p.base_role] = { total: pages.length, pages: pages };
@@ -3542,6 +3885,7 @@
   });
   listen("workflow:complete", function (e) {
     var p = e.payload || {}; if (!isRunSession(p)) return;
+    if (state.workflow.run.status === "stopped") return;
     state.workflow.run.status = "complete";
     // [edict-obs] 后端带回成品路径 → 弹成品卡(一键打开 deck)
     if (p.artifact) {
@@ -3551,13 +3895,20 @@
   });
   listen("workflow:blocked", function (e) {
     var p = e.payload || {}; if (!isRunSession(p)) return;
+    if (state.workflow.run.status === "stopped") return;
     state.workflow.run.status = "blocked";
     // 后端 emit 的是 message(+warmup_report)，不是 reason/waiting_roles。
     pushRunCard({ kind: "system", text: "⚙️ 工作流卡住：" + (p.message || p.reason || "未知原因"), resolved: false });
     notify();
   });
+  listen("workflow:stopped", function (e) {
+    var p = e.payload || {}; if (!isRunSession(p)) return;
+    markWorkflowRunStopped();
+    notify();
+  });
   listen("workflow:gate_approval", function (e) {
     var p = e.payload || {}; if (!isRunSession(p)) return;
+    if (state.workflow.run.status === "stopped") return;
     var findings = p.findings || (p.gate_description ? [p.gate_description] : []);
     // 去重:同一角色已有未处理的 gate 卡 → 只更新 findings,不叠新卡(huizou 反复过闸会重复 emit)。
     var dup = (state.workflow.run.cards || []).find(function (c) { return c.kind === "gate" && c.roleId === p.role_id && !c.resolved; });
@@ -3569,6 +3920,7 @@
   // [edict-obs] SubAgent 实时进展(底座每步/每个工具调用自动发)。
   listen("workflow:agent_progress", function (e) {
     var p = e.payload || {}; if (!isRunSession(p)) return;
+    if (state.workflow.run.status === "stopped") return;
     if (!state.workflow.run.progress) state.workflow.run.progress = {};
     var key = p.role_id || p.agent_id;
     if (!key) return;
@@ -3580,6 +3932,7 @@
   // [edict-obs] per-role token 账本快照(每次 LLM 调用后推一次累计值)。
   listen("workflow:token_usage", function (e) {
     var p = e.payload || {}; if (!isRunSession(p)) return;
+    if (state.workflow.run.status === "stopped") return;
     if (!state.workflow.run.tokens) state.workflow.run.tokens = {};
     var key = p.role_id || p.agent_id;
     if (!key) return;
@@ -3594,6 +3947,7 @@
   listen("chat:user_input_required", function (e) {
     var p = e.payload || {};
     if (!state.workflow.run.sessionId || p.session_id !== state.workflow.run.sessionId) return;
+    if (state.workflow.run.status === "stopped") return;
     var qs = p.questions || []; if (!Array.isArray(qs) || !qs.length) return;
     pushRunCard({ kind: "user_input", toolCallId: p.id, questions: qs, resolved: false });
     notify();
@@ -4580,6 +4934,7 @@
   function renderArtifactVisual(path) { return invoke("render_artifact_visual", { path: path }); }
   function openContainingFolder(path) { return invoke("open_containing_folder", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   function revealSessionFolder(sessionId) { return invoke("reveal_session_folder", { sessionId: sessionId }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
+  function openScheduledTaskFolder(automationId) { return invoke("open_scheduled_task_folder", { automationId: automationId }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   function openInSystem(path) { return invoke("open_in_system", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   // 仅放白名单 URL (metaso.cn / open.bochaai.com),后端 open_external_url 强制校验。
   function openExternalUrl(url) { return invoke("open_external_url", { url: url }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
@@ -5545,6 +5900,19 @@
       return res;
     } catch (e) { addSystemItem("⚠️ 启动工作流失败: " + e); return null; }
   }
+  // 停止整个 run：后端先落 stop marker 再取消所有后台 SubAgent；返回旧 brief，
+  // 供工作流页打开“修改需求并重新开始”的预填表单。
+  async function stopWorkflowTask(reason) {
+    var sid = state.workflow.run.sessionId;
+    if (!sid) throw new Error("当前没有可停止的工作流");
+    var result = await invoke("stop_workflow", {
+      sessionId: sid,
+      reason: reason || "user_stopped",
+    });
+    markWorkflowRunStopped();
+    notify();
+    return result || {};
+  }
   // 模板页数据源:已发现且 enabled 的工作流(含 ui 块)。失败回空数组(模板页显示空态)。
   async function listWorkflows() {
     try { return (await invoke("list_workflows")) || []; }
@@ -5645,7 +6013,9 @@
     startupMark("bridge:init_start");
     // Populate the global Scheduled unread summary without requiring the user
     // to visit the Scheduled page first. This stays off the startup critical path.
-    loadScheduledTasks().catch(function () {});
+    loadScheduledTasks().catch(function () {}).then(function () {
+      loadScheduledTaskRecentRuns().catch(function () {});
+    });
     startupMark("bridge:monitor_polling_deferred", "starts when monitor view becomes active");
     await startupAwait("bridge:load_settings", loadSettings);
     await startupAwait("bridge:load_effective_model", loadEffectiveModelConfig);
@@ -5699,13 +6069,16 @@
     loadScheduledTasks: loadScheduledTasks,
     readScheduledTask: readScheduledTask,
     loadScheduledTaskRuns: loadScheduledTaskRuns,
+    loadScheduledTaskRecentRuns: loadScheduledTaskRecentRuns,
     selectScheduledTask: selectScheduledTask,
     refreshScheduledTaskData: refreshScheduledTaskData,
     clearScheduledTaskSelection: clearScheduledTaskSelection,
+    dismissScheduledTaskError: dismissScheduledTaskError,
     createScheduledTask: createScheduledTask,
     updateScheduledTask: updateScheduledTask,
     pauseScheduledTask: pauseScheduledTask,
     resumeScheduledTask: resumeScheduledTask,
+    toggleScheduledTaskPinned: toggleScheduledTaskPinned,
     deleteScheduledTask: deleteScheduledTask,
     runScheduledTaskNow: runScheduledTaskNow,
     pickFolder: pickFolder,
@@ -5783,6 +6156,7 @@
     renderArtifactVisual: renderArtifactVisual,
     openContainingFolder: openContainingFolder,
     revealSessionFolder: revealSessionFolder,
+    openScheduledTaskFolder: openScheduledTaskFolder,
     openInSystem: openInSystem,
     openArtifactExternal: openArtifactExternal,
     listDeliverables: listDeliverables,
@@ -5804,6 +6178,7 @@
     setCurrentPhase: setCurrentPhase,
     // 卡片流工作流
     startWorkflowTask: startWorkflowTask,
+    stopWorkflowTask: stopWorkflowTask,
     listWorkflows: listWorkflows,
     resetWorkflowRun: resetWorkflowRun,
     selectWorkflowRole: selectWorkflowRole,

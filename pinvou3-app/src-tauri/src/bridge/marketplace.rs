@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 
+use deepseek_tui::mcp::{McpConfig, McpPool, McpServerConfig, McpTimeouts};
 use serde::{Deserialize, Serialize};
 
 use super::paths;
@@ -34,6 +35,8 @@ pub struct ToolManifest {
     pub secret_env: Vec<SecretEnv>,
     #[serde(default)]
     pub secret_headers: Vec<SecretHeader>,
+    #[serde(default)]
+    pub validate_on_install: bool,
     #[serde(default)]
     pub config_fields: Vec<ConfigField>,
     #[serde(default)]
@@ -163,6 +166,86 @@ fn mcp_secret_store_error(tool_id: &str, key: &str, error: CredentialError) -> S
     ))
 }
 
+fn expected_remote_tool_names(manifest: &ToolManifest) -> Vec<String> {
+    if !manifest.mcp_tools.is_empty() {
+        return manifest
+            .mcp_tools
+            .iter()
+            .map(|name| normalize_manifest_tool_name(name, manifest))
+            .collect();
+    }
+    Vec::new()
+}
+
+fn normalize_manifest_tool_name(name: &str, manifest: &ToolManifest) -> String {
+    for server in &manifest.servers {
+        let prefix = format!("mcp_{}_", server.name);
+        if let Some(rest) = name.strip_prefix(&prefix) {
+            return rest.to_string();
+        }
+    }
+    let id_prefix = format!("mcp_{}_", manifest.id);
+    if let Some(rest) = name.strip_prefix(&id_prefix) {
+        return rest.to_string();
+    }
+    name.to_string()
+}
+
+fn remote_validation_user_error(raw: &str) -> String {
+    let redacted = redact_secret(raw);
+    let lower = redacted.to_ascii_lowercase();
+    let auth_failed = [
+        "401",
+        "403",
+        "unauthorized",
+        "forbidden",
+        "invalid token",
+        "invalid api key",
+        "invalid apikey",
+        "api key invalid",
+        "apikey invalid",
+        "expired",
+        "authentication failed",
+        "auth failed",
+        "permission denied",
+        "access denied",
+        "鉴权",
+        "认证",
+        "无效",
+        "过期",
+        "权限",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    let network_error = [
+        "dns",
+        "tls",
+        "certificate",
+        "connection refused",
+        "connection reset",
+        "connect error",
+        "proxy",
+        "network",
+        "failed to lookup address",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+
+    if auth_failed {
+        "API Key 无效或已过期，请更新后重试".to_string()
+    } else if lower.contains("429") || lower.contains("too many requests") {
+        "远程 MCP 服务当前限流，请稍后重试".to_string()
+    } else if lower.contains("timed out") || lower.contains("timeout") || lower.contains("超时") {
+        "远程 MCP 服务响应超时，请稍后重试".to_string()
+    } else if lower.contains("tools/list") || lower.contains("工具列表") {
+        "远程 MCP 工具列表异常，请稍后重试".to_string()
+    } else if network_error {
+        "无法连接远程 MCP 服务，请检查网络或代理".to_string()
+    } else {
+        "远程 MCP 连接校验失败，请检查 API Key 或稍后重试".to_string()
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct BuiltinMcpSecretSpec {
     tool_id: &'static str,
@@ -234,6 +317,13 @@ pub struct MarketplaceToolInfo {
     /// 时前端漏建映射导致两卡状态分叉。
     #[serde(default)]
     pub companion_skills: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketplaceToolValidation {
+    pub tool_id: String,
+    pub connected: bool,
+    pub tools: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -326,24 +416,7 @@ fn manifest_secret_targets(manifest: &ToolManifest) -> Vec<(String, String)> {
 /// 重启后把**所有已安装工具**的 secret 从 keyring 重灌进进程 env(MCP 子进程 expand
 /// `${...}` 占位符用)。不再硬编码内置 3 个 —— 自定义/上传的带 secret 工具重启后同样生效。
 pub fn sync_mcp_secret_env_vars() -> Result<(), String> {
-    let store = SystemCredentialStore::new();
-    let mgr = MarketplaceManager::new();
-    for tool_id in mgr.installed_ids() {
-        let Some(manifest) = mgr.load_manifest(&tool_id) else {
-            continue;
-        };
-        for (target, key) in manifest_secret_targets(&manifest) {
-            let reference = mcp_secret_reference(&tool_id, &target, &key);
-            match store.get(&reference) {
-                Ok(Some(value)) if !value.trim().is_empty() => {
-                    std::env::set_var(mcp_secret_env_var(&key), value);
-                }
-                Ok(_) => {}
-                Err(e) => return Err(mcp_secret_store_error(&tool_id, &key, e)),
-            }
-        }
-    }
-    Ok(())
+    MarketplaceManager::new().sync_secret_env_vars()
 }
 
 /// 当前被禁用连接器 → 模型可见工具全名(喂给引擎 disallowed_tools 的)。
@@ -380,6 +453,25 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             installed_file,
             credential_store,
         }
+    }
+
+    fn sync_secret_env_vars(&self) -> Result<(), String> {
+        for tool_id in self.installed_ids() {
+            let Some(manifest) = self.load_manifest(&tool_id) else {
+                continue;
+            };
+            for (target, key) in manifest_secret_targets(&manifest) {
+                let reference = mcp_secret_reference(&tool_id, &target, &key);
+                match self.credential_store.get(&reference) {
+                    Ok(Some(value)) if !value.trim().is_empty() => {
+                        std::env::set_var(mcp_secret_env_var(&key), value);
+                    }
+                    Ok(_) => {}
+                    Err(e) => return Err(mcp_secret_store_error(&tool_id, &key, e)),
+                }
+            }
+        }
+        Ok(())
     }
 
     /// 扫描 bundle mcp-servers/ 下所有含 manifest.json 的子目录
@@ -475,6 +567,104 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         self.save_installed(&installed)?;
 
         Ok(())
+    }
+
+    /// manifest 显式要求时，把“配置已写入”收紧为“远程 MCP 已握手且工具可发现”。
+    pub fn requires_remote_connection_validation(&self, tool_id: &str) -> bool {
+        self.load_manifest(tool_id)
+            .map(|m| m.validate_on_install && !m.servers.is_empty())
+            .unwrap_or(false)
+    }
+
+    pub async fn validate_remote_connection(
+        &self,
+        tool_id: &str,
+    ) -> Result<MarketplaceToolValidation, String> {
+        let manifest = self
+            .load_manifest(tool_id)
+            .ok_or_else(|| format!("工具 '{tool_id}' 不存在"))?;
+        if !self.requires_remote_connection_validation(tool_id) {
+            return Ok(MarketplaceToolValidation {
+                tool_id: tool_id.to_string(),
+                connected: true,
+                tools: Vec::new(),
+            });
+        }
+
+        let mut pool = McpPool::new(self.validation_mcp_config(&manifest)?);
+        let errors = pool.connect_all().await;
+        if !errors.is_empty() {
+            let message = errors
+                .into_iter()
+                .map(|(server, err)| format!("{server}: {err:#}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(remote_validation_user_error(&message));
+        }
+
+        let tools = pool
+            .all_tools()
+            .into_iter()
+            .map(|(_, tool)| tool.name.clone())
+            .collect::<Vec<_>>();
+        if tools.is_empty() {
+            return Err("远程 MCP 工具列表异常，请稍后重试".to_string());
+        }
+
+        let expected = expected_remote_tool_names(&manifest);
+        if !expected.is_empty() {
+            let missing = expected
+                .iter()
+                .filter(|name| !tools.iter().any(|tool| tool == *name))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !missing.is_empty() {
+                return Err(format!(
+                    "远程 MCP 工具列表异常，缺少工具: {}",
+                    missing.join(", ")
+                ));
+            }
+        }
+
+        Ok(MarketplaceToolValidation {
+            tool_id: tool_id.to_string(),
+            connected: true,
+            tools,
+        })
+    }
+
+    fn validation_mcp_config(&self, manifest: &ToolManifest) -> Result<McpConfig, String> {
+        let mcp_path = paths::mcp_config_path();
+        let content = std::fs::read_to_string(&mcp_path)
+            .map_err(|e| format!("读取 MCP 配置失败: {e}"))?;
+        let mcp: serde_json::Value =
+            serde_json::from_str(&content).map_err(|e| format!("解析 MCP 配置失败: {e}"))?;
+        let servers = mcp
+            .get("servers")
+            .and_then(|v| v.as_object())
+            .ok_or_else(|| "MCP 配置缺少 servers".to_string())?;
+
+        let mut config = McpConfig {
+            timeouts: McpTimeouts {
+                connect_timeout: 20,
+                execute_timeout: 30,
+                read_timeout: 30,
+            },
+            servers: std::collections::HashMap::new(),
+        };
+        for server in &manifest.servers {
+            let entry = servers
+                .get(&server.name)
+                .ok_or_else(|| format!("MCP 配置缺少 server '{}'", server.name))?;
+            let mut server_config: McpServerConfig = serde_json::from_value(entry.clone())
+                .map_err(|e| format!("解析 MCP server '{}' 失败: {e}", server.name))?;
+            server_config.required = true;
+            server_config.connect_timeout = Some(20);
+            server_config.execute_timeout = Some(30);
+            server_config.read_timeout = Some(30);
+            config.servers.insert(server.name.clone(), server_config);
+        }
+        Ok(config)
     }
 
     pub fn migrate_mcp_plaintext_secrets(&self) -> Result<McpSecretMigrationResult, String> {
@@ -756,6 +946,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             for (target, key) in manifest_secret_targets(&manifest) {
                 let reference = mcp_secret_reference(tool_id, &target, &key);
                 let _ = self.credential_store.delete(&reference);
+                std::env::remove_var(mcp_secret_env_var(&key));
             }
         }
         // 更新 installed.json
@@ -1145,11 +1336,15 @@ mod tests {
     use super::*;
     use crate::bridge::paths::tests::ENV_LOCK;
     use crate::credential_store::{CredentialStore, MemoryCredentialStore};
+    use std::future::Future;
+    use std::sync::{Arc, Mutex as StdMutex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::task::JoinHandle;
 
     #[test]
     fn manifest_secret_targets_dedups_and_maps_bearer_to_header() {
-        // 同一 key 在 secret_env/secret_headers 与 config_fields 重复声明 → 去重一次;
-        // config_fields 的 "bearer" 落成 keyring target "header"(与 install 对齐)。
+        // 同一 key 在 secret_env/secret_headers 与 config_fields 重复声明 → 去重一次。
         let manifest: ToolManifest = serde_json::from_str(
             r#"{
             "id":"t","name":"T","description":"","version":"1","icon":"","category":"",
@@ -1169,6 +1364,58 @@ mod tests {
         assert!(targets.contains(&("header".to_string(), "QCC_API_KEY".to_string())));
     }
 
+    #[test]
+    fn remote_validation_error_classifier_prefers_auth_message_for_token_failures() {
+        for raw in [
+            "401 Unauthorized",
+            "403 Forbidden",
+            "invalid apikey",
+            "invalid api key",
+            "invalid token",
+            "api key invalid",
+            "authentication failed",
+            "auth failed",
+            "permission denied",
+            "access denied",
+            "鉴权失败",
+            "认证失败",
+            "API Key 无效",
+            "token expired",
+        ] {
+            assert_eq!(
+                remote_validation_user_error(raw),
+                "API Key 无效或已过期，请更新后重试",
+                "raw={raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_validation_error_classifier_separates_network_and_unknown_errors() {
+        for raw in [
+            "connection refused",
+            "dns lookup failed",
+            "proxy connect failed",
+            "TLS certificate error",
+            "failed to lookup address information",
+        ] {
+            assert_eq!(
+                remote_validation_user_error(raw),
+                "无法连接远程 MCP 服务，请检查网络或代理",
+                "raw={raw}"
+            );
+        }
+
+        assert_eq!(
+            remote_validation_user_error("upstream rejected request"),
+            "远程 MCP 连接校验失败，请检查 API Key 或稍后重试"
+        );
+        assert_eq!(
+            remote_validation_user_error("unexpected json-rpc error wrong-token-20260715"),
+            "远程 MCP 连接校验失败，请检查 API Key 或稍后重试"
+        );
+    }
+
     /// 把 PINVOU3_HOME 指到一个干净临时目录跑闭包,跑完恢复并清理。
     /// 借 paths 的 ENV_LOCK 跟其它 mutate PINVOU3_HOME 的测试串行,避免互相覆盖。
     fn with_temp_home<F: FnOnce()>(f: F) {
@@ -1177,6 +1424,7 @@ mod tests {
         let prev_amap = std::env::var("PINVOU3_MCP_SECRET_AMAP_KEY").ok();
         let prev_iwencai = std::env::var("PINVOU3_MCP_SECRET_IWENCAI_API_KEY").ok();
         let prev_qcc = std::env::var("PINVOU3_MCP_SECRET_QCC_API_KEY").ok();
+        let prev_patsnap = std::env::var("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").ok();
         let dir = std::env::temp_dir().join(format!("pinvou3-mkt-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1190,6 +1438,7 @@ mod tests {
             ("PINVOU3_MCP_SECRET_AMAP_KEY", prev_amap),
             ("PINVOU3_MCP_SECRET_IWENCAI_API_KEY", prev_iwencai),
             ("PINVOU3_MCP_SECRET_QCC_API_KEY", prev_qcc),
+            ("PINVOU3_MCP_SECRET_PATSNAP_API_KEY", prev_patsnap),
         ] {
             match value {
                 Some(v) => std::env::set_var(key, v),
@@ -1197,6 +1446,205 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    async fn with_temp_home_async<F, Fut>(f: F)
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let prev_amap = std::env::var("PINVOU3_MCP_SECRET_AMAP_KEY").ok();
+        let prev_iwencai = std::env::var("PINVOU3_MCP_SECRET_IWENCAI_API_KEY").ok();
+        let prev_qcc = std::env::var("PINVOU3_MCP_SECRET_QCC_API_KEY").ok();
+        let prev_patsnap = std::env::var("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").ok();
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-mkt-test-async-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PINVOU3_HOME", &dir);
+        f().await;
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        for (key, value) in [
+            ("PINVOU3_MCP_SECRET_AMAP_KEY", prev_amap),
+            ("PINVOU3_MCP_SECRET_IWENCAI_API_KEY", prev_iwencai),
+            ("PINVOU3_MCP_SECRET_QCC_API_KEY", prev_qcc),
+            ("PINVOU3_MCP_SECRET_PATSNAP_API_KEY", prev_patsnap),
+        ] {
+            match value {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    struct MockMcpServer {
+        url: String,
+        seen_methods: Arc<StdMutex<Vec<String>>>,
+        task: JoinHandle<()>,
+    }
+
+    impl Drop for MockMcpServer {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    async fn spawn_mock_mcp_server(valid_key: &'static str) -> MockMcpServer {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen_methods = Arc::new(StdMutex::new(Vec::new()));
+        let seen_for_task = Arc::clone(&seen_methods);
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let seen = Arc::clone(&seen_for_task);
+                tokio::spawn(async move {
+                    let _ = handle_mock_mcp_request(stream, valid_key, seen).await;
+                });
+            }
+        });
+        MockMcpServer {
+            url: format!("http://{addr}/mcp"),
+            seen_methods,
+            task,
+        }
+    }
+
+    async fn handle_mock_mcp_request(
+        mut stream: tokio::net::TcpStream,
+        valid_key: &str,
+        seen_methods: Arc<StdMutex<Vec<String>>>,
+    ) -> std::io::Result<()> {
+        let mut buffer = Vec::new();
+        let header_end = loop {
+            let mut chunk = [0u8; 1024];
+            let n = stream.read(&mut chunk).await?;
+            if n == 0 {
+                return Ok(());
+            }
+            buffer.extend_from_slice(&chunk[..n]);
+            if let Some(pos) = find_header_end(&buffer) {
+                break pos;
+            }
+        };
+        let headers = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+        let first = headers.lines().next().unwrap_or_default();
+        let mut parts = first.split_whitespace();
+        let method = parts.next().unwrap_or_default();
+        let _path = parts.next().unwrap_or_default();
+
+        if method == "GET" {
+            return write_http_response(&mut stream, 404, "text/plain", "not found").await;
+        }
+
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if name.trim().eq_ignore_ascii_case("content-length") {
+                    value.trim().parse::<usize>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+        let body_start = header_end + 4;
+        while buffer.len() < body_start + content_length {
+            let mut chunk = [0u8; 1024];
+            let n = stream.read(&mut chunk).await?;
+            if n == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..n]);
+        }
+        let body = &buffer[body_start..buffer.len().min(body_start + content_length)];
+        let expected_authorization = format!("Bearer {valid_key}");
+        let authorized = headers.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.trim().eq_ignore_ascii_case("authorization")
+                    && value.trim() == expected_authorization
+            })
+        });
+        if !authorized {
+            return write_http_response(&mut stream, 401, "text/plain", "unauthorized").await;
+        }
+
+        let request: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+        let rpc_method = request
+            .get("method")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        seen_methods.lock().unwrap().push(rpc_method.clone());
+
+        if rpc_method == "notifications/initialized" {
+            return write_http_response(&mut stream, 202, "application/json", "").await;
+        }
+
+        let id = request.get("id").cloned().unwrap_or(serde_json::json!(1));
+        let result = match rpc_method.as_str() {
+            "initialize" => serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "serverInfo": {"name": "mock-patsnap", "version": "1.0.0"}
+            }),
+            "tools/list" => serde_json::json!({
+                "tools": [
+                    {"name": "patsnap_search", "description": "search", "inputSchema": {"type": "object"}},
+                    {"name": "patsnap_fetch", "description": "fetch", "inputSchema": {"type": "object"}}
+                ]
+            }),
+            "resources/list" => serde_json::json!({"resources": []}),
+            "resources/templates/list" => serde_json::json!({"resourceTemplates": []}),
+            "prompts/list" => serde_json::json!({"prompts": []}),
+            _ => serde_json::json!({}),
+        };
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": result
+        });
+        write_http_response(
+            &mut stream,
+            200,
+            "application/json",
+            &response.to_string(),
+        )
+        .await
+    }
+
+    fn find_header_end(buffer: &[u8]) -> Option<usize> {
+        buffer.windows(4).position(|w| w == b"\r\n\r\n")
+    }
+
+    async fn write_http_response(
+        stream: &mut tokio::net::TcpStream,
+        status: u16,
+        content_type: &str,
+        body: &str,
+    ) -> std::io::Result<()> {
+        let reason = match status {
+            200 => "OK",
+            202 => "Accepted",
+            401 => "Unauthorized",
+            404 => "Not Found",
+            _ => "Error",
+        };
+        let response = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.as_bytes().len()
+        );
+        stream.write_all(response.as_bytes()).await
     }
 
     fn write_tool_manifest(tool_id: &str, manifest: &str) {
@@ -1543,7 +1991,7 @@ mod tests {
     }
 
     #[test]
-    fn install_remote_secret_header_writes_placeholder_without_plain_secret() {
+    fn install_qcc_secret_header_writes_placeholder_without_plain_secret() {
         with_temp_home(|| {
             write_tool_manifest(
                 "qcc",
@@ -1574,6 +2022,283 @@ mod tests {
             assert_eq!(authorization, "Bearer ${PINVOU3_MCP_SECRET_QCC_API_KEY}");
             assert!(!mcp.to_string().contains(&secret));
         });
+    }
+
+    #[test]
+    fn install_patsnap_secret_header_writes_placeholder_without_plain_secret() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "patsnap-search",
+                r#"{
+                    "id":"patsnap-search","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"","args":[],
+                    "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}],
+                    "servers":[{"name":"patsnap-search","url":"https://connect.zhihuiya.com/2b0355/logic-mcp"}]
+                }"#,
+            );
+            let store = MemoryCredentialStore::default();
+            let secret = secret_value("patsnap");
+            store
+                .set(
+                    &mcp_secret_reference("patsnap-search", "header", "PATSNAP_API_KEY"),
+                    &secret,
+                )
+                .unwrap();
+            let mgr = MarketplaceManager::with_store(store);
+
+            mgr.install("patsnap-search", &std::collections::HashMap::new())
+                .unwrap();
+
+            let mcp = read_mcp_json();
+            let url = mcp["servers"]["patsnap-search"]["url"].as_str().unwrap();
+            assert_eq!(
+                url,
+                "https://connect.zhihuiya.com/2b0355/logic-mcp"
+            );
+            assert_eq!(
+                mcp["servers"]["patsnap-search"]["headers"]["Authorization"],
+                "Bearer ${PINVOU3_MCP_SECRET_PATSNAP_API_KEY}"
+            );
+            assert!(!mcp.to_string().contains(&secret));
+        });
+    }
+
+    #[test]
+    fn sync_secret_env_vars_restores_header_secret() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "patsnap-search",
+                r#"{
+                    "id":"patsnap-search","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"","args":[],
+                    "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}],
+                    "servers":[{"name":"patsnap-search","url":"https://connect.zhihuiya.com/2b0355/logic-mcp"}]
+                }"#,
+            );
+            let store = MemoryCredentialStore::default();
+            let secret = secret_value("patsnap-sync");
+            store
+                .set(
+                    &mcp_secret_reference("patsnap-search", "header", "PATSNAP_API_KEY"),
+                    &secret,
+                )
+                .unwrap();
+            let mgr = MarketplaceManager::with_store(store);
+            mgr.save_installed(&["patsnap-search".to_string()]).unwrap();
+            std::env::remove_var("PINVOU3_MCP_SECRET_PATSNAP_API_KEY");
+
+            mgr.sync_secret_env_vars().unwrap();
+
+            assert_eq!(
+                std::env::var("PINVOU3_MCP_SECRET_PATSNAP_API_KEY")
+                    .ok()
+                    .as_deref(),
+                Some(secret.as_str())
+            );
+        });
+    }
+
+    #[test]
+    fn uninstall_remote_secret_header_removes_credential_and_env() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "patsnap-search",
+                r#"{
+                    "id":"patsnap-search","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"","args":[],
+                    "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}],
+                    "servers":[{"name":"patsnap-search","url":"https://connect.zhihuiya.com/2b0355/logic-mcp"}]
+                }"#,
+            );
+            let store = MemoryCredentialStore::default();
+            let secret = secret_value("patsnap-uninstall");
+            let reference = mcp_secret_reference("patsnap-search", "header", "PATSNAP_API_KEY");
+            store.set(&reference, &secret).unwrap();
+            let mgr = MarketplaceManager::with_store(store.clone());
+
+            mgr.install("patsnap-search", &std::collections::HashMap::new())
+                .unwrap();
+            assert_eq!(
+                std::env::var("PINVOU3_MCP_SECRET_PATSNAP_API_KEY")
+                    .ok()
+                    .as_deref(),
+                Some(secret.as_str())
+            );
+
+            mgr.uninstall("patsnap-search").unwrap();
+
+            assert!(!mgr.installed_ids().contains(&"patsnap-search".to_string()));
+            let mcp = read_mcp_json();
+            assert!(mcp["servers"].get("patsnap-search").is_none());
+            assert_eq!(store.get(&reference).unwrap(), None);
+            assert!(std::env::var("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").is_err());
+        });
+    }
+
+    #[test]
+    fn uninstall_patsnap_does_not_remove_other_connector_secrets() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "patsnap-search",
+                r#"{
+                    "id":"patsnap-search","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"","args":[],
+                    "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}],
+                    "servers":[{"name":"patsnap-search","url":"https://connect.zhihuiya.com/2b0355/logic-mcp"}]
+                }"#,
+            );
+            write_tool_manifest(
+                "qcc",
+                r#"{
+                    "id":"qcc","name":"QCC","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"","args":[],
+                    "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"QCC_API_KEY","provider":"qcc","required":true}],
+                    "servers":[{"name":"qcc-company","url":"https://example.invalid/mcp"}]
+                }"#,
+            );
+            let store = MemoryCredentialStore::default();
+            let patsnap_secret = secret_value("patsnap-isolated");
+            let qcc_secret = secret_value("qcc-isolated");
+            let patsnap_ref = mcp_secret_reference("patsnap-search", "header", "PATSNAP_API_KEY");
+            let qcc_ref = mcp_secret_reference("qcc", "header", "QCC_API_KEY");
+            store.set(&patsnap_ref, &patsnap_secret).unwrap();
+            store.set(&qcc_ref, &qcc_secret).unwrap();
+            let mgr = MarketplaceManager::with_store(store.clone());
+
+            mgr.install("patsnap-search", &std::collections::HashMap::new())
+                .unwrap();
+            mgr.install("qcc", &std::collections::HashMap::new())
+                .unwrap();
+            assert_eq!(
+                std::env::var("PINVOU3_MCP_SECRET_QCC_API_KEY")
+                    .ok()
+                    .as_deref(),
+                Some(qcc_secret.as_str())
+            );
+
+            mgr.uninstall("patsnap-search").unwrap();
+
+            let mcp = read_mcp_json();
+            assert!(mcp["servers"].get("patsnap-search").is_none());
+            assert!(mcp["servers"].get("qcc-company").is_some());
+            assert_eq!(store.get(&patsnap_ref).unwrap(), None);
+            assert!(std::env::var("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").is_err());
+            assert_eq!(store.get(&qcc_ref).unwrap(), Some(qcc_secret.clone()));
+            assert_eq!(
+                std::env::var("PINVOU3_MCP_SECRET_QCC_API_KEY")
+                    .ok()
+                    .as_deref(),
+                Some(qcc_secret.as_str())
+            );
+        });
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn validate_patsnap_with_invalid_token_can_be_rolled_back() {
+        with_temp_home_async(|| async {
+            let mock = spawn_mock_mcp_server("valid-token").await;
+            write_tool_manifest(
+                "patsnap-search",
+                &format!(
+                    r#"{{
+                    "id":"patsnap-search","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":["patsnap_search","patsnap_fetch"],"command":"","args":[],
+                    "validate_on_install":true,
+                    "secret_headers":[{{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}}],
+                    "servers":[{{"name":"patsnap-search","url":"{}"}}]
+                }}"#,
+                    mock.url
+                ),
+            );
+            let store = MemoryCredentialStore::default();
+            let mgr = MarketplaceManager::with_store(store.clone());
+            let mut config = std::collections::HashMap::new();
+            config.insert("PATSNAP_API_KEY".to_string(), "wrong-token".to_string());
+
+            mgr.install("patsnap-search", &config).unwrap();
+            let err = mgr
+                .validate_remote_connection("patsnap-search")
+                .await
+                .unwrap_err();
+            mgr.uninstall("patsnap-search").unwrap();
+
+            assert!(err.contains("API Key 无效"), "unexpected error: {err}");
+            assert!(!err.contains("无法连接远程 MCP 服务"));
+            assert!(!mgr.installed_ids().contains(&"patsnap-search".to_string()));
+            let mcp = read_mcp_json();
+            assert!(mcp["servers"].get("patsnap-search").is_none());
+            assert_eq!(store
+                .get(&mcp_secret_reference(
+                    "patsnap-search",
+                    "header",
+                    "PATSNAP_API_KEY"
+                ))
+                .unwrap(), None);
+            assert!(std::env::var("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").is_err());
+            assert!(!err.contains("wrong-token"));
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn validate_patsnap_with_valid_token_discovers_expected_tools() {
+        with_temp_home_async(|| async {
+            let mock = spawn_mock_mcp_server("valid-token").await;
+            write_tool_manifest(
+                "patsnap-search",
+                &format!(
+                    r#"{{
+                    "id":"patsnap-search","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":["patsnap_search","patsnap_fetch"],"command":"","args":[],
+                    "validate_on_install":true,
+                    "secret_headers":[{{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}}],
+                    "servers":[{{"name":"patsnap-search","url":"{}"}}]
+                }}"#,
+                    mock.url
+                ),
+            );
+            let store = MemoryCredentialStore::default();
+            let mgr = MarketplaceManager::with_store(store.clone());
+            let mut config = std::collections::HashMap::new();
+            config.insert("PATSNAP_API_KEY".to_string(), "valid-token".to_string());
+
+            mgr.install("patsnap-search", &config).unwrap();
+            let validation = mgr
+                .validate_remote_connection("patsnap-search")
+                .await
+                .unwrap();
+
+            assert!(mgr.installed_ids().contains(&"patsnap-search".to_string()));
+            let mcp = read_mcp_json();
+            assert_eq!(
+                mcp["servers"]["patsnap-search"]["headers"]["Authorization"],
+                "Bearer ${PINVOU3_MCP_SECRET_PATSNAP_API_KEY}"
+            );
+            assert!(!mcp.to_string().contains("valid-token"));
+            assert_eq!(
+                store
+                    .get(&mcp_secret_reference(
+                        "patsnap-search",
+                        "header",
+                        "PATSNAP_API_KEY"
+                    ))
+                    .unwrap()
+                    .as_deref(),
+                Some("valid-token")
+            );
+            assert_eq!(
+                std::env::var("PINVOU3_MCP_SECRET_PATSNAP_API_KEY")
+                    .ok()
+                    .as_deref(),
+                Some("valid-token")
+            );
+            assert!(validation.tools.contains(&"patsnap_search".to_string()));
+            assert!(validation.tools.contains(&"patsnap_fetch".to_string()));
+            let seen = mock.seen_methods.lock().unwrap().clone();
+            assert!(seen.contains(&"initialize".to_string()));
+            assert!(seen.contains(&"tools/list".to_string()));
+        })
+        .await;
     }
 
     #[test]

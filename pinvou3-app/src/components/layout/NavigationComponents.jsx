@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Archive, Check, Edit2, FolderOpen, MoreHorizontal, PinIcon, PinOffIcon, Sparkles, Trash2, X } from '../icons.jsx';
 import { useLongPressDrag } from '../../hooks/useLongPressDrag.js';
 
@@ -208,17 +209,86 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
       const [menuOpen, setMenuOpen] = useState(false);
-      const [menuUp, setMenuUp] = useState(false);
+      const [menuStyle, setMenuStyle] = useState(null);
       const [val, setVal] = useState(chat.title);
       const drag = useLongPressDrag('session', onPickUp);
       function save() { const tx = val.trim(); setEditing(false); if (tx && tx !== chat.title) onRename(chat.id, tx); }
+      const closeMenu = () => setMenuOpen(false);
+      const placeMenu = (target) => {
+        const rect = target.getBoundingClientRect();
+        const width = 176;
+        const height = 184;
+        const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+        const top = rect.bottom + 6 + height > window.innerHeight
+          ? Math.max(8, rect.top - height - 6)
+          : Math.max(8, rect.bottom + 6);
+        setMenuStyle({ left, top, width });
+      };
       const toggleMenu = (e) => {
         e.stopPropagation();
-        const rect = e.currentTarget.getBoundingClientRect();
-        setMenuUp(window.innerHeight - rect.bottom < 80);
+        placeMenu(e.currentTarget);
         setMenuOpen(v => !v);
       };
+      const openContextMenu = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        placeMenu(e.currentTarget);
+        setMenuOpen(true);
+      };
+      useEffect(() => {
+        if (!menuOpen) return;
+        const close = () => setMenuOpen(false);
+        const closeOnEscape = (event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            close();
+          }
+        };
+        document.addEventListener('pointerdown', close);
+        window.addEventListener('keydown', closeOnEscape);
+        window.addEventListener('resize', close);
+        window.addEventListener('scroll', close, true);
+        return () => {
+          document.removeEventListener('pointerdown', close);
+          window.removeEventListener('keydown', closeOnEscape);
+          window.removeEventListener('resize', close);
+          window.removeEventListener('scroll', close, true);
+        };
+      }, [menuOpen]);
       const menuItemCls = `w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] whitespace-nowrap transition-colors ${isDark ? 'text-[#E3E3E3] hover:bg-[#303134]' : 'text-[#1F1F1F] hover:bg-[#F1F3F4]'}`;
+      const menu = menuOpen && menuStyle && typeof document !== 'undefined' ? createPortal(
+        <div onPointerDown={e => e.stopPropagation()}
+          data-testid={chat.menuTestId}
+          className={`fixed z-[1000] overflow-hidden rounded-xl py-1 shadow-xl ring-1 ${isDark ? 'bg-[#202124] ring-white/10' : 'bg-white ring-black/10'}`}
+          style={menuStyle}>
+          <button className={menuItemCls} onClick={() => { closeMenu(); onTogglePinned && onTogglePinned(chat.id, !chat.pinned); }}>
+            {chat.pinned ? <PinOffIcon size={15} /> : <PinIcon size={15} />}
+            <span>{chat.pinned ? t.riUnpin : t.riPin}</span>
+          </button>
+          <button className={menuItemCls} onClick={() => { closeMenu(); setVal(chat.title); setEditing(true); }}>
+            <Edit2 size={15} />
+            <span>{t.riRename}</span>
+          </button>
+          <button className={`${menuItemCls} ${isDark ? 'text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#C5221F] hover:bg-[#FAD2CF]'}`} onClick={() => { closeMenu(); setConfirming(true); }}>
+            <Trash2 size={15} />
+            <span>{t.cpDelete}</span>
+          </button>
+          {(onOpenFolder || onArchive) && (
+            <div className={`my-1 h-px ${isDark ? 'bg-white/10' : 'bg-black/10'}`} />
+          )}
+          <button className={menuItemCls} onClick={() => { closeMenu(); onOpenFolder && onOpenFolder(chat.id); }}>
+            <FolderOpen size={15} />
+            <span>{t.riOpenFolder}</span>
+          </button>
+          {onArchive && (
+            <button className={menuItemCls} onClick={() => { closeMenu(); onArchive(chat.id); }}>
+              <Archive size={15} />
+              <span>{t.archiveSession}</span>
+            </button>
+          )}
+        </div>,
+        document.body
+      ) : null;
       if (editing) {
         return (
           <div className="px-1.5 py-0.5">
@@ -234,6 +304,8 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
       return (
         <div onClick={drag.guardClick(() => onSelect(chat.id))}
           {...drag.handlers}
+          onContextMenu={openContextMenu}
+          data-testid={chat.testId}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
           style={ dragging ? { opacity: 0.4 } : (personaTarget ? { background: isDark?'rgba(10,132,255,.20)':'rgba(0,122,255,.12)', boxShadow:'inset 0 0 0 1px '+(isDark?'rgba(10,132,255,.6)':'rgba(0,122,255,.45)'), color: isDark?'#fff':'#1F1F1F' } : undefined) }
           className={`group flex items-center px-4 py-1.5 rounded-full cursor-pointer text-[15px] transition-all
@@ -241,7 +313,13 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
               : active ? (isDark ? 'bg-[#333537] text-white' : 'bg-[#E1E5EA] text-[#1F1F1F]')
                      : (isDark ? 'text-[#E3E3E3] hover:bg-[#282A2C]' : 'text-[#1F1F1F] hover:bg-[#E1E5EA]')}`}>
           {personaTarget && <Sparkles size={13} className="shrink-0 mr-1.5" style={{ color: isDark?'#0A84FF':'#007AFF' }} />}
-          <span className="truncate pr-2 leading-relaxed whitespace-nowrap flex-1">{chat.title}</span>
+          {chat.leadingIcon && <span className="mr-3 shrink-0 opacity-95">{chat.leadingIcon}</span>}
+          <span className="min-w-0 flex-1 pr-2">
+            <span className={`block truncate whitespace-nowrap ${chat.subtitle ? 'leading-5' : 'leading-relaxed'}`}>{chat.title}</span>
+            {chat.subtitle && (
+              <span className={`block truncate text-[12px] leading-4 ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>{chat.subtitle}</span>
+            )}
+          </span>
           {chat.working && <span className="shrink-0 mr-1 inline-block w-2 h-2 rounded-full bg-current opacity-70 animate-pulse" title={t.riGenerating}></span>}
           {chat.skill && <span className="text-[11px] shrink-0 opacity-70 mr-1" title={chat.skill}>🧭</span>}
           {confirming ? (
@@ -274,19 +352,11 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
                 <div className="relative">
                   <button title={t.riMore} onClick={toggleMenu}
                     className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:bg-[#444746]' : 'text-[#5F6368] hover:bg-[#D3D7DB]'}`}><MoreHorizontal size={14} /></button>
-                  {menuOpen && (
-                    <div onClick={e => e.stopPropagation()}
-                      className={`absolute right-0 ${menuUp ? 'bottom-7' : 'top-7'} z-50 w-40 overflow-hidden rounded-xl py-1 shadow-xl ring-1 ${isDark ? 'bg-[#202124] ring-white/10' : 'bg-white ring-black/10'}`}>
-                      <button className={menuItemCls} onClick={() => { setMenuOpen(false); onOpenFolder && onOpenFolder(chat.id); }}>
-                        <FolderOpen size={15} />
-                        <span>{t.riOpenFolder}</span>
-                      </button>
-                    </div>
-                  )}
                 </div>
               </div>
             </>
           )}
+          {menu}
         </div>
       );
     };

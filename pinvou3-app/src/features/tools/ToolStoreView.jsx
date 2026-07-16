@@ -1,9 +1,27 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Briefcase, ChevronLeft, ChevronRight, Cpu, Globe, IconGrid, IconList, Package, Search, Server, User, XIcon, Zap } from '../../components/icons.jsx';
-import { notifyComposerToolsChanged } from '../settings/SettingsView.jsx';
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
+import { notifyComposerToolsChanged } from './tool-events.js';
 import { TsActionBtn, tsCategories, tsFeaturedCollections, tsSkillsData, tsToolsData } from './tool-common.jsx';
+
+const OAUTH_UI_TIMEOUT_MS = 90_000;
+
+const oauthUiTimeoutResult = (serverName) => ({
+  status: 'timeout',
+  message: '未收到浏览器授权回调，请确认是否已完成授权，或稍后重新授权。',
+  server_name: serverName,
+});
+
+const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
+  let timeoutId = null;
+  const timeoutPromise = new Promise(resolve => {
+    timeoutId = setTimeout(() => resolve(fallbackResult), timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeoutId) clearTimeout(timeoutId);
+  });
+};
 
 const FEISHU_STEPS = [
       { key: 'runtime', label: '准备运行时', sub: '解压 Node 到 ~/.pinvou3' },
@@ -280,7 +298,7 @@ const FEISHU_STEPS = [
     }
 
     // iOS 风格弹窗（安装/卸载后提示需新建会话生效）
-    const TsAlert = ({ alert, theme, onDismiss, onNewChat }) => {
+    const TsAlert = ({ alert, theme, onDismiss, onNewChat, onCancelLoading }) => {
       const isDark = theme === 'dark';
       if (!alert.visible && !alert.loading) return null;
       return (
@@ -292,20 +310,34 @@ const FEISHU_STEPS = [
             style={{ animation: 'tsAlertIn .2s ease-out' }}
           >
             {alert.loading ? (
-              <div className="px-6 py-8 text-center">
-                <div className="flex justify-center mb-4">
-                  <div className={`w-6 h-6 rounded-full border-[2.5px] border-t-transparent ${isDark ? 'border-[#0A84FF]' : 'border-[#007AFF]'}`}
-                    style={{ animation: 'tsSpinner .8s linear infinite' }} />
+              <>
+                <div className="px-6 py-8 text-center">
+                  <div className="flex justify-center mb-4">
+                    <div className={`w-6 h-6 rounded-full border-[2.5px] border-t-transparent ${isDark ? 'border-[#0A84FF]' : 'border-[#007AFF]'}`}
+                      style={{ animation: 'tsSpinner .8s linear infinite' }} />
+                  </div>
+                  <div className={`text-[17px] font-semibold mb-1.5 ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                    {alert.title}
+                  </div>
+                  {alert.subtitle && (
+                    <div className={`text-[13px] leading-relaxed ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                      {alert.subtitle}
+                    </div>
+                  )}
                 </div>
-                <div className={`text-[17px] font-semibold mb-1.5 ${isDark ? 'text-white' : 'text-slate-900'}`}>
-                  {alert.title}
-                </div>
-                {alert.subtitle && (
-                  <div className={`text-[13px] leading-relaxed ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-                    {alert.subtitle}
+                {alert.cancelable && (
+                  <div className={`border-t ${isDark ? 'border-white/10' : 'border-slate-200'}`}>
+                    <button
+                      onClick={() => onCancelLoading && onCancelLoading(alert)}
+                      className={`w-full py-3 text-[17px] font-normal text-center transition-colors ${
+                        isDark ? 'text-[#0A84FF] active:bg-white/5' : 'text-[#007AFF] active:bg-slate-100'
+                      }`}
+                    >
+                      取消
+                    </button>
                   </div>
                 )}
-              </div>
+              </>
             ) : (
               <>
                 <div className="px-6 pt-6 pb-5 text-center">
@@ -367,8 +399,21 @@ const FEISHU_STEPS = [
           >
             <div className="px-6 pt-6 pb-4 text-center max-h-[70vh] overflow-y-auto">
               <div className={`text-[17px] font-semibold mb-3 ${isDark ? 'text-white' : 'text-slate-900'}`}>
-                配置「{config.name}」
+                {config.configTitle || `配置「${config.name}」`}
               </div>
+              {config.configDescription && (
+                <div className={`text-[12px] leading-relaxed mb-3 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                  {config.configDescription}
+                </div>
+              )}
+              {config.configDocUrl && (
+                <button
+                  onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: config.configDocUrl })}
+                  className={`text-[13px] mb-4 inline-block ${isDark ? 'text-[#0A84FF]' : 'text-[#007AFF]'} hover:underline`}
+                >
+                  {config.configDocLabel || '查看配置说明'} →
+                </button>
+              )}
               {/* 引导链接放最上,不夹在输入框中间 */}
               {fields.find(f => f.helpUrl) && (
                 <button
@@ -385,7 +430,7 @@ const FEISHU_STEPS = [
                     {field.label}
                   </label>
                   <input
-                    type="text"
+                    type={field.secret ? 'password' : 'text'}
                     placeholder={field.placeholder || "sk-..."}
                     value={values[field.key] || ''}
                     onChange={e => setValues(v => ({ ...v, [field.key]: e.target.value }))}
@@ -421,7 +466,7 @@ const FEISHU_STEPS = [
                     : (isDark ? 'text-slate-600' : 'text-slate-300')
                 }`}
               >
-                {config.backendId === 'feishu' ? '连接' : '安装'}
+                {config.backendId === 'feishu' || fields.length > 0 ? '连接' : '安装'}
               </button>
             </div>
           </div>
@@ -475,6 +520,7 @@ const FEISHU_STEPS = [
       const [skillToMcp, setSkillToMcp] = useState({});
       const [busyId, setBusyId] = useState(null);
       const [alert, setAlert] = useState({ visible: false, loading: false, title: '', subtitle: '', isInstall: false, isError: false });
+      const oauthRequestRef = useRef({});
       const [configDialog, setConfigDialog] = useState(null); // { backendId, name, fields }
       const [obsidianGuide, setObsidianGuide] = useState(null); // {backendId,name,state,vault_path} 未安装/没库引导
       const [viewMode, setViewMode] = useState('card'); // 'card'(卡片视图) | 'list'(列表视图)
@@ -771,14 +817,94 @@ const FEISHU_STEPS = [
 
       useEffect(() => { loadBackendState(); }, []);
 
+      const beginOAuthRequest = (backendId) => {
+        const requestId = `${Date.now()}-${Math.random()}`;
+        oauthRequestRef.current[backendId] = requestId;
+        return requestId;
+      };
+
+      const isCurrentOAuthRequest = (backendId, requestId) => (
+        !!requestId && oauthRequestRef.current[backendId] === requestId
+      );
+
+      const clearOAuthRequest = (backendId, requestId) => {
+        if (isCurrentOAuthRequest(backendId, requestId)) {
+          delete oauthRequestRef.current[backendId];
+        }
+      };
+
+      useEffect(() => () => {
+        const activeRequests = Object.entries(oauthRequestRef.current);
+        oauthRequestRef.current = {};
+        activeRequests.forEach(([toolId, requestId]) => {
+          window.__TAURI__.core
+            .invoke('cancel_marketplace_tool_oauth_login', { toolId, requestId })
+            .catch(err => console.error('cancel marketplace oauth on unmount failed:', err));
+        });
+      }, []);
+
+      const markOAuthPending = (backendId, message = '已写入 MCP 配置，但尚未完成元典 OAuth 授权。') => {
+        setToolAuthStates(prev => ({
+          ...prev,
+          [backendId]: {
+            ...(prev[backendId] || {}),
+            installed: true,
+            mcp_configured: true,
+            oauth_required: true,
+            oauth_token_present: false,
+            status: 'config_installed_auth_pending',
+            message,
+          },
+        }));
+        if (selectedTool && selectedTool.backendId === backendId) {
+          setSelectedTool(prev => ({
+            ...prev,
+            installed: false,
+            authStatus: 'config_installed_auth_pending',
+            authMessage: message,
+          }));
+        }
+      };
+
+      const cancelOAuthLoading = async (activeAlert) => {
+        const backendId = activeAlert?.toolId;
+        const requestId = activeAlert?.requestId;
+        if (!backendId || !isCurrentOAuthRequest(backendId, requestId)) return;
+        setAlert(prev => ({
+          ...prev,
+          cancelable: false,
+          subtitle: '正在停止浏览器授权等待…',
+        }));
+        try {
+          await window.__TAURI__.core.invoke('cancel_marketplace_tool_oauth_login', {
+            toolId: backendId,
+            requestId,
+          });
+        } catch (err) {
+          console.error('cancel_marketplace_tool_oauth_login failed:', err);
+          if (isCurrentOAuthRequest(backendId, requestId)) {
+            setAlert(prev => ({
+              ...prev,
+              cancelable: true,
+              subtitle: '取消失败，可重试；授权等待仍在继续。',
+            }));
+          }
+        }
+      };
+
       // 执行安装（已拿到 config 或无需 config）
       const doInstall = async (backendId, userConfig) => {
         const t = tsToolsData.find(x => x.backendId === backendId);
         const name = t ? t.title : backendId;
-        const hasPipDeps = !t?.configFields || t.configFields.length === 0; // 无 config 的本地工具可能有 pip deps
+        const hasConfig = Boolean(t?.configFields?.length);
+        const hasPipDeps = !hasConfig; // 无 config 的本地工具可能有 pip deps
+        const oauthRequestId = t?.oauthMcp ? beginOAuthRequest(backendId) : null;
         setBusyId(backendId);
         if (t?.oauthMcp) {
-          setAlert({ loading: true, visible: false, title: `正在连接「${name}」`, subtitle: '正在写入 MCP 配置并打开授权页…', isInstall: true, isError: false });
+          const loadingTitle = backendId === 'yuandian-mcp' ? '正在连接元典法律' : `正在连接「${name}」`;
+          setAlert({ loading: true, visible: false, title: loadingTitle, subtitle: '正在写入 MCP 配置…', isInstall: true, isError: false, cancelable: false, toolId: backendId, requestId: oauthRequestId });
+        } else if (hasConfig) {
+          setAlert({ loading: true, visible: false, title: `正在连接「${name}」`, subtitle: '正在校验 API Key 与远程工具…', isInstall: true, isError: false });
         } else if (hasPipDeps) {
           setAlert({ loading: true, visible: false, title: `正在安装「${name}」`, subtitle: '首次安装需下载依赖，请耐心等待…', isInstall: true, isError: false });
         }
@@ -789,6 +915,7 @@ const FEISHU_STEPS = [
           }
           await window.__TAURI__.core.invoke('install_marketplace_tool', args);
           if (t?.oauthMcp) {
+            if (!isCurrentOAuthRequest(backendId, oauthRequestId)) return;
             setToolAuthStates(prev => ({
               ...prev,
               [backendId]: {
@@ -800,14 +927,45 @@ const FEISHU_STEPS = [
                 message: '正在等待浏览器授权完成。',
               },
             }));
-            const loginResult = await window.__TAURI__.core.invoke('start_marketplace_tool_oauth_login', { toolId: backendId });
+            const loginPromise = window.__TAURI__.core
+              .invoke('start_marketplace_tool_oauth_login', { toolId: backendId, requestId: oauthRequestId })
+              .catch(err => ({
+                status: 'failed',
+                message: String(err).slice(0, 240),
+                server_name: backendId,
+              }));
+            setAlert({
+              loading: true,
+              visible: false,
+              title: backendId === 'yuandian-mcp' ? '正在连接元典法律' : `正在连接「${name}」`,
+              subtitle: '已打开浏览器，正在等待授权…',
+              isInstall: true,
+              isError: false,
+              cancelable: true,
+              toolId: backendId,
+              requestId: oauthRequestId,
+            });
+            const loginResult = await withUiTimeout(
+              loginPromise,
+              OAUTH_UI_TIMEOUT_MS,
+              oauthUiTimeoutResult('yuandian_mcp')
+            );
+            if (!isCurrentOAuthRequest(backendId, oauthRequestId)) return;
+            if (loginResult?.status === 'timeout') {
+              await window.__TAURI__.core
+                .invoke('cancel_marketplace_tool_oauth_login', { toolId: backendId, requestId: oauthRequestId })
+                .catch(err => console.error('cancel marketplace oauth after UI timeout failed:', err));
+            }
+            if (!isCurrentOAuthRequest(backendId, oauthRequestId)) return;
             const authStatus = await window.__TAURI__.core
               .invoke('get_marketplace_tool_auth_status', { toolId: backendId })
               .catch((err) => {
                 console.error('get_marketplace_tool_auth_status after oauth failed:', err);
                 return null;
               });
+            if (!isCurrentOAuthRequest(backendId, oauthRequestId)) return;
             await loadBackendState();
+            if (!isCurrentOAuthRequest(backendId, oauthRequestId)) return;
 
             const outcome = resolveOAuthInstallOutcome(name, loginResult, authStatus);
             if (!outcome.connected) {
@@ -831,7 +989,7 @@ const FEISHU_STEPS = [
           setAlert({
             visible: true,
             loading: false,
-            title: `已安装「${name}」`,
+            title: hasConfig ? `已连接「${name}」` : `已安装「${name}」`,
             isInstall: true,
             isError: false,
             toolId: backendId,
@@ -841,10 +999,18 @@ const FEISHU_STEPS = [
           }
           notifyComposerToolsChanged();
         } catch (e) {
+          if (t?.oauthMcp && !isCurrentOAuthRequest(backendId, oauthRequestId)) return;
           console.error('install failed:', e);
           setAlert({ visible: true, loading: false, title: '操作失败，请重试', subtitle: String(e && e.message ? e.message : e).slice(0, 240), isInstall: false, isError: true });
         } finally {
-          setBusyId(null);
+          if (t?.oauthMcp) {
+            if (isCurrentOAuthRequest(backendId, oauthRequestId)) {
+              clearOAuthRequest(backendId, oauthRequestId);
+              setBusyId(null);
+            }
+          } else {
+            setBusyId(null);
+          }
         }
       };
 
@@ -1137,7 +1303,15 @@ const FEISHU_STEPS = [
             return doInstall(backendId, {});
           }
           if (t?.configFields && t.configFields.length > 0) {
-            setConfigDialog({ backendId, name, fields: t.configFields });
+            setConfigDialog({
+              backendId,
+              name,
+              fields: t.configFields,
+              configTitle: t.configTitle,
+              configDescription: t.configDescription,
+              configDocUrl: t.configDocUrl,
+              configDocLabel: t.configDocLabel,
+            });
             return;
           }
           return doInstall(backendId, {});
@@ -1206,7 +1380,7 @@ const FEISHU_STEPS = [
 
       return (
         <div className={`${isDark ? 'dark' : ''} flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden antialiased selection:bg-blue-200 dark:selection:bg-blue-900`}>
-          {createPortal(<TsAlert alert={alert} theme={theme} onDismiss={() => setAlert(a => ({ ...a, visible: false }))} onNewChat={() => { const tid = alert.toolId; setAlert(a => ({ ...a, visible: false })); if (onNewChat) onNewChat(tid); }} />, document.body)}
+          {createPortal(<TsAlert alert={alert} theme={theme} onDismiss={() => setAlert(a => ({ ...a, visible: false }))} onCancelLoading={cancelOAuthLoading} onNewChat={() => { const tid = alert.toolId; setAlert(a => ({ ...a, visible: false })); if (onNewChat) onNewChat(tid); }} />, document.body)}
           {createPortal(<TsConfigDialog
             config={configDialog}
             theme={theme}

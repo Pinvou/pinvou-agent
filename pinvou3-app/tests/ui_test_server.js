@@ -2,7 +2,9 @@ const { createReadStream, existsSync, statSync } = require('fs');
 const { createServer } = require('http');
 const { extname, isAbsolute, join, relative, resolve } = require('path');
 
-const root = resolve(__dirname, '../dist');
+// CI / local verification can point at an isolated Vite output when the normal
+// dist directory is read-only or intentionally preserved.
+const root = resolve(process.env.PINVOU3_UI_TEST_ROOT || resolve(__dirname, '../dist'));
 const mime = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',

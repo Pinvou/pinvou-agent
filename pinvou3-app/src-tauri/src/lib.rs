@@ -47,6 +47,7 @@ pub mod super_permission;
 mod startup;
 mod telemetry;
 mod timing;
+mod ui_cache;
 mod updater;
 mod voice_asr;
 mod workflow_migrate;
@@ -218,6 +219,9 @@ pub fn run() {
     ensure_release_env();
     startup::init();
     startup::mark("environment:ready");
+    // 必须早于 Tauri Builder/WebView 创建：避免升级后 WebKit 复用旧 index.html，
+    // 却在新包内找不到旧 CSS，退化成裸 HTML 页面。
+    ui_cache::migrate_before_webview();
     let initial_navigation_reported =
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let builder = tauri::Builder::default()
@@ -584,10 +588,12 @@ pub fn run() {
             scheduled_tasks::list_scheduled_tasks,
             scheduled_tasks::read_scheduled_task,
             scheduled_tasks::list_scheduled_task_runs,
+            scheduled_tasks::list_scheduled_runs,
             scheduled_tasks::create_scheduled_task,
             scheduled_tasks::update_scheduled_task,
             scheduled_tasks::pause_scheduled_task,
             scheduled_tasks::resume_scheduled_task,
+            scheduled_tasks::set_scheduled_task_pinned,
             scheduled_tasks::delete_scheduled_task,
             scheduled_tasks::run_scheduled_task_now,
             scheduled_tasks::mark_scheduled_run_viewed,
@@ -636,6 +642,7 @@ pub fn run() {
             commands::open_in_system,
             commands::open_containing_folder,
             commands::reveal_session_folder,
+            commands::open_scheduled_task_folder,
             commands::open_artifact_window,
             detach::open_detached_window,
             detach::begin_detach_drag,
@@ -665,6 +672,7 @@ pub fn run() {
             commands::save_project_config,
             commands::save_agent_overrides,
             commands::cancel_workflow_role,
+            commands::stop_workflow,
             commands::approve_workflow_gate,
             commands::reject_workflow_gate,
             commands::get_workflow_state,
@@ -703,6 +711,7 @@ pub fn run() {
             commands::install_marketplace_tool,
             commands::get_marketplace_tool_auth_status,
             commands::start_marketplace_tool_oauth_login,
+            commands::cancel_marketplace_tool_oauth_login,
             commands::uninstall_marketplace_tool,
             commands::detect_obsidian,
             knowledge::kb_start_scan,

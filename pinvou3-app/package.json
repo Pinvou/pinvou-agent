@@ -1,7 +1,7 @@
 {
   "name": "pinvou3-app",
   "version": "0.6.0",
-  "description": "pinvou3 智能助手桌面应用（Tauri 2.0 + DeepSeek-TUI + Qwen3.6）",
+  "description": "品悟智能助手桌面应用",
   "private": true,
   "scripts": {
     "tauri": "tauri",
@@ -18,11 +18,13 @@
     "bundle:nsis": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stage-windows-nsis-resources.ps1 -ValidateOnly && tauri bundle --features dev-tools --bundles nsis --config src-tauri/target/release/nsis-stage/tauri.nsis-stage.conf.json",
     "test:update-notice": "node tests/update_notice_logic.test.js",
     "test:marketplace-oauth": "node tests/marketplace_oauth_logic.test.js",
+    "test:composer-tools": "node tests/composer_tool_menu_logic.test.js",
     "test:scheduled": "node tests/scheduled_tasks_unit.js",
     "test:builtin-secrets": "node tests/builtin_secrets_build.test.js",
-    "test": "npm run test:update-notice && npm run test:marketplace-oauth && npm run test:scheduled && npm run test:builtin-secrets",
+    "test": "npm run test:update-notice && npm run test:marketplace-oauth && npm run test:composer-tools && npm run test:scheduled && npm run test:builtin-secrets",
     "test:ui-smoke": "node tests/ui_smoke.js",
     "test:kb-smoke": "node tests/kb_smoke.js",
+    "test:composer-tools-smoke": "node tests/composer_tools_smoke.js",
     "test:tool-store": "node tests/tool_store_smoke.js",
     "test:remote-mobile": "node ../remote-control-relay/test/mobile-ui.smoke.cjs",
     "test:markdown": "node tests/render_markdown_smoke.js",

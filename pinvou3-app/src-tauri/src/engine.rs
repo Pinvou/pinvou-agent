@@ -12,7 +12,7 @@
 //! 这一层只做 "boot engine + 转发事件"。Engine 自管 session 状态，多轮对话
 //! 在同一个 EngineHandle 内自然累积。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -38,6 +38,11 @@ use crate::bridge::sessions::{
     ScheduledEngineState, ScheduledRunProfile, ScheduledTokenAccounting, SessionStore,
 };
 use crate::bridge::Pinvou3Bridge;
+
+/// 定时任务无人值守首轮的唯一附加约束。任务 prompt 原文已作为用户消息传入，
+/// 这一句只防模型把目标改写成别的事，不再堆叠更长的提示词。
+const SCHEDULED_TURN_REMINDER: &str =
+    "本轮是定时任务的自动执行：直接执行用户消息里的任务，不要改写、替换或扩展任务目标。";
 
 /// 单个 session 的 engine wrapper(handle + 该 session 绑定的 bridge)。
 ///
@@ -172,10 +177,11 @@ impl AppEngine {
         } else {
             None
         };
-        let mut engine_config = bridge.build_engine_config_for_session(session_id);
-        if let Some(profile) = &scheduled_profile {
-            engine_config.workspace = profile.workspace.clone();
-        }
+        let workspace = scheduled_profile
+            .as_ref()
+            .map(|profile| profile.workspace.clone())
+            .unwrap_or_else(|| bridge.session_workspace(session_id));
+        let mut engine_config = bridge.build_engine_config_for_session_at(session_id, workspace);
         // The app and the Engine must observe the same background process table.
         // This lets the UI cancel a detached shell directly by task id, without
         // asking the model to call another tool or keeping the LLM turn busy.
@@ -231,6 +237,7 @@ impl AppEngine {
             handle.clone(),
             store,
             bridge.clone(),
+            workspace.clone(),
             session_id.to_string(),
             turn_events.clone(),
             scheduled_profile,
@@ -322,7 +329,7 @@ impl AppEngine {
         let mut op = self.bridge.build_send_message_op(
             content,
             profile.execution_mode().to_app_mode(),
-            None,
+            Some(SCHEDULED_TURN_REMINDER.to_string()),
             false,
         );
         apply_scheduled_turn_policy(&mut op, profile)?;
@@ -514,12 +521,12 @@ pub(crate) fn emit_fanout(app: &AppHandle, session_id: &str, base_role: &str) {
 pub(crate) async fn apply_harness_action(
     action: crate::harness::HarnessAction,
     app: &AppHandle,
-    bridge: &Pinvou3Bridge,
+    workspace: &Path,
     handle: &EngineHandle,
     active_id: &str,
 ) -> bool {
     use crate::harness::HarnessAction as HA;
-    let ws = bridge.session_workspace(active_id);
+    let ws = workspace.to_path_buf();
     match action {
         HA::SpawnAgent {
             role_id,
@@ -792,6 +799,7 @@ fn spawn_event_forwarder(
     handle: EngineHandle,
     store: SessionStore,
     bridge: Pinvou3Bridge,
+    execution_workspace: PathBuf,
     session_id: String,
     turn_events: broadcast::Sender<EngineTurnSignal>,
     scheduled_profile: Option<ScheduledRunProfile>,
@@ -1147,7 +1155,7 @@ fn spawn_event_forwarder(
                 // 不值得为它 spawn_blocking(forwarder 本身不在 LLM 关键路径上)。
                 Event::SubAgentMailbox { message, .. } => {
                     use deepseek_tui::tools::subagent::MailboxMessage as MM;
-                    let ws = bridge.session_workspace(&session_id);
+                    let ws = execution_workspace.clone();
                     match message {
                         MM::TokenUsage {
                             agent_id,
@@ -1242,6 +1250,13 @@ fn spawn_event_forwarder(
                     role: envelope_role,
                     failed,
                 } => {
+                    // 用户停止整个工作流后，SubAgent 可能在任务 abort 前抢先送达
+                    // 一个完成信封。持久 stop marker 是调度熔断边界：迟到结果可留在
+                    // 项目目录，但绝不能再过 gate、补派下一页或推进下一个角色。
+                    if crate::harness::workflow_is_stopped(&execution_workspace) {
+                        eprintln!("[harness] ignore late AgentComplete after workflow stop: {id}");
+                        continue;
+                    }
                     eprintln!(
                         "[harness] subagent {id} complete ({} chars summary, failed={failed})",
                         result.len()
@@ -1275,7 +1290,7 @@ fn spawn_event_forwarder(
                             {
                                 let page: u32 =
                                     page_str.trim_start_matches('p').parse().unwrap_or(0);
-                                let ws = bridge.session_workspace(&session_id);
+                                let ws = execution_workspace.clone();
                                 // [per_page] 先校验该页【真写成】：SSE 超时/放弃的 agent 也
                                 // emit AgentComplete，但只留空壳骨架。空壳不计 done，自动重派
                                 // 该页(带上限)，挡住空壳混入 batch → 避免 gate pagenum_mismatch
@@ -1391,7 +1406,7 @@ fn spawn_event_forwarder(
                             };
 
                             if let Some(base_role) = base_for_step {
-                                let ws = bridge.session_workspace(&session_id);
+                                let ws = execution_workspace.clone();
                                 // [2026-06-06] SubAgent 执行失败(failed=true,单角色)绝不走 gate：
                                 // gate 只验产物存在+非空，会拿【上一轮陈旧产物】把失败洗成 PASS
                                 // (实锤:web_search 不可用→PM 0步即死→旧 brief 过关)。改走
@@ -1415,13 +1430,13 @@ fn spawn_event_forwarder(
                                 let handled = apply_harness_action(
                                     action,
                                     &app,
-                                    &bridge,
+                                    &execution_workspace,
                                     &approve_handle,
                                     &session_id,
                                 )
                                 .await;
                                 if handled {
-                                    let ws = bridge.session_workspace(&session_id);
+                                    let ws = execution_workspace.clone();
                                     let app_clone = app.clone();
                                     let sid_clone = session_id.clone();
                                     tokio::task::spawn_blocking(move || {
@@ -1550,9 +1565,9 @@ fn spawn_event_forwarder(
 
                         // ── H1: Harness Loop (skill session 图执行器) ──
                         // 本 session 绑定了 skill 且项目目录有 workflow_progress.json →
-                        // harness 图执行器驱动下一步。workspace 用**本 session 的**目录
-                        // (多 session 并发:每个工作流的项目落在各自 session workspace)。
-                        let harness_workspace = bridge.session_workspace(&session_id);
+                        // harness 图执行器始终使用 engine 的实际执行工作区：普通会话是
+                        // session 私有目录，定时会话是所属 automation 的专属工作间。
+                        let harness_workspace = execution_workspace.clone();
                         let harness_handled = if state.active_skill.is_some() {
                             // [C2] harness_phase 已删。工作流由 kick(命令)+ AgentComplete
                             // 驱动;主 session 在工作流期间空闲,此处 TurnComplete 一般不参与
@@ -1569,8 +1584,14 @@ fn spawn_event_forwarder(
                                 ),
                             );
 
-                            apply_harness_action(action, &app, &bridge, &approve_handle, &active_id)
-                                .await
+                            apply_harness_action(
+                                action,
+                                &app,
+                                &execution_workspace,
+                                &approve_handle,
+                                &active_id,
+                            )
+                            .await
                         } else {
                             false
                         };

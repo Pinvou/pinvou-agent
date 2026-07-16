@@ -85,53 +85,63 @@ fingerprints=(
   "C10 |MCP 启动应用无控制台 helper     |DeepSeek-TUI/crates/tui/src/mcp.rs|suppress_tokio_console_window(&mut cmd)"
   # —— C11(2026-07-07,fork #7):Windows killed background shell 不 join 可能阻塞的 reader ——
   "C11 |Windows killed shell reader 不阻塞|DeepSeek-TUI/crates/tui/src/tools/shell.rs|if matches!(self.status, ShellStatus::Killed)"
-  "C12 |shell 实时输出事件定义          |DeepSeek-TUI/crates/tui/src/core/events.rs|ToolCallOutput {"
-  "C12 |shell reader 输出回调           |DeepSeek-TUI/crates/tui/src/tools/spec.rs|pub tool_output_sink: Option<ToolOutputSink>"
-  "C12 |shell reader 流式 UTF-8 解码    |DeepSeek-TUI/crates/tui/src/tools/shell.rs|struct StreamingUtf8Decoder"
-  "C12 |shell 中文跨分片行为测试        |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_shell_live_output_preserves_utf8_across_read_boundaries"
-  "C12 |shell 前台输出可控测试子进程     |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn controlled_streaming_child_command"
-  "C12 |shell 完成前输出行为测试         |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_exec_shell_streams_output_before_completion"
-  "C12 |后台启动返回后输出行为测试       |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_exec_shell_background_streams_after_start_returns"
-  "C12 |后台 wait 完成前输出行为测试     |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_exec_shell_wait_streams_background_output_before_completion"
-  "C12 |Engine 完成前输出事件测试        |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_engine_emits_shell_output_before_tool_completion"
-  "C12 |Engine 后台启动返回后输出测试    |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_engine_keeps_background_shell_output_after_tool_completion"
-  "C12 |Engine 后台 wait 输出事件测试    |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_engine_emits_background_wait_output_before_tool_completion"
-  "C12 |Engine 可控实时输出测试工具      |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|struct ControlledStreamingTool"
-  "C12 |Engine 输出合并异步转发器        |DeepSeek-TUI/crates/tui/src/core/engine/tool_execution.rs|struct ToolOutputEventForwarder"
-  "C12 |Engine 输出拥塞无丢失测试        |DeepSeek-TUI/crates/tui/src/core/engine/tool_execution.rs|fn forkguard_tool_output_forwarder_coalesces_without_dropping_on_backpressure"
-  "C12 |前端终端跨分片解析状态           |pinvou3-app/src/tauri-bridge.js|function terminalParserState(item, stream)"
-  "C12 |前端终端跨分片 UI 回归           |pinvou3-app/tests/ui_smoke.js|terminal parser preserves CRLF and ANSI state across live chunks"
-  "C12 |后台终态输出 tail 对账           |pinvou3-app/src/tauri-bridge.js|function reconcileBackgroundTerminalOutput(previous, payload)"
-  "C12 |后台终态 stdout/stderr UI 回归   |pinvou3-app/tests/ui_smoke.js|background shell terminal event reconciles final stdout and stderr tails"
-  "C13 |池级 session turn 生命周期       |pinvou3-app/src-tauri/src/engine_pool.rs|turn_lifecycles: SessionTurnLifecycles"
-  "C13 |缺失 Engine 仅活动 turn 补终态   |pinvou3-app/src-tauri/src/engine_pool.rs|cancel recovered active turn without engine"
-  "C13 |forwarder 异常结束补权威终态     |pinvou3-app/src-tauri/src/engine.rs|TurnOutcomeStatus::Failed,"
-  "C13 |异常结束与回收单终态测试         |pinvou3-app/src-tauri/src/engine.rs|fn forwarder_stop_and_reclaim_share_one_terminal"
-  "C13 |池级生命周期空闲取消测试         |pinvou3-app/src-tauri/src/engine_pool.rs|fn session_turn_lifecycle_survives_engine_entry_removal_without_faking_idle_cancel"
+  # —— C12(2026-07-14):内部 system-reminder 不参与 Working Set 路径提取 ——
+  "C12 |Working Set 剥离内部提醒      |DeepSeek-TUI/crates/tui/src/working_set.rs|fn strip_leading_system_reminder(text: &str) -> &str"
+  "C12 |Working Set 历史重建回归      |DeepSeek-TUI/crates/tui/src/working_set.rs|fn forkguard_working_set_rebuild_ignores_leading_system_reminder_paths"
+  "C13 |shell 实时输出事件定义          |DeepSeek-TUI/crates/tui/src/core/events.rs|ToolCallOutput {"
+  "C13 |shell reader 输出回调           |DeepSeek-TUI/crates/tui/src/tools/spec.rs|pub tool_output_sink: Option<ToolOutputSink>"
+  "C13 |shell reader 流式 UTF-8 解码    |DeepSeek-TUI/crates/tui/src/tools/shell.rs|struct StreamingUtf8Decoder"
+  "C13 |shell 中文跨分片行为测试        |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_shell_live_output_preserves_utf8_across_read_boundaries"
+  "C13 |shell 前台输出可控测试子进程     |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn controlled_streaming_child_command"
+  "C13 |shell 完成前输出行为测试         |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_exec_shell_streams_output_before_completion"
+  "C13 |后台启动返回后输出行为测试       |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_exec_shell_background_streams_after_start_returns"
+  "C13 |后台 wait 完成前输出行为测试     |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_exec_shell_wait_streams_background_output_before_completion"
+  "C13 |Engine 完成前输出事件测试        |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_engine_emits_shell_output_before_tool_completion"
+  "C13 |Engine 后台启动返回后输出测试    |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_engine_keeps_background_shell_output_after_tool_completion"
+  "C13 |Engine 后台 wait 输出事件测试    |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_engine_emits_background_wait_output_before_tool_completion"
+  "C13 |Engine 可控实时输出测试工具      |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|struct ControlledStreamingTool"
+  "C13 |Engine 输出合并异步转发器        |DeepSeek-TUI/crates/tui/src/core/engine/tool_execution.rs|struct ToolOutputEventForwarder"
+  "C13 |Engine 输出拥塞无丢失测试        |DeepSeek-TUI/crates/tui/src/core/engine/tool_execution.rs|fn forkguard_tool_output_forwarder_coalesces_without_dropping_on_backpressure"
+  "C13 |前端终端跨分片解析状态           |pinvou3-app/src/tauri-bridge.js|function terminalParserState(item, stream)"
+  "C13 |前端终端跨分片 UI 回归           |pinvou3-app/tests/ui_smoke.js|terminal parser preserves CRLF and ANSI state across live chunks"
+  "C13 |后台终态输出 tail 对账           |pinvou3-app/src/tauri-bridge.js|function reconcileBackgroundTerminalOutput(previous, payload)"
+  "C13 |后台终态 stdout/stderr UI 回归   |pinvou3-app/tests/ui_smoke.js|background shell terminal event reconciles final stdout and stderr tails"
+  "C14 |池级 session turn 生命周期       |pinvou3-app/src-tauri/src/engine_pool.rs|turn_lifecycles: SessionTurnLifecycles"
+  "C14 |缺失 Engine 仅活动 turn 补终态   |pinvou3-app/src-tauri/src/engine_pool.rs|cancel recovered active turn without engine"
+  "C14 |forwarder 异常结束补权威终态     |pinvou3-app/src-tauri/src/engine.rs|TurnOutcomeStatus::Failed,"
+  "C14 |异常结束与回收单终态测试         |pinvou3-app/src-tauri/src/engine.rs|fn forwarder_stop_and_reclaim_share_one_terminal"
+  "C14 |池级生命周期空闲取消测试         |pinvou3-app/src-tauri/src/engine_pool.rs|fn session_turn_lifecycle_survives_engine_entry_removal_without_faking_idle_cancel"
   # —— P1(2026-07-03):list_mcp_resources/templates 按对应集合非空 gate(上游原为 servers 非空即注入)——
   # pinvou3 MCP server 全 tools-only,原条件下这两个元工具永久空转;改按 resources/templates 非空注入。可上游。
   "P1  |list_mcp_resources 按 resources 非空 gate|DeepSeek-TUI/crates/tui/src/mcp.rs|if !self.all_resource_templates().is_empty()"
-  # AUTO(2026-07-09):automation MINUTELY RRULE support for PINVOU scheduled tasks.
-  "AUTO|automation MINUTELY schedule variant |DeepSeek-TUI/crates/tui/src/automation_manager.rs|Minutely {"
-  "AUTO|automation MINUTELY forkguard test  |DeepSeek-TUI/crates/tui/src/automation_manager.rs|fn forkguard_parses_minutely_rrule"
-  "AUTO|automation tool advertises MINUTELY |DeepSeek-TUI/crates/tui/src/tools/automation.rs|FREQ=MINUTELY;INTERVAL=N"
-  "AUTO|host executor immutable task getters |DeepSeek-TUI/crates/tui/src/task_manager.rs|pub fn workspace(&self) -> &Path"
-  "AUTO|host executor pre-turn thread link   |DeepSeek-TUI/crates/tui/src/task_manager.rs|ThreadCreated {"
+  # —— P2(2026-07-16):可取消 OAuth 登录 + 宿主请求编排——
+  # 取消必须先 drop 底座 OAuth future/回调监听再返回;新请求先等旧请求退出,快取消早于注册也不能漏。
+  "P2  |MCP OAuth cancellable API      |DeepSeek-TUI/crates/tui/src/mcp/oauth.rs|pub async fn perform_oauth_login_for_server_with_cancel"
+  "P2  |MCP OAuth cancellation regression|DeepSeek-TUI/crates/tui/src/mcp/oauth.rs|fn forkguard_cancellable_oauth_drops_in_flight_flow_before_returning"
+  "P2  |OAuth host request coordinator |pinvou3-app/src-tauri/src/commands.rs|struct MarketplaceOAuthLoginCoordinator"
+  # AUTO-lite(2026-07-13):scheduled-lite 重做——撤 durable scheduler 重 fork(原 fork PR #8,
+  # +13744/−5646),回 8073aa9b 基线 + 最小补丁(5 文件)。守护点:host executor
+  # 只读 getters / ThreadCreated 会话身份先于 turn 持久化 / automation model 透传 /
+  # automation.id 稳定 conversation key / 强制审批(hook ask + rlm_eval)不可被
+  # auto-approve 绕过 / v4 task schema 向后兼容 v3。
+  # 注:定时任务恒 YOLO 属产品决策,落在 app 层:Shell 每次跟随全局设置,
+  # trust/autoApprove 恒 true;基座默认值保持不动。
+  "AUTO|app 层定时任务恒 YOLO(create 强制)   |pinvou3-app/src-tauri/src/scheduled_tasks.rs|auto_approve: Some(true)"
+  "AUTO|普通聊天与定时任务共用 Shell 推导    |pinvou3-app/src-tauri/src/bridge/mod.rs|pub(crate) fn allow_shell_for_prefs"
+  "AUTO|定时执行每次刷新全局 Shell           |pinvou3-app/src-tauri/src/scheduled_executor.rs|let allow_shell = self.runtime.yolo_allow_shell();"
+  "AUTO|定时执行固定信任并自动批准           |pinvou3-app/src-tauri/src/scheduled_executor.rs|trust_mode: true,"
   "AUTO|automation propagates selected model |DeepSeek-TUI/crates/tui/src/automation_manager.rs|model: automation.model.clone()"
-  "AUTO|automation skips stale slot backlog  |DeepSeek-TUI/crates/tui/src/automation_manager.rs|latest_due_at_or_before"
-  "AUTO|MINUTELY normalizes legacy cursor     |DeepSeek-TUI/crates/tui/src/automation_manager.rs|fn normalize_due_cursor"
-  "AUTO|task prune protects run/pending owners|DeepSeek-TUI/crates/tui/src/automation_manager.rs|pub fn protected_task_ids"
-  "AUTO|running run link triggers persistence|DeepSeek-TUI/crates/tui/src/automation_manager.rs|run.thread_id != task.thread_id"
-  "AUTO|run index avoids retained-history scan|DeepSeek-TUI/crates/tui/src/automation_manager.rs|fn retention_guard_does_not_parse_retained_history_on_nonterminal_save"
-  "AUTO|retention reads only prune candidates |DeepSeek-TUI/crates/tui/src/automation_manager.rs|fn terminal_retention_reads_only_prune_candidates"
-  "AUTO|journaled enqueue recovery failpoint  |DeepSeek-TUI/crates/tui/src/automation_manager.rs|fn manual_run_recovers_journaled_enqueue"
-  "AUTO|Running state durable before execute  |DeepSeek-TUI/crates/tui/src/task_manager.rs|fn executor_never_starts_before_running_record_is_durable"
-  "AUTO|terminal artifact retry is durable    |DeepSeek-TUI/crates/tui/src/task_manager.rs|fn terminal_artifact_write_failure_retries_without_publishing_terminal_state"
-  "AUTO|report failure cancels executor token |DeepSeek-TUI/crates/tui/src/task_manager.rs|fn reporter_failure_cancels_token"
-  "AUTO|bad persisted mode isolated           |DeepSeek-TUI/crates/tui/src/task_manager.rs|fn invalid_mode_isolated_retaining_idempotency"
-  "AUTO|terminal task prune is crash durable  |DeepSeek-TUI/crates/tui/src/task_manager.rs|pub async fn prune_terminal_tasks"
-  "AUTO|persisted task id matches safe stem   |DeepSeek-TUI/crates/tui/src/task_manager.rs|fn load_state_rejects_unsafe_mismatched_and_duplicate_task_ids"
-  "AUTO|non-bypassable approval carries force |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn yolo_hook_ask_emits_non_bypassable_force_prompt"
+  "AUTO|host executor immutable task getters |DeepSeek-TUI/crates/tui/src/task_manager.rs|pub fn workspace(&self) -> &Path"
+  "AUTO|host executor pre-turn thread create  |DeepSeek-TUI/crates/tui/src/task_manager.rs|ThreadCreated {"
+  "AUTO|running run link triggers persistence |DeepSeek-TUI/crates/tui/src/automation_manager.rs|run.thread_id != task.thread_id"
+  "AUTO|v4 task 稳定 conversation key        |DeepSeek-TUI/crates/tui/src/task_manager.rs|pub conversation_key: Option<String>"
+  "AUTO|task schema 升级为 v4                |DeepSeek-TUI/crates/tui/src/task_manager.rs|const CURRENT_TASK_SCHEMA_VERSION: u32 = 4;"
+  "AUTO|automation 入队携带稳定会话键         |DeepSeek-TUI/crates/tui/src/automation_manager.rs|add_task_with_conversation_key(new_task, Some(automation.id.clone()))"
+  "AUTO|小时调度支持稳定时间锚点              |DeepSeek-TUI/crates/tui/src/automation_manager.rs|fn hourly_rrule_uses_clock_time_as_a_stable_anchor"
+  "AUTO|终态运行保留候选不包含活动运行         |DeepSeek-TUI/crates/tui/src/automation_manager.rs|terminal_run_prune_candidates"
+  "AUTO|终态底座任务配套删除                  |DeepSeek-TUI/crates/tui/src/task_manager.rs|delete_terminal_task"
+  "AUTO|registry 工具强制审批不可绕过        |DeepSeek-TUI/crates/tui/src/core/engine/turn_loop.rs|pub(super) fn registered_tool_approval_force_prompt"
+  "AUTO|强制审批 force_prompt 回归断言       |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|registered_tool_approval_force_prompt("
   # —— 工作流 fork 基座层(三省六部;feat/sansheng-workflow 随附,2026-06-12 补)——
   # 行为层已有 engine_config_locks_critical_fields(W10 reasoning_effort);其余 W* 暂只 L1。
   "W1  |SpawnSubAgent 扩展字段          |DeepSeek-TUI/crates/tui/src/core/ops.rs|expects_file_output: bool"
@@ -147,6 +157,8 @@ fingerprints=(
   "W10 |reasoning_effort 会话初始注入   |DeepSeek-TUI/crates/tui/src/core/engine.rs|session.reasoning_effort = config.reasoning_effort"
   "W11 |submit_output 成功即 break 收工 |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|if output_schema.is_some() && output_submitted.is_some()"
   "W12 |registry max_steps per-spawn 生效|DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|options.max_steps.unwrap_or(self.max_steps)"
+  "W13 |宿主显式取消全部后台 Agent   |DeepSeek-TUI/crates/tui/src/core/ops.rs|CancelSubAgents"
+  "W13 |取消全部后台 Agent 行为回归   |DeepSeek-TUI/crates/tui/src/tools/subagent/tests.rs|forkguard_cancel_all_running_aborts_every_live_agent"
   # —— Agentic RAG: EngineConfig.extra_tools 应用层工具注入口(2026-06-24)——
   # 通用扩展点(可上游 PR):app 注入 kb_search 等 ToolSpec,无需 fork 工具表。丢了 → app
   # 的 kb_search 工具静默不进 registry,Agentic RAG 整条失效却不报错。
@@ -196,19 +208,12 @@ bold "── 第 2 层:fork 回归测试 (codewhale-tui) ──"
     test_write_file_rejects_oversized_content \
     test_append_file_rejects_oversized_content \
     disallowed_tools_gate_blocks_prefix_wildcard \
-    retention_guard_does_not_parse_retained_history_on_nonterminal_save \
-    terminal_retention_reads_only_prune_candidates \
-    manual_run_recovers_journaled_enqueue \
-    minutely_fast_forward_normalizes_legacy_cursor_at_end_of_minute \
-    invalid_pending_journal_blocks_all_task_pruning \
-    prune_terminal_tasks_preserves_protected_and_active_tasks \
-    startup_finishes_journaled_task_prune \
-    load_state_rejects_unsafe_mismatched_and_duplicate_task_ids \
-    executor_never_starts_before_running_record_is_durable \
-    terminal_artifact_write_failure_retries_without_publishing_terminal_state \
-    reporter_failure_cancels_token \
-    invalid_mode_isolated_retaining_idempotency \
-    yolo_hook_ask_emits_non_bypassable_force_prompt ) || fail=1
+    automation_task_settings_default_for_legacy_records \
+    automation_enqueue_uses_default_and_explicit_task_settings \
+    worker_receives_persisted_conversation_key \
+    create_schema_exposes_rrule \
+    rlm_eval_required_approval_ignores_generic_auto_approve \
+    generic_required_tools_keep_auto_approve_behavior ) || fail=1
 
 echo
 bold "── 第 2 层:fork 回归测试 (pinvou3-tauri / bridge) ──"

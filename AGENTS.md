@@ -20,20 +20,16 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 | Tauri UI / Rust wrapper / Engine 配置 | pinvou3-app 内 Rust |
 | 修上游 bug | DeepSeek-TUI fork(详见 `docs/fork-policy.md`,软上限 1500 行) + 视情况 PR |
 
-> **fork 维护**：策略/sync 流程/PR 状态见 [`docs/fork-policy.md`](docs/fork-policy.md)；fork 现状清单(C1–C7)+ sync 后验证 checklist 见 [`docs/fork-modifications.md`](docs/fork-modifications.md)。**基线/drift 以 fork-policy §0 为单一真相源**(软上限 1500 行,原"≤50 行"已修订)；守护手段 = fork-guard.sh 指纹 + forkguard_ 测试 + dump_system_prompt 前后 diff。
+> **fork 维护**：策略/sync 流程/PR 状态见 [`docs/fork-policy.md`](docs/fork-policy.md)；fork 现状清单(C1–C14)+ sync 后验证 checklist 见 [`docs/fork-modifications.md`](docs/fork-modifications.md)。**基线/drift 以 fork-policy §0 为单一真相源**(软上限 1500 行,原"≤50 行"已修订)；守护手段 = fork-guard.sh 指纹 + forkguard_ 测试 + dump_system_prompt 前后 diff。
 > **fork patch 指纹随 patch 同 PR**：新增/改 fork patch 的 PR 必须**同 PR**带上 fork-guard.sh 指纹 + 更新 fork-modifications.md——指纹随 patch 走,**不拆事后 catch-up PR**(出现 catch-up PR = 原始 PR 漏了指纹)。提 PR 前跑 `./scripts/fork-guard.sh --fast` 自查。**main CI `fast-gate` 已 enforce 此约束**：缺指纹 / 改 gitlink 没登记 fork-modifications / 落后 main 都挡合(`.github/workflows/pr-check.yml`)。
 > **fork 改动是否要 PR**：通用优化 / bug 修复才提；pinvou3 专用留 fork。详见 `docs/fork-policy.md` §2 决策树。
 > **底座上游PR规范**：https://github.com/Hmbown/CodeWhale/blob/main/CONTRIBUTING.md
 
-### 2. 只用本地算力（GB10 + Qwen3.6-35B-A3B-FP8）
-
-- 设计以当前模型能力为基线，未来变强是 bonus
-
-### 3. 提交日志
+### 2. 提交日志
 
 - git log 提交日志统一使用中文，并在标题中注明类型前缀，例如 `fix:` / `feat:` / `docs:`；类型前缀后的描述使用中文。
 
-### 4. GitHub PR 规范
+### 3. GitHub PR 规范
 
 - GitHub PR 的标题和正文统一使用中文（代码标识、命令、路径等保留原文）。
 - PR 正文必须明确说明以下内容：

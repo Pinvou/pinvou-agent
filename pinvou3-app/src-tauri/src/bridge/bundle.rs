@@ -90,8 +90,9 @@ const DINGTALK_SKILL_DIRS: [&str; 1] = ["dws"];
 /// 0.12: 接入 H3C 知道知识库技能(zhidao CLI + SKILL.md),与 EIP 并列门控
 /// 0.13: 接入企微官方域技能(wecomcli-*,MIT):独立 wecom-skills/ 内嵌 + 独立门控
 /// 0.14: 接入钉钉官方 dws skill + Linux ARM64 内置 dws CLI
+/// 0.15: 增加 exec_shell 登录终端环境过滤 hook(shell_env.sh)
 pub const BUNDLE_VERSION: &str = concat!(
-    "0.14-",
+    "0.15-",
     env!("BUNDLE_INSTRUCTIONS_HASH"),
     "-",
     env!("BUNDLE_WORKFLOW_HASH_SANSHENG"),
@@ -234,6 +235,8 @@ const IWENCAI_MANIFEST_JSON: &str =
 const QCC_MANIFEST_JSON: &str = include_str!("../../../resources/mcp-servers/qcc/manifest.json");
 const YUANDIAN_MANIFEST_JSON: &str =
     include_str!("../../../resources/mcp-servers/yuandian-mcp/manifest.json");
+const PATSNAP_SEARCH_MANIFEST_JSON: &str =
+    include_str!("../../../resources/mcp-servers/patsnap-search/manifest.json");
 const OBSIDIAN_SERVER_PY: &str = include_str!("../../../resources/mcp-servers/obsidian/server.py");
 const OBSIDIAN_MANIFEST_JSON: &str =
     include_str!("../../../resources/mcp-servers/obsidian/manifest.json");
@@ -252,6 +255,9 @@ pub const DENY_SENSITIVE_PATHS_SH: &str =
 pub const DENY_SENSITIVE_PATHS_PS1: &str =
     include_str!("../../resources/bundle/deny_sensitive_paths.ps1");
 
+/// 内嵌的 exec_shell CLI 兼容环境 hook：读取登录 shell 环境并过滤凭证。
+pub const SHELL_ENV_SH: &str = include_str!("../../resources/bundle/shell_env.sh");
+
 #[derive(Debug, Clone)]
 pub struct Pinvou3Bundle {
     pub root: PathBuf,
@@ -261,6 +267,7 @@ pub struct Pinvou3Bundle {
     pub mcp_json: PathBuf,
     pub deny_sensitive_sh: PathBuf,
     pub deny_sensitive_ps1: PathBuf,
+    pub shell_env_sh: PathBuf,
 }
 
 impl Pinvou3Bundle {
@@ -273,6 +280,7 @@ impl Pinvou3Bundle {
             mcp_json: paths::bundle_mcp_json(),
             deny_sensitive_sh: paths::bundle_root().join("deny_sensitive_paths.sh"),
             deny_sensitive_ps1: paths::bundle_root().join("deny_sensitive_paths.ps1"),
+            shell_env_sh: paths::bundle_root().join("shell_env.sh"),
         }
     }
 
@@ -425,15 +433,18 @@ impl Pinvou3Bundle {
             // 那里按 locale 填);此处仅防 {{PINVOU3_TITLE_LANG}} 占位符原文残留在 disk 文件。
             .replace("{{PINVOU3_TITLE_LANG}}", "简体中文");
         std::fs::write(&self.instructions_md, rendered)?;
-        // 敏感目录拦截脚本：写入 + 加可执行位
+        // PINVOU 自有 hooks：写入 + 加可执行位
         std::fs::write(&self.deny_sensitive_sh, DENY_SENSITIVE_PATHS_SH)?;
         std::fs::write(&self.deny_sensitive_ps1, DENY_SENSITIVE_PATHS_PS1)?;
+        std::fs::write(&self.shell_env_sh, SHELL_ENV_SH)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perm = std::fs::metadata(&self.deny_sensitive_sh)?.permissions();
-            perm.set_mode(0o755);
-            std::fs::set_permissions(&self.deny_sensitive_sh, perm)?;
+            for script in [&self.deny_sensitive_sh, &self.shell_env_sh] {
+                let mut perm = std::fs::metadata(script)?.permissions();
+                perm.set_mode(0o755);
+                std::fs::set_permissions(script, perm)?;
+            }
         }
         std::fs::write(&version_file, BUNDLE_VERSION)?;
         eprintln!(
@@ -860,6 +871,13 @@ impl Pinvou3Bundle {
         let yuandian_dir = dir.join("yuandian-mcp");
         std::fs::create_dir_all(&yuandian_dir)?;
         std::fs::write(yuandian_dir.join("manifest.json"), YUANDIAN_MANIFEST_JSON)?;
+        // 工具市场：智慧芽专利&文献融合检索（远程 MCP，API Key 通过请求头占位符注入）
+        let patsnap_dir = dir.join("patsnap-search");
+        std::fs::create_dir_all(&patsnap_dir)?;
+        std::fs::write(
+            patsnap_dir.join("manifest.json"),
+            PATSNAP_SEARCH_MANIFEST_JSON,
+        )?;
         // 工具市场：Obsidian 知识库 MCP server（本地 stdio，检索本机 vault）
         let obsidian_dir = dir.join("obsidian");
         std::fs::create_dir_all(&obsidian_dir)?;
@@ -902,6 +920,7 @@ mod tests {
         assert!(bundle.mcp_json.is_file());
         assert!(bundle.deny_sensitive_sh.is_file());
         assert!(bundle.deny_sensitive_ps1.is_file());
+        assert!(bundle.shell_env_sh.is_file());
         assert!(paths::bundle_version_file().is_file());
         // present_artifact MCP server 应解包,mcp.json 注册且占位符替换成绝对路径
         assert!(
@@ -1015,6 +1034,93 @@ mod tests {
         assert!(!bundle.cached_feishu_skills_visible());
         assert!(!bundle.cached_wecom_skills_visible());
         assert!(!bundle.cached_dingtalk_skills_visible());
+        cleanup(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_env_hook_keeps_cli_context_and_filters_credentials() {
+        use std::collections::HashMap;
+        use std::process::Command;
+
+        let tmp = tempdir();
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            std::path::Path::new(&tmp).join(".bash_profile"),
+            "printf 'PROFILE_STDOUT=must-not-inject'\n\
+             export PATH=/opt/custom-cli/bin:/usr/bin:/bin\n\
+             export CUSTOM_FROM_PROFILE=loaded\n",
+        )
+        .unwrap();
+        let script = std::path::Path::new(&tmp).join("shell_env.sh");
+        std::fs::write(&script, SHELL_ENV_SH).unwrap();
+        let output = Command::new("bash")
+            .arg(&script)
+            .env_clear()
+            .env("HOME", &tmp)
+            .env("USER", "pinvou-test")
+            .env("SHELL", "/bin/bash")
+            .env("PATH", "/usr/bin:/bin")
+            .env("XDG_RUNTIME_DIR", "/run/user/1000")
+            .env("CUSTOM_SDK_HOME", "/opt/custom-sdk")
+            .env("HTTPS_PROXY", "http://127.0.0.1:7890")
+            .env("OPENAI_API_KEY", "must-not-leak")
+            .env("PINVOU3_MCP_SECRET_AMAP_KEY", "must-not-leak")
+            .env("SSH_AUTH_SOCK", "/run/user/1000/ssh-agent")
+            .env("NODE_OPTIONS", "--require=/tmp/inject.js")
+            .env(
+                "PRIVATE_INDEX",
+                "https://user:password@example.invalid/simple",
+            )
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "shell_env hook failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let vars = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(
+            vars.get("PATH").map(String::as_str),
+            Some("/opt/custom-cli/bin:/usr/bin:/bin")
+        );
+        assert_eq!(
+            vars.get("CUSTOM_FROM_PROFILE").map(String::as_str),
+            Some("loaded")
+        );
+        assert_eq!(
+            vars.get("XDG_RUNTIME_DIR").map(String::as_str),
+            Some("/run/user/1000")
+        );
+        assert_eq!(
+            vars.get("CUSTOM_SDK_HOME").map(String::as_str),
+            Some("/opt/custom-sdk")
+        );
+        assert_eq!(
+            vars.get("HTTPS_PROXY").map(String::as_str),
+            Some("http://127.0.0.1:7890")
+        );
+        assert!(
+            !vars.contains_key("PROFILE_STDOUT"),
+            "登录 profile 在 marker 前的 KEY=VALUE 输出不得被注入"
+        );
+        for key in [
+            "OPENAI_API_KEY",
+            "PINVOU3_MCP_SECRET_AMAP_KEY",
+            "SSH_AUTH_SOCK",
+            "NODE_OPTIONS",
+            "PRIVATE_INDEX",
+        ] {
+            assert!(
+                !vars.contains_key(key),
+                "敏感变量 {key} 不得进入 exec_shell"
+            );
+        }
 
         cleanup(&tmp);
     }
