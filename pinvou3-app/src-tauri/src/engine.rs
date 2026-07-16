@@ -68,12 +68,12 @@ struct TurnLifecycleState {
 /// reclaim and a natural `TurnComplete` race to one authoritative terminal
 /// event instead of either dropping it or emitting it twice.
 #[derive(Debug, Default)]
-struct TurnLifecycle {
+pub(crate) struct TurnLifecycle {
     state: Mutex<TurnLifecycleState>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct EmittedTerminal {
+pub(crate) struct EmittedTerminal {
     turn_id: Option<String>,
 }
 
@@ -95,7 +95,7 @@ pub(crate) fn emit_chat_terminal(
 }
 
 impl TurnLifecycle {
-    fn on_submitted(&self) {
+    pub(crate) fn on_submitted(&self) {
         let mut state = self.state.lock();
         if !state.active {
             state.active = true;
@@ -118,7 +118,7 @@ impl TurnLifecycle {
         state.terminal_emitted = false;
     }
 
-    fn finish_once(&self, emit: impl FnOnce()) -> Option<EmittedTerminal> {
+    pub(crate) fn finish_once(&self, emit: impl FnOnce()) -> Option<EmittedTerminal> {
         let mut state = self.state.lock();
         if !state.active || state.terminal_emitted {
             return None;
@@ -132,7 +132,7 @@ impl TurnLifecycle {
         Some(emitted)
     }
 
-    fn emit_terminal_once(
+    pub(crate) fn emit_terminal_once(
         &self,
         app: &AppHandle,
         session_id: &str,
@@ -156,11 +156,12 @@ impl AppEngine {
     ///
     /// [`build_engine_config_for_session`]: crate::bridge::Pinvou3Bridge::build_engine_config_for_session
     /// [`EnginePool`]: crate::engine_pool::EnginePool
-    pub async fn spawn_for_session(
+    pub(crate) async fn spawn_for_session(
         app: AppHandle,
         store: SessionStore,
         bridge: Pinvou3Bridge,
         session_id: &str,
+        turn_lifecycle: Arc<TurnLifecycle>,
     ) -> Result<(Self, tauri::async_runtime::JoinHandle<()>)> {
         // C 方案(P-no-disk): instructions 走 Inline,不再写 disk(远端)。
         // 工作流会话不再施加监工白名单(对话型监工已废弃);SubAgent 角色的工具
@@ -225,7 +226,6 @@ impl AppEngine {
         let handle = spawn_engine(engine_config, &dt_config);
         let (turn_events, _) = broadcast::channel(32);
         let scheduled_unattended = Arc::new(AtomicBool::new(false));
-        let turn_lifecycle = Arc::new(TurnLifecycle::default());
         let forwarder = spawn_event_forwarder(
             app,
             handle.clone(),
@@ -1794,12 +1794,26 @@ fn spawn_event_forwarder(
                 _ => {}
             }
         }
+        let error = "Engine event stream stopped before a terminal event".to_string();
+        if let Some(emitted) = turn_lifecycle.emit_terminal_once(
+            &app,
+            &session_id,
+            TurnOutcomeStatus::Failed,
+            Some(error.clone()),
+        ) {
+            crate::timing::finish_turn(&session_id, "Failed", Some(&error));
+            if let Some(turn_id) = emitted.turn_id {
+                let _ = turn_events.send(EngineTurnSignal::Terminal {
+                    turn_id,
+                    status: TurnOutcomeStatus::Failed,
+                    error: Some(error.clone()),
+                });
+            }
+        }
         let _ = turn_events.send(EngineTurnSignal::ForwarderStopped {
-            error: "Engine event stream stopped before a terminal event".to_string(),
+            error: error.clone(),
         });
-        eprintln!(
-            "[pinvou3-app] event forwarder stopped for session {session_id} (engine shut down?)"
-        );
+        eprintln!("[pinvou3-app] event forwarder stopped for session {session_id}: {error}");
     })
 }
 
@@ -1947,6 +1961,26 @@ mod turn_lifecycle_tests {
         lifecycle.on_submitted();
         lifecycle.on_submission_failed();
         assert_eq!(lifecycle.finish_once(|| panic!("must stay idle")), None);
+    }
+
+    #[test]
+    fn forwarder_stop_and_reclaim_share_one_terminal() {
+        let lifecycle = TurnLifecycle::default();
+        let emitted = Cell::new(0_u8);
+        lifecycle.on_submitted();
+        lifecycle.on_started("turn-1".to_string());
+
+        assert_eq!(
+            lifecycle.finish_once(|| emitted.set(emitted.get() + 1)),
+            Some(EmittedTerminal {
+                turn_id: Some("turn-1".to_string())
+            })
+        );
+        assert_eq!(
+            lifecycle.finish_once(|| panic!("reclaim must not emit twice")),
+            None
+        );
+        assert_eq!(emitted.get(), 1);
     }
 }
 

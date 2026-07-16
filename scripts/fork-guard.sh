@@ -102,6 +102,11 @@ fingerprints=(
   "C12 |前端终端跨分片 UI 回归           |pinvou3-app/tests/ui_smoke.js|terminal parser preserves CRLF and ANSI state across live chunks"
   "C12 |后台终态输出 tail 对账           |pinvou3-app/src/tauri-bridge.js|function reconcileBackgroundTerminalOutput(previous, payload)"
   "C12 |后台终态 stdout/stderr UI 回归   |pinvou3-app/tests/ui_smoke.js|background shell terminal event reconciles final stdout and stderr tails"
+  "C13 |池级 session turn 生命周期       |pinvou3-app/src-tauri/src/engine_pool.rs|turn_lifecycles: SessionTurnLifecycles"
+  "C13 |缺失 Engine 仅活动 turn 补终态   |pinvou3-app/src-tauri/src/engine_pool.rs|cancel recovered active turn without engine"
+  "C13 |forwarder 异常结束补权威终态     |pinvou3-app/src-tauri/src/engine.rs|TurnOutcomeStatus::Failed,"
+  "C13 |异常结束与回收单终态测试         |pinvou3-app/src-tauri/src/engine.rs|fn forwarder_stop_and_reclaim_share_one_terminal"
+  "C13 |池级生命周期空闲取消测试         |pinvou3-app/src-tauri/src/engine_pool.rs|fn session_turn_lifecycle_survives_engine_entry_removal_without_faking_idle_cancel"
   # —— P1(2026-07-03):list_mcp_resources/templates 按对应集合非空 gate(上游原为 servers 非空即注入)——
   # pinvou3 MCP server 全 tools-only,原条件下这两个元工具永久空转;改按 resources/templates 非空注入。可上游。
   "P1  |list_mcp_resources 按 resources 非空 gate|DeepSeek-TUI/crates/tui/src/mcp.rs|if !self.all_resource_templates().is_empty()"

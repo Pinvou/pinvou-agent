@@ -28,6 +28,7 @@ use deepseek_tui::core::ops::Op;
 use deepseek_tui::models::{ContentBlock, Message};
 use deepseek_tui::tools::user_input::UserInputResponse;
 use deepseek_tui::tui::app::AppMode;
+use parking_lot::Mutex as SyncMutex;
 use tauri::async_runtime::JoinHandle;
 use tauri::AppHandle;
 use tokio::sync::Mutex;
@@ -36,7 +37,7 @@ use tokio_util::sync::CancellationToken;
 use crate::bridge::prefs::{SavedModel, UserPrefs};
 use crate::bridge::sessions::{ScheduledRunProfile, SessionStore};
 use crate::bridge::Pinvou3Bridge;
-use crate::engine::{AppEngine, EngineTurnSignal};
+use crate::engine::{AppEngine, EngineTurnSignal, TurnLifecycle};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ScheduledTurnCompletion {
@@ -77,6 +78,31 @@ impl SessionTurnLocks {
         let gate = Arc::new(Mutex::new(()));
         locks.insert(session_id.to_string(), Arc::downgrade(&gate));
         gate
+    }
+}
+
+/// Per-session turn state survives Engine entry removal, allowing cancel and
+/// abnormal forwarder shutdown to converge on one authoritative terminal.
+#[derive(Clone, Default)]
+struct SessionTurnLifecycles {
+    states: Arc<SyncMutex<HashMap<String, Arc<TurnLifecycle>>>>,
+}
+
+impl SessionTurnLifecycles {
+    fn for_session(&self, session_id: &str) -> Arc<TurnLifecycle> {
+        let mut states = self.states.lock();
+        states
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(TurnLifecycle::default()))
+            .clone()
+    }
+
+    fn get(&self, session_id: &str) -> Option<Arc<TurnLifecycle>> {
+        self.states.lock().get(session_id).cloned()
+    }
+
+    fn remove(&self, session_id: &str) {
+        self.states.lock().remove(session_id);
     }
 }
 
@@ -133,6 +159,7 @@ fn should_sync_session(is_scheduled: bool, has_messages: bool) -> bool {
 pub struct EnginePool {
     entries: Arc<Mutex<HashMap<String, EngineEntry>>>,
     turn_locks: SessionTurnLocks,
+    turn_lifecycles: SessionTurnLifecycles,
     app: AppHandle,
     store: SessionStore,
     /// 所有 session 共享一份已 boot 的 bridge(boot 会写盘 / 设 env,只能一次)。
@@ -147,6 +174,7 @@ impl EnginePool {
         Ok(Self {
             entries: Arc::new(Mutex::new(HashMap::new())),
             turn_locks: SessionTurnLocks::default(),
+            turn_lifecycles: SessionTurnLifecycles::default(),
             app,
             store,
             bridge,
@@ -290,6 +318,7 @@ impl EnginePool {
             self.store.clone(),
             bridge,
             session_id,
+            self.turn_lifecycles.for_session(session_id),
         )
         .await?;
         log::info!(
@@ -389,14 +418,18 @@ impl EnginePool {
         session_id: &str,
         expected_task_id: &str,
     ) -> Result<()> {
-        delete_scheduled_run_with_gate(
+        let result = delete_scheduled_run_with_gate(
             &self.turn_locks,
             &self.store,
             session_id,
             expected_task_id,
             || self.evict_locked(session_id),
         )
-        .await
+        .await;
+        if result.is_ok() {
+            self.turn_lifecycles.remove(session_id);
+        }
+        result
     }
 
     async fn evict_locked(&self, session_id: &str) {
@@ -412,11 +445,15 @@ impl EnginePool {
                 crate::timing::finish_turn(session_id, "Interrupted", None);
             }
             entry.engine.cancel_current();
+            entry.forwarder.abort();
             if let Err(e) = entry.engine.handle.send(Op::Shutdown).await {
                 eprintln!("[engine_pool] shutdown {session_id} failed: {e:?}");
             }
-            entry.forwarder.abort();
         }
+    }
+
+    pub(crate) fn forget_session(&self, session_id: &str) {
+        self.turn_lifecycles.remove(session_id);
     }
 
     // ── 模型热切换(commands.rs 调用)──────────────────────────────
@@ -555,23 +592,35 @@ impl EnginePool {
         result
     }
 
-    /// 取消指定 session 正在生成的回复。Engine 已不存在时也发送 Interrupted
-    /// 权威终态，使前端可靠退出 busy，而不是把取消静默处理成 no-op。
+    /// 取消指定 session 正在生成的回复。Engine 已不存在时，仅在池仍确认存在活动
+    /// turn 时补发 Interrupted 权威终态；空闲会话取消保持 no-op。
     pub async fn cancel(&self, session_id: &str) {
         if let Some(engine) = self.handle_for(session_id).await {
             engine.cancel_current();
-        } else {
-            log::warn!(
-                "[engine_pool] cancel resolved as interrupted because engine is missing sid={}",
-                session_id
-            );
-            crate::engine::emit_chat_terminal(
+        } else if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
+            let emitted = lifecycle.emit_terminal_once(
                 &self.app,
                 session_id,
                 TurnOutcomeStatus::Interrupted,
                 None,
             );
+            if emitted.is_none() {
+                log::info!(
+                    "[engine_pool] cancel ignored for idle session without engine sid={}",
+                    session_id
+                );
+                return;
+            }
+            log::warn!(
+                "[engine_pool] cancel recovered active turn without engine sid={}",
+                session_id
+            );
             crate::timing::finish_turn(session_id, "Interrupted", None);
+        } else {
+            log::info!(
+                "[engine_pool] cancel ignored for unknown idle session sid={}",
+                session_id
+            );
         }
     }
 
@@ -811,7 +860,7 @@ fn resolve_scheduled_model(
 mod scheduled_model_tests {
     use super::{
         delete_scheduled_run_with_gate, resolve_scheduled_model, scheduled_profile_after_turn_gate,
-        should_sync_session, ScheduledUnattendedGuard, SessionTurnLocks,
+        should_sync_session, ScheduledUnattendedGuard, SessionTurnLifecycles, SessionTurnLocks,
     };
     use crate::bridge::prefs::{ModelPreset, SavedModel};
     use crate::bridge::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
@@ -895,6 +944,24 @@ mod scheduled_model_tests {
             assert!(flag.load(Ordering::Acquire));
         }
         assert!(!flag.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn session_turn_lifecycle_survives_engine_entry_removal_without_faking_idle_cancel() {
+        let lifecycles = SessionTurnLifecycles::default();
+        let engine_lifecycle = lifecycles.for_session("session-1");
+        engine_lifecycle.on_submitted();
+        drop(engine_lifecycle);
+
+        let pool_lifecycle = lifecycles
+            .get("session-1")
+            .expect("pool retains active lifecycle independently");
+        assert!(pool_lifecycle.finish_once(|| {}).is_some());
+        assert_eq!(
+            pool_lifecycle.finish_once(|| panic!("must stay idle")),
+            None
+        );
+        assert!(lifecycles.get("unknown-session").is_none());
     }
 
     #[tokio::test]
