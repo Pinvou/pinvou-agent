@@ -26,6 +26,7 @@ function injectSource() {
   return `(function(){
     const TOOL_META={
       weather:['高德天气',[]],iwencai:['同花顺问财',[]],qcc:['企查查',[]],
+      'patsnap-search':['智慧芽专利&文献融合检索',[]],
       'yuandian-mcp':['华宇元典法律数据',[]],
       obsidian:['Obsidian 知识库',[]],pptx:['PPT 生成',[]],gongwen:['公文写作',['government-writing']]
     };
@@ -164,6 +165,19 @@ async function closeDetail(page, title) {
     rec(`${query} 经 UI 安装`,installed);
   }
 
+  await action(page,'智慧芽专利&文献','配置');
+  rec('智慧芽安装前展示 API Key 配置',await page.evaluate(()=>{
+    const input=document.querySelector('input[type="password"][placeholder="粘贴你的智慧芽 API Key"]');
+    return document.body.innerText.includes('填写智慧芽 API Key')&&!!input;
+  }));
+  const patsnapInput=await page.$('input[type="password"][placeholder="粘贴你的智慧芽 API Key"]');
+  await patsnapInput.type('patsnap-test-token');
+  await clickExact(page,'连接'); await sleep(260); await dismiss(page);
+  rec('智慧芽经 Header 凭据配置连接',await page.evaluate(()=>{
+    const call=[...window.__TOOL_STORE_TEST__.calls].reverse().find(x=>x.cmd==='install_marketplace_tool'&&x.args.toolId==='patsnap-search');
+    return window.__TOOL_STORE_TEST__.installed['patsnap-search']&&call?.args?.config?.PATSNAP_API_KEY==='patsnap-test-token';
+  }));
+
   await action(page,'Obsidian 知识库','安装');
   rec('Obsidian 缺库时先展示引导',await page.evaluate(()=>document.body.innerText.includes('还没有笔记库')));
   await clickExact(page,'我已新建，重新检测'); await sleep(250); await dismiss(page);
@@ -211,7 +225,10 @@ async function closeDetail(page, title) {
   }
 
   const calls=await page.evaluate(()=>window.__TOOL_STORE_TEST__.calls);
-  rec('安装调用只传工具 ID/空配置，不写真实凭据',calls.filter(x=>x.cmd==='install_marketplace_tool').every(x=>x.args&&x.args.toolId&&!x.args.config));
+  rec('仅智慧芽安装调用携带用户配置',calls.filter(x=>x.cmd==='install_marketplace_tool').every(x=>{
+    if(x.args.toolId==='patsnap-search')return Object.keys(x.args.config||{}).join(',')==='PATSNAP_API_KEY';
+    return x.args&&x.args.toolId&&!x.args.config;
+  }));
   rec('页面无未处理 JavaScript 异常',errors.length===0,errors.slice(0,2).join(' | '));
 
   await browser.close();

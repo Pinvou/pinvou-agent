@@ -3277,6 +3277,8 @@ const EXTERNAL_URL_ALLOWLIST: &[&str] = &[
     "https://app.tavily.com/",
     "https://www.iwencai.com/",
     "https://agent.qcc.com/",
+    // 智慧芽开放平台:智慧芽 MCP API Key 获取说明
+    "https://open.zhihuiya.com/",
     // MegaCube 官网(侧边栏 footer 入口跳转)
     "https://www.h3c.com/",
     // 飞书/Lark OAuth(device flow 授权页 + 账号页);连接飞书走这里开浏览器
@@ -6430,9 +6432,9 @@ mod tests {
         }
     }
 
-    /// 扩 EXTERNAL_URL_ALLOWLIST 必须加测试:obsidian.md 放行,仿冒/非 https 拒绝。
+    /// 扩 EXTERNAL_URL_ALLOWLIST 必须加测试:目标域名放行,仿冒/非 https 拒绝。
     #[test]
-    fn external_allowlist_allows_obsidian_rejects_lookalikes() {
+    fn external_allowlist_allows_known_targets_rejects_lookalikes() {
         assert!(url_in_external_allowlist("https://obsidian.md/download"));
         assert!(url_in_external_allowlist("https://metaso.cn/"));
         assert!(!url_in_external_allowlist(
@@ -6441,8 +6443,15 @@ mod tests {
         assert!(!url_in_external_allowlist(
             "https://passport.legalmind.cn/ssologin?appId=apiplatform"
         ));
+        assert!(url_in_external_allowlist(
+            "https://open.zhihuiya.com/dashboard/api-keys"
+        ));
         assert!(!url_in_external_allowlist("https://obsidian.md.evil.com/"));
+        assert!(!url_in_external_allowlist(
+            "https://open.zhihuiya.com.evil.com/dashboard/api-keys"
+        ));
         assert!(!url_in_external_allowlist("http://obsidian.md/"));
+        assert!(!url_in_external_allowlist("http://open.zhihuiya.com/"));
         assert!(!url_in_external_allowlist("https://evil.example.com/"));
     }
 
@@ -7162,9 +7171,36 @@ pub async fn install_marketplace_tool(
     config: Option<std::collections::HashMap<String, String>>,
 ) -> Result<(), String> {
     let user_config = config.unwrap_or_default();
+    let install_tool_id = tool_id.clone();
     tokio::task::spawn_blocking(move || {
         let mgr = crate::bridge::marketplace::MarketplaceManager::new();
-        mgr.install(&tool_id, &user_config)?;
+        mgr.install(&install_tool_id, &user_config)
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))??;
+
+    let should_validate = {
+        let mgr = crate::bridge::marketplace::MarketplaceManager::new();
+        mgr.requires_remote_connection_validation(&tool_id)
+    };
+    if should_validate {
+        let validation_result = {
+            let mgr = crate::bridge::marketplace::MarketplaceManager::new();
+            mgr.validate_remote_connection(&tool_id).await
+        };
+        if let Err(err) = validation_result {
+            let rollback_tool_id = tool_id.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                let mgr = crate::bridge::marketplace::MarketplaceManager::new();
+                mgr.uninstall(&rollback_tool_id)
+            })
+            .await;
+            return Err(err);
+        }
+    }
+
+    tokio::task::spawn_blocking(move || {
+        let mgr = crate::bridge::marketplace::MarketplaceManager::new();
         // 联动:装该 MCP 声明的配套技能(引擎+引导整体到位)。
         // skill 是增强,装失败只记日志、不让已成功的 MCP 安装回滚。
         for sid in mgr.companion_skills(&tool_id) {

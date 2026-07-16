@@ -233,6 +233,8 @@ const IWENCAI_MANIFEST_JSON: &str =
 const QCC_MANIFEST_JSON: &str = include_str!("../../../resources/mcp-servers/qcc/manifest.json");
 const YUANDIAN_MANIFEST_JSON: &str =
     include_str!("../../../resources/mcp-servers/yuandian-mcp/manifest.json");
+const PATSNAP_SEARCH_MANIFEST_JSON: &str =
+    include_str!("../../../resources/mcp-servers/patsnap-search/manifest.json");
 const OBSIDIAN_SERVER_PY: &str = include_str!("../../../resources/mcp-servers/obsidian/server.py");
 const OBSIDIAN_MANIFEST_JSON: &str =
     include_str!("../../../resources/mcp-servers/obsidian/manifest.json");
@@ -795,6 +797,13 @@ impl Pinvou3Bundle {
         let yuandian_dir = dir.join("yuandian-mcp");
         std::fs::create_dir_all(&yuandian_dir)?;
         std::fs::write(yuandian_dir.join("manifest.json"), YUANDIAN_MANIFEST_JSON)?;
+        // 工具市场：智慧芽专利&文献融合检索（远程 MCP，API Key 通过请求头占位符注入）
+        let patsnap_dir = dir.join("patsnap-search");
+        std::fs::create_dir_all(&patsnap_dir)?;
+        std::fs::write(
+            patsnap_dir.join("manifest.json"),
+            PATSNAP_SEARCH_MANIFEST_JSON,
+        )?;
         // 工具市场：Obsidian 知识库 MCP server（本地 stdio，检索本机 vault）
         let obsidian_dir = dir.join("obsidian");
         std::fs::create_dir_all(&obsidian_dir)?;

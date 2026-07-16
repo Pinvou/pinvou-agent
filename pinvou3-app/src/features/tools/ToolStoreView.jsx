@@ -399,8 +399,21 @@ const FEISHU_STEPS = [
           >
             <div className="px-6 pt-6 pb-4 text-center max-h-[70vh] overflow-y-auto">
               <div className={`text-[17px] font-semibold mb-3 ${isDark ? 'text-white' : 'text-slate-900'}`}>
-                配置「{config.name}」
+                {config.configTitle || `配置「${config.name}」`}
               </div>
+              {config.configDescription && (
+                <div className={`text-[12px] leading-relaxed mb-3 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                  {config.configDescription}
+                </div>
+              )}
+              {config.configDocUrl && (
+                <button
+                  onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: config.configDocUrl })}
+                  className={`text-[13px] mb-4 inline-block ${isDark ? 'text-[#0A84FF]' : 'text-[#007AFF]'} hover:underline`}
+                >
+                  {config.configDocLabel || '查看配置说明'} →
+                </button>
+              )}
               {/* 引导链接放最上,不夹在输入框中间 */}
               {fields.find(f => f.helpUrl) && (
                 <button
@@ -417,7 +430,7 @@ const FEISHU_STEPS = [
                     {field.label}
                   </label>
                   <input
-                    type="text"
+                    type={field.secret ? 'password' : 'text'}
                     placeholder={field.placeholder || "sk-..."}
                     value={values[field.key] || ''}
                     onChange={e => setValues(v => ({ ...v, [field.key]: e.target.value }))}
@@ -453,7 +466,7 @@ const FEISHU_STEPS = [
                     : (isDark ? 'text-slate-600' : 'text-slate-300')
                 }`}
               >
-                {config.backendId === 'feishu' ? '连接' : '安装'}
+                {config.backendId === 'feishu' || fields.length > 0 ? '连接' : '安装'}
               </button>
             </div>
           </div>
@@ -883,12 +896,15 @@ const FEISHU_STEPS = [
       const doInstall = async (backendId, userConfig) => {
         const t = tsToolsData.find(x => x.backendId === backendId);
         const name = t ? t.title : backendId;
-        const hasPipDeps = !t?.configFields || t.configFields.length === 0; // 无 config 的本地工具可能有 pip deps
+        const hasConfig = Boolean(t?.configFields?.length);
+        const hasPipDeps = !hasConfig; // 无 config 的本地工具可能有 pip deps
         const oauthRequestId = t?.oauthMcp ? beginOAuthRequest(backendId) : null;
         setBusyId(backendId);
         if (t?.oauthMcp) {
           const loadingTitle = backendId === 'yuandian-mcp' ? '正在连接元典法律' : `正在连接「${name}」`;
           setAlert({ loading: true, visible: false, title: loadingTitle, subtitle: '正在写入 MCP 配置…', isInstall: true, isError: false, cancelable: false, toolId: backendId, requestId: oauthRequestId });
+        } else if (hasConfig) {
+          setAlert({ loading: true, visible: false, title: `正在连接「${name}」`, subtitle: '正在校验 API Key 与远程工具…', isInstall: true, isError: false });
         } else if (hasPipDeps) {
           setAlert({ loading: true, visible: false, title: `正在安装「${name}」`, subtitle: '首次安装需下载依赖，请耐心等待…', isInstall: true, isError: false });
         }
@@ -973,7 +989,7 @@ const FEISHU_STEPS = [
           setAlert({
             visible: true,
             loading: false,
-            title: `已安装「${name}」`,
+            title: hasConfig ? `已连接「${name}」` : `已安装「${name}」`,
             isInstall: true,
             isError: false,
             toolId: backendId,
@@ -1287,7 +1303,15 @@ const FEISHU_STEPS = [
             return doInstall(backendId, {});
           }
           if (t?.configFields && t.configFields.length > 0) {
-            setConfigDialog({ backendId, name, fields: t.configFields });
+            setConfigDialog({
+              backendId,
+              name,
+              fields: t.configFields,
+              configTitle: t.configTitle,
+              configDescription: t.configDescription,
+              configDocUrl: t.configDocUrl,
+              configDocLabel: t.configDocLabel,
+            });
             return;
           }
           return doInstall(backendId, {});
