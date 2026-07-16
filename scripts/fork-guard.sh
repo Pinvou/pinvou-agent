@@ -134,6 +134,8 @@ fingerprints=(
   "W10 |reasoning_effort 会话初始注入   |DeepSeek-TUI/crates/tui/src/core/engine.rs|session.reasoning_effort = config.reasoning_effort"
   "W11 |submit_output 成功即 break 收工 |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|if output_schema.is_some() && output_submitted.is_some()"
   "W12 |registry max_steps per-spawn 生效|DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|options.max_steps.unwrap_or(self.max_steps)"
+  "W13 |宿主显式取消全部后台 Agent   |DeepSeek-TUI/crates/tui/src/core/ops.rs|CancelSubAgents"
+  "W13 |取消全部后台 Agent 行为回归   |DeepSeek-TUI/crates/tui/src/tools/subagent/tests.rs|forkguard_cancel_all_running_aborts_every_live_agent"
   # —— Agentic RAG: EngineConfig.extra_tools 应用层工具注入口(2026-06-24)——
   # 通用扩展点(可上游 PR):app 注入 kb_search 等 ToolSpec,无需 fork 工具表。丢了 → app
   # 的 kb_search 工具静默不进 registry,Agentic RAG 整条失效却不报错。

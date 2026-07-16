@@ -70,7 +70,7 @@ const WidgetCard = ({ title, children, theme }) => {
         case 'running': case 'reviewing': case 'briefing': return 'EXECUTING';
         case 'gate_waiting': case 'gate_approval': case 'waiting_human': return 'GATE_PENDING';
         case 'completed': case 'complete': return 'COMPLETED';
-        case 'failed': case 'blocked': case 'blocked-upstream': return null;
+        case 'failed': case 'blocked': case 'blocked-upstream': case 'stopped': return null;
         default: return 'PENDING';
       }
     }
@@ -135,7 +135,7 @@ const WidgetCard = ({ title, children, theme }) => {
       const isSleeping = status === 'pending' || status === 'skipped';
       if (avatar) {
         const isDone = status === 'completed' || status === 'complete';
-        const isDimmed = status === 'failed' || status === 'stale'
+        const isDimmed = status === 'failed' || status === 'stale' || status === 'stopped'
           || status === 'blocked' || status === 'blocked-upstream';
         // 状态 → 滤镜/描边
         let filter, ring, opacity = 1;
@@ -265,11 +265,13 @@ const WidgetCard = ({ title, children, theme }) => {
         reviewing: '品悟评审中', gate_waiting: '等待你确认', gate_approval: '等待你确认', waiting_human: '等待你确认',
         completed: '已完成', complete: '已完成', failed: '执行失败', stale: '需要重跑', skipped: '已跳过',
         blocked: '已阻塞', 'blocked-upstream': '上游阻塞',
+        stopped: '已停止',
       };
       const statusEmoji = {
         pending: '💤', ready: '🟢', running: '⚡', reviewing: '🔍',
         gate_waiting: '🔔', gate_approval: '🔔', waiting_human: '🔔', completed: '✅', complete: '✅',
         failed: '❌', stale: '🔄', skipped: '⏭️', blocked: '🚫', 'blocked-upstream': '🚫',
+        stopped: '⏹️',
       };
       const waitingLabel = (waitingFor && waitingFor.length > 0 && (isSleeping || isBlocked))
         ? '等待 ' + waitingFor.map(id => AGENT_NAME_MAP[id] || id).join('、') + ' 交付'
@@ -986,7 +988,7 @@ const WidgetCard = ({ title, children, theme }) => {
     };
 
     // —— 新建任务模态 ——
-    const NewTaskModal = ({ theme, onClose, onStarted, workflow }) => {
+    const NewTaskModal = ({ theme, onClose, onStarted, workflow, initialBrief = '' }) => {
       const isDark = theme === 'dark';
       // [工作流分离 Stage D] 表单形态全由该工作流 workflow.json 的 ui 块决定:
       // ui.scenarioOptions 有值 → 场景下拉;ui.attachments → 附件区。
@@ -995,7 +997,7 @@ const WidgetCard = ({ title, children, theme }) => {
       const defaultScenario = SCENARIOS.length ? SCENARIOS[0].value
         : ((workflow && workflow.scenarios && workflow.scenarios[0]) || '');
       const [scenario, setScenario] = useState(defaultScenario);
-      const [briefText, setBriefText] = useState('');
+      const [briefText, setBriefText] = useState(initialBrief);
       const [files, setFiles] = useState([]);      // 三省六部附件路径(start 后拷进配套材料/)
       const [picking, setPicking] = useState(false);
       const [starting, setStarting] = useState(false);
@@ -1119,6 +1121,8 @@ const WidgetCard = ({ title, children, theme }) => {
       const run = wf.run || { active: false, agents: {}, cards: [], status: 'idle' };
       const [opened, setOpened] = useState(false);
       const [showNewTask, setShowNewTask] = useState(false);
+      const [restartBrief, setRestartBrief] = useState('');
+      const [stopping, setStopping] = useState(false);
       // [工作流分离 Stage D] 模板页/新建表单数据源 = 后端 list_workflows(含 ui 块)
       const [workflows, setWorkflows] = useState([]);
       const [newTaskWorkflow, setNewTaskWorkflow] = useState(null);
@@ -1175,7 +1179,7 @@ const WidgetCard = ({ title, children, theme }) => {
                       const hasRun = run.scenario && (wf.scenarios || []).indexOf(run.scenario) >= 0
                         && (run.active || Object.keys(run.agents || {}).length > 0);
                       if (hasRun) { setExited(false); setOpened(true); }
-                      else { setShowNewTask(true); }
+                      else { setRestartBrief(''); setShowNewTask(true); }
                     }} />;
                 })}
                 {workflows.length === 0 && (
@@ -1183,13 +1187,14 @@ const WidgetCard = ({ title, children, theme }) => {
                 )}
               </div>
             </div>
-            {showNewTask && <NewTaskModal theme={theme} workflow={newTaskWorkflow}
+            {showNewTask && <NewTaskModal theme={theme} workflow={newTaskWorkflow} initialBrief={restartBrief}
               onClose={() => setShowNewTask(false)} onStarted={() => { setExited(false); setOpened(true); }} />}
           </div>
         );
       }
 
       const statusText = run.status === 'complete' ? '✅ 已完成'
+        : run.status === 'stopped' ? '⏹ 已停止'
         : run.status === 'blocked' ? '⚫ 阻塞'
         : run.active ? '🔵 运行中' : '未开始（点"新建任务"启动）';
       // run.agents{rid→{status,depends_on}} → swim-lane 需要的 agentStates/agentDeps
@@ -1218,6 +1223,25 @@ const WidgetCard = ({ title, children, theme }) => {
       const retryRole = (rid) => {
         if (bridge.available && bridge.retryWorkflowRole) bridge.retryWorkflowRole(rid);
       };
+      const openRestart = (brief) => {
+        setRestartBrief(brief || '');
+        setNewTaskWorkflow(runWorkflow || workflows[0] || null);
+        setShowNewTask(true);
+      };
+      const stopAndRestart = async () => {
+        if (stopping || !bridge.stopWorkflowTask) return;
+        if (!window.confirm('停止后，当前任务不会再继续派发。已生成的文件会保留，你可以修改原需求后重新开始。')) return;
+        setStopping(true);
+        try {
+          const result = await bridge.stopWorkflowTask('user_stopped_for_restart');
+          const brief = result && result.brief && result.brief.user_request_raw;
+          openRestart(typeof brief === 'string' ? brief : '');
+        } catch (e) {
+          window.alert('停止工作流失败：' + String((e && e.message) || e));
+        } finally {
+          setStopping(false);
+        }
+      };
 
       return (
         <div className={containerCls}>
@@ -1231,10 +1255,16 @@ const WidgetCard = ({ title, children, theme }) => {
               {memorialRoleId && memorialDone && (
                 <button onClick={() => setMemorialOpen(true)} className={cardBtnCls(isDark)}>📜 奏折</button>
               )}
+              {run.status === 'stopped' ? (
+                <button onClick={() => openRestart(restartBrief)} className={cardBtnCls(isDark, 'primary')}>✏️ 修改需求并重新开始</button>
+              ) : run.status !== 'complete' ? (
+                <button data-testid="workflow-stop-restart" onClick={stopAndRestart} disabled={stopping}
+                  className={`${cardBtnCls(isDark)} ${stopping ? 'opacity-50 cursor-not-allowed' : ''}`}>{stopping ? '停止中…' : '⏹ 停止并修改'}</button>
+              ) : null}
               <button onClick={() => { setOpened(false); setExited(true); }} className={cardBtnCls(isDark)}>← 模板页</button>
               {/* 看板内新建 = 跟当前看板同工作流(开机自动恢复直接进看板时没经过模板卡,
                   必须在这里按 run 反查工作流对象,否则表单回落错) */}
-              <button onClick={() => { setNewTaskWorkflow(runWorkflow || workflows[0] || null); setShowNewTask(true); }} className={cardBtnCls(isDark, 'primary')}>+ 新建任务</button>
+              <button onClick={() => { setRestartBrief(''); setNewTaskWorkflow(runWorkflow || workflows[0] || null); setShowNewTask(true); }} className={cardBtnCls(isDark, 'primary')}>+ 新建任务</button>
             </div>
           </div>
           <div className="flex-1 overflow-auto custom-scrollbar px-6 md:px-10 pb-4">
@@ -1248,7 +1278,7 @@ const WidgetCard = ({ title, children, theme }) => {
           )}
           {run.selectedRole && <CardDrawer roleId={run.selectedRole} projectDir={run.projectDir} theme={theme} onClose={() => bridge.closeWorkflowDrawer()} />}
           {memorialOpen && <ImperialMemorialModal projectDir={run.projectDir} theme={theme} onClose={() => setMemorialOpen(false)} />}
-          {showNewTask && <NewTaskModal theme={theme} workflow={newTaskWorkflow} onClose={() => setShowNewTask(false)} onStarted={() => { setExited(false); setOpened(true); }} />}
+          {showNewTask && <NewTaskModal theme={theme} workflow={newTaskWorkflow} initialBrief={restartBrief} onClose={() => setShowNewTask(false)} onStarted={() => { setExited(false); setOpened(true); }} />}
         </div>
       );
     };

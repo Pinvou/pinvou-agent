@@ -4,7 +4,7 @@
 > 用途:① sync 后查 patch 存活 ② 交接 / onboarding ③ 上游 PR 定位改动点。
 > 配套:`scripts/fork-guard.sh`(指纹 + 回归测试守卫)、`docs/fork-policy.md`(维护策略 + sync 流程 + PR 状态)。
 >
-> **当前基线**:submodule 指向 `pinvou3-clean@477e2ba9`(fork PR #14 merge commit,包含 fork PR #15)+ 小时调度时间锚点(+109/−10,1 文件;见 §4)。基线包含 scheduled-lite/C12/P2 后续补丁(+701/−17,7 文件;2026-07-13 撤回 fork PR #8 durable scheduler 重做,2026-07-14 补稳定 conversation key、Working Set 提醒剥离与终态保留清理,2026-07-16 补可取消 OAuth 登录)。`.gitmodules` 追踪 `pinvou3-clean`。
+> **当前基线**:submodule 指向 `pinvou3-clean@8832469c`(fork PR #16 merge commit,包含 fork PR #14/#15)+ W13 宿主取消后台 Agent(+75/−0,4 文件)。基线包含 scheduled-lite/C12/P2 后续补丁(+701/−17,7 文件)、小时调度时间锚点(+109/−10,1 文件;见 §4)与 W13。`.gitmodules` 追踪 `pinvou3-clean`。
 
 ---
 
@@ -12,9 +12,9 @@
 
 | 项 | 值 |
 |---|---|
-| submodule 分支 | 当前基线 **`pinvou3-clean@477e2ba9`**(fork PR #14 merge commit,包含 fork PR #15;`.gitmodules` 追踪 `pinvou3-clean`);durable scheduler 重实现留在 `codex/scheduled-tasks` 备查;备份 `backup/v0.8.65-merge-result`(merge 树)、`backup/pre-reclean-trial-tip`(旧 fork tip `6b3059da`)、`backup/pre-v0.8.65-sync`(旧远程 pinvou3-clean `4518f845`) |
-| fork drift | `8073aa9b` 基线原 drift **+7070/−4930,54 文件**(vs v0.8.65)+ scheduled-lite/C12/P2 后续 **+701/−17,7 文件** + 小时调度锚点 **+109/−10,1 文件**。durable scheduler 的 +13744/−5646 已撤回,仍保持轻 fork(fork-policy §0) |
-| 历史 | v0.8.65 clean re-fork 的 C1–C12 + R + W 主题,以及后续 blocklist/compact/cancellation 修复;2026-07-13 fork PR #9 撤自动 warmup;同日 durable scheduled runtime(原 fork PR #8)以 AUTO-lite 最小补丁重做并撤回重实现(见 §4);2026-07-16 增加 P2 可取消 OAuth 登录与宿主生命周期编排，并补小时调度起点 |
+| submodule 分支 | 当前基线 **`pinvou3-clean@8832469c`**(fork PR #16 merge commit,包含 fork PR #14/#15;`.gitmodules` 追踪 `pinvou3-clean`);durable scheduler 重实现留在 `codex/scheduled-tasks` 备查;备份 `backup/v0.8.65-merge-result`(merge 树)、`backup/pre-reclean-trial-tip`(旧 fork tip `6b3059da`)、`backup/pre-v0.8.65-sync`(旧远程 pinvou3-clean `4518f845`) |
+| fork drift | `8073aa9b` 基线原 drift **+7070/−4930,54 文件**(vs v0.8.65)+ scheduled-lite/C12/P2 后续 **+701/−17,7 文件** + 小时调度锚点 **+109/−10,1 文件** + W13 宿主取消后台 Agent **+75/−0,4 文件**。durable scheduler 的 +13744/−5646 已撤回,仍保持轻 fork(fork-policy §0) |
+| 历史 | v0.8.65 clean re-fork 的 C1–C12 + R + W 主题,以及后续 blocklist/compact/cancellation 修复;2026-07-13 fork PR #9 撤自动 warmup;同日 durable scheduled runtime(原 fork PR #8)以 AUTO-lite 最小补丁重做并撤回重实现(见 §4);2026-07-16 增加 P2 可取消 OAuth 登录、小时调度起点与 W13 宿主批量取消后台 Agent |
 | LLM 暴露 native 工具 | **20 个**(全量注册 − 黑名单;原 23,2026-07-03 纯办公定位再砍 git_status/git_diff/diagnostics)。**tool_search 已禁用**(⚠️2026-07-03 修:v0.8.65 折叠单名后门控名与双旧名对不上一度漏注入,已补裸名,详见 C2)。MCP `mcp_pinvou_present_artifact` 另接,共 21 入口 |
 | fork-guard | 指纹 + 回归测试(`scripts/fork-guard.sh`;**v0.8.65 撤 P pwd-move 2 条**=上游已 harvest;+MKT skill 停用 3 条;**AUTO 重型指纹 18 条撤、AUTO-lite 现为 16 条**);AUTO-lite 定向回归覆盖 automation model/conversation key、小时调度锚点、schema v4/v3 兼容、运行链接、终态保留、engine force_prompt 与 app scheduled Yolo 链路 |
 | system prompt | dump 逐字节稳定;per-turn `<runtime_prompt>` tag + goal continuation 均已 gate |
@@ -176,8 +176,9 @@
   | W9 | ~~read_pdf catch_unwind 防 panic~~ **v0.8.60 被上游 `guard_pdf_extract` harvest**(见 §2.2) |
   | W10 | `EngineConfig.reasoning_effort` 会话建时初始化(不依赖首条 SendMessage);`"off"` 由 app bridge 按 `provider==vllm` 注入 |
   | W12 | `SubAgentSpawnOptions.max_steps` per-spawn 覆盖(`options.max_steps.unwrap_or(self.max_steps)`),registry 的 15/20/30 真生效 |
+  | W13 | `Op::CancelSubAgents` + `SubAgentManager::cancel_all_running`：宿主可在用户停止整个工作流时显式 abort 全部后台 SubAgent；普通 `CancelRequest` 仍只取消前台 turn |
 - **tool_whitelist**(与 C2 blocklist **互补两层,不冲突**):`EngineConfig.tool_whitelist` 通用白名单机制(submodule 字段 + turn_loop `retain`)。blocklist 全局减法(建 catalog 时);tool_whitelist per-session `retain`(turn_loop 最后)。whitelist 在 blocklist 过滤后的集上 retain → **无法重新暴露黑名单工具**。⚠️ **app 层监工用法已删(2026-06-15,对话型监工废弃)**:`supervisor_tool_whitelist()` + `spawn_for_session` 施加 + 死代码 `build_engine_config_for_workflow` 均移除,**机制本身(submodule)保留待用,字段恒 None**;submodule `engine.rs:263` doc 仍有一处指向已删函数的悬空引用,待下次 sync 顺带清。
-- **验证**:L1 subagent scenarios 真 vLLM 跑通(`subagent_compare_3_libs` 并行 3 agent / 487s);W1–W12 forkguard 指纹;行为层仅 W10 `engine_config_locks_critical_fields`
+- **验证**:L1 subagent scenarios 真 vLLM 跑通(`subagent_compare_3_libs` 并行 3 agent / 487s);W1–W13 forkguard 指纹;行为层含 W10 `engine_config_locks_critical_fields`、W13 `forkguard_cancel_all_running_aborts_every_live_agent`
 - 上游 PR:❌ pinvou3 专用(可复用上游 WhaleFlow 基础 crate,暂未迁)
 
 ### app 层 fork(不在 submodule —— override hook / bridge 注入,fork-guard 也守)

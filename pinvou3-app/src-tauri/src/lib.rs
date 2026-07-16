@@ -573,6 +573,7 @@ pub fn run() {
             commands::save_project_config,
             commands::save_agent_overrides,
             commands::cancel_workflow_role,
+            commands::stop_workflow,
             commands::approve_workflow_gate,
             commands::reject_workflow_gate,
             commands::get_workflow_state,

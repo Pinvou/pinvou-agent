@@ -136,7 +136,7 @@
         sessionId: null,
         projectDir: null,
         scenario: null,
-        status: "idle",      // idle | running | complete | blocked
+        status: "idle",      // idle | running | complete | blocked | stopped
         agents: {},          // role_id → { id, name, status, last_gate_verdict, outputs_present, last_run_ts, depends_on }
         cards: [],           // 底部交互卡片队列 [{ cardId, kind:'user_input'|'gate'|'system', resolved, ... }]
         selectedRole: null,  // 右抽屉选中的角色
@@ -3264,6 +3264,8 @@
   // payload: { id: tool_call_id, questions: [{header, id, question, options:[{label, description}]}] }
   listen("chat:user_input_required", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
+    if (state.workflow.run.status === "stopped" &&
+        state.workflow.run.sessionId && p.session_id === state.workflow.run.sessionId) return;
     var questions = p.questions || [];
     if (!Array.isArray(questions) || questions.length === 0) return;
     addChatItem({
@@ -3404,6 +3406,18 @@
     var agents = state.workflow.run.agents;
     agents[roleId] = Object.assign(agents[roleId] || { id: roleId }, patch);
   }
+  function markWorkflowRunStopped() {
+    state.workflow.run.status = "stopped";
+    Object.keys(state.workflow.run.agents || {}).forEach(function (id) {
+      var agent = state.workflow.run.agents[id];
+      if (agent && (agent.status === "running" || agent.status === "reviewing" || agent.status === "briefing")) {
+        agent.status = "stopped";
+      }
+    });
+    (state.workflow.run.cards || []).forEach(function (card) {
+      if (!card.resolved) { card.resolved = true; card.cardState = "cancelled"; }
+    });
+  }
   function mergeFullState(p) {
     var run = state.workflow.run;
     if (p.project_dir) run.projectDir = p.project_dir;
@@ -3430,7 +3444,10 @@
         wave: r.wave, bu: r.bu,   // [B2 E1] 差事分层 + 取头像/配色
       });
     });
-    if (p.all_completed) run.status = "complete";
+    // stop marker 是最终状态。迟到或手动刷新的 full_state 仍可能携带盘上旧的
+    // running/reviewing 状态，不能让已停止的角色卡回跳成“执行中”。
+    if (p.stopped) markWorkflowRunStopped();
+    else if (p.all_completed) run.status = "complete";
   }
   // [2026-06-06] 快照恢复：把前端 run 态挂回一个已存在的工作流 run（app 重启/切会话后）。
   // 拉后端快照(get_workflow_state) → 点亮 run 态(复刻 project_started 结构) → mergeFullState
@@ -3441,7 +3458,8 @@
       if (!snap || !snap.roles || Object.keys(snap.roles).length === 0) return false;
       state.workflow.run = {
         active: true, sessionId: sessionId, projectDir: snap.project_dir || null,
-        scenario: snap.scenario || null, status: snap.all_completed ? "complete" : "running",
+        scenario: snap.scenario || null,
+        status: snap.stopped ? "stopped" : (snap.all_completed ? "complete" : "running"),
         agents: {}, cards: [], selectedRole: null,
       };
       mergeFullState(snap);
@@ -3499,6 +3517,7 @@
   });
   listen("workflow:agent_state_changed", function (e) {
     var p = e.payload || {}; if (!isRunSession(p)) return;
+    if (state.workflow.run.status === "stopped") return;
     applyAgentPatch(p.role_id, { name: p.role_name || p.role_id, status: p.status || "running" });
     notify();
   });
@@ -3506,6 +3525,7 @@
   // payload: { base_role, pages:[{page,status}] }，status ∈ queued|running|done|retrying。
   listen("workflow:fanout", function (e) {
     var p = e.payload || {}; if (!isRunSession(p)) return;
+    if (state.workflow.run.status === "stopped") return;
     if (!state.workflow.run.fanout) state.workflow.run.fanout = {};
     var pages = p.pages || [];
     state.workflow.run.fanout[p.base_role] = { total: pages.length, pages: pages };
@@ -3513,6 +3533,7 @@
   });
   listen("workflow:complete", function (e) {
     var p = e.payload || {}; if (!isRunSession(p)) return;
+    if (state.workflow.run.status === "stopped") return;
     state.workflow.run.status = "complete";
     // [edict-obs] 后端带回成品路径 → 弹成品卡(一键打开 deck)
     if (p.artifact) {
@@ -3522,13 +3543,20 @@
   });
   listen("workflow:blocked", function (e) {
     var p = e.payload || {}; if (!isRunSession(p)) return;
+    if (state.workflow.run.status === "stopped") return;
     state.workflow.run.status = "blocked";
     // 后端 emit 的是 message(+warmup_report)，不是 reason/waiting_roles。
     pushRunCard({ kind: "system", text: "⚙️ 工作流卡住：" + (p.message || p.reason || "未知原因"), resolved: false });
     notify();
   });
+  listen("workflow:stopped", function (e) {
+    var p = e.payload || {}; if (!isRunSession(p)) return;
+    markWorkflowRunStopped();
+    notify();
+  });
   listen("workflow:gate_approval", function (e) {
     var p = e.payload || {}; if (!isRunSession(p)) return;
+    if (state.workflow.run.status === "stopped") return;
     var findings = p.findings || (p.gate_description ? [p.gate_description] : []);
     // 去重:同一角色已有未处理的 gate 卡 → 只更新 findings,不叠新卡(huizou 反复过闸会重复 emit)。
     var dup = (state.workflow.run.cards || []).find(function (c) { return c.kind === "gate" && c.roleId === p.role_id && !c.resolved; });
@@ -3540,6 +3568,7 @@
   // [edict-obs] SubAgent 实时进展(底座每步/每个工具调用自动发)。
   listen("workflow:agent_progress", function (e) {
     var p = e.payload || {}; if (!isRunSession(p)) return;
+    if (state.workflow.run.status === "stopped") return;
     if (!state.workflow.run.progress) state.workflow.run.progress = {};
     var key = p.role_id || p.agent_id;
     if (!key) return;
@@ -3551,6 +3580,7 @@
   // [edict-obs] per-role token 账本快照(每次 LLM 调用后推一次累计值)。
   listen("workflow:token_usage", function (e) {
     var p = e.payload || {}; if (!isRunSession(p)) return;
+    if (state.workflow.run.status === "stopped") return;
     if (!state.workflow.run.tokens) state.workflow.run.tokens = {};
     var key = p.role_id || p.agent_id;
     if (!key) return;
@@ -3565,6 +3595,7 @@
   listen("chat:user_input_required", function (e) {
     var p = e.payload || {};
     if (!state.workflow.run.sessionId || p.session_id !== state.workflow.run.sessionId) return;
+    if (state.workflow.run.status === "stopped") return;
     var qs = p.questions || []; if (!Array.isArray(qs) || !qs.length) return;
     pushRunCard({ kind: "user_input", toolCallId: p.id, questions: qs, resolved: false });
     notify();
@@ -5397,6 +5428,19 @@
       return res;
     } catch (e) { addSystemItem("⚠️ 启动工作流失败: " + e); return null; }
   }
+  // 停止整个 run：后端先落 stop marker 再取消所有后台 SubAgent；返回旧 brief，
+  // 供工作流页打开“修改需求并重新开始”的预填表单。
+  async function stopWorkflowTask(reason) {
+    var sid = state.workflow.run.sessionId;
+    if (!sid) throw new Error("当前没有可停止的工作流");
+    var result = await invoke("stop_workflow", {
+      sessionId: sid,
+      reason: reason || "user_stopped",
+    });
+    markWorkflowRunStopped();
+    notify();
+    return result || {};
+  }
   // 模板页数据源:已发现且 enabled 的工作流(含 ui 块)。失败回空数组(模板页显示空态)。
   async function listWorkflows() {
     try { return (await invoke("list_workflows")) || []; }
@@ -5638,6 +5682,7 @@
     setCurrentPhase: setCurrentPhase,
     // 卡片流工作流
     startWorkflowTask: startWorkflowTask,
+    stopWorkflowTask: stopWorkflowTask,
     listWorkflows: listWorkflows,
     resetWorkflowRun: resetWorkflowRun,
     selectWorkflowRole: selectWorkflowRole,
