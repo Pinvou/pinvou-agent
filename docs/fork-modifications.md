@@ -4,17 +4,17 @@
 > 用途:① sync 后查 patch 存活 ② 交接 / onboarding ③ 上游 PR 定位改动点。
 > 配套:`scripts/fork-guard.sh`(指纹 + 回归测试守卫)、`docs/fork-policy.md`(维护策略 + sync 流程 + PR 状态)。
 >
-> **当前基线**:submodule 工作分支 `codex/hourly-schedule-start` ← `4c7d4d08`(`codex/scheduled-lite`,fork PR #9 tip `8073aa9b` + scheduled-lite/C12 后续补丁)+ 小时调度时间锚点(+109/−10,1 文件;见 §4)。`.gitmodules` 仍追踪 `pinvou3-clean`,合流方式随 gitlink PR 定。
+> **当前基线**:submodule 工作分支 `codex/hourly-schedule-start@a6e56b33` ← `pinvou3-clean@97dd2e72`(fork PR #15 merge commit)+ 小时调度时间锚点(+109/−10,1 文件;见 §4)。基线包含 scheduled-lite/C12/P2 后续补丁(+701/−17,7 文件;2026-07-13 撤回 fork PR #8 durable scheduler 重做,2026-07-14 补稳定 conversation key、Working Set 提醒剥离与终态保留清理,2026-07-16 补可取消 OAuth 登录)。`.gitmodules` 追踪 `pinvou3-clean`。
 
 ---
 
-## 0. 当前状态速览(2026-07-13 · v0.8.65)
+## 0. 当前状态速览(2026-07-16 · v0.8.65)
 
 | 项 | 值 |
 |---|---|
-| submodule 分支 | 工作分支 **`codex/hourly-schedule-start`**(从 `codex/scheduled-lite` tip `4c7d4d08` 切出;`.gitmodules` 追踪 `pinvou3-clean`);durable scheduler 重实现留在 `codex/scheduled-tasks` 备查;备份 `backup/v0.8.65-merge-result`(merge 树)、`backup/pre-reclean-trial-tip`(旧 fork tip `6b3059da`)、`backup/pre-v0.8.65-sync`(旧远程 pinvou3-clean `4518f845`) |
-| fork drift | `8073aa9b` 基线原 drift **+7070/−4930,54 文件**(vs v0.8.65)+ scheduled-lite/C12 后续 **+605/−12,6 文件** + 小时调度锚点 **+109/−10,1 文件**。durable scheduler 的 +13744/−5646 已撤回,仍保持轻 fork(fork-policy §0) |
-| 历史 | v0.8.65 clean re-fork 的 C1–C12 + R + W 主题,以及后续 blocklist/compact/cancellation 修复;2026-07-13 fork PR #9 撤自动 warmup;同日 durable scheduled runtime(原 fork PR #8)以 AUTO-lite 最小补丁重做并撤回重实现(见 §4) |
+| submodule 分支 | 工作分支 **`codex/hourly-schedule-start@a6e56b33`**(从 `pinvou3-clean@97dd2e72` 切出;`.gitmodules` 追踪 `pinvou3-clean`);durable scheduler 重实现留在 `codex/scheduled-tasks` 备查;备份 `backup/v0.8.65-merge-result`(merge 树)、`backup/pre-reclean-trial-tip`(旧 fork tip `6b3059da`)、`backup/pre-v0.8.65-sync`(旧远程 pinvou3-clean `4518f845`) |
+| fork drift | `8073aa9b` 基线原 drift **+7070/−4930,54 文件**(vs v0.8.65)+ scheduled-lite/C12/P2 后续 **+701/−17,7 文件** + 小时调度锚点 **+109/−10,1 文件**。durable scheduler 的 +13744/−5646 已撤回,仍保持轻 fork(fork-policy §0) |
+| 历史 | v0.8.65 clean re-fork 的 C1–C12 + R + W 主题,以及后续 blocklist/compact/cancellation 修复;2026-07-13 fork PR #9 撤自动 warmup;同日 durable scheduled runtime(原 fork PR #8)以 AUTO-lite 最小补丁重做并撤回重实现(见 §4);2026-07-16 增加 P2 可取消 OAuth 登录与宿主生命周期编排，并补小时调度起点 |
 | LLM 暴露 native 工具 | **20 个**(全量注册 − 黑名单;原 23,2026-07-03 纯办公定位再砍 git_status/git_diff/diagnostics)。**tool_search 已禁用**(⚠️2026-07-03 修:v0.8.65 折叠单名后门控名与双旧名对不上一度漏注入,已补裸名,详见 C2)。MCP `mcp_pinvou_present_artifact` 另接,共 21 入口 |
 | fork-guard | 指纹 + 回归测试(`scripts/fork-guard.sh`;**v0.8.65 撤 P pwd-move 2 条**=上游已 harvest;+MKT skill 停用 3 条;**AUTO 重型指纹 18 条撤、AUTO-lite 现为 16 条**);AUTO-lite 定向回归覆盖 automation model/conversation key、小时调度锚点、schema v4/v3 兼容、运行链接、终态保留、engine force_prompt 与 app scheduled Yolo 链路 |
 | system prompt | dump 逐字节稳定;per-turn `<runtime_prompt>` tag + goal continuation 均已 gate |
@@ -22,7 +22,7 @@
 
 ---
 
-## 1. fork 结构(C1–C12 + AUTO + R + W 逻辑主题)
+## 1. fork 结构(C1–C12 + P1–P2 + AUTO-lite + R + W 逻辑主题)
 
 > 逻辑分组,对应主题 commit。看某文件 fork-distinct 改动:`git -C DeepSeek-TUI diff v0.8.60..HEAD -- <file>`。
 > 冲突易出血优先级(sync review 顺序):**prompts.rs(C5+C7) > turn_loop.rs(C7) > subagent/mod.rs(W) > tool_catalog.rs(C2) > project_context.rs(C5)**。
@@ -47,6 +47,12 @@
 - **改动**:上游 `list_mcp_resources` / `list_mcp_resource_templates` 注入条件是 `!self.config.servers.is_empty()`——只要注册任何 MCP server 就注入,与是否真暴露 resources 无关。pinvou3 的 MCP server 全 tools-only(present_artifact/gongwen/weather/iwencai 的 `resources/list` 均返回 `-32601`),这两个元工具**永久空转**、纯占工具槽+token、52 session 零调用。改为按 `all_resources()` / `all_resource_templates()` 非空**分别 gate**,与下方 `mcp_read_resource`(`!resources.is_empty()`)一致
 - **测试**:`mcp::tests` 全过(P1 不破坏);fork-guard 指纹 `P1 list_mcp_resources 按 resources 非空 gate`
 - 上游 PR:✅ **可提**(通用优化:有 server 但零 resources 时不该注入 list 工具)
+
+### P2 `mcp/oauth` 可取消的 OAuth 登录(2026-07-16)
+- **文件**:`crates/tui/src/mcp/oauth.rs`;宿主接线在 `pinvou3-app/src-tauri/src/commands.rs` 与工具商店前端
+- **改动**:保留原 `perform_oauth_login_for_server` API,新增接收 `CancellationToken` 的 `perform_oauth_login_for_server_with_cancel`。取消会 drop 正在执行的 OAuth future,从而触发 `CallbackServerGuard::drop` / `Server::unblock`,并在返回前停止旧回调监听。宿主按 `tool_id + request_id` 编排:新授权先取消并等待旧授权退出;显式取消也等待底座 future 退出;取消早于 start 注册的竞态由 pending cancellation 兜住。前端写配置阶段不可取消,进入浏览器授权阶段才开放取消;UI 超时先终止后端再读取真实 token,解决超时/回调同边界的乱序状态。
+- **测试**:`forkguard_cancellable_oauth_drops_in_flight_flow_before_returning`;`forkguard_marketplace_oauth_{replacement_waits_for_previous_flow,cancel_waits_until_flow_finishes,remembers_cancel_before_register}`;工具商店浏览器旅程覆盖安装阶段不可取消、请求 ID 对齐与取消后待授权态
+- 上游 PR:✅ **可提**(底座可取消 API 属通用能力;宿主编排与 UI 留 pinvou3)
 
 ### AUTO-lite `automation` host executor 最小契约(2026-07-14,替代原 durable scheduler)
 - **文件**:`crates/tui/src/automation_manager.rs`、`crates/tui/src/task_manager.rs`、`crates/tui/src/tools/automation.rs`、`crates/tui/src/core/engine/turn_loop.rs`、`crates/tui/src/core/engine/tests.rs`

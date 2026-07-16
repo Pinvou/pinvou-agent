@@ -166,8 +166,9 @@ def main():
         "pptx",
         "gongwen",
         "yuandian-mcp",
+        "patsnap-search",
     }
-    print("✅ manifest: 7 个可安装 MCP 清单完整且目录 ID 一致")
+    print("✅ manifest: 8 个可安装 MCP 清单完整且目录 ID 一致")
 
     expected = {
         "weather": {"get_weather"},
@@ -252,6 +253,29 @@ def main():
         "oauth_resource": "https://open.chineselaw.com/mcp",
     }]
     print("✅ yuandian-mcp: 唯一远程端点 + OAuth scope/resource 清单契约")
+
+    patsnap = manifests["patsnap-search"]
+    assert patsnap["mcp_tools"] == ["patsnap_search", "patsnap_fetch"] and not patsnap["command"]
+    assert patsnap["servers"] == [{
+        "name": "patsnap-search",
+        "url": "https://connect.zhihuiya.com/2b0355/logic-mcp",
+    }]
+    assert patsnap["validate_on_install"] is True
+    assert patsnap["secret_headers"] == [{
+        "header": "Authorization",
+        "scheme": "Bearer",
+        "source_key": "PATSNAP_API_KEY",
+        "provider": "patsnap",
+        "required": True,
+    }]
+    assert patsnap["config_fields"] == [{
+        "key": "PATSNAP_API_KEY",
+        "label": "智慧芽 API Key",
+        "required": True,
+        "target": "bearer",
+        "secret": True,
+    }]
+    print("✅ patsnap-search: 唯一远程端点 + bearer secret + 安装校验契约")
 
     print("\n✅ ALL MCP SERVER CONTRACTS PASS")
 

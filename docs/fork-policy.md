@@ -1,14 +1,14 @@
 # pinvou3 对 DeepSeek-TUI 底座的 fork 维护策略
 
-> 创建 2026-05-28 · 最后更新 2026-07-16(HOURLY 稳定时间锚点,基线为 scheduled-lite tip `4c7d4d08`)
+> 创建 2026-05-28 · 最后更新 2026-07-16(HOURLY 稳定时间锚点 + P2 可取消 OAuth 登录,基线为 `pinvou3-clean@97dd2e72` 后续集成)
 > 适用:每次新增 fork patch + 每次跟进上游 sync
 > 配套:`scripts/fork-guard.sh`、`bin/dump_system_prompt.rs`、`docs/fork-modifications.md`(现状清单 + 验证 checklist)
 
 ## 0. 现状
 
-- DeepSeek-TUI 是 `h3c-hexin/DeepSeek-TUI` fork(submodule,工作分支 **`codex/hourly-schedule-start`** ← scheduled-lite tip `4c7d4d08`,upstream **v0.8.65** clean re-fork 系;`.gitmodules` 追踪 `pinvou3-clean`,合流方式随 gitlink PR 定;durable scheduler 旧 tip `5f5a58db` 已撤回,重实现留 `codex/scheduled-tasks` 备查;备份 `backup/v0.8.65-merge-result` + `backup/pre-reclean-trial-tip`)
-- fork drift = `8073aa9b` 基线 **+7070/−4930,54 文件**(vs v0.8.65)+ scheduled-lite/C12 后续 **+605/−12,6 文件** + 小时调度锚点 **+109/−10,1 文件**。新增量包含 host executor 契约、稳定 conversation key、强制审批回归、Working Set 提醒剥离、终态保留清理与测试;durable scheduler 的 +13744/−5646 已于 2026-07-13 撤回(见 fork-modifications §4),仍在软上限内
-- fork 结构 = **C1–C12 + AUTO-lite + R + W 逻辑主题**(AUTO-lite = host executor 最小契约,W = 三省六部工作流层),详见 `docs/fork-modifications.md` §1
+- DeepSeek-TUI 是 `h3c-hexin/DeepSeek-TUI` fork(submodule,工作分支 **`codex/hourly-schedule-start@a6e56b33`** ← `pinvou3-clean@97dd2e72` = fork PR #15 merge commit,upstream **v0.8.65** clean re-fork 系;`.gitmodules` 追踪 `pinvou3-clean`;durable scheduler 旧 tip `5f5a58db` 已撤回,重实现留 `codex/scheduled-tasks` 备查;备份 `backup/v0.8.65-merge-result` + `backup/pre-reclean-trial-tip`)
+- fork drift = `8073aa9b` 基线 **+7070/−4930,54 文件**(vs v0.8.65)+ scheduled-lite/C12/P2 后续 **+701/−17,7 文件** + 小时调度锚点 **+109/−10,1 文件**。新增量包含 host executor 契约、稳定 conversation key、强制审批回归、Working Set 提醒剥离、终态保留清理、可取消 OAuth API、小时调度锚点与测试;durable scheduler 的 +13744/−5646 已于 2026-07-13 撤回(见 fork-modifications §4),仍在软上限内
+- fork 结构 = **C1–C12 + P1–P2 + AUTO-lite + R + W 逻辑主题**(AUTO-lite = host executor 最小契约,W = 三省六部工作流层),详见 `docs/fork-modifications.md` §1
 - 路线:轻 fork 优先——scheduler/持久化用底座原生实现,fork 只补 host 消费接口与安全语义;靠工程化(指纹 + 测试 + dump diff + 文档)控制维护成本
 
 ## 1. 总则

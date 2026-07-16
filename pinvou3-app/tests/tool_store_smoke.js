@@ -26,9 +26,15 @@ function injectSource() {
   return `(function(){
     const TOOL_META={
       weather:['高德天气',[]],iwencai:['同花顺问财',[]],qcc:['企查查',[]],
+      'patsnap-search':['智慧芽专利&文献融合检索',[]],
+      'yuandian-mcp':['华宇元典法律数据',[]],
       obsidian:['Obsidian 知识库',[]],pptx:['PPT 生成',[]],gongwen:['公文写作',['government-writing']]
     };
-    const state=window.__TOOL_STORE_TEST__={installed:{},skills:{visualizer:false},connected:{feishu:false,wecom:false,dingtalk:false,eip:false,zhidao:false},calls:[],obsidianChecks:0};
+    const state=window.__TOOL_STORE_TEST__={
+      installed:{},skills:{visualizer:false},connected:{feishu:false,wecom:false,dingtalk:false,eip:false,zhidao:false},
+      oauthAuth:{},oauthRequests:{},finishOAuthInstall:null,calls:[],obsidianChecks:0,composerChanged:0
+    };
+    window.addEventListener('pinvou:tools-changed',()=>{state.composerChanged++;});
     window.__TAURI_EVENT_HANDLERS__={};
     const tools=()=>Object.entries(TOOL_META).map(([id,[name,companions]])=>({id,name,description:'test',version:'1.0.0',icon:'',category:'test',installed:!!state.installed[id],companion_skills:companions}));
     const skills=()=>[{id:'government-writing',title:'党政机关公文写作',installed:!!state.installed.gongwen,user_uploaded:false},{id:'visualizer',title:'数据分析可视化',installed:!!state.skills.visualizer,user_uploaded:false}];
@@ -49,9 +55,28 @@ function injectSource() {
         case 'get_active_persona': return Promise.resolve(null);
         case 'detect_local_vllm_setup': return Promise.resolve({eligible:false});
         case 'list_marketplace_tools': return Promise.resolve(tools());
+        case 'get_marketplace_tool_auth_status': {
+          const installed=!!state.installed[args.toolId];
+          return Promise.resolve(state.oauthAuth[args.toolId] || {
+            installed,
+            mcp_configured: installed,
+            oauth_required: args.toolId==='yuandian-mcp',
+            oauth_token_present: false,
+            status: installed ? 'config_installed_auth_pending' : 'not_installed',
+            message: installed ? '已写入 MCP 配置，但尚未完成元典 OAuth 授权。' : '尚未连接华宇元典法律数据。',
+          });
+        }
         case 'list_marketplace_skills': return Promise.resolve(skills());
-        case 'install_marketplace_tool': state.installed[args.toolId]=true; return Promise.resolve(null);
+        case 'install_marketplace_tool':
+          if(args.toolId==='yuandian-mcp') return new Promise(resolve=>{state.finishOAuthInstall=()=>{state.installed[args.toolId]=true;state.finishOAuthInstall=null;resolve(null);};});
+          state.installed[args.toolId]=true; return Promise.resolve(null);
         case 'uninstall_marketplace_tool': state.installed[args.toolId]=false; return Promise.resolve(null);
+        case 'start_marketplace_tool_oauth_login': return new Promise(resolve=>{state.oauthRequests[args.requestId]={toolId:args.toolId,resolve};});
+        case 'cancel_marketplace_tool_oauth_login': {
+          const request=state.oauthRequests[args.requestId];
+          if(request&&request.toolId===args.toolId){delete state.oauthRequests[args.requestId];request.resolve({status:'cancelled',message:'已取消等待浏览器授权',server_name:args.toolId});}
+          return Promise.resolve(true);
+        }
         case 'install_marketplace_skill': state.skills[args.skillId]=true; return Promise.resolve(null);
         case 'uninstall_marketplace_skill': state.skills[args.skillId]=false; return Promise.resolve(null);
         case 'detect_obsidian': state.obsidianChecks++; return Promise.resolve(state.obsidianChecks===1?{state:'no_vault'}:{state:'ok',vault_path:'/tmp/test-vault'});
@@ -140,6 +165,19 @@ async function closeDetail(page, title) {
     rec(`${query} 经 UI 安装`,installed);
   }
 
+  await action(page,'智慧芽专利&文献','配置');
+  rec('智慧芽安装前展示 API Key 配置',await page.evaluate(()=>{
+    const input=document.querySelector('input[type="password"][placeholder="粘贴你的智慧芽 API Key"]');
+    return document.body.innerText.includes('填写智慧芽 API Key')&&!!input;
+  }));
+  const patsnapInput=await page.$('input[type="password"][placeholder="粘贴你的智慧芽 API Key"]');
+  await patsnapInput.type('patsnap-test-token');
+  await clickExact(page,'连接'); await sleep(260); await dismiss(page);
+  rec('智慧芽经 Header 凭据配置连接',await page.evaluate(()=>{
+    const call=[...window.__TOOL_STORE_TEST__.calls].reverse().find(x=>x.cmd==='install_marketplace_tool'&&x.args.toolId==='patsnap-search');
+    return window.__TOOL_STORE_TEST__.installed['patsnap-search']&&call?.args?.config?.PATSNAP_API_KEY==='patsnap-test-token';
+  }));
+
   await action(page,'Obsidian 知识库','安装');
   rec('Obsidian 缺库时先展示引导',await page.evaluate(()=>document.body.innerText.includes('还没有笔记库')));
   await clickExact(page,'我已新建，重新检测'); await sleep(250); await dismiss(page);
@@ -152,6 +190,23 @@ async function closeDetail(page, title) {
 
   await action(page,'高德天气','卸载'); await dismiss(page);
   rec('MCP 经 UI 卸载并刷新状态',await page.evaluate(()=>!window.__TOOL_STORE_TEST__.installed.weather));
+
+  const composerChangedBeforeYuandian = await page.evaluate(()=>window.__TOOL_STORE_TEST__.composerChanged);
+  await action(page,'华宇元典法律数据','连接');
+  rec('元典写配置阶段不可取消',await page.evaluate(()=>document.body.innerText.includes('正在写入 MCP 配置')&&![...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='取消')));
+  await page.evaluate(()=>window.__TOOL_STORE_TEST__.finishOAuthInstall()); await sleep(180);
+  rec('元典 OAuth loading 弹窗可取消',await page.evaluate(()=>document.body.innerText.includes('正在连接元典法律')&&[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='取消')));
+  await clickExact(page,'取消'); await sleep(180);
+  rec('元典取消命令与授权请求使用同一 requestId',await page.evaluate(()=>{
+    const calls=window.__TOOL_STORE_TEST__.calls;
+    const start=[...calls].reverse().find(x=>x.cmd==='start_marketplace_tool_oauth_login');
+    const cancel=[...calls].reverse().find(x=>x.cmd==='cancel_marketplace_tool_oauth_login');
+    return !!start&&!!cancel&&start.args.toolId===cancel.args.toolId&&start.args.requestId===cancel.args.requestId;
+  }));
+  rec('元典取消授权后不显示已连接',await page.evaluate(()=>!document.body.innerText.includes('已连接「华宇元典法律数据」')));
+  rec('元典取消授权后保持待授权态',await page.evaluate(()=>window.__TOOL_STORE_TEST__.installed['yuandian-mcp']&&[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='重新授权')));
+  rec('元典未授权不通知 composer 刷新',await page.evaluate(before=>window.__TOOL_STORE_TEST__.composerChanged===before, composerChangedBeforeYuandian));
+  await dismiss(page);
 
   const connectors=[
     ['飞书（Lark）','feishu','feishu:connected',['feishu_ensure_cli','feishu_connect_begin']],
@@ -170,7 +225,10 @@ async function closeDetail(page, title) {
   }
 
   const calls=await page.evaluate(()=>window.__TOOL_STORE_TEST__.calls);
-  rec('安装调用只传工具 ID/空配置，不写真实凭据',calls.filter(x=>x.cmd==='install_marketplace_tool').every(x=>x.args&&x.args.toolId&&!x.args.config));
+  rec('仅智慧芽安装调用携带用户配置',calls.filter(x=>x.cmd==='install_marketplace_tool').every(x=>{
+    if(x.args.toolId==='patsnap-search')return Object.keys(x.args.config||{}).join(',')==='PATSNAP_API_KEY';
+    return x.args&&x.args.toolId&&!x.args.config;
+  }));
   rec('页面无未处理 JavaScript 异常',errors.length===0,errors.slice(0,2).join(' | '));
 
   await browser.close();
