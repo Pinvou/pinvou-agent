@@ -1015,10 +1015,6 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               </div>
               <SField isDark={isDark} label={t.customModelName} type="text" value={model} onChange={e => setModel(e.target.value)} />
               <SField isDark={isDark} label={t.customBaseUrl} type="text" value={baseUrl} onChange={e => setBaseUrl(e.target.value)} />
-              <div className="grid grid-cols-2 gap-3">
-                <SField isDark={isDark} label={t.modelContextWindow} type="number" min="1" step="1" value={contextWindow} onChange={e => setContextWindow(e.target.value)} />
-                <SField isDark={isDark} label={t.modelMaxOutput} type="number" min="1" step="1" value={maxOutput} onChange={e => setMaxOutput(e.target.value)} />
-              </div>
               <div>
                 <span className={`text-[14px] block mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.customApiKey}</span>
                 <div className={`mb-2 text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{keyStatusText}</div>
