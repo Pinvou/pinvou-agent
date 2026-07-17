@@ -149,6 +149,42 @@ const RELEASE_ENV_DEFAULTS: &[(&str, &str)] = &[
     ("XMODIFIERS", "@im=fcitx"),
 ];
 
+const WEBKIT_RENDERING_OVERRIDE_KEYS: &[&str] = &[
+    "WEBKIT_DISABLE_COMPOSITING_MODE",
+    "WEBKIT_DISABLE_DMABUF_RENDERER",
+    "WEBKIT_DMABUF_RENDERER_FORCE_SHM",
+    "WEBKIT_FORCE_DMABUF_RENDERER",
+    "WEBKIT_WEB_RENDER_DEVICE_FILE",
+];
+
+fn should_force_webkit_dmabuf_shm(
+    is_linux_arm64_nvidia: bool,
+    has_explicit_rendering_override: bool,
+) -> bool {
+    is_linux_arm64_nvidia && !has_explicit_rendering_override
+}
+
+fn configure_webkit_rendering_env() {
+    use std::env;
+
+    let has_explicit_rendering_override = WEBKIT_RENDERING_OVERRIDE_KEYS
+        .iter()
+        .any(|key| env::var_os(key).is_some());
+    let is_linux_arm64_nvidia = cfg!(all(target_os = "linux", target_arch = "aarch64"))
+        && std::path::Path::new("/proc/driver/nvidia/version").is_file();
+
+    if should_force_webkit_dmabuf_shm(
+        is_linux_arm64_nvidia,
+        has_explicit_rendering_override,
+    ) {
+        // GB10/NVIDIA + WebKitGTK 2.52 会在 DMA-BUF/GBM 路径调用
+        // DRM_IOCTL_MODE_CREATE_DUMB 并被驱动拒绝。FORCE_SHM 仅把 WebKit
+        // renderer buffer 传输改为共享内存，不关闭 compositing，因此透明
+        // 桌伴动画仍能正确清帧。显式外部配置始终优先。
+        env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1");
+    }
+}
+
 /// 为 release 安装包（.deb 双击启动场景）注入 run-dev.sh 里集中处理的运行时 env。
 /// dev 启动走 run-dev.sh 已经 export 过的不会被覆盖（var_os().is_none() 守门）。
 fn ensure_release_env() {
@@ -164,6 +200,7 @@ fn ensure_release_env() {
             env::set_var("HOME", profile);
         }
     }
+    configure_webkit_rendering_env();
     for (k, v) in RELEASE_ENV_DEFAULTS {
         if env::var_os(k).is_none() {
             env::set_var(k, v);
@@ -203,6 +240,16 @@ fn ensure_release_env() {
 
 #[cfg(test)]
 mod release_env_contract {
+    #[test]
+    fn arm64_nvidia_uses_shm_without_disabling_compositing() {
+        assert!(super::should_force_webkit_dmabuf_shm(true, false));
+        assert!(
+            !super::should_force_webkit_dmabuf_shm(true, true),
+            "用户显式配置的 WebKit 渲染策略必须优先"
+        );
+        assert!(!super::should_force_webkit_dmabuf_shm(false, false));
+    }
+
     #[test]
     fn hardware_compositing_is_not_disabled_by_default() {
         assert!(
