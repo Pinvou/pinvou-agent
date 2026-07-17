@@ -5008,16 +5008,22 @@
     var rawCategory = (err && err.category) || "";
     var rawStage = (err && err.stage) || fallbackStage || "recording";
     var rawMessage = String((err && (err.message || err.toString && err.toString())) || err || "");
+    var constraint = String((err && err.constraint) || "");
     if (name === "NotAllowedError" || name === "SecurityError" || rawCategory === "permission_denied") {
       return { category: "permission_denied", stage: "permission", message: "麦克风权限被拒绝，请在系统设置中允许本应用访问麦克风后重试。" };
     }
     if (name === "NotFoundError" || name === "DevicesNotFoundError" || rawCategory === "device_unavailable") {
       return { category: "device_unavailable", stage: "device", message: "未检测到可用麦克风，请检查录音设备是否启用或被占用。" };
     }
-    // WebKitGTK 在没有可用录音源时可能报 OverconstrainedError / "Invalid constraint"，
-    // 而非标准的 NotFoundError。对用户而言仍是“没有可用麦克风”。
+    // WebKitGTK 可能把不支持的音频约束报为 OverconstrainedError / "Invalid constraint"。
+    // 这和没有录音设备不同：设备可能存在，只是不支持 channelCount、降噪等配置。
     if (name === "OverconstrainedError" || name === "ConstraintNotSatisfiedError" || /invalid constraint/i.test(rawMessage)) {
-      return { category: "device_unavailable", stage: "device", message: "无法启动录音：未检测到可用麦克风。请连接或启用麦克风后重试。" };
+      return {
+        category: "constraint_unsupported",
+        stage: "device",
+        message: "无法启动录音：当前麦克风或 WebView 不支持所需的录音配置。请重试；若仍失败，请检查麦克风设置或更新系统组件。",
+        diagnostic: constraint ? "unsupported media constraint: " + constraint : "unsupported media constraint",
+      };
     }
     if (rawCategory === "empty_result") {
       return { category: "empty_result", stage: rawStage, message: "未识别到语音内容，请靠近麦克风后重试。" };
@@ -5174,7 +5180,7 @@
         stage: normalized.stage,
         completedAt: Date.now(),
       });
-      emitVoiceDiagnostic(normalized.stage, "error", normalized.category, normalized.message, normalized.category);
+      emitVoiceDiagnostic(normalized.stage, "error", normalized.diagnostic || normalized.category, normalized.message, normalized.category);
     } finally {
       if (activeVoiceInput === session) activeVoiceInput = null;
     }
@@ -5315,7 +5321,7 @@
         stage: normalized.stage,
         completedAt: Date.now(),
       });
-      emitVoiceDiagnostic(normalized.stage, "error", normalized.category, normalized.message, normalized.category);
+      emitVoiceDiagnostic(normalized.stage, "error", normalized.diagnostic || normalized.category, normalized.message, normalized.category);
     }
   }
 
@@ -5348,11 +5354,12 @@
   function runVoiceInputDebugAssertions() {
     var denied = normalizeVoiceError({ name: "NotAllowedError" });
     var noDevice = normalizeVoiceError({ name: "NotFoundError" });
-    var invalidConstraint = normalizeVoiceError({ name: "OverconstrainedError", message: "Invalid constraint" });
+    var unsupportedConstraint = normalizeVoiceError({ name: "OverconstrainedError", message: "Invalid constraint", constraint: "channelCount" });
     var mismatch = normalizeVoiceError({ category: "context_mismatch" });
     console.assert(denied.category === "permission_denied", "permission error classified");
     console.assert(noDevice.category === "device_unavailable", "device error classified");
-    console.assert(invalidConstraint.message === "无法启动录音：未检测到可用麦克风。请连接或启用麦克风后重试。", "invalid constraint classified");
+    console.assert(unsupportedConstraint.category === "constraint_unsupported", "unsupported constraint classified");
+    console.assert(unsupportedConstraint.diagnostic === "unsupported media constraint: channelCount", "unsupported constraint diagnostic");
     console.assert(mismatch.stage === "writeback", "context mismatch classified");
     console.assert(appendVoiceText("草稿", "识别文本") === "草稿\n识别文本", "voice text appended");
     return true;
