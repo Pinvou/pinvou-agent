@@ -36,11 +36,13 @@ mod monitor;
 mod notifications;
 mod os;
 pub mod personas;
+mod pet_window;
 mod pinvou_review;
 mod process;
 mod remote_control;
 mod scheduled_executor;
 mod scheduled_tasks;
+mod selected_pet;
 pub mod super_permission;
 mod telemetry;
 mod timing;
@@ -347,6 +349,10 @@ pub fn run() {
             app.handle().manage(monitor_state);
             app.handle()
                 .manage(notifications::NotificationState::default());
+            app.handle()
+                .manage(pet_window::PetNavigationState::default());
+            app.handle().manage(pet_window::PetReplyState::default());
+            app.handle().manage(selected_pet::SelectedPetStore::load());
 
             // CLI 连接器连接编排状态(按连接器 id 存长驻子进程 PID + 取消标志),
             // 飞书 / 企微共用,供 *_connect_begin / *_cancel 用。
@@ -421,7 +427,18 @@ pub fn run() {
                 std::thread::spawn(move || seed_web_template(web_tpl_src));
             }
 
+            // 桌宠:settings.json 里 pet.enabled 为真时随主窗口一起拉起。
+            pet_window::spawn_if_enabled(app.handle());
+
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // 主窗口销毁 → 一并关掉桌宠,否则只剩宠物窗口时 app 不退出。
+            if window.label() == "main" {
+                if let tauri::WindowEvent::Destroyed = event {
+                    pet_window::close_with_main(window.app_handle());
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::chat,
@@ -547,6 +564,19 @@ pub fn run() {
             commands::open_artifact_window,
             detach::open_detached_window,
             detach::begin_detach_drag,
+            pet_window::set_pet_enabled,
+            pet_window::show_pet_context_menu,
+            pet_window::hide_pet_context_menu,
+            pet_window::get_pet_scale,
+            pet_window::set_pet_scale,
+            pet_window::set_pet_activity_visible,
+            pet_window::save_pet_position,
+            pet_window::open_main_from_pet,
+            pet_window::take_pet_navigation,
+            pet_window::queue_pet_reply,
+            pet_window::take_pet_reply,
+            selected_pet::get_selected_pet,
+            selected_pet::set_selected_pet,
             commands::open_external_url,
             commands::ingest_file,
             commands::detect_system_tools,

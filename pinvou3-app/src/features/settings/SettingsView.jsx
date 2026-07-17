@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom';
 import { Archive, Briefcase, Check, ChevronDown, Cpu, Database, Edit2, FileText, Lightbulb, MessageSquare, MoreHorizontal, Paperclip, Plus, RefreshCw, Search, Smartphone, Sparkles, Store, Trash2, User, Video, Wrench, X, Zap } from '../../components/icons.jsx';
 import { ArchivedDeleteConfirmDialog } from '../../components/layout/NavigationComponents.jsx';
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
+import PetSettingsSection from '../pet/PetSettingsSection.jsx';
+import { DEFAULT_PET_ID } from '../pet/pet-registry.js';
 import { bridge } from '../../hooks/useBridge.js';
 import { formatSessionDate } from '../../shared/date-utils.js';
 import { visibleUserModels } from '../../shared/model-options.js';
@@ -1124,7 +1126,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       );
     };
 
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, searchCredential, searchKeyAction, searchHasSavedKey, onKeepSearchApiKey, onReplaceSearchApiKey, onDeleteSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onConfirmSearchConfig, onMemoryEnabledChange, searchNeedsRestart, languageNeedsRestart, bs, t, onRestoreArchived, onDeleteArchived, updateFocusTick }) => {
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, searchCredential, searchKeyAction, searchHasSavedKey, onKeepSearchApiKey, onReplaceSearchApiKey, onDeleteSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, searchNeedsRestart, languageNeedsRestart, bs, t, onRestoreArchived, onDeleteArchived, updateFocusTick }) => {
       const isDark = activeTheme === 'dark';
       const [editingModel, setEditingModel] = useState(null);
       const modelEnvLocked = (bs && bs.effectiveModelConfig && bs.effectiveModelConfig.env_overrides) || [];
@@ -1331,6 +1333,41 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   onMemoryEnabledChange={onMemoryEnabledChange}
                 />
               )}
+
+              <SCard isDark={isDark} title="桌伴公仔">
+                {(() => {
+                  const petEnabled = !!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled);
+                  return (
+                    <>
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="min-w-0">
+                          <div className={`text-[14px] font-medium ${isDark ? 'text-[#E8EAED]' : 'text-[#1F1F1F]'}`}>
+                            {petEnabled ? '已启用' : '已关闭'}
+                          </div>
+                          <div className={`mt-1 text-[13px] leading-relaxed ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
+                            开启后，桌面上会出现一只常驻小公仔，随 PINVOU 的思考、工具调用和任务结果切换动作。可直接拖动摆放位置，点一下有惊喜。
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => onPetEnabledChange && onPetEnabledChange(!petEnabled)}
+                          role="switch"
+                          aria-checked={petEnabled}
+                          title={petEnabled ? '关闭公仔' : '开启公仔'}
+                          className={`shrink-0 w-12 h-7 rounded-full p-1 flex items-center transition-colors ${petEnabled ? 'justify-end bg-[#0B57D0]' : `justify-start ${isDark ? 'bg-[#3C4043]' : 'bg-[#DADCE0]'}`}`}
+                        >
+                          <span className="block w-5 h-5 rounded-full bg-white shadow" />
+                        </button>
+                      </div>
+                      <PetSettingsSection
+                        isDark={isDark}
+                        enabled={petEnabled}
+                        selectedPetId={(bs && bs.selectedPet) || DEFAULT_PET_ID}
+                        onSelect={(id) => (bridge.available ? bridge.setSelectedPet(id) : Promise.resolve())}
+                      />
+                    </>
+                  );
+                })()}
+              </SCard>
 
               <SCard isDark={isDark} title={t.modelBackend}>
                 <div className="space-y-4">
