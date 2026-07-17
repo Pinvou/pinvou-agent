@@ -100,6 +100,19 @@
     marked.setOptions({ gfm: true, breaks: true, headerIds: false, mangle: false });
   }
 
+  // The pet is a separate WebView and must not own a second copy of the main
+  // application state. Keep only the renderer used by its activity cards and
+  // return before chat listeners, session loading, polling, or update checks.
+  const locationSearch = String((window.location && window.location.search) || "");
+  const isPetWindow = /(?:^|[?&])window=pet(?:&|$)/.test(locationSearch);
+  if (isPetWindow) {
+    window.TauriBridge = {
+      available: false,
+      renderMarkdown: renderMarkdown,
+    };
+    return;
+  }
+
   // ── State ────────────────────────────────────────────────────────
   var state = {
     sessions: [],
@@ -133,6 +146,7 @@
     monitor: null,
     backendOnline: null, // null=checking, true, false
     settings: null,
+    selectedPet: "lingling",
     memory: {
       loading: false,
       error: null,
@@ -291,6 +305,7 @@
   var itemIdSeq = 0;
   var toolMeta = {};       // id → { name, args }
   var shellNotifyTimer = null;
+  var shellPollState = Object.create(null); // session_id → { timer, inFlight, waitBudget }
   // 上下文行口径保护：TurnComplete 的 usage.input_tokens 是本轮所有请求的累加
   // （计费口径）。只有单请求的"干净轮"该值才等于当前上下文占用；本轮一旦出现
   // 工具调用/重试/压缩（= 多请求），就跳过这次 tokens 更新，保留上一个准确值。
@@ -705,6 +720,8 @@
     if (!buf || (opts && opts.fresh)) buf = sessionStates[id] = freshBuffer();
     touchSessionBuffer(id, buf, id.indexOf("sched-") === 0);
     loadWorkingSetFrom(buf);
+    state.artifacts = filterSessionArtifacts(state.artifacts, id);
+    scheduleShellPoll(id, true);
   }
   // 在指定 session 的工作集上跑一段【同步】逻辑。sid 是 active → 直接跑(零行为变化);
   // 否则临时切到该 buffer 跑完再切回(期间不 notify)。
@@ -2562,8 +2579,173 @@
         state.chatItems[i].success = success;
         state.chatItems[i].state = success ? "done" : "failed";
         delete state.chatItems[i]._terminalParser;
-        break;
+        return state.chatItems[i];
       }
+    }
+    return null;
+  }
+
+  function isShellExecutionTool(name) {
+    return ["exec_shell", "exec_shell_wait", "exec_wait", "task_shell_start", "task_shell_wait", "shell"].indexOf(name) >= 0;
+  }
+
+  function utf8Length(text) {
+    try { return new TextEncoder().encode(String(text || "")).length; }
+    catch (_) { return String(text || "").length; }
+  }
+
+  // Shell snapshots are a tail view, not an append-only byte stream. Normalize
+  // terminal control sequences and state omissions explicitly instead of
+  // pretending the visible tail is the complete log.
+  function normalizeTerminalTail(text) {
+    var value = String(text || "")
+      .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+      .replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, "");
+    var out = [];
+    value.split("\n").forEach(function (line) {
+      // After splitting on LF, a normal Windows CRLF line still ends in CR.
+      // Remove that delimiter first; only an *internal* CR means a terminal
+      // progress line overwrote earlier content on the same row.
+      var visible = line.endsWith("\r") ? line.slice(0, -1) : line;
+      var overwriteAt = visible.lastIndexOf("\r");
+      if (overwriteAt >= 0) visible = visible.slice(overwriteAt + 1);
+      while (visible.indexOf("\x08") >= 0) {
+        visible = visible.replace(/[^\x08]\x08/g, "").replace(/^\x08+/, "");
+      }
+      out.push(visible);
+    });
+    return out.join("\n");
+  }
+
+  function formatShellSnapshot(job) {
+    function section(raw, total, label) {
+      raw = String(raw || "");
+      var visibleRaw = raw.replace(/^\.\.\.\s*/, "");
+      var omitted = /^\.\.\./.test(raw) || Number(total || 0) > utf8Length(visibleRaw);
+      var body = normalizeTerminalTail(visibleRaw);
+      if (omitted) body = "[中间" + label + "输出已省略]\n" + body;
+      return body;
+    }
+    var stdout = section(job.stdout_tail, job.stdout_len, "标准");
+    var stderr = section(job.stderr_tail, job.stderr_len, "错误");
+    var parts = [];
+    if (stdout) parts.push(stdout);
+    if (stderr) parts.push((stdout ? "[STDERR]\n" : "") + stderr);
+    if (String(job.status || "").toLowerCase() !== "running") {
+      var code = job.exit_code == null ? "未知" : String(job.exit_code);
+      parts.push("[任务已结束，退出码: " + code + "]");
+    }
+    return parts.join("\n");
+  }
+
+  function shellCommandForItem(item) {
+    return item && item.args && typeof item.args.command === "string" ? item.args.command : "";
+  }
+
+  function shellSnapshotKey(job) {
+    return JSON.stringify([
+      job.id, job.status, job.exit_code, job.stdout_len, job.stderr_len,
+      job.stdout_tail, job.stderr_tail,
+    ]);
+  }
+
+  function applyShellSnapshots(sid, jobs) {
+    var anyRunning = false;
+    var changed = false;
+    var runningCommandCounts = {};
+    (jobs || []).forEach(function (job) {
+      if (String(job.status || "").toLowerCase() !== "running") return;
+      var command = String(job.command || "");
+      runningCommandCounts[command] = (runningCommandCounts[command] || 0) + 1;
+    });
+    runSyncOnSession(sid, function () {
+      (jobs || []).forEach(function (job) {
+        var status = String(job.status || "").toLowerCase();
+        var running = status === "running";
+        if (running) anyRunning = true;
+        var item = state.chatItems.find(function (it) {
+          return it.type === "tool" && it.taskId === job.id;
+        });
+        if (!item && running) {
+          var command = String(job.command || "");
+          var candidates = state.chatItems.filter(function (it) {
+            return it.type === "tool" && isShellExecutionTool(it.name) && !it.taskId &&
+              it.state === "running" && shellCommandForItem(it) === command;
+          });
+          // Command text is only a temporary bridge until tool_end exposes the
+          // task id. Never guess when identical commands are concurrent.
+          if (runningCommandCounts[command] === 1 && candidates.length === 1) item = candidates[0];
+        }
+        // A detached job may have been started by a subagent, so no matching
+        // top-level tool card exists. Completed jobs must also get a card: the
+        // first poll may happen after a short detached process already exited.
+        if (!item) {
+          item = {
+            type: "tool", toolId: "shell-task:" + job.id, name: "exec_shell",
+            args: { command: job.command || "" }, output: null, success: null,
+            state: running ? "running" : "failed", shellSnapshot: true,
+          };
+          addChatItem(item);
+          changed = true;
+        }
+        var snapshotKey = shellSnapshotKey(job);
+        if (item.shellSnapshotKey === snapshotKey) return;
+        item.taskId = job.id;
+        item.sessionId = sid;
+        item.shellStatus = job.status;
+        item.exitCode = job.exit_code;
+        item.elapsedMs = job.elapsed_ms;
+        item.output = formatShellSnapshot(job);
+        item.state = running ? "running" : (status === "completed" ? "done" : "failed");
+        item.success = running ? null : status === "completed";
+        item.shellSnapshotKey = snapshotKey;
+        changed = true;
+      });
+    });
+    if (changed) notify();
+    return anyRunning;
+  }
+
+  function scheduleShellPoll(sid, immediate) {
+    if (!sid) return;
+    var poll = shellPollState[sid] || (shellPollState[sid] = {
+      timer: null, inFlight: false, waitBudget: 0,
+    });
+    poll.waitBudget = Math.max(poll.waitBudget, 12);
+    if (poll.timer || poll.inFlight) return;
+    poll.timer = setTimeout(function () { runShellPoll(sid); }, immediate ? 0 : 250);
+  }
+
+  async function runShellPoll(sid) {
+    var poll = shellPollState[sid];
+    if (!poll || poll.inFlight) return;
+    poll.timer = null;
+    poll.inFlight = true;
+    var running = false;
+    try {
+      var jobs = await invoke("list_shell_tasks", { sessionId: sid });
+      running = applyShellSnapshots(sid, Array.isArray(jobs) ? jobs : []);
+      if (!running) poll.waitBudget = Math.max(0, poll.waitBudget - 1);
+    } catch (error) {
+      console.warn("shell task polling failed", error);
+      poll.waitBudget = Math.max(0, poll.waitBudget - 1);
+    } finally {
+      poll.inFlight = false;
+    }
+    if (running || poll.waitBudget > 0) {
+      poll.timer = setTimeout(function () { runShellPoll(sid); }, 250);
+    } else {
+      delete shellPollState[sid];
+    }
+  }
+
+  async function cancelShellTask(sessionId, taskId) {
+    var sid = sessionId || state.activeSessionId;
+    if (!sid || !taskId) return;
+    try {
+      await invoke("cancel_shell_task", { sessionId: sid, taskId: taskId });
+    } finally {
+      scheduleShellPoll(sid, true);
     }
   }
   function scheduleShellNotify() {
@@ -2984,9 +3166,18 @@
   function isBusyFor(sid) {
     return sid === state.activeSessionId ? state.busy : !!(sessionStates[sid] && sessionStates[sid].busy);
   }
+  // 桌宠窗口靠全局事件感知回合起止。turn_start 补齐"发送 → 首 token"的空窗
+  // (chat:delta 之前引擎在思考,宠物不该干站着);turn_end 只兜 invoke 直接失败
+  // 这种不会有 chat:done 的路径。JS emit 是全局广播,宠物窗口 listen 收得到。
+  function emitPetEvent(name, sid) {
+    try {
+      if (TAURI && TAURI.event && TAURI.event.emit) TAURI.event.emit(name, { session_id: sid });
+    } catch (_) { /* 桌宠是纯装饰,广播失败不影响对话 */ }
+  }
+
   // 真正发送:在 sid 的工作集上加 user 气泡 + 流式占位 + busy,然后 invoke chat。
   // active/后台通用(后台走 runSyncOnSession 临时切工作集)。
-  function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools) {
+  function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure) {
     safeConsoleInfo("[pinvou3][chat-ui] send start", {
       sid: sid,
       textLen: (text || "").length,
@@ -3005,6 +3196,7 @@
       state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
     });
     notify();
+    emitPetEvent("pet:turn_start", sid);
     publishRemoteUserMessage(sid, displayText, meta && meta.remoteClientMessageId);
     return invoke("chat", { message: text, attachments: attachmentsPayload, sessionId: sid, restrictTools: !!restrictTools })
       .catch(function (err) {
@@ -3012,6 +3204,7 @@
           sid: sid,
           error: err && err.toString ? err.toString() : err,
         });
+        emitPetEvent("pet:turn_end", sid);
         runSyncOnSession(sid, function () {
           addSystemItem("⚠️ " + (err && err.toString ? err.toString() : err));
           state.busy = false;
@@ -3019,6 +3212,7 @@
         });
         notify();
         flushQueued(sid);
+        if (surfaceFailure) throw err;
       });
   }
   function publishRemoteUserMessage(sid, content, clientMessageId) {
@@ -3045,6 +3239,37 @@
     var restrictTools = items.some(function (i) { return !!i.restrictTools; });
     notify();
     doSendFor(sid, text, displayText, attachments, meta, restrictTools);
+  }
+
+  async function sendMessageToSession(sessionId, text, meta) {
+    var sid = String(sessionId || "").trim();
+    var content = String(text || "").trim();
+    if (!sid) throw new Error("目标会话不存在");
+    if (!content) throw new Error("回复内容为空");
+    var exists = state.sessions.some(function (session) { return String(session.id) === sid; });
+    if (!exists) throw new Error("目标会话不存在");
+
+    await ensureSessionBufferLoaded(sid);
+    if (isBusyFor(sid)) {
+      runSyncOnSession(sid, function () {
+        state.queued.push({
+          id: ++itemIdSeq,
+          text: content,
+          displayText: content,
+          attachments: [],
+          meta: meta || null,
+          restrictTools: false,
+        });
+      });
+      notify();
+      return { accepted: true, queued: true };
+    }
+    var completion = doSendFor(sid, content, content, [], meta || null, false, true)
+      .then(
+        function () { return { ok: true }; },
+        function (error) { return { ok: false, error: error }; }
+      );
+    return { accepted: true, queued: false, completion: completion };
   }
 
   async function sendMessage(text, meta) {
@@ -3384,6 +3609,9 @@
       output: null, success: null, state: "running",
       sessionId: p.session_id || state.activeSessionId,
     });
+    if (isShellExecutionTool(p.name)) {
+      scheduleShellPoll(p.session_id || state.activeSessionId, true);
+    }
     notify();
   }); });
 
@@ -3477,7 +3705,29 @@
 
     // load_skill：卡照出，但不把返回的 SKILL.md 全文写进卡，展开只见占位（防设计系统泄露）。
     var outForCard = (meta && meta.name === "load_skill") ? "（技能已加载，内容不展示）" : p.output;
-    updateToolItem(p.id, outForCard, p.success);
+    var updatedToolItem = updateToolItem(p.id, outForCard, p.success);
+    var shellTaskId = p.metadata && (p.metadata.task_id || p.metadata.taskId);
+    if (updatedToolItem && shellTaskId) {
+      var syntheticShellItem = state.chatItems.find(function (it) {
+        return it !== updatedToolItem && it.shellSnapshot === true && it.taskId === shellTaskId;
+      });
+      if (syntheticShellItem) {
+        ["shellStatus", "exitCode", "elapsedMs", "output", "state", "success", "shellSnapshotKey"]
+          .forEach(function (key) {
+            if (syntheticShellItem[key] !== undefined) updatedToolItem[key] = syntheticShellItem[key];
+          });
+        var syntheticIndex = state.chatItems.indexOf(syntheticShellItem);
+        if (syntheticIndex >= 0) state.chatItems.splice(syntheticIndex, 1);
+      }
+      updatedToolItem.taskId = shellTaskId;
+      updatedToolItem.sessionId = p.session_id || state.activeSessionId;
+      var shellStatus = String((p.metadata && p.metadata.status) || "").toLowerCase();
+      if (shellStatus === "running" || /running|background/i.test(String(p.output || ""))) {
+        updatedToolItem.state = "running";
+        updatedToolItem.success = null;
+      }
+      scheduleShellPoll(updatedToolItem.sessionId, true);
+    }
 
     // Careful hook：DeepSeek-TUI shell.rs 拦截 Dangerous → 红色拦截卡
     var md = p.metadata;
@@ -4246,6 +4496,25 @@
   }
 
   // ── Settings ─────────────────────────────────────────────────────
+  // 桌宠开关由 Rust set_pet_enabled 直接写盘(设置页/宠物右键/快捷图标共用),
+  // 这里同步进内存副本——否则下次整份 saveSettings 会用旧值把开关翻回去。
+  listen("pet:enabled_changed", function (e) {
+    if (state.settings) {
+      state.settings.pet = Object.assign({}, state.settings.pet || {}, {
+        enabled: !!(e.payload && e.payload.enabled),
+      });
+      notify();
+    }
+  });
+
+  listen("pet:selected_changed", function (e) {
+    var selectedPet = e.payload && e.payload.selected_pet;
+    if (typeof selectedPet === "string") {
+      state.selectedPet = selectedPet;
+      notify();
+    }
+  });
+
   async function loadSettings() {
     try {
       state.settings = await invoke("get_settings");
@@ -4253,6 +4522,17 @@
       state.settings = { theme: "genesis", language: "zh-Hans" };
     }
     notify();
+  }
+  async function loadSelectedPet() {
+    try {
+      state.selectedPet = await invoke("get_selected_pet");
+    } catch (e) {
+      state.selectedPet = "lingling";
+    }
+    notify();
+  }
+  async function setSelectedPet(id) {
+    return await invoke("set_selected_pet", { id: id });
   }
   async function loadEffectiveModelConfig() {
     try {
@@ -4507,7 +4787,8 @@
     }
     notify();
   }
-  // model 对象字段须是 snake_case(SavedModel serde): {id,name,preset,model,base_url,api_key,credential_action}
+  // model 对象字段须是 snake_case(SavedModel serde):
+  // {id,name,preset,context_window_tokens,max_output_tokens,model,base_url,api_key,credential_action}
   async function saveModel(model) {
     await invoke("save_model", { model: model });
     await loadModels();
@@ -5545,11 +5826,22 @@
     var rawCategory = (err && err.category) || "";
     var rawStage = (err && err.stage) || fallbackStage || "recording";
     var rawMessage = String((err && (err.message || err.toString && err.toString())) || err || "");
+    var constraint = String((err && err.constraint) || "");
     if (name === "NotAllowedError" || name === "SecurityError" || rawCategory === "permission_denied") {
       return { category: "permission_denied", stage: "permission", message: "麦克风权限被拒绝，请在系统设置中允许本应用访问麦克风后重试。" };
     }
     if (name === "NotFoundError" || name === "DevicesNotFoundError" || rawCategory === "device_unavailable") {
       return { category: "device_unavailable", stage: "device", message: "未检测到可用麦克风，请检查录音设备是否启用或被占用。" };
+    }
+    // WebKitGTK 可能把不支持的音频约束报为 OverconstrainedError / "Invalid constraint"。
+    // 这和没有录音设备不同：设备可能存在，只是不支持 channelCount、降噪等配置。
+    if (name === "OverconstrainedError" || name === "ConstraintNotSatisfiedError" || /invalid constraint/i.test(rawMessage)) {
+      return {
+        category: "constraint_unsupported",
+        stage: "device",
+        message: "无法启动录音：当前麦克风或 WebView 不支持所需的录音配置。请重试；若仍失败，请检查麦克风设置或更新系统组件。",
+        diagnostic: constraint ? "unsupported media constraint: " + constraint : "unsupported media constraint",
+      };
     }
     if (rawCategory === "empty_result") {
       return { category: "empty_result", stage: rawStage, message: "未识别到语音内容，请靠近麦克风后重试。" };
@@ -5706,7 +5998,7 @@
         stage: normalized.stage,
         completedAt: Date.now(),
       });
-      emitVoiceDiagnostic(normalized.stage, "error", normalized.category, normalized.message, normalized.category);
+      emitVoiceDiagnostic(normalized.stage, "error", normalized.diagnostic || normalized.category, normalized.message, normalized.category);
     } finally {
       if (activeVoiceInput === session) activeVoiceInput = null;
     }
@@ -5847,7 +6139,7 @@
         stage: normalized.stage,
         completedAt: Date.now(),
       });
-      emitVoiceDiagnostic(normalized.stage, "error", normalized.category, normalized.message, normalized.category);
+      emitVoiceDiagnostic(normalized.stage, "error", normalized.diagnostic || normalized.category, normalized.message, normalized.category);
     }
   }
 
@@ -5880,9 +6172,12 @@
   function runVoiceInputDebugAssertions() {
     var denied = normalizeVoiceError({ name: "NotAllowedError" });
     var noDevice = normalizeVoiceError({ name: "NotFoundError" });
+    var unsupportedConstraint = normalizeVoiceError({ name: "OverconstrainedError", message: "Invalid constraint", constraint: "channelCount" });
     var mismatch = normalizeVoiceError({ category: "context_mismatch" });
     console.assert(denied.category === "permission_denied", "permission error classified");
     console.assert(noDevice.category === "device_unavailable", "device error classified");
+    console.assert(unsupportedConstraint.category === "constraint_unsupported", "unsupported constraint classified");
+    console.assert(unsupportedConstraint.diagnostic === "unsupported media constraint: channelCount", "unsupported constraint diagnostic");
     console.assert(mismatch.stage === "writeback", "context mismatch classified");
     console.assert(appendVoiceText("草稿", "识别文本") === "草稿\n识别文本", "voice text appended");
     return true;
@@ -6092,6 +6387,7 @@
     });
     startupMark("bridge:monitor_polling_deferred", "starts when monitor view becomes active");
     await startupAwait("bridge:load_settings", loadSettings);
+    await startupAwait("bridge:load_selected_pet", loadSelectedPet);
     await startupAwait("bridge:load_effective_model", loadEffectiveModelConfig);
     await startupAwait("bridge:load_app_version", loadAppVersion);
     await startupAwait("bridge:load_models", loadModels);
@@ -6127,6 +6423,7 @@
     refreshConnectorAuthGates: refreshConnectorAuthGates,
     loadKnowledgeEmbedderAfterFirstFrame: loadKnowledgeEmbedderAfterFirstFrame,
     sendMessage: sendMessage,
+    sendMessageToSession: sendMessageToSession,
     prefillComposer: prefillComposer,
     removeQueued: removeQueued,
     startVoiceInput: startVoiceInput,
@@ -6171,6 +6468,7 @@
     startMonitorPolling: startMonitorPolling,
     stopMonitorPolling: stopMonitorPolling,
     clearMonitorStats: clearMonitorStats,
+    setSelectedPet: setSelectedPet,
     saveSettings: saveSettings,
     saveSettingsAndRestart: saveSettingsAndRestart,
     submitFeedback: submitFeedback,

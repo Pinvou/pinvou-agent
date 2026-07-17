@@ -1,16 +1,5 @@
 #!/usr/bin/env bash
-# fork-guard.sh — 上游 sync 后自动校验 pinvou3 对 DeepSeek-TUI 底座的 fork patch。
-#
-# 用法:  ./scripts/fork-guard.sh            # 全量(指纹 + 编译跑测试)
-#        ./scripts/fork-guard.sh --fast      # 只跑指纹层(秒级,不编译)
-#
-# 两层防护:
-#   1. 指纹层 — grep 每个 fork 标记是否还在(抓 merge 静默丢整段 patch),秒级。
-#   2. 行为层 — cargo test 跑精选 fork 回归测试(抓「值/行为被改回上游」),需编译。
-#
-# 注:L1 vLLM dialog harness 慢且需后端,不在此脚本内;按需单独跑。
-# 维护:新增 fork patch 时,在此同步加一条指纹 + 一个 forkguard_ 前缀测试,
-#       并更新 docs/fork-modifications.md。
+# v0.9.0 clean re-fork guard:按 6 个长期主题守指纹与行为。
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,210 +14,107 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-# ---------- 第 1 层:指纹(代码是否还在) ----------
-bold "── 第 1 层:fork patch 指纹校验 ──"
-# 格式: "编号|说明|文件(相对 REPO)|grep -F 固定串"
-# 2026-06-04 clean re-fork(pinvou3-clean ← v0.8.53):已删 subagent 全套 / phase-demo /
-# qwen-128K / fetch_url 残留测试;已 harvest 的(bing decode / network_policy fake-ip /
-# InstructionSource / override hook / EngineConfig.instructions / 256K compact)指纹一并撤除
-# —— 它们已是上游自带,不再是 fork-distinct patch。下面只保留仍 fork-distinct 的 patch。
+bold "── 第 1 层:v0.9.0 主题指纹校验 ──"
+# 格式:主题|说明|文件(相对仓库根)|grep -F 固定串
 fingerprints=(
-  # —— submodule fork patch ——
-  "#14 |file.rs 64KB content 上限       |DeepSeek-TUI/crates/tui/src/tools/file.rs|WRITE_FILE_MAX_CONTENT_BYTES"
-  "#15 |truncated_args_hint 截断提示    |DeepSeek-TUI/crates/tui/src/core/engine/dispatch.rs|truncated_args_hint"
-  "    |tool_catalog blocklist 模型     |DeepSeek-TUI/crates/tui/src/core/engine/tool_catalog.rs|pinvou3_should_defer_native_tool"
-  "    |pinvou3_blocklist 工具表        |DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs|fn is_pinvou3_hidden"
-  "    |tool_search 注入受 blocklist gate|DeepSeek-TUI/crates/tui/src/core/engine/tool_catalog.rs|is_pinvou3_hidden(TOOL_SEARCH_NAME)"
-  # 2026-07-03:v0.8.65 上游把 tool_search 折叠成**单名**,门控 TOOL_SEARCH_NAME=\"tool_search\" 依赖
-  # blocklist 含**裸单名**。原指纹查废弃双旧名 tool_search_tool_regex(空防、恒在),bug 时照样命中→
-  # 没抓住漏注入。改查裸单名;真正行为守护靠 forkguard_tool_search_not_injected 测试(已修断言)。
-  "    |tool_search 裸单名进 blocklist   |DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs|\"tool_search\","
-  # 2026-07-03 工具表 golden 守护(结果式,堵 sync 改名/新增/折叠漂移;验收清单 3.2/3.4)
-  "    |golden:blocklist 精确名单        |DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs|fn forkguard_blocklist_golden"
-  "    |golden:注入层 active snapshot    |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_yolo_no_deferred_activator_first_class"
-  # 2026-07-03 auto-compact 根治:pinvou3 直接调底座 budget(不再镜像 500K/262144/公式→静默倒置)
-  "    |compact:底座 budget 函数 depub   |DeepSeek-TUI/crates/tui/src/core/engine.rs|pub use context::context_input_budget_for_route"
-  "    |compact:derive 调底座 budget     |pinvou3-app/src-tauri/src/bridge/mod.rs|context_input_budget_for_route("
-  "    |compact:跨仓不倒置守护测试       |pinvou3-app/src-tauri/src/bridge/mod.rs|fn forkguard_compaction_threshold_below_emergency_all_windows"
-  # C4-a「多行逐行取最严」指纹于 v0.8.57 撤除:上游 18df8db0 extract neutral command support
-  # 自带 split_command_segments+analyze_destructive_patterns,已取代,fork 块已删。
-  "    |careful shell YOLO 也 BLOCK     |DeepSeek-TUI/crates/tui/src/tools/shell.rs|Dangerous commands are BLOCKED in ALL modes"
-  "#25 |skills union pub API            |DeepSeek-TUI/crates/tui/src/skills/mod.rs|pub fn render_available_skills_context_for_workspace_and_dir"
-  # v0.8.65 集成:#41 收窄到只 ~/.pinvou3/bundle/skills(2026-06-29 决策,去 .agents/skills);
-  # skill 市场停用开关(MKT)取 origin/main 更全的 3 条指纹。
-  "#26 |prompts skills_block union 调用 |DeepSeek-TUI/crates/tui/src/prompts.rs|render_available_skills_context_for_workspace_and_dir_with_mode("
-  "#41 |skill 路径只剩 ~/.pinvou3/bundle/skills|DeepSeek-TUI/crates/tui/src/skills/mod.rs|home.join(\".pinvou3\").join(\"bundle\").join(\"skills\")"
-  "MKT |skill 停用过滤器 setter         |DeepSeek-TUI/crates/tui/src/skills/mod.rs|pub fn set_disabled_skills"
-  "MKT |render 跳过停用 skill           |DeepSeek-TUI/crates/tui/src/skills/mod.rs|if is_skill_disabled(&skill.name)"
-  "MKT |load_skill 停用即 not-found     |DeepSeek-TUI/crates/tui/src/tools/skill.rs|crate::skills::is_skill_disabled(name)"
-  "    |PROJECT_CONTEXT_FILES 砍空(C 终态)  |DeepSeek-TUI/crates/tui/src/project_context.rs|PROJECT_CONTEXT_FILES: &[&str] = &[]"
-  "    |GLOBAL_PATHS 砍空                   |DeepSeek-TUI/crates/tui/src/project_context.rs|const GLOBAL_PATHS: &[&[&str]] = &[]"
-  "53  |constitution.json loader 短路       |DeepSeek-TUI/crates/tui/src/project_context.rs|v0.8.53 上游引入 \`.codewhale/constitution.json\`"
-  "    |generate_ephemeral_context 砍空(C5) |DeepSeek-TUI/crates/tui/src/project_context.rs|[pinvou3-fork C5] 砍空返 None"
-  "#42 |static composer hook(密封静态层)   |DeepSeek-TUI/crates/tui/src/prompts.rs|pub fn set_static_prompt_composer_override"
-  "#42 |ContextMgmt/COMPACT 受 composer gate|DeepSeek-TUI/crates/tui/src/prompts.rs|static_prompt_composer().is_none()"
-  "#42 |Runtime Policy Ref 受 composer gate |DeepSeek-TUI/crates/tui/src/prompts.rs|Policy Reference(agent/plan/yolo"
-  "#42 |runtime_prompt tag 受 composer gate |DeepSeek-TUI/crates/tui/src/core/engine/turn_loop.rs|static_prompt_composer_installed()"
-  # —— P(pwd/workspace 移出静态 system → per-turn turn_meta)指纹已撤(2026-06-29 v0.8.65)——
-  #    上游 v0.8.65 已 harvest 该优化(render_environment_block 不再输出 pwd + turn_meta 带
-  #    workspace),不再 fork-distinct;详见 fork-modifications §2.2。
-  # —— 会话工具开关(2026-06-23):pinvou3 connector 开关广播 disallowed_tools 给引擎(fork #4)——
-  # 引擎加 Op::SetDisallowedTools → 写 config.disallowed_tools → 下一轮 filter_tool_catalog_for_gates 隐藏。
-  "C8  |SetDisallowedTools op 定义       |DeepSeek-TUI/crates/tui/src/core/ops.rs|SetDisallowedTools { tools: Vec<String> }"
-  "C8  |SetDisallowedTools 写 disallowed |DeepSeek-TUI/crates/tui/src/core/engine.rs|Op::SetDisallowedTools { tools }"
-  # —— C9(2026-06-30,fork #5):disallowed_tools 规则支持 `*` 后缀前缀通配,禁掉远程 MCP 动态工具 ——
-  "C9  |command_denies_tool 前缀通配    |DeepSeek-TUI/crates/tui/src/core/engine/turn_loop.rs|rule.strip_suffix('*')"
-  # —— C10(2026-06-30,fork #6):MCP env placeholder + Windows 子进程后台控制台抑制 ——
-  "C10 |MCP env placeholder 解析        |DeepSeek-TUI/crates/tui/src/mcp.rs|fn expand_env_placeholders(value: &str) -> Result<String>"
-  "C10 |MCP env placeholder 回归        |DeepSeek-TUI/crates/tui/src/mcp/tests.rs|PINVOU3_MCP_SECRET_QCC_API_KEY"
-  "C10 |Windows 子进程无控制台 helper   |DeepSeek-TUI/crates/tui/src/utils.rs|pub(crate) fn suppress_tokio_console_window"
-  "C10 |MCP 启动应用无控制台 helper     |DeepSeek-TUI/crates/tui/src/mcp.rs|suppress_tokio_console_window(&mut cmd)"
-  # —— C11(2026-07-07,fork #7):Windows killed background shell 不 join 可能阻塞的 reader ——
-  "C11 |Windows killed shell reader 不阻塞|DeepSeek-TUI/crates/tui/src/tools/shell.rs|if matches!(self.status, ShellStatus::Killed)"
-  # —— C12(2026-07-14):内部 system-reminder 不参与 Working Set 路径提取 ——
-  "C12 |Working Set 剥离内部提醒      |DeepSeek-TUI/crates/tui/src/working_set.rs|fn strip_leading_system_reminder(text: &str) -> &str"
-  "C12 |Working Set 历史重建回归      |DeepSeek-TUI/crates/tui/src/working_set.rs|fn forkguard_working_set_rebuild_ignores_leading_system_reminder_paths"
-  "C13 |shell 实时输出事件定义          |DeepSeek-TUI/crates/tui/src/core/events.rs|ToolCallOutput {"
-  "C13 |shell reader 输出回调           |DeepSeek-TUI/crates/tui/src/tools/spec.rs|pub tool_output_sink: Option<ToolOutputSink>"
-  "C13 |shell reader 流式 UTF-8 解码    |DeepSeek-TUI/crates/tui/src/tools/shell.rs|struct StreamingUtf8Decoder"
-  "C13 |shell 中文跨分片行为测试        |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_shell_live_output_preserves_utf8_across_read_boundaries"
-  "C13 |shell 前台输出可控测试子进程     |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn controlled_streaming_child_command"
-  "C13 |shell 完成前输出行为测试         |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_exec_shell_streams_output_before_completion"
-  "C13 |后台启动返回后输出行为测试       |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_exec_shell_background_streams_after_start_returns"
-  "C13 |后台 wait 完成前输出行为测试     |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_exec_shell_wait_streams_background_output_before_completion"
-  "C13 |Engine 完成前输出事件测试        |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_engine_emits_shell_output_before_tool_completion"
-  "C13 |Engine 后台启动返回后输出测试    |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_engine_keeps_background_shell_output_after_tool_completion"
-  "C13 |Engine 后台 wait 输出事件测试    |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_engine_emits_background_wait_output_before_tool_completion"
-  "C13 |Engine 可控实时输出测试工具      |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|struct ControlledStreamingTool"
-  "C13 |Engine 输出合并异步转发器        |DeepSeek-TUI/crates/tui/src/core/engine/tool_execution.rs|struct ToolOutputEventForwarder"
-  "C13 |Engine 输出拥塞无丢失测试        |DeepSeek-TUI/crates/tui/src/core/engine/tool_execution.rs|fn forkguard_tool_output_forwarder_coalesces_without_dropping_on_backpressure"
-  "C13 |前端终端跨分片解析状态           |pinvou3-app/src/tauri-bridge.js|function terminalParserState(item, stream)"
-  "C13 |前端终端跨分片 UI 回归           |pinvou3-app/tests/ui_smoke.js|terminal parser preserves CRLF and ANSI state across live chunks"
-  "C13 |后台终态输出 tail 对账           |pinvou3-app/src/tauri-bridge.js|function reconcileBackgroundTerminalOutput(previous, payload)"
-  "C13 |后台终态 stdout/stderr UI 回归   |pinvou3-app/tests/ui_smoke.js|background shell terminal event reconciles final stdout and stderr tails"
-  "C14 |池级 session turn 生命周期       |pinvou3-app/src-tauri/src/engine_pool.rs|turn_lifecycles: SessionTurnLifecycles"
-  "C14 |缺失 Engine 仅活动 turn 补终态   |pinvou3-app/src-tauri/src/engine_pool.rs|cancel recovered active turn without engine"
-  "C14 |forwarder 异常结束补权威终态     |pinvou3-app/src-tauri/src/engine.rs|TurnOutcomeStatus::Failed,"
-  "C14 |异常结束与回收单终态测试         |pinvou3-app/src-tauri/src/engine.rs|fn forwarder_stop_and_reclaim_share_one_terminal"
-  "C14 |池级生命周期空闲取消测试         |pinvou3-app/src-tauri/src/engine_pool.rs|fn session_turn_lifecycle_survives_engine_entry_removal_without_faking_idle_cancel"
-  # —— P1(2026-07-03):list_mcp_resources/templates 按对应集合非空 gate(上游原为 servers 非空即注入)——
-  # pinvou3 MCP server 全 tools-only,原条件下这两个元工具永久空转;改按 resources/templates 非空注入。可上游。
-  "P1  |list_mcp_resources 按 resources 非空 gate|DeepSeek-TUI/crates/tui/src/mcp.rs|if !self.all_resource_templates().is_empty()"
-  # —— P2(2026-07-16):可取消 OAuth 登录 + 宿主请求编排——
-  # 取消必须先 drop 底座 OAuth future/回调监听再返回;新请求先等旧请求退出,快取消早于注册也不能漏。
-  "P2  |MCP OAuth cancellable API      |DeepSeek-TUI/crates/tui/src/mcp/oauth.rs|pub async fn perform_oauth_login_for_server_with_cancel"
-  "P2  |MCP OAuth cancellation regression|DeepSeek-TUI/crates/tui/src/mcp/oauth.rs|fn forkguard_cancellable_oauth_drops_in_flight_flow_before_returning"
-  "P2  |OAuth host request coordinator |pinvou3-app/src-tauri/src/commands.rs|struct MarketplaceOAuthLoginCoordinator"
-  # AUTO-lite(2026-07-13):scheduled-lite 重做——撤 durable scheduler 重 fork(原 fork PR #8,
-  # +13744/−5646),回 8073aa9b 基线 + 最小补丁(5 文件)。守护点:host executor
-  # 只读 getters / ThreadCreated 会话身份先于 turn 持久化 / automation model 透传 /
-  # automation.id 稳定 conversation key / 强制审批(hook ask + rlm_eval)不可被
-  # auto-approve 绕过 / v4 task schema 向后兼容 v3。
-  # 注:定时任务恒 YOLO 属产品决策,落在 app 层:Shell 每次跟随全局设置,
-  # trust/autoApprove 恒 true;基座默认值保持不动。
-  "AUTO|app 层定时任务恒 YOLO(create 强制)   |pinvou3-app/src-tauri/src/scheduled_tasks.rs|auto_approve: Some(true)"
-  "AUTO|普通聊天与定时任务共用 Shell 推导    |pinvou3-app/src-tauri/src/bridge/mod.rs|pub(crate) fn allow_shell_for_prefs"
-  "AUTO|定时执行每次刷新全局 Shell           |pinvou3-app/src-tauri/src/scheduled_executor.rs|let allow_shell = self.runtime.yolo_allow_shell();"
-  "AUTO|定时执行固定信任并自动批准           |pinvou3-app/src-tauri/src/scheduled_executor.rs|trust_mode: true,"
-  "AUTO|automation propagates selected model |DeepSeek-TUI/crates/tui/src/automation_manager.rs|model: automation.model.clone()"
-  "AUTO|host executor immutable task getters |DeepSeek-TUI/crates/tui/src/task_manager.rs|pub fn workspace(&self) -> &Path"
-  "AUTO|host executor pre-turn thread create  |DeepSeek-TUI/crates/tui/src/task_manager.rs|ThreadCreated {"
-  "AUTO|running run link triggers persistence |DeepSeek-TUI/crates/tui/src/automation_manager.rs|run.thread_id != task.thread_id"
-  "AUTO|v4 task 稳定 conversation key        |DeepSeek-TUI/crates/tui/src/task_manager.rs|pub conversation_key: Option<String>"
-  "AUTO|task schema 升级为 v4                |DeepSeek-TUI/crates/tui/src/task_manager.rs|const CURRENT_TASK_SCHEMA_VERSION: u32 = 4;"
-  "AUTO|automation 入队携带稳定会话键         |DeepSeek-TUI/crates/tui/src/automation_manager.rs|add_task_with_conversation_key(new_task, Some(automation.id.clone()))"
-  "AUTO|小时调度支持稳定时间锚点              |DeepSeek-TUI/crates/tui/src/automation_manager.rs|fn hourly_rrule_uses_clock_time_as_a_stable_anchor"
-  "AUTO|终态运行保留候选不包含活动运行         |DeepSeek-TUI/crates/tui/src/automation_manager.rs|terminal_run_prune_candidates"
-  "AUTO|终态底座任务配套删除                  |DeepSeek-TUI/crates/tui/src/task_manager.rs|delete_terminal_task"
-  "AUTO|registry 工具强制审批不可绕过        |DeepSeek-TUI/crates/tui/src/core/engine/turn_loop.rs|pub(super) fn registered_tool_approval_force_prompt"
-  "AUTO|强制审批 force_prompt 回归断言       |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|registered_tool_approval_force_prompt("
-  # —— 工作流 fork 基座层(三省六部;feat/sansheng-workflow 随附,2026-06-12 补)——
-  # 行为层已有 engine_config_locks_critical_fields(W10 reasoning_effort);其余 W* 暂只 L1。
-  "W1  |SpawnSubAgent 扩展字段          |DeepSeek-TUI/crates/tui/src/core/ops.rs|expects_file_output: bool"
-  "W2  |StructuredOutput 催交重试上限   |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|const MAX_STRUCTURED_OUTPUT_RETRIES: u32 = 3;"
-  "W3  |submit_output 合成工具名        |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|const SUBMIT_OUTPUT_TOOL: &str = \"submit_output\";"
-  "W4  |request_user_input 路由通道     |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|pub user_input_tx: Option<broadcast::Sender<UserInputDecision>>"
-  "W5  |AgentComplete failed 信封       |DeepSeek-TUI/crates/tui/src/core/events.rs|[pinvou3-fork] True when sub-agent execution ended via error rather"
-  "W6  |SubAgent Mailbox 信封           |DeepSeek-TUI/crates/tui/src/tools/subagent/mailbox.rs|pub struct MailboxEnvelope {"
-  "W7  |SubAgent 贪心解码 temp=0        |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|const SUBAGENT_TEMPERATURE: f32 = 0.0;"
-  "W8  |SubAgent web/custom 工具面      |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|with_full_agent_surface("
-  # W9 read_pdf catch_unwind 于 v0.8.60 sync 被上游 harvest(guard_pdf_extract,
-  # file.rs:447 同语义 catch_unwind 辅助函数;char-boundary 部分也已是上游自带)→ 撤指纹。
-  "W10 |reasoning_effort 会话初始注入   |DeepSeek-TUI/crates/tui/src/core/engine.rs|session.reasoning_effort = config.reasoning_effort"
-  "W11 |submit_output 成功即 break 收工 |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|if output_schema.is_some() && output_submitted.is_some()"
-  "W12 |registry max_steps per-spawn 生效|DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|options.max_steps.unwrap_or(self.max_steps)"
-  "W13 |宿主显式取消全部后台 Agent   |DeepSeek-TUI/crates/tui/src/core/ops.rs|CancelSubAgents"
-  "W13 |取消全部后台 Agent 行为回归   |DeepSeek-TUI/crates/tui/src/tools/subagent/tests.rs|forkguard_cancel_all_running_aborts_every_live_agent"
-  # —— Agentic RAG: EngineConfig.extra_tools 应用层工具注入口(2026-06-24)——
-  # 通用扩展点(可上游 PR):app 注入 kb_search 等 ToolSpec,无需 fork 工具表。丢了 → app
-  # 的 kb_search 工具静默不进 registry,Agentic RAG 整条失效却不报错。
-  "RAG1|EngineConfig.extra_tools 字段     |DeepSeek-TUI/crates/tui/src/core/engine.rs|pub extra_tools: ExtraTools"
-  "RAG2|tool_setup 注册 extra_tools       |DeepSeek-TUI/crates/tui/src/core/engine/tool_setup.rs|&self.config.extra_tools.0"
-  # —— app 层 fork(pinvou3-app)——
-  "#18b|bridge 透传 fake-ip 信任段      |pinvou3-app/src-tauri/src/bridge/mod.rs|with_trusted_fakeip_cidrs"
-  "#16 |bridge subagent_api_timeout 300 |pinvou3-app/src-tauri/src/bridge/mod.rs|from_secs(300)"
-  # main #14 prompt 单一来源重构:宪法/裁决/Authority 从 base.md 折叠进 instructions.md,
-  # compose 丢弃 base(静态层只剩 Mode)→ 原 base.md 的 3 个指纹失效,改指向新落点。
-  "#36 |宪法核心折叠进 instructions(单一来源)|pinvou3-app/src-tauri/resources/bundle/instructions.md|权威顺序"
-  "#43 |compose 丢弃 base,静态层只剩 Mode   |pinvou3-app/src-tauri/src/bridge/bundle.rs|静态层只剩 Mode"
-  "    |敏感目录 deny hook hard-deny exit 2 |pinvou3-app/src-tauri/resources/bundle/deny_sensitive_paths.sh|hard-deny 必须 **exit 2**"
-  "#37 |LOCALE_PREAMBLE_ZH_HANS 短版        |pinvou3-app/src-tauri/src/bridge/bundle.rs|pinvou3 界面语言为简体中文"
-  "#38 |AUTHORITY_RECAP 清空(已折叠 instr)  |pinvou3-app/src-tauri/src/bridge/bundle.rs|Authority Recap（Final Reminder）清空"
-  "#45 |instructions 动态注入 model 名      |pinvou3-app/src-tauri/src/bridge/mod.rs|{{PINVOU3_MODEL}}"
-  "    |C 方案 pinvou3 注入 Inline          |pinvou3-app/src-tauri/src/bridge/mod.rs|fn session_instructions(&self, session_id: &str) -> Vec<InstructionSource>"
-  "#42 |app 装静态层 composer               |pinvou3-app/src-tauri/src/bridge/bundle.rs|set_static_prompt_composer_override"
-  "#42 |pinvou3 Mode/compact 静态层文案     |pinvou3-app/src-tauri/src/bridge/bundle.rs|pub fn compose_static_layers"
-  "#42 |LOCALE_PREAMBLE_JA 短版             |pinvou3-app/src-tauri/src/bridge/bundle.rs|pinvou3 の UI 言語は日本語です"
+  "T1|library facade 存在               |DeepSeek-TUI/crates/tui/src/lib.rs|pub mod core;"
+  "T1|宿主额外工具入口                   |DeepSeek-TUI/crates/tui/src/core/engine.rs|pub extra_tools: ExtraTools"
+
+  "T2|写文件 64KB 上限                  |DeepSeek-TUI/crates/tui/src/tools/file.rs|WRITE_FILE_MAX_CONTENT_BYTES"
+  "T2|截断参数修复提示                   |DeepSeek-TUI/crates/tui/src/core/engine/dispatch.rs|truncated_args_hint"
+  "T2|工具黑名单结果 golden              |DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs|fn forkguard_blocklist_golden"
+  "T2|deferred 激活面 golden             |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_yolo_no_deferred_activator_first_class"
+  "T2|disallowed_tools 前缀规则          |DeepSeek-TUI/crates/tui/src/core/engine/turn_loop.rs|rule.strip_suffix('*')"
+  "T2|Dangerous 命令全模式阻断           |DeepSeek-TUI/crates/tui/src/tools/shell.rs|Dangerous commands are BLOCKED in ALL modes"
+  "T2|shell 实时输出事件定义             |DeepSeek-TUI/crates/tui/src/core/events.rs|ToolCallOutput {"
+  "T2|shell reader 输出回调              |DeepSeek-TUI/crates/tui/src/tools/spec.rs|pub tool_output_sink: Option<ToolOutputSink>"
+  "T2|shell reader 流式 UTF-8 解码       |DeepSeek-TUI/crates/tui/src/tools/shell.rs|struct StreamingUtf8Decoder"
+  "T2|shell 中文跨分片行为测试           |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_shell_live_output_preserves_utf8_across_read_boundaries"
+  "T2|shell 完成前输出行为测试           |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_exec_shell_streams_output_before_completion"
+  "T2|后台启动返回后输出行为测试         |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_exec_shell_background_streams_after_start_returns"
+  "T2|后台 wait 完成前输出行为测试       |DeepSeek-TUI/crates/tui/src/tools/shell/tests.rs|fn forkguard_exec_shell_wait_streams_background_output_before_completion"
+  "T2|Engine 完成前输出事件测试          |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_engine_emits_shell_output_before_tool_completion"
+  "T2|Engine 后台启动返回后输出测试      |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_engine_keeps_background_shell_output_after_tool_completion"
+  "T2|Engine 后台 wait 输出事件测试      |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_engine_emits_background_wait_output_before_tool_completion"
+  "T2|Engine 输出合并异步转发器          |DeepSeek-TUI/crates/tui/src/core/engine/tool_execution.rs|struct ToolOutputEventForwarder"
+  "T2|Engine 输出拥塞无丢失测试          |DeepSeek-TUI/crates/tui/src/core/engine/tool_execution.rs|fn forkguard_tool_output_forwarder_coalesces_without_dropping_on_backpressure"
+
+  "T3|项目上下文仅走 inline              |DeepSeek-TUI/crates/tui/src/project_context.rs|fn forkguard_pinvou3_uses_only_inline_project_context"
+  "T3|密封静态 prompt composer           |DeepSeek-TUI/crates/tui/src/prompts.rs|pub fn set_static_prompt_composer_override"
+  "T3|instructions 不受 4KB fragment 截断|DeepSeek-TUI/crates/tui/src/prompts.rs|fn forkguard_permissions_fragment_preserves_instructions_beyond_default_fragment_cap"
+  "T3|skill 来源收敛到 bundle            |DeepSeek-TUI/crates/tui/src/skills/mod.rs|home.join(\".pinvou3\").join(\"bundle\").join(\"skills\")"
+  "T3|停用 skill 不进入目录              |DeepSeek-TUI/crates/tui/src/skills/mod.rs|if is_skill_disabled(&skill.name)"
+  "T3|内部提醒不污染 Working Set         |DeepSeek-TUI/crates/tui/src/working_set.rs|fn strip_leading_system_reminder(text: &str) -> &str"
+
+  "T4|automation 透传模型                |DeepSeek-TUI/crates/tui/src/automation_manager.rs|model: automation.model.clone()"
+  "T4|稳定 conversation key              |DeepSeek-TUI/crates/tui/src/task_manager.rs|pub conversation_key: Option<String>"
+  "T4|task schema v4                     |DeepSeek-TUI/crates/tui/src/task_manager.rs|const CURRENT_TASK_SCHEMA_VERSION: u32 = 4;"
+  "T4|小时调度稳定锚点                   |DeepSeek-TUI/crates/tui/src/automation_manager.rs|fn forkguard_hourly_rrule_without_explicit_time_keeps_creation_phase"
+  "T4|漏跑跳过且同任务不重叠             |DeepSeek-TUI/crates/tui/src/automation_manager.rs|fn forkguard_scheduler_skips_offline_misfires_without_backfill"
+  "T4|终态运行保留                       |DeepSeek-TUI/crates/tui/src/automation_manager.rs|terminal_run_prune_candidates"
+  "T4|终态 task 级联删除                 |DeepSeek-TUI/crates/tui/src/task_manager.rs|delete_terminal_task"
+  "T4|强制审批不可被 auto approve 绕过   |DeepSeek-TUI/crates/tui/src/core/engine/turn_loop.rs|registered_tool_approval_force_prompt"
+
+  "T5|宿主工具硬白名单                   |DeepSeek-TUI/crates/tui/src/core/engine.rs|pub tool_whitelist: Option<HashSet<String>>"
+  "T5|SpawnSubAgent 工作流契约            |DeepSeek-TUI/crates/tui/src/core/ops.rs|expects_file_output: bool"
+  "T5|结构化产出提交工具                 |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|const SUBMIT_OUTPUT_TOOL: &str = \"submit_output\";"
+  "T5|结构化产出安全路径回归             |DeepSeek-TUI/crates/tui/src/tools/subagent/tests.rs|fn forkguard_structured_output_persists_only_declared_safe_paths"
+  "T5|宿主取消全部后台 agent             |DeepSeek-TUI/crates/tui/src/core/ops.rs|CancelSubAgents"
+  "T5|批量取消行为回归                   |DeepSeek-TUI/crates/tui/src/tools/subagent/tests.rs|fn forkguard_cancel_all_running_aborts_every_live_agent"
+  "T5|OAuth 登录可取消                   |DeepSeek-TUI/crates/tui/src/mcp/oauth.rs|pub async fn perform_oauth_login_for_server_with_cancel"
+
+  "T6|opaque runtime route 对宿主公开    |DeepSeek-TUI/crates/tui/src/route_runtime.rs|pub struct ResolvedRuntimeRoute"
+  "T6|宿主路由解析入口                   |DeepSeek-TUI/crates/tui/src/route_runtime.rs|pub fn resolve_runtime_route("
+  "T6|宿主显式 route limits 入口         |DeepSeek-TUI/crates/tui/src/route_runtime.rs|pub fn resolve_runtime_route_with_limits("
+  "T6|显式 output 覆盖未知模型 4K fallback|DeepSeek-TUI/crates/tui/src/route_budget.rs|fn forkguard_explicit_route_output_limit_beats_unknown_model_name_fallback"
+  "T6|automation reconcile shared API    |DeepSeek-TUI/crates/tui/src/automation_manager.rs|pub async fn reconcile_run_statuses_shared("
+
+  "APP|消息携带 resolved route            |pinvou3-app/src-tauri/src/bridge/mod.rs|resolve_runtime_route_for_model"
+  "APP|部署级 route profile               |pinvou3-app/src-tauri/src/bridge/mod.rs|fn route_limits_for_model("
+  "APP|128K/256K Compact 结果式回归       |pinvou3-app/src-tauri/src/bridge/mod.rs|fn forkguard_compaction_128k_scenarios"
+  "APP|兼容引擎显式 limits 结果式回归     |pinvou3-app/src-tauri/src/bridge/mod.rs|fn forkguard_openai_compatible_route_uses_declared_limits"
+  "APP|手动压缩携带同源 route             |pinvou3-app/src-tauri/src/engine.rs|send(Op::CompactContext {"
+  "APP|定时任务使用 shared run API        |pinvou3-app/src-tauri/src/scheduled_tasks.rs|run_now_shared(&self.automations"
+  "APP|敏感目录 hard deny 为 exit 2       |pinvou3-app/src-tauri/resources/bundle/deny_sensitive_paths.sh|hard-deny 必须 **exit 2**"
+  "APP|静态层 composer 仍由 app 安装      |pinvou3-app/src-tauri/src/bridge/bundle.rs|set_static_prompt_composer_override"
+  "APP|内置技能写入 bundle 单一来源        |pinvou3-app/src-tauri/src/bridge/bundle.rs|fn forkguard_builtin_visual_skill_uses_bundle_root_and_safe_name"
+  "APP|前端终端跨分片解析状态             |pinvou3-app/src/tauri-bridge.js|function terminalParserState(item, stream)"
+  "APP|前端终端跨分片 UI 回归             |pinvou3-app/tests/ui_smoke.js|terminal parser preserves CRLF and ANSI state across live chunks"
+  "APP|后台终态输出 tail 对账             |pinvou3-app/src/tauri-bridge.js|function reconcileBackgroundTerminalOutput(previous, payload)"
+  "APP|后台终态 stdout/stderr UI 回归      |pinvou3-app/tests/ui_smoke.js|background shell terminal event reconciles final stdout and stderr tails"
+  "APP|session 级 ShellManager 复用        |pinvou3-app/src-tauri/src/engine_pool.rs|struct SessionShellManagers"
+  "APP|turn 权威终态抢占门                 |pinvou3-app/src-tauri/src/engine.rs|pub(crate) fn claim_terminal"
+  "APP|Engine 回收终态去重                 |pinvou3-app/src-tauri/src/engine.rs|emit_reclaimed_terminal_once"
 )
+
 for fp in "${fingerprints[@]}"; do
-  IFS='|' read -r id desc file pat <<<"$fp"
+  IFS='|' read -r theme desc file pat <<<"$fp"
   if grep -qF -- "$pat" "$REPO/$file" 2>/dev/null; then
-    green "  ✓ ${id}${desc}"
+    green "  ✓ ${theme} ${desc}"
   else
-    red   "  ✗ ${id}${desc}  — 指纹消失于 $file (疑似 merge 静默丢失)"
+    red "  ✗ ${theme} ${desc} — 指纹消失于 $file"
     fail=1
   fi
 done
 
 if [[ $FAST_ONLY -eq 1 ]]; then
   echo
-  [[ $fail -eq 0 ]] && green "指纹层全过 (--fast,未跑测试)" || red "指纹层有缺失,见上"
+  [[ $fail -eq 0 ]] && green "指纹层全过 (--fast)" || red "指纹层有缺失"
   exit $fail
 fi
 
-# ---------- 第 2 层:行为(值/逻辑是否被改回上游) ----------
 echo
-bold "── 第 2 层:fork 回归测试 (codewhale-tui) ──"
-# libtest 多 filter = OR。forkguard_ 前缀网住所有新增守卫;其余按名列出。
-( cd "$TUI" && cargo test -p codewhale-tui --lib -- \
-    forkguard_ \
-    pinvou3_yolo_offers_nonblocklisted_tools_outside_upstream_default \
-    truncated_args_hint_fires_for_file_write_missing_field \
-    truncated_args_hint_skips_other_tools_and_other_errors \
-    test_write_file_rejects_oversized_content \
-    test_append_file_rejects_oversized_content \
-    disallowed_tools_gate_blocks_prefix_wildcard \
-    automation_task_settings_default_for_legacy_records \
-    automation_enqueue_uses_default_and_explicit_task_settings \
-    worker_receives_persisted_conversation_key \
-    create_schema_exposes_rrule \
-    rlm_eval_required_approval_ignores_generic_auto_approve \
-    generic_required_tools_keep_auto_approve_behavior ) || fail=1
+bold "── 第 2 层:DeepSeek-TUI forkguard 回归 ──"
+( cd "$TUI" && cargo test -p codewhale-tui forkguard_ --lib -- --test-threads=1 ) || fail=1
 
 echo
-bold "── 第 2 层:fork 回归测试 (pinvou3-tauri / bridge) ──"
-( cd "$APP" && cargo test -p pinvou3-tauri --lib -- \
-    forkguard_ \
-    engine_config_locks_critical_fields \
-    default_model_window_recognized_by_engine \
-    search_prefs_default_is_bing_no_key \
-    search_prefs_roundtrip_with_metaso_key \
-    search_prefs_partial_json_fills_defaults ) || fail=1
+bold "── 第 2 层:pinvou3-app forkguard 回归 ──"
+( cd "$APP" && cargo test -p pinvou3-tauri forkguard_ --lib -- --test-threads=1 ) || fail=1
 
 echo
 if [[ $fail -eq 0 ]]; then
-  green "✅ fork-guard 全过 — 底座 fork patch 在当前基线上完好。"
+  green "✅ fork-guard 全过 — 6 个 v0.9.0 fork 主题完好。"
 else
-  red   "❌ fork-guard 有失败 — 见上方。对照 docs/fork-modifications.md 排查被静默丢/改回的 patch。"
+  red "❌ fork-guard 失败 — 对照 docs/fork-modifications.md 排查。"
 fi
 exit $fail

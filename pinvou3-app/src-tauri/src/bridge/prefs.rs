@@ -314,6 +314,12 @@ pub struct SavedModel {
     pub name: String,
     /// 决定 provider 路由 + 模板,复用现有 9 预设枚举。
     pub preset: ModelPreset,
+    /// 该具体部署允许的 context window；与发给服务端的 `model` wire name 解耦。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_tokens: Option<u32>,
+    /// Pinvou 对该 route 声明的单轮 output 上限；最终仍受进程级请求上限约束。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
     pub model: String,
     pub base_url: String,
     #[serde(default, skip_serializing)]
@@ -334,6 +340,8 @@ impl SavedModel {
             id: BUILTIN_LLMAPI_MODEL_ID.to_string(),
             name: BUILTIN_LLMAPI_MODEL_NAME.to_string(),
             preset: ModelPreset::OpenaiCompatible,
+            context_window_tokens: None,
+            max_output_tokens: None,
             model: crate::llmapi_hub::DEFAULT_MODEL.to_string(),
             base_url: crate::llmapi_hub::DEFAULT_CHAT_BASE_URL.to_string(),
             api_key: String::new(),
@@ -346,6 +354,19 @@ impl SavedModel {
 
     pub fn is_builtin_llmapi(&self) -> bool {
         self.id == BUILTIN_LLMAPI_MODEL_ID
+    }
+
+    fn normalize_route_limits(&mut self) {
+        self.context_window_tokens = self.context_window_tokens.filter(|tokens| *tokens > 0);
+        self.max_output_tokens = self.max_output_tokens.filter(|tokens| *tokens > 0);
+        if self.preset == ModelPreset::LocalVllm {
+            if self.context_window_tokens.is_none() && self.model == "qwen36_35b_256k" {
+                self.context_window_tokens = Some(262_144);
+            }
+            if self.max_output_tokens.is_none() {
+                self.max_output_tokens = Some(24_576);
+            }
+        }
     }
 
     pub fn credential_reference(&self) -> CredentialReference {
@@ -438,6 +459,15 @@ impl Default for NotificationPrefs {
     }
 }
 
+/// 桌宠偏好。只存开关——窗口位置在 `~/.pinvou3/pet_window.json`(pet_window.rs 私有
+/// 管理)。位置刻意不进 settings.json:settings 由前端整份回写(update_settings),
+/// 旧副本会把拖动后的实时位置覆盖回去。
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PetPrefs {
+    pub enabled: bool,
+}
+
 /// 用户偏好。`settings.json` 顶层结构。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -448,6 +478,7 @@ pub struct UserPrefs {
     pub memory_enabled: bool,
     pub search: SearchPrefs,
     pub notifications: NotificationPrefs,
+    pub pet: PetPrefs,
     pub advanced: AdvancedPrefs,
 }
 
@@ -483,6 +514,9 @@ impl UserPrefs {
         let mut normalized = self.clone();
         normalized.search.normalize();
         normalized.enforce_memory_locale_policy();
+        for model in &mut normalized.advanced.saved_models {
+            model.normalize_route_limits();
+        }
         normalized.sanitize_plaintext_api_keys();
         let s = serde_json::to_string_pretty(&normalized).expect("UserPrefs serialize");
         std::fs::write(path, s)
@@ -503,6 +537,9 @@ impl UserPrefs {
     /// `pub(crate)`:bridge 测试模拟 `load()` 的迁移路径(custom_* → active model)。
     pub(crate) fn migrate_models(&mut self) {
         if !self.advanced.saved_models.is_empty() {
+            for model in &mut self.advanced.saved_models {
+                model.normalize_route_limits();
+            }
             return;
         }
         let preset = self.advanced.model_preset.unwrap_or_default();
@@ -524,6 +561,8 @@ impl UserPrefs {
             id: id.clone(),
             name: model.clone(),
             preset,
+            context_window_tokens: None,
+            max_output_tokens: None,
             model,
             base_url,
             api_key,
@@ -532,6 +571,7 @@ impl UserPrefs {
             has_secret: false,
             credential_action: None,
         });
+        self.advanced.saved_models[0].normalize_route_limits();
         self.advanced.custom_api_key = None;
         if self.advanced.active_model_id.is_none() {
             self.advanced.active_model_id = Some(id);
@@ -836,7 +876,8 @@ impl UserPrefs {
     }
 
     /// 增或改(按 id)一条模型。
-    pub fn upsert_model(&mut self, m: SavedModel) {
+    pub fn upsert_model(&mut self, mut m: SavedModel) {
+        m.normalize_route_limits();
         if let Some(existing) = self.advanced.saved_models.iter_mut().find(|x| x.id == m.id) {
             *existing = m;
         } else {
@@ -868,6 +909,8 @@ mod tests {
         let m = &prefs.advanced.saved_models[0];
         assert_eq!(m.preset, ModelPreset::LocalVllm);
         assert_eq!(m.model, "qwen36_35b_256k");
+        assert_eq!(m.context_window_tokens, Some(262_144));
+        assert_eq!(m.max_output_tokens, Some(24_576));
         assert_eq!(prefs.advanced.active_model_id.as_deref(), Some("default"));
         assert_eq!(prefs.active_model().map(|m| m.id.as_str()), Some("default"));
     }
@@ -943,6 +986,8 @@ mod tests {
             id: "m2".into(),
             name: "Kimi".into(),
             preset: ModelPreset::Kimi,
+            context_window_tokens: None,
+            max_output_tokens: None,
             model: "kimi-k2.6".into(),
             base_url: "https://api.moonshot.cn/v1".into(),
             api_key: String::new(),
@@ -1043,6 +1088,7 @@ mod tests {
             memory_enabled: false,
             search: SearchPrefs::default(),
             notifications: NotificationPrefs::default(),
+            pet: PetPrefs::default(),
             advanced: AdvancedPrefs {
                 allow_shell: Some(false),
                 max_output_tokens: Some(8192),

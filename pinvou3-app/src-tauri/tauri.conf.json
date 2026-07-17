@@ -6,7 +6,7 @@
   "identifier": "com.pinvou.pinvou3",
   "build": {
     "beforeDevCommand": "vite",
-    "beforeBuildCommand": "vite build",
+    "beforeBuildCommand": "npm run validate:pet-assets -- --release && vite build",
     "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../dist"
   },

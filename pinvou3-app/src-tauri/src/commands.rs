@@ -1863,9 +1863,13 @@ pub async fn delete_session(
             // 先回收该 session 的 engine(cancel 在跑的 turn + shutdown + abort forwarder),
             // 再删盘上数据,避免僵尸 engine 继续往已删 session 写产物。
             pool.evict(&id).await;
-            store
+            let result = store
                 .delete(&id)
-                .map_err(|e| format!("delete_session({id}): {e:?}"))
+                .map_err(|e| format!("delete_session({id}): {e:?}"));
+            if result.is_ok() {
+                pool.forget_session(&id);
+            }
+            result
         }
         SessionKind::ScheduledRun => {
             let scheduled = app
@@ -2029,18 +2033,28 @@ pub async fn cancel_generation(
     Ok(())
 }
 
-/// Cancel one detached shell process by its stable background task id.
+/// Return the app-owned snapshot of shell jobs for one session. Polling this
+/// command does not touch Engine lifecycle or conversation state.
+#[tauri::command]
+pub async fn list_shell_tasks(
+    session_id: String,
+    pool: State<'_, EnginePool>,
+) -> Result<Vec<deepseek_tui::tools::shell::ShellJobSnapshot>, String> {
+    pool.list_shell_tasks(&session_id)
+        .await
+        .map_err(|error| format!("list_shell_tasks({session_id}): {error:#}"))
+}
+
+/// Cancel a detached or foreground-backed shell by its stable task id.
 #[tauri::command]
 pub async fn cancel_shell_task(
     session_id: String,
     task_id: String,
     pool: State<'_, EnginePool>,
-) -> Result<serde_json::Value, String> {
-    let result = pool
-        .cancel_shell_task(&session_id, &task_id)
+) -> Result<deepseek_tui::tools::shell::ShellResult, String> {
+    pool.cancel_shell_task(&session_id, &task_id)
         .await
-        .map_err(|error| error.to_string())?;
-    serde_json::to_value(result).map_err(|error| error.to_string())
+        .map_err(|error| format!("cancel_shell_task({session_id}, {task_id}): {error:#}"))
 }
 
 /// 计算当前应「对模型隐藏」的工具全名**完整列表**(小写)。
@@ -6121,11 +6135,10 @@ mod tests {
         let registration = coordinator.register("yuandian-mcp", "request-1").await;
         let cancellation_token = registration.cancellation_token.clone();
         let cancel_coordinator = std::sync::Arc::clone(&coordinator);
-        let cancel_task = tokio::spawn(async move {
-            cancel_coordinator
-                .cancel("yuandian-mcp", "request-1")
-                .await
-        });
+        let cancel_task =
+            tokio::spawn(
+                async move { cancel_coordinator.cancel("yuandian-mcp", "request-1").await },
+            );
         tokio::task::yield_now().await;
 
         assert!(cancellation_token.is_cancelled());
@@ -6135,18 +6148,12 @@ mod tests {
         );
 
         coordinator
-            .finish(
-                "yuandian-mcp",
-                "request-1",
-                registration.completion_sender,
-            )
+            .finish("yuandian-mcp", "request-1", registration.completion_sender)
             .await;
         assert!(cancel_task.await.unwrap());
         let newer = coordinator.register("yuandian-mcp", "request-2").await;
         assert!(
-            !coordinator
-                .cancel("yuandian-mcp", "stale-request")
-                .await,
+            !coordinator.cancel("yuandian-mcp", "stale-request").await,
             "a stale request id must not cancel a newer flow"
         );
         assert!(!newer.cancellation_token.is_cancelled());
@@ -6202,11 +6209,9 @@ mod tests {
         uninstall_marketplace_tool("yuandian-mcp".to_string()).unwrap();
 
         assert!(!test_oauth_token_exists(&key));
-        assert!(
-            !crate::bridge::marketplace::MarketplaceManager::new()
-                .installed_ids()
-                .contains(&"yuandian-mcp".to_string())
-        );
+        assert!(!crate::bridge::marketplace::MarketplaceManager::new()
+            .installed_ids()
+            .contains(&"yuandian-mcp".to_string()));
         let mcp_content = std::fs::read_to_string(crate::bridge::paths::mcp_config_path()).unwrap();
         let mcp: serde_json::Value = serde_json::from_str(&mcp_content).unwrap();
         assert!(mcp["servers"].get(server_name).is_none());
@@ -6229,11 +6234,9 @@ mod tests {
 
         let err = uninstall_marketplace_tool("yuandian-mcp".to_string()).unwrap_err();
         assert!(err.contains("删除 MCP OAuth token 失败"));
-        assert!(
-            crate::bridge::marketplace::MarketplaceManager::new()
-                .installed_ids()
-                .contains(&"yuandian-mcp".to_string())
-        );
+        assert!(crate::bridge::marketplace::MarketplaceManager::new()
+            .installed_ids()
+            .contains(&"yuandian-mcp".to_string()));
         let mcp_content = std::fs::read_to_string(crate::bridge::paths::mcp_config_path()).unwrap();
         let mcp: serde_json::Value = serde_json::from_str(&mcp_content).unwrap();
         assert!(mcp["servers"].get(server_name).is_some());
@@ -6754,7 +6757,9 @@ mod tests {
         ));
 
         // rename_session 路径：set_title 对 scheduled 会话生效并落盘。
-        store.set_title(&id, "重命名后的定时运行".to_string()).expect("rename");
+        store
+            .set_title(&id, "重命名后的定时运行".to_string())
+            .expect("rename");
         assert_eq!(
             store.load(&id).expect("reload").metadata.title,
             "重命名后的定时运行"
@@ -7538,11 +7543,7 @@ struct MarketplaceOAuthLoginRegistration {
 }
 
 impl MarketplaceOAuthLoginCoordinator {
-    async fn register(
-        &self,
-        tool_id: &str,
-        request_id: &str,
-    ) -> MarketplaceOAuthLoginRegistration {
+    async fn register(&self, tool_id: &str, request_id: &str) -> MarketplaceOAuthLoginRegistration {
         let cancellation_token = tokio_util::sync::CancellationToken::new();
         let (completion_sender, completion) = tokio::sync::watch::channel(false);
         let mut state = self.state.lock().await;

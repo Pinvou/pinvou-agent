@@ -217,21 +217,31 @@ pub fn zhidao_skills_should_show() -> bool {
     connected_flag().is_file()
 }
 
-/// 仅在连接可见性真实变化时更新标记与技能文件。在跑 Engine 会在下一轮消息前
-/// 重扫技能目录，因此不需要回收 Engine。
 fn set_connected(v: bool) -> bool {
-    if zhidao_skills_should_show() == v {
-        return false;
-    }
+    let previous = zhidao_skills_should_show();
     let p = connected_flag();
-    if v {
-        let _ = std::fs::create_dir_all(zhidao_home());
-        let _ = std::fs::write(&p, b"1");
-    } else {
-        let _ = std::fs::remove_file(&p);
+    if previous != v {
+        if v {
+            let _ = std::fs::create_dir_all(zhidao_home());
+            let _ = std::fs::write(&p, b"1");
+        } else {
+            let _ = std::fs::remove_file(&p);
+        }
     }
-    let _ = crate::bridge::bundle::Pinvou3Bundle::paths().apply_zhidao_skill_visibility(v);
-    true
+    let skill_visible = crate::bridge::bundle::Pinvou3Bundle::paths()
+        .skills_dir
+        .join("zhidao")
+        .join("SKILL.md")
+        .is_file();
+    let deferred = (previous != v || skill_visible != v)
+        && crate::connector_visibility::request(
+            crate::connector_visibility::ConnectorKind::Zhidao,
+            v,
+        );
+    if deferred {
+        log::info!("[zhidao] skill visibility queued for the next turn connected={v}");
+    }
+    previous != v
 }
 
 #[derive(Default)]
@@ -253,6 +263,8 @@ pub async fn zhidao_status() -> Result<Value, String> {
         let cmd = zhidao(&["load"])?;
         let (ok, _code, so, _se) = run(cmd)?;
         let connected = ok && so.contains("ZHIDAO_TOKEN");
+        // 状态查询只更新期望可见性；活跃 turn 自然结束后再落技能文件。
+        let _ = set_connected(connected);
         // 只回 connected:load 的 stdout 就是 ZHIDAO_TOKEN 本体,不能进 webview
         Ok::<Value, String>(json!({ "connected": connected }))
     })
@@ -297,7 +309,7 @@ fn run_login_flow(app: &AppHandle) {
         }
         if is_authed() {
             if set_connected(true) {
-                log::info!("[zhidao] skill visibility changed connected=true; applies next turn");
+                log::info!("[zhidao] connected state changed; visibility will apply without evicting active turns");
             }
             emit(app, "zhidao:connected", json!({ "ok": true }));
             return;
@@ -377,8 +389,8 @@ pub async fn zhidao_logout() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         let cmd = zhidao(&["clear"])?;
         let (ok, _code, so, se) = run(cmd)?;
-        if set_connected(false) {
-            log::info!("[zhidao] skill visibility changed connected=false; applies next turn");
+        if ok {
+            let _ = set_connected(false);
         }
         Ok::<Value, String>(json!({ "ok": ok, "stdout": so, "stderr": se }))
     })
@@ -396,5 +408,4 @@ mod tests {
         assert!(qr.starts_with("data:image/svg+xml;base64,"));
         assert!(qr.len() > 512);
     }
-
 }

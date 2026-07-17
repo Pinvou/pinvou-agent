@@ -1,0 +1,655 @@
+/* 桌宠窗口:整窗透明。html/body 的背景来自全局样式(主界面主题),
+   在 pet 窗口里必须全部压掉,否则透明窗口显示一块底色方块。 */
+html.pet-window,
+html.pet-window body,
+html.pet-window #root {
+  background: transparent !important;
+  overflow: hidden !important;
+}
+
+.pet-root {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* 人物贴底：卡片出现/消失不改变人物在窗口内的位置——垂直居中会让
+     卡片卸载的第一帧人物立刻重排（窗口异步缩放前的闪动即源于此）。
+     底边距 8px 与拖拽物理(pet-interaction PET_BOTTOM_PADDING)一致。 */
+  justify-content: flex-end;
+  padding-bottom: 8px;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+  position: relative;
+  box-sizing: border-box;
+}
+
+.pet-root.pet-align-left {
+  align-items: flex-start;
+  padding-left: 24px;
+}
+
+.pet-root.pet-align-right {
+  align-items: flex-end;
+  padding-right: 24px;
+}
+
+/* 人物独立缩放；活动卡保持固定字号，不随人物比例一起缩小。 */
+.pet-character-slot {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.pet-stage {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform-origin: 50% 100%;
+}
+
+/* 拖拽倾斜层:JS 按水平速度直接写 rotate(不走 React state,60fps)。 */
+.pet-tilt {
+  transform-origin: 50% 90%;
+  will-change: transform;
+}
+
+.pet-character {
+  cursor: grab;
+  touch-action: none;
+}
+.pet-character:focus {
+  outline: 0;
+}
+.pet-character:focus-visible .pet-sprite {
+  filter: drop-shadow(0 0 4px rgba(65, 118, 205, 0.68));
+}
+.pet-character:active {
+  cursor: grabbing;
+}
+
+.pet-sprite {
+  background-repeat: no-repeat;
+  image-rendering: -webkit-optimize-contrast;
+  pointer-events: none;
+}
+
+/* 图集与默认回退都加载失败时，透明置顶窗口仍必须留下可见、可点击的恢复入口。 */
+.pet-activation-fallback {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 132px;
+  min-height: 104px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid rgba(78, 86, 98, 0.22);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #34383e;
+  box-shadow: 0 5px 18px rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+}
+
+.pet-activation-fallback:focus-visible {
+  outline: 2px solid rgba(65, 118, 205, 0.8);
+  outline-offset: 2px;
+}
+
+.pet-activation-fallback-icon {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #fce8e6;
+  color: #c5221f;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.pet-activation-fallback-title {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.pet-activation-fallback-action {
+  color: #0b57d0;
+  font-size: 12px;
+}
+
+/* 独立气泡共享一个透明滚动面板；气泡本身不拥有滚动。 */
+.pet-activities {
+  width: 300px;
+  max-height: 260px;
+  margin-bottom: 2px;
+  padding: 8px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  opacity: 1;
+}
+.pet-activities-tray {
+  gap: 8px;
+}
+.pet-activities::-webkit-scrollbar {
+  display: none;
+}
+.pet-activity-shell {
+  width: 100%;
+  flex: 0 0 auto;
+}
+.pet-activity {
+  position: relative;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 48px;
+  border: 1px solid rgba(33, 38, 45, 0.09);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.98);
+  color: #34383e;
+  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.10);
+  transition: background 0.14s ease, box-shadow 0.14s ease;
+}
+.pet-activity:hover {
+  background: #fff;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.13);
+}
+.pet-activity-scheduled {
+  border-color: rgba(66, 133, 224, 0.30);
+  background: rgba(235, 245, 255, 0.98);
+  box-shadow: 0 2px 8px rgba(46, 111, 198, 0.16);
+}
+.pet-activity-scheduled:hover {
+  background: rgba(243, 249, 255, 0.99);
+  box-shadow: 0 3px 11px rgba(46, 111, 198, 0.22);
+}
+.pet-activity-scheduled .pet-activity-title { color: #245f9f; }
+.pet-activity-scheduled .pet-activity-body { color: #52708f; }
+.pet-scheduled-status {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #3d83d5;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 750;
+  line-height: 1;
+}
+.pet-activity-open {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  outline: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.pet-activity-open:focus-visible {
+  box-shadow: inset 0 0 0 2px rgba(65, 118, 205, 0.72);
+}
+.pet-activity-main {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  min-height: 48px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  box-sizing: border-box;
+  padding: 7px 14px;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  pointer-events: none;
+}
+.pet-activity-title-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 22px;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.pet-activity-body-row {
+  position: relative;
+  min-width: 0;
+}
+.pet-activity-status {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 11px;
+  height: 11px;
+  box-sizing: border-box;
+  border: 1.5px solid #9299a3;
+  border-top-color: transparent;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 8px;
+  font-weight: 750;
+  line-height: 1;
+  transition: opacity 0.12s ease;
+}
+.pet-activity-waiting .pet-activity-status { border-color: #c58a18; border-top-color: transparent; }
+.pet-activity-failed .pet-activity-status { border: 0; background: #d94b45; }
+.pet-activity-review .pet-activity-status { width: 12px; height: 12px; border: 0; background: #1daf58; }
+.pet-activity-running .pet-activity-status { animation: pet-status-spin 0.9s linear infinite; }
+@keyframes pet-status-spin { to { transform: rotate(360deg); } }
+.pet-activity-title {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+  color: #20242a;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.18;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pet-activity-body {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  color: #686f79;
+  font-size: 13px;
+  line-height: 1.28;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.pet-activity.is-expanded .pet-activity-body {
+  display: block;
+  -webkit-line-clamp: unset;
+  max-height: none;
+  overflow: visible;
+}
+.pet-activity-body-expanded {
+  overflow: visible;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.pet-activity-body > :first-child { margin-top: 0; }
+.pet-activity-body > :last-child { margin-bottom: 0; }
+.pet-activity-body p { margin: 0; }
+.pet-activity-body h1,
+.pet-activity-body h2,
+.pet-activity-body h3,
+.pet-activity-body h4,
+.pet-activity-body h5,
+.pet-activity-body h6 {
+  margin: 0;
+  font: inherit;
+  font-weight: 650;
+}
+.pet-activity-body ul,
+.pet-activity-body ol {
+  margin: 0;
+  padding-left: 1.25em;
+}
+.pet-activity-body blockquote {
+  margin: 0;
+  padding-left: 7px;
+  border-left: 2px solid #cfd3d8;
+}
+.pet-activity-body code {
+  padding: 0 3px;
+  border-radius: 4px;
+  background: #f0f2f4;
+  font: 0.92em/1.2 ui-monospace, "Cascadia Code", monospace;
+}
+.pet-activity-body pre {
+  margin: 0;
+  white-space: pre-wrap;
+}
+.pet-activity-body pre code { padding: 0; }
+.pet-activity-body * { pointer-events: none; }
+.pet-activity-close,
+.pet-activity-expand,
+.pet-activity-reply {
+  z-index: 3;
+  border: 1px solid rgba(33, 38, 45, 0.13);
+  background: rgba(255, 255, 255, 0.98);
+  color: #4c535c;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+}
+.pet-activity-close {
+  position: absolute;
+  top: -7px;
+  left: -7px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 15px;
+  line-height: 17px;
+  opacity: 0;
+  pointer-events: none;
+}
+.pet-activity-expand {
+  position: relative;
+  top: -2px;
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: center;
+  width: 22px;
+  height: 22px;
+  padding: 0 0 2px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #858b94;
+  box-shadow: none;
+  opacity: 0;
+  pointer-events: none;
+  font-size: 21px;
+  line-height: 20px;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+.pet-activity-expand-icon {
+  display: block;
+  transition: transform 0.12s ease;
+}
+.pet-activity.is-expanded .pet-activity-expand-icon {
+  transform: rotate(90deg);
+}
+.pet-activity-expand::before {
+  content: attr(data-hint);
+  position: absolute;
+  right: 27px;
+  top: 50%;
+  padding: 4px 8px;
+  border: 1px solid rgba(33, 38, 45, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.98);
+  color: #4b5158;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity 0.12s ease;
+}
+.pet-activity-expand:hover::before,
+.pet-activity-expand:focus-visible::before {
+  opacity: 1;
+}
+.pet-activity:hover .pet-activity-status {
+  opacity: 0;
+}
+.pet-activity:hover .pet-activity-expand {
+  opacity: 1;
+  pointer-events: auto;
+}
+.pet-activity-expand:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.pet-activity-expand:hover,
+.pet-activity-expand:focus-visible {
+  background: #4c5158;
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.16);
+}
+.pet-activity-reply {
+  position: absolute;
+  right: 8px;
+  bottom: 5px;
+  top: auto;
+  min-width: 35px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 18px;
+  opacity: 0;
+  pointer-events: none;
+}
+.pet-activity:hover .pet-activity-close,
+.pet-activity-close:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.pet-activity:hover .pet-activity-reply,
+.pet-activity-reply:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.pet-activity-close:hover {
+  background: #f5f6f7;
+}
+.pet-activity-reply:hover,
+.pet-activity-reply:focus-visible {
+  background: #4c5158;
+  color: #fff;
+}
+.pet-activity-close:focus-visible,
+.pet-activity-reply:focus-visible {
+  outline: 2px solid rgba(65, 118, 205, 0.72);
+  outline-offset: 1px;
+}
+@media (hover: none) and (pointer: coarse) {
+  .pet-activity-status {
+    opacity: 0;
+  }
+  .pet-activity-expand,
+  .pet-activity-reply {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+.pet-reply-composer {
+  width: calc(100% - 12px);
+  min-height: 28px;
+  margin: 4px 6px 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 22px;
+  align-items: end;
+  gap: 3px;
+  box-sizing: border-box;
+  padding: 2px 4px 2px 9px;
+  border: 1px solid rgba(33, 38, 45, 0.12);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+.pet-reply-composer textarea {
+  width: 100%;
+  min-height: 18px;
+  max-height: 52px;
+  box-sizing: border-box;
+  padding: 0;
+  resize: none;
+  overflow-y: auto;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #2d3238;
+  font: 13px/18px system-ui, -apple-system, "Segoe UI", sans-serif;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.pet-reply-composer textarea::placeholder {
+  color: #9aa0a8;
+}
+.pet-reply-composer > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #737a84;
+  font-size: 15px;
+  line-height: 22px;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+.pet-reply-composer > button:not(:disabled):hover {
+  background: #343941;
+  color: #fff;
+}
+.pet-reply-composer > button:disabled {
+  opacity: 0.28;
+  cursor: default;
+}
+.pet-reply-send-icon {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.pet-reply-error {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: #c7443e;
+  font-size: 11px;
+  line-height: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pet-activity-awake {
+  text-align: left;
+}
+.pet-activity-awake .pet-activity-title,
+.pet-activity-awake .pet-activity-body {
+  max-width: 100%;
+}
+
+/* 等比例缩放手柄：锚定人物自身右下角，默认隐藏，悬停时出现。 */
+.pet-resize-grip {
+  position: absolute;
+  bottom: 4px;
+  z-index: 8;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  opacity: 0;
+  pointer-events: none;
+  touch-action: none;
+  transition: opacity 0.14s ease;
+}
+.pet-character-slot > .pet-resize-grip {
+  left: auto;
+  right: 6px;
+  bottom: 0;
+}
+.pet-resize-grip-icon {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  width: 16px;
+  height: 16px;
+  overflow: visible;
+  fill: none;
+  stroke: rgba(57, 63, 70, 0.9);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+.pet-root:hover .pet-resize-grip,
+.pet-resize-grip:active {
+  opacity: 0.68;
+  pointer-events: auto;
+}
+.pet-root:hover .pet-resize-grip:hover,
+.pet-resize-grip:active {
+  opacity: 1;
+}
+
+/* 活动卡收起徽标：锚在人物头部右上（百分比定位，随缩放自适应——
+   精灵帧四周有透明留白，不能贴槽的边缘）。展开态是毛玻璃"−"小圆钮，
+   与活动卡同一视觉语言；收起态换蓝底数字。 */
+.pet-collapse-badge {
+  position: absolute;
+  top: 1%;
+  right: 15%;
+  z-index: 5;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.92);
+  color: #5F6368;
+  border: 1px solid rgba(60, 64, 67, 0.16);
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.16);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.pet-collapse-badge:hover {
+  transform: scale(1.1);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.24);
+}
+
+.pet-collapse-badge--count {
+  width: auto;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #0B57D0;
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.85);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-collapse-badge {
+    transition: none;
+  }
+}
+
+/* DOM 仍保留供展开前测量；原生窗口会同步缩回人物大小。 */
+.pet-activities--collapsed {
+  opacity: 0;
+  pointer-events: none;
+}

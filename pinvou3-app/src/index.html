@@ -157,6 +157,8 @@
   <script src="/tauri-bridge.js" onload="__PINVOU_STARTUP__.mark('app:tauri_bridge_loaded')" onerror="__PINVOU_STARTUP__.mark('app:tauri_bridge_error')"></script>
   <script>
     window.addEventListener('DOMContentLoaded', function () {
+      const isPetWindow = new URLSearchParams(window.location.search).get('window') === 'pet';
+      if (isPetWindow) return;
       if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === 'function') {
         window.__TAURI__.core.invoke('get_monitor_snapshot').catch(function (e) {
           console.warn('[monitor] direct boot probe failed', e);

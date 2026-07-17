@@ -21,6 +21,7 @@ pub mod feedback;
 pub use commands::build_message_with_attachments;
 // CLI 连接器公共管道(飞书 / 企微 / 钉钉共享:起进程 / 扫码 / 事件 / 取消)。
 mod connector_cli;
+mod connector_visibility;
 mod dingtalk;
 pub mod engine;
 pub mod engine_pool;
@@ -38,11 +39,13 @@ mod monitor;
 mod notifications;
 mod os;
 pub mod personas;
+mod pet_window;
 mod pinvou_review;
 mod process;
 mod remote_control;
 mod scheduled_executor;
 mod scheduled_tasks;
+mod selected_pet;
 pub mod super_permission;
 mod startup;
 mod telemetry;
@@ -140,14 +143,50 @@ const RELEASE_ENV_DEFAULTS: &[(&str, &str)] = &[
     // ~/.deepseek config 的 subagent api_timeout=300 对齐(步级超时须更大)。
     ("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS", "280"),
     // —— webkit2gtk / fcitx 兼容（Wayland 下 IM 协议挂）——
-    // x86 Intel 与 ARM64 GB10 真机回归均能稳定运行；关闭 compositing mode
-    // 避免 NVIDIA/WebKitGTK DMA-BUF/GBM 组合出现黑白屏或启动异常。
-    ("WEBKIT_DISABLE_COMPOSITING_MODE", "1"),
+    // 不得默认设置 WEBKIT_DISABLE_COMPOSITING_MODE：关闭合成后，透明桌伴窗口的
+    // 动画帧会在 WebKitGTK 软件渲染路径上留下未清理的透明残影。极少数
+    // NVIDIA/WebKitGTK 兼容异常机器仍可从外部显式设为 1，var_os 守门会保留。
     ("GDK_BACKEND", "x11"),
     ("GTK_IM_MODULE", "fcitx"),
     ("QT_IM_MODULE", "fcitx"),
     ("XMODIFIERS", "@im=fcitx"),
 ];
+
+const WEBKIT_RENDERING_OVERRIDE_KEYS: &[&str] = &[
+    "WEBKIT_DISABLE_COMPOSITING_MODE",
+    "WEBKIT_DISABLE_DMABUF_RENDERER",
+    "WEBKIT_DMABUF_RENDERER_FORCE_SHM",
+    "WEBKIT_FORCE_DMABUF_RENDERER",
+    "WEBKIT_WEB_RENDER_DEVICE_FILE",
+];
+
+fn should_force_webkit_dmabuf_shm(
+    is_linux_arm64_nvidia: bool,
+    has_explicit_rendering_override: bool,
+) -> bool {
+    is_linux_arm64_nvidia && !has_explicit_rendering_override
+}
+
+fn configure_webkit_rendering_env() {
+    use std::env;
+
+    let has_explicit_rendering_override = WEBKIT_RENDERING_OVERRIDE_KEYS
+        .iter()
+        .any(|key| env::var_os(key).is_some());
+    let is_linux_arm64_nvidia = cfg!(all(target_os = "linux", target_arch = "aarch64"))
+        && std::path::Path::new("/proc/driver/nvidia/version").is_file();
+
+    if should_force_webkit_dmabuf_shm(
+        is_linux_arm64_nvidia,
+        has_explicit_rendering_override,
+    ) {
+        // GB10/NVIDIA + WebKitGTK 2.52 会在 DMA-BUF/GBM 路径调用
+        // DRM_IOCTL_MODE_CREATE_DUMB 并被驱动拒绝。FORCE_SHM 仅把 WebKit
+        // renderer buffer 传输改为共享内存，不关闭 compositing，因此透明
+        // 桌伴动画仍能正确清帧。显式外部配置始终优先。
+        env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1");
+    }
+}
 
 /// 为 release 安装包（.deb 双击启动场景）注入 run-dev.sh 里集中处理的运行时 env。
 /// dev 启动走 run-dev.sh 已经 export 过的不会被覆盖（var_os().is_none() 守门）。
@@ -164,6 +203,7 @@ fn ensure_release_env() {
             env::set_var("HOME", profile);
         }
     }
+    configure_webkit_rendering_env();
     for (k, v) in RELEASE_ENV_DEFAULTS {
         if env::var_os(k).is_none() {
             env::set_var(k, v);
@@ -204,12 +244,22 @@ fn ensure_release_env() {
 #[cfg(test)]
 mod release_env_contract {
     #[test]
-    fn compositing_mode_is_disabled_by_default() {
+    fn arm64_nvidia_uses_shm_without_disabling_compositing() {
+        assert!(super::should_force_webkit_dmabuf_shm(true, false));
         assert!(
-            super::RELEASE_ENV_DEFAULTS
+            !super::should_force_webkit_dmabuf_shm(true, true),
+            "用户显式配置的 WebKit 渲染策略必须优先"
+        );
+        assert!(!super::should_force_webkit_dmabuf_shm(false, false));
+    }
+
+    #[test]
+    fn hardware_compositing_is_not_disabled_by_default() {
+        assert!(
+            !super::RELEASE_ENV_DEFAULTS
                 .iter()
-                .any(|(key, value)| *key == "WEBKIT_DISABLE_COMPOSITING_MODE" && *value == "1"),
-            "WebKit 合成兼容模式必须作为 release 默认值"
+                .any(|(key, _)| *key == "WEBKIT_DISABLE_COMPOSITING_MODE"),
+            "WebKit 合成模式只能由外部环境变量显式关闭，不能作为全局默认值"
         );
     }
 }
@@ -431,6 +481,10 @@ pub fn run() {
             app.handle().manage(monitor_state);
             app.handle()
                 .manage(notifications::NotificationState::default());
+            app.handle()
+                .manage(pet_window::PetNavigationState::default());
+            app.handle().manage(pet_window::PetReplyState::default());
+            app.handle().manage(selected_pet::SelectedPetStore::load());
 
             // CLI 连接器连接编排状态(按连接器 id 存长驻子进程 PID + 取消标志),
             // 飞书 / 企微共用,供 *_connect_begin / *_cancel 用。
@@ -506,8 +560,19 @@ pub fn run() {
                 });
             }
 
+            // 桌宠:settings.json 里 pet.enabled 为真时随主窗口一起拉起。
+            pet_window::spawn_if_enabled(app.handle());
+
             startup::mark("setup:done");
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // 主窗口销毁 → 一并关掉桌宠,否则只剩宠物窗口时 app 不退出。
+            if window.label() == "main" {
+                if let tauri::WindowEvent::Destroyed = event {
+                    pet_window::close_with_main(window.app_handle());
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::chat,
@@ -603,6 +668,7 @@ pub fn run() {
             commands::save_session_artifacts,
             commands::list_workspace_files,
             commands::cancel_generation,
+            commands::list_shell_tasks,
             commands::cancel_shell_task,
             remote_control::remote_control_start,
             remote_control::remote_control_stop,
@@ -646,6 +712,19 @@ pub fn run() {
             commands::open_artifact_window,
             detach::open_detached_window,
             detach::begin_detach_drag,
+            pet_window::set_pet_enabled,
+            pet_window::show_pet_context_menu,
+            pet_window::hide_pet_context_menu,
+            pet_window::get_pet_scale,
+            pet_window::set_pet_scale,
+            pet_window::set_pet_activity_visible,
+            pet_window::save_pet_position,
+            pet_window::open_main_from_pet,
+            pet_window::take_pet_navigation,
+            pet_window::queue_pet_reply,
+            pet_window::take_pet_reply,
+            selected_pet::get_selected_pet,
+            selected_pet::set_selected_pet,
             commands::open_external_url,
             commands::ingest_file,
             commands::detect_system_tools,

@@ -261,6 +261,8 @@ pub async fn bootstrap_local_vllm(app: tauri::AppHandle) -> Result<BootstrapResu
         id: BOOTSTRAP_MODEL_ID.to_string(),
         name: "本地大模型".to_string(),
         preset: ModelPreset::LocalVllm,
+        context_window_tokens: None,
+        max_output_tokens: None,
         model: model.clone(),
         base_url: base_url.clone(),
         api_key: String::new(),
