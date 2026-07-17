@@ -202,6 +202,43 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     llmApiCacheFallback.keptExisting && llmApiCacheFallback.keptModels && llmApiCacheFallback.clearedWhenAuthoritative,
     JSON.stringify(llmApiCacheFallback));
 
+  // 模型表单可能包含尚未保存的名称、地址和密钥，点击遮罩层不能意外丢失草稿；
+  // 只有显式点击“取消”才关闭。
+  const modelModalOpened = await page.evaluate(() => {
+    const nav = document.querySelector('[data-testid="nav-settings"]');
+    if (!nav) return false;
+    nav.click();
+    return true;
+  });
+  await sleep(700);
+  const modelModalOutsideClick = await page.evaluate(async () => {
+    const settle = () => new Promise(resolve => setTimeout(resolve, 50));
+    const add = document.querySelector('[data-testid="settings-model-add"]');
+    if (!add) return { addFound: false, opened: false, stayedOpen: false, cancelled: false };
+    add.click();
+    await settle();
+    const backdrop = document.querySelector('[data-testid="model-form-backdrop"]');
+    const opened = !!document.querySelector('[data-testid="model-form-dialog"]');
+    if (backdrop) backdrop.click();
+    await settle();
+    const stayedOpen = !!document.querySelector('[data-testid="model-form-dialog"]');
+    const cancel = document.querySelector('[data-testid="model-form-cancel"]');
+    if (cancel) cancel.click();
+    await settle();
+    return {
+      addFound: true,
+      opened,
+      stayedOpen,
+      cancelled: !document.querySelector('[data-testid="model-form-dialog"]'),
+    };
+  });
+  rec(
+    '模型编辑弹窗点击外部不关闭且显式取消仍可关闭',
+    modelModalOpened && modelModalOutsideClick.addFound && modelModalOutsideClick.opened
+      && modelModalOutsideClick.stayedOpen && modelModalOutsideClick.cancelled,
+    JSON.stringify(modelModalOutsideClick),
+  );
+
   // ①b 工作流运行中可停止；停止后原需求自动进入新任务编辑框。
   page.on('dialog', async dialog => { await dialog.accept(); });
   await expand(page); await sleep(300);

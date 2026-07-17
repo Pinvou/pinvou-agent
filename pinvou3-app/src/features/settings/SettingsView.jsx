@@ -673,8 +673,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         : hasSavedKey ? t.credConfigured
         : t.credNotConfigured;
       return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150" onClick={onCancel}>
-          <div onClick={e => e.stopPropagation()}
+        <div data-testid="model-form-backdrop"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150">
+          <div data-testid="model-form-dialog" role="dialog" aria-modal="true"
             className={`w-[460px] max-w-[92vw] max-h-[88vh] overflow-y-auto rounded-[24px] p-6 shadow-2xl ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
             <h2 className="text-[18px] font-medium mb-5">{initial.__new ? t.modelFormAddTitle : t.modelFormEditTitle}</h2>
             <div className="space-y-4">
@@ -791,7 +792,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               )}
             </div>
             <div className="flex justify-end gap-2 mt-6">
-              <button onClick={onCancel} className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>{t.cpCancel}</button>
+              <button data-testid="model-form-cancel" onClick={onCancel} className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>{t.cpCancel}</button>
               <button onClick={doSave} disabled={!canSave}
                 className={`text-[13px] font-medium px-5 py-2 rounded-full transition-colors disabled:opacity-50 ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'}`}>{t.modelSaveBtn}</button>
             </div>
@@ -1420,7 +1421,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                       );
                     })}
                   </div>
-                  <button onClick={() => setEditingModel({ __new: true, id: '', name: '', preset: 'local_vllm', model: MODEL_PRESET_DEFS.local_vllm.model, base_url: MODEL_PRESET_DEFS.local_vllm.baseUrl, api_key: '' })}
+                  <button data-testid="settings-model-add" onClick={() => setEditingModel({ __new: true, id: '', name: '', preset: 'local_vllm', model: MODEL_PRESET_DEFS.local_vllm.model, base_url: MODEL_PRESET_DEFS.local_vllm.baseUrl, api_key: '' })}
                     className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#F0F4F9] text-[#1F1F1F] hover:bg-[#E8EAED]'}`}>{t.addModel}</button>
                 </div>
               </SCard>
