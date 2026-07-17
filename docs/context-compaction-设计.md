@@ -67,15 +67,19 @@ served name 变 `qwen3.6-35b` 无 `_Nk` 后缀 → 底座兜底 128,000 窗口�
 
 ## 3. 方案总纲
 
-### 探测透传（零 fork，客户 bug 的直接修复）
+### 部署档案 + 探测透传（v0.9 当前方案）
 
 1. `monitor.rs`：`probe_vllm_served_model` → `probe_vllm_model_info`，返回
    `(Option<String>, Option<u32>)`（name, max_model_len）。`parse_models_response`
    已解析两者，现在只是别丢 max——纯透传，零新增请求。
 2. `engine_pool.rs`：探测结果两个都用，name 覆盖 model（现状不变）+ 存 `max_model_len`。
-3. `bridge/mod.rs`：探测到 W → `active_route_limits = Some(RouteLimits{ context_tokens:
-   Some(W), ..Default::default() })`；失败透传 `None`（名字 hint 老路）。**只填
-   context_tokens，不填 output_tokens**（O 走 §3 派生，别钉死 route）。
+3. `SavedModel`：持久化具体部署的 `context_window_tokens` / `max_output_tokens`，与发给服务端
+   的 wire model alias 解耦；设置页可为任意 OpenAI-compatible 引擎配置。
+4. `bridge/mod.rs`：声明窗口与 probe 取较小值，生成同时包含 context/output 的
+   `active_route_limits`；默认本地 Qwen 为 262144/24576，未知 vLLM alias 回退
+   128000/24576，其他引擎没有声明时不猜。
+5. v0.9 底座只补最小 embed API：把宿主 limits 附到 resolved route；显式 route output
+   优先于未知模型名的 4K 兼容 fallback，未声明 route 的上游行为不变。
 
 连带收益（现状白丢的）：系统提示词窗口声明跟真值走（engine.rs:933）、请求输出 cap
 按小窗自动钳制（context.rs:62）、context report 百分比 route-aware（context_report.rs:179）。
@@ -112,17 +116,17 @@ T = clamp(T, floor=4,096, 上界=0.75·W)
 小窗口 T 贴 floor 是**数学结论不是设计旋钮**——固定开销在小窗口占大头。C/D 档不花精力
 调参，只保证「floor 防压缩风暴 + 设置页/chip 告警不崩」。
 
-### O 派生（阶段一）
+### O 来源（v0.9）
 
-`O = clamp(24,576, 下限 6,144, 上界 W/4)`。语义是「业务单次输出需求」（公文/PPT 单次
-≤16KB chunk ≈ 3-5K token，24,576 覆盖 + margin），只在小窗装不下时被迫缩，下限保证至少
-能写完一个 chunk。W/4 是保守上界，非线性依据，小窗口时生效。
+O 是具体 route 的单轮输出上限，不再从 wire model 名字猜。默认本地档案为 24,576；用户可
+按部署显式配置，最终取“档案值、Pinvou 进程级请求上限、窗口可容纳值”的较小值。底座只在
+route 未声明 O 时才使用静态模型目录/未知模型 4K fallback。
 
 ## 4. 分期计划
 
 三块，两期在关键路径、一条上游线并行。
 
-### 一期：后端探测 + 多窗口适配（零 fork，堵客户 bug）
+### v0.8 一期：后端探测 + 多窗口适配（历史上零 fork）
 
 > **实施状态（2026-07-02，分支 `pinvou3-compact`）**：✅ 代码完成 + 编译通过 + 275
 > lib 测试全绿 + fork-guard `--fast` 零变化（证实零 fork）。
@@ -136,10 +140,14 @@ T = clamp(T, floor=4,096, 上界=0.75·W)
 > 注：O 按窗口分档(≥500K→262144,否则 max_output_tokens);云端拿不到真实窗口的模型
 > (gpt-4o/qwen-max 等)退 128k 兜底(与底座同源不倒置),准确值靠二期手动配置。
 
-范围：§3 探测透传 + T 推导公式 + O 派生 + 参数化守护测试。全部 app 层，不动 submodule。
+> **v0.9 更新（2026-07-17）**：上面的“零 fork”是当时基线的历史结论。v0.9 resolved
+> route 会对未知 wire alias 采用 4K output 兼容 fallback，因此现方案在 T6 增加了最小
+> limits 宿主入口与显式 output 优先级；模型档案、探测和 Compact 推导仍全部在 app。
 
-- 改：`monitor.rs`（探测透传）、`engine_pool.rs`（存 W）、`bridge/mod.rs`
-  （填 `active_route_limits` + T 推导 helper 替换写死 190K）。
+范围：部署档案/探测/T 推导都在 app；底座仅保留 T6 的 route limits 入口和预算优先级。
+
+- 改：`monitor.rs`（探测透传）、`engine_pool.rs`（存 W）、`bridge/prefs.rs`
+  （部署档案）、`bridge/mod.rs`（同源 route limits + T 推导）。
 - ops：bundle 启动脚本补 `--served-model-name qwen36_35b_256k`（防御 + 监控标签；
   113 机 `~/workspace/pinvou3-bundle`，不在本仓则记 ops 项，不阻塞 PR）。
 - 依赖：app Cargo.toml 加 `codewhale-config`（facade 不 re-export `RouteLimits`；
@@ -151,18 +159,17 @@ T = clamp(T, floor=4,096, 上界=0.75·W)
 2. 守护测试参数化四窗口，断言**同尺**不变式 `k·(T+R) + S + M ≤ E`（旧的
    `compaction_threshold_stays_below_emergency_budget` 锁的是跨尺假不变式，一并改）；
    另断言 `probed context_tokens=Some` 时 `active_route_limits.context_tokens` 被填。
-3. `./scripts/fork-guard.sh --fast` 应零变化（不动 submodule）。
+3. `./scripts/fork-guard.sh` 必须覆盖底座 route limits/output precedence 与 app 的
+   128K/256K、自定义兼容引擎结果式回归。
 4. 真机冒烟：连本地 vLLM，footer 百分比按 262,144 计；长会话 ~T 处出现
    "Auto context compaction"（正常路径）而非 "Emergency"。
 5. 回归客户场景：mock probe 返回 131,072，确认正常压缩先于紧急、无抖动。
 
-### 二期：手动配置 context length（app 层兜底）
+### 手动配置 context/output（已完成）
 
-范围：设置页给用户手动指定窗口，覆盖探测值。定位 = **容错兜底**（探测不可用、
-用户想强制更小窗口留余量、第三方 provider 无 `/v1/models`），不是主路径。
-
-- 落点：`prefs.advanced.context_length_override`（`Option<u32>`）→ 优先级高于探测，
-  探测/hint 作为占位显示。
+范围：设置页按 SavedModel 指定窗口与 output。声明值是部署能力上限；probe 若得到更小窗口
+则向下收紧，避免配置高于真实引擎。这样同一模型在不同 endpoint 上可以有不同档案，也不会
+把 vLLM/Qwen 规则误套到 llama.cpp、SGLang 或其他 OpenAI-compatible 引擎。
 - 需处理：改值后是否需重启 engine（走已有「需重启」操作条约定，见 memory
   `headless_ui_smoke_check`）；非法值（< prompt 开销）拒绝 + 告警。
 
