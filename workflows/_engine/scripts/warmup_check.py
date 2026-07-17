@@ -4,8 +4,6 @@ import json
 import os
 from pathlib import Path
 import sys
-import time
-import urllib.error
 import urllib.request
 
 # 通用项目骨架(HTML_Deck 等具体工作流产物目录由各自角色按需建,不在引擎预检里)
@@ -27,9 +25,9 @@ REQUIRED_SCRIPTS = [
     "warmup_check.py",
     "workflow_logger.py",
 ]
-# PINVOU3_MODEL_BASE_URL 由宿主 harness::run_cmd 注入(env 优先,回退 settings.json custom_base_url)。
-# PINVOU3_MODEL_API_KEY 按需注入；PINVOU3_SEARCH_API_KEY 可降级
-# (缺失只 warn,见 check_search_api)——都不该阻塞工作流启动,故移出必需项。
+# PINVOU3_MODEL_BASE_URL 由宿主 harness::run_cmd 注入(env 优先,回退应用模型配置)。
+# warmup 不请求 /models：兼容服务可能允许推理但禁止列模型，不能据此阻塞工作流。
+# 模型鉴权由首个真实推理请求验证；PINVOU3_SEARCH_API_KEY 缺失只降级为 warn。
 REQUIRED_ENVS = []
 
 
@@ -95,44 +93,6 @@ def model_base_url():
     return os.environ.get("PINVOU3_MODEL_BASE_URL", "").rstrip("/")
 
 
-def model_api_key():
-    value = os.environ.get("PINVOU3_MODEL_API_KEY", "").strip()
-    return (value, "PINVOU3_MODEL_API_KEY") if value else ("", "")
-
-
-def check_llm_endpoint():
-    base = model_base_url()
-    if not base:
-        return item("blocked", "model base URL is missing", "Set PINVOU3_MODEL_BASE_URL")
-    # PINVOU3_MODEL_BASE_URL 通常已含 /v1（OpenAI 兼容惯例，launch 脚本与 bridge fallback 都带），
-    # 直接拼 /v1/models 会变成 /v1/v1/models → 404。base 已以 /v1 结尾时只补 /models。
-    url = base + "/models" if base.endswith("/v1") else base + "/v1/models"
-    # 抖动 / 大模型冷启动容忍：最多 3 次探测（每次 10s timeout，失败间隔 2s），
-    # 任一次成功即 pass；3 次全失败才判 blocked。避免单次网络抖动误卡 harness。
-    last = None
-    api_key, api_key_source = model_api_key()
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    for attempt in range(3):
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                if 200 <= resp.status < 400:
-                    suffix = f" (attempt {attempt + 1}/3)" if attempt else ""
-                    return item("pass", f"LLM endpoint reachable: {url}{suffix}")
-                last = f"HTTP {resp.status}"
-        except urllib.error.HTTPError as exc:
-            if exc.code in (401, 403):
-                auth_state = f"with {api_key_source}" if api_key else "without model API key"
-                last = f"HTTP {exc.code}: authorization failed ({auth_state})"
-            else:
-                last = f"HTTP {exc.code}: {exc.reason}"
-        except Exception as exc:
-            last = str(exc)
-        if attempt < 2:
-            time.sleep(2)
-    return item("blocked", f"LLM endpoint unreachable after 3 tries: {last}", "Check LLM API service, PINVOU3_MODEL_BASE_URL, and PINVOU3_MODEL_API_KEY")
-
-
 def check_search_endpoint():
     key = os.environ.get("PINVOU3_SEARCH_API_KEY")
     if not key:
@@ -175,7 +135,6 @@ def main(argv):
         "python_dependencies": check_python_deps(),
         "script_presence": check_scripts(),
         "environment_variables": check_env(),
-        "llm_endpoint": check_llm_endpoint(),
         "search_api": check_search_endpoint(),
         "materials_directory": check_materials(project),
     }

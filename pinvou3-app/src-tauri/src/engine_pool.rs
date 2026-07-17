@@ -26,6 +26,9 @@ use anyhow::{bail, Context, Result};
 use deepseek_tui::core::events::TurnOutcomeStatus;
 use deepseek_tui::core::ops::Op;
 use deepseek_tui::models::{ContentBlock, Message};
+use deepseek_tui::tools::shell::{
+    new_shared_shell_manager, SharedShellManager, ShellJobSnapshot, ShellResult,
+};
 use deepseek_tui::tools::user_input::UserInputResponse;
 use deepseek_tui::tui::app::AppMode;
 use parking_lot::Mutex as SyncMutex;
@@ -106,6 +109,29 @@ impl SessionTurnLifecycles {
     }
 }
 
+#[derive(Clone, Default)]
+struct SessionShellManagers {
+    managers: Arc<SyncMutex<HashMap<String, SharedShellManager>>>,
+}
+
+impl SessionShellManagers {
+    fn for_session(&self, session_id: &str, workspace: std::path::PathBuf) -> SharedShellManager {
+        let mut managers = self.managers.lock();
+        managers
+            .entry(session_id.to_string())
+            .or_insert_with(|| new_shared_shell_manager(workspace))
+            .clone()
+    }
+
+    fn get(&self, session_id: &str) -> Option<SharedShellManager> {
+        self.managers.lock().get(session_id).cloned()
+    }
+
+    fn remove(&self, session_id: &str) {
+        self.managers.lock().remove(session_id);
+    }
+}
+
 fn scheduled_profile_after_turn_gate(
     store: &SessionStore,
     session_id: &str,
@@ -160,6 +186,7 @@ pub struct EnginePool {
     entries: Arc<Mutex<HashMap<String, EngineEntry>>>,
     turn_locks: SessionTurnLocks,
     turn_lifecycles: SessionTurnLifecycles,
+    shell_managers: SessionShellManagers,
     app: AppHandle,
     store: SessionStore,
     /// 所有 session 共享一份已 boot 的 bridge(boot 会写盘 / 设 env,只能一次)。
@@ -175,6 +202,7 @@ impl EnginePool {
             entries: Arc::new(Mutex::new(HashMap::new())),
             turn_locks: SessionTurnLocks::default(),
             turn_lifecycles: SessionTurnLifecycles::default(),
+            shell_managers: SessionShellManagers::default(),
             app,
             store,
             bridge,
@@ -328,12 +356,19 @@ impl EnginePool {
             session_id,
             started_at.elapsed().as_millis()
         );
+        let shell_workspace = self
+            .store
+            .scheduled_profile(session_id)
+            .map(|profile| profile.workspace)
+            .unwrap_or_else(|| bridge.session_workspace(session_id));
+        let shell_manager = self.shell_managers.for_session(session_id, shell_workspace);
         let (engine, forwarder) = AppEngine::spawn_for_session(
             self.app.clone(),
             self.store.clone(),
             bridge,
             session_id,
             self.turn_lifecycles.for_session(session_id),
+            shell_manager,
         )
         .await?;
         log::info!(
@@ -442,7 +477,7 @@ impl EnginePool {
         )
         .await;
         if result.is_ok() {
-            self.turn_lifecycles.remove(session_id);
+            self.forget_session(session_id);
         }
         result
     }
@@ -469,6 +504,37 @@ impl EnginePool {
 
     pub(crate) fn forget_session(&self, session_id: &str) {
         self.turn_lifecycles.remove(session_id);
+        self.shell_managers.remove(session_id);
+    }
+
+    pub async fn list_shell_tasks(&self, session_id: &str) -> Result<Vec<ShellJobSnapshot>> {
+        let Some(manager) = self.shell_managers.get(session_id) else {
+            return Ok(Vec::new());
+        };
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut manager = manager
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Shell manager lock poisoned"))?;
+            Ok(manager.list_jobs())
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("list shell tasks join failed: {error}"))?
+    }
+
+    pub async fn cancel_shell_task(&self, session_id: &str, task_id: &str) -> Result<ShellResult> {
+        let manager = self
+            .shell_managers
+            .get(session_id)
+            .with_context(|| format!("No shell runtime for session '{session_id}'"))?;
+        let task_id = task_id.to_string();
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut manager = manager
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Shell manager lock poisoned"))?;
+            manager.kill(&task_id)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("cancel shell task join failed: {error}"))?
     }
 
     // ── 模型热切换(commands.rs 调用)──────────────────────────────
@@ -641,21 +707,6 @@ impl EnginePool {
                 session_id
             );
         }
-    }
-
-    /// Cancel a detached shell task directly. This path is independent of the
-    /// model turn cancellation token and therefore remains usable after
-    /// `chat:done` has completed the turn.
-    pub async fn cancel_shell_task(
-        &self,
-        session_id: &str,
-        task_id: &str,
-    ) -> Result<deepseek_tui::tools::shell::ShellResult> {
-        let engine = self
-            .handle_for(session_id)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("Session engine is no longer available"))?;
-        engine.cancel_shell_task(task_id)
     }
 
     /// pinvou3 工具开关(全局持久):把"被禁用的工具全名"(模型可见全名,小写)广播给
@@ -863,9 +914,12 @@ fn resolve_scheduled_model(
     }
 
     let mut matches = models.iter().filter(|model| model.model == profile.model);
-    let selected = matches
-        .next()
-        .with_context(|| format!("此任务绑定的 AI 模型已不可用，请重新选择 AI 模型并保存任务。模型：{}", profile.model))?;
+    let selected = matches.next().with_context(|| {
+        format!(
+            "此任务绑定的 AI 模型已不可用，请重新选择 AI 模型并保存任务。模型：{}",
+            profile.model
+        )
+    })?;
     if matches.next().is_some() {
         bail!(
             "此任务绑定的 AI 模型配置不唯一，请重新选择 AI 模型并保存任务。模型：{}",
@@ -899,7 +953,7 @@ mod scheduled_model_tests {
     use super::{
         delete_scheduled_run_with_gate, resolve_scheduled_model, resolve_spawn_model,
         scheduled_profile_after_turn_gate, should_sync_session, ScheduledUnattendedGuard,
-        SessionTurnLifecycles, SessionTurnLocks,
+        SessionShellManagers, SessionTurnLifecycles, SessionTurnLocks,
     };
     use crate::bridge::prefs::{ModelPreset, SavedModel};
     use crate::bridge::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
@@ -913,6 +967,8 @@ mod scheduled_model_tests {
             id: id.to_string(),
             name: id.to_string(),
             preset: ModelPreset::OpenaiCompatible,
+            context_window_tokens: None,
+            max_output_tokens: None,
             model: wire_name.to_string(),
             base_url: "https://example.invalid/v1".to_string(),
             api_key: String::new(),
@@ -1006,6 +1062,21 @@ mod scheduled_model_tests {
     }
 
     #[test]
+    fn session_shell_manager_is_reused_across_engine_rebuilds() {
+        let managers = SessionShellManagers::default();
+        let first = managers.for_session("session-1", PathBuf::from("D:/workspace-a"));
+        let rebuilt = managers.for_session("session-1", PathBuf::from("D:/workspace-b"));
+        assert!(Arc::ptr_eq(&first, &rebuilt));
+        drop(first);
+        assert!(
+            Arc::strong_count(&rebuilt) >= 2,
+            "the session registry must keep detached jobs alive after an Engine entry drops"
+        );
+        managers.remove("session-1");
+        assert!(managers.get("session-1").is_none());
+    }
+
+    #[test]
     fn session_turn_lifecycle_survives_engine_entry_removal_without_faking_idle_cancel() {
         let lifecycles = SessionTurnLifecycles::default();
         let engine_lifecycle = lifecycles.for_session("session-1");
@@ -1021,6 +1092,8 @@ mod scheduled_model_tests {
             None
         );
         assert!(lifecycles.get("unknown-session").is_none());
+        lifecycles.remove("session-1");
+        assert!(lifecycles.get("session-1").is_none());
     }
 
     #[tokio::test]

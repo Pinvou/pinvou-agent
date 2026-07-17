@@ -56,7 +56,10 @@ fn make_qr(url: &str) -> Option<String> {
         .dark_color(svg::Color("#000000"))
         .light_color(svg::Color("#ffffff"))
         .build();
-    Some(format!("data:image/svg+xml;base64,{}", b64(image.as_bytes())))
+    Some(format!(
+        "data:image/svg+xml;base64,{}",
+        b64(image.as_bytes())
+    ))
 }
 
 // ──────────────────────────── 路径 / 凭证 ────────────────────────────
@@ -90,7 +93,12 @@ fn device_id() -> String {
         .unwrap_or(0);
     let mut h = Sha256::new();
     h.update(format!("{}-{}", nanos, std::process::id()).as_bytes());
-    let id: String = h.finalize().iter().take(16).map(|b| format!("{:02x}", b)).collect();
+    let id: String = h
+        .finalize()
+        .iter()
+        .take(16)
+        .map(|b| format!("{:02x}", b))
+        .collect();
     let _ = std::fs::create_dir_all(eip_home());
     let _ = std::fs::write(&p, &id);
     id
@@ -277,22 +285,30 @@ pub fn eip_skills_should_show() -> bool {
     connected_flag().is_file()
 }
 
-/// 置连接标记并**同步技能可见性**(写 / 删 `eip/SKILL.md`)。仅在可见性真实
-/// 变化时写盘；在跑 Engine 会在下一轮 `SendMessage` 刷新 system prompt 并重扫技能，
-/// 无需回收当前 Engine，也不会打断正在运行的 turn。
+/// 置连接标记并请求技能可见性变更。空闲时立即写/删 `eip/SKILL.md`；
+/// 有活跃 turn 时延迟到边界应用，保证配置只影响下一个 turn。
 fn set_connected(v: bool) -> bool {
-    if eip_skills_should_show() == v {
-        return false;
-    }
+    let previous = eip_skills_should_show();
     let p = connected_flag();
-    if v {
-        let _ = std::fs::create_dir_all(eip_home());
-        let _ = std::fs::write(&p, b"1");
-    } else {
-        let _ = std::fs::remove_file(&p);
+    if previous != v {
+        if v {
+            let _ = std::fs::create_dir_all(eip_home());
+            let _ = std::fs::write(&p, b"1");
+        } else {
+            let _ = std::fs::remove_file(&p);
+        }
     }
-    let _ = crate::bridge::bundle::Pinvou3Bundle::paths().apply_eip_skill_visibility(v);
-    true
+    let skill_visible = crate::bridge::bundle::Pinvou3Bundle::paths()
+        .skills_dir
+        .join("eip")
+        .join("SKILL.md")
+        .is_file();
+    let deferred = (previous != v || skill_visible != v)
+        && crate::connector_visibility::request(crate::connector_visibility::ConnectorKind::Eip, v);
+    if deferred {
+        log::info!("[eip] skill visibility queued for the next turn connected={v}");
+    }
+    previous != v
 }
 
 // ──────────────────────────── 连接编排状态 ────────────────────────────
@@ -326,6 +342,9 @@ pub async fn eip_status() -> Result<Value, String> {
             .and_then(|v| v.get("hasToken"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        // Reconcile durable visibility without rebuilding or interrupting an
+        // active Engine. connector_visibility applies it at the turn boundary.
+        let _ = set_connected(connected);
         // 只回 connected:auth status 的 raw/stderr 可能含 token,不进 webview
         Ok::<Value, String>(json!({ "connected": connected }))
     })
@@ -339,7 +358,9 @@ pub async fn eip_status() -> Result<Value, String> {
 /// 立即返回 `{started:true}`,前端 listen 事件驱动 UI。
 #[tauri::command]
 pub async fn eip_connect_begin(app: AppHandle) -> Result<Value, String> {
-    app.state::<EipConn>().cancelled.store(false, Ordering::SeqCst);
+    app.state::<EipConn>()
+        .cancelled
+        .store(false, Ordering::SeqCst);
     let app2 = app.clone();
     tokio::task::spawn_blocking(move || run_login_flow(&app2));
     Ok(json!({ "started": true }))
@@ -362,7 +383,11 @@ fn run_login_flow(app: &AppHandle) {
             return; // 取消:静默
         }
         if start.elapsed() > Duration::from_secs(300) {
-            emit(app, "eip:error", json!({ "message": "登录超时(5 分钟内未完成)" }));
+            emit(
+                app,
+                "eip:error",
+                json!({ "message": "登录超时(5 分钟内未完成)" }),
+            );
             return;
         }
         std::thread::sleep(Duration::from_secs(3));
@@ -372,7 +397,7 @@ fn run_login_flow(app: &AppHandle) {
         }
         if is_authed() {
             if set_connected(true) {
-                log::info!("[eip] skill visibility changed connected=true; applies next turn");
+                log::info!("[eip] connected state changed; visibility will apply without evicting active turns");
             }
             emit(app, "eip:connected", json!({ "ok": true }));
             return;
@@ -384,7 +409,9 @@ fn run_login_flow(app: &AppHandle) {
 fn get_sso_url() -> Result<String, String> {
     let cmd = eip(&["auth", "login", "--no-poll", "--output", "json"])?;
     let (_ok, _code, so, se) = run(cmd)?;
-    let p = parse_json(&so).or_else(|| parse_json(&se)).unwrap_or(Value::Null);
+    let p = parse_json(&so)
+        .or_else(|| parse_json(&se))
+        .unwrap_or(Value::Null);
     ["ssoLoginUrl", "ssoUrl", "url"]
         .iter()
         .find_map(|k| p.get(*k).and_then(|v| v.as_str()))
@@ -402,7 +429,9 @@ fn get_sso_url() -> Result<String, String> {
 /// 取消连接:置取消标志(登录轮询下一拍自停)。
 #[tauri::command]
 pub async fn eip_cancel(app: AppHandle) -> Result<Value, String> {
-    app.state::<EipConn>().cancelled.store(true, Ordering::SeqCst);
+    app.state::<EipConn>()
+        .cancelled
+        .store(true, Ordering::SeqCst);
     Ok(json!({ "ok": true }))
 }
 
@@ -412,8 +441,8 @@ pub async fn eip_logout() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         let cmd = eip(&["auth", "logout"])?;
         let (ok, _code, so, se) = run(cmd)?;
-        if set_connected(false) {
-            log::info!("[eip] skill visibility changed connected=false; applies next turn");
+        if ok {
+            let _ = set_connected(false); // 下一个 turn 生效，不驱逐活跃 Engine
         }
         Ok::<Value, String>(json!({ "ok": ok, "stdout": so, "stderr": se }))
     })

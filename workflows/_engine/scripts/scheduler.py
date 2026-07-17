@@ -21,9 +21,10 @@ Harness Loop 拿到 scheduler 输出的 prompt 后，spawn SubAgent 执行。
     # 获取某个角色的完整 prompt
     python3 scheduler.py /path/to/project --scenario sansheng_liubu --prompt taizi
 
-    # 标记角色完成 / 失败
+    # 标记角色完成 / 可重试失败 / 不可重试失败
     python3 scheduler.py /path/to/project --scenario sansheng_liubu --complete taizi
     python3 scheduler.py /path/to/project --scenario sansheng_liubu --fail taizi --reason "..."
+    python3 scheduler.py /path/to/project --scenario sansheng_liubu --fail-fatal taizi --reason "HTTP 401"
 
     # 应用回滚规则(violation_type 来自该工作流 route_table 的 rollback_rules)
     python3 scheduler.py /path/to/project --scenario sansheng_liubu --rollback fengbo
@@ -364,6 +365,7 @@ def main():
     group.add_argument("--start", metavar="ROLE_ID", help="标记角色开始执行")
     group.add_argument("--complete", metavar="ROLE_ID", help="标记角色完成")
     group.add_argument("--fail", metavar="ROLE_ID", help="标记角色失败")
+    group.add_argument("--fail-fatal", metavar="ROLE_ID", help="标记角色发生不可重试失败并直接进入 failed")
     group.add_argument("--gate-wait", metavar="ROLE_ID", help="标记角色等待审批")
     group.add_argument("--rollback", metavar="VIOLATION_TYPE", help="按 violation_type 应用 SDAN 声明式回滚（自动算闭包+max_rollback）")
     group.add_argument("--reset", metavar="ROLE_ID", help="重置角色为 pending（清重试计数），用于从失败节点续跑")
@@ -420,6 +422,16 @@ def main():
             "ok": True, "role": args.fail,
             "status": ws.get_status(args.fail),
             "reason": args.reason,
+        }, ensure_ascii=False))
+
+    elif args.fail_fatal:
+        ws.fail_role(args.fail_fatal, error=args.reason, fatal=True)
+        ws.save()
+        print(json.dumps({
+            "ok": True, "role": args.fail_fatal,
+            "status": ws.get_status(args.fail_fatal),
+            "reason": args.reason,
+            "retryable": False,
         }, ensure_ascii=False))
 
     elif args.gate_wait:

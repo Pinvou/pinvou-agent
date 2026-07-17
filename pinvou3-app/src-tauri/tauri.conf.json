@@ -2,11 +2,11 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "pinvou3",
   "mainBinaryName": "pinvou3-tauri",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "identifier": "com.pinvou.pinvou3",
   "build": {
     "beforeDevCommand": "vite",
-    "beforeBuildCommand": "vite build",
+    "beforeBuildCommand": "npm run validate:pet-assets -- --release && vite build",
     "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../dist"
   },
@@ -70,6 +70,8 @@
         "installMode": "perMachine",
         "template": "resources/windows/nsis/installer-template.nsi",
         "installerHooks": "resources/windows/nsis/installer-hooks.nsh",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
         "languages": [
           "SimpChinese",
           "English"

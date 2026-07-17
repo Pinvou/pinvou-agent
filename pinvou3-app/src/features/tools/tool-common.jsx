@@ -139,6 +139,8 @@ const AcFmtIcon = ({ kind, className }) => (
         case 'file_search':
           return args.query ? '"' + args.query + '"' : '';
         case 'exec_shell':
+        case 'task_shell_start':
+        case 'shell':
           return typeof args.command === 'string' ? args.command.replace(/\s+/g, ' ').trim() : '';
         case 'checklist_update':
         case 'todo_update':

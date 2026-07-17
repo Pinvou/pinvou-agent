@@ -1572,6 +1572,8 @@ where
         preset: crate::bridge::prefs::ModelPreset::OpenaiCompatible,
         model: config.model,
         base_url: config.base_url,
+        context_window_tokens: None,
+        max_output_tokens: None,
         api_key: String::new(),
         credential_ref: Some(config.token_credential_ref),
         credential_state: crate::credential_store::CredentialState::Configured,
@@ -1688,6 +1690,8 @@ pub fn ready_saved_model_from_local_binding_system(
         preset: crate::bridge::prefs::ModelPreset::OpenaiCompatible,
         model,
         base_url: crate::llmapi_hub::DEFAULT_CHAT_BASE_URL.to_string(),
+        context_window_tokens: None,
+        max_output_tokens: None,
         api_key: String::new(),
         credential_ref: Some(reference),
         credential_state: crate::credential_store::CredentialState::Configured,
@@ -1789,8 +1793,13 @@ fn status_without_binding(identity: &LlmApiIdentity) -> LlmApiStatusResponse {
 }
 
 fn status_from_binding(binding: &LlmApiBinding) -> LlmApiStatusResponse {
-    let backend_user_exists = binding.newapi_user_id.is_some()
-        || binding.provisioning_status == ProvisioningStatus::Ready;
+    let authoritative_unavailable = matches!(
+        binding.last_error_code,
+        Some(LlmApiErrorCode::UserNotFound | LlmApiErrorCode::ServiceDisabled)
+    );
+    let backend_user_exists = !authoritative_unavailable
+        && (binding.newapi_user_id.is_some()
+            || binding.provisioning_status == ProvisioningStatus::Ready);
     let backend_username = backend_user_exists.then(|| {
         binding
             .newapi_username
@@ -1810,10 +1819,10 @@ fn status_from_binding(binding: &LlmApiBinding) -> LlmApiStatusResponse {
         binding.usage.used_tokens,
         binding.usage.remaining_tokens
     );
-    let backend_user_state = if backend_user_exists {
-        BackendUserState::Exists
-    } else if binding.last_error_code == Some(LlmApiErrorCode::UserNotFound) {
+    let backend_user_state = if authoritative_unavailable {
         BackendUserState::NotExists
+    } else if backend_user_exists {
+        BackendUserState::Exists
     } else {
         BackendUserState::Unknown
     };
@@ -1840,8 +1849,11 @@ fn status_after_refresh_failure(
     code: Option<LlmApiErrorCode>,
     message: Option<String>,
 ) -> LlmApiStatusResponse {
-    let authoritative_not_found = code == Some(LlmApiErrorCode::UserNotFound);
-    status.backend_user_state = if authoritative_not_found {
+    let authoritative_unavailable = matches!(
+        code,
+        Some(LlmApiErrorCode::UserNotFound | LlmApiErrorCode::ServiceDisabled)
+    );
+    status.backend_user_state = if authoritative_unavailable {
         status.backend_user_exists = false;
         status.backend_username = None;
         status.backend_display_name = None;
@@ -1852,7 +1864,7 @@ fn status_after_refresh_failure(
     } else {
         BackendUserState::Unknown
     };
-    status.stale = !authoritative_not_found;
+    status.stale = !authoritative_unavailable;
     status.last_error_code = code;
     status.last_error_message = message;
     status
@@ -2008,6 +2020,42 @@ mod tests {
         assert!(!status.stale);
         assert!(status.backend_username.is_none());
         assert!(status.backend_display_name.is_none());
+        assert!(status.quota.is_none());
+    }
+
+    #[test]
+    fn authoritative_disabled_user_is_unavailable_even_with_cached_binding() {
+        let mut binding = LlmApiBinding::new(&identity().0, LlmApiPolicy::default());
+        binding.newapi_user_id = Some("newapi-user-1".to_string());
+        binding.newapi_username = Some("u_1".to_string());
+        binding.newapi_display_name = Some("User One".to_string());
+        binding.provisioning_status = ProvisioningStatus::Ready;
+
+        let status = status_after_refresh_failure(
+            status_from_binding(&binding),
+            Some(LlmApiErrorCode::ServiceDisabled),
+            Some("disabled".to_string()),
+        );
+
+        assert!(!status.backend_user_exists);
+        assert_eq!(status.backend_user_state, BackendUserState::NotExists);
+        assert!(!status.stale);
+        assert!(status.backend_username.is_none());
+        assert!(status.backend_display_name.is_none());
+        assert!(status.quota.is_none());
+    }
+
+    #[test]
+    fn cached_disabled_state_is_also_unavailable_without_refresh() {
+        let mut binding = LlmApiBinding::new(&identity().0, LlmApiPolicy::default());
+        binding.newapi_user_id = Some("newapi-user-1".to_string());
+        binding.provisioning_status = ProvisioningStatus::Ready;
+        binding.last_error_code = Some(LlmApiErrorCode::ServiceDisabled);
+
+        let status = status_from_binding(&binding);
+
+        assert!(!status.backend_user_exists);
+        assert_eq!(status.backend_user_state, BackendUserState::NotExists);
         assert!(status.quota.is_none());
     }
 

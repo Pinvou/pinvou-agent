@@ -39,6 +39,8 @@ function injectSource() {
     const ZOMBIE={session_id:'s-zombie',project_dir:'/x/wf',scenario:'sansheng_liubu'};
     const WF_STATE={project_dir:'/x/wf',scenario:'sansheng_liubu',all_completed:false,roles:{taizi:{name:'太子',status:'running'},zhongshu:{name:'中书',status:'pending'}}};
     const SESSIONS=[{id:'s1',title:'第三季度财报分析',created_at:1,updated_at:9}];
+    window.__SHELL_JOBS__=[];
+    window.__CANCEL_SHELL_ARGS__=null;
     const CONV={s1:{metadata:{id:'s1'},artifacts:['/home/x/会议纪要.md'],messages:[
       {role:'user',content:[{type:'text',text:'整理纪要'}]},
       {role:'assistant',content:[{type:'text',text:'已生成会议纪要。'},{type:'tool_use',id:'t1',name:'write_file',input:{path:'/home/x/会议纪要.md',content:'# 会议纪要'}}]},
@@ -54,7 +56,11 @@ function injectSource() {
         case 'get_effective_model_config': return Promise.resolve({model:'qwen36_35b_256k',base_url:'http://127.0.0.1:8000/v1',api_key_set:false});
         case 'get_llmapi_status': return window.__LLMAPI_STATUS_ERROR__
           ? Promise.reject(new Error('temporary llmapi status failure'))
-          : Promise.resolve(window.__LLMAPI_STATUS__ || null);
+          : Promise.resolve(window.__LLMAPI_STATUS__ || {
+              backend_user_exists:false,
+              backend_user_state:'not_exists',
+              stale:false
+            });
         case 'get_llmapi_models': return window.__LLMAPI_MODELS_ERROR__
           ? Promise.reject(new Error('temporary llmapi models failure'))
           : Promise.resolve(window.__LLMAPI_MODELS__ || {available_models:[],default_model:''});
@@ -69,6 +75,10 @@ function injectSource() {
         case 'check_for_update': return Promise.resolve({available:false});
         case 'find_resumable_run': return Promise.resolve(ZOMBIE);
         case 'get_workflow_state': return Promise.resolve(WF_STATE);
+        case 'start_workflow': return Promise.resolve({session_id:'s-kick-fail',project_dir:'/x/kick-fail'});
+        case 'kick_workflow': return window.__KICK_WORKFLOW_ERROR__
+          ? Promise.reject(new Error('模型服务预检失败：HTTP 401'))
+          : Promise.resolve('spawning');
         case 'stop_workflow': window.__STOP_WORKFLOW_ARGS__=args; return Promise.resolve({ok:true,session_id:'s-zombie',scenario:'sansheng_liubu',brief:{user_request_raw:'原始三省六部需求'}});
         case 'check_dependencies': return Promise.resolve([]);
         case 'list_marketplace_tools': return Promise.resolve([]);
@@ -83,6 +93,14 @@ function injectSource() {
         case 'get_session_pinvou_reviews': return Promise.resolve([]);
         case 'summon_pinvou': return Promise.resolve({personas:[{id:'travel',label:'旅行规划',primary:true}],alternates:['budget'],trace:'看了下，有几点确认',recommendations:[{topic:'预算',pick:'中档',why:'稳妥'}],issues:[{severity:'high',kind:'quality',persona:'travel',text:'日期冲突',suggestion:'对齐'}],coverage:[],framework:[],risk:'medium',confidence:0.8});
         case 'load_session': return Promise.resolve(CONV[args&&args.id]||{metadata:{id:'x'},messages:[],artifacts:[]});
+        case 'list_shell_tasks': return Promise.resolve(window.__SHELL_JOBS__);
+        case 'cancel_shell_task':
+          window.__CANCEL_SHELL_ARGS__=args;
+          if(window.__CANCEL_SHELL_ERROR__) return Promise.reject('kill failed');
+          window.__SHELL_JOBS__=window.__SHELL_JOBS__.map(function(job){
+            return job.id===args.taskId ? Object.assign({},job,{status:'Killed',exit_code:130}) : job;
+          });
+          return Promise.resolve({task_id:args.taskId,status:'Killed',exit_code:130,stdout:'',stderr:'',duration_ms:1});
         case 'artifact_info': return Promise.resolve({exists:true,kind:'md',size:2048,modified:1});
         case 'read_artifact_text': return Promise.resolve('# 会议纪要');
         case 'render_artifact_visual': return Promise.resolve({mode:'unsupported'});
@@ -122,7 +140,7 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
   const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new', args: ['--no-sandbox', '--disable-gpu', '--no-first-run', '--no-default-browser-check'], userDataDir: PROFILE });
   const page = await browser.newPage();
   const errs = [];
-  page.on('pageerror', e => errs.push(e.message));
+  page.on('pageerror', e => errs.push(e.stack || e.message));
   await page.evaluateOnNewDocument(injectSource());
   await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
   await page.goto(INDEX, { waitUntil: 'networkidle0' });
@@ -175,6 +193,17 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     await window.TauriBridge.getLlmApiStatus();
     await window.TauriBridge.getLlmApiModels();
 
+    window.__LLMAPI_STATUS__ = {
+      backend_user_exists: false,
+      backend_user_state: 'unknown',
+      stale: true,
+      provisioning_status: 'not_started',
+    };
+    await window.TauriBridge.getLlmApiStatus();
+    const retainedAfterUnknown = window.TauriBridge.getState();
+    const keptOnUnknown = retainedAfterUnknown.llmApiStatus
+      && retainedAfterUnknown.llmApiStatus.backend_user_state === 'exists';
+
     window.__LLMAPI_STATUS_ERROR__ = true;
     window.__LLMAPI_MODELS_ERROR__ = true;
     await window.TauriBridge.getLlmApiStatus().catch(() => {});
@@ -189,14 +218,53 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
       backend_user_state: 'not_exists',
       stale: false,
       provisioning_status: 'not_started',
+      last_error_code: 'service_disabled',
     };
     await window.TauriBridge.getLlmApiStatus();
     const clearedWhenAuthoritative = window.TauriBridge.getState().llmApiModels === null;
-    return { keptExisting, keptModels, clearedWhenAuthoritative };
+    return { keptOnUnknown, keptExisting, keptModels, clearedWhenAuthoritative };
   });
-  rec('LLM API 暂时失败保留账户和模型缓存，仅明确不存在时清理',
-    llmApiCacheFallback.keptExisting && llmApiCacheFallback.keptModels && llmApiCacheFallback.clearedWhenAuthoritative,
+  rec('LLM API 暂时失败保留账户和模型缓存，仅明确不存在或禁用时清理',
+    llmApiCacheFallback.keptOnUnknown && llmApiCacheFallback.keptExisting
+      && llmApiCacheFallback.keptModels && llmApiCacheFallback.clearedWhenAuthoritative,
     JSON.stringify(llmApiCacheFallback));
+
+  // 模型表单可能包含尚未保存的名称、地址和密钥，点击遮罩层不能意外丢失草稿；
+  // 只有显式点击“取消”才关闭。
+  const modelModalOpened = await page.evaluate(() => {
+    const nav = document.querySelector('[data-testid="nav-settings"]');
+    if (!nav) return false;
+    nav.click();
+    return true;
+  });
+  await sleep(700);
+  const modelModalOutsideClick = await page.evaluate(async () => {
+    const settle = () => new Promise(resolve => setTimeout(resolve, 50));
+    const add = document.querySelector('[data-testid="settings-model-add"]');
+    if (!add) return { addFound: false, opened: false, stayedOpen: false, cancelled: false };
+    add.click();
+    await settle();
+    const backdrop = document.querySelector('[data-testid="model-form-backdrop"]');
+    const opened = !!document.querySelector('[data-testid="model-form-dialog"]');
+    if (backdrop) backdrop.click();
+    await settle();
+    const stayedOpen = !!document.querySelector('[data-testid="model-form-dialog"]');
+    const cancel = document.querySelector('[data-testid="model-form-cancel"]');
+    if (cancel) cancel.click();
+    await settle();
+    return {
+      addFound: true,
+      opened,
+      stayedOpen,
+      cancelled: !document.querySelector('[data-testid="model-form-dialog"]'),
+    };
+  });
+  rec(
+    '模型编辑弹窗点击外部不关闭且显式取消仍可关闭',
+    modelModalOpened && modelModalOutsideClick.addFound && modelModalOutsideClick.opened
+      && modelModalOutsideClick.stayedOpen && modelModalOutsideClick.cancelled,
+    JSON.stringify(modelModalOutsideClick),
+  );
 
   // ①b 工作流运行中可停止；停止后原需求自动进入新任务编辑框。
   page.on('dialog', async dialog => { await dialog.accept(); });
@@ -236,6 +304,53 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     JSON.stringify(stoppedAfterLateSnapshot),
   );
   await clickText(page, '取消'); await sleep(300);
+
+  // ①d kick 失败必须 reject 给新建任务弹窗，不能把“项目已创建”误当成启动成功。
+  const kickFailure = await page.evaluate(async () => {
+    window.__KICK_WORKFLOW_ERROR__ = true;
+    let error = '';
+    try {
+      await window.TauriBridge.startWorkflowTask('sansheng_liubu', { user_request_raw: '测试启动失败' });
+    } catch (e) {
+      error = String((e && e.message) || e);
+    }
+    window.__KICK_WORKFLOW_ERROR__ = false;
+    return {
+      error,
+      calls: window.__TAURI_INVOKES__.filter(call => call.cmd === 'start_workflow' || call.cmd === 'kick_workflow').map(call => call.cmd),
+    };
+  });
+  rec(
+    '①d kick失败向调用方透传具体错误',
+    kickFailure.error.includes('HTTP 401')
+      && kickFailure.calls.slice(-2).join(',') === 'start_workflow,kick_workflow',
+    JSON.stringify(kickFailure),
+  );
+
+  // ①e 后端 blocked 事件和持久化 full_state 都必须把看板置为 blocked，并显示原因。
+  const blockedState = await page.evaluate(async () => {
+    for (const handler of (window.__TAURI_EVENT_HANDLERS__['workflow:project_started'] || [])) {
+      await handler({ payload: { session_id: 's-blocked', project_dir: '/x/blocked', scenario: 'sansheng_liubu' } });
+    }
+    for (const handler of (window.__TAURI_EVENT_HANDLERS__['workflow:blocked'] || [])) {
+      await handler({ payload: { session_id: 's-blocked', status: 'blocked', stage: 'warmup', message: 'HTTP 401: authorization failed' } });
+    }
+    for (const handler of (window.__TAURI_EVENT_HANDLERS__['workflow:full_state'] || [])) {
+      await handler({ payload: { session_id: 's-blocked', blocked: true, blocked_reason: 'HTTP 401: authorization failed', roles: { taizi: { status: 'pending' } } } });
+    }
+    const run = window.TauriBridge.getState().workflow.run;
+    return {
+      status: run.status,
+      blockedCards: (run.cards || []).filter(card => card.workflowBlocked).map(card => card.text),
+    };
+  });
+  rec(
+    '①e 预热失败显示权威阻塞状态且不重复错误卡',
+    blockedState.status === 'blocked'
+      && blockedState.blockedCards.length === 1
+      && blockedState.blockedCards[0].includes('HTTP 401'),
+    JSON.stringify(blockedState),
+  );
 
   // 手机先向尚未在桌面打开的后台 session 发消息：hydration 必须先把磁盘 messages
   // 重建成 chatItems；否则桌面随后切入时只剩这条手机消息，历史和产物卡都像“丢了”。
@@ -452,6 +567,104 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     memoryCommands.includes('confirm_pending_memory:mem-confirm') &&
     memoryCommands.includes('ignore_pending_memory:mem-ignore') &&
     memoryCommands.includes('never_pending_memory:mem-never'), JSON.stringify(memoryCommands));
+
+  // ShellManager 快照轮询：按 task_id 更新同一卡片、明确标注 tail 省略、取消直达 kill，
+  // 终态展示退出码且不依赖 chat:done。
+  await page.evaluate(async () => {
+    window.__SHELL_JOBS__=[{
+      id:'task-live-1',job_id:'1',command:'long-running-test',cwd:'C:/tmp',status:'Running',
+      exit_code:null,elapsed_ms:500,stdout_tail:'...tick 1\r\ntick 2\r\nprogress 10%\rprogress 80%',stderr_tail:'',
+      stdout_len:4096,stderr_len:0,stdin_available:true,stale:false,linked_task_id:null,
+    }];
+    const handlers=window.__TAURI_EVENT_HANDLERS__['chat:tool_start']||[];
+    for(const handler of handlers) await handler({payload:{session_id:'s1',id:'shell-realtime',name:'exec_shell',args:{command:'long-running-test'}}});
+  });
+  await sleep(700);
+  const shellRunning = await page.evaluate(() => {
+    const item=window.TauriBridge.getState().chatItems.find(it=>it.taskId==='task-live-1');
+    return item && {state:item.state,taskId:item.taskId,output:item.output};
+  });
+  await page.evaluate(() => window.TauriBridge.cancelShellTask('s1','task-live-1'));
+  await sleep(700);
+  const shellCancelled = await page.evaluate(() => {
+    const item=window.TauriBridge.getState().chatItems.find(it=>it.taskId==='task-live-1');
+    return {item:item&&{state:item.state,exitCode:item.exitCode,output:item.output},args:window.__CANCEL_SHELL_ARGS__};
+  });
+  rec('③c Shell 实时 tail、省略标记、task_id 取消与退出码',
+    shellRunning && shellRunning.state==='running' && shellRunning.output.includes('输出已省略') &&
+    shellRunning.output.includes('tick 1') && shellRunning.output.includes('tick 2') &&
+    shellRunning.output.includes('progress 80%') && !shellRunning.output.includes('progress 10%') &&
+    shellCancelled.item && shellCancelled.item.state==='failed' && shellCancelled.item.exitCode===130 && shellCancelled.item.output.includes('退出码: 130') &&
+    shellCancelled.args && shellCancelled.args.sessionId==='s1' && shellCancelled.args.taskId==='task-live-1',
+    JSON.stringify({shellRunning,shellCancelled}));
+
+  // 相同命令不能靠 command 字符串猜 task_id；先用 task-id 合成卡承接，
+  // tool_end 暴露真实 id 后再与对应工具卡合并。首次看到已结束的 detached job 也不能丢。
+  await page.evaluate(async () => {
+    window.__SHELL_JOBS__=[
+      {id:'task-dup-a',job_id:'2',command:'same-command',cwd:'C:/tmp',status:'Running',exit_code:null,elapsed_ms:100,stdout_tail:'A',stderr_tail:'',stdout_len:1,stderr_len:0,stdin_available:true,stale:false,linked_task_id:null},
+      {id:'task-dup-b',job_id:'3',command:'same-command',cwd:'C:/tmp',status:'Running',exit_code:null,elapsed_ms:100,stdout_tail:'B',stderr_tail:'',stdout_len:1,stderr_len:0,stdin_available:true,stale:false,linked_task_id:null},
+      {id:'task-detached-done',job_id:'4',command:'fast-detached',cwd:'C:/tmp',status:'Completed',exit_code:0,elapsed_ms:20,stdout_tail:'done fast',stderr_tail:'',stdout_len:9,stderr_len:0,stdin_available:false,stale:false,linked_task_id:null},
+    ];
+    const starts=window.__TAURI_EVENT_HANDLERS__['chat:tool_start']||[];
+    for(const handler of starts) {
+      await handler({payload:{session_id:'s1',id:'dup-tool-a',name:'exec_shell',args:{command:'same-command'}}});
+      await handler({payload:{session_id:'s1',id:'dup-tool-b',name:'exec_shell',args:{command:'same-command'}}});
+    }
+  });
+  await sleep(700);
+  const ambiguousBeforeEnd = await page.evaluate(() => {
+    const items=window.TauriBridge.getState().chatItems;
+    return ['dup-tool-a','dup-tool-b'].map(id => {
+      const item=items.find(it=>it.toolId===id); return item && item.taskId;
+    });
+  });
+  await page.evaluate(async () => {
+    const ends=window.__TAURI_EVENT_HANDLERS__['chat:tool_end']||[];
+    for(const handler of ends) {
+      await handler({payload:{session_id:'s1',id:'dup-tool-a',success:true,output:'running in background',metadata:{task_id:'task-dup-a',status:'Running'}}});
+      await handler({payload:{session_id:'s1',id:'dup-tool-b',success:true,output:'running in background',metadata:{task_id:'task-dup-b',status:'Running'}}});
+    }
+  });
+  await sleep(500);
+  const shellIdentity = await page.evaluate(() => {
+    const items=window.TauriBridge.getState().chatItems;
+    const a=items.filter(it=>it.taskId==='task-dup-a');
+    const b=items.filter(it=>it.taskId==='task-dup-b');
+    const done=items.find(it=>it.taskId==='task-detached-done');
+    return {a:a.map(it=>it.toolId),b:b.map(it=>it.toolId),done:done&&{state:done.state,output:done.output}};
+  });
+  rec('③d Shell 同命令 task_id 不错配、已结束 detached job 不丢',
+    ambiguousBeforeEnd.every(value=>value==null) &&
+    shellIdentity.a.length===1 && shellIdentity.a[0]==='dup-tool-a' &&
+    shellIdentity.b.length===1 && shellIdentity.b[0]==='dup-tool-b' &&
+    shellIdentity.done && shellIdentity.done.state==='done' && shellIdentity.done.output.includes('done fast'),
+    JSON.stringify({ambiguousBeforeEnd,shellIdentity}));
+
+  const unchangedPollNotifications = await page.evaluate(async () => {
+    let count=0;
+    const unsubscribe=window.TauriBridge.subscribe(() => { count+=1; });
+    await new Promise(resolve=>setTimeout(resolve,650));
+    unsubscribe();
+    return count;
+  });
+  rec('③d-2 Shell 快照未变化时不做全量状态广播', unchangedPollNotifications===0, String(unchangedPollNotifications));
+
+  await page.evaluate(() => {
+    window.__CANCEL_SHELL_ERROR__=true;
+    const button=[...document.querySelectorAll('button')].find(node=>
+      node.textContent.trim()==='取消' && node.parentElement && node.parentElement.textContent.includes('same-command'));
+    if(button) button.click();
+  });
+  await sleep(400);
+  const cancelFailureState = await page.evaluate(() => {
+    const button=[...document.querySelectorAll('button')].find(node=>
+      node.textContent.trim()==='取消' && node.parentElement && node.parentElement.textContent.includes('same-command'));
+    return {visible:document.body.innerText.includes('取消失败: kill failed'),retryable:!!button&&!button.disabled};
+  });
+  rec('③e Shell 取消失败有卡片提示且不产生永久取消态',
+    cancelFailureState.visible && cancelFailureState.retryable, JSON.stringify(cancelFailureState));
+  await page.evaluate(() => { window.__CANCEL_SHELL_ERROR__=false; });
 
   // ⑤ 品悟检阅 modal 本地化渲染:threading t 不报错 + 裁决标签/trace 出现(i18n 回归)
   await page.evaluate(() => window.TauriBridge.summonPinvou('/home/x/会议纪要.md'));

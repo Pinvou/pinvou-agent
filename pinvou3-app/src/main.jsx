@@ -254,6 +254,14 @@ let appFirstRenderMarked = false;
       );
     };
 
+    // 桌宠快捷开关的爪印图标(lucide paw-print 风格,icons.jsx 没有现成的)
+    const PetPawIcon = () => (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="11" cy="4" r="2" /><circle cx="18" cy="8" r="2" /><circle cx="4" cy="8" r="2" />
+        <path d="M14.35 13.5a4 4 0 0 0-6.7 0c-.63 1.4-1.6 2.4-2.25 3.3-.72 1 .16 3.2 1.9 3.2 1.4 0 2.3-1 4.35-1s2.95 1 4.35 1c1.74 0 2.62-2.2 1.9-3.2-.65-.9-1.62-1.9-2.25-3.3z" />
+      </svg>
+    );
+
     /* ==========================================
        MegaCube 本地大模型引导:进行中步骤指示 + 自跑计时
        (后端 vllm-setup:phase 事件给 phase/attempt;秒数本组件自跑,pkexec 阻塞期也在涨)
@@ -335,6 +343,19 @@ let appFirstRenderMarked = false;
       const [llmApiError, setLlmApiError] = useState(null);
       const navInfo = typeof navigator === 'undefined' ? '' : ((navigator.userAgent || '') + ' ' + (navigator.platform || ''));
       const isWindows = /Windows|Win32|Win64/i.test(navInfo);
+      // 供全局事件监听器读取最新视图状态（监听器只注册一次，不能闭包旧值）。
+      const activeChatRef = useRef(activeChat);
+      activeChatRef.current = activeChat;
+      const currentViewRef = useRef(currentView);
+      currentViewRef.current = currentView;
+      useEffect(() => {
+        const liveBridge = window.TauriBridge || bridge;
+        if (!liveBridge || typeof liveBridge.startMonitorPolling !== 'function') return;
+        if (currentView === 'monitor') {
+          liveBridge.startMonitorPolling();
+          return () => { if (typeof liveBridge.stopMonitorPolling === 'function') liveBridge.stopMonitorPolling(); };
+        }
+      }, [currentView]);
       // 工具商店/卡片用 Tailwind dark: 变体(darkMode:'class'),全局挂 <html>.dark 让其随 app 主题切换
       useEffect(() => { document.documentElement.classList.toggle('dark', activeTheme === 'dark'); }, [activeTheme]);
       // MegaCube(GB10) 首屏检测:仅启动一次,检测「预装但未启用」本地大模型环境(后端短路保证普通机零开销)。
@@ -414,6 +435,9 @@ let appFirstRenderMarked = false;
       const [poolMyOnly, setPoolMyOnly] = useState(false); // 跳卡池时是否直接落「我的卡牌」筛选(从确认窗"去查看"进来=true)
       const [remoteOpen, setRemoteOpen] = useState(false);
       const [settingsUpdateFocusTick, setSettingsUpdateFocusTick] = useState(0);
+      const [petFocusComposerTick, setPetFocusComposerTick] = useState(0);
+      const petSnapshotRef = useRef([]);
+      const petSnapshotSequenceRef = useRef(0);
 
       // ── 多窗口(撕离/tear-off):长按标签 → 浮起跟手 → 拖到目标屏 → 松手 → 该屏最大化打开 ──
       // dragAvatar = 被拎起的标签副本(跟随光标的 DOM 元素);null=没在拖。原生只判落点,视觉全在这。
@@ -759,6 +783,34 @@ let appFirstRenderMarked = false;
       const [archiveConfirm, setArchiveConfirm] = useState(null);
       const [archiveToast, setArchiveToast] = useState(false);
 
+      petSnapshotRef.current = chatHistory.map(chat => ({
+        id: chat.id,
+        title: chat.title,
+        working: chat.working,
+      }));
+      useEffect(() => {
+        const ev = window.__TAURI__ && window.__TAURI__.event;
+        if (!ev) return undefined;
+        let disposed = false;
+        let unlisten = null;
+        const broadcast = () => {
+          if (typeof ev.emit !== 'function') return Promise.resolve();
+          return ev.emit('pet:activity_snapshot', {
+            sequence: ++petSnapshotSequenceRef.current,
+            sessions: petSnapshotRef.current,
+          }).catch(() => {});
+        };
+        broadcast();
+        ev.listen('pet:request_snapshot', broadcast).then((fn) => {
+          if (disposed) fn();
+          else unlisten = fn;
+        }).catch(() => {});
+        return () => {
+          disposed = true;
+          if (unlisten) unlisten();
+        };
+      }, [bs && bs.sessions, bs && bs.sessionBusy, language]);
+
       async function navigateFromScheduledRun(nextView, beforeNavigate) {
         if (bs && bs.scheduledRunContext && bridge.available && bridge.exitScheduledRunChat) {
           const exited = await bridge.exitScheduledRunChat();
@@ -821,6 +873,241 @@ let appFirstRenderMarked = false;
         setActiveChat(id);
         setCurrentView('chat');
       }
+
+      // 用户在主窗口里亲眼看着完成的会话，公仔的活动卡属于冗余提醒——
+      // 完成瞬间若该会话正处于前台聊天视图且窗口有焦点，直接标记已读，
+      // 卡片自动消失，不需要用户再去点。
+      useEffect(() => {
+        const tauri = window.__TAURI__;
+        const ev = tauri && tauri.event;
+        if (!ev) return undefined;
+        let disposed = false;
+        const unlisteners = [];
+        const emitToPet = (name, payload) => (
+          typeof ev.emitTo === 'function'
+            ? ev.emitTo('pet', name, payload)
+            : (typeof ev.emit === 'function' ? ev.emit(name, payload) : Promise.resolve())
+        );
+        ev.listen('chat:done', (event) => {
+          if (disposed) return;
+          const payload = event.payload || {};
+          const sid = payload.session_id || payload.sessionId;
+          if (!sid) return;
+          if (typeof document.hasFocus === 'function' && !document.hasFocus()) return;
+          if (currentViewRef.current !== 'chat') return;
+          if (String(activeChatRef.current) !== String(sid)) return;
+          emitToPet('pet:session_viewed', { session_id: sid }).catch(() => {});
+        }).then((unlisten) => {
+          if (disposed) unlisten();
+          else unlisteners.push(unlisten);
+        }).catch(() => {});
+        return () => {
+          disposed = true;
+          unlisteners.forEach((fn) => { try { fn(); } catch (_) {} });
+        };
+      }, []);
+
+      // 用户从侧栏切进一个已经完成的会话时，也立即收掉对应完成气泡。
+      // 运行中的卡不会被 markSessionViewed 删除；等它完成时，上面的
+      // chat:done 监听会再次确认当前画面并完成收尾。
+      useEffect(() => {
+        const ev = window.__TAURI__ && window.__TAURI__.event;
+        if (!ev || currentView !== 'chat' || !activeChat) return;
+        if (typeof document.hasFocus === 'function' && !document.hasFocus()) return;
+        const emit = typeof ev.emitTo === 'function'
+          ? ev.emitTo('pet', 'pet:session_viewed', { session_id: activeChat })
+          : (typeof ev.emit === 'function'
+            ? ev.emit('pet:session_viewed', { session_id: activeChat })
+            : Promise.resolve());
+        emit.catch(() => {});
+      }, [currentView, activeChat]);
+
+      useEffect(() => {
+        const tauri = window.__TAURI__;
+        const ev = tauri && tauri.event;
+        const core = tauri && tauri.core;
+        if (!ev || !core) return undefined;
+        const emitToPet = (name, payload) => (
+          typeof ev.emitTo === 'function'
+            ? ev.emitTo('pet', name, payload)
+            : (typeof ev.emit === 'function' ? ev.emit(name, payload) : Promise.resolve())
+        );
+        let disposed = false;
+        let consuming = false;
+        const unlisteners = [];
+        const consumePetNavigation = async () => {
+          if (disposed || consuming) return;
+          consuming = true;
+          try {
+            const request = await core.invoke('take_pet_navigation');
+            if (!request || disposed) return;
+            const scheduledRun = request.scheduled_run || request.scheduledRun;
+            if (scheduledRun) {
+              const automationId = scheduledRun.automationId || scheduledRun.automation_id;
+              const runId = scheduledRun.runId || scheduledRun.run_id;
+              const sessionId = scheduledRun.sessionId || scheduledRun.session_id;
+              const taskName = scheduledRun.taskName || scheduledRun.task_name;
+              const endedAt = scheduledRun.endedAt || scheduledRun.ended_at;
+              if (!bridge.available || !bridge.openScheduledRunChat) {
+                emitToPet('pet:scheduled_notice_open_failed', { run_id: runId }).catch(() => {});
+                return;
+              }
+              let opened = false;
+              try {
+                opened = await bridge.openScheduledRunChat({
+                  id: runId,
+                  automationId,
+                  sessionId,
+                  status: 'completed',
+                  endedAt,
+                  unread: true,
+                }, {
+                  id: automationId,
+                  name: taskName,
+                });
+              } catch (error) {
+                console.error('[pet scheduled navigation] open failed', error);
+              }
+              if (!opened) {
+                emitToPet('pet:scheduled_notice_open_failed', { run_id: runId }).catch(() => {});
+                return;
+              }
+              setActiveChat(sessionId);
+              setCurrentView('scheduled');
+              emitToPet('pet:scheduled_notice_opened', { run_id: runId }).catch(() => {});
+              return;
+            }
+            const sid = request.session_id || request.sessionId;
+            if (!sid) {
+              setCurrentView('chat');
+              setPetFocusComposerTick(value => value + 1);
+              return;
+            }
+            if (!bridge.available) return;
+            const sessionExists = petSnapshotRef.current.some((session) => String(session.id) === String(sid));
+            if (!sessionExists) {
+              setCurrentView('chat');
+              setPetFocusComposerTick(value => value + 1);
+              emitToPet('pet:session_unavailable', { session_id: sid }).catch(() => {});
+              return;
+            }
+            const switched = await bridge.switchToSession(sid);
+            if (!switched) {
+              emitToPet('pet:session_unavailable', { session_id: sid }).catch(() => {});
+              return;
+            }
+            setActiveChat(sid);
+            setCurrentView('chat');
+            setPetFocusComposerTick(value => value + 1);
+            emitToPet('pet:session_viewed', { session_id: sid }).catch(() => {});
+          } catch (error) {
+            console.error('[pet navigation] consume failed', error);
+          } finally {
+            consuming = false;
+          }
+        };
+        const subscriptions = [ev.listen('pet:navigation_pending', consumePetNavigation)];
+        window.addEventListener('focus', consumePetNavigation);
+        void consumePetNavigation();
+        Promise.all(subscriptions).then((items) => {
+          if (disposed) items.forEach(fn => fn());
+          else unlisteners.push(...items);
+        }).catch(() => {});
+        return () => {
+          disposed = true;
+          window.removeEventListener('focus', consumePetNavigation);
+          unlisteners.forEach(fn => { try { fn(); } catch (_) {} });
+        };
+      }, []);
+
+      useEffect(() => {
+        const tauri = window.__TAURI__;
+        const ev = tauri && tauri.event;
+        const core = tauri && tauri.core;
+        if (!ev || !core || !bridge.available || !bridge.sendMessageToSession) return undefined;
+        let disposed = false;
+        let consuming = false;
+        let rerun = false;
+        let unlisten = null;
+        const emitToPet = (name, payload) => (
+          typeof ev.emitTo === 'function'
+            ? ev.emitTo('pet', name, payload)
+            : (typeof ev.emit === 'function' ? ev.emit(name, payload) : Promise.resolve())
+        );
+        const consume = async () => {
+          if (disposed) return;
+          if (consuming) {
+            rerun = true;
+            return;
+          }
+          consuming = true;
+          try {
+            if (typeof bridge.init === 'function') await bridge.init();
+            while (!disposed) {
+              const request = await core.invoke('take_pet_reply');
+              if (!request) break;
+              const requestId = request.request_id || request.requestId;
+              const sid = request.session_id || request.sessionId;
+              const text = String(request.text || '').trim();
+              const liveSessions = typeof bridge.getState === 'function'
+                ? (bridge.getState().sessions || [])
+                : [];
+              const sessionExists = petSnapshotRef.current.some(
+                session => String(session.id) === String(sid),
+              ) || liveSessions.some(session => String(session.id) === String(sid));
+              if (!sessionExists) {
+                await emitToPet('pet:reply_failed', {
+                  request_id: requestId,
+                  session_id: sid,
+                  error: '目标会话不存在',
+                  unavailable: true,
+                }).catch(() => {});
+                continue;
+              }
+              try {
+                const result = await bridge.sendMessageToSession(sid, text);
+                await emitToPet('pet:reply_accepted', {
+                  request_id: requestId,
+                  session_id: sid,
+                }).catch(() => {});
+                if (result?.completion) {
+                  result.completion.then((outcome) => {
+                    if (outcome?.ok) return;
+                    return emitToPet('pet:reply_failed', {
+                      request_id: requestId,
+                      session_id: sid,
+                      error: String(outcome?.error?.message || outcome?.error || '任务未能启动'),
+                    }).catch(() => {});
+                  });
+                }
+              } catch (error) {
+                await emitToPet('pet:reply_failed', {
+                  request_id: requestId,
+                  session_id: sid,
+                  error: String(error && error.message ? error.message : error),
+                }).catch(() => {});
+              }
+            }
+          } catch (error) {
+            console.error('[pet reply] consume failed', error);
+          } finally {
+            consuming = false;
+            if (rerun && !disposed) {
+              rerun = false;
+              void consume();
+            }
+          }
+        };
+        ev.listen('pet:reply_pending', consume).then((fn) => {
+          if (disposed) fn();
+          else unlisten = fn;
+        }).catch(() => {});
+        void consume();
+        return () => {
+          disposed = true;
+          if (unlisten) unlisten();
+        };
+      }, []);
 
       function handleDeleteSession(id) {
         if (bridge.available) bridge.deleteSession(id);
@@ -947,6 +1234,13 @@ let appFirstRenderMarked = false;
           const memoryAvailable = (LANG_TO_TAG[language] || 'zh-Hans') === 'zh-Hans';
           bridge.saveSettings(buildFullSettings({ memory_enabled: memoryAvailable && !!enabled }));
         }
+      }
+
+      function handleSetPetEnabled(enabled) {
+        if (!bridge.available) return;
+        // 单一路径:set_pet_enabled 负责持久化 + 窗口显隐 + 广播
+        // pet:enabled_changed(bridge 听到后刷新 settings 副本,防旧值回写)。
+        window.__TAURI__.core.invoke('set_pet_enabled', { enabled: !!enabled }).catch(() => {});
       }
 
       async function handleSetTaskCompletedNotif(enabled) {
@@ -1323,24 +1617,32 @@ let appFirstRenderMarked = false;
 
               <div className={`${isSidebarOpen ? 'flex items-center justify-between gap-2' : 'flex flex-col items-center gap-3'}`}>
                 {!isSidebarOpen && (
-                  <button
-                    onClick={handleOpenRemoteControl}
-                    title="手机扫码连接"
-                    className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
-                  >
-                    <Smartphone size={18} />
-                    {bs && bs.remoteControl && bs.remoteControl.active && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
-                  </button>
-                )}
-                {!isSidebarOpen && (
-                  <button
-                    onClick={() => navigateFromScheduledRun('settings')}
-                    title={t.settings}
-                    className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
-                  >
-                    <Settings size={18} />
-                    {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
-                  </button>
+                  <>
+                    <button
+                      onClick={handleOpenRemoteControl}
+                      title="手机扫码连接"
+                      className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
+                    >
+                      <Smartphone size={18} />
+                      {bs && bs.remoteControl && bs.remoteControl.active && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
+                    </button>
+                    <button
+                      onClick={() => handleSetPetEnabled(!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled))}
+                      title={(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? '隐藏公仔' : '召唤公仔'}
+                      className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? 'text-[#34A853]' : (activeTheme === 'dark' ? 'text-[#E3E3E3]' : 'text-[#444746]')} ${activeTheme === 'dark' ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]'}`}
+                    >
+                      <PetPawIcon />
+                    </button>
+                    <button
+                      data-testid="nav-settings"
+                      onClick={() => navigateFromScheduledRun('settings')}
+                      title={t.settings}
+                      className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
+                    >
+                      <Settings size={18} />
+                      {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
+                    </button>
+                  </>
                 )}
                 {!isWindows && (
                   <button
@@ -1365,6 +1667,14 @@ let appFirstRenderMarked = false;
                       {bs && bs.remoteControl && bs.remoteControl.active && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
                     </button>
                     <button
+                      onClick={() => handleSetPetEnabled(!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled))}
+                      title={(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? '隐藏公仔' : '召唤公仔'}
+                      className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? 'text-[#34A853]' : (activeTheme === 'dark' ? 'text-[#C4C7C5]' : 'text-[#444746]')} ${activeTheme === 'dark' ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]'}`}
+                    >
+                      <PetPawIcon />
+                    </button>
+                    <button
+                      data-testid="nav-settings"
                       onClick={() => navigateFromScheduledRun('settings')}
                       title={t.settings}
                       className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
@@ -1413,6 +1723,7 @@ let appFirstRenderMarked = false;
                   onSetActiveModel={(id) => bridge.available && bridge.setActiveModel(id)}
                   onConfirmSearchConfig={handleConfirmSearchConfig}
                   onMemoryEnabledChange={handleSetMemoryEnabled}
+                  onPetEnabledChange={handleSetPetEnabled}
                   searchNeedsRestart={searchNeedsRestart}
                   languageNeedsRestart={languageNeedsRestart}
                   bs={bs}
@@ -1426,7 +1737,7 @@ let appFirstRenderMarked = false;
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
-            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => navigateFromScheduledRun('settings', () => setTimeout(() => document.getElementById('settings-dependencies')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80))} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />}
+            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => navigateFromScheduledRun('settings', () => setTimeout(() => document.getElementById('settings-dependencies')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80))} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />}
             {SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled' && (
               bs && bs.scheduledRunContext ? (
                 <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => navigateFromScheduledRun('settings', () => setTimeout(() => document.getElementById('settings-dependencies')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80))} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />

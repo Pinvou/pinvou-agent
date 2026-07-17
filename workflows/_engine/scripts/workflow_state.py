@@ -337,10 +337,16 @@ class WorkflowState:
         rs["gate_result"] = gate_result
         rs["output_hashes"] = self._compute_output_hashes(role_id)
 
-    def fail_role(self, role_id: str, error: str = ""):
+    def fail_role(self, role_id: str, error: str = "", fatal: bool = False):
         rs = self._state["roles"][role_id]
-        rs["retries"] = rs.get("retries", 0) + 1
         max_retries = self._roles_by_id.get(role_id, {}).get("max_retries", 3)
+        if fatal:
+            # 鉴权/授权错误不会因重派角色而恢复，直接落失败终态，避免浪费调用。
+            rs["retries"] = max_retries
+            rs["status"] = RoleStatus.FAILED.value
+            rs["error"] = error
+            return
+        rs["retries"] = rs.get("retries", 0) + 1
         if rs["retries"] >= max_retries:
             rs["status"] = RoleStatus.FAILED.value
             rs["error"] = error

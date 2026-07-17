@@ -310,6 +310,17 @@ pub fn read_full_agent_state(workspace: &Path) -> Option<serde_json::Value> {
             if let Some(value) = stop.get("reason") {
                 obj.insert("stop_reason".into(), value.clone());
             }
+        } else if let Some(reason) = workflow_failure_reason_for_project(&project) {
+            obj.insert("blocked".into(), serde_json::Value::Bool(true));
+            obj.insert("blocked_reason".into(), serde_json::Value::String(reason));
+        } else if let Ok(report) = read_warmup_report(&project) {
+            if report.get("status").and_then(|value| value.as_str()) == Some("blocked") {
+                obj.insert("blocked".into(), serde_json::Value::Bool(true));
+                if let Some(reason) = warmup_block_reason(&report) {
+                    obj.insert("blocked_reason".into(), serde_json::Value::String(reason));
+                }
+                obj.insert("warmup_report".into(), report);
+            }
         }
     }
 
@@ -782,10 +793,8 @@ fn run_cmd(program: &str, args: &[&str], cwd: &Path) -> Result<String, String> {
 }
 
 fn run_cmd_with_timeout(program: &str, args: &[&str], cwd: &Path, timeout_secs: u64) -> Result<String, String> {
-    // [pinvou3] warmup/scheduler 子进程需要 app 实际用的模型配置。app 可能只配
-    // settings.json(custom_base_url/custom_api_key)而不设模型环境变量,那样
-    // warmup 的 endpoint 预检会误判 blocked → 工作流启动卡死。统一注入解析后的
-    // base_url/api_key(env 优先,回退 settings.json),子进程不必关心配置来源。
+    // warmup 只做本地前置条件检查，不再请求模型接口。保留解析后的 base_url 用于
+    // 校验配置存在；API Key 不再暴露给 Python 调度/验收子进程。
     let bridge = crate::bridge::Pinvou3Bridge::boot().ok();
     let base_url = std::env::var("PINVOU3_MODEL_BASE_URL")
         .unwrap_or_else(|_| {
@@ -794,15 +803,6 @@ fn run_cmd_with_timeout(program: &str, args: &[&str], cwd: &Path, timeout_secs: 
                 .map(|b| b.base_url())
                 .unwrap_or_else(crate::monitor::vllm_base_url)
         });
-    let api_key = std::env::var("PINVOU3_MODEL_API_KEY")
-        .ok()
-        .or_else(|| {
-            let bridge = bridge.as_ref()?;
-            let key = bridge.api_key();
-            let is_local_default = bridge.provider() == "vllm" && key == "local-no-auth";
-            (!is_local_default).then_some(key)
-        })
-        .unwrap_or_default();
     let mut command = HiddenCommand::new(program);
     command
         .args(args)
@@ -810,9 +810,6 @@ fn run_cmd_with_timeout(program: &str, args: &[&str], cwd: &Path, timeout_secs: 
         .env("PYTHONPATH", cwd)
         .env("PYTHONIOENCODING", "utf-8") // Windows stdout 默认 GBK，中文 print 会 UnicodeEncodeError
         .env("PINVOU3_MODEL_BASE_URL", base_url);
-    if !api_key.trim().is_empty() {
-        command.env("PINVOU3_MODEL_API_KEY", api_key);
-    }
     let mut child = command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -930,6 +927,71 @@ fn read_warmup_report(project: &Path) -> Result<serde_json::Value, String> {
     serde_json::from_str(&content).map_err(|e| format!("parse warmup_report.json: {e}"))
 }
 
+/// 从 warmup 报告提取一条适合直接展示给用户的阻断原因。优先返回具体检查项，
+/// 避免把整份 JSON 当错误文本塞进弹窗和工作流卡片。
+pub(crate) fn warmup_block_reason(report: &serde_json::Value) -> Option<String> {
+    let checks = report.get("checks")?.as_object()?;
+    checks
+        .values()
+        .find(|check| check.get("status").and_then(|value| value.as_str()) == Some("blocked"))
+        .and_then(|check| check.get("details").and_then(|value| value.as_str()))
+        .map(str::trim)
+        .filter(|details| !details.is_empty())
+        .map(String::from)
+}
+
+/// 识别真实模型请求返回的不可重试鉴权/授权错误。底座会把 HTTP 401/403 格式化为
+/// `Authentication failed` / `Authorization failed`；兼容旧错误文本中的显式状态码。
+/// 只在 `AgentComplete.failed=true` 后调用，不把普通角色文本中的数字误判为故障。
+pub(crate) fn model_auth_failure_reason(error: &str) -> Option<String> {
+    let lower = error.to_ascii_lowercase();
+    let is_auth_failure = [
+        "authentication failed",
+        "authorization failed",
+        "http 401",
+        "http 403",
+        "401 unauthorized",
+        "403 forbidden",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    if !is_auth_failure {
+        return None;
+    }
+
+    error
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| truncate_on_char_boundary(line, 400).to_string())
+}
+
+fn workflow_failure_reason_for_project(project: &Path) -> Option<String> {
+    let content =
+        std::fs::read_to_string(project.join("_state").join("workflow_progress.json")).ok()?;
+    let state: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let roles = state.get("roles")?.as_object()?;
+    roles.iter().find_map(|(role_id, value)| {
+        let status = value.get("status").and_then(serde_json::Value::as_str)?;
+        if !matches!(status, "failed" | "blocked") {
+            return None;
+        }
+        let error = value
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|message| !message.is_empty());
+        Some(match error {
+            Some(message) => format!("{role_id}: {message}"),
+            None => format!("{role_id} 执行失败"),
+        })
+    })
+}
+
+pub(crate) fn workflow_failure_reason(workspace: &Path) -> Option<String> {
+    workflow_failure_reason_for_project(&find_project_dir(workspace)?)
+}
+
 // [tool 化 2026-06-06] run_ghost_deck_step 已删——框架实例化(含 base.css)是 designer
 // SubAgent 的业务,经 compose_deck tool 完成(SDAN/02 Router 四不:Router 不跑业务脚本)。
 // generate_ghost_deck.py 仍是排版核心库,但只由 compose_deck.py 内部 import,不再被 harness 直调。
@@ -1022,9 +1084,8 @@ pub fn step_fresh(workspace: &Path) -> HarnessAction {
     // warm-up gating: 判 status == "pass" 而非文件存在
     // 防止 blocked 报告也写盘导致下次启动跳过检查
     //
-    // 兜底开关 PINVOU3_SKIP_WARMUP=1: 当前阶段彻底跳过 warmup gating,harness 直接进
-    // scheduler --next dispatch,确保不会因 warmup(端点抖动/依赖缺)误卡。生产去掉该 env
-    // 即恢复预检。warmup_check.py 本身也已加 3 次重试容忍抖动(双保险)。
+    // 兜底开关 PINVOU3_SKIP_WARMUP=1: 彻底跳过本地 warmup gating，直接进入
+    // scheduler --next dispatch。正常场景保留依赖、脚本和项目目录等本地检查。
     let skip_warmup = std::env::var("PINVOU3_SKIP_WARMUP")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
@@ -1260,6 +1321,27 @@ pub fn agent_failed(workspace: &Path, role_id: &str, error: &str) -> HarnessActi
     let first_line = error.lines().next().unwrap_or("");
     let reason = truncate_on_char_boundary(first_line, 200);
     log_flow(&project, "agent_failed", &[("role_id", role_id), ("reason", reason)]);
+    if let Some(auth_reason) = model_auth_failure_reason(error) {
+        let fatal_reason = format!("模型服务鉴权失败: {auth_reason}");
+        if let Err(scheduler_error) = run_scheduler(
+            &project,
+            &[
+                "--scenario",
+                &scenario,
+                "--fail-fatal",
+                role_id,
+                "--reason",
+                &fatal_reason,
+            ],
+        ) {
+            return HarnessAction::Error(format!(
+                "记录模型鉴权失败终态时出错: {scheduler_error}"
+            ));
+        }
+        return HarnessAction::Blocked {
+            message: format!("模型服务鉴权失败，已停止自动重试：{auth_reason}"),
+        };
+    }
     let _ = run_scheduler(
         &project,
         &["--scenario", &scenario, "--fail", role_id, "--reason", &format!("subagent 执行失败: {reason}")],
@@ -2225,6 +2307,77 @@ fn read_role_def(role_id: &str) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn warmup_block_reason_returns_concrete_failed_check() {
+        let report = serde_json::json!({
+            "status": "blocked",
+            "checks": {
+                "dependencies": { "status": "pass", "details": "ok" },
+                "script_presence": {
+                    "status": "blocked",
+                    "details": "missing scripts: scheduler.py"
+                }
+            }
+        });
+
+        assert_eq!(
+            warmup_block_reason(&report).as_deref(),
+            Some("missing scripts: scheduler.py")
+        );
+    }
+
+    #[test]
+    fn model_auth_failure_is_non_retryable_but_other_http_errors_are_not() {
+        for error in [
+            "Authentication failed: invalid API key",
+            "Authorization failed: access denied",
+            "SSE stream request failed: HTTP 401 Unauthorized",
+            "Failed to call API: HTTP 403 Forbidden",
+        ] {
+            assert!(model_auth_failure_reason(error).is_some(), "{error}");
+        }
+        for error in [
+            "SSE stream request failed: HTTP 429 Too Many Requests",
+            "Server error (503): unavailable",
+            "rendered 403 pages successfully",
+        ] {
+            assert!(model_auth_failure_reason(error).is_none(), "{error}");
+        }
+    }
+
+    #[test]
+    fn workflow_failure_reason_restores_persisted_blocked_state() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-workflow-failure-{}-{nonce}",
+            std::process::id()
+        ));
+        let state_dir = root.join("_state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(
+            state_dir.join("workflow_progress.json"),
+            serde_json::json!({
+                "roles": {
+                    "taizi": {
+                        "status": "failed",
+                        "error": "模型服务鉴权失败: HTTP 403 Forbidden"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            workflow_failure_reason_for_project(&root).as_deref(),
+            Some("taizi: 模型服务鉴权失败: HTTP 403 Forbidden")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn workflow_stop_marker_blocks_resume_and_preserves_brief() {

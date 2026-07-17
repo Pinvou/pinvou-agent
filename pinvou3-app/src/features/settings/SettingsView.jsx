@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom';
 import { Archive, Briefcase, Check, ChevronDown, Cpu, Database, Edit2, FileText, Lightbulb, MessageSquare, MoreHorizontal, Paperclip, Plus, RefreshCw, Search, Smartphone, Sparkles, Store, Trash2, User, Video, Wrench, X, Zap } from '../../components/icons.jsx';
 import { ArchivedDeleteConfirmDialog } from '../../components/layout/NavigationComponents.jsx';
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
+import PetSettingsSection from '../pet/PetSettingsSection.jsx';
+import { DEFAULT_PET_ID } from '../pet/pet-registry.js';
 import { bridge } from '../../hooks/useBridge.js';
 import { formatSessionDate } from '../../shared/date-utils.js';
 import { buildComposerToolMenuState } from './composer-tool-menu-logic.js';
@@ -601,6 +603,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const [preset, setPreset] = useState(initial.preset || 'local_vllm');
       const [model, setModel] = useState(initial.model || '');
       const [baseUrl, setBaseUrl] = useState(initial.base_url || '');
+      const [contextWindow, setContextWindow] = useState(initial.context_window_tokens ? String(initial.context_window_tokens) : '');
+      const [maxOutput, setMaxOutput] = useState(initial.max_output_tokens ? String(initial.max_output_tokens) : '');
       const [apiKey, setApiKey] = useState('');
       const [keyAction, setKeyAction] = useState(initial.__new ? 'replace' : 'keep_existing');
       const [showKey, setShowKey] = useState(false);
@@ -615,6 +619,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         setPreset(p);
         const defs = MODEL_PRESET_DEFS[p] || MODEL_PRESET_DEFS.local_vllm;
         setBaseUrl(defs.baseUrl); setModel(defs.model);
+        setContextWindow(p === 'local_vllm' ? '262144' : '');
+        setMaxOutput(p === 'local_vllm' ? '24576' : '');
         if (p !== 'local_vllm') { setApiKey(''); setKeyAction(initial.__new ? 'replace' : 'keep_existing'); }
       }
       async function handleTest() {
@@ -664,7 +670,15 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       function doSave() {
         if (!canSave) return;
         const id = initial.__new ? ('m_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)) : initial.id;
-        onSave({ id: id, name: name.trim(), preset: preset, model: model.trim(), base_url: baseUrl.trim(), api_key: keyAction === 'replace' ? apiKey.trim() : '', credential_action: keyAction });
+        const contextTokens = Number.parseInt(contextWindow, 10);
+        const outputTokens = Number.parseInt(maxOutput, 10);
+        onSave({
+          id: id, name: name.trim(), preset: preset,
+          context_window_tokens: Number.isFinite(contextTokens) && contextTokens > 0 ? contextTokens : null,
+          max_output_tokens: Number.isFinite(outputTokens) && outputTokens > 0 ? outputTokens : null,
+          model: model.trim(), base_url: baseUrl.trim(),
+          api_key: keyAction === 'replace' ? apiKey.trim() : '', credential_action: keyAction,
+        });
       }
       const credentialState = initial.credential_state || (initial.has_secret ? 'configured' : 'missing');
       const hasSavedKey = !!initial.has_secret || credentialState === 'configured' || credentialState === 'env_override';
@@ -673,8 +687,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         : hasSavedKey ? t.credConfigured
         : t.credNotConfigured;
       return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150" onClick={onCancel}>
-          <div onClick={e => e.stopPropagation()}
+        <div data-testid="model-form-backdrop"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150">
+          <div data-testid="model-form-dialog" role="dialog" aria-modal="true"
             className={`w-[460px] max-w-[92vw] max-h-[88vh] overflow-y-auto rounded-[24px] p-6 shadow-2xl ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
             <h2 className="text-[18px] font-medium mb-5">{initial.__new ? t.modelFormAddTitle : t.modelFormEditTitle}</h2>
             <div className="space-y-4">
@@ -791,7 +806,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               )}
             </div>
             <div className="flex justify-end gap-2 mt-6">
-              <button onClick={onCancel} className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>{t.cpCancel}</button>
+              <button data-testid="model-form-cancel" onClick={onCancel} className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>{t.cpCancel}</button>
               <button onClick={doSave} disabled={!canSave}
                 className={`text-[13px] font-medium px-5 py-2 rounded-full transition-colors disabled:opacity-50 ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'}`}>{t.modelSaveBtn}</button>
             </div>
@@ -1137,7 +1152,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
 
     // ── 「添加模型」方案:模型快切 chip + 添加/编辑弹窗 ─────────────────
     // 各预设默认 baseUrl/model 模板(与 bridge/prefs.rs 对齐),添加模型时自动填充。
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, searchCredential, searchKeyAction, searchHasSavedKey, onKeepSearchApiKey, onReplaceSearchApiKey, onDeleteSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onConfirmSearchConfig, onMemoryEnabledChange, searchNeedsRestart, languageNeedsRestart, bs, t, onRestoreArchived, onDeleteArchived, updateFocusTick }) => {
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, searchCredential, searchKeyAction, searchHasSavedKey, onKeepSearchApiKey, onReplaceSearchApiKey, onDeleteSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, searchNeedsRestart, languageNeedsRestart, bs, t, onRestoreArchived, onDeleteArchived, updateFocusTick }) => {
       const isDark = activeTheme === 'dark';
       const isWindows = /Windows/i.test(navigator.userAgent || '');
       const [editingModel, setEditingModel] = useState(null);
@@ -1361,6 +1376,41 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 />
               )}
 
+              <SCard isDark={isDark} title="桌伴公仔">
+                {(() => {
+                  const petEnabled = !!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled);
+                  return (
+                    <>
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="min-w-0">
+                          <div className={`text-[14px] font-medium ${isDark ? 'text-[#E8EAED]' : 'text-[#1F1F1F]'}`}>
+                            {petEnabled ? '已启用' : '已关闭'}
+                          </div>
+                          <div className={`mt-1 text-[13px] leading-relaxed ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
+                            开启后，桌面上会出现一只常驻小公仔，随 PINVOU 的思考、工具调用和任务结果切换动作。可直接拖动摆放位置，点一下有惊喜。
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => onPetEnabledChange && onPetEnabledChange(!petEnabled)}
+                          role="switch"
+                          aria-checked={petEnabled}
+                          title={petEnabled ? '关闭公仔' : '开启公仔'}
+                          className={`shrink-0 w-12 h-7 rounded-full p-1 flex items-center transition-colors ${petEnabled ? 'justify-end bg-[#0B57D0]' : `justify-start ${isDark ? 'bg-[#3C4043]' : 'bg-[#DADCE0]'}`}`}
+                        >
+                          <span className="block w-5 h-5 rounded-full bg-white shadow" />
+                        </button>
+                      </div>
+                      <PetSettingsSection
+                        isDark={isDark}
+                        enabled={petEnabled}
+                        selectedPetId={(bs && bs.selectedPet) || DEFAULT_PET_ID}
+                        onSelect={(id) => (bridge.available ? bridge.setSelectedPet(id) : Promise.resolve())}
+                      />
+                    </>
+                  );
+                })()}
+              </SCard>
+
               <SCard isDark={isDark} title={t.modelBackend}>
                 <div className="space-y-4">
                   <p className={`text-[13px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{t.modelBackendDesc}</p>
@@ -1420,7 +1470,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                       );
                     })}
                   </div>
-                  <button onClick={() => setEditingModel({ __new: true, id: '', name: '', preset: 'local_vllm', model: MODEL_PRESET_DEFS.local_vllm.model, base_url: MODEL_PRESET_DEFS.local_vllm.baseUrl, api_key: '' })}
+                  <button data-testid="settings-model-add" onClick={() => setEditingModel({ __new: true, id: '', name: '', preset: 'local_vllm', context_window_tokens: 262144, max_output_tokens: 24576, model: MODEL_PRESET_DEFS.local_vllm.model, base_url: MODEL_PRESET_DEFS.local_vllm.baseUrl, api_key: '' })}
                     className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#F0F4F9] text-[#1F1F1F] hover:bg-[#E8EAED]'}`}>{t.addModel}</button>
                 </div>
               </SCard>

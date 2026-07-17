@@ -6,9 +6,10 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use chrono::Weekday;
 use deepseek_tui::automation_manager::{
-    spawn_scheduler, AutomationManager, AutomationRecord, AutomationRunRecord, AutomationRunStatus,
-    AutomationSchedule, AutomationSchedulerConfig, AutomationStatus, CreateAutomationRequest,
-    SharedAutomationManager, UpdateAutomationRequest,
+    reconcile_run_statuses_shared, run_now_shared, spawn_scheduler, AutomationManager,
+    AutomationRecord, AutomationRunRecord, AutomationRunStatus, AutomationSchedule,
+    AutomationSchedulerConfig, AutomationStatus, CreateAutomationRequest, SharedAutomationManager,
+    UpdateAutomationRequest,
 };
 use deepseek_tui::task_manager::{SharedTaskManager, TaskManager, TaskManagerConfig, TaskStatus};
 use parking_lot::{Mutex as ParkingMutex, RwLock};
@@ -871,7 +872,6 @@ impl ScheduledTaskState {
             default_mode: SCHEDULED_EXECUTION_MODE.to_string(),
             allow_shell,
             trust_mode: true,
-            max_subagents: 2,
         };
         let executor = Arc::new(ScheduledChatExecutor::from_services(
             sessions.clone(),
@@ -887,8 +887,8 @@ impl ScheduledTaskState {
         {
             let manager = automations.lock().await;
             ensure_all_automation_workspaces(&manager)?;
-            manager.reconcile_run_statuses(&task_manager).await?;
         }
+        reconcile_run_statuses_shared(&automations, &task_manager).await?;
         let cancel = CancellationToken::new();
         let scheduler_handle = spawn_scheduler(
             automations.clone(),
@@ -1093,18 +1093,20 @@ impl ScheduledTaskState {
 
     async fn run_task_now(&self, id: String) -> Result<ScheduledRunDto, String> {
         let _operation = self.lock_operation(&id).await;
-        let manager = self.automations.lock().await;
         let task_manager = self
             .task_manager
             .as_ref()
             .ok_or_else(|| "Scheduled task runtime is unavailable".to_string())?;
-        let current = manager
-            .get_automation(&id)
-            .map_err(|err| format!("Failed to run scheduled task '{id}': {err}"))?;
-        ensure_automation_workspace(&manager, current)
-            .map_err(|err| format!("Failed to prepare scheduled task workspace '{id}': {err:#}"))?;
-        let run = manager
-            .run_now(&id, task_manager)
+        {
+            let manager = self.automations.lock().await;
+            let current = manager
+                .get_automation(&id)
+                .map_err(|err| format!("Failed to run scheduled task '{id}': {err}"))?;
+            ensure_automation_workspace(&manager, current).map_err(|err| {
+                format!("Failed to prepare scheduled task workspace '{id}': {err:#}")
+            })?;
+        }
+        let run = run_now_shared(&self.automations, &id, task_manager)
             .await
             .map_err(|err| format!("Failed to run scheduled task '{id}': {err}"))?;
         let session_titles = scheduled_session_titles(&self.sessions)
@@ -1290,10 +1292,7 @@ impl ScheduledTaskState {
         let Some(task_manager) = &self.task_manager else {
             return Ok(());
         };
-        {
-            let manager = self.automations.lock().await;
-            manager.reconcile_run_statuses(task_manager).await?;
-        }
+        reconcile_run_statuses_shared(&self.automations, task_manager).await?;
         Ok(())
     }
 
@@ -2379,12 +2378,11 @@ mod tests {
         want_terminal: bool,
     ) -> AutomationRunRecord {
         for _ in 0..400 {
+            reconcile_run_statuses_shared(automations, task_manager)
+                .await
+                .expect("reconcile run statuses");
             let run = {
                 let manager = automations.lock().await;
-                manager
-                    .reconcile_run_statuses(task_manager)
-                    .await
-                    .expect("reconcile run statuses");
                 manager
                     .list_runs(automation_id, None)
                     .expect("list runs")
@@ -2435,7 +2433,6 @@ mod tests {
                 default_mode: SCHEDULED_EXECUTION_MODE.to_string(),
                 allow_shell: false,
                 trust_mode: true,
-                max_subagents: 1,
             },
             Arc::new(SessionCreatingExecutor {
                 sessions: sessions.clone(),
@@ -2487,13 +2484,13 @@ mod tests {
     }
 
     async fn run_once(fixture: &CascadeFixture) -> AutomationRunRecord {
-        let queued = {
-            let manager = fixture.state.automations.lock().await;
-            manager
-                .run_now(&fixture.automation_id, &fixture.task_manager)
-                .await
-                .expect("run now")
-        };
+        let queued = run_now_shared(
+            &fixture.state.automations,
+            &fixture.automation_id,
+            &fixture.task_manager,
+        )
+        .await
+        .expect("run now");
         wait_for_linked_run(
             &fixture.state.automations,
             &fixture.task_manager,
