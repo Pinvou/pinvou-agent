@@ -138,7 +138,7 @@ grep -rn "messages.push\|runtime_prompt" DeepSeek-TUI/crates/tui/src/core/engine
 
 > ⚠️ **PR 被 CLOSED ≠ 功能没进上游**:上游常**独立重实现**(v0.8.49 override hook #2356、v0.8.57 composer #2786 / skills union #2737 均如此)。sync 时按文件级 diff 逐字段比对,别假设。
 
-## 8. 上游 PR 状态(2026-07-16 v0.8.68 主线核对)
+## 8. 上游 PR 状态(2026-07-17 GitHub 核对)
 
 > `gh pr list --repo Hmbown/CodeWhale --author h3c-hexin --state all` 核。head 走 `h3c-hexin/DeepSeek-TUI` 跨 fork；提报前从最新 `upstream/main` 切净分支，逐项自查无 Pinvou / Qwen / vLLM / GB10 品牌或 fixture 泄漏。
 
@@ -146,8 +146,7 @@ grep -rn "messages.push\|runtime_prompt" DeepSeek-TUI/crates/tui/src/core/engine
 
 | PR | 内容 | 本地验证 / 后续 |
 |---|---|---|
-| [#4379](https://github.com/Hmbown/CodeWhale/pull/4379) | P2: opt-in cancellable MCP OAuth login API；保留旧 API，取消时先 drop in-flight future，保证回调监听关闭后才返回 | `cargo fmt --check` + `cancellable_oauth_drops_in_flight_flow_before_returning` 通过；关联问题 [#4380](https://github.com/Hmbown/CodeWhale/issues/4380)，仍按普通 PR 等待审阅 |
-| [#4381](https://github.com/Hmbown/CodeWhale/pull/4381) | AUTO-lite: HOURLY 支持 `BYHOUR` / `BYMINUTE` 锚点，按 automation 创建日期保持相位，旧无锚点规则不变 | `cargo fmt --check` + 两条 `hourly_rrule_*` 回归通过；若合入，下次 sync 按文件级 diff harvest |
+| [#4381](https://github.com/Hmbown/CodeWhale/pull/4381) | AUTO-lite: HOURLY 支持 `BYHOUR` / `BYMINUTE` 锚点，按 automation 创建日期保持相位，旧无锚点规则不变 | 全部检查通过，当前 `MERGEABLE`、待审阅；若合入，下次 sync 按文件级 diff harvest |
 | [#4383](https://github.com/Hmbown/CodeWhale/pull/4383) | C11: Windows killed background shell 不同步 join 被 pipe 阻塞的 reader thread；其他终态与非 Windows 保持 join | `cargo fmt --check` + Linux orphan-pipe 回归通过；新增 Windows 专属 blocked-reader 回归，交由上游 Windows CI 执行 |
 
 > **2026-07-16 主线复核**:P1 资源/模板列表按实际暴露集合 gate 已在 upstream v0.8.68 等价存在，**不重复提 PR**；AUTO-lite 的 `approval_force_prompt` / `rlm_eval` 不可旁路审批也已被上游现有实现覆盖。下次 sync 必须按字段核对后再撤对应 fork 指纹，不能只凭同名判断。
@@ -159,9 +158,10 @@ grep -rn "messages.push\|runtime_prompt" DeepSeek-TUI/crates/tui/src/core/engine
 | [#3823](https://github.com/Hmbown/CodeWhale/pull/3823) | suppress background console windows on Windows(C10-win;`CREATE_NO_WINDOW` 抹掉子进程闪窗,非 Windows no-op) | `d87dabcd0cba` |
 | [#3824](https://github.com/Hmbown/CodeWhale/pull/3824) | wildcard disallowed tool prefixes(C9;`disallowed_tools` 规则尾 `*` 前缀匹配,向后兼容) | `4150b4835ca6` |
 | [#3825](https://github.com/Hmbown/CodeWhale/pull/3825) | `${VAR}` env placeholders in MCP stdio config(C10-env;只 stdio 子进程 env,**header 展开未提**=底座原生 `bearer_token_env_var`/`env_headers` 已覆盖) | `f4f4555cc968` |
+| [#4379](https://github.com/Hmbown/CodeWhale/pull/4379) | P2: opt-in cancellable MCP OAuth login API；保留旧 API，取消时先 drop in-flight future，保证回调监听关闭后才返回 | `61f204823949` |
 
 > 提交纪律:三 PR 均从 `origin/main`(= 上游,386 commit ahead of v0.8.65)切净分支手动应用 + 泛化(去 Pinvou/qcc/gongwen/PINVOU3_* 测试 fixture)+ `cargo test`/`cargo fmt --check` 验证;commit/PR body 无 Claude 署名、无品牌泄漏。#3825 首推曾因 rustfmt 单行超宽 Lint fail,`cargo fmt` 修后 amend 重推即过。
-> **下次 sync 待办**:这三块(C9 / C10-env / C10-win)上游已 harvest,sync 时按文件级 diff 确认后**撤 fork-guard 指纹 + fork-modifications §1 对应小节标 harvested**(C10-env 的 header 展开部分仍 fork 保留)。
+> **下次 sync 待办**:这四块(C9 / C10-env / C10-win / P2 OAuth API)上游已 harvest,sync 时按文件级 diff 确认后**撤 fork-guard 指纹 + fork-modifications §1 对应小节标 harvested**；P2 的宿主按 `tool_id + request_id` 编排和 UI 仍留 pinvou3，C10-env 的 header 展开部分仍 fork 保留。
 > **2026-06-30 评估后不提**:R(extra_tools)= 上游无 lib target / app-server 不构造 EngineConfig,无 in-tree 消费者会被关。**Q(自动 warmup)已于 2026-07-07 撤除**:不再保留 always-on 机制；2026-07-14 A/B 进一步确认 warmup 只能概率性缓解，生产方案是保留 prefix caching、关闭 MTP。详见 fork-modifications §R/§Q 与[专项复盘](Qwen3.6-vLLM-prefix-cache-MTP-工具调用漂移复盘.md)。
 
 **⏹️ CLOSED —— 上游独立实现或不跟进**(fork 侧已取上游版 / 保 fork patch)
