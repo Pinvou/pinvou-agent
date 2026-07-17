@@ -3,6 +3,8 @@ import { ChevronDown, ChevronRight, FileText, Wrench } from '../../components/ic
 import { bridge } from '../../hooks/useBridge.js';
 import { AcShieldCheck, AcSparkles, ArtifactCard, DiffView, GrepView, ListDirView, OutputError, OutputPre, QUIET_TOOLS, ReceiptBlock, ShellTextView, ShellView, StockQuoteCard, TODO_TOOLS, TodoView, WeatherCard, isReceipt, isStockQuoteTool, isWeatherTool, looksDiff, outBox, parseReceipt, toolBasename, toolSummary, tryParseJson, tryTailJson } from './tool-common.jsx';
 
+const isShellExecutionTool = name => name === 'exec_shell' || name === 'task_shell_start' || name === 'shell';
+
 const ToolOutput = ({ item, isDark, t }) => {
       const out = item.output;
       if (item.success === false) return <OutputError text={out} isDark={isDark} />;
@@ -49,7 +51,7 @@ const ToolOutput = ({ item, isDark, t }) => {
       if (isReceipt(out)) return <ReceiptBlock text={out} isDark={isDark} t={t} />;
       if (item.name === 'list_dir') { const v = tryParseJson(out); if (Array.isArray(v)) return <ListDirView items={v} isDark={isDark} t={t} />; }
       else if (item.name === 'grep_files') { const v = tryParseJson(out); if (v && Array.isArray(v.matches)) return <GrepView data={v} isDark={isDark} t={t} />; }
-      else if (item.name === 'exec_shell') {
+      else if (isShellExecutionTool(item.name)) {
         const v = tryParseJson(out);
         if (v && (v.stdout != null || v.exit_code != null || v.status)) return <ShellView data={v} isDark={isDark} t={t} />;
         return <ShellTextView cmd={item.args && item.args.command} text={out} isDark={isDark} />;
@@ -67,8 +69,12 @@ const ToolOutput = ({ item, isDark, t }) => {
       const isDark = theme === 'dark';
       // 有可视化卡片的工具(天气/股票)完成后直接展开,不折叠
       const hasCard = (isWeatherTool(item.name) || isStockQuoteTool(item.name)) && item.state === 'done';
-      const [expanded, setExpanded] = useState(hasCard);
+      const liveShell = isShellExecutionTool(item.name) && item.state === 'running' && item.output != null;
+      const [expanded, setExpanded] = useState(hasCard || liveShell);
+      const [shellCancelling, setShellCancelling] = useState(false);
+      const [shellCancelError, setShellCancelError] = useState('');
       useEffect(() => { if (hasCard) setExpanded(true); }, [hasCard]);
+      useEffect(() => { if (liveShell) setExpanded(true); }, [liveShell]);
       const isRunning = item.state === 'running';
       const isDone = item.state === 'done';
       const isFailed = item.state === 'failed';
@@ -81,7 +87,8 @@ const ToolOutput = ({ item, isDark, t }) => {
           ? (isDark ? 'text-[#93D5A6]' : 'text-[#137333]')
           : (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]');
 
-      const statusText = isRunning ? t.toolRunning : isDone ? t.toolDone : t.toolFailed;
+      const statusText = isRunning ? t.toolRunning
+        : (item.exitCode != null ? `${isDone ? t.toolDone : t.toolFailed} · exit ${item.exitCode}` : (isDone ? t.toolDone : t.toolFailed));
       const mutedColor = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
 
       const detail = expanded ? (
@@ -130,8 +137,30 @@ const ToolOutput = ({ item, isDark, t }) => {
               ? <span className={`text-[12px] flex-1 truncate ${mutedColor}`}>{summary}</span>
               : <span className="flex-1" />}
             <span className={`text-[12px] ${statusColor}`}>{statusText}</span>
+            {isRunning && item.taskId && (
+              <button
+                type="button"
+                disabled={shellCancelling}
+                onClick={async e => {
+                  e.stopPropagation();
+                  setShellCancelling(true);
+                  setShellCancelError('');
+                  try { await bridge.cancelShellTask(item.sessionId, item.taskId); }
+                  catch (error) { setShellCancelError(`${t.shellCancelFailed || t.toolFailed}: ${String(error)}`); }
+                  finally { setShellCancelling(false); }
+                }}
+                className={`px-2.5 py-1 rounded-full text-[11px] disabled:opacity-50 ${isDark ? 'bg-[#3C4043] text-[#F28B82]' : 'bg-white text-[#C5221F] border border-black/10'}`}
+              >
+                {shellCancelling ? '…' : t.cpCancel}
+              </button>
+            )}
             <ChevronDown size={14} className={`transition-transform ${expanded ? 'rotate-180' : ''} ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`} />
           </div>
+          {shellCancelError && (
+            <div className={`px-4 pb-2 text-[11px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>
+              {shellCancelError}
+            </div>
+          )}
           {detail}
         </div>
       );

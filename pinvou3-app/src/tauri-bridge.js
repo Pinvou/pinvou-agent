@@ -239,6 +239,7 @@
   var pendingAssistantBlocks = [];
   var itemIdSeq = 0;
   var toolMeta = {};       // id → { name, args }
+  var shellPollState = Object.create(null); // session_id → { timer, inFlight, waitBudget }
   // 上下文行口径保护：TurnComplete 的 usage.input_tokens 是本轮所有请求的累加
   // （计费口径）。只有单请求的"干净轮"该值才等于当前上下文占用；本轮一旦出现
   // 工具调用/重试/压缩（= 多请求），就跳过这次 tokens 更新，保留上一个准确值。
@@ -645,6 +646,7 @@
     touchSessionBuffer(id, buf, id.indexOf("sched-") === 0);
     loadWorkingSetFrom(buf);
     state.artifacts = filterSessionArtifacts(state.artifacts, id);
+    scheduleShellPoll(id, true);
   }
   // 在指定 session 的工作集上跑一段【同步】逻辑。sid 是 active → 直接跑(零行为变化);
   // 否则临时切到该 buffer 跑完再切回(期间不 notify)。
@@ -2501,8 +2503,173 @@
         state.chatItems[i].output = output;
         state.chatItems[i].success = success;
         state.chatItems[i].state = success ? "done" : "failed";
-        break;
+        return state.chatItems[i];
       }
+    }
+    return null;
+  }
+
+  function isShellExecutionTool(name) {
+    return name === "exec_shell" || name === "task_shell_start" || name === "shell";
+  }
+
+  function utf8Length(text) {
+    try { return new TextEncoder().encode(String(text || "")).length; }
+    catch (_) { return String(text || "").length; }
+  }
+
+  // Shell snapshots are a tail view, not an append-only byte stream. Normalize
+  // terminal control sequences and state omissions explicitly instead of
+  // pretending the visible tail is the complete log.
+  function normalizeTerminalTail(text) {
+    var value = String(text || "")
+      .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+      .replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, "");
+    var out = [];
+    value.split("\n").forEach(function (line) {
+      // After splitting on LF, a normal Windows CRLF line still ends in CR.
+      // Remove that delimiter first; only an *internal* CR means a terminal
+      // progress line overwrote earlier content on the same row.
+      var visible = line.endsWith("\r") ? line.slice(0, -1) : line;
+      var overwriteAt = visible.lastIndexOf("\r");
+      if (overwriteAt >= 0) visible = visible.slice(overwriteAt + 1);
+      while (visible.indexOf("\x08") >= 0) {
+        visible = visible.replace(/[^\x08]\x08/g, "").replace(/^\x08+/, "");
+      }
+      out.push(visible);
+    });
+    return out.join("\n");
+  }
+
+  function formatShellSnapshot(job) {
+    function section(raw, total, label) {
+      raw = String(raw || "");
+      var visibleRaw = raw.replace(/^\.\.\.\s*/, "");
+      var omitted = /^\.\.\./.test(raw) || Number(total || 0) > utf8Length(visibleRaw);
+      var body = normalizeTerminalTail(visibleRaw);
+      if (omitted) body = "[中间" + label + "输出已省略]\n" + body;
+      return body;
+    }
+    var stdout = section(job.stdout_tail, job.stdout_len, "标准");
+    var stderr = section(job.stderr_tail, job.stderr_len, "错误");
+    var parts = [];
+    if (stdout) parts.push(stdout);
+    if (stderr) parts.push((stdout ? "[STDERR]\n" : "") + stderr);
+    if (String(job.status || "").toLowerCase() !== "running") {
+      var code = job.exit_code == null ? "未知" : String(job.exit_code);
+      parts.push("[任务已结束，退出码: " + code + "]");
+    }
+    return parts.join("\n");
+  }
+
+  function shellCommandForItem(item) {
+    return item && item.args && typeof item.args.command === "string" ? item.args.command : "";
+  }
+
+  function shellSnapshotKey(job) {
+    return JSON.stringify([
+      job.id, job.status, job.exit_code, job.stdout_len, job.stderr_len,
+      job.stdout_tail, job.stderr_tail,
+    ]);
+  }
+
+  function applyShellSnapshots(sid, jobs) {
+    var anyRunning = false;
+    var changed = false;
+    var runningCommandCounts = {};
+    (jobs || []).forEach(function (job) {
+      if (String(job.status || "").toLowerCase() !== "running") return;
+      var command = String(job.command || "");
+      runningCommandCounts[command] = (runningCommandCounts[command] || 0) + 1;
+    });
+    runSyncOnSession(sid, function () {
+      (jobs || []).forEach(function (job) {
+        var status = String(job.status || "").toLowerCase();
+        var running = status === "running";
+        if (running) anyRunning = true;
+        var item = state.chatItems.find(function (it) {
+          return it.type === "tool" && it.taskId === job.id;
+        });
+        if (!item && running) {
+          var command = String(job.command || "");
+          var candidates = state.chatItems.filter(function (it) {
+            return it.type === "tool" && isShellExecutionTool(it.name) && !it.taskId &&
+              it.state === "running" && shellCommandForItem(it) === command;
+          });
+          // Command text is only a temporary bridge until tool_end exposes the
+          // task id. Never guess when identical commands are concurrent.
+          if (runningCommandCounts[command] === 1 && candidates.length === 1) item = candidates[0];
+        }
+        // A detached job may have been started by a subagent, so no matching
+        // top-level tool card exists. Completed jobs must also get a card: the
+        // first poll may happen after a short detached process already exited.
+        if (!item) {
+          item = {
+            type: "tool", toolId: "shell-task:" + job.id, name: "exec_shell",
+            args: { command: job.command || "" }, output: null, success: null,
+            state: running ? "running" : "failed", shellSnapshot: true,
+          };
+          addChatItem(item);
+          changed = true;
+        }
+        var snapshotKey = shellSnapshotKey(job);
+        if (item.shellSnapshotKey === snapshotKey) return;
+        item.taskId = job.id;
+        item.sessionId = sid;
+        item.shellStatus = job.status;
+        item.exitCode = job.exit_code;
+        item.elapsedMs = job.elapsed_ms;
+        item.output = formatShellSnapshot(job);
+        item.state = running ? "running" : (status === "completed" ? "done" : "failed");
+        item.success = running ? null : status === "completed";
+        item.shellSnapshotKey = snapshotKey;
+        changed = true;
+      });
+    });
+    if (changed) notify();
+    return anyRunning;
+  }
+
+  function scheduleShellPoll(sid, immediate) {
+    if (!sid) return;
+    var poll = shellPollState[sid] || (shellPollState[sid] = {
+      timer: null, inFlight: false, waitBudget: 0,
+    });
+    poll.waitBudget = Math.max(poll.waitBudget, 12);
+    if (poll.timer || poll.inFlight) return;
+    poll.timer = setTimeout(function () { runShellPoll(sid); }, immediate ? 0 : 250);
+  }
+
+  async function runShellPoll(sid) {
+    var poll = shellPollState[sid];
+    if (!poll || poll.inFlight) return;
+    poll.timer = null;
+    poll.inFlight = true;
+    var running = false;
+    try {
+      var jobs = await invoke("list_shell_tasks", { sessionId: sid });
+      running = applyShellSnapshots(sid, Array.isArray(jobs) ? jobs : []);
+      if (!running) poll.waitBudget = Math.max(0, poll.waitBudget - 1);
+    } catch (error) {
+      console.warn("shell task polling failed", error);
+      poll.waitBudget = Math.max(0, poll.waitBudget - 1);
+    } finally {
+      poll.inFlight = false;
+    }
+    if (running || poll.waitBudget > 0) {
+      poll.timer = setTimeout(function () { runShellPoll(sid); }, 250);
+    } else {
+      delete shellPollState[sid];
+    }
+  }
+
+  async function cancelShellTask(sessionId, taskId) {
+    var sid = sessionId || state.activeSessionId;
+    if (!sid || !taskId) return;
+    try {
+      await invoke("cancel_shell_task", { sessionId: sid, taskId: taskId });
+    } finally {
+      scheduleShellPoll(sid, true);
     }
   }
 
@@ -3052,8 +3219,11 @@
     // Add tool card
     addChatItem({
       type: "tool", toolId: p.id, name: p.name, args: p.args,
-      output: null, success: null, state: "running",
+      output: null, success: null, state: "running", sessionId: p.session_id || state.activeSessionId,
     });
+    if (isShellExecutionTool(p.name)) {
+      scheduleShellPoll(p.session_id || state.activeSessionId, true);
+    }
     notify();
   }); });
 
@@ -3131,7 +3301,29 @@
 
     // load_skill：卡照出，但不把返回的 SKILL.md 全文写进卡，展开只见占位（防设计系统泄露）。
     var outForCard = (meta && meta.name === "load_skill") ? "（技能已加载，内容不展示）" : p.output;
-    updateToolItem(p.id, outForCard, p.success);
+    var updatedToolItem = updateToolItem(p.id, outForCard, p.success);
+    var shellTaskId = p.metadata && (p.metadata.task_id || p.metadata.taskId);
+    if (updatedToolItem && shellTaskId) {
+      var syntheticShellItem = state.chatItems.find(function (it) {
+        return it !== updatedToolItem && it.shellSnapshot === true && it.taskId === shellTaskId;
+      });
+      if (syntheticShellItem) {
+        ["shellStatus", "exitCode", "elapsedMs", "output", "state", "success", "shellSnapshotKey"]
+          .forEach(function (key) {
+            if (syntheticShellItem[key] !== undefined) updatedToolItem[key] = syntheticShellItem[key];
+          });
+        var syntheticIndex = state.chatItems.indexOf(syntheticShellItem);
+        if (syntheticIndex >= 0) state.chatItems.splice(syntheticIndex, 1);
+      }
+      updatedToolItem.taskId = shellTaskId;
+      updatedToolItem.sessionId = p.session_id || state.activeSessionId;
+      var shellStatus = String((p.metadata && p.metadata.status) || "").toLowerCase();
+      if (shellStatus === "running" || /running|background/i.test(String(p.output || ""))) {
+        updatedToolItem.state = "running";
+        updatedToolItem.success = null;
+      }
+      scheduleShellPoll(updatedToolItem.sessionId, true);
+    }
 
     // Careful hook：DeepSeek-TUI shell.rs 拦截 Dangerous → 红色拦截卡
     var md = p.metadata;
@@ -5615,6 +5807,7 @@
     confirmScheduledTaskDraft: confirmScheduledTaskDraft,
     clearScheduledTaskDraft: clearScheduledTaskDraft,
     cancelGeneration: cancelGeneration,
+    cancelShellTask: cancelShellTask,
     createNewSession: createNewSession,
     switchToSession: switchToSession,
     openScheduledRunChat: openScheduledRunChat,

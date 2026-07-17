@@ -12,9 +12,7 @@ use std::time::{Duration, Instant};
 
 use qrcode::{render::svg, QrCode};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Manager, State};
-
-use crate::engine_pool::EnginePool;
+use tauri::{AppHandle, Emitter, Manager};
 
 fn b64(data: &[u8]) -> String {
     const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -219,15 +217,31 @@ pub fn zhidao_skills_should_show() -> bool {
     connected_flag().is_file()
 }
 
-fn set_connected(v: bool) {
+fn set_connected(v: bool) -> bool {
+    let previous = zhidao_skills_should_show();
     let p = connected_flag();
-    if v {
-        let _ = std::fs::create_dir_all(zhidao_home());
-        let _ = std::fs::write(&p, b"1");
-    } else {
-        let _ = std::fs::remove_file(&p);
+    if previous != v {
+        if v {
+            let _ = std::fs::create_dir_all(zhidao_home());
+            let _ = std::fs::write(&p, b"1");
+        } else {
+            let _ = std::fs::remove_file(&p);
+        }
     }
-    let _ = crate::bridge::bundle::Pinvou3Bundle::paths().apply_zhidao_skill_visibility(v);
+    let skill_visible = crate::bridge::bundle::Pinvou3Bundle::paths()
+        .skills_dir
+        .join("zhidao")
+        .join("SKILL.md")
+        .is_file();
+    let deferred = (previous != v || skill_visible != v)
+        && crate::connector_visibility::request(
+            crate::connector_visibility::ConnectorKind::Zhidao,
+            v,
+        );
+    if deferred {
+        log::info!("[zhidao] skill visibility queued for the next turn connected={v}");
+    }
+    previous != v
 }
 
 #[derive(Default)]
@@ -244,43 +258,31 @@ fn is_cancelled(app: &AppHandle) -> bool {
 }
 
 #[tauri::command]
-pub async fn zhidao_status(pool: State<'_, EnginePool>) -> Result<Value, String> {
-    let previous_visible = zhidao_skills_should_show();
-    let value = tokio::task::spawn_blocking(|| {
+pub async fn zhidao_status() -> Result<Value, String> {
+    tokio::task::spawn_blocking(|| {
         let cmd = zhidao(&["load"])?;
         let (ok, _code, so, _se) = run(cmd)?;
         let connected = ok && so.contains("ZHIDAO_TOKEN");
-        set_connected(connected);
+        // 状态查询只更新期望可见性；活跃 turn 自然结束后再落技能文件。
+        let _ = set_connected(connected);
         // 只回 connected:load 的 stdout 就是 ZHIDAO_TOKEN 本体,不能进 webview
         Ok::<Value, String>(json!({ "connected": connected }))
     })
     .await
-    .map_err(|e| format!("spawn_blocking: {e}"))??;
-    let connected = value
-        .get("connected")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if connected || previous_visible {
-        pool.evict_active().await;
-    }
-    Ok(value)
+    .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
 #[tauri::command]
-pub async fn zhidao_connect_begin(
-    app: AppHandle,
-    pool: State<'_, EnginePool>,
-) -> Result<Value, String> {
+pub async fn zhidao_connect_begin(app: AppHandle) -> Result<Value, String> {
     app.state::<ZhidaoConn>()
         .cancelled
         .store(false, Ordering::SeqCst);
     let app2 = app.clone();
-    let pool2 = pool.inner().clone();
-    tokio::task::spawn_blocking(move || run_login_flow(&app2, pool2));
+    tokio::task::spawn_blocking(move || run_login_flow(&app2));
     Ok(json!({ "started": true }))
 }
 
-fn run_login_flow(app: &AppHandle, pool: EnginePool) {
+fn run_login_flow(app: &AppHandle) {
     let login = match get_sso_login() {
         Ok(login) => login,
         Err(e) => {
@@ -306,8 +308,9 @@ fn run_login_flow(app: &AppHandle, pool: EnginePool) {
             let _ = run(cmd);
         }
         if is_authed() {
-            set_connected(true);
-            tauri::async_runtime::spawn(async move { pool.evict_active().await; });
+            if set_connected(true) {
+                log::info!("[zhidao] connected state changed; visibility will apply without evicting active turns");
+            }
             emit(app, "zhidao:connected", json!({ "ok": true }));
             return;
         }
@@ -382,17 +385,17 @@ pub async fn zhidao_cancel(app: AppHandle) -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub async fn zhidao_logout(pool: State<'_, EnginePool>) -> Result<Value, String> {
-    let result = tokio::task::spawn_blocking(|| {
+pub async fn zhidao_logout() -> Result<Value, String> {
+    tokio::task::spawn_blocking(|| {
         let cmd = zhidao(&["clear"])?;
         let (ok, _code, so, se) = run(cmd)?;
-        set_connected(false);
+        if ok {
+            let _ = set_connected(false);
+        }
         Ok::<Value, String>(json!({ "ok": ok, "stdout": so, "stderr": se }))
     })
     .await
-    .map_err(|e| format!("spawn_blocking: {e}"))?;
-    pool.evict_active().await;
-    result
+    .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
 #[cfg(test)]
@@ -405,5 +408,4 @@ mod tests {
         assert!(qr.starts_with("data:image/svg+xml;base64,"));
         assert!(qr.len() > 512);
     }
-
 }
