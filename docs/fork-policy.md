@@ -6,7 +6,7 @@
 ## 0. 当前基线与组织方式
 
 - 上游：`Hmbown/CodeWhale` tag `v0.9.0`，commit `d167c07c96282411956ea7f35ddb8227afa1402f`。
-- clean re-fork 工作分支：`codex/sync-v0.9.0`，当前 head `64b0ceb060f7`。
+- clean re-fork 工作分支：`codex/sync-v0.9.0`，当前 head `4cff0b9e64a9`。
 - fork 不再按历史 C1–C12 / W1–W13 批量编号维护，当前只保留 **6 个长期主题**：
 
   1. 宿主 library facade

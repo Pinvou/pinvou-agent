@@ -8,10 +8,10 @@
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.0`，commit `d167c07c96282411956ea7f35ddb8227afa1402f` |
-| fork 分支 | `codex/sync-v0.9.0`，当前 head `64b0ceb060f7` |
+| fork 分支 | `codex/sync-v0.9.0`，当前 head `4cff0b9e64a9` |
 | 组织方式 | **6 个长期主题 commit**，按耦合边界维护；不再保留 C1–C12 / W1–W13 批量编号 |
 | drift | 对 `v0.9.0`：**+3260 / -539，53 文件** |
-| 守护 | `scripts/fork-guard.sh`：42 条主题指纹 + submodule/app `forkguard_` 行为测试 |
+| 守护 | `scripts/fork-guard.sh`：43 条主题指纹 + submodule/app `forkguard_` 行为测试 |
 | app 状态 | `pinvou3-tauri` 主库编译通过，lib test target 可完整编译 |
 
 ### 软上限评估
@@ -63,20 +63,21 @@
 
 ### T4 `fork`：定时任务执行与历史生命周期
 
-- **commit**：`a280506ee feat(fork): 收敛定时任务执行与历史生命周期`
+- **commit**：`27293bd3f feat(fork): 收敛定时任务执行与历史生命周期`
 - **核心文件**：`automation_manager.rs`、`task_manager.rs`、`tools/automation.rs`、`core/engine/turn_loop.rs`。
 - **内容**：
   - automation 透传选定 model，并用 automation id 作为稳定 `conversation_key`。
   - task schema v4，兼容读取 v3；运行中的 thread/turn 链接及时落盘。
-  - HOURLY 规则按创建时间形成稳定锚点。
+  - HOURLY 规则按创建时间形成稳定锚点；旧规则即使未显式写 `BYMINUTE`，跳过漏跑后也不漂移到 App 重启分钟。
+  - 调度器对关机/休眠期间错过的时段默认直接跳到下一未来时段，不补跑历史；同一 automation 存在 queued/running run 时跳过当前时段，避免重叠和积压。
   - 只清理终态 run/task，保留活动运行并级联删除对应 artifacts。
   - `force_prompt` 工具不能被通用 auto-approve 绕过。
 - **为什么留 fork**：pinvou3 的 hidden scheduled session 依赖稳定会话身份和历史级联语义；只放 app 会与 TaskManager 持久化竞态。
-- **守护**：automation 18 项回归、`worker_receives_persisted_conversation_key`、运行链接、保留、终态删除和小时锚点测试。
+- **守护**：automation 回归、`worker_receives_persisted_conversation_key`、运行链接、保留、终态删除、小时锚点、漏跑跳过和同任务不重叠测试。
 
 ### T5 `fork`：宿主编排、工作流完成闸与可取消登录
 
-- **commit**：`68ff3c2a6 feat(fork): 适配宿主编排与工作流完成闸`
+- **commit**：`add065123 feat(fork): 适配宿主编排与工作流完成闸`
 - **核心文件**：`core/engine.rs`、`core/ops.rs`、`core/events.rs`、`tools/subagent/mod.rs`、`tools/subagent/tests.rs`、`mcp/oauth.rs`。
 - **内容**：
   - `EngineConfig.extra_tools`、hard `tool_whitelist`、会话 reasoning effort 和动态 disallowed tools。
@@ -90,7 +91,7 @@
 
 ### T6 `embed`：宿主路由、预算与 shared automation 接口
 
-- **commit**：`64b0ceb06 feat(embed): 补齐宿主路由与定时任务接口`
+- **commit**：`4cff0b9e6 feat(embed): 补齐宿主路由与定时任务接口`
 - **核心文件**：`route_runtime.rs`、`route_budget.rs`、`automation_manager.rs`
 - **内容**：
   - 向 embedder 公开字段私有的 `ResolvedRuntimeRoute` 和 `resolve_runtime_route`；只暴露非敏感 model receipt。
