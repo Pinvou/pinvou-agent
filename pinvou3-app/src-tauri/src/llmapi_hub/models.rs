@@ -257,10 +257,12 @@ impl From<&LlmUsageSnapshot> for QuotaStatus {
     }
 }
 
-/// Whether the backend account is authoritatively known to exist.
+/// Whether the backend account is authoritatively known to be available.
 ///
-/// `Unknown` is intentionally distinct from `NotExists`: transient backend
-/// failures must not hide a previously provisioned built-in model.
+/// `Exists` means the account exists and is enabled. `NotExists` also covers
+/// deleted or disabled accounts. `Unknown` is intentionally distinct from
+/// `NotExists`: transient backend failures must not hide a previously
+/// provisioned built-in model.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BackendUserState {
@@ -273,7 +275,7 @@ pub enum BackendUserState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LlmApiStatusResponse {
     pub pinvou_user_id: Option<String>,
-    /// Compatibility field for existing consumers. New visibility decisions
+    /// Compatibility field for existing consumers. New availability decisions
     /// should use `backend_user_state` so `Unknown` is not treated as absent.
     pub backend_user_exists: bool,
     #[serde(default)]

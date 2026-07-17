@@ -568,7 +568,8 @@ function tick() {
   return new Promise(function (resolve) { setImmediate(resolve); });
 }
 
-function createBridgeHarness(sharedStorage) {
+function createBridgeHarness(sharedStorage, runtimeOptions) {
+  runtimeOptions = runtimeOptions || {};
   var listeners = Object.create(null);
   var handlers = Object.create(null);
   var calls = [];
@@ -610,6 +611,9 @@ function createBridgeHarness(sharedStorage) {
         cmd === "list_scheduled_runs") return [];
     if (cmd === "get_mode_state") return { mode: "yolo" };
     if (cmd === "get_memory_overview") return {};
+    if (cmd === "get_llmapi_status") {
+      return { backend_user_exists: false, backend_user_state: "not_exists", stale: false };
+    }
     if (cmd === "session_mounted_collection" || cmd === "get_active_persona" ||
         cmd === "find_resumable_run" || cmd === "check_for_update") return null;
     if (cmd === "get_settings") return { theme: "genesis", language: "zh-Hans" };
@@ -661,8 +665,8 @@ function createBridgeHarness(sharedStorage) {
     document: document,
     localStorage: storage,
     console: { log: function () {}, warn: function () {}, error: function () {} },
-    setTimeout: setTimeout,
-    clearTimeout: clearTimeout,
+    setTimeout: runtimeOptions.setTimeout || setTimeout,
+    clearTimeout: runtimeOptions.clearTimeout || clearTimeout,
     setInterval: function () { return 0; },
     clearInterval: function () {},
     structuredClone: function (value) { return JSON.parse(JSON.stringify(value)); },
@@ -681,6 +685,82 @@ function createBridgeHarness(sharedStorage) {
       return listeners[name]({ payload: payload || {} });
     },
   };
+}
+
+async function llmApiStartupRetryBehavior() {
+  var timers = [];
+  var harness = createBridgeHarness(null, {
+    setTimeout: function (callback, delay) {
+      timers.push({ callback: callback, delay: delay });
+      return timers.length;
+    },
+    clearTimeout: function () {},
+  });
+  var statusCalls = 0;
+  var modelCalls = 0;
+  harness.handlers.get_llmapi_status = function () {
+    statusCalls += 1;
+    if (statusCalls === 1) {
+      return { backend_user_exists: false, backend_user_state: "unknown", stale: true };
+    }
+    if (statusCalls === 2) throw new Error("temporary network failure");
+    return { backend_user_exists: true, backend_user_state: "exists", stale: false };
+  };
+  harness.handlers.get_llmapi_models = function () {
+    modelCalls += 1;
+    return { available_models: ["deepseek-v4-flash"], default_model: "deepseek-v4-flash" };
+  };
+
+  await harness.bridge.init();
+  await tick();
+  assert.strictEqual(statusCalls, 1, "startup should query the built-in account immediately");
+  var firstRetry = timers.find(function (timer) { return timer.delay === 2000; });
+  assert.ok(firstRetry, "an unknown account result should schedule the first retry");
+
+  firstRetry.callback();
+  await tick();
+  await tick();
+  assert.strictEqual(statusCalls, 2, "a transport failure should keep the startup retry active");
+  var secondRetry = timers.find(function (timer) { return timer.delay === 5000; });
+  assert.ok(secondRetry, "startup retries should back off after another inconclusive result");
+
+  secondRetry.callback();
+  await tick();
+  await tick();
+  assert.strictEqual(statusCalls, 3, "startup should retry until the account result is authoritative");
+  assert.strictEqual(modelCalls, 1, "a known existing account should refresh built-in models once");
+  assert.strictEqual(harness.bridge.getState().llmApiStatus.backend_user_state, "exists");
+  assert.strictEqual(harness.bridge.getState().llmApiModels.default_model, "deepseek-v4-flash");
+  assert.strictEqual(
+    timers.filter(function (timer) { return timer.delay === 10000; }).length,
+    0,
+    "startup retries should stop after an existing account is confirmed"
+  );
+
+  var missingTimers = [];
+  var missingHarness = createBridgeHarness(null, {
+    setTimeout: function (callback, delay) {
+      missingTimers.push({ callback: callback, delay: delay });
+      return missingTimers.length;
+    },
+    clearTimeout: function () {},
+  });
+  var missingStatusCalls = 0;
+  missingHarness.handlers.get_llmapi_status = function () {
+    missingStatusCalls += 1;
+    return { backend_user_exists: false, backend_user_state: "not_exists", stale: false };
+  };
+
+  await missingHarness.bridge.init();
+  await tick();
+  await tick();
+  assert.strictEqual(missingStatusCalls, 1, "a confirmed missing account should not be retried");
+  assert.strictEqual(missingHarness.bridge.getState().llmApiStatus.backend_user_state, "not_exists");
+  assert.strictEqual(
+    missingTimers.filter(function (timer) { return timer.delay === 2000; }).length,
+    0,
+    "startup retries should stop after account absence is confirmed"
+  );
 }
 
 async function scheduledRunUnreadBehavior() {
@@ -2383,6 +2463,7 @@ async function scheduledRunNowPollStopsOnTerminalBehavior() {
 }
 
 Promise.resolve()
+  .then(llmApiStartupRetryBehavior)
   .then(scheduledRunViewExitBehavior)
   .then(scheduledRunNowPollStopsOnTerminalBehavior)
   .then(scheduledRunNowSidebarLinkBehavior)

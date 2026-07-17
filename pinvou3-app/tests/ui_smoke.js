@@ -54,7 +54,11 @@ function injectSource() {
         case 'get_effective_model_config': return Promise.resolve({model:'qwen36_35b_256k',base_url:'http://127.0.0.1:8000/v1',api_key_set:false});
         case 'get_llmapi_status': return window.__LLMAPI_STATUS_ERROR__
           ? Promise.reject(new Error('temporary llmapi status failure'))
-          : Promise.resolve(window.__LLMAPI_STATUS__ || null);
+          : Promise.resolve(window.__LLMAPI_STATUS__ || {
+              backend_user_exists:false,
+              backend_user_state:'not_exists',
+              stale:false
+            });
         case 'get_llmapi_models': return window.__LLMAPI_MODELS_ERROR__
           ? Promise.reject(new Error('temporary llmapi models failure'))
           : Promise.resolve(window.__LLMAPI_MODELS__ || {available_models:[],default_model:''});
@@ -179,6 +183,17 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     await window.TauriBridge.getLlmApiStatus();
     await window.TauriBridge.getLlmApiModels();
 
+    window.__LLMAPI_STATUS__ = {
+      backend_user_exists: false,
+      backend_user_state: 'unknown',
+      stale: true,
+      provisioning_status: 'not_started',
+    };
+    await window.TauriBridge.getLlmApiStatus();
+    const retainedAfterUnknown = window.TauriBridge.getState();
+    const keptOnUnknown = retainedAfterUnknown.llmApiStatus
+      && retainedAfterUnknown.llmApiStatus.backend_user_state === 'exists';
+
     window.__LLMAPI_STATUS_ERROR__ = true;
     window.__LLMAPI_MODELS_ERROR__ = true;
     await window.TauriBridge.getLlmApiStatus().catch(() => {});
@@ -193,13 +208,15 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
       backend_user_state: 'not_exists',
       stale: false,
       provisioning_status: 'not_started',
+      last_error_code: 'service_disabled',
     };
     await window.TauriBridge.getLlmApiStatus();
     const clearedWhenAuthoritative = window.TauriBridge.getState().llmApiModels === null;
-    return { keptExisting, keptModels, clearedWhenAuthoritative };
+    return { keptOnUnknown, keptExisting, keptModels, clearedWhenAuthoritative };
   });
-  rec('LLM API 暂时失败保留账户和模型缓存，仅明确不存在时清理',
-    llmApiCacheFallback.keptExisting && llmApiCacheFallback.keptModels && llmApiCacheFallback.clearedWhenAuthoritative,
+  rec('LLM API 暂时失败保留账户和模型缓存，仅明确不存在或禁用时清理',
+    llmApiCacheFallback.keptOnUnknown && llmApiCacheFallback.keptExisting
+      && llmApiCacheFallback.keptModels && llmApiCacheFallback.clearedWhenAuthoritative,
     JSON.stringify(llmApiCacheFallback));
 
   // 模型表单可能包含尚未保存的名称、地址和密钥，点击遮罩层不能意外丢失草稿；

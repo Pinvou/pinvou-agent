@@ -4297,6 +4297,23 @@
     return llmApiBackendUserState(status) === "exists";
   }
 
+  function llmApiAccountStateIsKnown(status) {
+    var backendUserState = llmApiBackendUserState(status);
+    return backendUserState === "exists" || backendUserState === "not_exists";
+  }
+
+  var LLMAPI_STARTUP_RETRY_DELAYS_MS = [2000, 5000, 10000, 30000];
+
+  function llmApiStartupRetryDelay(attempt) {
+    return LLMAPI_STARTUP_RETRY_DELAYS_MS[
+      Math.min(attempt, LLMAPI_STARTUP_RETRY_DELAYS_MS.length - 1)
+    ];
+  }
+
+  function waitForLlmApiStartupRetry(delayMs) {
+    return new Promise(function (resolve) { setTimeout(resolve, delayMs); });
+  }
+
   async function refreshLlmApiState(options) {
     options = options || {};
     var refreshModels = options.refreshModels !== false;
@@ -4305,7 +4322,11 @@
     var models = null;
     try {
       status = await invoke("get_llmapi_status");
-      state.llmApiStatus = status;
+      // An inconclusive refresh must not change model visibility after an
+      // authoritative account result has already been observed.
+      if (llmApiAccountStateIsKnown(status) || !llmApiAccountStateIsKnown(state.llmApiStatus)) {
+        state.llmApiStatus = status;
+      }
     } catch (e) {
       console.warn("get llmapi status failed", e);
       // Keep the last known account state. A transport failure is not proof
@@ -4341,6 +4362,39 @@
     state.llmApiModels = models;
     notify();
     return models;
+  }
+
+  async function refreshLlmApiOnStartup() {
+    var retryAttempt = 0;
+    while (true) {
+      var status = null;
+      try {
+        status = await getLlmApiStatus();
+      } catch (e) {
+        console.warn("load llmapi account status failed", e);
+      }
+
+      if (llmApiAccountStateIsKnown(status)) {
+        if (llmApiAccountKnownExists(status)) {
+          try {
+            await getLlmApiModels();
+          } catch (e) {
+            console.warn("load llmapi models failed", e);
+          }
+        }
+        try {
+          await loadModels();
+        } catch (e) {
+          console.warn("reload saved models after llmapi account refresh failed", e);
+        }
+        return status;
+      }
+
+      var retryDelayMs = llmApiStartupRetryDelay(retryAttempt);
+      retryAttempt += 1;
+      console.warn("llmapi account status is unknown; retrying in " + retryDelayMs + "ms");
+      await waitForLlmApiStartupRetry(retryDelayMs);
+    }
   }
 
   async function setLlmApiDefaultModel(model) {
@@ -6041,9 +6095,7 @@
     await startupAwait("bridge:load_effective_model", loadEffectiveModelConfig);
     await startupAwait("bridge:load_app_version", loadAppVersion);
     await startupAwait("bridge:load_models", loadModels);
-    getLlmApiStatus()
-      .then(function (status) { return llmApiAccountKnownExists(status) ? getLlmApiModels() : null; })
-      .then(loadModels)
+    refreshLlmApiOnStartup()
       .catch(function (e) { console.warn("load llmapi account/models failed", e); });
     startupMark("bridge:llmapi_refresh_started");
     await startupAwait("bridge:refresh_history", refreshHistoryList);

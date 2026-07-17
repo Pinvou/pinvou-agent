@@ -1,4 +1,5 @@
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use super::models::{LlmApiError, LlmApiErrorCode, LlmApiIdentity, LlmApiPolicy};
@@ -22,6 +23,8 @@ const DEFAULT_OPENAI_MODELS_PATH: &str = "/v1/models";
 const DEFAULT_TOKEN_NAME: &str = "default";
 const HTTP_CONNECT_TIMEOUT_SECS: u64 = 5;
 const HTTP_REQUEST_TIMEOUT_SECS: u64 = 20;
+const LOOKUP_USER_PAGE_SIZE: usize = 100;
+const LOOKUP_USER_MAX_PAGES: usize = 1_000;
 
 pub trait LlmApiHubAdapter {
     fn lookup_user(&self, identity: &LlmApiIdentity) -> Result<NewApiUser, LlmApiError>;
@@ -106,6 +109,8 @@ impl<T> NewApiEnvelope<T> {
 
 #[derive(Debug, Deserialize)]
 struct NewApiPage<T> {
+    #[serde(default)]
+    total: Option<usize>,
     items: Vec<T>,
 }
 
@@ -120,6 +125,8 @@ struct NewApiUserRecord {
     #[serde(default)]
     used_quota: Option<u64>,
     status: Option<i32>,
+    #[serde(default, alias = "DeletedAt", alias = "deletedAt")]
+    deleted_at: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -542,20 +549,7 @@ impl HttpLlmApiHubAdapter {
             ),
             "query current user",
         )?;
-        if user.status.is_some_and(|status| status != 1) {
-            return Err(LlmApiError::new(
-                LlmApiErrorCode::ServiceDisabled,
-                "New API current user is disabled",
-                false,
-            ));
-        }
-        let user = NewApiUser {
-            id: json_value_to_string(&user.id),
-            username: user.username,
-            display_name: user.display_name,
-            quota: user.quota,
-            used_quota: user.used_quota,
-        };
+        let user = available_user_from_record(user, "current user")?;
         log::info!(
             "[llmapi_hub][adapter] current user ok newapi_user_id={} username={} has_display_name={} elapsed_ms={}",
             user.id,
@@ -970,39 +964,73 @@ impl HttpLlmApiHubAdapter {
 impl LlmApiHubAdapter for HttpLlmApiHubAdapter {
     fn lookup_user(&self, identity: &LlmApiIdentity) -> Result<NewApiUser, LlmApiError> {
         let endpoint = self.endpoint(self.lookup_user_endpoint.as_ref(), DEFAULT_LOOKUP_USER_PATH);
-        let page: NewApiPage<NewApiUserRecord> = self.send_json(
-            self.auth_request(self.client.get(endpoint)).query(&[
-                ("keyword", identity.pinvou_user_id.as_str()),
-                ("p", "1"),
-                ("size", "20"),
-            ]),
-            "lookup user",
-        )?;
-        let user = page
-            .items
-            .into_iter()
-            .find(|user| user.username == identity.pinvou_user_id)
-            .ok_or_else(|| {
+        let page_size = LOOKUP_USER_PAGE_SIZE.to_string();
+        let mut expected_total = None;
+        let mut seen_user_ids = HashSet::new();
+
+        for page_number in 1..=LOOKUP_USER_MAX_PAGES {
+            let page_number_param = page_number.to_string();
+            let page: NewApiPage<NewApiUserRecord> = self.send_json(
+                self.auth_request(self.client.get(&endpoint)).query(&[
+                    ("keyword", identity.pinvou_user_id.as_str()),
+                    ("status", "1"),
+                    ("p", page_number_param.as_str()),
+                    ("size", page_size.as_str()),
+                ]),
+                "lookup user",
+            )?;
+            let total = page.total.ok_or_else(|| {
                 LlmApiError::new(
-                    LlmApiErrorCode::UserNotFound,
-                    "New API backend account does not exist for current device",
-                    false,
+                    LlmApiErrorCode::ProvisioningFailed,
+                    "New API lookup user response is missing pagination total",
+                    true,
                 )
             })?;
-        if user.status.is_some_and(|status| status != 1) {
-            return Err(LlmApiError::new(
-                LlmApiErrorCode::ServiceDisabled,
-                "New API backend account is disabled",
-                false,
-            ));
+
+            if expected_total
+                .replace(total)
+                .is_some_and(|value| value != total)
+            {
+                return Err(LlmApiError::new(
+                    LlmApiErrorCode::ProvisioningFailed,
+                    "New API lookup user pagination total changed while querying",
+                    true,
+                ));
+            }
+
+            let previous_seen_count = seen_user_ids.len();
+            for user in page.items {
+                let user_id = json_value_to_string(&user.id);
+                seen_user_ids.insert(user_id);
+                if user.username == identity.pinvou_user_id {
+                    return available_user_from_record(user, "backend account");
+                }
+            }
+
+            if seen_user_ids.len() > total {
+                return Err(LlmApiError::new(
+                    LlmApiErrorCode::ProvisioningFailed,
+                    "New API lookup user pagination returned more users than total",
+                    true,
+                ));
+            }
+            if seen_user_ids.len() == total {
+                return Err(backend_user_not_found());
+            }
+            if seen_user_ids.len() == previous_seen_count {
+                return Err(LlmApiError::new(
+                    LlmApiErrorCode::ProvisioningFailed,
+                    "New API lookup user pagination made no progress",
+                    true,
+                ));
+            }
         }
-        Ok(NewApiUser {
-            id: json_value_to_string(&user.id),
-            username: user.username,
-            display_name: user.display_name,
-            quota: user.quota,
-            used_quota: user.used_quota,
-        })
+
+        Err(LlmApiError::new(
+            LlmApiErrorCode::ProvisioningFailed,
+            "New API lookup user pagination exceeded the safety limit",
+            true,
+        ))
     }
 
     fn create_token(
@@ -1208,6 +1236,42 @@ fn json_value_to_string(value: &serde_json::Value) -> String {
     }
 }
 
+fn available_user_from_record(
+    user: NewApiUserRecord,
+    account_label: &str,
+) -> Result<NewApiUser, LlmApiError> {
+    if user.deleted_at.is_some() {
+        return Err(backend_user_not_found());
+    }
+    match user.status {
+        Some(1) => Ok(NewApiUser {
+            id: json_value_to_string(&user.id),
+            username: user.username,
+            display_name: user.display_name,
+            quota: user.quota,
+            used_quota: user.used_quota,
+        }),
+        Some(_) => Err(LlmApiError::new(
+            LlmApiErrorCode::ServiceDisabled,
+            format!("New API {account_label} is disabled"),
+            false,
+        )),
+        None => Err(LlmApiError::new(
+            LlmApiErrorCode::ProvisioningFailed,
+            format!("New API {account_label} response is missing account status"),
+            true,
+        )),
+    }
+}
+
+fn backend_user_not_found() -> LlmApiError {
+    LlmApiError::new(
+        LlmApiErrorCode::UserNotFound,
+        "New API backend account is not available for current device",
+        false,
+    )
+}
+
 fn cookie_header_from_response(response: &reqwest::blocking::Response) -> String {
     response
         .headers()
@@ -1248,7 +1312,9 @@ fn http_error(operation: &str, status: u16, body: &str) -> LlmApiError {
 fn business_error(operation: &str, message: Option<String>) -> LlmApiError {
     let message = message.unwrap_or_else(|| "unknown New API error".to_string());
     let lower = message.to_ascii_lowercase();
-    let code = if lower.contains("not exist") || lower.contains("不存在") {
+    let code = if operation == "query current user"
+        && (lower.contains("not exist") || lower.contains("不存在"))
+    {
         LlmApiErrorCode::UserNotFound
     } else if lower.contains("not logged in")
         || lower.contains("access token")
@@ -1265,6 +1331,10 @@ fn business_error(operation: &str, message: Option<String>) -> LlmApiError {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
 
     #[derive(Debug, Clone, Default)]
     pub struct MockLlmApiHubAdapter {
@@ -1337,6 +1407,104 @@ pub mod tests {
             .code,
             LlmApiErrorCode::UserNotFound
         );
+    }
+
+    #[test]
+    fn lookup_user_queries_enabled_accounts_across_all_pages() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let responses = [
+                r#"{"success":true,"data":{"total":2,"items":[{"id":1,"username":"u_10","status":1}]}}"#,
+                r#"{"success":true,"data":{"total":2,"items":[{"id":2,"username":"u_1","status":1}]}}"#,
+            ];
+            for body in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 4096];
+                let bytes_read = stream.read(&mut request).unwrap();
+                request_tx
+                    .send(String::from_utf8_lossy(&request[..bytes_read]).into_owned())
+                    .unwrap();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+            }
+        });
+        let adapter = HttpLlmApiHubAdapter {
+            admin_base_url: format!("http://{address}"),
+            admin_user_id: "1".to_string(),
+            admin_token: "admin-token".to_string(),
+            lookup_user_endpoint: None,
+            create_token_endpoint: None,
+            configure_policy_endpoint: None,
+            client: reqwest::blocking::Client::builder().build().unwrap(),
+        };
+
+        let user = adapter
+            .lookup_user(&LlmApiIdentity {
+                pinvou_user_id: "u_1".to_string(),
+                device_binding_id: "device-1".to_string(),
+                bios_sn_hash: "hash-1".to_string(),
+            })
+            .unwrap();
+
+        assert_eq!(user.id, "2");
+        let first_request = request_rx.recv().unwrap();
+        let second_request = request_rx.recv().unwrap();
+        assert!(first_request.contains("keyword=u_1"));
+        assert!(first_request.contains("status=1"));
+        assert!(first_request.contains("p=1"));
+        assert!(first_request.contains("size=100"));
+        assert!(second_request.contains("p=2"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn unavailable_and_indeterminate_user_records_are_distinguished() {
+        let disabled =
+            available_user_from_record(user_record(Some(2), None), "backend account").unwrap_err();
+        assert_eq!(disabled.code, LlmApiErrorCode::ServiceDisabled);
+        assert!(!disabled.retryable);
+
+        let deleted = available_user_from_record(
+            user_record(Some(1), Some(serde_json::json!("2026-07-17T00:00:00Z"))),
+            "backend account",
+        )
+        .unwrap_err();
+        assert_eq!(deleted.code, LlmApiErrorCode::UserNotFound);
+        assert!(!deleted.retryable);
+
+        let missing_status =
+            available_user_from_record(user_record(None, None), "backend account").unwrap_err();
+        assert_eq!(missing_status.code, LlmApiErrorCode::ProvisioningFailed);
+        assert!(missing_status.retryable);
+    }
+
+    #[test]
+    fn lookup_business_not_found_is_not_treated_as_authoritative_absence() {
+        let error = business_error(
+            "lookup user",
+            Some("database record does not exist".to_string()),
+        );
+        assert_eq!(error.code, LlmApiErrorCode::ProvisioningFailed);
+        assert!(error.retryable);
+    }
+
+    fn user_record(status: Option<i32>, deleted_at: Option<serde_json::Value>) -> NewApiUserRecord {
+        NewApiUserRecord {
+            id: serde_json::json!(1),
+            username: "u_1".to_string(),
+            display_name: Some("User One".to_string()),
+            quota: Some(1_000),
+            used_quota: Some(100),
+            status,
+            deleted_at,
+        }
     }
 
     #[test]
