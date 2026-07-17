@@ -330,19 +330,23 @@ pub fn create_or_show(app: &AppHandle) -> Result<(), String> {
     position_window(&win);
     // Linux/X11 下 builder 在窗口 map 之前写入的 always_on_top 可能丢失，
     // 必须在窗口已显示后再向窗口管理器重申一次。
-    keep_above(&win)?;
+    keep_above(&win);
     Ok(())
 }
 
-fn keep_above(win: &tauri::WebviewWindow) -> Result<(), String> {
-    win.set_always_on_top(true)
-        .map_err(|error| format!("keep pet window always on top: {error}"))
+/// 重申置顶是对 builder 声明的增强：部分窗口管理器不支持运行时修改时，
+/// 不能因此把已经成功创建/显示的桌伴当作失败。
+fn keep_above(win: &tauri::WebviewWindow) {
+    if let Err(error) = win.set_always_on_top(true) {
+        eprintln!("[pinvou3-app] keep pet window always on top failed: {error}");
+    }
 }
 
 fn show_and_keep_above(win: &tauri::WebviewWindow) -> Result<(), String> {
     win.show()
         .map_err(|error| format!("show pet window: {error}"))?;
-    keep_above(win)
+    keep_above(win);
+    Ok(())
 }
 
 /// 恢复保存位置(中心点仍在某显示器内才信),否则落到主屏右下角。
