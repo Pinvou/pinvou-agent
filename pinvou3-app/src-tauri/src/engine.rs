@@ -1277,6 +1277,14 @@ fn spawn_event_forwarder(
                         eprintln!("[harness] ignore late AgentComplete after workflow stop: {id}");
                         continue;
                     }
+                    if let Some(reason) =
+                        crate::harness::workflow_failure_reason(&execution_workspace)
+                    {
+                        eprintln!(
+                            "[harness] ignore late AgentComplete after workflow blocked: {id} ({reason})"
+                        );
+                        continue;
+                    }
                     eprintln!(
                         "[harness] subagent {id} complete ({} chars summary, failed={failed})",
                         result.len()
@@ -1302,6 +1310,58 @@ fn spawn_event_forwarder(
                         if is_dup {
                             eprintln!("[harness] 重复 AgentComplete id={id},跳过");
                         } else if let Some(role) = decision_role {
+                            // 401/403 已被底座归类为不可重试；工作流层也必须立即熔断。
+                            // per_page 原路径会把无产出的页当空壳重派，因此在 fan-out
+                            // join 之前统一截获，直接把逻辑角色写成 fatal failed。
+                            if failed
+                                && role.contains('#')
+                                && crate::harness::model_auth_failure_reason(&result).is_some()
+                            {
+                                let base_role = role
+                                    .split_once('#')
+                                    .map(|(base, _)| base)
+                                    .unwrap_or(role.as_str())
+                                    .to_string();
+                                crate::harness::batch_clear(&session_id, &base_role);
+                                let ws = execution_workspace.clone();
+                                let err_text = result.clone();
+                                let base_for_failure = base_role.clone();
+                                let action = tokio::task::spawn_blocking(move || {
+                                    crate::harness::agent_failed(
+                                        &ws,
+                                        &base_for_failure,
+                                        &err_text,
+                                    )
+                                })
+                                .await
+                                .unwrap_or_else(|_| {
+                                    crate::harness::HarnessAction::Error(
+                                        "spawn_blocking panicked".into(),
+                                    )
+                                });
+                                let handled = apply_harness_action(
+                                    action,
+                                    &app,
+                                    &execution_workspace,
+                                    &approve_handle,
+                                    &session_id,
+                                )
+                                .await;
+                                if handled {
+                                    if let Some(mut state) =
+                                        crate::harness::read_full_agent_state(&execution_workspace)
+                                    {
+                                        if let Some(obj) = state.as_object_mut() {
+                                            obj.insert(
+                                                "session_id".into(),
+                                                json!(session_id.clone()),
+                                            );
+                                        }
+                                        let _ = app.emit("workflow:full_state", state);
+                                    }
+                                }
+                                continue;
+                            }
                             // [per_page] role 形如 "slide_writer#p01" = fan-out 成员：
                             // 记一页 join 计数，未齐则等其余页（不推进）；齐了才对【单一
                             // 逻辑节点】base_role 验收一次。普通角色 base = role 本身。
