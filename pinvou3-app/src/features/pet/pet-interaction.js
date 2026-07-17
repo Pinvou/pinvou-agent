@@ -342,8 +342,12 @@ const REVERSE_VELOCITY_RETENTION = 0.15;
 export function dragAnimationFromMotion(current, deltaX, deltaY) {
   const dx = Number.isFinite(deltaX) ? deltaX : 0;
   const dy = Number.isFinite(deltaY) ? deltaY : 0;
-  if (Math.abs(dx) < 1 || Math.abs(dx) < Math.abs(dy) * 0.35) return current;
-  return dx > 0 ? 'running-right' : 'running-left';
+  const next = dx > 0 ? 'running-right' : 'running-left';
+  // 迟滞：慢速拖动时相邻事件增量只有 ±1px，手抖的反向事件和真实换向
+  // 无法靠单事件区分，反转方向必须要求更大的位移，否则方向会被噪声翻转。
+  const threshold = current && next !== current ? 3 : 1;
+  if (Math.abs(dx) < threshold || Math.abs(dx) < Math.abs(dy) * 0.35) return current;
+  return next;
 }
 
 export function stepPetDrag(state) {

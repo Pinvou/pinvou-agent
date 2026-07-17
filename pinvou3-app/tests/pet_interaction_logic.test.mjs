@@ -196,6 +196,31 @@ const closeTo = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e
   assert.strictEqual(drag.dragAnimationFromMotion('running-left', 20, 0), 'running-right');
   assert.strictEqual(drag.dragAnimationFromMotion('running-right', -12, 1), 'running-left');
   assert.strictEqual(drag.dragAnimationFromMotion('running-left', 0, 8), 'running-left');
+  assert.strictEqual(
+    drag.dragAnimationFromMotion('running-right', -1, 0),
+    'running-right',
+    'a ±1px jitter event must not flip the running direction',
+  );
+  assert.strictEqual(
+    drag.dragAnimationFromMotion('running-right', -2, 0),
+    'running-right',
+    'reversing direction requires at least a 3px delta (hysteresis)',
+  );
+  assert.strictEqual(
+    drag.dragAnimationFromMotion('running-right', -3, 0),
+    'running-left',
+    'a decisive 3px reverse delta must flip the direction',
+  );
+  assert.strictEqual(
+    drag.dragAnimationFromMotion('running-right', 1, 0),
+    'running-right',
+    'keeping the current direction still works from a 1px delta',
+  );
+  assert.strictEqual(
+    drag.dragAnimationFromMotion(null, -1, 0),
+    'running-left',
+    'establishing the initial direction still works from a 1px delta',
+  );
 
   const reversing = {
     ...base,
