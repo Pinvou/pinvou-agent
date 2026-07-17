@@ -41,6 +41,7 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
   - **改了什么**：概括本次修改的主要内容。
   - **改动原因**：说明问题背景、修改目的或采用该方案的原因。
   - **影响面**：列出受影响的功能、模块、平台、兼容性及潜在风险；没有影响也要明确说明。
+- 提交 PR 前遵循 `CONTRIBUTING.md` 中的流程和 CI 门控要求。
 
 ## 主体
 
@@ -50,9 +51,3 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 - 扩展物（instructions.md / skills / mcp-servers / personas）源码在 `pinvou3-app/.../resources/bundle/`，**编译进 app**，启动释放到 `~/.pinvou3/bundle/`
 
 启动：`./pinvou3-app/run-dev.sh`
-
-## 参考文档
-
-- `CONTRIBUTING.md` — 贡献 / PR 流程 + CI 门控(人类协作者入口)
-- `docs/验证报告-qwen3.6-deepseek-tui.md` — 阶段 A 实证报告
-- git log + commit message — 决策记录与已知坑修复
