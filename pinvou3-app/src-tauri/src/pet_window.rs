@@ -307,7 +307,7 @@ pub fn point_on_any_monitor(cx: i32, cy: i32, monitors: &[(i32, i32, u32, u32)])
 /// 建/显示桌宠窗口。已存在只 show(设置开关反复切换不重建 WebView)。
 pub fn create_or_show(app: &AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window(PET_LABEL) {
-        let _ = win.show();
+        show_and_keep_above(&win)?;
         return Ok(());
     }
     let state = load_state();
@@ -328,7 +328,21 @@ pub fn create_or_show(app: &AppHandle) -> Result<(), String> {
         .map_err(|e| format!("build pet window: {e}"))?;
 
     position_window(&win);
+    // Linux/X11 下 builder 在窗口 map 之前写入的 always_on_top 可能丢失，
+    // 必须在窗口已显示后再向窗口管理器重申一次。
+    keep_above(&win)?;
     Ok(())
+}
+
+fn keep_above(win: &tauri::WebviewWindow) -> Result<(), String> {
+    win.set_always_on_top(true)
+        .map_err(|error| format!("keep pet window always on top: {error}"))
+}
+
+fn show_and_keep_above(win: &tauri::WebviewWindow) -> Result<(), String> {
+    win.show()
+        .map_err(|error| format!("show pet window: {error}"))?;
+    keep_above(win)
 }
 
 /// 恢复保存位置(中心点仍在某显示器内才信),否则落到主屏右下角。

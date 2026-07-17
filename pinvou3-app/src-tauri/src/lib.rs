@@ -140,9 +140,9 @@ const RELEASE_ENV_DEFAULTS: &[(&str, &str)] = &[
     // ~/.deepseek config 的 subagent api_timeout=300 对齐(步级超时须更大)。
     ("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS", "280"),
     // —— webkit2gtk / fcitx 兼容（Wayland 下 IM 协议挂）——
-    // x86 Intel 与 ARM64 GB10 真机回归均能稳定运行；关闭 compositing mode
-    // 避免 NVIDIA/WebKitGTK DMA-BUF/GBM 组合出现黑白屏或启动异常。
-    ("WEBKIT_DISABLE_COMPOSITING_MODE", "1"),
+    // 不得默认设置 WEBKIT_DISABLE_COMPOSITING_MODE：关闭合成后，透明桌伴窗口的
+    // 动画帧会在 WebKitGTK 软件渲染路径上留下未清理的透明残影。极少数
+    // NVIDIA/WebKitGTK 兼容异常机器仍可从外部显式设为 1，var_os 守门会保留。
     ("GDK_BACKEND", "x11"),
     ("GTK_IM_MODULE", "fcitx"),
     ("QT_IM_MODULE", "fcitx"),
@@ -204,12 +204,12 @@ fn ensure_release_env() {
 #[cfg(test)]
 mod release_env_contract {
     #[test]
-    fn compositing_mode_is_disabled_by_default() {
+    fn hardware_compositing_is_not_disabled_by_default() {
         assert!(
-            super::RELEASE_ENV_DEFAULTS
+            !super::RELEASE_ENV_DEFAULTS
                 .iter()
-                .any(|(key, value)| *key == "WEBKIT_DISABLE_COMPOSITING_MODE" && *value == "1"),
-            "WebKit 合成兼容模式必须作为 release 默认值"
+                .any(|(key, _)| *key == "WEBKIT_DISABLE_COMPOSITING_MODE"),
+            "WebKit 合成模式只能由外部环境变量显式关闭，不能作为全局默认值"
         );
     }
 }
