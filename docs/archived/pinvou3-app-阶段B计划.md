@@ -4,7 +4,7 @@
 > 状态：开干中
 > 关联：
 > - 阶段 A 验证报告：`docs/验证报告-qwen3.6-deepseek-tui.md`（Qwen3.6 完成率 5/5，pinvou3 编排层证伪）
-> - DeepSeek-TUI 架构详解：`docs/DeepSeek-TUI-架构详解.md`
+> - DeepSeek-TUI 架构详解：`docs/archived/DeepSeek-TUI-架构详解.md`
 
 ---
 

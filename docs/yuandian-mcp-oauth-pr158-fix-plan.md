@@ -149,7 +149,7 @@ cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml marketplace_auth_sta
 
 已落地自动化用例：
 
-- `external_allowlist_allows_obsidian_rejects_lookalikes`
+- `external_allowlist_allows_known_targets_rejects_lookalikes`
 
 #### 3.5 前端行为测试
 
