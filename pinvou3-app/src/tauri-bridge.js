@@ -52,6 +52,19 @@
     marked.setOptions({ gfm: true, breaks: true, headerIds: false, mangle: false });
   }
 
+  // The pet is a separate WebView and must not own a second copy of the main
+  // application state. Keep only the renderer used by its activity cards and
+  // return before chat listeners, session loading, polling, or update checks.
+  const locationSearch = String((window.location && window.location.search) || "");
+  const isPetWindow = /(?:^|[?&])window=pet(?:&|$)/.test(locationSearch);
+  if (isPetWindow) {
+    window.TauriBridge = {
+      available: false,
+      renderMarkdown: renderMarkdown,
+    };
+    return;
+  }
+
   // ── State ────────────────────────────────────────────────────────
   var state = {
     sessions: [],
@@ -85,6 +98,7 @@
     monitor: null,
     backendOnline: null, // null=checking, true, false
     settings: null,
+    selectedPet: "lingling",
     memory: {
       loading: false,
       error: null,
@@ -2846,9 +2860,18 @@
   function isBusyFor(sid) {
     return sid === state.activeSessionId ? state.busy : !!(sessionStates[sid] && sessionStates[sid].busy);
   }
+  // 桌宠窗口靠全局事件感知回合起止。turn_start 补齐"发送 → 首 token"的空窗
+  // (chat:delta 之前引擎在思考,宠物不该干站着);turn_end 只兜 invoke 直接失败
+  // 这种不会有 chat:done 的路径。JS emit 是全局广播,宠物窗口 listen 收得到。
+  function emitPetEvent(name, sid) {
+    try {
+      if (TAURI && TAURI.event && TAURI.event.emit) TAURI.event.emit(name, { session_id: sid });
+    } catch (_) { /* 桌宠是纯装饰,广播失败不影响对话 */ }
+  }
+
   // 真正发送:在 sid 的工作集上加 user 气泡 + 流式占位 + busy,然后 invoke chat。
   // active/后台通用(后台走 runSyncOnSession 临时切工作集)。
-  function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools) {
+  function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure) {
     turnUsageDirty[sid] = false; // 新一轮开始，重置口径保护
     runSyncOnSession(sid, function () {
       var uitem = { type: "user", text: displayText, time: timeStr() };
@@ -2862,9 +2885,11 @@
       state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
     });
     notify();
+    emitPetEvent("pet:turn_start", sid);
     publishRemoteUserMessage(sid, displayText, meta && meta.remoteClientMessageId);
     return invoke("chat", { message: text, attachments: attachmentsPayload, sessionId: sid, restrictTools: !!restrictTools })
       .catch(function (err) {
+        emitPetEvent("pet:turn_end", sid);
         runSyncOnSession(sid, function () {
           addSystemItem("⚠️ " + (err && err.toString ? err.toString() : err));
           state.busy = false;
@@ -2872,6 +2897,7 @@
         });
         notify();
         flushQueued(sid);
+        if (surfaceFailure) throw err;
       });
   }
   function publishRemoteUserMessage(sid, content, clientMessageId) {
@@ -2898,6 +2924,37 @@
     var restrictTools = items.some(function (i) { return !!i.restrictTools; });
     notify();
     doSendFor(sid, text, displayText, attachments, meta, restrictTools);
+  }
+
+  async function sendMessageToSession(sessionId, text, meta) {
+    var sid = String(sessionId || "").trim();
+    var content = String(text || "").trim();
+    if (!sid) throw new Error("目标会话不存在");
+    if (!content) throw new Error("回复内容为空");
+    var exists = state.sessions.some(function (session) { return String(session.id) === sid; });
+    if (!exists) throw new Error("目标会话不存在");
+
+    await ensureSessionBufferLoaded(sid);
+    if (isBusyFor(sid)) {
+      runSyncOnSession(sid, function () {
+        state.queued.push({
+          id: ++itemIdSeq,
+          text: content,
+          displayText: content,
+          attachments: [],
+          meta: meta || null,
+          restrictTools: false,
+        });
+      });
+      notify();
+      return { accepted: true, queued: true };
+    }
+    var completion = doSendFor(sid, content, content, [], meta || null, false, true)
+      .then(
+        function () { return { ok: true }; },
+        function (error) { return { ok: false, error: error }; }
+      );
+    return { accepted: true, queued: false, completion: completion };
   }
 
   async function sendMessage(text, meta) {
@@ -4061,6 +4118,25 @@
   }
 
   // ── Settings ─────────────────────────────────────────────────────
+  // 桌宠开关由 Rust set_pet_enabled 直接写盘(设置页/宠物右键/快捷图标共用),
+  // 这里同步进内存副本——否则下次整份 saveSettings 会用旧值把开关翻回去。
+  listen("pet:enabled_changed", function (e) {
+    if (state.settings) {
+      state.settings.pet = Object.assign({}, state.settings.pet || {}, {
+        enabled: !!(e.payload && e.payload.enabled),
+      });
+      notify();
+    }
+  });
+
+  listen("pet:selected_changed", function (e) {
+    var selectedPet = e.payload && e.payload.selected_pet;
+    if (typeof selectedPet === "string") {
+      state.selectedPet = selectedPet;
+      notify();
+    }
+  });
+
   async function loadSettings() {
     try {
       state.settings = await invoke("get_settings");
@@ -4068,6 +4144,17 @@
       state.settings = { theme: "genesis", language: "zh-Hans" };
     }
     notify();
+  }
+  async function loadSelectedPet() {
+    try {
+      state.selectedPet = await invoke("get_selected_pet");
+    } catch (e) {
+      state.selectedPet = "lingling";
+    }
+    notify();
+  }
+  async function setSelectedPet(id) {
+    return await invoke("set_selected_pet", { id: id });
   }
   async function loadEffectiveModelConfig() {
     try {
@@ -5746,6 +5833,7 @@
     if (initPromise) return initPromise;
     initPromise = (async function () {
     await loadSettings();
+    await loadSelectedPet();
     await loadEffectiveModelConfig();
     await loadAppVersion();
     await loadModels();
@@ -5776,6 +5864,7 @@
     getState: function () { return snapshotState(); },
     init: init,
     sendMessage: sendMessage,
+    sendMessageToSession: sendMessageToSession,
     prefillComposer: prefillComposer,
     removeQueued: removeQueued,
     startVoiceInput: startVoiceInput,
@@ -5820,6 +5909,7 @@
     startMonitorPolling: startMonitorPolling,
     stopMonitorPolling: stopMonitorPolling,
     clearMonitorStats: clearMonitorStats,
+    setSelectedPet: setSelectedPet,
     saveSettings: saveSettings,
     saveSettingsAndRestart: saveSettingsAndRestart,
     submitFeedback: submitFeedback,

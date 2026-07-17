@@ -6,7 +6,12 @@
 
 - 如果仓库根目录存在 `.codex-memory.md`，开始工作前先读取；该文件是本地私人记忆，不提交。
 
-### 1. DeepSeek-TUI 是底座，不重复造轮子
+### 1. 开发与 PR 前同步最新主线
+
+- 开始新的开发任务前，先安全同步最新 `origin/main` 和 submodule，不得丢失已有本地改动。
+- 创建 PR 前及合并 PR 前，确保分支已同步最新 `origin/main` 并解决全部冲突。
+
+### 2. DeepSeek-TUI 是底座，不重复造轮子
 
 DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegistry / Commands 路由 / MCP client / Hooks / Cycle / Compaction。
 
@@ -25,29 +30,24 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 > **fork 改动是否要 PR**：通用优化 / bug 修复才提；pinvou3 专用留 fork。详见 `docs/fork-policy.md` §2 决策树。
 > **底座上游PR规范**：https://github.com/Hmbown/CodeWhale/blob/main/CONTRIBUTING.md
 
-### 2. 提交日志
+### 3. 提交日志
 
 - git log 提交日志统一使用中文，并在标题中注明类型前缀，例如 `fix:` / `feat:` / `docs:`；类型前缀后的描述使用中文。
 
-### 3. GitHub PR 规范
+### 4. GitHub PR 规范
 
 - GitHub PR 的标题和正文统一使用中文（代码标识、命令、路径等保留原文）。
 - PR 正文必须明确说明以下内容：
   - **改了什么**：概括本次修改的主要内容。
   - **改动原因**：说明问题背景、修改目的或采用该方案的原因。
   - **影响面**：列出受影响的功能、模块、平台、兼容性及潜在风险；没有影响也要明确说明。
+- 提交 PR 前遵循 `CONTRIBUTING.md` 中的流程和 CI 门控要求。
 
 ## 主体
 
 - `pinvou3-app/` — 🟢 Tauri 2.0 + EngineHandle wrapper（主线）
-- `DeepSeek-TUI/` — submodule（h3c-hexin/DeepSeek-TUI fork），改动遵循约束 1
+- `DeepSeek-TUI/` — submodule（h3c-hexin/DeepSeek-TUI fork），改动遵循约束 2
 - 运行时数据在 `~/.pinvou3/`（sessions / settings.json / bundle / knowledge）
 - 扩展物（instructions.md / skills / mcp-servers / personas）源码在 `pinvou3-app/.../resources/bundle/`，**编译进 app**，启动释放到 `~/.pinvou3/bundle/`
 
 启动：`./pinvou3-app/run-dev.sh`
-
-## 参考文档
-
-- `CONTRIBUTING.md` — 贡献 / PR 流程 + CI 门控(人类协作者入口)
-- `docs/验证报告-qwen3.6-deepseek-tui.md` — 阶段 A 实证报告
-- git log + commit message — 决策记录与已知坑修复

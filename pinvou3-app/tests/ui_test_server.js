@@ -12,6 +12,7 @@ const mime = {
   '.jpg': 'image/jpeg',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
 };
 
 function startUiTestServer() {
