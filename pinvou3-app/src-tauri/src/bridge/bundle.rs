@@ -105,8 +105,8 @@ pub const INSTRUCTIONS_MD: &str = include_str!("../../resources/bundle/instructi
 
 /// 内置「视觉设计」技能（设计系统直出 HTML）。编译期内嵌，解包到
 /// `~/.pinvou3/bundle/skills/visual-design/SKILL.md`，进 SkillRegistry 的 `## Skills`
-/// 目录。ascii 目录名避开中文路径在 include_str! 的坑；frontmatter `name: 视觉设计`
-/// 才是模型 load_skill 用的 id。
+/// 目录。目录名与 frontmatter 均使用 v0.9 要求的安全命令名 `visual-design`；中文触发词
+/// 继续由 description / 正文承载。
 const VISUAL_DESIGN_SKILL_MD: &str =
     include_str!("../../resources/bundle/skills/visual-design/SKILL.md");
 
@@ -476,15 +476,11 @@ impl Pinvou3Bundle {
         Ok(())
     }
 
-    /// 解包内嵌的内置 skills。**落位到 `~/.agents/skills/`**——引擎 fork patch #41 让
-    /// `load_skill` 工具只扫这个目录(`agents_global_skills_dir`);bundle/skills 只进
-    /// system-prompt catalogue 的 union、`load_skill` 不认。落错目录会"列得出、load 不到"。
+    /// 解包内嵌的内置 skills 到 pinvou3 单一来源 `bundle/skills`。v0.9 clean re-fork
+    /// 后 catalogue 与 `load_skill` 都只扫描此目录，不再写 `~/.agents/skills`。
     /// 每次启动防御性重写(immutable 内置资源)。当前:视觉设计。
     fn write_builtin_skills(&self) -> std::io::Result<()> {
-        let Some(agents) = deepseek_tui::skills::agents_global_skills_dir() else {
-            return Ok(()); // 拿不到 home 目录就跳过,不致命
-        };
-        let dir = agents.join("visual-design");
+        let dir = self.skills_dir.join("visual-design");
         std::fs::create_dir_all(&dir)?;
         std::fs::write(dir.join("SKILL.md"), VISUAL_DESIGN_SKILL_MD)?;
         Ok(())
@@ -1024,6 +1020,22 @@ mod tests {
         cleanup(&tmp);
     }
 
+    #[test]
+    fn forkguard_builtin_visual_skill_uses_bundle_root_and_safe_name() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = Pinvou3Bundle::paths();
+
+        bundle.write_builtin_skills().unwrap();
+
+        let skill_path = bundle.skills_dir.join("visual-design").join("SKILL.md");
+        let content = std::fs::read_to_string(&skill_path).unwrap();
+        assert!(content.contains("name: visual-design"));
+        assert!(skill_path.starts_with(&bundle.skills_dir));
+        cleanup(&tmp);
+    }
+
     /// 已下架预置 MCP 工具的清理:目录、installed.json、mcp.json、禁用列表都不应残留。
     #[test]
     fn cleanup_removed_marketplace_tools_removes_data_analysis() {
@@ -1127,8 +1139,6 @@ mod tests {
     /// 失败 = set_static_prompt_composer_override fork patch 被合丢。
     #[test]
     fn forkguard_static_composer_takes_over_static_layers() {
-        use deepseek_tui::models::SystemPrompt;
-
         install_prompt_overrides(); // OnceLock 幂等,谁先调都一样
 
         // v0.8.57:上游删了 `system_prompt_for_mode(AppMode)`(prompt 改 mode-independent)。
@@ -1137,17 +1147,14 @@ mod tests {
         // (Plan 前端入口已下线;若恢复,mode 走 per-turn <runtime_prompt> tag,非静态前缀)。
         let tmp = tempdir();
         std::fs::create_dir_all(&tmp).unwrap();
-        let SystemPrompt::Text(yolo) =
-            deepseek_tui::prompts::system_prompt_for_mode_with_context_and_skills(
-                std::path::Path::new(&tmp),
-                None,
-                None,
-                None,
-                None,
-            )
-        else {
-            panic!("unexpected SystemPrompt variant")
-        };
+        let prompt = deepseek_tui::prompts::system_prompt_for_mode_with_context_and_skills(
+            std::path::Path::new(&tmp),
+            None,
+            None,
+            None,
+            None,
+        );
+        let yolo = deepseek_tui::prompts::system_prompt_flat_text(&prompt);
         // 干掉的底座块(composer 密封 + gate:Compaction 模板/Sub-agents/Thinking budget/
         // Tier 体系/全模式 Runtime Policy Reference 实证死重)
         for gone in [
@@ -1186,24 +1193,19 @@ mod tests {
     /// composer 抑制(prompts.rs 的 static_prompt_composer().is_none() gate)。
     #[test]
     fn forkguard_static_composer_suppresses_context_mgmt_appends() {
-        use deepseek_tui::models::SystemPrompt;
-
         install_prompt_overrides();
 
         let tmp = tempdir();
         std::fs::create_dir_all(&tmp).unwrap();
         // v0.8.57:上游把 system prompt 改 mode-independent,该函数签名去掉首个 AppMode 参数。
-        let SystemPrompt::Text(text) =
-            deepseek_tui::prompts::system_prompt_for_mode_with_context_and_skills(
-                std::path::Path::new(&tmp),
-                None,
-                None,
-                None,
-                None,
-            )
-        else {
-            panic!("unexpected SystemPrompt variant")
-        };
+        let prompt = deepseek_tui::prompts::system_prompt_for_mode_with_context_and_skills(
+            std::path::Path::new(&tmp),
+            None,
+            None,
+            None,
+            None,
+        );
+        let text = deepseek_tui::prompts::system_prompt_flat_text(&prompt);
         assert!(
             !text.contains("## Context Management"),
             "Context Management 应被 composer 抑制"
@@ -1268,7 +1270,12 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        format!("/tmp/pinvou3-bundle-test-{}", id)
+        std::env::var_os("TMPDIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+            .join(format!("pinvou3-bundle-test-{id}"))
+            .to_string_lossy()
+            .into_owned()
     }
 
     fn cleanup(dir: &str) {

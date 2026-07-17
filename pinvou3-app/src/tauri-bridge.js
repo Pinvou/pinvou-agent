@@ -3969,7 +3969,8 @@
     }
     notify();
   }
-  // model 对象字段须是 snake_case(SavedModel serde): {id,name,preset,model,base_url,api_key,credential_action}
+  // model 对象字段须是 snake_case(SavedModel serde):
+  // {id,name,preset,context_window_tokens,max_output_tokens,model,base_url,api_key,credential_action}
   async function saveModel(model) {
     await invoke("save_model", { model: model });
     await loadModels();
@@ -5013,6 +5014,11 @@
     if (name === "NotFoundError" || name === "DevicesNotFoundError" || rawCategory === "device_unavailable") {
       return { category: "device_unavailable", stage: "device", message: "未检测到可用麦克风，请检查录音设备是否启用或被占用。" };
     }
+    // WebKitGTK 在没有可用录音源时可能报 OverconstrainedError / "Invalid constraint"，
+    // 而非标准的 NotFoundError。对用户而言仍是“没有可用麦克风”。
+    if (name === "OverconstrainedError" || name === "ConstraintNotSatisfiedError" || /invalid constraint/i.test(rawMessage)) {
+      return { category: "device_unavailable", stage: "device", message: "无法启动录音：未检测到可用麦克风。请连接或启用麦克风后重试。" };
+    }
     if (rawCategory === "empty_result") {
       return { category: "empty_result", stage: rawStage, message: "未识别到语音内容，请靠近麦克风后重试。" };
     }
@@ -5342,9 +5348,11 @@
   function runVoiceInputDebugAssertions() {
     var denied = normalizeVoiceError({ name: "NotAllowedError" });
     var noDevice = normalizeVoiceError({ name: "NotFoundError" });
+    var invalidConstraint = normalizeVoiceError({ name: "OverconstrainedError", message: "Invalid constraint" });
     var mismatch = normalizeVoiceError({ category: "context_mismatch" });
     console.assert(denied.category === "permission_denied", "permission error classified");
     console.assert(noDevice.category === "device_unavailable", "device error classified");
+    console.assert(invalidConstraint.message === "无法启动录音：未检测到可用麦克风。请连接或启用麦克风后重试。", "invalid constraint classified");
     console.assert(mismatch.stage === "writeback", "context mismatch classified");
     console.assert(appendVoiceText("草稿", "识别文本") === "草稿\n识别文本", "voice text appended");
     return true;

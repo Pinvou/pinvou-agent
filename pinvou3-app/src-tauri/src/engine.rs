@@ -197,7 +197,7 @@ impl AppEngine {
     ) -> Result<()> {
         let op = self
             .bridge
-            .build_send_message_op(content, mode, persona_reminder, restrict_tools);
+            .build_send_message_op(content, mode, persona_reminder, restrict_tools)?;
         self.handle.send(op).await?;
         Ok(())
     }
@@ -225,8 +225,12 @@ impl AppEngine {
             profile.execution_mode().to_app_mode(),
             Some(SCHEDULED_TURN_REMINDER.to_string()),
             false,
-        );
-        apply_scheduled_turn_policy(&mut op, profile)?;
+        )?;
+        let route = self
+            .bridge
+            .resolve_runtime_route_for_model(&profile.model)?;
+        let compaction = self.bridge.compaction_config_for_model(&profile.model);
+        apply_scheduled_turn_policy(&mut op, profile, route, compaction)?;
         Ok(op)
     }
 
@@ -251,7 +255,13 @@ impl AppEngine {
     /// 手动触发上下文压缩（用户点 token 进度条 → 立即压缩）。
     /// 自动压缩由上游 CompactionConfig.enabled 控制（pinvou3 走默认 = on）。
     pub async fn compact_now(&self) -> Result<()> {
-        self.handle.send(Op::CompactContext).await?;
+        let model = self.bridge.model();
+        self.handle
+            .send(Op::CompactContext {
+                route: Box::new(self.bridge.resolve_runtime_route_for_model(&model)?),
+                compaction: Box::new(self.bridge.compaction_config_for_model(&model)),
+            })
+            .await?;
         Ok(())
     }
 
@@ -291,6 +301,7 @@ impl AppEngine {
                 system_prompt_override: false,
                 model: self.bridge.model(),
                 workspace: self.workspace.clone(),
+                mode: AppMode::Yolo,
             })
             .await?;
         Ok(())
@@ -593,7 +604,7 @@ fn spawn_event_forwarder(
         let mut rx = handle.rx_event.write().await;
         while let Some(event) = rx.recv().await {
             match event {
-                Event::TurnStarted { turn_id } => {
+                Event::TurnStarted { turn_id, .. } => {
                     current_turn_id = Some(turn_id.clone());
                     let _ = turn_events.send(turn_tracker.on_started(turn_id));
                     // 本轮起始打点(TTFT 起点)。底座已发此事件,原先落 `_` 被忽略。
@@ -865,6 +876,7 @@ fn spawn_event_forwarder(
                             agent_id,
                             model,
                             usage,
+                            ..
                         } => {
                             let role = agent_roles
                                 .get(&agent_id)
@@ -1650,10 +1662,16 @@ impl TurnCompletionTracker {
 /// The bridge remains the source of hooks, tool restrictions, and provider
 /// details; scheduled execution only overrides fields explicitly owned by the
 /// automation record.
-fn apply_scheduled_turn_policy(op: &mut Op, profile: &ScheduledRunProfile) -> Result<()> {
+fn apply_scheduled_turn_policy(
+    op: &mut Op,
+    profile: &ScheduledRunProfile,
+    resolved_route: deepseek_tui::route_runtime::ResolvedRuntimeRoute,
+    compaction_config: deepseek_tui::compaction::CompactionConfig,
+) -> Result<()> {
     let Op::SendMessage {
         mode,
-        model,
+        route,
+        compaction,
         auto_model,
         allow_shell,
         trust_mode,
@@ -1667,7 +1685,8 @@ fn apply_scheduled_turn_policy(op: &mut Op, profile: &ScheduledRunProfile) -> Re
     };
 
     *mode = profile.execution_mode().to_app_mode();
-    *model = profile.model.clone();
+    *route = Box::new(resolved_route);
+    *compaction = Box::new(compaction_config);
     *auto_model = false;
     *allow_shell = profile.allow_shell;
     *trust_mode = profile.trust_mode;
@@ -1697,7 +1716,8 @@ mod scheduled_turn_tests {
         scheduled_tool_should_auto_approve, EngineTurnSignal, TurnCompletionTracker,
     };
     use crate::bridge::sessions::{ScheduledRunMode, ScheduledRunProfile};
-    use deepseek_tui::config::ApiProvider;
+    use deepseek_tui::config::Config;
+    use deepseek_tui::compaction::CompactionConfig;
     use deepseek_tui::core::events::TurnOutcomeStatus;
     use deepseek_tui::core::ops::{Op, UserInputProvenance};
     use deepseek_tui::tools::goal::GoalStatus;
@@ -1706,11 +1726,19 @@ mod scheduled_turn_tests {
     use std::path::PathBuf;
 
     fn base_op() -> Op {
+        let config = Config::default();
         Op::SendMessage {
             content: "scheduled prompt".to_string(),
             mode: AppMode::Yolo,
-            provider: Some(ApiProvider::Openai),
-            model: "fallback-model".to_string(),
+            route: Box::new(
+                deepseek_tui::route_runtime::resolve_runtime_route(
+                    &config,
+                    config.api_provider(),
+                    Some("fallback-model"),
+                )
+                .expect("resolve fallback route"),
+            ),
+            compaction: Box::new(CompactionConfig::default()),
             goal_objective: None,
             goal_token_budget: None,
             goal_status: GoalStatus::Complete,
@@ -1731,6 +1759,26 @@ mod scheduled_turn_tests {
         }
     }
 
+    fn scheduled_route_and_compaction(
+        profile: &ScheduledRunProfile,
+    ) -> (
+        deepseek_tui::route_runtime::ResolvedRuntimeRoute,
+        CompactionConfig,
+    ) {
+        let config = Config::default();
+        let route = deepseek_tui::route_runtime::resolve_runtime_route(
+            &config,
+            config.api_provider(),
+            Some(&profile.model),
+        )
+        .expect("resolve scheduled route");
+        let compaction = CompactionConfig {
+            model: profile.model.clone(),
+            ..Default::default()
+        };
+        (route, compaction)
+    }
+
     fn profile(auto_approve: bool) -> ScheduledRunProfile {
         ScheduledRunProfile {
             task_id: "task-1".to_string(),
@@ -1747,12 +1795,15 @@ mod scheduled_turn_tests {
     #[test]
     fn scheduled_policy_is_exact_and_preserves_external_user_authority() {
         let mut op = base_op();
-        apply_scheduled_turn_policy(&mut op, &profile(false)).expect("send-message op");
+        let profile = profile(false);
+        let (route, compaction) = scheduled_route_and_compaction(&profile);
+        apply_scheduled_turn_policy(&mut op, &profile, route, compaction)
+            .expect("send-message op");
 
         match op {
             Op::SendMessage {
                 mode,
-                model,
+                route,
                 auto_model,
                 allow_shell,
                 trust_mode,
@@ -1766,7 +1817,7 @@ mod scheduled_turn_tests {
                     AppMode::Agent,
                     "a legacy persisted mode must not bypass autoApprove=false"
                 );
-                assert_eq!(model, "scheduled-model");
+                assert_eq!(route.model(), "scheduled-model");
                 assert!(!auto_model);
                 assert!(allow_shell);
                 assert!(trust_mode);
@@ -1784,7 +1835,9 @@ mod scheduled_turn_tests {
         legacy_yolo.mode = ScheduledRunMode::Yolo;
         let mut op = base_op();
 
-        apply_scheduled_turn_policy(&mut op, &legacy_yolo).expect("scheduled unattended op");
+        let (route, compaction) = scheduled_route_and_compaction(&legacy_yolo);
+        apply_scheduled_turn_policy(&mut op, &legacy_yolo, route, compaction)
+            .expect("scheduled unattended op");
 
         match op {
             Op::SendMessage {

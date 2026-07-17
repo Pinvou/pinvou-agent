@@ -267,7 +267,7 @@ mod tests {
     use anyhow::{bail, Result};
     use async_trait::async_trait;
     use deepseek_tui::automation_manager::{
-        AutomationManager, AutomationStatus, CreateAutomationRequest,
+        run_now_shared, AutomationManager, AutomationStatus, CreateAutomationRequest,
     };
     use deepseek_tui::core::events::TurnOutcomeStatus;
     use deepseek_tui::task_manager::{
@@ -467,7 +467,6 @@ mod tests {
             default_mode: "agent".to_string(),
             allow_shell: false,
             trust_mode: false,
-            max_subagents: 1,
         };
         let executor = Arc::new(ScheduledChatExecutor::new(runtime));
         let manager = TaskManager::start_with_executor(config, executor).await?;
@@ -512,6 +511,8 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             preset: ModelPreset::OpenaiCompatible,
+            context_window_tokens: None,
+            max_output_tokens: None,
             model: wire_name.to_string(),
             base_url: "https://example.invalid/v1".to_string(),
             api_key: String::new(),
@@ -634,22 +635,27 @@ mod tests {
             turn_id: "bound-turn".to_string(),
         }]));
         let (root, manager) = manager_with_runtime(runtime.clone()).await?;
-        let automation_manager = AutomationManager::open(root.0.join("automations"))?;
-        let automation = automation_manager.create_automation(CreateAutomationRequest {
-            name: "bound automation".to_string(),
-            prompt: "run with bound model".to_string(),
-            rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
-            cwds: Vec::new(),
-            model: Some("scheduled-model".to_string()),
-            mode: Some("yolo".to_string()),
-            allow_shell: Some(false),
-            trust_mode: Some(false),
-            auto_approve: Some(false),
-            status: Some(AutomationStatus::Paused),
-        })?;
+        let automation_manager = Arc::new(tokio::sync::Mutex::new(AutomationManager::open(
+            root.0.join("automations"),
+        )?));
+        let automation = automation_manager
+            .lock()
+            .await
+            .create_automation(CreateAutomationRequest {
+                name: "bound automation".to_string(),
+                prompt: "run with bound model".to_string(),
+                rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
+                cwds: Vec::new(),
+                model: Some("scheduled-model".to_string()),
+                mode: Some("yolo".to_string()),
+                allow_shell: Some(false),
+                trust_mode: Some(false),
+                auto_approve: Some(false),
+                status: Some(AutomationStatus::Paused),
+            })?;
         runtime.bind_model_id(&automation.id, "scheduled-model", "deepseek-b");
 
-        let run = automation_manager.run_now(&automation.id, &manager).await?;
+        let run = run_now_shared(&automation_manager, &automation.id, &manager).await?;
         let task_id = run.task_id.as_deref().expect("task id");
         wait_for_terminal_state(&manager, task_id, std::time::Duration::from_secs(5)).await?;
 
@@ -699,23 +705,26 @@ mod tests {
             },
         ]));
         let (root, task_manager) = manager_with_runtime(runtime.clone()).await?;
-        let automation_manager = AutomationManager::open(root.0.join("automations"))?;
-        let automation = automation_manager.create_automation(CreateAutomationRequest {
-            name: "daily brief".to_string(),
-            prompt: "prepare the brief".to_string(),
-            rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
-            cwds: Vec::new(),
-            model: Some("scheduled-model".to_string()),
-            mode: Some("yolo".to_string()),
-            allow_shell: Some(false),
-            trust_mode: Some(false),
-            auto_approve: Some(false),
-            status: Some(AutomationStatus::Paused),
-        })?;
+        let automation_manager = Arc::new(tokio::sync::Mutex::new(AutomationManager::open(
+            root.0.join("automations"),
+        )?));
+        let automation = automation_manager
+            .lock()
+            .await
+            .create_automation(CreateAutomationRequest {
+                name: "daily brief".to_string(),
+                prompt: "prepare the brief".to_string(),
+                rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
+                cwds: Vec::new(),
+                model: Some("scheduled-model".to_string()),
+                mode: Some("yolo".to_string()),
+                allow_shell: Some(false),
+                trust_mode: Some(false),
+                auto_approve: Some(false),
+                status: Some(AutomationStatus::Paused),
+            })?;
 
-        let first_run = automation_manager
-            .run_now(&automation.id, &task_manager)
-            .await?;
+        let first_run = run_now_shared(&automation_manager, &automation.id, &task_manager).await?;
         let first_task_id = first_run.task_id.as_deref().expect("first task id");
         wait_for_terminal_state(
             &task_manager,
@@ -724,9 +733,7 @@ mod tests {
         )
         .await?;
 
-        let second_run = automation_manager
-            .run_now(&automation.id, &task_manager)
-            .await?;
+        let second_run = run_now_shared(&automation_manager, &automation.id, &task_manager).await?;
         let second_task_id = second_run.task_id.as_deref().expect("second task id");
         wait_for_terminal_state(
             &task_manager,
