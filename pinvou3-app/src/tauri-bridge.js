@@ -3770,6 +3770,19 @@
       if (!card.resolved) { card.resolved = true; card.cardState = "cancelled"; }
     });
   }
+  function markWorkflowRunBlocked(payload) {
+    var p = payload || {};
+    var run = state.workflow.run;
+    run.status = "blocked";
+    var text = "⚙️ 工作流卡住：" + (p.message || p.blocked_reason || p.reason || "未知原因");
+    var existing = (run.cards || []).find(function (card) { return card.workflowBlocked; });
+    if (existing) {
+      existing.text = text;
+      existing.resolved = false;
+    } else {
+      pushRunCard({ kind: "system", text: text, resolved: false, workflowBlocked: true });
+    }
+  }
   function mergeFullState(p) {
     var run = state.workflow.run;
     if (p.project_dir) run.projectDir = p.project_dir;
@@ -3799,6 +3812,7 @@
     // stop marker 是最终状态。迟到或手动刷新的 full_state 仍可能携带盘上旧的
     // running/reviewing 状态，不能让已停止的角色卡回跳成“执行中”。
     if (p.stopped) markWorkflowRunStopped();
+    else if (p.blocked || p.status === "blocked") markWorkflowRunBlocked(p);
     else if (p.all_completed) run.status = "complete";
   }
   // [2026-06-06] 快照恢复：把前端 run 态挂回一个已存在的工作流 run（app 重启/切会话后）。
@@ -3811,7 +3825,7 @@
       state.workflow.run = {
         active: true, sessionId: sessionId, projectDir: snap.project_dir || null,
         scenario: snap.scenario || null,
-        status: snap.stopped ? "stopped" : (snap.all_completed ? "complete" : "running"),
+        status: snap.stopped ? "stopped" : (snap.blocked ? "blocked" : (snap.all_completed ? "complete" : "running")),
         agents: {}, cards: [], selectedRole: null,
       };
       mergeFullState(snap);
@@ -3896,9 +3910,7 @@
   listen("workflow:blocked", function (e) {
     var p = e.payload || {}; if (!isRunSession(p)) return;
     if (state.workflow.run.status === "stopped") return;
-    state.workflow.run.status = "blocked";
-    // 后端 emit 的是 message(+warmup_report)，不是 reason/waiting_roles。
-    pushRunCard({ kind: "system", text: "⚙️ 工作流卡住：" + (p.message || p.reason || "未知原因"), resolved: false });
+    markWorkflowRunBlocked(p);
     notify();
   });
   listen("workflow:stopped", function (e) {
@@ -5893,12 +5905,20 @@
   // ── 卡片流工作流：动作（invoke 包装）────────────────────────────
   // 新建任务：建项目（project_started 事件设 run 态）→ kick 派发首个 agent（无聊天）。
   async function startWorkflowTask(scenario, brief) {
+    var res;
     try {
-      var res = await invoke("start_workflow", { scenario: scenario, briefInit: brief || null });
-      try { await invoke("kick_workflow", { sessionId: res.session_id }); }
-      catch (e) { addSystemItem("⚠️ kick_workflow 失败: " + e); }
-      return res;
-    } catch (e) { addSystemItem("⚠️ 启动工作流失败: " + e); return null; }
+      res = await invoke("start_workflow", { scenario: scenario, briefInit: brief || null });
+    } catch (e) {
+      addSystemItem("⚠️ 创建工作流失败: " + e);
+      throw e;
+    }
+    try {
+      await invoke("kick_workflow", { sessionId: res.session_id });
+    } catch (e) {
+      addSystemItem("⚠️ 启动工作流失败: " + e);
+      throw e;
+    }
+    return res;
   }
   // 停止整个 run：后端先落 stop marker 再取消所有后台 SubAgent；返回旧 brief，
   // 供工作流页打开“修改需求并重新开始”的预填表单。

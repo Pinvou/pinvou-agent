@@ -69,6 +69,10 @@ function injectSource() {
         case 'check_for_update': return Promise.resolve({available:false});
         case 'find_resumable_run': return Promise.resolve(ZOMBIE);
         case 'get_workflow_state': return Promise.resolve(WF_STATE);
+        case 'start_workflow': return Promise.resolve({session_id:'s-kick-fail',project_dir:'/x/kick-fail'});
+        case 'kick_workflow': return window.__KICK_WORKFLOW_ERROR__
+          ? Promise.reject(new Error('模型服务预检失败：HTTP 401'))
+          : Promise.resolve('spawning');
         case 'stop_workflow': window.__STOP_WORKFLOW_ARGS__=args; return Promise.resolve({ok:true,session_id:'s-zombie',scenario:'sansheng_liubu',brief:{user_request_raw:'原始三省六部需求'}});
         case 'check_dependencies': return Promise.resolve([]);
         case 'list_marketplace_tools': return Promise.resolve([]);
@@ -236,6 +240,53 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     JSON.stringify(stoppedAfterLateSnapshot),
   );
   await clickText(page, '取消'); await sleep(300);
+
+  // ①d kick 失败必须 reject 给新建任务弹窗，不能把“项目已创建”误当成启动成功。
+  const kickFailure = await page.evaluate(async () => {
+    window.__KICK_WORKFLOW_ERROR__ = true;
+    let error = '';
+    try {
+      await window.TauriBridge.startWorkflowTask('sansheng_liubu', { user_request_raw: '测试启动失败' });
+    } catch (e) {
+      error = String((e && e.message) || e);
+    }
+    window.__KICK_WORKFLOW_ERROR__ = false;
+    return {
+      error,
+      calls: window.__TAURI_INVOKES__.filter(call => call.cmd === 'start_workflow' || call.cmd === 'kick_workflow').map(call => call.cmd),
+    };
+  });
+  rec(
+    '①d kick失败向调用方透传具体错误',
+    kickFailure.error.includes('HTTP 401')
+      && kickFailure.calls.slice(-2).join(',') === 'start_workflow,kick_workflow',
+    JSON.stringify(kickFailure),
+  );
+
+  // ①e 后端 blocked 事件和持久化 full_state 都必须把看板置为 blocked，并显示原因。
+  const blockedState = await page.evaluate(async () => {
+    for (const handler of (window.__TAURI_EVENT_HANDLERS__['workflow:project_started'] || [])) {
+      await handler({ payload: { session_id: 's-blocked', project_dir: '/x/blocked', scenario: 'sansheng_liubu' } });
+    }
+    for (const handler of (window.__TAURI_EVENT_HANDLERS__['workflow:blocked'] || [])) {
+      await handler({ payload: { session_id: 's-blocked', status: 'blocked', stage: 'warmup', message: 'HTTP 401: authorization failed' } });
+    }
+    for (const handler of (window.__TAURI_EVENT_HANDLERS__['workflow:full_state'] || [])) {
+      await handler({ payload: { session_id: 's-blocked', blocked: true, blocked_reason: 'HTTP 401: authorization failed', roles: { taizi: { status: 'pending' } } } });
+    }
+    const run = window.TauriBridge.getState().workflow.run;
+    return {
+      status: run.status,
+      blockedCards: (run.cards || []).filter(card => card.workflowBlocked).map(card => card.text),
+    };
+  });
+  rec(
+    '①e 预热失败显示权威阻塞状态且不重复错误卡',
+    blockedState.status === 'blocked'
+      && blockedState.blockedCards.length === 1
+      && blockedState.blockedCards[0].includes('HTTP 401'),
+    JSON.stringify(blockedState),
+  );
 
   // 手机先向尚未在桌面打开的后台 session 发消息：hydration 必须先把磁盘 messages
   // 重建成 chatItems；否则桌面随后切入时只剩这条手机消息，历史和产物卡都像“丢了”。

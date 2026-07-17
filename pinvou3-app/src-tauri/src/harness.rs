@@ -310,6 +310,14 @@ pub fn read_full_agent_state(workspace: &Path) -> Option<serde_json::Value> {
             if let Some(value) = stop.get("reason") {
                 obj.insert("stop_reason".into(), value.clone());
             }
+        } else if let Ok(report) = read_warmup_report(&project) {
+            if report.get("status").and_then(|value| value.as_str()) == Some("blocked") {
+                obj.insert("blocked".into(), serde_json::Value::Bool(true));
+                if let Some(reason) = warmup_block_reason(&report) {
+                    obj.insert("blocked_reason".into(), serde_json::Value::String(reason));
+                }
+                obj.insert("warmup_report".into(), report);
+            }
         }
     }
 
@@ -928,6 +936,19 @@ fn read_warmup_report(project: &Path) -> Result<serde_json::Value, String> {
     let content = std::fs::read_to_string(&path)
         .map_err(|e| format!("read warmup_report.json: {e}"))?;
     serde_json::from_str(&content).map_err(|e| format!("parse warmup_report.json: {e}"))
+}
+
+/// 从 warmup 报告提取一条适合直接展示给用户的阻断原因。优先返回具体检查项，
+/// 避免把整份 JSON 当错误文本塞进弹窗和工作流卡片。
+pub(crate) fn warmup_block_reason(report: &serde_json::Value) -> Option<String> {
+    let checks = report.get("checks")?.as_object()?;
+    checks
+        .values()
+        .find(|check| check.get("status").and_then(|value| value.as_str()) == Some("blocked"))
+        .and_then(|check| check.get("details").and_then(|value| value.as_str()))
+        .map(str::trim)
+        .filter(|details| !details.is_empty())
+        .map(String::from)
 }
 
 // [tool 化 2026-06-06] run_ghost_deck_step 已删——框架实例化(含 base.css)是 designer
@@ -2225,6 +2246,25 @@ fn read_role_def(role_id: &str) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn warmup_block_reason_returns_concrete_failed_check() {
+        let report = serde_json::json!({
+            "status": "blocked",
+            "checks": {
+                "dependencies": { "status": "pass", "details": "ok" },
+                "llm_endpoint": {
+                    "status": "blocked",
+                    "details": "HTTP 401: authorization failed"
+                }
+            }
+        });
+
+        assert_eq!(
+            warmup_block_reason(&report).as_deref(),
+            Some("HTTP 401: authorization failed")
+        );
+    }
 
     #[test]
     fn workflow_stop_marker_blocks_resume_and_preserves_brief() {

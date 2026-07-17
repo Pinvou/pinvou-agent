@@ -4926,7 +4926,8 @@ pub async fn kick_workflow(
     let ws = store
         .execution_workspace(&sid)
         .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
-    let action = tokio::task::spawn_blocking(move || crate::harness::step_fresh(&ws))
+    let harness_workspace = ws.clone();
+    let action = tokio::task::spawn_blocking(move || crate::harness::step_fresh(&harness_workspace))
         .await
         .map_err(|e| format!("spawn_blocking step_fresh: {e}"))?;
 
@@ -5009,7 +5010,13 @@ pub async fn kick_workflow(
             Ok(format!("spawning {role_name} ({n} pages, 在飞={k})"))
         }
         crate::harness::HarnessAction::Blocked { message } => {
-            Err(format!("workflow blocked: {message}"))
+            crate::engine::emit_workflow_blocked(&app, &sid, &ws, &message);
+            let display_message = serde_json::from_str::<serde_json::Value>(&message)
+                .ok()
+                .as_ref()
+                .and_then(crate::harness::warmup_block_reason)
+                .unwrap_or(message);
+            Err(format!("工作流启动失败：{display_message}"))
         }
         _ => Ok("no dispatch (already running or not applicable)".to_string()),
     }

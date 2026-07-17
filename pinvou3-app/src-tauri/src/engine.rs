@@ -513,6 +513,39 @@ pub(crate) fn emit_fanout(app: &AppHandle, session_id: &str, base_role: &str) {
     );
 }
 
+/// 发送工作流权威阻塞状态。启动预热和运行期调度共用同一事件，前端无需维护
+/// 两套失败协议；JSON warmup 报告保留在 payload 中，展示文本只取具体阻断原因。
+pub(crate) fn emit_workflow_blocked(
+    app: &AppHandle,
+    session_id: &str,
+    workspace: &Path,
+    message: &str,
+) {
+    eprintln!("[harness] blocked: {message}");
+    crate::audit::append(
+        workspace,
+        "blocked",
+        "",
+        json!({ "message": crate::audit::clip(message) }),
+    );
+    let warmup_report = serde_json::from_str::<serde_json::Value>(message).ok();
+    let display_message = warmup_report
+        .as_ref()
+        .and_then(crate::harness::warmup_block_reason)
+        .unwrap_or_else(|| message.to_string());
+    let stage = if warmup_report.is_some() { "warmup" } else { "runtime" };
+    let _ = app.emit(
+        "workflow:blocked",
+        json!({
+            "session_id": session_id,
+            "status": "blocked",
+            "stage": stage,
+            "message": display_message,
+            "warmup_report": warmup_report,
+        }),
+    );
+}
+
 /// [pinvou3-fork] 执行一个 [`HarnessAction`](crate::harness::HarnessAction)：emit
 /// 前端事件，派发真 SubAgent（SpawnAgent → `Op::SpawnSubAgent`）
 /// 或等待/收尾（WaitForHuman/AllDone/Blocked）。由 `TurnComplete`（首轮 step_fresh）
@@ -655,20 +688,7 @@ pub(crate) async fn apply_harness_action(
             true
         }
         HA::Blocked { message } => {
-            eprintln!("[harness] blocked: {message}");
-            crate::audit::append(
-                &ws,
-                "blocked",
-                "",
-                json!({ "message": crate::audit::clip(&message) }),
-            );
-            let warmup_report = serde_json::from_str::<serde_json::Value>(&message).ok();
-            let _ = app.emit(
-                "workflow:blocked",
-                json!({
-                    "session_id": active_id, "message": message, "warmup_report": warmup_report,
-                }),
-            );
+            emit_workflow_blocked(app, active_id, &ws, &message);
             true
         }
         HA::Error(e) => {
