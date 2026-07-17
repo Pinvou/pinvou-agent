@@ -86,8 +86,8 @@ pub struct Pinvou3Bridge {
     /// active。EnginePool spawn 时按该 session 的 model_id 注入(见 `with_session_model`)。
     pub session_model: Option<SavedModel>,
     /// 本地 vLLM `/v1/models` 探测到的 `max_model_len`(上下文窗口)。EnginePool spawn
-    /// 时由 `probe_vllm_model_info` 注入。Some → 填 active_route_limits.context_tokens +
-    /// 按真实窗口推导压缩阈值;None(探测失败/云端 provider)→ 走底座名字 hint 老路。
+    /// 时由 `probe_vllm_model_info` 注入。Some → 与 SavedModel 声明取较小值后填入
+    /// active_route_limits，并与 output profile 一起推导压缩阈值。
     pub probed_context_tokens: Option<u32>,
 }
 
@@ -488,16 +488,50 @@ impl Pinvou3Bridge {
         self.prefs.advanced.max_output_tokens.unwrap_or(24_576)
     }
 
-    /// 底座 emergency 线用的 context window。probed(vLLM `/v1/models` 的 `max_model_len`)
-    /// 优先;否则按模型名 hint——与底座 `provider_capability` 的 generic 分支一致
-    /// (`context_window_for_model` 有值则用,否则 LEGACY 128K)。
+    /// 为一个具体 wire model 生成宿主已知的 route facts。正确性不依赖模型名：
+    /// SavedModel 显式能力与实时 probe 取更小值；本地 vLLM 无显式 context 时才
+    /// 使用模型 hint/128K 保守值。output 始终不超过 Pinvou 全局 24K 请求意图。
+    fn route_limits_for_model(&self, model: &str) -> Option<codewhale_config::route::RouteLimits> {
+        let saved = self.effective_model().filter(|saved| saved.model == model);
+        let configured_context = saved.and_then(|saved| saved.context_window_tokens);
+        let context_tokens = match (configured_context, self.probed_context_tokens) {
+            (Some(configured), Some(probed)) => Some(configured.min(probed)),
+            (Some(configured), None) => Some(configured),
+            (None, Some(probed)) => Some(probed),
+            (None, None) if self.provider() == "vllm" => {
+                Some(deepseek_tui::models::context_window_for_model(model).unwrap_or(128_000))
+            }
+            (None, None) => None,
+        };
+        let configured_output = saved.and_then(|saved| saved.max_output_tokens);
+        let output_tokens = configured_output
+            .or_else(|| (self.provider() == "vllm").then(|| self.max_output_tokens()))
+            .map(|tokens| tokens.min(self.max_output_tokens()))
+            .map(|tokens| {
+                context_tokens.map_or(tokens, |context| {
+                    tokens.min(context.saturating_sub(1_024).max(1))
+                })
+            });
+        let limits = codewhale_config::route::RouteLimits {
+            context_tokens: context_tokens.map(u64::from),
+            input_tokens: None,
+            output_tokens: output_tokens.map(u64::from),
+        };
+        limits.has_known_limit().then_some(limits)
+    }
+
+    /// 底座 emergency 线用的 context window。SavedModel 声明与 probe(vLLM
+    /// `/v1/models` 的 `max_model_len`)取较小值；都没有时才按模型名 hint/128K。
     ///
     /// ⚠️ **填 active_route_limits 与推导 token_threshold 必须共用这一个 window**,
     /// 否则 T(正常线)/E(紧急线)用不同窗口 → 倒置(见 docs/context-compaction-设计.md)。
-    fn effective_context_window(&self) -> u32 {
-        self.probed_context_tokens.unwrap_or_else(|| {
-            deepseek_tui::models::context_window_for_model(&self.model()).unwrap_or(128_000)
-        })
+    fn effective_context_window(&self, model: &str) -> u32 {
+        self.route_limits_for_model(model)
+            .and_then(|limits| limits.context_tokens)
+            .and_then(|tokens| u32::try_from(tokens).ok())
+            .unwrap_or_else(|| {
+                deepseek_tui::models::context_window_for_model(model).unwrap_or(128_000)
+            })
     }
 
     /// 按窗口推导 `should_compact` 的 `token_threshold`(nice 主路径触发线 T)。
@@ -505,36 +539,37 @@ impl Pinvou3Bridge {
     ///
     ///   T = (E − S)/1.5 − FIXED,   clamp[4096, 0.75·W]
     ///   E = W − O − 1024           (底座 emergency 线,conservative 全量尺)
-    ///   O 按窗口分档(镜像底座):≥500K → 262144;否则 max_output_tokens()(见下)
+    ///   O 来自同一 route profile；未声明 route 时才由底座 provider/model fallback 推导
     ///
     /// ÷1.5 把 conservative 全量尺换算回 `should_compact` 的 raw 子集尺(k=1.5 实测精确,
     /// pinvou 关 thinking 无偏移)。S=4000(system 保守估算,dump 实测 ~1.4K + 余量);
     /// FIXED=22000(framing ~2.5K + pinned/recent R ~4.5K + safety margin ~15K)。
     /// 写死单值对任一窗口非倒置即过保守,故按窗口推导(实证:262K→~133K / 131K→~46K)。
-    fn derive_compaction_threshold(&self) -> usize {
-        let window = self.effective_context_window() as usize;
+    fn derive_compaction_threshold(&self, model: &str) -> usize {
+        let window = self.effective_context_window(model) as usize;
         // [pinvou3-fork 根治 2026-07-03] 直接问底座要 emergency input budget E,**不再镜像**
         // 500K/262144/output 预留/`E=W−O−1024` 公式。那些常数一旦上游 sync 改动,pinvou3 编译
         // 不报错却静默算出不一致的 E → 倒置(与 tool_search 折叠单名同类:依赖上游不变的假设,
         // 间接检查抓不到)。底座 `context_input_budget_for_route` 已封装窗口分档(≥500K→262144 /
         // 否则 effective_max_output)+ headroom;传 input_tokens=0 取总 budget E。上游改这些
         // pinvou3 自动跟随、永不倒置。route_limits 与 build_engine_config.active_route_limits 同源。
-        let route_limits =
-            self.probed_context_tokens
-                .map(|w| codewhale_config::route::RouteLimits {
-                    context_tokens: Some(u64::from(w)),
-                    ..Default::default()
-                });
+        let route_limits = self.route_limits_for_model(model);
+        let provider = self.build_dt_config().api_provider();
         let emergency = deepseek_tui::core::engine::context_input_budget_for_route(
-            ApiProvider::Deepseek,
-            &self.model(),
+            provider,
+            model,
             route_limits,
             0,
         )
         .unwrap_or_else(|| {
             // 底座返 None(未知 model + 无探测 route_limits):与底座禁用 preflight 时同路,保守兜底。
             window
-                .saturating_sub(self.max_output_tokens() as usize)
+                .saturating_sub(
+                    route_limits
+                        .and_then(|limits| limits.output_tokens)
+                        .and_then(|tokens| usize::try_from(tokens).ok())
+                        .unwrap_or_else(|| self.max_output_tokens() as usize),
+                )
                 .saturating_sub(1_024)
         });
         // 以下 S/FIXED/÷1.5/clamp 是 pinvou3 自己的 T 推导(同尺换算 + 守护余量),**非镜像底座**。
@@ -648,7 +683,7 @@ impl Pinvou3Bridge {
             //   资源闸(决策③ fork 基底用步数上限,token_budget 透传 default 不启用)。
             //   auto_review_policy/exec_policy_engine: 审查/exec 策略。
             //   active_route_limits/skills_scan_codewhale_only/workspace_follow_symlinks: 透传。
-            active_route_limits: _, // pinvou3 显式构造(见下,填 vLLM 探测窗口),不透传 default
+            active_route_limits: _, // pinvou3 按 SavedModel + probe 显式构造，不透传 default
             skills_scan_codewhale_only,
             max_admitted_subagents,
             subagents_enabled,
@@ -657,6 +692,9 @@ impl Pinvou3Bridge {
             workspace_follow_symlinks,
             exec_policy_engine,
             extra_tools,
+            fleet_roster,
+            moraine_fallback,
+            terminal_chrome_enabled,
         } = EngineConfig::default();
 
         // hook 有两条消费路径：turn_loop 从 EngineConfig.hook_executor 跑
@@ -722,7 +760,7 @@ impl Pinvou3Bridge {
             //    非倒置即过保守——2026-07-02 实证坐实 190K 在健康 256K 机也倒置(emergency@198
             //    早于 should_compact@255)。故 token_threshold 改**按窗口推导**:
             //    derive_compaction_threshold() = (E−S)/1.5 − 22000, clamp[4096, 0.75W];
-            //    W 来源 = 探测(active_route_limits.context_tokens)优先,否则名字 hint。
+            //    W/O 来源 = SavedModel 显式 route profile + probe；vLLM 缺省才走保守值。
             //    公式常数与实证见 docs/context-compaction-设计.md;同尺不变式由回归测试
             //    forkguard_compaction_threshold_below_emergency_all_windows 四窗口锁住。
             // 上游默认 token_threshold=800K,对本地窗口永远撞不到,**必须显式 set**。
@@ -730,7 +768,7 @@ impl Pinvou3Bridge {
             //    随 cycle removal 一并去掉),原 60K 下限设置失效,删除。
             compaction: deepseek_tui::compaction::CompactionConfig {
                 model: self.model(),
-                token_threshold: self.derive_compaction_threshold(),
+                token_threshold: self.derive_compaction_threshold(&self.model()),
                 ..compaction
             },
             // ⚠️ v0.8.51 上游整体移除 cycle 子系统(release "cycle removal"):
@@ -837,16 +875,10 @@ impl Pinvou3Bridge {
             //   资源闸(决策③ fork 基底用步数上限,token_budget 透传 default 不启用)。
             //   auto_review_policy/exec_policy_engine: 审查/exec 策略。
             //   active_route_limits/skills_scan_codewhale_only/workspace_follow_symlinks: 透传。
-            // [pinvou3-fork] active_route_limits:填 vLLM 探测到的窗口(context_tokens),
-            // 让底座 emergency 线 + footer 百分比按真实 max_model_len 计;探测失败(None)
-            // → 透传 None,底座回退模型名 hint 老路。只填 context_tokens,输出预留仍走
-            // DEEPSEEK_MAX_OUTPUT_TOKENS(见 max_output_tokens / wire_max_output_tokens_env)。
-            active_route_limits: self.probed_context_tokens.map(|w| {
-                codewhale_config::route::RouteLimits {
-                    context_tokens: Some(u64::from(w)),
-                    ..Default::default()
-                }
-            }),
+            // [pinvou3-fork] active_route_limits:把 SavedModel 声明和实时 probe 收敛成同一份
+            // context/output route facts，让底座 emergency 线、Compact 与真实请求上限同尺。
+            // 未登记的 vLLM 才回退 128K/24K；其他兼容引擎可在 SavedModel 显式声明。
+            active_route_limits: self.route_limits_for_model(&self.model()),
             skills_scan_codewhale_only,
             max_admitted_subagents,
             subagents_enabled,
@@ -855,6 +887,9 @@ impl Pinvou3Bridge {
             workspace_follow_symlinks,
             exec_policy_engine,
             extra_tools,
+            fleet_roster,
+            moraine_fallback,
+            terminal_chrome_enabled,
         }
     }
 
@@ -992,13 +1027,43 @@ impl Pinvou3Bridge {
     /// 注：DeepSeek-TUI 当前的 `auto_approve` 字段不旁路 `await_tool_approval`
     /// （上游 bug），所以 event forwarder 仍要监听 ApprovalRequired 并主动
     /// 调 `approve_tool_call`。这条逻辑见 `engine.rs::spawn_event_forwarder`。
+    pub fn resolve_runtime_route_for_model(
+        &self,
+        model: &str,
+    ) -> Result<deepseek_tui::route_runtime::ResolvedRuntimeRoute> {
+        let config = self.build_dt_config();
+        let provider = config.api_provider();
+        let route = if let Some(limits) = self.route_limits_for_model(model) {
+            deepseek_tui::route_runtime::resolve_runtime_route_with_limits(
+                &config,
+                provider,
+                Some(model),
+                limits,
+            )
+        } else {
+            deepseek_tui::route_runtime::resolve_runtime_route(&config, provider, Some(model))
+        };
+        route.map_err(anyhow::Error::msg)
+    }
+
+    pub fn compaction_config_for_model(
+        &self,
+        model: &str,
+    ) -> deepseek_tui::compaction::CompactionConfig {
+        deepseek_tui::compaction::CompactionConfig {
+            model: model.to_string(),
+            token_threshold: self.derive_compaction_threshold(model),
+            ..Default::default()
+        }
+    }
+
     pub fn build_send_message_op(
         &self,
         content: String,
         mode: AppMode,
         persona_reminder: Option<String>,
         restrict_tools: bool,
-    ) -> Op {
+    ) -> Result<Op> {
         let (allow_shell, trust_mode) = match mode {
             AppMode::Yolo => (self.allow_shell(), true),
             // Plan: allow_shell=true 让 engine 正常路由 shell 工具，
@@ -1008,7 +1073,7 @@ impl Pinvou3Bridge {
             // sandbox + 只读工具集，不依赖 trust_mode）。
             AppMode::Plan => (true, true),
             // Agent mode pinvou3 不暴露，但保留 default 处理避免 panic
-            AppMode::Agent => (self.allow_shell(), false),
+            AppMode::Agent | AppMode::Auto | AppMode::Operate => (self.allow_shell(), false),
         };
         // 超级权限状态每 turn 实时注入(is_enabled() 每次读 disk),绕开
         // refresh_all_instructions no-op 导致的"切开关不生效"——静态 prompt
@@ -1030,10 +1095,12 @@ impl Pinvou3Bridge {
         }
         let full_content =
             format!("<system-reminder>\n{reminder_body}\n</system-reminder>\n\n{content}");
-        Op::SendMessage {
+        let model = self.model();
+        Ok(Op::SendMessage {
             content: full_content,
             mode,
-            model: self.model(),
+            route: Box::new(self.resolve_runtime_route_for_model(&model)?),
+            compaction: Box::new(self.compaction_config_for_model(&model)),
             goal_objective: None,
             // v0.8.59 上游新增 /goal 目标管理;pinvou3 GUI 不用,取默认(无预算/Active)。
             goal_token_budget: None,
@@ -1072,15 +1139,11 @@ impl Pinvou3Bridge {
             hook_executor: Some(self.build_hook_executor()),
             // v0.8.59 上游新增 concise verbosity 模式;pinvou3 GUI 走默认详尽,取 None。
             verbosity: None,
-            // —— v0.8.65 上游新增字段 ——
-            // provider: auto-route 选不同已认证 provider 时用;pinvou3 走 config 固定
-            // provider,这里 None 让 engine 沿用配置。
-            provider: None,
             // dynamic_tools: per-message 动态工具;pinvou3 不用,空。
             dynamic_tools: Vec::new(),
             // provenance: 消息来源。build_send_message_op 是用户内容 → ExternalUser。
             provenance: deepseek_tui::core::ops::UserInputProvenance::ExternalUser,
-        }
+        })
     }
 }
 
@@ -1100,7 +1163,7 @@ fn reminder_for(mode: AppMode) -> Option<&'static str> {
         // Yolo: 大产物分块实测不再 load-bearing(landing.html 397 行一次 write_file、73.8s 不撞
         // timeout——idle timeout 早从 90s 提到 240-280s;且 h3c-ppt 等大-deck workflow 已下线,
         // 无依赖)→ 砍光 YOLO_REMINDER。Yolo per-turn 只剩 sudo(动态状态)。Agent pinvou3 不暴露。
-        AppMode::Yolo | AppMode::Agent => None,
+        AppMode::Yolo | AppMode::Agent | AppMode::Auto | AppMode::Operate => None,
     }
 }
 
@@ -1162,6 +1225,8 @@ mod tests {
             id: "test-model".to_string(),
             name: model.to_string(),
             preset,
+            context_window_tokens: None,
+            max_output_tokens: None,
             model: model.to_string(),
             base_url: base_url.to_string(),
             api_key: api_key.to_string(),
@@ -1179,7 +1244,7 @@ mod tests {
     ///     128000,T 按 128000 推导。两种都 nice 主路径活(T ≪ E),不再是写死 190K 的倒置
     ///     抖动(190K > 128K 窗口的 E,必倒置——正是客户机每 1-2 工具调用一次 Emergency 的根因)。
     #[test]
-    fn compaction_128k_scenarios() {
+    fn forkguard_compaction_128k_scenarios() {
         let _env = EnvGuard::new(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
         // [根治后] derive_compaction_threshold 经底座 context_input_budget_for_route 读
         // DEEPSEEK_MAX_OUTPUT_TOKENS 算 output 预留(不再镜像 24576)。测试须钉死生产 env 值,
@@ -1201,6 +1266,11 @@ mod tests {
             Some(131_072),
             "探测成功必须填 route_limits.context_tokens"
         );
+        assert_eq!(
+            cfg_a.active_route_limits.and_then(|l| l.output_tokens),
+            Some(24_576),
+            "128K 本地 route 必须显式携带 Pinvou 24K output"
+        );
         assert!(
             (40_000..=55_000).contains(&t_a),
             "128K 窗口 T 应 ~46K,实得 {t_a}"
@@ -1217,7 +1287,7 @@ mod tests {
             "",
         );
         b.probed_context_tokens = None;
-        let win_b = b.effective_context_window();
+        let win_b = b.effective_context_window(&b.model());
         let cfg_b = b.build_engine_config();
         let t_b = cfg_b.compaction.token_threshold;
         let e_b = win_b as usize - b.max_output_tokens() as usize - 1_024;
@@ -1229,9 +1299,14 @@ mod tests {
             win_b, 128_000,
             "无 _Nk 名字 + 探测失败 → 底座 legacy 128000(与 provider_capability generic 分支对齐)"
         );
-        assert!(
-            cfg_b.active_route_limits.is_none(),
-            "探测失败 → route_limits None(走底座名字 hint 老路)"
+        assert_eq!(
+            cfg_b.active_route_limits,
+            Some(codewhale_config::route::RouteLimits {
+                context_tokens: Some(128_000),
+                input_tokens: None,
+                output_tokens: Some(24_576),
+            }),
+            "未知本地 alias 也必须携带明确的 128K/24K 保守 profile"
         );
         assert!(
             (38_000..=50_000).contains(&t_b),
@@ -1241,6 +1316,58 @@ mod tests {
             t_b < e_b,
             "T({t_b}) 必须低于紧急线 E({e_b})——nice 先于 emergency(不倒置)"
         );
+
+        // C. Pinvou 默认健康部署:SavedModel 明确 262144/24576，不依赖 wire alias。
+        let mut c = fixture_bridge();
+        c.prefs.migrate_models();
+        let cfg_c = c.build_engine_config();
+        let t_c = cfg_c.compaction.token_threshold;
+        assert_eq!(
+            cfg_c.active_route_limits,
+            Some(codewhale_config::route::RouteLimits {
+                context_tokens: Some(262_144),
+                input_tokens: None,
+                output_tokens: Some(24_576),
+            })
+        );
+        assert_eq!(
+            t_c, 133_029,
+            "256K/24K profile 的 Compact 阈值应稳定为 133029"
+        );
+    }
+
+    /// route profile 属于具体部署，不属于 vLLM/Qwen 特例。任何 OpenAI-compatible
+    /// 本地引擎只要在 SavedModel 声明能力，都必须走同一预算链。
+    #[test]
+    fn forkguard_openai_compatible_route_uses_declared_limits() {
+        let _env = EnvGuard::new(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "custom-local-model",
+            "http://127.0.0.1:9000/v1",
+            "",
+        );
+        let saved = bridge
+            .prefs
+            .advanced
+            .saved_models
+            .first_mut()
+            .expect("active model");
+        saved.context_window_tokens = Some(131_072);
+        saved.max_output_tokens = Some(24_576);
+
+        let config = bridge.build_engine_config();
+        assert_eq!(
+            config.active_route_limits,
+            Some(codewhale_config::route::RouteLimits {
+                context_tokens: Some(131_072),
+                input_tokens: None,
+                output_tokens: Some(24_576),
+            })
+        );
+        assert_eq!(config.compaction.token_threshold, 45_648);
     }
 
     /// 实际会用的云端大窗口模型(不探测 → probed=None,window 走 catalog/名字 hint)。
@@ -1270,7 +1397,7 @@ mod tests {
             let mut b = fixture_bridge();
             set_active_model(&mut b, ModelPreset::Deepseek, model, "https://x/v1", "");
             b.probed_context_tokens = None; // 云端不探测
-            let win = b.effective_context_window() as usize;
+            let win = b.effective_context_window(&b.model()) as usize;
             assert_eq!(
                 win, want_window,
                 "{model} 窗口应 {want_window}(catalog/hint),实得 {win}"
@@ -1315,7 +1442,9 @@ mod tests {
     fn build_send_message_op_injects_sudo_for_yolo_not_plan() {
         let bridge = fixture_bridge();
         let content_of =
-            |mode| match bridge.build_send_message_op("用户消息".to_string(), mode, None, false)
+            |mode| match bridge
+                .build_send_message_op("用户消息".to_string(), mode, None, false)
+                .expect("resolve test route")
             {
                 Op::SendMessage { content, .. } => content,
                 other => panic!("期望 SendMessage,得到 {other:?}"),
@@ -1343,7 +1472,8 @@ mod tests {
             AppMode::Yolo,
             Some(persona.clone()),
             false,
-        );
+        )
+        .expect("resolve test route");
         let content = match op {
             Op::SendMessage { content, .. } => content,
             other => panic!("期望 SendMessage,得到 {other:?}"),
@@ -1353,7 +1483,9 @@ mod tests {
             "加持后 op 必须在 system-reminder 内注入 persona 人设,得到:\n{content}"
         );
         // None 时不应出现该文案
-        let op_none = bridge.build_send_message_op("hi".to_string(), AppMode::Yolo, None, false);
+        let op_none = bridge
+            .build_send_message_op("hi".to_string(), AppMode::Yolo, None, false)
+            .expect("resolve test route");
         if let Op::SendMessage { content, .. } = op_none {
             assert!(!content.contains("数据库架构师"), "未加持不应注入 persona");
         }
@@ -1370,7 +1502,9 @@ mod tests {
             AppMode::Yolo,
             None,
             restrict,
-        ) {
+        )
+        .expect("resolve test route")
+        {
             Op::SendMessage { allowed_tools, .. } => allowed_tools,
             other => panic!("期望 SendMessage,得到 {other:?}"),
         };
@@ -1487,12 +1621,9 @@ mod tests {
         for window in [262_144u32, 131_072, 65_536] {
             let mut bridge = fixture_bridge();
             bridge.probed_context_tokens = Some(window);
-            let route_limits = Some(codewhale_config::route::RouteLimits {
-                context_tokens: Some(u64::from(window)),
-                ..Default::default()
-            });
+            let route_limits = bridge.route_limits_for_model(&bridge.model());
             let emergency = deepseek_tui::core::engine::context_input_budget_for_route(
-                ApiProvider::Deepseek,
+                bridge.build_dt_config().api_provider(),
                 &bridge.model(),
                 route_limits,
                 0,
@@ -1530,8 +1661,8 @@ mod tests {
     }
 
     /// probed_context_tokens=Some → 必须填进 active_route_limits.context_tokens
-    /// (底座 emergency 线 + footer 百分比据此按真实 max_model_len 计);None → 透传 None
-    /// (走底座名字 hint 老路)。下次 sync 若构造块把 active_route_limits 改回透传 default,
+    /// (底座 emergency 线 + footer 百分比据此按真实 max_model_len 计);None → 本地 vLLM
+    /// 仍给 model hint/128K + 24K 保守 profile。下次 sync 若构造块改回透传 default，
     /// 本测试立刻报错。
     #[test]
     fn forkguard_probed_window_fills_route_limits() {
@@ -1544,10 +1675,18 @@ mod tests {
             "probed_context_tokens=Some 必须填进 active_route_limits.context_tokens"
         );
 
-        let cfg_none = fixture_bridge().build_engine_config();
-        assert!(
-            cfg_none.active_route_limits.is_none(),
-            "未探测(probed=None)应透传 None,走底座名字 hint 老路"
+        let no_probe = fixture_bridge();
+        let expected_context =
+            deepseek_tui::models::context_window_for_model(&no_probe.model()).unwrap_or(128_000);
+        let cfg_none = no_probe.build_engine_config();
+        assert_eq!(
+            cfg_none.active_route_limits,
+            Some(codewhale_config::route::RouteLimits {
+                context_tokens: Some(u64::from(expected_context)),
+                input_tokens: None,
+                output_tokens: Some(24_576),
+            }),
+            "未探测的本地 vLLM 应使用 model hint/128K + 24K 保守 profile"
         );
     }
 
@@ -1772,7 +1911,9 @@ mod tests {
         let Op::SendMessage {
             hook_executor: Some(message_executor),
             ..
-        } = bridge.build_send_message_op("test".into(), AppMode::Yolo, None, false)
+        } = bridge
+            .build_send_message_op("test".into(), AppMode::Yolo, None, false)
+            .expect("resolve test route")
         else {
             panic!("每轮 SendMessage 必须显式携带 hook executor");
         };
@@ -1877,7 +2018,9 @@ mod tests {
     fn bridge_yolo_mode_trust_mode_true() {
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         let bridge = fixture_bridge();
-        let op = bridge.build_send_message_op("hi".into(), AppMode::Yolo, None, false);
+        let op = bridge
+            .build_send_message_op("hi".into(), AppMode::Yolo, None, false)
+            .expect("resolve test route");
         let (_allow_shell, trust_mode) = extract_shell_trust(op);
         assert!(trust_mode, "Yolo 模式 trust_mode 必须 true");
     }
@@ -1887,7 +2030,9 @@ mod tests {
     #[test]
     fn bridge_plan_mode_trust_mode_true_after_p1() {
         let bridge = fixture_bridge();
-        let op = bridge.build_send_message_op("list dir".into(), AppMode::Plan, None, false);
+        let op = bridge
+            .build_send_message_op("list dir".into(), AppMode::Plan, None, false)
+            .expect("resolve test route");
         let (_allow_shell, trust_mode) = extract_shell_trust(op);
         assert!(
             trust_mode,
@@ -1903,7 +2048,9 @@ mod tests {
     fn bridge_plan_mode_allow_shell_true() {
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         let bridge = fixture_bridge();
-        let op = bridge.build_send_message_op("exec ls".into(), AppMode::Plan, None, false);
+        let op = bridge
+            .build_send_message_op("exec ls".into(), AppMode::Plan, None, false)
+            .expect("resolve test route");
         let (allow_shell, _trust_mode) = extract_shell_trust(op);
         assert!(
             allow_shell,

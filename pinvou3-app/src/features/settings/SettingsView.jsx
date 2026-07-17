@@ -913,6 +913,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const [preset, setPreset] = useState(initial.preset || 'local_vllm');
       const [model, setModel] = useState(initial.model || '');
       const [baseUrl, setBaseUrl] = useState(initial.base_url || '');
+      const [contextWindow, setContextWindow] = useState(initial.context_window_tokens ? String(initial.context_window_tokens) : '');
+      const [maxOutput, setMaxOutput] = useState(initial.max_output_tokens ? String(initial.max_output_tokens) : '');
       const [apiKey, setApiKey] = useState('');
       const [keyAction, setKeyAction] = useState(initial.__new ? 'replace' : 'keep_existing');
       const [showKey, setShowKey] = useState(false);
@@ -927,6 +929,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         setPreset(p);
         const defs = MODEL_PRESET_DEFS[p] || MODEL_PRESET_DEFS.local_vllm;
         setBaseUrl(defs.baseUrl); setModel(defs.model);
+        setContextWindow(p === 'local_vllm' ? '262144' : '');
+        setMaxOutput(p === 'local_vllm' ? '24576' : '');
         if (p !== 'local_vllm') { setApiKey(''); setKeyAction(initial.__new ? 'replace' : 'keep_existing'); }
       }
       async function handleTest() {
@@ -976,7 +980,15 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       function doSave() {
         if (!canSave) return;
         const id = initial.__new ? ('m_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)) : initial.id;
-        onSave({ id: id, name: name.trim(), preset: preset, model: model.trim(), base_url: baseUrl.trim(), api_key: keyAction === 'replace' ? apiKey.trim() : '', credential_action: keyAction });
+        const contextTokens = Number.parseInt(contextWindow, 10);
+        const outputTokens = Number.parseInt(maxOutput, 10);
+        onSave({
+          id: id, name: name.trim(), preset: preset,
+          context_window_tokens: Number.isFinite(contextTokens) && contextTokens > 0 ? contextTokens : null,
+          max_output_tokens: Number.isFinite(outputTokens) && outputTokens > 0 ? outputTokens : null,
+          model: model.trim(), base_url: baseUrl.trim(),
+          api_key: keyAction === 'replace' ? apiKey.trim() : '', credential_action: keyAction,
+        });
       }
       const credentialState = initial.credential_state || (initial.has_secret ? 'configured' : 'missing');
       const hasSavedKey = !!initial.has_secret || credentialState === 'configured' || credentialState === 'env_override';
@@ -1003,6 +1015,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               </div>
               <SField isDark={isDark} label={t.customModelName} type="text" value={model} onChange={e => setModel(e.target.value)} />
               <SField isDark={isDark} label={t.customBaseUrl} type="text" value={baseUrl} onChange={e => setBaseUrl(e.target.value)} />
+              <div className="grid grid-cols-2 gap-3">
+                <SField isDark={isDark} label={t.modelContextWindow} type="number" min="1" step="1" value={contextWindow} onChange={e => setContextWindow(e.target.value)} />
+                <SField isDark={isDark} label={t.modelMaxOutput} type="number" min="1" step="1" value={maxOutput} onChange={e => setMaxOutput(e.target.value)} />
+              </div>
               <div>
                 <span className={`text-[14px] block mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.customApiKey}</span>
                 <div className={`mb-2 text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{keyStatusText}</div>
@@ -1354,7 +1370,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                       );
                     })}
                   </div>
-                  <button onClick={() => setEditingModel({ __new: true, id: '', name: '', preset: 'local_vllm', model: MODEL_PRESET_DEFS.local_vllm.model, base_url: MODEL_PRESET_DEFS.local_vllm.baseUrl, api_key: '' })}
+                  <button onClick={() => setEditingModel({ __new: true, id: '', name: '', preset: 'local_vllm', context_window_tokens: 262144, max_output_tokens: 24576, model: MODEL_PRESET_DEFS.local_vllm.model, base_url: MODEL_PRESET_DEFS.local_vllm.baseUrl, api_key: '' })}
                     className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#F0F4F9] text-[#1F1F1F] hover:bg-[#E8EAED]'}`}>{t.addModel}</button>
                 </div>
               </SCard>

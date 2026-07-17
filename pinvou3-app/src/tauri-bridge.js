@@ -3969,7 +3969,8 @@
     }
     notify();
   }
-  // model 对象字段须是 snake_case(SavedModel serde): {id,name,preset,model,base_url,api_key,credential_action}
+  // model 对象字段须是 snake_case(SavedModel serde):
+  // {id,name,preset,context_window_tokens,max_output_tokens,model,base_url,api_key,credential_action}
   async function saveModel(model) {
     await invoke("save_model", { model: model });
     await loadModels();

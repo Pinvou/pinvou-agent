@@ -13,10 +13,7 @@
 
 use anyhow::Result;
 use deepseek_tui::memory;
-use deepseek_tui::models::SystemPrompt;
-use deepseek_tui::prompts::{
-    self, PromptSessionContext,
-};
+use deepseek_tui::prompts::{self, PromptSessionContext};
 use deepseek_tui::tui::app::AppMode;
 use deepseek_tui::tui::approval::ApprovalMode;
 use pinvou3_lib::bridge::Pinvou3Bridge;
@@ -29,8 +26,7 @@ fn main() -> Result<()> {
     let cfg = bridge.build_engine_config_for_session(sid);
 
     // 复刻 Engine::new (core/engine.rs:454-475) 的入参装配
-    let user_memory_block =
-        memory::compose_block(cfg.memory_enabled, &cfg.memory_path);
+    let user_memory_block = memory::compose_block(cfg.memory_enabled, &cfg.memory_path);
 
     let session_ctx = PromptSessionContext {
         user_memory_block: user_memory_block.as_deref(),
@@ -62,36 +58,28 @@ fn main() -> Result<()> {
         Some("agent") => (AppMode::Agent, ApprovalMode::Suggest),
         _ => (AppMode::Yolo, ApprovalMode::Auto),
     };
-    let prompt =
-        prompts::system_prompt_for_mode_with_context_skills_session_and_approval(
-            &cfg.workspace,
-            None,
-            Some(&cfg.skills_dir),
-            Some(&cfg.instructions),
-            session_ctx,
-        );
+    let prompt = prompts::system_prompt_for_mode_with_context_skills_session_and_approval(
+        &cfg.workspace,
+        None,
+        Some(&cfg.skills_dir),
+        Some(&cfg.instructions),
+        session_ctx,
+    );
+    let text = prompts::system_prompt_flat_text(&prompt);
 
-    match prompt {
-        SystemPrompt::Text(text) => {
-            // 打 dump 元数据 + body
-            eprintln!("───────── dump meta ─────────");
-            eprintln!("workspace    = {}", cfg.workspace.display());
-            eprintln!("skills_dir   = {}", cfg.skills_dir.display());
-            eprintln!("instructions = {:?}", cfg.instructions);
-            eprintln!("locale_tag   = {}", cfg.locale_tag);
-            eprintln!("model_id     = {}", cfg.model);
-            eprintln!("approval     = {approval:?}");
-            eprintln!("mode         = {mode:?}");
-            eprintln!("show_thinking= {}", cfg.show_thinking);
-            eprintln!("byte_len     = {}", text.len());
-            eprintln!("line_count   = {}", text.lines().count());
-            eprintln!("─────────────────────────────");
-            println!("{text}");
-        }
-        other => {
-            eprintln!("unexpected SystemPrompt variant: {other:?}");
-            std::process::exit(2);
-        }
-    }
+    // 打 dump 元数据 + body。v0.9.0 生产路径返回 Blocks，统一扁平化便于跨版本 diff。
+    eprintln!("───────── dump meta ─────────");
+    eprintln!("workspace    = {}", cfg.workspace.display());
+    eprintln!("skills_dir   = {}", cfg.skills_dir.display());
+    eprintln!("instructions = {:?}", cfg.instructions);
+    eprintln!("locale_tag   = {}", cfg.locale_tag);
+    eprintln!("model_id     = {}", cfg.model);
+    eprintln!("approval     = {approval:?}");
+    eprintln!("mode         = {mode:?}");
+    eprintln!("show_thinking= {}", cfg.show_thinking);
+    eprintln!("byte_len     = {}", text.len());
+    eprintln!("line_count   = {}", text.lines().count());
+    eprintln!("─────────────────────────────");
+    println!("{text}");
     Ok(())
 }
