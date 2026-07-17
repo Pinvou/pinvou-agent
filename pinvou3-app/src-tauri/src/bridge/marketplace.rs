@@ -146,6 +146,35 @@ fn mcp_secret_placeholder(secret_name: &str) -> String {
     format!("${{{}}}", mcp_secret_env_var(secret_name))
 }
 
+/// 远程 MCP 的密钥不能写进 `headers`:底座会把那个字段当作字面量发送,
+/// 不会展开 `${ENV}` 占位符。Bearer 走专用的环境变量配置;无 scheme 的
+/// 自定义 header 则使用 `env_headers`。这样密钥始终只在进程环境和凭据库中。
+fn set_remote_secret_header(
+    env_headers: &mut serde_json::Map<String, serde_json::Value>,
+    bearer_token_env_var: &mut Option<String>,
+    header: &str,
+    scheme: &str,
+    key: &str,
+) -> Result<(), String> {
+    let env_var = mcp_secret_env_var(key);
+    if header.eq_ignore_ascii_case("authorization") && scheme.eq_ignore_ascii_case("bearer") {
+        if let Some(existing) = bearer_token_env_var.as_deref() {
+            if existing != env_var {
+                return Err("同一个远程 MCP server 不支持多个 Bearer 密钥".to_string());
+            }
+        }
+        *bearer_token_env_var = Some(env_var);
+        return Ok(());
+    }
+    if scheme.trim().is_empty() {
+        env_headers.insert(header.to_string(), serde_json::Value::String(env_var));
+        return Ok(());
+    }
+    Err(format!(
+        "远程 MCP 密钥 header '{header}' 的 scheme '{scheme}' 暂不支持；请使用 Bearer Authorization 或无 scheme 的自定义 header"
+    ))
+}
+
 fn write_json_pretty(path: &std::path::Path, value: &serde_json::Value) -> Result<(), String> {
     let json = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
     std::fs::write(path, json).map_err(|e| format!("写入 {} 失败: {e}", path.display()))
@@ -635,8 +664,8 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 
     fn validation_mcp_config(&self, manifest: &ToolManifest) -> Result<McpConfig, String> {
         let mcp_path = paths::mcp_config_path();
-        let content = std::fs::read_to_string(&mcp_path)
-            .map_err(|e| format!("读取 MCP 配置失败: {e}"))?;
+        let content =
+            std::fs::read_to_string(&mcp_path).map_err(|e| format!("读取 MCP 配置失败: {e}"))?;
         let mcp: serde_json::Value =
             serde_json::from_str(&content).map_err(|e| format!("解析 MCP 配置失败: {e}"))?;
         let servers = mcp
@@ -882,13 +911,14 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 {
                     if let Some(secret) = auth.strip_prefix("Bearer ").filter(|v| !v.is_empty()) {
                         self.store_migrated_secret(spec, secret, result)?;
-                        headers.insert(
-                            "Authorization".to_string(),
-                            serde_json::Value::String(format!(
-                                "Bearer {}",
-                                mcp_secret_placeholder(spec.key)
-                            )),
-                        );
+                        // `headers` 是字面量,不会展开 `${ENV}`。迁移到
+                        // 底座的 Bearer 环境变量字段,避免“已迁移但实际鉴权失败”。
+                        headers.remove("Authorization");
+                        if headers.is_empty() {
+                            entry.as_object_mut().map(|object| object.remove("headers"));
+                        }
+                        entry["bearer_token_env_var"] =
+                            serde_json::Value::String(mcp_secret_env_var(spec.key));
                         changed = true;
                     }
                 }
@@ -1134,23 +1164,28 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             // ── 远程工具：遍历 manifest.servers[]，写 url/headers ──
             for server in &manifest.servers {
                 let mut headers = serde_json::Map::new();
+                let mut env_headers = serde_json::Map::new();
+                let mut bearer_token_env_var = None;
 
                 // 1. config_fields 中 target="bearer" 的字段（用户填入）
                 for field in &manifest.config_fields {
                     if field.target == "bearer" {
                         if let Some(val) = user_config.get(&field.key) {
                             if field.secret {
-                                let placeholder = self.resolve_secret_placeholder(
+                                self.resolve_secret_placeholder(
                                     &manifest.id,
                                     "header",
                                     &field.key,
                                     user_config,
                                     &manifest.env,
                                 )?;
-                                headers.insert(
-                                    "Authorization".to_string(),
-                                    serde_json::Value::String(format!("Bearer {}", placeholder)),
-                                );
+                                set_remote_secret_header(
+                                    &mut env_headers,
+                                    &mut bearer_token_env_var,
+                                    "Authorization",
+                                    "Bearer",
+                                    &field.key,
+                                )?;
                             } else {
                                 headers.insert(
                                     "Authorization".to_string(),
@@ -1163,19 +1198,20 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 
                 // 2. manifest.secret_headers 声明的敏感 header（不落明文）
                 for secret in &manifest.secret_headers {
-                    let placeholder = self.resolve_secret_placeholder(
+                    self.resolve_secret_placeholder(
                         &manifest.id,
                         "header",
                         &secret.source_key,
                         user_config,
                         &manifest.env,
                     )?;
-                    let value = if secret.scheme.trim().is_empty() {
-                        placeholder
-                    } else {
-                        format!("{} {}", secret.scheme, placeholder)
-                    };
-                    headers.insert(secret.header.clone(), serde_json::Value::String(value));
+                    set_remote_secret_header(
+                        &mut env_headers,
+                        &mut bearer_token_env_var,
+                        &secret.header,
+                        &secret.scheme,
+                        &secret.source_key,
+                    )?;
                 }
 
                 // 3. 兼容旧 manifest.env 中以 _API_KEY 结尾的字段，迁移后只写占位。
@@ -1212,6 +1248,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 }
                 if !headers.is_empty() {
                     entry["headers"] = serde_json::Value::Object(headers);
+                }
+                if !env_headers.is_empty() {
+                    entry["env_headers"] = serde_json::Value::Object(env_headers);
+                }
+                if let Some(env_var) = bearer_token_env_var {
+                    entry["bearer_token_env_var"] = serde_json::Value::String(env_var);
                 }
                 servers.insert(server.name.clone(), entry);
             }
@@ -1416,6 +1458,38 @@ mod tests {
         );
     }
 
+    #[test]
+    fn remote_secret_header_config_uses_environment_backed_fields() {
+        let mut env_headers = serde_json::Map::new();
+        let mut bearer_token_env_var = None;
+
+        set_remote_secret_header(
+            &mut env_headers,
+            &mut bearer_token_env_var,
+            "Authorization",
+            "Bearer",
+            "PATSNAP_API_KEY",
+        )
+        .unwrap();
+        set_remote_secret_header(
+            &mut env_headers,
+            &mut bearer_token_env_var,
+            "X-Api-Key",
+            "",
+            "EXAMPLE_API_KEY",
+        )
+        .unwrap();
+
+        assert_eq!(
+            bearer_token_env_var.as_deref(),
+            Some("PINVOU3_MCP_SECRET_PATSNAP_API_KEY")
+        );
+        assert_eq!(
+            env_headers["X-Api-Key"],
+            "PINVOU3_MCP_SECRET_EXAMPLE_API_KEY"
+        );
+    }
+
     /// 把 PINVOU3_HOME 指到一个干净临时目录跑闭包,跑完恢复并清理。
     /// 借 paths 的 ENV_LOCK 跟其它 mutate PINVOU3_HOME 的测试串行,避免互相覆盖。
     fn with_temp_home<F: FnOnce()>(f: F) {
@@ -1459,10 +1533,8 @@ mod tests {
         let prev_iwencai = std::env::var("PINVOU3_MCP_SECRET_IWENCAI_API_KEY").ok();
         let prev_qcc = std::env::var("PINVOU3_MCP_SECRET_QCC_API_KEY").ok();
         let prev_patsnap = std::env::var("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").ok();
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou3-mkt-test-async-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("pinvou3-mkt-test-async-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("PINVOU3_HOME", &dir);
@@ -1594,8 +1666,8 @@ mod tests {
         let id = request.get("id").cloned().unwrap_or(serde_json::json!(1));
         let result = match rpc_method.as_str() {
             "initialize" => serde_json::json!({
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
+            "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
                 "serverInfo": {"name": "mock-patsnap", "version": "1.0.0"}
             }),
             "tools/list" => serde_json::json!({
@@ -1614,13 +1686,7 @@ mod tests {
             "id": id,
             "result": result
         });
-        write_http_response(
-            &mut stream,
-            200,
-            "application/json",
-            &response.to_string(),
-        )
-        .await
+        write_http_response(&mut stream, 200, "application/json", &response.to_string()).await
     }
 
     fn find_header_end(buffer: &[u8]) -> Option<usize> {
@@ -1991,7 +2057,7 @@ mod tests {
     }
 
     #[test]
-    fn install_qcc_secret_header_writes_placeholder_without_plain_secret() {
+    fn install_qcc_secret_header_uses_bearer_env_without_plain_secret() {
         with_temp_home(|| {
             write_tool_manifest(
                 "qcc",
@@ -2016,16 +2082,17 @@ mod tests {
                 .unwrap();
 
             let mcp = read_mcp_json();
-            let authorization = mcp["servers"]["qcc-company"]["headers"]["Authorization"]
-                .as_str()
-                .unwrap();
-            assert_eq!(authorization, "Bearer ${PINVOU3_MCP_SECRET_QCC_API_KEY}");
+            assert!(mcp["servers"]["qcc-company"].get("headers").is_none());
+            assert_eq!(
+                mcp["servers"]["qcc-company"]["bearer_token_env_var"],
+                "PINVOU3_MCP_SECRET_QCC_API_KEY"
+            );
             assert!(!mcp.to_string().contains(&secret));
         });
     }
 
     #[test]
-    fn install_patsnap_secret_header_writes_placeholder_without_plain_secret() {
+    fn install_patsnap_secret_header_uses_bearer_env_without_plain_secret() {
         with_temp_home(|| {
             write_tool_manifest(
                 "patsnap-search",
@@ -2051,13 +2118,11 @@ mod tests {
 
             let mcp = read_mcp_json();
             let url = mcp["servers"]["patsnap-search"]["url"].as_str().unwrap();
+            assert_eq!(url, "https://connect.zhihuiya.com/2b0355/logic-mcp");
+            assert!(mcp["servers"]["patsnap-search"].get("headers").is_none());
             assert_eq!(
-                url,
-                "https://connect.zhihuiya.com/2b0355/logic-mcp"
-            );
-            assert_eq!(
-                mcp["servers"]["patsnap-search"]["headers"]["Authorization"],
-                "Bearer ${PINVOU3_MCP_SECRET_PATSNAP_API_KEY}"
+                mcp["servers"]["patsnap-search"]["bearer_token_env_var"],
+                "PINVOU3_MCP_SECRET_PATSNAP_API_KEY"
             );
             assert!(!mcp.to_string().contains(&secret));
         });
@@ -2271,8 +2336,8 @@ mod tests {
             assert!(mgr.installed_ids().contains(&"patsnap-search".to_string()));
             let mcp = read_mcp_json();
             assert_eq!(
-                mcp["servers"]["patsnap-search"]["headers"]["Authorization"],
-                "Bearer ${PINVOU3_MCP_SECRET_PATSNAP_API_KEY}"
+                mcp["servers"]["patsnap-search"]["bearer_token_env_var"],
+                "PINVOU3_MCP_SECRET_PATSNAP_API_KEY"
             );
             assert!(!mcp.to_string().contains("valid-token"));
             assert_eq!(
@@ -2383,7 +2448,7 @@ mod tests {
     }
 
     #[test]
-    fn migrate_legacy_qcc_bearer_header_writes_placeholder_and_stores_secret() {
+    fn migrate_legacy_qcc_bearer_header_uses_env_and_stores_secret() {
         with_temp_home(|| {
             let secret = secret_value("legacy-qcc");
             let mcp_path = crate::bridge::paths::mcp_config_path();
@@ -2414,7 +2479,9 @@ mod tests {
             assert_eq!(stored.as_deref(), Some(secret.as_str()));
             let content = std::fs::read_to_string(&mcp_path).unwrap();
             assert!(!content.contains(&secret));
-            assert!(content.contains("Bearer ${PINVOU3_MCP_SECRET_QCC_API_KEY}"));
+            assert!(
+                content.contains("\"bearer_token_env_var\": \"PINVOU3_MCP_SECRET_QCC_API_KEY\"")
+            );
         });
     }
 
@@ -2458,7 +2525,9 @@ mod tests {
             let content = std::fs::read_to_string(&mcp_path).unwrap();
             assert!(!content.contains(&old_secret));
             assert!(!content.contains(&kept_secret));
-            assert!(content.contains("Bearer ${PINVOU3_MCP_SECRET_QCC_API_KEY}"));
+            assert!(
+                content.contains("\"bearer_token_env_var\": \"PINVOU3_MCP_SECRET_QCC_API_KEY\"")
+            );
         });
     }
 

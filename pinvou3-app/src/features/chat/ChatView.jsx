@@ -217,7 +217,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       );
     };
 
-    const ChatView = ({ theme, t, bs, prefill, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoTools, onBackScheduledRun }) => {
+    const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoTools, onBackScheduledRun }) => {
       const isDark = theme === 'dark';
       const [inputText, setInputText] = useState('');
       const [artifactsOpen, setArtifactsOpen] = useState(false);
@@ -284,6 +284,13 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       const autoScrollRef = useRef(true);
       const [showScrollBottom, setShowScrollBottom] = useState(false);
       const composerRef = useRef(null);
+      useEffect(() => {
+        if (!focusComposerTick) return undefined;
+        const timer = window.setTimeout(() => {
+          if (composerRef.current) composerRef.current.focus();
+        }, 80);
+        return () => window.clearTimeout(timer);
+      }, [focusComposerTick]);
       // 输入框自动增高:随内容从最小(~2行)长到上限 160px,再内部滚动(iOS 手感)。
       // 清空(发送后)inputText 变 '' → 自动缩回最小高。
       useEffect(() => {

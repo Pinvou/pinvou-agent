@@ -12,6 +12,8 @@ export default defineConfig([
   {
     files: [
       'src/main.jsx',
+      'src/pet-main.jsx',
+      'src/pet-menu-main.js',
       'src/components/**/*.{js,jsx}',
       'src/features/**/*.{js,jsx}',
       'src/hooks/**/*.{js,jsx}',

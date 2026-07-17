@@ -42,6 +42,7 @@ jobs:
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
       l1: ${{ steps.filter.outputs.l1 }}
+      pet: ${{ steps.filter.outputs.pet }}
       frontend: ${{ steps.filter.outputs.frontend }}
     steps:
       - uses: actions/checkout@v4
@@ -65,6 +66,29 @@ jobs:
               - 'pinvou3-app/src-tauri/Cargo.toml'
               - 'pinvou3-app/src-tauri/Cargo.lock'
               - 'DeepSeek-TUI'
+              - '.github/workflows/pr-check.yml'
+            pet:
+              - 'pinvou3-app/src/assets/pet/**'
+              - 'pinvou3-app/src/features/pet/**'
+              - 'pinvou3-app/src/features/chat/ChatView.jsx'
+              - 'pinvou3-app/src/features/settings/SettingsView.jsx'
+              - 'pinvou3-app/src/hooks/useReducedMotion.js'
+              - 'pinvou3-app/src/index.html'
+              - 'pinvou3-app/src/main.jsx'
+              - 'pinvou3-app/src/pet-*'
+              - 'pinvou3-app/scripts/validate-pet-assets.mjs'
+              - 'pinvou3-app/tests/pet_*'
+              - 'pinvou3-app/src/tauri-bridge.js'
+              - 'pinvou3-app/src-tauri/capabilities/default.json'
+              - 'pinvou3-app/src-tauri/src/bridge/prefs.rs'
+              - 'pinvou3-app/src-tauri/src/lib.rs'
+              - 'pinvou3-app/src-tauri/src/pet_window.rs'
+              - 'pinvou3-app/src-tauri/src/selected_pet.rs'
+              - 'pinvou3-app/src-tauri/tauri.conf.json'
+              - 'pinvou3-app/package.json'
+              - 'pinvou3-app/package-lock.json'
+              - 'pinvou3-app/vite.config.js'
+              - 'pinvou3-app/eslint.config.mjs'
               - '.github/workflows/pr-check.yml'
             frontend:
               - 'pinvou3-app/src/**'
@@ -170,6 +194,38 @@ jobs:
           node tests/drag_gesture_smoke.js
           node tests/update_notice_ui_smoke.js
           node tests/scheduled_tasks_smoke.js
+          node tests/pet_selector_ui_smoke.js
+
+  pet-frontend-test:
+    name: pet-frontend-test
+    needs: changes
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.changes.outputs.pet == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pinvou3-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: pinvou3-app/package-lock.json
+
+      - name: 安装前端依赖
+        run: npm ci --prefer-offline --no-audit
+
+      - name: 桌宠逻辑测试与资源校验
+        run: npm test
+
+      - name: Vite build
+        run: npm run build:ui
+
+      - name: 宠物选择器浏览器 smoke
+        run: |
+          export CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          node tests/pet_selector_ui_smoke.js
 
   rust-test:
     name: rust-test

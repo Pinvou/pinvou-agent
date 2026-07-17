@@ -431,6 +431,15 @@ impl Default for NotificationPrefs {
     }
 }
 
+/// 桌宠偏好。只存开关——窗口位置在 `~/.pinvou3/pet_window.json`(pet_window.rs 私有
+/// 管理)。位置刻意不进 settings.json:settings 由前端整份回写(update_settings),
+/// 旧副本会把拖动后的实时位置覆盖回去。
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PetPrefs {
+    pub enabled: bool,
+}
+
 /// 用户偏好。`settings.json` 顶层结构。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -441,6 +450,7 @@ pub struct UserPrefs {
     pub memory_enabled: bool,
     pub search: SearchPrefs,
     pub notifications: NotificationPrefs,
+    pub pet: PetPrefs,
     pub advanced: AdvancedPrefs,
 }
 
@@ -959,6 +969,7 @@ mod tests {
             memory_enabled: false,
             search: SearchPrefs::default(),
             notifications: NotificationPrefs::default(),
+            pet: PetPrefs::default(),
             advanced: AdvancedPrefs {
                 allow_shell: Some(false),
                 max_output_tokens: Some(8192),
