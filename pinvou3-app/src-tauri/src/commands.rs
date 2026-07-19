@@ -7593,6 +7593,9 @@ fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
 /// 按 timestamp 升序。空 session / 无 timing 文件返回空数组(诊断面板按空态渲染)。
 #[tauri::command]
 pub fn get_session_timeline(session_id: String) -> Result<Vec<crate::timing::TimelineEvent>, String> {
+    // 防路径穿越:timing reader 内部走 sessions_root().join(session_id),
+    // 必须先校验 session_id 字符集(只允许 [A-Za-z0-9_-]),否则可构造 ../ 越界。
+    crate::bridge::sessions::validate_session_id(&session_id).map_err(|e| format!("{e:?}"))?;
     Ok(crate::timing::read_timeline(&session_id))
 }
 
@@ -7603,5 +7606,7 @@ pub fn get_session_timeline(session_id: String) -> Result<Vec<crate::timing::Tim
 pub fn get_session_stats(
     session_id: String,
 ) -> Result<crate::timing::SessionTimelineStats, String> {
+    // 同 get_session_timeline:校验 session_id 字符集防路径穿越。
+    crate::bridge::sessions::validate_session_id(&session_id).map_err(|e| format!("{e:?}"))?;
     Ok(crate::timing::compute_stats(&session_id))
 }
