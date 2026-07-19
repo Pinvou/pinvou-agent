@@ -13,8 +13,7 @@
 > `~/.pinvou3/user/instructions.md`（`~/.deepseek/instructions.md` 会在 boot 时被清理，见
 > `bridge/mod.rs` `cleanup_legacy_pinvou3_disk_files()`）。底座 13 层拼装与第 6a 层
 > `<instructions>` 注入点的结论不受影响；下文相关段落保留作 2026-05-28 时点记录。
-> 另：文中 `compose_mode_prompt_with_approval_and_model` 现名
-> `compose_prompt_with_approval_model_and_shell`；各 `file.rs:NNN` 行号随版本漂移，定位以符号名为准。
+> 另：各 `file.rs:NNN` 行号随版本漂移，定位以符号名为准。
 
 ---
 
@@ -75,7 +74,7 @@ pinvou3-app/src-tauri/src/engine.rs:56  AppEngine::spawn_for_session()
 | 层 | 文件位置 | 来源 | 内容 |
 |---|---|---|---|
 | **0** | `prompts.rs:696` | `locale_reinforcement_preamble(locale_tag)` | zh-Hans/ja/pt-BR 时，最前面贴"用该语言思考"前奏 |
-| **1a** | `prompts.rs:683` | `compose_mode_prompt_with_approval_and_model()` | BASE_PROMPT (include `prompts/constitution.md`，v0.9 前为 base.md) + mode 子段 (plan/yolo/agent) + ApprovalMode 段 |
+| **1a** | `prompts.rs:683` | `compose_prompt_with_approval_model_and_shell()` | BASE_PROMPT (include `prompts/constitution.md`，v0.9 前为 base.md) + mode 子段 (plan/yolo/agent) + ApprovalMode 段 |
 | **1b** | `prompts.rs:686` | `load_project_context_with_parents(workspace)` | workspace 内自动扫的 `.codewhale/instructions.md` 块 |
 | **2a** | `prompts.rs:731` | `render_environment_block()` | `## Environment`：locale / platform / shell / pwd |
 | **2b** | `prompts.rs:741` | `translation_output_instruction()` | 仅当 `translation_enabled=true`（pinvou3 关闭） |
