@@ -1521,10 +1521,23 @@ fn spawn_event_forwarder(
                         // 卡兜底,不值得用噪音判据再造一层。
                     }
                     let status_text = format!("{terminal_status:?}");
-                    crate::timing::finish_turn(
+                    // 落 usage 进 timing_events.jsonl,作为模型耗时/失败/上下文消耗的
+                    // 内部诊断数据源。usage.input/output_tokens 是 u32,
+                    // prompt_cache_*_tokens 是 Option<u32>,统一 unwrap_or(0) + u64 转换落盘。
+                    crate::timing::finish_turn_with_usage(
                         &session_id,
                         &status_text,
                         terminal_error.as_deref(),
+                        Some(crate::timing::TurnUsage {
+                            input_tokens: u64::from(usage.input_tokens),
+                            output_tokens: u64::from(usage.output_tokens),
+                            cache_hit_tokens: u64::from(
+                                usage.prompt_cache_hit_tokens.unwrap_or(0),
+                            ),
+                            cache_miss_tokens: u64::from(
+                                usage.prompt_cache_miss_tokens.unwrap_or(0),
+                            ),
+                        }),
                     );
                     if crate::memory::memory_enabled() {
                         if let Some(capture) = crate::memory::take_turn_capture(&session_id) {

@@ -7580,3 +7580,28 @@ fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
     crate::bridge::skill_marketplace::refresh_disabled_skills();
     Ok(())
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Session timing 诊断读取接口(2026-07 新增)
+//
+// timing_events.jsonl 此前只写不读——重启 / 切 session 后历史耗时与 token usage
+// 全丢,也无法被任何诊断面板/开发者入口消费。这两个命令把已有 sidecar 数据
+// 接通,作为内部诊断基础(模型耗时/失败轮次/上下文消耗),不是顶级历史产品入口。
+// ───────────────────────────────────────────────────────────────────────────
+
+/// 读取 session 的全部 timeline 事件(user_start / assistant_done 对 + usage),
+/// 按 timestamp 升序。空 session / 无 timing 文件返回空数组(诊断面板按空态渲染)。
+#[tauri::command]
+pub fn get_session_timeline(session_id: String) -> Result<Vec<crate::timing::TimelineEvent>, String> {
+    Ok(crate::timing::read_timeline(&session_id))
+}
+
+/// 聚合 session 级 stats:轮数 / token 累计 / cache 命中 / 成功失败数 / 首末时间。
+/// 诊断面板卡片直接消费。token 来自 timing_events 的 usage 字段(2026-07 起写入);
+/// 老于此的 session 这些字段为 0(只显示 turn_count + 时间)。
+#[tauri::command]
+pub fn get_session_stats(
+    session_id: String,
+) -> Result<crate::timing::SessionTimelineStats, String> {
+    Ok(crate::timing::compute_stats(&session_id))
+}
