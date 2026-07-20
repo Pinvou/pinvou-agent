@@ -188,6 +188,14 @@ pub fn read_timeline(session_id: &str) -> Vec<TimelineEvent> {
             }
             // 反序列化成宽 schema(用 Value 再取字段),避免缺字段时整条事件丢
             let v: serde_json::Value = serde_json::from_str(line).ok()?;
+            // [F4] timestamp 缺失 / 类型错时直接跳过整条事件,而不是 unwrap_or(0)
+            // 让它变成 1970-01-01 污染排序:compute_stats 用 sort_by_key(timestamp)
+            // 取 first/last turn ts,一条坏行会让首末都变 1970。
+            // 注意:turn_id / event 仍保留 unwrap_or("") 兜底,因为缺这俩只是无法
+            // 配对成 turn(by_turn 用空串作 key 不会污染计数),不会污染时间统计。
+            let Some(timestamp) = v.get("timestamp").and_then(|x| x.as_i64()) else {
+                return None;
+            };
             let usage = v.get("usage").and_then(|u| {
                 if u.is_null() {
                     return None;
@@ -216,7 +224,7 @@ pub fn read_timeline(session_id: &str) -> Vec<TimelineEvent> {
             Some(TimelineEvent {
                 turn_id: v.get("turn_id").and_then(|x| x.as_str()).unwrap_or("").to_string(),
                 event: v.get("event").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                timestamp: v.get("timestamp").and_then(|x| x.as_i64()).unwrap_or(0),
+                timestamp,
                 ts: v.get("ts").and_then(|x| x.as_str()).unwrap_or("").to_string(),
                 status: v
                     .get("status")
