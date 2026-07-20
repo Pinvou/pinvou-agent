@@ -59,6 +59,8 @@
 
 `SyncSession` 新角色：从「切换时替换状态」退化为「冷启动注水历史」——仅在某 session 首次需要引擎、且已有磁盘历史时调一次。
 
+> 后续更新（2026-05-28，d15820f「P-no-disk」）：instructions 改 `InstructionSource::Inline` 注入，不再写 `~/.pinvou3/sessions/<id>/instructions.md`；`write_session_instructions` / `rewrite_instructions_for_session` 已删（`session_instructions_path` 仅留作 boot 时 legacy 清理）；`refresh_all_instructions()` 已为 no-op，sudo 开关状态改每 turn `<system-reminder>` 注入（89231b4）。
+
 ### 3.2 前端（`tauri-bridge.js`）
 
 **工作集 + per-session 缓冲**模型：

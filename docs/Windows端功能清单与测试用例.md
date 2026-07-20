@@ -5,11 +5,12 @@
 | 项目 | 内容 |
 |---|---|
 | 适用产品 | PINVOU Windows 桌面端 |
-| 当前版本 | `0.5.14` |
-| 代码基线 | 主仓库 `5bd5869`；DeepSeek-TUI 子模块 `eac58c472` |
-| 目标架构 | Windows x64 |
+| 当前版本 | `0.6.2` |
+| 代码基线 | 主仓库 `5ad6c33`；DeepSeek-TUI 子模块 `419964409`（上游基线 `v0.9.0`） |
+| 核对日期 | 2026-07-20 |
+| 目标架构 | Windows x64（当前随包运行时、VC++ 检测和 NSIS 资源均为 x64） |
 | 文档性质 | 依据当前代码生成的功能盘点、系统测试设计与发版验收基线 |
-| 主要代码依据 | `pinvou3-app/src/main.jsx`、`pinvou3-app/src/tauri-bridge.js`、`pinvou3-app/src-tauri/src/lib.rs`、`pinvou3-app/src-tauri/src/os/windows/`、`DeepSeek-TUI/crates/tui/src/` |
+| 主要代码依据 | `pinvou3-app/src/`、`pinvou3-app/src-tauri/src/`、`pinvou3-app/src-tauri/resources/windows/`、`pinvou3-app/tests/`、`DeepSeek-TUI/crates/tui/src/` |
 
 本文只记录当前仓库中已经存在的代码能力，不把规划文档中的设想直接视为已交付功能。功能状态定义如下：
 
@@ -35,8 +36,8 @@
 
 | 运行时 | 用途 | 当前策略 |
 |---|---|---|
-| Embedded Python 3.13 x64 | MCP、连接器及部分文件处理 | 安装到 `runtime/python`，由安装器配置运行环境 |
-| Node.js 24 x64 | 连接器和 Node 类工具 | 安装到 `runtime/node`，由安装器配置运行环境 |
+| Embedded Python 3.13.14 x64 | MCP、连接器及部分文件处理 | 安装到 `runtime/python`，由安装器配置运行环境 |
+| Node.js 24.18.0 x64 | 连接器和 Node 类工具 | 安装到 `runtime/node`，由安装器配置运行环境 |
 | Pandoc 3.10 | DOCX、ODT 等文档解析 | 随包安装 |
 | Poppler | PDF 文本提取和页面渲染 | 随包安装 |
 | Tesseract + `chi_sim`/`eng` | 图片及扫描 PDF OCR | 随包安装 |
@@ -54,12 +55,16 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | 目录或文件 | 内容 |
 |---|---|
 | `sessions/` | 会话、消息、制品引用、角色卡事件等会话数据 |
+| `automations/` | 定时任务定义、模型绑定、界面元数据和底座运行记录 |
+| `scheduled/` | 按任务隔离的内部工作间和任务产物 |
+| `scheduled-runs/` | 定时任务运行会话归属和已读状态 |
 | `bundle/` | 内置说明、技能、工作流、MCP 配置和随应用释放的扩展资源 |
 | `knowledge/` | 本地知识库数据库、索引和模型 |
 | `asr/` | 按需下载的语音识别模型 |
 | `updates/` | OTA 下载、解包和安装反馈状态 |
 | `marketplace/` | 工具、技能安装状态和动态配置 |
 | `settings.json` | 用户设置；敏感凭据按代码策略进入系统凭据存储，不应明文展示在 UI、日志或测试报告中 |
+| `pet_window.json` / `selected_pet.json` | 桌伴公仔位置、缩放和当前选择；启用开关保存在 `settings.json` |
 
 ## 3. Windows 端详细功能清单
 
@@ -76,6 +81,8 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | APP-07 | 手机连接入口 | 条件可用 | 显示远程控制二维码和连接状态 |
 | APP-08 | 中英文界面 | 可用 | 设置后持久化；语言变更按界面提示重启生效 |
 | APP-09 | 深色/浅色主题 | 可用 | 即时切换并在重启后恢复 |
+| APP-10 | 单实例唤醒 | 可用 | 应用已运行时再次启动会显示、还原并聚焦已有主窗口，不创建第二套进程状态 |
+| APP-11 | 定时任务导航 | 可用 | 主导航显示定时任务入口；存在未查看的运行会话时展示未读标记 |
 
 ### 3.2 会话与智能对话
 
@@ -102,7 +109,7 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | 编号 | 功能 | 状态 | 用户可见行为 |
 |---|---|---|---|
 | SHELL-01 | Windows 命令执行 | 基础能力 | 模型可通过 Shell 工具调用 CMD、PowerShell、WinGet 等命令 |
-| SHELL-02 | 前台实时 stdout/stderr | 可用 | 普通管道读取线程持续产生 `ToolCallOutput`，Tauri 转为 `chat:tool_delta`，工具卡实时刷新 |
+| SHELL-02 | 前台实时 stdout/stderr | 可用 | 普通管道读取线程持续产生 `ToolCallOutput`，Tauri 转为 `chat:tool_delta`，工具卡实时刷新；流式 UTF-8 解码保留跨读取块字符 |
 | SHELL-03 | 长命令后台化 | 可用 | 预计超过约 5 秒的任务优先以后台任务启动并立即返回任务 ID |
 | SHELL-04 | 后台任务持续输出 | 可用 | 后台启动结果返回后，原工具卡继续接收 stdout/stderr；`chat:done` 不会直接清掉该任务卡 |
 | SHELL-05 | 后台任务等待/快照 | 可用 | `exec_shell_wait` 默认读取当前快照；明确等待时持续读取直到依赖满足或任务终止 |
@@ -110,7 +117,9 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | SHELL-07 | 按任务 ID 取消 | 可用 | 前端从工具卡取消后台 Shell 任务，后端终止任务并返回状态 |
 | SHELL-08 | Windows 进程树终止 | 可用 | 使用 Windows 进程树/Job Object 相关策略清理子进程，避免只结束父 Shell 后下载器继续运行 |
 | SHELL-09 | 后台子进程不弹黑窗 | 可用 | Windows 子进程统一使用无控制台窗口创建标志 |
-| SHELL-10 | 普通管道模式 | 设计约束 | 当前不自动启用 PTY；只保证应用收到程序写入 stdout/stderr 管道的内容 |
+| SHELL-10 | 跨事件终端解析 | 可用 | 按工具调用和 stdout/stderr 分别保存解析状态，正确拼接跨事件的 CRLF、刷新式进度和 ANSI 控制序列 |
+| SHELL-11 | 输出背压与终态收敛 | 可用 | 实时块在异步转发器中合并并接受事件通道背压，工具完成前 flush；后台终态再补齐去重后的输出尾部 |
+| SHELL-12 | 普通管道模式 | 设计约束 | 当前不自动启用 PTY；只保证应用收到程序写入 stdout/stderr 管道的内容 |
 
 ### 3.4 附件、文件解析与制品
 
@@ -148,6 +157,7 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | MODEL-07 | 本地 vLLM 自动发现 | 条件可用 | 探测本机服务、模型名和上下文长度 |
 | MODEL-08 | 本地 vLLM 引导安装 | 条件可用 | 支持检测、启动安装、跳过和不再提醒；依赖兼容硬件和本地环境 |
 | MODEL-09 | 会话模型记忆 | 可用 | 各会话保存所用模型，切换会话时恢复 |
+| MODEL-10 | 部署级上下文配置 | 基础能力 | 后端按模型配置、实时探测和路由上限计算上下文与输出预算；当前设置页不展示高级参数输入框 |
 
 ### 3.6 本地知识库
 
@@ -189,14 +199,18 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | WF-05 | 失败角色重跑 | 可用 | 只重置并重跑失败节点，已完成上游节点不重复执行 |
 | WF-06 | 工作流恢复 | 可用 | 启动时发现可恢复 run 后重新挂载看板 |
 | WF-07 | 工作流交互卡 | 可用 | 角色请求信息时提交答案，或追加任务材料 |
+| WF-08 | 停止并修改 | 可用 | 运行中可确认停止，保留已生成文件和原始需求；修改后创建新的 run，已停止 run 不再原地恢复或继续派发 |
+| WF-09 | 启动预检与鉴权熔断 | 可用 | 预检只检查本地前置条件；模型 401/403 等鉴权失败直接停止自动重试，暂时性错误仍按重试策略处理 |
 | SKILL-01 | 技能列表与详情 | 可用 | 浏览技能、查看正文和演示，创建绑定技能的新会话 |
 | SKILL-02 | 会话技能绑定 | 可用 | 技能只对绑定会话生效，可解绑 |
+| SKILL-03 | 输入框统一工具菜单 | 可用 | 已安装工具、独立技能、已连接服务和内置自动技能统一展示；配套技能不与所属 MCP 重复出现 |
 | TOOL-01 | 工具市场浏览和搜索 | 可用 | 按分类、关键词、精选集合和已安装状态筛选 |
 | TOOL-02 | MCP 工具安装/卸载 | 条件可用 | 安装状态落盘；工具通常在新会话生效 |
 | TOOL-03 | 技能市场安装/卸载 | 可用 | 安装内置或导入技能包，更新模型可见技能目录 |
-| TOOL-04 | OAuth 工具授权 | 条件可用 | 启动浏览器授权、轮询状态、处理成功、失败和超时 |
+| TOOL-04 | OAuth 工具授权 | 条件可用 | 启动浏览器授权、轮询状态、处理成功、失败、取消和超时；取消会等待在途授权流程真正结束 |
 | TOOL-05 | 本地工具依赖安装 | 条件可用 | 需要 Python 等依赖时展示安装中状态和失败反馈 |
 | TOOL-06 | 工具禁用动态生效 | 可用 | 连接可见性实际变化时刷新工具状态；不因纯状态查询回收正在运行的 Engine |
+| TOOL-07 | 智慧芽专利与文献检索 | 条件可用 | 安装远程 MCP 后支持专利/论文融合检索和详情获取；API Key 进入系统凭据存储，安装时验证连接和工具清单 |
 
 ### 3.9 企业连接器与远程控制
 
@@ -212,7 +226,41 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | REMOTE-02 | 移动端消息同步 | 条件可用 | 手机端发送用户消息，桌面端向远端发布聊天和状态事件 |
 | REMOTE-03 | 停止远程控制 | 可用 | 主动断开并更新桌面状态 |
 
-### 3.10 监控、语音、设置与更新
+### 3.10 定时任务
+
+| 编号 | 功能 | 状态 | 用户可见行为 |
+|---|---|---|---|
+| SCHED-01 | 定时任务入口 | 可用 | 主导航可直接进入任务页，并按任务未读运行状态显示提示 |
+| SCHED-02 | 内置任务模板 | 条件可用 | 提供每日早报、事项督办和工作周报模板；模板会根据已连接办公系统查询信息，不自动发送、审批或修改业务数据 |
+| SCHED-03 | 自定义任务 | 可用 | 填写名称、执行内容、模型和频率后创建；工作间由系统自动分配，无需选择用户目录 |
+| SCHED-04 | 频率设置 | 可用 | 支持工作日、每天、每周多选星期，以及每 1～24 小时；小时任务可设置起始时间并保持原始执行相位 |
+| SCHED-05 | 编辑与启停 | 可用 | 任务详情自动保存名称、提示词、模型和频率，支持暂停、恢复和删除确认 |
+| SCHED-06 | 立即运行 | 条件可用 | 手动触发一次独立运行；运行使用任务绑定模型和内部工作间，不与普通会话串台 |
+| SCHED-07 | 运行历史与会话 | 可用 | 展示排队、运行、完成和失败记录；可从任务详情、侧栏快捷记录或桌伴提醒打开所属会话 |
+| SCHED-08 | 未读状态 | 可用 | 已完成且有可打开会话的运行会标记未读；打开后清除对应标记，不影响同任务其他运行 |
+| SCHED-09 | 对话创建任务 | 条件可用 | 从任务页进入纯对话收集流程，信息完整后由前端直接创建并打开任务详情，不再二次确认 |
+| SCHED-10 | 调度防积压 | 可用 | 关机、休眠或应用未运行期间错过的时段不在下次启动集中补跑；同一任务已有排队/运行实例时跳过重叠时段 |
+| SCHED-11 | 数据与级联清理 | 可用 | 删除任务时清理其定义、绑定、已读状态和所属运行会话/制品，不删除无关普通会话 |
+| SCHED-12 | 任务文件夹 | 可用 | 每个任务拥有独立工作间，可从详情页打开并查看持续积累的任务文件 |
+
+### 3.11 桌伴公仔
+
+| 编号 | 功能 | 状态 | 用户可见行为 |
+|---|---|---|---|
+| PET-01 | 桌伴开关 | 可用 | 侧栏快捷按钮和设置页均可召唤/隐藏；启用状态持久化，右键公仔可选择隐藏 |
+| PET-02 | 公仔选择 | 可用 | 设置页可在灵灵、浪浪和 Ace Taffy 间切换；选择写入独立状态文件并同步到桌伴窗口 |
+| PET-03 | 独立透明窗口 | 可用 | 公仔运行在无边框、透明、跳过任务栏的独立窗口中，并请求始终置顶；主窗口退出时一并关闭 |
+| PET-04 | 状态动画 | 可用 | 空闲、首次唤醒、悬停、运行、等待输入、完成检阅和失败状态使用对应动作；系统“减少动态效果”启用时降级为静态帧 |
+| PET-05 | 点击返回主界面 | 可用 | 单击公仔或就绪卡会显示并聚焦主窗口；活动卡可直接打开所属会话 |
+| PET-06 | 弹性拖动 | 可用 | 拖动时按方向切换动作，松手后带惯性和边缘反弹；跨多显示器/DPI 时重新计算边界，防止落入显示器空洞 |
+| PET-07 | 调整大小 | 可用 | 拖动缩放手柄在 `0.5～1.2` 范围调整，保持人物锚点和屏幕可见性并持久化 |
+| PET-08 | 位置恢复 | 可用 | 重启后恢复上次位置；原显示器被移除或保存位置失效时回到主屏右下角 |
+| PET-09 | 多会话活动卡 | 可用 | 最多展示 6 个会话的运行、等待、完成或失败状态，持续显示最新回复/工具阶段并支持展开、折叠和关闭提醒 |
+| PET-10 | 桌伴快捷回复 | 条件可用 | 可在活动卡直接回复所属会话；提交成功后进入主聊天队列，失败时保留草稿并允许重试 |
+| PET-11 | 定时任务完成提醒 | 可用 | 展示最新未确认的定时任务完成卡，可打开对应运行或关闭并记住已确认时间 |
+| PET-12 | 资源校验与降级 | 可用 | 构建前校验清单、封面和 spritesheet；运行时选择资源加载失败会回退默认公仔，全部失败时显示可重试占位 |
+
+### 3.12 监控、语音、设置与更新
 
 | 编号 | 功能 | 状态 | 用户可见行为 |
 |---|---|---|---|
@@ -233,16 +281,6 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | OTA-03 | Windows OTA 安装 | 条件可用 | 准备双层 OTA 包并启动安装程序；升级结果在下次启动上报 |
 | OTA-04 | 版本保护 | 可用 | 只提示更高版本，拒绝不完整、损坏或越界的更新包 |
 
-### 3.11 当前隐藏功能
-
-| 编号 | 功能 | 状态 | 说明 |
-|---|---|---|---|
-| SCHED-01 | 定时任务导航入口 | 隐藏 | `src/main.jsx` 中 `SCHEDULED_TASKS_ENTRY_ENABLED = false`，正式主导航不显示 |
-| SCHED-02 | 定时任务增删改查 | 隐藏 | 后端和桥接支持创建、编辑、暂停、恢复、删除、立即运行 |
-| SCHED-03 | 频率与工作目录 | 隐藏 | 页面支持日期、时间、重复频率、模型和工作目录；缺工作目录时 fail closed |
-| SCHED-04 | 运行记录和未读状态 | 隐藏 | 支持运行历史、运行中状态、未读标记及打开所属会话 |
-| SCHED-05 | 对话生成定时任务草稿 | 隐藏 | 聊天可生成结构化草稿并确认创建，但入口关闭时普通用户不可达 |
-
 ## 4. 测试范围与方法
 
 ### 4.1 推荐测试环境
@@ -254,9 +292,10 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | 路径 | 系统盘、非系统盘、含空格路径、中文路径、长路径、UNC 路径输入 |
 | 网络 | 正常网络、限速、短时断网、DNS/服务端失败、代理环境 |
 | 模型 | 内置模型账号、本地 vLLM、一个 OpenAI 兼容远程模型、无可用模型 |
-| 硬件 | NVIDIA 独显、集显/无 NVIDIA；有麦克风和无麦克风环境 |
+| 硬件 | NVIDIA 独显、集显/无 NVIDIA；有麦克风、无麦克风和录音约束不兼容环境；单屏及不同 DPI/排列的双屏环境 |
 | 文件 | 文本、PDF、扫描 PDF、Office/WPS、图片、压缩包、邮件、超限和损坏样本 |
 | 升级 | 全新安装、覆盖升级、取消升级、损坏 OTA、升级后首次启动 |
+| 辅助功能 | Windows“动画效果”开/关各一轮，验证桌伴的动态与减少动态效果降级 |
 
 ### 4.2 优先级
 
@@ -288,6 +327,7 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | WIN-INSTALL-008 | P0 | 已安装应用和测试数据 | 卸载时勾选删除数据 | 当前用户 `.pinvou3` 删除；非当前用户和无关目录不受影响 |
 | WIN-BOOT-001 | P0 | 正常安装 | 冷启动应用 | 主窗口最大化显示；无黑色控制台闪窗；启动过程无永久白屏 |
 | WIN-BOOT-002 | P1 | 断网 | 冷启动应用 | 本地界面和历史会话可用；账号、更新等后台检查失败不阻塞启动 |
+| WIN-BOOT-003 | P1 | 应用已运行且主窗口最小化 | 再次启动应用 | 复用已有实例，主窗口显示、还原并获得焦点；不会出现两个独立会话状态 |
 | WIN-WINDOW-001 | P1 | 应用已启动 | 拖动标题栏，最小化、最大化、还原、关闭 | 窗口行为符合按钮含义，无重复窗口或崩溃 |
 | WIN-WINDOW-002 | P1 | 打开监控/知识库等页面 | 将入口拖出为独立窗口，再关闭 | 独立窗口正确显示目标内容；关闭不退出主应用，不污染主窗口状态 |
 
@@ -321,9 +361,9 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | WIN-SHELL-006 | P1 | WinGet 可用 | 安装或下载一个耗时包 | 能看到 WinGet 实际写入管道的进度/状态；完成后显示退出码和完整结果 |
 | WIN-SHELL-007 | P1 | 后台任务运行中 | 多次调用 `exec_shell_wait` 快照 | 只追加新增内容，不重复整段历史；任务不会因读取快照被取消 |
 | WIN-SHELL-008 | P1 | 后台任务运行中 | 让聊天 turn 先完成 | `chat:done` 不把后台任务误标为完成，取消按钮仍可用 |
-| WIN-SHELL-009 | P1 | 输出含 `\r` 刷新式进度和 ANSI 颜色 | 运行进度命令 | 工具卡合并同一进度行，不无限堆叠；控制字符不直接显示 |
-| WIN-SHELL-010 | P1 | 输出量大且前端渲染较慢 | 连续输出大量日志 | 子进程不因事件通道阻塞；工具卡有容量上限；最终结果仍可获取 |
-| WIN-SHELL-011 | P1 | 输出中文和 emoji | 让多字节字符跨多个小块写出 | 字符不应出现替换符或乱码；若出现则记录为 UTF-8 分块缺陷 |
+| WIN-SHELL-009 | P1 | 输出含 `\r` 刷新式进度和 ANSI 颜色，且控制序列跨事件分片 | 运行进度命令 | 工具卡合并同一进度行，不无限堆叠；CRLF 和 ANSI 跨片状态正确，控制字符不直接显示 |
+| WIN-SHELL-010 | P1 | 输出量大且前端渲染较慢 | 连续输出大量日志 | 异步转发器接受背压并合并相邻块；完成事件晚于输出 flush；最终 stdout/stderr 无静默缺口 |
+| WIN-SHELL-011 | P1 | 输出中文和 emoji | 让多字节字符跨多个小块写出 | 流式 UTF-8 解码保留未完成字节；字符无替换符或乱码，最终结果与实时卡收敛 |
 | WIN-SHELL-012 | P1 | 后台任务刚结束 | 在终态边界点击取消 | 结果稳定为已完成或已取消之一，不出现永久 cancelling 或重复终态 |
 | WIN-SHELL-013 | P2 | 应用退出前有后台任务 | 关闭应用并检查进程 | PINVOU 启动的受管任务按生命周期策略清理，不残留不可见 Shell |
 | WIN-SHELL-014 | P2 | 命令只在交互终端输出进度 | 普通管道模式执行 | 允许无交互进度，但最终输出和状态必须正确；测试报告注明“未启用 PTY”而非误判实时事件链失败 |
@@ -358,10 +398,13 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | WIN-MODEL-002 | P0 | 已成功同步过账号，随后模拟后台 5xx/超时 | 重启或刷新状态 | 保留上次已确认账号和模型，不因暂时失败隐藏内置模型 |
 | WIN-MODEL-003 | P0 | 后台明确返回设备账号不存在 | 刷新状态 | 清理账号、模型和额度缓存；界面不继续展示已删除账号 |
 | WIN-MODEL-004 | P1 | 后台恢复 | 从失败状态再次刷新 | 更新为服务端最新账号和模型，不需要清空全部本地数据 |
+| WIN-MODEL-004A | P1 | 后台只返回部分账户字段或空模型列表 | 刷新状态 | 不把不完整绑定误判为可用内置模型；已确认缓存按权威/暂时失败语义处理 |
 | WIN-MODEL-005 | P1 | 本地 vLLM 在 `127.0.0.1:8000` | 自动发现并测试 | 显示模型名和上下文；可保存并完成对话 |
 | WIN-MODEL-006 | P1 | vLLM 不可达 | 测试连接 | 返回明确失败原因，不把不可用模型设为活动模型 |
 | WIN-MODEL-007 | P1 | 配置兼容 API | 保存、替换、保留和删除密钥 | 凭据状态正确；UI 和设置文件不回显明文密钥 |
 | WIN-MODEL-008 | P1 | 两个可用模型 | 设置全局模型，再为单会话切换 | 新会话使用全局默认；指定会话恢复自己的模型 |
+| WIN-MODEL-009 | P1 | 打开模型新增/编辑弹窗并填写未保存内容 | 点击遮罩层，再分别点取消和保存 | 点击遮罩层不关闭弹窗或丢失输入；只有显式取消/保存关闭并执行对应动作 |
+| WIN-MODEL-010 | P2 | 打开模型设置 | 检查可编辑字段并进行连接测试 | 当前界面不展示上下文窗口、最大输出等高级输入；运行预算仍由已保存部署信息、探测结果和路由上限正确计算 |
 | WIN-SEARCH-001 | P1 | 有有效搜索凭据 | 配置搜索源并重启 | 新 Engine 使用新搜索源，凭据不出现在日志和会话 |
 | WIN-SEARCH-002 | P1 | 凭据来自环境变量 | 打开设置并尝试覆盖 | 显示环境覆盖状态，行为符合锁定规则 |
 | WIN-SEARCH-003 | P1 | 搜索服务不可达 | 触发联网查询 | 工具失败可见，聊天 turn 能继续或安全结束，不永久 busy |
@@ -398,14 +441,45 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | WIN-WF-004 | P1 | 某角色失败 | 点击重跑 | 只重跑失败角色及必要下游，已完成上游不重复 |
 | WIN-WF-005 | P1 | 工作流运行中 | 关闭并重启应用 | 可恢复 run 自动挂回看板；已结束或僵尸 run 不劫持启动 |
 | WIN-WF-006 | P1 | 工作流请求补充信息/材料 | 提交答案并添加中文路径文件 | 对应角色继续，材料复制到正确项目且同名安全去重 |
+| WIN-WF-007 | P0 | 工作流运行中且已有部分文件 | 点击“停止并修改”，确认后修改需求重新开始 | 原 run 固化为已停止且不再派发；已有文件保留；新任务使用修改后的需求和新的 run/session |
+| WIN-WF-008 | P1 | 分别模拟本地预检正常、模型 401/403 和暂时性 5xx | 启动工作流并观察重试 | 预检不以探测模型接口误阻塞；401/403 显示鉴权失败并停止重试；可重试错误遵循上限后收敛 |
 | WIN-TOOL-001 | P0 | 工具商店可用 | 搜索、分类、仅看已安装 | 卡片、分类和安装状态一致，无重复工具 |
 | WIN-TOOL-002 | P1 | 选择无额外配置的 MCP | 安装并新建会话调用 | 安装成功提示“新会话生效”；新会话工具目录包含该 MCP |
 | WIN-TOOL-003 | P1 | 已安装 MCP | 卸载并新建会话 | 工具配置和安装状态移除；其他 MCP 不受影响 |
 | WIN-TOOL-004 | P1 | OAuth 工具可用 | 完成授权、拒绝授权、等待超时 | 三类结果有不同反馈；状态轮询能退出；凭据不回显 |
 | WIN-TOOL-005 | P1 | 工具安装依赖下载 | 切换页面后返回 | 安装状态仍正确；完成/失败弹窗不会丢失或重复 |
 | WIN-TOOL-006 | P1 | 当前聊天正在运行 | 触发连接器状态刷新 | 纯查询不回收 Engine；当前 turn 不被工具目录刷新打断 |
+| WIN-TOOL-007 | P1 | 已安装独立技能、带配套技能的 MCP 和至少一个已连接服务 | 打开输入框“工具”菜单并切换可停用项 | 菜单统一展示工具、独立技能、连接服务和内置视觉设计；配套技能不重复；启用计数与实际状态一致 |
+| WIN-TOOL-008 | P1 | 智慧芽测试 API Key | 分别使用有效和无效 Key 安装“智慧芽专利&文献” | 有效 Key 发现 `patsnap_search`/`patsnap_fetch` 后完成安装；无效 Key 回滚配置、凭据和安装状态 |
+| WIN-TOOL-009 | P0 | 已安装智慧芽和另一个带凭据工具 | 检查 `mcp.json`、日志后卸载智慧芽 | 智慧芽 Key 不以明文写入配置或日志；卸载只清理自身服务和凭据，不影响其他连接器 |
 
-### 5.8 连接器、远程控制、监控和语音
+### 5.8 定时任务与桌伴公仔
+
+| 用例 ID | P | 前置条件 | 操作步骤 | 预期结果 |
+|---|---:|---|---|---|
+| WIN-SCHED-001 | P0 | 应用正常启动 | 从主导航进入定时任务，切换全部/运行中/已暂停筛选 | 入口可见且页面加载真实任务；筛选结果与任务状态一致；加载失败可重试且不显示预览假数据 |
+| WIN-SCHED-002 | P1 | 有可用模型 | 依次选择每日早报、事项督办、工作周报模板并创建 | 名称、提示词和频率按模板预填；提交后任务立即启用；系统自动创建独立工作间，无需选择目录 |
+| WIN-SCHED-003 | P1 | 有两个可用模型 | 新建空白任务，编辑名称、内容、模型、工作日/每天/每周多选星期 | 详情保存后刷新仍一致；任务使用绑定模型；周频率至少保留一个星期 |
+| WIN-SCHED-004 | P0 | 创建每 3 小时任务并设置起始时间 | 重启应用、跨过一个执行点，再编辑其他字段 | 起始分钟/相位不因重启或无关编辑漂移；下次执行时间符合原始锚点 |
+| WIN-SCHED-005 | P1 | 已有活动任务 | 暂停、重启应用、恢复，再点击立即运行 | 暂停时不自动触发；状态持久化；恢复后计算未来时间；立即运行产生一条独立记录 |
+| WIN-SCHED-006 | P0 | 某任务已有 queued/running 运行 | 到达下一计划点并重启应用模拟错过多个时段 | 同任务不重叠运行；错过时段不会在启动时集中补跑，只安排下一未来时段 |
+| WIN-SCHED-007 | P1 | 任务产生完成、失败和运行中记录 | 从详情历史、侧栏“定时任务记录”及未读入口分别打开 | 状态、时间和错误正确；有会话的记录可打开；打开后只清对应未读并显示返回任务页入口 |
+| WIN-SCHED-008 | P1 | 有可用模型 | 点击“对话创建”，按提示补全任务信息 | 聊天不调用系统计划任务或写任务文件；结构化草稿完成后前端直接创建任务并打开详情，不要求二次确认 |
+| WIN-SCHED-009 | P0 | 一个任务有多次运行会话和制品，另有普通会话 | 确认删除任务 | 删除任务定义、模型绑定、已读状态和所属运行会话/制品；普通会话与其他任务不受影响 |
+| WIN-SCHED-010 | P1 | 任务已创建并产出文件 | 点击“打开文件夹”，再次运行后查看 | 打开该任务内部工作间；后续运行继续使用同一任务工作间，文件不串到普通会话 |
+| WIN-PET-001 | P0 | 桌伴默认关闭 | 从展开/收起侧栏和设置页分别开启、关闭，再重启 | 快捷入口与设置同步；启用时创建透明桌伴窗口，关闭时即时隐藏；重启恢复开关状态 |
+| WIN-PET-002 | P1 | 桌伴已开启 | 在设置页依次选择灵灵、浪浪、Ace Taffy，重启应用 | 预览资源加载正常；桌伴即时切换且选择持久化；快速连续切换只提交最后一次有效选择 |
+| WIN-PET-003 | P0 | 桌伴已开启 | 单击公仔、按 Enter/空格、右键后选择隐藏 | 单击/键盘会显示并聚焦主窗口；右键菜单只在公仔本体出现；隐藏后设置和快捷开关同步 |
+| WIN-PET-004 | P1 | Windows 动画效果分别开启和关闭 | 触发悬停、聊天运行、工具调用、等待输入、完成和失败 | 动画开启时状态动作正确并最终回到空闲；减少动态效果时使用单帧降级，无持续动画 |
+| WIN-PET-005 | P0 | 不同 DPI/高低排列的双屏 | 拖动并甩出公仔，跨屏、撞边、经过显示器空洞后松手 | 跟手、惯性和反弹连续；水平运动方向正确；公仔与活动卡始终位于某个显示器工作区内 |
+| WIN-PET-006 | P1 | 桌伴位于屏幕边缘并有活动卡 | 用手柄缩到最小、放到最大，重启并移除原显示器 | 缩放限制在 `0.5～1.2`；人物锚点不跳；位置/缩放持久化；失效位置回到主屏右下角 |
+| WIN-PET-007 | P1 | 两个会话分别处于运行、等待/完成状态 | 切换会话并观察活动卡，展开、折叠、关闭其中一张 | 卡片标题、最新文本、工具阶段和状态归属正确；最多显示 6 张；操作一张不影响其他会话 |
+| WIN-PET-008 | P0 | 活动卡可回复 | 输入文本并发送，再模拟会话不存在或 Engine 不可用 | 成功时消息进入原会话并继续运行；失败时草稿保留且错误可见，可重试；不会发到当前主窗口的其他会话 |
+| WIN-PET-009 | P1 | 定时任务刚完成且运行会话可打开 | 点击桌伴完成提醒，再完成下一次运行并关闭提醒 | 首次点击打开准确的任务运行并清未读；关闭只确认当前提醒；新的更晚运行仍可再次提醒 |
+| WIN-PET-010 | P1 | 将所选公仔资源模拟为损坏 | 启动或切换公仔 | 先回退默认公仔且纠正选择；所有资源均失败时显示“加载失败/点击重试”，不留透明不可操作窗口 |
+| WIN-PET-011 | P1 | 桌伴置顶调用被系统/窗口管理器拒绝 | 开启或重新显示桌伴并继续交互 | 置顶失败只记录降级，不把已成功创建的桌伴判为开启失败；主窗口退出后桌伴和菜单一起关闭 |
+
+### 5.9 连接器、远程控制、监控和语音
 
 | 用例 ID | P | 前置条件 | 操作步骤 | 预期结果 |
 |---|---:|---|---|---|
@@ -423,10 +497,10 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | WIN-VOICE-001 | P1 | 有麦克风且 ASR 模型已安装 | 点击录音、说话、再次点击结束 | 显示权限/录音/识别状态，文本追加到原草稿 |
 | WIN-VOICE-002 | P1 | 首次使用且模型缺失 | 开始语音输入并安装模型 | 展示下载、校验、完成进度；完成后可录音 |
 | WIN-VOICE-003 | P0 | 模型下载中 | 取消或断网 | 下载停止、临时文件不作为有效模型、可重试 |
-| WIN-VOICE-004 | P1 | 麦克风被拒绝或不存在 | 开始录音 | 分别显示权限拒绝/设备不可用，不清空原输入草稿 |
+| WIN-VOICE-004 | P1 | 分别构造麦克风权限被拒绝、没有输入设备、设备不支持请求的录音约束 | 开始录音 | 三类错误使用不同提示，不把“无设备”误报为权限问题，也不清空原输入草稿 |
 | WIN-VOICE-005 | P1 | 正在识别 | 切换会话 | 结果不写入新会话，并显示或记录上下文不匹配终态 |
 
-### 5.9 设置、依赖、反馈与 OTA
+### 5.10 设置、依赖、反馈与 OTA
 
 | 用例 ID | P | 前置条件 | 操作步骤 | 预期结果 |
 |---|---:|---|---|---|
@@ -445,7 +519,7 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | WIN-OTA-007 | P1 | 升级安装成功 | 首次启动新版本 | 读取并上报成功结果；删除或归档待上报记录，不重复提示 |
 | WIN-OTA-008 | P1 | 升级被用户取消或失败 | 再次启动 | 上报失败/取消状态；旧版本仍可使用，后续可重试 |
 
-### 5.10 安全、稳定性与兼容性
+### 5.11 安全、稳定性与兼容性
 
 | 用例 ID | P | 前置条件 | 操作步骤 | 预期结果 |
 |---|---:|---|---|---|
@@ -453,6 +527,7 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | WIN-SEC-002 | P0 | 构造 `..`、盘符切换、UNC、符号链接/联接点路径 | 导入、打开或安装文件 | canonicalize 后仍执行边界校验，越界路径被拒绝 |
 | WIN-SEC-003 | P0 | 构造恶意外部 URL | 调用打开 URL | 只允许代码白名单认可的协议/目标，拒绝命令注入和本地危险协议 |
 | WIN-SEC-004 | P0 | 超级权限关闭 | 请求高风险系统操作 | 不静默提权；需要授权时明确提示并允许取消 |
+| WIN-SEC-005 | P0 | Windows 发布构建未提供内置 MCP 凭据 | 执行默认构建，再显式设置跳过开关重试 | 默认构建因缺少必需凭据而失败且不打印密钥；只有显式跳过时生成不含内置额度的包 |
 | WIN-STAB-001 | P0 | 运行长 Shell、模型生成或工作流 | 高频查询连接器状态、切换页面 | 正在运行的 turn 不被无关状态刷新回收 |
 | WIN-STAB-002 | P0 | Engine 被主动回收 | 观察前端状态 | 仍发送权威终态，busy、取消中和工具卡均收敛 |
 | WIN-STAB-003 | P1 | 快速连续点击取消/关闭/切会话 | 重复操作 | 命令幂等或返回明确已结束状态，不崩溃、不重复删除数据 |
@@ -470,8 +545,12 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 npm test
 npm run test:ui-smoke
 npm run test:kb-smoke
+npm run test:composer-tools-smoke
 npm run test:tool-store
+npm run test:pet-selector-ui
+node tests/scheduled_tasks_smoke.js
 npm run test:markdown
+npm run validate:pet-assets -- --release
 npm run lint:ui
 npm run build:ui
 ```
@@ -479,12 +558,14 @@ npm run build:ui
 现有脚本已覆盖以下关键回归：
 
 - 内置模型账号暂时失败保留缓存、明确不存在时清理。
-- `exec_shell`、`exec_shell_wait` 结束前的实时输出。
-- 后台 Shell 跨 `chat:done` 保持、折叠进度、按任务 ID 取消和独立终态。
+- `exec_shell`、`exec_shell_wait` 结束前的实时输出，以及 UTF-8、CRLF 和 ANSI 跨分片拼接。
+- 后台 Shell 跨 `chat:done` 保持、折叠进度、输出尾部补齐、按任务 ID 取消和独立终态。
 - 工具产物归属、记忆候选卡、品悟检阅、Plan/YOLO、vLLM 引导。
 - 知识库页面、知识集、文件列表和添加来源。
-- 工具市场安装、卸载、OAuth 编排及凭据不透传到前端安装参数。
+- 输入框统一工具菜单，工具市场安装、卸载、OAuth 编排、智慧芽远程 MCP 及凭据不透传到前端安装参数。
 - Markdown 制品直接编辑、保存、选区 AI 编辑和浏览器异常检查。
+- 定时任务模板/自定义创建、小时锚点、任务会话隔离、运行记录、未读状态和删除级联。
+- 桌伴资源注册、三款公仔选择、状态动画、弹性拖拽/缩放、活动卡回复、定时任务提醒、窗口导航与降级路径。
 
 ### 6.2 Rust 与 DeepSeek-TUI
 
@@ -493,8 +574,10 @@ npm run build:ui
 ```powershell
 cargo +stable check --manifest-path pinvou3-app/src-tauri/Cargo.toml
 cargo +stable test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib
-cargo +stable test --manifest-path DeepSeek-TUI/crates/tui/Cargo.toml shell::tests
-bash ./scripts/fork-guard.sh --fast
+cargo +stable test --manifest-path DeepSeek-TUI/crates/tui/Cargo.toml forkguard_ --lib -- --test-threads=1
+cargo +stable test --manifest-path DeepSeek-TUI/crates/tui/Cargo.toml automation_manager::tests --lib -- --test-threads=1
+$gitBash = Join-Path $env:ProgramFiles 'Git\bin\bash.exe'
+& $gitBash ./scripts/fork-guard.sh --fast
 ```
 
 Windows 发版机还应执行：
@@ -514,24 +597,26 @@ npm run build:nsis
 | P0 | Windows CI 真进程测试：PowerShell/CMD 前台实时输出、后台输出、任务取消、父子进程树清理 |
 | P0 | Engine 缺失/主动回收时的取消和 `chat:done` 权威终态端到端测试 |
 | P0 | OTA 双层 ZIP、JSON 无 BOM、两级哈希、路径越界和损坏包拒绝测试 |
-| P1 | UTF-8 字符跨读取块、CRLF 跨事件块、ANSI 序列跨事件块的流式拼接测试 |
 | P1 | 中文用户名、空格路径、UNC 和联接点的附件/制品/运行时路径测试 |
 | P1 | NSIS 安装与卸载虚拟机流水线，检查注册表、PATH、VC++ 和用户数据选项 |
 | P1 | 连接器状态高频轮询期间长 turn 不被 Engine 回收的并发回归 |
+| P1 | Windows 多显示器/混合 DPI 桌伴真窗口测试：跨屏拖拽、显示器拔插、置顶降级、缩放锚点和主窗口退出联动 |
+| P1 | 使用可控时钟的定时任务冷启动测试：小时锚点、休眠漏跑跳过、同任务不重叠和运行历史保留 |
 | P2 | WinGet 真实下载进度在普通管道模式下的多版本兼容矩阵 |
 
 ## 7. 已知边界与重点风险
 
-1. **定时任务入口当前关闭。** 后端、桥接和页面存在不代表正式用户可见；发版清单默认不应宣称该功能已经开放。
-2. **Shell 不使用 PTY。** 只有子进程实际写入 stdout/stderr 管道的内容才能实时显示。部分程序检测到非交互终端后可能禁用动态进度，这属于当前设计边界。
-3. **实时 Shell 事件使用有界通道和非阻塞发送。** 极端高频输出时中间块可能被丢弃，最终完整结果仍应作为正确性兜底；应重点验证最终工具结果与实时卡片的收敛。
-4. **字节块解码边界需要专项回归。** 任意读取块使用有损 UTF-8 解码时，多字节字符恰好跨块可能出现替换字符。
-5. **终端控制序列跨事件块需要专项回归。** `\r\n` 或 ANSI 序列被拆到不同事件时，若前端按单块无状态处理，可能产生多余换行或残留控制字符。
+1. **当前 Windows 发布链只面向 x64。** Embedded Python、Node.js、Pandoc、ONNX Runtime 和 VC++ 检测均使用 x64 资源；不能把 Linux ARM64 兼容代码视为 Windows ARM64 安装包支持。
+2. **定时任务要求 PINVOU 正在运行。** 当前不创建 Windows Task Scheduler 系统任务；应用关闭、关机或休眠期间错过的时段会跳过，下一次启动只安排未来时段。
+3. **Shell 不使用 PTY。** 只有子进程实际写入 stdout/stderr 管道的内容才能实时显示。部分程序检测到非交互终端后可能禁用动态进度，这属于当前设计边界。
+4. **实时 Shell 转发不再以丢块降压。** reader 进入无界进程内队列，异步 worker 再接受事件通道背压并合并相邻块；极端持续输出的主要风险变为内存增长，仍应限制工具卡展示量并验证最终结果。
+5. **桌伴的置顶和透明渲染依赖 Windows 窗口/WebView 能力。** 运行时置顶重申失败会降级为普通可用窗口；混合 DPI、多显示器空洞和显卡驱动环境仍需真机验收。
 6. **大型语音模型不随安装包提供。** 首次语音输入依赖网络下载；断网环境只能使用已经下载并校验的模型。
 7. **LibreOffice 不在当前随包运行时清单中。** DOC、WPS、PPT、DPS、XLS、ET 等路径需要外部 LibreOffice；缺失时必须给出依赖提示。
 8. **音视频附件尚未自动转写。** 聊天框麦克风输入已有离线 ASR，但添加 MP3/MP4 文件当前只登记元数据。
 9. **附件单文件上限为 20 MiB。** 压缩包另有 50 条目和解压后 100 MiB 总量限制。
-10. **外部服务能力必须按失败类型处理。** 暂时性网络/服务错误不能等同于账号不存在；只有权威“无账号/已撤销”结果才能清理缓存和工具可见性。
+10. **模型高级参数当前不在设置页开放。** 上下文窗口和最大输出预算由保存的部署事实、探测结果与路由上限决定；普通用户不能直接在 UI 中修改这些字段。
+11. **外部服务能力必须按失败类型处理。** 暂时性网络/服务错误不能等同于账号不存在或凭据无效；只有权威“无账号/已撤销/鉴权失败”结果才能清理缓存、回滚安装或熔断重试。
 
 ## 8. Windows 发版验收清单
 
@@ -545,12 +630,15 @@ npm run build:nsis
 - [ ] 制品生成、预览、Markdown 编辑、系统打开和会话隔离通过。
 - [ ] 知识库模型下载/取消、索引/取消、检索和会话挂载通过。
 - [ ] 工具市场安装/卸载/OAuth、新会话生效及连接器状态稳定性通过。
-- [ ] 工作流启动、人工门禁、重跑和重启恢复通过。
+- [ ] 输入框统一工具菜单、智慧芽有效/无效凭据安装与卸载隔离通过。
+- [ ] 定时任务模板/自定义创建、小时锚点、暂停恢复、立即运行、未读、删除级联和漏跑不补执行通过。
+- [ ] 桌伴三款公仔、开关持久化、状态卡回复、定时提醒、多屏拖拽、缩放、资源降级和退出联动通过。
+- [ ] 工作流启动、人工门禁、重跑、停止并修改、鉴权熔断和重启恢复通过。
 - [ ] 麦克风拒绝、首次模型下载、录音识别和会话切换保护通过。
 - [ ] OTA 检查、下载、取消、哈希失败、合法安装和升级结果上报通过。
 - [ ] 中文用户名、含空格路径、非系统盘和低磁盘空间专项通过。
 - [ ] UI、日志、设置、会话和反馈材料均未泄露敏感凭据。
-- [ ] `npm test`、UI smoke、知识库 smoke、工具市场 smoke、Markdown smoke、Rust 检查和 fork guard 全部记录实际结果。
+- [ ] `npm test`、UI/知识库/输入框工具/工具市场/定时任务/桌伴/Markdown smoke、Rust 检查和 fork guard 全部记录实际结果。
 
 ## 9. 功能与代码追溯矩阵
 
@@ -564,13 +652,15 @@ npm run build:nsis
 | 模型与内置账号 | `features/settings/SettingsView.jsx`、`tauri-bridge.js` | `llmapi_hub/`、`local_vllm_setup.rs`、`commands.rs` | `tests/ui_smoke.js`、对应 Rust 模块测试 |
 | 本地知识库 | `features/knowledge/KnowledgeView.jsx` | `knowledge/`、`file_ingest.rs` | `tests/kb_smoke.js`、`knowledge/` 内单元测试 |
 | 记忆和角色卡 | `SettingsView.jsx`、`features/personas/` | `commands.rs`、`memory.rs`、`personas.rs` | `tests/ui_smoke.js`、对应 Rust 模块测试 |
-| 工作流和技能 | `features/workflow/WorkflowView.jsx`、`tauri-bridge.js` | `commands.rs`、`workflow_registry.rs`、`workflow_runs.rs` | `tests/ui_smoke.js`、工作流 Rust 测试 |
-| 工具市场与 OAuth | `features/tools/`、`features/settings/SettingsView.jsx` | `bridge/marketplace.rs`、`bridge/skill_marketplace.rs` | `tests/tool_store_smoke.js`、`tests/marketplace_oauth_logic.test.js` |
+| 工作流和技能 | `features/workflow/WorkflowView.jsx`、`tauri-bridge.js` | `commands.rs`、`harness.rs`、`workflow_registry.rs`、`workflow_runs.rs` | `tests/ui_smoke.js`、工作流 Rust 测试 |
+| 输入框工具与技能 | `features/settings/SettingsView.jsx`、`composer-tool-menu-logic.js` | `commands.rs`、`connector_visibility.rs` | `tests/composer_tool_menu_logic.test.js`、`tests/composer_tools_smoke.js` |
+| 工具市场与 OAuth | `features/tools/`、`features/settings/SettingsView.jsx` | `bridge/marketplace.rs`、`bridge/skill_marketplace.rs` | `tests/tool_store_smoke.js`、`tests/marketplace_oauth_logic.test.js`、`scripts/mcp-server-contract-smoke.py` |
 | 企业连接器 | `features/tools/ToolStoreView.jsx`、`tauri-bridge.js` | `feishu.rs`、`wecom.rs`、`dingtalk.rs`、`eip.rs`、`zhidao.rs` | 连接器模块测试、`tests/tool_store_smoke.js` |
-| 定时任务（隐藏） | `features/scheduled/ScheduledTasksView.jsx`、`tauri-bridge.js` | `scheduled_tasks.rs` | `tests/scheduled_tasks_unit.js`、`tests/scheduled_tasks_smoke.js` |
+| 定时任务 | `features/scheduled/ScheduledTasksView.jsx`、`features/chat/ChatView.jsx`、`tauri-bridge.js` | `scheduled_tasks.rs`、`scheduled_executor.rs`、`bridge/sessions.rs` | `tests/scheduled_tasks_unit.js`、`tests/scheduled_tasks_smoke.js`、底座 `automation_manager` 测试 |
+| 桌伴公仔 | `features/pet/`、`pet-main.jsx`、`pet-menu-main.js`、`main.jsx` | `pet_window.rs`、`selected_pet.rs` | `tests/pet_*.test.mjs`、`tests/pet_selector_ui_smoke.js`、对应 Rust 测试 |
 | 远程控制 | `features/settings/SettingsView.jsx`、`tauri-bridge.js` | `remote_control/` | `remote-control-relay/test/mobile-ui.smoke.cjs` |
 | 监控 | `features/monitor/MonitorView.jsx`、`tauri-bridge.js` | `commands.rs`、`os/windows/windows_cpu.rs`、`windows_memory.rs` | `tests/ui_smoke.js` 及监控模块测试 |
-| 语音输入 | `features/chat/ChatView.jsx`、`tauri-bridge.js` | `voice_asr.rs`、`os/windows/windows_system.rs` | `voice_asr.rs` 内模型校验和状态测试 |
+| 语音输入 | `features/chat/ChatView.jsx`、`tauri-bridge.js` | `voice_asr.rs`、`os/windows/windows_system.rs` | `tests/voice_input_error_logic.test.js`、`voice_asr.rs` 内模型校验和状态测试 |
 | 设置、依赖、反馈 | `features/settings/SettingsView.jsx` | `commands.rs`、`file_ingest.rs`、`windows_dependency.rs`、`windows_permission.rs` | 设置/文件解析模块测试 |
 | Windows OTA | `features/settings/SettingsView.jsx`、`tauri-bridge.js` | `updater.rs`、`os/windows/windows_update.rs` | `tests/update_notice_logic.test.js`、`tests/update_notice_ui_smoke.js`、OTA 脚本验证 |
-| Windows 安装包 | 无 | `src-tauri/tauri.conf.json`、`resources/windows/nsis/`、`scripts/prepare-windows-runtimes.ps1` | NSIS 发版机人工/虚拟机验收 |
+| Windows 安装包 | 无 | `src-tauri/tauri.conf.json`、`resources/windows/nsis/`、`scripts/prepare-windows-runtimes.ps1`、`scripts/tauri-build-with-secrets.js` | `tests/builtin_secrets_build.test.js`、`scripts/validate-pet-assets.mjs`、NSIS 发版机人工/虚拟机验收 |

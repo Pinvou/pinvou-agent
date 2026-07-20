@@ -706,17 +706,16 @@ impl Pinvou3Bundle {
         Ok(())
     }
 
-    /// 知道技能门控:连接成功后放出 SKILL.md,未连接/登出时只保留 bin/。
+    /// 知道技能门控:连接成功后用当前内嵌版本刷新 SKILL.md,未连接/登出时只保留
+    /// bin/。不能只在文件缺失时写:二进制健康的既有安装也必须收到技能文本更新。
     pub fn apply_zhidao_skill_visibility(&self, show: bool) -> std::io::Result<()> {
         let skill_md = self.skills_dir.join("zhidao").join("SKILL.md");
         if show {
-            if !skill_md.is_file() {
-                if let Some(f) = ZHIDAO_SKILL_DIR.get_file("SKILL.md") {
-                    if let Some(parent) = skill_md.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    std::fs::write(&skill_md, f.contents())?;
+            if let Some(f) = ZHIDAO_SKILL_DIR.get_file("SKILL.md") {
+                if let Some(parent) = skill_md.parent() {
+                    std::fs::create_dir_all(parent)?;
                 }
+                std::fs::write(&skill_md, f.contents())?;
             }
         } else {
             let _ = std::fs::remove_file(&skill_md);
@@ -1030,6 +1029,25 @@ mod tests {
         assert!(!bundle.cached_feishu_skills_visible());
         assert!(!bundle.cached_wecom_skills_visible());
         assert!(!bundle.cached_dingtalk_skills_visible());
+        cleanup(&tmp);
+    }
+
+    #[test]
+    fn zhidao_visibility_refreshes_embedded_skill_text() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = Pinvou3Bundle::paths();
+        let skill_md = bundle.skills_dir.join("zhidao").join("SKILL.md");
+        std::fs::create_dir_all(skill_md.parent().unwrap()).unwrap();
+        std::fs::write(&skill_md, "STALE SKILL").unwrap();
+
+        bundle.apply_zhidao_skill_visibility(true).unwrap();
+        let embedded = ZHIDAO_SKILL_DIR.get_file("SKILL.md").unwrap().contents();
+        assert_eq!(std::fs::read(&skill_md).unwrap(), embedded);
+
+        bundle.apply_zhidao_skill_visibility(false).unwrap();
+        assert!(!skill_md.exists());
         cleanup(&tmp);
     }
 

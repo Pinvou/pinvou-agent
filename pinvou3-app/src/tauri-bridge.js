@@ -264,7 +264,8 @@
       open: false,        // 弹框是否展示
       status: null,       // voice_asr_status 返回 { engine, ffmpeg, model, ready, missing }
       installing: false,  // 安装中
-      progress: null,     // { stage:'ffmpeg'|'model'|'done', downloaded, total }
+      cancelling: false,  // 已请求取消，等待后端停止下载
+      progress: null,     // { stage:'ffmpeg'|'model'|'cancelling'|'cancelled'|'done', downloaded, total }
       error: null,
     },
     // 知识库 embedding 模型按需下载引导（知识库页未装模型时显 gate）
@@ -362,6 +363,8 @@
       openFailed: "⚠️ Open failed: ", pasteImageFailed: "⚠️ Paste image failed: ",
       filePickUnavailable: "⚠️ File picker unavailable", filePickFailed: "⚠️ File selection failed: ",
       equipNoSession: "⚠️ Open or create a chat before equipping an expert", equipFailed: "⚠️ Equip failed: ",
+      shellOutputOmitted: kind => `[Earlier ${kind} output omitted]`, shellUnknownExit: "unknown",
+      shellTaskFinished: code => `[Task finished, exit code: ${code}]`,
     },
     ja: {
       newChatFailed: "⚠️ 新規チャットの作成に失敗: ", loadChatFailed: "⚠️ チャットの読み込みに失敗: ", deleteFailed: "⚠️ 削除に失敗: ",
@@ -380,6 +383,8 @@
       openFailed: "⚠️ 開けませんでした: ", pasteImageFailed: "⚠️ 画像の貼り付けに失敗: ",
       filePickUnavailable: "⚠️ ファイル選択を利用できません", filePickFailed: "⚠️ ファイル選択に失敗: ",
       equipNoSession: "⚠️ エキスパートを装備する前にチャットを開くか新規作成してください", equipFailed: "⚠️ 装備に失敗: ",
+      shellOutputOmitted: kind => `[途中の${kind === "stderr" ? "標準エラー" : "標準出力"}を省略]`, shellUnknownExit: "不明",
+      shellTaskFinished: code => `[タスク終了、終了コード: ${code}]`,
     },
     zh: {
       newChatFailed: "⚠️ 新建对话失败: ", loadChatFailed: "⚠️ 加载对话失败: ", deleteFailed: "⚠️ 删除失败: ",
@@ -398,6 +403,8 @@
       openFailed: "⚠️ 打开失败: ", pasteImageFailed: "⚠️ 粘贴图片失败: ",
       filePickUnavailable: "⚠️ 文件选择不可用", filePickFailed: "⚠️ 选择文件失败: ",
       equipNoSession: "⚠️ 请先打开或新建一个对话再加持专家", equipFailed: "⚠️ 加持失败: ",
+      shellOutputOmitted: kind => `[中间${kind === "stderr" ? "错误" : "标准"}输出已省略]`, shellUnknownExit: "未知",
+      shellTaskFinished: code => `[任务已结束，退出码: ${code}]`,
     },
   };
   function bt(key) {
@@ -2618,22 +2625,22 @@
   }
 
   function formatShellSnapshot(job) {
-    function section(raw, total, label) {
+    function section(raw, total, kind) {
       raw = String(raw || "");
       var visibleRaw = raw.replace(/^\.\.\.\s*/, "");
       var omitted = /^\.\.\./.test(raw) || Number(total || 0) > utf8Length(visibleRaw);
       var body = normalizeTerminalTail(visibleRaw);
-      if (omitted) body = "[中间" + label + "输出已省略]\n" + body;
+      if (omitted) body = bt("shellOutputOmitted")(kind) + "\n" + body;
       return body;
     }
-    var stdout = section(job.stdout_tail, job.stdout_len, "标准");
-    var stderr = section(job.stderr_tail, job.stderr_len, "错误");
+    var stdout = section(job.stdout_tail, job.stdout_len, "stdout");
+    var stderr = section(job.stderr_tail, job.stderr_len, "stderr");
     var parts = [];
     if (stdout) parts.push(stdout);
     if (stderr) parts.push((stdout ? "[STDERR]\n" : "") + stderr);
     if (String(job.status || "").toLowerCase() !== "running") {
-      var code = job.exit_code == null ? "未知" : String(job.exit_code);
-      parts.push("[任务已结束，退出码: " + code + "]");
+      var code = job.exit_code == null ? bt("shellUnknownExit") : String(job.exit_code);
+      parts.push(bt("shellTaskFinished")(code));
     }
     return parts.join("\n");
   }
@@ -2647,6 +2654,20 @@
       job.id, job.status, job.exit_code, job.stdout_len, job.stderr_len,
       job.stdout_tail, job.stderr_tail,
     ]);
+  }
+
+  function terminalShellHistoryMatch(item, job) {
+    if (!item || item.type !== "tool" || item.taskId || item.state === "running" ||
+        !isShellExecutionTool(item.name) || shellCommandForItem(item) !== String(job.command || "")) {
+      return false;
+    }
+    var output = normalizeTerminalTail(String(item.output || ""));
+    if (output.indexOf(String(job.id || "")) >= 0 && job.id) return true;
+    var evidence = [job.stdout_tail, job.stderr_tail].map(function (raw) {
+      return normalizeTerminalTail(String(raw || "").replace(/^\.\.\.\s*/, "")).trim();
+    }).filter(Boolean);
+    if (evidence.length) return evidence.every(function (text) { return output.indexOf(text) >= 0; });
+    return /\(no output\)|no output|无输出|出力なし/i.test(output);
   }
 
   function applyShellSnapshots(sid, jobs) {
@@ -2676,6 +2697,12 @@
           // task id. Never guess when identical commands are concurrent.
           if (runningCommandCounts[command] === 1 && candidates.length === 1) item = candidates[0];
         }
+        if (!item && !running) {
+          item = state.chatItems.find(function (it) {
+            return terminalShellHistoryMatch(it, job);
+          });
+          if (item) item.shellHistoryReconciled = true;
+        }
         // A detached job may have been started by a subagent, so no matching
         // top-level tool card exists. Completed jobs must also get a card: the
         // first poll may happen after a short detached process already exited.
@@ -2695,7 +2722,9 @@
         item.shellStatus = job.status;
         item.exitCode = job.exit_code;
         item.elapsedMs = job.elapsed_ms;
-        item.output = formatShellSnapshot(job);
+        if (!item.shellHistoryReconciled || item.output == null || running) {
+          item.output = formatShellSnapshot(job);
+        }
         item.state = running ? "running" : (status === "completed" ? "done" : "failed");
         item.success = running ? null : status === "completed";
         item.shellSnapshotKey = snapshotKey;
@@ -5797,6 +5826,8 @@
 
   // ── 语音输入（WebView one-shot 录音 → 本地 SenseVoice/FunASR ASR；Linux webview 录音授权见 lib.rs setup）──────────────
   var activeVoiceInput = null;
+  var VOICE_DEVICE_PROBE_TIMEOUT_MS = 1500;
+  var VOICE_DEVICE_REQUEST_TIMEOUT_MS = 8000;
 
   function setVoiceInputStatus(status, patch) {
     var next = Object.assign({}, state.voiceInput, patch || {});
@@ -5830,7 +5861,10 @@
     if (name === "NotAllowedError" || name === "SecurityError" || rawCategory === "permission_denied") {
       return { category: "permission_denied", stage: "permission", message: "麦克风权限被拒绝，请在系统设置中允许本应用访问麦克风后重试。" };
     }
-    if (name === "NotFoundError" || name === "DevicesNotFoundError" || rawCategory === "device_unavailable") {
+    if (rawCategory === "device_unavailable") {
+      return { category: "device_unavailable", stage: "device", message: rawMessage || "未检测到可用麦克风，请检查录音设备是否启用或被占用。" };
+    }
+    if (name === "NotFoundError" || name === "DevicesNotFoundError") {
       return { category: "device_unavailable", stage: "device", message: "未检测到可用麦克风，请检查录音设备是否启用或被占用。" };
     }
     // WebKitGTK 可能把不支持的音频约束报为 OverconstrainedError / "Invalid constraint"。
@@ -5870,6 +5904,13 @@
   function cleanupVoiceInputSession(session) {
     if (!session) return;
     if (session.timeoutId) clearTimeout(session.timeoutId);
+    if (session.permissionTimeoutId) clearTimeout(session.permissionTimeoutId);
+    session.permissionTimeoutId = null;
+    if (session.cancelPermissionRequest) {
+      var cancelPermissionRequest = session.cancelPermissionRequest;
+      session.cancelPermissionRequest = null;
+      try { cancelPermissionRequest(); } catch (_) {}
+    }
     // 先摘掉音频回调：webkit2gtk 的 WebAudio 是 GStreamer 后端，ScriptProcessorNode 的
     // onaudioprocess 跑在音频线程，若在 disconnect/close 期间再触发一次、访问已释放的
     // 缓冲，会让 WebProcess 段错误（表现为「识别出文字后 app 崩溃」）。务必先置 null。
@@ -5889,6 +5930,57 @@
     if (ctx && ctx.state !== "closed") {
       setTimeout(function () { try { ctx.close().catch(function () {}); } catch (_) {} }, 0);
     }
+  }
+
+  async function probeVoiceAudioInput(timeoutMs) {
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== "function") return null;
+    var timer = null;
+    try {
+      return await Promise.race([
+        navigator.mediaDevices.enumerateDevices().then(function (devices) {
+          return devices.some(function (device) { return device && device.kind === "audioinput"; });
+        }),
+        new Promise(function (resolve) {
+          timer = setTimeout(function () { resolve(null); }, timeoutMs || VOICE_DEVICE_PROBE_TIMEOUT_MS);
+        }),
+      ]);
+    } catch (_) {
+      return null;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  function requestVoiceMedia(session, constraints, timeoutMs) {
+    var abandoned = false;
+    var mediaPromise = navigator.mediaDevices.getUserMedia(constraints).then(function (stream) {
+      if (abandoned || activeVoiceInput !== session) {
+        stopMediaTracks(stream);
+        throw { category: "cancelled", stage: "permission", message: "已取消语音输入" };
+      }
+      return stream;
+    });
+    var timeoutPromise = new Promise(function (_, reject) {
+      session.permissionTimeoutId = setTimeout(function () {
+        abandoned = true;
+        reject({
+          category: "device_unavailable",
+          stage: "device",
+          message: "麦克风检测超时，未发现可用录音设备。请检查设备连接和 Windows 麦克风设置后重试。",
+        });
+      }, timeoutMs || VOICE_DEVICE_REQUEST_TIMEOUT_MS);
+    });
+    var cancelPromise = new Promise(function (_, reject) {
+      session.cancelPermissionRequest = function () {
+        abandoned = true;
+        reject({ category: "cancelled", stage: "permission", message: "已取消语音输入" });
+      };
+    });
+    return Promise.race([mediaPromise, timeoutPromise, cancelPromise]).finally(function () {
+      if (session.permissionTimeoutId) clearTimeout(session.permissionTimeoutId);
+      session.permissionTimeoutId = null;
+      session.cancelPermissionRequest = null;
+    });
   }
 
   function mergeFloatChunks(chunks) {
@@ -6008,16 +6100,49 @@
   // voice_asr:progress 事件。装完 ready 自动关框。
   async function installVoiceAsr() {
     if (state.voiceAsrSetup.installing) return;
-    state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { installing: true, error: null, progress: { stage: "start" } });
+    state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { installing: true, cancelling: false, error: null, progress: { stage: "start" } });
     notify();
     try {
       var st = await invoke("install_voice_asr");
-      var patch = { installing: false, status: st, progress: { stage: "done" } };
+      var patch = { installing: false, cancelling: false, status: st, progress: { stage: "done" } };
       if (st && st.ready) patch.open = false;
       state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, patch);
       notify();
     } catch (e) {
-      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { installing: false, error: String(e) });
+      var cancelled = state.voiceAsrSetup.cancelling || String(e).indexOf("已取消") >= 0;
+      var failedPatch = {
+        installing: false,
+        cancelling: false,
+        progress: cancelled ? { stage: "cancelled" } : state.voiceAsrSetup.progress,
+        error: cancelled ? null : String(e),
+      };
+      if (cancelled) failedPatch.open = false;
+      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, failedPatch);
+      notify();
+    }
+  }
+
+  async function cancelVoiceAsrSetup() {
+    if (!state.voiceAsrSetup.installing) {
+      closeVoiceAsrSetup();
+      return;
+    }
+    if (state.voiceAsrSetup.cancelling) return;
+    state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, {
+      cancelling: true,
+      progress: { stage: "cancelling" },
+      error: null,
+    });
+    notify();
+    try {
+      await invoke("cancel_voice_asr");
+      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { open: false });
+      notify();
+    } catch (e) {
+      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, {
+        cancelling: false,
+        error: String(e),
+      });
       notify();
     }
   }
@@ -6059,21 +6184,17 @@
       return;
     }
 
-    // 首次/缺组件：先检测本地语音识别依赖，缺则弹安装框、不进录音。
-    try {
-      var asrStatus = await invoke("voice_asr_status");
-      // VoiceAsrStatus 只有 engine/ffmpeg/model/ready/missing,无 installable 字段。
-      // 未装好即弹安装引导;平台 gating 若要做,需先给后端补 installable(当前无此需求)。
-      if (asrStatus && !asrStatus.ready) {
-        state.voiceAsrSetup = { open: true, status: asrStatus, installing: false, progress: null, error: null };
-        notify();
-        return;
-      }
-    } catch (e) {
-      // 检测失败（如 mock 环境/旧后端）不阻塞，继续走原录音路径（环境变量/兜底引擎）
+    // 模型下载期间再次点麦克风时保留原下载会话，不能用新的依赖检测结果
+    // 覆盖 installing/cancelling/progress，否则新引导框的“取消”只会关 UI，
+    // 后端下载仍会继续。
+    if (state.voiceAsrSetup.installing) {
+      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { open: true });
+      notify();
+      return;
     }
 
-    var AudioCtor = window.AudioContext || window.webkitAudioContext;
+    // 点击后立即进入可见、可取消的检测态。模型状态查询首次可能需要读取模型文件，
+    // 如果等查询结束后才更新 UI，Windows 上会表现为按钮点击后没有任何反馈。
     var session = {
       id: Date.now().toString(36),
       sessionId: state.activeSessionId || null,
@@ -6085,9 +6206,34 @@
     };
     activeVoiceInput = session;
     setVoiceInputStatus("requesting_permission", {
-      message: "正在请求麦克风权限…",
+      message: "正在检测麦克风设备…",
       sessionId: session.sessionId,
       startedAt: session.startedAt,
+      stage: "device",
+    });
+    emitVoiceDiagnostic("device", "info", "checking voice input environment", "", "");
+
+    // 首次/缺组件：先检测本地语音识别依赖，缺则弹安装框、不进录音。
+    try {
+      var asrStatus = await invoke("voice_asr_status");
+      if (activeVoiceInput !== session) return;
+      // 未装好即弹安装引导；installable 决定当前平台是否提供内置安装入口。
+      if (asrStatus && !asrStatus.ready) {
+        cleanupVoiceInputSession(session);
+        activeVoiceInput = null;
+        setVoiceInputStatus("idle", { message: "", stage: null, sessionId: null });
+        state.voiceAsrSetup = { open: true, status: asrStatus, installing: false, cancelling: false, progress: null, error: null };
+        notify();
+        return;
+      }
+    } catch (e) {
+      if (activeVoiceInput !== session) return;
+      // 检测失败（如 mock 环境/旧后端）不阻塞，继续走原录音路径（环境变量/兜底引擎）
+    }
+
+    var AudioCtor = window.AudioContext || window.webkitAudioContext;
+    setVoiceInputStatus("requesting_permission", {
+      message: "正在请求麦克风权限…",
       stage: "permission",
     });
     emitVoiceDiagnostic("permission", "info", "requesting microphone permission", "", "");
@@ -6099,14 +6245,19 @@
       if (!AudioCtor) {
         throw { category: "recording_failed", stage: "recording", message: "当前 WebView 不支持音频录制。" };
       }
-      session.stream = await navigator.mediaDevices.getUserMedia({
+      var hasAudioInput = await probeVoiceAudioInput(VOICE_DEVICE_PROBE_TIMEOUT_MS);
+      if (activeVoiceInput !== session) return;
+      if (hasAudioInput === false) {
+        throw { category: "device_unavailable", stage: "device", message: "未检测到可用麦克风，请连接或启用录音设备后重试。" };
+      }
+      session.stream = await requestVoiceMedia(session, {
         audio: {
           channelCount: 1,
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
         },
-      });
+      }, VOICE_DEVICE_REQUEST_TIMEOUT_MS);
       if (activeVoiceInput !== session) {
         cleanupVoiceInputSession(session);
         return;
@@ -6130,7 +6281,8 @@
       emitVoiceDiagnostic("recording", "info", "recording started", "", "");
     } catch (err) {
       cleanupVoiceInputSession(session);
-      if (activeVoiceInput === session) activeVoiceInput = null;
+      if (activeVoiceInput !== session) return;
+      activeVoiceInput = null;
       var normalized = normalizeVoiceError(err, "recording");
       setVoiceInputStatus("failed", {
         message: normalized.message,
@@ -6428,6 +6580,7 @@
     removeQueued: removeQueued,
     startVoiceInput: startVoiceInput,
     installVoiceAsr: installVoiceAsr,
+    cancelVoiceAsrSetup: cancelVoiceAsrSetup,
     closeVoiceAsrSetup: closeVoiceAsrSetup,
     downloadKbModel: downloadKbModel,
     cancelKbModel: cancelKbModel,

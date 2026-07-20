@@ -349,7 +349,7 @@ pinvou3 不改 ToolRegistry 或 ToolSpec —— 完全复用上游。差异只�
 3. **vision_config = None + Feature::VisionModel = false** → image_analyze 不注册
 4. **allow_shell = true** + Yolo 模式 → exec_shell 等可用
 
-详细取舍见 `docs/system-prompt-与底座的差异.md`。
+详细取舍见 `docs/archived/system-prompt-与底座的差异.md`。
 
 ---
 

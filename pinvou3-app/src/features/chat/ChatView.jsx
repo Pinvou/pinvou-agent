@@ -429,7 +429,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       const voiceInput = (bs && bs.voiceInput) || { status: 'idle' };
       const voiceActive = voiceInput.status === 'requesting_permission' || voiceInput.status === 'recording' || voiceInput.status === 'transcribing';
       const voiceRecording = voiceInput.status === 'recording';
-      const voiceBusy = voiceInput.status === 'requesting_permission' || voiceInput.status === 'transcribing';
+      const voiceBusy = voiceInput.status === 'transcribing';
       const voiceNotice = voiceInput.status !== 'idle' && voiceInput.message;
       const hasDraftText = inputText.trim().length > 0;
       const hasReadyAttachment = attachments.some(a => a.status === 'ready');
@@ -451,7 +451,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         : voiceInput.status === 'failed'
           ? t.voiceRetry
           : voiceInput.status === 'requesting_permission'
-            ? t.voiceRequesting
+            ? t.voiceCancel
             : voiceInput.status === 'transcribing'
               ? t.voiceTranscribing
               : t.voiceStart;
@@ -552,6 +552,10 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
           return;
         }
         if (!bridge.available) return;
+        if (voiceInput.status === 'requesting_permission') {
+          bridge.cancelVoiceInput();
+          return;
+        }
         if (voiceBusy) return;
         if (voiceInput.status === 'recording') {
           bridge.startVoiceInput(inputText, (text) => setInputText(prev => bridge.appendVoiceText(prev, text)));
@@ -880,18 +884,23 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                   onClick={() => { if (!su.installing) bridge.closeVoiceAsrSetup(); }}>
                   <div className={`w-full max-w-[440px] rounded-[20px] shadow-2xl p-6 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}
                     onClick={e => e.stopPropagation()}>
-                    <h3 className="text-[16px] font-semibold mb-2">启用本地语音识别</h3>
-                    <p className="text-[13px] leading-relaxed opacity-80 mb-4">
-                      {needEngine
-                        ? '本地语音识别运行时缺失，请修复或重新安装应用；仅缺模型时可在这里下载。'
-                        : `首次使用需要下载语音识别模型（${modelSizeText}${needFfmpeg ? ' + ffmpeg' : ''}），完全本地运行、语音不上传云端。`}
-                    </p>
+                    <h3 className="text-[16px] font-semibold mb-2">
+                      {su.installing ? '下载语音识别模型' : '启用本地语音识别'}
+                    </h3>
+                    {!su.installing && (
+                      <p className="text-[13px] leading-relaxed opacity-80 mb-4">
+                        {needEngine
+                          ? '本地语音识别运行时缺失，请修复或重新安装应用；仅缺模型时可在这里下载。'
+                          : `首次使用需要下载语音识别模型（${modelSizeText}${needFfmpeg ? ' + ffmpeg' : ''}），完全本地运行、语音不上传云端。`}
+                      </p>
+                    )}
                     {su.installing && (
                       <div className="mb-4">
                         <div className="text-[12px] opacity-70 mb-1">
                           {prog.stage === 'ffmpeg' ? '正在安装 ffmpeg（可能弹系统授权框）…'
                             : prog.stage === 'model' ? ('正在下载模型 ' + (pct != null ? pct + '%' : '…'))
                             : prog.stage === 'verify' ? '正在校验模型完整性…'
+                            : prog.stage === 'cancelling' ? '正在取消下载…'
                             : prog.stage === 'done' ? '完成'
                             : prog.stage === 'cancelled' ? '已取消'
                             : prog.stage === 'failed' ? '下载失败，可重试'
@@ -904,11 +913,14 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                     )}
                     {su.error && <div className="text-[13px] text-[#EA4335] mb-3">❌ {su.error}</div>}
                     <div className="flex items-center justify-end gap-2">
-                      <button onClick={() => bridge.closeVoiceAsrSetup()} disabled={su.installing}
-                        className={`text-[13px] px-4 py-2 rounded-full ${isDark ? 'bg-[#333537] hover:bg-[#444746]' : 'bg-[#E1E5EA] hover:bg-[#D3D9E0]'} ${su.installing ? 'opacity-50' : ''}`}>取消</button>
-                      <button onClick={() => bridge.installVoiceAsr()} disabled={su.installing || !su.status?.installable}
-                        className={`text-[13px] font-medium px-4 py-2 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'} ${(su.installing || !su.status?.installable) ? 'opacity-50' : ''}`}>
-                        {su.installing ? '安装中…' : (!su.status?.installable ? '需要修复安装' : (needModel ? '下载模型' : '安装'))}</button>
+                      <button onClick={() => bridge.cancelVoiceAsrSetup()} disabled={su.cancelling}
+                        className={`text-[13px] px-4 py-2 rounded-full ${isDark ? 'bg-[#333537] hover:bg-[#444746]' : 'bg-[#E1E5EA] hover:bg-[#D3D9E0]'} ${su.cancelling ? 'opacity-50' : ''}`}>
+                        {su.installing ? (su.cancelling ? '正在取消…' : '取消下载') : '取消'}</button>
+                      {!su.installing && (
+                        <button onClick={() => bridge.installVoiceAsr()} disabled={!su.status?.installable}
+                          className={`text-[13px] font-medium px-4 py-2 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'} ${!su.status?.installable ? 'opacity-50' : ''}`}>
+                          {!su.status?.installable ? '需要修复安装' : (needModel ? '下载模型' : '安装')}</button>
+                      )}
                     </div>
                   </div>
                 </div>
