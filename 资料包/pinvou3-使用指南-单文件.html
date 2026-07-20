@@ -152,6 +152,7 @@
   figure.shot{position:relative;margin:26px 0 8px;border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:var(--shadow-lg);background:#fff;transition:border-color .25s,transform .25s}
   figure.shot:hover{border-color:var(--line-2)}
   figure.shot img{display:block;width:100%;height:auto;cursor:zoom-in}
+  figure.shot img:focus-visible{outline:3px solid #CBA763;outline-offset:-4px}
   .zoom-ic{position:absolute;top:12px;right:12px;width:34px;height:34px;border-radius:10px;background:rgba(18,15,10,.55);color:#fff;display:grid;place-items:center;opacity:0;transform:scale(.8);transition:opacity .22s,transform .22s;pointer-events:none;backdrop-filter:blur(4px)}
   .zoom-ic svg{width:16px;height:16px}
   figure.shot:hover .zoom-ic{opacity:1;transform:scale(1)}
@@ -191,7 +192,7 @@
   .pcell:hover{background:rgba(255,255,255,.075);transform:translateY(-3px)}
   .pcell .big{font-family:var(--serif);font-size:26px;color:#fff;margin-bottom:6px;display:flex;align-items:center;gap:10px}
   .pcell .big svg{width:20px;height:20px;color:#CBA763}
-  .pcell .lb{font-size:13px;color:#A29B8C;line-height:1.55}
+  .pcell .pcell-lb{font-size:13px;color:#A29B8C;line-height:1.55}
 
   /* ===== FAQ ===== */
   details.faq{border:1px solid var(--line);border-radius:14px;background:var(--bg-raise);margin-bottom:11px;overflow:hidden;transition:border-color .2s,box-shadow .2s}
@@ -246,7 +247,7 @@
   .lb-cap{color:#D8D2C4;font-size:13.5px;text-align:center;max-width:74ch;line-height:1.6}
   .lb-cap b{color:#fff;font-weight:600}
   .lb-ui{position:absolute;color:#fff;z-index:2}
-  .lb-count{top:20px;left:24px;font-family:var(--mono);font-size:12px;letter-spacing:.12em;color:rgba(255,255,255,.65)}
+  .lb-count{top:20px;left:24px;font-family:var(--mono);font-size:12px;letter-spacing:.12em;color:rgba(255,255,255,.75)}
   .lb-btn{width:44px;height:44px;border-radius:50%;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);display:grid;place-items:center;transition:background .2s,transform .2s;color:#fff}
   .lb-btn:hover{background:rgba(255,255,255,.22);transform:scale(1.06)}
   .lb-btn svg{width:18px;height:18px}
@@ -254,7 +255,7 @@
   .lb-prev,.lb-next{top:50%;margin-top:-22px}
   .lb-prev{left:20px}
   .lb-next{right:20px}
-  .lb-hint{bottom:18px;left:50%;transform:translateX(-50%);font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:rgba(255,255,255,.4)}
+  .lb-hint{bottom:18px;left:50%;transform:translateX(-50%);font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:rgba(255,255,255,.7)}
 
   /* ===== 入场动画 ===== */
   html.js .reveal{opacity:0;transform:translateY(24px);transition:opacity .7s cubic-bezier(.2,.7,.2,1),transform .7s cubic-bezier(.2,.7,.2,1);transition-delay:var(--d,0s)}
@@ -291,7 +292,7 @@
     figure.shot{box-shadow:none;break-inside:avoid-page}
     figure.shot img{max-height:110mm;object-fit:contain}
     .privacy{background:#f2f2f2!important;color:#111}
-    .privacy p,.privacy .lb{color:#444!important}
+    .privacy p,.privacy .pcell-lb{color:#444!important}
     .pcell .big,.privacy h2{color:#111!important}
     html.js .reveal{opacity:1;transform:none}
   }
@@ -569,10 +570,10 @@
     <h2>你的资料，从头到尾都在你自己机器上。</h2>
     <p>品悟跑在<b>本机的算力</b>上，不把你的文件、对话、数据发到任何外部服务器。对话和产物都存在本机的 <b>~/.pinvou3</b> 目录里。这意味着——敏感合同、内部财报、客户名单，都可以放心交给它。</p>
     <div class="pgrid">
-      <div class="pcell"><div class="big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>本地</div><div class="lb">推理全程在本机完成，默认不依赖外网</div></div>
-      <div class="pcell"><div class="big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="10" width="15" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>私有</div><div class="lb">文件与对话只存在你的电脑上</div></div>
-      <div class="pcell"><div class="big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.6-3 7.8-7 9.2-4-1.4-7-4.6-7-9.2V6z"/><path d="M9.3 11.8l2 2 3.6-3.8"/></svg>可控</div><div class="lb">危险操作有安全拦截，不会偷偷执行</div></div>
-      <div class="pcell"><div class="big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8.8a15 15 0 0 1 20 0M5.5 12.5a10 10 0 0 1 13 0M9 16.2a5 5 0 0 1 6 0"/><circle cx="12" cy="19.4" r="1.2" fill="currentColor" stroke="none"/></svg>离线</div><div class="lb">不联网也能完成大部分日常任务</div></div>
+      <div class="pcell"><div class="big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>本地</div><div class="pcell-lb">推理全程在本机完成，默认不依赖外网</div></div>
+      <div class="pcell"><div class="big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="10" width="15" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>私有</div><div class="pcell-lb">文件与对话只存在你的电脑上</div></div>
+      <div class="pcell"><div class="big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.6-3 7.8-7 9.2-4-1.4-7-4.6-7-9.2V6z"/><path d="M9.3 11.8l2 2 3.6-3.8"/></svg>可控</div><div class="pcell-lb">危险操作有安全拦截，不会偷偷执行</div></div>
+      <div class="pcell"><div class="big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8.8a15 15 0 0 1 20 0M5.5 12.5a10 10 0 0 1 13 0M9 16.2a5 5 0 0 1 6 0"/><circle cx="12" cy="19.4" r="1.2" fill="currentColor" stroke="none"/></svg>离线</div><div class="pcell-lb">不联网也能完成大部分日常任务</div></div>
     </div>
   </div>
 </div>
@@ -602,7 +603,7 @@
       </details>
 
       <details class="faq"><summary><span class="q">Q</span>开了联网搜索却查不到东西？<span class="arr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></span></summary>
-        <div class="ans-wrap"><div class="ans-inner"><div class="ans">多半是搜索源没配好。进 <b>设置 → 联网搜索</b>，确认选了搜索源；部分源（Bocha / 百度 / Tavily）<b>必须填 API Key</b>，界面里有"获取你自己的 key"指引。改完按提示保存重启。</div></div></div>
+        <div class="ans-wrap"><div class="ans-inner"><div class="ans">多半是搜索源没配好。进 <b>设置 → 联网搜索</b>，从 <b>Bing / Metaso / Bocha / 百度 / Tavily</b> 里选一个搜索源。各源要求不同：<b>Bing</b> 不需要 API Key（但中文搜索结果一般）；<b>Metaso</b> 留空可走社区共享 Key（约 100 次/天，多用户共享），填自己的更稳；<b>Bocha / 百度 / Tavily</b> <b>必须填 API Key</b>，界面里有"获取你自己的 key"指引。改完按提示保存重启。</div></div></div>
       </details>
 
       <details class="faq"><summary><span class="q">Q</span>怎么判断它说的对不对？<span class="arr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></span></summary>
@@ -636,7 +637,7 @@
 
 <div class="drawer" id="drawer" aria-hidden="true">
   <div class="drawer-bg" data-close></div>
-  <div class="drawer-panel" role="dialog" aria-label="目录">
+  <div class="drawer-panel" role="dialog" aria-modal="true" aria-label="目录">
     <div class="drawer-head"><span>目录</span>
       <button class="icon-btn" data-close aria-label="关闭目录" style="width:32px;height:32px">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
@@ -647,7 +648,7 @@
   </div>
 </div>
 
-<div class="lb" id="lb" aria-hidden="true" role="dialog" aria-label="截图大图">
+<div class="lb" id="lb" aria-hidden="true" role="dialog" aria-modal="true" aria-label="截图大图" tabindex="-1">
   <div class="lb-bg" data-lbclose></div>
   <span class="lb-ui lb-count" id="lbCount">1 / 1</span>
   <button class="lb-ui lb-btn lb-close" data-lbclose aria-label="关闭大图">
@@ -735,12 +736,94 @@
   onScroll();
   fab.addEventListener('click',function(){window.scrollTo({top:0,behavior:reduceMotion?'auto':'smooth'});});
 
+  /* ---------- 滚动锁定（保存/恢复内联样式 + iOS fixed-body） ---------- */
+  var scrollLock={depth:0,prevOverflow:'',prevPosition:'',prevTop:'',prevWidth:'',prevScrollY:0};
+  function lockScroll(){
+    if(scrollLock.depth===0){
+      scrollLock.prevOverflow=document.body.style.overflow;
+      scrollLock.prevPosition=document.body.style.position;
+      scrollLock.prevTop=document.body.style.top;
+      scrollLock.prevWidth=document.body.style.width;
+      scrollLock.prevScrollY=window.pageYOffset||document.documentElement.scrollTop||0;
+      document.body.style.overflow='hidden';
+      document.body.style.position='fixed';
+      document.body.style.top=(-scrollLock.prevScrollY)+'px';
+      document.body.style.width='100%';
+    }
+    scrollLock.depth++;
+  }
+  function unlockScroll(){
+    if(scrollLock.depth===0)return;
+    scrollLock.depth--;
+    if(scrollLock.depth===0){
+      document.body.style.overflow=scrollLock.prevOverflow;
+      document.body.style.position=scrollLock.prevPosition;
+      document.body.style.top=scrollLock.prevTop;
+      document.body.style.width=scrollLock.prevWidth;
+      var prevBehavior=document.documentElement.style.scrollBehavior;
+      document.documentElement.style.scrollBehavior='auto';
+      window.scrollTo(0,scrollLock.prevScrollY);
+      document.documentElement.style.scrollBehavior=prevBehavior;
+    }
+  }
+
+  /* ---------- modal 焦点与背景隔离 ---------- */
+  function inertBackground(activeModal){
+    var previous=[];
+    [].slice.call(document.body.children).forEach(function(el){
+      if(el===activeModal||el.tagName==='SCRIPT')return;
+      previous.push({el:el,inert:!!el.inert});
+      el.inert=true;
+    });
+    return previous;
+  }
+  function restoreBackground(previous){
+    (previous||[]).forEach(function(item){item.el.inert=item.inert;});
+  }
+  function focusWithoutScroll(el){
+    if(!el||!el.focus)return;
+    try{el.focus({preventScroll:true});}catch(e){try{el.focus();}catch(ignore){}}
+  }
+  function focusableIn(modal){
+    return $$('a[href],button:not([disabled]),[tabindex]:not([tabindex="-1"])',modal)
+      .filter(function(el){return !el.inert&&el.getAttribute('aria-hidden')!=='true';});
+  }
+  function trapFocus(modal,e){
+    if(e.key!=='Tab')return;
+    var items=focusableIn(modal),active=document.activeElement;
+    if(!items.length){e.preventDefault();focusWithoutScroll(modal);return;}
+    var first=items[0],last=items[items.length-1];
+    if(e.shiftKey&&(active===first||active===modal||!modal.contains(active))){
+      e.preventDefault();focusWithoutScroll(last);
+    }else if(!e.shiftKey&&(active===last||active===modal||!modal.contains(active))){
+      e.preventDefault();focusWithoutScroll(first);
+    }
+  }
+
   /* ---------- 移动端目录抽屉 ---------- */
-  var drawer=$('#drawer'),drawerList=$('#drawerList');
+  var drawer=$('#drawer'),drawerList=$('#drawerList'),drawerLastFocus=null,drawerBackground=[];
   drawerList.innerHTML=$('#tocList').innerHTML;
   $$('#drawerList .toc-cursor').forEach(function(el){el.remove();});
-  function openDrawer(){drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');document.body.style.overflow='hidden';}
-  function closeDrawer(){drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');document.body.style.overflow='';}
+  function openDrawer(){
+    if(drawer.classList.contains('open'))return;
+    drawerLastFocus=document.activeElement;
+    drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');
+    drawer.inert=false;
+    drawerBackground=inertBackground(drawer);
+    lockScroll();
+    requestAnimationFrame(function(){requestAnimationFrame(function(){
+      if(drawer.classList.contains('open'))focusWithoutScroll($('button[data-close]',drawer));
+    });});
+  }
+  function closeDrawer(){
+    if(!drawer.classList.contains('open'))return;
+    drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');
+    drawer.inert=true;
+    restoreBackground(drawerBackground);drawerBackground=[];
+    unlockScroll();
+    focusWithoutScroll(drawerLastFocus);drawerLastFocus=null;
+  }
+  drawer.inert=true;
   $('#menuBtn').addEventListener('click',openDrawer);
   $$('[data-close]',drawer).forEach(function(el){el.addEventListener('click',closeDrawer);});
   $$('#drawerList a').forEach(function(a){a.addEventListener('click',closeDrawer);});
@@ -753,7 +836,8 @@
     badge.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v6M8 11h6"/></svg>';
     f.appendChild(badge);
   });
-  var lb=$('#lb'),lbImg=$('#lbImg'),lbCap=$('#lbCap'),lbCount=$('#lbCount'),idx=0;
+  var lb=$('#lb'),lbImg=$('#lbImg'),lbCap=$('#lbCap'),lbCount=$('#lbCount'),idx=0,
+      lbLastFocus=null,lbBackground=[];
   function renderLb(){
     var img=figs[idx].querySelector('img');
     var cap=figs[idx].querySelector('figcaption');
@@ -762,18 +846,39 @@
     lbCap.innerHTML=cap?cap.innerHTML:'';
     lbCount.textContent=(idx+1)+' / '+figs.length;
   }
-  function openLb(i){
+  function openLb(i,trigger){
+    if(lb.classList.contains('open'))return;
     idx=i;renderLb();
+    lbLastFocus=trigger||document.activeElement;
     lb.classList.add('open');lb.setAttribute('aria-hidden','false');
-    document.body.style.overflow='hidden';
+    lb.inert=false;
+    lbBackground=inertBackground(lb);
+    lockScroll();
+    requestAnimationFrame(function(){requestAnimationFrame(function(){
+      if(lb.classList.contains('open'))focusWithoutScroll($('.lb-close',lb));
+    });});
   }
   function closeLb(){
+    if(!lb.classList.contains('open'))return;
     lb.classList.remove('open');lb.setAttribute('aria-hidden','true');
-    document.body.style.overflow='';
+    lb.inert=true;
+    restoreBackground(lbBackground);lbBackground=[];
+    unlockScroll();
+    focusWithoutScroll(lbLastFocus);lbLastFocus=null;
   }
+  lb.inert=true;
   function stepLb(d){idx=(idx+d+figs.length)%figs.length;renderLb();}
   figs.forEach(function(f,i){
-    f.querySelector('img').addEventListener('click',function(){openLb(i);});
+    var img=f.querySelector('img');
+    img.tabIndex=0;
+    img.setAttribute('role','button');
+    img.setAttribute('aria-haspopup','dialog');
+    img.setAttribute('aria-controls','lb');
+    img.setAttribute('aria-label','查看大图：'+(img.alt||('截图 '+(i+1))));
+    img.addEventListener('click',function(){openLb(i,img);});
+    img.addEventListener('keydown',function(e){
+      if(e.key==='Enter'||e.key===' '){e.preventDefault();openLb(i,img);}
+    });
   });
   $$('[data-lbclose]').forEach(function(el){el.addEventListener('click',closeLb);});
   $('#lbPrev').addEventListener('click',function(){stepLb(-1);});
@@ -783,8 +888,10 @@
       if(e.key==='Escape')closeLb();
       else if(e.key==='ArrowLeft')stepLb(-1);
       else if(e.key==='ArrowRight')stepLb(1);
-    }else if(e.key==='Escape'&&drawer.classList.contains('open')){
-      closeDrawer();
+      else trapFocus(lb,e);
+    }else if(drawer.classList.contains('open')){
+      if(e.key==='Escape')closeDrawer();
+      else trapFocus(drawer,e);
     }
   });
   var touchX=null;
