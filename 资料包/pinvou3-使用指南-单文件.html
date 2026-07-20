@@ -191,7 +191,7 @@
   .pcell:hover{background:rgba(255,255,255,.075);transform:translateY(-3px)}
   .pcell .big{font-family:var(--serif);font-size:26px;color:#fff;margin-bottom:6px;display:flex;align-items:center;gap:10px}
   .pcell .big svg{width:20px;height:20px;color:#CBA763}
-  .pcell .lb{font-size:13px;color:#A29B8C;line-height:1.55}
+  .pcell .pcell-lb{font-size:13px;color:#A29B8C;line-height:1.55}
 
   /* ===== FAQ ===== */
   details.faq{border:1px solid var(--line);border-radius:14px;background:var(--bg-raise);margin-bottom:11px;overflow:hidden;transition:border-color .2s,box-shadow .2s}
@@ -291,7 +291,7 @@
     figure.shot{box-shadow:none;break-inside:avoid-page}
     figure.shot img{max-height:110mm;object-fit:contain}
     .privacy{background:#f2f2f2!important;color:#111}
-    .privacy p,.privacy .lb{color:#444!important}
+    .privacy p,.privacy .pcell-lb{color:#444!important}
     .pcell .big,.privacy h2{color:#111!important}
     html.js .reveal{opacity:1;transform:none}
   }
@@ -569,10 +569,10 @@
     <h2>你的资料，从头到尾都在你自己机器上。</h2>
     <p>品悟跑在<b>本机的算力</b>上，不把你的文件、对话、数据发到任何外部服务器。对话和产物都存在本机的 <b>~/.pinvou3</b> 目录里。这意味着——敏感合同、内部财报、客户名单，都可以放心交给它。</p>
     <div class="pgrid">
-      <div class="pcell"><div class="big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>本地</div><div class="lb">推理全程在本机完成，默认不依赖外网</div></div>
-      <div class="pcell"><div class="big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="10" width="15" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>私有</div><div class="lb">文件与对话只存在你的电脑上</div></div>
-      <div class="pcell"><div class="big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.6-3 7.8-7 9.2-4-1.4-7-4.6-7-9.2V6z"/><path d="M9.3 11.8l2 2 3.6-3.8"/></svg>可控</div><div class="lb">危险操作有安全拦截，不会偷偷执行</div></div>
-      <div class="pcell"><div class="big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8.8a15 15 0 0 1 20 0M5.5 12.5a10 10 0 0 1 13 0M9 16.2a5 5 0 0 1 6 0"/><circle cx="12" cy="19.4" r="1.2" fill="currentColor" stroke="none"/></svg>离线</div><div class="lb">不联网也能完成大部分日常任务</div></div>
+      <div class="pcell"><div class="big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>本地</div><div class="pcell-lb">推理全程在本机完成，默认不依赖外网</div></div>
+      <div class="pcell"><div class="big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="10" width="15" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>私有</div><div class="pcell-lb">文件与对话只存在你的电脑上</div></div>
+      <div class="pcell"><div class="big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.6-3 7.8-7 9.2-4-1.4-7-4.6-7-9.2V6z"/><path d="M9.3 11.8l2 2 3.6-3.8"/></svg>可控</div><div class="pcell-lb">危险操作有安全拦截，不会偷偷执行</div></div>
+      <div class="pcell"><div class="big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8.8a15 15 0 0 1 20 0M5.5 12.5a10 10 0 0 1 13 0M9 16.2a5 5 0 0 1 6 0"/><circle cx="12" cy="19.4" r="1.2" fill="currentColor" stroke="none"/></svg>离线</div><div class="pcell-lb">不联网也能完成大部分日常任务</div></div>
     </div>
   </div>
 </div>
