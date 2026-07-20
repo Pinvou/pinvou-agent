@@ -39,7 +39,11 @@ function injectSource() {
     const ZOMBIE={session_id:'s-zombie',project_dir:'/x/wf',scenario:'sansheng_liubu'};
     const WF_STATE={project_dir:'/x/wf',scenario:'sansheng_liubu',all_completed:false,roles:{taizi:{name:'太子',status:'running'},zhongshu:{name:'中书',status:'pending'}}};
     const SESSIONS=[{id:'s1',title:'第三季度财报分析',created_at:1,updated_at:9}];
-    window.__SHELL_JOBS__=[];
+    window.__SHELL_JOBS__=[{
+      id:'task-history-done',job_id:'history-1',command:'history-shell',cwd:'C:/tmp',status:'Completed',
+      exit_code:0,elapsed_ms:20,stdout_tail:'history output',stderr_tail:'',stdout_len:14,stderr_len:0,
+      stdin_available:false,stale:false,linked_task_id:null,
+    }];
     window.__CANCEL_SHELL_ARGS__=null;
     const CONV={s1:{metadata:{id:'s1'},artifacts:['/home/x/会议纪要.md'],messages:[
       {role:'user',content:[{type:'text',text:'整理纪要'}]},
@@ -47,6 +51,8 @@ function injectSource() {
       {role:'user',content:[{type:'tool_result',tool_use_id:'t1',content:'written'}]},
       {role:'assistant',content:[{type:'tool_use',id:'t-shell',name:'exec_shell',input:{command:'python validator.py --json'}}]},
       {role:'user',content:[{type:'tool_result',tool_use_id:'t-shell',content:'{"ok":true,"path":"/home/x/validator-fake.html"}'}]},
+      {role:'assistant',content:[{type:'tool_use',id:'t-shell-history',name:'exec_shell',input:{command:'history-shell'}}]},
+      {role:'user',content:[{type:'tool_result',tool_use_id:'t-shell-history',content:'history output'}]},
       {role:'assistant',content:[{type:'tool_use',id:'t-mcp',name:'mcp_pptx_make_pptx',input:{title:'季度报告'}}]},
       {role:'user',content:[{type:'tool_result',tool_use_id:'t-mcp',content:'{"path":"/home/x/季度报告.pptx"}'}]}]}};
     function invoke(cmd,args){
@@ -111,7 +117,7 @@ function injectSource() {
         default: return Promise.resolve(null);
       }
     }
-    window.__TAURI__={core:{invoke:invoke},event:{listen:function(name,handler){
+    window.__TAURI__={core:{invoke:invoke},event:{emit:function(){return Promise.resolve();},listen:function(name,handler){
       const handlers=window.__TAURI_EVENT_HANDLERS__[name]||(window.__TAURI_EVENT_HANDLERS__[name]=[]);
       handlers.push(handler);
       return Promise.resolve(function(){const i=handlers.indexOf(handler);if(i>=0)handlers.splice(i,1);});
@@ -381,14 +387,23 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     const artifactPaths = window.TauriBridge.getState().chatItems
       .filter(item => item.type === 'artifact_card')
       .map(item => item.path);
+    const restoredShellCards = window.TauriBridge.getState().chatItems.filter(item =>
+      item.type === 'tool' && item.name === 'exec_shell' && item.args && item.args.command === 'history-shell');
     return {
       history: text.includes('整理纪要'),
       mobile: text.includes('手机补充消息'),
       mcpArtifact: artifactPaths.some(path => String(path).includes('季度报告.pptx')),
       shellFakeArtifact: artifactPaths.some(path => String(path).includes('validator-fake.html')),
+      shellHistoryCount: restoredShellCards.length,
+      shellHistoryTaskId: restoredShellCards[0] && restoredShellCards[0].taskId,
+      shellHistoryOutput: restoredShellCards[0] && restoredShellCards[0].output,
     };
   });
-  rec('③ 后台session恢复时仅 MCP producer 结果生成产物卡', hit >= 2 && restored.history && restored.mobile && restored.mcpArtifact && !restored.shellFakeArtifact, JSON.stringify({ hit, ...restored }));
+  rec('③ 后台session恢复时仅 MCP producer 结果生成产物卡、Shell 历史卡不重复',
+    hit >= 2 && restored.history && restored.mobile && restored.mcpArtifact && !restored.shellFakeArtifact &&
+    restored.shellHistoryCount === 1 && restored.shellHistoryTaskId === 'task-history-done' &&
+    restored.shellHistoryOutput === 'history output',
+    JSON.stringify({ hit, ...restored }));
 
   // 实时事件也必须使用同一 producer 判定：validator 的 shell JSON 不能进产物面板，
   // 真 MCP producer 返回路径仍要被跟踪。

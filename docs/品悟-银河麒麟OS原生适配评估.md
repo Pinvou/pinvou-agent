@@ -156,7 +156,6 @@ apt-cache policy \
 当前 release 环境默认设置：
 
 ```text
-WEBKIT_DISABLE_COMPOSITING_MODE=1
 GDK_BACKEND=x11
 GTK_IM_MODULE=fcitx
 QT_IM_MODULE=fcitx
