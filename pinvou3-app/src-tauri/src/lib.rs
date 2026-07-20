@@ -650,6 +650,8 @@ pub fn run() {
             commands::set_session_pinned,
             commands::list_archived_sessions,
             commands::set_session_archived,
+            commands::get_session_timeline,
+            commands::get_session_stats,
             scheduled_tasks::list_scheduled_tasks,
             scheduled_tasks::read_scheduled_task,
             scheduled_tasks::list_scheduled_task_runs,
