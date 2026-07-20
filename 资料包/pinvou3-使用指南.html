@@ -1,165 +1,376 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="no-js">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>品悟 PINVOU · 使用指南</title>
 <meta name="description" content="品悟 PINVOU 桌面智能助手 —— 5 分钟上手指南。本地算力，数据不外传。">
+<meta name="theme-color" content="#F6F3EC" id="metaTheme">
+<meta property="og:title" content="品悟 PINVOU · 使用指南">
+<meta property="og:description" content="桌面智能助手 5 分钟上手：本地算力，数据不外传。">
+<script>
+  /* 首屏前确定主题，避免闪烁 */
+  try{
+    document.documentElement.classList.remove('no-js');
+    document.documentElement.classList.add('js');
+    var q=new URLSearchParams(location.search).get('theme');
+    var t=q||localStorage.getItem('pinvou-guide-theme');
+    if(t!=='light'&&t!=='dark'){t=window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';}
+    document.documentElement.dataset.theme=t;
+  }catch(e){document.documentElement.dataset.theme='light';}
+</script>
 <style>
   :root{
-    --paper:#FBF9F5; --paper-2:#F3EFE6; --paper-3:#ECE7DB;
-    --ink:#1B1A18; --ink-soft:#5A554C; --ink-faint:#8E887C;
-    --line:#E3DCCD; --line-strong:#D4CBB7;
-    --blue:#0B57D0; --blue-deep:#083E94; --blue-soft:#E7EFFB; --blue-soft-2:#D6E4FA;
-    --gold:#A57C32; --danger:#C5221F; --ok:#1E7A45;
-    --shadow:0 1px 2px rgba(40,30,10,.04),0 8px 28px rgba(40,30,10,.07);
-    --shadow-lg:0 2px 6px rgba(40,30,10,.05),0 20px 50px rgba(40,30,10,.11);
-    --serif:Georgia,"Songti SC","STSong","Noto Serif CJK SC","Source Han Serif SC",serif;
+    --bg:#F6F3EC; --bg-raise:#FDFCF8; --bg-sunk:#EEE9DD;
+    --ink:#211C13; --ink-2:#5B5343; --ink-3:#8E8572;
+    --line:#E3DDCE; --line-2:#D3CAB4;
+    --accent:#2C4BD7; --accent-deep:#1F38A6; --accent-soft:#E9EDFB; --accent-soft-2:#D6DFFA;
+    --gold:#A97F2F; --ok:#177245; --danger:#C0351F;
+    --on-accent:#FFFFFF;
+    --shadow-sm:0 1px 2px rgba(46,36,16,.05),0 6px 20px rgba(46,36,16,.06);
+    --shadow-lg:0 2px 6px rgba(46,36,16,.06),0 24px 56px rgba(46,36,16,.13);
+    --header-bg:rgba(246,243,236,.8);
+    --serif:"Noto Serif SC","Source Han Serif SC","Songti SC","STSong",Georgia,serif;
     --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
     --mono:"SF Mono","JetBrains Mono",Menlo,Consolas,"Liberation Mono",monospace;
-    --maxw:1180px;
+    --maxw:1160px; --head-h:64px;
+    color-scheme:light;
+  }
+  html[data-theme="dark"]{
+    --bg:#14120E; --bg-raise:#1D1A14; --bg-sunk:#0E0C09;
+    --ink:#ECE7DA; --ink-2:#B4AB97; --ink-3:#7E7765;
+    --line:#2B271E; --line-2:#3C362A;
+    --accent:#94B0FF; --accent-deep:#C2D1FF; --accent-soft:rgba(148,176,255,.13); --accent-soft-2:rgba(148,176,255,.22);
+    --gold:#CBA763; --ok:#4DB88A; --danger:#E2725B;
+    --on-accent:#10131F;
+    --shadow-sm:0 1px 2px rgba(0,0,0,.35),0 6px 20px rgba(0,0,0,.3);
+    --shadow-lg:0 2px 6px rgba(0,0,0,.4),0 24px 56px rgba(0,0,0,.5);
+    --header-bg:rgba(20,18,14,.78);
+    color-scheme:dark;
   }
   *{box-sizing:border-box;margin:0;padding:0}
-  html{scroll-behavior:smooth;scroll-padding-top:90px}
-  body{background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;overflow-x:hidden}
-  body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;opacity:.5;background-image:radial-gradient(rgba(120,100,60,.05) 1px,transparent 0);background-size:3px 3px}
-  a{color:var(--blue);text-decoration:none}
-  ::selection{background:var(--blue-soft-2);color:var(--blue-deep)}
+  html{scroll-behavior:smooth;scroll-padding-top:calc(var(--head-h) + 22px)}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;overflow-x:hidden;transition:background-color .3s ease,color .3s ease}
+  a{color:var(--accent);text-decoration:none}
+  button{font-family:inherit;cursor:pointer;border:0;background:none;color:inherit}
+  ::selection{background:var(--accent-soft-2);color:var(--accent-deep)}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:6px}
+  html[data-theme="dark"] img{-webkit-user-drag:none}
 
-  header.top{position:sticky;top:0;z-index:50;backdrop-filter:saturate(140%) blur(12px);background:rgba(251,249,245,.82);border-bottom:1px solid var(--line)}
-  .top-in{max-width:var(--maxw);margin:0 auto;padding:14px 28px;display:flex;align-items:center;gap:14px}
-  .brand{display:flex;align-items:baseline;gap:10px;font-weight:600}
-  .brand .zh{font-family:var(--serif);font-size:22px;letter-spacing:.06em;color:var(--ink)}
-  .brand .en{font-family:var(--mono);font-size:12px;letter-spacing:.28em;color:var(--blue);text-transform:uppercase}
-  .brand .dot{width:6px;height:6px;border-radius:50%;background:var(--gold);align-self:center}
-  .top-tag{margin-left:auto;font-family:var(--mono);font-size:11px;letter-spacing:.22em;color:var(--ink-faint);text-transform:uppercase}
-  .top-tag b{color:var(--ink-soft);font-weight:500}
+  /* ===== 顶栏 ===== */
+  header.top{position:sticky;top:0;z-index:60;backdrop-filter:saturate(150%) blur(14px);-webkit-backdrop-filter:saturate(150%) blur(14px);background:var(--header-bg);border-bottom:1px solid var(--line)}
+  .top-in{max-width:var(--maxw);margin:0 auto;height:var(--head-h);padding:0 28px;display:flex;align-items:center;gap:14px}
+  .brand{display:flex;align-items:center;gap:11px;color:var(--ink)}
+  .brand .mark{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent) 0%,var(--accent-deep) 100%);display:grid;place-items:center;color:#fff;font-family:var(--serif);font-size:16px;font-weight:700;box-shadow:0 3px 10px rgba(44,75,215,.32)}
+  html[data-theme="dark"] .brand .mark{color:var(--on-accent);box-shadow:0 3px 10px rgba(0,0,0,.5)}
+  .brand .zh{font-family:var(--serif);font-size:21px;font-weight:600;letter-spacing:.05em}
+  .brand .en{font-family:var(--mono);font-size:11px;letter-spacing:.26em;color:var(--accent);text-transform:uppercase;margin-top:2px}
+  .brand .sep{width:5px;height:5px;border-radius:50%;background:var(--gold)}
+  .top-actions{margin-left:auto;display:flex;align-items:center;gap:10px}
+  .top-tag{font-family:var(--mono);font-size:11px;letter-spacing:.2em;color:var(--ink-3);text-transform:uppercase;padding-right:6px}
+  .top-tag b{color:var(--ink-2);font-weight:500}
+  .icon-btn{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;color:var(--ink-2);border:1px solid var(--line);background:var(--bg-raise);transition:border-color .2s,color .2s,transform .15s}
+  .icon-btn:hover{border-color:var(--line-2);color:var(--ink);transform:translateY(-1px)}
+  .icon-btn svg{width:18px;height:18px}
+  #themeBtn .ic-moon{display:none}
+  html[data-theme="dark"] #themeBtn .ic-sun{display:none}
+  html[data-theme="dark"] #themeBtn .ic-moon{display:block}
+  #menuBtn{display:none}
+  .progress{position:absolute;left:0;bottom:-1px;height:2.5px;width:100%;transform-origin:0 50%;transform:scaleX(0);background:linear-gradient(90deg,var(--accent),var(--gold));will-change:transform}
 
-  .hero{position:relative;z-index:1;max-width:var(--maxw);margin:0 auto;padding:84px 28px 56px}
-  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.34em;text-transform:uppercase;color:var(--blue);margin-bottom:26px;display:flex;align-items:center;gap:14px}
-  .eyebrow::before{content:"";width:38px;height:1px;background:var(--blue)}
-  .hero h1{font-family:var(--serif);font-weight:600;font-size:clamp(40px,7vw,82px);line-height:1.04;letter-spacing:-.01em;margin-bottom:28px}
+  /* ===== Hero ===== */
+  .hero{position:relative;max-width:var(--maxw);margin:0 auto;padding:88px 28px 60px}
+  .hero::before{content:"";position:absolute;inset:-64px 0 auto;height:560px;pointer-events:none;background:radial-gradient(640px 320px at 18% 8%,var(--accent-soft) 0%,transparent 70%),radial-gradient(520px 300px at 86% 22%,rgba(169,127,47,.1) 0%,transparent 70%)}
+  .hero-in{position:relative}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.32em;text-transform:uppercase;color:var(--accent);margin-bottom:26px;display:flex;align-items:center;gap:14px}
+  .eyebrow::before{content:"";width:36px;height:1px;background:var(--accent)}
+  .hero h1{font-family:var(--serif);font-weight:600;font-size:clamp(38px,6.4vw,74px);line-height:1.08;letter-spacing:-.01em;margin-bottom:26px}
   .hero h1 .hl{position:relative;white-space:nowrap}
-  .hero h1 .hl::after{content:"";position:absolute;left:-2px;right:-2px;bottom:.12em;height:.34em;background:var(--blue-soft-2);z-index:-1;transform:skewX(-12deg)}
-  .hero .lede{font-size:clamp(17px,2.2vw,21px);color:var(--ink-soft);max-width:60ch;line-height:1.7}
+  .hero h1 .hl::after{content:"";position:absolute;left:-2px;right:-2px;bottom:.1em;height:.32em;background:var(--accent-soft-2);z-index:-1;transform:skewX(-12deg);border-radius:2px}
+  .hero .lede{font-size:clamp(16.5px,2vw,19.5px);color:var(--ink-2);max-width:62ch;line-height:1.75}
   .hero .lede b{color:var(--ink);font-weight:600}
-  .chips{display:flex;flex-wrap:wrap;gap:12px;margin-top:38px}
-  .chip{display:inline-flex;align-items:center;gap:9px;padding:9px 16px 9px 13px;border:1px solid var(--line-strong);border-radius:999px;background:rgba(255,255,255,.55);font-size:14px;font-weight:500;color:var(--ink-soft);box-shadow:var(--shadow)}
-  .chip .ic{font-size:16px;line-height:1}
+  .cta-row{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin-top:34px}
+  .btn{display:inline-flex;align-items:center;gap:9px;padding:12px 22px;border-radius:13px;font-size:15px;font-weight:600;transition:transform .18s,box-shadow .18s,background .18s,border-color .18s}
+  .btn svg{width:16px;height:16px}
+  .btn-pri{background:var(--accent);color:var(--on-accent);box-shadow:0 8px 22px rgba(44,75,215,.3)}
+  html[data-theme="dark"] .btn-pri{box-shadow:0 8px 22px rgba(0,0,0,.5)}
+  .btn-pri:hover{transform:translateY(-2px);box-shadow:0 12px 28px rgba(44,75,215,.36)}
+  .btn-ghost{border:1px solid var(--line-2);color:var(--ink-2);background:var(--bg-raise)}
+  .btn-ghost:hover{color:var(--ink);border-color:var(--ink-3);transform:translateY(-2px)}
+  .hero-meta{display:flex;flex-wrap:wrap;gap:8px 22px;margin-top:22px;font-family:var(--mono);font-size:12px;color:var(--ink-3);letter-spacing:.04em}
+  .hero-meta span{display:inline-flex;align-items:center;gap:8px}
+  .hero-meta svg{width:13px;height:13px;color:var(--gold)}
+  .chips{display:flex;flex-wrap:wrap;gap:12px;margin-top:30px}
+  .chip{display:inline-flex;align-items:center;gap:9px;padding:9px 16px 9px 13px;border:1px solid var(--line);border-radius:999px;background:var(--bg-raise);font-size:14px;font-weight:500;color:var(--ink-2);box-shadow:var(--shadow-sm);transition:transform .18s,border-color .18s}
+  .chip:hover{transform:translateY(-2px);border-color:var(--line-2)}
+  .chip .ic{width:26px;height:26px;border-radius:8px;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;flex-shrink:0}
+  .chip .ic svg{width:14px;height:14px}
   .chip b{color:var(--ink);font-weight:600}
+  .hero-shot{margin-top:54px}
 
-  .wrap{position:relative;z-index:1;max-width:var(--maxw);margin:0 auto;padding:0 28px 100px;display:grid;grid-template-columns:226px 1fr;gap:56px;align-items:start}
-  nav.toc{position:sticky;top:90px;align-self:start}
-  .toc h4{font-family:var(--mono);font-size:11px;letter-spacing:.24em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:16px;padding-left:2px}
-  .toc a{display:flex;gap:11px;align-items:baseline;padding:7px 10px;border-radius:9px;color:var(--ink-soft);font-size:14px;line-height:1.45;transition:.2s;border-left:2px solid transparent}
-  .toc a .n{font-family:var(--mono);font-size:11px;color:var(--ink-faint);min-width:18px}
-  .toc a:hover{background:var(--paper-2);color:var(--ink)}
-  .toc a.active{color:var(--blue-deep);background:var(--blue-soft);border-left-color:var(--blue);font-weight:600}
-  .toc a.active .n{color:var(--blue)}
-  .toc .help{margin-top:22px;padding-top:18px;border-top:1px solid var(--line);font-size:12.5px;color:var(--ink-faint);line-height:1.6}
+  /* ===== 主体布局 ===== */
+  .wrap{position:relative;max-width:var(--maxw);margin:0 auto;padding:0 28px 100px;display:grid;grid-template-columns:230px minmax(0,1fr);gap:60px;align-items:start}
+  nav.toc{position:sticky;top:calc(var(--head-h) + 28px)}
+  .toc h4{font-family:var(--mono);font-size:11px;letter-spacing:.24em;text-transform:uppercase;color:var(--ink-3);margin-bottom:14px;padding-left:2px}
+  .toc-list{position:relative}
+  .toc-cursor{position:absolute;left:0;top:0;width:3px;height:20px;border-radius:2px;background:var(--accent);opacity:0;transform:translateY(0);transition:transform .3s cubic-bezier(.4,0,.2,1),opacity .25s}
+  .toc a{display:flex;gap:11px;align-items:baseline;padding:7px 10px 7px 14px;border-radius:9px;color:var(--ink-2);font-size:14px;line-height:1.45;transition:background .2s,color .2s}
+  .toc a .n{font-family:var(--mono);font-size:11px;color:var(--ink-3);min-width:18px;transition:color .2s}
+  .toc a:hover{background:var(--bg-sunk);color:var(--ink)}
+  .toc a.active{color:var(--accent-deep);background:var(--accent-soft);font-weight:600}
+  .toc a.active .n{color:var(--accent)}
+  .toc .help{margin-top:22px;padding-top:18px;border-top:1px solid var(--line);font-size:12.5px;color:var(--ink-3);line-height:1.65}
 
   main{min-width:0}
-  section.block{padding:30px 0 8px;scroll-margin-top:84px}
-  section.block+section.block{border-top:1px solid var(--line);margin-top:30px}
+  section.block{padding:36px 0 10px;scroll-margin-top:calc(var(--head-h) + 22px)}
+  section.block+section.block{border-top:1px solid var(--line);margin-top:34px}
   .sec-head{display:flex;align-items:flex-start;gap:20px;margin-bottom:22px}
-  .sec-num{font-family:var(--serif);font-size:clamp(34px,5vw,52px);line-height:.9;color:var(--blue);opacity:.92;font-weight:600;min-width:1.4em}
-  .sec-titles h2{font-family:var(--serif);font-size:clamp(24px,3.4vw,33px);font-weight:600;line-height:1.18;letter-spacing:-.005em}
-  .sec-titles .sub{color:var(--ink-soft);font-size:15.5px;margin-top:7px;max-width:56ch}
-  .prose{max-width:64ch}
+  .sec-num{font-family:var(--serif);font-size:clamp(34px,4.6vw,50px);line-height:.92;color:var(--accent);font-weight:600;min-width:1.35em}
+  .sec-titles{min-width:0}
+  .sec-titles h2{font-family:var(--serif);font-size:clamp(23px,3.2vw,31px);font-weight:600;line-height:1.22;letter-spacing:-.005em}
+  .sec-titles h2 .anchor{opacity:0;margin-left:10px;font-family:var(--mono);font-size:.55em;font-weight:400;color:var(--ink-3);vertical-align:.28em;transition:opacity .2s,color .2s}
+  .sec-titles h2:hover .anchor,.sec-titles h2 .anchor:focus-visible{opacity:1}
+  .sec-titles h2 .anchor:hover{color:var(--accent)}
+  .sec-titles .sub{color:var(--ink-2);font-size:15.5px;margin-top:8px;max-width:58ch}
+  .prose{max-width:66ch}
   .prose p{margin:0 0 15px}
-  .prose p.muted{color:var(--ink-soft)}
-  .kbd{font-family:var(--mono);font-size:12.5px;background:var(--paper-3);border:1px solid var(--line-strong);border-bottom-width:2px;border-radius:6px;padding:2px 7px;color:var(--ink);white-space:nowrap}
-  .ui{font-weight:600;color:var(--blue-deep);background:var(--blue-soft);border-radius:5px;padding:1px 6px;white-space:nowrap}
+  .prose p.muted{color:var(--ink-2)}
+  .kbd{font-family:var(--mono);font-size:12.5px;background:var(--bg-sunk);border:1px solid var(--line-2);border-bottom-width:2px;border-radius:6px;padding:2px 7px;color:var(--ink);white-space:nowrap}
+  .ui{font-weight:600;color:var(--accent-deep);background:var(--accent-soft);border-radius:5px;padding:1px 6px;white-space:nowrap}
   .steps{counter-reset:s;list-style:none;margin:18px 0 4px}
-  .steps li{position:relative;padding-left:40px;margin-bottom:14px;color:var(--ink-soft);line-height:1.7}
-  .steps li::before{counter-increment:s;content:counter(s);position:absolute;left:0;top:1px;width:26px;height:26px;border-radius:50%;background:var(--ink);color:var(--paper);font-family:var(--mono);font-size:12px;display:grid;place-items:center;font-weight:600}
+  .steps li{position:relative;padding-left:42px;margin-bottom:14px;color:var(--ink-2);line-height:1.7}
+  .steps li::before{counter-increment:s;content:counter(s);position:absolute;left:0;top:2px;width:25px;height:25px;border-radius:50%;background:var(--accent-soft);border:1px solid var(--accent-soft-2);color:var(--accent-deep);font-family:var(--mono);font-size:12px;display:grid;place-items:center;font-weight:600;z-index:1}
+  .steps li::after{content:"";position:absolute;left:12.5px;top:31px;bottom:-11px;width:1px;background:var(--line-2)}
+  .steps li:last-child::after{display:none}
   .steps li b{color:var(--ink)}
   .tags{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 4px}
-  .tag{font-size:13px;padding:5px 12px;border-radius:8px;background:var(--paper-2);border:1px solid var(--line);color:var(--ink-soft)}
+  .tag{font-size:13px;padding:5px 12px;border-radius:8px;background:var(--bg-raise);border:1px solid var(--line);color:var(--ink-2);transition:border-color .2s,transform .15s}
+  .tag:hover{border-color:var(--line-2);transform:translateY(-1px)}
   .tag b{color:var(--ink);font-weight:600}
 
-  /* 真实界面截图 */
-  figure.shot{margin:24px 0 8px;border:1px solid var(--line-strong);border-radius:16px;overflow:hidden;box-shadow:var(--shadow-lg);background:#fff}
-  figure.shot img{display:block;width:100%;height:auto}
-  .shotgrid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:24px 0 8px}
+  /* ===== 截图 ===== */
+  figure.shot{position:relative;margin:26px 0 8px;border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:var(--shadow-lg);background:#fff;transition:border-color .25s,transform .25s}
+  figure.shot:hover{border-color:var(--line-2)}
+  figure.shot img{display:block;width:100%;height:auto;cursor:zoom-in}
+  .zoom-ic{position:absolute;top:12px;right:12px;width:34px;height:34px;border-radius:10px;background:rgba(18,15,10,.55);color:#fff;display:grid;place-items:center;opacity:0;transform:scale(.8);transition:opacity .22s,transform .22s;pointer-events:none;backdrop-filter:blur(4px)}
+  .zoom-ic svg{width:16px;height:16px}
+  figure.shot:hover .zoom-ic{opacity:1;transform:scale(1)}
+  .shotgrid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:26px 0 8px}
   .shotgrid figure.shot{margin:0}
-  figcaption{font-size:13px;color:var(--ink-faint);padding:10px 14px;background:var(--paper-2);border-top:1px solid var(--line);line-height:1.5}
-  figcaption b{color:var(--ink-soft);font-weight:600}
+  figcaption{font-size:13px;color:var(--ink-3);padding:11px 15px;background:var(--bg-sunk);border-top:1px solid var(--line);line-height:1.55}
+  figcaption b{color:var(--ink-2);font-weight:600}
 
-  .note{display:flex;gap:13px;padding:15px 17px;border-radius:13px;margin:18px 0;font-size:14.5px;line-height:1.65;background:var(--paper-2);border:1px solid var(--line)}
-  .note .ic{font-size:19px;line-height:1.3;flex-shrink:0}
-  .note.tip{background:var(--blue-soft);border-color:var(--blue-soft-2)}
-  .note.tip b{color:var(--blue-deep)}
-  .note.safe{background:#EAF5EE;border-color:#C8E6D2}
+  /* ===== 提示块 ===== */
+  .note{display:flex;gap:14px;padding:15px 18px;border-radius:14px;margin:20px 0;font-size:14.5px;line-height:1.68;background:var(--bg-raise);border:1px solid var(--line)}
+  .note .ic{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;flex-shrink:0;background:var(--bg-sunk);color:var(--ink-2)}
+  .note .ic svg{width:16px;height:16px}
+  .note.tip{background:var(--accent-soft);border-color:var(--accent-soft-2)}
+  .note.tip .ic{background:rgba(255,255,255,.5);color:var(--accent)}
+  html[data-theme="dark"] .note.tip .ic{background:rgba(148,176,255,.16)}
+  .note.tip b{color:var(--accent-deep)}
+  .note.safe{background:rgba(23,114,69,.08);border-color:rgba(23,114,69,.22)}
+  .note.safe .ic{background:rgba(23,114,69,.12);color:var(--ok)}
   .note.safe b{color:var(--ok)}
-  .note p{margin:0}
+  .note p{margin:0;color:var(--ink-2)}
+  .note p b{color:var(--ink)}
+  .note.tip p b{color:var(--accent-deep)}
+  .note.safe p b{color:var(--ok)}
 
-  .privacy{position:relative;z-index:1;background:var(--ink);color:#EDE8DC;margin:30px 0;border-radius:22px;padding:46px clamp(24px,5vw,54px);overflow:hidden}
-  .privacy::after{content:"";position:absolute;right:-80px;top:-80px;width:300px;height:300px;border-radius:50%;background:radial-gradient(circle,rgba(11,87,208,.55),transparent 70%)}
+  /* ===== 隐私横带 ===== */
+  .privacy{position:relative;background:#141210;color:#EDE8DC;margin:34px 0;border-radius:24px;padding:52px clamp(24px,5vw,56px);overflow:hidden;border:1px solid rgba(255,255,255,.07)}
+  .privacy::before{content:"";position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);background-size:44px 44px;mask-image:radial-gradient(720px 420px at 78% 0%,#000 0%,transparent 78%);-webkit-mask-image:radial-gradient(720px 420px at 78% 0%,#000 0%,transparent 78%)}
+  .privacy::after{content:"";position:absolute;right:-90px;top:-90px;width:340px;height:340px;border-radius:50%;background:radial-gradient(circle,rgba(66,103,230,.5),transparent 70%)}
+  .privacy .glow2{position:absolute;left:-100px;bottom:-120px;width:300px;height:300px;border-radius:50%;background:radial-gradient(circle,rgba(169,127,47,.34),transparent 70%)}
   .privacy .eyebrow{color:#9DBDF5}
   .privacy .eyebrow::before{background:#9DBDF5}
-  .privacy h2{font-family:var(--serif);font-size:clamp(26px,4vw,40px);font-weight:600;line-height:1.15;margin-bottom:18px;max-width:18ch;position:relative}
-  .privacy p{color:#B9B2A3;max-width:56ch;font-size:16px;position:relative}
+  .privacy h2{font-family:var(--serif);font-size:clamp(25px,3.8vw,38px);font-weight:600;line-height:1.18;margin-bottom:18px;max-width:20ch;position:relative}
+  .privacy>p{color:#B4AD9E;max-width:58ch;font-size:15.5px;position:relative}
   .privacy p b{color:#fff}
-  .pgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:18px;margin-top:34px;position:relative}
-  .pcell .big{font-family:var(--serif);font-size:30px;color:#fff;margin-bottom:5px}
-  .pcell .lb{font-size:13.5px;color:#A39C8D;line-height:1.5}
+  .pgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:16px;margin-top:36px;position:relative}
+  .pcell{padding:18px 18px 16px;border-radius:16px;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.08);transition:background .25s,transform .25s}
+  .pcell:hover{background:rgba(255,255,255,.075);transform:translateY(-3px)}
+  .pcell .big{font-family:var(--serif);font-size:26px;color:#fff;margin-bottom:6px;display:flex;align-items:center;gap:10px}
+  .pcell .big svg{width:20px;height:20px;color:#CBA763}
+  .pcell .lb{font-size:13px;color:#A29B8C;line-height:1.55}
 
-  details.faq{border:1px solid var(--line);border-radius:13px;background:#fff;margin-bottom:11px;overflow:hidden;transition:.2s}
-  details.faq[open]{box-shadow:var(--shadow);border-color:var(--line-strong)}
-  details.faq summary{list-style:none;cursor:pointer;padding:16px 20px;font-weight:600;font-size:15.5px;display:flex;align-items:center;gap:13px}
+  /* ===== FAQ ===== */
+  details.faq{border:1px solid var(--line);border-radius:14px;background:var(--bg-raise);margin-bottom:11px;overflow:hidden;transition:border-color .2s,box-shadow .2s}
+  details.faq[open]{box-shadow:var(--shadow-sm);border-color:var(--line-2)}
+  details.faq summary{list-style:none;cursor:pointer;padding:16px 20px;font-weight:600;font-size:15.5px;display:flex;align-items:center;gap:13px;transition:color .2s}
+  details.faq summary:hover{color:var(--accent-deep)}
   details.faq summary::-webkit-details-marker{display:none}
-  details.faq summary .q{font-family:var(--mono);font-size:12px;color:var(--blue);flex-shrink:0}
-  details.faq summary .arr{margin-left:auto;color:var(--ink-faint);transition:.25s;font-size:13px}
-  details.faq[open] summary .arr{transform:rotate(90deg);color:var(--blue)}
-  details.faq .ans{padding:0 20px 18px 49px;color:var(--ink-soft);font-size:14.5px;line-height:1.72}
+  details.faq summary .q{font-family:var(--mono);font-size:11.5px;color:var(--accent);flex-shrink:0;width:24px;height:24px;border-radius:7px;background:var(--accent-soft);display:grid;place-items:center;font-weight:600}
+  details.faq summary .arr{margin-left:auto;color:var(--ink-3);transition:transform .28s,color .2s;display:grid;place-items:center}
+  details.faq summary .arr svg{width:14px;height:14px}
+  details.faq[open] summary .arr{transform:rotate(90deg);color:var(--accent)}
+  details.faq .ans-wrap{display:grid;grid-template-rows:0fr;transition:grid-template-rows .34s cubic-bezier(.4,0,.2,1)}
+  details.faq[open] .ans-wrap{grid-template-rows:1fr}
+  details.faq .ans-inner{overflow:hidden}
+  details.faq .ans{padding:1px 20px 19px 57px;color:var(--ink-2);font-size:14.5px;line-height:1.75}
   details.faq .ans b{color:var(--ink)}
 
-  footer{position:relative;z-index:1;border-top:1px solid var(--line);background:var(--paper-2)}
-  .foot-in{max-width:var(--maxw);margin:0 auto;padding:40px 28px;display:flex;flex-wrap:wrap;gap:18px;align-items:center;color:var(--ink-faint);font-size:13.5px}
-  .foot-in .brand{margin-right:auto}
+  /* ===== 页脚 ===== */
+  footer{border-top:1px solid var(--line);background:var(--bg-sunk)}
+  .foot-in{max-width:var(--maxw);margin:0 auto;padding:38px 28px;display:flex;flex-wrap:wrap;gap:14px 22px;align-items:center;color:var(--ink-3);font-size:13.5px}
   .foot-in .brand .zh{font-size:18px}
+  .foot-in .brand .mark{width:26px;height:26px;font-size:14px;border-radius:8px}
+  .foot-note{width:100%;font-size:12.5px;color:var(--ink-3);line-height:1.7;border-top:1px dashed var(--line-2);padding-top:16px;margin-top:4px}
 
-  .reveal{opacity:0;transform:translateY(22px);transition:opacity .7s cubic-bezier(.2,.7,.2,1),transform .7s cubic-bezier(.2,.7,.2,1)}
-  .reveal.in{opacity:1;transform:none}
-  @media (prefers-reduced-motion:reduce){.reveal{opacity:1;transform:none;transition:none}html{scroll-behavior:auto}}
-  @media (max-width:880px){.wrap{grid-template-columns:1fr;gap:0}nav.toc{display:none}.shotgrid{grid-template-columns:1fr}.hero{padding-top:54px}}
+  /* ===== 悬浮按钮 ===== */
+  .fab{position:fixed;right:26px;bottom:26px;z-index:70;width:46px;height:46px;border-radius:50%;background:var(--bg-raise);border:1px solid var(--line-2);color:var(--ink-2);display:grid;place-items:center;box-shadow:var(--shadow-lg);opacity:0;visibility:hidden;transform:translateY(12px);transition:opacity .3s,transform .3s,visibility .3s,color .2s,border-color .2s}
+  .fab.show{opacity:1;visibility:visible;transform:none}
+  .fab:hover{color:var(--accent);border-color:var(--accent)}
+  .fab svg{width:18px;height:18px}
+
+  /* ===== 移动端目录抽屉 ===== */
+  .drawer{position:fixed;inset:0;z-index:90;visibility:hidden;pointer-events:none;transition:visibility .34s}
+  .drawer.open{visibility:visible;pointer-events:auto}
+  .drawer-bg{position:absolute;inset:0;background:rgba(15,13,9,.5);opacity:0;transition:opacity .3s;backdrop-filter:blur(3px)}
+  .drawer.open .drawer-bg{opacity:1}
+  .drawer-panel{position:absolute;left:0;top:0;bottom:0;width:min(320px,86vw);background:var(--bg-raise);border-right:1px solid var(--line);box-shadow:var(--shadow-lg);transform:translateX(-102%);transition:transform .34s cubic-bezier(.32,.72,.24,1);display:flex;flex-direction:column}
+  .drawer.open .drawer-panel{transform:none}
+  .drawer-head{display:flex;align-items:center;justify-content:space-between;padding:18px 20px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:11px;letter-spacing:.24em;text-transform:uppercase;color:var(--ink-3)}
+  .drawer-list{flex:1;overflow-y:auto;padding:14px 12px}
+  .drawer-list a{display:flex;gap:11px;align-items:baseline;padding:11px 12px;border-radius:10px;color:var(--ink-2);font-size:15px;transition:background .2s,color .2s}
+  .drawer-list a .n{font-family:var(--mono);font-size:11px;color:var(--ink-3);min-width:18px}
+  .drawer-list a.active{color:var(--accent-deep);background:var(--accent-soft);font-weight:600}
+  .drawer-foot{padding:16px 20px;border-top:1px solid var(--line);font-size:12.5px;color:var(--ink-3);line-height:1.65}
+
+  /* ===== 图片灯箱 ===== */
+  .lb{position:fixed;inset:0;z-index:120;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:22px;opacity:0;visibility:hidden;transition:opacity .26s ease,visibility .26s}
+  .lb.open{opacity:1;visibility:visible}
+  .lb-bg{position:absolute;inset:0;background:rgba(14,12,8,.93);backdrop-filter:blur(10px)}
+  .lb-stage{position:relative;display:flex;flex-direction:column;align-items:center;gap:14px;max-width:min(1240px,95vw);max-height:100%}
+  .lb-stage img{max-width:100%;max-height:calc(100vh - 170px);object-fit:contain;border-radius:12px;background:#fff;box-shadow:0 30px 90px rgba(0,0,0,.55);transform:scale(.96);transition:transform .3s cubic-bezier(.2,.7,.2,1)}
+  .lb.open .lb-stage img{transform:scale(1)}
+  .lb-cap{color:#D8D2C4;font-size:13.5px;text-align:center;max-width:74ch;line-height:1.6}
+  .lb-cap b{color:#fff;font-weight:600}
+  .lb-ui{position:absolute;color:#fff;z-index:2}
+  .lb-count{top:20px;left:24px;font-family:var(--mono);font-size:12px;letter-spacing:.12em;color:rgba(255,255,255,.65)}
+  .lb-btn{width:44px;height:44px;border-radius:50%;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);display:grid;place-items:center;transition:background .2s,transform .2s;color:#fff}
+  .lb-btn:hover{background:rgba(255,255,255,.22);transform:scale(1.06)}
+  .lb-btn svg{width:18px;height:18px}
+  .lb-close{top:18px;right:22px}
+  .lb-prev,.lb-next{top:50%;margin-top:-22px}
+  .lb-prev{left:20px}
+  .lb-next{right:20px}
+  .lb-hint{bottom:18px;left:50%;transform:translateX(-50%);font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:rgba(255,255,255,.4)}
+
+  /* ===== 入场动画 ===== */
+  html.js .reveal{opacity:0;transform:translateY(24px);transition:opacity .7s cubic-bezier(.2,.7,.2,1),transform .7s cubic-bezier(.2,.7,.2,1);transition-delay:var(--d,0s)}
+  html.js .reveal.in{opacity:1;transform:none}
+
+  /* ===== 响应式 ===== */
+  @media (max-width:920px){
+    .wrap{grid-template-columns:1fr;gap:0;padding-bottom:80px}
+    nav.toc{display:none}
+    #menuBtn{display:grid}
+    .hero{padding-top:60px}
+    .shotgrid{grid-template-columns:1fr}
+  }
+  @media (max-width:640px){
+    .top-tag{display:none}
+    .hero{padding:46px 20px 44px}
+    .wrap{padding:0 20px 70px}
+    .top-in{padding:0 20px}
+    .sec-head{gap:14px}
+    .privacy{border-radius:18px;padding:38px 22px}
+    .lb-prev{left:8px}
+    .lb-next{right:8px}
+    .lb-btn{width:40px;height:40px}
+    .fab{right:16px;bottom:16px}
+  }
+
+  /* ===== 打印 ===== */
+  @media print{
+    header.top,.fab,.drawer,.lb,.toc,.cta-row,.progress{display:none!important}
+    body{background:#fff;font-size:12px}
+    .hero{padding-top:20px}
+    .wrap{display:block;padding:0}
+    section.block{break-inside:avoid-page;border-top-color:#ddd}
+    figure.shot{box-shadow:none;break-inside:avoid-page}
+    figure.shot img{max-height:110mm;object-fit:contain}
+    .privacy{background:#f2f2f2!important;color:#111}
+    .privacy p,.privacy .lb{color:#444!important}
+    .pcell .big,.privacy h2{color:#111!important}
+    html.js .reveal{opacity:1;transform:none}
+  }
+  @media (prefers-reduced-motion:reduce){
+    html{scroll-behavior:auto}
+    html.js .reveal{opacity:1;transform:none;transition:none}
+    *,*::before,*::after{transition-duration:.01ms!important;animation-duration:.01ms!important}
+  }
 </style>
 </head>
 <body>
 
 <header class="top">
   <div class="top-in">
-    <div class="brand"><span class="zh">品悟</span><span class="dot"></span><span class="en">Pinvou</span></div>
-    <div class="top-tag"><b>使用指南</b> · 5 分钟上手</div>
+    <a class="brand" href="#top" aria-label="回到顶部">
+      <span class="mark">品</span>
+      <span class="zh">品悟</span>
+      <span class="sep"></span>
+      <span class="en">Pinvou</span>
+    </a>
+    <div class="top-actions">
+      <span class="top-tag"><b>使用指南</b> · 5 分钟上手</span>
+      <button class="icon-btn" id="themeBtn" aria-label="切换浅色 / 深色模式" title="切换浅色 / 深色">
+        <svg class="ic-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M4.9 4.9l1.7 1.7M17.4 17.4l1.7 1.7M19.1 4.9l-1.7 1.7M6.6 17.4l-1.7 1.7"/></svg>
+        <svg class="ic-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.4 14.2A8.5 8.5 0 1 1 9.8 3.6a7 7 0 1 0 10.6 10.6z"/></svg>
+      </button>
+      <button class="icon-btn" id="menuBtn" aria-label="打开目录">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+      </button>
+    </div>
   </div>
+  <div class="progress" id="progress"></div>
 </header>
 
-<div class="hero">
-  <div class="eyebrow reveal">桌面智能助手 · 快速上手</div>
-  <h1 class="reveal">把活儿交给<span class="hl">品悟</span>，<br>结果留在你自己机器上。</h1>
-  <p class="lede reveal">品悟（PINVOU）是一台跑在你<b>本机算力</b>上的桌面 AI 助手。传一份文件进去就能分析，能写文档、做表格、查资料、整理纪要——而<b>整个过程数据不离开这台电脑</b>。这份指南带你 5 分钟学会它最常用的几件事。</p>
-  <div class="chips reveal">
-    <span class="chip"><span class="ic">🔒</span><b>本地算力</b>·数据不外传</span>
-    <span class="chip"><span class="ic">📎</span>传文件<b>就能分析</b></span>
-    <span class="chip"><span class="ic">🎴</span><b>召唤</b>领域专家</span>
-    <span class="chip"><span class="ic">🧩</span>一键接<b>办公工具</b></span>
+<div class="hero" id="top">
+  <div class="hero-in">
+    <div class="eyebrow reveal">桌面智能助手 · 快速上手</div>
+    <h1 class="reveal" style="--d:.06s">把活儿交给<span class="hl">品悟</span>，<br>结果留在你自己机器上。</h1>
+    <p class="lede reveal" style="--d:.12s">品悟（PINVOU）是一台跑在你<b>本机算力</b>上的桌面 AI 助手。传一份文件进去就能分析，能写文档、做表格、查资料、整理纪要——而<b>整个过程数据不离开这台电脑</b>。这份指南带你 5 分钟学会它最常用的几件事。</p>
+    <div class="cta-row reveal" style="--d:.18s">
+      <a class="btn btn-pri" href="#s1">开始阅读
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
+      </a>
+      <a class="btn btn-ghost" href="#faq">先看常见问题</a>
+    </div>
+    <div class="hero-meta reveal" style="--d:.24s">
+      <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 2"/></svg>约 5 分钟读完</span>
+      <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>9 个主题 + 7 个常见问题</span>
+      <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v6M8 11h6"/></svg>所有截图可点击放大</span>
+    </div>
+    <div class="chips reveal" style="--d:.3s">
+      <span class="chip"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.6-3 7.8-7 9.2-4-1.4-7-4.6-7-9.2V6z"/><path d="M9.3 11.8l2 2 3.6-3.8"/></svg></span><b>本地算力</b>·数据不外传</span>
+      <span class="chip"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.4 10.6l-8.5 8.5a5.4 5.4 0 0 1-7.7-7.7l8.5-8.5a3.6 3.6 0 0 1 5.1 5.1l-8.5 8.5a1.8 1.8 0 0 1-2.6-2.6l7.8-7.8"/></svg></span>传文件<b>就能分析</b></span>
+      <span class="chip"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4l1.9 4.6L18.5 10l-4.6 1.9L12 16.5l-1.9-4.6L5.5 10l4.6-1.4z"/><path d="M18.5 15.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z"/></svg></span><b>召唤</b>领域专家</span>
+      <span class="chip"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v4M15 3v4M7 7h10v4a5 5 0 0 1-10 0z"/><path d="M12 16v5"/></svg></span>一键接<b>办公工具</b></span>
+    </div>
   </div>
+  <figure class="shot hero-shot reveal" style="--d:.38s">
+    <img src="shots-web/conversation.webp" width="1500" height="958" alt="品悟对话界面：用户提问，AI 逐字给出分析结论" decoding="async">
+    <figcaption><b>品悟的对话界面：</b>像聊天一样提需求，它逐字作答，成品收进右上「产物与代码」。本页所有截图都可点击放大查看。</figcaption>
+  </figure>
 </div>
 
 <div class="wrap">
-  <nav class="toc">
+  <nav class="toc" aria-label="目录">
     <h4>目录</h4>
-    <a href="#s1"><span class="n">01</span>开始第一次对话</a>
-    <a href="#s2"><span class="n">02</span>把文件交给它分析</a>
-    <a href="#s3"><span class="n">03</span>管理多个对话</a>
-    <a href="#s4"><span class="n">04</span>拿到它做出的成品</a>
-    <a href="#s5"><span class="n">05</span>危险操作会被拦下</a>
-    <a href="#s6"><span class="n">06</span>召唤领域专家</a>
-    <a href="#s7"><span class="n">07</span>一键接办公工具</a>
-    <a href="#s8"><span class="n">08</span>设置与个性化</a>
-    <a href="#s9"><span class="n">09</span>保持更新</a>
-    <a href="#faq"><span class="n">★</span>常见问题</a>
+    <div class="toc-list" id="tocList">
+      <span class="toc-cursor" id="tocCursor"></span>
+      <a href="#s1"><span class="n">01</span>开始第一次对话</a>
+      <a href="#s2"><span class="n">02</span>把文件交给它分析</a>
+      <a href="#s3"><span class="n">03</span>管理多个对话</a>
+      <a href="#s4"><span class="n">04</span>拿到它做出的成品</a>
+      <a href="#s5"><span class="n">05</span>危险操作会被拦下</a>
+      <a href="#s6"><span class="n">06</span>召唤领域专家</a>
+      <a href="#s7"><span class="n">07</span>一键接办公工具</a>
+      <a href="#s8"><span class="n">08</span>设置与个性化</a>
+      <a href="#s9"><span class="n">09</span>保持更新</a>
+      <a href="#faq"><span class="n">★</span>常见问题</a>
+    </div>
     <div class="help">遇到装不上 / 连不上后端等问题，请联系为你部署品悟的技术同事。</div>
   </nav>
 
@@ -168,7 +379,7 @@
     <!-- 01 -->
     <section class="block reveal" id="s1">
       <div class="sec-head"><div class="sec-num">01</div><div class="sec-titles">
-        <h2>开始第一次对话</h2>
+        <h2>开始第一次对话<a class="anchor" href="#s1" aria-label="本小节链接">#</a></h2>
         <div class="sub">打开品悟，光标停在底部输入框。直接打字提问就行。</div>
       </div></div>
       <div class="prose">
@@ -179,16 +390,16 @@
         </ol>
       </div>
       <figure class="shot">
-        <img src="shots-web/conversation.webp" alt="品悟对话界面：用户提问，AI 给出分析结论" loading="lazy">
+        <img src="shots-web/conversation.webp" width="1500" height="958" alt="品悟对话界面：用户提问，AI 给出分析结论" loading="lazy" decoding="async">
         <figcaption><b>一次真实对话：</b>提问后 AI 逐字作答，重点会自动加粗，写好的文件收进右上「产物与代码」。</figcaption>
       </figure>
-      <div class="note"><span class="ic">💡</span><p>底部那行"<b>PINVOU 可能会生成不准确的信息，请仔细核实</b>"是善意提醒：AI 很能干，但关键数字、事实结论还是要你过一眼。</p></div>
+      <div class="note"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.3 11c.6.5 1 1.3 1.1 2h4.4c.1-.7.5-1.5 1.1-2A6 6 0 0 0 12 3z"/></svg></span><p>底部那行"<b>PINVOU 可能会生成不准确的信息，请仔细核实</b>"是善意提醒：AI 很能干，但关键数字、事实结论还是要你过一眼。</p></div>
     </section>
 
     <!-- 02 -->
     <section class="block reveal" id="s2">
       <div class="sec-head"><div class="sec-num">02</div><div class="sec-titles">
-        <h2>把文件交给它分析</h2>
+        <h2>把文件交给它分析<a class="anchor" href="#s2" aria-label="本小节链接">#</a></h2>
         <div class="sub">不用复制粘贴正文，直接把文件加进去，它就拿到了里面的内容。</div>
       </div></div>
       <div class="prose">
@@ -209,16 +420,16 @@
         </div>
       </div>
       <figure class="shot">
-        <img src="shots-web/attachments.webp" alt="输入框里加了两个附件：财报 PDF 和销售明细 Excel" loading="lazy">
+        <img src="shots-web/attachments.webp" width="1500" height="406" alt="输入框里加了两个附件：财报 PDF 和销售明细 Excel" loading="lazy" decoding="async">
         <figcaption><b>加好附件的样子：</b>文件名后的 ✓ 表示已解析完成，点 ✕ 可移除；然后正常输入问题发送即可。</figcaption>
       </figure>
-      <div class="note tip"><span class="ic">📌</span><p>例子："把这份 PDF 合同的关键条款列成表" / "这张截图里的报错是什么意思" / "汇总这份 Excel 各区域销量"。</p></div>
+      <div class="note tip"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v-6"/><circle cx="12" cy="12" r="9"/><path d="M12 8h.01"/></svg></span><p>例子："把这份 PDF 合同的关键条款列成表" / "这张截图里的报错是什么意思" / "汇总这份 Excel 各区域销量"。</p></div>
     </section>
 
     <!-- 03 -->
     <section class="block reveal" id="s3">
       <div class="sec-head"><div class="sec-num">03</div><div class="sec-titles">
-        <h2>管理多个对话</h2>
+        <h2>管理多个对话<a class="anchor" href="#s3" aria-label="本小节链接">#</a></h2>
         <div class="sub">不同的事开不同的对话，互不打架。左侧栏就是你的对话列表。</div>
       </div></div>
       <div class="prose">
@@ -230,7 +441,7 @@
         <p class="muted">所有对话都<b>自动保存在本机</b>，下次打开还在——连 AI 当时的工具调用记录都会原样还原。左下角 <span class="ui">本地环境</span> 常驻显示你正用的本地算力节点。</p>
       </div>
       <figure class="shot">
-        <img src="shots-web/home.webp" alt="品悟主界面：左侧多对话列表与功能导航" loading="lazy">
+        <img src="shots-web/home.webp" width="1500" height="958" alt="品悟主界面：左侧多对话列表与功能导航" loading="lazy" decoding="async">
         <figcaption><b>主界面一览：</b>左侧从上到下是 新对话 / 搜索 / 系统监控 / 专家卡牌池 / 工作流 / 工具商店，下面是你的历史对话列表。</figcaption>
       </figure>
     </section>
@@ -238,7 +449,7 @@
     <!-- 04 -->
     <section class="block reveal" id="s4">
       <div class="sec-head"><div class="sec-num">04</div><div class="sec-titles">
-        <h2>拿到它做出的成品</h2>
+        <h2>拿到它做出的成品<a class="anchor" href="#s4" aria-label="本小节链接">#</a></h2>
         <div class="sub">AI 写的文档、表格、图片、代码，都会自动收进右侧 <span class="ui">产物与代码</span> 面板。</div>
       </div></div>
       <div class="prose">
@@ -250,15 +461,15 @@
         </ul>
       </div>
       <div class="shotgrid">
-        <figure class="shot"><img src="shots-web/artifacts.webp" alt="产物面板的产出物列表" loading="lazy"><figcaption><b>产出物列表</b>——这次生成的三个文件。</figcaption></figure>
-        <figure class="shot"><img src="shots-web/artifacts-preview.webp" alt="产物面板里预览 Markdown 文件" loading="lazy"><figcaption><b>预览 + 操作</b>——内嵌看内容，底部「打开 / 所在位置」。</figcaption></figure>
+        <figure class="shot"><img src="shots-web/artifacts.webp" width="1500" height="958" alt="产物面板的产出物列表" loading="lazy" decoding="async"><figcaption><b>产出物列表</b>——这次生成的三个文件。</figcaption></figure>
+        <figure class="shot"><img src="shots-web/artifacts-preview.webp" width="1500" height="958" alt="产物面板里预览 Markdown 文件" loading="lazy" decoding="async"><figcaption><b>预览 + 操作</b>——内嵌看内容，底部「打开 / 所在位置」。</figcaption></figure>
       </div>
     </section>
 
     <!-- 05 -->
     <section class="block reveal" id="s5">
       <div class="sec-head"><div class="sec-num">05</div><div class="sec-titles">
-        <h2>危险操作，它会自动拦下</h2>
+        <h2>危险操作，它会自动拦下<a class="anchor" href="#s5" aria-label="本小节链接">#</a></h2>
         <div class="sub">品悟自带一道安全保护，一直开着，你不用做任何设置。</div>
       </div></div>
       <div class="prose">
@@ -266,7 +477,7 @@
         <p class="muted">即使你在「设置 → 系统权限」里开了高级执行权限（Sudo），这类真正危险的操作<b>依然会被拦</b>。要真是你需要的，得你自己手动谨慎来。</p>
       </div>
       <figure class="shot">
-        <img src="shots-web/safety.webp" alt="安全拦截卡：拦下了一条危险操作 sudo rm -rf /" loading="lazy">
+        <img src="shots-web/safety.webp" width="1500" height="958" alt="安全拦截卡：拦下了一条危险操作 sudo rm -rf /" loading="lazy" decoding="async">
         <figcaption><b>拦截时的样子：</b>清楚地告诉你 AI 想干什么、为什么危险，并强调"AI 不会被允许做这种危险事"。</figcaption>
       </figure>
     </section>
@@ -274,7 +485,7 @@
     <!-- 06 -->
     <section class="block reveal" id="s6">
       <div class="sec-head"><div class="sec-num">06</div><div class="sec-titles">
-        <h2>召唤领域专家</h2>
+        <h2>召唤领域专家<a class="anchor" href="#s6" aria-label="本小节链接">#</a></h2>
         <div class="sub"><span class="ui">专家卡牌池</span> 里是一组"专家能力卡"。加持一张，AI 就以那个领域专家的标准来接你的活儿。</div>
       </div></div>
       <div class="prose">
@@ -282,7 +493,7 @@
         <p class="muted">没有合适的？顶部 <span class="ui">AI 造卡 · 一键生成专家卡</span> ——描述一句你要的角色，AI 帮你生成一张专属专家卡，沉淀你团队自己的标准打法。</p>
       </div>
       <figure class="shot">
-        <img src="shots-web/cardpool.webp" alt="专家卡牌池：各领域专家卡 + AI 一键造卡" loading="lazy">
+        <img src="shots-web/cardpool.webp" width="1500" height="1167" alt="专家卡牌池：各领域专家卡 + AI 一键造卡" loading="lazy" decoding="async">
         <figcaption><b>专家卡牌池：</b>顶部可「AI 造卡」一键生成；下面按部门筛选，每张卡点「加持」即可让 AI 以该专家标准承接对话。</figcaption>
       </figure>
     </section>
@@ -290,7 +501,7 @@
     <!-- 07 -->
     <section class="block reveal" id="s7">
       <div class="sec-head"><div class="sec-num">07</div><div class="sec-titles">
-        <h2>一键接办公工具</h2>
+        <h2>一键接办公工具<a class="anchor" href="#s7" aria-label="本小节链接">#</a></h2>
         <div class="sub"><span class="ui">工具商店</span> 里预置了一批常用工具，装上就能让 AI 直接调用。</div>
       </div></div>
       <div class="prose">
@@ -309,16 +520,16 @@
         <p class="muted">带 <b>⚡ 需密钥</b> 标记的工具要先填对应平台的 Key 才能用；天气、企查查等开箱即用。还能用顶部分类（MCP 核心 / 协作办公 / 金融 / 开发）快速筛选。</p>
       </div>
       <figure class="shot">
-        <img src="shots-web/toolStore.webp" alt="工具商店：天气、同花顺、企查查、腾讯文档、飞书、钉钉等" loading="lazy">
+        <img src="shots-web/toolStore.webp" width="1500" height="1229" alt="工具商店：天气、同花顺、企查查、腾讯文档、飞书、钉钉等" loading="lazy" decoding="async">
         <figcaption><b>工具商店：</b>顶部是精选推荐，下面是工具列表，点卡片即可查看详情并安装。</figcaption>
       </figure>
-      <div class="note tip"><span class="ic">🔎</span><p>另外，AI 默认能力之外想让它<b>查实时资料</b>，到「设置 → 联网搜索」选一个搜索源开启即可（部分搜索源需要填 Key，界面里有获取指引）。</p></div>
+      <div class="note tip"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg></span><p>另外，AI 默认能力之外想让它<b>查实时资料</b>，到「设置 → 联网搜索」选一个搜索源开启即可（部分搜索源需要填 Key，界面里有获取指引）。</p></div>
     </section>
 
     <!-- 08 -->
     <section class="block reveal" id="s8">
       <div class="sec-head"><div class="sec-num">08</div><div class="sec-titles">
-        <h2>设置与个性化</h2>
+        <h2>设置与个性化<a class="anchor" href="#s8" aria-label="本小节链接">#</a></h2>
         <div class="sub">点左下角齿轮进 <span class="ui">设置</span>，按需调整。常用的几项：</div>
       </div></div>
       <div class="prose">
@@ -332,7 +543,7 @@
         <p class="muted">改外观、语言会立刻生效；改联网搜索源会提示"保存后应用将重启"，按提示重启一下即可。</p>
       </div>
       <figure class="shot">
-        <img src="shots-web/settings.webp" alt="设置页：模型与后端、联网搜索、系统权限、外观与语言、版本与更新、依赖体检" loading="lazy">
+        <img src="shots-web/settings.webp" width="1500" height="2479" alt="设置页：模型与后端、联网搜索、系统权限、外观与语言、版本与更新、依赖体检" loading="lazy" decoding="async">
         <figcaption><b>设置全貌：</b>从上到下依次是 模型与后端 / 联网搜索 / 系统权限 / 外观与语言 / 版本与更新 / 依赖体检。</figcaption>
       </figure>
     </section>
@@ -340,7 +551,7 @@
     <!-- 09 -->
     <section class="block reveal" id="s9">
       <div class="sec-head"><div class="sec-num">09</div><div class="sec-titles">
-        <h2>保持更新</h2>
+        <h2>保持更新<a class="anchor" href="#s9" aria-label="本小节链接">#</a></h2>
         <div class="sub">品悟会持续改进，记得偶尔检查一下新版本。</div>
       </div></div>
       <div class="prose">
@@ -353,14 +564,15 @@
 
 <div class="hero" style="padding-top:0;padding-bottom:0">
   <div class="privacy reveal">
+    <span class="glow2"></span>
     <div class="eyebrow">为什么选本地</div>
     <h2>你的资料，从头到尾都在你自己机器上。</h2>
     <p>品悟跑在<b>本机的算力</b>上，不把你的文件、对话、数据发到任何外部服务器。对话和产物都存在本机的 <b>~/.pinvou3</b> 目录里。这意味着——敏感合同、内部财报、客户名单，都可以放心交给它。</p>
     <div class="pgrid">
-      <div class="pcell"><div class="big">本地</div><div class="lb">推理全程在本机完成，默认不依赖外网</div></div>
-      <div class="pcell"><div class="big">私有</div><div class="lb">文件与对话只存在你的电脑上</div></div>
-      <div class="pcell"><div class="big">可控</div><div class="lb">危险操作有安全拦截，不会偷偷执行</div></div>
-      <div class="pcell"><div class="big">离线</div><div class="lb">不联网也能完成大部分日常任务</div></div>
+      <div class="pcell"><div class="big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>本地</div><div class="lb">推理全程在本机完成，默认不依赖外网</div></div>
+      <div class="pcell"><div class="big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="10" width="15" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>私有</div><div class="lb">文件与对话只存在你的电脑上</div></div>
+      <div class="pcell"><div class="big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.6-3 7.8-7 9.2-4-1.4-7-4.6-7-9.2V6z"/><path d="M9.3 11.8l2 2 3.6-3.8"/></svg>可控</div><div class="lb">危险操作有安全拦截，不会偷偷执行</div></div>
+      <div class="pcell"><div class="big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8.8a15 15 0 0 1 20 0M5.5 12.5a10 10 0 0 1 13 0M9 16.2a5 5 0 0 1 6 0"/><circle cx="12" cy="19.4" r="1.2" fill="currentColor" stroke="none"/></svg>离线</div><div class="lb">不联网也能完成大部分日常任务</div></div>
     </div>
   </div>
 </div>
@@ -368,34 +580,37 @@
 <div class="wrap" style="grid-template-columns:1fr;padding-bottom:80px">
   <main>
     <section class="block reveal" id="faq">
-      <div class="sec-head"><div class="sec-num">★</div><div class="sec-titles"><h2>常见问题</h2></div></div>
+      <div class="sec-head"><div class="sec-num">★</div><div class="sec-titles">
+        <h2>常见问题<a class="anchor" href="#faq" aria-label="本小节链接">#</a></h2>
+        <div class="sub">点一下问题即可展开答案。</div>
+      </div></div>
 
-      <details class="faq"><summary><span class="q">Q</span>我的资料会被上传到云端吗？<span class="arr">›</span></summary>
-        <div class="ans">不会。品悟用<b>本机算力</b>做推理，文件和对话都存在你电脑的 <b>~/.pinvou3</b> 目录里，默认不发往任何外部服务器。只有当你<b>主动开启"联网搜索"或安装了需要联网的工具</b>时，才会按需把相应内容发给你选定的服务——其余仍在本地。</div>
+      <details class="faq"><summary><span class="q">Q</span>我的资料会被上传到云端吗？<span class="arr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></span></summary>
+        <div class="ans-wrap"><div class="ans-inner"><div class="ans">不会。品悟用<b>本机算力</b>做推理，文件和对话都存在你电脑的 <b>~/.pinvou3</b> 目录里，默认不发往任何外部服务器。只有当你<b>主动开启"联网搜索"或安装了需要联网的工具</b>时，才会按需把相应内容发给你选定的服务——其余仍在本地。</div></div></div>
       </details>
 
-      <details class="faq"><summary><span class="q">Q</span>它回答得有点慢，正常吗？<span class="arr">›</span></summary>
-        <div class="ans">正常。本地模型在生成较长内容时会慢一些，界面会提示"<b>本地模型在生成长内容，请耐心等</b>"。短问答通常很快；长文档、复杂分析多等一会儿即可。</div>
+      <details class="faq"><summary><span class="q">Q</span>它回答得有点慢，正常吗？<span class="arr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></span></summary>
+        <div class="ans-wrap"><div class="ans-inner"><div class="ans">正常。本地模型在生成较长内容时会慢一些，界面会提示"<b>本地模型在生成长内容，请耐心等</b>"。短问答通常很快；长文档、复杂分析多等一会儿即可。</div></div></div>
       </details>
 
-      <details class="faq"><summary><span class="q">Q</span>上传文件提示解析失败？<span class="arr">›</span></summary>
-        <div class="ans">某些文件类型（扫描件 OCR、旧版 Office、压缩包等）需要对应的处理组件。进 <b>设置 → 依赖体检</b>，若显示有缺失，点 <b>一键安装</b> 即可（需联网或可用的安装源）。装不上请找你的技术同事。</div>
+      <details class="faq"><summary><span class="q">Q</span>上传文件提示解析失败？<span class="arr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></span></summary>
+        <div class="ans-wrap"><div class="ans-inner"><div class="ans">某些文件类型（扫描件 OCR、旧版 Office、压缩包等）需要对应的处理组件。进 <b>设置 → 依赖体检</b>，若显示有缺失，点 <b>一键安装</b> 即可（需联网或可用的安装源）。装不上请找你的技术同事。</div></div></div>
       </details>
 
-      <details class="faq"><summary><span class="q">Q</span>工具商店里的工具点了"安装"用不了？<span class="arr">›</span></summary>
-        <div class="ans">看工具卡上有没有 <b>⚡ 需密钥</b> 标记。带这个标记的工具（如腾讯文档、飞书、钉钉等）要先在弹出的配置里填好对应平台的 API Key 才能用；天气、企查查等不需要密钥，装上即用。</div>
+      <details class="faq"><summary><span class="q">Q</span>工具商店里的工具点了"安装"用不了？<span class="arr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></span></summary>
+        <div class="ans-wrap"><div class="ans-inner"><div class="ans">看工具卡上有没有 <b>⚡ 需密钥</b> 标记。带这个标记的工具（如腾讯文档、飞书、钉钉等）要先在弹出的配置里填好对应平台的 API Key 才能用；天气、企查查等不需要密钥，装上即用。</div></div></div>
       </details>
 
-      <details class="faq"><summary><span class="q">Q</span>开了联网搜索却查不到东西？<span class="arr">›</span></summary>
-        <div class="ans">多半是搜索源没配好。进 <b>设置 → 联网搜索</b>，确认选了搜索源；部分源（Bocha / 百度 / Tavily）<b>必须填 API Key</b>，界面里有"获取你自己的 key"指引。改完按提示保存重启。</div>
+      <details class="faq"><summary><span class="q">Q</span>开了联网搜索却查不到东西？<span class="arr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></span></summary>
+        <div class="ans-wrap"><div class="ans-inner"><div class="ans">多半是搜索源没配好。进 <b>设置 → 联网搜索</b>，确认选了搜索源；部分源（Bocha / 百度 / Tavily）<b>必须填 API Key</b>，界面里有"获取你自己的 key"指引。改完按提示保存重启。</div></div></div>
       </details>
 
-      <details class="faq"><summary><span class="q">Q</span>怎么判断它说的对不对？<span class="arr">›</span></summary>
-        <div class="ans">AI 很能干但不是永远准确，输入框下方一直写着"请仔细核实"。<b>关键数字、事实结论、对外发布的内容</b>，建议你自己再过一眼，或让它附上来源。把它当成一个高效助手，而不是绝对权威。</div>
+      <details class="faq"><summary><span class="q">Q</span>怎么判断它说的对不对？<span class="arr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></span></summary>
+        <div class="ans-wrap"><div class="ans-inner"><div class="ans">AI 很能干但不是永远准确，输入框下方一直写着"请仔细核实"。<b>关键数字、事实结论、对外发布的内容</b>，建议你自己再过一眼，或让它附上来源。把它当成一个高效助手，而不是绝对权威。</div></div></div>
       </details>
 
-      <details class="faq"><summary><span class="q">Q</span>装不上 / 打开后连不上后端怎么办？<span class="arr">›</span></summary>
-        <div class="ans">这类属于部署和环境问题（需要本机的推理服务先跑起来），不是日常使用范畴。请联系<b>为你部署品悟的技术同事</b>，或向供应方索取《部署运维手册》。</div>
+      <details class="faq"><summary><span class="q">Q</span>装不上 / 打开后连不上后端怎么办？<span class="arr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></span></summary>
+        <div class="ans-wrap"><div class="ans-inner"><div class="ans">这类属于部署和环境问题（需要本机的推理服务先跑起来），不是日常使用范畴。请联系<b>为你部署品悟的技术同事</b>，或向供应方索取《部署运维手册》。</div></div></div>
       </details>
 
     </section>
@@ -404,18 +619,193 @@
 
 <footer>
   <div class="foot-in">
-    <div class="brand"><span class="zh">品悟</span><span class="dot"></span><span class="en">Pinvou</span></div>
+    <a class="brand" href="#top" aria-label="回到顶部">
+      <span class="mark">品</span>
+      <span class="zh">品悟</span>
+      <span class="sep"></span>
+      <span class="en">Pinvou</span>
+    </a>
     <span>本地算力的桌面智能助手</span><span>·</span><span>使用指南 · 终端用户版</span>
+    <div class="foot-note">本页另有离线单文件版（截图已内嵌，双击即看）。界面截图由真实前端渲染的示例数据生成；实际界面以你电脑上的版本为准。</div>
   </div>
 </footer>
 
+<button class="fab" id="fab" aria-label="回到顶部" title="回到顶部">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 11l7-7 7 7"/></svg>
+</button>
+
+<div class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer-bg" data-close></div>
+  <div class="drawer-panel" role="dialog" aria-label="目录">
+    <div class="drawer-head"><span>目录</span>
+      <button class="icon-btn" data-close aria-label="关闭目录" style="width:32px;height:32px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="drawer-list" id="drawerList"></div>
+    <div class="drawer-foot">遇到装不上 / 连不上后端等问题，请联系为你部署品悟的技术同事。</div>
+  </div>
+</div>
+
+<div class="lb" id="lb" aria-hidden="true" role="dialog" aria-label="截图大图">
+  <div class="lb-bg" data-lbclose></div>
+  <span class="lb-ui lb-count" id="lbCount">1 / 1</span>
+  <button class="lb-ui lb-btn lb-close" data-lbclose aria-label="关闭大图">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+  </button>
+  <button class="lb-ui lb-btn lb-prev" id="lbPrev" aria-label="上一张">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+  </button>
+  <button class="lb-ui lb-btn lb-next" id="lbNext" aria-label="下一张">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg>
+  </button>
+  <div class="lb-stage">
+    <img id="lbImg" alt="">
+    <div class="lb-cap" id="lbCap"></div>
+  </div>
+  <span class="lb-ui lb-hint">ESC 关闭 · ← → 切换</span>
+</div>
+
 <script>
-  var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});},{threshold:.1,rootMargin:'0px 0px -8% 0px'});
-  document.querySelectorAll('.reveal').forEach(function(el){io.observe(el);});
-  var links=[].slice.call(document.querySelectorAll('nav.toc a'));
-  var map={};links.forEach(function(a){map[a.getAttribute('href').slice(1)]=a;});
-  var spy=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){links.forEach(function(a){a.classList.remove('active');});var a=map[e.target.id];if(a)a.classList.add('active');}});},{rootMargin:'-45% 0px -50% 0px'});
-  document.querySelectorAll('section.block').forEach(function(s){spy.observe(s);});
+(function(){
+  "use strict";
+  var $=function(s,c){return (c||document).querySelector(s);};
+  var $$=function(s,c){return [].slice.call((c||document).querySelectorAll(s));};
+  var reduceMotion=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---------- 主题切换 ---------- */
+  var metaTheme=$('#metaTheme');
+  var THEME_BG={light:'#F6F3EC',dark:'#14120E'};
+  function applyTheme(t,persist){
+    document.documentElement.dataset.theme=t;
+    if(metaTheme)metaTheme.setAttribute('content',THEME_BG[t]||THEME_BG.light);
+    if(persist){try{localStorage.setItem('pinvou-guide-theme',t);}catch(e){}}
+  }
+  applyTheme(document.documentElement.dataset.theme==='dark'?'dark':'light',false);
+  $('#themeBtn').addEventListener('click',function(){
+    applyTheme(document.documentElement.dataset.theme==='dark'?'light':'dark',true);
+  });
+  try{
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change',function(e){
+      if(!localStorage.getItem('pinvou-guide-theme'))applyTheme(e.matches?'dark':'light',false);
+    });
+  }catch(e){}
+
+  /* ---------- 入场动画 ---------- */
+  var io=new IntersectionObserver(function(es){
+    es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});
+  },{threshold:.08,rootMargin:'0px 0px -6% 0px'});
+  $$('.reveal').forEach(function(el){io.observe(el);});
+
+  /* ---------- 目录高亮 + 游标 ---------- */
+  var tocLinks=$$('#tocList a');
+  var cursor=$('#tocCursor');
+  var activeMap={};
+  tocLinks.forEach(function(a){activeMap[a.getAttribute('href').slice(1)]=a;});
+  function setActive(id){
+    tocLinks.forEach(function(a){a.classList.remove('active');});
+    $$('#drawerList a').forEach(function(a){a.classList.toggle('active',a.getAttribute('href')==='#'+id);});
+    var a=activeMap[id];
+    if(a){
+      a.classList.add('active');
+      if(cursor){
+        cursor.style.opacity='1';
+        cursor.style.transform='translateY('+(a.offsetTop+(a.offsetHeight-20)/2)+'px)';
+      }
+    }
+  }
+  var spy=new IntersectionObserver(function(es){
+    es.forEach(function(e){if(e.isIntersecting)setActive(e.target.id);});
+  },{rootMargin:'-38% 0px -55% 0px'});
+  $$('section.block').forEach(function(s){spy.observe(s);});
+
+  /* ---------- 进度条 + 回顶按钮 ---------- */
+  var progress=$('#progress'),fab=$('#fab'),ticking=false;
+  function onScroll(){
+    if(ticking)return;ticking=true;
+    requestAnimationFrame(function(){
+      var max=document.documentElement.scrollHeight-window.innerHeight;
+      var p=max>0?Math.min(1,window.scrollY/max):0;
+      progress.style.transform='scaleX('+p+')';
+      fab.classList.toggle('show',window.scrollY>700);
+      ticking=false;
+    });
+  }
+  window.addEventListener('scroll',onScroll,{passive:true});
+  onScroll();
+  fab.addEventListener('click',function(){window.scrollTo({top:0,behavior:reduceMotion?'auto':'smooth'});});
+
+  /* ---------- 移动端目录抽屉 ---------- */
+  var drawer=$('#drawer'),drawerList=$('#drawerList');
+  drawerList.innerHTML=$('#tocList').innerHTML;
+  $$('#drawerList .toc-cursor').forEach(function(el){el.remove();});
+  function openDrawer(){drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');document.body.style.overflow='hidden';}
+  function closeDrawer(){drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');document.body.style.overflow='';}
+  $('#menuBtn').addEventListener('click',openDrawer);
+  $$('[data-close]',drawer).forEach(function(el){el.addEventListener('click',closeDrawer);});
+  $$('#drawerList a').forEach(function(a){a.addEventListener('click',closeDrawer);});
+
+  /* ---------- 截图灯箱 ---------- */
+  var figs=$$('figure.shot');
+  figs.forEach(function(f){
+    var badge=document.createElement('span');
+    badge.className='zoom-ic';
+    badge.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v6M8 11h6"/></svg>';
+    f.appendChild(badge);
+  });
+  var lb=$('#lb'),lbImg=$('#lbImg'),lbCap=$('#lbCap'),lbCount=$('#lbCount'),idx=0;
+  function renderLb(){
+    var img=figs[idx].querySelector('img');
+    var cap=figs[idx].querySelector('figcaption');
+    lbImg.src=img.currentSrc||img.src;
+    lbImg.alt=img.alt||'';
+    lbCap.innerHTML=cap?cap.innerHTML:'';
+    lbCount.textContent=(idx+1)+' / '+figs.length;
+  }
+  function openLb(i){
+    idx=i;renderLb();
+    lb.classList.add('open');lb.setAttribute('aria-hidden','false');
+    document.body.style.overflow='hidden';
+  }
+  function closeLb(){
+    lb.classList.remove('open');lb.setAttribute('aria-hidden','true');
+    document.body.style.overflow='';
+  }
+  function stepLb(d){idx=(idx+d+figs.length)%figs.length;renderLb();}
+  figs.forEach(function(f,i){
+    f.querySelector('img').addEventListener('click',function(){openLb(i);});
+  });
+  $$('[data-lbclose]').forEach(function(el){el.addEventListener('click',closeLb);});
+  $('#lbPrev').addEventListener('click',function(){stepLb(-1);});
+  $('#lbNext').addEventListener('click',function(){stepLb(1);});
+  document.addEventListener('keydown',function(e){
+    if(lb.classList.contains('open')){
+      if(e.key==='Escape')closeLb();
+      else if(e.key==='ArrowLeft')stepLb(-1);
+      else if(e.key==='ArrowRight')stepLb(1);
+    }else if(e.key==='Escape'&&drawer.classList.contains('open')){
+      closeDrawer();
+    }
+  });
+  var touchX=null;
+  lb.addEventListener('touchstart',function(e){touchX=e.changedTouches[0].clientX;},{passive:true});
+  lb.addEventListener('touchend',function(e){
+    if(touchX===null)return;
+    var dx=e.changedTouches[0].clientX-touchX;touchX=null;
+    if(Math.abs(dx)>48)stepLb(dx>0?-1:1);
+  },{passive:true});
+
+  /* ---------- 打印时展开全部 FAQ ---------- */
+  var closedBeforePrint=[];
+  window.addEventListener('beforeprint',function(){
+    closedBeforePrint=$$('details.faq:not([open])');
+    closedBeforePrint.forEach(function(d){d.open=true;});
+  });
+  window.addEventListener('afterprint',function(){
+    closedBeforePrint.forEach(function(d){d.open=false;});
+    closedBeforePrint=[];
+  });
+})();
 </script>
 </body>
 </html>
