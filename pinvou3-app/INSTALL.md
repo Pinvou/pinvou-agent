@@ -8,7 +8,7 @@
 ## 1. 安装
 
 ```bash
-sudo dpkg -i pinvou3_0.6.1_arm64.deb
+sudo dpkg -i pinvou3_0.6.2_arm64.deb
 # 若报依赖缺失，自动补装：
 sudo apt-get install -f
 ```
