@@ -82,6 +82,13 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 - 正文应简洁、可审阅并与代码差异一致，不包含账号、密码、密钥、内部敏感地址、私人数据等不应进入 PR 的信息。
 - 创建 PR 前按实际影响执行必要检查；涉及 DeepSeek-TUI fork 时必须遵守本文件第 1 节的同 PR 指纹和文档要求，并运行 `./scripts/fork-guard.sh --fast`。
 
+### 8. 禅道问题解决规则
+
+- 涉及禅道 BUG 的获取、复现、修复版本确认、解决备注、状态流转或结果回查时，必须先读取 `.specify/memory/constitution-zentao.md`；该文件是解决禅道问题的专用规则文档和单一真相源。
+- 必须先完成代码验证、规范提交以及规则文档要求的 GitHub/GitLab 推送，再将禅道 BUG 设置为已解决；更新状态后必须按规则文档回查状态、版本、解决动作和备注。
+- 当前修复版本、`buildID`、接口步骤或已验证流程发生变化时，必须同步更新 `.specify/memory/constitution-zentao.md`，不得只保留在临时对话或个人记忆中。
+- 账号、密码、Token、Cookie 等认证信息不得写入仓库、提交信息、禅道备注或可见日志；专用规则与本文件、项目宪章、安全约束或仓库事实冲突时，以上位规则和事实为准，并修正规则文档。
+
 ## 主体
 
 - `pinvou3-app/` — 🟢 Tauri 2.0 + EngineHandle wrapper（主线）
@@ -97,6 +104,7 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 - `docs/验证报告-qwen3.6-deepseek-tui.md` — 阶段 A 实证报告
 - git log + commit message — 决策记录与已知坑修复
 - `docs/Git Commit 信息规范文档.md` — **强制** Git commit 信息规范。任何方式发起的 commit 都必须符合该规范；本仓库通过 `.githooks/commit-msg` 与 CI 校验执行。
+- `.specify/memory/constitution-zentao.md` — 解决禅道问题的专用规则文档；处理禅道 BUG 前必须读取并遵守。
 
 <!-- SPECKIT START -->
 如需了解当前 Spec Kit feature 使用的技术、项目结构、shell 命令和其他重要信息，请阅读
