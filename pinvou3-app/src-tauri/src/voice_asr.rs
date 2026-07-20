@@ -7,6 +7,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -17,6 +18,17 @@ use crate::bridge::paths;
 static ASR_INSTALLING: AtomicBool = AtomicBool::new(false);
 static ASR_CANCEL: AtomicBool = AtomicBool::new(false);
 const ASR_CANCEL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+static MODEL_VERIFICATION_CACHE: OnceLock<Mutex<Option<ModelVerificationCache>>> = OnceLock::new();
+
+#[derive(Debug, Clone)]
+struct ModelVerificationCache {
+    path: PathBuf,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    expected_size: u64,
+    sha256: String,
+    verified: bool,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct AsrModelSpec {
@@ -68,7 +80,6 @@ pub fn model_available() -> bool {
 }
 
 // 打包引擎目录：启动时从 resource_dir 解析后存这里，供 engine_path 回退使用。
-use std::sync::OnceLock;
 static BUNDLED_ENGINE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 pub fn set_bundled_engine_dir(dir: PathBuf) {
@@ -316,26 +327,69 @@ fn verify_and_promote_model(tmp: &Path, dest: &Path, spec: &AsrModelSpec) -> Res
     if dest.exists() {
         let _ = std::fs::remove_file(dest);
     }
-    std::fs::rename(tmp, dest).map_err(|e| format!("保存 ASR 模型失败: {e}"))
+    std::fs::rename(tmp, dest).map_err(|e| format!("保存 ASR 模型失败: {e}"))?;
+    remember_model_verification(dest, spec, true);
+    Ok(())
 }
 
 pub fn model_file_verified(path: &Path, spec: &AsrModelSpec) -> bool {
-    if !path.is_file() {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.len() != spec.expected_size {
         return false;
     }
-    if path
-        .metadata()
-        .map(|m| m.len() != spec.expected_size)
-        .unwrap_or(true)
-    {
-        return false;
+    let modified = metadata.modified().ok();
+    let sha256 = spec.sha256.trim().to_ascii_lowercase();
+    if let Ok(cache) = model_verification_cache().lock() {
+        if let Some(cache) = cache.as_ref() {
+            if cache.path == path
+                && cache.len == metadata.len()
+                && cache.modified == modified
+                && cache.expected_size == spec.expected_size
+                && cache.sha256 == sha256
+            {
+                return cache.verified;
+            }
+        }
     }
     if spec.sha256.trim().is_empty() {
+        remember_model_verification_with_metadata(path, spec, &metadata, true);
         return true;
     }
-    sha256_file(path)
+    let verified = sha256_file(path)
         .map(|got| got.eq_ignore_ascii_case(spec.sha256))
-        .unwrap_or(false)
+        .unwrap_or(false);
+    remember_model_verification_with_metadata(path, spec, &metadata, verified);
+    verified
+}
+
+fn model_verification_cache() -> &'static Mutex<Option<ModelVerificationCache>> {
+    MODEL_VERIFICATION_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn remember_model_verification(path: &Path, spec: &AsrModelSpec, verified: bool) {
+    if let Ok(metadata) = path.metadata() {
+        remember_model_verification_with_metadata(path, spec, &metadata, verified);
+    }
+}
+
+fn remember_model_verification_with_metadata(
+    path: &Path,
+    spec: &AsrModelSpec,
+    metadata: &std::fs::Metadata,
+    verified: bool,
+) {
+    if let Ok(mut cache) = model_verification_cache().lock() {
+        *cache = Some(ModelVerificationCache {
+            path: path.to_path_buf(),
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+            expected_size: spec.expected_size,
+            sha256: spec.sha256.trim().to_ascii_lowercase(),
+            verified,
+        });
+    }
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {
@@ -461,8 +515,10 @@ fn strip_control_markers(s: &str) -> String {
 
 /// 前端查询本地语音识别各组件就绪状态。
 #[tauri::command]
-pub fn voice_asr_status() -> VoiceAsrStatus {
-    status()
+pub async fn voice_asr_status() -> VoiceAsrStatus {
+    tokio::task::spawn_blocking(status)
+        .await
+        .unwrap_or_else(|_| status())
 }
 
 /// 一键安装本地语音识别依赖：缺 ffmpeg 走 pkexec apt，缺模型则下载（带进度）。
@@ -558,6 +614,33 @@ mod tests {
             )
         ));
         assert!(!model_file_verified(&file, &test_spec(3, "bad")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn model_verification_cache_records_and_invalidates_file_fingerprint() {
+        let root = std::env::temp_dir().join(format!("pinvou3-asr-cache-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        let file = root.join("model.gguf");
+        std::fs::write(&file, b"abc").unwrap();
+        let spec = test_spec(
+            3,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        );
+
+        assert!(model_file_verified(&file, &spec));
+        let cached = model_verification_cache()
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("verification result should be cached");
+        assert_eq!(cached.path, file);
+        assert_eq!(cached.len, 3);
+        assert!(cached.verified);
+
+        std::fs::write(&file, b"abcd").unwrap();
+        assert!(!model_file_verified(&file, &spec));
 
         let _ = std::fs::remove_dir_all(&root);
     }

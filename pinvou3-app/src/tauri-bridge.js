@@ -5826,6 +5826,8 @@
 
   // ── 语音输入（WebView one-shot 录音 → 本地 SenseVoice/FunASR ASR；Linux webview 录音授权见 lib.rs setup）──────────────
   var activeVoiceInput = null;
+  var VOICE_DEVICE_PROBE_TIMEOUT_MS = 1500;
+  var VOICE_DEVICE_REQUEST_TIMEOUT_MS = 8000;
 
   function setVoiceInputStatus(status, patch) {
     var next = Object.assign({}, state.voiceInput, patch || {});
@@ -5859,7 +5861,10 @@
     if (name === "NotAllowedError" || name === "SecurityError" || rawCategory === "permission_denied") {
       return { category: "permission_denied", stage: "permission", message: "麦克风权限被拒绝，请在系统设置中允许本应用访问麦克风后重试。" };
     }
-    if (name === "NotFoundError" || name === "DevicesNotFoundError" || rawCategory === "device_unavailable") {
+    if (rawCategory === "device_unavailable") {
+      return { category: "device_unavailable", stage: "device", message: rawMessage || "未检测到可用麦克风，请检查录音设备是否启用或被占用。" };
+    }
+    if (name === "NotFoundError" || name === "DevicesNotFoundError") {
       return { category: "device_unavailable", stage: "device", message: "未检测到可用麦克风，请检查录音设备是否启用或被占用。" };
     }
     // WebKitGTK 可能把不支持的音频约束报为 OverconstrainedError / "Invalid constraint"。
@@ -5899,6 +5904,13 @@
   function cleanupVoiceInputSession(session) {
     if (!session) return;
     if (session.timeoutId) clearTimeout(session.timeoutId);
+    if (session.permissionTimeoutId) clearTimeout(session.permissionTimeoutId);
+    session.permissionTimeoutId = null;
+    if (session.cancelPermissionRequest) {
+      var cancelPermissionRequest = session.cancelPermissionRequest;
+      session.cancelPermissionRequest = null;
+      try { cancelPermissionRequest(); } catch (_) {}
+    }
     // 先摘掉音频回调：webkit2gtk 的 WebAudio 是 GStreamer 后端，ScriptProcessorNode 的
     // onaudioprocess 跑在音频线程，若在 disconnect/close 期间再触发一次、访问已释放的
     // 缓冲，会让 WebProcess 段错误（表现为「识别出文字后 app 崩溃」）。务必先置 null。
@@ -5918,6 +5930,57 @@
     if (ctx && ctx.state !== "closed") {
       setTimeout(function () { try { ctx.close().catch(function () {}); } catch (_) {} }, 0);
     }
+  }
+
+  async function probeVoiceAudioInput(timeoutMs) {
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== "function") return null;
+    var timer = null;
+    try {
+      return await Promise.race([
+        navigator.mediaDevices.enumerateDevices().then(function (devices) {
+          return devices.some(function (device) { return device && device.kind === "audioinput"; });
+        }),
+        new Promise(function (resolve) {
+          timer = setTimeout(function () { resolve(null); }, timeoutMs || VOICE_DEVICE_PROBE_TIMEOUT_MS);
+        }),
+      ]);
+    } catch (_) {
+      return null;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  function requestVoiceMedia(session, constraints, timeoutMs) {
+    var abandoned = false;
+    var mediaPromise = navigator.mediaDevices.getUserMedia(constraints).then(function (stream) {
+      if (abandoned || activeVoiceInput !== session) {
+        stopMediaTracks(stream);
+        throw { category: "cancelled", stage: "permission", message: "已取消语音输入" };
+      }
+      return stream;
+    });
+    var timeoutPromise = new Promise(function (_, reject) {
+      session.permissionTimeoutId = setTimeout(function () {
+        abandoned = true;
+        reject({
+          category: "device_unavailable",
+          stage: "device",
+          message: "麦克风检测超时，未发现可用录音设备。请检查设备连接和 Windows 麦克风设置后重试。",
+        });
+      }, timeoutMs || VOICE_DEVICE_REQUEST_TIMEOUT_MS);
+    });
+    var cancelPromise = new Promise(function (_, reject) {
+      session.cancelPermissionRequest = function () {
+        abandoned = true;
+        reject({ category: "cancelled", stage: "permission", message: "已取消语音输入" });
+      };
+    });
+    return Promise.race([mediaPromise, timeoutPromise, cancelPromise]).finally(function () {
+      if (session.permissionTimeoutId) clearTimeout(session.permissionTimeoutId);
+      session.permissionTimeoutId = null;
+      session.cancelPermissionRequest = null;
+    });
   }
 
   function mergeFloatChunks(chunks) {
@@ -6130,21 +6193,8 @@
       return;
     }
 
-    // 首次/缺组件：先检测本地语音识别依赖，缺则弹安装框、不进录音。
-    try {
-      var asrStatus = await invoke("voice_asr_status");
-      // VoiceAsrStatus 只有 engine/ffmpeg/model/ready/missing,无 installable 字段。
-      // 未装好即弹安装引导;平台 gating 若要做,需先给后端补 installable(当前无此需求)。
-      if (asrStatus && !asrStatus.ready) {
-        state.voiceAsrSetup = { open: true, status: asrStatus, installing: false, cancelling: false, progress: null, error: null };
-        notify();
-        return;
-      }
-    } catch (e) {
-      // 检测失败（如 mock 环境/旧后端）不阻塞，继续走原录音路径（环境变量/兜底引擎）
-    }
-
-    var AudioCtor = window.AudioContext || window.webkitAudioContext;
+    // 点击后立即进入可见、可取消的检测态。模型状态查询首次可能需要读取模型文件，
+    // 如果等查询结束后才更新 UI，Windows 上会表现为按钮点击后没有任何反馈。
     var session = {
       id: Date.now().toString(36),
       sessionId: state.activeSessionId || null,
@@ -6156,9 +6206,34 @@
     };
     activeVoiceInput = session;
     setVoiceInputStatus("requesting_permission", {
-      message: "正在请求麦克风权限…",
+      message: "正在检测麦克风设备…",
       sessionId: session.sessionId,
       startedAt: session.startedAt,
+      stage: "device",
+    });
+    emitVoiceDiagnostic("device", "info", "checking voice input environment", "", "");
+
+    // 首次/缺组件：先检测本地语音识别依赖，缺则弹安装框、不进录音。
+    try {
+      var asrStatus = await invoke("voice_asr_status");
+      if (activeVoiceInput !== session) return;
+      // 未装好即弹安装引导；installable 决定当前平台是否提供内置安装入口。
+      if (asrStatus && !asrStatus.ready) {
+        cleanupVoiceInputSession(session);
+        activeVoiceInput = null;
+        setVoiceInputStatus("idle", { message: "", stage: null, sessionId: null });
+        state.voiceAsrSetup = { open: true, status: asrStatus, installing: false, cancelling: false, progress: null, error: null };
+        notify();
+        return;
+      }
+    } catch (e) {
+      if (activeVoiceInput !== session) return;
+      // 检测失败（如 mock 环境/旧后端）不阻塞，继续走原录音路径（环境变量/兜底引擎）
+    }
+
+    var AudioCtor = window.AudioContext || window.webkitAudioContext;
+    setVoiceInputStatus("requesting_permission", {
+      message: "正在请求麦克风权限…",
       stage: "permission",
     });
     emitVoiceDiagnostic("permission", "info", "requesting microphone permission", "", "");
@@ -6170,14 +6245,19 @@
       if (!AudioCtor) {
         throw { category: "recording_failed", stage: "recording", message: "当前 WebView 不支持音频录制。" };
       }
-      session.stream = await navigator.mediaDevices.getUserMedia({
+      var hasAudioInput = await probeVoiceAudioInput(VOICE_DEVICE_PROBE_TIMEOUT_MS);
+      if (activeVoiceInput !== session) return;
+      if (hasAudioInput === false) {
+        throw { category: "device_unavailable", stage: "device", message: "未检测到可用麦克风，请连接或启用录音设备后重试。" };
+      }
+      session.stream = await requestVoiceMedia(session, {
         audio: {
           channelCount: 1,
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
         },
-      });
+      }, VOICE_DEVICE_REQUEST_TIMEOUT_MS);
       if (activeVoiceInput !== session) {
         cleanupVoiceInputSession(session);
         return;
@@ -6201,7 +6281,8 @@
       emitVoiceDiagnostic("recording", "info", "recording started", "", "");
     } catch (err) {
       cleanupVoiceInputSession(session);
-      if (activeVoiceInput === session) activeVoiceInput = null;
+      if (activeVoiceInput !== session) return;
+      activeVoiceInput = null;
       var normalized = normalizeVoiceError(err, "recording");
       setVoiceInputStatus("failed", {
         message: normalized.message,

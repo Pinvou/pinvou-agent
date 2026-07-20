@@ -429,7 +429,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       const voiceInput = (bs && bs.voiceInput) || { status: 'idle' };
       const voiceActive = voiceInput.status === 'requesting_permission' || voiceInput.status === 'recording' || voiceInput.status === 'transcribing';
       const voiceRecording = voiceInput.status === 'recording';
-      const voiceBusy = voiceInput.status === 'requesting_permission' || voiceInput.status === 'transcribing';
+      const voiceBusy = voiceInput.status === 'transcribing';
       const voiceNotice = voiceInput.status !== 'idle' && voiceInput.message;
       const hasDraftText = inputText.trim().length > 0;
       const hasReadyAttachment = attachments.some(a => a.status === 'ready');
@@ -451,7 +451,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         : voiceInput.status === 'failed'
           ? t.voiceRetry
           : voiceInput.status === 'requesting_permission'
-            ? t.voiceRequesting
+            ? t.voiceCancel
             : voiceInput.status === 'transcribing'
               ? t.voiceTranscribing
               : t.voiceStart;
@@ -552,6 +552,10 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
           return;
         }
         if (!bridge.available) return;
+        if (voiceInput.status === 'requesting_permission') {
+          bridge.cancelVoiceInput();
+          return;
+        }
         if (voiceBusy) return;
         if (voiceInput.status === 'recording') {
           bridge.startVoiceInput(inputText, (text) => setInputText(prev => bridge.appendVoiceText(prev, text)));
