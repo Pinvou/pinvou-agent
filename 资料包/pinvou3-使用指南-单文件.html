@@ -647,7 +647,7 @@
   </div>
 </div>
 
-<div class="lb" id="lb" aria-hidden="true" role="dialog" aria-label="截图大图">
+<div class="lb" id="lb" aria-hidden="true" role="dialog" aria-label="截图大图" tabindex="-1">
   <div class="lb-bg" data-lbclose></div>
   <span class="lb-ui lb-count" id="lbCount">1 / 1</span>
   <button class="lb-ui lb-btn lb-close" data-lbclose aria-label="关闭大图">
@@ -735,12 +735,44 @@
   onScroll();
   fab.addEventListener('click',function(){window.scrollTo({top:0,behavior:reduceMotion?'auto':'smooth'});});
 
+  /* ---------- 滚动锁定（保存/恢复 overflow 原值 + iOS 滚动位置） ---------- */
+  var scrollLock={depth:0,prevOverflow:'',prevScrollY:0};
+  function lockScroll(){
+    if(scrollLock.depth===0){
+      scrollLock.prevOverflow=document.body.style.overflow;
+      scrollLock.prevScrollY=window.pageYOffset||document.documentElement.scrollTop||0;
+      document.body.style.overflow='hidden';
+    }
+    scrollLock.depth++;
+  }
+  function unlockScroll(){
+    if(scrollLock.depth>0)scrollLock.depth--;
+    if(scrollLock.depth===0){
+      document.body.style.overflow=scrollLock.prevOverflow;
+      var top=scrollLock.prevScrollY;
+      if(top&&(window.pageYOffset||document.documentElement.scrollTop)!==top){
+        window.scrollTo(0,top);
+      }
+    }
+  }
+
   /* ---------- 移动端目录抽屉 ---------- */
-  var drawer=$('#drawer'),drawerList=$('#drawerList');
+  var drawer=$('#drawer'),drawerList=$('#drawerList'),lastFocus=null;
   drawerList.innerHTML=$('#tocList').innerHTML;
   $$('#drawerList .toc-cursor').forEach(function(el){el.remove();});
-  function openDrawer(){drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');document.body.style.overflow='hidden';}
-  function closeDrawer(){drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');document.body.style.overflow='';}
+  function openDrawer(){
+    lastFocus=document.activeElement;
+    drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');
+    drawer.inert=false;
+    lockScroll();
+  }
+  function closeDrawer(){
+    drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');
+    drawer.inert=true;
+    unlockScroll();
+    if(lastFocus&&lastFocus.focus)try{lastFocus.focus();}catch(e){}
+  }
+  drawer.inert=true;
   $('#menuBtn').addEventListener('click',openDrawer);
   $$('[data-close]',drawer).forEach(function(el){el.addEventListener('click',closeDrawer);});
   $$('#drawerList a').forEach(function(a){a.addEventListener('click',closeDrawer);});
@@ -764,13 +796,19 @@
   }
   function openLb(i){
     idx=i;renderLb();
+    lastFocus=document.activeElement;
     lb.classList.add('open');lb.setAttribute('aria-hidden','false');
-    document.body.style.overflow='hidden';
+    lb.inert=false;
+    try{lb.focus();}catch(e){}
+    lockScroll();
   }
   function closeLb(){
     lb.classList.remove('open');lb.setAttribute('aria-hidden','true');
-    document.body.style.overflow='';
+    lb.inert=true;
+    unlockScroll();
+    if(lastFocus&&lastFocus.focus)try{lastFocus.focus();}catch(e){}
   }
+  lb.inert=true;
   function stepLb(d){idx=(idx+d+figs.length)%figs.length;renderLb();}
   figs.forEach(function(f,i){
     f.querySelector('img').addEventListener('click',function(){openLb(i);});
