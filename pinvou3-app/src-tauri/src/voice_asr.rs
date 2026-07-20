@@ -16,6 +16,7 @@ use crate::bridge::paths;
 
 static ASR_INSTALLING: AtomicBool = AtomicBool::new(false);
 static ASR_CANCEL: AtomicBool = AtomicBool::new(false);
+const ASR_CANCEL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
 #[derive(Debug, Clone, Copy)]
 pub struct AsrModelSpec {
@@ -165,21 +166,36 @@ pub async fn download_asr_model(
     let _ = std::fs::remove_file(&tmp);
     let mut last_err = None;
     for url in model_download_urls(&spec) {
+        if ASR_CANCEL.load(Ordering::Acquire) {
+            emit_download_cancelled(app);
+            return Err("已取消".to_string());
+        }
         match download_model_from_url(app, &url, &tmp, &spec).await {
             Ok(()) => {
+                if ASR_CANCEL.load(Ordering::Acquire) {
+                    let _ = std::fs::remove_file(&tmp);
+                    emit_download_cancelled(app);
+                    return Err("已取消".to_string());
+                }
                 let _ = app.emit(
                     "voice_asr:progress",
                     serde_json::json!({ "stage": "verify" }),
                 );
-                return verify_and_promote_model(&tmp, &dest, &spec).map(|()| dest);
+                let result = verify_and_promote_model(&tmp, &dest, &spec);
+                match result {
+                    Ok(()) => return Ok(dest),
+                    Err(_) if ASR_CANCEL.load(Ordering::Acquire) => {
+                        let _ = std::fs::remove_file(&tmp);
+                        emit_download_cancelled(app);
+                        return Err("已取消".to_string());
+                    }
+                    Err(err) => return Err(err),
+                }
             }
             Err(err) => {
                 let _ = std::fs::remove_file(&tmp);
-                if ASR_CANCEL.load(Ordering::Relaxed) {
-                    let _ = app.emit(
-                        "voice_asr:progress",
-                        serde_json::json!({ "stage": "cancelled" }),
-                    );
+                if ASR_CANCEL.load(Ordering::Acquire) {
+                    emit_download_cancelled(app);
                     return Err("已取消".to_string());
                 }
                 last_err = Some(err);
@@ -213,11 +229,16 @@ async fn download_model_from_url(
         .user_agent("pinvou3-asr/1.0")
         .build()
         .map_err(|e| format!("构建 ASR 模型下载客户端失败: {e}"))?;
-    let mut resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("连接 ASR 模型源失败: {e}"))?
+    let response = tokio::select! {
+        result = client.get(url).send() => {
+            result.map_err(|e| format!("连接 ASR 模型源失败: {e}"))?
+        }
+        _ = wait_for_asr_cancel() => {
+            let _ = std::fs::remove_file(tmp);
+            return Err("已取消".to_string());
+        }
+    };
+    let mut resp = response
         .error_for_status()
         .map_err(|e| format!("ASR 模型源响应异常: {e}"))?;
     let total = resp
@@ -227,16 +248,20 @@ async fn download_model_from_url(
     let mut file = std::fs::File::create(tmp).map_err(|e| format!("创建 ASR 模型文件失败: {e}"))?;
     let mut downloaded: u64 = 0;
     let mut last_emit: u64 = 0;
-    while let Some(chunk) = resp
-        .chunk()
-        .await
-        .map_err(|e| format!("ASR 模型下载中断: {e}"))?
-    {
-        if ASR_CANCEL.load(Ordering::Relaxed) {
-            drop(file);
-            let _ = std::fs::remove_file(tmp);
-            return Err("已取消".to_string());
-        }
+    loop {
+        let chunk = tokio::select! {
+            result = resp.chunk() => {
+                result.map_err(|e| format!("ASR 模型下载中断: {e}"))?
+            }
+            _ = wait_for_asr_cancel() => {
+                drop(file);
+                let _ = std::fs::remove_file(tmp);
+                return Err("已取消".to_string());
+            }
+        };
+        let Some(chunk) = chunk else {
+            break;
+        };
         file.write_all(&chunk)
             .map_err(|e| format!("写入 ASR 模型失败: {e}"))?;
         downloaded += chunk.len() as u64;
@@ -251,6 +276,19 @@ async fn download_model_from_url(
     Ok(())
 }
 
+async fn wait_for_asr_cancel() {
+    while !ASR_CANCEL.load(Ordering::Acquire) {
+        tokio::time::sleep(ASR_CANCEL_POLL_INTERVAL).await;
+    }
+}
+
+fn emit_download_cancelled(app: &tauri::AppHandle) {
+    let _ = app.emit(
+        "voice_asr:progress",
+        serde_json::json!({ "stage": "cancelled" }),
+    );
+}
+
 fn temp_model_path(dest: &Path) -> PathBuf {
     let filename = dest
         .file_name()
@@ -260,9 +298,17 @@ fn temp_model_path(dest: &Path) -> PathBuf {
 }
 
 fn verify_and_promote_model(tmp: &Path, dest: &Path, spec: &AsrModelSpec) -> Result<(), String> {
+    if ASR_CANCEL.load(Ordering::Acquire) {
+        let _ = std::fs::remove_file(tmp);
+        return Err("已取消".to_string());
+    }
     if !model_file_verified(tmp, spec) {
         let _ = std::fs::remove_file(tmp);
         return Err("ASR 模型校验失败，请重试下载。".to_string());
+    }
+    if ASR_CANCEL.load(Ordering::Acquire) {
+        let _ = std::fs::remove_file(tmp);
+        return Err("已取消".to_string());
     }
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("创建 ASR 目录失败: {e}"))?;
@@ -431,7 +477,7 @@ pub async fn install_voice_asr(app: tauri::AppHandle) -> Result<VoiceAsrStatus, 
     if ASR_INSTALLING.swap(true, Ordering::SeqCst) {
         return Err("ASR 模型正在下载或安装中".to_string());
     }
-    ASR_CANCEL.store(false, Ordering::Relaxed);
+    ASR_CANCEL.store(false, Ordering::Release);
     let _guard = InstallGuard;
     let _ = app.emit(
         "voice_asr:progress",
@@ -449,7 +495,7 @@ pub async fn install_voice_asr(app: tauri::AppHandle) -> Result<VoiceAsrStatus, 
 
 #[tauri::command]
 pub fn cancel_voice_asr() {
-    ASR_CANCEL.store(true, Ordering::Relaxed);
+    ASR_CANCEL.store(true, Ordering::Release);
 }
 
 struct InstallGuard;

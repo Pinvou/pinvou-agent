@@ -264,7 +264,8 @@
       open: false,        // 弹框是否展示
       status: null,       // voice_asr_status 返回 { engine, ffmpeg, model, ready, missing }
       installing: false,  // 安装中
-      progress: null,     // { stage:'ffmpeg'|'model'|'done', downloaded, total }
+      cancelling: false,  // 已请求取消，等待后端停止下载
+      progress: null,     // { stage:'ffmpeg'|'model'|'cancelling'|'cancelled'|'done', downloaded, total }
       error: null,
     },
     // 知识库 embedding 模型按需下载引导（知识库页未装模型时显 gate）
@@ -6036,16 +6037,49 @@
   // voice_asr:progress 事件。装完 ready 自动关框。
   async function installVoiceAsr() {
     if (state.voiceAsrSetup.installing) return;
-    state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { installing: true, error: null, progress: { stage: "start" } });
+    state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { installing: true, cancelling: false, error: null, progress: { stage: "start" } });
     notify();
     try {
       var st = await invoke("install_voice_asr");
-      var patch = { installing: false, status: st, progress: { stage: "done" } };
+      var patch = { installing: false, cancelling: false, status: st, progress: { stage: "done" } };
       if (st && st.ready) patch.open = false;
       state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, patch);
       notify();
     } catch (e) {
-      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { installing: false, error: String(e) });
+      var cancelled = state.voiceAsrSetup.cancelling || String(e).indexOf("已取消") >= 0;
+      var failedPatch = {
+        installing: false,
+        cancelling: false,
+        progress: cancelled ? { stage: "cancelled" } : state.voiceAsrSetup.progress,
+        error: cancelled ? null : String(e),
+      };
+      if (cancelled) failedPatch.open = false;
+      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, failedPatch);
+      notify();
+    }
+  }
+
+  async function cancelVoiceAsrSetup() {
+    if (!state.voiceAsrSetup.installing) {
+      closeVoiceAsrSetup();
+      return;
+    }
+    if (state.voiceAsrSetup.cancelling) return;
+    state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, {
+      cancelling: true,
+      progress: { stage: "cancelling" },
+      error: null,
+    });
+    notify();
+    try {
+      await invoke("cancel_voice_asr");
+      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { open: false });
+      notify();
+    } catch (e) {
+      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, {
+        cancelling: false,
+        error: String(e),
+      });
       notify();
     }
   }
@@ -6093,7 +6127,7 @@
       // VoiceAsrStatus 只有 engine/ffmpeg/model/ready/missing,无 installable 字段。
       // 未装好即弹安装引导;平台 gating 若要做,需先给后端补 installable(当前无此需求)。
       if (asrStatus && !asrStatus.ready) {
-        state.voiceAsrSetup = { open: true, status: asrStatus, installing: false, progress: null, error: null };
+        state.voiceAsrSetup = { open: true, status: asrStatus, installing: false, cancelling: false, progress: null, error: null };
         notify();
         return;
       }
@@ -6456,6 +6490,7 @@
     removeQueued: removeQueued,
     startVoiceInput: startVoiceInput,
     installVoiceAsr: installVoiceAsr,
+    cancelVoiceAsrSetup: cancelVoiceAsrSetup,
     closeVoiceAsrSetup: closeVoiceAsrSetup,
     downloadKbModel: downloadKbModel,
     cancelKbModel: cancelKbModel,
