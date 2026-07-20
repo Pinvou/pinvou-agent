@@ -37,12 +37,20 @@ function injectSource() {
     const ZOMBIE={session_id:'s-zombie',project_dir:'/x/wf',scenario:'sansheng_liubu'};
     const WF_STATE={project_dir:'/x/wf',scenario:'sansheng_liubu',all_completed:false,roles:{taizi:{name:'太子',status:'running'},zhongshu:{name:'中书',status:'pending'}}};
     const SESSIONS=[{id:'s1',title:'第三季度财报分析',created_at:1,updated_at:9}];
+    window.__SHELL_JOBS__=[{
+      id:'task-history-done',job_id:'history-1',command:'history-shell',cwd:'C:/tmp',status:'Completed',
+      exit_code:0,elapsed_ms:20,stdout_tail:'history output',stderr_tail:'',stdout_len:14,stderr_len:0,
+      stdin_available:false,stale:false,linked_task_id:null,
+    }];
+    window.__CANCEL_SHELL_ARGS__=null;
     const CONV={s1:{metadata:{id:'s1'},artifacts:['/home/x/会议纪要.md'],messages:[
       {role:'user',content:[{type:'text',text:'整理纪要'}]},
       {role:'assistant',content:[{type:'text',text:'已生成会议纪要。'},{type:'tool_use',id:'t1',name:'write_file',input:{path:'/home/x/会议纪要.md',content:'# 会议纪要'}}]},
       {role:'user',content:[{type:'tool_result',tool_use_id:'t1',content:'written'}]},
       {role:'assistant',content:[{type:'tool_use',id:'t-shell',name:'exec_shell',input:{command:'python validator.py --json'}}]},
       {role:'user',content:[{type:'tool_result',tool_use_id:'t-shell',content:'{"ok":true,"path":"/home/x/validator-fake.html"}'}]},
+      {role:'assistant',content:[{type:'tool_use',id:'t-shell-history',name:'exec_shell',input:{command:'history-shell'}}]},
+      {role:'user',content:[{type:'tool_result',tool_use_id:'t-shell-history',content:'history output'}]},
       {role:'assistant',content:[{type:'tool_use',id:'t-mcp',name:'mcp_pptx_make_pptx',input:{title:'季度报告'}}]},
       {role:'user',content:[{type:'tool_result',tool_use_id:'t-mcp',content:'{"path":"/home/x/季度报告.pptx"}'}]}]}};
     function invoke(cmd,args){
@@ -70,6 +78,14 @@ function injectSource() {
         case 'get_session_pinvou_reviews': return Promise.resolve([]);
         case 'summon_pinvou': return Promise.resolve({personas:[{id:'travel',label:'旅行规划',primary:true}],alternates:['budget'],trace:'看了下，有几点确认',recommendations:[{topic:'预算',pick:'中档',why:'稳妥'}],issues:[{severity:'high',kind:'quality',persona:'travel',text:'日期冲突',suggestion:'对齐'}],coverage:[],framework:[],risk:'medium',confidence:0.8});
         case 'load_session': return Promise.resolve(CONV[args&&args.id]||{metadata:{id:'x'},messages:[],artifacts:[]});
+        case 'list_shell_tasks': return Promise.resolve(window.__SHELL_JOBS__);
+        case 'cancel_shell_task':
+          window.__CANCEL_SHELL_ARGS__=args;
+          if(window.__CANCEL_SHELL_ERROR__) return Promise.reject('kill failed');
+          window.__SHELL_JOBS__=window.__SHELL_JOBS__.map(function(job){
+            return job.id===args.taskId ? Object.assign({},job,{status:'Killed',exit_code:130}) : job;
+          });
+          return Promise.resolve({task_id:args.taskId,status:'Killed',exit_code:130,stdout:'',stderr:'',duration_ms:1});
         case 'artifact_info': return Promise.resolve({exists:true,kind:'md',size:2048,modified:1});
         case 'read_artifact_text': return Promise.resolve('# 会议纪要');
         case 'render_artifact_visual': return Promise.resolve({mode:'unsupported'});
@@ -80,7 +96,7 @@ function injectSource() {
         default: return Promise.resolve(null);
       }
     }
-    window.__TAURI__={core:{invoke:invoke},event:{listen:function(name,handler){
+    window.__TAURI__={core:{invoke:invoke},event:{emit:function(){return Promise.resolve();},listen:function(name,handler){
       const handlers=window.__TAURI_EVENT_HANDLERS__[name]||(window.__TAURI_EVENT_HANDLERS__[name]=[]);
       handlers.push(handler);
       return Promise.resolve(function(){const i=handlers.indexOf(handler);if(i>=0)handlers.splice(i,1);});
@@ -216,14 +232,23 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     const artifactPaths = window.TauriBridge.getState().chatItems
       .filter(item => item.type === 'artifact_card')
       .map(item => item.path);
+    const restoredShellCards = window.TauriBridge.getState().chatItems.filter(item =>
+      item.type === 'tool' && item.name === 'exec_shell' && item.args && item.args.command === 'history-shell');
     return {
       history: text.includes('整理纪要'),
       mobile: text.includes('手机补充消息'),
       mcpArtifact: artifactPaths.some(path => String(path).includes('季度报告.pptx')),
       shellFakeArtifact: artifactPaths.some(path => String(path).includes('validator-fake.html')),
+      shellHistoryCount: restoredShellCards.length,
+      shellHistoryTaskId: restoredShellCards[0] && restoredShellCards[0].taskId,
+      shellHistoryOutput: restoredShellCards[0] && restoredShellCards[0].output,
     };
   });
-  rec('③ 后台session恢复时仅 MCP producer 结果生成产物卡', hit >= 2 && restored.history && restored.mobile && restored.mcpArtifact && !restored.shellFakeArtifact, JSON.stringify({ hit, ...restored }));
+  rec('③ 后台session恢复时仅 MCP producer 结果生成产物卡、Shell 历史卡不重复',
+    hit >= 2 && restored.history && restored.mobile && restored.mcpArtifact && !restored.shellFakeArtifact &&
+    restored.shellHistoryCount === 1 && restored.shellHistoryTaskId === 'task-history-done' &&
+    restored.shellHistoryOutput === 'history output',
+    JSON.stringify({ hit, ...restored }));
 
   // 实时事件也必须使用同一 producer 判定：validator 的 shell JSON 不能进产物面板，
   // 真 MCP producer 返回路径仍要被跟踪。
@@ -239,6 +264,104 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
   });
   const liveArtifacts = await page.evaluate(() => window.TauriBridge.getState().artifacts.map(item => item.path));
   rec('③b 实时 tool_end 不跟踪 shell path、保留 MCP 产物', liveArtifacts.includes('live-report.docx') && !liveArtifacts.includes('live-validator-fake.html'), JSON.stringify(liveArtifacts));
+
+  // ShellManager 快照轮询：按 task_id 更新同一卡片、明确标注 tail 省略、取消直达 kill，
+  // 终态展示退出码且不依赖 chat:done。
+  await page.evaluate(async () => {
+    window.__SHELL_JOBS__=[{
+      id:'task-live-1',job_id:'1',command:'long-running-test',cwd:'C:/tmp',status:'Running',
+      exit_code:null,elapsed_ms:500,stdout_tail:'...tick 1\r\ntick 2\r\nprogress 10%\rprogress 80%',stderr_tail:'',
+      stdout_len:4096,stderr_len:0,stdin_available:true,stale:false,linked_task_id:null,
+    }];
+    const handlers=window.__TAURI_EVENT_HANDLERS__['chat:tool_start']||[];
+    for(const handler of handlers) await handler({payload:{session_id:'s1',id:'shell-realtime',name:'exec_shell',args:{command:'long-running-test'}}});
+  });
+  await sleep(700);
+  const shellRunning = await page.evaluate(() => {
+    const item=window.TauriBridge.getState().chatItems.find(it=>it.taskId==='task-live-1');
+    return item && {state:item.state,taskId:item.taskId,output:item.output};
+  });
+  await page.evaluate(() => window.TauriBridge.cancelShellTask('s1','task-live-1'));
+  await sleep(700);
+  const shellCancelled = await page.evaluate(() => {
+    const item=window.TauriBridge.getState().chatItems.find(it=>it.taskId==='task-live-1');
+    return {item:item&&{state:item.state,exitCode:item.exitCode,output:item.output},args:window.__CANCEL_SHELL_ARGS__};
+  });
+  rec('③c Shell 实时 tail、省略标记、task_id 取消与退出码',
+    shellRunning && shellRunning.state==='running' && shellRunning.output.includes('输出已省略') &&
+    shellRunning.output.includes('tick 1') && shellRunning.output.includes('tick 2') &&
+    shellRunning.output.includes('progress 80%') && !shellRunning.output.includes('progress 10%') &&
+    shellCancelled.item && shellCancelled.item.state==='failed' && shellCancelled.item.exitCode===130 && shellCancelled.item.output.includes('退出码: 130') &&
+    shellCancelled.args && shellCancelled.args.sessionId==='s1' && shellCancelled.args.taskId==='task-live-1',
+    JSON.stringify({shellRunning,shellCancelled}));
+
+  // 相同命令不能靠 command 字符串猜 task_id；先用 task-id 合成卡承接，
+  // tool_end 暴露真实 id 后再与对应工具卡合并。首次看到已结束的 detached job 也不能丢。
+  await page.evaluate(async () => {
+    window.__SHELL_JOBS__=[
+      {id:'task-dup-a',job_id:'2',command:'same-command',cwd:'C:/tmp',status:'Running',exit_code:null,elapsed_ms:100,stdout_tail:'A',stderr_tail:'',stdout_len:1,stderr_len:0,stdin_available:true,stale:false,linked_task_id:null},
+      {id:'task-dup-b',job_id:'3',command:'same-command',cwd:'C:/tmp',status:'Running',exit_code:null,elapsed_ms:100,stdout_tail:'B',stderr_tail:'',stdout_len:1,stderr_len:0,stdin_available:true,stale:false,linked_task_id:null},
+      {id:'task-detached-done',job_id:'4',command:'fast-detached',cwd:'C:/tmp',status:'Completed',exit_code:0,elapsed_ms:20,stdout_tail:'done fast',stderr_tail:'',stdout_len:9,stderr_len:0,stdin_available:false,stale:false,linked_task_id:null},
+    ];
+    const starts=window.__TAURI_EVENT_HANDLERS__['chat:tool_start']||[];
+    for(const handler of starts) {
+      await handler({payload:{session_id:'s1',id:'dup-tool-a',name:'exec_shell',args:{command:'same-command'}}});
+      await handler({payload:{session_id:'s1',id:'dup-tool-b',name:'exec_shell',args:{command:'same-command'}}});
+    }
+  });
+  await sleep(700);
+  const ambiguousBeforeEnd = await page.evaluate(() => {
+    const items=window.TauriBridge.getState().chatItems;
+    return ['dup-tool-a','dup-tool-b'].map(id => {
+      const item=items.find(it=>it.toolId===id); return item && item.taskId;
+    });
+  });
+  await page.evaluate(async () => {
+    const ends=window.__TAURI_EVENT_HANDLERS__['chat:tool_end']||[];
+    for(const handler of ends) {
+      await handler({payload:{session_id:'s1',id:'dup-tool-a',success:true,output:'running in background',metadata:{task_id:'task-dup-a',status:'Running'}}});
+      await handler({payload:{session_id:'s1',id:'dup-tool-b',success:true,output:'running in background',metadata:{task_id:'task-dup-b',status:'Running'}}});
+    }
+  });
+  await sleep(500);
+  const shellIdentity = await page.evaluate(() => {
+    const items=window.TauriBridge.getState().chatItems;
+    const a=items.filter(it=>it.taskId==='task-dup-a');
+    const b=items.filter(it=>it.taskId==='task-dup-b');
+    const done=items.find(it=>it.taskId==='task-detached-done');
+    return {a:a.map(it=>it.toolId),b:b.map(it=>it.toolId),done:done&&{state:done.state,output:done.output}};
+  });
+  rec('③d Shell 同命令 task_id 不错配、已结束 detached job 不丢',
+    ambiguousBeforeEnd.every(value=>value==null) &&
+    shellIdentity.a.length===1 && shellIdentity.a[0]==='dup-tool-a' &&
+    shellIdentity.b.length===1 && shellIdentity.b[0]==='dup-tool-b' &&
+    shellIdentity.done && shellIdentity.done.state==='done' && shellIdentity.done.output.includes('done fast'),
+    JSON.stringify({ambiguousBeforeEnd,shellIdentity}));
+
+  const unchangedPollNotifications = await page.evaluate(async () => {
+    let count=0;
+    const unsubscribe=window.TauriBridge.subscribe(() => { count+=1; });
+    await new Promise(resolve=>setTimeout(resolve,650));
+    unsubscribe();
+    return count;
+  });
+  rec('③d-2 Shell 快照未变化时不做全量状态广播', unchangedPollNotifications===0, String(unchangedPollNotifications));
+
+  await page.evaluate(() => {
+    window.__CANCEL_SHELL_ERROR__=true;
+    const button=[...document.querySelectorAll('button')].find(node=>
+      node.textContent.trim()==='取消' && node.parentElement && node.parentElement.textContent.includes('same-command'));
+    if(button) button.click();
+  });
+  await sleep(400);
+  const cancelFailureState = await page.evaluate(() => {
+    const button=[...document.querySelectorAll('button')].find(node=>
+      node.textContent.trim()==='取消' && node.parentElement && node.parentElement.textContent.includes('same-command'));
+    return {visible:document.body.innerText.includes('取消失败: kill failed'),retryable:!!button&&!button.disabled};
+  });
+  rec('③e Shell 取消失败有卡片提示且不产生永久取消态',
+    cancelFailureState.visible && cancelFailureState.retryable, JSON.stringify(cancelFailureState));
+  await page.evaluate(() => { window.__CANCEL_SHELL_ERROR__=false; });
 
   // ④ 品悟检阅 modal 本地化渲染:threading t 不报错 + 裁决标签/trace 出现(i18n 回归)
   await page.evaluate(() => window.TauriBridge.summonPinvou('/home/x/会议纪要.md'));
