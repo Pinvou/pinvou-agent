@@ -1523,7 +1523,11 @@ fn spawn_event_forwarder(
                     let status_text = format!("{terminal_status:?}");
                     // 落 usage 进 timing_events.jsonl,作为模型耗时/失败/上下文消耗的
                     // 内部诊断数据源。usage.input/output_tokens 是 u32,
-                    // prompt_cache_*_tokens 是 Option<u32>,统一 unwrap_or(0) + u64 转换落盘。
+                    // prompt_cache_*_tokens / reasoning_tokens 是 Option<u32>,
+                    // 统一 unwrap_or(0) + u64 转换落盘。
+                    // [F3] 转发 cache_write_tokens(Anthropic cache-write 按 1.25x 计费)
+                    // 与 reasoning_tokens(DeepSeek V4 思考模型主要成本),否则字段一旦缺
+                    // 持久化就回填不了,影响将来真实 cost 估算。
                     crate::timing::finish_turn_with_usage(
                         &session_id,
                         &status_text,
@@ -1537,6 +1541,10 @@ fn spawn_event_forwarder(
                             cache_miss_tokens: u64::from(
                                 usage.prompt_cache_miss_tokens.unwrap_or(0),
                             ),
+                            cache_write_tokens: u64::from(
+                                usage.prompt_cache_write_tokens.unwrap_or(0),
+                            ),
+                            reasoning_tokens: u64::from(usage.reasoning_tokens.unwrap_or(0)),
                         }),
                     );
                     if crate::memory::memory_enabled() {

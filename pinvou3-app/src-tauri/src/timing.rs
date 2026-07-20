@@ -65,14 +65,24 @@ fn append_event(session_id: &str, entry: serde_json::Value) {
 
 /// 单轮 token usage 快照(随 `assistant_done` 落盘)。
 ///
-/// `cache_hit_tokens` / `cache_miss_tokens` 为 Anthropic 风格 prompt cache 计数;
-/// 非 Anthropic provider 全为 0,前端按 0 渲染即可。
+/// 与上游 `deepseek_tui::models::Usage` 字段集对齐(forward-compat),让历史面板 /
+/// replay / 真实 cost 估算有完整数据源。老 session 的旧事件缺这些字段时按缺失
+/// 反序列化为 0(见 `read_timeline`)。
+///
+/// - `input_tokens` / `output_tokens`:基础输入输出(u32 升 u64)。
+/// - `cache_hit_tokens` / `cache_miss_tokens`:Anthropic 风格 prompt cache 命中 /
+///   未命中(u32 升 u64)。非 Anthropic provider 全为 0。
+/// - `cache_write_tokens`:`cache_creation_input_tokens`,按 cache-write 计费
+///   (Anthropic 1.25x)。缺这字段会让 cost 估算系统性少算。
+/// - `reasoning_tokens`:推理 token(DeepSeek V4 等思考模型的重要成本来源)。
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct TurnUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_hit_tokens: u64,
     pub cache_miss_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub reasoning_tokens: u64,
 }
 
 pub fn start_turn(session_id: &str) -> String {
@@ -142,6 +152,8 @@ pub fn finish_turn_with_usage(
             "output_tokens": u.output_tokens,
             "cache_hit_tokens": u.cache_hit_tokens,
             "cache_miss_tokens": u.cache_miss_tokens,
+            "cache_write_tokens": u.cache_write_tokens,
+            "reasoning_tokens": u.reasoning_tokens,
         });
     }
     append_event(session_id, entry);
@@ -191,6 +203,14 @@ pub fn read_timeline(session_id: &str) -> Vec<TimelineEvent> {
                         .get("cache_miss_tokens")
                         .and_then(|x| x.as_u64())
                         .unwrap_or(0),
+                    cache_write_tokens: u
+                        .get("cache_write_tokens")
+                        .and_then(|x| x.as_u64())
+                        .unwrap_or(0),
+                    reasoning_tokens: u
+                        .get("reasoning_tokens")
+                        .and_then(|x| x.as_u64())
+                        .unwrap_or(0),
                 })
             });
             Some(TimelineEvent {
@@ -223,6 +243,8 @@ pub struct SessionTimelineStats {
     pub total_output_tokens: u64,
     pub total_cache_hit_tokens: u64,
     pub total_cache_miss_tokens: u64,
+    pub total_cache_write_tokens: u64,
+    pub total_reasoning_tokens: u64,
     pub first_turn_ts: Option<String>,
     pub last_turn_ts: Option<String>,
     pub completed_turns: usize,
@@ -261,6 +283,8 @@ pub fn compute_stats(session_id: &str) -> SessionTimelineStats {
                 stats.total_output_tokens += u.output_tokens;
                 stats.total_cache_hit_tokens += u.cache_hit_tokens;
                 stats.total_cache_miss_tokens += u.cache_miss_tokens;
+                stats.total_cache_write_tokens += u.cache_write_tokens;
+                stats.total_reasoning_tokens += u.reasoning_tokens;
             }
             // [F2] eq_ignore_ascii_case 统一大小写匹配,识别全部三个终态:
             //   Completed / Interrupted / Failed。
