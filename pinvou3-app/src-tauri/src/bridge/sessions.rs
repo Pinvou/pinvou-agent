@@ -1392,7 +1392,7 @@ impl SessionStore {
 
 /// 生成 URL-safe session id（短 8 字节 timestamp + nanos hash）。
 /// 上游 `validated_session_path` 只允许 `[A-Za-z0-9_-]`，所以走 base32-like 字符集。
-fn validate_session_id(id: &str) -> Result<()> {
+pub(crate) fn validate_session_id(id: &str) -> Result<()> {
     if id.trim().is_empty()
         || !id.chars().all(|character| {
             character.is_ascii_alphanumeric() || character == '-' || character == '_'
