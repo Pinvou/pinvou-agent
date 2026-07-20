@@ -6,7 +6,7 @@
 >
 > ⚠️ **2026-07-17 复核**：文中「per-session instructions 写 disk
 > （`~/.pinvou3/sessions/<sid>/instructions.md`）」的描述（§1 时序图、§3 骨架、§4 rehydrate
-> 语义、§5 速查表相关行、§7 验证清单）已过期。现行为 C 方案 P-no-disk：instructions 走
+> 语义）已过期。现行为 C 方案 P-no-disk：instructions 走
 > `InstructionSource::Inline` 内存注入（`bridge/mod.rs` `session_instructions()`），不再写
 > disk；`sync_session` 传 `system_prompt: None`（`src-tauri/src/engine.rs`）；`{{PINVOU3_WORKSPACE}}`
 > 占位符已移除，workspace 改走 per-turn `<turn_meta>` 注入；用户自定义 instructions 现路径为
@@ -179,9 +179,9 @@ Op::SyncSession {
 
 ### 4.3 多 session 并发隔离
 
-每个 session 写到独立路径 `~/.pinvou3/sessions/<sid>/instructions.md`，每个 engine 的 `EngineConfig.instructions` 指向自己 session 的文件。engine rehydrate 时各读各的，互不干扰。
+每个 session 的 `EngineConfig.instructions` 都包含独立的 `InstructionSource::Inline`，其 `name` 带 session id；workspace 也按 session 分目录。engine rehydrate 复用各自内存中的配置，不依赖 session 目录里的 instructions 文件。
 
-测试覆盖：`bridge/mod.rs:865 engine_config_for_session_paths_are_isolated`。
+测试覆盖：`bridge/mod.rs` 的 `engine_config_for_session_paths_are_isolated`。
 
 ---
 
@@ -195,7 +195,7 @@ Op::SyncSession {
 | 底座 BASE_PROMPT 本身 | 上游源文件 `DeepSeek-TUI/crates/tui/src/prompts/constitution.md`（v0.9 前为 base.md）；pinvou3 文案经 override 注入，内容在 `pinvou3-app/src-tauri/resources/bundle/base.md`（见 [`base-prompt-override-阶段2.md`](./base-prompt-override-阶段2.md)） |
 | 模式 prompt 子段（plan.md/yolo.md/agent.md） | `DeepSeek-TUI/crates/tui/src/prompts/modes/*.md` |
 | 13 层拼装逻辑 | `DeepSeek-TUI/crates/tui/src/prompts.rs:673` |
-| 实际看某 session 的最终 prompt | 读 `~/.pinvou3/sessions/<sid>/instructions.md`，再对照 `prompts.rs:673` 走一遍拼装 |
+| 查看 pinvou3 实际最终 prompt | `cargo run --manifest-path pinvou3-app/src-tauri/Cargo.toml --bin dump_system_prompt` |
 
 ---
 
@@ -226,9 +226,9 @@ Op::SyncSession {
 
 想确认某段文本是不是真的进了 system prompt：
 
-1. 找一个跑着的 session，看 `~/.pinvou3/sessions/<sid>/instructions.md` 内容。
-2. 看 `pinvou3-app/src-tauri/src/bridge/mod.rs:184 session_instruction_paths()`，确认这个文件确实在数组里。
-3. 看 `DeepSeek-TUI/crates/tui/src/prompts.rs:800-804`，确认 `instructions` 数组里的所有文件都会被 `render_instructions_block` 包成 `<instructions>` 标签拼进 system prompt。
-4. （可选）在 engine 入口加临时 `eprintln!("{}", session.system_prompt)` 打印实际值。
+1. 运行 `cargo run --manifest-path pinvou3-app/src-tauri/Cargo.toml --bin dump_system_prompt > /tmp/pinvou3_system_prompt.txt`。
+2. 查看 `bridge/mod.rs` 的 `session_instructions()`，确认 pinvou3 指令以 `InstructionSource::Inline` 进入 `EngineConfig.instructions`。
+3. 查看底座 `prompts.rs` 的 `system_prompt_for_mode_with_context_skills_session_and_approval()` 与 `render_instructions_block()`，确认 inline/file instructions 都进入 `<instructions>` 块。
+4. 在 dump 结果中搜索待验证文本；涉及 per-turn `<runtime_prompt>` / `<turn_meta>` 的内容不属于静态 system prompt，需在真实 turn 事件或对应测试中验证。
 
-不要相信"我以为 pinvou3 绕过了底座"这种二手描述，每次都按上面 1-3 走一遍（参考 `[[reuse_verify_pinvou3_wiring]]`）。
+不要相信"我以为 pinvou3 绕过了底座"这种二手描述，每次都沿实际构造链验证（参考 `[[reuse_verify_pinvou3_wiring]]`）。

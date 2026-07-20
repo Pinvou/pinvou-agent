@@ -1,4 +1,4 @@
-# pinvou3 v0.2.0 安装说明（本地 LLM 版）
+# pinvou3 安装说明（本地 LLM 版）
 
 > 本包为 **arm64 (aarch64)** 架构，仅限 ARM64 Linux（如 NVIDIA Jetson、Raspberry Pi 5、Apple Silicon Linux VM 等）。
 > 默认连接 **本机 127.0.0.1:8000** 的 vLLM 服务，**不依赖外网**。
@@ -8,12 +8,12 @@
 ## 1. 安装
 
 ```bash
-sudo dpkg -i pinvou3_0.2.0_arm64.deb
+sudo dpkg -i pinvou3_0.6.1_arm64.deb
 # 若报依赖缺失，自动补装：
 sudo apt-get install -f
 ```
 
-`dpkg` 会自动处理以下依赖：
+安装包会声明 Tauri UI 运行时依赖，并推荐以下文档处理工具：
 - `libwebkit2gtk-4.1-0`、`libgtk-3-0`（Tauri UI 运行时）
 - 推荐（非强制）：`poppler-utils`、`tesseract-ocr`、`tesseract-ocr-chi-sim`、`pandoc`、`p7zip-full`、`python3`（文档/图片处理工具）、`libreoffice`、`libemail-outlook-message-perl`
 
@@ -69,22 +69,11 @@ pinvou3
 
 环境变量优先级最高，适合 run-dev.sh 或临时切换。
 
-### 方式 B：`~/.pinvou3/settings.json`（持久化）
+### 方式 B：应用设置（持久化，推荐）
 
-手改 `~/.pinvou3/settings.json` 的 `advanced` 字段：
+打开「设置 → 模型与后端」，新增或编辑模型，填写模型名、API 地址和密钥后设为当前模型。应用会把模型保存到 `advanced.saved_models`，密钥单独存入系统凭证库；不要把明文密钥手写进 `settings.json`。
 
-```json
-{
-  "advanced": {
-    "model_preset": "openai_compatible",
-    "custom_model_name": "my-local-qwen",
-    "custom_base_url": "http://192.168.1.100:8000/v1",
-    "custom_api_key": "local-no-auth"
-  }
-}
-```
-
-支持的 `model_preset`：
+支持的模型预设：
 - `local_vllm` — 默认本地 qwen36_35b_256k（无需改配置）
 - `openai_compatible` — OpenAI 官方 / 兼容 API（如 GPT-4o、自托管 proxy、自定义本地 vLLM）
 - `deepseek` — DeepSeek 官方 API
@@ -95,9 +84,7 @@ pinvou3
 - `glm` — 智谱 GLM
 - `mimo` — 小米 MiMo
 
-`custom_model_name`、`custom_base_url`、`custom_api_key` 用于覆盖所选预设的默认模型名、地址与 key。
-
-也可写入 `~/.bashrc` 或创建启动脚本持久化。
+需要用环境变量持久覆盖时，也可将方式 A 的变量写入启动脚本；桌面菜单启动通常不会读取 `~/.bashrc`。
 
 ---
 
@@ -144,5 +131,5 @@ rm -rf ~/.pinvou3
 
 | 文件 | 说明 |
 |------|------|
-| `pinvou3_0.2.0_arm64.deb` | 主安装包（14 MB） |
+| `pinvou3_<版本>_arm64.deb` | 主安装包 |
 | `INSTALL.md` | 本安装说明 |
