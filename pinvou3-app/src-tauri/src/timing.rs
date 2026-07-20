@@ -1,14 +1,14 @@
-//! Best-effort per-turn timing + usage/cost events.
+//! Best-effort per-turn timing + token usage events.
 //!
 //! This intentionally stays outside SavedSession/messages so timing telemetry
 //! never changes model context, session schema, or artifact behavior.
 //!
 //! 2026-07 升级:`assistant_done` 事件追加 `usage`(input/output/cache tokens)字段,
-//! 让历史面板 / replay / cost 统计有数据源。老 session 的旧事件无 usage 字段,
-//! 反序列化按缺失处理(`Option`),Timeline API 对老 session 也安全返回。
+//! 作为内部诊断数据源。老 session 的旧事件无 usage 字段,反序列化按缺失处理
+//! (`Option`),Timeline API 对老 session 也安全返回。
 
 use std::collections::{HashMap, VecDeque};
-use std::io::Write;
+use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -18,6 +18,10 @@ use serde_json::json;
 
 static TURN_SEQ: AtomicU64 = AtomicU64::new(1);
 static ACTIVE_TURNS: OnceLock<Mutex<HashMap<String, VecDeque<String>>>> = OnceLock::new();
+
+/// 防止诊断命令吞入异常增长的 sidecar。按当前每轮两条事件的大小,
+/// 32 MiB 足以覆盖数万轮对话；超限时明确报错,不返回会被误解为空会话的假结果。
+const MAX_TIMING_FILE_BYTES: u64 = 32 * 1024 * 1024;
 
 fn active_turns() -> &'static Mutex<HashMap<String, VecDeque<String>>> {
     ACTIVE_TURNS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -65,16 +69,16 @@ fn append_event(session_id: &str, entry: serde_json::Value) {
 
 /// 单轮 token usage 快照(随 `assistant_done` 落盘)。
 ///
-/// 与上游 `deepseek_tui::models::Usage` 字段集对齐(forward-compat),让历史面板 /
-/// replay / 真实 cost 估算有完整数据源。老 session 的旧事件缺这些字段时按缺失
-/// 反序列化为 0(见 `read_timeline`)。
+/// 记录上游 `deepseek_tui::models::Usage` 中当前诊断需要的主要 token 字段。
+/// 老 session 的旧事件缺这些字段时按 0 读取(见 `read_timeline`)。这里不做金额
+/// 换算,也不宣称覆盖 provider 的全部计费维度。
 ///
 /// - `input_tokens` / `output_tokens`:基础输入输出(u32 升 u64)。
 /// - `cache_hit_tokens` / `cache_miss_tokens`:Anthropic 风格 prompt cache 命中 /
 ///   未命中(u32 升 u64)。非 Anthropic provider 全为 0。
 /// - `cache_write_tokens`:`cache_creation_input_tokens`,按 cache-write 计费
-///   (Anthropic 1.25x)。缺这字段会让 cost 估算系统性少算。
-/// - `reasoning_tokens`:推理 token(DeepSeek V4 等思考模型的重要成本来源)。
+///   (具体费率由 provider 决定)。
+/// - `reasoning_tokens`:推理 token。
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct TurnUsage {
     pub input_tokens: u64,
@@ -114,7 +118,7 @@ pub fn finish_turn(session_id: &str, status: &str, error: Option<&str>) {
 /// 收尾本轮并把 usage 落进 `assistant_done` 事件。
 ///
 /// `usage: Option<TurnUsage>` —— None 时(老路径 / 失败兜底)不写 usage 字段,
-/// reader API 按缺失处理。Some 时写入 4 个 token 计数,前端可估算 cost。
+/// reader API 按缺失处理。Some 时写入 6 个 token 计数。
 pub fn finish_turn_with_usage(
     session_id: &str,
     status: &str,
@@ -175,75 +179,111 @@ pub struct TimelineEvent {
 ///
 /// 文件不存在 / 解析失败的行被静默跳过(append-only jsonl 的单行损坏不应让整个 timeline 崩)。
 /// 空文件 / 文件不存在 → 空向量。
-pub fn read_timeline(session_id: &str) -> Vec<TimelineEvent> {
+pub fn read_timeline(session_id: &str) -> std::io::Result<Vec<TimelineEvent>> {
     let path = crate::bridge::paths::session_timing_events(session_id);
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        return Vec::new();
+    let file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
     };
-    let mut events: Vec<TimelineEvent> = content
-        .lines()
-        .filter_map(|line| {
-            if line.trim().is_empty() {
-                return None;
-            }
-            // 反序列化成宽 schema(用 Value 再取字段),避免缺字段时整条事件丢
-            let v: serde_json::Value = serde_json::from_str(line).ok()?;
-            // [F4] timestamp 缺失 / 类型错时直接跳过整条事件,而不是 unwrap_or(0)
-            // 让它变成 1970-01-01 污染排序:compute_stats 用 sort_by_key(timestamp)
-            // 取 first/last turn ts,一条坏行会让首末都变 1970。
-            // 注意:turn_id / event 仍保留 unwrap_or("") 兜底,因为缺这俩只是无法
-            // 配对成 turn(by_turn 用空串作 key 不会污染计数),不会污染时间统计。
-            let Some(timestamp) = v.get("timestamp").and_then(|x| x.as_i64()) else {
-                return None;
-            };
-            let usage = v.get("usage").and_then(|u| {
-                if u.is_null() {
-                    return None;
-                }
-                Some(TurnUsage {
-                    input_tokens: u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
-                    output_tokens: u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
-                    cache_hit_tokens: u
-                        .get("cache_hit_tokens")
-                        .and_then(|x| x.as_u64())
-                        .unwrap_or(0),
-                    cache_miss_tokens: u
-                        .get("cache_miss_tokens")
-                        .and_then(|x| x.as_u64())
-                        .unwrap_or(0),
-                    cache_write_tokens: u
-                        .get("cache_write_tokens")
-                        .and_then(|x| x.as_u64())
-                        .unwrap_or(0),
-                    reasoning_tokens: u
-                        .get("reasoning_tokens")
-                        .and_then(|x| x.as_u64())
-                        .unwrap_or(0),
-                })
-            });
-            Some(TimelineEvent {
-                turn_id: v.get("turn_id").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                event: v.get("event").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                timestamp,
-                ts: v.get("ts").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                status: v
-                    .get("status")
-                    .and_then(|x| x.as_str())
-                    .map(|s| s.to_string()),
-                error: v
-                    .get("error")
-                    .and_then(|x| x.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string()),
-                usage,
-            })
-        })
-        .collect();
+    let file_len = file.metadata()?.len();
+    if file_len > MAX_TIMING_FILE_BYTES {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "timing sidecar too large: {file_len} bytes (limit {MAX_TIMING_FILE_BYTES})"
+            ),
+        ));
+    }
+
+    let mut reader = BufReader::new(file);
+    let mut events = Vec::new();
+    let mut line = String::new();
+    let mut bytes_read = 0_u64;
+    loop {
+        line.clear();
+        let read = reader.read_line(&mut line)?;
+        if read == 0 {
+            break;
+        }
+        bytes_read = bytes_read.saturating_add(read as u64);
+        // 文件可能在 metadata 后继续增长,读取过程中再守一次上限。
+        if bytes_read > MAX_TIMING_FILE_BYTES {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "timing sidecar grew beyond {MAX_TIMING_FILE_BYTES} bytes while reading"
+                ),
+            ));
+        }
+        if let Some(event) = parse_timeline_line(&line) {
+            events.push(event);
+        }
+    }
     events.sort_by_key(|e| e.timestamp);
-    events
+    Ok(events)
 }
 
-/// session 级聚合统计(给历史面板卡片用)。
+fn parse_timeline_line(line: &str) -> Option<TimelineEvent> {
+    if line.trim().is_empty() {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let turn_id = v.get("turn_id")?.as_str()?.trim();
+    if turn_id.is_empty() {
+        return None;
+    }
+    let event = v.get("event")?.as_str()?;
+    if !matches!(event, "user_start" | "assistant_done") {
+        return None;
+    }
+    let timestamp = v.get("timestamp")?.as_i64()?;
+    let ts = v.get("ts")?.as_str()?.trim();
+    if ts.is_empty() {
+        return None;
+    }
+    let usage = v
+        .get("usage")
+        .and_then(serde_json::Value::as_object)
+        .map(|u| TurnUsage {
+            input_tokens: u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
+            output_tokens: u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
+            cache_hit_tokens: u
+                .get("cache_hit_tokens")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0),
+            cache_miss_tokens: u
+                .get("cache_miss_tokens")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0),
+            cache_write_tokens: u
+                .get("cache_write_tokens")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0),
+            reasoning_tokens: u
+                .get("reasoning_tokens")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0),
+        });
+    Some(TimelineEvent {
+        turn_id: turn_id.to_string(),
+        event: event.to_string(),
+        timestamp,
+        ts: ts.to_string(),
+        status: v
+            .get("status")
+            .and_then(|x| x.as_str())
+            .map(str::to_string),
+        error: v
+            .get("error")
+            .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        usage,
+    })
+}
+
+/// session 级聚合统计,供内部诊断入口使用。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionTimelineStats {
     pub turn_count: usize,
@@ -260,54 +300,76 @@ pub struct SessionTimelineStats {
     /// 用户主动 Ctrl-C / 超时中断的轮次(engine 上游 TurnOutcomeStatus::Interrupted)。
     /// 之前被 `_ => {}` 静默丢弃,导致 turn_count 与 completed+failed 对不上。
     pub interrupted_turns: usize,
+    /// 有 user_start 但没有 assistant_done 的轮次,常见于进程退出或文件尾部截断。
+    pub incomplete_turns: usize,
+    /// assistant_done 存在,但状态不是当前已知枚举。单独暴露,避免静默制造差值。
+    pub unknown_status_turns: usize,
 }
 
 /// 聚合 session timeline 为单个 stats 对象。
 ///
 /// 算法:遍历 read_timeline(),按 turn_id 配对 (user_start, assistant_done),
 /// 每对算一个 turn。token / 状态从 assistant_done 取(失败时 usage 可能为 None)。
-pub fn compute_stats(session_id: &str) -> SessionTimelineStats {
-    let events = read_timeline(session_id);
+pub fn compute_stats(session_id: &str) -> std::io::Result<SessionTimelineStats> {
+    let events = read_timeline(session_id)?;
     let mut stats = SessionTimelineStats::default();
     // 按 turn_id 索引;一个 turn 由 user_start + assistant_done 组成
-    let mut by_turn: HashMap<String, (&TimelineEvent, Option<&TimelineEvent>)> = HashMap::new();
+    let mut by_turn: HashMap<String, (Option<&TimelineEvent>, Option<&TimelineEvent>)> =
+        HashMap::new();
     for e in &events {
-        let entry = by_turn
-            .entry(e.turn_id.clone())
-            .or_insert((e, None));
+        let entry = by_turn.entry(e.turn_id.clone()).or_insert((None, None));
         if e.event == "assistant_done" {
             entry.1 = Some(e);
-        } else if e.event == "user_start" && entry.0.event != "user_start" {
-            entry.0 = e;
+        } else if e.event == "user_start" {
+            entry.0 = Some(e);
         }
     }
-    stats.turn_count = by_turn.len();
-    stats.first_turn_ts = events.first().map(|e| e.ts.clone());
-    stats.last_turn_ts = events.last().map(|e| e.ts.clone());
-    for (_, done) in by_turn.values() {
-        if let Some(d) = done {
-            if let Some(u) = &d.usage {
-                stats.total_input_tokens += u.input_tokens;
-                stats.total_output_tokens += u.output_tokens;
-                stats.total_cache_hit_tokens += u.cache_hit_tokens;
-                stats.total_cache_miss_tokens += u.cache_miss_tokens;
-                stats.total_cache_write_tokens += u.cache_write_tokens;
-                stats.total_reasoning_tokens += u.reasoning_tokens;
+    stats.turn_count = by_turn.values().filter(|(start, _)| start.is_some()).count();
+    stats.first_turn_ts = events
+        .iter()
+        .find(|event| by_turn.get(&event.turn_id).is_some_and(|pair| pair.0.is_some()))
+        .map(|event| event.ts.clone());
+    stats.last_turn_ts = events
+        .iter()
+        .rev()
+        .find(|event| by_turn.get(&event.turn_id).is_some_and(|pair| pair.0.is_some()))
+        .map(|event| event.ts.clone());
+    for (start, done) in by_turn.values() {
+        if start.is_none() {
+            continue;
+        }
+        let Some(d) = done else {
+            stats.incomplete_turns += 1;
+            continue;
+        };
+        if let Some(u) = &d.usage {
+            stats.total_input_tokens = stats.total_input_tokens.saturating_add(u.input_tokens);
+            stats.total_output_tokens = stats.total_output_tokens.saturating_add(u.output_tokens);
+            stats.total_cache_hit_tokens =
+                stats.total_cache_hit_tokens.saturating_add(u.cache_hit_tokens);
+            stats.total_cache_miss_tokens = stats
+                .total_cache_miss_tokens
+                .saturating_add(u.cache_miss_tokens);
+            stats.total_cache_write_tokens = stats
+                .total_cache_write_tokens
+                .saturating_add(u.cache_write_tokens);
+            stats.total_reasoning_tokens = stats
+                .total_reasoning_tokens
+                .saturating_add(u.reasoning_tokens);
+        }
+        match d.status.as_deref() {
+            Some(s) if s.eq_ignore_ascii_case("Completed") => stats.completed_turns += 1,
+            Some(s)
+                if s.eq_ignore_ascii_case("Failed")
+                    || s.eq_ignore_ascii_case("send_error") =>
+            {
+                stats.failed_turns += 1;
             }
-            // [F2] eq_ignore_ascii_case 统一大小写匹配,识别全部三个终态:
-            //   Completed / Interrupted / Failed。
-            // 之前用硬展开 `Some("Completed") | Some("completed")` 既漏 Interrupted,
-            // 又容易再漏一个变体(engine.rs 上游 `format!("{terminal_status:?}")`
-            // 永远是 PascalCase,但脏数据/老格式可能是 lowercase)。
-            match d.status.as_deref() {
-                Some(s) if s.eq_ignore_ascii_case("Completed") => stats.completed_turns += 1,
-                Some(s) if s.eq_ignore_ascii_case("Failed") => stats.failed_turns += 1,
-                Some(s) if s.eq_ignore_ascii_case("Interrupted") => stats.interrupted_turns += 1,
-                _ => {}
-            }
+            Some(s) if s.eq_ignore_ascii_case("Interrupted") => stats.interrupted_turns += 1,
+            _ => stats.unknown_status_turns += 1,
         }
     }
-    stats
+    Ok(stats)
 }
 
 #[cfg(test)]
@@ -374,7 +436,7 @@ mod tests {
             }),
         );
 
-        let timeline = read_timeline(sid);
+        let timeline = read_timeline(sid).unwrap();
         assert_eq!(timeline.len(), 2);
         let done = timeline
             .iter()
@@ -396,7 +458,7 @@ mod tests {
             "PINVOU3_HOME",
             std::env::temp_dir().join(format!("nonexistent-{}", now_ms())),
         );
-        let timeline = read_timeline("never-existed");
+        let timeline = read_timeline("never-existed").unwrap();
         assert!(timeline.is_empty());
     }
 
@@ -424,7 +486,7 @@ mod tests {
         finish_turn(sid, "completed", None);
 
         // 应该跳过坏行,只拿到 2 条事件
-        let timeline = read_timeline(sid);
+        let timeline = read_timeline(sid).unwrap();
         assert_eq!(timeline.len(), 2);
         let _ = std::fs::remove_dir_all(tmp);
     }
@@ -461,7 +523,7 @@ mod tests {
         start_turn(sid);
         finish_turn_with_usage(sid, "Failed", Some("oops"), None);
 
-        let stats = compute_stats(sid);
+        let stats = compute_stats(sid).unwrap();
         assert_eq!(stats.turn_count, 3);
         assert_eq!(stats.completed_turns, 2);
         assert_eq!(stats.failed_turns, 1);
@@ -482,7 +544,7 @@ mod tests {
             "PINVOU3_HOME",
             std::env::temp_dir().join(format!("nope-{}", now_ms())),
         );
-        let stats = compute_stats("does-not-exist");
+        let stats = compute_stats("does-not-exist").unwrap();
         assert_eq!(stats.turn_count, 0);
         assert_eq!(stats.total_input_tokens, 0);
         assert!(stats.first_turn_ts.is_none());
@@ -515,7 +577,7 @@ mod tests {
         start_turn(sid);
         finish_turn_with_usage(sid, "interrupted", None, None);
 
-        let stats = compute_stats(sid);
+        let stats = compute_stats(sid).unwrap();
         assert_eq!(stats.turn_count, 4);
         assert_eq!(stats.completed_turns, 1);
         assert_eq!(stats.failed_turns, 1);
@@ -525,6 +587,122 @@ mod tests {
             stats.completed_turns + stats.failed_turns + stats.interrupted_turns,
             stats.turn_count
         );
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    #[test]
+    fn compute_stats_classifies_real_terminal_edges() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-terminal-edges-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("PINVOU3_HOME", &tmp);
+
+        let sid = "session-terminal-edges";
+        start_turn(sid);
+        finish_turn(sid, "send_error", Some("engine unavailable"));
+        start_turn(sid);
+        finish_turn(sid, "FutureStatus", None);
+        start_turn(sid);
+
+        let stats = compute_stats(sid).unwrap();
+        assert_eq!(stats.turn_count, 3);
+        assert_eq!(stats.failed_turns, 1);
+        assert_eq!(stats.incomplete_turns, 1);
+        assert_eq!(stats.unknown_status_turns, 1);
+        assert_eq!(
+            stats.completed_turns
+                + stats.failed_turns
+                + stats.interrupted_turns
+                + stats.incomplete_turns
+                + stats.unknown_status_turns,
+            stats.turn_count
+        );
+
+        // 清掉进程内 ACTIVE_TURNS 的未完成记录,避免影响同进程后续测试。
+        finish_turn(sid, "Interrupted", None);
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    #[test]
+    fn read_timeline_skips_events_without_required_identity() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-bad-identity-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("PINVOU3_HOME", &tmp);
+
+        let sid = "session-bad-identity";
+        start_turn(sid);
+        finish_turn(sid, "Completed", None);
+        let path = crate::bridge::paths::session_timing_events(sid);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .and_then(|mut file| {
+                file.write_all(
+                    br#"{"event":"user_start","timestamp":1,"ts":"1970-01-01T00:00:00Z"}
+{"turn_id":"missing-event","timestamp":2,"ts":"1970-01-01T00:00:00Z"}
+{"event":"unknown","turn_id":"unknown-event","timestamp":3,"ts":"1970-01-01T00:00:00Z"}
+"#,
+                )
+            })
+            .unwrap();
+
+        let timeline = read_timeline(sid).unwrap();
+        assert_eq!(timeline.len(), 2);
+        assert_eq!(compute_stats(sid).unwrap().turn_count, 1);
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    #[test]
+    fn read_timeline_surfaces_io_errors_instead_of_empty_data() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-io-error-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("PINVOU3_HOME", &tmp);
+
+        let path = crate::bridge::paths::session_timing_events("session-io-error");
+        std::fs::create_dir_all(&path).unwrap();
+        assert!(read_timeline("session-io-error").is_err());
+        assert!(compute_stats("session-io-error").is_err());
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    #[test]
+    fn read_timeline_rejects_oversized_sidecar() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-too-large-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("PINVOU3_HOME", &tmp);
+
+        let path = crate::bridge::paths::session_timing_events("session-too-large");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_TIMING_FILE_BYTES + 1).unwrap();
+        let error = read_timeline("session-too-large").unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
 
         let _ = std::fs::remove_dir_all(tmp);
     }
@@ -563,7 +741,7 @@ mod tests {
             })
             .unwrap();
 
-        let timeline = read_timeline(sid);
+        let timeline = read_timeline(sid).unwrap();
         // 只剩 2 条正常事件;2 条脏事件被跳过
         assert_eq!(timeline.len(), 2, "dirty-timestamp events must be skipped");
         // 没有任何事件的 timestamp 是 0(1970)
@@ -572,7 +750,7 @@ mod tests {
             "no event should fall back to 1970"
         );
 
-        let stats = compute_stats(sid);
+        let stats = compute_stats(sid).unwrap();
         // turn_count 不被坏事件污染(还是 1)
         assert_eq!(stats.turn_count, 1);
         // first/last 都不是 1970(脏事件 timestamp=0 排序后会变成 first)
@@ -612,7 +790,7 @@ mod tests {
             }),
         );
 
-        let timeline = read_timeline(sid);
+        let timeline = read_timeline(sid).unwrap();
         let done = timeline
             .iter()
             .find(|e| e.event == "assistant_done")
@@ -621,7 +799,7 @@ mod tests {
         assert_eq!(u.cache_write_tokens, 80);
         assert_eq!(u.reasoning_tokens, 500);
 
-        let stats = compute_stats(sid);
+        let stats = compute_stats(sid).unwrap();
         assert_eq!(stats.total_cache_write_tokens, 80);
         assert_eq!(stats.total_reasoning_tokens, 500);
 
