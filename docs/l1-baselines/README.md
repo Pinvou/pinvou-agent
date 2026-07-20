@@ -62,7 +62,7 @@ git commit -m "锚 L1 baseline $ver"
 ### 2. 跟历史 baseline diff
 
 ```
-跟 Claude 说: "对比 docs/l1-baselines/v0.8.37/ 跟 target/l1-runs/<新ts>/"
+跟 Claude 说: "对比 docs/l1-baselines/<ver>/ 跟 target/l1-runs/<新ts>/"
 ```
 
 Claude 读两边 judge-report 的总览表 + 关注 ±0.5 以上的维度变化,**diff 报告告诉哪些维度漂了、可能原因、是否要 rollback**。

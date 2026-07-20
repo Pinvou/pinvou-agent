@@ -2,7 +2,7 @@
 
 > 分支 `worktree-kimi-base-migration` · 状态:Rust + Node 桥接迁移**功能完成**(除 `edit_last_turn`),
 > build 绿 / 87 单测过 / Native 零回归。**仅差 GUI 实测**(需显示环境)。
-> 配套:可行性分析 `docs/底座替换评估-kimi-code.md`;PoC + 增量记录 `docs/kimi-迁移-里程碑0-PoC结果.md`。
+> 配套:可行性分析 `docs/archived/底座替换评估-kimi-code.md`;PoC + 增量记录 `docs/archived/kimi-迁移-里程碑0-PoC结果.md`。
 
 ---
 

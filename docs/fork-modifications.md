@@ -8,7 +8,7 @@
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.0`，commit `d167c07c96282411956ea7f35ddb8227afa1402f` |
-| fork 分支 | `codex/sync-v0.9.0`，当前 head `4cff0b9e64a9` |
+| fork 分支 | `codex/sync-v0.9.0`，当前 head `4cff0b9e6e1d` |
 | 组织方式 | **6 个长期主题 commit**，按耦合边界维护；不再保留 C1–C12 / W1–W13 批量编号 |
 | drift | 对 `v0.9.0`：**+3260 / -539，53 文件** |
 | 守护 | `scripts/fork-guard.sh`：43 条主题指纹 + submodule/app `forkguard_` 行为测试 |

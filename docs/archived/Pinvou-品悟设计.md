@@ -300,26 +300,26 @@ SessionModeState {
 
 ## 9. 风险与待验证项
 
-### 8.1 Outside Voice 独立性打折
+### 9.1 Outside Voice 独立性打折
 本地 Qwen 单模型，subagent fallback = 同模型 fresh context，找漏洞重叠度可能高。v1 接受这个折扣（A+C 方案），后续可考虑：
 - 装第二个本地小模型（Phi-4 / Llama-3.3 8B）专做 critic
 - 接云 API 关键节点兜底（成本可控的话）
 
-### 8.2 EXIT GATE blocking 的回退机制
+### 9.2 EXIT GATE blocking 的回退机制
 如果 Pinvou review 失败（subagent 报错、LLM 超时），EXIT GATE 不能死锁——需要降级路径：
 - 重试 1 次 → 仍失败 → 弹"Pinvou 不可用，强制继续？"用户拍板
 - 不要让基础设施故障变成产品阻塞
 
-### 8.3 Suppressions 列表的维护
+### 9.3 Suppressions 列表的维护
 gstack `review/checklist.md:170-180` 列表是英文 + 通用 web 开发场景。pinvou3 场景不同（本地 Tauri / Rust + 中文用户），需要：
 - v1 先抄 gstack 列表作为种子
 - 实际运行中观察哪些 finding 经常被用户 [直接执行]，进 suppressions
 
-### 8.4 256K context 的实际利用
+### 9.4 256K context 的实际利用
 主 LLM 端：tool schema 已占 30K，留给 history ~200K+（充裕）
 Pinvou 端：subagent fresh context + 完整 plan + execute trace，单次 prefill 可能 50K+，**单次响应延迟 5-10s**（可接受，因为非热路径）
 
-### 8.5 弱模型加固教训的对照
+### 9.5 弱模型加固教训的对照
 本仓库 commit `7b983b6` 试过用 reminder 强制 LLM 行为（禁过渡语）→ Qwen3.6 反向膨胀，已回滚。v1 设计直接对症：
 - Pinvou skill prompt 中"禁止 X"条款必须配 **代码级强制**（EXIT GATE 检查表格），不靠 LLM 自觉
 - 不要重蹈 7b983b6 覆辙

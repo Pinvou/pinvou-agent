@@ -4,7 +4,7 @@
 >
 > 关联文档：
 > - 计划：`/home/hexin/.claude/plans/qwen3-6-gb10-gentle-parasol.md`
-> - DeepSeek-TUI 架构：`DeepSeek-TUI-架构详解.md`
+> - DeepSeek-TUI 架构：`archived/DeepSeek-TUI-架构详解.md`
 >
 > 启动日期：2026-05-12
 

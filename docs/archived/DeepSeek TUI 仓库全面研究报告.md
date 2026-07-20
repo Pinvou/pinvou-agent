@@ -248,7 +248,7 @@ OPENAI_BASE_URL="http://your-local-server/v1" deepseek --provider openai --model
 - 配置在 ~/.deepseek/mcp.json
 - 支持自注册：deepseek-tui mcp add-self
 - 含资源/提示辅助工具
-- 每服务器可设置 enabled_tools/diabled_tools 白名单/黑名单
+- 每服务器可设置 enabled_tools/disabled_tools 白名单/黑名单
 (3) Hooks 系统（生命周期钩子）
 - 前置/后置工具执行钩子
 - 支持 stdout、jsonl、webhook 输出

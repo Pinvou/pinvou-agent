@@ -44,17 +44,17 @@
 
 ### 2.2 注册:bundle/mcp.json
 
-`pinvou3-app/src-tauri/resources/bundle/mcp.json`(改默认内容,从 `{"servers":{}}` → 加一条)
+`~/.pinvou3/bundle/mcp.json`(运行时文件;默认内容在 `pinvou3-app/src-tauri/src/bridge/bundle.rs` 的 `DEFAULT_MCP_JSON`,从 `{"servers":{}}` → 加一条)
 
 ```json
 {"servers": {
-  "present": {
+  "pinvou3": {
     "command": "python3",
     "args": ["<bundle>/mcp-servers/present_artifact_server.py"]
   }
 }}
 ```
-> **已实测**(从底座 `mcp.rs:2061` `all_tools()` 确认):透传工具名 = `mcp_{server}_{tool}` = **`mcp_pinvou_present_artifact`**。instructions 引导名 + 前端匹配都按此全名;前端 `isPresentArtifactTool` 用 `endsWith("present_artifact")` 命中,改 server 名也不破。`bundle.rs` 的 DEFAULT_MCP_JSON 用 `{{PINVOU3_PRESENT_SERVER}}` 占位符,`ensure_extracted` 写出时替换成绝对路径。
+> **已实测**(从底座 `mcp.rs:2061` `all_tools()` 确认):透传工具名 = `mcp_{server}_{tool}` = **`mcp_pinvou3_present_artifact`**(server 名初版为 `pinvou`,后改 `pinvou3` 消除模型漂名)。instructions 引导名 + 前端匹配都按此全名;前端 `isPresentArtifactTool` 用 `endsWith("present_artifact")` 命中,改 server 名也不破。`bundle.rs` 的 DEFAULT_MCP_JSON 用 `{{PINVOU3_PRESENT_SERVER}}` 占位符,`ensure_extracted` 写出时替换成绝对路径。
 
 ### 2.3 前端:卡片渲染 + 还原(工作量大头,但都同构)
 
@@ -127,7 +127,7 @@ Pinvou 产出成品.html → 调 present_artifact{path,title}
 | 文件 | 类型 | fork? |
 |---|---|---|
 | `resources/bundle/mcp-servers/present_artifact_server.py` | 新建 ~80 行 | 否 |
-| `resources/bundle/mcp.json` | 改默认 | 否 |
+| `~/.pinvou3/bundle/mcp.json`(默认在 `bundle.rs` DEFAULT_MCP_JSON) | 改默认 | 否 |
 | `resources/bundle/instructions.md` | 加引导段 | 否 |
 | `src/tauri-bridge.js` | tool_end 分支 + rerender 还原 | 否 |
 | `src/index.html` | ArtifactCard 组件 + dispatcher | 否 |

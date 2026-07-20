@@ -39,7 +39,7 @@ fork patch 指纹**随 patch 同 PR**——新增 / 改 fork patch 必须**同�
 - `docs/fork-modifications.md` 登记条目
 - `scripts/fork-guard.sh` 指纹(+ L2 回归测试,如适用)
 
-**不拆事后 catch-up PR**(出现 catch-up PR = 原始 PR 漏了指纹)。submodule gitlink 要焊到 fork 跟踪分支(`pinvou3-clean`)上、不是游离的 PR 分支 commit。细节见 `CLAUDE.md` 约束 1 + `docs/fork-policy.md`。
+**不拆事后 catch-up PR**(出现 catch-up PR = 原始 PR 漏了指纹)。submodule gitlink 要焊到 fork 跟踪分支(`pinvou3-clean`)上、不是游离的 PR 分支 commit。细节见 `AGENTS.md` 约束 2 + `docs/fork-policy.md`。
 
 ## commit message
 
