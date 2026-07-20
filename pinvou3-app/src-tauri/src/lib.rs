@@ -21,6 +21,7 @@ pub mod feedback;
 pub use commands::build_message_with_attachments;
 // CLI 连接器公共管道(飞书 / 企微共享:起进程 / 扫码 / 事件 / 取消)。
 mod connector_cli;
+mod connector_visibility;
 mod dingtalk;
 mod eip;
 pub mod engine;
@@ -569,6 +570,8 @@ pub fn run() {
             commands::save_session_artifacts,
             commands::list_workspace_files,
             commands::cancel_generation,
+            commands::list_shell_tasks,
+            commands::cancel_shell_task,
             remote_control::remote_control_start,
             remote_control::remote_control_stop,
             remote_control::remote_control_status,

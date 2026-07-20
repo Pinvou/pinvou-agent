@@ -26,8 +26,12 @@ use anyhow::{bail, Context, Result};
 use deepseek_tui::core::events::TurnOutcomeStatus;
 use deepseek_tui::core::ops::Op;
 use deepseek_tui::models::{ContentBlock, Message};
+use deepseek_tui::tools::shell::{
+    new_shared_shell_manager, SharedShellManager, ShellJobSnapshot, ShellResult,
+};
 use deepseek_tui::tools::user_input::UserInputResponse;
 use deepseek_tui::tui::app::AppMode;
+use parking_lot::Mutex as SyncMutex;
 use tauri::async_runtime::JoinHandle;
 use tauri::AppHandle;
 use tokio::sync::Mutex;
@@ -36,7 +40,7 @@ use tokio_util::sync::CancellationToken;
 use crate::bridge::prefs::{SavedModel, UserPrefs};
 use crate::bridge::sessions::{ScheduledRunProfile, SessionStore};
 use crate::bridge::Pinvou3Bridge;
-use crate::engine::{AppEngine, EngineTurnSignal};
+use crate::engine::{AppEngine, EngineTurnSignal, TurnLifecycle};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ScheduledTurnCompletion {
@@ -77,6 +81,52 @@ impl SessionTurnLocks {
         let gate = Arc::new(Mutex::new(()));
         locks.insert(session_id.to_string(), Arc::downgrade(&gate));
         gate
+    }
+}
+
+#[derive(Clone, Default)]
+struct SessionTurnLifecycles {
+    states: Arc<SyncMutex<HashMap<String, Arc<TurnLifecycle>>>>,
+}
+
+impl SessionTurnLifecycles {
+    fn for_session(&self, session_id: &str) -> Arc<TurnLifecycle> {
+        let mut states = self.states.lock();
+        states
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(TurnLifecycle::default()))
+            .clone()
+    }
+
+    fn get(&self, session_id: &str) -> Option<Arc<TurnLifecycle>> {
+        self.states.lock().get(session_id).cloned()
+    }
+
+    fn remove(&self, session_id: &str) {
+        self.states.lock().remove(session_id);
+    }
+}
+
+#[derive(Clone, Default)]
+struct SessionShellManagers {
+    managers: Arc<SyncMutex<HashMap<String, SharedShellManager>>>,
+}
+
+impl SessionShellManagers {
+    fn for_session(&self, session_id: &str, workspace: std::path::PathBuf) -> SharedShellManager {
+        let mut managers = self.managers.lock();
+        managers
+            .entry(session_id.to_string())
+            .or_insert_with(|| new_shared_shell_manager(workspace))
+            .clone()
+    }
+
+    fn get(&self, session_id: &str) -> Option<SharedShellManager> {
+        self.managers.lock().get(session_id).cloned()
+    }
+
+    fn remove(&self, session_id: &str) {
+        self.managers.lock().remove(session_id);
     }
 }
 
@@ -133,6 +183,8 @@ fn should_sync_session(is_scheduled: bool, has_messages: bool) -> bool {
 pub struct EnginePool {
     entries: Arc<Mutex<HashMap<String, EngineEntry>>>,
     turn_locks: SessionTurnLocks,
+    turn_lifecycles: SessionTurnLifecycles,
+    shell_managers: SessionShellManagers,
     app: AppHandle,
     store: SessionStore,
     /// 所有 session 共享一份已 boot 的 bridge(boot 会写盘 / 设 env,只能一次)。
@@ -147,6 +199,8 @@ impl EnginePool {
         Ok(Self {
             entries: Arc::new(Mutex::new(HashMap::new())),
             turn_locks: SessionTurnLocks::default(),
+            turn_lifecycles: SessionTurnLifecycles::default(),
+            shell_managers: SessionShellManagers::default(),
             app,
             store,
             bridge,
@@ -216,12 +270,22 @@ impl EnginePool {
 
         let is_scheduled = self.store.scheduled_profile(session_id).is_some();
 
+        let bridge = self
+            .fresh_bridge_for(session_id, scheduled_unattended)
+            .await?;
+        let shell_workspace = self
+            .store
+            .scheduled_profile(session_id)
+            .map(|profile| profile.workspace)
+            .unwrap_or_else(|| bridge.session_workspace(session_id));
+        let shell_manager = self.shell_managers.for_session(session_id, shell_workspace);
         let (engine, forwarder) = AppEngine::spawn_for_session(
             self.app.clone(),
             self.store.clone(),
-            self.fresh_bridge_for(session_id, scheduled_unattended)
-                .await?,
+            bridge,
             session_id,
+            self.turn_lifecycles.for_session(session_id),
+            shell_manager,
         )
         .await?;
 
@@ -291,32 +355,70 @@ impl EnginePool {
         session_id: &str,
         expected_task_id: &str,
     ) -> Result<()> {
-        delete_scheduled_run_with_gate(
+        let result = delete_scheduled_run_with_gate(
             &self.turn_locks,
             &self.store,
             session_id,
             expected_task_id,
             || self.evict_locked(session_id),
         )
-        .await
+        .await;
+        if result.is_ok() {
+            self.forget_session(session_id);
+        }
+        result
     }
 
     async fn evict_locked(&self, session_id: &str) {
         if let Some(entry) = self.entries.lock().await.remove(session_id) {
+            if entry.engine.finish_reclaimed_turn(&self.app, session_id) {
+                log::warn!(
+                    "[engine_pool] emitted interrupted terminal before reclaim sid={}",
+                    session_id
+                );
+                crate::timing::finish_turn(session_id, "Interrupted", None);
+            }
             entry.engine.cancel_current();
+            entry.forwarder.abort();
             if let Err(e) = entry.engine.handle.send(Op::Shutdown).await {
                 eprintln!("[engine_pool] shutdown {session_id} failed: {e:?}");
             }
-            entry.forwarder.abort();
         }
     }
 
-    /// 回收当前 active session 的 engine。用于全局能力开关/连接器状态变化后,
-    /// 让下一轮按最新 Skill catalogue 重建 system prompt。
-    pub async fn evict_active(&self) {
-        if let Some(session_id) = self.store.active_id() {
-            self.evict(&session_id).await;
-        }
+    pub(crate) fn forget_session(&self, session_id: &str) {
+        self.turn_lifecycles.remove(session_id);
+        self.shell_managers.remove(session_id);
+    }
+
+    pub async fn list_shell_tasks(&self, session_id: &str) -> Result<Vec<ShellJobSnapshot>> {
+        let Some(manager) = self.shell_managers.get(session_id) else {
+            return Ok(Vec::new());
+        };
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut manager = manager
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Shell manager lock poisoned"))?;
+            Ok(manager.list_jobs())
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("list shell tasks join failed: {error}"))?
+    }
+
+    pub async fn cancel_shell_task(&self, session_id: &str, task_id: &str) -> Result<ShellResult> {
+        let manager = self
+            .shell_managers
+            .get(session_id)
+            .with_context(|| format!("No shell runtime for session '{session_id}'"))?;
+        let task_id = task_id.to_string();
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut manager = manager
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Shell manager lock poisoned"))?;
+            manager.kill(&task_id)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("cancel shell task join failed: {error}"))?
     }
 
     // ── 模型热切换(commands.rs 调用)──────────────────────────────
@@ -463,6 +565,13 @@ impl EnginePool {
     pub async fn cancel(&self, session_id: &str) {
         if let Some(engine) = self.handle_for(session_id).await {
             engine.cancel_current();
+        } else if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
+            lifecycle.emit_terminal_once(
+                &self.app,
+                session_id,
+                TurnOutcomeStatus::Interrupted,
+                None,
+            );
         }
     }
 
@@ -671,9 +780,12 @@ fn resolve_scheduled_model(
     }
 
     let mut matches = models.iter().filter(|model| model.model == profile.model);
-    let selected = matches
-        .next()
-        .with_context(|| format!("此任务绑定的 AI 模型已不可用，请重新选择 AI 模型并保存任务。模型：{}", profile.model))?;
+    let selected = matches.next().with_context(|| {
+        format!(
+            "此任务绑定的 AI 模型已不可用，请重新选择 AI 模型并保存任务。模型：{}",
+            profile.model
+        )
+    })?;
     if matches.next().is_some() {
         bail!(
             "此任务绑定的 AI 模型配置不唯一，请重新选择 AI 模型并保存任务。模型：{}",
@@ -707,7 +819,7 @@ mod scheduled_model_tests {
     use super::{
         delete_scheduled_run_with_gate, resolve_scheduled_model, resolve_spawn_model,
         scheduled_profile_after_turn_gate, should_sync_session, ScheduledUnattendedGuard,
-        SessionTurnLocks,
+        SessionShellManagers, SessionTurnLifecycles, SessionTurnLocks,
     };
     use crate::bridge::prefs::{ModelPreset, SavedModel};
     use crate::bridge::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
@@ -813,6 +925,35 @@ mod scheduled_model_tests {
             assert!(flag.load(Ordering::Acquire));
         }
         assert!(!flag.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn session_shell_manager_is_reused_across_engine_rebuilds() {
+        let managers = SessionShellManagers::default();
+        let first = managers.for_session("session-1", PathBuf::from("D:/workspace-a"));
+        let rebuilt = managers.for_session("session-1", PathBuf::from("D:/workspace-b"));
+        assert!(Arc::ptr_eq(&first, &rebuilt));
+        drop(first);
+        assert!(
+            Arc::strong_count(&rebuilt) >= 2,
+            "the session registry must keep detached jobs alive after an Engine entry drops"
+        );
+        managers.remove("session-1");
+        assert!(managers.get("session-1").is_none());
+    }
+
+    #[test]
+    fn turn_lifecycle_survives_engine_entry_removal_without_faking_idle_cancel() {
+        let lifecycles = SessionTurnLifecycles::default();
+        let engine_lifecycle = lifecycles.for_session("session-1");
+        engine_lifecycle.on_submitted();
+        drop(engine_lifecycle);
+
+        let pool_lifecycle = lifecycles.get("session-1").expect("session lifecycle");
+        assert!(pool_lifecycle.finish_once(|| {}).is_some());
+        assert_eq!(pool_lifecycle.finish_once(|| panic!("duplicate")), None);
+        lifecycles.remove("session-1");
+        assert!(lifecycles.get("session-1").is_none());
     }
 
     #[tokio::test]

@@ -385,7 +385,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
           const shouldShow = !isNearChatBottom(el) && el.scrollHeight > el.clientHeight + 4;
           setShowScrollBottom(v => v === shouldShow ? v : shouldShow);
         }
-      }, [chatItems.length, chatItems[chatItems.length - 1]?.html, composerH]);
+      }, [chatItems.length, chatItems[chatItems.length - 1]?.html, chatItems[chatItems.length - 1]?.output, composerH]);
 
       // 切换/加载会话:无条件把新会话滚到最底部(最新消息)并复位 autoScrollRef。
       // 上面的流式 auto-scroll 复用了跨会话持久的 autoScrollRef + 不 remount 的滚动容器,
