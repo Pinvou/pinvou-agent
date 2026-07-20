@@ -52,6 +52,17 @@ vm.runInContext(
   assert.match(chatSource, /su\.installing \? '下载语音识别模型' : '启用本地语音识别'/);
   assert.match(chatSource, /\{!su\.installing && \(/);
 
+  const voiceInputStart = bridgeSource.indexOf("  async function startVoiceInput(");
+  const installingGuard = bridgeSource.indexOf("if (state.voiceAsrSetup.installing)", voiceInputStart);
+  const statusCheck = bridgeSource.indexOf('invoke("voice_asr_status")', voiceInputStart);
+  assert.notStrictEqual(voiceInputStart, -1, "startVoiceInput must exist");
+  assert.ok(installingGuard > voiceInputStart, "startVoiceInput must guard an active ASR download");
+  assert.ok(installingGuard < statusCheck, "active download guard must run before dependency detection");
+  assert.match(
+    bridgeSource.slice(installingGuard, statusCheck),
+    /Object\.assign\(\{\}, state\.voiceAsrSetup, \{ open: true \}\);[\s\S]*?notify\(\);[\s\S]*?return;/,
+  );
+
   console.log("voice_asr_cancel_logic: ok");
 })().catch((error) => {
   console.error(error);

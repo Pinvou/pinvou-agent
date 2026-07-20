@@ -6121,6 +6121,15 @@
       return;
     }
 
+    // 模型下载期间再次点麦克风时保留原下载会话，不能用新的依赖检测结果
+    // 覆盖 installing/cancelling/progress，否则新引导框的“取消”只会关 UI，
+    // 后端下载仍会继续。
+    if (state.voiceAsrSetup.installing) {
+      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { open: true });
+      notify();
+      return;
+    }
+
     // 首次/缺组件：先检测本地语音识别依赖，缺则弹安装框、不进录音。
     try {
       var asrStatus = await invoke("voice_asr_status");
