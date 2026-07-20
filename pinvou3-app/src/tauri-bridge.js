@@ -303,6 +303,8 @@
       openFailed: "⚠️ Open failed: ", pasteImageFailed: "⚠️ Paste image failed: ",
       filePickUnavailable: "⚠️ File picker unavailable", filePickFailed: "⚠️ File selection failed: ",
       equipNoSession: "⚠️ Open or create a chat before equipping an expert", equipFailed: "⚠️ Equip failed: ",
+      shellOutputOmitted: kind => `[Earlier ${kind} output omitted]`, shellUnknownExit: "unknown",
+      shellTaskFinished: code => `[Task finished, exit code: ${code}]`,
     },
     ja: {
       newChatFailed: "⚠️ 新規チャットの作成に失敗: ", loadChatFailed: "⚠️ チャットの読み込みに失敗: ", deleteFailed: "⚠️ 削除に失敗: ",
@@ -320,6 +322,8 @@
       openFailed: "⚠️ 開けませんでした: ", pasteImageFailed: "⚠️ 画像の貼り付けに失敗: ",
       filePickUnavailable: "⚠️ ファイル選択を利用できません", filePickFailed: "⚠️ ファイル選択に失敗: ",
       equipNoSession: "⚠️ エキスパートを装備する前にチャットを開くか新規作成してください", equipFailed: "⚠️ 装備に失敗: ",
+      shellOutputOmitted: kind => `[途中の${kind === "stderr" ? "標準エラー" : "標準出力"}を省略]`, shellUnknownExit: "不明",
+      shellTaskFinished: code => `[タスク終了、終了コード: ${code}]`,
     },
     zh: {
       newChatFailed: "⚠️ 新建对话失败: ", loadChatFailed: "⚠️ 加载对话失败: ", deleteFailed: "⚠️ 删除失败: ",
@@ -337,6 +341,8 @@
       openFailed: "⚠️ 打开失败: ", pasteImageFailed: "⚠️ 粘贴图片失败: ",
       filePickUnavailable: "⚠️ 文件选择不可用", filePickFailed: "⚠️ 选择文件失败: ",
       equipNoSession: "⚠️ 请先打开或新建一个对话再加持专家", equipFailed: "⚠️ 加持失败: ",
+      shellOutputOmitted: kind => `[中间${kind === "stderr" ? "错误" : "标准"}输出已省略]`, shellUnknownExit: "未知",
+      shellTaskFinished: code => `[任务已结束，退出码: ${code}]`,
     },
   };
   function bt(key) {
@@ -2556,22 +2562,22 @@
   }
 
   function formatShellSnapshot(job) {
-    function section(raw, total, label) {
+    function section(raw, total, kind) {
       raw = String(raw || "");
       var visibleRaw = raw.replace(/^\.\.\.\s*/, "");
       var omitted = /^\.\.\./.test(raw) || Number(total || 0) > utf8Length(visibleRaw);
       var body = normalizeTerminalTail(visibleRaw);
-      if (omitted) body = "[中间" + label + "输出已省略]\n" + body;
+      if (omitted) body = bt("shellOutputOmitted")(kind) + "\n" + body;
       return body;
     }
-    var stdout = section(job.stdout_tail, job.stdout_len, "标准");
-    var stderr = section(job.stderr_tail, job.stderr_len, "错误");
+    var stdout = section(job.stdout_tail, job.stdout_len, "stdout");
+    var stderr = section(job.stderr_tail, job.stderr_len, "stderr");
     var parts = [];
     if (stdout) parts.push(stdout);
     if (stderr) parts.push((stdout ? "[STDERR]\n" : "") + stderr);
     if (String(job.status || "").toLowerCase() !== "running") {
-      var code = job.exit_code == null ? "未知" : String(job.exit_code);
-      parts.push("[任务已结束，退出码: " + code + "]");
+      var code = job.exit_code == null ? bt("shellUnknownExit") : String(job.exit_code);
+      parts.push(bt("shellTaskFinished")(code));
     }
     return parts.join("\n");
   }
@@ -2585,6 +2591,20 @@
       job.id, job.status, job.exit_code, job.stdout_len, job.stderr_len,
       job.stdout_tail, job.stderr_tail,
     ]);
+  }
+
+  function terminalShellHistoryMatch(item, job) {
+    if (!item || item.type !== "tool" || item.taskId || item.state === "running" ||
+        !isShellExecutionTool(item.name) || shellCommandForItem(item) !== String(job.command || "")) {
+      return false;
+    }
+    var output = normalizeTerminalTail(String(item.output || ""));
+    if (output.indexOf(String(job.id || "")) >= 0 && job.id) return true;
+    var evidence = [job.stdout_tail, job.stderr_tail].map(function (raw) {
+      return normalizeTerminalTail(String(raw || "").replace(/^\.\.\.\s*/, "")).trim();
+    }).filter(Boolean);
+    if (evidence.length) return evidence.every(function (text) { return output.indexOf(text) >= 0; });
+    return /\(no output\)|no output|无输出|出力なし/i.test(output);
   }
 
   function applyShellSnapshots(sid, jobs) {
@@ -2614,6 +2634,12 @@
           // task id. Never guess when identical commands are concurrent.
           if (runningCommandCounts[command] === 1 && candidates.length === 1) item = candidates[0];
         }
+        if (!item && !running) {
+          item = state.chatItems.find(function (it) {
+            return terminalShellHistoryMatch(it, job);
+          });
+          if (item) item.shellHistoryReconciled = true;
+        }
         // A detached job may have been started by a subagent, so no matching
         // top-level tool card exists. Completed jobs must also get a card: the
         // first poll may happen after a short detached process already exited.
@@ -2633,7 +2659,9 @@
         item.shellStatus = job.status;
         item.exitCode = job.exit_code;
         item.elapsedMs = job.elapsed_ms;
-        item.output = formatShellSnapshot(job);
+        if (!item.shellHistoryReconciled || item.output == null || running) {
+          item.output = formatShellSnapshot(job);
+        }
         item.state = running ? "running" : (status === "completed" ? "done" : "failed");
         item.success = running ? null : status === "completed";
         item.shellSnapshotKey = snapshotKey;
