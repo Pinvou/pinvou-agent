@@ -227,6 +227,9 @@ pub struct SessionTimelineStats {
     pub last_turn_ts: Option<String>,
     pub completed_turns: usize,
     pub failed_turns: usize,
+    /// 用户主动 Ctrl-C / 超时中断的轮次(engine 上游 TurnOutcomeStatus::Interrupted)。
+    /// 之前被 `_ => {}` 静默丢弃,导致 turn_count 与 completed+failed 对不上。
+    pub interrupted_turns: usize,
 }
 
 /// 聚合 session timeline 为单个 stats 对象。
@@ -259,9 +262,15 @@ pub fn compute_stats(session_id: &str) -> SessionTimelineStats {
                 stats.total_cache_hit_tokens += u.cache_hit_tokens;
                 stats.total_cache_miss_tokens += u.cache_miss_tokens;
             }
+            // [F2] eq_ignore_ascii_case 统一大小写匹配,识别全部三个终态:
+            //   Completed / Interrupted / Failed。
+            // 之前用硬展开 `Some("Completed") | Some("completed")` 既漏 Interrupted,
+            // 又容易再漏一个变体(engine.rs 上游 `format!("{terminal_status:?}")`
+            // 永远是 PascalCase,但脏数据/老格式可能是 lowercase)。
             match d.status.as_deref() {
-                Some("Completed") | Some("completed") => stats.completed_turns += 1,
-                Some("Failed") | Some("failed") => stats.failed_turns += 1,
+                Some(s) if s.eq_ignore_ascii_case("Completed") => stats.completed_turns += 1,
+                Some(s) if s.eq_ignore_ascii_case("Failed") => stats.failed_turns += 1,
+                Some(s) if s.eq_ignore_ascii_case("Interrupted") => stats.interrupted_turns += 1,
                 _ => {}
             }
         }
