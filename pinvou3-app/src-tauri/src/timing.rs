@@ -370,6 +370,7 @@ mod tests {
                 output_tokens: 350,
                 cache_hit_tokens: 800,
                 cache_miss_tokens: 400,
+                ..Default::default()
             }),
         );
 
@@ -453,6 +454,7 @@ mod tests {
                     output_tokens: 200,
                     cache_hit_tokens: 500,
                     cache_miss_tokens: 500,
+                    ..Default::default()
                 }),
             );
         }
@@ -484,5 +486,145 @@ mod tests {
         assert_eq!(stats.turn_count, 0);
         assert_eq!(stats.total_input_tokens, 0);
         assert!(stats.first_turn_ts.is_none());
+    }
+
+    /// [F2] Interrupted 终态之前被 `_ => {}` 静默丢弃,导致 turn_count 与
+    /// completed+failed 对不上。验证 compute_stats 现在能正确分类三个终态,
+    /// 且大小写不敏感(engine 上游落盘是 PascalCase,但脏数据可能是 lowercase)。
+    #[test]
+    fn compute_stats_counts_interrupted_terminal_state() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-interrupted-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("PINVOU3_HOME", &tmp);
+
+        let sid = "session-interrupted";
+        // 1 completed + 1 failed + 2 interrupted(一个 PascalCase 一个 lowercase,
+        // 验证 eq_ignore_ascii_case 写法不再漏变体)
+        start_turn(sid);
+        finish_turn_with_usage(sid, "Completed", None, None);
+        start_turn(sid);
+        finish_turn_with_usage(sid, "Failed", Some("err"), None);
+        start_turn(sid);
+        finish_turn_with_usage(sid, "Interrupted", Some("ctrl-c"), None);
+        start_turn(sid);
+        finish_turn_with_usage(sid, "interrupted", None, None);
+
+        let stats = compute_stats(sid);
+        assert_eq!(stats.turn_count, 4);
+        assert_eq!(stats.completed_turns, 1);
+        assert_eq!(stats.failed_turns, 1);
+        assert_eq!(stats.interrupted_turns, 2);
+        // 三个终态加起来必须等于 turn_count——这是 F2 修复的本质保证
+        assert_eq!(
+            stats.completed_turns + stats.failed_turns + stats.interrupted_turns,
+            stats.turn_count
+        );
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    /// [F4] 缺 timestamp / 类型错的脏事件之前 unwrap_or(0) 变成 1970-01-01,
+    /// 污染 first_turn_ts / last_turn_ts。验证现在被整条跳过:
+    /// turn_count 不被多算、first/last 不被 1970 污染。
+    #[test]
+    fn read_timeline_skips_events_with_missing_or_bad_timestamp() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-badts-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("PINVOU3_HOME", &tmp);
+
+        let sid = "session-badts";
+        // 一条正常 turn
+        start_turn(sid);
+        finish_turn(sid, "completed", None);
+
+        // 注入两条脏事件:一条完全缺 timestamp,一条 timestamp 类型错(string 而非 int)
+        let path = crate::bridge::paths::session_timing_events(sid);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .and_then(|mut f| {
+                f.write_all(
+                    br#"{"event":"user_start","turn_id":"bad1","ts":"2099-01-01T00:00:00Z"}
+{"event":"assistant_done","turn_id":"bad2","timestamp":"not-a-number","ts":"2099-01-01T00:00:00Z"}
+"#,
+                )
+            })
+            .unwrap();
+
+        let timeline = read_timeline(sid);
+        // 只剩 2 条正常事件;2 条脏事件被跳过
+        assert_eq!(timeline.len(), 2, "dirty-timestamp events must be skipped");
+        // 没有任何事件的 timestamp 是 0(1970)
+        assert!(
+            timeline.iter().all(|e| e.timestamp > 0),
+            "no event should fall back to 1970"
+        );
+
+        let stats = compute_stats(sid);
+        // turn_count 不被坏事件污染(还是 1)
+        assert_eq!(stats.turn_count, 1);
+        // first/last 都不是 1970(脏事件 timestamp=0 排序后会变成 first)
+        assert!(stats.first_turn_ts.is_some());
+        assert!(stats.last_turn_ts.is_some());
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    /// [F3] TurnUsage 新字段(cache_write_tokens / reasoning_tokens)落盘 + 读取 +
+    /// compute_stats 累加全链路。验证 forward-compat 字段集不丢字段。
+    #[test]
+    fn finish_turn_with_usage_records_extended_usage_fields() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-extended-usage-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("PINVOU3_HOME", &tmp);
+
+        let sid = "session-extended-usage";
+        start_turn(sid);
+        finish_turn_with_usage(
+            sid,
+            "Completed",
+            None,
+            Some(TurnUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_hit_tokens: 30,
+                cache_miss_tokens: 20,
+                cache_write_tokens: 80,
+                reasoning_tokens: 500,
+            }),
+        );
+
+        let timeline = read_timeline(sid);
+        let done = timeline
+            .iter()
+            .find(|e| e.event == "assistant_done")
+            .expect("has assistant_done");
+        let u = done.usage.expect("usage recorded");
+        assert_eq!(u.cache_write_tokens, 80);
+        assert_eq!(u.reasoning_tokens, 500);
+
+        let stats = compute_stats(sid);
+        assert_eq!(stats.total_cache_write_tokens, 80);
+        assert_eq!(stats.total_reasoning_tokens, 500);
+
+        let _ = std::fs::remove_dir_all(tmp);
     }
 }
