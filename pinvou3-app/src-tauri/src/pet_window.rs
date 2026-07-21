@@ -168,6 +168,25 @@ fn pet_window_logical_size(
     }
 }
 
+/// 运行时生效尺寸。GB10 实测:WebKitGTK 给 webview 的最小内容尺寸约 200x200,
+/// GTK 不允许窗口小于内容最小值——紧凑桌伴请求 144x165 实得 200x200,
+/// min_inner_size hint 也放不开。定位数学若按请求尺寸算,窗口底/右边会凸出
+/// 预期边界,拖拽物理一开边界钳制人物就被顶走("点击上移")。Linux 上把假定
+/// 尺寸夹到同一下限让数学与真实窗口一致;其他平台请求尺寸如实生效,不动。
+fn pet_window_effective_size(
+    scale: f64,
+    activity_visible: bool,
+    activity_height: Option<f64>,
+) -> (f64, f64) {
+    let size = pet_window_logical_size(scale, activity_visible, activity_height);
+    #[cfg(target_os = "linux")]
+    let size = {
+        const WEBVIEW_MIN: f64 = 200.0;
+        (size.0.max(WEBVIEW_MIN), size.1.max(WEBVIEW_MIN))
+    };
+    size
+}
+
 fn activity_content_height(activity_height: Option<f64>) -> f64 {
     let measured = activity_height.unwrap_or(PET_ACTIVITY_DEFAULT_H);
     if measured.is_finite() {
@@ -185,7 +204,7 @@ fn character_local_top_left(
 ) -> (f64, f64) {
     let scale = clamp_scale(scale);
     let (window_width, window_height) =
-        pet_window_logical_size(scale, activity_visible, activity_height);
+        pet_window_effective_size(scale, activity_visible, activity_height);
     let character_width = PET_FRAME_W * scale;
     let character_height = PET_FRAME_H * scale;
     let x = if alignment == "left" {
@@ -312,10 +331,14 @@ pub fn create_or_show(app: &AppHandle) -> Result<(), String> {
     }
     let state = load_state();
     let scale = state.scale;
-    let initial_size = pet_window_logical_size(scale, state.activity_visible, None);
+    let initial_size = pet_window_effective_size(scale, state.activity_visible, None);
     let win = WebviewWindowBuilder::new(app, PET_LABEL, WebviewUrl::App("pet.html".into()))
         .title("PINVOU 桌伴公仔")
         .inner_size(initial_size.0, initial_size.1)
+        // GTK 下无显式 min hint 的窗口会被钳到 ~200x200 最小尺寸(GB10 实测,
+        // 菜单窗口同病):紧凑桌伴请求 144x165 实得 200x200,定位数学随之失准。
+        // 96x120 覆盖 MIN_SCALE 下的最小合法尺寸,放开 GTK 的钳制。
+        .min_inner_size(96.0, 120.0)
         .resizable(false)
         .maximizable(false)
         .minimizable(false)
@@ -366,7 +389,7 @@ fn position_window(win: &tauri::WebviewWindow) {
 
     let st = load_state();
     if let (Some(x), Some(y)) = (st.x, st.y) {
-        let fallback = pet_window_logical_size(st.scale, st.activity_visible, None);
+        let fallback = pet_window_effective_size(st.scale, st.activity_visible, None);
         let (w, h) = win
             .outer_size()
             .map(|s| (s.width as i32, s.height as i32))
@@ -381,7 +404,7 @@ fn position_window(win: &tauri::WebviewWindow) {
         let p = m.position();
         let s = m.size();
         let monitor_scale = m.scale_factor();
-        let logical = pet_window_logical_size(st.scale, st.activity_visible, None);
+        let logical = pet_window_effective_size(st.scale, st.activity_visible, None);
         let w = (logical.0 * monitor_scale) as i32;
         let h = (logical.1 * monitor_scale) as i32;
         let x = p.x + s.width as i32 - w - (24.0 * monitor_scale) as i32;
@@ -506,6 +529,9 @@ pub async fn show_pet_context_menu(
         )
         .title("桌伴公仔菜单")
         .inner_size(PET_MENU_WIDTH, PET_MENU_HEIGHT)
+        // GTK 下空窗口默认/最小尺寸是 200x200,set_size 会被钳制(GB10 实测
+        // outer=200x200 scale=1)。显式 min hint 允许窗口缩到目标尺寸。
+        .min_inner_size(PET_MENU_WIDTH, PET_MENU_HEIGHT)
         .resizable(false)
         .maximizable(false)
         .minimizable(false)
@@ -523,6 +549,26 @@ pub async fn show_pet_context_menu(
     let _ = menu.eval("document.documentElement.classList.remove('pet-menu-hidden')");
     menu.show()
         .map_err(|error| format!("show pet context menu failed: {error}"))?;
+    // 菜单与桌伴同为置顶窗口,而菜单弹在光标处——光标必然落在桌伴窗口范围内
+    // (透明区域也接收输入)。X11 上菜单若排在桌伴之下,点击全被桌伴截走,
+    // 菜单看得见点不着。map 后重申置顶把菜单提到置顶栈顶(同 keep_above)。
+    let _ = menu.set_always_on_top(true);
+    // Linux/X11 下窗口 map 之前写入的尺寸可能被窗口管理器丢弃(与 always_on_top
+    // 丢失同类,参见 keep_above)：菜单曾以 ~200x200 的兜底尺寸渲染成大白块
+    // (启动日志 "GBM buffer of size 200x200" 即它)。map 后重申 min hint 与
+    // 尺寸(GTK 会把 resize 钳到最小尺寸,须先放开 min)。
+    let _ = menu.set_min_size(Some(tauri::LogicalSize::new(PET_MENU_WIDTH, PET_MENU_HEIGHT)));
+    let _ = menu.set_size(tauri::LogicalSize::new(PET_MENU_WIDTH, PET_MENU_HEIGHT));
+    position_pet_menu_at_cursor(&pet, &menu, (anchor_x, anchor_y));
+    // 诊断走终端:重申后回读实际物理尺寸,便于在无 inspector 的机器上判断
+    // set_size 是否真被 WM 接受(期望 58x28 × scale)。
+    match (menu.outer_size(), menu.scale_factor()) {
+        (Ok(size), Ok(scale)) => eprintln!(
+            "[pet menu] shown outer={}x{} scale={scale}",
+            size.width, size.height
+        ),
+        (size, scale) => eprintln!("[pet menu] size readback failed: {size:?} {scale:?}"),
+    }
     menu.set_focus()
         .map_err(|error| format!("focus pet context menu failed: {error}"))
 }
@@ -639,6 +685,17 @@ fn resize_pet_window(win: &tauri::WebviewWindow, logical_size: (f64, f64), ancho
         (logical_size.1 * sf).round() as u32,
     );
     let _ = win.set_size(tauri::PhysicalSize::new(nw, nh));
+    // 诊断:X11 的 resize 异步生效,这里的回读多为旧值(GB10 实测会拿到上一个
+    // 状态的尺寸),只能当观测信号,绝不能拿来做定位数学——定位一律用请求值,
+    // 请求值已经过 pet_window_effective_size 与真实钳制对齐。
+    if let Ok(size) = win.outer_size() {
+        if (size.width, size.height) != (nw, nh) {
+            eprintln!(
+                "[pet resize] requested {nw}x{nh} readback {}x{} (async, stale ok)",
+                size.width, size.height
+            );
+        }
+    }
     if let Some((size, pos)) = before {
         let (nx, ny) = resized_position(
             (pos.x, pos.y),
@@ -694,6 +751,17 @@ fn resize_pet_window_at_character_anchor(
             area.size.height,
         )
     });
+    // 定位一律用请求值:请求值已经过 pet_window_effective_size 与 GTK 真实
+    // 钳制对齐;X11 resize 异步生效,此刻回读多为旧值,不能参与定位数学。
+    let _ = win.set_size(tauri::PhysicalSize::new(width, height));
+    if let Ok(size) = win.outer_size() {
+        if (size.width, size.height) != (width, height) {
+            eprintln!(
+                "[pet resize] requested {width}x{height} readback {}x{} (async, stale ok)",
+                size.width, size.height
+            );
+        }
+    }
     let (x, y) = character_anchor_position(
         (
             (screen_anchor.0 - local_x * sf).round() as i32,
@@ -702,7 +770,6 @@ fn resize_pet_window_at_character_anchor(
         (width, height),
         work_area,
     );
-    let _ = win.set_size(tauri::PhysicalSize::new(width, height));
     let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
 }
 
@@ -750,7 +817,7 @@ pub async fn set_pet_scale(
         save_state(st)?;
     }
     if let Some(win) = win {
-        let logical_size = pet_window_logical_size(scale, activity_visible, activity_height);
+        let logical_size = pet_window_effective_size(scale, activity_visible, activity_height);
         if let Some(character_anchor) = character_anchor {
             resize_pet_window_at_character_anchor(
                 &win,
@@ -790,7 +857,7 @@ pub async fn set_pet_activity_visible(
         save_state(st)?;
     }
     if let Some(win) = app.get_webview_window(PET_LABEL) {
-        let logical_size = pet_window_logical_size(st.scale, visible, activity_height);
+        let logical_size = pet_window_effective_size(st.scale, visible, activity_height);
         // 人物在窗口内贴底、贴对齐侧(CSS 与 character_local_top_left 一致),
         // 所以只要缩放时保持"底边 + 人物贴边侧"两条边不动,人物在屏幕上就
         // 纹丝不动——卡片卸载的中间帧也稳定,因为人物位置不依赖卡片存在。
@@ -824,13 +891,34 @@ pub async fn open_main_from_pet(
     navigation: State<'_, PetNavigationState>,
     app: AppHandle,
 ) -> Result<(), String> {
+    // 诊断走终端:此命令的失败只会回到 pet 窗口的 JS console,无 inspector 时
+    // 不可见——X11 上 show/set_focus 被 WM 拒绝时用户只看到"点了没反应"。
+    eprintln!("[pet nav] open_main_from_pet invoked");
     let main = app
         .get_webview_window("main")
-        .ok_or_else(|| "main window not found".to_string())?;
-    main.show()
-        .map_err(|error| format!("show main window failed: {error}"))?;
-    main.unminimize()
-        .map_err(|error| format!("unminimize main window failed: {error}"))?;
+        .ok_or_else(|| "main window not found".to_string())
+        .map_err(|error| {
+            eprintln!("[pet nav] {error}");
+            error
+        })?;
+    // GB10 实测:主窗口最小化时 unminimize 返回 Ok 但 mutter 拒绝 deiconify
+    // (焦点抢占保护),窗口召不回来。withdraw+remap 等价于新窗口映射,WM 必须
+    // 显示——仅在确实最小化时走这条路,避免可见窗口无谓闪一下。
+    let was_minimized = main.is_minimized().unwrap_or(false);
+    eprintln!("[pet nav] main minimized={was_minimized}");
+    if was_minimized {
+        let _ = main.hide();
+    }
+    main.show().map_err(|error| {
+        let msg = format!("show main window failed: {error}");
+        eprintln!("[pet nav] {msg}");
+        msg
+    })?;
+    main.unminimize().map_err(|error| {
+        let msg = format!("unminimize main window failed: {error}");
+        eprintln!("[pet nav] {msg}");
+        msg
+    })?;
     let target = session_id.and_then(|value| {
         let trimmed = value.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
@@ -842,10 +930,20 @@ pub async fn open_main_from_pet(
         session_id: target,
         scheduled_run,
     })?;
-    main.set_focus()
-        .map_err(|error| format!("focus main window failed: {error}"))?;
+    // X11 焦点抢占保护:实测(GB10) show/unminimize/set_focus 全部返回 Ok,
+    // 但 WM 拒绝把主窗口提到前台,只打 demand-attention——用户看到"点了没反应"。
+    // raise 不受焦点保护限制:瞬时置顶把窗口强制提前,聚焦后立即交还。
+    let _ = main.set_always_on_top(true);
+    let focus_result = main.set_focus().map_err(|error| {
+        let msg = format!("focus main window failed: {error}");
+        eprintln!("[pet nav] {msg}");
+        msg
+    });
+    let _ = main.set_always_on_top(false);
+    focus_result?;
     app.emit_to("main", "pet:navigation_pending", ())
         .map_err(|error| format!("emit pet navigation wakeup failed: {error}"))?;
+    eprintln!("[pet nav] open_main_from_pet ok");
     Ok(())
 }
 
@@ -997,9 +1095,17 @@ mod tests {
     #[test]
     fn character_top_left_tracks_the_real_flex_layout() {
         // 贴底布局:y = 窗高 - 8 - 人物高,与卡片存在与否无关。
+        // 紧凑 0.5 档在 Linux 上按 200x200 生效尺寸计算(WebKitGTK 最小内容
+        // 尺寸,见 pet_window_effective_size),局部坐标随之不同。
+        #[cfg(not(target_os = "linux"))]
         assert_eq!(
             character_local_top_left(0.5, false, None, "right"),
             (24.0, 53.0)
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            character_local_top_left(0.5, false, None, "right"),
+            (80.0, 88.0)
         );
         assert_eq!(
             character_local_top_left(1.0, false, None, "left"),
@@ -1013,6 +1119,16 @@ mod tests {
             character_local_top_left(0.5, true, Some(112.0), "left"),
             (24.0, 116.0)
         );
+    }
+
+    #[test]
+    fn effective_size_floors_to_webview_min_on_linux_only() {
+        #[cfg(target_os = "linux")]
+        assert_eq!(pet_window_effective_size(0.5, false, None), (200.0, 200.0));
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(pet_window_effective_size(0.5, false, None), (144.0, 165.0));
+        // 高于下限的尺寸各平台一致。
+        assert_eq!(pet_window_effective_size(1.0, true, None), (350.0, 332.0));
     }
 
     #[test]

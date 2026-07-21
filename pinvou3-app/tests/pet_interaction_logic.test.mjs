@@ -658,9 +658,16 @@ assert.match(viewCode, /Number\.isFinite\(configuredScale\)/);
 assert.match(viewCode, /useState\(startupScale\)/);
 assert.match(viewCode, /invoke\('set_pet_scale',[\s\S]{0,120}?scale:\s*startupScale/);
 assert.match(viewCode, /\{allowResize && \(\s*<div\s+className="pet-resize-grip"/);
-assert.match(viewCode, /invoke\('show_pet_context_menu',\s*\{[\s\S]{0,100}?anchorX:\s*event\.clientX/);
-assert.match(viewCode, /if \(event\.button !== 0\) return;[\s\S]{0,180}?invoke\('hide_pet_context_menu'\)/);
-assert.doesNotMatch(viewCode, /setMenu\(|className=.*pet-menu/);
+// 右键菜单为窗口内 DOM 浮层(不再 invoke 原生菜单窗口:GB10/WebKitGTK 下
+// 新起第二个透明窗口会 malloc 堆损坏闪退)。
+assert.match(viewCode, /onContextMenu=\{onCharacterContextMenu\}/);
+assert.match(viewCode, /const onCharacterContextMenu = \(event\) => \{/);
+assert.match(viewCode, /setCtxMenu\(\{ x, y \}\)/);
+assert.match(viewCode, /className="pet-context-menu"/);
+assert.match(viewCode, /invoke\('set_pet_enabled',\s*\{\s*enabled:\s*false\s*\}\)/);
+assert.match(viewCode, /if \(event\.button !== 0\) return;/);
+assert.doesNotMatch(viewCode, /invoke\('show_pet_context_menu'/);
+assert.doesNotMatch(viewCode, /invoke\('hide_pet_context_menu'/);
 assert.match(viewCode, /petScreenAnchorFromRect\(/);
 assert.match(viewCode, /anchor:\s*hasCharacterAnchor\s*\?\s*'character_top_left'/);
 assert.match(viewCode, /anchorX:\s*hasCharacterAnchor\s*\?\s*drag\.anchorX/);

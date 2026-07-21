@@ -150,6 +150,10 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
   const [baseAnimation, setBaseAnimation] = useState('idle');
   const [dragAnimation, setDragAnimation] = useState(null);
   const [hovered, setHovered] = useState(false);
+  // 右键菜单改为窗口内 DOM 浮层(不再另起透明 webview:GB10/WebKitGTK 下
+  // 新起第二个透明窗口会触发 malloc 堆损坏闪退,且被 GTK 钳到 200x200)。
+  const [ctxMenu, setCtxMenu] = useState(null);
+  const ctxMenuRef = useRef(null);
   const [firstAwake, setFirstAwake] = useState(true);
   const [activities, setActivities] = useState([]);
   const [scheduledNotice, setScheduledNotice] = useState(null);
@@ -647,11 +651,21 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
   };
   useEffect(() => () => stopPhysics(), []);
 
+  // 纯点击(未拖动)不该启动拖拽物理:stepPhysics 每帧都按 bounds 把窗口钳到
+  // 一个位置,而该 bounds 在 X11 上因窗口实际尺寸与请求尺寸不一致而偏移,于是
+  // 表现为"点一下人物就整体上移"。只有真正拖动(press.moved)才启动物理。
+  const beginPetPhysics = (drag) => {
+    if (!drag || drag.physicsRunning || !drag.geometryReady) return;
+    drag.physicsRunning = true;
+    cancelAnimationFrame(physRafRef.current);
+    physRafRef.current = requestAnimationFrame(stepPhysics);
+  };
+
   const pressRef = useRef(null);
   const onPointerDown = (event) => {
     if (event.button !== 0) return;
-    const core = window.__TAURI__ && window.__TAURI__.core;
-    if (core) core.invoke('hide_pet_context_menu').catch(() => {});
+    // 右键菜单现为窗口内 DOM 浮层,开启时由捕获阶段 pointerdown 监听收起,
+    // 无需再对已废弃的原生菜单窗口发 hide IPC。
     measureActivityCard();
     event.currentTarget.setPointerCapture(event.pointerId);
     pressRef.current = {
@@ -683,6 +697,9 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
       bounds: null,
     };
     dragRef.current = drag;
+    // 立刻停掉上一次拖拽遗留的惯性循环,避免它作用到这次的新 drag 上。
+    cancelAnimationFrame(physRafRef.current);
+    physRafRef.current = 0;
     const T = window.__TAURI__;
     if (!T || !T.window) return;
     readPetDragContext(T)
@@ -698,8 +715,9 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
           drag.dpr = monitorScale;
         }
         Object.assign(drag, attachPetDragGeometry(drag, { position, size, monitor: null }));
-        cancelAnimationFrame(physRafRef.current);
-        physRafRef.current = requestAnimationFrame(stepPhysics);
+        drag.geometryReady = true;
+        // 若按下后已经移动过(真拖动),几何就绪即启动物理;纯点击则不启动。
+        if (pressRef.current && pressRef.current.moved) beginPetPhysics(drag);
       })
       .catch((error) => {
         console.error('[pet drag] read context failed', error);
@@ -731,6 +749,8 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
         drag.ty += motionY * pointerScale;
       }
     }
+    // 越过拖动阈值才启动物理循环(纯点击不启动,避免点击触发 bounds 钳制上移)。
+    if (press && press.moved) beginPetPhysics(drag);
   };
 
   const finishPointer = (cancelled = false) => {
@@ -869,14 +889,46 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
   const onCharacterContextMenu = (event) => {
     event.preventDefault();
     event.stopPropagation();
+    // pet-root 铺满视口(100vw/100vh),clientX/Y 即窗口内局部坐标。菜单钳在
+    // 窗口内(pet-root overflow:hidden 会裁掉溢出),避免半截跑到窗口外。
+    const MENU_W = 88;
+    const MENU_H = 32;
+    const margin = 8;
+    const x = Math.max(margin, Math.min(event.clientX, window.innerWidth - MENU_W - margin));
+    const y = Math.max(margin, Math.min(event.clientY, window.innerHeight - MENU_H - margin));
+    setCtxMenu({ x, y });
+  };
+
+  const hidePet = async () => {
     const core = window.__TAURI__ && window.__TAURI__.core;
-    if (core) {
-      core.invoke('show_pet_context_menu', {
-        anchorX: event.clientX,
-        anchorY: event.clientY,
-      }).catch(() => {});
+    try {
+      if (core) await core.invoke('set_pet_enabled', { enabled: false });
+    } finally {
+      setCtxMenu(null);
     }
   };
+
+  // 菜单开启时:窗口外(菜单以外)点击 / Esc / 失焦都收起。捕获阶段监听,
+  // 命中菜单内部则不收,与旧独立菜单窗口的 blur/透明区收起语义一致。
+  useEffect(() => {
+    if (!ctxMenu) return undefined;
+    const close = () => setCtxMenu(null);
+    const onPointerDownAway = (event) => {
+      if (ctxMenuRef.current && ctxMenuRef.current.contains(event.target)) return;
+      close();
+    };
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') close();
+    };
+    window.addEventListener('pointerdown', onPointerDownAway, true);
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('blur', close);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDownAway, true);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('blur', close);
+    };
+  }, [ctxMenu]);
 
   const dismissActivity = (event, sessionId) => {
     event.preventDefault();
@@ -1194,6 +1246,19 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
           </div>
         )}
       </div>
+      {ctxMenu && (
+        <div
+          ref={ctxMenuRef}
+          className="pet-context-menu"
+          style={{ left: ctxMenu.x, top: ctxMenu.y }}
+          onContextMenu={(event) => event.preventDefault()}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button type="button" className="pet-context-menu-item" onClick={hidePet}>
+            隐藏公仔
+          </button>
+        </div>
+      )}
     </div>
   );
 }

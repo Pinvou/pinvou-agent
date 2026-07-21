@@ -11,15 +11,19 @@ html.pet-menu-hidden {
   visibility: hidden;
 }
 
+/* 按钮用固定尺寸而非铺满窗口:GTK 下菜单窗口可能被钳在 200x200 最小尺寸
+   (GB10 实测),铺满会渲染成大白块。固定 54x24 + 2px 边距在 58x28 的正常
+   窗口里仍然铺满,在被钳大的窗口里则是左上角一枚小按钮、其余透明。 */
 body {
-  display: flex;
+  display: block;
   box-sizing: border-box;
-  padding: 2px;
 }
 
 #hide-pet {
-  width: 100%;
-  height: 100%;
+  display: block;
+  width: 54px;
+  height: 24px;
+  margin: 2px;
   box-sizing: border-box;
   padding: 0 3px;
   border: 1px solid rgba(20, 24, 31, 0.12);

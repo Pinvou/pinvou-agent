@@ -653,3 +653,37 @@ html.pet-window #root {
   opacity: 0;
   pointer-events: none;
 }
+
+/* 右键菜单:窗口内 DOM 浮层(不再另起透明 webview,规避 GB10 的 malloc 闪退
+   与 GTK 200x200 钳制)。绝对定位于 pet-root，位置在 JS 里已钳进窗口内。 */
+.pet-context-menu {
+  position: absolute;
+  z-index: 50;
+  margin: 0;
+  padding: 0;
+}
+
+.pet-context-menu-item {
+  display: block;
+  min-width: 72px;
+  height: 26px;
+  padding: 0 10px;
+  box-sizing: border-box;
+  border: 1px solid rgba(20, 24, 31, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 2px 8px rgba(20, 24, 31, 0.15);
+  color: #30343b;
+  font: 12px/1 system-ui, "Microsoft YaHei UI", sans-serif;
+  white-space: nowrap;
+  cursor: default;
+  backdrop-filter: blur(10px);
+}
+
+.pet-context-menu-item:hover,
+.pet-context-menu-item:focus-visible {
+  border-color: #2f3338;
+  outline: 0;
+  background: #2f3338;
+  color: #fff;
+}
