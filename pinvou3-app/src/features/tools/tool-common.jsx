@@ -1,7 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { BookOpen, Briefcase, Building2, ChevronDown, ChevronLeft, ChevronRight, CloudSun, Code, Cpu, FileText, Globe, Hexagon, IconGrid, IconList, Layout, LineChart, Mail, MessageCircle, Navigation, Package, Palette, Presentation, Search, Send, Server, TrendingDown, TrendingUp, User, Video, Wrench, XIcon, Zap } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
+import { parseUnifiedDiff, diffStats } from './unified-diff-parser.js';
 
 const AcFmtIcon = ({ kind, className }) => (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
@@ -235,17 +236,151 @@ const AcFmtIcon = ({ kind, className }) => (
         </div>
       );
     };
+    // IDE 风格 diff viewer:解析 unified diff → 行号 + 着色背景 + 文件头 + 摘要脚注。
+    // 替换原纯文本按行着色版本(2026-07 升级,对齐 Cursor/Claude Code/Cline 行业标准)。
+    // 解析失败或 receipt preview 截断时降级为单列文本,绝不崩。
     const DiffView = ({ text, isDark }) => {
-      const lines = String(text).split('\n');
-      const add = isDark ? 'text-[#93D5A6]' : 'text-[#137333]';
-      const del = isDark ? 'text-[#F28B82]' : 'text-[#C5221F]';
-      const hunk = isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]';
-      const muted = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
-      const color = (l) => /^(\+\+\+|---)/.test(l) ? muted : l.startsWith('+') ? add : l.startsWith('-') ? del : l.startsWith('@@') ? hunk : '';
+      const parsed = useMemo(() => parseUnifiedDiff(text), [text]);
+      // M4:diffStats 在 parsed 不变时不必重算,用 useMemo 避免每次渲染 O(n) 扫描。
+      // 多文件场景每个 file 段各自算 stats;顶层 stats(向后兼容/全局胶囊)只走聚合。
+      // 注意:Hook 必须无条件调用 —— 不能放在下方 !parsed.ok 的 early return 之后,
+      // 否则同一组件从解析失败切到成功时 Hook 数量变化,React 报
+      // "Rendered more hooks than during the previous render"(评审 M4)。
+      const fileStatsList = useMemo(
+        () => (parsed.ok && parsed.files ? parsed.files : []).map((f) => diffStats({ hunks: f.hunks })),
+        [parsed],
+      );
+      // 展开/收起完整 diff(默认 200px 滚动,点文件头 chevron 展开全部)。
+      const [expanded, setExpanded] = useState(false);
+      // 解析失败(非 diff 文本 / 大文件 [diff omitted] / 截断 receipt preview):走文本兜底。
+      if (!parsed.ok) {
+        if (parsed.omitReason) {
+          const muted = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
+          const body = isDark ? 'text-[#C4C7C5]' : 'text-[#444746]';
+          // H5:omitReason 现在可能同时含 summary("Wrote N bytes")和
+          // "[diff omitted] ..." 原因(summary 在前)。summary 走正常字色,
+          // omitReason 整段保持灰字提示。
+          return (
+            <div className={outBox(isDark)} style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>
+              {parsed.summary ? <div className={body + ' mb-1'}>{parsed.summary}</div> : null}
+              <div className={muted}>{parsed.omitReason}</div>
+            </div>
+          );
+        }
+        const lines = String(text).split('\n');
+        const add = isDark ? 'text-[#93D5A6]' : 'text-[#137333]';
+        const del = isDark ? 'text-[#F28B82]' : 'text-[#C5221F]';
+        const hunk = isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]';
+        const muted = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
+        const color = (l) => /^(\+\+\+|---)/.test(l) ? muted : l.startsWith('+') ? add : l.startsWith('-') ? del : l.startsWith('@@') ? hunk : '';
+        return (
+          <pre className={outBox(isDark)} style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>
+            {lines.map((l, i) => <div key={i} className={color(l)}>{l || ' '}</div>)}
+          </pre>
+        );
+      }
+      // 配色:沿用原 DiffView 的 iOS 风格调色板,新增行级背景色提升可读性。
+      const addText = isDark ? 'text-[#93D5A6]' : 'text-[#137333]';
+      const delText = isDark ? 'text-[#F28B82]' : 'text-[#C5221F]';
+      const ctxText = isDark ? 'text-[#C4C7C5]' : 'text-[#444746]';
+      const mutedText = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
+      const addBg = isDark ? 'bg-[#0e1f0e]' : 'bg-[#e6f4ea]';
+      const delBg = isDark ? 'bg-[#2a0e0e]' : 'bg-[#fce8e6]';
+      const hunkBg = isDark ? 'bg-[#0d1a2e]' : 'bg-[#e8f0fe]';
+      const headerBg = isDark ? 'bg-[#1b1b1d]' : 'bg-[#f1f3f4]';
+      const metaText = isDark ? 'text-[#8E8E8E]' : 'text-[#5f6368]';
+
+      const noStyle = { whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' };
+
+      // H1:多文件分段渲染 —— 每个文件段独立 header + 统计胶囊;单文件场景下
+      // parsed.files 长度为 1,与原行为一致。
+      const files = parsed.files && parsed.files.length > 0 ? parsed.files : [{ oldPath: parsed.oldPath, newPath: parsed.newPath, hunks: parsed.hunks }];
+
       return (
-        <pre className={outBox(isDark)} style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>
-          {lines.map((l, i) => <div key={i} className={color(l)}>{l || ' '}</div>)}
-        </pre>
+        // 根节点不用 overflow-hidden class:vendor/tailwind.js 运行时把生成的
+        // .overflow-hidden 注入到 base.css 之后,会盖掉 .tool-card-output 的
+        // overflow-y:auto,导致 diff 被 200px max-height 裁剪且无法滚动(e2e 实测)。
+        // 内联样式优先级最高:显式 y 滚动 + x 裁剪(保圆角),expanded 时放开 max-height。
+        <div
+          data-testid="diff-view"
+          className={`${outBox(isDark)} p-0`}
+          style={{ overflowY: 'auto', overflowX: 'hidden', ...(expanded ? { maxHeight: 'none' } : {}) }}
+        >
+          {files.map((file, fi) => {
+            const fst = fileStatsList[fi] || { add: 0, del: 0, ctx: 0 };
+            return (
+              <div key={fi} className={fi > 0 ? `border-t ${isDark ? 'border-white/10' : 'border-black/10'}` : ''}>
+                {/* 文件头:旧路径 → 新路径(同文件只显示一个)。add/del 统计胶囊 + 展开按钮。 */}
+                <div data-testid="diff-file-header" className={`flex items-center justify-between gap-2 px-3 py-1.5 text-[11px] border-b ${isDark ? 'border-white/5' : 'border-black/5'} ${headerBg}`}>
+                  <div className={`flex items-center gap-1.5 min-w-0 ${metaText}`}>
+                    <span aria-hidden>📄</span>
+                    <span className="truncate font-mono">{file.newPath || file.oldPath || ''}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className={`px-1.5 py-0.5 rounded ${addText} ${addBg}`}>+{fst.add}</span>
+                    <span className={`px-1.5 py-0.5 rounded ${delText} ${delBg}`}>−{fst.del}</span>
+                    <button
+                      type="button"
+                      onClick={() => setExpanded((v) => !v)}
+                      title={expanded ? '收起' : '展开完整 diff'}
+                      aria-label={expanded ? '收起 diff' : '展开完整 diff'}
+                      className={`px-1 py-0.5 rounded ${mutedText} ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}
+                    >
+                      <ChevronDown size={12} className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />
+                    </button>
+                  </div>
+                </div>
+
+                {/* hunk 渲染:行号列 + 内容列,add/del 行带背景色 */}
+                <div className="overflow-x-auto">
+                  {file.hunks.map((h, hi) => (
+                    <div key={hi}>
+                      <div className={`px-3 py-0.5 text-[11px] font-mono ${mutedText} ${hunkBg}`}>{h.header}</div>
+                      {h.lines.map((l, li) => {
+                        // 行号列(右对齐,固定 4 字符宽)。空侧用 ''。
+                        const oldStr = l.oldNo != null ? String(l.oldNo) : '';
+                        const newStr = l.newNo != null ? String(l.newNo) : '';
+                        let bg = '', txt = ctxText, marker = ' ';
+                        if (l.kind === 'add') { bg = addBg; txt = addText; marker = '+'; }
+                        else if (l.kind === 'del') { bg = delBg; txt = delText; marker = '−'; }
+                        else if (l.kind === 'meta') { txt = mutedText; }
+                        return (
+                          <div
+                            key={li}
+                            data-testid="diff-line"
+                            data-diff-kind={l.kind}
+                            data-old-no={oldStr}
+                            data-new-no={newStr}
+                            className={`flex items-start ${bg} text-[12px] leading-[1.55]`}
+                          >
+                            <span className={`select-none text-right pr-2 pl-2 w-[3.5rem] shrink-0 ${mutedText}`}>{oldStr}</span>
+                            <span className={`select-none text-right pr-2 w-[3.5rem] shrink-0 ${mutedText}`}>{newStr}</span>
+                            <span className={`select-none w-4 shrink-0 ${txt}`}>{marker}</span>
+                            <span className={`flex-1 pr-3 ${txt}`} style={noStyle}>{l.text || ' '}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+
+          {/* 摘要脚注:Replaced N occurrences / Created ... / Wrote ... bytes */}
+          {parsed.summary ? (
+            <div data-testid="diff-summary" className={`px-3 py-1.5 text-[11px] border-t ${isDark ? 'border-white/5' : 'border-black/5'} ${mutedText}`}>
+              {parsed.summary}
+            </div>
+          ) : null}
+
+          {/* LSP 诊断块(若后端 append),单独样式 */}
+          {parsed.trailingDiagnostics ? (
+            <div data-testid="diff-diagnostics" className={`px-3 py-1.5 text-[11px] border-t ${isDark ? 'border-white/5' : 'border-black/5'} ${delText}`} style={{ whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' }}>
+              {parsed.trailingDiagnostics}
+            </div>
+          ) : null}
+        </div>
       );
     };
     const ShellView = ({ data, isDark, t }) => {
