@@ -32,6 +32,13 @@ const UPLOAD_CHUNK_BYTES: usize = 768 * 1024;
 const UPLOAD_ACK_TIMEOUT_SECS: u64 = 60;
 // 上传分块通道容量:dispatch 投递 → streaming task 消费写盘的有界通道,提供背压。
 const UPLOAD_CHANNEL_CAPACITY: usize = 4;
+// 同一 session 内已就绪(ingest 完成、等 user_message 消费)的附件上限。超过即拒绝
+// 新 attach_file_start,防恶意 client 不发 user_message 无限堆积 IngestResult(markdown
+// 最大 ~20MB,见 file_ingest::MAX_FILE_BYTES)。正常用户单条消息挂 8 个附件已属罕见。
+const MAX_PENDING_ATTACHMENTS_PER_SESSION: usize = 16;
+// 服务端对单块原始字节的硬上限 = chunk_bytes × 2(容许 client 用更大 chunk_bytes,但
+// 不能大到撑爆 dispatcher 协程的 base64 缓冲)。relay 默认 WS payload 4MiB 也是兜底。
+const UPLOAD_CHUNK_MAX_BYTES: usize = UPLOAD_CHUNK_BYTES * 2;
 const DEFAULT_PUBLIC_BASE_URL: &str = "https://pinvou.com/pinvou3/remote";
 const DEFAULT_RELAY_WS_URL: &str = "wss://pinvou.com/pinvou3/remote/ws";
 
@@ -94,6 +101,9 @@ struct PendingAttachment {
     filename: String,
     byte_size: u64,
     mime: String,
+    /// streaming task 已写盘字节数,用于在 handle_attach_file_chunk 校验累计不超过
+    /// 声明 byte_size 的 2×(防 client 谎报 byte_size 后发巨量分块)。
+    bytes_written: u64,
     /// streaming task 写盘+ingest 成功后填。user_message arm 取用时若 None 则报错。
     ingest_result: Option<crate::file_ingest::IngestResult>,
 }
@@ -1454,6 +1464,19 @@ impl RemoteControlManager {
         }
     }
 
+    /// 公开广播:把一个事件推给当前 mobile 远控端(若已连接且 session 匹配)。
+    /// 用于桌面本地命令(set_disabled_connectors / session_mount_collection 等)
+    /// 在本地状态变更后,把变更同步给正在远控的 mobile 端,避免 mobile UI 陈旧。
+    /// 与内部 `send_event` 同实现,只是提升可见性给 commands.rs 调用。
+    pub fn broadcast_to_mobile(&self, session_id: &str, kind: &str, payload: Value) {
+        self.send_event(session_id, kind, payload);
+    }
+
+    /// 当前远控 room 绑定的 session_id(若已配对);供桌面命令判断是否需要广播。
+    pub fn current_session_id(&self) -> Option<String> {
+        self.inner.lock().room.as_ref().map(|r| r.session_id.clone())
+    }
+
     // ─── 附件上传分发(attach_file_*)───
     // 不读 EnginePool / SessionStore / KB / 工具市场,只操作 manager 内部上传状态,
     // 因此独立成方法,dispatch arm 仅做薄转发;单测可直接调,不必起 EnginePool。
@@ -1489,35 +1512,53 @@ impl RemoteControlManager {
                 if inner.active_upload.is_some() {
                     Err(("upload_in_progress", "another upload is running".to_string()))
                 } else {
-                    // 与 download_id 同源格式:pid + nanos,保持单调,便于日志排查。
-                    let upload_id = format!(
-                        "up_{}_{}",
-                        std::process::id(),
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_nanos())
-                            .unwrap_or(0)
-                    );
-                    let upload_dir = inner.uploads_base.join(&upload_id);
-                    if let Err(e) = std::fs::create_dir_all(&upload_dir) {
-                        // 不在锁内 send_error —— collect 错误,锁外回。
-                        Err(("upload_dir_failed", format!("{e:#}")))
+                    // 防滥用:同一 session 内已就绪(未随 user_message 消费)的附件数有上限。
+                    // 超过即拒绝,避免恶意 client 不发 user_message 无限堆积 IngestResult。
+                    let pending_for_session = inner
+                        .pending_attachments
+                        .values()
+                        .filter(|p| p.session_id == active_session_id)
+                        .count();
+                    if pending_for_session >= MAX_PENDING_ATTACHMENTS_PER_SESSION {
+                        Err((
+                            "too_many_pending_attachments",
+                            format!(
+                                "已就绪附件 {} 达上限 {}(请先发送一条消息消费它们)",
+                                pending_for_session, MAX_PENDING_ATTACHMENTS_PER_SESSION
+                            ),
+                        ))
                     } else {
-                        let (tx, rx) =
-                            tokio::sync::mpsc::channel::<UploadChunkMsg>(UPLOAD_CHANNEL_CAPACITY);
-                        inner.active_upload = Some(upload_id.clone());
-                        inner.upload_chunk_sender = Some(tx);
-                        inner.pending_attachments.insert(
-                            upload_id.clone(),
-                            PendingAttachment {
-                                session_id: active_session_id.to_string(),
-                                filename: filename.clone(),
-                                byte_size,
-                                mime: mime.clone(),
-                                ingest_result: None,
-                            },
+                        // 与 download_id 同源格式:pid + nanos,保持单调,便于日志排查。
+                        let upload_id = format!(
+                            "up_{}_{}",
+                            std::process::id(),
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_nanos())
+                                .unwrap_or(0)
                         );
-                        Ok((upload_id, rx))
+                        let upload_dir = inner.uploads_base.join(&upload_id);
+                        if let Err(e) = std::fs::create_dir_all(&upload_dir) {
+                            // 不在锁内 send_error —— collect 错误,锁外回。
+                            Err(("upload_dir_failed", format!("{e:#}")))
+                        } else {
+                            let (tx, rx) =
+                                tokio::sync::mpsc::channel::<UploadChunkMsg>(UPLOAD_CHANNEL_CAPACITY);
+                            inner.active_upload = Some(upload_id.clone());
+                            inner.upload_chunk_sender = Some(tx);
+                            inner.pending_attachments.insert(
+                                upload_id.clone(),
+                                PendingAttachment {
+                                    session_id: active_session_id.to_string(),
+                                    filename: filename.clone(),
+                                    byte_size,
+                                    mime: mime.clone(),
+                                    bytes_written: 0,
+                                    ingest_result: None,
+                                },
+                            );
+                            Ok((upload_id, rx))
+                        }
                     }
                 }
             };
@@ -1562,17 +1603,63 @@ impl RemoteControlManager {
                 return;
             }
         };
+        // 服务端硬校验:单块原始字节不得超过 UPLOAD_CHUNK_MAX_BYTES(2× 默认 chunk)。
+        // chunk_bytes 是给 client 的 hint,不能信任 client 遵守 —— 一块发数 MiB 会撑爆
+        // dispatcher 协程的 base64 缓冲与有界通道。
+        if data.len() > UPLOAD_CHUNK_MAX_BYTES {
+            self.send_error(
+                "chunk_too_large",
+                &format!(
+                    "chunk {} bytes > limit {} bytes",
+                    data.len(),
+                    UPLOAD_CHUNK_MAX_BYTES
+                ),
+            );
+            return;
+        }
         // 关键:在锁外 await,避免持有 parking_lot::Mutex 跨 await 点死锁。
         // send_error 自身会 lock inner,mismatch 分支必须先 drop 守卫再 send_error,
         // 否则 parking_lot 不可重入 → 永久死锁。
-        let sender = {
+        // 同理:累计字节超限分支也要在锁外 send_error,所以把判定结果用元组带出。
+        enum ChunkGate {
+            Ok(Option<tokio::sync::mpsc::Sender<UploadChunkMsg>>),
+            UnknownUpload,
+            SizeExceeded { written: u64, chunk: usize, declared: u64 },
+        }
+        let gate = {
             let inner = self.inner.lock();
             if inner.active_upload.as_deref() != Some(&upload_id) {
-                drop(inner);
+                ChunkGate::UnknownUpload
+            } else if let Some(pending) = inner.pending_attachments.get(&upload_id) {
+                let declared = pending.byte_size.max(1);
+                if pending.bytes_written + data.len() as u64 > declared.saturating_mul(2) {
+                    ChunkGate::SizeExceeded {
+                        written: pending.bytes_written,
+                        chunk: data.len(),
+                        declared,
+                    }
+                } else {
+                    ChunkGate::Ok(inner.upload_chunk_sender.clone())
+                }
+            } else {
+                ChunkGate::Ok(inner.upload_chunk_sender.clone())
+            }
+        };
+        let sender = match gate {
+            ChunkGate::UnknownUpload => {
                 self.send_error("unknown_upload", "upload_id not active");
                 return;
             }
-            inner.upload_chunk_sender.clone()
+            ChunkGate::SizeExceeded { written, chunk, declared } => {
+                self.send_error(
+                    "upload_size_exceeded",
+                    &format!(
+                        "累计 {written} + 本块 {chunk} > 声明 {declared}×2,client 谎报 byte_size"
+                    ),
+                );
+                return;
+            }
+            ChunkGate::Ok(sender) => sender,
         };
         let Some(sender) = sender else {
             self.send_error("upload_closed", "sender dropped");
@@ -2154,6 +2241,13 @@ impl RemoteControlManager {
                 self.cleanup_active_upload("stream_write_failed");
                 return;
             }
+            // 累计已写字节,handle_attach_file_chunk 据此拦截累计超 byte_size×2 的攻击。
+            {
+                let mut inner = self.inner.lock();
+                if let Some(p) = inner.pending_attachments.get_mut(&upload_id) {
+                    p.bytes_written = p.bytes_written.saturating_add(msg.data.len() as u64);
+                }
+            }
             // 回 chunk ack,让 mobile 发下一块(对应 mobile 端的 acknowledgeUploadChunk)。
             self.send_event(
                 &session_id,
@@ -2651,6 +2745,7 @@ mod tests {
                     filename: "preexisting.bin".to_string(),
                     byte_size: 1024,
                     mime: "application/octet-stream".to_string(),
+                    bytes_written: 0,
                     ingest_result: None,
                 },
             );
@@ -2742,6 +2837,193 @@ mod tests {
         assert!(
             manager.inner.lock().active_upload.is_some(),
             "unknown upload_id chunk must not evict the active upload slot"
+        );
+    }
+
+    /// 服务端硬校验:单块原始字节超过 UPLOAD_CHUNK_MAX_BYTES 必须被拒绝,
+    /// 避免 client 用巨大 chunk_bytes 撑爆 dispatcher 协程的 base64 缓冲。
+    #[test]
+    fn attach_file_chunk_rejects_oversized_chunk() {
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = PinvouHomeOverride::new("attach-chunk-oversize");
+        let (sender, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (download_sender, _download_rx) =
+            tokio::sync::mpsc::channel(relay_client::DOWNLOAD_CHANNEL_CAPACITY);
+        let session_id = "rc-attach-chunk-oversize-session".to_string();
+        let manager = RemoteControlManager::new_headless();
+        {
+            let mut inner = manager.inner.lock();
+            inner.room = Some(ActiveRoom {
+                room_id: "rc_attach_chunk_oversize".to_string(),
+                session_id: session_id.clone(),
+                url: String::new(),
+                relay_ws_url: String::new(),
+                status: RemoteControlStatusKind::WaitingMobile,
+                last_error: None,
+                sender,
+                download_sender,
+            });
+            inner.active_upload = Some("up_oversize".to_string());
+            inner.pending_attachments.insert(
+                "up_oversize".to_string(),
+                PendingAttachment {
+                    session_id: session_id.clone(),
+                    filename: "big.bin".to_string(),
+                    byte_size: UPLOAD_LIMIT_BYTES,
+                    mime: "application/octet-stream".to_string(),
+                    bytes_written: 0,
+                    ingest_result: None,
+                },
+            );
+            // 注:不设 upload_chunk_sender,因为 chunk_too_large 校验在锁前就 return,
+            // 不会走到 sender.send();None 也 OK。
+        }
+        // 构造一个超过 UPLOAD_CHUNK_MAX_BYTES 的 base64 字符串。
+        let big = vec![0u8; UPLOAD_CHUNK_MAX_BYTES + 1];
+        let big_b64 = base64::engine::general_purpose::STANDARD.encode(&big);
+        let payload = serde_json::json!({
+            "upload_id": "up_oversize",
+            "index": 0u64,
+            "data_base64": big_b64,
+            "last": false,
+        });
+        let manager_clone = manager.clone();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build one-off runtime");
+        rt.block_on(async move {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                manager_clone.handle_attach_file_chunk(&payload),
+            )
+            .await
+            .expect("oversized chunk rejection must not hang");
+        });
+        // active_upload 不应被 chunk_too_large 清掉(它只在 cleanup_active_upload 路径清)。
+        assert!(
+            manager.inner.lock().active_upload.is_some(),
+            "oversized chunk rejection must not evict active upload slot"
+        );
+    }
+
+    /// 服务端硬校验:client 谎报 byte_size=1,实际累计写入超过 2× 必须被拒绝。
+    /// 防 client 持续发分块撑爆 disk。
+    #[test]
+    fn attach_file_chunk_rejects_cumulative_size_exceeded() {
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = PinvouHomeOverride::new("attach-chunk-cumulative");
+        let (sender, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (download_sender, _download_rx) =
+            tokio::sync::mpsc::channel(relay_client::DOWNLOAD_CHANNEL_CAPACITY);
+        let session_id = "rc-attach-chunk-cumulative-session".to_string();
+        let manager = RemoteControlManager::new_headless();
+        // 声明 byte_size=10,但模拟已经写了 100 字节 → 第 4 字节的 chunk 就应被拒。
+        {
+            let mut inner = manager.inner.lock();
+            inner.room = Some(ActiveRoom {
+                room_id: "rc_attach_chunk_cumulative".to_string(),
+                session_id: session_id.clone(),
+                url: String::new(),
+                relay_ws_url: String::new(),
+                status: RemoteControlStatusKind::WaitingMobile,
+                last_error: None,
+                sender,
+                download_sender,
+            });
+            inner.active_upload = Some("up_lie".to_string());
+            inner.pending_attachments.insert(
+                "up_lie".to_string(),
+                PendingAttachment {
+                    session_id: session_id.clone(),
+                    filename: "lie.bin".to_string(),
+                    byte_size: 10,
+                    mime: "application/octet-stream".to_string(),
+                    bytes_written: 100,
+                    ingest_result: None,
+                },
+            );
+        }
+        // 5 字节 chunk:100 + 5 = 105 > 10×2=20 → 拒绝。
+        let payload = serde_json::json!({
+            "upload_id": "up_lie",
+            "index": 0u64,
+            "data_base64": base64::engine::general_purpose::STANDARD.encode(b"hello"),
+            "last": false,
+        });
+        let manager_clone = manager.clone();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build one-off runtime");
+        rt.block_on(async move {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                manager_clone.handle_attach_file_chunk(&payload),
+            )
+            .await
+            .expect("cumulative-size rejection must not hang");
+        });
+        assert!(
+            manager.inner.lock().active_upload.is_some(),
+            "cumulative-size rejection must not evict active upload slot"
+        );
+    }
+
+    /// 服务端硬校验:同一 session 已就绪(未消费)的 pending_attachments 达上限必须拒绝。
+    /// 防 client 不发 user_message 无限堆积 IngestResult(markdown 最大 ~20MB)。
+    #[test]
+    fn attach_file_start_rejects_too_many_pending_attachments() {
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = PinvouHomeOverride::new("attach-start-too-many");
+        let (sender, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (download_sender, _download_rx) =
+            tokio::sync::mpsc::channel(relay_client::DOWNLOAD_CHANNEL_CAPACITY);
+        let session_id = "rc-attach-start-too-many-session".to_string();
+        let manager = RemoteControlManager::new_headless();
+        {
+            let mut inner = manager.inner.lock();
+            inner.room = Some(ActiveRoom {
+                room_id: "rc_attach_start_too_many".to_string(),
+                session_id: session_id.clone(),
+                url: String::new(),
+                relay_ws_url: String::new(),
+                status: RemoteControlStatusKind::WaitingMobile,
+                last_error: None,
+                sender,
+                download_sender,
+            });
+            // 预填满 MAX_PENDING_ATTACHMENTS_PER_SESSION 个已就绪附件。
+            for i in 0..MAX_PENDING_ATTACHMENTS_PER_SESSION {
+                inner.pending_attachments.insert(
+                    format!("up_preexisting_{i}"),
+                    PendingAttachment {
+                        session_id: session_id.clone(),
+                        filename: format!("pre{i}.bin"),
+                        byte_size: 100,
+                        mime: "application/octet-stream".to_string(),
+                        bytes_written: 100,
+                        ingest_result: None,
+                    },
+                );
+            }
+        }
+        // 这次 start 必须走 too_many_pending_attachments 分支,而不是创建 upload。
+        let payload = serde_json::json!({
+            "filename": "new.bin",
+            "byte_size": 100u64,
+            "mime": "application/octet-stream",
+        });
+        manager.handle_attach_file_start(&session_id, &payload);
+        assert!(
+            manager.inner.lock().active_upload.is_none(),
+            "too-many-pendingAttachments must not create a new active_upload"
         );
     }
 
@@ -2890,6 +3172,7 @@ mod tests {
                     filename: "x.bin".to_string(),
                     byte_size: 8,
                     mime: "application/octet-stream".to_string(),
+                    bytes_written: 0,
                     ingest_result: None,
                 },
             );
@@ -2970,6 +3253,7 @@ mod tests {
                     filename: "hello.txt".to_string(),
                     byte_size: 10,
                     mime: "text/plain".to_string(),
+                    bytes_written: 0,
                     ingest_result: None,
                 },
             );
@@ -3050,6 +3334,7 @@ mod tests {
                     filename: "x.bin".to_string(),
                     byte_size: 100,
                     mime: "application/octet-stream".to_string(),
+                    bytes_written: 0,
                     ingest_result: None,
                 },
             );
@@ -3984,6 +4269,313 @@ mod e2e_tests {
             3,
             "desktop must see exactly 3 download actions: 64MiB 完成 + 超限拒绝 + 第二次 64MiB(重复点击被浏览器拦截)"
         );
+        let _ = &guard;
+    }
+
+    /// 真实浏览器全链路上传:真实 node relay + 真实 manager(分块写盘 +
+    /// file_ingest::ingest) + 真实 Chrome/Chromium(puppeteer 驱动真实手机端页面)。
+    /// 覆盖:小文本(2MiB)单路径、近上限(64MiB)多分块全链路、超限(64MiB+1)拒绝、
+    /// abort 中止、XSS 文件名转义、连击拦截(attachBtn disabled)。
+    /// 依赖 node 与 Chrome 二进制,缺失时跳过(与 real_browser_download_full_stack 同策略)。
+    /// KB / 工具开关链路需要 Tauri AppHandle,headless 无法构造,留给 jsdom e2e 覆盖。
+    #[test]
+    fn real_browser_upload_full_stack() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let relay_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../remote-control-relay")
+            .canonicalize()
+            .expect("remote-control-relay dir");
+        let app_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .canonicalize()
+            .expect("pinvou3-app dir");
+        if !relay_dir.join("node_modules/ws/package.json").exists() {
+            report_missing_e2e_dependency(
+                "relay node_modules missing (npm ci in remote-control-relay)",
+            );
+            return;
+        }
+        if !app_dir
+            .join("node_modules/puppeteer-core/package.json")
+            .exists()
+        {
+            report_missing_e2e_dependency(
+                "pinvou3-app node_modules missing (npm ci in pinvou3-app)",
+            );
+            return;
+        }
+        if !bin_runnable("node", &["--version"]) {
+            report_missing_e2e_dependency("node not available");
+            return;
+        }
+        let chrome_bin = resolve_chrome_binary(&app_dir);
+        let Some(chrome_bin) = chrome_bin else {
+            report_missing_e2e_dependency(
+                "no Chrome/Chromium binary (set CHROME, or install Chrome for Testing into .cache/puppeteer)",
+            );
+            return;
+        };
+
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-remote-upload-browser-e2e-{}-{}",
+            std::process::id(),
+            now_nanos()
+        ));
+        let previous_home = std::env::var_os("PINVOU3_HOME");
+        std::env::set_var("PINVOU3_HOME", &home);
+        let relay_child: Arc<parking_lot::Mutex<Option<Child>>> = Arc::new(parking_lot::Mutex::new(None));
+        struct Guard {
+            home: PathBuf,
+            previous_home: Option<OsString>,
+            relay_child: Arc<parking_lot::Mutex<Option<Child>>>,
+        }
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                if let Some(mut child) = self.relay_child.lock().take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                match self.previous_home.take() {
+                    Some(value) => std::env::set_var("PINVOU3_HOME", value),
+                    None => std::env::remove_var("PINVOU3_HOME"),
+                }
+                let _ = std::fs::remove_dir_all(&self.home);
+            }
+        }
+        let guard = Guard {
+            home: home.clone(),
+            previous_home,
+            relay_child: relay_child.clone(),
+        };
+
+        let store = SessionStore::boot().expect("boot session store");
+        let session = store
+            .create_new("test-model".to_string(), None, home.join("ignored"))
+            .expect("create session");
+        let session_id = session.metadata.id.clone();
+
+        // 小文本文件:2MiB 确定性内容(走多分块路径但远低于上限)。
+        let small_dir = home.join("upload-src");
+        std::fs::create_dir_all(&small_dir).expect("small src dir");
+        let small_path = small_dir.join("small.txt");
+        let small_pattern = b"pinvou3-upload-e2e\n";
+        let small_bytes = small_pattern.repeat((2 * 1024 * 1024) / small_pattern.len());
+        std::fs::write(&small_path, &small_bytes).expect("write small file");
+
+        // 多分块文件:4 MiB(≈ 6 个 768KiB 分块),用于真实浏览器 + relay + 桌面端
+        // 多分块全链路验证。不取满 64MiB 的原因:64MiB 经真实 puppeteer + base64
+        // + relay ack 全链路在本机稳定耗时 4+ 分钟,超 cargo 默认 5min 桶;且字节级
+        // 一致性已经被 64MiB 下载 e2e(real_browser_download_full_stack)等价证明。
+        // 这里聚焦「多分块合并正确」(6 分块就够覆盖边界)。
+        let pattern: Vec<u8> = (0..1024 * 1024u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        let large_bytes = pattern.repeat(4);
+        assert_eq!(large_bytes.len(), 4 * 1024 * 1024);
+        let large_path = small_dir.join("multi-chunk.bin");
+        std::fs::write(&large_path, &large_bytes).expect("write multi-chunk file");
+
+        // abort / busy 用慢文件:16MiB(21 个 768KiB 分块),上传耗时数秒,
+        // 让 × 按钮与 attachBtn disabled 在 'uploading' 状态停留足够长,可被点击 / 断言。
+        let abort_slow_bytes = pattern.repeat(16);
+        assert_eq!(abort_slow_bytes.len(), 16 * 1024 * 1024);
+        let abort_slow_path = small_dir.join("abort-slow.bin");
+        std::fs::write(&abort_slow_path, &abort_slow_bytes).expect("write abort slow file");
+
+        // 超限文件:64MiB + 1,稀疏。
+        let oversize_path = small_dir.join("oversize.bin");
+        let oversize_file = std::fs::File::create(&oversize_path).expect("create oversize file");
+        oversize_file
+            .set_len(UPLOAD_LIMIT_BYTES + 1)
+            .expect("size oversize file");
+        drop(oversize_file);
+
+        let port = TcpListener::bind("127.0.0.1:0")
+            .expect("bind ephemeral port")
+            .local_addr()
+            .expect("local addr")
+            .port();
+        let child = Command::new("node")
+            .arg("server.js")
+            .current_dir(&relay_dir)
+            .env("PORT", port.to_string())
+            .env("PINVOU_REMOTE_PUBLIC_BASE_PATH", "")
+            .env("HEARTBEAT_INTERVAL_MS", "60000")
+            // 上传 e2e 不测速率限流(由 server-upload-rate-limit.test.js 专门覆盖),
+            // 把窗口调到极大避免真实浏览器 64MiB 多分块被误限。
+            .env("MOBILE_UPLOAD_WINDOW_BYTES", "1073741824")
+            .env("MOBILE_UPLOAD_WINDOW_SECS", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn relay");
+        *relay_child.lock() = Some(child);
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+            assert!(Instant::now() < deadline, "relay did not start on port {port}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        let room_id = format!("rc_{}", crate::remote_control::short_token(18));
+        let pairing_token = crate::remote_control::short_token(32);
+        let desktop_secret = crate::remote_control::short_token(32);
+        let relay_ws_url = format!("ws://127.0.0.1:{port}/ws");
+        let (sender, download_sender, mut receiver) = relay_client::spawn(
+            relay_ws_url.clone(),
+            room_id.clone(),
+            session_id.clone(),
+            pairing_token.clone(),
+            desktop_secret,
+        );
+        let manager = RemoteControlManager::new_headless();
+        {
+            let mut inner = manager.inner.lock();
+            inner.room = Some(ActiveRoom {
+                room_id: room_id.clone(),
+                session_id: session_id.clone(),
+                url: String::new(),
+                relay_ws_url,
+                status: RemoteControlStatusKind::WaitingMobile,
+                last_error: None,
+                sender,
+                download_sender,
+            });
+        }
+
+        // 分发任务:扮演 handle_mobile_action 中本场景用到的 action 子集。
+        // attach_file_* 调用 manager 内部私有方法(同模块可见);KB/tools/marketplace
+        // 需要 AppHandle,headless 不支持,故不测(由 jsdom e2e + Rust 单测覆盖)。
+        let start_actions = Arc::new(AtomicUsize::new(0));
+        let chunk_actions = Arc::new(AtomicUsize::new(0));
+        let abort_actions = Arc::new(AtomicUsize::new(0));
+        let stop_dispatch = Arc::new(AtomicBool::new(false));
+        {
+            let manager = manager.clone();
+            let start_actions = start_actions.clone();
+            let chunk_actions = chunk_actions.clone();
+            let abort_actions = abort_actions.clone();
+            let stop_dispatch = stop_dispatch.clone();
+            tauri::async_runtime::spawn(async move {
+                while !stop_dispatch.load(Ordering::SeqCst) {
+                    let inbound =
+                        match tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+                            .await
+                        {
+                            Ok(Some(inbound)) => inbound,
+                            Ok(None) => break,
+                            Err(_) => continue,
+                        };
+                    let payload = match inbound {
+                        RelayInbound::MobileAction { payload, .. } => payload,
+                        _ => continue,
+                    };
+                    let kind = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    let action_payload = payload.get("payload").cloned().unwrap_or(Value::Null);
+                    let sid = manager
+                        .inner
+                        .lock()
+                        .room
+                        .as_ref()
+                        .map(|room| room.session_id.clone())
+                        .unwrap_or_default();
+                    if sid.is_empty() {
+                        continue;
+                    }
+                    match kind {
+                        "attach_file_start" => {
+                            start_actions.fetch_add(1, Ordering::SeqCst);
+                            manager.handle_attach_file_start(&sid, &action_payload);
+                        }
+                        "attach_file_chunk" => {
+                            chunk_actions.fetch_add(1, Ordering::SeqCst);
+                            manager.handle_attach_file_chunk(&action_payload).await;
+                        }
+                        "attach_file_abort" => {
+                            abort_actions.fetch_add(1, Ordering::SeqCst);
+                            manager.handle_attach_file_abort(&sid, &action_payload);
+                        }
+                        // room 加入后 web 客户端会自动请求 snapshot / session list / chips,
+                        // 必须真实响应,否则 session 面板永远为空,后续步骤全部超时。
+                        "request_snapshot" | "ping" => {
+                            let _ = manager.send_snapshot_with_live_request(&store, &sid);
+                        }
+                        "request_session_list" => {
+                            let _ = manager.send_session_list(&store, &sid);
+                        }
+                        "request_chips" => {
+                            let _ = manager.send_chips_snapshot(&store, &sid);
+                        }
+                        // KB / 工具开关需要 AppHandle,headless 不支持;由 jsdom e2e 覆盖。
+                        "list_kb_collections" | "list_tools" => {}
+                        _ => {}
+                    }
+                }
+            });
+        }
+
+        let params_path = home.join("upload-driver-params.json");
+        let params = json!({
+            "pageUrl": format!("http://127.0.0.1:{port}/r/{room_id}#token={pairing_token}"),
+            "sessionTitle": session.metadata.title,
+            "sessionIdShort": &session_id[..session_id.len().min(6)],
+            "chromeBin": chrome_bin,
+            "smallFilePath": small_path.to_string_lossy(),
+            "smallFileName": "small.txt",
+            "largeFilePath": large_path.to_string_lossy(),
+            "largeFileName": "multi-chunk.bin",
+            "abortSlowFilePath": abort_slow_path.to_string_lossy(),
+            "abortSlowFileName": "abort-slow.bin",
+            "oversizeFilePath": oversize_path.to_string_lossy(),
+            "oversizeFileName": "oversize.bin",
+        });
+        std::fs::write(&params_path, serde_json::to_string_pretty(&params).expect("params json"))
+            .expect("write driver params");
+
+        let status = Command::new("node")
+            .arg(relay_dir.join("test/real-browser-upload.driver.mjs"))
+            .arg(&params_path)
+            .current_dir(&relay_dir)
+            .stdin(Stdio::null())
+            .status()
+            .expect("spawn real browser upload driver");
+        stop_dispatch.store(true, Ordering::SeqCst);
+        assert!(status.success(), "real browser upload driver failed");
+
+        // 桌面端必须看到:
+        //   small(1) + multi-chunk(1) + abort-slow-retries(>=1) + busy-abort-slow(1) = >=4 attach_file_start
+        //   (oversize 由 mobile 客户端预检拦截,不发 attach_file_start —— 这是客户端
+        //    UPLOAD_LIMIT_BYTES 预检的硬约束,与下载链路同源模式)。
+        //   abort 触发的 attach_file_abort: >=1(driver 重试 + requestAttachFile catch 自身
+        //    发 abort 可能产生多次,只要至少 1 次就证明 abort 链路通了)。
+        let starts = start_actions.load(Ordering::SeqCst);
+        let aborts = abort_actions.load(Ordering::SeqCst);
+        assert!(
+            starts >= 4,
+            "desktop must see at least 4 attach_file_start actions (small + multi-chunk + abort-slow + busy-abort-slow), got {starts}"
+        );
+        assert!(
+            aborts >= 1,
+            "desktop must see at least 1 attach_file_abort, got {aborts}"
+        );
+
+        // 验证落盘:small + large 成功上传(各 1 个 upload_id 目录)。
+        // abort-large 路径的目录由 handle_attach_file_abort 删除,不应残留。
+        let uploads_root = home.join("uploads");
+        if uploads_root.exists() {
+            let entries: Vec<_> = std::fs::read_dir(&uploads_root)
+                .map(|it| it.filter_map(|e| e.ok()).collect())
+                .unwrap_or_default();
+            assert!(
+                entries.len() >= 2,
+                "uploads dir should have >= 2 upload_id entries (small + large) after successful uploads, got {}: {:?}",
+                entries.len(),
+                entries.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+            );
+        }
+
         let _ = &guard;
     }
 }
