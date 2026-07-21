@@ -6,8 +6,6 @@ const bridgeSource = readFileSync(new URL('../src/tauri-bridge.js', import.meta.
 const indexSource = readFileSync(new URL('../src/index.html', import.meta.url), 'utf8');
 const petIndexSource = readFileSync(new URL('../src/pet.html', import.meta.url), 'utf8');
 const petMainSource = readFileSync(new URL('../src/pet-main.jsx', import.meta.url), 'utf8');
-const petMenuIndexSource = readFileSync(new URL('../src/pet-menu.html', import.meta.url), 'utf8');
-const petMenuMainSource = readFileSync(new URL('../src/pet-menu-main.js', import.meta.url), 'utf8');
 const mainSource = readFileSync(new URL('../src/main.jsx', import.meta.url), 'utf8');
 const rustPetWindow = readFileSync(new URL('../src-tauri/src/pet_window.rs', import.meta.url), 'utf8');
 const calls = { invoke: 0, listen: 0 };
@@ -53,20 +51,16 @@ assert.match(
 assert.match(petIndexSource, /src="\/pet-main\.jsx"/);
 assert.match(petMainSource, /allowResize:\s*false/);
 assert.match(petMainSource, /scale:\s*0\.5/);
+assert.match(petMainSource, /verticalAlignment:\s*query\.get\('verticalAlignment'\)/);
 assert.match(
   petMainSource,
-  /<PetWindow[\s\S]{0,120}?allowResize=\{PET_WINDOW_CONFIG\.allowResize\}[\s\S]{0,120}?configuredScale=\{PET_WINDOW_CONFIG\.scale\}/,
+  /<PetWindow[\s\S]{0,160}?allowResize=\{PET_WINDOW_CONFIG\.allowResize\}[\s\S]{0,160}?configuredScale=\{PET_WINDOW_CONFIG\.scale\}[\s\S]{0,160}?configuredVerticalAlignment=\{PET_WINDOW_CONFIG\.verticalAlignment\}/,
 );
 assert.doesNotMatch(
   petIndexSource,
   /tauri-bridge|tailwind|personas-i18n|update-notice|src="\/main\.jsx"/i,
 );
-assert.match(petMenuIndexSource, /src="\/pet-menu-main\.js"/);
-assert.doesNotMatch(petMenuIndexSource, /tauri-bridge|tailwind|src="\/main\.jsx"/i);
-assert.match(petMenuMainSource, /addEventListener\('blur'/);
-assert.match(petMenuMainSource, /classList\.add\('pet-menu-hidden'\)/);
-assert.match(petMenuMainSource, /invoke\('set_pet_enabled', \{ enabled: false \}\)/);
 assert.doesNotMatch(mainSource, /import PetWindow|window'\) === 'pet'/);
-assert.match(rustPetWindow, /WebviewUrl::App\("pet\.html"\.into\(\)\)/);
+assert.match(rustPetWindow, /pet\.html\?verticalAlignment=\{\}/);
 
 console.log('pet bootstrap isolation tests passed');
