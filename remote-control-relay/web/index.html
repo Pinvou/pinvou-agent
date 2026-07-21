@@ -520,6 +520,12 @@
     let sessionId = '';
     let streamNode = null;
     let runStatusNode = null;
+    // renderSnapshot 期间置 true:addSystem 据此判断当前 .system 节点是
+    // 「历史快照重建」(careful_blocked / persona_equip / chat_item.text 等)
+    // 还是「实时事件提示」(附件已就绪 / 下载失败 / 连接恢复等)。前者随下一次
+    // snapshot 自然重建,不应跨 snapshot 保留;后者不属于历史,snapshot 重渲染
+    // 后必须存活,否则用户刚收到的事件反馈会被 messages.innerHTML='' 擦掉。
+    let renderingSnapshot = false;
     let reconnectTimer = null;
     let joinTimer = null;
     let thinkingFrame = 0;
@@ -1073,6 +1079,9 @@
     function addSystem(text) {
       const div = document.createElement('div');
       div.className = 'system';
+      // 仅在非 snapshot 渲染期产生的 system 节点打上 ephemeral 标记,
+      // renderSnapshot 据此在重渲染前后保留它们(见 renderSnapshot)。
+      if (!renderingSnapshot) div.dataset.ephemeral = 'true';
       div.textContent = text;
       appendToMessages(div);
     }
@@ -2044,33 +2053,50 @@
       state.artifactHistory = [];
       state.turnDirtyArtifacts = [];
       state.turnPresentedArtifacts = [];
+      // 先抽出「实时事件提示」(ephemeral) system 节点:snapshot 刷新会整体
+      // 重建历史,但用户刚发生的实时反馈(附件已就绪 / 下载失败 / 连接恢复等)
+      // 不属于历史,不能跟着被 innerHTML='' 擦掉。这里按 data-ephemeral 挑出来,
+      // 历史渲染完后再按原顺序追加回末尾。chat_items 重建出的 system 节点
+      // 没有 ephemeral 标记,自然跟随新 snapshot 重建,不会被错误保留。
+      const survivingSystemNodes = Array.from(
+        el.messages.querySelectorAll(':scope > .system[data-ephemeral="true"]'),
+      );
       el.messages.innerHTML = '';
-      const session = snapshot.session || {};
-      sessionId = session.id || sessionId;
-      if (!state.pendingSessionId || state.pendingSessionId === sessionId) state.pendingSessionId = '';
-      rememberSnapshotSession(session);
-      el.title.textContent = session.title || 'PINVOU Remote';
-      el.subtitle.textContent = session.id ? `session ${session.id}` : '当前 session';
-      updateArtifacts(Array.isArray(snapshot.artifacts) ? snapshot.artifacts : []);
-      const messages = Array.isArray(snapshot.messages) ? snapshot.messages : [];
-      const chatItems = Array.isArray(snapshot.chat_items) ? snapshot.chat_items : [];
-      const useChatItems = chatItems.length > 0 && (!messages.length || chatItems.length >= messages.length);
-      if (!messages.length && !chatItems.length) {
-        el.messages.innerHTML = '<div class="empty">当前 session 暂无历史消息。你可以直接发送第一条远程消息。</div>';
+      let useChatItems = false;
+      renderingSnapshot = true;
+      try {
+        const session = snapshot.session || {};
+        sessionId = session.id || sessionId;
+        if (!state.pendingSessionId || state.pendingSessionId === sessionId) state.pendingSessionId = '';
+        rememberSnapshotSession(session);
+        el.title.textContent = session.title || 'PINVOU Remote';
+        el.subtitle.textContent = session.id ? `session ${session.id}` : '当前 session';
+        updateArtifacts(Array.isArray(snapshot.artifacts) ? snapshot.artifacts : []);
+        const messages = Array.isArray(snapshot.messages) ? snapshot.messages : [];
+        const chatItems = Array.isArray(snapshot.chat_items) ? snapshot.chat_items : [];
+        useChatItems = chatItems.length > 0 && (!messages.length || chatItems.length >= messages.length);
+        if (!messages.length && !chatItems.length && survivingSystemNodes.length === 0) {
+          el.messages.innerHTML = '<div class="empty">当前 session 暂无历史消息。你可以直接发送第一条远程消息。</div>';
+        }
+        if (useChatItems) {
+          renderChatItemSnapshot(chatItems);
+        } else if (messages.some(m => Array.isArray(m.blocks))) {
+          rebuildFromBlocks(messages);
+        } else {
+          messages.forEach(m => {
+            if (m.content) addMessage(m.role === 'user' ? 'user' : 'assistant', m.content);
+            if (Array.isArray(m.tools) && m.tools.length) {
+              m.tools.forEach(t => addToolCard({ id: t.id, name: t.name, args: t.args, status: '完成' }));
+            }
+          });
+        }
+      } finally {
+        renderingSnapshot = false;
       }
-      if (useChatItems) {
-        renderChatItemSnapshot(chatItems);
-      } else if (messages.some(m => Array.isArray(m.blocks))) {
-        rebuildFromBlocks(messages);
-      } else {
-        messages.forEach(m => {
-          if (m.content) addMessage(m.role === 'user' ? 'user' : 'assistant', m.content);
-          if (Array.isArray(m.tools) && m.tools.length) {
-            m.tools.forEach(t => addToolCard({ id: t.id, name: t.name, args: t.args, status: '完成' }));
-          }
-        });
-      }
-      const waitingForUserInput = useChatItems && chatItems.some(item =>
+      // 把保留下来的实时提示按原顺序追加回消息流末尾。
+      survivingSystemNodes.forEach(node => el.messages.appendChild(node));
+      const chatItemsForGate = Array.isArray(snapshot.chat_items) ? snapshot.chat_items : [];
+      const waitingForUserInput = useChatItems && chatItemsForGate.some(item =>
         item && item.type === 'user_input' && !item.resolved && item.cardState !== 'submitted' && item.cardState !== 'cancelled'
       );
       setTurnActive(!!snapshot.busy && !waitingForUserInput, snapshot.busy ? 'waiting' : 'idle');
