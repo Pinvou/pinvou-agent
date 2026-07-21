@@ -93,7 +93,40 @@ if ($actualThumbprint -ne $normalizedThumbprint) {
 }
 
 if (-not $signature.TimeStamperCertificate) {
-  throw "The file signature has no timestamp certificate: $resolvedFilePath"
+  $timestampUrls = @(
+    $TimestampUrl,
+    "http://tsa.wosign.com/timestamp",
+    "http://timestamp.wosign.com/rfc3161"
+  ) | Select-Object -Unique
+
+  foreach ($candidateTimestampUrl in $timestampUrls) {
+    Write-Host "WoSign timestamp retry started with $candidateTimestampUrl for: $resolvedFilePath"
+    $timestampArguments = @(
+      "timestamp",
+      "/hide",
+      "/c",
+      "/tr", $candidateTimestampUrl,
+      "/file", $resolvedFilePath
+    )
+
+    Push-Location -LiteralPath $toolDirectory
+    try {
+      & $resolvedToolPath @timestampArguments
+      $timestampExitCode = $LASTEXITCODE
+    } finally {
+      Pop-Location
+    }
+    Write-Host "WoSign timestamp command exited with code $timestampExitCode for: $resolvedFilePath"
+
+    $signature = Get-AuthenticodeSignature -LiteralPath $resolvedFilePath
+    if ($signature.TimeStamperCertificate) {
+      break
+    }
+  }
+
+  if (-not $signature.TimeStamperCertificate) {
+    throw "The file signature has no timestamp certificate after all timestamp retries: $resolvedFilePath"
+  }
 }
 
 Write-Host "WoSign signed and verified: $resolvedFilePath"

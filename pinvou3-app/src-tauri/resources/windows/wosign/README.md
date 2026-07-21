@@ -13,6 +13,7 @@ be shipped with the application. `wosigncodecmd.exe` requires
 The certificate thumbprint and UKey password used by the current build process
 are configured directly in `sign.ps1`. The script always uses the tools in this
 directory, runs the command from this directory so the companion executable can
-be resolved, and ignores already-signed inputs so staged NSIS builds can be
-safely retried. Update the script when the signing certificate or UKey password
-changes.
+be resolved, keeps `/isf` to ignore already-signed inputs, and retries RFC 3161
+timestamping with the configured endpoint and WoSign endpoints whenever the
+resulting signature has no timestamp. Update the script when the signing
+certificate or UKey password changes.

@@ -16,6 +16,9 @@ assert.match(signScript, /Join-Path \$PSScriptRoot "wosigncodecmd\.exe"/u);
 assert.doesNotMatch(signScript, /PINVOU3_WOSIGN_TOOL_PATH/u);
 assert.match(signScript, /"\/isf"/u);
 assert.match(signScript, /Push-Location -LiteralPath \$toolDirectory/u);
+assert.match(signScript, /"timestamp"/u);
+assert.match(signScript, /http:\/\/tsa\.wosign\.com\/timestamp/u);
+assert.match(signScript, /http:\/\/timestamp\.wosign\.com\/rfc3161/u);
 assert.ok(packageJson.scripts["build:nsis"].includes("--verbose"));
 assert.ok(packageJson.scripts["bundle:nsis"].includes("--verbose"));
 assert.deepEqual(signingConfig.bundle.windows.signCommand.args.slice(0, 2), [
