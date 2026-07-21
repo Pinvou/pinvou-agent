@@ -130,6 +130,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       // search 后端配置:provider 默认 bing(对齐 bridge prefs::SearchProvider::default());
       // bs.settings 加载后 useEffect 同步进来。
       const [searchProvider, setSearchProvider] = useState('bing');
+      const [enabledSearchProviders, setEnabledSearchProviders] = useState(['bing']);
       const [searchApiKey, setSearchApiKey] = useState('');
       const [searchKeyDrafts, setSearchKeyDrafts] = useState({});
       const [searchKeyActions, setSearchKeyActions] = useState({});
@@ -154,13 +155,13 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       const PRESET_DEFAULTS = {
         local_vllm:  { baseUrl: 'http://127.0.0.1:8000/v1',                model: 'qwen36_35b_256k' },
         deepseek:    { baseUrl: 'https://api.deepseek.com',                model: 'deepseek-v4-pro' },
-        kimi:        { baseUrl: 'https://api.moonshot.cn/v1',              model: 'kimi-k2.6' },
-        openai_compatible: { baseUrl: 'https://api.openai.com/v1',        model: 'gpt-4o' },
-        qwen:        { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-max' },
-        doubao:      { baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-pro-256k' },
-        minimax:     { baseUrl: 'https://api.minimax.chat/v1',            model: 'abab6.5s-chat' },
-        glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-4-plus' },
-        mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2-flash' },
+        kimi:        { baseUrl: 'https://api.moonshot.cn/v1',              model: 'kimi-k3' },
+        openai_compatible: { baseUrl: 'https://api.openai.com/v1',        model: 'gpt-5.6-terra' },
+        qwen:        { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3.7-plus' },
+        doubao:      { baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-seed-evolving' },
+        minimax:     { baseUrl: 'https://api.minimax.chat/v1',            model: 'MiniMax-M3' },
+        glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-5.2' },
+        mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2.5-pro' },
       };
       function normalizedModelProfile(name, baseUrl, apiKey) {
         const modelName = (name || '').trim();
@@ -197,6 +198,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       const [poolMyOnly, setPoolMyOnly] = useState(false); // 跳卡池时是否直接落「我的卡牌」筛选(从确认窗"去查看"进来=true)
       const [remoteOpen, setRemoteOpen] = useState(false);
       const [settingsUpdateFocusTick, setSettingsUpdateFocusTick] = useState(0);
+      const [settingsInitialSection, setSettingsInitialSection] = useState('general');
       const [petFocusComposerTick, setPetFocusComposerTick] = useState(0);
       const petSnapshotRef = useRef([]);
       const petSnapshotSequenceRef = useRef(0);
@@ -297,6 +299,9 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
             provider: search.provider || 'bing',
             apiKey: search.api_key || '',
             credentials: credentials,
+            enabledProviders: Array.isArray(search.enabled_providers) && search.enabled_providers.length
+              ? Array.from(new Set(['bing', ...search.enabled_providers]))
+              : ['bing', search.provider || 'bing'].filter(Boolean),
           };
           const drafts = {};
           const actions = {};
@@ -309,6 +314,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
             actions[saved.provider] = 'replace';
           }
           setSearchProvider(saved.provider);
+          setEnabledSearchProviders(saved.enabledProviders);
           setSearchApiKey(drafts[saved.provider] || '');
           setSearchKeyDrafts(drafts);
           setSearchKeyActions(actions);
@@ -394,6 +400,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         return {
           ...baseSearch,
           provider: searchProvider,
+          enabled_providers: Array.from(new Set(['bing', ...enabledSearchProviders, searchProvider])),
           api_key: null,
           credentials,
         };
@@ -403,6 +410,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       const searchCredentialDirty = SEARCH_KEY_PROVIDERS.some(searchProviderCredentialDirty);
       const searchNeedsRestart = !!savedSearch && (
         searchProvider !== savedSearch.provider ||
+        JSON.stringify(Array.from(new Set(enabledSearchProviders)).sort()) !== JSON.stringify(Array.from(new Set(savedSearch.enabledProviders || ['bing'])).sort()) ||
         searchCredentialDirty
       );
       // 语言已即时写盘+切 UI,但 LLM 的 locale_tag 要重启 engine 才生效 → 偏离启动语言就提示。
@@ -421,6 +429,8 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         pinnedAt: s.pinned_at || '',
         skill: skillBindings[s.id] || null,
         working: !!sessionBusy[s.id], // 多 session 并发:该 session 是否正在后台生成
+        testId: 'regular-sidebar-item',
+        menuTestId: 'regular-sidebar-menu',
       })) : [];
       const pinnedChatHistory = chatHistory
         .filter(chat => chat.pinned)
@@ -504,6 +514,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       const [historyOpen, setHistoryOpen] = useState({ pinned: true, scheduledRuns: true, regular: true });
       const [archiveConfirm, setArchiveConfirm] = useState(null);
       const [archiveToast, setArchiveToast] = useState(false);
+      const [settingsToast, setSettingsToast] = useState('');
 
       petSnapshotRef.current = chatHistory.map(chat => ({
         id: chat.id,
@@ -538,6 +549,11 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         if (beforeNavigate) beforeNavigate();
         setCurrentView(nextView);
         return true;
+      }
+
+      function openSettingsSection(section = 'general') {
+        setSettingsInitialSection(section);
+        return navigateFromScheduledRun('settings');
       }
 
       function scheduledRunLabel(value) {
@@ -860,9 +876,29 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         return () => clearTimeout(timer);
       }, [archiveToast]);
 
-      function handleToggleSuperPerm() {
-        if (bridge.available) bridge.toggleSuperPerm();
-        else setSuperPerm(!superPerm);
+      useEffect(() => {
+        if (!settingsToast) return;
+        const timer = setTimeout(() => setSettingsToast(''), 3000);
+        return () => clearTimeout(timer);
+      }, [settingsToast]);
+
+      async function handleToggleSuperPerm() {
+        const target = !superPerm;
+        if (!bridge.available) {
+          setSuperPerm(target);
+          return;
+        }
+        setSuperPerm(target);
+        try {
+          const result = await bridge.toggleSuperPerm();
+          if (!result || result.ok === false) {
+            setSuperPerm(!!(result && result.enabled));
+            setSettingsToast((result && result.error) || '无法开启高级执行权限');
+          }
+        } catch (error) {
+          setSuperPerm(!target);
+          setSettingsToast(String(error || '无法开启高级执行权限'));
+        }
       }
 
       // 构造完整 UserPrefs 对象写盘。spread bs.settings 保留 search/advanced 等
@@ -904,30 +940,39 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
 
       function handleSetSearchProvider(p) {
         if (p === searchProvider) return;
+        setEnabledSearchProviders(prev => Array.from(new Set(['bing', ...prev, p])));
         setSearchProvider(p);
         setSearchApiKey(searchKeyDrafts[p] || '');
       }
 
-      function handleSetSearchApiKey(k) {
-        setSearchApiKey(k);
-        setSearchKeyDrafts(prev => ({ ...prev, [searchProvider]: k }));
-        setSearchKeyActions(prev => ({ ...prev, [searchProvider]: k.trim() ? 'replace' : 'keep_existing' }));
+      function handleAddSearchProvider(p) {
+        setEnabledSearchProviders(prev => Array.from(new Set(['bing', ...prev, p])));
+        handleSetSearchProvider(p);
       }
 
-      function handleKeepSearchApiKey() {
-        setSearchApiKey('');
-        setSearchKeyDrafts(prev => ({ ...prev, [searchProvider]: '' }));
-        setSearchKeyActions(prev => ({ ...prev, [searchProvider]: 'keep_existing' }));
+      function handleDeleteSearchProvider(p) {
+        if (p === 'bing') return;
+        setEnabledSearchProviders(prev => {
+          const next = prev.filter(x => x !== p);
+          return next.length ? next : ['bing'];
+        });
+        setSearchKeyDrafts(prev => ({ ...prev, [p]: '' }));
+        setSearchKeyActions(prev => ({ ...prev, [p]: 'delete' }));
+        if (searchProvider === p) handleSetSearchProvider('bing');
       }
 
-      function handleReplaceSearchApiKey() {
-        setSearchKeyActions(prev => ({ ...prev, [searchProvider]: 'replace' }));
+      function handleTestSearchProvider(p) {
+        if (!bridge.available || !bridge.testSearchProvider) return Promise.resolve('当前环境不可测试搜索源');
+        const action = searchProviderKeyAction(p);
+        const draft = searchKeyDrafts[p] || '';
+        return bridge.testSearchProvider(p, action === 'replace' ? draft : '');
       }
 
-      function handleDeleteSearchApiKey() {
-        setSearchApiKey('');
-        setSearchKeyDrafts(prev => ({ ...prev, [searchProvider]: '' }));
-        setSearchKeyActions(prev => ({ ...prev, [searchProvider]: 'delete' }));
+      function handleSetSearchApiKey(k, providerOverride) {
+        const targetProvider = providerOverride || searchProvider;
+        if (targetProvider === searchProvider) setSearchApiKey(k);
+        setSearchKeyDrafts(prev => ({ ...prev, [targetProvider]: k }));
+        setSearchKeyActions(prev => ({ ...prev, [targetProvider]: k.trim() ? 'replace' : 'keep_existing' }));
       }
 
       function handleConfirmSearchConfig() {
@@ -1069,9 +1114,16 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
               onClose={() => setArchiveToast(false)}
               onView={() => {
                 setArchiveToast(false);
-                setCurrentView('settings');
+                openSettingsSection('data');
               }}
             />,
+            document.body
+          )}
+
+          {settingsToast && createPortal(
+            <div className="fixed left-1/2 bottom-8 z-[120] -translate-x-1/2 rounded-full bg-black/80 px-4 py-2 text-[13px] font-medium text-white shadow-2xl">
+              {settingsToast}
+            </div>,
             document.body
           )}
 
@@ -1317,7 +1369,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                     <PetPawIcon />
                   </button>
                   <button
-                    onClick={() => navigateFromScheduledRun('settings')}
+                    onClick={() => openSettingsSection('general')}
                     title={t.settings}
                     className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
                   >
@@ -1387,17 +1439,16 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                   superPerm={superPerm} setSuperPerm={handleToggleSuperPerm}
                   taskCompletedNotif={taskCompletedNotif} setTaskCompletedNotif={handleSetTaskCompletedNotif}
                   searchProvider={searchProvider} setSearchProvider={handleSetSearchProvider}
+                  enabledSearchProviders={enabledSearchProviders}
+                  onAddSearchProvider={handleAddSearchProvider}
+                  onDeleteSearchProvider={handleDeleteSearchProvider}
+                  onTestSearchProvider={handleTestSearchProvider}
                   searchApiKey={searchApiKey} setSearchApiKey={handleSetSearchApiKey}
-                  searchCredential={searchCredentialForProvider(searchProvider)}
-                  searchKeyAction={searchProviderKeyAction(searchProvider)}
                   searchHasSavedKey={searchHasSavedKey(searchProvider)}
-                  onKeepSearchApiKey={handleKeepSearchApiKey}
-                  onReplaceSearchApiKey={handleReplaceSearchApiKey}
-                  onDeleteSearchApiKey={handleDeleteSearchApiKey}
                   savedModels={(bs && bs.savedModels) || []}
                   activeModelId={bs && bs.activeModelId}
                   onSaveModel={(m) => bridge.available && bridge.saveModel(m)}
-                  onDeleteModel={(m) => { if (bridge.available && window.confirm(t.deleteModelConfirm(m.name))) bridge.deleteModel(m.id); }}
+                  onDeleteModel={(m) => { if (bridge.available) bridge.deleteModel(m.id); }}
                   onSetActiveModel={(id) => bridge.available && bridge.setActiveModel(id)}
                   onConfirmSearchConfig={handleConfirmSearchConfig}
                   onMemoryEnabledChange={handleSetMemoryEnabled}
@@ -1409,16 +1460,18 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                   onRestoreArchived={handleRestoreArchivedSession}
                   onDeleteArchived={handleDeleteSession}
                   updateFocusTick={settingsUpdateFocusTick}
+                  initialSection={settingsInitialSection}
+                  onCloseSettings={() => navigateFromScheduledRun('chat')}
                 />
               </SettingsErrorBoundary>
             )}
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
-            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => navigateFromScheduledRun('settings')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />}
+            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />}
             {SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled' && (
               bs && bs.scheduledRunContext ? (
-                <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => navigateFromScheduledRun('settings')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />
+                <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />
               ) : (
                 <ScheduledTasksView theme={activeTheme} t={t} onOpenChat={() => setCurrentView('chat')} />
               )
@@ -1554,6 +1607,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
             bs={bs}
             t={t}
             onShowChangelog={() => {
+              setSettingsInitialSection('update');
               setCurrentView('settings');
               setSettingsUpdateFocusTick(v => v + 1);
             }}

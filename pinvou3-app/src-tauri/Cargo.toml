@@ -14,6 +14,10 @@ default-run = "pinvou3-tauri"
 name = "pinvou3_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+default = ["local-embed"]
+local-embed = ["dep:fastembed"]
+
 [build-dependencies]
 tauri-build = { version = "2.6.1", features = [] }
 
@@ -80,7 +84,7 @@ walkdir = "2"
 
 # 本地 embedding（L1 语义检索）：fastembed-rs 进程内 ONNX 推理（CPU EP），**不依赖 vLLM**。
 # 模型(bge-m3 ONNX)用户本地下载，UserDefinedEmbeddingModel 从目录加载，不走 HF 自动下载。
-fastembed = "4"
+fastembed = { version = "4", optional = true }
 
 # 电子表格解析（file_ingest 用）：纯 Rust 读 xlsx/xls/ods 的**全部工作表**。
 # 旧实现走 LibreOffice CSV 只导「活动工作表」，多 sheet 文件会丢 90% 内容（实测散热

@@ -70,7 +70,7 @@ function injectSource() {
         default: return Promise.resolve(null);
       }
     }
-    window.__TAURI__={core:{invoke:invoke},event:{listen:function(){return Promise.resolve(function(){});}},
+    window.__TAURI__={core:{invoke:invoke},event:{emit:function(){return Promise.resolve();},listen:function(){return Promise.resolve(function(){});}},
       window:{getCurrentWindow:function(){return {minimize(){},maximize(){},close(){},toggleMaximize(){},isMaximized(){return Promise.resolve(false);},onResized(){return Promise.resolve(function(){});},startDragging(){}};}},
       dialog:{open:function(){return Promise.resolve(['/home/x/新文档.pdf']);}}};
   })();`;

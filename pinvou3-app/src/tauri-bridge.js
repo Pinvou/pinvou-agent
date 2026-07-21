@@ -4278,13 +4278,16 @@
   }
   // model 对象字段须是 snake_case(SavedModel serde):
   // {id,name,preset,context_window_tokens,max_output_tokens,model,base_url,api_key,credential_action}
-  async function saveModel(model) {
-    await invoke("save_model", { model: model });
-    await loadModels();
-  }
-  async function deleteModel(id) {
-    await invoke("delete_model", { id: id });
-    await loadModels();
+ async function saveModel(model) {
+   await invoke("save_model", { model: model });
+   await loadModels();
+ }
+ async function revealModelApiKey(id) {
+   return await invoke("reveal_model_api_key", { id: id });
+ }
+ async function deleteModel(id) {
+   await invoke("delete_model", { id: id });
+   await loadModels();
   }
   async function setActiveModel(id) {
     await invoke("set_active_model", { id: id });
@@ -4311,6 +4314,9 @@
   async function testModelConnection(baseUrl, apiKey, modelId) {
     return await invoke("test_model_connection", { baseUrl: baseUrl, apiKey: apiKey, modelId: modelId || null });
   }
+  async function testSearchProvider(provider, apiKey) {
+    return await invoke("test_search_provider", { provider: provider, apiKey: apiKey || null });
+  }
 
   // ── Super permission ─────────────────────────────────────────────
   async function refreshSuperPerm() {
@@ -4328,11 +4334,14 @@
       addSystemItem(state.superPermEnabled
         ? bt("superOn")
         : bt("superOff"));
+      notify();
+      return { ok: state.superPermEnabled === target, enabled: state.superPermEnabled };
     } catch (e) {
       addSystemItem("⚠️ " + e);
       try { state.superPermEnabled = !!(await invoke("get_super_permission_status")); } catch (e2) {}
+      notify();
+      return { ok: false, enabled: state.superPermEnabled, error: String(e) };
     }
-    notify();
   }
 
   // ── Mode state ───────────────────────────────────────────────────
@@ -5947,13 +5956,15 @@
     dismissVllmSetup: dismissVllmSetup,
     declineVllmSetup: declineVllmSetup,
     getEffectiveModelConfig: getEffectiveModelConfig,
-    loadModels: loadModels,
-    saveModel: saveModel,
-    deleteModel: deleteModel,
+   loadModels: loadModels,
+   saveModel: saveModel,
+   revealModelApiKey: revealModelApiKey,
+   deleteModel: deleteModel,
     setActiveModel: setActiveModel,
     loadSessionModel: loadSessionModel,
     switchModel: switchModel,
     testModelConnection: testModelConnection,
+    testSearchProvider: testSearchProvider,
     toggleSuperPerm: toggleSuperPerm,
     renderMarkdown: renderMarkdown,
     startRemoteControl: startRemoteControl,

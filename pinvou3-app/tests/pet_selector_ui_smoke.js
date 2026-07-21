@@ -178,19 +178,6 @@ async function waitForCards(page) {
   }, { timeout: 20000 });
 }
 
-async function waitForPreviewRow(page, expectedY, timeoutMs) {
-  const selector = '[data-pet-id="ace-taffy"] .pet-card-sprite';
-  const deadline = Date.now() + timeoutMs;
-  const seen = new Set();
-  while (Date.now() < deadline) {
-    const position = await page.$eval(selector, (sprite) => sprite.style.backgroundPosition);
-    seen.add(position);
-    if (position.endsWith(` ${expectedY}px`)) return;
-    await new Promise((resolve) => setTimeout(resolve, 40));
-  }
-  throw new Error(`悬浮预览未进入 Y=${expectedY}px 动作行，实际位置: ${[...seen].join(', ')}`);
-}
-
 async function main() {
   const { url } = await startUiTestServer();
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-pet-selector-'));
@@ -210,19 +197,35 @@ async function main() {
     await page.goto(`${url}/index.html`, { waitUntil: 'networkidle0' });
     await page.waitForSelector('[data-testid="app-root"]', { timeout: 20000 });
     await page.click('button[title="设置"]');
-    await page.waitForSelector('[data-pet-selector-toggle="true"]', { timeout: 10000 });
-    await page.click('[data-pet-selector-toggle="true"]');
     await waitForCards(page);
 
-    const layout = await page.$$eval('[data-pet-id]', (cards) => cards.map((card) => {
-      const rect = card.getBoundingClientRect();
-      return { id: card.dataset.petId, left: rect.left, top: rect.top, width: rect.width };
-    }));
-    if (layout.map(({ id }) => id).join(',') !== 'lingling,langlang,ace-taffy') {
+    const layout = await page.evaluate(() => {
+      const track = document.querySelector('.pet-card-track');
+      const trackRect = track.getBoundingClientRect();
+      return {
+        hasToggle: !!document.querySelector('[data-pet-selector-toggle="true"]'),
+        trackClientWidth: track.clientWidth,
+        trackScrollWidth: track.scrollWidth,
+        trackRight: trackRect.right,
+        cards: [...document.querySelectorAll('[data-pet-id]')].map((card) => {
+          const rect = card.getBoundingClientRect();
+          return { id: card.dataset.petId, left: rect.left, right: rect.right, top: rect.top, width: rect.width };
+        }),
+      };
+    });
+    if (layout.hasToggle) throw new Error('桌宠选择器不应再展示“更换”展开按钮');
+    if (layout.trackScrollWidth > layout.trackClientWidth + 1) {
+      throw new Error(`桌宠选择器不应出现横向滚动条: ${JSON.stringify(layout)}`);
+    }
+    if (layout.cards.some((card) => card.right > layout.trackRight + 1 || card.width > 165)) {
+      throw new Error(`桌宠卡片未完整收紧展示: ${JSON.stringify(layout)}`);
+    }
+    const cards = layout.cards;
+    if (cards.map(({ id }) => id).join(',') !== 'lingling,langlang,ace-taffy') {
       throw new Error(`宠物顺序错误: ${JSON.stringify(layout)}`);
     }
-    if (!layout.every((card) => Math.abs(card.top - layout[0].top) < 1)
-      || !(layout[0].left < layout[1].left && layout[1].left < layout[2].left)) {
+    if (!cards.every((card) => Math.abs(card.top - cards[0].top) < 1)
+      || !(cards[0].left < cards[1].left && cards[1].left < cards[2].left)) {
       throw new Error(`三卡不是横向布局: ${JSON.stringify(layout)}`);
     }
 
@@ -264,18 +267,16 @@ async function main() {
     });
     const bottomWhitespace = contentGeometry.cardBottom - contentGeometry.descriptionBottom;
     if (contentGeometry.figureBackground !== 'none'
-      || contentGeometry.figureHeight !== 110
-      || Math.abs(contentGeometry.cardHeight - 220) > 1
-      || contentGeometry.nameTop < contentGeometry.figureBottom + 8
+      || contentGeometry.figureHeight !== 62
+      || contentGeometry.cardHeight < 132
+      || contentGeometry.cardHeight > 150
+      || contentGeometry.nameTop < contentGeometry.figureBottom + 4
       || contentGeometry.nameWeight < 600
-      || bottomWhitespace < 18
-      || bottomWhitespace > 34) {
+      || bottomWhitespace < 8
+      || bottomWhitespace > 28) {
       throw new Error(`角色卡内容布局错误: ${JSON.stringify(contentGeometry)}`);
     }
-    await page.waitForFunction(() => {
-      const sprite = document.querySelector('[data-pet-id="ace-taffy"] .pet-card-sprite');
-      return sprite && sprite.getBoundingClientRect().width >= 106;
-    }, { timeout: 1000 });
+    await page.waitForSelector('[data-pet-id="ace-taffy"] .pet-card-sprite', { timeout: 1000 });
     const previewBefore = await page.$eval('[data-pet-id="ace-taffy"] .pet-card-sprite', (sprite) => ({
       position: getComputedStyle(sprite).backgroundPosition,
       size: getComputedStyle(sprite).backgroundSize,
@@ -283,25 +284,35 @@ async function main() {
       visualWidth: sprite.getBoundingClientRect().width,
       visualHeight: sprite.getBoundingClientRect().height,
       transform: getComputedStyle(sprite).transform,
+      figureWidth: sprite.closest('.pet-card-figure').getBoundingClientRect().width,
+      figureHeight: sprite.closest('.pet-card-figure').getBoundingClientRect().height,
     }));
     await new Promise((resolve) => setTimeout(resolve, 350));
     const previewAfter = await page.$eval('[data-pet-id="ace-taffy"] .pet-card-sprite', (sprite) => (
       getComputedStyle(sprite).backgroundPosition
     ));
-    // Chromium serializes the implicit vertical `auto` as either `768px` or
-    // `768px auto`, depending on the engine build.
-    if (!previewBefore.size.startsWith('768px') || Math.abs(previewBefore.layoutHeight - 104) > 0.5) {
+    // Chromium serializes the implicit vertical `auto` as either `<width>` or
+    // `<width> auto`, depending on the engine build.
+    if (!previewBefore.size.startsWith('460.8px') || Math.abs(previewBefore.layoutHeight - 62.4) > 0.5) {
       throw new Error(`Ace Taffy 预览尺寸错误: ${JSON.stringify(previewBefore)}`);
     }
-    if (previewBefore.visualWidth < 106 || previewBefore.visualHeight < 115
+    if (previewBefore.visualWidth < 60 || previewBefore.visualHeight < 68
+      || previewBefore.visualWidth > previewBefore.figureWidth + 8
+      || previewBefore.visualHeight > previewBefore.figureHeight + 10
       || previewBefore.transform === 'none') {
-      throw new Error(`悬浮角色没有平滑放大: ${JSON.stringify(previewBefore)}`);
+      throw new Error(`悬浮角色尺寸未匹配紧凑卡片: ${JSON.stringify(previewBefore)}`);
     }
     if (previewBefore.position === previewAfter) {
       throw new Error(`Ace Taffy 悬浮动画未推进: ${previewBefore.position}`);
     }
-    await waitForPreviewRow(page, -416, 2500);
-    await waitForPreviewRow(page, -832, 3000);
+    await page.waitForFunction(() => {
+      const sprite = document.querySelector('[data-pet-id="ace-taffy"] .pet-card-sprite');
+      if (!sprite) return false;
+      window.__PET_PREVIEW_POSITIONS__ = window.__PET_PREVIEW_POSITIONS__ || [];
+      const position = getComputedStyle(sprite).backgroundPosition;
+      if (!window.__PET_PREVIEW_POSITIONS__.includes(position)) window.__PET_PREVIEW_POSITIONS__.push(position);
+      return window.__PET_PREVIEW_POSITIONS__.length >= 3;
+    }, { timeout: 3000 });
 
     const names = await page.$$eval('[data-pet-id] .pet-card-name', (elements) => (
       elements.map((element) => element.textContent.trim())
@@ -406,8 +417,6 @@ async function main() {
     await settingsPage.goto(`${url}/index.html`, { waitUntil: 'networkidle0' });
     await settingsPage.waitForSelector('[data-testid="app-root"]', { timeout: 20000 });
     await settingsPage.click('button[title="设置"]');
-    await settingsPage.waitForSelector('[data-pet-selector-toggle="true"]', { timeout: 10000 });
-    await settingsPage.click('[data-pet-selector-toggle="true"]');
     await waitForCards(settingsPage);
     await settingsPage.click('[data-pet-id="ace-taffy"] .pet-card-main');
 

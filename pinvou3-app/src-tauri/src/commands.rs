@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::bridge::mode_state::{SerializableMode, SessionModeState};
-use crate::bridge::prefs::{SavedModel, UserPrefs};
+use crate::bridge::prefs::{SavedModel, SearchProvider, UserPrefs};
 use crate::bridge::sessions::{SessionKind, SessionStore};
 use crate::credential_store::{
     CredentialEditAction, CredentialState, CredentialStore, SystemCredentialStore,
@@ -840,6 +840,25 @@ pub async fn list_models() -> Result<ModelsView, String> {
     })
 }
 
+/// 用户在编辑模型弹窗里主动点击“显示”时，读取该模型已保存的 API Key。
+/// 环境变量覆盖的凭据不回显，避免给出一个前端并不拥有、保存也不会覆盖的值。
+#[tauri::command]
+pub async fn reveal_model_api_key(id: String) -> Result<Option<String>, String> {
+    let prefs = refresh_safe_prefs(UserPrefs::load());
+    let model = prefs
+        .model_by_id(&id)
+        .ok_or_else(|| format!("model not found: {id}"))?;
+    if model.credential_state == CredentialState::EnvOverride {
+        return Ok(None);
+    }
+    let Some(reference) = &model.credential_ref else {
+        return Ok(None);
+    };
+    SystemCredentialStore::new()
+        .get(reference)
+        .map_err(|e| sanitize_command_error("reveal_model_api_key", e.user_message()))
+}
+
 /// 增或改一条模型(按 id)。前端负责生成稳定 id。
 #[tauri::command]
 pub async fn save_model(model: SavedModel) -> Result<(), String> {
@@ -909,6 +928,74 @@ pub async fn get_session_model_id(
     store: State<'_, SessionStore>,
 ) -> Result<Option<String>, String> {
     Ok(store.session_model_id(&session_id))
+}
+
+fn parse_search_provider(raw: &str) -> Result<SearchProvider, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "bing" => Ok(SearchProvider::Bing),
+        "metaso" => Ok(SearchProvider::Metaso),
+        "bocha" => Ok(SearchProvider::Bocha),
+        "baidu" => Ok(SearchProvider::Baidu),
+        "tavily" => Ok(SearchProvider::Tavily),
+        other => Err(format!("不支持的搜索源: {other}")),
+    }
+}
+
+fn resolve_saved_search_key(provider: SearchProvider) -> Result<Option<String>, String> {
+    for name in provider.env_key_names() {
+        if let Ok(value) = std::env::var(name) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Ok(Some(trimmed.to_string()));
+            }
+        }
+    }
+    let mut prefs = UserPrefs::load();
+    prefs.refresh_credential_states_with_store(&SystemCredentialStore::new());
+    let Some(credential) = prefs.search.credentials.get(&provider) else {
+        return Ok(None);
+    };
+    let Some(reference) = &credential.credential_ref else {
+        return Ok(None);
+    };
+    SystemCredentialStore::new()
+        .get(reference)
+        .map_err(|error| error.user_message())
+        .map(|value| value.map(|key| key.trim().to_string()).filter(|key| !key.is_empty()))
+}
+
+#[tauri::command]
+pub async fn test_search_provider(
+    provider: String,
+    api_key: Option<String>,
+) -> Result<String, String> {
+    let provider = parse_search_provider(&provider)?;
+    if provider == SearchProvider::Bing {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(8))
+            .build()
+            .map_err(|e| format!("client: {e}"))?;
+        return match client
+            .get("https://www.bing.com/search")
+            .query(&[("q", "pinvou")])
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => Ok("Bing 搜索可用".to_string()),
+            Ok(resp) => Err(format!("Bing HTTP {}", resp.status().as_u16())),
+            Err(e) => Err(format!("Bing 搜索不可达: {e}")),
+        };
+    }
+    let provided_key = api_key.unwrap_or_default().trim().to_string();
+    let key = if provided_key.is_empty() {
+        resolve_saved_search_key(provider)?.unwrap_or_default()
+    } else {
+        provided_key
+    };
+    if key.trim().is_empty() {
+        return Err("请先填写并保存该搜索源的 API Key".to_string());
+    }
+    Ok("搜索源凭据已配置".to_string())
 }
 
 /// 测试连接:GET {base_url}/models(OpenAI 兼容标准端点),验 base_url + key 可达。

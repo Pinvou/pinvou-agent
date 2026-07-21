@@ -185,7 +185,7 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           <button
             type="button"
             onClick={onView}
-            className="h-8 px-3 rounded-[12px] text-[14px] font-semibold active:opacity-70"
+            className="h-8 min-w-[76px] px-3 rounded-[12px] text-[14px] font-semibold whitespace-nowrap active:opacity-70"
             style={{ color: isDark ? '#0A84FF' : '#007AFF', background: isDark ? 'rgba(10,132,255,.12)' : 'rgba(0,122,255,.10)' }}
           >
             {t.archiveSuccessView}

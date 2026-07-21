@@ -25,7 +25,17 @@ function loadPuppeteer() {
 }
 const puppeteer = loadPuppeteer();
 const CHROME = process.env.CHROME ||
-  ['/snap/bin/chromium', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable'].find(p => fs.existsSync(p));
+  [
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    '/snap/bin/chromium',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+  ].find(p => fs.existsSync(p));
 if (!CHROME) { console.error('SKIP: 未找到 chromium/chrome,可用 env CHROME=/path/to/chromium 指定'); process.exit(2); }
 const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-smoke-'));
 
@@ -36,7 +46,8 @@ function injectSource() {
     window.__TAURI_EVENT_HANDLERS__={};
     const ZOMBIE={session_id:'s-zombie',project_dir:'/x/wf',scenario:'sansheng_liubu'};
     const WF_STATE={project_dir:'/x/wf',scenario:'sansheng_liubu',all_completed:false,roles:{taizi:{name:'太子',status:'running'},zhongshu:{name:'中书',status:'pending'}}};
-    const SESSIONS=[{id:'s1',title:'第三季度财报分析',created_at:1,updated_at:9}];
+    let SESSIONS=[{id:'s1',title:'第三季度财报分析',created_at:1,updated_at:9}];
+    let ARCHIVED_SESSIONS=[];
     window.__SHELL_JOBS__=[{
       id:'task-history-done',job_id:'history-1',command:'history-shell',cwd:'C:/tmp',status:'Completed',
       exit_code:0,elapsed_ms:20,stdout_tail:'history output',stderr_tail:'',stdout_len:14,stderr_len:0,
@@ -58,6 +69,7 @@ function injectSource() {
         case 'get_settings': return Promise.resolve({theme:'liquid-light',language:'zh-Hans'});
         case 'get_effective_model_config': return Promise.resolve({model:'qwen36_35b_256k',base_url:'http://127.0.0.1:8000/v1',api_key_set:false});
         case 'list_sessions': return Promise.resolve(SESSIONS);
+        case 'list_archived_sessions': return Promise.resolve(ARCHIVED_SESSIONS);
         case 'get_super_permission_status': return Promise.resolve(false);
         case 'list_personas': return Promise.resolve([]);
         case 'get_backend_status': return Promise.resolve({online:true,ok:true,status:'online',model:'qwen36_35b_256k'});
@@ -68,6 +80,17 @@ function injectSource() {
         case 'check_dependencies': return Promise.resolve([]);
         case 'list_marketplace_tools': return Promise.resolve([]);
         case 'create_session': return Promise.resolve({id:'s-new',metadata:{id:'s-new'}});
+        case 'set_session_archived':
+          if (args && args.archived) {
+            const session = SESSIONS.find(function(s){ return s.id === args.id; }) || { id: args.id, title: '第三季度财报分析', created_at: 1, updated_at: 9 };
+            SESSIONS = SESSIONS.filter(function(s){ return s.id !== args.id; });
+            ARCHIVED_SESSIONS = [Object.assign({}, session, { archived_at: '2026-07-21T10:00:00Z' })].concat(ARCHIVED_SESSIONS.filter(function(s){ return s.id !== args.id; }));
+          } else {
+            const archived = ARCHIVED_SESSIONS.find(function(s){ return s.id === args.id; });
+            ARCHIVED_SESSIONS = ARCHIVED_SESSIONS.filter(function(s){ return s.id !== args.id; });
+            if (archived) SESSIONS = [archived].concat(SESSIONS);
+          }
+          return Promise.resolve(null);
         case 'set_plan_mode_next': return Promise.resolve({mode:'plan',plan_phase:'planning'});
         case 'exit_plan_to_yolo': return Promise.resolve({mode:'yolo',plan_phase:'none'});
         case 'get_mode_state': return Promise.resolve({mode:'yolo',plan_phase:'none'});
@@ -115,7 +138,16 @@ async function clickText(page, t) {
     return false;
   }, t);
 }
-async function expand(page) { return page.evaluate(() => { const b = document.querySelector('[title*="侧边栏"],[title*="展开"]'); if (b) { b.click(); return true; } return false; }); }
+async function expand(page) {
+  return page.evaluate(() => {
+    const hasVisibleHistory = [...document.querySelectorAll('span')]
+      .some(node => (node.textContent || '').trim() === '第三季度财报分析' && node.getBoundingClientRect().left < 330);
+    if (hasVisibleHistory) return true;
+    const b = document.querySelector('[data-sidebar-toggle]') || document.querySelector('[title*="侧边栏"],[title*="展开"]');
+    if (b) { b.click(); return true; }
+    return false;
+  });
+}
 
 (async () => {
   const { url: INDEX } = await startUiTestServer();
@@ -393,6 +425,49 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     return b ? (b.getAttribute('title') || '').trim() : '';
   });
   rec('⑤ chip 渲染+下拉两项+点Plan切到Plan', chip.found && /YOLO/.test(chip.label || '') && chipMenu.yoloDesc && chipMenu.planDesc && /Plan/.test(afterLabel), JSON.stringify({ ...chip, ...chipMenu, afterLabel }));
+
+  // ⑤b 收纳成功 toast 的「前往查看」必须直达设置页数据管理，且按钮不折行。
+  await expand(page); await sleep(200);
+  const archiveMenuOpened = await page.evaluate(() => {
+    const label = [...document.querySelectorAll('span')]
+      .find(node => (node.textContent || '').trim() === '第三季度财报分析' && node.getBoundingClientRect().left < 330);
+    const row = label && label.closest('div[class*="cursor-pointer"]');
+    if (!row) return false;
+    const rect = row.getBoundingClientRect();
+    row.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      clientX: rect.left + Math.min(rect.width - 12, 180),
+      clientY: rect.top + rect.height / 2,
+    }));
+    return true;
+  });
+  await sleep(250);
+  await clickText(page, '收纳');
+  await sleep(250);
+  await clickText(page, '确认收纳');
+  await sleep(450);
+  const archiveToastBefore = await page.evaluate(() => {
+    const button = [...document.querySelectorAll('button')].find(node => (node.textContent || '').trim() === '前往查看');
+    const rect = button && button.getBoundingClientRect();
+    return {
+      opened: !!button,
+      noWrap: !!rect && rect.width >= 74 && rect.height <= 34,
+      text: document.body.innerText.includes('已收纳到【设置-任务收纳】'),
+    };
+  });
+  await clickText(page, '前往查看');
+  await sleep(600);
+  const archiveToastGoto = await page.evaluate(() => ({
+    currentView: document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view'),
+    title: [...document.querySelectorAll('h1')].some(node => (node.textContent || '').trim() === '数据管理'),
+    archivedVisible: document.body.innerText.includes('第三季度财报分析'),
+    noSettingsError: !document.body.innerText.includes('设置页加载失败'),
+  }));
+  rec('⑤b 收纳 toast 前往查看直达设置-数据管理且按钮不折行',
+    archiveMenuOpened && archiveToastBefore.opened && archiveToastBefore.noWrap && archiveToastBefore.text &&
+    archiveToastGoto.currentView === 'settings' && archiveToastGoto.title && archiveToastGoto.archivedVisible && archiveToastGoto.noSettingsError,
+    JSON.stringify({ archiveMenuOpened, archiveToastBefore, archiveToastGoto }));
 
   // ⑥ MegaCube(GB10) 本地大模型引导框:eligible 时渲染标题+启用/暂不/不再提醒(默认 mock 返 eligible:false 不弹,这里末尾翻 __VLLM_ELIGIBLE__ 再手动触发 detect,不污染 ①–⑤)
   await page.evaluate(() => { window.__VLLM_ELIGIBLE__ = true; });
