@@ -11,13 +11,14 @@
 //! - 触发不以机型(DMI product_name)为门槛:GB10 底层是 NVIDIA DGX Spark,H3C 不同批次固件
 //!   DMI 串写法不一(实测 `SCI-CUBE` / `NVIDIA_DGX_Spark`),易漏判。改以 `/opt/.h3c/packages/vllm`
 //!   这套预装为真凭据——出厂镜像独有,普通机不会有。product_name 仅回填 `is_megacube` 供诊断。
-//! - 提权只发生在引导阶段、且**一次 pkexec** 办完(给 startup.sh 加可执行位+装单元+reload+enable --now),
+//! - 提权只发生在引导阶段、且**一次 pkexec** 办完(给 startup.sh 加可执行位+装单元+reload+enable+restart),
 //!   复用 `super_permission::run_pkexec` 的 pkexec 范式;**不走** sudoers 开关,二者无关。
 //! - startup.sh 以 root 跑,内容来自出厂预装目录——属可信来源。该脚本须可重复
 //!   执行(docker load 幂等 / docker run 固定 --name 前先 docker rm -f),是预装侧编写约定。
 
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -37,6 +38,10 @@ const SERVICE_NAME: &str = "pinvou3-vllm.service";
 const CONTAINER_NAME: &str = "pinvou3-vllm-sim";
 const PRODUCT_NAME_PATH: &str = "/sys/class/dmi/id/product_name";
 const VLLM_PORTS: [u16; 3] = [8000, 8001, 8002];
+const RUNTIME_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
+/// 首启通常 5-6 分钟，bootstrap 的用户等待上限为 10 分钟；额外留 2 分钟余量后，
+/// API 仍离线的 running/activating 才视为卡死，避免永远停在 starting。
+const STARTING_STALE_AFTER: Duration = Duration::from_secs(12 * 60);
 /// 探到在线但 /v1/models 没回模型名时的兜底(正常 vLLM 一定有 served name,极少用到)。
 const FALLBACK_MODEL: &str = "qwen36_35b_256k";
 /// 引导成功后写入的固定模型 id(再次引导按 id upsert,幂等)。
@@ -61,6 +66,9 @@ pub struct LocalVllmSetupStatus {
     pub vllm_online: bool,
     pub engine_state: LocalVllmEngineState,
     pub already_bootstrapped: bool,
+    /// 与运行态无关的产品 Gate：预装齐全、未成功引导且用户未选择不再提醒。
+    /// 前端仅在 starting 超过硬截止后用它决定是否恢复启用入口。
+    pub may_offer_setup: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -140,31 +148,121 @@ async fn probe_online() -> Option<(String, Option<String>)> {
 #[derive(Debug, Default)]
 struct RuntimeSnapshot {
     container_status: Option<String>,
+    /// true 表示 Docker 查询成功；此时 status=None 才能可靠解释为“容器不存在”。
+    container_observed: bool,
+    container_age_secs: Option<u64>,
     service_load: Option<String>,
     service_active: Option<String>,
     service_sub: Option<String>,
+    service_result: Option<String>,
+    service_exec_status: Option<i32>,
+    service_age_secs: Option<u64>,
 }
 
-fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(program).args(args).output().ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+fn command_output_with_timeout(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<Output, String> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{program} 启动失败: {e}"))?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return child
+                    .wait_with_output()
+                    .map_err(|e| format!("{program} 读取输出失败: {e}"));
+            }
+            Ok(None) if started.elapsed() < timeout => {
+                thread::sleep(Duration::from_millis(20));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{program} 执行超过 {}ms", timeout.as_millis()));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{program} 等待失败: {e}"));
+            }
+        }
+    }
+}
+
+fn output_text(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn age_from_rfc3339(raw: &str) -> Option<u64> {
+    let started = chrono::DateTime::parse_from_rfc3339(raw).ok()?;
+    chrono::Utc::now()
+        .signed_duration_since(started.with_timezone(&chrono::Utc))
+        .to_std()
+        .ok()
+        .map(|age| age.as_secs())
+}
+
+fn monotonic_age_secs(started_micros: u64) -> Option<u64> {
+    if started_micros == 0 {
+        return None;
+    }
+    let raw = std::fs::read_to_string("/proc/uptime").ok()?;
+    let uptime_secs: f64 = raw.split_whitespace().next()?.parse().ok()?;
+    let now_micros = (uptime_secs * 1_000_000.0) as u64;
+    (now_micros >= started_micros).then(|| (now_micros - started_micros) / 1_000_000)
 }
 
 fn runtime_snapshot() -> RuntimeSnapshot {
-    let container_status = command_stdout(
-        "docker",
-        &["inspect", "--format={{.State.Status}}", CONTAINER_NAME],
-    )
-    .filter(|s| !s.is_empty());
+    let mut snapshot = RuntimeSnapshot::default();
 
-    let mut snapshot = RuntimeSnapshot {
-        container_status,
-        ..RuntimeSnapshot::default()
-    };
-    if let Some(raw) = command_stdout(
+    // 先用 docker ps 区分“查询成功但容器不存在”和“无 Docker 权限/daemon 不可用”。
+    // 直接 inspect 的所有非零退出都折叠成 None，会把权限错误误判为容器退出。
+    let name_filter = format!("name=^/{CONTAINER_NAME}$");
+    if let Ok(list) = command_output_with_timeout(
+        "docker",
+        &["ps", "-a", "--filter", &name_filter, "--format={{.ID}}"],
+        RUNTIME_COMMAND_TIMEOUT,
+    ) {
+        if list.status.success() {
+            snapshot.container_observed = true;
+            if !output_text(&list).is_empty() {
+                if let Ok(inspect) = command_output_with_timeout(
+                    "docker",
+                    &[
+                        "inspect",
+                        "--format={{.State.Status}}|{{.State.StartedAt}}",
+                        CONTAINER_NAME,
+                    ],
+                    RUNTIME_COMMAND_TIMEOUT,
+                ) {
+                    if inspect.status.success() {
+                        let raw = output_text(&inspect);
+                        let mut parts = raw.splitn(2, '|');
+                        snapshot.container_status = parts
+                            .next()
+                            .filter(|value| !value.is_empty())
+                            .map(str::to_string);
+                        snapshot.container_age_secs = parts.next().and_then(age_from_rfc3339);
+                        if snapshot.container_status.is_none() {
+                            snapshot.container_observed = false;
+                        }
+                    } else {
+                        snapshot.container_observed = false;
+                    }
+                } else {
+                    snapshot.container_observed = false;
+                }
+            }
+        }
+    }
+
+    if let Ok(output) = command_output_with_timeout(
         "systemctl",
         &[
             "show",
@@ -172,8 +270,17 @@ fn runtime_snapshot() -> RuntimeSnapshot {
             "--property=LoadState",
             "--property=ActiveState",
             "--property=SubState",
+            "--property=Result",
+            "--property=ExecMainStatus",
+            "--property=ExecMainStartTimestampMonotonic",
         ],
+        RUNTIME_COMMAND_TIMEOUT,
     ) {
+        if !output.status.success() {
+            return snapshot;
+        }
+        let raw = output_text(&output);
+        let mut service_started_micros = None;
         for line in raw.lines() {
             let Some((key, value)) = line.split_once('=') else {
                 continue;
@@ -183,30 +290,85 @@ fn runtime_snapshot() -> RuntimeSnapshot {
                 "LoadState" => snapshot.service_load = value,
                 "ActiveState" => snapshot.service_active = value,
                 "SubState" => snapshot.service_sub = value,
+                "Result" => snapshot.service_result = value,
+                "ExecMainStatus" => {
+                    snapshot.service_exec_status = value.and_then(|raw| raw.parse().ok())
+                }
+                "ExecMainStartTimestampMonotonic" => {
+                    service_started_micros = value.and_then(|raw| raw.parse().ok())
+                }
                 _ => {}
             }
         }
+        snapshot.service_age_secs = service_started_micros.and_then(monotonic_age_secs);
     }
     snapshot
 }
 
+fn starting_is_stale(snapshot: &RuntimeSnapshot) -> bool {
+    [snapshot.container_age_secs, snapshot.service_age_secs]
+        .into_iter()
+        .flatten()
+        .any(|age| age >= STARTING_STALE_AFTER.as_secs())
+}
+
 fn classify_runtime_state(snapshot: &RuntimeSnapshot) -> LocalVllmEngineState {
     match snapshot.container_status.as_deref() {
-        Some("running" | "restarting" | "created") => return LocalVllmEngineState::Starting,
         Some("exited" | "dead" | "removing" | "paused") => {
             return LocalVllmEngineState::Failed;
         }
         _ => {}
     }
 
-    match snapshot.service_active.as_deref() {
-        Some("activating") => LocalVllmEngineState::Starting,
-        Some("failed") => LocalVllmEngineState::Failed,
-        // oneshot + RemainAfterExit 会在容器退出后仍 active(exited)，不能当成启动中。
-        Some("active") if snapshot.service_sub.as_deref() == Some("exited") => {
+    if snapshot.service_active.as_deref() == Some("failed")
+        || snapshot
+            .service_result
+            .as_deref()
+            .is_some_and(|result| !matches!(result, "success" | "done"))
+        || snapshot
+            .service_exec_status
+            .is_some_and(|status| status != 0)
+    {
+        return LocalVllmEngineState::Failed;
+    }
+
+    if matches!(
+        snapshot.container_status.as_deref(),
+        Some("running" | "restarting" | "created")
+    ) {
+        return if starting_is_stale(snapshot) {
             LocalVllmEngineState::Failed
+        } else {
+            LocalVllmEngineState::Starting
+        };
+    }
+
+    match snapshot.service_active.as_deref() {
+        Some("activating") => {
+            if starting_is_stale(snapshot) {
+                LocalVllmEngineState::Failed
+            } else {
+                LocalVllmEngineState::Starting
+            }
         }
-        Some("active") => LocalVllmEngineState::Starting,
+        // oneshot + RemainAfterExit 正常启动后就是 active(exited)。Docker 可观测且容器
+        // 不存在时才能立即判失败；Docker 权限不足时先按启动中处理，再由年龄上限收敛。
+        Some("active") if snapshot.service_sub.as_deref() == Some("exited") => {
+            if (snapshot.container_observed && snapshot.container_status.is_none())
+                || starting_is_stale(snapshot)
+            {
+                LocalVllmEngineState::Failed
+            } else {
+                LocalVllmEngineState::Starting
+            }
+        }
+        Some("active") => {
+            if starting_is_stale(snapshot) {
+                LocalVllmEngineState::Failed
+            } else {
+                LocalVllmEngineState::Starting
+            }
+        }
         _ => LocalVllmEngineState::Stopped,
     }
 }
@@ -291,7 +453,8 @@ pub async fn detect_local_vllm_setup() -> Result<LocalVllmSetupStatus, String> {
         engine_state,
         LocalVllmEngineState::Stopped | LocalVllmEngineState::Failed
     );
-    let eligible = has_packages && can_offer_start && !already_bootstrapped && !declined;
+    let may_offer_setup = has_packages && !already_bootstrapped && !declined;
+    let eligible = may_offer_setup && can_offer_start;
 
     Ok(LocalVllmSetupStatus {
         eligible,
@@ -300,6 +463,7 @@ pub async fn detect_local_vllm_setup() -> Result<LocalVllmSetupStatus, String> {
         vllm_online,
         engine_state,
         already_bootstrapped,
+        may_offer_setup,
     })
 }
 
@@ -454,6 +618,8 @@ mod tests {
     fn runtime_state_distinguishes_loading_stopped_and_failed() {
         let running = RuntimeSnapshot {
             container_status: Some("running".into()),
+            container_observed: true,
+            container_age_secs: Some(60),
             service_active: Some("active".into()),
             service_sub: Some("exited".into()),
             ..RuntimeSnapshot::default()
@@ -472,6 +638,17 @@ mod tests {
             LocalVllmEngineState::Starting
         );
 
+        let stale_running = RuntimeSnapshot {
+            container_status: Some("running".into()),
+            container_observed: true,
+            container_age_secs: Some(STARTING_STALE_AFTER.as_secs()),
+            ..RuntimeSnapshot::default()
+        };
+        assert_eq!(
+            classify_runtime_state(&stale_running),
+            LocalVllmEngineState::Failed
+        );
+
         let stale_oneshot = RuntimeSnapshot {
             container_status: Some("exited".into()),
             service_active: Some("active".into()),
@@ -487,6 +664,64 @@ mod tests {
             classify_runtime_state(&RuntimeSnapshot::default()),
             LocalVllmEngineState::Stopped
         );
+    }
+
+    #[test]
+    fn runtime_state_does_not_treat_docker_permission_error_as_missing_container() {
+        let docker_unobservable = RuntimeSnapshot {
+            container_observed: false,
+            service_active: Some("active".into()),
+            service_sub: Some("exited".into()),
+            service_result: Some("success".into()),
+            service_exec_status: Some(0),
+            service_age_secs: Some(60),
+            ..RuntimeSnapshot::default()
+        };
+        assert_eq!(
+            classify_runtime_state(&docker_unobservable),
+            LocalVllmEngineState::Starting
+        );
+
+        let missing_container = RuntimeSnapshot {
+            container_observed: true,
+            service_active: Some("active".into()),
+            service_sub: Some("exited".into()),
+            service_result: Some("success".into()),
+            service_exec_status: Some(0),
+            service_age_secs: Some(60),
+            ..RuntimeSnapshot::default()
+        };
+        assert_eq!(
+            classify_runtime_state(&missing_container),
+            LocalVllmEngineState::Failed
+        );
+
+        let stale_unobservable = RuntimeSnapshot {
+            service_active: Some("active".into()),
+            service_sub: Some("exited".into()),
+            service_age_secs: Some(STARTING_STALE_AFTER.as_secs()),
+            ..RuntimeSnapshot::default()
+        };
+        assert_eq!(
+            classify_runtime_state(&stale_unobservable),
+            LocalVllmEngineState::Failed
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_commands_have_a_hard_timeout() {
+        let success =
+            command_output_with_timeout("sh", &["-c", "printf ready"], Duration::from_millis(500))
+                .expect("quick command should complete");
+        assert!(success.status.success());
+        assert_eq!(output_text(&success), "ready");
+
+        let started = Instant::now();
+        let result =
+            command_output_with_timeout("sh", &["-c", "sleep 1"], Duration::from_millis(40));
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_millis(500));
     }
 
     #[test]
