@@ -11,5 +11,8 @@ be shipped with the application. `wosigncodecmd.exe` requires
   `73825CE95F524BCD932E5852B7D59E890318E268ED55B7AD65315460613CAA11`
 
 The certificate thumbprint and UKey password used by the current build process
-are configured directly in `sign.ps1`. Update that script when the signing
-certificate or UKey password changes.
+are configured directly in `sign.ps1`. The script always uses the tools in this
+directory, runs the command from this directory so the companion executable can
+be resolved, and ignores already-signed inputs so staged NSIS builds can be
+safely retried. Update the script when the signing certificate or UKey password
+changes.

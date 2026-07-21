@@ -6,6 +6,7 @@
         "cmd": "powershell.exe",
         "args": [
           "-NoProfile",
+          "-NonInteractive",
           "-ExecutionPolicy",
           "Bypass",
           "-File",

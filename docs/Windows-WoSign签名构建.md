@@ -12,7 +12,10 @@ Windows NSIS 发布构建通过项目内的 `wosigncodecmd.exe` 完成签名，
 可选环境变量：
 
 - `PINVOU3_WOSIGN_TIMESTAMP_URL`：RFC 3161 时间戳地址，默认使用 `http://timestamp.digicert.com`。
-- `PINVOU3_WOSIGN_TOOL_PATH`：`wosigncodecmd.exe` 的可选覆盖路径；默认使用项目签名脚本同目录下的工具。
+
+签名工具路径不可通过环境变量覆盖，构建始终使用项目内与 `sign.ps1` 同目录的
+`wosigncodecmd.exe` 和 `wosigncode.exe`，并以该目录作为沃通命令的工作目录。
+签名命令包含 `/isf`，重复打包时会跳过已签名文件。
 
 证书或 UKey 密码变化后，需要同步修改项目内签名脚本。
 
@@ -30,4 +33,4 @@ npm run build:nsis
 npm run bundle:nsis
 ```
 
-两个命令都会先执行 `check:wosign`，签名参数无效、命令行工具或配套工具缺失时立即终止。Tauri 在写入 NSIS bundle 类型后调用同一签名脚本，依次签署主程序、NSIS 卸载程序和最终安装器。
+两个命令都会先执行 `check:wosign`，签名参数无效、命令行工具或配套工具缺失时立即终止。Tauri 在写入 NSIS bundle 类型后调用同一签名脚本，依次签署主程序、NSIS 卸载程序和最终安装器。构建已启用 Tauri verbose 日志；若签名失败，Jenkins 日志会显示签名阶段、目标文件、沃通输出和退出码。

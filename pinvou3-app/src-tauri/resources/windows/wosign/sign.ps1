@@ -3,7 +3,6 @@ param(
   [string]$FilePath,
 
   [string]$TimestampUrl = $env:PINVOU3_WOSIGN_TIMESTAMP_URL,
-  [string]$ToolPath = $env:PINVOU3_WOSIGN_TOOL_PATH,
   [switch]$ValidateOnly
 )
 
@@ -26,11 +25,7 @@ if ([string]::IsNullOrWhiteSpace($TimestampUrl)) {
   $TimestampUrl = "http://timestamp.digicert.com"
 }
 
-if ([string]::IsNullOrWhiteSpace($ToolPath)) {
-  $ToolPath = Join-Path $PSScriptRoot "wosigncodecmd.exe"
-}
-
-$resolvedToolPath = [System.IO.Path]::GetFullPath($ToolPath)
+$resolvedToolPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "wosigncodecmd.exe"))
 if (-not (Test-Path -LiteralPath $resolvedToolPath -PathType Leaf)) {
   throw "WoSign command-line tool was not found: $resolvedToolPath"
 }
@@ -39,6 +34,7 @@ $companionToolPath = Join-Path ([System.IO.Path]::GetDirectoryName($resolvedTool
 if (-not (Test-Path -LiteralPath $companionToolPath -PathType Leaf)) {
   throw "WoSign companion tool was not found: $companionToolPath"
 }
+$toolDirectory = [System.IO.Path]::GetDirectoryName($resolvedToolPath)
 
 $resolvedFilePath = [System.IO.Path]::GetFullPath($FilePath)
 if (-not (Test-Path -LiteralPath $resolvedFilePath -PathType Leaf)) {
@@ -46,8 +42,13 @@ if (-not (Test-Path -LiteralPath $resolvedFilePath -PathType Leaf)) {
 }
 
 if ($ValidateOnly) {
-  & $resolvedToolPath "help" 2>&1 | Out-Null
-  $validationExitCode = $LASTEXITCODE
+  Push-Location -LiteralPath $toolDirectory
+  try {
+    & $resolvedToolPath "help" 2>&1 | Out-Null
+    $validationExitCode = $LASTEXITCODE
+  } finally {
+    Pop-Location
+  }
   if ($validationExitCode -ne 0) {
     throw "WoSign command-line tool validation failed with exit code $validationExitCode."
   }
@@ -61,14 +62,22 @@ $signArguments = @(
   "/tp", $normalizedThumbprint,
   "/p", $Password,
   "/hide",
+  "/isf",
   "/c",
   "/dig", "sha256",
   "/tr", $TimestampUrl,
   "/file", $resolvedFilePath
 )
 
-& $resolvedToolPath @signArguments
-$signExitCode = $LASTEXITCODE
+Write-Host "WoSign signing started: $resolvedFilePath"
+Push-Location -LiteralPath $toolDirectory
+try {
+  & $resolvedToolPath @signArguments
+  $signExitCode = $LASTEXITCODE
+} finally {
+  Pop-Location
+}
+Write-Host "WoSign command exited with code $signExitCode for: $resolvedFilePath"
 if ($signExitCode -ne 0) {
   throw "WoSign failed with exit code $signExitCode while signing: $resolvedFilePath"
 }
