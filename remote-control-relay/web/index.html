@@ -120,6 +120,19 @@
     .jump-bottom svg { width: 18px; height: 18px; stroke: currentColor; }
     .chipbar { display: flex; gap: 7px; overflow-x: auto; padding-bottom: 7px; scrollbar-width: none; }
     .chipbar::-webkit-scrollbar { display: none; }
+    .visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
+    .attachment-preview { max-height: 30dvh; overflow: auto; padding: 6px 0 0; display: flex; flex-direction: column; gap: 6px; }
+    .attachment-preview.hidden { display: none; }
+    .attachment-card { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); }
+    .attachment-card .att-icon { flex: 0 0 auto; font-size: 18px; }
+    .attachment-card .att-main { flex: 1 1 auto; min-width: 0; }
+    .attachment-card .att-title { font-size: 13px; font-weight: 700; color: var(--text); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .attachment-card .att-sub { margin-top: 3px; font-size: 11px; color: var(--muted); }
+    .attachment-card .att-bar { margin-top: 5px; height: 4px; border-radius: 999px; background: rgba(255,255,255,.10); overflow: hidden; }
+    .attachment-card .att-bar-inner { height: 100%; width: 0%; background: var(--blue); transition: width .2s; }
+    .attachment-card.error .att-bar-inner { background: #c5221f; }
+    .attachment-card.done .att-bar-inner { width: 100% !important; background: #2faa5a; }
+    .attachment-card .att-x { flex: 0 0 auto; width: 28px; height: 28px; min-width: 28px; padding: 0; border-radius: 9px; background: transparent; color: var(--muted); font-size: 16px; }
     .chip { flex: 0 0 auto; min-height: 30px; padding: 6px 10px; border-radius: 11px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font-size: 12px; white-space: nowrap; display: inline-flex; align-items: center; gap: 7px; }
     .chip strong { font-weight: 700; color: var(--text); }
     .chip.readonly { color: var(--muted); }
@@ -321,14 +334,23 @@
       </svg>
     </button>
     <footer>
+      <div class="attachment-preview hidden" id="attachmentPreview"></div>
       <div class="chipbar" id="chipbar">
         <button class="chip" id="modeChip">Mode</button>
         <button class="chip" id="modelChip">Model</button>
+        <button class="chip" id="knowledgeChip" disabled>📚 知识库</button>
+        <button class="chip" id="toolsChip" disabled>🔧 工具</button>
       </div>
       <div class="composer">
+        <button class="icon-button" id="attachBtn" aria-label="选择附件" disabled>
+          <svg fill="none" viewBox="0 0 24 24" stroke-width="2" aria-hidden="true">
+            <path d="m21 11-8.5 8.5a5 5 0 0 1-7-7L14 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L16 6"></path>
+          </svg>
+        </button>
         <textarea id="input" rows="1" placeholder="发送消息到桌面端当前 session"></textarea>
         <button class="primary" id="actionButton">发送</button>
       </div>
+      <input type="file" id="fileInput" class="visually-hidden" />
       <div class="row">
         <span class="small" id="hint">云端仅中继，不保存消息全文</span>
       </div>
@@ -491,6 +513,11 @@
       moreMenu: document.getElementById('moreMenu'),
       modeChip: document.getElementById('modeChip'),
       modelChip: document.getElementById('modelChip'),
+      knowledgeChip: document.getElementById('knowledgeChip'),
+      toolsChip: document.getElementById('toolsChip'),
+      attachBtn: document.getElementById('attachBtn'),
+      fileInput: document.getElementById('fileInput'),
+      attachmentPreview: document.getElementById('attachmentPreview'),
       sheetOverlay: document.getElementById('sheetOverlay'),
       sheetTitle: document.getElementById('sheetTitle'),
       sheetBody: document.getElementById('sheetBody'),
@@ -562,6 +589,10 @@
       kb: { collections: [], mounted: null, loading: false },
       tools: { all: [], disabledIds: [], loading: false },
       toolsDebounceTimer: null,
+      toolsSetDebounceTimer: null,
+      // 逻辑上属于 Group H,放这里方便单次上传串行控制。
+      uploadBusy: false,
+      uploadStartResolvers: Object.create(null), // '__pending__' -> { resolve, reject }(同时只有一个上传在飞)
     };
     const sentClientIds = new Set();
     const toolNodes = new Map();
@@ -577,6 +608,8 @@
         el.moreChip,
         el.modeChip,
         el.modelChip,
+        el.knowledgeChip,
+        el.toolsChip,
       ].forEach(node => {
         if (node) node.disabled = disabled;
       });
@@ -608,11 +641,13 @@
       el.takeoverHint.textContent = '重新连接后，当前正在控制的设备会被断开。';
       el.takeoverScreen.classList.remove('hidden');
       el.takeoverScreen.scrollTop = 0;
+      updateChipLabels();
     }
     function hideTakeoverScreen() {
       state.replaced = false;
       setControlsDisabled(false);
       el.takeoverScreen.classList.add('hidden');
+      updateChipLabels();
     }
     function enterTerminalState(status, title, message, hint, variant) {
       state.terminal = true;
@@ -767,6 +802,31 @@
       if (state.chips.persona_id) addReadonlyChip(`Persona ${state.chips.persona_id}`);
       if (state.chips.mounted_collection) addReadonlyChip(`知识库 #${state.chips.mounted_collection}`);
       if (state.chips.pinvou_review_enabled) addReadonlyChip('品悟开启');
+      updateChipLabels();
+    }
+    // knowledgeChip / toolsChip / attachBtn 的文案与 disabled 状态。
+    // 每次 KB / 工具 snapshot、连接状态、上传 busy 变化时调用,以及 renderChips 末尾统一调用。
+    function updateChipLabels() {
+      if (el.knowledgeChip) {
+        const mounted = state.kb && state.kb.mounted;
+        if (mounted) {
+          const col = (state.kb.collections || []).find(c => c && c.id === mounted);
+          el.knowledgeChip.innerHTML = '📚 <strong>' + ((col && (col.name || col.title)) || ('#' + mounted)) + '</strong>';
+        } else {
+          el.knowledgeChip.innerHTML = '📚 知识库';
+        }
+        el.knowledgeChip.disabled = !joined || state.replaced;
+      }
+      if (el.toolsChip) {
+        const all = (state.tools && state.tools.all) || [];
+        const disabledIds = (state.tools && state.tools.disabledIds) || [];
+        const enabled = all.length - disabledIds.length;
+        el.toolsChip.innerHTML = '🔧 <strong>' + enabled + '/' + all.length + '</strong>';
+        el.toolsChip.disabled = !joined || state.replaced;
+      }
+      if (el.attachBtn) {
+        el.attachBtn.disabled = !joined || state.replaced || state.uploadBusy;
+      }
     }
     function rememberSnapshotSession(session) {
       if (!session || !session.id) return;
@@ -866,6 +926,14 @@
       }
       if (kind === 'artifacts') sendAction('request_artifacts', {});
       if (kind === 'models') sendAction('request_chips', {});
+      if (kind === 'knowledge' && joined) {
+        state.kb.loading = true;
+        sendActionAwait('list_kb_collections', {}).catch(() => {});
+      }
+      if (kind === 'tools' && joined) {
+        state.tools.loading = true;
+        sendActionAwait('list_tools', {}).catch(() => {});
+      }
       renderSheet();
       el.sheetOverlay.classList.remove('hidden');
     }
@@ -880,6 +948,8 @@
       if (state.sheet === 'mode') return renderModeSheet();
       if (state.sheet === 'models') return renderModelSheet();
       if (state.sheet === 'theme') return renderThemeSheet();
+      if (state.sheet === 'knowledge') return renderKnowledgeSheet();
+      if (state.sheet === 'tools') return renderToolsSheet();
     }
     function sheetItem({ title, sub, mark, active, onClick }) {
       const btn = document.createElement('button');
@@ -907,13 +977,22 @@
       state.pendingSessionId = id;
       state.sessionChoiceRequired = false;
       closeSheet();
+      // 切/进 session 后,主动拉取 KB 挂载状态 + 全局工具开关;
+      // 不同 session 可能挂在不同 KB,先清空本地缓存避免错显。
+      state.kb.mounted = null;
+      const fetchKbAndTools = () => {
+        sendActionAwait('list_kb_collections', {}).catch(() => {});
+        sendActionAwait('list_tools', {}).catch(() => {});
+      };
       if (id === sessionId) {
         sendAction('request_snapshot', {});
         sendAction('request_chips', {});
         sendAction('request_artifacts', {});
+        fetchKbAndTools();
         return;
       }
       sendAction('switch_remote_session', { session_id: id });
+      fetchKbAndTools();
     }
     function renderCreateSessionButton() {
       const bar = document.createElement('div');
@@ -1049,6 +1128,111 @@
           },
         }));
       });
+    }
+    function renderKnowledgeSheet() {
+      el.sheetTitle.textContent = '知识库';
+      el.sheetBody.innerHTML = '';
+      if (!joined) {
+        el.sheetBody.innerHTML = '<div class="empty-panel">未连接到桌面端。</div>';
+        return;
+      }
+      if (state.kb.loading) {
+        el.sheetBody.innerHTML = '<div class="empty-panel">正在加载知识库列表…</div>';
+        return;
+      }
+      const collections = Array.isArray(state.kb.collections) ? state.kb.collections : [];
+      const mounted = state.kb.mounted || null;
+      const mountedItem = mounted
+        ? collections.find(c => c && c.id === mounted)
+        : null;
+      if (mounted) {
+        el.sheetBody.appendChild(sheetItem({
+          title: (mountedItem && (mountedItem.name || mountedItem.title)) || ('#' + mounted),
+          sub: '已挂载到当前 session',
+          mark: '挂载中',
+          active: true,
+          onClick: () => {
+            sendAction('unmount_kb_collection', {});
+            closeSheet();
+          },
+        }));
+      } else {
+        const empty = document.createElement('div');
+        empty.className = 'empty-panel';
+        empty.textContent = '当前 session 未挂载知识库。';
+        el.sheetBody.appendChild(empty);
+      }
+      if (!collections.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty-panel';
+        empty.textContent = '没有可用的知识库 collection。';
+        el.sheetBody.appendChild(empty);
+        return;
+      }
+      collections.forEach(c => {
+        if (!c || !c.id) return;
+        const isMounted = c.id === mounted;
+        el.sheetBody.appendChild(sheetItem({
+          title: c.name || c.title || ('#' + c.id),
+          sub: c.description || c.id,
+          mark: isMounted ? '已挂载' : '挂载',
+          active: isMounted,
+          onClick: () => {
+            if (isMounted) {
+              sendAction('unmount_kb_collection', {});
+            } else {
+              sendAction('mount_kb_collection', { collection_id: c.id });
+            }
+            closeSheet();
+          },
+        }));
+      });
+    }
+    function renderToolsSheet() {
+      el.sheetTitle.textContent = '工具开关';
+      el.sheetBody.innerHTML = '';
+      if (!joined) {
+        el.sheetBody.innerHTML = '<div class="empty-panel">未连接到桌面端。</div>';
+        return;
+      }
+      if (state.tools.loading) {
+        el.sheetBody.innerHTML = '<div class="empty-panel">正在加载工具列表…</div>';
+        return;
+      }
+      const all = Array.isArray(state.tools.all) ? state.tools.all : [];
+      const disabled = Array.isArray(state.tools.disabledIds) ? state.tools.disabledIds : [];
+      const disabledSet = new Set(disabled);
+      if (!all.length) {
+        el.sheetBody.innerHTML = '<div class="empty-panel">暂无可用工具。</div>';
+        return;
+      }
+      all.forEach(t => {
+        if (!t || !t.connector_id) return;
+        const isEnabled = !disabledSet.has(t.connector_id);
+        el.sheetBody.appendChild(sheetItem({
+          title: t.name || t.connector_id,
+          sub: t.description || t.connector_id,
+          mark: isEnabled ? '已启用' : '已禁用',
+          active: isEnabled,
+          onClick: () => {
+            const next = new Set(state.tools.disabledIds || []);
+            if (isEnabled) next.add(t.connector_id);
+            else next.delete(t.connector_id);
+            state.tools.disabledIds = Array.from(next);
+            renderToolsSheet();
+            scheduleSetDisabledConnectors();
+          },
+        }));
+      });
+    }
+    // debounced 500ms after toggle; 避免连击产生多次 set_disabled_connectors。
+    function scheduleSetDisabledConnectors() {
+      if (state.toolsSetDebounceTimer) clearTimeout(state.toolsSetDebounceTimer);
+      state.toolsSetDebounceTimer = setTimeout(() => {
+        state.toolsSetDebounceTimer = null;
+        sendAction('set_disabled_connectors', { connector_ids: state.tools.disabledIds || [] });
+        updateChipLabels();
+      }, 500);
     }
     function addMessage(role, text) {
       const div = document.createElement('div');
@@ -1373,6 +1557,121 @@
       if (artifactId) return sendAction('request_artifact_download', { artifact_id: artifactId });
       if (path) return sendAction('request_artifact_download', { artifact_path: path });
       return false;
+    }
+    // 用户从 file picker 选了一个文件后调用:attach_file_start 等 ack → 分块上传
+    // (每块等 attach_file_relay_ack 再发下一块,NAK 重试 3 次) → 等 attach_file_result。
+    // 同时只允许一个上传在飞(state.uploadBusy)。
+    async function requestAttachFile(file) {
+      if (!joined || state.replaced) {
+        addSystem('未连接到桌面端,无法上传。');
+        return;
+      }
+      if (state.uploadBusy) {
+        addSystem('已有附件正在上传,请等待完成或取消。');
+        return;
+      }
+      state.uploadBusy = true;
+      updateChipLabels();
+      const tempUploadId = 'pending-' + Date.now();
+      setUploadState(tempUploadId, {
+        filename: file.name,
+        byte_size: file.size,
+        mime: file.type || 'application/octet-stream',
+        received: 0,
+        status: 'starting',
+        busy: true,
+      });
+      renderAttachmentPreview();
+      let realUploadId = null;
+      try {
+        // 1. attach_file_start → attach_file_start_ack(由 handler resolve)
+        const startAck = await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            if (state.uploadStartResolvers['__pending__']) {
+              delete state.uploadStartResolvers['__pending__'];
+              reject(new Error('attach_file_start timeout'));
+            }
+          }, 10000);
+          state.uploadStartResolvers['__pending__'] = {
+            resolve: (payload) => { clearTimeout(timer); resolve(payload); },
+            reject: (err) => { clearTimeout(timer); reject(err); },
+          };
+          const sent = sendAction('attach_file_start', {
+            filename: file.name,
+            byte_size: file.size,
+            mime: file.type || 'application/octet-stream',
+          });
+          if (!sent) {
+            clearTimeout(timer);
+            delete state.uploadStartResolvers['__pending__'];
+            reject(new Error('ws not open'));
+          }
+        });
+        realUploadId = startAck && startAck.upload_id;
+        const chunkBytes = (startAck && startAck.chunk_bytes) || (256 * 1024);
+        if (!realUploadId) throw new Error('attach_file_start_ack 缺少 upload_id');
+        // 把临时 state 迁移到真实 upload_id
+        const tempState = state.uploads[tempUploadId] || {};
+        delete state.uploads[tempUploadId];
+        setUploadState(realUploadId, Object.assign({}, tempState, {
+          status: 'uploading',
+          realUploadId,
+          chunk_bytes: chunkBytes,
+        }));
+        renderAttachmentPreview();
+        // 2. 分块循环
+        const total = file.size;
+        let offset = 0;
+        let index = 0;
+        while (offset < total) {
+          const end = Math.min(offset + chunkBytes, total);
+          const buf = await file.slice(offset, end).arrayBuffer();
+          const data_base64 = arrayBufferToBase64Standard(buf);
+          const last = end >= total;
+          let attempt = 0;
+          while (true) {
+            attempt++;
+            sendAction('attach_file_chunk', { upload_id: realUploadId, index, data_base64, last });
+            try {
+              await waitForRelayAck(realUploadId, index, 65000);
+              break;
+            } catch (e) {
+              if (attempt >= 3) throw e;
+              await new Promise(r => setTimeout(r, 1000 * attempt));
+            }
+          }
+          offset = end;
+          index++;
+          setUploadState(realUploadId, { received: offset });
+          renderAttachmentPreview();
+        }
+        // 3. 等 attach_file_result(handler 会更新 state.uploads[id].status)
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('attach_file_result timeout')), 120000);
+          const check = () => {
+            const up = state.uploads[realUploadId];
+            if (!up) { clearTimeout(timer); reject(new Error('upload vanished')); return; }
+            if (up.status === 'done') { clearTimeout(timer); resolve(); return; }
+            if (up.status === 'error') { clearTimeout(timer); reject(new Error(up.error || 'server error')); return; }
+            setTimeout(check, 200);
+          };
+          check();
+        });
+      } catch (err) {
+        addSystem('附件上传失败: ' + (err && err.message || err));
+        if (tempUploadId && state.uploads[tempUploadId]) {
+          setUploadState(tempUploadId, { status: 'error', error: (err && err.message) || '失败', busy: false });
+        }
+        if (realUploadId) {
+          sendAction('attach_file_abort', { upload_id: realUploadId });
+        }
+        renderAttachmentPreview();
+      } finally {
+        // 清理 start resolver(若 reject 前未清)
+        if (state.uploadStartResolvers['__pending__']) delete state.uploadStartResolvers['__pending__'];
+        state.uploadBusy = false;
+        updateChipLabels();
+      }
     }
     function setDownloadBusy(busy) {
       state.downloadBusy = busy;
@@ -1995,6 +2294,84 @@
     function clearUploadState(upload_id) {
       delete state.uploads[upload_id];
     }
+    // 根据 state.uploads 渲染附件预览卡片(文件名、进度、可中止)。空则隐藏整个区。
+    function renderAttachmentPreview() {
+      if (!el.attachmentPreview) return;
+      const ids = Object.keys(state.uploads);
+      if (!ids.length) {
+        el.attachmentPreview.classList.add('hidden');
+        el.attachmentPreview.innerHTML = '';
+        return;
+      }
+      el.attachmentPreview.classList.remove('hidden');
+      el.attachmentPreview.innerHTML = '';
+      ids.forEach(id => {
+        const up = state.uploads[id];
+        if (!up) return;
+        const card = document.createElement('div');
+        card.className = 'attachment-card ' + (up.status || 'starting');
+        if (up.status === 'done') card.classList.add('done');
+        if (up.status === 'error' || up.status === 'rate_limited') card.classList.add('error');
+        const icon = document.createElement('div');
+        icon.className = 'att-icon';
+        icon.textContent = up.preview && up.preview.kind === 'image' ? '🖼' : '📎';
+        const main = document.createElement('div');
+        main.className = 'att-main';
+        const title = document.createElement('div');
+        title.className = 'att-title';
+        title.textContent = up.filename || id;
+        const sub = document.createElement('div');
+        sub.className = 'att-sub';
+        let subText = '';
+        if (up.status === 'done' && up.preview) {
+          const parts = [];
+          if (up.preview.kind) parts.push(up.preview.kind);
+          if (up.preview.byte_size) parts.push(formatSize(up.preview.byte_size));
+          if (up.preview.token_estimate) parts.push('~' + up.preview.token_estimate + ' tok');
+          subText = parts.join(' · ') || '已就绪';
+          if (up.preview.warning) subText += '  ⚠ ' + up.preview.warning;
+        } else if (up.status === 'error') {
+          subText = '失败: ' + (up.error || '未知错误');
+        } else if (up.status === 'rate_limited') {
+          subText = '被限流,稍后重试';
+        } else if (typeof up.received === 'number' && typeof up.byte_size === 'number' && up.byte_size > 0) {
+          const pct = Math.min(100, Math.round((up.received / up.byte_size) * 100));
+          subText = formatSize(up.received) + ' / ' + formatSize(up.byte_size) + ' · ' + pct + '%';
+        } else if (up.status === 'starting') {
+          subText = '等待桌面端响应…';
+        } else {
+          subText = formatSize(up.byte_size || 0);
+        }
+        sub.textContent = subText;
+        const bar = document.createElement('div');
+        bar.className = 'att-bar';
+        const inner = document.createElement('div');
+        inner.className = 'att-bar-inner';
+        if (typeof up.received === 'number' && typeof up.byte_size === 'number' && up.byte_size > 0) {
+          inner.style.width = Math.min(100, Math.round((up.received / up.byte_size) * 100)) + '%';
+        }
+        bar.appendChild(inner);
+        main.appendChild(title);
+        main.appendChild(sub);
+        main.appendChild(bar);
+        card.appendChild(icon);
+        card.appendChild(main);
+        if (up.status !== 'done' && up.status !== 'error') {
+          const x = document.createElement('button');
+          x.className = 'att-x';
+          x.textContent = '×';
+          x.setAttribute('aria-label', '取消上传');
+          x.onclick = () => {
+            // 仅在已拿到真实 upload_id 时才向桌面端发 abort;否则只能本地清。
+            if (up.realUploadId) sendAction('attach_file_abort', { upload_id: up.realUploadId });
+            clearUploadState(id);
+            renderAttachmentPreview();
+          };
+          card.appendChild(x);
+        }
+        el.attachmentPreview.appendChild(card);
+      });
+    }
     function blockText(blocks) {
       return (Array.isArray(blocks) ? blocks : [])
         .filter(b => b && b.type === 'text')
@@ -2506,6 +2883,13 @@
         case 'remote_session_switched': {
           const s = msg.payload && msg.payload.session || {};
           if (state.pendingSessionId && s.id && s.id !== state.pendingSessionId) break;
+          // uploads 按 spec 是 session 作用域;切 session 时统一清空,避免上个 session 的 pending ack 卡住。
+          state.kb.mounted = null;
+          rejectAllPendingAcks('session switched');
+          rejectAllPendingRelayAcksAll('session switched');
+          Object.keys(state.uploads).forEach(clearUploadState);
+          state.uploadBusy = false;
+          renderAttachmentPreview();
           state.sessionChoiceRequired = false;
           state.creatingSession = false;
           sessionId = s.id || sessionId;
@@ -2514,6 +2898,7 @@
           el.subtitle.textContent = sessionId ? `session ${sessionId}` : '当前 session';
           setTurnActive(false);
           setStatus('已切换');
+          updateChipLabels();
           break;
         }
         case 'artifact_list':
@@ -2537,6 +2922,93 @@
           if (state.sheet === 'mode') renderModeSheet();
           if (state.sheet === 'models') renderModelSheet();
           break;
+        case 'kb_collections_snapshot': {
+          const kbp = msg.payload || {};
+          state.kb.collections = Array.isArray(kbp.collections) ? kbp.collections : [];
+          state.kb.mounted = kbp.mounted_collection_id ?? null;
+          state.kb.loading = false;
+          resolvePendingAck('list_kb_collections', kbp);
+          if (state.sheet === 'knowledge') renderKnowledgeSheet();
+          updateChipLabels();
+          break;
+        }
+        case 'tools_snapshot': {
+          const tp = msg.payload || {};
+          state.tools.all = Array.isArray(tp.all) ? tp.all : [];
+          state.tools.disabledIds = Array.isArray(tp.disabled_ids) ? tp.disabled_ids : [];
+          state.tools.loading = false;
+          resolvePendingAck('list_tools', tp);
+          if (state.sheet === 'tools') renderToolsSheet();
+          updateChipLabels();
+          break;
+        }
+        case 'attach_file_start_ack': {
+          // 等待 startAck 的 requestAttachFile 收到真实 upload_id + chunk_bytes
+          const sap = msg.payload || {};
+          const slot = state.uploadStartResolvers['__pending__'];
+          if (slot) {
+            delete state.uploadStartResolvers['__pending__'];
+            slot.resolve(sap);
+          }
+          break;
+        }
+        case 'attach_file_relay_ack': {
+          const rap = msg.payload || {};
+          resolveRelayAck(rap.upload_id, rap.index, rap.ok !== false, rap.message);
+          break;
+        }
+        case 'attach_file_result': {
+          const rp = msg.payload || {};
+          const up = rp.upload_id && state.uploads[rp.upload_id];
+          if (!up) break;
+          if (rp.ok) {
+            setUploadState(rp.upload_id, { status: 'done', preview: rp.ingest_preview || null, busy: false });
+            addSystem('附件 ' + (up.filename || rp.upload_id) + ' 已就绪。');
+          } else {
+            setUploadState(rp.upload_id, { status: 'error', error: rp.error || '未知错误', busy: false });
+            addSystem('附件 ' + (up.filename || rp.upload_id) + ' 处理失败: ' + (rp.error || '未知错误'));
+          }
+          renderAttachmentPreview();
+          break;
+        }
+        case 'attach_file_aborted': {
+          const ap = msg.payload || {};
+          const au = ap.upload_id && state.uploads[ap.upload_id];
+          clearUploadState(ap.upload_id);
+          rejectAllPendingRelayAcks(ap.upload_id, ap.reason || 'aborted');
+          addSystem('附件上传已中止: ' + (ap.reason || '未知原因'));
+          if (au && au.filename) {
+            // 已在 addSystem 中说明
+          }
+          renderAttachmentPreview();
+          break;
+        }
+        case 'attach_file_rate_limited': {
+          // 仅作 UI 提示;重试由 requestAttachFile 的 NAK 重试循环负责。
+          const rlp = msg.payload || {};
+          if (rlp.upload_id && state.uploads[rlp.upload_id]) {
+            setUploadState(rlp.upload_id, { status: 'rate_limited', retryAfter: rlp.retry_after_ms });
+            renderAttachmentPreview();
+          }
+          break;
+        }
+        case 'tools_changed': {
+          if (state.toolsDebounceTimer) clearTimeout(state.toolsDebounceTimer);
+          state.toolsDebounceTimer = setTimeout(() => {
+            state.toolsDebounceTimer = null;
+            sendAction('list_tools', {});
+          }, 500);
+          break;
+        }
+        case 'kb_mount_changed': {
+          const kmp = msg.payload || {};
+          if (!kmp.session_id || kmp.session_id === sessionId) {
+            state.kb.mounted = kmp.collection_id ?? null;
+            if (state.sheet === 'knowledge') renderKnowledgeSheet();
+            updateChipLabels();
+          }
+          break;
+        }
         case 'plan_snapshot':
           {
             const p = msg.payload || {};
@@ -2670,6 +3142,12 @@
           addSystem(`错误: ${(msg.payload && msg.payload.message) || msg.message || 'unknown'}`);
           break;
         case 'room_replaced':
+          rejectAllPendingAcks('room replaced');
+          rejectAllPendingRelayAcksAll('room replaced');
+          Object.keys(state.uploads).forEach(clearUploadState);
+          state.uploadBusy = false;
+          state.kb.mounted = null;
+          renderAttachmentPreview();
           showTakeoverScreen();
           break;
         case 'room_closed':
@@ -2692,6 +3170,7 @@
         setStatus('已连接');
         state.sessionChoiceRequired = true;
         el.messages.innerHTML = '<div class="empty">请选择一个 session 进入。</div>';
+        updateChipLabels();
         openSheet('sessions');
         return;
       }
@@ -2727,6 +3206,12 @@
       ws.onclose = () => {
         joined = false;
         clearTimeout(joinTimer);
+        rejectAllPendingAcks('ws closed');
+        rejectAllPendingRelayAcksAll('ws closed');
+        Object.keys(state.uploads).forEach(clearUploadState);
+        state.uploadBusy = false;
+        renderAttachmentPreview();
+        updateChipLabels();
         abortArtifactDownloads('连接中断，请重试。');
         if (state.replaced || state.terminal) return;
         setStatus('重连中');
@@ -2755,16 +3240,23 @@
         return;
       }
       const text = el.input.value.trim();
-      if (!text) return;
+      // 已就绪的附件随消息一起发(upload_id 列表)。
+      const doneUploadIds = Object.keys(state.uploads).filter(id => state.uploads[id] && state.uploads[id].status === 'done');
+      if (!text && doneUploadIds.length === 0) return;
       const id = clientId();
       sentClientIds.add(id);
       addMessage('user', text);
       el.input.value = '';
       setTurnActive(true, 'waiting');
-      if (!sendAction('user_message', { content: text }, id)) {
+      const sent = sendAction('user_message', { content: text, attachment_upload_ids: doneUploadIds }, id);
+      if (!sent) {
         setTurnActive(false);
         addSystem('发送失败：远控连接尚未就绪。');
+        return;
       }
+      // sendAction 成功(ws 已 open),清掉已发的附件预览卡片。
+      doneUploadIds.forEach(uploadId => clearUploadState(uploadId));
+      renderAttachmentPreview();
     }
     function reconnectThisDevice() {
       syncViewportMetrics();
@@ -2802,6 +3294,15 @@
     };
     el.modeChip.onclick = () => openSheet('mode');
     el.modelChip.onclick = () => openSheet('models');
+    el.knowledgeChip.onclick = () => openSheet('knowledge');
+    el.toolsChip.onclick = () => openSheet('tools');
+    el.attachBtn.onclick = () => el.fileInput.click();
+    el.fileInput.onchange = () => {
+      const file = el.fileInput.files && el.fileInput.files[0];
+      if (!file) return;
+      el.fileInput.value = '';  // reset so selecting same file twice still fires change
+      requestAttachFile(file);
+    };
     el.sheetClose.onclick = closeSheet;
     el.sheetOverlay.onclick = e => { if (e.target === el.sheetOverlay) closeSheet(); };
     el.previewClose.onclick = () => el.previewOverlay.classList.add('hidden');
