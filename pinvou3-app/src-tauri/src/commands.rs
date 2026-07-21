@@ -225,6 +225,7 @@ pub fn session_mount_collection(
     collection_id: i64,
     store: State<'_, SessionStore>,
     knowledge: State<'_, KnowledgeService>,
+    app: AppHandle,
 ) -> Result<(), String> {
     // 完全门控:embedding 模型没就绪 → 知识库整体不可用,拒绝挂载。前端会置灰入口,
     // 这里是防绕过兜底(草稿态直调 / 旧前端 / 命令注入)。
@@ -232,13 +233,26 @@ pub fn session_mount_collection(
         return Err("embedding 模型未就绪,知识库暂不可用".to_string());
     }
     store.set_mounted_collection(&session_id, Some(collection_id));
+    // 挂载已落盘成功,emit 失败不应让命令失败(只影响远程客户端的同步提示)。
+    let _ = app.emit(
+        "remote_control:kb_mount_changed",
+        serde_json::json!({ "session_id": session_id, "collection_id": collection_id }),
+    );
     Ok(())
 }
 
 /// 摘下会话的知识集挂载。
 #[tauri::command]
-pub fn session_unmount_collection(session_id: String, store: State<'_, SessionStore>) {
+pub fn session_unmount_collection(
+    session_id: String,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) {
     store.set_mounted_collection(&session_id, None);
+    let _ = app.emit(
+        "remote_control:kb_mount_changed",
+        serde_json::json!({ "session_id": session_id, "collection_id": null }),
+    );
 }
 
 /// 读会话当前挂载的知识集 id(前端切会话时重读,恢复挂载条显示)。
@@ -1804,6 +1818,31 @@ pub async fn cancel_shell_task(
         .map_err(|error| format!("cancel_shell_task({session_id}, {task_id}): {error:#}"))
 }
 
+/// 落盘连接器开关 → 联动技能 → 重算完整禁用工具列表 → 广播到所有在跑引擎。
+///
+/// 抽出 `set_disabled_connectors` 的 4 步副作用序列,让 web 远程指令管理器可在
+/// 非 Tauri 命令上下文复用。`app` 为 `None` 时(无 AppHandle)退化为只读
+/// `disabled_tool_names()`,不补 `kb_search` gate(远程指令调用方已自行管控)。
+pub async fn apply_disabled_connectors(
+    app: Option<&AppHandle>,
+    pool: &EnginePool,
+    connector_ids: Vec<String>,
+) -> Result<(), String> {
+    let app_clone = app.cloned();
+    let disallowed = tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
+        crate::bridge::marketplace::save_disabled_connectors(&connector_ids);
+        crate::bridge::skill_marketplace::refresh_disabled_skills();
+        Ok(match &app_clone {
+            Some(a) => compute_disallowed_tools(a),
+            None => crate::bridge::marketplace::disabled_tool_names(),
+        })
+    })
+    .await
+    .map_err(|e| format!("apply_disabled_connectors join: {e}"))??;
+    pool.set_disallowed_all(disallowed).await;
+    Ok(())
+}
+
 /// 计算当前应「对模型隐藏」的工具全名**完整列表**(小写)。
 ///
 /// 因 `EnginePool::set_disallowed_all` 是**全量替换** `config.disallowed_tools`,任何调用方
@@ -1826,25 +1865,17 @@ pub fn compute_disallowed_tools(app: &AppHandle) -> Vec<String> {
 /// pinvou3 工具开关(全局持久):设置当前被关掉的连接器(connector_ids = 市场工具 id)。
 /// 落盘 → 推算成模型可见工具全名广播给所有在跑引擎 → 隐藏这些工具。空 = 全开。
 /// 持久:用户关一次,所有新对话/新窗口都继承,直到手动开回。
+///
+/// 同时 emit `remote_control:tools_changed`,让移动端 web 远程客户端感知全局工具开关变化。
 #[tauri::command]
 pub async fn set_disabled_connectors(
     connector_ids: Vec<String>,
     app: AppHandle,
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
-    // 落盘后用 compute_disallowed_tools 重算**完整**禁用列表(含连接器禁用 + kb gate),否则
-    // 切连接器开关的全量替换会冲掉知识库为空时的 kb_search 隐藏。
-    let app2 = app.clone();
-    let tools = tokio::task::spawn_blocking(move || {
-        crate::bridge::marketplace::save_disabled_connectors(&connector_ids);
-        // 联动:被禁用连接器的 companion 技能一并从 ## Skills 隐藏(如公文 MCP 关掉 →
-        // government-writing 隐藏)。开回来时同理恢复。
-        crate::bridge::skill_marketplace::refresh_disabled_skills();
-        compute_disallowed_tools(&app2)
-    })
-    .await
-    .map_err(|e| format!("compute disabled tools: {e}"))?;
-    pool.set_disallowed_all(tools).await;
+    apply_disabled_connectors(Some(&app), &pool, connector_ids).await?;
+    app.emit("remote_control:tools_changed", ())
+        .map_err(|e| format!("emit tools_changed: {e}"))?;
     Ok(())
 }
 
@@ -7704,4 +7735,37 @@ pub async fn get_session_stats(
         .await
         .map_err(|error| format!("统计 session timeline 任务失败: {error}"))?
         .map_err(|error| format!("统计 session timeline 失败: {error}"))
+}
+
+/// web 远程 e2e 专用:校验 mobile 上传的文件已落盘且 sha256 匹配。生产代码不调用。
+///
+/// 路径布局与 web-remote manager 落盘约定对齐:
+/// `<pinvou3_home>/uploads/<upload_id>/data.bin`(`<pinvou3_home>` 默认 `~/.pinvou3`,
+/// 测试可用 `PINVOU3_HOME` 重定位)。返回 sha256(小写 hex)+ 字节数,e2e 比对客户端已知值。
+#[tauri::command]
+pub async fn verify_upload(upload_id: String) -> Result<VerifyUploadOutput, String> {
+    // 防 upload_id 路径穿越:只允许 [A-Za-z0-9_-],与 session_id 校验一致。
+    crate::bridge::sessions::validate_session_id(&upload_id)
+        .map_err(|e| format!("invalid upload_id: {e:?}"))?;
+    let file_path = crate::bridge::paths::pinvou3_home()
+        .join("uploads")
+        .join(&upload_id)
+        .join("data.bin");
+    let bytes = tokio::fs::read(&file_path)
+        .await
+        .map_err(|e| format!("read {}: {e}", file_path.display()))?;
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let sha256 = format!("{:x}", hasher.finalize());
+    Ok(VerifyUploadOutput {
+        sha256,
+        byte_size: bytes.len() as u64,
+    })
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct VerifyUploadOutput {
+    pub sha256: String,
+    pub byte_size: u64,
 }
