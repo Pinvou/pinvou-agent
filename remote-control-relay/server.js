@@ -34,8 +34,32 @@ const roomCreationBuckets = new Map();
 const wsConnectionBuckets = new Map();
 const telemetry = createTelemetryService();
 
-function send(ws, value) {
-  if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(value));
+function send(ws, value, onSent) {
+  if (!ws || ws.readyState !== ws.OPEN) {
+    onSent?.(new Error("websocket is not open"));
+    return false;
+  }
+  try {
+    ws.send(JSON.stringify(value), onSent);
+    return true;
+  } catch (error) {
+    onSent?.(error);
+    return false;
+  }
+}
+
+function acknowledgeDownloadChunk(room, payload, error) {
+  send(room.desktop, {
+    type: "artifact_download_relay_ack",
+    room_id: room.room_id,
+    session_id: room.session_id,
+    payload: {
+      download_id: payload?.download_id || "",
+      index: payload?.index,
+      ok: !error,
+      message: error ? String(error.message || error) : undefined,
+    },
+  });
 }
 
 function boundedInteger(raw, fallback, min, max) {
@@ -418,6 +442,14 @@ wss.on("connection", (ws, req) => {
         room.session_id = msg.session_id;
       }
       audit(room, `desktop:${msg.type || "event"}`);
+      // 下载分片必须等 relay 真正把当前帧写出后才通知 desktop 继续下一块。
+      // 这把桌面端的有界通道背压贯穿到 relay→mobile 的慢速链路，避免
+      // ws.send 在慢网手机前无限累计几十 MiB 的 bufferedAmount。
+      if (msg.type === "artifact_download_chunk") {
+        const payload = msg.payload || {};
+        send(room.mobile, msg, (error) => acknowledgeDownloadChunk(room, payload, error));
+        return;
+      }
       send(room.mobile, msg);
       return;
     }
