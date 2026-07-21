@@ -1399,7 +1399,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       );
     };
 
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders = ['bing'], onAddSearchProvider, onDeleteSearchProvider, searchApiKey, setSearchApiKey, searchHasSavedKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, searchNeedsRestart, languageNeedsRestart, bs, t, onRestoreArchived, onDeleteArchived, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders = ['bing'], onAddSearchProvider, onDeleteSearchProvider, searchApiKey, setSearchApiKey, searchHasSavedKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, searchNeedsRestart, languageNeedsRestart, bs, t, onRestoreArchived, onDeleteArchived, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
       const isDark = activeTheme === 'dark';
       const [activeSection, setActiveSection] = useState(initialSection || 'general');
       const [editingModel, setEditingModel] = useState(null);
@@ -2019,7 +2019,13 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               <p className={`mt-2 text-[14px] leading-5 ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{type === 'search' ? '搜索源或凭据保存后，需要重启应用才能用于助手的联网搜索。' : '界面语言已切换，重启后助手回复语言也会同步生效。'}</p>
             </div>
             <div className={`grid grid-cols-2 border-t ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}>
-              <button onClick={() => setRestartDialog(null)} className={`h-12 text-[17px] font-semibold border-r ${isDark ? 'border-white/[0.12] text-[#0A84FF]' : 'border-black/[0.12] text-[#007AFF]'}`}>稍后</button>
+              <button onClick={async () => {
+                if (type === 'search' && onSaveSearchConfig) {
+                  const saved = await onSaveSearchConfig();
+                  if (saved === false) return;
+                }
+                setRestartDialog(null);
+              }} className={`h-12 text-[17px] font-semibold border-r ${isDark ? 'border-white/[0.12] text-[#0A84FF]' : 'border-black/[0.12] text-[#007AFF]'}`}>稍后</button>
               <button onClick={() => { setRestartDialog(null); type === 'search' ? onConfirmSearchConfig() : (bridge.available && bridge.restartApp()); }} className="h-12 text-[17px] font-semibold text-[#007AFF]">现在重启</button>
             </div>
           </div>

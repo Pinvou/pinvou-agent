@@ -508,15 +508,36 @@ async function modalWidth(page, headingText) {
   rec('⑫ 确认重启后写入搜索源和凭据草稿', searchSaved && searchSaved.provider === 'bocha' && searchSaved.enabled.includes('bocha') && searchSaved.bochaAction === 'replace' && searchSaved.bochaKey === 'bocha-key', JSON.stringify(searchSaved));
 
   await clickSettingsSection(page, '搜索');
+  const savesBeforeDeleteLater = await callCount(page, 'update_settings');
+  const restartsBeforeDeleteLater = await callCount(page, 'save_settings_and_restart');
   await clickRowAction(page, '秘塔', '删除');
   await sleep(250);
   const searchDeleteWidth = await modalWidth(page, '删除搜索源？');
   const searchDeleteDialog = await page.evaluate(() => document.body.innerText.includes('删除搜索源？') && document.body.innerText.includes('将移除 秘塔'));
   await clickExact(page, '删除搜索源');
   await sleep(250);
-  rec('⑬ 删除搜索源使用窄 iOS 确认框', searchDeleteDialog && searchDeleteWidth >= 260 && searchDeleteWidth <= 285, `width=${searchDeleteWidth}`);
   await clickExact(page, '稍后');
-  await sleep(200);
+  await sleep(300);
+  const deleteLaterSaved = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'update_settings');
+    const search = call && call.args && call.args.prefs && call.args.prefs.search;
+    return search && {
+      enabled: search.enabled_providers,
+      metasoAction: search.credentials && search.credentials.metaso && search.credentials.metaso.credential_action,
+    };
+  });
+  const savesAfterDeleteLater = await callCount(page, 'update_settings');
+  const restartsAfterDeleteLater = await callCount(page, 'save_settings_and_restart');
+  rec('⑬ 删除搜索源使用窄 iOS 确认框，选择稍后会写盘但不重启',
+    searchDeleteDialog
+      && searchDeleteWidth >= 260
+      && searchDeleteWidth <= 285
+      && savesAfterDeleteLater === savesBeforeDeleteLater + 1
+      && restartsAfterDeleteLater === restartsBeforeDeleteLater
+      && deleteLaterSaved
+      && !deleteLaterSaved.enabled.includes('metaso')
+      && deleteLaterSaved.metasoAction === 'delete',
+    JSON.stringify({ width: searchDeleteWidth, savesBeforeDeleteLater, savesAfterDeleteLater, restartsBeforeDeleteLater, restartsAfterDeleteLater, deleteLaterSaved }));
 
   await clickSettingsSection(page, '权限与环境');
   await page.evaluate(() => {

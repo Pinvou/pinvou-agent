@@ -983,6 +983,18 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         }
       }
 
+      async function handleSaveSearchConfig() {
+        if (!bridge.available) return true;
+        const saved = await bridge.saveSettings(buildFullSettings({
+          search: buildSearchSettingsPayload(),
+        }));
+        if (saved === false) {
+          setSettingsToast('搜索配置保存失败，请重试');
+          return false;
+        }
+        return true;
+      }
+
       function handleSetLanguage(lang) {
         setLanguage(lang);
         if (bridge.available) {
@@ -1450,6 +1462,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                   onSaveModel={(m) => bridge.available && bridge.saveModel(m)}
                   onDeleteModel={(m) => { if (bridge.available) bridge.deleteModel(m.id); }}
                   onSetActiveModel={(id) => bridge.available && bridge.setActiveModel(id)}
+                  onSaveSearchConfig={handleSaveSearchConfig}
                   onConfirmSearchConfig={handleConfirmSearchConfig}
                   onMemoryEnabledChange={handleSetMemoryEnabled}
                   onPetEnabledChange={handleSetPetEnabled}
