@@ -444,6 +444,8 @@ impl RemoteControlManager {
                     .unwrap_or("")
                     .trim()
                     .to_string();
+                // 去重 + 保序:mobile 若重复传同一 upload_id,只取一次,避免附件被双发。
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
                 let attachment_upload_ids: Vec<String> = action
                     .payload
                     .get("attachment_upload_ids")
@@ -451,6 +453,7 @@ impl RemoteControlManager {
                     .map(|arr| {
                         arr.iter()
                             .filter_map(|x| x.as_str().map(String::from))
+                            .filter(|id| seen.insert(id.clone()))
                             .collect()
                     })
                     .unwrap_or_default();
@@ -2219,13 +2222,31 @@ impl RemoteControlManager {
             }
         }
 
+        // spec §4.2:回给 mobile 的只是 ingest_preview(filename + kind + byte_size +
+        // token_estimate + warning),**不含 markdown / path**(markdown 走 WS 太重,
+        // path 是桌面绝对路径,不该泄漏)。完整 IngestResult 留在 pending_attachments
+        // 里,user_message 时随 mobile_user_message 一起透传给前端走桌面 chat。
+        let preview_filename = {
+            let inner = self.inner.lock();
+            inner
+                .pending_attachments
+                .get(&upload_id)
+                .map(|p| p.filename.clone())
+                .unwrap_or_else(|| ingest_result.basename.clone())
+        };
         self.send_event(
             &session_id,
             "attach_file_result",
             json!({
                 "upload_id": upload_id,
                 "ok": true,
-                "ingest": ingest_result,
+                "ingest_preview": {
+                    "filename": preview_filename,
+                    "kind": ingest_result.kind,
+                    "byte_size": ingest_result.byte_size,
+                    "token_estimate": ingest_result.token_estimate,
+                    "warning": ingest_result.warning,
+                },
             }),
         );
     }
