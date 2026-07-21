@@ -82,13 +82,13 @@ fn cloud_model_windows() {
     // (preset, 默认模型名)—— 见 bridge::model() 的 ModelPreset 分支
     let models = [
         ("Deepseek", "deepseek-v4-pro"),
-        ("Kimi", "kimi-k2.6"),
-        ("OpenaiCompatible", "gpt-4o"),
-        ("Qwen", "qwen-max"),
-        ("Doubao", "doubao-pro-256k"),
-        ("Minimax", "abab6.5s-chat"),
-        ("Glm", "glm-4-plus"),
-        ("Mimo", "mimo-v2-flash"),
+        ("Kimi", "kimi-k3"),
+        ("OpenaiCompatible", "gpt-5.6-terra"),
+        ("Qwen", "qwen3.7-plus"),
+        ("Doubao", "doubao-seed-evolving"),
+        ("Minimax", "MiniMax-M3"),
+        ("Glm", "glm-5.2"),
+        ("Mimo", "mimo-v2.5-pro"),
         ("LocalVllm(对照)", "qwen36_35b_256k"),
     ];
     eprintln!("\n==== 云端模型窗口(context_window_for_model)====");

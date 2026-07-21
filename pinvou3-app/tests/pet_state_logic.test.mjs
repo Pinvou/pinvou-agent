@@ -167,8 +167,7 @@ try {
   );
   assert.deepEqual(deriveActivities(race, now + 501), []);
 
-  // 自动已读先于 chat:done 到达时，运行卡先保留；完成事件随后负责删除，
-  // 既不提前隐藏真实运行任务，也不留下完成气泡。
+  // 打开运行中的会话后若主窗口失焦/最小化，未来的完成结果仍必须展示。
   const viewedFirst = createPetState();
   applyEvent(viewedFirst, 'pet:turn_start', { session_id: 's-viewed-first' }, now);
   assert.equal(markSessionViewed(viewedFirst, 's-viewed-first'), false);
@@ -177,7 +176,26 @@ try {
     applyEvent(viewedFirst, 'chat:done', { session_id: 's-viewed-first', status: 'Completed' }, now + 2),
     true,
   );
-  assert.deepEqual(deriveActivities(viewedFirst, now + 3), []);
+  assert.deepEqual(deriveActivities(viewedFirst, now + 3).map((item) => item.status), ['review']);
+
+  // 完成时主窗口仍聚焦当前会话，确认事件即使先到也必须压住完成卡。
+  const completedViewFirst = createPetState();
+  applyEvent(completedViewFirst, 'pet:turn_start', { session_id: 's-completed-view-first' }, now);
+  assert.equal(markSessionViewed(
+    completedViewFirst,
+    's-completed-view-first',
+    { completed: true },
+  ), false);
+  assert.equal(
+    applyEvent(
+      completedViewFirst,
+      'chat:done',
+      { session_id: 's-completed-view-first', status: 'Completed' },
+      now + 2,
+    ),
+    true,
+  );
+  assert.deepEqual(deriveActivities(completedViewFirst, now + 3), []);
 
   // 权威 false 快照立即收尾，不依赖 2 秒后再来第二张快照。
   const ghost = createPetState();

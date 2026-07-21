@@ -218,7 +218,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       );
     };
 
-    const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoTools, onBackScheduledRun }) => {
+    const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun }) => {
       const isDark = theme === 'dark';
       const [inputText, setInputTextState] = useState('');
       const [inputLimitReached, setInputLimitReached] = useState(false);
@@ -704,8 +704,8 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
 
             {!hasMessages && !welcomeToolId && (
               /* Gemini Style Centered Empty State */
-              <div className="text-center mb-12 animate-in slide-in-from-bottom-4 duration-500">
-                <h1 className={`text-[44px] font-normal mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
+              <div className="w-full max-w-[760px] px-4 text-center mb-12 animate-in slide-in-from-bottom-4 duration-500">
+                <h1 className={`text-[34px] md:text-[44px] leading-tight font-normal mb-2 whitespace-normal break-words ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
                   {t.chatGreeting}
                 </h1>
               </div>
@@ -979,7 +979,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                     <Mic size={18} />
                   </button>
                   <ComposerModeChip t={t} bs={bs} compact={composerCompact} />
-                  <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoSettings} compact={composerCompact} />
+                  <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoModelSettings || onGotoSettings} compact={composerCompact} />
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} compact={composerCompact} activeSkill={bs && bs.activeSkill} />
                   <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
                 </div>

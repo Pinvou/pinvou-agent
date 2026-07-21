@@ -11,7 +11,6 @@ use std::{collections::VecDeque, sync::Mutex};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 pub const PET_LABEL: &str = "pet";
-pub const PET_MENU_LABEL: &str = "pet-menu";
 
 const PET_FRAME_W: f64 = 192.0;
 const PET_FRAME_H: f64 = 208.0;
@@ -28,9 +27,6 @@ const PET_ACTIVITY_GAP_H: f64 = 12.0;
 const PET_CHARACTER_BOTTOM: f64 = 8.0;
 const MIN_SCALE: f64 = 0.5;
 const MAX_SCALE: f64 = 1.2;
-const PET_MENU_WIDTH: f64 = 58.0;
-const PET_MENU_HEIGHT: f64 = 28.0;
-const PET_MENU_GAP: f64 = 3.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PetNavigationRequest {
@@ -168,6 +164,25 @@ fn pet_window_logical_size(
     }
 }
 
+/// 运行时生效尺寸。GB10 实测:WebKitGTK 给 webview 的最小内容尺寸约 200x200,
+/// GTK 不允许窗口小于内容最小值——紧凑桌伴请求 144x165 实得 200x200,
+/// min_inner_size hint 也放不开。定位数学若按请求尺寸算,窗口底/右边会凸出
+/// 预期边界,拖拽物理一开边界钳制人物就被顶走("点击上移")。Linux 上把假定
+/// 尺寸夹到同一下限让数学与真实窗口一致;其他平台请求尺寸如实生效,不动。
+fn pet_window_effective_size(
+    scale: f64,
+    activity_visible: bool,
+    activity_height: Option<f64>,
+) -> (f64, f64) {
+    let size = pet_window_logical_size(scale, activity_visible, activity_height);
+    #[cfg(target_os = "linux")]
+    let size = {
+        const WEBVIEW_MIN: f64 = 200.0;
+        (size.0.max(WEBVIEW_MIN), size.1.max(WEBVIEW_MIN))
+    };
+    size
+}
+
 fn activity_content_height(activity_height: Option<f64>) -> f64 {
     let measured = activity_height.unwrap_or(PET_ACTIVITY_DEFAULT_H);
     if measured.is_finite() {
@@ -182,10 +197,11 @@ fn character_local_top_left(
     activity_visible: bool,
     activity_height: Option<f64>,
     alignment: &str,
+    vertical_alignment: PetVerticalAlignment,
 ) -> (f64, f64) {
     let scale = clamp_scale(scale);
     let (window_width, window_height) =
-        pet_window_logical_size(scale, activity_visible, activity_height);
+        pet_window_effective_size(scale, activity_visible, activity_height);
     let character_width = PET_FRAME_W * scale;
     let character_height = PET_FRAME_H * scale;
     let x = if alignment == "left" {
@@ -193,9 +209,10 @@ fn character_local_top_left(
     } else {
         window_width - PET_HORIZONTAL_PADDING / 2.0 - character_width
     };
-    // 人物贴底(与 pet.css 的 flex-end + padding-bottom: 8px 严格一致):
-    // 纵向位置只由窗口高度决定,活动卡的出现/消失不再牵动人物。
-    let y = window_height - PET_CHARACTER_BOTTOM - character_height;
+    let y = match vertical_alignment {
+        PetVerticalAlignment::Top => 0.0,
+        PetVerticalAlignment::Bottom => window_height - PET_CHARACTER_BOTTOM - character_height,
+    };
     (x, y)
 }
 
@@ -228,7 +245,7 @@ fn clamp_scale_to_character_work_area(
     }
 }
 
-/// `~/.pinvou3/pet_window.json` —— 桌宠窗口位置(全局物理像素)+ 缩放。
+/// `~/.pinvou3/pet_window.json` —— 桌宠 client 原点(全局物理像素)+ 缩放 + 竖向靠边。
 /// 见 prefs::PetPrefs 注释:刻意不进 settings.json,避免前端整份回写覆盖。
 fn state_path() -> std::path::PathBuf {
     crate::bridge::paths::pinvou3_home().join("pet_window.json")
@@ -238,14 +255,48 @@ fn default_scale() -> f64 {
     MIN_SCALE
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PetVerticalAlignment {
+    Top,
+    #[default]
+    Bottom,
+}
+
+impl PetVerticalAlignment {
+    fn from_str(value: &str) -> Self {
+        if value == "top" {
+            Self::Top
+        } else {
+            Self::Bottom
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PetPositionSpace {
+    Client,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct PetWindowState {
     pub x: Option<i32>,
     pub y: Option<i32>,
+    /// `None` 表示旧版本保存的 WM frame 原点；新版本一律保存 WebView client 原点。
+    pub position_space: Option<PetPositionSpace>,
     #[serde(default = "default_scale")]
     pub scale: f64,
     pub activity_visible: bool,
+    pub vertical_alignment: PetVerticalAlignment,
 }
 
 impl Default for PetWindowState {
@@ -253,8 +304,10 @@ impl Default for PetWindowState {
         Self {
             x: None,
             y: None,
+            position_space: None,
             scale: MIN_SCALE,
             activity_visible: false,
+            vertical_alignment: PetVerticalAlignment::Bottom,
         }
     }
 }
@@ -264,6 +317,10 @@ pub fn clamp_scale(s: f64) -> f64 {
         return 1.0;
     }
     s.clamp(MIN_SCALE, MAX_SCALE)
+}
+
+fn scale_resize_required(current: f64, next: f64, has_explicit_anchor: bool) -> bool {
+    has_explicit_anchor || (current - next).abs() > 1e-9
 }
 
 fn load_state() -> PetWindowState {
@@ -312,10 +369,18 @@ pub fn create_or_show(app: &AppHandle) -> Result<(), String> {
     }
     let state = load_state();
     let scale = state.scale;
-    let initial_size = pet_window_logical_size(scale, state.activity_visible, None);
-    let win = WebviewWindowBuilder::new(app, PET_LABEL, WebviewUrl::App("pet.html".into()))
+    let initial_size = pet_window_effective_size(scale, state.activity_visible, None);
+    let pet_url = format!(
+        "pet.html?verticalAlignment={}",
+        state.vertical_alignment.as_str()
+    );
+    let win = WebviewWindowBuilder::new(app, PET_LABEL, WebviewUrl::App(pet_url.into()))
         .title("PINVOU 桌伴公仔")
         .inner_size(initial_size.0, initial_size.1)
+        // GTK 下无显式 min hint 的窗口会被钳到 ~200x200 最小尺寸(GB10 实测,
+        // 菜单窗口同病):紧凑桌伴请求 144x165 实得 200x200,定位数学随之失准。
+        // 96x120 覆盖 MIN_SCALE 下的最小合法尺寸,放开 GTK 的钳制。
+        .min_inner_size(96.0, 120.0)
         .resizable(false)
         .maximizable(false)
         .minimizable(false)
@@ -324,13 +389,17 @@ pub fn create_or_show(app: &AppHandle) -> Result<(), String> {
         .shadow(false)
         .always_on_top(true)
         .skip_taskbar(true)
+        // TAO/GTK 默认会先 map 窗口、再应用 decorations(false)。Mutter 因此可能
+        // 给无边框桌伴缓存一段标题栏 frame，形成约 37px 的顶部透明空气墙。
+        // 隐藏创建让无装饰属性在首次 map 前完整生效，再由下方统一定位和显示。
+        .visible(false)
         .build()
         .map_err(|e| format!("build pet window: {e}"))?;
 
     position_window(&win);
     // Linux/X11 下 builder 在窗口 map 之前写入的 always_on_top 可能丢失，
     // 必须在窗口已显示后再向窗口管理器重申一次。
-    keep_above(&win);
+    show_and_keep_above(&win)?;
     Ok(())
 }
 
@@ -349,6 +418,19 @@ fn show_and_keep_above(win: &tauri::WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
+fn legacy_frame_position_to_client(
+    saved: (i32, i32),
+    observed_inner: (i32, i32),
+    observed_outer: (i32, i32),
+) -> Option<(i32, i32)> {
+    let dx = observed_inner.0.checked_sub(observed_outer.0)?;
+    let dy = observed_inner.1.checked_sub(observed_outer.1)?;
+    if !(0..=128).contains(&dx) || !(0..=128).contains(&dy) {
+        return None;
+    }
+    Some((saved.0.saturating_add(dx), saved.1.saturating_add(dy)))
+}
+
 /// 恢复保存位置(中心点仍在某显示器内才信),否则落到主屏右下角。
 fn position_window(win: &tauri::WebviewWindow) {
     let monitors: Vec<(i32, i32, u32, u32)> = win
@@ -364,16 +446,47 @@ fn position_window(win: &tauri::WebviewWindow) {
         })
         .unwrap_or_default();
 
-    let st = load_state();
-    if let (Some(x), Some(y)) = (st.x, st.y) {
-        let fallback = pet_window_logical_size(st.scale, st.activity_visible, None);
-        let (w, h) = win
-            .outer_size()
-            .map(|s| (s.width as i32, s.height as i32))
-            .unwrap_or((fallback.0 as i32, fallback.1 as i32));
-        if point_on_any_monitor(x + w / 2, y + h / 2, &monitors) {
-            let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
-            return;
+    let mut st = load_state();
+    if let (Some(saved_x), Some(saved_y)) = (st.x, st.y) {
+        let client_position = match st.position_space {
+            Some(PetPositionSpace::Client) => Some(((saved_x, saved_y), false)),
+            None => {
+                // 旧版直接保存 Linux/TAO onMoved 的 WM frame 原点，但 GTK 的
+                // set_position 实际按 client 原点移动。只有观测到可信 inset 才
+                // 迁移并落 marker；观测异常时宁可使用默认落点，也不污染旧状态。
+                match (win.inner_position(), win.outer_position()) {
+                    (Ok(inner), Ok(outer)) => legacy_frame_position_to_client(
+                        (saved_x, saved_y),
+                        (inner.x, inner.y),
+                        (outer.x, outer.y),
+                    )
+                    .map(|position| (position, true)),
+                    _ => None,
+                }
+            }
+        };
+        if let Some(((x, y), migrated)) = client_position {
+            let fallback = pet_window_effective_size(st.scale, st.activity_visible, None);
+            let (w, h) = win
+                .inner_size()
+                .map(|s| (s.width as i32, s.height as i32))
+                .unwrap_or_else(|_| {
+                    let sf = win.scale_factor().unwrap_or(1.0);
+                    (
+                        (fallback.0 * sf).round() as i32,
+                        (fallback.1 * sf).round() as i32,
+                    )
+                });
+            if point_on_any_monitor(x + w / 2, y + h / 2, &monitors) {
+                let positioned = win.set_position(tauri::PhysicalPosition::new(x, y)).is_ok();
+                if migrated && positioned {
+                    st.x = Some(x);
+                    st.y = Some(y);
+                    st.position_space = Some(PetPositionSpace::Client);
+                    let _ = save_state(st);
+                }
+                return;
+            }
         }
     }
     // 默认落点:主屏右下,留边距 + 任务栏冗余。
@@ -381,7 +494,7 @@ fn position_window(win: &tauri::WebviewWindow) {
         let p = m.position();
         let s = m.size();
         let monitor_scale = m.scale_factor();
-        let logical = pet_window_logical_size(st.scale, st.activity_visible, None);
+        let logical = pet_window_effective_size(st.scale, st.activity_visible, None);
         let w = (logical.0 * monitor_scale) as i32;
         let h = (logical.1 * monitor_scale) as i32;
         let x = p.x + s.width as i32 - w - (24.0 * monitor_scale) as i32;
@@ -403,9 +516,6 @@ pub fn spawn_if_enabled(app: &AppHandle) {
 pub fn close_with_main(app: &AppHandle) {
     if let Some(pet) = app.get_webview_window(PET_LABEL) {
         let _ = pet.close();
-    }
-    if let Some(menu) = app.get_webview_window(PET_MENU_LABEL) {
-        let _ = menu.close();
     }
 }
 
@@ -437,102 +547,11 @@ pub async fn set_pet_enabled(enabled: bool, app: AppHandle) -> Result<(), String
         if let Some(win) = app.get_webview_window(PET_LABEL) {
             let _ = win.hide();
         }
-        if let Some(menu) = app.get_webview_window(PET_MENU_LABEL) {
-            let _ = menu.hide();
-        }
     }
     let _ = app.emit(
         "pet:enabled_changed",
         serde_json::json!({ "enabled": enabled }),
     );
-    Ok(())
-}
-
-fn position_pet_menu_at_cursor(
-    pet: &tauri::WebviewWindow,
-    menu: &tauri::WebviewWindow,
-    anchor: (f64, f64),
-) {
-    let (Ok(pet_position), Ok(menu_size)) = (pet.outer_position(), menu.outer_size()) else {
-        return;
-    };
-    let scale_factor = pet.scale_factor().unwrap_or(1.0);
-    let cursor_x = pet_position.x + (anchor.0 * scale_factor).round() as i32;
-    let cursor_y = pet_position.y + (anchor.1 * scale_factor).round() as i32;
-    let gap = (PET_MENU_GAP * scale_factor).round() as i32;
-    let work_area = pet.current_monitor().ok().flatten().map(|monitor| {
-        let area = monitor.work_area();
-        (
-            area.position.x,
-            area.position.y,
-            area.size.width,
-            area.size.height,
-        )
-    });
-    let mut x = cursor_x + gap;
-    let mut y = cursor_y + gap;
-    if let Some((left, top, width, height)) = work_area {
-        let right = left + width as i32;
-        let bottom = top + height as i32;
-        if x + menu_size.width as i32 > right {
-            x = cursor_x - menu_size.width as i32 - gap;
-        }
-        if y + menu_size.height as i32 > bottom {
-            y = cursor_y - menu_size.height as i32 - gap;
-        }
-        x = x.clamp(left, (right - menu_size.width as i32).max(left));
-        y = y.clamp(top, (bottom - menu_size.height as i32).max(top));
-    }
-    let _ = menu.set_position(tauri::PhysicalPosition::new(x, y));
-}
-
-/// 使用独立的紧凑弹层复刻 Codex 菜单视觉，同时避开系统菜单不可调的最小宽度。
-#[tauri::command]
-pub async fn show_pet_context_menu(
-    anchor_x: f64,
-    anchor_y: f64,
-    app: AppHandle,
-) -> Result<(), String> {
-    let pet = app
-        .get_webview_window(PET_LABEL)
-        .ok_or_else(|| "pet window not found".to_string())?;
-    let menu = if let Some(menu) = app.get_webview_window(PET_MENU_LABEL) {
-        menu
-    } else {
-        WebviewWindowBuilder::new(
-            &app,
-            PET_MENU_LABEL,
-            WebviewUrl::App("pet-menu.html".into()),
-        )
-        .title("桌伴公仔菜单")
-        .inner_size(PET_MENU_WIDTH, PET_MENU_HEIGHT)
-        .resizable(false)
-        .maximizable(false)
-        .minimizable(false)
-        .decorations(false)
-        .transparent(true)
-        .shadow(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .visible(false)
-        .build()
-        .map_err(|error| format!("build pet context menu window failed: {error}"))?
-    };
-    let _ = menu.set_size(tauri::LogicalSize::new(PET_MENU_WIDTH, PET_MENU_HEIGHT));
-    position_pet_menu_at_cursor(&pet, &menu, (anchor_x, anchor_y));
-    let _ = menu.eval("document.documentElement.classList.remove('pet-menu-hidden')");
-    menu.show()
-        .map_err(|error| format!("show pet context menu failed: {error}"))?;
-    menu.set_focus()
-        .map_err(|error| format!("focus pet context menu failed: {error}"))
-}
-
-#[tauri::command]
-pub async fn hide_pet_context_menu(app: AppHandle) -> Result<(), String> {
-    if let Some(menu) = app.get_webview_window(PET_MENU_LABEL) {
-        menu.hide()
-            .map_err(|error| format!("hide pet context menu failed: {error}"))?;
-    }
     Ok(())
 }
 
@@ -547,7 +566,9 @@ enum ScaleAnchor {
     BottomCenter,
     BottomLeft,
     BottomRight,
+    TopCenter,
     TopLeft,
+    TopRight,
 }
 
 fn resized_position(
@@ -570,7 +591,13 @@ fn resized_position(
             x += old_size.0 as i32 - new_size.0 as i32;
             y += old_size.1 as i32 - new_size.1 as i32;
         }
+        ScaleAnchor::TopCenter => {
+            x += (old_size.0 as i32 - new_size.0 as i32) / 2;
+        }
         ScaleAnchor::TopLeft => {}
+        ScaleAnchor::TopRight => {
+            x += old_size.0 as i32 - new_size.0 as i32;
+        }
     }
     if let Some((left, top, width, height)) = work_area {
         let right = left + width as i32;
@@ -587,22 +614,30 @@ fn edge_anchor(
     position: (i32, i32),
     size: (u32, u32),
     work_area: Option<(i32, i32, u32, u32)>,
+    vertical_alignment: PetVerticalAlignment,
 ) -> ScaleAnchor {
     let Some((left, _, width, _)) = work_area else {
-        return ScaleAnchor::BottomCenter;
+        return match vertical_alignment {
+            PetVerticalAlignment::Top => ScaleAnchor::TopCenter,
+            PetVerticalAlignment::Bottom => ScaleAnchor::BottomCenter,
+        };
     };
     let window_center = position.0 as i64 + size.0 as i64 / 2;
     let monitor_center = left as i64 + width as i64 / 2;
-    if window_center <= monitor_center {
-        ScaleAnchor::BottomLeft
-    } else {
-        ScaleAnchor::BottomRight
+    match (window_center <= monitor_center, vertical_alignment) {
+        (true, PetVerticalAlignment::Top) => ScaleAnchor::TopLeft,
+        (false, PetVerticalAlignment::Top) => ScaleAnchor::TopRight,
+        (true, PetVerticalAlignment::Bottom) => ScaleAnchor::BottomLeft,
+        (false, PetVerticalAlignment::Bottom) => ScaleAnchor::BottomRight,
     }
 }
 
-fn window_edge_anchor(win: &tauri::WebviewWindow) -> ScaleAnchor {
-    let position = win.outer_position().ok();
-    let size = win.outer_size().ok();
+fn window_edge_anchor(
+    win: &tauri::WebviewWindow,
+    vertical_alignment: PetVerticalAlignment,
+) -> ScaleAnchor {
+    let position = win.inner_position().ok();
+    let size = win.inner_size().ok();
     let work_area = win.current_monitor().ok().flatten().map(|monitor| {
         let area = monitor.work_area();
         (
@@ -617,13 +652,17 @@ fn window_edge_anchor(win: &tauri::WebviewWindow) -> ScaleAnchor {
             (position.x, position.y),
             (size.width, size.height),
             work_area,
+            vertical_alignment,
         ),
-        _ => ScaleAnchor::BottomCenter,
+        _ => match vertical_alignment {
+            PetVerticalAlignment::Top => ScaleAnchor::TopCenter,
+            PetVerticalAlignment::Bottom => ScaleAnchor::BottomCenter,
+        },
     }
 }
 
 fn resize_pet_window(win: &tauri::WebviewWindow, logical_size: (f64, f64), anchor: ScaleAnchor) {
-    let before = win.outer_size().ok().zip(win.outer_position().ok());
+    let before = win.inner_size().ok().zip(win.inner_position().ok());
     let work_area = win.current_monitor().ok().flatten().map(|monitor| {
         let area = monitor.work_area();
         (
@@ -639,6 +678,17 @@ fn resize_pet_window(win: &tauri::WebviewWindow, logical_size: (f64, f64), ancho
         (logical_size.1 * sf).round() as u32,
     );
     let _ = win.set_size(tauri::PhysicalSize::new(nw, nh));
+    // 诊断:X11 的 resize 异步生效,这里的回读多为旧值(GB10 实测会拿到上一个
+    // 状态的尺寸),只能当观测信号,绝不能拿来做定位数学——定位一律用请求值,
+    // 请求值已经过 pet_window_effective_size 与真实钳制对齐。
+    if let Ok(size) = win.inner_size() {
+        if (size.width, size.height) != (nw, nh) {
+            eprintln!(
+                "[pet resize] requested {nw}x{nh} readback {}x{} (async, stale ok)",
+                size.width, size.height
+            );
+        }
+    }
     if let Some((size, pos)) = before {
         let (nx, ny) = resized_position(
             (pos.x, pos.y),
@@ -678,11 +728,17 @@ fn resize_pet_window_at_character_anchor(
     activity_visible: bool,
     activity_height: Option<f64>,
     alignment: &str,
+    vertical_alignment: PetVerticalAlignment,
     screen_anchor: (f64, f64),
 ) {
     let sf = win.scale_factor().unwrap_or(1.0);
-    let (local_x, local_y) =
-        character_local_top_left(scale, activity_visible, activity_height, alignment);
+    let (local_x, local_y) = character_local_top_left(
+        scale,
+        activity_visible,
+        activity_height,
+        alignment,
+        vertical_alignment,
+    );
     let width = (logical_size.0 * sf).round() as u32;
     let height = (logical_size.1 * sf).round() as u32;
     let work_area = win.current_monitor().ok().flatten().map(|monitor| {
@@ -694,6 +750,17 @@ fn resize_pet_window_at_character_anchor(
             area.size.height,
         )
     });
+    // 定位一律用请求值:请求值已经过 pet_window_effective_size 与 GTK 真实
+    // 钳制对齐;X11 resize 异步生效,此刻回读多为旧值,不能参与定位数学。
+    let _ = win.set_size(tauri::PhysicalSize::new(width, height));
+    if let Ok(size) = win.inner_size() {
+        if (size.width, size.height) != (width, height) {
+            eprintln!(
+                "[pet resize] requested {width}x{height} readback {}x{} (async, stale ok)",
+                size.width, size.height
+            );
+        }
+    }
     let (x, y) = character_anchor_position(
         (
             (screen_anchor.0 - local_x * sf).round() as i32,
@@ -702,7 +769,6 @@ fn resize_pet_window_at_character_anchor(
         (width, height),
         work_area,
     );
-    let _ = win.set_size(tauri::PhysicalSize::new(width, height));
     let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
 }
 
@@ -713,6 +779,7 @@ pub async fn set_pet_scale(
     scale: f64,
     anchor: Option<String>,
     alignment: Option<String>,
+    vertical_alignment: Option<String>,
     anchor_x: Option<f64>,
     anchor_y: Option<f64>,
     activity_visible: Option<bool>,
@@ -743,14 +810,24 @@ pub async fn set_pet_scale(
             clamp_scale_to_character_work_area(scale, character_anchor, scale_factor, work_area);
     }
     let mut st = load_state();
+    let resize_required = scale_resize_required(st.scale, scale, anchor.is_some());
     st.scale = scale;
     let activity_visible = activity_visible.unwrap_or(st.activity_visible);
+    let vertical_alignment = vertical_alignment
+        .as_deref()
+        .map(PetVerticalAlignment::from_str)
+        .unwrap_or(st.vertical_alignment);
     st.activity_visible = activity_visible;
+    st.vertical_alignment = vertical_alignment;
     if persist.unwrap_or(true) {
         save_state(st)?;
     }
-    if let Some(win) = win {
-        let logical_size = pet_window_logical_size(scale, activity_visible, activity_height);
+    // 启动时活动可见性和缩放状态会由两个 React effect 紧邻上报。X11 resize
+    // 异步生效，如果缩放值根本没变却再次按旧尺寸改位置，两次锚定会竞态，
+    // 让右侧公仔每次启动随机横移半个宽差。活动显隐由专用命令负责；这里
+    // 只有真实缩放变化（或显式锚点）才修改原生窗口几何。
+    if let Some(win) = win.filter(|_| resize_required) {
+        let logical_size = pet_window_effective_size(scale, activity_visible, activity_height);
         if let Some(character_anchor) = character_anchor {
             resize_pet_window_at_character_anchor(
                 &win,
@@ -759,13 +836,16 @@ pub async fn set_pet_scale(
                 activity_visible,
                 activity_height,
                 alignment.as_deref().unwrap_or("right"),
+                vertical_alignment,
                 character_anchor,
             );
         } else {
             let scale_anchor = if anchor.as_deref() == Some("top_left") {
                 ScaleAnchor::TopLeft
             } else if activity_visible {
-                window_edge_anchor(&win)
+                window_edge_anchor(&win, vertical_alignment)
+            } else if vertical_alignment == PetVerticalAlignment::Top {
+                ScaleAnchor::TopCenter
             } else {
                 ScaleAnchor::BottomCenter
             };
@@ -780,39 +860,66 @@ pub async fn set_pet_activity_visible(
     visible: bool,
     activity_height: Option<f64>,
     alignment: Option<String>,
+    vertical_alignment: Option<String>,
     app: AppHandle,
 ) -> Result<(), String> {
     let mut st = load_state();
+    let vertical_alignment = vertical_alignment
+        .as_deref()
+        .map(PetVerticalAlignment::from_str)
+        .unwrap_or(st.vertical_alignment);
     // 高度流式上报会频繁进入本命令:可见性没变时跳过写盘,
     // 别让每次窗口微调都附带一次同步磁盘 IO。
-    if st.activity_visible != visible {
+    if st.activity_visible != visible || st.vertical_alignment != vertical_alignment {
         st.activity_visible = visible;
+        st.vertical_alignment = vertical_alignment;
         save_state(st)?;
     }
     if let Some(win) = app.get_webview_window(PET_LABEL) {
-        let logical_size = pet_window_logical_size(st.scale, visible, activity_height);
-        // 人物在窗口内贴底、贴对齐侧(CSS 与 character_local_top_left 一致),
-        // 所以只要缩放时保持"底边 + 人物贴边侧"两条边不动,人物在屏幕上就
-        // 纹丝不动——卡片卸载的中间帧也稳定,因为人物位置不依赖卡片存在。
+        let logical_size = pet_window_effective_size(st.scale, visible, activity_height);
+        // 人物在窗口内贴当前竖向边与横向对齐侧(CSS 与
+        // character_local_top_left 一致)。活动卡显隐改变窗口尺寸时，
+        // 同时保住这两条边，人物在屏幕上就不会跳。
         // 贴边方向必须用前端的实际对齐值:按窗口中心猜测在屏幕中部会猜反,
         // 这正是收起时人物瞬移的原始根因。
-        let anchor = match alignment.as_deref() {
-            Some("left") => ScaleAnchor::BottomLeft,
-            Some(_) => ScaleAnchor::BottomRight,
-            None => window_edge_anchor(&win),
+        let anchor = match (alignment.as_deref(), vertical_alignment) {
+            (Some("left"), PetVerticalAlignment::Top) => ScaleAnchor::TopLeft,
+            (Some(_), PetVerticalAlignment::Top) => ScaleAnchor::TopRight,
+            (Some("left"), PetVerticalAlignment::Bottom) => ScaleAnchor::BottomLeft,
+            (Some(_), PetVerticalAlignment::Bottom) => ScaleAnchor::BottomRight,
+            (None, vertical_alignment) => window_edge_anchor(&win, vertical_alignment),
         };
         resize_pet_window(&win, logical_size, anchor);
     }
     Ok(())
 }
 
-/// 桌宠窗口拖动落定后保存位置(前端 onMoved 防抖后调,全局物理像素)。
+/// 桌宠窗口拖动落定后保存 client 原点(前端 onMoved 防抖后重新读取,全局物理像素)。
 #[tauri::command]
-pub async fn save_pet_position(x: i32, y: i32) -> Result<(), String> {
+pub async fn save_pet_position(
+    x: i32,
+    y: i32,
+    vertical_alignment: Option<String>,
+) -> Result<(), String> {
     let mut st = load_state(); // 保留 scale
     st.x = Some(x);
     st.y = Some(y);
+    st.position_space = Some(PetPositionSpace::Client);
+    if let Some(vertical_alignment) = vertical_alignment.as_deref() {
+        st.vertical_alignment = PetVerticalAlignment::from_str(vertical_alignment);
+    }
     save_state(st)
+}
+
+#[tauri::command]
+pub async fn save_pet_vertical_alignment(alignment: String) -> Result<(), String> {
+    let mut st = load_state();
+    let alignment = PetVerticalAlignment::from_str(&alignment);
+    if st.vertical_alignment != alignment {
+        st.vertical_alignment = alignment;
+        save_state(st)?;
+    }
+    Ok(())
 }
 
 /// 点击宠物时唤醒主窗口；点击活动时额外把目标 session 路由给主窗口。
@@ -824,13 +931,34 @@ pub async fn open_main_from_pet(
     navigation: State<'_, PetNavigationState>,
     app: AppHandle,
 ) -> Result<(), String> {
+    // 诊断走终端:此命令的失败只会回到 pet 窗口的 JS console,无 inspector 时
+    // 不可见——X11 上 show/set_focus 被 WM 拒绝时用户只看到"点了没反应"。
+    eprintln!("[pet nav] open_main_from_pet invoked");
     let main = app
         .get_webview_window("main")
-        .ok_or_else(|| "main window not found".to_string())?;
-    main.show()
-        .map_err(|error| format!("show main window failed: {error}"))?;
-    main.unminimize()
-        .map_err(|error| format!("unminimize main window failed: {error}"))?;
+        .ok_or_else(|| "main window not found".to_string())
+        .map_err(|error| {
+            eprintln!("[pet nav] {error}");
+            error
+        })?;
+    // GB10 实测:主窗口最小化时 unminimize 返回 Ok 但 mutter 拒绝 deiconify
+    // (焦点抢占保护),窗口召不回来。withdraw+remap 等价于新窗口映射,WM 必须
+    // 显示——仅在确实最小化时走这条路,避免可见窗口无谓闪一下。
+    let was_minimized = main.is_minimized().unwrap_or(false);
+    eprintln!("[pet nav] main minimized={was_minimized}");
+    if was_minimized {
+        let _ = main.hide();
+    }
+    main.show().map_err(|error| {
+        let msg = format!("show main window failed: {error}");
+        eprintln!("[pet nav] {msg}");
+        msg
+    })?;
+    main.unminimize().map_err(|error| {
+        let msg = format!("unminimize main window failed: {error}");
+        eprintln!("[pet nav] {msg}");
+        msg
+    })?;
     let target = session_id.and_then(|value| {
         let trimmed = value.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
@@ -842,10 +970,20 @@ pub async fn open_main_from_pet(
         session_id: target,
         scheduled_run,
     })?;
-    main.set_focus()
-        .map_err(|error| format!("focus main window failed: {error}"))?;
+    // X11 焦点抢占保护:实测(GB10) show/unminimize/set_focus 全部返回 Ok,
+    // 但 WM 拒绝把主窗口提到前台,只打 demand-attention——用户看到"点了没反应"。
+    // raise 不受焦点保护限制:瞬时置顶把窗口强制提前,聚焦后立即交还。
+    let _ = main.set_always_on_top(true);
+    let focus_result = main.set_focus().map_err(|error| {
+        let msg = format!("focus main window failed: {error}");
+        eprintln!("[pet nav] {msg}");
+        msg
+    });
+    let _ = main.set_always_on_top(false);
+    focus_result?;
     app.emit_to("main", "pet:navigation_pending", ())
         .map_err(|error| format!("emit pet navigation wakeup failed: {error}"))?;
+    eprintln!("[pet nav] open_main_from_pet ok");
     Ok(())
 }
 
@@ -893,12 +1031,37 @@ mod tests {
     }
 
     #[test]
+    fn legacy_frame_position_migrates_only_with_valid_observation() {
+        assert_eq!(
+            legacy_frame_position_to_client((815, 489), (815, 526), (815, 489)),
+            Some((815, 526))
+        );
+        assert_eq!(
+            legacy_frame_position_to_client((815, 489), (815, 900), (815, 489)),
+            None,
+            "异常 frame inset 不得把旧坐标永久标成 client"
+        );
+        assert_eq!(
+            legacy_frame_position_to_client((815, 489), (815, 480), (815, 489)),
+            None,
+            "负 inset 是陈旧观测，不得参与迁移"
+        );
+        assert_eq!(
+            legacy_frame_position_to_client((100, 200), (10, 10), (10, 10)),
+            Some((100, 200)),
+            "无边框平台的零 inset 必须保持坐标不变"
+        );
+    }
+
+    #[test]
     fn pet_state_serde_roundtrip_and_legacy() {
         let st = PetWindowState {
             x: Some(-120),
             y: Some(3456),
+            position_space: Some(PetPositionSpace::Client),
             scale: 1.3,
             activity_visible: true,
+            vertical_alignment: PetVerticalAlignment::Top,
         };
         let s = serde_json::to_string(&st).unwrap();
         let back: PetWindowState = serde_json::from_str(&s).unwrap();
@@ -907,7 +1070,9 @@ mod tests {
         let legacy: PetWindowState = serde_json::from_str(r#"{"x":10,"y":20}"#).unwrap();
         assert_eq!(legacy.scale, MIN_SCALE);
         assert_eq!(legacy.x, Some(10));
+        assert_eq!(legacy.position_space, None);
         assert!(!legacy.activity_visible);
+        assert_eq!(legacy.vertical_alignment, PetVerticalAlignment::Bottom);
         // 空文件/缺字段 → 全默认
         let empty: PetWindowState = serde_json::from_str("{}").unwrap();
         assert_eq!(empty, PetWindowState::default());
@@ -997,22 +1162,58 @@ mod tests {
     #[test]
     fn character_top_left_tracks_the_real_flex_layout() {
         // 贴底布局:y = 窗高 - 8 - 人物高,与卡片存在与否无关。
+        // 紧凑 0.5 档在 Linux 上按 200x200 生效尺寸计算(WebKitGTK 最小内容
+        // 尺寸,见 pet_window_effective_size),局部坐标随之不同。
+        #[cfg(not(target_os = "linux"))]
         assert_eq!(
-            character_local_top_left(0.5, false, None, "right"),
+            character_local_top_left(0.5, false, None, "right", PetVerticalAlignment::Bottom,),
             (24.0, 53.0)
         );
+        #[cfg(target_os = "linux")]
         assert_eq!(
-            character_local_top_left(1.0, false, None, "left"),
+            character_local_top_left(0.5, false, None, "right", PetVerticalAlignment::Bottom,),
+            (80.0, 88.0)
+        );
+        assert_eq!(
+            character_local_top_left(1.0, false, None, "left", PetVerticalAlignment::Bottom,),
             (24.0, 8.0)
         );
         assert_eq!(
-            character_local_top_left(0.5, true, Some(112.0), "right"),
+            character_local_top_left(
+                0.5,
+                true,
+                Some(112.0),
+                "right",
+                PetVerticalAlignment::Bottom,
+            ),
             (230.0, 116.0)
         );
         assert_eq!(
-            character_local_top_left(0.5, true, Some(112.0), "left"),
+            character_local_top_left(0.5, true, Some(112.0), "left", PetVerticalAlignment::Bottom,),
             (24.0, 116.0)
         );
+        assert_eq!(
+            character_local_top_left(0.5, true, Some(112.0), "left", PetVerticalAlignment::Top,),
+            (24.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn effective_size_floors_to_webview_min_on_linux_only() {
+        #[cfg(target_os = "linux")]
+        assert_eq!(pet_window_effective_size(0.5, false, None), (200.0, 200.0));
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(pet_window_effective_size(0.5, false, None), (144.0, 165.0));
+        // 高于下限的尺寸各平台一致。
+        assert_eq!(pet_window_effective_size(1.0, true, None), (350.0, 332.0));
+    }
+
+    #[test]
+    fn unchanged_scale_does_not_race_activity_resize() {
+        assert!(!scale_resize_required(0.5, 0.5, false));
+        assert!(!scale_resize_required(0.5, 0.5 + 1e-10, false));
+        assert!(scale_resize_required(0.5, 0.6, false));
+        assert!(scale_resize_required(0.5, 0.5, true));
     }
 
     #[test]
@@ -1135,12 +1336,26 @@ mod tests {
     fn activity_window_anchor_tracks_the_screen_half() {
         let work_area = Some((100, 0, 1200, 800));
         assert_eq!(
-            edge_anchor((120, 20), (144, 165), work_area),
+            edge_anchor(
+                (120, 20),
+                (144, 165),
+                work_area,
+                PetVerticalAlignment::Bottom,
+            ),
             ScaleAnchor::BottomLeft
         );
         assert_eq!(
-            edge_anchor((1000, 20), (144, 165), work_area),
+            edge_anchor(
+                (1000, 20),
+                (144, 165),
+                work_area,
+                PetVerticalAlignment::Bottom,
+            ),
             ScaleAnchor::BottomRight
+        );
+        assert_eq!(
+            edge_anchor((120, 20), (144, 165), work_area, PetVerticalAlignment::Top,),
+            ScaleAnchor::TopLeft
         );
     }
 
@@ -1173,8 +1388,10 @@ mod tests {
         let state = PetWindowState {
             x: Some(12),
             y: Some(34),
+            position_space: Some(PetPositionSpace::Client),
             scale: 1.2,
             activity_visible: true,
+            vertical_alignment: PetVerticalAlignment::Top,
         };
         let path = root.join("nested").join("pet_window.json");
         save_state_to(&path, &state).unwrap();

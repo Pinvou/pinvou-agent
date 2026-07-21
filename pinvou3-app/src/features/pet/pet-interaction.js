@@ -12,7 +12,7 @@ function requireWindowApi(T) {
 export async function readPetDragContext(T) {
   const api = requireWindowApi(T);
   const win = api.getCurrentWindow();
-  if (!win || typeof win.outerPosition !== 'function' || typeof win.outerSize !== 'function') {
+  if (!win || typeof win.innerPosition !== 'function' || typeof win.innerSize !== 'function') {
     throw new Error('Tauri current window geometry API is unavailable');
   }
   const monitorPromise = Promise.resolve()
@@ -22,15 +22,21 @@ export async function readPetDragContext(T) {
     ? Promise.resolve().then(() => api.availableMonitors()).catch(() => [])
     : Promise.resolve([]);
   const [position, size, monitor, available] = await Promise.all([
-    win.outerPosition(),
-    win.outerSize(),
+    win.innerPosition(),
+    win.innerSize(),
     monitorPromise,
     monitorsPromise,
   ]);
   const monitors = Array.isArray(available) && available.length > 0
     ? available
     : (monitor ? [monitor] : []);
-  return { win, position, size, monitor, monitors };
+  return {
+    win,
+    position,
+    size,
+    monitor,
+    monitors,
+  };
 }
 
 function monitorArea(monitor) {
@@ -97,10 +103,14 @@ function connectedMonitorArea(monitors, seed) {
 function petLocalRect({
   size,
   alignment,
+  verticalAlignment,
+  viewportHeight,
   characterWidth,
   characterHeight,
   horizontalPadding,
   verticalPadding,
+  localTop,
+  localBottom,
 }) {
   const windowWidth = Number(size && size.width);
   const windowHeight = Number(size && size.height);
@@ -108,22 +118,55 @@ function petLocalRect({
   const height = Number(characterHeight);
   const horizontal = Number(horizontalPadding);
   const vertical = Number(verticalPadding);
-  if (![windowWidth, windowHeight, width, height, horizontal, vertical].every(Number.isFinite)) return null;
+  if (![windowWidth, width, height, horizontal].every(Number.isFinite)) return null;
   const left = alignment === 'left' ? horizontal : windowWidth - horizontal - width;
-  const bottom = windowHeight - vertical;
-  return { l: left, t: bottom - height, r: left + width, b: bottom };
+  const viewport = Number(viewportHeight);
+  // 竖向优先用实测值(getBoundingClientRect):X11 下 outerSize 回读不可靠,
+  // 用 windowHeight 反推的人物底边会偏高,拖拽起手时把人物钳上去。实测缺失
+  // 时回退到 windowHeight - verticalPadding(Windows 上两者一致)。
+  let top;
+  let bottom;
+  if (Number.isFinite(localTop) && Number.isFinite(localBottom)) {
+    // 拖拽起手已经从真实 DOM 测得人物在 WebView 内的位置时，以实测为准。
+    // X11 的异步 resize 会让外框尺寸与当前内容视口短暂不同，继续按
+    // viewport/固定 padding 反推会在物理循环启动后把窗口向上钳一次。
+    top = Number(localTop);
+    bottom = Number(localBottom);
+  } else if (Number.isFinite(viewport) && Number.isFinite(vertical)) {
+    top = verticalAlignment === 'top' ? 0 : viewport - vertical - height;
+    bottom = top + height;
+  } else {
+    bottom = Number.isFinite(windowHeight) && Number.isFinite(vertical)
+      ? windowHeight - vertical
+      : NaN;
+    top = bottom - height;
+  }
+  if (![bottom, top].every(Number.isFinite)) return null;
+  return { l: left, t: top, r: left + width, b: bottom };
 }
 
-export function petWindowBounds({ monitors, monitor, ...geometry }) {
+export function petWindowBounds({
+  monitors,
+  monitor,
+  clientOriginVerticalBounds,
+  ...geometry
+}) {
   const desktop = connectedMonitorArea(monitors, monitor);
   const pet = petLocalRect(geometry);
   if (!desktop || !pet) return null;
-  return {
+  const bounds = {
     l: desktop.l - pet.l,
     t: desktop.t - pet.t,
     r: desktop.r - pet.r,
     b: desktop.b - pet.b,
   };
+  const clientTop = clientOriginVerticalBounds && clientOriginVerticalBounds.t;
+  const clientBottom = clientOriginVerticalBounds && clientOriginVerticalBounds.b;
+  if (Number.isFinite(clientTop) && Number.isFinite(clientBottom)) {
+    bounds.t = Math.max(bounds.t, clientTop);
+    bounds.b = Math.max(bounds.t, Math.min(bounds.b, clientBottom));
+  }
+  return bounds;
 }
 
 export function petElementHorizontalBounds({
@@ -142,6 +185,34 @@ export function petElementHorizontalBounds({
   };
 }
 
+function clientOriginVerticalBounds(area, viewportHeight) {
+  const height = Number(viewportHeight);
+  if (!area || !Number.isFinite(height) || height <= 0) return null;
+  return {
+    t: area.t,
+    b: Math.max(area.t, area.b - height),
+  };
+}
+
+export function petClientOriginVerticalBounds({ monitor, viewportHeight }) {
+  // 布局翻转看当前显示器边缘，不能用多屏外接矩形：异高/错位屏幕会把
+  // 另一块屏的边缘误当成当前人物的触边位置。
+  return clientOriginVerticalBounds(monitorArea(monitor), viewportHeight);
+}
+
+export function petConnectedClientOriginVerticalBounds({
+  monitors,
+  monitor,
+  viewportHeight,
+}) {
+  // 最终硬钳制使用相连桌面的整体范围，允许人物继续跨到上下相邻屏幕；
+  // 外接矩形中的空洞随后由 clampPetDragToDesktop 投影回真实显示器。
+  return clientOriginVerticalBounds(
+    connectedMonitorArea(monitors, monitor),
+    viewportHeight,
+  );
+}
+
 export function petAlignmentAtDragEdge({
   currentAlignment,
   x,
@@ -157,6 +228,24 @@ export function petAlignmentAtDragEdge({
   if (!Number.isFinite(edgeX)) return current;
   if (edgeX <= bounds.l + margin) return 'left';
   if (edgeX >= bounds.r - margin) return 'right';
+  return current;
+}
+
+export function petVerticalAlignmentAtDragEdge({
+  currentAlignment,
+  y,
+  ty,
+  holding,
+  bounds,
+  threshold = 1,
+}) {
+  const current = currentAlignment === 'top' ? 'top' : 'bottom';
+  if (!bounds) return current;
+  const edgeY = holding && Number.isFinite(ty) ? ty : y;
+  const margin = Number.isFinite(threshold) ? Math.max(0, threshold) : 1;
+  if (!Number.isFinite(edgeY)) return current;
+  if (edgeY <= bounds.t + margin) return 'top';
+  if (edgeY >= bounds.b - margin) return 'bottom';
   return current;
 }
 
@@ -197,8 +286,20 @@ export function clampPetDragToDesktop(state, { monitors, ...geometry }) {
     if (!best || distance < best.distance) best = { distance, cx: nx, cy: ny };
   }
   const next = { ...state, x: best.cx - offsetX, y: best.cy - offsetY };
-  if (next.x !== x) next.vx = state.holding ? 0 : -state.vx * BOUNCE;
-  if (next.y !== y) next.vy = state.holding ? 0 : -state.vy * BOUNCE;
+  if (next.x !== x) {
+    next.vx = 0;
+    if (state.holding) {
+      next.tx = next.x;
+      next.lastTx = next.x;
+    }
+  }
+  if (next.y !== y) {
+    next.vy = 0;
+    if (state.holding) {
+      next.ty = next.y;
+      next.lastTy = next.y;
+    }
+  }
   return next;
 }
 
@@ -261,57 +362,72 @@ export function rebasePetDragForAlignment(state, {
   const shifted = (value) => (Number.isFinite(value) ? value + offset : value);
   return {
     ...state,
-    base: state.base ? { ...state.base, x: shifted(state.base.x) } : state.base,
     x: shifted(state.x),
     tx: shifted(state.tx),
     lastTx: shifted(state.lastTx),
   };
 }
 
-const RELEASE_VELOCITY = 0.18;
+export function rebasePetDragForVerticalAlignment(state, {
+  from,
+  to,
+  viewportHeight,
+  characterHeight,
+  verticalPadding,
+  previousLocalTop,
+  nextLocalTop,
+}) {
+  const source = from === 'top' ? 'top' : 'bottom';
+  const target = to === 'top' ? 'top' : 'bottom';
+  const viewport = Number(viewportHeight);
+  const character = Number(characterHeight);
+  const padding = Number(verticalPadding);
+  const measuredPreviousTop = Number(previousLocalTop);
+  const measuredNextTop = Number(nextLocalTop);
+  const hasMeasuredShift = Number.isFinite(measuredPreviousTop)
+    && Number.isFinite(measuredNextTop);
+  const anchorDistance = [viewport, character, padding].every(Number.isFinite)
+    ? Math.max(0, viewport - character - padding)
+    : 0;
+  const offset = source === target
+    ? 0
+    : (hasMeasuredShift
+      ? measuredPreviousTop - measuredNextTop
+      : (source === 'top' ? -anchorDistance : anchorDistance));
+  const shifted = (value) => (Number.isFinite(value) ? value + offset : value);
+  return {
+    ...state,
+    y: shifted(state.y),
+    ty: shifted(state.ty),
+    lastTy: shifted(state.lastTy),
+  };
+}
 
-export function attachPetDragGeometry(state, { position, size, monitor }) {
-  const dpr = Number.isFinite(state.dpr) ? state.dpr : 1;
+export function attachPetDragGeometry(state, { position }) {
+  const pointerScale = Number.isFinite(state.pointerScale) ? state.pointerScale : 1;
   const currentCX = Number.isFinite(state.currentCX) ? state.currentCX : state.startCX;
   const currentCY = Number.isFinite(state.currentCY) ? state.currentCY : state.startCY;
-  const tx = position.x + (currentCX - state.startCX) * dpr;
-  const ty = position.y + (currentCY - state.startCY) * dpr;
+  const tx = position.x + (currentCX - state.startCX) * pointerScale;
+  const ty = position.y + (currentCY - state.startCY) * pointerScale;
   const next = {
     ...state,
-    base: position,
+    geometryReady: true,
     x: position.x,
     y: position.y,
     tx,
     ty,
-    lastTx: tx,
-    lastTy: ty,
+    lastTx: state.releasePending ? position.x : tx,
+    lastTy: state.releasePending ? position.y : ty,
   };
 
-  if (monitor) {
-    next.bounds = {
-      l: monitor.position.x,
-      t: monitor.position.y,
-      r: monitor.position.x + monitor.size.width - size.width,
-      b: monitor.position.y + monitor.size.height - size.height,
-    };
-  }
-  if (state.released) {
-    next.vx += (tx - next.x) * RELEASE_VELOCITY;
-    next.vy += (ty - next.y) * RELEASE_VELOCITY;
-    next.holding = false;
-  }
   return next;
 }
 
 export function releasePetDrag(state) {
-  const next = { ...state, released: true };
-  if (!state.base) return next;
-  if (!(state.physicsSteps > 0)) {
-    next.vx += (state.tx - state.x) * RELEASE_VELOCITY;
-    next.vy += (state.ty - state.y) * RELEASE_VELOCITY;
-  }
-  next.holding = false;
-  return next;
+  // 松手可能发生在 pointermove 后、下一 rAF 前，或 resize 同步暂停期间。
+  // 保留一次严格跟手帧消费最新 tx/ty，然后立即停住，不能丢掉尾帧位移，
+  // 也不能让历史速度在松手后继续推动或反弹窗口。
+  return { ...state, releasePending: true };
 }
 
 export function setPetWindowPosition(T, win, x, y) {
@@ -330,64 +446,83 @@ export function setPetWindowPosition(T, win, x, y) {
   }
 }
 
-const SPRING = 0.14;
-const HOLDING_DAMPING = 0.74;
-const INERTIA_DAMPING = 0.955;
-const BOUNCE = 0.55;
-const STOP_SPEED = 0.4;
-const MAX_TILT = 16;
-const HOLDING_DIRECT_FOLLOW = 0.85;
-const REVERSE_VELOCITY_RETENTION = 0.15;
-
 export function dragAnimationFromMotion(current, deltaX, deltaY) {
   const dx = Number.isFinite(deltaX) ? deltaX : 0;
   const dy = Number.isFinite(deltaY) ? deltaY : 0;
-  if (Math.abs(dx) < 1 || Math.abs(dx) < Math.abs(dy) * 0.35) return current;
-  return dx > 0 ? 'running-right' : 'running-left';
+  const next = dx > 0 ? 'running-right' : 'running-left';
+  // 迟滞：慢速拖动时相邻事件增量只有 ±1px，手抖的反向事件和真实换向
+  // 无法靠单事件区分，反转方向必须要求更大的位移，否则方向会被噪声翻转。
+  const threshold = current && next !== current ? 3 : 1;
+  if (Math.abs(dx) < threshold || Math.abs(dx) < Math.abs(dy) * 0.35) return current;
+  return next;
 }
 
 export function stepPetDrag(state) {
-  let { x, y, vx, vy } = state;
-  if (state.holding) {
-    const targetDx = Number.isFinite(state.lastTx) ? state.tx - state.lastTx : 0;
-    const targetDy = Number.isFinite(state.lastTy) ? state.ty - state.lastTy : 0;
-    if (targetDx && vx && Math.sign(targetDx) !== Math.sign(vx)) {
-      vx *= REVERSE_VELOCITY_RETENTION;
-    }
-    if (targetDy && vy && Math.sign(targetDy) !== Math.sign(vy)) {
-      vy *= REVERSE_VELOCITY_RETENTION;
-    }
-    x += targetDx * HOLDING_DIRECT_FOLLOW;
-    y += targetDy * HOLDING_DIRECT_FOLLOW;
-    vx += (state.tx - x) * SPRING;
-    vy += (state.ty - y) * SPRING;
-    vx *= HOLDING_DAMPING;
-    vy *= HOLDING_DAMPING;
-  } else {
-    vx *= INERTIA_DAMPING;
-    vy *= INERTIA_DAMPING;
+  let { x, y, tx, ty } = state;
+  const followPointer = state.holding || state.releasePending;
+  if (followPointer) {
+    // 人物位置就是鼠标目标，不保留速度、弹簧或惯性状态。
+    x = tx;
+    y = ty;
   }
+  const next = clampPetDragToBounds({
+    ...state,
+    x,
+    y,
+    tx,
+    ty,
+    vx: 0,
+    vy: 0,
+    lastTx: tx,
+    lastTy: ty,
+  });
+  if (state.releasePending) {
+    next.holding = false;
+    next.releasePending = false;
+    next.vx = 0;
+    next.vy = 0;
+    next.stopped = true;
+  }
+  return next;
+}
 
-  x += vx;
-  y += vy;
-  if (state.bounds) {
-    const { l, t, r, b } = state.bounds;
-    if (x < l) { x = l; vx = state.holding ? 0 : Math.abs(vx) * BOUNCE; }
-    if (x > r) { x = r; vx = state.holding ? 0 : -Math.abs(vx) * BOUNCE; }
-    if (y < t) { y = t; vy = state.holding ? 0 : Math.abs(vy) * BOUNCE; }
-    if (y > b) { y = b; vy = state.holding ? 0 : -Math.abs(vy) * BOUNCE; }
+export function clampPetDragToBounds(state, bounds = state.bounds) {
+  let { x, y, tx, ty, vx, vy } = state;
+  if (bounds) {
+    const { l, t, r, b } = bounds;
+    if (x < l) {
+      x = l;
+      tx = l;
+      vx = 0;
+    }
+    if (x > r) {
+      x = r;
+      tx = r;
+      vx = 0;
+    }
+    if (y < t) {
+      y = t;
+      ty = t;
+      vy = 0;
+    }
+    if (y > b) {
+      y = b;
+      ty = b;
+      vy = 0;
+    }
   }
 
   return {
     ...state,
     x,
     y,
+    tx,
+    ty,
     vx,
     vy,
-    lastTx: state.tx,
-    lastTy: state.ty,
-    tilt: Math.max(-MAX_TILT, Math.min(MAX_TILT, vx * 0.5)),
-    stopped: !state.holding && Math.abs(vx) < STOP_SPEED && Math.abs(vy) < STOP_SPEED,
+    lastTx: tx,
+    lastTy: ty,
+    stopped: !state.holding,
   };
 }
 

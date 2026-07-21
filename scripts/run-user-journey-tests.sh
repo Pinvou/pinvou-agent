@@ -2,6 +2,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
+export PYTHONUTF8="${PYTHONUTF8:-1}"
+if [ -z "${CHROME:-}" ]; then
+  CHROME="$(node -e "const fs=require('fs');const p=['C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe','C:\\\\Program Files (x86)\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe','C:\\\\Program Files\\\\Microsoft\\\\Edge\\\\Application\\\\msedge.exe','C:\\\\Program Files (x86)\\\\Microsoft\\\\Edge\\\\Application\\\\msedge.exe','/snap/bin/chromium','/usr/bin/chromium','/usr/bin/chromium-browser','/usr/bin/google-chrome','/usr/bin/google-chrome-stable'].find(x=>fs.existsSync(x));if(p)process.stdout.write(p);" 2>/dev/null || true)"
+  if [ -n "$CHROME" ]; then export CHROME; fi
+fi
 
 run_required() {
   echo "== $* =="
@@ -36,6 +42,7 @@ fi
 run_required npm --prefix pinvou3-app run build:ui
 run_required npm --prefix remote-control-relay test
 run_optional_skip2 node pinvou3-app/tests/ui_smoke.js
+run_optional_skip2 node pinvou3-app/tests/settings_ui_smoke.js
 run_optional_skip2 node pinvou3-app/tests/kb_smoke.js
 run_optional_skip2 node pinvou3-app/tests/tool_store_smoke.js
 run_optional_skip2 node remote-control-relay/test/mobile-ui.smoke.cjs

@@ -64,7 +64,12 @@ async function main() {
     const el = document.querySelector('#settings-version-update');
     if (!el) return false;
     const r = el.getBoundingClientRect();
-    return r.top < window.innerHeight && r.bottom > 0 && document.body.innerText.includes('版本与更新');
+    const text = el.innerText || '';
+    return r.top < window.innerHeight
+      && r.bottom > 0
+      && text.includes('版本')
+      && text.includes('更新内容')
+      && text.includes('检查更新');
   }, { timeout: 5000 });
 
   await browser.close();
