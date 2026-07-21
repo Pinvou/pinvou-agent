@@ -40,6 +40,14 @@ struct Inner {
     seen: Dedup,
     /// 同一房间同时只允许一个下载任务(值为 download_id),防止重复点击并行堆叠大文件传输。
     active_download: Option<String>,
+    download_ack_sender: Option<tokio::sync::mpsc::UnboundedSender<DownloadRelayAck>>,
+}
+
+#[derive(Debug)]
+struct DownloadRelayAck {
+    index: usize,
+    ok: bool,
+    message: Option<String>,
 }
 
 #[derive(Clone)]
@@ -138,6 +146,7 @@ impl RemoteControlManager {
             let mut inner = self.inner.lock();
             inner.seen = Dedup::default();
             inner.active_download = None;
+            inner.download_ack_sender = None;
             inner.room = Some(ActiveRoom {
                 room_id: room_id.clone(),
                 session_id: session_id.clone(),
@@ -169,6 +178,15 @@ impl RemoteControlManager {
                         status,
                         message,
                     } => manager.update_status_from_relay(&room_id, &status, message),
+                    RelayInbound::DownloadAck {
+                        download_id,
+                        index,
+                        ok,
+                        message,
+                    } => manager.handle_download_relay_ack(
+                        &download_id,
+                        DownloadRelayAck { index, ok, message },
+                    ),
                     RelayInbound::Error(err) => manager.set_error(err),
                 }
             }
@@ -190,6 +208,8 @@ impl RemoteControlManager {
     fn close_current(&self, reason: &str) {
         let old = {
             let mut inner = self.inner.lock();
+            inner.active_download = None;
+            inner.download_ack_sender = None;
             inner.room.take()
         };
         if let Some(room) = old {
@@ -855,6 +875,7 @@ impl RemoteControlManager {
                 .map(|duration| duration.as_nanos())
                 .unwrap_or(0)
         );
+        let (ack_sender, ack_receiver) = tokio::sync::mpsc::unbounded_channel();
         let room = {
             let mut inner = self.inner.lock();
             let room = inner
@@ -867,6 +888,7 @@ impl RemoteControlManager {
                 return Err("已有下载进行中,请等待完成后再试".to_string());
             }
             inner.active_download = Some(download_id.clone());
+            inner.download_ack_sender = Some(ack_sender);
             room
         };
         // 流式传输在独立任务里进行:不阻塞消息循环,分块经有界通道发送形成背压。
@@ -880,6 +902,7 @@ impl RemoteControlManager {
                 &task_download_id,
                 &ext,
                 byte_size,
+                ack_receiver,
             )
             .await;
             if let Err(err) = result {
@@ -888,9 +911,23 @@ impl RemoteControlManager {
             let mut inner = manager.inner.lock();
             if inner.active_download.as_deref() == Some(task_download_id.as_str()) {
                 inner.active_download = None;
+                inner.download_ack_sender = None;
             }
         });
         Ok(())
+    }
+
+    fn handle_download_relay_ack(&self, download_id: &str, ack: DownloadRelayAck) {
+        let sender = {
+            let inner = self.inner.lock();
+            if inner.active_download.as_deref() != Some(download_id) {
+                return;
+            }
+            inner.download_ack_sender.clone()
+        };
+        if let Some(sender) = sender {
+            let _ = sender.send(ack);
+        }
     }
 
     pub fn send_chips_snapshot(
@@ -1337,6 +1374,7 @@ async fn stream_artifact_download(
     download_id: &str,
     ext: &str,
     byte_size: u64,
+    mut ack_receiver: tokio::sync::mpsc::UnboundedReceiver<DownloadRelayAck>,
 ) -> Result<(), String> {
     use tokio::io::AsyncReadExt;
 
@@ -1364,12 +1402,14 @@ async fn stream_artifact_download(
         .map_err(|e| format!("open artifact file: {e}"))?;
     let mut buffer = vec![0u8; DOWNLOAD_CHUNK_BYTES];
     let mut index = 0usize;
-    loop {
+    let mut remaining = byte_size as usize;
+    while remaining > 0 {
         // read 不保证一次填满,循环读满一块或到 EOF。
         let mut filled = 0usize;
-        while filled < buffer.len() {
+        let target = buffer.len().min(remaining);
+        while filled < target {
             let read = file
-                .read(&mut buffer[filled..])
+                .read(&mut buffer[filled..target])
                 .await
                 .map_err(|e| format!("read artifact file: {e}"))?;
             if read == 0 {
@@ -1377,8 +1417,11 @@ async fn stream_artifact_download(
             }
             filled += read;
         }
-        if filled == 0 {
-            break;
+        if filled != target {
+            return Err(format!(
+                "artifact changed during download (expected {byte_size} bytes, reached EOF after {} bytes)",
+                byte_size as usize - remaining + filled
+            ));
         }
         room.download_sender
             .send(RelayOutbound::Envelope(envelope(
@@ -1393,7 +1436,35 @@ async fn stream_artifact_download(
             )))
             .await
             .map_err(|e| format!("send artifact download chunk {index}: {e}"))?;
+        let ack = tokio::time::timeout(Duration::from_secs(60), ack_receiver.recv())
+            .await
+            .map_err(|_| format!("relay/mobile is too slow while sending chunk {index}"))?
+            .ok_or_else(|| "download acknowledgement channel closed".to_string())?;
+        if ack.index != index {
+            return Err(format!(
+                "unexpected download acknowledgement: expected chunk {index}, got {}",
+                ack.index
+            ));
+        }
+        if !ack.ok {
+            return Err(format!(
+                "relay could not deliver chunk {index}: {}",
+                ack.message.unwrap_or_else(|| "mobile disconnected".to_string())
+            ));
+        }
+        remaining -= filled;
         index += 1;
+    }
+    let mut extra = [0u8; 1];
+    if file
+        .read(&mut extra)
+        .await
+        .map_err(|e| format!("read artifact file: {e}"))?
+        != 0
+    {
+        return Err(format!(
+            "artifact changed during download (grew beyond declared {byte_size} bytes)"
+        ));
     }
     room.download_sender
         .send(RelayOutbound::Envelope(envelope(
@@ -1678,12 +1749,31 @@ mod tests {
         );
         assert!(second.unwrap_err().contains("进行中"));
 
-        // 排空有界通道(start + 8 chunks + end),流式任务走完后锁必须归还。
+        // 排空有界通道，并模拟 relay 每写出一块后的 ACK；任务走完后锁必须归还。
         tauri::async_runtime::block_on(async {
             let mut drained = 0usize;
             while drained < 10 {
                 match tokio::time::timeout(Duration::from_secs(5), download_rx.recv()).await {
-                    Ok(Some(_)) => drained += 1,
+                    Ok(Some(RelayOutbound::Envelope(env))) => {
+                        if env.kind == "artifact_download_chunk" {
+                            let index = env.payload["index"].as_u64().expect("chunk index") as usize;
+                            let download_id = env.payload["download_id"]
+                                .as_str()
+                                .expect("download id");
+                            manager.handle_download_relay_ack(
+                                download_id,
+                                DownloadRelayAck {
+                                    index,
+                                    ok: true,
+                                    message: None,
+                                },
+                            );
+                        }
+                        drained += 1;
+                    }
+                    Ok(Some(RelayOutbound::Close { .. })) => {
+                        panic!("download channel must not carry Close")
+                    }
                     other => panic!("download stream ended early: {other:?}"),
                 }
             }
@@ -1860,6 +1950,13 @@ mod e2e_tests {
             .unwrap_or(0)
     }
 
+    fn report_missing_e2e_dependency(reason: &str) {
+        if std::env::var("PINVOU_REQUIRE_REMOTE_E2E").as_deref() == Ok("1") {
+            panic!("required remote e2e dependency missing: {reason}");
+        }
+        eprintln!("skip remote e2e: {reason}");
+    }
+
     #[test]
     fn artifact_download_round_trips_through_real_relay() {
         let _env_lock = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1875,7 +1972,9 @@ mod e2e_tests {
         let previous_home = std::env::var_os("PINVOU3_HOME");
         std::env::set_var("PINVOU3_HOME", &home);
         if !relay_dir.join("node_modules/ws/package.json").exists() {
-            eprintln!("skip remote download e2e: relay node_modules missing (npm ci in remote-control-relay)");
+            report_missing_e2e_dependency(
+                "relay node_modules missing (npm ci in remote-control-relay)",
+            );
             return;
         }
         let port = TcpListener::bind("127.0.0.1:0")
@@ -1896,7 +1995,7 @@ mod e2e_tests {
         {
             Ok(child) => child,
             Err(err) => {
-                eprintln!("skip remote download e2e: cannot spawn node: {err}");
+                report_missing_e2e_dependency(&format!("cannot spawn node: {err}"));
                 std::env::remove_var("PINVOU3_HOME");
                 return;
             }
@@ -2054,7 +2153,7 @@ mod e2e_tests {
         manager
             .send_artifact_download(&store, &session_id, None, Some("reports/e2e-big.bin"))
             .expect("send big artifact download");
-        let big = collect_download(&mut read, "e2e-big.bin").await;
+        let big = collect_download(&mut read, receiver, &manager, "e2e-big.bin").await;
         assert_eq!(big.session_id, session_id);
         assert_eq!(big.mime, "application/octet-stream");
         assert_eq!(big.byte_size, big_expect.len() as u64);
@@ -2070,7 +2169,7 @@ mod e2e_tests {
         manager
             .send_artifact_download(&store, &session_id, None, Some("notes/hello.txt"))
             .expect("send text artifact download");
-        let text = collect_download(&mut read, "hello.txt").await;
+        let text = collect_download(&mut read, receiver, &manager, "hello.txt").await;
         assert_eq!(text.mime, "text/plain");
         assert_eq!(text.total_chunks, 1);
         assert_eq!(text.bytes, text_expect, "text file bytes must round-trip");
@@ -2143,6 +2242,8 @@ mod e2e_tests {
                 tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
             >,
         >,
+        receiver: &mut RelayReceiver,
+        manager: &RemoteControlManager,
         expect_basename: &str,
     ) -> CollectedDownload {
         let mut session_id = String::new();
@@ -2204,6 +2305,22 @@ mod e2e_tests {
                         .expect("chunk data")
                         .to_string();
                     chunks[index] = Some(data);
+                    let ack = loop {
+                        let inbound = tokio::time::timeout(Duration::from_secs(10), receiver.recv())
+                            .await
+                            .expect("download ack timeout")
+                            .expect("desktop inbound closed");
+                        if let RelayInbound::DownloadAck {
+                            download_id,
+                            index,
+                            ok,
+                            message,
+                        } = inbound
+                        {
+                            break (download_id, DownloadRelayAck { index, ok, message });
+                        }
+                    };
+                    manager.handle_download_relay_ack(&ack.0, ack.1);
                 }
                 "artifact_download_end" => {
                     assert_eq!(
@@ -2304,24 +2421,28 @@ mod e2e_tests {
             .canonicalize()
             .expect("pinvou3-app dir");
         if !relay_dir.join("node_modules/ws/package.json").exists() {
-            eprintln!("skip real browser e2e: relay node_modules missing (npm ci in remote-control-relay)");
+            report_missing_e2e_dependency(
+                "relay node_modules missing (npm ci in remote-control-relay)",
+            );
             return;
         }
         if !app_dir
             .join("node_modules/puppeteer-core/package.json")
             .exists()
         {
-            eprintln!("skip real browser e2e: pinvou3-app node_modules missing (npm ci in pinvou3-app)");
+            report_missing_e2e_dependency(
+                "pinvou3-app node_modules missing (npm ci in pinvou3-app)",
+            );
             return;
         }
         if !bin_runnable("node", &["--version"]) {
-            eprintln!("skip real browser e2e: node not available");
+            report_missing_e2e_dependency("node not available");
             return;
         }
         let chrome_bin = resolve_chrome_binary(&app_dir);
         let Some(chrome_bin) = chrome_bin else {
-            eprintln!(
-                "skip real browser e2e: no Chrome/Chromium binary (set CHROME, or install Chrome for Testing into .cache/puppeteer)"
+            report_missing_e2e_dependency(
+                "no Chrome/Chromium binary (set CHROME, or install Chrome for Testing into .cache/puppeteer)",
             );
             return;
         };
@@ -2471,8 +2592,21 @@ mod e2e_tests {
                             Ok(None) => break,
                             Err(_) => continue,
                         };
-                    let RelayInbound::MobileAction { payload, .. } = inbound else {
-                        continue;
+                    let payload = match inbound {
+                        RelayInbound::DownloadAck {
+                            download_id,
+                            index,
+                            ok,
+                            message,
+                        } => {
+                            manager.handle_download_relay_ack(
+                                &download_id,
+                                DownloadRelayAck { index, ok, message },
+                            );
+                            continue;
+                        }
+                        RelayInbound::MobileAction { payload, .. } => payload,
+                        _ => continue,
                     };
                     let kind = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
                     let action_payload = payload.get("payload").cloned().unwrap_or(Value::Null);

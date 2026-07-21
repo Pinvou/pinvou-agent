@@ -28,6 +28,12 @@ pub enum RelayInbound {
         status: String,
         message: Option<String>,
     },
+    DownloadAck {
+        download_id: String,
+        index: usize,
+        ok: bool,
+        message: Option<String>,
+    },
     Error(String),
 }
 
@@ -178,6 +184,21 @@ async fn run_loop(
                                 message: value.get("message").and_then(|v| v.as_str()).map(ToString::to_string),
                             });
                         }
+                        "artifact_download_relay_ack" => {
+                            let payload = value.get("payload").unwrap_or(&Value::Null);
+                            let Some(download_id) = payload.get("download_id").and_then(|v| v.as_str()) else {
+                                continue;
+                            };
+                            let Some(index) = payload.get("index").and_then(|v| v.as_u64()) else {
+                                continue;
+                            };
+                            let _ = tx_in.send(RelayInbound::DownloadAck {
+                                download_id: download_id.to_string(),
+                                index: index as usize,
+                                ok: payload.get("ok").and_then(|v| v.as_bool()).unwrap_or(false),
+                                message: payload.get("message").and_then(|v| v.as_str()).map(ToString::to_string),
+                            });
+                        }
                         "error" => {
                             let message = value
                                 .get("message")
@@ -201,7 +222,10 @@ async fn run_loop(
 }
 
 /// 序列化并写入一条 envelope;返回 Ok(false) 表示 WS 写失败,调用方应 break 走重连。
-async fn send_envelope<S>(write: &mut S, env: super::protocol::RelayEnvelope) -> Result<bool, String>
+async fn send_envelope<S>(
+    write: &mut S,
+    env: super::protocol::RelayEnvelope,
+) -> Result<bool, String>
 where
     S: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
 {
