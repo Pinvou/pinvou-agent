@@ -555,6 +555,13 @@
       previewArtifact: null,
       downloads: {},
       downloadBusy: false,
+      // —— 远程高级指令:附件上传 / KB / 工具 ——
+      uploads: Object.create(null),          // upload_id -> { filename, byte_size, mime, received, ackIndex, preview, busy, error }
+      pendingAcks: Object.create(null),      // kind -> { resolve, timer } —— list_kb_collections / list_tools 等 RPC 等待(kind-keyed,见 sendActionAwait)
+      pendingRelayAcks: Object.create(null), // upload_id -> { index -> { resolve, timer } } —— attach_file_relay_ack 等待
+      kb: { collections: [], mounted: null, loading: false },
+      tools: { all: [], disabledIds: [], loading: false },
+      toolsDebounceTimer: null,
     };
     const sentClientIds = new Set();
     const toolNodes = new Map();
@@ -1884,6 +1891,109 @@
       const action = { type, client_message_id: explicitClientId || clientId(), payload };
       ws.send(JSON.stringify({ type: 'mobile_action', payload: action }));
       return true;
+    }
+    // sendAction 的 Promise 变体:发送 action 并等桌面端回 snapshot 事件。
+    // 注意:桌面端 list_kb_collections / list_tools 当前不在 snapshot payload 里回 cmid,
+    // 所以这里用 kind-keyed(每种 RPC 同时只允许一个在飞),由 handleDesktopEvent 在收到
+    // 对应 snapshot 事件时调 resolvePendingAck(kind, payload) 兜底 resolve。
+    // 后续 Rust 端若在 snapshot 里补 _ack: { cmid, ok, error },可改为精确 cmid 匹配。
+    function sendActionAwait(kind, payload, timeoutMs) {
+      return new Promise((resolve, reject) => {
+        if (state.replaced || !ws || ws.readyState !== WebSocket.OPEN || !joined) {
+          reject(new Error('ws not open'));
+          return;
+        }
+        if (state.pendingAcks[kind]) {
+          reject(new Error(kind + ' already pending'));
+          return;
+        }
+        const timer = setTimeout(() => {
+          if (state.pendingAcks[kind]) {
+            delete state.pendingAcks[kind];
+            reject(new Error(kind + ' timeout'));
+          }
+        }, timeoutMs || 10000);
+        state.pendingAcks[kind] = { resolve, timer };
+        // 用 sendAction 复用 cmid 生成 + ws.send,但 cmid 不参与匹配。
+        sendAction(kind, payload);
+      });
+    }
+    function resolvePendingAck(kind, payload) {
+      const entry = state.pendingAcks[kind];
+      if (!entry) return;
+      delete state.pendingAcks[kind];
+      clearTimeout(entry.timer);
+      entry.resolve(payload);
+    }
+    function rejectAllPendingAcks(reason) {
+      Object.keys(state.pendingAcks).forEach(kind => {
+        const entry = state.pendingAcks[kind];
+        delete state.pendingAcks[kind];
+        clearTimeout(entry.timer);
+        entry.reject(new Error(reason || 'ws closed'));
+      });
+    }
+    // 等待桌面端对某块 upload chunk 的 ack(attach_file_relay_ack 事件)。
+    // 60s 内未收到 → reject(mobile 上层会 abort upload)。
+    function waitForRelayAck(upload_id, index, timeoutMs) {
+      return new Promise((resolve, reject) => {
+        const perUpload = state.pendingRelayAcks[upload_id] || Object.create(null);
+        if (perUpload[index]) {
+          reject(new Error('duplicate wait for upload ' + upload_id + ' index ' + index));
+          return;
+        }
+        const timer = setTimeout(() => {
+          if (perUpload[index]) {
+            delete perUpload[index];
+            if (Object.keys(perUpload).length === 0) delete state.pendingRelayAcks[upload_id];
+            reject(new Error('relay ack timeout for upload ' + upload_id + ' index ' + index));
+          }
+        }, timeoutMs || 65000);
+        perUpload[index] = { resolve, timer };
+        state.pendingRelayAcks[upload_id] = perUpload;
+      });
+    }
+    function resolveRelayAck(upload_id, index, ok, message) {
+      const perUpload = state.pendingRelayAcks[upload_id];
+      if (!perUpload || !perUpload[index]) return;
+      const entry = perUpload[index];
+      delete perUpload[index];
+      if (Object.keys(perUpload).length === 0) delete state.pendingRelayAcks[upload_id];
+      clearTimeout(entry.timer);
+      if (ok) entry.resolve();
+      else entry.reject(new Error(message || ('relay rejected upload ' + upload_id + ' index ' + index)));
+    }
+    function rejectAllPendingRelayAcks(upload_id, reason) {
+      const perUpload = state.pendingRelayAcks[upload_id];
+      if (!perUpload) return;
+      delete state.pendingRelayAcks[upload_id];
+      Object.keys(perUpload).forEach(index => {
+        clearTimeout(perUpload[index].timer);
+        perUpload[index].reject(new Error(reason || ('upload ' + upload_id + ' aborted')));
+      });
+    }
+    function rejectAllPendingRelayAcksAll(reason) {
+      Object.keys(state.pendingRelayAcks).forEach(upload_id => {
+        rejectAllPendingRelayAcks(upload_id, reason);
+      });
+    }
+    // 大 buffer 一次性 fromCharCode 会栈溢出,按 8KiB 分块转换。
+    // 输出标准 base64 (含 padding,用 + /),与服务端 base64::STANDARD 对齐。
+    function arrayBufferToBase64Standard(buf) {
+      const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+      const CHUNK = 8192;
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += CHUNK) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+      }
+      return btoa(binary);
+    }
+    function setUploadState(upload_id, patch) {
+      const cur = state.uploads[upload_id] || {};
+      state.uploads[upload_id] = Object.assign({}, cur, patch);
+    }
+    function clearUploadState(upload_id) {
+      delete state.uploads[upload_id];
     }
     function blockText(blocks) {
       return (Array.isArray(blocks) ? blocks : [])
