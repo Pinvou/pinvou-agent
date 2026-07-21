@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -24,6 +24,14 @@ const PREVIEW_LIMIT_BYTES: usize = 256 * 1024;
 const DOWNLOAD_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 // 每块原始字节数；base64 后约 1MiB，低于 relay 默认 4MiB 的 WS payload 上限。
 const DOWNLOAD_CHUNK_BYTES: usize = 768 * 1024;
+// 远程上传单文件上限,与下载对称,防止一次性把超大文件读进内存。
+const UPLOAD_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
+// 上传分块原始字节数;与下载保持一致(base64 后约 1MiB)。
+const UPLOAD_CHUNK_BYTES: usize = 768 * 1024;
+// 上传 ACK 等待超时:超过即视为中继或对端异常,主动收尾。
+const UPLOAD_ACK_TIMEOUT_SECS: u64 = 60;
+// 上传分块通道容量:dispatch 投递 → streaming task 消费写盘的有界通道,提供背压。
+const UPLOAD_CHANNEL_CAPACITY: usize = 4;
 const DEFAULT_PUBLIC_BASE_URL: &str = "https://pinvou.com/pinvou3/remote";
 const DEFAULT_RELAY_WS_URL: &str = "wss://pinvou.com/pinvou3/remote/ws";
 
@@ -34,13 +42,35 @@ pub struct RemoteControlManager {
     inner: Arc<Mutex<Inner>>,
 }
 
-#[derive(Default)]
 struct Inner {
     room: Option<ActiveRoom>,
     seen: Dedup,
     /// 同一房间同时只允许一个下载任务(值为 download_id),防止重复点击并行堆叠大文件传输。
     active_download: Option<String>,
     download_ack_sender: Option<tokio::sync::mpsc::UnboundedSender<DownloadRelayAck>>,
+    /// 同一房间同时只允许一个上传任务(值为 upload_id),防止并发堆叠。
+    active_upload: Option<String>,
+    /// 上传分块通道:dispatch 把 chunk 投到这里,streaming task 消费写盘。有界,背压来源之一。
+    upload_chunk_sender: Option<tokio::sync::mpsc::Sender<UploadChunkMsg>>,
+    /// 已完成上传但尚未随消息发走的附件,等待 user_message 取用。key = upload_id。
+    pending_attachments: HashMap<String, PendingAttachment>,
+    /// 上传落盘根目录。每个 upload 一个子目录 `<uploads_base>/<upload_id>/data.bin`。
+    uploads_base: PathBuf,
+}
+
+impl Default for Inner {
+    fn default() -> Self {
+        Self {
+            room: None,
+            seen: Dedup::default(),
+            active_download: None,
+            download_ack_sender: None,
+            active_upload: None,
+            upload_chunk_sender: None,
+            pending_attachments: HashMap::new(),
+            uploads_base: crate::bridge::paths::pinvou3_home().join("uploads"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -48,6 +78,24 @@ struct DownloadRelayAck {
     index: usize,
     ok: bool,
     message: Option<String>,
+}
+
+#[derive(Debug)]
+struct UploadChunkMsg {
+    upload_id: String,
+    index: usize,
+    data: Vec<u8>,
+    last: bool,
+}
+
+#[derive(Debug, Clone)]
+struct PendingAttachment {
+    session_id: String,
+    filename: String,
+    byte_size: u64,
+    mime: String,
+    /// streaming task 写盘+ingest 成功后填。user_message arm 取用时若 None 则报错。
+    ingest_result: Option<crate::file_ingest::IngestResult>,
 }
 
 #[derive(Clone)]
@@ -1541,6 +1589,24 @@ mod tests {
     fn write_file(path: &Path, contents: &[u8]) {
         std::fs::create_dir_all(path.parent().expect("test file parent")).expect("create parent");
         std::fs::write(path, contents).expect("write test file");
+    }
+
+    #[test]
+    fn inner_default_uploads_base_is_under_pinvou3_home() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let override_env = PinvouHomeOverride::new("inner-default-uploads");
+        let inner = Inner::default();
+        assert!(
+            inner.uploads_base.ends_with("uploads"),
+            "uploads_base should end with `uploads`, got {:?}",
+            inner.uploads_base
+        );
+        assert!(inner.active_upload.is_none());
+        assert!(inner.upload_chunk_sender.is_none());
+        assert!(inner.pending_attachments.is_empty());
+        drop(override_env);
     }
 
     #[test]
