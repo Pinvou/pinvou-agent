@@ -7,9 +7,10 @@
 # 与生产的边界(如实说明):
 #   - 不改动:生产 relay 实例(pinvou-remote-relay.service/8787)、生产路由 /pinvou3/remote、
 #     生产 telemetry 数据目录;测试流量与数据目录完全独立。
-#   - 会更改(共享前端代理上的有限运维面,均自动备份/原子替换/失败回滚):
+#   - 会更改(共享前端代理上的有限运维面，关键文件使用备份/原子替换/局部失败回滚):
 #     1) nginx:snippets/pinvou3-remote-relay-test.conf + sites-enabled/pinvou 一行 include + reload
-#     2) 专用低权限隧道账号 relay-tunnel(nologin shell)及其 authorized_keys
+#     2) 专用低权限隧道账号 relay-tunnel(nologin shell)、authorized_keys，以及
+#        /etc/ssh/sshd_config 末尾一段带 BEGIN/END 标记的 Match User 限权块
 #     3) fail2ban:启动隧道前对 relay 主机 IP unbanip(未封时为无害 no-op)
 #
 # 架构(详见 docs/remote-e2e-test-endpoint.md):
@@ -24,7 +25,7 @@
 #
 # 安全校验(在任何远端变更之前执行,防止 env 覆盖误伤):
 #   - RELAY_SERVER / PROXY_SERVER 必须等于登记主机,否则直接拒绝执行;
-#   - TEST_DIR 必须是 /opt/pinvou-remote-relay-test 本身或其后缀/子目录(--teardown 的 rm -rf 依赖此);
+#   - TEST_DIR 必须精确等于 /opt/pinvou-remote-relay-test(--teardown 的 rm -rf 依赖此);
 #   - TEST_PORT 必须是 1024-65535 且不得为生产端口 8787;BASE_PATH 必须以 /pinvou3/remote-test 开头。
 #
 # 可用环境变量覆盖(默认值即当前线上布局):
@@ -50,6 +51,9 @@ SERVICE="pinvou-remote-relay-test.service"
 TUNNEL_SERVICE="pinvou-remote-relay-test-tunnel.service"
 NGINX_SNIPPET="/etc/nginx/snippets/pinvou3-remote-relay-test.conf"
 NGINX_SITE="/etc/nginx/sites-enabled/pinvou"
+SSHD_CONFIG="/etc/ssh/sshd_config"
+SSHD_BLOCK_BEGIN="# BEGIN PINVOU3 REMOTE TEST TUNNEL"
+SSHD_BLOCK_END="# END PINVOU3 REMOTE TEST TUNNEL"
 TUNNEL_KEY_COMMENT="relay-test-tunnel"
 TUNNEL_USER="relay-tunnel"
 
@@ -63,7 +67,7 @@ STAGE="初始化"
 on_err() {
   local rc=$?
   echo "✗ 失败于阶段: $STAGE (exit=$rc)" >&2
-  echo "  远端变更均按「暂存 → 原子替换 → 失败回滚」执行;如怀疑残留,可重跑脚本(幂等收敛)或 --teardown。" >&2
+  echo "  关键文件按「暂存 → 原子替换 → 局部失败回滚」执行;跨主机不是全局事务,可重跑脚本(幂等收敛)或 --teardown。" >&2
   exit "$rc"
 }
 trap on_err ERR
@@ -86,10 +90,9 @@ validate_config() {
     /pinvou3/remote-test|/pinvou3/remote-test/*) ;;
     *) echo "拒绝执行: BASE_PATH=$BASE_PATH 必须以 /pinvou3/remote-test 开头" >&2; err=1 ;;
   esac
-  case "$TEST_DIR" in
-    /opt/pinvou-remote-relay-test|/opt/pinvou-remote-relay-test-*|/opt/pinvou-remote-relay-test/*) ;;
-    *) echo "拒绝执行: TEST_DIR=$TEST_DIR 必须是 /opt/pinvou-remote-relay-test 本身或其后缀/子目录" >&2; err=1 ;;
-  esac
+  if [ "$TEST_DIR" != "/opt/pinvou-remote-relay-test" ]; then
+    echo "拒绝执行: TEST_DIR=$TEST_DIR 必须精确等于 /opt/pinvou-remote-relay-test" >&2; err=1
+  fi
   case "$PUBLIC_URL" in
     *"$BASE_PATH"*) ;;
     *) echo "拒绝执行: PUBLIC_URL=$PUBLIC_URL 与 BASE_PATH=$BASE_PATH 不一致" >&2; err=1 ;;
@@ -99,6 +102,10 @@ validate_config() {
   if [[ ! "$TEST_DIR" =~ ^[A-Za-z0-9._/-]+$ || ! "$BASE_PATH" =~ ^[A-Za-z0-9._/-]+$ ]]; then
     echo "拒绝执行: TEST_DIR/BASE_PATH 只允许字母数字与 . _ / -" >&2; err=1
   fi
+  # 字符白名单挡不住 /../ 路径穿越；显式拒绝 BASE_PATH 的 . / .. 路径组件。
+  case "/$BASE_PATH/" in
+    */./*|*/../*) echo "拒绝执行: BASE_PATH 不允许包含 . 或 .. 路径组件" >&2; err=1 ;;
+  esac
   [ "$err" = 0 ] || exit 1
 }
 
@@ -118,10 +125,10 @@ teardown() {
 set -euo pipefail
 test_dir="$1"; service="$2"; tunnel_service="$3"
 # 远端二次校验:任何删除动作之前,确认 test_dir 是预期的测试目录(防 env 覆盖导致 rm -rf 误伤)。
-case "$test_dir" in
-  /opt/pinvou-remote-relay-test|/opt/pinvou-remote-relay-test-*|/opt/pinvou-remote-relay-test/*) ;;
-  *) echo "拒绝删除: test_dir=$test_dir 不在测试目录白名单内" >&2; exit 1 ;;
-esac
+if [ "$test_dir" != "/opt/pinvou-remote-relay-test" ]; then
+  echo "拒绝删除: test_dir=$test_dir 不是登记的测试目录" >&2
+  exit 1
+fi
 if [[ ! "$test_dir" =~ ^[A-Za-z0-9._/-]+$ ]]; then
   echo "拒绝删除: test_dir=$test_dir 含非法字符" >&2; exit 1
 fi
@@ -135,9 +142,9 @@ systemctl daemon-reload
 echo "relay 主机:已移除测试实例与隧道"
 REMOTE
   STAGE="拆除代理侧资源"
-  proxy_ssh "bash -s -- $(shq_all "$NGINX_SNIPPET" "$NGINX_SITE" "$TUNNEL_KEY_COMMENT" "$TUNNEL_USER")" <<'REMOTE'
+  proxy_ssh "bash -s -- $(shq_all "$NGINX_SNIPPET" "$NGINX_SITE" "$TUNNEL_KEY_COMMENT" "$TUNNEL_USER" "$SSHD_CONFIG" "$SSHD_BLOCK_BEGIN" "$SSHD_BLOCK_END")" <<'REMOTE'
 set -euo pipefail
-snippet="$1"; site="$2"; key_comment="$3"; tunnel_user="$4"
+snippet="$1"; site="$2"; key_comment="$3"; tunnel_user="$4"; sshd_config="$5"; block_begin="$6"; block_end="$7"
 # 与部署阶段同理:解析软链真实路径(sed -i 会断软链),备份放 sites-enabled 之外。
 site="$(sudo readlink -f "$site")"
 backup_dir="/etc/nginx/pinvou-backups"
@@ -171,6 +178,30 @@ if [ -f "$HOME/.ssh/authorized_keys" ] && grep -q " $key_comment\$" "$HOME/.ssh/
   chmod 600 "$tmp"
   mv "$tmp" "$HOME/.ssh/authorized_keys"
 fi
+# 账号已经删除后，移除 sshd_config 末尾的脚本托管块；验证/reload 失败则恢复。
+if ! id "$tunnel_user" >/dev/null 2>&1 && sudo grep -qF "$block_begin" "$sshd_config"; then
+  sudo cp -a "$sshd_config" "$sshd_config.pinvou-rollback"
+  tmp="$(mktemp)"
+  awk -v begin="$block_begin" -v end="$block_end" '
+    $0 == begin { managed=1; next }
+    $0 == end { managed=0; next }
+    !managed { print }
+  ' "$sshd_config" > "$tmp"
+  sudo cp -a "$sshd_config" "$sshd_config.pinvou-new"
+  sudo tee "$sshd_config.pinvou-new" < "$tmp" > /dev/null
+  rm -f "$tmp"
+  sudo mv "$sshd_config.pinvou-new" "$sshd_config"
+  if ! sudo sshd -t || ! sudo systemctl reload ssh; then
+    sudo mv "$sshd_config.pinvou-rollback" "$sshd_config"
+    sudo sshd -t
+    sudo systemctl reload ssh
+    echo "✗ sshd 配置清理失败，已恢复原配置" >&2
+    exit 1
+  fi
+  sudo rm -f "$sshd_config.pinvou-rollback"
+elif id "$tunnel_user" >/dev/null 2>&1; then
+  echo "⚠ $tunnel_user 账号仍存在，保留 sshd 转发限制，避免残留 key 获得宽松权限" >&2
+fi
 sudo nginx -t
 sudo systemctl reload nginx
 echo "前端代理:已移除 location、隧道账号与历史 key 并 reload nginx"
@@ -180,6 +211,11 @@ REMOTE
 }
 
 validate_config
+
+if [[ "${1:-}" == "--validate-only" ]]; then
+  echo "配置校验通过"
+  exit 0
+fi
 
 if [[ "${1:-}" == "--teardown" ]]; then
   teardown
@@ -288,9 +324,9 @@ STAGE="代理侧隧道账号与 authorized_keys(原子替换,支持密钥轮换)
 # 注意 2:不能用 restrict 替代显式 no-* 列表 —— restrict 会置 no_port_forwarding,
 #   把转发整体禁用,permitlisten 只是转发被允许时的白名单,两者组合 = 全部转发被拒
 #   (OpenSSH 9.6p1 实测:Server has disabled port forwarding,2026-07-21 踩坑)。
-proxy_ssh "bash -s -- $(shq_all "$TUNNEL_USER" "$TUNNEL_PUBKEY" "$TEST_PORT" "$TUNNEL_KEY_COMMENT")" <<'REMOTE'
+proxy_ssh "bash -s -- $(shq_all "$TUNNEL_USER" "$TUNNEL_PUBKEY" "$TEST_PORT" "$TUNNEL_KEY_COMMENT" "$SSHD_CONFIG" "$SSHD_BLOCK_BEGIN" "$SSHD_BLOCK_END")" <<'REMOTE'
 set -euo pipefail
-tunnel_user="$1"; pubkey="$2"; port="$3"; key_comment="$4"
+tunnel_user="$1"; pubkey="$2"; port="$3"; key_comment="$4"; sshd_config="$5"; block_begin="$6"; block_end="$7"
 if ! id "$tunnel_user" >/dev/null 2>&1; then
   nologin_path="$(command -v nologin || echo /usr/sbin/nologin)"
   sudo useradd --create-home --shell "$nologin_path" --comment "pinvou3 remote-test tunnel" "$tunnel_user"
@@ -303,10 +339,38 @@ tunnel_group="$(id -gn "$tunnel_user")"
 home_dir="$(getent passwd "$tunnel_user" | cut -d: -f6)"
 ak="$home_dir/.ssh/authorized_keys"
 sudo install -d -m 700 -o "$tunnel_user" -g "$tunnel_group" "$home_dir/.ssh"
+# permitlisten 只限制 ssh -R，不能阻止 ssh -L/direct-tcpip。通过专用 Match User
+# 把该账号的 TCP forwarding 限为 remote，避免密钥泄露后把代理机当任意 TCP 跳板。
+# 该机的 Include 位于 sshd_config 第 12 行，Match 块不能安全放进早期 include（会让后续
+# 全局指令落入 Match 语境）。因此用明确 BEGIN/END 标记把托管块收敛到主配置末尾。
+sudo cp -a "$sshd_config" "$sshd_config.pinvou-rollback"
+tmp="$(mktemp)"
+awk -v begin="$block_begin" -v end="$block_end" '
+  $0 == begin { managed=1; next }
+  $0 == end { managed=0; next }
+  !managed { print }
+' "$sshd_config" > "$tmp"
+printf "\n%s\nMatch User %s\n    AllowTcpForwarding remote\n    PermitListen 127.0.0.1:%s\n    X11Forwarding no\n    PermitTTY no\n%s\n" \
+  "$block_begin" "$tunnel_user" "$port" "$block_end" >> "$tmp"
+sudo cp -a "$sshd_config" "$sshd_config.pinvou-new"
+sudo tee "$sshd_config.pinvou-new" < "$tmp" > /dev/null
+rm -f "$tmp"
+sudo mv "$sshd_config.pinvou-new" "$sshd_config"
+if ! sudo sshd -t || ! sudo systemctl reload ssh; then
+  sudo mv "$sshd_config.pinvou-rollback" "$sshd_config"
+  sudo sshd -t
+  sudo systemctl reload ssh
+  echo "✗ sshd 隧道权限配置失败，已恢复旧配置" >&2
+  exit 1
+fi
+sudo rm -f "$sshd_config.pinvou-rollback"
+effective="$(sudo sshd -T -C user="$tunnel_user",host=localhost,addr=127.0.0.1)"
+grep -qx 'allowtcpforwarding remote' <<<"$effective"
+grep -qx "permitlisten 127.0.0.1:$port" <<<"$effective"
+# sshd 限权生效后再安装公钥，避免首次部署时出现 key 已可用、Match User 尚未
+# reload 的宽松权限窗口。relay-tunnel 是本脚本全权管理的专用账号，authorized_keys
+# 每次原子重写为恰好一行，密钥轮换时旧 key 和历史错位行一并清除。
 new_line="no-pty,no-agent-forwarding,no-X11-forwarding,no-user-rc,permitlisten=\"127.0.0.1:$port\" $pubkey"
-# relay-tunnel 是本脚本全权管理的专用账号,authorized_keys 收敛为恰好一行:
-# 暂存(同目录,保证 mv 同文件系统原子)→ 权限 → mv。relay 侧密钥轮换后旧公钥被整体
-# 替换,历史错位行/失效 key 一并清除,天然幂等。
 sudo bash -c '
   set -euo pipefail
   ak="$1"; new_line="$2"; owner="$3"
@@ -428,10 +492,10 @@ if ! sudo grep -qF "include $snippet;" "$site"; then
   sudo sed -i "s|    include /etc/nginx/snippets/pinvou3-remote-relay.conf;|    include /etc/nginx/snippets/pinvou3-remote-relay.conf;\n    include $snippet;|" "$site"
   site_changed=1
 fi
-# 3) 原子替换 snippet 并整体验证;失败则恢复到变更前状态
+# 3) 原子替换 snippet 并整体验证;验证或 reload 失败都恢复到变更前状态
 sudo mv "$snippet.new" "$snippet"
-if ! sudo nginx -t > /dev/null 2>&1; then
-  echo "✗ nginx -t 失败,自动回滚 nginx 变更" >&2
+if ! sudo nginx -t > /dev/null 2>&1 || ! sudo systemctl reload nginx; then
+  echo "✗ nginx 验证/reload 失败,自动回滚 nginx 变更" >&2
   if sudo test -f "$snippet.rollback"; then
     sudo mv "$snippet.rollback" "$snippet"
   else
@@ -441,10 +505,10 @@ if ! sudo nginx -t > /dev/null 2>&1; then
     sudo sed -i "\|include $snippet;|d" "$site"
   fi
   sudo nginx -t
+  sudo systemctl reload nginx
   exit 1
 fi
 sudo rm -f "$snippet.rollback"
-sudo systemctl reload nginx
 echo "nginx 已加载 $base_path 并 reload"
 REMOTE
 

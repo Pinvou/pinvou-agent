@@ -7,8 +7,9 @@
 > **与生产的边界（如实说明）**：生产 relay 实例（8787）、生产路由 `/pinvou3/remote`、生产
 > telemetry 数据目录完全不动，测试流量与数据目录独立；但脚本会对**共享前端代理**做有限的
 > 运维变更——新增 nginx snippet + 一行 include 并 reload、创建专用低权限隧道账号
-> `relay-tunnel`、对 relay 主机 IP 做 fail2ban unban。这些变更全部由脚本自动备份、
-> 原子替换、失败回滚，并非「生产零改动」。
+> `relay-tunnel`、`/etc/ssh/sshd_config` 末尾该账号的 `Match User` 限权块、对 relay 主机 IP 做 fail2ban
+> unban。关键配置采用暂存、原子替换和局部失败回滚，但跨两台机器并非一个全局事务，
+> 并非「生产零改动」。
 
 ## 架构
 
@@ -32,9 +33,10 @@ relay 主机  root@47.120.8.237
 
 **隧道权限收敛**：隧道不再使用 `admin` 账号。代理侧有专用低权限账号 `relay-tunnel`
 （nologin shell，无 sudo），其 `authorized_keys` 仅一行，options 为
-`no-pty,no-agent-forwarding,no-X11-forwarding,no-user-rc,permitlisten="127.0.0.1:8788"`
+`no-pty,no-agent-forwarding,no-X11-forwarding,no-user-rc,permitlisten="127.0.0.1:8788"`，
+同时 sshd `Match User relay-tunnel` 设置 `AllowTcpForwarding remote` 与同一 `PermitListen`
 ——即使 relay 主机 root 或隧道私钥泄露，也只能建立这一个回环反向转发，
-无法在代理机执行任何命令或转发其他端口。
+无法在代理机执行命令、发起本地转发或监听其他端口。
 
 与生产的关系：
 
@@ -68,13 +70,13 @@ telemetry 数据目录独立（`/var/lib/pinvou-telemetry-test`），与生产�
 （`/opt/pinvou-remote-relay-test.bak`，失败版本留在 `.failed` 供排查）并以非零退出。
 
 **安全校验**：在任何远端变更之前，脚本会校验目标 host（`RELAY_SERVER`/`PROXY_SERVER`
-必须等于登记的两台主机）、`TEST_DIR`（必须是 `/opt/pinvou-remote-relay-test` 本身或其
-后缀/子目录）、`TEST_PORT`（1024–65535 且不得为生产端口 8787）、`BASE_PATH`
+必须等于登记的两台主机）、`TEST_DIR`（必须精确等于 `/opt/pinvou-remote-relay-test`）、
+`TEST_PORT`（1024–65535 且不得为生产端口 8787）、`BASE_PATH`
 （必须以 `/pinvou3/remote-test` 开头），且 `TEST_DIR`/`BASE_PATH` 只允许
 字母数字与 `. _ / -`（会被拼接进远端命令，排除一切 shell 元字符）。任一不符直接拒绝执行——包括 `--teardown` 的
 `rm -rf` 也依赖这道白名单（远端还会二次校验）。
 
-**失败处理**：远端每处变更都按「暂存 → 原子替换 → 失败回滚」执行：
+**失败处理**：高风险文件替换按「暂存 → 原子替换 → 局部失败回滚」执行：
 
 - relay 代码：打成单个 tarball 流式上传（`.tmp` 落盘后原子 mv），远端先解包到 `.extract`
   暂存目录并装好依赖才整体替换——解包/`npm ci` 失败时现役目录未被触碰；替换后健康检查
@@ -84,7 +86,11 @@ telemetry 数据目录独立（`/var/lib/pinvou-telemetry-test`），与生产�
   新增的 include，回到变更前的可用配置后才退出。
 - 隧道账号 `authorized_keys`：`relay-tunnel` 为脚本全权管理的专用账号，每次原子重写为
   恰好一行——relay 侧密钥重新生成后旧公钥被整体换掉（密钥轮换幂等），不残留失效 key。
-- 中途异常退出时，脚本会打印失败阶段；重跑脚本即可幂等收敛。
+- sshd：主配置末尾一段带 BEGIN/END 标记的专用 `Match User` 块只允许 remote forwarding；
+  `sshd -t` 或 reload 失败会恢复旧配置。之所以不用 `sshd_config.d`，是因为该机的 Include
+  位于主配置前部，drop-in 中的 `Match` 会污染随后全局指令的解析语境。
+- 中途异常退出时，脚本会打印失败阶段；跨 relay/代理两台主机的整体部署不是全局事务，
+  重跑脚本可幂等收敛，或用 `--teardown` 清理。
 
 ### 桌面 app 指向测试端点
 
@@ -131,6 +137,10 @@ pinvou3-tauri        # 或 ./pinvou3-app/run-dev.sh 调试构建
    `no_port_forwarding` 把转发整体禁用，`permitlisten` 只是转发被允许时的白名单，
    两者组合 = 全部转发被拒（OpenSSH 9.6p1 实测报 `Server has disabled port forwarding`，
    2026-07-21 踩坑）。
+   还要注意：`permitlisten` 只约束 `ssh -R`，不会限制 `ssh -L`。脚本因此另外写入
+   `/etc/ssh/sshd_config` 末尾的 `Match User relay-tunnel`，使用 `AllowTcpForwarding remote`
+   禁止本地转发；不能只靠
+   `authorized_keys` options 宣称该密钥只能建立指定反向隧道。
 3. **新建系统账号默认是锁定的**：`useradd` 出来的账号 shadow 为 `!`，sshd 按
    "account is locked" 拒绝**包括 pubkey 在内**的一切登录——隧道重启风暴随即触发 fail2ban
    封 IP（2026-07-21 实测踩坑）。必须 `usermod -p '*'`：密码登录不可用但账号不算锁定，
@@ -157,7 +167,8 @@ pinvou3-tauri        # 或 ./pinvou3-app/run-dev.sh 调试构建
 - `admin@8.218.49.20`：`/etc/nginx/snippets/pinvou3-remote-relay-test.conf`、
   `sites-enabled/pinvou`（→ `sites-available/pinvou` 软链）内一行 include、
   `/etc/nginx/pinvou-backups/`（site 备份目录）、专用隧道账号 `relay-tunnel`
-  （`/home/relay-tunnel/.ssh/authorized_keys` 内 `relay-test-tunnel` 条目）。
+  （`/home/relay-tunnel/.ssh/authorized_keys` 内 `relay-test-tunnel` 条目）、
+  `/etc/ssh/sshd_config` 末尾的 `BEGIN/END PINVOU3 REMOTE TEST TUNNEL` 托管块。
   注：首版脚本曾把隧道 key 放在 `admin` 自己的 authorized_keys，评审后已收敛到
   `relay-tunnel`；新版脚本部署/teardown 时会自动清理该历史条目。
   另：首版脚本在 `sites-enabled/` 直接写 `pinvou.bak-*` 备份且 `sed -i` 断开了
