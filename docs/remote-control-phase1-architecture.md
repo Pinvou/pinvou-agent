@@ -327,6 +327,53 @@ disconnect
 }
 ```
 
+### 一期增量:附件上传 / 知识库挂载 / 工具开关
+
+一期上线后追加三项桌面端对齐能力,仍严格遵循「本地执行权不外移」「云端只做 relay」两条原则:
+
+**Mobile -> Desktop 新增 action**(`remote_control/manager.rs` 内分发):
+
+```text
+attach_file_start / attach_file_chunk / attach_file_abort
+list_kb_collections / mount_kb_collection / unmount_kb_collection
+list_tools / set_disabled_connectors
+```
+
+`user_message` payload 新增可选字段 `attachment_upload_ids: string[]`,把上一次 `attach_file_*` 完成的 upload_id 透传给 Engine。
+
+**Desktop -> Mobile 新增 event**:
+
+```text
+attach_file_start_ack / attach_file_chunk_ack / attach_file_result / attach_file_error
+kb_collections_snapshot / kb_mount_changed
+tools_snapshot / tools_changed
+```
+
+**附件上传链路**(完全镜像已合并的下载链路 PR #203):
+
+- 上限 64MiB、分块 768KiB、base64 上行。
+- 三层背压:WS TCP 有序 + 有界 mpsc channel(cap 4) + 显式 `attach_file_chunk_ack` + 60s ack 超时。
+- 桌面端落盘到 `<pinvou3_home>/uploads/<upload_id>/data.bin`,`upload_id` 走 `validate_session_id` 字符集校验防路径穿越。
+- 落盘完成后 `spawn_blocking` 调 `file_ingest::ingest`,产出 `IngestResult`,但只把 `ingest_preview`(kind / byte_size / token_estimate / warning,不含 markdown 与本地路径)回送 mobile;完整 `IngestResult` 在下一条 `user_message` 时本地消费。
+- `close_current` / `stop_current` / `disconnect` **不删源文件**,防止 LLM `read_file` 与清理逻辑竞争;由 `mobile_disconnected` / 切 session / streaming task 自身超时三条后续路径清理。
+
+**知识库挂载开关**(对齐桌面端 `session_mount_collection` / `session_unmount_collection`):
+
+- 每个 remote session 独立挂载/摘挂一个 KB collection;空集合拒绝挂载。
+- 挂载/摘挂通过 `remote_control:kb_mount_changed` 事件即时回推 mobile。
+- 已知限制:`KbSearchTool` 仅 Plan 模式注册(`tool_setup.rs:41`),Yolo 模式下 KB toggle 实际无效,修复需改 fork,不在本增量范围。
+
+**工具开关**(对齐桌面端 `set_disabled_connectors`):
+
+- 全局 connector 开关,跨 session 持久化到 `disabled_connectors.json`。
+- 当前 session 立即生效,通过 `EnginePool::set_disallowed_all` 下发。
+- 桌面端 chip 通过 `pinvou:tools-changed` DOM 事件即时刷新(由 `tauri-bridge.js` 从 `remote_control:tools_changed` 转译)。
+
+**relay 侧改动**:
+
+- 新增 `acknowledgeUploadChunk`,仅在 `attach_file_chunk` 转发失败时触发 NAK。
+- mobile 上传速率限流默认 100MiB / 5s 滑动窗口,可由 `MOBILE_UPLOAD_WINDOW_BYTES` / `MOBILE_UPLOAD_WINDOW_SECS` 环境变量覆盖;触发限流时 emit `attach_file_rate_limited`。
+
 ## 手机 Web UI 一期范围
 
 一期页面以单个 session 会话页为主，并提供轻量 session 选择面板：
@@ -496,6 +543,8 @@ kb_search_result
 knowledge_card
 source_card
 ```
+
+> **增量说明**:一期上线后追加的「知识库挂载开关」仅提供 KB collection 的挂载/摘挂能力(复用桌面端 `session_mount_collection`),不引入 `kb_search_result` / `knowledge_card` / `source_card` 等 device-room 级语义——这些仍留给二期 device room 升级。「附件上传」「工具开关」同理,均为复用桌面端已有命令,不污染 session room 边界。
 
 ## 关键决策
 
