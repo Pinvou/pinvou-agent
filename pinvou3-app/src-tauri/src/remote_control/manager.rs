@@ -1482,9 +1482,12 @@ impl RemoteControlManager {
             }
         };
         // 关键:在锁外 await,避免持有 parking_lot::Mutex 跨 await 点死锁。
+        // send_error 自身会 lock inner,mismatch 分支必须先 drop 守卫再 send_error,
+        // 否则 parking_lot 不可重入 → 永久死锁。
         let sender = {
             let inner = self.inner.lock();
             if inner.active_upload.as_deref() != Some(&upload_id) {
+                drop(inner);
                 self.send_error("unknown_upload", "upload_id not active");
                 return;
             }
@@ -1517,6 +1520,7 @@ impl RemoteControlManager {
         let dir_to_remove = {
             let mut inner = self.inner.lock();
             if inner.active_upload.as_deref() != Some(&upload_id) {
+                drop(inner);
                 self.send_error("unknown_upload", "upload_id not active");
                 return;
             }
@@ -2386,6 +2390,112 @@ mod tests {
         assert!(
             manager.inner.lock().pending_attachments.is_empty(),
             "attach_file_abort must drop the pending attachment"
+        );
+    }
+
+    /// 回归:attach_file_chunk 在 upload_id 不匹配时,必须在 drop 锁守卫之后再 send_error,
+    /// 否则 parking_lot::Mutex 不可重入 → 永久死锁。本测试用 1s 超时驱动 async fn,
+    /// 若路径未修复则会 hang 到超时失败。
+    #[test]
+    fn attach_file_chunk_unknown_upload_id_does_not_deadlock() {
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = PinvouHomeOverride::new("attach-chunk-unknown");
+        let (sender, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (download_sender, _download_rx) =
+            tokio::sync::mpsc::channel(relay_client::DOWNLOAD_CHANNEL_CAPACITY);
+        let session_id = "rc-attach-chunk-unknown-session".to_string();
+        let manager = RemoteControlManager::new_headless();
+        {
+            let mut inner = manager.inner.lock();
+            inner.room = Some(ActiveRoom {
+                room_id: "rc_attach_chunk_unknown".to_string(),
+                session_id: session_id.clone(),
+                url: String::new(),
+                relay_ws_url: String::new(),
+                status: RemoteControlStatusKind::WaitingMobile,
+                last_error: None,
+                sender,
+                download_sender,
+            });
+            // 槽位被另一个 upload 占用,使下面的 chunk upload_id 必然不匹配。
+            inner.active_upload = Some("up_other_active".to_string());
+        }
+
+        let payload = serde_json::json!({
+            "upload_id": "up_does_not_match",
+            "index": 0u64,
+            "data_base64": "AA==",
+            "last": false,
+        });
+
+        let manager_clone = manager.clone();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build one-off runtime");
+        rt.block_on(async move {
+            // 修复前:这里会永久 hang(send_error 重入死锁)。修复后:mismatch 分支 drop
+            // 守卫后正常 send_error 并 return。
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                manager_clone.handle_attach_file_chunk(&payload),
+            )
+            .await
+            .expect("handle_attach_file_chunk must not deadlock on unknown upload_id");
+        });
+
+        // 锁仍然可用(未被毒化/未被泄漏持有)。
+        assert!(
+            manager.inner.lock().active_upload.is_some(),
+            "unknown upload_id chunk must not evict the active upload slot"
+        );
+    }
+
+    /// 回归:attach_file_abort 在 upload_id 不匹配时同样要 drop 锁守卫后再 send_error。
+    /// 同一类 re-entrant 死锁防御。
+    #[test]
+    fn attach_file_abort_unknown_upload_id_does_not_deadlock() {
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = PinvouHomeOverride::new("attach-abort-unknown");
+        let (sender, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (download_sender, _download_rx) =
+            tokio::sync::mpsc::channel(relay_client::DOWNLOAD_CHANNEL_CAPACITY);
+        let session_id = "rc-attach-abort-unknown-session".to_string();
+        let manager = RemoteControlManager::new_headless();
+        {
+            let mut inner = manager.inner.lock();
+            inner.room = Some(ActiveRoom {
+                room_id: "rc_attach_abort_unknown".to_string(),
+                session_id: session_id.clone(),
+                url: String::new(),
+                relay_ws_url: String::new(),
+                status: RemoteControlStatusKind::WaitingMobile,
+                last_error: None,
+                sender,
+                download_sender,
+            });
+            inner.active_upload = Some("up_other_active".to_string());
+        }
+
+        let payload = serde_json::json!({ "upload_id": "up_does_not_match" });
+
+        // abort 是 sync fn,但内含 send_error → 修复前会直接死锁本线程。
+        // 用 spawn + recv 超时检测:如果 abort 死锁,join 会超时。
+        let manager_clone = manager.clone();
+        let handle = std::thread::spawn(move || {
+            manager_clone.handle_attach_file_abort(&session_id, &payload);
+        });
+        handle
+            .join()
+            .expect("handle_attach_file_abort must not deadlock on unknown upload_id");
+
+        assert!(
+            manager.inner.lock().active_upload.is_some(),
+            "unknown upload_id abort must not evict the active upload slot"
         );
     }
 }
