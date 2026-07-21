@@ -2242,4 +2242,324 @@ mod e2e_tests {
             }
         }
     }
+
+    fn bin_runnable(bin: &str, args: &[&str]) -> bool {
+        Command::new(bin)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    /// Chrome 解析顺序:CHROME 环境变量 → 仓库本地 .cache/puppeteer(手动 zip 或
+    /// npx @puppeteer/browsers 布局) → 常见系统路径。只返回能跑 --version 的。
+    fn resolve_chrome_binary(app_dir: &Path) -> Option<String> {
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        if let Ok(from_env) = std::env::var("CHROME") {
+            if !from_env.is_empty() {
+                candidates.push(PathBuf::from(from_env));
+            }
+        }
+        if let Some(repo_root) = app_dir.parent() {
+            candidates.push(repo_root.join(".cache/puppeteer/chrome-linux64/chrome"));
+            if let Ok(entries) = std::fs::read_dir(repo_root.join(".cache/puppeteer/chrome")) {
+                for entry in entries.flatten() {
+                    candidates.push(entry.path().join("chrome-linux64/chrome"));
+                }
+            }
+        }
+        for system in [
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+        ] {
+            candidates.push(PathBuf::from(system));
+        }
+        candidates
+            .into_iter()
+            .find(|path| path.exists() && bin_runnable(&path.to_string_lossy(), &["--version"]))
+            .map(|path| path.to_string_lossy().to_string())
+    }
+
+    /// 真实浏览器全链路:真实 node relay + 真实 manager(流式下载/单下载锁/背压)
+    /// + 真实 Chrome/Chromium(puppeteer-core 驱动 relay 服务的真实手机端页面)。
+    /// 覆盖:64MiB 近上限下载字节一致、64MiB+1 超限拒绝、下载中重复点击拦截、
+    /// 中途杀 relay 断连中断。依赖 node 与 Chrome 二进制,缺失时跳过。
+    /// Chrome 解析顺序:CHROME 环境变量 → 仓库本地 .cache/puppeteer → 常见系统路径。
+    #[test]
+    fn real_browser_download_full_stack() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let relay_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../remote-control-relay")
+            .canonicalize()
+            .expect("remote-control-relay dir");
+        let app_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .canonicalize()
+            .expect("pinvou3-app dir");
+        if !relay_dir.join("node_modules/ws/package.json").exists() {
+            eprintln!("skip real browser e2e: relay node_modules missing (npm ci in remote-control-relay)");
+            return;
+        }
+        if !app_dir
+            .join("node_modules/puppeteer-core/package.json")
+            .exists()
+        {
+            eprintln!("skip real browser e2e: pinvou3-app node_modules missing (npm ci in pinvou3-app)");
+            return;
+        }
+        if !bin_runnable("node", &["--version"]) {
+            eprintln!("skip real browser e2e: node not available");
+            return;
+        }
+        let chrome_bin = resolve_chrome_binary(&app_dir);
+        let Some(chrome_bin) = chrome_bin else {
+            eprintln!(
+                "skip real browser e2e: no Chrome/Chromium binary (set CHROME, or install Chrome for Testing into .cache/puppeteer)"
+            );
+            return;
+        };
+
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-remote-browser-e2e-{}-{}",
+            std::process::id(),
+            now_nanos()
+        ));
+        let previous_home = std::env::var_os("PINVOU3_HOME");
+        std::env::set_var("PINVOU3_HOME", &home);
+        let relay_child: Arc<parking_lot::Mutex<Option<Child>>> = Arc::new(parking_lot::Mutex::new(None));
+        struct Guard {
+            home: PathBuf,
+            previous_home: Option<OsString>,
+            relay_child: Arc<parking_lot::Mutex<Option<Child>>>,
+        }
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                if let Some(mut child) = self.relay_child.lock().take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                match self.previous_home.take() {
+                    Some(value) => std::env::set_var("PINVOU3_HOME", value),
+                    None => std::env::remove_var("PINVOU3_HOME"),
+                }
+                let _ = std::fs::remove_dir_all(&self.home);
+            }
+        }
+        let guard = Guard {
+            home: home.clone(),
+            previous_home,
+            relay_child: relay_child.clone(),
+        };
+
+        // 近上限文件:恰好 64MiB(边界值,>64MiB 才拒绝);内容为确定性伪随机。
+        let store = SessionStore::boot().expect("boot session store");
+        let session = store
+            .create_new("test-model".to_string(), None, home.join("ignored"))
+            .expect("create session");
+        let session_id = session.metadata.id.clone();
+        let workspace = paths::session_workspace_dir(&session_id);
+        let pattern: Vec<u8> = (0..1024 * 1024u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        let near_bytes = pattern.repeat((DOWNLOAD_LIMIT_BYTES as usize) / pattern.len());
+        assert_eq!(near_bytes.len() as u64, DOWNLOAD_LIMIT_BYTES);
+        let near_path = workspace.join("reports/near-limit.bin");
+        std::fs::create_dir_all(near_path.parent().expect("near parent")).expect("near dir");
+        std::fs::write(&near_path, &near_bytes).expect("write near-limit file");
+        // 超限文件:稀疏到 64MiB+1,仅元数据参与判定。
+        let oversize_path = workspace.join("reports/oversize.bin");
+        let oversize_file = std::fs::File::create(&oversize_path).expect("create oversize file");
+        oversize_file
+            .set_len(DOWNLOAD_LIMIT_BYTES + 1)
+            .expect("size oversize file");
+        drop(oversize_file);
+        store
+            .update_artifacts(
+                &session_id,
+                vec![
+                    near_path.to_string_lossy().to_string(),
+                    oversize_path.to_string_lossy().to_string(),
+                ],
+            )
+            .expect("register artifacts");
+
+        let port = TcpListener::bind("127.0.0.1:0")
+            .expect("bind ephemeral port")
+            .local_addr()
+            .expect("local addr")
+            .port();
+        let child = Command::new("node")
+            .arg("server.js")
+            .current_dir(&relay_dir)
+            .env("PORT", port.to_string())
+            .env("PINVOU_REMOTE_PUBLIC_BASE_PATH", "")
+            .env("HEARTBEAT_INTERVAL_MS", "60000")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn relay");
+        *relay_child.lock() = Some(child);
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+            assert!(Instant::now() < deadline, "relay did not start on port {port}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        let room_id = format!("rc_{}", crate::remote_control::short_token(18));
+        let pairing_token = crate::remote_control::short_token(32);
+        let desktop_secret = crate::remote_control::short_token(32);
+        let relay_ws_url = format!("ws://127.0.0.1:{port}/ws");
+        let (sender, download_sender, mut receiver) = relay_client::spawn(
+            relay_ws_url.clone(),
+            room_id.clone(),
+            session_id.clone(),
+            pairing_token.clone(),
+            desktop_secret,
+        );
+        let manager = RemoteControlManager::new_headless();
+        {
+            let mut inner = manager.inner.lock();
+            inner.room = Some(ActiveRoom {
+                room_id: room_id.clone(),
+                session_id: session_id.clone(),
+                url: String::new(),
+                relay_ws_url,
+                status: RemoteControlStatusKind::WaitingMobile,
+                last_error: None,
+                sender,
+                download_sender,
+            });
+        }
+
+        // 分发任务:扮演 handle_mobile_action 中本场景用到的 action 子集
+        // (EnginePool 需要 AppHandle,headless 无法构造;下载/预览/列表路径全部真实)。
+        let download_actions = Arc::new(AtomicUsize::new(0));
+        let stop_dispatch = Arc::new(AtomicBool::new(false));
+        let control_file = home.join("control.txt");
+        {
+            let manager = manager.clone();
+            let store = store.clone();
+            let download_actions = download_actions.clone();
+            let stop_dispatch = stop_dispatch.clone();
+            let control_file = control_file.clone();
+            let relay_child = relay_child.clone();
+            tauri::async_runtime::spawn(async move {
+                while !stop_dispatch.load(Ordering::SeqCst) {
+                    // 控制文件:驱动端要求杀 relay,模拟真实网络中断。
+                    if let Ok(cmd) = std::fs::read_to_string(&control_file) {
+                        if cmd.trim() == "kill_relay" {
+                            if let Some(mut child) = relay_child.lock().take() {
+                                let _ = child.kill();
+                                let _ = child.wait();
+                            }
+                            let _ = std::fs::remove_file(&control_file);
+                        }
+                    }
+                    let inbound =
+                        match tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+                            .await
+                        {
+                            Ok(Some(inbound)) => inbound,
+                            Ok(None) => break,
+                            Err(_) => continue,
+                        };
+                    let RelayInbound::MobileAction { payload, .. } = inbound else {
+                        continue;
+                    };
+                    let kind = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    let action_payload = payload.get("payload").cloned().unwrap_or(Value::Null);
+                    let sid = manager
+                        .inner
+                        .lock()
+                        .room
+                        .as_ref()
+                        .map(|room| room.session_id.clone())
+                        .unwrap_or_default();
+                    if sid.is_empty() {
+                        continue;
+                    }
+                    let result = match kind {
+                        "request_snapshot" | "ping" => {
+                            manager.send_snapshot_with_live_request(&store, &sid)
+                        }
+                        "request_session_list" => manager.send_session_list(&store, &sid),
+                        "request_chips" => manager.send_chips_snapshot(&store, &sid),
+                        "request_artifacts" => manager.send_artifact_list(&store, &sid),
+                        "switch_remote_session" => match action_payload
+                            .get("session_id")
+                            .and_then(|v| v.as_str())
+                        {
+                            Some(id) => manager.switch_remote_session(&store, id),
+                            None => Ok(()),
+                        },
+                        "request_artifact_preview" => {
+                            if let Some(id) =
+                                action_payload.get("artifact_id").and_then(|v| v.as_str())
+                            {
+                                manager.send_artifact_preview(&store, &sid, id)
+                            } else if let Some(path) =
+                                action_payload.get("artifact_path").and_then(|v| v.as_str())
+                            {
+                                manager.send_artifact_preview_by_path(&store, &sid, path)
+                            } else {
+                                Err("missing artifact_id".to_string())
+                            }
+                        }
+                        "request_artifact_download" => {
+                            download_actions.fetch_add(1, Ordering::SeqCst);
+                            let id = action_payload.get("artifact_id").and_then(|v| v.as_str());
+                            let path =
+                                action_payload.get("artifact_path").and_then(|v| v.as_str());
+                            manager.send_artifact_download(&store, &sid, id, path)
+                        }
+                        _ => Ok(()),
+                    };
+                    if let Err(err) = result {
+                        manager.send_error("mobile_action_failed", &err);
+                    }
+                }
+            });
+        }
+
+        let download_dir = home.join("firefox-downloads");
+        let params_path = home.join("driver-params.json");
+        let params = json!({
+            "pageUrl": format!("http://127.0.0.1:{port}/r/{room_id}#token={pairing_token}"),
+            "sessionTitle": session.metadata.title,
+            "sessionIdShort": &session_id[..session_id.len().min(6)],
+            "artifactName": "near-limit.bin",
+            "oversizeName": "oversize.bin",
+            "downloadDir": download_dir,
+            "controlFile": control_file,
+            "sourceFile": near_path,
+            "expectedSize": DOWNLOAD_LIMIT_BYTES,
+            "chromeBin": chrome_bin,
+        });
+        std::fs::write(&params_path, serde_json::to_string_pretty(&params).expect("params json"))
+            .expect("write driver params");
+
+        let status = Command::new("node")
+            .arg(relay_dir.join("test/real-browser-download.driver.mjs"))
+            .arg(&params_path)
+            .current_dir(&relay_dir)
+            .stdin(Stdio::null())
+            .status()
+            .expect("spawn real browser driver");
+        stop_dispatch.store(true, Ordering::SeqCst);
+        assert!(status.success(), "real browser driver failed");
+        assert_eq!(
+            download_actions.load(Ordering::SeqCst),
+            3,
+            "desktop must see exactly 3 download actions: 64MiB 完成 + 超限拒绝 + 第二次 64MiB(重复点击被浏览器拦截)"
+        );
+        let _ = &guard;
+    }
 }
