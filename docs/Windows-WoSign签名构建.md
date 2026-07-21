@@ -1,9 +1,8 @@
 # Windows WoSign 签名构建
 
-Windows NSIS 发布构建通过项目内
-`pinvou3-app/src-tauri/resources/windows/wosign/wosigncodecmd.exe`
-完成签名，不依赖服务器上的外部工具目录。该工具仅供构建阶段使用，
-没有配置为 Tauri bundle 资源，不会随应用安装包发布。
+Windows NSIS 发布构建通过项目内的 `wosigncodecmd.exe` 完成签名，
+同时要求同目录存在配套的 `wosigncode.exe`，不依赖服务器上的外部工具目录。
+两个工具仅供构建阶段使用，没有配置为 Tauri bundle 资源，不会随应用安装包发布。
 
 ## 签名参数
 
@@ -31,4 +30,4 @@ npm run build:nsis
 npm run bundle:nsis
 ```
 
-两个命令都会先执行 `check:wosign`，签名参数无效或项目签名工具缺失时立即终止。Tauri 在写入 NSIS bundle 类型后调用同一签名脚本，依次签署主程序、NSIS 卸载程序和最终安装器。
+两个命令都会先执行 `check:wosign`，签名参数无效、命令行工具或配套工具缺失时立即终止。Tauri 在写入 NSIS bundle 类型后调用同一签名脚本，依次签署主程序、NSIS 卸载程序和最终安装器。

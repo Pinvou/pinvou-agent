@@ -35,13 +35,24 @@ if (-not (Test-Path -LiteralPath $resolvedToolPath -PathType Leaf)) {
   throw "WoSign command-line tool was not found: $resolvedToolPath"
 }
 
+$companionToolPath = Join-Path ([System.IO.Path]::GetDirectoryName($resolvedToolPath)) "wosigncode.exe"
+if (-not (Test-Path -LiteralPath $companionToolPath -PathType Leaf)) {
+  throw "WoSign companion tool was not found: $companionToolPath"
+}
+
 $resolvedFilePath = [System.IO.Path]::GetFullPath($FilePath)
 if (-not (Test-Path -LiteralPath $resolvedFilePath -PathType Leaf)) {
   throw "File to sign was not found: $resolvedFilePath"
 }
 
 if ($ValidateOnly) {
-  Write-Host "WoSign parameters validated for: $resolvedFilePath"
+  & $resolvedToolPath "help" 2>&1 | Out-Null
+  $validationExitCode = $LASTEXITCODE
+  if ($validationExitCode -ne 0) {
+    throw "WoSign command-line tool validation failed with exit code $validationExitCode."
+  }
+
+  Write-Host "WoSign configuration validated for: $resolvedFilePath"
   exit 0
 }
 
