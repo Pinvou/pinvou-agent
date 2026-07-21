@@ -254,12 +254,27 @@ impl RemoteControlManager {
     }
 
     fn close_current(&self, reason: &str) {
-        let old = {
+        // 锁内:统一清空 download / upload 全部槽位,顺带收集要删的 upload 目录路径。
+        // upload 目录的删除放到锁外(best-effort),避免在持锁期间做 fs I/O。
+        let (old, upload_dirs) = {
             let mut inner = self.inner.lock();
+            let dirs: Vec<PathBuf> = inner
+                .pending_attachments
+                .keys()
+                .map(|id| inner.uploads_base.join(id))
+                .collect();
             inner.active_download = None;
             inner.download_ack_sender = None;
-            inner.room.take()
+            inner.active_upload = None;
+            inner.upload_chunk_sender = None;
+            inner.pending_attachments.clear();
+            (inner.room.take(), dirs)
         };
+        // 锁外 best-effort 删盘上未完成的上传目录:丢 sender 后 streaming task 会自然收尾,
+        // 但盘上残留的半成品文件需要在这里清掉,防止占用磁盘。
+        for dir in upload_dirs {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
         if let Some(room) = old {
             let _ = room.sender.send(RelayOutbound::Close {
                 room_id: room.room_id,
@@ -267,6 +282,30 @@ impl RemoteControlManager {
                 reason: reason.to_string(),
             });
             self.emit_status();
+        }
+    }
+
+    /// 清理当前进行中的上传:丢 sender 让 streaming task 自然终止,清 Inner 字段,
+    /// best-effort 删除盘上未完成的 upload 目录。失败仅 log,不阻塞调用方。
+    ///
+    /// 调用方需保证**不在持锁状态**下调用 —— 本方法自己 lock,且 lock 之间无嵌套。
+    fn cleanup_active_upload(&self, reason: &str) {
+        let (upload_id, dir_to_remove) = {
+            let mut inner = self.inner.lock();
+            let Some(upload_id) = inner.active_upload.take() else {
+                return;
+            };
+            inner.upload_chunk_sender = None;
+            inner.pending_attachments.remove(&upload_id);
+            let dir_to_remove = inner.uploads_base.join(&upload_id);
+            (upload_id, dir_to_remove)
+        };
+        // 锁外做 fs 删除(best-effort):不阻塞 dispatcher,失败只 log。
+        if let Err(e) = std::fs::remove_dir_all(&dir_to_remove) {
+            // 不报错给上层,只在日志留痕 —— 与 attach_file_abort 的删除风格一致。
+            eprintln!(
+                "[remote-control] cleanup_active_upload: remove_dir_all failed for upload_id={upload_id} reason={reason} (likely already gone): {e:#}"
+            );
         }
     }
 
@@ -877,6 +916,10 @@ impl RemoteControlManager {
         store: &SessionStore,
         target_session_id: &str,
     ) -> Result<(), String> {
+        // 切 session 时,旧 session 的进行中上传失效:清槽位 + 删盘上目录。
+        // 新 session 的快照里不会出现旧 upload,mobile UI 据此自然收尾,
+        // 故不需要向 mobile 发 attach_file_aborted 事件。
+        self.cleanup_active_upload("switch_session");
         let saved = store
             .load(target_session_id)
             .map_err(|e| format!("load target session({target_session_id}): {e:?}"))?;
@@ -1321,6 +1364,11 @@ impl RemoteControlManager {
                 _ => room.status,
             };
             room.last_error = message;
+        }
+        // mobile 断开:旧 upload 必然无法收到后续 chunk,清掉槽位 + 删盘上数据。
+        // 锁外调 cleanup(它自己再 lock,且 lock 之间无嵌套)。
+        if status == "mobile_disconnected" {
+            self.cleanup_active_upload("mobile_disconnected");
         }
         self.emit_status();
     }
@@ -2559,6 +2607,90 @@ mod tests {
         assert!(
             manager.inner.lock().active_upload.is_none(),
             "dir-failed start must not occupy the upload slot"
+        );
+    }
+
+    /// 回归:close_current / stop_current 必须清空 upload 相关 Inner 字段,并 best-effort
+    /// 删除盘上未完成的 upload 目录。防止 manager 拆除后 active_upload 槽位残留,导致下次
+    /// attach_file_start 被永久拒服务,以及 <uploads_base>/<upload_id>/ 半成品文件堆积。
+    #[test]
+    fn close_current_clears_active_upload_slot() {
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = PinvouHomeOverride::new("close-clears-upload");
+        let (sender, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (download_sender, _download_rx) =
+            tokio::sync::mpsc::channel(relay_client::DOWNLOAD_CHANNEL_CAPACITY);
+        let session_id = "rc-close-clears-upload-session".to_string();
+        let manager = RemoteControlManager::new_headless();
+        let upload_dir;
+        {
+            let mut inner = manager.inner.lock();
+            inner.room = Some(ActiveRoom {
+                room_id: "rc_close_clears_upload".to_string(),
+                session_id: session_id.clone(),
+                url: String::new(),
+                relay_ws_url: String::new(),
+                status: RemoteControlStatusKind::WaitingMobile,
+                last_error: None,
+                sender,
+                download_sender,
+            });
+            inner.active_upload = Some("up_close_test".to_string());
+            inner.pending_attachments.insert(
+                "up_close_test".to_string(),
+                PendingAttachment {
+                    session_id: session_id.clone(),
+                    filename: "x.bin".to_string(),
+                    byte_size: 8,
+                    mime: "application/octet-stream".to_string(),
+                    ingest_result: None,
+                },
+            );
+            upload_dir = inner.uploads_base.join("up_close_test");
+            std::fs::create_dir_all(&upload_dir).expect("seed upload dir");
+            std::fs::write(upload_dir.join("data.bin"), b"partial").expect("seed partial file");
+        }
+
+        manager.close_current("test");
+
+        let inner = manager.inner.lock();
+        assert!(
+            inner.active_upload.is_none(),
+            "close_current must clear active_upload"
+        );
+        assert!(
+            inner.upload_chunk_sender.is_none(),
+            "close_current must clear sender"
+        );
+        assert!(
+            inner.pending_attachments.is_empty(),
+            "close_current must clear pending_attachments"
+        );
+        assert!(
+            !upload_dir.exists(),
+            "close_current must remove upload dir"
+        );
+    }
+
+    /// 回归:cleanup_active_upload 在没有进行中 upload 时必须 no-op,既不 panic 也不修改状态。
+    /// 这覆盖 mobile_disconnected / switch_session 在"恰好无上传"时的快路径。
+    #[test]
+    fn cleanup_active_upload_is_noop_when_no_upload_active() {
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = PinvouHomeOverride::new("cleanup-noop");
+        let manager = RemoteControlManager::new_headless();
+        manager.cleanup_active_upload("noop_test"); // 不应 panic
+        assert!(
+            manager.inner.lock().active_upload.is_none(),
+            "cleanup with no active upload must not populate the slot"
+        );
+        assert!(
+            manager.inner.lock().pending_attachments.is_empty(),
+            "cleanup with no active upload must not populate pending_attachments"
         );
     }
 }
