@@ -28,11 +28,21 @@ pub enum RelayInbound {
         status: String,
         message: Option<String>,
     },
+    DownloadAck {
+        download_id: String,
+        index: usize,
+        ok: bool,
+        message: Option<String>,
+    },
     Error(String),
 }
 
 pub type RelaySender = mpsc::UnboundedSender<RelayOutbound>;
 pub type RelayReceiver = mpsc::UnboundedReceiver<RelayInbound>;
+/// 下载分块走独立有界通道：发送端 `.await` 即背压，避免大文件 Base64 在无界队列里堆积。
+pub type DownloadSender = mpsc::Sender<RelayOutbound>;
+/// 下载通道容量(块数)。每块 base64 后约 1MiB,4 块峰值约 4MiB。
+pub const DOWNLOAD_CHANNEL_CAPACITY: usize = 4;
 
 #[derive(Clone)]
 struct RegisterInfo {
@@ -48,8 +58,9 @@ pub fn spawn(
     session_id: String,
     pairing_token: String,
     desktop_secret: String,
-) -> (RelaySender, RelayReceiver) {
+) -> (RelaySender, DownloadSender, RelayReceiver) {
     let (tx_out, mut rx_out) = mpsc::unbounded_channel::<RelayOutbound>();
+    let (tx_download, mut rx_download) = mpsc::channel::<RelayOutbound>(DOWNLOAD_CHANNEL_CAPACITY);
     let (tx_in, rx_in) = mpsc::unbounded_channel::<RelayInbound>();
     let register = RegisterInfo {
         room_id,
@@ -58,17 +69,26 @@ pub fn spawn(
         desktop_secret,
     };
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = run_loop(relay_ws_url, tx_in.clone(), &mut rx_out, register).await {
+        if let Err(e) = run_loop(
+            relay_ws_url,
+            tx_in.clone(),
+            &mut rx_out,
+            &mut rx_download,
+            register,
+        )
+        .await
+        {
             let _ = tx_in.send(RelayInbound::Error(e));
         }
     });
-    (tx_out, rx_in)
+    (tx_out, tx_download, rx_in)
 }
 
 async fn run_loop(
     relay_ws_url: String,
     tx_in: mpsc::UnboundedSender<RelayInbound>,
     rx_out: &mut mpsc::UnboundedReceiver<RelayOutbound>,
+    rx_download: &mut mpsc::Receiver<RelayOutbound>,
     register: RegisterInfo,
 ) -> Result<(), String> {
     loop {
@@ -106,9 +126,7 @@ async fn run_loop(
                     let Some(outbound) = outbound else { return Ok(()); };
                     match outbound {
                         RelayOutbound::Envelope(env) => {
-                            let value = serde_json::to_value(env).map_err(|e| e.to_string())?;
-                            if let Err(e) = write.send(Message::Text(value.to_string())).await {
-                                eprintln!("[remote-control] relay send failed: {e}");
+                            if !send_envelope(&mut write, env).await? {
                                 break;
                             }
                         }
@@ -117,6 +135,19 @@ async fn run_loop(
                             let _ = write.send(Message::Text(value.to_string())).await;
                             return Ok(());
                         }
+                    }
+                }
+                // 下载分块专用有界通道:容量满时发送端挂起,形成背压。
+                download = rx_download.recv() => {
+                    match download {
+                        Some(RelayOutbound::Envelope(env)) => {
+                            if !send_envelope(&mut write, env).await? {
+                                break;
+                            }
+                        }
+                        // 下载通道只承载 Envelope;Close 永远走无界控制通道。
+                        Some(RelayOutbound::Close { .. }) => {}
+                        None => return Ok(()),
                     }
                 }
                 msg = read.next() => {
@@ -153,6 +184,21 @@ async fn run_loop(
                                 message: value.get("message").and_then(|v| v.as_str()).map(ToString::to_string),
                             });
                         }
+                        "artifact_download_relay_ack" => {
+                            let payload = value.get("payload").unwrap_or(&Value::Null);
+                            let Some(download_id) = payload.get("download_id").and_then(|v| v.as_str()) else {
+                                continue;
+                            };
+                            let Some(index) = payload.get("index").and_then(|v| v.as_u64()) else {
+                                continue;
+                            };
+                            let _ = tx_in.send(RelayInbound::DownloadAck {
+                                download_id: download_id.to_string(),
+                                index: index as usize,
+                                ok: payload.get("ok").and_then(|v| v.as_bool()).unwrap_or(false),
+                                message: payload.get("message").and_then(|v| v.as_str()).map(ToString::to_string),
+                            });
+                        }
                         "error" => {
                             let message = value
                                 .get("message")
@@ -173,4 +219,20 @@ async fn run_loop(
         });
         tokio::time::sleep(Duration::from_millis(900)).await;
     }
+}
+
+/// 序列化并写入一条 envelope;返回 Ok(false) 表示 WS 写失败,调用方应 break 走重连。
+async fn send_envelope<S>(
+    write: &mut S,
+    env: super::protocol::RelayEnvelope,
+) -> Result<bool, String>
+where
+    S: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
+    let value = serde_json::to_value(env).map_err(|e| e.to_string())?;
+    if let Err(e) = write.send(Message::Text(value.to_string())).await {
+        eprintln!("[remote-control] relay send failed: {e}");
+        return Ok(false);
+    }
+    Ok(true)
 }

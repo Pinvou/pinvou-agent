@@ -314,6 +314,21 @@ jobs:
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # remote_control 的真实 relay 下载 e2e 需要 node + relay 依赖,缺 node_modules/ws 时
+      # 该 e2e 会自动 skip —— 装上依赖让 CI 真正执行它,而不是绿灯假过。
+      - name: Node.js (relay e2e)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: remote-control-relay/package-lock.json
+
+      - name: relay 依赖 (真实 relay e2e)
+        run: npm --prefix remote-control-relay ci --prefer-offline --no-audit
+
+      - name: 浏览器驱动依赖 (真实 Chrome 下载 e2e)
+        run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
+
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -325,7 +340,10 @@ jobs:
 
       # --test-threads=1:bridge 测试读/写全局 env,并行会竞争(qwen_preset/vllm 等 flaky)。
       - name: cargo test --lib (真 bge-m3/vLLM 测试已 #[ignore])
-        run: cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
+        run: |
+          export CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          export PINVOU_REQUIRE_REMOTE_E2E=1
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
 
       - name: L1 harness 严格错误回归（不调用真模型）
         # PR 仅在 harness 相关路径变化时跑；main push 恒跑，保留合并后的完整验证。
