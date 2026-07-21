@@ -254,27 +254,19 @@ impl RemoteControlManager {
     }
 
     fn close_current(&self, reason: &str) {
-        // 锁内:统一清空 download / upload 全部槽位,顺带收集要删的 upload 目录路径。
-        // upload 目录的删除放到锁外(best-effort),避免在持锁期间做 fs I/O。
-        let (old, upload_dirs) = {
+        // 锁内:统一清空 download / upload 全部槽位。
+        // **不删源文件**(spec §5:防 LLM read_file 竞争):仅清 HashMap 项,
+        // streaming task 收 None 后自中止;盘上数据由 mobile_disconnected /
+        // session 切换 / streaming task timeout 后续路径清理。
+        let old = {
             let mut inner = self.inner.lock();
-            let dirs: Vec<PathBuf> = inner
-                .pending_attachments
-                .keys()
-                .map(|id| inner.uploads_base.join(id))
-                .collect();
             inner.active_download = None;
             inner.download_ack_sender = None;
             inner.active_upload = None;
             inner.upload_chunk_sender = None;
             inner.pending_attachments.clear();
-            (inner.room.take(), dirs)
+            inner.room.take()
         };
-        // 锁外 best-effort 删盘上未完成的上传目录:丢 sender 后 streaming task 会自然收尾,
-        // 但盘上残留的半成品文件需要在这里清掉,防止占用磁盘。
-        for dir in upload_dirs {
-            let _ = std::fs::remove_dir_all(&dir);
-        }
         if let Some(room) = old {
             let _ = room.sender.send(RelayOutbound::Close {
                 room_id: room.room_id,
@@ -2668,10 +2660,15 @@ mod tests {
             inner.pending_attachments.is_empty(),
             "close_current must clear pending_attachments"
         );
+        // spec §5:close_current / stop_current / disconnect **不删源文件**
+        // (防 LLM read_file 竞争);源文件由 mobile_disconnected / session 切换 /
+        // streaming task timeout 后续清理。这里断言目录**仍在**,守住这条不变量。
         assert!(
-            !upload_dir.exists(),
-            "close_current must remove upload dir"
+            upload_dir.exists(),
+            "close_current must NOT remove upload dir (spec: source files survive until mobile_disconnected / switch / timeout)"
         );
+        // 清理本测试自己造的目录,避免污染其他用例。
+        let _ = std::fs::remove_dir_all(&upload_dir);
     }
 
     /// 回归:cleanup_active_upload 在没有进行中 upload 时必须 no-op,既不 panic 也不修改状态。
