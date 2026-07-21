@@ -36,6 +36,7 @@ pub mod llmapi_hub;
 mod local_vllm_setup;
 pub mod memory;
 mod monitor;
+mod microphone_permission;
 mod notifications;
 mod os;
 pub mod personas;
@@ -639,6 +640,7 @@ pub fn run() {
             commands::get_session_model_id,
             commands::test_model_connection,
             commands::transcribe_voice_audio,
+            microphone_permission::reset_microphone_permission,
             voice_asr::voice_asr_status,
             voice_asr::install_voice_asr,
             voice_asr::cancel_voice_asr,

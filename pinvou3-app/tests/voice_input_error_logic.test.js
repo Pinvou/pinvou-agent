@@ -108,6 +108,19 @@ vm.runInContext(
     "cancelled dependency status query must not resume microphone acquisition",
   );
 
+  const permissionCatchAt = source.indexOf('if (normalized.category === "permission_denied")', startVoiceInputAt);
+  assert.ok(permissionCatchAt > startVoiceInputAt, "permission denial recovery must exist in voice input flow");
+  assert.match(
+    source.slice(permissionCatchAt, permissionCatchAt + 900),
+    /await invoke\("reset_microphone_permission"\)/,
+    "Windows WebView2 microphone denial must reset the saved permission before retry",
+  );
+  assert.match(
+    source.slice(permissionCatchAt, permissionCatchAt + 900),
+    /请再次点击语音输入并在授权提示中选择允许/,
+    "permission denial must tell the user how to trigger the prompt again",
+  );
+
   console.log("voice_input_error_logic: ok");
 })().catch((error) => {
   console.error(error);

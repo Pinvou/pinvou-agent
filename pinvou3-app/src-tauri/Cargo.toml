@@ -118,6 +118,8 @@ device_query = "2"
 [target.'cfg(windows)'.dependencies]
 fastembed = { version = "4", default-features = false, features = ["ort-load-dynamic"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Performance", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+webview2-com = "0.38.2"
+windows = "0.61.3"
 
 [target.'cfg(not(windows))'.dependencies]
 fastembed = "4"
