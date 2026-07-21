@@ -4081,6 +4081,8 @@
       var r = roles[rid] || {};
       applyAgentPatch(rid, {
         id: rid, name: r.name || rid, status: r.status || "pending",
+        error: typeof r.error === "string" && r.error.trim() ? r.error : null,
+        retries: r.retries == null ? 0 : r.retries,
         last_gate_verdict: r.last_gate_verdict || null,
         outputs_present: r.outputs_present || 0,
         last_run_ts: r.last_run_ts || null,

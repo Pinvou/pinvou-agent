@@ -18,6 +18,7 @@
 //!   └─ 无 → scheduler --next → dispatch 第一个角色
 //! ```
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -257,7 +258,7 @@ fn read_route_table_for(workflow: &str) -> serde_json::Value {
 /// scheduler.py --status 返回基础字段；本函数额外 enrich：
 /// - `last_gate_verdict`: 最近一次 gate report 的 verdict（PASS/FAIL/WARN）
 /// - `outputs_present`: agent_registry.outputs glob 后实际存在的文件数
-/// - `last_run_ts`: workflow_flow.log 里该 role 最近一条事件的时间戳
+/// - `last_run_ts`: flow_log.jsonl / agent_log.jsonl 里该 role 最近一条事件的时间戳
 /// - `project_dir`（顶层）: 项目目录绝对路径，前端调 get_role_outputs / get_gate_report 时用
 pub fn read_full_agent_state(workspace: &Path) -> Option<serde_json::Value> {
     let project = find_project_dir(workspace)?;
@@ -431,19 +432,30 @@ fn simple_glob_match(pattern: &str, name: &str) -> bool {
 }
 
 fn read_last_run_ts(project: &Path, role_id: &str) -> Option<String> {
-    let log_path = project.join("_state").join("workflow_flow.log");
-    let content = std::fs::read_to_string(&log_path).ok()?;
     let mut latest_ts: Option<String> = None;
-    for line in content.lines() {
-        let rec: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        if rec.get("role_id").and_then(|r| r.as_str()) != Some(role_id) {
+    for file_name in ["flow_log.jsonl", "agent_log.jsonl", "workflow_flow.log"] {
+        let log_path = project.join("_state").join(file_name);
+        let Ok(content) = std::fs::read_to_string(&log_path) else {
             continue;
-        }
-        if let Some(ts) = rec.get("ts").and_then(|t| t.as_str()) {
-            latest_ts = Some(ts.to_string());
+        };
+        for line in content.lines() {
+            let rec: serde_json::Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if rec.get("role_id").and_then(|r| r.as_str()) != Some(role_id) {
+                continue;
+            }
+            let Some(ts) = rec
+                .get("timestamp")
+                .or_else(|| rec.get("ts"))
+                .and_then(|t| t.as_str())
+            else {
+                continue;
+            };
+            if latest_ts.as_deref().is_none_or(|latest| ts > latest) {
+                latest_ts = Some(ts.to_string());
+            }
         }
     }
     latest_ts
@@ -739,40 +751,56 @@ fn resolve_gate_type(role_id: &str, project: &Path) -> String {
 // ── 日志 ──
 
 fn log_flow(project: &Path, event: &str, extra: &[(&str, &str)]) {
-    let script = workflow_root_for(&workflow_of_project(project))
-        .join("scripts")
-        .join("workflow_logger.py");
-    if !script.exists() { return; }
-
     let mut record = serde_json::Map::new();
-    record.insert("project".into(), serde_json::Value::String(project.to_string_lossy().into()));
+    record.insert(
+        "timestamp".into(),
+        serde_json::Value::String(chrono::Local::now().to_rfc3339()),
+    );
+    record.insert("layer".into(), serde_json::Value::String("flow".into()));
     record.insert("event".into(), serde_json::Value::String(event.into()));
     for (k, v) in extra {
         record.insert((*k).into(), serde_json::Value::String((*v).into()));
     }
-    let json_str = serde_json::to_string(&record).unwrap_or_default();
-
-    let py_code = format!(
-        "import sys,json; sys.path.insert(0,'{scripts}'); from workflow_logger import log_flow; \
-         d=json.loads(sys.stdin.read()); log_flow(d['project'], d['event'], \
-         **{{k:v for k,v in d.items() if k not in ('project','event')}})",
-        scripts = script.parent().unwrap().display(),
-    );
-
-    let mut child = match HiddenCommand::new(python_cmd())
-        .args(["-c", &py_code])
-        .env("PYTHONIOENCODING", "utf-8")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn() {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    if let Some(ref mut stdin) = child.stdin {
-        let _ = std::io::Write::write_all(stdin, json_str.as_bytes());
+    let state_dir = project.join("_state");
+    let path = state_dir.join("flow_log.jsonl");
+    let result = std::fs::create_dir_all(&state_dir).and_then(|_| {
+        let mut line = serde_json::to_string(&record).unwrap_or_default();
+        line.push('\n');
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut file| file.write_all(line.as_bytes()))
+    });
+    if let Err(error) = result {
+        eprintln!("[harness] write workflow log failed ({}): {error}", path.display());
     }
-    let _ = child.wait();
+}
+
+pub(crate) fn record_runtime_failure(
+    workspace: &Path,
+    role_id: &str,
+    stage: &str,
+    error: &str,
+) {
+    let Some(project) = find_project_dir(workspace) else {
+        eprintln!("[harness] runtime failure without workflow project: {stage}: {error}");
+        return;
+    };
+    let detail = failure_detail(error);
+    let reason = failure_summary(&detail);
+    let category = failure_category(&detail);
+    log_flow(
+        &project,
+        "runtime_failure",
+        &[
+            ("role_id", role_id),
+            ("stage", stage),
+            ("category", category),
+            ("reason", &reason),
+            ("detail", &detail),
+        ],
+    );
 }
 
 // ── Subprocess ──
@@ -964,6 +992,80 @@ pub(crate) fn model_auth_failure_reason(error: &str) -> Option<String> {
         .map(str::trim)
         .find(|line| !line.is_empty())
         .map(|line| truncate_on_char_boundary(line, 400).to_string())
+}
+
+/// 把 SubAgent 的失败信封整理成可持久化、可展示的诊断文本。
+/// 底座会在正文后附 `<codewhale:...>` 完成哨兵；它只用于协议同步，不应污染日志。
+fn failure_detail(error: &str) -> String {
+    let detail = error
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("<codewhale:"))
+        .take(24)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let detail = if detail.is_empty() {
+        "SubAgent 未返回具体错误信息".to_string()
+    } else {
+        detail
+    };
+    truncate_on_char_boundary(&detail, 4000).to_string()
+}
+
+fn failure_summary(detail: &str) -> String {
+    let summary = detail.lines().take(6).collect::<Vec<_>>().join(" | ");
+    truncate_on_char_boundary(&summary, 800).to_string()
+}
+
+fn failure_category(detail: &str) -> &'static str {
+    let lower = detail.to_ascii_lowercase();
+    if model_auth_failure_reason(detail).is_some() {
+        "model_auth"
+    } else if ["timed out", "timeout", "deadline exceeded"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+    {
+        "timeout"
+    } else if ["http 429", "rate limit", "too many requests"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+    {
+        "rate_limit"
+    } else if [
+        "not permitted",
+        "permission denied",
+        "access denied",
+        "read-only",
+        "readonly",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        "permission"
+    } else if ["tool", "mcp", "command failed", "exit code"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+    {
+        "tool"
+    } else if [
+        "connection",
+        "dns",
+        "request failed",
+        "sse stream",
+        "http 500",
+        "http 502",
+        "http 503",
+        "http 504",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        "network"
+    } else if lower.contains("model") {
+        "model"
+    } else {
+        "unknown"
+    }
 }
 
 fn workflow_failure_reason_for_project(project: &Path) -> Option<String> {
@@ -1309,6 +1411,24 @@ pub fn approve_gate(workspace: &Path, role_id: &str) -> HarnessAction {
 /// 失败被洗成 PASS（实锤：web_search 不可用 → PM 秒死 → 旧 brief 过关）。
 /// 语义对齐 gate local fail：--fail 计次 → 耗尽则 Blocked，否则带失败原因重派同角色。
 pub fn agent_failed(workspace: &Path, role_id: &str, error: &str) -> HarnessAction {
+    agent_failed_impl(workspace, role_id, None, error)
+}
+
+pub(crate) fn agent_failed_for_agent(
+    workspace: &Path,
+    role_id: &str,
+    agent_id: &str,
+    error: &str,
+) -> HarnessAction {
+    agent_failed_impl(workspace, role_id, Some(agent_id), error)
+}
+
+fn agent_failed_impl(
+    workspace: &Path,
+    role_id: &str,
+    agent_id: Option<&str>,
+    error: &str,
+) -> HarnessAction {
     let project = match find_project_dir(workspace) {
         Some(p) => p,
         None => return HarnessAction::NotApplicable,
@@ -1317,11 +1437,22 @@ pub fn agent_failed(workspace: &Path, role_id: &str, error: &str) -> HarnessActi
         return HarnessAction::NotApplicable;
     }
     let scenario = read_scenario(&project).unwrap_or_else(|| "solution_deck".to_string());
-    // 失败原因只取首行并截断（中文安全），进 flow_log + scheduler reason + 重派 addendum。
-    let first_line = error.lines().next().unwrap_or("");
-    let reason = truncate_on_char_boundary(first_line, 200);
-    log_flow(&project, "agent_failed", &[("role_id", role_id), ("reason", reason)]);
-    if let Some(auth_reason) = model_auth_failure_reason(error) {
+    // 失败信封常把真正原因放在第二行以后；保留多行详情进日志，同时生成单行摘要供
+    // scheduler 状态、阻塞卡片和重派提示使用。协议哨兵由 failure_detail 过滤。
+    let detail = failure_detail(error);
+    let reason = failure_summary(&detail);
+    let category = failure_category(&detail);
+    let mut failure_fields = vec![
+        ("role_id", role_id),
+        ("category", category),
+        ("reason", reason.as_str()),
+        ("detail", detail.as_str()),
+    ];
+    if let Some(agent_id) = agent_id {
+        failure_fields.push(("agent_id", agent_id));
+    }
+    log_flow(&project, "agent_failed", &failure_fields);
+    if let Some(auth_reason) = model_auth_failure_reason(&detail) {
         let fatal_reason = format!("模型服务鉴权失败: {auth_reason}");
         if let Err(scheduler_error) = run_scheduler(
             &project,
@@ -1338,35 +1469,124 @@ pub fn agent_failed(workspace: &Path, role_id: &str, error: &str) -> HarnessActi
                 "记录模型鉴权失败终态时出错: {scheduler_error}"
             ));
         }
+        log_flow(
+            &project,
+            "agent_failure_terminal",
+            &[
+                ("role_id", role_id),
+                ("category", category),
+                ("reason", &fatal_reason),
+                ("retryable", "false"),
+            ],
+        );
         return HarnessAction::Blocked {
             message: format!("模型服务鉴权失败，已停止自动重试：{auth_reason}"),
         };
     }
-    let _ = run_scheduler(
+    if let Err(scheduler_error) = run_scheduler(
         &project,
-        &["--scenario", &scenario, "--fail", role_id, "--reason", &format!("subagent 执行失败: {reason}")],
-    );
+        &[
+            "--scenario",
+            &scenario,
+            "--fail",
+            role_id,
+            "--reason",
+            &format!("subagent 执行失败: {reason}"),
+        ],
+    ) {
+        log_flow(
+            &project,
+            "scheduler_failure",
+            &[
+                ("role_id", role_id),
+                ("stage", "record_agent_failure"),
+                ("reason", &scheduler_error),
+                ("original_failure", &reason),
+            ],
+        );
+        return HarnessAction::Error(format!(
+            "记录 {role_id} 执行失败时调度器出错: {scheduler_error}; 原始失败: {reason}"
+        ));
+    }
 
     // retries 耗尽 → scheduler 置 failed → Blocked（与 gate local fail 对称）
-    let status_json =
-        run_scheduler(&project, &["--scenario", &scenario, "--status"]).unwrap_or_default();
-    let is_failed = status_json.contains(&format!("\"{role_id}\"")) && {
-        // 精确判该角色 status=failed（避免别的角色 failed 误伤）
-        serde_json::from_str::<serde_json::Value>(&status_json)
-            .ok()
-            .and_then(|v| {
-                v.get("roles")?
-                    .get(role_id)?
-                    .get("status")
-                    .map(|s| s == "failed")
-            })
-            .unwrap_or(false)
+    let status_json = match run_scheduler(&project, &["--scenario", &scenario, "--status"]) {
+        Ok(status) => status,
+        Err(scheduler_error) => {
+            log_flow(
+                &project,
+                "scheduler_failure",
+                &[
+                    ("role_id", role_id),
+                    ("stage", "read_failure_status"),
+                    ("reason", &scheduler_error),
+                    ("original_failure", &reason),
+                ],
+            );
+            return HarnessAction::Error(format!(
+                "读取 {role_id} 失败状态时调度器出错: {scheduler_error}; 原始失败: {reason}"
+            ));
+        }
     };
+    let status = serde_json::from_str::<serde_json::Value>(&status_json).unwrap_or_default();
+    let persisted_progress = std::fs::read_to_string(
+        project.join("_state").join("workflow_progress.json"),
+    )
+    .ok()
+    .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+    .unwrap_or_default();
+    // workflow_progress.json 是重试计数和终态的持久真相源；scheduler --status
+    // 可能只返回展示快照而省略 retries，优先读取持久状态，避免日志错误显示 0/2。
+    let role_status = persisted_progress
+        .get("roles")
+        .and_then(|roles| roles.get(role_id))
+        .or_else(|| status.get("roles").and_then(|roles| roles.get(role_id)));
+    let is_failed = role_status
+        .and_then(|role| role.get("status"))
+        .and_then(serde_json::Value::as_str)
+        == Some("failed");
+    let retries = role_status
+        .and_then(|role| role.get("retries"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0)
+        .to_string();
+    let max_retries = status
+        .get("roles")
+        .and_then(|roles| roles.get(role_id))
+        .and_then(|role| role.get("effective_config"))
+        .and_then(|config| config.get("max_retries"))
+        .and_then(serde_json::Value::as_u64)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
     if is_failed {
+        log_flow(
+            &project,
+            "agent_failure_terminal",
+            &[
+                ("role_id", role_id),
+                ("category", category),
+                ("reason", &reason),
+                ("retryable", "false"),
+                ("attempt", &retries),
+                ("max_retries", &max_retries),
+            ],
+        );
         return HarnessAction::Blocked {
             message: format!("{role_id} SubAgent 执行失败且重试耗尽: {reason}"),
         };
     }
+
+    log_flow(
+        &project,
+        "agent_retry_scheduled",
+        &[
+            ("role_id", role_id),
+            ("category", category),
+            ("reason", &reason),
+            ("attempt", &retries),
+            ("max_retries", &max_retries),
+        ],
+    );
 
     let addendum = format!(
         "## 上一轮执行失败（非产出质量问题）\n\n失败原因：{reason}\n\n请重新执行本角色任务。"
@@ -1377,7 +1597,23 @@ pub fn agent_failed(workspace: &Path, role_id: &str, error: &str) -> HarnessActi
             Err(e) => HarnessAction::Error(e),
         }
     } else {
-        let _ = run_scheduler(&project, &["--scenario", &scenario, "--start", role_id]);
+        if let Err(scheduler_error) =
+            run_scheduler(&project, &["--scenario", &scenario, "--start", role_id])
+        {
+            log_flow(
+                &project,
+                "scheduler_failure",
+                &[
+                    ("role_id", role_id),
+                    ("stage", "restart_agent"),
+                    ("reason", &scheduler_error),
+                    ("original_failure", &reason),
+                ],
+            );
+            return HarnessAction::Error(format!(
+                "重启 {role_id} 时调度器出错: {scheduler_error}; 原始失败: {reason}"
+            ));
+        }
         spawn_agent_or_error(&project, &scenario, role_id, &addendum)
     }
 }
@@ -2344,6 +2580,47 @@ mod tests {
         ] {
             assert!(model_auth_failure_reason(error).is_none(), "{error}");
         }
+    }
+
+    #[test]
+    fn failure_diagnostic_preserves_multiline_reason_and_drops_protocol_sentinel() {
+        let raw = "SubAgent execution failed\nMCP tool filesystem/write_file failed: access denied\n\
+                   <codewhale:subagent.done status=\"failed\">ignored</codewhale:subagent.done>";
+        let detail = failure_detail(raw);
+        assert!(detail.contains("MCP tool filesystem/write_file failed: access denied"));
+        assert!(!detail.contains("codewhale"));
+        assert_eq!(failure_category(&detail), "permission");
+        assert!(failure_summary(&detail).contains("access denied"));
+    }
+
+    #[test]
+    fn flow_log_is_written_natively_and_updates_last_run_timestamp() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-workflow-log-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        log_flow(
+            &root,
+            "agent_failed",
+            &[
+                ("role_id", "taizi"),
+                ("reason", "HTTP 503 upstream unavailable"),
+            ],
+        );
+
+        let path = root.join("_state").join("flow_log.jsonl");
+        let content = std::fs::read_to_string(&path).unwrap();
+        let record: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(record["event"], "agent_failed");
+        assert_eq!(record["reason"], "HTTP 503 upstream unavailable");
+        assert!(record["timestamp"].as_str().is_some_and(|value| !value.is_empty()));
+        assert_eq!(
+            read_last_run_ts(&root, "taizi").as_deref(),
+            record["timestamp"].as_str()
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
