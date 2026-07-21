@@ -123,6 +123,56 @@ const WidgetCard = ({ title, children, theme }) => {
       return { defs, lanes };
     }
 
+    function formatWorkflowLogRecord(record) {
+      if (record == null) return '';
+      if (typeof record === 'string') return record;
+      if (typeof record !== 'object') return String(record);
+      const eventLabels = {
+        agent_failed: '❌ Agent 执行失败',
+        agent_failure_terminal: '🛑 失败已达终态',
+        agent_retry_scheduled: '🔄 已安排自动重试',
+        runtime_failure: '❌ 运行时失败',
+        scheduler_failure: '❌ 调度器失败',
+        failure_state: '🛑 当前失败状态',
+        dispatch: '▶️ 开始派发',
+        complete: '✅ 执行完成',
+        gate_fail: '⚠️ 交付检查未通过',
+        gate_pass: '✅ 交付检查通过',
+        rollback: '↩️ 工作流回滚',
+      };
+      const categoryLabels = {
+        model_auth: '模型鉴权',
+        permission: '工具权限',
+        timeout: '超时',
+        rate_limit: '限流',
+        tool: '工具调用',
+        network: '网络',
+        model: '模型服务',
+      };
+      const timestamp = record.timestamp || record.ts || '';
+      const event = record.event || record.kind || 'log';
+      const head = `${timestamp ? '[' + timestamp + '] ' : ''}${eventLabels[event] || event}`;
+      const context = [];
+      if (record.role_id) context.push('角色: ' + record.role_id);
+      if (record.agent_id) context.push('Agent: ' + record.agent_id);
+      if (record.stage) context.push('阶段: ' + record.stage);
+      if (record.category && record.category !== 'unknown') context.push('类型: ' + (categoryLabels[record.category] || record.category));
+      if (record.attempt) context.push('重试: ' + record.attempt + '/' + (record.max_retries || '?'));
+      const lines = [head + (context.length ? ' · ' + context.join(' · ') : '')];
+      if (record.reason) lines.push('原因: ' + record.reason);
+      if (record.detail && record.detail !== record.reason) lines.push('详情: ' + record.detail);
+      return lines.join('\n');
+    }
+
+    function workflowLogText(raw) {
+      if (raw == null) return '';
+      if (typeof raw === 'string') return raw;
+      if (Array.isArray(raw)) return raw.map(formatWorkflowLogRecord).filter(Boolean).join('\n\n');
+      if (raw.lines && Array.isArray(raw.lines)) return raw.lines.join('\n');
+      if (raw.text) return String(raw.text);
+      return formatWorkflowLogRecord(raw);
+    }
+
     // Agent 头像。
     // 有 avatar（三省六部古风头像：10 张人物像 + 回奏奏折静物）→ 渲染圆形图，但必须保留状态语义：
     //   running/reviewing/briefing → 彩色 + 主题色脉冲描边
@@ -242,7 +292,7 @@ const WidgetCard = ({ title, children, theme }) => {
       );
     };
 
-    const AgentCard = ({ agent, status, waitingFor, fanout, progress, tokens, theme, onApprove, onRetry, onClick }) => {
+    const AgentCard = ({ agent, status, failureReason, waitingFor, fanout, progress, tokens, theme, onApprove, onRetry, onClick }) => {
       const isDark = theme === 'dark';
       const st = status || 'pending';
       const uiState = toUiState(st);
@@ -306,6 +356,12 @@ const WidgetCard = ({ title, children, theme }) => {
             <span>{statusEmoji[st] || '💤'}</span>
             <span>{statusLabels[st] || '待机'}</span>
           </div>
+          {(isFailed || isBlocked) && failureReason ? (
+            <div data-testid={`workflow-agent-error-${agent.id}`} title={failureReason}
+                 className={`mt-2 w-full text-[10px] leading-relaxed text-center line-clamp-3 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>
+              {failureReason}
+            </div>
+          ) : null}
           {progress ? (
             <div style={{ fontSize: 11, opacity: 0.75, marginTop: 4, maxWidth: "100%",
                           whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
@@ -337,7 +393,7 @@ const WidgetCard = ({ title, children, theme }) => {
 
     // 自上而下 路由图：层层向下，符合古代权力分布(皇上→太子→三省→六部→回奏)。
     // 卡片居中；卡片之间按【实际路由依赖】用曲线相连——无明确路由的卡片不连线。
-    const AgentPipelineView = ({ ui, agents, agentStates, agentDeps, fanout, progress, tokens, theme, onApprove, onRetry, onCardClick }) => {
+    const AgentPipelineView = ({ ui, agents, agentStates, agentErrors, agentDeps, fanout, progress, tokens, theme, onApprove, onRetry, onCardClick }) => {
       const isDark = theme === 'dark';
       // 布局全按 run.ui(workflow.json)+ 实际 agents 算;差事动态分批在 layoutForRun 内处理。
       const { defs, lanes } = layoutForRun(ui, agents);
@@ -411,6 +467,7 @@ const WidgetCard = ({ title, children, theme }) => {
                     <div key={rid} ref={el => { cardRefs.current[rid] = el; }} className="w-[176px] shrink-0">
                       <AgentCard agent={agent}
                         status={(agentStates || {})[rid]}
+                        failureReason={(agentErrors || {})[rid]}
                         waitingFor={(agentDeps || {})[rid]}
                         fanout={(fanout || {})[rid]}
                         progress={(progress || {})[rid]}
@@ -622,7 +679,7 @@ const WidgetCard = ({ title, children, theme }) => {
     // [2026-06-07 #18/#20] 生图引擎面板：客户选 provider + 填自己的 key（不用白浪的）。
     // (ImageProviderPanel 已随 h3c-ppt 工作流 2026-06-11 存档下线:仅 illustrator 角色用)
 
-    const CardDrawer = ({ roleId, projectDir, theme, onClose }) => {
+    const CardDrawer = ({ roleId, projectDir, failureReason, theme, onClose }) => {
       const isDark = theme === 'dark';
       const [info, setInfo] = useState({ loading: false, error: null, data: null });
       const [outputs, setOutputs] = useState({ loading: false, error: null, data: null });
@@ -665,14 +722,6 @@ const WidgetCard = ({ title, children, theme }) => {
         if (['json', 'yaml', 'yml'].includes(e)) return '🔢';
         return '📎';
       };
-      const logText = (raw) => {
-        if (raw == null) return '';
-        if (typeof raw === 'string') return raw;
-        if (Array.isArray(raw)) return raw.map((l) => (typeof l === 'string' ? l : JSON.stringify(l))).join('\n');
-        if (raw.lines && Array.isArray(raw.lines)) return raw.lines.join('\n');
-        if (raw.text) return String(raw.text);
-        return JSON.stringify(raw, null, 2);
-      };
       const verdictStyle = (v) => {
         const s = String(v || '').toLowerCase();
         if (['pass', 'passed', 'approve', 'approved', 'ok'].includes(s)) return isDark ? 'bg-[#1E3A2A] text-[#93D5A6]' : 'bg-[#E6F4EA] text-[#137333]';
@@ -700,7 +749,7 @@ const WidgetCard = ({ title, children, theme }) => {
       }) : [];
       const gd = gate.data || {};
       const findings = Array.isArray(gd.findings) ? gd.findings : [];
-      const tail = logText(logs.data);
+      const tail = workflowLogText(logs.data);
       const meta = (info.data && info.data.registry_meta) || {};
       const promptMd = (info.data && info.data.prompt_md) || '';
       const inputSection = (() => { const m = promptMd.match(/##\s*你的输入[\s\S]*?(?=\n##\s|$)/); return m ? m[0].replace(/##\s*你的输入\s*/, '').trim() : ''; })();
@@ -716,6 +765,12 @@ const WidgetCard = ({ title, children, theme }) => {
               <button onClick={onClose} className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ml-2 ${isDark ? 'hover:bg-[#333537] text-[#C4C7C5]' : 'hover:bg-[#F0F4F9] text-[#444746]'}`}>✕</button>
             </div>
             <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-5">
+              {failureReason && (
+                <section data-testid="workflow-failure-reason">
+                  <div className={`text-[12px] font-semibold mb-2 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>❌ 最近失败原因</div>
+                  <pre className={`text-[12px] leading-relaxed whitespace-pre-wrap break-words font-mono rounded-[12px] p-3 border ${isDark ? 'border-[#F28B82]/30 bg-[#2A1A1A] text-[#F28B82]' : 'border-[#C5221F]/20 bg-[#FFF5F5] text-[#A50E0E]'}`}>{failureReason}</pre>
+                </section>
+              )}
               <section>
                 <div className={secHeadCls}>🛠 角色说明</div>
                 <StateLine st={info} empty={!info.loading && !info.error && !info.data ? '暂无角色信息' : null} />
@@ -801,7 +856,7 @@ const WidgetCard = ({ title, children, theme }) => {
                 )}
               </section>
               <section>
-                <div className={secHeadCls}>📋 运行日志(尾 60 行)</div>
+                <div className={secHeadCls}>📋 运行日志（尾 60 条）</div>
                 <StateLine st={logs} empty={!logs.loading && !logs.error && !tail ? '暂无日志' : null} />
                 {!logs.loading && !logs.error && tail && (
                   <pre className={`text-[11px] leading-relaxed whitespace-pre-wrap break-words font-mono max-h-[320px] overflow-y-auto custom-scrollbar rounded-[12px] p-3 border ${isDark ? 'border-white/10 bg-[#131314] text-[#C4C7C5]' : 'border-black/10 bg-[#F8FAFC] text-[#444746]'}`}>{tail}</pre>
@@ -1198,10 +1253,11 @@ const WidgetCard = ({ title, children, theme }) => {
         : run.status === 'blocked' ? '⚫ 阻塞'
         : run.active ? '🔵 运行中' : '未开始（点"新建任务"启动）';
       // run.agents{rid→{status,depends_on}} → swim-lane 需要的 agentStates/agentDeps
-      const agentStates = {}, agentDeps = {};
+      const agentStates = {}, agentErrors = {}, agentDeps = {};
       Object.keys(run.agents || {}).forEach((rid) => {
         const a = run.agents[rid] || {};
         agentStates[rid] = a.status;
+        agentErrors[rid] = a.error || '';
         agentDeps[rid] = a.depends_on || [];
       });
       // [per_page] fan-out 逐页状态(base_role → {total, pages}) → 卡片展开 N 个 SubAgent chip
@@ -1268,7 +1324,7 @@ const WidgetCard = ({ title, children, theme }) => {
             </div>
           </div>
           <div className="flex-1 overflow-auto custom-scrollbar px-6 md:px-10 pb-4">
-            <AgentPipelineView ui={run.ui || (runWorkflow && runWorkflow.ui) || null} agents={run.agents || {}} agentStates={agentStates} agentDeps={agentDeps} fanout={fanout} progress={progress} tokens={tokens} theme={theme}
+            <AgentPipelineView ui={run.ui || (runWorkflow && runWorkflow.ui) || null} agents={run.agents || {}} agentStates={agentStates} agentErrors={agentErrors} agentDeps={agentDeps} fanout={fanout} progress={progress} tokens={tokens} theme={theme}
               onApprove={approveRole} onRetry={retryRole} onCardClick={(rid) => bridge.selectWorkflowRole(rid)} />
           </div>
           {(run.cards || []).some(c => !c.resolved) && (
@@ -1276,7 +1332,7 @@ const WidgetCard = ({ title, children, theme }) => {
               <InteractionArea cards={run.cards || []} theme={theme} />
             </div>
           )}
-          {run.selectedRole && <CardDrawer roleId={run.selectedRole} projectDir={run.projectDir} theme={theme} onClose={() => bridge.closeWorkflowDrawer()} />}
+          {run.selectedRole && <CardDrawer roleId={run.selectedRole} projectDir={run.projectDir} failureReason={(run.agents[run.selectedRole] || {}).error || ''} theme={theme} onClose={() => bridge.closeWorkflowDrawer()} />}
           {memorialOpen && <ImperialMemorialModal projectDir={run.projectDir} theme={theme} onClose={() => setMemorialOpen(false)} />}
           {showNewTask && <NewTaskModal theme={theme} workflow={newTaskWorkflow} initialBrief={restartBrief} onClose={() => setShowNewTask(false)} onStarted={() => { setExited(false); setOpened(true); }} />}
         </div>
@@ -1289,4 +1345,4 @@ const WidgetCard = ({ title, children, theme }) => {
     // 窗口间强独立:各自 useBridge()/init(),不做 live 数据同步(真相源在后端,进程内共享)。
     // ==========================================
 
-export { WidgetCard, ProgressBar, ListRow, UI_STATES, toUiState, AGENT_NAME_MAP, layoutForRun, AgentAvatar, FanoutGrid, AgentCard, AgentPipelineView, FilePreviewModal, ImperialMemorialModal, CardDrawer, WfUserInputCard, GateApprovalCard, InteractionArea, NewTaskModal, TemplateCard, WorkflowView };
+export { WidgetCard, ProgressBar, ListRow, UI_STATES, toUiState, AGENT_NAME_MAP, layoutForRun, formatWorkflowLogRecord, workflowLogText, AgentAvatar, FanoutGrid, AgentCard, AgentPipelineView, FilePreviewModal, ImperialMemorialModal, CardDrawer, WfUserInputCard, GateApprovalCard, InteractionArea, NewTaskModal, TemplateCard, WorkflowView };

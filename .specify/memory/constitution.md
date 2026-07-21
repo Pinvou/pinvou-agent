@@ -1,15 +1,10 @@
 <!--
 Sync Impact Report
-Version change: 1.0.0 -> 1.1.0
+Version change: 1.1.0 -> 1.2.0
 Modified principles:
-- template principle 1 -> I. 中文文档优先
-- template principle 2 -> II. DeepSeek-TUI 底座优先
-- template principle 3 -> III. 本地算力与数据边界
-- template principle 4 -> IV. 小步高质量变更
-- template principle 5 -> V. 可测试性与可验证交付
-- Added: VI. 可维护性与长期演进
+- None
 Added principles:
-- VII. 合并保全与用户裁决
+- VIII. 禅道问题规则单一真相源
 Added sections:
 - None
 Removed sections:
@@ -22,8 +17,9 @@ Templates requiring updates:
 - ✅ .specify/templates/checklist-template.md (reviewed; no structural change required)
 - ✅ .specify/extensions/git/commands/*.md (reviewed; no change required)
 Runtime guidance:
-- ✅ AGENTS.md updated with merge-conflict preservation rules
-- ✅ README.md reviewed; no constitution reference update required
+- ✅ .specify/memory/constitution-zentao.md designated as the ZenTao rule source
+- ✅ AGENTS.md updated with ZenTao issue handling rules
+- ✅ README.md and CONTRIBUTING.md reviewed; no update required
 Follow-up TODOs:
 - None
 -->
@@ -92,12 +88,28 @@ MUST NOT 猜测用户偏好或静默选择一侧。
 **Rationale**: 多分支长期并行使文本层的“ours/theirs”无法代表功能层的正确答案。先保全、后裁决能防止
 合并成功但功能倒退，并让不可逆的产品取舍由实际负责人决定。
 
+### VIII. 禅道问题规则单一真相源
+
+凡涉及禅道 BUG 的获取、复现、修复版本确认、解决备注、状态流转和结果回查，执行者 MUST 在开始处理前
+读取 `.specify/memory/constitution-zentao.md`，并将其作为解决禅道问题的专用规则文档和单一真相源。
+该文档中记录的当前修复版本、`buildID`、接口步骤和已验证流程发生变化时，维护者 MUST 更新该文档，
+不得仅把新流程保留在聊天记录、临时脚本或个人记忆中。
+
+禅道问题标记为已解决前，MUST 按该规则文档完成代码验证、规范提交、向要求的仓库推送、解决备注填写和
+状态回查。账号、密码、Token、Cookie 等认证信息 MUST 仅从获授权的本地配置或凭据存储读取，MUST NOT
+写入仓库、提交信息、禅道备注或可见日志。若该专用规则与本宪章、`AGENTS.md` 的安全约束或仓库实际状态
+冲突，MUST 优先遵守上位规则和事实，并同步修正规则文档；不得为完成状态流转而绕过安全或伪造结果。
+
+**Rationale**: 禅道闭环同时跨越问题系统、版本、GitHub、GitLab 和验证结果。明确唯一规则来源可以避免
+使用过期版本、漏推仓库、提前关闭问题或泄露认证信息。
+
 ## 技术边界
 
 - `pinvou3-app/` 是 Tauri 2.0 + EngineHandle wrapper 主线，负责 UI、设置、桥接、session/workflow 编排和底座配置。
 - `DeepSeek-TUI/` 是 submodule/fork，负责 agent 底座能力；fork 改动必须遵循底座优先原则和 fork 文档。
 - `docs/fork-modifications.md` 是 DeepSeek-TUI fork 修改的单一真相源；同步上游后必须运行 fork guard 并检查 system prompt、工具集合和动态工具激活路径。
 - `process.md` 是跨阶段状态、待办和已知问题的长期记录；重大方向调整必须同步更新。
+- `.specify/memory/constitution-zentao.md` 是禅道问题处理的专用规则文档；动态版本、`buildID`、解决步骤和回查要求以该文件为准。
 - Windows 迁移 MUST 优先处理路径、外部工具探测、安装更新、打包目标、用户数据目录和 vLLM endpoint 配置，不得把 Linux-only 机制直接平移为默认。
 
 ## 开发流程与质量门禁
@@ -109,6 +121,7 @@ MUST NOT 猜测用户偏好或静默选择一侧。
 5. 验证阶段 MUST 报告实际执行的检查和未执行原因。高风险改动不得只以“未运行测试”收尾，必须给出补验路径。
 6. 文档阶段 MUST 使用中文更新相关说明；英文外部术语可保留，但核心解释必须中文可读。
 7. 合并阶段 MUST 建立双方功能差异清单，优先合并保留；不可机械判定的取舍必须暂停并请求用户决策。
+8. 禅道问题阶段 MUST 先读取专用规则文档，记录 Bug ID 和目标版本，并在验证、提交及双仓推送完成后再更新状态和回查结果。
 
 ## Governance
 
@@ -128,5 +141,6 @@ MUST NOT 猜测用户偏好或静默选择一侧。
 - `/speckit-tasks` MUST 生成能验证的任务，而不是仅描述意图。
 - 代码评审 MUST 优先检查边界破坏、测试缺口、fork drift、文档漂移和跨平台风险。
 - 合并评审 MUST 检查本地功能是否被来源分支覆盖，以及所有非机械取舍是否有用户决策记录。
+- 禅道问题评审 MUST 检查 `.specify/memory/constitution-zentao.md` 已被遵守，且状态、版本、提交链接和回查结果与事实一致。
 
-**Version**: 1.1.0 | **Ratified**: 2026-06-15 | **Last Amended**: 2026-07-13
+**Version**: 1.2.0 | **Ratified**: 2026-06-15 | **Last Amended**: 2026-07-20

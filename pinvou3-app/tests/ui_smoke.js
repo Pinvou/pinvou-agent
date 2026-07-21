@@ -93,6 +93,10 @@ function injectSource() {
         case 'check_for_update': return Promise.resolve({available:false});
         case 'find_resumable_run': return Promise.resolve(ZOMBIE);
         case 'get_workflow_state': return Promise.resolve(WF_STATE);
+        case 'get_role_logs': return Promise.resolve([
+          {timestamp:'2026-07-21T10:00:00+08:00',event:'agent_failed',role_id:'taizi',agent_id:'agent_diag01',category:'permission',reason:'未产出任何文件；最后一次工具错误: tool write_file failed: access denied',detail:'Tool write_file is not permitted for the read-only custom role'},
+          {timestamp:'2026-07-21T10:00:01+08:00',event:'agent_failure_terminal',role_id:'taizi',reason:'重试次数已用尽',attempt:'3',max_retries:'3'},
+        ]);
         case 'start_workflow': return Promise.resolve({session_id:'s-kick-fail',project_dir:'/x/kick-fail'});
         case 'kick_workflow': return window.__KICK_WORKFLOW_ERROR__
           ? Promise.reject(new Error('模型服务预检失败：HTTP 401'))
@@ -281,6 +285,12 @@ async function expand(page) {
   await sleep(700);
   const modelModalOutsideClick = await page.evaluate(async () => {
     const settle = () => new Promise(resolve => setTimeout(resolve, 50));
+    const modelSection = [...document.querySelectorAll('aside button')]
+      .find(button => (button.textContent || '').trim() === '模型');
+    if (modelSection) {
+      modelSection.click();
+      await settle();
+    }
     const add = document.querySelector('[data-testid="settings-model-add"]');
     if (!add) return { addFound: false, opened: false, stayedOpen: false, cancelled: false };
     add.click();
@@ -377,11 +387,16 @@ async function expand(page) {
       await handler({ payload: { session_id: 's-blocked', status: 'blocked', stage: 'warmup', message: 'HTTP 401: authorization failed' } });
     }
     for (const handler of (window.__TAURI_EVENT_HANDLERS__['workflow:full_state'] || [])) {
-      await handler({ payload: { session_id: 's-blocked', blocked: true, blocked_reason: 'HTTP 401: authorization failed', roles: { taizi: { status: 'pending' } } } });
+      await handler({ payload: {
+        session_id: 's-blocked', blocked: true, blocked_reason: 'HTTP 401: authorization failed',
+        ui: { agentDefs: [{ id: 'taizi', name: '太子', desc: '接旨', color: '#8a1c1c' }], lanes: [{ title: '接旨', agents: ['taizi'] }] },
+        roles: { taizi: { name: '太子', status: 'failed', error: '模型服务鉴权失败：HTTP 401 authorization failed' } },
+      } });
     }
     const run = window.TauriBridge.getState().workflow.run;
     return {
       status: run.status,
+      agentError: run.agents.taizi && run.agents.taizi.error,
       blockedCards: (run.cards || []).filter(card => card.workflowBlocked).map(card => card.text),
     };
   });
@@ -389,9 +404,32 @@ async function expand(page) {
     '①e 预热失败显示权威阻塞状态且不重复错误卡',
     blockedState.status === 'blocked'
       && blockedState.blockedCards.length === 1
-      && blockedState.blockedCards[0].includes('HTTP 401'),
+      && String(blockedState.blockedCards[0] || '').includes('HTTP 401')
+      && String(blockedState.agentError || '').includes('HTTP 401'),
     JSON.stringify(blockedState),
   );
+
+  // ①f 失败角色详情必须同时展示权威 error 和可读的结构化运行日志。
+  const failureDiagnostics = await page.evaluate(async () => {
+    window.TauriBridge.selectWorkflowRole('taizi');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    return {
+      reason: (document.querySelector('[data-testid="workflow-failure-reason"]') || {}).textContent || '',
+      card: (document.querySelector('[data-testid="workflow-agent-error-taizi"]') || {}).textContent || '',
+      body: document.body.innerText,
+    };
+  });
+  rec(
+    '①f 失败角色展示具体原因和结构化运行日志',
+    failureDiagnostics.reason.includes('HTTP 401')
+      && failureDiagnostics.card.includes('HTTP 401')
+      && failureDiagnostics.body.includes('Tool write_file is not permitted')
+      && failureDiagnostics.body.includes('类型: 工具权限')
+      && failureDiagnostics.body.includes('Agent: agent_diag01')
+      && failureDiagnostics.body.includes('重试: 3/3'),
+    JSON.stringify(failureDiagnostics),
+  );
+  await page.evaluate(() => window.TauriBridge.closeWorkflowDrawer()); await sleep(100);
 
   // 手机先向尚未在桌面打开的后台 session 发消息：hydration 必须先把磁盘 messages
   // 重建成 chatItems；否则桌面随后切入时只剩这条手机消息，历史和产物卡都像“丢了”。

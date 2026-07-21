@@ -105,7 +105,7 @@ function main() {
 
   if (args[0] === "build" || args[0] === "bundle") {
     const runtimeConfig = stageWindowsRuntime();
-    if (runtimeConfig && !args.includes("--config")) {
+    if (runtimeConfig) {
       args.push("--config", runtimeConfig);
     }
   }

@@ -1702,7 +1702,7 @@ let appFirstRenderMarked = false;
                     </button>
                     <button
                       data-testid="nav-settings"
-                      onClick={() => navigateFromScheduledRun('settings')}
+                      onClick={() => openSettingsSection('general')}
                       title={t.settings}
                       className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
                     >

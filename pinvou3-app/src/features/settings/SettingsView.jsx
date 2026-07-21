@@ -19,6 +19,28 @@ import minimaxIcon from '../../brand-icons/minimax.svg';
 import openaiIcon from '../../brand-icons/openai.svg';
 import qwenIcon from '../../brand-icons/qwen.svg';
 
+function isReadonlyModel(model) {
+  return !!(model && (model.readonly || model.system));
+}
+
+function isBuiltinLlmApiModel(model) {
+  return !!(model && (model.kind === 'builtin_llmapi' || model.id === 'builtin_llmapi'));
+}
+
+function hasLlmApiBackendUser(bs) {
+  const status = bs && bs.llmApiStatus;
+  if (!status || status.backend_user_state === 'not_exists') return false;
+  return status.backend_user_state === 'exists' || !!status.backend_user_exists;
+}
+
+function visibleSortedModels(models, bs) {
+  const allowBuiltin = hasLlmApiBackendUser(bs);
+  return (models || [])
+    .filter(model => model && model.id && (!isBuiltinLlmApiModel(model) || allowBuiltin))
+    .slice()
+    .sort((a, b) => Number(isBuiltinLlmApiModel(b)) - Number(isBuiltinLlmApiModel(a)));
+}
+
 const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, style }, ref) => (
       <section ref={ref} id={id} style={style} className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
         <h2 className="text-[18px] font-medium mb-6 flex items-center gap-2">
@@ -1240,15 +1262,15 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       );
       if (initial.__new && pickerOpen) {
         return (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150" onClick={onCancel}>
-            <div onClick={e => e.stopPropagation()}
+          <div data-testid="model-form-backdrop" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150">
+            <div data-testid="model-form-dialog" role="dialog" aria-modal="true"
               className={`w-[440px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl ${isDark ? 'bg-[#1C1C1E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
               <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
                 <div>
                   <h2 className="text-[20px] leading-6 font-semibold">{t.modelFormAddTitle}</h2>
                   <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>选择模型后再填写必要凭据</p>
                 </div>
-                <button onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
+                <button data-testid="model-form-cancel" onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
               </div>
               <div className="px-5 py-4">{renderCatalogPicker()}</div>
             </div>
@@ -1264,7 +1286,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 <h2 className="text-[20px] leading-6 font-semibold">{initial.__new ? t.modelFormAddTitle : t.modelFormEditTitle}</h2>
                 <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{isLocalPreset ? selectedModelLabel : `${selectedProvider} · ${selectedModelLabel}`}</p>
               </div>
-              <button onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
+              <button data-testid="model-form-cancel" onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
             </div>
             <div className="space-y-4 px-5 py-4">
               <div className={`overflow-hidden rounded-[18px] border ${isDark ? 'border-white/[0.10] bg-[#2C2C2E]' : 'border-black/[0.08] bg-white'}`}>
@@ -1408,6 +1430,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
 
     const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders = ['bing'], onAddSearchProvider, onDeleteSearchProvider, searchApiKey, setSearchApiKey, searchHasSavedKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, searchNeedsRestart, languageNeedsRestart, bs, t, onRestoreArchived, onDeleteArchived, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
       const isDark = activeTheme === 'dark';
+      const isWindows = /Windows/i.test(navigator.userAgent || '');
       const [activeSection, setActiveSection] = useState(initialSection || 'general');
       const [editingModel, setEditingModel] = useState(null);
       const [modelDeleteConfirm, setModelDeleteConfirm] = useState(null);
@@ -1422,6 +1445,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const [feedbackStatus, setFeedbackStatus] = useState({ state: 'idle', message: '', receipt: null });
       const [feedbackNotice, setFeedbackNotice] = useState('');
       const [archivedDeleteConfirm, setArchivedDeleteConfirm] = useState(null);
+      const [llmApiModelBusy, setLlmApiModelBusy] = useState(false);
+      const llmApiModels = (bs && bs.llmApiModels) || {};
+      const builtinAvailableModels = llmApiModels.available_models || [];
+      const builtinDefaultModel = llmApiModels.default_model || (((bs && bs.settings && bs.settings.advanced && bs.settings.advanced.builtin_llmapi_default_model) || '') || '');
       const versionUpdateRef = useRef(null);
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
       const archivedSessions = (bs && bs.archivedSessions) || [];
@@ -1529,6 +1556,16 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         setArchivedDeleteConfirm(null);
         if (id && onDeleteArchived) onDeleteArchived(id);
       };
+      const refreshBuiltinModels = async () => {
+        if (!bridge.available || !bridge.getLlmApiModels) return;
+        setLlmApiModelBusy(true);
+        try { await bridge.getLlmApiModels(); } finally { setLlmApiModelBusy(false); }
+      };
+      const setBuiltinDefaultModel = async model => {
+        if (!bridge.available || !bridge.setLlmApiDefaultModel || !model) return;
+        setLlmApiModelBusy(true);
+        try { await bridge.setLlmApiDefaultModel(model); } finally { setLlmApiModelBusy(false); }
+      };
       // 进设置页自动体检一次可选依赖装齐没; 之后用户可手动「重新检测」
       useEffect(() => {
         if (!bridge.available || (bs && (bs.deps || bs.depsChecking))) return;
@@ -1622,7 +1659,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             : 'bg-[#34C759]/15 text-[#248A3D]'
         }`}>{children}</span>
       );
-      const userModels = visibleUserModels(savedModels || []);
+      const userModels = visibleSortedModels(savedModels || [], bs);
       const isLocalModel = model => model && (model.preset === 'local_vllm' || /127\.0\.0\.1|localhost/i.test(model.base_url || ''));
       const searchOptions = [
         { key: 'bing', label: 'Bing', desc: '内置搜索' },
@@ -1722,6 +1759,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const renderModelRows = models => models.length ? models.map(m => {
         const isActive = m.id === activeModelId;
         const isLocal = isLocalModel(m);
+        const isReadonly = isReadonlyModel(m);
         const title = m.model || m.name;
         return (
           <div key={m.id} className={`min-h-[60px] grid grid-cols-[24px_32px_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.12]'}`}>
@@ -1733,12 +1771,32 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               <div className="flex items-center gap-2 min-w-0">
                 <span className={`text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{title}</span>
                 {isLocal && <Tag tone="gray">本地模型</Tag>}
+                {isBuiltinLlmApiModel(m) && <Tag tone="gray">内置模型</Tag>}
                 {isActive && <Tag>默认</Tag>}
               </div>
+              {isBuiltinLlmApiModel(m) && (
+                <div className="mt-2 flex items-center gap-2 flex-wrap">
+                  <span className={`text-[12px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{t.builtinModelSelect}</span>
+                  <select
+                    value={builtinDefaultModel || m.model || ''}
+                    disabled={llmApiModelBusy || builtinAvailableModels.length === 0}
+                    onChange={e => setBuiltinDefaultModel(e.target.value)}
+                    className={`min-w-[220px] max-w-full rounded-lg border px-3 py-1.5 text-[12px] outline-none ${isDark ? 'bg-[#1E1F20] border-white/[0.10] text-[#F2F2F7]' : 'bg-white border-black/[0.12] text-[#1C1C1E]'}`}
+                  >
+                    {builtinAvailableModels.length === 0 ? (
+                      <option value={m.model || ''}>{t.builtinModelEmpty}</option>
+                    ) : builtinAvailableModels.map(model => <option key={model} value={model}>{model}</option>)}
+                  </select>
+                  <button onClick={refreshBuiltinModels} disabled={llmApiModelBusy}
+                    className={`min-h-8 px-3 rounded-full text-[14px] font-medium disabled:opacity-50 ${actionButton('blue')}`}>
+                    {llmApiModelBusy ? t.builtinModelLoading : t.builtinModelRefresh}
+                  </button>
+                </div>
+              )}
             </div>
             <div className="shrink-0 flex items-center gap-2">
-              <button onClick={() => setEditingModel({ ...m, __scope: isLocal ? 'local' : 'cloud' })} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('blue')}`}>编辑</button>
-              {models.length > 1 && !isLocal && <button onClick={() => setModelDeleteConfirm(m)} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('red')}`}>删除</button>}
+              {!isReadonly && <button onClick={() => setEditingModel({ ...m, __scope: isLocal ? 'local' : 'cloud' })} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('blue')}`}>编辑</button>}
+              {!isReadonly && models.length > 1 && !isLocal && <button onClick={() => setModelDeleteConfirm(m)} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('red')}`}>删除</button>}
             </div>
           </div>
         );
@@ -1796,7 +1854,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             <SectionTitle>模型</SectionTitle>
             <Group>
               {renderModelRows(userModels)}
-              <button onClick={() => setEditingModel(newModelDraft('deepseek'))}
+              <button data-testid="settings-model-add" onClick={() => setEditingModel(newModelDraft('deepseek'))}
                 className={`w-full min-h-[52px] flex items-center justify-center gap-2 px-4 text-[16px] font-normal border-t ${isDark ? 'border-white/[0.10] text-[#0A84FF] hover:bg-white/[0.05]' : 'border-black/[0.12] text-[#007AFF] hover:bg-black/[0.035]'}`}>
                 <Plus size={18} />
                 <span>添加模型</span>
@@ -1890,6 +1948,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         const notes = (upd && String(upd.notes || '').trim()) || '暂无更新说明';
         const updateChecking = !!(bs && bs.updateChecking);
         const updateDownloading = !!(bs && bs.updateDownloading);
+        const updateCancelling = !!(bs && bs.updateCancelling);
         const updateReady = !!(bs && bs.updateReady);
         const updateProgress = (bs && bs.updateProgress) || 0;
         const isWindowsUpdate = upd && upd.platform === 'windows';
@@ -1902,13 +1961,17 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         const updateButtonLabel = updateChecking
           ? '检查中…'
           : updateDownloading
-            ? (updateProgress >= 100 ? '安装中…' : `下载中 ${updateProgress}%`)
+            ? (updateProgress >= 100 ? '安装中…' : (updateCancelling ? '取消中…' : '取消下载'))
             : updateReady
               ? (isWindowsUpdate ? '安装器已启动' : '立即重启')
               : (upd && upd.available ? (upd.platform === 'linux' ? '升级并重启' : '下载并安装') : '检查更新');
-        const updateButtonDisabled = !bridge.available || updateChecking || updateDownloading || (updateReady && isWindowsUpdate);
+        const updateButtonDisabled = !bridge.available || updateChecking || updateCancelling || (updateDownloading && updateProgress >= 100) || (updateReady && isWindowsUpdate);
         const handleUpdateAction = () => {
-          if (!bridge.available || updateChecking || updateDownloading) return;
+          if (!bridge.available || updateChecking) return;
+          if (updateDownloading) {
+            if (updateProgress < 100 && !updateCancelling) bridge.cancelUpdate();
+            return;
+          }
           if (updateReady) {
             if (!isWindowsUpdate) bridge.restartApp();
             return;
@@ -1934,13 +1997,57 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           </div>
         );
       };
-      const renderPermissions = () => (
-        <IOSSection title="系统">
-          <IOSRow label="高级执行权限" desc="允许助手执行环境配置等高级指令">
-            <IOSSwitch checked={!!superPerm} onChange={setSuperPerm} />
-          </IOSRow>
-        </IOSSection>
-      );
+      const renderPermissions = () => {
+        const deps = (bs && bs.deps) || [];
+        const checking = !!(bs && bs.depsChecking);
+        const installing = !!(bs && bs.depsInstalling);
+        const installError = bs && bs.depsInstallError;
+        const missing = deps.filter(dep => !dep.installed);
+        const checked = deps.length > 0;
+        const busy = checking || installing;
+        return (
+          <>
+            {!isWindows && (
+              <IOSSection title="系统">
+                <IOSRow label="高级执行权限" desc="允许助手执行环境配置等高级指令">
+                  <IOSSwitch checked={!!superPerm} onChange={setSuperPerm} />
+                </IOSRow>
+              </IOSSection>
+            )}
+            <div id="settings-dependencies">
+              <IOSSection
+                title={t.depCheckTitle}
+                footer={isWindows ? t.depInstallNoteWindows : t.depInstallNote}
+              >
+                <IOSRow
+                  label={checking ? t.depChecking : (!checked ? t.depCheckTitle : (missing.length ? `${missing.length}${t.depMissingSuffix}` : t.depAllOk))}
+                  desc={installing ? t.depInstalling : (installError ? String(installError) : '')}
+                >
+                  <button
+                    onClick={() => bridge.available && bridge.checkDependencies()}
+                    disabled={!bridge.available || busy}
+                    className={`h-9 px-4 rounded-full text-[14px] font-semibold disabled:opacity-50 ${isDark ? 'bg-white/[0.08] text-[#0A84FF]' : 'bg-[#E5E5EA] text-[#007AFF]'}`}
+                  >{checking ? t.depChecking : t.depRecheck}</button>
+                </IOSRow>
+                {missing.map(dep => (
+                  <IOSRow key={dep.key} label={t[`dep_${dep.key}`] || dep.key} desc={dep.apt || ''}>
+                    <Tag tone="gray">缺失</Tag>
+                  </IOSRow>
+                ))}
+                {missing.length > 0 && (
+                  <IOSRow label={isWindows ? '安装缺失依赖' : t.depGoInstall}>
+                    <button
+                      onClick={() => bridge.available && bridge.installDependencies()}
+                      disabled={!bridge.available || busy}
+                      className="h-9 px-4 rounded-full bg-[#007AFF] text-white text-[14px] font-semibold disabled:opacity-50"
+                    >{installing ? t.depInstalling : t.depInstallBtn}</button>
+                  </IOSRow>
+                )}
+              </IOSSection>
+            </div>
+          </>
+        );
+      };
       const renderHelp = () => (
         <IOSSection>
           <IOSRow label="提交问题或建议" desc="支持图片和视频附件，提交前会显示隐私提示">

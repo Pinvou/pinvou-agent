@@ -4081,6 +4081,8 @@
       var r = roles[rid] || {};
       applyAgentPatch(rid, {
         id: rid, name: r.name || rid, status: r.status || "pending",
+        error: typeof r.error === "string" && r.error.trim() ? r.error : null,
+        retries: r.retries == null ? 0 : r.retries,
         last_gate_verdict: r.last_gate_verdict || null,
         outputs_present: r.outputs_present || 0,
         last_run_ts: r.last_run_ts || null,
@@ -6324,6 +6326,17 @@
       if (activeVoiceInput !== session) return;
       activeVoiceInput = null;
       var normalized = normalizeVoiceError(err, "recording");
+      if (normalized.category === "permission_denied") {
+        try {
+          var permissionReset = await invoke("reset_microphone_permission");
+          if (permissionReset) {
+            normalized.message = "麦克风权限已被拒绝，请再次点击语音输入并在授权提示中选择允许；若仍失败，请检查 Windows 麦克风设置。";
+            emitVoiceDiagnostic("permission", "info", "microphone permission reset to default", normalized.message, normalized.category);
+          }
+        } catch (resetError) {
+          emitVoiceDiagnostic("permission", "warn", "failed to reset microphone permission: " + String(resetError), normalized.message, normalized.category);
+        }
+      }
       setVoiceInputStatus("failed", {
         message: normalized.message,
         error: normalized.message,
