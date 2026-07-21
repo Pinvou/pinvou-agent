@@ -3607,9 +3607,24 @@
 
   // 远程 mobile 改工具开关 → Rust emit remote_control:tools_changed → 这里桥接到
   // 桌面前端监听的 DOM CustomEvent 'pinvou:tools-changed'(tool-events.js / 类似入口),
-  // 让 chip 上的工具开关计数立即同步。KB mount 事件无需桥接(由 manager send_event 直消费)。
+  // 让 chip 上的工具开关计数立即同步。
   listen("remote_control:tools_changed", function () {
     try { window.dispatchEvent(new CustomEvent('pinvou:tools-changed')); } catch (_) {}
+  });
+
+  // 远程 mobile 挂载/摘挂 KB → Rust emit remote_control:kb_mount_changed → 这里同步
+  // 桌面前端 state.mountedCollection(由 ChatView 渲染 KB 指示器)。否则 mobile 切了 KB,
+  // 桌面端 chip 仍显旧状态直到用户切 session 强制重读。
+  // payload 形状:{ session_id, collection_id } 或 { session_id, collection_id: null }。
+  // 只处理当前 active session 的变更(其他 session 的挂载不影响当前视图)。
+  listen("remote_control:kb_mount_changed", function (e) {
+    var p = e && e.payload;
+    if (!p || !state.activeSessionId) return;
+    if (p.session_id !== state.activeSessionId) return;
+    var cid = (p.collection_id == null) ? null : p.collection_id;
+    if (state.mountedCollection === cid) return;
+    state.mountedCollection = cid;
+    notify();
   });
 
   // 本地语音识别依赖安装进度（模型下载 / ffmpeg 安装）

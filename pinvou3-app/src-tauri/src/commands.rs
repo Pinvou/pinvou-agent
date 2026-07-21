@@ -238,6 +238,9 @@ pub fn session_mount_collection(
         "remote_control:kb_mount_changed",
         serde_json::json!({ "session_id": session_id, "collection_id": collection_id }),
     );
+    // 同时把变更同步给正在远控的 mobile 端(若该 session 正在被远控),避免 mobile UI 陈旧。
+    // 与 set_disabled_connectors 的双向广播对称:桌面本地变更也必须通知 mobile。
+    broadcast_kb_mount_to_mobile(&app, &session_id, Some(collection_id));
     Ok(())
 }
 
@@ -253,6 +256,20 @@ pub fn session_unmount_collection(
         "remote_control:kb_mount_changed",
         serde_json::json!({ "session_id": session_id, "collection_id": null }),
     );
+    broadcast_kb_mount_to_mobile(&app, &session_id, None);
+}
+
+/// 桌面本地 KB 挂载/摘挂变更 → 推给 mobile(若 session 正在被远控)。
+/// payload 形状与 manager.rs dispatch 内 emit 的 kb_mount_changed 一致,确保
+/// mobile handleDesktopEvent 单一 case 能同时处理 mobile-triggered 和 desktop-triggered。
+fn broadcast_kb_mount_to_mobile(app: &AppHandle, session_id: &str, collection_id: Option<i64>) {
+    if let Some(manager) = app.try_state::<crate::remote_control::RemoteControlManager>() {
+        let payload = serde_json::json!({
+            "session_id": session_id,
+            "collection_id": collection_id,
+        });
+        manager.broadcast_to_mobile(session_id, "kb_mount_changed", payload);
+    }
 }
 
 /// 读会话当前挂载的知识集 id(前端切会话时重读,恢复挂载条显示)。
@@ -1866,7 +1883,8 @@ pub fn compute_disallowed_tools(app: &AppHandle) -> Vec<String> {
 /// 落盘 → 推算成模型可见工具全名广播给所有在跑引擎 → 隐藏这些工具。空 = 全开。
 /// 持久:用户关一次,所有新对话/新窗口都继承,直到手动开回。
 ///
-/// 同时 emit `remote_control:tools_changed`,让移动端 web 远程客户端感知全局工具开关变化。
+/// 同时 emit `remote_control:tools_changed`,让桌面 chip 即时刷新;并通过 manager
+/// 把 tools_changed 推给正在远控的 mobile 端(若 session 正在被远控),避免 mobile UI 陈旧。
 #[tauri::command]
 pub async fn set_disabled_connectors(
     connector_ids: Vec<String>,
@@ -1874,8 +1892,15 @@ pub async fn set_disabled_connectors(
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
     apply_disabled_connectors(Some(&app), &pool, connector_ids).await?;
-    app.emit("remote_control:tools_changed", ())
-        .map_err(|e| format!("emit tools_changed: {e}"))?;
+    // emit 失败不应让命令失败:disabled_connectors.json 已落盘,engine pool 已生效,
+    // emit 失败只影响 UI 即时刷新(下次 reload 自愈)。与 kb_mount_changed emit 同步策略。
+    let _ = app.emit("remote_control:tools_changed", ());
+    // 推给正在远控的 mobile(若该 session 正在被远控)。
+    if let Some(manager) = app.try_state::<crate::remote_control::RemoteControlManager>() {
+        if let Some(sid) = manager.current_session_id() {
+            manager.broadcast_to_mobile(&sid, "tools_changed", serde_json::json!({}));
+        }
+    }
     Ok(())
 }
 
