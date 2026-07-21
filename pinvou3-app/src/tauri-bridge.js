@@ -3581,7 +3581,9 @@
     var p = e.payload || {};
     var sid = p.session_id;
     var content = (p.content || "").trim();
-    if (!sid || !content) return;
+    var attachments = p.attachments || [];
+    // 允许纯附件消息(content 为空但 attachments 非空),对齐 Group E user_message 改造。
+    if (!sid || (!content && !attachments.length)) return;
     try { await ensureSessionBufferLoaded(sid); }
     catch (err) {
       console.warn("remote session hydrate failed", err);
@@ -3593,14 +3595,21 @@
           id: ++itemIdSeq,
           text: content,
           displayText: content,
-          attachments: [],
+          attachments: attachments,
           meta: { remoteClientMessageId: p.client_message_id || null },
         });
       });
       notify();
       return;
     }
-    doSendFor(sid, content, content, [], { remoteClientMessageId: p.client_message_id || null });
+    doSendFor(sid, content, content, attachments, { remoteClientMessageId: p.client_message_id || null });
+  });
+
+  // 远程 mobile 改工具开关 → Rust emit remote_control:tools_changed → 这里桥接到
+  // 桌面前端监听的 DOM CustomEvent 'pinvou:tools-changed'(tool-events.js / 类似入口),
+  // 让 chip 上的工具开关计数立即同步。KB mount 事件无需桥接(由 manager send_event 直消费)。
+  listen("remote_control:tools_changed", function () {
+    try { window.dispatchEvent(new CustomEvent('pinvou:tools-changed')); } catch (_) {}
   });
 
   // 本地语音识别依赖安装进度（模型下载 / ffmpeg 安装）
