@@ -25,6 +25,15 @@ const MAX_WS_CONNECTIONS = boundedInteger(
 const WS_CONNECT_LIMIT = boundedInteger(process.env.WS_CONNECT_LIMIT, 120, 1, 100_000);
 const WS_CONNECT_WINDOW_MS = boundedInteger(process.env.WS_CONNECT_WINDOW_MS, 60_000, 1000, 60 * 60_000);
 const WS_AUTH_TIMEOUT_MS = boundedInteger(process.env.WS_AUTH_TIMEOUT_MS, 10_000, 1000, 60_000);
+// mobile → desktop 上传分片的字节速率窗口(防 mobile 在慢网/抖动下把 desktop 写盘撑爆)。
+// 与其它限额一样支持 env 覆盖,便于单测用小窗口触发限流。
+const MOBILE_UPLOAD_WINDOW_BYTES = boundedInteger(
+  process.env.MOBILE_UPLOAD_WINDOW_BYTES,
+  100 * 1024 * 1024,
+  1024,
+  1024 * 1024 * 1024,
+);
+const MOBILE_UPLOAD_WINDOW_SECS = boundedInteger(process.env.MOBILE_UPLOAD_WINDOW_SECS, 5, 1, 3600);
 const ALLOWED_PROXY_IPS = parseIpSet(process.env.PINVOU_REMOTE_ALLOWED_PROXY_IPS);
 const TRUSTED_PROXY_IPS = parseIpSet(
   process.env.PINVOU_REMOTE_TRUSTED_PROXY_IPS || process.env.PINVOU_REMOTE_ALLOWED_PROXY_IPS,
@@ -32,6 +41,8 @@ const TRUSTED_PROXY_IPS = parseIpSet(
 const rooms = new Map();
 const roomCreationBuckets = new Map();
 const wsConnectionBuckets = new Map();
+// 每个 mobile ws → { bytes, resetAt(ms epoch) };用 WeakMap 让 ws 被 GC 时窗口自动回收。
+const mobileUploadRate = new WeakMap();
 const telemetry = createTelemetryService();
 
 function send(ws, value, onSent) {
@@ -55,6 +66,24 @@ function acknowledgeDownloadChunk(room, payload, error) {
     session_id: room.session_id,
     payload: {
       download_id: payload?.download_id || "",
+      index: payload?.index,
+      ok: !error,
+      message: error ? String(error.message || error) : undefined,
+    },
+  });
+}
+
+// mobile → desktop 的 attach_file_chunk 转发结果(成功或失败)时,relay 主动向 mobile 回一份
+// ack,让 mobile 端的 waitForRelayAck 立即 resolve(成功)或 reject(失败),而不是干等 60s 超时。
+// 镜像 acknowledgeDownloadChunk 的结构,字段名换成 upload_id,事件名换成 attach_file_relay_ack。
+// 方向与下载相反:下载 ack 回 desktop(发送方),上传 ack 回 mobile(发送方)。
+function acknowledgeUploadChunk(room, payload, error) {
+  send(room.mobile, {
+    type: "attach_file_relay_ack",
+    room_id: room.room_id,
+    session_id: room.session_id,
+    payload: {
+      upload_id: payload?.upload_id || "",
       index: payload?.index,
       ok: !error,
       message: error ? String(error.message || error) : undefined,
@@ -133,6 +162,22 @@ function consumeWsConnection(ip, now = Date.now()) {
     WS_CONNECT_WINDOW_MS,
     now,
   );
+}
+
+// 滑动窗口:单个 mobile ws 在 MOBILE_UPLOAD_WINDOW_SECS 内累计超过 MOBILE_UPLOAD_WINDOW_BYTES
+// 时拒绝转发。返回 true 表示放行(已从预算中扣减 byteLen),false 表示限流(未扣减,调用方需
+// 自行向 mobile 发 attach_file_rate_limited 通知)。窗口过期自动重置。
+function consumeMobileUploadBudget(ws, byteLen, now = Date.now()) {
+  let entry = mobileUploadRate.get(ws);
+  if (!entry || now >= entry.resetAt) {
+    entry = { bytes: 0, resetAt: now + MOBILE_UPLOAD_WINDOW_SECS * 1000 };
+    mobileUploadRate.set(ws, entry);
+  }
+  if (entry.bytes + byteLen > MOBILE_UPLOAD_WINDOW_BYTES) {
+    return false;
+  }
+  entry.bytes += byteLen;
+  return true;
 }
 
 function rejectSocket(ws, code, message) {
@@ -457,6 +502,33 @@ wss.on("connection", (ws, req) => {
     if (ws.role === "mobile") {
       const payload = msg.type === "mobile_action" ? msg.payload : msg;
       audit(room, `mobile:${payload?.type || "action"}`);
+      if (payload?.type === "attach_file_chunk") {
+        // 上传分片先做字节速率限流:mobile 网络抖动时避免把 desktop 写盘撑爆。
+        // base64 长度 ≈ 4/3 原始字节,粗估即可,精确解码反而消耗 CPU。
+        const approxBytes = Math.ceil((payload?.data_base64 || "").length * 3 / 4);
+        if (!consumeMobileUploadBudget(ws, approxBytes)) {
+          // 超出窗口:直接通知 mobile 限流并停止转发,desktop 不会收到这一块。
+          send(ws, {
+            type: "attach_file_rate_limited",
+            room_id: room.room_id,
+            session_id: room.session_id,
+            payload: {
+              upload_id: payload?.upload_id || "",
+              retry_after_ms: 1000,
+            },
+          });
+          return;
+        }
+        // 等到 desktop WS 真正把这一帧写完后再向 mobile 回 ack(成功/失败均回),
+        // 把 desktop 有界通道的背压贯穿到 mobile 的下一块,并避免 mobile 干等 60s 超时。
+        send(room.desktop, {
+          type: "mobile_action",
+          room_id: room.room_id,
+          session_id: room.session_id,
+          payload,
+        }, (error) => acknowledgeUploadChunk(room, payload, error));
+        return;
+      }
       send(room.desktop, {
         type: "mobile_action",
         room_id: room.room_id,
