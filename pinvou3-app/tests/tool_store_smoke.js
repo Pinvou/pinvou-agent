@@ -91,7 +91,7 @@ function injectSource() {
       }
     }
     window.__emitTauri=async function(name,payload){for(const h of (window.__TAURI_EVENT_HANDLERS__[name]||[])) await h({payload:payload||{}});};
-    window.__TAURI__={core:{invoke},event:{listen(name,handler){const hs=window.__TAURI_EVENT_HANDLERS__[name]||(window.__TAURI_EVENT_HANDLERS__[name]=[]);hs.push(handler);return Promise.resolve(()=>{const i=hs.indexOf(handler);if(i>=0)hs.splice(i,1);});}},
+    window.__TAURI__={core:{invoke},event:{emit(){return Promise.resolve();},listen(name,handler){const hs=window.__TAURI_EVENT_HANDLERS__[name]||(window.__TAURI_EVENT_HANDLERS__[name]=[]);hs.push(handler);return Promise.resolve(()=>{const i=hs.indexOf(handler);if(i>=0)hs.splice(i,1);});}},
       window:{getCurrentWindow(){return {minimize(){},maximize(){},close(){},toggleMaximize(){},isMaximized(){return Promise.resolve(false);},onResized(){return Promise.resolve(()=>{});},startDragging(){}};}},dialog:{open(){return Promise.resolve(null);}}};
   })();`;
 }

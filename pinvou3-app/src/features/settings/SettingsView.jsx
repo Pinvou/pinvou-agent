@@ -964,7 +964,12 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           else if (online.length === 0) {
             // 没探到运行中的实例:看本机是否有预装大模型,有则提示一键启用(走同一 bootstrap)。
             const setup = await bridge.detectLocalVllmSetup();
-            if (setup && setup.has_packages && !setup.vllm_online) setOfferSetup(true);
+            const canStart = setup && setup.has_packages &&
+              (setup.engine_state ? ['stopped', 'failed'].includes(setup.engine_state) : !setup.vllm_online);
+            if (canStart) setOfferSetup(true);
+            if (setup && setup.engine_state === 'starting') {
+              setDetectResult({ candidates: [], engineState: 'starting' });
+            }
           }
         } catch (e) {
           setDetectResult({ error: String(e) });
@@ -1056,6 +1061,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 <div className={`rounded-xl border p-3 space-y-2 ${isDark ? 'border-[#333537] bg-[#131314]' : 'border-[#E0E3E7] bg-[#F8F9FB]'}`}>
                   {detectResult.error ? (
                     <span className={`text-[12px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{t.vllmDetectError(detectResult.error)}</span>
+                  ) : detectResult.engineState === 'starting' ? (
+                    <span className={`text-[12px] ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{t.vllmDetectStarting}</span>
                   ) : detectResult.candidates.length === 0 ? (
                     <span className={`text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{t.vllmDetectNone}</span>
                   ) : (

@@ -89,9 +89,12 @@ function injectSource() {
         case 'artifact_info': return Promise.resolve({exists:true,kind:'md',size:2048,modified:1});
         case 'read_artifact_text': return Promise.resolve('# 会议纪要');
         case 'render_artifact_visual': return Promise.resolve({mode:'unsupported'});
-        case 'detect_local_vllm_setup': return Promise.resolve(window.__VLLM_ELIGIBLE__
-          ? {eligible:true,is_megacube:true,has_packages:true,vllm_online:false,already_bootstrapped:false}
-          : {eligible:false,is_megacube:false,has_packages:false,vllm_online:false,already_bootstrapped:false});
+        case 'detect_local_vllm_setup': {
+          const engineState = window.__VLLM_STATE__ || 'stopped';
+          return Promise.resolve(window.__VLLM_ELIGIBLE__ && engineState !== 'starting'
+            ? {eligible:true,may_offer_setup:true,is_megacube:true,has_packages:true,vllm_online:false,engine_state:engineState,already_bootstrapped:false}
+            : {eligible:false,may_offer_setup:!!window.__VLLM_ELIGIBLE__,is_megacube:engineState==='starting',has_packages:engineState==='starting',vllm_online:false,engine_state:engineState,already_bootstrapped:false});
+        }
         case 'bootstrap_local_vllm': return new Promise(function(){}); // 永不 resolve,停在 bootstrapping 态供测步骤指示
         default: return Promise.resolve(null);
       }
@@ -394,7 +397,34 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
   });
   rec('⑤ chip 渲染+下拉两项+点Plan切到Plan', chip.found && /YOLO/.test(chip.label || '') && chipMenu.yoloDesc && chipMenu.planDesc && /Plan/.test(afterLabel), JSON.stringify({ ...chip, ...chipMenu, afterLabel }));
 
-  // ⑥ MegaCube(GB10) 本地大模型引导框:eligible 时渲染标题+启用/暂不/不再提醒(默认 mock 返 eligible:false 不弹,这里末尾翻 __VLLM_ELIGIBLE__ 再手动触发 detect,不污染 ①–⑤)
+  // ⑥ 开机加载中不弹框；确认 stopped 后才渲染启用引导。
+  await page.evaluate(() => { window.__VLLM_ELIGIBLE__ = true; window.__VLLM_STATE__ = 'starting'; });
+  await page.evaluate(() => window.TauriBridge.detectLocalVllmSetup());
+  await sleep(300);
+  const startingSetup = await page.evaluate(() => document.body.innerText.includes('启用本地大模型'));
+  rec('⑥ MegaCube 引擎 starting 时不弹启用框', !startingSetup, JSON.stringify({ popup: startingSetup }));
+
+  // 将时钟推进到 12 分钟截止之后，等待内部自动轮询一次；卡死的 starting 必须恢复重试入口。
+  await page.evaluate(() => {
+    window.__VLLM_REAL_DATE_NOW__ = Date.now;
+    const base = Date.now();
+    Date.now = () => base + 13 * 60 * 1000;
+  });
+  await sleep(3300);
+  const timedOutSetup = await page.evaluate(() => {
+    const setup = window.TauriBridge.getState().vllmSetup || {};
+    return {
+      popup: document.body.innerText.includes('启用本地大模型'),
+      state: setup.engine_state,
+      timedOut: setup.detection_timed_out,
+    };
+  });
+  rec('⑦ MegaCube 引擎 starting 超时后恢复重试入口', timedOutSetup.popup && timedOutSetup.state === 'failed' && timedOutSetup.timedOut === true, JSON.stringify(timedOutSetup));
+
+  await page.evaluate(() => {
+    Date.now = window.__VLLM_REAL_DATE_NOW__;
+    window.__VLLM_STATE__ = 'stopped';
+  });
   await page.evaluate(() => { window.__VLLM_ELIGIBLE__ = true; });
   await page.evaluate(() => window.TauriBridge.detectLocalVllmSetup());
   await sleep(500);
@@ -402,9 +432,9 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     const btns = [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim());
     return { title: document.body.innerText.includes('启用本地大模型'), enable: btns.includes('启用'), skip: btns.includes('暂不'), never: btns.includes('不再提醒') };
   });
-  rec('⑥ MegaCube 引导框 eligible 渲染(标题+启用/暂不/不再提醒)', setup.title && setup.enable && setup.skip && setup.never, JSON.stringify(setup));
+  rec('⑧ MegaCube 引导框 eligible 渲染(标题+启用/暂不/不再提醒)', setup.title && setup.enable && setup.skip && setup.never, JSON.stringify(setup));
 
-  // ⑦ 点「不再提醒」→ 二次确认子态(警示文案 + 确认不启用/再想想);点「再想想」回到初始态
+  // ⑨ 点「不再提醒」→ 二次确认子态(警示文案 + 确认不启用/再想想);点「再想想」回到初始态
   await clickText(page, '不再提醒');
   await sleep(300);
   const decline = await page.evaluate(() => {
@@ -413,16 +443,16 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
   });
   await clickText(page, '再想想');
   await sleep(200);
-  rec('⑦ 不再提醒→二次确认渲染(警示+确认/再想想)', decline.warn && decline.confirm && decline.reconsider, JSON.stringify(decline));
+  rec('⑨ 不再提醒→二次确认渲染(警示+确认/再想想)', decline.warn && decline.confirm && decline.reconsider, JSON.stringify(decline));
 
-  // ⑧ 点「启用」→ 进行中步骤指示渲染(授权/等待步骤 + 计时;mock bootstrap 永不 resolve 停在进行中)
+  // ⑩ 点「启用」→ 立即进入等待系统授权；mock bootstrap 永不 resolve 停在进行中。
   await clickText(page, '启用');
   await sleep(700);
   const prog = await page.evaluate(() => {
     const txt = document.body.innerText;
-    return { auth: txt.includes('授权并启动引擎'), wait: txt.includes('等待模型加载就绪'), elapsed: txt.includes('已等待') };
+    return { auth: txt.includes('等待系统授权'), wait: txt.includes('等待模型加载就绪'), elapsed: txt.includes('已等待') };
   });
-  rec('⑧ 引导进行中步骤指示+计时渲染', prog.auth && prog.wait && prog.elapsed, JSON.stringify(prog));
+  rec('⑩ 点启用后等待系统授权+计时渲染', prog.auth && prog.wait && prog.elapsed, JSON.stringify(prog));
 
   if (errs.length) console.log('⚠️ PAGEERRORS:', errs.slice(0, 3).join(' | '));
   await browser.close();
