@@ -16,6 +16,7 @@ const drag = await import(pathToFileURL(dragTmp));
 assert.strictEqual(typeof drag.readPetDragContext, 'function');
 assert.strictEqual(typeof drag.setPetWindowPosition, 'function');
 assert.strictEqual(typeof drag.stepPetDrag, 'function', 'stepPetDrag must be exported');
+assert.strictEqual(typeof drag.clampPetDragToBounds, 'function');
 assert.strictEqual(typeof drag.attachPetDragGeometry, 'function', 'attachPetDragGeometry must be exported');
 assert.strictEqual(typeof drag.releasePetDrag, 'function', 'releasePetDrag must be exported');
 assert.strictEqual(typeof drag.scaleFromResizeDrag, 'function', 'scaleFromResizeDrag must be exported');
@@ -47,18 +48,24 @@ assert.strictEqual(
   'function',
   'alignment changes must preserve the visible pet anchor',
 );
+assert.strictEqual(typeof drag.petVerticalAlignmentAtDragEdge, 'function');
+assert.strictEqual(typeof drag.petClientOriginVerticalBounds, 'function');
+assert.strictEqual(typeof drag.petConnectedClientOriginVerticalBounds, 'function');
+assert.strictEqual(typeof drag.rebasePetDragForVerticalAlignment, 'function');
 
 {
   let moduleMonitorCalls = 0;
   let availableMonitorCalls = 0;
   let instanceMonitorCalls = 0;
+  let outerPositionCalls = 0;
   let receivedPosition = null;
-  const position = { x: 120, y: -40 };
+  const position = { x: 120, y: -3 };
   const size = { width: 240, height: 330 };
   const monitor = { position: { x: 0, y: 0 }, size: { width: 1920, height: 1080 } };
   const win = {
-    outerPosition: async () => position,
-    outerSize: async () => size,
+    innerPosition: async () => position,
+    innerSize: async () => size,
+    outerPosition: async () => { outerPositionCalls += 1; return { x: 120, y: -126 }; },
     currentMonitor: () => { instanceMonitorCalls += 1; throw new Error('instance API must not run'); },
     setPosition: async (next) => { receivedPosition = next; },
   };
@@ -83,6 +90,7 @@ assert.strictEqual(
   assert.strictEqual(moduleMonitorCalls, 1);
   assert.strictEqual(availableMonitorCalls, 1);
   assert.strictEqual(instanceMonitorCalls, 0);
+  assert.strictEqual(outerPositionCalls, 0, 'decorless pet drag must not mix stale outer/client origins');
 
   await drag.setPetWindowPosition(T, win, 10.6, -2.4);
   assert.ok(receivedPosition instanceof PhysicalPosition);
@@ -115,14 +123,37 @@ const base = {
 const closeTo = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} != ${expected}`);
 
 {
+  const ready = {
+    holding: true,
+    x: 815,
+    y: 323,
+    tx: 915,
+    ty: 423,
+    lastTx: 815,
+    lastTy: 323,
+    vx: 0,
+    vy: 0,
+    bounds: null,
+  };
+  const next = drag.stepPetDrag(ready);
+  const pointerY = 475;
+  const initialGrabOffsetY = 52;
+  assert.strictEqual(
+    pointerY - next.y,
+    initialGrabOffsetY,
+    'even a 100px pointer event must preserve the grab point exactly',
+  );
+}
+
+{
   const pending = {
     holding: true,
-    released: true,
+    releasePending: true,
     startCX: 100,
     startCY: 200,
     currentCX: 140,
     currentCY: 260,
-    dpr: 2,
+    pointerScale: 2,
     x: 0,
     y: 0,
     tx: 0,
@@ -133,17 +164,23 @@ const closeTo = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e
   };
   const next = drag.attachPetDragGeometry(pending, {
     position: { x: 300, y: 400 },
-    size: { width: 240, height: 330 },
-    monitor: { position: { x: 0, y: 0 }, size: { width: 1920, height: 1080 } },
   });
   assert.strictEqual(next.x, 300);
   assert.strictEqual(next.y, 400);
   assert.strictEqual(next.tx, 380);
   assert.strictEqual(next.ty, 520);
-  closeTo(next.vx, 15.4);
-  closeTo(next.vy, 23.6);
-  assert.strictEqual(next.holding, false);
-  assert.deepStrictEqual(next.bounds, { l: 0, t: 0, r: 1680, b: 750 });
+  closeTo(next.vx, 1);
+  closeTo(next.vy, 2);
+  assert.strictEqual(next.holding, true);
+  assert.strictEqual(next.geometryReady, true);
+  assert.strictEqual(next.bounds, null);
+  const consumed = drag.stepPetDrag(next);
+  assert.strictEqual(consumed.x, 380);
+  assert.strictEqual(consumed.y, 520);
+  assert.strictEqual(consumed.holding, false);
+  closeTo(consumed.vx, 0);
+  closeTo(consumed.vy, 0);
+  assert.strictEqual(consumed.stopped, true);
   assert.strictEqual(pending.x, 0, 'attachPetDragGeometry must not mutate input');
 }
 
@@ -166,28 +203,55 @@ const closeTo = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e
 {
   const readyBeforeFirstFrame = {
     holding: true,
-    released: false,
-    base: { x: 300, y: 400 },
+    geometryReady: true,
     x: 300,
     y: 400,
     tx: 380,
     ty: 520,
+    lastTx: 300,
+    lastTy: 400,
     vx: 0,
     vy: 0,
-    physicsSteps: 0,
   };
   const next = drag.releasePetDrag(readyBeforeFirstFrame);
-  assert.strictEqual(next.released, true);
-  assert.strictEqual(next.holding, false);
-  closeTo(next.vx, 14.4);
-  closeTo(next.vy, 21.6);
+  assert.strictEqual(next.holding, true);
+  assert.strictEqual(next.releasePending, true);
+  const consumed = drag.stepPetDrag(next);
+  assert.strictEqual(consumed.x, 380);
+  assert.strictEqual(consumed.y, 520);
+  assert.strictEqual(consumed.holding, false);
+  closeTo(consumed.vx, 0);
+  closeTo(consumed.vy, 0);
+  assert.strictEqual(consumed.stopped, true);
   assert.strictEqual(readyBeforeFirstFrame.holding, true, 'releasePetDrag must not mutate input');
 }
 
 {
+  const releasedWithTail = drag.releasePetDrag({
+    holding: true,
+    geometryReady: true,
+    x: 300,
+    y: 400,
+    tx: 340,
+    ty: 430,
+    lastTx: 300,
+    lastTy: 400,
+    vx: 0,
+    vy: 0,
+    bounds: null,
+  });
+  const consumedTail = drag.stepPetDrag(releasedWithTail);
+  assert.deepStrictEqual(
+    { x: consumedTail.x, y: consumedTail.y, holding: consumedTail.holding },
+    { x: 340, y: 430, holding: false },
+    'the final pointer movement before release must be consumed on the next frame',
+  );
+}
+
+{
   const next = drag.stepPetDrag(base);
-  closeTo(next.x, 10.36);
-  closeTo(next.vx, 10.36);
+  closeTo(next.x, 100);
+  closeTo(next.vx, 0);
   assert.strictEqual(next.stopped, false);
   assert.strictEqual(base.x, 0, 'stepPetDrag must not mutate input');
 }
@@ -224,7 +288,7 @@ const closeTo = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e
 
   const reversing = {
     ...base,
-    x: -47.39,
+    x: -100,
     tx: -80,
     vx: -20.08,
     lastTx: -100,
@@ -239,20 +303,19 @@ const closeTo = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e
 
 {
   const next = drag.stepPetDrag({ ...base, holding: false, tx: 0, vx: 10 });
-  closeTo(next.vx, 9.55);
-  closeTo(next.x, 9.55);
-  assert.strictEqual(next.stopped, false);
+  closeTo(next.vx, 0);
+  closeTo(next.x, 0);
+  assert.strictEqual(next.stopped, true);
 }
 
 {
-  const next = drag.stepPetDrag({
+  const next = drag.clampPetDragToBounds({
     ...base,
     holding: false,
-    x: 99, tx: 99, vx: 10,
-    bounds: { l: 0, t: 0, r: 100, b: 100 },
-  });
+    x: 110, tx: 110, vx: 10,
+  }, { l: 0, t: 0, r: 100, b: 100 });
   assert.strictEqual(next.x, 100);
-  assert.ok(next.vx < 0, 'right-edge collision must reverse horizontal velocity');
+  assert.strictEqual(next.vx, 0, 'right-edge collision must stop without bouncing');
 }
 
 {
@@ -263,29 +326,36 @@ const closeTo = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e
     bounds: { l: 0, t: 0, r: 100, b: 100 },
   });
   assert.strictEqual(next.x, 100);
+  assert.strictEqual(next.tx, 100, 'a held target must be rebased to the real edge');
   assert.strictEqual(next.vx, 0, 'a held pet must stop at the edge instead of bouncing under the pointer');
+
+  const reversingImmediately = drag.stepPetDrag({
+    ...next,
+    tx: next.tx - 1,
+    lastTx: next.tx,
+  });
+  assert.strictEqual(
+    reversingImmediately.x,
+    99,
+    'after hitting an edge, reversing the pointer must move immediately without dead travel',
+  );
 }
 
 {
-  const next = drag.stepPetDrag({
+  const next = drag.clampPetDragToBounds({
     ...base,
     holding: false,
-    x: 1, y: 1, tx: 1, ty: 1, vx: -10, vy: -10,
-    bounds: { l: 0, t: 0, r: 100, b: 100 },
-  });
+    x: -1, y: -1, tx: -1, ty: -1, vx: -10, vy: -10,
+  }, { l: 0, t: 0, r: 100, b: 100 });
   assert.strictEqual(next.x, 0);
   assert.strictEqual(next.y, 0);
-  assert.ok(next.vx > 0 && next.vy > 0, 'top-left collision must reverse both velocities');
+  assert.strictEqual(next.vx, 0);
+  assert.strictEqual(next.vy, 0, 'top-left collision must stop both velocities without bouncing');
 }
 
 {
   const next = drag.stepPetDrag({ ...base, holding: false, tx: 0, vx: 0.2, vy: -0.2 });
   assert.strictEqual(next.stopped, true);
-}
-
-{
-  const next = drag.stepPetDrag({ ...base, tx: 1000 });
-  assert.strictEqual(next.tilt, 16);
 }
 
 {
@@ -374,6 +444,35 @@ const closeTo = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e
     right,
     'the active monitor must follow the visible pet across the seam',
   );
+
+  const releasedAcrossSeam = drag.stepPetDrag({
+    holding: true,
+    releasePending: true,
+    x: 1700,
+    y: 500,
+    tx: 1900,
+    ty: 500,
+    lastTx: 1700,
+    lastTy: 500,
+    vx: 0,
+    vy: 0,
+    bounds: null,
+  });
+  assert.strictEqual(releasedAcrossSeam.stopped, true);
+  assert.strictEqual(
+    drag.petMonitorAtPosition({
+      position: { x: releasedAcrossSeam.x, y: releasedAcrossSeam.y },
+      size: geometry.size,
+      alignment: 'left',
+      characterWidth: 192,
+      characterHeight: 208,
+      horizontalPadding: 24,
+      verticalPadding: 8,
+      monitors: geometry.monitors,
+    }),
+    right,
+    'the release tail position must select the new monitor before the stopped frame exits',
+  );
 }
 
 // 异高 / 错位 / L 形布局：相连显示器的外接矩形包含实际没有屏幕的空洞。
@@ -409,7 +508,7 @@ const closeTo = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e
   );
   assert.strictEqual(rescued.x, 1000, 'projection must not move the pet sideways when only y is out');
   assert.strictEqual(rescued.y, 859, 'the pet must land on the short display bottom edge (1079-220)');
-  assert.ok(rescued.vy < 0, 'inertia into the hole must bounce back, not keep pushing');
+  assert.strictEqual(rescued.vy, 0, 'projection out of a desktop hole must stop without bouncing');
 
   // 连续动画帧：单次钳制证明不了不抖、不逃逸，必须按真实帧循环跑。
   const geo = { monitors: [short, tall], ...metrics };
@@ -418,7 +517,6 @@ const closeTo = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e
 
   // 1) 按住不放、往空洞深处拽 60 帧：每一帧人物都必须还在真实屏幕上。
   let held = {
-    base: { x: 1000, y: 800 },
     x: 1000,
     y: 800,
     vx: 0,
@@ -446,14 +544,17 @@ const closeTo = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e
     `holding against the hole edge must settle, not oscillate: ${settled.join(',')}`,
   );
   assert.strictEqual(held.vy, 0, 'holding against the hole edge must not accumulate velocity');
+  assert.strictEqual(held.ty, held.y, 'projection must rebase the held pointer target to the real edge');
+  assert.strictEqual(held.lastTy, held.y, 'projection must rebase the previous pointer target too');
+  const reversed = frame({ ...held, ty: held.ty - 1 });
+  assert.strictEqual(reversed.y, held.y - 1, 'reversing 1px from a desktop hole must move immediately');
 
-  // 2) 松手后带惯性甩进空洞：跑到停下为止，中途任何一帧都不许落在空洞里。
+  // 2) 松手后不再保留惯性：第一帧就必须停住，不能继续滑动或反弹。
   let flung = {
-    base: { x: 1000, y: 800 },
     x: 1000,
     y: 800,
     vx: 0,
-    vy: 45, // 朝空洞猛甩
+    vy: 45,
     tx: 1000,
     ty: 800,
     lastTx: 1000,
@@ -467,10 +568,11 @@ const closeTo = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e
     frames += 1;
     assert.ok(
       onAnyMonitor(petCenter(flung)),
-      `inertia frame ${frames} must not strand the pet in the hole (y=${flung.y})`,
+      `released frame ${frames} must not strand the pet in the hole (y=${flung.y})`,
     );
   }
-  assert.ok(flung.stopped, 'the fling must come to rest instead of bouncing forever');
+  assert.strictEqual(frames, 1, 'release must stop on the first frame without inertia');
+  assert.ok(flung.stopped);
 
   // 屏幕内的位置必须原样返回(同一对象)，避免每帧无谓地重建 state。
   const inside = { x: 1000, y: 500, vx: 2, vy: 2, holding: false };
@@ -525,7 +627,6 @@ const closeTo = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e
 
 {
   const current = {
-    base: { x: 581, y: 50 },
     x: 581,
     y: 50,
     tx: 620,
@@ -545,9 +646,8 @@ const closeTo = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e
   const beforePetCenter = current.x + 24 + 192 / 2;
   const afterPetCenter = next.x + 350 - 24 - 192 / 2;
   assert.strictEqual(afterPetCenter, beforePetCenter, 'the pet must not jump when its card changes side');
-  assert.strictEqual(next.tx - next.x, current.tx - current.x, 'spring displacement must stay continuous');
+  assert.strictEqual(next.tx - next.x, current.tx - current.x, 'pointer displacement must stay continuous');
   assert.strictEqual(next.lastTx - next.x, current.lastTx - current.x, 'pointer motion delta must stay continuous');
-  assert.strictEqual(next.base.x, 471, 'future pointer targets must use the rebased window origin');
   assert.strictEqual(next.vx, current.vx, 'alignment must not reverse or damp horizontal velocity');
   assert.strictEqual(current.x, 581, 'alignment rebasing must not mutate the input state');
 
@@ -559,9 +659,351 @@ const closeTo = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e
     horizontalPadding: 24,
   });
   assert.deepStrictEqual(
-    { x: roundTrip.x, tx: roundTrip.tx, lastTx: roundTrip.lastTx, baseX: roundTrip.base.x },
-    { x: current.x, tx: current.tx, lastTx: current.lastTx, baseX: current.base.x },
+    { x: roundTrip.x, tx: roundTrip.tx, lastTx: roundTrip.lastTx },
+    { x: current.x, tx: current.tx, lastTx: current.lastTx },
     'repeated left/right crossings must not accumulate position drift',
+  );
+
+  const rawCrossing = drag.stepPetDrag({
+    holding: true,
+    x: 45,
+    y: 50,
+    tx: -20,
+    ty: 50,
+    lastTx: 45,
+    lastTy: 50,
+    vx: 0,
+    vy: 0,
+    bounds: null,
+  });
+  assert.strictEqual(rawCrossing.x, -20, 'the raw horizontal overshoot must survive the motion step');
+  const crossingAlignment = drag.petAlignmentAtDragEdge({
+    currentAlignment: 'right',
+    x: rawCrossing.x,
+    tx: rawCrossing.tx,
+    holding: true,
+    bounds: { l: 0, r: 100 },
+  });
+  const crossed = drag.rebasePetDragForAlignment(rawCrossing, {
+    from: 'right',
+    to: crossingAlignment,
+    windowWidth: 350,
+    characterWidth: 192,
+    horizontalPadding: 24,
+  });
+  assert.strictEqual(crossingAlignment, 'left');
+  assert.strictEqual(rawCrossing.x + 134, crossed.x + 24);
+  assert.strictEqual(crossed.x, 90, 'a 20px edge overshoot must not be discarded before rebasing');
+}
+
+{
+  const monitor = { position: { x: 0, y: 0 }, size: { width: 1920, height: 1080 } };
+  const bottomBounds = drag.petWindowBounds({
+    monitors: [monitor],
+    monitor,
+    size: { width: 350, height: 376 },
+    alignment: 'right',
+    verticalAlignment: 'bottom',
+    viewportHeight: 376,
+    characterWidth: 96,
+    characterHeight: 104,
+    horizontalPadding: 24,
+    verticalPadding: 8,
+  });
+  const topBounds = drag.petWindowBounds({
+    monitors: [monitor],
+    monitor,
+    size: { width: 350, height: 376 },
+    alignment: 'right',
+    verticalAlignment: 'top',
+    viewportHeight: 376,
+    characterWidth: 96,
+    characterHeight: 104,
+    horizontalPadding: 24,
+    verticalPadding: 8,
+  });
+  assert.strictEqual(bottomBounds.t, -264, 'bottom layout requires a negative X11 y to reach the top');
+  assert.strictEqual(topBounds.t, 0, 'top layout keeps the character exactly at the work-area top');
+
+  const measuredBounds = drag.petWindowBounds({
+    monitors: [monitor],
+    monitor,
+    size: { width: 350, height: 376 },
+    alignment: 'right',
+    verticalAlignment: 'bottom',
+    viewportHeight: 376,
+    characterWidth: 96,
+    characterHeight: 104,
+    horizontalPadding: 24,
+    verticalPadding: 8,
+    localTop: 100,
+    localBottom: 204,
+  });
+  assert.deepStrictEqual(
+    { t: measuredBounds.t, b: measuredBounds.b },
+    { t: -100, b: 876 },
+    'the measured character rect must override inferred viewport math during a drag',
+  );
+  const reachableMeasuredBounds = drag.petWindowBounds({
+    monitors: [monitor],
+    monitor,
+    clientOriginVerticalBounds: { t: 37, b: 704 },
+    size: { width: 350, height: 376 },
+    alignment: 'right',
+    verticalAlignment: 'bottom',
+    viewportHeight: 376,
+    characterWidth: 96,
+    characterHeight: 104,
+    horizontalPadding: 24,
+    verticalPadding: 8,
+    localTop: 100,
+    localBottom: 204,
+  });
+  assert.deepStrictEqual(
+    { t: reachableMeasuredBounds.t, b: reachableMeasuredBounds.b },
+    { t: 37, b: 704 },
+    'the drag model must never diverge from the client-origin range enforced by the WM',
+  );
+
+  const clientBounds = drag.petClientOriginVerticalBounds({
+    monitor,
+    viewportHeight: 376,
+  });
+  assert.deepStrictEqual(clientBounds, { t: 0, b: 704 });
+  assert.deepStrictEqual(
+    drag.petClientOriginVerticalBounds({
+      monitor: {
+        workArea: {
+          position: { x: 42, y: 32 },
+          size: { width: 1878, height: 1048 },
+        },
+      },
+      viewportHeight: 200,
+      frameTopInset: 123,
+    }),
+    { t: 32, b: 880 },
+    'stale X11 outer-position deltas must not create a phantom top air wall',
+  );
+  const above = { position: { x: 0, y: -900 }, size: { width: 1920, height: 900 } };
+  assert.deepStrictEqual(
+    drag.petConnectedClientOriginVerticalBounds({
+      monitors: [above, monitor],
+      monitor,
+      viewportHeight: 376,
+    }),
+    { t: -900, b: 704 },
+    'hard bounds must span vertically connected monitors instead of trapping the pet on one screen',
+  );
+  assert.deepStrictEqual(
+    drag.petClientOriginVerticalBounds({
+      monitor: {
+        position: { x: 1920, y: 120 },
+        size: { width: 1280, height: 800 },
+        workArea: {
+          position: { x: 1920, y: 144 },
+          size: { width: 1280, height: 752 },
+        },
+      },
+      viewportHeight: 376,
+    }),
+    { t: 144, b: 520 },
+    'client bounds must use the current monitor work area in offset multi-monitor layouts',
+  );
+  assert.strictEqual(
+    drag.petVerticalAlignmentAtDragEdge({
+      currentAlignment: 'bottom',
+      y: 45,
+      ty: 1,
+      holding: true,
+      bounds: clientBounds,
+      threshold: 1,
+    }),
+    'top',
+    'the layout must flip exactly when the work-area client boundary is reached',
+  );
+  assert.strictEqual(
+    drag.petVerticalAlignmentAtDragEdge({
+      currentAlignment: 'bottom',
+      y: 45,
+      ty: 2,
+      holding: true,
+      bounds: clientBounds,
+      threshold: 1,
+    }),
+    'bottom',
+    'there must be no large anticipation band before the real native boundary',
+  );
+  assert.strictEqual(
+    drag.petVerticalAlignmentAtDragEdge({
+      currentAlignment: 'top',
+      y: 680,
+      ty: 703,
+      holding: true,
+      bounds: clientBounds,
+      threshold: 1,
+    }),
+    'bottom',
+    'the bottom edge band must perform the symmetric flip without dead travel',
+  );
+  assert.strictEqual(
+    drag.petVerticalAlignmentAtDragEdge({
+      currentAlignment: 'bottom',
+      y: 1,
+      ty: 300,
+      holding: false,
+      bounds: clientBounds,
+      threshold: 1,
+    }),
+    'top',
+    'a released tail frame must use the modeled window position to enter the same edge band',
+  );
+
+  const rawHeldCrossing = drag.stepPetDrag({
+    holding: true,
+    x: 200,
+    y: 45,
+    tx: 200,
+    ty: -17,
+    lastTx: 200,
+    lastTy: 45,
+    vx: 0,
+    vy: 0,
+    bounds: null,
+  });
+  const heldCrossingAlignment = drag.petVerticalAlignmentAtDragEdge({
+    currentAlignment: 'bottom',
+    y: rawHeldCrossing.y,
+    ty: rawHeldCrossing.ty,
+    holding: true,
+    bounds: clientBounds,
+    threshold: 1,
+  });
+  const heldCrossed = drag.rebasePetDragForVerticalAlignment(rawHeldCrossing, {
+    from: 'bottom',
+    to: heldCrossingAlignment,
+    previousLocalTop: 250,
+    nextLocalTop: 4,
+  });
+  assert.strictEqual(heldCrossingAlignment, 'top');
+  assert.strictEqual(rawHeldCrossing.y + 250, heldCrossed.y + 4);
+  assert.strictEqual(heldCrossed.y, 229, 'a 17px top-edge overshoot must survive the layout flip');
+
+  const releasedTailCrossing = drag.stepPetDrag({
+    holding: true,
+    releasePending: true,
+    x: 200,
+    y: 45,
+    tx: 200,
+    ty: -17,
+    lastTx: 200,
+    lastTy: 45,
+    vx: 0,
+    vy: -25,
+    bounds: null,
+  });
+  const releasedTailAlignment = drag.petVerticalAlignmentAtDragEdge({
+    currentAlignment: 'bottom',
+    y: releasedTailCrossing.y,
+    ty: releasedTailCrossing.ty,
+    holding: releasedTailCrossing.holding,
+    bounds: clientBounds,
+    threshold: 1,
+  });
+  const releasedTailRebased = drag.rebasePetDragForVerticalAlignment(releasedTailCrossing, {
+    from: 'bottom',
+    to: releasedTailAlignment,
+    previousLocalTop: 250,
+    nextLocalTop: 4,
+  });
+  assert.strictEqual(releasedTailAlignment, 'top', 'the final held frame must still trigger the edge flip');
+  assert.strictEqual(releasedTailCrossing.y + 250, releasedTailRebased.y + 4);
+  assert.strictEqual(releasedTailRebased.holding, false);
+  assert.strictEqual(releasedTailRebased.stopped, true);
+  assert.strictEqual(releasedTailRebased.vy, 0);
+
+  const releasedAtEdge = drag.stepPetDrag({
+    holding: false,
+    x: 200,
+    y: 45,
+    tx: 200,
+    ty: 45,
+    lastTx: 200,
+    lastTy: 45,
+    vx: 0,
+    vy: -30,
+    bounds: null,
+  });
+  assert.strictEqual(releasedAtEdge.y, 45);
+  assert.strictEqual(releasedAtEdge.vy, 0);
+  assert.strictEqual(releasedAtEdge.stopped, true, 'released drag must not continue into the edge');
+
+  const beforeMeasuredFlip = {
+    x: 200,
+    y: 80,
+    tx: 200,
+    ty: 180,
+    lastTx: 200,
+    lastTy: 170,
+  };
+  const measuredFlip = drag.rebasePetDragForVerticalAlignment(beforeMeasuredFlip, {
+    from: 'bottom',
+    to: 'top',
+    viewportHeight: 376,
+    characterHeight: 104,
+    verticalPadding: 8,
+    previousLocalTop: 250,
+    nextLocalTop: 4,
+  });
+  assert.deepStrictEqual(
+    { y: measuredFlip.y, ty: measuredFlip.ty, lastTy: measuredFlip.lastTy },
+    { y: 326, ty: 426, lastTy: 416 },
+    'vertical rebase must apply only the measured layout shift to model and pointer targets',
+  );
+  assert.strictEqual(
+    beforeMeasuredFlip.y + 250,
+    measuredFlip.y + 4,
+    'windowY + characterLocalTop must stay invariant across the layout flip',
+  );
+  assert.strictEqual(
+    measuredFlip.ty - measuredFlip.y,
+    beforeMeasuredFlip.ty - beforeMeasuredFlip.y,
+    'layout rebasing must preserve the pointer grab displacement',
+  );
+
+  const current = {
+    x: 200,
+    y: -4,
+    tx: 200,
+    ty: -3,
+    lastTx: 200,
+    lastTy: -2,
+    vx: 0,
+    vy: -4,
+  };
+  const flipped = drag.rebasePetDragForVerticalAlignment(current, {
+    from: 'bottom',
+    to: 'top',
+    viewportHeight: 376,
+    characterHeight: 104,
+    verticalPadding: 8,
+  });
+  assert.strictEqual(flipped.y, 260);
+  assert.strictEqual(
+    flipped.y,
+    current.y + 264,
+    'vertical layout changes must preserve the character screen position',
+  );
+  assert.strictEqual(flipped.ty - flipped.y, current.ty - current.y);
+  const roundTrip = drag.rebasePetDragForVerticalAlignment(flipped, {
+    from: 'top',
+    to: 'bottom',
+    viewportHeight: 376,
+    characterHeight: 104,
+    verticalPadding: 8,
+  });
+  assert.deepStrictEqual(
+    { y: roundTrip.y, ty: roundTrip.ty, lastTy: roundTrip.lastTy },
+    { y: current.y, ty: current.ty, lastTy: current.lastTy },
   );
 }
 
@@ -598,7 +1040,7 @@ const closeTo = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e
       bounds,
     }),
     'right',
-    'released inertia must use the visible pet position instead of the stale pointer target',
+    'a released tail frame must use the visible pet position instead of the stale pointer target',
   );
 }
 
@@ -637,8 +1079,12 @@ assert.match(
   'the first pet render must match the configured startup window',
 );
 assert.match(viewCode, /readPetDragContext\(T\)/);
-assert.match(viewCode, /setPetWindowPosition\(T, drag\.win, drag\.x, drag\.y\)/);
-assert.match(viewCode, /stepPetDrag\(drag\)/);
+assert.match(viewCode, /Promise\.resolve\(win\.innerPosition\(\)\)/);
+assert.doesNotMatch(
+  viewCode,
+  /save_pet_position[\s\S]{0,120}?[xy]:\s*payload\.[xy]/,
+  'raw onMoved frame coordinates must never be persisted',
+);
 assert.match(viewCode, /dragAnimationFromMotion\(/);
 assert.match(viewCode, /petEdgeAlignment\(/);
 assert.match(viewCode, /petElementHorizontalBounds\(/);
@@ -652,7 +1098,7 @@ assert.doesNotMatch(viewCode, /win\.currentMonitor\(/);
 assert.match(viewCode, /scaleFromResizeDrag\(/);
 assert.match(
   viewCode,
-  /function PetWindow\(\{ allowResize = true, configuredScale = null \}\)/,
+  /function PetWindow\(\{[\s\S]{0,160}?allowResize = true,[\s\S]{0,160}?configuredScale = null,[\s\S]{0,160}?configuredVerticalAlignment = 'bottom'/,
 );
 assert.match(viewCode, /Number\.isFinite\(configuredScale\)/);
 assert.match(viewCode, /useState\(startupScale\)/);
@@ -675,6 +1121,22 @@ assert.match(viewCode, /ref=\{characterSlotRef\}/);
 assert.match(viewCode, /persist:\s*pending\.persist/);
 assert.match(viewCode, /queueResizeScale\(drag, next, false\)/);
 assert.match(viewCode, /queueResizeScale\(drag, drag\.currentScale, true\)/);
+assert.doesNotMatch(
+  viewCode,
+  /await\s+setPetWindowPosition/,
+  'dragging must not serialize native position writes and reintroduce spring-like lag',
+);
+assert.match(
+  viewCode,
+  /inFlight:\s*new Set\(\)/,
+  'native position writes must still be tracked for geometry-read barriers',
+);
+const stepPhysicsIndex = viewCode.indexOf('Object.assign(drag, stepPetDrag');
+const activeMonitorIndex = viewCode.indexOf('const activeMonitor = petMonitorAtPosition');
+assert.ok(
+  stepPhysicsIndex >= 0 && activeMonitorIndex >= 0 && stepPhysicsIndex < activeMonitorIndex,
+  'the latest release-tail position must be consumed before selecting the active monitor',
+);
 assert.match(viewCode, /className="pet-resize-grip"/);
 assert.match(viewCode, /className="pet-resize-grip-icon"/);
 assert.match(viewCode, /d="M2 14H14V2"/);

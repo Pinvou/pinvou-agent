@@ -20,6 +20,7 @@ import {
 } from './pet-card-state.js';
 import {
   attachPetDragGeometry,
+  clampPetDragToBounds,
   clampPetDragToDesktop,
   dragAnimationFromMotion,
   petAlignmentAtDragEdge,
@@ -27,9 +28,13 @@ import {
   petElementHorizontalBounds,
   petMonitorAtPosition,
   petScreenAnchorFromRect,
+  petVerticalAlignmentAtDragEdge,
+  petClientOriginVerticalBounds,
+  petConnectedClientOriginVerticalBounds,
   petWindowBounds,
   readPetDragContext,
   rebasePetDragForAlignment,
+  rebasePetDragForVerticalAlignment,
   releasePetDrag,
   scaleFromResizeDrag,
   setPetWindowPosition,
@@ -67,6 +72,8 @@ const FIRST_AWAKE_MS = 8_000;
 const PET_EDGE_PADDING = 24;
 const PET_BOTTOM_PADDING = 8;
 const PET_ACTIVITY_WINDOW_HEIGHT = 260;
+// workArea 已给出无装饰窗口的真实 client 边界，只留 1px 消除整数取整抖动。
+const PET_VERTICAL_FLIP_MARGIN = 1;
 const PET_FRAME_WIDTH = PET_FRAME_W;
 const PET_FRAME_HEIGHT = PET_FRAME_H;
 
@@ -139,7 +146,11 @@ function PetActivityBody({ text, expanded = false }) {
   );
 }
 
-export default function PetWindow({ allowResize = true, configuredScale = null }) {
+export default function PetWindow({
+  allowResize = true,
+  configuredScale = null,
+  configuredVerticalAlignment = 'bottom',
+}) {
   const startupScale = Number.isFinite(configuredScale)
     ? Math.min(MAX_SCALE, Math.max(DEFAULT_SCALE, configuredScale))
     : DEFAULT_SCALE;
@@ -164,6 +175,10 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
   );
   const [scale, setScale] = useState(startupScale);
   const [edgeAlign, setEdgeAlign] = useState('right');
+  const [edgeVAlign, setEdgeVAlign] = useState(
+    configuredVerticalAlignment === 'top' ? 'top' : 'bottom',
+  );
+  const petRootRef = useRef(null);
   const activityListRef = useRef(null);
   const characterSlotRef = useRef(null);
   const activityCardRectRef = useRef(null);
@@ -176,7 +191,9 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
   scaleRef.current = scale;
   const edgeAlignRef = useRef(edgeAlign);
   edgeAlignRef.current = edgeAlign;
-  const alignmentGeometryRef = useRef(null);
+  const edgeVAlignRef = useRef(edgeVAlign);
+  edgeVAlignRef.current = edgeVAlign;
+  const verticalAlignmentSaveTimerRef = useRef(0);
 
   const activateSelectedPet = async (id, startup = false) => {
     const committed = await loadActivePet(id, {
@@ -199,7 +216,6 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
 
   const updateEdgeAlignment = (geometry, initial = false) => {
     if (!geometry) return;
-    alignmentGeometryRef.current = geometry;
     const dpr = window.devicePixelRatio || 1;
     const next = petEdgeAlignment({
       ...geometry,
@@ -235,7 +251,12 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
     }
     const rect = card.getBoundingClientRect();
     activityCardRectRef.current = rect.width > 0
-      ? { left: rect.left, right: rect.right }
+      ? {
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        bottom: rect.bottom,
+      }
       : null;
   };
 
@@ -395,7 +416,9 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
       const sid = event.payload && (event.payload.session_id || event.payload.sessionId);
       if (openingSessionRef.current === String(sid || '')) openingSessionRef.current = null;
       dispatchCardUi({ type: 'dismiss', sessionId: String(sid || '') });
-      if (markSessionViewed(stateRef.current, sid)) refresh();
+      if (markSessionViewed(stateRef.current, sid, {
+        completed: event.payload?.completed === true,
+      })) refresh();
     }));
     subscriptions.push(ev.listen('pet:session_unavailable', (event) => {
       const sid = event.payload && (event.payload.session_id || event.payload.sessionId);
@@ -452,6 +475,7 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
         visible,
         activityHeight,
         alignment: edgeAlignRef.current,
+        verticalAlignment: edgeVAlignRef.current,
       }).catch(() => {});
     };
     const list = activityListRef.current;
@@ -476,6 +500,7 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
         scale: startupScale,
         activityVisible: activityVisibleRef.current,
         activityHeight: activityHeightRef.current,
+        verticalAlignment: edgeVAlignRef.current,
       })
       : T.core.invoke('get_pet_scale');
     scaleRequest.then((value) => {
@@ -483,24 +508,72 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
     }).catch(() => {});
     const win = T.window.getCurrentWindow();
     let saveTimer = 0;
+    let disposed = false;
     const unlisteners = [];
     readPetDragContext(T).then((geometry) => updateEdgeAlignment(geometry, true)).catch(() => {});
-    win.onMoved(({ payload }) => {
-      if (alignmentGeometryRef.current) {
-        alignmentGeometryRef.current = { ...alignmentGeometryRef.current, position: payload };
-      }
+    // Linux/TAO 的 onMoved payload 来自 WM frame origin，而 setPosition 在 GTK
+    // 实际按 client origin 移动。事件只当作“发生了移动”的通知；稳定后重新读
+    // innerPosition，保证运行模型、持久化和下次恢复始终处于同一坐标域。
+    win.onMoved(() => {
       window.clearTimeout(saveTimer);
       saveTimer = window.setTimeout(() => {
-        T.core.invoke('save_pet_position', { x: payload.x, y: payload.y }).catch(() => {});
+        Promise.resolve(win.innerPosition()).then((position) => {
+          if (disposed) return;
+          return T.core.invoke('save_pet_position', {
+            x: position.x,
+            y: position.y,
+            verticalAlignment: edgeVAlignRef.current,
+          });
+        }).catch(() => {});
       }, 500);
     }).then((fn) => { unlisteners.push(fn); });
     win.onResized(({ payload }) => {
-      if (alignmentGeometryRef.current) {
-        alignmentGeometryRef.current = { ...alignmentGeometryRef.current, size: payload };
+      if (dragRef.current) {
+        const activeDrag = dragRef.current;
+        activeDrag.windowSize = payload;
+        const resizeSyncToken = {};
+        activeDrag.resizeSyncToken = resizeSyncToken;
+        const positionQueue = positionQueueRef.current;
+        if (positionQueue.requested && positionQueue.requested.drag === activeDrag) {
+          positionQueue.requested = null;
+        }
+        const queuedMoveSettled = waitForPetPositionWrites();
+        window.requestAnimationFrame(() => {
+          measureActivityCard();
+          queuedMoveSettled
+            .then(() => win.innerPosition())
+            .then((position) => {
+              if (dragRef.current !== activeDrag
+                || activeDrag.resizeSyncToken !== resizeSyncToken) return;
+              if (activeDrag.geometryReady) {
+                const dx = position.x - activeDrag.x;
+                const dy = position.y - activeDrag.y;
+                const shifted = (value, delta) => (
+                  Number.isFinite(value) ? value + delta : value
+                );
+                activeDrag.x = position.x;
+                activeDrag.y = position.y;
+                activeDrag.tx = shifted(activeDrag.tx, dx);
+                activeDrag.ty = shifted(activeDrag.ty, dy);
+                activeDrag.lastTx = shifted(activeDrag.lastTx, dx);
+                activeDrag.lastTy = shifted(activeDrag.lastTy, dy);
+              }
+              activeDrag.localRect = measurePetLocalRect(activeDrag);
+              activeDrag.resizeSyncToken = null;
+            })
+            .catch(() => {
+              if (dragRef.current === activeDrag
+                && activeDrag.resizeSyncToken === resizeSyncToken) {
+                activeDrag.resizeSyncToken = null;
+              }
+            });
+        });
+      } else {
+        window.requestAnimationFrame(measureActivityCard);
       }
-      if (dragRef.current) dragRef.current.windowSize = payload;
     }).then((fn) => { unlisteners.push(fn); });
     return () => {
+      disposed = true;
       window.clearTimeout(saveTimer);
       unlisteners.forEach((unlisten) => unlisten());
     };
@@ -542,33 +615,80 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
     setScheduledNotice(null);
   };
 
-  // Elastic drag: the window follows a spring, then continues with inertia and
-  // edge bounce. Horizontal drag alone switches to the directional run rows.
-  const tiltRef = useRef(null);
+  // 按住时窗口严格跟手；松手消费尾帧后立即停住。
   const dragRef = useRef(null);
   const physRafRef = useRef(0);
+  const positionQueueRef = useRef({ requested: null, inFlight: new Set() });
 
   const stopPhysics = (expected = null) => {
     if (expected && dragRef.current !== expected) return;
     dragRef.current = null;
     cancelAnimationFrame(physRafRef.current);
     physRafRef.current = 0;
-    if (tiltRef.current) tiltRef.current.style.transform = '';
+  };
+
+  const waitForPetPositionWrites = () => {
+    const queue = positionQueueRef.current;
+    const writes = [...queue.inFlight];
+    return writes.length > 0 ? Promise.allSettled(writes) : Promise.resolve();
+  };
+
+  const queuePetWindowPosition = (drag) => {
+    const queue = positionQueueRef.current;
+    const x = Math.round(drag.x);
+    const y = Math.round(drag.y);
+    if (queue.requested
+      && queue.requested.drag === drag
+      && queue.requested.x === x
+      && queue.requested.y === y) return;
+    const job = { drag, x, y };
+    queue.requested = job;
+    // rAF 已经把同一帧的鼠标事件合并成最新坐标。这里必须立即提交，不能等待
+    // 上一笔 GTK setPosition Promise；串行等待会让原生窗口阶梯式追赶鼠标，
+    // 体感等同于重新加入弹簧。inFlight 只用于 resize/新拖拽前的读取屏障。
+    const write = setPetWindowPosition(window.__TAURI__, drag.win, x, y);
+    queue.inFlight.add(write);
+    void write
+      .catch((error) => {
+        if (queue.requested === job) queue.requested = null;
+        console.error('[pet drag] setPosition failed', error);
+        if (dragRef.current === drag) stopPhysics(drag);
+      })
+      .finally(() => {
+        queue.inFlight.delete(write);
+      });
   };
 
   const stepPhysics = () => {
     const drag = dragRef.current;
-    if (!drag || !drag.base || !drag.win) return;
+    if (!drag || !drag.geometryReady || !drag.win) return;
+    if (drag.resizeSyncToken) {
+      physRafRef.current = requestAnimationFrame(stepPhysics);
+      return;
+    }
     const currentAlignment = edgeAlignRef.current;
-    const monitorScale = Number(drag.pointerScale) || Number(drag.dpr) || 1;
+    const currentVAlign = edgeVAlignRef.current;
+    let monitorScale = Number(drag.pointerScale) || 1;
+    const measuredLocalRect = drag.localRect || measurePetLocalRect(drag);
+    if (measuredLocalRect) drag.localRect = measuredLocalRect;
     const metrics = {
       size: drag.windowSize,
       alignment: currentAlignment,
+      verticalAlignment: currentVAlign,
+      viewportHeight: Number(drag.windowSize && drag.windowSize.height)
+        || window.innerHeight * monitorScale,
       characterWidth: PET_FRAME_WIDTH * scaleRef.current * monitorScale,
       characterHeight: PET_FRAME_HEIGHT * scaleRef.current * monitorScale,
       horizontalPadding: PET_EDGE_PADDING * monitorScale,
       verticalPadding: PET_BOTTOM_PADDING * monitorScale,
+      // 竖向 bounds 用起手实测的人物矩形(物理像素),规避 X11 outerSize 回读不准。
+      localTop: measuredLocalRect ? measuredLocalRect.t : undefined,
+      localBottom: measuredLocalRect ? measuredLocalRect.b : undefined,
     };
+    // 必须先消费本帧最新目标，再用人物的新位置选择活动屏。否则“跨屏+松手”
+    // 同帧发生时会按旧屏计算一次并立即停止，再也没有下一帧纠正边界/DPI。
+    // 暂不钳制原始 overshoot，让后面的横/竖布局翻转先消费它。
+    Object.assign(drag, stepPetDrag({ ...drag, bounds: null }));
     const activeMonitor = petMonitorAtPosition({
       position: { x: drag.x, y: drag.y },
       monitors: drag.monitors,
@@ -579,16 +699,35 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
       const nextScale = Number(activeMonitor.scaleFactor);
       if (Number.isFinite(nextScale) && nextScale > 0) {
         drag.pointerScale = nextScale;
-        drag.dpr = nextScale;
+        monitorScale = nextScale;
+        drag.localRect = measurePetLocalRect(drag);
+        metrics.viewportHeight = Number(drag.windowSize && drag.windowSize.height)
+          || window.innerHeight * nextScale;
+        metrics.characterWidth = PET_FRAME_WIDTH * scaleRef.current * nextScale;
+        metrics.characterHeight = PET_FRAME_HEIGHT * scaleRef.current * nextScale;
+        metrics.horizontalPadding = PET_EDGE_PADDING * nextScale;
+        metrics.verticalPadding = PET_BOTTOM_PADDING * nextScale;
+        metrics.localTop = drag.localRect ? drag.localRect.t : undefined;
+        metrics.localBottom = drag.localRect ? drag.localRect.b : undefined;
       }
     }
-    drag.bounds = petWindowBounds({
+    const windowVBounds = petClientOriginVerticalBounds({
+      monitor: drag.monitor,
+      viewportHeight: metrics.viewportHeight,
+    });
+    const desktopWindowVBounds = petConnectedClientOriginVerticalBounds({
+      monitors: drag.monitors,
+      monitor: drag.monitor,
+      viewportHeight: metrics.viewportHeight,
+    });
+    const transitionBounds = petWindowBounds({
       monitors: drag.monitors,
       monitor: drag.monitor,
       ...metrics,
     });
-    Object.assign(drag, stepPetDrag(drag));
-    if (drag.windowSize && drag.bounds) {
+    // 最终布局确定后才做 WM 可达范围钳制，否则一次大步事件会永久丢掉
+    // 鼠标抓点偏移。
+    if (drag.windowSize && transitionBounds) {
       const cardRect = activityVisibleRef.current
         && !cardsCollapsedRef.current
         && activityCardRectRef.current;
@@ -603,7 +742,7 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
         x: drag.x,
         tx: drag.tx,
         holding: drag.holding,
-        bounds: cardBounds || drag.bounds,
+        bounds: cardBounds || transitionBounds,
       });
       if (nextAlignment !== currentAlignment) {
         Object.assign(drag, rebasePetDragForAlignment(drag, {
@@ -616,47 +755,107 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
         edgeAlignRef.current = nextAlignment;
         setEdgeAlign(nextAlignment);
         window.requestAnimationFrame(measureActivityCard);
-        drag.bounds = petWindowBounds({
-          monitors: drag.monitors,
-          monitor: drag.monitor,
-          ...metrics,
-          alignment: nextAlignment,
-        });
       }
-      // 对齐 rebase 会横向平移 x，所以空洞判定必须排在它后面、且在下游读取
-      // drag.x/y 之前——否则 alignmentGeometryRef 会记到钳制前的旧坐标。
+      // 宠物窗首次 map 前已保持无装饰，setPosition / innerPosition 统一使用
+      // client origin；可达顶边就是工作区顶边，触边当帧翻转并 rebase 人物锚点。
+      const nextVAlign = petVerticalAlignmentAtDragEdge({
+        currentAlignment: currentVAlign,
+        y: drag.y,
+        ty: drag.ty,
+        holding: drag.holding,
+        bounds: windowVBounds || transitionBounds,
+        threshold: PET_VERTICAL_FLIP_MARGIN * monitorScale,
+      });
+      if (nextVAlign !== currentVAlign) {
+        const previousLocalRect = measurePetLocalRect(drag) || measuredLocalRect;
+        edgeVAlignRef.current = nextVAlign;
+        // 原生窗口坐标会在本物理帧内按新布局 rebase。React state 的 className
+        // 更新若晚一帧，人物会先随窗口跳走、下一帧才回到锚点，肉眼就是一次
+        // 卡顿/闪跳。先同步改 DOM class，确保本帧提交给合成器的布局与坐标一致；
+        // state 随后接管声明式状态。
+        if (petRootRef.current) {
+          petRootRef.current.classList.remove(`pet-valign-${currentVAlign}`);
+          petRootRef.current.classList.add(`pet-valign-${nextVAlign}`);
+        }
+        // class 已同步切换，此处只在翻转帧强制测一次新人物矩形。用真实 localTop
+        // 差值 rebase，既守住鼠标抓点，也避免重新依赖 X11 不可靠的 outerSize。
+        const nextLocalRect = petRootRef.current ? measurePetLocalRect(drag) : null;
+        Object.assign(drag, rebasePetDragForVerticalAlignment(drag, {
+          from: currentVAlign,
+          to: nextVAlign,
+          viewportHeight: metrics.viewportHeight,
+          characterHeight: metrics.characterHeight,
+          verticalPadding: metrics.verticalPadding,
+          previousLocalTop: previousLocalRect ? previousLocalRect.t : undefined,
+          nextLocalTop: nextLocalRect ? nextLocalRect.t : undefined,
+        }));
+        drag.localRect = nextLocalRect;
+        metrics.verticalAlignment = nextVAlign;
+        metrics.localTop = nextLocalRect ? nextLocalRect.t : undefined;
+        metrics.localBottom = nextLocalRect ? nextLocalRect.b : undefined;
+        setEdgeVAlign(nextVAlign);
+        const core = window.__TAURI__ && window.__TAURI__.core;
+        if (core) {
+          // 落盘不在翻转关键帧做；快速往返时只保存最终方向。
+          window.clearTimeout(verticalAlignmentSaveTimerRef.current);
+          verticalAlignmentSaveTimerRef.current = window.setTimeout(() => {
+            core.invoke('save_pet_vertical_alignment', {
+              alignment: edgeVAlignRef.current,
+            }).catch(() => {});
+          }, 250);
+        }
+        window.requestAnimationFrame(measureActivityCard);
+      }
+      drag.bounds = petWindowBounds({
+        monitors: drag.monitors,
+        monitor: drag.monitor,
+        clientOriginVerticalBounds: desktopWindowVBounds,
+        ...metrics,
+        alignment: edgeAlignRef.current,
+        verticalAlignment: edgeVAlignRef.current,
+      });
+      Object.assign(drag, clampPetDragToBounds(drag));
+      // 对齐 rebase 会平移模型原点，空洞判定必须排在它后面。
       Object.assign(drag, clampPetDragToDesktop(drag, {
         monitors: drag.monitors,
         ...metrics,
         alignment: edgeAlignRef.current,
+        verticalAlignment: edgeVAlignRef.current,
       }));
-      alignmentGeometryRef.current = {
-        position: { x: drag.x, y: drag.y },
-        size: drag.windowSize,
-        monitor: drag.monitor,
-      };
     }
-    drag.physicsSteps = (drag.physicsSteps || 0) + 1;
-    const T = window.__TAURI__;
-    setPetWindowPosition(T, drag.win, drag.x, drag.y).catch((error) => {
-      console.error('[pet drag] setPosition failed', error);
-      stopPhysics(drag);
-    });
-    if (tiltRef.current) tiltRef.current.style.transform = `rotate(${drag.tilt}deg)`;
+    queuePetWindowPosition(drag);
     if (drag.stopped) {
       stopPhysics(drag);
       return;
     }
     physRafRef.current = requestAnimationFrame(stepPhysics);
   };
-  useEffect(() => () => stopPhysics(), []);
+  useEffect(() => () => {
+    stopPhysics();
+    positionQueueRef.current.requested = null;
+    window.clearTimeout(verticalAlignmentSaveTimerRef.current);
+  }, []);
 
-  // 纯点击(未拖动)不该启动拖拽物理:stepPhysics 每帧都按 bounds 把窗口钳到
-  // 一个位置,而该 bounds 在 X11 上因窗口实际尺寸与请求尺寸不一致而偏移,于是
-  // 表现为"点一下人物就整体上移"。只有真正拖动(press.moved)才启动物理。
+  // 起手时实测人物槽在窗口内的真实矩形(物理像素):X11 下 outerSize 回读不准,
+  // 用它反推的人物底边偏高会让拖拽起手人物上跳。人物在窗口内的位置在一次拖拽
+  // 中不变,测一次缓存即可,不必每帧测(避免强制重排)。
+  const measurePetLocalRect = (drag) => {
+    const el = characterSlotRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    if (!(rect.width > 0) || !(rect.height > 0)) return null;
+    const sf = Number(drag && drag.pointerScale) || window.devicePixelRatio || 1;
+    return {
+      t: rect.top * sf,
+      b: rect.bottom * sf,
+    };
+  };
+
+  // 纯点击不启动拖拽物理，避免无位移操作触发一次无意义的窗口定位。
   const beginPetPhysics = (drag) => {
     if (!drag || drag.physicsRunning || !drag.geometryReady) return;
     drag.physicsRunning = true;
+    drag.localRect = measurePetLocalRect(drag);
     cancelAnimationFrame(physRafRef.current);
     physRafRef.current = requestAnimationFrame(stepPhysics);
   };
@@ -675,7 +874,7 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
       lastY: event.screenY,
       moved: false,
     };
-    const dpr = window.devicePixelRatio || 1;
+    const pointerScale = window.devicePixelRatio || 1;
     const previous = dragRef.current;
     const drag = {
       win: null,
@@ -684,25 +883,30 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
       startCY: event.screenY,
       currentCX: event.screenX,
       currentCY: event.screenY,
-      dpr,
-      released: false,
-      physicsSteps: 0,
-      base: null,
+      pointerScale,
+      didMove: false,
+      geometryReady: false,
       x: 0,
       y: 0,
       tx: 0,
       ty: 0,
-      vx: previous ? previous.vx : 0,
-      vy: previous ? previous.vy : 0,
+      vx: 0,
+      vy: 0,
       bounds: null,
     };
     dragRef.current = drag;
-    // 立刻停掉上一次拖拽遗留的惯性循环,避免它作用到这次的新 drag 上。
+    // 立刻停掉上一次拖拽遗留的动画帧,避免它作用到这次的新 drag 上。
     cancelAnimationFrame(physRafRef.current);
     physRafRef.current = 0;
+    const positionQueue = positionQueueRef.current;
+    positionQueue.requested = null;
+    const previousPositionSettled = waitForPetPositionWrites();
     const T = window.__TAURI__;
-    if (!T || !T.window) return;
-    readPetDragContext(T)
+    if (!T || !T.window) {
+      stopPhysics(drag);
+      return;
+    }
+    previousPositionSettled.then(() => readPetDragContext(T))
       .then(({ win, position, size, monitor, monitors }) => {
         if (dragRef.current !== drag) return;
         drag.win = win;
@@ -712,12 +916,12 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
         const monitorScale = Number(monitor && monitor.scaleFactor);
         if (Number.isFinite(monitorScale) && monitorScale > 0) {
           drag.pointerScale = monitorScale;
-          drag.dpr = monitorScale;
         }
-        Object.assign(drag, attachPetDragGeometry(drag, { position, size, monitor: null }));
-        drag.geometryReady = true;
+        Object.assign(drag, attachPetDragGeometry(drag, {
+          position,
+        }));
         // 若按下后已经移动过(真拖动),几何就绪即启动物理;纯点击则不启动。
-        if (pressRef.current && pressRef.current.moved) beginPetPhysics(drag);
+        if (drag.didMove) beginPetPhysics(drag);
       })
       .catch((error) => {
         console.error('[pet drag] read context failed', error);
@@ -733,7 +937,10 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
     if (press) {
       const dx = event.screenX - press.x;
       const dy = event.screenY - press.y;
-      if (Math.abs(dx) + Math.abs(dy) > 4) press.moved = true;
+      if (Math.abs(dx) + Math.abs(dy) > 4) {
+        press.moved = true;
+        if (drag) drag.didMove = true;
+      }
       motionX = event.screenX - press.lastX;
       motionY = event.screenY - press.lastY;
       setDragAnimation((current) => dragAnimationFromMotion(current, motionX, motionY));
@@ -743,8 +950,8 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
     if (drag && drag.holding) {
       drag.currentCX = event.screenX;
       drag.currentCY = event.screenY;
-      if (drag.base) {
-        const pointerScale = Number(drag.pointerScale) || Number(drag.dpr) || 1;
+      if (drag.geometryReady) {
+        const pointerScale = Number(drag.pointerScale) || 1;
         drag.tx += motionX * pointerScale;
         drag.ty += motionY * pointerScale;
       }
@@ -757,8 +964,14 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
     const press = pressRef.current;
     pressRef.current = null;
     setDragAnimation(null);
-    if (dragRef.current) Object.assign(dragRef.current, releasePetDrag(dragRef.current));
-    if (!cancelled && press && !press.moved) openMain(null);
+    const drag = dragRef.current;
+    const isClick = !cancelled && press && !press.moved;
+    if (cancelled || !press || !press.moved) {
+      stopPhysics(drag);
+      if (isClick) openMain(null);
+      return;
+    }
+    if (drag) Object.assign(drag, releasePetDrag(drag));
   };
 
   const resizeRef = useRef(null);
@@ -778,6 +991,7 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
           scale: next,
           anchor: hasCharacterAnchor ? 'character_top_left' : 'top_left',
           alignment: drag.alignment,
+          verticalAlignment: edgeVAlignRef.current,
           anchorX: hasCharacterAnchor ? drag.anchorX : null,
           anchorY: hasCharacterAnchor ? drag.anchorY : null,
           activityVisible: activityVisibleRef.current,
@@ -844,7 +1058,7 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
     const T = window.__TAURI__;
     const rect = characterSlotRef.current?.getBoundingClientRect();
     Promise.resolve()
-      .then(() => T?.window?.getCurrentWindow()?.outerPosition())
+      .then(() => T?.window?.getCurrentWindow()?.innerPosition())
       .then((position) => petScreenAnchorFromRect({
         position,
         rect,
@@ -970,7 +1184,8 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
 
   return (
     <div
-      className={`pet-root pet-align-${edgeAlign}`}
+      ref={petRootRef}
+      className={`pet-root pet-align-${edgeAlign} pet-valign-${edgeVAlign}`}
       style={{ '--pet-character-width': `${PET_FRAME_WIDTH * scale}px` }}
       onContextMenu={suppressContextMenu}
     >
@@ -1184,9 +1399,7 @@ export default function PetWindow({ allowResize = true, configuredScale = null }
                 if (event.key === 'Enter' || event.key === ' ') openMain(null);
               }}
             >
-              <div className="pet-tilt" ref={tiltRef}>
-                <PetSprite pet={activePet} animation={animation} />
-              </div>
+              <PetSprite pet={activePet} animation={animation} />
             </div>
           </div>
         )}

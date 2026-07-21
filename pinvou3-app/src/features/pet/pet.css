@@ -26,6 +26,20 @@ html.pet-window #root {
   box-sizing: border-box;
 }
 
+/* 靠近屏幕顶部时把人物放到窗口顶部、活动卡放到人物下方。
+   这样 X11 无需使用会被窗口管理器拒绝的负 y 坐标，人物仍能真正贴顶。 */
+.pet-root.pet-valign-top {
+  justify-content: flex-start;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.pet-root.pet-valign-top .pet-activities {
+  order: 1;
+  margin-top: 2px;
+  margin-bottom: 0;
+}
+
 .pet-root.pet-align-left {
   align-items: flex-start;
   padding-left: 24px;
@@ -47,12 +61,6 @@ html.pet-window #root {
   left: 50%;
   bottom: 0;
   transform-origin: 50% 100%;
-}
-
-/* 拖拽倾斜层:JS 按水平速度直接写 rotate(不走 React state,60fps)。 */
-.pet-tilt {
-  transform-origin: 50% 90%;
-  will-change: transform;
 }
 
 .pet-character {

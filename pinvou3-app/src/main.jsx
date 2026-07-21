@@ -615,7 +615,10 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
           if (typeof document.hasFocus === 'function' && !document.hasFocus()) return;
           if (currentViewRef.current !== 'chat') return;
           if (String(activeChatRef.current) !== String(sid)) return;
-          emitToPet('pet:session_viewed', { session_id: sid }).catch(() => {});
+          emitToPet('pet:session_viewed', {
+            session_id: sid,
+            completed: true,
+          }).catch(() => {});
         }).then((unlisten) => {
           if (disposed) unlisten();
           else unlisteners.push(unlisten);

@@ -9,7 +9,7 @@
     "dev:ui": "tauri dev",
     "serve:src": "vite",
     "build:ui": "vite build",
-    "lint:ui": "eslint src/main.jsx src/pet-main.jsx src/pet-menu-main.js src/components src/features src/hooks src/shared",
+    "lint:ui": "eslint src/main.jsx src/pet-main.jsx src/components src/features src/hooks src/shared",
     "build": "tauri build",
     "test:update-notice": "node tests/update_notice_logic.test.js",
     "test:diff-parser": "node tests/unified_diff_parser.test.js",

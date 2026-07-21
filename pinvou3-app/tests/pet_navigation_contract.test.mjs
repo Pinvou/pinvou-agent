@@ -43,7 +43,6 @@ assert.match(petCss, /\.pet-root\.pet-align-right\s*\{/);
 assert.match(petWindow, /className="pet-character-slot"/);
 assert.match(petWindow, /invoke\(['"]set_pet_activity_visible['"]/);
 // 右键菜单为窗口内 DOM 浮层(不再 invoke 原生菜单窗口:GB10 malloc 闪退)。
-// 注:Rust 侧 show/hide_pet_context_menu 暂留 dormant,待清理批次删除。
 assert.match(petWindow, /const onCharacterContextMenu = \(event\) => \{/);
 assert.match(petWindow, /setCtxMenu\(\{ x, y \}\)/);
 assert.match(petWindow, /className="pet-context-menu"/);
@@ -57,17 +56,12 @@ assert.match(rustPetWindow, /pet:navigation_pending/);
 assert.match(rustPetWindow, /pub async fn take_pet_navigation/);
 assert.match(rustPetWindow, /emit_to\(\s*['"]main['"]/);
 assert.match(rustPetWindow, /pub async fn set_pet_activity_visible/);
-assert.match(
-  rustPetWindow,
-  /pub async fn show_pet_context_menu[\s\S]{0,900}?WebviewWindowBuilder::new\([\s\S]{0,120}?PET_MENU_LABEL[\s\S]{0,120}?pet-menu\.html[\s\S]{0,500}?inner_size\(PET_MENU_WIDTH, PET_MENU_HEIGHT\)/,
-  'the compact context menu must use an independent cursor-anchored window',
-);
+assert.doesNotMatch(rustPetWindow, /PET_MENU_LABEL|show_pet_context_menu|hide_pet_context_menu/);
 assert.match(rustLib, /pet_window::open_main_from_pet/);
 assert.match(rustLib, /pet_window::take_pet_navigation/);
 assert.match(rustLib, /manage\(pet_window::PetNavigationState::default\(\)\)/);
 assert.match(rustLib, /pet_window::set_pet_activity_visible/);
-assert.match(rustLib, /pet_window::show_pet_context_menu/);
-assert.match(rustLib, /pet_window::hide_pet_context_menu/);
+assert.doesNotMatch(rustLib, /pet_window::(?:show|hide)_pet_context_menu/);
 
 assert.match(main, /listen\(['"]pet:navigation_pending['"]/);
 assert.match(main, /invoke\(['"]take_pet_navigation['"]\)/);
