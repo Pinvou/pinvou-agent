@@ -25,7 +25,8 @@ name = "pinvou3_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
-default = []
+default = ["local-embed"]
+local-embed = ["dep:fastembed"]
 dev-tools = []
 
 [build-dependencies]
@@ -95,7 +96,6 @@ walkdir = "2"
 
 # 本地 embedding（L1 语义检索）：fastembed-rs 进程内 ONNX 推理（CPU EP），**不依赖 vLLM**。
 # 模型(bge-m3 ONNX)用户本地下载，UserDefinedEmbeddingModel 从目录加载，不走 HF 自动下载。
-
 # 电子表格解析（file_ingest 用）：纯 Rust 读 xlsx/xls/ods 的**全部工作表**。
 # 旧实现走 LibreOffice CSV 只导「活动工作表」，多 sheet 文件会丢 90% 内容（实测散热
 # 报告 4 sheet 只抽到首页 418 字）；calamine 直接按 reader 嗅探格式、逐 sheet 逐行读。
@@ -116,11 +116,11 @@ device_query = "2"
 
 # keyring 不再直接依赖 —— 凭证走底座 codewhale-secrets(它内部按平台引 keyring)。
 [target.'cfg(windows)'.dependencies]
-fastembed = { version = "4", default-features = false, features = ["ort-load-dynamic"] }
+fastembed = { version = "4", default-features = false, features = ["ort-load-dynamic"], optional = true }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Performance", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 
 [target.'cfg(not(windows))'.dependencies]
-fastembed = "4"
+fastembed = { version = "4", optional = true }
 
 # Linux webview(webkit2gtk)默认拒绝 getUserMedia → 语音输入点麦克风被拒。
 # 连 permission-request 信号放行 UserMedia(麦克风)请求。版本对齐 wry 0.55 用的 2.0.x。

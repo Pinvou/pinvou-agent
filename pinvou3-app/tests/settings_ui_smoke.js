@@ -1,0 +1,655 @@
+#!/usr/bin/env node
+/**
+ * 设置页全局配置 smoke：加载真实 Vite dist，mock TauriBridge，点击真实 React UI。
+ * 覆盖模型/搜索/权限/帮助反馈四个高风险设置面板：
+ * - 模型列表默认单选、删除二次确认、本地模型不可删除、添加模型保存条件、编辑模型回显凭据和同厂商切换
+ * - 搜索源交互与模型页一致，添加源未点保存不得持久化，确认重启后才写设置
+ * - 高级执行权限失败时回滚并 toast 提示
+ * - 反馈弹窗保持与模型/搜索一致的 iOS 规格，提交成功不使用原生 alert
+ */
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { startUiTestServer } = require('./ui_test_server');
+
+function loadPuppeteer() {
+  try { return require('puppeteer-core'); } catch (_) { /* fall through */ }
+  const npx = path.join(os.homedir(), '.npm', '_npx');
+  if (fs.existsSync(npx)) {
+    for (const directory of fs.readdirSync(npx)) {
+      const candidate = path.join(npx, directory, 'node_modules', 'puppeteer-core');
+      if (fs.existsSync(candidate)) {
+        try { return require(candidate); } catch (_) { /* try next */ }
+      }
+    }
+  }
+  console.error('SKIP: 找不到 puppeteer-core');
+  process.exit(2);
+}
+
+const puppeteer = loadPuppeteer();
+const CHROME = process.env.CHROME || [
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+  '/snap/bin/chromium',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+  '/usr/bin/google-chrome',
+  '/usr/bin/google-chrome-stable',
+].find(candidate => fs.existsSync(candidate));
+if (!CHROME) {
+  console.error('SKIP: 未找到 chromium/chrome，可用 env CHROME=/path/to/chrome 指定');
+  process.exit(2);
+}
+const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-settings-'));
+
+function injectSource() {
+  return `(function () {
+    var handlers = Object.create(null);
+    var settings = {
+      theme: 'liquid-light',
+      language: 'zh-Hans',
+      memory_enabled: false,
+      notifications: { enabled: true, task_completed: true },
+      pet: { enabled: false },
+      search: {
+        provider: 'bing',
+        enabled_providers: ['bing', 'metaso'],
+        api_key: null,
+        credentials: {
+          metaso: { credential_state: 'configured', has_secret: true },
+        },
+      },
+      advanced: {},
+    };
+    var models = [
+      {
+        id: 'local-qwen',
+        name: '本地 vLLM',
+        preset: 'local_vllm',
+        model: 'qwen36_35b_256k',
+        base_url: 'http://127.0.0.1:8000/v1',
+        has_secret: false,
+        credential_state: 'missing',
+      },
+      {
+        id: 'cloud-deepseek',
+        name: 'DeepSeek',
+        preset: 'deepseek',
+        model: 'deepseek-v4-flash',
+        base_url: 'https://api.deepseek.com',
+        has_secret: true,
+        credential_state: 'configured',
+      },
+    ];
+    var activeModelId = 'local-qwen';
+    var superPerm = false;
+    var calls = [];
+    var updateResponse = { available: false, current_version: '0.6.1', latest_version: '0.6.1', notes: '', platform: 'windows' };
+    var pendingDownloadResolve = null;
+    function record(cmd, args) { calls.push({ cmd: cmd, args: args || null }); }
+    window.alert = function (message) { record('window_alert', { message: message }); };
+    window.confirm = function (message) { record('window_confirm', { message: message }); return true; };
+    function emit(name, payload) {
+      return Promise.all((handlers[name] || []).slice().map(function (handler) {
+        return handler({ payload: payload || {} });
+      }));
+    }
+    function invoke(cmd, args) {
+      record(cmd, args);
+      switch (cmd) {
+        case 'get_settings': return Promise.resolve(settings);
+        case 'update_settings': settings = args.prefs; return Promise.resolve(null);
+        case 'save_settings_and_restart': settings = args.prefs; return Promise.resolve(null);
+        case 'get_effective_model_config': return Promise.resolve({ model: 'qwen36_35b_256k', base_url: 'http://127.0.0.1:8000/v1', preset: 'local_vllm', api_key_set: false });
+        case 'list_models': return Promise.resolve({ models: models.slice(), active_model_id: activeModelId });
+        case 'reveal_model_api_key': return Promise.resolve(args.id === 'cloud-deepseek' ? 'sk-saved-deepseek' : null);
+        case 'save_model':
+          models = models.filter(function (model) { return model.id !== args.model.id; }).concat(Object.assign({}, args.model, {
+            has_secret: !!(args.model.api_key || args.model.preset === 'local_vllm'),
+            credential_state: args.model.preset === 'local_vllm' ? 'missing' : 'configured',
+          }));
+          return Promise.resolve(null);
+        case 'delete_model':
+          models = models.filter(function (model) { return model.id !== args.id; });
+          if (activeModelId === args.id) activeModelId = models[0] && models[0].id;
+          return Promise.resolve(null);
+        case 'set_active_model': activeModelId = args.id; return Promise.resolve(null);
+        case 'test_model_connection': return Promise.resolve('ok');
+        case 'discover_local_vllm': return Promise.resolve({ candidates: [] });
+        case 'detect_local_vllm_setup': return Promise.resolve({ eligible: false, has_packages: false, vllm_online: false });
+        case 'get_selected_pet': return Promise.resolve('lingling');
+        case 'list_sessions': return Promise.resolve([]);
+        case 'get_super_permission_status': return Promise.resolve(superPerm);
+        case 'set_super_permission': return Promise.reject(new Error('pkexec unavailable'));
+        case 'list_personas': return Promise.resolve([]);
+        case 'get_backend_status': return Promise.resolve({ online: true, ok: true, status: 'online' });
+        case 'check_for_update': return Promise.resolve(Object.assign({}, updateResponse));
+        case 'download_update': return new Promise(function (resolve) { pendingDownloadResolve = resolve; });
+        case 'install_update': return Promise.resolve(null);
+        case 'find_resumable_run': return Promise.resolve(null);
+        case 'check_dependencies': return Promise.resolve([]);
+        case 'submit_feedback': return Promise.resolve({ status: 'submitted', message: '反馈已提交，感谢你的帮助。' });
+        case 'list_marketplace_tools': return Promise.resolve([]);
+        case 'get_mode_state': return Promise.resolve({ mode: 'yolo', plan_phase: 'none' });
+        case 'get_active_persona': return Promise.resolve(null);
+        case 'list_workflows': return Promise.resolve([]);
+        case 'list_workspace_files': return Promise.resolve([]);
+        case 'list_scheduled_tasks': return Promise.resolve([]);
+        case 'list_scheduled_task_recent_runs': return Promise.resolve([]);
+        case 'get_app_version': return Promise.resolve('0.6.1');
+        default: return Promise.resolve(null);
+      }
+    }
+    window.__SETTINGS_TEST__ = {
+      calls: calls,
+      emit: emit,
+      models: function () { return models.slice(); },
+      settings: function () { return settings; },
+      activeModelId: function () { return activeModelId; },
+      setUpdateResponse: function (next) { updateResponse = Object.assign({}, updateResponse, next || {}); },
+      resolveDownload: function () {
+        if (pendingDownloadResolve) {
+          var resolve = pendingDownloadResolve;
+          pendingDownloadResolve = null;
+          resolve({ package_path: 'C:\\\\tmp\\\\pinvou.zip', installer_path: 'C:\\\\tmp\\\\pinvou.msi', latest_version: updateResponse.latest_version });
+        }
+      },
+    };
+    window.__TAURI__ = {
+      core: { invoke: invoke },
+      event: {
+        listen: function (name, handler) {
+          (handlers[name] || (handlers[name] = [])).push(handler);
+          return Promise.resolve(function () {
+            var index = handlers[name].indexOf(handler);
+            if (index >= 0) handlers[name].splice(index, 1);
+          });
+        },
+        emit: emit,
+      },
+      window: {
+        getCurrentWindow: function () {
+          return {
+            minimize: function () {},
+            maximize: function () {},
+            close: function () {},
+            toggleMaximize: function () {},
+            isMaximized: function () { return Promise.resolve(false); },
+            onResized: function () { return Promise.resolve(function () {}); },
+            startDragging: function () {},
+          };
+        },
+      },
+      dialog: { open: function () { return Promise.resolve(null); } },
+    };
+  })();`;
+}
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const callCount = (page, cmd) => page.evaluate(command =>
+  window.__SETTINGS_TEST__.calls.filter(call => call.cmd === command).length, cmd);
+
+async function clickExact(page, text) {
+  const ok = await page.evaluate(t => {
+    const elements = [...document.querySelectorAll('button,span,div,a,h1,h2')].filter(element => (element.textContent || '').trim() === t);
+    const element = elements.find(el => el.tagName === 'BUTTON') || elements[elements.length - 1];
+    if (!element) return false;
+    const target = element.closest('button') || element;
+    target.scrollIntoView({ block: 'center' });
+    target.click();
+    return true;
+  }, text);
+  if (!ok) throw new Error('找不到可点击文本: ' + text);
+}
+
+async function clickSettingsSection(page, label) {
+  const ok = await page.evaluate(text => {
+    const buttons = [...document.querySelectorAll('aside button')].filter(button => (button.textContent || '').trim() === text);
+    const button = buttons[buttons.length - 1];
+    if (!button) return false;
+    button.click();
+    return true;
+  }, label);
+  if (!ok) throw new Error('找不到设置分区: ' + label);
+  await sleep(250);
+}
+
+async function clickRowAction(page, rowText, actionText) {
+  const ok = await page.evaluate((rowText, actionText) => {
+    const row = [...document.querySelectorAll('div')].find(node =>
+      typeof node.className === 'string'
+      && node.className.includes('grid-cols-')
+      && (node.textContent || '').includes(rowText));
+    const button = row && [...row.querySelectorAll('button')].find(candidate => (candidate.textContent || '').trim() === actionText);
+    if (!button) return false;
+    button.scrollIntoView({ block: 'center' });
+    button.click();
+    return true;
+  }, rowText, actionText);
+  if (!ok) throw new Error('找不到行操作: ' + rowText + ' / ' + actionText);
+}
+
+async function clickRowRadio(page, rowText) {
+  const ok = await page.evaluate(rowText => {
+    const row = [...document.querySelectorAll('div')].find(node =>
+      typeof node.className === 'string'
+      && node.className.includes('grid-cols-')
+      && (node.textContent || '').includes(rowText));
+    const button = row && row.querySelector('button[title]');
+    if (!button) return false;
+    button.scrollIntoView({ block: 'center' });
+    button.click();
+    return true;
+  }, rowText);
+  if (!ok) throw new Error('找不到行单选: ' + rowText);
+}
+
+async function modalWidth(page, headingText) {
+  return page.evaluate(text => {
+    const heading = [...document.querySelectorAll('h2,h3')].find(node => (node.textContent || '').trim() === text);
+    if (!heading) return null;
+    let node = heading.parentElement;
+    while (node && node.getBoundingClientRect().width < 200) node = node.parentElement;
+    return node ? Math.round(node.getBoundingClientRect().width) : null;
+  }, headingText);
+}
+
+(async () => {
+  const { url } = await startUiTestServer();
+  const browser = await puppeteer.launch({
+    executablePath: CHROME,
+    headless: 'new',
+    args: ['--no-sandbox', '--disable-gpu', '--no-first-run', '--no-default-browser-check'],
+    userDataDir: PROFILE,
+  });
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('console', message => { if (message.type() === 'error') errors.push('console:' + message.text()); });
+  await page.evaluateOnNewDocument(injectSource());
+  await page.setViewport({ width: 1440, height: 1000 });
+  await page.goto(url, { waitUntil: 'networkidle0' });
+  await page.waitForFunction(() => window.TauriBridge && document.querySelector('[data-testid="app-root"]'), { timeout: 20000 });
+  await sleep(1000);
+
+  const results = [];
+  const rec = (name, pass, detail = '') => {
+    results.push({ name, pass });
+    console.log(`${pass ? '✅' : '❌'} ${name}${detail ? '  ' + detail : ''}`);
+  };
+
+  await page.evaluate(() => {
+    const button = [...document.querySelectorAll('button[title="设置"]')].pop();
+    if (button) button.click();
+  });
+  await page.waitForFunction(() => document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view') === 'settings', { timeout: 8000 });
+  await sleep(400);
+  rec('① 设置页可打开且无错误边界', await page.evaluate(() => document.body.innerText.includes('通用') && !document.body.innerText.includes('设置页加载失败')));
+
+  await clickSettingsSection(page, '更新');
+  await page.evaluate(async () => {
+    window.__SETTINGS_TEST__.setUpdateResponse({
+      available: true,
+      current_version: '0.6.1',
+      latest_version: '0.6.2',
+      notes: '设置页更新按钮测试',
+      platform: 'windows',
+    });
+    await window.TauriBridge.checkForUpdate();
+  });
+  await sleep(500);
+  const beforeDownloadCalls = await callCount(page, 'download_update');
+  await page.click('#settings-version-update [data-settings-update-action="true"]');
+  await page.evaluate(() => window.__SETTINGS_TEST__.emit('update:progress', { downloaded: 37, total: 100 }));
+  await sleep(500);
+  const updateDownloadState = await page.evaluate(() => {
+    const root = document.querySelector('#settings-version-update');
+    const button = root && root.querySelector('button');
+    return {
+      disabled: !!(button && button.disabled),
+      text: button ? button.textContent.trim() : '',
+      desc: root ? root.innerText : '',
+    };
+  });
+  const afterDownloadCalls = await callCount(page, 'download_update');
+  rec('①b 设置页下载按钮进入下载态后禁用并显示进度',
+    beforeDownloadCalls === 0
+    && afterDownloadCalls === 1
+    && updateDownloadState.disabled
+    && updateDownloadState.text.includes('下载中 37%')
+    && updateDownloadState.desc.includes('正在下载更新 37%'),
+    JSON.stringify(updateDownloadState));
+  await page.evaluate(() => window.__SETTINGS_TEST__.resolveDownload());
+  await sleep(250);
+
+  await clickSettingsSection(page, '模型');
+  const modelList = await page.evaluate(() => {
+    const text = document.body.innerText;
+    const rows = [...document.querySelectorAll('div')].filter(node => typeof node.className === 'string' && node.className.includes('grid-cols-'));
+    const deepseekRow = rows.find(node => (node.textContent || '').includes('deepseek-v4-flash'));
+    const localRow = rows.find(node => (node.textContent || '').includes('qwen36_35b_256k') && (node.textContent || '').includes('本地模型'));
+    return {
+      localTag: text.includes('本地模型'),
+      activeTag: text.includes('默认'),
+      noStatusNoise: !text.includes('已配置') && !text.includes('未配置'),
+      localHasNoDelete: !!localRow && !(localRow.textContent || '').includes('删除'),
+      cloudHasDelete: !!deepseekRow,
+      oldSaveSearchButtonHidden: !text.includes('保存搜索配置'),
+    };
+  });
+  rec('② 模型列表符合 iOS 列表交互标识', Object.values(modelList).every(Boolean), JSON.stringify(modelList));
+
+  await clickRowRadio(page, 'deepseek-v4-flash');
+  await sleep(350);
+  const activeSet = await page.evaluate(() => window.__SETTINGS_TEST__.activeModelId());
+  rec('③ 圆圈单选可设默认模型', activeSet === 'cloud-deepseek', activeSet);
+
+  await clickRowAction(page, 'deepseek-v4-flash', '编辑');
+  await sleep(250);
+  const maskedSavedKey = await page.evaluate(() => ({
+    maskedPlaceholder: [...document.querySelectorAll('input')].some(node => node.placeholder === '••••••••'),
+    noConfiguredText: !document.body.innerText.includes('已配置'),
+  }));
+  await clickExact(page, '显示');
+  await sleep(350);
+  const editModelBehavior = await page.evaluate(() => {
+    const text = document.body.innerText;
+    const input = [...document.querySelectorAll('input')].find(node => node.value === 'sk-saved-deepseek');
+    return {
+      revealCall: window.__SETTINGS_TEST__.calls.some(call => call.cmd === 'reveal_model_api_key' && call.args.id === 'cloud-deepseek'),
+      keyRevealed: !!input,
+      sameProviderOnlyClosed: !text.includes('kimi-k3') && !text.includes('glm-5.2'),
+    };
+  });
+  await clickExact(page, '更换');
+  await sleep(250);
+  const sameProviderPicker = await page.evaluate(() => {
+    const text = document.body.innerText;
+    return text.includes('deepseek-v4-pro') && text.includes('deepseek-v4-flash') && !text.includes('kimi-k3') && !text.includes('glm-5.2');
+  });
+  rec('④ 编辑模型默认掩码显示已保存 Key，显示后回显且只允许同厂商更换', Object.values(maskedSavedKey).every(Boolean) && Object.values(editModelBehavior).every(Boolean) && sameProviderPicker, JSON.stringify({ ...maskedSavedKey, ...editModelBehavior, sameProviderPicker }));
+  await clickExact(page, '取消');
+  await sleep(200);
+
+  await clickExact(page, '添加模型');
+  await sleep(250);
+  await clickExact(page, '自定义 DeepSeek 模型');
+  await sleep(250);
+  const modelIdInput = await page.$('input[placeholder="输入模型 ID"]');
+  await modelIdInput.click();
+  await modelIdInput.type('custom-model-id');
+  const typedModelId = await page.evaluate(() => document.querySelector('input[placeholder="输入模型 ID"]')?.value || '');
+  rec('④ 模型 ID 输入框可连续输入', typedModelId === 'custom-model-id', typedModelId);
+  await clickExact(page, '取消');
+  await sleep(200);
+
+  const deleteBefore = await callCount(page, 'delete_model');
+  await clickRowAction(page, 'deepseek-v4-flash', '删除');
+  await sleep(250);
+  const deleteDialog = await page.evaluate(() => document.body.innerText.includes('删除模型？') && document.body.innerText.includes('将移除该模型配置'));
+  const deleteWidth = await modalWidth(page, '删除模型？');
+  const deleteStillBeforeConfirm = await callCount(page, 'delete_model');
+  rec('④ 删除模型先出 iOS 二次确认且未立即删除', deleteDialog && deleteWidth >= 260 && deleteWidth <= 285 && deleteStillBeforeConfirm === deleteBefore, `width=${deleteWidth}`);
+  await clickExact(page, '取消');
+  await sleep(200);
+  await clickRowAction(page, 'deepseek-v4-flash', '删除');
+  await sleep(200);
+  await clickExact(page, '删除模型');
+  await sleep(500);
+  const deleted = await page.evaluate(() => ({
+    calls: window.__SETTINGS_TEST__.calls.filter(call => call.cmd === 'delete_model').map(call => call.args.id),
+    remaining: window.__SETTINGS_TEST__.models().map(model => model.id),
+  }));
+  rec('⑤ 确认后才调用删除模型并刷新列表', deleted.calls.includes('cloud-deepseek') && !deleted.remaining.includes('cloud-deepseek'), JSON.stringify(deleted));
+
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  const modelPickerWidth = await modalWidth(page, '添加模型');
+  const freshCatalog = await page.evaluate(() => {
+    const text = document.body.innerText;
+    const stale = ['deepseek-chat', 'kimi-k2.5', 'glm-4-plus', 'minimax-m1', 'abab6.5s-chat', 'mimo-v2-flash', 'qwen-max', 'qwen-plus', 'qwen-turbo', 'doubao-pro-256k', 'gpt-4o'];
+    return {
+      hasLatest: text.includes('kimi-k3') && text.includes('MiniMax-M3') && text.includes('mimo-v2.5-pro') && text.includes('qwen3.7-plus') && text.includes('doubao-seed-2.1-pro'),
+      noStale: stale.every(name => !text.includes(name)),
+    };
+  });
+  rec('⑥ 内置模型目录不展示已下线或弃用推荐项', Object.values(freshCatalog).every(Boolean), JSON.stringify(freshCatalog));
+  await clickExact(page, 'deepseek-v4-pro');
+  await sleep(300);
+  const addModelBeforeKey = await page.evaluate(() => {
+    const text = document.body.innerText;
+    const save = [...document.querySelectorAll('button')].reverse().find(button => (button.textContent || '').trim() === '保存');
+    return {
+      noAdvancedCollapse: !text.includes('高级设置'),
+      noApiUrlForBuiltIn: !text.includes('API 地址'),
+      saveDisabled: !!save && save.disabled,
+      hasSingleKeyInput: document.querySelectorAll('input[placeholder="输入 API Key"]').length === 1,
+    };
+  });
+  rec('⑥ 添加内置云模型表单精简且 API Key 前禁用保存', modelPickerWidth >= 430 && modelPickerWidth <= 455 && Object.values(addModelBeforeKey).every(Boolean), JSON.stringify({ modelPickerWidth, ...addModelBeforeKey }));
+  const apiInput = await page.$('input[placeholder="输入 API Key"]');
+  await apiInput.type('sk-model-test');
+  await sleep(150);
+  await clickExact(page, '保存');
+  await sleep(500);
+  const savedModel = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return call && call.args && call.args.model;
+  });
+  rec('⑦ 输入 API Key 后可保存新增模型', savedModel && savedModel.model === 'deepseek-v4-pro' && savedModel.api_key === 'sk-model-test', JSON.stringify(savedModel));
+
+  await clickSettingsSection(page, '搜索');
+  const searchList = await page.evaluate(() => {
+    const text = document.body.innerText;
+    return {
+      hasBing: text.includes('Bing'),
+      hasMetaso: text.includes('秘塔'),
+      noStatusNoise: !text.includes('已配置') && !text.includes('未配置'),
+      noStandaloneSave: !text.includes('保存搜索配置'),
+      addInGroup: text.includes('添加搜索源'),
+    };
+  });
+  rec('⑧ 搜索列表按模型页交互精简', Object.values(searchList).every(Boolean), JSON.stringify(searchList));
+
+  await clickRowAction(page, '秘塔', '编辑');
+  await sleep(250);
+  const existingSearchNoChange = await page.evaluate(() => {
+    const text = document.body.innerText;
+    const save = [...document.querySelectorAll('button')].reverse().find(button => (button.textContent || '').trim() === '保存');
+    return {
+      dialog: text.includes('编辑搜索源') && text.includes('秘塔'),
+      masked: !!document.querySelector('input[placeholder="••••••••"]'),
+      saveDisabled: !!save && save.disabled,
+    };
+  });
+  rec('⑧.1 已有搜索源未输入新 Key 时保存置灰', Object.values(existingSearchNoChange).every(Boolean), JSON.stringify(existingSearchNoChange));
+  await clickExact(page, '取消');
+  await sleep(150);
+
+  const savesBeforePick = await callCount(page, 'save_settings_and_restart');
+  await clickExact(page, '添加搜索源');
+  await sleep(250);
+  const searchPickerWidth = await modalWidth(page, '添加搜索源');
+  await clickExact(page, '博查');
+  await sleep(300);
+  const pickWithoutSave = await page.evaluate(() => ({
+    restartDialog: document.body.innerText.includes('重启以应用搜索配置？'),
+    saveButtonDisabled: [...document.querySelectorAll('button')].some(button => (button.textContent || '').trim() === '保存' && button.disabled),
+    bochaInSavedSettings: (window.__SETTINGS_TEST__.settings().search.enabled_providers || []).includes('bocha'),
+  }));
+  const savesAfterPick = await callCount(page, 'save_settings_and_restart');
+  rec('⑨ 选择搜索源但未点保存不会持久化', searchPickerWidth >= 430 && searchPickerWidth <= 455 && !pickWithoutSave.restartDialog && pickWithoutSave.saveButtonDisabled && !pickWithoutSave.bochaInSavedSettings && savesAfterPick === savesBeforePick, JSON.stringify({ searchPickerWidth, ...pickWithoutSave, savesBeforePick, savesAfterPick }));
+
+  const searchKeyInput = await page.$('input[placeholder="输入 API Key"]');
+  await searchKeyInput.click();
+  await searchKeyInput.type('bocha-key');
+  const typedValue = await page.evaluate(() => document.querySelector('input[placeholder="输入 API Key"]')?.value || '');
+  rec('⑩ 搜索源 API Key 输入框可连续输入', typedValue === 'bocha-key', typedValue);
+  await clickExact(page, '保存');
+  await sleep(300);
+  const restartPrompt = await page.evaluate(() => document.body.innerText.includes('重启以应用搜索配置？'));
+  const savesBeforeRestart = await callCount(page, 'save_settings_and_restart');
+  rec('⑪ 搜索源保存后先提示重启，未确认前不写盘重启', restartPrompt && savesBeforeRestart === savesBeforePick, String(savesBeforeRestart));
+  await clickExact(page, '现在重启');
+  await sleep(300);
+  const searchSaved = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_settings_and_restart');
+    const search = call && call.args && call.args.prefs && call.args.prefs.search;
+    return search && {
+      provider: search.provider,
+      enabled: search.enabled_providers,
+      bochaAction: search.credentials && search.credentials.bocha && search.credentials.bocha.credential_action,
+      bochaKey: search.credentials && search.credentials.bocha && search.credentials.bocha.api_key,
+    };
+  });
+  rec('⑫ 确认重启后写入搜索源和凭据草稿', searchSaved && searchSaved.provider === 'bocha' && searchSaved.enabled.includes('bocha') && searchSaved.bochaAction === 'replace' && searchSaved.bochaKey === 'bocha-key', JSON.stringify(searchSaved));
+
+  await clickSettingsSection(page, '搜索');
+  const savesBeforeDeleteLater = await callCount(page, 'update_settings');
+  const restartsBeforeDeleteLater = await callCount(page, 'save_settings_and_restart');
+  await clickRowAction(page, '秘塔', '删除');
+  await sleep(250);
+  const searchDeleteWidth = await modalWidth(page, '删除搜索源？');
+  const searchDeleteDialog = await page.evaluate(() => document.body.innerText.includes('删除搜索源？') && document.body.innerText.includes('将移除 秘塔'));
+  await clickExact(page, '删除搜索源');
+  await sleep(250);
+  await clickExact(page, '稍后');
+  await sleep(300);
+  const deleteLaterSaved = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'update_settings');
+    const search = call && call.args && call.args.prefs && call.args.prefs.search;
+    return search && {
+      enabled: search.enabled_providers,
+      metasoAction: search.credentials && search.credentials.metaso && search.credentials.metaso.credential_action,
+    };
+  });
+  const savesAfterDeleteLater = await callCount(page, 'update_settings');
+  const restartsAfterDeleteLater = await callCount(page, 'save_settings_and_restart');
+  rec('⑬ 删除搜索源使用窄 iOS 确认框，选择稍后会写盘但不重启',
+    searchDeleteDialog
+      && searchDeleteWidth >= 260
+      && searchDeleteWidth <= 285
+      && savesAfterDeleteLater === savesBeforeDeleteLater + 1
+      && restartsAfterDeleteLater === restartsBeforeDeleteLater
+      && deleteLaterSaved
+      && !deleteLaterSaved.enabled.includes('metaso')
+      && deleteLaterSaved.metasoAction === 'delete',
+    JSON.stringify({ width: searchDeleteWidth, savesBeforeDeleteLater, savesAfterDeleteLater, restartsBeforeDeleteLater, restartsAfterDeleteLater, deleteLaterSaved }));
+
+  await clickSettingsSection(page, '权限与环境');
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll('div')].find(node => (node.textContent || '').includes('高级执行权限') && node.querySelector('[role="switch"]'));
+    const button = row && row.querySelector('[role="switch"]');
+    if (button) button.click();
+  });
+  await sleep(600);
+  const permToast = await page.evaluate(() => ({
+    setCall: window.__SETTINGS_TEST__.calls.some(call => call.cmd === 'set_super_permission'),
+    toast: document.body.innerText.includes('pkexec unavailable') || document.body.innerText.includes('无法开启高级执行权限'),
+    checked: document.querySelector('[role="switch"]')?.getAttribute('aria-checked'),
+  }));
+  rec('⑭ 高级权限失败回滚并 toast 提示', permToast.setCall && permToast.toast && permToast.checked === 'false', JSON.stringify(permToast));
+
+  await clickSettingsSection(page, '帮助反馈');
+  await clickExact(page, '提交反馈');
+  await sleep(250);
+  const feedbackModal = await page.evaluate(() => {
+    const title = [...document.querySelectorAll('h2')].find(node => (node.textContent || '').trim() === '我要反馈');
+    const modal = title && title.closest('[data-feedback-dialog="true"]');
+    const rect = modal && modal.getBoundingClientRect();
+    const buttons = [...document.querySelectorAll('button')].map(button => (button.textContent || '').trim());
+    const textarea = document.querySelector('textarea[placeholder*="请描述"]');
+    const titleInput = document.querySelector('input[placeholder*="一句话概括"]');
+    const groupCount = modal ? modal.querySelectorAll('.rounded-\\[16px\\]').length : 0;
+    const nativeAlertCalls = window.__SETTINGS_TEST__.calls.filter(call => call.cmd === 'window_alert').length;
+    const scrollWidth = modal ? modal.scrollWidth : 0;
+    const clientWidth = modal ? modal.clientWidth : 0;
+    return {
+      exists: !!modal,
+      width: rect ? Math.round(rect.width) : 0,
+      insideViewport: !!rect && rect.left >= -1 && rect.right <= window.innerWidth + 1 && rect.top >= -1 && rect.bottom <= window.innerHeight + 1,
+      compactTitle: !!title && Number.parseFloat(window.getComputedStyle(title).fontSize) <= 20,
+      hasBottomActions: buttons.includes('取消') && buttons.includes('提交反馈'),
+      hasGroupedInputs: !!textarea && !!titleInput,
+      singleLayerGroups: groupCount === 3,
+      noNativeAlertBeforeSubmit: nativeAlertCalls === 0,
+      noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth + 1,
+      modalNoHorizontalOverflow: scrollWidth <= clientWidth + 1,
+    };
+  });
+  rec('⑮ 反馈弹窗符合模型/搜索一致的 iOS 规格', feedbackModal.exists && feedbackModal.width >= 420 && feedbackModal.width <= 455 && feedbackModal.insideViewport && feedbackModal.compactTitle && feedbackModal.hasBottomActions && feedbackModal.hasGroupedInputs && feedbackModal.singleLayerGroups && feedbackModal.noNativeAlertBeforeSubmit && feedbackModal.noHorizontalOverflow && feedbackModal.modalNoHorizontalOverflow, JSON.stringify(feedbackModal));
+  await page.evaluate(() => {
+    const textarea = document.querySelector('[data-feedback-dialog="true"] textarea[placeholder*="请描述"]');
+    if (!textarea) return;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+    textarea.focus();
+    setter.call(textarea, '反馈弹窗测试');
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  const feedbackTyped = await page.evaluate(() => document.querySelector('[data-feedback-dialog="true"] textarea[placeholder*="请描述"]')?.value || '');
+  await page.evaluate(() => {
+    const modal = document.querySelector('[data-feedback-dialog="true"]');
+    const button = modal && [...modal.querySelectorAll('button')].find(node => (node.textContent || '').trim() === '提交反馈');
+    if (button) button.click();
+  });
+  await sleep(400);
+  const feedbackSubmit = await page.evaluate(() => ({
+    nativeAlertCalls: window.__SETTINGS_TEST__.calls.filter(call => call.cmd === 'window_alert').length,
+    submitCalls: window.__SETTINGS_TEST__.calls.filter(call => call.cmd === 'submit_feedback').length,
+    toast: document.body.innerText.includes('反馈已提交，感谢你的帮助。'),
+    dialogClosed: !document.querySelector('[data-feedback-dialog="true"]'),
+  }));
+  rec('⑯ 提交反馈成功使用应用内 toast，不弹系统 alert', feedbackTyped === '反馈弹窗测试' && feedbackSubmit.nativeAlertCalls === 0 && feedbackSubmit.submitCalls === 1 && feedbackSubmit.toast && feedbackSubmit.dialogClosed, JSON.stringify({ feedbackTyped, ...feedbackSubmit }));
+  await sleep(200);
+
+  await page.setViewport({ width: 760, height: 620 });
+  await sleep(350);
+  await clickSettingsSection(page, '通用');
+  const responsiveSettings = await page.evaluate(() => {
+    const aside = document.querySelector('aside');
+    const panel = aside && aside.parentElement;
+    const label = [...document.querySelectorAll('div')].find(node => (node.textContent || '').trim() === '界面语言');
+    const panelRect = panel && panel.getBoundingClientRect();
+    const labelRect = label && label.getBoundingClientRect();
+    return {
+      panelInsideViewport: !!panelRect && panelRect.left >= -1 && panelRect.top >= -1 && panelRect.right <= window.innerWidth + 1 && panelRect.bottom <= window.innerHeight + 1,
+      labelNotVertical: !!labelRect && labelRect.width >= 54 && labelRect.height <= 28,
+      noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth + 1,
+    };
+  });
+  rec('⑰ 小窗口设置弹窗随窗口收缩且标签不竖排', Object.values(responsiveSettings).every(Boolean), JSON.stringify(responsiveSettings));
+
+  await page.mouse.click(8, 8);
+  await page.waitForFunction(() => document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view') === 'chat', { timeout: 8000 });
+  await page.evaluate(() => window.TauriBridge && window.TauriBridge.createNewSession && window.TauriBridge.createNewSession());
+  await sleep(600);
+  const responsiveGreeting = await page.evaluate(() => {
+    const greeting = [...document.querySelectorAll('h1')].find(node => {
+      const text = node.textContent || '';
+      const fontSize = Number.parseFloat(window.getComputedStyle(node).fontSize);
+      return text.includes('今天想聊点什么') || text.includes("what's good") || text.includes('今日は') || fontSize >= 30;
+    });
+    const rect = greeting && greeting.getBoundingClientRect();
+    const fontSize = greeting ? Number.parseFloat(window.getComputedStyle(greeting).fontSize) : 0;
+    return {
+      exists: !!greeting,
+      insideViewport: !!rect && rect.left >= -1 && rect.right <= window.innerWidth + 1,
+      smallWindowFont: fontSize > 0 && fontSize <= 34,
+      noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth + 1,
+    };
+  });
+  rec('⑱ 小窗口欢迎文案不溢出', Object.values(responsiveGreeting).every(Boolean), JSON.stringify(responsiveGreeting));
+
+  rec('⑲ 全程无运行时报错', errors.length === 0, errors.slice(0, 3).join(' | '));
+  await browser.close();
+
+  const failed = results.filter(result => !result.pass).length;
+  console.log(failed ? `\n❌ ${failed}/${results.length} FAILED` : `\n✅ ALL ${results.length} PASS`);
+  process.exit(failed ? 1 : 0);
+})().catch(error => {
+  console.error('FATAL', error.stack || error.message);
+  process.exit(1);
+});

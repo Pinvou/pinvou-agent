@@ -5,18 +5,26 @@
 //! 向量化只在后台 `std::thread`（解析/检索线程）里调用，避免阻塞 async runtime。
 //! 端点/模型未配置（env 缺失或加载失败）时上层退回全文 fts 检索。
 
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::path::Path;
 
+#[cfg(feature = "local-embed")]
+use std::{path::PathBuf, sync::Mutex};
+
+#[cfg(feature = "local-embed")]
 use fastembed::{
     InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles, UserDefinedEmbeddingModel,
 };
 
+#[cfg(feature = "local-embed")]
 pub struct Embedder {
     model: Mutex<TextEmbedding>,
     name: String,
 }
 
+#[cfg(not(feature = "local-embed"))]
+pub struct Embedder;
+
+#[cfg(feature = "local-embed")]
 impl Embedder {
     /// 从本地模型目录加载。目录需含：`model.onnx`（发布布局）或
     /// `onnx/model_int8.onnx`（Hugging Face 原始布局）+
@@ -99,6 +107,30 @@ impl Embedder {
     }
 }
 
+#[cfg(not(feature = "local-embed"))]
+impl Embedder {
+    pub fn from_env_or_dir(_fallback: Option<&Path>) -> Option<Self> {
+        None
+    }
+
+    pub fn model(&self) -> &str {
+        "disabled"
+    }
+
+    pub fn source(&self) -> &str {
+        "local(fastembed disabled)"
+    }
+
+    pub fn embed(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
+        Err("local embedding feature disabled".to_string())
+    }
+
+    pub fn embed_one(&self, _text: &str) -> Result<Vec<f32>, String> {
+        Err("local embedding feature disabled".to_string())
+    }
+}
+
+#[cfg(feature = "local-embed")]
 fn normalize(v: &mut [f32]) {
     let n: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     if n > 0.0 {

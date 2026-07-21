@@ -60,7 +60,6 @@ export default defineConfig({
       input: {
         main: resolve(sourceRoot, 'index.html'),
         pet: resolve(sourceRoot, 'pet.html'),
-        petMenu: resolve(sourceRoot, 'pet-menu.html'),
       },
     },
   },

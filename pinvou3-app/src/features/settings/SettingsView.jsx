@@ -7,8 +7,17 @@ import PetSettingsSection from '../pet/PetSettingsSection.jsx';
 import { DEFAULT_PET_ID } from '../pet/pet-registry.js';
 import { bridge } from '../../hooks/useBridge.js';
 import { formatSessionDate } from '../../shared/date-utils.js';
+import { visibleUserModels } from '../../shared/model-options.js';
 import { buildComposerToolMenuState } from './composer-tool-menu-logic.js';
 import { notifyComposerToolsChanged } from '../tools/tool-events.js';
+import deepseekIcon from '../../brand-icons/deepseek.svg';
+import doubaoIcon from '../../brand-icons/doubao.svg';
+import glmIcon from '../../brand-icons/glm.svg';
+import kimiIcon from '../../brand-icons/kimi.svg';
+import mimoIcon from '../../brand-icons/mimo.svg';
+import minimaxIcon from '../../brand-icons/minimax.svg';
+import openaiIcon from '../../brand-icons/openai.svg';
+import qwenIcon from '../../brand-icons/qwen.svg';
 
 const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, style }, ref) => (
       <section ref={ref} id={id} style={style} className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
@@ -44,12 +53,12 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     );
 
     const SSegmented = ({ isDark, options, value, onChange }) => (
-      <div className={`p-1 rounded-full flex ${isDark ? 'bg-[#131314]' : 'bg-[#E1E5EA]'}`}>
+      <div className={`p-1 rounded-full flex flex-wrap justify-end gap-1 max-w-full ${isDark ? 'bg-[#131314]' : 'bg-[#E1E5EA]'}`}>
         {options.map(o => (
           <button
             key={o.key}
             onClick={() => onChange(o.key)}
-            className={`px-5 py-2 rounded-full text-[14px] font-medium transition-colors ${
+            className={`min-w-[72px] px-4 py-2 rounded-full text-[14px] font-medium transition-colors ${
               value === o.key ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-white text-[#0B57D0] shadow-sm') : ''
             }`}
           >{o.label}</button>
@@ -71,43 +80,354 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       </div>
     );
 
+    const MemorySettingsCard = ({ isDark, bs, memoryEnabled, onMemoryEnabledChange }) => {
+      const memory = (bs && bs.memory) || {};
+      const profile = memory.profile || {};
+      const identity = profile.identity || {};
+      const preferences = memory.preferences || [];
+      const workContext = memory.work_context || [];
+      const currentFocus = (memory.current_focus || []).filter(item => item.status === 'active');
+      const recentActivity = (memory.recent_activity || []).filter(item => item.status === 'active');
+      const [open, setOpen] = useState(false);
+      const [tab, setTab] = useState('long_term');
+      const [query, setQuery] = useState('');
+      const [menuFor, setMenuFor] = useState(null);
+      const [draft, setDraft] = useState({
+        call_name: identity.call_name || '',
+        assistant_alias: identity.assistant_alias || '',
+      });
+      const [editing, setEditing] = useState(null);
+      const [saving, setSaving] = useState(false);
+      const subText = isDark ? 'text-[#C4C7C5]' : 'text-[#444746]';
+      const faintText = isDark ? 'text-[#8F969E]' : 'text-[#6B7280]';
+      const border = isDark ? 'border-[#333537]' : 'border-[#DDE3EA]';
+      const itemBg = isDark ? 'bg-[#131314]' : 'bg-white';
+      const cardBg = isDark ? 'bg-[#17191D] border-white/[0.08]' : 'bg-white border-[#DDE3EA]';
+      const panelBg = isDark ? 'bg-[#1F2023] text-[#E8EAED]' : 'bg-[#F8FAFD] text-[#1F1F1F]';
+      const inputBg = isDark ? 'bg-[#131314] border-[#3C4043] text-[#E8EAED] placeholder:text-[#777D86]' : 'bg-white border-[#DDE3EA] text-[#1F1F1F] placeholder:text-[#8A9099]';
+      const ghostBtn = isDark ? 'bg-white/[0.07] text-[#E3E3E3] hover:bg-white/[0.11]' : 'bg-[#E1E5EA] text-[#1F1F1F] hover:bg-[#D3D9E0]';
+      const dangerBtn = isDark ? 'text-[#F28B82] hover:bg-[#3A2425]' : 'text-[#C5221F] hover:bg-[#FCE8E6]';
+      const primaryBtn = isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]';
+      const selectedTab = isDark
+        ? 'bg-[rgba(43,119,255,0.16)] border-[rgba(70,145,255,0.35)] text-[#D8E8FF]'
+        : 'bg-[#E8F0FE] border-[#B8D1FF] text-[#0B57D0]';
+      const profileCount = (identity.call_name ? 1 : 0) + (identity.assistant_alias ? 1 : 0);
+      const profileSummary = [
+        identity.call_name ? `称呼：${identity.call_name}` : '',
+        identity.assistant_alias ? `助手昵称：${identity.assistant_alias}` : '',
+      ].filter(Boolean).join(' · ');
+      const total = preferences.length + workContext.length + currentFocus.length + recentActivity.length;
+      const longTermItems = [
+        ...preferences.map(item => ({ ...item, kind: 'preference' })),
+        ...workContext.map(item => ({ ...item, kind: 'work_context' })),
+      ];
+      const recentItems = [
+        ...currentFocus.map(item => ({ ...item, kind: 'current_focus' })),
+        ...recentActivity.map(item => ({ ...item, kind: 'recent_activity' })),
+      ];
+      const longTermCount = profileCount + longTermItems.length;
+      const recentCount = recentItems.length;
+      const tabs = [
+        { key: 'long_term', label: '长期记忆', count: longTermCount, icon: Database },
+        { key: 'recent', label: '近期记忆', count: recentCount, icon: RefreshCw },
+      ];
+      const tabMeta = tabs.find(x => x.key === tab) || tabs[0];
+      const memoryTypeLabel = kind => kind === 'current_focus' ? '当前关注'
+        : kind === 'recent_activity' ? '近期动态'
+        : kind === 'work_context' ? '工作背景'
+        : '长期偏好';
+      const memoryTypeIcon = kind => kind === 'current_focus' ? Lightbulb
+        : kind === 'recent_activity' ? RefreshCw
+        : kind === 'work_context' ? Briefcase
+        : kind === 'profile' ? User
+        : Sparkles;
+      const memoryTypeTone = kind => kind === 'work_context' ? 'text-[#8AB4F8] bg-[#1A73E8]/[0.13]'
+        : kind === 'current_focus' ? 'text-[#FDD663] bg-[#FDD663]/[0.12]'
+        : kind === 'recent_activity' ? 'text-[#81C995] bg-[#34A853]/[0.12]'
+        : kind === 'profile' ? 'text-[#C58AF9] bg-[#A142F4]/[0.12]'
+        : 'text-[#A8C7FA] bg-[#A8C7FA]/[0.12]';
+      const normalizedQuery = query.trim().toLowerCase();
+      const searchMatch = text => !normalizedQuery || String(text || '').toLowerCase().includes(normalizedQuery);
+
+      useEffect(() => {
+        if (!bridge.available || !bridge.loadMemoryOverview) return;
+        bridge.loadMemoryOverview();
+      }, [bs && bs.activeSessionId]);
+      useEffect(() => {
+        setDraft({
+          call_name: identity.call_name || '',
+          assistant_alias: identity.assistant_alias || '',
+        });
+      }, [identity.call_name, identity.assistant_alias]);
+      useEffect(() => {
+        setMenuFor(null);
+        setQuery('');
+      }, [tab, open]);
+
+      const reload = () => bridge.available && bridge.loadMemoryOverview && bridge.loadMemoryOverview();
+      const saveProfile = async () => {
+        if (!bridge.available || !bridge.saveMemoryProfilePatch) return;
+        setSaving(true);
+        try {
+          await bridge.saveMemoryProfilePatch({
+            call_name: draft.call_name,
+            assistant_alias: draft.assistant_alias,
+          });
+        } finally {
+          setSaving(false);
+        }
+      };
+      const startEdit = item => {
+        setMenuFor(null);
+        setEditing({
+          kind: item.kind,
+          id: item.id,
+          text: item.text || item.content || '',
+        });
+      };
+      const saveEdit = async () => {
+        if (!editing || !bridge.updateMemoryItem) return;
+        setSaving(true);
+        try {
+          await bridge.updateMemoryItem(editing.kind, editing.id, {
+            text: editing.text,
+          });
+          setEditing(null);
+        } finally {
+          setSaving(false);
+        }
+      };
+      const deleteItem = async item => {
+        setMenuFor(null);
+        if (!item || !bridge.deleteMemoryItem) return;
+        if (!window.confirm('删除后这条记忆不会再被使用，确定删除吗？')) return;
+        await bridge.deleteMemoryItem(item.kind, item.id);
+      };
+      const archiveItem = async item => {
+        setMenuFor(null);
+        if (!item || !bridge.archiveRecentWorkMemory) return;
+        await bridge.archiveRecentWorkMemory(item.id);
+      };
+      const activeList = tab === 'recent' ? recentItems : longTermItems;
+      const filteredList = activeList.filter(item => searchMatch(item.text || item.content));
+
+      const formatMemoryTime = item => {
+        const raw = item.updated_at || item.created_at || item.last_seen_at || item.last_used_at;
+        if (!raw) return '已记住';
+        const date = new Date(raw);
+        if (Number.isNaN(date.getTime())) return '已记住';
+        const diff = Date.now() - date.getTime();
+        const day = 24 * 60 * 60 * 1000;
+        if (diff >= 0 && diff < day) return '今天更新';
+        if (diff >= day && diff < 7 * day) return `${Math.floor(diff / day)} 天前更新`;
+        return `${date.getMonth() + 1}月${date.getDate()}日更新`;
+      };
+      const confidenceText = item => {
+        const n = Number(item.confidence);
+        if (!Number.isFinite(n)) return '自动整理';
+        if (n >= 0.85) return '置信度高';
+        if (n >= 0.65) return '置信度中';
+        return '置信度低';
+      };
+
+      const MemoryRow = ({ item }) => {
+        const Icon = memoryTypeIcon(item.kind);
+        const rowKey = `${item.kind}:${item.id}`;
+        return (
+          <div className={`group relative rounded-2xl border px-4 py-4 ${cardBg} shadow-[0_12px_34px_rgba(0,0,0,0.16)]`}>
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className={`w-7 h-7 rounded-full flex items-center justify-center ${memoryTypeTone(item.kind)}`}><Icon size={14} /></span>
+                  <span className="text-[13px] font-medium">{memoryTypeLabel(item.kind)}</span>
+                  <span className={`ml-auto text-[11px] ${faintText}`}>{formatMemoryTime(item)}</span>
+                </div>
+                <div className="text-[14px] leading-relaxed break-words">{item.text}</div>
+                <div className={`mt-3 text-[12px] ${faintText}`}>
+                  来源：对话识别 · {confidenceText(item)}
+                </div>
+              </div>
+              <button
+                title="更多操作"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuFor(menuFor === rowKey ? null : rowKey);
+                }}
+                className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#AEB4BC] hover:bg-white/[0.08] hover:text-[#F2F3F5]' : 'text-[#5F6368] hover:bg-black/[0.06]'}`}
+              >
+                <MoreHorizontal size={17} />
+              </button>
+            </div>
+            {menuFor === rowKey && (
+              <div onClick={(e) => e.stopPropagation()} className={`absolute right-4 top-12 z-10 min-w-[118px] rounded-xl border ${border} ${isDark ? 'bg-[#24262B] text-[#E8EAED]' : 'bg-white text-[#1F1F1F]'} shadow-2xl overflow-hidden`}>
+                <button onClick={() => startEdit(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${isDark ? 'hover:bg-white/[0.07]' : 'hover:bg-black/[0.04]'}`}><Edit2 size={14} />编辑</button>
+                {(item.kind === 'current_focus' || item.kind === 'recent_activity') && (
+                  <button onClick={() => archiveItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${isDark ? 'hover:bg-white/[0.07]' : 'hover:bg-black/[0.04]'}`}><Archive size={14} />归档</button>
+                )}
+                <button onClick={() => deleteItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${dangerBtn}`}><Trash2 size={14} />删除</button>
+              </div>
+            )}
+          </div>
+        );
+      };
+
+      return (
+        <>
+          <SCard isDark={isDark} title="记忆">
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <div className={`text-[14px] font-medium ${isDark ? 'text-[#E8EAED]' : 'text-[#1F1F1F]'}`}>
+                  {memoryEnabled ? '已启用' : '已关闭'}
+                </div>
+                <div className={`mt-1 text-[13px] leading-relaxed ${subText}`}>
+                  {memoryEnabled
+                    ? (memory.loading ? '正在读取记忆' : (profileSummary ? `${profileSummary} · ${total} 条有效记忆。` : `PINVOU 会记住你的偏好、工作背景和近期事项，让后续对话更容易接上上下文。已记录 ${total} 条有效记忆。`))
+                    : '开启后，PINVOU 可以记住你的称呼、稳定偏好、工作背景和近期事项，减少重复说明。'}
+                </div>
+                {memory.error && <div className="mt-2 text-[13px] text-[#EA4335]">{memory.error}</div>}
+              </div>
+              <div className="shrink-0 flex items-center gap-2">
+                <button
+                  onClick={() => onMemoryEnabledChange && onMemoryEnabledChange(!memoryEnabled)}
+                  role="switch"
+                  aria-checked={!!memoryEnabled}
+                  title={memoryEnabled ? '关闭记忆' : '开启记忆'}
+                  className={`w-12 h-7 rounded-full p-1 flex items-center transition-colors ${memoryEnabled ? 'justify-end bg-[#0B57D0]' : `justify-start ${isDark ? 'bg-[#3C4043]' : 'bg-[#DADCE0]'}`}`}
+                >
+                  <span className="block w-5 h-5 rounded-full bg-white shadow" />
+                </button>
+                {memoryEnabled && (
+                  <button onClick={() => { setOpen(true); reload(); }} className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${primaryBtn}`}>
+                    查看和管理
+                  </button>
+                )}
+              </div>
+            </div>
+          </SCard>
+
+          {open && (
+            <div className="fixed inset-0 z-[80] flex items-center justify-center px-4 py-6">
+              <div className="absolute inset-0 bg-black/55" onClick={() => setOpen(false)} />
+              <div className={`relative w-full max-w-[980px] max-h-[88vh] overflow-hidden rounded-[22px] border ${border} ${panelBg} shadow-2xl`}>
+                <div className={`flex items-center justify-between gap-4 px-6 py-4 border-b ${border}`}>
+                  <div>
+                    <div className="text-[19px] font-semibold">记忆中心</div>
+                    <div className={`text-[12px] mt-1 ${subText}`}>记忆由 AI 自动整理，非必要无需手动管理。</div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button onClick={reload} disabled={!!memory.loading} className={`inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-full ${ghostBtn}`}><RefreshCw size={13} className={memory.loading ? 'animate-spin' : ''} />{memory.loading ? '同步中' : '同步记忆'}</button>
+                    <button onClick={() => setOpen(false)} className={`w-8 h-8 rounded-full flex items-center justify-center ${ghostBtn}`}><X size={15} /></button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-[190px_1fr] min-h-[420px] max-h-[calc(88vh-73px)]">
+                  <div className={`border-b md:border-b-0 md:border-r ${border} p-3 overflow-auto`}>
+                    <div className="space-y-1">
+                      {tabs.map(({ key, label, count, icon: TabIcon }) => (
+                        <button
+                          key={key}
+                          onClick={() => setTab(key)}
+                          className={`w-full flex items-center gap-2 text-left px-3 py-2 rounded-full border text-[13px] transition-colors ${tab === key ? selectedTab : `border-transparent ${isDark ? 'hover:bg-white/[0.06]' : 'hover:bg-black/[0.04]'}`}`}
+                        >
+                          <TabIcon size={15} className="shrink-0" />
+                          <span className="min-w-0 flex-1 truncate">{label}</span>
+                          <span className="text-[11px] opacity-75">{count}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="p-5 overflow-auto" onClick={() => setMenuFor(null)}>
+                    {!memoryEnabled && (
+                      <div className={`mb-4 rounded-2xl border px-4 py-3 ${isDark ? 'bg-white/[0.04] border-white/[0.08]' : 'bg-white border-[#DDE3EA]'}`}>
+                        <div className={`text-[13px] leading-relaxed ${subText}`}>开启记忆后，PINVOU 会在对话中使用这些信息，并自动整理新的长期记忆与近期记忆。</div>
+                      </div>
+                    )}
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-5">
+                      <div>
+                        <div className="text-[16px] font-semibold">{tabMeta.label}</div>
+                        <div className={`text-[12px] mt-1 ${faintText}`}>{tab === 'long_term' ? '称呼、长期偏好与工作背景' : '当前关注与近期动态'} · {tabMeta.count} 条</div>
+                      </div>
+                      <div className={`h-10 min-w-0 md:w-[260px] flex items-center gap-2 rounded-full border px-3 ${inputBg}`}>
+                        <Search size={15} className={faintText} />
+                        <input value={query} onChange={e => setQuery(e.target.value)} onClick={e => e.stopPropagation()} placeholder="搜索记忆" className="w-full bg-transparent outline-none text-[13px]" />
+                      </div>
+                    </div>
+
+                    {tab === 'long_term' ? (
+                      <div className="space-y-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <SField isDark={isDark} label="助手称呼我" value={draft.call_name} onChange={e => setDraft({ ...draft, call_name: e.target.value })} placeholder="例如：欣哥" />
+                          <SField isDark={isDark} label="我称呼助手" value={draft.assistant_alias} onChange={e => setDraft({ ...draft, assistant_alias: e.target.value })} placeholder="例如：小猪" />
+                        </div>
+                        <div className="flex justify-end">
+                          <button onClick={saveProfile} disabled={saving} className={`text-[12px] font-medium px-4 py-2 rounded-full ${primaryBtn} ${saving ? 'opacity-50' : ''}`}>{saving ? '保存中' : '保存'}</button>
+                        </div>
+                        {filteredList.length === 0 ? (
+                          <div className={`text-[13px] ${subText}`}>{query.trim() ? '没有匹配的长期记忆。' : '暂无长期偏好或工作背景。'}</div>
+                        ) : (
+                          <div className="space-y-3">{filteredList.map(item => <MemoryRow key={`${item.kind}:${item.id}`} item={item} />)}</div>
+                        )}
+                        <div className={`rounded-2xl border px-4 py-3 ${isDark ? 'bg-white/[0.03] border-white/[0.06]' : 'bg-white/70 border-[#DDE3EA]'}`}>
+                          <div className={`text-[12px] leading-relaxed ${faintText}`}>长期记忆会长期保留，用来理解你的稳定偏好、工作背景和称呼习惯。它不会自动过期，你可以随时编辑或删除。</div>
+                        </div>
+                      </div>
+                    ) : filteredList.length === 0 ? (
+                      <div className={`text-[13px] ${subText}`}>{query.trim() ? '没有匹配的近期记忆。' : '暂无当前关注或近期动态。'}</div>
+                    ) : (
+                      <div className="space-y-3">
+                        {filteredList.map(item => <MemoryRow key={`${item.kind}:${item.id}`} item={item} />)}
+                        <div className={`rounded-2xl border px-4 py-3 ${isDark ? 'bg-white/[0.03] border-white/[0.06]' : 'bg-white/70 border-[#DDE3EA]'}`}>
+                          <div className={`text-[12px] leading-relaxed ${faintText}`}>近期记忆会记录最近正在推进和刚完成的事情，用来帮助 PINVOU 接上上下文。它会随时间自动淡出，你也可以手动归档或删除。</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {editing && (
+            <div className="fixed inset-0 z-[90] flex items-center justify-center px-4">
+              <div className="absolute inset-0 bg-black/60" onClick={() => setEditing(null)} />
+              <div className={`relative w-full max-w-[560px] rounded-[18px] border ${border} ${panelBg} p-5 shadow-2xl`}>
+                <div className="flex items-center justify-between gap-3 mb-4">
+                  <div>
+                    <div className="text-[16px] font-semibold">编辑{memoryTypeLabel(editing.kind)}</div>
+                    <div className={`text-[12px] mt-1 ${subText}`}>修改后会立即影响后续记忆注入。</div>
+                  </div>
+                  <button onClick={() => setEditing(null)} className={`w-8 h-8 rounded-full flex items-center justify-center ${ghostBtn}`}><X size={15} /></button>
+                </div>
+                <div className="space-y-3">
+                  <label className="block">
+                    <span className={`block text-[12px] mb-1.5 ${subText}`}>内容</span>
+                    <textarea value={editing.text} onChange={e => setEditing({ ...editing, text: e.target.value })} rows={5} className={`w-full rounded-xl border px-3 py-2 text-[14px] outline-none resize-none ${inputBg}`} />
+                  </label>
+                </div>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button onClick={() => setEditing(null)} className={`text-[13px] px-4 py-2 rounded-full ${ghostBtn}`}>取消</button>
+                  <button onClick={saveEdit} disabled={saving || !editing.text.trim()} className={`text-[13px] font-medium px-4 py-2 rounded-full ${primaryBtn} ${(saving || !editing.text.trim()) ? 'opacity-50' : ''}`}>{saving ? '保存中' : '保存'}</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+        </>
+      );
+    };
+
     // ── 「添加模型」方案:模型快切 chip + 添加/编辑弹窗 ─────────────────
     // 各预设默认 baseUrl/model 模板(与 bridge/prefs.rs 对齐),添加模型时自动填充。
     const MODEL_PRESET_DEFS = {
       local_vllm:  { baseUrl: 'http://127.0.0.1:8000/v1',                model: 'qwen36_35b_256k' },
       deepseek:    { baseUrl: 'https://api.deepseek.com',                model: 'deepseek-v4-pro' },
-      kimi:        { baseUrl: 'https://api.moonshot.cn/v1',              model: 'kimi-k2.6' },
-      openai_compatible: { baseUrl: 'https://api.openai.com/v1',        model: 'gpt-4o' },
-      qwen:        { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-max' },
-      doubao:      { baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-pro-256k' },
-      minimax:     { baseUrl: 'https://api.minimax.chat/v1',            model: 'abab6.5s-chat' },
-      glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-4-plus' },
-      mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2-flash' },
+      kimi:        { baseUrl: 'https://api.moonshot.cn/v1',              model: 'kimi-k3' },
+      openai_compatible: { baseUrl: 'https://api.openai.com/v1',        model: 'gpt-5.6-terra' },
+      qwen:        { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3.7-plus' },
+      doubao:      { baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-seed-evolving' },
+      minimax:     { baseUrl: 'https://api.minimax.chat/v1',            model: 'MiniMax-M3' },
+      glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-5.2' },
+      mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2.5-pro' },
     };
-    function isReadonlyModel(model) {
-      return !!(model && (model.readonly || model.system));
-    }
-    function isBuiltinLlmApiModel(model) {
-      return !!(model && (model.kind === 'builtin_llmapi' || model.id === 'builtin_llmapi'));
-    }
-    function hasLlmApiBackendUser(bs) {
-      const status = bs && bs.llmApiStatus;
-      if (!status) return false;
-      if (status.backend_user_state === 'not_exists') return false;
-      return status.backend_user_state === 'exists' || !!status.backend_user_exists;
-    }
-    function visibleSortedModels(models, bs) {
-      const allowBuiltin = hasLlmApiBackendUser(bs);
-      return ((models || [])
-        .filter(m => !isBuiltinLlmApiModel(m) || allowBuiltin)
-        .slice()
-        .sort((a, b) => {
-          const aBuiltin = isBuiltinLlmApiModel(a);
-          const bBuiltin = isBuiltinLlmApiModel(b);
-          if (aBuiltin === bBuiltin) return 0;
-          return aBuiltin ? -1 : 1;
-        }));
-    }
     function presetOptionsI18n(t) {
       return [
         { key: 'local_vllm', label: t.modelPresetLocalVllm },
@@ -127,10 +447,140 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       return m[preset] || preset;
     }
 
+    const BRAND_ICON_BY_PRESET = {
+      deepseek: deepseekIcon,
+      kimi: kimiIcon,
+      glm: glmIcon,
+      qwen: qwenIcon,
+      doubao: doubaoIcon,
+      minimax: minimaxIcon,
+      mimo: mimoIcon,
+      openai_compatible: openaiIcon,
+      local_vllm: qwenIcon,
+    };
+
+    const MODEL_CATALOG = {
+      local: [
+        {
+          key: 'local',
+          title: '本地 vLLM',
+          preset: 'local_vllm',
+          items: [
+            { model: 'qwen36_35b_256k', title: 'qwen36_35b_256k', desc: '本地服务默认模型' },
+            { model: '', title: '自定义本地模型', desc: '填写本地服务暴露的模型 ID', custom: true },
+          ],
+        },
+      ],
+      cloud: [
+        {
+          key: 'deepseek',
+          title: 'DeepSeek',
+          preset: 'deepseek',
+          items: [
+            { model: 'deepseek-v4-pro', title: 'deepseek-v4-pro', desc: '高能力模型' },
+            { model: 'deepseek-v4-flash', title: 'deepseek-v4-flash', desc: '快速响应' },
+            { model: '', title: '自定义 DeepSeek 模型', desc: '手动填写模型 ID', custom: true },
+          ],
+        },
+        {
+          key: 'kimi',
+          title: 'Kimi',
+          preset: 'kimi',
+          items: [
+            { model: 'kimi-k3', title: 'kimi-k3', desc: '最新通用模型' },
+            { model: 'kimi-k2.7-code', title: 'kimi-k2.7-code', desc: '代码场景' },
+            { model: 'kimi-k2.7-code-highspeed', title: 'kimi-k2.7-code-highspeed', desc: '高速代码场景' },
+            { model: 'kimi-k2.6', title: 'kimi-k2.6', desc: '稳定可用' },
+            { model: '', title: '自定义 Kimi 模型', desc: '手动填写模型 ID', custom: true },
+          ],
+        },
+        {
+          key: 'glm',
+          title: 'GLM',
+          preset: 'glm',
+          items: [
+            { model: 'glm-5.2', title: 'glm-5.2', desc: '最新推荐' },
+            { model: 'glm-5-turbo', title: 'glm-5-turbo', desc: '高性价比' },
+            { model: 'glm-4.7', title: 'glm-4.7', desc: '通用能力' },
+            { model: 'glm-5.1', title: 'glm-5.1', desc: '兼容保留' },
+            { model: '', title: '自定义 GLM 模型', desc: '手动填写模型 ID', custom: true },
+          ],
+        },
+        {
+          key: 'minimax',
+          title: 'MiniMax',
+          preset: 'minimax',
+          items: [
+            { model: 'MiniMax-M3', title: 'MiniMax-M3', desc: '最新推荐' },
+            { model: 'MiniMax-M2.7', title: 'MiniMax-M2.7', desc: '通用能力' },
+            { model: 'MiniMax-M2.7-highspeed', title: 'MiniMax-M2.7-highspeed', desc: '高速响应' },
+            { model: 'MiniMax-M2.5', title: 'MiniMax-M2.5', desc: '兼容保留' },
+            { model: 'MiniMax-M2.5-highspeed', title: 'MiniMax-M2.5-highspeed', desc: '兼容高速' },
+            { model: '', title: '自定义 MiniMax 模型', desc: '手动填写模型 ID', custom: true },
+          ],
+        },
+        {
+          key: 'mimo',
+          title: 'MiMo',
+          preset: 'mimo',
+          items: [
+            { model: 'mimo-v2.5-pro', title: 'mimo-v2.5-pro', desc: '最新推荐' },
+            { model: 'mimo-v2.5', title: 'mimo-v2.5', desc: '通用能力' },
+            { model: '', title: '自定义 MiMo 模型', desc: '手动填写模型 ID', custom: true },
+          ],
+        },
+        {
+          key: 'qwen',
+          title: '通义千问',
+          preset: 'qwen',
+          items: [
+            { model: 'qwen3.7-plus', title: 'qwen3.7-plus', desc: '最新推荐' },
+            { model: 'qwen3.6-flash', title: 'qwen3.6-flash', desc: '快速响应' },
+            { model: '', title: '自定义通义模型', desc: '手动填写模型 ID', custom: true },
+          ],
+        },
+        {
+          key: 'doubao',
+          title: '豆包',
+          preset: 'doubao',
+          items: [
+            { model: 'doubao-seed-evolving', title: 'doubao-seed-evolving', desc: '最新推荐' },
+            { model: 'doubao-seed-2.1-pro', title: 'doubao-seed-2.1-pro', desc: '高能力模型' },
+            { model: 'doubao-seed-2.1-turbo', title: 'doubao-seed-2.1-turbo', desc: '快速响应' },
+            { model: 'doubao-seed-2.0-pro', title: 'doubao-seed-2.0-pro', desc: '稳定通用' },
+            { model: 'doubao-seed-2.0-lite', title: 'doubao-seed-2.0-lite', desc: '轻量模型' },
+            { model: '', title: '自定义豆包模型', desc: '手动填写模型 ID', custom: true },
+          ],
+        },
+        {
+          key: 'openai_compatible',
+          title: 'OpenAI Compatible',
+          preset: 'openai_compatible',
+          items: [
+            { model: 'gpt-5.6-terra', title: 'gpt-5.6-terra', desc: '兼容端点示例' },
+            { model: 'gpt-5.6-luna', title: 'gpt-5.6-luna', desc: '兼容端点示例' },
+            { model: 'gpt-5.6-sol', title: 'gpt-5.6-sol', desc: '兼容端点示例' },
+            { model: '', title: '自定义兼容模型', desc: '手动填写模型 ID 和服务地址', custom: true },
+          ],
+        },
+      ],
+    };
+
+    const ProviderIcon = ({ preset, isDark, compact = false }) => {
+      const src = BRAND_ICON_BY_PRESET[preset];
+      if (!src) return null;
+      const darkBacked = preset === 'kimi';
+      return (
+        <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden ${darkBacked ? 'bg-[#111827]' : (isDark ? 'bg-white' : 'bg-white border border-black/[0.08]')}`}>
+          <img src={src} alt="" className={`${compact ? 'h-6 w-6' : 'h-7 w-7'} object-contain`} />
+        </span>
+      );
+    };
+
     // 聊天输入框上方:当前会话模型 chip + 下拉热切。
     const ModelChip = ({ isDark, t, bs, onGotoSettings }) => {
       const [open, setOpen] = useState(false);
-      const savedModels = visibleSortedModels((bs && bs.savedModels) || [], bs);
+      const savedModels = visibleUserModels((bs && bs.savedModels) || []);
       const activeSessionId = bs ? bs.activeSessionId : null;
       const activeModelId = bs && bs.activeModelId;
       const currentSessionModelId = bs && bs.currentSessionModelId;
@@ -183,7 +633,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     // 输入框底栏:模型选择器(iOS 化,复用 ModelChip 的 switchModel 逻辑;darkMode:'class' 故用 dark: 变体)。
     const ComposerModelSelector = ({ t, bs, onGotoSettings, compact }) => {
       const [open, setOpen] = useState(false);
-      const savedModels = visibleSortedModels((bs && bs.savedModels) || [], bs);
+      const savedModels = visibleUserModels((bs && bs.savedModels) || []);
       const activeSessionId = bs ? bs.activeSessionId : null;
       const activeModelId = bs && bs.activeModelId;
       const currentSessionModelId = bs && bs.currentSessionModelId;
@@ -599,6 +1049,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
 
     // 添加/编辑模型模态弹窗。
     const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs }) => {
+      const modelScope = initial.__scope || (initial.preset === 'local_vllm' ? 'local' : 'cloud');
+      const initialCatalogGroups = MODEL_CATALOG[modelScope] || MODEL_CATALOG.cloud;
+      const initialCatalogMatch = initialCatalogGroups.some(group =>
+        group.preset === initial.preset && group.items.some(item => !item.custom && item.model === initial.model)
+      );
       const [name, setName] = useState(initial.name || '');
       const [preset, setPreset] = useState(initial.preset || 'local_vllm');
       const [model, setModel] = useState(initial.model || '');
@@ -608,6 +1063,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const [apiKey, setApiKey] = useState('');
       const [keyAction, setKeyAction] = useState(initial.__new ? 'replace' : 'keep_existing');
       const [showKey, setShowKey] = useState(false);
+      const [pickerOpen, setPickerOpen] = useState(!!initial.__new && initial.preset !== 'local_vllm');
+      const [customModel, setCustomModel] = useState(!!initial.__custom || (!initial.__new && initial.preset !== 'local_vllm' && !initialCatalogMatch));
+      const [keyRevealError, setKeyRevealError] = useState('');
       const [testing, setTesting] = useState(false);
       const [testResult, setTestResult] = useState(null);
       const [detecting, setDetecting] = useState(false);
@@ -615,13 +1073,29 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       // 本机预装大模型「再入口」:检测无运行实例但有预装时,提示启用;走同一 bootstrap。
       const [offerSetup, setOfferSetup] = useState(false);   // 检测到预装,显示启用提示
       const [bootstrapHere, setBootstrapHere] = useState(false); // 从本页发起了 bootstrap(隔离全局态,避免开机引导的成功态串到这里)
-      function applyPreset(p) {
+      const baseCatalogGroups = MODEL_CATALOG[modelScope] || MODEL_CATALOG.cloud;
+      const catalogGroups = !initial.__new && modelScope === 'cloud'
+        ? baseCatalogGroups.filter(group => group.preset === initial.preset)
+        : baseCatalogGroups;
+      function applyCatalogItem(group, item) {
+        const p = group.preset;
         setPreset(p);
         const defs = MODEL_PRESET_DEFS[p] || MODEL_PRESET_DEFS.local_vllm;
-        setBaseUrl(defs.baseUrl); setModel(defs.model);
+        const nextModel = item.custom ? '' : (item.model || defs.model);
+        setBaseUrl(defs.baseUrl);
+        setModel(nextModel);
+        setName(p === 'local_vllm' ? (nextModel ? `本地 ${nextModel}` : '本地模型') : group.title);
         setContextWindow(p === 'local_vllm' ? '262144' : '');
         setMaxOutput(p === 'local_vllm' ? '24576' : '');
-        if (p !== 'local_vllm') { setApiKey(''); setKeyAction(initial.__new ? 'replace' : 'keep_existing'); }
+        if (p !== 'local_vllm') {
+          setApiKey('');
+          setKeyAction(initial.__new ? 'replace' : 'keep_existing');
+        } else {
+          setApiKey('');
+          setKeyAction(initial.__new ? 'replace' : 'keep_existing');
+        }
+        setCustomModel(!!item.custom);
+        setPickerOpen(false);
       }
       async function handleTest() {
         if (!bridge.available) return;
@@ -652,7 +1126,12 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           else if (online.length === 0) {
             // 没探到运行中的实例:看本机是否有预装大模型,有则提示一键启用(走同一 bootstrap)。
             const setup = await bridge.detectLocalVllmSetup();
-            if (setup && setup.has_packages && !setup.vllm_online) setOfferSetup(true);
+            const canStart = setup && setup.has_packages &&
+              (setup.engine_state ? ['stopped', 'failed'].includes(setup.engine_state) : !setup.vllm_online);
+            if (canStart) setOfferSetup(true);
+            if (setup && setup.engine_state === 'starting') {
+              setDetectResult({ candidates: [], engineState: 'starting' });
+            }
           }
         } catch (e) {
           setDetectResult({ error: String(e) });
@@ -666,85 +1145,197 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         if (status === 'mismatch') return t.vllmDetectMismatch;
         return t.vllmDetectOffline;
       }
-      const canSave = !!(name.trim() && model.trim() && baseUrl.trim());
-      function doSave() {
-        if (!canSave) return;
-        const id = initial.__new ? ('m_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)) : initial.id;
-        const contextTokens = Number.parseInt(contextWindow, 10);
-        const outputTokens = Number.parseInt(maxOutput, 10);
-        onSave({
-          id: id, name: name.trim(), preset: preset,
-          context_window_tokens: Number.isFinite(contextTokens) && contextTokens > 0 ? contextTokens : null,
-          max_output_tokens: Number.isFinite(outputTokens) && outputTokens > 0 ? outputTokens : null,
-          model: model.trim(), base_url: baseUrl.trim(),
-          api_key: keyAction === 'replace' ? apiKey.trim() : '', credential_action: keyAction,
-        });
-      }
+      const isLocalPreset = preset === 'local_vllm';
+      const showModelIdField = isLocalPreset || customModel;
+      const showBaseUrlField = isLocalPreset || (customModel && preset === 'openai_compatible');
+      const showCustomCloudKeyField = !isLocalPreset && customModel;
+      const showConfigFields = showModelIdField || showBaseUrlField || showCustomCloudKeyField;
+      const selectedProvider = presetProviderLabel(preset, t);
+      const selectedModelLabel = model || '自定义模型';
+      const saveName = name.trim() || (isLocalPreset ? (model.trim() ? `本地 ${model.trim()}` : '本地模型') : selectedProvider);
       const credentialState = initial.credential_state || (initial.has_secret ? 'configured' : 'missing');
       const hasSavedKey = !!initial.has_secret || credentialState === 'configured' || credentialState === 'env_override';
       const keyStatusText = credentialState === 'env_override' ? t.credEnvOverride
         : credentialState === 'unavailable' ? t.credUnavailable
         : hasSavedKey ? t.credConfigured
         : t.credNotConfigured;
+      const hasUsableApiKey = isLocalPreset || hasSavedKey || !!apiKey.trim();
+      const canSave = !!(saveName && model.trim() && baseUrl.trim() && hasUsableApiKey);
+      async function toggleApiKeyVisibility() {
+        const nextVisible = !showKey;
+        if (nextVisible && hasSavedKey && !apiKey.trim() && credentialState !== 'env_override' && initial.id && bridge.revealModelApiKey) {
+          try {
+            setKeyRevealError('');
+            const savedKey = await bridge.revealModelApiKey(initial.id);
+            if (savedKey) setApiKey(savedKey);
+          } catch (error) {
+            setKeyRevealError(String(error || '读取 API Key 失败'));
+          }
+        }
+        setShowKey(nextVisible);
+      }
+      function doSave() {
+        if (!canSave) return;
+        const id = initial.__new ? ('m_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)) : initial.id;
+        const contextTokens = Number.parseInt(contextWindow, 10);
+        const outputTokens = Number.parseInt(maxOutput, 10);
+        const nextKeyAction = isLocalPreset
+          ? 'keep_existing'
+          : (apiKey.trim() ? 'replace' : (initial.__new || !hasSavedKey ? 'replace' : 'keep_existing'));
+        onSave({
+          id: id, name: saveName, preset: preset,
+          context_window_tokens: Number.isFinite(contextTokens) && contextTokens > 0 ? contextTokens : null,
+          max_output_tokens: Number.isFinite(outputTokens) && outputTokens > 0 ? outputTokens : null,
+          model: model.trim(), base_url: baseUrl.trim(),
+          api_key: !isLocalPreset && apiKey.trim() ? apiKey.trim() : '', credential_action: nextKeyAction,
+        });
+      }
+      const catalogSectionTitleClass = `px-1 mb-2 text-[12px] leading-4 font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`;
+      const catalogGroupClass = `overflow-hidden rounded-[16px] ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]'}`;
+      const formSectionTitle = `px-1 mb-1.5 text-[12px] leading-4 font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`;
+      const formGroup = `overflow-hidden rounded-[16px] ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]'}`;
+      const formDivider = isDark ? 'border-white/[0.10]' : 'border-black/[0.10]';
+      const renderInlineField = ({ label, value, onChange, placeholder, type = 'text', trailing, readOnly = false }) => (
+        <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
+          <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{label}</label>
+          <input
+            type={type}
+            value={value}
+            onChange={onChange}
+            readOnly={readOnly}
+            placeholder={placeholder}
+            className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none ${isDark ? 'text-[#F2F2F7] placeholder:text-[#636366]' : 'text-[#1C1C1E] placeholder:text-[#8A8A8E]'} ${readOnly ? 'cursor-default' : ''}`}
+          />
+          {trailing}
+        </div>
+      );
+      const renderCatalogPicker = () => (
+        <div className="space-y-4">
+          {catalogGroups.map(group => (
+            <section key={group.key}>
+              <div className={catalogSectionTitleClass}>{group.title}</div>
+              <div className={catalogGroupClass}>
+                {group.items.map(item => {
+                  const active = preset === group.preset && model === item.model && !item.custom;
+                  return (
+                    <button
+                      type="button"
+                      key={`${group.key}-${item.title}`}
+                      onClick={() => applyCatalogItem(group, item)}
+                      className={`w-full min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 ${active ? 'bg-[#007AFF]/10' : ''} ${isDark ? 'border-white/[0.10] hover:bg-white/[0.06]' : 'border-black/[0.10] hover:bg-black/[0.035]'}`}
+                    >
+                      <ProviderIcon preset={group.preset} isDark={isDark} compact />
+                      <span className="min-w-0 flex-1">
+                        <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{item.title}</span>
+                        <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{item.desc}</span>
+                      </span>
+                      {active ? <Check size={16} className="shrink-0 text-[#007AFF]" /> : <ChevronDown size={16} className={`-rotate-90 shrink-0 ${isDark ? 'text-[#636366]' : 'text-[#C7C7CC]'}`} />}
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          ))}
+        </div>
+      );
+      if (initial.__new && pickerOpen) {
+        return (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150" onClick={onCancel}>
+            <div onClick={e => e.stopPropagation()}
+              className={`w-[440px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl ${isDark ? 'bg-[#1C1C1E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
+              <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
+                <div>
+                  <h2 className="text-[20px] leading-6 font-semibold">{t.modelFormAddTitle}</h2>
+                  <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>选择模型后再填写必要凭据</p>
+                </div>
+                <button onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
+              </div>
+              <div className="px-5 py-4">{renderCatalogPicker()}</div>
+            </div>
+          </div>
+        );
+      }
       return (
-        <div data-testid="model-form-backdrop"
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150">
-          <div data-testid="model-form-dialog" role="dialog" aria-modal="true"
-            className={`w-[460px] max-w-[92vw] max-h-[88vh] overflow-y-auto rounded-[24px] p-6 shadow-2xl ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
-            <h2 className="text-[18px] font-medium mb-5">{initial.__new ? t.modelFormAddTitle : t.modelFormEditTitle}</h2>
-            <div className="space-y-4">
-              <SField isDark={isDark} label={t.modelDisplayName} type="text" value={name} onChange={e => setName(e.target.value)} />
+        <div data-testid="model-form-backdrop" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150" onClick={onCancel}>
+          <div data-testid="model-form-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()}
+            className={`w-[430px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl ${isDark ? 'bg-[#1C1C1E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
+            <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${formDivider}`}>
               <div>
-                <span className={`text-[14px] block mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.modelPreset}</span>
-                <div className="relative">
-                  <select value={preset} onChange={e => applyPreset(e.target.value)}
-                    className={`w-full appearance-none px-4 py-2 pr-10 rounded-lg text-[14px] outline-none ${isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746]' : 'bg-white text-[#1F1F1F] border border-[#C4C7C5]'}`}>
-                    {presetOptionsI18n(t).map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
-                  </select>
-                  <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none"><ChevronDown size={16} className={isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'} /></div>
-                </div>
+                <h2 className="text-[20px] leading-6 font-semibold">{initial.__new ? t.modelFormAddTitle : t.modelFormEditTitle}</h2>
+                <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{isLocalPreset ? selectedModelLabel : `${selectedProvider} · ${selectedModelLabel}`}</p>
               </div>
-              <SField isDark={isDark} label={t.customModelName} type="text" value={model} onChange={e => setModel(e.target.value)} />
-              <SField isDark={isDark} label={t.customBaseUrl} type="text" value={baseUrl} onChange={e => setBaseUrl(e.target.value)} />
-              <div>
-                <span className={`text-[14px] block mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.customApiKey}</span>
-                <div className={`mb-2 text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{keyStatusText}</div>
-                <div className="relative">
-                  <input type={showKey ? 'text' : 'password'} value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
-                    placeholder={hasSavedKey ? t.credEnterNewKey : (preset === 'local_vllm' ? 'local-no-auth' : 'sk-...')}
-                    className={`w-full px-4 py-2 pr-10 rounded-lg text-[14px] outline-none ${isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746] focus:border-[#A8C7FA]' : 'bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0]'}`} />
-                  <button onClick={() => setShowKey(s => !s)} className="absolute right-2 top-1/2 -translate-y-1/2 text-[14px] opacity-70 px-1">{showKey ? '🙈' : '👁'}</button>
-                </div>
-              </div>
-                {hasSavedKey && (
-                  <div className="mt-2 flex items-center gap-2 flex-wrap">
-                    <button onClick={() => { setKeyAction('keep_existing'); setApiKey(''); }}
-                      className={`text-[12px] px-3 py-1.5 rounded-full ${keyAction === 'keep_existing' ? (isDark ? 'bg-[#174EA6] text-white' : 'bg-[#D2E3FC] text-[#174EA6]') : (isDark ? 'bg-[#2B2C2F] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]')}`}>{t.credKeep}</button>
-                    <button onClick={() => setKeyAction('replace')}
-                      className={`text-[12px] px-3 py-1.5 rounded-full ${keyAction === 'replace' ? (isDark ? 'bg-[#174EA6] text-white' : 'bg-[#D2E3FC] text-[#174EA6]') : (isDark ? 'bg-[#2B2C2F] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]')}`}>{t.credReplace}</button>
-                    <button onClick={() => { setKeyAction('delete'); setApiKey(''); }}
-                      className={`text-[12px] px-3 py-1.5 rounded-full ${keyAction === 'delete' ? (isDark ? 'bg-[#5F2120] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]') : (isDark ? 'bg-[#2B2C2F] text-[#F28B82]' : 'bg-[#F0F4F9] text-[#C5221F]')}`}>{t.credDeleteKey}</button>
+              <button onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
+            </div>
+            <div className="space-y-4 px-5 py-4">
+              <div className={`overflow-hidden rounded-[18px] border ${isDark ? 'border-white/[0.10] bg-[#2C2C2E]' : 'border-black/[0.08] bg-white'}`}>
+                {isLocalPreset ? (
+                  <div className="w-full min-h-[62px] px-4 py-3 flex items-center gap-3 text-left">
+                    <ProviderIcon preset={preset} isDark={isDark} compact />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[15px] leading-5 font-normal truncate">{selectedProvider}</span>
+                      <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{selectedModelLabel}</span>
+                    </span>
                   </div>
-                )}
-              <div className="flex items-center gap-3 flex-wrap">
-                <button onClick={handleTest} disabled={testing || !baseUrl.trim()}
-                  className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors disabled:opacity-50 ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#F0F4F9] text-[#1F1F1F] hover:bg-[#E8EAED]'}`}>
-                  {testing ? t.testingConn : t.testConnection}
-                </button>
-                {preset === 'local_vllm' && (
-                  <button onClick={handleDetect} disabled={detecting}
-                    className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors disabled:opacity-50 ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#F0F4F9] text-[#1F1F1F] hover:bg-[#E8EAED]'}`}>
-                    {detecting ? t.detectingLocalVllm : t.detectLocalVllm}
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setPickerOpen(v => !v)}
+                    className={`w-full min-h-[62px] px-4 py-3 flex items-center gap-3 text-left ${isDark ? 'hover:bg-white/[0.05]' : 'hover:bg-black/[0.035]'}`}
+                  >
+                    <ProviderIcon preset={preset} isDark={isDark} compact />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[15px] leading-5 font-normal truncate">{selectedProvider}</span>
+                      <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{selectedModelLabel}</span>
+                    </span>
+                    <span className="shrink-0 text-[14px] text-[#007AFF]">{pickerOpen ? '收起' : '更换'}</span>
                   </button>
                 )}
-                {testResult && (
-                  <span className={`text-[12px] max-w-[280px] truncate ${testResult.ok ? (isDark ? 'text-[#93D5A6]' : 'text-[#137333]') : (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]')}`}>{testResult.msg}</span>
+                {pickerOpen && !isLocalPreset && (
+                  <div className={`border-t px-4 py-4 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.12]'}`}>
+                    {renderCatalogPicker()}
+                  </div>
                 )}
               </div>
+              {!isLocalPreset && !customModel && (
+                <section>
+                  <div className={formGroup}>
+                    <div className="min-h-[54px] flex items-center gap-3 px-4 py-2.5">
+                      <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>API Key</label>
+                      <input type="text" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
+                        placeholder={hasSavedKey ? '••••••••' : '输入 API Key'}
+                        style={showKey ? undefined : { WebkitTextSecurity: 'disc' }}
+                        className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none ${isDark ? 'text-[#F2F2F7] placeholder:text-[#636366]' : 'text-[#1C1C1E] placeholder:text-[#8A8A8E]'}`} />
+                      <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? '隐藏' : '显示'}</button>
+                    </div>
+                  </div>
+                  {keyRevealError && <div className="px-1 mt-1.5 text-[12px] leading-4 text-[#FF3B30]">{keyRevealError}</div>}
+                </section>
+              )}
+              {showConfigFields && (
+                <section>
+                  <div className={formGroup}>
+                    {showModelIdField && renderInlineField({ label: isLocalPreset ? '本地模型 ID' : '模型 ID', value: model, onChange: e => setModel(e.target.value), placeholder: isLocalPreset ? '' : '输入模型 ID' })}
+                    {showCustomCloudKeyField && (
+                      <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
+                        <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>API Key</label>
+                        <input type="text" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
+                          placeholder={hasSavedKey ? '••••••••' : '输入 API Key'}
+                          style={showKey ? undefined : { WebkitTextSecurity: 'disc' }}
+                          className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none ${isDark ? 'text-[#F2F2F7] placeholder:text-[#636366]' : 'text-[#1C1C1E] placeholder:text-[#8A8A8E]'}`} />
+                        <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? '隐藏' : '显示'}</button>
+                      </div>
+                    )}
+                    {showBaseUrlField && renderInlineField({ label: t.customBaseUrl, value: baseUrl, onChange: e => setBaseUrl(e.target.value) })}
+                  </div>
+                  {keyRevealError && <div className="px-1 mt-1.5 text-[12px] leading-4 text-[#FF3B30]">{keyRevealError}</div>}
+                </section>
+              )}
               {preset === 'local_vllm' && detectResult && (
                 <div className={`rounded-xl border p-3 space-y-2 ${isDark ? 'border-[#333537] bg-[#131314]' : 'border-[#E0E3E7] bg-[#F8F9FB]'}`}>
                   {detectResult.error ? (
                     <span className={`text-[12px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{t.vllmDetectError(detectResult.error)}</span>
+                  ) : detectResult.engineState === 'starting' ? (
+                    <span className={`text-[12px] ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{t.vllmDetectStarting}</span>
                   ) : detectResult.candidates.length === 0 ? (
                     <span className={`text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{t.vllmDetectNone}</span>
                   ) : (
@@ -805,373 +1396,33 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 </div>
               )}
             </div>
-            <div className="flex justify-end gap-2 mt-6">
-              <button data-testid="model-form-cancel" onClick={onCancel} className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>{t.cpCancel}</button>
+            <div className={`flex justify-end gap-2 px-5 py-4 border-t ${formDivider}`}>
+              <button data-testid="model-form-cancel" onClick={onCancel} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors ${isDark ? 'text-[#0A84FF] hover:bg-white/[0.06]' : 'text-[#007AFF] hover:bg-black/[0.04]'}`}>{t.cpCancel}</button>
               <button onClick={doSave} disabled={!canSave}
-                className={`text-[13px] font-medium px-5 py-2 rounded-full transition-colors disabled:opacity-50 ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'}`}>{t.modelSaveBtn}</button>
+                className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold transition-colors disabled:opacity-35">{t.modelSaveBtn}</button>
             </div>
           </div>
         </div>
       );
     };
 
-    const MemorySettingsCard = ({ isDark, bs, memoryEnabled, onMemoryEnabledChange }) => {
-      const memory = (bs && bs.memory) || {};
-      const profile = memory.profile || {};
-      const identity = profile.identity || {};
-      const preferences = memory.preferences || [];
-      const workContext = memory.work_context || [];
-      const currentFocus = (memory.current_focus || []).filter(item => item.status === 'active');
-      const recentActivity = (memory.recent_activity || []).filter(item => item.status === 'active');
-      const [open, setOpen] = useState(false);
-      const [tab, setTab] = useState('long_term');
-      const [query, setQuery] = useState('');
-      const [menuFor, setMenuFor] = useState(null);
-      const [draft, setDraft] = useState({
-        call_name: identity.call_name || '',
-        assistant_alias: identity.assistant_alias || '',
-      });
-      const [editing, setEditing] = useState(null);
-      const [saving, setSaving] = useState(false);
-      const subText = isDark ? 'text-[#C4C7C5]' : 'text-[#444746]';
-      const faintText = isDark ? 'text-[#8F969E]' : 'text-[#6B7280]';
-      const border = isDark ? 'border-[#333537]' : 'border-[#DDE3EA]';
-      const itemBg = isDark ? 'bg-[#131314]' : 'bg-white';
-      const cardBg = isDark ? 'bg-[#17191D] border-white/[0.08]' : 'bg-white border-[#DDE3EA]';
-      const panelBg = isDark ? 'bg-[#1F2023] text-[#E8EAED]' : 'bg-[#F8FAFD] text-[#1F1F1F]';
-      const inputBg = isDark ? 'bg-[#131314] border-[#3C4043] text-[#E8EAED] placeholder:text-[#777D86]' : 'bg-white border-[#DDE3EA] text-[#1F1F1F] placeholder:text-[#8A9099]';
-      const ghostBtn = isDark ? 'bg-white/[0.07] text-[#E3E3E3] hover:bg-white/[0.11]' : 'bg-[#E1E5EA] text-[#1F1F1F] hover:bg-[#D3D9E0]';
-      const dangerBtn = isDark ? 'text-[#F28B82] hover:bg-[#3A2425]' : 'text-[#C5221F] hover:bg-[#FCE8E6]';
-      const primaryBtn = isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]';
-      const selectedTab = isDark
-        ? 'bg-[rgba(43,119,255,0.16)] border-[rgba(70,145,255,0.35)] text-[#D8E8FF]'
-        : 'bg-[#E8F0FE] border-[#B8D1FF] text-[#0B57D0]';
-      const profileCount = (identity.call_name ? 1 : 0) + (identity.assistant_alias ? 1 : 0);
-      const profileSummary = [
-        identity.call_name ? `称呼：${identity.call_name}` : '',
-        identity.assistant_alias ? `助手昵称：${identity.assistant_alias}` : '',
-      ].filter(Boolean).join(' · ');
-      const total = preferences.length + workContext.length + currentFocus.length + recentActivity.length;
-      const longTermItems = [
-        ...preferences.map(item => ({ ...item, kind: 'preference' })),
-        ...workContext.map(item => ({ ...item, kind: 'work_context' })),
-      ];
-      const recentItems = [
-        ...currentFocus.map(item => ({ ...item, kind: 'current_focus' })),
-        ...recentActivity.map(item => ({ ...item, kind: 'recent_activity' })),
-      ];
-      const longTermCount = profileCount + longTermItems.length;
-      const recentCount = recentItems.length;
-      const tabs = [
-        { key: 'long_term', label: '长期记忆', count: longTermCount, icon: Database },
-        { key: 'recent', label: '近期记忆', count: recentCount, icon: RefreshCw },
-      ];
-      const tabMeta = tabs.find(x => x.key === tab) || tabs[0];
-      const memoryTypeLabel = kind => kind === 'current_focus' ? '当前关注'
-        : kind === 'recent_activity' ? '近期动态'
-        : kind === 'work_context' ? '工作背景'
-        : '长期偏好';
-      const memoryTypeIcon = kind => kind === 'current_focus' ? Lightbulb
-        : kind === 'recent_activity' ? RefreshCw
-        : kind === 'work_context' ? Briefcase
-        : kind === 'profile' ? User
-        : Sparkles;
-      const memoryTypeTone = kind => kind === 'work_context' ? 'text-[#8AB4F8] bg-[#1A73E8]/[0.13]'
-        : kind === 'current_focus' ? 'text-[#FDD663] bg-[#FDD663]/[0.12]'
-        : kind === 'recent_activity' ? 'text-[#81C995] bg-[#34A853]/[0.12]'
-        : kind === 'profile' ? 'text-[#C58AF9] bg-[#A142F4]/[0.12]'
-        : 'text-[#A8C7FA] bg-[#A8C7FA]/[0.12]';
-      const normalizedQuery = query.trim().toLowerCase();
-      const searchMatch = text => !normalizedQuery || String(text || '').toLowerCase().includes(normalizedQuery);
-
-      useEffect(() => {
-        if (!bridge.available || !bridge.loadMemoryOverview) return;
-        bridge.loadMemoryOverview();
-      }, [bs && bs.activeSessionId]);
-      useEffect(() => {
-        setDraft({
-          call_name: identity.call_name || '',
-          assistant_alias: identity.assistant_alias || '',
-        });
-      }, [identity.call_name, identity.assistant_alias]);
-      useEffect(() => {
-        setMenuFor(null);
-        setQuery('');
-      }, [tab, open]);
-
-      const reload = () => bridge.available && bridge.loadMemoryOverview && bridge.loadMemoryOverview();
-      const saveProfile = async () => {
-        if (!bridge.available || !bridge.saveMemoryProfilePatch) return;
-        setSaving(true);
-        try {
-          await bridge.saveMemoryProfilePatch({
-            call_name: draft.call_name,
-            assistant_alias: draft.assistant_alias,
-          });
-        } finally {
-          setSaving(false);
-        }
-      };
-      const startEdit = item => {
-        setMenuFor(null);
-        setEditing({
-          kind: item.kind,
-          id: item.id,
-          text: item.text || item.content || '',
-        });
-      };
-      const saveEdit = async () => {
-        if (!editing || !bridge.updateMemoryItem) return;
-        setSaving(true);
-        try {
-          await bridge.updateMemoryItem(editing.kind, editing.id, {
-            text: editing.text,
-          });
-          setEditing(null);
-        } finally {
-          setSaving(false);
-        }
-      };
-      const deleteItem = async item => {
-        setMenuFor(null);
-        if (!item || !bridge.deleteMemoryItem) return;
-        if (!window.confirm('删除后这条记忆不会再被使用，确定删除吗？')) return;
-        await bridge.deleteMemoryItem(item.kind, item.id);
-      };
-      const archiveItem = async item => {
-        setMenuFor(null);
-        if (!item || !bridge.archiveRecentWorkMemory) return;
-        await bridge.archiveRecentWorkMemory(item.id);
-      };
-      const activeList = tab === 'recent' ? recentItems : longTermItems;
-      const filteredList = activeList.filter(item => searchMatch(item.text || item.content));
-
-      const formatMemoryTime = item => {
-        const raw = item.updated_at || item.created_at || item.last_seen_at || item.last_used_at;
-        if (!raw) return '已记住';
-        const date = new Date(raw);
-        if (Number.isNaN(date.getTime())) return '已记住';
-        const diff = Date.now() - date.getTime();
-        const day = 24 * 60 * 60 * 1000;
-        if (diff >= 0 && diff < day) return '今天更新';
-        if (diff >= day && diff < 7 * day) return `${Math.floor(diff / day)} 天前更新`;
-        return `${date.getMonth() + 1}月${date.getDate()}日更新`;
-      };
-      const confidenceText = item => {
-        const n = Number(item.confidence);
-        if (!Number.isFinite(n)) return '自动整理';
-        if (n >= 0.85) return '置信度高';
-        if (n >= 0.65) return '置信度中';
-        return '置信度低';
-      };
-
-      const MemoryRow = ({ item }) => {
-        const Icon = memoryTypeIcon(item.kind);
-        const rowKey = `${item.kind}:${item.id}`;
-        return (
-          <div className={`group relative rounded-2xl border px-4 py-4 ${cardBg} shadow-[0_12px_34px_rgba(0,0,0,0.16)]`}>
-            <div className="flex items-start justify-between gap-4">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 mb-3">
-                  <span className={`w-7 h-7 rounded-full flex items-center justify-center ${memoryTypeTone(item.kind)}`}><Icon size={14} /></span>
-                  <span className="text-[13px] font-medium">{memoryTypeLabel(item.kind)}</span>
-                  <span className={`ml-auto text-[11px] ${faintText}`}>{formatMemoryTime(item)}</span>
-                </div>
-                <div className="text-[14px] leading-relaxed break-words">{item.text}</div>
-                <div className={`mt-3 text-[12px] ${faintText}`}>
-                  来源：对话识别 · {confidenceText(item)}
-                </div>
-              </div>
-              <button
-                title="更多操作"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setMenuFor(menuFor === rowKey ? null : rowKey);
-                }}
-                className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#AEB4BC] hover:bg-white/[0.08] hover:text-[#F2F3F5]' : 'text-[#5F6368] hover:bg-black/[0.06]'}`}
-              >
-                <MoreHorizontal size={17} />
-              </button>
-            </div>
-            {menuFor === rowKey && (
-              <div onClick={(e) => e.stopPropagation()} className={`absolute right-4 top-12 z-10 min-w-[118px] rounded-xl border ${border} ${isDark ? 'bg-[#24262B] text-[#E8EAED]' : 'bg-white text-[#1F1F1F]'} shadow-2xl overflow-hidden`}>
-                <button onClick={() => startEdit(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${isDark ? 'hover:bg-white/[0.07]' : 'hover:bg-black/[0.04]'}`}><Edit2 size={14} />编辑</button>
-                {(item.kind === 'current_focus' || item.kind === 'recent_activity') && (
-                  <button onClick={() => archiveItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${isDark ? 'hover:bg-white/[0.07]' : 'hover:bg-black/[0.04]'}`}><Archive size={14} />归档</button>
-                )}
-                <button onClick={() => deleteItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${dangerBtn}`}><Trash2 size={14} />删除</button>
-              </div>
-            )}
-          </div>
-        );
-      };
-
-      return (
-        <>
-          <SCard isDark={isDark} title="记忆">
-            <div className="flex items-center justify-between gap-4">
-              <div className="min-w-0">
-                <div className={`text-[14px] font-medium ${isDark ? 'text-[#E8EAED]' : 'text-[#1F1F1F]'}`}>
-                  {memoryEnabled ? '已启用' : '已关闭'}
-                </div>
-                <div className={`mt-1 text-[13px] leading-relaxed ${subText}`}>
-                  {memoryEnabled
-                    ? (memory.loading ? '正在读取记忆' : (profileSummary ? `${profileSummary} · ${total} 条有效记忆。` : `PINVOU 会记住你的偏好、工作背景和近期事项，让后续对话更容易接上上下文。已记录 ${total} 条有效记忆。`))
-                    : '开启后，PINVOU 可以记住你的称呼、稳定偏好、工作背景和近期事项，减少重复说明。'}
-                </div>
-                {memory.error && <div className="mt-2 text-[13px] text-[#EA4335]">{memory.error}</div>}
-              </div>
-              <div className="shrink-0 flex items-center gap-2">
-                <button
-                  onClick={() => onMemoryEnabledChange && onMemoryEnabledChange(!memoryEnabled)}
-                  role="switch"
-                  aria-checked={!!memoryEnabled}
-                  title={memoryEnabled ? '关闭记忆' : '开启记忆'}
-                  className={`w-12 h-7 rounded-full p-1 flex items-center transition-colors ${memoryEnabled ? 'justify-end bg-[#0B57D0]' : `justify-start ${isDark ? 'bg-[#3C4043]' : 'bg-[#DADCE0]'}`}`}
-                >
-                  <span className="block w-5 h-5 rounded-full bg-white shadow" />
-                </button>
-                {memoryEnabled && (
-                  <button onClick={() => { setOpen(true); reload(); }} className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${primaryBtn}`}>
-                    查看和管理
-                  </button>
-                )}
-              </div>
-            </div>
-          </SCard>
-
-          {open && (
-            <div className="fixed inset-0 z-[80] flex items-center justify-center px-4 py-6">
-              <div className="absolute inset-0 bg-black/55" onClick={() => setOpen(false)} />
-              <div className={`relative w-full max-w-[980px] max-h-[88vh] overflow-hidden rounded-[22px] border ${border} ${panelBg} shadow-2xl`}>
-                <div className={`flex items-center justify-between gap-4 px-6 py-4 border-b ${border}`}>
-                  <div>
-                    <div className="text-[19px] font-semibold">记忆中心</div>
-                    <div className={`text-[12px] mt-1 ${subText}`}>记忆由 AI 自动整理，非必要无需手动管理。</div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button onClick={reload} disabled={!!memory.loading} className={`inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-full ${ghostBtn}`}><RefreshCw size={13} className={memory.loading ? 'animate-spin' : ''} />{memory.loading ? '同步中' : '同步记忆'}</button>
-                    <button onClick={() => setOpen(false)} className={`w-8 h-8 rounded-full flex items-center justify-center ${ghostBtn}`}><X size={15} /></button>
-                  </div>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-[190px_1fr] min-h-[420px] max-h-[calc(88vh-73px)]">
-                  <div className={`border-b md:border-b-0 md:border-r ${border} p-3 overflow-auto`}>
-                    <div className="space-y-1">
-                      {tabs.map(({ key, label, count, icon: TabIcon }) => (
-                        <button
-                          key={key}
-                          onClick={() => setTab(key)}
-                          className={`w-full flex items-center gap-2 text-left px-3 py-2 rounded-full border text-[13px] transition-colors ${tab === key ? selectedTab : `border-transparent ${isDark ? 'hover:bg-white/[0.06]' : 'hover:bg-black/[0.04]'}`}`}
-                        >
-                          <TabIcon size={15} className="shrink-0" />
-                          <span className="min-w-0 flex-1 truncate">{label}</span>
-                          <span className="text-[11px] opacity-75">{count}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="p-5 overflow-auto" onClick={() => setMenuFor(null)}>
-                    {!memoryEnabled && (
-                      <div className={`mb-4 rounded-2xl border px-4 py-3 ${isDark ? 'bg-white/[0.04] border-white/[0.08]' : 'bg-white border-[#DDE3EA]'}`}>
-                        <div className={`text-[13px] leading-relaxed ${subText}`}>开启记忆后，PINVOU 会在对话中使用这些信息，并自动整理新的长期记忆与近期记忆。</div>
-                      </div>
-                    )}
-                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-5">
-                      <div>
-                        <div className="text-[16px] font-semibold">{tabMeta.label}</div>
-                        <div className={`text-[12px] mt-1 ${faintText}`}>{tab === 'long_term' ? '称呼、长期偏好与工作背景' : '当前关注与近期动态'} · {tabMeta.count} 条</div>
-                      </div>
-                      <div className={`h-10 min-w-0 md:w-[260px] flex items-center gap-2 rounded-full border px-3 ${inputBg}`}>
-                        <Search size={15} className={faintText} />
-                        <input value={query} onChange={e => setQuery(e.target.value)} onClick={e => e.stopPropagation()} placeholder="搜索记忆" className="w-full bg-transparent outline-none text-[13px]" />
-                      </div>
-                    </div>
-
-                    {tab === 'long_term' ? (
-                      <div className="space-y-4">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          <SField isDark={isDark} label="助手称呼我" value={draft.call_name} onChange={e => setDraft({ ...draft, call_name: e.target.value })} placeholder="例如：欣哥" />
-                          <SField isDark={isDark} label="我称呼助手" value={draft.assistant_alias} onChange={e => setDraft({ ...draft, assistant_alias: e.target.value })} placeholder="例如：小猪" />
-                        </div>
-                        <div className="flex justify-end">
-                          <button onClick={saveProfile} disabled={saving} className={`text-[12px] font-medium px-4 py-2 rounded-full ${primaryBtn} ${saving ? 'opacity-50' : ''}`}>{saving ? '保存中' : '保存'}</button>
-                        </div>
-                        {filteredList.length === 0 ? (
-                          <div className={`text-[13px] ${subText}`}>{query.trim() ? '没有匹配的长期记忆。' : '暂无长期偏好或工作背景。'}</div>
-                        ) : (
-                          <div className="space-y-3">{filteredList.map(item => <MemoryRow key={`${item.kind}:${item.id}`} item={item} />)}</div>
-                        )}
-                        <div className={`rounded-2xl border px-4 py-3 ${isDark ? 'bg-white/[0.03] border-white/[0.06]' : 'bg-white/70 border-[#DDE3EA]'}`}>
-                          <div className={`text-[12px] leading-relaxed ${faintText}`}>长期记忆会长期保留，用来理解你的稳定偏好、工作背景和称呼习惯。它不会自动过期，你可以随时编辑或删除。</div>
-                        </div>
-                      </div>
-                    ) : filteredList.length === 0 ? (
-                      <div className={`text-[13px] ${subText}`}>{query.trim() ? '没有匹配的近期记忆。' : '暂无当前关注或近期动态。'}</div>
-                    ) : (
-                      <div className="space-y-3">
-                        {filteredList.map(item => <MemoryRow key={`${item.kind}:${item.id}`} item={item} />)}
-                        <div className={`rounded-2xl border px-4 py-3 ${isDark ? 'bg-white/[0.03] border-white/[0.06]' : 'bg-white/70 border-[#DDE3EA]'}`}>
-                          <div className={`text-[12px] leading-relaxed ${faintText}`}>近期记忆会记录最近正在推进和刚完成的事情，用来帮助 PINVOU 接上上下文。它会随时间自动淡出，你也可以手动归档或删除。</div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {editing && (
-            <div className="fixed inset-0 z-[90] flex items-center justify-center px-4">
-              <div className="absolute inset-0 bg-black/60" onClick={() => setEditing(null)} />
-              <div className={`relative w-full max-w-[560px] rounded-[18px] border ${border} ${panelBg} p-5 shadow-2xl`}>
-                <div className="flex items-center justify-between gap-3 mb-4">
-                  <div>
-                    <div className="text-[16px] font-semibold">编辑{memoryTypeLabel(editing.kind)}</div>
-                    <div className={`text-[12px] mt-1 ${subText}`}>修改后会立即影响后续记忆注入。</div>
-                  </div>
-                  <button onClick={() => setEditing(null)} className={`w-8 h-8 rounded-full flex items-center justify-center ${ghostBtn}`}><X size={15} /></button>
-                </div>
-                <div className="space-y-3">
-                  <label className="block">
-                    <span className={`block text-[12px] mb-1.5 ${subText}`}>内容</span>
-                    <textarea value={editing.text} onChange={e => setEditing({ ...editing, text: e.target.value })} rows={5} className={`w-full rounded-xl border px-3 py-2 text-[14px] outline-none resize-none ${inputBg}`} />
-                  </label>
-                </div>
-                <div className="mt-5 flex justify-end gap-2">
-                  <button onClick={() => setEditing(null)} className={`text-[13px] px-4 py-2 rounded-full ${ghostBtn}`}>取消</button>
-                  <button onClick={saveEdit} disabled={saving || !editing.text.trim()} className={`text-[13px] font-medium px-4 py-2 rounded-full ${primaryBtn} ${(saving || !editing.text.trim()) ? 'opacity-50' : ''}`}>{saving ? '保存中' : '保存'}</button>
-                </div>
-              </div>
-            </div>
-          )}
-
-        </>
-      );
-    };
-
-    // ── 「添加模型」方案:模型快切 chip + 添加/编辑弹窗 ─────────────────
-    // 各预设默认 baseUrl/model 模板(与 bridge/prefs.rs 对齐),添加模型时自动填充。
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, searchApiKey, setSearchApiKey, searchCredential, searchKeyAction, searchHasSavedKey, onKeepSearchApiKey, onReplaceSearchApiKey, onDeleteSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, searchNeedsRestart, languageNeedsRestart, bs, t, onRestoreArchived, onDeleteArchived, updateFocusTick }) => {
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders = ['bing'], onAddSearchProvider, onDeleteSearchProvider, searchApiKey, setSearchApiKey, searchHasSavedKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, searchNeedsRestart, languageNeedsRestart, bs, t, onRestoreArchived, onDeleteArchived, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
       const isDark = activeTheme === 'dark';
-      const isWindows = /Windows/i.test(navigator.userAgent || '');
+      const [activeSection, setActiveSection] = useState(initialSection || 'general');
       const [editingModel, setEditingModel] = useState(null);
+      const [modelDeleteConfirm, setModelDeleteConfirm] = useState(null);
+      const [editingSearch, setEditingSearch] = useState(null);
+      const [pendingSearchProvider, setPendingSearchProvider] = useState(null);
+      const [searchDeleteConfirm, setSearchDeleteConfirm] = useState(null);
+      const [searchPickerOpen, setSearchPickerOpen] = useState(false);
+      const [restartDialog, setRestartDialog] = useState(null);
       const modelEnvLocked = (bs && bs.effectiveModelConfig && bs.effectiveModelConfig.env_overrides) || [];
       const [feedbackOpen, setFeedbackOpen] = useState(false);
       const [feedbackDraft, setFeedbackDraft] = useState({ type: 'issue', title: '', description: '', attachments: [] });
       const [feedbackStatus, setFeedbackStatus] = useState({ state: 'idle', message: '', receipt: null });
+      const [feedbackNotice, setFeedbackNotice] = useState('');
       const [archivedDeleteConfirm, setArchivedDeleteConfirm] = useState(null);
-      const [llmApiModelBusy, setLlmApiModelBusy] = useState(false);
-      const llmApiModels = (bs && bs.llmApiModels) || {};
-      const builtinAvailableModels = llmApiModels.available_models || [];
-      const builtinDefaultModel = llmApiModels.default_model || (((bs && bs.settings && bs.settings.advanced && bs.settings.advanced.builtin_llmapi_default_model) || '') || '');
-      const visibleModels = visibleSortedModels(savedModels, bs);
       const versionUpdateRef = useRef(null);
-      const searchCredentialState = (searchCredential && searchCredential.credential_state) || (searchHasSavedKey ? 'configured' : 'missing');
-      const searchKeyStatusText = searchCredentialState === 'env_override' ? t.credEnvOverride
-        : searchCredentialState === 'unavailable' ? t.credUnavailable
-        : searchHasSavedKey ? t.credConfigured
-        : t.credNotConfigured;
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
       const archivedSessions = (bs && bs.archivedSessions) || [];
       const memorySettingsVisible = language === 'zh';
@@ -1193,6 +1444,14 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           versionUpdateRef.current && versionUpdateRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
         });
       }, [updateFocusTick]);
+      useEffect(() => {
+        if (initialSection) setActiveSection(initialSection);
+      }, [initialSection]);
+      useEffect(() => {
+        if (!feedbackNotice) return;
+        const timer = window.setTimeout(() => setFeedbackNotice(''), 2600);
+        return () => window.clearTimeout(timer);
+      }, [feedbackNotice]);
       const resetFeedback = () => {
         setFeedbackDraft({ type: 'issue', title: '', description: '', attachments: [] });
         setFeedbackStatus({ state: 'idle', message: '', receipt: null });
@@ -1251,7 +1510,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             privacy_notice_version: '2026-06-24',
           });
           if (receipt && receipt.status === 'submitted') {
-            window.alert((receipt && receipt.message) || t.feedbackSubmitted);
+            setFeedbackNotice((receipt && receipt.message) || t.feedbackSubmitted);
             resetFeedback();
             setFeedbackOpen(false);
             return;
@@ -1269,16 +1528,6 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         const id = archivedDeleteConfirm && archivedDeleteConfirm.id;
         setArchivedDeleteConfirm(null);
         if (id && onDeleteArchived) onDeleteArchived(id);
-      };
-      const refreshBuiltinModels = async () => {
-        if (!bridge.available || !bridge.getLlmApiModels) return;
-        setLlmApiModelBusy(true);
-        try { await bridge.getLlmApiModels(); } finally { setLlmApiModelBusy(false); }
-      };
-      const setBuiltinDefaultModel = async (model) => {
-        if (!bridge.available || !bridge.setLlmApiDefaultModel || !model) return;
-        setLlmApiModelBusy(true);
-        try { await bridge.setLlmApiDefaultModel(model); } finally { setLlmApiModelBusy(false); }
       };
       // 进设置页自动体检一次可选依赖装齐没; 之后用户可手动「重新检测」
       useEffect(() => {
@@ -1298,545 +1547,754 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           window.clearTimeout(timerId);
         };
       }, []);
-      const presetOptions = [
-        { key: 'local_vllm',  label: t.modelPresetLocalVllm },
-        { key: 'deepseek',    label: t.modelPresetDeepseek },
-        { key: 'kimi',        label: t.modelPresetKimi },
-        { key: 'openai_compatible', label: t.modelPresetOpenaiCompatible },
-        { key: 'qwen',        label: t.modelPresetQwen },
-        { key: 'doubao',      label: t.modelPresetDoubao },
-        { key: 'minimax',     label: t.modelPresetMinimax },
-        { key: 'glm',         label: t.modelPresetGlm },
-        { key: 'mimo',        label: t.modelPresetMimo },
+      const IOSSection = ({ title, children, footer }) => (
+        <section className="mb-6">
+          {title && <div className={`px-3 mb-2 text-[12px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{title}</div>}
+          <div className={`overflow-hidden rounded-[18px] ${isDark ? 'bg-[#2C2C2E]' : 'bg-white'}`}>{children}</div>
+          {footer && <div className={`px-3 mt-2 text-[12px] leading-relaxed ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{footer}</div>}
+        </section>
+      );
+      const IOSRow = ({ label, desc, value, children, onClick, danger }) => {
+        const RowTag = onClick ? 'button' : 'div';
+        return (
+        <RowTag
+          type={onClick ? 'button' : undefined}
+          onClick={onClick}
+          className={`w-full min-h-[58px] flex flex-wrap items-center gap-3 px-4 py-2.5 text-left border-b last:border-b-0 ${
+            isDark ? 'border-white/[0.10] text-[#F2F2F7]' : 'border-black/[0.12] text-[#1C1C1E]'
+          } ${onClick ? (isDark ? 'hover:bg-white/[0.05]' : 'hover:bg-black/[0.035]') : ''}`}
+        >
+          <div className="flex-1 min-w-[120px]">
+            <div className={`text-[15px] leading-5 font-normal whitespace-nowrap ${danger ? 'text-[#FF3B30]' : ''}`}>{label}</div>
+            {desc && <div className={`mt-0.5 text-[13px] leading-5 ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{desc}</div>}
+          </div>
+          {value && <div className={`text-[14px] shrink-0 ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{value}</div>}
+          {children}
+        </RowTag>
+        );
+      };
+      const IOSSwitch = ({ checked, onChange }) => (
+        <button
+          type="button"
+          role="switch"
+          aria-checked={checked}
+          onClick={() => onChange(!checked)}
+          className={`relative h-[26px] w-[46px] shrink-0 rounded-full transition-colors ${checked ? 'bg-[#34C759]' : (isDark ? 'bg-[#3A3A3C]' : 'bg-[#E5E5EA]')}`}
+        >
+          <span className={`absolute left-0 top-[2px] h-[22px] w-[22px] rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-[22px]' : 'translate-x-[2px]'}`} />
+        </button>
+      );
+      const SectionButton = ({ id, icon, label, dot }) => (
+        <button
+          type="button"
+          onClick={() => setActiveSection(id)}
+          className={`w-full h-10 px-3 rounded-[14px] flex items-center gap-2.5 text-[14px] transition-colors ${
+            activeSection === id
+              ? (isDark ? 'bg-[#173A5E] text-[#64B5F6]' : 'bg-[#D8EAFE] text-[#007AFF]')
+              : (isDark ? 'text-[#F2F2F7] hover:bg-white/[0.06]' : 'text-[#1C1C1E] hover:bg-black/[0.04]')
+          }`}
+        >
+          <span className={`w-7 h-7 rounded-[9px] flex items-center justify-center ${activeSection === id ? 'bg-[#007AFF]/10' : (isDark ? 'bg-white/[0.08]' : 'bg-black/[0.05]')}`}>{icon}</span>
+          <span className="font-semibold truncate">{label}</span>
+          {dot && <span className="ml-auto w-2.5 h-2.5 rounded-full bg-[#FF3B30]" />}
+        </button>
+      );
+      const actionButton = (tone = 'blue') => {
+        if (tone === 'green') return 'text-[#34C759] hover:bg-[#34C759]/10';
+        if (tone === 'red') return 'text-[#FF3B30] hover:bg-[#FF3B30]/10';
+        return 'text-[#007AFF] hover:bg-[#007AFF]/10';
+      };
+      const Group = ({ children }) => (
+        <div className={`overflow-hidden rounded-[18px] border ${isDark ? 'bg-[#2C2C2E] border-white/[0.04]' : 'bg-white border-black/[0.03]'}`}>{children}</div>
+      );
+      const SectionTitle = ({ children }) => (
+        <div className={`px-3 mb-2 text-[12px] leading-4 font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{children}</div>
+      );
+      const RadioDot = ({ active }) => (
+        <span className={`block w-5 h-5 rounded-full border-[3px] ${active ? 'border-[#007AFF]' : (isDark ? 'border-[#636366]' : 'border-[#AEAEB2]')}`}>
+          {active && <span className="block w-2 h-2 rounded-full bg-[#007AFF] mx-auto mt-[3px]" />}
+        </span>
+      );
+      const Tag = ({ children, tone = 'green' }) => (
+        <span className={`shrink-0 text-[12px] px-2 py-0.5 rounded-md ${
+          tone === 'gray'
+            ? (isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]')
+            : 'bg-[#34C759]/15 text-[#248A3D]'
+        }`}>{children}</span>
+      );
+      const userModels = visibleUserModels(savedModels || []);
+      const isLocalModel = model => model && (model.preset === 'local_vllm' || /127\.0\.0\.1|localhost/i.test(model.base_url || ''));
+      const searchOptions = [
+        { key: 'bing', label: 'Bing', desc: '内置搜索' },
+        { key: 'metaso', label: '秘塔', desc: '中文搜索服务' },
+        { key: 'bocha', label: '博查', desc: '搜索服务' },
+        { key: 'baidu', label: '百度', desc: '千帆 AI 搜索' },
+        { key: 'tavily', label: 'Tavily', desc: '海外搜索服务' },
       ];
-      return (
-        <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
-
-          {/* 标题随内容一起滚动：固定标题 + 硬裁切的滚动边界在视觉上打架 */}
-          <div className="flex-1 overflow-y-auto px-16 pb-20 custom-scrollbar">
-            <div className="max-w-[800px]">
-              <h1 className="text-[32px] font-normal tracking-tight pt-12 pb-8">{t.settings}</h1>
-              <div className="space-y-8">
-
-              <SCard isDark={isDark} title={t.archivedTasks}>
-                <div className="space-y-3">
-                  {t.archivedTasksDesc && <p className={`text-[14px] leading-relaxed ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.archivedTasksDesc}</p>}
-                  {archivedSessions.length === 0 ? (
-                    <div className={`rounded-xl px-4 py-3 text-[13px] ${isDark ? 'bg-[#131314] text-[#9AA0A6]' : 'bg-white text-[#5F6368]'}`}>{t.archivedEmpty}</div>
-                  ) : (
-                    <div className="max-h-[360px] overflow-y-auto custom-scrollbar pr-1 -mr-1 space-y-2">
-                      {archivedSessions.map(s => (
-                        <div key={s.id} className={`flex items-center gap-3 rounded-xl border px-4 py-3 ${isDark ? 'border-[#333537] bg-[#131314]' : 'border-[#E0E3E7] bg-white'}`}>
-                          <Archive size={16} className={`shrink-0 ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`} />
-                          <div className="flex-1 min-w-0">
-                            <div className={`text-[14px] font-medium truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{s.title || t.newChat}</div>
-                            <div className={`text-[12px] truncate ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>收纳于 {formatSessionDate(s.archived_at || s.updated_at || s.created_at, language)}</div>
-                          </div>
-                          <button onClick={() => onRestoreArchived && onRestoreArchived(s.id)}
-                            className={`shrink-0 text-[12px] px-3 py-1.5 rounded-full transition-colors ${isDark ? 'text-[#A8C7FA] hover:bg-[#333537]' : 'text-[#0B57D0] hover:bg-[#F0F4F9]'}`}>{t.restoreArchived}</button>
-                          <button onClick={() => setArchivedDeleteConfirm(s)}
-                            className={`shrink-0 text-[12px] px-3 py-1.5 rounded-full transition-colors ${isDark ? 'text-[#F28B82] hover:bg-[#333537]' : 'text-[#C5221F] hover:bg-[#FCE8E6]'}`}>{t.cpDelete}</button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </SCard>
-
-              {archivedDeleteConfirm && createPortal(
-                <ArchivedDeleteConfirmDialog
-                  theme={activeTheme}
-                  t={t}
-                  onCancel={() => setArchivedDeleteConfirm(null)}
-                  onConfirm={confirmArchivedDelete}
-                />,
-                document.body
-              )}
-
-              <SCard isDark={isDark} title={t.feedbackTitle}>
-                <div className="flex items-start justify-between gap-4">
-                  <div className="min-w-0">
-                    <p className={`text-[14px] leading-relaxed ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.feedbackDesc}</p>
-                  </div>
-                  <button
-                    onClick={() => { setFeedbackOpen(true); if (feedbackStatus.state === 'submitted') resetFeedback(); }}
-                    className={`shrink-0 inline-flex items-center gap-2 text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'}`}
-                  >
-                    <MessageSquare size={16} /> {t.feedbackOpen}
-                  </button>
-                </div>
-              </SCard>
-
-              {memorySettingsVisible && (
-                <MemorySettingsCard
-                  isDark={isDark}
-                  bs={bs}
-                  memoryEnabled={!!(bs && bs.settings && bs.settings.memory_enabled)}
-                  onMemoryEnabledChange={onMemoryEnabledChange}
-                />
-              )}
-
-              <SCard isDark={isDark} title="桌伴公仔">
-                {(() => {
-                  const petEnabled = !!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled);
-                  return (
-                    <>
-                      <div className="flex items-center justify-between gap-4">
-                        <div className="min-w-0">
-                          <div className={`text-[14px] font-medium ${isDark ? 'text-[#E8EAED]' : 'text-[#1F1F1F]'}`}>
-                            {petEnabled ? '已启用' : '已关闭'}
-                          </div>
-                          <div className={`mt-1 text-[13px] leading-relaxed ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
-                            开启后，桌面上会出现一只常驻小公仔，随 PINVOU 的思考、工具调用和任务结果切换动作。可直接拖动摆放位置，点一下有惊喜。
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => onPetEnabledChange && onPetEnabledChange(!petEnabled)}
-                          role="switch"
-                          aria-checked={petEnabled}
-                          title={petEnabled ? '关闭公仔' : '开启公仔'}
-                          className={`shrink-0 w-12 h-7 rounded-full p-1 flex items-center transition-colors ${petEnabled ? 'justify-end bg-[#0B57D0]' : `justify-start ${isDark ? 'bg-[#3C4043]' : 'bg-[#DADCE0]'}`}`}
-                        >
-                          <span className="block w-5 h-5 rounded-full bg-white shadow" />
-                        </button>
-                      </div>
-                      <PetSettingsSection
-                        isDark={isDark}
-                        enabled={petEnabled}
-                        selectedPetId={(bs && bs.selectedPet) || DEFAULT_PET_ID}
-                        onSelect={(id) => (bridge.available ? bridge.setSelectedPet(id) : Promise.resolve())}
-                      />
-                    </>
-                  );
-                })()}
-              </SCard>
-
-              <SCard isDark={isDark} title={t.modelBackend}>
-                <div className="space-y-4">
-                  <p className={`text-[13px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{t.modelBackendDesc}</p>
-                  {modelEnvLocked.length > 0 && (
-                    <div className={`text-[12px] rounded-lg px-3 py-2 ${isDark ? 'bg-[#3A2E1A] text-[#F9D67A]' : 'bg-[#FEF7E0] text-[#B06000]'}`}>
-                      {t.modelEnvLocked(modelEnvLocked.join(', '))}
-                    </div>
-                  )}
-                  <div className="space-y-2">
-                    {visibleModels.map(m => {
-                      const isActive = m.id === activeModelId;
-                      const isReadonly = isReadonlyModel(m);
-                      return (
-                        <div key={m.id} className={`flex items-center gap-3 rounded-xl border px-4 py-3 ${isDark ? 'border-[#333537] bg-[#131314]' : 'border-[#E0E3E7] bg-white'}`}>
-                          <button onClick={() => { if (!isActive) onSetActiveModel(m.id); }} title={t.setActiveModel} className="shrink-0">
-                            <span className={`block w-4 h-4 rounded-full border-2 ${isActive ? 'border-[#0B57D0] bg-[#0B57D0]' : (isDark ? 'border-[#5F6368]' : 'border-[#9AA0A6]')}`}>
-                              {isActive && <span className="block w-1.5 h-1.5 mx-auto mt-[3px] rounded-full bg-white"></span>}
-                            </span>
-                          </button>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className={`text-[14px] font-medium truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{m.name}</span>
-                              <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${isDark ? 'bg-[#2A2B2D] text-[#9AA0A6]' : 'bg-[#F0F4F9] text-[#5F6368]'}`}>{presetProviderLabel(m.preset, t)}</span>
-                              {isActive && <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${isDark ? 'bg-[#1A3A1F] text-[#93D5A6]' : 'bg-[#E6F4EA] text-[#137333]'}`}>{t.modelActiveTag}</span>}
-                            </div>
-                            <div className={`text-[12px] truncate ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{m.model} · {m.base_url}</div>
-                            {isBuiltinLlmApiModel(m) && (
-                              <div className="mt-2 flex items-center gap-2 flex-wrap">
-                                <span className={`text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{t.builtinModelSelect}</span>
-                                <select
-                                  value={builtinDefaultModel || m.model || ''}
-                                  disabled={llmApiModelBusy || builtinAvailableModels.length === 0}
-                                  onChange={e => setBuiltinDefaultModel(e.target.value)}
-                                  className={`min-w-[220px] max-w-full rounded-lg border px-3 py-1.5 text-[12px] outline-none ${isDark ? 'bg-[#1E1F20] border-[#333537] text-[#E3E3E3]' : 'bg-white border-[#DADCE0] text-[#1F1F1F]'}`}
-                                >
-                                  {builtinAvailableModels.length === 0 ? (
-                                    <option value={m.model || ''}>{t.builtinModelEmpty}</option>
-                                  ) : builtinAvailableModels.map(model => (
-                                    <option key={model} value={model}>{model}</option>
-                                  ))}
-                                </select>
-                                <button
-                                  onClick={refreshBuiltinModels}
-                                  disabled={llmApiModelBusy}
-                                  className={`text-[12px] px-3 py-1.5 rounded-full transition-colors disabled:opacity-50 ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#F0F4F9] text-[#1F1F1F] hover:bg-[#E8EAED]'}`}
-                                >
-                                  {llmApiModelBusy ? t.builtinModelLoading : t.builtinModelRefresh}
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                          {!isReadonly && <button onClick={() => setEditingModel(m)} title={t.editModel} className={`shrink-0 text-[12px] px-3 py-1.5 rounded-full transition-colors ${isDark ? 'text-[#A8C7FA] hover:bg-[#333537]' : 'text-[#0B57D0] hover:bg-[#F0F4F9]'}`}>{t.editModel}</button>}
-                          {!isReadonly && visibleModels.length > 1 && (
-                            <button onClick={() => onDeleteModel(m)} title={t.deleteModelBtn} className={`shrink-0 text-[12px] px-3 py-1.5 rounded-full transition-colors ${isDark ? 'text-[#F28B82] hover:bg-[#333537]' : 'text-[#C5221F] hover:bg-[#FCE8E6]'}`}>{t.deleteModelBtn}</button>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <button data-testid="settings-model-add" onClick={() => setEditingModel({ __new: true, id: '', name: '', preset: 'local_vllm', context_window_tokens: 262144, max_output_tokens: 24576, model: MODEL_PRESET_DEFS.local_vllm.model, base_url: MODEL_PRESET_DEFS.local_vllm.baseUrl, api_key: '' })}
-                    className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#F0F4F9] text-[#1F1F1F] hover:bg-[#E8EAED]'}`}>{t.addModel}</button>
-                </div>
-              </SCard>
-              {editingModel && (
-                <ModelFormModal isDark={isDark} t={t} initial={editingModel} bs={bs}
-                  onCancel={() => setEditingModel(null)}
-                  onSave={m => { onSaveModel(m); setEditingModel(null); }} />
-              )}
-              <SCard isDark={isDark} title={t.searchBackend}>
-                <div className="space-y-6">
-                  <SRow isDark={isDark} label={t.searchSource} desc={t.searchBackendDesc}>
-                    <SSegmented isDark={isDark} value={searchProvider} onChange={setSearchProvider}
-                      options={[{ key: 'bing', label: 'Bing' }, { key: 'metaso', label: 'Metaso' }, { key: 'bocha', label: 'Bocha' }, { key: 'baidu', label: 'Baidu' }, { key: 'tavily', label: 'Tavily' }]} />
-                  </SRow>
-
-                  {searchProvider === 'bing' ? (
-                    <span className={`text-[13px] block ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
-                      {t.searchKeyHintBing}
-                    </span>
-                  ) : (
-                    <div>
-                      <div className={`mb-2 text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{searchKeyStatusText}</div>
-                      <SField isDark={isDark} label={t.searchKey} type="password"
-                        value={searchApiKey} onChange={e => setSearchApiKey(e.target.value)}
-                        placeholder={searchHasSavedKey ? t.credEnterNewKey : t.searchKeyPlaceholder} />
-                      {searchHasSavedKey && (
-                        <div className="mt-2 flex items-center gap-2 flex-wrap">
-                          <button onClick={onKeepSearchApiKey}
-                            className={`text-[12px] px-3 py-1.5 rounded-full ${searchKeyAction === 'keep_existing' ? (isDark ? 'bg-[#174EA6] text-white' : 'bg-[#D2E3FC] text-[#174EA6]') : (isDark ? 'bg-[#2B2C2F] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]')}`}>{t.credKeep}</button>
-                          <button onClick={onReplaceSearchApiKey}
-                            className={`text-[12px] px-3 py-1.5 rounded-full ${searchKeyAction === 'replace' ? (isDark ? 'bg-[#174EA6] text-white' : 'bg-[#D2E3FC] text-[#174EA6]') : (isDark ? 'bg-[#2B2C2F] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]')}`}>{t.credReplace}</button>
-                          <button onClick={onDeleteSearchApiKey}
-                            className={`text-[12px] px-3 py-1.5 rounded-full ${searchKeyAction === 'delete' ? (isDark ? 'bg-[#5F2120] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]') : (isDark ? 'bg-[#2B2C2F] text-[#F28B82]' : 'bg-[#F0F4F9] text-[#C5221F]')}`}>{t.credDeleteKey}</button>
-                        </div>
-                      )}
-                      <span className={`text-[12px] mt-2 block ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
-                        {searchProvider === 'metaso' ? t.searchKeyHintMetaso : searchProvider === 'baidu' ? t.searchKeyHintBaidu : searchProvider === 'tavily' ? t.searchKeyHintTavily : t.searchKeyHintBocha}
-                      </span>
-
-                      <div className={`mt-3 px-3 py-2 rounded-lg flex items-center justify-between gap-3 ${isDark ? 'bg-[#131314]' : 'bg-white'}`}>
-                        <span className={`text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
-                          {searchProvider === 'metaso' ? t.searchGetKeyMetasoSteps : searchProvider === 'baidu' ? t.searchGetKeyBaiduSteps : searchProvider === 'tavily' ? t.searchGetKeyTavilySteps : t.searchGetKeyBochaSteps}
-                        </span>
-                        <button
-                          onClick={() => {
-                            const url = searchProvider === 'metaso'
-                              ? 'https://metaso.cn/search-api/api-keys'
-                              : searchProvider === 'baidu'
-                              ? 'https://console.bce.baidu.com/iam/#/iam/apikey/list'
-                              : searchProvider === 'tavily'
-                              ? 'https://app.tavily.com/'
-                              : 'https://open.bochaai.com/';
-                            if (bridge.available) bridge.openExternalUrl(url);
-                          }}
-                          className={`text-[12px] font-medium px-3 py-1 rounded-full whitespace-nowrap transition-colors ${
-                            isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]'
-                                   : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'
-                          }`}
-                        >{t.searchGetKey} ↗</button>
-                      </div>
-                    </div>
-                  )}
-
-                  {searchNeedsRestart && (
-                    <SActionBar isDark={isDark} message={t.searchRestartHint}
-                      actionLabel={t.confirmAndRestart} onAction={onConfirmSearchConfig} />
-                  )}
-                </div>
-              </SCard>
-
-              {!isWindows && (
-              <SCard isDark={isDark} title={t.sysPerm}>
-                <SRow isDark={isDark} label={t.sudo} desc={t.sudoDesc}>
-                  <button
-                    onClick={setSuperPerm}
-                    className={`w-[52px] h-[32px] rounded-full p-[2px] transition-colors duration-300 relative ${superPerm ? (isDark ? 'bg-[#A8C7FA]' : 'bg-[#0B57D0]') : (isDark ? 'bg-[#444746]' : 'bg-[#747775]')}`}
-                  >
-                    {/* off 态 thumb 暗色下用浅灰——原深蓝在深灰轨道上几乎不可见 */}
-                    <div className={`w-[28px] h-[28px] rounded-full shadow-sm transform transition-transform duration-300 ${superPerm ? (isDark ? 'bg-[#041E49]' : 'bg-white') : (isDark ? 'bg-[#C4C7C5]' : 'bg-white')} ${superPerm ? 'translate-x-[20px]' : 'translate-x-0'}`} />
-                  </button>
-                </SRow>
-              </SCard>
-              )}
-
-              <SCard isDark={isDark} title={t.notifications}>
-                <SRow isDark={isDark} label={t.taskCompletedNotif} desc={t.taskCompletedNotifDesc}>
-                  <button
-                    onClick={() => setTaskCompletedNotif(!taskCompletedNotif)}
-                    className={`w-[52px] h-[32px] rounded-full p-[2px] transition-colors duration-300 relative ${taskCompletedNotif ? (isDark ? 'bg-[#A8C7FA]' : 'bg-[#0B57D0]') : (isDark ? 'bg-[#444746]' : 'bg-[#747775]')}`}
-                    aria-pressed={taskCompletedNotif}
-                  >
-                    <div className={`w-[28px] h-[28px] rounded-full shadow-sm transform transition-transform duration-300 ${taskCompletedNotif ? (isDark ? 'bg-[#041E49]' : 'bg-white') : (isDark ? 'bg-[#C4C7C5]' : 'bg-white')} ${taskCompletedNotif ? 'translate-x-[20px]' : 'translate-x-0'}`} />
-                  </button>
-                </SRow>
-              </SCard>
-
-              <SCard isDark={isDark} title={t.notifications}>
-                <SRow isDark={isDark} label={t.taskCompletedNotif} desc={t.taskCompletedNotifDesc}>
-                  <button
-                    onClick={() => setTaskCompletedNotif(!taskCompletedNotif)}
-                    className={`w-[52px] h-[32px] rounded-full p-[2px] transition-colors duration-300 relative ${taskCompletedNotif ? (isDark ? 'bg-[#A8C7FA]' : 'bg-[#0B57D0]') : (isDark ? 'bg-[#444746]' : 'bg-[#747775]')}`}
-                    aria-pressed={taskCompletedNotif}
-                  >
-                    <div className={`w-[28px] h-[28px] rounded-full shadow-sm transform transition-transform duration-300 ${taskCompletedNotif ? (isDark ? 'bg-[#041E49]' : 'bg-white') : (isDark ? 'bg-[#C4C7C5]' : 'bg-white')} ${taskCompletedNotif ? 'translate-x-[20px]' : 'translate-x-0'}`} />
-                  </button>
-                </SRow>
-              </SCard>
-
-              <SCard isDark={isDark} title={t.appearance}>
-                <div className="space-y-8">
-                  <SRow isDark={isDark} label={t.lang} desc={t.langDesc}>
-                    <SSegmented isDark={isDark} value={language} onChange={setLanguage}
-                      options={[{ key: 'zh', label: '中文' }, { key: 'en', label: 'English' }, { key: 'ja', label: '日本語' }]} />
-                  </SRow>
-                  {languageNeedsRestart && (
-                    <SActionBar isDark={isDark} message={t.langRestartHint}
-                      actionLabel={t.restartNow} onAction={() => bridge.available && bridge.restartApp()} />
-                  )}
-                  <SRow isDark={isDark} label={t.theme} desc={t.themeDesc}>
-                    <SSegmented isDark={isDark} value={activeTheme} onChange={setActiveTheme}
-                      options={[{ key: 'light', label: t.light }, { key: 'dark', label: t.dark }]} />
-                  </SRow>
-                </div>
-              </SCard>
-
-              {/* 版本与更新: Linux 检查→下载 deb→安装→重启;Windows 检查→下载 zip→启动 MSI→退出 */}
-              <SCard
-                ref={versionUpdateRef}
-                id="settings-version-update"
-                style={{ scrollMarginTop: '24px', scrollMarginBottom: '24px' }}
-                isDark={isDark}
-                title={t.versionUpdate}
-                titleAdornment={hasUpdate ? <span className="w-2 h-2 rounded-full bg-[#EA4335]" /> : null}
-              >
-                {(() => {
-                  const upd = bs && bs.updateInfo;
-                  const checking = !!(bs && bs.updateChecking);
-                  const downloading = !!(bs && bs.updateDownloading);
-                  const ready = !!(bs && bs.updateReady);
-                  const progress = (bs && bs.updateProgress) || 0;
-                  const subText = isDark ? 'text-[#C4C7C5]' : 'text-[#444746]';
-                  const isWindowsUpdate = !!(upd && upd.platform === 'windows');
-                  const currentVersion = (bs && bs.appVersion) || (upd && upd.current_version) || '—';
-                  return (
-                    <div>
-                      <div className="flex items-center justify-between">
-                        <div className="pr-8">
-                          <span className="text-[16px] block mb-1">
-                            {t.curVer} v{currentVersion} (内测版)
-                          </span>
-                          <span className={`text-[14px] leading-relaxed block ${subText}`}>
-                            {checking ? t.checking
-                              : (bs && bs.updateCheckError === 'latest') ? t.upToDate
-                              : (bs && bs.updateCheckError) ? (t.updateCheckFailed + ': ' + bs.updateCheckError)
-                              : (upd && upd.available) ? (t.newVersionFound + ': v' + upd.latest_version)
-                              : ''}
-                          </span>
-                        </div>
-                        <button
-                          onClick={() => bridge.available && !checking && bridge.checkForUpdate()}
-                          disabled={checking}
-                          className={`text-[12px] font-medium px-4 py-2 rounded-full whitespace-nowrap transition-colors ${
-                            isDark ? 'bg-[#333537] text-[#E3E3E3] hover:bg-[#444746]'
-                                   : 'bg-[#E1E5EA] text-[#1F1F1F] hover:bg-[#D3D9E0]'
-                          } ${checking ? 'opacity-50' : ''}`}
-                        >{t.checkUpdate}</button>
-                      </div>
-
-                      {upd && upd.available && (
-                        <div className={`mt-5 pt-5 border-t ${isDark ? 'border-[#333537]' : 'border-[#DDE3EA]'}`}>
-                          {upd.notes && (
-                            <div className="mb-4">
-                              <span className={`text-[12px] block mb-1 ${subText}`}>{t.updateNotes}</span>
-                              <span className="text-[14px] leading-relaxed whitespace-pre-wrap block">{upd.notes}</span>
-                            </div>
-                          )}
-
-                          {ready ? (
-                            <div className="flex items-center justify-between">
-                              <span className="text-[14px]">✅ {isWindowsUpdate ? t.updateInstallerStarted : t.updateComplete}</span>
-                              {!isWindowsUpdate && (
-                                <button
-                                  onClick={() => bridge.available && bridge.restartApp()}
-                                  className={`text-[12px] font-medium px-4 py-2 rounded-full whitespace-nowrap transition-colors ${
-                                    isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]'
-                                           : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'
-                                  }`}
-                                >{t.restartNow}</button>
-                              )}
-                            </div>
-                          ) : downloading ? (
-                            <div>
-                              <div className="flex items-center justify-between mb-2">
-                                <span className={`text-[12px] ${subText}`}>{progress >= 100 ? t.installing : t.downloading}</span>
-                                <span className={`text-[12px] ${subText}`}>{progress}%</span>
-                              </div>
-                              <div className={`h-[6px] rounded-full overflow-hidden ${isDark ? 'bg-[#333537]' : 'bg-[#DDE3EA]'}`}>
-                                <div className="h-full rounded-full transition-all duration-200" style={{ width: progress + '%', backgroundColor: '#0B57D0' }} />
-                              </div>
-                              {/* 取消仅下载阶段可用; 进 install(pkexec/apt)后系统接管不可中断 */}
-                              {progress < 100 && (
-                                <div className="flex justify-end mt-3">
-                                  <button
-                                    onClick={() => bridge.available && bridge.cancelUpdate()}
-                                    disabled={!!(bs && bs.updateCancelling)}
-                                    className={`text-[12px] font-medium px-4 py-2 rounded-full whitespace-nowrap transition-colors ${
-                                      isDark ? 'bg-[#333537] text-[#E3E3E3] hover:bg-[#444746]'
-                                             : 'bg-[#E1E5EA] text-[#1F1F1F] hover:bg-[#D3D9E0]'
-                                    } ${(bs && bs.updateCancelling) ? 'opacity-50' : ''}`}
-                                  >{(bs && bs.updateCancelling) ? t.cancelling : t.cancel}</button>
-                                </div>
-                              )}
-                            </div>
-                          ) : (
-                            <button
-                              onClick={() => bridge.available && bridge.downloadAndInstallUpdate()}
-                              className={`text-[12px] font-medium px-4 py-2 rounded-full whitespace-nowrap transition-colors ${
-                                isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]'
-                                       : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'
-                              }`}
-                            >{(isWindowsUpdate ? t.downloadInstall : t.downloadInstallRestart)} (v{upd.latest_version})</button>
-                          )}
-
-                          {bs && bs.updateError && (
-                            <span className="text-[13px] mt-3 block text-[#EA4335]">⚠️ {bs.updateError}</span>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
-              </SCard>
-
-              {/* 依赖体检: 进页自动检测,只报缺失项 + 一键(pkexec apt)安装,成功/失败提示 */}
-              <div id="settings-dependencies">
-              <SCard isDark={isDark} title={t.depCheckTitle}>
-                {(() => {
-                  const deps = (bs && bs.deps) || [];
-                  const checking = !!(bs && bs.depsChecking);
-                  const installing = !!(bs && bs.depsInstalling);
-                  const installErr = bs && bs.depsInstallError;
-                  const subText = isDark ? 'text-[#C4C7C5]' : 'text-[#444746]';
-                  const checked = deps.length > 0;
-                  const missing = deps.filter(d => !d.installed);
-                  const busy = checking || installing;
-                  const btnGhost = isDark ? 'bg-[#333537] text-[#E3E3E3] hover:bg-[#444746]' : 'bg-[#E1E5EA] text-[#1F1F1F] hover:bg-[#D3D9E0]';
-                  const btnPrimary = isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]';
-                  return (
-                    <div>
-                      <div className="flex items-center justify-between">
-                        <span className={`text-[14px] leading-relaxed pr-4 ${subText}`}>
-                          {checking ? t.depChecking
-                            : installing ? t.depInstalling
-                            : !checked ? t.depChecking
-                            : missing.length === 0 ? ('✅ ' + t.depAllOk)
-                            : ('⚠️ ' + missing.length + t.depMissingSuffix)}
-                        </span>
-                        <button
-                          onClick={() => bridge.available && !busy && bridge.checkDependencies()}
-                          disabled={busy}
-                          className={`text-[12px] font-medium px-4 py-2 rounded-full whitespace-nowrap transition-colors ${btnGhost} ${busy ? 'opacity-50' : ''}`}
-                        >{t.depRecheck}</button>
-                      </div>
-
-                      {checked && missing.length > 0 && (
-                        <div className={`mt-4 pt-4 border-t ${isDark ? 'border-[#333537]' : 'border-[#DDE3EA]'}`}>
-                          <div className="space-y-2 mb-4">
-                            {missing.map(d => (
-                              <div key={d.key} className="flex items-center justify-between text-[14px]">
-                                <span>⚠️ {(t['dep_' + d.key] || d.key)}</span>
-                                <span className={`text-[12px] ${subText}`}>{d.apt}</span>
-                              </div>
-                            ))}
-                          </div>
-                          <div className="flex items-center justify-between gap-3">
-                            <span className={`text-[12px] ${subText}`}>{isWindows ? t.depInstallNoteWindows : t.depInstallNote}</span>
-                            <button
-                              onClick={() => bridge.available && !busy && bridge.installDependencies()}
-                              disabled={busy}
-                              className={`text-[12px] font-medium px-4 py-2 rounded-full whitespace-nowrap transition-colors ${btnPrimary} ${busy ? 'opacity-50' : ''}`}
-                            >{installing ? t.depInstalling : t.depInstallBtn}</button>
-                          </div>
-                          {installErr && <span className="text-[13px] mt-3 block text-[#EA4335]">❌ {installErr}</span>}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
-              </SCard>
+      const enabledSearchSet = new Set(['bing', ...(enabledSearchProviders || [])]);
+      const enabledSearchList = searchOptions.filter(item => enabledSearchSet.has(item.key));
+      const searchCredentialFor = provider => {
+        const credentials = (bs && bs.settings && bs.settings.search && bs.settings.search.credentials) || {};
+        return credentials[provider] || {};
+      };
+      const searchHasKey = provider => {
+        if (provider === 'bing') return true;
+        const credential = searchCredentialFor(provider);
+        const state = credential.credential_state || (credential.has_secret ? 'configured' : 'missing');
+        return !!credential.has_secret || state === 'configured' || state === 'env_override';
+      };
+      const newModelDraft = preset => {
+        const defs = MODEL_PRESET_DEFS[preset] || MODEL_PRESET_DEFS.deepseek;
+        return {
+          __new: true,
+          id: '',
+          name: preset === 'local_vllm' ? '本地 Qwen3.6' : presetProviderLabel(preset, t),
+          preset,
+          context_window_tokens: preset === 'local_vllm' ? 262144 : null,
+          max_output_tokens: preset === 'local_vllm' ? 24576 : null,
+          model: defs.model,
+          base_url: defs.baseUrl,
+          api_key: '',
+          __scope: preset === 'local_vllm' ? 'local' : 'cloud',
+        };
+      };
+      const memoryEnabled = !!(bs && bs.settings && bs.settings.memory_enabled);
+      const memory = (bs && bs.memory) || {};
+      const identity = (memory.profile && memory.profile.identity) || {};
+      const longTermItems = [
+        ...(memory.preferences || []).map(item => ({ ...item, kind: 'preference', type: '长期偏好' })),
+        ...(memory.work_context || []).map(item => ({ ...item, kind: 'work_context', type: '工作背景' })),
+      ];
+      const recentItems = [
+        ...(memory.current_focus || []).filter(item => item.status !== 'archived').map(item => ({ ...item, kind: 'current_focus', type: '当前关注' })),
+        ...(memory.recent_activity || []).filter(item => item.status !== 'archived').map(item => ({ ...item, kind: 'recent_activity', type: '近期动态' })),
+      ];
+      useEffect(() => {
+        if (activeSection === 'memory' && memoryEnabled && bridge.available && bridge.loadMemoryOverview) bridge.loadMemoryOverview();
+      }, [activeSection, memoryEnabled]);
+      useEffect(() => {
+        if (updateFocusTick) setActiveSection('update');
+      }, [updateFocusTick]);
+      const [memoryEditor, setMemoryEditor] = useState(null);
+      const [memoryDeleteConfirm, setMemoryDeleteConfirm] = useState(null);
+      const openMemoryItemViewer = item => {
+        setMemoryEditor({
+          mode: 'memory',
+          kind: item.kind,
+          id: item.id,
+          title: '记忆详情',
+          subtitle: '',
+          label: '内容',
+          value: item.text || item.content || '',
+          originalValue: item.text || item.content || '',
+          multiline: true,
+          editing: false,
+        });
+      };
+      const saveMemoryEditor = async () => {
+        if (!memoryEditor || !bridge.available) return;
+        const text = String(memoryEditor.value || '').trim();
+        if (memoryEditor.mode === 'memory') {
+          if (!text || !bridge.updateMemoryItem) return;
+          await bridge.updateMemoryItem(memoryEditor.kind, memoryEditor.id, { text });
+        } else if (memoryEditor.mode === 'profile') {
+          if (!bridge.saveMemoryProfilePatch) return;
+          await bridge.saveMemoryProfilePatch({ [memoryEditor.key]: text });
+        }
+        setMemoryEditor(null);
+      };
+      const deleteMemoryItem = async item => {
+        if (!bridge.available || !bridge.deleteMemoryItem) return;
+        await bridge.deleteMemoryItem(item.kind, item.id);
+      };
+      const editProfile = key => {
+        const label = key === 'call_name' ? '用户称呼' : '助手昵称';
+        setMemoryEditor({
+          mode: 'profile',
+          key,
+          title: `编辑${label}`,
+          subtitle: key === 'call_name' ? '助手称呼你的方式' : '你称呼助手的方式',
+          label,
+          value: identity[key] || '',
+          multiline: false,
+        });
+      };
+      const renderModelRows = models => models.length ? models.map(m => {
+        const isActive = m.id === activeModelId;
+        const isLocal = isLocalModel(m);
+        const title = m.model || m.name;
+        return (
+          <div key={m.id} className={`min-h-[60px] grid grid-cols-[24px_32px_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.12]'}`}>
+            <button onClick={() => !isActive && onSetActiveModel(m.id)} className="shrink-0" title={t.setActiveModel}>
+              <RadioDot active={isActive} />
+            </button>
+            <ProviderIcon preset={m.preset || (isLocal ? 'local_vllm' : 'openai_compatible')} isDark={isDark} compact />
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className={`text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{title}</span>
+                {isLocal && <Tag tone="gray">本地模型</Tag>}
+                {isActive && <Tag>默认</Tag>}
               </div>
-
+            </div>
+            <div className="shrink-0 flex items-center gap-2">
+              <button onClick={() => setEditingModel({ ...m, __scope: isLocal ? 'local' : 'cloud' })} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('blue')}`}>编辑</button>
+              {models.length > 1 && !isLocal && <button onClick={() => setModelDeleteConfirm(m)} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('red')}`}>删除</button>}
+            </div>
+          </div>
+        );
+      }) : <div className={`px-4 py-4 text-[14px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>暂无模型</div>;
+      const petEnabled = !!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled);
+      const selectedPetId = (bs && typeof bs.selectedPet === 'string' && bs.selectedPet) || DEFAULT_PET_ID;
+      const handlePetSelect = id => {
+        if (!bridge.available || !bridge.setSelectedPet) return Promise.resolve();
+        return bridge.setSelectedPet(id);
+      };
+      const renderGeneral = () => (
+        <>
+          <IOSSection title="外观">
+            <IOSRow label="界面语言" desc="切换应用显示语言">
+              <SSegmented isDark={isDark} value={language} onChange={v => { setLanguage(v); setRestartDialog('language'); }} options={[{ key: 'zh', label: '中文' }, { key: 'en', label: 'English' }, { key: 'ja', label: '日本語' }]} />
+            </IOSRow>
+            <IOSRow label="主题模式" desc="选择浅色或深色外观">
+              <SSegmented isDark={isDark} value={activeTheme} onChange={setActiveTheme} options={[{ key: 'light', label: t.light }, { key: 'dark', label: t.dark }]} />
+            </IOSRow>
+          </IOSSection>
+          <IOSSection title="通知">
+            <IOSRow label="任务完成提醒" desc="任务完成后展示系统通知">
+              <IOSSwitch checked={taskCompletedNotif} onChange={setTaskCompletedNotif} />
+            </IOSRow>
+          </IOSSection>
+          <section className="mb-6">
+            <div className={`px-3 mb-2 text-[12px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>桌面助手</div>
+            <div className={`overflow-hidden rounded-[18px] ${isDark ? 'bg-[#2C2C2E]' : 'bg-white'}`}>
+              <div className={`w-full min-h-[58px] flex flex-wrap items-center gap-3 px-4 py-2.5 text-left border-b ${
+                isDark ? 'border-white/[0.10] text-[#F2F2F7]' : 'border-black/[0.12] text-[#1C1C1E]'
+              } ${petEnabled ? '' : 'last:border-b-0'}`}>
+                <div className="flex-1 min-w-[120px]">
+                  <div className="text-[15px] leading-5 font-normal whitespace-nowrap">桌伴公仔</div>
+                  <div className={`mt-0.5 text-[13px] leading-5 ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>在桌面显示常驻小公仔</div>
+                </div>
+                <IOSSwitch checked={petEnabled} onChange={onPetEnabledChange} />
+              </div>
+              {petEnabled && (
+                <div className={`px-4 pb-4 border-t ${isDark ? 'border-white/[0.10]' : 'border-black/[0.12]'}`}>
+                  <PetSettingsSection
+                    isDark={isDark}
+                    enabled={petEnabled}
+                    selectedPetId={selectedPetId}
+                    onSelect={handlePetSelect}
+                  />
+                </div>
+              )}
+            </div>
+          </section>
+        </>
+      );
+      const renderModels = () => (
+        <>
+          <section className="mb-6">
+            <SectionTitle>模型</SectionTitle>
+            <Group>
+              {renderModelRows(userModels)}
+              <button onClick={() => setEditingModel(newModelDraft('deepseek'))}
+                className={`w-full min-h-[52px] flex items-center justify-center gap-2 px-4 text-[16px] font-normal border-t ${isDark ? 'border-white/[0.10] text-[#0A84FF] hover:bg-white/[0.05]' : 'border-black/[0.12] text-[#007AFF] hover:bg-black/[0.035]'}`}>
+                <Plus size={18} />
+                <span>添加模型</span>
+              </button>
+            </Group>
+            {modelEnvLocked.length > 0 && <div className={`px-3 mt-2 text-[12px] leading-relaxed ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>如果模型配置被环境变量管理，设置页会保留当前值，但修改可能需要到环境变量中完成。</div>}
+          </section>
+        </>
+      );
+      const renderSearch = () => (
+        <>
+          <section className="mb-6">
+            <SectionTitle>搜索源列表</SectionTitle>
+            <Group>
+            {enabledSearchList.map(item => {
+              return (
+                <div key={item.key} className={`min-h-[60px] grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-[14px] px-4 py-3 border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.12]'}`}>
+                  <button onClick={() => { setSearchProvider(item.key); setRestartDialog('search'); }} className="shrink-0" title="设为默认">
+                    <RadioDot active={searchProvider === item.key} />
+                  </button>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className={`text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{item.label}</span>
+                      {item.key === searchProvider && <Tag>默认</Tag>}
+                    </div>
+                    <div className={`mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{item.desc}</div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {item.key !== 'bing' && <button onClick={() => { setPendingSearchProvider(null); setEditingSearch(item.key); }} className={`shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('blue')}`}>编辑</button>}
+                    {item.key !== 'bing' && <button onClick={() => setSearchDeleteConfirm(item)} className={`shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('red')}`}>删除</button>}
+                  </div>
+                </div>
+              );
+            })}
+            <button onClick={() => setSearchPickerOpen(true)}
+              className={`w-full min-h-[52px] flex items-center justify-center gap-2 px-4 text-[16px] font-normal border-t ${isDark ? 'border-white/[0.10] text-[#0A84FF] hover:bg-white/[0.05]' : 'border-black/[0.12] text-[#007AFF] hover:bg-black/[0.035]'}`}>
+              <Plus size={18} />
+              <span>添加搜索源</span>
+            </button>
+            </Group>
+          </section>
+        </>
+      );
+      const renderMemoryList = (items, empty) => items.length ? items.map(item => {
+        const text = item.text || item.content || '未命名记忆';
+        return (
+          <div key={`${item.kind}-${item.id}`} className={`min-h-[92px] flex items-start gap-4 px-4 py-3.5 border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.12]'}`}>
+            <div className="min-w-0 flex-1">
+              <div className={`text-[15px] leading-6 whitespace-pre-wrap break-words line-clamp-3 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{text}</div>
+            </div>
+            <button onClick={() => openMemoryItemViewer(item)} className={`shrink-0 mt-0.5 text-[14px] px-3 py-1.5 rounded-full ${actionButton('blue')}`}>查看</button>
+          </div>
+        );
+      }) : <IOSRow label={empty} />;
+      const renderMemory = () => (
+        <>
+          <IOSSection>
+            <IOSRow label="启用记忆" desc="PINVOU 会记住称呼、偏好、工作背景和近期事项">
+              <IOSSwitch checked={memoryEnabled} onChange={onMemoryEnabledChange} />
+            </IOSRow>
+          </IOSSection>
+          {memoryEnabled && (
+            <>
+              <IOSSection title="个人资料">
+                <IOSRow label="用户称呼" desc="助手称呼你的方式" value={identity.call_name || '未设置'} onClick={() => editProfile('call_name')}>
+                  <ChevronDown size={22} className="-rotate-90 opacity-35" />
+                </IOSRow>
+                <IOSRow label="助手昵称" desc="你称呼助手的方式" value={identity.assistant_alias || 'PINVOU'} onClick={() => editProfile('assistant_alias')}>
+                  <ChevronDown size={22} className="-rotate-90 opacity-35" />
+                </IOSRow>
+              </IOSSection>
+              <IOSSection title="长期记忆">{renderMemoryList(longTermItems, '暂无长期记忆')}</IOSSection>
+              <IOSSection title="短期记忆">{renderMemoryList(recentItems, '暂无短期记忆')}</IOSSection>
+            </>
+          )}
+        </>
+      );
+      const renderData = () => (
+        <IOSSection title="隐藏任务">
+          {archivedSessions.length ? archivedSessions.map(s => (
+            <IOSRow key={s.id} label={s.title || t.newChat} desc={`收纳于 ${formatSessionDate(s.archived_at || s.updated_at || s.created_at, language)}`}>
+              <button onClick={() => onRestoreArchived && onRestoreArchived(s.id)} className={`shrink-0 text-[14px] px-3 py-1.5 rounded-full ${actionButton('blue')}`}>恢复</button>
+              <button onClick={() => setArchivedDeleteConfirm(s)} className={`shrink-0 text-[14px] px-3 py-1.5 rounded-full ${actionButton('red')}`}>删除</button>
+            </IOSRow>
+          )) : <IOSRow label="暂无隐藏任务" desc="收纳后的任务会显示在这里" />}
+        </IOSSection>
+      );
+      const renderUpdate = () => {
+        const upd = bs && bs.updateInfo;
+        const currentVersion = (bs && bs.appVersion) || (upd && upd.current_version) || '—';
+        const notes = (upd && String(upd.notes || '').trim()) || '暂无更新说明';
+        const updateChecking = !!(bs && bs.updateChecking);
+        const updateDownloading = !!(bs && bs.updateDownloading);
+        const updateReady = !!(bs && bs.updateReady);
+        const updateProgress = (bs && bs.updateProgress) || 0;
+        const isWindowsUpdate = upd && upd.platform === 'windows';
+        const updateError = (bs && bs.updateError) || (bs && bs.updateCheckError && bs.updateCheckError !== 'latest' ? bs.updateCheckError : '');
+        const updateStatusDesc = updateDownloading
+          ? (updateProgress >= 100 ? '正在安装更新…' : `正在下载更新 ${updateProgress}%`)
+          : updateReady
+            ? (isWindowsUpdate ? '安装器已启动，应用将自动退出' : '升级完成，重启后生效')
+            : (upd && upd.available ? `v${upd.latest_version}` : (bs && bs.updateCheckError === 'latest' ? '已是最新版本' : ''));
+        const updateButtonLabel = updateChecking
+          ? '检查中…'
+          : updateDownloading
+            ? (updateProgress >= 100 ? '安装中…' : `下载中 ${updateProgress}%`)
+            : updateReady
+              ? (isWindowsUpdate ? '安装器已启动' : '立即重启')
+              : (upd && upd.available ? (upd.platform === 'linux' ? '升级并重启' : '下载并安装') : '检查更新');
+        const updateButtonDisabled = !bridge.available || updateChecking || updateDownloading || (updateReady && isWindowsUpdate);
+        const handleUpdateAction = () => {
+          if (!bridge.available || updateChecking || updateDownloading) return;
+          if (updateReady) {
+            if (!isWindowsUpdate) bridge.restartApp();
+            return;
+          }
+          if (upd && upd.available) bridge.downloadAndInstallUpdate();
+          else bridge.checkForUpdate();
+        };
+        return (
+          <div ref={versionUpdateRef} id="settings-version-update">
+            <IOSSection title="版本">
+              <IOSRow label="当前版本" desc="内测版" value={`v${currentVersion}`} />
+              <IOSRow label={upd && upd.available ? '发现新版本' : '检查更新'} desc={updateStatusDesc}>
+              <button data-settings-update-action="true" onClick={handleUpdateAction} disabled={updateButtonDisabled} className="h-9 px-4 rounded-full bg-[#007AFF] text-white text-[14px] font-semibold whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed">{updateButtonLabel}</button>
+            </IOSRow>
+            </IOSSection>
+            {updateError && (
+              <div className="px-3 -mt-3 mb-4 text-[12px] leading-5 text-[#EA4335] break-words">{String(updateError)}</div>
+            )}
+            <section className="mb-6">
+              <div className={`px-3 mb-2 text-[12px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>更新内容</div>
+              <div className={`rounded-[18px] px-4 py-3.5 text-[14px] leading-6 whitespace-pre-line ${isDark ? 'bg-[#2C2C2E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>{notes}</div>
+            </section>
+          </div>
+        );
+      };
+      const renderPermissions = () => (
+        <IOSSection title="系统">
+          <IOSRow label="高级执行权限" desc="允许助手执行环境配置等高级指令">
+            <IOSSwitch checked={!!superPerm} onChange={setSuperPerm} />
+          </IOSRow>
+        </IOSSection>
+      );
+      const renderHelp = () => (
+        <IOSSection>
+          <IOSRow label="提交问题或建议" desc="支持图片和视频附件，提交前会显示隐私提示">
+            <button onClick={() => setFeedbackOpen(true)} className="h-9 px-4 rounded-full bg-[#007AFF] text-white text-[14px] font-semibold">提交反馈</button>
+          </IOSRow>
+        </IOSSection>
+      );
+      const renderContent = () => {
+        if (activeSection === 'model') return renderModels();
+        if (activeSection === 'search') return renderSearch();
+        if (activeSection === 'memory') return renderMemory();
+        if (activeSection === 'permissions') return renderPermissions();
+        if (activeSection === 'data') return renderData();
+        if (activeSection === 'update') return renderUpdate();
+        if (activeSection === 'help') return renderHelp();
+        return renderGeneral();
+      };
+      const sectionTitle = {
+        general: '通用',
+        model: '模型',
+        search: '搜索',
+        memory: '记忆',
+        permissions: '权限与环境',
+        data: '数据管理',
+        update: '更新',
+        help: '帮助反馈',
+      }[activeSection] || '通用';
+      const SearchSourceModal = ({ provider, isNew, onClose }) => {
+        const option = searchOptions.find(x => x.key === provider);
+        const [showSearchKey, setShowSearchKey] = useState(false);
+        const [draftKey, setDraftKey] = useState('');
+        const hasSavedKey = searchHasKey(provider);
+        const canSaveSearch = (provider === 'bing' && isNew) || !!String(draftKey || '').trim();
+        useEffect(() => {
+          setDraftKey('');
+          setShowSearchKey(false);
+        }, [provider]);
+        return (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150" onClick={onClose}>
+            <div onClick={e => e.stopPropagation()}
+              className={`w-[430px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl ${isDark ? 'bg-[#1C1C1E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
+              <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
+                <div>
+                  <h2 className="text-[20px] leading-6 font-semibold">编辑搜索源</h2>
+                  <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{option ? option.label : provider}</p>
+                </div>
+                <button onClick={onClose} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
+              </div>
+              <div className="space-y-4 px-5 py-4">
+                <section>
+                  <div className={`overflow-hidden rounded-[16px] ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]'}`}>
+                    <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>
+                    <label className="shrink-0 text-[14px] leading-5">API Key</label>
+                    <input type="text" value={draftKey} onChange={e => setDraftKey(e.target.value)}
+                      autoFocus
+                      placeholder={hasSavedKey ? '••••••••' : '输入 API Key'}
+                      style={showSearchKey ? undefined : { WebkitTextSecurity: 'disc' }}
+                      className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none ${isDark ? 'placeholder:text-[#636366]' : 'placeholder:text-[#8A8A8E]'}`} />
+                    <button type="button" onClick={() => setShowSearchKey(v => !v)} className="shrink-0 text-[14px] text-[#007AFF]">{showSearchKey ? '隐藏' : '显示'}</button>
+                    </div>
+                  </div>
+                </section>
+              </div>
+              <div className={`flex justify-end gap-2 px-5 py-4 border-t ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
+                <button onClick={onClose} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors ${isDark ? 'text-[#0A84FF] hover:bg-white/[0.06]' : 'text-[#007AFF] hover:bg-black/[0.04]'}`}>取消</button>
+                <button onClick={() => {
+                  if (!canSaveSearch) return;
+                  if (isNew) onAddSearchProvider && onAddSearchProvider(provider);
+                  if (draftKey.trim()) setSearchApiKey(draftKey, provider);
+                  onClose();
+                  setRestartDialog('search');
+                }} disabled={!canSaveSearch} className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold transition-colors disabled:opacity-35">保存</button>
               </div>
             </div>
           </div>
-          {feedbackOpen && (
-            <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/45">
-              <div className={`w-full max-w-[680px] max-h-[88vh] overflow-y-auto rounded-[20px] shadow-2xl ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
-                <div className={`sticky top-0 z-10 flex items-center justify-between gap-3 px-6 py-4 border-b ${isDark ? 'bg-[#1E1F20] border-[#333537]' : 'bg-white border-[#E0E3E7]'}`}>
-                  <h2 className="text-[18px] font-medium">{t.feedbackDialogTitle}</h2>
-                  <button onClick={closeFeedback} className={`w-9 h-9 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#F0F4F9]'}`}><X size={18} /></button>
+        );
+      };
+      const RestartDialog = ({ type }) => (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
+          <div className={`w-[340px] overflow-hidden rounded-[18px] shadow-2xl ${isDark ? 'bg-[#2C2C2E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
+            <div className="px-6 pt-6 pb-5 text-center">
+              <h3 className="text-[18px] font-semibold">{type === 'search' ? '重启以应用搜索配置？' : '重启以应用语言设置？'}</h3>
+              <p className={`mt-2 text-[14px] leading-5 ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{type === 'search' ? '搜索源或凭据保存后，需要重启应用才能用于助手的联网搜索。' : '界面语言已切换，重启后助手回复语言也会同步生效。'}</p>
+            </div>
+            <div className={`grid grid-cols-2 border-t ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}>
+              <button onClick={async () => {
+                if (type === 'search' && onSaveSearchConfig) {
+                  const saved = await onSaveSearchConfig();
+                  if (saved === false) return;
+                }
+                setRestartDialog(null);
+              }} className={`h-12 text-[17px] font-semibold border-r ${isDark ? 'border-white/[0.12] text-[#0A84FF]' : 'border-black/[0.12] text-[#007AFF]'}`}>稍后</button>
+              <button onClick={() => { setRestartDialog(null); type === 'search' ? onConfirmSearchConfig() : (bridge.available && bridge.restartApp()); }} className="h-12 text-[17px] font-semibold text-[#007AFF]">现在重启</button>
+            </div>
+          </div>
+        </div>
+      );
+      const ModelDeleteDialog = ({ model }) => (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
+          <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl ${isDark ? 'bg-[#2C2C2E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
+            <div className="px-5 pt-5 pb-4 text-center">
+              <h3 className="text-[17px] leading-6 font-semibold">删除模型？</h3>
+              <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>将移除该模型配置和已保存的凭据。</p>
+            </div>
+            <div className={`border-t ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}>
+              <button onClick={() => { onDeleteModel(model); setModelDeleteConfirm(null); }} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}>删除模型</button>
+              <button onClick={() => setModelDeleteConfirm(null)} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">取消</button>
+            </div>
+          </div>
+        </div>
+      );
+      const SearchDeleteDialog = ({ source }) => (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
+          <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl ${isDark ? 'bg-[#2C2C2E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
+            <div className="px-5 pt-5 pb-4 text-center">
+              <h3 className="text-[17px] leading-6 font-semibold">删除搜索源？</h3>
+              <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>将移除 {source.label} 和已保存的凭据。</p>
+            </div>
+            <div className={`border-t ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}>
+              <button onClick={() => { onDeleteSearchProvider && onDeleteSearchProvider(source.key); setSearchDeleteConfirm(null); setRestartDialog('search'); }} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}>删除搜索源</button>
+              <button onClick={() => setSearchDeleteConfirm(null)} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">取消</button>
+            </div>
+          </div>
+        </div>
+      );
+      return (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center px-3 py-3 sm:px-5 sm:py-5 bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
+          onClick={(event) => {
+            if (event.target === event.currentTarget && onCloseSettings) {
+              onCloseSettings();
+            }
+          }}
+        >
+          <div
+            style={{ width: 'min(920px, calc(100vw - 24px))', height: 'min(620px, calc(100vh - 24px))' }}
+            onClick={(event) => event.stopPropagation()}
+            className={`relative flex overflow-hidden rounded-[24px] border shadow-[0_22px_58px_rgba(0,0,0,0.34)] ${isDark ? 'border-white/[0.14] bg-[#1C1C1E] text-[#F2F2F7]' : 'border-white/70 bg-[#F2F2F7] text-[#1C1C1E]'}`}
+          >
+            {onCloseSettings && (
+              <button onClick={onCloseSettings} className={`absolute right-5 top-5 z-20 h-9 w-9 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}>
+                <X size={18} />
+              </button>
+            )}
+            <aside
+              style={{ width: 'clamp(150px, 24vw, 210px)' }}
+              className={`shrink-0 overflow-y-auto custom-scrollbar border-r px-3 sm:px-4 py-5 sm:py-7 ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}
+            >
+              <div className={`mb-4 px-1 text-[12px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>常用</div>
+              <div className="space-y-2">
+                <SectionButton id="general" icon={<Sparkles size={17} />} label="通用" />
+                <SectionButton id="model" icon={<Cpu size={17} />} label="模型" />
+                <SectionButton id="search" icon={<Search size={17} />} label="搜索" />
+                {memorySettingsVisible && <SectionButton id="memory" icon={<Database size={17} />} label="记忆" />}
+              </div>
+              <div className={`mt-7 mb-4 px-1 text-[12px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>系统</div>
+              <div className="space-y-2">
+                <SectionButton id="permissions" icon={<Wrench size={17} />} label="权限与环境" />
+                <SectionButton id="data" icon={<Archive size={17} />} label="数据管理" />
+                <SectionButton id="update" icon={<RefreshCw size={17} />} label="更新" dot={hasUpdate} />
+                <SectionButton id="help" icon={<MessageSquare size={17} />} label="帮助反馈" />
+              </div>
+            </aside>
+            <main className="flex-1 min-w-0 overflow-y-auto custom-scrollbar px-4 sm:px-6 md:px-8 py-5 sm:py-7">
+              <div className="max-w-[680px]">
+                <div className="mb-6 pr-12">
+                  <h1 className="text-[24px] leading-tight font-semibold tracking-normal">{sectionTitle}</h1>
                 </div>
-                <div className="p-6 space-y-5">
+                {renderContent()}
+              </div>
+            </main>
+          </div>
+          {editingModel && (
+            <ModelFormModal isDark={isDark} t={t} initial={editingModel} bs={bs}
+              onCancel={() => setEditingModel(null)}
+              onSave={m => { onSaveModel(m); setEditingModel(null); }} />
+          )}
+          {modelDeleteConfirm && <ModelDeleteDialog model={modelDeleteConfirm} />}
+          {searchDeleteConfirm && <SearchDeleteDialog source={searchDeleteConfirm} />}
+          {searchPickerOpen && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150" onClick={() => setSearchPickerOpen(false)}>
+              <div onClick={e => e.stopPropagation()}
+                className={`w-[440px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl ${isDark ? 'bg-[#1C1C1E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
+                <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
                   <div>
-                    <label className="block text-[13px] font-medium mb-2">{t.feedbackType}</label>
-                    <SSegmented isDark={isDark} value={feedbackDraft.type} onChange={type => setFeedbackDraft(prev => ({ ...prev, type }))} options={feedbackTypes} />
+                    <h2 className="text-[20px] leading-6 font-semibold">添加搜索源</h2>
+                    <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>选择搜索源后再填写必要凭据</p>
                   </div>
-                  <div>
-                    <label className="block text-[13px] font-medium mb-2">{t.feedbackSubject}</label>
-                    <input value={feedbackDraft.title} maxLength={120} onChange={e => setFeedbackDraft(prev => ({ ...prev, title: e.target.value }))}
-                      placeholder={t.feedbackSubjectPh}
-                      className={`w-full rounded-xl px-4 py-3 text-[14px] outline-none border ${isDark ? 'bg-[#131314] border-[#333537] text-[#E3E3E3]' : 'bg-[#F8F9FB] border-[#DDE3EA] text-[#1F1F1F]'}`} />
-                  </div>
-                  <div>
-                    <label className="block text-[13px] font-medium mb-2">{t.feedbackBody}</label>
-                    <textarea value={feedbackDraft.description} maxLength={5000} onChange={e => setFeedbackDraft(prev => ({ ...prev, description: e.target.value }))}
-                      placeholder={t.feedbackBodyPh} rows={6}
-                      className={`w-full resize-y rounded-xl px-4 py-3 text-[14px] leading-relaxed outline-none border ${isDark ? 'bg-[#131314] border-[#333537] text-[#E3E3E3]' : 'bg-[#F8F9FB] border-[#DDE3EA] text-[#1F1F1F]'}`} />
-                  </div>
-                  <div>
-                    <div className="flex items-center justify-between gap-3 mb-2">
-                      <label className="text-[13px] font-medium">{t.feedbackAttachments}</label>
-                      <button onClick={pickFeedbackAttachments} className={`inline-flex items-center gap-2 text-[12px] font-medium px-3 py-2 rounded-full ${isDark ? 'bg-[#333537] hover:bg-[#444746]' : 'bg-[#E8EEF7] hover:bg-[#DCE6F5]'}`}>
-                        <Paperclip size={15} /> {t.feedbackAddAttachment}
+                  <button onClick={() => setSearchPickerOpen(false)} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
+                </div>
+                <div className="px-5 py-4">
+                  <div className={`overflow-hidden rounded-[16px] ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]'}`}>
+                    {searchOptions.filter(item => !enabledSearchSet.has(item.key)).map(item => (
+                      <button key={item.key} type="button" onClick={() => {
+                          setSearchPickerOpen(false);
+                          if (item.key !== 'bing') {
+                            setPendingSearchProvider(item.key);
+                            setEditingSearch(item.key);
+                          } else {
+                            onAddSearchProvider && onAddSearchProvider(item.key);
+                            setRestartDialog('search');
+                          }
+                        }}
+                        className={`w-full min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 ${isDark ? 'border-white/[0.10] hover:bg-white/[0.06]' : 'border-black/[0.10] hover:bg-black/[0.035]'}`}>
+                        <span className="min-w-0 flex-1">
+                          <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{item.label}</span>
+                          <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{item.desc}</span>
+                        </span>
+                        <ChevronDown size={16} className={`-rotate-90 shrink-0 ${isDark ? 'text-[#636366]' : 'text-[#C7C7CC]'}`} />
                       </button>
-                    </div>
-                    <p className={`text-[12px] mb-3 ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{t.feedbackAttachmentHint}</p>
-                    {feedbackDraft.attachments.length === 0 ? (
-                      <div className={`text-[13px] rounded-xl border px-4 py-3 ${isDark ? 'border-[#333537] text-[#9AA0A6]' : 'border-[#DDE3EA] text-[#5F6368]'}`}>{t.feedbackNoAttachments}</div>
-                    ) : (
-                      <div className="space-y-2">
-                        {feedbackDraft.attachments.map((a, idx) => (
-                          <div key={`${a.path}-${idx}`} className={`flex items-center justify-between gap-3 rounded-xl border px-3 py-2 ${isDark ? 'border-[#333537] bg-[#131314]' : 'border-[#DDE3EA] bg-[#F8F9FB]'}`}>
-                            <div className="min-w-0 flex items-center gap-2">
-                              {a.media_type === 'video' ? <Video size={16} /> : <FileText size={16} />}
-                              <span className="truncate text-[13px]">{a.name}</span>
-                            </div>
-                            <button onClick={() => setFeedbackDraft(prev => ({ ...prev, attachments: prev.attachments.filter((_, i) => i !== idx) }))}
-                              className={`w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#E8EEF7]'}`}><Trash2 size={15} /></button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  <div className={`rounded-xl px-4 py-3 text-[12px] leading-relaxed ${isDark ? 'bg-[#131314] text-[#C4C7C5]' : 'bg-[#F8F9FB] text-[#444746]'}`}>{t.feedbackPrivacy}</div>
-                  {feedbackStatus.message && (
-                    <div className={`rounded-xl px-4 py-3 text-[13px] ${feedbackStatus.state === 'submitted' ? (isDark ? 'bg-[#17351F] text-[#93D5A6]' : 'bg-[#E6F4EA] text-[#137333]') : (isDark ? 'bg-[#3A1E1E] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]')}`}>
-                      {feedbackStatus.message}
-                    </div>
-                  )}
-                  <div className="flex items-center justify-end gap-2">
-                    <button onClick={closeFeedback} className={`text-[13px] font-medium px-4 py-2 rounded-full ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#F0F4F9]'}`}>{t.cancel}</button>
-                    {feedbackStatus.state === 'failed_retryable' && (
-                      <button onClick={submitFeedbackDraft} className={`text-[13px] font-medium px-4 py-2 rounded-full ${isDark ? 'bg-[#333537] hover:bg-[#444746]' : 'bg-[#E8EEF7] hover:bg-[#DCE6F5]'}`}>{t.feedbackRetry}</button>
-                    )}
-                    <button onClick={submitFeedbackDraft} disabled={feedbackStatus.state === 'submitting'}
-                      className={`text-[13px] font-medium px-5 py-2 rounded-full disabled:opacity-50 ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'}`}>
-                      {feedbackStatus.state === 'submitting' ? t.feedbackSubmitting : t.feedbackSubmit}
-                    </button>
+                    ))}
                   </div>
                 </div>
               </div>
             </div>
           )}
+          {editingSearch && <SearchSourceModal provider={editingSearch} isNew={pendingSearchProvider === editingSearch} onClose={() => { setEditingSearch(null); setPendingSearchProvider(null); }} />}
+          {memoryEditor && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4" onClick={() => setMemoryEditor(null)}>
+              <div onClick={e => e.stopPropagation()} className={`w-full max-w-[500px] rounded-[24px] shadow-2xl ${isDark ? 'bg-[#1C1C1E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
+                <div className={`px-6 py-4 flex items-start justify-between border-b ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}>
+                  <div>
+                    <h2 className="text-[22px] leading-7 font-semibold">{memoryEditor.title}</h2>
+                    <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{memoryEditor.subtitle}</p>
+                  </div>
+                  <button onClick={() => setMemoryEditor(null)} className={`h-10 w-10 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08]' : 'bg-[#E5E5EA]'}`}><X size={20} /></button>
+                </div>
+                <div className="px-6 py-5">
+                  <label className="block">
+                    <span className={`block px-1 mb-2 text-[13px] font-semibold ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{memoryEditor.label}</span>
+                    {memoryEditor.multiline ? (
+                      <textarea
+                        value={memoryEditor.value}
+                        onChange={e => setMemoryEditor(prev => ({ ...prev, value: e.target.value }))}
+                        rows={5}
+                        className={`w-full rounded-[16px] px-4 py-3 text-[15px] leading-6 outline-none resize-none ${isDark ? 'bg-[#2C2C2E] text-[#F2F2F7] placeholder:text-[#636366]' : 'bg-[#F2F2F7] text-[#1C1C1E] placeholder:text-[#8A8A8E]'}`}
+                      />
+                    ) : (
+                      <input
+                        value={memoryEditor.value}
+                        onChange={e => setMemoryEditor(prev => ({ ...prev, value: e.target.value }))}
+                        className={`w-full rounded-[16px] px-4 py-3 text-[15px] outline-none ${isDark ? 'bg-[#2C2C2E] text-[#F2F2F7] placeholder:text-[#636366]' : 'bg-[#F2F2F7] text-[#1C1C1E] placeholder:text-[#8A8A8E]'}`}
+                      />
+                    )}
+                  </label>
+                  <div className="mt-6 flex justify-end gap-2.5">
+                    <button onClick={() => setMemoryEditor(null)} className={`h-10 px-4 rounded-full text-[14px] font-semibold ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#E5E5EA]'}`}>取消</button>
+                    <button onClick={saveMemoryEditor} className="h-10 px-4 rounded-full bg-[#007AFF] text-white text-[14px] font-semibold">保存</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+          {restartDialog && <RestartDialog type={restartDialog} />}
+          {archivedDeleteConfirm && createPortal(
+            <ArchivedDeleteConfirmDialog
+              theme={activeTheme}
+              t={t}
+              onCancel={() => setArchivedDeleteConfirm(null)}
+              onConfirm={confirmArchivedDelete}
+            />,
+            document.body
+          )}
+          {feedbackOpen && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150" onClick={closeFeedback}>
+              <div
+                onClick={e => e.stopPropagation()}
+                data-feedback-dialog="true"
+                className={`w-[430px] max-w-[90vw] max-h-[76vh] overflow-y-auto rounded-[22px] shadow-2xl custom-scrollbar ${isDark ? 'bg-[#1C1C1E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}
+              >
+                <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
+                  <div className="min-w-0">
+                    <h2 className="text-[20px] leading-6 font-semibold">{t.feedbackDialogTitle}</h2>
+                    <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{t.feedbackDesc}</p>
+                  </div>
+                  <button onClick={closeFeedback} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
+                </div>
+                <div className="space-y-4 px-5 py-4">
+                  <section>
+                    <div className={`overflow-hidden rounded-[16px] ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]'}`}>
+                      <div className="min-h-[54px] flex items-center gap-3 px-4 py-2.5">
+                        <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{t.feedbackType}</label>
+                        <SSegmented isDark={isDark} value={feedbackDraft.type} onChange={type => setFeedbackDraft(prev => ({ ...prev, type }))} options={feedbackTypes} />
+                      </div>
+                    </div>
+                  </section>
+                  <section>
+                    <div className={`overflow-hidden rounded-[16px] ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]'}`}>
+                      <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
+                        <label className="shrink-0 text-[14px] leading-5">{t.feedbackSubject}</label>
+                        <input value={feedbackDraft.title} maxLength={120} onChange={e => setFeedbackDraft(prev => ({ ...prev, title: e.target.value }))}
+                        placeholder={t.feedbackSubjectPh}
+                        className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none ${isDark ? 'placeholder:text-[#636366]' : 'placeholder:text-[#8A8A8E]'}`} />
+                      </div>
+                      <div className="px-4 py-3">
+                        <div className="mb-2 text-[14px] leading-5">{t.feedbackBody}</div>
+                        <textarea value={feedbackDraft.description} maxLength={5000} onChange={e => setFeedbackDraft(prev => ({ ...prev, description: e.target.value }))}
+                        placeholder={t.feedbackBodyPh} rows={5}
+                        className={`w-full resize-none bg-transparent text-[14px] leading-6 outline-none ${isDark ? 'placeholder:text-[#636366]' : 'placeholder:text-[#8A8A8E]'}`} />
+                      </div>
+                    </div>
+                  </section>
+                  <section>
+                    <div className={`overflow-hidden rounded-[16px] ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]'}`}>
+                      <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b ${feedbackDraft.attachments.length > 0 ? (isDark ? 'border-white/[0.10]' : 'border-black/[0.10]') : 'border-transparent'}`}>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[14px] leading-5">{t.feedbackAttachments}</div>
+                          <div className={`mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>
+                            {feedbackDraft.attachments.length > 0 ? `${feedbackDraft.attachments.length}/5` : t.feedbackNoAttachments}
+                          </div>
+                        </div>
+                        <button onClick={pickFeedbackAttachments} className="shrink-0 text-[14px] text-[#007AFF]">{t.feedbackAddAttachment}</button>
+                      </div>
+                      {feedbackDraft.attachments.length > 0 && (
+                        <div>
+                        {feedbackDraft.attachments.map((a, idx) => (
+                          <div key={`${a.path}-${idx}`} className={`min-h-[48px] flex items-center justify-between gap-3 px-4 py-2.5 border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
+                            <span className={`min-w-0 truncate text-[13px] ${isDark ? 'text-[#C7C7CC]' : 'text-[#636366]'}`}>{a.name}</span>
+                            <button onClick={() => setFeedbackDraft(prev => ({ ...prev, attachments: prev.attachments.filter((_, i) => i !== idx) }))} className="shrink-0 text-[14px] text-[#FF3B30]">{t.cpDelete}</button>
+                          </div>
+                        ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className={`px-1 mt-1.5 text-[12px] leading-4 ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{t.feedbackAttachmentHint}</div>
+                  </section>
+                  <div className={`px-1 text-[12px] leading-5 ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{t.feedbackPrivacy}</div>
+                  {feedbackStatus.message && (
+                    <div className={`rounded-[14px] px-4 py-3 text-[14px] ${feedbackStatus.state === 'submitted' ? 'bg-[#34C759]/15 text-[#248A3D]' : 'bg-[#FF3B30]/15 text-[#FF3B30]'}`}>
+                      {feedbackStatus.message}
+                    </div>
+                  )}
+                </div>
+                <div className={`flex justify-end gap-2 px-5 py-4 border-t ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
+                    <button onClick={closeFeedback} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors ${isDark ? 'text-[#0A84FF] hover:bg-white/[0.06]' : 'text-[#007AFF] hover:bg-black/[0.04]'}`}>{t.cancel}</button>
+                    {feedbackStatus.state === 'failed_retryable' && (
+                      <button onClick={submitFeedbackDraft} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors ${isDark ? 'text-[#0A84FF] hover:bg-white/[0.06]' : 'text-[#007AFF] hover:bg-black/[0.04]'}`}>{t.feedbackRetry}</button>
+                    )}
+                    <button onClick={submitFeedbackDraft} disabled={feedbackStatus.state === 'submitting'} className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold disabled:opacity-35">
+                      {feedbackStatus.state === 'submitting' ? t.feedbackSubmitting : t.feedbackSubmit}
+                    </button>
+                </div>
+              </div>
+            </div>
+          )}
+          {feedbackNotice && (
+            <div className="fixed left-1/2 bottom-8 z-[130] -translate-x-1/2 px-4 py-2.5 rounded-full bg-black/80 text-white text-[14px] shadow-xl backdrop-blur-md">
+              {feedbackNotice}
+            </div>
+          )}
         </div>
       );
     };
+
 
     // ==========================================
     // Chat View (Gemini Centered Style + Messages)

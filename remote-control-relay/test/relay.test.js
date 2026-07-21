@@ -434,6 +434,50 @@ test("relay accepts a payload larger than the previous 1 MiB limit", async () =>
   closeSocket(desktop);
 });
 
+test("relay acknowledges a download chunk only after forwarding it to mobile", async () => {
+  const room = `rc_download_ack_${Date.now()}`;
+  const token = `token_${Date.now()}`;
+  const secret = `secret_${Date.now()}`;
+  const desktop = await registerDesktop(room, token, secret);
+  const mobile = await joinMobile(room, token);
+  const forwarded = nextMessage(mobile, "artifact_download_chunk", 5000);
+  const acknowledged = nextMessage(desktop, "artifact_download_relay_ack", 5000);
+  desktop.send(JSON.stringify({
+    type: "artifact_download_chunk",
+    room_id: room,
+    session_id: "session-test",
+    payload: { download_id: "dl-ack", index: 7, data: "YWNr" },
+  }));
+  assert.equal((await forwarded).payload.data, "YWNr");
+  assert.deepEqual((await acknowledged).payload, {
+    download_id: "dl-ack",
+    index: 7,
+    ok: true,
+  });
+  closeSocket(mobile);
+  closeSocket(desktop);
+});
+
+test("relay rejects a download chunk immediately when no mobile is connected", async () => {
+  const room = `rc_download_no_mobile_${Date.now()}`;
+  const token = `token_${Date.now()}`;
+  const secret = `secret_${Date.now()}`;
+  const desktop = await registerDesktop(room, token, secret);
+  const acknowledged = nextMessage(desktop, "artifact_download_relay_ack", 5000);
+  desktop.send(JSON.stringify({
+    type: "artifact_download_chunk",
+    room_id: room,
+    session_id: "session-test",
+    payload: { download_id: "dl-no-mobile", index: 0, data: "eA==" },
+  }));
+  const ack = await acknowledged;
+  assert.equal(ack.payload.download_id, "dl-no-mobile");
+  assert.equal(ack.payload.index, 0);
+  assert.equal(ack.payload.ok, false);
+  assert.match(ack.payload.message, /not open/);
+  closeSocket(desktop);
+});
+
 test("relay caps new rooms while allowing existing room reconnect", async () => {
   const limitedPort = port + 1;
   const limited = spawn(process.execPath, [join(relayDir, "server.js")], {
