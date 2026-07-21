@@ -358,13 +358,13 @@ impl Pinvou3Bridge {
         match self.prefs.advanced.model_preset.unwrap_or_default() {
             ModelPreset::LocalVllm => LOCAL_VLLM_MODEL.into(),
             ModelPreset::Deepseek => "deepseek-v4-pro".to_string(),
-            ModelPreset::Kimi => "kimi-k2.6".to_string(),
-            ModelPreset::OpenaiCompatible => "gpt-4o".to_string(),
-            ModelPreset::Qwen => "qwen-max".to_string(),
-            ModelPreset::Doubao => "doubao-pro-256k".to_string(),
-            ModelPreset::Minimax => "abab6.5s-chat".to_string(),
-            ModelPreset::Glm => "glm-4-plus".to_string(),
-            ModelPreset::Mimo => "mimo-v2-flash".to_string(),
+            ModelPreset::Kimi => "kimi-k3".to_string(),
+            ModelPreset::OpenaiCompatible => "gpt-5.6-terra".to_string(),
+            ModelPreset::Qwen => "qwen3.7-plus".to_string(),
+            ModelPreset::Doubao => "doubao-seed-evolving".to_string(),
+            ModelPreset::Minimax => "MiniMax-M3".to_string(),
+            ModelPreset::Glm => "glm-5.2".to_string(),
+            ModelPreset::Mimo => "mimo-v2.5-pro".to_string(),
         }
     }
 
@@ -2191,7 +2191,7 @@ mod tests {
         assert_eq!(bridge.provider(), "openai");
     }
 
-    /// OpenaiCompatible preset 必须透传任意模型名（如 gpt-4o）。
+    /// OpenaiCompatible preset 必须透传任意模型名（如自定义兼容端点模型）。
     #[test]
     fn openai_compatible_passthrough_model_name() {
         let _env = EnvGuard::new(&[
@@ -2204,11 +2204,11 @@ mod tests {
         set_active_model(
             &mut bridge,
             ModelPreset::OpenaiCompatible,
-            "gpt-4o",
+            "custom-openai-model",
             "https://api.openai.com/v1",
             "sk-xxx",
         );
-        assert_eq!(bridge.model(), "gpt-4o");
+        assert_eq!(bridge.model(), "custom-openai-model");
         assert_eq!(bridge.provider(), "openai");
         assert_eq!(bridge.base_url(), "https://api.openai.com/v1");
         assert_eq!(bridge.api_key(), "sk-xxx");
@@ -2225,7 +2225,7 @@ mod tests {
         ]);
         let mut bridge = fixture_bridge();
         bridge.prefs.advanced.model_preset = Some(ModelPreset::OpenaiCompatible);
-        bridge.prefs.advanced.custom_model_name = Some("gpt-4o".to_string());
+        bridge.prefs.advanced.custom_model_name = Some("custom-openai-model".to_string());
         std::env::set_var("DEEPSEEK_MODEL", "env-model");
         std::env::set_var("DEEPSEEK_PROVIDER", "env-provider");
         std::env::set_var("DEEPSEEK_BASE_URL", "http://env:8000/v1");
@@ -2249,7 +2249,7 @@ mod tests {
         set_active_model(
             &mut bridge,
             ModelPreset::OpenaiCompatible,
-            "gpt-4o",
+            "custom-openai-model",
             "https://api.openai.com/v1",
             "",
         );
@@ -2364,7 +2364,7 @@ mod tests {
             "",
         );
         assert_eq!(bridge.provider(), "openai");
-        assert_eq!(bridge.model(), "qwen-max");
+        assert_eq!(bridge.model(), "qwen3.7-plus");
         assert_eq!(
             bridge.base_url(),
             "https://dashscope.aliyuncs.com/compatible-mode/v1"
