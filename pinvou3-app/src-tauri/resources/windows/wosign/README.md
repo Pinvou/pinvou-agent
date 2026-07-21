@@ -10,11 +10,12 @@ be shipped with the application. `wosigncodecmd.exe` requires
 - Companion tool: `wosigncode.exe`; file version: `3.0.1.26`; SHA-256:
   `73825CE95F524BCD932E5852B7D59E890318E268ED55B7AD65315460613CAA11`
 
-The certificate thumbprint and UKey password used by the current build process
-are configured directly in `sign.ps1`. The script always uses the tools in this
-directory, runs the command from this directory so the companion executable can
-be resolved, and keeps `/isf` to ignore already-signed inputs. The command still
-requests an RFC 3161 timestamp. The script treats a zero WoSign exit code as
-success and does not perform an additional Authenticode, certificate thumbprint,
-or timestamp validation. Update the script when the signing certificate or UKey
-password changes.
+The certificate thumbprint and UKey password are read from the repository-local,
+gitignored `scripts/.builtin-secrets.env` file through
+`PINVOU3_WOSIGN_THUMBPRINT` and `PINVOU3_WOSIGN_PASSWORD`. The script always uses
+the tools in this directory, runs the command from this directory so the companion
+executable can be resolved, and keeps `/isf` to ignore already-signed inputs. The
+command still requests an RFC 3161 timestamp. The script treats a zero WoSign exit
+code as success and does not perform an additional Authenticode, certificate
+thumbprint, or timestamp validation. Update the private secrets file when the
+signing certificate or UKey password changes.

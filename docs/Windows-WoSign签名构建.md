@@ -6,8 +6,9 @@ Windows NSIS 发布构建通过项目内的 `wosigncodecmd.exe` 完成签名，
 
 ## 签名参数
 
-代码签名证书 SHA1 指纹和 UKey 密码当前固定配置在
-`pinvou3-app/src-tauri/resources/windows/wosign/sign.ps1` 中，构建前不需要设置对应环境变量。
+代码签名证书 SHA1 指纹和 UKey 密码保存在仓库根目录下被 Git 忽略的
+`scripts/.builtin-secrets.env` 中，分别使用 `PINVOU3_WOSIGN_THUMBPRINT` 和
+`PINVOU3_WOSIGN_PASSWORD`。可复制 `scripts/.builtin-secrets.env.example` 后填写真值。
 
 可选环境变量：
 
@@ -20,7 +21,7 @@ Windows NSIS 发布构建通过项目内的 `wosigncodecmd.exe` 完成签名，
 Tauri 的自定义签名命令从 `src-tauri` 目录执行，因此配置中的脚本路径必须写为
 `resources/windows/wosign/sign.ps1`，不得再次添加 `src-tauri/` 前缀。
 
-证书或 UKey 密码变化后，需要同步修改项目内签名脚本。
+证书或 UKey 密码变化后，只需修改构建机器上的私密配置文件，不应将真值写回签名脚本或提交到 Git。
 
 ## 构建命令
 
