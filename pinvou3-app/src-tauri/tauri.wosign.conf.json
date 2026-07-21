@@ -10,7 +10,7 @@
           "-ExecutionPolicy",
           "Bypass",
           "-File",
-          "src-tauri/resources/windows/wosign/sign.ps1",
+          "resources/windows/wosign/sign.ps1",
           "-FilePath",
           "%1"
         ]

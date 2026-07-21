@@ -16,6 +16,8 @@ Windows NSIS 发布构建通过项目内的 `wosigncodecmd.exe` 完成签名，
 签名工具路径不可通过环境变量覆盖，构建始终使用项目内与 `sign.ps1` 同目录的
 `wosigncodecmd.exe` 和 `wosigncode.exe`，并以该目录作为沃通命令的工作目录。
 签名命令包含 `/isf`，重复打包时会跳过已签名文件。
+Tauri 的自定义签名命令从 `src-tauri` 目录执行，因此配置中的脚本路径必须写为
+`resources/windows/wosign/sign.ps1`，不得再次添加 `src-tauri/` 前缀。
 
 证书或 UKey 密码变化后，需要同步修改项目内签名脚本。
 

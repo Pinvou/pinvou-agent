@@ -22,5 +22,11 @@ assert.deepEqual(signingConfig.bundle.windows.signCommand.args.slice(0, 2), [
   "-NoProfile",
   "-NonInteractive",
 ]);
+assert.equal(
+  signingConfig.bundle.windows.signCommand.args[
+    signingConfig.bundle.windows.signCommand.args.indexOf("-File") + 1
+  ],
+  "resources/windows/wosign/sign.ps1",
+);
 
 console.log("wosign signing contract: ok");
