@@ -314,6 +314,18 @@ jobs:
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # remote_control 的真实 relay 下载 e2e 需要 node + relay 依赖,缺 node_modules/ws 时
+      # 该 e2e 会自动 skip —— 装上依赖让 CI 真正执行它,而不是绿灯假过。
+      - name: Node.js (relay e2e)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: remote-control-relay/package-lock.json
+
+      - name: relay 依赖 (真实 relay e2e)
+        run: npm --prefix remote-control-relay ci --prefer-offline --no-audit
+
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
         with:

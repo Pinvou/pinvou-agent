@@ -11,7 +11,7 @@ use tauri::{AppHandle, Emitter};
 use super::protocol::{
     envelope, MobileAction, RemoteControlStatus, RemoteControlStatusKind, RemotePairingInfo,
 };
-use super::relay_client::{self, RelayInbound, RelayOutbound, RelaySender};
+use super::relay_client::{self, DownloadSender, RelayInbound, RelayOutbound, RelaySender};
 use super::snapshot;
 use crate::bridge::mode_state::SerializableMode;
 use crate::bridge::prefs::{SavedModel, UserPrefs};
@@ -38,6 +38,8 @@ pub struct RemoteControlManager {
 struct Inner {
     room: Option<ActiveRoom>,
     seen: Dedup,
+    /// 同一房间同时只允许一个下载任务(值为 download_id),防止重复点击并行堆叠大文件传输。
+    active_download: Option<String>,
 }
 
 #[derive(Clone)]
@@ -49,6 +51,7 @@ struct ActiveRoom {
     status: RemoteControlStatusKind,
     last_error: Option<String>,
     sender: RelaySender,
+    download_sender: DownloadSender,
 }
 
 #[derive(Default)]
@@ -123,7 +126,7 @@ impl RemoteControlManager {
             pairing_token
         );
         let qr_data_url = connector_cli::make_qr(&url);
-        let (sender, mut receiver) = relay_client::spawn(
+        let (sender, download_sender, mut receiver) = relay_client::spawn(
             relay_ws_url.clone(),
             room_id.clone(),
             session_id.clone(),
@@ -134,6 +137,7 @@ impl RemoteControlManager {
         {
             let mut inner = self.inner.lock();
             inner.seen = Dedup::default();
+            inner.active_download = None;
             inner.room = Some(ActiveRoom {
                 room_id: room_id.clone(),
                 session_id: session_id.clone(),
@@ -142,6 +146,7 @@ impl RemoteControlManager {
                 status: RemoteControlStatusKind::ConnectingRelay,
                 last_error: None,
                 sender: sender.clone(),
+                download_sender,
             });
         }
         self.emit_status();
@@ -301,7 +306,6 @@ impl RemoteControlManager {
                 | "request_session_list"
                 | "request_artifacts"
                 | "request_artifact_preview"
-                | "request_artifact_download"
                 | "request_chips"
                 | "disconnect"
         ) {
@@ -807,15 +811,6 @@ impl RemoteControlManager {
         artifact_id: Option<&str>,
         artifact_path: Option<&str>,
     ) -> Result<(), String> {
-        let room = {
-            let inner = self.inner.lock();
-            inner
-                .room
-                .as_ref()
-                .filter(|room| room.session_id == session_id)
-                .cloned()
-        }
-        .ok_or_else(|| "remote control not active".to_string())?;
         let (path, artifact_id) = if let Some(id) = artifact_id {
             let saved = store
                 .load(session_id)
@@ -839,20 +834,19 @@ impl RemoteControlManager {
         if !metadata.is_file() {
             return Err("artifact is not a file".to_string());
         }
-        if metadata.len() > DOWNLOAD_LIMIT_BYTES {
+        let byte_size = metadata.len();
+        if byte_size > DOWNLOAD_LIMIT_BYTES {
             return Err(format!(
-                "artifact too large to download ({} bytes, limit {} bytes)",
-                metadata.len(),
-                DOWNLOAD_LIMIT_BYTES
+                "artifact too large to download ({byte_size} bytes, limit {DOWNLOAD_LIMIT_BYTES} bytes)"
             ));
         }
-        let bytes = std::fs::read(&path).map_err(|e| format!("read artifact file: {e}"))?;
+        // 同步打开一次,把权限/占用类错误留在同步路径,由 handle_mobile_action 回错给 mobile。
+        std::fs::File::open(&path).map_err(|e| format!("open artifact file: {e}"))?;
         let ext = path
             .extension()
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        let total_chunks = download_chunk_count(bytes.len());
         let download_id = format!(
             "dl_{}_{}",
             std::process::id(),
@@ -861,48 +855,42 @@ impl RemoteControlManager {
                 .map(|duration| duration.as_nanos())
                 .unwrap_or(0)
         );
-        room.sender
-            .send(RelayOutbound::Envelope(envelope(
-                &room.room_id,
-                &room.session_id,
-                "artifact_download_start",
-                json!({
-                    "session_id": session_id,
-                    "artifact_id": artifact_id,
-                    "download_id": download_id,
-                    "basename": path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
-                    "path_tail": tail_path(&path.to_string_lossy()),
-                    "mime": download_mime_for_ext(&ext),
-                    "byte_size": bytes.len(),
-                    "total_chunks": total_chunks,
-                }),
-            )))
-            .map_err(|e| format!("send artifact download start: {e}"))?;
-        for (index, chunk) in bytes.chunks(DOWNLOAD_CHUNK_BYTES).enumerate() {
-            room.sender
-                .send(RelayOutbound::Envelope(envelope(
-                    &room.room_id,
-                    &room.session_id,
-                    "artifact_download_chunk",
-                    json!({
-                        "download_id": download_id,
-                        "index": index,
-                        "data": base64::engine::general_purpose::STANDARD.encode(chunk),
-                    }),
-                )))
-                .map_err(|e| format!("send artifact download chunk {index}: {e}"))?;
-        }
-        room.sender
-            .send(RelayOutbound::Envelope(envelope(
-                &room.room_id,
-                &room.session_id,
-                "artifact_download_end",
-                json!({
-                    "download_id": download_id,
-                    "total_chunks": total_chunks,
-                }),
-            )))
-            .map_err(|e| format!("send artifact download end: {e}"))
+        let room = {
+            let mut inner = self.inner.lock();
+            let room = inner
+                .room
+                .as_ref()
+                .filter(|room| room.session_id == session_id)
+                .cloned()
+                .ok_or_else(|| "remote control not active".to_string())?;
+            if inner.active_download.is_some() {
+                return Err("已有下载进行中,请等待完成后再试".to_string());
+            }
+            inner.active_download = Some(download_id.clone());
+            room
+        };
+        // 流式传输在独立任务里进行:不阻塞消息循环,分块经有界通道发送形成背压。
+        let manager = self.clone();
+        let task_download_id = download_id;
+        tauri::async_runtime::spawn(async move {
+            let result = stream_artifact_download(
+                &room,
+                &path,
+                artifact_id,
+                &task_download_id,
+                &ext,
+                byte_size,
+            )
+            .await;
+            if let Err(err) = result {
+                manager.send_error("artifact_download_failed", &err);
+            }
+            let mut inner = manager.inner.lock();
+            if inner.active_download.as_deref() == Some(task_download_id.as_str()) {
+                inner.active_download = None;
+            }
+        });
+        Ok(())
     }
 
     pub fn send_chips_snapshot(
@@ -1339,6 +1327,90 @@ fn download_chunk_count(byte_len: usize) -> usize {
     }
 }
 
+/// 流式发送一个产物下载:start → 逐块 chunk → end,全部经有界下载通道。
+/// 文件按 768KB 逐块读取,同一时刻内存里只有一块原始字节 + 其 base64;
+/// 通道满时 `.await` 挂起形成背压,大文件不会在无界队列里堆积。
+async fn stream_artifact_download(
+    room: &ActiveRoom,
+    path: &Path,
+    artifact_id: Value,
+    download_id: &str,
+    ext: &str,
+    byte_size: u64,
+) -> Result<(), String> {
+    use tokio::io::AsyncReadExt;
+
+    let total_chunks = download_chunk_count(byte_size as usize);
+    room.download_sender
+        .send(RelayOutbound::Envelope(envelope(
+            &room.room_id,
+            &room.session_id,
+            "artifact_download_start",
+            json!({
+                "session_id": room.session_id,
+                "artifact_id": artifact_id,
+                "download_id": download_id,
+                "basename": path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
+                "path_tail": tail_path(&path.to_string_lossy()),
+                "mime": download_mime_for_ext(ext),
+                "byte_size": byte_size,
+                "total_chunks": total_chunks,
+            }),
+        )))
+        .await
+        .map_err(|e| format!("send artifact download start: {e}"))?;
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| format!("open artifact file: {e}"))?;
+    let mut buffer = vec![0u8; DOWNLOAD_CHUNK_BYTES];
+    let mut index = 0usize;
+    loop {
+        // read 不保证一次填满,循环读满一块或到 EOF。
+        let mut filled = 0usize;
+        while filled < buffer.len() {
+            let read = file
+                .read(&mut buffer[filled..])
+                .await
+                .map_err(|e| format!("read artifact file: {e}"))?;
+            if read == 0 {
+                break;
+            }
+            filled += read;
+        }
+        if filled == 0 {
+            break;
+        }
+        room.download_sender
+            .send(RelayOutbound::Envelope(envelope(
+                &room.room_id,
+                &room.session_id,
+                "artifact_download_chunk",
+                json!({
+                    "download_id": download_id,
+                    "index": index,
+                    "data": base64::engine::general_purpose::STANDARD.encode(&buffer[..filled]),
+                }),
+            )))
+            .await
+            .map_err(|e| format!("send artifact download chunk {index}: {e}"))?;
+        index += 1;
+    }
+    room.download_sender
+        .send(RelayOutbound::Envelope(envelope(
+            &room.room_id,
+            &room.session_id,
+            "artifact_download_end",
+            json!({
+                "download_id": download_id,
+                "total_chunks": total_chunks,
+                "byte_size": byte_size,
+            }),
+        )))
+        .await
+        .map_err(|e| format!("send artifact download end: {e}"))?;
+    Ok(())
+}
+
 fn download_mime_for_ext(ext: &str) -> &'static str {
     match ext {
         "zip" => "application/zip",
@@ -1559,6 +1631,68 @@ mod tests {
             Some(PathBuf::from("chart.json"))
         );
         assert_eq!(path_after_segment("workspace", "workspace"), None);
+    }
+
+    #[test]
+    fn concurrent_download_is_rejected_until_active_download_finishes() {
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = PinvouHomeOverride::new("download-lock");
+        let store = SessionStore::boot().expect("boot session store");
+        let session = store
+            .create_new("test-model".to_string(), None, home.root.join("ignored"))
+            .expect("create session");
+        let session_id = session.metadata.id.clone();
+        let workspace = paths::session_workspace_dir(&session_id);
+        // 8 块 > 下载通道容量(4):消费端不排空时流式任务堵在背压上,锁必然保持。
+        let big = vec![b'x'; DOWNLOAD_CHUNK_BYTES * 8];
+        write_file(&workspace.join("reports/lock.bin"), &big);
+
+        let (sender, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (download_sender, mut download_rx) =
+            tokio::sync::mpsc::channel(relay_client::DOWNLOAD_CHANNEL_CAPACITY);
+        let manager = RemoteControlManager::new_headless();
+        {
+            let mut inner = manager.inner.lock();
+            inner.room = Some(ActiveRoom {
+                room_id: "rc_lock_test".to_string(),
+                session_id: session_id.clone(),
+                url: String::new(),
+                relay_ws_url: String::new(),
+                status: RemoteControlStatusKind::WaitingMobile,
+                last_error: None,
+                sender,
+                download_sender,
+            });
+        }
+
+        manager
+            .send_artifact_download(&store, &session_id, None, Some("reports/lock.bin"))
+            .expect("first download should be accepted");
+        let second =
+            manager.send_artifact_download(&store, &session_id, None, Some("reports/lock.bin"));
+        assert!(
+            second.is_err(),
+            "a second download must be rejected while one is active"
+        );
+        assert!(second.unwrap_err().contains("进行中"));
+
+        // 排空有界通道(start + 8 chunks + end),流式任务走完后锁必须归还。
+        tauri::async_runtime::block_on(async {
+            let mut drained = 0usize;
+            while drained < 10 {
+                match tokio::time::timeout(Duration::from_secs(5), download_rx.recv()).await {
+                    Ok(Some(_)) => drained += 1,
+                    other => panic!("download stream ended early: {other:?}"),
+                }
+            }
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while manager.inner.lock().active_download.is_some() {
+                assert!(Instant::now() < deadline, "download lock was not released");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        });
     }
 }
 
@@ -1797,7 +1931,7 @@ mod e2e_tests {
         let pairing_token = crate::remote_control::short_token(32);
         let desktop_secret = crate::remote_control::short_token(32);
         let relay_ws_url = format!("ws://127.0.0.1:{port}/ws");
-        let (sender, mut receiver) = relay_client::spawn(
+        let (sender, download_sender, mut receiver) = relay_client::spawn(
             relay_ws_url.clone(),
             room_id.clone(),
             session_id.clone(),
@@ -1815,6 +1949,7 @@ mod e2e_tests {
                 status: RemoteControlStatusKind::WaitingMobile,
                 last_error: None,
                 sender,
+                download_sender,
             });
         }
 
@@ -1925,6 +2060,8 @@ mod e2e_tests {
         assert_eq!(big.byte_size, big_expect.len() as u64);
         assert_eq!(big.total_chunks, 3);
         assert_eq!(big.bytes, big_expect, "big file bytes must round-trip");
+        // 下载锁在任务发送完 end 后才释放,下一次下载前等它归位,避免时序抖动。
+        wait_download_idle(&manager).await;
 
         // 小文本文件:单块 + 正确 MIME。
         send_mobile_action(&mut write, "dl-text", json!({ "artifact_path": "notes/hello.txt" }))
@@ -1937,6 +2074,7 @@ mod e2e_tests {
         assert_eq!(text.mime, "text/plain");
         assert_eq!(text.total_chunks, 1);
         assert_eq!(text.bytes, text_expect, "text file bytes must round-trip");
+        wait_download_idle(&manager).await;
 
         // 越界路径必须被拒绝(不会向 mobile 发任何 download 事件)。
         let escape = manager.send_artifact_download(&store, &session_id, None, Some("/etc/hostname"));
@@ -1980,6 +2118,14 @@ mod e2e_tests {
             if let RelayInbound::MobileAction { payload, .. } = inbound {
                 return payload;
             }
+        }
+    }
+
+    async fn wait_download_idle(manager: &RemoteControlManager) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while manager.inner.lock().active_download.is_some() {
+            assert!(Instant::now() < deadline, "download lock was not released");
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
 
@@ -2063,6 +2209,16 @@ mod e2e_tests {
                     assert_eq!(
                         payload.get("download_id").and_then(|v| v.as_str()),
                         Some(download_id.as_str())
+                    );
+                    assert_eq!(
+                        payload.get("total_chunks").and_then(|v| v.as_u64()),
+                        Some(total_chunks as u64),
+                        "end total_chunks must match start"
+                    );
+                    assert_eq!(
+                        payload.get("byte_size").and_then(|v| v.as_u64()),
+                        Some(byte_size),
+                        "end byte_size must match start"
                     );
                     let mut bytes = Vec::new();
                     for (index, chunk) in chunks.iter().enumerate() {

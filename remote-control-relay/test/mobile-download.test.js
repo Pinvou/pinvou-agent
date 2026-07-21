@@ -187,3 +187,177 @@ test('下载进行中收到 error 事件会中断并提示', (t) => {
     '消息流应提示下载中断',
   );
 });
+
+test('越界分片下标被忽略,不影响正常分片重组', async (t) => {
+  const { window, close } = createPage();
+  t.after(close);
+
+  const data = Buffer.from('hello remote download');
+  window.handleDesktopEvent({
+    type: 'artifact_download_start',
+    payload: {
+      session_id: 'sess1',
+      download_id: 'dl_range',
+      basename: 'range.bin',
+      mime: 'application/octet-stream',
+      byte_size: data.length,
+      total_chunks: 1,
+    },
+  });
+  // 非法下标(>= total_chunks)与负数下标都必须被丢弃。
+  window.handleDesktopEvent({
+    type: 'artifact_download_chunk',
+    payload: { download_id: 'dl_range', index: 5, data: Buffer.alloc(16).toString('base64') },
+  });
+  window.handleDesktopEvent({
+    type: 'artifact_download_chunk',
+    payload: { download_id: 'dl_range', index: -1, data: Buffer.alloc(16).toString('base64') },
+  });
+  window.handleDesktopEvent({
+    type: 'artifact_download_chunk',
+    payload: { download_id: 'dl_range', index: 0, data: data.toString('base64') },
+  });
+  window.handleDesktopEvent({
+    type: 'artifact_download_end',
+    payload: { download_id: 'dl_range', total_chunks: 1, byte_size: data.length },
+  });
+
+  assert.equal(window.__downloadName, 'range.bin', '合法分片应正常完成下载');
+  const got = Buffer.from(await window.__capturedBlob.arrayBuffer());
+  assert.deepEqual(got, data);
+});
+
+test('结束消息分块数不一致时判定失败', (t) => {
+  const { window, close } = createPage();
+  t.after(close);
+
+  const data = Buffer.from('chunk count mismatch');
+  window.handleDesktopEvent({
+    type: 'artifact_download_start',
+    payload: {
+      session_id: 'sess1',
+      download_id: 'dl_miscount',
+      basename: 'miscount.bin',
+      mime: 'application/octet-stream',
+      byte_size: data.length,
+      total_chunks: 1,
+    },
+  });
+  window.handleDesktopEvent({
+    type: 'artifact_download_chunk',
+    payload: { download_id: 'dl_miscount', index: 0, data: data.toString('base64') },
+  });
+  window.handleDesktopEvent({
+    type: 'artifact_download_end',
+    payload: { download_id: 'dl_miscount', total_chunks: 2 },
+  });
+
+  assert.equal(window.__capturedBlob, undefined, '分块数不一致不应保存');
+  assert.ok(
+    systemTexts(window).some((text) => text.includes('下载 miscount.bin 失败')),
+    '消息流应提示下载失败',
+  );
+});
+
+test('重组字节数与开始声明不符时判定失败', (t) => {
+  const { window, close } = createPage();
+  t.after(close);
+
+  const data = Buffer.from('short');
+  window.handleDesktopEvent({
+    type: 'artifact_download_start',
+    payload: {
+      session_id: 'sess1',
+      download_id: 'dl_size',
+      basename: 'size.bin',
+      mime: 'application/octet-stream',
+      byte_size: data.length + 100,
+      total_chunks: 1,
+    },
+  });
+  window.handleDesktopEvent({
+    type: 'artifact_download_chunk',
+    payload: { download_id: 'dl_size', index: 0, data: data.toString('base64') },
+  });
+  window.handleDesktopEvent({
+    type: 'artifact_download_end',
+    payload: { download_id: 'dl_size', total_chunks: 1 },
+  });
+
+  assert.equal(window.__capturedBlob, undefined, '字节数不符不应保存');
+  assert.ok(
+    systemTexts(window).some((text) => text.includes('下载 size.bin 失败')),
+    '消息流应提示下载失败',
+  );
+});
+
+test('下载进行中重复点击只发一次请求,完成后可再次下载', (t) => {
+  const { window, sent, close } = createPage();
+  t.after(close);
+
+  window.showPreview({
+    session_id: 'sess1',
+    artifact_id: 'art-9',
+    basename: 'report.bin',
+    path_tail: 'reports/report.bin',
+    preview: { type: 'text', content: 'hello' },
+  });
+  const downloadButton = window.document.getElementById('previewDownload');
+  const countRequests = () =>
+    sent.filter((msg) => msg.type === 'mobile_action' && msg.payload.type === 'request_artifact_download')
+      .length;
+
+  sent.length = 0;
+  downloadButton.click();
+  downloadButton.click();
+  assert.equal(countRequests(), 1, '下载进行中重复点击不应重复发请求');
+  assert.equal(downloadButton.disabled, true, '下载中按钮应禁用');
+
+  // 走完一次完整下载后,按钮恢复、可以再次发起。
+  window.handleDesktopEvent({
+    type: 'artifact_download_start',
+    payload: {
+      session_id: 'sess1',
+      download_id: 'dl_again',
+      basename: 'report.bin',
+      mime: 'application/octet-stream',
+      byte_size: 5,
+      total_chunks: 1,
+    },
+  });
+  window.handleDesktopEvent({
+    type: 'artifact_download_chunk',
+    payload: { download_id: 'dl_again', index: 0, data: Buffer.from('again').toString('base64') },
+  });
+  window.handleDesktopEvent({
+    type: 'artifact_download_end',
+    payload: { download_id: 'dl_again', total_chunks: 1, byte_size: 5 },
+  });
+  assert.equal(downloadButton.disabled, false, '下载完成后按钮应恢复');
+  downloadButton.click();
+  assert.equal(countRequests(), 2, '完成后应能再次发起下载');
+});
+
+test('连接中断(onclose)会中断进行中的下载', (t) => {
+  const { window, close } = createPage();
+  t.after(close);
+
+  window.handleDesktopEvent({
+    type: 'artifact_download_start',
+    payload: {
+      session_id: 'sess1',
+      download_id: 'dl_ws',
+      basename: 'ws.bin',
+      mime: 'application/octet-stream',
+      byte_size: CHUNK * 2,
+      total_chunks: 2,
+    },
+  });
+  window.WebSocket.instance.onclose();
+
+  assert.equal(window.__capturedBlob, undefined);
+  assert.ok(
+    systemTexts(window).some((text) => text.includes('下载 ws.bin 中断')),
+    '连接中断应提示下载中断',
+  );
+});
